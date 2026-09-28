@@ -308,6 +308,16 @@ function setParameters(
       log.error(`Illegal parameter ${key} in WebGPU`)();
     }
   }
+
+  // Every blend factor adds blend state, so factors inherited from a default would otherwise turn
+  // blending on under an explicit `blend: false` - as WebGL does not. Some targets (32-bit float)
+  // are not blendable at all, and a pipeline that blends into one is invalid.
+  if (parameters.blend === false) {
+    const target = pipelineDescriptor.fragment?.targets?.[0];
+    if (target) {
+      delete target.blend;
+    }
+  }
 }
 
 /** @todo - support multiple color targets... */
