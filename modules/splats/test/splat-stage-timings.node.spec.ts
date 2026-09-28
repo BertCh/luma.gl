@@ -3,7 +3,11 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {expect, it} from 'vitest';
-import {getGPUSplatStage, getGPUSplatStageTimings} from '../src/splat-stage-timings';
+import {
+  GPU_SPLAT_STAGE_PREFIXES,
+  getGPUSplatStage,
+  getGPUSplatStageTimings
+} from '../src/splat-stage-timings';
 
 /** Builds a timing report shaped like one the command graph produces. */
 function makeReport(
@@ -43,12 +47,23 @@ it('every node the splat graph emits is attributed to a stage', () => {
   expect(getGPUSplatStage('something-else'), 'a foreign node belongs to no stage').toBe(undefined);
 });
 
-it('the gather pass is not mistaken for part of the sort', () => {
-  // Both node ids begin with the same prefix up to a point, and a shorter-first match would put
-  // the compatibility gather inside the sort's budget.
-  expect(getGPUSplatStage('gaussian-splat-gather-sorted-records'), 'gather is its own stage').toBe(
-    'gather'
-  );
+it('stage prefixes are disjoint, so the gather pass is never mistaken for part of the sort', () => {
+  // Classification takes the first matching prefix. That is only order-independent if no prefix is
+  // a prefix of another; otherwise a reordering could silently move a node into the wrong budget.
+  for (const [prefix] of GPU_SPLAT_STAGE_PREFIXES) {
+    const otherPrefixes = GPU_SPLAT_STAGE_PREFIXES.filter(([other]) => other !== prefix);
+    for (const [other] of otherPrefixes) {
+      expect(prefix.startsWith(other), `${prefix} does not start with ${other}`).toBe(false);
+    }
+  }
+  expect(
+    getGPUSplatStage('gaussian-splat-gather-sorted-records'),
+    'gather is its own stage, although its id mentions sorting'
+  ).toBe('gather');
+  expect(
+    getGPUSplatStage('gaussian-splat-sorted-records'),
+    'a sort-adjacent resource id is not attributed to the sort'
+  ).toBe(undefined);
 });
 
 it('stage timings sum the nodes that belong to each stage', () => {

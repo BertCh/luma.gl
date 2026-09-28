@@ -60,18 +60,30 @@ export const SPLAT_CLIP_UNIFORM_BYTE_LENGTH = MAXIMUM_SPLAT_CLIP_PLANES * 16 + 1
 const MINIMUM_CLIP_EXTENT = 1e-6;
 
 /**
+ * Whether a plane can be evaluated: a finite, non-degenerate normal and a finite constant.
+ *
+ * Degenerate planes are dropped everywhere - by the packer, the activity test, and CPU coverage -
+ * so every path agrees on which planes a region actually has.
+ */
+function isSplatClipPlaneValid(plane: SplatClipPlane): boolean {
+  const length = Math.hypot(plane.normal[0], plane.normal[1], plane.normal[2]);
+  return Number.isFinite(length) && length > MINIMUM_CLIP_EXTENT && Number.isFinite(plane.distance);
+}
+
+/**
  * Packs one clip region into the uniform block layout the projection shader expects.
  *
  * Plane normals are normalized here so the shader can treat the signed distance as a world-space
- * length without a per-splat square root.
+ * length without a per-splat square root. Degenerate planes (zero or non-finite normal, non-finite
+ * constant) are dropped before the plane limit is enforced.
  *
- * @throws If the region declares more than {@link MAXIMUM_SPLAT_CLIP_PLANES} planes.
+ * @throws If the region has more than {@link MAXIMUM_SPLAT_CLIP_PLANES} valid planes.
  */
 export function packSplatClipUniforms(region: SplatClipRegion | undefined): ArrayBuffer {
   const uniformData = new ArrayBuffer(SPLAT_CLIP_UNIFORM_BYTE_LENGTH);
   const floatValues = new Float32Array(uniformData);
   const integerValues = new Uint32Array(uniformData);
-  const planes = region?.planes ?? [];
+  const planes = (region?.planes ?? []).filter(isSplatClipPlaneValid);
   if (planes.length > MAXIMUM_SPLAT_CLIP_PLANES) {
     throw new RangeError(
       `Gaussian splat clip regions support at most ${MAXIMUM_SPLAT_CLIP_PLANES} planes`
@@ -82,9 +94,6 @@ export function packSplatClipUniforms(region: SplatClipRegion | undefined): Arra
   for (const plane of planes) {
     const [normalX, normalY, normalZ] = plane.normal;
     const length = Math.hypot(normalX, normalY, normalZ);
-    if (!(length > MINIMUM_CLIP_EXTENT) || !Number.isFinite(plane.distance)) {
-      continue;
-    }
     const offset = planeCount * 4;
     floatValues[offset] = normalX / length;
     floatValues[offset + 1] = normalY / length;
@@ -103,7 +112,7 @@ export function packSplatClipUniforms(region: SplatClipRegion | undefined): Arra
 
 /** Whether a region would attenuate anything, so the shader branch can be skipped entirely. */
 export function isSplatClipRegionActive(region: SplatClipRegion | undefined): boolean {
-  return Boolean(region?.planes.some(plane => Math.hypot(...plane.normal) > MINIMUM_CLIP_EXTENT));
+  return Boolean(region?.planes.some(isSplatClipPlaneValid));
 }
 
 /**
@@ -128,11 +137,12 @@ export function getSplatClipCoverage(
   const softness = Math.max(region.softness ?? 1, 0);
   let coverage = isUnion ? 0 : 1;
   for (const plane of region.planes) {
-    const [normalX, normalY, normalZ] = plane.normal;
-    const length = Math.hypot(normalX, normalY, normalZ);
-    if (!(length > MINIMUM_CLIP_EXTENT)) {
+    // Skip exactly the planes the packer drops, so CPU coverage matches the GPU evaluation.
+    if (!isSplatClipPlaneValid(plane)) {
       continue;
     }
+    const [normalX, normalY, normalZ] = plane.normal;
+    const length = Math.hypot(normalX, normalY, normalZ);
     const unitX = normalX / length;
     const unitY = normalY / length;
     const unitZ = normalZ / length;

@@ -63,11 +63,13 @@ it('graph-native Gaussian picking preserves projected, uniform, and integer iden
   expect(
     GPU_SPLAT_GRAPH_PICKING_SHADER,
     'preserves packed projected source identity without interpolation or 24-bit encoding'
-  ).toMatch(/@location\(2\)\s*@interpolate\(flat\)\s*projectedRowIndex:\s*u32/);
+  ).toMatch(/@location\(3\)\s*@interpolate\(flat\)\s*projectedRowIndex:\s*u32/);
   expect(
     GPU_SPLAT_GRAPH_PICKING_SHADER,
-    'excludes transparent and cutoff-clipped Gaussian fragments from picking'
-  ).toMatch(/alpha\s*<=\s*0\.0\s*\|\|\s*alpha\s*<\s*graphUniforms\.alphaCutoff/);
+    'excludes transparent, cutoff-clipped and (opt-in) low-coverage fragments from picking'
+  ).toMatch(
+    /alpha\s*<=\s*0\.0\s*\|\|\s*alpha\s*<\s*max\(graphUniforms\.alphaCutoff,\s*graphUniforms\.pickingAlphaThreshold\)/
+  );
   expect(
     GPU_SPLAT_GRAPH_PICKING_SHADER,
     'publishes the packed projected row through an exact signed integer attachment'
@@ -198,7 +200,9 @@ it('GPUSplatGraphPicker reuses graph buffers and one GPU-visible indirect comman
   );
   const renderer = new GPUSplatGraphRenderer(device, {
     data: [firstBatch, secondBatch],
-    viewportSize: [1, 1]
+    viewportSize: [1, 1],
+    // NullDevice reports no vertex-stage storage buffers; this test stubs the storage path.
+    renderPath: 'storage'
   });
   const projectedRecordBuffer = device.createBuffer({
     byteLength: GPU_SPLAT_PROJECTED_RECORD_BYTE_LENGTH * 3,
@@ -327,7 +331,12 @@ it('GPUSplatGraphPicker serializes deferred readback across independently replac
       rowIndexBase: 1_900_000_000
     })
   );
-  const renderer = new GPUSplatGraphRenderer(device, {data: firstBatch, viewportSize: [2, 1]});
+  const renderer = new GPUSplatGraphRenderer(device, {
+    data: firstBatch,
+    viewportSize: [2, 1],
+    // NullDevice reports no vertex-stage storage buffers; this test stubs the storage path.
+    renderPath: 'storage'
+  });
   const projectedRecordBuffer = device.createBuffer({
     byteLength: GPU_SPLAT_PROJECTED_RECORD_BYTE_LENGTH,
     usage: Buffer.STORAGE | Buffer.COPY_DST
@@ -480,7 +489,12 @@ it('GPUSplatGraphMixedRenderer composites shared-depth meshes around one graph i
       rowIndexBase: 90
     })
   );
-  const renderer = new GPUSplatGraphRenderer(device, {data: batch, viewportSize: [8, 8]});
+  const renderer = new GPUSplatGraphRenderer(device, {
+    data: batch,
+    viewportSize: [8, 8],
+    // NullDevice reports no vertex-stage storage buffers; this test stubs the storage path.
+    renderPath: 'storage'
+  });
   const projectedRecordBuffer = device.createBuffer({
     byteLength: GPU_SPLAT_PROJECTED_RECORD_BYTE_LENGTH,
     usage: Buffer.STORAGE | Buffer.COPY_DST
@@ -582,6 +596,31 @@ it('GPUSplatGraphMixedRenderer composites shared-depth meshes around one graph i
     'prepares a later graph composition frame'
   ).toBe(true);
   expect(mixedRenderer.model, 'reuses the same projected-record display model').toBe(initialModel);
+
+  // Stochastic coverage is sorted for visibility only, so the compositor must resolve it with
+  // depth writes and opaque output even when the caller asked for neither.
+  renderer.setProps({alphaMode: 'stochastic'});
+  const blendOnlyCompositor = new GPUSplatGraphMixedRenderer(renderer, {
+    colorAttachmentFormat: 'rgba8unorm',
+    depthStencilAttachmentFormat: 'depth24plus',
+    depthWriteEnabled: false
+  });
+  expect(
+    Boolean(blendOnlyCompositor.predraw(device.commandEncoder)),
+    'prepares a stochastic composition'
+  ).toBe(true);
+  expect(
+    blendOnlyCompositor.model?.parameters.depthWriteEnabled,
+    'stochastic coverage always writes depth'
+  ).toBe(true);
+  expect(blendOnlyCompositor.model?.parameters.blend, 'and draws opaquely').toBe(false);
+  blendOnlyCompositor.destroy();
+  expect(
+    Boolean(mixedRenderer.predraw(device.commandEncoder)),
+    'an existing compositor follows the alpha-mode change'
+  ).toBe(true);
+  expect(mixedRenderer.model, 'by rebuilding its display model').not.toBe(initialModel);
+  expect(mixedRenderer.model?.parameters.blend, 'without blending').toBe(false);
   mixedRenderer.destroy();
   mixedRenderer.destroy();
   expect(

@@ -48,9 +48,29 @@ it('dilation compensation shrinks opacity by exactly the determinant ratio', () 
     getSplatDilationCompensation(variance, 0, variance, 0),
     'no filter means no compensation'
   ).toBe(1);
+});
+
+it('a degenerate covariance is compensated toward zero, not rendered at full opacity', () => {
   expect(
     getSplatDilationCompensation(0, 0, 0, 0.3),
-    'a degenerate covariance falls back to base 3DGS rather than vanishing'
+    'a point Gaussian has no energy to spread over the filter footprint'
+  ).toBe(0);
+  expect(
+    getSplatDilationCompensation(4, 2, 1, 0.3),
+    'a line Gaussian (zero determinant) likewise contributes nothing after dilation'
+  ).toBe(0);
+  expect(
+    getSplatDilationCompensation(1, 1.0000001, 1, 0.3),
+    'round-off that drives the original determinant negative is treated as zero'
+  ).toBe(0);
+  const nearlyDegenerate = getSplatDilationCompensation(1e-8, 0, 1e-8, 0.3);
+  expect(
+    nearlyDegenerate > 0 && nearlyDegenerate < 1e-6,
+    'a tiny but valid determinant keeps its tiny compensation instead of snapping to one'
+  ).toBe(true);
+  expect(
+    getSplatDilationCompensation(0, 0, 0, 1e-7),
+    'only a dilated covariance that is itself degenerate falls back to base 3DGS'
   ).toBe(1);
 });
 

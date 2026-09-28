@@ -194,7 +194,9 @@ describe('bounded GPU sort dispatch', () => {
   });
 
   test('rejects radix ranges beyond the complete bounded three-dimensional capacity', () => {
-    const fixture = createSortGraphFixture(8 * WORKGROUP_SIZE + 1, 'radix');
+    // Radix dispatches one workgroup per tile of 256 threads x 8 keys, so a limit of two per
+    // dimension holds eight tiles; one key more needs a ninth.
+    const fixture = createSortGraphFixture(8 * 8 * WORKGROUP_SIZE + 1, 'radix');
     const addComputePass = vi.spyOn(fixture.graph, 'addComputePass');
 
     try {

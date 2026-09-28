@@ -109,7 +109,8 @@ export function planSplatBudget(
   const logBucketScale = Math.log(gainBucketScale);
 
   const refinedNodeIds = new Set<string>();
-  const cut: SplatBudgetNode[] = [];
+  // Only the size of the cut is reported, so it is counted rather than kept as a list.
+  let selectedNodeCount = 0;
   let selectedSplatCount = 0;
   const upgrades: SplatBudgetUpgrade[] = [];
 
@@ -117,7 +118,7 @@ export function planSplatBudget(
     if (!view.isVisible(node)) {
       return;
     }
-    cut.push(node);
+    selectedNodeCount++;
     selectedSplatCount += getBudgetNodeSplatCount(node);
     const upgrade = getSplatBudgetUpgrade(node, view, maximumScreenSpaceError, logBucketScale);
     if (upgrade) {
@@ -151,11 +152,9 @@ export function planSplatBudget(
 
     refinedNodeIds.add(best.node.id);
     if (best.node.refinement !== 'add') {
+      // Only admitted nodes become candidates, so the refined node is always in the cut.
       selectedSplatCount -= getBudgetNodeSplatCount(best.node);
-      const cutIndex = cut.indexOf(best.node);
-      if (cutIndex >= 0) {
-        cut.splice(cutIndex, 1);
-      }
+      selectedNodeCount--;
     }
     // Rule 3: only the immediate children become candidates.
     for (const child of best.children) {
@@ -166,7 +165,7 @@ export function planSplatBudget(
   return {
     refinedNodeIds,
     selectedSplatCount,
-    selectedNodeCount: cut.length,
+    selectedNodeCount,
     consideredUpgradeCount,
     budgetExhausted
   };

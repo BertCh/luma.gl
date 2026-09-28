@@ -32,9 +32,19 @@ export type SplatCovarianceProjectionProps = {
   rotation: readonly [number, number, number, number];
   modelViewProjectionMatrix?: readonly number[];
   viewportSize?: readonly [number, number];
-  /** Isotropic screen-space filter standard deviation in pixels. Prefer the variance spelling. */
+  /**
+   * Isotropic screen-space filter standard deviation in pixels. Prefer the variance spelling.
+   * Defaults to no filter.
+   */
   kernel2DSize?: number;
-  /** Isotropic screen-space filter variance in square pixels. Defaults to `0.3`. */
+  /**
+   * Isotropic screen-space filter variance in square pixels. Takes precedence over
+   * `kernel2DSize`.
+   *
+   * Defaults to `0` - no filter - so existing callers of this low-level helper keep their output.
+   * The renderers resolve their own default (`0.3`, matching the reference rasterizer) and pass it
+   * explicitly.
+   */
   screenSpaceFilterVariance?: number;
   /** Extra per-level isotropic filter variance for level-of-detail refiltering. */
   levelFilterVariance?: number;
@@ -77,8 +87,13 @@ export function projectSplatCovarianceToScreen(
     }
   }
 
-  const addedVariance =
-    getSplatScreenFilterVariance(props) + Math.max(props.levelFilterVariance ?? 0, 0);
+  // Unlike the renderers, this helper adds no filter unless asked, so its output is unchanged for
+  // callers that predate the variance spelling and its reference-rasterizer default.
+  const screenFilterVariance =
+    props.screenSpaceFilterVariance === undefined && props.kernel2DSize === undefined
+      ? 0
+      : getSplatScreenFilterVariance(props);
+  const addedVariance = screenFilterVariance + Math.max(props.levelFilterVariance ?? 0, 0);
   const dilationCompensation = getSplatDilationCompensation(
     covariance00,
     covariance01,

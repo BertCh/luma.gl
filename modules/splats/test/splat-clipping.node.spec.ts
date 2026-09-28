@@ -172,3 +172,45 @@ it('the packed block skips degenerate planes and rejects overfull regions', () =
     'more planes than the block can hold is an error, not a silent truncation'
   ).toThrow(/at most 8 planes/);
 });
+
+it('degenerate planes do not count toward the plane limit', () => {
+  const planes = [
+    ...Array.from({length: MAXIMUM_SPLAT_CLIP_PLANES}, (_, index) => ({
+      normal: [1, 0, 0] as const,
+      distance: index
+    })),
+    {normal: [0, 0, 0] as const, distance: 1},
+    {normal: [0, 1, 0] as const, distance: Number.NaN}
+  ];
+
+  const packed = packSplatClipUniforms({planes});
+  expect(
+    new Uint32Array(packed)[MAXIMUM_SPLAT_CLIP_PLANES * 4],
+    'eight usable planes plus two degenerate ones pack as eight'
+  ).toBe(MAXIMUM_SPLAT_CLIP_PLANES);
+});
+
+it('CPU coverage skips the same non-finite planes the packer drops', () => {
+  const axes = getIsotropicAxes(1);
+  const position: [number, number, number] = [3, 0, 0];
+  const reference = getSplatClipCoverage(HALF_SPACE_AT_ORIGIN, position, axes);
+
+  for (const invalidPlane of [
+    {normal: [0, 1, 0] as const, distance: Number.NaN},
+    {normal: [0, 1, 0] as const, distance: Number.POSITIVE_INFINITY},
+    {normal: [Number.POSITIVE_INFINITY, 0, 0] as const, distance: 0}
+  ]) {
+    const coverage = getSplatClipCoverage(
+      {planes: [...HALF_SPACE_AT_ORIGIN.planes, invalidPlane]},
+      position,
+      axes
+    );
+    expect(coverage, `ignores ${JSON.stringify(invalidPlane)} rather than returning NaN`).toBe(
+      reference
+    );
+  }
+  expect(
+    isSplatClipRegionActive({planes: [{normal: [0, 1, 0], distance: Number.NaN}]}),
+    'a region of only non-finite planes is inactive'
+  ).toBe(false);
+});

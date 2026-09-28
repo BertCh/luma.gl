@@ -77,6 +77,43 @@ it('GPUSplatGraphRenderer preserves HDR radiance and resolves display tone mappi
   void 0;
 });
 
+it('GPUSplatGraphRenderer keeps every visible Gaussian pickable unless a threshold is requested', () => {
+  const device = makeWebGPUNullDevice();
+  const batch = makeGPUSplatData(device, makeGraphSplatSource([0.2], 0));
+  const renderer = new GPUSplatGraphRenderer(device, {data: batch});
+
+  expect(
+    renderer.props.pickingAlphaThreshold,
+    'picking defaults to the render alphaCutoff, so a 0.2-opacity splat stays pickable'
+  ).toBe(0);
+  renderer.setProps({pickingAlphaThreshold: 0.5});
+  expect(renderer.props.pickingAlphaThreshold, 'the coverage threshold is opt-in').toBe(0.5);
+
+  renderer.destroy();
+  batch.destroy();
+});
+
+it('GPUSplatGraphRenderer sorts stochastic coverage for visibility only', () => {
+  const device = makeWebGPUNullDevice();
+  const batch = makeGPUSplatData(device, makeGraphSplatSource([0.5], 0));
+  const renderer = new GPUSplatGraphRenderer(device, {data: batch});
+
+  expect(renderer.depthKeyBits, 'blended coverage sorts a 16-bit float16 depth key').toBe(16);
+  renderer.setProps({alphaMode: 'stochastic'});
+  expect(
+    renderer.depthKeyBits,
+    'stochastic coverage only partitions visible rows ahead of culled ones'
+  ).toBe(1);
+  renderer.setProps({alphaMode: 'blend', depthKeyMode: 'linear', depthKeyBits: 32});
+  expect(
+    renderer.depthKeyBits,
+    'quantized keys stop at the 24 bits single precision quantizes exactly'
+  ).toBe(24);
+
+  renderer.destroy();
+  batch.destroy();
+});
+
 it('GPUSplatGraphRenderer validates borrowing and replacement ownership', () => {
   const firstDevice = makeWebGPUNullDevice();
   const secondDevice = makeWebGPUNullDevice();

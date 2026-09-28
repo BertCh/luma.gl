@@ -35,10 +35,13 @@ const INVALID_INDEX = 0xffffffff;
 const MAXIMUM_LOGICAL_LENGTH = 0x80000000;
 const AUTO_BITONIC_MAXIMUM_LENGTH = BITONIC_WORKGROUP_SIZE;
 
-/** Radix digit widths whose per-workgroup ballot masks fit the guaranteed workgroup storage. */
-const SUPPORTED_RADIX_DIGIT_BITS = [4, 8] as const;
+/**
+ * Radix digit widths whose per-workgroup ballot masks fit the guaranteed 16 KB of workgroup
+ * storage: an eight-bit digit reserves `(256 * 8 + 256) * 4 = 9216` bytes in the scatter pass.
+ */
+const SUPPORTED_RADIX_DIGIT_BITS: readonly GPUSortDigitBits[] = [4, 8];
 /** Default digit width. Benchmarks across Apple, NVIDIA and Mali parts keep four-bit digits. */
-const DEFAULT_RADIX_DIGIT_BITS = 4;
+const DEFAULT_RADIX_DIGIT_BITS: GPUSortDigitBits = 4;
 /**
  * Keys handled by one thread per radix tile.
  *
@@ -48,8 +51,8 @@ const DEFAULT_RADIX_DIGIT_BITS = 4;
  * eighth of the dispatch and scan overhead.
  */
 const DEFAULT_RADIX_ELEMENTS_PER_THREAD = 8;
-/** Guaranteed WebGPU workgroup storage, used to reject digit widths that cannot fit. */
-const MINIMUM_WORKGROUP_STORAGE_BYTES = 16384;
+/** Radix digit widths supported by {@link GPUSort}. */
+export type GPUSortDigitBits = 4 | 8;
 
 /** Sort implementation requested by {@link GPUSort}. */
 export type GPUSortAlgorithm = 'auto' | 'bitonic' | 'radix';
@@ -81,7 +84,7 @@ export type GPUSortProps = {
    * Eight-bit digits halve the pass count for wide keys at the cost of a 256-bucket ballot mask in
    * workgroup storage. Four-bit digits remain the portable default.
    */
-  digitBits?: 4 | 8;
+  digitBits?: GPUSortDigitBits;
   /**
    * Keys processed by one radix thread. Defaults to `8`.
    *
@@ -142,7 +145,7 @@ export class GPUSort {
   /** Significant least-significant key bits processed by the radix implementation. */
   readonly keyBits: number;
   /** Bits consumed by one radix pass. */
-  readonly digitBits: number;
+  readonly digitBits: GPUSortDigitBits;
   /** Keys processed by one radix thread within its workgroup's tile. */
   readonly elementsPerThread: number;
   /** Concrete implementation selected after resolving `'auto'`. */
@@ -184,7 +187,7 @@ export class GPUSort {
     if (!Number.isInteger(this.keyBits) || this.keyBits < 1 || this.keyBits > 32) {
       throw new Error(`${this.id} keyBits must be an integer from 1 to 32`);
     }
-    if (!SUPPORTED_RADIX_DIGIT_BITS.includes(this.digitBits as 4 | 8)) {
+    if (!SUPPORTED_RADIX_DIGIT_BITS.includes(this.digitBits)) {
       throw new Error(`${this.id} digitBits must be 4 or 8`);
     }
     if (
@@ -193,10 +196,6 @@ export class GPUSort {
       this.elementsPerThread > 32
     ) {
       throw new Error(`${this.id} elementsPerThread must be an integer from 1 to 32`);
-    }
-    const radixStorageBytes = getRadixScatterStorageBytes(this.digitBits);
-    if (radixStorageBytes > MINIMUM_WORKGROUP_STORAGE_BYTES) {
-      throw new Error(`${this.id} digitBits exceeds the guaranteed workgroup storage size`);
     }
     if (
       this.values.length !== this.keys.length ||
@@ -300,16 +299,17 @@ function getAtomicSortNodes<Parameters>(
     return nodes;
   }
 
-  const dispatchLayout = getBoundedDispatchLayout(
-    'GPUSort',
-    sort.keys.length,
-    RADIX_WORKGROUP_SIZE,
-    maxComputeWorkgroupsPerDimension
-  );
-
   if (sort.resolvedAlgorithm === 'bitonic') {
+    const dispatchLayout = getBoundedDispatchLayout(
+      'GPUSort',
+      sort.keys.length,
+      RADIX_WORKGROUP_SIZE,
+      maxComputeWorkgroupsPerDimension
+    );
     nodes.push(...addBitonicSort(graph, sort, dispatchLayout, maxComputeWorkgroupsPerDimension));
   } else {
+    // Radix plans its own dispatch per tile of `256 * elementsPerThread` keys, so bounding it here
+    // at one key per thread would reject ranges its tiling fits comfortably.
     nodes.push(...addRadixSort(graph, sort, maxComputeWorkgroupsPerDimension));
   }
 
@@ -766,7 +766,16 @@ const OUTPUT_VALUES_OFFSET: u32 = ${getViewElementOffset(sort.outputValues)}u;
   return nodes;
 }
 
-/** Resolves the tiling, histogram shape, and pass count one radix sort would use. @internal */
+/**
+ * Resolves the tiling, histogram shape, and pass count one radix sort would use.
+ *
+ * Pure planning over the row count and radix options: no device or graph is needed, so callers
+ * can size budgets or autotune `digitBits` and `elementsPerThread` before creating a sort.
+ * {@link GPUSort.radixPlan} returns the same plan for an existing sort.
+ *
+ * @param sort Row count (`keys.length`), significant `keyBits`, `digitBits` and
+ * `elementsPerThread`, as accepted by {@link GPUSortProps}.
+ */
 export function getGPUSortRadixPlan(sort: {
   keys: {length: number};
   keyBits: number;

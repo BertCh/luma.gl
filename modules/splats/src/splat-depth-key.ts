@@ -3,7 +3,12 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 /**
- * Back-to-front depth keys for Gaussian splat ordering, shared by the CPU and GPU sort paths.
+ * Back-to-front depth keys for Gaussian splat ordering.
+ *
+ * The GPU radix sort consumes these keys directly. {@link packSplatDepthKey} is the CPU reference
+ * implementation of the same formulas (used for tests, tiled keys and custom CPU sorts); the CPU
+ * `SplatRenderer` does not quantize at all and sorts exact float32 depths, so its ordering can
+ * legitimately differ from a quantized GPU key where two depths share a bucket.
  *
  * The distribution of a quantized depth key matters more than its width. Normalized device depth
  * is hyperbolic: at the near/far ratios a geospatial camera uses, almost the whole key range is
@@ -14,7 +19,7 @@
  * @remarks
  * No published source measures the visual error of any particular key width or distribution for
  * splats. These modes exist so that question can be answered by measurement in-repo rather than
- * by argument; {@link SPLAT_DEPTH_KEY_BITS} is the shared default both paths start from.
+ * by argument; {@link SPLAT_DEPTH_KEY_BITS} is the default width for the quantized distributions.
  */
 
 /** Distribution used to quantize view-space depth into an unsigned sort key. */
@@ -29,19 +34,29 @@ export type SplatDepthKeyMode =
   | 'float32';
 
 /**
- * Shared default depth-key width in bits.
+ * Default depth-key width in bits for {@link packSplatDepthKey} and the GPU radix sort.
  *
- * Both the CPU reference sort and the GPU radix sort quantize to this width unless a caller
- * overrides it, which is what keeps a scene's ordering identical across the two paths.
+ * `'float16'` keys are always this wide and `'float32'` keys are always 32 bits; `'linear'` and
+ * `'ndc'` keys quantize to this width unless a caller requests another (at most 24 bits).
  */
 export const SPLAT_DEPTH_KEY_BITS = 16;
 
 /** Widest supported depth key; the GPU radix sort accepts at most a 32-bit key. */
 export const SPLAT_MAXIMUM_DEPTH_KEY_BITS = 32;
 
+/**
+ * Widest key the quantized `'linear'` and `'ndc'` distributions can produce exactly.
+ *
+ * The GPU quantizes in single precision, whose 24-bit significand cannot represent every integer
+ * above `2^24`; a wider quantized key would round the far end past the maximum visible key and
+ * wrap. The floating-point distributions are bit patterns and are not limited by this.
+ */
+const SPLAT_MAXIMUM_QUANTIZED_DEPTH_KEY_BITS = 24;
+
 /** Sentinel sorted after every valid key of the same width, marking a culled Gaussian. */
 export function getSplatInvalidDepthKey(keyBits: number = SPLAT_DEPTH_KEY_BITS): number {
-  return keyBits >= 32 ? 0xffffffff : (1 << keyBits) - 1;
+  // `2 ** keyBits` rather than a shift: `1 << 31` is negative in JavaScript.
+  return keyBits >= 32 ? 0xffffffff : 2 ** keyBits - 1;
 }
 
 /** Largest key a visible Gaussian may take, one below the culled sentinel. */
@@ -50,9 +65,12 @@ export function getSplatMaximumDepthKey(keyBits: number = SPLAT_DEPTH_KEY_BITS):
 }
 
 /**
- * Returns the key width a distribution requires, ignoring any narrower request.
+ * Returns the key width a distribution actually uses for a requested width.
  *
- * The floating-point distributions are bit patterns, not quantizations, so their widths are fixed.
+ * The floating-point distributions are bit patterns, not quantizations, so their widths are fixed
+ * (16 for `'float16'`, 32 for `'float32'`) whatever is requested. The quantized `'linear'` and
+ * `'ndc'` distributions honor the request between 1 and 24 bits; wider requests are clamped to 24
+ * because the GPU quantizes in single precision.
  */
 export function getSplatDepthKeyBits(
   mode: SplatDepthKeyMode,
@@ -64,7 +82,10 @@ export function getSplatDepthKeyBits(
     case 'float32':
       return 32;
     default:
-      return Math.min(Math.max(Math.floor(requestedKeyBits), 1), SPLAT_MAXIMUM_DEPTH_KEY_BITS);
+      return Math.min(
+        Math.max(Math.floor(requestedKeyBits), 1),
+        SPLAT_MAXIMUM_QUANTIZED_DEPTH_KEY_BITS
+      );
   }
 }
 
@@ -145,7 +166,7 @@ export function packSplatDepthKey(
       const depthMax = options.depthMax ?? 1;
       const depthRange = Math.max(depthMax - depthMin, Number.EPSILON);
       const normalizedDepth = Math.min(Math.max((depth - depthMin) / depthRange, 0), 1);
-      quantizedDepth = Math.round(normalizedDepth * maximumKey);
+      quantizedDepth = Math.min(Math.round(normalizedDepth * maximumKey), maximumKey);
       break;
     }
   }
@@ -195,11 +216,31 @@ const SPLAT_DEPTH_KEY_MODE_LINEAR: u32 = 1u;
 const SPLAT_DEPTH_KEY_MODE_FLOAT16: u32 = 2u;
 const SPLAT_DEPTH_KEY_MODE_FLOAT32: u32 = 3u;
 
+// Largest finite half-precision value. \`pack2x16float\` of anything larger is indeterminate in
+// WGSL, so depths are clamped to it before packing.
+const SPLAT_MAXIMUM_FLOAT16_DEPTH: f32 = 65504.0;
+// Smallest value that rounds to half-precision infinity. At and above it the CPU path saturates to
+// \`0x7c00\`, and the GPU path reproduces that bit pattern explicitly so the two keys agree.
+const SPLAT_FLOAT16_OVERFLOW_DEPTH: f32 = 65520.0;
+const SPLAT_FLOAT16_INFINITY_BITS: u32 = 0x7c00u;
+
+/** Quantizes a normalized depth uniformly, never exceeding \`maximumKey\`. */
+fn quantizeSplatNormalizedDepth(normalizedDepth: f32, maximumKey: u32) -> u32 {
+  return min(u32(round(clamp(normalizedDepth, 0.0, 1.0) * f32(maximumKey))), maximumKey);
+}
+
 /**
  * Packs one back-to-front sort key.
  *
  * \`viewDepth\` is the perspective divisor, which for a standard projection is the view-space
- * distance along the view direction; \`normalizedDeviceDepth\` is only consulted in NDC mode.
+ * distance along the view direction; \`normalizedDeviceDepth\` is consulted in NDC mode and for
+ * affine projections.
+ *
+ * An affine (orthographic) projection has a constant divisor, so \`viewDepth\` carries no ordering
+ * at all. Its normalized device depth is instead linear in view distance, so every distribution
+ * quantizes that uniformly across the full key width - the correct spacing when a projection does
+ * not foreshorten. \`depthMin\` and \`depthMax\` are then unused; the near and far planes bound
+ * the range instead.
  */
 fn packSplatDepthKey(
   mode: u32,
@@ -207,22 +248,36 @@ fn packSplatDepthKey(
   viewDepth: f32,
   normalizedDeviceDepth: f32,
   depthMin: f32,
-  depthMax: f32
+  depthMax: f32,
+  affineProjection: bool
 ) -> u32 {
   var quantized: u32 = 0u;
-  if (mode == SPLAT_DEPTH_KEY_MODE_FLOAT32) {
+  if (affineProjection || mode == SPLAT_DEPTH_KEY_MODE_NDC) {
+    quantized = quantizeSplatNormalizedDepth(normalizedDeviceDepth, maximumKey);
+  } else if (mode == SPLAT_DEPTH_KEY_MODE_FLOAT32) {
     quantized = min(bitcast<u32>(max(viewDepth, 0.0)), maximumKey);
   } else if (mode == SPLAT_DEPTH_KEY_MODE_FLOAT16) {
     // The low half of a packed pair is the half-precision bit pattern of the first component,
-    // which is monotone in the value for every non-negative input.
-    quantized = min(pack2x16float(vec2<f32>(max(viewDepth, 0.0), 0.0)) & 0xffffu, maximumKey);
-  } else if (mode == SPLAT_DEPTH_KEY_MODE_LINEAR) {
-    let range = max(depthMax - depthMin, 1e-6);
-    let normalized = clamp((viewDepth - depthMin) / range, 0.0, 1.0);
-    quantized = u32(round(normalized * f32(maximumKey)));
+    // which is monotone in the value for every non-negative input up to the half maximum.
+    var halfBits =
+      pack2x16float(vec2<f32>(clamp(viewDepth, 0.0, SPLAT_MAXIMUM_FLOAT16_DEPTH), 0.0)) & 0xffffu;
+    if (viewDepth >= SPLAT_FLOAT16_OVERFLOW_DEPTH) {
+      halfBits = SPLAT_FLOAT16_INFINITY_BITS;
+    }
+    quantized = min(halfBits, maximumKey);
   } else {
-    quantized = u32(round(clamp(normalizedDeviceDepth, 0.0, 1.0) * f32(maximumKey)));
+    let range = max(depthMax - depthMin, 1e-6);
+    quantized = quantizeSplatNormalizedDepth((viewDepth - depthMin) / range, maximumKey);
   }
   return maximumKey - quantized;
+}
+
+/**
+ * Whether a column-major projection matrix is affine, i.e. its clip-space \`w\` is constant.
+ *
+ * Orthographic projections are affine; perspective projections are not.
+ */
+fn isSplatAffineProjection(matrix: mat4x4<f32>) -> bool {
+  return matrix[0][3] == 0.0 && matrix[1][3] == 0.0 && matrix[2][3] == 0.0;
 }
 `;

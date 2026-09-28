@@ -70,7 +70,10 @@ export type GPUSplatRenderPath =
 export type GPUSplatAlphaMode =
   /** Sorted back-to-front alpha blending, with depth writes disabled. */
   | 'blend'
-  /** Dithered coverage, opaque blending and depth writes; consumes no depth ordering. */
+  /**
+   * Dithered coverage, opaque blending and depth writes. Needs no depth ordering: the sort pass
+   * only compacts visible rows (one radix pass) for the indirect draw.
+   */
   | 'stochastic';
 
 /** Per-batch level-of-detail parameters applied while projecting one source batch. */
@@ -151,15 +154,22 @@ export type GPUSplatGraphRendererProps = Omit<
   depthKeyBits?: number;
   /** View-space distance range normalized by the `'linear'` distribution. */
   depthRange?: readonly [number, number];
-  /** How Gaussian coverage reaches the framebuffer. Defaults to `'blend'`. */
+  /**
+   * How Gaussian coverage reaches the framebuffer. Defaults to `'blend'`.
+   *
+   * `'stochastic'` needs no depth ordering, so the global sort shrinks to a one-bit visibility
+   * partition; `depthKeyMode`, `depthKeyBits` and `depthRange` then have no effect.
+   */
   alphaMode?: GPUSplatAlphaMode;
   /**
-   * Minimum coverage a Gaussian must reach at a pixel to be pickable there. Defaults to `0.5`.
+   * Minimum coverage a Gaussian must reach at a pixel to be pickable there. Defaults to `0`, so
+   * picking uses the same `alphaCutoff` as rendering and every visible Gaussian stays pickable.
    *
    * Picking a volumetric primitive by first hit is genuinely ambiguous: the 3-sigma border of a
    * large, nearly transparent Gaussian can sit in front of a small opaque one while contributing
-   * almost nothing to the pixel. Requiring real coverage before a Gaussian can claim the pixel
-   * resolves that case in favor of what the viewer can actually see.
+   * almost nothing to the pixel. Raising the threshold (e.g. to `0.5`) resolves that case in favor
+   * of what the viewer can actually see, at the cost of making any Gaussian whose peak opacity is
+   * below the threshold unpickable everywhere - which is why it is opt-in.
    */
   pickingAlphaThreshold?: number;
   /** Non-destructive soft clipping of Gaussians to a half-space, slab, or convex prism. */
@@ -258,6 +268,12 @@ const BLENDED_RENDER_PARAMETERS = {
   blendAlphaSrcFactor: 'one',
   blendAlphaDstFactor: 'one-minus-src-alpha'
 } as const;
+
+/**
+ * Sort width under stochastic alpha: a single bit, so every visible row packs to key `0` and the
+ * culled sentinel is `1`. The radix sort is stable, so this is a one-pass compaction.
+ */
+const STOCHASTIC_VISIBILITY_KEY_BITS = 1;
 
 const STOCHASTIC_RENDER_PARAMETERS = {
   depthWriteEnabled: true,
@@ -365,7 +381,7 @@ export class GPUSplatGraphRenderer {
       depthKeyBits: props.depthKeyBits ?? 16,
       depthRange: [...(props.depthRange ?? [0, 1])],
       alphaMode: props.alphaMode ?? 'blend',
-      pickingAlphaThreshold: props.pickingAlphaThreshold ?? 0.5,
+      pickingAlphaThreshold: props.pickingAlphaThreshold ?? 0,
       ...(props.clipRegion ? {clipRegion: props.clipRegion} : {}),
       batchParams: props.batchParams ?? []
     };
@@ -421,8 +437,17 @@ export class GPUSplatGraphRenderer {
     return this.presentation;
   }
 
-  /** Depth-key width the global sort is compiled for, in bits. */
+  /**
+   * Key width the global sort is compiled for, in bits.
+   *
+   * Under `alphaMode: 'stochastic'` this is `1`: depth writes resolve visibility, so the sort only
+   * has to partition visible rows (key `0`) ahead of culled ones (key `1`) for the indirect draw,
+   * which one radix pass does instead of a full depth ordering.
+   */
   get depthKeyBits(): number {
+    if (this.props.alphaMode === 'stochastic') {
+      return STOCHASTIC_VISIBILITY_KEY_BITS;
+    }
     return getSplatDepthKeyBits(this.props.depthKeyMode, this.props.depthKeyBits);
   }
 

@@ -246,7 +246,9 @@ it('GPUSort bounds bitonic and radix stages across all three dispatch dimensions
     const dispatchSpy = vi.spyOn(Computation.prototype, 'dispatch');
 
     try {
-      const result = await runSort(device, keys, values, algorithm, direction, undefined, 2);
+      // One key per thread keeps the radix dispatch at one workgroup per 256 keys, so 1025 rows
+      // still span all three bounded dimensions.
+      const result = await runSort(device, keys, values, algorithm, direction, undefined, 2, 1);
       const expected = getStableSortedPairs(keys, values, direction);
       expect(result.keys, `${algorithm} sorts every multidimensional key`).toEqual(expected.keys);
       expect(
@@ -287,7 +289,7 @@ it('GPUSort bounds bitonic and radix stages across all three dispatch dimensions
   const limitedKeys = Uint32Array.from(keys, key => key & 0x7fff);
   const dispatchSpy = vi.spyOn(Computation.prototype, 'dispatch');
   try {
-    const result = await runSort(device, limitedKeys, values, 'radix', 'ascending', 15, 2);
+    const result = await runSort(device, limitedKeys, values, 'radix', 'ascending', 15, 2, 1);
     const expected = getStableSortedPairs(limitedKeys, values, 'ascending');
     expect(result.keys, 'odd-width multidimensional radix keys match').toEqual(expected.keys);
     expect(result.values, 'odd-width multidimensional radix remains stable').toEqual(
@@ -774,7 +776,8 @@ async function runSort(
   algorithm: GPUSortAlgorithm,
   direction: GPUSortDirection,
   keyBits?: number,
-  maxComputeWorkgroupsPerDimension?: number
+  maxComputeWorkgroupsPerDimension?: number,
+  elementsPerThread?: number
 ): Promise<SortResult> {
   const byteLength = Math.max(keys.length, 1) * Uint32Array.BYTES_PER_ELEMENT;
   const keysBuffer = device.createBuffer({
@@ -810,7 +813,8 @@ async function runSort(
     outputValues: outputValueView,
     algorithm,
     direction,
-    keyBits
+    keyBits,
+    elementsPerThread
   });
   if (maxComputeWorkgroupsPerDimension === undefined) {
     graph.add(sort);

@@ -93,7 +93,9 @@ it('paged Gaussian GPU shaders preserve sparse source rows within baseline stora
   expect(
     GPU_PAGED_SPLAT_PROJECTION_SHADER,
     'preserves integrated Gaussian opacity when adding a screen-space antialias kernel'
-  ).toMatch(/alpha \*= sqrt\(originalDeterminant \/ filteredDeterminant\)/);
+  ).toMatch(
+    /alpha = alpha \* getSplatDilationCompensation\(\s*baseCovariance00,\s*covariance01,\s*baseCovariance11,\s*addedVariance\s*\)/
+  );
   expect(
     GPU_PAGED_SPLAT_PROJECTION_SHADER,
     'maps already-decoded Spark hierarchy opacity from 1–2 into its authored 1–5 domain'
@@ -105,7 +107,7 @@ it('paged Gaussian GPU shaders preserve sparse source rows within baseline stora
   expect(
     GPU_PAGED_SPLAT_RENDER_SHADER,
     "retains Spark's nonlinear opaque-parent falloff without expanding projected records"
-  ).toMatch(/1\.0 - pow\(max\(1\.0 - gaussianWeight, 0\.0\), opaqueExponent\)/);
+  ).toMatch(/1\.0 - pow\(max\(1\.0 - coverage, 0\.0\), opaqueExponent\)/);
   void 0;
 });
 

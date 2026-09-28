@@ -76,10 +76,31 @@ export type GPUPagedSplatPage = {
   bounds?: SplatResidencyBounds;
 };
 
-/** Shared camera/style controls plus independently projected page and output segment limits. */
+/**
+ * Shared camera/style controls plus independently projected page and output segment limits.
+ *
+ * Graph-renderer controls the paged renderer does not implement are omitted rather than silently
+ * ignored: it always applies Mip-Splatting dilation compensation, uses a fixed-width float16 depth
+ * key, alpha-blends, presents through its own segmented render pass, and does not clip, pick,
+ * refilter per batch, or switch fragment kernels, support-radius policy or render paths.
+ */
 export type GPUPagedSplatRendererProps = Omit<
   GPUSplatGraphRendererProps,
-  'expectedSplatCount' | 'expectedBatchCount'
+  | 'expectedSplatCount'
+  | 'expectedBatchCount'
+  | 'clipRegion'
+  | 'antialiasing'
+  | 'fragmentKernel'
+  | 'dynamicSupportRadius'
+  | 'compensateScreenSpaceClamp'
+  | 'depthKeyMode'
+  | 'depthKeyBits'
+  | 'depthRange'
+  | 'alphaMode'
+  | 'pickingAlphaThreshold'
+  | 'batchParams'
+  | 'renderPath'
+  | 'presentation'
 > & {
   /** Intact source pages and optional per-page sparse row selections. */
   pages?: readonly GPUPagedSplatPage[];

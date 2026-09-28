@@ -19,9 +19,10 @@ import {expect, it} from 'vitest';
  * threads visits keys in ascending index order. These cases pack heavy duplicates into rows that
  * straddle tile boundaries, which is where a blocked layout would reorder equal keys.
  */
-it('GPUSort radix keeps equal keys stable across multi-element tiles', async () => {
+it('GPUSort radix keeps equal keys stable across multi-element tiles', async t => {
   const device = await getWebGPUTestDevice();
   if (!device) {
+    t.skip('webgpu not available');
     return;
   }
 
@@ -49,9 +50,10 @@ it('GPUSort radix keeps equal keys stable across multi-element tiles', async () 
   }
 });
 
-it('GPUSort radix sorts a full 32-bit key with eight-bit digits', async () => {
+it('GPUSort radix sorts a full 32-bit key with eight-bit digits', async t => {
   const device = await getWebGPUTestDevice();
   if (!device) {
+    t.skip('webgpu not available');
     return;
   }
 
@@ -70,6 +72,35 @@ it('GPUSort radix sorts a full 32-bit key with eight-bit digits', async () => {
 
   expect(result.keys, 'four eight-bit passes order the full key').toEqual(expected.keys);
   expect(result.values, 'payloads follow their keys').toEqual(expected.values);
+});
+
+it('GPUSort radix sorts descending with eight-bit digits and a partial final digit', async t => {
+  const device = await getWebGPUTestDevice();
+  if (!device) {
+    t.skip('webgpu not available');
+    return;
+  }
+
+  // 5000 rows span three 2048-key tiles; twelve key bits leave a four-bit final digit, and the
+  // high bits above keyBits must be ignored rather than sorted.
+  const length = 5000;
+  const keys = Uint32Array.from(
+    {length},
+    (_, index) => ((Math.imul(index, 2654435761) >>> 0) & 0xfffff) | (index % 3 << 28)
+  );
+  const values = Uint32Array.from({length}, (_, index) => index);
+  for (const direction of ['ascending', 'descending'] as const) {
+    const result = await runTiledSort(device, keys, values, {
+      direction,
+      keyBits: 12,
+      digitBits: 8,
+      elementsPerThread: 8
+    });
+    const expected = getStableSortedPairs(keys, values, direction, 12);
+
+    expect(result.keys, `${direction} orders the twelve significant bits`).toEqual(expected.keys);
+    expect(result.values, `${direction} keeps ties in input order`).toEqual(expected.values);
+  }
 });
 
 type TiledSortOptions = {

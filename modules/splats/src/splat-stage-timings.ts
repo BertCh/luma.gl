@@ -57,12 +57,14 @@ export type GPUSplatStageTimings = {
 };
 
 /**
- * Node-id prefixes, longest first.
+ * Node-id prefixes and the stage each one marks.
  *
- * Order matters: `gaussian-splat-gather-sorted-records` has to be matched before the sort's own
- * `gaussian-splat-global-depth-sort` prefix would otherwise be tested against it.
+ * No prefix is a prefix of another, so every node id matches at most one entry and the order of this
+ * list does not matter. Keep it that way when adding a stage; the tests check it.
+ *
+ * @internal Exported for tests only.
  */
-const STAGE_PREFIXES: readonly (readonly [string, GPUSplatStage])[] = [
+export const GPU_SPLAT_STAGE_PREFIXES: readonly (readonly [string, GPUSplatStage])[] = [
   ['gaussian-splat-initialize', 'initialize'],
   ['gaussian-splat-project-batch', 'projection'],
   ['gaussian-splat-features-batch', 'features'],
@@ -73,7 +75,7 @@ const STAGE_PREFIXES: readonly (readonly [string, GPUSplatStage])[] = [
 
 /** Classifies one graph node into the stage it belongs to. */
 export function getGPUSplatStage(nodeId: string): GPUSplatStage | undefined {
-  for (const [prefix, stage] of STAGE_PREFIXES) {
+  for (const [prefix, stage] of GPU_SPLAT_STAGE_PREFIXES) {
     if (nodeId.startsWith(prefix)) {
       return stage;
     }

@@ -5,7 +5,12 @@
 import {type GPUCommandNode} from './gpu-command-node';
 import {GraphVectorView, type GPUCommandGraph} from './gpu-command-graph';
 import {validateMatchingVectorTopology} from './graph-data-view-utils';
-import {GPUSort, type GPUSortAlgorithm, type GPUSortDirection} from './gpu-sort';
+import {
+  GPUSort,
+  type GPUSortAlgorithm,
+  type GPUSortDigitBits,
+  type GPUSortDirection
+} from './gpu-sort';
 
 /** Properties for independent stable sorting of aligned GPU vector chunks. */
 export type GPUBatchSortProps = {
@@ -23,6 +28,10 @@ export type GPUBatchSortProps = {
   algorithm?: GPUSortAlgorithm;
   /** Requested order within every batch. Defaults to `'ascending'`. */
   direction?: GPUSortDirection;
+  /** Radix digit width forwarded to every chunk sort. Defaults to `4`. */
+  digitBits?: GPUSortDigitBits;
+  /** Keys per radix thread forwarded to every chunk sort. Defaults to `8`. */
+  elementsPerThread?: number;
 };
 
 /**
@@ -100,7 +109,11 @@ export class GPUBatchSort {
           outputKeys: this.outputKeys.data[chunkIndex],
           outputValues: this.outputValues.data[chunkIndex],
           algorithm: this.algorithm,
-          direction: this.direction
+          direction: this.direction,
+          ...(props.digitBits !== undefined ? {digitBits: props.digitBits} : {}),
+          ...(props.elementsPerThread !== undefined
+            ? {elementsPerThread: props.elementsPerThread}
+            : {})
         })
     );
     this.resolvedAlgorithms = this.chunkSorts.map(sort => sort.resolvedAlgorithm);

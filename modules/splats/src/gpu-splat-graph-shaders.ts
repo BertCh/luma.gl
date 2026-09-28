@@ -643,13 +643,16 @@ fn main(@builtin(global_invocation_id) globalInvocationId: vec3<u32>) {
     return;
   }
 
+  // Perspective: clip w is the view-space distance. Orthographic: w is constant, so the key falls
+  // back to normalized device depth, which is linear in view distance for an affine projection.
   depthKeys[projectedRowIndex] = packSplatDepthKey(
     graphUniforms.depthKeyMode,
     graphUniforms.maximumDepthKey,
     clipCenter.w,
     clipCenter.z / clipCenter.w * 0.5 + 0.5,
     graphUniforms.depthRange.x,
-    graphUniforms.depthRange.y
+    graphUniforms.depthRange.y,
+    isSplatAffineProjection(graphUniforms.modelViewProjectionMatrix)
   );
   let packedAxes = packProjectedAxes(axis0, axis1);
   let packedColor = packProjectedColor(vec4<f32>(color.rgb, storedAlpha));
@@ -991,13 +994,49 @@ fn fragmentMain(input: GraphSplatFragmentInputs) -> @location(0) vec4<f32> {
 }
 `;
 
-/** Shared WGSL prelude reused by graph-native picking and mixed-scene composition. @internal */
+/**
+ * Shared WGSL prelude for custom shaders that read `GPUSplatGraphRenderer` output.
+ *
+ * Declares the `GraphSplatUniforms` struct (the renderer's uniform buffer, laid out in
+ * {@link GPU_SPLAT_GRAPH_UNIFORM_BYTE_LENGTH} bytes), the `SPLAT_FLAG_*` feature-flag constants
+ * and `hasSplatFlag`, the packed `ProjectedSplat` record (stride
+ * {@link GPU_SPLAT_PROJECTED_RECORD_BYTE_LENGTH}) with its pack/unpack accessors, the
+ * antialiasing helpers, and `getSplatResolvedSupportRadius`. It declares no bindings, so a host
+ * shader binds the renderer's `uniformBuffer`, projected records and sorted ids under its own
+ * layout.
+ *
+ * Include it before {@link GPU_SPLAT_QUAD_EXPANSION_SHADER_WGSL} and
+ * {@link GPU_SPLAT_FRAGMENT_SHARED_SHADER_WGSL}. External picking passes (for example deck.gl's
+ * splat layer) and mixed-scene composition use it so their geometry and coverage match the
+ * renderer exactly.
+ *
+ * @remarks
+ * The struct layout and record packing are part of the renderer's contract with these shaders;
+ * they change together and are documented in the upgrade guide when they do.
+ */
 export const GPU_SPLAT_GRAPH_SHARED_WGSL = GPU_SPLAT_GRAPH_SHARED;
 
-/** Shared quad expansion reused by graph-native picking. @internal */
+/**
+ * Vertex-stage WGSL that expands one projected record into its support quad.
+ *
+ * Provides `ExpandedSplatQuad`, `getSplatQuadCorner(vertexIndex)` and
+ * `expandSplatQuad(uniforms, vertexIndex, clipCenter, packedAxis0, packedAxis1, packedColorRG,
+ * packedColorBA)`, which returns the clip-space corner position, the Gaussian coordinate in
+ * standard deviations, the half-pixel footprint used by the analytic kernel, and the unpacked
+ * color. Draw four vertices (triangle strip) per instance. Requires
+ * {@link GPU_SPLAT_GRAPH_SHARED_WGSL}.
+ */
 export const GPU_SPLAT_QUAD_EXPANSION_SHADER_WGSL = GPU_SPLAT_QUAD_EXPANSION_WGSL;
 
-/** Shared fragment coverage and presentation reused by graph-native picking. @internal */
+/**
+ * Fragment-stage WGSL for Gaussian coverage and presentation.
+ *
+ * Provides `getSplatFragmentCoverage` (center sample or pixel integral, per the analytic-kernel
+ * flag), `getSplatResolvedAlpha` (including radiance-field opacity), `getSplatPresentedColor`
+ * (exposure and tone mapping) and `getSplatDitherThreshold` (stochastic alpha). Custom passes use
+ * these so a fragment they accept is exactly one the renderer would draw. Requires
+ * {@link GPU_SPLAT_GRAPH_SHARED_WGSL}.
+ */
 export const GPU_SPLAT_FRAGMENT_SHARED_SHADER_WGSL = GPU_SPLAT_FRAGMENT_SHARED_WGSL;
 
 /** Clip planes one projection pass can evaluate, re-exported for renderer validation. */

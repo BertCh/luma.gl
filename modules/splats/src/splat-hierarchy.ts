@@ -3,7 +3,7 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import type {GPUSplatData} from './splat-data';
-import {projectWorldPositionToScreen} from './splat-covariance';
+import {projectWorldPositionToScreen, transformSplatPosition} from './splat-covariance';
 import {
   SplatResidencyManager,
   type SplatResidencyBounds,
@@ -96,6 +96,25 @@ export type SplatHierarchyView = {
   verticalFieldOfView?: number;
   /** Optional per-view override for gaze-aware page selection and load ordering. */
   foveation?: SplatHierarchyFoveation;
+  /**
+   * Coarsening of what this view *requests*, at least `1`. Defaults to `1`.
+   *
+   * What is drawn is still chosen at full detail from what is resident: a finer page already on the
+   * GPU keeps being drawn. Only pages that are not resident are held to a threshold this many times
+   * coarser before they are requested, and until they arrive their resident ancestor stands in.
+   * The intended use is a moving camera, where a fine page requested now arrives after the view that
+   * asked for it, but the detail already loaded costs nothing to keep. Values below `1` and `NaN`
+   * are treated as `1`; `Infinity` requests nothing below the roots.
+   */
+  requestErrorScale?: number;
+  /**
+   * Distance from the camera to what the viewer is looking at, in the units of node bounds.
+   *
+   * Pages farther than this have their error relaxed by the manager's
+   * {@link SplatHierarchyManagerProps.distanceFalloff}, which defaults to `0`, so this field has no
+   * effect until that is set. Without it, distance enters only through perspective.
+   */
+  focusDistance?: number;
 };
 
 /** One intact, currently rendered source batch and its view-dependent hierarchy metadata. */
@@ -117,8 +136,10 @@ export type SplatHierarchyFrontierEntry = {
   /**
    * Opacity multiplier for a continuous level transition, in `[0, 1]`.
    *
-   * `1` unless `lodFadeBand` is set. A node fades in over a band of its parent's projected error
-   * rather than appearing at a single threshold.
+   * `1` unless `lodFadeBand` is set. A child of an additive (`refinement: 'add'`) parent fades in
+   * over a band of its parent's projected error rather than appearing at a single threshold. Children
+   * of a replacing parent are always `1`: the parent is no longer drawn beneath them, so fading them
+   * would leave the region translucent.
    */
   fadeOpacity: number;
 };
@@ -147,7 +168,10 @@ export type SplatHierarchyStats = {
   budgetedSplatCount: number;
   /** Whether budget planning stopped because the next refinement did not fit. */
   budgetExhausted: boolean;
-  /** Frames since budget planning last re-ran, for an amortized traversal. */
+  /**
+   * `update()` calls since budget planning last re-ran, for an amortized traversal. Re-traversals
+   * triggered by page loads settling reuse the current plan and do not advance this count.
+   */
   framesSinceBudgetPlan: number;
 };
 
@@ -173,7 +197,10 @@ export type SplatHierarchyManagerProps = {
    */
   splatBudget?: number;
   /**
-   * Frames a budget plan is reused before being re-planned. Defaults to `1`.
+   * `update()` calls a budget plan is used for before being re-planned. Defaults to `1`.
+   *
+   * Only camera updates count as frames; re-traversals after a page load settles reuse the plan,
+   * which depends on the view alone.
    *
    * Consecutive frames agree on almost the whole cut, so re-planning every frame is mostly wasted
    * work. Values around `4` are the usual trade; the cost is that a fast camera move takes up to
@@ -184,13 +211,27 @@ export type SplatHierarchyManagerProps = {
    * Width of the level transition as a fraction of `maximumScreenSpaceError`. Defaults to `0`.
    *
    * Non-zero values fade a finer level in over a band of parent error instead of switching it on,
-   * which is the one popping mitigation an exactly-once additive tree can use.
+   * which is the one popping mitigation an exactly-once additive tree can use. Applies only below
+   * additive (`refinement: 'add'`) parents; replacing children switch in atomically, since their
+   * parent is hidden as soon as they are drawn.
    */
   lodFadeBand?: number;
   /** Maximum simultaneously running source page fetches or decoder worker requests. */
   maxConcurrentLoads?: number;
   /** Default gaze-aware refinement and loading controls for views without an override. */
   foveation?: SplatHierarchyFoveation;
+  /**
+   * How much faster than perspective error falls off beyond the view's `focusDistance`.
+   * Defaults to `0`.
+   *
+   * A page at `k` times the focus distance has its error divided by `k ^ distanceFalloff`. Perspective
+   * already makes distant pages coarser in world units; this makes them coarser in *pixels* too,
+   * which is where an oblique view over terrain spends most of its budget - on a horizon the viewer
+   * is not looking at.
+   *
+   * Has no effect unless the view supplies {@link SplatHierarchyView.focusDistance}.
+   */
+  distanceFalloff?: number;
   /** Called with intact source batches whenever the renderer-visible frontier changes. */
   onFrontierChange?: (
     batches: readonly GPUSplatData[],
@@ -235,9 +276,16 @@ export class SplatHierarchyManager {
 
   private readonly nodesById = new Map<string, SplatHierarchyNode>();
   private readonly ownedPinnedIds = new Set<string>();
+  /**
+   * Resident chunks whose eviction priority this hierarchy has written, including those from roots
+   * replaced by `setRoots`. Exactly these are demoted once the traversal stops selecting them.
+   */
+  private readonly prioritizedChunkIds = new Set<string>();
   private readonly queuedLoads = new Map<string, SplatHierarchyLoadRequest>();
   private readonly pendingLoads = new Map<string, PendingSplatHierarchyLoad>();
   private readonly rejectedLoadIds = new Set<string>();
+  /** Loads the latest traversal asked for, consulted when a cancelled load settles. */
+  private latestRequestedLoads = new Map<string, SplatHierarchyLoadRequest>();
   private readonly loadPage?: SplatHierarchyPageLoader;
   private readonly onFrontierChange?: SplatHierarchyManagerProps['onFrontierChange'];
   private readonly onLoadError?: SplatHierarchyManagerProps['onLoadError'];
@@ -245,6 +293,7 @@ export class SplatHierarchyManager {
   private readonly maximumScreenSpaceError: number;
   private readonly maxConcurrentLoads: number;
   private readonly foveation?: SplatHierarchyFoveation;
+  private readonly distanceFalloff: number;
   private readonly splatBudget?: number;
   private readonly budgetUpdateInterval: number;
   private readonly lodFadeBand: number;
@@ -261,6 +310,7 @@ export class SplatHierarchyManager {
   private budgetPlan?: SplatBudgetPlan;
   private framesSinceBudgetPlan = Number.POSITIVE_INFINITY;
   private screenSpaceErrorCache = new Map<string, number>();
+  private refinementErrorCache = new Map<string, number>();
 
   /** Creates a source-preserving hierarchy backed by a shared or independently bounded window. */
   constructor(props: SplatHierarchyManagerProps) {
@@ -274,6 +324,7 @@ export class SplatHierarchyManager {
     this.maximumScreenSpaceError = Math.max(props.maximumScreenSpaceError ?? 8, 0);
     this.maxConcurrentLoads = Math.max(1, Math.floor(props.maxConcurrentLoads ?? 4));
     this.foveation = props.foveation;
+    this.distanceFalloff = Math.max(props.distanceFalloff ?? 0, 0);
     this.splatBudget = props.splatBudget !== undefined ? Math.max(props.splatBudget, 0) : undefined;
     this.budgetUpdateInterval = Math.max(1, Math.floor(props.budgetUpdateInterval ?? 1));
     this.lodFadeBand = Math.max(props.lodFadeBand ?? 0, 0);
@@ -309,9 +360,10 @@ export class SplatHierarchyManager {
       abortedLoadCount: this.abortedLoadCount,
       budgetedSplatCount: this.budgetPlan?.selectedSplatCount ?? 0,
       budgetExhausted: this.budgetPlan?.budgetExhausted ?? false,
-      framesSinceBudgetPlan: Number.isFinite(this.framesSinceBudgetPlan)
-        ? this.framesSinceBudgetPlan
-        : 0
+      framesSinceBudgetPlan:
+        this.budgetPlan && Number.isFinite(this.framesSinceBudgetPlan)
+          ? this.framesSinceBudgetPlan
+          : 0
     };
   }
 
@@ -338,6 +390,9 @@ export class SplatHierarchyManager {
     }
     this.currentView = view;
     this.rejectedLoadIds.clear();
+    // Only a camera update is a frame for budget amortization; `refresh()` also runs when loads
+    // settle, and counting those would re-plan several times within one frame.
+    this.framesSinceBudgetPlan++;
     this.refresh();
     return this.currentFrontier;
   }
@@ -371,6 +426,9 @@ export class SplatHierarchyManager {
     this.currentFrontier = [];
     if (this.ownsResidencyManager) {
       this.residencyManager.destroy();
+    } else if (!this.residencyManager.destroyed) {
+      // A shared window outlives this hierarchy; leave no stale priorities behind in it.
+      this.demoteInactiveChunks(new Set());
     }
   }
 
@@ -400,20 +458,15 @@ export class SplatHierarchyManager {
 
     this.visibleNodeCount = 0;
     this.culledNodeCount = 0;
+    this.screenSpaceErrorCache.clear();
+    this.refinementErrorCache.clear();
     this.updateBudgetPlan(view);
     const requestedLoads = new Map<string, SplatHierarchyLoadRequest>();
     const protectedChunkIds = new Set<string>();
     const selectedFrontier: SplatHierarchyFrontierEntry[] = [];
     for (const root of this.roots) {
       selectedFrontier.push(
-        ...this.traverseNode(
-          root,
-          0,
-          view,
-          requestedLoads,
-          protectedChunkIds,
-          Number.POSITIVE_INFINITY
-        ).entries
+        ...this.traverseNode(root, 0, view, requestedLoads, protectedChunkIds, 1, true).entries
       );
     }
 
@@ -423,9 +476,10 @@ export class SplatHierarchyManager {
     ]);
     for (const entry of selectedFrontier) {
       this.protectChunk(entry.chunk);
-      this.residencyManager.setPriority(entry.chunk, entry.priority);
+      this.setChunkPriority(entry.chunk, entry.priority);
     }
     this.releaseInactivePins(activeChunkIds);
+    this.demoteInactiveChunks(activeChunkIds);
     this.updateFrontier(selectedFrontier);
     this.synchronizeLoadRequests(requestedLoads);
     this.startQueuedLoads();
@@ -435,21 +489,23 @@ export class SplatHierarchyManager {
    * Re-plans the budgeted cut, reusing the previous plan for `budgetUpdateInterval - 1` frames.
    *
    * Consecutive frames agree on almost the whole selection, so re-planning every frame is mostly
-   * repeated work; amortizing it is the remaining CPU cost on the fully GPU-driven path.
+   * repeated work; amortizing it is the remaining CPU cost on the fully GPU-driven path. Frames are
+   * counted by `update()` alone: a plan depends only on the view, so a re-traversal for a settled
+   * load within the same frame always reuses it.
    */
   private updateBudgetPlan(view: SplatHierarchyView): void {
     if (this.splatBudget === undefined) {
       this.budgetPlan = undefined;
       return;
     }
-    this.screenSpaceErrorCache.clear();
     if (this.budgetPlan && this.framesSinceBudgetPlan < this.budgetUpdateInterval) {
-      this.framesSinceBudgetPlan++;
       return;
     }
 
     const budgetView: SplatBudgetView = {
-      getScreenSpaceError: node => this.getCachedScreenSpaceError(node as SplatHierarchyNode, view),
+      // Planned against the same view-weighted error the traversal refines by, so foveation, focus
+      // distance and motion decide where the budget goes rather than only the order pages load in.
+      getScreenSpaceError: node => this.getCachedRefinementError(node as SplatHierarchyNode, view),
       getCoverage: node => getSplatHierarchyCoverage(node as SplatHierarchyNode, view),
       isVisible: node =>
         isSplatHierarchyNodeVisible(node as SplatHierarchyNode, view.modelViewProjectionMatrix)
@@ -472,13 +528,31 @@ export class SplatHierarchyManager {
     return screenSpaceError;
   }
 
+  /** Memoizes the view-weighted error refinement, budgeting and load order all compare. */
+  private getCachedRefinementError(node: SplatHierarchyNode, view: SplatHierarchyView): number {
+    const cached = this.refinementErrorCache.get(node.id);
+    if (cached !== undefined) {
+      return cached;
+    }
+    const refinementError = getSplatHierarchyRefinementError(
+      node,
+      view,
+      view.foveation ?? this.foveation,
+      this.distanceFalloff,
+      this.getCachedScreenSpaceError(node, view)
+    );
+    this.refinementErrorCache.set(node.id, refinementError);
+    return refinementError;
+  }
+
   private traverseNode(
     node: SplatHierarchyNode,
     levelOfDetail: number,
     view: SplatHierarchyView,
     requestedLoads: Map<string, SplatHierarchyLoadRequest>,
     protectedChunkIds: Set<string>,
-    parentScreenSpaceError: number
+    fadeOpacity: number,
+    mayRequest: boolean
   ): SplatHierarchyTraversalResult {
     if (!isSplatHierarchyNodeVisible(node, view.modelViewProjectionMatrix)) {
       this.culledNodeCount++;
@@ -487,12 +561,7 @@ export class SplatHierarchyManager {
     this.visibleNodeCount++;
 
     const screenSpaceError = this.getCachedScreenSpaceError(node, view);
-    const priority = getSplatHierarchyFoveatedPriority(
-      node,
-      view,
-      view.foveation ?? this.foveation,
-      screenSpaceError
-    );
+    const priority = this.getCachedRefinementError(node, view);
     let residentChunk = this.residencyManager.getChunk(node.id);
     if (node.data && !node.data.destroyed) {
       residentChunk = this.residencyManager.add(node.data, {
@@ -503,9 +572,19 @@ export class SplatHierarchyManager {
         ...(residentChunk?.pinned ? {pinned: true} : {}),
         ...(node.ownsData !== undefined ? {ownsData: node.ownsData} : {})
       });
+      if (residentChunk) {
+        this.prioritizedChunkIds.add(residentChunk.id);
+      }
     }
 
-    if (!residentChunk && (!node.data || node.data.destroyed) && (node.load || this.loadPage)) {
+    // A page already in flight is kept either way: aborting it only to request it again once the
+    // camera settles throws away the part of the fetch and decode that is already done.
+    if (
+      !residentChunk &&
+      (!node.data || node.data.destroyed) &&
+      (node.load || this.loadPage) &&
+      (mayRequest || this.pendingLoads.has(node.id))
+    ) {
       requestedLoads.set(node.id, {node, levelOfDetail, priority});
     }
 
@@ -515,15 +594,19 @@ export class SplatHierarchyManager {
       (this.budgetPlan
         ? this.budgetPlan.refinedNodeIds.has(node.id)
         : priority > this.maximumScreenSpaceError);
-    const fadeOpacity = getSplatLevelFadeOpacity(
-      parentScreenSpaceError,
-      this.maximumScreenSpaceError,
-      this.lodFadeBand
-    );
     const filterVariance = Math.max(node.filterVariance ?? 0, 0);
     if (!shouldRefine) {
       if (!residentChunk) {
-        return {entries: [], visible: true, complete: false};
+        // Coarsening must never blank what is already drawn. A page the view no longer refines -
+        // because the camera started moving, or pulled back - may itself have been evicted once its
+        // children landed; until it reloads, those children are a better stand-in than a hole.
+        const cover =
+          node.refinement === 'add'
+            ? undefined
+            : this.collectResidentCover(node, levelOfDetail, view);
+        return cover
+          ? {entries: cover, visible: true, complete: true}
+          : {entries: [], visible: true, complete: false};
       }
       return {
         entries: [
@@ -547,6 +630,17 @@ export class SplatHierarchyManager {
       this.protectChunk(residentChunk);
     }
 
+    // Selection above is made at full detail; only a request for a missing child is held to the
+    // coarser threshold. So resident children are drawn, and missing ones leave this page standing in.
+    const childrenMayRequest =
+      mayRequest &&
+      priority / getSplatHierarchyRequestErrorScale(view) > this.maximumScreenSpaceError;
+    // Only additive children fade in: this page stays drawn beneath them. Replacing children are
+    // drawn only once this page is hidden, so fading them in would leave the region translucent.
+    const childFadeOpacity =
+      node.refinement === 'add'
+        ? getSplatLevelFadeOpacity(priority, this.maximumScreenSpaceError, this.lodFadeBand)
+        : 1;
     const childResults = children.map(child =>
       this.traverseNode(
         child,
@@ -554,7 +648,8 @@ export class SplatHierarchyManager {
         view,
         requestedLoads,
         protectedChunkIds,
-        screenSpaceError
+        childFadeOpacity,
+        childrenMayRequest
       )
     );
     const visibleChildResults = childResults.filter(result => result.visible);
@@ -591,7 +686,7 @@ export class SplatHierarchyManager {
       for (const childEntry of childEntries) {
         this.protectChunk(childEntry.chunk);
         protectedChunkIds.add(childEntry.chunk.id);
-        this.residencyManager.setPriority(childEntry.chunk, childEntry.priority);
+        this.setChunkPriority(childEntry.chunk, childEntry.priority);
       }
       return {
         entries: [
@@ -613,6 +708,67 @@ export class SplatHierarchyManager {
     return {entries: childEntries, visible: true, complete: false};
   }
 
+  /**
+   * Finds resident descendants that together stand in for a page that is not resident, without
+   * requesting anything. Returns `undefined` unless every visible branch below is covered.
+   *
+   * The cover is transient and is not part of the budget plan: it draws finer pages than the plan
+   * selected until the coarser page reloads. It costs no residency (every page in it is already
+   * resident), but it does cost draw time, so a cover holding more splats than the whole
+   * `splatBudget` is refused and the region waits for the coarser page instead.
+   */
+  private collectResidentCover(
+    node: SplatHierarchyNode,
+    levelOfDetail: number,
+    view: SplatHierarchyView
+  ): SplatHierarchyFrontierEntry[] | undefined {
+    const cover = this.collectResidentCoverEntries(node, levelOfDetail, view);
+    if (!cover || this.splatBudget === undefined) {
+      return cover;
+    }
+    const coverSplatCount = cover.reduce((total, entry) => total + entry.chunk.splatCount, 0);
+    return coverSplatCount <= this.splatBudget ? cover : undefined;
+  }
+
+  private collectResidentCoverEntries(
+    node: SplatHierarchyNode,
+    levelOfDetail: number,
+    view: SplatHierarchyView
+  ): SplatHierarchyFrontierEntry[] | undefined {
+    const cover: SplatHierarchyFrontierEntry[] = [];
+    const visibleChildren = (node.children ?? []).filter(child =>
+      isSplatHierarchyNodeVisible(child, view.modelViewProjectionMatrix)
+    );
+    if (visibleChildren.length === 0) {
+      return undefined;
+    }
+    for (const child of visibleChildren) {
+      const chunk = this.residencyManager.getChunk(child.id);
+      if (chunk) {
+        cover.push({
+          node: child,
+          chunk,
+          levelOfDetail: levelOfDetail + 1,
+          screenSpaceError: this.getCachedScreenSpaceError(child, view),
+          priority: this.getCachedRefinementError(child, view),
+          isFallback: true,
+          filterVariance: Math.max(child.filterVariance ?? 0, 0),
+          fadeOpacity: 1
+        });
+        continue;
+      }
+      if (child.refinement === 'add') {
+        return undefined;
+      }
+      const childCover = this.collectResidentCoverEntries(child, levelOfDetail + 1, view);
+      if (!childCover) {
+        return undefined;
+      }
+      cover.push(...childCover);
+    }
+    return cover;
+  }
+
   private protectChunk(chunk: SplatResidencyChunk): void {
     if (!chunk.pinned && this.residencyManager.pin(chunk)) {
       this.ownedPinnedIds.add(chunk.id);
@@ -626,6 +782,45 @@ export class SplatHierarchyManager {
       }
       this.ownedPinnedIds.delete(chunkId);
       this.residencyManager.unpin(chunkId);
+    }
+  }
+
+  /**
+   * Drops this hierarchy's pages that the traversal no longer wants to the bottom of eviction order.
+   *
+   * A page's priority is only written while it is selected, so one that leaves the frontier keeps
+   * the priority it had at its most important - after a close pass, an error of thousands of
+   * pixels. Residency evicts only for an incoming page of at least equal priority, so those stale
+   * pages outrank every page the frontier is actually asking for: nothing is evicted, every request
+   * is refused, and the view stays on coarse fallbacks for as long as the camera holds still.
+   * Zero ranks them below any request, and ties among them fall back to least recently used.
+   *
+   * The pages demoted are exactly those whose priority this hierarchy wrote, not those its current
+   * roots name, so pages from roots replaced by `setRoots` are demoted too. A consequence worth
+   * knowing: every page this hierarchy is not drawing sits at priority zero, so among them eviction
+   * is effectively least recently used, ordered by when each left the selection.
+   */
+  private demoteInactiveChunks(activeChunkIds: ReadonlySet<string>): void {
+    for (const chunkId of this.prioritizedChunkIds) {
+      const chunk = this.residencyManager.getChunk(chunkId);
+      if (!chunk) {
+        this.prioritizedChunkIds.delete(chunkId);
+        continue;
+      }
+      if (activeChunkIds.has(chunkId)) {
+        continue;
+      }
+      if (chunk.priority > 0) {
+        this.residencyManager.setPriority(chunk, 0);
+      }
+      this.prioritizedChunkIds.delete(chunkId);
+    }
+  }
+
+  /** Writes a chunk's eviction priority and remembers to demote it once it is no longer selected. */
+  private setChunkPriority(chunk: SplatResidencyChunk, priority: number): void {
+    if (this.residencyManager.setPriority(chunk, priority)) {
+      this.prioritizedChunkIds.add(chunk.id);
     }
   }
 
@@ -649,6 +844,7 @@ export class SplatHierarchyManager {
   }
 
   private synchronizeLoadRequests(requestedLoads: Map<string, SplatHierarchyLoadRequest>): void {
+    this.latestRequestedLoads = requestedLoads;
     for (const [nodeId] of this.queuedLoads) {
       if (!requestedLoads.has(nodeId)) {
         this.queuedLoads.delete(nodeId);
@@ -677,14 +873,15 @@ export class SplatHierarchyManager {
       this.pendingLoads.size < this.maxConcurrentLoads &&
       this.queuedLoads.size > 0
     ) {
-      const request = Array.from(this.queuedLoads.values()).sort(
-        (firstRequest, secondRequest) =>
-          secondRequest.priority - firstRequest.priority ||
-          firstRequest.levelOfDetail - secondRequest.levelOfDetail ||
-          firstRequest.node.id.localeCompare(secondRequest.node.id)
-      )[0];
-      this.queuedLoads.delete(request.node.id);
-      this.startLoad(request);
+      // One pass for the best request rather than a full sort per load started.
+      let request: SplatHierarchyLoadRequest | undefined;
+      for (const candidate of this.queuedLoads.values()) {
+        if (!request || compareLoadRequests(candidate, request) < 0) {
+          request = candidate;
+        }
+      }
+      this.queuedLoads.delete(request!.node.id);
+      this.startLoad(request!);
     }
   }
 
@@ -719,33 +916,74 @@ export class SplatHierarchyManager {
         }
       )
       .then(chunk => {
-        if (controller.signal.aborted || this.isDestroyed) {
+        // A load cancelled by a camera move may be wanted again by the time it settles; the view
+        // turned back while it was in flight. Keep what it produced rather than fetching it twice.
+        const isStillRequested =
+          !this.isDestroyed && this.latestRequestedLoads.has(request.node.id);
+        if (this.isDestroyed || (controller.signal.aborted && !isStillRequested)) {
           if (chunk && !this.residencyManager.destroyed) {
             this.residencyManager.remove(chunk);
           }
-          return;
+          return false;
+        }
+        if (chunk && controller.signal.aborted) {
+          this.completedLoadCount++;
+          this.prioritizedChunkIds.add(chunk.id);
+          return true;
         }
         if (!chunk) {
           this.rejectedLoadIds.add(request.node.id);
           this.rejectedLoadCount++;
-          return;
+          return false;
         }
         this.completedLoadCount++;
+        this.prioritizedChunkIds.add(chunk.id);
+        return true;
       })
       .catch(error => {
         if (!controller.signal.aborted && !this.isDestroyed) {
           this.rejectedLoadIds.add(request.node.id);
           this.onLoadError?.(error, request.node);
         }
+        return false;
       })
-      .finally(() => {
+      .then(admitted => {
         this.pendingLoads.delete(request.node.id);
-        if (!this.isDestroyed) {
+        if (this.isDestroyed) {
+          return;
+        }
+        // Only an admitted page changes what the traversal can select. A rejected or failed load
+        // leaves the residency window exactly as it was, so re-walking the tree for it would
+        // reproduce the same frontier - and under a full budget every visible child is rejected,
+        // which turned each frame into one full traversal per rejection. Those settle only by
+        // freeing a load slot, so they start the next queued request and nothing more.
+        // A cancelled load is different: while it was pending the traversal would not queue it
+        // again, so if the view wants it back it must be re-requested now, not at the next
+        // `update()`. Cancellations come from camera changes and are bounded by the load
+        // concurrency, so re-traversing for them cannot storm.
+        if (
+          admitted ||
+          (controller.signal.aborted && this.latestRequestedLoads.has(request.node.id))
+        ) {
           this.refresh();
+        } else {
+          this.startQueuedLoads();
         }
       });
     this.pendingLoads.set(request.node.id, {controller, promise: loadPromise});
   }
+}
+
+/** Orders queued loads best-first: priority, then coarser levels, then identity for determinism. */
+function compareLoadRequests(
+  firstRequest: SplatHierarchyLoadRequest,
+  secondRequest: SplatHierarchyLoadRequest
+): number {
+  return (
+    secondRequest.priority - firstRequest.priority ||
+    firstRequest.levelOfDetail - secondRequest.levelOfDetail ||
+    firstRequest.node.id.localeCompare(secondRequest.node.id)
+  );
 }
 
 /** Returns conservative camera-distance-adjusted geometric approximation error in pixels. */
@@ -761,16 +999,27 @@ export function getSplatHierarchyScreenSpaceError(
     ) - Math.max(node.bounds.radius ?? 0, 0),
     MINIMUM_CAMERA_DISTANCE
   );
-  const verticalFieldOfView = Math.min(
-    Math.max(view.verticalFieldOfView ?? DEFAULT_VERTICAL_FIELD_OF_VIEW, MINIMUM_CAMERA_DISTANCE),
-    Math.PI - MINIMUM_CAMERA_DISTANCE
-  );
+  const verticalFieldOfView = getSplatHierarchyVerticalFieldOfView(view);
   const focalLengthPixels =
     Math.max(view.viewportSize[1], 0) / (2 * Math.tan(verticalFieldOfView / 2));
   return (Math.max(node.geometricError, 0) * focalLengthPixels) / distance;
 }
 
-/** Applies optional viewport-normalized gaze falloff to geometric page-loading importance. */
+/** The view's vertical field of view, defaulted and clamped strictly inside `(0, PI)`. */
+function getSplatHierarchyVerticalFieldOfView(view: SplatHierarchyView): number {
+  return Math.min(
+    Math.max(view.verticalFieldOfView ?? DEFAULT_VERTICAL_FIELD_OF_VIEW, MINIMUM_CAMERA_DISTANCE),
+    Math.PI - MINIMUM_CAMERA_DISTANCE
+  );
+}
+
+/**
+ * Applies optional viewport-normalized gaze falloff to geometric page-loading importance.
+ *
+ * The gaze distance is measured from the foveation center to the nearest edge of the page's
+ * projected bounding sphere, not to its center, and a page the camera is inside (or whose center is
+ * behind the camera) is never relaxed.
+ */
 export function getSplatHierarchyFoveatedPriority(
   node: SplatHierarchyNode,
   view: SplatHierarchyView,
@@ -781,17 +1030,86 @@ export function getSplatHierarchyFoveatedPriority(
   if (strength === 0) {
     return screenSpaceError;
   }
+  // Measured to the nearest edge of the page's footprint, not its center. A large nearby page
+  // reaches into the gaze even when its center projects off screen, and its center projects to
+  // nonsense once it is behind the camera; either way it is the closest ground in view, and
+  // relaxing it hands its budget to the horizon.
+  const radius = Math.max(node.bounds.radius ?? 0, 0);
+  const cameraDistance = Math.hypot(
+    node.bounds.center[0] - view.cameraPosition[0],
+    node.bounds.center[1] - view.cameraPosition[1],
+    node.bounds.center[2] - view.cameraPosition[2]
+  );
+  const clipW = transformSplatPosition(view.modelViewProjectionMatrix, node.bounds.center)[3];
+  if (cameraDistance <= radius || (view.modelViewProjectionMatrix && !(clipW > 0))) {
+    return screenSpaceError;
+  }
   const [screenPositionX, screenPositionY] = projectWorldPositionToScreen(
     view.modelViewProjectionMatrix,
     view.viewportSize,
     node.bounds.center
   );
-  const normalizedPositionX = screenPositionX / Math.max(view.viewportSize[0], 1);
-  const normalizedPositionY = screenPositionY / Math.max(view.viewportSize[1], 1);
+  const viewportWidth = Math.max(view.viewportSize[0], 1);
+  const viewportHeight = Math.max(view.viewportSize[1], 1);
   const center = foveation?.center ?? [0.5, 0.5];
-  const gazeDistance = Math.hypot(normalizedPositionX - center[0], normalizedPositionY - center[1]);
-  const peripheralDistance = Math.max(gazeDistance - Math.max(foveation?.radius ?? 0.15, 0), 0);
+  // Gaze offsets are normalized per axis (x by width, y by height), like `foveation.center` and
+  // `foveation.radius`.
+  const gazeOffsetX = screenPositionX / viewportWidth - center[0];
+  const gazeOffsetY = screenPositionY / viewportHeight - center[1];
+  const gazeDistance = Math.hypot(gazeOffsetX, gazeOffsetY);
+  const verticalFieldOfView = getSplatHierarchyVerticalFieldOfView(view);
+  // Projected radius in viewport heights: radius over the height the view spans at that distance.
+  const projectedRadius = radius / (2 * cameraDistance * Math.tan(verticalFieldOfView / 2));
+  // In per-axis normalized units that circle is an ellipse, `aspect` times narrower in x. Take its
+  // extent along the gaze direction so the edge is found in the same units the gaze distance uses.
+  const aspect = viewportWidth / viewportHeight;
+  const projectedRadiusTowardGaze =
+    gazeDistance > 0
+      ? projectedRadius /
+        Math.hypot((gazeOffsetX / gazeDistance) * aspect, gazeOffsetY / gazeDistance)
+      : projectedRadius;
+  const peripheralDistance = Math.max(
+    gazeDistance - projectedRadiusTowardGaze - Math.max(foveation?.radius ?? 0.15, 0),
+    0
+  );
   return screenSpaceError / (1 + peripheralDistance * strength);
+}
+
+/**
+ * Returns the error a page is refined, budgeted and scheduled by: its projected error, weighted by
+ * where it sits in the view.
+ *
+ * Two independent relaxations divide the projected error, so each is `1` where it does not apply:
+ * foveation (distance from the gaze position) and focus distance (how far past what the viewer is
+ * looking at). The view's `requestErrorScale` is deliberately not one of them: it gates requests,
+ * not what is drawn.
+ */
+export function getSplatHierarchyRefinementError(
+  node: SplatHierarchyNode,
+  view: SplatHierarchyView,
+  foveation: SplatHierarchyFoveation | undefined = view.foveation,
+  distanceFalloff = 0,
+  screenSpaceError = getSplatHierarchyScreenSpaceError(node, view)
+): number {
+  const foveatedError = getSplatHierarchyFoveatedPriority(node, view, foveation, screenSpaceError);
+  let distanceRelaxation = 1;
+  const {focusDistance} = view;
+  if (distanceFalloff > 0 && focusDistance !== undefined && focusDistance > 0) {
+    const distance =
+      Math.hypot(
+        node.bounds.center[0] - view.cameraPosition[0],
+        node.bounds.center[1] - view.cameraPosition[1],
+        node.bounds.center[2] - view.cameraPosition[2]
+      ) - Math.max(node.bounds.radius ?? 0, 0);
+    distanceRelaxation = Math.max(distance / focusDistance, 1) ** distanceFalloff;
+  }
+  return foveatedError / distanceRelaxation;
+}
+
+/** The view's request coarsening, never below `1`; `NaN` is treated as unset. */
+function getSplatHierarchyRequestErrorScale(view: SplatHierarchyView): number {
+  const scale = view.requestErrorScale ?? 1;
+  return Number.isNaN(scale) ? 1 : Math.max(scale, 1);
 }
 
 /** Conservatively excludes a source page only when its sphere lies outside one clip plane. */
@@ -849,10 +1167,7 @@ export function getSplatHierarchyCoverage(
     ),
     MINIMUM_CAMERA_DISTANCE
   );
-  const verticalFieldOfView = Math.min(
-    Math.max(view.verticalFieldOfView ?? DEFAULT_VERTICAL_FIELD_OF_VIEW, MINIMUM_CAMERA_DISTANCE),
-    Math.PI - MINIMUM_CAMERA_DISTANCE
-  );
+  const verticalFieldOfView = getSplatHierarchyVerticalFieldOfView(view);
   const viewportHeight = Math.max(view.viewportSize[1], 1);
   const viewportWidth = Math.max(view.viewportSize[0], 1);
   const focalLengthPixels = viewportHeight / (2 * Math.tan(verticalFieldOfView / 2));

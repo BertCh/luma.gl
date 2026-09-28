@@ -96,6 +96,7 @@ export {
   SplatHierarchyManager,
   getSplatHierarchyCoverage,
   getSplatHierarchyFoveatedPriority,
+  getSplatHierarchyRefinementError,
   getSplatHierarchyScreenSpaceError,
   isSplatHierarchyNodeVisible,
   type SplatHierarchyFoveation,

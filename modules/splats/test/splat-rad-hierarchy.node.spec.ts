@@ -666,14 +666,16 @@ it('SplatRADHierarchyManager culls rows and concentrates detail around camera fo
   const parents = makeRADPage(device, {
     id: 'parents',
     rowIndexBase: 0,
-    positions: [0, 0, 0, 0.8, 0, 0],
+    // Foveation is measured to the nearest edge of a row's footprint, so the peripheral row sits
+    // far enough out that its whole footprint, not just its center, is outside the gaze.
+    positions: [0, 0, 0, 0.95, 0, 0],
     childCounts: [1, 1],
     childStarts: [2, 3]
   });
   const children = makeRADPage(device, {
     id: 'children',
     rowIndexBase: 2,
-    positions: [0.1, 0, 0, 0.8, 0, 0]
+    positions: [0.1, 0, 0, 0.95, 0, 0]
   });
   const manager = new SplatRADHierarchyManager({
     pages: [parents, children],

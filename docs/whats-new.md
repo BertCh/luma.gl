@@ -107,6 +107,42 @@ Target Release Date: Q3, 2026
 
 - **Stable RAD camera retargeting** - `SplatRADHierarchyManager` preserves resolved visible rows while reprioritizing retained branches for a changed camera, traverses offscreen ancestors needed for visible descendants, and keeps bounded traversal, page demand, and active-row capacity coherent across rapid camera updates.
 
+_Splat rendering (`GPUSplatGraphRenderer`):_
+
+- **Reference-correct antialiasing** - the screen-space filter adds the reference rasterizer's
+  `0.3` px² of variance, with Mip-Splatting opacity compensation, opacity-derived support radius,
+  energy-preserving size clamping and an optional `fragmentKernel: 'analytic'` pixel integral.
+- **Distance-uniform depth keys** - `depthKeyMode` (`'float16'` default, `'float32'`, `'linear'`,
+  `'ndc'`) keys the global sort on view-space distance, and orthographic views key on device depth.
+- **Smaller projected records** - half-precision axes and color take a record from 48 to 32 bytes.
+- **Soft clipping, stochastic alpha and compatibility rendering** - `clipRegion` fades Gaussians
+  across up to eight planes, `alphaMode: 'stochastic'` needs only a one-pass visibility sort, and
+  `renderPath: 'compatible'` renders without vertex-stage storage buffers.
+- **Shared WGSL for external passes** - `GPU_SPLAT_GRAPH_SHARED_WGSL`,
+  `GPU_SPLAT_QUAD_EXPANSION_SHADER_WGSL` and `GPU_SPLAT_FRAGMENT_SHARED_SHADER_WGSL` let a host
+  (for example a deck.gl picking pass) draw the renderer's records with identical coverage.
+- **Tiled radix sort** - `GPUSort` takes `digitBits` (`4` or `8`) and `elementsPerThread` (default
+  `8`), also forwarded by `GPUBatchSort`; `getGPUSortRadixPlan()` reports the resulting tiling.
+
+_Splat hierarchy (`SplatHierarchyManager`):_
+
+- **Budgeted, view-weighted selection** - `splatBudget` plans the cut greedily by quality per splat
+  (`budgetUpdateInterval` amortizes re-planning across `update()` calls), `lodFadeBand` fades
+  additive children in, per-node `filterVariance` is forwarded to the renderer, and
+  `distanceFalloff` with a view's `focusDistance` relaxes detail past the focus. A view's
+  `requestErrorScale` defers requests while the camera moves without dropping resident detail.
+- **Foveation measures to a page's nearest edge** - `getSplatHierarchyFoveatedPriority()` now
+  measures gaze distance to the nearest edge of the projected bounding sphere (aspect-correct), never
+  relaxes a page the camera is inside or behind, and clamps the field of view.
+- **Stale pages are evicted** - pages the traversal stops selecting (including those from roots
+  replaced by `setRoots()`) drop to priority zero, and a cancelled load the view asks for again is
+  kept or re-requested instead of being lost.
+
+**@luma.gl/webgpu**
+
+- **`blend: false` wins** - an explicit `blend: false` now removes blend state even when blend
+  factors are also supplied, matching WebGL and keeping non-blendable (32-bit float) targets valid.
+
 ## Version 9.4
 
 Release Date: September 5, 2026

@@ -10,12 +10,15 @@ import {
   GPU_SPLAT_FEATURE_FLAGS,
   GPU_SPLAT_FEATURE_SHADER,
   GPU_SPLAT_FEATURE_SHADER_LAYOUT,
+  GPU_SPLAT_FRAGMENT_SHARED_SHADER_WGSL,
   GPU_SPLAT_GATHER_SHADER,
   GPU_SPLAT_GRAPH_FEATURE_UNIFORM_BYTE_LENGTH,
+  GPU_SPLAT_GRAPH_SHARED_WGSL,
   GPU_SPLAT_GRAPH_UNIFORM_BYTE_LENGTH,
   GPU_SPLAT_PROJECTION_SHADER,
   GPU_SPLAT_PROJECTION_SHADER_LAYOUT,
   GPU_SPLAT_PROJECTED_RECORD_BYTE_LENGTH,
+  GPU_SPLAT_QUAD_EXPANSION_SHADER_WGSL,
   GPU_SPLAT_RENDER_SHADER,
   GPU_SPLAT_RENDER_SHADER_LAYOUT
 } from '../src/gpu-splat-graph-shaders';
@@ -195,6 +198,21 @@ it('GPU Gaussian enhancement evaluates harmonics and semantic filters within Web
     'keeps optional view-dependent feature controls in one compact 48-byte uniform'
   ).toBe(GPU_SPLAT_GRAPH_FEATURE_UNIFORM_BYTE_LENGTH);
   expect(
+    featureUniforms?.members?.map(member => ({name: member.name, offset: member.offset})),
+    'retains source-local coefficient strides and complete semantic-selection metadata'
+  ).toEqual([
+    {name: 'cameraPosition', offset: 0},
+    {name: 'sphericalHarmonicsDegree', offset: 12},
+    {name: 'sphericalHarmonicsStride', offset: 16},
+    {name: 'hasSemanticIds', offset: 20},
+    {name: 'includeCount', offset: 24},
+    {name: 'excludeCount', offset: 28},
+    {name: 'hasIncludeSelection', offset: 32},
+    {name: 'includeUnlabeled', offset: 36},
+    {name: 'semanticFilterActive', offset: 40},
+    {name: 'padding', offset: 44}
+  ]);
+  expect(
     GPU_SPLAT_FEATURE_SHADER,
     'removes filtered rows from the existing GPU-owned indirect draw count'
   ).toMatch(/atomicSub\(&drawCommands\[1u\],\s*1u\)/);
@@ -288,24 +306,120 @@ it('radiance-field and antialiasing behavior are feature flags, not forked shade
   expect(new Set(Object.values(GPU_SPLAT_FEATURE_FLAGS)).size, 'no two features share a bit').toBe(
     Object.keys(GPU_SPLAT_FEATURE_FLAGS).length
   );
+  // The prelude declares the flags and the support-radius helper, so matching those names in a
+  // full shader proves nothing. What matters is that every stage embeds the one prelude verbatim
+  // and that each stage's *own* code routes through the shared helpers rather than a local copy.
   for (const [name, source] of Object.entries(ALL_SPLAT_SHADERS)) {
     if (name === 'gather') {
       continue;
     }
-    expect(source, `${name}: reads the shared feature-flag word`).toMatch(/featureFlags/);
+    expect(
+      source.includes(GPU_SPLAT_GRAPH_SHARED_WGSL),
+      `${name}: embeds the shared prelude unmodified`
+    ).toBe(true);
+    expect(
+      getStageSource(source).includes('fn getSplatResolvedSupportRadius('),
+      `${name}: does not redefine the support radius locally`
+    ).toBe(false);
   }
-  // Every stage that sizes or samples a Gaussian resolves its support radius through the one
-  // shared function, so a flag cannot mean one thing during projection and another when drawing.
+
   for (const name of [
     'render',
     'compatibleRender',
     'picking',
     'compatiblePicking',
     'pagedRender'
-  ]) {
+  ] as const) {
+    const source = ALL_SPLAT_SHADERS[name];
     expect(
-      ALL_SPLAT_SHADERS[name as keyof typeof ALL_SPLAT_SHADERS],
-      `${name}: resolves the support radius through the shared helper`
-    ).toMatch(/getSplatResolvedSupportRadius\(/);
+      source.includes(GPU_SPLAT_QUAD_EXPANSION_SHADER_WGSL),
+      `${name}: embeds the shared quad expansion`
+    ).toBe(true);
+    expect(
+      getStageSource(source),
+      `${name}: its vertex entry expands the quad through the shared helper`
+    ).toMatch(/let quad = expandSplatQuad\(/);
+    expect(
+      getStageSource(source),
+      `${name}: its fragment entry evaluates coverage through the shared helper`
+    ).toMatch(/getSplatFragmentCoverage\(/);
+  }
+  expect(
+    GPU_SPLAT_QUAD_EXPANSION_SHADER_WGSL,
+    'the quad expansion sizes the Gaussian with the flag-aware support radius'
+  ).toMatch(/getSplatResolvedSupportRadius\(\s*uniforms\.featureFlags/);
+
+  for (const name of ['projection', 'pagedProjection'] as const) {
+    const stage = getStageSource(ALL_SPLAT_SHADERS[name]);
+    expect(stage, `${name}: sizes its quad with the same flag-aware helper`).toMatch(
+      /getSplatResolvedSupportRadius\(\s*graphUniforms\.featureFlags/
+    );
+    expect(stage, `${name}: gates dilation compensation on its feature flag`).toMatch(
+      /hasSplatFlag\(graphUniforms\.featureFlags, SPLAT_FLAG_COMPENSATE_DILATION\)/
+    );
+  }
+  for (const name of ['render', 'compatibleRender'] as const) {
+    expect(
+      getStageSource(ALL_SPLAT_SHADERS[name]),
+      `${name}: resolves stochastic coverage from the feature flag`
+    ).toMatch(/hasSplatFlag\(graphUniforms\.featureFlags, SPLAT_FLAG_STOCHASTIC_ALPHA\)/);
   }
 });
+
+it('GPU Gaussian shaders preserve rotated anisotropic HDR source data', () => {
+  expect(
+    GPU_SPLAT_PROJECTION_SHADER,
+    'Float32 source radiance is decoded without normalization or clamping'
+  ).toMatch(
+    /hasSplatFlag\(graphUniforms\.featureFlags, SPLAT_FLAG_FLOAT_COLOR\)[\s\S]*?bitcast<f32>\(colors\[colorIndex\]\)/
+  );
+  expect(GPU_SPLAT_PROJECTION_SHADER, 'packed RGBA8 source colors retain normalized alpha').toMatch(
+    /\(packedColor\s*>>\s*24u\)\s*&\s*255u[\s\S]*?\/\s*255\.0/
+  );
+  expect(
+    GPU_SPLAT_PROJECTION_SHADER,
+    'anisotropic covariance preserves source quaternion rotation'
+  ).toMatch(/getProjectedRotation\(rotations\[batchRowIndex\]\)/);
+  expect(
+    GPU_SPLAT_PROJECTION_SHADER,
+    'conservative screen culling retains the complete oriented Gaussian support'
+  ).toMatch(/let screenExtent\s*=\s*abs\(axis0\)\s*\+\s*abs\(axis1\)/);
+  expect(
+    GPU_SPLAT_FRAGMENT_SHARED_SHADER_WGSL,
+    'projected rendering retains optional Reinhard HDR display mapping'
+  ).toMatch(/linearColor\s*\/\s*\(vec3<f32>\(1\.0\)\s*\+\s*linearColor\)/);
+  for (const name of ['render', 'compatibleRender'] as const) {
+    const reflect = new WgslReflect(ALL_SPLAT_SHADERS[name]);
+    expect(
+      reflect.entry.vertex.map(entry => entry.name),
+      `${name}: one instanced vertex entry point`
+    ).toEqual(['vertexMain']);
+    expect(
+      reflect.entry.fragment.map(entry => entry.name),
+      `${name}: one Gaussian fragment entry point`
+    ).toEqual(['fragmentMain']);
+    expect(
+      getStageSource(ALL_SPLAT_SHADERS[name]),
+      `${name}: presents color through the shared exposure and tone mapping`
+    ).toMatch(/getSplatPresentedColor\(graphUniforms, input\.color\.rgb\)/);
+  }
+});
+
+it('projection keys orthographic views on device depth instead of the constant clip w', () => {
+  for (const name of ['projection', 'pagedProjection'] as const) {
+    expect(
+      getStageSource(ALL_SPLAT_SHADERS[name]),
+      `${name}: tells the key packer whether the projection is affine`
+    ).toMatch(
+      /packSplatDepthKey\([\s\S]*?clipCenter\.w,[\s\S]*?isSplatAffineProjection\(graphUniforms\.modelViewProjectionMatrix\)\s*\)/
+    );
+  }
+});
+
+/** Returns a shader with the shared preludes removed, leaving only the stage's own code. */
+function getStageSource(source: string): string {
+  return source
+    .replace(GPU_SPLAT_GRAPH_SHARED_WGSL, '')
+    .replace(GPU_SPLAT_QUAD_EXPANSION_SHADER_WGSL, '')
+    .replace(GPU_SPLAT_FRAGMENT_SHARED_SHADER_WGSL, '');
+}

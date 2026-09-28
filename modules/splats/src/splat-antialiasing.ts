@@ -74,8 +74,10 @@ export function getSplatScreenFilterVariance(props: {
  * `addedVariance` is the isotropic variance added to both diagonal terms. The off-diagonal term is
  * unchanged by an isotropic filter, so only the diagonal enters the dilated determinant.
  *
- * @returns A factor in `(0, 1]` to multiply into opacity. Returns `1` when the filter is disabled
- * or the pre-dilation covariance is degenerate, which leaves base 3DGS behavior untouched.
+ * @returns A factor in `[0, 1]` to multiply into opacity. Returns `1` when the filter is disabled
+ * or the *dilated* covariance is still degenerate, which leaves base 3DGS behavior untouched. A
+ * degenerate pre-dilation covariance (determinant at or below zero) yields `0`, since a Gaussian
+ * with no projected area has no energy to spread over the filter footprint.
  */
 export function getSplatDilationCompensation(
   covariance00: number,
@@ -92,12 +94,14 @@ export function getSplatDilationCompensation(
   if (
     !Number.isFinite(originalDeterminant) ||
     !Number.isFinite(dilatedDeterminant) ||
-    originalDeterminant <= MINIMUM_COVARIANCE_DETERMINANT ||
     dilatedDeterminant <= MINIMUM_COVARIANCE_DETERMINANT
   ) {
     return 1;
   }
-  return Math.min(Math.sqrt(originalDeterminant / dilatedDeterminant), 1);
+  // A degenerate original (a Gaussian flattened to a line or point on screen) carries almost no
+  // energy, so its compensation tends to zero rather than to full opacity: returning `1` here would
+  // render the pure filter footprint at the Gaussian's full peak.
+  return Math.min(Math.sqrt(Math.max(originalDeterminant, 0) / dilatedDeterminant), 1);
 }
 
 /**
@@ -192,13 +196,10 @@ fn getSplatDilationCompensation(
   let originalDeterminant = covariance00 * covariance11 - covariance01 * covariance01;
   let dilatedDeterminant =
     (covariance00 + addedVariance) * (covariance11 + addedVariance) - covariance01 * covariance01;
-  if (
-    originalDeterminant <= SPLAT_MINIMUM_COVARIANCE_DETERMINANT ||
-    dilatedDeterminant <= SPLAT_MINIMUM_COVARIANCE_DETERMINANT
-  ) {
+  if (dilatedDeterminant <= SPLAT_MINIMUM_COVARIANCE_DETERMINANT) {
     return 1.0;
   }
-  return min(sqrt(originalDeterminant / dilatedDeterminant), 1.0);
+  return min(sqrt(max(originalDeterminant, 0.0) / dilatedDeterminant), 1.0);
 }
 
 /** Energy-conserving compensation for a covariance uniformly rescaled by \`axisScale\`. */

@@ -13,6 +13,7 @@ import {NullDevice} from '@luma.gl/test-utils';
 import {
   SplatHierarchyManager,
   getSplatHierarchyFoveatedPriority,
+  getSplatHierarchyRefinementError,
   getSplatHierarchyScreenSpaceError,
   isSplatHierarchyNodeVisible,
   type SplatHierarchyLoadContext,
@@ -1090,6 +1091,664 @@ it('SplatHierarchyManager replaces source roots and rejects duplicate source ide
   firstBatch.destroy();
   secondBatch.destroy();
   void 0;
+});
+
+it('SplatHierarchyManager does not re-traverse for loads the residency budget rejects', async () => {
+  const device = new NullDevice({});
+  const rootBatch = makeSplatHierarchyBatch(device, 30, 1200);
+  const residencyManager = new SplatResidencyManager({maxResidentChunks: 1});
+  const manager = new SplatHierarchyManager({
+    residencyManager,
+    maximumScreenSpaceError: 1,
+    maxConcurrentLoads: 1,
+    roots: [
+      {
+        ...makeSplatHierarchyNode('root', [0, 0, 0], 1),
+        data: rootBatch,
+        children: [
+          makeSplatHierarchyNode('a', [-0.2, -0.2, 0], 0),
+          makeSplatHierarchyNode('b', [0.2, -0.2, 0], 0),
+          makeSplatHierarchyNode('c', [-0.2, 0.2, 0], 0),
+          makeSplatHierarchyNode('d', [0.2, 0.2, 0], 0)
+        ]
+      }
+    ],
+    loadPage: () => {
+      throw new Error('an over-budget page must never reach the decoder');
+    }
+  });
+  // Private, and counted here because a traversal per rejection is the regression: under a full
+  // budget every visible child is rejected, and each one used to re-walk the whole tree.
+  const internals = manager as unknown as {refresh: () => void};
+  const refresh = internals.refresh.bind(manager);
+  let traversalCount = 0;
+  internals.refresh = () => {
+    traversalCount++;
+    refresh();
+  };
+
+  manager.update(makeSplatHierarchyView());
+  await manager.waitForIdle();
+
+  expect(manager.stats.rejectedLoadCount, 'rejects every child that cannot fit').toBe(4);
+  expect(traversalCount, 'traverses once for the view, not once per rejection').toBe(1);
+  expect(manager.stats.queuedLoadCount, 'drains the queue through the freed load slots').toBe(0);
+  expect(manager.frontierBatches, 'keeps drawing the resident parent').toEqual([rootBatch]);
+
+  manager.destroy();
+  residencyManager.destroy();
+  rootBatch.destroy();
+});
+
+it('SplatHierarchyManager evicts pages it no longer wants for pages it does', async () => {
+  const device = new NullDevice({});
+  const nearBatch = makeSplatHierarchyBatch(device, 40, 1600);
+  const farBatch = makeSplatHierarchyBatch(device, 41, 1700);
+  const residencyManager = new SplatResidencyManager({maxResidentChunks: 1, ownsData: false});
+  const manager = new SplatHierarchyManager({
+    residencyManager,
+    maximumScreenSpaceError: 1,
+    roots: [
+      makeSplatHierarchyNode('near', [0, 0, 0], 1),
+      makeSplatHierarchyNode('far', [1.3, 0, 0], 1)
+    ],
+    loadPage: node => (node.id === 'near' ? nearBatch : farBatch)
+  });
+
+  // A close camera loads `near` at a large projected error; `far` is outside the frustum.
+  manager.update(makeSplatHierarchyView([0, 0, 0.2]));
+  await manager.waitForIdle();
+  manager.update(makeSplatHierarchyView([0, 0, 0.2]));
+  expect(manager.frontierBatches, 'loads the page in view').toEqual([nearBatch]);
+
+  // Turn to `far` from much further away, so it is wanted at a far smaller error than `near` had.
+  const turnedView = {
+    ...makeSplatHierarchyView([1.3, 0, 40]),
+    modelViewProjectionMatrix: [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, -1.3, 0, 0, 1]
+  };
+  manager.update(turnedView);
+  await manager.waitForIdle();
+  manager.update(turnedView);
+
+  expect(
+    manager.frontierBatches,
+    'admits the page in view by evicting the one that left it, whatever its old priority'
+  ).toEqual([farBatch]);
+  expect(manager.stats.rejectedLoadCount, 'without refusing it first').toBe(0);
+
+  manager.destroy();
+  residencyManager.destroy();
+  nearBatch.destroy();
+  farBatch.destroy();
+});
+
+it('Splat hierarchy relaxes refinement error by focus distance', () => {
+  const nearNode = makeSplatHierarchyNode('near', [0, 0, 0], 1);
+  const farNode = makeSplatHierarchyNode('far', [0, 0, -36], 1);
+  const view = {...makeSplatHierarchyView(), focusDistance: 4};
+  const nearError = getSplatHierarchyScreenSpaceError(nearNode, view);
+  const farError = getSplatHierarchyScreenSpaceError(farNode, view);
+
+  expect(
+    getSplatHierarchyRefinementError(nearNode, view, undefined, 1),
+    'leaves a page nearer than the focus distance at its projected error'
+  ).toBeCloseTo(nearError);
+  expect(
+    getSplatHierarchyRefinementError(farNode, view, undefined, 1),
+    'divides the error of a page ten focus distances away by ten'
+  ).toBeCloseTo(farError / ((40 - 0.05) / 4));
+  expect(
+    getSplatHierarchyRefinementError(farNode, view, undefined, 0),
+    'applies no distance relaxation by default'
+  ).toBeCloseTo(farError);
+});
+
+it('Splat hierarchy foveates by the nearest edge of a page, not its center', () => {
+  const view = makeSplatHierarchyView([0, 0, 4]);
+  const foveation = {radius: 0.05, strength: 8};
+  // Centered at the right edge of the view, but wide enough to reach well into the gaze.
+  const wideNode = makeSplatHierarchyNode('wide', [0.9, 0, 0], 1, 3.5);
+  const smallNode = makeSplatHierarchyNode('small', [0.9, 0, 0], 1, 0.01);
+  const aroundCamera = makeSplatHierarchyNode('around', [0.9, 0, 3.5], 1, 1.5);
+
+  expect(
+    getSplatHierarchyFoveatedPriority(wideNode, view, foveation, 100),
+    'leaves a page reaching into the gaze unrelaxed'
+  ).toBe(100);
+  expect(
+    getSplatHierarchyFoveatedPriority(smallNode, view, foveation, 100) < 100,
+    'still relaxes a page wholly outside it'
+  ).toBe(true);
+  expect(
+    getSplatHierarchyFoveatedPriority(aroundCamera, view, foveation, 100),
+    'never relaxes a page the camera is inside'
+  ).toBe(100);
+});
+
+it('SplatHierarchyManager spends a splat budget where the view is looking', async () => {
+  const device = new NullDevice({});
+  const batches: GPUSplatData[] = [];
+  const makeRoot = (id: string, center: readonly [number, number, number]) => {
+    const batch = makeSplatHierarchyBatch(device, batches.length, batches.length * 10);
+    batches.push(batch);
+    return {
+      ...makeSplatHierarchyNode(id, center, 1, 0.1),
+      data: batch,
+      estimatedSplatCount: 1,
+      children: [0, 1, 2, 3].map(index => ({
+        ...makeSplatHierarchyNode(`${id}-${index}`, center, 0),
+        estimatedSplatCount: 10
+      }))
+    };
+  };
+  // Named so an unfoveated tie goes to the edge: only foveation can hand the budget to the center.
+  const roots = [makeRoot('a-edge', [0.8, 0, 0]), makeRoot('b-center', [0, 0, 0])];
+  // Both roots, plus one refinement of 40 - 1 splats. Not two.
+  const splatBudget = 2 + 39;
+
+  const getRequestedIds = async (
+    props: Partial<ConstructorParameters<typeof SplatHierarchyManager>[0]>,
+    view: SplatHierarchyView = makeSplatHierarchyView()
+  ): Promise<string[]> => {
+    const requested: string[] = [];
+    const residencyManager = new SplatResidencyManager();
+    const manager = new SplatHierarchyManager({
+      roots,
+      residencyManager,
+      maximumScreenSpaceError: 0.01,
+      maxConcurrentLoads: 16,
+      splatBudget,
+      loadPage: node => {
+        requested.push(node.id);
+        return new Promise<GPUSplatData>(() => {});
+      },
+      ...props
+    });
+    manager.update(view);
+    await flushSplatHierarchyMicrotasks();
+    manager.destroy();
+    residencyManager.destroy();
+    return requested.map(id => id.split('-').slice(0, 2).join('-'));
+  };
+
+  expect(
+    new Set(await getRequestedIds({})),
+    'refines the tie-break winner without foveation'
+  ).toEqual(new Set(['a-edge']));
+  expect(
+    new Set(await getRequestedIds({foveation: {radius: 0.05, strength: 8}})),
+    'plans the budget against the foveated error'
+  ).toEqual(new Set(['b-center']));
+  expect(
+    await getRequestedIds({}, {...makeSplatHierarchyView(), requestErrorScale: 1e6}),
+    'requests no finer pages while the view is coarsened for motion'
+  ).toEqual([]);
+
+  for (const batch of batches) {
+    batch.destroy();
+  }
+});
+
+it('SplatHierarchyManager keeps resident children up while a coarsened parent reloads', async () => {
+  const device = new NullDevice({});
+  const rootBatch = makeSplatHierarchyBatch(device, 0, 0);
+  const leafBatches = [
+    makeSplatHierarchyBatch(device, 1, 10),
+    makeSplatHierarchyBatch(device, 2, 20)
+  ];
+  const residencyManager = new SplatResidencyManager();
+  const leaves = [
+    makeSplatHierarchyNode('leaf-0', [-0.2, 0, 0], 0),
+    makeSplatHierarchyNode('leaf-1', [0.2, 0, 0], 0)
+  ];
+  leaves.forEach((leaf, index) =>
+    residencyManager.add(leafBatches[index], {id: leaf.id, bounds: leaf.bounds, ownsData: false})
+  );
+  const requested: string[] = [];
+  const manager = new SplatHierarchyManager({
+    residencyManager,
+    maximumScreenSpaceError: 2,
+    roots: [
+      {
+        ...makeSplatHierarchyNode('root', [0, 0, 0], 100, 0.5),
+        data: rootBatch,
+        children: [{...makeSplatHierarchyNode('middle', [0, 0, 0], 1, 0.4), children: leaves}]
+      }
+    ],
+    loadPage: node => {
+      requested.push(node.id);
+      return new Promise<GPUSplatData>(() => {});
+    }
+  });
+
+  expect(
+    manager.update(makeSplatHierarchyView()).map(entry => entry.node.id),
+    'draws the resident leaves at full detail'
+  ).toEqual(['leaf-0', 'leaf-1']);
+
+  // Pulled back until the middle page is good enough and the leaves are no longer wanted.
+  const coarsened = manager.update(makeSplatHierarchyView([0, 0, 400]));
+  expect(
+    coarsened.map(entry => entry.node.id),
+    'keeps the finer resident pages rather than falling back past them'
+  ).toEqual(['leaf-0', 'leaf-1']);
+  expect(
+    coarsened.every(entry => entry.isFallback),
+    'marks them as standing in'
+  ).toBe(true);
+  await flushSplatHierarchyMicrotasks();
+  expect(requested, 'still asks for the page the coarser view selects').toContain('middle');
+
+  manager.destroy();
+  residencyManager.destroy();
+  rootBatch.destroy();
+  leafBatches.forEach(batch => batch.destroy());
+});
+
+it('SplatHierarchyManager keeps loaded detail while moving and only defers what is missing', async () => {
+  const device = new NullDevice({});
+  const rootBatch = makeSplatHierarchyBatch(device, 0, 0);
+  const loadedBatch = makeSplatHierarchyBatch(device, 1, 10);
+  const residencyManager = new SplatResidencyManager();
+  const loaded = makeSplatHierarchyNode('loaded', [-0.2, 0, 0], 0);
+  const missing = makeSplatHierarchyNode('missing', [0.2, 0, 0], 0);
+  const otherRoot = {
+    ...makeSplatHierarchyNode('other', [0, 0.5, 0], 1, 0.1),
+    data: makeSplatHierarchyBatch(device, 2, 20),
+    children: [
+      makeSplatHierarchyNode('other-0', [0, 0.4, 0], 0),
+      makeSplatHierarchyNode('other-1', [0, 0.6, 0], 0)
+    ]
+  };
+  const leftRoot = {
+    ...makeSplatHierarchyNode('left', [0, 0, 0], 1, 0.3),
+    data: rootBatch,
+    children: [
+      {...makeSplatHierarchyNode('left-a', [-0.1, 0, 0], 0.5, 0.15), children: [loaded]},
+      {...makeSplatHierarchyNode('left-b', [0.1, 0, 0], 0.5, 0.15), children: [missing]}
+    ]
+  };
+  // Only the left branch's leaves matter here; its middle level is resident up front.
+  const middleBatches = [
+    makeSplatHierarchyBatch(device, 3, 30),
+    makeSplatHierarchyBatch(device, 4, 40)
+  ];
+  residencyManager.add(middleBatches[0], {id: 'left-a', ownsData: false});
+  residencyManager.add(middleBatches[1], {id: 'left-b', ownsData: false});
+  residencyManager.add(loadedBatch, {id: 'loaded', ownsData: false});
+  const requested: string[] = [];
+  const manager = new SplatHierarchyManager({
+    residencyManager,
+    maximumScreenSpaceError: 1,
+    maxConcurrentLoads: 8,
+    roots: [leftRoot, otherRoot],
+    loadPage: node => {
+      requested.push(node.id);
+      return new Promise<GPUSplatData>(() => {});
+    }
+  });
+  const moving = {...makeSplatHierarchyView(), requestErrorScale: 1e6};
+
+  const frontier = manager.update(moving).map(entry => entry.node.id);
+  await flushSplatHierarchyMicrotasks();
+  expect(
+    frontier,
+    'draws the loaded fine page and stands the resident parent in for the missing one'
+  ).toEqual(['loaded', 'left-b', 'other']);
+  expect(requested, 'requests nothing finer while moving').toEqual([]);
+
+  manager.update(makeSplatHierarchyView());
+  await flushSplatHierarchyMicrotasks();
+  expect(new Set(requested), 'requests the missing detail once the camera settles').toEqual(
+    new Set(['missing', 'other-0', 'other-1'])
+  );
+
+  manager.update(moving);
+  await flushSplatHierarchyMicrotasks();
+  expect(manager.stats.abortedLoadCount, 'does not abort detail already in flight').toBe(0);
+  expect(manager.stats.pendingLoadCount, 'and keeps it loading').toBe(3);
+
+  manager.destroy();
+  residencyManager.destroy();
+  for (const batch of [rootBatch, loadedBatch, otherRoot.data, ...middleBatches]) {
+    batch.destroy();
+  }
+});
+
+it('SplatHierarchyManager keeps a cancelled page the view asks for again before it settles', async () => {
+  const device = new NullDevice({});
+  const pageBatch = makeSplatHierarchyBatch(device, 50, 5000);
+  const residencyManager = new SplatResidencyManager({ownsData: false});
+  const resolvers: ((batch: GPUSplatData) => void)[] = [];
+  const manager = new SplatHierarchyManager({
+    residencyManager,
+    roots: [makeSplatHierarchyNode('page', [0, 0, 0], 1)],
+    // Ignores cancellation, as a fetch already past its network phase or a busy worker may.
+    loadPage: () => new Promise<GPUSplatData>(resolve => resolvers.push(resolve))
+  });
+  const lookingAway = {
+    ...makeSplatHierarchyView(),
+    modelViewProjectionMatrix: [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, -1.3, 0, 0, 1]
+  };
+
+  manager.update(makeSplatHierarchyView());
+  await flushSplatHierarchyMicrotasks();
+  manager.update(lookingAway);
+  expect(manager.stats.abortedLoadCount, 'turning away cancels the page').toBe(1);
+  manager.update(makeSplatHierarchyView());
+
+  resolvers[0](pageBatch);
+  await flushSplatHierarchyMicrotasks();
+  expect(
+    manager.frontierBatches,
+    'draws the page as soon as it settles, without another update()'
+  ).toEqual([pageBatch]);
+  expect(resolvers.length, 'and does not fetch it a second time').toBe(1);
+  expect(manager.stats.pendingLoadCount, 'leaving nothing in flight').toBe(0);
+
+  // The same cancellation with the view still turned away discards what the loader produced.
+  manager.update(lookingAway);
+  expect(manager.frontierBatches, 'nothing is drawn while looking away').toEqual([]);
+
+  manager.destroy();
+  residencyManager.destroy();
+  pageBatch.destroy();
+});
+
+it('SplatHierarchyManager re-requests a cancelled page the view wants back once it settles', async () => {
+  const device = new NullDevice({});
+  const pageBatch = makeSplatHierarchyBatch(device, 51, 5100);
+  const residencyManager = new SplatResidencyManager({ownsData: false});
+  const resolvers: ((batch: GPUSplatData) => void)[] = [];
+  const loadErrors: unknown[] = [];
+  const manager = new SplatHierarchyManager({
+    residencyManager,
+    roots: [makeSplatHierarchyNode('page', [0, 0, 0], 1)],
+    // Honours cancellation by rejecting, so nothing is left to keep when it settles.
+    loadPage: (_node, {signal}) =>
+      new Promise<GPUSplatData>((resolve, reject) => {
+        resolvers.push(resolve);
+        signal.addEventListener('abort', () => reject(signal.reason));
+      }),
+    onLoadError: error => loadErrors.push(error)
+  });
+  const lookingAway = {
+    ...makeSplatHierarchyView(),
+    modelViewProjectionMatrix: [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, -1.3, 0, 0, 1]
+  };
+
+  manager.update(makeSplatHierarchyView());
+  await flushSplatHierarchyMicrotasks();
+  // Away and back within one frame: the cancelled load has not settled when the view returns.
+  manager.update(lookingAway);
+  manager.update(makeSplatHierarchyView());
+  await flushSplatHierarchyMicrotasks();
+
+  expect(resolvers.length, 'requests the page again once the cancelled load settles').toBe(2);
+  resolvers[1](pageBatch);
+  await manager.waitForIdle();
+  expect(manager.frontierBatches, 'and draws it without another update()').toEqual([pageBatch]);
+  expect(loadErrors, 'a cancellation is not reported as a load error').toEqual([]);
+
+  manager.destroy();
+  residencyManager.destroy();
+  pageBatch.destroy();
+});
+
+it('SplatHierarchyManager fades only children of additive parents in over lodFadeBand', () => {
+  const device = new NullDevice({});
+  const batches: GPUSplatData[] = [];
+  const makeTree = (refinement: 'add' | 'replace'): SplatHierarchyNode => {
+    const makeBatch = () => {
+      const batch = makeSplatHierarchyBatch(device, batches.length, batches.length * 10);
+      batches.push(batch);
+      return batch;
+    };
+    return {
+      // 128 px focal length at 3.95 units: about 3 px of error, halfway through a band of 2 to 4.
+      ...makeSplatHierarchyNode('root', [0, 0, 0], (3 * 3.95) / 128),
+      refinement,
+      data: makeBatch(),
+      children: [
+        {
+          ...makeSplatHierarchyNode('sharp', [-0.02, 0, 0], 0),
+          data: makeBatch(),
+          filterVariance: 0.3
+        },
+        {
+          ...makeSplatHierarchyNode('clamped', [0.02, 0, 0], 0),
+          data: makeBatch(),
+          filterVariance: -1
+        }
+      ]
+    };
+  };
+  const getFrontier = (refinement: 'add' | 'replace') => {
+    const residencyManager = new SplatResidencyManager({ownsData: false});
+    const manager = new SplatHierarchyManager({
+      residencyManager,
+      roots: [makeTree(refinement)],
+      maximumScreenSpaceError: 2,
+      lodFadeBand: 1
+    });
+    const frontier = manager.update(makeSplatHierarchyView()).map(entry => ({
+      id: entry.node.id,
+      fadeOpacity: entry.fadeOpacity,
+      filterVariance: entry.filterVariance
+    }));
+    manager.destroy();
+    residencyManager.destroy();
+    return frontier;
+  };
+
+  const replaced = getFrontier('replace');
+  expect(
+    replaced.map(entry => entry.id),
+    'replacing children stand in for their parent'
+  ).toEqual(['sharp', 'clamped']);
+  expect(
+    replaced.map(entry => entry.fadeOpacity),
+    'and are drawn opaque, since nothing is drawn beneath them'
+  ).toEqual([1, 1]);
+  expect(
+    replaced.map(entry => entry.filterVariance),
+    'each carries its own filter variance, never negative'
+  ).toEqual([0.3, 0]);
+
+  const added = getFrontier('add');
+  expect(
+    added.map(entry => entry.id),
+    'additive children draw over their parent'
+  ).toEqual(['root', 'sharp', 'clamped']);
+  expect(added[0].fadeOpacity, 'the root has no parent to fade against').toBe(1);
+  expect(added[1].fadeOpacity, 'additive children fade in across the band').toBeCloseTo(0.5, 2);
+  expect(added[2].fadeOpacity, 'all of them').toBeCloseTo(0.5, 2);
+
+  for (const batch of batches) {
+    batch.destroy();
+  }
+});
+
+it('SplatHierarchyManager evicts pages from roots replaced by setRoots', async () => {
+  const device = new NullDevice({});
+  const nearBatch = makeSplatHierarchyBatch(device, 60, 6000);
+  const farBatch = makeSplatHierarchyBatch(device, 61, 6100);
+  const residencyManager = new SplatResidencyManager({maxResidentChunks: 1, ownsData: false});
+  const manager = new SplatHierarchyManager({
+    residencyManager,
+    maximumScreenSpaceError: 1,
+    roots: [makeSplatHierarchyNode('old-near', [0, 0, 0], 1)],
+    loadPage: node => (node.id === 'old-near' ? nearBatch : farBatch)
+  });
+
+  // Loaded close up, so the old page carries a very large priority.
+  manager.update(makeSplatHierarchyView([0, 0, 0.2]));
+  await manager.waitForIdle();
+  expect(manager.frontierBatches, 'loads the original page').toEqual([nearBatch]);
+
+  // New roots that no longer name the old page, wanted at a far smaller error.
+  manager.setRoots([makeSplatHierarchyNode('new-far', [1.3, 0, 0], 1)]);
+  const turnedView = {
+    ...makeSplatHierarchyView([1.3, 0, 40]),
+    modelViewProjectionMatrix: [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, -1.3, 0, 0, 1]
+  };
+  manager.update(turnedView);
+  await manager.waitForIdle();
+
+  expect(
+    manager.frontierBatches,
+    'evicts the page the old roots loaded for the one the new roots want'
+  ).toEqual([farBatch]);
+  expect(manager.stats.rejectedLoadCount, 'without refusing it first').toBe(0);
+
+  manager.destroy();
+  residencyManager.destroy();
+  nearBatch.destroy();
+  farBatch.destroy();
+});
+
+it('SplatHierarchyManager counts budgetUpdateInterval in update() calls, not traversals', async () => {
+  const device = new NullDevice({});
+  const rootBatch = makeSplatHierarchyBatch(device, 70, 7000);
+  const childBatches = [0, 1].map(index => makeSplatHierarchyBatch(device, 71 + index, 7100));
+  const residencyManager = new SplatResidencyManager({ownsData: false});
+  const manager = new SplatHierarchyManager({
+    residencyManager,
+    maximumScreenSpaceError: 1,
+    splatBudget: 100,
+    budgetUpdateInterval: 3,
+    roots: [
+      {
+        ...makeSplatHierarchyNode('root', [0, 0, 0], 1, 0.1),
+        data: rootBatch,
+        estimatedSplatCount: 1,
+        children: [0, 1].map(index => ({
+          ...makeSplatHierarchyNode(`child-${index}`, [index ? 0.05 : -0.05, 0, 0], 0),
+          estimatedSplatCount: 1
+        }))
+      }
+    ],
+    loadPage: async node => childBatches[Number(node.id.split('-')[1])]
+  });
+
+  manager.update(makeSplatHierarchyView());
+  expect(manager.stats.framesSinceBudgetPlan, 'plans on the first update').toBe(0);
+  await manager.waitForIdle();
+  expect(manager.stats.completedLoadCount, 'both children loaded and re-traversed').toBe(2);
+  expect(manager.stats.framesSinceBudgetPlan, 'traversals for settled loads are not frames').toBe(
+    0
+  );
+  expect(manager.frontierBatches, 'and they reuse the plan to select the children').toEqual(
+    childBatches
+  );
+
+  const framesSincePlan: number[] = [];
+  for (let frame = 0; frame < 4; frame++) {
+    manager.update(makeSplatHierarchyView());
+    framesSincePlan.push(manager.stats.framesSinceBudgetPlan);
+  }
+  expect(framesSincePlan, 'reuses each plan for two further frames').toEqual([1, 2, 0, 1]);
+  expect(manager.stats.budgetedSplatCount, 'reports what the plan spends').toBe(2);
+
+  manager.destroy();
+  residencyManager.destroy();
+  rootBatch.destroy();
+  childBatches.forEach(batch => batch.destroy());
+});
+
+it('SplatHierarchyManager treats a requestErrorScale below one or NaN as one', async () => {
+  const device = new NullDevice({});
+  const rootBatch = makeSplatHierarchyBatch(device, 80, 8000);
+  const getRequestedIds = async (requestErrorScale?: number): Promise<string[]> => {
+    const requested: string[] = [];
+    const residencyManager = new SplatResidencyManager({ownsData: false});
+    const manager = new SplatHierarchyManager({
+      residencyManager,
+      maximumScreenSpaceError: 1,
+      roots: [
+        {
+          ...makeSplatHierarchyNode('root', [0, 0, 0], 1, 0.1),
+          data: rootBatch,
+          children: [
+            makeSplatHierarchyNode('a', [-0.05, 0, 0], 0),
+            makeSplatHierarchyNode('b', [0.05, 0, 0], 0)
+          ]
+        }
+      ],
+      loadPage: node => {
+        requested.push(node.id);
+        return new Promise<GPUSplatData>(() => {});
+      }
+    });
+    manager.update({...makeSplatHierarchyView(), requestErrorScale});
+    await flushSplatHierarchyMicrotasks();
+    manager.destroy();
+    residencyManager.destroy();
+    return requested.sort();
+  };
+
+  expect(await getRequestedIds(), 'requests the children by default').toEqual(['a', 'b']);
+  for (const scale of [Number.NaN, 0.25, 0, -3]) {
+    expect(await getRequestedIds(scale), `requestErrorScale ${scale} acts as 1`).toEqual([
+      'a',
+      'b'
+    ]);
+  }
+  expect(
+    await getRequestedIds(Number.POSITIVE_INFINITY),
+    'an infinite scale requests nothing below the roots'
+  ).toEqual([]);
+
+  rootBatch.destroy();
+});
+
+it('Splat hierarchy foveation clamps the field of view and respects the viewport aspect', () => {
+  const foveation = {center: [0.5, 0.5] as const, radius: 0.05, strength: 8};
+  const node = makeSplatHierarchyNode('side', [0.5, 0, 0], 1, 0.2);
+  const clampedView = {...makeSplatHierarchyView(), verticalFieldOfView: Math.PI - 1e-6};
+  const clamped = getSplatHierarchyFoveatedPriority(node, clampedView, foveation, 100);
+  for (const verticalFieldOfView of [2 * Math.PI, 4, Math.PI]) {
+    expect(
+      getSplatHierarchyFoveatedPriority(
+        node,
+        {...makeSplatHierarchyView(), verticalFieldOfView},
+        foveation,
+        100
+      ),
+      `a field of view of ${verticalFieldOfView} is clamped like screen-space error clamps it`
+    ).toBeCloseTo(clamped, 9);
+  }
+  expect(
+    Number.isFinite(
+      getSplatHierarchyFoveatedPriority(
+        node,
+        {...makeSplatHierarchyView(), verticalFieldOfView: 0},
+        foveation,
+        100
+      )
+    ),
+    'a zero field of view stays finite'
+  ).toBe(true);
+
+  // A sphere 0.31 viewport heights across, a quarter of the width to the side of the gaze. On a
+  // square viewport it reaches the foveal radius; on one twice as wide it covers half as much of
+  // the normalized width, and no longer does.
+  const wideSphere = makeSplatHierarchyNode('wide', [0.5, 0, 0], 1, 2.5);
+  const tallSphere = makeSplatHierarchyNode('tall', [0, 0.5, 0], 1, 2.5);
+  const squareView = makeSplatHierarchyView();
+  const wideView = {...makeSplatHierarchyView(), viewportSize: [512, 256] as const};
+  expect(
+    getSplatHierarchyFoveatedPriority(wideSphere, squareView, foveation, 100),
+    'reaches the gaze horizontally on a square viewport'
+  ).toBe(100);
+  expect(
+    getSplatHierarchyFoveatedPriority(wideSphere, wideView, foveation, 100) < 100,
+    'but not on a wide one, where its normalized horizontal extent halves'
+  ).toBe(true);
+  expect(
+    getSplatHierarchyFoveatedPriority(tallSphere, wideView, foveation, 100),
+    'its vertical extent is measured in viewport heights either way'
+  ).toBe(100);
 });
 
 function makeSplatHierarchyNode(

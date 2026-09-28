@@ -17,7 +17,7 @@ import {Model, PickingManager, type PickInfo, type PickingShouldPickOptions} fro
 import type {GPUSplatData} from './splat-data';
 import type {SplatPickingInfo, SplatPickingProps} from './splat-picking';
 import type {SplatMixedRenderOptions} from './splat-renderer';
-import {GPUSplatGraphRenderer} from './gpu-splat-graph-renderer';
+import {GPUSplatGraphRenderer, type GPUSplatAlphaMode} from './gpu-splat-graph-renderer';
 import {
   GPU_SPLAT_COMPATIBLE_RENDER_SHADER,
   GPU_SPLAT_COMPATIBLE_RENDER_SHADER_LAYOUT,
@@ -78,8 +78,9 @@ const SORTED_ID_BUFFER_LAYOUT: BufferLayout = {
  * Picking a volumetric primitive by first hit is ambiguous in a way picking a triangle is not: the
  * outer support of a large, nearly transparent Gaussian routinely sits in front of a small opaque
  * one while contributing almost nothing to the pixel. This pass therefore rejects any fragment
- * whose own coverage at the pixel falls below `pickingAlphaThreshold` before the depth test
- * resolves the winner, so what is picked is what is visible.
+ * whose own coverage at the pixel falls below `max(alphaCutoff, pickingAlphaThreshold)` before the
+ * depth test resolves the winner. The threshold defaults to `0` (render parity); raising it makes
+ * what is picked track what is visible, at the cost of making faint Gaussians unpickable.
  *
  * @remarks
  * A pick resolved against accumulated transmittance rather than per-splat coverage would also
@@ -339,7 +340,13 @@ export type GPUSplatGraphMixedRendererProps = {
   depthStencilAttachmentFormat?: TextureFormatDepthStencil;
   /** Depth comparison against opaque meshes already drawn into the same render pass. */
   depthCompare?: CompareFunction;
-  /** Whether transparent Gaussian fragments should update shared scene depth. */
+  /**
+   * Whether transparent Gaussian fragments should update shared scene depth. Defaults to `false`.
+   *
+   * Ignored when the borrowed renderer uses `alphaMode: 'stochastic'`: stochastic coverage is
+   * resolved by the depth test rather than by ordering, so depth writes are always enabled and
+   * blending is disabled for it.
+   */
   depthWriteEnabled?: boolean;
 };
 
@@ -363,6 +370,7 @@ export class GPUSplatGraphMixedRenderer {
   model?: Model;
 
   private modelSources?: GraphSplatModelSources;
+  private modelAlphaMode?: GPUSplatAlphaMode;
   private isDestroyed = false;
 
   /** Borrows one live graph renderer without compiling a graph or allocating a display model. */
@@ -456,12 +464,18 @@ export class GPUSplatGraphMixedRenderer {
     if (!sources) {
       return undefined;
     }
-    if (this.model && areGraphSplatModelSourcesEqual(this.modelSources, sources)) {
+    const alphaMode = this.renderer.props.alphaMode;
+    if (
+      this.model &&
+      this.modelAlphaMode === alphaMode &&
+      areGraphSplatModelSourcesEqual(this.modelSources, sources)
+    ) {
       return this.model;
     }
 
     this.model?.destroy();
     this.modelSources = sources;
+    this.modelAlphaMode = alphaMode;
     const isCompatible = this.renderer.renderPath === 'compatible';
     this.model = new Model(this.device, {
       id: 'gaussian-splat-graph-mixed-renderer',
@@ -488,17 +502,22 @@ export class GPUSplatGraphMixedRenderer {
       instanceCount: this.renderer.capacity.splatCount,
       vertexCount: 4,
       topology: 'triangle-strip',
-      parameters: {
-        depthWriteEnabled: this.props.depthWriteEnabled,
-        depthCompare: this.props.depthCompare,
-        blend: true,
-        blendColorOperation: 'add',
-        blendAlphaOperation: 'add',
-        blendColorSrcFactor: 'src-alpha',
-        blendColorDstFactor: 'one-minus-src-alpha',
-        blendAlphaSrcFactor: 'one',
-        blendAlphaDstFactor: 'one-minus-src-alpha'
-      }
+      // Stochastic coverage emits opaque fragments that only the depth test can order, because
+      // the graph sorts it for visibility alone; blended coverage relies on the depth ordering.
+      parameters:
+        alphaMode === 'stochastic'
+          ? {depthWriteEnabled: true, depthCompare: this.props.depthCompare, blend: false}
+          : {
+              depthWriteEnabled: this.props.depthWriteEnabled,
+              depthCompare: this.props.depthCompare,
+              blend: true,
+              blendColorOperation: 'add',
+              blendAlphaOperation: 'add',
+              blendColorSrcFactor: 'src-alpha',
+              blendColorDstFactor: 'one-minus-src-alpha',
+              blendAlphaSrcFactor: 'one',
+              blendAlphaDstFactor: 'one-minus-src-alpha'
+            }
     });
     return this.model;
   }
@@ -510,9 +529,9 @@ export class GPUSplatGraphMixedRenderer {
  * Original source batches remain borrowed and unchanged. Every pick draws only the graph's
  * GPU-counted visible rows, reads one integer pixel asynchronously, and resolves original source
  * row, batch, and semantic identity without CPU projection, source uploads, or graph rebuilding.
- * A Gaussian only claims a pixel where its own coverage reaches the renderer's
- * `pickingAlphaThreshold`, so the faint outer support of a large splat cannot shadow a small
- * opaque one behind it.
+ * A Gaussian only claims a pixel where its own coverage reaches the renderer's `alphaCutoff` and
+ * optional `pickingAlphaThreshold`; raising the latter stops the faint outer support of a large
+ * splat shadowing a small opaque one behind it.
  */
 export class GPUSplatGraphPicker {
   /** WebGPU device shared with the graph renderer and its caller-owned source batches. */

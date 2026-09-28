@@ -9,17 +9,115 @@ import {
   getSplatMaximumDepthKey,
   packSplatDepthKey,
   packSplatFloat16Bits,
-  SPLAT_DEPTH_KEY_BITS
+  SPLAT_DEPTH_KEY_BITS,
+  SPLAT_DEPTH_KEY_WGSL
 } from '../src/splat-depth-key';
 
-it('both projection paths quantize to one shared default key width', () => {
-  expect(SPLAT_DEPTH_KEY_BITS, 'the CPU and GPU sorts agree on 16 bits').toBe(16);
+it('depth keys default to one 16-bit width with a reserved culled sentinel', () => {
+  expect(SPLAT_DEPTH_KEY_BITS, 'packSplatDepthKey and the GPU radix sort default to 16 bits').toBe(
+    16
+  );
   expect(getSplatInvalidDepthKey(16), 'culled rows take the final key of their width').toBe(0xffff);
   expect(getSplatMaximumDepthKey(16), 'visible rows stop one short of it').toBe(0xfffe);
   expect(getSplatInvalidDepthKey(32), 'a 32-bit width does not overflow the shift').toBe(
     0xffffffff
   );
   expect(getSplatMaximumDepthKey(32), 'nor does its maximum visible key').toBe(0xfffffffe);
+  expect(getSplatInvalidDepthKey(31), 'a 31-bit width stays positive').toBe(0x7fffffff);
+  expect(getSplatMaximumDepthKey(24), 'and a 24-bit width matches its mask').toBe(0xfffffe);
+});
+
+it('quantized distributions stop at 24 bits, the width single precision quantizes exactly', () => {
+  expect(getSplatDepthKeyBits('linear', 32), 'a 32-bit linear request is clamped').toBe(24);
+  expect(getSplatDepthKeyBits('ndc', 28), 'and so is a wide NDC request').toBe(24);
+  expect(getSplatDepthKeyBits('linear', 0), 'with at least one bit').toBe(1);
+
+  const maximumKey = getSplatMaximumDepthKey(24);
+  expect(
+    packSplatDepthKey(0, {mode: 'linear', keyBits: 32, depthMax: 1}),
+    'the nearest depth takes the largest visible key without wrapping'
+  ).toBe(maximumKey);
+  expect(
+    packSplatDepthKey(1, {mode: 'linear', keyBits: 32, depthMax: 1}),
+    'and the farthest takes zero'
+  ).toBe(0);
+  expect(
+    packSplatDepthKey(0.5, {mode: 'ndc', keyBits: 32}) < getSplatInvalidDepthKey(24),
+    'no quantized key reaches the culled sentinel'
+  ).toBe(true);
+});
+
+/**
+ * JavaScript transcription of the WGSL `'float16'` branch of `packSplatDepthKey`: clamp to the
+ * half-precision maximum, pack, then substitute infinity at the overflow threshold.
+ * `packSplatFloat16Bits` stands in for `pack2x16float`, whose rounding it reproduces.
+ */
+function packGPUFloat16DepthKey(viewDepth: number): number {
+  const maximumKey = getSplatMaximumDepthKey(16);
+  const clamped = Math.min(Math.max(viewDepth, 0), 65504);
+  let halfBits = packSplatFloat16Bits(clamped) & 0xffff;
+  if (viewDepth >= 65520) {
+    halfBits = 0x7c00;
+  }
+  return maximumKey - Math.min(halfBits, maximumKey);
+}
+
+it('the GPU half-precision key never packs an out-of-range depth and matches the CPU key', () => {
+  expect(
+    SPLAT_DEPTH_KEY_WGSL,
+    'WGSL clamps before pack2x16float, whose result is indeterminate past 65504'
+  ).toMatch(
+    /pack2x16float\(vec2<f32>\(clamp\(viewDepth, 0\.0, SPLAT_MAXIMUM_FLOAT16_DEPTH\), 0\.0\)\)/
+  );
+  expect(SPLAT_DEPTH_KEY_WGSL, 'at the largest finite half').toMatch(
+    /SPLAT_MAXIMUM_FLOAT16_DEPTH: f32 = 65504\.0;/
+  );
+  expect(SPLAT_DEPTH_KEY_WGSL, 'and substitutes infinity where the CPU path overflows').toMatch(
+    /SPLAT_FLOAT16_OVERFLOW_DEPTH: f32 = 65520\.0;/
+  );
+
+  const saturated = packSplatDepthKey(1e6, {mode: 'float16'});
+  expect(saturated, 'the CPU key saturates to half-precision infinity').toBe(0xfffe - 0x7c00);
+  expect(
+    saturated < packSplatDepthKey(65504, {mode: 'float16'}),
+    'which still sorts before (behind) the farthest finite depth'
+  ).toBe(true);
+
+  for (const depth of [
+    0, 1, 1000, 30_000, 65_000, 65_504, 65_510, 65_519.99, 65_520, 70_000, 1e6, 1e30
+  ]) {
+    expect(packGPUFloat16DepthKey(depth), `GPU and CPU formulas agree at ${depth}`).toBe(
+      packSplatDepthKey(depth, {mode: 'float16'})
+    );
+  }
+});
+
+it('half-precision keys are coarse at geospatial distances', () => {
+  // Bucket width at distance d is 2^(floor(log2 d) - 10): 16 m between 16 and 32 km and 32 m
+  // beyond 32 km, and everything past 65.5 km ties.
+  const bucketWidth = (depth: number): number => {
+    const key = packSplatDepthKey(depth, {mode: 'float16'});
+    let far = depth;
+    while (packSplatDepthKey(far, {mode: 'float16'}) === key) {
+      far += 0.25;
+    }
+    return far - depth;
+  };
+  expect(bucketWidth(20_000) <= 16, 'at 20 km one key spans up to 16 m').toBe(true);
+  expect(bucketWidth(40_000) <= 32, 'at 40 km up to 32 m').toBe(true);
+  expect(packSplatDepthKey(70_000, {mode: 'float16'}), 'and depths past 65.5 km all tie').toBe(
+    packSplatDepthKey(100_000, {mode: 'float16'})
+  );
+});
+
+it('the GPU key falls back to device depth under an affine projection', () => {
+  expect(
+    SPLAT_DEPTH_KEY_WGSL,
+    'orthographic clip w is constant, so every mode quantizes normalized device depth'
+  ).toMatch(/if \(affineProjection \|\| mode == SPLAT_DEPTH_KEY_MODE_NDC\)/);
+  expect(SPLAT_DEPTH_KEY_WGSL, 'affine means the matrix w row is (0, 0, 0, w)').toMatch(
+    /matrix\[0\]\[3\] == 0\.0 && matrix\[1\]\[3\] == 0\.0 && matrix\[2\]\[3\] == 0\.0/
+  );
 });
 
 it('floating-point distributions fix their own width', () => {

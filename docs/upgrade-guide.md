@@ -27,6 +27,55 @@ luma.gl largely follows [SEMVER](https://semver.org) conventions. Breaking chang
   `CompositeShaderPassComputeOptimization`. Effect factories and values likewise replace their
   `ShaderPassPipeline` suffix with `CompositeShaderPass`.
 
+**@luma.gl/splats - rendering, depth keys and sorting**
+
+- `SPLAT_DEPTH_KEY_BITS` dropped from `24` to `16`. `packSplatDepthKey(depth, options)` now takes
+  `{mode, keyBits, depthMin, depthMax, tileId}`; `mode` defaults to `'linear'` (the old behavior)
+  but keys are 16 bits and the largest visible key is `2 ** keyBits - 2`, because the all-ones key
+  is reserved for culled rows (`getSplatInvalidDepthKey()`). A `tileId` now sits directly above
+  `keyBits`. `'linear'` and `'ndc'` keys are clamped to at most 24 bits.
+- `GPU_SPLAT_PROJECTED_RECORD_BYTE_LENGTH` is `32` (was `48`): a projected record is a `vec4<f32>`
+  clip center followed by half-precision axes and color (`packedAxis0`, `packedAxis1`,
+  `packedColorRG`, `packedColorBA`). `GPU_SPLAT_GRAPH_UNIFORM_BYTE_LENGTH` is `160` (was `128`)
+  with a new `GraphSplatUniforms` layout. Custom shaders reading renderer buffers should include
+  `GPU_SPLAT_GRAPH_SHARED_WGSL` and use its accessors rather than hard-coding offsets.
+- Visual defaults changed in `GPUSplatGraphRenderer` and `GPUPagedSplatRenderer`, and the screen
+  filter default in `SplatRenderer`:
+  - The screen-space filter adds `0.3` px² of variance (the reference rasterizer), not
+    `0.3² = 0.09`. `kernel2DSize` (a standard deviation) is deprecated in favor of
+    `screenSpaceFilterVariance`; pass `screenSpaceFilterVariance: 0.09` for the old look.
+    `projectSplatCovarianceToScreen()` still adds no filter unless one is passed.
+  - Mip-Splatting opacity compensation is on (`antialiasing: 'mip-splatting'`; use `'none'` for
+    base 3DGS), as are `dynamicSupportRadius` and `compensateScreenSpaceClamp`.
+  - The GPU sort key defaults to `depthKeyMode: 'float16'` (view-space distance) instead of
+    hyperbolic device depth. Under an orthographic (affine) projection every mode keys on device
+    depth instead, since clip `w` is constant there.
+  - `pickingAlphaThreshold` defaults to `0`, so picking uses `alphaCutoff` like rendering.
+  - `alphaMode: 'stochastic'` sorts a one-bit visibility key (`renderer.depthKeyBits === 1`), and
+    `GPUSplatGraphMixedRenderer` always enables depth writes and disables blending for it.
+- `getSplatDilationCompensation()` returns `0` rather than `1` when the pre-dilation covariance is
+  degenerate, so point- or line-like projections no longer render at full opacity.
+- `GPUPagedSplatRendererProps` no longer accepts graph-renderer props the paged renderer ignored
+  (`clipRegion`, `antialiasing`, `fragmentKernel`, `dynamicSupportRadius`,
+  `compensateScreenSpaceClamp`, `depthKeyMode`, `depthKeyBits`, `depthRange`, `alphaMode`,
+  `pickingAlphaThreshold`, `batchParams`, `renderPath`, `presentation`).
+- `packSplatClipUniforms()` drops degenerate planes before enforcing the 8-plane limit.
+
+**@luma.gl/gpgpu - GPUSort**
+
+- Radix `GPUSort` processes `elementsPerThread` keys per thread, default `8`, so one workgroup
+  covers 2048 keys. Dispatch sizes, histogram lengths and scratch sizes shrink accordingly, and
+  ranges that previously exceeded a small `maxComputeWorkgroupsPerDimension` now fit. Pass
+  `elementsPerThread: 1` for the previous tiling. `GPUSort.digitBits` is typed `4 | 8`.
+
+**@luma.gl/splats**
+
+- `SplatHierarchyFrontierEntry` gained required `filterVariance` and `fadeOpacity` fields, and
+  `SplatHierarchyStats` gained required `budgetedSplatCount`, `budgetExhausted` and
+  `framesSinceBudgetPlan`. Code that constructs these objects itself must supply them.
+- `getSplatHierarchyFoveatedPriority()` now measures to the nearest edge of a page's projected
+  bounds rather than its center, so large or nearby pages are relaxed less than before.
+
 **@luma.gl/experimental**
 
 - OIT fullscreen resolution is now exposed as `createABufferResolveCompositeShaderPass()` and

@@ -245,6 +245,7 @@ export type {GPUAncestorProjectionProps} from './gpu-ancestor-projection';
 export {GPUSort, getGPUSortRadixPlan} from './gpu-sort';
 export type {
   GPUSortAlgorithm,
+  GPUSortDigitBits,
   GPUSortDirection,
   GPUSortProps,
   GPUSortRadixPlan
