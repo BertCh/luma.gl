@@ -35,15 +35,15 @@ it('paged Gaussian GPU shaders preserve sparse source rows within baseline stora
         .map(binding => ({name: binding.name, location: binding.location}))
     );
     const uniforms = reflection.uniforms.find(uniform => uniform.name === 'graphUniforms');
-    expect(uniforms?.size, `${name} reuses the existing 128-byte camera uniform allocation`).toBe(
-      128
+    expect(uniforms?.size, `${name} reuses the existing 160-byte camera uniform allocation`).toBe(
+      160
     );
     expect(
       uniforms?.members?.slice(-2).map(member => ({name: member.name, offset: member.offset})),
       `${name} fills previously unused source-index uniform padding`
     ).toEqual([
-      {name: 'hasActiveRows', offset: 120},
-      {name: 'sourceRowOffset', offset: 124}
+      {name: 'hasActiveRows', offset: 152},
+      {name: 'sourceRowOffset', offset: 156}
     ]);
   }
 
@@ -64,8 +64,8 @@ it('paged Gaussian GPU shaders preserve sparse source rows within baseline stora
   );
   expect(
     projection.structs.find(struct => struct.name === 'ProjectedSplat')?.size,
-    'preserves shared 48-byte anisotropic HDR projected records'
-  ).toBe(48);
+    'preserves the shared 32-byte packed projected record'
+  ).toBe(32);
   expect(
     GPU_PAGED_SPLAT_PROJECTION_SHADER,
     'projects only compact selected page-local source rows'

@@ -383,23 +383,13 @@ it('GPUPagedSplatRenderer globally sorts overlapping real WebGPU pages across bo
     ).toEqual([4, 4, 0, 0, 4, 2, 0, 0, 4, 2, 0, 0]);
 
     const firstOutputBytes = await renderer.projectedRecordBuffers[0].readAsync();
-    const firstOutput = new Float32Array(
-      firstOutputBytes.buffer,
-      firstOutputBytes.byteOffset,
-      firstOutputBytes.byteLength / Float32Array.BYTES_PER_ELEMENT
-    );
     const secondOutputBytes = await renderer.projectedRecordBuffers[1].readAsync();
-    const secondOutput = new Float32Array(
-      secondOutputBytes.buffer,
-      secondOutputBytes.byteOffset,
-      secondOutputBytes.byteLength / Float32Array.BYTES_PER_ELEMENT
-    );
     expect(
       [
-        Array.from(firstOutput.slice(8, 11)),
-        Array.from(firstOutput.slice(20, 23)),
-        Array.from(secondOutput.slice(8, 11)),
-        Array.from(secondOutput.slice(20, 23))
+        Array.from(unpackProjectedRecord(firstOutputBytes, 0).slice(8, 11)),
+        Array.from(unpackProjectedRecord(firstOutputBytes, 1).slice(8, 11)),
+        Array.from(unpackProjectedRecord(secondOutputBytes, 0).slice(8, 11)),
+        Array.from(unpackProjectedRecord(secondOutputBytes, 1).slice(8, 11))
       ],
       'gathers only renderer-owned projected records into exact cross-page depth order'
     ).toEqual([
@@ -549,7 +539,8 @@ it('GPUPagedSplatRenderer calibrates perspective, antialiasing, and Spark RAD pa
       Math.sqrt(horizontalDeviation * horizontalDeviation + 0.3) * gaussianSupportRadius;
     const actualHorizontalRadius = Math.hypot(perspectiveRecord[4], perspectiveRecord[5]);
     expect(
-      Boolean(Math.abs(actualHorizontalRadius - expectedHorizontalRadius) < 0.03),
+      // The axes are stored as half-precision pairs, which is worth about 0.02 at this magnitude.
+      Boolean(Math.abs(actualHorizontalRadius - expectedHorizontalRadius) < 0.05),
       `projects the exact perspective Jacobian radius ${actualHorizontalRadius.toFixed(3)} ≈ ${expectedHorizontalRadius.toFixed(3)}`
     ).toBe(true);
     const originalDeterminant =
@@ -559,7 +550,7 @@ it('GPUPagedSplatRenderer calibrates perspective, antialiasing, and Spark RAD pa
       (verticalDeviation * verticalDeviation + 0.3);
     const expectedFilteredOpacity = 0.8 * Math.sqrt(originalDeterminant / filteredDeterminant);
     expect(
-      Boolean(Math.abs(perspectiveRecord[11] - expectedFilteredOpacity) < 0.001),
+      Boolean(Math.abs(perspectiveRecord[11] - expectedFilteredOpacity) < 0.002),
       'preserves integrated projected opacity under Spark-compatible screen-space filtering'
     ).toBe(true);
 
@@ -614,7 +605,7 @@ it('GPUPagedSplatRenderer calibrates perspective, antialiasing, and Spark RAD pa
     device.submit();
     const parentRecord = await readPagedProjectedRecord(renderer);
     expect(
-      Boolean(Math.abs(parentRecord[11] - 3) < 0.001),
+      Boolean(Math.abs(parentRecord[11] - 3) < 0.003),
       'maps decoded RAD opacity 1.5 to Spark parent opacity 3 without decoding twice'
     ).toBe(true);
     const conventionalRadius = Math.hypot(conventionalRecord[4], conventionalRecord[5]);
@@ -622,7 +613,7 @@ it('GPUPagedSplatRenderer calibrates perspective, antialiasing, and Spark RAD pa
     const expectedParentRadius =
       (conventionalRadius * (gaussianSupportRadius + 0.7 * (3 - 1))) / gaussianSupportRadius;
     expect(
-      Boolean(Math.abs(parentRadius - expectedParentRadius) < 0.03),
+      Boolean(Math.abs(parentRadius - expectedParentRadius) < 0.05),
       "expands the opaque parent support by Spark's authored 0.7-per-opacity-unit rule"
     ).toBe(true);
     const parentPixel = await readPagedSplatPixel(
@@ -650,11 +641,11 @@ it('GPUPagedSplatRenderer calibrates perspective, antialiasing, and Spark RAD pa
     const expectedMinorAxis =
       parentTextureSize * 0.5 * 0.05 * (gaussianSupportRadius + 0.7 * (3 - 1));
     expect(
-      Boolean(Math.abs(cappedMajorAxis - 8) < 0.01),
+      Boolean(Math.abs(cappedMajorAxis - 8) < 0.02),
       "caps the final expanded major support radius at Spark's maximum pixel size"
     ).toBe(true);
     expect(
-      Boolean(Math.abs(cappedMinorAxis - expectedMinorAxis) < 0.03),
+      Boolean(Math.abs(cappedMinorAxis - expectedMinorAxis) < 0.05),
       'does not shrink the independent minor axis when only the major support is capped'
     ).toBe(true);
 
@@ -751,17 +742,12 @@ it('GPUPagedSplatRenderer converts mixed sRGB pages without corrupting Float32 H
     );
     device.submit();
     const mixedBytes = await renderer.projectedRecordBuffers[0].readAsync();
-    const mixedRecords = new Float32Array(
-      mixedBytes.buffer,
-      mixedBytes.byteOffset,
-      mixedBytes.byteLength / Float32Array.BYTES_PER_ELEMENT
-    );
     expect(
-      Boolean(Math.abs(mixedRecords[8] - (128 / 255) ** 2.2) < 0.002),
+      Boolean(Math.abs(unpackProjectedRecord(mixedBytes, 0)[8] - (128 / 255) ** 2.2) < 0.002),
       'converts the far Uint8 sRGB page to linear light before global gathering'
     ).toBe(true);
     expect(
-      Boolean(Math.abs(mixedRecords[20] - 0.5) < 0.001),
+      Boolean(Math.abs(unpackProjectedRecord(mixedBytes, 1)[8] - 0.5) < 0.001),
       'preserves already-linear near Float32 HDR radiance in the same ordered output'
     ).toBe(true);
     const linearFloatPixel = await readPagedSplatPixel(
@@ -780,13 +766,8 @@ it('GPUPagedSplatRenderer converts mixed sRGB pages without corrupting Float32 H
     expect(renderer.compiledGraph, 'retains the same mixed-page compute graph').toBe(originalGraph);
     device.submit();
     const radBytes = await renderer.projectedRecordBuffers[0].readAsync();
-    const radRecords = new Float32Array(
-      radBytes.buffer,
-      radBytes.byteOffset,
-      radBytes.byteLength / Float32Array.BYTES_PER_ELEMENT
-    );
     expect(
-      Boolean(Math.abs(radRecords[20] - 0.5 ** 2.2) < 0.002),
+      Boolean(Math.abs(unpackProjectedRecord(radBytes, 1)[8] - 0.5 ** 2.2) < 0.002),
       'converts actual Float32 RAD DC plus SH radiance after source feature evaluation'
     ).toBe(true);
     const linearRadPixel = await readPagedSplatPixel(
@@ -1165,8 +1146,58 @@ function makeBrowserPagedSplatSource(
 }
 
 async function readPagedProjectedRecord(renderer: GPUPagedSplatRenderer): Promise<Float32Array> {
-  const bytes = await renderer.projectedRecordBuffers[0].readAsync();
-  return new Float32Array(bytes.buffer, bytes.byteOffset, 12);
+  return unpackProjectedRecord(await renderer.projectedRecordBuffers[0].readAsync(), 0);
+}
+
+/**
+ * Unpacks one 32-byte projected record into a flat float view.
+ *
+ * The stored record keeps its clip center in single precision and packs its screen-space axes and
+ * HDR color as half-precision pairs, which is what takes it from 48 bytes to 32. The assertions
+ * below read a decoded copy laid out as `[clipCenter(4), axis0(2), axis1(2), color(4)]`, so the
+ * half-precision storage shows up only as the widened tolerances they use.
+ */
+function unpackProjectedRecord(bytes: Uint8Array, recordIndex: number): Float32Array {
+  const words = new Uint32Array(bytes.buffer, bytes.byteOffset, bytes.byteLength / 4);
+  const floats = new Float32Array(bytes.buffer, bytes.byteOffset, bytes.byteLength / 4);
+  const base = recordIndex * 8;
+  const [axisX0, axisY0] = unpackHalfPair(words[base + 4]);
+  const [axisX1, axisY1] = unpackHalfPair(words[base + 5]);
+  const [red, green] = unpackHalfPair(words[base + 6]);
+  const [blue, alpha] = unpackHalfPair(words[base + 7]);
+  return Float32Array.from([
+    floats[base],
+    floats[base + 1],
+    floats[base + 2],
+    floats[base + 3],
+    axisX0,
+    axisY0,
+    axisX1,
+    axisY1,
+    red,
+    green,
+    blue,
+    alpha
+  ]);
+}
+
+/** Decodes one `pack2x16float` word. */
+function unpackHalfPair(packed: number): [number, number] {
+  return [decodeHalfPrecision(packed & 0xffff), decodeHalfPrecision(packed >>> 16)];
+}
+
+/** Decodes one IEEE 754 half-precision bit pattern. */
+function decodeHalfPrecision(bits: number): number {
+  const sign = bits & 0x8000 ? -1 : 1;
+  const exponent = (bits >> 10) & 0x1f;
+  const fraction = bits & 0x3ff;
+  if (exponent === 0) {
+    return sign * fraction * 2 ** -24;
+  }
+  if (exponent === 0x1f) {
+    return fraction ? Number.NaN : sign * Number.POSITIVE_INFINITY;
+  }
+  return sign * (1 + fraction / 1024) * 2 ** (exponent - 15);
 }
 
 function encodePagedHighDynamicRangeFrame(

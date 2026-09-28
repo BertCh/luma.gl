@@ -34,6 +34,44 @@ export {
   type SplatSemanticSelection
 } from './splat-filter';
 export {
+  DEFAULT_SPLAT_SCREEN_FILTER_VARIANCE,
+  getSplatClampCompensation,
+  getSplatDilationCompensation,
+  getSplatLogisticCdf,
+  getSplatPixelIntegral,
+  getSplatScreenFilterVariance,
+  getSplatSupportRadius,
+  type SplatAntialiasingMode,
+  type SplatFragmentKernel
+} from './splat-antialiasing';
+export {
+  getSplatDepthKeyBits,
+  getSplatInvalidDepthKey,
+  getSplatMaximumDepthKey,
+  packSplatFloat16Bits,
+  SPLAT_MAXIMUM_DEPTH_KEY_BITS,
+  type SplatDepthKeyMode
+} from './splat-depth-key';
+export {
+  getSplatClipCoverage,
+  isSplatClipRegionActive,
+  MAXIMUM_SPLAT_CLIP_PLANES,
+  packSplatClipUniforms,
+  SPLAT_CLIP_UNIFORM_BYTE_LENGTH,
+  type SplatClipCombineMode,
+  type SplatClipPlane,
+  type SplatClipRegion
+} from './splat-clipping';
+export {
+  getSplatLevelFadeOpacity,
+  planSplatBudget,
+  type SplatBudgetNode,
+  type SplatBudgetPlan,
+  type SplatBudgetPlanProps,
+  type SplatBudgetRefinement,
+  type SplatBudgetView
+} from './splat-budget';
+export {
   SplatPicker,
   resolveSplatPickInfo,
   SPLAT_COLOR_PICKING_FS_GLSL,
@@ -56,6 +94,7 @@ export {
 } from './splat-residency';
 export {
   SplatHierarchyManager,
+  getSplatHierarchyCoverage,
   getSplatHierarchyFoveatedPriority,
   getSplatHierarchyScreenSpaceError,
   isSplatHierarchyNodeVisible,
@@ -106,8 +145,18 @@ export {
   type SplatRendererStats
 } from './splat-renderer';
 export {
+  getGPUSplatStage,
+  getGPUSplatStageTimings,
+  type GPUSplatStage,
+  type GPUSplatStageTiming,
+  type GPUSplatStageTimings
+} from './splat-stage-timings';
+export {
   GPUSplatGraphRenderer,
-  type GPUSplatGraphRendererProps
+  type GPUSplatAlphaMode,
+  type GPUSplatGraphRendererProps,
+  type GPUSplatRenderPath,
+  type SplatBatchRenderParams
 } from './gpu-splat-graph-renderer';
 export {
   GPUPagedSplatRenderer,
@@ -119,9 +168,29 @@ export {
   GPUSplatGraphMixedRenderer,
   GPUSplatGraphPicker,
   resolveGPUSplatGraphPickInfo,
+  GPU_SPLAT_GRAPH_COMPATIBLE_PICKING_SHADER,
   GPU_SPLAT_GRAPH_PICKING_SHADER,
   type GPUSplatGraphMixedRendererProps
 } from './gpu-splat-graph-interaction';
+export {
+  GPU_SPLAT_COMPATIBLE_RENDER_SHADER,
+  GPU_SPLAT_COMPATIBLE_RENDER_SHADER_LAYOUT,
+  GPU_SPLAT_FEATURE_FLAGS,
+  GPU_SPLAT_FEATURE_SHADER,
+  GPU_SPLAT_FEATURE_SHADER_LAYOUT,
+  GPU_SPLAT_FRAGMENT_SHARED_SHADER_WGSL,
+  GPU_SPLAT_GATHER_SHADER,
+  GPU_SPLAT_GATHER_SHADER_LAYOUT,
+  GPU_SPLAT_GRAPH_SHARED_WGSL,
+  GPU_SPLAT_GRAPH_UNIFORM_BYTE_LENGTH,
+  GPU_SPLAT_QUAD_EXPANSION_SHADER_WGSL,
+  GPU_SPLAT_MAXIMUM_CLIP_PLANES,
+  GPU_SPLAT_PROJECTED_RECORD_BYTE_LENGTH,
+  GPU_SPLAT_PROJECTION_SHADER,
+  GPU_SPLAT_PROJECTION_SHADER_LAYOUT,
+  GPU_SPLAT_RENDER_SHADER,
+  GPU_SPLAT_RENDER_SHADER_LAYOUT
+} from './gpu-splat-graph-shaders';
 export {
   SPLAT_ATTRIBUTE_SHADER_LAYOUT,
   SPLAT_ATTRIBUTE_WGSL_SHADER,

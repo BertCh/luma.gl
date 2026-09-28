@@ -4,6 +4,7 @@
 
 import type {
   Buffer,
+  BufferLayout,
   CommandEncoder,
   CompareFunction,
   Device,
@@ -17,7 +18,16 @@ import type {GPUSplatData} from './splat-data';
 import type {SplatPickingInfo, SplatPickingProps} from './splat-picking';
 import type {SplatMixedRenderOptions} from './splat-renderer';
 import {GPUSplatGraphRenderer} from './gpu-splat-graph-renderer';
-import {GPU_SPLAT_RENDER_SHADER, GPU_SPLAT_RENDER_SHADER_LAYOUT} from './gpu-splat-graph-shaders';
+import {
+  GPU_SPLAT_COMPATIBLE_RENDER_SHADER,
+  GPU_SPLAT_COMPATIBLE_RENDER_SHADER_LAYOUT,
+  GPU_SPLAT_FRAGMENT_SHARED_SHADER_WGSL,
+  GPU_SPLAT_GRAPH_SHARED_WGSL,
+  GPU_SPLAT_PROJECTED_RECORD_BYTE_LENGTH,
+  GPU_SPLAT_QUAD_EXPANSION_SHADER_WGSL,
+  GPU_SPLAT_RENDER_SHADER,
+  GPU_SPLAT_RENDER_SHADER_LAYOUT
+} from './gpu-splat-graph-shaders';
 
 const EMPTY_GPU_SPLAT_GRAPH_PICKING_INFO: SplatPickingInfo = {
   batchIndex: null,
@@ -35,31 +45,51 @@ const GPU_SPLAT_GRAPH_PICKING_SHADER_LAYOUT = {
   ]
 } satisfies ShaderLayout;
 
-/** GPU-native picking shader consuming already projected, globally sorted Gaussian records. */
-export const GPU_SPLAT_GRAPH_PICKING_SHADER = /* wgsl */ `\
-struct GraphSplatUniforms {
-  modelViewProjectionMatrix: mat4x4<f32>,
-  viewportSize: vec2<f32>,
-  radiusScale: f32,
-  alphaScale: f32,
-  alphaCutoff: f32,
-  screenSizeCutoffPixels: f32,
-  gaussianSupportRadius: f32,
-  kernel2DSize: f32,
-  maxScreenSpaceSplatSize: f32,
-  exposure: f32,
-  toneMapping: u32,
-  batchOffset: u32,
-  rowCount: u32,
-  isFloatColor: u32,
+const GPU_SPLAT_GRAPH_COMPATIBLE_PICKING_SHADER_LAYOUT = {
+  attributes: [
+    {name: 'instanceClipCenter', location: 0, type: 'vec4<f32>', stepMode: 'instance'},
+    {name: 'instancePackedRecord', location: 1, type: 'vec4<u32>', stepMode: 'instance'},
+    {name: 'instanceSortedId', location: 2, type: 'u32', stepMode: 'instance'}
+  ],
+  bindings: [{name: 'graphUniforms', type: 'uniform', group: 0, location: 0}]
+} satisfies ShaderLayout;
+
+/** Interleaved instance stream over one sorted projected-record buffer. @internal */
+const SORTED_RECORD_BUFFER_LAYOUT: BufferLayout = {
+  name: 'sortedRecords',
+  stepMode: 'instance',
+  byteStride: GPU_SPLAT_PROJECTED_RECORD_BYTE_LENGTH,
+  attributes: [
+    {attribute: 'instanceClipCenter', format: 'float32x4', byteOffset: 0},
+    {attribute: 'instancePackedRecord', format: 'uint32x4', byteOffset: 16}
+  ]
 };
 
-struct ProjectedSplat {
-  clipCenter: vec4<f32>,
-  axis0: vec2<f32>,
-  axis1: vec2<f32>,
-  color: vec4<f32>,
+/** Source-row identity for the compatibility picking stream. @internal */
+const SORTED_ID_BUFFER_LAYOUT: BufferLayout = {
+  name: 'sortedIds',
+  stepMode: 'instance',
+  attributes: [{attribute: 'instanceSortedId', format: 'uint32', byteOffset: 0}]
 };
+
+/**
+ * GPU-native picking shader consuming already projected, globally sorted Gaussian records.
+ *
+ * Picking a volumetric primitive by first hit is ambiguous in a way picking a triangle is not: the
+ * outer support of a large, nearly transparent Gaussian routinely sits in front of a small opaque
+ * one while contributing almost nothing to the pixel. This pass therefore rejects any fragment
+ * whose own coverage at the pixel falls below `pickingAlphaThreshold` before the depth test
+ * resolves the winner, so what is picked is what is visible.
+ *
+ * @remarks
+ * A pick resolved against accumulated transmittance rather than per-splat coverage would also
+ * account for occlusion by the Gaussians in front of the candidate; that needs an ordered resolve
+ * the rasterizer cannot express in a single pass and is not implemented here.
+ */
+export const GPU_SPLAT_GRAPH_PICKING_SHADER = /* wgsl */ `\
+${GPU_SPLAT_GRAPH_SHARED_WGSL}
+${GPU_SPLAT_QUAD_EXPANSION_SHADER_WGSL}
+${GPU_SPLAT_FRAGMENT_SHARED_SHADER_WGSL}
 
 @group(0) @binding(0) var<uniform> graphUniforms: GraphSplatUniforms;
 @group(0) @binding(1) var<storage, read> projectedRecords: array<ProjectedSplat>;
@@ -68,8 +98,9 @@ struct ProjectedSplat {
 struct GraphSplatPickingFragmentInputs {
   @builtin(position) position: vec4<f32>,
   @location(0) gaussianCoordinate: vec2<f32>,
-  @location(1) alpha: f32,
-  @location(2) @interpolate(flat) projectedRowIndex: u32,
+  @location(1) pixelHalfWidth: vec2<f32>,
+  @location(2) alpha: f32,
+  @location(3) @interpolate(flat) projectedRowIndex: u32,
 };
 
 struct GraphSplatPickingFragmentOutputs {
@@ -82,38 +113,107 @@ fn vertexMain(
   @builtin(vertex_index) vertexIndex: u32,
   @builtin(instance_index) instanceIndex: u32
 ) -> GraphSplatPickingFragmentInputs {
-  let corners = array<vec2<f32>, 4>(
-    vec2<f32>(-1.0, -1.0),
-    vec2<f32>(1.0, -1.0),
-    vec2<f32>(-1.0, 1.0),
-    vec2<f32>(1.0, 1.0)
-  );
-  let corner = corners[vertexIndex];
   let projectedRowIndex = sortedIds[instanceIndex];
   let projected = projectedRecords[projectedRowIndex];
-  let screenOffset = corner.x * projected.axis0 + corner.y * projected.axis1;
-  let clipOffset = vec2<f32>(
-    screenOffset.x * 2.0 / max(graphUniforms.viewportSize.x, 1.0),
-    -screenOffset.y * 2.0 / max(graphUniforms.viewportSize.y, 1.0)
-  ) * projected.clipCenter.w;
+  let quad = expandSplatQuad(
+    graphUniforms,
+    vertexIndex,
+    projected.clipCenter,
+    projected.packedAxis0,
+    projected.packedAxis1,
+    projected.packedColorRG,
+    projected.packedColorBA
+  );
 
   var output: GraphSplatPickingFragmentInputs;
-  output.position = vec4<f32>(
-    projected.clipCenter.xy + clipOffset,
-    projected.clipCenter.z,
-    projected.clipCenter.w
-  );
-  output.gaussianCoordinate = corner * graphUniforms.gaussianSupportRadius;
-  output.alpha = projected.color.a;
+  output.position = quad.position;
+  output.gaussianCoordinate = quad.gaussianCoordinate;
+  output.pixelHalfWidth = quad.pixelHalfWidth;
+  output.alpha = quad.color.a;
   output.projectedRowIndex = projectedRowIndex;
   return output;
 }
 
 @fragment
 fn fragmentMain(input: GraphSplatPickingFragmentInputs) -> GraphSplatPickingFragmentOutputs {
-  let gaussianWeight = exp(-0.5 * dot(input.gaussianCoordinate, input.gaussianCoordinate));
-  let alpha = input.alpha * gaussianWeight;
-  if (alpha <= 0.0 || alpha < graphUniforms.alphaCutoff) {
+  let coverage = getSplatFragmentCoverage(
+    graphUniforms,
+    input.gaussianCoordinate,
+    input.pixelHalfWidth
+  );
+  let alpha = input.alpha * coverage;
+  if (alpha <= 0.0 || alpha < max(graphUniforms.alphaCutoff, graphUniforms.pickingAlphaThreshold)) {
+    discard;
+  }
+
+  var output: GraphSplatPickingFragmentOutputs;
+  output.color = vec4<f32>(0.0);
+  output.pickingIndices = vec2<i32>(i32(input.projectedRowIndex), 0);
+  return output;
+}
+`;
+
+/**
+ * Compatibility picking shader with no storage buffers in the vertex stage.
+ *
+ * The sorted records and their source-row identities arrive as two instance streams, so the pick
+ * still resolves to the original projected row without any vertex-stage indirection.
+ */
+export const GPU_SPLAT_GRAPH_COMPATIBLE_PICKING_SHADER = /* wgsl */ `\
+${GPU_SPLAT_GRAPH_SHARED_WGSL}
+${GPU_SPLAT_QUAD_EXPANSION_SHADER_WGSL}
+${GPU_SPLAT_FRAGMENT_SHARED_SHADER_WGSL}
+
+@group(0) @binding(0) var<uniform> graphUniforms: GraphSplatUniforms;
+
+struct GraphSplatPickingFragmentInputs {
+  @builtin(position) position: vec4<f32>,
+  @location(0) gaussianCoordinate: vec2<f32>,
+  @location(1) pixelHalfWidth: vec2<f32>,
+  @location(2) alpha: f32,
+  @location(3) @interpolate(flat) projectedRowIndex: u32,
+};
+
+struct GraphSplatPickingFragmentOutputs {
+  @location(0) color: vec4<f32>,
+  @location(1) pickingIndices: vec2<i32>,
+};
+
+@vertex
+fn vertexMain(
+  @builtin(vertex_index) vertexIndex: u32,
+  @location(0) instanceClipCenter: vec4<f32>,
+  @location(1) instancePackedRecord: vec4<u32>,
+  @location(2) instanceSortedId: u32
+) -> GraphSplatPickingFragmentInputs {
+  let quad = expandSplatQuad(
+    graphUniforms,
+    vertexIndex,
+    instanceClipCenter,
+    instancePackedRecord.x,
+    instancePackedRecord.y,
+    instancePackedRecord.z,
+    instancePackedRecord.w
+  );
+
+  var output: GraphSplatPickingFragmentInputs;
+  output.position = quad.position;
+  output.gaussianCoordinate = quad.gaussianCoordinate;
+  output.pixelHalfWidth = quad.pixelHalfWidth;
+  output.alpha = quad.color.a;
+  output.projectedRowIndex = instanceSortedId;
+  return output;
+}
+
+@fragment
+fn fragmentMain(input: GraphSplatPickingFragmentInputs) -> GraphSplatPickingFragmentOutputs {
+  let coverage = getSplatFragmentCoverage(
+    graphUniforms,
+    input.gaussianCoordinate,
+    input.pixelHalfWidth
+  );
+  let alpha = input.alpha * coverage;
+  if (alpha <= 0.0 || alpha < max(graphUniforms.alphaCutoff, graphUniforms.pickingAlphaThreshold)) {
     discard;
   }
 
@@ -159,6 +259,78 @@ export function resolveGPUSplatGraphPickInfo(
   return {...EMPTY_GPU_SPLAT_GRAPH_PICKING_INFO};
 }
 
+/** Live graph-owned buffers one consumer model borrows, whichever render path is active. */
+type GraphSplatModelSources = {
+  uniformBuffer: Buffer;
+  projectedRecordBuffer?: Buffer;
+  sortedIndexBuffer?: Buffer;
+  sortedRecordBuffer?: Buffer;
+};
+
+/** Reads the renderer's current buffers, or `undefined` before the graph has been compiled. */
+function getGraphSplatModelSources(
+  renderer: GPUSplatGraphRenderer
+): GraphSplatModelSources | undefined {
+  const uniformBuffer = renderer.uniformBuffer;
+  if (!uniformBuffer) {
+    return undefined;
+  }
+  if (renderer.renderPath === 'compatible') {
+    const sortedRecordBuffer = renderer.sortedRecordBuffer;
+    const sortedIndexBuffer = renderer.sortedIndexBuffer;
+    if (!sortedRecordBuffer || !sortedIndexBuffer) {
+      return undefined;
+    }
+    return {uniformBuffer, sortedRecordBuffer, sortedIndexBuffer};
+  }
+  const projectedRecordBuffer = renderer.projectedRecordBuffer;
+  const sortedIndexBuffer = renderer.sortedIndexBuffer;
+  if (!projectedRecordBuffer || !sortedIndexBuffer) {
+    return undefined;
+  }
+  return {uniformBuffer, projectedRecordBuffer, sortedIndexBuffer};
+}
+
+/** Whether a cached consumer model still borrows exactly the renderer's live buffers. */
+function areGraphSplatModelSourcesEqual(
+  left: GraphSplatModelSources | undefined,
+  right: GraphSplatModelSources
+): boolean {
+  return (
+    left !== undefined &&
+    left.uniformBuffer === right.uniformBuffer &&
+    left.projectedRecordBuffer === right.projectedRecordBuffer &&
+    left.sortedIndexBuffer === right.sortedIndexBuffer &&
+    left.sortedRecordBuffer === right.sortedRecordBuffer
+  );
+}
+
+/** Binds one consumer model to the renderer's current buffers for the active render path. */
+function bindGraphSplatModel(
+  model: Model,
+  renderPath: 'storage' | 'compatible',
+  sources: GraphSplatModelSources,
+  renderPass: RenderPass,
+  options: {includeSortedIdStream?: boolean} = {}
+): void {
+  renderPass.setPipeline(model.pipeline);
+  if (renderPath === 'compatible') {
+    model.setAttributes({
+      sortedRecords: sources.sortedRecordBuffer!,
+      ...(options.includeSortedIdStream ? {sortedIds: sources.sortedIndexBuffer!} : {})
+    });
+    renderPass.setVertexArray(model.vertexArray);
+    renderPass.setBindings({graphUniforms: sources.uniformBuffer});
+    return;
+  }
+  renderPass.setVertexArray(model.vertexArray);
+  renderPass.setBindings({
+    graphUniforms: sources.uniformBuffer,
+    projectedRecords: sources.projectedRecordBuffer!,
+    sortedIds: sources.sortedIndexBuffer!
+  });
+}
+
 /** Attachment formats and shared mesh-depth policy for projected Gaussian graph composition. */
 export type GPUSplatGraphMixedRendererProps = {
   /** Existing render-pass color format; defaults to the WebGPU presentation format. */
@@ -175,9 +347,10 @@ export type GPUSplatGraphMixedRendererProps = {
  * Composites graph-projected Gaussians between opaque and transparent meshes in one shared pass.
  *
  * Call `predraw(commandEncoder)` before opening the external render pass. Graph projection must
- * already exist or will be encoded first; the current graph also records its normal presentation
- * pass during that preparation. The mixed pass then reuses the original projected records, global
- * sort, and GPU-visible indirect command without CPU projection or source-buffer uploads.
+ * already exist or will be encoded first. A renderer constructed with `presentation: false`
+ * records no draw of its own during that preparation, which is the configuration this compositor
+ * is meant for: the mixed pass then reuses the projected records, global sort, and GPU-visible
+ * indirect command without CPU projection, source uploads, or a discarded presentation pass.
  */
 export class GPUSplatGraphMixedRenderer {
   /** WebGPU device shared by the borrowing graph renderer and mixed scene. */
@@ -189,9 +362,7 @@ export class GPUSplatGraphMixedRenderer {
   /** Reusable display model borrowing graph-owned projected rows, sort indices, and uniforms. */
   model?: Model;
 
-  private projectedRecordBuffer?: Buffer;
-  private sortedIndexBuffer?: Buffer;
-  private uniformBuffer?: Buffer;
+  private modelSources?: GraphSplatModelSources;
   private isDestroyed = false;
 
   /** Borrows one live graph renderer without compiling a graph or allocating a display model. */
@@ -222,8 +393,7 @@ export class GPUSplatGraphMixedRenderer {
   /**
    * Refreshes graph projection and prepares the mixed-scene model before the caller opens a pass.
    *
-   * Caller-owned command submission is preserved. The current graph also records its standard
-   * presentation draw while updating projection; the actual mixed composition remains one pass.
+   * Caller-owned command submission is preserved.
    */
   predraw(commandEncoder: CommandEncoder): boolean {
     if (this.isDestroyed || this.renderer.destroyed || this.renderer.batches.length === 0) {
@@ -256,17 +426,9 @@ export class GPUSplatGraphMixedRenderer {
       model &&
       !model.pipeline.isErrored &&
       this.renderer.batches.length > 0 &&
-      this.projectedRecordBuffer &&
-      this.sortedIndexBuffer &&
-      this.uniformBuffer
+      this.modelSources
     ) {
-      renderPass.setPipeline(model.pipeline);
-      renderPass.setVertexArray(model.vertexArray);
-      renderPass.setBindings({
-        graphUniforms: this.uniformBuffer,
-        projectedRecords: this.projectedRecordBuffer,
-        sortedIds: this.sortedIndexBuffer
-      });
+      bindGraphSplatModel(model, this.renderer.renderPath, this.modelSources, renderPass);
       this.renderer.drawCommands.draw(renderPass, 0);
       recordedDraw = true;
     }
@@ -285,41 +447,41 @@ export class GPUSplatGraphMixedRenderer {
     }
     this.model?.destroy();
     this.model = undefined;
-    this.projectedRecordBuffer = undefined;
-    this.sortedIndexBuffer = undefined;
-    this.uniformBuffer = undefined;
+    this.modelSources = undefined;
     this.isDestroyed = true;
   }
 
   private getMixedModel(): Model | undefined {
-    const projectedRecordBuffer = this.renderer.projectedRecordBuffer;
-    const sortedIndexBuffer = this.renderer.sortedIndexBuffer;
-    const uniformBuffer = this.renderer.uniformBuffer;
-    if (!projectedRecordBuffer || !sortedIndexBuffer || !uniformBuffer) {
+    const sources = getGraphSplatModelSources(this.renderer);
+    if (!sources) {
       return undefined;
     }
-    if (
-      this.model &&
-      this.projectedRecordBuffer === projectedRecordBuffer &&
-      this.sortedIndexBuffer === sortedIndexBuffer &&
-      this.uniformBuffer === uniformBuffer
-    ) {
+    if (this.model && areGraphSplatModelSourcesEqual(this.modelSources, sources)) {
       return this.model;
     }
 
     this.model?.destroy();
-    this.projectedRecordBuffer = projectedRecordBuffer;
-    this.sortedIndexBuffer = sortedIndexBuffer;
-    this.uniformBuffer = uniformBuffer;
+    this.modelSources = sources;
+    const isCompatible = this.renderer.renderPath === 'compatible';
     this.model = new Model(this.device, {
       id: 'gaussian-splat-graph-mixed-renderer',
-      source: GPU_SPLAT_RENDER_SHADER,
-      shaderLayout: GPU_SPLAT_RENDER_SHADER_LAYOUT,
-      bindings: {
-        graphUniforms: uniformBuffer,
-        projectedRecords: projectedRecordBuffer,
-        sortedIds: sortedIndexBuffer
-      },
+      source: isCompatible ? GPU_SPLAT_COMPATIBLE_RENDER_SHADER : GPU_SPLAT_RENDER_SHADER,
+      shaderLayout: isCompatible
+        ? GPU_SPLAT_COMPATIBLE_RENDER_SHADER_LAYOUT
+        : GPU_SPLAT_RENDER_SHADER_LAYOUT,
+      ...(isCompatible
+        ? {
+            bufferLayout: [SORTED_RECORD_BUFFER_LAYOUT],
+            attributes: {sortedRecords: sources.sortedRecordBuffer!},
+            bindings: {graphUniforms: sources.uniformBuffer}
+          }
+        : {
+            bindings: {
+              graphUniforms: sources.uniformBuffer,
+              projectedRecords: sources.projectedRecordBuffer!,
+              sortedIds: sources.sortedIndexBuffer!
+            }
+          }),
       colorAttachmentFormats: [this.props.colorAttachmentFormat],
       depthStencilAttachmentFormat: this.props.depthStencilAttachmentFormat,
       isInstanced: true,
@@ -348,6 +510,9 @@ export class GPUSplatGraphMixedRenderer {
  * Original source batches remain borrowed and unchanged. Every pick draws only the graph's
  * GPU-counted visible rows, reads one integer pixel asynchronously, and resolves original source
  * row, batch, and semantic identity without CPU projection, source uploads, or graph rebuilding.
+ * A Gaussian only claims a pixel where its own coverage reaches the renderer's
+ * `pickingAlphaThreshold`, so the faint outer support of a large splat cannot shadow a small
+ * opaque one behind it.
  */
 export class GPUSplatGraphPicker {
   /** WebGPU device shared with the graph renderer and its caller-owned source batches. */
@@ -363,9 +528,7 @@ export class GPUSplatGraphPicker {
   /** Latest resolved original source batch, global row, batch-local row, and semantic identity. */
   pickInfo: SplatPickingInfo = {...EMPTY_GPU_SPLAT_GRAPH_PICKING_INFO};
 
-  private projectedRecordBuffer?: Buffer;
-  private sortedIndexBuffer?: Buffer;
-  private uniformBuffer?: Buffer;
+  private modelSources?: GraphSplatModelSources;
   private pickingBatches: readonly GPUSplatData[] = [];
   private pendingPickingRequest: Promise<void> = Promise.resolve();
   private pickingGeneration = 0;
@@ -514,9 +677,7 @@ export class GPUSplatGraphPicker {
     this.model = undefined;
     this.manager.destroy();
     this.pickingBatches = [];
-    this.projectedRecordBuffer = undefined;
-    this.sortedIndexBuffer = undefined;
-    this.uniformBuffer = undefined;
+    this.modelSources = undefined;
     this.isDestroyed = true;
   }
 
@@ -545,34 +706,41 @@ export class GPUSplatGraphPicker {
   }
 
   private getPickingModel(): Model | undefined {
-    const projectedRecordBuffer = this.renderer.projectedRecordBuffer;
-    const sortedIndexBuffer = this.renderer.sortedIndexBuffer;
-    const uniformBuffer = this.renderer.uniformBuffer;
-    if (!projectedRecordBuffer || !sortedIndexBuffer || !uniformBuffer) {
+    const sources = getGraphSplatModelSources(this.renderer);
+    if (!sources) {
       return undefined;
     }
-    if (
-      this.model &&
-      this.projectedRecordBuffer === projectedRecordBuffer &&
-      this.sortedIndexBuffer === sortedIndexBuffer &&
-      this.uniformBuffer === uniformBuffer
-    ) {
+    if (this.model && areGraphSplatModelSourcesEqual(this.modelSources, sources)) {
       return this.model;
     }
 
     this.model?.destroy();
-    this.projectedRecordBuffer = projectedRecordBuffer;
-    this.sortedIndexBuffer = sortedIndexBuffer;
-    this.uniformBuffer = uniformBuffer;
+    this.modelSources = sources;
+    const isCompatible = this.renderer.renderPath === 'compatible';
     this.model = new Model(this.device, {
       id: 'gaussian-splat-graph-index-picking',
-      source: GPU_SPLAT_GRAPH_PICKING_SHADER,
-      shaderLayout: GPU_SPLAT_GRAPH_PICKING_SHADER_LAYOUT,
-      bindings: {
-        graphUniforms: uniformBuffer,
-        projectedRecords: projectedRecordBuffer,
-        sortedIds: sortedIndexBuffer
-      },
+      source: isCompatible
+        ? GPU_SPLAT_GRAPH_COMPATIBLE_PICKING_SHADER
+        : GPU_SPLAT_GRAPH_PICKING_SHADER,
+      shaderLayout: isCompatible
+        ? GPU_SPLAT_GRAPH_COMPATIBLE_PICKING_SHADER_LAYOUT
+        : GPU_SPLAT_GRAPH_PICKING_SHADER_LAYOUT,
+      ...(isCompatible
+        ? {
+            bufferLayout: [SORTED_RECORD_BUFFER_LAYOUT, SORTED_ID_BUFFER_LAYOUT],
+            attributes: {
+              sortedRecords: sources.sortedRecordBuffer!,
+              sortedIds: sources.sortedIndexBuffer!
+            },
+            bindings: {graphUniforms: sources.uniformBuffer}
+          }
+        : {
+            bindings: {
+              graphUniforms: sources.uniformBuffer,
+              projectedRecords: sources.projectedRecordBuffer!,
+              sortedIds: sources.sortedIndexBuffer!
+            }
+          }),
       colorAttachmentFormats: ['rgba8unorm', 'rg32sint'],
       depthStencilAttachmentFormat: 'depth24plus',
       isInstanced: true,
@@ -585,15 +753,11 @@ export class GPUSplatGraphPicker {
   }
 
   private draw(renderPass: RenderPass, model: Model): void {
-    if (!this.projectedRecordBuffer || !this.sortedIndexBuffer || !this.uniformBuffer) {
+    if (!this.modelSources) {
       return;
     }
-    renderPass.setPipeline(model.pipeline);
-    renderPass.setVertexArray(model.vertexArray);
-    renderPass.setBindings({
-      graphUniforms: this.uniformBuffer,
-      projectedRecords: this.projectedRecordBuffer,
-      sortedIds: this.sortedIndexBuffer
+    bindGraphSplatModel(model, this.renderer.renderPath, this.modelSources, renderPass, {
+      includeSortedIdStream: true
     });
     this.renderer.drawCommands.draw(renderPass, 0);
   }

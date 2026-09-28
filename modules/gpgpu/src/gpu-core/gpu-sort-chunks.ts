@@ -34,7 +34,9 @@ export function getChunkedSortNodes<Parameters>(
           outputValues,
           algorithm: sort.resolvedAlgorithm,
           direction: sort.direction,
-          keyBits: sort.keyBits
+          keyBits: sort.keyBits,
+          digitBits: sort.digitBits as 4 | 8,
+          elementsPerThread: sort.elementsPerThread
         }),
         graph,
         maximum

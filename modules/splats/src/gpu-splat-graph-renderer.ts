@@ -17,17 +17,37 @@ import {
 } from '@luma.gl/gpgpu/gpu-core';
 import {GPUSplatData} from './splat-data';
 import {
+  GPU_SPLAT_COMPATIBLE_RENDER_SHADER,
+  GPU_SPLAT_COMPATIBLE_RENDER_SHADER_LAYOUT,
+  GPU_SPLAT_FEATURE_FLAGS,
   GPU_SPLAT_FEATURE_SHADER,
   GPU_SPLAT_FEATURE_SHADER_LAYOUT,
+  GPU_SPLAT_GATHER_SHADER,
+  GPU_SPLAT_GATHER_SHADER_LAYOUT,
   GPU_SPLAT_GRAPH_FEATURE_UNIFORM_BYTE_LENGTH,
   GPU_SPLAT_GRAPH_UNIFORM_BYTE_LENGTH,
-  GPU_SPLAT_INVALID_DEPTH_KEY,
   GPU_SPLAT_PROJECTED_RECORD_BYTE_LENGTH,
   GPU_SPLAT_PROJECTION_SHADER,
   GPU_SPLAT_PROJECTION_SHADER_LAYOUT,
   GPU_SPLAT_RENDER_SHADER,
   GPU_SPLAT_RENDER_SHADER_LAYOUT
 } from './gpu-splat-graph-shaders';
+import {
+  getSplatScreenFilterVariance,
+  type SplatAntialiasingMode,
+  type SplatFragmentKernel
+} from './splat-antialiasing';
+import {
+  getSplatDepthKeyBits,
+  getSplatMaximumDepthKey,
+  type SplatDepthKeyMode
+} from './splat-depth-key';
+import {
+  isSplatClipRegionActive,
+  packSplatClipUniforms,
+  SPLAT_CLIP_UNIFORM_BYTE_LENGTH,
+  type SplatClipRegion
+} from './splat-clipping';
 import type {SplatRendererProps, SplatRendererStats} from './splat-renderer';
 import type {SplatSemanticFilter, SplatSemanticSelection} from './splat-filter';
 import {
@@ -35,6 +55,44 @@ import {
   type SplatSphericalHarmonicsDegree
 } from './splat-spherical-harmonics';
 import type {SplatSortMode} from './splat-sort';
+import {getGPUSplatStageTimings, type GPUSplatStageTimings} from './splat-stage-timings';
+
+/** How the vertex stage reaches its globally sorted projected Gaussian records. */
+export type GPUSplatRenderPath =
+  /** Choose `'compatible'` only where the device forbids vertex-stage storage buffers. */
+  | 'auto'
+  /** Index the projected records and sort order from vertex-stage storage buffers. */
+  | 'storage'
+  /** Gather the sorted records into an instanced vertex stream before the draw. */
+  | 'compatible';
+
+/** How Gaussian coverage is resolved against the framebuffer. */
+export type GPUSplatAlphaMode =
+  /** Sorted back-to-front alpha blending, with depth writes disabled. */
+  | 'blend'
+  /** Dithered coverage, opaque blending and depth writes; consumes no depth ordering. */
+  | 'stochastic';
+
+/** Per-batch level-of-detail parameters applied while projecting one source batch. */
+export type SplatBatchRenderParams = {
+  /**
+   * Extra isotropic screen-space variance contributed by this level, in square pixels.
+   *
+   * Level-of-detail refiltering: a coarse level represents geometry that a finer level resolves,
+   * so it should be blurred by the difference between the two, not rendered sharp and then
+   * replaced. The value is one scalar per node, which is what makes this affordable - no extra
+   * per-splat bytes anywhere in the archive.
+   */
+  filterVariance?: number;
+  /**
+   * Opacity multiplier used to cross-fade this level in or out, in `[0, 1]`.
+   *
+   * An exactly-once additive hierarchy has no refitted parent to interpolate against, so a
+   * continuous fade derived from the node's own geometric error is the one popping mitigation
+   * available to it.
+   */
+  fadeOpacity?: number;
+};
 
 /** Camera, styling, borrowed data, and canvas clearing for graph-native Gaussian rendering. */
 export type GPUSplatGraphRendererProps = Omit<
@@ -47,6 +105,69 @@ export type GPUSplatGraphRendererProps = Omit<
   expectedSplatCount?: number;
   /** Optional final Arrow batch count used to reserve immutable borrowed-source binding slots. */
   expectedBatchCount?: number;
+  /**
+   * Whether the compiled graph records its own presentation render pass. Defaults to `true`.
+   *
+   * A host that draws the splats itself - inside a render pass it already opened, for correct
+   * depth compositing against other geometry - should set this to `false`. Otherwise the graph
+   * rasterizes every visible Gaussian into a canvas pass the host then clears over, which is pure
+   * wasted fill.
+   */
+  presentation?: boolean;
+  /**
+   * Screen-space antialiasing for the projected covariance. Defaults to `'mip-splatting'`.
+   *
+   * The dilation filter that keeps sub-pixel Gaussians visible also brightens them. Compensating
+   * opacity for the determinant change restores the normalization the dilation removes, which
+   * matters most exactly when a geospatial camera zooms out.
+   */
+  antialiasing?: SplatAntialiasingMode;
+  /**
+   * Isotropic screen-space filter variance in square pixels. Defaults to `0.3`.
+   *
+   * This names the added *variance*, matching the reference rasterizer. The deprecated
+   * `kernel2DSize` names a standard deviation and is squared before use.
+   */
+  screenSpaceFilterVariance?: number;
+  /** Per-fragment Gaussian evaluation. Defaults to `'gaussian'`. */
+  fragmentKernel?: SplatFragmentKernel;
+  /**
+   * Derive each Gaussian's support radius from its own opacity. Defaults to `true`.
+   *
+   * A fixed 3-sigma quad is only correct for an opaque Gaussian. Solving for the radius at which
+   * the Gaussian drops below one 8-bit color step shrinks the quad for the low-opacity Gaussians
+   * that dominate a trained scene, and dynamic radius sizing is the single largest line item in
+   * published rasterization ablations.
+   */
+  dynamicSupportRadius?: boolean;
+  /**
+   * Preserve integrated energy when {@link SplatRendererProps.maxScreenSpaceSplatSize} shrinks a
+   * projected Gaussian. Defaults to `true`. Without it the clamp silently distorts the covariance.
+   */
+  compensateScreenSpaceClamp?: boolean;
+  /** Distribution used to quantize depth into the global sort key. Defaults to `'float16'`. */
+  depthKeyMode?: SplatDepthKeyMode;
+  /** Key width for the quantized distributions. Ignored by the floating-point distributions. */
+  depthKeyBits?: number;
+  /** View-space distance range normalized by the `'linear'` distribution. */
+  depthRange?: readonly [number, number];
+  /** How Gaussian coverage reaches the framebuffer. Defaults to `'blend'`. */
+  alphaMode?: GPUSplatAlphaMode;
+  /**
+   * Minimum coverage a Gaussian must reach at a pixel to be pickable there. Defaults to `0.5`.
+   *
+   * Picking a volumetric primitive by first hit is genuinely ambiguous: the 3-sigma border of a
+   * large, nearly transparent Gaussian can sit in front of a small opaque one while contributing
+   * almost nothing to the pixel. Requiring real coverage before a Gaussian can claim the pixel
+   * resolves that case in favor of what the viewer can actually see.
+   */
+  pickingAlphaThreshold?: number;
+  /** Non-destructive soft clipping of Gaussians to a half-space, slab, or convex prism. */
+  clipRegion?: SplatClipRegion;
+  /** Per-batch level-of-detail refiltering and fade, aligned with the source batch list. */
+  batchParams?: readonly (SplatBatchRenderParams | undefined)[];
+  /** How the vertex stage reaches its sorted records. Defaults to `'auto'`. */
+  renderPath?: GPUSplatRenderPath;
 };
 
 type ResolvedGPUSplatGraphRendererProps = {
@@ -76,12 +197,23 @@ type ResolvedGPUSplatGraphRendererProps = {
   alphaCutoff: number;
   screenSizeCutoffPixels: number;
   gaussianSupportRadius: number;
-  kernel2DSize: number;
+  screenSpaceFilterVariance: number;
   maxScreenSpaceSplatSize: number;
   radiusScale: number;
   alphaScale: number;
   exposure: number;
   toneMapping: 'none' | 'reinhard';
+  antialiasing: SplatAntialiasingMode;
+  fragmentKernel: SplatFragmentKernel;
+  dynamicSupportRadius: boolean;
+  compensateScreenSpaceClamp: boolean;
+  depthKeyMode: SplatDepthKeyMode;
+  depthKeyBits: number;
+  depthRange: [number, number];
+  alphaMode: GPUSplatAlphaMode;
+  pickingAlphaThreshold: number;
+  clipRegion?: SplatClipRegion;
+  batchParams: readonly (SplatBatchRenderParams | undefined)[];
 };
 
 const INITIALIZE_SHADER_LAYOUT = {
@@ -107,6 +239,31 @@ const FEATURE_SOURCE_SLOT_COLUMNS = [
 ] as const;
 
 const MINIMUM_SEMANTIC_SELECTION_CAPACITY = 64;
+
+const DEPTH_KEY_MODE_CODES: Record<SplatDepthKeyMode, number> = {
+  ndc: 0,
+  linear: 1,
+  float16: 2,
+  float32: 3
+};
+
+const BLENDED_RENDER_PARAMETERS = {
+  depthWriteEnabled: false,
+  depthCompare: 'less-equal',
+  blend: true,
+  blendColorOperation: 'add',
+  blendAlphaOperation: 'add',
+  blendColorSrcFactor: 'src-alpha',
+  blendColorDstFactor: 'one-minus-src-alpha',
+  blendAlphaSrcFactor: 'one',
+  blendAlphaDstFactor: 'one-minus-src-alpha'
+} as const;
+
+const STOCHASTIC_RENDER_PARAMETERS = {
+  depthWriteEnabled: true,
+  depthCompare: 'less-equal',
+  blend: false
+} as const;
 
 type SourceSlotColumnName =
   | (typeof SOURCE_SLOT_COLUMNS)[number]['name']
@@ -136,6 +293,8 @@ export class GPUSplatGraphRenderer {
   private readonly clearColor: [number, number, number, number];
   private readonly expectedSplatCount?: number;
   private readonly expectedBatchCount?: number;
+  private readonly presentation: boolean;
+  private readonly requestedRenderPath: GPUSplatRenderPath;
   private readonly ownedBuffers: Buffer[] = [];
   private readonly batchUniforms: Buffer[] = [];
   private readonly batchFeatureUniforms: Buffer[] = [];
@@ -143,6 +302,8 @@ export class GPUSplatGraphRenderer {
   private model?: Model;
   private projectedRecordsBuffer?: Buffer;
   private sortedValuesBuffer?: Buffer;
+  private sortedRecordsBuffer?: Buffer;
+  private clipUniformBuffer?: Buffer;
   private semanticSelectionBuffer?: Buffer;
   private semanticSelectionValues = new Uint32Array(0);
   private semanticIncludeCount = 0;
@@ -155,6 +316,8 @@ export class GPUSplatGraphRenderer {
   private hasExplicitToneMapping: boolean;
   private hasPresentedContent = false;
   private isDestroyed = false;
+  private resolvedRenderPath: Exclude<GPUSplatRenderPath, 'auto'>;
+  private frameIndex = 0;
 
   /** Retains supplied batches lazily; graph compilation waits until the first `encode()`. */
   constructor(device: Device, props: GPUSplatGraphRendererProps = {}) {
@@ -174,6 +337,9 @@ export class GPUSplatGraphRenderer {
     this.device = device;
     this.expectedSplatCount = props.expectedSplatCount;
     this.expectedBatchCount = props.expectedBatchCount;
+    this.presentation = props.presentation ?? true;
+    this.requestedRenderPath = props.renderPath ?? 'auto';
+    this.resolvedRenderPath = resolveSplatRenderPath(device, this.requestedRenderPath);
     this.clearColor = [...(props.clearColor ?? [0, 0, 0, 0])];
     this.props = {
       modelViewProjectionMatrix: toSplatGraphMatrix(props.modelViewProjectionMatrix),
@@ -185,12 +351,23 @@ export class GPUSplatGraphRenderer {
       alphaCutoff: props.alphaCutoff ?? props.opacityThreshold ?? 1 / 255,
       screenSizeCutoffPixels: props.screenSizeCutoffPixels ?? 0,
       gaussianSupportRadius: props.gaussianSupportRadius ?? 3,
-      kernel2DSize: props.kernel2DSize ?? 0.3,
+      screenSpaceFilterVariance: getSplatScreenFilterVariance(props),
       maxScreenSpaceSplatSize: props.maxScreenSpaceSplatSize ?? 1024,
       radiusScale: props.radiusScale ?? props.pointSize ?? 1,
       alphaScale: props.alphaScale ?? 1,
       exposure: props.exposure ?? 1,
-      toneMapping: props.toneMapping ?? 'none'
+      toneMapping: props.toneMapping ?? 'none',
+      antialiasing: props.antialiasing ?? 'mip-splatting',
+      fragmentKernel: props.fragmentKernel ?? 'gaussian',
+      dynamicSupportRadius: props.dynamicSupportRadius ?? true,
+      compensateScreenSpaceClamp: props.compensateScreenSpaceClamp ?? true,
+      depthKeyMode: props.depthKeyMode ?? 'float16',
+      depthKeyBits: props.depthKeyBits ?? 16,
+      depthRange: [...(props.depthRange ?? [0, 1])],
+      alphaMode: props.alphaMode ?? 'blend',
+      pickingAlphaThreshold: props.pickingAlphaThreshold ?? 0.5,
+      ...(props.clipRegion ? {clipRegion: props.clipRegion} : {}),
+      batchParams: props.batchParams ?? []
     };
     this.hasExplicitToneMapping = props.toneMapping !== undefined;
     this.updateSemanticSelections(props.semanticFilter);
@@ -224,14 +401,49 @@ export class GPUSplatGraphRenderer {
     return this.projectedRecordsBuffer;
   }
 
+  /** Sorted projected records as an instanced vertex stream; only the compatible path fills it. */
+  get sortedRecordBuffer(): Buffer | undefined {
+    return this.sortedRecordsBuffer;
+  }
+
   /** First immutable graph uniform binding shared by projected-record consumer passes. */
   get uniformBuffer(): Buffer | undefined {
     return this.batchUniforms[0];
   }
 
+  /** Concrete vertex-stage strategy after resolving `'auto'` against the device limits. */
+  get renderPath(): Exclude<GPUSplatRenderPath, 'auto'> {
+    return this.resolvedRenderPath;
+  }
+
+  /** Whether the compiled graph records its own presentation render pass. */
+  get presentsContent(): boolean {
+    return this.presentation;
+  }
+
+  /** Depth-key width the global sort is compiled for, in bits. */
+  get depthKeyBits(): number {
+    return getSplatDepthKeyBits(this.props.depthKeyMode, this.props.depthKeyBits);
+  }
+
   /** Source and renderer allocation diagnostics without forcing GPU readback or CPU sorting. */
   get stats(): SplatRendererStats {
     return this.getStats();
+  }
+
+  /**
+   * Reads per-stage GPU timings for the most recently submitted frame.
+   *
+   * Reports projection, sorting and rasterization as separate lines, because a single end-to-end
+   * number cannot say which of them to work on - and which one dominates changes with the scene
+   * and the device rather than being a property of the renderer.
+   *
+   * @remarks GPU durations require the `timestamp-query` device feature. Without it the stages
+   * carry only their CPU encoding cost. Call this after submitting, not before.
+   */
+  async readStageTimings(): Promise<GPUSplatStageTimings | undefined> {
+    const report = await this.lastEncoding?.readTimings();
+    return report && getGPUSplatStageTimings(report);
   }
 
   /** Whether this borrowing renderer has already released its owned graph resources. */
@@ -266,7 +478,10 @@ export class GPUSplatGraphRenderer {
   /** Updates mutable camera, styling, or borrowed data; graph allocation options are immutable. */
   setProps(
     props: Partial<
-      Omit<GPUSplatGraphRendererProps, 'clearColor' | 'expectedSplatCount' | 'expectedBatchCount'>
+      Omit<
+        GPUSplatGraphRendererProps,
+        'clearColor' | 'expectedSplatCount' | 'expectedBatchCount' | 'presentation' | 'renderPath'
+      >
     >
   ): void {
     if (props.data !== undefined) {
@@ -324,6 +539,10 @@ export class GPUSplatGraphRenderer {
       this.props.cameraPosition = [...props.cameraPosition];
       this.requiresEncoding = true;
     }
+    if (props.depthRange && !areSplatGraphValuesEqual(this.props.depthRange, props.depthRange)) {
+      this.props.depthRange = [props.depthRange[0], props.depthRange[1]];
+      this.requiresEncoding = true;
+    }
     if (
       props.sphericalHarmonicsDegree !== undefined &&
       this.props.sphericalHarmonicsDegree !== props.sphericalHarmonicsDegree
@@ -334,6 +553,30 @@ export class GPUSplatGraphRenderer {
     if ('semanticFilter' in props && !Object.is(this.props.semanticFilter, props.semanticFilter)) {
       this.updateSemanticSelections(props.semanticFilter);
       this.props.semanticFilter = props.semanticFilter;
+      this.requiresEncoding = true;
+    }
+    if ('clipRegion' in props && !Object.is(this.props.clipRegion, props.clipRegion)) {
+      this.props.clipRegion = props.clipRegion;
+      this.requiresEncoding = true;
+    }
+    if (props.batchParams !== undefined && props.batchParams !== this.props.batchParams) {
+      this.props.batchParams = props.batchParams;
+      this.requiresEncoding = true;
+    }
+    // The compiled sort width and the render pipeline's blend state are baked into the graph.
+    if (props.depthKeyMode !== undefined && props.depthKeyMode !== this.props.depthKeyMode) {
+      this.props.depthKeyMode = props.depthKeyMode;
+      this.requiresGraphRebuild = true;
+      this.requiresEncoding = true;
+    }
+    if (props.depthKeyBits !== undefined && props.depthKeyBits !== this.props.depthKeyBits) {
+      this.props.depthKeyBits = props.depthKeyBits;
+      this.requiresGraphRebuild = true;
+      this.requiresEncoding = true;
+    }
+    if (props.alphaMode !== undefined && props.alphaMode !== this.props.alphaMode) {
+      this.props.alphaMode = props.alphaMode;
+      this.requiresGraphRebuild = true;
       this.requiresEncoding = true;
     }
 
@@ -350,13 +593,26 @@ export class GPUSplatGraphRenderer {
       ...(props.gaussianSupportRadius !== undefined
         ? {gaussianSupportRadius: props.gaussianSupportRadius}
         : {}),
-      ...(props.kernel2DSize !== undefined ? {kernel2DSize: props.kernel2DSize} : {}),
+      ...(props.screenSpaceFilterVariance !== undefined || props.kernel2DSize !== undefined
+        ? {screenSpaceFilterVariance: getSplatScreenFilterVariance(props)}
+        : {}),
       ...(props.maxScreenSpaceSplatSize !== undefined
         ? {maxScreenSpaceSplatSize: props.maxScreenSpaceSplatSize}
         : {}),
       ...(props.alphaScale !== undefined ? {alphaScale: props.alphaScale} : {}),
       ...(props.exposure !== undefined ? {exposure: props.exposure} : {}),
-      ...(props.toneMapping !== undefined ? {toneMapping: props.toneMapping} : {})
+      ...(props.toneMapping !== undefined ? {toneMapping: props.toneMapping} : {}),
+      ...(props.antialiasing !== undefined ? {antialiasing: props.antialiasing} : {}),
+      ...(props.fragmentKernel !== undefined ? {fragmentKernel: props.fragmentKernel} : {}),
+      ...(props.dynamicSupportRadius !== undefined
+        ? {dynamicSupportRadius: props.dynamicSupportRadius}
+        : {}),
+      ...(props.compensateScreenSpaceClamp !== undefined
+        ? {compensateScreenSpaceClamp: props.compensateScreenSpaceClamp}
+        : {}),
+      ...(props.pickingAlphaThreshold !== undefined
+        ? {pickingAlphaThreshold: props.pickingAlphaThreshold}
+        : {})
     };
     if (props.toneMapping !== undefined) {
       this.hasExplicitToneMapping = true;
@@ -374,6 +630,8 @@ export class GPUSplatGraphRenderer {
    *
    * The caller still owns command submission. An unchanged scene or an initially empty source
    * returns `undefined`; transitioning from presented content to an empty frontier clears once.
+   * With `presentation: false` no draw is recorded at all and the caller renders the sorted
+   * records itself.
    */
   encode(commandEncoder: CommandEncoder): GPUCommandGraphEncoding | undefined {
     if (this.isDestroyed) {
@@ -387,13 +645,15 @@ export class GPUSplatGraphRenderer {
         new Uint32Array([0]),
         this.drawCommands.getInstanceCountByteOffset(0)
       );
-      const renderPass = commandEncoder.beginRenderPass({
-        id: 'gaussian-splat-graph-clear-pass',
-        clearColor: this.clearColor,
-        clearDepth: 1,
-        clearStencil: false
-      });
-      renderPass.end();
+      if (this.presentation) {
+        const renderPass = commandEncoder.beginRenderPass({
+          id: 'gaussian-splat-graph-clear-pass',
+          clearColor: this.clearColor,
+          clearDepth: 1,
+          clearStencil: false
+        });
+        renderPass.end();
+      }
       this.lastEncoding = new GPUCommandGraphEncoding(
         [
           {
@@ -418,6 +678,11 @@ export class GPUSplatGraphRenderer {
         this.requiresEncoding = true;
       }
     }
+    // Stochastic coverage decorrelates its dither pattern across frames, so a static camera must
+    // keep re-encoding for the noise to average out under temporal accumulation.
+    if (this.props.alphaMode === 'stochastic') {
+      this.requiresEncoding = true;
+    }
     if (!this.requiresEncoding) {
       return undefined;
     }
@@ -428,6 +693,7 @@ export class GPUSplatGraphRenderer {
       return undefined;
     }
 
+    this.frameIndex = (this.frameIndex + 1) >>> 0;
     this.writeBatchUniforms();
     this.lastEncoding = this.compiledGraph.encode(commandEncoder, {
       parameters: undefined,
@@ -493,6 +759,7 @@ export class GPUSplatGraphRenderer {
       return;
     }
 
+    this.resolvedRenderPath = resolveSplatRenderPath(this.device, this.requestedRenderPath);
     this.allocatedSplatCapacity = this.resolveSplatCapacity(rowCount);
     this.allocatedBatchCapacity = this.resolveBatchCapacity(this.batches.length);
     const projectedByteLength =
@@ -522,10 +789,20 @@ export class GPUSplatGraphRenderer {
       'gaussian-splat-sorted-keys',
       this.allocatedSplatCapacity * Uint32Array.BYTES_PER_ELEMENT
     );
-    this.sortedValuesBuffer = this.createOwnedBuffer(
-      'gaussian-splat-sorted-indices',
-      this.allocatedSplatCapacity * Uint32Array.BYTES_PER_ELEMENT
-    );
+    // VERTEX usage lets the compatibility picking path read the sorted ids as an instance stream
+    // instead of indexing them from the vertex shader.
+    this.sortedValuesBuffer = this.device.createBuffer({
+      id: 'gaussian-splat-sorted-indices',
+      byteLength: this.allocatedSplatCapacity * Uint32Array.BYTES_PER_ELEMENT,
+      usage: Buffer.STORAGE | Buffer.VERTEX | Buffer.COPY_SRC | Buffer.COPY_DST
+    });
+    this.ownedBuffers.push(this.sortedValuesBuffer);
+    this.clipUniformBuffer = this.device.createBuffer({
+      id: 'gaussian-splat-clip-uniforms',
+      byteLength: SPLAT_CLIP_UNIFORM_BYTE_LENGTH,
+      usage: Buffer.UNIFORM | Buffer.COPY_DST
+    });
+    this.ownedBuffers.push(this.clipUniformBuffer);
     this.semanticSelectionCapacity = Math.max(
       MINIMUM_SEMANTIC_SELECTION_CAPACITY,
       this.semanticSelectionValues.length
@@ -536,6 +813,7 @@ export class GPUSplatGraphRenderer {
     );
 
     const projectedRecords = this.importOwnedBuffer(graph, projectedRecordsBuffer);
+    const clipUniforms = this.importOwnedBuffer(graph, this.clipUniformBuffer);
     const semanticSelections = this.importOwnedBuffer(graph, this.semanticSelectionBuffer);
     const depthKeys = this.importUint32Buffer(graph, depthKeysBuffer, this.allocatedSplatCapacity);
     const sourceIndices = this.importUint32Buffer(
@@ -554,13 +832,16 @@ export class GPUSplatGraphRenderer {
       this.allocatedSplatCapacity
     );
     const drawCommandViews = this.drawCommands.importToGraph(graph);
+    const depthKeyBits = this.depthKeyBits;
+    const invalidDepthKey = getSplatMaximumDepthKey(depthKeyBits) + 1;
 
     this.addInitializationPass(
       graph,
       sourceIndices,
       depthKeys,
       drawCommandViews.buffer,
-      this.allocatedSplatCapacity
+      this.allocatedSplatCapacity,
+      invalidDepthKey
     );
 
     let firstUniform: GraphBufferHandle | undefined;
@@ -595,7 +876,8 @@ export class GPUSplatGraphRenderer {
         projectedRecords,
         depthKeys,
         drawCommands: drawCommandViews.buffer,
-        uniforms
+        uniforms,
+        clipUniforms
       });
       this.addFeaturePass(graph, {
         batchIndex,
@@ -618,15 +900,114 @@ export class GPUSplatGraphRenderer {
         outputValues: sortedIndices,
         algorithm: 'radix',
         direction: 'ascending',
-        keyBits: 16
+        keyBits: depthKeyBits
       })
     );
+
+    let sortedRecords: GraphBufferHandle | undefined;
+    if (this.resolvedRenderPath === 'compatible') {
+      this.sortedRecordsBuffer = this.device.createBuffer({
+        id: 'gaussian-splat-sorted-records',
+        byteLength: projectedByteLength,
+        usage: Buffer.STORAGE | Buffer.VERTEX | Buffer.COPY_DST
+      });
+      this.ownedBuffers.push(this.sortedRecordsBuffer);
+      sortedRecords = this.importOwnedBuffer(graph, this.sortedRecordsBuffer);
+      this.addGatherPass(graph, {
+        projectedRecords,
+        sortedIndices,
+        sortedRecords,
+        rowCapacity: this.allocatedSplatCapacity
+      });
+    }
 
     const firstUniformBuffer = this.batchUniforms[0];
     if (!firstUniform) {
       return;
     }
-    this.model = new Model(this.device, {
+    this.model = this.createRenderModel(firstUniformBuffer, projectedRecordsBuffer);
+
+    if (this.presentation) {
+      graph.addRenderPass({
+        id: 'gaussian-splat-indirect-render',
+        resources: [
+          ...(this.resolvedRenderPath === 'compatible' && sortedRecords
+            ? [{buffer: sortedRecords, usage: 'vertex' as const}]
+            : [
+                {buffer: projectedRecords, usage: 'storage-read' as const},
+                {buffer: sortedIndices, usage: 'storage-read' as const}
+              ]),
+          {buffer: firstUniform, usage: 'uniform'},
+          {buffer: drawCommandViews.buffer, usage: 'indirect'}
+        ],
+        compile: () => ({
+          getRenderPassProps: () => ({
+            id: 'gaussian-splat-graph-render-pass',
+            clearColor: this.clearColor,
+            clearDepth: 1,
+            clearStencil: false
+          }),
+          encode: ({renderPass, getBuffer}) => {
+            const model = this.model;
+            if (!model) {
+              return;
+            }
+            renderPass.setPipeline(model.pipeline);
+            if (this.resolvedRenderPath === 'compatible' && sortedRecords) {
+              model.setAttributes({sortedRecords: getBuffer(sortedRecords)});
+              renderPass.setVertexArray(model.vertexArray);
+              renderPass.setBindings({graphUniforms: getBuffer(firstUniform)});
+            } else {
+              renderPass.setVertexArray(model.vertexArray);
+              renderPass.setBindings({
+                graphUniforms: getBuffer(firstUniform),
+                projectedRecords: getBuffer(projectedRecords),
+                sortedIds: getBuffer(sortedIndices)
+              });
+            }
+            this.drawCommands.draw(renderPass, 0);
+          }
+        })
+      });
+    }
+
+    this.compiledGraph = graph.compile();
+    this.requiresGraphRebuild = false;
+  }
+
+  private createRenderModel(uniformBuffer: Buffer, projectedRecordsBuffer: Buffer): Model {
+    const parameters =
+      this.props.alphaMode === 'stochastic'
+        ? STOCHASTIC_RENDER_PARAMETERS
+        : BLENDED_RENDER_PARAMETERS;
+    if (this.resolvedRenderPath === 'compatible') {
+      return new Model(this.device, {
+        id: 'gaussian-splat-graph-render-model',
+        source: GPU_SPLAT_COMPATIBLE_RENDER_SHADER,
+        shaderLayout: GPU_SPLAT_COMPATIBLE_RENDER_SHADER_LAYOUT,
+        bufferLayout: [
+          {
+            name: 'sortedRecords',
+            stepMode: 'instance',
+            byteStride: GPU_SPLAT_PROJECTED_RECORD_BYTE_LENGTH,
+            attributes: [
+              {attribute: 'instanceClipCenter', format: 'float32x4', byteOffset: 0},
+              {attribute: 'instancePackedRecord', format: 'uint32x4', byteOffset: 16}
+            ]
+          }
+        ],
+        isInstanced: true,
+        instanceCount: this.allocatedSplatCapacity,
+        vertexCount: 4,
+        topology: 'triangle-strip',
+        bindings: {graphUniforms: uniformBuffer},
+        ...(this.sortedRecordsBuffer
+          ? {attributes: {sortedRecords: this.sortedRecordsBuffer}}
+          : {}),
+        parameters
+      });
+    }
+    return new Model(this.device, {
       id: 'gaussian-splat-graph-render-model',
       source: GPU_SPLAT_RENDER_SHADER,
       shaderLayout: GPU_SPLAT_RENDER_SHADER_LAYOUT,
@@ -635,56 +1016,12 @@ export class GPUSplatGraphRenderer {
       vertexCount: 4,
       topology: 'triangle-strip',
       bindings: {
-        graphUniforms: firstUniformBuffer,
+        graphUniforms: uniformBuffer,
         projectedRecords: projectedRecordsBuffer,
-        sortedIds: this.sortedValuesBuffer
+        sortedIds: this.sortedValuesBuffer!
       },
-      parameters: {
-        depthWriteEnabled: false,
-        depthCompare: 'less-equal',
-        blend: true,
-        blendColorOperation: 'add',
-        blendAlphaOperation: 'add',
-        blendColorSrcFactor: 'src-alpha',
-        blendColorDstFactor: 'one-minus-src-alpha',
-        blendAlphaSrcFactor: 'one',
-        blendAlphaDstFactor: 'one-minus-src-alpha'
-      }
+      parameters
     });
-
-    graph.addRenderPass({
-      id: 'gaussian-splat-indirect-render',
-      resources: [
-        {buffer: projectedRecords, usage: 'storage-read'},
-        {buffer: sortedIndices, usage: 'storage-read'},
-        {buffer: firstUniform, usage: 'uniform'},
-        {buffer: drawCommandViews.buffer, usage: 'indirect'}
-      ],
-      compile: () => ({
-        getRenderPassProps: () => ({
-          id: 'gaussian-splat-graph-render-pass',
-          clearColor: this.clearColor,
-          clearDepth: 1,
-          clearStencil: false
-        }),
-        encode: ({renderPass, getBuffer}) => {
-          if (!this.model) {
-            return;
-          }
-          renderPass.setPipeline(this.model.pipeline);
-          renderPass.setVertexArray(this.model.vertexArray);
-          renderPass.setBindings({
-            graphUniforms: getBuffer(firstUniform),
-            projectedRecords: getBuffer(projectedRecords),
-            sortedIds: getBuffer(sortedIndices)
-          });
-          this.drawCommands.draw(renderPass, 0);
-        }
-      })
-    });
-
-    this.compiledGraph = graph.compile();
-    this.requiresGraphRebuild = false;
   }
 
   private addInitializationPass(
@@ -692,11 +1029,12 @@ export class GPUSplatGraphRenderer {
     sourceIndices: GraphDataView<'uint32'>,
     depthKeys: GraphDataView<'uint32'>,
     drawCommands: GraphBufferHandle,
-    rowCount: number
+    rowCount: number,
+    invalidDepthKey: number
   ): void {
     const shader = /* wgsl */ `
 const ROW_COUNT: u32 = ${rowCount}u;
-const INVALID_DEPTH_KEY: u32 = ${GPU_SPLAT_INVALID_DEPTH_KEY}u;
+const INVALID_DEPTH_KEY: u32 = ${invalidDepthKey >>> 0}u;
 @group(0) @binding(0) var<storage, read_write> sortValues: array<u32>;
 @group(0) @binding(1) var<storage, read_write> drawCommands: array<atomic<u32>>;
 @group(0) @binding(2) var<storage, read_write> depthKeys: array<u32>;
@@ -747,9 +1085,10 @@ fn main(@builtin(global_invocation_id) invocation: vec3<u32>) {
       depthKeys: GraphDataView<'uint32'>;
       drawCommands: GraphBufferHandle;
       uniforms: GraphBufferHandle;
+      clipUniforms: GraphBufferHandle;
     }
   ): GraphBufferHandle {
-    const {batchIndex, projectedRecords, depthKeys, drawCommands, uniforms} = props;
+    const {batchIndex, projectedRecords, depthKeys, drawCommands, uniforms, clipUniforms} = props;
     const positions = this.importSourceSlotBuffer(graph, batchIndex, 'positions', 12);
     const scales = this.importSourceSlotBuffer(graph, batchIndex, 'scales', 12);
     const rotations = this.importSourceSlotBuffer(graph, batchIndex, 'rotations', 16);
@@ -767,7 +1106,8 @@ fn main(@builtin(global_invocation_id) invocation: vec3<u32>) {
         {buffer: projectedRecords, usage: 'storage-write'},
         {buffer: depthKeys, usage: 'storage-write'},
         {buffer: drawCommands, usage: 'storage-read-write'},
-        {buffer: uniforms, usage: 'uniform'}
+        {buffer: uniforms, usage: 'uniform'},
+        {buffer: clipUniforms, usage: 'uniform'}
       ],
       compile: ({device}) => {
         const computation = new Computation(device, {
@@ -790,7 +1130,8 @@ fn main(@builtin(global_invocation_id) invocation: vec3<u32>) {
               projectedRecords: getBuffer(projectedRecords),
               depthKeys: getBuffer(depthKeys),
               drawCommands: getBuffer(drawCommands),
-              graphUniforms: getBuffer(uniforms)
+              graphUniforms: getBuffer(uniforms),
+              clipUniforms: getBuffer(clipUniforms)
             });
             computation.dispatch(computePass, Math.ceil(batch.length / 256));
           },
@@ -881,30 +1222,89 @@ fn main(@builtin(global_invocation_id) invocation: vec3<u32>) {
     });
   }
 
+  /**
+   * Materializes the sorted records as a sequential vertex stream.
+   *
+   * Only the compatibility path needs this. Devices that allow vertex-stage storage buffers index
+   * the records directly and never pay for the gather or the extra buffer.
+   */
+  private addGatherPass(
+    graph: GPUCommandGraph,
+    props: {
+      projectedRecords: GraphBufferHandle;
+      sortedIndices: GraphDataView<'uint32'>;
+      sortedRecords: GraphBufferHandle;
+      rowCapacity: number;
+    }
+  ): void {
+    const {projectedRecords, sortedIndices, sortedRecords, rowCapacity} = props;
+    graph.addComputePass({
+      id: 'gaussian-splat-gather-sorted-records',
+      resources: [
+        {buffer: projectedRecords, usage: 'storage-read'},
+        {buffer: sortedIndices, usage: 'storage-read'},
+        {buffer: sortedRecords, usage: 'storage-write'}
+      ],
+      compile: ({device}) => {
+        const computation = new Computation(device, {
+          id: 'gaussian-splat-gather-sorted-records',
+          source: GPU_SPLAT_GATHER_SHADER,
+          shaderLayout: GPU_SPLAT_GATHER_SHADER_LAYOUT
+        });
+        return {
+          encode: ({computePass, getBuffer}) => {
+            computation.setBindings({
+              projectedRecords: getBuffer(projectedRecords),
+              sortedIds: getBuffer(sortedIndices),
+              sortedRecords: getBuffer(sortedRecords)
+            });
+            computation.dispatch(computePass, Math.ceil(rowCapacity / 256));
+          },
+          destroy: () => computation.destroy()
+        };
+      }
+    });
+  }
+
   private writeBatchUniforms(): void {
     if (this.semanticSelectionValues.length > 0) {
       this.semanticSelectionBuffer?.write(this.semanticSelectionValues);
     }
+    const clippingActive = isSplatClipRegionActive(this.props.clipRegion);
+    this.clipUniformBuffer?.write(
+      new Uint8Array(packSplatClipUniforms(clippingActive ? this.props.clipRegion : undefined))
+    );
+
+    const depthKeyBits = this.depthKeyBits;
+    const maximumDepthKey = getSplatMaximumDepthKey(depthKeyBits);
     let batchOffset = 0;
     for (let batchIndex = 0; batchIndex < this.allocatedBatchCapacity; batchIndex++) {
       const batch = this.batches[batchIndex];
+      const batchParams = this.props.batchParams[batchIndex];
       const uniformData = new ArrayBuffer(GPU_SPLAT_GRAPH_UNIFORM_BYTE_LENGTH);
       const floatValues = new Float32Array(uniformData);
       const integerValues = new Uint32Array(uniformData);
       floatValues.set(this.props.modelViewProjectionMatrix, 0);
       floatValues.set(this.props.viewportSize, 16);
-      floatValues[18] = this.props.radiusScale;
-      floatValues[19] = this.props.alphaScale;
-      floatValues[20] = this.props.alphaCutoff;
-      floatValues[21] = this.props.screenSizeCutoffPixels;
-      floatValues[22] = this.props.gaussianSupportRadius;
-      floatValues[23] = this.props.kernel2DSize;
-      floatValues[24] = this.props.maxScreenSpaceSplatSize;
-      floatValues[25] = this.props.exposure;
-      integerValues[26] = this.props.toneMapping === 'reinhard' ? 1 : 0;
-      integerValues[27] = batchOffset;
-      integerValues[28] = batch?.length ?? 0;
-      integerValues[29] = batch?.colors.format === 'float32x4' ? 1 : 0;
+      floatValues.set(this.props.depthRange, 18);
+      floatValues[20] = this.props.radiusScale;
+      floatValues[21] = this.props.alphaScale;
+      floatValues[22] = this.props.alphaCutoff;
+      floatValues[23] = this.props.screenSizeCutoffPixels;
+      floatValues[24] = this.props.gaussianSupportRadius;
+      floatValues[25] = this.props.screenSpaceFilterVariance;
+      floatValues[26] = Math.max(batchParams?.filterVariance ?? 0, 0);
+      floatValues[27] = clampUnitInterval(batchParams?.fadeOpacity ?? 1);
+      floatValues[28] = this.props.maxScreenSpaceSplatSize;
+      floatValues[29] = this.props.exposure;
+      integerValues[30] = this.props.toneMapping === 'reinhard' ? 1 : 0;
+      integerValues[31] = this.getFeatureFlags(batch, clippingActive);
+      integerValues[32] = DEPTH_KEY_MODE_CODES[this.props.depthKeyMode];
+      integerValues[33] = maximumDepthKey >>> 0;
+      integerValues[34] = batchOffset;
+      integerValues[35] = batch?.length ?? 0;
+      integerValues[36] = this.frameIndex;
+      floatValues[37] = this.props.pickingAlphaThreshold;
       this.batchUniforms[batchIndex].write(new Uint8Array(uniformData));
 
       const featureData = new ArrayBuffer(GPU_SPLAT_GRAPH_FEATURE_UNIFORM_BYTE_LENGTH);
@@ -931,6 +1331,32 @@ fn main(@builtin(global_invocation_id) invocation: vec3<u32>) {
       this.batchFeatureUniforms[batchIndex].write(new Uint8Array(featureData));
       batchOffset += batch?.length ?? 0;
     }
+  }
+
+  private getFeatureFlags(batch: GPUSplatData | undefined, clippingActive: boolean): number {
+    let flags = 0;
+    if (batch?.colors.format === 'float32x4') {
+      flags |= GPU_SPLAT_FEATURE_FLAGS.floatColor;
+    }
+    if (this.props.antialiasing === 'mip-splatting') {
+      flags |= GPU_SPLAT_FEATURE_FLAGS.compensateDilation;
+    }
+    if (this.props.compensateScreenSpaceClamp) {
+      flags |= GPU_SPLAT_FEATURE_FLAGS.compensateClamp;
+    }
+    if (this.props.dynamicSupportRadius) {
+      flags |= GPU_SPLAT_FEATURE_FLAGS.dynamicSupportRadius;
+    }
+    if (this.props.fragmentKernel === 'analytic') {
+      flags |= GPU_SPLAT_FEATURE_FLAGS.analyticFragmentKernel;
+    }
+    if (this.props.alphaMode === 'stochastic') {
+      flags |= GPU_SPLAT_FEATURE_FLAGS.stochasticAlpha;
+    }
+    if (clippingActive) {
+      flags |= GPU_SPLAT_FEATURE_FLAGS.clipping;
+    }
+    return flags >>> 0;
   }
 
   private getSourceBufferOverrides(): Record<string, GraphImportedBuffer> {
@@ -1069,10 +1495,36 @@ fn main(@builtin(global_invocation_id) invocation: vec3<u32>) {
     this.batchFeatureUniforms.length = 0;
     this.projectedRecordsBuffer = undefined;
     this.sortedValuesBuffer = undefined;
+    this.sortedRecordsBuffer = undefined;
+    this.clipUniformBuffer = undefined;
     this.semanticSelectionBuffer = undefined;
     this.semanticSelectionCapacity = 0;
     this.requiresGraphRebuild = true;
   }
+}
+
+/**
+ * Chooses a vertex-stage strategy for the device.
+ *
+ * WebGPU compatibility mode reports zero storage buffers in the vertex stage, which forbids the
+ * pattern every web splat renderer uses. Detecting that and gathering the sorted records into a
+ * vertex stream instead keeps the whole pipeline working where the draw would otherwise fail.
+ */
+function resolveSplatRenderPath(
+  device: Device,
+  requested: GPUSplatRenderPath
+): Exclude<GPUSplatRenderPath, 'auto'> {
+  if (requested !== 'auto') {
+    return requested;
+  }
+  const vertexStageStorageBuffers = device.limits.maxStorageBuffersInVertexStage;
+  return Number.isFinite(vertexStageStorageBuffers) && vertexStageStorageBuffers < 2
+    ? 'compatible'
+    : 'storage';
+}
+
+function clampUnitInterval(value: number): number {
+  return Math.min(Math.max(Number.isFinite(value) ? value : 1, 0), 1);
 }
 
 function getSplatSemanticSelectionValues(selection: SplatSemanticSelection | undefined): number[] {

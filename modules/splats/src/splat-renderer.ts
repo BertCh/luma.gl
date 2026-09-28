@@ -19,6 +19,7 @@ import {
   type GPUInputSchema
 } from '@luma.gl/experimental/gpu-tables';
 import {GPUSplatData} from './splat-data';
+import {getSplatScreenFilterVariance} from './splat-antialiasing';
 import {projectSplatCovarianceToScreen} from './splat-covariance';
 import {acceptsSplatSemantic, type SplatSemanticFilter} from './splat-filter';
 import {
@@ -66,8 +67,21 @@ export type SplatRendererProps = {
   screenSizeCutoffPixels?: number;
   /** Number of Gaussian standard deviations covered by the rendered quad. */
   gaussianSupportRadius?: number;
-  /** Isotropic screen-space kernel added to each Gaussian covariance. */
+  /**
+   * Isotropic screen-space filter standard deviation added to each Gaussian covariance.
+   *
+   * @deprecated Prefer {@link SplatRendererProps.screenSpaceFilterVariance}, which names the
+   * *variance* the reference rasterizer actually specifies. Squaring a `0.3` px standard deviation
+   * gives `0.09` px^2, about a third of the `0.3` px^2 the reference adds.
+   */
   kernel2DSize?: number;
+  /**
+   * Isotropic screen-space filter variance added to each Gaussian covariance, in square pixels.
+   *
+   * Takes precedence over {@link SplatRendererProps.kernel2DSize}. Defaults to `0.3`, matching the
+   * reference rasterizer.
+   */
+  screenSpaceFilterVariance?: number;
   /** Maximum projected one-sigma axis length in pixels. */
   maxScreenSpaceSplatSize?: number;
   /** Additional multiplier applied to each Gaussian support radius. */
@@ -248,7 +262,9 @@ export class SplatRenderer {
       alphaCutoff: props.alphaCutoff ?? props.opacityThreshold ?? 1 / 255,
       screenSizeCutoffPixels: props.screenSizeCutoffPixels ?? 0,
       gaussianSupportRadius: props.gaussianSupportRadius ?? 3,
-      kernel2DSize: props.kernel2DSize ?? 0.3,
+      // Both spellings resolve through one helper so the two paths cannot disagree about what
+      // 0.3 means; this path stores the standard deviation its GLSL shader expects.
+      kernel2DSize: Math.sqrt(getSplatScreenFilterVariance(props)),
       maxScreenSpaceSplatSize: props.maxScreenSpaceSplatSize ?? 1024,
       radiusScale: props.radiusScale ?? props.pointSize ?? 1,
       alphaScale: props.alphaScale ?? 1,
@@ -375,8 +391,8 @@ export class SplatRenderer {
     if (props.gaussianSupportRadius !== undefined) {
       this.setResolvedProp('gaussianSupportRadius', props.gaussianSupportRadius);
     }
-    if (props.kernel2DSize !== undefined) {
-      this.setResolvedProp('kernel2DSize', props.kernel2DSize);
+    if (props.kernel2DSize !== undefined || props.screenSpaceFilterVariance !== undefined) {
+      this.setResolvedProp('kernel2DSize', Math.sqrt(getSplatScreenFilterVariance(props)));
     }
     if (props.maxScreenSpaceSplatSize !== undefined) {
       this.setResolvedProp('maxScreenSpaceSplatSize', props.maxScreenSpaceSplatSize);

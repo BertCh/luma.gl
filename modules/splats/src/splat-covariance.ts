@@ -2,6 +2,12 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {
+  getSplatClampCompensation,
+  getSplatDilationCompensation,
+  getSplatScreenFilterVariance
+} from './splat-antialiasing';
+
 /** One-sigma screen-space axes of an anisotropic projected Gaussian. */
 export type ProjectedSplatCovariance = {
   /** Dominant one-sigma screen-space axis in pixels. */
@@ -10,6 +16,13 @@ export type ProjectedSplatCovariance = {
   axis1: readonly [number, number];
   /** Length of the dominant one-sigma axis in pixels. */
   maxAxisPixels: number;
+  /**
+   * Opacity factor restoring the normalization the screen-space filter and size clamp remove.
+   *
+   * `1` when neither modified the covariance. Callers multiply it into opacity and clamp the
+   * result to `1`; ignoring it reproduces base 3DGS, which brightens what it dilates.
+   */
+  opacityCompensation: number;
 };
 
 /** Camera and Gaussian parameters accepted by covariance projection. */
@@ -19,7 +32,12 @@ export type SplatCovarianceProjectionProps = {
   rotation: readonly [number, number, number, number];
   modelViewProjectionMatrix?: readonly number[];
   viewportSize?: readonly [number, number];
+  /** Isotropic screen-space filter standard deviation in pixels. Prefer the variance spelling. */
   kernel2DSize?: number;
+  /** Isotropic screen-space filter variance in square pixels. Defaults to `0.3`. */
+  screenSpaceFilterVariance?: number;
+  /** Extra per-level isotropic filter variance for level-of-detail refiltering. */
+  levelFilterVariance?: number;
   maxScreenSpaceSplatSize?: number;
 };
 
@@ -59,25 +77,32 @@ export function projectSplatCovarianceToScreen(
     }
   }
 
-  const kernel2DSize = Math.max(props.kernel2DSize ?? 0, 0);
-  const kernelVariance = kernel2DSize * kernel2DSize;
-  const covariance = getCovarianceEllipseAxes(
-    covariance00 + kernelVariance,
+  const addedVariance =
+    getSplatScreenFilterVariance(props) + Math.max(props.levelFilterVariance ?? 0, 0);
+  const dilationCompensation = getSplatDilationCompensation(
+    covariance00,
     covariance01,
-    covariance11 + kernelVariance
+    covariance11,
+    addedVariance
+  );
+  const covariance = getCovarianceEllipseAxes(
+    covariance00 + addedVariance,
+    covariance01,
+    covariance11 + addedVariance
   );
   const maxAxisPixels = Math.max(
     props.maxScreenSpaceSplatSize ?? Number.POSITIVE_INFINITY,
     MIN_AXIS_PIXELS
   );
   if (covariance.maxAxisPixels <= maxAxisPixels) {
-    return covariance;
+    return {...covariance, opacityCompensation: dilationCompensation};
   }
   const axisScale = maxAxisPixels / covariance.maxAxisPixels;
   return {
     axis0: [covariance.axis0[0] * axisScale, covariance.axis0[1] * axisScale],
     axis1: [covariance.axis1[0] * axisScale, covariance.axis1[1] * axisScale],
-    maxAxisPixels
+    maxAxisPixels,
+    opacityCompensation: dilationCompensation * getSplatClampCompensation(axisScale)
   };
 }
 
@@ -164,7 +189,8 @@ export function getCovarianceEllipseAxes(
     return {
       axis0: [MIN_AXIS_PIXELS, 0],
       axis1: [0, MIN_AXIS_PIXELS],
-      maxAxisPixels: MIN_AXIS_PIXELS
+      maxAxisPixels: MIN_AXIS_PIXELS,
+      opacityCompensation: 1
     };
   }
 
@@ -194,6 +220,7 @@ export function getCovarianceEllipseAxes(
   return {
     axis0: [normalizedX * firstAxisLength, normalizedY * firstAxisLength],
     axis1: [-normalizedY * secondAxisLength, normalizedX * secondAxisLength],
-    maxAxisPixels: Math.max(firstAxisLength, secondAxisLength)
+    maxAxisPixels: Math.max(firstAxisLength, secondAxisLength),
+    opacityCompensation: 1
   };
 }

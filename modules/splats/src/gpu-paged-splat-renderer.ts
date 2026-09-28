@@ -24,10 +24,16 @@ import {
 import type {GPUSplatGraphRendererProps} from './gpu-splat-graph-renderer';
 import {
   GPU_SPLAT_GRAPH_FEATURE_UNIFORM_BYTE_LENGTH,
+  GPU_SPLAT_FEATURE_FLAGS,
   GPU_SPLAT_GRAPH_UNIFORM_BYTE_LENGTH,
-  GPU_SPLAT_INVALID_DEPTH_KEY,
   GPU_SPLAT_PROJECTED_RECORD_BYTE_LENGTH
 } from './gpu-splat-graph-shaders';
+import {
+  getSplatDepthKeyBits,
+  getSplatInvalidDepthKey,
+  getSplatMaximumDepthKey
+} from './splat-depth-key';
+import {getSplatScreenFilterVariance} from './splat-antialiasing';
 import {
   GPU_PAGED_SPLAT_FEATURE_SHADER,
   GPU_PAGED_SPLAT_FEATURE_SHADER_LAYOUT,
@@ -44,6 +50,16 @@ import {
   getSplatSphericalHarmonicCoefficientCount,
   type SplatSphericalHarmonicsDegree
 } from './splat-spherical-harmonics';
+
+/**
+ * Depth-key distribution for paged hierarchies.
+ *
+ * Half-precision bit patterns spend their 31745 buckets in proportion to distance, which is what a
+ * paged scene needs: a hierarchy streams over a depth range far wider than a single scene, and a
+ * uniformly quantized key would collapse its far pages into ties.
+ */
+const PAGED_DEPTH_KEY_MODE_CODE = 2;
+const PAGED_DEPTH_KEY_BITS = getSplatDepthKeyBits('float16');
 
 const WORKGROUP_SIZE = 256;
 const MINIMUM_SEMANTIC_SELECTION_CAPACITY = 64;
@@ -116,7 +132,7 @@ type ResolvedPagedSplatProps = {
   alphaCutoff: number;
   screenSizeCutoffPixels: number;
   gaussianSupportRadius: number;
-  kernel2DSize: number;
+  screenSpaceFilterVariance: number;
   maxScreenSpaceSplatSize: number;
   radiusScale: number;
   alphaScale: number;
@@ -264,7 +280,7 @@ export class GPUPagedSplatRenderer {
       alphaCutoff: props.alphaCutoff ?? props.opacityThreshold ?? 1 / 255,
       screenSizeCutoffPixels: props.screenSizeCutoffPixels ?? 0,
       gaussianSupportRadius: props.gaussianSupportRadius ?? 3,
-      kernel2DSize: props.kernel2DSize ?? 0.3,
+      screenSpaceFilterVariance: getSplatScreenFilterVariance(props),
       maxScreenSpaceSplatSize: props.maxScreenSpaceSplatSize ?? 1024,
       radiusScale: props.radiusScale ?? props.pointSize ?? 1,
       alphaScale: props.alphaScale ?? 1,
@@ -456,7 +472,9 @@ export class GPUPagedSplatRenderer {
       ...(props.gaussianSupportRadius !== undefined
         ? {gaussianSupportRadius: props.gaussianSupportRadius}
         : {}),
-      ...(props.kernel2DSize !== undefined ? {kernel2DSize: props.kernel2DSize} : {}),
+      ...(props.kernel2DSize !== undefined || props.screenSpaceFilterVariance !== undefined
+        ? {screenSpaceFilterVariance: getSplatScreenFilterVariance(props)}
+        : {}),
       ...(props.maxScreenSpaceSplatSize !== undefined
         ? {maxScreenSpaceSplatSize: props.maxScreenSpaceSplatSize}
         : {}),
@@ -681,7 +699,7 @@ export class GPUPagedSplatRenderer {
         outputValues: sortedIndices,
         algorithm: 'radix',
         direction: 'ascending',
-        keyBits: 16
+        keyBits: PAGED_DEPTH_KEY_BITS
       })
     );
     this.addInversePermutationPass(graph, sortedIndices, inverseIndices);
@@ -757,7 +775,7 @@ export class GPUPagedSplatRenderer {
     const shader = /* wgsl */ `
 const ROW_COUNT: u32 = ${this.globalSortCapacity}u;
 const WORKGROUPS_X: u32 = ${dispatch.x}u;
-const INVALID_DEPTH_KEY: u32 = ${GPU_SPLAT_INVALID_DEPTH_KEY}u;
+const INVALID_DEPTH_KEY: u32 = ${getSplatInvalidDepthKey(PAGED_DEPTH_KEY_BITS)}u;
 @group(0) @binding(0) var<storage, read_write> values: array<u32>;
 @group(0) @binding(1) var<storage, read_write> depthKeys: array<u32>;
 @group(0) @binding(2) var<storage, read_write> drawCommands: array<atomic<u32>>;
@@ -978,25 +996,33 @@ fn main(@builtin(global_invocation_id) invocation: vec3<u32>) {
     const shader = /* wgsl */ `
 struct ProjectedSplat {
   clipCenter: vec4<f32>,
-  axis0: vec2<f32>,
-  axis1: vec2<f32>,
-  color: vec4<f32>,
+  packedAxis0: u32,
+  packedAxis1: u32,
+  packedColorRG: u32,
+  packedColorBA: u32,
 };
 struct GraphSplatUniforms {
   modelViewProjectionMatrix: mat4x4<f32>,
   viewportSize: vec2<f32>,
+  depthRange: vec2<f32>,
   radiusScale: f32,
   alphaScale: f32,
   alphaCutoff: f32,
   screenSizeCutoffPixels: f32,
   gaussianSupportRadius: f32,
-  kernel2DSize: f32,
+  screenFilterVariance: f32,
+  levelFilterVariance: f32,
+  levelFadeOpacity: f32,
   maxScreenSpaceSplatSize: f32,
   exposure: f32,
   toneMapping: u32,
+  featureFlags: u32,
+  depthKeyMode: u32,
+  maximumDepthKey: u32,
   batchOffset: u32,
   rowCount: u32,
-  isFloatColor: u32,
+  frameIndex: u32,
+  pickingAlphaThreshold: f32,
   hasActiveRows: u32,
   sourceRowOffset: u32,
 };
@@ -1245,25 +1271,36 @@ fn main() {
       const integerValues = new Uint32Array(uniformData);
       floatValues.set(this.props.modelViewProjectionMatrix, 0);
       floatValues.set(this.props.viewportSize, 16);
-      floatValues[18] = this.props.radiusScale;
-      floatValues[19] = this.props.alphaScale;
-      floatValues[20] = this.props.alphaCutoff;
-      floatValues[21] = this.props.screenSizeCutoffPixels;
-      floatValues[22] = this.props.gaussianSupportRadius;
-      floatValues[23] = this.props.kernel2DSize;
-      floatValues[24] = this.props.maxScreenSpaceSplatSize;
-      floatValues[25] = this.props.exposure;
-      integerValues[26] = this.props.toneMapping === 'reinhard' ? 1 : 0;
-      integerValues[27] = segment.globalRowOffset;
-      integerValues[28] = segment.activeRowCount;
+      floatValues[18] = 0;
+      floatValues[19] = 1;
+      floatValues[20] = this.props.radiusScale;
+      floatValues[21] = this.props.alphaScale;
+      floatValues[22] = this.props.alphaCutoff;
+      floatValues[23] = this.props.screenSizeCutoffPixels;
+      floatValues[24] = this.props.gaussianSupportRadius;
+      floatValues[25] = this.props.screenSpaceFilterVariance;
+      floatValues[26] = 0;
+      floatValues[27] = 1;
+      floatValues[28] = this.props.maxScreenSpaceSplatSize;
+      floatValues[29] = this.props.exposure;
+      integerValues[30] = this.props.toneMapping === 'reinhard' ? 1 : 0;
       const hasFloatColor = segment.page.data.colors.format === 'float32x4';
       const encodeLinearColor =
         hasPagedHighDynamicRangePresentation(this.device) &&
         (!hasFloatColor || this.props.lodOpacity);
-      integerValues[29] =
-        (hasFloatColor ? 1 : 0) | (this.props.lodOpacity ? 2 : 0) | (encodeLinearColor ? 4 : 0);
-      integerValues[30] = segment.activeRows ? 1 : 0;
-      integerValues[31] = segment.sourceRowOffset;
+      integerValues[31] =
+        (hasFloatColor ? GPU_SPLAT_FEATURE_FLAGS.floatColor : 0) |
+        (this.props.lodOpacity ? GPU_SPLAT_FEATURE_FLAGS.radialOpacity : 0) |
+        (encodeLinearColor ? GPU_SPLAT_FEATURE_FLAGS.srgbDecode : 0) |
+        GPU_SPLAT_FEATURE_FLAGS.compensateDilation;
+      integerValues[32] = PAGED_DEPTH_KEY_MODE_CODE;
+      integerValues[33] = getSplatMaximumDepthKey(PAGED_DEPTH_KEY_BITS);
+      integerValues[34] = segment.globalRowOffset;
+      integerValues[35] = segment.activeRowCount;
+      integerValues[36] = 0;
+      floatValues[37] = 0.5;
+      integerValues[38] = segment.activeRows ? 1 : 0;
+      integerValues[39] = segment.sourceRowOffset;
       segment.uniformBuffer.write(new Uint8Array(uniformData));
 
       const featureData = new ArrayBuffer(GPU_SPLAT_GRAPH_FEATURE_UNIFORM_BYTE_LENGTH);

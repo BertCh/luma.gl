@@ -5,12 +5,20 @@
 /** Camera-dependent Gaussian splat depth-ordering strategies. */
 export type SplatSortMode = 'none' | 'global' | 'tile';
 
-/** Number of low-order bits reserved for quantized back-to-front depth. */
-export const SPLAT_DEPTH_KEY_BITS = 24;
 /** Screen-space tile size used by tile-local depth ordering. */
 export const SPLAT_TILE_SIZE_PIXELS = 16;
 
-const MAX_DEPTH_KEY = (1 << SPLAT_DEPTH_KEY_BITS) - 1;
+export {
+  getSplatDepthKeyBits,
+  getSplatInvalidDepthKey,
+  getSplatMaximumDepthKey,
+  packSplatDepthKey,
+  packSplatFloat16Bits,
+  SPLAT_DEPTH_KEY_BITS,
+  SPLAT_MAXIMUM_DEPTH_KEY_BITS,
+  type SplatDepthKeyMode
+} from './splat-depth-key';
+
 const MIN_RADIX_SORT_REFERENCE_COUNT = 8192;
 const RADIX_DIGIT_BITS = 8;
 const RADIX_DIGIT_COUNT = 1 << RADIX_DIGIT_BITS;
@@ -30,21 +38,6 @@ export type SplatSortReference = {
   /** Screen tile identity used by tile-local sorting. */
   tileIndex: number;
 };
-
-/** Quantizes one positive depth into an ascending, back-to-front sortable key. */
-export function packSplatDepthKey(
-  depth: number,
-  options: {depthMin?: number; depthMax?: number; tileId?: number} = {}
-): number {
-  const depthMin = options.depthMin ?? 0;
-  const depthMax = options.depthMax ?? 1;
-  const depthRange = Math.max(depthMax - depthMin, Number.EPSILON);
-  const normalizedDepth = Math.min(Math.max((depth - depthMin) / depthRange, 0), 1);
-  const depthKey = Math.round(normalizedDepth * MAX_DEPTH_KEY);
-  return (
-    ((((options.tileId ?? 0) & 0xff) << SPLAT_DEPTH_KEY_BITS) | (MAX_DEPTH_KEY - depthKey)) >>> 0
-  );
-}
 
 /** Returns stable back-to-front row indices without changing source data. */
 export function getSortedSplatIndicesByDepth(depths: Float32Array): Uint32Array {

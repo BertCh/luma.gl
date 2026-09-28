@@ -10,6 +10,12 @@ import {
   type SplatResidencyBudget,
   type SplatResidencyChunk
 } from './splat-residency';
+import {
+  getSplatLevelFadeOpacity,
+  planSplatBudget,
+  type SplatBudgetPlan,
+  type SplatBudgetView
+} from './splat-budget';
 
 /** Whether refined source pages replace their parent or add detail to it. */
 export type SplatHierarchyRefinement = 'replace' | 'add';
@@ -38,6 +44,14 @@ export type SplatHierarchyNode = {
   estimatedSplatCount?: number;
   /** Whether finer child content replaces this page or contributes additional detail. */
   refinement?: SplatHierarchyRefinement;
+  /**
+   * Extra isotropic screen-space filter variance this level should be rendered with, in px^2.
+   *
+   * Level-of-detail refiltering: a coarse page stands in for geometry a finer page resolves, so it
+   * should be blurred by the difference rather than drawn sharp and then swapped out. One scalar
+   * per manifest node, and zero extra bytes per splat.
+   */
+  filterVariance?: number;
   /** Whether the residency manager owns and destroys this particular source page. */
   ownsData?: boolean;
   /** Opaque source metadata, such as compression, feature identifiers, or tile transforms. */
@@ -98,6 +112,15 @@ export type SplatHierarchyFrontierEntry = {
   priority: number;
   /** Whether this page is temporarily covering finer pages that are not resident yet. */
   isFallback: boolean;
+  /** Extra screen-space filter variance this level carries, in square pixels. */
+  filterVariance: number;
+  /**
+   * Opacity multiplier for a continuous level transition, in `[0, 1]`.
+   *
+   * `1` unless `lodFadeBand` is set. A node fades in over a band of its parent's projected error
+   * rather than appearing at a single threshold.
+   */
+  fadeOpacity: number;
 };
 
 /** Current traversal, bounded scheduling, source visibility, and page-load diagnostics. */
@@ -120,6 +143,12 @@ export type SplatHierarchyStats = {
   rejectedLoadCount: number;
   /** In-flight source pages cancelled after becoming irrelevant to the active view. */
   abortedLoadCount: number;
+  /** Estimated splats the current selection spends, when a splat budget is active. */
+  budgetedSplatCount: number;
+  /** Whether budget planning stopped because the next refinement did not fit. */
+  budgetExhausted: boolean;
+  /** Frames since budget planning last re-ran, for an amortized traversal. */
+  framesSinceBudgetPlan: number;
 };
 
 /** Hierarchy, bounded residency, decoding, scheduling, and renderer integration controls. */
@@ -134,6 +163,30 @@ export type SplatHierarchyManagerProps = {
   loadPage?: SplatHierarchyPageLoader;
   /** Maximum acceptable projected geometric error, measured in physical pixels. */
   maximumScreenSpaceError?: number;
+  /**
+   * Maximum estimated splats the selected cut may contain.
+   *
+   * Supplying a budget switches selection from "is this node good enough?" to "where does my next
+   * hundred thousand splats buy the most quality?", planned greedily by
+   * {@link planSplatBudget}. `maximumScreenSpaceError` still terminates refinement early for nodes
+   * that are already good enough, so a scene well under budget behaves identically either way.
+   */
+  splatBudget?: number;
+  /**
+   * Frames a budget plan is reused before being re-planned. Defaults to `1`.
+   *
+   * Consecutive frames agree on almost the whole cut, so re-planning every frame is mostly wasted
+   * work. Values around `4` are the usual trade; the cost is that a fast camera move takes up to
+   * that many frames to reach its final selection.
+   */
+  budgetUpdateInterval?: number;
+  /**
+   * Width of the level transition as a fraction of `maximumScreenSpaceError`. Defaults to `0`.
+   *
+   * Non-zero values fade a finer level in over a band of parent error instead of switching it on,
+   * which is the one popping mitigation an exactly-once additive tree can use.
+   */
+  lodFadeBand?: number;
   /** Maximum simultaneously running source page fetches or decoder worker requests. */
   maxConcurrentLoads?: number;
   /** Default gaze-aware refinement and loading controls for views without an override. */
@@ -192,6 +245,9 @@ export class SplatHierarchyManager {
   private readonly maximumScreenSpaceError: number;
   private readonly maxConcurrentLoads: number;
   private readonly foveation?: SplatHierarchyFoveation;
+  private readonly splatBudget?: number;
+  private readonly budgetUpdateInterval: number;
+  private readonly lodFadeBand: number;
 
   private roots: readonly SplatHierarchyNode[];
   private currentView?: SplatHierarchyView;
@@ -202,6 +258,9 @@ export class SplatHierarchyManager {
   private rejectedLoadCount = 0;
   private abortedLoadCount = 0;
   private isDestroyed = false;
+  private budgetPlan?: SplatBudgetPlan;
+  private framesSinceBudgetPlan = Number.POSITIVE_INFINITY;
+  private screenSpaceErrorCache = new Map<string, number>();
 
   /** Creates a source-preserving hierarchy backed by a shared or independently bounded window. */
   constructor(props: SplatHierarchyManagerProps) {
@@ -215,6 +274,9 @@ export class SplatHierarchyManager {
     this.maximumScreenSpaceError = Math.max(props.maximumScreenSpaceError ?? 8, 0);
     this.maxConcurrentLoads = Math.max(1, Math.floor(props.maxConcurrentLoads ?? 4));
     this.foveation = props.foveation;
+    this.splatBudget = props.splatBudget !== undefined ? Math.max(props.splatBudget, 0) : undefined;
+    this.budgetUpdateInterval = Math.max(1, Math.floor(props.budgetUpdateInterval ?? 1));
+    this.lodFadeBand = Math.max(props.lodFadeBand ?? 0, 0);
     this.indexNodes();
   }
 
@@ -244,7 +306,12 @@ export class SplatHierarchyManager {
       queuedLoadCount: this.queuedLoads.size,
       completedLoadCount: this.completedLoadCount,
       rejectedLoadCount: this.rejectedLoadCount,
-      abortedLoadCount: this.abortedLoadCount
+      abortedLoadCount: this.abortedLoadCount,
+      budgetedSplatCount: this.budgetPlan?.selectedSplatCount ?? 0,
+      budgetExhausted: this.budgetPlan?.budgetExhausted ?? false,
+      framesSinceBudgetPlan: Number.isFinite(this.framesSinceBudgetPlan)
+        ? this.framesSinceBudgetPlan
+        : 0
     };
   }
 
@@ -257,6 +324,8 @@ export class SplatHierarchyManager {
   setRoots(roots: readonly SplatHierarchyNode[]): void {
     this.roots = roots;
     this.indexNodes();
+    this.budgetPlan = undefined;
+    this.framesSinceBudgetPlan = Number.POSITIVE_INFINITY;
     if (this.currentView) {
       this.update(this.currentView);
     }
@@ -331,12 +400,20 @@ export class SplatHierarchyManager {
 
     this.visibleNodeCount = 0;
     this.culledNodeCount = 0;
+    this.updateBudgetPlan(view);
     const requestedLoads = new Map<string, SplatHierarchyLoadRequest>();
     const protectedChunkIds = new Set<string>();
     const selectedFrontier: SplatHierarchyFrontierEntry[] = [];
     for (const root of this.roots) {
       selectedFrontier.push(
-        ...this.traverseNode(root, 0, view, requestedLoads, protectedChunkIds).entries
+        ...this.traverseNode(
+          root,
+          0,
+          view,
+          requestedLoads,
+          protectedChunkIds,
+          Number.POSITIVE_INFINITY
+        ).entries
       );
     }
 
@@ -354,12 +431,54 @@ export class SplatHierarchyManager {
     this.startQueuedLoads();
   }
 
+  /**
+   * Re-plans the budgeted cut, reusing the previous plan for `budgetUpdateInterval - 1` frames.
+   *
+   * Consecutive frames agree on almost the whole selection, so re-planning every frame is mostly
+   * repeated work; amortizing it is the remaining CPU cost on the fully GPU-driven path.
+   */
+  private updateBudgetPlan(view: SplatHierarchyView): void {
+    if (this.splatBudget === undefined) {
+      this.budgetPlan = undefined;
+      return;
+    }
+    this.screenSpaceErrorCache.clear();
+    if (this.budgetPlan && this.framesSinceBudgetPlan < this.budgetUpdateInterval) {
+      this.framesSinceBudgetPlan++;
+      return;
+    }
+
+    const budgetView: SplatBudgetView = {
+      getScreenSpaceError: node => this.getCachedScreenSpaceError(node as SplatHierarchyNode, view),
+      getCoverage: node => getSplatHierarchyCoverage(node as SplatHierarchyNode, view),
+      isVisible: node =>
+        isSplatHierarchyNodeVisible(node as SplatHierarchyNode, view.modelViewProjectionMatrix)
+    };
+    this.budgetPlan = planSplatBudget(this.roots, budgetView, {
+      splatBudget: this.splatBudget,
+      maximumScreenSpaceError: this.maximumScreenSpaceError
+    });
+    this.framesSinceBudgetPlan = 0;
+  }
+
+  /** Memoizes projected error for one frame; budget planning and traversal both consult it. */
+  private getCachedScreenSpaceError(node: SplatHierarchyNode, view: SplatHierarchyView): number {
+    const cached = this.screenSpaceErrorCache.get(node.id);
+    if (cached !== undefined) {
+      return cached;
+    }
+    const screenSpaceError = getSplatHierarchyScreenSpaceError(node, view);
+    this.screenSpaceErrorCache.set(node.id, screenSpaceError);
+    return screenSpaceError;
+  }
+
   private traverseNode(
     node: SplatHierarchyNode,
     levelOfDetail: number,
     view: SplatHierarchyView,
     requestedLoads: Map<string, SplatHierarchyLoadRequest>,
-    protectedChunkIds: Set<string>
+    protectedChunkIds: Set<string>,
+    parentScreenSpaceError: number
   ): SplatHierarchyTraversalResult {
     if (!isSplatHierarchyNodeVisible(node, view.modelViewProjectionMatrix)) {
       this.culledNodeCount++;
@@ -367,7 +486,7 @@ export class SplatHierarchyManager {
     }
     this.visibleNodeCount++;
 
-    const screenSpaceError = getSplatHierarchyScreenSpaceError(node, view);
+    const screenSpaceError = this.getCachedScreenSpaceError(node, view);
     const priority = getSplatHierarchyFoveatedPriority(
       node,
       view,
@@ -391,14 +510,33 @@ export class SplatHierarchyManager {
     }
 
     const children = node.children ?? [];
-    const shouldRefine = children.length > 0 && priority > this.maximumScreenSpaceError;
+    const shouldRefine =
+      children.length > 0 &&
+      (this.budgetPlan
+        ? this.budgetPlan.refinedNodeIds.has(node.id)
+        : priority > this.maximumScreenSpaceError);
+    const fadeOpacity = getSplatLevelFadeOpacity(
+      parentScreenSpaceError,
+      this.maximumScreenSpaceError,
+      this.lodFadeBand
+    );
+    const filterVariance = Math.max(node.filterVariance ?? 0, 0);
     if (!shouldRefine) {
       if (!residentChunk) {
         return {entries: [], visible: true, complete: false};
       }
       return {
         entries: [
-          {node, chunk: residentChunk, levelOfDetail, screenSpaceError, priority, isFallback: false}
+          {
+            node,
+            chunk: residentChunk,
+            levelOfDetail,
+            screenSpaceError,
+            priority,
+            isFallback: false,
+            filterVariance,
+            fadeOpacity
+          }
         ],
         visible: true,
         complete: true
@@ -410,7 +548,14 @@ export class SplatHierarchyManager {
     }
 
     const childResults = children.map(child =>
-      this.traverseNode(child, levelOfDetail + 1, view, requestedLoads, protectedChunkIds)
+      this.traverseNode(
+        child,
+        levelOfDetail + 1,
+        view,
+        requestedLoads,
+        protectedChunkIds,
+        screenSpaceError
+      )
     );
     const visibleChildResults = childResults.filter(result => result.visible);
     const childEntries = visibleChildResults.flatMap(result => result.entries);
@@ -426,7 +571,9 @@ export class SplatHierarchyManager {
               levelOfDetail,
               screenSpaceError,
               priority,
-              isFallback: !childrenComplete
+              isFallback: !childrenComplete,
+              filterVariance,
+              fadeOpacity
             }
           ]
         : [];
@@ -448,7 +595,16 @@ export class SplatHierarchyManager {
       }
       return {
         entries: [
-          {node, chunk: residentChunk, levelOfDetail, screenSpaceError, priority, isFallback: true}
+          {
+            node,
+            chunk: residentChunk,
+            levelOfDetail,
+            screenSpaceError,
+            priority,
+            isFallback: true,
+            filterVariance,
+            fadeOpacity
+          }
         ],
         visible: true,
         complete: true
@@ -481,7 +637,9 @@ export class SplatHierarchyManager {
         return (
           entry.node.id !== previousEntry.node.id ||
           entry.chunk.data !== previousEntry.chunk.data ||
-          entry.isFallback !== previousEntry.isFallback
+          entry.isFallback !== previousEntry.isFallback ||
+          entry.fadeOpacity !== previousEntry.fadeOpacity ||
+          entry.filterVariance !== previousEntry.filterVariance
         );
       });
     this.currentFrontier = selectedFrontier;
@@ -667,4 +825,38 @@ export function isSplatHierarchyNodeVisible(
     }
   }
   return true;
+}
+
+/**
+ * Returns the fraction of the viewport a source page's bounding sphere covers.
+ *
+ * Budget planning weights quality gain by how much of the screen a refinement actually affects, so
+ * a distant page and a page filling the view are not ranked by their error alone.
+ */
+export function getSplatHierarchyCoverage(
+  node: SplatHierarchyNode,
+  view: SplatHierarchyView
+): number {
+  const radius = Math.max(node.bounds.radius ?? 0, 0);
+  if (radius === 0) {
+    return 0;
+  }
+  const distance = Math.max(
+    Math.hypot(
+      node.bounds.center[0] - view.cameraPosition[0],
+      node.bounds.center[1] - view.cameraPosition[1],
+      node.bounds.center[2] - view.cameraPosition[2]
+    ),
+    MINIMUM_CAMERA_DISTANCE
+  );
+  const verticalFieldOfView = Math.min(
+    Math.max(view.verticalFieldOfView ?? DEFAULT_VERTICAL_FIELD_OF_VIEW, MINIMUM_CAMERA_DISTANCE),
+    Math.PI - MINIMUM_CAMERA_DISTANCE
+  );
+  const viewportHeight = Math.max(view.viewportSize[1], 1);
+  const viewportWidth = Math.max(view.viewportSize[0], 1);
+  const focalLengthPixels = viewportHeight / (2 * Math.tan(verticalFieldOfView / 2));
+  const projectedRadius = (radius * focalLengthPixels) / distance;
+  const projectedArea = Math.PI * projectedRadius * projectedRadius;
+  return Math.min(projectedArea / (viewportWidth * viewportHeight), 1);
 }

@@ -29,16 +29,17 @@ it('graph-native Gaussian picking preserves projected, uniform, and integer iden
   const projectedRecord = reflection.structs.find(struct => struct.name === 'ProjectedSplat');
   expect(
     projectedRecord?.size,
-    'borrows the exact renderer-owned 48-byte projected Gaussian record'
+    'borrows the exact renderer-owned 32-byte packed projected record'
   ).toBe(GPU_SPLAT_PROJECTED_RECORD_BYTE_LENGTH);
   expect(
     projectedRecord?.members.map(member => ({name: member.name, offset: member.offset})),
-    'preserves projected clip centers, anisotropic axes, and Float32 alpha'
+    'a single-precision clip center, half-precision axes, and half-precision HDR color'
   ).toEqual([
     {name: 'clipCenter', offset: 0},
-    {name: 'axis0', offset: 16},
-    {name: 'axis1', offset: 24},
-    {name: 'color', offset: 32}
+    {name: 'packedAxis0', offset: 16},
+    {name: 'packedAxis1', offset: 20},
+    {name: 'packedColorRG', offset: 24},
+    {name: 'packedColorBA', offset: 28}
   ]);
   expect(
     reflection.uniforms[0]?.size,

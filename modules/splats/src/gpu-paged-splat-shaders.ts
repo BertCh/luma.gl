@@ -11,6 +11,19 @@ import {
   GPU_SPLAT_RENDER_SHADER
 } from './gpu-splat-graph-shaders';
 
+/**
+ * Paged Gaussian shaders, derived from the shared graph shaders by explicit substitution.
+ *
+ * Only the *structural* differences live here: sparse source rows reached through an active-row
+ * index, a separate global depth domain, and visibility counted in the feature pass rather than
+ * during projection. Everything appearance-related - radiance-field opacity, the circular support
+ * profile, sRGB decoding - is a feature flag in the shared shaders, so the two paths cannot drift
+ * apart in how a Gaussian looks.
+ *
+ * {@link replacePagedShaderSource} throws when an anchor no longer matches, which turns any
+ * upstream shader edit into a build failure here rather than a silent behavior change.
+ */
+
 /** Sparse source projection retains every original column within eight storage bindings. */
 export const GPU_PAGED_SPLAT_PROJECTION_SHADER_LAYOUT = {
   attributes: [],
@@ -53,145 +66,149 @@ export const GPU_PAGED_SPLAT_RENDER_SHADER_LAYOUT = {
   ]
 } satisfies ShaderLayout;
 
-const PAGED_UNIFORM_FIELDS = `  isFloatColor: u32,
-  hasActiveRows: u32,
-  sourceRowOffset: u32,
-};`;
-
-/** Original Gaussian projection with sparse source rows and a separate global depth domain. */
-const GPU_PAGED_SPLAT_SPARSE_PROJECTION_SHADER = replacePagedShaderSource(
-  replacePagedShaderSource(
-    replacePagedShaderSource(
-      replacePagedShaderSource(
-        replacePagedShaderSource(
-          replacePagedShaderSource(
-            GPU_SPLAT_PROJECTION_SHADER,
-            '  isFloatColor: u32,\n};',
-            PAGED_UNIFORM_FIELDS
-          ),
-          '@group(0) @binding(7) var<storage, read_write> drawCommands: array<atomic<u32>>;',
-          '@group(0) @binding(7) var<storage, read> activeRows: array<u32>;'
-        ),
-        '  depthKeys[rowIndex] = INVALID_DEPTH_KEY;',
-        '  depthKeys[graphUniforms.batchOffset + rowIndex] = INVALID_DEPTH_KEY;'
-      ),
-      `  let batchRowIndex = globalInvocationId.x;
-  if (batchRowIndex >= graphUniforms.rowCount) {
-    return;
-  }
-
-  let projectedRowIndex = graphUniforms.batchOffset + batchRowIndex;`,
-      `  let projectedRowIndex = globalInvocationId.x;
+/** Resolves one sparse source row, either densely offset or through the active-row index. */
+const PAGED_SPARSE_ROW_RESOLUTION = `  let projectedRowIndex = globalInvocationId.x;
   if (projectedRowIndex >= graphUniforms.rowCount) {
     return;
   }
   var batchRowIndex = projectedRowIndex + graphUniforms.sourceRowOffset;
   if (graphUniforms.hasActiveRows != 0u) {
     batchRowIndex = activeRows[projectedRowIndex];
-  }`
-    ),
-    '  depthKeys[projectedRowIndex] = MAXIMUM_VALID_DEPTH_KEY - quantizedDepth;',
-    '  depthKeys[graphUniforms.batchOffset + projectedRowIndex] = MAXIMUM_VALID_DEPTH_KEY - quantizedDepth;'
-  ),
-  '  atomicAdd(&drawCommands[1u], 1u);\n',
-  ''
+  }`;
+
+const DENSE_ROW_RESOLUTION = `  let batchRowIndex = globalInvocationId.x;
+  if (batchRowIndex >= graphUniforms.rowCount) {
+    return;
+  }
+
+  let projectedRowIndex = graphUniforms.batchOffset + batchRowIndex;`;
+
+/**
+ * Original Gaussian projection over sparse source rows in a separate global depth domain.
+ *
+ * Projected records are indexed page-locally while depth keys are indexed globally, because the
+ * sort spans every resident page while each page owns its own record range.
+ */
+const GPU_PAGED_SPLAT_SPARSE_PROJECTION_SHADER = [
+  // Binding 7 carries the active-row index instead of the indirect draw command: a paged renderer
+  // counts visible rows once, in its feature pass, after semantic filtering has run.
+  [
+    '@group(0) @binding(7) var<storage, read_write> drawCommands: array<atomic<u32>>;',
+    '@group(0) @binding(7) var<storage, read> activeRows: array<u32>;'
+  ],
+  ['@group(0) @binding(9) var<uniform> clipUniforms: GraphSplatClipUniforms;\n', ''],
+  [DENSE_ROW_RESOLUTION, PAGED_SPARSE_ROW_RESOLUTION],
+  [
+    '  depthKeys[rowIndex] = graphUniforms.maximumDepthKey + 1u;',
+    '  depthKeys[graphUniforms.batchOffset + rowIndex] = graphUniforms.maximumDepthKey + 1u;'
+  ],
+  [
+    '  depthKeys[projectedRowIndex] = packSplatDepthKey(',
+    '  depthKeys[graphUniforms.batchOffset + projectedRowIndex] = packSplatDepthKey('
+  ],
+  [
+    `  if (hasSplatFlag(graphUniforms.featureFlags, SPLAT_FLAG_CLIPPING)) {
+    alpha = alpha * getSplatClipCoverage(
+      clipUniforms,
+      position,
+      worldAxis0,
+      worldAxis1,
+      worldAxis2
+    );
+    if (alpha < graphUniforms.alphaCutoff) {
+      clearProjectedSplat(projectedRowIndex);
+      return;
+    }
+  }
+
+`,
+    ''
+  ],
+  ['  atomicAdd(&drawCommands[1u], 1u);\n', '']
+].reduce(
+  (source, [search, replacement]) => replacePagedShaderSource(source, search, replacement),
+  GPU_SPLAT_PROJECTION_SHADER
 );
 
-/** Analytic perspective covariance and compensated filtering preserve Spark RAD appearance. */
+/** Analytic perspective covariance preserves Spark RAD appearance without extra bindings. */
 export const GPU_PAGED_SPLAT_PROJECTION_SHADER = makeCalibratedPagedProjectionShader(
   GPU_PAGED_SPLAT_SPARSE_PROJECTION_SHADER
 );
 
 /** Sparse source feature evaluation publishes the exact globally visible indirect count. */
-export const GPU_PAGED_SPLAT_FEATURE_SHADER = replacePagedShaderSource(
-  replacePagedShaderSource(
-    replacePagedShaderSource(
-      replacePagedShaderSource(
-        replacePagedShaderSource(
-          replacePagedShaderSource(
-            GPU_SPLAT_FEATURE_SHADER,
-            '  isFloatColor: u32,\n};',
-            PAGED_UNIFORM_FIELDS
-          ),
-          `@group(0) @binding(7) var<uniform> graphUniforms: GraphSplatUniforms;
+export const GPU_PAGED_SPLAT_FEATURE_SHADER = [
+  [
+    `@group(0) @binding(7) var<uniform> graphUniforms: GraphSplatUniforms;
 @group(0) @binding(8) var<uniform> featureUniforms: GraphSplatFeatureUniforms;`,
-          `@group(0) @binding(7) var<storage, read> activeRows: array<u32>;
+    `@group(0) @binding(7) var<storage, read> activeRows: array<u32>;
 @group(0) @binding(8) var<uniform> graphUniforms: GraphSplatUniforms;
 @group(0) @binding(9) var<uniform> featureUniforms: GraphSplatFeatureUniforms;`
-        ),
-        `  let batchRowIndex = globalInvocationId.x;
-  if (batchRowIndex >= graphUniforms.rowCount) {
-    return;
-  }
-
-  let projectedRowIndex = graphUniforms.batchOffset + batchRowIndex;`,
-        `  let projectedRowIndex = globalInvocationId.x;
-  if (projectedRowIndex >= graphUniforms.rowCount) {
-    return;
-  }
-  var batchRowIndex = projectedRowIndex + graphUniforms.sourceRowOffset;
-  if (graphUniforms.hasActiveRows != 0u) {
-    batchRowIndex = activeRows[projectedRowIndex];
-  }
+  ],
+  [
+    DENSE_ROW_RESOLUTION,
+    `${PAGED_SPARSE_ROW_RESOLUTION}
   let globalRowIndex = graphUniforms.batchOffset + projectedRowIndex;`
-      ),
-      '  if (depthKeys[projectedRowIndex] == INVALID_FEATURE_DEPTH_KEY) {',
-      '  if (depthKeys[globalRowIndex] == INVALID_FEATURE_DEPTH_KEY) {'
-    ),
-    `    depthKeys[projectedRowIndex] = INVALID_FEATURE_DEPTH_KEY;
+  ],
+  [
+    '  let invalidDepthKey = graphUniforms.maximumDepthKey + 1u;\n  if (depthKeys[projectedRowIndex] == invalidDepthKey) {',
+    '  let invalidDepthKey = graphUniforms.maximumDepthKey + 1u;\n  if (depthKeys[globalRowIndex] == invalidDepthKey) {'
+  ],
+  [
+    `    depthKeys[projectedRowIndex] = invalidDepthKey;
     atomicSub(&drawCommands[1u], 1u);`,
-    '    depthKeys[globalRowIndex] = INVALID_FEATURE_DEPTH_KEY;'
-  ),
-  `      projectedColor.a
-    );
+    '    depthKeys[globalRowIndex] = invalidDepthKey;'
+  ],
+  // The visible count is published here, once, after both harmonics and semantic filtering.
+  [
+    `    projectedRecords[projectedRowIndex].packedColorRG = packedColor.x;
+    projectedRecords[projectedRowIndex].packedColorBA = packedColor.y;
   }
 }
 `,
-  `      projectedColor.a
-    );
-  }
-  if ((graphUniforms.isFloatColor & 4u) != 0u) {
-    let projectedColor = projectedRecords[projectedRowIndex].color;
-    projectedRecords[projectedRowIndex].color = vec4<f32>(
-      pow(max(projectedColor.rgb, vec3<f32>(0.0)), vec3<f32>(2.2)),
-      projectedColor.a
-    );
+    `    projectedRecords[projectedRowIndex].packedColorRG = packedColor.x;
+    projectedRecords[projectedRowIndex].packedColorBA = packedColor.y;
   }
   atomicAdd(&drawCommands[1u], 1u);
 }
 `
+  ]
+].reduce(
+  (source, [search, replacement]) => replacePagedShaderSource(source, search, replacement),
+  GPU_SPLAT_FEATURE_SHADER
 );
 
 /** Final gathered records already occupy exact global painter order. */
-const GPU_PAGED_SPLAT_ORDERED_RENDER_SHADER = replacePagedShaderSource(
-  replacePagedShaderSource(
-    GPU_SPLAT_RENDER_SHADER,
-    '@group(0) @binding(2) var<storage, read> sortedIds: array<u32>;\n',
-    ''
-  ),
-  '  let projected = projectedRecords[sortedIds[instanceIndex]];',
-  '  let projected = projectedRecords[instanceIndex];'
+export const GPU_PAGED_SPLAT_RENDER_SHADER = [
+  ['@group(0) @binding(2) var<storage, read> sortedIds: array<u32>;\n', ''],
+  [
+    '  let projected = projectedRecords[sortedIds[instanceIndex]];',
+    '  let projected = projectedRecords[instanceIndex];'
+  ]
+].reduce(
+  (source, [search, replacement]) => replacePagedShaderSource(source, search, replacement),
+  GPU_SPLAT_RENDER_SHADER
 );
 
-/** Spark's nonlinear parent opacity stays opt-in and preserves the existing record layout. */
-export const GPU_PAGED_SPLAT_RENDER_SHADER = makeCalibratedPagedRenderShader(
-  GPU_PAGED_SPLAT_ORDERED_RENDER_SHADER
-);
-
-/** Applies the exact homogeneous-coordinate projection Jacobian without extra source bindings. */
+/**
+ * Applies the exact homogeneous-coordinate projection Jacobian without extra source bindings.
+ *
+ * Finite differencing the projection along each Gaussian axis is accurate for small, near-axis
+ * Gaussians and increasingly wrong for large ones near the edge of a wide field of view.
+ * Differentiating the perspective divide directly removes that error for the same instruction
+ * count, which matters for the coarse parent pages a paged hierarchy spends most of its time in.
+ */
 function makeCalibratedPagedProjectionShader(source: string): string {
-  let calibratedSource = replacePagedShaderSource(
-    source,
-    `fn getProjectedScreenPosition(position: vec3<f32>) -> vec2<f32> {
+  return [
+    [
+      `fn getProjectedScreenPosition(position: vec3<f32>) -> vec2<f32> {
   let clipPosition = graphUniforms.modelViewProjectionMatrix * vec4<f32>(position, 1.0);`,
-    `fn getProjectedScreenPosition(clipPosition: vec4<f32>) -> vec2<f32> {`
-  );
-  calibratedSource = replacePagedShaderSource(
-    calibratedSource,
-    `}
+      `fn getProjectedScreenPosition(clipPosition: vec4<f32>) -> vec2<f32> {`
+    ],
+    [
+      `}
 
 fn getProjectedRotation(quaternion: vec4<f32>)`,
-    `}
+      `}
 
 fn getProjectedScreenAxis(clipCenter: vec4<f32>, worldAxis: vec3<f32>) -> vec2<f32> {
   let clipAxis = graphUniforms.modelViewProjectionMatrix * vec4<f32>(worldAxis, 0.0);
@@ -205,149 +222,21 @@ fn getProjectedScreenAxis(clipCenter: vec4<f32>, worldAxis: vec3<f32>) -> vec2<f
 }
 
 fn getProjectedRotation(quaternion: vec4<f32>)`
-  );
-  calibratedSource = replacePagedShaderSource(
-    calibratedSource,
-    '  if (graphUniforms.isFloatColor != 0u) {',
-    '  if ((graphUniforms.isFloatColor & 1u) != 0u) {'
-  );
-  calibratedSource = replacePagedShaderSource(
-    calibratedSource,
-    `  let color = getProjectedColor(batchRowIndex);
-  let alpha = color.a * opacities[batchRowIndex] * graphUniforms.alphaScale;`,
-    `  let color = getProjectedColor(batchRowIndex);
-  let sourceAlpha = color.a * opacities[batchRowIndex];
-  var alpha = sourceAlpha * graphUniforms.alphaScale;
-  if ((graphUniforms.isFloatColor & 2u) != 0u && sourceAlpha > 1.0) {
-    alpha = min(sourceAlpha * 4.0 - 3.0, 5.0) * graphUniforms.alphaScale;
-  }`
-  );
-  calibratedSource = replacePagedShaderSource(
-    calibratedSource,
-    `  let center = getProjectedScreenPosition(position);
-  let rotationMatrix = getProjectedRotation(rotations[batchRowIndex]);
-  let delta0 = getProjectedScreenPosition(position + rotationMatrix[0] * scale.x) - center;
-  let delta1 = getProjectedScreenPosition(position + rotationMatrix[1] * scale.y) - center;
-  let delta2 = getProjectedScreenPosition(position + rotationMatrix[2] * scale.z) - center;
-  let kernelVariance = graphUniforms.kernel2DSize * graphUniforms.kernel2DSize;
-  let covariance00 = dot(
-    vec3<f32>(delta0.x, delta1.x, delta2.x),
-    vec3<f32>(delta0.x, delta1.x, delta2.x)
-  ) + kernelVariance;
-  let covariance01 = dot(
-    vec3<f32>(delta0.x, delta1.x, delta2.x),
-    vec3<f32>(delta0.y, delta1.y, delta2.y)
-  );
-  let covariance11 = dot(
-    vec3<f32>(delta0.y, delta1.y, delta2.y),
-    vec3<f32>(delta0.y, delta1.y, delta2.y)
-  ) + kernelVariance;
-  let halfTrace =`,
-    `  let center = getProjectedScreenPosition(clipCenter);
-  let rotationMatrix = getProjectedRotation(rotations[batchRowIndex]);
-  let delta0 = getProjectedScreenAxis(clipCenter, rotationMatrix[0] * scale.x);
-  let delta1 = getProjectedScreenAxis(clipCenter, rotationMatrix[1] * scale.y);
-  let delta2 = getProjectedScreenAxis(clipCenter, rotationMatrix[2] * scale.z);
-  let horizontalAxes = vec3<f32>(delta0.x, delta1.x, delta2.x);
-  let verticalAxes = vec3<f32>(delta0.y, delta1.y, delta2.y);
-  let unfilteredCovariance00 = dot(horizontalAxes, horizontalAxes);
-  let unfilteredCovariance11 = dot(verticalAxes, verticalAxes);
-  let covariance01 = dot(horizontalAxes, verticalAxes);
-  let originalDeterminant = max(
-    unfilteredCovariance00 * unfilteredCovariance11 - covariance01 * covariance01,
-    0.0
-  );
-  let kernelVariance = graphUniforms.kernel2DSize * graphUniforms.kernel2DSize;
-  let covariance00 = unfilteredCovariance00 + kernelVariance;
-  let covariance11 = unfilteredCovariance11 + kernelVariance;
-  let filteredDeterminant = max(
-    covariance00 * covariance11 - covariance01 * covariance01,
-    MINIMUM_PROJECTABLE_W
-  );
-  alpha *= sqrt(originalDeterminant / filteredDeterminant);
-  if (!isFiniteSplatValue(alpha) || alpha < graphUniforms.alphaCutoff) {
-    clearProjectedSplat(projectedRowIndex);
-    return;
-  }
-  let halfTrace =`
-  );
-  calibratedSource = replacePagedShaderSource(
-    calibratedSource,
-    `  let clampScale = min(
-    max(graphUniforms.maxScreenSpaceSplatSize, 0.001) / maximumAxisLength,
-    1.0
-  );`,
-    `  let conventionalClampScale = min(
-    max(graphUniforms.maxScreenSpaceSplatSize, 0.001) / maximumAxisLength,
-    1.0
-  );
-  let clampScale = select(
-    conventionalClampScale,
-    1.0,
-    (graphUniforms.isFloatColor & 2u) != 0u
-  );`
-  );
-  calibratedSource = replacePagedShaderSource(
-    calibratedSource,
-    '  let supportScale = graphUniforms.gaussianSupportRadius * graphUniforms.radiusScale * clampScale;',
-    `  let adjustedSupportRadius = graphUniforms.gaussianSupportRadius + select(
-    0.0,
-    0.7 * max(alpha - 1.0, 0.0),
-    (graphUniforms.isFloatColor & 2u) != 0u
-  );
-  let supportScale = adjustedSupportRadius * graphUniforms.radiusScale * clampScale;`
-  );
-  return replacePagedShaderSource(
-    calibratedSource,
-    `  let axis0 = firstDirection * firstAxisLength * supportScale;
-  let axis1 = secondDirection * secondAxisLength * supportScale;`,
-    `  let firstSupportAxisLength = firstAxisLength * supportScale;
-  let secondSupportAxisLength = secondAxisLength * supportScale;
-  let maximumSupportAxisLength = max(graphUniforms.maxScreenSpaceSplatSize, 0.001);
-  let axis0 = firstDirection * select(
-    firstSupportAxisLength,
-    min(firstSupportAxisLength, maximumSupportAxisLength),
-    (graphUniforms.isFloatColor & 2u) != 0u
-  );
-  let axis1 = secondDirection * select(
-    secondSupportAxisLength,
-    min(secondSupportAxisLength, maximumSupportAxisLength),
-    (graphUniforms.isFloatColor & 2u) != 0u
-  );`
-  );
-}
-
-/** Preserves Spark's finite circular support and nonlinear opaque hierarchy-parent profile. */
-function makeCalibratedPagedRenderShader(source: string): string {
-  let calibratedSource = replacePagedShaderSource(
-    source,
-    '  output.gaussianCoordinate = corner * graphUniforms.gaussianSupportRadius;',
-    `  let adjustedSupportRadius = graphUniforms.gaussianSupportRadius + select(
-    0.0,
-    0.7 * max(projected.color.a - 1.0, 0.0),
-    (graphUniforms.isFloatColor & 2u) != 0u
-  );
-  output.gaussianCoordinate = corner * adjustedSupportRadius;`
-  );
-  return replacePagedShaderSource(
-    calibratedSource,
-    `  let gaussianWeight = exp(-0.5 * dot(input.gaussianCoordinate, input.gaussianCoordinate));
-  let alpha = input.color.a * gaussianWeight;`,
-    `  let radiusSquared = dot(input.gaussianCoordinate, input.gaussianCoordinate);
-  let adjustedSupportRadius = graphUniforms.gaussianSupportRadius + select(
-    0.0,
-    0.7 * max(input.color.a - 1.0, 0.0),
-    (graphUniforms.isFloatColor & 2u) != 0u
-  );
-  if (radiusSquared > adjustedSupportRadius * adjustedSupportRadius) {
-    discard;
-  }
-  let gaussianWeight = exp(-0.5 * radiusSquared);
-  var alpha = input.color.a * gaussianWeight;
-  if ((graphUniforms.isFloatColor & 2u) != 0u && input.color.a > 1.0) {
-    let opaqueExponent = exp((input.color.a * input.color.a - 1.0) / 2.718281828459045);
-    alpha = 1.0 - pow(max(1.0 - gaussianWeight, 0.0), opaqueExponent);
-  }`
+    ],
+    [
+      `  let center = getProjectedScreenPosition(position);
+  let delta0 = getProjectedScreenPosition(position + worldAxis0) - center;
+  let delta1 = getProjectedScreenPosition(position + worldAxis1) - center;
+  let delta2 = getProjectedScreenPosition(position + worldAxis2) - center;`,
+      `  let center = getProjectedScreenPosition(clipCenter);
+  let delta0 = getProjectedScreenAxis(clipCenter, worldAxis0);
+  let delta1 = getProjectedScreenAxis(clipCenter, worldAxis1);
+  let delta2 = getProjectedScreenAxis(clipCenter, worldAxis2);`
+    ]
+  ].reduce(
+    (calibrated, [search, replacement]) =>
+      replacePagedShaderSource(calibrated, search, replacement),
+    source
   );
 }
 

@@ -30,11 +30,26 @@ import {
 
 const BITONIC_WORKGROUP_SIZE = 256;
 const RADIX_WORKGROUP_SIZE = 256;
-const RADIX_DIGIT_BITS = 4;
 const RADIX_MASK_WORD_COUNT = RADIX_WORKGROUP_SIZE / 32;
 const INVALID_INDEX = 0xffffffff;
 const MAXIMUM_LOGICAL_LENGTH = 0x80000000;
 const AUTO_BITONIC_MAXIMUM_LENGTH = BITONIC_WORKGROUP_SIZE;
+
+/** Radix digit widths whose per-workgroup ballot masks fit the guaranteed workgroup storage. */
+const SUPPORTED_RADIX_DIGIT_BITS = [4, 8] as const;
+/** Default digit width. Benchmarks across Apple, NVIDIA and Mali parts keep four-bit digits. */
+const DEFAULT_RADIX_DIGIT_BITS = 4;
+/**
+ * Keys handled by one thread per radix tile.
+ *
+ * One element per thread makes every workgroup cover only {@link RADIX_WORKGROUP_SIZE} keys, which
+ * inflates both the per-pass histogram and the number of hierarchical scan levels above it. Eight
+ * keys per thread is the value shipping WebGPU sorters use: the same shader structure with an
+ * eighth of the dispatch and scan overhead.
+ */
+const DEFAULT_RADIX_ELEMENTS_PER_THREAD = 8;
+/** Guaranteed WebGPU workgroup storage, used to reject digit widths that cannot fit. */
+const MINIMUM_WORKGROUP_STORAGE_BYTES = 16384;
 
 /** Sort implementation requested by {@link GPUSort}. */
 export type GPUSortAlgorithm = 'auto' | 'bitonic' | 'radix';
@@ -60,6 +75,40 @@ export type GPUSortProps = {
   direction?: GPUSortDirection;
   /** Number of significant least-significant key bits processed by radix sort. Defaults to `32`. */
   keyBits?: number;
+  /**
+   * Bits consumed by one radix pass. Defaults to `4`.
+   *
+   * Eight-bit digits halve the pass count for wide keys at the cost of a 256-bucket ballot mask in
+   * workgroup storage. Four-bit digits remain the portable default.
+   */
+  digitBits?: 4 | 8;
+  /**
+   * Keys processed by one radix thread. Defaults to `8`.
+   *
+   * The tile a workgroup covers is `256 * elementsPerThread` keys, so raising this shrinks the
+   * per-pass histogram, the hierarchical scan above it, and the dispatch count in equal measure.
+   */
+  elementsPerThread?: number;
+};
+
+/** Resolved radix tiling, histogram shape, and pass count for one {@link GPUSort}. */
+export type GPUSortRadixPlan = {
+  /** Bits consumed per radix pass. */
+  digitBits: number;
+  /** Buckets scanned per pass, `2 ** digitBits`. */
+  bucketCount: number;
+  /** Keys processed by one thread within a tile. */
+  elementsPerThread: number;
+  /** Keys covered by one workgroup, `256 * elementsPerThread`. */
+  tileSize: number;
+  /** Workgroups dispatched per radix pass. */
+  workgroupCount: number;
+  /** Entries in the digit-major histogram scanned between each histogram and scatter pass. */
+  histogramLength: number;
+  /** Radix passes required to cover `keyBits`. */
+  passCount: number;
+  /** Workgroup storage bytes the scatter pass reserves for ballot masks and bucket cursors. */
+  workgroupStorageBytes: number;
 };
 
 type BitonicStage = {
@@ -92,6 +141,10 @@ export class GPUSort {
   readonly direction: GPUSortDirection;
   /** Significant least-significant key bits processed by the radix implementation. */
   readonly keyBits: number;
+  /** Bits consumed by one radix pass. */
+  readonly digitBits: number;
+  /** Keys processed by one radix thread within its workgroup's tile. */
+  readonly elementsPerThread: number;
   /** Concrete implementation selected after resolving `'auto'`. */
   readonly resolvedAlgorithm: Exclude<GPUSortAlgorithm, 'auto'>;
 
@@ -110,6 +163,8 @@ export class GPUSort {
     this.algorithm = props.algorithm ?? 'auto';
     this.direction = props.direction ?? 'ascending';
     this.keyBits = props.keyBits ?? 32;
+    this.digitBits = props.digitBits ?? DEFAULT_RADIX_DIGIT_BITS;
+    this.elementsPerThread = props.elementsPerThread ?? DEFAULT_RADIX_ELEMENTS_PER_THREAD;
 
     for (const [name, view] of [
       ['keys', this.keys],
@@ -128,6 +183,20 @@ export class GPUSort {
     }
     if (!Number.isInteger(this.keyBits) || this.keyBits < 1 || this.keyBits > 32) {
       throw new Error(`${this.id} keyBits must be an integer from 1 to 32`);
+    }
+    if (!SUPPORTED_RADIX_DIGIT_BITS.includes(this.digitBits as 4 | 8)) {
+      throw new Error(`${this.id} digitBits must be 4 or 8`);
+    }
+    if (
+      !Number.isInteger(this.elementsPerThread) ||
+      this.elementsPerThread < 1 ||
+      this.elementsPerThread > 32
+    ) {
+      throw new Error(`${this.id} elementsPerThread must be an integer from 1 to 32`);
+    }
+    const radixStorageBytes = getRadixScatterStorageBytes(this.digitBits);
+    if (radixStorageBytes > MINIMUM_WORKGROUP_STORAGE_BYTES) {
+      throw new Error(`${this.id} digitBits exceeds the guaranteed workgroup storage size`);
     }
     if (
       this.values.length !== this.keys.length ||
@@ -150,10 +219,26 @@ export class GPUSort {
   }
 
   /**
+   * Resolved radix tiling and pass structure, for diagnostics and autotuning.
+   *
+   * @remarks
+   * Reported for every sort, including one resolved to the bitonic implementation, because the
+   * plan depends only on the row count and the caller's radix options.
+   */
+  get radixPlan(): GPUSortRadixPlan {
+    return getGPUSortRadixPlan(this);
+  }
+
+  /**
    * Adds the selected sort implementation and graph-owned scratch to a command graph.
    *
    * Empty inputs add no nodes; one-row inputs add one copy pass. This method does not compile,
    * encode, submit, or read back commands.
+   *
+   * @remarks
+   * Every pass is wait-free. Histogram, hierarchical scan and scatter synchronize only through
+   * `workgroupBarrier()` and separate dispatches; no pass spins on another workgroup's result, so
+   * the implementation does not depend on forward-progress guarantees WebGPU does not make.
    */
   getCommandNodes<Parameters>(
     graph: GPUCommandGraph<Parameters>
@@ -225,7 +310,7 @@ function getAtomicSortNodes<Parameters>(
   if (sort.resolvedAlgorithm === 'bitonic') {
     nodes.push(...addBitonicSort(graph, sort, dispatchLayout, maxComputeWorkgroupsPerDimension));
   } else {
-    nodes.push(...addRadixSort(graph, sort, dispatchLayout, maxComputeWorkgroupsPerDimension));
+    nodes.push(...addRadixSort(graph, sort, maxComputeWorkgroupsPerDimension));
   }
 
   return nodes;
@@ -681,60 +766,97 @@ const OUTPUT_VALUES_OFFSET: u32 = ${getViewElementOffset(sort.outputValues)}u;
   return nodes;
 }
 
-/** Adds stable four-bit least-significant-digit histogram, scan, and scatter partitions. */
+/** Resolves the tiling, histogram shape, and pass count one radix sort would use. @internal */
+export function getGPUSortRadixPlan(sort: {
+  keys: {length: number};
+  keyBits: number;
+  digitBits: number;
+  elementsPerThread: number;
+}): GPUSortRadixPlan {
+  const digitBits = sort.digitBits;
+  const bucketCount = 2 ** digitBits;
+  const elementsPerThread = sort.elementsPerThread;
+  const tileSize = RADIX_WORKGROUP_SIZE * elementsPerThread;
+  const workgroupCount = Math.max(1, Math.ceil(sort.keys.length / tileSize));
+  const passCount = Math.ceil(sort.keyBits / digitBits);
+  return {
+    digitBits,
+    bucketCount,
+    elementsPerThread,
+    tileSize,
+    workgroupCount,
+    histogramLength: bucketCount * workgroupCount,
+    passCount,
+    workgroupStorageBytes: getRadixScatterStorageBytes(digitBits)
+  };
+}
+
+/** Workgroup storage the scatter pass reserves for ballot masks and per-bucket cursors. */
+function getRadixScatterStorageBytes(digitBits: number): number {
+  const bucketCount = 2 ** digitBits;
+  return (bucketCount * RADIX_MASK_WORD_COUNT + bucketCount) * Uint32Array.BYTES_PER_ELEMENT;
+}
+
+/**
+ * Adds stable least-significant-digit histogram, scan, and scatter partitions.
+ *
+ * Each workgroup owns a tile of `256 * elementsPerThread` keys addressed in a striped layout, so
+ * the slot-major order the scatter pass ranks in is exactly ascending key index and the sort stays
+ * stable without a second ordering pass.
+ */
 function addRadixSort<Parameters>(
   graph: GPUCommandGraph<Parameters>,
   sort: AtomicSort,
-  dispatchLayout: GPUBoundedDispatchLayout,
   maxComputeWorkgroupsPerDimension: number
 ): readonly GPUCommandNode<Parameters>[] {
   const nodes: GPUCommandNode<Parameters>[] = [];
-  const digitCount = Math.ceil(sort.keyBits / RADIX_DIGIT_BITS);
-  const workgroupCount = Math.ceil(sort.keys.length / RADIX_WORKGROUP_SIZE);
+  const plan = getGPUSortRadixPlan(sort);
+  const dispatchLayout = getBoundedDispatchLayout(
+    'GPUSort radix',
+    sort.keys.length,
+    plan.tileSize,
+    maxComputeWorkgroupsPerDimension
+  );
   const scratchKeys =
-    digitCount > 1
+    plan.passCount > 1
       ? createTransientView(graph, `${sort.id}-radix-scratch-keys`, 'uint32', sort.keys.length)
       : undefined;
   const scratchValues =
-    digitCount > 1
+    plan.passCount > 1
       ? createTransientView(graph, `${sort.id}-radix-scratch-values`, 'uint32', sort.keys.length)
       : undefined;
   let currentKeys = sort.keys;
   let currentValues = sort.values;
 
-  for (let digitIndex = 0; digitIndex < digitCount; digitIndex++) {
-    const bitOffset = digitIndex * RADIX_DIGIT_BITS;
-    const digitBits = Math.min(RADIX_DIGIT_BITS, sort.keyBits - bitOffset);
+  for (let digitIndex = 0; digitIndex < plan.passCount; digitIndex++) {
+    const bitOffset = digitIndex * plan.digitBits;
+    const digitBits = Math.min(plan.digitBits, sort.keyBits - bitOffset);
     const bucketCount = 2 ** digitBits;
     const histogram = createTransientView(
       graph,
       `${sort.id}-radix-digit-${bitOffset}-histogram`,
       'uint32',
-      bucketCount * workgroupCount
+      bucketCount * plan.workgroupCount
     );
     const offsets = createTransientView(
       graph,
       `${sort.id}-radix-digit-${bitOffset}-offsets`,
       'uint32',
-      bucketCount * workgroupCount
+      bucketCount * plan.workgroupCount
     );
-    const writesFinalOutput = (digitCount - digitIndex) % 2 === 1;
+    const writesFinalOutput = (plan.passCount - digitIndex) % 2 === 1;
     const nextKeys = writesFinalOutput ? sort.outputKeys : scratchKeys;
     const nextValues = writesFinalOutput ? sort.outputValues : scratchValues;
     if (!nextKeys || !nextValues) {
       throw new Error(`${sort.id} radix scratch is missing`);
     }
     nodes.push(
-      ...addRadixHistogramPass(
-        graph,
-        sort,
-        currentKeys,
-        histogram,
+      ...addRadixHistogramPass(graph, sort, currentKeys, histogram, {
         bitOffset,
         digitBits,
-        workgroupCount,
+        plan,
         dispatchLayout
-      )
+      })
     );
     const scan = new GPUScan({
       id: `${sort.id}-radix-digit-${bitOffset}-scan`,
@@ -753,10 +875,12 @@ function addRadixSort<Parameters>(
         offsets,
         nextKeys,
         nextValues,
-        bitOffset,
-        digitBits,
-        workgroupCount,
-        dispatchLayout
+        {
+          bitOffset,
+          digitBits,
+          plan,
+          dispatchLayout
+        }
       )
     );
     currentKeys = nextKeys;
@@ -766,18 +890,23 @@ function addRadixSort<Parameters>(
   return nodes;
 }
 
-/** Counts one radix digit per workgroup into a digit-major histogram suitable for global scan. */
+type RadixPassOptions = {
+  bitOffset: number;
+  digitBits: number;
+  plan: GPUSortRadixPlan;
+  dispatchLayout: GPUBoundedDispatchLayout;
+};
+
+/** Counts one radix digit per tile into a digit-major histogram suitable for global scan. */
 function addRadixHistogramPass<Parameters>(
   graph: GPUCommandGraph<Parameters>,
   sort: AtomicSort,
   keys: GraphDataView<'uint32'>,
   histogram: GraphDataView<'uint32'>,
-  bitOffset: number,
-  digitBits: number,
-  workgroupCount: number,
-  dispatchLayout: GPUBoundedDispatchLayout
+  options: RadixPassOptions
 ): readonly GPUCommandNode<Parameters>[] {
   const nodes: GPUCommandNode<Parameters>[] = [];
+  const {bitOffset, digitBits, plan, dispatchLayout} = options;
   const bucketCount = 2 ** digitBits;
   const descending = sort.direction === 'descending';
   const source = /* wgsl */ `
@@ -785,7 +914,9 @@ const ELEMENT_COUNT: u32 = ${sort.keys.length}u;
 const BIT_OFFSET: u32 = ${bitOffset}u;
 const BUCKET_COUNT: u32 = ${bucketCount}u;
 const DIGIT_MASK: u32 = ${bucketCount - 1}u;
-const WORKGROUP_COUNT: u32 = ${workgroupCount}u;
+const WORKGROUP_COUNT: u32 = ${plan.workgroupCount}u;
+const ELEMENTS_PER_THREAD: u32 = ${plan.elementsPerThread}u;
+const TILE_SIZE: u32 = ${plan.tileSize}u;
 const KEYS_OFFSET: u32 = ${getViewElementOffset(keys)}u;
 const HISTOGRAM_OFFSET: u32 = ${getViewElementOffset(histogram)}u;
 @group(0) @binding(0) var<storage, read> keys: array<u32>;
@@ -799,23 +930,26 @@ var<workgroup> digitCounts: array<atomic<u32>, ${bucketCount}>;
   let workgroupIndex =
     (workgroupId.z * ${dispatchLayout.y}u + workgroupId.y) * ${dispatchLayout.x}u + workgroupId.x;
   if (workgroupIndex >= WORKGROUP_COUNT) { return; }
-  if (localInvocationIndex < BUCKET_COUNT) {
-    atomicStore(&digitCounts[localInvocationIndex], 0u);
+  for (var bucket = localInvocationIndex; bucket < BUCKET_COUNT; bucket += ${RADIX_WORKGROUP_SIZE}u) {
+    atomicStore(&digitCounts[bucket], 0u);
   }
   workgroupBarrier();
 
-  let index = workgroupIndex * ${RADIX_WORKGROUP_SIZE}u + localInvocationIndex;
-  if (index < ELEMENT_COUNT) {
-    let key = keys[KEYS_OFFSET + index];
-    let digit = (key >> BIT_OFFSET) & DIGIT_MASK;
-    let bucket = ${descending ? 'DIGIT_MASK - digit' : 'digit'};
-    atomicAdd(&digitCounts[bucket], 1u);
+  let tileBase = workgroupIndex * TILE_SIZE;
+  for (var slot = 0u; slot < ELEMENTS_PER_THREAD; slot++) {
+    let index = tileBase + slot * ${RADIX_WORKGROUP_SIZE}u + localInvocationIndex;
+    if (index < ELEMENT_COUNT) {
+      let key = keys[KEYS_OFFSET + index];
+      let digit = (key >> BIT_OFFSET) & DIGIT_MASK;
+      let bucket = ${descending ? 'DIGIT_MASK - digit' : 'digit'};
+      atomicAdd(&digitCounts[bucket], 1u);
+    }
   }
   workgroupBarrier();
 
-  if (localInvocationIndex < BUCKET_COUNT) {
-    histogram[HISTOGRAM_OFFSET + localInvocationIndex * WORKGROUP_COUNT + workgroupIndex] =
-      atomicLoad(&digitCounts[localInvocationIndex]);
+  for (var bucket = localInvocationIndex; bucket < BUCKET_COUNT; bucket += ${RADIX_WORKGROUP_SIZE}u) {
+    histogram[HISTOGRAM_OFFSET + bucket * WORKGROUP_COUNT + workgroupIndex] =
+      atomicLoad(&digitCounts[bucket]);
   }
 }`;
   nodes.push(
@@ -834,7 +968,14 @@ var<workgroup> digitCounts: array<atomic<u32>, ${bucketCount}>;
   return nodes;
 }
 
-/** Stably scatters one digit using workgroup ballot masks and digit-major global offsets. */
+/**
+ * Stably scatters one digit using workgroup ballot masks and digit-major global offsets.
+ *
+ * The tile's keys are visited one striped slot at a time. Within a slot the 256 threads rank
+ * themselves through a per-bucket ballot mask; across slots a per-bucket cursor carries the count
+ * already emitted. Striped addressing makes that slot-major visit order identical to ascending key
+ * index, which is what keeps equal keys in their original order.
+ */
 function addRadixScatterPass<Parameters>(
   graph: GPUCommandGraph<Parameters>,
   sort: AtomicSort,
@@ -843,19 +984,20 @@ function addRadixScatterPass<Parameters>(
   offsets: GraphDataView<'uint32'>,
   outputKeys: GraphDataView<'uint32'>,
   outputValues: GraphDataView<'uint32'>,
-  bitOffset: number,
-  digitBits: number,
-  workgroupCount: number,
-  dispatchLayout: GPUBoundedDispatchLayout
+  options: RadixPassOptions
 ): readonly GPUCommandNode<Parameters>[] {
   const nodes: GPUCommandNode<Parameters>[] = [];
+  const {bitOffset, digitBits, plan, dispatchLayout} = options;
   const bucketCount = 2 ** digitBits;
   const descending = sort.direction === 'descending';
   const source = /* wgsl */ `
 const ELEMENT_COUNT: u32 = ${sort.keys.length}u;
 const BIT_OFFSET: u32 = ${bitOffset}u;
+const BUCKET_COUNT: u32 = ${bucketCount}u;
 const DIGIT_MASK: u32 = ${bucketCount - 1}u;
-const WORKGROUP_COUNT: u32 = ${workgroupCount}u;
+const WORKGROUP_COUNT: u32 = ${plan.workgroupCount}u;
+const ELEMENTS_PER_THREAD: u32 = ${plan.elementsPerThread}u;
+const TILE_SIZE: u32 = ${plan.tileSize}u;
 const MASK_WORD_COUNT: u32 = ${RADIX_MASK_WORD_COUNT}u;
 const MASK_COUNT: u32 = ${bucketCount * RADIX_MASK_WORD_COUNT}u;
 const KEYS_OFFSET: u32 = ${getViewElementOffset(keys)}u;
@@ -869,6 +1011,7 @@ const OUTPUT_VALUES_OFFSET: u32 = ${getViewElementOffset(outputValues)}u;
 @group(0) @binding(3) var<storage, read_write> outputKeys: array<u32>;
 @group(0) @binding(4) var<storage, read_write> outputValues: array<u32>;
 var<workgroup> digitMasks: array<atomic<u32>, ${bucketCount * RADIX_MASK_WORD_COUNT}>;
+var<workgroup> bucketCursors: array<u32, ${bucketCount}>;
 
 @compute @workgroup_size(${RADIX_WORKGROUP_SIZE}) fn main(
   @builtin(local_invocation_index) localInvocationIndex: u32,
@@ -877,38 +1020,54 @@ var<workgroup> digitMasks: array<atomic<u32>, ${bucketCount * RADIX_MASK_WORD_CO
   let workgroupIndex =
     (workgroupId.z * ${dispatchLayout.y}u + workgroupId.y) * ${dispatchLayout.x}u + workgroupId.x;
   if (workgroupIndex >= WORKGROUP_COUNT) { return; }
-  if (localInvocationIndex < MASK_COUNT) {
-    atomicStore(&digitMasks[localInvocationIndex], 0u);
+  for (var bucket = localInvocationIndex; bucket < BUCKET_COUNT; bucket += ${RADIX_WORKGROUP_SIZE}u) {
+    bucketCursors[bucket] = 0u;
   }
-  workgroupBarrier();
 
-  let index = workgroupIndex * ${RADIX_WORKGROUP_SIZE}u + localInvocationIndex;
-  let valid = index < ELEMENT_COUNT;
-  var key = 0u;
-  var bucket = 0u;
-  if (valid) {
-    key = keys[KEYS_OFFSET + index];
-    let digit = (key >> BIT_OFFSET) & DIGIT_MASK;
-    bucket = ${descending ? 'DIGIT_MASK - digit' : 'digit'};
-    let wordIndex = localInvocationIndex >> 5u;
-    let bitIndex = localInvocationIndex & 31u;
-    atomicOr(&digitMasks[bucket * MASK_WORD_COUNT + wordIndex], 1u << bitIndex);
-  }
-  workgroupBarrier();
-
-  if (index >= ELEMENT_COUNT) { return; }
-  let maskBase = bucket * MASK_WORD_COUNT;
-  let currentWord = localInvocationIndex >> 5u;
-  var localRank = 0u;
-  for (var word = 0u; word < currentWord; word++) {
-    localRank += countOneBits(atomicLoad(&digitMasks[maskBase + word]));
-  }
+  let tileBase = workgroupIndex * TILE_SIZE;
+  let maskWord = localInvocationIndex >> 5u;
   let precedingBits = (1u << (localInvocationIndex & 31u)) - 1u;
-  localRank += countOneBits(atomicLoad(&digitMasks[maskBase + currentWord]) & precedingBits);
-  let bucketOffset = offsets[OFFSETS_OFFSET + bucket * WORKGROUP_COUNT + workgroupIndex];
-  let outputIndex = bucketOffset + localRank;
-  outputKeys[OUTPUT_KEYS_OFFSET + outputIndex] = key;
-  outputValues[OUTPUT_VALUES_OFFSET + outputIndex] = values[VALUES_OFFSET + index];
+  for (var slot = 0u; slot < ELEMENTS_PER_THREAD; slot++) {
+    for (var mask = localInvocationIndex; mask < MASK_COUNT; mask += ${RADIX_WORKGROUP_SIZE}u) {
+      atomicStore(&digitMasks[mask], 0u);
+    }
+    workgroupBarrier();
+
+    let index = tileBase + slot * ${RADIX_WORKGROUP_SIZE}u + localInvocationIndex;
+    let valid = index < ELEMENT_COUNT;
+    var key = 0u;
+    var bucket = 0u;
+    if (valid) {
+      key = keys[KEYS_OFFSET + index];
+      let digit = (key >> BIT_OFFSET) & DIGIT_MASK;
+      bucket = ${descending ? 'DIGIT_MASK - digit' : 'digit'};
+      atomicOr(&digitMasks[bucket * MASK_WORD_COUNT + maskWord], 1u << (localInvocationIndex & 31u));
+    }
+    workgroupBarrier();
+
+    if (valid) {
+      let maskBase = bucket * MASK_WORD_COUNT;
+      var localRank = 0u;
+      for (var word = 0u; word < maskWord; word++) {
+        localRank += countOneBits(atomicLoad(&digitMasks[maskBase + word]));
+      }
+      localRank += countOneBits(atomicLoad(&digitMasks[maskBase + maskWord]) & precedingBits);
+      let bucketOffset = offsets[OFFSETS_OFFSET + bucket * WORKGROUP_COUNT + workgroupIndex];
+      let outputIndex = bucketOffset + bucketCursors[bucket] + localRank;
+      outputKeys[OUTPUT_KEYS_OFFSET + outputIndex] = key;
+      outputValues[OUTPUT_VALUES_OFFSET + outputIndex] = values[VALUES_OFFSET + index];
+    }
+    workgroupBarrier();
+
+    for (var bucket = localInvocationIndex; bucket < BUCKET_COUNT; bucket += ${RADIX_WORKGROUP_SIZE}u) {
+      var slotCount = 0u;
+      for (var word = 0u; word < MASK_WORD_COUNT; word++) {
+        slotCount += countOneBits(atomicLoad(&digitMasks[bucket * MASK_WORD_COUNT + word]));
+      }
+      bucketCursors[bucket] += slotCount;
+    }
+    workgroupBarrier();
+  }
 }`;
   nodes.push(
     ...addComputationPass(graph, {
