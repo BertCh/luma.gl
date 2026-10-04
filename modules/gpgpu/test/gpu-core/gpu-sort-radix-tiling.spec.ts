@@ -86,7 +86,7 @@ it('GPUSort radix sorts descending with eight-bit digits and a partial final dig
   const length = 5000;
   const keys = Uint32Array.from(
     {length},
-    (_, index) => ((Math.imul(index, 2654435761) >>> 0) & 0xfffff) | (index % 3 << 28)
+    (_, index) => ((Math.imul(index, 2654435761) >>> 0) & 0xfffff) | ((index % 3) << 28)
   );
   const values = Uint32Array.from({length}, (_, index) => index);
   for (const direction of ['ascending', 'descending'] as const) {
