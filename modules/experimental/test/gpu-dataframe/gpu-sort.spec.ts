@@ -576,13 +576,16 @@ it('GPUDataFrame globally orders preserved batches through bounded three-dimensi
     return;
   }
 
+  // Analytics kernels cover 256 rows per workgroup and the radix sort 2,048 keys, so the limit
+  // must exceed 8 for 256 * limit³ analytics rows to also need a third sort dimension.
+  const MAXIMUM_WORKGROUPS_PER_DIMENSION = 9;
   const originalLimits = device.limits;
   Object.defineProperty(device, 'limits', {
     configurable: true,
     value: new Proxy(originalLimits, {
       get(target, property) {
         return property === 'maxComputeWorkgroupsPerDimension'
-          ? 2
+          ? MAXIMUM_WORKGROUPS_PER_DIMENSION
           : Reflect.get(target, property, target);
       }
     })
@@ -590,8 +593,9 @@ it('GPUDataFrame globally orders preserved batches through bounded three-dimensi
   const dispatch = vi.spyOn(Kernel.prototype, 'dispatch');
   const sourceBuffers: Buffer[] = [];
   const expected: {score: number; sourceRow: number; ordinal: number}[] = [];
-  const lengths = [513, 0, 512];
-  const offsets = [1_000, 5_000, 9_000];
+  // 166,000 keys need 82 sort workgroups: 9×9×2 under the dimension limit.
+  const lengths = [83_000, 0, 83_000];
+  const offsets = [1_000, 100_000, 200_000];
   let ordinal = 0;
   const batches = lengths.map((length, batchIndex) => {
     const scores = Float32Array.from({length}, (_, index) => {
@@ -642,15 +646,15 @@ it('GPUDataFrame globally orders preserved batches through bounded three-dimensi
     expect(await readGPUSortChunks(compiled.globalSelectedCount), '').toEqual([[25]]);
     expect(
       await readGPUSortBuffer(getGPUSortBuffer(compiled.globalRowIndices.data[0]), 25),
-      'stable global top-K merges 1,025 discontiguous source rows without collapsing batches'
+      'stable global top-K merges 166,000 discontiguous source rows without collapsing batches'
     ).toEqual(expectedRows);
     expect(
       compiled.table.batches.map(batch => batch.numRows),
       ''
     ).toEqual(lengths);
     expect(
-      Boolean(dispatch.mock.calls.some(([, {x, y, z}]) => x === 2 && y === 2 && z === 2)),
-      'the explicit cross-batch permutation uses bounded 2×2×2 GPU sorting'
+      Boolean(dispatch.mock.calls.some(([, {x, y, z}]) => x === 9 && y === 9 && z === 2)),
+      'the explicit cross-batch permutation uses bounded 9×9×2 GPU sorting'
     ).toBe(true);
   } finally {
     compiled?.destroy();
