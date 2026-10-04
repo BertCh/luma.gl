@@ -18,7 +18,14 @@ Target Release Date: Q3, 2026
 - **`@luma.gl/arrow` (currently private)** - Arrow adapters and renderers are being prepared for
   publication as a standalone module.
 
+**@luma.gl/core**
+
+- **Targeted WebGPU limits** - `DeviceProps.requiredLimits` requests specific WebGPU device limits, such as `maxStorageBuffersPerShaderStage`, without taking every adapter limit and feature through `featureLevel: 'max'`. A development GPU then enforces the limits the application targets.
+- **Vertex buffer byte offsets** - `VertexArray.setBuffer()` accepts an optional `byteOffset`, so vertex data can start inside a shared buffer without changing the buffer layout or render pipeline.
+
 **@luma.gl/gpgpu**
+
+- **Incremental GPU execution** - [`GPUIncrementalExecution`](/docs/api-reference/experimental/gpu-core/gpu-incremental-execution) caches explicitly versioned batch partials, preserves borrowed source storage, and submits only changed batch work plus the live merge. The GPU Data Analysis example shows streaming sums, histograms, grouped counts, and unsigned Top-K with reuse instrumentation.
 
 - **Batch-preserving GPU rendering** - `GPUVectorModel` renders chunked vectors without
   concatenating their source batches.
@@ -51,6 +58,7 @@ Target Release Date: Q3, 2026
 
 **@luma.gl/engine**
 
+- **Attribute byte offsets** - `Model.setAttributes(buffers, {byteOffsets})` binds each named buffer at the byte offset where its vertex data starts.
 - **Awaitable pipeline creation** - `Computation.createAsync()` and `Model.createAsync()` expose
   native asynchronous WebGPU pipeline creation for application loading phases, backed by
   cache-aware asynchronous `Device` and `PipelineFactory` methods.
@@ -66,6 +74,9 @@ Target Release Date: Q3, 2026
 
 **@luma.gl/shadertools**
 
+- **Atmospheric scattering** - The shared GLSL/WGSL `atmosphere` module provides a Rayleigh/Mie sky and metre-space aerial perspective. `AtmosphereLayer` connects the same shader to deck.gl perspective views in [Riverfront soft shadows](/examples/deck/soft-shadows).
+- **Cloud sunlight extinction** - `clouds_getTransmittance` samples the existing animated cloud density to attenuate direct sunlight on buildings and ground, without separate cloud shadow resources.
+- **Surface weather** - The portable `surfaceWeather` material helpers and frame-rate-independent `integrateSurfaceWeather` function provide wetness, puddle highlights and slope-aware snow cover in [Riverfront weather](/examples/deck/weather).
 - **Hybrid fp64 arithmetic** - Double-single WGSL arithmetic can select direct floating-point or
   integer-controlled operations to balance portability and throughput.
 - **`CompositeShaderPass`** - The structured multi-pass postprocessing API and effect factories
@@ -140,8 +151,17 @@ _Splat hierarchy (`SplatHierarchyManager`):_
 
 **@luma.gl/webgpu**
 
+- **Attach to application-created `GPUDevice`s** - `luma.attachDevice(gpuDevice, {adapters: [webgpuAdapter]})` and `webgpuAdapter.attach(gpuDevice)` wrap an existing WebGPU device, so an application and deck.gl can share one device with the application's requested limits and features. `device.destroy()` leaves the `GPUDevice` usable; the application destroys it.
 - **`blend: false` wins** - an explicit `blend: false` now removes blend state even when blend
   factors are also supplied, matching WebGL and keeping non-blendable (32-bit float) targets valid.
+
+### Slang compute and textures
+
+The private Slang authoring module now supports integer atomics, byte-address buffers, synchronization
+diagnostics, texture arrays, multisampled loads, explicit gradients, gathers, dimension queries and
+more storage dimensions. The [particle vortex example](/examples/tutorials/slang-particles) simulates
+and renders one shared Slang source. The compiler remains optional and dependency-free; WebGL uses
+GLSL ES 300, with diagnostics for operations that require explicit GLSL 450.
 
 ## Version 9.4
 
@@ -246,6 +266,8 @@ analysis, text, splats, physical scenes, simulation, and immersive rendering.
 - **Composable projection programs** - Typed axis, unit, affine, and adaptive operations compile into a shared inline WGSL function and GPU Graph contributor. Programs preserve double-single intermediates, accept double-single output from upstream programs, propagate validity, and support compatible parameter updates without rebuilding the graph.
 - **Broader adaptive PROJJSON coverage** - Lambert Conic Conformal 1SP/2SP and Albers Equal Area definitions use verified EPSG method/parameter mappings and the existing double-single adaptive backend. Custom CRS labels need no registry entry; identifier-only and localized definitions retain explicit units and error budgets. Both planners offer optional `ProjectionPlanningError` throwing without changing their default structured failure results.
 - **Explicit projection seams and comparative benchmarks** - Double-single longitude normalization has declared intervals, invalid seam guards, and no automatic many-to-one inverse. The optional program benchmark compares native/adaptive arithmetic and inline/materialized execution against an independent validity-aware oracle, reporting accuracy, buffer memory, planning/compilation, and synchronized execution costs.
+- **Equal-budget projection performance sweeps** - Optional multi-patch UTM/Albers benchmarks compare quadratic/cubic adaptive plans, row counts, and shared-result consumer reuse at a fixed double-single accuracy budget. Reports distinguish timestamp-instrumented runs from normal pass-coalesced execution and include actual patch counts and buffer costs.
+- **Matched CPU projection baselines** - The program benchmark also measures repeated and shared-result CPU consumers, with explicit provider labels and binary64 outputs. GPU-resident speedup includes encoding and synchronized execution but explicitly excludes transfers and setup.
 - **Native Transverse Mercator and UTM** - Explicit Float32 forward/inverse programs support all 60 WGS84 UTM zones, EPSG 9807 PROJJSON conversions, and `utm`/`tmerc` pipelines. Domain and inverse-footprint checks reject unsupported branches. Default higher-precision execution continues to use double-single adaptive patches, now fitted from the normalized binary64 series reference for supported explicit CRS pairs.
 - **Projection metadata and CRS planning** - Projection programs expose immutable precision, domain, validity, inversion, and sampled-error metadata. The optional `@luma.gl/experimental/gpu-project/crs` adapter lowers explicit axis/unit/affine PROJ pipelines and fits bounded CRS transformations through math.gl 5, with structured fallback reasons and independently bounded inverse plans.
 - **Native Web Mercator programs** - Explicitly opt into forward/inverse Float32 formulas through PROJJSON or `webmerc` pipelines, with checked domains, honest arithmetic metadata, and shared inline/graph execution. Default high-precision Web Mercator planning retains double-single adaptive fitting against the validated binary64 formula and declines lossy provider routes.

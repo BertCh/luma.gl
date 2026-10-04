@@ -14,6 +14,15 @@ luma.gl largely follows [SEMVER](https://semver.org) conventions. Breaking chang
 
 **@luma.gl/gpgpu**
 
+### GPUFFT2D graph lifecycle
+
+`GPUFFT2D` now takes `{input, output, width, height, batchCount?, direction?}` graph views.
+Replace `new GPUFFT2D(device, dimensions)` and `transform.encode(encoder, buffers)` with
+`graph.add(new GPUFFT2D(props))`, `graph.compile()`, and `compiled.encode(encoder, {parameters: undefined})`.
+Destroy the compiled graph instead of the primitive. `GPUFFT2DEncodeOptions` is removed.
+Forward and inverse transforms are separate graph operations; pass parameters are immutable.
+See [GPUFFT2D](./api-reference/experimental/gpu-core/gpu-fft2d) for the migration example.
+
 - `GPULZByteDecompressor` descriptors now contain five uint32 words per record:
   `[outputOffset, byteLength, literalSourceOffset, literalPeriod, matchOffset]`. Code that creates
   descriptor buffers directly must add `literalPeriod` and use `GPU_LZ_BYTE_DESCRIPTOR_WORDS` when
@@ -75,6 +84,10 @@ luma.gl largely follows [SEMVER](https://semver.org) conventions. Breaking chang
   `framesSinceBudgetPlan`. Code that constructs these objects itself must supply them.
 - `getSplatHierarchyFoveatedPriority()` now measures to the nearest edge of a page's projected
   bounds rather than its center, so large or nearby pages are relaxed less than before.
+
+**@luma.gl/webgpu**
+
+- `WebGPUDevice.adapter` is now typed `GPUAdapter | null`. It is `null` for devices wrapped with `webgpuAdapter.attach()` / `luma.attachDevice()`, because a `GPUDevice` does not reference its `GPUAdapter`. Devices from `luma.createDevice()` still have an adapter; TypeScript code that reads `device.adapter` needs a null check or non-null assertion. Use `device.adapterInfo` for adapter metadata.
 
 **@luma.gl/experimental**
 

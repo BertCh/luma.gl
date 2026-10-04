@@ -1,0 +1,22 @@
+---
+title: Riverfront weather
+description: Tune rain, snow, drifting fog, and accumulating wetness and snow cover.
+sidebar_custom_props:
+  description: Explore rain, drifting snow, fog, wet surfaces, puddles, and snow-covered roofs.
+  backends: [webgpu, webgl2]
+  difficulty: intermediate
+  maturity: experimental
+  mobile: full
+  mobileProfile: standard
+  topics: [deck.gl, rendering, simulation]
+---
+
+import useBaseUrl from '@docusaurus/useBaseUrl';
+
+export const WeatherPreview = () => (
+  <iframe title="Riverfront weather interactive example"
+    src={useBaseUrl('/standalone-examples/weather/index.html')}
+    style={{width: '100%', height: '78vh', minHeight: 640, border: 0, borderRadius: 12}} />
+);
+
+<WeatherPreview />

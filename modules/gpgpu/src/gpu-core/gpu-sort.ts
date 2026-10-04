@@ -4,7 +4,7 @@
 
 import {type GPUCommandNode, createGPUComputeCommandNode} from './gpu-command-node';
 import {type Binding} from '@luma.gl/core';
-import {Computation} from '@luma.gl/engine';
+import {Kernel} from '@luma.gl/engine';
 import {
   GPUCommandGraph,
   type GraphBufferUse,
@@ -364,7 +364,7 @@ const OUTPUT_VALUES_OFFSET: u32 = ${getViewElementOffset(sort.outputValues)}u;
   outputValues[OUTPUT_VALUES_OFFSET + index] = values[VALUES_OFFSET + index];
 }`;
   nodes.push(
-    ...addComputationPass(graph, {
+    ...addKernelPass(graph, {
       id: `${sort.id}-${identifier}`,
       source,
       resources: [
@@ -485,7 +485,7 @@ fn comes_before(leftIndex: u32, rightIndex: u32) -> bool {
 ${useSubgroups ? getSubgroupLocalBitonicShader() : getPortableLocalBitonicShader()}
 }`;
   nodes.push(
-    ...addComputationPass(graph, {
+    ...addKernelPass(graph, {
       id: `${sort.id}-bitonic-local`,
       source,
       resources: [
@@ -622,7 +622,7 @@ const INDICES_OFFSET: u32 = ${getViewElementOffset(indices)}u;
   }
 }`;
   nodes.push(
-    ...addComputationPass(graph, {
+    ...addKernelPass(graph, {
       id: `${sort.id}-bitonic-initialize`,
       source,
       resources: [{buffer: indices, usage: 'storage-write'}],
@@ -694,7 +694,7 @@ fn comes_before(leftIndex: u32, rightIndex: u32) -> bool {
   indicesOut[INDICES_OUT_OFFSET + partnerIndex] = select(rightIndex, leftIndex, shouldSwap);
 }`;
   nodes.push(
-    ...addComputationPass(graph, {
+    ...addKernelPass(graph, {
       id: `${sort.id}-bitonic-${stage.blockWidth}-${stage.compareStride}`,
       source,
       resources: [
@@ -742,7 +742,7 @@ const OUTPUT_VALUES_OFFSET: u32 = ${getViewElementOffset(sort.outputValues)}u;
   outputValues[OUTPUT_VALUES_OFFSET + index] = values[VALUES_OFFSET + sourceIndex];
 }`;
   nodes.push(
-    ...addComputationPass(graph, {
+    ...addKernelPass(graph, {
       id: `${sort.id}-bitonic-gather`,
       source,
       resources: [
@@ -962,7 +962,7 @@ var<workgroup> digitCounts: array<atomic<u32>, ${bucketCount}>;
   }
 }`;
   nodes.push(
-    ...addComputationPass(graph, {
+    ...addKernelPass(graph, {
       id: `${sort.id}-radix-digit-${bitOffset}-histogram`,
       source,
       resources: [
@@ -1079,7 +1079,7 @@ var<workgroup> bucketCursors: array<u32, ${bucketCount}>;
   }
 }`;
   nodes.push(
-    ...addComputationPass(graph, {
+    ...addKernelPass(graph, {
       id: `${sort.id}-radix-digit-${bitOffset}-scatter`,
       source,
       resources: [
@@ -1118,7 +1118,7 @@ function getBitonicStages(paddedLength: number): BitonicStage[] {
 }
 
 /** Wraps generated WGSL in a graph compute node with deferred physical buffer resolution. */
-function addComputationPass<GraphParameters>(
+function addKernelPass<GraphParameters>(
   graph: GPUCommandGraph<GraphParameters>,
   props: {
     id: string;
@@ -1134,7 +1134,7 @@ function addComputationPass<GraphParameters>(
       id: props.id,
       resources: props.resources,
       compile: ({device}) => {
-        const computation = new Computation(device, {
+        const kernel = new Kernel(device, {
           id: props.id,
           source: props.source,
           shaderLayout: {
@@ -1152,15 +1152,15 @@ function addComputationPass<GraphParameters>(
             for (const [name, view] of Object.entries(props.bindings)) {
               bindings[name] = getViewBinding(view, getBuffer);
             }
-            computation.setBindings(bindings);
-            computation.dispatch(
-              computePass,
-              props.dispatchLayout.x,
-              props.dispatchLayout.y,
-              props.dispatchLayout.z
-            );
+
+            kernel.dispatch(computePass, {
+              bindings,
+              x: props.dispatchLayout.x,
+              y: props.dispatchLayout.y,
+              z: props.dispatchLayout.z
+            });
           },
-          destroy: () => computation.destroy()
+          destroy: () => kernel.destroy()
         };
       }
     })
