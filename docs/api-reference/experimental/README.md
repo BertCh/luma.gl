@@ -61,7 +61,9 @@ stable Engine models and Shadertools passes.
 | [GPU Dataframe](/docs/api-reference/experimental/gpu-dataframe) | Immutable GPU-resident dataframe expressions, grouping, aggregation, sorting, indexes, and joins. |
 | [GPU SQL](/docs/api-reference/experimental/gpu-sql) | Bounded SQL planning over registered GPU Dataframe inputs. |
 | [GPU Crossfilter](/docs/api-reference/experimental/gpu-crossfilter) | Linked GPU filtering, histograms, aggregates, and rendering masks. |
-| [Geospatial kernels](/docs/api-reference/experimental/geospatial) | Projection, distance, point-in-polygon, nearest-feature, and spatial-query operations. |
+| [Geospatial kernels](/docs/api-reference/experimental/geospatial) | Projection, distance, point-in-polygon, nearest-feature, and spatial-query operations, plus density, spatial-statistics, line, and trajectory analysis contributors. |
+| [GPU Terrain](/docs/api-reference/experimental/gpu-terrain) | Elevation-tile analysis contributors: slope, contours, viewshed, hydrology, solar shadows, and relief shading. |
+| [GPU Network](/docs/api-reference/experimental/gpu-network) | CSR network analysis contributors: reachability, service areas, accessibility, flow aggregation, and edge bundling. |
 
 ### Scene rendering and lighting
 

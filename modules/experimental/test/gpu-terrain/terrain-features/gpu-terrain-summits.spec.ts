@@ -6,7 +6,7 @@ import type {Buffer, Device} from '@luma.gl/core';
 import {GPUCommandGraph} from '@luma.gl/gpgpu/gpu-core';
 import {getWebGPUTestDevice} from '@luma.gl/test-utils';
 import {expect, it} from 'vitest';
-import {GPUParameterBuffer, importGraphBuffer, submitGraph} from '../../../src/utils/gpu-contributor-utils';
+import {GPUParameterBuffer, importGraphBuffer} from '../../../src/utils/gpu-contributor-utils';
 import {
   getGPUTerrainSummitsParameterValues,
   GPU_TERRAIN_SUMMITS_PARAMETER_LENGTH,
@@ -19,7 +19,8 @@ import {
   createOutputBuffer,
   isSoftwareDevice,
   readFloat32,
-  readUint32
+  readUint32,
+  submitGraph
 } from '../../utils/gpu-contributor-test-utils';
 import {computeTerrainSummits} from './terrain-summits-oracle';
 
@@ -31,7 +32,7 @@ type FixtureOptions = {
   settings: GPUTerrainSummitsSettings;
   capacity?: number;
   overflow?: boolean;
-  recipe?: Partial<GPUTerrainSummitsProps>;
+  contributor?: Partial<GPUTerrainSummitsProps>;
 };
 
 function createSummitsFixture(device: Device, options: FixtureOptions) {
@@ -90,7 +91,7 @@ function createSummitsFixture(device: Device, options: FixtureOptions) {
       overflow: options.overflow
         ? importGraphBuffer(graph, 'radius-overflow', radiusOverflow, 'uint32', 1)
         : undefined,
-      ...options.recipe
+      ...options.contributor
     })
   );
   const compiled = graph.compile();
@@ -263,7 +264,7 @@ it('GPUTerrainSummits matches the oracle on tie-heavy noise', async () => {
         width,
         height,
         settings,
-        recipe: {incompleteNeighborhood}
+        contributor: {incompleteNeighborhood}
       });
       const result = await fixture.run();
       const expected = computeTerrainSummits(
@@ -308,7 +309,7 @@ it('GPUTerrainSummits rejects or ignores grid edges', async () => {
     width,
     height,
     settings: BASE,
-    recipe: {incompleteNeighborhood: 'ignore'}
+    contributor: {incompleteNeighborhood: 'ignore'}
   });
   const ignored = await ignore.run();
   expect(ignored.mask[0]).toBe(1);
@@ -360,7 +361,7 @@ it('GPUTerrainSummits never lets nodata bleed into a summit', async () => {
     width,
     height,
     settings: BASE,
-    recipe: {incompleteNeighborhood: 'ignore'}
+    contributor: {incompleteNeighborhood: 'ignore'}
   });
   const ignored = await ignore.run();
   expect(ignored.mask[summit]).toBe(1);
@@ -433,7 +434,7 @@ it('GPUTerrainSummits clamps the radius to maximumRadiusPixels and raises overfl
     height,
     settings: {radius: 3, cellSize: [1, 1]},
     overflow: true,
-    recipe: {maximumRadiusPixels: 4}
+    contributor: {maximumRadiusPixels: 4}
   });
   const within = await fixture.run();
   expect(within.radiusOverflow).toBe(0);
@@ -510,7 +511,7 @@ it('GPUTerrainSummits follows per-row cell sizes in web-mercator and geographic 
       width,
       height,
       settings,
-      recipe: {cellSizeMode, incompleteNeighborhood: 'ignore'}
+      contributor: {cellSizeMode, incompleteNeighborhood: 'ignore'}
     });
     const result = await fixture.run();
     expect(result.mask).toEqual(expected.mask);

@@ -105,7 +105,7 @@ export type GPUNetworkSnappingProps = {
  * Snaps points onto the nearest edge of a road network, so they can enter a shortest-path search
  * as virtual nodes between the edge endpoints.
  *
- * For every point the recipe reports the nearest edge (smallest edge row on ties), the fraction
+ * For every point the contributor reports the nearest edge (smallest edge row on ties), the fraction
  * along it, the planar snap distance, and the two seed costs: `fraction * edgeCost` to the edge
  * source and `(1 - fraction) * edgeCost` to the edge target. The edge cost defaults to the planar
  * edge length. Points beyond the optional maximum snap distance snap to no edge.
@@ -701,7 +701,7 @@ fn readNode(node: u32) -> vec2<f32> {
   }
 }
 
-/** Returns every read-only view of a snapping recipe. */
+/** Returns every read-only view of a snapping contributor. */
 function getInputs(props: GPUNetworkSnappingProps): (GraphDataView | undefined)[] {
   return [
     props.points,
@@ -714,7 +714,7 @@ function getInputs(props: GPUNetworkSnappingProps): (GraphDataView | undefined)[
   ];
 }
 
-/** Returns every writable view of a snapping recipe. */
+/** Returns every writable view of a snapping contributor. */
 function getOutputs(props: GPUNetworkSnappingProps): (GraphDataView | undefined)[] {
   return [
     props.snappedEdges,

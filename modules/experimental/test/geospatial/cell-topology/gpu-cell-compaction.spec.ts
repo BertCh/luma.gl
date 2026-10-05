@@ -7,7 +7,7 @@ import {GPUCommandGraph} from '@luma.gl/gpgpu/gpu-core';
 import {getWebGPUTestDevice} from '@luma.gl/test-utils';
 import {cellToChildren, cellToParent, compactCells, getPentagons, polygonToCells} from 'h3-js';
 import {expect, it} from 'vitest';
-import {importGraphBuffer, submitGraph} from '../../../src/utils/gpu-contributor-utils';
+import {importGraphBuffer} from '../../../src/utils/gpu-contributor-utils';
 import {
   GPUCellCompaction,
   type GPUCellCompactionProps
@@ -21,7 +21,12 @@ import {
   type CellFamily
 } from '../cell-aggregation/cell-aggregation-oracle';
 import {createRandom} from '../cell-aggregation/cell-aggregation-points';
-import {createInputBuffer, createOutputBuffer, readUint32} from '../../utils/gpu-contributor-test-utils';
+import {
+  createInputBuffer,
+  createOutputBuffer,
+  readUint32,
+  submitGraph
+} from '../../utils/gpu-contributor-test-utils';
 import {
   compactCellsOnCPU,
   compareBigInt,

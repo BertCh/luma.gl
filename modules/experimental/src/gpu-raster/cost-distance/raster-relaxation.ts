@@ -14,7 +14,7 @@ import {
 } from '@luma.gl/gpgpu/gpu-core';
 import type {GPUTerrainCellSizeMode} from '../../gpu-terrain/terrain-analysis/index';
 import {createWGSLKernelNode, type WGSLKernelBinding} from '../../utils/wgsl-kernel-nodes';
-import {createRecipeTransientView, getRasterGridWGSL} from './raster-grid-utils';
+import {createContributorTransientView, getRasterGridWGSL} from './raster-grid-utils';
 
 /** Largest accepted compile-time iteration count for GPU-gated raster iterations. */
 export const GPU_RASTER_MAXIMUM_ITERATIONS = 1024;
@@ -64,14 +64,21 @@ export function createRasterIterationState<Parameters>(
   id: string,
   operation: string,
   invocationCount: number,
-  recipeId: string = id
+  contributorId: string = id
 ): RasterIterationState {
   return {
-    status: createRecipeTransientView(graph, operation, recipeId, `${id}-status`, 'uint32', 4),
-    dispatch: createRecipeTransientView(
+    status: createContributorTransientView(
       graph,
       operation,
-      recipeId,
+      contributorId,
+      `${id}-status`,
+      'uint32',
+      4
+    ),
+    dispatch: createContributorTransientView(
+      graph,
+      operation,
+      contributorId,
       `${id}-dispatch`,
       'uint32',
       3,
@@ -234,7 +241,7 @@ export type RasterTiledRelaxationProps = {
 /**
  * Creates the state for a tiled min-relaxation and returns it with its reset nodes.
  *
- * Schedule order: `resetNodes`, then the recipe's own value initialization and seed nodes (which
+ * Schedule order: `resetNodes`, then the contributor's own value initialization and seed nodes (which
  * may mark tiles), then {@link createRasterTiledRelaxationNodes}, then an optional
  * {@link createRasterIterationFinalizeNode}.
  *
@@ -256,7 +263,7 @@ export function createRasterTiledRelaxation<Parameters>(
     tileCount * WORKGROUP_SIZE,
     props.id
   );
-  const tileStamps = createRecipeTransientView(
+  const tileStamps = createContributorTransientView(
     graph,
     props.operation,
     props.id,
@@ -320,7 +327,7 @@ export function createRasterTiledRelaxationNodes<Parameters>(
     auxiliary: GraphDataView<'float32'>;
     /** Settings starting with the shared grid prefix. */
     settings: GraphDataView<'float32'>;
-    /** Recipe WGSL defining `getRelaxationCandidate`. */
+    /** Contributor WGSL defining `getRelaxationCandidate`. */
     declarations: string;
     /** In-tile repetitions per global iteration. Defaults to `2 * RASTER_RELAXATION_TILE_SIZE`. */
     innerIterations?: number;

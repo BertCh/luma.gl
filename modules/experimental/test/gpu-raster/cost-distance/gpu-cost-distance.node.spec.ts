@@ -70,7 +70,7 @@ it('GPUCostDistance prefixes every node ID and grows two nodes per iteration', (
   const device = createNullWebGPUDevice();
   const countNodes = (maxIterations: number) => {
     const graph = new GPUCommandGraph(device);
-    const recipe = new GPUCostDistance({
+    const contributor = new GPUCostDistance({
       ...createProps(graph),
       id: 'cd',
       maxIterations,
@@ -82,9 +82,8 @@ it('GPUCostDistance prefixes every node ID and grows two nodes per iteration', (
       converged: createTransientView(graph, 'converged', 'uint32', 1),
       iterationCount: createTransientView(graph, 'iteration-count', 'uint32', 1)
     });
-    expect(recipe.recipe).toBe('cost-distance');
-    expect(recipe.maxIterations).toBe(maxIterations);
-    return recipe.getCommandNodes(graph);
+    expect(contributor.maxIterations).toBe(maxIterations);
+    return contributor.getCommandNodes(graph);
   };
   const small = countNodes(2);
   const large = countNodes(5);
@@ -208,9 +207,8 @@ it('GPUCostDistancePath schedules a walk and publish node and validates props', 
       totalCount: createTransientView(graph, 'total-count', 'uint32', 1)
     }
   };
-  const recipe = new GPUCostDistancePath(props);
-  expect(recipe.recipe).toBe('cost-distance-path');
-  const ids = recipe.getCommandNodes(graph).map(node => node.id);
+  const contributor = new GPUCostDistancePath(props);
+  const ids = contributor.getCommandNodes(graph).map(node => node.id);
   expect(ids).toEqual(['path-walk', 'path-publish']);
   expect(new GPUCostDistancePath({...props, id: undefined}).id).toBe('cost-distance-path');
   expect(
@@ -263,7 +261,7 @@ it('GPUCostDistancePath schedules a walk and publish node and validates props', 
   device.destroy();
 });
 
-it('attributes internal transient ID collisions to the recipe that generated them', () => {
+it('attributes internal transient ID collisions to the contributor that generated them', () => {
   const device = createNullWebGPUDevice();
   // GPUCostDistancePath creates `${id}-total`.
   let graph = new GPUCommandGraph(device);

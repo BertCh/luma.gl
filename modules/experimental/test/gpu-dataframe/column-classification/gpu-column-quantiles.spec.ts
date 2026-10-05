@@ -6,7 +6,7 @@ import type {Buffer, Device} from '@luma.gl/core';
 import {GPUCommandGraph} from '@luma.gl/gpgpu/gpu-core';
 import {getWebGPUTestDevice} from '@luma.gl/test-utils';
 import {expect, it} from 'vitest';
-import {GPUParameterBuffer, importGraphBuffer, submitGraph} from '../../../src/utils/gpu-contributor-utils';
+import {GPUParameterBuffer, importGraphBuffer} from '../../../src/utils/gpu-contributor-utils';
 import {getColumnQuantileNodes} from '../../../src/gpu-dataframe/column-classification/column-quantiles-nodes';
 import {
   getGPUColumnQuantilesParameterLength,
@@ -18,7 +18,8 @@ import {
   createInputBuffer,
   createOutputBuffer,
   readFloat32,
-  readUint32
+  readUint32,
+  submitGraph
 } from '../../utils/gpu-contributor-test-utils';
 import {
   computeColumnQuantilesOracle,
@@ -141,7 +142,7 @@ function createFixture(
     format: 'float32',
     length: getGPUColumnQuantilesParameterLength(quantileCount)
   });
-  const recipe = new GPUColumnQuantiles({
+  const contributor = new GPUColumnQuantiles({
     id: 'quantiles',
     values: importGraphBuffer(graph, 'values', valuesBuffer, 'float32', rows),
     mask: maskBuffer ? importGraphBuffer(graph, 'mask', maskBuffer, 'uint32', rows) : undefined,
@@ -164,12 +165,12 @@ function createFixture(
         : {})
     }
   });
-  const originalGetCommandNodes = recipe.getCommandNodes.bind(recipe);
-  recipe.getCommandNodes = graphArgument => {
+  const originalGetCommandNodes = contributor.getCommandNodes.bind(contributor);
+  contributor.getCommandNodes = graphArgument => {
     counters.getCommandNodes++;
     return originalGetCommandNodes(graphArgument);
   };
-  graph.add(recipe);
+  graph.add(contributor);
   counters.compile++;
   const compiled = graph.compile();
   const encode = (frame: Frame) => {

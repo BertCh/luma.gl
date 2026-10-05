@@ -6,9 +6,14 @@ import type {Buffer, Device} from '@luma.gl/core';
 import {GPUCommandGraph} from '@luma.gl/gpgpu/gpu-core';
 import {getWebGPUTestDevice} from '@luma.gl/test-utils';
 import {expect, it} from 'vitest';
-import {importGraphBuffer, submitGraph} from '../../../src/utils/gpu-contributor-utils';
+import {importGraphBuffer} from '../../../src/utils/gpu-contributor-utils';
 import {GPUKeyJoin, type GPUKeyJoinKind} from '../../../src/gpu-dataframe/key-join';
-import {createInputBuffer, createOutputBuffer, readUint32} from '../../utils/gpu-contributor-test-utils';
+import {
+  createInputBuffer,
+  createOutputBuffer,
+  readUint32,
+  submitGraph
+} from '../../utils/gpu-contributor-test-utils';
 import {
   createRandom,
   joinOnCPU,

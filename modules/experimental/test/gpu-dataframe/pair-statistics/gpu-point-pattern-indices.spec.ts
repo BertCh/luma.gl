@@ -116,7 +116,7 @@ function createHarness(device: Device, scene: Scene, quadratGrid: readonly [numb
       quadratCounts: {format: 'uint32', length: quadratCount},
       quadratStatistics: {format: 'float32', length: GPU_QUADRAT_STATISTICS_LENGTH}
     },
-    createRecipe: views =>
+    createContributor: views =>
       new GPUPointPatternIndices({
         positions: views.positions,
         mask: views.mask,
@@ -418,7 +418,7 @@ it('GPUPointPatternIndices builds each part on its own with the same results', a
         clarkEvans: {format: 'float32', length: GPU_CLARK_EVANS_LENGTH},
         quadratStatistics: {format: 'float32', length: GPU_QUADRAT_STATISTICS_LENGTH}
       },
-      createRecipe: views =>
+      createContributor: views =>
         new GPUPointPatternIndices({
           positions: views.positions,
           mask: views.mask,
@@ -435,7 +435,7 @@ it('GPUPointPatternIndices builds each part on its own with the same results', a
       ...scene,
       parameterLength: GPU_POINT_PATTERN_INDICES_PARAMETER_LENGTH,
       outputs: {nearestNeighborIds: {format: 'uint32', length: rows}},
-      createRecipe: views =>
+      createContributor: views =>
         new GPUPointPatternIndices({
           positions: views.positions,
           mask: views.mask,

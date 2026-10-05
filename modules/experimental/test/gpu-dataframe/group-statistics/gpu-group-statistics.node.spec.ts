@@ -343,10 +343,9 @@ it('GPUGroupStatistics emits deterministic nodes for every statistic', () => {
       totalCount: view('uint32', 1)
     }
   };
-  const recipe = new GPUGroupStatistics(props);
-  const nodes = recipe.getCommandNodes(graph);
+  const contributor = new GPUGroupStatistics(props);
+  const nodes = contributor.getCommandNodes(graph);
   const ids = nodes.map(node => node.id);
-  expect(recipe.recipe).toBe('group-statistics');
   expect(new Set(ids).size).toBe(ids.length);
   expect(ids.every(id => id.startsWith('stats-'))).toBe(true);
   for (const step of [

@@ -93,7 +93,7 @@ it('GPULocalMoran matches the oracle across per-frame radius, level, and weight 
     {bounds: [10, 10, 70, 90], radius: 5}
   ];
   const harness = createSpatialAutocorrelationHarness(device, {
-    recipe: 'local-moran',
+    contributor: 'local-moran',
     scene,
     parameters: frames[0]
   });
@@ -144,7 +144,7 @@ it('GPULocalMoran finds a planted spatial outlier and honors the mask and fixed 
   mask[outlier] = 1;
   const parameters: GPUSpatialAutocorrelationParameters = {bounds: BOUNDS, radius: 8};
   const harness = createSpatialAutocorrelationHarness(device, {
-    recipe: 'local-moran',
+    contributor: 'local-moran',
     scene: {positions: scene.positions, values, mask},
     parameters
   });
@@ -192,7 +192,7 @@ it('GPULocalMoran applies Benjamini-Hochberg FDR to quadrant significance', asyn
       significanceLevel
     };
     const harness = createSpatialAutocorrelationHarness(device, {
-      recipe: 'local-moran',
+      contributor: 'local-moran',
       scene,
       parameters,
       falseDiscoveryRate: true

@@ -95,7 +95,7 @@ export type GPUGeographicallyWeightedRegressionSettings = {
 /**
  * Returns the float32 length of a parameter view for a ladder capacity.
  *
- * @param maximumBandwidthCount Compile-time ladder length of the recipe.
+ * @param maximumBandwidthCount Compile-time ladder length of the contributor.
  */
 export function getGPUGeographicallyWeightedRegressionParameterLength(
   maximumBandwidthCount: number = GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_MAXIMUM_LADDER_LENGTH
@@ -110,7 +110,7 @@ export function getGPUGeographicallyWeightedRegressionParameterLength(
  * between encodings without rebuilding the graph.
  *
  * @param settings Kernel, bandwidth mode and ladder.
- * @param maximumBandwidthCount Ladder capacity of the recipe (its `maximumBandwidthCount`).
+ * @param maximumBandwidthCount Ladder capacity of the contributor (its `maximumBandwidthCount`).
  * @param target Optional destination of at least the parameter length.
  * @throws If the ladder is empty, longer than the capacity, or has a non-finite value, or a name is
  * not recognized, or `target` is too short.

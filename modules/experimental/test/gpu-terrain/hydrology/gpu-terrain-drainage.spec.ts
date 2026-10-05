@@ -6,7 +6,7 @@ import type {Device} from '@luma.gl/core';
 import {GPUCommandGraph} from '@luma.gl/gpgpu/gpu-core';
 import {getWebGPUTestDevice} from '@luma.gl/test-utils';
 import {expect, it} from 'vitest';
-import {importGraphBuffer, submitGraph} from '../../../src/utils/gpu-contributor-utils';
+import {importGraphBuffer} from '../../../src/utils/gpu-contributor-utils';
 import {GPUTerrainHeightAboveDrainage} from '../../../src/gpu-terrain/hydrology/gpu-terrain-height-above-drainage';
 import {GPUTerrainStreamOrder} from '../../../src/gpu-terrain/hydrology/gpu-terrain-stream-order';
 import {
@@ -17,7 +17,8 @@ import {
   createInputBuffer,
   createOutputBuffer,
   readFloat32,
-  readUint32
+  readUint32,
+  submitGraph
 } from '../../utils/gpu-contributor-test-utils';
 import {
   computeHeightAboveDrainageOnCPU,
@@ -160,7 +161,7 @@ for (const [width, height] of [
   [37, 29],
   [70, 45]
 ]) {
-  it(`drainage recipes match the oracles on synthetic DEMs ${width}x${height}`, async () => {
+  it(`drainage contributors match the oracles on synthetic DEMs ${width}x${height}`, async () => {
     const device = await getWebGPUTestDevice();
     if (!device) {
       return;

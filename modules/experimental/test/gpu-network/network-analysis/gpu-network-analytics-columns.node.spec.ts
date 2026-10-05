@@ -61,7 +61,7 @@ it('GPUNetworkAnalyticsColumns schedules algorithms then normalization in a fixe
   const device = createNullWebGPUDevice();
   const imports = createImports(device);
   const {importView, graph} = imports;
-  const recipe = new GPUNetworkAnalyticsColumns({
+  const contributor = new GPUNetworkAnalyticsColumns({
     id: 'columns',
     ...createProps(imports),
     reverseOffsets: importView('reverse-offsets', 'uint32', NODE_COUNT + 1),
@@ -87,8 +87,7 @@ it('GPUNetworkAnalyticsColumns schedules algorithms then normalization in a fixe
     components: {output: importView('components', 'uint32', NODE_COUNT), iterations: 1},
     communities: {output: importView('communities', 'uint32', NODE_COUNT), iterations: 1}
   });
-  expect(recipe.recipe).toBe('network-analytics-columns');
-  const ids = recipe.getCommandNodes(graph).map(node => node.id);
+  const ids = contributor.getCommandNodes(graph).map(node => node.id);
   const indexOf = (prefix: string) => ids.findIndex(id => id.startsWith(prefix));
   expect(ids[0]).toBe('columns-degree');
   expect(ids[1]).toBe('columns-in-degree');
@@ -102,19 +101,19 @@ it('GPUNetworkAnalyticsColumns schedules algorithms then normalization in a fixe
   expect(ids.some(id => id.startsWith('columns-page-rank-extent'))).toBe(true);
   expect(ids).not.toContain('columns-in-degree-normalize');
   expect(ids.indexOf('columns-degree-normalize')).toBeGreaterThan(indexOf('columns-degree-extent'));
-  recipe.destroy();
+  contributor.destroy();
   device.destroy();
 });
 
 it('GPUNetworkAnalyticsColumns schedules only the requested metrics', () => {
   const device = createNullWebGPUDevice();
   const imports = createImports(device);
-  const recipe = new GPUNetworkAnalyticsColumns(createProps(imports));
-  expect(recipe.id).toBe('network-analytics-columns');
-  expect(recipe.getCommandNodes(imports.graph).map(node => node.id)).toEqual([
+  const contributor = new GPUNetworkAnalyticsColumns(createProps(imports));
+  expect(contributor.id).toBe('network-analytics-columns');
+  expect(contributor.getCommandNodes(imports.graph).map(node => node.id)).toEqual([
     'network-analytics-columns-degree'
   ]);
-  recipe.destroy();
+  contributor.destroy();
   device.destroy();
 });
 
@@ -223,13 +222,13 @@ it('GPUNetworkAnalyticsColumns validates props', () => {
 it('GPUNetworkAnalyticsColumns owns no GPU resources and validates algorithms eagerly', () => {
   const device = createNullWebGPUDevice();
   const imports = createImports(device);
-  const recipe = new GPUNetworkAnalyticsColumns(
+  const contributor = new GPUNetworkAnalyticsColumns(
     createProps(imports, {pageRank: {output: imports.importView('pr', 'float32', NODE_COUNT)}})
   );
-  const ids = recipe.getCommandNodes(imports.graph).map(node => node.id);
+  const ids = contributor.getCommandNodes(imports.graph).map(node => node.id);
   // PageRank reads an overflow word; the exact CSR gets a graph-owned zero word cleared first.
   expect(ids.indexOf('network-analytics-columns-page-rank-forward-overflow-exact-clear')).toBe(1);
-  expect(() => recipe.destroy()).not.toThrow();
+  expect(() => contributor.destroy()).not.toThrow();
 
   const failing = createImports(device);
   expect(

@@ -40,7 +40,7 @@ export type GPUColorScaleParameterOptions = {
   /** Scale type. */
   scale: GPUColorScaleType;
   /**
-   * Number of active domain entries, `1..maximumDomainCount`. Ignored when the recipe was given a
+   * Number of active domain entries, `1..maximumDomainCount`. Ignored when the contributor was given a
    * `domainCount` view, which then supplies a CLASS count `k` and the domain has `k + 1` edges.
    */
   domainCount: number;

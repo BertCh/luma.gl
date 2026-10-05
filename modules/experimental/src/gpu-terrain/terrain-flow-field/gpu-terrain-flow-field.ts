@@ -107,7 +107,7 @@ export type GPUTerrainFlowFieldProps = {
 
 /**
  * Terrain-following wind: a uniform horizontal wind deflected by the DEM so it flows around and
- * over relief, ready for the particle-advection and flow-texture recipes.
+ * over relief, ready for the particle-advection and flow-texture contributors.
  *
  * Air cannot enter the ground, so the 3D wind is projected onto the terrain tangent plane. With
  * the surface gradient `g = (dh/dx, dh/dy)` the horizontal part of that projection is

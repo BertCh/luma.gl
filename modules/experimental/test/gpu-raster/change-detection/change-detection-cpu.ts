@@ -103,7 +103,7 @@ export function studentTTwoSidedPOnCPU(t: number, degreesOfFreedom: number): num
   return Math.min(Math.max(incomplete, 0), 1);
 }
 
-/** Complementary error function (Numerical Recipes erfcc); mirrors the WGSL helper. */
+/** Complementary error function (Numerical Contributors erfcc); mirrors the WGSL helper. */
 export function complementaryErrorOnCPU(value: number): number {
   const z = Math.abs(value);
   const t = 1 / (1 + 0.5 * z);

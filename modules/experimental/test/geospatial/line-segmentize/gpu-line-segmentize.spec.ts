@@ -47,7 +47,7 @@ function createSegmentizeFixture(
     },
     capacity: options.capacity,
     pathCapacity: paths.pathOffsets.length - 1,
-    createRecipe: (inputs, parameters, output) =>
+    createContributor: (inputs, parameters, output) =>
       new GPULineSegmentize({
         positions: inputs['positions'] as GraphDataView<'float32x2'>,
         pathOffsets: inputs['pathOffsets'] as GraphDataView<'uint32'>,
@@ -230,7 +230,7 @@ it('GPUGreatCircleArcs matches the f64 slerp for origin/destination pairs', asyn
     },
     capacity,
     pathCapacity: sources.length,
-    createRecipe: (inputs, parameters, output) =>
+    createContributor: (inputs, parameters, output) =>
       new GPUGreatCircleArcs({
         sources: inputs['sources'] as GraphDataView<'float32x2'>,
         targets: inputs['targets'] as GraphDataView<'float32x2'>,
@@ -292,7 +292,7 @@ it('GPUGreatCircleArcs reports overflow and clamps offsets', async () => {
     },
     capacity,
     pathCapacity: 3,
-    createRecipe: (inputs, parameters, output) =>
+    createContributor: (inputs, parameters, output) =>
       new GPUGreatCircleArcs({
         sources: inputs['sources'] as GraphDataView<'float32x2'>,
         targets: inputs['targets'] as GraphDataView<'float32x2'>,

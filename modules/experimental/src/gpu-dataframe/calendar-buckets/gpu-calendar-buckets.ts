@@ -261,11 +261,7 @@ export class GPUCalendarBuckets implements GPUCommandNodeProducer {
       });
     }
 
-    const read = (
-      name: string,
-      view: GraphDataView,
-      type: 'u32' | 'i32'
-    ): WGSLKernelBinding => ({
+    const read = (name: string, view: GraphDataView, type: 'u32' | 'i32'): WGSLKernelBinding => ({
       name,
       view,
       type,

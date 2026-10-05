@@ -23,7 +23,7 @@ fn isNanValue(value: f32) -> bool {
 /**
  * Student-t two-sided p-value via the regularized incomplete beta function.
  *
- * `p = I_x(df / 2, 1 / 2)` with `x = df / (df + t^2)` (Numerical Recipes `betai` / `betacf`),
+ * `p = I_x(df / 2, 1 / 2)` with `x = df / (df + t^2)` (Numerical Contributors `betai` / `betacf`),
  * with a Stirling-series log-gamma (argument shifted up to at least 8 in a fixed 8-step loop).
  * The CPU oracle in the tests mirrors these formulas in float64.
  */
@@ -104,7 +104,7 @@ fn studentTTwoSidedP(t: f32, degreesOfFreedom: f32) -> f32 {
 `;
 
 /**
- * Complementary error function (Numerical Recipes `erfcc`, fractional error below 1.2e-7).
+ * Complementary error function (Numerical Contributors `erfcc`, fractional error below 1.2e-7).
  * The two-sided normal p-value of z is `erfc(|z| / sqrt(2))`.
  */
 export const ERFC_WGSL = /* wgsl */ `

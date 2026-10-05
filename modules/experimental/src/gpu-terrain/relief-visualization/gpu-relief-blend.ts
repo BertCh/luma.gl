@@ -189,7 +189,7 @@ export type GPUReliefBlendProps = {
  *
  * RVT's single-band overlay and soft light mutate the background array in place, so its
  * `render_images` then blends the result with itself and the layer opacity has no effect for
- * those two modes. This recipe applies the documented opacity to every mode instead.
+ * those two modes. This contributor applies the documented opacity to every mode instead.
  *
  * Percentile ("percent") stretches are not implemented because they need a histogram; callers
  * pass the numeric `minimum` and `maximum`, for example from `GPURasterStatistics`.

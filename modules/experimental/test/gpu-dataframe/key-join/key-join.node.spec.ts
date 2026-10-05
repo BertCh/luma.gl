@@ -72,7 +72,6 @@ it('GPUKeyJoin validates its props', () => {
   const view = <Format extends 'uint32' | 'float32' | 'uint32x2'>(format: Format, length: number) =>
     createTransientView(graph, `v-${serial++}`, format, length);
   expect(() => new GPUKeyJoin(createProps(graph)).getCommandNodes(graph)).not.toThrow();
-  expect(new GPUKeyJoin(createProps(graph)).recipe).toBe('key-join');
   expect(() => new GPUKeyJoin(createProps(graph, {sumScale: -1}))).toThrow(/sumScale/);
   expect(
     () =>

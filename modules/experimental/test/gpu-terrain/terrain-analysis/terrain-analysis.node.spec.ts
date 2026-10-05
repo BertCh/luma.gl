@@ -38,10 +38,9 @@ it('GPUTerrainDerivatives schedules gradients and the shade kernel', () => {
       ...overrides
     });
   };
-  const recipe = create();
-  expect(recipe.requiredHalo).toBe(1);
-  expect(recipe.recipe).toBe('terrain-derivatives');
-  expect(recipe.getCommandNodes(graph).map(node => node.id)).toEqual([
+  const contributor = create();
+  expect(contributor.requiredHalo).toBe(1);
+  expect(contributor.getCommandNodes(graph).map(node => node.id)).toEqual([
     'terrain-derivatives-gradient-x',
     'terrain-derivatives-gradient-y',
     'terrain-derivatives-shade'
@@ -89,15 +88,15 @@ it('GPUTerrainContours schedules one contour pipeline and overflow OR per level'
   });
   const levels = [level('a'), level('b')];
   const overflow = createTransientView(graph, 'overflow', 'uint32', 1);
-  const recipe = new GPUTerrainContours({
+  const contributor = new GPUTerrainContours({
     width: 5,
     height: 5,
     elevation: createBand(graph, 'elevation', 25),
     levels,
     overflow
   });
-  expect(recipe.requiredHalo).toBe(1);
-  const ids = recipe.getCommandNodes(graph).map(node => node.id);
+  expect(contributor.requiredHalo).toBe(1);
+  const ids = contributor.getCommandNodes(graph).map(node => node.id);
   expect(ids[0]).toBe('terrain-contours-level-0-classify');
   for (const id of [
     'terrain-contours-level-0-scatter',
@@ -207,8 +206,8 @@ it('GPUTerrainContours validates and schedules indirect draw layouts', () => {
       overflow: createTransientView(graph, `overflow-${instance}`, 'uint32', 1)
     });
   };
-  const drawNodes = (recipe: GPUTerrainContours) =>
-    recipe
+  const drawNodes = (contributor: GPUTerrainContours) =>
+    contributor
       .getCommandNodes(graph)
       .map(node => node.id)
       .filter(id => id.endsWith('-draw'));
@@ -216,7 +215,7 @@ it('GPUTerrainContours validates and schedules indirect draw layouts', () => {
   // Default two-vertex instanced record is written by the raster publish pass.
   expect(drawNodes(create())).toEqual([]);
   expect(drawNodes(create({verticesPerInstance: 2}))).toEqual([]);
-  // Other shapes add one recipe node after the level pipeline.
+  // Other shapes add one contributor node after the level pipeline.
   expect(drawNodes(create({verticesPerInstance: 6, drawCommandIndex: 1}))).toHaveLength(1);
   expect(drawNodes(create({drawLayout: 'line-list'}))).toHaveLength(1);
 

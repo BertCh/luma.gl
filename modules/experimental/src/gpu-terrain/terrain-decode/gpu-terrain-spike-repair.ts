@@ -68,7 +68,7 @@ const NO_VERTEX = '0xffffffffu';
 /**
  * Properties for {@link GPUTerrainSpikeRepair}.
  *
- * The recipe is cell-size independent: it compares heights only, never horizontal distances.
+ * The contributor is cell-size independent: it compares heights only, never horizontal distances.
  * Topology: grid size, `elevation` format and every numeric setting (all baked into WGSL),
  * `componentIterations`, and which optional outputs exist. Per-frame: elevation contents.
  */
@@ -138,7 +138,7 @@ function getHundredths(value: number | undefined, fallback: number): number | un
  * Run the repair on decoded full-resolution heights BEFORE any filtering or resampling: a filtered
  * spike is no longer a clean `step * k` jump. Out-of-range pixels are nodata from the decode step
  * (`GPUTerrainRGBDecode` `validRange`) and stay nodata; mt-image fills them from a neighbour
- * median, which is a separate, explicit choice that this recipe does not make. Nodata never bleeds:
+ * median, which is a separate, explicit choice that this contributor does not make. Nodata never bleeds:
  * invalid pixels are isolated, never seams, and their value slot is never read as a height.
  *
  * Components use `GPUGraphConnectedComponents` over a fixed-stride forward CSR (two slots per
@@ -149,14 +149,14 @@ function getHundredths(value: number | undefined, fallback: number): number | un
  *
  * Main component: the maximum size, ties to the lowest label. This equals mt-image, whose BFS
  * discovers components in ascending seed order and keeps the first strict maximum. mt-image skips
- * components with `size > N / 4` where `N` counts all pixels; this recipe uses the valid-pixel
+ * components with `size > N / 4` where `N` counts all pixels; this contributor uses the valid-pixel
  * count instead, since nodata pixels are not part of any component.
  *
  * Seam votes. For every ordered pair `(a, b)` of 4-adjacent valid pixels in different components,
  * `seams[label(a)]++`, `dh = h_a - h_b`, `k = round(dh / step)`, and the pair votes for `k` iff
  * `k != 0` and `|dh - step * k| < tolerance`. mt-image takes the mode `k` per component and shifts
  * iff `votes(mode) >= agreement * seams`. A per-component histogram is too large on the GPU, so
- * this recipe uses an exact equivalent. Keep per component `voteCount` and eight bit counts of
+ * this contributor uses an exact equivalent. Keep per component `voteCount` and eight bit counts of
  * `k + 128`. If some `k*` has `votes(k*) >= agreement * seams` with `agreement > 0.5`, then
  * `votes(k*) >= agreement * voteCount > voteCount / 2`, so `k*` is a strict majority of the votes
  * and each bit of `k* + 128` is the majority bit: the bit counts `> voteCount / 2` reproduce
@@ -180,7 +180,7 @@ function getHundredths(value: number | undefined, fallback: number): number | un
  * tiles are limited by `maxStorageBufferBindingSize` (2048 x 2048 at 128 MiB).
  *
  * Owns a CSR, label buffer and small scalars released by {@link destroy}, created on first use.
- * Add the recipe to one graph at a time; destroy compiled graphs first.
+ * Add the contributor to one graph at a time; destroy compiled graphs first.
  */
 export class GPUTerrainSpikeRepair implements GPUCommandNodeProducer {
   /** Prefix for every node and transient ID. */

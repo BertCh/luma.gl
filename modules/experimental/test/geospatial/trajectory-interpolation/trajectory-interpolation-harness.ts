@@ -5,7 +5,7 @@
 import type {Buffer, Device} from '@luma.gl/core';
 import {GPUCommandGraph} from '@luma.gl/gpgpu/gpu-core';
 import {expect} from 'vitest';
-import {GPUParameterBuffer, importGraphBuffer, submitGraph} from '../../../src/utils/gpu-contributor-utils';
+import {GPUParameterBuffer, importGraphBuffer} from '../../../src/utils/gpu-contributor-utils';
 import {getInt64TimeWords} from '../../../src/gpu-dataframe/time-window-filter/time-words';
 import {
   getGPUTrajectoryPlayheadParameterValues,
@@ -19,7 +19,8 @@ import {
   createInputBuffer,
   createOutputBuffer,
   readFloat32,
-  readUint32
+  readUint32,
+  submitGraph
 } from '../../utils/gpu-contributor-test-utils';
 import type {
   OracleTracks,
@@ -38,7 +39,7 @@ export type PlayheadGPUResult = PlayheadOracleResult & {
 /** One compiled playhead graph reused across playheads. */
 export type PlayheadFixture = {
   run(playhead: number | bigint, maxGap?: number): Promise<PlayheadGPUResult>;
-  /** Number of times the recipe built its command nodes (1 after compile). */
+  /** Number of times the contributor built its command nodes (1 after compile). */
   getBuildCount(): number;
   destroy(): void;
 };
@@ -105,7 +106,7 @@ export function createPlayheadFixture(
     draw: tracker.output(1)
   };
   const timestampBuffer = tracker.input(getTimestampData(tracks));
-  const recipe = new GPUTrajectoryPlayhead({
+  const contributor = new GPUTrajectoryPlayhead({
     id: 'playhead',
     positions: importGraphBuffer(
       graph,
@@ -164,12 +165,12 @@ export function createPlayheadFixture(
     drawInstanceCount: importGraphBuffer(graph, 'o-draw', out.draw, 'uint32', 1)
   });
   let buildCount = 0;
-  const getCommandNodes = recipe.getCommandNodes.bind(recipe);
-  recipe.getCommandNodes = currentGraph => {
+  const getCommandNodes = contributor.getCommandNodes.bind(contributor);
+  contributor.getCommandNodes = currentGraph => {
     buildCount++;
     return getCommandNodes(currentGraph);
   };
-  graph.add(recipe);
+  graph.add(contributor);
   const compiled = graph.compile();
   return {
     async run(playhead, maxGap = 0) {

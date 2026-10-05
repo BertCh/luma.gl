@@ -10,9 +10,9 @@ import {expect, it, vi} from 'vitest';
 
 import {GPUGraphDeckEffect} from '../src/gpu-graph/gpu-graph-effect';
 import {
-  getGPUGraphRecipeColumnsSkipReason,
-  GPUGraphRecipeColumns
-} from '../src/gpu-graph/gpu-graph-recipe-columns';
+  getGPUGraphAnalysisColumnsSkipReason,
+  GPUGraphAnalysisColumns
+} from '../src/gpu-graph/gpu-graph-analysis-columns';
 import {makeGraphExplorerDataset} from '../../../examples/experimental/gpu-graph-explorer/graph-data';
 import {
   buildCSR,
@@ -20,15 +20,15 @@ import {
   bandOracle,
   type NetworkCSR,
   type NetworkEdge
-} from '../../experimental/test/map-graphs/network-reachability/network-reachability-oracle';
+} from '../../experimental/test/gpu-network/network-reachability/network-reachability-oracle';
 import {
   componentsOracle,
   coreNumberOracle,
   degreeOracle,
   normalizeOracle,
   pageRankOracle
-} from '../../experimental/test/map-graphs/network-analysis/network-analytics-oracle';
-import {neighborhoodOracle} from '../../experimental/test/map-graphs/network-analysis/network-neighborhood-oracle';
+} from '../../experimental/test/gpu-network/network-analysis/network-analytics-oracle';
+import {neighborhoodOracle} from '../../experimental/test/gpu-network/network-analysis/network-neighborhood-oracle';
 
 const BAND_THRESHOLDS = [0, 1, 2, 3, 4, 6, 8, 12];
 
@@ -99,16 +99,16 @@ function bfsDistances(csr: NetworkCSR, vertexCount: number, source: number): num
   return distances;
 }
 
-async function encodeAndSubmit(device: Device, columns: GPUGraphRecipeColumns): Promise<void> {
-  const encoder = device.createCommandEncoder({id: 'recipe-columns-test'});
+async function encodeAndSubmit(device: Device, columns: GPUGraphAnalysisColumns): Promise<void> {
+  const encoder = device.createCommandEncoder({id: 'analysis-columns-test'});
   columns.encodeAnalytics(encoder);
   columns.encodeInteraction(encoder);
   device.submit(encoder.finish());
 }
 
-it('GPUGraphRecipeColumns produces oracle-exact GPU columns, masks, paths, and bands without recompiling', async () => {
+it('GPUGraphAnalysisColumns produces oracle-exact GPU columns, masks, paths, and bands without recompiling', async () => {
   const device = await getWebGPUTestDevice();
-  expect(device, 'a WebGPU device is required for the recipe-columns parity test').toBeTruthy();
+  expect(device, 'a WebGPU device is required for the analysis-columns parity test').toBeTruthy();
   if (!device) return;
 
   const dataset = makeGraphExplorerDataset();
@@ -119,7 +119,7 @@ it('GPUGraphRecipeColumns produces oracle-exact GPU columns, masks, paths, and b
   const {graph, destroy: destroyGraph} = createGraph(device, vertexCount, sources, targets);
 
   const submitSpy = vi.spyOn(device, 'submit');
-  const columns = new GPUGraphRecipeColumns(device, graph);
+  const columns = new GPUGraphAnalysisColumns(device, graph);
   try {
     expect(submitSpy.mock.calls.length, 'construction never submits hidden GPU work').toBe(0);
 
@@ -259,7 +259,7 @@ it('GPUGraphRecipeColumns produces oracle-exact GPU columns, masks, paths, and b
       'compiled graph objects are identical'
     ).toEqual(graphs);
     const encodeCount = columns.stats.interactionEncodeCount;
-    const idleEncoder = device.createCommandEncoder({id: 'recipe-columns-idle'});
+    const idleEncoder = device.createCommandEncoder({id: 'analysis-columns-idle'});
     expect(columns.encodeInteraction(idleEncoder), 'unchanged inputs encode nothing').toBe(false);
     expect(columns.encodeAnalytics(idleEncoder), 'analytics encode only once').toBe(false);
     idleEncoder.finish();
@@ -273,25 +273,25 @@ it('GPUGraphRecipeColumns produces oracle-exact GPU columns, masks, paths, and b
   }
 });
 
-it('GPUGraphDeckEffect owns recipe columns by default and can opt out', async () => {
+it('GPUGraphDeckEffect owns analysis columns by default and can opt out', async () => {
   const device = await getWebGPUTestDevice();
-  expect(device, 'a WebGPU device is required for the effect recipe-columns test').toBeTruthy();
+  expect(device, 'a WebGPU device is required for the effect analysis-columns test').toBeTruthy();
   if (!device) return;
 
   const dataset = makeGraphExplorerDataset();
   const submitSpy = vi.spyOn(device, 'submit');
   const effect = new GPUGraphDeckEffect(device, dataset);
-  const disabled = new GPUGraphDeckEffect(device, dataset, {recipeColumns: false});
+  const disabled = new GPUGraphDeckEffect(device, dataset, {analysisColumns: false});
   try {
     expect(submitSpy.mock.calls.length, 'effect construction never submits').toBe(0);
     submitSpy.mockRestore();
-    expect(effect.recipeColumns).toBeInstanceOf(GPUGraphRecipeColumns);
-    expect(effect.recipeColumnsSkipReason).toBeNull();
-    expect(disabled.recipeColumns).toBeUndefined();
-    expect(disabled.recipeColumnsSkipReason).toContain('disabled');
-    expect(getGPUGraphRecipeColumnsSkipReason(device, 128, 0)).toContain('no edges');
+    expect(effect.analysisColumns).toBeInstanceOf(GPUGraphAnalysisColumns);
+    expect(effect.analysisColumnsSkipReason).toBeNull();
+    expect(disabled.analysisColumns).toBeUndefined();
+    expect(disabled.analysisColumnsSkipReason).toContain('disabled');
+    expect(getGPUGraphAnalysisColumnsSkipReason(device, 128, 0)).toContain('no edges');
     expect(
-      getGPUGraphRecipeColumnsSkipReason(
+      getGPUGraphAnalysisColumnsSkipReason(
         device,
         1024,
         Math.ceil(device.limits.maxStorageBufferBindingSize / 4)
@@ -306,10 +306,10 @@ it('GPUGraphDeckEffect owns recipe columns by default and can opt out', async ()
       GPUGraphDeckEffect['preRender']
     >[0]);
     device.submit();
-    const mask = await readUint32(effect.recipeColumns!.neighborhoodMask, dataset.vertexCount);
+    const mask = await readUint32(effect.analysisColumns!.neighborhoodMask, dataset.vertexCount);
     expect(mask[5], 'the hovered vertex is inside its own neighborhood').toBeGreaterThan(0);
-    expect(effect.recipeColumns!.stats.interactionEncodeCount).toBe(1);
-    expect(effect.recipeColumns!.isAnalyticsComplete).toBe(true);
+    expect(effect.analysisColumns!.stats.interactionEncodeCount).toBe(1);
+    expect(effect.analysisColumns!.isAnalyticsComplete).toBe(true);
   } finally {
     effect.cleanup({} as never);
     disabled.cleanup({} as never);

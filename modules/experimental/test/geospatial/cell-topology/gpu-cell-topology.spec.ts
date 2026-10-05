@@ -7,13 +7,18 @@ import {GPUCommandGraph} from '@luma.gl/gpgpu/gpu-core';
 import {getWebGPUTestDevice} from '@luma.gl/test-utils';
 import {getPentagons, gridDisk, latLngToCell} from 'h3-js';
 import {expect, it} from 'vitest';
-import {importGraphBuffer, submitGraph} from '../../../src/utils/gpu-contributor-utils';
+import {importGraphBuffer} from '../../../src/utils/gpu-contributor-utils';
 import {
   getCellTopologyStride,
   GPUCellTopology,
   type GPUCellTopologyOperation
 } from '../../../src/geospatial/cell-topology/gpu-cell-topology';
-import {createInputBuffer, createOutputBuffer, readUint32} from '../../utils/gpu-contributor-test-utils';
+import {
+  createInputBuffer,
+  createOutputBuffer,
+  readUint32,
+  submitGraph
+} from '../../utils/gpu-contributor-test-utils';
 import {
   h3ToBigInt,
   joinCellKey,

@@ -7,7 +7,7 @@ import {GPUCommandGraph} from '@luma.gl/gpgpu/gpu-core';
 import {getWebGPUTestDevice} from '@luma.gl/test-utils';
 import {expect, it} from 'vitest';
 import {GPURasterTextureToBuffer} from '../../../src/gpu-raster';
-import {GPUParameterBuffer, importGraphBuffer, submitGraph} from '../../../src/utils/gpu-contributor-utils';
+import {GPUParameterBuffer, importGraphBuffer} from '../../../src/utils/gpu-contributor-utils';
 import {
   getGPUTextureShadingParameterValues,
   GPUTextureShading,
@@ -17,7 +17,8 @@ import {
   createInputBuffer,
   createOutputBuffer,
   readFloat32,
-  readUint32
+  readUint32,
+  submitGraph
 } from '../../utils/gpu-contributor-test-utils';
 import {createSmoothTerrain} from './terrain-horizon-oracle';
 import {computeTextureShading} from './texture-shading-oracle';

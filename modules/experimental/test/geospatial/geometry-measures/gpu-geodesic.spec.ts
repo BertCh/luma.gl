@@ -8,12 +8,13 @@ import {getWebGPUTestDevice} from '@luma.gl/test-utils';
 import {expect, it, vi} from 'vitest';
 import {GPUGeodesicDestination} from '../../../src/geospatial/geometry-measures/gpu-geodesic-destination';
 import {GPUGeodesicPairs} from '../../../src/geospatial/geometry-measures/gpu-geodesic-pairs';
-import {importGraphBuffer, submitGraph} from '../../../src/utils/gpu-contributor-utils';
+import {importGraphBuffer} from '../../../src/utils/gpu-contributor-utils';
 import {
   createInputBuffer,
   createOutputBuffer,
   readFloat32,
-  readUint32
+  readUint32,
+  submitGraph
 } from '../../utils/gpu-contributor-test-utils';
 import {
   getDestination,

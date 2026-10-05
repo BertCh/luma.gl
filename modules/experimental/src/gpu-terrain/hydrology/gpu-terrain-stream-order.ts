@@ -34,7 +34,7 @@ const OPERATION = 'GPUTerrainStreamOrder';
  * Properties for {@link GPUTerrainStreamOrder}.
  *
  * Compile-time: `width`, `height`, `maxIterations`, and the presence of `converged`. Per-frame: the
- * contents of `flowDirections` and `streams`. The recipe works on D8 receiver indices only, so it
+ * contents of `flowDirections` and `streams`. The contributor works on D8 receiver indices only, so it
  * has no cell-size model (`uniform`, `web-mercator` and `geographic` spacing give the same orders).
  *
  * Output aliasing: outputs never share a buffer with an input or with each other.

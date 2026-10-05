@@ -10,12 +10,17 @@ import {
   GPU_POINT_IN_POLYGON_CLASSIFICATION,
   GPUPairwisePointInPolygon
 } from '../../../src/geospatial';
-import {importGraphBuffer, submitGraph} from '../../../src/utils/gpu-contributor-utils';
+import {importGraphBuffer} from '../../../src/utils/gpu-contributor-utils';
 import {
   GPU_SPATIAL_JOIN_NO_FEATURE,
   GPUPointInPolygonJoin
 } from '../../../src/geospatial/spatial-join';
-import {createInputBuffer, createOutputBuffer, readUint32} from '../../utils/gpu-contributor-test-utils';
+import {
+  createInputBuffer,
+  createOutputBuffer,
+  readUint32,
+  submitGraph
+} from '../../utils/gpu-contributor-test-utils';
 import {UNCERTAINTY_FEATURES, UNCERTAINTY_POINTS} from './uncertainty-scene';
 import {
   buildPolygonFeatureArrays,

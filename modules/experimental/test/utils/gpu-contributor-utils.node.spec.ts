@@ -5,7 +5,13 @@
 import {Buffer} from '@luma.gl/core';
 import {GPUCommandGraph, GPUMask, createTransientView} from '@luma.gl/gpgpu/gpu-core';
 import {expect, test} from 'vitest';
-import {captureGraphCommandNodes, getGraphViewChunks, importGraphBuffer, validateGraphViewsBelongToGraph, validateCompactOutput} from '../../src/utils/gpu-contributor-utils';
+import {
+  captureGraphCommandNodes,
+  getGraphViewChunks,
+  importGraphBuffer,
+  validateGraphViewsBelongToGraph,
+  validateCompactOutput
+} from '../../src/utils/gpu-contributor-utils';
 import {type GPUCommandNodeProducer} from '@luma.gl/gpgpu/gpu-core';
 import {GPUPairwisePointDistance} from '../../src/geospatial';
 import {createNullWebGPUDevice} from './gpu-contributor-test-utils';
@@ -43,9 +49,9 @@ test('captureGraphCommandNodes bridges experimental addToGraph contributors', ()
   device.destroy();
 });
 
-test('a recipe built on captureGraphCommandNodes composes through graph.add', () => {
+test('a contributor built on captureGraphCommandNodes composes through graph.add', () => {
   const device = createNullWebGPUDevice();
-  const graph = new GPUCommandGraph(device, {id: 'recipe-composition'});
+  const graph = new GPUCommandGraph(device, {id: 'contributor-composition'});
   const input = createTransientView(graph, 'input', 'uint32', 8);
   const output = createTransientView(graph, 'output', 'uint32', 8);
   const scheduled: string[] = [];
@@ -55,7 +61,7 @@ test('a recipe built on captureGraphCommandNodes composes through graph.add', ()
     addComputePass(node);
   };
 
-  class InvertRecipe implements GPUCommandNodeProducer {
+  class InvertContributor implements GPUCommandNodeProducer {
     readonly id = 'invert';
     getCommandNodes<Parameters>(target: GPUCommandGraph<Parameters>) {
       return captureGraphCommandNodes(target, () => {
@@ -63,13 +69,13 @@ test('a recipe built on captureGraphCommandNodes composes through graph.add', ()
       });
     }
   }
-  graph.add(new InvertRecipe());
+  graph.add(new InvertContributor());
 
   expect(scheduled).toEqual(['invert-mask']);
   device.destroy();
 });
 
-test('map-graph validation helpers enforce graph membership and compact output layout', () => {
+test('contributor validation helpers enforce graph membership and compact output layout', () => {
   const device = createNullWebGPUDevice();
   const graph = new GPUCommandGraph(device, {id: 'validation'});
   const otherGraph = new GPUCommandGraph(device, {id: 'other'});
@@ -81,11 +87,15 @@ test('map-graph validation helpers enforce graph membership and compact output l
 
   expect(ids.length, 'length defaults to whole rows').toBe(16);
   expect(getGraphViewChunks(ids)).toEqual([ids]);
-  expect(() => validateGraphViewsBelongToGraph('recipe', graph, [ids, undefined])).not.toThrow();
-  expect(() => validateGraphViewsBelongToGraph('recipe', graph, [foreign])).toThrow(/target graph/);
-  expect(() => validateCompactOutput('recipe', {ids, count, overflow})).not.toThrow();
   expect(() =>
-    validateCompactOutput('recipe', {
+    validateGraphViewsBelongToGraph('contributor', graph, [ids, undefined])
+  ).not.toThrow();
+  expect(() => validateGraphViewsBelongToGraph('contributor', graph, [foreign])).toThrow(
+    /target graph/
+  );
+  expect(() => validateCompactOutput('contributor', {ids, count, overflow})).not.toThrow();
+  expect(() =>
+    validateCompactOutput('contributor', {
       ids,
       count: createTransientView(graph, 'empty-count', 'uint32', 0),
       overflow

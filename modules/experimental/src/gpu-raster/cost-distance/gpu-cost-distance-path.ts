@@ -16,7 +16,7 @@ import {
   validateTerrainBuffersDistinct,
   validateTerrainGrid
 } from '../../gpu-terrain/terrain-analysis/terrain-analysis-utils';
-import {createRecipeTransientView} from './raster-grid-utils';
+import {createContributorTransientView} from './raster-grid-utils';
 import {GPU_COST_DISTANCE_NONE} from './gpu-cost-distance';
 
 const OPERATION = 'GPUCostDistancePath';
@@ -117,7 +117,7 @@ export class GPUCostDistancePath implements GPUCommandNodeProducer {
       output.totalCount
     ]);
     const cellCount = props.width * props.height;
-    const total = createRecipeTransientView(graph, OPERATION, id, `${id}-total`, 'uint32', 1);
+    const total = createContributorTransientView(graph, OPERATION, id, `${id}-total`, 'uint32', 1);
     return [
       createWGSLKernelNode<Parameters>(graph, {
         id: `${id}-walk`,

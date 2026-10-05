@@ -13,14 +13,19 @@ import {
 } from '@luma.gl/gpgpu/gpu-core';
 import {getWebGPUTestDevice} from '@luma.gl/test-utils';
 import {expect, it} from 'vitest';
-import {importGraphBuffer, submitGraph} from '../../../src/utils/gpu-contributor-utils';
+import {importGraphBuffer} from '../../../src/utils/gpu-contributor-utils';
 import {GPUResidentRowSelection} from '../../../src/gpu-tables/residency-arena/gpu-resident-row-selection';
 import {
   getGPUTimeWindowParameterValues,
   GPUTimeWindowFilter
 } from '../../../src/gpu-dataframe/time-window-filter';
 import {getTimeWindowClassifyNodes} from '../../../src/gpu-dataframe/time-window-filter/time-window-classify-node';
-import {createInputBuffer, createOutputBuffer, createVectorView} from '../../utils/gpu-contributor-test-utils';
+import {
+  createInputBuffer,
+  createOutputBuffer,
+  createVectorView,
+  submitGraph
+} from '../../utils/gpu-contributor-test-utils';
 
 const ROW_COUNT = 1_048_576;
 const CHUNK_COUNTS = [1, 8, 32];

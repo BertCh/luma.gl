@@ -6,7 +6,7 @@ import {Buffer, type Device} from '@luma.gl/core';
 import {GPUCommandGraph} from '@luma.gl/gpgpu/gpu-core';
 import {getWebGPUTestDevice} from '@luma.gl/test-utils';
 import {expect, it} from 'vitest';
-import {GPUParameterBuffer, importGraphBuffer, submitGraph} from '../../../src/utils/gpu-contributor-utils';
+import {GPUParameterBuffer, importGraphBuffer} from '../../../src/utils/gpu-contributor-utils';
 import {
   decodeGPURegionStatistics,
   getGPURegionStatisticsSummaryLength,
@@ -19,7 +19,8 @@ import {
   createInputBuffer,
   createOutputBuffer,
   readCompactIds,
-  readUint32
+  readUint32,
+  submitGraph
 } from '../../utils/gpu-contributor-test-utils';
 import {
   CIRCLE,
@@ -223,7 +224,7 @@ it('GPURegionStatistics writes the clamped selected count to a draw record insta
       values: RECTANGLE
     });
     // A 4-word draw record [vertexCount, instanceCount, firstVertex, firstInstance] seeded with
-    // sentinels; the recipe must write only the 1-row slice at element offset 1.
+    // sentinels; the contributor must write only the 1-row slice at element offset 1.
     const recordBuffer = device.createBuffer({
       data: Uint32Array.from([6, 999, 0, 0]),
       usage: Buffer.STORAGE | Buffer.COPY_SRC | Buffer.COPY_DST

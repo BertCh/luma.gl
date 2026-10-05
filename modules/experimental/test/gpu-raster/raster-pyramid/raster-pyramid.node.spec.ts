@@ -78,10 +78,9 @@ it('GPURasterExtremaPyramid schedules one node per level with at most 8 bindings
       ...overrides
     });
   };
-  const recipe = create();
-  expect(recipe.recipe).toBe('raster-extrema-pyramid');
-  expect(recipe.layout.length).toBe(84);
-  const ids = recipe.getCommandNodes(graph).map(node => node.id);
+  const contributor = create();
+  expect(contributor.layout.length).toBe(84);
+  const ids = contributor.getCommandNodes(graph).map(node => node.id);
   expect(ids.filter(id => id.startsWith('raster-extrema-pyramid-level-'))).toEqual(
     [0, 1, 2, 3, 4].map(level => `raster-extrema-pyramid-level-${level}`)
   );

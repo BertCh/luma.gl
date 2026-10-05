@@ -274,8 +274,8 @@ it('GPUGlobalSpatialStatistics validates its props and emits deterministic node 
         })
       )
   ).toThrow(/must not share/);
-  const recipe = new GPUGlobalSpatialStatistics({...createProps(graph), id: 'g'});
-  const ids = recipe.getCommandNodes(graph).map(node => node.id);
+  const contributor = new GPUGlobalSpatialStatistics({...createProps(graph), id: 'g'});
+  const ids = contributor.getCommandNodes(graph).map(node => node.id);
   expect(ids[0]).toBe('g-include');
   expect(ids.at(-1)).toBe('g-finalize');
   expect(new Set(ids).size).toBe(ids.length);

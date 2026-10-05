@@ -51,6 +51,7 @@ contributor submits commands or reads results back.
 | [Pixel operations](/docs/api-reference/experimental/gpu-raster/operations-pixel) | Band math, NDVI, contrast, gamma, equalization, and thresholds. |
 | [Filters and morphology](/docs/api-reference/experimental/gpu-raster/operations-filters-morphology) | Neighborhood filters, convolution, gradients, dilation, erosion, opening, and closing. |
 | [Regions and contours](/docs/api-reference/experimental/gpu-raster/operations-regions-contours) | Connected components, region measurements, marching squares, and indirect overlays. |
+| [Analysis contributors](/docs/api-reference/experimental/gpu-raster/operations-analysis) | Zonal statistics, stretches, isolines, distance and cost surfaces, rasterization, change detection, and flow textures. |
 
 ## How to use this reference
 
@@ -61,5 +62,6 @@ page states ownership, capacity, failure, and performance behavior alongside its
 ## Related pages
 
 - [GPURaster overview](/docs/api-reference/experimental/gpu-raster)
+- [GPU Terrain](/docs/api-reference/experimental/gpu-terrain)
 - [Satellite Raster Lab](/examples/showcase/raster-lab)
 - [GPU Core](/docs/api-reference/experimental/gpu-core)

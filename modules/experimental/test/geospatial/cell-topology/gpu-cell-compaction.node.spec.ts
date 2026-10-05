@@ -90,8 +90,8 @@ it('GPUCellCompaction emits deterministic node IDs', () => {
   const device = createNullWebGPUDevice();
   const getIds = (overrides: Partial<GPUCellCompactionProps>) => {
     const graph = new GPUCommandGraph(device);
-    const recipe = new GPUCellCompaction(createProps(graph, {id: 'compaction', ...overrides}));
-    return recipe.getCommandNodes(graph).map(node => node.id);
+    const contributor = new GPUCellCompaction(createProps(graph, {id: 'compaction', ...overrides}));
+    return contributor.getCommandNodes(graph).map(node => node.id);
   };
   const compact = getIds({});
   expect(getIds({})).toEqual(compact);

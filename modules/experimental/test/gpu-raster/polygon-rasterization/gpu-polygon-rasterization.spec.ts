@@ -4,7 +4,7 @@
 
 import {getWebGPUTestDevice} from '@luma.gl/test-utils';
 import {expect, it} from 'vitest';
-import {submitGraph} from '../../../src/utils/gpu-contributor-utils';
+import {submitGraph} from '../../utils/gpu-contributor-test-utils';
 import {getGPUPolygonRasterizationExtentValues} from '../../../src/gpu-raster/polygon-rasterization';
 import {
   createPolygons,
@@ -64,7 +64,7 @@ it('GPUPolygonRasterization matches the oracle on holes, overlaps, sub-cell poly
   const polygons = createExactScene();
   const raster = {width: 16, height: 12, extent: [0, 0, 1, 1] as Extent};
   const fixture = createRasterizationFixture(device, {...raster, polygons, crossingCapacity: 256});
-  expect(fixture.recipe.singleSort).toBe(true);
+  expect(fixture.contributor.singleSort).toBe(true);
   const compiled = fixture.graph.compile();
   submitGraph(device, compiled, undefined);
   const actual = await readRasterization(fixture);
@@ -254,7 +254,7 @@ it('GPUPolygonRasterization sorts with two stable passes when the packed key exc
     polygons,
     crossingCapacity: expected.crossingCount + 64
   });
-  expect(fixture.recipe.singleSort).toBe(false);
+  expect(fixture.contributor.singleSort).toBe(false);
   const compiled = fixture.graph.compile();
   submitGraph(device, compiled, undefined);
   const actual = await readRasterization(fixture);

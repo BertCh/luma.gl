@@ -79,7 +79,6 @@ it('GPUTerrainCurvature packs settings and groups outputs into kernels', () => {
   ).toThrow(/ringGains/);
 
   const single = create();
-  expect(single.recipe).toBe('terrain-curvature');
   const singleIds = single.getCommandNodes(graph).map(node => node.id);
   expect(singleIds).toEqual(['terrain-curvature-elevation', 'terrain-curvature-curvature-0']);
 
@@ -172,7 +171,7 @@ it('GPUTerrainCurvature reports kernels that exceed the storage binding limit', 
     value: {...device.limits, maxStorageBuffersPerShaderStage: 6}
   });
   const graph = new GPUCommandGraph(device);
-  const recipe = new GPUTerrainCurvature({
+  const contributor = new GPUTerrainCurvature({
     width: 6,
     height: 5,
     elevation: createBand(graph, 'elevation', 30),
@@ -184,6 +183,6 @@ it('GPUTerrainCurvature reports kernels that exceed the storage binding limit', 
       ])
     )
   });
-  expect(() => recipe.getCommandNodes(graph)).toThrow(/storage buffers/);
+  expect(() => contributor.getCommandNodes(graph)).toThrow(/storage buffers/);
   device.destroy();
 });

@@ -4,19 +4,20 @@
 
 import type {Buffer, Device} from '@luma.gl/core';
 import {GPUCommandGraph, type GraphDataView} from '@luma.gl/gpgpu/gpu-core';
-import {GPUParameterBuffer, importGraphBuffer, submitGraph} from '../../../src/utils/gpu-contributor-utils';
+import {GPUParameterBuffer, importGraphBuffer} from '../../../src/utils/gpu-contributor-utils';
 import type {GPUCommandNodeProducer} from '@luma.gl/gpgpu/gpu-core';
 import {
   createInputBuffer,
   createOutputBuffer,
   readFloat32,
-  readUint32
+  readUint32,
+  submitGraph
 } from '../../utils/gpu-contributor-test-utils';
 
 /** Output column requested by a harness: format and row count. */
 export type HarnessOutput = {format: 'float32' | 'uint32'; length: number};
 
-/** Views handed to a harness recipe factory. */
+/** Views handed to a harness contributor factory. */
 export type HarnessViews<Names extends string = string> = {
   positions: GraphDataView<'float32x2'>;
   values?: GraphDataView<'float32'>;
@@ -25,7 +26,7 @@ export type HarnessViews<Names extends string = string> = {
   outputs: Record<Names, GraphDataView<'float32'> | GraphDataView<'uint32'>>;
 };
 
-/** A compiled graph holding one recipe, re-encoded with new parameters on every `run`. */
+/** A compiled graph holding one contributor, re-encoded with new parameters on every `run`. */
 export type PairStatisticsHarness<Names extends string = string> = {
   run(parameters: Float32Array): Promise<Record<Names, number[]>>;
   /** Number of graph compilations after the first; stays 0 across parameter changes. */
@@ -34,7 +35,7 @@ export type PairStatisticsHarness<Names extends string = string> = {
 };
 
 /**
- * Builds and compiles one graph around `createRecipe`, importing the scene and one caller-owned
+ * Builds and compiles one graph around `createContributor`, importing the scene and one caller-owned
  * buffer per requested output.
  */
 export function createPairStatisticsHarness<Names extends string>(
@@ -45,7 +46,7 @@ export function createPairStatisticsHarness<Names extends string>(
     mask?: Uint32Array;
     parameterLength: number;
     outputs: Record<Names, HarnessOutput>;
-    createRecipe: (views: HarnessViews<Names>) => GPUCommandNodeProducer;
+    createContributor: (views: HarnessViews<Names>) => GPUCommandNodeProducer;
   }
 ): PairStatisticsHarness<Names> {
   const rows = props.positions.length / 2;
@@ -101,7 +102,7 @@ export function createPairStatisticsHarness<Names extends string>(
     parameters: parameterBuffer.importToGraph(graph),
     outputs: outputViews
   };
-  graph.add(props.createRecipe(views));
+  graph.add(props.createContributor(views));
   let compileCount = 0;
   const compiled = graph.compile();
   compileCount++;

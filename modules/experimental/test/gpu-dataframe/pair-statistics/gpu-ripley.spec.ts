@@ -83,7 +83,7 @@ function createHarness(device: Device, scene: Scene, radiusCount = RADIUS_COUNT)
       pairCounts: {format: 'uint32', length: radiusCount},
       radii: {format: 'float32', length: radiusCount}
     },
-    createRecipe: views =>
+    createContributor: views =>
       new GPURipley({
         positions: views.positions,
         mask: views.mask,

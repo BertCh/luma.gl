@@ -105,7 +105,7 @@ fn cellIndexGeohashFromLngLat(longitude: f32, latitude: f32, length: u32) -> vec
  *
  * Precision: `st` is an f32 (24 bit mantissa) so `ij` carries an absolute error of up to a few
  * hundred units of 2^-30; the cell is exact except within that distance of a cell edge, so the
- * mismatch rate against an f64 reference grows with the level (see the recipe documentation).
+ * mismatch rate against an f64 reference grows with the level (see the contributor documentation).
  *
  * @internal
  */

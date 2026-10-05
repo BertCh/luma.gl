@@ -167,8 +167,8 @@ it('GPUTemporalReduction rejects invalid properties', () => {
 it('GPUTemporalReduction creates deterministic node IDs', () => {
   const device = createNullWebGPUDevice();
   const graph = new GPUCommandGraph(device);
-  const recipe = new GPUTemporalReduction(createProps(graph));
-  const ids = recipe.getCommandNodes(graph).map(node => node.id);
+  const contributor = new GPUTemporalReduction(createProps(graph));
+  const ids = contributor.getCommandNodes(graph).map(node => node.id);
   for (const step of [
     'init',
     'classify',
@@ -180,7 +180,7 @@ it('GPUTemporalReduction creates deterministic node IDs', () => {
   ]) {
     expect(ids).toContain(`temporal-reduction-${step}`);
   }
-  expect(recipe.slotCount).toBe(12);
+  expect(contributor.slotCount).toBe(12);
   device.destroy();
 });
 

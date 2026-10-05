@@ -6,7 +6,7 @@ import type {Device} from '@luma.gl/core';
 import {GPUCommandGraph} from '@luma.gl/gpgpu/gpu-core';
 import {getWebGPUTestDevice} from '@luma.gl/test-utils';
 import {expect, it} from 'vitest';
-import {GPUParameterBuffer, importGraphBuffer, submitGraph} from '../../../src/utils/gpu-contributor-utils';
+import {GPUParameterBuffer, importGraphBuffer} from '../../../src/utils/gpu-contributor-utils';
 import {
   getGPUNeighborSearchParameterValues,
   GPUNeighborSearch,
@@ -24,7 +24,8 @@ import {
   createInputBuffer,
   createOutputBuffer,
   readFloat32,
-  readUint32
+  readUint32,
+  submitGraph
 } from '../../utils/gpu-contributor-test-utils';
 import {
   computeGlobalSpatialStatisticsOracle,
@@ -68,7 +69,7 @@ function createHarness(device: Device, scene: Scene, statistics = ALL) {
     joinCounts: createOutputBuffer(device, 3)
   };
   const graph = new GPUCommandGraph(device, {id: 'global-statistics-test'});
-  const recipe = new GPUGlobalSpatialStatistics({
+  const contributor = new GPUGlobalSpatialStatistics({
     weights: {
       offsets: importGraphBuffer(graph, 'offsets', buffers.offsets, 'uint32', rows + 1),
       neighbors: importGraphBuffer(graph, 'neighbors', buffers.neighbors, 'uint32', capacity),
@@ -84,12 +85,12 @@ function createHarness(device: Device, scene: Scene, statistics = ALL) {
     joinCounts: importGraphBuffer(graph, 'join-counts', buffers.joinCounts, 'uint32', 3)
   });
   let buildCount = 0;
-  const getCommandNodes = recipe.getCommandNodes.bind(recipe);
-  recipe.getCommandNodes = (target => {
+  const getCommandNodes = contributor.getCommandNodes.bind(contributor);
+  contributor.getCommandNodes = (target => {
     buildCount++;
     return getCommandNodes(target);
-  }) as typeof recipe.getCommandNodes;
-  graph.add(recipe);
+  }) as typeof contributor.getCommandNodes;
+  graph.add(contributor);
   const compiled = graph.compile();
   return {
     get buildCount() {

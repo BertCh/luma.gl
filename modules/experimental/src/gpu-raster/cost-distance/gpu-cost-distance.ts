@@ -24,7 +24,7 @@ import {
   validateTerrainSettings
 } from '../../gpu-terrain/terrain-analysis/terrain-analysis-utils';
 import {
-  createRecipeTransientView,
+  createContributorTransientView,
   getRasterGridWGSL,
   validateRasterCellSizeMode,
   writeRasterGridSettings,
@@ -306,7 +306,7 @@ export class GPUCostDistance implements GPUCommandNodeProducer {
       height,
       true
     );
-    const auxiliary = createRecipeTransientView(
+    const auxiliary = createContributorTransientView(
       graph,
       OPERATION,
       id,
@@ -481,7 +481,14 @@ ${STRICT_PREDECESSOR_WGSL}`,
     if (props.bandThresholds && (props.bands || props.bandCounts)) {
       const bands =
         props.bands ??
-        createRecipeTransientView(graph, OPERATION, id, `${id}-bands-scratch`, 'uint32', cellCount);
+        createContributorTransientView(
+          graph,
+          OPERATION,
+          id,
+          `${id}-bands-scratch`,
+          'uint32',
+          cellCount
+        );
       nodes.push(
         createWGSLKernelNode<Parameters>(graph, {
           id: `${id}-bands`,
@@ -549,7 +556,7 @@ ${STRICT_PREDECESSOR_WGSL}`,
     const {width, height} = props;
     const {nodes, auxiliary, cellSizeMode} = context;
     const cellCount = width * height;
-    const levels = createRecipeTransientView(
+    const levels = createContributorTransientView(
       graph,
       OPERATION,
       id,
@@ -557,7 +564,7 @@ ${STRICT_PREDECESSOR_WGSL}`,
       'float32',
       cellCount
     );
-    const masks = createRecipeTransientView(
+    const masks = createContributorTransientView(
       graph,
       OPERATION,
       id,

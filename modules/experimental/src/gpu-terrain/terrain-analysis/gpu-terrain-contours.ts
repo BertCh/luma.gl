@@ -17,7 +17,10 @@ import {
 } from '../../gpu-raster/index';
 import {createWGSLKernelNode} from '../../utils/wgsl-kernel-nodes';
 import type {GPUCommandNodeProducer} from '@luma.gl/gpgpu/gpu-core';
-import {captureGraphCommandNodes, validateGraphViewsBelongToGraph} from '../../utils/gpu-contributor-utils';
+import {
+  captureGraphCommandNodes,
+  validateGraphViewsBelongToGraph
+} from '../../utils/gpu-contributor-utils';
 import {
   getTerrainBandViews,
   getTerrainElevationNodes,
@@ -91,8 +94,8 @@ export type GPUTerrainContoursProps = {
  * Extracts marching-squares contour segments for several elevation levels into bounded buffers.
  *
  * Each level is one `GPURasterContours` pipeline (classify, scan, scatter, publish); one
- * recipe-wide overflow flag reports truncation in any level. Per-level layout errors surface from
- * `GPURasterContours` when the recipe is added to a graph.
+ * contributor-wide overflow flag reports truncation in any level. Per-level layout errors surface from
+ * `GPURasterContours` when the contributor is added to a graph.
  */
 export class GPUTerrainContours implements GPUCommandNodeProducer {
   /** Prefix for every node and transient ID. */
@@ -156,7 +159,7 @@ export class GPUTerrainContours implements GPUCommandNodeProducer {
     const nodes: GPUCommandNode<Parameters>[] = [...source.nodes];
     for (const [index, level] of props.levels.entries()) {
       // The default two-vertex instanced record is written by the raster publish pass itself;
-      // every other shape is written by a recipe node that reads the clamped segment count.
+      // every other shape is written by a contributor node that reads the clamped segment count.
       const customDraw = level.draw !== undefined && !isDefaultContourDraw(level);
       const levelOverflow =
         level.overflow ?? createTransientView(graph, `${id}-level-${index}-overflow`, 'uint32', 1);
@@ -182,7 +185,7 @@ export class GPUTerrainContours implements GPUCommandNodeProducer {
       if (customDraw && level.draw) {
         nodes.push(createContourDrawNode<Parameters>(graph, id, index, level, level.draw));
       }
-      // The level-0 node writes without reading, so every encoding resets the recipe flag.
+      // The level-0 node writes without reading, so every encoding resets the contributor flag.
       nodes.push(
         createWGSLKernelNode<Parameters>(graph, {
           id: `${id}-overflow-${index}`,

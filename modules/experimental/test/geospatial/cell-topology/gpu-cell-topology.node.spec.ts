@@ -28,7 +28,7 @@ function create(
 ) {
   const graph = new GPUCommandGraph(createNullWebGPUDevice(), {id: 'g'});
   const stride = getCellTopologyStride(family, operation);
-  const recipe = new GPUCellTopology({
+  const contributor = new GPUCellTopology({
     id: extra.id,
     family,
     operation,
@@ -39,7 +39,7 @@ function create(
       counts: extra.counts ? view(graph, 'uint32', rows) : undefined
     }
   });
-  return {graph, recipe, stride};
+  return {graph, contributor, stride};
 }
 
 it('GPUCellTopology strides', () => {
@@ -80,14 +80,16 @@ it('GPUCellTopology emits one deterministic node per operation', () => {
     {type: 'children', resolution: 6, inputResolution: 5}
   ] as const) {
     for (const family of ['quadbin', 'h3'] as const) {
-      const {graph, recipe} = create(family, operation, 3, {counts: true, id: 'topo'});
-      const nodes = recipe.getCommandNodes(graph);
+      const {graph, contributor} = create(family, operation, 3, {counts: true, id: 'topo'});
+      const nodes = contributor.getCommandNodes(graph);
       expect(nodes.map(node => node.id)).toEqual(['topo-topology']);
     }
   }
-  const {graph, recipe} = create('h3', {type: 'disk', k: 1});
-  expect(recipe.id).toBe('cell-topology');
-  expect(recipe.getCommandNodes(graph).map(node => node.id)).toEqual(['cell-topology-topology']);
+  const {graph, contributor} = create('h3', {type: 'disk', k: 1});
+  expect(contributor.id).toBe('cell-topology');
+  expect(contributor.getCommandNodes(graph).map(node => node.id)).toEqual([
+    'cell-topology-topology'
+  ]);
 });
 
 it('GPUCellTopology validates inputs', () => {

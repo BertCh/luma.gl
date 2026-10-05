@@ -6,7 +6,7 @@ import type {Device} from '@luma.gl/core';
 import {GPUCommandGraph} from '@luma.gl/gpgpu/gpu-core';
 import {getWebGPUTestDevice} from '@luma.gl/test-utils';
 import {expect, it} from 'vitest';
-import {GPUParameterBuffer, importGraphBuffer, submitGraph} from '../../../src/utils/gpu-contributor-utils';
+import {GPUParameterBuffer, importGraphBuffer} from '../../../src/utils/gpu-contributor-utils';
 import {
   GPU_TERRAIN_VISIBILITY as V,
   GPUTerrainLineOfSight,
@@ -21,7 +21,8 @@ import {
   createOutputBuffer,
   isSoftwareDevice,
   readFloat32,
-  readUint32
+  readUint32,
+  submitGraph
 } from '../../utils/gpu-contributor-test-utils';
 import {computeTerrainSightLine, createFractalTerrain} from './terrain-analysis-oracle';
 
@@ -43,7 +44,9 @@ async function runLineOfSight(
   const pairCount = pairs.length / 4;
   const elevationBuffer = createInputBuffer(device, elevation);
   const pairBuffer = createInputBuffer(device, pairs);
-  const heightBuffer = options.pairHeights ? createInputBuffer(device, options.pairHeights) : undefined;
+  const heightBuffer = options.pairHeights
+    ? createInputBuffer(device, options.pairHeights)
+    : undefined;
   const visibilityBuffer = createOutputBuffer(device, pairCount);
   const clearanceBuffer = createOutputBuffer(device, pairCount);
   const settingsBuffer = new GPUParameterBuffer(device, {
@@ -86,7 +89,13 @@ async function runLineOfSight(
   };
   compiled.destroy();
   settingsBuffer.destroy();
-  for (const buffer of [elevationBuffer, pairBuffer, heightBuffer, visibilityBuffer, clearanceBuffer]) {
+  for (const buffer of [
+    elevationBuffer,
+    pairBuffer,
+    heightBuffer,
+    visibilityBuffer,
+    clearanceBuffer
+  ]) {
     buffer?.destroy();
   }
   return result;
@@ -204,12 +213,30 @@ it('GPUTerrainLineOfSight applies pair heights, noData and the float64 oracle', 
   strip[6] = 3;
   const settings: GPUTerrainSightLineSettings = {observerHeight: 1, cellSize: [1, 1]};
   const pairs = Float32Array.from([
-    0, 0, 10, 0, // behind the wall
-    0, 0, 4, 0, // in front of the wall
-    0, 0, 0, 0, // zero distance
-    -1, 0, 4, 0, // observer outside
-    0, 0, 12, 0, // target outside
-    0, 0, 10, 0 // behind the wall, with a tall observer
+    0,
+    0,
+    10,
+    0, // behind the wall
+    0,
+    0,
+    4,
+    0, // in front of the wall
+    0,
+    0,
+    0,
+    0, // zero distance
+    -1,
+    0,
+    4,
+    0, // observer outside
+    0,
+    0,
+    12,
+    0, // target outside
+    0,
+    0,
+    10,
+    0 // behind the wall, with a tall observer
   ]);
   const pairHeights = Float32Array.from([1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 50, 0]);
   const run = await runLineOfSight(device, strip, 12, 1, pairs, settings, {pairHeights});
@@ -234,7 +261,12 @@ it('GPUTerrainLineOfSight applies pair heights, noData and the float64 oracle', 
   };
   const pairList: number[] = [];
   for (let index = 0; index < 200; index++) {
-    pairList.push((index * 7.3) % (WIDTH - 1), (index * 3.1) % (HEIGHT - 1), (index * 5.7 + 3) % (WIDTH - 1), (index * 11.9 + 1) % (HEIGHT - 1));
+    pairList.push(
+      (index * 7.3) % (WIDTH - 1),
+      (index * 3.1) % (HEIGHT - 1),
+      (index * 5.7 + 3) % (WIDTH - 1),
+      (index * 11.9 + 1) % (HEIGHT - 1)
+    );
   }
   const list = Float32Array.from(pairList);
   const gpu = await runLineOfSight(device, terrain, WIDTH, HEIGHT, list, toleranceSettings, {

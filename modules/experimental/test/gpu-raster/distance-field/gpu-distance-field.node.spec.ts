@@ -70,12 +70,12 @@ it('GPUDistanceField builds deterministic exact and jump-flood node lists', () =
   const device = createNullWebGPUDevice();
   const getNodeIds = (overrides: Partial<GPUDistanceFieldProps>) => {
     const graph = new GPUCommandGraph(device);
-    const recipe = new GPUDistanceField({
+    const contributor = new GPUDistanceField({
       ...createProps(graph),
       id: 'df',
       ...overrides
     });
-    const first = recipe.getCommandNodes(graph).map(node => node.id);
+    const first = contributor.getCommandNodes(graph).map(node => node.id);
     return first;
   };
   expect(getNodeIds({})).toEqual([
@@ -98,13 +98,12 @@ it('GPUDistanceField builds deterministic exact and jump-flood node lists', () =
     seedMask: createTransientView(graph, 'mask', 'uint32', CELLS)
   });
   const graph = new GPUCommandGraph(device);
-  const recipe = new GPUDistanceField({
+  const contributor = new GPUDistanceField({
     ...createProps(graph),
     ...maskOnly(graph)
   });
-  expect(recipe.id).toBe('distance-field');
-  expect(recipe.recipe).toBe('distance-field');
-  expect(recipe.getCommandNodes(graph).map(node => node.id)).toEqual([
+  expect(contributor.id).toBe('distance-field');
+  expect(contributor.getCommandNodes(graph).map(node => node.id)).toEqual([
     'distance-field-seed-clear',
     'distance-field-columns',
     'distance-field-rows',

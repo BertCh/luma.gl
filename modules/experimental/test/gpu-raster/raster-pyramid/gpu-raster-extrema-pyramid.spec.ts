@@ -6,7 +6,7 @@ import type {Device} from '@luma.gl/core';
 import {createTransientView, GPUCommandGraph} from '@luma.gl/gpgpu/gpu-core';
 import {getWebGPUTestDevice} from '@luma.gl/test-utils';
 import {expect, it} from 'vitest';
-import {importGraphBuffer, submitGraph} from '../../../src/utils/gpu-contributor-utils';
+import {importGraphBuffer} from '../../../src/utils/gpu-contributor-utils';
 import {createWGSLKernelNode} from '../../../src/utils/wgsl-kernel-nodes';
 import {
   createRasterExtremaPyramidNodes,
@@ -17,7 +17,12 @@ import {
   GPURasterExtremaPyramid,
   type GPURasterExtremaPyramidFootprint
 } from '../../../src/gpu-raster/raster-pyramid';
-import {createInputBuffer, createOutputBuffer, readUint32} from '../../utils/gpu-contributor-test-utils';
+import {
+  createInputBuffer,
+  createOutputBuffer,
+  readUint32,
+  submitGraph
+} from '../../utils/gpu-contributor-test-utils';
 import {computeRasterExtremaPyramid} from './raster-pyramid-oracle';
 
 function createRandom(seed: number): () => number {

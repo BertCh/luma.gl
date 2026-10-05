@@ -256,11 +256,7 @@ export class GPUCompositeScore implements GPUCommandNodeProducer {
       : undefined;
     const ranks = enableRank ? transient('ranks', 'float32', rowCount * indicatorCount) : undefined;
 
-    const read = (
-      name: string,
-      view: GraphDataView,
-      type: 'u32' | 'f32'
-    ): WGSLKernelBinding => ({
+    const read = (name: string, view: GraphDataView, type: 'u32' | 'f32'): WGSLKernelBinding => ({
       name,
       view,
       type,

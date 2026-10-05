@@ -99,7 +99,7 @@ function createMatrixGraph(
   const costs = createOutputBuffer(device, rowNodes.length * nodeCount);
   const converged = createOutputBuffer(device, 1);
   buffers.push(costs, converged);
-  const recipe = new GPUNetworkCostMatrix({
+  const contributor = new GPUNetworkCostMatrix({
     id: 'matrix',
     offsets: importGraphBuffer(graph, 'offsets', input(csr.offsets), 'uint32', nodeCount + 1),
     neighbors: importGraphBuffer(
@@ -122,7 +122,7 @@ function createMatrixGraph(
     costs: importGraphBuffer(graph, 'costs', costs, 'float32', rowNodes.length * nodeCount),
     converged: importGraphBuffer(graph, 'converged', converged, 'uint32', 1)
   });
-  graph.add(recipe);
+  graph.add(contributor);
   return {graph, converged, costs, nodeCount};
 }
 

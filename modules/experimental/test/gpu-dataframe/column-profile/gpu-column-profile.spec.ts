@@ -6,7 +6,7 @@ import type {Buffer, Device} from '@luma.gl/core';
 import {GPUCommandGraph} from '@luma.gl/gpgpu/gpu-core';
 import {getWebGPUTestDevice} from '@luma.gl/test-utils';
 import {expect, it} from 'vitest';
-import {GPUParameterBuffer, importGraphBuffer, submitGraph} from '../../../src/utils/gpu-contributor-utils';
+import {GPUParameterBuffer, importGraphBuffer} from '../../../src/utils/gpu-contributor-utils';
 import {
   getGPUColumnProfileParameterLength,
   getGPUColumnProfileParameterValues,
@@ -19,7 +19,8 @@ import {
   createInputBuffer,
   createOutputBuffer,
   readFloat32,
-  readUint32
+  readUint32,
+  submitGraph
 } from '../../utils/gpu-contributor-test-utils';
 import {
   computeColumnProfileOracle,
@@ -152,7 +153,7 @@ function createFixture(device: Device, scene: Scene): Fixture {
     format: 'float32',
     length: getGPUColumnProfileParameterLength(columnCount)
   });
-  const recipe = new GPUColumnProfile({
+  const contributor = new GPUColumnProfile({
     id: 'profile',
     columns: columns.map((column, columnIndex): GPUColumnProfileColumn => {
       const buffer = columnBuffers[columnIndex];
@@ -208,12 +209,12 @@ function createFixture(device: Device, scene: Scene): Fixture {
       )
     }
   });
-  const originalGetCommandNodes = recipe.getCommandNodes.bind(recipe);
-  recipe.getCommandNodes = graphArgument => {
+  const originalGetCommandNodes = contributor.getCommandNodes.bind(contributor);
+  contributor.getCommandNodes = graphArgument => {
     counters.getCommandNodes++;
     return originalGetCommandNodes(graphArgument);
   };
-  graph.add(recipe);
+  graph.add(contributor);
   counters.compile++;
   const compiled = graph.compile();
   const encode = (domains: Domains = []) => {

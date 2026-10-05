@@ -61,9 +61,8 @@ it('getGPUTerrainHydrologicIndicesParameterValues packs settings', () => {
 
 it('GPUTerrainHydrologicIndices prefixes node ids', () => {
   const {device, graph, create} = createFixture();
-  const recipe = create({id: 'twi'});
-  expect(recipe.recipe).toBe('terrain-hydrologic-indices');
-  expect(recipe.getCommandNodes(graph).map(node => node.id)).toEqual([
+  const contributor = create({id: 'twi'});
+  expect(contributor.getCommandNodes(graph).map(node => node.id)).toEqual([
     'twi-elevation',
     'twi-indices'
   ]);

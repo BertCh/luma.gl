@@ -28,7 +28,7 @@ export function getLinePathOutputViews(output: GPULinePathOutput): (GraphDataVie
 /**
  * Validates the formats and lengths of a {@link GPULinePathOutput}.
  *
- * @param id Recipe ID for error messages.
+ * @param id Contributor ID for error messages.
  * @param output Output to validate.
  * @param pathCapacity Required number of output paths (`pathOffsets.length - 1`).
  * @internal

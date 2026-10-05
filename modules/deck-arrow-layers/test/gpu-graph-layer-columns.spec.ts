@@ -126,7 +126,7 @@ afterAll(() => {
   for (const step of cleanup) step();
 });
 
-describe('GPU Graph layers read recipe-agnostic GPU columns', () => {
+describe('GPU Graph layers read analysis-agnostic GPU columns', () => {
   it('colors nodes by a categorical uint32 column with a null color', async () => {
     const layer = makeNodeLayer({
       colorColumn: {

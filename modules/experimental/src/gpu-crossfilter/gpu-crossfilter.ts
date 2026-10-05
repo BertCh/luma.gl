@@ -11,6 +11,7 @@ import {
   type GPUHistogramEdges
 } from '@luma.gl/gpgpu/gpu-core';
 import {GPUMask} from '@luma.gl/gpgpu/gpu-core';
+import {GPUReduction} from '@luma.gl/gpgpu/gpu-core';
 import {GPUVisibilityWorkflow} from '@luma.gl/gpgpu/gpu-core';
 import {createTransientView} from '@luma.gl/gpgpu/gpu-core';
 import {
@@ -105,12 +106,21 @@ export type GPUCrossfilterMaskView = GPUCrossfilterViewOptions & {
   output: GPUCrossfilterMask;
 };
 
+/** One-row count of the rows that pass this view's effective selection. */
+export type GPUCrossfilterCountView = GPUCrossfilterViewOptions & {
+  /** This view publishes how many live rows pass the effective selection. */
+  kind: 'count';
+  /** Caller-owned one-row `uint32` count; rewritten on every encoding. */
+  output: GraphDataView<'uint32'>;
+};
+
 /** Dashboard view kept synchronized entirely through GPU command-graph work. */
 export type GPUCrossfilterView =
   | GPUCrossfilterHistogramView
   | GPUCrossfilterGroupView
   | GPUCrossfilterVisibilityView
-  | GPUCrossfilterMaskView;
+  | GPUCrossfilterMaskView
+  | GPUCrossfilterCountView;
 
 /** Source selections, linked views, and optional public mask owned by one dashboard. */
 export type GPUCrossfilterProps = {
@@ -122,6 +132,14 @@ export type GPUCrossfilterProps = {
   views?: readonly GPUCrossfilterView[];
   /** Optional caller-owned destination for the intersection of every selection. */
   outputMask?: GPUCrossfilterMask;
+  /**
+   * Optional per-row liveness, nonzero = live, for example a time-window or residency mask. Dead
+   * rows never enter a histogram, group, count, visibility list, or mask output, including views
+   * that exclude their own dimension, and they are skipped when a histogram view uses
+   * `domain: 'auto'`. Topology: it must share the dimensions' row count and chunk layout, and its
+   * presence is fixed at construction. Its contents may change every frame without recompiling.
+   */
+  liveMask?: GPUCrossfilterMask;
 };
 
 /**
@@ -146,6 +164,7 @@ export class GPUCrossfilter<Parameters = void> {
   private readonly selections = new Map<string, GPUCrossfilterSelection>();
   private readonly viewMasks = new Map<string, GPUCrossfilterMask | undefined>();
   private readonly excludedDimensionMasks = new Map<string, GPUCrossfilterMask | undefined>();
+  private readonly liveMask?: GPUCrossfilterMask;
   private addedToGraph = false;
   private destroyed = false;
 
@@ -175,6 +194,14 @@ export class GPUCrossfilter<Parameters = void> {
         }
       }
       validateViews(this.views, this.selections, this.id);
+      if (props.liveMask) {
+        assertMatchingInputs(
+          this.selections.values().next().value!.mask,
+          props.liveMask,
+          `${this.id} liveMask`
+        );
+        this.liveMask = props.liveMask;
+      }
 
       const firstMask = this.selections.values().next().value!.mask;
       this.mask = props.outputMask ?? createMaskLike(graph, `${this.id}-mask`, firstMask);
@@ -243,12 +270,13 @@ export class GPUCrossfilter<Parameters = void> {
     }
 
     for (const selection of this.selections.values()) selection.addToGraph(graph);
-    graph.add(
-      new GPUMask({
-        id: `${this.id}/controller/compose`,
-        inputs: Array.from(this.selections.values(), selection => selection.mask),
-        output: this.mask
-      })
+    this.composeMasks(
+      `${this.id}/controller/compose`,
+      [
+        ...Array.from(this.selections.values(), selection => selection.mask),
+        ...(this.liveMask ? [this.liveMask] : [])
+      ],
+      this.mask
     );
 
     for (const view of this.views) {
@@ -267,6 +295,9 @@ export class GPUCrossfilter<Parameters = void> {
           break;
         case 'mask':
           this.addMaskView(view, mask);
+          break;
+        case 'count':
+          this.addCountView(view, mask);
           break;
       }
     }
@@ -305,6 +336,7 @@ export class GPUCrossfilter<Parameters = void> {
     const inputs = Array.from(this.selections.values())
       .filter(selection => selection.dimension.id !== view.dimension)
       .map(selection => selection.mask);
+    if (this.liveMask) inputs.push(this.liveMask);
     if (inputs.length === 0) {
       this.excludedDimensionMasks.set(view.dimension, undefined);
       return undefined;
@@ -315,13 +347,7 @@ export class GPUCrossfilter<Parameters = void> {
       `${this.id}/controller/mask/without/${view.dimension}`,
       this.mask
     );
-    this.graph.add(
-      new GPUMask({
-        id: `${this.id}/controller/compose-without/${view.dimension}`,
-        inputs,
-        output
-      })
-    );
+    this.composeMasks(`${this.id}/controller/compose-without/${view.dimension}`, inputs, output);
     this.excludedDimensionMasks.set(view.dimension, output);
     return output;
   }
@@ -344,15 +370,84 @@ export class GPUCrossfilter<Parameters = void> {
       );
       return;
     }
+    let domain = view.domain;
+    if (domain === 'auto' && this.liveMask) {
+      // GPUHistogram's own 'auto' extent spans every input row; restrict it to live rows.
+      const extent = createTransientView(
+        this.graph,
+        `${id}-live-extent`,
+        view.input.format,
+        2
+      ) as GraphDataView<typeof view.input.format>;
+      this.graph.add(
+        new GPUReduction({
+          id: `${id}/extent`,
+          input: view.input,
+          mask: this.liveMask,
+          output: extent,
+          operation: 'extent'
+        })
+      );
+      domain = extent;
+    }
     this.graph.add(
       new GPUHistogram({
         id,
         input: view.input,
         output: view.output,
-        domain: view.domain,
+        domain,
         mask
       })
     );
+  }
+
+  /** Adds a one-row count of rows passing the effective selection. */
+  private addCountView(view: GPUCrossfilterCountView, mask: GPUCrossfilterMask | undefined): void {
+    const selectionMask = mask ?? this.createAllRowsMask(view.id);
+    this.viewMasks.set(view.id, selectionMask);
+    this.graph.add(
+      new GPUReduction({
+        id: `${this.id}/view/${view.id.length}:${view.id}`,
+        input: selectionMask,
+        output: view.output,
+        operation: 'sum'
+      })
+    );
+  }
+
+  /**
+   * Intersects masks, splitting the work into intermediate masks when one pass would exceed the
+   * device's storage-buffer binding limit (one binding per input plus the output).
+   */
+  private composeMasks(
+    id: string,
+    inputs: readonly GPUCrossfilterMask[],
+    output: GPUCrossfilterMask
+  ): void {
+    const maximumInputs = Math.max(
+      2,
+      (this.graph.device.limits.maxStorageBuffersPerShaderStage || 8) - 1
+    );
+    let remaining = inputs;
+    let level = 0;
+    while (remaining.length > maximumInputs) {
+      const next: GPUCrossfilterMask[] = [];
+      for (let first = 0; first < remaining.length; first += maximumInputs) {
+        const group = remaining.slice(first, first + maximumInputs);
+        if (group.length === 1) {
+          next.push(group[0]);
+          continue;
+        }
+        const partial = createMaskLike(this.graph, `${id}/partial-${level}-${first}`, output);
+        this.graph.add(
+          new GPUMask({id: `${id}/partial-${level}-${first}`, inputs: group, output: partial})
+        );
+        next.push(partial);
+      }
+      remaining = next;
+      level++;
+    }
+    this.graph.add(new GPUMask({id, inputs: remaining, output}));
   }
 
   /** Adds source-aligned masked counts or floating-point grouped statistics. */
@@ -423,6 +518,11 @@ export class GPUCrossfilter<Parameters = void> {
     const id = `${this.id}/controller/mask/view/${viewId}/all`;
     const nodeId = `${this.id}/controller/view/${viewId}/all`;
     const firstMask = this.selections.values().next().value!.mask;
+    if (this.liveMask) {
+      const live = createMaskLike(this.graph, id, firstMask);
+      this.graph.add(new GPUMask({id: nodeId, inputs: [this.liveMask], output: live}));
+      return live;
+    }
     const inverse = createMaskLike(this.graph, `${id}-inverse`, firstMask);
     const output = createMaskLike(this.graph, id, firstMask);
     this.graph.add(
@@ -546,6 +646,8 @@ function validateViews(
         break;
       case 'mask':
         assertMatchingInputs(firstMask, view.output, `${controllerId} view "${view.id}" output`);
+        break;
+      case 'count':
         break;
       case 'visibility':
         if (view.outputMask) {

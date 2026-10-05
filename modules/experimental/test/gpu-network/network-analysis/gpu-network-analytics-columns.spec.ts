@@ -17,7 +17,7 @@ import {
 } from '@luma.gl/gpgpu/gpu-graph';
 import {getWebGPUTestDevice} from '@luma.gl/test-utils';
 import {expect, it} from 'vitest';
-import {importGraphBuffer, submitGraph} from '../../../src/utils/gpu-contributor-utils';
+import {importGraphBuffer} from '../../../src/utils/gpu-contributor-utils';
 import {
   GPUNetworkAnalyticsColumns,
   type GPUNetworkAnalyticsColumnsProps
@@ -26,7 +26,8 @@ import {
   createInputBuffer,
   createOutputBuffer,
   readFloat32,
-  readUint32
+  readUint32,
+  submitGraph
 } from '../../utils/gpu-contributor-test-utils';
 import {
   buildCSR,
@@ -78,7 +79,7 @@ type Fixture = {
   csr: NetworkCSR;
   reverse?: NetworkCSR;
   outputs: Record<string, Buffer>;
-  recipe: GPUNetworkAnalyticsColumns;
+  contributor: GPUNetworkAnalyticsColumns;
   nodeCount: number;
 };
 
@@ -167,8 +168,8 @@ function createFixture(device: Device, options: FixtureOptions): Fixture {
     );
     props.inDegree = {output: output('inDegree', 'uint32', nodeCount)};
   }
-  const recipe = new GPUNetworkAnalyticsColumns(props);
-  graph.add(recipe);
+  const contributor = new GPUNetworkAnalyticsColumns(props);
+  graph.add(contributor);
   return {
     device,
     graph,
@@ -180,7 +181,7 @@ function createFixture(device: Device, options: FixtureOptions): Fixture {
     csr,
     reverse,
     outputs,
-    recipe,
+    contributor,
     nodeCount
   };
 }
@@ -190,7 +191,7 @@ function getOutput(fixture: Fixture, name: string): Buffer {
 }
 
 function destroyFixture(fixture: Fixture): void {
-  fixture.recipe.destroy();
+  fixture.contributor.destroy();
   for (const buffer of fixture.buffers) buffer.destroy();
 }
 

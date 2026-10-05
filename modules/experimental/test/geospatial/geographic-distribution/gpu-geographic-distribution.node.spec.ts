@@ -128,7 +128,7 @@ it('GPUGeographicDistribution returns deterministic node IDs within the binding 
       ellipseVertices: view(graph, 'o-ellipse-vertices', 'float32x2', 12),
       circleVertices: view(graph, 'o-circle-vertices', 'float32x2', 12)
     };
-    const recipe = new GPUGeographicDistribution(
+    const contributor = new GPUGeographicDistribution(
       createProps(
         graph,
         {
@@ -141,7 +141,7 @@ it('GPUGeographicDistribution returns deterministic node IDs within the binding 
         output
       )
     );
-    return recipe.getCommandNodes(graph).map(node => node.id);
+    return contributor.getCommandNodes(graph).map(node => node.id);
   };
   const first = create();
   expect(create()).toEqual(first);

@@ -3,4 +3,4 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import './gpu-crossfilter.spec';
-import './attribute-crossfilter';
+import './gpu-crossfilter-attributes.spec';

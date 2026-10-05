@@ -4,7 +4,7 @@
 
 import type {GraphDataView} from '@luma.gl/gpgpu/gpu-core';
 
-/** Coordinate interpretation shared by the line recipes. */
+/** Coordinate interpretation shared by the line contributors. */
 export type GPULineCoordinateSystem =
   /** Planar positions (projected or tile-local units); straight segments, Euclidean lengths. */
   | 'planar'
@@ -18,7 +18,7 @@ export type GPULineCoordinateSystem =
 export const GPU_LINE_NO_SOURCE = 0xffffffff;
 
 /**
- * Caller-owned, capacity-bounded path output written by the path-emitting recipes
+ * Caller-owned, capacity-bounded path output written by the path-emitting contributors
  * (`GPULineSegmentize`, `GPUGreatCircleArcs`, `GPULineSmooth`, `GPULineChunk`).
  *
  * Paths use the toolkit's flat layout: vertex rows in `positions`, path `p` owning rows
@@ -33,7 +33,7 @@ export type GPULinePathOutput = {
   /** Output vertices, `capacity` rows. Rows at or past `count` are unspecified. */
   positions: GraphDataView<'float32x2'>;
   /**
-   * Path start offsets, `pathCapacity + 1` rows, clamped to the vertex capacity. For recipes that
+   * Path start offsets, `pathCapacity + 1` rows, clamped to the vertex capacity. For contributors that
    * emit exactly one path per input path or pair, `pathCapacity` equals the input path count.
    */
   pathOffsets: GraphDataView<'uint32'>;
@@ -44,7 +44,7 @@ export type GPULinePathOutput = {
   /** Optional one-row scalar receiving the unclamped vertex count. */
   totalCount?: GraphDataView<'uint32'>;
   /**
-   * Optional one-row scalar receiving the clamped number of output paths. Required by recipes
+   * Optional one-row scalar receiving the clamped number of output paths. Required by contributors
    * whose path count is data dependent (chunking); otherwise equals the input path count.
    */
   pathCount?: GraphDataView<'uint32'>;

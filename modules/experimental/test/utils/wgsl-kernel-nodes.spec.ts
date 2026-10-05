@@ -6,11 +6,9 @@ import type {Device} from '@luma.gl/core';
 import {GPUCommandGraph} from '@luma.gl/gpgpu/gpu-core';
 import {getWebGPUTestDevice} from '@luma.gl/test-utils';
 import {expect, it} from 'vitest';
-import {
-  createWGSLKernelNode,
-  type WGSLKernelBinding
-} from '../../src/utils/wgsl-kernel-nodes';
-import {importGraphBuffer, submitGraph} from '../../src/utils/gpu-contributor-utils';
+import {createWGSLKernelNode, type WGSLKernelBinding} from '../../src/utils/wgsl-kernel-nodes';
+import {importGraphBuffer} from '../../src/utils/gpu-contributor-utils';
+import {submitGraph} from '../utils/gpu-contributor-test-utils';
 import {createInputBuffer, createOutputBuffer, readUint32} from './gpu-contributor-test-utils';
 
 /** Runs `callback` inside a WebGPU validation error scope and returns the captured messages. */
@@ -21,7 +19,7 @@ async function captureValidationErrors(
   const gpuDevice = device.handle as GPUDevice;
   gpuDevice.pushErrorScope('validation');
   await callback();
-  await device.handle.queue.onSubmittedWorkDone();
+  await gpuDevice.queue.onSubmittedWorkDone();
   const error = await gpuDevice.popErrorScope();
   return error ? [error.message] : [];
 }

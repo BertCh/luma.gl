@@ -19,7 +19,10 @@ import {
 } from '../../utils/wgsl-kernel-nodes';
 import type {GPUCompactOutput} from '../../utils/gpu-contributor-types';
 import type {GPUCommandNodeProducer} from '@luma.gl/gpgpu/gpu-core';
-import {validateGraphViewsBelongToGraph, validateCompactOutput} from '../../utils/gpu-contributor-utils';
+import {
+  validateGraphViewsBelongToGraph,
+  validateCompactOutput
+} from '../../utils/gpu-contributor-utils';
 import type {GPUTerrainCellSizeMode} from '../terrain-analysis/gpu-terrain-derivatives';
 import {
   getTerrainBandViews,

@@ -54,7 +54,7 @@ it('GPUCellCover validates its props', () => {
   const view = <Format extends 'uint32' | 'uint32x2'>(format: Format, length: number) =>
     createTransientView(graph, `v-${serial++}`, format, length);
   expect(() => new GPUCellCover(createProps(graph)).getCommandNodes(graph)).not.toThrow();
-  expect(new GPUCellCover(createProps(graph)).recipe).toBe('cell-cover');
+  expect(new GPUCellCover(createProps(graph)).id).toBe('cell-cover');
   expect(() => new GPUCellCover(createProps(graph, {resolution: 27}))).toThrow(/resolution/);
   expect(() => new GPUCellCover(createProps(graph, {family: 'h3', resolution: 16}))).toThrow(
     /resolution/

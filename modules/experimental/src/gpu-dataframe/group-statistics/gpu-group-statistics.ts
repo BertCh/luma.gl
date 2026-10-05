@@ -17,7 +17,10 @@ import {
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph
 } from '../../utils/gpu-contributor-utils';
-import {GPU_CELL_DEFAULT_SUM_SCALE, validateSumScale} from '../../geospatial/cell-aggregation/cell-table';
+import {
+  GPU_CELL_DEFAULT_SUM_SCALE,
+  validateSumScale
+} from '../../geospatial/cell-aggregation/cell-table';
 import {readBinding, writeBinding} from './group-statistics-common';
 import {getColumnReductionNodes} from './group-statistics-moments';
 import {getColumnOrderNodes} from './group-statistics-order';
@@ -25,7 +28,7 @@ import {getGroupStructureNodes} from './group-statistics-sort';
 
 const OPERATION = 'GPUGroupStatistics';
 
-/** Largest number of value columns one recipe instance reduces. */
+/** Largest number of value columns one contributor instance reduces. */
 const MAXIMUM_COLUMN_COUNT = 4;
 
 /** Statistics {@link GPUGroupStatistics} can compute per group and value column. */

@@ -5,18 +5,15 @@
 import type {Buffer, Device} from '@luma.gl/core';
 import {GPUCommandGraph, type GraphDataView} from '@luma.gl/gpgpu/gpu-core';
 import {expect, vi} from 'vitest';
-import {
-  GPUParameterBuffer,
-  importGraphBuffer,
-  submitGraph
-} from '../../../src/utils/gpu-contributor-utils';
+import {GPUParameterBuffer, importGraphBuffer} from '../../../src/utils/gpu-contributor-utils';
 import type {GPUCommandNodeProducer} from '@luma.gl/gpgpu/gpu-core';
 import type {GPULinePathOutput} from '../../../src/geospatial/line-segmentize/line-segmentize-types';
 import {
   createInputBuffer,
   createOutputBuffer,
   readFloat32,
-  readUint32
+  readUint32,
+  submitGraph
 } from '../../utils/gpu-contributor-test-utils';
 import {getHaversineDistance} from '../geometry-measures/geodesic-oracle';
 import type {FlatPathResult} from './line-segmentize-oracle';
@@ -34,7 +31,7 @@ export type LinePathReadback = {
   measures: number[];
 };
 
-/** A compiled single-recipe graph with typed inputs, a parameter buffer and a path output. */
+/** A compiled single-contributor graph with typed inputs, a parameter buffer and a path output. */
 export type LinePathFixture = {
   /** Writes parameters, encodes once, and reads the output. */
   run(parameters: Float32Array): Promise<LinePathReadback>;
@@ -44,7 +41,7 @@ export type LinePathFixture = {
 };
 
 /**
- * Builds a fixture around one recipe. `inputs` are imported by name; `createRecipe` receives the
+ * Builds a fixture around one contributor. `inputs` are imported by name; `createContributor` receives the
  * imported views, the parameter view and the output views.
  */
 export function createLinePathFixture(
@@ -61,7 +58,7 @@ export function createLinePathFixture(
     /** Whether to request the per-vertex `sourceRows` and `measures` outputs. Default true. */
     withVertexColumns?: boolean;
     pathCapacity: number;
-    createRecipe: (
+    createContributor: (
       inputs: Record<string, GraphDataView>,
       parameters: GraphDataView<'float32'>,
       output: GPULinePathOutput
@@ -106,7 +103,7 @@ export function createLinePathFixture(
     length: 4
   });
   graph.add(
-    options.createRecipe(views, parameterBuffer.importToGraph(graph), {
+    options.createContributor(views, parameterBuffer.importToGraph(graph), {
       positions: importGraphBuffer(graph, 'o-positions', outputs.positions, 'float32x2', capacity),
       pathOffsets: importGraphBuffer(
         graph,

@@ -3,7 +3,7 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 /**
- * WGSL helpers shared by the colour recipes: zero-normalised ordered keys, the d3 scale
+ * WGSL helpers shared by the colour contributors: zero-normalised ordered keys, the d3 scale
  * transforms, and `rgba8` unpacking and blending. Requires `COLUMN_ORDERED_KEY_WGSL`.
  *
  * @internal

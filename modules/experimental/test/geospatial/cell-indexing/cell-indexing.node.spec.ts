@@ -128,9 +128,8 @@ it('GPUPointToCell emits one deterministic node per family', () => {
       family: family as GPUCellIndexFamily,
       resolution: minimum + 1
     });
-    const recipe = new GPUPointToCell(props);
-    expect(recipe.recipe).toBe('point-to-cell');
-    const first = recipe.getCommandNodes(graph).map(node => node.id);
+    const contributor = new GPUPointToCell(props);
+    const first = contributor.getCommandNodes(graph).map(node => node.id);
     expect(first).toEqual([`cells-${family}-keys`]);
     // Without validity or mask the same kernel is emitted.
     const minimal = new GPUPointToCell({
@@ -298,9 +297,8 @@ it('GPUCellGeometry validates props and emits deterministic nodes', () => {
     s2: 4,
     a5: 5
   });
-  const recipe = new GPUCellGeometry(createGeometryProps({id: 'geometry'}));
-  expect(recipe.recipe).toBe('cell-geometry');
-  expect(recipe.getCommandNodes(graph).map(node => node.id)).toEqual(['geometry-geometry']);
+  const contributor = new GPUCellGeometry(createGeometryProps({id: 'geometry'}));
+  expect(contributor.getCommandNodes(graph).map(node => node.id)).toEqual(['geometry-geometry']);
   expectThrows({family: 'bogus' as never}, /family/);
   expectThrows({wordOrder: 'big' as never}, /wordOrder/);
   expectThrows({maximumVertexCount: 5}, /maximumVertexCount/);

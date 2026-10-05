@@ -6,7 +6,7 @@ import type {Buffer, Device} from '@luma.gl/core';
 import {GPUCommandGraph, type CompiledGPUCommandGraph} from '@luma.gl/gpgpu/gpu-core';
 import {getWebGPUTestDevice} from '@luma.gl/test-utils';
 import {expect, it} from 'vitest';
-import {GPUParameterBuffer, importGraphBuffer, submitGraph} from '../../../src/utils/gpu-contributor-utils';
+import {GPUParameterBuffer, importGraphBuffer} from '../../../src/utils/gpu-contributor-utils';
 import {
   getGPUSpatialClusteringParameterValues,
   GPUSpatialClustering,
@@ -18,7 +18,8 @@ import {
   createInputBuffer,
   createOutputBuffer,
   readFloat32,
-  readUint32
+  readUint32,
+  submitGraph
 } from '../../utils/gpu-contributor-test-utils';
 import {
   clusterPointsOracle,
@@ -89,7 +90,7 @@ function createHarness(device: Device, options: HarnessOptions) {
     centroids: createOutputBuffer(device, capacity * 2)
   };
   const graph = new GPUCommandGraph(device, {id: 'spatial-clustering-test'});
-  const recipe = new GPUSpatialClustering({
+  const contributor = new GPUSpatialClustering({
     positions: importGraphBuffer(graph, 'positions', positionsBuffer, 'float32x2', rows),
     parameters: parameterBuffer.importToGraph(graph),
     gridSize: options.gridSize ?? [32, 32],
@@ -115,7 +116,7 @@ function createHarness(device: Device, options: HarnessOptions) {
       capacity
     )
   });
-  graph.add(recipe);
+  graph.add(contributor);
   const compiled: CompiledGPUCommandGraph<void> = graph.compile();
 
   return {

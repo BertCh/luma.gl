@@ -29,7 +29,7 @@ export function roundHalfEven(value: number): number {
   return floor % 2 === 0 ? floor : floor + 1;
 }
 
-/** Graph-owned scratch shared by every mean filter of one recipe. @internal */
+/** Graph-owned scratch shared by every mean filter of one contributor. @internal */
 export type ReliefMeanFilterScratch = {
   /** Per-pixel row anchor, see {@link getReliefMeanFilterNodes}. */
   anchors: GraphDataView<'float32'>;

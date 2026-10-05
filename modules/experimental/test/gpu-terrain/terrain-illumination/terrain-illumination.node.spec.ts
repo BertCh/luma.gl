@@ -69,10 +69,9 @@ it('GPUTerrainHorizon validates props and schedules one node per sector', () => 
       ...overrides
     });
   };
-  const recipe = create();
-  expect(recipe.recipe).toBe('terrain-horizon');
-  expect(recipe.requiredHalo).toBe(4);
-  const nodeIds = recipe.getCommandNodes(graph).map(node => node.id);
+  const contributor = create();
+  expect(contributor.requiredHalo).toBe(4);
+  const nodeIds = contributor.getCommandNodes(graph).map(node => node.id);
   expect(nodeIds.filter(id => /-horizon-\d$/.test(id))).toHaveLength(8);
   expect(nodeIds.at(-1)).toBe('terrain-horizon-sky-view');
   expect(() => create({skyViewFactor: undefined})).toThrow(/at least one output/);
@@ -191,9 +190,9 @@ it('GPUReliefShading validates props and packs MDOW and custom lights', () => {
       ...overrides
     });
   };
-  const recipe = create();
-  expect(recipe.requiredHalo).toBe(1);
-  expect(recipe.getCommandNodes(graph).map(node => node.id)).toEqual([
+  const contributor = create();
+  expect(contributor.requiredHalo).toBe(1);
+  expect(contributor.getCommandNodes(graph).map(node => node.id)).toEqual([
     'relief-shading-gradient-x',
     'relief-shading-gradient-y',
     'relief-shading-hillshade'
@@ -275,11 +274,11 @@ it('GPUTextureShading validates props and approximates a fractional Laplacian', 
       ...overrides
     });
   };
-  const recipe = create();
+  const contributor = create();
   const radii = getGPUTextureShadingCascadeSigmas(3, 1).map(sigma => Math.ceil(3 * sigma));
-  expect(recipe.requiredHalo).toBe(radii.reduce((sum, radius) => sum + radius, 0));
+  expect(contributor.requiredHalo).toBe(radii.reduce((sum, radius) => sum + radius, 0));
   expect(
-    recipe
+    contributor
       .getCommandNodes(graph)
       .map(node => node.id)
       .at(-1)
@@ -369,8 +368,8 @@ it('GPUTerrainHorizon validates unorm16, anisotropic, and negative-openness opti
   expect(() => create({horizonFormat: 'float16' as never})).toThrow(/horizonFormat/);
   // 30 pixels * 7 sectors = 210 elements = 105 packed words.
   const packed = createTransientView(graph, 'packed', 'uint32', 105);
-  const recipe = create({horizonFormat: 'unorm16', horizon: packed});
-  expect(recipe.horizonFormat).toBe('unorm16');
+  const contributor = create({horizonFormat: 'unorm16', horizon: packed});
+  expect(contributor.horizonFormat).toBe('unorm16');
   expect(() =>
     create({
       horizonFormat: 'unorm16',
@@ -404,7 +403,7 @@ it('GPUTerrainHorizon validates unorm16, anisotropic, and negative-openness opti
     })
   ).toThrow(/30 float32/);
   expect(() => create({skyViewFactor: undefined})).toThrow(/at least one output/);
-  // A negative-openness-only recipe is a valid output set.
+  // A negative-openness-only contributor is a valid output set.
   const everything = create({
     skyViewFactor: createTransientView(graph, 'all-svf', 'float32', 30),
     positiveOpenness: createTransientView(graph, 'all-positive', 'float32', 30),

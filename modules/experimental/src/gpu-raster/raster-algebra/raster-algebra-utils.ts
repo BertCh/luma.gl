@@ -11,7 +11,7 @@ import {
 import {getWGSLFloatLiteral} from '../../utils/wgsl-kernel-nodes';
 import {validateGraphViewsBelongToGraph} from '../../utils/gpu-contributor-utils';
 
-/** Nodata description shared by raster-algebra recipes. @internal */
+/** Nodata description shared by raster-algebra contributors. @internal */
 export type RasterAlgebraNoData = {
   /** Optional finite sentinel compared exactly against cell values. NaN is always nodata. */
   noDataValue?: number;

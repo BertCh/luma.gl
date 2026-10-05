@@ -56,7 +56,7 @@ export function isGPUCellIndexFamily(value: unknown): value is GPUCellIndexFamil
 /**
  * Throws unless `family` is a known family and `resolution` an integer in its range.
  *
- * @param id Recipe ID used as the error prefix.
+ * @param id Contributor ID used as the error prefix.
  * @param family Family name to check.
  * @param resolution Resolution to check against the family's range.
  */

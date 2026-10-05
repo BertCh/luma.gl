@@ -5,7 +5,7 @@
 import {GPUCommandGraph} from '@luma.gl/gpgpu/gpu-core';
 import {getWebGPUTestDevice} from '@luma.gl/test-utils';
 import {expect, it} from 'vitest';
-import {importGraphBuffer, submitGraph} from '../../../src/utils/gpu-contributor-utils';
+import {importGraphBuffer} from '../../../src/utils/gpu-contributor-utils';
 import {
   createGPUPointDensityGaussianKernel,
   getGPUPointDensityHexagonGridSize,
@@ -16,7 +16,8 @@ import {
   createOutputBuffer,
   createVectorView,
   readFloat32,
-  readUint32
+  readUint32,
+  submitGraph
 } from '../../utils/gpu-contributor-test-utils';
 import {
   computeExtent,

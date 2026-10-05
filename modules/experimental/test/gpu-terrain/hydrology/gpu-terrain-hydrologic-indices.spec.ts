@@ -6,14 +6,19 @@ import type {Device} from '@luma.gl/core';
 import {GPUCommandGraph} from '@luma.gl/gpgpu/gpu-core';
 import {getWebGPUTestDevice} from '@luma.gl/test-utils';
 import {expect, it} from 'vitest';
-import {GPUParameterBuffer, importGraphBuffer, submitGraph} from '../../../src/utils/gpu-contributor-utils';
+import {GPUParameterBuffer, importGraphBuffer} from '../../../src/utils/gpu-contributor-utils';
 import {
   GPUTerrainHydrologicIndices,
   getGPUTerrainHydrologicIndicesParameterValues,
   type GPUTerrainHydrologicIndicesSettings
 } from '../../../src/gpu-terrain/hydrology/gpu-terrain-hydrologic-indices';
 import type {GPUTerrainCellSizeMode} from '../../../src/gpu-terrain/terrain-analysis';
-import {createInputBuffer, createOutputBuffer, readFloat32} from '../../utils/gpu-contributor-test-utils';
+import {
+  createInputBuffer,
+  createOutputBuffer,
+  readFloat32,
+  submitGraph
+} from '../../utils/gpu-contributor-test-utils';
 import {
   computeHydrologicIndices,
   type HydrologicIndicesOracleResult
@@ -151,7 +156,7 @@ it('GPUTerrainHydrologicIndices matches the float64 oracle', async () => {
     for (const [demName, createDem] of Object.entries(DEMS)) {
       const elevation = createDem(width, height);
       for (const [caseName, options] of cases) {
-        // Contributing area from the CPU flow oracle (the GPU flow recipe has its own tests).
+        // Contributing area from the CPU flow oracle (the GPU flow contributor has its own tests).
         const flow = computeTerrainFlow({
           elevation,
           width,

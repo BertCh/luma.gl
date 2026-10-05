@@ -6,14 +6,15 @@ import type {Buffer, Device} from '@luma.gl/core';
 import {GPUCommandGraph, type CompiledGPUCommandGraph} from '@luma.gl/gpgpu/gpu-core';
 import {getWebGPUTestDevice} from '@luma.gl/test-utils';
 import {expect, it} from 'vitest';
-import {GPUParameterBuffer, importGraphBuffer, submitGraph} from '../../../src/utils/gpu-contributor-utils';
+import {GPUParameterBuffer, importGraphBuffer} from '../../../src/utils/gpu-contributor-utils';
 import {GPUNetworkPathExtraction} from '../../../src/gpu-network/network-analysis/gpu-network-path-extraction';
 import {GPUNetworkReachability} from '../../../src/gpu-network/network-reachability';
 import {
   createInputBuffer,
   createOutputBuffer,
   readFloat32,
-  readUint32
+  readUint32,
+  submitGraph
 } from '../../utils/gpu-contributor-test-utils';
 import {
   buildCSR,
@@ -132,7 +133,7 @@ function createHarness(device: Device, options: HarnessOptions) {
   const edgeOverflowOut = track(createOutputBuffer(device, 1));
   const edgeTotalOut = track(createOutputBuffer(device, 1));
   const edgePathOffsets = track(createOutputBuffer(device, targetCapacity + 1));
-  const recipe = new GPUNetworkPathExtraction({
+  const contributor = new GPUNetworkPathExtraction({
     id: 'path',
     predecessors,
     costs,
@@ -177,7 +178,7 @@ function createHarness(device: Device, options: HarnessOptions) {
         }
       : undefined
   });
-  graph.add(recipe);
+  graph.add(contributor);
   const compiled: CompiledGPUCommandGraph<void> = graph.compile();
   const state = {
     targets: [...options.targets],

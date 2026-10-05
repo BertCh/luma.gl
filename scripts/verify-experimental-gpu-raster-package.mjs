@@ -209,6 +209,39 @@ const ecmaScriptRasterModule = await import(pathToFileURL(ecmaScriptModuleEntry)
 const commonJsRasterModule = require(commonJsEntry);
 const ecmaScriptRootModule = await import(pathToFileURL(ecmaScriptRootEntry).href);
 const commonJsRootModule = require(commonJsRootEntry);
+
+const ecmaScriptEntryModule = ecmaScriptRasterModule;
+const commonJsEntryModule = commonJsRasterModule;
+const contributorExportNames = [
+  'GPUCostDistance',
+  'GPUCostDistancePath',
+  'GPURasterZonalStatistics',
+  'GPUDistanceField',
+  'GPUPolygonRasterization',
+  'GPURasterJoin',
+  'GPURasterArithmetic',
+  'GPURasterCellStatistics',
+  'GPURasterConditional',
+  'GPURasterReclassify',
+  'GPUWeightedOverlay',
+  'GPURasterStretch',
+  'GPUIsobands',
+  'GPUIsolines',
+  'GPURasterProfile',
+  'GPURasterSampling',
+  'GPUParticleAdvection',
+  'GPULineIntegralConvolution',
+  'GPUStreamlines',
+  'GPUChangeDetection',
+  'GPUParameterBuffer'
+];
+
+for (const exportName of contributorExportNames) {
+  assert.equal(typeof ecmaScriptEntryModule[exportName], 'function', exportName);
+  assert.equal(typeof commonJsEntryModule[exportName], 'function', exportName);
+  assert.equal(exportName in ecmaScriptRootModule, false, `${exportName} leaked into the root`);
+  assert.equal(exportName in commonJsRootModule, false, `${exportName} leaked into the root`);
+}
 const ecmaScriptExportNames = Object.keys(ecmaScriptRasterModule).sort();
 const commonJsExportNames = Object.keys(commonJsRasterModule)
   .filter((exportName) => exportName !== '__esModule')
@@ -1747,6 +1780,53 @@ void RootGPURasterGlobalPercentile;
     createRequire(typeTestPath).resolve('@luma.gl/experimental/gpu-raster'),
     commonJsEntry,
     "the temporary consumer resolves this worktree's experimental package"
+  );
+
+
+  const contributorTypeTestPath = path.join(temporaryDirectory, 'contributors.mts');
+  writeFileSync(
+    contributorTypeTestPath,
+    `import {
+  ${contributorExportNames.join(',\n  ')},
+  type GPUCompactOutput,
+  type GPUUint32Rows
+} from '@luma.gl/experimental/gpu-raster';
+import type {GPUCommandNodeProducer} from '@luma.gl/gpgpu/gpu-core';
+
+const contributorConstructors = [
+  ${contributorExportNames.join(',\n  ')}
+];
+declare const output: GPUCompactOutput;
+declare const rows: GPUUint32Rows;
+declare const contributor: GPUCommandNodeProducer;
+void contributorConstructors;
+void output;
+void rows;
+void contributor;
+
+// @ts-expect-error Analysis contributors stay isolated from the experimental root.
+import {GPUIsolines as RootContributor} from '@luma.gl/experimental';
+void RootContributor;
+`
+  );
+  const contributorProgram = typescript.createProgram([contributorTypeTestPath], {
+    module: typescript.ModuleKind.NodeNext,
+    moduleResolution: typescript.ModuleResolutionKind.NodeNext,
+    noEmit: true,
+    skipLibCheck: true,
+    strict: true,
+    target: typescript.ScriptTarget.ES2022,
+    types: []
+  });
+  const contributorDiagnostics = typescript.getPreEmitDiagnostics(contributorProgram);
+  assert.equal(
+    contributorDiagnostics.length,
+    0,
+    typescript.formatDiagnosticsWithColorAndContext(contributorDiagnostics, {
+      getCanonicalFileName: fileName => fileName,
+      getCurrentDirectory: () => temporaryDirectory,
+      getNewLine: () => '\n'
+    })
   );
 
   const program = typescript.createProgram([typeTestPath], {

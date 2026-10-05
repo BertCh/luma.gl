@@ -78,7 +78,7 @@ export type GPUSimpleLocalReliefProps = {
   settings: GraphDataView<'float32'>;
   /**
    * Window half-width in pixels, an integer of at least 1. RVT restricts the trend radius to
-   * 10 to 50 pixels; this recipe accepts any radius (cost grows linearly with it).
+   * 10 to 50 pixels; this contributor accepts any radius (cost grows linearly with it).
    */
   radius: number;
   /** Optional relief per pixel, `verticalExaggeration * (z - mean_r(z))`, NaN where invalid. */

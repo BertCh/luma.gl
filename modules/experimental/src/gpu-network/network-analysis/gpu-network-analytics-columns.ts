@@ -20,7 +20,10 @@ import {
 } from '@luma.gl/gpgpu/gpu-graph';
 import type {GPUCommandNodeProducer} from '@luma.gl/gpgpu/gpu-core';
 import {createWGSLKernelNode} from '../../utils/wgsl-kernel-nodes';
-import {captureGraphCommandNodes, validateGraphViewsBelongToGraph} from '../../utils/gpu-contributor-utils';
+import {
+  captureGraphCommandNodes,
+  validateGraphViewsBelongToGraph
+} from '../../utils/gpu-contributor-utils';
 
 /**
  * One node-aligned analytics column and its optional normalized and extent companions.
@@ -322,7 +325,7 @@ export class GPUNetworkAnalyticsColumns implements GPUCommandNodeProducer {
   }
 
   /**
-   * Kept for API compatibility. The recipe owns no GPU resources: each gpu-graph algorithm clears
+   * Kept for API compatibility. The contributor owns no GPU resources: each gpu-graph algorithm clears
    * its own graph-owned zero overflow word.
    */
   destroy(): void {}

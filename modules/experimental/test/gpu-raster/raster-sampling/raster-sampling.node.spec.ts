@@ -235,7 +235,6 @@ it('GPURasterSampling and GPURasterProfile validate their inputs', () => {
         output: {values: view(graph, 'float32', 5)},
         ...overrides
       } as ConstructorParameters<typeof GPURasterSampling>[0]);
-    expect(sampling().recipe).toBe('raster-sampling');
     expect(sampling({id: 'custom'}).id).toBe('custom');
     expect(() => sampling({width: 0})).toThrow(/width/);
     expect(() => sampling({noDataValue: NaN})).toThrow(/noDataValue/);
@@ -264,7 +263,6 @@ it('GPURasterSampling and GPURasterProfile validate their inputs', () => {
         ...overrides
       } as ConstructorParameters<typeof GPURasterProfile>[0]);
     const created = profile();
-    expect(created.recipe).toBe('raster-profile');
     expect(created.pathCount).toBe(2);
     expect(created.sampleCapacity).toBe(10);
     expect(() => profile({pathOffsets: view(graph, 'uint32', 1)})).toThrow(/pathOffsets/);

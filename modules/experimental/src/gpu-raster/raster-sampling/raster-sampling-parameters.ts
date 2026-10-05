@@ -14,9 +14,9 @@ export type GPURasterSamplingNoDataPolicy = 'strict' | 'renormalize';
 
 /** Per-frame settings of {@link GPURasterSampling}. */
 export type GPURasterSamplingSettings = {
-  /** Raster width in cells; must match the recipe's `width`. */
+  /** Raster width in cells; must match the contributor's `width`. */
   width: number;
-  /** Raster height in cells; must match the recipe's `height`. */
+  /** Raster height in cells; must match the contributor's `height`. */
   height: number;
   /** Raster extent `[minX, minY, maxX, maxY]`; row 0 is at `minY`. */
   extent: readonly [number, number, number, number];

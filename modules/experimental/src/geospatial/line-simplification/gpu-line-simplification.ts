@@ -116,7 +116,7 @@ export type GPULineSimplificationProps = {
    */
   importance: GraphDataView<'float32'>;
   /**
-   * Whether this recipe computes `importance`. Default `true`. Set to `false` in a per-frame graph
+   * Whether this contributor computes `importance`. Default `true`. Set to `false` in a per-frame graph
    * that only selects rows from an importance column computed once by another graph.
    */
   computeImportance?: boolean;
@@ -180,7 +180,7 @@ export class GPULineSimplification implements GPUCommandNodeProducer {
   readonly metric: GPULineSimplificationMetric;
   /** Compile-time round cap. */
   readonly maximumRounds: number;
-  /** Whether the importance rounds are part of this recipe. */
+  /** Whether the importance rounds are part of this contributor. */
   readonly computeImportance: boolean;
 
   constructor(props: GPULineSimplificationProps) {

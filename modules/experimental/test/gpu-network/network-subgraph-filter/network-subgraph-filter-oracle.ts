@@ -2,7 +2,10 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import {splitTimeWords, joinTimeWords} from '../../../src/gpu-dataframe/time-window-filter/time-words';
+import {
+  splitTimeWords,
+  joinTimeWords
+} from '../../../src/gpu-dataframe/time-window-filter/time-words';
 
 type Range = readonly [number, number] | null | undefined;
 

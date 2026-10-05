@@ -41,7 +41,7 @@ fn addSaturated(left: u32, right: u32) -> u32 {
   return select(sum, 0xffffffffu, sum < left);
 }`;
 
-/** Static per-recipe configuration used to generate kernels. @internal */
+/** Static per-contributor configuration used to generate kernels. @internal */
 export type TileLODShaderConfig = {
   id: string;
   nodeCount: number;

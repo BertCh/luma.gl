@@ -7,7 +7,7 @@ import {GPUCommandGraph, type CompiledGPUCommandGraph} from '@luma.gl/gpgpu/gpu-
 import type {GPUVectorFormat} from '@luma.gl/gpgpu/gpu-data';
 import {getWebGPUTestDevice} from '@luma.gl/test-utils';
 import {expect, it} from 'vitest';
-import {importGraphBuffer, submitGraph} from '../../../src/utils/gpu-contributor-utils';
+import {importGraphBuffer} from '../../../src/utils/gpu-contributor-utils';
 import {
   decodeGPUNetworkCoarseningSummary,
   GPUNetworkCoarsening
@@ -16,7 +16,8 @@ import {
   createInputBuffer,
   createOutputBuffer,
   readFloat32,
-  readUint32
+  readUint32,
+  submitGraph
 } from '../../utils/gpu-contributor-test-utils';
 import {
   buildCoarseningCSR,
@@ -61,7 +62,7 @@ type Result = {
 class Fixture {
   readonly graph: GPUCommandGraph;
   readonly buffers: Buffer[] = [];
-  readonly recipe: GPUNetworkCoarsening;
+  readonly contributor: GPUNetworkCoarsening;
   readonly out: Record<string, Buffer> = {};
   compiled?: CompiledGPUCommandGraph<void>;
 
@@ -88,7 +89,7 @@ class Fixture {
       return view(name, format as 'uint32', buffer, rows);
     };
     const {positions, vertexValues} = options;
-    this.recipe = new GPUNetworkCoarsening({
+    this.contributor = new GPUNetworkCoarsening({
       id: 'coarse',
       offsets: input('offsets', 'uint32', csr.offsets) as never,
       neighbors: input('neighbors', 'uint32', csr.neighbors) as never,
@@ -120,7 +121,7 @@ class Fixture {
       edgeWeights: output('edge-weights', 'float32', edgeCapacity, 1) as never,
       summary: output('summary', 'uint32', 8, 1) as never
     });
-    this.graph.add(this.recipe);
+    this.graph.add(this.contributor);
   }
 
   async run(): Promise<Result> {

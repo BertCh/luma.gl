@@ -136,7 +136,7 @@ it('GPUChangeDetection creates deterministic nodes for the requested modes only'
   const device = createNullWebGPUDevice();
   const graph = new GPUCommandGraph(device);
   const f32 = (length: number) => createTransientView(graph, `o-${serial++}`, 'float32', length);
-  const recipe = new GPUChangeDetection(
+  const contributor = new GPUChangeDetection(
     createProps(graph, {
       output: {
         difference: f32(3),
@@ -148,7 +148,7 @@ it('GPUChangeDetection creates deterministic nodes for the requested modes only'
       }
     })
   );
-  const ids = recipe.getCommandNodes(graph).map(node => node.id);
+  const ids = contributor.getCommandNodes(graph).map(node => node.id);
   expect(ids).toEqual([
     'change-detection-two-slice',
     'change-detection-t-test',

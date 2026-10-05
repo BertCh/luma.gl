@@ -20,7 +20,7 @@ const f = Math.fround;
 /** One feature: polygons, each a list of rings (shell first), each a list of `[lng, lat]`. */
 export type CoverFeature = number[][][][];
 
-/** Flattened polygon arrays as the recipe takes them. */
+/** Flattened polygon arrays as the contributor takes them. */
 export type CoverPolygonArrays = {
   positions: Float32Array;
   featureOffsets: Uint32Array;
@@ -400,7 +400,7 @@ export function roundFeatures(features: CoverFeature[]): CoverFeature[] {
 
 /**
  * Closed-ring rectangle helper: counter-clockwise `[west, south, east, north]` ring (closed for
- * h3-js, which expects a closed GeoJSON loop; the recipe's rings close implicitly either way).
+ * h3-js, which expects a closed GeoJSON loop; the contributor's rings close implicitly either way).
  */
 export function createRectangleRing([west, south, east, north]: number[]): number[][] {
   return [

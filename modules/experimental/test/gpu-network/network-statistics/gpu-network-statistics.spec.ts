@@ -8,14 +8,19 @@ import {GPUVector} from '@luma.gl/gpgpu/gpu-data';
 import {GPUGraph, GPUGraphModularity} from '@luma.gl/gpgpu/gpu-graph';
 import {getWebGPUTestDevice} from '@luma.gl/test-utils';
 import {expect, it} from 'vitest';
-import {importGraphBuffer, submitGraph} from '../../../src/utils/gpu-contributor-utils';
+import {importGraphBuffer} from '../../../src/utils/gpu-contributor-utils';
 import {
   decodeGPUNetworkStatistics,
   encodeGPUNetworkStatisticsParameters,
   getGPUNetworkStatisticsLength,
   GPUNetworkStatistics
 } from '../../../src/gpu-network/network-statistics';
-import {createInputBuffer, createOutputBuffer, readUint32} from '../../utils/gpu-contributor-test-utils';
+import {
+  createInputBuffer,
+  createOutputBuffer,
+  readUint32,
+  submitGraph
+} from '../../utils/gpu-contributor-test-utils';
 import {createSymmetricEdges} from '../network-analysis/network-analytics-oracle';
 import {
   buildCSR,
@@ -44,7 +49,7 @@ class Fixture {
   readonly csr: ReturnType<typeof buildCSR>;
   readonly buffers: Buffer[] = [];
   readonly outputBuffer: Buffer;
-  readonly recipe: GPUNetworkStatistics;
+  readonly contributor: GPUNetworkStatistics;
   readonly binCount: number;
   compiled?: CompiledGPUCommandGraph<void>;
   private vertexMaskBuffer?: Buffer;
@@ -83,7 +88,7 @@ class Fixture {
         createInputBuffer(device, encodeGPUNetworkStatisticsParameters(options.parameters))
       );
     }
-    this.recipe = new GPUNetworkStatistics({
+    this.contributor = new GPUNetworkStatistics({
       id: 'stats',
       offsets: importView('offsets', offsets, nodeCount + 1),
       neighbors: importView('neighbors', neighbors, slotCount),
@@ -98,7 +103,7 @@ class Fixture {
       componentIterations: 64,
       output: importView('output', this.outputBuffer, getGPUNetworkStatisticsLength(this.binCount))
     });
-    this.graph.add(this.recipe);
+    this.graph.add(this.contributor);
   }
 
   /** Encodes the same compiled graph and decodes the raw words. */
@@ -135,7 +140,7 @@ class Fixture {
 
   destroy(): void {
     this.compiled?.destroy();
-    this.recipe.destroy();
+    this.contributor.destroy();
     for (const buffer of this.buffers) buffer.destroy();
   }
 }

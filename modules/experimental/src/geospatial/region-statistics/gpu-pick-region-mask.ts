@@ -28,7 +28,7 @@ export type GPUPickRegionMaskProps = {
 
 /**
  * Converts a capacity-bounded index-picking region result into a deduplicated source-aligned 0/1
- * mask. The application adds `GPUIndexPickingTarget.addRegionPass` before this recipe; the graph
+ * mask. The application adds `GPUIndexPickingTarget.addRegionPass` before this contributor; the graph
  * orders the two through the hazard on `result`.
  */
 export class GPUPickRegionMask implements GPUCommandNodeProducer {

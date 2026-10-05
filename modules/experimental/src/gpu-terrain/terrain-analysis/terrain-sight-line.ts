@@ -9,7 +9,7 @@ import {
 import {getWGSLFloatLiteral} from '../../utils/wgsl-kernel-nodes';
 import {TERRAIN_WGSL_HELPERS} from './terrain-analysis-utils';
 
-/** Marching strategy of the sight-line recipes. */
+/** Marching strategy of the sight-line contributors. */
 export type GPUTerrainSightLineTraversal = 'march' | 'pyramid';
 
 /** Relative slack of the pyramid skip bound: 2^-17, more than 100 float32 ULP. @internal */
@@ -36,7 +36,10 @@ export type TerrainSightLineWGSLOptions = {
  * which compilers materialise as per-call local copies inside the hot loop.
  */
 function getPyramidWGSL(layout: GPURasterExtremaPyramidLayout): string {
-  const lookup = (name: string, select: (level: GPURasterExtremaPyramidLayout['levels'][number]) => number) =>
+  const lookup = (
+    name: string,
+    select: (level: GPURasterExtremaPyramidLayout['levels'][number]) => number
+  ) =>
     `fn ${name}(level: u32) -> u32 {
   switch (level) {
 ${layout.levels.map(level => `    case ${level.level}u: { return ${select(level)}u; }`).join('\n')}

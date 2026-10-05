@@ -259,11 +259,7 @@ export class GPUTemporalReduction implements GPUCommandNodeProducer {
     const lastRows = u32('last-rows', slotCount);
     const occupied = u32('occupied', slotCount);
     const {counts} = output;
-    const read = (
-      name: string,
-      view: GraphDataView,
-      type: 'u32' | 'f32'
-    ): WGSLKernelBinding => ({
+    const read = (name: string, view: GraphDataView, type: 'u32' | 'f32'): WGSLKernelBinding => ({
       name,
       view,
       type,

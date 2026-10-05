@@ -43,9 +43,9 @@ function createEdges(graph: GPUCommandGraph) {
 it('GPUNetworkPathExtraction schedules nodes without and with edges', () => {
   const device = createNullWebGPUDevice();
   const graph = new GPUCommandGraph(device);
-  const recipe = new GPUNetworkPathExtraction(createProps(graph));
-  expect(recipe.recipe).toBe('network-path-extraction');
-  const ids = recipe.getCommandNodes(graph).map(node => node.id);
+  const contributor = new GPUNetworkPathExtraction(createProps(graph));
+  expect(contributor.id).toBe('network-path-extraction');
+  const ids = contributor.getCommandNodes(graph).map(node => node.id);
   expect(ids.slice(0, 2)).toEqual([
     'network-path-extraction-clear',
     'network-path-extraction-measure'

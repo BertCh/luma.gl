@@ -130,7 +130,7 @@ export function getFloat32Bits(value: number): number {
 }
 
 /**
- * Small-grid CPU decode with the full nodata policy of the recipe, for the focused GPU tests.
+ * Small-grid CPU decode with the full nodata policy of the contributor, for the focused GPU tests.
  * Returns `{values, validity}` where nodata pixels hold NaN bits.
  */
 export function decodeWithPolicy(

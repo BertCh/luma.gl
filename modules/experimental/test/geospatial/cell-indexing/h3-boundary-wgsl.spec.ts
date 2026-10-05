@@ -16,12 +16,16 @@ import {
   gridDisk
 } from 'h3-js';
 import {expect, it} from 'vitest';
-import {importGraphBuffer, submitGraph} from '../../../src/utils/gpu-contributor-utils';
+import {importGraphBuffer} from '../../../src/utils/gpu-contributor-utils';
 import {H3_BOUNDARY_WGSL} from '../../../src/geospatial/cell-indexing/h3-boundary-wgsl';
 import {createWGSLKernelNode} from '../../../src/utils/wgsl-kernel-nodes';
 import {h3ToBigInt, splitCellKey} from '../cell-aggregation/cell-aggregation-oracle';
 import {createRandom} from '../cell-aggregation/cell-aggregation-points';
-import {createInputBuffer, createOutputBuffer} from '../../utils/gpu-contributor-test-utils';
+import {
+  createInputBuffer,
+  createOutputBuffer,
+  submitGraph
+} from '../../utils/gpu-contributor-test-utils';
 
 const CAPACITY = 8192;
 const MAXIMUM_VERTICES = 10;

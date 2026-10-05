@@ -100,7 +100,7 @@ it('GPUCalendarBuckets splits outputs over kernels within the binding limit', ()
     quarter: u32(),
     hourWeekdayCounts: u32(168)
   };
-  const recipe = new GPUCalendarBuckets({
+  const contributor = new GPUCalendarBuckets({
     id: 'calendar',
     timestamps: view(graph, 'uint32x2', 6),
     mask: u32(),
@@ -108,7 +108,7 @@ it('GPUCalendarBuckets splits outputs over kernels within the binding limit', ()
     parameters: view(graph, 'sint32', 2),
     output
   });
-  const nodes = recipe.getCommandNodes(graph);
+  const nodes = contributor.getCommandNodes(graph);
   // 4 inputs + 11 outputs at 4 outputs per kernel = 3 kernels, after the matrix fill.
   expect(nodes.map(node => node.id)).toEqual([
     'calendar-fill-matrix',

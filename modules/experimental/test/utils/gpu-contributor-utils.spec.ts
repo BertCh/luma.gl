@@ -5,10 +5,11 @@
 import {GPUCommandGraph, GPUMask} from '@luma.gl/gpgpu/gpu-core';
 import {getWebGPUTestDevice} from '@luma.gl/test-utils';
 import {expect, it} from 'vitest';
-import {GPUParameterBuffer, importGraphBuffer, submitGraph} from '../../src/utils/gpu-contributor-utils';
+import {GPUParameterBuffer, importGraphBuffer} from '../../src/utils/gpu-contributor-utils';
+import {submitGraph} from '../utils/gpu-contributor-test-utils';
 import {createOutputBuffer, readUint32} from './gpu-contributor-test-utils';
 
-it('GPUParameterBuffer updates recipe inputs between encodings without recompiling', async () => {
+it('GPUParameterBuffer updates contributor inputs between encodings without recompiling', async () => {
   const device = await getWebGPUTestDevice();
   if (!device) {
     return;

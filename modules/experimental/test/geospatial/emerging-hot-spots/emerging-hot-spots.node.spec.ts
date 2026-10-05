@@ -143,9 +143,8 @@ it('GPUEmergingHotSpots creates deterministic nodes', () => {
   const device = createNullWebGPUDevice();
   const graph = new GPUCommandGraph(device);
   const mask = createTransientView(graph, 'mask', 'uint32', 12);
-  const recipe = new GPUEmergingHotSpots(createProps(graph, {id: 'eh', mask}));
-  expect(recipe.recipe).toBe('emerging-hot-spots');
-  const ids = recipe.getCommandNodes(graph).map(node => node.id);
+  const contributor = new GPUEmergingHotSpots(createProps(graph, {id: 'eh', mask}));
+  const ids = contributor.getCommandNodes(graph).map(node => node.id);
   expect(ids).toEqual([
     'eh-block-sums',
     'eh-mean',

@@ -14,11 +14,11 @@ import {
 } from '@luma.gl/gpgpu/gpu-graph';
 import {GPUData, GPUVector} from '@luma.gl/gpgpu/gpu-data';
 import {
-  getGPUGraphRecipeColumnsSkipReason,
-  GPUGraphRecipeColumns,
-  type GPUGraphRecipeColumnsOptions,
-  type GPUGraphRecipeColumnsStats
-} from './gpu-graph-recipe-columns';
+  getGPUGraphAnalysisColumnsSkipReason,
+  GPUGraphAnalysisColumns,
+  type GPUGraphAnalysisColumnsOptions,
+  type GPUGraphAnalysisColumnsStats
+} from './gpu-graph-analysis-columns';
 
 /** Caller-owned graph input preserving original edge partitions and vertex allocations. */
 export type GPUGraphDeckDataset = {
@@ -67,8 +67,8 @@ export type GPUGraphDeckEffectStats = {
   framesPerSecond: number;
   completedAnalysisStages: number;
   totalAnalysisStages: number;
-  /** Recipe-column measurements, or `undefined` when recipe columns are disabled or skipped. */
-  recipeColumns?: GPUGraphRecipeColumnsStats;
+  /** Analysis-column measurements, or `undefined` when analysis columns are disabled or skipped. */
+  analysisColumns?: GPUGraphAnalysisColumnsStats;
 };
 
 /** Optional bounded layout selection and CPU-only diagnostic callback. */
@@ -77,14 +77,14 @@ export type GPUGraphDeckEffectOptions = {
   pointMode?: boolean;
   maxVisibleEdges?: number;
   /**
-   * Builds {@link GPUGraphRecipeColumns} (map-graph analytics columns, hover neighborhood mask,
-   * path ranks and reachability bands) as `effect.recipeColumns`. Defaults to `true`; the effect
-   * skips it automatically, recording `recipeColumnsSkipReason`, when the symmetrized adjacency
+   * Builds {@link GPUGraphAnalysisColumns} (GPU Graph analytics columns, hover neighborhood mask,
+   * path ranks and reachability bands) as `effect.analysisColumns`. Defaults to `true`; the effect
+   * skips it automatically, recording `analysisColumnsSkipReason`, when the symmetrized adjacency
    * exceeds the adapter's buffer limits. Pass `false` to opt out.
    */
-  recipeColumns?: boolean;
-  /** Compile-time tuning forwarded to {@link GPUGraphRecipeColumns}. */
-  recipeColumnOptions?: GPUGraphRecipeColumnsOptions;
+  analysisColumns?: boolean;
+  /** Compile-time tuning forwarded to {@link GPUGraphAnalysisColumns}. */
+  analysisColumnOptions?: GPUGraphAnalysisColumnsOptions;
   onStats?: (stats: GPUGraphDeckEffectStats) => void;
   /** Adds an explicitly provided O(E + 4V) contributor without importing application code. */
   addSampledLayoutToGraph?: (
@@ -95,17 +95,17 @@ export type GPUGraphDeckEffectOptions = {
 
 /**
  * Declares resident GPU Graph topology and progressive layout inside deck.gl's own render encoder,
- * plus {@link GPUGraphRecipeColumns}, the row-aligned analytics outputs the graph layers consume.
+ * plus {@link GPUGraphAnalysisColumns}, the row-aligned analytics outputs the graph layers consume.
  *
  * Construction compiles persistent graphs but never submits commands or reads a buffer. Original
  * source edge batches, including their empty middle partition, remain directly available to Deck
  * edge layers. The first ordinary frame encodes the directed topology once; every ordinary frame
  * then encodes force integration.
  *
- * {@link GPUGraphRecipeColumns} owns every analytic (degree, PageRank, core number, components,
+ * {@link GPUGraphAnalysisColumns} owns every analytic (degree, PageRank, core number, components,
  * communities, hover neighborhood, A to B path, reachability bands). Its topology and analytics
  * encode once in the first frames and its interaction graph encodes only in frames after
- * {@link setHoverVertex}, {@link setNeighborhoodHops} or {@link setPathEndpoints}. The recipe
+ * {@link setHoverVertex}, {@link setNeighborhoodHops} or {@link setPathEndpoints}. The analysis
  * columns treat the graph as undirected; the effect's own directed topology serves only the
  * force layout.
  */
@@ -126,12 +126,12 @@ export class GPUGraphDeckEffect implements Effect {
   readonly analysisGraph: CompiledGPUCommandGraph<void>;
   readonly frameGraph: CompiledGPUCommandGraph<void>;
   /**
-   * Map-graph recipe outputs bound by the graph layers, or `undefined` when disabled through
-   * `recipeColumns: false` or skipped (see {@link recipeColumnsSkipReason}).
+   * analysis contributor outputs bound by the graph layers, or `undefined` when disabled through
+   * `analysisColumns: false` or skipped (see {@link analysisColumnsSkipReason}).
    */
-  readonly recipeColumns?: GPUGraphRecipeColumns;
-  /** Why {@link recipeColumns} is absent, or `null` when it exists. */
-  readonly recipeColumnsSkipReason: string | null = null;
+  readonly analysisColumns?: GPUGraphAnalysisColumns;
+  /** Why {@link analysisColumns} is absent, or `null` when it exists. */
+  readonly analysisColumnsSkipReason: string | null = null;
 
   private readonly buffers: Buffer[] = [];
   private readonly vectors: GPUVector[] = [];
@@ -262,18 +262,18 @@ export class GPUGraphDeckEffect implements Effect {
     }
     this.frameGraph = frame.compile();
 
-    if (options.recipeColumns === false) {
-      this.recipeColumnsSkipReason = 'disabled by options.recipeColumns';
+    if (options.analysisColumns === false) {
+      this.analysisColumnsSkipReason = 'disabled by options.analysisColumns';
     } else {
-      this.recipeColumnsSkipReason = getGPUGraphRecipeColumnsSkipReason(
+      this.analysisColumnsSkipReason = getGPUGraphAnalysisColumnsSkipReason(
         device,
         dataset.vertexCount,
         this.graph.edgeCount
       );
-      if (this.recipeColumnsSkipReason === null) {
-        this.recipeColumns = new GPUGraphRecipeColumns(device, this.graph, {
-          id: 'gpu-graph-deck-recipes',
-          ...options.recipeColumnOptions
+      if (this.analysisColumnsSkipReason === null) {
+        this.analysisColumns = new GPUGraphAnalysisColumns(device, this.graph, {
+          id: 'gpu-graph-deck-analysis',
+          ...options.analysisColumnOptions
         });
       }
     }
@@ -299,8 +299,8 @@ export class GPUGraphDeckEffect implements Effect {
       this.completedAnalysisStages++;
       advancedAnalysis = true;
     }
-    this.recipeColumns?.encodeAnalytics(this.device.commandEncoder);
-    this.recipeColumns?.encodeInteraction(this.device.commandEncoder);
+    this.analysisColumns?.encodeAnalytics(this.device.commandEncoder);
+    this.analysisColumns?.encodeInteraction(this.device.commandEncoder);
     const encoding = this.frameGraph.encode(this.device.commandEncoder, {parameters: undefined});
     this.frameCount++;
     const frameTime = performance.now();
@@ -318,24 +318,24 @@ export class GPUGraphDeckEffect implements Effect {
   }
 
   /**
-   * Sets the hovered vertex of {@link GPUGraphRecipeColumns.neighborhoodMask}; `null` clears it.
-   * No-op without recipe columns. Never recompiles; the next frame re-encodes the interaction graph.
+   * Sets the hovered vertex of {@link GPUGraphAnalysisColumns.neighborhoodMask}; `null` clears it.
+   * No-op without analysis columns. Never recompiles; the next frame re-encodes the interaction graph.
    */
   setHoverVertex(vertex: number | null): void {
-    this.recipeColumns?.setHoverVertex(vertex);
+    this.analysisColumns?.setHoverVertex(vertex);
   }
 
-  /** Sets the recipe neighborhood radius (0 to 8). No-op without recipe columns. */
+  /** Sets the analysis neighborhood radius (0 to 8). No-op without analysis columns. */
   setNeighborhoodHops(hops: number): void {
-    this.recipeColumns?.setNeighborhoodHops(hops);
+    this.analysisColumns?.setNeighborhoodHops(hops);
   }
 
   /**
-   * Sets the shortest-path endpoints A (rank 1) and B of {@link GPUGraphRecipeColumns.pathRanks};
-   * `null` for either clears the path. No-op without recipe columns.
+   * Sets the shortest-path endpoints A (rank 1) and B of {@link GPUGraphAnalysisColumns.pathRanks};
+   * `null` for either clears the path. No-op without analysis columns.
    */
   setPathEndpoints(source: number | null, target: number | null): void {
-    this.recipeColumns?.setPathEndpoints(source, target);
+    this.analysisColumns?.setPathEndpoints(source, target);
   }
 
   /** Pins or releases exactly one original source vertex; no other rows are repacked. */
@@ -386,7 +386,7 @@ export class GPUGraphDeckEffect implements Effect {
     this.destroyed = true;
     for (const stage of this.analysisStages) stage.destroy();
     this.frameGraph.destroy();
-    this.recipeColumns?.destroy();
+    this.analysisColumns?.destroy();
     for (const vector of this.vectors.reverse()) vector.destroy();
     for (const buffer of this.buffers.reverse()) buffer.destroy();
   }
@@ -434,7 +434,7 @@ export class GPUGraphDeckEffect implements Effect {
       framesPerSecond: this.smoothedFramesPerSecond,
       completedAnalysisStages: this.completedAnalysisStages,
       totalAnalysisStages: this.analysisStages.length,
-      recipeColumns: this.recipeColumns?.stats
+      analysisColumns: this.analysisColumns?.stats
     });
   }
 

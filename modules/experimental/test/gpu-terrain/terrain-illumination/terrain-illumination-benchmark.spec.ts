@@ -6,7 +6,7 @@ import type {Buffer, Device} from '@luma.gl/core';
 import {GPUCommandGraph} from '@luma.gl/gpgpu/gpu-core';
 import {getWebGPUTestDevice} from '@luma.gl/test-utils';
 import {expect, it} from 'vitest';
-import {GPUParameterBuffer, importGraphBuffer, submitGraph} from '../../../src/utils/gpu-contributor-utils';
+import {GPUParameterBuffer, importGraphBuffer} from '../../../src/utils/gpu-contributor-utils';
 import {
   getGPUReliefShadingParameterValues,
   GPUReliefShading
@@ -27,7 +27,11 @@ import {
   getGPUTextureShadingParameterValues,
   GPUTextureShading
 } from '../../../src/gpu-terrain/terrain-illumination/gpu-texture-shading';
-import {createInputBuffer, createOutputBuffer} from '../../utils/gpu-contributor-test-utils';
+import {
+  createInputBuffer,
+  createOutputBuffer,
+  submitGraph
+} from '../../utils/gpu-contributor-test-utils';
 import {createSmoothTerrain} from './terrain-horizon-oracle';
 
 // Opt in with `VITE_TERRAIN_ILLUMINATION_BENCHMARK=true npx vitest run --project headless <this file>`.

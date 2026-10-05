@@ -219,7 +219,7 @@ const WORKGROUP_SIZE = 256;
  * bins each. Undirected: in = out = total = live row length (not doubled). Directed: total = in +
  * out. Degree statistics cover live vertices only.
  *
- * Components run `GPUGraphConnectedComponents` on a recipe-owned masked copy of the neighbors
+ * Components run `GPUGraphConnectedComponents` on a contributor-owned masked copy of the neighbors
  * (dead slots become `0xffffffff`), so masked vertices are isolated and excluded from counts.
  *
  * Modularity uses exact `u32` atomic sums (intra-community slots and per-label degree sums) and a
@@ -231,7 +231,7 @@ const WORKGROUP_SIZE = 256;
  * out-of-range label) gives modularity 0 and `modularityValid` 0.
  *
  * Owns a masked-neighbors buffer, a label buffer and small scalars, released by {@link destroy}.
- * Add the recipe to one graph at a time; destroy compiled graphs first.
+ * Add the contributor to one graph at a time; destroy compiled graphs first.
  */
 export class GPUNetworkStatistics implements GPUCommandNodeProducer {
   /** Prefix for every node and transient ID. */
@@ -775,7 +775,7 @@ var<workgroup> sharedSum: array<f32, ${WORKGROUP_SIZE}>;`,
     return nodes;
   }
 
-  /** Releases the recipe-owned buffers. Destroy compiled graphs that use them first. */
+  /** Releases the contributor-owned buffers. Destroy compiled graphs that use them first. */
   destroy(): void {
     this.maskedNeighbors.destroy();
     this.componentLabels.destroy();

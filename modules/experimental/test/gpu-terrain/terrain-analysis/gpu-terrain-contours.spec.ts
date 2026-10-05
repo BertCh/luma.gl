@@ -6,13 +6,14 @@ import type {Buffer} from '@luma.gl/core';
 import {DrawCommandBuffer, GPUCommandGraph} from '@luma.gl/gpgpu/gpu-core';
 import {getWebGPUTestDevice} from '@luma.gl/test-utils';
 import {expect, it} from 'vitest';
-import {GPUParameterBuffer, importGraphBuffer, submitGraph} from '../../../src/utils/gpu-contributor-utils';
+import {GPUParameterBuffer, importGraphBuffer} from '../../../src/utils/gpu-contributor-utils';
 import {GPUTerrainContours} from '../../../src/gpu-terrain/terrain-analysis';
 import {
   createInputBuffer,
   createOutputBuffer,
   readFloat32,
-  readUint32
+  readUint32,
+  submitGraph
 } from '../../utils/gpu-contributor-test-utils';
 import {countContourSegments, sampleBilinear} from './terrain-analysis-oracle';
 
@@ -213,7 +214,7 @@ async function runContourDraw(options: {
   const verticesBuffer = createOutputBuffer(device, options.segmentCapacity * 4);
   const countBuffer = createOutputBuffer(device, 1);
   const overflowBuffer = createOutputBuffer(device, 1);
-  const recipeOverflowBuffer = createOutputBuffer(device, 1);
+  const contributorOverflowBuffer = createOutputBuffer(device, 1);
   const commands = new DrawCommandBuffer(device, {
     id: `${options.id}-commands`,
     type: 'draw',
@@ -250,7 +251,7 @@ async function runContourDraw(options: {
           verticesPerInstance: options.verticesPerInstance
         }
       ],
-      overflow: importGraphBuffer(graph, 'overflow', recipeOverflowBuffer, 'uint32', 1)
+      overflow: importGraphBuffer(graph, 'overflow', contributorOverflowBuffer, 'uint32', 1)
     })
   );
   const compiled = graph.compile();
@@ -264,7 +265,7 @@ async function runContourDraw(options: {
     verticesBuffer,
     countBuffer,
     overflowBuffer,
-    recipeOverflowBuffer
+    contributorOverflowBuffer
   ]) {
     buffer.destroy();
   }

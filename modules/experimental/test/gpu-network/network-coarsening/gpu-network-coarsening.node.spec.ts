@@ -67,7 +67,6 @@ it('GPUNetworkCoarsening schedules a fixed node order and omits unused passes', 
   const {graph, importView, props} = createContext(device);
   const minimal = new GPUNetworkCoarsening(props({id: 'coarse'}));
   const minimalIds = minimal.getCommandNodes(graph).map(node => node.id);
-  expect(minimal.recipe).toBe('network-coarsening');
   expect(minimalIds[0]).toBe('coarse-zero-stats');
   expect(minimalIds.some(id => id === 'coarse-groups')).toBe(false);
   expect(minimalIds.some(id => id.endsWith('-edge-weights'))).toBe(false);

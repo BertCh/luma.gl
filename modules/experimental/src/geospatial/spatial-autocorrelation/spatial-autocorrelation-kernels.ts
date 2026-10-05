@@ -26,7 +26,7 @@ const BLOCK_ROWS = 4096;
 /** Key of a non-finite z-score in the false-discovery-rate sort; sorts after every finite one. */
 const INVALID_P_VALUE_KEY = 0x7f800001;
 
-/** Inputs shared by both spatial-autocorrelation recipes. @internal */
+/** Inputs shared by both spatial-autocorrelation contributors. @internal */
 export type SpatialAutocorrelationInputProps = {
   id: string;
   positions: GraphDataView<'float32x2'>;
@@ -52,7 +52,7 @@ export type SpatialAutocorrelationInputs<Parameters> = {
 };
 
 /**
- * Validates the props shared by both recipes and returns the row count.
+ * Validates the props shared by both contributors and returns the row count.
  *
  * @internal
  */
@@ -260,7 +260,7 @@ export function getSpatialAutocorrelationNeighborLoopWGSL(action: string): strin
 }
 
 /**
- * Builds the shared front end of both recipes: per-row validity and cell keys, the cell index
+ * Builds the shared front end of both contributors: per-row validity and cell keys, the cell index
  * (cell counts, exclusive offsets and a stable sort of rows by cell), and the global moments.
  *
  * Moments come from fixed-order two-level workgroup tree sums over the rows (no float atomics):

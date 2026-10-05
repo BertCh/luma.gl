@@ -123,9 +123,8 @@ it('GPUSolarPosition validates views and schedules one node', () => {
       ...overrides
     });
   };
-  const recipe = create();
-  expect(recipe.recipe).toBe('solar-position');
-  expect(recipe.getCommandNodes(graph).map(node => node.id)).toEqual(['solar-position-sun']);
+  const contributor = create();
+  expect(contributor.getCommandNodes(graph).map(node => node.id)).toEqual(['solar-position-sun']);
   expect(() => create({altitude: undefined})).toThrow(/at least one output/);
   expect(() => create({azimuth: createTransientView(graph, 'short', 'float32', 9)})).toThrow(
     /10 float32/

@@ -18,9 +18,33 @@ import {
 } from '@luma.gl/gpgpu/gpu-core';
 import {GPUVector} from '@luma.gl/gpgpu/gpu-data';
 import {GPUGraph, GPUGraphTopology, type GPUGraphAdjacency} from '@luma.gl/gpgpu/gpu-graph';
-import {GPUNetworkAnalyticsColumns, GPUNetworkNeighborhood, GPUNetworkPathExtraction, GPUNetworkReachability, type GPUNetworkAnalyticsColumnsProps} from '@luma.gl/experimental/gpu-network';
-import {importGraphBuffer} from '@luma.gl/experimental/UNRESOLVED';
+import {
+  GPUNetworkAnalyticsColumns,
+  GPUNetworkNeighborhood,
+  GPUNetworkPathExtraction,
+  GPUNetworkReachability,
+  type GPUNetworkAnalyticsColumnsProps
+} from '@luma.gl/experimental/gpu-network';
 import type {GPUGraphNodeColumn} from './gpu-graph-columns';
+
+/**
+ * Imports one caller-owned buffer into a command graph and returns a packed view over it, using
+ * the public `GPUCommandGraph.importBuffer()` and `createDataView()` methods. The graph never
+ * destroys the buffer.
+ */
+function importGraphBuffer<Format extends 'uint32' | 'float32'>(
+  graph: GPUCommandGraph<void>,
+  id: string,
+  buffer: Buffer,
+  format: Format,
+  length: number
+): GraphDataView<Format> {
+  const handle = graph.importBuffer(
+    {id, byteLength: buffer.byteLength, usage: buffer.usage},
+    buffer
+  );
+  return graph.createDataView(handle, {format, length});
+}
 
 const SCALAR_BYTE_LENGTH = 4;
 const WORKGROUP_SIZE = 256;
@@ -29,18 +53,22 @@ const MASSIVE_VERTEX_COUNT = 16_384;
 const MAXIMUM_NEIGHBORHOOD_HOPS = 8;
 const DEFAULT_PATH_MAXIMUM_ITERATIONS = 64;
 /**
- * Hop thresholds of {@link GPUGraphRecipeColumns.reachabilityBands}: band 0 is the source itself,
+ * Hop thresholds of {@link GPUGraphAnalysisColumns.reachabilityBands}: band 0 is the source itself,
  * band 1 is one hop away, and so on. Nodes beyond the last threshold are `NONE`.
  */
 const DEFAULT_BAND_HOP_THRESHOLDS: readonly number[] = [0, 1, 2, 3, 4, 6, 8, 12];
 
-/** Names of the analytics columns published by {@link GPUGraphRecipeColumns}. */
-export type GPUGraphRecipeColumnName =
-  'degree' | 'pageRank' | 'coreNumber' | 'component' | 'community';
+/** Names of the analytics columns published by {@link GPUGraphAnalysisColumns}. */
+export type GPUGraphAnalysisColumnName =
+  | 'degree'
+  | 'pageRank'
+  | 'coreNumber'
+  | 'component'
+  | 'community';
 
-/** Optional tuning of {@link GPUGraphRecipeColumns}. All values are compile-time. */
-export type GPUGraphRecipeColumnsOptions = {
-  /** Prefix for graph, node and buffer IDs. Defaults to `'gpu-graph-recipes'`. */
+/** Optional tuning of {@link GPUGraphAnalysisColumns}. All values are compile-time. */
+export type GPUGraphAnalysisColumnsOptions = {
+  /** Prefix for graph, node and buffer IDs. Defaults to `'gpu-graph-analysis'`. */
   id?: string;
   /** Relaxation iterations (maximum hop distance) of the A to B path search. Default 64. */
   pathMaximumIterations?: number;
@@ -48,8 +76,8 @@ export type GPUGraphRecipeColumnsOptions = {
   bandHopThresholds?: readonly number[];
 };
 
-/** Estimated resident and adapter-limit footprint of {@link GPUGraphRecipeColumns}. */
-export type GPUGraphRecipeColumnsFootprint = {
+/** Estimated resident and adapter-limit footprint of {@link GPUGraphAnalysisColumns}. */
+export type GPUGraphAnalysisColumnsFootprint = {
   /** Bytes of the largest single buffer (the symmetrized neighbor list). */
   largestBufferBytes: number;
   /** Sum of persistent buffers: topology, columns, masks, parameters. Excludes graph transients. */
@@ -57,15 +85,15 @@ export type GPUGraphRecipeColumnsFootprint = {
 };
 
 /**
- * Estimates the footprint of {@link GPUGraphRecipeColumns} for a graph without allocating.
+ * Estimates the footprint of {@link GPUGraphAnalysisColumns} for a graph without allocating.
  *
  * The undirected topology stores `2 * edgeCount` neighbors and edge IDs, which dominates.
  */
-export function estimateGPUGraphRecipeColumnsFootprint(
+export function estimateGPUGraphAnalysisColumnsFootprint(
   vertexCount: number,
   edgeCount: number,
   bandCount: number = DEFAULT_BAND_HOP_THRESHOLDS.length
-): GPUGraphRecipeColumnsFootprint {
+): GPUGraphAnalysisColumnsFootprint {
   const symmetricEdgeBytes = 2 * edgeCount * SCALAR_BYTE_LENGTH;
   // offsets + 3 raw columns + 3 normalized + component + community + hop distances + mask +
   // path ranks + bands, all one u32 per node.
@@ -77,18 +105,18 @@ export function estimateGPUGraphRecipeColumnsFootprint(
 }
 
 /**
- * Returns why the recipe columns cannot be built for this graph on `device`, or `null` when they
+ * Returns why the analysis columns cannot be built for this graph on `device`, or `null` when they
  * can. Checks the adapter's storage-binding and buffer-size limits against the symmetrized CSR.
  */
-export function getGPUGraphRecipeColumnsSkipReason(
+export function getGPUGraphAnalysisColumnsSkipReason(
   device: Device,
   vertexCount: number,
   edgeCount: number
 ): string | null {
-  if (device.type !== 'webgpu') return 'recipe columns require WebGPU compute';
+  if (device.type !== 'webgpu') return 'analysis columns require WebGPU compute';
   if (vertexCount < 1) return 'graph has no vertices';
   if (edgeCount < 1) return 'graph has no edges';
-  const {largestBufferBytes} = estimateGPUGraphRecipeColumnsFootprint(vertexCount, edgeCount);
+  const {largestBufferBytes} = estimateGPUGraphAnalysisColumnsFootprint(vertexCount, edgeCount);
   const limit = Math.min(device.limits.maxStorageBufferBindingSize, device.limits.maxBufferSize);
   if (largestBufferBytes > limit) {
     return `symmetrized adjacency needs ${largestBufferBytes} bytes, adapter limit is ${limit}`;
@@ -96,9 +124,9 @@ export function getGPUGraphRecipeColumnsSkipReason(
   return null;
 }
 
-/** Fixed layout of {@link GPUGraphRecipeColumns} measurements, available without readback. */
-export type GPUGraphRecipeColumnsStats = {
-  /** Persistent buffer bytes owned by the recipe columns. */
+/** Fixed layout of {@link GPUGraphAnalysisColumns} measurements, available without readback. */
+export type GPUGraphAnalysisColumnsStats = {
+  /** Persistent buffer bytes owned by the analysis columns. */
   residentBufferBytes: number;
   /** Physical transient bytes of every compiled graph. */
   transientBufferBytes: number;
@@ -115,7 +143,7 @@ export type GPUGraphRecipeColumnsStats = {
 };
 
 /**
- * GPU-resident, row-aligned map-graph recipe outputs for the deck.gl graph layers.
+ * GPU-resident, row-aligned analysis contributor outputs for the deck.gl graph layers.
  *
  * Every output is a caller-visible {@link Buffer} with one packed 4-byte row per graph vertex and
  * `STORAGE | COPY_SRC | COPY_DST` usage, so layers bind them directly as storage buffers and
@@ -123,7 +151,7 @@ export type GPUGraphRecipeColumnsStats = {
  * encodes; per-interaction inputs (hover, hops, path endpoints) live in tiny buffers written with
  * `Buffer.write`, so interactions never recompile anything.
  *
- * Topology: the recipes need a symmetric CSR. This class builds ONE undirected `GPUGraphTopology`
+ * Topology: the contributors need a symmetric CSR. This class builds ONE undirected `GPUGraphTopology`
  * over an undirected view of the source graph's own source and target vectors (cost: `2E`
  * neighbors and `2E` edge IDs, `16 E` bytes, no copy of the edge list). The directed forward CSR
  * was rejected: it would make hover neighborhoods and click-to-click paths one-way and would
@@ -137,9 +165,9 @@ export type GPUGraphRecipeColumnsStats = {
  * per call for massive graphs). {@link encodeInteraction} encodes only when an input changed.
  * Both append to the caller's command encoder and never submit.
  */
-export class GPUGraphRecipeColumns {
+export class GPUGraphAnalysisColumns {
   /** Normalized `degree`, `pageRank`, `coreNumber` (float32 in [0, 1]) and uint32 labels. */
-  readonly columns: Readonly<Record<GPUGraphRecipeColumnName, GPUGraphNodeColumn>>;
+  readonly columns: Readonly<Record<GPUGraphAnalysisColumnName, GPUGraphNodeColumn>>;
   /** Un-normalized degree (uint32), PageRank (float32, sums to 1) and core number (uint32). */
   readonly rawColumns: Readonly<Record<'degree' | 'pageRank' | 'coreNumber', GPUGraphNodeColumn>>;
   /**
@@ -170,13 +198,13 @@ export class GPUGraphRecipeColumns {
   readonly analyticsGraphs: readonly CompiledGPUCommandGraph<void>[];
   /** Compiled interaction graph: neighborhood, reachability, bands, path extraction, ranks. */
   readonly interactionGraph: CompiledGPUCommandGraph<void>;
-  /** Undirected topology the recipes run on. */
+  /** Undirected topology the contributors run on. */
   readonly topology: GPUGraphTopology;
 
   private readonly device: Device;
   private readonly buffers: Buffer[] = [];
   private readonly vectors: GPUVector[] = [];
-  private readonly recipes: {destroy?(): void}[] = [];
+  private readonly contributors: {destroy?(): void}[] = [];
   private readonly seeds: Buffer;
   private readonly seedCount: Buffer;
   private readonly hops: Buffer;
@@ -203,15 +231,15 @@ export class GPUGraphRecipeColumns {
    * @param graph Source graph; its source and target vectors are reused, never copied.
    * @param options Compile-time tuning.
    */
-  constructor(device: Device, graph: GPUGraph, options: GPUGraphRecipeColumnsOptions = {}) {
-    const skipReason = getGPUGraphRecipeColumnsSkipReason(
+  constructor(device: Device, graph: GPUGraph, options: GPUGraphAnalysisColumnsOptions = {}) {
+    const skipReason = getGPUGraphAnalysisColumnsSkipReason(
       device,
       graph.vertexCount,
       graph.edgeCount
     );
-    if (skipReason) throw new Error(`GPUGraphRecipeColumns unavailable: ${skipReason}`);
+    if (skipReason) throw new Error(`GPUGraphAnalysisColumns unavailable: ${skipReason}`);
     this.device = device;
-    const id = options.id ?? 'gpu-graph-recipes';
+    const id = options.id ?? 'gpu-graph-analysis';
     const nodeCount = graph.vertexCount;
     const edgeCount = graph.edgeCount;
     const symmetricCount = edgeCount * 2;
@@ -243,7 +271,7 @@ export class GPUGraphRecipeColumns {
       this.topology.addToGraph(topology);
       this.topologyGraph = topology.compile();
 
-      // Analytics columns. Raw outputs are required by the recipe; normalized ones are published.
+      // Analytics columns. Raw outputs are required by the contributor; normalized ones are published.
       const raw = {
         degree: this.createBuffer(`${id}-degree-raw`, nodeCount),
         pageRank: this.createBuffer(`${id}-page-rank-raw`, nodeCount),
@@ -270,7 +298,7 @@ export class GPUGraphRecipeColumns {
       };
 
       const iterations = massive ? 2 : undefined;
-      const metricGroups: readonly (readonly GPUGraphRecipeColumnName[])[] = massive
+      const metricGroups: readonly (readonly GPUGraphAnalysisColumnName[])[] = massive
         ? [['degree'], ['component'], ['community'], ['pageRank'], ['coreNumber']]
         : [['degree', 'pageRank', 'coreNumber', 'component', 'community']];
       const analyticsGraphs: CompiledGPUCommandGraph<void>[] = [];
@@ -321,9 +349,9 @@ export class GPUGraphRecipeColumns {
             iterations: iterations ?? 16
           };
         }
-        const recipe = new GPUNetworkAnalyticsColumns(props);
-        this.recipes.push(recipe);
-        stage.add(recipe);
+        const contributor = new GPUNetworkAnalyticsColumns(props);
+        this.contributors.push(contributor);
+        stage.add(contributor);
         analyticsGraphs.push(stage.compile());
       }
       this.analyticsGraphs = analyticsGraphs;
@@ -379,7 +407,7 @@ export class GPUGraphRecipeColumns {
         symmetricCount
       );
       interaction.add(
-        createRecipeKernelNode(interaction, {
+        createAnalysisKernelNode(interaction, {
           id: `${id}-unit-weights`,
           bindings: [
             {
@@ -440,7 +468,7 @@ export class GPUGraphRecipeColumns {
       // Extraction orders ids source to target, so rank = position + 1 puts A at rank 1.
       const ranks = importInput('path-ranks', this.pathRanks, 'uint32', nodeCount);
       interaction.add(
-        createRecipeKernelNode(interaction, {
+        createAnalysisKernelNode(interaction, {
           id: `${id}-path-ranks-clear`,
           bindings: [{name: 'ranks', view: ranks, type: 'u32', access: 'read_write'}],
           invocationCount: nodeCount,
@@ -448,7 +476,7 @@ export class GPUGraphRecipeColumns {
         })
       );
       interaction.add(
-        createRecipeKernelNode(interaction, {
+        createAnalysisKernelNode(interaction, {
           id: `${id}-path-ranks-scatter`,
           bindings: [
             {name: 'ids', view: pathIds, type: 'u32', access: 'read'},
@@ -495,7 +523,7 @@ export class GPUGraphRecipeColumns {
   }
 
   /** Immediately available measurements; reads nothing from the GPU. */
-  get stats(): GPUGraphRecipeColumnsStats {
+  get stats(): GPUGraphAnalysisColumnsStats {
     return {
       residentBufferBytes: this.buffers.reduce((total, buffer) => total + buffer.byteLength, 0),
       transientBufferBytes: [
@@ -576,7 +604,7 @@ export class GPUGraphRecipeColumns {
     return true;
   }
 
-  /** Destroys compiled graphs, recipes and every buffer, including the published outputs. */
+  /** Destroys compiled graphs, contributors and every buffer, including the published outputs. */
   destroy(): void {
     if (this.destroyed) return;
     this.destroyed = true;
@@ -587,7 +615,7 @@ export class GPUGraphRecipeColumns {
     this.topologyGraph?.destroy();
     for (const graph of this.analyticsGraphs ?? []) graph.destroy();
     this.interactionGraph?.destroy();
-    for (const recipe of this.recipes) recipe.destroy?.();
+    for (const contributor of this.contributors) contributor.destroy?.();
     for (const vector of this.vectors.reverse()) vector.destroy();
     for (const buffer of this.buffers.reverse()) buffer.destroy();
   }
@@ -650,7 +678,7 @@ export class GPUGraphRecipeColumns {
   }
 }
 
-type RecipeKernelProps = {
+type AnalysisKernelProps = {
   id: string;
   bindings: readonly {
     name: string;
@@ -664,12 +692,12 @@ type RecipeKernelProps = {
 };
 
 /**
- * One linear compute pass over packed storage views, following the map-graph kernel pattern.
+ * One linear compute pass over packed storage views, following the linear WGSL kernel pattern.
  * Bindings expose `${name}Offset` element offsets; `index` is the guarded invocation index.
  */
-function createRecipeKernelNode(
+function createAnalysisKernelNode(
   graph: GPUCommandGraph<void>,
-  props: RecipeKernelProps
+  props: AnalysisKernelProps
 ): GPUCommandNode<void> {
   const layout = getBoundedDispatchLayout(
     props.id,
@@ -718,7 +746,7 @@ fn main(
       usage: binding.access === 'read' ? 'storage-read' : 'storage-read-write'
     })),
     workload: {
-      operation: 'GPUGraphRecipeColumns',
+      operation: 'GPUGraphAnalysisColumns',
       commandCount: 1,
       maximumWorkgroupCount: layout.x * layout.y * layout.z,
       maximumInvocationCount: props.invocationCount,

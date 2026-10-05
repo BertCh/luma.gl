@@ -33,9 +33,7 @@ const STATUS_GAP: u32 = ${GPU_TRAJECTORY_PLAYHEAD_STATUS.gap}u;
 `;
 
 /** Returns the `timestamps` storage binding. @internal */
-function getTimestampsBinding(
-  timestamps: TrajectoryInterpolationTimestamps
-): WGSLKernelBinding {
+function getTimestampsBinding(timestamps: TrajectoryInterpolationTimestamps): WGSLKernelBinding {
   return {
     name: 'timestamps',
     view: timestamps,

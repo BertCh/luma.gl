@@ -37,10 +37,10 @@ function countNodes(chunkCount: number, tileCount: number) {
   const device = createNullWebGPUDevice();
   const count = (build: (graph: GPUCommandGraph) => {getCommandNodes: unknown}): number => {
     const graph = new GPUCommandGraph(device);
-    const recipe = build(graph) as {
+    const contributor = build(graph) as {
       getCommandNodes: (graph: GPUCommandGraph) => readonly unknown[];
     };
-    return recipe.getCommandNodes(graph).length;
+    return contributor.getCommandNodes(graph).length;
   };
   const scalarOutputs = (graph: GPUCommandGraph) => ({
     count: createTransientView(graph, 'count', 'uint32', 1),

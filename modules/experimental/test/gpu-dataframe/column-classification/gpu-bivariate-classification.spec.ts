@@ -6,7 +6,7 @@ import type {Buffer, Device} from '@luma.gl/core';
 import {GPUCommandGraph} from '@luma.gl/gpgpu/gpu-core';
 import {getWebGPUTestDevice} from '@luma.gl/test-utils';
 import {expect, it} from 'vitest';
-import {GPUParameterBuffer, importGraphBuffer, submitGraph} from '../../../src/utils/gpu-contributor-utils';
+import {GPUParameterBuffer, importGraphBuffer} from '../../../src/utils/gpu-contributor-utils';
 import {GPUBivariateClassification} from '../../../src/gpu-dataframe/column-classification/gpu-bivariate-classification';
 import {
   getGPUBivariateClassificationParameterValues,
@@ -14,7 +14,12 @@ import {
 } from '../../../src/gpu-dataframe/column-classification/bivariate-classification-parameters';
 import {packGPUColor} from '../../../src/gpu-dataframe/column-classification/color-scale-parameters';
 import {computeBivariateClassificationOnCPU} from './bivariate-classification-oracle';
-import {createInputBuffer, createOutputBuffer, readUint32} from '../../utils/gpu-contributor-test-utils';
+import {
+  createInputBuffer,
+  createOutputBuffer,
+  readUint32,
+  submitGraph
+} from '../../utils/gpu-contributor-test-utils';
 
 const NONE = 0xffffffff;
 const NO_DATA = 0x0a0b0c0d;

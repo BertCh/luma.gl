@@ -47,10 +47,12 @@ it('GPUParticleAdvection validates props and builds deterministic nodes', () => 
   const graph = new GPUCommandGraph(createNullWebGPUDevice(), {
     id: 'particle-validation'
   });
-  const recipe = new GPUParticleAdvection(createProps(graph, {id: 'wind'}));
-  expect(recipe.recipe).toBe('particle-advection');
-  expect(recipe.particleCount).toBe(10);
-  expect(recipe.getCommandNodes(graph).map(node => node.id)).toEqual(['wind-step', 'wind-trails']);
+  const contributor = new GPUParticleAdvection(createProps(graph, {id: 'wind'}));
+  expect(contributor.particleCount).toBe(10);
+  expect(contributor.getCommandNodes(graph).map(node => node.id)).toEqual([
+    'wind-step',
+    'wind-trails'
+  ]);
   const withoutTrails = new GPUParticleAdvection(createProps(graph, {trails: undefined}));
   expect(withoutTrails.getCommandNodes(graph)).toHaveLength(1);
 

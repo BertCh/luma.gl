@@ -32,7 +32,7 @@ import {
 /** Number of float32 values read from `GPUMultiScaleReliefProps.settings`. */
 export const GPU_MULTI_SCALE_RELIEF_PARAMETER_LENGTH = 4;
 
-/** Feature-size description shared by {@link getGPUMultiScaleReliefRadii} and the recipe. */
+/** Feature-size description shared by {@link getGPUMultiScaleReliefRadii} and the contributor. */
 export type GPUMultiScaleReliefScales = {
   /** Pixel size in projected metres. Positive. */
   resolution: number;

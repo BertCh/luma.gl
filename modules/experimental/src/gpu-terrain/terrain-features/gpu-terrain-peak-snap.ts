@@ -159,7 +159,7 @@ export type GPUTerrainPeakSnapProps = {
    * non-positive entries fall back to the settings radius. A distance-dependent rule such as
    * `min(250, 60 + 0.004 * distance)` metres (60 m plus 0.4 % of the distance to the viewer,
    * capped at 250 m, used for peaks drawn from coarser tiles in the mt-image skyline renderer) is
-   * a caller recipe: compute it per candidate and upload it here.
+   * a caller contributor: compute it per candidate and upload it here.
    */
   candidateRadii?: GraphDataView<'float32'>;
   /** Per-frame settings with at least 8 float32 values, see {@link getGPUTerrainPeakSnapParameterValues}. */

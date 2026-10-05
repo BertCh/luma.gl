@@ -6,7 +6,7 @@ import type {Buffer, Device} from '@luma.gl/core';
 import {GPUCommandGraph} from '@luma.gl/gpgpu/gpu-core';
 import {getWebGPUTestDevice} from '@luma.gl/test-utils';
 import {expect, it} from 'vitest';
-import {GPUParameterBuffer, importGraphBuffer, submitGraph} from '../../../src/utils/gpu-contributor-utils';
+import {GPUParameterBuffer, importGraphBuffer} from '../../../src/utils/gpu-contributor-utils';
 import {
   getGPUReliefBlendParameterValues,
   GPU_RELIEF_BLEND_VAT_ARCHAEOLOGICAL,
@@ -15,7 +15,13 @@ import {
   type GPUReliefBlendLayerSettings,
   type GPUReliefBlendMode
 } from '../../../src/gpu-terrain/relief-visualization/gpu-relief-blend';
-import {createInputBuffer, createOutputBuffer, readFloat32, readUint32} from '../../utils/gpu-contributor-test-utils';
+import {
+  createInputBuffer,
+  createOutputBuffer,
+  readFloat32,
+  readUint32,
+  submitGraph
+} from '../../utils/gpu-contributor-test-utils';
 import {computeBlendRVT, type RVTBlendLayer} from './relief-visualization-oracle';
 import {expectClose} from './relief-test-utils';
 
@@ -170,7 +176,10 @@ it('GPUReliefBlend uses the bottom layer as is and analytic overlay and soft lig
     device,
     [bottom, top],
     [
-      [{minimum: 0, maximum: 1, blendMode: 'multiply', opacity: 0.1}, {minimum: 0, maximum: 1}],
+      [
+        {minimum: 0, maximum: 1, blendMode: 'multiply', opacity: 0.1},
+        {minimum: 0, maximum: 1}
+      ],
       [
         {minimum: 0, maximum: 1},
         {minimum: 0, maximum: 1, blendMode: 'overlay', opacity: 1}

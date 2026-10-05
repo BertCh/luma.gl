@@ -62,7 +62,7 @@ export function getGPUNetworkSubgraphFilterParameterLength(
 }
 
 /**
- * Packs ranges into the float32 layout the recipe reads.
+ * Packs ranges into the float32 layout the contributor reads.
  *
  * Records of {@link GPU_NETWORK_SUBGRAPH_FILTER_PARAMETER_STRIDE} floats `[min, max, enabled, 0]`:
  * vertex columns first, then edge columns, then the f32 edge time window. Write the result into the

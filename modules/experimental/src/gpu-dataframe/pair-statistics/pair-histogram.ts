@@ -106,14 +106,14 @@ export function validatePairHistogramShape(
 /**
  * Builds the shared pair-histogram kernel: one thread per included focus row (in cell order, so a
  * workgroup's foci are spatially coherent) visits every included row of the 3x3 cell
- * neighborhood within the per-frame `maximumDistance` and lets the recipe accumulate integer
+ * neighborhood within the per-frame `maximumDistance` and lets the contributor accumulate integer
  * amounts into `slotCount x channelCount` histogram accumulators.
  *
  * Determinism without float atomics: each workgroup accumulates into shared-memory 64-bit
  * accumulators (two `atomic<u32>` words with carry detection from the `atomicAdd` return), then
  * adds its partials into global 64-bit accumulators the same way. Integer addition is associative,
  * so the result is exact and independent of scheduling. Float quantities are accumulated in fixed
- * point: the recipe scales a non-negative term to at most about `2^24` before
+ * point: the contributor scales a non-negative term to at most about `2^24` before
  * `quantizePairAmount`, which leaves 40 bits of headroom (about 10^12 pairs per accumulator).
  *
  * Cost is the number of candidate pairs in the 3x3 neighborhoods. When `maximumDistance` covers the

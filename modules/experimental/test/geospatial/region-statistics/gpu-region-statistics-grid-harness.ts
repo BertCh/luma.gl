@@ -4,7 +4,7 @@
 
 import type {Buffer, Device} from '@luma.gl/core';
 import {GPUCommandGraph, GPUGridIndex, type GPUGridIndexView} from '@luma.gl/gpgpu/gpu-core';
-import {GPUParameterBuffer, importGraphBuffer, submitGraph} from '../../../src/utils/gpu-contributor-utils';
+import {GPUParameterBuffer, importGraphBuffer} from '../../../src/utils/gpu-contributor-utils';
 import {
   decodeGPURegionStatistics,
   getGPURegionStatisticsSummaryLength,
@@ -16,7 +16,8 @@ import {
   createInputBuffer,
   createOutputBuffer,
   readCompactIds,
-  readUint32
+  readUint32,
+  submitGraph
 } from '../../utils/gpu-contributor-test-utils';
 
 /** Options for {@link GridStatisticsHarness}. */
@@ -39,8 +40,8 @@ export type GridStatisticsHarnessOptions = {
   indexMode: 'same-graph' | 'separate-graph';
 };
 
-/** Everything read back from one recipe encoding. */
-export type RecipeReadback = {
+/** Everything read back from one contributor encoding. */
+export type ContributorReadback = {
   words: Uint32Array;
   result: GPURegionStatisticsResult;
   ids?: number[];
@@ -49,7 +50,7 @@ export type RecipeReadback = {
   mask?: number[];
 };
 
-type RecipeBuffers = {
+type ContributorBuffers = {
   summary: Buffer;
   ids?: Buffer;
   count?: Buffer;
@@ -74,8 +75,8 @@ export class GridStatisticsHarness {
   private readonly options: GridStatisticsHarnessOptions;
   private readonly inputBuffers: Buffer[] = [];
   private readonly indexBuffers: Buffer[] = [];
-  private readonly brute: RecipeBuffers;
-  private readonly grid: RecipeBuffers;
+  private readonly brute: ContributorBuffers;
+  private readonly grid: ContributorBuffers;
   private readonly bounds: GPUParameterBuffer<'float32'>;
   private readonly circle: GPUParameterBuffer<'float32'>;
   private readonly vertices: GPUParameterBuffer<'float32'>;
@@ -153,12 +154,12 @@ export class GridStatisticsHarness {
           : undefined
       };
     };
-    const createRecipe = (
+    const createContributor = (
       tag: 'brute' | 'grid',
       inputs: ReturnType<typeof createGraph>
-    ): {props: GPURegionStatisticsProps; buffers: RecipeBuffers} => {
+    ): {props: GPURegionStatisticsProps; buffers: ContributorBuffers} => {
       const {graph} = inputs;
-      const buffers: RecipeBuffers = {
+      const buffers: ContributorBuffers = {
         summary: createOutputBuffer(device, getGPURegionStatisticsSummaryLength(this.binCount))
       };
       const props: GPURegionStatisticsProps = {
@@ -213,14 +214,14 @@ export class GridStatisticsHarness {
     };
 
     const bruteInputs = createGraph('brute');
-    const bruteRecipe = createRecipe('brute', bruteInputs);
-    this.brute = bruteRecipe.buffers;
-    bruteInputs.graph.add(new GPURegionStatistics(bruteRecipe.props));
+    const bruteContributor = createContributor('brute', bruteInputs);
+    this.brute = bruteContributor.buffers;
+    bruteInputs.graph.add(new GPURegionStatistics(bruteContributor.props));
     this.bruteCompiled = bruteInputs.graph.compile();
 
     const gridInputs = createGraph('grid');
-    const gridRecipe = createRecipe('grid', gridInputs);
-    this.grid = gridRecipe.buffers;
+    const gridContributor = createContributor('grid', gridInputs);
+    this.grid = gridContributor.buffers;
     let index: GPUGridIndexView;
     if (options.indexMode === 'same-graph') {
       const gridIndex = new GPUGridIndex({
@@ -322,7 +323,7 @@ export class GridStatisticsHarness {
     }
     gridInputs.graph.add(
       new GPURegionStatistics({
-        ...gridRecipe.props,
+        ...gridContributor.props,
         spatialIndex: {kind: 'grid', index, candidateCapacity: options.candidateCapacity}
       })
     );
@@ -352,7 +353,7 @@ export class GridStatisticsHarness {
     this.vertexCount.write(Uint32Array.of(vertexCount));
   }
 
-  /** Encodes both recipes (and the index when it lives in the grid graph). */
+  /** Encodes both contributors (and the index when it lives in the grid graph). */
   encodeBoth(): void {
     submitGraph(this.device, this.bruteCompiled, undefined);
     submitGraph(this.device, this.gridCompiled, undefined);
@@ -366,17 +367,17 @@ export class GridStatisticsHarness {
     submitGraph(this.device, this.gridCompiled, undefined);
   }
 
-  /** Small readback that waits for the most recent submission of either recipe. */
+  /** Small readback that waits for the most recent submission of either contributor. */
   async sync(which: 'brute' | 'grid'): Promise<void> {
     await (which === 'brute' ? this.brute : this.grid).summary.readAsync(0, 4);
   }
 
   /** Reads summary, optional IDs, optional mask. */
-  async read(which: 'brute' | 'grid'): Promise<RecipeReadback> {
+  async read(which: 'brute' | 'grid'): Promise<ContributorReadback> {
     const buffers = which === 'brute' ? this.brute : this.grid;
     const length = getGPURegionStatisticsSummaryLength(this.binCount);
     const words = Uint32Array.from(await readUint32(buffers.summary, length));
-    const readback: RecipeReadback = {words, result: decodeGPURegionStatistics(words)};
+    const readback: ContributorReadback = {words, result: decodeGPURegionStatistics(words)};
     if (buffers.ids && buffers.count && buffers.overflow && buffers.total) {
       readback.ids = await readCompactIds(buffers.ids, buffers.count);
       readback.outputOverflow = (await readUint32(buffers.overflow, 1))[0];

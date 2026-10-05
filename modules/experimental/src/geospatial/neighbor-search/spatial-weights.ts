@@ -12,7 +12,7 @@ import {
  * A spatial-weights matrix in CSR form: row `i` lists the neighbors `j` of focus row `i` and the
  * weight `w_ij` of each.
  *
- * This is the shared weights structure of the map-graph statistics recipes. `GPUNeighborSearch`
+ * This is the shared weights structure of the statistics contributors. `GPUNeighborSearch`
  * writes it on the GPU (kNN or distance band); `GPUGlobalSpatialStatistics`,
  * `GPULocalPermutationTest` and `GPUGlobalPermutationTest` read it. Applications can also upload
  * one built elsewhere, for example polygon contiguity computed once on the CPU.
@@ -27,7 +27,7 @@ import {
  * - Weights are finite and non-negative.
  *
  * The row and neighbor-ID spaces may differ for cross (query to target) weights; the statistics
- * recipes require square self-join weights where `neighbors` index the same rows as `offsets`.
+ * contributors require square self-join weights where `neighbors` index the same rows as `offsets`.
  */
 export type GPUSpatialWeights = {
   /** `rows + 1` exclusive row offsets into the neighbor slots. */
@@ -46,7 +46,7 @@ export type GPUSpatialWeights = {
  *
  * Only shapes are validated here; the ordering invariants are the producer's responsibility.
  *
- * @param id Recipe ID used in error messages.
+ * @param id Contributor ID used in error messages.
  * @param weights Weights to validate.
  * @param name Prop name used in error messages. Defaults to `'weights'`.
  */

@@ -7,7 +7,7 @@ import {GPUCommandGraph, type CompiledGPUCommandGraph} from '@luma.gl/gpgpu/gpu-
 import {getWebGPUTestDevice} from '@luma.gl/test-utils';
 import {expect, it} from 'vitest';
 import {GPURasterTextureToBuffer} from '../../../src/gpu-raster';
-import {importGraphBuffer, submitGraph} from '../../../src/utils/gpu-contributor-utils';
+import {importGraphBuffer} from '../../../src/utils/gpu-contributor-utils';
 import {
   computeAdjacencyMatrixOrder,
   encodeGPUAdjacencyMatrixWindow,
@@ -18,7 +18,8 @@ import {
   createInputBuffer,
   createOutputBuffer,
   readFloat32,
-  readUint32
+  readUint32,
+  submitGraph
 } from '../../utils/gpu-contributor-test-utils';
 import {
   buildMatrixCSR,
@@ -52,7 +53,7 @@ class Fixture {
   readonly textureReadback: Buffer;
   readonly textureValidity: Buffer;
   readonly texture?: Texture;
-  readonly recipe: GPUAdjacencyMatrix;
+  readonly contributor: GPUAdjacencyMatrix;
   compiled?: CompiledGPUCommandGraph<void>;
 
   constructor(
@@ -114,7 +115,7 @@ class Fixture {
         {mipLevelCount: 1}
       );
     }
-    this.recipe = new GPUAdjacencyMatrix({
+    this.contributor = new GPUAdjacencyMatrix({
       id: 'matrix',
       offsets: input('offsets', this.csr.offsets)!,
       neighbors: input('neighbors', this.csr.neighbors)!,
@@ -141,7 +142,7 @@ class Fixture {
         textureStatistic: 'count'
       }
     });
-    this.graph.add(this.recipe);
+    this.graph.add(this.contributor);
     if (textureView) {
       new GPURasterTextureToBuffer({
         id: 'texture-readback',

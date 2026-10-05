@@ -20,7 +20,10 @@ import {
 import {createPublishNode} from '../../utils/wgsl-kernel-nodes';
 import type {GPUCompactOutput} from '../../utils/gpu-contributor-types';
 import type {GPUCommandNodeProducer} from '@luma.gl/gpgpu/gpu-core';
-import {validateGraphViewsBelongToGraph, validateCompactOutput} from '../../utils/gpu-contributor-utils';
+import {
+  validateGraphViewsBelongToGraph,
+  validateCompactOutput
+} from '../../utils/gpu-contributor-utils';
 import {
   createTileLODBudgetNode,
   createTileLODDecideNode,
@@ -417,7 +420,7 @@ export class GPUTileLODSelection implements GPUCommandNodeProducer {
   }
 }
 
-/** Returns every read-only view of the recipe. */
+/** Returns every read-only view of the contributor. */
 function getInputViews(props: GPUTileLODSelectionProps): GraphDataView[] {
   const {hierarchy} = props;
   return [
@@ -434,7 +437,7 @@ function getInputViews(props: GPUTileLODSelectionProps): GraphDataView[] {
   ].filter(view => view !== undefined);
 }
 
-/** Returns every writable view of the recipe. */
+/** Returns every writable view of the contributor. */
 function getOutputViews(props: GPUTileLODSelectionProps): GraphDataView[] {
   return [
     props.output.ids,

@@ -28,7 +28,7 @@ export type GPUWeightedOverlayLayerSettings = {
   inputMax?: number;
   /** Linear mode: use `1 - t` so lower inputs score higher. */
   invert?: boolean;
-  /** Table mode: active breaks of this layer, at most the recipe's `maximumBreakCount`. */
+  /** Table mode: active breaks of this layer, at most the contributor's `maximumBreakCount`. */
   breakCount?: number;
   /** Table mode interval closure, as in `GPURasterReclassify`. Defaults to `'left'`. */
   closed?: 'left' | 'right';

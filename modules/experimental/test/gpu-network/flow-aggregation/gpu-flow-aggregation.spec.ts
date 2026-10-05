@@ -6,7 +6,7 @@ import type {Buffer, Device} from '@luma.gl/core';
 import {GPUCommandGraph, type CompiledGPUCommandGraph} from '@luma.gl/gpgpu/gpu-core';
 import {getWebGPUTestDevice} from '@luma.gl/test-utils';
 import {expect, it} from 'vitest';
-import {GPUParameterBuffer, importGraphBuffer, submitGraph} from '../../../src/utils/gpu-contributor-utils';
+import {GPUParameterBuffer, importGraphBuffer} from '../../../src/utils/gpu-contributor-utils';
 import {
   GPUFlowAggregation,
   GPU_FLOW_AGGREGATION_NO_ZONE,
@@ -24,9 +24,13 @@ import {
   createInputBuffer,
   createOutputBuffer,
   readFloat32,
-  readUint32
+  readUint32,
+  submitGraph
 } from '../../utils/gpu-contributor-test-utils';
-import {findNearestHexagon, createSeededPoints} from '../../geospatial/point-density/point-density-oracle';
+import {
+  findNearestHexagon,
+  createSeededPoints
+} from '../../geospatial/point-density/point-density-oracle';
 import {
   computeFlowAggregation,
   createSeededRandom,
@@ -106,7 +110,7 @@ function createHarness(device: Device, options: HarnessOptions): Harness {
   const zoneOutWeights = createOutput('zone-out-weights', 'float32', zoneCount);
   const zoneInWeights = createOutput('zone-in-weights', 'float32', zoneCount);
 
-  const recipe = new GPUFlowAggregation({
+  const contributor = new GPUFlowAggregation({
     id: options.id,
     pairCapacity: options.pairCapacity,
     maxProbeCount: options.maxProbeCount,
@@ -132,7 +136,7 @@ function createHarness(device: Device, options: HarnessOptions): Harness {
         }
       : {})
   });
-  graph.add(recipe);
+  graph.add(contributor);
   const compiled = graph.compile();
   return {
     compiled,

@@ -273,7 +273,7 @@ it('GPUHotSpotAnalysis and GPULocalMoran reject invalid properties', () => {
   device.destroy();
 });
 
-it('spatial-autocorrelation recipes create deterministic node IDs', () => {
+it('spatial-autocorrelation contributors create deterministic node IDs', () => {
   const device = createNullWebGPUDevice();
   for (const falseDiscoveryRate of [false, true]) {
     const graph = new GPUCommandGraph(device);

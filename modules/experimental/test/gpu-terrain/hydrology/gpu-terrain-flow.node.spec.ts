@@ -68,7 +68,6 @@ it('GPUTerrainFlow prefixes node ids and grows with iteration limits', () => {
     fillConverged: createTransientView(graph, 'fc-small', 'uint32', 1),
     accumulationConverged: createTransientView(graph, 'ac-small', 'uint32', 1)
   });
-  expect(small.recipe).toBe('terrain-flow');
   const smallNodes = small.getCommandNodes(graph);
   expect(smallNodes.every(node => node.id.startsWith('terrain-flow-'))).toBe(true);
   const ids = smallNodes.map(node => node.id);
@@ -160,12 +159,12 @@ it('GPUTerrainFlow lets outputs share a buffer only over disjoint byte ranges', 
   const common = {fillDepressions: true, streams: createTransientView(graph, 'st', 'uint32', 30)};
 
   // Two 1-row flags in different words of one buffer are accepted and schedule normally.
-  const recipe = create({
+  const contributor = create({
     ...common,
     fillConverged: flagsAt(0),
     accumulationConverged: flagsAt(4)
   });
-  expect(() => recipe.getCommandNodes(graph)).not.toThrow();
+  expect(() => contributor.getCommandNodes(graph)).not.toThrow();
 
   // The same bytes, or overlapping ranges, are refused.
   expect(() =>

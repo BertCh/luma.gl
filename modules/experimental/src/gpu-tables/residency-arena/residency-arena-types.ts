@@ -29,7 +29,7 @@ export type GPUResidencyArenaColumnSpec = {
   /**
    * Optional value written to every component of rows that hold no live data: at construction,
    * on eviction, and into the unused tail of a tile's last page. Use `NaN` for positions so
-   * recipes without a mask input (for example `GPUPointDensity`, which ignores non-finite
+   * contributors without a mask input (for example `GPUPointDensity`, which ignores non-finite
    * positions) skip dead rows, and `0` for weights. When omitted, dead rows keep stale data and
    * only the live mask excludes them.
    */
@@ -73,7 +73,7 @@ export type GPUResidencyArenaResolvedRow = {
 
 /**
  * Graph views over one arena, all imported once per graph. Each column is ONE packed view over
- * its whole buffer (`length === rowCapacity`), so a recipe over arena columns emits the same nodes
+ * its whole buffer (`length === rowCapacity`), so a contributor over arena columns emits the same nodes
  * whatever the number or placement of resident tiles.
  */
 export type GPUResidencyArenaGraphViews = {

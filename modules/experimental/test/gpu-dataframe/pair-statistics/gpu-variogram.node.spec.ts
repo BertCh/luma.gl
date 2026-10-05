@@ -107,13 +107,13 @@ it('GPUVariogram emits deterministic node IDs', () => {
   const device = createNullWebGPUDevice();
   const ids = () => {
     const graph = new GPUCommandGraph(device);
-    const recipe = new GPUVariogram({
+    const contributor = new GPUVariogram({
       ...createProps(graph),
       id: 'v',
       pairCounts: createTransientView(graph, `counts-${serial++}`, 'uint32', 8),
       statistics: createTransientView(graph, `stats-${serial++}`, 'float32', 5)
     });
-    return recipe.getCommandNodes(graph).map(node => node.id);
+    return contributor.getCommandNodes(graph).map(node => node.id);
   };
   const first = ids();
   expect(ids()).toEqual(first);

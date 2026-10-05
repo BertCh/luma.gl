@@ -7,12 +7,17 @@ import {dggs} from '@luma.gl/shadertools';
 import {getWebGPUTestDevice} from '@luma.gl/test-utils';
 import {cellToChildren, getRes0Cells} from 'h3-js';
 import {expect, it} from 'vitest';
-import {importGraphBuffer, submitGraph} from '../../../src/utils/gpu-contributor-utils';
+import {importGraphBuffer} from '../../../src/utils/gpu-contributor-utils';
 import {H3_NEIGHBOR_WGSL} from '../../../src/geospatial/cell-topology/h3-neighbor-wgsl';
 import {createWGSLKernelNode} from '../../../src/utils/wgsl-kernel-nodes';
 import {h3ToBigInt, joinCellKey, splitCellKey} from '../cell-aggregation/cell-aggregation-oracle';
 import {createRandom} from '../cell-aggregation/cell-aggregation-points';
-import {createInputBuffer, createOutputBuffer, readUint32} from '../../utils/gpu-contributor-test-utils';
+import {
+  createInputBuffer,
+  createOutputBuffer,
+  readUint32,
+  submitGraph
+} from '../../utils/gpu-contributor-test-utils';
 import {getH3Neighbor, isH3Pentagon} from './h3-neighbor-oracle';
 import {getH3TestCells} from './h3-neighbor-test-cells';
 

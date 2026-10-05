@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-// CPU oracles for the raster-algebra recipes. Not exported from src. Every f32 operation is
+// CPU oracles for the raster-algebra contributors. Not exported from src. Every f32 operation is
 // rounded with Math.fround in the same association as the WGSL kernels.
 
 const f = Math.fround;

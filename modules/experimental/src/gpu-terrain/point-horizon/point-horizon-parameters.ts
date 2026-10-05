@@ -12,7 +12,7 @@ export const GPU_POINT_HORIZON_VISIBILITY_PARAMETER_LENGTH = 12;
 export const GPU_POINT_HORIZON_EARTH_RADIUS = 6371008.8;
 
 /**
- * Raster projection model of the point-horizon recipes (topology: baked into WGSL).
+ * Raster projection model of the point-horizon contributors (topology: baked into WGSL).
  *
  * - `'planar'`: the raster is in projected meters (a local metric CRS such as UTM or a national
  *   grid). Rays are straight lines, a pixel is `cellSize = [x, y]` meters, distances are planar
@@ -52,7 +52,7 @@ export type GPUPointHorizonHeightReference = 'ground' | 'absolute';
 export type GPUPointHorizonTraversal = 'march' | 'pyramid';
 
 /**
- * Per-frame settings shared by both recipes for a planar raster.
+ * Per-frame settings shared by both contributors for a planar raster.
  *
  * Cell-size model: projected meters per pixel, `cellSize = [x, y]`, both finite and positive.
  * Curvature convention: the earth drops terrain at ground distance `d` by `c * d^2` with
@@ -71,7 +71,7 @@ export type GPUPointHorizonPlanarSettings = {
 };
 
 /**
- * Per-frame settings shared by both recipes for a Web Mercator window.
+ * Per-frame settings shared by both contributors for a Web Mercator window.
  *
  * Cell-size model: Web Mercator world pixels, `worldPixelSize` pixels per 360 degrees. Distances
  * are spherical arc meters on `R = 6371008.8` m; see {@link GPUPointHorizonPlanarSettings} for the

@@ -75,7 +75,7 @@ it('GPUHotSpotAnalysis matches the Gi* oracle across per-frame radius and bounds
     {bounds: [20, 20, 80, 80], radius: 7.5}
   ];
   const harness = createSpatialAutocorrelationHarness(device, {
-    recipe: 'hot-spot',
+    contributor: 'hot-spot',
     scene,
     parameters: frames[0]
   });
@@ -121,7 +121,7 @@ it('GPUHotSpotAnalysis honors the mask, excluded values, and fixed moments', asy
   const scene = {positions, values, mask};
   const parameters: GPUSpatialAutocorrelationParameters = {bounds: BOUNDS, radius: 6};
   const harness = createSpatialAutocorrelationHarness(device, {
-    recipe: 'hot-spot',
+    contributor: 'hot-spot',
     scene,
     parameters
   });
@@ -169,7 +169,7 @@ it('GPUHotSpotAnalysis applies Benjamini-Hochberg FDR to the bins', async () => 
   }
   const scene = createAutocorrelatedScene(31, 2500, [5, 9]);
   const harness = createSpatialAutocorrelationHarness(device, {
-    recipe: 'hot-spot',
+    contributor: 'hot-spot',
     scene,
     parameters: {bounds: BOUNDS, radius: 5},
     falseDiscoveryRate: true
@@ -214,7 +214,7 @@ it('GPUHotSpotAnalysis writes NaN for invalid parameters and degenerate selectio
   const mask = new Uint32Array(64);
   mask[5] = 1;
   const harness = createSpatialAutocorrelationHarness(device, {
-    recipe: 'hot-spot',
+    contributor: 'hot-spot',
     scene: {...scene, mask},
     parameters: {bounds: BOUNDS, radius: 10}
   });

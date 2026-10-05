@@ -82,7 +82,6 @@ it('GPUIsolines validates views and schedules deterministic nodes', () => {
     parameters: view('parameters', 'float32', GPU_ISOLINES_PARAMETER_LENGTH)
   };
   const segmentsOnly = new GPUIsolines({...base, output: output()});
-  expect(segmentsOnly.recipe).toBe('isolines');
   expect(segmentsOnly.maximumLevelCount).toBe(3);
   expect(segmentsOnly.segmentCapacity).toBe(40);
   const segmentNodes = segmentsOnly.getCommandNodes(graph).map(node => node.id);

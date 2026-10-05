@@ -10,24 +10,24 @@ import {
 import type {GPUTerrainCellSizeMode} from '../../gpu-terrain/terrain-analysis/index';
 
 /**
- * Creates a recipe-owned transient view and attributes an ID collision to the recipe.
+ * Creates a contributor-owned transient view and attributes an ID collision to the contributor.
  *
- * Recipes derive transient IDs as `${id}-<suffix>`. When the caller already uses such an ID the
- * graph reports only that the resource ID is taken; this rethrows an error naming the recipe class
+ * Contributors derive transient IDs as `${id}-<suffix>`. When the caller already uses such an ID the
+ * graph reports only that the resource ID is taken; this rethrows an error naming the contributor class
  * and ID, keeping the graph's error as `cause`.
  *
- * @param operation Recipe class name, such as `'GPUCostDistance'`.
- * @param recipeId The recipe's `id` prop.
+ * @param operation Contributor class name, such as `'GPUCostDistance'`.
+ * @param contributorId The contributor's `id` prop.
  * @param transientId The generated resource ID to create.
  * @internal
  */
-export function createRecipeTransientView<
+export function createContributorTransientView<
   Format extends 'uint32' | 'float32',
   Parameters = unknown
 >(
   graph: GPUCommandGraph<Parameters>,
   operation: string,
-  recipeId: string,
+  contributorId: string,
   transientId: string,
   format: Format,
   length: number,
@@ -38,7 +38,7 @@ export function createRecipeTransientView<
   } catch (error) {
     if (error instanceof Error && /resource id ".*" is already in use/.test(error.message)) {
       throw new Error(
-        `${operation} "${recipeId}": internal transient resource "${transientId}" (generated from the recipe id) collides with an existing graph resource; choose a different recipe id or rename the resource`,
+        `${operation} "${contributorId}": internal transient resource "${transientId}" (generated from the contributor id) collides with an existing graph resource; choose a different contributor id or rename the resource`,
         {cause: error}
       );
     }
@@ -79,7 +79,7 @@ export const GPU_RASTER_D8_DIRECTIONS: readonly GPURasterD8Direction[] = [
 /** Mean equatorial meters per degree, matching `GPUTerrainDerivatives`. @internal */
 export const RASTER_METERS_PER_DEGREE = 111319.49079327357;
 
-/** Settings prefix shared by raster grid recipes: `[cellSizeX, cellSizeY, northEdge, southEdge]`. @internal */
+/** Settings prefix shared by raster grid contributors: `[cellSizeX, cellSizeY, northEdge, southEdge]`. @internal */
 export const RASTER_GRID_SETTINGS_LENGTH = 4;
 
 /** CPU description of the shared settings prefix. @internal */

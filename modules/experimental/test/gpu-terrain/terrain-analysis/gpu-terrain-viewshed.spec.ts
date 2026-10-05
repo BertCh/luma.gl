@@ -7,7 +7,7 @@ import {GPUCommandGraph} from '@luma.gl/gpgpu/gpu-core';
 import {getWebGPUTestDevice} from '@luma.gl/test-utils';
 import {expect, it} from 'vitest';
 import {GPURasterTextureToBuffer} from '../../../src/gpu-raster';
-import {GPUParameterBuffer, importGraphBuffer, submitGraph} from '../../../src/utils/gpu-contributor-utils';
+import {GPUParameterBuffer, importGraphBuffer} from '../../../src/utils/gpu-contributor-utils';
 import {
   GPU_TERRAIN_VISIBILITY as V,
   GPUTerrainViewshed,
@@ -21,7 +21,8 @@ import {
   createInputBuffer,
   createOutputBuffer,
   isSoftwareDevice,
-  readUint32
+  readUint32,
+  submitGraph
 } from '../../utils/gpu-contributor-test-utils';
 import {
   computeTerrainViewshed,
@@ -345,7 +346,12 @@ it('GPUTerrainViewshed pyramid traversal is bit-identical to march', async () =>
   ];
   const toleranceCases: (GPUTerrainVisibilityToleranceSettings | undefined)[] = [
     undefined,
-    {toleranceMeters: 2, tolerancePerKilometer: 1, targetIgnoreDistance: 60, targetIgnoreFraction: 0.02}
+    {
+      toleranceMeters: 2,
+      tolerancePerKilometer: 1,
+      targetIgnoreDistance: 60,
+      targetIgnoreFraction: 0.02
+    }
   ];
   let hiddenShare = 0;
   let marginalCount = 0;
@@ -362,10 +368,17 @@ it('GPUTerrainViewshed pyramid traversal is bit-identical to march', async () =>
           traversal: 'march',
           tolerance
         });
-        const pyramid = await runViewshed(device, terrain, FRACTAL_WIDTH, FRACTAL_HEIGHT, settings, {
-          traversal: 'pyramid',
-          tolerance
-        });
+        const pyramid = await runViewshed(
+          device,
+          terrain,
+          FRACTAL_WIDTH,
+          FRACTAL_HEIGHT,
+          settings,
+          {
+            traversal: 'pyramid',
+            tolerance
+          }
+        );
         expect(pyramid).toEqual(march);
         hiddenShare += march.filter(code => code === V.hidden).length / march.length;
         marginalCount += march.filter(code => code === V.marginal).length;
@@ -380,9 +393,9 @@ it('GPUTerrainViewshed pyramid traversal is bit-identical to march', async () =>
             )
           );
           // The legacy kernel (no new props) agrees with the new march kernel.
-          expect(await runViewshed(device, terrain, FRACTAL_WIDTH, FRACTAL_HEIGHT, settings)).toEqual(
-            march
-          );
+          expect(
+            await runViewshed(device, terrain, FRACTAL_WIDTH, FRACTAL_HEIGHT, settings)
+          ).toEqual(march);
         }
       }
     }
@@ -403,7 +416,11 @@ it('GPUTerrainViewshed tolerance bands classify marginal cells and ignore the la
   // units (0.167 m at the target) above the sight line to column 10.
   const strip = new Float32Array(12);
   strip[6] = 0.5;
-  const settings: GPUTerrainViewshedSettings = {observer: [0, 0], observerHeight: 1, cellSize: [1, 1]};
+  const settings: GPUTerrainViewshedSettings = {
+    observer: [0, 0],
+    observerHeight: 1,
+    cellSize: [1, 1]
+  };
   for (const traversal of ['march', 'pyramid'] as const) {
     const exact = await runViewshed(device, strip, 12, 1, settings, {traversal});
     expect(exact[10]).toBe(V.hidden);

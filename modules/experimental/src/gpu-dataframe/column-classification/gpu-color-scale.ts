@@ -231,11 +231,12 @@ export class GPUColorScale implements GPUCommandNodeProducer {
     const classes =
       output.classIndices ?? createTransientView(graph, `${id}-classes`, 'uint32', rows);
     const positions = createTransientView(graph, `${id}-positions`, 'float32', rows);
-    const read = (
-      name: string,
-      view: GraphDataView,
-      type: 'u32' | 'f32'
-    ): WGSLKernelBinding => ({name, view, type, access: 'read'});
+    const read = (name: string, view: GraphDataView, type: 'u32' | 'f32'): WGSLKernelBinding => ({
+      name,
+      view,
+      type,
+      access: 'read'
+    });
     const declarations = `const MAXIMUM_DOMAIN_COUNT: u32 = ${maximumDomainCount}u;
 const MAXIMUM_PALETTE_COUNT: u32 = ${maximumPaletteCount}u;
 ${COLUMN_ORDERED_KEY_WGSL}

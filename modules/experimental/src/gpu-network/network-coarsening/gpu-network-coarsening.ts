@@ -243,7 +243,7 @@ function getFixedPointAddSource(array: string, index: string, quantized: string)
  * kept prefix on overflow, the counts and the weights are all deterministic. A bounded hash table
  * was rejected because a full table drops keys depending on atomic race order.
  *
- * The recipe owns no GPU resources; every transient belongs to the graph. Every output word is
+ * The contributor owns no GPU resources; every transient belongs to the graph. Every output word is
  * rewritten on every encoding.
  */
 export class GPUNetworkCoarsening implements GPUCommandNodeProducer {

@@ -39,7 +39,7 @@ function createProps(
 it('GPUBufferSelection builds nodes for a valid configuration', () => {
   const graph = new GPUCommandGraph(createNullWebGPUDevice(), {id: 'buffer-selection-node'});
   const selection = new GPUBufferSelection(createProps(graph));
-  expect(selection.recipe).toBe('buffer-selection');
+  expect(selection.id).toBe('buffer-selection');
   expect(selection.id).toBe('buffer-selection');
   const ids = selection.getCommandNodes(graph).map(node => node.id);
   expect(ids).toContain('buffer-selection-mask');

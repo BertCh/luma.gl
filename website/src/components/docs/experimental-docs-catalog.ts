@@ -20,6 +20,7 @@ export type ExperimentalDocsTabId =
   | 'gpu-raster'
   | 'gpu-raster-concepts'
   | 'gpu-raster-operations'
+  | 'gpu-terrain'
   | 'gpu-graph'
   | 'gpu-graph-operations'
   | 'gpu-graph-topology'
@@ -27,12 +28,14 @@ export type ExperimentalDocsTabId =
   | 'gpu-graph-connectivity'
   | 'gpu-graph-metrics'
   | 'gpu-graph-layouts'
+  | 'gpu-network'
   | 'gpu-dataframe'
   | 'gpu-dataframe-operations'
   | 'gpu-dataframe-expressions'
   | 'gpu-dataframe-aggregation'
   | 'gpu-dataframe-sorting'
   | 'gpu-dataframe-indexes-joins'
+  | 'gpu-dataframe-analysis'
   | 'gpu-sql'
   | 'gpu-crossfilter'
   | 'gpu-trace'
@@ -149,7 +152,8 @@ export const EXPERIMENTAL_DOCS_TAB_GROUPS: readonly DocsTabGroup<ExperimentalDoc
     tabs: [
       {id: 'gpu-raster', label: 'Overview', href: '/docs/api-reference/experimental/gpu-raster'},
       {id: 'gpu-raster-concepts', label: 'Concepts', href: '/docs/api-reference/experimental/gpu-raster/concepts'},
-      {id: 'gpu-raster-operations', label: 'Operations', href: '/docs/api-reference/experimental/gpu-raster/operations'}
+      {id: 'gpu-raster-operations', label: 'Operations', href: '/docs/api-reference/experimental/gpu-raster/operations'},
+      {id: 'gpu-terrain', label: 'Terrain', href: '/docs/api-reference/experimental/gpu-terrain'}
     ]
   },
   {
@@ -162,7 +166,8 @@ export const EXPERIMENTAL_DOCS_TAB_GROUPS: readonly DocsTabGroup<ExperimentalDoc
       {id: 'gpu-graph-traversal', label: 'Traversal', href: '/docs/api-reference/experimental/gpu-graph-traversal'},
       {id: 'gpu-graph-connectivity', label: 'Connectivity', href: '/docs/api-reference/experimental/gpu-graph-connectivity'},
       {id: 'gpu-graph-metrics', label: 'Metrics', href: '/docs/api-reference/experimental/gpu-graph-metrics'},
-      {id: 'gpu-graph-layouts', label: 'Layouts', href: '/docs/api-reference/experimental/gpu-graph-layouts'}
+      {id: 'gpu-graph-layouts', label: 'Layouts', href: '/docs/api-reference/experimental/gpu-graph-layouts'},
+      {id: 'gpu-network', label: 'Network', href: '/docs/api-reference/experimental/gpu-network'}
     ]
   },
   {
@@ -175,6 +180,7 @@ export const EXPERIMENTAL_DOCS_TAB_GROUPS: readonly DocsTabGroup<ExperimentalDoc
       {id: 'gpu-dataframe-aggregation', label: 'Aggregation', href: '/docs/api-reference/experimental/gpu-dataframe-aggregation'},
       {id: 'gpu-dataframe-sorting', label: 'Sorting', href: '/docs/api-reference/experimental/gpu-dataframe-sorting'},
       {id: 'gpu-dataframe-indexes-joins', label: 'Indexes & Joins', href: '/docs/api-reference/experimental/gpu-dataframe-indexes-joins'},
+      {id: 'gpu-dataframe-analysis', label: 'Analysis', href: '/docs/api-reference/experimental/gpu-dataframe-analysis'},
       {id: 'gpu-sql', label: 'SQL', href: '/docs/api-reference/experimental/gpu-sql'}
     ]
   },

@@ -33,10 +33,9 @@ it('GPUTerrainSpikeRepair schedules canonicalisation, graph, components and repa
       ...overrides
     });
   };
-  const recipe = create();
-  expect(recipe.recipe).toBe('terrain-spike-repair');
-  expect(recipe.componentIterations).toBe(32);
-  const nodeIds = recipe.getCommandNodes(graph).map(node => node.id);
+  const contributor = create();
+  expect(contributor.componentIterations).toBe(32);
+  const nodeIds = contributor.getCommandNodes(graph).map(node => node.id);
   for (const step of [
     'clear',
     'graph',
@@ -59,7 +58,7 @@ it('GPUTerrainSpikeRepair schedules canonicalisation, graph, components and repa
       .map(node => node.id)
   ).toContain('repair-publish-labels');
   expect(Object.values(GPU_TERRAIN_SPIKE_REPAIR_STATISTICS)).toEqual([0, 1, 2, 3, 4]);
-  recipe.destroy();
+  contributor.destroy();
   device.destroy();
 });
 

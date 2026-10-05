@@ -64,13 +64,13 @@ function createJoinProps(
 
 it('GPUPolygonRasterization prefixes deterministic node IDs and schedules boundary on request', () => {
   const graph = new GPUCommandGraph(createNullWebGPUDevice());
-  const recipe = new GPUPolygonRasterization(createRasterizationProps(graph));
-  const ids = recipe.getCommandNodes(graph).map(node => node.id);
+  const contributor = new GPUPolygonRasterization(createRasterizationProps(graph));
+  const ids = contributor.getCommandNodes(graph).map(node => node.id);
   expect(ids.every(id => id.startsWith('raster-'))).toBe(true);
   expect(ids).toContain('raster-edges');
   expect(ids).toContain('raster-fill');
   expect(ids.some(id => id.startsWith('raster-boundary'))).toBe(false);
-  expect(recipe.singleSort).toBe(true);
+  expect(contributor.singleSort).toBe(true);
   const repeatGraph = new GPUCommandGraph(createNullWebGPUDevice());
   const repeatIds = new GPUPolygonRasterization(createRasterizationProps(repeatGraph))
     .getCommandNodes(repeatGraph)
@@ -91,15 +91,15 @@ it('GPUPolygonRasterization prefixes deterministic node IDs and schedules bounda
 it('GPUPolygonRasterization switches to two stable sorts when the packed key exceeds 32 bits', () => {
   const graph = new GPUCommandGraph(createNullWebGPUDevice());
   // 64 * 65536 row-column keys need 22 bits; 1024 polygons plus the sentinel need 11.
-  const recipe = new GPUPolygonRasterization(
+  const contributor = new GPUPolygonRasterization(
     createRasterizationProps(
       graph,
       {zones: createTransientView(graph, 'big-zones', 'uint32', 65535 * 64)},
       {width: 65535, height: 64, polygonCount: 1024}
     )
   );
-  expect(recipe.singleSort).toBe(false);
-  const ids = recipe.getCommandNodes(graph).map(node => node.id);
+  expect(contributor.singleSort).toBe(false);
+  const ids = contributor.getCommandNodes(graph).map(node => node.id);
   expect(ids.some(id => id.startsWith('raster-sort-row-column'))).toBe(true);
   expect(ids.some(id => id.startsWith('raster-sort-polygon'))).toBe(true);
 });

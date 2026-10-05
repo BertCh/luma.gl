@@ -81,7 +81,7 @@ it('getGPUClassBreaksParameterValues packs the header and method data', () => {
 });
 
 it('GPUClassBreaks validates its views and options', () => {
-  /** Builds the recipe on a fresh graph with overrides derived from that graph. */
+  /** Builds the contributor on a fresh graph with overrides derived from that graph. */
   const build = (
     getOverrides: (graph: GPUCommandGraph) => Partial<GPUClassBreaksProps> = () => ({}),
     rows = 100,
@@ -178,8 +178,8 @@ it('GPUClassBreaks returns deterministic node IDs and rejects foreign views', ()
     'lean-class-counts-clear',
     'lean-class-counts'
   ]);
-  const recipe = new GPUClassBreaks(createProps(createGraph()));
-  expect(() => recipe.getCommandNodes(createGraph())).toThrow(/target graph/);
+  const contributor = new GPUClassBreaks(createProps(createGraph()));
+  expect(() => contributor.getCommandNodes(createGraph())).toThrow(/target graph/);
 });
 
 it('class breaks oracle reproduces textbook breaks', () => {
@@ -225,6 +225,6 @@ it('class breaks oracle reproduces textbook breaks', () => {
 it('GPUClassBreaks fits every kernel in 8 storage buffers with all methods compiled', () => {
   // The default WebGPU limit; the null device reports it, so an extra binding throws here.
   const graph = createGraph();
-  const recipe = new GPUClassBreaks(createProps(graph));
-  expect(() => recipe.getCommandNodes(graph)).not.toThrow();
+  const contributor = new GPUClassBreaks(createProps(graph));
+  expect(() => contributor.getCommandNodes(graph)).not.toThrow();
 });

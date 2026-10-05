@@ -41,7 +41,7 @@ const OPERATION = 'GPUZonalStatistics';
  * `GPUPointInPolygonJoin` every encoding. A point belongs to the containing feature with the
  * smallest row.
  *
- * Polygon geometry uses the GeoArrow-style layout of `GPUPointInPolygonJoin`; see that recipe for
+ * Polygon geometry uses the GeoArrow-style layout of `GPUPointInPolygonJoin`; see that contributor for
  * the offset conventions. The polygon buffers' contents are per-frame; everything else here is
  * compile-time topology.
  */
@@ -266,7 +266,7 @@ const OUTPUT_NAMES = [
  *
  * No weighted density, no median or quantiles, no variance, no weighted minima or maxima, no
  * geographic (spherical) areas, and no union of overlapping polygons within one feature. The
- * recipe never compiles, encodes, submits, or reads back.
+ * contributor never compiles, encodes, submits, or reads back.
  */
 export class GPUZonalStatistics implements GPUCommandNodeProducer {
   /** Prefix for every node and transient ID. */

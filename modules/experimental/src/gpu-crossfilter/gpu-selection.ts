@@ -41,6 +41,17 @@ export type GPUCrossfilterRangeDimension = {
   input: GPUCrossfilterScalarInput;
   /** Optional packed source-aligned destination for canonical selection flags. */
   mask?: GPUCrossfilterMask;
+  /**
+   * Treats NaN and infinite `float32` values as missing: such rows always fail this dimension,
+   * even while no range is active, so they are excluded from every other linked view too.
+   * Ignored for integer inputs. Defaults to `false`, which accepts them while inactive.
+   */
+  rejectNonFinite?: boolean;
+  /**
+   * Makes the range half-open, `minimum <= value < maximum`, so adjacent brushes partition a
+   * domain. Defaults to `false`, the inclusive `[minimum, maximum]` interval.
+   */
+  exclusiveMaximum?: boolean;
 };
 
 /** Two scalar dimensions with an optional caller-owned output mask. */
@@ -55,6 +66,11 @@ export type GPUCrossfilterBoundsDimension = {
   y: GPUCrossfilterScalarInput;
   /** Optional packed source-aligned destination for canonical selection flags. */
   mask?: GPUCrossfilterMask;
+  /**
+   * Treats rows whose `x` or `y` is NaN or infinite as missing: they always fail this dimension,
+   * even while no bounds are active. Ignored for integer inputs. Defaults to `false`.
+   */
+  rejectNonFinite?: boolean;
 };
 
 /** Interactive scalar or two-dimensional selection registered with a GPUCrossfilter controller. */
@@ -197,6 +213,9 @@ export class GPUCrossfilterSelection {
         id: primaryInput instanceof GraphVectorView ? `${this.id}-chunk-${chunkIndex}` : this.id,
         primaryInput: primaryChunk,
         secondaryInput: secondaryChunks?.[chunkIndex],
+        rejectNonFinite: this.dimension.rejectNonFinite === true,
+        exclusiveMaximum:
+          this.dimension.kind === 'range' && this.dimension.exclusiveMaximum === true,
         state: this.stateView,
         output: outputChunks[chunkIndex]
       });
@@ -254,6 +273,8 @@ function addSelectionPass<Parameters>(
     id: string;
     primaryInput: GraphDataView<GPUCrossfilterScalarFormat>;
     secondaryInput?: GraphDataView<GPUCrossfilterScalarFormat>;
+    rejectNonFinite: boolean;
+    exclusiveMaximum: boolean;
     state: GraphDataView<'uint32'>;
     output: GraphDataView<'uint32'>;
   }
@@ -270,11 +291,30 @@ function addSelectionPass<Parameters>(
     : '';
   const primaryMinimum = getStateScalarExpression(props.primaryInput.format, 1);
   const primaryMaximum = getStateScalarExpression(props.primaryInput.format, 2);
-  const primaryCondition = `primaryValue >= ${primaryMinimum} && primaryValue <= ${primaryMaximum}`;
+  const maximumOperator = props.exclusiveMaximum ? '<' : '<=';
+  const primaryCondition = `primaryValue >= ${primaryMinimum} && primaryValue ${maximumOperator} ${primaryMaximum}`;
   const secondaryCondition = props.secondaryInput
     ? ` && secondaryValue >= ${getStateScalarExpression(props.secondaryInput.format, 3)} &&
       secondaryValue <= ${getStateScalarExpression(props.secondaryInput.format, 4)}`
     : '';
+  const finiteChecks = [
+    props.primaryInput.format === 'float32' ? 'primaryFinite' : undefined,
+    props.secondaryInput?.format === 'float32' ? 'secondaryFinite' : undefined
+  ].filter(Boolean);
+  const rejectsNonFinite = props.rejectNonFinite && finiteChecks.length > 0;
+  const finiteDeclarations = rejectsNonFinite
+    ? `let primaryFinite = ${
+        props.primaryInput.format === 'float32'
+          ? '(bitcast<u32>(primaryValue) & 0x7f800000u) != 0x7f800000u'
+          : 'true'
+      };
+  let secondaryFinite = ${
+    props.secondaryInput?.format === 'float32'
+      ? '(bitcast<u32>(secondaryValue) & 0x7f800000u) != 0x7f800000u'
+      : 'true'
+  };
+  let finite = ${finiteChecks.join(' && ')};`
+    : 'let finite = true;';
   const source = /* wgsl */ `
 const ELEMENT_COUNT: u32 = ${props.primaryInput.length}u;
 const PRIMARY_OFFSET: u32 = ${getViewElementOffset(props.primaryInput)}u;
@@ -291,13 +331,14 @@ fn main(@builtin(global_invocation_id) globalId: vec3<u32>) {
   if (index >= ELEMENT_COUNT) {
     return;
   }
-  if (selectionState[STATE_OFFSET] == 0u) {
-    outputMask[OUTPUT_OFFSET + index] = 1u;
-    return;
-  }
   let primaryValue = primaryValues[PRIMARY_OFFSET + index];
   ${props.secondaryInput ? 'let secondaryValue = secondaryValues[SECONDARY_OFFSET + index];' : ''}
-  let accepted = ${primaryCondition}${secondaryCondition};
+  ${finiteDeclarations}
+  if (selectionState[STATE_OFFSET] == 0u) {
+    outputMask[OUTPUT_OFFSET + index] = select(0u, 1u, finite);
+    return;
+  }
+  let accepted = finite && ${primaryCondition}${secondaryCondition};
   outputMask[OUTPUT_OFFSET + index] = select(0u, 1u, accepted);
 }`;
 

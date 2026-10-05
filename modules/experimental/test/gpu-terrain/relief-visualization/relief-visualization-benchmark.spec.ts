@@ -6,7 +6,7 @@ import type {Buffer, Device} from '@luma.gl/core';
 import {GPUCommandGraph} from '@luma.gl/gpgpu/gpu-core';
 import {getWebGPUTestDevice} from '@luma.gl/test-utils';
 import {it} from 'vitest';
-import {GPUParameterBuffer, importGraphBuffer, submitGraph} from '../../../src/utils/gpu-contributor-utils';
+import {GPUParameterBuffer, importGraphBuffer} from '../../../src/utils/gpu-contributor-utils';
 import {
   getGPULocalDominanceParameterValues,
   GPULocalDominance
@@ -24,7 +24,11 @@ import {
   getGPUSimpleLocalReliefParameterValues,
   GPUSimpleLocalRelief
 } from '../../../src/gpu-terrain/relief-visualization/gpu-simple-local-relief';
-import {createInputBuffer, createOutputBuffer} from '../../utils/gpu-contributor-test-utils';
+import {
+  createInputBuffer,
+  createOutputBuffer,
+  submitGraph
+} from '../../utils/gpu-contributor-test-utils';
 import {createSmoothTerrain} from '../terrain-illumination/terrain-horizon-oracle';
 
 // Opt in with `VITE_RELIEF_VISUALIZATION_BENCHMARK=true npx vitest run --project headless <this file>`.
@@ -104,7 +108,9 @@ it.skipIf(!RUN_BENCHMARK)('relief visualization 1024^2 timings', {timeout: 60000
   const slrmSettings = createSettings(getGPUSimpleLocalReliefParameterValues());
   const msrmSettings = createSettings(getGPUMultiScaleReliefParameterValues());
   const dominanceSettings = createSettings(getGPULocalDominanceParameterValues());
-  const blendSettings = createSettings(getGPUReliefBlendParameterValues(GPU_RELIEF_BLEND_VAT_ARCHAEOLOGICAL));
+  const blendSettings = createSettings(
+    getGPUReliefBlendParameterValues(GPU_RELIEF_BLEND_VAT_ARCHAEOLOGICAL)
+  );
   const lines = [
     await measureCase(device, 'SLRM radius 20', (graph, buffers) => {
       graph.add(

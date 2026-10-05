@@ -9,7 +9,7 @@ import {
   createRandom,
   GridStatisticsHarness,
   type GridStatisticsHarnessOptions,
-  type RecipeReadback
+  type ContributorReadback
 } from './gpu-region-statistics-grid-harness';
 import {
   CIRCLE,
@@ -61,8 +61,8 @@ function createRandomData(seed: number, count: number, integerValues: boolean): 
 
 /** Asserts the documented identity guarantee between brute-force and grid-index readbacks. */
 function expectIdentical(
-  brute: RecipeReadback,
-  grid: RecipeReadback,
+  brute: ContributorReadback,
+  grid: ContributorReadback,
   exactSum: boolean,
   label: string
 ): void {

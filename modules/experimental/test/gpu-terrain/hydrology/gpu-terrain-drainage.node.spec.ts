@@ -56,17 +56,16 @@ function createFixture() {
   return {device, graph, view, hand, watersheds, order};
 }
 
-it('exports stable recipe names and constants', () => {
+it('exports stable contributor names and constants', () => {
   const {device, hand, watersheds, order} = createFixture();
-  expect(hand().recipe).toBe('terrain-height-above-drainage');
-  expect(watersheds().recipe).toBe('terrain-watersheds');
-  expect(order().recipe).toBe('terrain-stream-order');
   expect(hand().id).toBe('terrain-height-above-drainage');
+  expect(watersheds().id).toBe('terrain-watersheds');
+  expect(order().id).toBe('terrain-stream-order');
   expect(GPU_TERRAIN_WATERSHED_NONE).toBe(0xffffffff);
   device.destroy();
 });
 
-it('node ids carry the recipe prefix and grow with the iteration limit', () => {
+it('node ids carry the contributor prefix and grow with the iteration limit', () => {
   const {device, graph, view, hand, watersheds, order} = createFixture();
   const handNodes = hand({id: 'h', maxIterations: 3, converged: view('uint32', 1)}).getCommandNodes(
     graph

@@ -40,7 +40,7 @@ export function getCoreDefaultBuffer(buffer: Buffer | DynamicBuffer): Buffer {
  *
  * `GPUCommandGraph.importGPUVector` de-duplicates on the physical buffer, so gpu-graph algorithms
  * that import this vector resolve to the handle the caller already imported and hazards stay
- * tracked between them and the recipe's own nodes.
+ * tracked between them and the contributor's own nodes.
  *
  * @internal
  * @throws If the view was not imported with a default buffer.
@@ -62,7 +62,7 @@ export function getGraphViewGPUVector<Format extends 'uint32' | 'float32'>(
 
 /** Properties for {@link createNetworkAnalyticsTopology}. @internal */
 export type NetworkAnalyticsTopologyProps = {
-  /** Recipe ID used in error messages. */
+  /** Contributor ID used in error messages. */
   id: string;
   /** Number of nodes. */
   nodeCount: number;
@@ -74,7 +74,7 @@ export type NetworkAnalyticsTopologyProps = {
   reverseOffsets?: GraphDataView<'uint32'>;
   /** Reverse CSR neighbors; required with `reverseOffsets`. */
   reverseNeighbors?: GraphDataView<'uint32'>;
-  /** Recipe-owned zero-filled uint32 buffer used as the always-zero count and overflow word. */
+  /** Contributor-owned zero-filled uint32 buffer used as the always-zero count and overflow word. */
   status: Buffer;
 };
 
@@ -83,7 +83,7 @@ export type NetworkAnalyticsTopologyProps = {
  *
  * Every gpu-graph algorithm reads only `graph.vertexCount`, `graph.directed`, and
  * `forward`/`reverse` `offsets`, `neighbors`, and `overflow`. The other fields only feed those
- * classes' allocation-disjointness checks. `overflow` points at a recipe-owned zero word because
+ * classes' allocation-disjointness checks. `overflow` points at a contributor-owned zero word because
  * a caller-built CSR is exact.
  *
  * @internal

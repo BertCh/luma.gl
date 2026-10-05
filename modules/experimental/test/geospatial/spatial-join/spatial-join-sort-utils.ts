@@ -4,13 +4,14 @@
 
 import type {Buffer, Device} from '@luma.gl/core';
 import {GPUCommandGraph, type CompiledGPUCommandGraph} from '@luma.gl/gpgpu/gpu-core';
-import {GPUParameterBuffer, importGraphBuffer, submitGraph} from '../../../src/utils/gpu-contributor-utils';
+import {GPUParameterBuffer, importGraphBuffer} from '../../../src/utils/gpu-contributor-utils';
 import {GPUNearestFeatureJoin, GPUPointInPolygonJoin} from '../../../src/geospatial/spatial-join';
 import {
   createInputBuffer,
   createOutputBuffer,
   readFloat32,
-  readUint32
+  readUint32,
+  submitGraph
 } from '../../utils/gpu-contributor-test-utils';
 import {buildPolygonFeatureArrays, type OraclePolygonFeature} from './spatial-join-oracle';
 

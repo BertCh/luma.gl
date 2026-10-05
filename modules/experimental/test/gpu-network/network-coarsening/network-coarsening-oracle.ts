@@ -117,7 +117,7 @@ export function dequantize(sum: bigint, scale: number): number {
   return fround((negative ? -result : result) / scale);
 }
 
-/** CPU reference with the same liveness, grouping, ordering and fixed-point rules as the recipe. */
+/** CPU reference with the same liveness, grouping, ordering and fixed-point rules as the contributor. */
 export function computeCoarseningOracle(options: CoarseningOracleOptions): CoarseningOracleResult {
   const {nodeCount, csr, labels, groupCapacity, directed, edgeCapacity} = options;
   const scale = options.fixedPointScale ?? 65536;

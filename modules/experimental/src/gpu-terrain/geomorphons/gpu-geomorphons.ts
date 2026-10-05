@@ -63,7 +63,7 @@ export const GPU_GEOMORPHONS_PARAMETER_LENGTH = 8;
 /**
  * CPU-side description packed by {@link getGPUGeomorphonsParameterValues}.
  *
- * The cell-size model follows `cellSizeMode` of the recipe: projected metres (`'uniform'`),
+ * The cell-size model follows `cellSizeMode` of the contributor: projected metres (`'uniform'`),
  * equatorial Web Mercator metres (`'web-mercator'`), or geographic degrees (`'geographic'`) with
  * latitude-dependent row spacing derived from `northEdge` and `southEdge`.
  */

@@ -17,7 +17,10 @@ import {
 } from '../../gpu-raster/index';
 import {createWGSLKernelNode, type WGSLKernelBinding} from '../../utils/wgsl-kernel-nodes';
 import type {GPUCommandNodeProducer} from '@luma.gl/gpgpu/gpu-core';
-import {captureGraphCommandNodes, validateGraphViewsBelongToGraph} from '../../utils/gpu-contributor-utils';
+import {
+  captureGraphCommandNodes,
+  validateGraphViewsBelongToGraph
+} from '../../utils/gpu-contributor-utils';
 import {
   getTerrainBandViews,
   getTerrainElevationNodes,

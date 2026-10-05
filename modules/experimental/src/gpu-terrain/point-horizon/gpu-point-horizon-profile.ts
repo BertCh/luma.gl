@@ -2,11 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import type {
-  GPUCommandGraph,
-  GPUCommandNode,
-  GraphDataView
-} from '@luma.gl/gpgpu/gpu-core';
+import type {GPUCommandGraph, GPUCommandNode, GraphDataView} from '@luma.gl/gpgpu/gpu-core';
 import type {GPURasterBand} from '../../gpu-raster/index';
 import {createWGSLKernelNode, type WGSLKernelBinding} from '../../utils/wgsl-kernel-nodes';
 import type {GPUCommandNodeProducer} from '@luma.gl/gpgpu/gpu-core';
@@ -165,7 +161,12 @@ export class GPUPointHorizonProfile implements GPUCommandNodeProducer {
       {name: 'observers', view: props.observers, type: 'f32', access: 'read'}
     ];
     if (props.tangent) {
-      bindings.push({name: 'tangentOutput', view: props.tangent, type: 'f32', access: 'read_write'});
+      bindings.push({
+        name: 'tangentOutput',
+        view: props.tangent,
+        type: 'f32',
+        access: 'read_write'
+      });
     }
     if (props.elevation) {
       bindings.push({
@@ -191,7 +192,9 @@ export class GPUPointHorizonProfile implements GPUCommandNodeProducer {
     const raysPerDispatch = props.raysPerDispatch ?? GPU_POINT_HORIZON_RAYS_PER_DISPATCH;
     const writes = (value: string) =>
       [
-        props.tangent ? `tangentOutput[tangentOutputOffset + ray] = ${value === 'nan' ? 'nanValue()' : 'select(-BIG, result.t, result.has)'};` : '',
+        props.tangent
+          ? `tangentOutput[tangentOutputOffset + ray] = ${value === 'nan' ? 'nanValue()' : 'select(-BIG, result.t, result.has)'};`
+          : '',
         props.elevation
           ? `elevationOutput[elevationOutputOffset + ray] = ${value === 'nan' ? 'nanValue()' : 'select(-90.0, atanAccurate(result.t) * DEGREES, result.has)'};`
           : '',
@@ -199,7 +202,11 @@ export class GPUPointHorizonProfile implements GPUCommandNodeProducer {
           ? `distanceOutput[distanceOutputOffset + ray] = ${value === 'nan' ? 'nanValue()' : 'select(0.0, result.d, result.has)'};`
           : ''
       ].join('\n  ');
-    for (let chunk = 0, rayOffset = 0; rayOffset < rayCount; chunk++, rayOffset += raysPerDispatch) {
+    for (
+      let chunk = 0, rayOffset = 0;
+      rayOffset < rayCount;
+      chunk++, rayOffset += raysPerDispatch
+    ) {
       const count = Math.min(raysPerDispatch, rayCount - rayOffset);
       nodes.push(
         createWGSLKernelNode<Parameters>(graph, {

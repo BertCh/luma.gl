@@ -83,13 +83,13 @@ export {
   type GPUGraphNodeLayerProps
 } from './gpu-graph/gpu-graph-node-layer';
 export {
-  estimateGPUGraphRecipeColumnsFootprint,
-  getGPUGraphRecipeColumnsSkipReason,
-  GPUGraphRecipeColumns
-} from './gpu-graph/gpu-graph-recipe-columns';
+  estimateGPUGraphAnalysisColumnsFootprint,
+  getGPUGraphAnalysisColumnsSkipReason,
+  GPUGraphAnalysisColumns
+} from './gpu-graph/gpu-graph-analysis-columns';
 export type {
-  GPUGraphRecipeColumnName,
-  GPUGraphRecipeColumnsFootprint,
-  GPUGraphRecipeColumnsOptions,
-  GPUGraphRecipeColumnsStats
-} from './gpu-graph/gpu-graph-recipe-columns';
+  GPUGraphAnalysisColumnName,
+  GPUGraphAnalysisColumnsFootprint,
+  GPUGraphAnalysisColumnsOptions,
+  GPUGraphAnalysisColumnsStats
+} from './gpu-graph/gpu-graph-analysis-columns';

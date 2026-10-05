@@ -122,9 +122,9 @@ it('GPUOrdinaryLeastSquares validates its inputs', () => {
 it('GPUOrdinaryLeastSquares emits a deterministic node chain with stable IDs', () => {
   const device = createNullWebGPUDevice();
   const graph = new GPUCommandGraph(device);
-  const recipe = new GPUOrdinaryLeastSquares(createProps(graph, {id: 'ols', tileRowCount: 8}));
-  expect(recipe.tileCount).toBe(3);
-  const nodes = recipe.getCommandNodes(graph);
+  const contributor = new GPUOrdinaryLeastSquares(createProps(graph, {id: 'ols', tileRowCount: 8}));
+  expect(contributor.tileCount).toBe(3);
+  const nodes = contributor.getCommandNodes(graph);
   expect(nodes.map(node => node.id)).toEqual([
     'ols-means-tiles',
     'ols-means-merge',
@@ -149,7 +149,7 @@ it('default tile size caps the tile count at 4096', () => {
   const device = createNullWebGPUDevice();
   const graph = new GPUCommandGraph(device);
   const rows = 3_000_000;
-  const recipe = new GPUOrdinaryLeastSquares({
+  const contributor = new GPUOrdinaryLeastSquares({
     predictors: createTransientView(graph, 'p', 'float32', rows),
     response: createTransientView(graph, 'r', 'float32', rows),
     predictorCount: 1,
@@ -161,8 +161,8 @@ it('default tile size caps the tile count at 4096', () => {
       status: createTransientView(graph, 'u', 'uint32', 1)
     }
   });
-  expect(recipe.tileCount).toBeLessThanOrEqual(4096);
-  expect(recipe.tileRowCount).toBe(Math.ceil(rows / 4096));
+  expect(contributor.tileCount).toBeLessThanOrEqual(4096);
+  expect(contributor.tileRowCount).toBe(Math.ceil(rows / 4096));
   device.destroy();
 });
 

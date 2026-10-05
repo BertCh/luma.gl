@@ -53,10 +53,9 @@ it('GPUDotDensity validates props and builds deterministic nodes', () => {
   const graph = new GPUCommandGraph(createNullWebGPUDevice(), {
     id: 'dot-validation'
   });
-  const recipe = new GPUDotDensity(createProps(graph, {id: 'dots'}));
-  expect(recipe.recipe).toBe('dot-density');
-  expect(recipe.featureCount).toBe(3);
-  const ids = recipe.getCommandNodes(graph).map(node => node.id);
+  const contributor = new GPUDotDensity(createProps(graph, {id: 'dots'}));
+  expect(contributor.featureCount).toBe(3);
+  const ids = contributor.getCommandNodes(graph).map(node => node.id);
   expect(ids[0]).toBe('dots-features');
   expect(ids).toContain('dots-sample');
   expect(ids[ids.length - 1]).toBe('dots-publish');
@@ -100,7 +99,7 @@ it('GPUDotDensity validates props and builds deterministic nodes', () => {
     output: {...props.output, slotCounts: undefined, slotOffsets: undefined},
     counts: createTransientView(graph, 'counts', 'uint32', 3)
   });
-  expect(points.recipe).toBe('random-points-in-polygon');
+  expect(points.id).toBe('random-points-in-polygon');
   expect(
     () =>
       new GPURandomPointsInPolygon({

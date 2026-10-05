@@ -33,7 +33,7 @@ function createOutput(graph: GPUCommandGraph, prefix: string, capacity: number) 
 
 it('GPUTerrainSummits schedules canonicalisation, search, compaction and publish', () => {
   const device = createNullWebGPUDevice();
-  // Every recipe gets its own graph: node and transient IDs must be unique within one graph.
+  // Every contributor gets its own graph: node and transient IDs must be unique within one graph.
   const getNodeIds = (
     build: (graph: GPUCommandGraph) => Partial<GPUTerrainSummitsProps>
   ): string[] => {
@@ -68,7 +68,7 @@ it('GPUTerrainSummits schedules canonicalisation, search, compaction and publish
   expect(ids.indexOf('hill-overflow-clear')).toBeLessThan(ids.indexOf('hill-summits'));
   expect(ids.indexOf('hill-publish')).toBeLessThan(ids.indexOf('hill-output-drop'));
 
-  // A list-only recipe keeps the mask in a transient.
+  // A list-only contributor keeps the mask in a transient.
   expect(getNodeIds(graph => ({output: createOutput(graph, 'list-only', 4)}))).toContain(
     'terrain-summits-publish'
   );
@@ -159,9 +159,8 @@ it('GPUTerrainPeakSnap schedules search and unpack nodes', () => {
       ...overrides
     });
   };
-  const recipe = create();
-  expect(recipe.recipe).toBe('terrain-peak-snap');
-  const ids = recipe.getCommandNodes(graph).map(node => node.id);
+  const contributor = create();
+  const ids = contributor.getCommandNodes(graph).map(node => node.id);
   expect(ids.slice(-2)).toEqual(['terrain-peak-snap-search', 'terrain-peak-snap-unpack']);
   expect(ids).not.toContain('terrain-peak-snap-overflow-clear');
   expect(

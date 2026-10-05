@@ -28,7 +28,7 @@ import {
 } from './terrain-analysis-utils';
 import {getTerrainSightLineWGSL, type GPUTerrainSightLineTraversal} from './terrain-sight-line';
 
-/** Number of float32 values read from the `settings` of the sight-line recipes. */
+/** Number of float32 values read from the `settings` of the sight-line contributors. */
 export const GPU_TERRAIN_SIGHT_LINE_PARAMETER_LENGTH = 12;
 
 /**
@@ -101,7 +101,7 @@ export function getGPUTerrainSightLineParameterValues(
   return target;
 }
 
-/** Creates the optional pyramid nodes and binding shared by the sight-line recipes. @internal */
+/** Creates the optional pyramid nodes and binding shared by the sight-line contributors. @internal */
 export function getSightLinePyramid<Parameters>(
   graph: GPUCommandGraph<Parameters>,
   id: string,

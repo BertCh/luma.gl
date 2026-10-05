@@ -6,7 +6,7 @@ import type {Buffer, Device} from '@luma.gl/core';
 import {GPUCommandGraph} from '@luma.gl/gpgpu/gpu-core';
 import {getWebGPUTestDevice} from '@luma.gl/test-utils';
 import {expect, it} from 'vitest';
-import {importGraphBuffer, submitGraph} from '../../../src/utils/gpu-contributor-utils';
+import {importGraphBuffer} from '../../../src/utils/gpu-contributor-utils';
 import {
   GPU_SPATIAL_JOIN_NO_FEATURE as N,
   GPUPointInPolygonJoin,
@@ -18,7 +18,8 @@ import {
   createVectorView,
   readCompactIds,
   readUint32,
-  sortNumbers
+  sortNumbers,
+  submitGraph
 } from '../../utils/gpu-contributor-test-utils';
 import {
   buildPolygonFeatureArrays,

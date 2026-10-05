@@ -11,9 +11,13 @@ import {
   type GraphDataView,
   type GraphVectorView
 } from '@luma.gl/gpgpu/gpu-core';
-import {GPUPairwisePointSegmentDistance} from '../index';
+import {GPUPairwisePointSegmentDistance} from '../gpu-pairwise-point-segment-distance';
 import {createWGSLKernelNode, type WGSLKernelBinding} from '../../utils/wgsl-kernel-nodes';
-import type {GPUCompactOutput, GPUFloat32Positions, GPUUint32Rows} from '../../utils/gpu-contributor-types';
+import type {
+  GPUCompactOutput,
+  GPUFloat32Positions,
+  GPUUint32Rows
+} from '../../utils/gpu-contributor-types';
 import type {GPUCommandNodeProducer} from '@luma.gl/gpgpu/gpu-core';
 import {
   captureGraphCommandNodes,

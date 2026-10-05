@@ -112,6 +112,41 @@ retain their original ordered chunk boundaries; chunking is not distributed or m
 Call `filter.clear(dimensionId)`, `filter.clearAll()`, or `filter.destroy()` as the application
 updates or releases its selections.
 
+## Live rows, missing values, and brush intervals
+
+Tables whose rows come and go, such as a time window or a residency mask, need three options beyond
+the defaults. All keep the graph topology fixed, so their contents or ranges can change every frame
+without recompiling.
+
+```ts
+const filter = new GPUCrossfilter(graph, {
+  dimensions: [
+    {id: 'speed', kind: 'range', input: speed, rejectNonFinite: true, exclusiveMaximum: true},
+    {id: 'hour', kind: 'range', input: hour, exclusiveMaximum: true}
+  ],
+  // nonzero = live; dead rows never reach any view
+  liveMask,
+  views: [
+    // 'auto' infers the domain from live, finite rows only, independent of every brush
+    {id: 'speed-histogram', kind: 'histogram', dimension: 'speed', input: speed, domain: 'auto', output: speedBins},
+    {id: 'selected-count', kind: 'count', output: selectedCount}
+  ]
+});
+```
+
+- `liveMask` (controller prop) removes dead rows from every histogram, group, count, visibility,
+  and mask output, including self-excluding views, and from `'auto'` histogram domains.
+- `rejectNonFinite` (range and bounds dimensions) treats NaN and infinite `float32` values as
+  missing: such rows always fail that dimension, even while it is inactive, so they leave every
+  other linked view too. By default they are accepted while the dimension is inactive.
+- `exclusiveMaximum` (range dimensions) makes the brush half-open, `minimum <= value < maximum`,
+  so adjacent brushes partition a domain. The default interval is inclusive on both ends.
+- The `count` view publishes a one-row `uint32` count of live rows that pass the view's effective
+  selection, without compacting row identifiers.
+
+Mask composition splits into intermediate masks when the dimension count exceeds the device's
+storage-buffer binding limit, so the number of dimensions is not bounded by one compute pass.
+
 ## Core concepts and data model
 
 - Dimensions own active range or rectangular selection state.
@@ -131,6 +166,7 @@ updates or releases its selections.
 | Group view | Publishes dense grouped count, sum, minimum, maximum, or mean |
 | Visibility view | Publishes stable compacted source IDs and a count |
 | Mask view | Publishes source-aligned selection flags |
+| Count view | Publishes the number of live rows passing the effective selection |
 
 ## Limits and compatibility
 

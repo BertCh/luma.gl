@@ -6,7 +6,7 @@ import type {Buffer, Device} from '@luma.gl/core';
 import {GPUCommandGraph} from '@luma.gl/gpgpu/gpu-core';
 import {getWebGPUTestDevice} from '@luma.gl/test-utils';
 import {expect, it} from 'vitest';
-import {GPUParameterBuffer, importGraphBuffer, submitGraph} from '../../../src/utils/gpu-contributor-utils';
+import {GPUParameterBuffer, importGraphBuffer} from '../../../src/utils/gpu-contributor-utils';
 import {
   getGPULocalDominanceParameterValues,
   getGPULocalDominanceShifts,
@@ -14,7 +14,12 @@ import {
   type GPULocalDominanceGeometry,
   type GPULocalDominanceSettings
 } from '../../../src/gpu-terrain/relief-visualization/gpu-local-dominance';
-import {createOutputBuffer, readFloat32, readUint32} from '../../utils/gpu-contributor-test-utils';
+import {
+  createOutputBuffer,
+  readFloat32,
+  readUint32,
+  submitGraph
+} from '../../utils/gpu-contributor-test-utils';
 import {createSmoothTerrain} from '../terrain-illumination/terrain-horizon-oracle';
 import {computeLocalDominanceRVT, pythonRound} from './relief-visualization-oracle';
 import {
@@ -123,21 +128,27 @@ it('GPULocalDominance matches the RVT roll loop with nodata and per-frame settin
     {},
     {minimumRadius: 3, maximumRadius: 9, radiusIncrement: 2, angularResolution: 45}
   ]) {
-    await runLocalDominance(device, elevation, geometry, settingsList, (dominance, validity, settings) => {
-      const expected = computeLocalDominanceRVT({
-        width: WIDTH,
-        height: HEIGHT,
-        elevation,
-        ...geometry,
-        ...settings
-      });
-      expectClose(dominance, expected, 2e-4, JSON.stringify([geometry, settings]));
-      expect(validity).toEqual(expected.map(value => (Number.isNaN(value) ? 0 : 1)));
-      const finite = dominance.filter(Number.isFinite);
-      // A real result varies; a failed compile would give zeros or a constant.
-      expect(Math.max(...finite) - Math.min(...finite)).toBeGreaterThan(0.05);
-      expect(getMaximumMagnitude(dominance)).toBeGreaterThan(0.1);
-    });
+    await runLocalDominance(
+      device,
+      elevation,
+      geometry,
+      settingsList,
+      (dominance, validity, settings) => {
+        const expected = computeLocalDominanceRVT({
+          width: WIDTH,
+          height: HEIGHT,
+          elevation,
+          ...geometry,
+          ...settings
+        });
+        expectClose(dominance, expected, 2e-4, JSON.stringify([geometry, settings]));
+        expect(validity).toEqual(expected.map(value => (Number.isNaN(value) ? 0 : 1)));
+        const finite = dominance.filter(Number.isFinite);
+        // A real result varies; a failed compile would give zeros or a constant.
+        expect(Math.max(...finite) - Math.min(...finite)).toBeGreaterThan(0.05);
+        expect(getMaximumMagnitude(dominance)).toBeGreaterThan(0.1);
+      }
+    );
   }
 });
 

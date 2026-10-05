@@ -35,7 +35,6 @@ it('GPUNetworkServiceAreas schedules reachability, label propagation, and option
     facilityNodeCounts: createTransientView(graph, 'node-counts', 'uint32', 3),
     facilityCostSums: createTransientView(graph, 'cost-sums', 'float32', 3)
   });
-  expect(service.recipe).toBe('network-service-areas');
   const ids = service.getCommandNodes(graph).map(node => node.id);
   const reachabilityIds = ids.filter(id => id.startsWith('service-reachability-'));
   expect(ids.slice(0, reachabilityIds.length)).toEqual(reachabilityIds);

@@ -40,7 +40,7 @@ export const GPU_TERRAIN_DRAINAGE_NONE = 0xffffffff;
  *
  * Compile-time: `width`, `height`, `maxIterations`, the elevation format and calibration, and which
  * optional outputs are provided. Per-frame: the contents of `elevation`, `flowDirections` and
- * `streams`. The recipe works on D8 receiver indices only, so it has no cell-size model: the result
+ * `streams`. The contributor works on D8 receiver indices only, so it has no cell-size model: the result
  * is a vertical difference in elevation units, independent of `uniform`, `web-mercator` or
  * `geographic` cell spacing.
  *
@@ -104,7 +104,7 @@ export type GPUTerrainHeightAboveDrainageProps = {
  * a path length. Receiver cycles, possible only in caller-supplied directions, leave `converged` at 0.
  *
  * Compose it with {@link GPUTerrainFlow}: pass its `filledElevation` (or the raw DEM),
- * `flowDirections` and `streams`. It is a separate recipe so grids from other tools can be used.
+ * `flowDirections` and `streams`. It is a separate contributor so grids from other tools can be used.
  */
 export class GPUTerrainHeightAboveDrainage implements GPUCommandNodeProducer {
   /** Prefix for every node and transient ID. */
@@ -178,7 +178,7 @@ export class GPUTerrainHeightAboveDrainage implements GPUCommandNodeProducer {
     nodes.push(
       ...createTerrainFlowPointerNodes(graph, {
         id,
-        recipeId: id,
+        contributorId: id,
         operation: OPERATION,
         width,
         height,

@@ -7,7 +7,7 @@ import {GPUCommandGraph} from '@luma.gl/gpgpu/gpu-core';
 import {getWebGPUTestDevice} from '@luma.gl/test-utils';
 import {expect, it} from 'vitest';
 import {GPURasterTextureToBuffer} from '../../../src/gpu-raster';
-import {GPUParameterBuffer, importGraphBuffer, submitGraph} from '../../../src/utils/gpu-contributor-utils';
+import {GPUParameterBuffer, importGraphBuffer} from '../../../src/utils/gpu-contributor-utils';
 import {
   convolveLineIntegralOnCPU,
   getGPULineIntegralConvolutionParameterValues,
@@ -15,7 +15,12 @@ import {
   GPULineIntegralConvolution,
   type GPULineIntegralConvolutionSettings
 } from '../../../src/gpu-raster/flow-texture';
-import {createInputBuffer, createOutputBuffer, readFloat32} from '../../utils/gpu-contributor-test-utils';
+import {
+  createInputBuffer,
+  createOutputBuffer,
+  readFloat32,
+  submitGraph
+} from '../../utils/gpu-contributor-test-utils';
 import {createVortexField, type TestField} from './flow-texture-scenes';
 
 type Result = {

@@ -38,10 +38,9 @@ it('GPUTerrainRuggedness schedules one window kernel and validates props', () =>
       ...overrides
     });
   };
-  const recipe = create();
-  expect(recipe.requiredHalo).toBe(1);
-  expect(recipe.recipe).toBe('terrain-ruggedness');
-  expect(recipe.getCommandNodes(graph).map(node => node.id)).toEqual([
+  const contributor = create();
+  expect(contributor.requiredHalo).toBe(1);
+  expect(contributor.getCommandNodes(graph).map(node => node.id)).toEqual([
     'terrain-ruggedness-elevation',
     'terrain-ruggedness-window'
   ]);
@@ -92,11 +91,10 @@ it('GPUTerrainVectorRuggedness schedules normals and window kernels', () => {
       ...overrides
     });
   };
-  const recipe = create();
-  expect(recipe.recipe).toBe('terrain-vector-ruggedness');
-  expect(recipe.requiredHalo).toBe(2);
+  const contributor = create();
+  expect(contributor.requiredHalo).toBe(2);
   expect(create({radius: 4}).requiredHalo).toBe(5);
-  expect(recipe.getCommandNodes(graph).map(node => node.id)).toEqual([
+  expect(contributor.getCommandNodes(graph).map(node => node.id)).toEqual([
     'terrain-vector-ruggedness-elevation',
     'terrain-vector-ruggedness-normals',
     'terrain-vector-ruggedness-window'

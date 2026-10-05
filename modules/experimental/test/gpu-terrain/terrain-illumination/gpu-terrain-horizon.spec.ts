@@ -6,7 +6,7 @@ import type {Buffer, Device} from '@luma.gl/core';
 import {GPUCommandGraph} from '@luma.gl/gpgpu/gpu-core';
 import {getWebGPUTestDevice} from '@luma.gl/test-utils';
 import {expect, it} from 'vitest';
-import {GPUParameterBuffer, importGraphBuffer, submitGraph} from '../../../src/utils/gpu-contributor-utils';
+import {GPUParameterBuffer, importGraphBuffer} from '../../../src/utils/gpu-contributor-utils';
 import {
   decodeGPUTerrainHorizonUnorm16,
   encodeGPUTerrainHorizonUnorm16,
@@ -24,7 +24,8 @@ import {
   createInputBuffer,
   createOutputBuffer,
   readFloat32,
-  readUint32
+  readUint32,
+  submitGraph
 } from '../../utils/gpu-contributor-test-utils';
 import {
   computeTerrainHorizon,
@@ -68,10 +69,10 @@ function createHorizonFixture(
     length: 8,
     values: getGPUTerrainHorizonParameterValues({cellSize: [10, 10]})
   });
-  const {withHorizon: _, ...recipeOptions} = options;
+  const {withHorizon: _, ...contributorOptions} = options;
   graph.add(
     new GPUTerrainHorizon({
-      ...recipeOptions,
+      ...contributorOptions,
       elevation: {
         id: 'elevation',
         format: 'float32',

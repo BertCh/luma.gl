@@ -6,7 +6,7 @@ import type {Buffer, Device} from '@luma.gl/core';
 import {GPUCommandGraph} from '@luma.gl/gpgpu/gpu-core';
 import {getWebGPUTestDevice} from '@luma.gl/test-utils';
 import {expect, it} from 'vitest';
-import {GPUParameterBuffer, importGraphBuffer, submitGraph} from '../../../src/utils/gpu-contributor-utils';
+import {GPUParameterBuffer, importGraphBuffer} from '../../../src/utils/gpu-contributor-utils';
 import {
   getGPUTerrainPeakSnapParameterValues,
   GPU_TERRAIN_PEAK_SNAP_PARAMETER_LENGTH,
@@ -20,7 +20,8 @@ import {
   createOutputBuffer,
   isSoftwareDevice,
   readFloat32,
-  readUint32
+  readUint32,
+  submitGraph
 } from '../../utils/gpu-contributor-test-utils';
 import {computeTerrainPeakSnap} from './terrain-summits-oracle';
 
@@ -34,7 +35,7 @@ type FixtureOptions = {
   candidateRadii?: number[];
   settings: GPUTerrainPeakSnapSettings;
   overflow?: boolean;
-  recipe?: Partial<GPUTerrainPeakSnapProps>;
+  contributor?: Partial<GPUTerrainPeakSnapProps>;
 };
 
 function createPeakSnapFixture(device: Device, options: FixtureOptions) {
@@ -99,7 +100,7 @@ function createPeakSnapFixture(device: Device, options: FixtureOptions) {
       overflow: options.overflow
         ? importGraphBuffer(graph, 'overflow', overflow, 'uint32', 1)
         : undefined,
-      ...options.recipe
+      ...options.contributor
     })
   );
   const compiled = graph.compile();
@@ -331,7 +332,7 @@ it('GPUTerrainPeakSnap never lets nodata bleed and reports noData', async () => 
     height: HEIGHT,
     candidates,
     settings,
-    recipe: {}
+    contributor: {}
   });
   const result = await fixture.run();
   const expected = computeTerrainPeakSnap(
@@ -512,7 +513,7 @@ it('GPUTerrainPeakSnap clamps the radius to maximumRadiusPixels and raises overf
     candidates,
     settings,
     overflow: true,
-    recipe: options
+    contributor: options
   });
   expect((await fixture.run()).overflow).toBe(0);
   const wide = {...settings, radius: 9};
@@ -594,7 +595,7 @@ it('GPUTerrainPeakSnap follows per-row cell sizes in web-mercator and geographic
       height: HEIGHT,
       candidates,
       settings,
-      recipe: {cellSizeMode}
+      contributor: {cellSizeMode}
     });
     const result = await fixture.run();
     expect(result.status).toEqual(expected.status);

@@ -53,7 +53,7 @@ adapts existing GPU results to real deck.gl layers; it does not replace the unde
 ## Graph effects and layers
 
 `GPUGraphDeckEffect` composes topology and progressive force layout inside deck.gl's existing
-frame, and its `GPUGraphRecipeColumns` runs the map-graph network recipes on a symmetrized CSR:
+frame, and its `GPUGraphAnalysisColumns` runs the `@luma.gl/experimental/gpu-network` contributors on a symmetrized CSR:
 normalized degree, PageRank and core number, component and community labels, a hover
 neighborhood mask, reachability bands, and the shortest path between two picked vertices.
 Deck owns queue submission; the effect retains original source and target edge partitions,
@@ -79,9 +79,9 @@ const nodes = new GPUGraphNodeLayer({
   id: 'nodes',
   positions: effect.positions,
   vertexCount: dataset.vertexCount,
-  colorColumn: effect.recipeColumns?.columns.pageRank,
+  colorColumn: effect.analysisColumns?.columns.pageRank,
   colorScale: {type: 'linear', domain: [0, 0.2], palette: [[59, 76, 192], [244, 109, 67]]},
-  pathRanks: effect.recipeColumns?.pathRanks
+  pathRanks: effect.analysisColumns?.pathRanks
 });
 ```
 

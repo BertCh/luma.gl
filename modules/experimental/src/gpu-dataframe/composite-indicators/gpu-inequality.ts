@@ -281,21 +281,13 @@ export class GPUInequality implements GPUCommandNodeProducer {
     const lorenz =
       output.lorenzKnots ?? transient('lorenz', 'float32', zoneCount * lorenzKnotCount);
 
-    const read = (
-      name: string,
-      view: GraphDataView,
-      type: 'u32' | 'f32'
-    ): WGSLKernelBinding => ({
+    const read = (name: string, view: GraphDataView, type: 'u32' | 'f32'): WGSLKernelBinding => ({
       name,
       view,
       type,
       access: 'read'
     });
-    const write = (
-      name: string,
-      view: GraphDataView,
-      type: 'u32' | 'f32'
-    ): WGSLKernelBinding => ({
+    const write = (name: string, view: GraphDataView, type: 'u32' | 'f32'): WGSLKernelBinding => ({
       name,
       view,
       type,

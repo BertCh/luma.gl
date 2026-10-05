@@ -46,7 +46,7 @@ function createContext(device: Device) {
 it('GPUNetworkStatistics schedules a fixed node order', () => {
   const device = createNullWebGPUDevice();
   const {graph, importView, props} = createContext(device);
-  const recipe = new GPUNetworkStatistics({
+  const contributor = new GPUNetworkStatistics({
     id: 'stats',
     ...props({
       directed: true,
@@ -56,8 +56,7 @@ it('GPUNetworkStatistics schedules a fixed node order', () => {
       parameters: importView('parameters', 2)
     })
   });
-  expect(recipe.recipe).toBe('network-statistics');
-  const ids = recipe.getCommandNodes(graph).map(node => node.id);
+  const ids = contributor.getCommandNodes(graph).map(node => node.id);
   const indexOf = (prefix: string) => ids.findIndex(id => id.startsWith(prefix));
   expect(ids[0]).toBe('stats-zero-output');
   expect(indexOf('stats-slots')).toBeGreaterThan(indexOf('stats-zero-in-sum'));
@@ -66,20 +65,20 @@ it('GPUNetworkStatistics schedules a fixed node order', () => {
   expect(indexOf('stats-degrees')).toBeGreaterThan(indexOf('stats-component-sizes'));
   expect(indexOf('stats-intra-community')).toBeGreaterThan(indexOf('stats-degrees'));
   expect(ids[ids.length - 1]).toBe('stats-finish');
-  recipe.destroy();
+  contributor.destroy();
   device.destroy();
 });
 
 it('GPUNetworkStatistics omits unused passes and defaults the id', () => {
   const device = createNullWebGPUDevice();
   const {graph, props} = createContext(device);
-  const recipe = new GPUNetworkStatistics(props());
-  expect(recipe.id).toBe('network-statistics');
-  const ids = recipe.getCommandNodes(graph).map(node => node.id);
+  const contributor = new GPUNetworkStatistics(props());
+  expect(contributor.id).toBe('network-statistics');
+  const ids = contributor.getCommandNodes(graph).map(node => node.id);
   expect(ids.some(id => id.includes('intra-community'))).toBe(false);
   expect(ids.some(id => id.includes('zero-in-degree'))).toBe(false);
   expect(ids.some(id => id.includes('zero-out-sum'))).toBe(false);
-  recipe.destroy();
+  contributor.destroy();
   device.destroy();
 });
 
@@ -115,7 +114,7 @@ it('GPUNetworkStatistics validates props', () => {
     create({offsets: createTransientView(graph, 'transient-offsets', 'uint32', NODE_COUNT + 1)})
   ).toThrow(/offsets must be imported with a default buffer/);
 
-  // Views from another graph are rejected when the recipe is added.
+  // Views from another graph are rejected when the contributor is added.
   const otherDevice = createNullWebGPUDevice();
   const other = createContext(otherDevice);
   const foreign = new GPUNetworkStatistics(other.props());
@@ -128,7 +127,7 @@ it('GPUNetworkStatistics validates props', () => {
 it('GPUNetworkStatistics stays inside the 8 storage binding limit', () => {
   const device = createNullWebGPUDevice();
   const {graph, importView, props} = createContext(device);
-  const recipe = new GPUNetworkStatistics(
+  const contributor = new GPUNetworkStatistics(
     props({
       directed: true,
       vertexMask: importView('vertex-mask', NODE_COUNT),
@@ -137,8 +136,8 @@ it('GPUNetworkStatistics stays inside the 8 storage binding limit', () => {
       parameters: importView('parameters', 2)
     })
   );
-  expect(() => recipe.getCommandNodes(graph)).not.toThrow();
-  recipe.destroy();
+  expect(() => contributor.getCommandNodes(graph)).not.toThrow();
+  contributor.destroy();
   device.destroy();
 });
 

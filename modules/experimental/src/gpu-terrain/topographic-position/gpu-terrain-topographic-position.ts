@@ -53,7 +53,7 @@ export type GPUTerrainTopographicPositionScale = {
 /**
  * Properties for {@link GPUTerrainTopographicPosition}.
  *
- * Every scale is in cells, so the recipe is independent of the cell-size model: with projected
+ * Every scale is in cells, so the contributor is independent of the cell-size model: with projected
  * (`'uniform'`) metres, Web Mercator, or geographic degrees alike, a radius of `r` cells covers
  * `r` rows and `r` columns. On geographic grids the window is therefore narrower in ground metres
  * east-west than north-south by cos(latitude). Outputs are in elevation units (TPI) or
@@ -105,7 +105,7 @@ export type GPUTerrainTopographicPositionProps = {
  * summed-area table.
  *
  * A float32 summed-area table loses the box sums it exists to provide: on a 1024² tile at 1000 m
- * the table entries reach 10^9, whose float32 spacing is 64 elevation units. This recipe instead
+ * the table entries reach 10^9, whose float32 spacing is 64 elevation units. This contributor instead
  * quantizes elevations to integers (`quantum`, default 1/256), builds a 64-bit modular table with
  * the GPU Core `GPUScanUint64`, `GPUScan`, and `GPUTranspose` primitives, and recovers every box
  * sum exactly. Variance is then formed relative to the centre cell in exact integer arithmetic,

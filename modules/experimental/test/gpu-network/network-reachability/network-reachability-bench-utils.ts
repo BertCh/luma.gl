@@ -6,11 +6,15 @@ import type {Device} from '@luma.gl/core';
 import {GPUCommandGraph} from '@luma.gl/gpgpu/gpu-core';
 import {importGraphBuffer} from '../../../src/utils/gpu-contributor-utils';
 import type {GPUNetworkReachabilityProps} from '../../../src/gpu-network/network-reachability';
-import {createInputBuffer, createOutputBuffer, readUint32} from '../../utils/gpu-contributor-test-utils';
+import {
+  createInputBuffer,
+  createOutputBuffer,
+  readUint32
+} from '../../utils/gpu-contributor-test-utils';
 import {buildCSR, type NetworkEdge} from './network-reachability-oracle';
 
-/** Recipe class under measurement: the current one or a baseline copy. */
-export type ReachabilityRecipeClass = new (
+/** Contributor class under measurement: the current one or a baseline copy. */
+export type ReachabilityContributorClass = new (
   props: GPUNetworkReachabilityProps
 ) => {
   getCommandNodes: (graph: GPUCommandGraph) => readonly unknown[];
@@ -41,7 +45,7 @@ function median(values: number[]): number {
  */
 export async function measureReachability(
   device: Device,
-  RecipeClass: ReachabilityRecipeClass,
+  ContributorClass: ReachabilityContributorClass,
   options: {
     label: string;
     nodeCount: number;
@@ -89,7 +93,7 @@ export async function measureReachability(
       : {}),
     ...(options.localIterations === undefined ? {} : {localIterations: options.localIterations})
   };
-  graph.add(new RecipeClass(props) as never);
+  graph.add(new ContributorClass(props) as never);
   const compileStart = performance.now();
   const compiled = graph.compile();
   const compileMilliseconds = performance.now() - compileStart;

@@ -3,7 +3,7 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 /**
- * Mean Earth radius in meters (IUGG R1), the default sphere radius of the geodesic recipes and of
+ * Mean Earth radius in meters (IUGG R1), the default sphere radius of the geodesic contributors and of
  * turf's `distance`, `length`, `destination` and `along`.
  */
 export const GPU_GEODESIC_MEAN_EARTH_RADIUS = 6371008.8;
@@ -15,7 +15,7 @@ export const GPU_GEODESIC_WGS84_SEMI_MAJOR_AXIS = 6378137;
 export const GPU_GEODESIC_WGS84_FLATTENING = 1 / 298.257223563;
 
 /**
- * Shared f32 spherical geodesy helpers for the geometry recipes (`line-segmentize`,
+ * Shared f32 spherical geodesy helpers for the geometry contributors (`line-segmentize`,
  * `geometry-measures`, `linear-referencing`). Positions are `vec2<f32>(longitude, latitude)` in
  * degrees; angles returned in radians unless the name says degrees.
  *

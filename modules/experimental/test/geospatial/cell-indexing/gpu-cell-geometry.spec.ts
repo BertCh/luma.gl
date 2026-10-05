@@ -15,7 +15,7 @@ import {
   latLngToCell
 } from 'h3-js';
 import {expect, it} from 'vitest';
-import {importGraphBuffer, submitGraph} from '../../../src/utils/gpu-contributor-utils';
+import {importGraphBuffer} from '../../../src/utils/gpu-contributor-utils';
 import {createWGSLKernelNode} from '../../../src/utils/wgsl-kernel-nodes';
 import {
   GPU_CELL_GEOMETRY_VERTEX_COUNTS,
@@ -33,7 +33,8 @@ import {
   createInputBuffer,
   createOutputBuffer,
   readFloat32,
-  readUint32
+  readUint32,
+  submitGraph
 } from '../../utils/gpu-contributor-test-utils';
 import {
   geohashCellToBounds,

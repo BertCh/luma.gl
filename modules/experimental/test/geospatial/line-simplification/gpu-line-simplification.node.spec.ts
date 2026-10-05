@@ -151,8 +151,10 @@ it('GPULineSimplification validates props', () => {
 it('GPULineSimplification emits deterministic node IDs and five nodes per round', () => {
   const device = createNullWebGPUDevice();
   const graph = new GPUCommandGraph(device);
-  const recipe = new GPULineSimplification(createProps(graph, {id: 'simplify', maximumRounds: 3}));
-  const nodes = recipe.getCommandNodes(graph);
+  const contributor = new GPULineSimplification(
+    createProps(graph, {id: 'simplify', maximumRounds: 3})
+  );
+  const nodes = contributor.getCommandNodes(graph);
   const ids = nodes.map(node => node.id);
   expect(ids.slice(0, 2)).toEqual(['simplify-rounds-reset', 'simplify-init']);
   expect(ids.filter(id => id.startsWith('simplify-round-'))).toHaveLength(15);

@@ -11,7 +11,7 @@ import {
 } from '@luma.gl/gpgpu/gpu-core';
 import {getWebGPUTestDevice} from '@luma.gl/test-utils';
 import {expect, it} from 'vitest';
-import {GPUParameterBuffer, importGraphBuffer, submitGraph} from '../../../src/utils/gpu-contributor-utils';
+import {GPUParameterBuffer, importGraphBuffer} from '../../../src/utils/gpu-contributor-utils';
 import {
   GPU_TILE_LOD_VIEW_LENGTH,
   GPU_TILE_LOD_VIEW_OFFSETS,
@@ -25,7 +25,8 @@ import {
   readCompactIds,
   readFloat32,
   readUint32,
-  sortNumbers
+  sortNumbers,
+  submitGraph
 } from '../../utils/gpu-contributor-test-utils';
 import {
   FIXTURE_A,

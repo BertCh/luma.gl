@@ -12,7 +12,10 @@ import {
 import {GPURasterBufferToTexture, type GPURasterBand} from '../../gpu-raster/index';
 import type {WGSLKernelBinding} from '../../utils/wgsl-kernel-nodes';
 import type {GPUCommandNodeProducer} from '@luma.gl/gpgpu/gpu-core';
-import {captureGraphCommandNodes, validateGraphViewsBelongToGraph} from '../../utils/gpu-contributor-utils';
+import {
+  captureGraphCommandNodes,
+  validateGraphViewsBelongToGraph
+} from '../../utils/gpu-contributor-utils';
 import {
   getTerrainBandViews,
   getTerrainElevationNodes,
@@ -41,7 +44,7 @@ export const GPU_TERRAIN_CAST_SHADOW_PARAMETER_LENGTH = 16;
 /**
  * CPU-side description packed by {@link getGPUTerrainCastShadowParameterValues}.
  *
- * Cell-size model: `cellSize` is interpreted by the recipe's `cellSizeMode` as projected metres
+ * Cell-size model: `cellSize` is interpreted by the contributor's `cellSizeMode` as projected metres
  * (`uniform`), equatorial Web Mercator metres or degrees with latitude-dependent spacing
  * (`web-mercator`, `geographic`, using `northEdge` and `southEdge`).
  */
@@ -76,7 +79,7 @@ export type GPUTerrainCastShadowSettings = {
  *
  * The digital line family of the sun direction is computed here on the CPU in float64 (direction
  * `(sin(azimuth), +-cos(azimuth))` exactly as in `getGPUTerrainHorizonDirection`, but not rounded to
- * float32), so changing the sun never recompiles the graph. `rowDirection` must match the recipe.
+ * float32), so changing the sun never recompiles the graph. `rowDirection` must match the contributor.
  *
  * @throws If a cell size is not finite and positive, the angular radius is negative or not finite,
  * the azimuth is not finite, or `target` is too short.

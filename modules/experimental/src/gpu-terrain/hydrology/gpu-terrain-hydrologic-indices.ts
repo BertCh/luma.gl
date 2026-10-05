@@ -131,7 +131,7 @@ export type GPUTerrainHydrologicIndicesProps = {
  *
  * Invalid cells and cells with a non-finite `A` get NaN. Implementations differ mainly in the
  * slope: Whitebox and SAGA usually take a 3x3 (Horn or Zevenbergen-Thorne) slope raster and
- * TauDEM the D-infinity slope; this recipe uses the D8 descent slope so `tan(beta)` and the flow
+ * TauDEM the D-infinity slope; this contributor uses the D8 descent slope so `tan(beta)` and the flow
  * routing agree on flats and filled depressions. One kernel, no iteration.
  */
 export class GPUTerrainHydrologicIndices implements GPUCommandNodeProducer {

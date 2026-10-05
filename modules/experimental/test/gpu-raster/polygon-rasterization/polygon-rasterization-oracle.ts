@@ -69,7 +69,7 @@ function getPolygonEdges(polygons: OraclePolygons, polygon: number): Edge[] {
 }
 
 /**
- * Even-odd test with the recipe's half-open rule: an edge counts when
+ * Even-odd test with the contributor's half-open rule: an edge counts when
  * `min(y0, y1) <= y < max(y0, y1)` and its crossing is at or left of `x`.
  */
 function isInsideEdges(edges: readonly Edge[], x: number, y: number): boolean {
@@ -132,7 +132,7 @@ export type OracleRasterization = {
   looseBoundary: Uint8Array;
   /** 1 where a crossing or vertex lies within `tieTolerance` cells of the center (float ties). */
   ambiguous: Uint8Array;
-  /** Total (edge, row) crossings inside the raster, as counted by the recipe. */
+  /** Total (edge, row) crossings inside the raster, as counted by the contributor. */
   crossingCount: number;
 };
 

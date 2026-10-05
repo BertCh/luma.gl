@@ -181,8 +181,8 @@ it('GPUFlowAggregation rejects views from another graph', () => {
   const device = createNullWebGPUDevice();
   const graph = new GPUCommandGraph(device);
   const otherGraph = new GPUCommandGraph(device);
-  const recipe = new GPUFlowAggregation(createProps(graph));
-  expect(() => recipe.getCommandNodes(otherGraph)).toThrow(/target graph/);
+  const contributor = new GPUFlowAggregation(createProps(graph));
+  expect(() => contributor.getCommandNodes(otherGraph)).toThrow(/target graph/);
   device.destroy();
 });
 
@@ -313,14 +313,14 @@ it('GPUFlowAggregation validates word time windows and sumOrder', () => {
   );
   const device = createNullWebGPUDevice();
   const graph = new GPUCommandGraph(device);
-  const recipe = new GPUFlowAggregation(
+  const contributor = new GPUFlowAggregation(
     createProps(graph, {
       timeWindow: timeWindow(graph, {}),
       sumOrder: 'sorted'
     })
   );
-  expect(recipe.sumOrder).toBe('sorted');
-  expect(recipe.getCommandNodes(graph).length).toBeGreaterThan(0);
+  expect(contributor.sumOrder).toBe('sorted');
+  expect(contributor.getCommandNodes(graph).length).toBeGreaterThan(0);
   device.destroy();
 });
 
@@ -333,7 +333,7 @@ it('GPUFlowAggregation sorted sums add sort, scan, and gather nodes', () => {
       format: Format,
       length: number
     ) => createTransientView(graph, `${sumOrder}-${name}`, format, length);
-    const recipe = new GPUFlowAggregation({
+    const contributor = new GPUFlowAggregation({
       sumOrder,
       zones: {kind: 'ids', zoneCount: 4},
       originZoneIds: createDefault('origins', 'uint32', 10),
@@ -349,7 +349,7 @@ it('GPUFlowAggregation sorted sums add sort, scan, and gather nodes', () => {
       zoneOutWeights: createDefault('zone-out-weights', 'float32', 4),
       zoneInWeights: createDefault('zone-in-weights', 'float32', 4)
     });
-    const count = recipe.getCommandNodes(graph).length;
+    const count = contributor.getCommandNodes(graph).length;
     device.destroy();
     return count;
   };

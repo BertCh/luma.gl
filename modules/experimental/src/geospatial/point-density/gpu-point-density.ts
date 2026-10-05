@@ -101,7 +101,7 @@ export type GPUPointDensityProps = {
   /**
    * Optional per-row uint32 mask with the same logical length as `positions` (single packed view).
    * Rows whose mask is `0` are excluded from the count, sum, mean, smoothing input, extent, and
-   * histogram; any nonzero value includes the row, matching the other map-graph mask inputs. The
+   * histogram; any nonzero value includes the row, matching the other contributor mask inputs. The
    * contents are per-frame: rewriting them never recompiles the graph. Omitted means every row is
    * included, and the node list is unchanged.
    */

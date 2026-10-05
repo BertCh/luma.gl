@@ -17,7 +17,10 @@ import {
   type GPURasterBufferBand,
   type GPURasterTextureBand
 } from '../../gpu-raster/index';
-import {captureGraphCommandNodes, validateGraphViewsBelongToGraph} from '../../utils/gpu-contributor-utils';
+import {
+  captureGraphCommandNodes,
+  validateGraphViewsBelongToGraph
+} from '../../utils/gpu-contributor-utils';
 
 /** WGSL helper shared by terrain kernels. @internal */
 export const TERRAIN_WGSL_HELPERS = /* wgsl */ `

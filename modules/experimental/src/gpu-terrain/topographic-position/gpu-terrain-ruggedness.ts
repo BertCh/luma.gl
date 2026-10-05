@@ -70,7 +70,7 @@ export type GPUTerrainRuggednessProps = {
  * and roughness over a 3x3 window in one fused kernel.
  *
  * Outputs use elevation units (no cell size, no z factor). Invalid pixels receive NaN and
- * validity 0. The recipe satisfies the `GPURasterHaloStage` contract with a one-pixel halo.
+ * validity 0. The contributor satisfies the `GPURasterHaloStage` contract with a one-pixel halo.
  */
 export class GPUTerrainRuggedness implements GPUCommandNodeProducer {
   /** Prefix for every node and transient ID. */

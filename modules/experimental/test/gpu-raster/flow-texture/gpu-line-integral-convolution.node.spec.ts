@@ -42,9 +42,8 @@ it('GPULineIntegralConvolution validates props and builds deterministic nodes', 
   const graph = new GPUCommandGraph(createNullWebGPUDevice(), {
     id: 'lic-validation'
   });
-  const recipe = new GPULineIntegralConvolution(createProps(graph, {id: 'flow'}));
-  expect(recipe.recipe).toBe('line-integral-convolution');
-  expect(recipe.getCommandNodes(graph).map(node => node.id)).toEqual([
+  const contributor = new GPULineIntegralConvolution(createProps(graph, {id: 'flow'}));
+  expect(contributor.getCommandNodes(graph).map(node => node.id)).toEqual([
     'flow-noise',
     'flow-convolve'
   ]);

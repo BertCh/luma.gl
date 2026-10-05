@@ -6,7 +6,7 @@ import type {Buffer, Device} from '@luma.gl/core';
 import {GPUCommandGraph, type GraphDataView} from '@luma.gl/gpgpu/gpu-core';
 import {getWebGPUTestDevice} from '@luma.gl/test-utils';
 import {expect, it} from 'vitest';
-import {GPUParameterBuffer, importGraphBuffer, submitGraph} from '../../../src/utils/gpu-contributor-utils';
+import {GPUParameterBuffer, importGraphBuffer} from '../../../src/utils/gpu-contributor-utils';
 import {
   getGPUCalendarBucketsParameterValues,
   GPUCalendarBuckets,
@@ -15,7 +15,12 @@ import {
   type GPUCalendarBucketsProps
 } from '../../../src/gpu-dataframe/calendar-buckets';
 import {getInt64TimeWords} from '../../../src/gpu-dataframe/time-window-filter';
-import {createInputBuffer, createOutputBuffer, readUint32} from '../../utils/gpu-contributor-test-utils';
+import {
+  createInputBuffer,
+  createOutputBuffer,
+  readUint32,
+  submitGraph
+} from '../../utils/gpu-contributor-test-utils';
 import {
   countHourWeekdayOnCPU,
   createRandomTimestamps,
@@ -48,7 +53,7 @@ type CalendarResult = Record<string, number[]> & {
   hourWeekdayCounts: number[];
 };
 
-/** Counts how often the recipe emits its nodes, which a parameter change must never trigger. */
+/** Counts how often the contributor emits its nodes, which a parameter change must never trigger. */
 class CountingCalendarBuckets extends GPUCalendarBuckets {
   static nodeBuilds = 0;
   override getCommandNodes<Parameters>(graph: GPUCommandGraph<Parameters>) {

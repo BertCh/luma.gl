@@ -132,7 +132,7 @@ export function computeTerrainHorizon(options: HorizonOracleOptions): HorizonOra
       let weightedSineSum = 0;
       let weightSum = 0;
       for (let sector = 0; sector < directionCount; sector++) {
-        // The march direction is part of the recipe contract (float32, snapped axis components).
+        // The march direction is part of the contributor contract (float32, snapped axis components).
         const [dx, dy] = getGPUTerrainHorizonDirection(
           sector,
           directionCount,

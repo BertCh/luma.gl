@@ -55,11 +55,11 @@ function createSegmentizeProps(
 
 it('GPULineSegmentize validates inputs and emits deterministic node IDs', () => {
   const graph = new GPUCommandGraph(createNullWebGPUDevice(), {id: 'segmentize'});
-  const recipe = new GPULineSegmentize({
+  const contributor = new GPULineSegmentize({
     ...createSegmentizeProps(graph),
     coordinateSystem: 'spherical'
   });
-  const ids = recipe.getCommandNodes(graph).map(node => node.id);
+  const ids = contributor.getCommandNodes(graph).map(node => node.id);
   expect(ids[0]).toBe('line-segmentize-prefix');
   expect(ids).toContain('line-segmentize-count');
   expect(ids).toContain('line-segmentize-emit');
@@ -98,13 +98,15 @@ it('GPUGreatCircleArcs validates pair inputs', () => {
   const graph = new GPUCommandGraph(createNullWebGPUDevice(), {id: 'arcs'});
   const sources = createTransientView(graph, getViewId('sources'), 'float32x2', 3);
   const parameters = createTransientView(graph, getViewId('parameters'), 'float32', 4);
-  const recipe = new GPUGreatCircleArcs({
+  const contributor = new GPUGreatCircleArcs({
     sources,
     targets: createTransientView(graph, getViewId('targets'), 'float32x2', 3),
     parameters,
     output: createOutput(graph, 3)
   });
-  expect(recipe.getCommandNodes(graph).map(node => node.id)).toContain('great-circle-arcs-emit');
+  expect(contributor.getCommandNodes(graph).map(node => node.id)).toContain(
+    'great-circle-arcs-emit'
+  );
   expect(
     () =>
       new GPUGreatCircleArcs({

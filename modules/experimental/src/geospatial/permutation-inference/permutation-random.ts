@@ -5,8 +5,8 @@
 // Private counter-based random numbers for permutation inference: Philox 4x32-10 (Salmon et al.,
 // "Parallel random numbers: as easy as 1, 2, 3", SC 2011), a bounded integer draw, and a keyed
 // Feistel bijection on [0, n). The WGSL and TypeScript implementations produce bit-identical
-// streams, so CPU oracles reproduce GPU permutations exactly. Proposed for promotion to a shared
-// map-graph or gpu-core module once a second recipe needs it.
+// streams, so CPU oracles reproduce GPU permutations exactly. Proposed for promotion to the shared
+// utils module once a second contributor needs it.
 
 const PHILOX_M0 = 0xd2511f53;
 const PHILOX_M1 = 0xcd9e8d57;

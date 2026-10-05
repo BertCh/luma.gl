@@ -18,7 +18,7 @@ export type GPUInverseDistanceWeightingSettings = {
   power?: number;
   /**
    * Nearest-neighbor limit `k`; zero (default) uses every sample within the radius. Values above
-   * the recipe's compile-time `maximumNeighborCount` are clamped to it.
+   * the contributor's compile-time `maximumNeighborCount` are clamped to it.
    */
   neighborCount?: number;
   /** Cells with fewer contributing samples (and no exact hit) are nodata. Defaults to 1. */
@@ -69,7 +69,7 @@ export type GPUFocalStatisticsShape = 'square' | 'circle';
 export type GPUFocalStatisticsSettings = {
   /**
    * Window radius in cells. A square window covers `|dx|, |dy| <= floor(radius)`; a circle covers
-   * offsets with `dx^2 + dy^2 <= radius^2` inside that square. Clamped to the recipe's
+   * offsets with `dx^2 + dy^2 <= radius^2` inside that square. Clamped to the contributor's
    * compile-time `maximumRadius`.
    */
   radius: number;

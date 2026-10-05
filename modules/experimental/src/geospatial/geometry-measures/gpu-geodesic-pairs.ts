@@ -207,7 +207,7 @@ const RADIUS: f32 = ${getWGSLFloatLiteral(this.radius)};`,
   }
 }
 
-/** Validates the shared model options of the geodesic column recipes. @internal */
+/** Validates the shared model options of the geodesic column contributors. @internal */
 export function validateGeodesicOptions(
   id: string,
   model: GPUGeodesicModel,

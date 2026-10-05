@@ -18,7 +18,7 @@ import {
   getRasterIterationCondition
 } from '../../gpu-raster/cost-distance/raster-relaxation';
 
-/** Receiver index, label, and drainage value meaning "none" in the D8 tracing recipes. @internal */
+/** Receiver index, label, and drainage value meaning "none" in the D8 tracing contributors. @internal */
 export const TERRAIN_FLOW_TRACING_NONE = 0xffffffff;
 
 /**
@@ -108,7 +108,7 @@ export function createTerrainFlowPointerNodes<Parameters>(
   graph: GPUCommandGraph<Parameters>,
   props: {
     id: string;
-    recipeId: string;
+    contributorId: string;
     operation: string;
     width: number;
     height: number;
@@ -125,7 +125,7 @@ export function createTerrainFlowPointerNodes<Parameters>(
     `${props.id}-pointer`,
     props.operation,
     cellCount,
-    props.recipeId
+    props.contributorId
   );
   const stopRule = getStopRuleSource(props.stops);
   const tracing = getTerrainFlowTracingWGSL(props.width, props.height);

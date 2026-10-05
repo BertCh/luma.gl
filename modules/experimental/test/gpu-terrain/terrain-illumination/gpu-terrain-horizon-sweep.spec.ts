@@ -6,7 +6,7 @@ import type {Buffer, Device} from '@luma.gl/core';
 import {createTransientView, GPUCommandGraph} from '@luma.gl/gpgpu/gpu-core';
 import {getWebGPUTestDevice} from '@luma.gl/test-utils';
 import {expect, it} from 'vitest';
-import {GPUParameterBuffer, importGraphBuffer, submitGraph} from '../../../src/utils/gpu-contributor-utils';
+import {GPUParameterBuffer, importGraphBuffer} from '../../../src/utils/gpu-contributor-utils';
 import {
   getGPUTerrainHorizonDirection,
   getGPUTerrainHorizonParameterValues,
@@ -16,7 +16,12 @@ import {
 } from '../../../src/gpu-terrain/terrain-illumination/gpu-terrain-horizon';
 import {getTerrainHorizonSweepNode} from '../../../src/gpu-terrain/terrain-illumination/terrain-horizon-sweep';
 import type {GPUTerrainIlluminationCellSizeMode} from '../../../src/gpu-terrain/terrain-illumination/terrain-illumination-utils';
-import {createInputBuffer, createOutputBuffer, readFloat32} from '../../utils/gpu-contributor-test-utils';
+import {
+  createInputBuffer,
+  createOutputBuffer,
+  readFloat32,
+  submitGraph
+} from '../../utils/gpu-contributor-test-utils';
 import {computeTerrainHorizon, createRandom, createSmoothTerrain} from './terrain-horizon-oracle';
 import {
   computeTerrainHorizonSweepBruteForce,
@@ -75,7 +80,6 @@ function createSweepFixture(
   });
   graph.add({
     id: 'sweep-harness',
-    recipe: 'sweep-harness',
     props: {},
     getCommandNodes: nodeGraph => {
       const hull = createTransientView(nodeGraph, 'sweep-hull', 'uint32', pixelCount);

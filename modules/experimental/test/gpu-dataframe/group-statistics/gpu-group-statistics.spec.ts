@@ -6,13 +6,17 @@ import type {Buffer, Device} from '@luma.gl/core';
 import {GPUCommandGraph, type GraphDataView} from '@luma.gl/gpgpu/gpu-core';
 import {getWebGPUTestDevice} from '@luma.gl/test-utils';
 import {expect, it} from 'vitest';
-import {GPUParameterBuffer, importGraphBuffer, submitGraph} from '../../../src/utils/gpu-contributor-utils';
+import {GPUParameterBuffer, importGraphBuffer} from '../../../src/utils/gpu-contributor-utils';
 import {
   GPUGroupStatistics,
   type GPUGroupStatistic,
   type GPUGroupStatisticsColumnOutput
 } from '../../../src/gpu-dataframe/group-statistics';
-import {createInputBuffer, createOutputBuffer} from '../../utils/gpu-contributor-test-utils';
+import {
+  createInputBuffer,
+  createOutputBuffer,
+  submitGraph
+} from '../../utils/gpu-contributor-test-utils';
 import {
   canonicalizeValue,
   computeGroupStatisticsOnCPU,
@@ -207,7 +211,7 @@ async function createRun(harness: Harness, scene: Scene) {
       output: views as GPUGroupStatisticsColumnOutput
     };
   });
-  const recipe = new GPUGroupStatistics({
+  const contributor = new GPUGroupStatistics({
     keys: importGraphBuffer(graph, 'keys', keysBuffer, keyFormat, rows) as never,
     mask: importGraphBuffer(graph, 'mask', maskBuffer, 'uint32', rows),
     columns,
@@ -222,7 +226,7 @@ async function createRun(harness: Harness, scene: Scene) {
       totalCount: importGraphBuffer(graph, 'out-total', outputBuffers.total, 'uint32', 1)
     }
   });
-  graph.add(recipe);
+  graph.add(contributor);
   const compiled = graph.compile();
   const allOutputs: [Buffer, number][] = [
     [outputBuffers.keys, capacity * keyWordCount],
@@ -718,7 +722,7 @@ it('GPUGroupStatistics encodes bitwise identically twice and handles an all-mask
   harness.destroy();
 });
 
-it('GPUGroupStatistics handles every statistic alone and a recipe with no columns', async () => {
+it('GPUGroupStatistics handles every statistic alone and a contributor with no columns', async () => {
   const device = await getWebGPUTestDevice();
   if (!device) {
     return;

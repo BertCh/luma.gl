@@ -192,10 +192,10 @@ it('GPUCellAggregation emits deterministic nodes with one or two key sorts', () 
   const device = createNullWebGPUDevice();
   const graph = new GPUCommandGraph(device);
   const getIds = (resolution: number) => {
-    const recipe = new GPUCellAggregation(
+    const contributor = new GPUCellAggregation(
       createProps(graph, {id: `agg-${resolution}`, resolution})
     );
-    const first = recipe.getCommandNodes(graph).map(node => node.id);
+    const first = contributor.getCommandNodes(graph).map(node => node.id);
     return first;
   };
   const single = getIds(15);

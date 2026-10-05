@@ -21,7 +21,11 @@ import {
   createPublishNode,
   type WGSLKernelBinding
 } from '../../utils/wgsl-kernel-nodes';
-import type {GPUCompactOutput, GPUFloat32Positions, GPUUint32Rows} from '../../utils/gpu-contributor-types';
+import type {
+  GPUCompactOutput,
+  GPUFloat32Positions,
+  GPUUint32Rows
+} from '../../utils/gpu-contributor-types';
 import type {GPUCommandNodeProducer} from '@luma.gl/gpgpu/gpu-core';
 import {
   getGraphViewChunks,
@@ -80,8 +84,8 @@ export type GPURegionStatisticsProps = {
    * `output.count` (`min(selected, output.ids.length)`), rewritten every encoding. Typically the
    * `instanceCount` word of an indirect draw record, imported as a 1-row view at an element offset
    * so an instanced draw of the selected rows needs no readback. Requires `output`: the draw
-   * indexes rows through `output.ids`, so a recipe with no id list has nothing to draw, and
-   * statistics-only recipes read the selected count from `summary` instead. Must not alias any
+   * indexes rows through `output.ids`, so a contributor with no id list has nothing to draw, and
+   * statistics-only contributors read the selected count from `summary` instead. Must not alias any
    * other output or input.
    */
   drawInstanceCount?: GraphDataView<'uint32'>;
@@ -478,7 +482,7 @@ export class GPURegionStatistics implements GPUCommandNodeProducer {
   }
 }
 
-/** Returns every read-only view used by a region statistics recipe. */
+/** Returns every read-only view used by a region statistics contributor. */
 function getStatisticsInputs(
   props: GPURegionStatisticsProps
 ): (GraphDataView | GraphVectorView | undefined)[] {

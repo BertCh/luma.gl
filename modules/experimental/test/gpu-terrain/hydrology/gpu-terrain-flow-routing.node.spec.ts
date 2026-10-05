@@ -11,10 +11,10 @@ import {
 } from '../../../src/gpu-terrain/hydrology';
 import {createNullWebGPUDevice} from '../../utils/gpu-contributor-test-utils';
 
-function createRecipe(overrides: Partial<GPUTerrainFlowProps> = {}) {
+function createContributor(overrides: Partial<GPUTerrainFlowProps> = {}) {
   const device = createNullWebGPUDevice();
   const graph = new GPUCommandGraph(device);
-  const recipe = new GPUTerrainFlow({
+  const contributor = new GPUTerrainFlow({
     width: 6,
     height: 5,
     elevation: {
@@ -28,22 +28,22 @@ function createRecipe(overrides: Partial<GPUTerrainFlowProps> = {}) {
     maxAccumulationIterations: 3,
     ...overrides
   });
-  return {device, graph, recipe};
+  return {device, graph, contributor};
 }
 
 it('GPUTerrainFlow validates flowRouting', () => {
-  expect(() => createRecipe({flowRouting: 'dinf' as never})).toThrow(
+  expect(() => createContributor({flowRouting: 'dinf' as never})).toThrow(
     /flowRouting must be d8, d-infinity, mfd-freeman, or mfd-quinn/
   );
   for (const flowRouting of ['d8', 'd-infinity', 'mfd-freeman', 'mfd-quinn'] as const) {
-    expect(() => createRecipe({flowRouting}).device.destroy()).not.toThrow();
+    expect(() => createContributor({flowRouting}).device.destroy()).not.toThrow();
   }
 });
 
 it('GPUTerrainFlow routed accumulation uses the D8 node layout and ids', () => {
   const ids = (flowRouting: GPUTerrainFlowProps['flowRouting']) => {
-    const {device, graph, recipe} = createRecipe({flowRouting});
-    const nodeIds = recipe.getCommandNodes(graph).map(node => node.id);
+    const {device, graph, contributor} = createContributor({flowRouting});
+    const nodeIds = contributor.getCommandNodes(graph).map(node => node.id);
     device.destroy();
     return nodeIds;
   };

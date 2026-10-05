@@ -11,7 +11,7 @@ export type GPUGraphColumnFormat = 'uint32' | 'float32';
  * One GPU-resident column with exactly one packed 4-byte row per graph node (or edge).
  *
  * Columns are bound as read-only storage buffers and indexed by `instance_index`, never as
- * vertex attributes, so any number of recipe outputs can be swapped in without touching the
+ * vertex attributes, so any number of analysis outputs can be swapped in without touching the
  * WebGL2-era 16-attribute ceiling or rebuilding a pipeline. `float32` rows are read with
  * `bitcast<f32>` from the same `array<u32>` binding, so switching formats is a uniform change.
  */

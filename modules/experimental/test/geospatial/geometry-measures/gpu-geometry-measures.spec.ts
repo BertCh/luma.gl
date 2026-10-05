@@ -11,12 +11,13 @@ import {
   GPUGeometryMeasures,
   type GPUGeometryMeasuresProps
 } from '../../../src/geospatial/geometry-measures';
-import {importGraphBuffer, submitGraph} from '../../../src/utils/gpu-contributor-utils';
+import {importGraphBuffer} from '../../../src/utils/gpu-contributor-utils';
 import {
   createInputBuffer,
   createOutputBuffer,
   readFloat32,
-  readUint32
+  readUint32,
+  submitGraph
 } from '../../utils/gpu-contributor-test-utils';
 import {
   createFlatGeometry,

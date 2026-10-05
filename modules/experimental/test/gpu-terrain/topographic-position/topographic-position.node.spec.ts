@@ -37,10 +37,9 @@ it('GPUTerrainTopographicPosition builds one exact summed-area table and validat
       ...overrides
     });
   };
-  const recipe = create();
-  expect(recipe.recipe).toBe('terrain-topographic-position');
-  expect(recipe.requiredHalo).toBe(4);
-  const ids = recipe.getCommandNodes(graph).map(node => node.id);
+  const contributor = create();
+  expect(contributor.requiredHalo).toBe(4);
+  const ids = contributor.getCommandNodes(graph).map(node => node.id);
   expect(ids[0]).toBe('terrain-topographic-position-elevation');
   expect(ids[1]).toBe('terrain-topographic-position-summed-area-quantize');
   expect(ids.at(-1)).toBe('terrain-topographic-position-evaluate');
@@ -89,7 +88,6 @@ it('GPUTerrainWeissLandforms composes position, slope, statistics, and classific
     });
   };
   const global = create();
-  expect(global.recipe).toBe('terrain-weiss-landforms');
   expect(global.requiredHalo).toBe(15);
   const globalIds = global.getCommandNodes(graph).map(node => node.id);
   expect(globalIds).toContain('weiss-1-slope');

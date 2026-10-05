@@ -8,7 +8,7 @@ import {
   wrapLongitudeDelta
 } from '../geometry-measures/geodesic-oracle';
 
-/** Flat path layout used by the line recipe tests. */
+/** Flat path layout used by the line contributor tests. */
 export type FlatPaths = {
   /** Interleaved x/y (or longitude/latitude) values. */
   positions: Float32Array;

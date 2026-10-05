@@ -87,9 +87,8 @@ it('GPUTerrainCriticalPoints validates props and schedules its nodes', () => {
       ...overrides
     });
   };
-  const recipe = create();
-  expect(recipe.recipe).toBe('terrain-critical-points');
-  expect(recipe.getCommandNodes(graph).map(node => node.id)).toEqual([
+  const contributor = create();
+  expect(contributor.getCommandNodes(graph).map(node => node.id)).toEqual([
     'terrain-critical-points-elevation',
     'terrain-critical-points-classify'
   ]);

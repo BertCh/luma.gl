@@ -6,7 +6,7 @@ import type {Device} from '@luma.gl/core';
 import {GPUCommandGraph} from '@luma.gl/gpgpu/gpu-core';
 import {getWebGPUTestDevice} from '@luma.gl/test-utils';
 import {expect, it} from 'vitest';
-import {importGraphBuffer, submitGraph} from '../../../src/utils/gpu-contributor-utils';
+import {importGraphBuffer} from '../../../src/utils/gpu-contributor-utils';
 import {
   GPU_TERRAIN_SPIKE_REPAIR_STATISTICS as S,
   GPUTerrainSpikeRepair,
@@ -16,7 +16,8 @@ import {
   createInputBuffer,
   createOutputBuffer,
   readFloat32,
-  readUint32
+  readUint32,
+  submitGraph
 } from '../../utils/gpu-contributor-test-utils';
 import {
   computeTerrainSpikeRepair,
@@ -93,8 +94,8 @@ async function runRepair(
     labels: importGraphBuffer(graph, 'labels', outputs.labels, 'uint32', pixelCount),
     statistics: importGraphBuffer(graph, 'statistics', outputs.statistics, 'uint32', 5)
   };
-  const recipe = new GPUTerrainSpikeRepair(props);
-  graph.add(recipe);
+  const contributor = new GPUTerrainSpikeRepair(props);
+  graph.add(contributor);
   const compiled = graph.compile();
   submitGraph(device, compiled, undefined);
   const result = {
@@ -104,7 +105,7 @@ async function runRepair(
     statistics: await readUint32(outputs.statistics, 5)
   };
   compiled.destroy();
-  recipe.destroy();
+  contributor.destroy();
   for (const buffer of [inputValues, inputValidity, ...Object.values(outputs)]) {
     buffer?.destroy();
   }

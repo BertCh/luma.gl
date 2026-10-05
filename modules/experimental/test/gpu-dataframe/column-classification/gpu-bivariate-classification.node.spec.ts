@@ -90,9 +90,8 @@ it('GPUBivariateClassification parameter helper packs the documented layout', ()
 it('GPUBivariateClassification returns deterministic node IDs', () => {
   const device = createNullWebGPUDevice();
   const graph = new GPUCommandGraph(device);
-  const recipe = new GPUBivariateClassification(createProps(graph, {id: 'bi'}));
-  expect(recipe.recipe).toBe('bivariate-classification');
-  const ids = recipe.getCommandNodes(graph).map(node => node.id);
+  const contributor = new GPUBivariateClassification(createProps(graph, {id: 'bi'}));
+  const ids = contributor.getCommandNodes(graph).map(node => node.id);
   expect(ids).toEqual(['bi-init', 'bi-classify', 'bi-colorize']);
   const otherGraph = new GPUCommandGraph(device);
   const other = new GPUBivariateClassification(createProps(otherGraph, {id: 'bi'}));
@@ -151,8 +150,8 @@ it('GPUBivariateClassification rejects aliased buffers and foreign graphs', () =
         output: {classIds: props.output.colors, colors: props.output.colors}
       })
   ).toThrow(/share buffers/);
-  const recipe = new GPUBivariateClassification(createProps(graph));
-  expect(() => recipe.getCommandNodes(new GPUCommandGraph(device))).toThrow(/target graph/);
+  const contributor = new GPUBivariateClassification(createProps(graph));
+  expect(() => contributor.getCommandNodes(new GPUCommandGraph(device))).toThrow(/target graph/);
   device.destroy();
 });
 

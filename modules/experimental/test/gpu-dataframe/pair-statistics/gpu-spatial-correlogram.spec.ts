@@ -60,7 +60,7 @@ function createHarness(
       peakBands: {format: 'uint32', length: 2},
       statistics: {format: 'float32', length: GPU_SPATIAL_CORRELOGRAM_STATISTICS_LENGTH}
     },
-    createRecipe: views =>
+    createContributor: views =>
       new GPUSpatialCorrelogram({
         positions: views.positions,
         values: views.values!,

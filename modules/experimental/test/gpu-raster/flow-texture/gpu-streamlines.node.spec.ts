@@ -60,10 +60,9 @@ it('GPUStreamlines validates props and builds deterministic nodes', () => {
   const graph = new GPUCommandGraph(createNullWebGPUDevice(), {
     id: 'streamline-validation'
   });
-  const recipe = new GPUStreamlines(createProps(graph, {id: 'lines'}));
-  expect(recipe.recipe).toBe('streamlines');
-  expect(recipe.seedCount).toBe(6);
-  const ids = recipe.getCommandNodes(graph).map(node => node.id);
+  const contributor = new GPUStreamlines(createProps(graph, {id: 'lines'}));
+  expect(contributor.seedCount).toBe(6);
+  const ids = contributor.getCommandNodes(graph).map(node => node.id);
   expect(ids[0]).toBe('lines-trace');
   expect(ids).toContain('lines-round-3-decide');
   expect(ids).not.toContain('lines-round-4-claim');

@@ -13,9 +13,13 @@ import {
 import {
   GPU_POINT_IN_POLYGON_CLASSIFICATION,
   GPUPairwisePointInPolygon
-} from '../index';
+} from '../gpu-pairwise-point-in-polygon';
 import {createWGSLKernelNode} from '../../utils/wgsl-kernel-nodes';
-import type {GPUCompactOutput, GPUFloat32Positions, GPUUint32Rows} from '../../utils/gpu-contributor-types';
+import type {
+  GPUCompactOutput,
+  GPUFloat32Positions,
+  GPUUint32Rows
+} from '../../utils/gpu-contributor-types';
 import type {GPUCommandNodeProducer} from '@luma.gl/gpgpu/gpu-core';
 import {
   captureGraphCommandNodes,

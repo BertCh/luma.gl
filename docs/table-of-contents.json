@@ -383,7 +383,8 @@
               "api-reference/experimental/gpu-tables/gpu-schema",
               "api-reference/experimental/gpu-tables/gpu-input-schema",
               "api-reference/experimental/gpu-tables/gpu-table-shader-bindings",
-              "api-reference/experimental/gpu-tables/gpu-table-buffer-planner"
+              "api-reference/experimental/gpu-tables/gpu-table-buffer-planner",
+              "api-reference/experimental/gpu-tables/gpu-residency"
             ]
           },
           {
@@ -399,7 +400,6 @@
                   "api-reference/experimental/gpu-core/recipes"
                 ]
               },
-              "api-reference/experimental/map-graphs",
               {
                 "type": "category",
                 "label": "Compute Foundations",
@@ -576,6 +576,8 @@
               "api-reference/experimental/gpu-graph-layouts"
             ]
           },
+          "api-reference/experimental/gpu-network",
+          "api-reference/experimental/gpu-terrain",
           {
             "type": "category",
             "label": "GPU Raster",
@@ -592,7 +594,8 @@
                   "api-reference/experimental/gpu-raster/operations-statistics",
                   "api-reference/experimental/gpu-raster/operations-pixel",
                   "api-reference/experimental/gpu-raster/operations-filters-morphology",
-                  "api-reference/experimental/gpu-raster/operations-regions-contours"
+                  "api-reference/experimental/gpu-raster/operations-regions-contours",
+                  "api-reference/experimental/gpu-raster/operations-analysis"
                 ]
               }
             ]
@@ -647,6 +650,7 @@
               "api-reference/experimental/gpu-dataframe-aggregation",
               "api-reference/experimental/gpu-dataframe-sorting",
               "api-reference/experimental/gpu-dataframe-indexes-joins",
+              "api-reference/experimental/gpu-dataframe-analysis",
               "api-reference/experimental/gpu-sql"
             ]
           },

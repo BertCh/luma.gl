@@ -4,7 +4,7 @@
 
 import type {Buffer, Device} from '@luma.gl/core';
 import {GPUCommandGraph, type GPUCommandNodeProducer} from '@luma.gl/gpgpu/gpu-core';
-import {GPUParameterBuffer, importGraphBuffer, submitGraph} from '../../../src/utils/gpu-contributor-utils';
+import {GPUParameterBuffer, importGraphBuffer} from '../../../src/utils/gpu-contributor-utils';
 import {
   getGPUPermutationParameterValues,
   GPUGlobalPermutationTest,
@@ -19,7 +19,8 @@ import {
   createInputBuffer,
   createOutputBuffer,
   readFloat32,
-  readUint32
+  readUint32,
+  submitGraph
 } from '../../utils/gpu-contributor-test-utils';
 import type {CPUSpatialWeights} from './permutation-oracle';
 
@@ -82,13 +83,13 @@ function importScene(graph: GPUCommandGraph, scene: Scene, buffers: SceneBuffers
   };
 }
 
-function countBuilds(recipe: GPUCommandNodeProducer<unknown>): () => number {
+function countBuilds(contributor: GPUCommandNodeProducer<unknown>): () => number {
   let buildCount = 0;
-  const getCommandNodes = recipe.getCommandNodes.bind(recipe);
-  recipe.getCommandNodes = (target => {
+  const getCommandNodes = contributor.getCommandNodes.bind(contributor);
+  contributor.getCommandNodes = (target => {
     buildCount++;
     return getCommandNodes(target);
-  }) as typeof recipe.getCommandNodes;
+  }) as typeof contributor.getCommandNodes;
   return () => buildCount;
 }
 
@@ -124,7 +125,7 @@ export function createLocalPermutationHarness(
     overflow: createOutputBuffer(device, 1)
   };
   const graph = new GPUCommandGraph(device, {id: 'local-permutation-test'});
-  const recipe = new GPULocalPermutationTest({
+  const contributor = new GPULocalPermutationTest({
     ...importScene(graph, scene, buffers),
     statistic: options.statistic,
     maximumPermutations: options.maximumPermutations ?? 999,
@@ -136,8 +137,8 @@ export function createLocalPermutationHarness(
     significant: importGraphBuffer(graph, 'significant', outputs.significant, 'uint32', rows),
     overflow: importGraphBuffer(graph, 'overflow', outputs.overflow, 'uint32', 1)
   });
-  const getBuildCount = countBuilds(recipe);
-  graph.add(recipe);
+  const getBuildCount = countBuilds(contributor);
+  graph.add(contributor);
   const compiled = graph.compile();
   return {
     get buildCount() {
@@ -205,7 +206,7 @@ export function createGlobalPermutationHarness(
     histogram: createOutputBuffer(device, bins)
   };
   const graph = new GPUCommandGraph(device, {id: 'global-permutation-test'});
-  const recipe = new GPUGlobalPermutationTest({
+  const contributor = new GPUGlobalPermutationTest({
     ...importScene(graph, scene, buffers),
     statistic: options.statistic,
     maximumPermutations,
@@ -225,8 +226,8 @@ export function createGlobalPermutationHarness(
     ),
     histogram: importGraphBuffer(graph, 'histogram', outputs.histogram, 'uint32', bins)
   });
-  const getBuildCount = countBuilds(recipe);
-  graph.add(recipe);
+  const getBuildCount = countBuilds(contributor);
+  graph.add(contributor);
   const compiled = graph.compile();
   return {
     get buildCount() {

@@ -5,7 +5,7 @@
 import {GPUCommandGraph} from '@luma.gl/gpgpu/gpu-core';
 import {getWebGPUTestDevice} from '@luma.gl/test-utils';
 import {expect, it} from 'vitest';
-import {GPUParameterBuffer, importGraphBuffer, submitGraph} from '../../../src/utils/gpu-contributor-utils';
+import {GPUParameterBuffer, importGraphBuffer} from '../../../src/utils/gpu-contributor-utils';
 import {GPUIsobands} from '../../../src/gpu-raster/isolines/gpu-isobands';
 import {
   getGPUIsobandsParameterValues,
@@ -15,7 +15,8 @@ import {
   createInputBuffer,
   createOutputBuffer,
   readFloat32,
-  readUint32
+  readUint32,
+  submitGraph
 } from '../../utils/gpu-contributor-test-utils';
 import {createRandom} from '../raster-algebra/raster-algebra-test-utils';
 import {
@@ -90,7 +91,7 @@ it('GPUIsobands matches the CPU oracle as breaks, counts and windows change with
   const totalBuffer = createOutputBuffer(device, 1);
   const vertexCountBuffer = createOutputBuffer(device, 1);
   const graph = new GPUCommandGraph(device, {id: 'isobands-graph'});
-  const recipe = new GPUIsobands({
+  const contributor = new GPUIsobands({
     id: 'isobands',
     width: WIDTH,
     height: HEIGHT,
@@ -109,7 +110,7 @@ it('GPUIsobands matches the CPU oracle as breaks, counts and windows change with
       vertexCount: importGraphBuffer(graph, 'vertex-count', vertexCountBuffer, 'uint32', 1)
     }
   });
-  graph.add(recipe);
+  graph.add(contributor);
   let compileCount = 0;
   const compiled = graph.compile();
   compileCount++;

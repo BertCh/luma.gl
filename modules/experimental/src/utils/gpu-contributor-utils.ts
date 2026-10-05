@@ -9,9 +9,7 @@ import {
   createGPURenderCommandNode,
   GraphVectorView,
   validatePackedUint32View,
-  type CompiledGPUCommandGraph,
   type GPUCommandGraph,
-  type GPUCommandGraphEncoding,
   type GPUCommandNode,
   type GPUComputeCommandNode,
   type GPUCopyCommandNode,
@@ -39,14 +37,12 @@ export type GPUParameterBufferProps<Format extends GPUParameterFormat> = {
 /**
  * A small application-owned storage buffer for values that change between encodings.
  *
- * Recipes read viewports, time windows, thresholds, and similar per-frame state from a packed
+ * Contributors read viewports, time windows, thresholds, and similar per-frame state from a packed
  * storage view instead of baking them into WGSL, so the application can call {@link write} and
  * encode the same compiled graph again without recompiling. Like `DrawCommandBuffer`, the buffer is
  * created on a device and imported into one or more graphs, which never destroy it.
  */
-export class GPUParameterBuffer<
-  Format extends GPUParameterFormat = GPUParameterFormat
-> {
+export class GPUParameterBuffer<Format extends GPUParameterFormat = GPUParameterFormat> {
   /** Buffer and default graph resource ID. */
   readonly id: string;
   /** Packed scalar format of every element. */
@@ -71,7 +67,7 @@ export class GPUParameterBuffer<
   }
 
   /**
-   * Imports the buffer into a graph and returns a packed view to pass into recipe props.
+   * Imports the buffer into a graph and returns a packed view to pass into contributor props.
    *
    * @param graph Graph that reads the parameters.
    * @param id Graph resource ID. Defaults to the buffer ID.
@@ -140,7 +136,7 @@ export function validateGraphViewsBelongToGraph<Parameters>(
     }
     for (const chunk of getGraphViewChunks(view)) {
       if (chunk.buffer.graph !== graph) {
-        // Recipe inputs and outputs must be created or imported on the graph passed to graph.add().
+        // Contributor inputs and outputs must be created or imported on the graph passed to graph.add().
         throw new Error(`${id} views must belong to the target graph`);
       }
     }
@@ -216,8 +212,8 @@ export function validateCompactOutput(id: string, output: GPUCompactOutput): voi
  *
  * Geospatial, raster, and projection operations in `@luma.gl/experimental` schedule nodes directly
  * through `addToGraph(graph)`, while GPU Core contributors return them from
- * `getCommandNodes(graph)`. A recipe's `getCommandNodes(graph)` wraps such calls with this helper
- * so every recipe composes through `graph.add(recipe)` in declaration order. Transient resources
+ * `getCommandNodes(graph)`. A contributor's `getCommandNodes(graph)` wraps such calls with this helper
+ * so every contributor composes through `graph.add(contributor)` in declaration order. Transient resources
  * created by `addNodes` are still declared on `graph`.
  *
  * @param graph Graph passed to the contributor.
@@ -255,20 +251,4 @@ export function captureGraphCommandNodes<Parameters>(
     }
   }
   return nodes;
-}
-
-/**
- * Application-side convenience that encodes one compiled graph into a new encoder and submits it.
- *
- * Recipes never call this. It exists for standalone use, examples, and tests.
- */
-export function submitGraph<Parameters>(
-  device: Device,
-  compiled: CompiledGPUCommandGraph<Parameters>,
-  parameters: Parameters
-): GPUCommandGraphEncoding {
-  const commandEncoder = device.createCommandEncoder({id: `${compiled.id}-encoder`});
-  const encoding = compiled.encode(commandEncoder, {parameters});
-  device.submit(commandEncoder.finish());
-  return encoding;
 }

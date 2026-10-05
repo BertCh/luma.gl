@@ -4,7 +4,7 @@
 
 import type {Buffer, Device} from '@luma.gl/core';
 import {GPUCommandGraph} from '@luma.gl/gpgpu/gpu-core';
-import {GPUParameterBuffer, importGraphBuffer, submitGraph} from '../../../src/utils/gpu-contributor-utils';
+import {GPUParameterBuffer, importGraphBuffer} from '../../../src/utils/gpu-contributor-utils';
 import {
   getGPUSpatialAutocorrelationParameterValues,
   GPUHotSpotAnalysis,
@@ -16,7 +16,8 @@ import {
   createInputBuffer,
   createOutputBuffer,
   readFloat32,
-  readUint32
+  readUint32,
+  submitGraph
 } from '../../utils/gpu-contributor-test-utils';
 
 const GARBAGE = 0x7f7f7f7f;
@@ -60,7 +61,7 @@ export type SpatialAutocorrelationHarness = {
 export function createSpatialAutocorrelationHarness(
   device: Device,
   options: {
-    recipe: 'hot-spot' | 'local-moran';
+    contributor: 'hot-spot' | 'local-moran';
     scene: SpatialAutocorrelationScene;
     parameters: GPUSpatialAutocorrelationParameters;
     gridSize?: readonly [number, number];
@@ -98,7 +99,7 @@ export function createSpatialAutocorrelationHarness(
     spatialLag: createOutputBuffer(device, rows),
     quadrants: createOutputBuffer(device, rows)
   };
-  const graph = new GPUCommandGraph(device, {id: `${options.recipe}-test`});
+  const graph = new GPUCommandGraph(device, {id: `${options.contributor}-test`});
   const common = {
     positions: importGraphBuffer(graph, 'positions', positionsBuffer, 'float32x2', rows),
     values: importGraphBuffer(graph, 'values', valuesBuffer, 'float32', rows),
@@ -123,8 +124,8 @@ export function createSpatialAutocorrelationHarness(
       4
     )
   };
-  const recipe =
-    options.recipe === 'hot-spot'
+  const contributor =
+    options.contributor === 'hot-spot'
       ? new GPUHotSpotAnalysis({
           ...common,
           bins: importGraphBuffer(graph, 'bins', outputs.bins, 'sint32', rows)
@@ -136,12 +137,12 @@ export function createSpatialAutocorrelationHarness(
           quadrants: importGraphBuffer(graph, 'quadrants', outputs.quadrants, 'uint32', rows)
         });
   let buildCount = 0;
-  const getCommandNodes = recipe.getCommandNodes.bind(recipe);
-  recipe.getCommandNodes = (target => {
+  const getCommandNodes = contributor.getCommandNodes.bind(contributor);
+  contributor.getCommandNodes = (target => {
     buildCount++;
     return getCommandNodes(target);
-  }) as typeof recipe.getCommandNodes;
-  graph.add(recipe);
+  }) as typeof contributor.getCommandNodes;
+  graph.add(contributor);
   const compiled = graph.compile();
 
   return {

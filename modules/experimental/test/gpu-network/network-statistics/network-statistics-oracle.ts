@@ -20,7 +20,7 @@ export type NetworkStatisticsOracleOptions = {
   binning?: 'linear' | 'log2';
 };
 
-/** Degree bin of one degree under the recipe's two rules. */
+/** Degree bin of one degree under the contributor's two rules. */
 export function getDegreeBin(
   degree: number,
   binCount: number,

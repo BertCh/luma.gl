@@ -266,8 +266,8 @@ it('GPUSpatialClustering rejects views from another graph', () => {
   const device = createNullWebGPUDevice();
   const graph = new GPUCommandGraph(device);
   const otherGraph = new GPUCommandGraph(device);
-  const recipe = new GPUSpatialClustering(createProps(graph));
-  expect(() => recipe.getCommandNodes(otherGraph)).toThrow(/must belong to the target graph/);
+  const contributor = new GPUSpatialClustering(createProps(graph));
+  expect(() => contributor.getCommandNodes(otherGraph)).toThrow(/must belong to the target graph/);
   device.destroy();
 });
 

@@ -11,7 +11,8 @@ export type GPUTablesDocsTabId =
   | 'schema'
   | 'input-schema'
   | 'shader-bindings'
-  | 'buffer-planner';
+  | 'buffer-planner'
+  | 'residency';
 
 export const GPU_TABLES_DOCS_TAB_GROUPS: DocumentationTabGroup<GPUTablesDocsTabId>[] = [
   {
@@ -67,6 +68,16 @@ export const GPU_TABLES_DOCS_TAB_GROUPS: DocumentationTabGroup<GPUTablesDocsTabI
         id: 'buffer-planner',
         label: 'Buffer planner',
         href: '/docs/api-reference/experimental/gpu-tables/gpu-table-buffer-planner'
+      }
+    ]
+  },
+  {
+    label: 'GPU table residency',
+    tabs: [
+      {
+        id: 'residency',
+        label: 'Residency',
+        href: '/docs/api-reference/experimental/gpu-tables/gpu-residency'
       }
     ]
   }

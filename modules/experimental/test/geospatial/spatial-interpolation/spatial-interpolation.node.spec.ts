@@ -174,10 +174,10 @@ it('GPUInverseDistanceWeighting returns deterministic node IDs', () => {
     const ids: string[][] = [];
     for (let run = 0; run < 2; run++) {
       withGraph(graph => {
-        const recipe = new GPUInverseDistanceWeighting(
+        const contributor = new GPUInverseDistanceWeighting(
           createInterpolationProps(graph, {id: 'idw', maximumNeighborCount})
         );
-        ids.push(recipe.getCommandNodes(graph).map(node => node.id));
+        ids.push(contributor.getCommandNodes(graph).map(node => node.id));
       });
     }
     expect(ids[0]).toEqual(ids[1]);

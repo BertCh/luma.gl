@@ -6,7 +6,7 @@ import type {Device} from '@luma.gl/core';
 import {GPUCommandGraph} from '@luma.gl/gpgpu/gpu-core';
 import {getWebGPUTestDevice} from '@luma.gl/test-utils';
 import {expect, it} from 'vitest';
-import {GPUParameterBuffer, importGraphBuffer, submitGraph} from '../../../src/utils/gpu-contributor-utils';
+import {GPUParameterBuffer, importGraphBuffer} from '../../../src/utils/gpu-contributor-utils';
 import {
   GPU_TERRAIN_VISIBILITY as V,
   GPUTerrainCumulativeViewshed,
@@ -16,7 +16,12 @@ import {
   type GPUTerrainSightLineSettings,
   type GPUTerrainSightLineTraversal
 } from '../../../src/gpu-terrain/terrain-analysis';
-import {createInputBuffer, createOutputBuffer, readUint32} from '../../utils/gpu-contributor-test-utils';
+import {
+  createInputBuffer,
+  createOutputBuffer,
+  readUint32,
+  submitGraph
+} from '../../utils/gpu-contributor-test-utils';
 import {createFractalTerrain} from './terrain-analysis-oracle';
 
 const WIDTH = 40;
@@ -54,7 +59,7 @@ async function runCumulative(
     values: getGPUTerrainSightLineParameterValues({...SETTINGS, toleranceMeters: 2})
   });
   const graph = new GPUCommandGraph(device, {id: 'terrain-cumulative-test'});
-  const recipe = new GPUTerrainCumulativeViewshed({
+  const contributor = new GPUTerrainCumulativeViewshed({
     width: WIDTH,
     height: HEIGHT,
     elevation: {
@@ -72,7 +77,7 @@ async function runCumulative(
     visibleCount: importGraphBuffer(graph, 'visible', visibleBuffer, 'uint32', PIXEL_COUNT),
     marginalCount: importGraphBuffer(graph, 'marginal', marginalBuffer, 'uint32', PIXEL_COUNT)
   });
-  graph.add(recipe);
+  graph.add(contributor);
   const compiled = graph.compile();
   submitGraph(device, compiled, undefined);
   const result = {

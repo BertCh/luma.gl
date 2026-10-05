@@ -127,11 +127,11 @@ Use it when a social-network, service-dependency, fraud-investigation, or citati
 already uses deck.gl and needs GPU graph results to become directly drawable attributes.
 
 The effect first encodes forward and reverse adjacency for layout, and its
-`GPUGraphRecipeColumns` runs the [map graph](/docs/api-reference/experimental/map-graphs) network
-recipes on an undirected view of the original edges: normalized degree, PageRank, and core number,
+`GPUGraphRecipeColumns` runs the [GPU Network](/docs/api-reference/experimental/gpu-network) contributors
+on an undirected view of the original edges: normalized degree, PageRank, and core number,
 weak-component and label-propagation community labels, a hover neighborhood, reachability bands,
 and a two-endpoint shortest path. Later frames encode actual exact, flat-grid spatial, or sampled
-force layout into deck.gl's own command encoder; the interaction recipes rerun only when hover or
+force layout into deck.gl's own command encoder; the interaction contributors rerun only when hover or
 path endpoints change. deck.gl remains responsible for queue submission. The writable layout
 allocation is also the node layer's `float32x2` instance vertex attribute. Recipe columns, the
 neighborhood mask, and path ranks are bound as row-aligned storage buffers with uniform color and

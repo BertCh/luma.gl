@@ -66,7 +66,7 @@ submitting work implicitly, or reading source rows back to the CPU.
 
 ## Linked-view outputs
 
-Four view kinds expose different GPU-resident representations of the current
+Five view kinds expose different GPU-resident representations of the current
 selection:
 
 - `histogram` counts scalar rows into caller-owned bins.
@@ -76,6 +76,11 @@ selection:
   scatterplots, maps, or indirect rendering.
 - `mask` publishes a caller-owned source-aligned selection mask for custom
   compute or rendering passes.
+- `count` publishes a one-row count of live rows passing the effective selection.
+
+Pass `liveMask` to drop dead rows from every view (and from `domain: 'auto'` histograms), set
+`rejectNonFinite` on a dimension to treat NaN and infinite values as missing, and set
+`exclusiveMaximum` on a range dimension for half-open `[minimum, maximum)` brushes.
 
 Visibility views can retain application-defined identifiers by passing a
 source-aligned `sourceIds` view, or generate consecutive identifiers beginning

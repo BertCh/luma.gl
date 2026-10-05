@@ -38,10 +38,9 @@ it('GPUGeomorphons schedules elevation canonicalization and one classify kernel'
       ...overrides
     });
   };
-  const recipe = create();
-  expect(recipe.recipe).toBe('geomorphons');
-  expect(recipe.requiredHalo).toBe(4);
-  const ids = recipe.getCommandNodes(graph).map(node => node.id);
+  const contributor = create();
+  expect(contributor.requiredHalo).toBe(4);
+  const ids = contributor.getCommandNodes(graph).map(node => node.id);
   expect(ids[ids.length - 1]).toBe('geomorphons-classify');
   expect(ids.length).toBe(2);
   expect(

@@ -3,7 +3,12 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {Buffer, type Device} from '@luma.gl/core';
-import {GraphVectorView, type GraphDataView} from '@luma.gl/gpgpu/gpu-core';
+import {
+  GraphVectorView,
+  type CompiledGPUCommandGraph,
+  type GPUCommandGraphEncoding,
+  type GraphDataView
+} from '@luma.gl/gpgpu/gpu-core';
 import {getGPUVectorFormatInfo, type GPUVectorFormat} from '@luma.gl/gpgpu/gpu-data';
 import {NullDevice} from '@luma.gl/test-utils';
 
@@ -97,4 +102,20 @@ export function isSoftwareDevice(device: Device): boolean {
   return (
     device.info.gpu === 'software' || device.info.gpuType === 'cpu' || Boolean(device.info.fallback)
   );
+}
+
+/**
+ * Encodes one compiled graph into a new command encoder and submits it.
+ *
+ * Contributors never submit; this is a test convenience for headless specs.
+ */
+export function submitGraph<Parameters>(
+  device: Device,
+  compiled: CompiledGPUCommandGraph<Parameters>,
+  parameters: Parameters
+): GPUCommandGraphEncoding {
+  const commandEncoder = device.createCommandEncoder({id: `${compiled.id}-encoder`});
+  const encoding = compiled.encode(commandEncoder, {parameters});
+  device.submit(commandEncoder.finish());
+  return encoding;
 }

@@ -12,7 +12,7 @@ export type GPUPermutationParameters = {
    * `permutations`, independent of the dispatch shape.
    */
   seed: number;
-  /** Number of permutations `P`, at most the recipe's `maximumPermutations`. */
+  /** Number of permutations `P`, at most the contributor's `maximumPermutations`. */
   permutations: number;
   /** Significance level for the local `significant` mask. Defaults to 0.05. Ignored by the global test. */
   significanceLevel?: number;

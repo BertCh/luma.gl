@@ -5,7 +5,7 @@
 import {getWGSLFloatLiteral} from '../../utils/wgsl-kernel-nodes';
 import {GPU_GEODESIC_WGS84_FLATTENING, GPU_GEODESIC_WGS84_SEMI_MAJOR_AXIS} from './geodesic-wgsl';
 
-/** Earth model of the geodesic column recipes. */
+/** Earth model of the geodesic column contributors. */
 export type GPUGeodesicModel = 'sphere' | 'wgs84';
 
 /** Default compile-time Vincenty iteration count. */

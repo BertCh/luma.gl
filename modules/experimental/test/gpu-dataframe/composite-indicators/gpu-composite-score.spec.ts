@@ -6,14 +6,19 @@ import type {Buffer, Device} from '@luma.gl/core';
 import {GPUCommandGraph} from '@luma.gl/gpgpu/gpu-core';
 import {getWebGPUTestDevice} from '@luma.gl/test-utils';
 import {expect, it} from 'vitest';
-import {GPUParameterBuffer, importGraphBuffer, submitGraph} from '../../../src/utils/gpu-contributor-utils';
+import {GPUParameterBuffer, importGraphBuffer} from '../../../src/utils/gpu-contributor-utils';
 import {GPUCompositeScore} from '../../../src/gpu-dataframe/composite-indicators/gpu-composite-score';
 import {
   getGPUCompositeScoreParameterValues,
   GPU_COMPOSITE_SCORE_PARAMETER_LENGTH,
   type GPUCompositeScoreSettings
 } from '../../../src/gpu-dataframe/composite-indicators/composite-score-parameters';
-import {createInputBuffer, createOutputBuffer, readFloat32} from '../../utils/gpu-contributor-test-utils';
+import {
+  createInputBuffer,
+  createOutputBuffer,
+  readFloat32,
+  submitGraph
+} from '../../utils/gpu-contributor-test-utils';
 import {
   computeCompositeScoreOnCPU,
   type CompositeScoreOracleResult

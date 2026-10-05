@@ -117,7 +117,7 @@ export function createWeights(
     }
     offsets[row + 1] = neighbors.length;
   }
-  // Capacity slack filled with garbage the recipe must ignore.
+  // Capacity slack filled with garbage the contributor must ignore.
   for (let slot = 0; slot < slack; slot++) {
     neighbors.push(slot % Math.max(rows.length, 1));
     weights.push(1e6);

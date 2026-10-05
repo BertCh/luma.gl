@@ -12,7 +12,7 @@ export const GPU_RASTER_RECLASSIFY_NO_DATA_CLASS = 0xffffffff;
 
 /** Per-frame settings of {@link GPURasterReclassify}. */
 export type GPURasterReclassifySettings = {
-  /** Number of active ascending breaks, at most the recipe's `maximumBreakCount`. */
+  /** Number of active ascending breaks, at most the contributor's `maximumBreakCount`. */
   breakCount: number;
   /**
    * Which side of each interval is closed. `'left'` (default) gives intervals `[b[k - 1], b[k])`,

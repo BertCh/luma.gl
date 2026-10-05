@@ -7,7 +7,7 @@ import {GPUCommandGraph, type CompiledGPUCommandGraph} from '@luma.gl/gpgpu/gpu-
 import {getWebGPUTestDevice} from '@luma.gl/test-utils';
 import {expect, it, vi} from 'vitest';
 import {GPURasterTextureToBuffer} from '../../../src/gpu-raster';
-import {GPUParameterBuffer, importGraphBuffer, submitGraph} from '../../../src/utils/gpu-contributor-utils';
+import {GPUParameterBuffer, importGraphBuffer} from '../../../src/utils/gpu-contributor-utils';
 import {
   getGPUDistanceFieldParameterValues,
   GPUDistanceField,
@@ -19,7 +19,8 @@ import {
   createInputBuffer,
   createOutputBuffer,
   readFloat32,
-  readUint32
+  readUint32,
+  submitGraph
 } from '../../utils/gpu-contributor-test-utils';
 import {
   computeDistanceFieldOnCPU,
@@ -58,7 +59,7 @@ type FixtureResult = {
 class Fixture {
   readonly options: FixtureOptions;
   readonly cellCount: number;
-  readonly recipe: GPUDistanceField;
+  readonly contributor: GPUDistanceField;
   readonly compiled: CompiledGPUCommandGraph;
   readonly settings: GPUParameterBuffer<'float32'>;
   readonly positions?: GPUParameterBuffer<'float32'>;
@@ -155,7 +156,7 @@ class Fixture {
       : undefined;
     const view = (name: keyof Fixture['outputs'], format: 'float32' | 'uint32') =>
       importGraphBuffer(graph, `df-${name}`, this.outputs[name], format, this.cellCount);
-    this.recipe = new GPUDistanceField({
+    this.contributor = new GPUDistanceField({
       id: 'df',
       width,
       height,
@@ -184,8 +185,8 @@ class Fixture {
         texture: textureView as never
       }
     });
-    this.getCommandNodes = vi.spyOn(this.recipe, 'getCommandNodes');
-    graph.add(this.recipe);
+    this.getCommandNodes = vi.spyOn(this.contributor, 'getCommandNodes');
+    graph.add(this.contributor);
     if (textureView) {
       this.textureBuffer = this.track(createOutputBuffer(device, this.cellCount));
       const validity = this.track(createOutputBuffer(device, this.cellCount));

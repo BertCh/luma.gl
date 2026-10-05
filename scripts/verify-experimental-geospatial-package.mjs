@@ -51,6 +51,65 @@ for (const exportName of runtimeValueExportNames) {
   assert.equal(exportName in commonJsRootModule, false);
 }
 
+const ecmaScriptEntryModule = ecmaScriptGeospatialModule;
+const commonJsEntryModule = commonJsGeospatialModule;
+const contributorExportNames = [
+  'GPUPointDensity',
+  'GPURegionStatistics',
+  'GPURegionMask',
+  'GPUPickRegionMask',
+  'GPUPointInPolygonJoin',
+  'GPUNearestFeatureJoin',
+  'GPUBufferSelection',
+  'GPUZonalStatistics',
+  'GPUSpatialClustering',
+  'GPUTrajectoryMetrics',
+  'GPUInverseDistanceWeighting',
+  'GPUFocalStatistics',
+  'GPUHotSpotAnalysis',
+  'GPULocalMoran',
+  'GPUTrajectoryPlayhead',
+  'GPUTrajectoryResample',
+  'GPULineSimplification',
+  'GPUCellAggregation',
+  'GPUCellLevelSelection',
+  'GPUCellPyramid',
+  'GPUCellRollup',
+  'GPUPointToCell',
+  'GPUCellGeometry',
+  'GPUCellTopology',
+  'GPUCellCompaction',
+  'GPUCellTableCompare',
+  'GPULineSegmentize',
+  'GPUGreatCircleArcs',
+  'GPULineSmooth',
+  'GPULineChunk',
+  'GPUGeometryMeasures',
+  'GPUGeodesicPairs',
+  'GPUGeodesicDestination',
+  'GPULinearReferencing',
+  'GPULineLocate',
+  'GPUDotDensity',
+  'GPURandomPointsInPolygon',
+  'GPUNeighborSearch',
+  'GPUGlobalSpatialStatistics',
+  'GPUGlobalPermutationTest',
+  'GPULocalPermutationTest',
+  'GPUGeographicDistribution',
+  'GPUEmergingHotSpots',
+  'GPUCellCover',
+  'GPUOrdinaryLeastSquares',
+  'GPUGeographicallyWeightedRegression',
+  'GPUParameterBuffer'
+];
+
+for (const exportName of contributorExportNames) {
+  assert.equal(typeof ecmaScriptEntryModule[exportName], 'function', exportName);
+  assert.equal(typeof commonJsEntryModule[exportName], 'function', exportName);
+  assert.equal(exportName in ecmaScriptRootModule, false, `${exportName} leaked into the root`);
+  assert.equal(exportName in commonJsRootModule, false, `${exportName} leaked into the root`);
+}
+
 function makeRootVector(rootModule, id, format, rowByteLength) {
   const chunk = {
     buffer: {id: `${id}-buffer`},
@@ -147,6 +206,53 @@ void RootGPUHaversineDistance;
 import {GPU_POINT_IN_POLYGON_CLASSIFICATION as RootClassification} from '@luma.gl/experimental';
 void RootClassification;
 `
+  );
+
+
+  const contributorTypeTestPath = path.join(temporaryDirectory, 'contributors.mts');
+  writeFileSync(
+    contributorTypeTestPath,
+    `import {
+  ${contributorExportNames.join(',\n  ')},
+  type GPUCompactOutput,
+  type GPUUint32Rows
+} from '@luma.gl/experimental/geospatial';
+import type {GPUCommandNodeProducer} from '@luma.gl/gpgpu/gpu-core';
+
+const contributorConstructors = [
+  ${contributorExportNames.join(',\n  ')}
+];
+declare const output: GPUCompactOutput;
+declare const rows: GPUUint32Rows;
+declare const contributor: GPUCommandNodeProducer;
+void contributorConstructors;
+void output;
+void rows;
+void contributor;
+
+// @ts-expect-error Analysis contributors stay isolated from the experimental root.
+import {GPUPointDensity as RootContributor} from '@luma.gl/experimental';
+void RootContributor;
+`
+  );
+  const contributorProgram = typescript.createProgram([contributorTypeTestPath], {
+    module: typescript.ModuleKind.NodeNext,
+    moduleResolution: typescript.ModuleResolutionKind.NodeNext,
+    noEmit: true,
+    skipLibCheck: true,
+    strict: true,
+    target: typescript.ScriptTarget.ES2022,
+    types: []
+  });
+  const contributorDiagnostics = typescript.getPreEmitDiagnostics(contributorProgram);
+  assert.equal(
+    contributorDiagnostics.length,
+    0,
+    typescript.formatDiagnosticsWithColorAndContext(contributorDiagnostics, {
+      getCanonicalFileName: fileName => fileName,
+      getCurrentDirectory: () => temporaryDirectory,
+      getNewLine: () => '\n'
+    })
   );
 
   const program = typescript.createProgram([typeTestPath], {

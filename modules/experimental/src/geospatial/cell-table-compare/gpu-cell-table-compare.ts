@@ -90,7 +90,7 @@ export type GPUCellTableCompareProps = {
   id?: string;
   /**
    * First table, written by {@link GPUCellAggregation} or {@link GPUCellRollup}: ascending keys in
-   * rows `[0, count)`. Both tables must use the same grid family and resolution; the recipe
+   * rows `[0, count)`. Both tables must use the same grid family and resolution; the contributor
    * cannot check that.
    */
   before: GPUCellTable;

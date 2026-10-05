@@ -55,7 +55,7 @@ function createHarness(
       robustSemivariances: {format: 'float32', length: binCount},
       statistics: {format: 'float32', length: GPU_VARIOGRAM_STATISTICS_LENGTH}
     },
-    createRecipe: views =>
+    createContributor: views =>
       new GPUVariogram({
         positions: views.positions,
         values: views.values!,
@@ -222,7 +222,7 @@ it('GPUVariogram reports NaN for empty lags and zero for constant values', async
       semivariances: {format: 'float32', length: 8},
       pairCounts: {format: 'uint32', length: 8}
     },
-    createRecipe: views =>
+    createContributor: views =>
       new GPUVariogram({
         positions: views.positions,
         values: views.values!,

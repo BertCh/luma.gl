@@ -60,13 +60,13 @@ it('GPULocalPermutationTest validates its props and emits deterministic node IDs
   expect(() => create({pseudoPValues: view('float32', 9)})).toThrow(/pseudoPValues length/);
   expect(() => create({parameters: view('uint32', 2)})).toThrow(/parameters/);
   expect(() => create({exceedances: common.weights.offsets})).toThrow();
-  const recipe = create({
+  const contributor = create({
     id: 'local',
     significant: view('uint32', 10),
     falseDiscoveryRate: true,
     observed: view('float32', 10)
   });
-  const ids = recipe.getCommandNodes(graph).map(node => node.id);
+  const ids = contributor.getCommandNodes(graph).map(node => node.id);
   expect(ids).toContain('local-permute');
   expect(ids).toContain('local-fdr-threshold');
   expect(ids.at(-1)).toBe('local-classify');
@@ -92,12 +92,12 @@ it('GPUGlobalPermutationTest validates its props and emits deterministic node ID
     /referenceDistribution/
   );
   expect(() => create({values: view('float32', 3)})).toThrow(/values length/);
-  const recipe = create({
+  const contributor = create({
     id: 'global',
     histogram: view('uint32', 8),
     referenceDistribution: view('float32', 999)
   });
-  const ids = recipe.getCommandNodes(graph).map(node => node.id);
+  const ids = contributor.getCommandNodes(graph).map(node => node.id);
   expect(ids).toContain('global-pairs');
   expect(ids.at(-1)).toBe('global-finalize');
   expect(new Set(ids).size).toBe(ids.length);

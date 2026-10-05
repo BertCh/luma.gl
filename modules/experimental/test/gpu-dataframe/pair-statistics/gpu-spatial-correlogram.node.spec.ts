@@ -101,7 +101,7 @@ it('GPUSpatialCorrelogram emits deterministic node IDs with every output', () =>
     const graph = new GPUCommandGraph(device);
     const view = <Format extends 'float32' | 'uint32'>(format: Format, length: number) =>
       createTransientView(graph, `out-${serial++}`, format, length);
-    const recipe = new GPUSpatialCorrelogram({
+    const contributor = new GPUSpatialCorrelogram({
       ...createProps(graph),
       id: 'c',
       zScores: view('float32', 6),
@@ -112,7 +112,7 @@ it('GPUSpatialCorrelogram emits deterministic node IDs with every output', () =>
       peakBands: view('uint32', 2),
       statistics: view('float32', 5)
     });
-    return recipe.getCommandNodes(graph).map(node => node.id);
+    return contributor.getCommandNodes(graph).map(node => node.id);
   };
   const first = ids();
   expect(ids()).toEqual(first);

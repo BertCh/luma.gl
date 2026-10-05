@@ -9,7 +9,11 @@ import {
   getGPUPolygonRasterizationExtentValues,
   GPUPolygonRasterization
 } from '../../../src/gpu-raster/polygon-rasterization';
-import {createInputBuffer, createOutputBuffer, readUint32} from '../../utils/gpu-contributor-test-utils';
+import {
+  createInputBuffer,
+  createOutputBuffer,
+  readUint32
+} from '../../utils/gpu-contributor-test-utils';
 import type {OraclePolygons} from './polygon-rasterization-oracle';
 
 /** Rasterization graph plus the buffers a test reads or rewrites. */
@@ -27,7 +31,7 @@ export type RasterizationFixture = {
   owned: Buffer[];
   width: number;
   height: number;
-  recipe: GPUPolygonRasterization;
+  contributor: GPUPolygonRasterization;
 };
 
 /** Adds a `GPUPolygonRasterization` with every output to a new graph (not compiled). */
@@ -63,7 +67,7 @@ export function createRasterizationFixture(
   const extentView = extent.importToGraph(graph);
   const zonesView = importGraphBuffer(graph, 'zones', zonesBuffer, 'uint32', cellCount);
   const boundaryView = importGraphBuffer(graph, 'boundary', boundaryBuffer, 'uint32', cellCount);
-  const recipe = new GPUPolygonRasterization({
+  const contributor = new GPUPolygonRasterization({
     width,
     height,
     extent: extentView,
@@ -101,7 +105,7 @@ export function createRasterizationFixture(
     overflow: importGraphBuffer(graph, 'overflow', overflowBuffer, 'uint32', 1),
     crossingCount: importGraphBuffer(graph, 'crossing-count', crossingCountBuffer, 'uint32', 1)
   });
-  graph.add(recipe);
+  graph.add(contributor);
   return {
     graph,
     extent,
@@ -116,7 +120,7 @@ export function createRasterizationFixture(
     owned: [...polygonBuffers, zonesBuffer, boundaryBuffer, overflowBuffer, crossingCountBuffer],
     width,
     height,
-    recipe
+    contributor
   };
 }
 

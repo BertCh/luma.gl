@@ -17,8 +17,8 @@ import {createFillNode, createWGSLKernelNode} from '../../utils/wgsl-kernel-node
 import {createSegmentSumNode, getSortKeyBits} from '../../utils/sorted-segment-sums';
 
 /**
- * Number of leading float32 parameter slots shared by every pair-statistics recipe:
- * `[minX, minY, maxX, maxY, maximumDistance]`. Recipe-specific slots follow.
+ * Number of leading float32 parameter slots shared by every pair-statistics contributor:
+ * `[minX, minY, maxX, maxY, maximumDistance]`. Contributor-specific slots follow.
  *
  * @internal
  */
@@ -241,7 +241,7 @@ ${PAIR_STATISTICS_FLOAT_WGSL}
 }
 
 /**
- * Builds the shared front end of the pair-statistics recipes: per-row validity and cell keys, the
+ * Builds the shared front end of the pair-statistics contributors: per-row validity and cell keys, the
  * cell index (counts, exclusive offsets and a stable sort of rows by cell) and, with `values`, the
  * global value moments.
  *
@@ -634,7 +634,7 @@ const BLOCK_COUNT: u32 = ${blockCount}u;`,
 }
 
 /**
- * Builds one node that clears `view` to zero. Re-exported so recipes in this directory need not
+ * Builds one node that clears `view` to zero. Re-exported so contributors in this directory need not
  * import the shared kernels for it.
  *
  * @internal

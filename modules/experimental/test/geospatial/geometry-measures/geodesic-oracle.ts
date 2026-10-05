@@ -3,7 +3,7 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 /**
- * f64 twins of `GEODESIC_WGSL`, used as the oracle by every geometry recipe test. Positions are
+ * f64 twins of `GEODESIC_WGSL`, used as the oracle by every geometry contributor test. Positions are
  * `[longitude, latitude]` in degrees; angles in radians unless the name says degrees.
  */
 

@@ -310,7 +310,7 @@ export type GPUTerrainFlowProps = {
  *   deterministic pull as D8, with each donor's fraction recomputed from the surface, so values are
  *   written once from finalized donors in fixed direction order.
  *
- * Downstream products take this recipe's outputs: {@link GPUTerrainHeightAboveDrainage},
+ * Downstream products take this contributor's outputs: {@link GPUTerrainHeightAboveDrainage},
  * {@link GPUTerrainWatersheds}, {@link GPUTerrainStreamOrder} and
  * {@link GPUTerrainHydrologicIndices}.
  *

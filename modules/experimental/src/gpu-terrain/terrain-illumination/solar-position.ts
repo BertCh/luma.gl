@@ -83,7 +83,7 @@ export function getSolarRefractionDegrees(elevationDegrees: number): number {
  * Computes the sun position with the NOAA solar calculator algorithm (Meeus, low precision).
  *
  * Accuracy is about 0.01 degree for years 1800-2100 before refraction. The computation runs in
- * float64 on the CPU; pass `azimuthDegrees` and `altitudeDegrees` to per-frame recipe settings
+ * float64 on the CPU; pass `azimuthDegrees` and `altitudeDegrees` to per-frame contributor settings
  * such as `getGPUSolarShadowMaskParameterValues`, or use `GPUSolarPosition` for many locations.
  *
  * @param timestamp Unix epoch milliseconds (UTC) or a `Date`.

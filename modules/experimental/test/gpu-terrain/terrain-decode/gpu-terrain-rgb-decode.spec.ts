@@ -6,13 +6,17 @@ import {Texture, type Device} from '@luma.gl/core';
 import {GPUCommandGraph, type GraphTextureView} from '@luma.gl/gpgpu/gpu-core';
 import {getWebGPUTestDevice} from '@luma.gl/test-utils';
 import {expect, it} from 'vitest';
-import {importGraphBuffer, submitGraph} from '../../../src/utils/gpu-contributor-utils';
+import {importGraphBuffer} from '../../../src/utils/gpu-contributor-utils';
 import {
   GPUTerrainRGBDecode,
   type GPUTerrainRGBDecodeProps,
   type GPUTerrainRGBEncoding
 } from '../../../src/gpu-terrain/terrain-decode/gpu-terrain-rgb-decode';
-import {createInputBuffer, createOutputBuffer} from '../../utils/gpu-contributor-test-utils';
+import {
+  createInputBuffer,
+  createOutputBuffer,
+  submitGraph
+} from '../../utils/gpu-contributor-test-utils';
 import {
   buildExpectedBits,
   decodeWithPolicy,
@@ -31,7 +35,7 @@ type DecodeOptions = Partial<
   >
 >;
 
-/** Runs the recipe on packed RGBA8 words through the buffer or the texture path. */
+/** Runs the contributor on packed RGBA8 words through the buffer or the texture path. */
 async function runDecode(
   device: Device,
   words: Uint32Array,

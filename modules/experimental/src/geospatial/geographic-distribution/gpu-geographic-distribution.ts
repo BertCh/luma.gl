@@ -165,7 +165,7 @@ export type GPUGeographicDistributionProps = {
  * ## Non-goals
  *
  * No central feature (argmin of summed distances), no geodesic distances, no per-feature
- * confidence ellipse beyond the standard deviation multiplier. The recipe never compiles, encodes,
+ * confidence ellipse beyond the standard deviation multiplier. The contributor never compiles, encodes,
  * submits, or reads back.
  */
 export class GPUGeographicDistribution implements GPUCommandNodeProducer {
@@ -320,11 +320,7 @@ export class GPUGeographicDistribution implements GPUCommandNodeProducer {
       createTransientView(graph, `${id}-${name}`, 'float32', length);
     const u32 = (name: string, length: number) =>
       createTransientView(graph, `${id}-${name}`, 'uint32', length);
-    const read = (
-      name: string,
-      view: GraphDataView,
-      type: 'u32' | 'f32'
-    ): WGSLKernelBinding => ({
+    const read = (name: string, view: GraphDataView, type: 'u32' | 'f32'): WGSLKernelBinding => ({
       name,
       view,
       type,

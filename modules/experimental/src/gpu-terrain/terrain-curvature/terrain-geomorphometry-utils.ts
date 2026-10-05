@@ -8,7 +8,7 @@ import type {GPUTerrainCellSizeMode} from '../terrain-analysis/gpu-terrain-deriv
  * Number of leading float32 values shared by every geomorphometry settings layout:
  * `[cellSizeX, cellSizeY, zFactor, northEdge, southEdge]`.
  *
- * Recipe-specific values follow from index 5.
+ * Contributor-specific values follow from index 5.
  *
  * @internal
  */

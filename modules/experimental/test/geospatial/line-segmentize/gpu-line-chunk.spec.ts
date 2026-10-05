@@ -36,7 +36,7 @@ function createChunkFixture(
     },
     capacity: options.capacity,
     pathCapacity: options.pathCapacity,
-    createRecipe: (inputs, parameters, output) =>
+    createContributor: (inputs, parameters, output) =>
       new GPULineChunk({
         positions: inputs['positions'] as GraphDataView<'float32x2'>,
         pathOffsets: inputs['pathOffsets'] as GraphDataView<'uint32'>,

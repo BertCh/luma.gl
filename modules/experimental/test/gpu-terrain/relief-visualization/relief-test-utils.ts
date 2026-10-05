@@ -62,7 +62,11 @@ export function getMaximumMagnitude(values: ArrayLike<number>): number {
 }
 
 /** Writes NaN into the listed pixels. */
-export function punchHoles(elevation: Float32Array, width: number, holes: [number, number][]): void {
+export function punchHoles(
+  elevation: Float32Array,
+  width: number,
+  holes: [number, number][]
+): void {
   for (const [column, row] of holes) {
     elevation[row * width + column] = NaN;
   }

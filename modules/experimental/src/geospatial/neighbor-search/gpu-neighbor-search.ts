@@ -88,7 +88,7 @@ export type GPUNeighborSearchProps = {
 
 /**
  * Exact k-nearest-neighbor and distance-band queries between planar points, written as a
- * {@link GPUSpatialWeights} CSR: the reusable spatial-weights structure of the statistics recipes.
+ * {@link GPUSpatialWeights} CSR: the reusable spatial-weights structure of the statistics contributors.
  *
  * Definition, which the GPU result matches exactly (IDs and offsets) or within f32 rounding
  * (distances, weights):

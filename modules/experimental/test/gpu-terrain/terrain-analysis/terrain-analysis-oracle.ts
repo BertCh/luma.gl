@@ -318,8 +318,19 @@ export function computeTerrainSightLine(
     settings
   ).slice(6, 10);
   const inside = ([x, y]: readonly [number, number]) =>
-    Number.isFinite(x) && Number.isFinite(y) && x >= 0 && y >= 0 && x <= width - 1 && y <= height - 1;
-  const noData = {code: 3, clearance: Number.NaN, maxSlope: -Infinity, targetSlope: Number.NaN, band: 0};
+    Number.isFinite(x) &&
+    Number.isFinite(y) &&
+    x >= 0 &&
+    y >= 0 &&
+    x <= width - 1 &&
+    y <= height - 1;
+  const noData = {
+    code: 3,
+    clearance: Number.NaN,
+    maxSlope: -Infinity,
+    targetSlope: Number.NaN,
+    band: 0
+  };
   if (!inside(observer) || !inside(target)) {
     return noData;
   }
@@ -336,7 +347,13 @@ export function computeTerrainSightLine(
     return {...noData, code: 2};
   }
   if (distance === 0) {
-    return {code: 1, clearance: 3.4028234663852886e38, maxSlope: -Infinity, targetSlope: Number.NaN, band: 0};
+    return {
+      code: 1,
+      clearance: 3.4028234663852886e38,
+      maxSlope: -Infinity,
+      targetSlope: Number.NaN,
+      band: 0
+    };
   }
   const targetTop = targetSample + (heights ? heights[1] : targetHeight);
   const targetSlope = (targetTop - curvature * distance * distance - eye) / distance;
@@ -430,7 +447,9 @@ export function createFractalTerrain(
   const result = new Float32Array(width * height);
   let octaveAmplitude = amplitude;
   for (let cellSize = 32; cellSize >= 2; cellSize /= 2) {
-    const lattice = new Float64Array((Math.ceil(width / cellSize) + 2) * (Math.ceil(height / cellSize) + 2));
+    const lattice = new Float64Array(
+      (Math.ceil(width / cellSize) + 2) * (Math.ceil(height / cellSize) + 2)
+    );
     for (let index = 0; index < lattice.length; index++) {
       lattice[index] = random() * 2 - 1;
     }
@@ -445,7 +464,8 @@ export function createFractalTerrain(
         const fx = smooth(x - x0);
         const fy = smooth(y - y0);
         const top = lattice[y0 * stride + x0] * (1 - fx) + lattice[y0 * stride + x0 + 1] * fx;
-        const bottom = lattice[(y0 + 1) * stride + x0] * (1 - fx) + lattice[(y0 + 1) * stride + x0 + 1] * fx;
+        const bottom =
+          lattice[(y0 + 1) * stride + x0] * (1 - fx) + lattice[(y0 + 1) * stride + x0 + 1] * fx;
         result[row * width + column] += octaveAmplitude * (top * (1 - fy) + bottom * fy);
       }
     }

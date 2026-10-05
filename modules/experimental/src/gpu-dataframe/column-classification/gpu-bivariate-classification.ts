@@ -235,11 +235,12 @@ export class GPUBivariateClassification implements GPUCommandNodeProducer {
     ]);
     const rows = props.valuesX.length;
     const classes = output.classIds ?? createTransientView(graph, `${id}-classes`, 'uint32', rows);
-    const read = (
-      name: string,
-      view: GraphDataView,
-      type: 'u32' | 'f32'
-    ): WGSLKernelBinding => ({name, view, type, access: 'read'});
+    const read = (name: string, view: GraphDataView, type: 'u32' | 'f32'): WGSLKernelBinding => ({
+      name,
+      view,
+      type,
+      access: 'read'
+    });
     const declarations = `const MAXIMUM_CLASS_COUNT: u32 = ${maximumClassCount}u;
 ${COLUMN_ORDERED_KEY_WGSL}
 ${COLOR_SCALE_WGSL}`;

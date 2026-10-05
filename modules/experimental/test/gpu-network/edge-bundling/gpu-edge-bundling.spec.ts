@@ -6,7 +6,7 @@ import type {Buffer, Device} from '@luma.gl/core';
 import {GPUCommandGraph, type CompiledGPUCommandGraph} from '@luma.gl/gpgpu/gpu-core';
 import {getWebGPUTestDevice} from '@luma.gl/test-utils';
 import {expect, it} from 'vitest';
-import {GPUParameterBuffer, importGraphBuffer, submitGraph} from '../../../src/utils/gpu-contributor-utils';
+import {GPUParameterBuffer, importGraphBuffer} from '../../../src/utils/gpu-contributor-utils';
 import {
   GPUEdgeBundling,
   createGPUEdgeBundlingParameterValues,
@@ -17,7 +17,8 @@ import {
   createOutputBuffer,
   isSoftwareDevice,
   readFloat32,
-  readUint32
+  readUint32,
+  submitGraph
 } from '../../utils/gpu-contributor-test-utils';
 import {bundleEdgesOracle, type EdgeBundlingOracleInput} from './edge-bundling-oracle';
 
@@ -95,7 +96,7 @@ function createFixture(device: Device, scene: Scene, options: FixtureOptions = {
             : createGPUEdgeBundlingParameterValues(options.parameters, 'float32')
       })
     : undefined;
-  const recipe = new GPUEdgeBundling({
+  const contributor = new GPUEdgeBundling({
     positions: importGraphBuffer(graph, 'positions', buffers[0], 'float32x2', vertexCount),
     sourceVertices: importGraphBuffer(graph, 'sources', buffers[1], 'uint32', edgeCount),
     targetVertices: importGraphBuffer(graph, 'targets', buffers[2], 'uint32', edgeCount),
@@ -111,7 +112,7 @@ function createFixture(device: Device, scene: Scene, options: FixtureOptions = {
     drawRecord:
       drawRecordBuffer && importGraphBuffer(graph, 'draw-record', drawRecordBuffer, 'uint32', 4)
   });
-  graph.add(recipe);
+  graph.add(contributor);
   const nodeCount = 4 + 3 * iterations + (options.withIndices ? 1 : 0);
   const compiled = graph.compile();
   return {

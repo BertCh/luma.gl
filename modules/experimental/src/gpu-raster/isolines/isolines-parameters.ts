@@ -7,11 +7,11 @@ export const GPU_ISOLINES_PARAMETER_LENGTH = 8;
 
 /** Per-frame settings of {@link GPUIsolines}. */
 export type GPUIsolinesSettings = {
-  /** Raster width in samples. Must match the recipe topology. */
+  /** Raster width in samples. Must match the contributor topology. */
   width: number;
-  /** Raster height in samples. Must match the recipe topology. */
+  /** Raster height in samples. Must match the contributor topology. */
   height: number;
-  /** Number of active leading rows of the `levels` view. Clamped by the recipe to its maximum. */
+  /** Number of active leading rows of the `levels` view. Clamped by the contributor to its maximum. */
   levelCount: number;
   /**
    * World extent `[minX, minY, maxX, maxY]` of the raster. Sample `(column, row)` sits at the

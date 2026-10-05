@@ -5,7 +5,7 @@
 import {GPUCommandGraph} from '@luma.gl/gpgpu/gpu-core';
 import {getWebGPUTestDevice} from '@luma.gl/test-utils';
 import {expect, it} from 'vitest';
-import {importGraphBuffer, submitGraph} from '../../../src/utils/gpu-contributor-utils';
+import {importGraphBuffer} from '../../../src/utils/gpu-contributor-utils';
 import {createWGSLKernelNode} from '../../../src/utils/wgsl-kernel-nodes';
 import {
   getFeistelHalfBits,
@@ -15,7 +15,7 @@ import {
   PERMUTATION_RANDOM_WGSL,
   PhiloxStream
 } from '../../../src/geospatial/permutation-inference/permutation-random';
-import {createOutputBuffer, readUint32} from '../../utils/gpu-contributor-test-utils';
+import {createOutputBuffer, readUint32, submitGraph} from '../../utils/gpu-contributor-test-utils';
 
 const BOUNDS = [1, 2, 3, 6, 7, 1000, 65537, 0x80000001, 0xfffffffe, 0xffffffff];
 const DRAWS = 16;

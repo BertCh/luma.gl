@@ -13,7 +13,10 @@ import {
 import {GPURasterBufferToTexture, type GPURasterBand} from '../../gpu-raster/index';
 import {createWGSLKernelNode, type WGSLKernelBinding} from '../../utils/wgsl-kernel-nodes';
 import type {GPUCommandNodeProducer} from '@luma.gl/gpgpu/gpu-core';
-import {captureGraphCommandNodes, validateGraphViewsBelongToGraph} from '../../utils/gpu-contributor-utils';
+import {
+  captureGraphCommandNodes,
+  validateGraphViewsBelongToGraph
+} from '../../utils/gpu-contributor-utils';
 import {
   createRasterExtremaPyramidNodes,
   getGPURasterExtremaPyramidLayout,
@@ -32,7 +35,7 @@ import {
 import {getTerrainSightLineWGSL, type GPUTerrainSightLineTraversal} from './terrain-sight-line';
 
 /**
- * Visibility codes written by the terrain sight-line recipes.
+ * Visibility codes written by the terrain sight-line contributors.
  *
  * `marginal` means the target is within the tolerance band of the sight line: neither clearly
  * hidden nor clearly visible.

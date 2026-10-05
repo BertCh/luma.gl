@@ -142,7 +142,7 @@ export type TerrainHorizonSweepNodeProps = {
   height: number;
   /** Pixel-space unit direction of the sector, from `getGPUTerrainHorizonDirection`. */
   direction: readonly [number, number];
-  /** Radius window in pixels (the recipe's `maximumRadius`). */
+  /** Radius window in pixels (the contributor's `maximumRadius`). */
   maximumRadius: number;
   /** Cell size interpretation. */
   cellSizeMode: GPUTerrainIlluminationCellSizeMode;

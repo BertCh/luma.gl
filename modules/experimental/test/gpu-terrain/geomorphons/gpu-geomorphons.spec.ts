@@ -6,14 +6,19 @@ import type {Buffer, Device} from '@luma.gl/core';
 import {GPUCommandGraph} from '@luma.gl/gpgpu/gpu-core';
 import {getWebGPUTestDevice} from '@luma.gl/test-utils';
 import {expect, it} from 'vitest';
-import {GPUParameterBuffer, importGraphBuffer, submitGraph} from '../../../src/utils/gpu-contributor-utils';
+import {GPUParameterBuffer, importGraphBuffer} from '../../../src/utils/gpu-contributor-utils';
 import {
   GPU_GEOMORPHON_FORMS,
   GPUGeomorphons,
   getGPUGeomorphonsParameterValues,
   type GPUGeomorphonsProps
 } from '../../../src/gpu-terrain/geomorphons';
-import {createInputBuffer, createOutputBuffer, readUint32} from '../../utils/gpu-contributor-test-utils';
+import {
+  createInputBuffer,
+  createOutputBuffer,
+  readUint32,
+  submitGraph
+} from '../../utils/gpu-contributor-test-utils';
 import {computeGeomorphons, type GeomorphonOracleOptions} from './geomorphons-oracle';
 
 type Outputs = {forms: number[]; ternary: number[]; pattern: number[]; validity: number[]};

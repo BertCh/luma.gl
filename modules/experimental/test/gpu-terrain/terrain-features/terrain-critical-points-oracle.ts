@@ -4,7 +4,7 @@
 
 /** CPU oracle for terrain critical-point classification (pure comparisons). Test-only. */
 
-/** Class codes, mirrored here so the oracle does not import the recipe. */
+/** Class codes, mirrored here so the oracle does not import the contributor. */
 export const CRITICAL_POINT = {
   regular: 0,
   peak: 1,

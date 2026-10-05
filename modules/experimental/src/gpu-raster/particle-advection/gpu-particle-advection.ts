@@ -122,6 +122,15 @@ export type GPUParticleAdvectionProps = {
  *
  * Precision: positions and the field extent are f32; use field-local or tile-local coordinates for
  * large worlds.
+ *
+ * Relation to `FlowParticleSimulation` (`@luma.gl/experimental/simulation`): this contributor only
+ * declares its resources and command nodes into a caller-owned `GPUCommandGraph`, so the caller
+ * owns the device, the particle and velocity buffers, compilation, submission and the frame loop,
+ * and can chain it after other contributors (for example `GPUTerrainFlowField`). The
+ * `FlowParticleSimulation` is the standalone alternative: it owns its device resources and state
+ * textures and advances them with a stateful `step()` call. The two are not interchangeable and
+ * are not merged; they use different state layouts (storage buffers here, render-target textures
+ * there) and different random generators.
  */
 export class GPUParticleAdvection implements GPUCommandNodeProducer {
   /** Prefix for graph node IDs. */

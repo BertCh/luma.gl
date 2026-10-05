@@ -11,7 +11,7 @@ import {
 
 const {fround} = Math;
 
-/** Inputs of the CPU oracle; mirrors the GPU recipes' views. */
+/** Inputs of the CPU oracle; mirrors the GPU contributors' views. */
 export type SpatialAutocorrelationOracleInput = {
   positions: Float32Array;
   values: Float32Array;

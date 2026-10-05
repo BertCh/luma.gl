@@ -6,9 +6,14 @@ import type {Buffer, Device} from '@luma.gl/core';
 import {GPUCommandGraph} from '@luma.gl/gpgpu/gpu-core';
 import {getWebGPUTestDevice} from '@luma.gl/test-utils';
 import {expect, it} from 'vitest';
-import {GPUParameterBuffer, importGraphBuffer, submitGraph} from '../../../src/utils/gpu-contributor-utils';
+import {GPUParameterBuffer, importGraphBuffer} from '../../../src/utils/gpu-contributor-utils';
 import {GPUNetworkNeighborhood} from '../../../src/gpu-network/network-analysis/gpu-network-neighborhood';
-import {createInputBuffer, createOutputBuffer, readUint32} from '../../utils/gpu-contributor-test-utils';
+import {
+  createInputBuffer,
+  createOutputBuffer,
+  readUint32,
+  submitGraph
+} from '../../utils/gpu-contributor-test-utils';
 import {buildCSR, type NetworkEdge} from '../network-reachability/network-reachability-oracle';
 import {createGridEdges, createSymmetricEdges} from './network-analytics-oracle';
 import {neighborhoodOracle} from './network-neighborhood-oracle';

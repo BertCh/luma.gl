@@ -332,7 +332,7 @@ describe('GPUIsobands validation and wiring', () => {
 
   it('creates deterministic node ids', () => {
     const {device, graph, view} = setup();
-    const recipe = new GPUIsobands({
+    const contributor = new GPUIsobands({
       id: 'bands',
       width: 4,
       height: 3,
@@ -350,10 +350,9 @@ describe('GPUIsobands validation and wiring', () => {
         vertexCount: view('uint32', 1)
       }
     });
-    expect(recipe.recipe).toBe('isobands');
-    expect(recipe.cellCount).toBe(6);
-    expect(recipe.triangleCapacity).toBe(20);
-    const ids = recipe.getCommandNodes(graph).map(node => node.id);
+    expect(contributor.cellCount).toBe(6);
+    expect(contributor.triangleCapacity).toBe(20);
+    const ids = contributor.getCommandNodes(graph).map(node => node.id);
     expect(ids[0]).toBe('bands-classes');
     expect(ids).toContain('bands-count');
     expect(ids).toContain('bands-scatter');

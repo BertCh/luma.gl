@@ -33,7 +33,7 @@ const MAXIMUM_LATTICE_SAMPLES = 1 << 24;
 const MINIMUM_STEP_EXPONENT = -8;
 
 /**
- * Options of the exact power-of-two distance lattice, shared by both point-horizon recipes.
+ * Options of the exact power-of-two distance lattice, shared by both point-horizon contributors.
  *
  * The lattice follows mt-image's adaptive step rule
  * `step(d) = max(stepFactor * d, clamp(nearFactor * d, minimumStep, cellSize * cellSteps))`
@@ -275,9 +275,11 @@ export function getGPUPointHorizonSegments(
   const oneMinusCosines = distances.map(value =>
     Math.fround(2 * Math.sin(value / (2 * radius)) ** 2)
   );
-  const endIndices = distances.slice(1).map((value, segment) =>
-    segment === distances.length - 2 ? lattice.sampleCount : lattice.getCeilIndex(value)
-  );
+  const endIndices = distances
+    .slice(1)
+    .map((value, segment) =>
+      segment === distances.length - 2 ? lattice.sampleCount : lattice.getCeilIndex(value)
+    );
   return {distances, sines, oneMinusCosines, endIndices};
 }
 
@@ -371,7 +373,11 @@ export function resolvePointHorizonModel(
     throw new Error(`${id} traversal must be march or pyramid`);
   }
   const azimuthCount = options.azimuthCount ?? 720;
-  if (!Number.isInteger(azimuthCount) || azimuthCount < 1 || azimuthCount > MAXIMUM_LATTICE_SAMPLES) {
+  if (
+    !Number.isInteger(azimuthCount) ||
+    azimuthCount < 1 ||
+    azimuthCount > MAXIMUM_LATTICE_SAMPLES
+  ) {
     throw new Error(`${id} azimuthCount must be an integer in [1, 2^24]`);
   }
   const firstAzimuth = options.firstAzimuth ?? 0;
@@ -996,7 +1002,12 @@ export function createPointHorizonSource<Parameters>(
     {name: 'elevationValidity', view: validity, type: 'u32', access: 'read'}
   ];
   if (model.layout) {
-    const combined = createTransientView(graph, `${id}-pyramid`, 'float32', 2 * model.layout.length);
+    const combined = createTransientView(
+      graph,
+      `${id}-pyramid`,
+      'float32',
+      2 * model.layout.length
+    );
     nodes.push(
       ...createRasterExtremaPyramidNodes(graph, {
         id: `${id}-pyramid`,

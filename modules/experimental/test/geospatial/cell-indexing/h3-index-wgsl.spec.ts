@@ -15,10 +15,14 @@ import {
   greatCircleDistance
 } from 'h3-js';
 import {expect, it} from 'vitest';
-import {importGraphBuffer, submitGraph} from '../../../src/utils/gpu-contributor-utils';
+import {importGraphBuffer} from '../../../src/utils/gpu-contributor-utils';
 import {createWGSLKernelNode} from '../../../src/utils/wgsl-kernel-nodes';
 import {H3_INDEX_WGSL} from '../../../src/geospatial/cell-indexing/h3-index-wgsl';
-import {createInputBuffer, createOutputBuffer} from '../../utils/gpu-contributor-test-utils';
+import {
+  createInputBuffer,
+  createOutputBuffer,
+  submitGraph
+} from '../../utils/gpu-contributor-test-utils';
 import {
   createCellEdgePoints,
   createPentagonNeighborhoodPoints,

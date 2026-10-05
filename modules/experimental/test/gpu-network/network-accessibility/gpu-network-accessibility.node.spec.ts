@@ -43,17 +43,17 @@ function createMatrixProps(
 
 it('GPUNetworkCostMatrix schedules lane expansion and one reachability per batch', () => {
   const graph = new GPUCommandGraph(createNullWebGPUDevice());
-  const recipe = new GPUNetworkCostMatrix({
+  const contributor = new GPUNetworkCostMatrix({
     ...createMatrixProps(graph),
     seedsPerRow: 2,
     laneCount: 2,
     maxIterations: 3,
     converged: createView(graph, 'uint32', 1)
   });
-  expect(recipe.rowCount).toBe(5);
-  expect(recipe.nodeCount).toBe(8);
-  expect(recipe.batchCount).toBe(3);
-  const ids = recipe.getCommandNodes(graph).map(node => node.id);
+  expect(contributor.rowCount).toBe(5);
+  expect(contributor.nodeCount).toBe(8);
+  expect(contributor.batchCount).toBe(3);
+  const ids = contributor.getCommandNodes(graph).map(node => node.id);
   expect(ids.slice(0, 3)).toEqual([
     'matrix-expand-offsets',
     'matrix-expand-edges',
@@ -122,7 +122,7 @@ function createAccessibilityProps(
 
 it('GPUNetworkAccessibility schedules scores and catchment nodes', () => {
   const graph = new GPUCommandGraph(createNullWebGPUDevice());
-  const recipe = new GPUNetworkAccessibility(
+  const contributor = new GPUNetworkAccessibility(
     createAccessibilityProps(graph, {
       cumulative: createView(graph, 'float32', 10),
       catchment: {
@@ -131,9 +131,9 @@ it('GPUNetworkAccessibility schedules scores and catchment nodes', () => {
       }
     })
   );
-  expect(recipe.rowCount).toBe(4);
-  expect(recipe.nodeCount).toBe(10);
-  expect(recipe.getCommandNodes(graph).map(node => node.id)).toEqual([
+  expect(contributor.rowCount).toBe(4);
+  expect(contributor.nodeCount).toBe(10);
+  expect(contributor.getCommandNodes(graph).map(node => node.id)).toEqual([
     'access-scores',
     'access-catchment-ratios',
     'access-catchment-scores'

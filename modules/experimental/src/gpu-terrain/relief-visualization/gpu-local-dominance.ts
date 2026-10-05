@@ -29,7 +29,7 @@ import {roundHalfEven} from './relief-visualization-utils';
 /** Number of float32 values read from `GPULocalDominanceProps.settings`. */
 export const GPU_LOCAL_DOMINANCE_PARAMETER_LENGTH = 4;
 
-/** Largest supported number of sample offsets (`distances * angles`) of one recipe. */
+/** Largest supported number of sample offsets (`distances * angles`) of one contributor. */
 export const GPU_LOCAL_DOMINANCE_MAX_SHIFT_COUNT = 8192;
 
 /** CPU-side description packed by {@link getGPULocalDominanceParameterValues}. */

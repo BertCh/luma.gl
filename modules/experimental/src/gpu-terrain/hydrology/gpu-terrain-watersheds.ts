@@ -8,7 +8,7 @@ import {
   type GPUCommandNode,
   type GraphDataView
 } from '@luma.gl/gpgpu/gpu-core';
-import {createRecipeTransientView} from '../../gpu-raster/cost-distance/raster-grid-utils';
+import {createContributorTransientView} from '../../gpu-raster/cost-distance/raster-grid-utils';
 import {validateRasterIterations} from '../../gpu-raster/cost-distance/raster-relaxation';
 import {
   createFillNode,
@@ -40,7 +40,7 @@ export const GPU_TERRAIN_WATERSHED_NONE = 0xffffffff;
  * Properties for {@link GPUTerrainWatersheds}.
  *
  * Compile-time: `width`, `height`, `maxIterations`, and the presence of `pourPoints`, `converged`.
- * Per-frame: the contents of `flowDirections` and `pourPoints`. The recipe works on D8 receiver
+ * Per-frame: the contents of `flowDirections` and `pourPoints`. The contributor works on D8 receiver
  * indices only, so it has no cell-size model (`uniform`, `web-mercator` and `geographic` spacing
  * give the same labels).
  *
@@ -63,7 +63,7 @@ export type GPUTerrainWatershedsProps = {
   /**
    * Optional pour points as cell indices (`row * width + column`). Indices outside the grid and
    * indices of invalid cells are ignored. When several points share a cell the lowest point index
-   * wins. Length is compile-time, contents per-frame. Without pour points the recipe labels
+   * wins. Length is compile-time, contents per-frame. Without pour points the contributor labels
    * drainage basins.
    */
   pourPoints?: GraphDataView<'uint32'>;
@@ -137,7 +137,7 @@ export class GPUTerrainWatersheds implements GPUCommandNodeProducer {
       props.converged
     ]);
     const cellCount = width * height;
-    const pointer = createRecipeTransientView(
+    const pointer = createContributorTransientView(
       graph,
       'GPUTerrainWatersheds',
       id,
@@ -148,7 +148,7 @@ export class GPUTerrainWatersheds implements GPUCommandNodeProducer {
     const nodes: GPUCommandNode<Parameters>[] = [];
     let markers: GraphDataView<'uint32'> | undefined;
     if (props.pourPoints) {
-      markers = createRecipeTransientView(
+      markers = createContributorTransientView(
         graph,
         'GPUTerrainWatersheds',
         id,
@@ -185,7 +185,7 @@ export class GPUTerrainWatersheds implements GPUCommandNodeProducer {
     nodes.push(
       ...createTerrainFlowPointerNodes(graph, {
         id,
-        recipeId: id,
+        contributorId: id,
         operation: OPERATION,
         width,
         height,

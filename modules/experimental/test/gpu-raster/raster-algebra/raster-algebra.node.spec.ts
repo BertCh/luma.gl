@@ -84,7 +84,7 @@ it('raster-algebra parameter helpers pack layouts', () => {
   );
 });
 
-it('raster-algebra recipes validate props', () => {
+it('raster-algebra contributors validate props', () => {
   withGraph(graph => {
     const values = view(graph, 'float32', 12);
     const breaks = view(graph, 'float32', 4);
@@ -191,7 +191,7 @@ it('raster-algebra recipes validate props', () => {
   });
 });
 
-it('raster-algebra recipes return deterministic node IDs', () => {
+it('raster-algebra contributors return deterministic node IDs', () => {
   withGraph(graph => {
     const reclassify = new GPURasterReclassify({
       id: 'r',

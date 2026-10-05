@@ -127,7 +127,6 @@ it('GPUProfilePeaks validates props and schedules its nodes', () => {
       ...overrides
     }).getCommandNodes(target);
   };
-  expect(create().recipe).toBe('profile-peaks');
   expect(create().nms).toBe(2);
   expect(create({window: 40}).nms).toBe(10);
   expect(build().map(node => node.id)).toEqual([

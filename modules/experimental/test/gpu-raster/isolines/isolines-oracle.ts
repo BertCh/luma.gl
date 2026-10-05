@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-/** Inputs of the isolines oracle. Mirrors the GPU recipe's topology and per-frame values. */
+/** Inputs of the isolines oracle. Mirrors the GPU contributor's topology and per-frame values. */
 export type IsolinesScene = {
   width: number;
   height: number;

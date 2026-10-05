@@ -558,7 +558,7 @@ fn readZ(band: u32) -> f32 {
 
 /**
  * Two-sided normal p-value `erfc(|z| / sqrt(2))` with the Numerical Recipes `erfcc` Chebyshev fit
- * (fractional error below 1.2e-7 in exact arithmetic), as in the spatial-autocorrelation recipes.
+ * (fractional error below 1.2e-7 in exact arithmetic), as in the spatial-autocorrelation contributors.
  */
 const TWO_SIDED_P_VALUE_WGSL = /* wgsl */ `
 fn getTwoSidedPValue(z: f32) -> f32 {

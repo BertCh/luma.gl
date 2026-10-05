@@ -613,7 +613,7 @@ const PATH_COUNT: u32 = ${props.pathCount}u;`,
 }
 
 /**
- * Writes the identity source-path column (`sourcePaths[p] = p`) for recipes that emit one output
+ * Writes the identity source-path column (`sourcePaths[p] = p`) for contributors that emit one output
  * path per input path.
  *
  * @internal

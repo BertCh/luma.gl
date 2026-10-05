@@ -15,7 +15,7 @@ const LENGTH_EPSILON = f(1e-9);
 const GRADIENT_QUANTA = 4;
 const RADIUS_EPSILON = f(1e-9);
 
-/** Inputs of {@link bundleEdgesOracle}; mirrors the recipe props and per-frame parameters. */
+/** Inputs of {@link bundleEdgesOracle}; mirrors the contributor props and per-frame parameters. */
 export type EdgeBundlingOracleInput = {
   positions: Float32Array;
   sources: ArrayLike<number>;

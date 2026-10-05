@@ -44,7 +44,7 @@ export const GPU_PROFILE_PEAKS_MAXIMUM_NMS_ROUNDS = 1024;
  * CPU-side description packed by {@link getGPUProfilePeaksParameterValues}.
  *
  * Values are in profile-value units (for example metres for an elevation profile, degrees for a
- * horizon). The model is cell-size independent: every other distance of the recipe is measured in
+ * horizon). The model is cell-size independent: every other distance of the contributor is measured in
  * profile samples.
  */
 export type GPUProfilePeaksSettings = {
@@ -79,7 +79,7 @@ export function getGPUProfilePeaksParameterValues(
  *
  * Topology (compile time): `window`, `minSide`, `nms`, `wrap`, `nmsRounds`, which views exist and
  * their lengths. Per-frame: `settings` and the contents of `values`, `validity` and `offsets`.
- * Every distance is in profile samples and every value in profile-value units, so the recipe is
+ * Every distance is in profile samples and every value in profile-value units, so the contributor is
  * cell-size independent.
  */
 export type GPUProfilePeaksProps = {

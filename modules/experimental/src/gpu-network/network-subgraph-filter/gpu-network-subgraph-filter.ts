@@ -42,7 +42,7 @@ const OPERATION = 'GPUNetworkSubgraphFilter';
  *
  * Row `v` of `offsets`/`neighbors` holds the live slots of vertex `v` in their original order;
  * dead vertices and dead slots have no entries. `offsets` is exact (`nodeCount + 1` rows) even when
- * `neighbors` overflows. Bind the views to another recipe as its forward CSR.
+ * `neighbors` overflows. Bind the views to another contributor as its forward CSR.
  */
 export type GPUNetworkSubgraphFilterInducedCSR = {
   /** `nodeCount + 1` rows. Row `nodeCount` is the live slot total. */
@@ -153,7 +153,7 @@ export type GPUNetworkSubgraphFilterProps = {
  * results are exact and deterministic. Optional outputs: counts, compact live vertex and slot ids
  * (stable ascending, via `GPUScan`), and an induced CSR from a prefix sum over live degree.
  *
- * Add the recipe to one graph at a time. It owns no GPU resources.
+ * Add the contributor to one graph at a time. It owns no GPU resources.
  */
 export class GPUNetworkSubgraphFilter implements GPUCommandNodeProducer {
   /** Prefix for every node and transient ID. */
@@ -359,12 +359,14 @@ export class GPUNetworkSubgraphFilter implements GPUCommandNodeProducer {
             type: 'f32',
             access: 'read'
           },
-          ...chunk.map((view, i): WGSLKernelBinding => ({
-            name: `column${i}`,
-            view,
-            type: 'f32',
-            access: 'read'
-          }))
+          ...chunk.map(
+            (view, i): WGSLKernelBinding => ({
+              name: `column${i}`,
+              view,
+              type: 'f32',
+              access: 'read'
+            })
+          )
         ];
         const tests = chunk
           .map(

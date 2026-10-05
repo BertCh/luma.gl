@@ -6,14 +6,19 @@ import type {Buffer, Device} from '@luma.gl/core';
 import {GPUCommandGraph} from '@luma.gl/gpgpu/gpu-core';
 import {getWebGPUTestDevice} from '@luma.gl/test-utils';
 import {expect, it} from 'vitest';
-import {GPUParameterBuffer, importGraphBuffer, submitGraph} from '../../../src/utils/gpu-contributor-utils';
+import {GPUParameterBuffer, importGraphBuffer} from '../../../src/utils/gpu-contributor-utils';
 import {
   getGPUMultiScaleReliefParameterValues,
   getGPUMultiScaleReliefRadii,
   GPUMultiScaleRelief,
   type GPUMultiScaleReliefScales
 } from '../../../src/gpu-terrain/relief-visualization/gpu-multi-scale-relief';
-import {createOutputBuffer, readFloat32, readUint32} from '../../utils/gpu-contributor-test-utils';
+import {
+  createOutputBuffer,
+  readFloat32,
+  readUint32,
+  submitGraph
+} from '../../utils/gpu-contributor-test-utils';
 import {createSmoothTerrain} from '../terrain-illumination/terrain-horizon-oracle';
 import {computeMultiScaleReliefRVT} from './relief-visualization-oracle';
 import {

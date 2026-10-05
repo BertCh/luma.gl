@@ -35,7 +35,7 @@ function createOutput(graph: GPUCommandGraph, name: string, capacity: number) {
 it('GPUNetworkNeighborhood schedules nodes in order', () => {
   const device = createNullWebGPUDevice();
   const graph = new GPUCommandGraph(device);
-  const recipe = new GPUNetworkNeighborhood({
+  const contributor = new GPUNetworkNeighborhood({
     ...createProps(graph),
     id: 'hood',
     maxHops: 2,
@@ -44,8 +44,7 @@ it('GPUNetworkNeighborhood schedules nodes in order', () => {
     nodes: createOutput(graph, 'nodes', 4),
     edges: createOutput(graph, 'edges', 20)
   });
-  expect(recipe.recipe).toBe('network-neighborhood');
-  const ids = recipe.getCommandNodes(graph).map(node => node.id);
+  const ids = contributor.getCommandNodes(graph).map(node => node.id);
   const positionOf = (id: string) => ids.indexOf(id);
   expect(ids[0]).toBe('hood-unit-weights');
   expect(ids.slice(1, 4)).toEqual([

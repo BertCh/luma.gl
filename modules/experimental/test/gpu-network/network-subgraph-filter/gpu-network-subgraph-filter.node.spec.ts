@@ -53,7 +53,7 @@ function createContext(device: Device) {
 it('GPUNetworkSubgraphFilter schedules a fixed node order', () => {
   const device = createNullWebGPUDevice();
   const {graph, importView, props} = createContext(device);
-  const recipe = new GPUNetworkSubgraphFilter({
+  const contributor = new GPUNetworkSubgraphFilter({
     id: 'sub',
     ...props({
       vertexColumns: [importView('vc', NODE_COUNT, 'float32')],
@@ -86,8 +86,7 @@ it('GPUNetworkSubgraphFilter schedules a fixed node order', () => {
       }
     })
   });
-  expect(recipe.recipe).toBe('network-subgraph-filter');
-  const ids = recipe.getCommandNodes(graph).map(node => node.id);
+  const ids = contributor.getCommandNodes(graph).map(node => node.id);
   const indexOf = (name: string) => ids.indexOf(`sub-${name}`);
   expect(ids[0]).toBe('sub-vertex-init');
   expect(indexOf('vertex-columns-0')).toBe(1);
@@ -107,9 +106,9 @@ it('GPUNetworkSubgraphFilter schedules a fixed node order', () => {
 it('GPUNetworkSubgraphFilter omits unused passes and defaults the id', () => {
   const device = createNullWebGPUDevice();
   const {graph, props} = createContext(device);
-  const recipe = new GPUNetworkSubgraphFilter(props());
-  expect(recipe.id).toBe('network-subgraph-filter');
-  const ids = recipe.getCommandNodes(graph).map(node => node.id);
+  const contributor = new GPUNetworkSubgraphFilter(props());
+  expect(contributor.id).toBe('network-subgraph-filter');
+  const ids = contributor.getCommandNodes(graph).map(node => node.id);
   expect(ids).toEqual([
     'network-subgraph-filter-vertex-init',
     'network-subgraph-filter-edge-init',

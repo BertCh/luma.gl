@@ -13,15 +13,15 @@ export const GPU_ISOBANDS_NO_DATA_CLASS = 0xffffffff;
 /** Per-frame settings of {@link GPUIsobands}. */
 export type GPUIsobandsSettings = {
   /**
-   * Number of active ascending breaks, at most the recipe's `maximumBreakCount` (larger values
+   * Number of active ascending breaks, at most the contributor's `maximumBreakCount` (larger values
    * clamp on the GPU). `breakCount + 1` bands exist: band `k` covers `[b[k - 1], b[k])`.
    */
   breakCount: number;
   /** Raster extent `[minX, minY, maxX, maxY]` in world units. Row 0 is at `minY`. */
   extent: readonly [number, number, number, number];
-  /** Raster width in samples (must equal the recipe's `width`). */
+  /** Raster width in samples (must equal the contributor's `width`). */
   width: number;
-  /** Raster height in samples (must equal the recipe's `height`). */
+  /** Raster height in samples (must equal the contributor's `height`). */
   height: number;
   /** First band emitted as geometry. Defaults to 0. Does not affect `bandClasses`. */
   firstBand?: number;

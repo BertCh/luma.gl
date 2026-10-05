@@ -6,7 +6,7 @@ import type {Buffer, Device} from '@luma.gl/core';
 import {GPUCommandGraph, createTransientView} from '@luma.gl/gpgpu/gpu-core';
 import {getWebGPUTestDevice} from '@luma.gl/test-utils';
 import {expect, it} from 'vitest';
-import {GPUParameterBuffer, importGraphBuffer, submitGraph} from '../../../src/utils/gpu-contributor-utils';
+import {GPUParameterBuffer, importGraphBuffer} from '../../../src/utils/gpu-contributor-utils';
 import {createWGSLKernelNode} from '../../../src/utils/wgsl-kernel-nodes';
 import {GPUColorScale} from '../../../src/gpu-dataframe/column-classification/gpu-color-scale';
 import {
@@ -15,7 +15,12 @@ import {
   type GPUColorScaleParameterOptions
 } from '../../../src/gpu-dataframe/column-classification/color-scale-parameters';
 import {computeColorScaleOnCPU, type ColorScaleOracleResult} from './color-scale-oracle';
-import {createInputBuffer, createOutputBuffer, readUint32} from '../../utils/gpu-contributor-test-utils';
+import {
+  createInputBuffer,
+  createOutputBuffer,
+  readUint32,
+  submitGraph
+} from '../../utils/gpu-contributor-test-utils';
 
 const NONE = 0xffffffff;
 

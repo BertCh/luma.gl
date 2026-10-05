@@ -3,7 +3,7 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 /**
- * WGSL helpers shared by the column-classification recipes: a NaN constant, a NaN test by bits,
+ * WGSL helpers shared by the column-classification contributors: a NaN constant, a NaN test by bits,
  * and the order-preserving `u32` encoding of `f32` values (`-0` sorts below `+0`).
  *
  * Unsigned comparison of the keys orders values exactly as a numeric sort does, so selection,

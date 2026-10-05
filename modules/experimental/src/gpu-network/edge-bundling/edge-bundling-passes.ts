@@ -31,7 +31,7 @@ export const EDGE_BUNDLING_GRADIENT_QUANTA = 4;
 /** Kernel radii at or under this (work-box units) end the schedule. @internal */
 export const EDGE_BUNDLING_RADIUS_EPSILON = 1e-9;
 
-/** Parameter views accepted by the recipe. @internal */
+/** Parameter views accepted by the contributor. @internal */
 export type EdgeBundlingParameterView = GraphDataView<'uint32'> | GraphDataView<'float32'>;
 
 /** Shared, compile-time constants of one bundling graph. @internal */

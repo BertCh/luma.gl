@@ -91,9 +91,10 @@ it('GPUTerrainRGBDecode validates props and schedules one node', () => {
       ...overrides
     });
   };
-  const recipe = create();
-  expect(recipe.recipe).toBe('terrain-rgb-decode');
-  expect(recipe.getCommandNodes(graph).map(node => node.id)).toEqual(['terrain-rgb-decode-decode']);
+  const contributor = create();
+  expect(contributor.getCommandNodes(graph).map(node => node.id)).toEqual([
+    'terrain-rgb-decode-decode'
+  ]);
   expect(
     create({id: 'dem', encoding: 'mapbox', clampBathymetry: true, noDataRGB: [1, 2, 3]})
       .getCommandNodes(graph)

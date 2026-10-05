@@ -47,14 +47,14 @@ function createProps(
 
 it('GPUGeometryMeasures validates layouts and emits deterministic nodes', () => {
   const graph = new GPUCommandGraph(createNullWebGPUDevice(), {id: 'measures'});
-  const recipe = new GPUGeometryMeasures({
+  const contributor = new GPUGeometryMeasures({
     ...createProps(graph),
     groupIds: view(graph, 'uint32', 3),
     groupCount: 2,
     groupOutput: {areas: view(graph, 'float32', 2), featureCounts: view(graph, 'uint32', 2)}
   });
-  expect(recipe.featureCount).toBe(3);
-  const ids = recipe.getCommandNodes(graph).map(node => node.id);
+  expect(contributor.featureCount).toBe(3);
+  const ids = contributor.getCommandNodes(graph).map(node => node.id);
   expect(ids[0]).toBe('geometry-measures-features');
   expect(ids[1]).toBe('geometry-measures-feature-output');
   expect(ids).toContain('geometry-measures-group-reduce');

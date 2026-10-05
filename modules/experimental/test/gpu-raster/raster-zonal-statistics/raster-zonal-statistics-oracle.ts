@@ -26,7 +26,7 @@ export type ZonalStatisticsOracleResult = {
   overflow: number;
 };
 
-/** Computes per-zone statistics on the CPU with the same validity rules as the GPU recipe. */
+/** Computes per-zone statistics on the CPU with the same validity rules as the GPU contributor. */
 export function computeZonalStatistics(
   zones: ArrayLike<number>,
   rawValues: ArrayLike<number>,

@@ -19,7 +19,10 @@ import {
 } from '../../gpu-raster/index';
 import {createWGSLKernelNode, type WGSLKernelBinding} from '../../utils/wgsl-kernel-nodes';
 import type {GPUCommandNodeProducer} from '@luma.gl/gpgpu/gpu-core';
-import {captureGraphCommandNodes, validateGraphViewsBelongToGraph} from '../../utils/gpu-contributor-utils';
+import {
+  captureGraphCommandNodes,
+  validateGraphViewsBelongToGraph
+} from '../../utils/gpu-contributor-utils';
 import {
   getTerrainBandViews,
   getTerrainElevationNodes,
@@ -124,7 +127,7 @@ export type GPUTerrainDerivativesProps = {
  * sun position, and latitude band are read from `settings` every encoding. Columns increase east
  * and, with the default `rowDirection`, rows increase south. Invalid pixels (an invalid center or
  * 3x3 neighbor, or invalid settings) receive NaN and validity 0. For seamless tiles, pass a tile
- * with a one-pixel halo; the recipe satisfies the `GPURasterHaloStage` contract.
+ * with a one-pixel halo; the contributor satisfies the `GPURasterHaloStage` contract.
  */
 export class GPUTerrainDerivatives implements GPUCommandNodeProducer {
   /** Prefix for every node and transient ID. */

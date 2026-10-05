@@ -213,8 +213,7 @@ export class GPUPolygonRasterization implements GPUCommandNodeProducer {
       ]
     );
     this.singleSort =
-      getSortKeyBits(this.polygonCount) + getSortKeyBits(cellCount + height - 1) <=
-      32;
+      getSortKeyBits(this.polygonCount) + getSortKeyBits(cellCount + height - 1) <= 32;
   }
 
   /** Returns reset, edge, scan, emit, sort, rank, fill, and optional boundary nodes. */

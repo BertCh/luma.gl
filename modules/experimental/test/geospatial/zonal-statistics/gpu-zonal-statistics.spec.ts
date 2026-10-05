@@ -6,7 +6,7 @@ import type {Buffer, Device} from '@luma.gl/core';
 import {GPUCommandGraph, type GraphDataView, type GraphVectorView} from '@luma.gl/gpgpu/gpu-core';
 import {getWebGPUTestDevice} from '@luma.gl/test-utils';
 import {expect, it} from 'vitest';
-import {importGraphBuffer, submitGraph} from '../../../src/utils/gpu-contributor-utils';
+import {importGraphBuffer} from '../../../src/utils/gpu-contributor-utils';
 import {GPU_SPATIAL_JOIN_NO_FEATURE} from '../../../src/geospatial/spatial-join';
 import {
   GPUZonalStatistics,
@@ -19,7 +19,8 @@ import {
   createOutputBuffer,
   createVectorView,
   readFloat32,
-  readUint32
+  readUint32,
+  submitGraph
 } from '../../utils/gpu-contributor-test-utils';
 import {
   buildPolygonFeatureArrays,
@@ -629,7 +630,7 @@ it('GPUZonalStatistics writes zero uncertainCount for feature rows', async () =>
     featureCount: 2,
     outputKeys: ['counts', 'uncertainCount']
   });
-  // Poison the output so the test proves the recipe writes it.
+  // Poison the output so the test proves the contributor writes it.
   fixture.outputs.uncertainCount!.write(new Uint32Array([7]));
   fixture.run();
   expect(await readUint32(fixture.outputs.counts!, 2)).toEqual([1, 2]);

@@ -73,3 +73,12 @@ export type {
   GPUTextureShadingSettings
 } from './gpu-texture-shading';
 export type {GPUTerrainIlluminationCellSizeMode} from './terrain-illumination-utils';
+export {
+  GPU_TERRAIN_CAST_SHADOW_PARAMETER_LENGTH,
+  GPUTerrainCastShadow,
+  getGPUTerrainCastShadowParameterValues
+} from './gpu-terrain-cast-shadow';
+export type {
+  GPUTerrainCastShadowProps,
+  GPUTerrainCastShadowSettings
+} from './gpu-terrain-cast-shadow';

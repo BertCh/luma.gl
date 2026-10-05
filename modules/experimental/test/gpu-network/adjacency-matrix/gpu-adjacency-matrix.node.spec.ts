@@ -3,7 +3,7 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {Buffer, type Device} from '@luma.gl/core';
-import {GPUCommandGraph, type GraphDataView} from '@luma.gl/gpgpu/gpu-core';
+import {GPUCommandGraph} from '@luma.gl/gpgpu/gpu-core';
 import {expect, it} from 'vitest';
 import {importGraphBuffer} from '../../../src/utils/gpu-contributor-utils';
 import {
@@ -81,7 +81,7 @@ it('GPUAdjacencyMatrix validates shapes and options', () => {
 it('GPUAdjacencyMatrix returns deterministic node ids', () => {
   const device = createNullWebGPUDevice();
   const {graph, view, props} = createContext(device);
-  const recipe = new GPUAdjacencyMatrix(
+  const contributor = new GPUAdjacencyMatrix(
     props({
       weights: view('weights', 'float32', 10),
       output: {
@@ -92,7 +92,7 @@ it('GPUAdjacencyMatrix returns deterministic node ids', () => {
       }
     })
   );
-  const ids = recipe.getCommandNodes(graph).map(node => node.id);
+  const ids = contributor.getCommandNodes(graph).map(node => node.id);
   expect(ids).toEqual([
     'adjacency-matrix-zero-counts',
     'adjacency-matrix-zero-weight-sums',
@@ -135,12 +135,12 @@ it('GPUAdjacencyMatrixOrder validates and names its nodes', () => {
         order: view('o', 'uint32', 3)
       })
   ).toThrow(/order/);
-  const recipe = new GPUAdjacencyMatrixOrder({
+  const contributor = new GPUAdjacencyMatrixOrder({
     groups: view('g2', 'uint32', 4),
     tieKeys: view('t', 'uint32', 4),
     order: view('o2', 'uint32', 4)
   });
-  const ids = recipe.getCommandNodes(graph).map(node => node.id);
+  const ids = contributor.getCommandNodes(graph).map(node => node.id);
   expect(ids[0]).toBe('adjacency-matrix-order-identity');
   expect(ids.at(-1)).toBe('adjacency-matrix-order-scatter');
   expect(ids).toContain('adjacency-matrix-order-gather-groups');

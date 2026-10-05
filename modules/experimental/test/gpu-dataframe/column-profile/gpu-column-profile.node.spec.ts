@@ -107,8 +107,8 @@ it('GPUColumnProfile emits deterministic node IDs', () => {
   const ids = () => {
     const device = createNullWebGPUDevice();
     const graph = new GPUCommandGraph(device);
-    const recipe = new GPUColumnProfile(createProps(graph, {id: 'profile'}));
-    const nodeIds = recipe.getCommandNodes(graph).map(node => node.id);
+    const contributor = new GPUColumnProfile(createProps(graph, {id: 'profile'}));
+    const nodeIds = contributor.getCommandNodes(graph).map(node => node.id);
     device.destroy();
     return nodeIds;
   };
@@ -132,13 +132,13 @@ it('GPUColumnProfile skips optional nodes when outputs are absent', () => {
   const device = createNullWebGPUDevice();
   const graph = new GPUCommandGraph(device);
   const props = createProps(graph);
-  const recipe = new GPUColumnProfile({
+  const contributor = new GPUColumnProfile({
     ...props,
     mask: undefined,
     parameters: undefined,
     output: {statistics: props.output.statistics}
   });
-  const ids = recipe.getCommandNodes(graph).map(node => node.id);
+  const ids = contributor.getCommandNodes(graph).map(node => node.id);
   expect(ids.some(id => id.includes('histogram'))).toBe(false);
   expect(ids.some(id => id.includes('domain'))).toBe(false);
   expect(ids.some(id => id.includes('category-counts'))).toBe(false);
@@ -234,8 +234,8 @@ it('GPUColumnProfile rejects views from another graph', () => {
   const device = createNullWebGPUDevice();
   const graph = new GPUCommandGraph(device);
   const other = new GPUCommandGraph(device);
-  const recipe = new GPUColumnProfile(createProps(graph));
-  expect(() => recipe.getCommandNodes(other)).toThrow(/must belong to the target graph/);
+  const contributor = new GPUColumnProfile(createProps(graph));
+  expect(() => contributor.getCommandNodes(other)).toThrow(/must belong to the target graph/);
   device.destroy();
 });
 

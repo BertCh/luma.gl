@@ -103,14 +103,14 @@ export type GPUGeographicallyWeightedRegressionProps = {
  * "Geographically Weighted Regression".
  *
  * For every included location `i` (a row with unmasked, finite position, predictors and response)
- * the recipe fits a weighted least squares `y ~ 1 + x` over all included rows `j` with weights
+ * the contributor fits a weighted least squares `y ~ 1 + x` over all included rows `j` with weights
  * `w_ij = K(d_ij / h_i)`, `d` the planar Euclidean distance. Kernels: `'gaussian'`
  * `exp(-0.5 (d/h)^2)`, `'bisquare'` `(1 - (d/h)^2)^2` for `d < h`. The bandwidth is fixed (`h` is
  * the ladder value) or adaptive (`h` is `1.00001` times the distance to the k-th nearest included
  * row, counting the location itself, as mgwr; ties in distance cannot change the k-th value).
  *
  * The parameter buffer carries a bandwidth ladder of up to `maximumBandwidthCount` candidates.
- * For every candidate the recipe computes `RSS = sum (y_i - yhat_i)^2`, the hat trace
+ * For every candidate the contributor computes `RSS = sum (y_i - yhat_i)^2`, the hat trace
  * `tr(S) = sum S_ii` with `S_ii = x_i^T (X'WX)^-1 x_i w_ii`, and
  * `AICc = n ln(RSS/n) + n ln(2 pi) + n (n + tr(S)) / (n - 2 - tr(S))` (n = included rows). A
  * candidate is invalid (score NaN) when any included location is singular, the bandwidth is not
@@ -305,21 +305,13 @@ export class GPUGeographicallyWeightedRegression implements GPUCommandNodeProduc
       transient('summary', 'float32', GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_SUMMARY_LENGTH);
     const locals = transient('locals', 'uint32', rowCount * LOCAL_STRIDE);
 
-    const read = (
-      name: string,
-      view: GraphDataView,
-      type: 'u32' | 'f32'
-    ): WGSLKernelBinding => ({
+    const read = (name: string, view: GraphDataView, type: 'u32' | 'f32'): WGSLKernelBinding => ({
       name,
       view,
       type,
       access: 'read'
     });
-    const write = (
-      name: string,
-      view: GraphDataView,
-      type: 'u32' | 'f32'
-    ): WGSLKernelBinding => ({
+    const write = (name: string, view: GraphDataView, type: 'u32' | 'f32'): WGSLKernelBinding => ({
       name,
       view,
       type,

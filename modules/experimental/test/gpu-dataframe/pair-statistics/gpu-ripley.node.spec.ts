@@ -4,7 +4,10 @@
 
 import {createTransientView, GPUCommandGraph} from '@luma.gl/gpgpu/gpu-core';
 import {expect, it} from 'vitest';
-import {GPURipley, type GPURipleyProps} from '../../../src/gpu-dataframe/pair-statistics/gpu-ripley';
+import {
+  GPURipley,
+  type GPURipleyProps
+} from '../../../src/gpu-dataframe/pair-statistics/gpu-ripley';
 import {
   getGPURipleyParameterValues,
   GPU_RIPLEY_EDGE_CORRECTION,
@@ -100,10 +103,10 @@ it('GPURipley rejects views from another graph', () => {
   const device = createNullWebGPUDevice();
   const graph = new GPUCommandGraph(device);
   const other = new GPUCommandGraph(device);
-  const recipe = new GPURipley(
+  const contributor = new GPURipley(
     createProps(graph, {k: createTransientView(other, 'foreign-k', 'float32', 8)})
   );
-  expect(() => recipe.getCommandNodes(graph)).toThrow(/target graph/);
+  expect(() => contributor.getCommandNodes(graph)).toThrow(/target graph/);
   device.destroy();
 });
 
@@ -113,7 +116,7 @@ it('GPURipley emits deterministic node IDs and only the finishing nodes it needs
     const graph = new GPUCommandGraph(device);
     const view = <Format extends 'uint32' | 'float32'>(format: Format, length: number) =>
       createTransientView(graph, `r-${serial++}`, format, length);
-    const recipe = new GPURipley({
+    const contributor = new GPURipley({
       ...createProps(graph),
       id: 'r',
       pairCounts: view('uint32', 8),
@@ -121,7 +124,7 @@ it('GPURipley emits deterministic node IDs and only the finishing nodes it needs
         ? {l: view('float32', 8), pairCorrelation: view('float32', 8), radii: view('float32', 8)}
         : {})
     });
-    return recipe.getCommandNodes(graph).map(node => node.id);
+    return contributor.getCommandNodes(graph).map(node => node.id);
   };
   const full = ids(true);
   expect(ids(true)).toEqual(full);

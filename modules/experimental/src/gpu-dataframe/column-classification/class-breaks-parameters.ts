@@ -39,7 +39,7 @@ export const GPU_CLASS_BREAKS_BOX_PLOT_CLASS_COUNT = 6;
 /**
  * Returns the float32 parameter length of a `GPUClassBreaks` with `maximumClassCount` classes.
  *
- * @param maximumClassCount Compile-time class capacity of the recipe.
+ * @param maximumClassCount Compile-time class capacity of the contributor.
  */
 export function getGPUClassBreaksParameterLength(maximumClassCount: number): number {
   return GPU_CLASS_BREAKS_PARAMETER_HEADER_LENGTH + maximumClassCount + 1;
@@ -47,7 +47,7 @@ export function getGPUClassBreaksParameterLength(maximumClassCount: number): num
 
 /** Per-frame settings packed by {@link getGPUClassBreaksParameterValues}. */
 export type GPUClassBreaksParameters = {
-  /** Classification method. It must be one of the recipe's compiled `methods`. */
+  /** Classification method. It must be one of the contributor's compiled `methods`. */
   method: GPUClassBreaksMethod;
   /**
    * Requested class count `k`. Ignored by `'box-plot'` (always 6) and `'custom'` (one less than
@@ -78,7 +78,7 @@ export type GPUClassBreaksParameters = {
  * GPU quantiles match a CPU oracle bit for bit.
  *
  * @param parameters Per-frame settings.
- * @param maximumClassCount Compile-time class capacity of the recipe.
+ * @param maximumClassCount Compile-time class capacity of the contributor.
  * @param target Optional destination of at least `getGPUClassBreaksParameterLength(maximumClassCount)` elements.
  * @throws If the class count is out of range or custom edges do not fit.
  */

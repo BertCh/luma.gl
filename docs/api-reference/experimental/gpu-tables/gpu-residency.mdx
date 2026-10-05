@@ -1,0 +1,118 @@
+---
+title: GPU residency arena and tile selection
+description: Page tiles into fixed-capacity GPU columns, select resident rows, and choose tiles to draw and load.
+---
+
+import {DocumentationBadge, DocumentationBadges} from '@site/src/components/docs/documentation-badges';
+import {GPUTablesDocsTabs} from '@site/src/components/docs/gpu-tables-docs-tabs';
+
+# GPU Residency
+
+<GPUTablesDocsTabs active="residency" />
+
+<DocumentationBadges>
+  <DocumentationBadge tone="version">From v10.0</DocumentationBadge>
+  <DocumentationBadge tone="experimental">Experimental API</DocumentationBadge>
+</DocumentationBadges>
+
+## Overview
+
+`@luma.gl/experimental/gpu-tables` exports analysis contributors for tiled and streamed rows.
+`GPUResidencyArena` owns fixed-capacity column buffers and pages tiles in and out with queue writes.
+`GPUResidentRowSelection` reduces the live rows to bounded stable IDs, and `GPUTileLODSelection`
+chooses which tiles of a hierarchy to draw and to load. Each contributor declares resources and
+command nodes into a caller-owned `GPUCommandGraph` through `getCommandNodes(graph)`
+(`GPUCommandNodeProducer`). None compiles, submits, encodes, or reads back.
+
+## When to use it
+
+Use the arena when rows arrive and leave in tiles or chunks and downstream analysis must not
+recompile as they do. A `GPUTable` or `GPURecordBatch` preserves the batches the application
+supplied, so a chunked graph grows a node set per batch. The arena keeps one packed view per column,
+so the node count of every downstream contributor is independent of how many tiles are resident.
+
+Use `GPUTileLODSelection` instead of `GPUVirtualGeometrySelection` when the tile hierarchy has
+residency, a load budget, foveation, or focus-distance falloff. Without those, the drawn frontier is
+identical to `GPUVirtualGeometrySelection`.
+
+## Quick start
+
+```ts
+import {GPUCommandGraph} from '@luma.gl/gpgpu/gpu-core';
+import {GPUResidencyArena} from '@luma.gl/experimental/gpu-tables';
+
+const graph = new GPUCommandGraph(device, {id: 'tiles'});
+const arena = new GPUResidencyArena(device, {rowCapacity: 1 << 20, columns: [
+  {name: 'positions', format: 'float32x2', deadValue: NaN},
+  {name: 'times', format: 'float32'}
+]});
+const views = arena.importToGraph(graph);
+// Pass `views.columns.times` and `views.liveMask` to any contributor.
+const compiled = graph.compile(); // once
+
+arena.insertTile('7/65/42', {rowCount, columns: {positions, times}}); // no recompile
+```
+
+## `GPUTileLODSelection`
+
+Walks a breadth-level tile hierarchy (bounding spheres, geometric errors, child ranges) once per
+level and selects the tiles to draw and to load. Refinement uses projected screen-space error,
+optionally relaxed by foveation and focus-distance falloff, and optionally capped by a per-frame
+cost and node budget spent deterministically by priority bucket. Resident refined tiles stand in
+for missing children; every visible non-resident tile is requested with a priority. Outputs include
+drawn IDs, requests, masks, nearest drawn ancestors, statistics, and indirect draw or dispatch
+records. `makeGPUTileLODQuadtree` builds a Morton-ordered quadtree hierarchy on the CPU.
+
+```ts
+graph.add(new GPUTileLODSelection({
+  hierarchy: {sphereBounds, geometricErrors, children, levelOffsets, tileIds},
+  view: view.importToGraph(graph), residency: residency.importToGraph(graph),
+  output, requests, indirectDraw: {commands: drawCommands.importToGraph(graph)}
+}));
+view.write(getGPUTileLODViewParameterValues({viewProjectionMatrix, cameraPosition, viewportSize,
+  maximumScreenSpaceError: 2}));
+```
+
+## `GPUResidencyArena` and `GPUResidentRowSelection`
+
+Runs contributors over tiled and streamed rows without changing the graph. `GPUResidencyArena` owns one
+fixed-capacity buffer per column plus a live mask and a per-row tile slot, and pages tiles in and
+out (`insertTile`, `evictTile`, `replaceTile`) with queue writes only: no buffer, pipeline, or graph
+is created during churn. `importToGraph(graph)` returns one packed view per column, so every existing
+contributor runs over arena columns unchanged and its node count does not depend on how many tiles are
+resident. Pages are fixed-size and need not be contiguous, so fragmentation never blocks an insert;
+`ResidencyArenaAllocator` is the CPU allocator and oracle (`resolveRow`, `getLiveRows`). Which tiles
+to evict is the application's policy (for example relative to a playhead or a request priority).
+
+Dead rows must not reach a contributor. Pass `liveMask` wherever a contributor takes a mask or predicate
+(`GPUTimeWindowFilter.additionalPredicates`, `GPURegionStatistics` `selection: {kind: 'mask'}`,
+`GPUPointDensity` `mask`), and give columns read by mask-less contributors a `deadValue`. Otherwise
+stale rows are counted, including in automatic histogram domains.
+
+`GPUResidentRowSelection` is the arena's mask, compaction, and indirect-draw step: live mask, an
+optional per-tile gate (`tileMask` indexed by tile slot), and optional predicates reduce to bounded
+stable IDs and an indirect `instanceCount`.
+
+```ts
+const arena = new GPUResidencyArena(device, {rowCapacity: 1 << 20, columns: [
+  {name: 'positions', format: 'float32x2', deadValue: NaN},
+  {name: 'times', format: 'float32'}
+]});
+const views = arena.importToGraph(graph);
+graph.add(new GPUTimeWindowFilter({
+  timestamps: views.columns.times, window: window.importToGraph(graph),
+  additionalPredicates: [{kind: 'selection', mask: views.liveMask}],
+  output, drawInstanceCount: graph.importGPUData('count', drawCommands.getInstanceCountData(0))
+}));
+const compiled = graph.compile();
+arena.insertTile('7/65/42', {rowCount, columns: {positions, times}}); // no recompile
+```
+
+Over 1,048,576 rows on an Apple M3 Pro, the arena graph stays at 10 nodes for any tile or chunk
+count, while `GPUCompaction` over a 32-chunk `GraphVectorView` emits 1,249; time mask, compaction,
+and publish take about 0.8 ms per queued encoding against 120 ms for the chunked graph.
+
+## Related pages
+
+- [GPU Tables](/docs/api-reference/experimental/gpu-tables)
+- [GPU Dataframe analysis contributors](/docs/api-reference/experimental/gpu-dataframe-analysis)

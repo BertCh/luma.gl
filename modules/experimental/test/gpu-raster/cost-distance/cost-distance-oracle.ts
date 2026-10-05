@@ -65,7 +65,7 @@ export function getNeighbor(
   return column < 0 || row < 0 || column >= width || row >= height ? -1 : row * width + column;
 }
 
-/** Grid Dijkstra in float64 with the recipe's impassable, limit, and seed rules. */
+/** Grid Dijkstra in float64 with the contributor's impassable, limit, and seed rules. */
 export function computeCostDistance(options: CostDistanceOracleOptions): Float64Array {
   const {width, height, friction} = options;
   const costLimit = options.costLimit ?? Infinity;
@@ -131,7 +131,7 @@ export function computeCostDistance(options: CostDistanceOracleOptions): Float64
   return costs;
 }
 
-/** Number of thresholds below each cost, or `NONE` (matches the recipe's band rule). */
+/** Number of thresholds below each cost, or `NONE` (matches the contributor's band rule). */
 export function computeBands(costs: ArrayLike<number>, thresholds: readonly number[]): Uint32Array {
   return Uint32Array.from(costs as ArrayLike<number>, cost => {
     if (!Number.isFinite(cost)) return NONE;

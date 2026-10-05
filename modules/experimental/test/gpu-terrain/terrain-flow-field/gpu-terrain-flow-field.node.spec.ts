@@ -58,9 +58,8 @@ it('getGPUTerrainFlowFieldParameterValues packs settings', () => {
 
 it('GPUTerrainFlowField prefixes node ids', () => {
   const {device, graph, create} = createFixture();
-  const recipe = create({id: 'wind'});
-  expect(recipe.recipe).toBe('terrain-flow-field');
-  expect(recipe.getCommandNodes(graph).map(node => node.id)).toEqual([
+  const contributor = create({id: 'wind'});
+  expect(contributor.getCommandNodes(graph).map(node => node.id)).toEqual([
     'wind-elevation',
     'wind-deflect'
   ]);

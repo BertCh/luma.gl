@@ -4,7 +4,7 @@
 
 /**
  * Float64 oracles written straight from the formulas of the Relief Visualization Toolbox (RVT,
- * Apache-2.0; Kokalj and Somrak 2019). They deliberately share no code with the GPU recipes:
+ * Apache-2.0; Kokalj and Somrak 2019). They deliberately share no code with the GPU contributors:
  * the mean filter uses RVT's padded integral image, MSRM runs RVT's loop over every scale, local
  * dominance rolls the padded array, and blending follows `render_all_images` top-last.
  */
@@ -81,8 +81,13 @@ export function computeMeanFilterRVT(
   const countImage = integralImage(counts, paddedWidth, paddedHeight);
   const wrap = (value: number, size: number) => ((value % size) + size) % size;
   // np.roll(a, shift)[i] = a[i - shift].
-  const rolled = (image: Float64Array, rowShift: number, columnShift: number, i: number, j: number) =>
-    image[wrap(i - rowShift, paddedHeight) * paddedWidth + wrap(j - columnShift, paddedWidth)];
+  const rolled = (
+    image: Float64Array,
+    rowShift: number,
+    columnShift: number,
+    i: number,
+    j: number
+  ) => image[wrap(i - rowShift, paddedHeight) * paddedWidth + wrap(j - columnShift, paddedWidth)];
   const window = (image: Float64Array, i: number, j: number) =>
     rolled(image, radius, radius, i, j) +
     rolled(image, -radius - 1, -radius - 1, i, j) -
@@ -195,7 +200,8 @@ export function computeLocalDominanceRVT(options: {
         for (let column = 0; column < paddedWidth; column++) {
           const moved =
             dem[
-              wrap(row - rowShift, paddedHeight) * paddedWidth + wrap(column - columnShift, paddedWidth)
+              wrap(row - rowShift, paddedHeight) * paddedWidth +
+                wrap(column - columnShift, paddedWidth)
             ];
           const here = dem[row * paddedWidth + column];
           if (here + observer > moved) {
@@ -236,7 +242,11 @@ function normalizeLinear(value: number, minimum: number, maximum: number): numbe
 }
 
 /** RVT's single-band blend equations (`blend_func.py`), without the in-place aliasing. */
-export function blendRVT(mode: RVTBlendLayer['blendMode'], active: number, background: number): number {
+export function blendRVT(
+  mode: RVTBlendLayer['blendMode'],
+  active: number,
+  background: number
+): number {
   switch (mode) {
     case 'multiply':
       return active * background;

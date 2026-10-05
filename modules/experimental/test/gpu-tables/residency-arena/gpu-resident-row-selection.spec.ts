@@ -6,10 +6,15 @@ import type {Buffer} from '@luma.gl/core';
 import {DrawCommandBuffer, GPUCommandGraph} from '@luma.gl/gpgpu/gpu-core';
 import {getWebGPUTestDevice} from '@luma.gl/test-utils';
 import {expect, it, vi} from 'vitest';
-import {importGraphBuffer, submitGraph} from '../../../src/utils/gpu-contributor-utils';
+import {importGraphBuffer} from '../../../src/utils/gpu-contributor-utils';
 import {GPUResidentRowSelection} from '../../../src/gpu-tables/residency-arena/gpu-resident-row-selection';
 import {GPU_RESIDENCY_ARENA_DEAD_SLOT} from '../../../src/gpu-tables/residency-arena/residency-arena-types';
-import {createInputBuffer, createOutputBuffer, readUint32} from '../../utils/gpu-contributor-test-utils';
+import {
+  createInputBuffer,
+  createOutputBuffer,
+  readUint32,
+  submitGraph
+} from '../../utils/gpu-contributor-test-utils';
 import {selectResidentRowsOracle} from './resident-row-selection-oracle';
 
 const ROW_CAPACITY = 4096;

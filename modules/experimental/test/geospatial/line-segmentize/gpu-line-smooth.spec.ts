@@ -27,7 +27,7 @@ function createSmoothFixture(
     capacity: options.capacity,
     pathCapacity: paths.pathOffsets.length - 1,
     withVertexColumns: false,
-    createRecipe: (inputs, parameters, output) =>
+    createContributor: (inputs, parameters, output) =>
       new GPULineSmooth({
         positions: inputs['positions'] as GraphDataView<'float32x2'>,
         pathOffsets: inputs['pathOffsets'] as GraphDataView<'uint32'>,

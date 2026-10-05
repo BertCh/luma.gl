@@ -143,8 +143,8 @@ describe('GPU Graph native deck.gl resident layers', () => {
       new URL('../src/gpu-graph/gpu-graph-effect.ts', import.meta.url),
       'utf8'
     );
-    expect(effectSource).toContain('GPUGraphRecipeColumns');
-    // Analytics live in the recipe columns only; the effect keeps no duplicate legacy copies.
+    expect(effectSource).toContain('GPUGraphAnalysisColumns');
+    // Analytics live in the analysis columns only; the effect keeps no duplicate legacy copies.
     expect(effectSource).not.toContain('GPUGraphDegree');
     expect(effectSource).not.toContain('GPUGraphPageRank');
     expect(effectSource).not.toContain('GPUGraphConnectedComponents');

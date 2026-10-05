@@ -6,7 +6,7 @@ import {Buffer, type Device} from '@luma.gl/core';
 import {GPUCommandGraph, type CompiledGPUCommandGraph} from '@luma.gl/gpgpu/gpu-core';
 import {getWebGPUTestDevice} from '@luma.gl/test-utils';
 import {expect, it} from 'vitest';
-import {importGraphBuffer, submitGraph} from '../../../src/utils/gpu-contributor-utils';
+import {importGraphBuffer} from '../../../src/utils/gpu-contributor-utils';
 import {
   decodeGPUNetworkSubgraphFilterCounts,
   getGPUNetworkSubgraphFilterParameterValues,
@@ -17,7 +17,12 @@ import {
   getGPUTimeWindowWordParameterValues,
   getInt64TimeWords
 } from '../../../src/gpu-dataframe/time-window-filter/time-words';
-import {createInputBuffer, createOutputBuffer, readUint32} from '../../utils/gpu-contributor-test-utils';
+import {
+  createInputBuffer,
+  createOutputBuffer,
+  readUint32,
+  submitGraph
+} from '../../utils/gpu-contributor-test-utils';
 import {createSymmetricEdges} from '../network-analysis/network-analytics-oracle';
 import {
   buildCSR,
@@ -60,7 +65,7 @@ class Fixture {
   readonly graph: GPUCommandGraph;
   readonly csr: ReturnType<typeof buildCSR>;
   readonly buffers: Buffer[] = [];
-  readonly recipe: GPUNetworkSubgraphFilter;
+  readonly contributor: GPUNetworkSubgraphFilter;
   readonly slotCount: number;
   readonly vertexColumns: Float32Array[] = [];
   readonly edgeColumns: Float32Array[] = [];
@@ -81,7 +86,8 @@ class Fixture {
     const {nodeCount} = options;
     this.graph = new GPUCommandGraph(device, {id: 'subgraph'});
     this.csr = buildCSR(nodeCount, options.edges);
-    const slotCount = (this.slotCount = this.csr.neighbors.length);
+    this.slotCount = this.csr.neighbors.length;
+    const slotCount = this.slotCount;
     const track = (name: string, buffer: Buffer) => {
       this.buffers.push(buffer);
       this.buffer[name] = buffer;
@@ -157,7 +163,7 @@ class Fixture {
       overflow: output(`${name}-overflow`, 1),
       totalCount: output(`${name}-total`, 1)
     });
-    this.recipe = new GPUNetworkSubgraphFilter({
+    this.contributor = new GPUNetworkSubgraphFilter({
       id: 'sub',
       offsets: view('offsets', input('offsets', this.csr.offsets), nodeCount + 1, 'uint32'),
       neighbors: view('neighbors', input('neighbors', this.csr.neighbors), slotCount, 'uint32'),
@@ -207,7 +213,7 @@ class Fixture {
         }
       }
     });
-    this.graph.add(this.recipe);
+    this.graph.add(this.contributor);
   }
 
   setState(state: GPUNetworkSubgraphFilterState): void {

@@ -129,10 +129,10 @@ export type GPUNetworkAccessibilityProps = {
  * within a per-frame cost threshold, gravity accessibility with negative-exponential or power decay,
  * and the two-step floating catchment area (2SFCA, with the decay applied inside each catchment).
  *
- * The recipe only reads the matrix, so changing the threshold, decay, or beta re-encodes a few
+ * The contributor only reads the matrix, so changing the threshold, decay, or beta re-encodes a few
  * linear passes and never re-runs a shortest-path search: build the matrix with
  * `GPUNetworkCostMatrix` in one graph, encode it when the network or the opportunity set changes,
- * and encode this recipe's graph every frame.
+ * and encode this contributor's graph every frame.
  *
  * Sums are deterministic without float atomics: per-node outputs gather the rows in ascending order
  * in one invocation, and per-row outputs reduce each row in one workgroup with a fixed tree.
@@ -297,7 +297,7 @@ export class GPUNetworkAccessibility implements GPUCommandNodeProducer {
   }
 }
 
-/** Returns every read-only view of an accessibility recipe. */
+/** Returns every read-only view of an accessibility contributor. */
 function getInputs(props: GPUNetworkAccessibilityProps): (GraphDataView | undefined)[] {
   return [props.costs, props.opportunityWeights, props.parameters, props.catchment?.demand];
 }

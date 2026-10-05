@@ -6,7 +6,7 @@ import type {Buffer, Device} from '@luma.gl/core';
 import {GPUCommandGraph} from '@luma.gl/gpgpu/gpu-core';
 import {getWebGPUTestDevice} from '@luma.gl/test-utils';
 import {expect, it} from 'vitest';
-import {GPUParameterBuffer, importGraphBuffer, submitGraph} from '../../../src/utils/gpu-contributor-utils';
+import {GPUParameterBuffer, importGraphBuffer} from '../../../src/utils/gpu-contributor-utils';
 import {
   getGPUEmergingHotSpotParameterValues,
   GPUEmergingHotSpots,
@@ -17,7 +17,8 @@ import {
   createInputBuffer,
   createOutputBuffer,
   readFloat32,
-  readUint32
+  readUint32,
+  submitGraph
 } from '../../utils/gpu-contributor-test-utils';
 import {
   computeEmergingHotSpotCells,
@@ -88,7 +89,7 @@ function createHarness(
     globalStatistics: createOutputBuffer(device, 4)
   };
   const graph = new GPUCommandGraph(device, {id: 'emerging-hot-spots-test'});
-  const recipe = new GPUEmergingHotSpots({
+  const contributor = new GPUEmergingHotSpots({
     values:
       format === 'uint32'
         ? importGraphBuffer(graph, 'values', valuesBuffer, 'uint32', binCount)
@@ -109,12 +110,12 @@ function createHarness(
     globalStatistics: importGraphBuffer(graph, 'stats', outputs.globalStatistics, 'float32', 4)
   });
   let buildCount = 0;
-  const getCommandNodes = recipe.getCommandNodes.bind(recipe);
-  recipe.getCommandNodes = (target => {
+  const getCommandNodes = contributor.getCommandNodes.bind(contributor);
+  contributor.getCommandNodes = (target => {
     buildCount++;
     return getCommandNodes(target);
-  }) as typeof recipe.getCommandNodes;
-  graph.add(recipe);
+  }) as typeof contributor.getCommandNodes;
+  graph.add(contributor);
   const compiled = graph.compile();
   return {
     get buildCount() {

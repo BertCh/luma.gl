@@ -111,13 +111,12 @@ it('GPUColorScale parameter helper packs the documented layout', () => {
 it('GPUColorScale accepts valid props and returns deterministic node IDs', () => {
   const device = createNullWebGPUDevice();
   const graph = new GPUCommandGraph(device);
-  const recipe = new GPUColorScale(createProps(graph, {id: 'scale'}));
-  expect(recipe.recipe).toBe('color-scale');
-  const ids = recipe.getCommandNodes(graph).map(node => node.id);
+  const contributor = new GPUColorScale(createProps(graph, {id: 'scale'}));
+  const ids = contributor.getCommandNodes(graph).map(node => node.id);
   expect(ids).toEqual(['scale-init', 'scale-classify', 'scale-colorize']);
   const secondGraph = new GPUCommandGraph(device);
-  const secondRecipe = new GPUColorScale(createProps(secondGraph, {id: 'scale'}));
-  expect(secondRecipe.getCommandNodes(secondGraph).map(node => node.id)).toEqual(ids);
+  const secondContributor = new GPUColorScale(createProps(secondGraph, {id: 'scale'}));
+  expect(secondContributor.getCommandNodes(secondGraph).map(node => node.id)).toEqual(ids);
   // Classes only need no colorize node and no init.
   const classOnlyGraph = new GPUCommandGraph(device);
   const classOnly = new GPUColorScale(
@@ -135,14 +134,14 @@ it('GPUColorScale accepts valid props and returns deterministic node IDs', () =>
 it('GPUColorScale accepts uint32 ordinal values, domainCount views and masks', () => {
   const device = createNullWebGPUDevice();
   const graph = new GPUCommandGraph(device);
-  const recipe = new GPUColorScale(
+  const contributor = new GPUColorScale(
     createProps(graph, {
       values: view(graph, 'uint32', 10),
       mask: view(graph, 'uint32', 10),
       domainCount: view(graph, 'uint32', 1)
     })
   );
-  expect(recipe.getCommandNodes(graph).length).toBe(3);
+  expect(contributor.getCommandNodes(graph).length).toBe(3);
   device.destroy();
 });
 
@@ -189,8 +188,8 @@ it('GPUColorScale rejects aliased buffers and foreign graphs', () => {
   };
   expect(() => new GPUColorScale(sharedOutputs)).toThrow(/share buffers/);
   const otherGraph = new GPUCommandGraph(device);
-  const recipe = new GPUColorScale(createProps(graph));
-  expect(() => recipe.getCommandNodes(otherGraph)).toThrow(/target graph/);
+  const contributor = new GPUColorScale(createProps(graph));
+  expect(() => contributor.getCommandNodes(otherGraph)).toThrow(/target graph/);
   device.destroy();
 });
 

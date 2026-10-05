@@ -61,13 +61,14 @@ function getNodeIds(rows: number, options: OptionSet = {}, capacity: number = ro
   return ids;
 }
 
-it('GPUResidentRowSelection has stable recipe name, default id, and unique prefixed node IDs', () => {
+it('GPUResidentRowSelection has stable default id, and unique prefixed node IDs', () => {
   const device = createNullWebGPUDevice();
   const graph = new GPUCommandGraph(device);
-  const recipe = new GPUResidentRowSelection(createProps(graph, 8, {tiles: true, predicates: 1}));
-  expect(recipe.recipe).toBe('resident-row-selection');
-  expect(recipe.id).toBe('resident-row-selection');
-  const ids = recipe.getCommandNodes(graph).map(node => node.id);
+  const contributor = new GPUResidentRowSelection(
+    createProps(graph, 8, {tiles: true, predicates: 1})
+  );
+  expect(contributor.id).toBe('resident-row-selection');
+  const ids = contributor.getCommandNodes(graph).map(node => node.id);
   expect(ids[0]).toBe('resident-row-selection-tile-expand');
   expect(ids.at(-1)).toBe('resident-row-selection-publish');
   expect(new Set(ids).size).toBe(ids.length);

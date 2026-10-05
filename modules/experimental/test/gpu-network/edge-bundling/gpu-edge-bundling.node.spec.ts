@@ -57,7 +57,7 @@ it('GPUEdgeBundling schedules box, initialize, per-iteration, finalize, and indi
 
   const minimalGraph = new GPUCommandGraph(device);
   const minimal = new GPUEdgeBundling(createProps(minimalGraph));
-  expect(minimal.recipe).toBe('edge-bundling');
+  expect(minimal.id).toBe('edge-bundling');
   const ids = minimal.getCommandNodes(minimalGraph).map(node => node.id);
   expect(ids.length).toBe(3 + 3 * 15 + 1);
   expect(ids[0]).toBe('edge-bundling-box-reset');

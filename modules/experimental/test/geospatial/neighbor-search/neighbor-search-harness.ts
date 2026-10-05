@@ -4,7 +4,7 @@
 
 import type {Buffer, Device} from '@luma.gl/core';
 import {GPUCommandGraph} from '@luma.gl/gpgpu/gpu-core';
-import {GPUParameterBuffer, importGraphBuffer, submitGraph} from '../../../src/utils/gpu-contributor-utils';
+import {GPUParameterBuffer, importGraphBuffer} from '../../../src/utils/gpu-contributor-utils';
 import {
   getGPUNeighborSearchParameterValues,
   GPUNeighborSearch,
@@ -15,7 +15,8 @@ import {
   createInputBuffer,
   createOutputBuffer,
   readFloat32,
-  readUint32
+  readUint32,
+  submitGraph
 } from '../../utils/gpu-contributor-test-utils';
 
 const GARBAGE = 0x7f7f7f7f;
@@ -86,7 +87,7 @@ export function createNeighborSearchHarness(
     counts: createOutputBuffer(device, queryRows)
   };
   const graph = new GPUCommandGraph(device, {id: 'neighbor-search-test'});
-  const recipe = new GPUNeighborSearch({
+  const contributor = new GPUNeighborSearch({
     mode: options.mode,
     k: options.k,
     gridSize: options.gridSize ?? [16, 16],
@@ -110,12 +111,12 @@ export function createNeighborSearchHarness(
     neighborCounts: importGraphBuffer(graph, 'counts', outputs.counts, 'uint32', queryRows)
   });
   let buildCount = 0;
-  const getCommandNodes = recipe.getCommandNodes.bind(recipe);
-  recipe.getCommandNodes = (target => {
+  const getCommandNodes = contributor.getCommandNodes.bind(contributor);
+  contributor.getCommandNodes = (target => {
     buildCount++;
     return getCommandNodes(target);
-  }) as typeof recipe.getCommandNodes;
-  graph.add(recipe);
+  }) as typeof contributor.getCommandNodes;
+  graph.add(contributor);
   const compiled = graph.compile();
 
   return {

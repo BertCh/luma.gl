@@ -263,7 +263,7 @@ export function fanTriangulate(piece: readonly BandVertex[]): BandVertex[][] {
 }
 
 /**
- * Whole-raster band triangles in (cell, band, piece, fan) order, mirroring the GPU recipe.
+ * Whole-raster band triangles in (cell, band, piece, fan) order, mirroring the GPU contributor.
  *
  * @param parameters Packed `getGPUIsobandsParameterValues` array.
  * @param capacity Triangle capacity; extra triangles only count toward `totalCount`.

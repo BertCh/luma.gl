@@ -17,7 +17,11 @@ import {
   createPublishNode,
   createTransientUint32Rows
 } from '../../utils/wgsl-kernel-nodes';
-import type {GPUCompactOutput, GPUFloat32Positions, GPUUint32Rows} from '../../utils/gpu-contributor-types';
+import type {
+  GPUCompactOutput,
+  GPUFloat32Positions,
+  GPUUint32Rows
+} from '../../utils/gpu-contributor-types';
 import type {GPUCommandNodeProducer} from '@luma.gl/gpgpu/gpu-core';
 import {
   getGraphViewChunks,
@@ -86,7 +90,7 @@ export type GPUBufferSelectionProps = {
 /**
  * Selects the points within a per-frame planar distance of point or polyline features.
  *
- * The recipe composes {@link GPUNearestFeatureJoin} (a feature BVH, candidate pairs, and exact
+ * The contributor composes {@link GPUNearestFeatureJoin} (a feature BVH, candidate pairs, and exact
  * point-to-segment distances) with a mask kernel (`nearestFeatureIds != no feature`) and, when
  * `output` is requested, `GPUVisibilityWorkflow` over that mask.
  *

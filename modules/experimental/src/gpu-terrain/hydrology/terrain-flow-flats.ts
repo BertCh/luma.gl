@@ -4,7 +4,10 @@
 
 import type {GPUCommandGraph, GPUCommandNode, GraphDataView} from '@luma.gl/gpgpu/gpu-core';
 import {createWGSLKernelNode, type WGSLKernelBinding} from '../../utils/wgsl-kernel-nodes';
-import {createRecipeTransientView, getRasterGridWGSL} from '../../gpu-raster/cost-distance/raster-grid-utils';
+import {
+  createContributorTransientView,
+  getRasterGridWGSL
+} from '../../gpu-raster/cost-distance/raster-grid-utils';
 import {
   createRasterTiledRelaxation,
   createRasterTiledRelaxationNodes
@@ -67,7 +70,7 @@ export function createTerrainFlowFlatNodes<Parameters>(
   const cellCount = props.width * props.height;
   const {cellClass} = props;
   const makeView = (suffix: string) =>
-    createRecipeTransientView<'float32', Parameters>(
+    createContributorTransientView<'float32', Parameters>(
       graph,
       OPERATION,
       props.id,

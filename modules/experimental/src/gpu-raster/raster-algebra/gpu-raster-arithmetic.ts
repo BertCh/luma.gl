@@ -55,7 +55,7 @@ export type GPURasterArithmeticProps = {
  * value, square root, natural logarithm, exponential, floor, ceil, and round (half to even).
  * Domain errors give NaN: division by zero (also `a + b == 0` for normalized difference), square
  * root of a negative, logarithm of a non-positive value, and power of a negative base or of zero
- * to a non-positive exponent. It is not an expression compiler: chain recipes for longer formulas.
+ * to a non-positive exponent. It is not an expression compiler: chain contributors for longer formulas.
  */
 export class GPURasterArithmetic implements GPUCommandNodeProducer {
   /** Prefix for every node ID. */

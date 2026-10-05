@@ -246,7 +246,6 @@ it('GPURasterStretch wires deterministic nodes within the binding limit', () => 
         statistics: view(graph, 'float32', 8)
       }
     });
-    expect(stretch.recipe).toBe('raster-stretch');
     const ids = stretch.getCommandNodes(graph).map(node => node.id);
     expect(ids).toEqual(
       expect.arrayContaining([
@@ -265,7 +264,7 @@ it('GPURasterStretch wires deterministic nodes within the binding limit', () => 
     expect(ids.indexOf('stretch-finalize')).toBeLessThan(ids.indexOf('stretch-apply'));
     expect(new Set(ids).size).toBe(ids.length);
   });
-  // A histogram-only recipe stops after the finalize kernel.
+  // A histogram-only contributor stops after the finalize kernel.
   withGraph(graph => {
     const stretch = new GPURasterStretch({
       values: view(graph, 'float32', 12),

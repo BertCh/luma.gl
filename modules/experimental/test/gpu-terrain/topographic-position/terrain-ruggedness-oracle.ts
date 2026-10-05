@@ -187,7 +187,7 @@ export type VectorRuggednessOracleOptions = {
   borderMode?: 'clamp' | 'nodata';
 };
 
-/** Ground cell size of one row in the same models as the GPU recipes. */
+/** Ground cell size of one row in the same models as the GPU contributors. */
 export function getOracleGroundCellSize(
   row: number,
   height: number,
@@ -209,7 +209,7 @@ export function getOracleGroundCellSize(
   return [cellX * metersPerDegree * Math.cos((edge * Math.PI) / 180), cellY * metersPerDegree];
 }
 
-/** Float64 mirror of the VRM recipe: Horn normals, then 1 - |sum n| / N over the window. */
+/** Float64 mirror of the VRM contributor: Horn normals, then 1 - |sum n| / N over the window. */
 export function computeVectorRuggedness(
   values: ArrayLike<number>,
   valid: ArrayLike<number> | undefined,

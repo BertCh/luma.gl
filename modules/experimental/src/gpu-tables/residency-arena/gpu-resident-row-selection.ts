@@ -42,7 +42,7 @@ export type GPUResidentRowSelectionProps = {
   liveMask: GraphDataView<'uint32'>;
   /**
    * Optional per-frame, per-tile gate, for example written by the app or a tile LOD selection
-   * recipe. A row passes when `slot < tileMask.length && tileMask[slot] != 0`, so dead rows
+   * contributor. A row passes when `slot < tileMask.length && tileMask[slot] != 0`, so dead rows
    * (`GPU_RESIDENCY_ARENA_DEAD_SLOT`) and slots beyond the mask are rejected.
    */
   tileVisibility?: {

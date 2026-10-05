@@ -65,7 +65,7 @@ it('GPUNetworkReachability schedules one gated relax node per round and optional
 
   const minimalGraph = new GPUCommandGraph(device);
   const minimal = new GPUNetworkReachability(createProps(minimalGraph));
-  expect(minimal.recipe).toBe('network-reachability');
+  expect(minimal.id).toBe('network-reachability');
   const minimalIds = minimal.getCommandNodes(minimalGraph).map(node => node.id);
   expect(minimalIds.slice(0, 2)).toEqual([
     'network-reachability-initialize',
@@ -160,7 +160,7 @@ it('GPUNetworkReachability validates props', () => {
 });
 
 it('GPUNetworkReachability graph size is one node per round for the explorer prop set', () => {
-  // Same props as examples/deck/map-graphs-explorer reachability mode: no predecessors.
+  // Same props as the reachability explorer mode: no predecessors.
   const countNodes = (maxIterations: number) => {
     const device = createNullWebGPUDevice();
     const graph = new GPUCommandGraph(device);

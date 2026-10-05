@@ -132,7 +132,7 @@ fn readSignificanceLevel() -> f32 {
 `;
 }
 
-/** Float helpers (finiteness, quiet NaN, two-sided p) shared with the autocorrelation recipes. @internal */
+/** Float helpers (finiteness, quiet NaN, two-sided p) shared with the autocorrelation contributors. @internal */
 export const PERMUTATION_FLOAT_WGSL = SPATIAL_AUTOCORRELATION_FLOAT_WGSL;
 
 /**

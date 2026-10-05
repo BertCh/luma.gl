@@ -62,7 +62,7 @@ export type GPUPointToCellProps = {
  * One compute kernel writes `output.cells` (little-endian `(low, high)` words, the Arrow `Uint64`
  * layout that `GPUCellAggregation` accepts as pre-keyed `cells`) and optionally `output.validity`.
  * Rows that are masked out or have a non-finite longitude or latitude get the zero key, the "no
- * cell" sentinel of every family. The recipe never compiles, submits or reads back.
+ * cell" sentinel of every family. The contributor never compiles, submits or reads back.
  *
  * Exactness per family, with positions rounded to f32:
  * - `'quadbin'`, `'quadkey'`: integer-only arithmetic (the `GPUCellAggregation` fixed-point
