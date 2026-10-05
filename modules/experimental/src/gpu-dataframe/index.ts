@@ -177,9 +177,7 @@ export type {
   GPUInequalitySettings
 } from './composite-indicators/index';
 
-export {
-  GPUGroupStatistics
-} from './group-statistics/index';
+export {GPUGroupStatistics} from './group-statistics/index';
 export type {
   GPUGroupStatistic,
   GPUGroupStatisticsColumn,
@@ -187,9 +185,7 @@ export type {
   GPUGroupStatisticsProps
 } from './group-statistics/index';
 
-export {
-  GPUKeyJoin
-} from './key-join/index';
+export {GPUKeyJoin} from './key-join/index';
 export type {
   GPUKeyJoinAggregate,
   GPUKeyJoinAggregateOperation,

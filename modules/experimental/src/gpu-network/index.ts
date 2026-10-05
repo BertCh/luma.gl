@@ -106,9 +106,7 @@ export {
   GPU_NETWORK_REACHABILITY_NONE,
   GPUNetworkReachability
 } from './network-reachability/index';
-export type {
-  GPUNetworkReachabilityProps
-} from './network-reachability/index';
+export type {GPUNetworkReachabilityProps} from './network-reachability/index';
 
 export {
   decodeGPUNetworkStatistics,

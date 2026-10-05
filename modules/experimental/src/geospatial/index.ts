@@ -77,9 +77,7 @@ export type {
   GPUCellWordOrder
 } from './cell-aggregation/index';
 
-export {
-  GPUCellCover
-} from './cell-cover/index';
+export {GPUCellCover} from './cell-cover/index';
 export type {
   GPUCellCoverContainment,
   GPUCellCoverOutput,
@@ -497,9 +495,7 @@ export type {
   GPUTrajectoryResampleSpacing
 } from './trajectory-interpolation/index';
 
-export {
-  GPUZonalStatistics
-} from './zonal-statistics/index';
+export {GPUZonalStatistics} from './zonal-statistics/index';
 export type {
   GPUZonalStatisticsExtentStatistic,
   GPUZonalStatisticsFeatureRows,
