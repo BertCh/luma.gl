@@ -150,7 +150,63 @@ export type GPURasterExtremaPyramidProps = GPURasterExtremaPyramidLayoutOptions 
   maximum?: GraphDataView<'float32'>;
   /** Receives per-cell minima; `length === layout.length`. */
   minimum?: GraphDataView<'float32'>;
+  /**
+   * Alternative to `maximum` / `minimum`: ONE view of `2 * layout.length` floats, maxima levels at
+   * `[0, length)` and minima levels at `[length, 2 * length)`. This is the form the sight-line and
+   * point-horizon contributors read through their `pyramid` prop (see
+   * {@link GPURasterExtremaPyramid.output}); it costs them a single storage binding.
+   */
+  combined?: GraphDataView<'float32'>;
 };
+
+/**
+ * A built min/max pyramid handed to a consumer so that it does not build its own.
+ *
+ * Accepted by the `pyramid` prop of `GPUTerrainViewshed`, `GPUTerrainLineOfSight`,
+ * `GPUTerrainCumulativeViewshed`, `GPUPointHorizonProfile` and `GPUPointHorizonVisibility`. The
+ * producer is a {@link GPURasterExtremaPyramid} created with `combined`, added to the same graph
+ * before the consumers or run in an earlier graph. The consumer requires `layout.footprint ===
+ * 'bilinear'`, matching grid dimensions, and a `combined` view of `2 * layout.length` floats; the
+ * pyramid must have been built from the same elevation values the consumer reads.
+ */
+export type GPURasterExtremaPyramidOutput = {
+  /** Level layout of `combined`. */
+  layout: GPURasterExtremaPyramidLayout;
+  /** Maxima levels followed by minima levels, `2 * layout.length` float32. */
+  combined: GraphDataView<'float32'>;
+};
+
+/**
+ * Validates a caller-supplied pyramid against the grid a consumer works on.
+ *
+ * @throws If the layout is not a `'bilinear'`-footprint pyramid over exactly `width x height`, or
+ *   `combined` is not a float32 view of `2 * layout.length` values.
+ * @internal
+ */
+export function validateRasterExtremaPyramidOutput(
+  id: string,
+  pyramid: GPURasterExtremaPyramidOutput,
+  width: number,
+  height: number
+): GPURasterExtremaPyramidLayout {
+  const {layout, combined} = pyramid;
+  if (!layout || !combined) {
+    throw new Error(`${id} pyramid must provide a layout and a combined view`);
+  }
+  if (layout.width !== width || layout.height !== height) {
+    throw new Error(
+      `${id} pyramid covers ${layout.width}x${layout.height} pixels but the grid is ${width}x${height}`
+    );
+  }
+  if (layout.footprint !== 'bilinear') {
+    throw new Error(`${id} pyramid must use the 'bilinear' footprint`);
+  }
+  if (layout.levels.length < 1) {
+    throw new Error(`${id} pyramid has no levels`);
+  }
+  validateViewLength(id, 'pyramid combined', combined, 2 * layout.length);
+  return layout;
+}
 
 function getFloat32Literal(value: number): string {
   return `${Math.fround(value)}`.replace(/^(-?\d+)$/, '$1.0');
@@ -196,6 +252,11 @@ export class GPURasterExtremaPyramid implements GPUCommandNodeProducer {
   readonly props: GPURasterExtremaPyramidProps;
   /** Level layout; use it to size and index the output views. */
   readonly layout: GPURasterExtremaPyramidLayout;
+  /**
+   * The built pyramid in the form consumers take as their `pyramid` prop; present when the
+   * pyramid was created with `combined`.
+   */
+  readonly output?: GPURasterExtremaPyramidOutput;
 
   constructor(props: GPURasterExtremaPyramidProps) {
     this.id = props.id ?? 'raster-extrema-pyramid';
@@ -203,7 +264,10 @@ export class GPURasterExtremaPyramid implements GPUCommandNodeProducer {
     const {id} = this;
     validateTerrainGrid(id, props.width, props.height);
     this.layout = getGPURasterExtremaPyramidLayout(props.width, props.height, props);
-    if (!props.maximum && !props.minimum) {
+    if (props.combined && (props.maximum || props.minimum)) {
+      throw new Error(`${id} combined cannot be used together with maximum or minimum`);
+    }
+    if (!props.maximum && !props.minimum && !props.combined) {
       throw new Error(`${id} requires at least one output`);
     }
     for (const [name, view] of [
@@ -214,11 +278,17 @@ export class GPURasterExtremaPyramid implements GPUCommandNodeProducer {
         validateViewLength(id, name, view, this.layout.length);
       }
     }
+    if (props.combined) {
+      validateViewLength(id, 'combined', props.combined, 2 * this.layout.length);
+    }
     validateTerrainBuffersDistinct(
       id,
-      [props.maximum, props.minimum],
+      [props.maximum, props.minimum, props.combined],
       getTerrainBandViews(props.input)
     );
+    if (props.combined) {
+      this.output = {layout: this.layout, combined: props.combined};
+    }
   }
 
   /** Returns canonicalization nodes followed by one `${id}-level-${L}` node per level. */
@@ -227,7 +297,7 @@ export class GPURasterExtremaPyramid implements GPUCommandNodeProducer {
   ): readonly GPUCommandNode<Parameters>[] {
     const {id, props, layout} = this;
     validateTerrainBandBelongsToGraph(id, graph, props.input, []);
-    validateGraphViewsBelongToGraph(id, graph, [props.maximum, props.minimum]);
+    validateGraphViewsBelongToGraph(id, graph, [props.maximum, props.minimum, props.combined]);
     const source = getTerrainElevationNodes(
       graph,
       id,
@@ -244,7 +314,8 @@ export class GPURasterExtremaPyramid implements GPUCommandNodeProducer {
         values: source.band.storage.values as GraphDataView<'float32'>,
         validity: source.band.validity as GraphDataView<'uint32'>,
         maximum: props.maximum,
-        minimum: props.minimum
+        minimum: props.minimum,
+        combined: props.combined
       })
     ];
   }

@@ -9,6 +9,10 @@ export type RGBEncoding = 'terrarium' | 'mapbox';
 const fround = Math.fround;
 const FLOAT32_TENTH = fround(0.1);
 
+// Shared scratch views: the exhaustive 2^24-code loops call the bit helpers per code.
+const SCRATCH_FLOATS = new Float32Array(1);
+const SCRATCH_BITS = new Uint32Array(SCRATCH_FLOATS.buffer);
+
 /** Exact Terrarium height (float64 arithmetic is exact for every triple): R*256 + G + B/256 - 32768. */
 export function decodeTerrariumFloat64(red: number, green: number, blue: number): number {
   return red * 256 + green + blue / 256 - 32768;
@@ -63,8 +67,8 @@ export function getFloat32Ulp(value: number): number {
 
 /** Returns the float32 ulp spacing at `value`, computed from the float32 bit pattern (exact). */
 export function getExactFloat32Ulp(value: number): number {
-  const bits = new Uint32Array(new Float32Array([Math.abs(value)]).buffer)[0];
-  const exponent = (bits >>> 23) & 0xff;
+  SCRATCH_FLOATS[0] = Math.abs(value);
+  const exponent = (SCRATCH_BITS[0] >>> 23) & 0xff;
   return exponent === 0 ? 2 ** -149 : 2 ** (exponent - 127 - 23);
 }
 
@@ -126,7 +130,8 @@ export const INVALID_FLOAT_BITS = 0x7fc00000;
 
 /** Float32 to uint32 bits. */
 export function getFloat32Bits(value: number): number {
-  return new Uint32Array(new Float32Array([value]).buffer)[0];
+  SCRATCH_FLOATS[0] = value;
+  return SCRATCH_BITS[0];
 }
 
 /**

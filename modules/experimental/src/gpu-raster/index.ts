@@ -387,6 +387,7 @@ export type {
   GPURasterExtremaPyramidLayout,
   GPURasterExtremaPyramidLayoutOptions,
   GPURasterExtremaPyramidLevel,
+  GPURasterExtremaPyramidOutput,
   GPURasterExtremaPyramidProps
 } from './raster-pyramid/index';
 

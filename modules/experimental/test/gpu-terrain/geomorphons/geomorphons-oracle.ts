@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {getOracleGroundCellSize} from '../terrain-oracle-utils';
+
 /** Float64 CPU oracle mirroring GRASS r.geomorphon with literal arctangent comparisons. */
 
 export type GeomorphonOracleOptions = {
@@ -65,27 +67,6 @@ export function getRotatedTernaryCode(value: number): number {
   return best;
 }
 
-function getGroundCellSize(
-  settings: ArrayLike<number>,
-  height: number,
-  row: number,
-  mode: string
-): [number, number] {
-  const cellX = settings[0];
-  const cellY = settings[1];
-  if (mode === 'uniform') {
-    return [cellX, cellY];
-  }
-  const fraction = (row + 0.5) / height;
-  const edge = settings[3] + (settings[4] - settings[3]) * fraction;
-  if (mode === 'web-mercator') {
-    const scale = Math.cosh(Math.PI * (1 - 2 * edge));
-    return [cellX / scale, cellY / scale];
-  }
-  const metresPerDegree = 111319.49079327357;
-  return [cellX * metresPerDegree * Math.cos((edge * Math.PI) / 180), cellY * metresPerDegree];
-}
-
 // Angles that differ by less than this are equal: exact ratios such as 2/20 and 3/30 arctangent
 // to values one ulp apart in float64, and GRASS resolves those ties by luck of rounding.
 const ANGLE_TIE_TOLERANCE = 1e-12;
@@ -146,10 +127,10 @@ export function computeGeomorphons(
         result.validity.push(0);
         continue;
       }
-      const [cellX, cellY] = getGroundCellSize(
+      const [cellX, cellY] = getOracleGroundCellSize(
         settings,
-        height,
         row,
+        height,
         options.cellSizeMode ?? 'uniform'
       );
       // Mirrors the GPU's 1e-5 relative guard that excludes samples exactly at the search limit.

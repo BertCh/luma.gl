@@ -3,10 +3,9 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {getGPUTerrainHorizonDirection} from '../../../src/gpu-terrain/terrain-illumination/gpu-terrain-horizon';
-import {
-  getTerrainIlluminationGroundCellSize,
-  type GPUTerrainIlluminationCellSizeMode
-} from '../../../src/gpu-terrain/terrain-illumination/terrain-illumination-utils';
+import type {GPUTerrainCellSizeMode} from '../../../src/gpu-terrain/index';
+import {getTerrainIlluminationGroundCellSize} from '../../../src/gpu-terrain/terrain-illumination/terrain-illumination-utils';
+import {createXorshiftRandom as createRandom} from '../terrain-oracle-utils';
 
 /** Inputs of the float64 horizon oracle. */
 export type HorizonOracleOptions = {
@@ -23,7 +22,7 @@ export type HorizonOracleOptions = {
   maximumDistance?: number;
   northEdge?: number;
   southEdge?: number;
-  cellSizeMode?: GPUTerrainIlluminationCellSizeMode;
+  cellSizeMode?: GPUTerrainCellSizeMode;
   rowDirection?: 'south' | 'north';
   /** Also compute nadir horizons (z factor negated) and `negativeOpenness`. */
   computeNadir?: boolean;
@@ -295,19 +294,6 @@ export function computeSolarShadow(options: ShadowOracleOptions): {
   return {sunVisibility, illumination};
 }
 
-/** Deterministic xorshift-based random generator in `[0, 1)`. */
-export function createRandom(seed: number): () => number {
-  let state = seed >>> 0 || 1;
-  return () => {
-    state ^= state << 13;
-    state >>>= 0;
-    state ^= state >>> 17;
-    state ^= state << 5;
-    state >>>= 0;
-    return state / 0x100000000;
-  };
-}
-
 /** Smooth random terrain: a sum of a few sinusoids plus a Gaussian peak, in meters. */
 export function createSmoothTerrain(width: number, height: number, seed: number): Float32Array {
   const random = createRandom(seed);
@@ -333,3 +319,5 @@ export function createSmoothTerrain(width: number, height: number, seed: number)
     return value + peak.height * Math.exp(-distanceSquared / 40);
   });
 }
+
+export {createRandom};

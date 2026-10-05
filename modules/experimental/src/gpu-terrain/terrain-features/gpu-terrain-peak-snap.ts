@@ -14,7 +14,11 @@ import type {GPURasterBand} from '../../gpu-raster/index';
 import {createFillNode, createWGSLKernelNode} from '../../utils/wgsl-kernel-nodes';
 import type {GPUCommandNodeProducer} from '@luma.gl/gpgpu/gpu-core';
 import {validateGraphViewsBelongToGraph} from '../../utils/gpu-contributor-utils';
-import type {GPUTerrainCellSizeMode} from '../terrain-analysis/gpu-terrain-derivatives';
+import {
+  getTerrainGroundCellSizeWGSL,
+  type GPUTerrainCellSizeMode,
+  validateTerrainCellSizeMode
+} from '../terrain-grid-utils';
 import {
   getTerrainBandViews,
   getTerrainElevationNodes,
@@ -25,11 +29,9 @@ import {
   validateTerrainSettings
 } from '../terrain-analysis/terrain-analysis-utils';
 import {
-  getTerrainFeaturesCellSizeWGSL,
   TERRAIN_FEATURES_DISC_WGSL,
   TERRAIN_FEATURES_WGSL_CONSTANTS,
   validateTerrainFeaturesCellSize,
-  validateTerrainFeaturesCellSizeMode,
   validateTerrainFeaturesMaximumRadiusPixels,
   validateTerrainFeaturesScalar
 } from './terrain-features-utils';
@@ -223,7 +225,7 @@ export class GPUTerrainPeakSnap implements GPUCommandNodeProducer {
     this.props = props;
     const {id} = this;
     validateTerrainGrid(id, props.width, props.height);
-    validateTerrainFeaturesCellSizeMode(id, props.cellSizeMode ?? 'uniform');
+    validateTerrainCellSizeMode(id, props.cellSizeMode ?? 'uniform');
     validateTerrainFeaturesMaximumRadiusPixels(id, props.maximumRadiusPixels);
     validatePackedView(props.candidates, ['float32x2'], `${id} candidates`);
     const candidateCount = props.candidates.length;
@@ -381,7 +383,7 @@ const STATUS_NO_DATA: u32 = ${codes.noData}u;
 const STATUS_OUTSIDE: u32 = ${codes.outside}u;
 ${TERRAIN_FEATURES_WGSL_CONSTANTS}
 ${TERRAIN_WGSL_HELPERS}
-${getTerrainFeaturesCellSizeWGSL(cellSizeMode, {cellSizeIndex: 3, northEdgeIndex: 5, southEdgeIndex: 6})}
+${getTerrainGroundCellSizeWGSL(cellSizeMode, {cellSizeIndex: 3, northEdgeIndex: 5})}
 ${TERRAIN_FEATURES_DISC_WGSL}
 var<private> snapStatus: u32;
 var<private> snapPosition: vec2<f32>;

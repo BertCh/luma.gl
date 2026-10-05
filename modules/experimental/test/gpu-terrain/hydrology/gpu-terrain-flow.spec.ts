@@ -27,6 +27,7 @@ import {
   createSeededRandom,
   type TerrainFlowOracleResult
 } from './terrain-flow-oracle';
+import {toBits} from '../terrain-test-utils';
 
 type FlowOptions = {
   settings?: GPUTerrainFlowSettings;
@@ -168,16 +169,6 @@ function createFlowFixture(
   };
 }
 
-/** Bit pattern comparison that treats NaN as equal to NaN. */
-function toBits(values: Float32Array): number[] {
-  const bits = new Uint32Array(values.length);
-  const floats = new Float32Array(bits.buffer);
-  for (const [index, value] of values.entries()) {
-    floats[index] = Number.isNaN(value) ? NaN : value;
-  }
-  return Array.from(bits);
-}
-
 async function expectMatchesOracle(
   device: Device,
   name: string,
@@ -292,7 +283,10 @@ it('GPUTerrainFlow reports pits without fill and drains them with fill and epsil
   fixture.destroy();
 
   // A rim of value 4 around the pit forces a nontrivial fill level.
-  const options = {fillDepressions: true, settings: {cellSize: [1, 1], fillEpsilon: 0.25}} as const;
+  const options: FlowOptions = {
+    fillDepressions: true,
+    settings: {cellSize: [1, 1], fillEpsilon: 0.25}
+  } as const;
   fixture = createFlowFixture(device, elevation, width, height, options);
   result = await fixture.run();
   expect(result.classes[center]).toBe(CELL_CLASS.draining);
@@ -403,7 +397,10 @@ it('GPUTerrainFlow follows per-frame changes without recompiling and is determin
   const height = 29;
   const first = DEMS.noise(width, height, 1);
   const second = DEMS.noise(width, height, 2);
-  const options = {fillDepressions: true, settings: {cellSize: [1, 1], streamThreshold: 3}};
+  const options: FlowOptions = {
+    fillDepressions: true,
+    settings: {cellSize: [1, 1], streamThreshold: 3}
+  };
   const fixture = createFlowFixture(device, first, width, height, options);
   const run1 = await fixture.run();
   const run2 = await fixture.run();
@@ -470,7 +467,10 @@ it('GPUTerrainFlow publishes both convergence flags into one summary buffer', as
   const width = 37;
   const height = 29;
   const elevation = DEMS.noise(width, height);
-  const options = {fillDepressions: true, settings: {cellSize: [1, 1], fillEpsilon: 0.25}} as const;
+  const options: FlowOptions = {
+    fillDepressions: true,
+    settings: {cellSize: [1, 1], fillEpsilon: 0.25}
+  } as const;
   const separate = createFlowFixture(device, elevation, width, height, options);
   const expected = await separate.run();
   separate.destroy();

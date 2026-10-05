@@ -12,7 +12,6 @@ import type {GPURasterBand} from '../../gpu-raster/index';
 import {createWGSLKernelNode, type WGSLKernelBinding} from '../../utils/wgsl-kernel-nodes';
 import type {GPUCommandNodeProducer} from '@luma.gl/gpgpu/gpu-core';
 import {validateGraphViewsBelongToGraph} from '../../utils/gpu-contributor-utils';
-import type {GPUTerrainCellSizeMode} from '../terrain-analysis/gpu-terrain-derivatives';
 import {
   getTerrainBandViews,
   getTerrainElevationNodes,
@@ -23,12 +22,19 @@ import {
   validateTerrainSettings
 } from '../terrain-analysis/terrain-analysis-utils';
 import {
-  getTerrainGroundCellSizeWGSL,
-  validateTerrainCellSizeMode,
-  validateTerrainRowDirection,
+  TERRAIN_GEOMORPHOMETRY_CELL_SLOTS,
   writeTerrainGeomorphometryCellSettings,
   type TerrainGeomorphometryCellSettings
 } from '../terrain-curvature/terrain-geomorphometry-utils';
+import {
+  getTerrainGroundCellSizeWGSL,
+  getTerrainRowNorthSignWGSL,
+  type GPUTerrainCellSizeMode,
+  type GPUTerrainRowDirection,
+  TERRAIN_DEGREES_TO_RADIANS_WGSL,
+  validateTerrainCellSizeMode,
+  validateTerrainRowDirection
+} from '../terrain-grid-utils';
 
 /**
  * How the zenith and nadir lines of sight of one direction are reduced to a ternary pattern digit.
@@ -132,7 +138,7 @@ export type GPUGeomorphonsProps = {
   /** Cell size interpretation. Defaults to `'uniform'`. */
   cellSizeMode?: GPUTerrainCellSizeMode;
   /** Direction in which the row index increases. Defaults to `'south'` (north-up rasters). */
-  rowDirection?: 'south' | 'north';
+  rowDirection?: GPUTerrainRowDirection;
 };
 
 /**
@@ -267,7 +273,7 @@ function getDeclarations(
   comparison: GPUGeomorphonComparison,
   skipRadius: number,
   cellSizeMode: GPUTerrainCellSizeMode,
-  rowDirection: 'south' | 'north'
+  rowDirection: GPUTerrainRowDirection
 ): string {
   return /* wgsl */ `
 const WIDTH: u32 = ${props.width}u;
@@ -275,10 +281,10 @@ const HEIGHT: u32 = ${props.height}u;
 const SEARCH_RADIUS: i32 = ${props.searchRadius};
 const SKIP_RADIUS: i32 = ${skipRadius};
 const COMPARISON: u32 = ${comparison === 'anglev1' ? 0 : comparison === 'anglev2' ? 1 : 2}u;
-const ROW_NORTH_SIGN: i32 = ${rowDirection === 'south' ? '-1' : '1'};
-const DEGREES_TO_RADIANS: f32 = 0.017453292519943295;
+${getTerrainRowNorthSignWGSL(rowDirection, 'i32')}
+${TERRAIN_DEGREES_TO_RADIANS_WGSL}
 ${TERRAIN_WGSL_HELPERS}
-${getTerrainGroundCellSizeWGSL(cellSizeMode)}
+${getTerrainGroundCellSizeWGSL(cellSizeMode, TERRAIN_GEOMORPHOMETRY_CELL_SLOTS)}
 
 // Directions in GRASS order: NE, N, NW, W, SW, S, SE, E.
 var<private> DIRECTION_COLUMN = array<i32, 8>(1, 0, -1, -1, -1, 0, 1, 1);

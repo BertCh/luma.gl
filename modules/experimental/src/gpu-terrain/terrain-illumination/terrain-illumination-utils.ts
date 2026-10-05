@@ -4,111 +4,23 @@
 
 import {validatePackedView, type GraphDataView} from '@luma.gl/gpgpu/gpu-core';
 import {getWGSLFloatLiteral} from '../../utils/wgsl-kernel-nodes';
+import {
+  getTerrainGroundCellSize,
+  TERRAIN_DEGREES_TO_RADIANS_WGSL,
+  TERRAIN_METERS_PER_DEGREE_WGSL
+} from '../terrain-grid-utils';
 
-/**
- * How terrain-illumination kernels convert settings cell sizes into ground meters per pixel.
- *
- * Same meaning as `GPUTerrainCellSizeMode` in `terrain-analysis`: `'uniform'` cell sizes are
- * meters; `'web-mercator'` cell sizes are equatorial Web Mercator meters scaled by the row's
- * latitude; `'geographic'` cell sizes are degrees scaled by meters per degree.
- */
-export type GPUTerrainIlluminationCellSizeMode = 'uniform' | 'web-mercator' | 'geographic';
-
-/** Meters per degree of latitude on the WGS84 equatorial sphere used by terrain kernels. @internal */
-export const TERRAIN_ILLUMINATION_METERS_PER_DEGREE = 111319.49079327357;
+/** CPU twin of the terrain ground cell size WGSL, kept under its illumination name. @internal */
+export const getTerrainIlluminationGroundCellSize = getTerrainGroundCellSize;
 
 /** WGSL constants shared by terrain-illumination kernels. @internal */
 export const TERRAIN_ILLUMINATION_WGSL_CONSTANTS = /* wgsl */ `
 const PI: f32 = 3.141592653589793;
-const DEGREES_TO_RADIANS: f32 = 0.017453292519943295;
+${TERRAIN_DEGREES_TO_RADIANS_WGSL}
 const RADIANS_TO_DEGREES: f32 = 57.29577951308232;
-const METERS_PER_DEGREE: f32 = ${TERRAIN_ILLUMINATION_METERS_PER_DEGREE};
+${TERRAIN_METERS_PER_DEGREE_WGSL}
 fn isFiniteValue(value: f32) -> bool { return (bitcast<u32>(value) & 0x7fffffffu) < 0x7f800000u; }
 fn getNaN(index: u32) -> f32 { return bitcast<f32>(0x7fc00000u | (index & 0u)); }`;
-
-/** Settings slots read by {@link getTerrainIlluminationGroundCellWGSL}. @internal */
-export type TerrainIlluminationCellSizeSlots = {
-  /** Name of the `f32` settings binding. */
-  settingsName: string;
-  /** Index of cell size x; cell size y is the next slot. */
-  cellSizeIndex: number;
-  /** Index of the north edge (top of row 0); the south edge is the next slot. */
-  northEdgeIndex: number;
-};
-
-/**
- * Returns WGSL `fn getGroundCellSize(row: u32) -> vec2<f32>` for one cell size mode.
- *
- * `HEIGHT` must be declared by the caller. The latitude of a row is interpolated linearly between
- * the north and south edges at the row center, exactly as in `GPUTerrainDerivatives`.
- *
- * @internal
- */
-export function getTerrainIlluminationGroundCellWGSL(
-  mode: GPUTerrainIlluminationCellSizeMode,
-  slots: TerrainIlluminationCellSizeSlots
-): string {
-  const settings = slots.settingsName;
-  const offset = `${settings}Offset`;
-  const cellSize = `vec2<f32>(${settings}[${offset} + ${slots.cellSizeIndex}u], ${settings}[${offset} + ${slots.cellSizeIndex + 1}u])`;
-  if (mode === 'uniform') {
-    return `fn getGroundCellSize(row: u32) -> vec2<f32> { return ${cellSize}; }`;
-  }
-  const edge = `mix(${settings}[${offset} + ${slots.northEdgeIndex}u], ${settings}[${offset} + ${slots.northEdgeIndex + 1}u], (f32(row) + 0.5) / f32(HEIGHT))`;
-  const scaled =
-    mode === 'web-mercator'
-      ? // cos(latitude) = 1 / cosh(PI * (1 - 2y)) for normalized Web Mercator y.
-        'cellSize / cosh(PI * (1.0 - 2.0 * edge))'
-      : 'cellSize * METERS_PER_DEGREE * vec2<f32>(cos(edge * DEGREES_TO_RADIANS), 1.0)';
-  return `fn getGroundCellSize(row: u32) -> vec2<f32> {
-  let cellSize = ${cellSize};
-  let edge = ${edge};
-  return ${scaled};
-}`;
-}
-
-/**
- * CPU twin of {@link getTerrainIlluminationGroundCellWGSL} for oracles, in float64.
- *
- * @returns `[x, y]` ground meters per pixel for `row`.
- * @internal
- */
-export function getTerrainIlluminationGroundCellSize(
-  mode: GPUTerrainIlluminationCellSizeMode,
-  cellSize: readonly [number, number],
-  northEdge: number,
-  southEdge: number,
-  row: number,
-  height: number
-): [number, number] {
-  if (mode === 'uniform') {
-    return [cellSize[0], cellSize[1]];
-  }
-  const fraction = (row + 0.5) / height;
-  const edge = northEdge + (southEdge - northEdge) * fraction;
-  if (mode === 'web-mercator') {
-    const scale = 1 / Math.cosh(Math.PI * (1 - 2 * edge));
-    return [cellSize[0] * scale, cellSize[1] * scale];
-  }
-  return [
-    cellSize[0] * TERRAIN_ILLUMINATION_METERS_PER_DEGREE * Math.cos((edge * Math.PI) / 180),
-    cellSize[1] * TERRAIN_ILLUMINATION_METERS_PER_DEGREE
-  ];
-}
-
-/** Throws unless `mode` is a known cell size mode. @internal */
-export function validateTerrainIlluminationCellSizeMode(id: string, mode: string): void {
-  if (!['uniform', 'web-mercator', 'geographic'].includes(mode)) {
-    throw new Error(`${id} cellSizeMode must be uniform, web-mercator, or geographic`);
-  }
-}
-
-/** Throws unless `rowDirection` is `'south'` or `'north'`. @internal */
-export function validateTerrainIlluminationRowDirection(id: string, rowDirection: string): void {
-  if (!['south', 'north'].includes(rowDirection)) {
-    throw new Error(`${id} rowDirection must be south or north`);
-  }
-}
 
 /** Throws unless `view` is a packed view of `format` with exactly `length` rows. @internal */
 export function validateTerrainIlluminationView(

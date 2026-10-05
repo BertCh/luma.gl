@@ -124,7 +124,7 @@ it('GPURasterExtremaPyramid schedules one node per level with at most 8 bindings
   expect(combinedNodes.map(node => node.id)).toEqual(
     [0, 1, 2, 3, 4].map(level => `c-level-${level}`)
   );
-  expect(combinedNodes.every(node => node.resources.length <= 3)).toBe(true);
+  expect(combinedNodes.every(node => (node.resources ?? []).length <= 3)).toBe(true);
   expect(() =>
     createRasterExtremaPyramidNodes(graph, {
       id: 'c2',
@@ -152,7 +152,7 @@ it('GPURasterExtremaPyramid schedules one node per level with at most 8 bindings
     maximum: shared,
     minimum: createTransientView(graph, 'b-min', 'float32', layout.length)
   });
-  expect(Math.max(...both.map(node => node.resources.length))).toBeLessThanOrEqual(8);
+  expect(Math.max(...both.map(node => (node.resources ?? []).length))).toBeLessThanOrEqual(8);
   device.destroy();
 });
 

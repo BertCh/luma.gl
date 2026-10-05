@@ -385,7 +385,7 @@ export const cellPyramidMode: SpatialAnalysisModeDefinition = {
 
     const instance: SpatialAnalysisModeInstance = {
       getCompiledGraphs: () =>
-        [compiledPyramid, compiledSelection] as CompiledGPUCommandGraph<unknown>[],
+        [compiledPyramid, compiledSelection] as CompiledGPUCommandGraph<never>[],
       encode(commandEncoder, frame) {
         // The pyramid depends only on the points and the mask, never on the camera.
         if (pyramidDirty) {

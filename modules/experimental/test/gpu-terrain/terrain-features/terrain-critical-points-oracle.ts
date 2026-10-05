@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {createXorshiftRandom} from '../terrain-oracle-utils';
+
 /** CPU oracle for terrain critical-point classification (pure comparisons). Test-only. */
 
 /** Class codes, mirrored here so the oracle does not import the contributor. */
@@ -140,15 +142,7 @@ export function createRandomElevation(
   seed: number,
   levels = 0
 ): Float32Array {
-  let state = seed >>> 0 || 1;
-  const next = () => {
-    state ^= state << 13;
-    state >>>= 0;
-    state ^= state >>> 17;
-    state ^= state << 5;
-    state >>>= 0;
-    return state / 0x100000000;
-  };
+  const next = createXorshiftRandom(seed);
   return Float32Array.from({length: width * height}, () =>
     levels > 0 ? Math.floor(next() * levels) : next() * 100
   );

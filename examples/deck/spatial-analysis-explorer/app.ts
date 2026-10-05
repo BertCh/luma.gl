@@ -119,7 +119,7 @@ export function createSpatialAnalysisExplorerDeck(
   let generation = 0;
   let draggingMode: SpatialAnalysisModeInstance | null = null;
   let finalized = false;
-  let seenGraphs = new Set<CompiledGPUCommandGraph<unknown>>();
+  let seenGraphs = new Set<CompiledGPUCommandGraph<never>>();
   let deck: ArrowDeck<MapView>;
 
   const panel = createSpatialAnalysisPanel(
@@ -203,7 +203,7 @@ export function createSpatialAnalysisExplorerDeck(
         effect.stats.frameCount >= READY_FRAME_COUNT
       ) {
         state.ready = true;
-        document.body.dataset.spatialAnalysisReady = 'true';
+        document.body.dataset['spatialAnalysisReady'] = 'true';
       }
     },
     onFinalize: () => {
@@ -248,9 +248,9 @@ export function createSpatialAnalysisExplorerDeck(
     state.ready = false;
     state.error = null;
     state.modeId = definition.id;
-    delete document.body.dataset.spatialAnalysisReady;
-    delete document.body.dataset.spatialAnalysisError;
-    document.body.dataset.spatialAnalysisMode = definition.id;
+    delete document.body.dataset['spatialAnalysisReady'];
+    delete document.body.dataset['spatialAnalysisError'];
+    document.body.dataset['spatialAnalysisMode'] = definition.id;
     deck.setProps({layers: [], controller: CONTROLLER});
     if (previous) destroyAfterFrames(previous);
 
@@ -311,7 +311,7 @@ export function createSpatialAnalysisExplorerDeck(
 
   function reportError(error: Error): void {
     state.error = error.message;
-    document.body.dataset.spatialAnalysisError = error.message;
+    document.body.dataset['spatialAnalysisError'] = error.message;
     panel.setStatus(`Error: ${error.message}`);
   }
 

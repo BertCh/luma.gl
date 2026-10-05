@@ -38,7 +38,7 @@ export type PointHorizonOracleObserver = readonly [number, number, number];
 export type PointHorizonOracleResult = {
   tangent: Float64Array;
   /** Degrees; -90 when no sample, NaN for an invalid observer. */
-  elevation: Float64Array;
+  skylineAngle: Float64Array;
   distance: Float64Array;
 };
 
@@ -182,7 +182,7 @@ export function computePointHorizonProfile(
 ): PointHorizonOracleResult {
   const rayCount = observers.length * model.azimuthSpan;
   const tangent = new Float64Array(rayCount).fill(Number.NaN);
-  const elevation = new Float64Array(rayCount).fill(Number.NaN);
+  const skylineAngle = new Float64Array(rayCount).fill(Number.NaN);
   const distance = new Float64Array(rayCount).fill(Number.NaN);
   observers.forEach(([column, row, height], observerIndex) => {
     if (!(column >= 0 && row >= 0 && column <= model.width - 1 && row <= model.height - 1)) {
@@ -201,11 +201,11 @@ export function computePointHorizonProfile(
       const result = marchOracleRay(model, column, row, eyeElevation, sinA, cosA);
       const index = observerIndex * model.azimuthSpan + a;
       tangent[index] = result.has ? result.t : -3.4028234663852886e38;
-      elevation[index] = result.has ? (Math.atan(result.t) * 180) / Math.PI : -90;
+      skylineAngle[index] = result.has ? (Math.atan(result.t) * 180) / Math.PI : -90;
       distance[index] = result.has ? result.d : 0;
     }
   });
-  return {tangent, elevation, distance};
+  return {tangent, skylineAngle, distance};
 }
 
 /** Seeded PRNG (mulberry32). */

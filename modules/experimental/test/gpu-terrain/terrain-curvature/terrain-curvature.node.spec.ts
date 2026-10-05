@@ -13,14 +13,7 @@ import {
 } from '../../../src/gpu-terrain/terrain-curvature';
 import {createNullWebGPUDevice} from '../../utils/gpu-contributor-test-utils';
 import {ORACLE_CURVATURE_KINDS} from './terrain-curvature-oracle';
-
-function createBand(graph: GPUCommandGraph, id: string, length: number) {
-  return {
-    id,
-    format: 'float32' as const,
-    storage: {kind: 'buffer' as const, values: createTransientView(graph, id, 'float32', length)}
-  };
-}
+import {createBand} from '../terrain-test-utils';
 
 it('GPUTerrainCurvature packs settings and groups outputs into kernels', () => {
   const device = createNullWebGPUDevice();

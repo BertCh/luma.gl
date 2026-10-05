@@ -31,12 +31,13 @@ import {
   getTerrainSweepLineGeometry,
   TERRAIN_SWEEP_MAX_EXTENT
 } from './terrain-horizon-sweep';
+import {validateTerrainIlluminationView} from './terrain-illumination-utils';
 import {
-  validateTerrainIlluminationCellSizeMode,
-  validateTerrainIlluminationRowDirection,
-  validateTerrainIlluminationView,
-  type GPUTerrainIlluminationCellSizeMode
-} from './terrain-illumination-utils';
+  type GPUTerrainCellSizeMode,
+  type GPUTerrainRowDirection,
+  validateTerrainCellSizeMode,
+  validateTerrainRowDirection
+} from '../terrain-grid-utils';
 
 /** Number of float32 values read from `GPUTerrainCastShadowProps.settings`. */
 export const GPU_TERRAIN_CAST_SHADOW_PARAMETER_LENGTH = 16;
@@ -86,7 +87,7 @@ export type GPUTerrainCastShadowSettings = {
  */
 export function getGPUTerrainCastShadowParameterValues(
   settings: GPUTerrainCastShadowSettings,
-  rowDirection: 'south' | 'north' = 'south',
+  rowDirection: GPUTerrainRowDirection = 'south',
   target: Float32Array = new Float32Array(GPU_TERRAIN_CAST_SHADOW_PARAMETER_LENGTH)
 ): Float32Array {
   if (target.length < GPU_TERRAIN_CAST_SHADOW_PARAMETER_LENGTH) {
@@ -158,9 +159,9 @@ export type GPUTerrainCastShadowProps = {
    */
   maximumRadius?: number;
   /** Cell size interpretation. Defaults to `'uniform'`. */
-  cellSizeMode?: GPUTerrainIlluminationCellSizeMode;
+  cellSizeMode?: GPUTerrainCellSizeMode;
   /** Direction in which the row index increases. Defaults to `'south'` (north-up rasters). */
-  rowDirection?: 'south' | 'north';
+  rowDirection?: GPUTerrainRowDirection;
   /** Optional fraction of the solar disk above the local horizon, in `[0, 1]`. */
   sunVisibility?: GraphDataView<'float32'>;
   /** Optional horizon angle in degrees along the sun azimuth. */
@@ -243,8 +244,8 @@ export class GPUTerrainCastShadow implements GPUCommandNodeProducer {
       props.width,
       props.height
     );
-    validateTerrainIlluminationCellSizeMode(id, props.cellSizeMode ?? 'uniform');
-    validateTerrainIlluminationRowDirection(id, props.rowDirection ?? 'south');
+    validateTerrainCellSizeMode(id, props.cellSizeMode ?? 'uniform');
+    validateTerrainRowDirection(id, props.rowDirection ?? 'south');
     validateTerrainBuffersDistinct(
       id,
       [props.sunVisibility, props.horizonAngle, props.validity],

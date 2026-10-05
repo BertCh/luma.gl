@@ -16,7 +16,7 @@ import {
   type GPUTerrainHorizonSettings
 } from '../../../src/gpu-terrain/terrain-illumination/gpu-terrain-horizon';
 import {getTerrainHorizonSweepNode} from '../../../src/gpu-terrain/terrain-illumination/terrain-horizon-sweep';
-import type {GPUTerrainIlluminationCellSizeMode} from '../../../src/gpu-terrain/terrain-illumination/terrain-illumination-utils';
+import type {GPUTerrainCellSizeMode} from '../../../src/gpu-terrain/index';
 import {
   createInputBuffer,
   createOutputBuffer,
@@ -39,7 +39,7 @@ type SweepFixtureOptions = {
   height: number;
   directionCount: number;
   maximumRadius: number;
-  cellSizeMode?: GPUTerrainIlluminationCellSizeMode;
+  cellSizeMode?: GPUTerrainCellSizeMode;
   rowDirection?: 'south' | 'north';
   zFactorSign?: 1 | -1;
   /** `horizon` stores every angle pixel-major, `sine` accumulates `sin(max(h, 0))` per pixel. */
@@ -379,10 +379,9 @@ it('sweep kernel agrees statistically with the ray march', async () => {
         worst = Math.max(worst, difference);
       }
       const mean = sum / (width * height);
-      console.log(
-        `sweep vs march ${label} radius ${maximumRadius}: mean |dSVF| ${mean.toExponential(2)}, max ${worst.toExponential(2)}`
+      expect(mean, `sweep vs march ${label} radius ${maximumRadius}: mean |dSVF|`).toBeLessThan(
+        bound
       );
-      expect(mean).toBeLessThan(bound);
       // Not all-flat: terrain has real occlusion.
       expect(march.skyViewFactor.some(value => value < 0.97)).toBe(true);
       expect(sine.some(value => value > 1)).toBe(true);

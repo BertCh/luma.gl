@@ -9,10 +9,8 @@ import {
   TERRAIN_SWEEP_SLOPE_SCALE,
   type TerrainSweepLineGeometry
 } from '../../../src/gpu-terrain/terrain-illumination/terrain-horizon-sweep';
-import {
-  getTerrainIlluminationGroundCellSize,
-  type GPUTerrainIlluminationCellSizeMode
-} from '../../../src/gpu-terrain/terrain-illumination/terrain-illumination-utils';
+import type {GPUTerrainCellSizeMode} from '../../../src/gpu-terrain/index';
+import {getTerrainIlluminationGroundCellSize} from '../../../src/gpu-terrain/terrain-illumination/terrain-illumination-utils';
 
 /** Inputs of the float64 sweep oracles. */
 export type SweepOracleOptions = {
@@ -32,7 +30,7 @@ export type SweepOracleOptions = {
   maximumDistance?: number;
   northEdge?: number;
   southEdge?: number;
-  cellSizeMode?: GPUTerrainIlluminationCellSizeMode;
+  cellSizeMode?: GPUTerrainCellSizeMode;
   rowDirection?: 'south' | 'north';
   /** Also compute the nadir pass (zFactor negated) into `nadirHorizon` and `negativeOpenness`. */
   nadir?: boolean;

@@ -19,13 +19,10 @@ import {
   submitGraph
 } from '../../utils/gpu-contributor-test-utils';
 import {computeTerrainRuggedness} from './terrain-ruggedness-oracle';
+import {createSeededRandom} from '../terrain-oracle-utils';
 
 function createTerrain(width: number, height: number): Float32Array {
-  let state = 12345;
-  const random = () => {
-    state = (Math.imul(state, 1664525) + 1013904223) >>> 0;
-    return state / 0x100000000;
-  };
+  const random = createSeededRandom(12345);
   return Float32Array.from({length: width * height}, () => 1000 + 40 * random());
 }
 
@@ -194,8 +191,6 @@ it('GPUTerrainRuggedness matches the gdaldem oracle for both edge modes and algo
       }
     }
   }
-  // Report measured maximum absolute errors in the test log.
-  console.log('ruggedness max abs errors', JSON.stringify(measuredErrors));
 });
 
 it('GPUTerrainRuggedness extrapolates corners and tiny grids like gdaldem', async () => {

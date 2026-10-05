@@ -141,6 +141,11 @@ samples with an invalid corner.
 - **Traversal.** `traversal: 'pyramid'` builds a min-max
   [`GPURasterExtremaPyramid`](./gpu-raster/operations-analysis.md) and skips blocks that provably
   cannot change the code. Results are bit-identical to `'march'` (the default).
+- **Shared pyramid.** Pass `pyramid` (a `GPURasterExtremaPyramidOutput`) to reuse one pyramid across
+  `GPUTerrainViewshed`, `GPUTerrainLineOfSight`, `GPUTerrainCumulativeViewshed`,
+  `GPUPointHorizonProfile` and `GPUPointHorizonVisibility`. It must cover the same grid with a
+  bilinear footprint. Building one costs 0.3 to 0.9 ms, but the pyramid-skip kernels are still about
+  2x slower than `'march'` for viewsheds, so prefer `'march'` there.
 
 Without `tolerance` and with `'march'`, `GPUTerrainViewshed` behaves as before.
 
@@ -168,10 +173,10 @@ settings.write(getGPUTerrainSightLineParameterValues({
 
 A 360° horizon profile from any number of observers, ported from mt-image's horizon march.
 
-- **Inputs.** Observers are `[column, row, height, 0]`. `heightReference` is `'ground'` (the
+- **Inputs.** The elevation grid is the `elevation` prop. Observers are `[column, row, height, 0]`. `heightReference` is `'ground'` (the
   default) or `'absolute'`.
 - **Outputs.** For each (observer, azimuth bin) the profile writes the maximum apparent-elevation
-  tangent `t = (h − h0)/d − c·d`, the elevation in degrees (−90 when nothing was sampled), and the
+  tangent `t = (h − h0)/d − c·d`, the `skylineAngle` in degrees (−90 when nothing was sampled), and the
   crest distance. Azimuth bin `i` is at `i·360/azimuthCount` degrees clockwise from north. Sectors
   are set with `firstAzimuth` and `azimuthSpan`.
 - **Projections.**
@@ -192,7 +197,7 @@ A 360° horizon profile from any number of observers, ported from mt-image's hor
     (the WGSL builtins are only 2^-11 or about 4096 ULP accurate).
 - **Traversal.** `traversal: 'pyramid'` (the default) skips min-max pyramid blocks whose
   conservative bound cannot raise the running maximum. Tangent and distance bits are identical to
-  `'march'`.
+  `'march'`. A shared `pyramid` can be passed as for the viewshed contributors.
 
 `GPUPointHorizonVisibility` classifies targets `[column, row, height, observerIndex]` like
 mt-image's peak classifier:
@@ -397,7 +402,11 @@ float32 rasters, each with an optional `r32float` or `rgba32float` storage textu
     style) over digital lines through pixel centres: amortised O(1) per pixel and sector, exact
     against brute force over the same samples, 4x faster at radius 256 and 36x at full-tile radius on
     1024² (16 sectors). Samples are pixel centres within half a pixel of the ray, so sky-view
-    factors differ from the bilinear march by about 0.01 on rough terrain.
+    factors differ from the bilinear march by about 0.01 on rough terrain. The sweep has a large
+    fixed cost per pixel and sector: it wins at large radii (1024² at radius 1023: 41 ms against
+    about 1300 ms; 512² at full radius: 36 against 109 ms) and loses at small ones (512² at radius
+    128: 60–125 ms against about 20 ms). Prefer the march for small radii and the sweep near the
+    full tile radius.
   - `horizonFormat: 'unorm16'` halves the horizon map (two 16-bit codes per `uint32`, 0.00275 degree
     steps, code 0 = nodata; `unpackGPUTerrainHorizonUnorm16` decodes on the CPU). `GPUSolarShadowMask`
     and `GPUSolarIrradiance` read it.

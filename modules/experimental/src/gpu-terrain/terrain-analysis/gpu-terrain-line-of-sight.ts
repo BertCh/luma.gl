@@ -16,7 +16,9 @@ import {validateGraphViewsBelongToGraph} from '../../utils/gpu-contributor-utils
 import {
   createRasterExtremaPyramidNodes,
   getGPURasterExtremaPyramidLayout,
-  type GPURasterExtremaPyramidLayout
+  validateRasterExtremaPyramidOutput,
+  type GPURasterExtremaPyramidLayout,
+  type GPURasterExtremaPyramidOutput
 } from '../../gpu-raster/raster-pyramid/index';
 import {
   getTerrainBandViews,
@@ -108,10 +110,18 @@ export function getSightLinePyramid<Parameters>(
   traversal: GPUTerrainSightLineTraversal | undefined,
   layout: GPURasterExtremaPyramidLayout | undefined,
   values: GraphDataView<'float32'>,
-  validity: GraphDataView<'uint32'>
+  validity: GraphDataView<'uint32'>,
+  shared?: GPURasterExtremaPyramidOutput
 ): {nodes: GPUCommandNode<Parameters>[]; binding?: WGSLKernelBinding} {
   if (traversal !== 'pyramid' || !layout) {
     return {nodes: []};
+  }
+  if (shared) {
+    // The caller built the pyramid (once, elsewhere): read it, build nothing.
+    return {
+      nodes: [],
+      binding: {name: 'pyramid', view: shared.combined, type: 'f32', access: 'read'}
+    };
   }
   const combined = createTransientView(graph, `${id}-pyramid`, 'float32', 2 * layout.length);
   return {
@@ -131,10 +141,17 @@ export function getSightLinePyramidLayout(
   id: string,
   traversal: GPUTerrainSightLineTraversal | undefined,
   width: number,
-  height: number
+  height: number,
+  shared?: GPURasterExtremaPyramidOutput
 ): GPURasterExtremaPyramidLayout | undefined {
   if (traversal !== undefined && traversal !== 'march' && traversal !== 'pyramid') {
     throw new Error(`${id} traversal must be 'march' or 'pyramid'`);
+  }
+  if (shared) {
+    if (traversal !== 'pyramid') {
+      throw new Error(`${id} pyramid requires traversal 'pyramid'`);
+    }
+    return validateRasterExtremaPyramidOutput(id, shared, width, height);
   }
   return traversal === 'pyramid'
     ? getGPURasterExtremaPyramidLayout(width, height, {firstBlockSize: 4, footprint: 'bilinear'})
@@ -167,6 +184,15 @@ export type GPUTerrainLineOfSightProps = {
   settings: GraphDataView<'float32'>;
   /** `'march'` (default) or `'pyramid'`, which gives bit-identical results. */
   traversal?: GPUTerrainSightLineTraversal;
+  /**
+   * Optional prebuilt min-max pyramid to read instead of building one inside this contributor.
+   * Requires `traversal: 'pyramid'`. Pass `GPURasterExtremaPyramid.output` of a pyramid created with
+   * `combined` over the same elevation, `footprint: 'bilinear'` and the same `width x height`
+   * (otherwise the constructor throws), added to the same graph before this contributor or run in
+   * an earlier graph. One pyramid then serves every consumer and is rebuilt only when the
+   * elevation changes. Results are bit-identical to a self-built pyramid and to `'march'`.
+   */
+  pyramid?: GPURasterExtremaPyramidOutput;
   /** `GPU_TERRAIN_VISIBILITY` code per pair. */
   visibility: GraphDataView<'uint32'>;
   /**
@@ -220,7 +246,13 @@ export class GPUTerrainLineOfSight implements GPUCommandNodeProducer {
       }
     }
     validateTerrainSettings(id, props.settings, GPU_TERRAIN_SIGHT_LINE_PARAMETER_LENGTH);
-    this.pyramidLayout = getSightLinePyramidLayout(id, props.traversal, props.width, props.height);
+    this.pyramidLayout = getSightLinePyramidLayout(
+      id,
+      props.traversal,
+      props.width,
+      props.height,
+      props.pyramid
+    );
     validateTerrainBuffersDistinct(
       id,
       [props.visibility, props.clearance],
@@ -241,6 +273,7 @@ export class GPUTerrainLineOfSight implements GPUCommandNodeProducer {
     const {width, height} = props;
     validateTerrainBandBelongsToGraph(id, graph, props.elevation, []);
     validateGraphViewsBelongToGraph(id, graph, [
+      props.pyramid?.combined,
       props.settings,
       props.pairs,
       props.pairHeights,
@@ -257,7 +290,8 @@ export class GPUTerrainLineOfSight implements GPUCommandNodeProducer {
       props.traversal,
       pyramidLayout,
       values,
-      validity
+      validity,
+      props.pyramid
     );
     nodes.push(...pyramid.nodes);
     const bindings: WGSLKernelBinding[] = [

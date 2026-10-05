@@ -7,3 +7,4 @@ import './gpu-terrain-contours.spec';
 import './gpu-terrain-viewshed.spec';
 import './gpu-terrain-line-of-sight.spec';
 import './gpu-terrain-cumulative-viewshed.spec';
+import './shared-pyramid.spec';

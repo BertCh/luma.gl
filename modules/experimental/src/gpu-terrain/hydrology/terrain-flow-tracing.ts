@@ -18,9 +18,6 @@ import {
   getRasterIterationCondition
 } from '../../gpu-raster/cost-distance/raster-relaxation';
 
-/** Receiver index, label, and drainage value meaning "none" in the D8 tracing contributors. @internal */
-export const TERRAIN_FLOW_TRACING_NONE = 0xffffffff;
-
 /**
  * WGSL constants and helpers shared by the D8 tracing kernels: `GRID_WIDTH`, `GRID_HEIGHT`,
  * `NO_CELL`, and `getFlowReceiver(cell, code)`.

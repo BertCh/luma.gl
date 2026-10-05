@@ -31,19 +31,7 @@ import {
   submitGraph
 } from '../../utils/gpu-contributor-test-utils';
 import {computeSolarShadow, createRandom, createSmoothTerrain} from './terrain-horizon-oracle';
-
-function expectClose(actual: number[], expected: number[], tolerance: number): void {
-  expect(actual.length).toBe(expected.length);
-  let worst = 0;
-  for (const [index, value] of expected.entries()) {
-    if (Number.isNaN(value)) {
-      expect(Number.isNaN(actual[index]), `index ${index}`).toBe(true);
-      continue;
-    }
-    worst = Math.max(worst, Math.abs(actual[index] - value));
-  }
-  expect(worst).toBeLessThan(tolerance);
-}
+import {expectClose} from '../terrain-test-utils';
 
 const SUN_SWEEP: GPUSolarShadowMaskSettings[] = [
   {azimuthDegrees: 135, altitudeDegrees: 12, ambientIntensity: 0.2},
@@ -419,7 +407,6 @@ it('GPUSolarShadowMask decodes a unorm16 horizon within one code step of the flo
       }
     }
     // One code step of horizon moves the soft visibility by at most (2 / PI) * step / radius.
-    console.log(`unorm16 shadow D=${directionCount}: worst vs float32 ${worstAgainstFloat}`);
     expect(worstAgainstFloat).toBeLessThan((GPU_TERRAIN_HORIZON_UNORM16_STEP_DEGREES / 1) * 0.7);
     compiled.destroy();
     settings.destroy();

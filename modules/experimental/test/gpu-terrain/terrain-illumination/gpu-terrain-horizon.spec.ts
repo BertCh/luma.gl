@@ -36,6 +36,7 @@ import {
   type HorizonOracleResult
 } from './terrain-horizon-oracle';
 import {computeTerrainHorizonSweepBruteForce} from './terrain-horizon-sweep-oracle';
+import {expectClose} from '../terrain-test-utils';
 
 type HorizonFixture = {
   run(settings: GPUTerrainHorizonSettings): Promise<HorizonOracleResult>;
@@ -127,19 +128,6 @@ function createHorizonFixture(
     }
   };
   return fixture;
-}
-
-function expectClose(actual: number[], expected: number[], tolerance: number): void {
-  expect(actual.length).toBe(expected.length);
-  let worst = 0;
-  for (const [index, value] of expected.entries()) {
-    if (Number.isNaN(value)) {
-      expect(Number.isNaN(actual[index]), `index ${index}`).toBe(true);
-      continue;
-    }
-    worst = Math.max(worst, Math.abs(actual[index] - value));
-  }
-  expect(worst).toBeLessThan(tolerance);
 }
 
 function expectOracle(actual: HorizonOracleResult, expected: HorizonOracleResult): void {
@@ -369,7 +357,6 @@ it('GPUTerrainHorizon matches analytic and float64 horizons on a tilted high-ele
       }
     }
   }
-  console.log(`tilted plane: worst axis error ${worstAxis} deg, worst off-axis ${worstOther} deg`);
   expect(nonTrivial).toBeGreaterThan(1000);
   expect(worstAxis).toBeLessThan(2e-5);
   expect(worstOther).toBeLessThan(2e-4);
@@ -420,7 +407,6 @@ it('GPUTerrainHorizon matches float64 on a tilted plane with curvature and a lon
     }
     steep += Math.abs(value) > 5 ? 1 : 0;
   }
-  console.log(`curved tilted plane: worst axis ${worstAxis} deg, worst diagonal ${worstOther} deg`);
   expect(steep).toBeGreaterThan(1000);
   expect(worstAxis).toBeLessThan(2e-5);
   expect(worstOther).toBeLessThan(2e-4);
@@ -680,9 +666,6 @@ it('GPUTerrainHorizon unorm16 horizon matches the quantised float32 horizon', as
         GPU_TERRAIN_HORIZON_UNORM16_STEP_DEGREES
       );
     }
-    console.log(
-      `unorm16 D=${directionCount}: worst code difference ${worstCodeDifference}, exact ${exactMatches}/${elementCount - nanCount}`
-    );
     expect(nanCount).toBe(2 * directionCount);
     expect(worstCodeDifference).toBeLessThanOrEqual(1);
     expect(exactMatches).toBeGreaterThan((elementCount - nanCount) * 0.99);

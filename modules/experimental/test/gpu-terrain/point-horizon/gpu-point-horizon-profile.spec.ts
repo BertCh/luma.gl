@@ -37,15 +37,15 @@ type ProfileConfig = {
   observers: readonly (readonly [number, number, number])[];
   settings: GPUPointHorizonSettings;
   model: GPUPointHorizonModelOptions;
-  /** Replace the elevation output with the evaluated-sample debug counter. */
+  /** Replace the skyline-angle output with the evaluated-sample debug counter. */
   countSamples?: boolean;
 };
 
 type ProfileResult = {
   tangent: Float32Array;
-  elevation: Float32Array;
+  skylineAngle: Float32Array;
   distance: Float32Array;
-  /** Evaluated samples per ray, only when `countSamples` replaced the elevation output. */
+  /** Evaluated samples per ray, only when `countSamples` replaced the skyline-angle output. */
   samples?: Uint32Array;
 };
 
@@ -72,7 +72,7 @@ async function runProfile(device: Device, config: ProfileConfig): Promise<Profil
       ...model,
       width,
       height,
-      terrain: {
+      elevation: {
         id: 'terrain',
         format: 'float32',
         storage: {
@@ -92,9 +92,9 @@ async function runProfile(device: Device, config: ProfileConfig): Promise<Profil
       ),
       settings: settings.importToGraph(graph),
       tangent: importGraphBuffer(graph, 'tangent', outputs[0], 'float32', rayCount),
-      elevation: config.countSamples
+      skylineAngle: config.countSamples
         ? undefined
-        : importGraphBuffer(graph, 'elevation', outputs[1], 'float32', rayCount),
+        : importGraphBuffer(graph, 'skyline-angle', outputs[1], 'float32', rayCount),
       samples: config.countSamples
         ? importGraphBuffer(graph, 'samples', outputs[1], 'uint32', rayCount)
         : undefined,
@@ -103,7 +103,7 @@ async function runProfile(device: Device, config: ProfileConfig): Promise<Profil
   );
   const compiled = graph.compile();
   submitGraph(device, compiled, undefined);
-  const [tangent, elevation, distance] = await Promise.all(
+  const [tangent, skylineAngle, distance] = await Promise.all(
     outputs.map(async buffer => Float32Array.from(await readFloat32(buffer, rayCount)))
   );
   const samples = config.countSamples
@@ -119,7 +119,7 @@ async function runProfile(device: Device, config: ProfileConfig): Promise<Profil
   ]) {
     buffer.destroy();
   }
-  return {tangent, elevation, distance, samples};
+  return {tangent, skylineAngle, distance, samples};
 }
 
 function toBits(values: Float32Array): Uint32Array {
@@ -158,7 +158,7 @@ function getOracleModel(config: ProfileConfig): PointHorizonOracleModel {
   };
 }
 
-function maximumElevationError(gpu: Float32Array, oracle: Float64Array): number {
+function maximumSkylineAngleError(gpu: Float32Array, oracle: Float64Array): number {
   let maximum = 0;
   for (let index = 0; index < gpu.length; index++) {
     if (Number.isNaN(oracle[index])) {
@@ -197,8 +197,8 @@ it('GPUPointHorizonProfile finds the curvature dip of a flat plane', async () =>
     });
     // max over d of (-h / d - c d) = -2 sqrt(h c) at d = sqrt(h / c) = 316 m
     const expected = (Math.atan(-2 * Math.sqrt(height * curvature)) * 180) / Math.PI;
-    expect(result.elevation.length).toBe(72);
-    for (const value of result.elevation) {
+    expect(result.skylineAngle.length).toBe(72);
+    for (const value of result.skylineAngle) {
       expect(Math.abs(value - expected)).toBeLessThan(1e-3);
     }
     expect(Math.abs(result.distance[0] - Math.sqrt(height / curvature))).toBeLessThan(25);
@@ -230,15 +230,15 @@ it('GPUPointHorizonProfile sees a wall at its angle and a higher eye lowers it',
   const low = await run(0, curvature);
   const east = 1; // azimuth index 1 of 4 is 90 degrees
   const expected = (Math.atan(wallHeight / 200 - 200 * curvature) * 180) / Math.PI;
-  expect(Math.abs(low.elevation[east] - expected)).toBeLessThan(1e-3);
+  expect(Math.abs(low.skylineAngle[east] - expected)).toBeLessThan(1e-3);
   expect(Math.abs(low.distance[east] - 200)).toBeLessThan(1e-3);
   const high = await run(20, curvature);
-  expect(high.elevation[east]).toBeLessThan(low.elevation[east]);
+  expect(high.skylineAngle[east]).toBeLessThan(low.skylineAngle[east]);
   const flat = await run(0, 0);
   const curved = await run(0, 4e-4);
-  expect(curved.elevation[east]).toBeLessThan(flat.elevation[east]);
+  expect(curved.skylineAngle[east]).toBeLessThan(flat.skylineAngle[east]);
   // A smaller drop coefficient (larger refraction k) raises the skyline.
-  expect(flat.elevation[east]).toBeGreaterThan(low.elevation[east]);
+  expect(flat.skylineAngle[east]).toBeGreaterThan(low.skylineAngle[east]);
 });
 
 it('GPUPointHorizonProfile pyramid equals march bit for bit on fractal terrain (planar)', async () => {
@@ -286,15 +286,15 @@ it('GPUPointHorizonProfile pyramid equals march bit for bit on fractal terrain (
     });
     expectBitIdentical(march, pyramid);
     // Non-trivial: varied skyline, hidden terrain, and an invalid (outside) observer.
-    const row = march.elevation.slice(0, 180);
+    const row = march.skylineAngle.slice(0, 180);
     expect(new Set(row).size).toBeGreaterThan(60);
     expect(Math.max(...row)).toBeGreaterThan(Math.min(...row) + 1);
-    expect(march.elevation[3 * 180]).toBeNaN();
+    expect(march.skylineAngle[3 * 180]).toBeNaN();
     expect(march.tangent[3 * 180 + 5]).toBeNaN();
     expect(march.distance[3 * 180 + 5]).toBeNaN();
     if (!isSoftwareDevice(device)) {
       const oracle = computePointHorizonProfile(getOracleModel(config), config.observers);
-      const error = maximumElevationError(march.elevation, oracle.elevation);
+      const error = maximumSkylineAngleError(march.skylineAngle, oracle.skylineAngle);
       expect(error).toBeLessThan(2e-3);
     }
   }
@@ -341,10 +341,10 @@ it('GPUPointHorizonProfile pyramid equals march bit for bit on fractal terrain (
     model: {...config.model, traversal: 'pyramid'}
   });
   expectBitIdentical(march, pyramid);
-  expect(new Set(march.elevation).size).toBeGreaterThan(60);
+  expect(new Set(march.skylineAngle).size).toBeGreaterThan(60);
   if (!isSoftwareDevice(device)) {
     const oracle = computePointHorizonProfile(getOracleModel(config), config.observers);
-    const error = maximumElevationError(march.elevation, oracle.elevation);
+    const error = maximumSkylineAngleError(march.skylineAngle, oracle.skylineAngle);
     expect(error).toBeLessThan(2e-3);
   }
 });
@@ -376,7 +376,7 @@ it('GPUPointHorizonProfile sector run equals the slice of the full run', async (
   expect(Array.from(toBits(sector.distance))).toEqual(
     Array.from(toBits(full.distance.slice(30, 55)))
   );
-  expect(new Set(full.elevation).size).toBeGreaterThan(20);
+  expect(new Set(full.skylineAngle).size).toBeGreaterThan(20);
 });
 
 it('GPUPointHorizonProfile pyramid omits samples without changing the result', async () => {
@@ -404,7 +404,13 @@ it('GPUPointHorizonProfile pyramid omits samples without changing the result', a
     model: {...config.model, traversal: 'pyramid'}
   });
   expectBitIdentical(march, pyramid);
-  const total = (counts?: Uint32Array) => (counts ?? []).reduce((sum, count) => sum + count, 0);
+  const total = (counts?: Uint32Array) => {
+    let sum = 0;
+    for (const count of counts ?? []) {
+      sum += count;
+    }
+    return sum;
+  };
   expect(total(march.samples)).toBeGreaterThan(90 * 2 * 500);
   expect(total(pyramid.samples)).toBeLessThan(0.7 * total(march.samples));
   expect(total(pyramid.samples)).toBeGreaterThan(0);

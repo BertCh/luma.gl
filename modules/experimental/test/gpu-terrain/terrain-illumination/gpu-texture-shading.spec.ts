@@ -22,24 +22,11 @@ import {
 } from '../../utils/gpu-contributor-test-utils';
 import {createSmoothTerrain} from './terrain-horizon-oracle';
 import {computeTextureShading} from './texture-shading-oracle';
+import {expectClose} from '../terrain-test-utils';
 
 const WIDTH = 64;
 const HEIGHT = 48;
 const PIXEL_COUNT = WIDTH * HEIGHT;
-
-function expectClose(actual: number[], expected: number[], tolerance: number): void {
-  expect(actual.length).toBe(expected.length);
-  let worst = 0;
-  for (const [index, value] of expected.entries()) {
-    if (Number.isNaN(value)) {
-      expect(Number.isNaN(actual[index]), `index ${index}`).toBe(true);
-      continue;
-    }
-    expect(Number.isNaN(actual[index]), `index ${index} expected ${value}`).toBe(false);
-    worst = Math.max(worst, Math.abs(actual[index] - value));
-  }
-  expect(worst).toBeLessThan(tolerance);
-}
 
 function getWeights(settings: GPUTextureShadingSettings): number[] {
   return Array.from(getGPUTextureShadingParameterValues(settings).subarray(1, 9));

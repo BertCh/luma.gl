@@ -185,7 +185,7 @@ it('GPUTerrainTopographicPosition matches the quantized oracle exactly up to flo
   expect(run.validity.filter(value => value === 0)).toHaveLength(4);
 
   const quantized = computeTopographicPosition(elevation, mask, width, height, SCALES, 1 / 256);
-  const errors = expectMatchesOracle(run, quantized, 1e-4, 2e-5);
+  expectMatchesOracle(run, quantized, 1e-4, 2e-5);
   for (const [index, value] of quantized.maximumDeviation.entries()) {
     if (Number.isNaN(value)) {
       expect(Number.isNaN(run.maximumDeviation[index])).toBe(true);
@@ -204,11 +204,7 @@ it('GPUTerrainTopographicPosition matches the quantized oracle exactly up to flo
 
   // Against the unquantized definition, TPI moves by at most one quantum.
   const definition = computeTopographicPosition(elevation, mask, width, height, SCALES);
-  const definitionErrors = expectMatchesOracle(run, definition, 1 / 256, 1e-3);
-  console.info(
-    `topographic position errors: quantized TPI ${errors.tpiError}, DEV ${errors.deviationError}; ` +
-      `definition TPI ${definitionErrors.tpiError}, DEV ${definitionErrors.deviationError}`
-  );
+  expectMatchesOracle(run, definition, 1 / 256, 1e-3);
 });
 
 it('GPUTerrainTopographicPosition radius-1 TPI equals the 8-neighbour gdaldem TPI', async () => {
@@ -283,10 +279,6 @@ it('GPUTerrainTopographicPosition keeps large high tiles exact where a float32 t
       float32TableTpiError = Math.max(float32TableTpiError, Math.abs(float32Mean - mean));
     }
   }
-  console.info(
-    `512x384 @ 3800 m: TPI error ${maximumTpiError} m, DEV error ${maximumDeviationError}; ` +
-      `a float32 summed-area table mean errs by ${float32TableTpiError} m`
-  );
   expect(maximumTpiError).toBeLessThan(1 / 256);
   expect(maximumDeviationError).toBeLessThan(1e-3);
   expect(float32TableTpiError).toBeGreaterThan(100 * maximumTpiError);

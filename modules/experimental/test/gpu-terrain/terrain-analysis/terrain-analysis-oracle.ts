@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {createMulberryRandom, getOracleGroundCellSize} from '../terrain-oracle-utils';
+
 const DEGREES = 180 / Math.PI;
 const SOBEL_X = [-1, 0, 1, -2, 0, 2, -1, 0, 1];
 const SOBEL_Y = [-1, -2, -1, 0, 0, 0, 1, 2, 1];
@@ -84,21 +86,13 @@ export function computeTerrainDerivatives(
   };
   for (let index = 0; index < width * height; index++) {
     const row = Math.floor(index / width);
-    let cellX = settings[0];
-    let cellY = settings[1];
-    const mode = options.cellSizeMode ?? 'uniform';
-    if (mode !== 'uniform') {
-      const fraction = (row + 0.5) / height;
-      const edge = settings[5] + (settings[6] - settings[5]) * fraction;
-      if (mode === 'web-mercator') {
-        const scale = Math.cosh(Math.PI * (1 - 2 * edge));
-        cellX /= scale;
-        cellY /= scale;
-      } else {
-        cellX = cellX * 111319.49079327357 * Math.cos((edge * Math.PI) / 180);
-        cellY = cellY * 111319.49079327357;
-      }
-    }
+    const [cellX, cellY] = getOracleGroundCellSize(
+      settings,
+      row,
+      height,
+      options.cellSizeMode ?? 'uniform',
+      5
+    );
     const zFactor = settings[2];
     const east = (zFactor * gradientX.values[index]) / (8 * cellX);
     const north = (rowSign * zFactor * gradientY.values[index]) / (8 * cellY);
@@ -436,14 +430,7 @@ export function createFractalTerrain(
   seed: number,
   amplitude: number
 ): Float32Array {
-  let state = seed >>> 0;
-  const random = () => {
-    state = (state + 0x6d2b79f5) >>> 0;
-    let t = state;
-    t = Math.imul(t ^ (t >>> 15), t | 1);
-    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
-    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
-  };
+  const random = createMulberryRandom(seed);
   const result = new Float32Array(width * height);
   let octaveAmplitude = amplitude;
   for (let cellSize = 32; cellSize >= 2; cellSize /= 2) {

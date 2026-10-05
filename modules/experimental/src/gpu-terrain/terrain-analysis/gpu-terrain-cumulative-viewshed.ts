@@ -16,7 +16,10 @@ import {
 } from '../../utils/wgsl-kernel-nodes';
 import type {GPUCommandNodeProducer} from '@luma.gl/gpgpu/gpu-core';
 import {validateGraphViewsBelongToGraph} from '../../utils/gpu-contributor-utils';
-import type {GPURasterExtremaPyramidLayout} from '../../gpu-raster/raster-pyramid/index';
+import type {
+  GPURasterExtremaPyramidLayout,
+  GPURasterExtremaPyramidOutput
+} from '../../gpu-raster/raster-pyramid/index';
 import {
   getSightLinePyramid,
   getSightLinePyramidLayout,
@@ -59,6 +62,15 @@ export type GPUTerrainCumulativeViewshedProps = {
   settings: GraphDataView<'float32'>;
   /** `'march'` (default) or `'pyramid'`, which gives bit-identical counts. */
   traversal?: GPUTerrainSightLineTraversal;
+  /**
+   * Optional prebuilt min-max pyramid to read instead of building one inside this contributor.
+   * Requires `traversal: 'pyramid'`. Pass `GPURasterExtremaPyramid.output` of a pyramid created with
+   * `combined` over the same elevation, `footprint: 'bilinear'` and the same `width x height`
+   * (otherwise the constructor throws), added to the same graph before this contributor or run in
+   * an earlier graph. One pyramid then serves every consumer and is rebuilt only when the
+   * elevation changes. Results are bit-identical to a self-built pyramid and to `'march'`.
+   */
+  pyramid?: GPURasterExtremaPyramidOutput;
   /**
    * Observers handled by one dispatch. Defaults to `max(1, floor(2^22 / pixelCount))`; lower it
    * to keep dispatches short on large grids.
@@ -122,7 +134,13 @@ export class GPUTerrainCumulativeViewshed implements GPUCommandNodeProducer {
       throw new Error(`${id} observersPerDispatch must be a positive integer`);
     }
     this.observersPerDispatch = perDispatch;
-    this.pyramidLayout = getSightLinePyramidLayout(id, props.traversal, props.width, props.height);
+    this.pyramidLayout = getSightLinePyramidLayout(
+      id,
+      props.traversal,
+      props.width,
+      props.height,
+      props.pyramid
+    );
     validateTerrainBuffersDistinct(
       id,
       [props.visibleCount, props.marginalCount],
@@ -144,6 +162,7 @@ export class GPUTerrainCumulativeViewshed implements GPUCommandNodeProducer {
     const pixelCount = width * height;
     validateTerrainBandBelongsToGraph(id, graph, props.elevation, []);
     validateGraphViewsBelongToGraph(id, graph, [
+      props.pyramid?.combined,
       props.settings,
       props.observers,
       props.observerHeights,
@@ -160,7 +179,8 @@ export class GPUTerrainCumulativeViewshed implements GPUCommandNodeProducer {
       props.traversal,
       pyramidLayout,
       values,
-      validity
+      validity,
+      props.pyramid
     );
     nodes.push(...pyramid.nodes);
     for (const [name, view] of [

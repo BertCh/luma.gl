@@ -951,6 +951,11 @@ Still open:
     tie rule. `GPUGraphSingleSourceShortestPath` is single-source dense Bellman-Ford with a
     lowest-parent tie rule.
   - `createWGSLKernelNode` now dispatches through the engine `Kernel`, like gpu-core.
+- Terrain performance:
+  - Pyramid-skip traversal kernels are about 2x slower than the march for viewshed and cumulative
+    viewshed. The pyramid build is only 0.3–0.9 ms and sharing one pyramid does not close the gap.
+  - Hydrology's fixed-length relaxation loops make the drainage graph 2,675 nodes; it needs a
+    GPU-side loop exit (indirect dispatch or a convergence flag).
 - Demo findings from `spatial-analysis-explorer`:
   - Explorer reachability mode should drop to `maxIterations` ≈ 48 (default `localIterations` 16):
     640 rounds is 649 nodes, 48 is 57; it converges in 5.

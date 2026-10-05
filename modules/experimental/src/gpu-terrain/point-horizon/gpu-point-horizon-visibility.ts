@@ -45,7 +45,7 @@ export type GPUPointHorizonVisibilityProps = GPUPointHorizonModelOptions & {
   /** Grid height in pixels (at least 2). */
   height: number;
   /** Terrain band (elevation). */
-  terrain: GPURasterBand;
+  elevation: GPURasterBand;
   /** Observer rows `[column, row, height, 0]`, see `GPUPointHorizonProfileProps.observers`. */
   observers: GraphDataView<'float32x4'>;
   /**
@@ -125,7 +125,7 @@ export class GPUPointHorizonVisibility implements GPUCommandNodeProducer {
     validateTerrainBuffersDistinct(
       id,
       [props.visibility, props.details],
-      [...getTerrainBandViews(props.terrain), props.settings, props.observers, props.targets]
+      [...getTerrainBandViews(props.elevation), props.settings, props.observers, props.targets]
     );
   }
 
@@ -134,15 +134,16 @@ export class GPUPointHorizonVisibility implements GPUCommandNodeProducer {
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
     const {id, props, model} = this;
-    validateTerrainBandBelongsToGraph(id, graph, props.terrain, []);
+    validateTerrainBandBelongsToGraph(id, graph, props.elevation, []);
     validateGraphViewsBelongToGraph(id, graph, [
+      props.pyramid?.combined,
       props.settings,
       props.observers,
       props.targets,
       props.visibility,
       props.details
     ]);
-    const source = createPointHorizonSource(graph, id, model, props.terrain);
+    const source = createPointHorizonSource(graph, id, model, props.elevation);
     const nodes: GPUCommandNode<Parameters>[] = [...source.nodes];
     const bindings: WGSLKernelBinding[] = [
       ...source.bindings,

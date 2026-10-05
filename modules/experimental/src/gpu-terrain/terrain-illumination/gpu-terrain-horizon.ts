@@ -30,7 +30,6 @@ import {
   validateTerrainTexture
 } from '../terrain-analysis/terrain-analysis-utils';
 import {
-  getTerrainIlluminationGroundCellWGSL,
   getTerrainHorizonStorageLength,
   TERRAIN_HORIZON_UNORM16_SCALE,
   TERRAIN_HORIZON_UNORM16_STEP_DEGREES,
@@ -38,12 +37,16 @@ import {
   validateTerrainHorizonFormat,
   validateTerrainHorizonView,
   validateTerrainIlluminationBindingSize,
-  validateTerrainIlluminationCellSizeMode,
-  validateTerrainIlluminationRowDirection,
   validateTerrainIlluminationView,
-  type GPUTerrainHorizonFormat,
-  type GPUTerrainIlluminationCellSizeMode
+  type GPUTerrainHorizonFormat
 } from './terrain-illumination-utils';
+import {
+  getTerrainGroundCellSizeWGSL,
+  type GPUTerrainCellSizeMode,
+  type GPUTerrainRowDirection,
+  validateTerrainCellSizeMode,
+  validateTerrainRowDirection
+} from '../terrain-grid-utils';
 import {getTerrainHorizonSweepNode, TERRAIN_SWEEP_MAX_EXTENT} from './terrain-horizon-sweep';
 
 export type {GPUTerrainHorizonFormat} from './terrain-illumination-utils';
@@ -275,7 +278,7 @@ export function getGPUTerrainHorizonStepDistances(
 export function getGPUTerrainHorizonDirection(
   sector: number,
   directionCount: number,
-  rowDirection: 'south' | 'north' = 'south'
+  rowDirection: GPUTerrainRowDirection = 'south'
 ): [number, number] {
   const azimuth = (2 * Math.PI * sector) / directionCount;
   const northRowSign = rowDirection === 'south' ? -1 : 1;
@@ -317,13 +320,19 @@ export type GPUTerrainHorizonProps = {
   stepGrowth?: number;
   /**
    * Horizon search, see {@link GPUTerrainHorizonAlgorithm}. Defaults to `'march'`. `'sweep'` needs
-   * `stepGrowth` 1 and grid extents up to 32767.
+   * `stepGrowth` 1 and grid extents up to 32767. The sweep is not universally faster: it has a
+   * large fixed cost per pixel and sector, so it wins at large radii and loses at small ones.
+   * Measured with 16 sectors on an Apple-silicon laptop: 1024^2 at the full radius 1023 sweep 41 ms
+   * against march about 1300 ms, at radius 256 about 100 ms against 360 ms; 512^2 at radius 128
+   * sweep 60 ms (125 ms with every output) against march about 20 ms. At 512^2 with every output
+   * the sweep still loses at radius 256 (218 against 58 ms) and wins at the full radius 511 (36
+   * against 109 ms). Prefer `'march'` for small radii and `'sweep'` near the full tile radius.
    */
   algorithm?: GPUTerrainHorizonAlgorithm;
   /** Cell size interpretation. Defaults to `'uniform'`. */
-  cellSizeMode?: GPUTerrainIlluminationCellSizeMode;
+  cellSizeMode?: GPUTerrainCellSizeMode;
   /** Direction in which the row index increases. Defaults to `'south'` (north-up rasters). */
-  rowDirection?: 'south' | 'north';
+  rowDirection?: GPUTerrainRowDirection;
   /**
    * Storage of the `horizon` output. `'float32'` (default) stores degrees; `'unorm16'` packs two
    * 16-bit codes per `uint32` word (see {@link encodeGPUTerrainHorizonUnorm16}), a half-size map
@@ -491,7 +500,7 @@ export function getTerrainHorizonSectorOutput(props: TerrainHorizonSectorOutputP
  *
  * @internal
  */
-export function getTerrainHorizonAnisotropicWeightWGSL(directionCount: number): string {
+function getTerrainHorizonAnisotropicWeightWGSL(directionCount: number): string {
   return `fn getAnisotropicWeight(sector: u32) -> f32 {
   let mainAzimuth = settings[settingsOffset + 8u];
   let level = settings[settingsOffset + 9u];
@@ -654,8 +663,8 @@ export class GPUTerrainHorizon implements GPUCommandNodeProducer {
       props.width,
       props.height
     );
-    validateTerrainIlluminationCellSizeMode(id, props.cellSizeMode ?? 'uniform');
-    validateTerrainIlluminationRowDirection(id, props.rowDirection ?? 'south');
+    validateTerrainCellSizeMode(id, props.cellSizeMode ?? 'uniform');
+    validateTerrainRowDirection(id, props.rowDirection ?? 'south');
     validateTerrainBuffersDistinct(
       id,
       [
@@ -936,7 +945,7 @@ function getSweepSectorNodes<Parameters>(
     directionCount: number;
     direction: [number, number];
     maximumRadius: number;
-    cellSizeMode: GPUTerrainIlluminationCellSizeMode;
+    cellSizeMode: GPUTerrainCellSizeMode;
     elevationValues: GraphDataView<'float32'>;
     elevationValidity: GraphDataView<'uint32'>;
     settings: GraphDataView<'float32'>;
@@ -1019,7 +1028,7 @@ function getHorizonNode<Parameters>(
     direction: [number, number];
     distances: string;
     stepCount: number;
-    cellSizeMode: GPUTerrainIlluminationCellSizeMode;
+    cellSizeMode: GPUTerrainCellSizeMode;
     elevationValues: GraphDataView<'float32'>;
     elevationValidity: GraphDataView<'uint32'>;
     settings: GraphDataView<'float32'>;
@@ -1086,8 +1095,7 @@ const STEP_COUNT: u32 = ${props.stepCount}u;
 var<private> STEP_DISTANCES: array<f32, ${props.stepCount}> = array<f32, ${props.stepCount}>(${props.distances});
 ${TERRAIN_ILLUMINATION_WGSL_CONSTANTS}
 ${zenithOutput?.declarations ?? ''}
-${getTerrainIlluminationGroundCellWGSL(props.cellSizeMode, {
-  settingsName: 'settings',
+${getTerrainGroundCellSizeWGSL(props.cellSizeMode, {
   cellSizeIndex: 0,
   northEdgeIndex: 4
 })}

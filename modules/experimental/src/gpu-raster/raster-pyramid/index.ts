@@ -6,6 +6,7 @@ export {
   createRasterExtremaPyramidNodes,
   getGPURasterExtremaPyramidLayout,
   getRasterExtremaPyramidWGSL,
+  validateRasterExtremaPyramidOutput,
   GPU_RASTER_EXTREMA_PYRAMID_EMPTY_MAXIMUM,
   GPU_RASTER_EXTREMA_PYRAMID_EMPTY_MINIMUM,
   GPURasterExtremaPyramid
@@ -15,5 +16,6 @@ export type {
   GPURasterExtremaPyramidLayout,
   GPURasterExtremaPyramidLayoutOptions,
   GPURasterExtremaPyramidLevel,
+  GPURasterExtremaPyramidOutput,
   GPURasterExtremaPyramidProps
 } from './gpu-raster-extrema-pyramid';

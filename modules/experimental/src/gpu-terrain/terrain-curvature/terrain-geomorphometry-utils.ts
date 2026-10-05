@@ -2,8 +2,6 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import type {GPUTerrainCellSizeMode} from '../terrain-analysis/gpu-terrain-derivatives';
-
 /**
  * Number of leading float32 values shared by every geomorphometry settings layout:
  * `[cellSizeX, cellSizeY, zFactor, northEdge, southEdge]`.
@@ -42,46 +40,10 @@ export function writeTerrainGeomorphometryCellSettings(
   target[4] = settings.southEdge ?? 0;
 }
 
-/** Throws unless `mode` is a supported cell size mode. @internal */
-export function validateTerrainCellSizeMode(id: string, mode: string | undefined): void {
-  if (!['uniform', 'web-mercator', 'geographic'].includes(mode ?? 'uniform')) {
-    throw new Error(`${id} cellSizeMode must be uniform, web-mercator, or geographic`);
-  }
-}
-
-/** Throws unless `rowDirection` is `'south'` or `'north'`. @internal */
-export function validateTerrainRowDirection(id: string, rowDirection: string | undefined): void {
-  if (!['south', 'north'].includes(rowDirection ?? 'south')) {
-    throw new Error(`${id} rowDirection must be south or north`);
-  }
-}
-
 /**
- * Returns WGSL declaring `getGroundCellSize(row: u32) -> vec2<f32>`, the ground cell size in
- * metres (times the settings units in `'uniform'` mode) of one raster row.
- *
- * The generated function reads the shared settings prefix from the storage binding named
- * `settings` and requires a `HEIGHT` constant. `'web-mercator'` divides by `cosh(PI * (1 - 2y))`
- * (the reciprocal of cos(latitude)) at the row centre; `'geographic'` multiplies degrees by
- * 111319.49 m and the x size by cos(latitude) at the row centre. Both models are a spherical,
- * row-constant approximation, exactly like `GPUTerrainDerivatives`.
+ * Settings slots of the shared prefix, for
+ * {@link getTerrainGroundCellSizeWGSL}: cell size at index 0 and the row edges at 3 and 4.
  *
  * @internal
  */
-export function getTerrainGroundCellSizeWGSL(mode: GPUTerrainCellSizeMode): string {
-  const body =
-    mode === 'uniform'
-      ? 'return cellSize;'
-      : `let rowFraction = (f32(row) + 0.5) / f32(HEIGHT);
-  let edge = mix(settings[settingsOffset + 3u], settings[settingsOffset + 4u], rowFraction);
-  ${
-    mode === 'web-mercator'
-      ? '// cos(latitude) = 1 / cosh(PI * (1 - 2y)) for normalized Web Mercator y.\n  return cellSize / cosh(3.141592653589793 * (1.0 - 2.0 * edge));'
-      : 'return cellSize * 111319.49079327357 * vec2<f32>(cos(edge * 0.017453292519943295), 1.0);'
-  }`;
-  return /* wgsl */ `
-fn getGroundCellSize(row: u32) -> vec2<f32> {
-  let cellSize = vec2<f32>(settings[settingsOffset], settings[settingsOffset + 1u]);
-  ${body}
-}`;
-}
+export const TERRAIN_GEOMORPHOMETRY_CELL_SLOTS = {cellSizeIndex: 0, northEdgeIndex: 3} as const;

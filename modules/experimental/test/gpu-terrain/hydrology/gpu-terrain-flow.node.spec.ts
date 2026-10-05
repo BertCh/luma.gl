@@ -110,8 +110,11 @@ it('GPUTerrainFlow prefixes node ids and grows with iteration limits', () => {
 
 it('GPUTerrainFlow validates its props', () => {
   const {device, graph, create} = createFixture();
-  const view = (name: string, format: 'float32' | 'uint32', length: number) =>
-    createTransientView(graph, name, format, length);
+  const view = <Format extends 'float32' | 'uint32'>(
+    name: string,
+    format: Format,
+    length: number
+  ) => createTransientView(graph, name, format, length);
   expect(() => create({width: 0})).toThrow(/dimensions/);
   expect(() => create({flowDirections: undefined})).toThrow(/at least one output/);
   expect(() => create({settings: view('s7', 'float32', 7)})).toThrow(/settings/);

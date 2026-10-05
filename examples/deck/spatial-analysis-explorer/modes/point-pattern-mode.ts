@@ -97,10 +97,29 @@ const GROUP_COLORS: readonly (readonly [number, number, number])[] = [
 ];
 
 // Float32 word offsets of the readback summary.
+type SummaryLayoutKey =
+  | 'rippleL'
+  | 'semivariances'
+  | 'variogramPairs'
+  | 'variogramDistances'
+  | 'variogramStatistics'
+  | 'moransI'
+  | 'zScores'
+  | 'bandPairs'
+  | 'peakBands'
+  | 'correlogramStatistics'
+  | 'clarkEvans'
+  | 'quadrat'
+  | 'counts'
+  | 'meanCenters'
+  | 'medianCenters'
+  | 'standardDistances'
+  | 'ellipses';
+
 const SUMMARY_LAYOUT = (() => {
-  const layout: Record<string, number> = {};
+  const layout = {} as Record<SummaryLayoutKey | 'words', number>;
   let offset = 0;
-  const add = (name: string, words: number) => {
+  const add = (name: SummaryLayoutKey, words: number) => {
     layout[name] = offset;
     offset += words;
   };
@@ -325,7 +344,7 @@ export const pointPatternMode: SpatialAnalysisModeDefinition = {
     const readbackRing = resources.track(
       new GPUReadbackRing(device, {
         id: 'point-pattern-summary',
-        byteLength: SUMMARY_LAYOUT.words * 4
+        byteLength: SUMMARY_LAYOUT['words'] * 4
       })
     );
 
@@ -833,7 +852,7 @@ export const pointPatternMode: SpatialAnalysisModeDefinition = {
     const formatP = (value: number) =>
       !Number.isFinite(value) ? 'n/a' : value < 0.001 ? '< 0.001' : value.toFixed(3);
 
-    function getSlice(name: string, length: number): Float32Array {
+    function getSlice(name: SummaryLayoutKey, length: number): Float32Array {
       return lastSummary!.subarray(SUMMARY_LAYOUT[name], SUMMARY_LAYOUT[name] + length);
     }
 
@@ -856,8 +875,8 @@ export const pointPatternMode: SpatialAnalysisModeDefinition = {
       // Variogram: aggregate sectors for 'all', otherwise one sector.
       const semivariances = getSlice('semivariances', LAG_COUNT * DIRECTION_COUNT);
       const pairs = lastSummaryWords.subarray(
-        SUMMARY_LAYOUT.variogramPairs,
-        SUMMARY_LAYOUT.variogramPairs + LAG_COUNT * DIRECTION_COUNT
+        SUMMARY_LAYOUT['variogramPairs'],
+        SUMMARY_LAYOUT['variogramPairs'] + LAG_COUNT * DIRECTION_COUNT
       );
       const distances = getSlice('variogramDistances', LAG_COUNT * DIRECTION_COUNT);
       const lagDistances: number[] = [];
@@ -882,7 +901,7 @@ export const pointPatternMode: SpatialAnalysisModeDefinition = {
           lagPairs.push(pairTotal);
         }
       }
-      const variance = lastSummary[SUMMARY_LAYOUT.variogramStatistics + 2];
+      const variance = lastSummary[SUMMARY_LAYOUT['variogramStatistics'] + 2];
       let model: VariogramModel | null = null;
       try {
         model = fitVariogramModel(
@@ -992,8 +1011,8 @@ export const pointPatternMode: SpatialAnalysisModeDefinition = {
             )} m`
       );
       const peakWords = lastSummaryWords.subarray(
-        SUMMARY_LAYOUT.peakBands,
-        SUMMARY_LAYOUT.peakBands + 2
+        SUMMARY_LAYOUT['peakBands'],
+        SUMMARY_LAYOUT['peakBands'] + 2
       );
       const describeBand = (band: number) =>
         band === GPU_SPATIAL_CORRELOGRAM_NO_BAND
@@ -1003,8 +1022,8 @@ export const pointPatternMode: SpatialAnalysisModeDefinition = {
 
       const group = inspectedGroup;
       const counts = lastSummaryWords.subarray(
-        SUMMARY_LAYOUT.counts,
-        SUMMARY_LAYOUT.counts + GROUP_COUNT
+        SUMMARY_LAYOUT['counts'],
+        SUMMARY_LAYOUT['counts'] + GROUP_COUNT
       );
       const meanCenters = getSlice('meanCenters', GROUP_COUNT * 2);
       const medianCenters = getSlice('medianCenters', GROUP_COUNT * 2);
@@ -1040,7 +1059,7 @@ export const pointPatternMode: SpatialAnalysisModeDefinition = {
     ) => {
       const ticket = readbackRing.tryAcquire();
       if (!ticket) return;
-      const copy = (name: keyof typeof outputs, key: string, words: number) =>
+      const copy = (name: keyof typeof outputs, key: SummaryLayoutKey, words: number) =>
         commandEncoder.copyBufferToBuffer({
           sourceBuffer: outputs[name],
           destinationBuffer: ticket.buffer,
@@ -1068,7 +1087,7 @@ export const pointPatternMode: SpatialAnalysisModeDefinition = {
       copy('medianCenters', 'medianCenters', GROUP_COUNT * 2);
       copy('standardDistances', 'standardDistances', GROUP_COUNT);
       copy('ellipses', 'ellipses', GROUP_COUNT * 3);
-      ticket.markEncoded({byteOffset: 0, byteLength: SUMMARY_LAYOUT.words * 4});
+      ticket.markEncoded({byteOffset: 0, byteLength: SUMMARY_LAYOUT['words'] * 4});
       readbackPending = true;
       needsReadback = false;
       try {
@@ -1076,8 +1095,8 @@ export const pointPatternMode: SpatialAnalysisModeDefinition = {
         if (destroyed) return;
         // Copy: the ring recycles its mapped memory.
         const copyBuffer = bytes.slice().buffer;
-        lastSummary = new Float32Array(copyBuffer, 0, SUMMARY_LAYOUT.words);
-        lastSummaryWords = new Uint32Array(copyBuffer, 0, SUMMARY_LAYOUT.words);
+        lastSummary = new Float32Array(copyBuffer, 0, SUMMARY_LAYOUT['words']);
+        lastSummaryWords = new Uint32Array(copyBuffer, 0, SUMMARY_LAYOUT['words']);
         updateReadouts();
         redrawCharts();
       } catch {

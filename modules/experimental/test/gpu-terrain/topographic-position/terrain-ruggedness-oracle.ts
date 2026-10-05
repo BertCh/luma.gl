@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {getOracleGroundCellSize} from '../terrain-oracle-utils';
+
 /** Options mirroring `GPUTerrainRuggedness` topology props. */
 export type TerrainRuggednessOracleOptions = {
   edgeMode?: 'nodata' | 'extrapolate';
@@ -187,28 +189,6 @@ export type VectorRuggednessOracleOptions = {
   borderMode?: 'clamp' | 'nodata';
 };
 
-/** Ground cell size of one row in the same models as the GPU contributors. */
-export function getOracleGroundCellSize(
-  row: number,
-  height: number,
-  settings: ArrayLike<number>,
-  mode: 'uniform' | 'web-mercator' | 'geographic'
-): [number, number] {
-  const cellX = settings[0];
-  const cellY = settings[1];
-  if (mode === 'uniform') {
-    return [cellX, cellY];
-  }
-  const fraction = (row + 0.5) / height;
-  const edge = settings[3] + (settings[4] - settings[3]) * fraction;
-  if (mode === 'web-mercator') {
-    const scale = 1 / Math.cosh(Math.PI * (1 - 2 * edge));
-    return [cellX * scale, cellY * scale];
-  }
-  const metersPerDegree = 111319.49079327357;
-  return [cellX * metersPerDegree * Math.cos((edge * Math.PI) / 180), cellY * metersPerDegree];
-}
-
 /** Float64 mirror of the VRM contributor: Horn normals, then 1 - |sum n| / N over the window. */
 export function computeVectorRuggedness(
   values: ArrayLike<number>,
@@ -246,7 +226,7 @@ export function computeVectorRuggedness(
         ok = ok && isSampleValid(sampleRow, sampleColumn);
         window.push(values[sampleRow * width + sampleColumn]);
       }
-      const [cellX, cellY] = getOracleGroundCellSize(row, height, settings, mode);
+      const [cellX, cellY] = getOracleGroundCellSize(settings, row, height, mode);
       const zFactor = settings[2];
       const east =
         (zFactor *

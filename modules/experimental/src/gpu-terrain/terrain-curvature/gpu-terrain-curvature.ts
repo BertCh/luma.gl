@@ -17,7 +17,6 @@ import {
 } from '../../utils/wgsl-kernel-nodes';
 import type {GPUCommandNodeProducer} from '@luma.gl/gpgpu/gpu-core';
 import {validateGraphViewsBelongToGraph} from '../../utils/gpu-contributor-utils';
-import type {GPUTerrainCellSizeMode} from '../terrain-analysis/gpu-terrain-derivatives';
 import {
   getTerrainBandViews,
   getTerrainElevationNodes,
@@ -29,13 +28,18 @@ import {
   type TerrainElevationSource
 } from '../terrain-analysis/terrain-analysis-utils';
 import {
-  getTerrainGroundCellSizeWGSL,
-  validateTerrainCellSizeMode,
-  validateTerrainRowDirection,
+  TERRAIN_GEOMORPHOMETRY_CELL_SLOTS,
   writeTerrainGeomorphometryCellSettings,
   TERRAIN_GEOMORPHOMETRY_SHARED_PARAMETER_LENGTH,
   type TerrainGeomorphometryCellSettings
 } from './terrain-geomorphometry-utils';
+import {
+  getTerrainGroundCellSizeWGSL,
+  type GPUTerrainCellSizeMode,
+  type GPUTerrainRowDirection,
+  validateTerrainCellSizeMode,
+  validateTerrainRowDirection
+} from '../terrain-grid-utils';
 
 /**
  * Estimator of the local partial derivatives `p, q, r, s, t`.
@@ -209,7 +213,7 @@ export type GPUTerrainCurvatureProps = {
   /** Cell size interpretation. Defaults to `'uniform'`. */
   cellSizeMode?: GPUTerrainCellSizeMode;
   /** Direction in which the row index increases. Defaults to `'south'` (north-up rasters). */
-  rowDirection?: 'south' | 'north';
+  rowDirection?: GPUTerrainRowDirection;
   /** `'clamp'` repeats edge samples; `'nodata'` invalidates windows leaving the raster. Defaults to `'clamp'`. */
   borderMode?: 'clamp' | 'nodata';
 };
@@ -592,7 +596,7 @@ const HEIGHT_SIGNED: i32 = ${props.height};
 var<private> windowValid: bool;
 var<private> ringValid: bool;
 ${TERRAIN_WGSL_HELPERS}
-${getTerrainGroundCellSizeWGSL(props.cellSizeMode ?? 'uniform')}
+${getTerrainGroundCellSizeWGSL(props.cellSizeMode ?? 'uniform', TERRAIN_GEOMORPHOMETRY_CELL_SLOTS)}
 // Elevation of an offset sample minus the centre elevation; flags the window invalid on failure.
 fn readWindowDelta(column: u32, row: u32, dx: i32, dy: i32, centre: f32) -> f32 {
   var sampleColumn = i32(column) + dx;

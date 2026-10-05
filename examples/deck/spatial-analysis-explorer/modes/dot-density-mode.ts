@@ -569,7 +569,7 @@ export const dotDensityMode: SpatialAnalysisModeDefinition = {
     };
 
     const instance: SpatialAnalysisModeInstance = {
-      getCompiledGraphs: () => [compiledDots, compiledRandom] as CompiledGPUCommandGraph<unknown>[],
+      getCompiledGraphs: () => [compiledDots, compiledRandom] as CompiledGPUCommandGraph<never>[],
       encode(commandEncoder, frame) {
         // Checking owns the output buffers and the parameter words until it finishes.
         if (checking) return;

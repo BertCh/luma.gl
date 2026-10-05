@@ -24,6 +24,7 @@ import {
   submitGraph
 } from '../../utils/gpu-contributor-test-utils';
 import {computeTerrainPeakSnap} from './terrain-summits-oracle';
+import {createHills, createNoise} from '../terrain-test-utils';
 
 type FixtureOptions = {
   values: Float32Array;
@@ -144,31 +145,10 @@ function expectMatchesOracle(
   });
 }
 
-function createNoise(width: number, height: number, levels: number, seed: number): Float32Array {
-  let state = seed >>> 0;
-  return Float32Array.from({length: width * height}, () => {
-    state = (Math.imul(state, 1664525) + 1013904223) >>> 0;
-    return (state >>> 8) % levels;
-  });
-}
-
-function createHills(width: number, height: number): Float32Array {
-  const hills = [
-    {x: 12, y: 10, amplitude: 100, sigma: 4},
-    {x: 24, y: 16, amplitude: 60, sigma: 3}
-  ];
-  return Float32Array.from({length: width * height}, (_, index) => {
-    const column = index % width;
-    const row = Math.floor(index / width);
-    return hills.reduce(
-      (sum, hill) =>
-        sum +
-        hill.amplitude *
-          Math.exp(-((column - hill.x) ** 2 + (row - hill.y) ** 2) / (2 * hill.sigma ** 2)),
-      0
-    );
-  });
-}
+const HILLS = [
+  {x: 12, y: 10, amplitude: 100, sigma: 4},
+  {x: 24, y: 16, amplitude: 60, sigma: 3}
+];
 
 const WIDTH = 32;
 const HEIGHT = 24;
@@ -184,7 +164,7 @@ it('GPUTerrainPeakSnap snaps to hill summits, keeps flanks, and reports status',
   if (!device) {
     return;
   }
-  const values = createHills(WIDTH, HEIGHT);
+  const values = createHills(WIDTH, HEIGHT, HILLS);
   const candidates = [
     10.25,
     8.5, // near the first summit: snapped

@@ -285,7 +285,6 @@ export type {
   GPUTerrainHorizonFormat,
   GPUTerrainHorizonProps,
   GPUTerrainHorizonSettings,
-  GPUTerrainIlluminationCellSizeMode,
   GPUTextureShadingProps,
   GPUTextureShadingSettings,
   SolarPosition,
@@ -319,3 +318,4 @@ export type {
   GPUTerrainWeissLandformsSettings,
   GPUTerrainWeissStandardization
 } from './topographic-position/index';
+export type {GPUTerrainRowDirection} from './terrain-grid-utils';

@@ -14,7 +14,6 @@ import type {GPURasterBand, GPURasterBorderMode} from '../../gpu-raster/index';
 import {createWGSLKernelNode, type WGSLKernelBinding} from '../../utils/wgsl-kernel-nodes';
 import type {GPUCommandNodeProducer} from '@luma.gl/gpgpu/gpu-core';
 import {validateGraphViewsBelongToGraph} from '../../utils/gpu-contributor-utils';
-import type {GPUTerrainCellSizeMode} from '../terrain-analysis/gpu-terrain-derivatives';
 import {
   getTerrainBandViews,
   getTerrainElevationNodes,
@@ -25,11 +24,17 @@ import {
   validateTerrainSettings
 } from '../terrain-analysis/terrain-analysis-utils';
 import {
-  getTerrainGroundCellSizeWGSL,
-  validateTerrainCellSizeMode,
-  validateTerrainRowDirection,
+  TERRAIN_GEOMORPHOMETRY_CELL_SLOTS,
   writeTerrainGeomorphometryCellSettings
 } from '../terrain-curvature/terrain-geomorphometry-utils';
+import {
+  getTerrainGroundCellSizeWGSL,
+  getTerrainRowNorthSignWGSL,
+  type GPUTerrainCellSizeMode,
+  type GPUTerrainRowDirection,
+  validateTerrainCellSizeMode,
+  validateTerrainRowDirection
+} from '../terrain-grid-utils';
 
 /** Number of float32 values read from `GPUTerrainVectorRuggednessProps.settings`. */
 export const GPU_TERRAIN_VECTOR_RUGGEDNESS_PARAMETER_LENGTH = 8;
@@ -95,7 +100,7 @@ export type GPUTerrainVectorRuggednessProps = {
   /** Cell size interpretation. Defaults to `'uniform'`. */
   cellSizeMode?: GPUTerrainCellSizeMode;
   /** Direction in which the row index increases. Defaults to `'south'` (north-up rasters). */
-  rowDirection?: 'south' | 'north';
+  rowDirection?: GPUTerrainRowDirection;
   /**
    * Treatment of the raster border when computing Horn normals: `'clamp'` repeats edge samples
    * (default), `'nodata'` leaves border normals invalid.
@@ -196,9 +201,9 @@ export class GPUTerrainVectorRuggedness implements GPUCommandNodeProducer {
       invocationCount: pixelCount,
       declarations: `const WIDTH: u32 = ${width}u;
 const HEIGHT: u32 = ${height}u;
-const ROW_NORTH_SIGN: f32 = ${(props.rowDirection ?? 'south') === 'south' ? '-1.0' : '1.0'};
+${getTerrainRowNorthSignWGSL(props.rowDirection ?? 'south')}
 ${TERRAIN_WGSL_HELPERS}
-${getTerrainGroundCellSizeWGSL(props.cellSizeMode ?? 'uniform')}`,
+${getTerrainGroundCellSizeWGSL(props.cellSizeMode ?? 'uniform', TERRAIN_GEOMORPHOMETRY_CELL_SLOTS)}`,
       body: `let row = i32(index / WIDTH);
   let column = i32(index % WIDTH);
   var isValid = true;

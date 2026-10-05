@@ -21,7 +21,7 @@ import {TERRAIN_WGSL_HELPERS} from '../terrain-analysis/terrain-analysis-utils';
  *
  * @internal
  */
-export const TERRAIN_SUMMED_AREA_MAXIMUM_QUANTIZED = 2147483520;
+const TERRAIN_SUMMED_AREA_MAXIMUM_QUANTIZED = 2147483520;
 
 /**
  * WGSL helpers for modular 64-bit integer arithmetic on `vec2<u32>` (low, high) words, plus the

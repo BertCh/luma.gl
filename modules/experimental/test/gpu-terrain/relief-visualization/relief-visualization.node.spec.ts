@@ -30,17 +30,7 @@ import {
 import {roundHalfEven} from '../../../src/gpu-terrain/relief-visualization/relief-visualization-utils';
 import {createNullWebGPUDevice} from '../../utils/gpu-contributor-test-utils';
 import {pythonRound} from './relief-visualization-oracle';
-
-function createBand(graph: GPUCommandGraph, id: string, length: number) {
-  return {
-    id,
-    format: 'float32' as const,
-    storage: {
-      kind: 'buffer' as const,
-      values: createTransientView(graph, id, 'float32', length)
-    }
-  };
-}
+import {createBand} from '../terrain-test-utils';
 
 it('roundHalfEven matches Python rounding', () => {
   for (const value of [-3.5, -2.5, -1.5, -0.5, 0, 0.4999999, 0.5, 1.5, 2.5, 3.5, 7.0000001, 9.9]) {

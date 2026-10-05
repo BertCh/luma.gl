@@ -72,7 +72,7 @@ export type SpatialAnalysisModeInstance = {
    * deliberately rebuilds a graph for a compile-time change (for example grid vs. hexagon) must
    * return the new objects; the shell counts those rebuilds separately.
    */
-  getCompiledGraphs: () => readonly CompiledGPUCommandGraph<unknown>[];
+  getCompiledGraphs: () => readonly CompiledGPUCommandGraph<never>[];
   /**
    * Writes per-frame parameter buffers and encodes compiled graphs into Deck's frame encoder.
    * Deck owns queue submission. Never compile, submit, or synchronously read back here.

@@ -5,7 +5,7 @@
 import type {Device} from '@luma.gl/core';
 import {GPUCommandGraph} from '@luma.gl/gpgpu/gpu-core';
 import {getWebGPUTestDevice} from '@luma.gl/test-utils';
-import {afterAll, expect, it} from 'vitest';
+import {expect, it} from 'vitest';
 import {GPUParameterBuffer, importGraphBuffer} from '../../../src/utils/gpu-contributor-utils';
 import {submitGraph} from '../../utils/gpu-contributor-test-utils';
 import {
@@ -52,7 +52,6 @@ const TOLERANCE: Record<Routing | 'd8', number> = {
   'mfd-freeman': 1e-4,
   'mfd-quinn': 1e-4
 };
-const maximumObservedError: Record<string, number> = {};
 
 type FlowOptions = {
   routing: GPUTerrainFlowProps['flowRouting'];
@@ -190,7 +189,6 @@ async function expectMatchesOracle(
   const result = await fixture.run();
   fixture.destroy();
   const oracle = runOracle(elevation, width, height, options);
-  let maximumError = 0;
   let maximumValue = 0;
   for (const [cell, expected] of oracle.accumulation.entries()) {
     const actual = result.accumulation[cell];
@@ -200,20 +198,18 @@ async function expectMatchesOracle(
     }
     expect(Number.isFinite(actual), `${name} cell ${cell} finite (${actual})`).toBe(true);
     const error = Math.abs(actual - expected) / Math.max(1, Math.abs(expected));
-    maximumError = Math.max(maximumError, error);
     maximumValue = Math.max(maximumValue, expected);
     expect(error, `${name} cell ${cell}: gpu ${actual} cpu ${expected}`).toBeLessThanOrEqual(
       TOLERANCE[routing]
     );
   }
-  maximumObservedError[routing] = Math.max(maximumObservedError[routing] ?? 0, maximumError);
   expect(result.converged, `${name} accumulationConverged`).toBe(1);
   return {oracle, result, maximumValue};
 }
 
 // Smooth or continuous DEMs with non-integer values: no exact facet ties.
-const DEMS: Record<string, (width: number, height: number) => Float32Array> = {
-  cone: (width, height) =>
+const DEMS = {
+  cone: (width: number, height: number) =>
     Float32Array.from({length: width * height}, (_, cell) => {
       const column = cell % width;
       const row = Math.floor(cell / width);
@@ -221,7 +217,7 @@ const DEMS: Record<string, (width: number, height: number) => Float32Array> = {
       const dy = row - (height - 1) / 2;
       return 100.3 - 1.7 * Math.hypot(dx, dy) + 0.0137 * column - 0.0071 * row;
     }),
-  ridges: (width, height) =>
+  ridges: (width: number, height: number) =>
     Float32Array.from({length: width * height}, (_, cell) => {
       const column = cell % width;
       const row = Math.floor(cell / width);
@@ -229,7 +225,7 @@ const DEMS: Record<string, (width: number, height: number) => Float32Array> = {
         20 + 5 * Math.sin(column * 0.45) + 4 * Math.cos(row * 0.37) + 0.21 * column + 0.13 * row
       );
     }),
-  valley: (width, height) => {
+  valley: (width: number, height: number) => {
     const random = createSeededRandom(5);
     return Float32Array.from({length: width * height}, (_, cell) => {
       const column = cell % width;
@@ -237,11 +233,11 @@ const DEMS: Record<string, (width: number, height: number) => Float32Array> = {
       return 3.1 * Math.abs(column - (width - 1) / 2) + 0.37 * (height - 1 - row) + 0.02 * random();
     });
   },
-  noise: (width, height) => {
+  noise: (width: number, height: number) => {
     const random = createSeededRandom(7);
     return Float32Array.from({length: width * height}, () => 20 * random());
   },
-  'nodata holes': (width, height) => {
+  'nodata holes': (width: number, height: number) => {
     const random = createSeededRandom(11);
     return Float32Array.from({length: width * height}, () =>
       random() < 0.1 ? NaN : 12 * random()
@@ -535,9 +531,4 @@ it('GPUTerrainFlow reports the rounds needed by the routed accumulation', async 
     }
     expect(rounds[routing], `${routing} converges within 64 rounds`).toBeDefined();
   }
-  console.log('terrain flow routing rounds (noise 70x45):', JSON.stringify(rounds));
-});
-
-afterAll(() => {
-  console.log('terrain flow routing max relative error:', JSON.stringify(maximumObservedError));
 });

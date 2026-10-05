@@ -25,6 +25,7 @@ import {
   computeTerrainFlow,
   type TerrainFlowOracleResult
 } from './terrain-flow-oracle';
+import {toBits} from '../terrain-test-utils';
 
 type FlatsOptions = {
   fillDepressions?: boolean;
@@ -116,15 +117,6 @@ async function runFlow(
     buffer.destroy();
   }
   return result;
-}
-
-function toBits(values: Float32Array): number[] {
-  const bits = new Uint32Array(values.length);
-  const floats = new Float32Array(bits.buffer);
-  for (const [index, value] of values.entries()) {
-    floats[index] = Number.isNaN(value) ? NaN : value;
-  }
-  return Array.from(bits);
 }
 
 function countClass(classes: Uint32Array, cellClass: number): number {

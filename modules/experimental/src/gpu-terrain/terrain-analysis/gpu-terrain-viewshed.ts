@@ -20,7 +20,9 @@ import {
 import {
   createRasterExtremaPyramidNodes,
   getGPURasterExtremaPyramidLayout,
-  type GPURasterExtremaPyramidLayout
+  validateRasterExtremaPyramidOutput,
+  type GPURasterExtremaPyramidLayout,
+  type GPURasterExtremaPyramidOutput
 } from '../../gpu-raster/raster-pyramid/index';
 import {
   getTerrainBandViews,
@@ -205,6 +207,15 @@ export type GPUTerrainViewshedProps = {
    */
   traversal?: GPUTerrainSightLineTraversal;
   /**
+   * Optional prebuilt min-max pyramid to read instead of building one inside this contributor.
+   * Requires `traversal: 'pyramid'`. Pass `GPURasterExtremaPyramid.output` of a pyramid created with
+   * `combined` over the same elevation, `footprint: 'bilinear'` and the same `width x height`
+   * (otherwise the constructor throws), added to the same graph before this contributor or run in
+   * an earlier graph. One pyramid then serves every consumer and is rebuilt only when the
+   * elevation changes. Results are bit-identical to a self-built pyramid and to `'march'`.
+   */
+  pyramid?: GPURasterExtremaPyramidOutput;
+  /**
    * Optional per-frame tolerance band and target-ignore stretch with at least
    * {@link GPU_TERRAIN_VISIBILITY_TOLERANCE_PARAMETER_LENGTH} float32 values, see
    * {@link getGPUTerrainVisibilityToleranceParameterValues}. When absent all four are 0 and the
@@ -273,11 +284,16 @@ export class GPUTerrainViewshed implements GPUCommandNodeProducer {
         GPU_TERRAIN_VISIBILITY_TOLERANCE_PARAMETER_LENGTH
       );
     }
+    if (props.pyramid && props.traversal !== 'pyramid') {
+      throw new Error(`${id} pyramid requires traversal 'pyramid'`);
+    }
     if (props.traversal === 'pyramid') {
-      this.pyramidLayout = getGPURasterExtremaPyramidLayout(props.width, props.height, {
-        firstBlockSize: 4,
-        footprint: 'bilinear'
-      });
+      this.pyramidLayout = props.pyramid
+        ? validateRasterExtremaPyramidOutput(id, props.pyramid, props.width, props.height)
+        : getGPURasterExtremaPyramidLayout(props.width, props.height, {
+            firstBlockSize: 4,
+            footprint: 'bilinear'
+          });
     }
     validateTerrainBuffersDistinct(
       id,
@@ -298,6 +314,7 @@ export class GPUTerrainViewshed implements GPUCommandNodeProducer {
     const {width, height} = props;
     validateTerrainBandBelongsToGraph(id, graph, props.elevation, [props.visibilityTexture]);
     validateGraphViewsBelongToGraph(id, graph, [
+      props.pyramid?.combined,
       props.settings,
       props.visibility,
       ...(props.tolerance ? [props.tolerance] : [])
@@ -448,7 +465,9 @@ fn sampleElevation(position: vec2<f32>) -> vec2<f32> {
       {name: 'elevationValues', view: values, type: 'f32', access: 'read'},
       {name: 'elevationValidity', view: validity, type: 'u32', access: 'read'}
     ];
-    if (pyramidLayout) {
+    if (pyramidLayout && props.pyramid) {
+      bindings.push({name: 'pyramid', view: props.pyramid.combined, type: 'f32', access: 'read'});
+    } else if (pyramidLayout) {
       const combined = createTransientView(
         graph,
         `${id}-pyramid`,

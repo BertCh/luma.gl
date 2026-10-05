@@ -8,11 +8,8 @@ import {
   getWGSLFloatLiteral,
   type WGSLKernelBinding
 } from '../../utils/wgsl-kernel-nodes';
-import {
-  getTerrainIlluminationGroundCellWGSL,
-  TERRAIN_ILLUMINATION_WGSL_CONSTANTS,
-  type GPUTerrainIlluminationCellSizeMode
-} from './terrain-illumination-utils';
+import {TERRAIN_ILLUMINATION_WGSL_CONSTANTS} from './terrain-illumination-utils';
+import {getTerrainGroundCellSizeWGSL, type GPUTerrainCellSizeMode} from '../terrain-grid-utils';
 
 /** Fixed-point scale of the digital line slope: `slopeFixed = round(minor / major * 65536)`. @internal */
 export const TERRAIN_SWEEP_SLOPE_SCALE = 65536;
@@ -145,7 +142,7 @@ export type TerrainHorizonSweepNodeProps = {
   /** Radius window in pixels (the contributor's `maximumRadius`). */
   maximumRadius: number;
   /** Cell size interpretation. */
-  cellSizeMode: GPUTerrainIlluminationCellSizeMode;
+  cellSizeMode: GPUTerrainCellSizeMode;
   /** 1 for horizons, -1 for the nadir pass (inverted DEM; curvature still drops). */
   zFactorSign: 1 | -1;
   /** Canonical elevation values, one per pixel. */
@@ -351,8 +348,7 @@ const HEIGHT: u32 = ${props.height}u;
 const NONE: u32 = 0xffffffffu;
 const MAXIMUM_RADIUS: f32 = ${getWGSLFloatLiteral(props.maximumRadius)};
 ${TERRAIN_ILLUMINATION_WGSL_CONSTANTS}
-${getTerrainIlluminationGroundCellWGSL(props.cellSizeMode, {
-  settingsName: 'settings',
+${getTerrainGroundCellSizeWGSL(props.cellSizeMode, {
   cellSizeIndex: 0,
   northEdgeIndex: 4
 })}

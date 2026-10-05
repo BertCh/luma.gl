@@ -23,6 +23,7 @@ import {
   submitGraph
 } from '../../utils/gpu-contributor-test-utils';
 import {computeTerrainSummits} from './terrain-summits-oracle';
+import {createHills, createNoise} from '../terrain-test-utils';
 
 type FixtureOptions = {
   values: Float32Array;
@@ -121,32 +122,10 @@ function createSummitsFixture(device: Device, options: FixtureOptions) {
   };
 }
 
-/** Deterministic integer noise in `[0, levels)` so equal heights (ties) are common. */
-function createNoise(width: number, height: number, levels: number, seed: number): Float32Array {
-  let state = seed >>> 0;
-  return Float32Array.from({length: width * height}, () => {
-    state = (Math.imul(state, 1664525) + 1013904223) >>> 0;
-    return (state >>> 8) % levels;
-  });
-}
-
-function createHills(width: number, height: number): Float32Array {
-  const hills = [
-    {x: 12, y: 10, amplitude: 100, sigma: 6},
-    {x: 30, y: 21, amplitude: 80, sigma: 5}
-  ];
-  return Float32Array.from({length: width * height}, (_, index) => {
-    const column = index % width;
-    const row = Math.floor(index / width);
-    return hills.reduce(
-      (sum, hill) =>
-        sum +
-        hill.amplitude *
-          Math.exp(-((column - hill.x) ** 2 + (row - hill.y) ** 2) / (2 * hill.sigma ** 2)),
-      0
-    );
-  });
-}
+const HILLS = [
+  {x: 12, y: 10, amplitude: 100, sigma: 6},
+  {x: 30, y: 21, amplitude: 80, sigma: 5}
+];
 
 function expectMatchesOracle(
   actual: {mask: number[]; drop: number[]; ids: number[]; outputDrop: number[]},
@@ -169,7 +148,7 @@ it('GPUTerrainSummits finds Gaussian hill summits and matches the oracle', async
   }
   const width = 44;
   const height = 32;
-  const values = createHills(width, height);
+  const values = createHills(width, height, HILLS);
   const settings = {radius: 4, cellSize: [1, 1]} as const;
   const fixture = createSummitsFixture(device, {values, width, height, settings});
   const result = await fixture.run();

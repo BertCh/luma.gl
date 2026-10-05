@@ -26,6 +26,7 @@ import {
   computeWatershedsOnCPU
 } from './terrain-drainage-oracle';
 import {TERRAIN_FLOW_DEMS as DEMS, computeTerrainFlow} from './terrain-flow-oracle';
+import {toBits} from '../terrain-test-utils';
 
 type DrainageInput = {
   width: number;
@@ -62,8 +63,11 @@ async function runDrainage(device: Device, input: DrainageInput) {
   const elevation = importGraphBuffer(graph, 'elevation', inputBuffers[0], 'float32', cellCount);
   const directions = importGraphBuffer(graph, 'directions', inputBuffers[1], 'uint32', cellCount);
   const streams = importGraphBuffer(graph, 'streams', inputBuffers[2], 'uint32', cellCount);
-  const view = (name: keyof typeof outputs, format: 'float32' | 'uint32', length = cellCount) =>
-    importGraphBuffer(graph, name, outputs[name], format, length);
+  const view = <Format extends 'float32' | 'uint32'>(
+    name: keyof typeof outputs,
+    format: Format,
+    length = cellCount
+  ) => importGraphBuffer(graph, name, outputs[name], format, length);
   graph.add(
     new GPUTerrainHeightAboveDrainage({
       width,
@@ -137,16 +141,6 @@ async function runDrainage(device: Device, input: DrainageInput) {
     buffer.destroy();
   }
   return result;
-}
-
-/** Bit pattern comparison that treats NaN as equal to NaN. */
-function toBits(values: Float32Array): number[] {
-  const bits = new Uint32Array(values.length);
-  const floats = new Float32Array(bits.buffer);
-  for (const [index, value] of values.entries()) {
-    floats[index] = Number.isNaN(value) ? NaN : value;
-  }
-  return Array.from(bits);
 }
 
 const DEM_CASES: [string, (width: number, height: number) => Float32Array, boolean][] = [

@@ -15,14 +15,7 @@ import {
   type GPUTerrainVectorRuggednessProps
 } from '../../../src/gpu-terrain/topographic-position/gpu-terrain-vector-ruggedness';
 import {createNullWebGPUDevice} from '../../utils/gpu-contributor-test-utils';
-
-function createBand(graph: GPUCommandGraph, id: string, length: number) {
-  return {
-    id,
-    format: 'float32' as const,
-    storage: {kind: 'buffer' as const, values: createTransientView(graph, id, 'float32', length)}
-  };
-}
+import {createBand} from '../terrain-test-utils';
 
 it('GPUTerrainRuggedness schedules one window kernel and validates props', () => {
   const device = createNullWebGPUDevice();

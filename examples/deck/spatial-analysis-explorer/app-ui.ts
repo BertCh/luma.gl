@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+type LegendColor = readonly (number | undefined)[];
+
 /** Handle returned by control builders so modes can update a control programmatically. */
 export type SpatialAnalysisControlHandle<T> = {
   setValue: (value: T) => void;
@@ -36,8 +38,8 @@ export type SpatialAnalysisControlSection = {
   /** Adds a color legend: discrete swatches, or a gradient when `gradient` is set. */
   addLegend: (props: {
     title: string;
-    entries?: readonly {color: readonly number[]; label: string}[];
-    gradient?: {colors: readonly (readonly number[])[]; minimumLabel: string; maximumLabel: string};
+    entries?: readonly {color: LegendColor; label: string}[];
+    gradient?: {colors: readonly LegendColor[]; minimumLabel: string; maximumLabel: string};
   }) => void;
   /** Adds explanatory text. */
   addNote: (text: string) => SpatialAnalysisControlHandle<string>;
@@ -114,7 +116,7 @@ export function createSpatialAnalysisPanel(
 ): SpatialAnalysisPanel {
   const panel = document.createElement('section');
   panel.setAttribute('aria-label', 'Spatial analysis explorer controls');
-  panel.dataset.spatialAnalysisPanel = '';
+  panel.dataset['spatialAnalysisPanel'] = '';
   Object.assign(panel.style, PANEL_STYLE);
   panel.innerHTML = `
     <div style="display:flex;align-items:center;justify-content:space-between;gap:8px">
@@ -138,7 +140,7 @@ export function createSpatialAnalysisPanel(
     const button = document.createElement('button');
     button.type = 'button';
     button.textContent = tab.title;
-    button.dataset.modeTab = tab.id;
+    button.dataset['modeTab'] = tab.id;
     button.style.cssText =
       'background:#13203f;color:#c8d6f0;border:1px solid #2a3c66;border-radius:99px;padding:3px 9px;font:inherit;font-size:11px;cursor:pointer';
     button.addEventListener('click', () => onSelectMode(tab.id));
@@ -157,12 +159,12 @@ export function createSpatialAnalysisPanel(
         <p style="margin:6px 0 0;color:#a9b8d0">${description}</p>`;
       modeArea.appendChild(header);
       statusElement = document.createElement('div');
-      statusElement.dataset.modeStatus = '';
+      statusElement.dataset['modeStatus'] = '';
       statusElement.style.cssText = 'margin-top:6px;color:#f1c96b;min-height:1em';
       modeArea.appendChild(statusElement);
       const controls = document.createElement('div');
       const readouts = document.createElement('div');
-      readouts.dataset.modeReadouts = '';
+      readouts.dataset['modeReadouts'] = '';
       readouts.style.cssText =
         'margin-top:10px;padding:8px;border-radius:8px;background:rgba(19,32,63,.7);font:11px/1.6 ui-monospace,monospace;display:none';
       modeArea.appendChild(controls);
@@ -327,7 +329,7 @@ function createControlSection(
       const heading = document.createElement('div');
       heading.textContent = title;
       legend.appendChild(heading);
-      const toCss = (color: readonly number[]) =>
+      const toCss = (color: LegendColor) =>
         `rgba(${color[0]},${color[1]},${color[2]},${(color[3] ?? 255) / 255})`;
       if (gradient) {
         const bar = document.createElement('div');

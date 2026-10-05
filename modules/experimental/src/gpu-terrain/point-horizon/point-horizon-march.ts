@@ -15,7 +15,9 @@ import {
   createRasterExtremaPyramidNodes,
   getGPURasterExtremaPyramidLayout,
   getRasterExtremaPyramidWGSL,
-  type GPURasterExtremaPyramidLayout
+  validateRasterExtremaPyramidOutput,
+  type GPURasterExtremaPyramidLayout,
+  type GPURasterExtremaPyramidOutput
 } from '../../gpu-raster/raster-pyramid/index';
 import {getTerrainElevationNodes} from '../terrain-analysis/terrain-analysis-utils';
 import {
@@ -293,6 +295,16 @@ export type GPUPointHorizonModelOptions = {
   heightReference?: GPUPointHorizonHeightReference;
   /** Sample traversal. Defaults to `'pyramid'`. */
   traversal?: GPUPointHorizonTraversal;
+  /**
+   * Optional prebuilt min-max pyramid to read instead of building one inside this contributor.
+   * Requires the `'pyramid'` traversal (the default). Pass `GPURasterExtremaPyramid.output` of a
+   * pyramid created with `combined` over the same elevation, `footprint: 'bilinear'` and the same
+   * `width x height` (otherwise the constructor throws), added to the same graph before this
+   * contributor or run in an earlier graph. One pyramid then serves every consumer and is rebuilt
+   * only when the elevation changes. Results are bit-identical to a self-built pyramid and to
+   * `'march'`.
+   */
+  pyramid?: GPURasterExtremaPyramidOutput;
   /** Divisions of 360 degrees. Defaults to 720. */
   azimuthCount?: number;
   /** First global azimuth index of the covered sector. Defaults to 0. */
@@ -334,6 +346,8 @@ export type ResolvedPointHorizonModel = {
   segments: GPUPointHorizonSegments | null;
   /** Pyramid layout, present for the `'pyramid'` traversal. */
   layout: GPURasterExtremaPyramidLayout | null;
+  /** Caller-supplied pyramid that replaces the internal build. */
+  sharedPyramid: GPURasterExtremaPyramidOutput | null;
 };
 
 /** First block size of the internal pyramid. */
@@ -372,6 +386,9 @@ export function resolvePointHorizonModel(
   if (traversal !== 'march' && traversal !== 'pyramid') {
     throw new Error(`${id} traversal must be march or pyramid`);
   }
+  if (options.pyramid && traversal !== 'pyramid') {
+    throw new Error(`${id} pyramid requires the pyramid traversal`);
+  }
   const azimuthCount = options.azimuthCount ?? 720;
   if (
     !Number.isInteger(azimuthCount) ||
@@ -406,13 +423,15 @@ export function resolvePointHorizonModel(
     azimuthSpan,
     lattice,
     segments: projection === 'web-mercator' ? getGPUPointHorizonSegments(lattice, options) : null,
-    layout:
-      traversal === 'pyramid'
+    layout: options.pyramid
+      ? validateRasterExtremaPyramidOutput(id, options.pyramid, width, height)
+      : traversal === 'pyramid'
         ? getGPURasterExtremaPyramidLayout(width, height, {
             firstBlockSize: PYRAMID_FIRST_BLOCK_SIZE,
             footprint: 'bilinear'
           })
-        : null
+        : null,
+    sharedPyramid: options.pyramid ?? null
   };
 }
 
@@ -1104,7 +1123,14 @@ export function createPointHorizonSource<Parameters>(
     {name: 'elevationValues', view: values, type: 'f32', access: 'read'},
     {name: 'elevationValidity', view: validity, type: 'u32', access: 'read'}
   ];
-  if (model.layout) {
+  if (model.layout && model.sharedPyramid) {
+    bindings.push({
+      name: 'pyramid',
+      view: model.sharedPyramid.combined,
+      type: 'f32',
+      access: 'read'
+    });
+  } else if (model.layout) {
     const combined = createTransientView(
       graph,
       `${id}-pyramid`,

@@ -132,7 +132,12 @@ it('hull sweep equals brute force on random terrain with nodata', () => {
       {zFactor: -2, curvatureCoefficient: 1e-3, maximumRadius: 17},
       {cellSize: [10, 14], maximumDistance: 130, rowDirection: 'north'}
     ];
-    for (const variant of variants) {
+    // Brute force costs O(directions x pixels x line length), so the 64-sector case (which exists
+    // for its many distinct line slopes) runs the unbounded variant plus one windowed, curved,
+    // north-up variant. Every option's plumbing is independent of the sector count and stays
+    // covered across all seven variants by the 4, 7, 8 and 16 sector cases.
+    const selectedVariants = directionCount >= 32 ? [variants[0], variants[5]] : variants;
+    for (const variant of selectedVariants) {
       const options = {...base, ...variant};
       expectSameResult(
         computeTerrainHorizonSweepHull(options),

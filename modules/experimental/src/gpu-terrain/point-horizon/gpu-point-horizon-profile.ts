@@ -50,7 +50,7 @@ export type GPUPointHorizonProfileProps = GPUPointHorizonModelOptions & {
   /** Grid height in pixels (at least 2). */
   height: number;
   /** Terrain band (elevation), buffer or texture. Calibration, no-data and validity are honored. */
-  terrain: GPURasterBand;
+  elevation: GPURasterBand;
   /**
    * Observer rows `[column, row, height, 0]` in pixel-center index space (fractional allowed).
    * With `heightReference: 'ground'` (default) the eye is the bilinear ground plus `height`, with
@@ -66,7 +66,7 @@ export type GPUPointHorizonProfileProps = GPUPointHorizonModelOptions & {
    */
   tangent?: GraphDataView<'float32'>;
   /** Optional skyline elevation angles in degrees, `atan(tBest)`; -90 when no sample, NaN invalid. */
-  elevation?: GraphDataView<'float32'>;
+  skylineAngle?: GraphDataView<'float32'>;
   /** Optional distance of the skyline sample in meters; 0 when no sample, NaN invalid. */
   distance?: GraphDataView<'float32'>;
   /**
@@ -115,7 +115,7 @@ export class GPUPointHorizonProfile implements GPUCommandNodeProducer {
     this.props = props;
     const {id} = this;
     this.model = resolvePointHorizonModel(id, props.width, props.height, props);
-    if (!props.tangent && !props.elevation && !props.distance) {
+    if (!props.tangent && !props.skylineAngle && !props.distance) {
       throw new Error(`${id} requires at least one output`);
     }
     validateTerrainSettings(id, props.settings, GPU_POINT_HORIZON_PARAMETER_LENGTH);
@@ -126,7 +126,7 @@ export class GPUPointHorizonProfile implements GPUCommandNodeProducer {
     const rayCount = props.observers.length * this.model.azimuthSpan;
     for (const [name, view] of [
       ['tangent', props.tangent],
-      ['elevation', props.elevation],
+      ['skylineAngle', props.skylineAngle],
       ['distance', props.distance]
     ] as const) {
       if (view) {
@@ -142,8 +142,8 @@ export class GPUPointHorizonProfile implements GPUCommandNodeProducer {
     }
     validateTerrainBuffersDistinct(
       id,
-      [props.tangent, props.elevation, props.distance, props.samples],
-      [...getTerrainBandViews(props.terrain), props.settings, props.observers]
+      [props.tangent, props.skylineAngle, props.distance, props.samples],
+      [...getTerrainBandViews(props.elevation), props.settings, props.observers]
     );
   }
 
@@ -152,16 +152,17 @@ export class GPUPointHorizonProfile implements GPUCommandNodeProducer {
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
     const {id, props, model} = this;
-    validateTerrainBandBelongsToGraph(id, graph, props.terrain, []);
+    validateTerrainBandBelongsToGraph(id, graph, props.elevation, []);
     validateGraphViewsBelongToGraph(id, graph, [
+      props.pyramid?.combined,
       props.settings,
       props.observers,
       props.tangent,
-      props.elevation,
+      props.skylineAngle,
       props.distance,
       props.samples
     ]);
-    const source = createPointHorizonSource(graph, id, model, props.terrain);
+    const source = createPointHorizonSource(graph, id, model, props.elevation);
     const nodes: GPUCommandNode<Parameters>[] = [...source.nodes];
     const bindings: WGSLKernelBinding[] = [
       ...source.bindings,
@@ -176,10 +177,10 @@ export class GPUPointHorizonProfile implements GPUCommandNodeProducer {
         access: 'read_write'
       });
     }
-    if (props.elevation) {
+    if (props.skylineAngle) {
       bindings.push({
-        name: 'elevationOutput',
-        view: props.elevation,
+        name: 'skylineAngleOutput',
+        view: props.skylineAngle,
         type: 'f32',
         access: 'read_write'
       });
@@ -211,8 +212,8 @@ export class GPUPointHorizonProfile implements GPUCommandNodeProducer {
         props.tangent
           ? `tangentOutput[tangentOutputOffset + ray] = ${value === 'nan' ? 'nanValue()' : 'select(-BIG, result.t, result.has)'};`
           : '',
-        props.elevation
-          ? `elevationOutput[elevationOutputOffset + ray] = ${value === 'nan' ? 'nanValue()' : 'select(-90.0, atanAccurate(result.t) * DEGREES, result.has)'};`
+        props.skylineAngle
+          ? `skylineAngleOutput[skylineAngleOutputOffset + ray] = ${value === 'nan' ? 'nanValue()' : 'select(-90.0, atanAccurate(result.t) * DEGREES, result.has)'};`
           : '',
         props.distance
           ? `distanceOutput[distanceOutputOffset + ray] = ${value === 'nan' ? 'nanValue()' : 'select(0.0, result.d, result.has)'};`

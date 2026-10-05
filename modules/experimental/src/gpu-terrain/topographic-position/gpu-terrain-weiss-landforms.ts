@@ -15,7 +15,6 @@ import type {GPURasterBand} from '../../gpu-raster/index';
 import {createWGSLKernelNode, type WGSLKernelBinding} from '../../utils/wgsl-kernel-nodes';
 import type {GPUCommandNodeProducer} from '@luma.gl/gpgpu/gpu-core';
 import {validateGraphViewsBelongToGraph} from '../../utils/gpu-contributor-utils';
-import type {GPUTerrainCellSizeMode} from '../terrain-analysis/gpu-terrain-derivatives';
 import {
   getTerrainBandViews,
   getTerrainElevationNodes,
@@ -26,15 +25,19 @@ import {
   validateTerrainSettings
 } from '../terrain-analysis/terrain-analysis-utils';
 import {
-  getTerrainGroundCellSizeWGSL,
+  TERRAIN_GEOMORPHOMETRY_CELL_SLOTS,
   type TerrainGeomorphometryCellSettings,
-  validateTerrainCellSizeMode,
   writeTerrainGeomorphometryCellSettings
 } from '../terrain-curvature/terrain-geomorphometry-utils';
 import {
   GPUTerrainTopographicPosition,
   type GPUTerrainTopographicPositionScale
 } from './gpu-terrain-topographic-position';
+import {
+  getTerrainGroundCellSizeWGSL,
+  type GPUTerrainCellSizeMode,
+  validateTerrainCellSizeMode
+} from '../terrain-grid-utils';
 
 /** Number of float32 values read from `GPUTerrainWeissLandformsProps.settings`. */
 export const GPU_TERRAIN_WEISS_LANDFORMS_PARAMETER_LENGTH = 8;
@@ -289,7 +292,7 @@ export class GPUTerrainWeissLandforms implements GPUCommandNodeProducer {
 const HEIGHT: u32 = ${height}u;
 const PIXEL_COUNT: u32 = ${pixelCount}u;
 ${TERRAIN_WGSL_HELPERS}
-${getTerrainGroundCellSizeWGSL(props.cellSizeMode ?? 'uniform')}
+${getTerrainGroundCellSizeWGSL(props.cellSizeMode ?? 'uniform', TERRAIN_GEOMORPHOMETRY_CELL_SLOTS)}
 fn readElevation(column: i32, row: i32) -> vec2<f32> {
   let sampleColumn = u32(clamp(column, 0i, i32(WIDTH) - 1i));
   let sampleRow = u32(clamp(row, 0i, i32(HEIGHT) - 1i));

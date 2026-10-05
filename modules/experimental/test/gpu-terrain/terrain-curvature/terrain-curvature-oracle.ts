@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {getOracleGroundCellSize} from '../terrain-oracle-utils';
+
 export type OracleCurvatureMethod = 'evans-young' | 'zevenbergen-thorne' | 'florinsky';
 
 export const ORACLE_CURVATURE_KINDS = [
@@ -149,30 +151,6 @@ export function computePartials(
     }
   }
   return {p: p * zFactor, q: q * zFactor, r: r * zFactor, s: s * zFactor, t: t * zFactor};
-}
-
-/** Ground cell size of one row in the three cell size models. */
-export function getOracleGroundCellSize(
-  settings: ArrayLike<number>,
-  row: number,
-  height: number,
-  mode: 'uniform' | 'web-mercator' | 'geographic'
-): [number, number] {
-  let cellX = settings[0];
-  let cellY = settings[1];
-  if (mode !== 'uniform') {
-    const fraction = (row + 0.5) / height;
-    const edge = settings[3] + (settings[4] - settings[3]) * fraction;
-    if (mode === 'web-mercator') {
-      const scale = Math.cosh(Math.PI * (1 - 2 * edge));
-      cellX /= scale;
-      cellY /= scale;
-    } else {
-      cellX = cellX * 111319.49079327357 * Math.cos((edge * Math.PI) / 180);
-      cellY = cellY * 111319.49079327357;
-    }
-  }
-  return [cellX, cellY];
 }
 
 export type TerrainCurvatureResult = {

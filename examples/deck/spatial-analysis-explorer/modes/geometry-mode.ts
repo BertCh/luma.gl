@@ -1789,7 +1789,6 @@ const MEASURE_SYSTEMS: readonly {id: MeasureSystem; label: string}[] = [
   {id: 'wgs84', label: 'WGS84 (Vincenty, authalic area)'}
 ];
 const GROUP_COUNT = 3;
-const _GROUP_NAMES = ['South', 'Central', 'North'] as const;
 
 async function createMeasuresView(
   context: SpatialAnalysisModeContext,

@@ -1079,7 +1079,7 @@ export const cellsMode: SpatialAnalysisModeDefinition = {
         if (!active) return [];
         return [active.indexGraph, active.zonesGraph, active.selectionGraph].filter(
           (graph): graph is CompiledGPUCommandGraph<void> => graph !== null
-        ) as CompiledGPUCommandGraph<unknown>[];
+        ) as CompiledGPUCommandGraph<never>[];
       },
       encode(commandEncoder, frame) {
         const active = pipeline;

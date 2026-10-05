@@ -35,13 +35,17 @@ import {
   validateTerrainTexture
 } from '../terrain-analysis/terrain-analysis-utils';
 import {
-  getTerrainIlluminationGroundCellWGSL,
   TERRAIN_ILLUMINATION_WGSL_CONSTANTS,
-  validateTerrainIlluminationCellSizeMode,
-  validateTerrainIlluminationRowDirection,
-  validateTerrainIlluminationView,
-  type GPUTerrainIlluminationCellSizeMode
+  validateTerrainIlluminationView
 } from './terrain-illumination-utils';
+import {
+  getTerrainGroundCellSizeWGSL,
+  getTerrainRowNorthSignWGSL,
+  type GPUTerrainCellSizeMode,
+  type GPUTerrainRowDirection,
+  validateTerrainCellSizeMode,
+  validateTerrainRowDirection
+} from '../terrain-grid-utils';
 
 /** Maximum number of lights in {@link GPUReliefShadingSettings.lights}. */
 export const GPU_RELIEF_SHADING_MAX_LIGHT_COUNT = 8;
@@ -285,9 +289,9 @@ export type GPUReliefShadingProps = {
    */
   curvature?: GraphDataView<'float32'>;
   /** Cell size interpretation. Defaults to `'uniform'`. */
-  cellSizeMode?: GPUTerrainIlluminationCellSizeMode;
+  cellSizeMode?: GPUTerrainCellSizeMode;
   /** Direction in which the row index increases. Defaults to `'south'` (north-up rasters). */
-  rowDirection?: 'south' | 'north';
+  rowDirection?: GPUTerrainRowDirection;
   /** Sobel border treatment forwarded to `GPURasterGradient`. Defaults to `'clamp'`. */
   borderMode?: GPURasterBorderMode;
   /** Optional multidirectional hillshade per pixel in `[0, 1]`. */
@@ -383,8 +387,8 @@ export class GPUReliefShading implements GPUCommandNodeProducer {
         props.height
       );
     }
-    validateTerrainIlluminationCellSizeMode(id, props.cellSizeMode ?? 'uniform');
-    validateTerrainIlluminationRowDirection(id, props.rowDirection ?? 'south');
+    validateTerrainCellSizeMode(id, props.cellSizeMode ?? 'uniform');
+    validateTerrainRowDirection(id, props.rowDirection ?? 'south');
     validateTerrainBuffersDistinct(
       id,
       [props.hillshade, props.relief, props.color, props.validity],
@@ -507,12 +511,11 @@ export class GPUReliefShading implements GPUCommandNodeProducer {
         invocationCount: pixelCount,
         declarations: `const WIDTH: u32 = ${width}u;
 const HEIGHT: u32 = ${height}u;
-const ROW_NORTH_SIGN: f32 = ${(props.rowDirection ?? 'south') === 'south' ? '-1.0' : '1.0'};
+${getTerrainRowNorthSignWGSL(props.rowDirection ?? 'south')}
 const LIGHT_OFFSET: u32 = ${LIGHT_OFFSET}u;
 const MAX_LIGHT_COUNT: u32 = ${GPU_RELIEF_SHADING_MAX_LIGHT_COUNT}u;
 ${TERRAIN_ILLUMINATION_WGSL_CONSTANTS}
-${getTerrainIlluminationGroundCellWGSL(cellSizeMode, {
-  settingsName: 'settings',
+${getTerrainGroundCellSizeWGSL(cellSizeMode, {
   cellSizeIndex: 0,
   northEdgeIndex: 3
 })}`,
@@ -657,8 +660,8 @@ function getSwingNode<Parameters>(
     id: string;
     width: number;
     height: number;
-    cellSizeMode: GPUTerrainIlluminationCellSizeMode;
-    rowDirection: 'south' | 'north';
+    cellSizeMode: GPUTerrainCellSizeMode;
+    rowDirection: GPUTerrainRowDirection;
     gradientX: GraphDataView<'float32'>;
     gradientY: GraphDataView<'float32'>;
     gradientValidity: GraphDataView<'uint32'>;
@@ -680,12 +683,11 @@ function getSwingNode<Parameters>(
     invocationCount: props.width * props.height,
     declarations: `const WIDTH: u32 = ${props.width}u;
 const HEIGHT: u32 = ${props.height}u;
-const ROW_NORTH_SIGN: f32 = ${props.rowDirection === 'south' ? '-1.0' : '1.0'};
+${getTerrainRowNorthSignWGSL(props.rowDirection)}
 const LIGHT_OFFSET: u32 = ${LIGHT_OFFSET}u;
 const MAX_LIGHT_COUNT: u32 = ${GPU_RELIEF_SHADING_MAX_LIGHT_COUNT}u;
 ${TERRAIN_ILLUMINATION_WGSL_CONSTANTS}
-${getTerrainIlluminationGroundCellWGSL(props.cellSizeMode, {
-  settingsName: 'settings',
+${getTerrainGroundCellSizeWGSL(props.cellSizeMode, {
   cellSizeIndex: 0,
   northEdgeIndex: 3
 })}`,

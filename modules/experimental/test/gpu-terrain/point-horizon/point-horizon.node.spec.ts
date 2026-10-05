@@ -169,11 +169,11 @@ it('GPUPointHorizonProfile schedules canonicalization, pyramid levels and march 
     return new GPUPointHorizonProfile({
       width: 64,
       height: 48,
-      terrain: createBand(graph, `terrain-${instance}`, 64 * 48),
+      elevation: createBand(graph, `terrain-${instance}`, 64 * 48),
       observers: createTransientView(graph, `observers-${instance}`, 'float32x4', 3),
       settings: createTransientView(graph, `settings-${instance}`, 'float32', 8),
       tangent: createTransientView(graph, `tangent-${instance}`, 'float32', 3 * 720),
-      elevation: createTransientView(graph, `elevation-${instance}`, 'float32', 3 * 720),
+      skylineAngle: createTransientView(graph, `skyline-angle-${instance}`, 'float32', 3 * 720),
       distance: createTransientView(graph, `distance-${instance}`, 'float32', 3 * 720),
       maximumDistance: 1000,
       cellSize: 10,
@@ -213,7 +213,7 @@ it('GPUPointHorizonProfile schedules canonicalization, pyramid levels and march 
     'chunk-march-1',
     'chunk-march-2'
   ]);
-  const single = create({id: 'single', elevation: undefined, distance: undefined});
+  const single = create({id: 'single', skylineAngle: undefined, distance: undefined});
   const singleMarch = single.getCommandNodes(graph).at(-1);
   expect(singleMarch?.resources?.length).toBe(6);
   const sector = create({
@@ -221,12 +221,12 @@ it('GPUPointHorizonProfile schedules canonicalization, pyramid levels and march 
     azimuthSpan: 100,
     firstAzimuth: 20,
     tangent: createTransientView(graph, 'sector-tangent', 'float32', 300),
-    elevation: undefined,
+    skylineAngle: undefined,
     distance: undefined
   });
   expect(sector.model.azimuthSpan).toBe(100);
 
-  expect(() => create({tangent: undefined, elevation: undefined, distance: undefined})).toThrow(
+  expect(() => create({tangent: undefined, skylineAngle: undefined, distance: undefined})).toThrow(
     /at least one output/
   );
   expect(() =>
@@ -251,7 +251,7 @@ it('GPUPointHorizonProfile schedules canonicalization, pyramid levels and march 
   const shared = createBand(graph, 'shared', 3 * 720);
   expect(() =>
     create({
-      terrain: {...shared, storage: {kind: 'buffer', values: shared.storage.values}},
+      elevation: {...shared, storage: {kind: 'buffer', values: shared.storage.values}},
       tangent: shared.storage.values
     })
   ).toThrow(/share buffers/);
@@ -260,7 +260,7 @@ it('GPUPointHorizonProfile schedules canonicalization, pyramid levels and march 
     new GPUPointHorizonProfile({
       width: 4,
       height: 4,
-      terrain: createBand(otherGraph, 'foreign', 16),
+      elevation: createBand(otherGraph, 'foreign', 16),
       observers: createTransientView(otherGraph, 'foreign-observers', 'float32x4', 1),
       settings: createTransientView(otherGraph, 'foreign-settings', 'float32', 8),
       tangent: createTransientView(otherGraph, 'foreign-tangent', 'float32', 720),
@@ -280,7 +280,7 @@ it('GPUPointHorizonVisibility schedules classification chunks within 8 bindings'
     return new GPUPointHorizonVisibility({
       width: 64,
       height: 48,
-      terrain: createBand(graph, `terrain-${instance}`, 64 * 48),
+      elevation: createBand(graph, `terrain-${instance}`, 64 * 48),
       observers: createTransientView(graph, `observers-${instance}`, 'float32x4', 2),
       targets: createTransientView(graph, `targets-${instance}`, 'float32x4', 5),
       settings: createTransientView(graph, `settings-${instance}`, 'float32', 12),

@@ -57,7 +57,7 @@ async function runVisibility(device: Device, config: VisibilityConfig) {
       ...model,
       width,
       height,
-      terrain: {
+      elevation: {
         id: 'terrain',
         format: 'float32',
         storage: {

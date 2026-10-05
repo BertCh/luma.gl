@@ -26,6 +26,7 @@ import {
   findProfilePeaksOracle,
   type ProfilePeaksOracleResult
 } from './profile-peaks-oracle';
+import {createMulberryRandom} from '../terrain-oracle-utils';
 
 type PeakOptions = {
   window: number;
@@ -209,17 +210,6 @@ async function expectOracleRun(
   const run = await runOnce(device, values, validity, offsets, options);
   expectMatchesOracle(run, oracle, offsets, options.wrap ?? false);
   return {run, oracle};
-}
-
-function createRandomGenerator(seed: number): () => number {
-  let state = seed >>> 0;
-  return () => {
-    state = (state + 0x6d2b79f5) >>> 0;
-    let mixed = state;
-    mixed = Math.imul(mixed ^ (mixed >>> 15), mixed | 1);
-    mixed ^= mixed + Math.imul(mixed ^ (mixed >>> 7), mixed | 61);
-    return ((mixed ^ (mixed >>> 14)) >>> 0) / 4294967296;
-  };
 }
 
 it('GPUProfilePeaks finds Gaussian summits at sub-sample accuracy', async () => {
@@ -581,7 +571,7 @@ for (const wrap of [false, true]) {
     }
     let totalPeaks = 0;
     for (const seed of [11, 12, 13, 14]) {
-      const random = createRandomGenerator(seed);
+      const random = createMulberryRandom(seed);
       const profiles: number[][] = [];
       const validityRows: number[][] = [];
       for (let profile = 0; profile < 6; profile++) {

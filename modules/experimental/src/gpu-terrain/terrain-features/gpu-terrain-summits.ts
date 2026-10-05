@@ -23,7 +23,11 @@ import {
   validateGraphViewsBelongToGraph,
   validateCompactOutput
 } from '../../utils/gpu-contributor-utils';
-import type {GPUTerrainCellSizeMode} from '../terrain-analysis/gpu-terrain-derivatives';
+import {
+  getTerrainGroundCellSizeWGSL,
+  type GPUTerrainCellSizeMode,
+  validateTerrainCellSizeMode
+} from '../terrain-grid-utils';
 import {
   getTerrainBandViews,
   getTerrainElevationNodes,
@@ -34,11 +38,9 @@ import {
   validateTerrainSettings
 } from '../terrain-analysis/terrain-analysis-utils';
 import {
-  getTerrainFeaturesCellSizeWGSL,
   TERRAIN_FEATURES_DISC_WGSL,
   TERRAIN_FEATURES_WGSL_CONSTANTS,
   validateTerrainFeaturesCellSize,
-  validateTerrainFeaturesCellSizeMode,
   validateTerrainFeaturesMaximumRadiusPixels,
   validateTerrainFeaturesScalar
 } from './terrain-features-utils';
@@ -194,7 +196,7 @@ export class GPUTerrainSummits implements GPUCommandNodeProducer {
     this.props = props;
     const {id} = this;
     const pixelCount = validateTerrainGrid(id, props.width, props.height);
-    validateTerrainFeaturesCellSizeMode(id, props.cellSizeMode ?? 'uniform');
+    validateTerrainCellSizeMode(id, props.cellSizeMode ?? 'uniform');
     validateTerrainFeaturesMaximumRadiusPixels(id, props.maximumRadiusPixels);
     if (
       props.incompleteNeighborhood !== undefined &&
@@ -340,7 +342,7 @@ const REJECT_INCOMPLETE: bool = ${(props.incompleteNeighborhood ?? 'reject') ===
 const NO_INDEX: u32 = 0xffffffffu;
 ${TERRAIN_FEATURES_WGSL_CONSTANTS}
 ${TERRAIN_WGSL_HELPERS}
-${getTerrainFeaturesCellSizeWGSL(cellSizeMode, {cellSizeIndex: 2, northEdgeIndex: 4, southEdgeIndex: 5})}
+${getTerrainGroundCellSizeWGSL(cellSizeMode, {cellSizeIndex: 2, northEdgeIndex: 4})}
 ${TERRAIN_FEATURES_DISC_WGSL}
 var<private> summitDrop: f32;
 // Returns whether the pixel is a summit and leaves its drop in summitDrop.

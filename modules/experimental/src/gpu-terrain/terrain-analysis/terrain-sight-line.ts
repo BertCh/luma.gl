@@ -12,7 +12,7 @@ import {TERRAIN_WGSL_HELPERS} from './terrain-analysis-utils';
 export type GPUTerrainSightLineTraversal = 'march' | 'pyramid';
 
 /** Relative slack of the pyramid skip bound: 2^-17, more than 100 float32 ULP. @internal */
-export const TERRAIN_SIGHT_LINE_SKIP_EPSILON = 7.62939453125e-6;
+const TERRAIN_SIGHT_LINE_SKIP_EPSILON = 7.62939453125e-6;
 
 /** Options for {@link getTerrainSightLineWGSL}. @internal */
 export type TerrainSightLineWGSLOptions = {

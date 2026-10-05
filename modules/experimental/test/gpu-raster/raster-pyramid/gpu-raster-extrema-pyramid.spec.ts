@@ -24,18 +24,11 @@ import {
   submitGraph
 } from '../../utils/gpu-contributor-test-utils';
 import {computeRasterExtremaPyramid} from './raster-pyramid-oracle';
-
-function createRandom(seed: number): () => number {
-  let state = seed >>> 0;
-  return () => {
-    state = (Math.imul(state, 1664525) + 1013904223) >>> 0;
-    return state / 0x100000000;
-  };
-}
+import {createSeededRandom} from '../../gpu-terrain/terrain-oracle-utils';
 
 /** Values with negatives, small fractions and large magnitudes, plus exact zeros. */
 function createValues(width: number, height: number, seed: number): Float32Array {
-  const random = createRandom(seed);
+  const random = createSeededRandom(seed);
   return Float32Array.from({length: width * height}, () => {
     const kind = random();
     if (kind < 0.05) return 0;
@@ -46,7 +39,7 @@ function createValues(width: number, height: number, seed: number): Float32Array
 
 /** Marks the top-left `size x size` block (an all-invalid block for every tested block size) plus noise. */
 function createValidity(width: number, height: number, size: number, seed: number): Uint32Array {
-  const random = createRandom(seed);
+  const random = createSeededRandom(seed);
   return Uint32Array.from({length: width * height}, (_, pixel) => {
     const x = pixel % width;
     const y = Math.floor(pixel / width);

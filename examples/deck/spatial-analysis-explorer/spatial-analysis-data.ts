@@ -732,6 +732,12 @@ function makeSyntheticZipCodes(): SpatialAnalysisPolygons {
   return makePolygons(features, 'synthetic', 'Synthetic ZIP-like polygons');
 }
 
+/** Quintic smootherstep of `x` clamped to [0, 1]: zero first and second derivatives at both ends. */
+function getSmootherStep(x: number): number {
+  const t = Math.min(1, Math.max(0, x));
+  return t * t * t * (t * (t * 6 - 15) + 10);
+}
+
 function makeSyntheticTerrain(): SpatialAnalysisTerrain {
   const size = 256;
   const elevation = new Float32Array(size * size);
@@ -751,9 +757,9 @@ function makeSyntheticTerrain(): SpatialAnalysisTerrain {
         const distanceSquared = (u - hill.x) ** 2 + (v - hill.y) ** 2;
         value += hill.height * Math.exp(-distanceSquared / (2 * hill.radius ** 2));
       }
-      // Sea to the west and north, like the San Francisco peninsula.
-      const land =
-        Math.min(1, Math.max(0, (u - 0.06) * 12)) * Math.min(1, Math.max(0, (v - 0.04) * 12));
+      // Sea to the west and north, like the San Francisco peninsula. The shore ramp is C2-smooth so
+      // curvature, TPI and other second-order measures show no crease where it saturates.
+      const land = getSmootherStep((u - 0.06) * 12) * getSmootherStep((v - 0.04) * 12);
       elevation[row * size + column] = value * land;
     }
   }

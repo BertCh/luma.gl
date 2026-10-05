@@ -19,14 +19,7 @@ import {
   type GPUTerrainDerivativesProps
 } from '../../../src/gpu-terrain/terrain-analysis';
 import {createNullWebGPUDevice} from '../../utils/gpu-contributor-test-utils';
-
-function createBand(graph: GPUCommandGraph, id: string, length: number) {
-  return {
-    id,
-    format: 'float32' as const,
-    storage: {kind: 'buffer' as const, values: createTransientView(graph, id, 'float32', length)}
-  };
-}
+import {createBand} from '../terrain-test-utils';
 
 it('GPUTerrainDerivatives schedules gradients and the shade kernel', () => {
   const device = createNullWebGPUDevice();
@@ -275,7 +268,7 @@ it('GPUTerrainViewshed pyramid and tolerance variants schedule nodes within 8 bi
     tolerance: createTransientView(graph, 'tolerance-pyramid', 'float32', 4)
   });
   const tolerantNodes = tolerant.getCommandNodes(graph);
-  expect(tolerantNodes.every(node => node.resources.length <= 8)).toBe(true);
+  expect(tolerantNodes.every(node => (node.resources ?? []).length <= 8)).toBe(true);
   expect(tolerantNodes.at(-1)!.resources).toHaveLength(6);
   const marchTolerant = create({
     tolerance: createTransientView(graph, 'tolerance-march', 'float32', 4)

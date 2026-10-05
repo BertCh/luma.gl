@@ -105,4 +105,3 @@ export type {
   GPUTextureShadingProps,
   GPUTextureShadingSettings
 } from './gpu-texture-shading';
-export type {GPUTerrainIlluminationCellSizeMode} from './terrain-illumination-utils';

@@ -23,17 +23,15 @@ import {
   computeVectorRuggedness,
   type VectorRuggednessOracleOptions
 } from './terrain-ruggedness-oracle';
+import {createSeededRandom} from '../terrain-oracle-utils';
 
 const WIDTH = 11;
 const HEIGHT = 9;
 const PIXEL_COUNT = WIDTH * HEIGHT;
 
 function createTerrain(): Float32Array {
-  let state = 987;
-  return Float32Array.from({length: PIXEL_COUNT}, () => {
-    state = (Math.imul(state, 1664525) + 1013904223) >>> 0;
-    return 1000 + 30 * (state / 0x100000000);
-  });
+  const random = createSeededRandom(987);
+  return Float32Array.from({length: PIXEL_COUNT}, () => 1000 + 30 * random());
 }
 
 type VectorFixture = {
@@ -207,7 +205,6 @@ it('GPUTerrainVectorRuggedness matches the oracle for radius, border, and nodata
       }
     }
   }
-  console.log('vrm max abs errors', JSON.stringify(errors));
 });
 
 it('GPUTerrainVectorRuggedness handles geographic mode, north rows, and settings rewrites', async () => {
@@ -233,7 +230,7 @@ it('GPUTerrainVectorRuggedness handles geographic mode, north rows, and settings
     rowDirection: 'north',
     radius: 3
   };
-  const error = await expectOracle(fixture, terrain, geographic, options);
+  await expectOracle(fixture, terrain, geographic, options);
   const before = await readFloat32(fixture.vrm, PIXEL_COUNT);
   expect(before.some(value => value > 0.001)).toBe(true);
 
@@ -245,10 +242,9 @@ it('GPUTerrainVectorRuggedness handles geographic mode, north rows, and settings
   });
   fixture.settings.write(updated);
   submitGraph(device, compiled, undefined);
-  const updatedError = await expectOracle(fixture, terrain, updated, options);
+  await expectOracle(fixture, terrain, updated, options);
   const after = await readFloat32(fixture.vrm, PIXEL_COUNT);
   expect(after.some((value, index) => Math.abs(value - before[index]) > 1e-4)).toBe(true);
-  console.log('vrm geographic max abs errors', error, updatedError);
   compiled.destroy();
   destroyFixture(fixture);
 });

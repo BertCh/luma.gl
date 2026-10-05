@@ -228,7 +228,6 @@ for (const [terrainName, createTerrain] of [
         testCase.options
       );
       const mismatches = countMismatches(actual, expected);
-      console.info(`geomorphons ${terrainName} ${testCase.name}: mismatches`, mismatches);
       expect(mismatches, `${terrainName} ${testCase.name}`).toEqual({
         forms: 0,
         ternary: 0,
@@ -261,7 +260,6 @@ it('GPUGeomorphons honors nodata and rewrites settings without recompiling', asy
   submitGraph(device, compiled, undefined);
   let actual = await readOutputs(fixture, WIDTH * HEIGHT);
   let expected = computeGeomorphons(elevation, mask, WIDTH, HEIGHT, first, {searchRadius: 6});
-  console.info('geomorphons nodata mismatches', countMismatches(actual, expected));
   expect(countMismatches(actual, expected)).toEqual({
     forms: 0,
     ternary: 0,

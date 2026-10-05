@@ -17,6 +17,7 @@ import type {GPUTerrainFlowRouting} from '../../../src/gpu-terrain/hydrology/gpu
 import {resolveFlatsOnCPU} from './terrain-flow-flats-oracle';
 import {accumulateRoutingOnCPU} from './terrain-flow-routing-oracle';
 import type {GPUTerrainCellSizeMode} from '../../../src/gpu-terrain/terrain-analysis';
+import {createSeededRandom} from '../terrain-oracle-utils';
 
 const fround = Math.fround;
 
@@ -233,15 +234,6 @@ export function computeTerrainFlow(input: TerrainFlowOracleInput): TerrainFlowOr
   return {filled, directions, classes, receivers, accumulation, streams};
 }
 
-/** Seeded linear congruential generator returning floats in `[0, 1)`. */
-export function createSeededRandom(seed: number): () => number {
-  let state = seed >>> 0;
-  return () => {
-    state = (Math.imul(state, 1664525) + 1013904223) >>> 0;
-    return state / 4294967296;
-  };
-}
-
 /** Named synthetic DEM generators with integer or quarter-step elevations. */
 export const TERRAIN_FLOW_DEMS = {
   cone: (width: number, height: number) =>
@@ -285,3 +277,5 @@ export const TERRAIN_FLOW_DEMS = {
     );
   }
 } as const;
+
+export {createSeededRandom};

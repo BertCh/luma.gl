@@ -33,9 +33,19 @@ import {
   validateTerrainSettings,
   validateTerrainTexture
 } from './terrain-analysis-utils';
+import {
+  getTerrainGroundCellSizeWGSL,
+  getTerrainRowNorthSignWGSL,
+  type GPUTerrainCellSizeMode,
+  type GPUTerrainRowDirection,
+  TERRAIN_DEGREES_TO_RADIANS_WGSL,
+  validateTerrainCellSizeMode,
+  validateTerrainRowDirection
+} from '../terrain-grid-utils';
+
+export type {GPUTerrainCellSizeMode} from '../terrain-grid-utils';
 
 /** How the shade kernel converts settings cell sizes into ground meters per pixel for each row. */
-export type GPUTerrainCellSizeMode = 'uniform' | 'web-mercator' | 'geographic';
 
 /** Slope output unit. */
 export type GPUTerrainSlopeUnits = 'degrees' | 'percent';
@@ -115,7 +125,7 @@ export type GPUTerrainDerivativesProps = {
   /** Slope unit. Defaults to `'degrees'`. */
   slopeUnits?: GPUTerrainSlopeUnits;
   /** Direction in which the row index increases. Defaults to `'south'` (north-up rasters). */
-  rowDirection?: 'south' | 'north';
+  rowDirection?: GPUTerrainRowDirection;
   /** Sobel border treatment forwarded to `GPURasterGradient`. Defaults to `'clamp'`. */
   borderMode?: GPURasterBorderMode;
 };
@@ -178,15 +188,11 @@ export class GPUTerrainDerivatives implements GPUCommandNodeProducer {
       props.width,
       props.height
     );
-    if (!['uniform', 'web-mercator', 'geographic'].includes(props.cellSizeMode ?? 'uniform')) {
-      throw new Error(`${id} cellSizeMode must be uniform, web-mercator, or geographic`);
-    }
+    validateTerrainCellSizeMode(id, props.cellSizeMode);
     if (!['degrees', 'percent'].includes(props.slopeUnits ?? 'degrees')) {
       throw new Error(`${id} slopeUnits must be degrees or percent`);
     }
-    if (!['south', 'north'].includes(props.rowDirection ?? 'south')) {
-      throw new Error(`${id} rowDirection must be south or north`);
-    }
+    validateTerrainRowDirection(id, props.rowDirection);
     validateTerrainBuffersDistinct(
       id,
       [props.slope, props.aspect, props.hillshade, props.validity],
@@ -304,7 +310,7 @@ function getShadeNode<Parameters>(
     validity?: GraphDataView<'uint32'>;
     cellSizeMode: GPUTerrainCellSizeMode;
     slopeUnits: GPUTerrainSlopeUnits;
-    rowDirection: 'south' | 'north';
+    rowDirection: GPUTerrainRowDirection;
   }
 ): GPUCommandNode<Parameters> {
   const bindings: WGSLKernelBinding[] = [
@@ -334,16 +340,6 @@ function getShadeNode<Parameters>(
       access: 'read_write'
     });
   }
-  const groundCellSource =
-    props.cellSizeMode === 'uniform'
-      ? 'return cellSize;'
-      : `let rowFraction = (f32(row) + 0.5) / f32(HEIGHT);
-  let edge = mix(settings[settingsOffset + 5u], settings[settingsOffset + 6u], rowFraction);
-  ${
-    props.cellSizeMode === 'web-mercator'
-      ? '// cos(latitude) = 1 / cosh(PI * (1 - 2y)) for normalized Web Mercator y.\n  return cellSize / cosh(PI * (1.0 - 2.0 * edge));'
-      : 'return cellSize * METERS_PER_DEGREE * vec2<f32>(cos(edge * DEGREES_TO_RADIANS), 1.0);'
-  }`;
   return createWGSLKernelNode<Parameters>(graph, {
     id: props.id,
     operation: 'GPUTerrainDerivatives',
@@ -353,15 +349,11 @@ function getShadeNode<Parameters>(
     declarations: `const WIDTH: u32 = ${props.width}u;
 const HEIGHT: u32 = ${props.height}u;
 const PI: f32 = 3.141592653589793;
-const DEGREES_TO_RADIANS: f32 = 0.017453292519943295;
+${TERRAIN_DEGREES_TO_RADIANS_WGSL}
 const RADIANS_TO_DEGREES: f32 = 57.29577951308232;
-const METERS_PER_DEGREE: f32 = 111319.49079327357;
-const ROW_NORTH_SIGN: f32 = ${props.rowDirection === 'south' ? '-1.0' : '1.0'};
+${getTerrainRowNorthSignWGSL(props.rowDirection)}
 ${TERRAIN_WGSL_HELPERS}
-fn getGroundCellSize(row: u32) -> vec2<f32> {
-  let cellSize = vec2<f32>(settings[settingsOffset], settings[settingsOffset + 1u]);
-  ${groundCellSource}
-}`,
+${getTerrainGroundCellSizeWGSL(props.cellSizeMode, {cellSizeIndex: 0, northEdgeIndex: 5})}`,
     body: `let row = index / WIDTH;
   let rawX = gradientX[gradientXOffset + index];
   let rawY = gradientY[gradientYOffset + index];

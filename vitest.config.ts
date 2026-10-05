@@ -134,6 +134,7 @@ const nodeCoveragePatterns = [
 // Benchmarks answer performance questions but do not add stable correctness coverage. Keep them
 // out of every pull request's instrumented browser run and expose them through an opt-in project.
 const browserBenchmarkTestPatterns = [
+  'modules/experimental/test/gpu-terrain/terrain-analysis/shared-pyramid-benchmark.spec.ts',
   'modules/experimental/test/gpu-network/network-reachability/gpu-network-reachability-bench.spec.ts',
   'modules/experimental/test/gpu-network/network-accessibility/gpu-network-accessibility-bench.spec.ts',
   'modules/experimental/test/geospatial/region-statistics/region-statistics-benchmark.spec.ts',

@@ -41,6 +41,11 @@ import {suitabilityMode} from './suitability-mode';
 import {reliefMode} from './relief-mode';
 import {flowFieldMode} from './flow-field-mode';
 import {spaceTimeMode} from './space-time-mode';
+import {visibilityMode} from './visibility-mode';
+import {geomorphometryMode} from './geomorphometry-mode';
+import {reliefVisualizationMode} from './relief-visualization-mode';
+import {drainageMode} from './drainage-mode';
+import {terrainFeaturesMode} from './terrain-features-mode';
 
 /**
  * Registered explorer modes, in tab order.
@@ -86,5 +91,10 @@ export const SPATIAL_ANALYSIS_MODES: readonly SpatialAnalysisModeDefinition[] = 
   suitabilityMode,
   reliefMode,
   flowFieldMode,
-  spaceTimeMode
+  spaceTimeMode,
+  visibilityMode,
+  geomorphometryMode,
+  reliefVisualizationMode,
+  drainageMode,
+  terrainFeaturesMode
 ];
