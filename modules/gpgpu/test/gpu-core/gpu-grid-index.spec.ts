@@ -360,6 +360,91 @@ it('GPUGridIndex preserves vector chunks and rebuilds after input updates', asyn
   for (const buffer of [...buffers, ...Object.values(outputs)]) buffer.destroy();
 });
 
+it('GPUGridIndex buffer bounds match literal bounds and follow rewrites without recompiling', async () => {
+  const device = await getWebGPUTestDevice();
+  if (!device) {
+    return;
+  }
+
+  const positionValues = Float32Array.from([0.25, 0.25, 0.75, 1.5, 1.25, 0.25, 1.75, 1.75, 5, 5]);
+  const staticResult = await runGridIndex(
+    device,
+    positionValues,
+    'float32x2',
+    [2, 2],
+    [0, 0, 2, 2],
+    5
+  );
+
+  const positions = createInputBuffer(device, positionValues);
+  const boundsBuffer = createInputBuffer(device, Float32Array.from([0, 0, 2, 2]));
+  const outputs = createIndexOutputs(device, 4, 5);
+  const graph = new GPUCommandGraph(device);
+  const index = new GPUGridIndex({
+    positions: importView(graph, 'positions', positions, 'float32x2', 5) as never,
+    gridSize: [2, 2],
+    bounds: [0, 0, 1, 1],
+    boundsBuffer: importView(graph, 'bounds', boundsBuffer, 'float32', 4),
+    ...importIndexOutputs(graph, outputs, 4, 5)
+  });
+  graph.add(index);
+  const compiled = graph.compile();
+
+  encode(device, compiled);
+  expect(await readUint32(outputs.cellOffsets, 5), 'same offsets as literal bounds').toEqual(
+    staticResult.cellOffsets
+  );
+  expect(staticResult.count).toBe(4);
+  expect((await readUint32(outputs.objectIds, 4)).sort((left, right) => left - right)).toEqual([
+    0, 1, 2, 3
+  ]);
+
+  boundsBuffer.write(Float32Array.from([0, 0, 8, 8]));
+  encode(device, compiled);
+  expect(
+    await readUint32(outputs.cellOffsets, 5),
+    'rewritten bounds regroup the points and admit the previously outside point'
+  ).toEqual([0, 4, 4, 4, 5]);
+  expect((await readUint32(outputs.count, 1))[0]).toBe(5);
+
+  boundsBuffer.write(Float32Array.from([2, 0, 0, 2]));
+  encode(device, compiled);
+  expect(
+    (await readUint32(outputs.count, 1))[0],
+    'unordered run-time bounds accept no positions'
+  ).toBe(0);
+
+  compiled.destroy();
+  positions.destroy();
+  boundsBuffer.destroy();
+  for (const buffer of Object.values(outputs)) buffer.destroy();
+});
+
+it('GPUGridIndex rejects malformed buffer bounds', async () => {
+  const device = await getWebGPUTestDevice();
+  if (!device) {
+    return;
+  }
+
+  const positions = createInputBuffer(device, Float32Array.from([0.5, 0.5]));
+  const boundsBuffer = createInputBuffer(device, Float32Array.from([0, 0, 1, 1, 2]));
+  const outputs = createIndexOutputs(device, 1, 1);
+  const graph = new GPUCommandGraph(device);
+  expect(
+    () =>
+      new GPUGridIndex({
+        positions: importView(graph, 'positions', positions, 'float32x2', 1) as never,
+        gridSize: [1, 1],
+        bounds: [0, 0, 1, 1],
+        boundsBuffer: importView(graph, 'bounds', boundsBuffer, 'float32', 5),
+        ...importIndexOutputs(graph, outputs, 1, 1)
+      })
+  ).toThrow(/boundsBuffer must hold 4/);
+  positions.destroy();
+  boundsBuffer.destroy();
+  for (const buffer of Object.values(outputs)) buffer.destroy();
+});
+
 type IndexOutputs = {
   cellOffsets: Buffer;
   objectIds: Buffer;
@@ -479,7 +564,7 @@ function createOutputBuffer(device: Device, length: number): Buffer {
   });
 }
 
-function importView<T extends 'float32x2' | 'float32x3' | 'uint32'>(
+function importView<T extends 'float32x2' | 'float32x3' | 'float32' | 'uint32'>(
   graph: GPUCommandGraph,
   id: string,
   buffer: Buffer,

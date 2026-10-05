@@ -51,6 +51,59 @@ it('GPUGridIndexQuery selects point cells and refreshes IDs and masks', async ()
   destroyFixture(fixture);
 });
 
+it('GPUGridIndexQuery matches static results with buffer bounds and follows bound rewrites', async () => {
+  const device = await getWebGPUTestDevice();
+  if (!device) {
+    return;
+  }
+
+  for (const [kind, query] of [
+    ['point', [0.5, 0.5]],
+    ['bounds', [0, 0, 0.5, 0.5]],
+    ['radius', [0.5, 0.5, 0.6]]
+  ] as const) {
+    const common = {
+      positions: POSITIONS_2D,
+      format: 'float32x2' as const,
+      gridSize: [2, 2] as const,
+      kind,
+      query: Float32Array.from(query),
+      outputCapacity: 6
+    };
+    const staticFixture = createQueryFixture(device, {...common, bounds: [0, 0, 2, 2]});
+    const bufferFixture = createQueryFixture(device, {
+      ...common,
+      bounds: Float32Array.from([0, 0, 2, 2])
+    });
+    encode(device, staticFixture.compiled);
+    encode(device, bufferFixture.compiled);
+    const expected = (await readQueryResult(staticFixture)).ids.sort(sortNumbers);
+    expect(expected.length, `${kind} query selects candidates`).toBeGreaterThan(0);
+    expect((await readQueryResult(bufferFixture)).ids.sort(sortNumbers)).toEqual(expected);
+    destroyFixture(staticFixture);
+    destroyFixture(bufferFixture);
+  }
+
+  const fixture = createQueryFixture(device, {
+    positions: POSITIONS_2D,
+    format: 'float32x2',
+    gridSize: [2, 2],
+    bounds: Float32Array.from([0, 0, 2, 2]),
+    kind: 'point',
+    query: Float32Array.from([0.5, 0.5]),
+    outputCapacity: 6
+  });
+  encode(device, fixture.compiled);
+  expect((await readQueryResult(fixture)).ids.sort(sortNumbers)).toEqual([0, 1]);
+  fixture.boundsBuffer!.write(Float32Array.from([0, 0, 1, 1]));
+  encode(device, fixture.compiled);
+  expect(
+    (await readQueryResult(fixture)).ids,
+    'rewriting buffer bounds moves the query cell without recompiling'
+  ).toEqual([1]);
+  destroyFixture(fixture);
+});
+
 it('GPUGridIndexQuery returns conservative bounds and radius candidates', async () => {
   const device = await getWebGPUTestDevice();
   if (!device) {
@@ -249,6 +302,7 @@ type QueryFixture = {
   outputCount: Buffer;
   outputOverflow: Buffer;
   outputMask?: Buffer;
+  boundsBuffer?: Buffer;
   outputCapacity: number;
   buffers: Buffer[];
 };
@@ -259,7 +313,7 @@ function createQueryFixture(
     positions: Float32Array;
     format: 'float32x2' | 'float32x3';
     gridSize: GPUGridIndexSize;
-    bounds: GPUGridIndexBounds;
+    bounds: GPUGridIndexBounds | Float32Array;
     kind: GPUGridIndexQueryKind;
     query: Float32Array;
     indexCapacity?: number;
@@ -283,10 +337,15 @@ function createQueryFixture(
   const outputMask =
     props.maskLength === undefined ? undefined : createOutputBuffer(device, props.maskLength);
   const graph = new GPUCommandGraph(device);
+  const boundsBuffer =
+    props.bounds instanceof Float32Array ? createInputBuffer(device, props.bounds) : undefined;
   const index = new GPUGridIndex({
     positions: importView(graph, 'positions', positions, props.format, positionCount) as never,
     gridSize: props.gridSize,
-    bounds: props.bounds,
+    bounds: boundsBuffer ? [0, 0, 1, 1] : (props.bounds as GPUGridIndexBounds),
+    boundsBuffer: boundsBuffer
+      ? importView(graph, 'bounds', boundsBuffer, 'float32', props.bounds.length)
+      : undefined,
     cellOffsets: importView(graph, 'cell-offsets', cellOffsets, 'uint32', cellCount + 1),
     objectIds: importView(graph, 'object-ids', objectIds, 'uint32', indexCapacity),
     count: importView(graph, 'index-count', indexCount, 'uint32', 1),
@@ -313,8 +372,10 @@ function createQueryFixture(
     outputCount,
     outputOverflow,
     outputMask,
+    boundsBuffer,
     outputCapacity: props.outputCapacity,
     buffers: [
+      ...(boundsBuffer ? [boundsBuffer] : []),
       positions,
       query,
       cellOffsets,

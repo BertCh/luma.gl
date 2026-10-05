@@ -93,16 +93,15 @@ it('GPUSpatialClustering schedules the label pipeline with prefixed unique IDs',
   const ids = new GPUSpatialClustering(createProps(graph))
     .getCommandNodes(graph)
     .map(node => node.id);
-  expect(ids[0]).toBe('spatial-clustering-cell-keys');
+  expect(ids[0]).toBe('spatial-clustering-grid-bounds');
   expect(ids.at(-1)).toBe('spatial-clustering-labels');
   expect(new Set(ids).size).toBe(ids.length);
   expect(ids.every(id => id.startsWith('spatial-clustering-'))).toBe(true);
   expect(ids.some(id => id.endsWith('-publish'))).toBe(false);
   const prefixes = [
-    'spatial-clustering-cell-keys',
-    'spatial-clustering-cell-counts',
-    'spatial-clustering-cell-starts',
-    'spatial-clustering-sort',
+    'spatial-clustering-grid-bounds',
+    'spatial-clustering-grid-positions',
+    'spatial-clustering-grid-index',
     'spatial-clustering-core',
     'spatial-clustering-parents-init',
     'spatial-clustering-union',

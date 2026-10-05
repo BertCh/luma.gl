@@ -115,6 +115,30 @@ graph.add(new GPUGridIndex({
 The primitive records build work only. It does not submit commands, allocate persistent output,
 read results back, choose a cell size, grow capacity, or perform an exact spatial query.
 
+### Run-time bounds
+
+`bounds` is validated on the CPU and compiled into the shaders, so changing it rebuilds the graph.
+When the domain changes every frame, also pass `boundsBuffer`: a packed `float32` view holding the
+same `2 * dimension` minima and maxima, read by the shaders at run time. It overrides `bounds`,
+which then only fixes the dimension. Rewriting the buffer rebins on the next encoding without
+recompiling. Run-time bounds are not validated: non-finite or unordered values accept no positions.
+`GPUGridIndexQuery` reads the bounds through its `index`, so it follows rewrites too.
+
+```ts
+const index = new GPUGridIndex({
+  positions,
+  gridSize: [64, 64],
+  bounds: [0, 0, 1, 1],
+  boundsBuffer: boundsView, // packed float32 view of boundsGPUBuffer
+  cellOffsets,
+  objectIds,
+  count,
+  overflow
+});
+// Next encoding rebins into the new domain without recompiling.
+boundsGPUBuffer.write(Float32Array.from([minX, minY, maxX, maxY]));
+```
+
 
 ## Chunked storage
 

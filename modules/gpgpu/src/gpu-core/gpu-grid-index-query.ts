@@ -16,15 +16,20 @@ import {
 import {createChunkNode, getGraphDataRange, validateChunkViews} from './gpu-chunk-utils';
 import {alignGraphVectorViews, getGraphVectorData} from './graph-vector-view-utils';
 import {
+  getGPUGridIndexBoundsSource,
   getGPUGridIndexDispatchLayout,
-  getGPUGridIndexInvocationIndexSource
+  getGPUGridIndexInvocationIndexSource,
+  isOrderedFiniteBounds
 } from './gpu-grid-index-internals';
 import {GPUScatter} from './gpu-scatter';
 
 /** Storage and domain contract consumed by {@link GPUGridIndexQuery}. */
 export type GPUGridIndexView = {
   gridSize: GPUGridIndexSize;
+  /** Literal domain; with `boundsBuffer` it only fixes the dimension. */
   bounds: GPUGridIndexBounds;
+  /** Optional run-time domain overriding `bounds`, commonly the index's own `boundsBuffer`. */
+  boundsBuffer?: GraphDataView<'float32'>;
   cellOffsets: GraphDataView<'uint32'> | GraphVectorView<'uint32'>;
   objectIds: GraphDataView<'uint32'> | GraphVectorView<'uint32'>;
   count: GraphDataView<'uint32'>;
@@ -123,7 +128,8 @@ export class GPUGridIndexQuery {
         this.index.objectIds,
         this.index.count,
         this.index.overflow,
-        this.query
+        this.query,
+        ...(this.index.boundsBuffer ? [this.index.boundsBuffer] : [])
       ],
       [this.output, this.count, this.overflow, ...(this.outputMask ? [this.outputMask] : [])]
     );
@@ -168,6 +174,13 @@ fn main(@builtin(workgroup_id) workgroupId: vec3u, @builtin(local_invocation_ind
         })
       );
     }
+    const boundsSource = getGPUGridIndexBoundsSource(
+      this.index.bounds,
+      this.index.boundsBuffer,
+      this.dimension,
+      4
+    );
+    const outputBinding = this.index.boundsBuffer ? 5 : 4;
     const cellCount = this.index.cellOffsets.length - 1;
     const cells = alignGraphVectorViews(graph, [
       getGraphDataRange(graph, this.index.cellOffsets, 0, cellCount),
@@ -204,7 +217,13 @@ fn main(@builtin(workgroup_id) workgroupId: vec3u, @builtin(local_invocation_ind
         nodes.push(
           createChunkNode(graph, {
             id: `${this.id}-query-${objectChunkIndex}-${cellChunkIndex}`,
-            inputs: {starts, ends, indexCount: this.index.count, queryValues: this.query},
+            inputs: {
+              starts,
+              ends,
+              indexCount: this.index.count,
+              queryValues: this.query,
+              ...(this.index.boundsBuffer ? {boundsValues: this.index.boundsBuffer} : {})
+            },
             outputs: {ranks, outputCount: this.count, outputOverflow: this.overflow},
             dispatch,
             source: `
@@ -212,13 +231,13 @@ const WIDTH: u32 = ${this.index.gridSize[0]}u;
 const HEIGHT: u32 = ${this.index.gridSize[1]}u;
 const DEPTH: u32 = ${this.index.gridSize[2] ?? 1}u;
 const QUERY_OFFSET: u32 = ${getViewElementOffset(this.query)}u;
-@group(0) @binding(0) var<storage, read> starts: array<u32>;
+${boundsSource.declarations}@group(0) @binding(0) var<storage, read> starts: array<u32>;
 @group(0) @binding(1) var<storage, read> ends: array<u32>;
 @group(0) @binding(2) var<storage, read> indexCount: array<u32>;
 @group(0) @binding(3) var<storage, read> queryValues: array<f32>;
-@group(0) @binding(4) var<storage, read_write> ranks: array<u32>;
-@group(0) @binding(5) var<storage, read_write> outputCount: array<atomic<u32>>;
-@group(0) @binding(6) var<storage, read_write> outputOverflow: array<atomic<u32>>;
+@group(0) @binding(${outputBinding}) var<storage, read_write> ranks: array<u32>;
+@group(0) @binding(${outputBinding + 1}) var<storage, read_write> outputCount: array<atomic<u32>>;
+@group(0) @binding(${outputBinding + 2}) var<storage, read_write> outputOverflow: array<atomic<u32>>;
 fn finite(value: f32) -> bool {
   return value == value && abs(value) <= 3.402823466e+38;
 }
@@ -270,7 +289,7 @@ fn main(@builtin(workgroup_id) workgroupId: vec3u, @builtin(local_invocation_ind
   let column = cellIndex % WIDTH;
   let row = (cellIndex / WIDTH) % HEIGHT;
   let layer = cellIndex / (WIDTH * HEIGHT);
-  ${makeCellSelection(this)}
+  ${makeCellSelection(this, boundsSource)}
   if (selected) {
     let destination = atomicAdd(&outputCount[${getViewElementOffset(this.count)}u], 1u);
     ranks[index] = destination;
@@ -325,24 +344,25 @@ fn main(@builtin(workgroup_id) workgroupId: vec3u, @builtin(local_invocation_ind
   }
 }
 
-function makeCellSelection(query: GPUGridIndexQuery): string {
+function makeCellSelection(
+  query: GPUGridIndexQuery,
+  bounds: ReturnType<typeof getGPUGridIndexBoundsSource>
+): string {
   const dimension = query.dimension;
-  const bounds = query.index.bounds;
-  const maximaOffset = dimension;
   const axes = [
     {
       name: 'x',
       coordinate: 'column',
       size: 'WIDTH',
-      minimum: bounds[0],
-      maximum: bounds[maximaOffset]
+      minimum: bounds.minimum[0]!,
+      maximum: bounds.maximum[0]!
     },
     {
       name: 'y',
       coordinate: 'row',
       size: 'HEIGHT',
-      minimum: bounds[1],
-      maximum: bounds[maximaOffset + 1]
+      minimum: bounds.minimum[1]!,
+      maximum: bounds.maximum[1]!
     },
     ...(dimension === 3
       ? [
@@ -350,16 +370,16 @@ function makeCellSelection(query: GPUGridIndexQuery): string {
             name: 'z',
             coordinate: 'layer',
             size: 'DEPTH',
-            minimum: bounds[2]!,
-            maximum: bounds[5]!
+            minimum: bounds.minimum[2]!,
+            maximum: bounds.maximum[2]!
           }
         ]
       : [])
   ];
   const cellDeclarations = axes
     .map(
-      axis => `let cellMin${axis.name.toUpperCase()} = cellMinimum(${axis.coordinate}, ${axis.size}, ${getFloatLiteral(axis.minimum)}, ${getFloatLiteral(axis.maximum)});
-  let cellMax${axis.name.toUpperCase()} = cellMaximum(${axis.coordinate}, ${axis.size}, ${getFloatLiteral(axis.minimum)}, ${getFloatLiteral(axis.maximum)});`
+      axis => `let cellMin${axis.name.toUpperCase()} = cellMinimum(${axis.coordinate}, ${axis.size}, ${axis.minimum}, ${axis.maximum});
+  let cellMax${axis.name.toUpperCase()} = cellMaximum(${axis.coordinate}, ${axis.size}, ${axis.minimum}, ${axis.maximum});`
     )
     .join('\n  ');
 
@@ -373,13 +393,13 @@ function makeCellSelection(query: GPUGridIndexQuery): string {
     const valid = axes
       .map(
         axis =>
-          `finite(query${axis.name.toUpperCase()}) && query${axis.name.toUpperCase()} >= ${getFloatLiteral(axis.minimum)} && query${axis.name.toUpperCase()} <= ${getFloatLiteral(axis.maximum)}`
+          `finite(query${axis.name.toUpperCase()}) && query${axis.name.toUpperCase()} >= ${axis.minimum} && query${axis.name.toUpperCase()} <= ${axis.maximum}`
       )
       .join(' && ');
     const queryCoordinates = axes
       .map(
         axis =>
-          `let query${axis.name.toUpperCase()}Coordinate = getCoordinate(query${axis.name.toUpperCase()}, ${getFloatLiteral(axis.minimum)}, ${getFloatLiteral(axis.maximum)}, ${axis.size});`
+          `let query${axis.name.toUpperCase()}Coordinate = getCoordinate(query${axis.name.toUpperCase()}, ${axis.minimum}, ${axis.maximum}, ${axis.size});`
       )
       .join('\n  ');
     const queryCell =
@@ -388,7 +408,7 @@ function makeCellSelection(query: GPUGridIndexQuery): string {
         : '(queryZCoordinate * HEIGHT + queryYCoordinate) * WIDTH + queryXCoordinate';
     return `${values}
   ${queryCoordinates}
-  let selected = ${valid} && cellIndex == ${queryCell};`;
+  let selected = ${bounds.validity}${valid} && cellIndex == ${queryCell};`;
   }
 
   if (query.kind === 'bounds') {
@@ -413,7 +433,7 @@ function makeCellSelection(query: GPUGridIndexQuery): string {
       .join(' && ');
     return `${cellDeclarations}
   ${values}
-  let selected = ${valid} && ${selected};`;
+  let selected = ${bounds.validity}${valid} && ${selected};`;
   }
 
   const values = axes
@@ -447,7 +467,7 @@ function makeCellSelection(query: GPUGridIndexQuery): string {
   let radius = queryValues[QUERY_OFFSET + ${dimension}u];
   ${closestPoints}
   let scale = ${scale};
-  let selected = ${validCenter} && finite(radius) && radius >= 0.0 && (scale == 0.0 || ${squaredDistance} <= (radius / scale) * (radius / scale));`;
+  let selected = ${bounds.validity}${validCenter} && finite(radius) && radius >= 0.0 && (scale == 0.0 || ${squaredDistance} <= (radius / scale) * (radius / scale));`;
 }
 
 function makeNestedMaximum(values: string[]): string {
@@ -465,7 +485,10 @@ function validateDisjointQueryViews(
     ['index objectIds', index.objectIds],
     ['index count', index.count],
     ['index overflow', index.overflow],
-    ['query', query]
+    ['query', query],
+    ...(index.boundsBuffer
+      ? [['index boundsBuffer', index.boundsBuffer] as [string, GraphDataView]]
+      : [])
   ];
   const outputNames = ['output', 'count', 'overflow', 'outputMask'];
   for (let outputIndex = 0; outputIndex < outputs.length; outputIndex++) {
@@ -496,18 +519,19 @@ function validateDisjointQueryViews(
 }
 
 function validateIndexView(id: string, index: GPUGridIndexView, dimension: 2 | 3): void {
+  if (index.boundsBuffer) {
+    validatePackedView(index.boundsBuffer, ['float32'], `${id} index boundsBuffer`);
+    if (index.boundsBuffer.length !== dimension * 2) {
+      throw new Error(`${id} index boundsBuffer must hold ${dimension * 2} float32 values`);
+    }
+  }
   if (index.bounds.length !== dimension * 2) {
     throw new Error(`${id} index gridSize and bounds must have matching dimensions`);
   }
   if (index.gridSize.some(size => !Number.isSafeInteger(size) || size <= 0)) {
     throw new Error(`${id} index gridSize must contain positive integers`);
   }
-  if (
-    !index.bounds.every(Number.isFinite) ||
-    Array.from({length: dimension}, (_, axis) => axis).some(
-      axis => index.bounds[axis]! > index.bounds[axis + dimension]!
-    )
-  ) {
+  if (!isOrderedFiniteBounds(index.bounds)) {
     throw new Error(`${id} index bounds must contain finite ordered minima and maxima`);
   }
   const cellCount = index.gridSize.reduce((product, size) => product * size, 1);
@@ -526,9 +550,4 @@ function validateIndexView(id: string, index: GPUGridIndexView, dimension: 2 | 3
   if (index.count.length < 1 || index.overflow.length < 1) {
     throw new Error(`${id} index count and overflow must each contain one uint32 row`);
   }
-}
-
-function getFloatLiteral(value: number): string {
-  const literal = `${Math.fround(value)}`;
-  return literal.includes('.') || literal.includes('e') ? literal : `${literal}.0`;
 }

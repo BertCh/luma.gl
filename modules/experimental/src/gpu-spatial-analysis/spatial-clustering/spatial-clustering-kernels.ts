@@ -12,8 +12,8 @@ export type SpatialClusteringGridViews = {
   positions: GraphDataView<'float32x2'>;
   parameters: GraphDataView<'float32'>;
   sortedRows: GraphDataView<'uint32'>;
-  cellStarts: GraphDataView<'uint32'>;
-  cellCounts: GraphDataView<'uint32'>;
+  /** `cellCount + 1` exclusive offsets from `GPUGridIndex` over the full `COLUMNS x ROWS` lattice. */
+  cellOffsets: GraphDataView<'uint32'>;
 };
 
 /**
@@ -109,7 +109,7 @@ fn getCellRow(lattice: Lattice, y: f32) -> u32 {
 /**
  * WGSL statements that visit every valid point within epsilon of `(x, y)` (the point itself
  * included) through the 3x3 cell neighborhood and run `action` with `neighbor` (row index) in
- * scope. Requires bindings `positions`, `sortedRows`, `cellStarts`, `cellCounts` and a `lattice`
+ * scope. Requires bindings `positions`, `sortedRows`, `cellOffsets` and a `lattice`
  * local. `keepGoing` is an extra loop condition that lets the caller stop early.
  */
 function getNeighborLoopWGSL(action: string, keepGoing: string = 'true'): string {
@@ -122,9 +122,9 @@ function getNeighborLoopWGSL(action: string, keepGoing: string = 'true'): string
   let lastRow = min(row + 1u, lattice.rows - 1u);
   for (var cellRow = firstRow; cellRow <= lastRow && ${keepGoing}; cellRow++) {
     for (var cellColumn = firstColumn; cellColumn <= lastColumn && ${keepGoing}; cellColumn++) {
-      let cell = cellRow * lattice.columns + cellColumn;
-      let start = cellStarts[cellStartsOffset + cell];
-      let end = start + cellCounts[cellCountsOffset + cell];
+      let cell = cellRow * COLUMNS + cellColumn;
+      let start = cellOffsets[cellOffsetsOffset + cell];
+      let end = cellOffsets[cellOffsetsOffset + cell + 1u];
       for (var slot = start; slot < end && ${keepGoing}; slot++) {
         let neighbor = sortedRows[sortedRowsOffset + slot];
         let deltaX = positions[positionsOffset + neighbor * 2u] - x;
@@ -142,31 +142,69 @@ function getGridBindings(views: SpatialClusteringGridViews): WGSLKernelBinding[]
     {name: 'positions', view: views.positions, type: 'f32', access: 'read'},
     {name: 'parameters', view: views.parameters, type: 'f32', access: 'read'},
     {name: 'sortedRows', view: views.sortedRows, type: 'u32', access: 'read'},
-    {name: 'cellStarts', view: views.cellStarts, type: 'u32', access: 'read'},
-    {name: 'cellCounts', view: views.cellCounts, type: 'u32', access: 'read'}
+    {name: 'cellOffsets', view: views.cellOffsets, type: 'u32', access: 'read'}
   ];
 }
 
-/** Writes the cell key (or `0xffffffff` when excluded) and the row index of every point. @internal */
-export function createSpatialClusteringCellKeysNode<Parameters>(
+/**
+ * Writes the `[minX, minY, maxX, maxY]` domain `GPUGridIndex` reads at run time: the per-frame
+ * lattice extended to `COLUMNS x ROWS` whole cells, or NaN (so nothing is indexed) when the
+ * parameters are invalid. @internal
+ */
+export function createSpatialClusteringGridBoundsNode<Parameters>(
+  graph: GPUCommandGraph<Parameters>,
+  props: {
+    id: string;
+    parameters: GraphDataView<'float32'>;
+    gridSize: readonly [number, number];
+    gridBounds: GraphDataView<'float32'>;
+  }
+): GPUCommandNode<Parameters> {
+  return createWGSLKernelNode<Parameters>(graph, {
+    id: props.id,
+    operation: OPERATION,
+    variant: 'grid-bounds',
+    bindings: [
+      {name: 'parameters', view: props.parameters, type: 'f32', access: 'read'},
+      {name: 'gridBounds', view: props.gridBounds, type: 'f32', access: 'read_write'}
+    ],
+    invocationCount: 1,
+    declarations: getSpatialClusteringSharedWGSL(props.gridSize[0], props.gridSize[1]),
+    body: `let lattice = readLattice();
+  let invalid = bitcast<f32>(0x7fc00000u | (index & 0u));
+  gridBounds[gridBoundsOffset] = select(invalid, lattice.minimumX, lattice.valid);
+  gridBounds[gridBoundsOffset + 1u] = select(invalid, lattice.minimumY, lattice.valid);
+  gridBounds[gridBoundsOffset + 2u] = select(invalid,
+    max(lattice.maximumX, lattice.minimumX + lattice.cellWidth * f32(COLUMNS)), lattice.valid);
+  gridBounds[gridBoundsOffset + 3u] = select(invalid,
+    max(lattice.maximumY, lattice.minimumY + lattice.cellHeight * f32(ROWS)), lattice.valid);`
+  });
+}
+
+/**
+ * Copies every valid point and writes NaN for excluded ones, which `GPUGridIndex` ignores. The
+ * index domain is wider than the valid extent, so it cannot reject them itself. Also writes the
+ * identity row IDs used when compacting. @internal
+ */
+export function createSpatialClusteringGridPositionsNode<Parameters>(
   graph: GPUCommandGraph<Parameters>,
   props: {
     id: string;
     positions: GraphDataView<'float32x2'>;
     parameters: GraphDataView<'float32'>;
     gridSize: readonly [number, number];
-    cellKeys: GraphDataView<'uint32'>;
+    gridPositions: GraphDataView<'float32x2'>;
     rowIds: GraphDataView<'uint32'>;
   }
 ): GPUCommandNode<Parameters> {
   return createWGSLKernelNode<Parameters>(graph, {
     id: props.id,
     operation: OPERATION,
-    variant: 'cell-keys',
+    variant: 'grid-positions',
     bindings: [
       {name: 'positions', view: props.positions, type: 'f32', access: 'read'},
       {name: 'parameters', view: props.parameters, type: 'f32', access: 'read'},
-      {name: 'cellKeys', view: props.cellKeys, type: 'u32', access: 'read_write'},
+      {name: 'gridPositions', view: props.gridPositions, type: 'f32', access: 'read_write'},
       {name: 'rowIds', view: props.rowIds, type: 'u32', access: 'read_write'}
     ],
     invocationCount: props.positions.length,
@@ -174,11 +212,10 @@ export function createSpatialClusteringCellKeysNode<Parameters>(
     body: `let lattice = readLattice();
   let x = positions[positionsOffset + index * 2u];
   let y = positions[positionsOffset + index * 2u + 1u];
-  var key = NOISE;
-  if (isPointValid(lattice, x, y)) {
-    key = getCellRow(lattice, y) * lattice.columns + getCellColumn(lattice, x);
-  }
-  cellKeys[cellKeysOffset + index] = key;
+  let valid = isPointValid(lattice, x, y);
+  let invalid = bitcast<f32>(0x7fc00000u | (index & 0u));
+  gridPositions[gridPositionsOffset + index * 2u] = select(invalid, x, valid);
+  gridPositions[gridPositionsOffset + index * 2u + 1u] = select(invalid, y, valid);
   rowIds[rowIdsOffset + index] = index;`
   });
 }

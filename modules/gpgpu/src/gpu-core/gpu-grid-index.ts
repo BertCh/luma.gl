@@ -4,7 +4,10 @@
 
 import {type GPUCommandNode} from './gpu-command-node';
 import {type GPUCommandGraph, type GraphDataView, GraphVectorView} from './gpu-command-graph';
-import {getGPUGridIndexCommandNodesWithDispatchLimit} from './gpu-grid-index-internals';
+import {
+  getGPUGridIndexCommandNodesWithDispatchLimit,
+  isOrderedFiniteBounds
+} from './gpu-grid-index-internals';
 import {
   doGraphDataViewsOverlap,
   validatePackedUint32View,
@@ -43,8 +46,18 @@ export type GPUGridIndexProps = {
   firstSourceIndex?: number;
   /** Positive integer dimensions matching the position dimension. */
   gridSize: GPUGridIndexSize;
-  /** Finite inclusive domain matching the position dimension. */
+  /**
+   * Finite inclusive domain matching the position dimension. Compiled into the shaders unless
+   * `boundsBuffer` is given, in which case it only fixes the dimension and is otherwise unused.
+   */
   bounds: GPUGridIndexBounds;
+  /**
+   * Optional packed `float32` view `[minX, minY, (minZ), maxX, maxY, (maxZ)]` read by the shaders
+   * at run time and overriding `bounds`. Rewriting its contents changes the domain on the next
+   * encoding without recompiling. It cannot be validated on the CPU: a non-finite or unordered
+   * domain accepts no positions.
+   */
+  boundsBuffer?: GraphDataView<'float32'>;
   /** Caller-owned `cellCount + 1` exclusive offsets. */
   cellOffsets: GraphDataView<'uint32'> | GraphVectorView<'uint32'>;
   /** Caller-owned capacity-bounded stable object IDs grouped by cell. */
@@ -69,6 +82,7 @@ export class GPUGridIndex {
   readonly firstSourceIndex: number;
   readonly gridSize: GPUGridIndexSize;
   readonly bounds: GPUGridIndexBounds;
+  readonly boundsBuffer?: GraphDataView<'float32'>;
   readonly cellOffsets: GraphDataView<'uint32'> | GraphVectorView<'uint32'>;
   readonly objectIds: GraphDataView<'uint32'> | GraphVectorView<'uint32'>;
   readonly count: GraphDataView<'uint32'>;
@@ -85,6 +99,7 @@ export class GPUGridIndex {
     this.firstSourceIndex = props.firstSourceIndex ?? 0;
     this.gridSize = props.gridSize;
     this.bounds = props.bounds;
+    this.boundsBuffer = props.boundsBuffer;
     this.cellOffsets = props.cellOffsets;
     this.objectIds = props.objectIds;
     this.count = props.count;
@@ -94,6 +109,12 @@ export class GPUGridIndex {
     const positionFormat = this.dimension === 2 ? 'float32x2' : 'float32x3';
     for (const chunk of getPositionChunks(this.positions)) {
       validatePackedView(chunk, [positionFormat], `${this.id} positions`);
+    }
+    if (this.boundsBuffer) {
+      validatePackedView(this.boundsBuffer, ['float32'], `${this.id} boundsBuffer`);
+      if (this.boundsBuffer.length !== this.dimension * 2) {
+        throw new Error(`${this.id} boundsBuffer must hold ${this.dimension * 2} float32 values`);
+      }
     }
     if (this.gridSize.length !== this.dimension || this.bounds.length !== this.dimension * 2) {
       throw new Error(`${this.id} positions, gridSize, and bounds must have matching dimensions`);
@@ -105,12 +126,7 @@ export class GPUGridIndex {
     if (!Number.isSafeInteger(this.cellCount) || this.cellCount >= MAXIMUM_UINT32) {
       throw new Error(`${this.id} cell count must fit in uint32`);
     }
-    if (
-      !this.bounds.every(Number.isFinite) ||
-      Array.from({length: this.dimension}, (_, axis) => axis).some(
-        axis => this.bounds[axis] > this.bounds[axis + this.dimension]
-      )
-    ) {
+    if (!isOrderedFiniteBounds(this.bounds)) {
       throw new Error(`${this.id} bounds must contain finite ordered minima and maxima`);
     }
 

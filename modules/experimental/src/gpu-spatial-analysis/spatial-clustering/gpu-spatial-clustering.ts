@@ -6,9 +6,8 @@ import {
   createTransientView,
   GPUCompaction,
   GPUFlagOffsets,
+  GPUGridIndex,
   GPUGroupAggregation,
-  GPUScan,
-  GPUSort,
   validatePackedUint32View,
   validatePackedView,
   type GPUCommandGraph,
@@ -25,7 +24,8 @@ import {
 } from '../../utils/gpu-contributor-utils';
 import {
   createSpatialClusteringBorderNode,
-  createSpatialClusteringCellKeysNode,
+  createSpatialClusteringGridBoundsNode,
+  createSpatialClusteringGridPositionsNode,
   createSpatialClusteringCentroidsNode,
   createSpatialClusteringCoreNode,
   createSpatialClusteringLabelsNode,
@@ -129,8 +129,9 @@ export type GPUSpatialClusteringProps = {
  * - Compact cluster IDs rank the roots in ascending row order, so labels are deterministic and
  *   independent of GPU scheduling.
  *
- * Composition: a cell-key kernel, `GPUGroupAggregation` cell counts, `GPUScan` cell starts,
- * `GPUSort` of rows by cell, a core-point kernel, a lock-free CAS union-find kernel that hooks the
+ * Composition: grid-domain and grid-point kernels feeding `GPUGridIndex` (its domain is a buffer, so
+ * bounds and epsilon never recompile; order within a cell is unspecified and nothing depends on
+ * it), a core-point kernel, a lock-free CAS union-find kernel that hooks the
  * larger root under the smaller, resolve and border kernels, `GPUFlagOffsets` for compact IDs,
  * and optional `GPUCompaction`, `GPUGroupAggregation` and publish nodes for cluster outputs.
  *
@@ -313,12 +314,13 @@ export class GPUSpatialClustering implements GPUCommandNodeProducer {
       return nodes;
     }
 
-    const cellKeys = createTransientView(graph, `${id}-cell-keys`, 'uint32', rows);
+    const gridBounds = createTransientView(graph, `${id}-grid-bounds`, 'float32', 4);
+    const gridPositions = createTransientView(graph, `${id}-grid-positions`, 'float32x2', rows);
     const rowIds = createTransientView(graph, `${id}-row-ids`, 'uint32', rows);
-    const cellCounts = createTransientView(graph, `${id}-cell-counts`, 'uint32', cellCount);
-    const cellStarts = createTransientView(graph, `${id}-cell-starts`, 'uint32', cellCount);
-    const sortedKeys = createTransientView(graph, `${id}-sorted-keys`, 'uint32', rows);
+    const cellOffsets = createTransientView(graph, `${id}-cell-offsets`, 'uint32', cellCount + 1);
     const sortedRows = createTransientView(graph, `${id}-sorted-rows`, 'uint32', rows);
+    const gridCount = createTransientView(graph, `${id}-grid-count`, 'uint32', 1);
+    const gridOverflow = createTransientView(graph, `${id}-grid-overflow`, 'uint32', 1);
     const coreFlags =
       props.coreFlags ?? createTransientView(graph, `${id}-core-flags`, 'uint32', rows);
     const parents = createTransientView(graph, `${id}-parents`, 'uint32', rows);
@@ -330,36 +332,34 @@ export class GPUSpatialClustering implements GPUCommandNodeProducer {
       positions,
       parameters,
       sortedRows,
-      cellStarts,
-      cellCounts
+      cellOffsets
     };
 
     nodes.push(
-      createSpatialClusteringCellKeysNode<Parameters>(graph, {
-        id: `${id}-cell-keys`,
+      createSpatialClusteringGridBoundsNode<Parameters>(graph, {
+        id: `${id}-grid-bounds`,
+        parameters,
+        gridSize,
+        gridBounds
+      }),
+      createSpatialClusteringGridPositionsNode<Parameters>(graph, {
+        id: `${id}-grid-positions`,
         positions,
         parameters,
         gridSize,
-        cellKeys,
+        gridPositions,
         rowIds
       }),
-      ...new GPUGroupAggregation({
-        id: `${id}-cell-counts`,
-        keys: cellKeys,
-        output: cellCounts
-      }).getCommandNodes(graph),
-      ...new GPUScan({
-        id: `${id}-cell-starts`,
-        input: cellCounts,
-        output: cellStarts,
-        mode: 'exclusive'
-      }).getCommandNodes(graph),
-      ...new GPUSort({
-        id: `${id}-sort`,
-        keys: cellKeys,
-        values: rowIds,
-        outputKeys: sortedKeys,
-        outputValues: sortedRows
+      ...new GPUGridIndex({
+        id: `${id}-grid-index`,
+        positions: gridPositions,
+        gridSize: [gridSize[0], gridSize[1]],
+        bounds: [0, 0, 1, 1],
+        boundsBuffer: gridBounds,
+        cellOffsets,
+        objectIds: sortedRows,
+        count: gridCount,
+        overflow: gridOverflow
       }).getCommandNodes(graph),
       createSpatialClusteringCoreNode<Parameters>(graph, {
         id: `${id}-core`,

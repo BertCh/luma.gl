@@ -4,9 +4,8 @@
 
 import {
   createTransientView,
-  GPUGroupAggregation,
+  GPUGridIndex,
   GPUScan,
-  GPUSort,
   validatePackedUint32View,
   validatePackedView,
   type GPUCommandGraph,
@@ -15,7 +14,6 @@ import {
 } from '@luma.gl/gpgpu/gpu-core';
 import type {GPUCommandNodeProducer} from '@luma.gl/gpgpu/gpu-core';
 import {createWGSLKernelNode, type WGSLKernelBinding} from '../../utils/wgsl-kernel-nodes';
-import {getSortKeyBits} from '../../utils/sorted-segment-sums';
 import {
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph
@@ -110,11 +108,14 @@ export type GPUNeighborSearchProps = {
  *   are clamped to the capacity, so a reader always sees consistent (possibly truncated) rows,
  *   and `overflow` is set. `totalNeighbors` and `neighborCounts` stay unclamped.
  *
- * Algorithm: targets are bucketed by a stable sort into a per-frame lattice (cells at least
- * `radius` wide in radius mode; `gridSize` cells over the bounds in kNN mode). kNN keeps a private
- * sorted top-k list per query and searches expanding cell rings until the k-th distance is
- * strictly inside the visited box. Radius mode counts, scans, emits and then insertion-sorts each
- * row by ID. No float atomics: every output is bitwise reproducible.
+ * Algorithm: targets are bucketed by `GPUGridIndex` into a per-frame lattice (cells at least
+ * `radius` wide in radius mode; `gridSize` cells over the bounds in kNN mode), whose domain is
+ * read from a buffer so changing bounds or radius never recompiles. kNN keeps a private sorted
+ * top-k list per query and searches expanding cell rings until the k-th distance is strictly
+ * inside the visited box. Radius mode counts, scans, emits and then insertion-sorts each row by
+ * ID. Order within a grid cell is unspecified, but every row is sorted by ID and no float atomics
+ * are used, so results are bitwise reproducible, except which neighbors the one row cut by an
+ * exceeded capacity keeps.
  */
 export class GPUNeighborSearch implements GPUCommandNodeProducer {
   /** Prefix for every node and transient ID. */
@@ -254,12 +255,17 @@ export class GPUNeighborSearch implements GPUCommandNodeProducer {
     // A self join applies the target mask to the query rows too unless a query mask is given.
     const queryMask = props.queryMask ?? (crossJoin ? undefined : props.mask);
 
-    const cellKeys = createTransientView(graph, `${id}-cell-keys`, 'uint32', targetRows);
-    const rowIds = createTransientView(graph, `${id}-row-ids`, 'uint32', targetRows);
-    const cellCounts = createTransientView(graph, `${id}-cell-counts`, 'uint32', cellCount);
+    const gridBounds = createTransientView(graph, `${id}-grid-bounds`, 'float32', 4);
+    const gridPositions = createTransientView(
+      graph,
+      `${id}-grid-positions`,
+      'float32x2',
+      targetRows
+    );
     const cellOffsets = createTransientView(graph, `${id}-cell-offsets`, 'uint32', cellCount + 1);
-    const sortedKeys = createTransientView(graph, `${id}-sorted-keys`, 'uint32', targetRows);
     const sortedRows = createTransientView(graph, `${id}-sorted-rows`, 'uint32', targetRows);
+    const gridCount = createTransientView(graph, `${id}-grid-count`, 'uint32', 1);
+    const gridOverflow = createTransientView(graph, `${id}-grid-overflow`, 'uint32', 1);
     const counts =
       props.neighborCounts ?? createTransientView(graph, `${id}-counts`, 'uint32', queryRows);
     const starts = createTransientView(graph, `${id}-starts`, 'uint32', queryRows);
@@ -267,64 +273,63 @@ export class GPUNeighborSearch implements GPUCommandNodeProducer {
       weights.distances ?? createTransientView(graph, `${id}-distances`, 'float32', capacity);
 
     const nodes: GPUCommandNode<Parameters>[] = [
+      // The upstream grid index takes its domain from a buffer, so the per-frame lattice (cells at
+      // least `radius` wide in radius mode) becomes bounds extended to COLUMNS x ROWS whole cells.
       createWGSLKernelNode<Parameters>(graph, {
-        id: `${id}-cell-keys`,
+        id: `${id}-grid-bounds`,
         operation: OPERATION,
-        variant: 'cell-keys',
+        variant: 'grid-bounds',
+        bindings: [
+          {name: 'parameters', view: parameters, type: 'f32', access: 'read'},
+          {name: 'gridBounds', view: gridBounds, type: 'f32', access: 'read_write'}
+        ],
+        invocationCount: 1,
+        declarations: latticeWGSL,
+        body: `let lattice = readLattice();
+  let invalid = bitcast<f32>(0x7fc00000u | (index & 0u));
+  gridBounds[gridBoundsOffset] = select(invalid, lattice.minimumX, lattice.valid);
+  gridBounds[gridBoundsOffset + 1u] = select(invalid, lattice.minimumY, lattice.valid);
+  gridBounds[gridBoundsOffset + 2u] = select(invalid,
+    max(lattice.maximumX, lattice.minimumX + lattice.cellWidth * f32(COLUMNS)), lattice.valid);
+  gridBounds[gridBoundsOffset + 3u] = select(invalid,
+    max(lattice.maximumY, lattice.minimumY + lattice.cellHeight * f32(ROWS)), lattice.valid);`
+      }),
+      // The grid index has no mask and its domain is wider than the valid extent, so excluded
+      // targets become NaN points, which it ignores.
+      createWGSLKernelNode<Parameters>(graph, {
+        id: `${id}-grid-positions`,
+        operation: OPERATION,
+        variant: 'grid-positions',
         bindings: [
           {name: 'positions', view: positions, type: 'f32', access: 'read'},
           {name: 'parameters', view: parameters, type: 'f32', access: 'read'},
           ...(props.mask
             ? [{name: 'mask', view: props.mask, type: 'u32' as const, access: 'read' as const}]
             : []),
-          {name: 'cellKeys', view: cellKeys, type: 'u32', access: 'read_write'},
-          {name: 'rowIds', view: rowIds, type: 'u32', access: 'read_write'}
+          {name: 'gridPositions', view: gridPositions, type: 'f32', access: 'read_write'}
         ],
         invocationCount: targetRows,
         declarations: latticeWGSL,
         body: `let lattice = readLattice();
   let x = positions[positionsOffset + index * 2u];
   let y = positions[positionsOffset + index * 2u + 1u];
-  let included = ${props.mask ? 'mask[maskOffset + index] != 0u' : 'true'};
-  var key = CELL_COUNT;
-  if (included && isPointValid(lattice, x, y)) {
-    key = getCellRow(lattice, y) * lattice.columns + getCellColumn(lattice, x);
-  }
-  cellKeys[cellKeysOffset + index] = key;
-  rowIds[rowIdsOffset + index] = index;`
+  let included = ${props.mask ? 'mask[maskOffset + index] != 0u' : 'true'} && isPointValid(lattice, x, y);
+  let invalid = bitcast<f32>(0x7fc00000u | (index & 0u));
+  gridPositions[gridPositionsOffset + index * 2u] = select(invalid, x, included);
+  gridPositions[gridPositionsOffset + index * 2u + 1u] = select(invalid, y, included);`
       }),
-      // Invalid targets carry the key CELL_COUNT, which the aggregation ignores and the sort puts last.
-      ...new GPUGroupAggregation({
-        id: `${id}-cell-counts`,
-        keys: cellKeys,
-        output: cellCounts
-      }).getCommandNodes(graph),
-      ...new GPUScan({
-        id: `${id}-cell-scan`,
-        input: cellCounts,
-        output: cellOffsets,
-        mode: 'exclusive'
-      }).getCommandNodes(graph),
-      createWGSLKernelNode<Parameters>(graph, {
-        id: `${id}-cell-total`,
-        operation: OPERATION,
-        variant: 'cell-total',
-        bindings: [
-          {name: 'counts', view: cellCounts, type: 'u32', access: 'read'},
-          {name: 'cellOffsets', view: cellOffsets, type: 'u32', access: 'read_write'}
-        ],
-        invocationCount: 1,
-        declarations: `const LAST_CELL: u32 = ${cellCount - 1}u;`,
-        body: `cellOffsets[cellOffsetsOffset + LAST_CELL + 1u] =
-    cellOffsets[cellOffsetsOffset + LAST_CELL] + counts[countsOffset + LAST_CELL];`
-      }),
-      ...new GPUSort({
-        id: `${id}-cell-sort`,
-        keys: cellKeys,
-        values: rowIds,
-        outputKeys: sortedKeys,
-        outputValues: sortedRows,
-        keyBits: getSortKeyBits(cellCount)
+      // Buckets targets into the lattice: `cellOffsets` and `sortedRows` (target rows by cell, in
+      // unspecified order within a cell; every consumer below is order independent or sorts).
+      ...new GPUGridIndex({
+        id: `${id}-grid-index`,
+        positions: gridPositions,
+        gridSize: [gridSize[0], gridSize[1]],
+        bounds: [0, 0, 1, 1],
+        boundsBuffer: gridBounds,
+        cellOffsets,
+        objectIds: sortedRows,
+        count: gridCount,
+        overflow: gridOverflow
       }).getCommandNodes(graph),
       // Query validity, stored in `counts` until the search pass overwrites it with the count.
       createWGSLKernelNode<Parameters>(graph, {

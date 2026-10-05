@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import {SPATIAL_AUTOCORRELATION_FLOAT_WGSL} from '../spatial-autocorrelation/spatial-autocorrelation-kernels';
+import {NEIGHBOR_SEARCH_FLOAT_WGSL} from './neighbor-search-wgsl';
 
 /**
  * WGSL shared by the neighbor-search kernels that read `parameters`: the per-frame lattice,
@@ -105,7 +105,7 @@ fn getCellRow(lattice: Lattice, y: f32) -> u32 {
   return min(u32(floor((y - lattice.minimumY) / lattice.cellHeight)), lattice.rows - 1u);
 }
 
-${SPATIAL_AUTOCORRELATION_FLOAT_WGSL}
+${NEIGHBOR_SEARCH_FLOAT_WGSL}
 `;
 }
 
@@ -126,7 +126,7 @@ export function getRadiusNeighborLoopWGSL(action: string): string {
   let firstRow = max(row, 1u) - 1u;
   let lastRow = min(row + 1u, lattice.rows - 1u);
   for (var cellRow = firstRow; cellRow <= lastRow; cellRow++) {
-    let rowBase = cellRow * lattice.columns;
+    let rowBase = cellRow * COLUMNS;
     let cellBegin = cellOffsets[cellOffsetsOffset + rowBase + firstColumn];
     let cellEnd = cellOffsets[cellOffsetsOffset + rowBase + lastColumn + 1u];
     for (var cellSlot = cellBegin; cellSlot < cellEnd; cellSlot++) {
@@ -187,7 +187,7 @@ export function getNearestNeighborSearchWGSL(selfCondition: string): string {
     let firstRow = max(queryRow - ring, 0);
     let endRow = min(queryRow + ring, lastRow);
     for (var cellRow = firstRow; cellRow <= endRow; cellRow++) {
-      let rowBase = u32(cellRow) * lattice.columns;
+      let rowBase = u32(cellRow) * COLUMNS;
       if (abs(cellRow - queryRow) == ring) {
         let cellBegin = cellOffsets[cellOffsetsOffset + rowBase + u32(firstColumn)];
         let cellEnd = cellOffsets[cellOffsetsOffset + rowBase + u32(endColumn) + 1u];
