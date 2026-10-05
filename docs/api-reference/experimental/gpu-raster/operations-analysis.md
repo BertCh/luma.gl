@@ -34,7 +34,7 @@ recompiling.
   calibrated, nodata-aware contrast or gamma that keeps the scalar domain, and `GPURasterHistogram`
   when you only need the histogram.
 - `GPURasterZonalStatistics` reduces a raster band over a pre-rasterized grid of zone IDs. Use
-  `GPUZonalStatistics` from [Geospatial](/docs/api-reference/experimental/geospatial) when the input
+  `GPUZonalStatistics` from [GPU Spatial Analysis](/docs/api-reference/experimental/gpu-spatial-analysis) when the input
   is points and polygon features instead of a raster.
 - `GPUDistanceField` and `GPUCostDistance` are the Euclidean and friction-weighted surfaces. Use
   [GPU Network](/docs/api-reference/experimental/gpu-network) reachability when travel follows a

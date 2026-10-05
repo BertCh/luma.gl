@@ -498,4 +498,4 @@ parameters.write(getGPUCalendarBucketsParameterValues(-300 /* UTC-5 */, 0 /* Mon
 
 - [GPU Dataframe](/docs/api-reference/experimental/gpu-dataframe)
 - [Indexes and joins](/docs/api-reference/experimental/gpu-dataframe-indexes-joins)
-- [Geospatial analysis contributors](/docs/api-reference/experimental/geospatial)
+- [GPU Spatial Analysis contributors](/docs/api-reference/experimental/gpu-spatial-analysis)

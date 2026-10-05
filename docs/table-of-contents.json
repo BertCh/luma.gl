@@ -577,6 +577,7 @@
             ]
           },
           "api-reference/experimental/gpu-network",
+          "api-reference/experimental/gpu-spatial-analysis",
           "api-reference/experimental/gpu-terrain",
           {
             "type": "category",

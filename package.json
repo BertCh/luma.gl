@@ -42,6 +42,7 @@
     "test-gpu-raster-package": "node ./scripts/verify-experimental-gpu-raster-package.mjs",
     "test-gpu-terrain-package": "node ./scripts/verify-experimental-gpu-terrain-package.mjs",
     "test-gpu-network-package": "node ./scripts/verify-experimental-gpu-network-package.mjs",
+    "test-gpu-spatial-analysis-package": "node ./scripts/verify-experimental-gpu-spatial-analysis-package.mjs",
     "examples:typecheck": "node ./scripts/examples-typecheck.mjs",
     "examples:synchronize-mobile-support": "node ./scripts/examples/synchronize-mobile-support-metadata.mjs",
     "examples:test-mobile": "node ./scripts/playwright/mobile-example-smoke.mjs",

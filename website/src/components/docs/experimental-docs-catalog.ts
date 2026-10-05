@@ -29,6 +29,7 @@ export type ExperimentalDocsTabId =
   | 'gpu-graph-metrics'
   | 'gpu-graph-layouts'
   | 'gpu-network'
+  | 'gpu-spatial-analysis'
   | 'gpu-dataframe'
   | 'gpu-dataframe-operations'
   | 'gpu-dataframe-expressions'
@@ -186,6 +187,11 @@ export const EXPERIMENTAL_DOCS_TAB_GROUPS: readonly DocsTabGroup<ExperimentalDoc
     id: 'gpu-network',
     label: 'GPU Network',
     tabs: [{id: 'gpu-network', label: 'Overview', href: '/docs/api-reference/experimental/gpu-network'}]
+  },
+  {
+    id: 'gpu-spatial-analysis',
+    label: 'GPU Spatial Analysis',
+    tabs: [{id: 'gpu-spatial-analysis', label: 'Overview', href: '/docs/api-reference/experimental/gpu-spatial-analysis'}]
   },
   {
     id: 'gpu-dataframe-analysis',

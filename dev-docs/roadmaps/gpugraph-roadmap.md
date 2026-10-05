@@ -638,7 +638,7 @@ graduated packages.
 
 Status: initial, experimental. Analysis contributors ship prebuilt command nodes for common map
 tasks, composed from the public primitives above, in the domain entry points
-`@luma.gl/experimental/gpu-terrain`, `gpu-network`, `geospatial`, `gpu-raster`, `gpu-dataframe`,
+`@luma.gl/experimental/gpu-terrain`, `gpu-network`, `gpu-spatial-analysis`, `gpu-raster`, `gpu-dataframe`,
 `gpu-tables`, and `gpu-crossfilter`. Each contributor is a `GPUCommandNodeProducer` class with typed
 graph-view inputs and outputs, per-frame parameters in storage views (no recompile), and GPU-side
 capacity and overflow reporting. Source lives under `modules/experimental/src/<entry>/<directory>/`;
@@ -646,7 +646,7 @@ the directory names below are relative to the entry that exports them. Shared he
 `modules/experimental/src/utils/`. User docs:
 [GPU Terrain](../../docs/api-reference/experimental/gpu-terrain.md),
 [GPU Network](../../docs/api-reference/experimental/gpu-network.md),
-[Geospatial](../../docs/api-reference/experimental/geospatial.md),
+[GPU Spatial Analysis](../../docs/api-reference/experimental/gpu-spatial-analysis.md),
 [GPURaster analysis contributors](../../docs/api-reference/experimental/gpu-raster/operations-analysis.md),
 [GPU Dataframe analysis contributors](../../docs/api-reference/experimental/gpu-dataframe-analysis.md), and
 [GPU residency](../../docs/api-reference/experimental/gpu-tables/gpu-residency.mdx).
