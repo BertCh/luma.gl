@@ -4,7 +4,10 @@
 
 import type {Viewport} from '@deck.gl/core';
 import {Buffer, type Device} from '@luma.gl/core';
-import {GPUParameterBuffer, type GPUParameterFormat} from '@luma.gl/experimental/geospatial';
+import {
+  GPUParameterBuffer,
+  type GPUParameterFormat
+} from '@luma.gl/experimental/gpu-spatial-analysis';
 import type {LocalMetricProjection} from './spatial-analysis-data';
 
 type Destroyable = {destroy: () => void};

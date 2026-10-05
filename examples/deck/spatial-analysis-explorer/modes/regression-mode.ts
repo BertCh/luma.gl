@@ -62,7 +62,7 @@ import {
   GPU_ORDINARY_LEAST_SQUARES_SUMMARY_ROW_COUNT,
   GPU_ORDINARY_LEAST_SQUARES_SUMMARY_SIGMA_SQUARED,
   getGPUGeographicallyWeightedRegressionParameterLength
-} from '@luma.gl/experimental/geospatial';
+} from '@luma.gl/experimental/gpu-spatial-analysis';
 import {importGraphBuffer} from '../graph-buffers';
 import {
   LocalMetricProjection,

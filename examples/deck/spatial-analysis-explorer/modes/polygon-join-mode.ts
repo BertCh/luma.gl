@@ -22,7 +22,10 @@ import {
   GPUReadbackRing,
   type CompiledGPUCommandGraph
 } from '@luma.gl/gpgpu/gpu-core';
-import {GPU_SPATIAL_JOIN_NO_FEATURE, GPUPointInPolygonJoin} from '@luma.gl/experimental/geospatial';
+import {
+  GPU_SPATIAL_JOIN_NO_FEATURE,
+  GPUPointInPolygonJoin
+} from '@luma.gl/experimental/gpu-spatial-analysis';
 import {importGraphBuffer} from '../graph-buffers';
 import {SpatialAnalysisPointLayer, SpatialAnalysisSegmentLayer} from '../spatial-analysis-layers';
 import type {

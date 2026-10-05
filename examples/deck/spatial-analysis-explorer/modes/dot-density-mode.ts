@@ -31,7 +31,7 @@ import {
   GPU_DOT_DENSITY_PARAMETER_LENGTH,
   GPUDotDensity,
   GPURandomPointsInPolygon
-} from '@luma.gl/experimental/geospatial';
+} from '@luma.gl/experimental/gpu-spatial-analysis';
 import {importGraphBuffer} from '../graph-buffers';
 import {SpatialAnalysisPointLayer, SpatialAnalysisSegmentLayer} from '../spatial-analysis-layers';
 import type {

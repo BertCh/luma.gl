@@ -7,9 +7,9 @@ import {GPUCommandGraph, type CompiledGPUCommandGraph} from '@luma.gl/gpgpu/gpu-
 import {
   createGPUPointDensityGaussianKernel,
   GPUPointDensity
-} from '@luma.gl/experimental/geospatial';
+} from '@luma.gl/experimental/gpu-spatial-analysis';
 import {importGraphBuffer} from '../graph-buffers';
-import {type GPUParameterBuffer} from '@luma.gl/experimental/geospatial';
+import {type GPUParameterBuffer} from '@luma.gl/experimental/gpu-spatial-analysis';
 import {LocalMetricProjection} from '../spatial-analysis-data';
 import {SpatialAnalysisPointLayer, SpatialAnalysisRasterLayer} from '../spatial-analysis-layers';
 import type {

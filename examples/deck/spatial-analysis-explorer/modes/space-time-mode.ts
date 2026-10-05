@@ -56,7 +56,7 @@ import {
   GPUEmergingHotSpots,
   GPU_EMERGING_HOT_SPOT_PARAMETER_LENGTH,
   GPU_EMERGING_HOT_SPOT_STATISTICS_LENGTH
-} from '@luma.gl/experimental/geospatial';
+} from '@luma.gl/experimental/gpu-spatial-analysis';
 import {importGraphBuffer} from '../graph-buffers';
 import {SpatialAnalysisPointLayer} from '../spatial-analysis-layers';
 import type {

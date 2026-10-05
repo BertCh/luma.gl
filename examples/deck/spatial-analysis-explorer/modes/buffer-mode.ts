@@ -20,7 +20,7 @@ import {
   GPUReadbackRing,
   type CompiledGPUCommandGraph
 } from '@luma.gl/gpgpu/gpu-core';
-import {GPUBufferSelection} from '@luma.gl/experimental/geospatial';
+import {GPUBufferSelection} from '@luma.gl/experimental/gpu-spatial-analysis';
 import {importGraphBuffer} from '../graph-buffers';
 import {SpatialAnalysisPointLayer, SpatialAnalysisSegmentLayer} from '../spatial-analysis-layers';
 import {LocalMetricProjection} from '../spatial-analysis-data';

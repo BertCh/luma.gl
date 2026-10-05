@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import {findNearestHexagon} from '../../geospatial/point-density/point-density-oracle';
+import {findNearestHexagon} from '../../gpu-spatial-analysis/point-density/point-density-oracle';
 
 type Bounds = [number, number, number, number];
 

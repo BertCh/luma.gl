@@ -45,7 +45,7 @@ import {
   type GPUClassBreaksMethod,
   type GPUColorScaleType
 } from '@luma.gl/experimental/gpu-dataframe';
-import {GPUPointDensity} from '@luma.gl/experimental/geospatial';
+import {GPUPointDensity} from '@luma.gl/experimental/gpu-spatial-analysis';
 import {importGraphBuffer} from '../graph-buffers';
 import {LocalMetricProjection} from '../spatial-analysis-data';
 import type {

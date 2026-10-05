@@ -31,7 +31,7 @@ import {
   GPUPolygonRasterization,
   GPURasterJoin
 } from '@luma.gl/experimental/gpu-raster';
-import {GPUPointInPolygonJoin} from '@luma.gl/experimental/geospatial';
+import {GPUPointInPolygonJoin} from '@luma.gl/experimental/gpu-spatial-analysis';
 import {importGraphBuffer} from '../graph-buffers';
 import {LocalMetricProjection} from '../spatial-analysis-data';
 import {

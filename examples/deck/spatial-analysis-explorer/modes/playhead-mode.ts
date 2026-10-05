@@ -15,7 +15,7 @@ import {
   GPUTrajectoryResample,
   GPU_TRAJECTORY_PLAYHEAD_PARAMETER_LENGTH,
   GPU_TRAJECTORY_PLAYHEAD_STATUS
-} from '@luma.gl/experimental/geospatial';
+} from '@luma.gl/experimental/gpu-spatial-analysis';
 import {importGraphBuffer} from '../graph-buffers';
 import type {
   SpatialAnalysisModeDefinition,

@@ -12,7 +12,7 @@ import {
   GPU_FLOW_AGGREGATION_NO_ZONE,
   type GPUFlowAggregationProps
 } from '../../../src/gpu-network/flow-aggregation';
-import {getGPUPointDensityHexagonGridSize} from '../../../src/geospatial/point-density';
+import {getGPUPointDensityHexagonGridSize} from '../../../src/gpu-spatial-analysis/point-density';
 import {
   getGPUTimeWindowParameterValues,
   getGPUTimeWindowWordParameterValues,
@@ -30,7 +30,7 @@ import {
 import {
   findNearestHexagon,
   createSeededPoints
-} from '../../geospatial/point-density/point-density-oracle';
+} from '../../gpu-spatial-analysis/point-density/point-density-oracle';
 import {
   computeFlowAggregation,
   createSeededRandom,

@@ -34,7 +34,7 @@ import {
   GPUFocalStatistics,
   GPUInverseDistanceWeighting,
   type GPUFocalStatisticsShape
-} from '@luma.gl/experimental/geospatial';
+} from '@luma.gl/experimental/gpu-spatial-analysis';
 import {GPUTerrainContours} from '@luma.gl/experimental/gpu-terrain';
 import {importGraphBuffer} from '../graph-buffers';
 import {createSeededRandom, LocalMetricProjection} from '../spatial-analysis-data';

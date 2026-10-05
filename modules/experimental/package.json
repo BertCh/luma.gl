@@ -92,6 +92,11 @@
       "import": "./dist/gpu-terrain/index.js",
       "require": "./dist/gpu-terrain/index.cjs"
     },
+    "./gpu-spatial-analysis": {
+      "types": "./dist/gpu-spatial-analysis/index.d.ts",
+      "import": "./dist/gpu-spatial-analysis/index.js",
+      "require": "./dist/gpu-spatial-analysis/index.cjs"
+    },
     "./gpu-network": {
       "types": "./dist/gpu-network/index.d.ts",
       "import": "./dist/gpu-network/index.js",

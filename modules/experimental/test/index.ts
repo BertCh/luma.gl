@@ -37,6 +37,7 @@ import './gpu-crossfilter';
 import './utils';
 import './gpu-dataframe';
 import './geospatial';
+import './gpu-spatial-analysis';
 import './gpu-network';
 import './gpu-terrain';
 import './gpu-tables';

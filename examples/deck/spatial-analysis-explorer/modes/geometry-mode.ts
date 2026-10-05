@@ -47,7 +47,7 @@ import {
   GPU_LINE_LOCATE_PARAMETER_LENGTH,
   GPU_LINE_SEGMENTIZE_PARAMETER_LENGTH,
   GPU_LINE_SMOOTH_PARAMETER_LENGTH
-} from '@luma.gl/experimental/geospatial';
+} from '@luma.gl/experimental/gpu-spatial-analysis';
 import {importGraphBuffer} from '../graph-buffers';
 import {
   createSeededRandom,

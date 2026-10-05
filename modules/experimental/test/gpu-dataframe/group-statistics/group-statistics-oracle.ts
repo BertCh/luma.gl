@@ -6,7 +6,7 @@
 // median, percentiles, mode, unique counts) are exact; moments are computed in float64 from the
 // true values and compared to the GPU with a stated float32 tolerance.
 
-import {getScaledValue} from '../../geospatial/cell-aggregation/cell-aggregation-oracle';
+import {getScaledValue} from '../../gpu-spatial-analysis/cell-aggregation/cell-aggregation-oracle';
 
 const f = Math.fround;
 

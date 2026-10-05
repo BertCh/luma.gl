@@ -19,7 +19,7 @@ import {
   type GraphDataView
 } from '@luma.gl/gpgpu/gpu-core';
 import {DrawCommandBuffer} from '@luma.gl/gpgpu/gpu-core';
-import {GPUCellLevelSelection, GPUCellPyramid} from '@luma.gl/experimental/geospatial';
+import {GPUCellLevelSelection, GPUCellPyramid} from '@luma.gl/experimental/gpu-spatial-analysis';
 import {importGraphBuffer} from '../graph-buffers';
 import type {Buffer} from '@luma.gl/core';
 import {LocalMetricProjection} from '../spatial-analysis-data';

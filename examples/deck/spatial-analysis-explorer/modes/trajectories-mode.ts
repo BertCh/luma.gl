@@ -13,7 +13,7 @@ import {
   getGPUTrajectoryMetricsParameterValues,
   GPUTrajectoryMetrics,
   GPU_TRAJECTORY_METRICS_PARAMETER_LENGTH
-} from '@luma.gl/experimental/geospatial';
+} from '@luma.gl/experimental/gpu-spatial-analysis';
 import {importGraphBuffer} from '../graph-buffers';
 import {SpatialAnalysisSegmentLayer} from '../spatial-analysis-layers';
 import type {

@@ -20,7 +20,7 @@ import {
 import {
   GPU_CELL_DEFAULT_SUM_SCALE,
   validateSumScale
-} from '../../geospatial/cell-aggregation/cell-table';
+} from '../../gpu-spatial-analysis/cell-aggregation/cell-table';
 import {readBinding, writeBinding} from './group-statistics-common';
 import {getColumnReductionNodes} from './group-statistics-moments';
 import {getColumnOrderNodes} from './group-statistics-order';

@@ -13,7 +13,7 @@ import {
 import {Buffer, type RenderPass} from '@luma.gl/core';
 import {Model} from '@luma.gl/engine';
 import type {DrawCommandBuffer} from '@luma.gl/gpgpu/gpu-core';
-import {GPU_POINT_DENSITY_HEXAGON_WGSL} from '@luma.gl/experimental/geospatial';
+import {GPU_POINT_DENSITY_HEXAGON_WGSL} from '@luma.gl/experimental/gpu-spatial-analysis';
 
 /** Segments each arc is tessellated into. The indirect draw record uses `ARC_SEGMENTS * 6` vertices. */
 export const ARC_SEGMENTS = 24;

@@ -44,7 +44,7 @@ import {
   GPUNeighborSearch,
   type GPUNeighborSearchKernel,
   type GPUNeighborSearchWeightKind
-} from '@luma.gl/experimental/geospatial';
+} from '@luma.gl/experimental/gpu-spatial-analysis';
 import {importGraphBuffer} from '../graph-buffers';
 import {
   SpatialAnalysisPointLayer,

@@ -31,7 +31,7 @@ import {
   GPUCellAggregation,
   GPUCellTableCompare,
   GPUPointToCell
-} from '@luma.gl/experimental/geospatial';
+} from '@luma.gl/experimental/gpu-spatial-analysis';
 import {
   GPUClassBreaks,
   GPUColorScale,

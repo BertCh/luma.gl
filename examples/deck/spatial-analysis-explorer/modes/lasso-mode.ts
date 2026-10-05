@@ -24,7 +24,7 @@ import {
   GPURegionStatistics,
   GPURegionStatisticsReadback,
   type GPURegionStatisticsResult
-} from '@luma.gl/experimental/geospatial';
+} from '@luma.gl/experimental/gpu-spatial-analysis';
 import {importGraphBuffer, submitGraph} from '../graph-buffers';
 import {createSeededRandom, LocalMetricProjection} from '../spatial-analysis-data';
 import {SpatialAnalysisPointLayer, SpatialAnalysisSegmentLayer} from '../spatial-analysis-layers';

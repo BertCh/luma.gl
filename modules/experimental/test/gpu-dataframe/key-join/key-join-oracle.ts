@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import {CELL_MAXIMUM_SCALED_VALUE} from '../../../src/geospatial/cell-aggregation/cell-table';
+import {CELL_MAXIMUM_SCALED_VALUE} from '../../../src/gpu-spatial-analysis/cell-aggregation/cell-table';
 
 const f = Math.fround;
 

@@ -13,7 +13,7 @@ import {
 import {Buffer, type Device, type RenderPass} from '@luma.gl/core';
 import {Model} from '@luma.gl/engine';
 import type {DrawCommandBuffer} from '@luma.gl/gpgpu/gpu-core';
-import {GPU_POINT_DENSITY_HEXAGON_WGSL} from '@luma.gl/experimental/geospatial';
+import {GPU_POINT_DENSITY_HEXAGON_WGSL} from '@luma.gl/experimental/gpu-spatial-analysis';
 
 /**
  * Generic deck.gl layers that draw analysis contributor outputs straight from GPU storage buffers.

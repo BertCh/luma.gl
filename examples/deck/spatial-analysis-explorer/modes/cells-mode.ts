@@ -49,7 +49,7 @@ import {
   getCellTopologyStride,
   type GPUCellCoverContainment,
   type GPUCellIndexFamily
-} from '@luma.gl/experimental/geospatial';
+} from '@luma.gl/experimental/gpu-spatial-analysis';
 import {importGraphBuffer} from '../graph-buffers';
 import {LocalMetricProjection} from '../spatial-analysis-data';
 import {SpatialAnalysisSegmentLayer} from '../spatial-analysis-layers';

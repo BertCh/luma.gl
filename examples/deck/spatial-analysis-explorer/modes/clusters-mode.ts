@@ -14,9 +14,9 @@ import {
   GPU_SPATIAL_CLUSTERING_NOISE,
   GPU_SPATIAL_CLUSTERING_PARAMETER_LENGTH,
   GPUSpatialClustering
-} from '@luma.gl/experimental/geospatial';
+} from '@luma.gl/experimental/gpu-spatial-analysis';
 import {importGraphBuffer} from '../graph-buffers';
-import {type GPUParameterBuffer} from '@luma.gl/experimental/geospatial';
+import {type GPUParameterBuffer} from '@luma.gl/experimental/gpu-spatial-analysis';
 import {SpatialAnalysisPointLayer} from '../spatial-analysis-layers';
 import type {
   SpatialAnalysisModeDefinition,

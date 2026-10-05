@@ -21,7 +21,7 @@ import {
   GPUReadbackRing,
   type CompiledGPUCommandGraph
 } from '@luma.gl/gpgpu/gpu-core';
-import {GPUNearestFeatureJoin} from '@luma.gl/experimental/geospatial';
+import {GPUNearestFeatureJoin} from '@luma.gl/experimental/gpu-spatial-analysis';
 import {importGraphBuffer} from '../graph-buffers';
 import {SpatialAnalysisPointLayer, SpatialAnalysisSegmentLayer} from '../spatial-analysis-layers';
 import type {

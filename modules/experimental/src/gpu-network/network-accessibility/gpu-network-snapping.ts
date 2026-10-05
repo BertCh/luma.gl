@@ -16,7 +16,7 @@ import {
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph
 } from '../../utils/gpu-contributor-utils';
-import {GPUNearestFeatureJoin} from '../../geospatial/spatial-join/index';
+import {GPUNearestFeatureJoin} from '../../gpu-spatial-analysis/spatial-join/index';
 import {ACCESSIBILITY_NONE} from './network-accessibility-passes';
 
 const OPERATION = 'GPUNetworkSnapping';

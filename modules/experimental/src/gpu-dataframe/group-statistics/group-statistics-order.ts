@@ -11,7 +11,7 @@ import {
   type GraphDataView
 } from '@luma.gl/gpgpu/gpu-core';
 import {createWGSLKernelNode} from '../../utils/wgsl-kernel-nodes';
-import {ORDERED_KEY_WGSL} from '../../geospatial/cell-aggregation/cell-table';
+import {ORDERED_KEY_WGSL} from '../../gpu-spatial-analysis/cell-aggregation/cell-table';
 import {
   atomicBinding,
   createGatherNode,

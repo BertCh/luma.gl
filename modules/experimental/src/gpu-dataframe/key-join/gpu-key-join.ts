@@ -31,7 +31,7 @@ import {
   GPU_CELL_DEFAULT_SUM_SCALE,
   ORDERED_KEY_WGSL,
   validateSumScale
-} from '../../geospatial/cell-aggregation/cell-table';
+} from '../../gpu-spatial-analysis/cell-aggregation/cell-table';
 
 const OPERATION = 'GPUKeyJoin';
 const MAXIMUM_GATHER_COLUMNS_PER_KERNEL = 3;

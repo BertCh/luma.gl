@@ -28,7 +28,7 @@ import {
   GPUZonalStatistics,
   type GPUZonalStatisticsExtentStatistic,
   type GPUZonalStatisticsSumOrder
-} from '@luma.gl/experimental/geospatial';
+} from '@luma.gl/experimental/gpu-spatial-analysis';
 import {importGraphBuffer} from '../graph-buffers';
 import {LocalMetricProjection, type SpatialAnalysisPolygons} from '../spatial-analysis-data';
 import {

@@ -14,7 +14,7 @@ import {
   getWGSLFloatLiteral,
   type WGSLKernelBinding
 } from '../../utils/wgsl-kernel-nodes';
-import {GPU_POINT_DENSITY_HEXAGON_WGSL} from '../../geospatial/point-density/point-density-hexagon';
+import {GPU_POINT_DENSITY_HEXAGON_WGSL} from '../../gpu-spatial-analysis/point-density/point-density-hexagon';
 
 const OPERATION = 'GPUFlowAggregation';
 const SEGMENT_WORKGROUP_SIZE = 256;

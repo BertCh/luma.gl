@@ -7,13 +7,13 @@ import {DrawCommandBuffer, GPUCommandGraph, type GraphDataView} from '@luma.gl/g
 import {getWebGPUTestDevice} from '@luma.gl/test-utils';
 import {afterEach, expect, it, vi} from 'vitest';
 import {GPUParameterBuffer, importGraphBuffer} from '../../../src/utils/gpu-contributor-utils';
-import {GPUPointDensity} from '../../../src/geospatial/point-density';
+import {GPUPointDensity} from '../../../src/gpu-spatial-analysis/point-density';
 import {
   decodeGPURegionStatistics,
   getGPURegionStatisticsSummaryLength,
   GPURegionStatistics,
   type GPURegionStatisticsResult
-} from '../../../src/geospatial/region-statistics';
+} from '../../../src/gpu-spatial-analysis/region-statistics';
 import {GPUResidentRowSelection} from '../../../src/gpu-tables/residency-arena';
 import {
   getGPUTimeWindowParameterValues,
