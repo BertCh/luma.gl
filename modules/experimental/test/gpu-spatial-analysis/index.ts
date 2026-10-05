@@ -26,3 +26,4 @@ import '../gpu-spatial-analysis/permutation-inference';
 import '../gpu-spatial-analysis/geographic-distribution';
 import '../gpu-spatial-analysis/emerging-hot-spots';
 import '../gpu-spatial-analysis/spatial-regression';
+import './spatial-weights';

@@ -15,6 +15,7 @@ import {
 import {createNullWebGPUDevice} from '../../utils/gpu-contributor-test-utils';
 import {
   computeHotSpotOracle,
+  createDistanceBandWeights,
   computeLocalMoranOracle,
   getConditionalLagMoments,
   getFalseDiscoveryRateLevels,
@@ -22,6 +23,16 @@ import {
 } from './spatial-autocorrelation-oracle';
 
 let serial = 0;
+
+function createWeightsViews(graph: GPUCommandGraph, rows = 10) {
+  const view = <Format extends 'uint32' | 'float32'>(format: Format, length: number) =>
+    createTransientView(graph, `view-${serial++}`, format, length);
+  return {
+    offsets: view('uint32', rows + 1),
+    neighbors: view('uint32', rows * 4),
+    weights: view('float32', rows * 4)
+  };
+}
 
 function createHotSpotProps(
   graph: GPUCommandGraph,
@@ -32,10 +43,9 @@ function createHotSpotProps(
     length: number
   ) => createTransientView(graph, `view-${serial++}`, format, length);
   return {
-    positions: view('float32x2', 10),
+    weights: createWeightsViews(graph),
     values: view('float32', 10),
     parameters: view('float32', GPU_SPATIAL_AUTOCORRELATION_PARAMETER_LENGTH),
-    gridSize: [4, 4],
     zScores: view('float32', 10),
     bins: view('sint32', 10),
     pValues: view('float32', 10),
@@ -52,10 +62,9 @@ function createLocalMoranProps(
     length: number
   ) => createTransientView(graph, `view-${serial++}`, format, length);
   return {
-    positions: view('float32x2', 10),
+    weights: createWeightsViews(graph),
     values: view('float32', 10),
     parameters: view('float32', GPU_SPATIAL_AUTOCORRELATION_PARAMETER_LENGTH),
-    gridSize: [4, 4],
     zScores: view('float32', 10),
     localI: view('float32', 10),
     quadrants: view('uint32', 10),
@@ -76,38 +85,36 @@ function expectHotSpotThrows(
 }
 
 it('getGPUSpatialAutocorrelationParameterValues packs and validates the layout', () => {
-  expect(
-    Array.from(getGPUSpatialAutocorrelationParameterValues({bounds: [0, 1, 2, 3], radius: 4}))
-  ).toEqual([0, 1, 2, 3, 4, Math.fround(0.05), 1, 0, 0, 0, 0, 0]);
+  expect(Array.from(getGPUSpatialAutocorrelationParameterValues())).toEqual([
+    Math.fround(0.05),
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0
+  ]);
   expect(
     Array.from(
       getGPUSpatialAutocorrelationParameterValues({
-        bounds: [0, 0, 1, 1],
-        radius: 0.5,
         significanceLevel: 0.25,
-        weightTransform: 'binary',
         fixedMoments: {count: 100, mean: 2, variance: 4}
       })
     )
-  ).toEqual([0, 0, 1, 1, 0.5, 0.25, 0, 1, 100, 2, 4, 0]);
-  const bounds = [0, 0, 1, 1] as const;
-  expect(() => getGPUSpatialAutocorrelationParameterValues({bounds, radius: 0})).toThrow(/radius/);
-  expect(() => getGPUSpatialAutocorrelationParameterValues({bounds, radius: NaN})).toThrow(
+  ).toEqual([0.25, 1, 100, 2, 4, 0, 0, 0]);
+  expect(() => getGPUSpatialAutocorrelationParameterValues({significanceLevel: NaN})).toThrow(
     /finite/
   );
-  expect(() =>
-    getGPUSpatialAutocorrelationParameterValues({bounds, radius: 1, significanceLevel: 1})
-  ).toThrow(/significanceLevel/);
+  expect(() => getGPUSpatialAutocorrelationParameterValues({significanceLevel: 1})).toThrow(
+    /significanceLevel/
+  );
   expect(() =>
     getGPUSpatialAutocorrelationParameterValues({
-      bounds,
-      radius: 1,
       fixedMoments: {count: 1, mean: 0, variance: 1}
     })
   ).toThrow(/fixedMoments/);
-  expect(() =>
-    getGPUSpatialAutocorrelationParameterValues({bounds, radius: 1}, new Float32Array(4))
-  ).toThrow(/12/);
+  expect(() => getGPUSpatialAutocorrelationParameterValues({}, new Float32Array(4))).toThrow(/8/);
 });
 
 it('getTwoSidedPValue matches known normal tail probabilities', () => {
@@ -131,11 +138,14 @@ it('conditional lag moments equal the exhaustive permutation moments', () => {
   const centered = raw.map(value => value - mean);
   const others = centered.slice(1);
   const sumOfSquares = centered.reduce((sum, value) => sum + value * value, 0);
-  for (const neighborCount of [1, 2, 3, 4]) {
+  // Binary weights on k neighbors, and a weighted case with distinct weights.
+  const weightCases = [[1], [1, 1], [1, 1, 1], [1, 1, 1, 1], [0.5, 2], [0.25, 1, 3]];
+  for (const caseWeights of weightCases) {
+    const neighborCount = caseWeights.length;
     const lags: number[] = [];
     const permute = (prefix: number[], rest: number[]): void => {
       if (prefix.length === neighborCount) {
-        lags.push(prefix.reduce((sum, value) => sum + value, 0));
+        lags.push(prefix.reduce((sum, value, index) => sum + caseWeights[index] * value, 0));
         return;
       }
       for (const [index, value] of rest.entries()) {
@@ -146,65 +156,81 @@ it('conditional lag moments equal the exhaustive permutation moments', () => {
     const expectedMean = lags.reduce((sum, value) => sum + value, 0) / lags.length;
     const expectedVariance =
       lags.reduce((sum, value) => sum + (value - expectedMean) ** 2, 0) / lags.length;
-    const moments = getConditionalLagMoments(centered[0], raw.length, sumOfSquares, neighborCount);
+    const moments = getConditionalLagMoments(
+      centered[0],
+      raw.length,
+      sumOfSquares,
+      caseWeights.reduce((sum, weight) => sum + weight, 0),
+      caseWeights.reduce((sum, weight) => sum + weight * weight, 0)
+    );
     expect(moments.mean).toBeCloseTo(expectedMean, 10);
     expect(moments.variance).toBeCloseTo(expectedVariance, 10);
   }
 });
 
-it('the Gi* oracle equals the uncentered ArcGIS formula', () => {
+it('the Gi* oracle equals the uncentered Ord-Getis formula for weighted neighborhoods', () => {
   const positions = Float32Array.from([0, 0, 1, 0, 2, 0, 5, 5, 6, 5, 9, 9, 0, 1, 7, 7]);
   const values = Float32Array.from([10, 12, 11, 2, 3, 1, 9, 4]);
-  const parameters = {bounds: [-1, -1, 10, 10] as const, radius: 1.5};
-  const oracle = computeHotSpotOracle({positions, values, parameters});
   const count = values.length;
+  const base = createDistanceBandWeights(positions, 1.5);
+  // Distance-decay weights on the same neighborhoods, so S1 differs from W.
+  const weights = {
+    ...base,
+    weights: Float32Array.from(base.weights, (_, slot) => 1 / (1 + (slot % 3)))
+  };
   const mean = values.reduce((sum, value) => sum + value, 0) / count;
   const deviation = Math.sqrt(
     values.reduce((sum, value) => sum + value * value, 0) / count - mean * mean
   );
-  for (let row = 0; row < count; row++) {
-    let weightedSum = 0;
-    let weightSum = 0;
-    for (let other = 0; other < count; other++) {
-      const distance = Math.hypot(
-        positions[other * 2] - positions[row * 2],
-        positions[other * 2 + 1] - positions[row * 2 + 1]
-      );
-      if (distance <= 1.5) {
-        weightedSum += values[other];
-        weightSum++;
+  for (const selfWeight of [1, 0, 0.5]) {
+    const oracle = computeHotSpotOracle({values, weights, selfWeight});
+    for (let row = 0; row < count; row++) {
+      let weightedSum = selfWeight * values[row];
+      let weightSum = selfWeight;
+      let squareSum = selfWeight * selfWeight;
+      for (let slot = weights.offsets[row]; slot < weights.offsets[row + 1]; slot++) {
+        weightedSum += weights.weights[slot] * values[weights.neighbors[slot]];
+        weightSum += weights.weights[slot];
+        squareSum += weights.weights[slot] ** 2;
+      }
+      // esda G_Local(star): (sum w x - X W) / (S sqrt((n S1 - W^2) / (n - 1))).
+      const spread = (count * squareSum - weightSum ** 2) / (count - 1);
+      const expected =
+        spread > 0 ? (weightedSum - mean * weightSum) / (deviation * Math.sqrt(spread)) : NaN;
+      if (Number.isNaN(expected)) {
+        expect(oracle.zScores[row]).toBeNaN();
+      } else {
+        expect(oracle.zScores[row]).toBeCloseTo(expected, 9);
       }
     }
-    const expected =
-      (weightedSum - mean * weightSum) /
-      (deviation * Math.sqrt((count * weightSum - weightSum * weightSum) / (count - 1)));
-    expect(oracle.zScores[row]).toBeCloseTo(expected, 9);
-    expect(oracle.neighborCounts[row]).toBe(weightSum);
   }
 });
 
-it('the local Moran oracle scales I like esda and keeps z invariant to the weight transform', () => {
+it('the local Moran oracle scales I like esda and keeps z invariant to row scaling of the weights', () => {
   const positions = Float32Array.from([0, 0, 1, 0, 2, 0, 5, 5, 6, 5, 9, 9, 0, 1, 7, 7]);
   const values = Float32Array.from([10, 12, 11, 2, 3, 1, 9, 4]);
-  const bounds = [-1, -1, 10, 10] as const;
-  const row = computeLocalMoranOracle({positions, values, parameters: {bounds, radius: 1.5}});
-  const binary = computeLocalMoranOracle({
-    positions,
-    values,
-    parameters: {bounds, radius: 1.5, weightTransform: 'binary'}
-  });
-  expect(binary.zScores).toEqual(row.zScores);
-  // esda: I_i = (n - 1) z_i * sum_j w_ij z_j / sum z^2, with row-standardized weights.
+  const binary = createDistanceBandWeights(positions, 1.5);
+  const standardized = createDistanceBandWeights(positions, 1.5, {rowStandardize: true});
+  const binaryResult = computeLocalMoranOracle({weights: binary, values});
+  const rowResult = computeLocalMoranOracle({weights: standardized, values});
+  for (const [row, zScore] of binaryResult.zScores.entries()) {
+    if (Number.isNaN(zScore)) {
+      expect(rowResult.zScores[row]).toBeNaN();
+    } else {
+      expect(rowResult.zScores[row]).toBeCloseTo(zScore, 5);
+    }
+  }
+  // esda: I_i = (n - 1) z_i * sum_j w_ij z_j / sum z^2 for the weights as given.
   const mean = values.reduce((sum, value) => sum + value, 0) / values.length;
   const centered = Array.from(values, value => value - mean);
   const denominator = centered.reduce((sum, value) => sum + value * value, 0);
-  for (const [index, count] of row.neighborCounts.entries()) {
-    const lag = count > 0 ? row.spatialLag[index] : 0;
-    expect(row.localI[index]).toBeCloseTo(
-      ((values.length - 1) * centered[index] * lag) / denominator,
+  for (const [index, count] of rowResult.neighborCounts.entries()) {
+    expect(rowResult.localI[index]).toBeCloseTo(
+      ((values.length - 1) * centered[index] * rowResult.spatialLag[index]) / denominator,
       10
     );
-    expect(binary.localI[index]).toBeCloseTo(row.localI[index] * count, 10);
+    // A binary lag is the neighbor sum, which is count times the row-standardized lag.
+    expect(binaryResult.spatialLag[index]).toBeCloseTo(rowResult.spatialLag[index] * count, 5);
   }
 });
 
@@ -225,14 +251,24 @@ it('getFalseDiscoveryRateLevels applies the BH step-up rule', () => {
 });
 
 it('GPUHotSpotAnalysis and GPULocalMoran reject invalid properties', () => {
-  expectHotSpotThrows(() => ({gridSize: [0, 4]}), /gridSize/);
+  expectHotSpotThrows(
+    graph => ({
+      weights: {
+        ...createWeightsViews(graph),
+        weights: createTransientView(graph, 'short-w', 'float32', 3)
+      }
+    }),
+    /weights length/
+  );
+  expectHotSpotThrows(() => ({selfWeight: -1}), /selfWeight/);
+  expectHotSpotThrows(() => ({selfWeight: NaN}), /selfWeight/);
   expectHotSpotThrows(
     graph => ({values: createTransientView(graph, 'short-values', 'float32', 9)}),
     /values length/
   );
   expectHotSpotThrows(
-    graph => ({parameters: createTransientView(graph, 'short-parameters', 'float32', 11)}),
-    /parameters must hold 12/
+    graph => ({parameters: createTransientView(graph, 'short-parameters', 'float32', 7)}),
+    /parameters must hold 8/
   );
   expectHotSpotThrows(
     graph => ({mask: createTransientView(graph, 'short-mask', 'uint32', 3)}),
@@ -252,10 +288,12 @@ it('GPUHotSpotAnalysis and GPULocalMoran reject invalid properties', () => {
   );
   expectHotSpotThrows(
     graph => ({
-      positions: createTransientView(graph, 'no-rows', 'float32x2', 0),
-      values: createTransientView(graph, 'no-values', 'float32', 0)
+      weights: {
+        ...createWeightsViews(graph),
+        offsets: createTransientView(graph, 'one', 'uint32', 1)
+      }
     }),
-    /at least one row/
+    /at least two entries/
   );
   const device = createNullWebGPUDevice();
   const graph = new GPUCommandGraph(device);
@@ -280,11 +318,11 @@ it('spatial-autocorrelation contributors create deterministic node IDs', () => {
     const hotSpot = new GPUHotSpotAnalysis(createHotSpotProps(graph, {falseDiscoveryRate}));
     const hotSpotIds = hotSpot.getCommandNodes(graph).map(node => node.id);
     for (const step of [
-      'cell-keys',
-      'cell-total',
+      'validity',
       'block-offsets',
       'value-sum-blocks',
       'value-sum-total',
+      'count-sum-total',
       'moments-mean',
       'center',
       'square-sum-total',
@@ -294,6 +332,7 @@ it('spatial-autocorrelation contributors create deterministic node IDs', () => {
     ]) {
       expect(hotSpotIds).toContain(`hot-spot-analysis-${step}`);
     }
+    expect(hotSpotIds.some(id => id.includes('cell-'))).toBe(false);
     expect(hotSpotIds.includes('hot-spot-analysis-fdr-thresholds')).toBe(falseDiscoveryRate);
     expect(new Set(hotSpotIds).size).toBe(hotSpotIds.length);
 

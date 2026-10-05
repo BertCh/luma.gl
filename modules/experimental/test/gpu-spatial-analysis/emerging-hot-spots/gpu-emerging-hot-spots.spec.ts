@@ -6,6 +6,7 @@ import type {Buffer, Device} from '@luma.gl/core';
 import {GPUCommandGraph} from '@luma.gl/gpgpu/gpu-core';
 import {getWebGPUTestDevice} from '@luma.gl/test-utils';
 import {expect, it} from 'vitest';
+import type {GPUSpatialWeights} from '../../../src/gpu-spatial-analysis/spatial-weights';
 import {GPUParameterBuffer, importGraphBuffer} from '../../../src/utils/gpu-contributor-utils';
 import {
   getGPUEmergingHotSpotParameterValues,
@@ -13,6 +14,13 @@ import {
   GPU_EMERGING_HOT_SPOT_PARAMETER_LENGTH,
   type GPUEmergingHotSpotParameters
 } from '../../../src/gpu-spatial-analysis/emerging-hot-spots';
+import {
+  getGPUNeighborSearchParameterValues,
+  GPUNeighborSearch,
+  GPU_NEIGHBOR_SEARCH_PARAMETER_LENGTH,
+  type GPUNeighborSearchParameters
+} from '../../../src/gpu-spatial-analysis/neighbor-search';
+import {createDistanceBandWeights} from '../spatial-autocorrelation/spatial-autocorrelation-oracle';
 import {
   createInputBuffer,
   createOutputBuffer,
@@ -24,6 +32,7 @@ import {
   computeEmergingHotSpotCells,
   computeEmergingHotSpotMoments,
   computeSpaceTimeGiStar,
+  computeSpaceTimeGiStarWeighted,
   createDesignedCube,
   createSeededRandom,
   type EmergingHotSpotCube
@@ -43,11 +52,26 @@ type Readback = {
   hotSliceCount: number[];
   coldSliceCount: number[];
   globalStatistics: number[];
+  /** Weights mode only: the CSR the contributor read (neighbors/weights untrimmed). */
+  csr: {offsets: number[]; neighbors: number[]; weights: number[]};
 };
+
+/** Weights mode: a hand-built CSR, or a `GPUNeighborSearch` radius search in the same graph. */
+type WeightsSource =
+  | {kind: 'csr'; offsets: Uint32Array; neighbors: Uint32Array; weights: Float32Array}
+  | {
+      kind: 'neighbor-search';
+      positions: Float32Array;
+      parameters: GPUNeighborSearchParameters;
+      capacity: number;
+    };
 
 type Harness = {
   readonly buildCount: number;
-  run(parameters: GPUEmergingHotSpotParameters): Promise<Readback>;
+  run(
+    parameters: GPUEmergingHotSpotParameters,
+    neighborParameters?: GPUNeighborSearchParameters
+  ): Promise<Readback>;
   writeValues(values: Float32Array | Uint32Array): void;
   destroy(): void;
 };
@@ -55,11 +79,13 @@ type Harness = {
 function createHarness(
   device: Device,
   cube: EmergingHotSpotCube & {values: Float32Array | Uint32Array},
-  options: {maximumRadius?: number} = {}
+  options: {maximumRadius?: number; weights?: WeightsSource; selfWeight?: number} = {}
 ): Harness {
   const {gridWidth, gridHeight, sliceCount} = cube;
   const cellCount = gridWidth * gridHeight;
   const binCount = cellCount * sliceCount;
+  const source = options.weights;
+  const capacity = source ? (source.kind === 'csr' ? source.neighbors.length : source.capacity) : 1;
   const format = cube.values instanceof Uint32Array ? 'uint32' : 'float32';
   const valuesBuffer = createInputBuffer(device, cube.values);
   const maskBuffer = cube.mask && createInputBuffer(device, Uint32Array.from(cube.mask));
@@ -70,6 +96,10 @@ function createHarness(
   });
   const outputs: Record<
     | 'giZScores'
+    | 'offsets'
+    | 'neighbors'
+    | 'spatialWeights'
+    | 'overflow'
     | 'trendZ'
     | 'trendP'
     | 'trendS'
@@ -80,6 +110,10 @@ function createHarness(
     Buffer
   > = {
     giZScores: createOutputBuffer(device, binCount),
+    offsets: createOutputBuffer(device, cellCount + 1),
+    neighbors: createOutputBuffer(device, capacity),
+    spatialWeights: createOutputBuffer(device, capacity),
+    overflow: createOutputBuffer(device, 1),
     trendZ: createOutputBuffer(device, cellCount),
     trendP: createOutputBuffer(device, cellCount),
     trendS: createOutputBuffer(device, cellCount),
@@ -89,13 +123,53 @@ function createHarness(
     globalStatistics: createOutputBuffer(device, 4)
   };
   const graph = new GPUCommandGraph(device, {id: 'emerging-hot-spots-test'});
+  const extraBuffers: Buffer[] = [];
+  let neighborParameterBuffer: GPUParameterBuffer<'float32'> | undefined;
+  let weights: GPUSpatialWeights | undefined;
+  if (source) {
+    if (source.kind === 'csr') {
+      outputs.offsets.write(source.offsets);
+      outputs.neighbors.write(source.neighbors);
+      outputs.spatialWeights.write(source.weights);
+    }
+    weights = {
+      offsets: importGraphBuffer(graph, 'offsets', outputs.offsets, 'uint32', cellCount + 1),
+      neighbors: importGraphBuffer(graph, 'neighbors', outputs.neighbors, 'uint32', capacity),
+      weights: importGraphBuffer(
+        graph,
+        'spatial-weights',
+        outputs.spatialWeights,
+        'float32',
+        capacity
+      )
+    };
+    if (source.kind === 'neighbor-search') {
+      const positionsBuffer = createInputBuffer(device, source.positions);
+      extraBuffers.push(positionsBuffer);
+      neighborParameterBuffer = new GPUParameterBuffer(device, {
+        id: 'neighbor-search-parameters',
+        format: 'float32',
+        length: GPU_NEIGHBOR_SEARCH_PARAMETER_LENGTH,
+        values: getGPUNeighborSearchParameterValues(source.parameters)
+      });
+      graph.add(
+        new GPUNeighborSearch({
+          mode: 'radius',
+          gridSize: [16, 16],
+          positions: importGraphBuffer(graph, 'positions', positionsBuffer, 'float32x2', cellCount),
+          parameters: neighborParameterBuffer.importToGraph(graph),
+          weights,
+          overflow: importGraphBuffer(graph, 'overflow', outputs.overflow, 'uint32', 1)
+        })
+      );
+    }
+  }
   const contributor = new GPUEmergingHotSpots({
     values:
       format === 'uint32'
         ? importGraphBuffer(graph, 'values', valuesBuffer, 'uint32', binCount)
         : importGraphBuffer(graph, 'values', valuesBuffer, 'float32', binCount),
-    gridWidth,
-    gridHeight,
+    ...(weights ? {weights, selfWeight: options.selfWeight} : {gridWidth, gridHeight}),
     sliceCount,
     maximumRadius: options.maximumRadius,
     mask: maskBuffer && importGraphBuffer(graph, 'mask', maskBuffer, 'uint32', cellCount),
@@ -121,9 +195,15 @@ function createHarness(
     get buildCount() {
       return buildCount;
     },
-    async run(parameters) {
+    async run(parameters, neighborParameters) {
       parameterBuffer.write(getGPUEmergingHotSpotParameterValues(parameters));
-      for (const buffer of Object.values(outputs)) {
+      if (neighborParameters && neighborParameterBuffer) {
+        neighborParameterBuffer.write(getGPUNeighborSearchParameterValues(neighborParameters));
+      }
+      for (const [name, buffer] of Object.entries(outputs)) {
+        if (source?.kind === 'csr' && ['offsets', 'neighbors', 'spatialWeights'].includes(name)) {
+          continue;
+        }
         buffer.write(new Uint32Array(buffer.byteLength / 4).fill(GARBAGE));
       }
       submitGraph(device, compiled, undefined);
@@ -138,7 +218,12 @@ function createHarness(
         category: await readUint32(outputs.category, cellCount),
         hotSliceCount: await readUint32(outputs.hotSliceCount, cellCount),
         coldSliceCount: await readUint32(outputs.coldSliceCount, cellCount),
-        globalStatistics: await readFloat32(outputs.globalStatistics, 4)
+        globalStatistics: await readFloat32(outputs.globalStatistics, 4),
+        csr: {
+          offsets: await readUint32(outputs.offsets, cellCount + 1),
+          neighbors: await readUint32(outputs.neighbors, capacity),
+          weights: await readFloat32(outputs.spatialWeights, capacity)
+        }
       };
     },
     writeValues(values) {
@@ -148,6 +233,10 @@ function createHarness(
       compiled.destroy();
       valuesBuffer.destroy();
       maskBuffer?.destroy();
+      for (const buffer of extraBuffers) {
+        buffer.destroy();
+      }
+      neighborParameterBuffer?.destroy();
       parameterBuffer.destroy();
       for (const buffer of Object.values(outputs)) {
         buffer.destroy();
@@ -379,3 +468,170 @@ it('GPUEmergingHotSpots writes NaN z for degenerate cubes', async () => {
     harness.destroy();
   }
 }, 60000);
+
+/** CSR of the lattice disc neighborhood (focal cell excluded): the weights-mode twin of a radius. */
+function createLatticeDiscWeights(
+  gridWidth: number,
+  gridHeight: number,
+  radius: number
+): {offsets: Uint32Array; neighbors: Uint32Array; weights: Float32Array} {
+  const offsets = [0];
+  const neighbors: number[] = [];
+  const reach = Math.floor(radius);
+  for (let cell = 0; cell < gridWidth * gridHeight; cell++) {
+    const column = cell % gridWidth;
+    const row = Math.floor(cell / gridWidth);
+    for (
+      let neighborRow = Math.max(row - reach, 0);
+      neighborRow <= Math.min(row + reach, gridHeight - 1);
+      neighborRow++
+    ) {
+      for (
+        let neighborColumn = Math.max(column - reach, 0);
+        neighborColumn <= Math.min(column + reach, gridWidth - 1);
+        neighborColumn++
+      ) {
+        const squared = (neighborRow - row) ** 2 + (neighborColumn - column) ** 2;
+        if (squared <= Math.fround(radius * radius) && squared > 0) {
+          neighbors.push(neighborRow * gridWidth + neighborColumn);
+        }
+      }
+    }
+    offsets.push(neighbors.length);
+  }
+  return {
+    offsets: Uint32Array.from(offsets),
+    neighbors: Uint32Array.from(neighbors),
+    weights: new Float32Array(neighbors.length).fill(1)
+  };
+}
+
+it('GPUEmergingHotSpots weights mode reproduces lattice mode on lattice-disc weights', async () => {
+  const device = await getWebGPUTestDevice();
+  if (!device) {
+    return;
+  }
+  const cube = createSpaceTimeCube(5);
+  for (const radius of [1, 1.5, 2.3]) {
+    const weights = createLatticeDiscWeights(cube.gridWidth, cube.gridHeight, radius);
+    const harness = createHarness(device, cube, {weights: {kind: 'csr', ...weights}});
+    try {
+      for (const frame of [
+        {temporalWindow: 0},
+        {temporalWindow: 3, confidenceLevel: 0.95 as const},
+        {temporalWindow: 23}
+      ]) {
+        const latticeFrame = {...frame, radius};
+        const result = await harness.run(latticeFrame);
+        const label = `radius ${radius} ${JSON.stringify(frame)}`;
+        expectZScoresClose(
+          result.giZScores,
+          computeSpaceTimeGiStar(cube, getGPUEmergingHotSpotParameterValues(latticeFrame)),
+          label
+        );
+        expectCellsMatchOracle(result, cube, latticeFrame, label);
+        expect((await harness.run(latticeFrame)).giZScoreBits).toEqual(result.giZScoreBits);
+      }
+      expect(harness.buildCount).toBe(1);
+    } finally {
+      harness.destroy();
+    }
+  }
+}, 120000);
+
+/** Cells at random points (a stand-in for H3 cell centers): irregular neighborhoods. */
+function createScatteredCube(seed: number, cellCount: number, sliceCount: number) {
+  const random = createSeededRandom(seed);
+  const positions = Float32Array.from({length: cellCount * 2}, () => random() * 100);
+  const values = new Float32Array(cellCount * sliceCount);
+  for (let cell = 0; cell < cellCount; cell++) {
+    const hot = Math.hypot(positions[cell * 2] - 30, positions[cell * 2 + 1] - 60) < 25;
+    for (let slice = 0; slice < sliceCount; slice++) {
+      values[cell * sliceCount + slice] = random() * 2 + (hot ? 4 + slice / 3 : 0);
+    }
+  }
+  values[7] = NaN;
+  const mask = new Uint32Array(cellCount).fill(1);
+  mask[11] = 0;
+  return {
+    positions,
+    cube: {gridWidth: cellCount, gridHeight: 1, sliceCount, values, mask} as EmergingHotSpotCube & {
+      values: Float32Array;
+    }
+  };
+}
+
+it('GPUEmergingHotSpots weights mode matches the weighted oracle on irregular weights', async () => {
+  const device = await getWebGPUTestDevice();
+  if (!device) {
+    return;
+  }
+  const {positions, cube} = createScatteredCube(9, 150, 10);
+  for (const [selfWeight, rowStandardize] of [
+    [1, false],
+    [0, false],
+    [0.5, true]
+  ] as const) {
+    const weights = createDistanceBandWeights(positions, 14, {rowStandardize});
+    const harness = createHarness(device, cube, {
+      weights: {kind: 'csr', ...weights},
+      selfWeight
+    });
+    try {
+      for (const frame of [
+        {temporalWindow: 0},
+        {temporalWindow: 2},
+        {temporalWindow: 9, criticalZ: 1.2}
+      ]) {
+        const result = await harness.run(frame);
+        const label = `self ${selfWeight} standardized ${rowStandardize} ${JSON.stringify(frame)}`;
+        const packed = getGPUEmergingHotSpotParameterValues(frame);
+        const expectedZ = computeSpaceTimeGiStarWeighted(cube, weights, selfWeight, packed);
+        expectZScoresClose(result.giZScores, expectedZ, label);
+        expect(expectedZ.some(z => z >= 1.96)).toBe(true);
+        expectCellsMatchOracle(result, cube, frame, label);
+      }
+    } finally {
+      harness.destroy();
+    }
+  }
+}, 120000);
+
+it('GPUEmergingHotSpots weights mode consumes weights written by GPUNeighborSearch', async () => {
+  const device = await getWebGPUTestDevice();
+  if (!device) {
+    return;
+  }
+  const {positions, cube} = createScatteredCube(21, 150, 10);
+  const harness = createHarness(device, cube, {
+    weights: {
+      kind: 'neighbor-search',
+      positions,
+      parameters: {bounds: [0, 0, 100, 100], radius: 10},
+      capacity: 150 * 150
+    }
+  });
+  try {
+    for (const radius of [10, 18]) {
+      const frame = {temporalWindow: 3};
+      const result = await harness.run(frame, {bounds: [0, 0, 100, 100], radius});
+      const expected = createDistanceBandWeights(positions, radius);
+      const used = result.csr.offsets[150];
+      expect(result.csr.neighbors.slice(0, used), `radius ${radius}`).toEqual(
+        Array.from(expected.neighbors)
+      );
+      const expectedZ = computeSpaceTimeGiStarWeighted(
+        cube,
+        expected,
+        1,
+        getGPUEmergingHotSpotParameterValues(frame)
+      );
+      expectZScoresClose(result.giZScores, expectedZ, `radius ${radius}`);
+      expectCellsMatchOracle(result, cube, frame, `radius ${radius}`);
+      expect(result.category.some(category => category !== 0)).toBe(true);
+    }
+    expect(harness.buildCount).toBe(1);
+  } finally {
+    harness.destroy();
+  }
+}, 120000);

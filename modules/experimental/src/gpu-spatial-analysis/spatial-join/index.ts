@@ -14,3 +14,15 @@ export {GPUNearestFeatureJoin} from './gpu-nearest-feature-join';
 export type {GPUNearestFeatureJoinProps} from './gpu-nearest-feature-join';
 export {GPUBufferSelection} from './gpu-buffer-selection';
 export type {GPUBufferSelectionProps} from './gpu-buffer-selection';
+export {GPUSpatialPredicateJoin} from './gpu-spatial-predicate-join';
+export type {
+  GPUSpatialPredicate,
+  GPUSpatialPredicateJoinProps
+} from './gpu-spatial-predicate-join';
+export type {
+  GPUSpatialJoinGeometry,
+  GPUSpatialJoinLines,
+  GPUSpatialJoinPairs,
+  GPUSpatialJoinPoints,
+  GPUSpatialJoinPolygons
+} from './spatial-join-types';

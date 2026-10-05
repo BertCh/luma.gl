@@ -4,8 +4,6 @@
 
 import {
   createTransientView,
-  GPUGroupAggregation,
-  GPUScan,
   GPUSort,
   validatePackedUint32View,
   validatePackedView,
@@ -15,6 +13,7 @@ import {
 } from '@luma.gl/gpgpu/gpu-core';
 import {createFillNode, createWGSLKernelNode} from '../../utils/wgsl-kernel-nodes';
 import {createSegmentSumNode, getSortKeyBits} from '../../utils/sorted-segment-sums';
+import {validateGPUSpatialWeights, type GPUSpatialWeights} from '../spatial-weights/index';
 import {
   GPU_SPATIAL_AUTOCORRELATION_PARAMETER_LENGTH,
   GPU_SPATIAL_AUTOCORRELATION_STATISTICS_LENGTH
@@ -29,21 +28,16 @@ const INVALID_P_VALUE_KEY = 0x7f800001;
 /** Inputs shared by both spatial-autocorrelation contributors. @internal */
 export type SpatialAutocorrelationInputProps = {
   id: string;
-  positions: GraphDataView<'float32x2'>;
+  weights: GPUSpatialWeights;
   values: GraphDataView<'float32'>;
   parameters: GraphDataView<'float32'>;
-  gridSize: readonly [number, number];
   mask?: GraphDataView<'uint32'>;
   globalStatistics?: GraphDataView<'float32'>;
 };
 
-/** Grid and moment views produced by {@link getSpatialAutocorrelationInputNodes}. @internal */
+/** Moment views produced by {@link getSpatialAutocorrelationInputNodes}. @internal */
 export type SpatialAutocorrelationInputs<Parameters> = {
   nodes: GPUCommandNode<Parameters>[];
-  /** Row indices grouped by cell, ascending row order within each cell. */
-  sortedRows: GraphDataView<'uint32'>;
-  /** `cellCount + 1` exclusive offsets of each cell in `sortedRows`. */
-  cellOffsets: GraphDataView<'uint32'>;
   /**
    * `rows + 4` floats: centered values `x - mean` (quiet NaN for excluded rows) followed by the
    * moments `[n, mean, variance, sumOfSquares]`.
@@ -60,39 +54,25 @@ export function validateSpatialAutocorrelationInputs(
   props: SpatialAutocorrelationInputProps
 ): number {
   const {id} = props;
-  validatePackedView(props.positions, ['float32x2'], `${id} positions`);
+  const rows = validateGPUSpatialWeights(id, props.weights);
   validatePackedView(props.values, ['float32'], `${id} values`);
   validatePackedView(props.parameters, ['float32'], `${id} parameters`);
-  const rows = props.positions.length;
-  if (rows < 1) {
-    throw new Error(`${id} positions must hold at least one row`);
-  }
   if (rows >= 2 ** 24) {
     // Counts and ranks are compared as f32 inside the kernels.
-    throw new Error(`${id} positions must hold fewer than 2^24 rows`);
+    throw new Error(`${id} weights must hold fewer than 2^24 rows`);
   }
   if (props.values.length !== rows) {
-    throw new Error(`${id} values length must equal positions length`);
+    throw new Error(`${id} values length must equal the weights row count`);
   }
   if (props.parameters.length < GPU_SPATIAL_AUTOCORRELATION_PARAMETER_LENGTH) {
     throw new Error(
       `${id} parameters must hold ${GPU_SPATIAL_AUTOCORRELATION_PARAMETER_LENGTH} float32 values`
     );
   }
-  const [columns, gridRows] = props.gridSize;
-  if (
-    !Number.isInteger(columns) ||
-    !Number.isInteger(gridRows) ||
-    columns < 1 ||
-    gridRows < 1 ||
-    columns * gridRows >= 0xffffffff
-  ) {
-    throw new Error(`${id} gridSize must be two positive integers with columns * rows < 2^32 - 1`);
-  }
   if (props.mask) {
     validatePackedUint32View(props.mask, `${id} mask`);
     if (props.mask.length !== rows) {
-      throw new Error(`${id} mask length must equal positions length`);
+      throw new Error(`${id} mask length must equal the weights row count`);
     }
   }
   if (props.globalStatistics) {
@@ -135,89 +115,16 @@ fn getTwoSidedPValue(z: f32) -> f32 {
 `;
 
 /**
- * WGSL shared by every kernel that reads the parameters: the lattice derivation, validity tests,
- * cell lookup, quiet NaN and the two-sided normal p-value. Kernels that include it must bind
- * `parameters` as `array<f32>`.
- *
- * Each encoding derives the active lattice from the per-frame bounds and radius so every cell is at
- * least `radius` wide (with a 2^-10 relative margin against rounding). The 3x3 cell neighborhood
- * of a point then always contains its whole distance band, so the radius can change every frame
- * without rebuilding anything but the per-frame sort.
+ * WGSL shared by every kernel that reads the parameters: `readParameter`, quiet NaN, finiteness
+ * and the two-sided normal p-value. Kernels that include it must bind `parameters` as
+ * `array<f32>`.
  *
  * @internal
  */
-export function getSpatialAutocorrelationSharedWGSL(gridSize: readonly [number, number]): string {
+export function getSpatialAutocorrelationSharedWGSL(): string {
   return /* wgsl */ `
-const COLUMNS: u32 = ${gridSize[0]}u;
-const ROWS: u32 = ${gridSize[1]}u;
-const CELL_COUNT: u32 = ${gridSize[0] * gridSize[1]}u;
-const CELL_MARGIN: f32 = 1.0009765625;
-
-struct Lattice {
-  valid: bool,
-  minimumX: f32,
-  minimumY: f32,
-  maximumX: f32,
-  maximumY: f32,
-  cellWidth: f32,
-  cellHeight: f32,
-  columns: u32,
-  rows: u32,
-  radiusSquared: f32
-}
-
 fn readParameter(slot: u32) -> f32 {
   return parameters[parametersOffset + slot];
-}
-
-fn readLattice() -> Lattice {
-  var lattice: Lattice;
-  lattice.cellWidth = 1.0;
-  lattice.cellHeight = 1.0;
-  lattice.columns = 1u;
-  lattice.rows = 1u;
-  lattice.radiusSquared = 0.0;
-  let minimumX = readParameter(0u);
-  let minimumY = readParameter(1u);
-  let maximumX = readParameter(2u);
-  let maximumY = readParameter(3u);
-  let radius = readParameter(4u);
-  let width = maximumX - minimumX;
-  let height = maximumY - minimumY;
-  let radiusSquared = radius * radius;
-  let cellRadius = radius * CELL_MARGIN;
-  lattice.valid =
-    isFiniteFloat(minimumX) && isFiniteFloat(minimumY) && isFiniteFloat(maximumX) &&
-    isFiniteFloat(maximumY) && isFiniteFloat(radius) && isFiniteFloat(width) &&
-    isFiniteFloat(height) && isFiniteFloat(radiusSquared) && isFiniteFloat(cellRadius) &&
-    radius > 0.0 && width >= 0.0 && height >= 0.0;
-  if (!lattice.valid) {
-    return lattice;
-  }
-  lattice.minimumX = minimumX;
-  lattice.minimumY = minimumY;
-  lattice.maximumX = maximumX;
-  lattice.maximumY = maximumY;
-  lattice.cellWidth = max(width / f32(COLUMNS), cellRadius);
-  lattice.cellHeight = max(height / f32(ROWS), cellRadius);
-  lattice.columns = min(COLUMNS - 1u, u32(floor(width / lattice.cellWidth))) + 1u;
-  lattice.rows = min(ROWS - 1u, u32(floor(height / lattice.cellHeight))) + 1u;
-  lattice.radiusSquared = radiusSquared;
-  return lattice;
-}
-
-fn isPointValid(lattice: Lattice, x: f32, y: f32) -> bool {
-  return lattice.valid && isFiniteFloat(x) && isFiniteFloat(y) &&
-    x >= lattice.minimumX && x <= lattice.maximumX &&
-    y >= lattice.minimumY && y <= lattice.maximumY;
-}
-
-fn getCellColumn(lattice: Lattice, x: f32) -> u32 {
-  return min(u32(floor((x - lattice.minimumX) / lattice.cellWidth)), lattice.columns - 1u);
-}
-
-fn getCellRow(lattice: Lattice, y: f32) -> u32 {
-  return min(u32(floor((y - lattice.minimumY) / lattice.cellHeight)), lattice.rows - 1u);
 }
 
 ${SPATIAL_AUTOCORRELATION_FLOAT_WGSL}
@@ -225,47 +132,36 @@ ${SPATIAL_AUTOCORRELATION_FLOAT_WGSL}
 }
 
 /**
- * WGSL statements that visit, in a fixed order, every included row within the distance band of
- * `(x, y)` (the focus row itself included) and run `action` with `neighbor` (row index) in scope.
+ * WGSL statements that visit, in CSR slot order (ascending neighbor ID), every neighbor of row
+ * `index` that is an included row other than `index` itself, and run `action` with `neighbor`
+ * (row index) and `weight` (`w_ij`) in scope. Requires bindings `offsets`, `neighbors`,
+ * `weights` and `statistics` (whose first `rows` entries are NaN for excluded rows) and the
+ * `ROWS` constant.
  *
- * Cells are visited row-major over the 3x3 neighborhood. The cells of one lattice row are
- * contiguous in `cellOffsets`, so each lattice row is one slot range of `sortedRows`, within which
- * rows ascend by cell and then by row index. The order is therefore independent of GPU scheduling
- * and the per-row sums are bitwise reproducible. Requires bindings `positions`, `sortedRows`,
- * `cellOffsets`, and `lattice`, `x`, `y` locals.
+ * The order is fixed by the weights, so per-row sums are reproducible.
  *
  * @internal
  */
-export function getSpatialAutocorrelationNeighborLoopWGSL(action: string): string {
+export function getSpatialWeightsNeighborLoopWGSL(action: string): string {
   return /* wgsl */ `
-  let column = getCellColumn(lattice, x);
-  let row = getCellRow(lattice, y);
-  let firstColumn = max(column, 1u) - 1u;
-  let lastColumn = min(column + 1u, lattice.columns - 1u);
-  let firstRow = max(row, 1u) - 1u;
-  let lastRow = min(row + 1u, lattice.rows - 1u);
-  for (var cellRow = firstRow; cellRow <= lastRow; cellRow++) {
-    let rowBase = cellRow * lattice.columns;
-    let begin = cellOffsets[cellOffsetsOffset + rowBase + firstColumn];
-    let end = cellOffsets[cellOffsetsOffset + rowBase + lastColumn + 1u];
-    for (var slot = begin; slot < end; slot++) {
-      let neighbor = sortedRows[sortedRowsOffset + slot];
-      let deltaX = positions[positionsOffset + neighbor * 2u] - x;
-      let deltaY = positions[positionsOffset + neighbor * 2u + 1u] - y;
-      if (deltaX * deltaX + deltaY * deltaY <= lattice.radiusSquared) {
-        ${action}
-      }
+  let slotBegin = offsets[offsetsOffset + index];
+  let slotEnd = offsets[offsetsOffset + index + 1u];
+  for (var slot = slotBegin; slot < slotEnd; slot++) {
+    let neighbor = neighbors[neighborsOffset + slot];
+    if (neighbor >= ROWS || neighbor == index || !isFiniteFloat(statistics[statisticsOffset + neighbor])) {
+      continue;
     }
+    let weight = weights[weightsOffset + slot];
+    ${action}
   }`;
 }
 
 /**
- * Builds the shared front end of both contributors: per-row validity and cell keys, the cell index
- * (cell counts, exclusive offsets and a stable sort of rows by cell), and the global moments.
+ * Builds the shared front end of both contributors: per-row validity and the global moments.
  *
  * Moments come from fixed-order two-level workgroup tree sums over the rows (no float atomics):
- * first the mean, then the sum of squared centered values, so the variance never subtracts two
- * large numbers. Fixed moments in the parameters replace both.
+ * first the count and the mean, then the sum of squared centered values, so the variance never
+ * subtracts two large numbers. Fixed moments in the parameters replace both.
  *
  * @internal
  */
@@ -273,24 +169,21 @@ export function getSpatialAutocorrelationInputNodes<Parameters>(
   graph: GPUCommandGraph<Parameters>,
   props: SpatialAutocorrelationInputProps & {operation: string}
 ): SpatialAutocorrelationInputs<Parameters> {
-  const {id, operation, positions, values, parameters, gridSize, mask} = props;
-  const rows = positions.length;
-  const cellCount = gridSize[0] * gridSize[1];
+  const {id, operation, values, parameters, mask} = props;
+  const rows = values.length;
   const blockCount = Math.ceil(rows / BLOCK_ROWS);
-  const sharedWGSL = getSpatialAutocorrelationSharedWGSL(gridSize);
+  const sharedWGSL = getSpatialAutocorrelationSharedWGSL();
   const nodes: GPUCommandNode<Parameters>[] = [];
 
-  const cellKeys = createTransientView(graph, `${id}-cell-keys`, 'uint32', rows);
-  const rowIds = createTransientView(graph, `${id}-row-ids`, 'uint32', rows);
+  const validity = createTransientView(graph, `${id}-validity`, 'uint32', rows);
   const valueContributions = createTransientView(graph, `${id}-value-terms`, 'float32', rows);
-  const cellCounts = createTransientView(graph, `${id}-cell-counts`, 'uint32', cellCount);
-  const cellOffsets = createTransientView(graph, `${id}-cell-offsets`, 'uint32', cellCount + 1);
-  const sortedKeys = createTransientView(graph, `${id}-sorted-keys`, 'uint32', rows);
-  const sortedRows = createTransientView(graph, `${id}-sorted-rows`, 'uint32', rows);
+  const countContributions = createTransientView(graph, `${id}-count-terms`, 'float32', rows);
   const blockOffsets = createTransientView(graph, `${id}-block-offsets`, 'uint32', blockCount + 1);
   const totalOffsets = createTransientView(graph, `${id}-total-offsets`, 'uint32', 2);
   const valuePartials = createTransientView(graph, `${id}-value-partials`, 'float32', blockCount);
   const valueTotal = createTransientView(graph, `${id}-value-total`, 'float32', 1);
+  const countPartials = createTransientView(graph, `${id}-count-partials`, 'float32', blockCount);
+  const countTotal = createTransientView(graph, `${id}-count-total`, 'float32', 1);
   const squareContributions = createTransientView(graph, `${id}-square-terms`, 'float32', rows);
   const squarePartials = createTransientView(graph, `${id}-square-partials`, 'float32', blockCount);
   const squareTotal = createTransientView(graph, `${id}-square-total`, 'float32', 1);
@@ -298,69 +191,27 @@ export function getSpatialAutocorrelationInputNodes<Parameters>(
 
   nodes.push(
     createWGSLKernelNode<Parameters>(graph, {
-      id: `${id}-cell-keys`,
+      id: `${id}-validity`,
       operation,
-      variant: 'cell-keys',
+      variant: 'validity',
       bindings: [
-        {name: 'positions', view: positions, type: 'f32', access: 'read'},
         {name: 'values', view: values, type: 'f32', access: 'read'},
-        {name: 'parameters', view: parameters, type: 'f32', access: 'read'},
         ...(mask
           ? [{name: 'mask', view: mask, type: 'u32' as const, access: 'read' as const}]
           : []),
-        {name: 'cellKeys', view: cellKeys, type: 'u32', access: 'read_write'},
-        {name: 'rowIds', view: rowIds, type: 'u32', access: 'read_write'},
-        {name: 'valueTerms', view: valueContributions, type: 'f32', access: 'read_write'}
+        {name: 'validity', view: validity, type: 'u32', access: 'read_write'},
+        {name: 'valueTerms', view: valueContributions, type: 'f32', access: 'read_write'},
+        {name: 'countTerms', view: countContributions, type: 'f32', access: 'read_write'}
       ],
       invocationCount: rows,
-      declarations: sharedWGSL,
-      body: `let lattice = readLattice();
-  let x = positions[positionsOffset + index * 2u];
-  let y = positions[positionsOffset + index * 2u + 1u];
-  let value = values[valuesOffset + index];
+      declarations: SPATIAL_AUTOCORRELATION_FLOAT_WGSL,
+      body: `let value = values[valuesOffset + index];
   let included = ${mask ? 'mask[maskOffset + index] != 0u' : 'true'};
-  let valid = included && isFiniteFloat(value) && isPointValid(lattice, x, y);
-  var key = CELL_COUNT;
-  if (valid) {
-    key = getCellRow(lattice, y) * lattice.columns + getCellColumn(lattice, x);
-  }
-  cellKeys[cellKeysOffset + index] = key;
-  rowIds[rowIdsOffset + index] = index;
-  valueTerms[valueTermsOffset + index] = select(0.0, value, valid);`
+  let valid = included && isFiniteFloat(value);
+  validity[validityOffset + index] = select(0u, 1u, valid);
+  valueTerms[valueTermsOffset + index] = select(0.0, value, valid);
+  countTerms[countTermsOffset + index] = select(0.0, 1.0, valid);`
     }),
-    // Excluded rows carry the key CELL_COUNT, which the aggregation ignores and the sort puts last.
-    ...new GPUGroupAggregation({
-      id: `${id}-cell-counts`,
-      keys: cellKeys,
-      output: cellCounts
-    }).getCommandNodes(graph),
-    ...new GPUScan({
-      id: `${id}-cell-scan`,
-      input: cellCounts,
-      output: cellOffsets,
-      mode: 'exclusive'
-    }).getCommandNodes(graph),
-    createWGSLKernelNode<Parameters>(graph, {
-      id: `${id}-cell-total`,
-      operation,
-      variant: 'cell-total',
-      bindings: [
-        {name: 'counts', view: cellCounts, type: 'u32', access: 'read'},
-        {name: 'cellOffsets', view: cellOffsets, type: 'u32', access: 'read_write'}
-      ],
-      invocationCount: 1,
-      declarations: `const LAST_CELL: u32 = ${cellCount - 1}u;`,
-      body: `cellOffsets[cellOffsetsOffset + LAST_CELL + 1u] =
-    cellOffsets[cellOffsetsOffset + LAST_CELL] + counts[countsOffset + LAST_CELL];`
-    }),
-    ...new GPUSort({
-      id: `${id}-cell-sort`,
-      keys: cellKeys,
-      values: rowIds,
-      outputKeys: sortedKeys,
-      outputValues: sortedRows,
-      keyBits: getSortKeyBits(cellCount)
-    }).getCommandNodes(graph),
     createWGSLKernelNode<Parameters>(graph, {
       id: `${id}-block-offsets`,
       operation,
@@ -388,12 +239,21 @@ const BLOCK_COUNT: u32 = ${blockCount}u;`,
       blockOffsets,
       totalOffsets
     }),
+    ...getTotalSumNodes<Parameters>(graph, {
+      id: `${id}-count-sum`,
+      operation,
+      input: countContributions,
+      partials: countPartials,
+      output: countTotal,
+      blockOffsets,
+      totalOffsets
+    }),
     createWGSLKernelNode<Parameters>(graph, {
       id: `${id}-moments-mean`,
       operation,
       variant: 'moments-mean',
       bindings: [
-        {name: 'cellOffsets', view: cellOffsets, type: 'u32', access: 'read'},
+        {name: 'countTotal', view: countTotal, type: 'f32', access: 'read'},
         {name: 'valueTotal', view: valueTotal, type: 'f32', access: 'read'},
         {name: 'parameters', view: parameters, type: 'f32', access: 'read'},
         {name: 'statistics', view: statistics, type: 'f32', access: 'read_write'}
@@ -401,11 +261,11 @@ const BLOCK_COUNT: u32 = ${blockCount}u;`,
       invocationCount: 1,
       declarations: `${sharedWGSL}
 const MOMENTS: u32 = ${rows}u;`,
-      body: `var count = f32(cellOffsets[cellOffsetsOffset + CELL_COUNT]);
+      body: `var count = countTotal[countTotalOffset];
   var mean = select(getQuietNaN(index), valueTotal[valueTotalOffset] / count, count >= 1.0);
-  if (readParameter(7u) != 0.0) {
-    count = readParameter(8u);
-    mean = readParameter(9u);
+  if (readParameter(1u) != 0.0) {
+    count = readParameter(2u);
+    mean = readParameter(3u);
   }
   statistics[statisticsOffset + MOMENTS] = count;
   statistics[statisticsOffset + MOMENTS + 1u] = mean;`
@@ -416,14 +276,13 @@ const MOMENTS: u32 = ${rows}u;`,
       variant: 'center',
       bindings: [
         {name: 'values', view: values, type: 'f32', access: 'read'},
-        {name: 'cellKeys', view: cellKeys, type: 'u32', access: 'read'},
+        {name: 'validity', view: validity, type: 'u32', access: 'read'},
         {name: 'statistics', view: statistics, type: 'f32', access: 'read_write'},
         {name: 'squareTerms', view: squareContributions, type: 'f32', access: 'read_write'}
       ],
       invocationCount: rows,
-      declarations: `const CELL_COUNT: u32 = ${cellCount}u;
-const MOMENTS: u32 = ${rows}u;`,
-      body: `let valid = cellKeys[cellKeysOffset + index] < CELL_COUNT;
+      declarations: `const MOMENTS: u32 = ${rows}u;`,
+      body: `let valid = validity[validityOffset + index] != 0u;
   let centered = values[valuesOffset + index] - statistics[statisticsOffset + MOMENTS + 1u];
   // Excluded rows store quiet NaN, which every later kernel reads as "not a focus row".
   statistics[statisticsOffset + index] = select(bitcast<f32>(0x7fc00000u | (index & 0u)), centered, valid);
@@ -464,8 +323,8 @@ const MOMENTS: u32 = ${rows}u;`,
   let mean = statistics[statisticsOffset + MOMENTS + 1u];
   var sumOfSquares = squareTotal[squareTotalOffset];
   var variance = select(getQuietNaN(index), sumOfSquares / count, count >= 1.0);
-  if (readParameter(7u) != 0.0) {
-    variance = readParameter(10u);
+  if (readParameter(1u) != 0.0) {
+    variance = readParameter(4u);
     sumOfSquares = variance * count;
   }
   statistics[statisticsOffset + MOMENTS + 2u] = variance;
@@ -480,7 +339,7 @@ const MOMENTS: u32 = ${rows}u;`,
   }`
     })
   );
-  return {nodes, sortedRows, cellOffsets, statistics};
+  return {nodes, statistics};
 }
 
 /** Two fixed-order tree-sum levels: one workgroup per block of rows, then one over the blocks. */
@@ -549,7 +408,6 @@ export function getFalseDiscoveryRateNodes<Parameters>(
     operation: string;
     zScores: GraphDataView<'float32'>;
     parameters: GraphDataView<'float32'>;
-    gridSize: readonly [number, number];
     levelExpressions: readonly string[];
   }
 ): FalseDiscoveryRateResult<Parameters> {
@@ -621,7 +479,7 @@ export function getFalseDiscoveryRateNodes<Parameters>(
         {name: 'counters', view: counters, type: 'atomic<u32>', access: 'read_write'}
       ],
       invocationCount: rows,
-      declarations: getSpatialAutocorrelationSharedWGSL(props.gridSize),
+      declarations: getSpatialAutocorrelationSharedWGSL(),
       body: `let testedCount = atomicLoad(&counters[countersOffset]);
   let rank = index + 1u;
   if (rank <= testedCount) {

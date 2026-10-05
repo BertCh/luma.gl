@@ -4,12 +4,14 @@
 
 /**
  * Local spatial autocorrelation of San Francisco bike-parking capacity. Each point carries a value
- * column (parking spaces). `GPUHotSpotAnalysis` (Getis-Ord Gi*) and `GPULocalMoran` (LISA) are both
- * compiled once, with and without false discovery rate correction, so the four graphs exist before
- * the first frame. The radius, the Moran significance level, the statistic and the FDR choice are
- * buffer writes or a choice between graphs that are already compiled: the rebuild counter stays 0.
- * The graphs run only when an input changed (the data is static), and `GPUHistogram` counts the
- * classes on the GPU so the only readback is a handful of integers.
+ * column (parking spaces). A `GPUNeighborSearch` distance band writes a spatial-weights CSR, which
+ * `GPUHotSpotAnalysis` (Getis-Ord Gi*) and `GPULocalMoran` (LISA) then consume. The search and both
+ * statistics are compiled once, the statistics with and without false discovery rate correction, so
+ * the five graphs exist before the first frame. The radius, the Moran significance level, the
+ * statistic and the FDR choice are buffer writes or a choice between graphs that are already
+ * compiled: the rebuild counter stays 0. The graphs run only when an input changed (the data is
+ * static), and `GPUHistogram` counts the classes on the GPU so the only readback is a handful of
+ * integers.
  */
 
 import type {Layer} from '@deck.gl/core';
@@ -20,9 +22,12 @@ import {
   type CompiledGPUCommandGraph
 } from '@luma.gl/gpgpu/gpu-core';
 import {
+  getGPUNeighborSearchParameterValues,
   getGPUSpatialAutocorrelationParameterValues,
   GPUHotSpotAnalysis,
   GPULocalMoran,
+  GPUNeighborSearch,
+  GPU_NEIGHBOR_SEARCH_PARAMETER_LENGTH,
   GPU_SPATIAL_AUTOCORRELATION_PARAMETER_LENGTH,
   GPU_SPATIAL_AUTOCORRELATION_STATISTICS_LENGTH
 } from '@luma.gl/experimental/gpu-spatial-analysis';
@@ -38,7 +43,11 @@ import {formatCount, SpatialAnalysisResources} from '../spatial-analysis-resourc
 const GRID_SIZE: readonly [number, number] = [256, 256];
 const GI_BIN_COUNT = 7;
 const MORAN_CLASS_COUNT = 5;
-const SUMMARY_WORDS = GI_BIN_COUNT + GPU_SPATIAL_AUTOCORRELATION_STATISTICS_LENGTH;
+/** Summary words: class counts, global statistics, then the neighbor-search overflow flag. */
+const OVERFLOW_WORD = GI_BIN_COUNT + GPU_SPATIAL_AUTOCORRELATION_STATISTICS_LENGTH;
+const SUMMARY_WORDS = OVERFLOW_WORD + 1;
+/** Neighbor slots reserved per point in the weights CSR (capped at every other point). */
+const SLOTS_PER_ROW = 1024;
 /** A class value no category can take, so negative Gi* bins (large uint32) are never "no data". */
 const NO_DATA_VALUE = 0x7fffffff;
 const HIDDEN: SpatialAnalysisColor = [0, 0, 0, 0];
@@ -102,6 +111,7 @@ export const hotSpotsMode: SpatialAnalysisModeDefinition = {
     let statistic: Statistic = 'gi-star';
     let falseDiscoveryRate = false;
     let radiusMeters = 400;
+    let weightsDirty = true;
     let significanceLevel = 0.05;
     let showNotSignificant = true;
     let dirty = true;
@@ -109,7 +119,18 @@ export const hotSpotsMode: SpatialAnalysisModeDefinition = {
     let readbackPending = false;
     let destroyed = false;
 
+    const capacity = pointCount * Math.min(SLOTS_PER_ROW, Math.max(pointCount - 1, 1));
     const positionsBuffer = resources.createBuffer('positions', parking.positions);
+    // The weights CSR the search writes and both statistics read.
+    const offsetsBuffer = resources.createBuffer('offsets', (pointCount + 1) * 4);
+    const neighborsBuffer = resources.createBuffer('neighbors', capacity * 4);
+    const weightsBuffer = resources.createBuffer('weights', capacity * 4);
+    const overflowBuffer = resources.createBuffer('overflow', 4);
+    const searchParameters = resources.createParameterBuffer(
+      'search-parameters',
+      'float32',
+      GPU_NEIGHBOR_SEARCH_PARAMETER_LENGTH
+    );
     const valuesBuffer = resources.createBuffer('values', parking.spaces);
     const parameters = resources.createParameterBuffer(
       'parameters',
@@ -140,19 +161,41 @@ export const hotSpotsMode: SpatialAnalysisModeDefinition = {
       new GPUReadbackRing(device, {id: 'hot-spots-summary', byteLength: SUMMARY_WORDS * 4})
     );
 
+    const importWeights = (graph: GPUCommandGraph<void>) => ({
+      offsets: importGraphBuffer(graph, 'offsets', offsetsBuffer, 'uint32', pointCount + 1),
+      neighbors: importGraphBuffer(graph, 'neighbors', neighborsBuffer, 'uint32', capacity),
+      weights: importGraphBuffer(graph, 'weights', weightsBuffer, 'float32', capacity)
+    });
+
+    // The distance-band search: radius and bounds are per-frame parameters, so changing the radius
+    // is a buffer write.
+    const searchGraph = new GPUCommandGraph<void>(device, {id: 'hot-spots-neighbor-search'});
+    searchGraph.add(
+      new GPUNeighborSearch({
+        id: 'neighbor-search',
+        mode: 'radius',
+        gridSize: GRID_SIZE,
+        positions: importGraphBuffer(
+          searchGraph,
+          'positions',
+          positionsBuffer,
+          'float32x2',
+          pointCount
+        ),
+        parameters: searchParameters.importToGraph(searchGraph),
+        weights: importWeights(searchGraph),
+        overflow: importGraphBuffer(searchGraph, 'overflow', overflowBuffer, 'uint32', 1)
+      })
+    );
+    const searchCompiled = resources.track(searchGraph.compile());
+
     // FDR is a compile-time option of both contributors, so both settings are compiled up front and the
     // toggle selects between graphs that share one set of output buffers.
     function compileVariant(kind: Statistic, fdr: boolean): Variant {
       const graph = new GPUCommandGraph<void>(device, {
         id: `hot-spots-${kind}${fdr ? '-fdr' : ''}`
       });
-      const positions = importGraphBuffer(
-        graph,
-        'positions',
-        positionsBuffer,
-        'float32x2',
-        pointCount
-      );
+      const weights = importWeights(graph);
       const values = importGraphBuffer(graph, 'values', valuesBuffer, 'float32', pointCount);
       const parameterView = parameters.importToGraph(graph);
       const output = outputs[kind];
@@ -169,10 +212,9 @@ export const hotSpotsMode: SpatialAnalysisModeDefinition = {
         graph.add(
           new GPUHotSpotAnalysis({
             id: 'gi-star',
-            positions,
+            weights,
             values,
             parameters: parameterView,
-            gridSize: GRID_SIZE,
             zScores,
             bins,
             globalStatistics: statistics,
@@ -198,10 +240,9 @@ export const hotSpotsMode: SpatialAnalysisModeDefinition = {
         graph.add(
           new GPULocalMoran({
             id: 'local-moran',
-            positions,
+            weights,
             values,
             parameters: parameterView,
-            gridSize: GRID_SIZE,
             zScores,
             quadrants,
             globalStatistics: statistics,
@@ -229,13 +270,11 @@ export const hotSpotsMode: SpatialAnalysisModeDefinition = {
     const getActiveVariant = () => variants[`${statistic}:${falseDiscoveryRate ? 'fdr' : 'plain'}`];
 
     const writeParameters = () => {
-      parameters.write(
-        getGPUSpatialAutocorrelationParameterValues({
-          bounds,
-          radius: radiusMeters,
-          significanceLevel
-        })
+      searchParameters.write(
+        getGPUNeighborSearchParameterValues({bounds, radius: radiusMeters, weightKind: 'binary'})
       );
+      parameters.write(getGPUSpatialAutocorrelationParameterValues({significanceLevel}));
+      weightsDirty = true;
       dirty = true;
       needsReadback = true;
     };
@@ -324,7 +363,7 @@ export const hotSpotsMode: SpatialAnalysisModeDefinition = {
     const updateLegendNote = () =>
       legendNote.setValue(
         statistic === 'gi-star'
-          ? 'Gi*: binary weights within the radius, the point itself included. Bins are 90/95/99% ' +
+          ? 'Gi*: binary distance-band weights, the point itself included (selfWeight 1). Bins are 90/95/99% ' +
               'two-sided confidence, or BH-FDR corrected.'
           : 'Moran: the point itself excluded, conditional-randomization z-score; quadrants are ' +
               'shown where p is at most the significance level (BH-FDR corrected if on).'
@@ -337,6 +376,7 @@ export const hotSpotsMode: SpatialAnalysisModeDefinition = {
     const outlierReadout = context.controls.addReadout('Outliers LH / HL');
     const insignificantReadout = context.controls.addReadout('Not significant');
     const momentsReadout = context.controls.addReadout('Mean / std. deviation');
+    const capacityReadout = context.controls.addReadout('Neighbor capacity');
     context.controls.addReadout('Data', parking.attribution);
 
     writeParameters();
@@ -360,6 +400,12 @@ export const hotSpotsMode: SpatialAnalysisModeDefinition = {
         destinationBuffer: ticket.buffer,
         destinationOffset: GI_BIN_COUNT * 4,
         size: GPU_SPATIAL_AUTOCORRELATION_STATISTICS_LENGTH * 4
+      });
+      commandEncoder.copyBufferToBuffer({
+        sourceBuffer: overflowBuffer,
+        destinationBuffer: ticket.buffer,
+        destinationOffset: OVERFLOW_WORD * 4,
+        size: 4
       });
       ticket.markEncoded({byteOffset: 0, byteLength: SUMMARY_WORDS * 4});
       readbackPending = true;
@@ -386,6 +432,9 @@ export const hotSpotsMode: SpatialAnalysisModeDefinition = {
         const mean = floats[GI_BIN_COUNT + 1];
         const deviation = floats[GI_BIN_COUNT + 3];
         momentsReadout.setValue(`${mean.toFixed(2)} / ${deviation.toFixed(2)} spaces`);
+        capacityReadout.setValue(
+          words[OVERFLOW_WORD] === 0 ? 'ok' : 'overflow: neighbors truncated, reduce the radius'
+        );
       } catch {
         // The ring or device was destroyed while the read was in flight.
         needsReadback = true;
@@ -395,10 +444,17 @@ export const hotSpotsMode: SpatialAnalysisModeDefinition = {
     };
 
     const instance: SpatialAnalysisModeInstance = {
-      getCompiledGraphs: () => Object.values(variants).map(variant => variant.compiled),
+      getCompiledGraphs: () => [
+        searchCompiled,
+        ...Object.values(variants).map(variant => variant.compiled)
+      ],
       encode(commandEncoder, frame) {
         // The data is static: results only change with the radius, level, statistic or FDR.
         if (dirty || frame.frameIndex < 2) {
+          if (weightsDirty || frame.frameIndex < 2) {
+            searchCompiled.encode(commandEncoder, {parameters: undefined});
+            weightsDirty = false;
+          }
           getActiveVariant().compiled.encode(commandEncoder, {parameters: undefined});
           dirty = false;
         }

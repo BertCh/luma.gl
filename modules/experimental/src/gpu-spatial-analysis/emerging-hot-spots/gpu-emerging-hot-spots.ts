@@ -11,12 +11,17 @@ import {
   type GraphDataView
 } from '@luma.gl/gpgpu/gpu-core';
 import type {GPUCommandNodeProducer} from '@luma.gl/gpgpu/gpu-core';
-import {createWGSLKernelNode, type WGSLKernelBinding} from '../../utils/wgsl-kernel-nodes';
+import {
+  createWGSLKernelNode,
+  getWGSLFloatLiteral,
+  type WGSLKernelBinding
+} from '../../utils/wgsl-kernel-nodes';
 import {
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph
 } from '../../utils/gpu-contributor-utils';
 import {SPATIAL_AUTOCORRELATION_FLOAT_WGSL} from '../spatial-autocorrelation/spatial-autocorrelation-kernels';
+import {validateGPUSpatialWeights, type GPUSpatialWeights} from '../spatial-weights/index';
 import {
   GPU_EMERGING_HOT_SPOT_MAXIMUM_RADIUS,
   GPU_EMERGING_HOT_SPOT_MAXIMUM_SLICE_COUNT,
@@ -32,25 +37,42 @@ const MAXIMUM_BIN_COUNT = 2 ** 31 - 1;
 /**
  * Properties for {@link GPUEmergingHotSpots}.
  *
- * Per-frame (no rebuild or recompile): the contents of `values`, `mask` and `parameters` (radius,
- * temporal window, critical z, trend significance and persistence thresholds). Compile-time:
- * `gridWidth`, `gridHeight`, `sliceCount`, `maximumRadius`, the value format, and which optional
- * views are present.
+ * The spatial neighborhood is either a regular lattice (`gridWidth`, `gridHeight` and the
+ * per-frame `radius`) or arbitrary spatial `weights` over the cells; exactly one of the two.
+ *
+ * Per-frame (no rebuild or recompile): the contents of `values`, `mask`, `weights` and `parameters`
+ * (radius in lattice mode, temporal window, critical z, trend significance and persistence
+ * thresholds). Compile-time: `gridWidth`, `gridHeight`, `sliceCount`, `maximumRadius`,
+ * `selfWeight`, the value format, and which optional views are present.
  */
 export type GPUEmergingHotSpotsProps = {
   /** Prefix for generated node and transient IDs. Defaults to `'emerging-hot-spots'`. */
   id?: string;
   /**
    * Dense space-time cube indexed `cell * sliceCount + slice` with `cell = row * gridWidth +
-   * column`, the layout of `GPUTemporalReduction` output. A NaN bin is missing and excluded. A
+   * column` in lattice mode and `cell` = the weights row in weights mode, the layout of `GPUTemporalReduction` output. A NaN bin is missing and excluded. A
    * `uint32` view (for example `GPUTemporalReduction` `counts`) is read as `f32(count)`, every bin
    * valid.
    */
   values: GraphDataView<'float32'> | GraphDataView<'uint32'>;
-  /** Lattice width in cells. Compile-time. */
-  gridWidth: number;
-  /** Lattice height in cells. Compile-time. */
-  gridHeight: number;
+  /** Lattice mode: lattice width in cells. Compile-time. Set together with `gridHeight`. */
+  gridWidth?: number;
+  /** Lattice mode: lattice height in cells. Compile-time. Set together with `gridWidth`. */
+  gridHeight?: number;
+  /**
+   * Weights mode: square self-join spatial weights over the cells (rows of `weights` are cells),
+   * for example `GPUNeighborSearch` output over H3 cell centers, optionally transformed. Used as
+   * given. The spatial neighborhood of a bin is the cell's CSR row (weights `w_ij`) and the cell
+   * itself (`selfWeight`), each over the current slice and the `temporalWindow` previous slices,
+   * every bin with temporal weight 1. Fewer than 2^24 cells. The per-frame `radius` is ignored.
+   * Exclusive with `gridWidth` and `gridHeight`.
+   */
+  weights?: GPUSpatialWeights;
+  /**
+   * Weights mode: weight `w_ii` of the focal cell's own bins (the star of Gi*). Compile-time,
+   * finite and non-negative. Defaults to `1`. Lattice mode always uses the focal cell with weight 1.
+   */
+  selfWeight?: number;
   /** Slices per cell, at most `GPU_EMERGING_HOT_SPOT_MAXIMUM_SLICE_COUNT`. Compile-time. */
   sliceCount: number;
   /**
@@ -58,7 +80,7 @@ export type GPUEmergingHotSpotsProps = {
    * per-frame radii are clamped. Compile-time. Defaults to 4.
    */
   maximumRadius?: number;
-  /** Optional per-cell mask (`cellCount` rows): zero excludes every bin of the cell. */
+  /** Optional per-cell mask (one row per cell): zero excludes every bin of the cell. */
   mask?: GraphDataView<'uint32'>;
   /**
    * Per-frame parameters: a packed float32 view of at least
@@ -91,11 +113,17 @@ export type GPUEmergingHotSpotsProps = {
  * 1. Global `n`, mean and population standard deviation of valid bins: per-block sums over fixed
  *    1024-bin blocks, then one invocation adding the block partials in order (mean first, then
  *    the sum of squared deviations).
- * 2. Space-time Gi* per bin with binary weights, the focal bin included:
+ * 2. Space-time Gi* per bin, the focal bin included. Lattice mode uses binary weights:
  *    `z = sum_j (x_j - X) / (S * sqrt((n k - k^2) / (n - 1)))` where `j` covers valid bins of cells
  *    whose lattice offset satisfies `dx^2 + dy^2 <= radius^2` in the current and `temporalWindow`
  *    previous slices, and `k` counts them. Neighbors are visited in a fixed order (offset rows,
  *    offset columns, ascending slice). z is NaN for a missing bin, `n < 2`, `S = 0` or `k >= n`.
+ *    Weights mode generalizes to `z = sum_j w_j (x_j - X) / (S * sqrt((n S1 - W^2) / (n - 1)))`
+ *    with `W = sum_j w_j` and `S1 = sum_j w_j^2` over the same bins, where `w_j` is the spatial
+ *    weight of the bin's cell (`selfWeight` for the focal cell, CSR weight for the others; the
+ *    temporal weight is 1) and neighbors are visited in CSR slot order, then ascending slice.
+ *    z is NaN for a missing bin, `n < 2`, `S = 0` or `n S1 <= W^2`. With binary weights the two
+ *    modes agree.
  * 3. Per-cell Mann-Kendall test over the finite z series (NaN slices skipped): `S = sum_{i<j}
  *    sign(z_j - z_i)` in exact integers, `Var = [n(n-1)(2n+5) - sum_t t(t-1)(2t+5)] / 18` with tie
  *    groups of exactly equal f32 values, `z = (S - sign(S)) / sqrt(Var)` (0 when `S = 0` or
@@ -124,7 +152,7 @@ export type GPUEmergingHotSpotsProps = {
  * Determinism: all sums run in a fixed order and integer statistics are exact, so repeated
  * encodings on one device are bitwise identical.
  *
- * Non-goals: permutation p-values, FDR correction, irregular neighborhoods, time-step intervals
+ * Non-goals: permutation p-values, FDR correction, building the weights, time-step intervals
  * other than one slice.
  */
 export class GPUEmergingHotSpots implements GPUCommandNodeProducer {
@@ -138,12 +166,20 @@ export class GPUEmergingHotSpots implements GPUCommandNodeProducer {
     this.props = props;
     const id = this.id;
     const {gridWidth, gridHeight, sliceCount} = props;
+    const hasLattice = gridWidth !== undefined || gridHeight !== undefined;
+    if (hasLattice === (props.weights !== undefined)) {
+      throw new Error(`${id} needs exactly one of gridWidth and gridHeight, or weights`);
+    }
+    const selfWeight = props.selfWeight ?? 1;
+    if (!Number.isFinite(selfWeight) || selfWeight < 0) {
+      throw new Error(`${id} selfWeight must be a finite number >= 0`);
+    }
     for (const [name, value] of [
-      ['gridWidth', gridWidth],
-      ['gridHeight', gridHeight],
+      ['gridWidth', hasLattice ? gridWidth : 1],
+      ['gridHeight', hasLattice ? gridHeight : 1],
       ['sliceCount', sliceCount]
     ] as const) {
-      if (!Number.isInteger(value) || value < 1) {
+      if (value === undefined || !Number.isInteger(value) || value < 1) {
         throw new Error(`${id} ${name} must be a positive integer`);
       }
     }
@@ -152,10 +188,15 @@ export class GPUEmergingHotSpots implements GPUCommandNodeProducer {
         `${id} sliceCount must be at most ${GPU_EMERGING_HOT_SPOT_MAXIMUM_SLICE_COUNT}`
       );
     }
-    const cellCount = gridWidth * gridHeight;
+    const cellCount = props.weights
+      ? validateGPUSpatialWeights(id, props.weights)
+      : gridWidth! * gridHeight!;
+    if (cellCount >= 2 ** 24) {
+      throw new Error(`${id} must have fewer than 2^24 cells`);
+    }
     const binCount = cellCount * sliceCount;
     if (binCount > MAXIMUM_BIN_COUNT) {
-      throw new Error(`${id} gridWidth * gridHeight * sliceCount must be below 2^31`);
+      throw new Error(`${id} cellCount * sliceCount must be below 2^31`);
     }
     const maximumRadius = props.maximumRadius ?? 4;
     if (
@@ -169,7 +210,7 @@ export class GPUEmergingHotSpots implements GPUCommandNodeProducer {
     }
     validatePackedView(props.values, ['float32', 'uint32'], `${id} values`);
     if (props.values.length !== binCount) {
-      throw new Error(`${id} values length must equal gridWidth * gridHeight * sliceCount`);
+      throw new Error(`${id} values length must equal cellCount * sliceCount`);
     }
     validatePackedView(props.parameters, ['float32'], `${id} parameters`);
     if (props.parameters.length < GPU_EMERGING_HOT_SPOT_PARAMETER_LENGTH) {
@@ -180,7 +221,7 @@ export class GPUEmergingHotSpots implements GPUCommandNodeProducer {
     if (props.mask) {
       validatePackedUint32View(props.mask, `${id} mask`);
       if (props.mask.length !== cellCount) {
-        throw new Error(`${id} mask length must equal gridWidth * gridHeight`);
+        throw new Error(`${id} mask length must equal the cell count`);
       }
     }
     validatePackedView(props.giZScores, ['float32'], `${id} giZScores`);
@@ -202,7 +243,7 @@ export class GPUEmergingHotSpots implements GPUCommandNodeProducer {
       ['coldSliceCount', props.coldSliceCount]
     ] as const) {
       if (view.length !== cellCount) {
-        throw new Error(`${id} ${name} length must equal gridWidth * gridHeight`);
+        throw new Error(`${id} ${name} length must equal the cell count`);
       }
     }
     if (props.globalStatistics) {
@@ -225,7 +266,14 @@ export class GPUEmergingHotSpots implements GPUCommandNodeProducer {
         props.coldSliceCount,
         props.globalStatistics
       ],
-      [props.values, props.parameters, props.mask]
+      [
+        props.values,
+        props.parameters,
+        props.mask,
+        props.weights?.offsets,
+        props.weights?.neighbors,
+        props.weights?.weights
+      ]
     );
   }
 
@@ -234,11 +282,17 @@ export class GPUEmergingHotSpots implements GPUCommandNodeProducer {
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
     const {id, props} = this;
-    const {values, mask, parameters, giZScores, gridWidth, gridHeight, sliceCount} = props;
+    const {values, mask, parameters, giZScores, weights, sliceCount} = props;
+    const gridWidth = props.gridWidth ?? 1;
+    const gridHeight = props.gridHeight ?? 1;
+    const selfWeight = props.selfWeight ?? 1;
     validateGraphViewsBelongToGraph(id, graph, [
       values,
       mask,
       parameters,
+      weights?.offsets,
+      weights?.neighbors,
+      weights?.weights,
       giZScores,
       props.trendZ,
       props.trendP,
@@ -249,7 +303,7 @@ export class GPUEmergingHotSpots implements GPUCommandNodeProducer {
       props.globalStatistics
     ]);
     const maximumRadius = props.maximumRadius ?? 4;
-    const cellCount = gridWidth * gridHeight;
+    const cellCount = weights ? weights.offsets.length - 1 : gridWidth * gridHeight;
     const binCount = cellCount * sliceCount;
     const blockCount = Math.ceil(binCount / BIN_BLOCK);
     const valueType = values.format === 'uint32' ? 'u32' : 'f32';
@@ -278,6 +332,7 @@ const SLICE_COUNT: u32 = ${sliceCount}u;
 const BIN_COUNT: u32 = ${binCount}u;
 const BIN_BLOCK: u32 = ${BIN_BLOCK}u;
 const MAXIMUM_RADIUS: f32 = ${maximumRadius}.0;
+const SELF_WEIGHT: f32 = ${getWGSLFloatLiteral(selfWeight)};
 ${SPATIAL_AUTOCORRELATION_FLOAT_WGSL}
 
 fn readValue(bin: u32) -> f32 {
@@ -310,6 +365,57 @@ fn isBinValid(bin: u32, cell: u32) -> bool {
       type: 'f32',
       access
     });
+    const weightsBindings: WGSLKernelBinding[] = weights
+      ? [
+          {name: 'offsets', view: weights.offsets, type: 'u32', access: 'read'},
+          {name: 'neighbors', view: weights.neighbors, type: 'u32', access: 'read'},
+          {name: 'weights', view: weights.weights, type: 'f32', access: 'read'}
+        ]
+      : [];
+    const weightsGiBody = `let cell = index / SLICE_COUNT;
+  let slice = index % SLICE_COUNT;
+  var zScore = getQuietNaN(index);
+  let rawWindow = parameters[parametersOffset + 1u];
+  let count = statistics[statisticsOffset];
+  let mean = statistics[statisticsOffset + 1u];
+  let variance = statistics[statisticsOffset + 2u];
+  let deviation = statistics[statisticsOffset + 3u];
+  if (isBinValid(index, cell) && isFiniteFloat(rawWindow) && rawWindow >= 0.0) {
+    let windowSize = u32(min(floor(rawWindow), f32(SLICE_COUNT - 1u)));
+    let firstSlice = slice - min(windowSize, slice);
+    var weightedSum = 0.0;
+    var weightSum = 0.0;
+    var squareSum = 0.0;
+    // The focal cell has weight SELF_WEIGHT; its CSR row never lists the cell itself.
+    for (var neighborSlice = firstSlice; SELF_WEIGHT != 0.0 && neighborSlice <= slice; neighborSlice++) {
+      let neighborBin = cell * SLICE_COUNT + neighborSlice;
+      if (isBinValid(neighborBin, cell)) {
+        weightedSum += SELF_WEIGHT * (readValue(neighborBin) - mean);
+        weightSum += SELF_WEIGHT;
+        squareSum += SELF_WEIGHT * SELF_WEIGHT;
+      }
+    }
+    for (var slot = offsets[offsetsOffset + cell]; slot < offsets[offsetsOffset + cell + 1u]; slot++) {
+      let neighborCell = neighbors[neighborsOffset + slot];
+      if (neighborCell >= CELL_COUNT || neighborCell == cell) {
+        continue;
+      }
+      let weight = weights[weightsOffset + slot];
+      for (var neighborSlice = firstSlice; neighborSlice <= slice; neighborSlice++) {
+        let neighborBin = neighborCell * SLICE_COUNT + neighborSlice;
+        if (isBinValid(neighborBin, neighborCell)) {
+          weightedSum += weight * (readValue(neighborBin) - mean);
+          weightSum += weight;
+          squareSum += weight * weight;
+        }
+      }
+    }
+    let spread = (count * squareSum - weightSum * weightSum) / (count - 1.0);
+    if (count >= 2.0 && variance > 0.0 && spread > 0.0 && isFiniteFloat(spread)) {
+      zScore = weightedSum / (deviation * sqrt(spread));
+    }
+  }
+  giZScores[giZScoresOffset + index] = zScore;`;
     const nodes: GPUCommandNode<Parameters>[] = [];
 
     nodes.push(
@@ -441,6 +547,7 @@ fn isBinValid(bin: u32, cell: u32) -> bool {
           valuesBinding,
           ...maskBindings,
           parametersBinding,
+          ...weightsBindings,
           statisticsBinding('read'),
           {
             name: 'giZScores',
@@ -451,7 +558,9 @@ fn isBinValid(bin: u32, cell: u32) -> bool {
         ],
         invocationCount: binCount,
         declarations,
-        body: `let cell = index / SLICE_COUNT;
+        body: weights
+          ? weightsGiBody
+          : `let cell = index / SLICE_COUNT;
   let slice = index % SLICE_COUNT;
   var zScore = getQuietNaN(index);
   let rawRadius = parameters[parametersOffset];

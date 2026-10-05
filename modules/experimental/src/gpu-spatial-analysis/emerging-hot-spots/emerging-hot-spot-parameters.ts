@@ -70,11 +70,12 @@ export const GPU_EMERGING_HOT_SPOT_CRITICAL_Z_SCORES: Readonly<Record<string, nu
  */
 export type GPUEmergingHotSpotParameters = {
   /**
-   * Spatial neighborhood radius in lattice cells. Cell `(dx, dy)` offsets with
+   * Lattice mode: spatial neighborhood radius in lattice cells. Cell `(dx, dy)` offsets with
    * `dx * dx + dy * dy <= radius * radius` are neighbors (the focal cell included, so `0` is the
-   * focal cell alone). Clamped to the compile-time `maximumRadius`.
+   * focal cell alone). Clamped to the compile-time `maximumRadius`. Ignored in weights mode.
+   * Defaults to `0`.
    */
-  radius: number;
+  radius?: number;
   /** Temporal window `k >= 0`: neighbors span the current slice and the `k` previous slices. */
   temporalWindow: number;
   /** Confidence level of hot and cold bins: `0.9`, `0.95` or `0.99`. Defaults to `0.9`. */
@@ -110,7 +111,8 @@ export function getGPUEmergingHotSpotParameterValues(
       `Emerging hot spot target must hold ${GPU_EMERGING_HOT_SPOT_PARAMETER_LENGTH} elements`
     );
   }
-  const {radius, temporalWindow} = parameters;
+  const {temporalWindow} = parameters;
+  const radius = parameters.radius ?? 0;
   if (!Number.isFinite(radius) || radius < 0) {
     throw new Error('Emerging hot spot radius must be a finite number >= 0');
   }

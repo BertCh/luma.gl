@@ -238,8 +238,25 @@ export type {
   GPUNeighborSearchWeightKind
 } from './neighbor-search/index';
 
-export {validateGPUSpatialWeights} from './spatial-weights/index';
-export type {GPUSpatialWeights} from './spatial-weights/index';
+export {
+  GPU_LATTICE_WEIGHTS_MAXIMUM_RADIUS,
+  GPUContiguityWeights,
+  GPULatticeWeights,
+  GPUSpatialLag,
+  GPUSpatialWeightsTransform,
+  validateGPUSpatialWeights
+} from './spatial-weights/index';
+export type {
+  GPUContiguityCriterion,
+  GPUContiguityWeightsProps,
+  GPULatticeCriterion,
+  GPULatticeWeightsProps,
+  GPUSpatialLagProps,
+  GPUSpatialWeights,
+  GPUSpatialWeightsKernel,
+  GPUSpatialWeightsTransformOperation,
+  GPUSpatialWeightsTransformProps
+} from './spatial-weights/index';
 
 export {
   getGPUPermutationParameterValues,
@@ -355,7 +372,8 @@ export {
   GPU_SPATIAL_JOIN_NO_FEATURE,
   GPUBufferSelection,
   GPUNearestFeatureJoin,
-  GPUPointInPolygonJoin
+  GPUPointInPolygonJoin,
+  GPUSpatialPredicateJoin
 } from './spatial-join/index';
 export type {
   GPUBufferSelectionProps,
@@ -363,7 +381,14 @@ export type {
   GPUNearestFeaturePoints,
   GPUNearestFeatureSegments,
   GPUNearestFeatureSource,
-  GPUPointInPolygonJoinProps
+  GPUPointInPolygonJoinProps,
+  GPUSpatialJoinGeometry,
+  GPUSpatialJoinLines,
+  GPUSpatialJoinPairs,
+  GPUSpatialJoinPoints,
+  GPUSpatialJoinPolygons,
+  GPUSpatialPredicate,
+  GPUSpatialPredicateJoinProps
 } from './spatial-join/index';
 
 export {

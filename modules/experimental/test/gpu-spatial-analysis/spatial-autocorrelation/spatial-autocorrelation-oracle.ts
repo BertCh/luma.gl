@@ -11,12 +11,24 @@ import {
 
 const {fround} = Math;
 
+/** Host-side CSR spatial weights, the CPU twin of `GPUSpatialWeights`. */
+export type OracleWeights = {
+  /** `rows + 1` exclusive row offsets. */
+  offsets: Uint32Array;
+  /** Neighbor row IDs, ascending within each row. */
+  neighbors: Uint32Array;
+  /** Weight per slot. */
+  weights: Float32Array;
+};
+
 /** Inputs of the CPU oracle; mirrors the GPU contributors' views. */
 export type SpatialAutocorrelationOracleInput = {
-  positions: Float32Array;
+  weights: OracleWeights;
   values: Float32Array;
   mask?: Uint32Array;
-  parameters: GPUSpatialAutocorrelationParameters;
+  parameters?: GPUSpatialAutocorrelationParameters;
+  /** Gi* only: weight `w_ii` of the focal row. Defaults to 1. */
+  selfWeight?: number;
 };
 
 /** Global moments used by both statistics. */
@@ -87,40 +99,76 @@ export function getTwoSidedPValue(zScore: number): number {
   return Math.min(t * Math.exp(exponent), 1);
 }
 
-/** Whether row `row` takes part in the analysis (mask, finite value, finite in-bounds position). */
+/** Whether each row takes part in the analysis (mask nonzero and finite value). */
 export function getIncludedRows(input: SpatialAutocorrelationOracleInput): boolean[] {
-  const [minX, minY, maxX, maxY] = input.parameters.bounds.map(fround);
-  const radius = fround(input.parameters.radius);
-  const validLattice =
-    radius > 0 && Number.isFinite(radius) && maxX - minX >= 0 && maxY - minY >= 0;
-  return Array.from(input.values, (value, row) => {
-    const x = input.positions[row * 2];
-    const y = input.positions[row * 2 + 1];
-    return (
-      validLattice &&
-      (input.mask ? input.mask[row] !== 0 : true) &&
-      Number.isFinite(value) &&
-      Number.isFinite(x) &&
-      Number.isFinite(y) &&
-      x >= minX &&
-      x <= maxX &&
-      y >= minY &&
-      y <= maxY
-    );
-  });
+  return Array.from(
+    input.values,
+    (value, row) => (input.mask ? input.mask[row] !== 0 : true) && Number.isFinite(value)
+  );
 }
 
-/** The f32 distance-band test the WGSL evaluates. */
-export function isWithinRadius(
+/**
+ * Brute-force distance-band weights with the same f32 distance test as `GPUNeighborSearch`: row `i`
+ * lists every row `j != i` with `|p_i - p_j| <= radius`, ascending. Optionally row-standardized
+ * (`1 / k`, rounded to f32 like the GPU) or with a custom weight per pair.
+ */
+export function createDistanceBandWeights(
   positions: Float32Array,
-  row: number,
-  other: number,
-  radius: number
-): boolean {
-  const deltaX = fround(positions[other * 2] - positions[row * 2]);
-  const deltaY = fround(positions[other * 2 + 1] - positions[row * 2 + 1]);
+  radius: number,
+  options: {rowStandardize?: boolean} = {}
+): OracleWeights {
+  const rows = positions.length / 2;
+  const offsets = [0];
+  const neighbors: number[] = [];
+  const weights: number[] = [];
   const radiusSquared = fround(fround(radius) * fround(radius));
-  return fround(fround(deltaX * deltaX) + fround(deltaY * deltaY)) <= radiusSquared;
+  for (let row = 0; row < rows; row++) {
+    const first = neighbors.length;
+    for (let other = 0; other < rows; other++) {
+      const deltaX = fround(positions[other * 2] - positions[row * 2]);
+      const deltaY = fround(positions[other * 2 + 1] - positions[row * 2 + 1]);
+      if (
+        other !== row &&
+        fround(fround(deltaX * deltaX) + fround(deltaY * deltaY)) <= radiusSquared
+      ) {
+        neighbors.push(other);
+        weights.push(1);
+      }
+    }
+    if (options.rowStandardize) {
+      const count = neighbors.length - first;
+      for (let slot = first; slot < neighbors.length; slot++) {
+        weights[slot] = fround(1 / count);
+      }
+    }
+    offsets.push(neighbors.length);
+  }
+  return {
+    offsets: Uint32Array.from(offsets),
+    neighbors: Uint32Array.from(neighbors),
+    weights: Float32Array.from(weights)
+  };
+}
+
+/**
+ * Included neighbors of `row` (other rows that are included) with their weights, in slot order,
+ * plus the sums `W = sum w`, `S1 = sum w^2` the statistics need.
+ */
+export function getIncludedNeighbors(
+  input: SpatialAutocorrelationOracleInput,
+  included: boolean[],
+  row: number
+): {neighbors: number[]; weights: number[]} {
+  const {offsets, neighbors, weights} = input.weights;
+  const result = {neighbors: [] as number[], weights: [] as number[]};
+  for (let slot = offsets[row]; slot < offsets[row + 1]; slot++) {
+    const neighbor = neighbors[slot];
+    if (neighbor !== row && included[neighbor]) {
+      result.neighbors.push(neighbor);
+      result.weights.push(weights[slot]);
+    }
+  }
+  return result;
 }
 
 /** Double-precision two-pass moments over included rows, or the fixed moments when given. */
@@ -128,7 +176,7 @@ export function getOracleMoments(
   input: SpatialAutocorrelationOracleInput,
   included: boolean[]
 ): SpatialAutocorrelationOracleMoments {
-  const fixed = input.parameters.fixedMoments;
+  const fixed = input.parameters?.fixedMoments;
   if (fixed) {
     return {
       count: fixed.count,
@@ -205,7 +253,10 @@ export function getFalseDiscoveryRateMargin(
   return margin;
 }
 
-/** Brute-force Getis-Ord Gi* oracle in double precision with the GPU's f32 neighbor test. */
+/**
+ * Brute-force Getis-Ord Gi* oracle in double precision: the Ord-Getis z-score for arbitrary weights
+ * `z = sum w (x - X) / (S sqrt((n S1 - W^2) / (n - 1)))` with the focal weight `selfWeight`.
+ */
 export function computeHotSpotOracle(
   input: SpatialAutocorrelationOracleInput,
   options: {falseDiscoveryRate?: boolean} = {}
@@ -213,6 +264,7 @@ export function computeHotSpotOracle(
   const rows = input.values.length;
   const included = getIncludedRows(input);
   const moments = getOracleMoments(input, included);
+  const selfWeight = input.selfWeight ?? 1;
   const zScores = new Array<number>(rows).fill(NaN);
   const neighborCounts = new Array<number>(rows).fill(0);
   const standardDeviation = Math.sqrt(moments.variance);
@@ -220,19 +272,20 @@ export function computeHotSpotOracle(
     if (!included[row]) {
       continue;
     }
-    let neighborSum = 0;
-    let neighborCount = 0;
-    for (let other = 0; other < rows; other++) {
-      if (included[other] && isWithinRadius(input.positions, row, other, input.parameters.radius)) {
-        neighborSum += input.values[other] - moments.mean;
-        neighborCount++;
-      }
+    const {neighbors, weights} = getIncludedNeighbors(input, included, row);
+    let weightedSum = selfWeight * (input.values[row] - moments.mean);
+    let weightSum = selfWeight;
+    let squareSum = selfWeight * selfWeight;
+    for (const [slot, neighbor] of neighbors.entries()) {
+      weightedSum += weights[slot] * (input.values[neighbor] - moments.mean);
+      weightSum += weights[slot];
+      squareSum += weights[slot] * weights[slot];
     }
-    neighborCounts[row] = neighborCount;
+    neighborCounts[row] = neighbors.length + (selfWeight !== 0 ? 1 : 0);
     const {count} = moments;
-    const spread = (neighborCount * (count - neighborCount)) / (count - 1);
+    const spread = (count * squareSum - weightSum * weightSum) / (count - 1);
     if (count >= 2 && moments.variance > 0 && spread > 0) {
-      zScores[row] = neighborSum / (standardDeviation * Math.sqrt(spread));
+      zScores[row] = weightedSum / (standardDeviation * Math.sqrt(spread));
     }
   }
   const pValues = zScores.map(zScore =>
@@ -254,8 +307,8 @@ export function getUncorrectedHotSpotLevel(zScore: number): number {
 }
 
 /**
- * Brute-force local Moran oracle in double precision with the GPU's f32 neighbor test and the
- * conditional-randomization analytic moments.
+ * Brute-force local Moran oracle in double precision with the conditional-randomization analytic
+ * moments, for weights used as given.
  */
 export function computeLocalMoranOracle(
   input: SpatialAutocorrelationOracleInput,
@@ -264,8 +317,7 @@ export function computeLocalMoranOracle(
   const rows = input.values.length;
   const included = getIncludedRows(input);
   const moments = getOracleMoments(input, included);
-  const significanceLevel = input.parameters.significanceLevel ?? 0.05;
-  const rowStandardized = (input.parameters.weightTransform ?? 'row') === 'row';
+  const significanceLevel = input.parameters?.significanceLevel ?? 0.05;
   const zScores = new Array<number>(rows).fill(NaN);
   const localI = new Array<number>(rows).fill(NaN);
   const spatialLag = new Array<number>(rows).fill(NaN);
@@ -275,36 +327,27 @@ export function computeLocalMoranOracle(
       continue;
     }
     const centered = input.values[row] - moments.mean;
-    let neighborSum = 0;
-    let neighborCount = 0;
-    for (let other = 0; other < rows; other++) {
-      if (
-        other !== row &&
-        included[other] &&
-        isWithinRadius(input.positions, row, other, input.parameters.radius)
-      ) {
-        neighborSum += input.values[other] - moments.mean;
-        neighborCount++;
-      }
+    const {neighbors, weights} = getIncludedNeighbors(input, included, row);
+    let lag = 0;
+    let weightSum = 0;
+    let squareSum = 0;
+    for (const [slot, neighbor] of neighbors.entries()) {
+      lag += weights[slot] * (input.values[neighbor] - moments.mean);
+      weightSum += weights[slot];
+      squareSum += weights[slot] * weights[slot];
     }
-    neighborCounts[row] = neighborCount;
-    spatialLag[row] = neighborCount > 0 ? neighborSum / neighborCount : 0;
-    const weightedLag = rowStandardized ? spatialLag[row] : neighborSum;
-    localI[row] = ((moments.count - 1) * centered * weightedLag) / moments.sumOfSquares;
+    neighborCounts[row] = neighbors.length;
+    spatialLag[row] = lag;
+    localI[row] = ((moments.count - 1) * centered * lag) / moments.sumOfSquares;
     const {mean, variance} = getConditionalLagMoments(
       centered,
       moments.count,
       moments.sumOfSquares,
-      neighborCount
+      weightSum,
+      squareSum
     );
-    if (
-      moments.count - 1 >= 2 &&
-      centered !== 0 &&
-      neighborCount > 0 &&
-      neighborCount < moments.count - 1 &&
-      variance > 0
-    ) {
-      const lagZ = (neighborSum - mean) / Math.sqrt(variance);
+    if (moments.count - 1 >= 2 && centered !== 0 && neighbors.length > 0 && variance > 0) {
+      const lagZ = (lag - mean) / Math.sqrt(variance);
       zScores[row] = centered < 0 ? -lagZ : lagZ;
     }
   }
@@ -321,22 +364,23 @@ export function computeLocalMoranOracle(
 }
 
 /**
- * Exact mean and variance of `L = sum of k randomly placed centered values` when the other
- * `count - 1` values (centered values summing to `-centered`) are permuted over the other
- * locations (sampling without replacement).
+ * Exact mean and variance of `L = sum_j w_j c_pi(j)` when the other `count - 1` centered values
+ * (summing to `-centered`) are permuted over the other locations (sampling without replacement):
+ * `E[L] = W mu`, `Var[L] = sigma^2 (N S1 - W^2) / (N - 1)` with `W = sum w`, `S1 = sum w^2`.
  */
 export function getConditionalLagMoments(
   centered: number,
   count: number,
   sumOfSquares: number,
-  neighborCount: number
+  weightSum: number,
+  squareSum: number
 ): {mean: number; variance: number} {
   const others = count - 1;
   const otherMean = -centered / others;
   const otherVariance = (sumOfSquares - centered * centered) / others - otherMean * otherMean;
   return {
-    mean: neighborCount * otherMean,
-    variance: (otherVariance * neighborCount * (others - neighborCount)) / (others - 1)
+    mean: weightSum * otherMean,
+    variance: (otherVariance * (others * squareSum - weightSum * weightSum)) / (others - 1)
   };
 }
 

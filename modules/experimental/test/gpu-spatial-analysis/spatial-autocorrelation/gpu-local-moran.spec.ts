@@ -11,11 +11,13 @@ import {
 import {
   computeLocalMoranOracle,
   createAutocorrelatedScene,
+  createDistanceBandWeights,
   createSeededRandom,
   getFalseDiscoveryRateLevels,
   getFalseDiscoveryRateMargin,
   getQuadrant,
-  type LocalMoranOracleResult
+  type LocalMoranOracleResult,
+  type OracleWeights
 } from './spatial-autocorrelation-oracle';
 import {
   createSpatialAutocorrelationHarness,
@@ -33,12 +35,18 @@ const CENTERED_GUARD = 1e-3;
 const BOUNDS = [-1, -1, 101, 101] as const;
 const RADII = [0.8, 3, 7.5, 15, 40] as const;
 
+function toCsr(weights: OracleWeights) {
+  return {kind: 'csr' as const, ...weights};
+}
+
 function expectMatchesOracle(
   result: SpatialAutocorrelationReadback,
   oracle: LocalMoranOracleResult,
   oracleValues: Float32Array,
   significanceLevel: number,
-  label: string
+  label: string,
+  /** Unstandardized weights sum `k` terms, so f32 rounding of the mean grows with `k`. */
+  unstandardized = false
 ): void {
   expect(result.neighborCounts, label).toEqual(oracle.neighborCounts);
   expect(result.globalStatistics[0], label).toBe(oracle.moments.count);
@@ -56,12 +64,15 @@ function expectMatchesOracle(
     if (!isClose(result.pValues[row], oracle.pValues[row], 1e-5, 2e-3)) {
       throw new Error(`${label}: row ${row} p ${result.pValues[row]} != ${oracle.pValues[row]}`);
     }
-    if (!isClose(result.spatialLag[row], oracle.spatialLag[row], 2e-4, 1e-3)) {
+    const scale = unstandardized ? Math.max(1, oracle.neighborCounts[row]) : 1;
+    if (!isClose(result.spatialLag[row], oracle.spatialLag[row], 2e-4 * scale, 1e-3)) {
       throw new Error(
         `${label}: row ${row} lag ${result.spatialLag[row]} != ${oracle.spatialLag[row]}`
       );
     }
-    if (!isClose(result.localI[row], oracle.localI[row], 2e-3 + (nearMean ? 1e-3 : 0), 2e-3)) {
+    if (
+      !isClose(result.localI[row], oracle.localI[row], (2e-3 + (nearMean ? 1e-3 : 0)) * scale, 2e-3)
+    ) {
       throw new Error(`${label}: row ${row} I ${result.localI[row]} != ${oracle.localI[row]}`);
     }
     // Quadrants are compared where neither the p-value nor a sign sits on a decision boundary.
@@ -80,40 +91,101 @@ function expectMatchesOracle(
   expect(comparedQuadrants, label).toBeGreaterThan(oracle.zScores.length * 0.95);
 }
 
-it('GPULocalMoran matches the oracle across per-frame radius, level, and weight changes without rebuilding', async () => {
+it('GPULocalMoran matches the oracle for hand-built CSR weights, levels and new values without rebuilding', async () => {
   const device = await getWebGPUTestDevice();
   if (!device) {
     return;
   }
   const scene = createAutocorrelatedScene(11, 2000, RADII);
-  const frames: GPUSpatialAutocorrelationParameters[] = [
-    ...RADII.map(radius => ({bounds: BOUNDS, radius})),
-    {bounds: BOUNDS, radius: 7.5, significanceLevel: 0.01},
-    {bounds: BOUNDS, radius: 7.5, weightTransform: 'binary'},
-    {bounds: [10, 10, 70, 90], radius: 5}
-  ];
+  for (const [radius, rowStandardize] of [
+    [0.8, true],
+    [3, true],
+    [7.5, true],
+    [7.5, false],
+    [15, true],
+    [40, true]
+  ] as const) {
+    const weights = createDistanceBandWeights(scene.positions, radius, {rowStandardize});
+    const harness = createSpatialAutocorrelationHarness(device, {
+      contributor: 'local-moran',
+      scene,
+      weights: toCsr(weights)
+    });
+    try {
+      const label = `radius ${radius} standardized ${rowStandardize}`;
+      for (const significanceLevel of radius === 7.5 ? [0.05, 0.01] : [0.05]) {
+        const parameters = {significanceLevel};
+        const oracle = computeLocalMoranOracle({...scene, weights, parameters});
+        const result = await harness.run(parameters);
+        expectMatchesOracle(
+          result,
+          oracle,
+          scene.values,
+          significanceLevel,
+          label,
+          !rowStandardize
+        );
+        expect((await harness.run(parameters)).zScoreBits).toEqual(result.zScoreBits);
+        if (radius === 7.5 && rowStandardize && significanceLevel === 0.05) {
+          const {HIGH_HIGH, LOW_LOW} = GPU_LOCAL_MORAN_QUADRANT;
+          expect(oracle.quadrants.some(quadrant => quadrant === HIGH_HIGH)).toBe(true);
+          expect(oracle.quadrants.some(quadrant => quadrant === LOW_LOW)).toBe(true);
+        }
+      }
+      if (radius === 7.5 && rowStandardize) {
+        const shifted = scene.values.map((value, row) => value * 0.5 + (row % 7));
+        harness.writeValues(shifted);
+        expectMatchesOracle(
+          await harness.run(),
+          computeLocalMoranOracle({...scene, values: shifted, weights}),
+          shifted,
+          0.05,
+          'new values'
+        );
+        expect(harness.buildCount).toBe(1);
+      }
+    } finally {
+      harness.destroy();
+    }
+  }
+}, 240000);
+
+it('GPULocalMoran consumes weights written by GPUNeighborSearch in the same graph', async () => {
+  const device = await getWebGPUTestDevice();
+  if (!device) {
+    return;
+  }
+  const scene = createAutocorrelatedScene(17, 2000, [3, 7.5, 12]);
   const harness = createSpatialAutocorrelationHarness(device, {
     contributor: 'local-moran',
     scene,
-    parameters: frames[0]
+    weights: {
+      kind: 'neighbor-search',
+      positions: scene.positions,
+      parameters: {bounds: BOUNDS, radius: 3, rowStandardize: true},
+      capacity: 2000 * 160
+    }
   });
   try {
-    for (const frame of frames) {
-      const oracle = computeLocalMoranOracle({...scene, parameters: frame});
-      const result = await harness.run(frame);
-      expectMatchesOracle(
-        result,
-        oracle,
-        scene.values,
-        frame.significanceLevel ?? 0.05,
-        `radius ${frame.radius}`
+    for (const [radius, rowStandardize] of [
+      [3, true],
+      [7.5, true],
+      [12, false]
+    ] as const) {
+      const result = await harness.run(undefined, {bounds: BOUNDS, radius, rowStandardize});
+      const expected = createDistanceBandWeights(scene.positions, radius, {rowStandardize});
+      expect(result.csr.neighbors, `radius ${radius} neighbors`).toEqual(
+        Array.from(expected.neighbors)
       );
-      expect((await harness.run(frame)).zScoreBits).toEqual(result.zScoreBits);
+      const weights = {
+        offsets: Uint32Array.from(result.csr.offsets),
+        neighbors: Uint32Array.from(result.csr.neighbors),
+        weights: Float32Array.from(result.csr.weights)
+      };
+      const oracle = computeLocalMoranOracle({...scene, weights});
+      expectMatchesOracle(result, oracle, scene.values, 0.05, `radius ${radius}`, !rowStandardize);
+      expect(oracle.quadrants.some(quadrant => quadrant !== 0)).toBe(true);
     }
-    const oracle = computeLocalMoranOracle({...scene, parameters: frames[2]});
-    const {HIGH_HIGH, LOW_LOW} = GPU_LOCAL_MORAN_QUADRANT;
-    expect(oracle.quadrants.some(quadrant => quadrant === HIGH_HIGH)).toBe(true);
-    expect(oracle.quadrants.some(quadrant => quadrant === LOW_LOW)).toBe(true);
     expect(harness.buildCount).toBe(1);
   } finally {
     harness.destroy();
@@ -142,15 +214,16 @@ it('GPULocalMoran finds a planted spatial outlier and honors the mask and fixed 
   const random = createSeededRandom(9);
   const mask = Uint32Array.from({length: values.length}, () => (random() < 0.7 ? 1 : 0));
   mask[outlier] = 1;
-  const parameters: GPUSpatialAutocorrelationParameters = {bounds: BOUNDS, radius: 8};
+  const parameters: GPUSpatialAutocorrelationParameters = {};
+  const weights = createDistanceBandWeights(scene.positions, 8, {rowStandardize: true});
   const harness = createSpatialAutocorrelationHarness(device, {
     contributor: 'local-moran',
-    scene: {positions: scene.positions, values, mask},
-    parameters
+    scene: {values, mask},
+    weights: toCsr(weights)
   });
   try {
     const result = await harness.run(parameters);
-    const oracle = computeLocalMoranOracle({positions: scene.positions, values, mask, parameters});
+    const oracle = computeLocalMoranOracle({weights, values, mask, parameters});
     expectMatchesOracle(result, oracle, values, 0.05, 'masked');
     expect(result.quadrants[outlier]).toBe(GPU_LOCAL_MORAN_QUADRANT.LOW_HIGH);
     expect(result.localI[outlier]).toBeLessThan(0);
@@ -163,12 +236,7 @@ it('GPULocalMoran finds a planted spatial outlier and honors the mask and fixed 
     const fixed = await harness.run(fixedParameters);
     expectMatchesOracle(
       fixed,
-      computeLocalMoranOracle({
-        positions: scene.positions,
-        values,
-        mask,
-        parameters: fixedParameters
-      }),
+      computeLocalMoranOracle({weights, values, mask, parameters: fixedParameters}),
       values,
       0.05,
       'fixed moments'
@@ -185,15 +253,13 @@ it('GPULocalMoran applies Benjamini-Hochberg FDR to quadrant significance', asyn
     return;
   }
   const scene = createAutocorrelatedScene(41, 2500, [6]);
+  const weights = createDistanceBandWeights(scene.positions, 6, {rowStandardize: true});
   for (const significanceLevel of [0.05, 0.1]) {
-    const parameters: GPUSpatialAutocorrelationParameters = {
-      bounds: BOUNDS,
-      radius: 6,
-      significanceLevel
-    };
+    const parameters: GPUSpatialAutocorrelationParameters = {significanceLevel};
     const harness = createSpatialAutocorrelationHarness(device, {
       contributor: 'local-moran',
       scene,
+      weights: toCsr(weights),
       parameters,
       falseDiscoveryRate: true
     });

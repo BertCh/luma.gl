@@ -112,6 +112,58 @@ export function computeSpaceTimeGiStar(
   return result;
 }
 
+/**
+ * Pass 2 in weights mode: space-time Gi* z per bin with spatial weights `w_ij` over cells (the
+ * cell's own bins weigh `selfWeight`), temporal weight 1 over the current and `temporalWindow`
+ * previous slices, and the Ord-Getis form `sum w (x - X) / (S sqrt((n S1 - W^2) / (n - 1)))`.
+ * `cube.gridWidth * cube.gridHeight` is the cell count.
+ */
+export function computeSpaceTimeGiStarWeighted(
+  cube: EmergingHotSpotCube,
+  weights: {offsets: ArrayLike<number>; neighbors: ArrayLike<number>; weights: ArrayLike<number>},
+  selfWeight: number,
+  packed: ArrayLike<number>
+): Float64Array {
+  const {sliceCount} = cube;
+  const moments = computeEmergingHotSpotMoments(cube);
+  const windowSize = Math.min(Math.floor(packed[1]), sliceCount - 1);
+  const result = new Float64Array(cube.values.length).fill(NaN);
+  for (let bin = 0; bin < cube.values.length; bin++) {
+    if (!isOracleBinValid(cube, bin)) {
+      continue;
+    }
+    const cell = Math.floor(bin / sliceCount);
+    const slice = bin % sliceCount;
+    const spatial = [{cell, weight: selfWeight}];
+    for (let slot = weights.offsets[cell]; slot < weights.offsets[cell + 1]; slot++) {
+      if (weights.neighbors[slot] !== cell) {
+        spatial.push({cell: weights.neighbors[slot], weight: weights.weights[slot]});
+      }
+    }
+    let weightedSum = 0;
+    let weightSum = 0;
+    let squareSum = 0;
+    for (const {cell: neighborCell, weight} of spatial) {
+      if (weight === 0) {
+        continue;
+      }
+      for (let t = Math.max(slice - windowSize, 0); t <= slice; t++) {
+        const neighborBin = neighborCell * sliceCount + t;
+        if (isOracleBinValid(cube, neighborBin)) {
+          weightedSum += weight * (cube.values[neighborBin] - moments.mean);
+          weightSum += weight;
+          squareSum += weight * weight;
+        }
+      }
+    }
+    const spread = (moments.count * squareSum - weightSum ** 2) / (moments.count - 1);
+    if (moments.count >= 2 && moments.variance > 0 && spread > 0) {
+      result[bin] = weightedSum / (moments.standardDeviation * Math.sqrt(spread));
+    }
+  }
+  return result;
+}
+
 /** Result of {@link computeMannKendall}. */
 export type MannKendallResult = {
   /** Finite sample count. */

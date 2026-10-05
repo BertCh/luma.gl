@@ -102,6 +102,43 @@ it('getGPUEmergingHotSpotParameterValues packs and validates the layout', () => 
 
 it('GPUEmergingHotSpots validates its inputs', () => {
   expectThrows(() => ({gridWidth: 0}), /gridWidth/);
+  expectThrows(() => ({gridHeight: undefined}), /gridHeight/);
+  expectThrows(() => ({gridWidth: undefined, gridHeight: undefined}), /exactly one/);
+  expectThrows(
+    graph => ({
+      weights: {
+        offsets: createTransientView(graph, 'o', 'uint32', 13),
+        neighbors: createTransientView(graph, 'n', 'uint32', 20),
+        weights: createTransientView(graph, 'w', 'float32', 20)
+      }
+    }),
+    /exactly one/
+  );
+  expectThrows(
+    graph => ({
+      gridWidth: undefined,
+      gridHeight: undefined,
+      selfWeight: -1,
+      weights: {
+        offsets: createTransientView(graph, 'o', 'uint32', 13),
+        neighbors: createTransientView(graph, 'n', 'uint32', 20),
+        weights: createTransientView(graph, 'w', 'float32', 20)
+      }
+    }),
+    /selfWeight/
+  );
+  expectThrows(
+    graph => ({
+      gridWidth: undefined,
+      gridHeight: undefined,
+      weights: {
+        offsets: createTransientView(graph, 'o', 'uint32', 11),
+        neighbors: createTransientView(graph, 'n', 'uint32', 20),
+        weights: createTransientView(graph, 'w', 'float32', 20)
+      }
+    }),
+    /values length/
+  );
   expectThrows(() => ({sliceCount: 1.5}), /sliceCount/);
   expectThrows(() => ({sliceCount: 257}), /sliceCount must be at most 256/);
   expectThrows(() => ({maximumRadius: 33}), /maximumRadius/);
@@ -277,3 +314,23 @@ it('the designed cube is classified as designed by the double precision oracle',
 function designedLength(designed: unknown[]): number {
   return designed.length;
 }
+
+it('GPUEmergingHotSpots weights mode creates the same pipeline over weights bindings', () => {
+  const device = createNullWebGPUDevice();
+  const graph = new GPUCommandGraph(device);
+  const view = <Format extends 'uint32' | 'float32'>(format: Format, length: number) =>
+    createTransientView(graph, `weights-mode-${serial++}`, format, length);
+  const base = createProps(graph, {gridWidth: undefined, gridHeight: undefined});
+  const contributor = new GPUEmergingHotSpots({
+    ...base,
+    weights: {
+      offsets: view('uint32', 13),
+      neighbors: view('uint32', 30),
+      weights: view('float32', 30)
+    }
+  });
+  const ids = contributor.getCommandNodes(graph).map(node => node.id);
+  expect(ids).toContain('emerging-hot-spots-gi-star');
+  expect(new Set(ids).size).toBe(ids.length);
+  device.destroy();
+});

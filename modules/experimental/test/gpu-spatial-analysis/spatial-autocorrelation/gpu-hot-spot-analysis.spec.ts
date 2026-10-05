@@ -12,10 +12,12 @@ import {
 import {
   computeHotSpotOracle,
   createAutocorrelatedScene,
+  createDistanceBandWeights,
   createSeededRandom,
   getFalseDiscoveryRateLevels,
   getFalseDiscoveryRateMargin,
-  type HotSpotOracleResult
+  type HotSpotOracleResult,
+  type OracleWeights
 } from './spatial-autocorrelation-oracle';
 import {
   createSpatialAutocorrelationHarness,
@@ -30,6 +32,10 @@ const Z_RELATIVE_TOLERANCE = 1e-3;
 const BIN_GUARD = 1e-2;
 
 const BOUNDS = [-1, -1, 101, 101] as const;
+
+function toCsr(weights: OracleWeights) {
+  return {kind: 'csr' as const, ...weights};
+}
 const RADII = [0.8, 3, 7.5, 15, 40] as const;
 
 function expectMatchesOracle(
@@ -63,42 +69,98 @@ function expectMatchesOracle(
   expect(comparedBins, label).toBeGreaterThan(oracle.zScores.length * 0.95);
 }
 
-it('GPUHotSpotAnalysis matches the Gi* oracle across per-frame radius and bounds changes without rebuilding', async () => {
+it('GPUHotSpotAnalysis matches the Gi* oracle for hand-built CSR weights, self weights and new values without rebuilding', async () => {
   const device = await getWebGPUTestDevice();
   if (!device) {
     return;
   }
   const scene = createAutocorrelatedScene(7, 2000, RADII);
-  const frames: GPUSpatialAutocorrelationParameters[] = [
-    ...RADII.map(radius => ({bounds: BOUNDS, radius})),
-    // A tighter extent excludes rows outside it.
-    {bounds: [20, 20, 80, 80], radius: 7.5}
-  ];
+  let significantRows = 0;
+  for (const [radius, selfWeight, rowStandardize] of [
+    [0.8, 1, false],
+    [3, 1, false],
+    [7.5, 1, false],
+    [7.5, 0, false],
+    [15, 1, false],
+    [7.5, 0.5, true],
+    [40, 1, false]
+  ] as const) {
+    const weights = createDistanceBandWeights(scene.positions, radius, {rowStandardize});
+    const harness = createSpatialAutocorrelationHarness(device, {
+      contributor: 'hot-spot',
+      scene,
+      weights: toCsr(weights),
+      selfWeight
+    });
+    try {
+      const input = {...scene, weights, selfWeight};
+      const label = `radius ${radius} self ${selfWeight} standardized ${rowStandardize}`;
+      const result = await harness.run();
+      expectMatchesOracle(result, computeHotSpotOracle(input), label);
+      significantRows += computeHotSpotOracle(input).bins.filter(bin => bin !== 0).length;
+      // Repeated encodings are bitwise identical.
+      expect((await harness.run()).zScoreBits).toEqual(result.zScoreBits);
+      if (radius === 7.5 && selfWeight === 1) {
+        // The scene has real hot and cold spots.
+        const oracle = computeHotSpotOracle(input);
+        expect(oracle.bins.some(bin => bin === 3)).toBe(true);
+        expect(oracle.bins.some(bin => bin === -3)).toBe(true);
+        // New values in the same compiled graph.
+        const shifted = scene.values.map((value, row) => value * 0.5 + (row % 7));
+        harness.writeValues(shifted);
+        expectMatchesOracle(
+          await harness.run(),
+          computeHotSpotOracle({...input, values: shifted}),
+          'new values'
+        );
+        expect(harness.buildCount).toBe(1);
+      }
+    } finally {
+      harness.destroy();
+    }
+  }
+  expect(significantRows).toBeGreaterThan(0);
+}, 240000);
+
+it('GPUHotSpotAnalysis consumes weights written by GPUNeighborSearch in the same graph', async () => {
+  const device = await getWebGPUTestDevice();
+  if (!device) {
+    return;
+  }
+  const scene = createAutocorrelatedScene(13, 2000, [3, 7.5, 12]);
   const harness = createSpatialAutocorrelationHarness(device, {
     contributor: 'hot-spot',
     scene,
-    parameters: frames[0]
+    weights: {
+      kind: 'neighbor-search',
+      positions: scene.positions,
+      parameters: {bounds: BOUNDS, radius: 3},
+      capacity: 2000 * 160
+    }
   });
   try {
-    let significantRows = 0;
-    for (const frame of frames) {
-      const oracle = computeHotSpotOracle({...scene, parameters: frame});
-      const result = await harness.run(frame);
-      expectMatchesOracle(result, oracle, `radius ${frame.radius}`);
-      significantRows += oracle.bins.filter(bin => bin !== 0).length;
-      // Repeated encodings are bitwise identical.
-      expect((await harness.run(frame)).zScoreBits).toEqual(result.zScoreBits);
+    // The search radius and the weight transform change per frame without a rebuild.
+    for (const [radius, rowStandardize] of [
+      [3, false],
+      [7.5, false],
+      [12, false],
+      [7.5, true]
+    ] as const) {
+      const result = await harness.run(undefined, {bounds: BOUNDS, radius, rowStandardize});
+      const expected = createDistanceBandWeights(scene.positions, radius, {rowStandardize});
+      expect(result.csr.offsets, `radius ${radius} offsets`).toEqual(Array.from(expected.offsets));
+      expect(result.csr.neighbors, `radius ${radius} neighbors`).toEqual(
+        Array.from(expected.neighbors)
+      );
+      const weights = {
+        offsets: Uint32Array.from(result.csr.offsets),
+        neighbors: Uint32Array.from(result.csr.neighbors),
+        weights: Float32Array.from(result.csr.weights)
+      };
+      const oracle = computeHotSpotOracle({...scene, weights});
+      expectMatchesOracle(result, oracle, `radius ${radius} standardized ${rowStandardize}`);
+      expect(oracle.bins.some(bin => bin !== 0)).toBe(true);
     }
-    // The scene has real hot and cold spots.
-    const oracle = computeHotSpotOracle({...scene, parameters: frames[2]});
-    expect(oracle.bins.some(bin => bin === 3)).toBe(true);
-    expect(oracle.bins.some(bin => bin === -3)).toBe(true);
-    expect(significantRows).toBeGreaterThan(0);
-    // New values in the same compiled graph.
-    const shifted = scene.values.map((value, row) => value * 0.5 + (row % 7));
-    harness.writeValues(shifted);
-    const oracleShifted = computeHotSpotOracle({...scene, values: shifted, parameters: frames[2]});
-    expectMatchesOracle(await harness.run(frames[2]), oracleShifted, 'new values');
     expect(harness.buildCount).toBe(1);
   } finally {
     harness.destroy();
@@ -114,22 +176,20 @@ it('GPUHotSpotAnalysis honors the mask, excluded values, and fixed moments', asy
   const values = base.values.slice();
   values[3] = NaN;
   values[10] = Infinity;
-  const positions = base.positions.slice();
-  positions[2 * 20] = NaN;
   const random = createSeededRandom(5);
   const mask = Uint32Array.from({length: values.length}, () => (random() < 0.6 ? 1 : 0));
-  const scene = {positions, values, mask};
-  const parameters: GPUSpatialAutocorrelationParameters = {bounds: BOUNDS, radius: 6};
+  const scene = {values, mask};
+  const weights = createDistanceBandWeights(base.positions, 6);
   const harness = createSpatialAutocorrelationHarness(device, {
     contributor: 'hot-spot',
     scene,
-    parameters
+    weights: toCsr(weights)
   });
   try {
-    const masked = computeHotSpotOracle({...scene, parameters});
-    const maskedResult = await harness.run(parameters);
+    const masked = computeHotSpotOracle({...scene, weights});
+    const maskedResult = await harness.run();
     expectMatchesOracle(maskedResult, masked, 'masked');
-    for (const row of [3, 10, 20]) {
+    for (const row of [3, 10]) {
       expect(Number.isNaN(maskedResult.zScores[row])).toBe(true);
       expect(maskedResult.bins[row]).toBe(0);
       expect(maskedResult.neighborCounts[row]).toBe(0);
@@ -141,11 +201,10 @@ it('GPUHotSpotAnalysis honors the mask, excluded values, and fixed moments', asy
     // Full selection: its global statistics become the fixed moments of a viewport-like subset.
     const everyRow = new Uint32Array(values.length).fill(1);
     harness.writeMask(everyRow);
-    const full = await harness.run(parameters);
-    expectMatchesOracle(full, computeHotSpotOracle({...scene, mask: everyRow, parameters}), 'full');
+    const full = await harness.run();
+    expectMatchesOracle(full, computeHotSpotOracle({...scene, mask: everyRow, weights}), 'full');
     harness.writeMask(mask);
     const fixedParameters: GPUSpatialAutocorrelationParameters = {
-      ...parameters,
       fixedMoments: {
         count: full.globalStatistics[0],
         mean: full.globalStatistics[1],
@@ -153,7 +212,7 @@ it('GPUHotSpotAnalysis honors the mask, excluded values, and fixed moments', asy
       }
     };
     const fixed = await harness.run(fixedParameters);
-    const fixedOracle = computeHotSpotOracle({...scene, parameters: fixedParameters});
+    const fixedOracle = computeHotSpotOracle({...scene, weights, parameters: fixedParameters});
     expectMatchesOracle(fixed, fixedOracle, 'fixed moments');
     expect(fixed.globalStatistics.slice(0, 3)).toEqual(full.globalStatistics.slice(0, 3));
     expect(harness.buildCount).toBe(1);
@@ -168,17 +227,17 @@ it('GPUHotSpotAnalysis applies Benjamini-Hochberg FDR to the bins', async () => 
     return;
   }
   const scene = createAutocorrelatedScene(31, 2500, [5, 9]);
-  const harness = createSpatialAutocorrelationHarness(device, {
-    contributor: 'hot-spot',
-    scene,
-    parameters: {bounds: BOUNDS, radius: 5},
-    falseDiscoveryRate: true
-  });
-  try {
-    for (const radius of [5, 9]) {
-      const parameters = {bounds: BOUNDS, radius};
-      const result = await harness.run(parameters);
-      const oracle = computeHotSpotOracle({...scene, parameters});
+  for (const radius of [5, 9]) {
+    const weights = createDistanceBandWeights(scene.positions, radius);
+    const harness = createSpatialAutocorrelationHarness(device, {
+      contributor: 'hot-spot',
+      scene,
+      weights: toCsr(weights),
+      falseDiscoveryRate: true
+    });
+    try {
+      const result = await harness.run();
+      const oracle = computeHotSpotOracle({...scene, weights});
       for (const [row, expected] of oracle.zScores.entries()) {
         expect(
           isClose(result.zScores[row], expected, Z_ABSOLUTE_TOLERANCE, Z_RELATIVE_TOLERANCE)
@@ -197,15 +256,15 @@ it('GPUHotSpotAnalysis applies Benjamini-Hochberg FDR to the bins', async () => 
       const uncorrected = oracle.bins.filter(bin => bin !== 0).length;
       expect(corrected).toBeGreaterThan(0);
       expect(corrected).toBeLessThanOrEqual(uncorrected);
-      expect((await harness.run(parameters)).bins).toEqual(result.bins);
+      expect((await harness.run()).bins).toEqual(result.bins);
+      expect(harness.buildCount).toBe(1);
+    } finally {
+      harness.destroy();
     }
-    expect(harness.buildCount).toBe(1);
-  } finally {
-    harness.destroy();
   }
 }, 120000);
 
-it('GPUHotSpotAnalysis writes NaN for invalid parameters and degenerate selections', async () => {
+it('GPUHotSpotAnalysis handles islands, degenerate selections and out-of-range neighbors', async () => {
   const device = await getWebGPUTestDevice();
   if (!device) {
     return;
@@ -213,31 +272,50 @@ it('GPUHotSpotAnalysis writes NaN for invalid parameters and degenerate selectio
   const scene = createAutocorrelatedScene(3, 64, [10]);
   const mask = new Uint32Array(64);
   mask[5] = 1;
+  const clique = createDistanceBandWeights(scene.positions, 1000);
   const harness = createSpatialAutocorrelationHarness(device, {
     contributor: 'hot-spot',
     scene: {...scene, mask},
-    parameters: {bounds: BOUNDS, radius: 10}
+    weights: toCsr(clique)
   });
   try {
     // One included row: n < 2, so even that row has no z-score.
-    const single = await harness.run({bounds: BOUNDS, radius: 10});
+    const single = await harness.run();
     expect(single.zScores.every(Number.isNaN)).toBe(true);
     expect(single.neighborCounts[5]).toBe(1);
     expect(single.globalStatistics[0]).toBe(1);
     harness.writeMask(new Uint32Array(64).fill(1));
-    // Radius 0 bypassing the packer excludes every row.
-    const zeroRadius = new Float32Array([...BOUNDS, 0, 0.05, 1, 0, 0, 0, 0, 0]);
-    const invalid = await harness.run(zeroRadius);
-    expect(invalid.zScores.every(Number.isNaN)).toBe(true);
-    expect(invalid.bins.every(bin => bin === 0)).toBe(true);
-    expect(invalid.neighborCounts.every(count => count === 0)).toBe(true);
-    expect(invalid.globalStatistics[0]).toBe(0);
-    // Every row within the band of every other: k = n, so z is undefined.
-    const everything = await harness.run({bounds: BOUNDS, radius: 1000});
+    // Every row weighs every other row: k = n, so z is undefined.
+    const everything = await harness.run();
     expect(everything.zScores.every(Number.isNaN)).toBe(true);
     expect(everything.neighborCounts.every(count => count === 64)).toBe(true);
     expect(harness.buildCount).toBe(1);
   } finally {
     harness.destroy();
+  }
+
+  // No neighbors at all (plus one out-of-range ID, which is ignored): with the focal weight each
+  // row is its own neighborhood, so z = (x - X) / S; without it z is undefined.
+  const rows = 64;
+  const islands: OracleWeights = {
+    offsets: Uint32Array.from({length: rows + 1}, (_, row) => (row > 0 ? 1 : 0)),
+    neighbors: Uint32Array.from([9999]),
+    weights: Float32Array.from([1])
+  };
+  for (const selfWeight of [1, 0]) {
+    const islandHarness = createSpatialAutocorrelationHarness(device, {
+      contributor: 'hot-spot',
+      scene,
+      weights: toCsr(islands),
+      selfWeight
+    });
+    try {
+      const result = await islandHarness.run();
+      const oracle = computeHotSpotOracle({...scene, weights: islands, selfWeight});
+      expectMatchesOracle(result, oracle, `islands self ${selfWeight}`);
+      expect(result.zScores.every(Number.isNaN)).toBe(selfWeight === 0);
+    } finally {
+      islandHarness.destroy();
+    }
   }
 }, 60000);

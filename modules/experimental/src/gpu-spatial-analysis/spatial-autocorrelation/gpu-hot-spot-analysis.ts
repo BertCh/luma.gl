@@ -22,11 +22,11 @@ import {
 import {
   getFalseDiscoveryRateNodes,
   getSpatialAutocorrelationInputNodes,
-  getSpatialAutocorrelationNeighborLoopWGSL,
-  getSpatialAutocorrelationSharedWGSL,
+  getSpatialWeightsNeighborLoopWGSL,
   SPATIAL_AUTOCORRELATION_FLOAT_WGSL,
   validateSpatialAutocorrelationInputs
 } from './spatial-autocorrelation-kernels';
+import type {GPUSpatialWeights} from '../spatial-weights/index';
 import {
   GPU_HOT_SPOT_CRITICAL_Z_SCORES,
   GPU_HOT_SPOT_SIGNIFICANCE_LEVELS
@@ -37,29 +37,40 @@ const OPERATION = 'GPUHotSpotAnalysis';
 /**
  * Properties for {@link GPUHotSpotAnalysis}.
  *
- * Per-frame (no rebuild or recompile): the contents of `positions`, `values`, `mask` and
- * `parameters` (bounds, radius, optional fixed moments). Compile-time: the row count, `gridSize`,
+ * Per-frame (no rebuild or recompile): the contents of `weights`, `values`, `mask` and
+ * `parameters` (optional fixed moments). Compile-time: the row count, `selfWeight`,
  * `falseDiscoveryRate`, and which optional views are present.
  */
 export type GPUHotSpotAnalysisProps = {
   /** Prefix for generated node and transient IDs. Defaults to `'hot-spot-analysis'`. */
   id?: string;
-  /** Packed planar points, one row per observation. At least one and fewer than 2^24 rows. */
-  positions: GraphDataView<'float32x2'>;
+  /**
+   * Square self-join spatial weights, one row per observation (for example from
+   * `GPUNeighborSearch`, optionally transformed). Used as given: the caller applies any
+   * transform (binary, row standardization, kernel). Fewer than 2^24 rows. The focal row's own
+   * weight is not read from the matrix (`w_ii = 0` by invariant); see `selfWeight`.
+   */
+  weights: GPUSpatialWeights;
+  /**
+   * Weight `w_ii` given to the focal row itself, the "star" in Gi*. Compile-time, finite and
+   * non-negative. Defaults to `1`, which with binary weights is the classic Gi*. Use `0` for the
+   * Gi statistic (focal row excluded). With row-standardized weights `1` makes the focal row as
+   * heavy as all its neighbors together, so prefer `0` there or fold the focal row into the
+   * weights before standardizing.
+   */
+  selfWeight?: number;
   /** Packed analysis values, one per row. Rows with a non-finite value are excluded. */
   values: GraphDataView<'float32'>;
   /**
    * Per-frame parameters: packed float32 view of at least
    * `GPU_SPATIAL_AUTOCORRELATION_PARAMETER_LENGTH` elements written with
-   * `getGPUSpatialAutocorrelationParameterValues`. Invalid bounds or radius exclude every row.
+   * `getGPUSpatialAutocorrelationParameterValues`.
    */
   parameters: GraphDataView<'float32'>;
   /**
-   * Maximum `[columns, rows]` of the neighbor-search cell lattice. Compile-time. Results never
-   * depend on it, only speed: each encoding uses cells at least `radius` wide.
+   * Optional row selection: nonzero includes the row. Excluded rows are neither foci nor
+   * neighbors (their weight is dropped from every row sum).
    */
-  gridSize: readonly [number, number];
-  /** Optional row selection: nonzero includes the row. Excluded rows are neither foci nor neighbors. */
   mask?: GraphDataView<'uint32'>;
   /** Caller-owned Gi* z-score per row; quiet NaN for excluded or undefined rows. */
   zScores: GraphDataView<'float32'>;
@@ -70,7 +81,7 @@ export type GPUHotSpotAnalysisProps = {
   bins?: GraphDataView<'sint32'>;
   /** Optional caller-owned two-sided normal p-value per row; quiet NaN where z is NaN. */
   pValues?: GraphDataView<'float32'>;
-  /** Optional caller-owned neighbor count per row, the row itself included; 0 for excluded rows. */
+  /** Optional caller-owned count of included weight entries per row, plus the row itself when `selfWeight` is nonzero; 0 for excluded rows. */
   neighborCounts?: GraphDataView<'uint32'>;
   /** Optional caller-owned `[n, mean, variance, standardDeviation]` actually used this frame. */
   globalStatistics?: GraphDataView<'float32'>;
@@ -84,33 +95,35 @@ export type GPUHotSpotAnalysisProps = {
 };
 
 /**
- * Getis-Ord Gi* local hot spot analysis over planar points with a distance-band weight.
+ * Getis-Ord Gi* local hot spot analysis on caller-supplied spatial weights.
  *
  * Definition, which the GPU result matches within f32 rounding:
- * - Included rows are mask-selected rows with a finite value and a finite position inside the
- *   inclusive bounds. `n`, the mean `X` and the population standard deviation
- *   `S = sqrt(sum (x - X)^2 / n)` are computed over included rows (or taken from fixed moments).
- * - Binary weights: `w_ij = 1` when `|p_i - p_j| <= radius`, the row itself included (Gi*).
- * - `z_i = sum_j w_ij (x_j - X) / (S * sqrt((n * k_i - k_i^2) / (n - 1)))`, where `k_i` is the
- *   neighbor count. This equals the ArcGIS Hot Spot Analysis formula with binary weights, computed
- *   on centered values to avoid cancellation. z is NaN when `n < 2`, `S = 0` or `k_i >= n`.
+ * - Included rows are mask-selected rows with a finite value. `n`, the mean `X` and the
+ *   population standard deviation `S = sqrt(sum (x - X)^2 / n)` are computed over included rows
+ *   (or taken from fixed moments).
+ * - Weights `w_ij` are the CSR entries of row `i` that point at included rows other than `i`,
+ *   used as given, plus the focal weight `w_ii = selfWeight` (default 1, the star of Gi*).
+ *   `W_i = sum_j w_ij` and `S1_i = sum_j w_ij^2`.
+ * - `z_i = sum_j w_ij (x_j - X) / (S * sqrt((n * S1_i - W_i^2) / (n - 1)))`, the Ord-Getis Gi*
+ *   z-score for arbitrary weights (esda `G_Local(star=True)` and ArcGIS Hot Spot Analysis),
+ *   computed on centered values to avoid cancellation. With binary weights `W_i = S1_i = k_i`.
+ *   z is NaN when `n < 2`, `S = 0` or `n * S1_i <= W_i^2`.
  * - p-values are two-sided normal; bins use the 90/95/99% critical values, or BH-FDR.
  *
- * Determinism: each row sums its neighbors in a fixed cell and row order, global moments use
- * fixed-order tree sums, and FDR uses integer atomics only, so repeated encodings on one device
- * are bitwise identical.
+ * Determinism: each row sums its neighbors in CSR slot order, global moments use fixed-order tree
+ * sums, and FDR uses integer atomics only, so repeated encodings on one device are bitwise
+ * identical.
  *
  * Caveat: moments describe the rows included this frame. When the mask follows the viewport,
- * panning changes `n`, `X` and `S` and therefore every z-score, and rows near the edge of the
- * included set lose neighbors. Pass `fixedMoments` (for example the `globalStatistics` of a
- * full-dataset frame) to pin the reference distribution.
+ * panning changes `n`, `X` and `S` and therefore every z-score. Pass `fixedMoments` (for example
+ * the `globalStatistics` of a full-dataset frame) to pin the reference distribution.
  *
- * Composition: a cell-key kernel, `GPUGroupAggregation` cell counts, `GPUScan` offsets, stable
- * `GPUSort` of rows by cell, two-level fixed-order tree sums for the moments, one gather kernel per
- * focus row over the 3x3 cell neighborhood, optional FDR nodes, and a classify kernel.
+ * Composition: a validity kernel, fixed-order two-level tree sums for the moments, one gather
+ * kernel per focus row over its CSR row, optional FDR nodes (one 31-bit `GPUSort`), and a classify
+ * kernel.
  *
- * Non-goals: permutation (pseudo) p-values, k-nearest or inverse-distance weights, geodesic
- * distances, chunked inputs, space-time neighborhoods.
+ * Non-goals: permutation (pseudo) p-values, building the weights, geodesic distances, chunked
+ * inputs, space-time neighborhoods (see `GPUEmergingHotSpots`).
  */
 export class GPUHotSpotAnalysis implements GPUCommandNodeProducer {
   /** Prefix for every node and transient ID. */
@@ -123,6 +136,10 @@ export class GPUHotSpotAnalysis implements GPUCommandNodeProducer {
     this.props = props;
     const id = this.id;
     const rows = validateSpatialAutocorrelationInputs({...props, id});
+    const selfWeight = props.selfWeight ?? 1;
+    if (!Number.isFinite(selfWeight) || selfWeight < 0) {
+      throw new Error(`${id} selfWeight must be a finite number >= 0`);
+    }
     validatePackedView(props.zScores, ['float32'], `${id} zScores`);
     if (props.bins) {
       validatePackedView(props.bins, ['sint32'], `${id} bins`);
@@ -140,13 +157,20 @@ export class GPUHotSpotAnalysis implements GPUCommandNodeProducer {
       ['neighborCounts', props.neighborCounts]
     ] as const) {
       if (view && view.length !== rows) {
-        throw new Error(`${id} ${name} length must equal positions length`);
+        throw new Error(`${id} ${name} length must equal the weights row count`);
       }
     }
     validateGraphOutputsDisjointFromInputs(
       id,
       [props.zScores, props.bins, props.pValues, props.neighborCounts, props.globalStatistics],
-      [props.positions, props.values, props.parameters, props.mask]
+      [
+        props.weights.offsets,
+        props.weights.neighbors,
+        props.weights.weights,
+        props.values,
+        props.parameters,
+        props.mask
+      ]
     );
   }
 
@@ -155,9 +179,12 @@ export class GPUHotSpotAnalysis implements GPUCommandNodeProducer {
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
     const {id, props} = this;
-    const {positions, parameters, gridSize, zScores} = props;
+    const {weights, parameters, zScores} = props;
+    const selfWeight = props.selfWeight ?? 1;
     validateGraphViewsBelongToGraph(id, graph, [
-      positions,
+      weights.offsets,
+      weights.neighbors,
+      weights.weights,
       props.values,
       parameters,
       props.mask,
@@ -167,20 +194,19 @@ export class GPUHotSpotAnalysis implements GPUCommandNodeProducer {
       props.neighborCounts,
       props.globalStatistics
     ]);
-    const rows = positions.length;
+    const rows = props.values.length;
     const inputs = getSpatialAutocorrelationInputNodes<Parameters>(graph, {
       ...props,
       id,
       operation: OPERATION
     });
     const nodes = inputs.nodes;
-    const sharedWGSL = getSpatialAutocorrelationSharedWGSL(gridSize);
+    const sharedWGSL = SPATIAL_AUTOCORRELATION_FLOAT_WGSL;
 
     const neighborBindings: WGSLKernelBinding[] = [
-      {name: 'positions', view: positions, type: 'f32', access: 'read'},
-      {name: 'parameters', view: parameters, type: 'f32', access: 'read'},
-      {name: 'sortedRows', view: inputs.sortedRows, type: 'u32', access: 'read'},
-      {name: 'cellOffsets', view: inputs.cellOffsets, type: 'u32', access: 'read'},
+      {name: 'offsets', view: weights.offsets, type: 'u32', access: 'read'},
+      {name: 'neighbors', view: weights.neighbors, type: 'u32', access: 'read'},
+      {name: 'weights', view: weights.weights, type: 'f32', access: 'read'},
       {name: 'statistics', view: inputs.statistics, type: 'f32', access: 'read'},
       {name: 'zScores', view: zScores, type: 'f32', access: 'read_write'}
     ];
@@ -200,23 +226,26 @@ export class GPUHotSpotAnalysis implements GPUCommandNodeProducer {
         bindings: neighborBindings,
         invocationCount: rows,
         declarations: `${sharedWGSL}
-const MOMENTS: u32 = ${rows}u;`,
+const MOMENTS: u32 = ${rows}u;
+const ROWS: u32 = ${rows}u;
+const SELF_WEIGHT: f32 = ${getWGSLFloatLiteral(selfWeight)};`,
         body: `let centered = statistics[statisticsOffset + index];
   var zScore = getQuietNaN(index);
   var neighborCount = 0u;
   if (isFiniteFloat(centered)) {
-    let lattice = readLattice();
-    let x = positions[positionsOffset + index * 2u];
-    let y = positions[positionsOffset + index * 2u + 1u];
-    var neighborSum = 0.0;
-    ${getSpatialAutocorrelationNeighborLoopWGSL(`neighborSum += statistics[statisticsOffset + neighbor];
-        neighborCount++;`)}
+    var weightedSum = SELF_WEIGHT * centered;
+    var weightSum = SELF_WEIGHT;
+    var squareSum = SELF_WEIGHT * SELF_WEIGHT;
+    neighborCount = select(0u, 1u, SELF_WEIGHT != 0.0);
+    ${getSpatialWeightsNeighborLoopWGSL(`weightedSum += weight * statistics[statisticsOffset + neighbor];
+      weightSum += weight;
+      squareSum += weight * weight;
+      neighborCount++;`)}
     let count = statistics[statisticsOffset + MOMENTS];
     let variance = statistics[statisticsOffset + MOMENTS + 2u];
-    let weightSum = f32(neighborCount);
-    let spread = weightSum * (count - weightSum) / (count - 1.0);
+    let spread = (count * squareSum - weightSum * weightSum) / (count - 1.0);
     if (count >= 2.0 && variance > 0.0 && spread > 0.0 && isFiniteFloat(spread)) {
-      zScore = neighborSum / (sqrt(variance) * sqrt(spread));
+      zScore = weightedSum / (sqrt(variance) * sqrt(spread));
     }
   }
   zScores[zScoresOffset + index] = zScore;
@@ -234,7 +263,6 @@ const MOMENTS: u32 = ${rows}u;`,
             operation: OPERATION,
             zScores,
             parameters,
-            gridSize,
             levelExpressions: GPU_HOT_SPOT_SIGNIFICANCE_LEVELS.map(getWGSLFloatLiteral)
           })
         : undefined;

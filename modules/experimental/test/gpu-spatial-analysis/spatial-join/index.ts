@@ -7,3 +7,4 @@ import './gpu-point-in-polygon-uncertainty.spec';
 import './gpu-nearest-feature-join.spec';
 import './spatial-join-sort.spec';
 import './gpu-buffer-selection.spec';
+import './gpu-spatial-predicate-join.spec';
