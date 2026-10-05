@@ -27,7 +27,7 @@ import {
 import {
   type GPUSpatialWeights,
   validateGPUSpatialWeights
-} from '../neighbor-search/spatial-weights';
+} from '../spatial-weights/spatial-weights';
 import {SPATIAL_AUTOCORRELATION_FLOAT_WGSL} from '../spatial-autocorrelation/spatial-autocorrelation-kernels';
 import {
   GPU_GLOBAL_SPATIAL_STATISTICS_LAYOUT,

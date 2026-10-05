@@ -22,7 +22,7 @@ import {
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph
 } from '../../utils/gpu-contributor-utils';
-import type {GPUSpatialWeights} from '../neighbor-search/spatial-weights';
+import type {GPUSpatialWeights} from '../spatial-weights/spatial-weights';
 import {
   getPermutationInputNodes,
   getPermutationParameterWGSL,

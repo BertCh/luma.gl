@@ -28,7 +28,10 @@ import {
   NEIGHBOR_WEIGHT_WGSL
 } from './neighbor-search-kernels';
 import {GPU_NEIGHBOR_SEARCH_PARAMETER_LENGTH} from './neighbor-search-parameters';
-import {type GPUSpatialWeights, validateGPUSpatialWeights} from './spatial-weights';
+import {
+  type GPUSpatialWeights,
+  validateGPUSpatialWeights
+} from '../spatial-weights/spatial-weights';
 
 const OPERATION = 'GPUNeighborSearch';
 

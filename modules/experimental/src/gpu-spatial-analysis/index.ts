@@ -15,7 +15,7 @@ export {
   GPUCellLevelSelection,
   GPUCellPyramid,
   GPUCellRollup
-} from '../gpu-spatial-analysis/cell-aggregation/index';
+} from './cell-aggregation/index';
 export type {
   GPUCellAggregationProps,
   GPUCellFamily,
@@ -26,14 +26,14 @@ export type {
   GPUCellRollupProps,
   GPUCellTable,
   GPUCellWordOrder
-} from '../gpu-spatial-analysis/cell-aggregation/index';
+} from './cell-aggregation/index';
 
-export {GPUCellCover} from '../gpu-spatial-analysis/cell-cover/index';
+export {GPUCellCover} from './cell-cover/index';
 export type {
   GPUCellCoverContainment,
   GPUCellCoverOutput,
   GPUCellCoverProps
-} from '../gpu-spatial-analysis/cell-cover/index';
+} from './cell-cover/index';
 
 export {
   GPU_CELL_GEOMETRY_H3_MAXIMUM_VERTEX_COUNT,
@@ -44,7 +44,7 @@ export {
   GPUPointToCell,
   isGPUCellIndexFamily,
   validateCellIndexResolution
-} from '../gpu-spatial-analysis/cell-indexing/index';
+} from './cell-indexing/index';
 export type {
   GPUCellGeometryFamily,
   GPUCellGeometryOutput,
@@ -53,19 +53,19 @@ export type {
   GPUCellIndexResolutionRange,
   GPUPointToCellOutput,
   GPUPointToCellProps
-} from '../gpu-spatial-analysis/cell-indexing/index';
+} from './cell-indexing/index';
 
 export {
   GPU_CELL_COMPARE_PRESENT_AFTER,
   GPU_CELL_COMPARE_PRESENT_BEFORE,
   GPUCellTableCompare
-} from '../gpu-spatial-analysis/cell-table-compare/index';
+} from './cell-table-compare/index';
 export type {
   GPUCellTableCompareMeasure,
   GPUCellTableCompareOutput,
   GPUCellTableCompareProps,
   GPUCellTableCompareZScore
-} from '../gpu-spatial-analysis/cell-table-compare/index';
+} from './cell-table-compare/index';
 
 export {
   getCellTopologyStride,
@@ -74,7 +74,7 @@ export {
   GPU_CELL_UNCOMPACT_DEFAULT_MAXIMUM_DEPTH,
   GPUCellCompaction,
   GPUCellTopology
-} from '../gpu-spatial-analysis/cell-topology/index';
+} from './cell-topology/index';
 export type {
   GPUCellCompactionOutput,
   GPUCellCompactionProps,
@@ -84,14 +84,14 @@ export type {
   GPUCellTopologyOutput,
   GPUCellTopologyProps,
   GPUCellUncompactOperation
-} from '../gpu-spatial-analysis/cell-topology/index';
+} from './cell-topology/index';
 
 export {
   getGPUDotDensityParameterValues,
   GPU_DOT_DENSITY_PARAMETER_LENGTH,
   GPUDotDensity,
   GPURandomPointsInPolygon
-} from '../gpu-spatial-analysis/dot-density/index';
+} from './dot-density/index';
 export type {
   GPUDotDensityMask,
   GPUDotDensityOutput,
@@ -99,7 +99,7 @@ export type {
   GPUDotDensityProps,
   GPUDotDensitySettings,
   GPURandomPointsInPolygonProps
-} from '../gpu-spatial-analysis/dot-density/index';
+} from './dot-density/index';
 
 export {
   getGPUEmergingHotSpotParameterValues,
@@ -110,24 +110,24 @@ export {
   GPU_EMERGING_HOT_SPOT_PARAMETER_LENGTH,
   GPU_EMERGING_HOT_SPOT_STATISTICS_LENGTH,
   GPUEmergingHotSpots
-} from '../gpu-spatial-analysis/emerging-hot-spots/index';
+} from './emerging-hot-spots/index';
 export type {
   GPUEmergingHotSpotParameters,
   GPUEmergingHotSpotsProps
-} from '../gpu-spatial-analysis/emerging-hot-spots/index';
+} from './emerging-hot-spots/index';
 
 export {
   getGPUGeographicDistributionParameterValues,
   GPU_GEOGRAPHIC_DISTRIBUTION_DEFAULT_MEDIAN_TOLERANCE,
   GPU_GEOGRAPHIC_DISTRIBUTION_PARAMETER_LENGTH,
   GPUGeographicDistribution
-} from '../gpu-spatial-analysis/geographic-distribution/index';
+} from './geographic-distribution/index';
 export type {
   GPUGeographicDistributionEllipseConvention,
   GPUGeographicDistributionOutput,
   GPUGeographicDistributionParameters,
   GPUGeographicDistributionProps
-} from '../gpu-spatial-analysis/geographic-distribution/index';
+} from './geographic-distribution/index';
 
 export {
   GPU_GEODESIC_DEFAULT_ITERATIONS,
@@ -137,7 +137,7 @@ export {
   GPUGeodesicDestination,
   GPUGeodesicPairs,
   GPUGeometryMeasures
-} from '../gpu-spatial-analysis/geometry-measures/index';
+} from './geometry-measures/index';
 export type {
   GPUGeodesicDestinationOutput,
   GPUGeodesicDestinationProps,
@@ -149,7 +149,7 @@ export type {
   GPUGeometryMeasuresGroupOutput,
   GPUGeometryMeasuresOutput,
   GPUGeometryMeasuresProps
-} from '../gpu-spatial-analysis/geometry-measures/index';
+} from './geometry-measures/index';
 
 export {
   GPU_GLOBAL_JOIN_COUNT_FIELD,
@@ -157,11 +157,11 @@ export {
   GPU_GLOBAL_SPATIAL_STATISTICS_LAYOUT,
   GPU_GLOBAL_SPATIAL_STATISTICS_SUMMARY,
   GPUGlobalSpatialStatistics
-} from '../gpu-spatial-analysis/global-spatial-statistics/index';
+} from './global-spatial-statistics/index';
 export type {
   GPUGlobalSpatialStatistic,
   GPUGlobalSpatialStatisticsProps
-} from '../gpu-spatial-analysis/global-spatial-statistics/index';
+} from './global-spatial-statistics/index';
 
 export {
   getGPUGreatCircleArcsParameterValues,
@@ -179,7 +179,7 @@ export {
   GPULineChunk,
   GPULineSegmentize,
   GPULineSmooth
-} from '../gpu-spatial-analysis/line-segmentize/index';
+} from './line-segmentize/index';
 export type {
   GPUGreatCircleArcsParameters,
   GPUGreatCircleArcsProps,
@@ -191,7 +191,7 @@ export type {
   GPULineSegmentizeProps,
   GPULineSmoothParameters,
   GPULineSmoothProps
-} from '../gpu-spatial-analysis/line-segmentize/index';
+} from './line-segmentize/index';
 
 export {
   getGPULineSimplificationParameterValues,
@@ -199,14 +199,14 @@ export {
   GPU_LINE_SIMPLIFICATION_MAXIMUM_ROUNDS,
   GPU_LINE_SIMPLIFICATION_PARAMETER_LENGTH,
   GPULineSimplification
-} from '../gpu-spatial-analysis/line-simplification/index';
+} from './line-simplification/index';
 export type {
   GPULineSimplificationMetric,
   GPULineSimplificationParameters,
   GPULineSimplificationProps,
   GPULineSimplificationSelection,
   GPULineSimplificationStatus
-} from '../gpu-spatial-analysis/line-simplification/index';
+} from './line-simplification/index';
 
 export {
   getGPULineLocateParameterValues,
@@ -214,14 +214,14 @@ export {
   GPU_LINE_LOCATE_STATUS,
   GPULinearReferencing,
   GPULineLocate
-} from '../gpu-spatial-analysis/linear-referencing/index';
+} from './linear-referencing/index';
 export type {
   GPULinearReferencingOutput,
   GPULinearReferencingProps,
   GPULineLocateOutput,
   GPULineLocateParameters,
   GPULineLocateProps
-} from '../gpu-spatial-analysis/linear-referencing/index';
+} from './linear-referencing/index';
 
 export {
   getGPUNeighborSearchParameterValues,
@@ -229,16 +229,17 @@ export {
   GPU_NEIGHBOR_SEARCH_MAXIMUM_K,
   GPU_NEIGHBOR_SEARCH_PARAMETER_LENGTH,
   GPU_NEIGHBOR_SEARCH_WEIGHT_KIND,
-  GPUNeighborSearch,
-  validateGPUSpatialWeights
-} from '../gpu-spatial-analysis/neighbor-search/index';
+  GPUNeighborSearch
+} from './neighbor-search/index';
 export type {
   GPUNeighborSearchKernel,
   GPUNeighborSearchParameters,
   GPUNeighborSearchProps,
-  GPUNeighborSearchWeightKind,
-  GPUSpatialWeights
-} from '../gpu-spatial-analysis/neighbor-search/index';
+  GPUNeighborSearchWeightKind
+} from './neighbor-search/index';
+
+export {validateGPUSpatialWeights} from './spatial-weights/index';
+export type {GPUSpatialWeights} from './spatial-weights/index';
 
 export {
   getGPUPermutationParameterValues,
@@ -248,14 +249,14 @@ export {
   GPU_PERMUTATION_PARAMETER_LENGTH,
   GPUGlobalPermutationTest,
   GPULocalPermutationTest
-} from '../gpu-spatial-analysis/permutation-inference/index';
+} from './permutation-inference/index';
 export type {
   GPUGlobalPermutationStatistic,
   GPUGlobalPermutationTestProps,
   GPULocalPermutationStatistic,
   GPULocalPermutationTestProps,
   GPUPermutationParameters
-} from '../gpu-spatial-analysis/permutation-inference/index';
+} from './permutation-inference/index';
 
 export {
   createGPUPointDensityGaussianKernel,
@@ -264,7 +265,7 @@ export {
   getGPUPointDensityHexagonGridSize,
   GPU_POINT_DENSITY_HEXAGON_WGSL,
   GPUPointDensity
-} from '../gpu-spatial-analysis/point-density/index';
+} from './point-density/index';
 export type {
   GPUPointDensityBinning,
   GPUPointDensityBounds,
@@ -272,7 +273,7 @@ export type {
   GPUPointDensityProps,
   GPUPointDensitySmoothing,
   GPUPointDensityStatistic
-} from '../gpu-spatial-analysis/point-density/index';
+} from './point-density/index';
 
 export {
   decodeGPURegionStatistics,
@@ -285,7 +286,7 @@ export {
   GPURegionMask,
   GPURegionStatistics,
   GPURegionStatisticsReadback
-} from '../gpu-spatial-analysis/region-statistics/index';
+} from './region-statistics/index';
 export type {
   GPUPickRegionMaskProps,
   GPURegionHistogramProps,
@@ -301,7 +302,7 @@ export type {
   GPURegionStatisticsProps,
   GPURegionStatisticsReadbackProps,
   GPURegionStatisticsResult
-} from '../gpu-spatial-analysis/region-statistics/index';
+} from './region-statistics/index';
 
 export {
   getGPUSpatialAutocorrelationParameterValues,
@@ -312,24 +313,24 @@ export {
   GPU_SPATIAL_AUTOCORRELATION_STATISTICS_LENGTH,
   GPUHotSpotAnalysis,
   GPULocalMoran
-} from '../gpu-spatial-analysis/spatial-autocorrelation/index';
+} from './spatial-autocorrelation/index';
 export type {
   GPUHotSpotAnalysisProps,
   GPULocalMoranProps,
   GPUSpatialAutocorrelationFixedMoments,
   GPUSpatialAutocorrelationParameters
-} from '../gpu-spatial-analysis/spatial-autocorrelation/index';
+} from './spatial-autocorrelation/index';
 
 export {
   getGPUSpatialClusteringParameterValues,
   GPU_SPATIAL_CLUSTERING_NOISE,
   GPU_SPATIAL_CLUSTERING_PARAMETER_LENGTH,
   GPUSpatialClustering
-} from '../gpu-spatial-analysis/spatial-clustering/index';
+} from './spatial-clustering/index';
 export type {
   GPUSpatialClusteringParameters,
   GPUSpatialClusteringProps
-} from '../gpu-spatial-analysis/spatial-clustering/index';
+} from './spatial-clustering/index';
 
 export {
   getGPUFocalStatisticsParameterValues,
@@ -338,7 +339,7 @@ export {
   GPU_INVERSE_DISTANCE_WEIGHTING_PARAMETER_LENGTH,
   GPUFocalStatistics,
   GPUInverseDistanceWeighting
-} from '../gpu-spatial-analysis/spatial-interpolation/index';
+} from './spatial-interpolation/index';
 export type {
   GPUFocalStatisticsOutput,
   GPUFocalStatisticsProps,
@@ -347,7 +348,7 @@ export type {
   GPUInverseDistanceWeightingOutput,
   GPUInverseDistanceWeightingProps,
   GPUInverseDistanceWeightingSettings
-} from '../gpu-spatial-analysis/spatial-interpolation/index';
+} from './spatial-interpolation/index';
 
 export {
   GPU_SPATIAL_JOIN_NO_DISTANCE,
@@ -355,7 +356,7 @@ export {
   GPUBufferSelection,
   GPUNearestFeatureJoin,
   GPUPointInPolygonJoin
-} from '../gpu-spatial-analysis/spatial-join/index';
+} from './spatial-join/index';
 export type {
   GPUBufferSelectionProps,
   GPUNearestFeatureJoinProps,
@@ -363,7 +364,7 @@ export type {
   GPUNearestFeatureSegments,
   GPUNearestFeatureSource,
   GPUPointInPolygonJoinProps
-} from '../gpu-spatial-analysis/spatial-join/index';
+} from './spatial-join/index';
 
 export {
   getChiSquareSurvival,
@@ -408,7 +409,7 @@ export {
   GPUGeographicallyWeightedRegression,
   GPUOrdinaryLeastSquares,
   SPATIAL_REGRESSION_MAXIMUM_PREDICTOR_COUNT
-} from '../gpu-spatial-analysis/spatial-regression/index';
+} from './spatial-regression/index';
 export type {
   GPUGeographicallyWeightedRegressionBandwidthMode,
   GPUGeographicallyWeightedRegressionKernel,
@@ -417,18 +418,18 @@ export type {
   GPUGeographicallyWeightedRegressionSettings,
   GPUOrdinaryLeastSquaresOutput,
   GPUOrdinaryLeastSquaresProps
-} from '../gpu-spatial-analysis/spatial-regression/index';
+} from './spatial-regression/index';
 
 export {
   getGPUTrajectoryMetricsParameterValues,
   GPU_TRAJECTORY_METRICS_PARAMETER_LENGTH,
   GPUTrajectoryMetrics
-} from '../gpu-spatial-analysis/trajectory-analysis/index';
+} from './trajectory-analysis/index';
 export type {
   GPUTrajectoryMetricsProps,
   GPUTrajectoryStopOutput,
   GPUTrajectoryStopParameters
-} from '../gpu-spatial-analysis/trajectory-analysis/index';
+} from './trajectory-analysis/index';
 
 export {
   getGPUTrajectoryPlayheadParameterValues,
@@ -437,16 +438,16 @@ export {
   GPU_TRAJECTORY_PLAYHEAD_STATUS,
   GPUTrajectoryPlayhead,
   GPUTrajectoryResample
-} from '../gpu-spatial-analysis/trajectory-interpolation/index';
+} from './trajectory-interpolation/index';
 export type {
   GPUTrajectoryPlayheadProps,
   GPUTrajectoryPlayheadStatus,
   GPUTrajectoryPlayheadTime,
   GPUTrajectoryResampleProps,
   GPUTrajectoryResampleSpacing
-} from '../gpu-spatial-analysis/trajectory-interpolation/index';
+} from './trajectory-interpolation/index';
 
-export {GPUZonalStatistics} from '../gpu-spatial-analysis/zonal-statistics/index';
+export {GPUZonalStatistics} from './zonal-statistics/index';
 export type {
   GPUZonalStatisticsExtentStatistic,
   GPUZonalStatisticsFeatureRows,
@@ -455,4 +456,4 @@ export type {
   GPUZonalStatisticsPolygons,
   GPUZonalStatisticsProps,
   GPUZonalStatisticsSumOrder
-} from '../gpu-spatial-analysis/zonal-statistics/index';
+} from './zonal-statistics/index';

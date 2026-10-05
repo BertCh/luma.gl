@@ -15,5 +15,3 @@ export type {
   GPUNeighborSearchParameters,
   GPUNeighborSearchWeightKind
 } from './neighbor-search-parameters';
-export {validateGPUSpatialWeights} from './spatial-weights';
-export type {GPUSpatialWeights} from './spatial-weights';

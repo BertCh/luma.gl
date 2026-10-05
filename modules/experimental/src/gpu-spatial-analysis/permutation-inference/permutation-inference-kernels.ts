@@ -16,7 +16,7 @@ import {createSegmentSumNode} from '../../utils/sorted-segment-sums';
 import {
   type GPUSpatialWeights,
   validateGPUSpatialWeights
-} from '../neighbor-search/spatial-weights';
+} from '../spatial-weights/spatial-weights';
 import {SPATIAL_AUTOCORRELATION_FLOAT_WGSL} from '../spatial-autocorrelation/spatial-autocorrelation-kernels';
 import {GPU_PERMUTATION_PARAMETER_LENGTH} from './permutation-parameters';
 
