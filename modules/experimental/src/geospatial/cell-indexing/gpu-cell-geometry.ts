@@ -19,7 +19,7 @@ import {
 } from '../../utils/gpu-contributor-utils';
 import {CELL_KEY_WGSL} from '../cell-aggregation/cell-keys';
 import {H3_BOUNDARY_WGSL} from './h3-boundary-wgsl';
-import type {GPUCellWordOrder} from '../cell-aggregation';
+import type {GPUCellWordOrder} from '../cell-aggregation/index';
 import type {GPUCellIndexFamily} from './cell-index-families';
 
 const OPERATION = 'GPUCellGeometry';

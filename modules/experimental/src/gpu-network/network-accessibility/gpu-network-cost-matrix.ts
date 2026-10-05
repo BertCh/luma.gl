@@ -16,7 +16,7 @@ import {
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph
 } from '../../utils/gpu-contributor-utils';
-import {GPUNetworkReachability} from '../network-reachability';
+import {GPUNetworkReachability} from '../network-reachability/index';
 import {ACCESSIBILITY_NONE} from './network-accessibility-passes';
 
 const OPERATION = 'GPUNetworkCostMatrix';
