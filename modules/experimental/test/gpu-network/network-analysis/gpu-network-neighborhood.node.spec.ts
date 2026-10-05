@@ -108,8 +108,11 @@ it('GPUNetworkNeighborhood validates props', () => {
     const base = createProps(graph);
     return new GPUNetworkNeighborhood({...base, ...build(graph, base)});
   };
-  const view = (graph: GPUCommandGraph, length: number, format: 'uint32' | 'float32' = 'uint32') =>
-    createTransientView(graph, 'override', format, length);
+  const view = <Format extends 'uint32' | 'float32' = 'uint32'>(
+    graph: GPUCommandGraph,
+    length: number,
+    format: Format = 'uint32' as Format
+  ) => createTransientView(graph, 'override', format, length);
   expect(() => create(graph => ({offsets: view(graph, 8)}))).toThrow(/offsets/);
   expect(() => create(graph => ({hops: view(graph, 2)}))).toThrow(/hops/);
   expect(() => create(graph => ({seedCount: view(graph, 2)}))).toThrow(/seedCount/);

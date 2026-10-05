@@ -154,9 +154,6 @@ _Splat hierarchy (`SplatHierarchyManager`):_
 
 - **`blend: false` wins** - an explicit `blend: false` now removes blend state even when blend
   factors are also supplied, matching WebGL and keeping non-blendable (32-bit float) targets valid.
-
-**@luma.gl/webgpu**
-
 - **Attach to application-created `GPUDevice`s** - `luma.attachDevice(gpuDevice, {adapters: [webgpuAdapter]})` and `webgpuAdapter.attach(gpuDevice)` wrap an existing WebGPU device, so an application and deck.gl can share one device with the application's requested limits and features. `device.destroy()` leaves the `GPUDevice` usable; the application destroys it.
 
 ### Experimental Slang package
@@ -180,6 +177,16 @@ diagnostics, texture arrays, multisampled loads, explicit gradients, gathers, di
 more storage dimensions. The [particle vortex example](/examples/tutorials/slang-particles) simulates
 and renders one shared Slang source. The compiler remains optional and dependency-free; WebGL uses
 GLSL ES 300, with diagnostics for operations that require explicit GLSL 450.
+
+### Shared scene lighting examples
+
+The experimental deck.gl GPU layers add optional camera/object motion capture and
+`SceneShaderPassEffect`, which connects shared HDR color, depth, normals and velocity to existing
+luma.gl shader-pass graphs. Riverfront fireflies, HDR night lighting, global illumination and light
+shafts demonstrate this shared infrastructure on WebGPU. `FireflyLayer` and the reusable `firefly`
+shader module also support WebGL2. Fireflies adds calm-water emitter reflections and adjustable
+bloom; Fireflies and HDR night lighting request extended-range, floating-point canvas output on
+HDR-capable displays, with an SDR presentation fallback.
 
 ## Version 9.4
 
@@ -719,14 +726,3 @@ New `Device.features` that enable new GLSL syntax
 - `shader-noperspective-interpolation-webgl`: GLSL vertex outputs and fragment inputs may be declared with a `noperspective` interpolation qualifier.
 - `shader-conservative-depth-webgl`: GLSL `gl_FragDepth` qualifiers `depth_any` `depth_greater` `depth_less` `depth_unchanged` can enable early depth test optimizations.
 - `shader-clip-cull-distance-webgl`: Enables `gl_ClipDistance[] / gl_CullDistance[]`.
-
-
-### Shared scene lighting examples
-
-The experimental deck.gl GPU layers add optional camera/object motion capture and
-`SceneShaderPassEffect`, which connects shared HDR color, depth, normals and velocity to existing
-luma.gl shader-pass graphs. Riverfront fireflies, HDR night lighting, global illumination and light
-shafts demonstrate this shared infrastructure on WebGPU. `FireflyLayer` and the reusable `firefly`
-shader module also support WebGL2. Fireflies adds calm-water emitter reflections and adjustable
-bloom; Fireflies and HDR night lighting request extended-range, floating-point canvas output on
-HDR-capable displays, with an SDR presentation fallback.

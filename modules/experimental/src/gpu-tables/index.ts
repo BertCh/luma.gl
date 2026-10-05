@@ -93,10 +93,10 @@ export {
   type GeneratedBufferBatchPlannerProps
 } from './utils/generated-buffer-batches';
 
-// Analysis contributors
 export type {GPUCompactOutput, GPUUint32Rows} from '../utils/gpu-contributor-types';
 export {GPUParameterBuffer} from '../utils/gpu-contributor-utils';
 export type {GPUParameterBufferProps, GPUParameterFormat} from '../utils/gpu-contributor-utils';
+
 export {
   GPU_RESIDENCY_ARENA_DEAD_SLOT,
   GPUResidencyArena,
@@ -116,6 +116,7 @@ export type {
   GPUResidentRowSelectionProps,
   ResidencyArenaAllocatorProps
 } from './residency-arena/index';
+
 export {
   getGPUTileLODFrustumPlanes,
   getGPUTileLODQuadtreeTile,

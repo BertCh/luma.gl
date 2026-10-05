@@ -151,6 +151,16 @@ export type GPUNetworkReachabilityProps = {
  *
  * Band `i` holds nodes with cost in `(threshold[i - 1], threshold[i]]`; band 0 holds
  * `cost <= threshold[0]`.
+ *
+ * Why this is not `GPUGraphSingleSourceShortestPath`: that algorithm takes one source, a physical
+ * `GPUGraphTopology` (weights from the graph, physical `GPUVector` outputs) and runs dense
+ * synchronized Bellman-Ford rounds that scan every vertex. This contributor takes command-graph
+ * views whose contents change every frame (CSR, weights, sources, source costs and count, cost
+ * limit, round limit), seeds many sources with initial costs, and relaxes a compact frontier with
+ * GPU-written indirect dispatches. Its predecessor rule (smallest strictly-cheaper tight
+ * in-neighbor, plus a level phase for equal-cost plateaus) also differs from the lowest-parent
+ * rule of the single-source algorithm. A virtual super-source would need a per-frame graph rebuild
+ * and would change predecessors and the cost limit semantics, so the two stay separate.
  */
 export class GPUNetworkReachability implements GPUCommandNodeProducer {
   /** Prefix for every node and transient ID. */

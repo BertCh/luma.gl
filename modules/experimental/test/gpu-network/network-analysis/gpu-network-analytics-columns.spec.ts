@@ -666,19 +666,19 @@ it('GPUNetworkAnalyticsColumns analyzes transient CSRs built by GPUCOOToCSR', as
     const compiled = graph.compile();
     submitGraph(device, compiled, undefined);
     const degree = degreeOracle(forward.csr.offsets);
-    expect(await readUint32(outputs.degree, nodeCount)).toEqual(Array.from(degree));
+    expect(await readUint32(outputs['degree'], nodeCount)).toEqual(Array.from(degree));
     const normalized = await readFloat32(outputs['degree-normalized'], nodeCount);
     const expectedNormalized = normalizeOracle(degree);
     for (const [node, value] of normalized.entries()) {
       expect(value).toBeCloseTo(expectedNormalized[node], 6);
     }
     if (reverse) {
-      expect(await readUint32(outputs.inDegree, nodeCount)).toEqual(
+      expect(await readUint32(outputs['inDegree'], nodeCount)).toEqual(
         Array.from(degreeOracle(reverse.csr.offsets))
       );
     }
     expectPageRankClose(
-      await readFloat32(outputs.pageRank, nodeCount),
+      await readFloat32(outputs['pageRank'], nodeCount),
       pageRankOracle(nodeCount, forward.csr, reverse?.csr ?? forward.csr, 0.85, 40)
     );
     const cores = coreNumberOracle(nodeCount, forward.csr, reverse?.csr);
@@ -688,7 +688,7 @@ it('GPUNetworkAnalyticsColumns analyzes transient CSRs built by GPUCOOToCSR', as
       expect(value).toBeCloseTo(expectedCoreNormalized[node], 6);
     }
     expect(await readUint32(outputs['core-converged'], 1)).toEqual([1]);
-    expect(await readUint32(outputs.components, nodeCount)).toEqual(
+    expect(await readUint32(outputs['components'], nodeCount)).toEqual(
       Array.from(componentsOracle(nodeCount, forward.csr))
     );
     expect(await readUint32(outputs['components-converged'], 1)).toEqual([1]);

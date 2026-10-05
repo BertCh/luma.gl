@@ -72,7 +72,6 @@ export class GridStatisticsHarness {
   readonly gridCompiled: Compiled;
   readonly indexCompiled?: Compiled;
   readonly device: Device;
-  private readonly options: GridStatisticsHarnessOptions;
   private readonly inputBuffers: Buffer[] = [];
   private readonly indexBuffers: Buffer[] = [];
   private readonly brute: ContributorBuffers;
@@ -85,7 +84,6 @@ export class GridStatisticsHarness {
 
   constructor(options: GridStatisticsHarnessOptions) {
     const {device, id} = options;
-    this.options = options;
     this.device = device;
     this.rowCount = options.positions.length / 2;
     this.binCount = options.binCount ?? 0;

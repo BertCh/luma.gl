@@ -288,7 +288,7 @@ its contents change, and `layer.getRenderStats()` reports draws, style uploads a
 endpoints are in `highlightMask`, and marks it on the path when both endpoints have consecutive
 `pathRanks`.
 
-`GPUGraphRecipeColumns` (owned by `GPUGraphDeckEffect`) wires these contributors onto a symmetrized
+`GPUGraphAnalysisColumns` (owned by `GPUGraphDeckEffect`) wires these contributors onto a symmetrized
 topology of the original edge batches and encodes them inside deck.gl's frame encoder: analytics
 once, and the neighborhood, reachability and path contributors only when `setHoverVertex`,
 `setNeighborhoodHops` or `setPathEndpoints` change their imported input buffers.

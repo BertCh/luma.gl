@@ -119,7 +119,7 @@ it('GPUZonalStatistics validates props', () => {
     create(createProps(graph, {}, {uncertainCount: out('empty-uncertain', 'uint32', 0)}))
   ).toThrow(/uncertainCount must contain one uint32 row/);
   expect(() =>
-    create(createProps(graph, {}, {uncertainCount: out('float-uncertain', 'float32', 1)}))
+    create(createProps(graph, {}, {uncertainCount: out('float-uncertain', 'float32', 1) as never}))
   ).toThrow(/uncertainCount/);
   expect(() =>
     create(createProps(graph, {}, {uncertainCount: out('uncertain', 'uint32', 1)}))

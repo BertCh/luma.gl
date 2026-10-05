@@ -939,6 +939,18 @@ Implemented (initial versions, node and headless WebGPU tests):
 
 Still open:
 
+- Upstream composition, checked 2026-10-05 (local code kept, with reasons in TSDoc):
+  - `GPUNeighborSearch`, `GPUSpatialClustering` and the spatial-autocorrelation contributors build
+    their own cell keys because `GPUGridIndex` bakes `bounds` and `gridSize` into WGSL. They need
+    per-frame bounds and a cell size of at least the per-frame radius, without recompiling. A
+    buffer-driven bounds and minimum-cell-size mode on `GPUGridIndex`, plus a stable in-cell order,
+    would let them drop their key kernels. Scan, sort and group aggregation are already upstream.
+  - `GPUNetworkStatistics` derives masked live degrees inside its masking pass. `GPUGraphDegree`
+    counts every stored CSR slot and has no vertex or edge mask.
+  - `GPUNetworkReachability` is multi-source, cost-bounded and frontier-driven, and keeps the network
+    tie rule. `GPUGraphSingleSourceShortestPath` is single-source dense Bellman-Ford with a
+    lowest-parent tie rule.
+  - `createWGSLKernelNode` now dispatches through the engine `Kernel`, like gpu-core.
 - Demo findings from `spatial-analysis-explorer`:
   - Explorer reachability mode should drop to `maxIterations` ≈ 48 (default `localIterations` 16):
     640 rounds is 649 nodes, 48 is 57; it converges in 5.

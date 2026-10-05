@@ -181,7 +181,7 @@ async function expectMatchesOracle(
     nodeCapacity: options.nodeCapacity ?? options.nodeCount,
     edgeCapacity: options.edgeCapacity ?? Math.max(csr.neighbors.length, 1)
   });
-  submitGraph(device, fixture.compiled, {});
+  submitGraph(device, fixture.compiled, undefined);
   const {buffers} = fixture;
   expect(await readUint32(buffers.hopDistances, options.nodeCount)).toEqual(expected.hopDistances);
   expect(await readUint32(buffers.nodeMask, options.nodeCount)).toEqual(expected.nodeMask);

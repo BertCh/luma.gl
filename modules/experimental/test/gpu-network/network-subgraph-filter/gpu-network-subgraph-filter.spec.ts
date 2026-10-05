@@ -192,10 +192,10 @@ class Fixture {
           )
         : undefined,
       parameters: parameterLength
-        ? view('parameters', this.buffer.parameters, parameterLength, 'float32')
+        ? view('parameters', this.buffer['parameters'], parameterLength, 'float32')
         : undefined,
       timeWordParameters: options.edgeTimeWords
-        ? view('twp', this.buffer.timeWordParameters, 8, 'uint32')
+        ? view('twp', this.buffer['timeWordParameters'], 8, 'uint32')
         : undefined,
       dropIsolated: options.dropIsolated,
       pairUndirectedSlots: options.pairUndirectedSlots,
@@ -217,12 +217,12 @@ class Fixture {
   }
 
   setState(state: GPUNetworkSubgraphFilterState): void {
-    this.buffer.parameters.write(getGPUNetworkSubgraphFilterParameterValues(this.layout, state));
+    this.buffer['parameters'].write(getGPUNetworkSubgraphFilterParameterValues(this.layout, state));
     this.state = state;
   }
 
   setTimeWindow(window: {start: number | bigint; end: number | bigint}): void {
-    this.buffer.timeWordParameters.write(getGPUTimeWindowWordParameterValues(window));
+    this.buffer['timeWordParameters'].write(getGPUTimeWindowWordParameterValues(window));
     this.window = window;
   }
 

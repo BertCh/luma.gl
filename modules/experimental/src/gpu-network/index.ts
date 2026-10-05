@@ -2,10 +2,74 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-// Analysis contributors
 export type {GPUCompactOutput, GPUUint32Rows} from '../utils/gpu-contributor-types';
 export {GPUParameterBuffer} from '../utils/gpu-contributor-utils';
 export type {GPUParameterBufferProps, GPUParameterFormat} from '../utils/gpu-contributor-utils';
+
+export {
+  computeAdjacencyMatrixOrder,
+  encodeGPUAdjacencyMatrixWindow,
+  getGPUAdjacencyMatrixFixedWeight,
+  GPU_ADJACENCY_MATRIX_DEFAULT_WEIGHT_SCALE,
+  GPU_ADJACENCY_MATRIX_WINDOW_LENGTH,
+  GPUAdjacencyMatrix,
+  GPUAdjacencyMatrixOrder
+} from './adjacency-matrix/index';
+export type {
+  GPUAdjacencyMatrixOrderProps,
+  GPUAdjacencyMatrixProps,
+  GPUAdjacencyMatrixWindow
+} from './adjacency-matrix/index';
+
+export {
+  createGPUEdgeBundlingParameterValues,
+  getGPUEdgeBundlingFixedPointExponent,
+  GPU_EDGE_BUNDLING_DEFAULTS,
+  GPU_EDGE_BUNDLING_MAXIMUM_ITERATIONS,
+  GPU_EDGE_BUNDLING_MAXIMUM_POINTS_PER_EDGE,
+  GPU_EDGE_BUNDLING_PARAMETER_LENGTH,
+  GPU_EDGE_BUNDLING_WORK_BOX_PADDING,
+  GPUEdgeBundling
+} from './edge-bundling/index';
+export type {
+  GPUEdgeBundlingParameterValues,
+  GPUEdgeBundlingProps
+} from './edge-bundling/index';
+
+export {
+  getGPUFlowPairKey,
+  getGPUFlowPairZones,
+  GPU_FLOW_AGGREGATION_MAXIMUM_ZONE_COUNT,
+  GPU_FLOW_AGGREGATION_NO_ZONE,
+  GPUFlowAggregation
+} from './flow-aggregation/index';
+export type {
+  GPUFlowAggregationBounds,
+  GPUFlowAggregationProps,
+  GPUFlowAggregationSumOrder,
+  GPUFlowAggregationTimeWindow,
+  GPUFlowAggregationZones
+} from './flow-aggregation/index';
+
+export {
+  encodeGPUNetworkAccessibilityParameters,
+  GPU_NETWORK_ACCESSIBILITY_PARAMETER_LENGTH,
+  GPU_NETWORK_SNAPPING_NO_VALUE,
+  GPU_NETWORK_SNAPPING_NONE,
+  GPUNetworkAccessibility,
+  GPUNetworkCostMatrix,
+  GPUNetworkSnapping
+} from './network-accessibility/index';
+export type {
+  GPUNetworkAccessibilityCatchment,
+  GPUNetworkAccessibilityDecay,
+  GPUNetworkAccessibilityParameters,
+  GPUNetworkAccessibilityProps,
+  GPUNetworkCostMatrixProps,
+  GPUNetworkSnappingProps,
+  GPUNetworkSnappingSeedDirection
+} from './network-accessibility/index';
+
 export {
   GPU_NETWORK_PATH_MAXIMUM_LENGTH,
   GPU_NETWORK_PATH_NO_EDGE,
@@ -22,24 +86,7 @@ export type {
   GPUNetworkPathExtractionProps,
   GPUNetworkServiceAreasProps
 } from './network-analysis/index';
-export {
-  GPUNetworkSnapping,
-  GPU_NETWORK_SNAPPING_NONE,
-  GPU_NETWORK_SNAPPING_NO_VALUE,
-  GPUNetworkCostMatrix,
-  GPUNetworkAccessibility,
-  GPU_NETWORK_ACCESSIBILITY_PARAMETER_LENGTH,
-  encodeGPUNetworkAccessibilityParameters
-} from './network-accessibility/index';
-export type {
-  GPUNetworkSnappingProps,
-  GPUNetworkSnappingSeedDirection,
-  GPUNetworkCostMatrixProps,
-  GPUNetworkAccessibilityProps,
-  GPUNetworkAccessibilityCatchment,
-  GPUNetworkAccessibilityDecay,
-  GPUNetworkAccessibilityParameters
-} from './network-accessibility/index';
+
 export {
   decodeGPUNetworkCoarseningSummary,
   GPU_NETWORK_COARSENING_MAXIMUM_GROUP_CAPACITY,
@@ -51,6 +98,7 @@ export type {
   GPUNetworkCoarseningProps,
   GPUNetworkCoarseningSummary
 } from './network-coarsening/index';
+
 export {
   GPU_NETWORK_REACHABILITY_MAXIMUM_ITERATIONS,
   GPU_NETWORK_REACHABILITY_MAXIMUM_LOCAL_ITERATIONS,
@@ -58,7 +106,10 @@ export {
   GPU_NETWORK_REACHABILITY_NONE,
   GPUNetworkReachability
 } from './network-reachability/index';
-export type {GPUNetworkReachabilityProps} from './network-reachability/index';
+export type {
+  GPUNetworkReachabilityProps
+} from './network-reachability/index';
+
 export {
   decodeGPUNetworkStatistics,
   encodeGPUNetworkStatisticsParameters,
@@ -73,6 +124,7 @@ export type {
   GPUNetworkStatisticsProps,
   GPUNetworkStatisticsResult
 } from './network-statistics/index';
+
 export {
   decodeGPUNetworkSubgraphFilterCounts,
   getGPUNetworkSubgraphFilterParameterLength,
@@ -90,42 +142,3 @@ export type {
   GPUNetworkSubgraphFilterProps,
   GPUNetworkSubgraphFilterState
 } from './network-subgraph-filter/index';
-export {
-  getGPUFlowPairKey,
-  getGPUFlowPairZones,
-  GPU_FLOW_AGGREGATION_MAXIMUM_ZONE_COUNT,
-  GPU_FLOW_AGGREGATION_NO_ZONE,
-  GPUFlowAggregation
-} from './flow-aggregation/index';
-export type {
-  GPUFlowAggregationBounds,
-  GPUFlowAggregationProps,
-  GPUFlowAggregationSumOrder,
-  GPUFlowAggregationTimeWindow,
-  GPUFlowAggregationZones
-} from './flow-aggregation/index';
-export {
-  createGPUEdgeBundlingParameterValues,
-  getGPUEdgeBundlingFixedPointExponent,
-  GPU_EDGE_BUNDLING_DEFAULTS,
-  GPU_EDGE_BUNDLING_MAXIMUM_ITERATIONS,
-  GPU_EDGE_BUNDLING_MAXIMUM_POINTS_PER_EDGE,
-  GPU_EDGE_BUNDLING_PARAMETER_LENGTH,
-  GPU_EDGE_BUNDLING_WORK_BOX_PADDING,
-  GPUEdgeBundling
-} from './edge-bundling/index';
-export type {GPUEdgeBundlingParameterValues, GPUEdgeBundlingProps} from './edge-bundling/index';
-export {
-  computeAdjacencyMatrixOrder,
-  encodeGPUAdjacencyMatrixWindow,
-  getGPUAdjacencyMatrixFixedWeight,
-  GPU_ADJACENCY_MATRIX_DEFAULT_WEIGHT_SCALE,
-  GPU_ADJACENCY_MATRIX_WINDOW_LENGTH,
-  GPUAdjacencyMatrix,
-  GPUAdjacencyMatrixOrder
-} from './adjacency-matrix/index';
-export type {
-  GPUAdjacencyMatrixOrderProps,
-  GPUAdjacencyMatrixProps,
-  GPUAdjacencyMatrixWindow
-} from './adjacency-matrix/index';

@@ -75,7 +75,12 @@ steady-state dispatches. On devices with `timestamp-query`, create the command e
 
 Optional algorithm entry points keep specialized workflows out of the default experimental bundle:
 
-- `@luma.gl/experimental/geospatial` provides graph-native spatial operations and distance kernels.
+- `@luma.gl/experimental/geospatial` provides graph-native spatial operations, distance kernels, and
+  spatial-statistics, line, and trajectory analysis contributors.
+- `@luma.gl/experimental/gpu-terrain` provides elevation-tile analysis contributors for slope, contours,
+  viewshed, hydrology, solar shadows, and relief shading.
+- `@luma.gl/experimental/gpu-network` provides CSR network analysis contributors for reachability,
+  service areas, accessibility, flow aggregation, and edge bundling.
 - `@luma.gl/experimental/gpu-project` compiles arbitrary CPU coordinate transformations into
   GPU-evaluated local projection patches with Float32 and double-single result modes.
 - `@luma.gl/experimental/gpu-trace` keeps execution-trace scenes, process/thread interactions,

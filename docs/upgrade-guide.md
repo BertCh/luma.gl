@@ -29,6 +29,13 @@ See [GPUFFT2D](./api-reference/experimental/gpu-core/gpu-fft2d) for the migratio
   allocating and indexing them. Prefer `planGPULZByteDescriptors()` to convert the unchanged
   four-word parser spans into GPU descriptors.
 
+### GPUSort radix tiling
+
+- Radix `GPUSort` processes `elementsPerThread` keys per thread, default `8`, so one workgroup
+  covers 2048 keys. Dispatch sizes, histogram lengths and scratch sizes shrink accordingly, and
+  ranges that previously exceeded a small `maxComputeWorkgroupsPerDimension` now fit. Pass
+  `elementsPerThread: 1` for the previous tiling. `GPUSort.digitBits` is typed `4 | 8`.
+
 **@luma.gl/shadertools**
 
 - `ShaderPassPipeline`, `ShaderPassPipelineStep`, and `ShaderPassComputeOptimization` have been
@@ -40,7 +47,7 @@ See [GPUFFT2D](./api-reference/experimental/gpu-core/gpu-fft2d) for the migratio
 
 - `WebGPUDevice.adapter` is now typed `GPUAdapter | null`. It is `null` for devices wrapped with `webgpuAdapter.attach()` / `luma.attachDevice()`, because a `GPUDevice` does not reference its `GPUAdapter`. Devices from `luma.createDevice()` still have an adapter; TypeScript code that reads `device.adapter` needs a null check or non-null assertion. Use `device.adapterInfo` for adapter metadata.
 
-**@luma.gl/splats - rendering, depth keys and sorting**
+**@luma.gl/splats**
 
 - `SPLAT_DEPTH_KEY_BITS` dropped from `24` to `16`. `packSplatDepthKey(depth, options)` now takes
   `{mode, keyBits, depthMin, depthMax, tileId}`; `mode` defaults to `'linear'` (the old behavior)
@@ -73,16 +80,6 @@ See [GPUFFT2D](./api-reference/experimental/gpu-core/gpu-fft2d) for the migratio
   `compensateScreenSpaceClamp`, `depthKeyMode`, `depthKeyBits`, `depthRange`, `alphaMode`,
   `pickingAlphaThreshold`, `batchParams`, `renderPath`, `presentation`).
 - `packSplatClipUniforms()` drops degenerate planes before enforcing the 8-plane limit.
-
-**@luma.gl/gpgpu - GPUSort**
-
-- Radix `GPUSort` processes `elementsPerThread` keys per thread, default `8`, so one workgroup
-  covers 2048 keys. Dispatch sizes, histogram lengths and scratch sizes shrink accordingly, and
-  ranges that previously exceeded a small `maxComputeWorkgroupsPerDimension` now fit. Pass
-  `elementsPerThread: 1` for the previous tiling. `GPUSort.digitBits` is typed `4 | 8`.
-
-**@luma.gl/splats**
-
 - `SplatHierarchyFrontierEntry` gained required `filterVariance` and `fadeOpacity` fields, and
   `SplatHierarchyStats` gained required `budgetedSplatCount`, `budgetExhausted` and
   `framesSinceBudgetPlan`. Code that constructs these objects itself must supply them.

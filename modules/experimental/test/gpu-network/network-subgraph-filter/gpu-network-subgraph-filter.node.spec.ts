@@ -22,7 +22,7 @@ const SLOT_COUNT = 8;
 function createContext(device: Device) {
   const graph = new GPUCommandGraph(device);
   const buffers: Buffer[] = [];
-  const importView = <Format extends 'uint32' | 'float32' | 'uint32x2'>(
+  const importView = <Format extends 'uint32' | 'float32' | 'uint32x2' = 'uint32'>(
     name: string,
     length: number,
     format: Format = 'uint32' as Format

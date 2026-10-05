@@ -146,8 +146,8 @@ it('arena columns drive GPUTimeWindowFilter with an indirect draw; the live pred
   const graph = new GPUCommandGraph(device, {id: 'composition-time-window'});
   const views = mirror.arena.importToGraph(graph);
   const windowView = window.importToGraph(graph);
-  const timestamps = views.columns.time as GraphDataView<'float32'>;
-  const sourceIds = views.columns.ids as GraphDataView<'uint32'>;
+  const timestamps = views.columns['time'] as GraphDataView<'float32'>;
+  const sourceIds = views.columns['ids'] as GraphDataView<'uint32'>;
   const live = createCompactOutput(device, graph, 'live');
   const stale = createCompactOutput(device, graph, 'stale');
   graph.add(
@@ -193,8 +193,8 @@ it('arena columns drive GPUTimeWindowFilter with an indirect draw; the live pred
     submitGraph(device, compiled, undefined);
 
     const liveRows = getLiveRows(mirror);
-    const times = mirror.columns.time as Float32Array;
-    const ids = mirror.columns.ids as Uint32Array;
+    const times = mirror.columns['time'] as Float32Array;
+    const ids = mirror.columns['ids'] as Uint32Array;
     const expectedIds = liveRows
       .filter(row => isInWindow(times[row], timeWindow))
       .map(row => ids[row]);
@@ -269,7 +269,7 @@ it('GPUTimeWindowFilter outputMask composes with GPUResidentRowSelection tile ga
   graph.add(
     new GPUTimeWindowFilter({
       id: 'time-only-filter',
-      timestamps: views.columns.time as GraphDataView<'float32'>,
+      timestamps: views.columns['time'] as GraphDataView<'float32'>,
       window: window.importToGraph(graph),
       output: timeOnly.output,
       outputMask: timeMask
@@ -284,7 +284,7 @@ it('GPUTimeWindowFilter outputMask composes with GPUResidentRowSelection tile ga
         tileMask: importGraphBuffer(graph, 'tile-mask', tileMaskBuffer, 'uint32', MAX_TILE_COUNT)
       },
       additionalPredicates: [{kind: 'time-range', mask: timeMask}],
-      sourceIds: views.columns.ids as GraphDataView<'uint32'>,
+      sourceIds: views.columns['ids'] as GraphDataView<'uint32'>,
       output: selected.output,
       drawInstanceCount: graph.importGPUData(
         'composition-gate-draw-count',
@@ -308,8 +308,8 @@ it('GPUTimeWindowFilter outputMask composes with GPUResidentRowSelection tile ga
     tileMaskBuffer.write(tileMask);
     submitGraph(device, compiled, undefined);
 
-    const times = mirror.columns.time as Float32Array;
-    const ids = mirror.columns.ids as Uint32Array;
+    const times = mirror.columns['time'] as Float32Array;
+    const ids = mirror.columns['ids'] as Uint32Array;
     const slots = mirror.arena.allocator.getRowTileSlots();
     const liveMask = mirror.getLiveMask();
     const expectedIds: number[] = [];
@@ -383,8 +383,8 @@ it('arena columns drive GPUPointDensity; NaN dead positions exclude dead rows wi
   graph.add(
     new GPUPointDensity({
       id: 'arena-density',
-      positions: views.columns.positions as GraphDataView<'float32x2'>,
-      weights: views.columns.weights as GraphDataView<'float32'>,
+      positions: views.columns['positions'] as GraphDataView<'float32x2'>,
+      weights: views.columns['weights'] as GraphDataView<'float32'>,
       bounds: [0, 0, 100, 100],
       gridSize: [GRID, GRID],
       statistic: 'sum',
@@ -406,8 +406,8 @@ it('arena columns drive GPUPointDensity; NaN dead positions exclude dead rows wi
     submitGraph(device, compiled, undefined);
 
     // CPU oracle over live rows only.
-    const positions = mirror.columns.positions as Float32Array;
-    const weights = mirror.columns.weights as Float32Array;
+    const positions = mirror.columns['positions'] as Float32Array;
+    const weights = mirror.columns['weights'] as Float32Array;
     const expectedCounts = new Array<number>(CELL_COUNT).fill(0);
     const expectedSums = new Array<number>(CELL_COUNT).fill(0);
     const liveRows = getLiveRows(mirror);
@@ -541,7 +541,7 @@ it('GPURegionStatistics automatic histogram domain ignores dead rows holding sta
   };
   const graph = new GPUCommandGraph(device, {id: 'composition-stats'});
   const views = mirror.arena.importToGraph(graph);
-  const values = views.columns.values as GraphDataView<'float32'>;
+  const values = views.columns['values'] as GraphDataView<'float32'>;
   const gate = createCompactOutput(device, graph, 'gate');
   const gateMask = importGraphBuffer(graph, 'gate-mask', gateMaskBuffer, 'uint32', ROW_CAPACITY);
   const statistics = (
@@ -594,7 +594,7 @@ it('GPURegionStatistics automatic histogram domain ignores dead rows holding sta
     tileMaskBuffer.write(tileMask);
     submitGraph(device, compiled, undefined);
 
-    const cpuValues = mirror.columns.values as Float32Array;
+    const cpuValues = mirror.columns['values'] as Float32Array;
     const liveRows = getLiveRows(mirror);
     const slots = mirror.arena.allocator.getRowTileSlots();
     const gatedRows = liveRows.filter(row => tileMask[slots[row]]);

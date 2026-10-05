@@ -219,6 +219,12 @@ const WORKGROUP_SIZE = 256;
  * bins each. Undirected: in = out = total = live row length (not doubled). Directed: total = in +
  * out. Degree statistics cover live vertices only.
  *
+ * Degrees are not computed with `GPUGraphDegree`: that algorithm subtracts CSR offsets, which
+ * counts every stored slot, while statistics need the live degree after per-vertex and per-slot
+ * masks (a masked CSR would need new offsets from a prefix sum), and the directed in-degree is a
+ * scatter over the live slots rather than a reverse CSR. The live row length, in-degree and slot
+ * counts therefore come from the same pass that builds the masked neighbors.
+ *
  * Components run `GPUGraphConnectedComponents` on a contributor-owned masked copy of the neighbors
  * (dead slots become `0xffffffff`), so masked vertices are isolated and excluded from counts.
  *

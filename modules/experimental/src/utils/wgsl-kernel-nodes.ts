@@ -3,7 +3,7 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import type {Binding} from '@luma.gl/core';
-import {Computation} from '@luma.gl/engine';
+import {Kernel} from '@luma.gl/engine';
 import {
   createGPUComputeCommandNode,
   createTransientView,
@@ -154,7 +154,7 @@ fn main(
       writeByteLength
     },
     compile: ({device}) => {
-      const computation = new Computation(device, {
+      const kernel = new Kernel(device, {
         id: props.id,
         source,
         shaderLayout: {
@@ -172,10 +172,14 @@ fn main(
           for (const binding of props.bindings) {
             resolvedBindings[binding.name] = getViewBinding(binding.view, getBuffer);
           }
-          computation.setBindings(resolvedBindings);
-          computation.dispatch(computePass, layout.x, layout.y, layout.z);
+          kernel.dispatch(computePass, {
+            bindings: resolvedBindings,
+            x: layout.x,
+            y: layout.y,
+            z: layout.z
+          });
         },
-        destroy: () => computation.destroy()
+        destroy: () => kernel.destroy()
       };
     }
   });

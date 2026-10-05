@@ -77,11 +77,11 @@ it('GPUResidencyArena churn matches the CPU image and creates no buffers', async
       for (let i = 0; i < range.rowCount; i++, tileRow++) {
         const row = range.firstRow + i;
         expectedPositions.set(
-          data.columns.positions.subarray(tileRow * 2, tileRow * 2 + 2),
+          data.columns['positions'].subarray(tileRow * 2, tileRow * 2 + 2),
           row * 2
         );
-        expectedTime[row] = data.columns.time[tileRow];
-        expectedIds[row] = data.columns.ids[tileRow];
+        expectedTime[row] = data.columns['time'][tileRow];
+        expectedIds[row] = data.columns['ids'][tileRow];
       }
     }
   };
@@ -233,11 +233,11 @@ it('GPUResidencyArena.importToGraph returns full-capacity views with stable IDs'
   const views = arena.importToGraph(graph);
   expect(views.rowCapacity).toBe(ROW_CAPACITY);
   expect(Object.keys(views.columns)).toEqual(['positions', 'ids']);
-  expect(views.columns.positions.length).toBe(ROW_CAPACITY);
-  expect(views.columns.ids.length).toBe(ROW_CAPACITY);
+  expect(views.columns['positions'].length).toBe(ROW_CAPACITY);
+  expect(views.columns['ids'].length).toBe(ROW_CAPACITY);
   expect(views.liveMask.length).toBe(ROW_CAPACITY);
   expect(views.rowTileSlots.length).toBe(ROW_CAPACITY);
-  expect(views.columns.positions.buffer.id).toBe('tiles-positions');
+  expect(views.columns['positions'].buffer.id).toBe('tiles-positions');
   expect(views.liveMask.buffer.id).toBe('tiles-live-mask');
   expect(views.rowTileSlots.buffer.id).toBe('tiles-row-tile-slots');
   arena.destroy();

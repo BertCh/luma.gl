@@ -173,10 +173,10 @@ async function expectStateMatchesOracle(
   options: {sourceIds: boolean; tiles: boolean}
 ): Promise<ReturnType<typeof selectResidentRowsOracle>> {
   const {buffers, device, compiled} = harness;
-  buffers.live.write(state.liveMask);
-  buffers.slots.write(state.rowTileSlots);
-  buffers.tileMask.write(state.tileMask);
-  buffers.predicate.write(state.predicateMask);
+  buffers['live'].write(state.liveMask);
+  buffers['slots'].write(state.rowTileSlots);
+  buffers['tileMask'].write(state.tileMask);
+  buffers['predicate'].write(state.predicateMask);
   submitGraph(device, compiled, undefined);
   const expected = selectResidentRowsOracle({
     liveMask: state.liveMask,
@@ -188,12 +188,12 @@ async function expectStateMatchesOracle(
       : undefined,
     capacity
   });
-  const [count] = await readUint32(buffers.count, 1);
+  const [count] = await readUint32(buffers['count'], 1);
   expect(count).toBe(expected.count);
-  expect(await readUint32(buffers.ids, count)).toEqual(expected.ids);
-  expect(await readUint32(buffers.total, 1)).toEqual([expected.total]);
-  expect(await readUint32(buffers.overflow, 1)).toEqual([expected.overflow]);
-  expect(await readUint32(buffers.mask, ROW_CAPACITY)).toEqual(expected.mask);
+  expect(await readUint32(buffers['ids'], count)).toEqual(expected.ids);
+  expect(await readUint32(buffers['total'], 1)).toEqual([expected.total]);
+  expect(await readUint32(buffers['overflow'], 1)).toEqual([expected.overflow]);
+  expect(await readUint32(buffers['mask'], ROW_CAPACITY)).toEqual(expected.mask);
   expect(await harness.readDrawCount()).toBe(expected.count);
   return expected;
 }

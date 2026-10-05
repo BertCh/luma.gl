@@ -133,7 +133,7 @@ weak-component and label-propagation community labels, a hover neighborhood, rea
 and a two-endpoint shortest path. Later frames encode actual exact, flat-grid spatial, or sampled
 force layout into deck.gl's own command encoder; the interaction contributors rerun only when hover or
 path endpoints change. deck.gl remains responsible for queue submission. The writable layout
-allocation is also the node layer's `float32x2` instance vertex attribute. Recipe columns, the
+allocation is also the node layer's `float32x2` instance vertex attribute. Analysis columns, the
 neighborhood mask, and path ranks are bound as row-aligned storage buffers with uniform color and
 size scales, so changing the displayed column never rebuilds a pipeline; each nonempty original
 edge partition gets its own edge layer, without concatenation, buffer copies, or per-frame graph
