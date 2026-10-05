@@ -295,6 +295,7 @@
             "items": [
               "api-reference/engine/geometry/geometries",
               "api-reference/engine/geometry/geometry",
+              "api-reference/engine/geometry/stroke-geometry",
               "api-reference/engine/geometry/gpu-geometry",
               "api-reference/engine/dynamic-buffer",
               "api-reference/engine/dynamic-texture",
@@ -446,6 +447,7 @@
                   "api-reference/experimental/gpu-core/concepts",
             "api-guide/gpu/batch-semantics",
                   "api-reference/experimental/gpu-core/gpu-command-graph",
+                  "api-reference/experimental/gpu-core/gpu-incremental-execution",
                   "api-reference/experimental/gpu-core/gpu-texture-history",
                   "api-reference/experimental/gpu-core/gpu-readback-ring",
                   "api-reference/experimental/gpu-core/draw-command-buffer"
@@ -804,6 +806,14 @@
       },
       {
         "type": "category",
+        "label": "@luma.gl/slang (Experimental, v10)",
+        "items": [
+          "api-reference/slang/README",
+          "api-reference/slang/reflection"
+        ]
+      },
+      {
+        "type": "category",
         "label": "@luma.gl/shadertools",
         "items": [
           {
@@ -838,7 +848,10 @@
                   "api-reference/shadertools/shader-modules/fp32",
                   "api-reference/shadertools/shader-modules/fp64",
                   "api-reference/shadertools/shader-modules/fp64-arithmetic",
-                  "api-reference/shadertools/shader-modules/random"
+                  "api-reference/shadertools/shader-modules/random",
+                  "api-reference/shadertools/shader-modules/pattern-fill",
+                  "api-reference/shadertools/shader-modules/sketch-stroke",
+                  "api-reference/shadertools/shader-modules/point-glow"
                 ]
               },
               {
@@ -860,6 +873,7 @@
                   "api-reference/shadertools/shader-modules/dggs",
                   "api-reference/shadertools/shader-modules/gpu-picking",
                   "api-reference/shadertools/shader-modules/picking",
+                  "api-reference/shadertools/shader-modules/path-dash",
                   "api-reference/shadertools/shader-modules/project",
                   "api-reference/shadertools/shader-modules/skin"
                 ]
@@ -1003,6 +1017,7 @@
           "developer-guide/debugging",
           "developer-guide/profiling",
           "developer-guide/bundling",
+          "developer-guide/releasing",
           "developer-guide/working-with-ai"
         ]
       },
