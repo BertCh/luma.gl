@@ -34,25 +34,9 @@ import {
   GPUReadbackRing,
   type CompiledGPUCommandGraph
 } from '@luma.gl/gpgpu/gpu-core';
-import {
-  getGPUDistanceFieldParameterValues,
-  getGPUIsobandsParameterValues,
-  getGPUIsolinesParameterValues,
-  getGPURasterStretchParameterValues,
-  getGPUTerrainDerivativesParameterValues,
-  GPU_DISTANCE_FIELD_PARAMETER_LENGTH,
-  GPU_ISOBANDS_PARAMETER_LENGTH,
-  GPU_ISOLINES_PARAMETER_LENGTH,
-  GPU_RASTER_STRETCH_PARAMETER_LENGTH,
-  GPU_TERRAIN_DERIVATIVES_PARAMETER_LENGTH,
-  GPUDistanceField,
-  GPUIsobands,
-  GPUIsolines,
-  GPURasterStretch,
-  GPUTerrainDerivatives,
-  importGraphBuffer,
-  type GPURasterStretchMode
-} from '@luma.gl/experimental/map-graphs';
+import {getGPUDistanceFieldParameterValues, getGPUIsobandsParameterValues, getGPUIsolinesParameterValues, getGPURasterStretchParameterValues, GPU_DISTANCE_FIELD_PARAMETER_LENGTH, GPU_ISOBANDS_PARAMETER_LENGTH, GPU_ISOLINES_PARAMETER_LENGTH, GPU_RASTER_STRETCH_PARAMETER_LENGTH, GPUDistanceField, GPUIsobands, GPUIsolines, GPURasterStretch, type GPURasterStretchMode} from '@luma.gl/experimental/gpu-raster';
+import {getGPUTerrainDerivativesParameterValues, GPU_TERRAIN_DERIVATIVES_PARAMETER_LENGTH, GPUTerrainDerivatives} from '@luma.gl/experimental/gpu-terrain';
+import {importGraphBuffer} from '@luma.gl/experimental/UNRESOLVED';
 import {LocalMetricProjection} from '../map-graphs-data';
 import {MapGraphsSegmentLayer, type MapGraphsColor} from '../map-graphs-layers';
 import type {MapGraphsModeDefinition, MapGraphsModeInstance} from '../map-graphs-mode';

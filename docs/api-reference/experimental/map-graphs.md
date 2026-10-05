@@ -14,16 +14,12 @@ raster modules; new WGSL is written only where no primitive fits.
 
 ```ts
 import {GPUCommandGraph} from '@luma.gl/gpgpu/gpu-core';
-import {
-  GPUMapGraphParameterBuffer,
-  GPUTimeWindowFilter,
-  getGPUTimeWindowParameterValues,
-  GPU_TIME_WINDOW_PARAMETER_LENGTH,
-  submitGraph
-} from '@luma.gl/experimental/map-graphs';
+import {GPUParameterBuffer} from '@luma.gl/experimental/geospatial';
+import {GPUTimeWindowFilter, getGPUTimeWindowParameterValues, GPU_TIME_WINDOW_PARAMETER_LENGTH} from '@luma.gl/experimental/gpu-dataframe';
+import {submitGraph} from '@luma.gl/experimental/UNRESOLVED';
 
 const graph = new GPUCommandGraph(device, {id: 'map'});
-const window = new GPUMapGraphParameterBuffer(device, {
+const window = new GPUParameterBuffer(device, {
   id: 'time-window',
   format: 'float32',
   length: GPU_TIME_WINDOW_PARAMETER_LENGTH
@@ -46,16 +42,16 @@ submitGraph(device, compiled, undefined);
   submit, or read back.
 - **Per-frame values never recompile.** Viewports, time windows, thresholds, radii, observer
   positions, budgets, and region shapes are read from storage views, usually a
-  `GPUMapGraphParameterBuffer` that the application rewrites with `write()`. Lengths, capacities,
+  `GPUParameterBuffer` that the application rewrites with `write()`. Lengths, capacities,
   grid sizes, and which optional views exist are compile-time topology; each prop's TSDoc says which
   category it belongs to.
-- **Bounded results report overflow on the GPU.** Compact ID lists use `GPUMapGraphCompactOutput`
+- **Bounded results report overflow on the GPU.** Compact ID lists use `GPUCompactOutput`
   (`ids`, `count`, `overflow`, optional `totalCount`). `count` is clamped to `ids.length` and can be
   an indirect draw instance count; `overflow` is rewritten every encoding.
 - **Stable IDs.** Result IDs are the caller's `sourceIds[row]` (or tile IDs) when given and zero-based
   rows otherwise. Node and transient IDs are `${id}-<step>`, so two instances in one graph need
   different `id` props.
-- **One import per buffer.** `importGraphBuffer` (and `GPUMapGraphParameterBuffer.importToGraph`)
+- **One import per buffer.** `importGraphBuffer` (and `GPUParameterBuffer.importToGraph`)
   registers a buffer under one graph resource ID. Importing the same buffer again under a different
   ID throws `already in use`; import it once and pass the returned view to every recipe that reads
   it.
@@ -91,7 +87,7 @@ window.write(getGPUTimeWindowParameterValues({start: now - trailLength, end: now
 ```
 
 ```ts
-const window = new GPUMapGraphParameterBuffer(device, {
+const window = new GPUParameterBuffer(device, {
   id: 'window', format: 'uint32', length: GPU_TIME_WORD_WINDOW_PARAMETER_LENGTH
 });
 const {vector: departures} = makeArrowTemporalWordGPUVector(device, table.getChild('departure')!);
@@ -454,7 +450,7 @@ domainParameters.write(getGPUColumnProfileParameterValues([[0, 100], [NaN, NaN]]
 Groups rows by a 32- or 64-bit key and computes kepler-style statistics per group and value column on the GPU: count, sum, mean, minimum, maximum, variance, standard deviation, skewness, kurtosis, median, percentiles, mode, unique count and a per-row group z-score. Use it for "aggregate this column by that key" panels, choropleth values keyed by a region id or an H3 or Quadbin cell, and per-group outlier styling.
 
 ```ts
-const fractions = new GPUMapGraphParameterBuffer(device, {id: 'fractions', format: 'float32', length: 3});
+const fractions = new GPUParameterBuffer(device, {id: 'fractions', format: 'float32', length: 3});
 graph.add(
   new GPUGroupStatistics({
     keys, // uint32, or uint32x2 (low, high) words; all-ones is "no key"
@@ -821,7 +817,7 @@ graph.add(new GPUNetworkReachability({
 
 Network analysis over the same directed CSR road network as `GPUNetworkReachability`.
 
-- `GPUNetworkPathExtraction` walks a reachability predecessor array from per-frame targets. It publishes ordered (source to target) node lists and resolved CSR edge lists as `GPUMapGraphCompactOutput`s, together with per-target offsets, costs, and found flags. Each walk is bounded by a compile-time `maxPathLength`, so cyclic or garbage predecessors terminate and raise `overflow`.
+- `GPUNetworkPathExtraction` walks a reachability predecessor array from per-frame targets. It publishes ordered (source to target) node lists and resolved CSR edge lists as `GPUCompactOutput`s, together with per-target offsets, costs, and found flags. Each walk is bounded by a compile-time `maxPathLength`, so cyclic or garbage predecessors terminate and raise `overflow`.
 - `GPUNetworkServiceAreas` assigns every node to its nearest per-frame facility. Ties go to the smallest facility row. It also reports per-facility node counts and the total cost each facility serves. It composes `GPUNetworkReachability` with a GPU-gated min-label pass over the tight shortest-path edges.
 - `GPUNetworkNeighborhood` publishes k-hop ego networks around per-frame seeds, with per-frame `k` up to a compile-time `maxHops`. Outputs are hop distances, masks, and compact node and induced-edge IDs.
 - `GPUNetworkAnalyticsColumns` runs `gpu-graph` degree, PageRank, connected components, core number, and label-propagation communities directly on the caller's CSR views through a `GPUGraphTopologyView`, so a transient CSR built in the same graph by `GPUCOOToCSR` works as well as imported buffers. It publishes node-aligned columns, optionally normalized to `[0, 1]` with a GPU extent.
@@ -1021,7 +1017,7 @@ compile-time. The per-frame `parameters` view holds `[activeIterations, kernelRa
 smoothing, stepScale]`; pack it with `createGPUEdgeBundlingParameterValues`.
 
 ```ts
-const parameters = new GPUMapGraphParameterBuffer(device, {id: 'bundling', format: 'uint32', length: 5,
+const parameters = new GPUParameterBuffer(device, {id: 'bundling', format: 'uint32', length: 5,
   values: createGPUEdgeBundlingParameterValues({kernelRadius: 0.03}, 'uint32')});
 graph.add(new GPUEdgeBundling({positions, sourceVertices, targetVertices, edgeMask,
   paths, startIndices, drawRecord, pointsPerEdge: 16, iterations: 15, densityResolution: 256,
@@ -1047,7 +1043,7 @@ the GPU every encoding, so dead rows never widen a histogram. NaN and infinite v
 dimension. `uint32` columns are binned as f32, which is exact only below 2^24.
 
 Optional outputs are the domains used, selected and live counts, a per-row selection mask, and a
-compact `GPUMapGraphCompactOutput` of selected row IDs.
+compact `GPUCompactOutput` of selected row IDs.
 
 ```ts
 graph.add(new GPUAttributeCrossfilter({
@@ -1216,7 +1212,7 @@ per-frame `maxDistance` clears cells beyond it and fills an optional `withinDist
 optional `r32float` texture receives a copy of `distances`. Cell sizes may differ in x and y.
 
 ```ts
-const settings = new GPUMapGraphParameterBuffer(device, {id: 'df-settings', format: 'float32', length: 8});
+const settings = new GPUParameterBuffer(device, {id: 'df-settings', format: 'float32', length: 8});
 graph.add(new GPUDistanceField({
   width, height, settings: settings.importToGraph(graph),
   seedPositions, seedCount, seedMask,  // capacity is seedPositions.length
@@ -1336,7 +1332,7 @@ a dense `uint32` zone raster on the GPU, plus optional boundary-cell flags. `GPU
 aggregates points by looking up their cell: O(1) per point, independent of polygon complexity.
 
 ```ts
-const extent = new GPUMapGraphParameterBuffer(device, {id: 'extent', format: 'float32', length: 4});
+const extent = new GPUParameterBuffer(device, {id: 'extent', format: 'float32', length: 4});
 extent.write(getGPUPolygonRasterizationExtentValues(originX, originY, cellWidth, cellHeight));
 const extentView = extent.importToGraph(graph);
 graph.add(new GPUPolygonRasterization({
@@ -1380,7 +1376,7 @@ compared exactly. Stacks are band-sequential: layer `i` occupies rows `[i * cell
   (half to even) on `a`, then an optional clamp. Domain errors give NaN.
 
 ```ts
-const overlayParameters = new GPUMapGraphParameterBuffer(device, {
+const overlayParameters = new GPUParameterBuffer(device, {
   id: 'overlay', format: 'float32', length: getGPUWeightedOverlayParameterLength(3)
 });
 graph.add(new GPUWeightedOverlay({
@@ -1469,7 +1465,7 @@ band and cell. An optional `vertexCount` (`3 * count`) feeds a non-indexed indir
 `firstBand`/`lastBand` limit the emitted bands per frame.
 
 ```ts
-const lineParameters = new GPUMapGraphParameterBuffer(device, {
+const lineParameters = new GPUParameterBuffer(device, {
   id: 'isolines', format: 'float32', length: GPU_ISOLINES_PARAMETER_LENGTH
 });
 graph.add(new GPUIsolines({
@@ -1518,7 +1514,7 @@ and maximum over finite samples (gain and loss sum positive and negative differe
 consecutive finite samples); plus `count`, `overflow`, and `totalCount`.
 
 ```ts
-const samplingParameters = new GPUMapGraphParameterBuffer(device, {
+const samplingParameters = new GPUParameterBuffer(device, {
   id: 'sampling', format: 'float32', length: GPU_RASTER_SAMPLING_PARAMETER_LENGTH
 });
 graph.add(new GPURasterSampling({
@@ -1547,8 +1543,8 @@ readback. Unlike screen-space fading trails, the trails are in data space, so th
 and zooming.
 
 ```ts
-const parameters = new GPUMapGraphParameterBuffer(device, {id: 'wind', format: 'float32', length: 12});
-const words = new GPUMapGraphParameterBuffer(device, {id: 'wind-words', format: 'uint32', length: 4});
+const parameters = new GPUParameterBuffer(device, {id: 'wind', format: 'float32', length: 12});
+const words = new GPUParameterBuffer(device, {id: 'wind-words', format: 'uint32', length: 4});
 graph.add(
   new GPUParticleAdvection({
     velocities, // GraphDataView<'float32x2'>, (u, v) per cell, row 0 = smallest y
@@ -1666,7 +1662,7 @@ only adds or removes dots; existing dots never move, so there is no flicker.
 `GPURandomPointsInPolygon` places an integer count of uniform random points per feature.
 
 ```ts
-const parameters = new GPUMapGraphParameterBuffer(device, {id: 'dots', format: 'uint32', length: 8});
+const parameters = new GPUParameterBuffer(device, {id: 'dots', format: 'uint32', length: 8});
 graph.add(
   new GPUDotDensity({
     polygonPositions, featureOffsets, polygonOffsets, ringOffsets, // GeoArrow, as GPUPointInPolygonJoin
@@ -1818,7 +1814,7 @@ polygon contiguity.
   unclamped.
 
 ```ts
-const parameters = new GPUMapGraphParameterBuffer(device, {
+const parameters = new GPUParameterBuffer(device, {
   id: 'knn', format: 'float32', length: GPU_NEIGHBOR_SEARCH_PARAMETER_LENGTH,
   values: getGPUNeighborSearchParameterValues({bounds, rowStandardize: true})
 });
@@ -1896,7 +1892,7 @@ compile-time `maximumPermutations`), the values or the weights never rebuilds th
   outputs are the `referenceDistribution` and its `histogram` (GeoDa's permutation plot).
 
 ```ts
-const parameters = new GPUMapGraphParameterBuffer(device, {
+const parameters = new GPUParameterBuffer(device, {
   id: 'permutations', format: 'uint32', length: GPU_PERMUTATION_PARAMETER_LENGTH,
   values: getGPUPermutationParameterValues({seed: 1, permutations: 99})
 });
@@ -1969,7 +1965,7 @@ polygon rings for the ellipse and the standard-distance circle. Project longitud
 every statistic is Euclidean.
 
 ```ts
-const parameters = new GPUMapGraphParameterBuffer(device, {
+const parameters = new GPUParameterBuffer(device, {
   id: 'distribution-parameters',
   format: 'float32',
   length: GPU_GEOGRAPHIC_DISTRIBUTION_PARAMETER_LENGTH
@@ -2101,7 +2097,7 @@ Charlton 2002; mgwr, ArcGIS GWR). For every included row `i` it fits a weighted 
 local R-squared, fitted values, residuals and the hat-matrix diagonal.
 
 ```ts
-const parameters = new GPUMapGraphParameterBuffer(device, {
+const parameters = new GPUParameterBuffer(device, {
   id: 'gwr-parameters',
   format: 'float32',
   length: getGPUGeographicallyWeightedRegressionParameterLength(16)
@@ -2156,7 +2152,7 @@ directions, the scaler and the aggregation live in a parameter buffer, so weight
 every row without rebuilding the graph.
 
 ```ts
-const parameters = new GPUMapGraphParameterBuffer(device, {
+const parameters = new GPUParameterBuffer(device, {
   id: 'composite-parameters',
   format: 'float32',
   length: GPU_COMPOSITE_SCORE_PARAMETER_LENGTH
@@ -2386,7 +2382,7 @@ time-of-day and weekday charts and calendar bucket keys need no per-row `Date` o
 columns feed `GPUTemporalReduction`, `GPUCellAggregation` keys and heatmaps.
 
 ```ts
-const parameters = new GPUMapGraphParameterBuffer(device, {id: 'calendar', format: 'sint32', length: 2});
+const parameters = new GPUParameterBuffer(device, {id: 'calendar', format: 'sint32', length: 2});
 graph.add(
   new GPUCalendarBuckets({
     timestamps, // GraphDataView<'uint32x2'>, Int64 epoch ms words, e.g. from getInt64TimeWords
@@ -2425,7 +2421,7 @@ present output group adds one compute node (`two-slice`, `multiband`, `t-test`, 
 deterministic and no atomics are used.
 
 ```ts
-const parameters = new GPUMapGraphParameterBuffer(device, {
+const parameters = new GPUParameterBuffer(device, {
   id: 'change-parameters',
   format: 'float32',
   length: GPU_CHANGE_DETECTION_PARAMETER_LENGTH

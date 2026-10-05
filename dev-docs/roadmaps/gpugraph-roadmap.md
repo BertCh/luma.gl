@@ -637,7 +637,7 @@ graduated packages.
 ## Map graph toolkit (initial versions)
 
 Status: initial, experimental. `@luma.gl/experimental/map-graphs` ships prebuilt command graphs for
-common map tasks, composed from the public primitives above. Each recipe is a `GPUMapGraphRecipe`
+common map tasks, composed from the public primitives above. Each recipe is a `GPUCommandNodeProducer`
 class with typed graph-view inputs and outputs, per-frame parameters in storage views (no
 recompile), and GPU-side capacity and overflow reporting. User docs:
 [Map Graph Toolkit](../../docs/api-reference/experimental/map-graphs.md).
@@ -746,10 +746,10 @@ Implemented (initial versions, node and headless WebGPU tests):
   maxima and an optional `r32float` texture over a per-frame zoom window; `GPUAdjacencyMatrixOrder`
   builds the order from group labels with two stable `GPUSort` passes and matches
   `computeAdjacencyMatrixOrder` exactly
-- **Deterministic sums** — one shared sorted segmented sum, `getMapGraphSortedSumNodes`
+- **Deterministic sums** — one shared sorted segmented sum, `getSortedSegmentSumNodes`
   (`map-graph-sorted-sums.ts`, stable radix sort, scan, gather, fixed 256-wide tree), used by zonal,
   raster zonal, flow aggregation and clustering
-- **Kernel helper** — `createMapGraphKernelNode` keeps every declared binding in the auto layout
+- **Kernel helper** — `createWGSLKernelNode` keeps every declared binding in the auto layout
   with a zero-cost phony reference (`_ = &binding;`) and omits an unset workload `variant`; a
   headless test reproduces the former bind-group validation failure
 - **deck.gl rendering of network outputs** — analytics columns, neighborhood mask, reachability
@@ -901,7 +901,7 @@ Still open:
     needed. A GPU Core "repeat while" node, or the frontier queue, would fix both.
   - `GPUTerrainFlow` has no iteration count; `GPUCostDistance` friction calibration is
     compile-time; `GPUTrajectoryMetrics` has no per-step speed, heading or acceleration;
-    `createMapGraphKernelNode` is not exported.
+    `createWGSLKernelNode` is not exported.
   - Record viewshed and reachability benchmarks on real data.
 - deck.gl WebGPU picking is mirrored vertically: `deck-picker` converts the cursor with
   `cssToDevicePixels([x, y], true)` (GL bottom-left) and reads WebGPU's top-left picking texture,
@@ -1089,7 +1089,7 @@ Still open:
     edges) with unquantized inputs, and add a shared no-fuse helper.
   - A WGSL module that fails to compile (one used the reserved word `target`) produced all-zero
     output with no error through the map-graph kernel node path. Surface shader compilation
-    errors in `createMapGraphKernelNode` or the graph compiler.
+    errors in `createWGSLKernelNode` or the graph compiler.
   - `GPUGridIndex` leaves the order within a cell to atomics, so float sums over neighbors vary
     between runs. `spatial-autocorrelation` builds its own stable cell index and
     `spatial-interpolation` sorts IDs within each cell. Add a stable in-cell order option to
@@ -1360,7 +1360,7 @@ Still open:
   - Significance does not apply multiple-comparison control (FDR); two-sample test assumes a fixed split slice (no per-cell breakpoint search)
 - Round 7 explorer findings (13 demo modes over the round-7 recipes):
   - `GPUClassBreaks` bound 9 storage buffers in one kernel with all methods compiled; fixed by
-    packing head/tail breaks into the head/tail state buffer. `createMapGraphKernelNode` now
+    packing head/tail breaks into the head/tail state buffer. `createWGSLKernelNode` now
     rejects kernels over the device's storage-buffer limit at declaration, so node specs (8-buffer
     null device) catch this. GPU specs use the `'max'` feature level and cannot.
   - Raster recipes assume row 0 at minimum y; DEMs are usually north-up. Add `rowOrigin: 'north'`

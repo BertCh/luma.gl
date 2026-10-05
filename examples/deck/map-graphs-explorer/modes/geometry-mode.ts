@@ -28,27 +28,8 @@ import type {Layer} from '@deck.gl/core';
 import {COORDINATE_SYSTEM} from '@deck.gl/core';
 import type {Buffer, CommandEncoder} from '@luma.gl/core';
 import {DrawCommandBuffer, GPUCommandGraph} from '@luma.gl/gpgpu/gpu-core';
-import {
-  getGPUGreatCircleArcsParameterValues,
-  getGPULineChunkParameterValues,
-  getGPULineLocateParameterValues,
-  getGPULineSegmentizeParameterValues,
-  getGPULineSmoothParameterValues,
-  GPUGeodesicDestination,
-  GPUGeodesicPairs,
-  GPUGeometryMeasures,
-  GPUGreatCircleArcs,
-  GPULineChunk,
-  GPULineLocate,
-  GPULineSegmentize,
-  GPULineSmooth,
-  GPULinearReferencing,
-  GPU_LINE_CHUNK_PARAMETER_LENGTH,
-  GPU_LINE_LOCATE_PARAMETER_LENGTH,
-  GPU_LINE_SEGMENTIZE_PARAMETER_LENGTH,
-  GPU_LINE_SMOOTH_PARAMETER_LENGTH,
-  importGraphBuffer
-} from '@luma.gl/experimental/map-graphs';
+import {getGPUGreatCircleArcsParameterValues, getGPULineChunkParameterValues, getGPULineLocateParameterValues, getGPULineSegmentizeParameterValues, getGPULineSmoothParameterValues, GPUGeodesicDestination, GPUGeodesicPairs, GPUGeometryMeasures, GPUGreatCircleArcs, GPULineChunk, GPULineLocate, GPULineSegmentize, GPULineSmooth, GPULinearReferencing, GPU_LINE_CHUNK_PARAMETER_LENGTH, GPU_LINE_LOCATE_PARAMETER_LENGTH, GPU_LINE_SEGMENTIZE_PARAMETER_LENGTH, GPU_LINE_SMOOTH_PARAMETER_LENGTH} from '@luma.gl/experimental/geospatial';
+import {importGraphBuffer} from '@luma.gl/experimental/UNRESOLVED';
 import {
   createSeededRandom,
   LocalMetricProjection,

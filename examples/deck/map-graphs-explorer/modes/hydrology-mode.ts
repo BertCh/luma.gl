@@ -23,15 +23,8 @@ import {
   GPUReadbackRing,
   type CompiledGPUCommandGraph
 } from '@luma.gl/gpgpu/gpu-core';
-import {
-  getGPUTerrainDerivativesParameterValues,
-  getGPUTerrainFlowParameterValues,
-  GPU_TERRAIN_DERIVATIVES_PARAMETER_LENGTH,
-  GPU_TERRAIN_FLOW_PARAMETER_LENGTH,
-  GPUTerrainDerivatives,
-  GPUTerrainFlow,
-  importGraphBuffer
-} from '@luma.gl/experimental/map-graphs';
+import {getGPUTerrainDerivativesParameterValues, getGPUTerrainFlowParameterValues, GPU_TERRAIN_DERIVATIVES_PARAMETER_LENGTH, GPU_TERRAIN_FLOW_PARAMETER_LENGTH, GPUTerrainDerivatives, GPUTerrainFlow} from '@luma.gl/experimental/gpu-terrain';
+import {importGraphBuffer} from '@luma.gl/experimental/UNRESOLVED';
 import {MapGraphsRasterLayer} from '../map-graphs-layers';
 import type {MapGraphsModeDefinition, MapGraphsModeInstance} from '../map-graphs-mode';
 import {formatCount, MapGraphsResources} from '../map-graphs-resources';

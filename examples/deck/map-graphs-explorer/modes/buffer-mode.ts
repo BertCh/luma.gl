@@ -20,7 +20,8 @@ import {
   GPUReadbackRing,
   type CompiledGPUCommandGraph
 } from '@luma.gl/gpgpu/gpu-core';
-import {GPUBufferSelection, importGraphBuffer} from '@luma.gl/experimental/map-graphs';
+import {GPUBufferSelection} from '@luma.gl/experimental/geospatial';
+import {importGraphBuffer} from '@luma.gl/experimental/UNRESOLVED';
 import {MapGraphsPointLayer, MapGraphsSegmentLayer} from '../map-graphs-layers';
 import {LocalMetricProjection} from '../map-graphs-data';
 import type {MapGraphsModeDefinition, MapGraphsModeInstance} from '../map-graphs-mode';

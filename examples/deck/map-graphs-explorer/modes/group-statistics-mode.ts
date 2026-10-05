@@ -27,22 +27,9 @@ import {
   type CompiledGPUCommandGraph,
   type GraphDataView
 } from '@luma.gl/gpgpu/gpu-core';
-import {
-  GPUCellAggregation,
-  GPUCellTableCompare,
-  GPUClassBreaks,
-  GPUColorScale,
-  GPUGroupStatistics,
-  GPUKeyJoin,
-  GPUPointToCell,
-  getGPUClassBreaksParameterLength,
-  getGPUClassBreaksParameterValues,
-  getGPUColorScaleParameterValues,
-  importGraphBuffer,
-  GPU_COLOR_SCALE_PARAMETER_LENGTH,
-  type GPUClassBreaksMethod,
-  type GPUGroupStatistic
-} from '@luma.gl/experimental/map-graphs';
+import {GPUCellAggregation, GPUCellTableCompare, GPUPointToCell} from '@luma.gl/experimental/geospatial';
+import {GPUClassBreaks, GPUColorScale, GPUGroupStatistics, GPUKeyJoin, getGPUClassBreaksParameterLength, getGPUClassBreaksParameterValues, getGPUColorScaleParameterValues, GPU_COLOR_SCALE_PARAMETER_LENGTH, type GPUClassBreaksMethod, type GPUGroupStatistic} from '@luma.gl/experimental/gpu-dataframe';
+import {importGraphBuffer} from '@luma.gl/experimental/UNRESOLVED';
 import {LocalMetricProjection} from '../map-graphs-data';
 import {MapGraphsPointLayer} from '../map-graphs-layers';
 import type {MapGraphsModeDefinition, MapGraphsModeInstance} from '../map-graphs-mode';

@@ -19,14 +19,8 @@ import {
   type CompiledGPUCommandGraph,
   type GPUGridIndexView
 } from '@luma.gl/gpgpu/gpu-core';
-import {
-  getGPURegionStatisticsSummaryLength,
-  GPURegionStatistics,
-  GPURegionStatisticsReadback,
-  importGraphBuffer,
-  submitGraph,
-  type GPURegionStatisticsResult
-} from '@luma.gl/experimental/map-graphs';
+import {getGPURegionStatisticsSummaryLength, GPURegionStatistics, GPURegionStatisticsReadback, type GPURegionStatisticsResult} from '@luma.gl/experimental/geospatial';
+import {importGraphBuffer, submitGraph} from '@luma.gl/experimental/UNRESOLVED';
 import {createSeededRandom, LocalMetricProjection} from '../map-graphs-data';
 import {MapGraphsPointLayer, MapGraphsSegmentLayer} from '../map-graphs-layers';
 import type {

@@ -20,13 +20,9 @@ import {
   type GraphDataView
 } from '@luma.gl/gpgpu/gpu-core';
 import type {GPURasterBand} from '@luma.gl/experimental/gpu-raster';
-import {
-  getGPUTerrainDerivativesParameterValues,
-  GPU_TERRAIN_DERIVATIVES_PARAMETER_LENGTH,
-  GPURasterZonalStatistics,
-  GPUTerrainDerivatives,
-  importGraphBuffer
-} from '@luma.gl/experimental/map-graphs';
+import {getGPUTerrainDerivativesParameterValues, GPU_TERRAIN_DERIVATIVES_PARAMETER_LENGTH, GPUTerrainDerivatives} from '@luma.gl/experimental/gpu-terrain';
+import {GPURasterZonalStatistics} from '@luma.gl/experimental/gpu-raster';
+import {importGraphBuffer} from '@luma.gl/experimental/UNRESOLVED';
 import {LocalMetricProjection} from '../map-graphs-data';
 import {MapGraphsRasterLayer, MapGraphsSegmentLayer} from '../map-graphs-layers';
 import type {

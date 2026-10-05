@@ -28,37 +28,9 @@ import {
   GPUReadbackRing,
   type CompiledGPUCommandGraph
 } from '@luma.gl/gpgpu/gpu-core';
-import {
-  getGPUDistanceFieldParameterValues,
-  getGPURasterArithmeticParameterValues,
-  getGPURasterCellStatisticsParameterValues,
-  getGPURasterConditionalParameterValues,
-  getGPURasterProfileParameterValues,
-  getGPURasterReclassifyParameterValues,
-  getGPURasterSamplingParameterValues,
-  getGPUTerrainDerivativesParameterValues,
-  getGPUWeightedOverlayParameterLength,
-  getGPUWeightedOverlayParameterValues,
-  GPU_DISTANCE_FIELD_PARAMETER_LENGTH,
-  GPU_RASTER_ARITHMETIC_PARAMETER_LENGTH,
-  GPU_RASTER_CELL_STATISTICS_PARAMETER_LENGTH,
-  GPU_RASTER_CONDITIONAL_PARAMETER_LENGTH,
-  GPU_RASTER_PROFILE_PARAMETER_LENGTH,
-  GPU_RASTER_RECLASSIFY_PARAMETER_LENGTH,
-  GPU_RASTER_SAMPLING_PARAMETER_LENGTH,
-  GPU_TERRAIN_DERIVATIVES_PARAMETER_LENGTH,
-  GPUDistanceField,
-  GPURasterArithmetic,
-  GPURasterCellStatistics,
-  GPURasterConditional,
-  GPURasterProfile,
-  GPURasterReclassify,
-  GPURasterSampling,
-  GPUTerrainDerivatives,
-  GPUWeightedOverlay,
-  importGraphBuffer,
-  type GPURasterSamplingMethod
-} from '@luma.gl/experimental/map-graphs';
+import {getGPUDistanceFieldParameterValues, getGPURasterArithmeticParameterValues, getGPURasterCellStatisticsParameterValues, getGPURasterConditionalParameterValues, getGPURasterProfileParameterValues, getGPURasterReclassifyParameterValues, getGPURasterSamplingParameterValues, getGPUWeightedOverlayParameterLength, getGPUWeightedOverlayParameterValues, GPU_DISTANCE_FIELD_PARAMETER_LENGTH, GPU_RASTER_ARITHMETIC_PARAMETER_LENGTH, GPU_RASTER_CELL_STATISTICS_PARAMETER_LENGTH, GPU_RASTER_CONDITIONAL_PARAMETER_LENGTH, GPU_RASTER_PROFILE_PARAMETER_LENGTH, GPU_RASTER_RECLASSIFY_PARAMETER_LENGTH, GPU_RASTER_SAMPLING_PARAMETER_LENGTH, GPUDistanceField, GPURasterArithmetic, GPURasterCellStatistics, GPURasterConditional, GPURasterProfile, GPURasterReclassify, GPURasterSampling, GPUWeightedOverlay, type GPURasterSamplingMethod} from '@luma.gl/experimental/gpu-raster';
+import {getGPUTerrainDerivativesParameterValues, GPU_TERRAIN_DERIVATIVES_PARAMETER_LENGTH, GPUTerrainDerivatives} from '@luma.gl/experimental/gpu-terrain';
+import {importGraphBuffer} from '@luma.gl/experimental/UNRESOLVED';
 import {LocalMetricProjection} from '../map-graphs-data';
 import {
   MapGraphsPointLayer,

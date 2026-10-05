@@ -9,14 +9,9 @@ import {
   GPUReadbackRing,
   type CompiledGPUCommandGraph
 } from '@luma.gl/gpgpu/gpu-core';
-import {
-  getGPUSpatialClusteringParameterValues,
-  GPU_SPATIAL_CLUSTERING_NOISE,
-  GPU_SPATIAL_CLUSTERING_PARAMETER_LENGTH,
-  GPUSpatialClustering,
-  importGraphBuffer,
-  type GPUMapGraphParameterBuffer
-} from '@luma.gl/experimental/map-graphs';
+import {getGPUSpatialClusteringParameterValues, GPU_SPATIAL_CLUSTERING_NOISE, GPU_SPATIAL_CLUSTERING_PARAMETER_LENGTH, GPUSpatialClustering} from '@luma.gl/experimental/geospatial';
+import {importGraphBuffer} from '@luma.gl/experimental/UNRESOLVED';
+import {type GPUParameterBuffer} from '@luma.gl/experimental/geospatial';
 import {MapGraphsPointLayer} from '../map-graphs-layers';
 import type {MapGraphsModeDefinition, MapGraphsModeInstance} from '../map-graphs-mode';
 import {formatCount, MapGraphsResources} from '../map-graphs-resources';
@@ -79,7 +74,7 @@ type ClusterSet = {
   pointCount: number;
   resources: MapGraphsResources;
   bounds: [number, number, number, number];
-  parameters: GPUMapGraphParameterBuffer<'float32'>;
+  parameters: GPUParameterBuffer<'float32'>;
   compiled: CompiledGPUCommandGraph<void>;
   labels: ReturnType<MapGraphsResources['createBuffer']>;
   coreFlags: ReturnType<MapGraphsResources['createBuffer']>;

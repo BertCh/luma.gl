@@ -30,24 +30,8 @@ import {
   GPUReadbackRing,
   type CompiledGPUCommandGraph
 } from '@luma.gl/gpgpu/gpu-core';
-import {
-  getGPULineIntegralConvolutionParameterValues,
-  getGPULineIntegralConvolutionWordParameterValues,
-  getGPUParticleAdvectionParameterValues,
-  getGPUParticleAdvectionWordParameterValues,
-  getGPUStreamlinesParameterValues,
-  getGPUStreamlinesWordParameterValues,
-  GPU_LINE_INTEGRAL_CONVOLUTION_PARAMETER_LENGTH,
-  GPU_LINE_INTEGRAL_CONVOLUTION_WORD_PARAMETER_LENGTH,
-  GPU_PARTICLE_ADVECTION_PARAMETER_LENGTH,
-  GPU_PARTICLE_ADVECTION_WORD_PARAMETER_LENGTH,
-  GPU_STREAMLINES_PARAMETER_LENGTH,
-  GPU_STREAMLINES_WORD_PARAMETER_LENGTH,
-  GPULineIntegralConvolution,
-  GPUParticleAdvection,
-  GPUStreamlines,
-  importGraphBuffer
-} from '@luma.gl/experimental/map-graphs';
+import {getGPULineIntegralConvolutionParameterValues, getGPULineIntegralConvolutionWordParameterValues, getGPUParticleAdvectionParameterValues, getGPUParticleAdvectionWordParameterValues, getGPUStreamlinesParameterValues, getGPUStreamlinesWordParameterValues, GPU_LINE_INTEGRAL_CONVOLUTION_PARAMETER_LENGTH, GPU_LINE_INTEGRAL_CONVOLUTION_WORD_PARAMETER_LENGTH, GPU_PARTICLE_ADVECTION_PARAMETER_LENGTH, GPU_PARTICLE_ADVECTION_WORD_PARAMETER_LENGTH, GPU_STREAMLINES_PARAMETER_LENGTH, GPU_STREAMLINES_WORD_PARAMETER_LENGTH, GPULineIntegralConvolution, GPUParticleAdvection, GPUStreamlines} from '@luma.gl/experimental/gpu-raster';
+import {importGraphBuffer} from '@luma.gl/experimental/UNRESOLVED';
 import type {MapGraphsTerrain} from '../map-graphs-data';
 import type {MapGraphsModeDefinition, MapGraphsModeInstance} from '../map-graphs-mode';
 import {formatCount, MapGraphsResources} from '../map-graphs-resources';

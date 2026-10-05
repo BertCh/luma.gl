@@ -22,16 +22,8 @@ import {
   type CompiledGPUCommandGraph
 } from '@luma.gl/gpgpu/gpu-core';
 import type {Buffer} from '@luma.gl/core';
-import {
-  getGPUTerrainDerivativesParameterValues,
-  getGPUTerrainViewshedParameterValues,
-  GPU_TERRAIN_DERIVATIVES_PARAMETER_LENGTH,
-  GPU_TERRAIN_VIEWSHED_PARAMETER_LENGTH,
-  GPUTerrainContours,
-  GPUTerrainDerivatives,
-  GPUTerrainViewshed,
-  importGraphBuffer
-} from '@luma.gl/experimental/map-graphs';
+import {getGPUTerrainDerivativesParameterValues, getGPUTerrainViewshedParameterValues, GPU_TERRAIN_DERIVATIVES_PARAMETER_LENGTH, GPU_TERRAIN_VIEWSHED_PARAMETER_LENGTH, GPUTerrainContours, GPUTerrainDerivatives, GPUTerrainViewshed} from '@luma.gl/experimental/gpu-terrain';
+import {importGraphBuffer} from '@luma.gl/experimental/UNRESOLVED';
 import {LocalMetricProjection} from '../map-graphs-data';
 import {
   MapGraphsPointLayer,

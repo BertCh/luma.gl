@@ -3,13 +3,8 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import type {Layer} from '@deck.gl/core';
-import {
-  getGPUDistanceFieldParameterValues,
-  GPU_DISTANCE_FIELD_NONE,
-  GPUDistanceField,
-  importGraphBuffer,
-  type GPUDistanceFieldMode
-} from '@luma.gl/experimental/map-graphs';
+import {getGPUDistanceFieldParameterValues, GPU_DISTANCE_FIELD_NONE, GPUDistanceField, type GPUDistanceFieldMode} from '@luma.gl/experimental/gpu-raster';
+import {importGraphBuffer} from '@luma.gl/experimental/UNRESOLVED';
 import {GPUCommandGraph, type CompiledGPUCommandGraph} from '@luma.gl/gpgpu/gpu-core';
 import {LocalMetricProjection} from '../map-graphs-data';
 import {MapGraphsPointLayer, MapGraphsRasterLayer, type MapGraphsColor} from '../map-graphs-layers';

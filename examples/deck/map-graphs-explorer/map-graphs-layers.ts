@@ -13,7 +13,7 @@ import {
 import {Buffer, type Device, type RenderPass} from '@luma.gl/core';
 import {Model} from '@luma.gl/engine';
 import type {DrawCommandBuffer} from '@luma.gl/gpgpu/gpu-core';
-import {GPU_POINT_DENSITY_HEXAGON_WGSL} from '@luma.gl/experimental/map-graphs';
+import {GPU_POINT_DENSITY_HEXAGON_WGSL} from '@luma.gl/experimental/geospatial';
 
 /**
  * Generic deck.gl layers that draw map-graph recipe outputs straight from GPU storage buffers.
@@ -711,7 +711,7 @@ export type MapGraphsRasterLayerProps = LayerProps &
     gridSize: readonly [number, number];
     /**
      * `[minX, minY, maxX, maxY]` meters as a literal, or a GPU buffer holding four float32 values
-     * (for example the same `GPUMapGraphParameterBuffer` a density recipe reads).
+     * (for example the same `GPUParameterBuffer` a density recipe reads).
      * For hexagons, `minX, minY` is the lattice origin (center of hexagon 0, 0).
      */
     bounds: readonly [number, number, number, number] | Buffer;

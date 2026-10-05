@@ -4,10 +4,7 @@
 
 import type {Viewport} from '@deck.gl/core';
 import {Buffer, type Device} from '@luma.gl/core';
-import {
-  GPUMapGraphParameterBuffer,
-  type GPUMapGraphParameterFormat
-} from '@luma.gl/experimental/map-graphs';
+import {GPUParameterBuffer, type GPUParameterFormat} from '@luma.gl/experimental/geospatial';
 import type {LocalMetricProjection} from './map-graphs-data';
 
 type Destroyable = {destroy: () => void};
@@ -56,14 +53,14 @@ export class MapGraphsResources {
   }
 
   /** Creates and tracks a per-frame parameter buffer. */
-  createParameterBuffer<Format extends GPUMapGraphParameterFormat>(
+  createParameterBuffer<Format extends GPUParameterFormat>(
     name: string,
     format: Format,
     length: number,
     values?: Float32Array | Uint32Array | Int32Array
-  ): GPUMapGraphParameterBuffer<Format> {
+  ): GPUParameterBuffer<Format> {
     return this.track(
-      new GPUMapGraphParameterBuffer(this.device, {
+      new GPUParameterBuffer(this.device, {
         id: `${this.prefix}-${name}`,
         format,
         length,

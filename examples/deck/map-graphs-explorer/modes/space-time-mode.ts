@@ -36,26 +36,11 @@ import {
   GPUReadbackRing,
   type CompiledGPUCommandGraph
 } from '@luma.gl/gpgpu/gpu-core';
-import {
-  getGPUAttributeCrossfilterParameterValues,
-  getGPUCalendarBucketsParameterValues,
-  getGPUChangeDetectionParameterValues,
-  getGPUEmergingHotSpotParameterValues,
-  getGPUTemporalReductionWordParameterValues,
-  getInt64TimeWords,
-  GPUAttributeCrossfilter,
-  GPUCalendarBuckets,
-  GPUChangeDetection,
-  GPUEmergingHotSpots,
-  GPUTemporalReduction,
-  GPU_ATTRIBUTE_CROSSFILTER_PARAMETER_STRIDE,
-  GPU_CALENDAR_BUCKETS_MATRIX_LENGTH,
-  GPU_CALENDAR_BUCKETS_PARAMETER_LENGTH,
-  GPU_CHANGE_DETECTION_PARAMETER_LENGTH,
-  GPU_EMERGING_HOT_SPOT_PARAMETER_LENGTH,
-  GPU_EMERGING_HOT_SPOT_STATISTICS_LENGTH,
-  importGraphBuffer
-} from '@luma.gl/experimental/map-graphs';
+import {getGPUAttributeCrossfilterParameterValues, GPUAttributeCrossfilter, GPU_ATTRIBUTE_CROSSFILTER_PARAMETER_STRIDE} from '@luma.gl/experimental/gpu-crossfilter';
+import {getGPUCalendarBucketsParameterValues, getGPUTemporalReductionWordParameterValues, getInt64TimeWords, GPUCalendarBuckets, GPUTemporalReduction, GPU_CALENDAR_BUCKETS_MATRIX_LENGTH, GPU_CALENDAR_BUCKETS_PARAMETER_LENGTH} from '@luma.gl/experimental/gpu-dataframe';
+import {getGPUChangeDetectionParameterValues, GPUChangeDetection, GPU_CHANGE_DETECTION_PARAMETER_LENGTH} from '@luma.gl/experimental/gpu-raster';
+import {getGPUEmergingHotSpotParameterValues, GPUEmergingHotSpots, GPU_EMERGING_HOT_SPOT_PARAMETER_LENGTH, GPU_EMERGING_HOT_SPOT_STATISTICS_LENGTH} from '@luma.gl/experimental/geospatial';
+import {importGraphBuffer} from '@luma.gl/experimental/UNRESOLVED';
 import {MapGraphsPointLayer} from '../map-graphs-layers';
 import type {MapGraphsModeDefinition, MapGraphsModeInstance} from '../map-graphs-mode';
 import {formatCount, MapGraphsResources} from '../map-graphs-resources';

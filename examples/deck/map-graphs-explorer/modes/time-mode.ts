@@ -9,12 +9,8 @@ import {
   GPUReadbackRing,
   type CompiledGPUCommandGraph
 } from '@luma.gl/gpgpu/gpu-core';
-import {
-  getGPUTimeWindowParameterValues,
-  GPUTimeWindowFilter,
-  GPU_TIME_WINDOW_PARAMETER_LENGTH,
-  importGraphBuffer
-} from '@luma.gl/experimental/map-graphs';
+import {getGPUTimeWindowParameterValues, GPUTimeWindowFilter, GPU_TIME_WINDOW_PARAMETER_LENGTH} from '@luma.gl/experimental/gpu-dataframe';
+import {importGraphBuffer} from '@luma.gl/experimental/UNRESOLVED';
 import {MapGraphsSegmentLayer} from '../map-graphs-layers';
 import type {MapGraphsModeDefinition, MapGraphsModeInstance} from '../map-graphs-mode';
 import {formatCount, MapGraphsResources} from '../map-graphs-resources';

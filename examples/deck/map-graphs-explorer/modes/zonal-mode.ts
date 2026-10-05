@@ -24,12 +24,8 @@ import {
   GPUReadbackRing,
   type CompiledGPUCommandGraph
 } from '@luma.gl/gpgpu/gpu-core';
-import {
-  GPUZonalStatistics,
-  importGraphBuffer,
-  type GPUZonalStatisticsExtentStatistic,
-  type GPUZonalStatisticsSumOrder
-} from '@luma.gl/experimental/map-graphs';
+import {GPUZonalStatistics, type GPUZonalStatisticsExtentStatistic, type GPUZonalStatisticsSumOrder} from '@luma.gl/experimental/geospatial';
+import {importGraphBuffer} from '@luma.gl/experimental/UNRESOLVED';
 import {LocalMetricProjection, type MapGraphsPolygons} from '../map-graphs-data';
 import {
   MapGraphsPointLayer,

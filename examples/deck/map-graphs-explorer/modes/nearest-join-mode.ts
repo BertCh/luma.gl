@@ -21,7 +21,8 @@ import {
   GPUReadbackRing,
   type CompiledGPUCommandGraph
 } from '@luma.gl/gpgpu/gpu-core';
-import {GPUNearestFeatureJoin, importGraphBuffer} from '@luma.gl/experimental/map-graphs';
+import {GPUNearestFeatureJoin} from '@luma.gl/experimental/geospatial';
+import {importGraphBuffer} from '@luma.gl/experimental/UNRESOLVED';
 import {MapGraphsPointLayer, MapGraphsSegmentLayer} from '../map-graphs-layers';
 import type {MapGraphsModeDefinition, MapGraphsModeInstance} from '../map-graphs-mode';
 import {createSeededRandom} from '../map-graphs-data';

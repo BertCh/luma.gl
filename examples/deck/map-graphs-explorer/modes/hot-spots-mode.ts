@@ -19,14 +19,8 @@ import {
   GPUReadbackRing,
   type CompiledGPUCommandGraph
 } from '@luma.gl/gpgpu/gpu-core';
-import {
-  getGPUSpatialAutocorrelationParameterValues,
-  GPUHotSpotAnalysis,
-  GPULocalMoran,
-  GPU_SPATIAL_AUTOCORRELATION_PARAMETER_LENGTH,
-  GPU_SPATIAL_AUTOCORRELATION_STATISTICS_LENGTH,
-  importGraphBuffer
-} from '@luma.gl/experimental/map-graphs';
+import {getGPUSpatialAutocorrelationParameterValues, GPUHotSpotAnalysis, GPULocalMoran, GPU_SPATIAL_AUTOCORRELATION_PARAMETER_LENGTH, GPU_SPATIAL_AUTOCORRELATION_STATISTICS_LENGTH} from '@luma.gl/experimental/geospatial';
+import {importGraphBuffer} from '@luma.gl/experimental/UNRESOLVED';
 import {MapGraphsPointLayer, type MapGraphsColor} from '../map-graphs-layers';
 import type {MapGraphsModeDefinition, MapGraphsModeInstance} from '../map-graphs-mode';
 import {formatCount, MapGraphsResources} from '../map-graphs-resources';

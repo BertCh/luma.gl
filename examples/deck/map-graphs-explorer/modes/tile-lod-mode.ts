@@ -23,16 +23,8 @@ import {
   GPUReadbackRing,
   type CompiledGPUCommandGraph
 } from '@luma.gl/gpgpu/gpu-core';
-import {
-  getGPUTileLODQuadtreeTile,
-  getGPUTileLODViewParameterValues,
-  GPU_TILE_LOD_STATISTICS_LENGTH,
-  GPU_TILE_LOD_UNLIMITED,
-  GPU_TILE_LOD_VIEW_LENGTH,
-  GPUTileLODSelection,
-  importGraphBuffer,
-  makeGPUTileLODQuadtree
-} from '@luma.gl/experimental/map-graphs';
+import {getGPUTileLODQuadtreeTile, getGPUTileLODViewParameterValues, GPU_TILE_LOD_STATISTICS_LENGTH, GPU_TILE_LOD_UNLIMITED, GPU_TILE_LOD_VIEW_LENGTH, GPUTileLODSelection, makeGPUTileLODQuadtree} from '@luma.gl/experimental/gpu-tables';
+import {importGraphBuffer} from '@luma.gl/experimental/UNRESOLVED';
 import {NEW_YORK_ORIGIN} from '../map-graphs-data';
 import type {MapGraphsModeDefinition, MapGraphsModeInstance} from '../map-graphs-mode';
 import {formatCount, MapGraphsResources} from '../map-graphs-resources';

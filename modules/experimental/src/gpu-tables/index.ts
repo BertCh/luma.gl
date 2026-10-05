@@ -92,3 +92,53 @@ export {
   type GeneratedBufferBatch,
   type GeneratedBufferBatchPlannerProps
 } from './utils/generated-buffer-batches';
+
+// Analysis contributors
+export type {GPUCompactOutput, GPUUint32Rows} from '../utils/gpu-contributor-types';
+export {GPUParameterBuffer} from '../utils/gpu-contributor-utils';
+export type {GPUParameterBufferProps, GPUParameterFormat} from '../utils/gpu-contributor-utils';
+export {
+  GPU_RESIDENCY_ARENA_DEAD_SLOT,
+  GPUResidencyArena,
+  GPUResidentRowSelection,
+  ResidencyArenaAllocator,
+  ResidencyArenaFullError
+} from './residency-arena/index';
+export type {
+  GPUResidencyArenaColumnFormat,
+  GPUResidencyArenaColumnSpec,
+  GPUResidencyArenaGraphViews,
+  GPUResidencyArenaProps,
+  GPUResidencyArenaResolvedRow,
+  GPUResidencyArenaRowRange,
+  GPUResidencyArenaTile,
+  GPUResidencyArenaTileData,
+  GPUResidentRowSelectionProps,
+  ResidencyArenaAllocatorProps
+} from './residency-arena/index';
+export {
+  getGPUTileLODFrustumPlanes,
+  getGPUTileLODQuadtreeTile,
+  getGPUTileLODViewParameterValues,
+  GPU_TILE_LOD_BUDGET_LENGTH,
+  GPU_TILE_LOD_INVALID_NODE,
+  GPU_TILE_LOD_PRIORITY_BUCKET_COUNT,
+  GPU_TILE_LOD_STATISTICS_LENGTH,
+  GPU_TILE_LOD_UNLIMITED,
+  GPU_TILE_LOD_VIEW_LENGTH,
+  GPU_TILE_LOD_VIEW_OFFSETS,
+  GPUTileLODSelection,
+  makeGPUTileLODQuadtree
+} from './tile-lod-selection/index';
+export type {
+  GPUTileLODFoveation,
+  GPUTileLODHierarchy,
+  GPUTileLODIndirectDispatch,
+  GPUTileLODIndirectDraw,
+  GPUTileLODQuadtree,
+  GPUTileLODQuadtreeProps,
+  GPUTileLODQuadtreeTile,
+  GPUTileLODRequestOutput,
+  GPUTileLODSelectionProps,
+  GPUTileLODViewProps
+} from './tile-lod-selection/index';

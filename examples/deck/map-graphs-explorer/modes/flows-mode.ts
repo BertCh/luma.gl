@@ -10,12 +10,9 @@ import {
   GPUReadbackRing,
   type CompiledGPUCommandGraph
 } from '@luma.gl/gpgpu/gpu-core';
-import {
-  getGPUTimeWindowParameterValues,
-  GPUFlowAggregation,
-  GPU_TIME_WINDOW_PARAMETER_LENGTH,
-  importGraphBuffer
-} from '@luma.gl/experimental/map-graphs';
+import {getGPUTimeWindowParameterValues, GPU_TIME_WINDOW_PARAMETER_LENGTH} from '@luma.gl/experimental/gpu-dataframe';
+import {GPUFlowAggregation} from '@luma.gl/experimental/gpu-network';
+import {importGraphBuffer} from '@luma.gl/experimental/UNRESOLVED';
 import {MapGraphsPointLayer, MapGraphsRasterLayer} from '../map-graphs-layers';
 import type {MapGraphsModeDefinition, MapGraphsModeInstance} from '../map-graphs-mode';
 import {formatCount, MapGraphsResources} from '../map-graphs-resources';

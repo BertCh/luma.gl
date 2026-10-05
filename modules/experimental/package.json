@@ -87,10 +87,15 @@
       "import": "./dist/gpu-trace/index.js",
       "require": "./dist/gpu-trace/index.cjs"
     },
-    "./map-graphs": {
-      "types": "./dist/map-graphs/index.d.ts",
-      "import": "./dist/map-graphs/index.js",
-      "require": "./dist/map-graphs/index.cjs"
+    "./gpu-terrain": {
+      "types": "./dist/gpu-terrain/index.d.ts",
+      "import": "./dist/gpu-terrain/index.js",
+      "require": "./dist/gpu-terrain/index.cjs"
+    },
+    "./gpu-network": {
+      "types": "./dist/gpu-network/index.d.ts",
+      "import": "./dist/gpu-network/index.js",
+      "require": "./dist/gpu-network/index.cjs"
     }
   },
   "files": [

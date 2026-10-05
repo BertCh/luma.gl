@@ -26,31 +26,8 @@ import {
   GPUReadbackRing,
   type CompiledGPUCommandGraph
 } from '@luma.gl/gpgpu/gpu-core';
-import {
-  getGPUReliefShadingParameterValues,
-  getGPUSolarPositionParameterValues,
-  getGPUSolarShadowMaskParameterValues,
-  getGPUTerrainDerivativesParameterValues,
-  getGPUTerrainHorizonParameterValues,
-  getGPUTextureShadingParameterValues,
-  getSolarPosition,
-  GPU_RELIEF_SHADING_PARAMETER_LENGTH,
-  GPU_SOLAR_DISK_ANGULAR_RADIUS_DEGREES,
-  GPU_SOLAR_POSITION_PARAMETER_LENGTH,
-  GPU_SOLAR_SHADOW_MASK_PARAMETER_LENGTH,
-  GPU_TERRAIN_DERIVATIVES_PARAMETER_LENGTH,
-  GPU_TERRAIN_HORIZON_PARAMETER_LENGTH,
-  GPU_TEXTURE_SHADING_PARAMETER_LENGTH,
-  GPUReliefShading,
-  GPUSolarPosition,
-  GPUSolarShadowMask,
-  GPUTerrainDerivatives,
-  GPUTerrainHorizon,
-  GPUTextureShading,
-  importGraphBuffer,
-  type GPUReliefShadingLight,
-  type GPUReliefShadingStop
-} from '@luma.gl/experimental/map-graphs';
+import {getGPUReliefShadingParameterValues, getGPUSolarPositionParameterValues, getGPUSolarShadowMaskParameterValues, getGPUTerrainDerivativesParameterValues, getGPUTerrainHorizonParameterValues, getGPUTextureShadingParameterValues, getSolarPosition, GPU_RELIEF_SHADING_PARAMETER_LENGTH, GPU_SOLAR_DISK_ANGULAR_RADIUS_DEGREES, GPU_SOLAR_POSITION_PARAMETER_LENGTH, GPU_SOLAR_SHADOW_MASK_PARAMETER_LENGTH, GPU_TERRAIN_DERIVATIVES_PARAMETER_LENGTH, GPU_TERRAIN_HORIZON_PARAMETER_LENGTH, GPU_TEXTURE_SHADING_PARAMETER_LENGTH, GPUReliefShading, GPUSolarPosition, GPUSolarShadowMask, GPUTerrainDerivatives, GPUTerrainHorizon, GPUTextureShading, type GPUReliefShadingLight, type GPUReliefShadingStop} from '@luma.gl/experimental/gpu-terrain';
+import {importGraphBuffer} from '@luma.gl/experimental/UNRESOLVED';
 import {LocalMetricProjection} from '../map-graphs-data';
 import {MapGraphsRasterLayer, type MapGraphsRasterLayerProps} from '../map-graphs-layers';
 import type {MapGraphsModeDefinition, MapGraphsModeInstance} from '../map-graphs-mode';

@@ -29,23 +29,8 @@ import {
   GPUReadbackRing,
   type CompiledGPUCommandGraph
 } from '@luma.gl/gpgpu/gpu-core';
-import {
-  getGPUNeighborSearchParameterValues,
-  getGPUPermutationParameterValues,
-  GPU_GLOBAL_PERMUTATION_RESULT,
-  GPU_GLOBAL_SPATIAL_STATISTIC_FIELD,
-  GPU_GLOBAL_SPATIAL_STATISTICS_LAYOUT,
-  GPU_GLOBAL_SPATIAL_STATISTICS_SUMMARY,
-  GPU_NEIGHBOR_SEARCH_PARAMETER_LENGTH,
-  GPU_PERMUTATION_PARAMETER_LENGTH,
-  GPUGlobalPermutationTest,
-  GPUGlobalSpatialStatistics,
-  GPULocalPermutationTest,
-  GPUNeighborSearch,
-  importGraphBuffer,
-  type GPUNeighborSearchKernel,
-  type GPUNeighborSearchWeightKind
-} from '@luma.gl/experimental/map-graphs';
+import {getGPUNeighborSearchParameterValues, getGPUPermutationParameterValues, GPU_GLOBAL_PERMUTATION_RESULT, GPU_GLOBAL_SPATIAL_STATISTIC_FIELD, GPU_GLOBAL_SPATIAL_STATISTICS_LAYOUT, GPU_GLOBAL_SPATIAL_STATISTICS_SUMMARY, GPU_NEIGHBOR_SEARCH_PARAMETER_LENGTH, GPU_PERMUTATION_PARAMETER_LENGTH, GPUGlobalPermutationTest, GPUGlobalSpatialStatistics, GPULocalPermutationTest, GPUNeighborSearch, type GPUNeighborSearchKernel, type GPUNeighborSearchWeightKind} from '@luma.gl/experimental/geospatial';
+import {importGraphBuffer} from '@luma.gl/experimental/UNRESOLVED';
 import {
   MapGraphsPointLayer,
   MapGraphsSegmentLayer,

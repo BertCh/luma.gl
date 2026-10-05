@@ -23,35 +23,9 @@
 
 import type {Layer} from '@deck.gl/core';
 import {GPUCommandGraph, GPUReadbackRing} from '@luma.gl/gpgpu/gpu-core';
-import {
-  fitVariogramModel,
-  evaluateVariogramModel,
-  getGPUGeographicDistributionParameterValues,
-  getGPUPointPatternIndicesParameterValues,
-  getGPURipleyParameterValues,
-  getGPUSpatialCorrelogramParameterValues,
-  getGPUVariogramParameterValues,
-  GPU_CLARK_EVANS_LENGTH,
-  GPU_GEOGRAPHIC_DISTRIBUTION_PARAMETER_LENGTH,
-  GPU_POINT_PATTERN_INDICES_PARAMETER_LENGTH,
-  GPU_QUADRAT_STATISTICS_LENGTH,
-  GPU_RIPLEY_PARAMETER_LENGTH,
-  GPU_SPATIAL_CORRELOGRAM_NO_BAND,
-  GPU_SPATIAL_CORRELOGRAM_PARAMETER_LENGTH,
-  GPU_SPATIAL_CORRELOGRAM_STATISTICS_LENGTH,
-  GPU_VARIOGRAM_PARAMETER_LENGTH,
-  GPU_VARIOGRAM_STATISTICS_LENGTH,
-  GPUGeographicDistribution,
-  GPUPointPatternIndices,
-  GPURipley,
-  GPUSpatialCorrelogram,
-  GPUVariogram,
-  importGraphBuffer,
-  type GPURipleyEdgeCorrection,
-  type GPUSpatialCorrelogramVarianceAssumption,
-  type VariogramModel,
-  type VariogramModelType
-} from '@luma.gl/experimental/map-graphs';
+import {fitVariogramModel, evaluateVariogramModel, getGPUPointPatternIndicesParameterValues, getGPURipleyParameterValues, getGPUSpatialCorrelogramParameterValues, getGPUVariogramParameterValues, GPU_CLARK_EVANS_LENGTH, GPU_POINT_PATTERN_INDICES_PARAMETER_LENGTH, GPU_QUADRAT_STATISTICS_LENGTH, GPU_RIPLEY_PARAMETER_LENGTH, GPU_SPATIAL_CORRELOGRAM_NO_BAND, GPU_SPATIAL_CORRELOGRAM_PARAMETER_LENGTH, GPU_SPATIAL_CORRELOGRAM_STATISTICS_LENGTH, GPU_VARIOGRAM_PARAMETER_LENGTH, GPU_VARIOGRAM_STATISTICS_LENGTH, GPUPointPatternIndices, GPURipley, GPUSpatialCorrelogram, GPUVariogram, type GPURipleyEdgeCorrection, type GPUSpatialCorrelogramVarianceAssumption, type VariogramModel, type VariogramModelType} from '@luma.gl/experimental/gpu-dataframe';
+import {getGPUGeographicDistributionParameterValues, GPU_GEOGRAPHIC_DISTRIBUTION_PARAMETER_LENGTH, GPUGeographicDistribution} from '@luma.gl/experimental/geospatial';
+import {importGraphBuffer} from '@luma.gl/experimental/UNRESOLVED';
 import {LocalMetricProjection} from '../map-graphs-data';
 import {
   MapGraphsPointLayer,

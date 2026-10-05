@@ -17,11 +17,8 @@ import {
   GPUReadbackRing,
   type CompiledGPUCommandGraph
 } from '@luma.gl/gpgpu/gpu-core';
-import {
-  GPUNetworkReachability,
-  GPU_NETWORK_REACHABILITY_NONE,
-  importGraphBuffer
-} from '@luma.gl/experimental/map-graphs';
+import {GPUNetworkReachability, GPU_NETWORK_REACHABILITY_NONE} from '@luma.gl/experimental/gpu-network';
+import {importGraphBuffer} from '@luma.gl/experimental/UNRESOLVED';
 import {LocalMetricProjection} from '../map-graphs-data';
 import {MapGraphsPointLayer, MapGraphsSegmentLayer} from '../map-graphs-layers';
 import type {MapGraphsModeDefinition, MapGraphsModeInstance} from '../map-graphs-mode';

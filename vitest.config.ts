@@ -134,10 +134,10 @@ const nodeCoveragePatterns = [
 // Benchmarks answer performance questions but do not add stable correctness coverage. Keep them
 // out of every pull request's instrumented browser run and expose them through an opt-in project.
 const browserBenchmarkTestPatterns = [
-  'modules/experimental/test/map-graphs/network-reachability/gpu-network-reachability-bench.spec.ts',
-  'modules/experimental/test/map-graphs/region-statistics/region-statistics-benchmark.spec.ts',
-  'modules/experimental/test/map-graphs/residency-arena/residency-arena-benchmark.spec.ts',
-  'modules/experimental/test/map-graphs/spatial-join/spatial-join-benchmark.spec.ts',
+  'modules/experimental/test/gpu-network/network-reachability/gpu-network-reachability-bench.spec.ts',
+  'modules/experimental/test/geospatial/region-statistics/region-statistics-benchmark.spec.ts',
+  'modules/experimental/test/gpu-tables/residency-arena/residency-arena-benchmark.spec.ts',
+  'modules/experimental/test/geospatial/spatial-join/spatial-join-benchmark.spec.ts',
   'modules/gpgpu/test/gpu-core/gpu-kernel-benchmark.spec.ts',
   'modules/gpgpu/test/gpu-core/gpu-fragmentation-benchmark.spec.ts',
   'modules/gpgpu/test/gpu-core/gpu-spatial-query-benchmark.spec.ts',

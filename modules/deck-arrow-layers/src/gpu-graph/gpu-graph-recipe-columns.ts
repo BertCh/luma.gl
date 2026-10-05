@@ -18,14 +18,8 @@ import {
 } from '@luma.gl/gpgpu/gpu-core';
 import {GPUVector} from '@luma.gl/gpgpu/gpu-data';
 import {GPUGraph, GPUGraphTopology, type GPUGraphAdjacency} from '@luma.gl/gpgpu/gpu-graph';
-import {
-  GPUNetworkAnalyticsColumns,
-  GPUNetworkNeighborhood,
-  GPUNetworkPathExtraction,
-  GPUNetworkReachability,
-  importGraphBuffer,
-  type GPUNetworkAnalyticsColumnsProps
-} from '@luma.gl/experimental/map-graphs';
+import {GPUNetworkAnalyticsColumns, GPUNetworkNeighborhood, GPUNetworkPathExtraction, GPUNetworkReachability, type GPUNetworkAnalyticsColumnsProps} from '@luma.gl/experimental/gpu-network';
+import {importGraphBuffer} from '@luma.gl/experimental/UNRESOLVED';
 import type {GPUGraphNodeColumn} from './gpu-graph-columns';
 
 const SCALAR_BYTE_LENGTH = 4;

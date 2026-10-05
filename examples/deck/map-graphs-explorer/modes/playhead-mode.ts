@@ -9,14 +9,8 @@ import {
   GPUReadbackRing,
   type CompiledGPUCommandGraph
 } from '@luma.gl/gpgpu/gpu-core';
-import {
-  getGPUTrajectoryPlayheadParameterValues,
-  GPUTrajectoryPlayhead,
-  GPUTrajectoryResample,
-  GPU_TRAJECTORY_PLAYHEAD_PARAMETER_LENGTH,
-  GPU_TRAJECTORY_PLAYHEAD_STATUS,
-  importGraphBuffer
-} from '@luma.gl/experimental/map-graphs';
+import {getGPUTrajectoryPlayheadParameterValues, GPUTrajectoryPlayhead, GPUTrajectoryResample, GPU_TRAJECTORY_PLAYHEAD_PARAMETER_LENGTH, GPU_TRAJECTORY_PLAYHEAD_STATUS} from '@luma.gl/experimental/geospatial';
+import {importGraphBuffer} from '@luma.gl/experimental/UNRESOLVED';
 import type {MapGraphsModeDefinition, MapGraphsModeInstance} from '../map-graphs-mode';
 import {formatCount, MapGraphsResources} from '../map-graphs-resources';
 import {

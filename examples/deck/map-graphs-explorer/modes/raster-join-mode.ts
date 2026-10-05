@@ -24,15 +24,9 @@ import {
   GPUReadbackRing,
   type CompiledGPUCommandGraph
 } from '@luma.gl/gpgpu/gpu-core';
-import {
-  getGPUPolygonRasterizationExtentValues,
-  GPU_POLYGON_RASTERIZATION_EXTENT_LENGTH,
-  GPU_POLYGON_RASTERIZATION_NO_ZONE,
-  GPUPointInPolygonJoin,
-  GPUPolygonRasterization,
-  GPURasterJoin,
-  importGraphBuffer
-} from '@luma.gl/experimental/map-graphs';
+import {getGPUPolygonRasterizationExtentValues, GPU_POLYGON_RASTERIZATION_EXTENT_LENGTH, GPU_POLYGON_RASTERIZATION_NO_ZONE, GPUPolygonRasterization, GPURasterJoin} from '@luma.gl/experimental/gpu-raster';
+import {GPUPointInPolygonJoin} from '@luma.gl/experimental/geospatial';
+import {importGraphBuffer} from '@luma.gl/experimental/UNRESOLVED';
 import {LocalMetricProjection} from '../map-graphs-data';
 import {
   MapGraphsPointLayer,

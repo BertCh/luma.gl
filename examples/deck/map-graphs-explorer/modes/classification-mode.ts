@@ -24,29 +24,9 @@ import {
   type CompiledGPUCommandGraph,
   type GraphDataView
 } from '@luma.gl/gpgpu/gpu-core';
-import {
-  GPUBivariateClassification,
-  GPUClassBreaks,
-  GPUColorScale,
-  GPUColumnProfile,
-  GPUColumnQuantiles,
-  GPUPointDensity,
-  GPU_COLUMN_PROFILE_STATISTIC,
-  GPU_COLUMN_PROFILE_STATISTIC_COUNT,
-  GPU_CLASS_BREAKS_METHODS,
-  GPU_CLASS_BREAKS_METHOD_CODES,
-  getGPUBivariateClassificationParameterValues,
-  getGPUClassBreaksParameterLength,
-  getGPUClassBreaksParameterValues,
-  getGPUColorScaleParameterValues,
-  getGPUColumnQuantilesParameterLength,
-  getGPUColumnQuantilesParameterValues,
-  importGraphBuffer,
-  GPU_BIVARIATE_CLASSIFICATION_PARAMETER_LENGTH,
-  GPU_COLOR_SCALE_PARAMETER_LENGTH,
-  type GPUClassBreaksMethod,
-  type GPUColorScaleType
-} from '@luma.gl/experimental/map-graphs';
+import {GPUBivariateClassification, GPUClassBreaks, GPUColorScale, GPUColumnProfile, GPUColumnQuantiles, GPU_COLUMN_PROFILE_STATISTIC, GPU_COLUMN_PROFILE_STATISTIC_COUNT, GPU_CLASS_BREAKS_METHODS, GPU_CLASS_BREAKS_METHOD_CODES, getGPUBivariateClassificationParameterValues, getGPUClassBreaksParameterLength, getGPUClassBreaksParameterValues, getGPUColorScaleParameterValues, getGPUColumnQuantilesParameterLength, getGPUColumnQuantilesParameterValues, GPU_BIVARIATE_CLASSIFICATION_PARAMETER_LENGTH, GPU_COLOR_SCALE_PARAMETER_LENGTH, type GPUClassBreaksMethod, type GPUColorScaleType} from '@luma.gl/experimental/gpu-dataframe';
+import {GPUPointDensity} from '@luma.gl/experimental/geospatial';
+import {importGraphBuffer} from '@luma.gl/experimental/UNRESOLVED';
 import {LocalMetricProjection} from '../map-graphs-data';
 import type {MapGraphsModeDefinition, MapGraphsModeInstance} from '../map-graphs-mode';
 import {MapGraphsPointLayer} from '../map-graphs-layers';

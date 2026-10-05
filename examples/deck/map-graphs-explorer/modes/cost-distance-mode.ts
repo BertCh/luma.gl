@@ -24,17 +24,9 @@ import {
   GPUReadbackRing,
   type CompiledGPUCommandGraph
 } from '@luma.gl/gpgpu/gpu-core';
-import {
-  getGPUCostDistanceParameterValues,
-  getGPUTerrainDerivativesParameterValues,
-  GPU_COST_DISTANCE_NONE,
-  GPU_COST_DISTANCE_PARAMETER_LENGTH,
-  GPU_TERRAIN_DERIVATIVES_PARAMETER_LENGTH,
-  GPUCostDistance,
-  GPUCostDistancePath,
-  GPUTerrainDerivatives,
-  importGraphBuffer
-} from '@luma.gl/experimental/map-graphs';
+import {getGPUCostDistanceParameterValues, GPU_COST_DISTANCE_NONE, GPU_COST_DISTANCE_PARAMETER_LENGTH, GPUCostDistance, GPUCostDistancePath} from '@luma.gl/experimental/gpu-raster';
+import {getGPUTerrainDerivativesParameterValues, GPU_TERRAIN_DERIVATIVES_PARAMETER_LENGTH, GPUTerrainDerivatives} from '@luma.gl/experimental/gpu-terrain';
+import {importGraphBuffer} from '@luma.gl/experimental/UNRESOLVED';
 import {LocalMetricProjection} from '../map-graphs-data';
 import {
   MapGraphsPointLayer,

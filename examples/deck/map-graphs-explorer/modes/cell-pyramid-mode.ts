@@ -19,11 +19,8 @@ import {
   type GraphDataView
 } from '@luma.gl/gpgpu/gpu-core';
 import {DrawCommandBuffer} from '@luma.gl/gpgpu/gpu-core';
-import {
-  GPUCellLevelSelection,
-  GPUCellPyramid,
-  importGraphBuffer
-} from '@luma.gl/experimental/map-graphs';
+import {GPUCellLevelSelection, GPUCellPyramid} from '@luma.gl/experimental/geospatial';
+import {importGraphBuffer} from '@luma.gl/experimental/UNRESOLVED';
 import type {Buffer} from '@luma.gl/core';
 import {LocalMetricProjection} from '../map-graphs-data';
 import type {MapGraphsModeDefinition, MapGraphsModeInstance} from '../map-graphs-mode';

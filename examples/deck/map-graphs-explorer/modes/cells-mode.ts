@@ -37,20 +37,8 @@ import {
   type CompiledGPUCommandGraph,
   type GraphDataView
 } from '@luma.gl/gpgpu/gpu-core';
-import {
-  GPUCellAggregation,
-  GPUCellCompaction,
-  GPUCellCover,
-  GPUCellGeometry,
-  GPUCellTopology,
-  GPUPointToCell,
-  GPU_CELL_GEOMETRY_H3_MAXIMUM_VERTEX_COUNT,
-  GPU_CELL_TOPOLOGY_MAXIMUM_RADIUS,
-  getCellTopologyStride,
-  importGraphBuffer,
-  type GPUCellCoverContainment,
-  type GPUCellIndexFamily
-} from '@luma.gl/experimental/map-graphs';
+import {GPUCellAggregation, GPUCellCompaction, GPUCellCover, GPUCellGeometry, GPUCellTopology, GPUPointToCell, GPU_CELL_GEOMETRY_H3_MAXIMUM_VERTEX_COUNT, GPU_CELL_TOPOLOGY_MAXIMUM_RADIUS, getCellTopologyStride, type GPUCellCoverContainment, type GPUCellIndexFamily} from '@luma.gl/experimental/geospatial';
+import {importGraphBuffer} from '@luma.gl/experimental/UNRESOLVED';
 import {LocalMetricProjection} from '../map-graphs-data';
 import {MapGraphsSegmentLayer} from '../map-graphs-layers';
 import type {

@@ -4,12 +4,9 @@
 
 import type {Layer} from '@deck.gl/core';
 import {GPUCommandGraph, type CompiledGPUCommandGraph} from '@luma.gl/gpgpu/gpu-core';
-import {
-  createGPUPointDensityGaussianKernel,
-  GPUPointDensity,
-  importGraphBuffer,
-  type GPUMapGraphParameterBuffer
-} from '@luma.gl/experimental/map-graphs';
+import {createGPUPointDensityGaussianKernel, GPUPointDensity} from '@luma.gl/experimental/geospatial';
+import {importGraphBuffer} from '@luma.gl/experimental/UNRESOLVED';
+import {type GPUParameterBuffer} from '@luma.gl/experimental/geospatial';
 import {LocalMetricProjection} from '../map-graphs-data';
 import {MapGraphsPointLayer, MapGraphsRasterLayer} from '../map-graphs-layers';
 import type {MapGraphsModeDefinition, MapGraphsModeInstance} from '../map-graphs-mode';
@@ -230,7 +227,7 @@ export const densityMode: MapGraphsModeDefinition = {
   }
 };
 
-function writeKernel(kernel: GPUMapGraphParameterBuffer<'float32'>, radius: number): void {
+function writeKernel(kernel: GPUParameterBuffer<'float32'>, radius: number): void {
   // Embed a radius-r Gaussian inside the compile-time kernel; unused taps are zero.
   const small = createGPUPointDensityGaussianKernel(radius);
   const size = radius * 2 + 1;

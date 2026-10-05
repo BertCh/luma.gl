@@ -26,17 +26,9 @@ import {
   GPUReadbackRing,
   type CompiledGPUCommandGraph
 } from '@luma.gl/gpgpu/gpu-core';
-import {
-  getGPUFocalStatisticsParameterValues,
-  getGPUInverseDistanceWeightingParameterValues,
-  GPU_FOCAL_STATISTICS_PARAMETER_LENGTH,
-  GPU_INVERSE_DISTANCE_WEIGHTING_PARAMETER_LENGTH,
-  GPUFocalStatistics,
-  GPUInverseDistanceWeighting,
-  GPUTerrainContours,
-  importGraphBuffer,
-  type GPUFocalStatisticsShape
-} from '@luma.gl/experimental/map-graphs';
+import {getGPUFocalStatisticsParameterValues, getGPUInverseDistanceWeightingParameterValues, GPU_FOCAL_STATISTICS_PARAMETER_LENGTH, GPU_INVERSE_DISTANCE_WEIGHTING_PARAMETER_LENGTH, GPUFocalStatistics, GPUInverseDistanceWeighting, type GPUFocalStatisticsShape} from '@luma.gl/experimental/geospatial';
+import {GPUTerrainContours} from '@luma.gl/experimental/gpu-terrain';
+import {importGraphBuffer} from '@luma.gl/experimental/UNRESOLVED';
 import {createSeededRandom, LocalMetricProjection} from '../map-graphs-data';
 import {MapGraphsPointLayer, MapGraphsRasterLayer} from '../map-graphs-layers';
 import type {MapGraphsModeDefinition, MapGraphsModeInstance} from '../map-graphs-mode';

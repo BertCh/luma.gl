@@ -125,7 +125,7 @@ const recipeExportNames = [
   'GPUGeographicallyWeightedRegression',
   'GPUCompositeScore',
   'GPUInequality',
-  'GPUMapGraphParameterBuffer'
+  'GPUParameterBuffer'
 ];
 
 assert.deepEqual(packageJson.exports?.['./map-graphs'], {
@@ -156,16 +156,16 @@ try {
   GPUPointDensity,
   GPUTileLODSelection,
   GPUTimeWindowFilter,
-  type GPUMapGraphCompactOutput,
-  type GPUMapGraphRecipe,
+  type GPUCompactOutput,
+  type GPUCommandNodeProducer,
   type GPUPointDensityProps,
   type GPUTileLODSelectionProps
 } from '@luma.gl/experimental/map-graphs';
 
 declare const densityProps: GPUPointDensityProps;
 declare const tileProps: GPUTileLODSelectionProps;
-declare const output: GPUMapGraphCompactOutput;
-const recipes: GPUMapGraphRecipe[] = [new GPUPointDensity(densityProps), new GPUTileLODSelection(tileProps)];
+declare const output: GPUCompactOutput;
+const recipes: GPUCommandNodeProducer[] = [new GPUPointDensity(densityProps), new GPUTileLODSelection(tileProps)];
 void recipes;
 void output;
 void GPUNetworkReachability;
