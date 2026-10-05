@@ -4,3 +4,11 @@
 import './terrain-analysis';
 import './hydrology';
 import './terrain-illumination';
+import './point-horizon';
+import './relief-visualization';
+import './terrain-flow-field';
+import './terrain-decode';
+import './terrain-features';
+import './terrain-curvature';
+import './geomorphons';
+import './topographic-position';

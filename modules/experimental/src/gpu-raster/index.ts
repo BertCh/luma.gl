@@ -410,3 +410,16 @@ export type {
   GPUParticleAdvectionTrails,
   GPUParticleAdvectionWordSettings
 } from './particle-advection/index';
+export {
+  getGPURasterExtremaPyramidLayout,
+  GPU_RASTER_EXTREMA_PYRAMID_EMPTY_MAXIMUM,
+  GPU_RASTER_EXTREMA_PYRAMID_EMPTY_MINIMUM,
+  GPURasterExtremaPyramid
+} from './raster-pyramid/index';
+export type {
+  GPURasterExtremaPyramidFootprint,
+  GPURasterExtremaPyramidLayout,
+  GPURasterExtremaPyramidLayoutOptions,
+  GPURasterExtremaPyramidLevel,
+  GPURasterExtremaPyramidProps
+} from './raster-pyramid/index';

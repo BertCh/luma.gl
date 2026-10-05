@@ -34,7 +34,7 @@ const SUPPORTED_EXAMPLE_WORKSPACES = new Set([
   'deck/depth-of-field',
   'deck/luspatial-taxi',
   'deck/gpu-culled-trace',
-  'deck/map-graphs-explorer',
+  'deck/spatial-analysis-explorer',
   'deck/pattern-fills',
   'deck/point-glow',
   'deck/globe-clouds',

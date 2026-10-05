@@ -111,7 +111,7 @@ const loadMillionRowCrossfilterExample = () =>
 const loadRasterLabExample = () => import('../../examples/showcase/raster-lab/app');
 const loadGPUSpatialTaxiExample = () => import('../../examples/deck/luspatial-taxi/app');
 const loadGPUGraphExplorerDeckExample = () => import('../../examples/deck/gpu-graph-explorer/app');
-const loadMapGraphsExplorerDeckExample = () => import('../../examples/deck/map-graphs-explorer/app');
+const loadSpatialAnalysisExplorerDeckExample = () => import('../../examples/deck/spatial-analysis-explorer/app');
 const loadFP64Example = () => import('../../examples/experimental/fp64/app');
 const loadGPUSortExample = () => import('../../examples/experimental/gpu-sort/src/app');
 const loadGPUDataAnalysisExample = () =>
@@ -575,17 +575,17 @@ export const DeckGPUGraphExplorerExample: React.FC<DeckArrowLayerExampleProps> =
   );
 };
 
-/** Loads the map-graphs recipe explorer only when its WebGPU example is opened. */
-export const DeckMapGraphsExplorerExample: React.FC<DeckArrowLayerExampleProps> = ({
+/** Loads the spatial analysis explorer only when its WebGPU example is opened. */
+export const DeckSpatialAnalysisExplorerExample: React.FC<DeckArrowLayerExampleProps> = ({
   embedded = false
 }) => {
-  const {module, errorMessage} = useDeferredExampleModule(loadMapGraphsExplorerDeckExample);
+  const {module, errorMessage} = useDeferredExampleModule(loadSpatialAnalysisExplorerDeckExample);
 
   if (!module) {
     return (
       <DeferredGPUExampleStatus
-        title="Map Graphs + deck.gl Explorer"
-        description="Loading map-graph recipes, open datasets, and direct deck.gl layers."
+        title="Spatial Analysis + deck.gl Explorer"
+        description="Loading analysis contributors, open datasets, and direct deck.gl layers."
         errorMessage={errorMessage}
         embedded={embedded}
         style={embedded ? DECK_ARROW_LAYER_EMBEDDED_STYLE : undefined}
@@ -597,10 +597,10 @@ export const DeckMapGraphsExplorerExample: React.FC<DeckArrowLayerExampleProps> 
     <ReactExample
       component={DeckArrowLayerCanvas}
       componentProps={{
-        createDeck: module.createMapGraphsExplorerDeck,
+        createDeck: module.createSpatialAnalysisExplorerDeck,
         panel: {
-          id: 'map-graphs-explorer',
-          title: 'Map Graphs + deck.gl Explorer',
+          id: 'spatial-analysis-explorer',
+          title: 'Spatial Analysis + deck.gl Explorer',
           devices: ['webgpu']
         }
       }}

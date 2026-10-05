@@ -8,6 +8,7 @@ import {getWebGPUTestDevice} from '@luma.gl/test-utils';
 import {expect, it} from 'vitest';
 import {GPURasterTextureToBuffer} from '../../../src/gpu-raster';
 import {GPUParameterBuffer, importGraphBuffer} from '../../../src/utils/gpu-contributor-utils';
+import {submitGraph} from '../../utils/gpu-contributor-test-utils';
 import {
   GPU_TERRAIN_VISIBILITY as V,
   GPUTerrainViewshed,
@@ -21,8 +22,7 @@ import {
   createInputBuffer,
   createOutputBuffer,
   isSoftwareDevice,
-  readUint32,
-  submitGraph
+  readUint32
 } from '../../utils/gpu-contributor-test-utils';
 import {
   computeTerrainViewshed,

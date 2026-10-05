@@ -70,6 +70,7 @@ it('GPUTerrainHorizon validates props and schedules one node per sector', () => 
     });
   };
   const contributor = create();
+  expect(contributor.id).toBe('terrain-horizon');
   expect(contributor.requiredHalo).toBe(4);
   const nodeIds = contributor.getCommandNodes(graph).map(node => node.id);
   expect(nodeIds.filter(id => /-horizon-\d$/.test(id))).toHaveLength(8);
@@ -91,6 +92,18 @@ it('GPUTerrainHorizon validates props and schedules one node per sector', () => 
   ).toThrow(/settings/);
   expect(() => create({cellSizeMode: 'polar' as never})).toThrow(/cellSizeMode/);
   expect(() => create({rowDirection: 'east' as never})).toThrow(/rowDirection/);
+  expect(contributor.algorithm).toBe('march');
+  expect(() => create({algorithm: 'pyramid' as never})).toThrow(/algorithm/);
+  expect(() => create({algorithm: 'sweep', stepGrowth: 1.2})).toThrow(/march algorithm only/);
+  const sweep = create({
+    id: 'sweep-horizon',
+    algorithm: 'sweep',
+    negativeOpenness: createTransientView(graph, 'sweep-negative', 'float32', 30)
+  });
+  const sweepIds = sweep.getCommandNodes(graph).map(node => node.id);
+  // One zenith and one nadir sweep node per sector.
+  expect(sweepIds.filter(id => /-horizon-\d$/.test(id))).toHaveLength(8);
+  expect(sweepIds.filter(id => /-horizon-\d-nadir$/.test(id))).toHaveLength(8);
   const shared = createBand(graph, 'shared', 30);
   expect(() => create({elevation: shared, skyViewFactor: shared.storage.values})).toThrow(
     /share buffers/
@@ -451,8 +464,8 @@ it('GPUTerrainHorizon validates unorm16, anisotropic, and negative-openness opti
 it('getTerrainHorizonSectorOutput emits zenith and nadir accumulations and checks bindings', () => {
   const device = createNullWebGPUDevice();
   const graph = new GPUCommandGraph(device);
-  const view = (id: string, format: 'float32' | 'uint32' = 'float32') =>
-    createTransientView(graph, id, format, 16);
+  const view = (id: string) => createTransientView(graph, id, 'float32', 16);
+  const wordView = (id: string) => createTransientView(graph, id, 'uint32', 16);
   const first = getTerrainHorizonSectorOutput({
     sector: 0,
     directionCount: 8,
@@ -482,7 +495,7 @@ it('getTerrainHorizonSectorOutput emits zenith and nadir accumulations and check
     sector: 3,
     directionCount: 7,
     horizonFormat: 'unorm16',
-    horizon: view('hp', 'uint32'),
+    horizon: wordView('hp'),
     mode: 'zenith'
   });
   expect(packed.bindings[0].type).toBe('u32');

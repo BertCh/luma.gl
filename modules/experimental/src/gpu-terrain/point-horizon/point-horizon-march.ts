@@ -438,6 +438,85 @@ function u32Array(values: readonly number[]): string {
 }
 
 /**
+ * Emits a pinned Horner evaluation `c0 + x (c1 + x (c2 + ...))` in `variable`: every multiply and
+ * every add goes through `pinMad`, so the result cannot depend on fused multiply-add contraction
+ * or re-association decisions that the shader compiler may make differently in two kernels.
+ */
+function pinnedHorner(variable: string, coefficients: readonly string[]): string {
+  let accumulator = coefficients[coefficients.length - 1];
+  for (let index = coefficients.length - 2; index >= 0; index--) {
+    accumulator = `pinMad(${variable}, ${accumulator}, ${coefficients[index]})`;
+  }
+  return accumulator;
+}
+
+const ATAN_COEFFICIENTS = [
+  '1.0',
+  '(-1.0 / 3.0)',
+  '(1.0 / 5.0)',
+  '(-1.0 / 7.0)',
+  '(1.0 / 9.0)',
+  '(-1.0 / 11.0)',
+  '(1.0 / 13.0)',
+  '(-1.0 / 15.0)'
+];
+const ATANH_COEFFICIENTS = [
+  '1.0',
+  '(1.0 / 3.0)',
+  '(1.0 / 5.0)',
+  '(1.0 / 7.0)',
+  '(1.0 / 9.0)',
+  '(1.0 / 11.0)',
+  '(1.0 / 13.0)'
+];
+const SIN_COEFFICIENTS = [
+  '1.0',
+  '(-1.0 / 6.0)',
+  '(1.0 / 120.0)',
+  '(-1.0 / 5040.0)',
+  '(1.0 / 362880.0)',
+  '(-1.0 / 39916800.0)',
+  '(1.0 / 6227020800.0)',
+  '(-1.0 / 1307674368000.0)'
+];
+const COS_COEFFICIENTS = [
+  '1.0',
+  '(-1.0 / 2.0)',
+  '(1.0 / 24.0)',
+  '(-1.0 / 720.0)',
+  '(1.0 / 40320.0)',
+  '(-1.0 / 3628800.0)',
+  '(1.0 / 479001600.0)',
+  '(-1.0 / 87178291200.0)'
+];
+const SINH_COEFFICIENTS = [
+  '1.0',
+  '(1.0 / 6.0)',
+  '(1.0 / 120.0)',
+  '(1.0 / 5040.0)',
+  '(1.0 / 362880.0)',
+  '(1.0 / 39916800.0)',
+  '(1.0 / 6227020800.0)'
+];
+const TANH_COEFFICIENTS = [
+  '1.0',
+  '(-1.0 / 3.0)',
+  '(2.0 / 15.0)',
+  '(-17.0 / 315.0)',
+  '(62.0 / 2835.0)',
+  '(-1382.0 / 155925.0)'
+];
+const ASIN_COEFFICIENTS = [
+  '1.0',
+  '(1.0 / 6.0)',
+  '(3.0 / 40.0)',
+  '(5.0 / 112.0)',
+  '(35.0 / 1152.0)',
+  '(63.0 / 2816.0)',
+  '(231.0 / 13312.0)'
+];
+
+/**
  * WGSL math shared by the point-horizon kernels: opaque guard, accurate series, azimuth sin/cos
  * from exact integer octant reduction, and the Web Mercator breakpoint offsets.
  *
@@ -446,6 +525,10 @@ function u32Array(values: readonly number[]): string {
  * `|z| <= tan(pi/12)` and sums an odd series; azimuth sin/cos reduce the integer index exactly into
  * one octant; `bp` forms every Web Mercator offset from cancellation-free difference terms and
  * small-argument series (mt-image `gpu/horizon/horizon.wgsl.ts`).
+ *
+ * Bit-stability. The pyramid and march kernels are compiled separately and must agree bit for bit,
+ * so every per-ray quantity (series, breakpoints, eye) is built from pinned operations
+ * (`pinMad`, `opaque`): a pinned product cannot be fused into the following add nor re-associated.
  */
 const PRECISION_WGSL = /* wgsl */ `
 const PI: f32 = 3.14159265358979323846;
@@ -463,20 +546,26 @@ fn opaque(x: f32) -> f32 {
   return bitcast<f32>(bitcast<u32>(x) ^ bitcast<u32>(settings[settingsOffset + 4u]));
 }
 
+// a * b + c with the product and the sum both pinned (no fma contraction, no re-association).
+fn pinMad(a: f32, b: f32, c: f32) -> f32 {
+  return opaque(opaque(a * b) + c);
+}
+
 fn isFiniteValue(value: f32) -> bool { return (bitcast<u32>(value) & 0x7fffffffu) < 0x7f800000u; }
-fn nanValue() -> f32 { return bitcast<f32>(0x7fc00000u); }
+// NaN built from the runtime zero word: WGSL rejects a constant-evaluated NaN.
+fn nanValue() -> f32 { return bitcast<f32>(0x7fc00000u | bitcast<u32>(settings[settingsOffset + 4u])); }
 
 // Odd Taylor series of atan for |z| <= tan(pi/12) = 0.2679.
 fn atanSeries(z: f32) -> f32 {
-  let z2 = z * z;
-  return z * (1.0 + z2 * (-1.0 / 3.0 + z2 * (1.0 / 5.0 + z2 * (-1.0 / 7.0 + z2 * (1.0 / 9.0 +
-    z2 * (-1.0 / 11.0 + z2 * (1.0 / 13.0 + z2 * (-1.0 / 15.0))))))));
+  let z2 = opaque(z * z);
+  return opaque(z * ${pinnedHorner('z2', ATAN_COEFFICIENTS)});
 }
 
 // atan on [0, 1]: pi/6 + atan((z sqrt(3) - 1) / (z + sqrt(3))) above tan(pi/12).
 fn atanUnit(a: f32) -> f32 {
   if (a > 0.2679491924311227) {
-    return 0.5235987755982988 + atanSeries((a * 1.7320508075688772 - 1.0) / (a + 1.7320508075688772));
+    let numerator = opaque(opaque(a * 1.7320508075688772) - 1.0);
+    return opaque(0.5235987755982988 + atanSeries(numerator / (a + 1.7320508075688772)));
   }
   return atanSeries(a);
 }
@@ -486,7 +575,7 @@ fn atanAccurate(z: f32) -> f32 {
   let a = abs(z);
   var r: f32;
   if (a > 1.0) {
-    r = HALF_PI - atanUnit(1.0 / a);
+    r = opaque(HALF_PI - atanUnit(1.0 / a));
   } else {
     r = atanUnit(a);
   }
@@ -504,23 +593,20 @@ fn atanS(y: f32, x: f32) -> f32 {
 // atanh(z) for |z| < 0.2 (odd series to z^13), log form otherwise.
 fn atanhS(z: f32) -> f32 {
   if (abs(z) < 0.2) {
-    let z2 = z * z;
-    return z * (1.0 + z2 * (1.0 / 3.0 + z2 * (1.0 / 5.0 + z2 * (1.0 / 7.0 + z2 * (1.0 / 9.0 +
-      z2 * (1.0 / 11.0 + z2 * (1.0 / 13.0)))))));
+    let z2 = opaque(z * z);
+    return opaque(z * ${pinnedHorner('z2', ATANH_COEFFICIENTS)});
   }
   return 0.5 * log((1.0 + z) / (1.0 - z));
 }
 
 // sin and cos series for |x| <= pi / 2 (error below 1e-9).
 fn sinSeries(x: f32) -> f32 {
-  let x2 = x * x;
-  return x * (1.0 + x2 * (-1.0 / 6.0 + x2 * (1.0 / 120.0 + x2 * (-1.0 / 5040.0 + x2 * (1.0 / 362880.0 +
-    x2 * (-1.0 / 39916800.0 + x2 * (1.0 / 6227020800.0 + x2 * (-1.0 / 1307674368000.0))))))));
+  let x2 = opaque(x * x);
+  return opaque(x * ${pinnedHorner('x2', SIN_COEFFICIENTS)});
 }
 fn cosSeries(x: f32) -> f32 {
-  let x2 = x * x;
-  return 1.0 + x2 * (-1.0 / 2.0 + x2 * (1.0 / 24.0 + x2 * (-1.0 / 720.0 + x2 * (1.0 / 40320.0 +
-    x2 * (-1.0 / 3628800.0 + x2 * (1.0 / 479001600.0 + x2 * (-1.0 / 87178291200.0)))))));
+  let x2 = opaque(x * x);
+  return ${pinnedHorner('x2', COS_COEFFICIENTS)};
 }
 
 // Azimuth index i of N (angle i * 360 / N degrees clockwise from north) to (sin, cos) with no
@@ -532,7 +618,7 @@ fn azimuthSinCos(index: u32, count: u32) -> vec2<f32> {
   let remainder = eight - octant * count;
   let odd = (octant & 1u) == 1u;
   let folded = select(remainder, count - remainder, odd);
-  let angle = (f32(folded) / f32(count)) * QUARTER_PI;
+  let angle = opaque(opaque(f32(folded) / f32(count)) * QUARTER_PI);
   let s0 = sinSeries(angle);
   let c0 = cosSeries(angle);
   let s = select(s0, c0, odd);
@@ -547,19 +633,18 @@ fn azimuthSinCos(index: u32, count: u32) -> vec2<f32> {
 // Normalised Mercator offset (dx, dy) of the great-circle point at angular distance D (sinD, omc =
 // 1 - cos D) along azimuth (sinA, cosA) from the eye (sinP1, cosP1, c2 = cosP1^2).
 fn bp(sinD: f32, omc: f32, sinA: f32, cosA: f32, sinP1: f32, cosP1: f32, c2: f32) -> vec2<f32> {
-  let ds = cosP1 * sinD * cosA - sinP1 * omc; // sin(phi2) - sin(phi1)
-  let den = c2 - sinP1 * ds; // 1 - sin(phi1) sin(phi2)
-  let dl = atanS(sinA * sinD * cosP1, den - omc); // cos D - sin(phi1) sin(phi2)
+  let ds = opaque(opaque(opaque(cosP1 * sinD) * cosA) - opaque(sinP1 * omc)); // sin(phi2) - sin(phi1)
+  let den = opaque(c2 - opaque(sinP1 * ds)); // 1 - sin(phi1) sin(phi2)
+  let dl = atanS(opaque(opaque(sinA * sinD) * cosP1), opaque(den - omc)); // cos D - sin(phi1) sin(phi2)
   let dy = atanhS(ds / den); // atanh(sin phi2) - atanh(sin phi1)
-  return vec2<f32>(dl * INV_TWO_PI, -dy * INV_TWO_PI);
+  return vec2<f32>(opaque(dl * INV_TWO_PI), opaque(-dy * INV_TWO_PI));
 }
 
 // sinh with a series below 0.5 (the exp form cancels there).
 fn sinhS(x: f32) -> f32 {
   if (abs(x) < 0.5) {
-    let x2 = x * x;
-    return x * (1.0 + x2 * (1.0 / 6.0 + x2 * (1.0 / 120.0 + x2 * (1.0 / 5040.0 + x2 * (1.0 / 362880.0 +
-      x2 * (1.0 / 39916800.0 + x2 * (1.0 / 6227020800.0)))))));
+    let x2 = opaque(x * x);
+    return opaque(x * ${pinnedHorner('x2', SINH_COEFFICIENTS)});
   }
   return 0.5 * (exp(x) - exp(-x));
 }
@@ -572,9 +657,8 @@ fn tanhS(x: f32) -> f32 {
   let a = abs(x);
   var r: f32;
   if (a < 0.3) {
-    let x2 = x * x;
-    r = a * (1.0 + x2 * (-1.0 / 3.0 + x2 * (2.0 / 15.0 + x2 * (-17.0 / 315.0 + x2 * (62.0 / 2835.0 +
-      x2 * (-1382.0 / 155925.0))))));
+    let x2 = opaque(x * x);
+    r = opaque(a * ${pinnedHorner('x2', TANH_COEFFICIENTS)});
   } else {
     let e = exp(-2.0 * a);
     r = (1.0 - e) / (1.0 + e);
@@ -584,9 +668,8 @@ fn tanhS(x: f32) -> f32 {
 // asin for z < 0.2 by series, builtin above.
 fn asinS(z: f32) -> f32 {
   if (z < 0.2) {
-    let z2 = z * z;
-    return z * (1.0 + z2 * (1.0 / 6.0 + z2 * (3.0 / 40.0 + z2 * (5.0 / 112.0 + z2 * (35.0 / 1152.0 +
-      z2 * (63.0 / 2816.0 + z2 * (231.0 / 13312.0)))))));
+    let z2 = opaque(z * z);
+    return opaque(z * ${pinnedHorner('z2', ASIN_COEFFICIENTS)});
   }
   return asin(min(z, 1.0));
 }
@@ -668,24 +751,25 @@ export function getPointHorizonMarchWGSL(model: ResolvedPointHorizonModel): stri
     : '';
   const raySetup = mercator
     ? `let worldPixelSize = settings[settingsOffset + 1u];
-  let c2 = eye.cosP * eye.cosP;
+  let c2 = opaque(eye.cosP * eye.cosP);
   var b0 = bp(SEGMENT_SINES[0], SEGMENT_OMC[0], sinA, cosA, eye.sinP, eye.cosP, c2);`
-    : `let dirU = sinA / settings[settingsOffset + 1u];
-  let dirV = ${model.rowDirection === 'south' ? '-' : ''}cosA / settings[settingsOffset + 2u];`;
+    : `let dirU = opaque(sinA / settings[settingsOffset + 1u]);
+  let dirV = opaque(${model.rowDirection === 'south' ? '-' : ''}cosA / settings[settingsOffset + 2u]);`;
   const segmentGeometry = mercator
     ? `let b1 = bp(SEGMENT_SINES[segment + 1u], SEGMENT_OMC[segment + 1u], sinA, cosA, eye.sinP, eye.cosP, c2);
     let dA = SEGMENT_DISTANCES[segment];
-    let invLength = 1.0 / (SEGMENT_DISTANCES[segment + 1u] - dA);
+    let invLength = opaque(1.0 / (SEGMENT_DISTANCES[segment + 1u] - dA));
     let uA = eye.fx + opaque(b0.x * worldPixelSize);
     let vA = eye.fy + opaque(b0.y * worldPixelSize);
-    let du = opaque((b1.x - b0.x) * worldPixelSize) * invLength;
-    let dv = opaque((b1.y - b0.y) * worldPixelSize) * invLength;`
+    let du = opaque(opaque((b1.x - b0.x) * worldPixelSize) * invLength);
+    let dv = opaque(opaque((b1.y - b0.y) * worldPixelSize) * invLength);`
     : `let dA = 0.0;
     let uA = eye.fx;
     let vA = eye.fy;
     let du = dirU;
     let dv = dirV;`;
   const segmentEnd = mercator ? 'b0 = b1;' : '';
+  const segmentEndDistance = mercator ? 'SEGMENT_DISTANCES[segment + 1u]' : 'BIG';
   const skip = usePyramid
     ? `if (n >= noTest) {
         var skipTo = n;
@@ -698,14 +782,28 @@ export function getPointHorizonMarchWGSL(model: ResolvedPointHorizonModel): stri
           let blockSize = i32(pyramidLevelBlockSize(level));
           let blockX = (p.xi / blockSize) * blockSize;
           let blockY = (p.yi / blockSize) * blockSize;
-          // Analytic exit of the ray from the block (integer part exact), then clamp and verify.
+          // Analytic exit of the ray from the block (integer part exact).
           var exitX = BIG;
           if (du > 0.0) { exitX = (f32(blockX + blockSize - p.xi) - p.fx) / du; }
           else if (du < 0.0) { exitX = (f32(blockX - p.xi) - p.fx) / du; }
           var exitY = BIG;
           if (dv > 0.0) { exitY = (f32(blockY + blockSize - p.yi) - p.fy) / dv; }
           else if (dv < 0.0) { exitY = (f32(blockY - p.yi) - p.fy) / dv; }
-          var candidate = latFloorIndex(d + min(exitX, exitY));
+          let exitDistance = d + min(exitX, exitY);
+          var hMin = 0.0;
+          if (!empty) {
+            hMin = pyramid[pyramidOffset + PYRAMID_MINIMUM_OFFSET + cellIndex];
+            // Cheap rejection with an upper estimate of the last skipped distance: any verified
+            // last sample is below the exit distance, the segment end and the ray end, and the
+            // bound only loosens as the last distance grows, so failing here loses nothing exact.
+            let farthest = min(exitDistance, min(${segmentEndDistance}, maximumDistance));
+            if (skipBound(hMax, hMin, eye, d, farthest, curvature) > tBest) {
+              if (level == 0u) { noTest = max(n + 1u, latCeilIndex(exitDistance)); }
+              break;
+            }
+          }
+          // Clamp to the last sample of the segment and of the ray, then verify and back off.
+          var candidate = latFloorIndex(exitDistance);
           candidate = min(candidate, min(i32(segmentEnd) - 1, rayLast));
           var verified = false;
           var dEnd = d;
@@ -714,9 +812,9 @@ export function getPointHorizonMarchWGSL(model: ResolvedPointHorizonModel): stri
             let candidateOctave = latOctave(u32(candidate));
             let candidateDistance = latDistance(
               candidateOctave, u32(candidate) - LAT_FIRST[candidateOctave] + LAT_J0[candidateOctave]);
-            let q2 = getPosition(candidateDistance, dA, uA, vA, du, dv, eye);
-            if (inGrid(q2) && q2.xi >= blockX && q2.xi < blockX + blockSize &&
-                q2.yi >= blockY && q2.yi < blockY + blockSize) {
+            let end = getPosition(candidateDistance, dA, uA, vA, du, dv, eye);
+            if (inGrid(end) && end.xi >= blockX && end.xi < blockX + blockSize &&
+                end.yi >= blockY && end.yi < blockY + blockSize) {
               verified = true;
               dEnd = candidateDistance;
               break;
@@ -724,24 +822,12 @@ export function getPointHorizonMarchWGSL(model: ResolvedPointHorizonModel): stri
             candidate = candidate - 1;
           }
           if (!verified) { break; }
-          var skippable = empty;
-          if (!empty) {
-            let hMin = pyramid[pyramidOffset + PYRAMID_MINIMUM_OFFSET + cellIndex];
-            let magnitude = max(abs(hMax - eye.hi), abs(hMin - eye.hi)) + abs(eye.lo);
-            let numerator = (hMax - eye.hi) - eye.lo + SKIP_EPSILON * magnitude;
-            let ratio = select((numerator / dEnd) * (1.0 - SKIP_EPSILON),
-              (numerator / d) * (1.0 + SKIP_EPSILON), numerator >= 0.0);
-            let drop = min(d * curvature, dEnd * curvature);
-            let upper = ratio - drop + SKIP_EPSILON * abs(drop);
-            skippable = upper <= tBest;
-          }
-          if (skippable) {
-            skipped = true;
-            skipTo = max(skipTo, u32(candidate) + 1u);
-          } else {
+          if (!empty && skipBound(hMax, hMin, eye, d, dEnd, curvature) > tBest) {
             if (level == 0u) { noTest = u32(candidate) + 1u; }
             break;
           }
+          skipped = true;
+          skipTo = max(skipTo, u32(candidate) + 1u);
         }
         if (skipped) {
           n = skipTo;
@@ -911,11 +997,26 @@ fn inGrid(p: Position) -> bool {
   return p.xi >= 0 && p.yi >= 0 && p.xi < WIDTH_I - 1 && p.yi < HEIGHT_I - 1;
 }
 
-struct RayResult { has: bool, t: f32, d: f32, tQ: f32 };
+// Upper bound of the tangent of every sample with distance in [d, dEnd] inside a cell of extrema
+// (hMax, hMin), see the proof above. EPS pads every rounding, FMA fusion and re-association.
+fn skipBound(hMax: f32, hMin: f32, eye: EyeState, d: f32, dEnd: f32, curvature: f32) -> f32 {
+  let magnitude = max(abs(hMax - eye.hi), abs(hMin - eye.hi)) + abs(eye.lo);
+  let numerator = (hMax - eye.hi) - eye.lo + SKIP_EPSILON * magnitude;
+  let ratio = select(
+    (numerator / dEnd) * (1.0 - SKIP_EPSILON),
+    (numerator / d) * (1.0 + SKIP_EPSILON),
+    numerator >= 0.0
+  );
+  let drop = min(d * curvature, dEnd * curvature);
+  return ratio - drop + SKIP_EPSILON * abs(drop);
+}
+
+struct RayResult { has: bool, t: f32, d: f32, tQ: f32, evaluated: u32 };
 
 // Marches one ray. Returns the maximum tangent tBest = hr / d - d c over valid samples and its
 // distance. tQ is the running maximum when the first sample with d >= q is reached (q <= 0 or
-// !useQ: -BIG).
+// !useQ: -BIG). evaluated counts the samples whose bilinear height was read (a debug measure of
+// the pyramid's skipping).
 fn marchRay(eye: EyeState, sinA: f32, cosA: f32, q: f32, useQ: bool) -> RayResult {
   let curvature = settings[settingsOffset];
   let maximumFrame = settings[settingsOffset + 3u];
@@ -932,6 +1033,7 @@ fn marchRay(eye: EyeState, sinA: f32, cosA: f32, q: f32, useQ: bool) -> RayResul
   var j = LAT_J0[0];
   var ended = false;
   var noTest = 0u;
+  var evaluated = 0u;
   for (var segment = 0u; segment < SEGMENT_COUNT; segment++) {
     if (ended || i32(n) > rayLast) { break; }
     let segmentEnd = SEGMENT_END[segment];
@@ -950,6 +1052,7 @@ fn marchRay(eye: EyeState, sinA: f32, cosA: f32, q: f32, useQ: bool) -> RayResul
       }
       ${skip}
       let cell = u32(p.yi) * WIDTH + u32(p.xi);
+      evaluated = evaluated + 1u;
       if (readCellValid(cell)) {
         let hr = bilinearRelative(cell, p.fx, p.fy, eye.hi, eye.lo);
         let t = hr / d - opaque(d * curvature);
@@ -969,7 +1072,7 @@ fn marchRay(eye: EyeState, sinA: f32, cosA: f32, q: f32, useQ: bool) -> RayResul
     ${segmentEnd}
   }
   if (!qDone) { tQ = select(-BIG, tBest, has); }
-  return RayResult(has, tBest, dBest, tQ);
+  return RayResult(has, tBest, dBest, tQ, evaluated);
 }
 `;
 }

@@ -651,6 +651,8 @@ the directory names below are relative to the entry that exports them. Shared he
 [GPU Dataframe analysis contributors](../../docs/api-reference/experimental/gpu-dataframe-analysis.md), and
 [GPU residency](../../docs/api-reference/experimental/gpu-tables/gpu-residency.mdx).
 
+Round 8 (DEM analysis ported from mt-image and Rigi): terrain decode and spike repair, summits and critical points, curvature, geomorphons, TPI/TRI/Weiss, hydrology extras and the flow field, and pyramid-accelerated visibility. Every contributor is compared against an f64 or CPU oracle; each has a headless GPU spec and a node spec.
+
 Implemented (initial versions, node and headless WebGPU tests):
 
 - **Viewport tile and LOD selection** — `GPUTileLODSelection`: SSE refinement with foveation and
@@ -720,7 +722,47 @@ Implemented (initial versions, node and headless WebGPU tests):
   unchanged; a negative control reproduces poopdeck.gl's dead-row histogram-domain failure
 - **Hydrology** — `GPUTerrainFlow`: Planchon–Darboux fill, D8 directions with flat/pit/outlet
   classes, deterministic accumulation (cells, area, runoff), stream mask; outputs may share one
-  buffer over disjoint byte ranges
+  buffer over disjoint byte ranges. Round 8 adds flat resolution (Barnes 2014, three GPU-gated
+  equal-height relaxations, bit-exact against a BFS oracle), D-infinity and Freeman/Quinn MFD
+  accumulation (deterministic pull, fractions recomputed per donor), and the derived contributors
+  `GPUTerrainHeightAboveDrainage` (HAND) and `GPUTerrainWatersheds` (pointer jumping),
+  `GPUTerrainStreamOrder` (Strahler) and `GPUTerrainHydrologicIndices` (SCA, TWI, SPI).
+  `GPUTerrainFlowField` builds a DEM-deflected wind field for particle advection, streamlines and
+  LIC (from mt-image). Apple silicon via Dawn/Metal, 512² synthetic DEM, fill ε 0, flats, area
+  accumulation, HAND, basins, Strahler, TWI and wind field in one graph: every loop converged;
+  no flats 59 ms; flat limit 32 71 ms, limit 128 91 ms; limit 512 212 ms (D8), 228 ms (D-inf),
+  237 ms (MFD)
+- **DEM analysis, round 8 (ported from mt-image / Rigi)**
+  - `GPUTerrainRGBDecode` and `GPUTerrainSpikeRepair` (`terrain-decode/`): Terrarium and Mapbox
+    terrain-RGB decode from a texture or packed buffer with nodata via alpha, RGB, validity or
+    range (exhaustive 2^24 GPU tests bit-exact on both input paths and encodings); opt-in ±256 m
+    spike repair on `GPUGraphConnectedComponents` (10-14 component rounds, up to a 513² serpentine)
+  - `GPUTerrainSummits`, `GPUTerrainPeakSnap`, `GPUTerrainCriticalPoints` and `GPUProfilePeaks`
+    (`terrain-features/`): disc summits with a ring-drop prominence bound, generic peak snapping,
+    8- or 6-neighbour critical points (the 6-ring gives χ = 0 exactly on a torus egg-crate), and 1-D
+    profile peaks with parallel exact greedy NMS and a wrap mode
+  - `GPUTerrainCurvature` (`terrain-curvature/`): 15 Florinsky curvatures from Evans–Young,
+    Zevenbergen–Thorne or Florinsky 5×5 partials (Whitebox signs), plus mt-image multi-radius ring
+    curvature; max abs error 4.2e-6 of output scale versus f64
+  - `GPUGeomorphons` (`geomorphons/`): GRASS r.geomorphon parity (3 comparison modes, flat
+    distance, skip radius, forms, raw and 498-class ternary codes); 0 mismatches versus an f64
+    mirror; 2048², L = 20: 15 ms
+  - `GPUTerrainRuggedness`, `GPUTerrainVectorRuggedness`, `GPUTerrainTopographicPosition` and
+    `GPUTerrainWeissLandforms` (`topographic-position/`): gdaldem TPI/TRI/roughness with both edge
+    modes, VRM, multiscale TPI/DEV/DEVmax from an exact integer summed-area table (f32 SAT: 5.4 m
+    error, exact table: 2.2 mm; 2048², 3 scales: 31 ms), Weiss 10 landform classes
+- **Visibility, round 8 (ported from mt-image / Rigi)**
+  - `GPURasterExtremaPyramid` (`raster-pyramid/`): exact min/max mip chain, bilinear-footprint option, validity-aware empty sentinels; bit-identical to the CPU build
+  - `GPUPointHorizonProfile` and `GPUPointHorizonVisibility` (`point-horizon/`): planar or Web Mercator piecewise great circle, exact power-of-two octave distance lattice, mt-image f32 precision scheme, curvature and refraction, pyramid skipping bit-identical to the march, tolerance-band peak classification (elevation error at most 3.3e-5 degrees against f64)
+  - `GPUTerrainViewshed` gains `traversal: 'pyramid'` (bit-identical) and a tolerance band with an ignored final stretch (code `marginal: 4`); new `GPUTerrainLineOfSight` (batched pairs, clearance) and `GPUTerrainCumulativeViewshed` (observers as the dispatch dimension). Curvature conventions documented (GDAL `cc = 0.85714`, k = 1/7, against k = 0.13)
+  - Measured (Apple GPU, Dawn, median of 5, with readback): viewshed 512² march 9.3 ms, pyramid 8.5 ms; 1024² 35.5 / 33.3 ms; 2048² 171 / 175 ms (about 70 ms fixed). Point horizon 1024²: 16 observers × 720 azimuths cell-30 m step 6 ms march, 10 ms pyramid (38 % of samples); 128 × 720 cell-2 m step 65 ms march, 39 ms pyramid (23 %). The pyramid wins only at high ray counts with a dense step rule
+- **Relief and illumination, round 8 (ported from mt-image / Rigi / RVT)**
+  - `GPUTerrainHorizon` `algorithm: 'sweep'`: exact upper-hull digital-line sweep, amortised O(1) per pixel and sector; 1024² × 16 sectors: 98.6 ms against 411 ms for the march at radius 256, 40.6 ms against 1474 ms at full radius
+  - `horizonFormat: 'unorm16'` half-size horizon maps (1-code parity); `negativeOpenness` and anisotropic SVF (RVT) outputs
+  - `GPUSolarIrradiance` (sun hours and insolation from the horizon map and `getSolarPosition` sun tables; 29 ms per 288-sample day at 1024²) and `GPUTerrainCastShadow` (single-sun exact sweep shadow without a horizon map, per-frame sun)
+  - `GPUReliefShading`: Imhof aspect swing, curvature raster input and elevation contrast, bit-identical when off
+  - `GPUSimpleLocalRelief`, `GPUMultiScaleRelief`, `GPULocalDominance` and `GPUReliefBlend` (`relief-visualization/`; SLRM, telescoped MSRM, local dominance, VAT blend with presets) against RVT-formula f64 oracles; 1024²: SLRM 3.3 ms, MSRM radius 100 5.4 ms, local dominance 84.5 ms, 4-layer blend 1.2 ms
+  - Precision: the horizon march now interpolates centre-relative heights; off-axis error at 4000 m fell from 1.5e-3° to 3.5e-5°. The inventory's fast-math division claim was tested and not reproduced
 - **Cost distance** — `GPUCostDistance` (tiled GPU-gated relaxation, cost limit, bands, back-links)
   and `GPUCostDistancePath`; generated-transient collisions name the contributor; back-links use the
   reachability tie rule, so paths through zero-friction plateaus reach a source (`maxTieIterations`)
@@ -766,7 +808,7 @@ Implemented (initial versions, node and headless WebGPU tests):
   storage-buffer columns with uniform scales: 0 pipeline rebuilds on column or scale change, 0
   uniform-buffer writes per steady frame. Contributor-side resident cost ≈16E bytes for the symmetrized
   CSR (89 KB at V=1,024/E=2,239; 5.5 MB at V=65,536/E=131,263)
-- **Real map demo** — `examples/deck/map-graphs-explorer` has 25 modes, one per contributor family, all
+- **Real map demo** — `examples/deck/spatial-analysis-explorer` has 25 modes, one per contributor family, all
   with 0 rebuilds under per-frame parameter changes
 - **Euclidean distance and allocation**: `GPUDistanceField`, an exact separable
   (Felzenszwalb-Huttenlocher) distance transform with smallest-ID nearest-seed allocation, anisotropic
@@ -897,7 +939,7 @@ Implemented (initial versions, node and headless WebGPU tests):
 
 Still open:
 
-- Demo findings from `map-graphs-explorer`:
+- Demo findings from `spatial-analysis-explorer`:
   - Explorer reachability mode should drop to `maxIterations` ≈ 48 (default `localIterations` 16):
     640 rounds is 649 nodes, 48 is 57; it converges in 5.
   - `GPUBufferSelection`, `GPUSpatialClustering` and `GPUTrajectoryMetrics` have no
@@ -967,8 +1009,14 @@ Still open:
 - Promote `gpu-raster/cost-distance/raster-relaxation.ts` (tiled min-relaxation, GPU-gated iteration) into
   `gpu-raster` once a second consumer exists (only `GPUCostDistance` uses it); network reachability
   no longer uses a gate, and raster relaxation could adopt the queue design for sparse activity.
-  Cross-tile hydrology and cost distance, flat routing, D-infinity, watershed labels, anisotropic
-  costs, and nearest-source allocation.
+  Cross-tile hydrology and cost distance, anisotropic costs, and nearest-source allocation.
+  `gpu-raster/cost-distance/raster-relaxation.ts` now has three consumers (cost distance, fill, flat
+  resolution); promote it to `gpu-raster`.
+- Hydrology open items: Priority-Flood filling and watershed labelling and least-cost breaching
+  (Barnes 2014; Lindsay 2016; sequential priority queues, GPU variants need a tile spill graph),
+  cross-tile fill, flats, accumulation and watersheds, D-infinity HAND/DistDown (TauDEM) and Shreve
+  magnitude, and a GPU loop primitive with a GPU-side break (gated loops cost about 50 µs per
+  skipped round pair after convergence).
 - Flow pair keys are 32-bit (65535 zones); trajectories need geodesic distances; capacitated
   location-allocation; OPTICS/HDBSCAN.
 - Round 4 contributors (`GPUTemporalReduction`, `GPUNetworkSubgraphFilter`, `GPUNetworkCoarsening`,
@@ -1212,10 +1260,10 @@ Still open:
 - Round 7, `GPUTerrainHorizon` and its siblings in `gpu-terrain/terrain-illumination/`:
   - FFT texture shading (exact `|f|^alpha`) needs a graph-node wrapper for gpu-core `GPUFFT2D` and 2x padding (4096² for a 2048² tile, above its 2048 limit); the DoG pyramid follows the target slope only within about 0.2 in the mid band and rolls off near Nyquist and below `1 / (2 pi sigma_max)`.
   - Texture shading runs at full resolution at every level (about 10 taps x `baseSigma * 2^levelCount` per pixel); a downsampled pyramid would make 7-8 levels cheap.
-  - Horizon march cost is O(pixels x sectors x steps) with direct global reads; a max-mip "horizon pyramid" (Timonen/Sloan) or shared-memory line sweep for axis sectors is not implemented.
-  - Horizon storage is float32 only; an `rg16float`/packed-f16 layout would halve the 268 MB of a 2048² x 16 map, and texture-array output for direct shader sampling is not offered.
+  - (Round 8 added `algorithm: 'sweep'`, exact and amortised O(1); the max-mip pyramid for the march is still open.) Horizon march cost is O(pixels x sectors x steps) with direct global reads; a max-mip "horizon pyramid" (Timonen/Sloan) or shared-memory line sweep for axis sectors is not implemented.
+  - (Resolved in round 8: `horizonFormat: 'unorm16'`.) Horizon storage is float32 only; an `rg16float`/packed-f16 layout would halve the 268 MB of a 2048² x 16 map, and texture-array output for direct shader sampling is not offered.
   - Ground distance uses the center row's cell size along the whole ray (fine for tiles, not for continent-scale geographic rasters).
-  - `GPUSolarIrradiance` (daily insolation integral over a sun path, sum of shadow x cos incidence) and per-pixel GPU sun position for globe-scale rasters are not built.
+  - (`GPUSolarIrradiance` landed in round 8.) Per-pixel GPU sun position for globe-scale rasters are not built.
   - `GPUReliefShading` color is packed RGBA8 in a `uint32` buffer only; no `rgba8unorm` storage-texture output helper (needs the shared texture-output helper proposed in research 04 section 4).
   - The relief texture output and the horizon texture output are untested on GPU; texture paths are covered for `GPUSolarShadowMask` and `GPUTextureShading` only.
 - Round 7, `GPURasterReclassify` and its siblings in `gpu-raster/raster-algebra/`:
@@ -1367,6 +1415,31 @@ Still open:
   - Scalar statistics (t-test, Sen, Mann-Kendall, significance) are single band only; per-band variants and a multiband Hotelling/Mahalanobis test are not built
   - Student-t p-value is float32 (about 1e-4 absolute); no f64-quality or exact-permutation path, and no Pettitt/CUSUM change-point or seasonal Mann-Kendall
   - Significance does not apply multiple-comparison control (FDR); two-sample test assumes a fixed split slice (no per-cell breakpoint search)
+- Round 8, DEM analysis ported from mt-image and Rigi (`terrain-decode/`, `terrain-features/`,
+  `terrain-curvature/`, `geomorphons/`, `topographic-position/`, `hydrology/`, `terrain-flow-field/`):
+  - True 2-D prominence and isolation (sequential Priority-Flood or union-find; Kirmse & de Ferranti), a 2× decode downsample with stats (use gpu-raster overview or reduction), and cross-tile spike repair (tile-edge seams are not voted) are not built
+  - Spike repair is capped near 2048² tiles (per-component bit counters need 8·N words in one binding), is bit-exact only for power-of-two `step`, and can shift a real enclosed butte with 216-296 m walls; enable it only for known-noisy sources
+  - Mapbox `(0,0,0)` decodes to -10000 m, inside the default range; pass `noDataRGB: [0, 0, 0]` when the source uses it as nodata
+  - Peak snap keeps unsnapped candidates at the bilinear DEM height (all four corners valid); `max(DEM, catalogue elevation)` is left to the caller. Profile-peak suppression is deterministic only once converged
+  - Summed-area table (`topographic-position/terrain-summed-area-table.ts`) should graduate into a gpgpu `GPUSummedAreaTable` / box-sum primitive (`GPUScanUint64` needs separate low and high buffers); TPI neighbourhoods are square annuli, not discs, and there is no Gaussian-weighted DEV
+  - Geomorphons lack the GRASS `extended` correction, per-sample geodesic distances (the centre row's cell size is used) and intensity/exposition/range/variance outputs; curvature lacks Florinsky's spheroidal-trapezoid method and a log-transform output
+  - Weiss global statistics depend on the tile extent (`'local'` avoids this); multi-tile Weiss and geomorphons need halos (`requiredHalo`) and mosaic-wide reductions
+  - HAND follows D8 paths only; hydrologic indices use the D8 descent slope, and zero slope gives +∞ TWI unless `minimumSlope` is set (default 0.001); D-infinity accumulation differs from the f64 oracle by up to 2.5e-4 relative at facet near-ties
+  - Oracles are f64 transcriptions of GDAL, GRASS and Whitebox definitions; no comparison against the actual binaries was run
+- Round 8, visibility (`raster-pyramid/`, `point-horizon/`, `terrain-analysis/`):
+  - Pyramid skip cost: the skip does an analytic exit, up to 4 endpoint re-checks and a bound at every level; try a coarse-to-fine start level per ray or workgroup-uniform skipping, GPU timestamp timing instead of wall clock, and a real-DEM benchmark
+  - Point horizon covers one raster band (tile window): no multi-ring mosaic (z15 to z9 out to 300 km), no geographic (lng/lat) great-circle path, no variable-length ridge-crest lists; targets narrower than one lattice step can be missed
+  - `GPUPointHorizonVisibility` has no f64 oracle (structural and planar-versus-Web-Mercator tests only); `firstAzimuth` wrap-around and `rowDirection: 'north'` are untested
+  - Sight-line contributors are planar only (no Web Mercator or geographic cell size); line of sight needs all four bilinear corners valid at the target
+  - `GPUTerrainHorizon` does not use the pyramid yet; the eye-adaptive `maximumDistance` helper is not built
+- Round 8, relief and illumination (`terrain-illumination/`, `relief-visualization/`):
+  - Max-mip horizon pyramid for the march (uses the extrema pyramid); the sweep covers most of the cost
+  - Per-row great-circle geometry for long rays and per-pixel GPU sun position for globe-scale irradiance
+  - `GPUReliefBlend` percent-clip stretches need a histogram percentile pass (pass min and max for now); Hesse's full LRM (purged trend surface) is not built, only SLRM and MSRM
+  - Local dominance is 84.5 ms at 1024² with 264 taps; a shared-memory tile or summed-area form could speed it up
+  - The sweep samples pixel centres within half a pixel of the ray, so SVF differs from the bilinear march by about 0.01 on rough terrain; sweep curvature with latitude-dependent cells uses the middle row's spacing for the argmax; sweep needs `stepGrowth` 1 and extents of at most 32767
+  - `'imhof-swing'` needs the `imhofSwing: true` topology flag, otherwise it behaves like `'aspect'`; mt-image's propagated-occluder soft shadow and multi-scale normals are not ported
+  - RVT-py's greyscale overlay and soft-light mutate the background in place so opacity has no effect there; `GPUReliefBlend` applies the documented opacity
 - Round 7 explorer findings (13 demo modes over the round-7 contributors):
   - `GPUClassBreaks` bound 9 storage buffers in one kernel with all methods compiled; fixed by
     packing head/tail breaks into the head/tail state buffer. `createWGSLKernelNode` now

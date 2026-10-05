@@ -44,8 +44,20 @@ import {
   type GPUTerrainHorizonFormat,
   type GPUTerrainIlluminationCellSizeMode
 } from './terrain-illumination-utils';
+import {getTerrainHorizonSweepNode, TERRAIN_SWEEP_MAX_EXTENT} from './terrain-horizon-sweep';
 
 export type {GPUTerrainHorizonFormat} from './terrain-illumination-utils';
+
+/**
+ * How {@link GPUTerrainHorizon} finds horizons:
+ * - `'march'`: bounded ray march with bilinear samples on the baked step schedule, O(steps) per
+ *   pixel and sector.
+ * - `'sweep'`: exact discrete horizons on digital lines through pixel centres with upper-hull
+ *   pointers (Stewart 1998 style), amortised O(1) per pixel and sector. Samples are pixel centres
+ *   on a digital line whose lateral offset from the ideal ray is at most half a pixel, so values
+ *   differ from the march by sampling, not by precision. `stepGrowth` must be 1.
+ */
+export type GPUTerrainHorizonAlgorithm = 'march' | 'sweep';
 
 /** Number of float32 values read from `GPUTerrainHorizonProps.settings`. */
 export const GPU_TERRAIN_HORIZON_PARAMETER_LENGTH = 8;
@@ -303,6 +315,11 @@ export type GPUTerrainHorizonProps = {
   maximumRadius: number;
   /** Geometric step growth, see {@link getGPUTerrainHorizonStepDistances}. Defaults to 1. */
   stepGrowth?: number;
+  /**
+   * Horizon search, see {@link GPUTerrainHorizonAlgorithm}. Defaults to `'march'`. `'sweep'` needs
+   * `stepGrowth` 1 and grid extents up to 32767.
+   */
+  algorithm?: GPUTerrainHorizonAlgorithm;
   /** Cell size interpretation. Defaults to `'uniform'`. */
   cellSizeMode?: GPUTerrainIlluminationCellSizeMode;
   /** Direction in which the row index increases. Defaults to `'south'` (north-up rasters). */
@@ -510,6 +527,12 @@ export function getTerrainHorizonAnisotropicWeightWGSL(directionCount: number): 
  *   `(1 - wMin) * |cos((t - tMain) / 2)|^level + wMin`, where `tMain` is the compass azimuth of
  *   maximum weight (RVT's `a_main_direction = A` is `(360 - A) mod 360` here).
  *
+ * With `algorithm: 'sweep'` the per-sector march is replaced by an exact upper-hull sweep over
+ * digital lines through pixel centres (one invocation per line, amortised O(1) per pixel and
+ * sector, and a second nadir sweep when `negativeOpenness` is bound); every output keeps its
+ * meaning. Measured on 1024^2 with 16 sectors: 98.6 ms against 411 ms at radius 256 and 40.6 ms
+ * against 1474 ms at radius 1023 on an Apple-silicon laptop.
+ *
  * One node per sector keeps each dispatch short on large tiles; sums accumulate in fixed sector
  * order, so results are deterministic. Invalid centers receive NaN and validity 0. Pixels closer
  * than `maximumRadius` to the tile edge see a truncated horizon: pass a tile with a
@@ -528,6 +551,8 @@ export class GPUTerrainHorizon implements GPUCommandNodeProducer {
   readonly stepDistances: Float32Array;
   /** Storage format of the optional `horizon` output. */
   readonly horizonFormat: GPUTerrainHorizonFormat;
+  /** Horizon search algorithm. */
+  readonly algorithm: GPUTerrainHorizonAlgorithm;
 
   constructor(props: GPUTerrainHorizonProps) {
     this.id = props.id ?? 'terrain-horizon';
@@ -565,6 +590,18 @@ export class GPUTerrainHorizon implements GPUCommandNodeProducer {
     }
     validateTerrainHorizonFormat(id, props.horizonFormat ?? 'float32');
     this.horizonFormat = props.horizonFormat ?? 'float32';
+    this.algorithm = props.algorithm ?? 'march';
+    if (this.algorithm !== 'march' && this.algorithm !== 'sweep') {
+      throw new Error(`${id} algorithm must be march or sweep`);
+    }
+    if (this.algorithm === 'sweep') {
+      if ((props.stepGrowth ?? 1) !== 1) {
+        throw new Error(`${id} stepGrowth applies to the march algorithm only`);
+      }
+      if (props.width > TERRAIN_SWEEP_MAX_EXTENT || props.height > TERRAIN_SWEEP_MAX_EXTENT) {
+        throw new Error(`${id} sweep supports extents up to ${TERRAIN_SWEEP_MAX_EXTENT}`);
+      }
+    }
     validateTerrainHorizonView(
       id,
       'horizon',
@@ -683,8 +720,37 @@ export class GPUTerrainHorizon implements GPUCommandNodeProducer {
     const rowDirection = props.rowDirection ?? 'south';
     const cellSizeMode = props.cellSizeMode ?? 'uniform';
     const distances = Array.from(this.stepDistances, getWGSLFloatLiteral).join(', ');
+    const hull =
+      this.algorithm === 'sweep'
+        ? createTransientView(graph, `${id}-sweep-hull`, 'uint32', pixelCount)
+        : undefined;
     for (let sector = 0; sector < directionCount; sector++) {
       const direction = getGPUTerrainHorizonDirection(sector, directionCount, rowDirection);
+      if (hull) {
+        nodes.push(
+          ...getSweepSectorNodes(graph, {
+            id: `${id}-horizon-${sector}`,
+            width,
+            height,
+            sector,
+            directionCount,
+            direction,
+            maximumRadius: props.maximumRadius,
+            cellSizeMode,
+            elevationValues,
+            elevationValidity,
+            settings: props.settings,
+            hull,
+            horizonFormat: this.horizonFormat,
+            horizon: props.horizon,
+            sineSum,
+            angleSum,
+            anisotropicSum,
+            nadirSum
+          })
+        );
+        continue;
+      }
       nodes.push(
         getHorizonNode(graph, {
           id: `${id}-horizon-${sector}`,
@@ -859,6 +925,88 @@ ${anisotropicSum ? getTerrainHorizonAnisotropicWeightWGSL(directionCount) : ''}`
   }
 }
 
+/** Builds the sweep kernels of one sector: zenith outputs, then the nadir pass when needed. */
+function getSweepSectorNodes<Parameters>(
+  graph: GPUCommandGraph<Parameters>,
+  props: {
+    id: string;
+    width: number;
+    height: number;
+    sector: number;
+    directionCount: number;
+    direction: [number, number];
+    maximumRadius: number;
+    cellSizeMode: GPUTerrainIlluminationCellSizeMode;
+    elevationValues: GraphDataView<'float32'>;
+    elevationValidity: GraphDataView<'uint32'>;
+    settings: GraphDataView<'float32'>;
+    hull: GraphDataView<'uint32'>;
+    horizonFormat: GPUTerrainHorizonFormat;
+    horizon?: GraphDataView<'float32'> | GraphDataView<'uint32'>;
+    sineSum?: GraphDataView<'float32'>;
+    angleSum?: GraphDataView<'float32'>;
+    anisotropicSum?: GraphDataView<'float32'>;
+    nadirSum?: GraphDataView<'float32'>;
+  }
+): GPUCommandNode<Parameters>[] {
+  const common = {
+    width: props.width,
+    height: props.height,
+    direction: props.direction,
+    maximumRadius: props.maximumRadius,
+    cellSizeMode: props.cellSizeMode,
+    elevationValues: props.elevationValues,
+    elevationValidity: props.elevationValidity,
+    settings: props.settings,
+    hull: props.hull
+  };
+  const nodes: GPUCommandNode<Parameters>[] = [];
+  // The sweep binds elevation values, validity, settings, and hull pointers itself.
+  if (props.horizon || props.sineSum || props.angleSum || props.anisotropicSum) {
+    const output = getTerrainHorizonSectorOutput({
+      sector: props.sector,
+      directionCount: props.directionCount,
+      horizonFormat: props.horizonFormat,
+      horizon: props.horizon,
+      sineSum: props.sineSum,
+      angleSum: props.angleSum,
+      anisotropicSum: props.anisotropicSum,
+      mode: 'zenith',
+      reservedBindingCount: 4
+    });
+    nodes.push(
+      getTerrainHorizonSweepNode(graph, {
+        ...common,
+        id: props.id,
+        zFactorSign: 1,
+        outputBindings: output.bindings,
+        outputDeclarations: output.declarations,
+        outputWGSL: output.wgsl
+      })
+    );
+  }
+  if (props.nadirSum) {
+    const output = getTerrainHorizonSectorOutput({
+      sector: props.sector,
+      directionCount: props.directionCount,
+      nadirSum: props.nadirSum,
+      mode: 'nadir',
+      reservedBindingCount: 4
+    });
+    nodes.push(
+      getTerrainHorizonSweepNode(graph, {
+        ...common,
+        id: `${props.id}-nadir`,
+        zFactorSign: -1,
+        outputBindings: output.bindings,
+        outputDeclarations: output.declarations,
+        outputWGSL: output.wgsl
+      })
+    );
+  }
+  return nodes;
+}
+
 /** Builds the ray-march kernel for one horizon sector. */
 function getHorizonNode<Parameters>(
   graph: GPUCommandGraph<Parameters>,
@@ -949,8 +1097,11 @@ fn isValidPixel(column: u32, row: u32) -> bool {
 fn getElevation(column: u32, row: u32) -> f32 {
   return elevationValues[elevationValuesOffset + row * WIDTH + column];
 }
-// Bilinear elevation at an in-grid pixel-center position; .y is 0 when any corner is invalid.
-fn sampleElevation(position: vec2<f32>) -> vec2<f32> {
+// Bilinear elevation relative to \`origin\` at an in-grid pixel-center position; .y is 0 when any
+// corner is invalid. Corners are made origin-relative before interpolating, so the interpolation
+// rounds at the scale of the local relief instead of the absolute elevation (at 4000 m the absolute
+// form loses about 2.4e-4 m, 1.4e-3 degrees over one 10 m step).
+fn sampleElevation(position: vec2<f32>, origin: f32) -> vec2<f32> {
   let base = vec2<u32>(floor(position));
   let next = min(base + vec2<u32>(1u), vec2<u32>(WIDTH - 1u, HEIGHT - 1u));
   let fraction = position - floor(position);
@@ -958,8 +1109,8 @@ fn sampleElevation(position: vec2<f32>) -> vec2<f32> {
       !isValidPixel(base.x, next.y) || !isValidPixel(next.x, next.y)) {
     return vec2<f32>(0.0, 0.0);
   }
-  let top = mix(getElevation(base.x, base.y), getElevation(next.x, base.y), fraction.x);
-  let bottom = mix(getElevation(base.x, next.y), getElevation(next.x, next.y), fraction.x);
+  let top = mix(getElevation(base.x, base.y) - origin, getElevation(next.x, base.y) - origin, fraction.x);
+  let bottom = mix(getElevation(base.x, next.y) - origin, getElevation(next.x, next.y) - origin, fraction.x);
   return vec2<f32>(mix(top, bottom, fraction.y), 1.0);
 }`,
     body: `let pixel = index;
@@ -985,16 +1136,16 @@ fn sampleElevation(position: vec2<f32>) -> vec2<f32> {
       if (any(position < vec2<f32>(0.0)) || any(position > limit)) { break; }
       let groundDistance = stepDistance * groundStep;
       if (maximumDistance > 0.0 && groundDistance > maximumDistance) { break; }
-      let elevationSample = sampleElevation(position);
+      let elevationSample = sampleElevation(position, centerElevation);
       if (elevationSample.y == 0.0) { continue; }
-      let rise = zFactor * (elevationSample.x - centerElevation) -
+      let rise = zFactor * elevationSample.x -
         curvature * groundDistance * groundDistance;
       let tangent = rise / groundDistance;
       if (!hasSample || tangent > maximumTangent) { maximumTangent = tangent; }
       ${
         nadir
           ? `// Inverted terrain: the elevation difference flips sign, the curvature drop does not.
-      let nadirRise = -zFactor * (elevationSample.x - centerElevation) -
+      let nadirRise = -zFactor * elevationSample.x -
         curvature * groundDistance * groundDistance;
       let nadirTangent = nadirRise / groundDistance;
       if (!hasSample || nadirTangent > maximumNadirTangent) { maximumNadirTangent = nadirTangent; }`

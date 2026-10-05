@@ -69,6 +69,13 @@ export type GPUPointHorizonProfileProps = GPUPointHorizonModelOptions & {
   elevation?: GraphDataView<'float32'>;
   /** Optional distance of the skyline sample in meters; 0 when no sample, NaN invalid. */
   distance?: GraphDataView<'float32'>;
+  /**
+   * Optional debug counter: the number of lattice samples whose bilinear height was evaluated per
+   * ray (`'march'` evaluates every sample up to the first out-of-grid one, `'pyramid'` omits the
+   * skipped ones). Spends a ninth binding when all three outputs are present, which is rejected:
+   * omit one output to use it.
+   */
+  samples?: GraphDataView<'uint32'>;
   /** Rays per compute node. Defaults to 65536. */
   raysPerDispatch?: number;
 };
@@ -135,7 +142,7 @@ export class GPUPointHorizonProfile implements GPUCommandNodeProducer {
     }
     validateTerrainBuffersDistinct(
       id,
-      [props.tangent, props.elevation, props.distance],
+      [props.tangent, props.elevation, props.distance, props.samples],
       [...getTerrainBandViews(props.terrain), props.settings, props.observers]
     );
   }
@@ -151,7 +158,8 @@ export class GPUPointHorizonProfile implements GPUCommandNodeProducer {
       props.observers,
       props.tangent,
       props.elevation,
-      props.distance
+      props.distance,
+      props.samples
     ]);
     const source = createPointHorizonSource(graph, id, model, props.terrain);
     const nodes: GPUCommandNode<Parameters>[] = [...source.nodes];
@@ -184,6 +192,14 @@ export class GPUPointHorizonProfile implements GPUCommandNodeProducer {
         access: 'read_write'
       });
     }
+    if (props.samples) {
+      bindings.push({
+        name: 'samplesOutput',
+        view: props.samples,
+        type: 'u32',
+        access: 'read_write'
+      });
+    }
     if (bindings.length > 8) {
       throw new Error(`${id} needs more than 8 storage bindings`);
     }
@@ -200,6 +216,9 @@ export class GPUPointHorizonProfile implements GPUCommandNodeProducer {
           : '',
         props.distance
           ? `distanceOutput[distanceOutputOffset + ray] = ${value === 'nan' ? 'nanValue()' : 'select(0.0, result.d, result.has)'};`
+          : '',
+        props.samples
+          ? `samplesOutput[samplesOutputOffset + ray] = ${value === 'nan' ? '0u' : 'result.evaluated'};`
           : ''
       ].join('\n  ');
     for (

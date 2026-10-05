@@ -4,6 +4,9 @@
 
 import './gpu-solar-position.spec';
 import './gpu-terrain-horizon.spec';
+import './gpu-terrain-horizon-sweep.spec';
+import './gpu-terrain-cast-shadow.spec';
+import './gpu-solar-irradiance.spec';
 import './gpu-solar-shadow-mask.spec';
 import './gpu-relief-shading.spec';
 import './gpu-texture-shading.spec';

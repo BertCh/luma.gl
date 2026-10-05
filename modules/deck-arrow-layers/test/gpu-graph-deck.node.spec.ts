@@ -298,14 +298,15 @@ describe('optional GPU Graph deck.gl gallery and API guide', () => {
     const examplePage = readFileSync(
       new URL('../../../website/content/examples/deck/gpu-graph-explorer.mdx', import.meta.url),
       'utf8'
-    );
+    ).replace(/\s+/g, ' ');
     const apiGuide = [
       '../../../docs/api-reference/experimental/gpu-graph.md',
       '../../../docs/api-reference/experimental/gpu-graph-operations.md',
       '../../../docs/api-reference/experimental/gpu-graph-layouts.md'
     ]
       .map(filename => readFileSync(new URL(filename, import.meta.url), 'utf8'))
-      .join('\n');
+      .join('\n')
+      .replace(/\s+/g, ' ');
     const topics = examplePage
       .match(/topics:\s*\[([^\]]+)\]/)?.[1]
       .split(',')
@@ -338,7 +339,7 @@ describe('optional GPU Graph deck.gl gallery and API guide', () => {
     const examplePage = readFileSync(
       new URL('../../../website/content/examples/deck/gpu-graph-explorer.mdx', import.meta.url),
       'utf8'
-    );
+    ).replace(/\s+/g, ' ');
 
     for (const section of [
       '## Overview',
@@ -363,14 +364,14 @@ describe('optional GPU Graph deck.gl gallery and API guide', () => {
 
     for (const control of [
       '**Hover a node**',
-      '**Click a node**',
+      '**Click two nodes**',
       '**Change the graph size**',
       '**Choose a layout mode**',
-      '**Choose a node color mode**',
-      '**Choose a node size mode**',
+      '**Color by**',
+      '**Choose a node size**',
       '**Toggle original edges**',
       '**Pause or resume the layout**',
-      '**Adjust neighborhood depth**',
+      '**Adjust hover neighborhood hops**',
       '**Drag a node**',
       '**Release pins**',
       '**Reset layout**',
@@ -392,14 +393,15 @@ describe('optional GPU Graph deck.gl gallery and API guide', () => {
     const examplePage = readFileSync(
       new URL('../../../website/content/examples/deck/gpu-graph-explorer.mdx', import.meta.url),
       'utf8'
-    );
+    ).replace(/\s+/g, ' ');
     const apiGuide = [
       '../../../docs/api-reference/experimental/gpu-graph.md',
       '../../../docs/api-reference/experimental/gpu-graph-operations.md',
       '../../../docs/api-reference/experimental/gpu-graph-layouts.md'
     ]
       .map(filename => readFileSync(new URL(filename, import.meta.url), 'utf8'))
-      .join('\n');
+      .join('\n')
+      .replace(/\s+/g, ' ');
 
     expect(examplePage).toContain('Upload the demonstration fixture once');
     expect(examplePage).toContain('intentionally empty batch');

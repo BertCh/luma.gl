@@ -228,3 +228,54 @@ export function getTerrainHorizonReadWGSL(
   return f32(code - 1u) * ${getWGSLFloatLiteral(TERRAIN_HORIZON_UNORM16_STEP_DEGREES)} - 90.0;
 }`;
 }
+
+/**
+ * Returns the WGSL shared by every kernel that turns a horizon map and a sun position into solar
+ * visibility: `DIRECTION_COUNT`, `SECTOR_DEGREES`, `readHorizonAngle` (see
+ * {@link getTerrainHorizonReadWGSL}), `fn getHorizonAtAzimuth(pixel: u32, azimuthDegrees: f32) -> f32`
+ * and `fn getSolarDiskVisibility(altitudeDegrees: f32, radiusDegrees: f32, horizonAngle: f32) -> f32`.
+ *
+ * `getHorizonAtAzimuth` interpolates linearly between the two sectors bracketing the compass
+ * azimuth, with wraparound. `getSolarDiskVisibility` is the area fraction of the solar disk above
+ * the horizon: `1 - (acos(u) - u * sqrt(1 - u^2)) / PI` with
+ * `u = clamp((altitude - horizon) / radius, -1, 1)`, a hard step when the radius is 0, and 0 when
+ * the whole disk is below the astronomical horizon. Used by `GPUSolarShadowMask` and
+ * `GPUSolarIrradiance`, so both agree exactly.
+ *
+ * Needs {@link TERRAIN_ILLUMINATION_WGSL_CONSTANTS} and the `${bindingName}Offset` constant.
+ *
+ * @internal
+ */
+export function getTerrainSolarVisibilityWGSL(
+  format: GPUTerrainHorizonFormat,
+  bindingName: string,
+  directionCount: number
+): string {
+  return `const DIRECTION_COUNT: u32 = ${directionCount}u;
+const SECTOR_DEGREES: f32 = ${getWGSLFloatLiteral(360 / directionCount)};
+${getTerrainHorizonReadWGSL(format, bindingName)}
+fn getHorizonAtAzimuth(pixel: u32, azimuthDegrees: f32) -> f32 {
+  let wrappedAzimuth = azimuthDegrees - 360.0 * floor(azimuthDegrees / 360.0);
+  let sectorPosition = wrappedAzimuth / SECTOR_DEGREES;
+  let lowerSector = min(u32(floor(sectorPosition)), DIRECTION_COUNT - 1u);
+  let upperSector = (lowerSector + 1u) % DIRECTION_COUNT;
+  let blend = clamp(sectorPosition - f32(lowerSector), 0.0, 1.0);
+  return mix(
+    readHorizonAngle(pixel * DIRECTION_COUNT + lowerSector),
+    readHorizonAngle(pixel * DIRECTION_COUNT + upperSector),
+    blend
+  );
+}
+fn getSolarDiskVisibility(altitudeDegrees: f32, radiusDegrees: f32, horizonAngle: f32) -> f32 {
+  var visibility = 0.0;
+  if (altitudeDegrees + radiusDegrees > 0.0) {
+    if (radiusDegrees > 0.0) {
+      let u = clamp((altitudeDegrees - horizonAngle) / radiusDegrees, -1.0, 1.0);
+      visibility = clamp(1.0 - (acos(u) - u * sqrt(max(1.0 - u * u, 0.0))) / PI, 0.0, 1.0);
+    } else {
+      visibility = select(0.0, 1.0, altitudeDegrees > horizonAngle);
+    }
+  }
+  return visibility;
+}`;
+}

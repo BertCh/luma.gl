@@ -7,10 +7,9 @@ export {
   GPUPointHorizonProfile
 } from './gpu-point-horizon-profile';
 export type {GPUPointHorizonProfileProps} from './gpu-point-horizon-profile';
-export {
-  getGPUPointHorizonDistanceLattice,
-  getGPUPointHorizonSegments
-} from './point-horizon-march';
+export {GPUPointHorizonVisibility} from './gpu-point-horizon-visibility';
+export type {GPUPointHorizonVisibilityProps} from './gpu-point-horizon-visibility';
+export {getGPUPointHorizonDistanceLattice, getGPUPointHorizonSegments} from './point-horizon-march';
 export type {
   GPUPointHorizonDistanceLattice,
   GPUPointHorizonDistanceLatticeOptions,

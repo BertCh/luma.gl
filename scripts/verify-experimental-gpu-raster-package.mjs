@@ -233,6 +233,7 @@ const contributorExportNames = [
   'GPULineIntegralConvolution',
   'GPUStreamlines',
   'GPUChangeDetection',
+  'GPURasterExtremaPyramid',
   'GPUParameterBuffer'
 ];
 

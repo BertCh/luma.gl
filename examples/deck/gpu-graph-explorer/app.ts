@@ -9,7 +9,7 @@ import {
   OrthographicView,
   type GPUGraphDeckEffectStats,
   type GPUGraphNodeColumn,
-  type GPUGraphRecipeColumns,
+  type GPUGraphAnalysisColumns,
   type PickingInfo
 } from '@deck.gl-community/arrow-layers';
 import {Buffer, type Device} from '@luma.gl/core';
@@ -261,7 +261,7 @@ export function createGPUGraphExplorerDeck(
     // synchronously here would reuse the previous effect's already-destroyed GPU allocations.
   }
 
-  /** Sends hover to the recipe neighborhood; layers only re-bind a mask, nothing rebuilds. */
+  /** Sends hover to the analysis neighborhood; layers only re-bind a mask, nothing rebuilds. */
   function setHoveredVertex(vertex: number | null): void {
     if (!effect || vertex === hoverVertex) return;
     hoverVertex = vertex;
@@ -298,15 +298,15 @@ export function createGPUGraphExplorerDeck(
   function createLayers(
     graphEffect: GPUGraphDeckEffect
   ): (GPUGraphEdgeLayer | GPUGraphNodeLayer)[] {
-    const recipes = graphEffect.recipeColumns;
-    const hasPath = Boolean(recipes) && pathSource !== null && pathTarget !== null;
-    const highlightMask = recipes && hoverVertex !== null ? recipes.neighborhoodMask : undefined;
-    const pathRanks = recipes && hasPath ? recipes.pathRanks : undefined;
+    const analysis = graphEffect.analysisColumns;
+    const hasPath = Boolean(analysis) && pathSource !== null && pathTarget !== null;
+    const highlightMask = analysis && hoverVertex !== null ? analysis.neighborhoodMask : undefined;
+    const pathRanks = analysis && hasPath ? analysis.pathRanks : undefined;
     const baseRadius = Math.max(1.4, Math.min(6, 60 / Math.sqrt(graphEffect.graph.vertexCount)));
-    const colorColumn = recipes ? getColorColumn(recipes, currentColorColumn) : undefined;
+    const colorColumn = analysis ? getColorColumn(analysis, currentColorColumn) : undefined;
     const sizeColumn =
-      recipes && currentNodeSize !== 'uniform'
-        ? recipes.columns[SIZE_COLUMN_NAMES[currentNodeSize]]
+      analysis && currentNodeSize !== 'uniform'
+        ? analysis.columns[SIZE_COLUMN_NAMES[currentNodeSize]]
         : undefined;
     const nonemptyChunkCount = graphEffect.graph.sourceVertices.data.filter(
       chunk => chunk.length > 0
@@ -351,7 +351,10 @@ export function createGPUGraphExplorerDeck(
       autoHighlight: true,
       positions: graphEffect.positions,
       colorColumn,
-      colorScale: getExplorerColorScale(currentColorColumn, recipes?.bandHopThresholds.length ?? 0),
+      colorScale: getExplorerColorScale(
+        currentColorColumn,
+        analysis?.bandHopThresholds.length ?? 0
+      ),
       sizeColumn,
       sizeScale: {
         domain: getExplorerValueDomain(currentNodeSize),
@@ -375,24 +378,24 @@ const SIZE_COLUMN_NAMES = {
   core: 'coreNumber'
 } as const;
 
-/** Maps an explorer color column to the recipe output that the node layer reads. */
+/** Maps an explorer color column to the analysis output that the node layer reads. */
 function getColorColumn(
-  recipes: GPUGraphRecipeColumns,
+  analysis: GPUGraphAnalysisColumns,
   column: ExplorerColorColumn
 ): GPUGraphNodeColumn {
   switch (column) {
     case 'community':
-      return recipes.columns.community;
+      return analysis.columns.community;
     case 'component':
-      return recipes.columns.component;
+      return analysis.columns.component;
     case 'degree':
-      return recipes.columns.degree;
+      return analysis.columns.degree;
     case 'pagerank':
-      return recipes.columns.pageRank;
+      return analysis.columns.pageRank;
     case 'core':
-      return recipes.columns.coreNumber;
+      return analysis.columns.coreNumber;
     case 'band':
-      return {buffer: recipes.reachabilityBands, format: 'uint32'};
+      return {buffer: analysis.reachabilityBands, format: 'uint32'};
   }
 }
 

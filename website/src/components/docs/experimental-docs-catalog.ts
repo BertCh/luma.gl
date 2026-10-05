@@ -166,8 +166,7 @@ export const EXPERIMENTAL_DOCS_TAB_GROUPS: readonly DocsTabGroup<ExperimentalDoc
       {id: 'gpu-graph-traversal', label: 'Traversal', href: '/docs/api-reference/experimental/gpu-graph-traversal'},
       {id: 'gpu-graph-connectivity', label: 'Connectivity', href: '/docs/api-reference/experimental/gpu-graph-connectivity'},
       {id: 'gpu-graph-metrics', label: 'Metrics', href: '/docs/api-reference/experimental/gpu-graph-metrics'},
-      {id: 'gpu-graph-layouts', label: 'Layouts', href: '/docs/api-reference/experimental/gpu-graph-layouts'},
-      {id: 'gpu-network', label: 'Network', href: '/docs/api-reference/experimental/gpu-network'}
+      {id: 'gpu-graph-layouts', label: 'Layouts', href: '/docs/api-reference/experimental/gpu-graph-layouts'}
     ]
   },
   {
@@ -180,9 +179,18 @@ export const EXPERIMENTAL_DOCS_TAB_GROUPS: readonly DocsTabGroup<ExperimentalDoc
       {id: 'gpu-dataframe-aggregation', label: 'Aggregation', href: '/docs/api-reference/experimental/gpu-dataframe-aggregation'},
       {id: 'gpu-dataframe-sorting', label: 'Sorting', href: '/docs/api-reference/experimental/gpu-dataframe-sorting'},
       {id: 'gpu-dataframe-indexes-joins', label: 'Indexes & Joins', href: '/docs/api-reference/experimental/gpu-dataframe-indexes-joins'},
-      {id: 'gpu-dataframe-analysis', label: 'Analysis', href: '/docs/api-reference/experimental/gpu-dataframe-analysis'},
       {id: 'gpu-sql', label: 'SQL', href: '/docs/api-reference/experimental/gpu-sql'}
     ]
+  },
+  {
+    id: 'gpu-network',
+    label: 'GPU Network',
+    tabs: [{id: 'gpu-network', label: 'Overview', href: '/docs/api-reference/experimental/gpu-network'}]
+  },
+  {
+    id: 'gpu-dataframe-analysis',
+    label: 'GPU Dataframe analysis',
+    tabs: [{id: 'gpu-dataframe-analysis', label: 'Overview', href: '/docs/api-reference/experimental/gpu-dataframe-analysis'}]
   },
   {
     id: 'gpu-crossfilter',

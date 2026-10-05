@@ -10,11 +10,7 @@ import {
   type GraphTextureView
 } from '@luma.gl/gpgpu/gpu-core';
 import {GPURasterBufferToTexture} from '../../gpu-raster/index';
-import {
-  createWGSLKernelNode,
-  getWGSLFloatLiteral,
-  type WGSLKernelBinding
-} from '../../utils/wgsl-kernel-nodes';
+import {createWGSLKernelNode, type WGSLKernelBinding} from '../../utils/wgsl-kernel-nodes';
 import type {GPUCommandNodeProducer} from '@luma.gl/gpgpu/gpu-core';
 import {
   captureGraphCommandNodes,
@@ -31,7 +27,7 @@ import {
   GPU_TERRAIN_HORIZON_MIN_DIRECTION_COUNT
 } from './gpu-terrain-horizon';
 import {
-  getTerrainHorizonReadWGSL,
+  getTerrainSolarVisibilityWGSL,
   TERRAIN_ILLUMINATION_WGSL_CONSTANTS,
   validateTerrainHorizonFormat,
   validateTerrainHorizonView,
@@ -307,32 +303,13 @@ export class GPUSolarShadowMask implements GPUCommandNodeProducer {
         operation: 'GPUSolarShadowMask',
         bindings,
         invocationCount: pixelCount,
-        declarations: `const DIRECTION_COUNT: u32 = ${directionCount}u;
-const SECTOR_DEGREES: f32 = ${getWGSLFloatLiteral(360 / directionCount)};
-${TERRAIN_ILLUMINATION_WGSL_CONSTANTS}
-${getTerrainHorizonReadWGSL(this.horizonFormat, 'horizon')}`,
+        declarations: `${TERRAIN_ILLUMINATION_WGSL_CONSTANTS}
+${getTerrainSolarVisibilityWGSL(this.horizonFormat, 'horizon', directionCount)}`,
         body: `let azimuthDegrees = settings[settingsOffset];
   let altitudeDegrees = settings[settingsOffset + 1u];
   let radiusDegrees = settings[settingsOffset + 2u];
-  let wrappedAzimuth = azimuthDegrees - 360.0 * floor(azimuthDegrees / 360.0);
-  let sectorPosition = wrappedAzimuth / SECTOR_DEGREES;
-  let lowerSector = min(u32(floor(sectorPosition)), DIRECTION_COUNT - 1u);
-  let upperSector = (lowerSector + 1u) % DIRECTION_COUNT;
-  let blend = clamp(sectorPosition - f32(lowerSector), 0.0, 1.0);
-  let horizonAngle = mix(
-    readHorizonAngle(index * DIRECTION_COUNT + lowerSector),
-    readHorizonAngle(index * DIRECTION_COUNT + upperSector),
-    blend
-  );
-  var visibility = 0.0;
-  if (altitudeDegrees + radiusDegrees > 0.0) {
-    if (radiusDegrees > 0.0) {
-      let u = clamp((altitudeDegrees - horizonAngle) / radiusDegrees, -1.0, 1.0);
-      visibility = clamp(1.0 - (acos(u) - u * sqrt(max(1.0 - u * u, 0.0))) / PI, 0.0, 1.0);
-    } else {
-      visibility = select(0.0, 1.0, altitudeDegrees > horizonAngle);
-    }
-  }
+  let horizonAngle = getHorizonAtAzimuth(index, azimuthDegrees);
+  let visibility = getSolarDiskVisibility(altitudeDegrees, radiusDegrees, horizonAngle);
   var isValid = isFiniteValue(horizonAngle);
   let invalidValue = getNaN(index);
   ${visibilityTarget ? 'visibilityValues[visibilityValuesOffset + index] = select(invalidValue, visibility, isValid);' : ''}

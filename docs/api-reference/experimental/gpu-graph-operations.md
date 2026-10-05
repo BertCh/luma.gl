@@ -127,7 +127,7 @@ Use it when a social-network, service-dependency, fraud-investigation, or citati
 already uses deck.gl and needs GPU graph results to become directly drawable attributes.
 
 The effect first encodes forward and reverse adjacency for layout, and its
-`GPUGraphRecipeColumns` runs the [GPU Network](/docs/api-reference/experimental/gpu-network) contributors
+`GPUGraphAnalysisColumns` runs the [GPU Network](/docs/api-reference/experimental/gpu-network) contributors
 on an undirected view of the original edges: normalized degree, PageRank, and core number,
 weak-component and label-propagation community labels, a hover neighborhood, reachability bands,
 and a two-endpoint shortest path. Later frames encode actual exact, flat-grid spatial, or sampled

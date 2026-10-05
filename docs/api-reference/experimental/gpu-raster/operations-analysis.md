@@ -15,7 +15,7 @@ The `@luma.gl/experimental/gpu-raster` entry point exports analysis contributors
 operations in the other families: zonal statistics, contrast stretch, isolines and isobands,
 Euclidean distance fields, cost distance, polygon rasterization, raster joins, reclassification,
 sampling and profiles, change detection, particle advection, streamlines, and line integral
-convolution. Each is an algorithm or workflow that declares resources and command nodes into a
+convolution, and exact min/max pyramids. Each is an algorithm or workflow that declares resources and command nodes into a
 caller-owned `GPUCommandGraph` through `getCommandNodes(graph)` (`GPUCommandNodeProducer`). It never
 compiles, submits, encodes, or reads back.
 
@@ -556,6 +556,23 @@ parameters.write(
   `alpha`; the sign follows the t statistic or S.
 - Masked cells write NaN (float), 0 (`mannKendallS`, `significance`) or `0xffffffff` (multiband
   direction code).
+
+## `GPURasterExtremaPyramid`
+
+An exact min/max mip chain (Tevs et al. 2008 maximum mipmaps) for conservative ray skipping. The
+[GPU Terrain](../gpu-terrain.md) sight-line and point-horizon contributors use it for
+`traversal: 'pyramid'`.
+
+- **Levels.** Level `L` has blocks of `firstBlockSize·2^L` pixels (default 4), down to 1×1 or
+  `levelCount`. Levels are packed into one float32 view per extremum, with offsets from
+  `getGPURasterExtremaPyramidLayout`.
+- **Footprint.** With `footprint: 'bilinear'` (the default), each cell also covers one extra
+  pixel column and row. Every bilinear sample whose base pixel lies in the block is then bounded by
+  that one cell. `'cell'` gives the plain block extrema.
+- **Validity.** Invalid pixels are excluded. Cells with no valid pixel hold ∓FLT_MAX
+  (`GPU_RASTER_EXTREMA_PYRAMID_EMPTY_*`).
+- **Exactness.** The GPU output is bit-identical to a CPU build. Level 0 reduces from pixels and
+  each higher level reduces the 2×2 cells below in a fixed order.
 
 ## Related pages
 

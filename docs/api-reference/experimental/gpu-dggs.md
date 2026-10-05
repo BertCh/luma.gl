@@ -37,7 +37,7 @@ inside a larger GPU pipeline, not a claim about end-to-end file ingestion.
 | `@luma.gl/gpgpu/gpu-h3` | `GPUH3CellProjection` | H3-specific pipelines and the clearest static types |
 | `@luma.gl/gpgpu/gpu-a5` | `GPUA5CellProjection` | A5-specific pipelines and the clearest static types |
 
-All three classes implement `GPUCommandGraphContributor`. They add one bounded compute pass; they
+All three classes implement `GPUCommandNodeProducer`. They add one bounded compute pass; they
 do not submit commands, allocate hidden result buffers, or read output back.
 
 ```ts

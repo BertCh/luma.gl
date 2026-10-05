@@ -289,8 +289,8 @@
       },
       {
         "type": "doc",
-        "id": "deck/map-graphs-explorer",
-        "label": "Map Graphs + deck.gl: Recipe Explorer"
+        "id": "deck/spatial-analysis-explorer",
+        "label": "Spatial Analysis + deck.gl Explorer"
       },
       "deck/gpu-culled-trace"
     ]

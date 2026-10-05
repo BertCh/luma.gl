@@ -7,6 +7,7 @@ import {GPUCommandGraph} from '@luma.gl/gpgpu/gpu-core';
 import {getWebGPUTestDevice} from '@luma.gl/test-utils';
 import {afterAll, expect, it} from 'vitest';
 import {GPUParameterBuffer, importGraphBuffer} from '../../../src/utils/gpu-contributor-utils';
+import {submitGraph} from '../../utils/gpu-contributor-test-utils';
 import {
   GPUTerrainFlow,
   getGPUTerrainFlowParameterValues,
@@ -17,8 +18,7 @@ import {
   createInputBuffer,
   createOutputBuffer,
   readFloat32,
-  readUint32,
-  submitGraph
+  readUint32
 } from '../../utils/gpu-contributor-test-utils';
 import {createSeededRandom, computeTerrainFlow} from './terrain-flow-oracle';
 import {
@@ -34,9 +34,9 @@ const ROUTINGS: Routing[] = ['d-infinity', 'mfd-freeman', 'mfd-quinn'];
 /**
  * Relative tolerance of GPU against the float64 oracle: `|gpu - cpu| <= tolerance * max(1, |cpu|)`.
  *
- * MFD (2e-4): float32 fractions, pow = exp2(p log2 x) with a few ULP of GPU error, sums of up to
+ * MFD (1e-4): float32 fractions, pow = exp2(p log2 x) with a few ULP of GPU error, sums of up to
  * hundreds of products along a path, and Metal fusing multiply-adds; observed errors are below
- * 3e-5.
+ * 1e-6.
  *
  * D-infinity (1e-3): additionally the facet competition is a near-tie when a steepest direction
  * lies close to a facet edge. There the interior slope hypot(s1, s2) of one facet exceeds the
@@ -49,8 +49,8 @@ const ROUTINGS: Routing[] = ['d-infinity', 'mfd-freeman', 'mfd-quinn'];
 const TOLERANCE: Record<Routing | 'd8', number> = {
   d8: 2e-4,
   'd-infinity': 1e-3,
-  'mfd-freeman': 2e-4,
-  'mfd-quinn': 2e-4
+  'mfd-freeman': 1e-4,
+  'mfd-quinn': 1e-4
 };
 const maximumObservedError: Record<string, number> = {};
 
@@ -492,7 +492,7 @@ it('GPUTerrainFlow conserves mass and sends fallback flow only to D8 receivers',
   }
 });
 
-it('GPUTerrainFlow routes through resolved flats when flat resolution is available', async () => {
+it('GPUTerrainFlow routes through resolved flats', async () => {
   const device = await getWebGPUTestDevice();
   if (!device) {
     return;
@@ -507,14 +507,7 @@ it('GPUTerrainFlow routes through resolved flats when flat resolution is availab
       resolveFlats: true,
       settings: {cellSize: [1, 1], fillEpsilon: 0}
     };
-    try {
-      await expectMatchesOracle(device, `${routing} flats`, elevation, width, height, options);
-    } catch (error) {
-      if (error instanceof Error && /not implemented/.test(error.message)) {
-        return; // Flat resolution has not landed yet; the coordinator enables this test.
-      }
-      throw error;
-    }
+    await expectMatchesOracle(device, `${routing} flats`, elevation, width, height, options);
   }
 });
 

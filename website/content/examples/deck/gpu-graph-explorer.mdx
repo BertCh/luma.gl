@@ -64,19 +64,19 @@ costs; keeping a graph resident does not automatically make every workload faste
    intentionally empty batch, and a second nonempty batch. Changing the slider creates an actual
    new graph; its displayed population is not a multiplied sample.
 2. **Analyze the graph in the first frame.** `GPUGraphDeckEffect` builds forward and reverse
-   compressed adjacency for layout, and its `GPUGraphRecipeColumns` runs the map-graph network
-   recipes on one undirected view of the original batches: `GPUNetworkAnalyticsColumns` produces
+   compressed adjacency for layout, and its `GPUGraphAnalysisColumns` runs the gpu-network
+   contributors on one undirected view of the original batches: `GPUNetworkAnalyticsColumns` produces
    normalized degree, PageRank, and core number plus weak-component and label-propagation community
    labels. Weak components describe connectivity; community labels can separate tightly connected
    groups inside one component. Their bounded iteration budget does not guarantee convergence.
 3. **Update interaction and layout in later frames.** Hovering a node writes one small input
    buffer, and `GPUNetworkNeighborhood` recomputes its bounded hop neighborhood. Two clicks set path
    endpoints; `GPUNetworkReachability` measures hop bands from the first and
-   `GPUNetworkPathExtraction` extracts the shortest path between them. These interaction recipes are
+   `GPUNetworkPathExtraction` extracts the shortest path between them. These interaction contributors are
    encoded only when their inputs change and never create pipelines. Exact, flat-grid spatial, or
    sampled force layout progressively advances the existing node positions.
 4. **Draw the same allocations through real deck.gl layers.** `GPUGraphNodeLayer` binds the actual
-   `float32x2` layout allocation as an instanced vertex attribute and every recipe output as a
+   `float32x2` layout allocation as an instanced vertex attribute and every contributor output as a
    row-aligned storage buffer: a color column with a linear or categorical scale, a size column,
    the hover neighborhood mask, and path ranks. Choosing another column or domain rebinds a buffer
    or rewrites one uniform block; it never rebuilds a pipeline. One `GPUGraphEdgeLayer` draws each

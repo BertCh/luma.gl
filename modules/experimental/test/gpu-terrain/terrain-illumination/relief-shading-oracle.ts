@@ -3,12 +3,19 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {
+  GPU_RELIEF_SHADING_CONTRAST_PIVOT,
   GPU_RELIEF_SHADING_MDOW_LIGHTS,
   type GPUReliefShadingSettings
 } from '../../../src/gpu-terrain/terrain-illumination/gpu-relief-shading';
 import {computeSobel} from '../terrain-analysis/terrain-analysis-oracle';
 
 const RADIANS = Math.PI / 180;
+
+/** GLSL/WGSL `smoothstep` in float64. */
+export function smoothstepOracle(low: number, high: number, value: number): number {
+  const t = Math.min(Math.max((value - low) / (high - low), 0), 1);
+  return t * t * (3 - 2 * t);
+}
 
 /** Float64 relief shading result. */
 export type ReliefShadingOracleResult = {
@@ -27,6 +34,8 @@ export function computeReliefShading(options: {
   settings: GPUReliefShadingSettings;
   skyViewFactor?: ArrayLike<number>;
   textureShade?: ArrayLike<number>;
+  /** Curvature raster, positive on ridges. */
+  curvature?: ArrayLike<number>;
   rowDirection?: 'south' | 'north';
 }): ReliefShadingOracleResult {
   const {width, height, elevation, settings} = options;
@@ -38,8 +47,10 @@ export function computeReliefShading(options: {
     altitude: (light.altitudeDegrees ?? 45) * RADIANS,
     weight: light.weight ?? 1
   }));
-  const aspectWeighting =
-    (settings.lightWeighting ?? (lightSet === 'mdow' ? 'aspect' : 'fixed')) === 'aspect';
+  const weighting = settings.lightWeighting ?? (lightSet === 'mdow' ? 'aspect' : 'fixed');
+  const aspectWeighting = weighting === 'aspect';
+  const swingRadians =
+    weighting === 'imhof-swing' ? (settings.imhofSwingDegrees ?? 65) * RADIANS : 0;
   const zFactor = settings.zFactor ?? 1;
   const rowSign = (options.rowDirection ?? 'south') === 'south' ? -1 : 1;
   const stops = settings.elevationStops ?? [];
@@ -58,17 +69,22 @@ export function computeReliefShading(options: {
     const normal = [-east / length, -north / length, 1 / length];
     const aspect = Math.atan2(-east, -north);
     const isFlat = east === 0 && north === 0;
+    const swingFactor = smoothstepOracle(0.05, 0.4, Math.hypot(normal[0], normal[1]));
     let weighted = 0;
     let weights = 0;
     for (const light of lights) {
+      const azimuth =
+        weighting === 'imhof-swing'
+          ? light.azimuth + swingRadians * Math.sin(aspect - light.azimuth) * swingFactor
+          : light.azimuth;
       const weight = aspectWeighting
         ? isFlat
           ? 1
           : Math.sin(aspect - light.azimuth) ** 2
         : light.weight;
       const direction = [
-        Math.sin(light.azimuth) * Math.cos(light.altitude),
-        Math.cos(light.azimuth) * Math.cos(light.altitude),
+        Math.sin(azimuth) * Math.cos(light.altitude),
+        Math.cos(azimuth) * Math.cos(light.altitude),
         Math.sin(light.altitude)
       ];
       const dot = normal[0] * direction[0] + normal[1] * direction[1] + normal[2] * direction[2];
@@ -88,6 +104,24 @@ export function computeReliefShading(options: {
       const texture = options.textureShade[pixel];
       valid &&= Number.isFinite(texture);
       shade += (settings.textureShadeStrength ?? 0.5) * texture;
+    }
+    if (options.curvature) {
+      const curvature = options.curvature[pixel];
+      valid &&= Number.isFinite(curvature);
+      shade += (settings.curvatureStrength ?? 1) * curvature;
+    }
+    const contrastStrength = settings.contrastStrength ?? 0;
+    if (contrastStrength !== 0) {
+      const low = settings.contrastLowElevation ?? 0;
+      const high = settings.contrastHighElevation ?? 0;
+      const ramp =
+        high > low
+          ? smoothstepOracle(low, high, elevation[pixel])
+          : elevation[pixel] >= low
+            ? 1
+            : 0;
+      const k = 1 - contrastStrength + contrastStrength * ramp;
+      shade = GPU_RELIEF_SHADING_CONTRAST_PIVOT + (shade - GPU_RELIEF_SHADING_CONTRAST_PIVOT) * k;
     }
     const relief = Math.min(Math.max(shade * (settings.exposure ?? 1), 0), 1);
     result.hillshade.push(gradientValid ? hillshade : NaN);

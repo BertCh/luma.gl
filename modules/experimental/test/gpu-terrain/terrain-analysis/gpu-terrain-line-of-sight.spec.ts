@@ -7,6 +7,7 @@ import {GPUCommandGraph} from '@luma.gl/gpgpu/gpu-core';
 import {getWebGPUTestDevice} from '@luma.gl/test-utils';
 import {expect, it} from 'vitest';
 import {GPUParameterBuffer, importGraphBuffer} from '../../../src/utils/gpu-contributor-utils';
+import {submitGraph} from '../../utils/gpu-contributor-test-utils';
 import {
   GPU_TERRAIN_VISIBILITY as V,
   GPUTerrainLineOfSight,
@@ -21,8 +22,7 @@ import {
   createOutputBuffer,
   isSoftwareDevice,
   readFloat32,
-  readUint32,
-  submitGraph
+  readUint32
 } from '../../utils/gpu-contributor-test-utils';
 import {computeTerrainSightLine, createFractalTerrain} from './terrain-analysis-oracle';
 

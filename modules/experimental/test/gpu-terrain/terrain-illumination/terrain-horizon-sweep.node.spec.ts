@@ -7,7 +7,8 @@ import {
   getTerrainSweepLineGeometry,
   getTerrainSweepMinorOffset
 } from '../../../src/gpu-terrain/terrain-illumination/terrain-horizon-sweep';
-import {createRandom, createSmoothTerrain} from './terrain-horizon-oracle';
+import {getGPUTerrainHorizonStepDistances} from '../../../src/gpu-terrain/terrain-illumination/gpu-terrain-horizon';
+import {computeTerrainHorizon, createRandom, createSmoothTerrain} from './terrain-horizon-oracle';
 import {
   computeTerrainHorizonSweepBruteForce,
   computeTerrainHorizonSweepHull,
@@ -209,4 +210,33 @@ it('hull sweep exercises the windowed query and reports nontrivial horizons', ()
   expect(result.horizon.filter(angle => angle < -5).length).toBeGreaterThan(1000);
   // Steps per window query stay bounded by the window.
   expect(result.statistics.windowSteps / result.statistics.windowQueries).toBeLessThan(6);
+});
+
+it('hull sweep equals the ray march on axis sectors and stays close on diagonals', () => {
+  const width = 48;
+  const height = 40;
+  const elevation = createSmoothTerrain(width, height, 8);
+  const options = {
+    width,
+    height,
+    elevation,
+    directionCount: 16,
+    maximumRadius: 20,
+    cellSize: [10, 10] as [number, number]
+  };
+  const sweep = computeTerrainHorizonSweepHull(options);
+  const march = computeTerrainHorizon({
+    ...options,
+    stepDistances: getGPUTerrainHorizonStepDistances(20)
+  });
+  // Axis lines hit pixel centres exactly like the march (identical); diagonals sample pixel
+  // centres at k * sqrt(2) pixels while the march samples bilinear points at d pixels along the ray.
+  for (const sector of [0, 2, 4, 6, 8, 10, 12, 14]) {
+    let total = 0;
+    for (let pixel = 0; pixel < width * height; pixel++) {
+      total += Math.abs(sweep.horizon[pixel * 16 + sector] - march.horizon[pixel * 16 + sector]);
+    }
+    const tolerance = sector % 4 === 0 ? 1e-9 : 1;
+    expect(total / (width * height), `sector ${sector}`).toBeLessThan(tolerance);
+  }
 });

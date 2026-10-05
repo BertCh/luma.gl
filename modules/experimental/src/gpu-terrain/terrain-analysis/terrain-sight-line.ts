@@ -3,10 +3,9 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {
-  GPU_RASTER_EXTREMA_PYRAMID_EMPTY_MAXIMUM,
+  getRasterExtremaPyramidWGSL,
   type GPURasterExtremaPyramidLayout
 } from '../../gpu-raster/raster-pyramid/index';
-import {getWGSLFloatLiteral} from '../../utils/wgsl-kernel-nodes';
 import {TERRAIN_WGSL_HELPERS} from './terrain-analysis-utils';
 
 /** Marching strategy of the sight-line contributors. */
@@ -28,35 +27,6 @@ export type TerrainSightLineWGSLOptions = {
   /** When true no early exit happens, so `maxS` and the clearance are exact. */
   clearance: boolean;
 };
-
-/**
- * Pyramid constants and lookups with the same names as `getRasterExtremaPyramidWGSL(layout)`.
- *
- * Per-level values come from `switch` statements instead of dynamically indexed `const` arrays,
- * which compilers materialise as per-call local copies inside the hot loop.
- */
-function getPyramidWGSL(layout: GPURasterExtremaPyramidLayout): string {
-  const lookup = (
-    name: string,
-    select: (level: GPURasterExtremaPyramidLayout['levels'][number]) => number
-  ) =>
-    `fn ${name}(level: u32) -> u32 {
-  switch (level) {
-${layout.levels.map(level => `    case ${level.level}u: { return ${select(level)}u; }`).join('\n')}
-    default: { return 0u; }
-  }
-}`;
-  return `const PYRAMID_LEVEL_COUNT: u32 = ${layout.levels.length}u;
-const PYRAMID_EMPTY_MAXIMUM: f32 = ${getWGSLFloatLiteral(GPU_RASTER_EXTREMA_PYRAMID_EMPTY_MAXIMUM)};
-const PYRAMID_MINIMUM_OFFSET: u32 = ${layout.length}u;
-${lookup('pyramidLevelBlockSize', level => level.blockSize)}
-${lookup('pyramidLevelWidth', level => level.width)}
-${lookup('pyramidLevelOffset', level => level.offset)}
-fn pyramidLevelIndex(level: u32, column: u32, row: u32) -> u32 {
-  let blockSize = pyramidLevelBlockSize(level);
-  return pyramidLevelOffset(level) + (row / blockSize) * pyramidLevelWidth(level) + column / blockSize;
-}`;
-}
 
 /**
  * Generates the module-scope WGSL of the tolerance-aware sight-line model shared by
@@ -101,8 +71,9 @@ fn pyramidLevelIndex(level: u32, column: u32, row: u32) -> u32 {
  *    the `(1 +- EPS)` factors cover the division rounding. If that bound is `<= threshold`, no skipped
  *    sample can exceed the threshold, so neither the early exit, the code nor `maxS` (when it is
  *    output) changes. Cells without a valid pixel can only contain ignored samples.
- * 3. Applied bottom-up (level 0 first, then coarser levels while the bound holds) and always from
- *    the same sample `i`; the walk resumes at the largest skippable `j + 1`.
+ * 3. Every pyramid level is an independent valid skip from the same sample `i`; the walk tries the
+ *    level that worked last (descending until one works), then climbs while the bound holds, and
+ *    resumes at the largest skippable `j + 1`. The search order only affects speed, never the result.
  *
  * Remaining assumption: a compiler may evaluate the position expression in two textual copies with
  * different FMA contraction; the effect is at most one ULP of position at a block boundary, where
@@ -115,11 +86,81 @@ export function getTerrainSightLineWGSL(options: TerrainSightLineWGSLOptions): s
   if (traversal === 'pyramid' && !layout) {
     throw new Error('terrain sight line traversal pyramid requires a pyramid layout');
   }
-  const pyramid = traversal === 'pyramid' ? getPyramidWGSL(layout!) : '';
+  const pyramid = traversal === 'pyramid' ? getRasterExtremaPyramidWGSL(layout!) : '';
   const skipFunction =
     traversal === 'pyramid'
       ? /* wgsl */ `
-// Returns the index of the first sample that must still be evaluated, at least \`first\`.
+// Tries to skip samples \`first\` .. last at one pyramid level; returns last + 1, or 0 when the block
+// does not contain the ray long enough or its bound exceeds the threshold.
+fn trySkipLevel(
+  level: u32,
+  observer: vec2<f32>,
+  delta: vec2<f32>,
+  targetDistance: f32,
+  first: u32,
+  count: u32,
+  baseFirst: vec2<u32>,
+  distanceFirst: f32,
+  eye: f32,
+  curvature: f32,
+  threshold: f32
+) -> u32 {
+  let gridMaximum = vec2<f32>(f32(WIDTH - 1u), f32(HEIGHT - 1u));
+  let blockSize = pyramidLevelBlockSize(level);
+  let cell = baseFirst / vec2<u32>(blockSize);
+  let origin = vec2<f32>(cell * vec2<u32>(blockSize));
+  let size = f32(blockSize);
+  var exitFraction = 2.0;
+  if (delta.x > 0.0) {
+    exitFraction = min(exitFraction, (origin.x + size - observer.x) / delta.x);
+  } else if (delta.x < 0.0) {
+    exitFraction = min(exitFraction, (origin.x - observer.x) / delta.x);
+  }
+  if (delta.y > 0.0) {
+    exitFraction = min(exitFraction, (origin.y + size - observer.y) / delta.y);
+  } else if (delta.y < 0.0) {
+    exitFraction = min(exitFraction, (origin.y - observer.y) / delta.y);
+  }
+  var last = u32(clamp(floor(exitFraction * f32(count)), f32(first), f32(count - 1u)));
+  var inside = false;
+  for (var attempt = 0u; attempt < 4u; attempt++) {
+    let baseLast = vec2<u32>(floor(clamp(rayPosition(observer, delta, last, count), vec2<f32>(0.0), gridMaximum)));
+    if (all(baseLast / vec2<u32>(blockSize) == cell)) {
+      inside = true;
+      break;
+    }
+    if (last <= first) {
+      break;
+    }
+    last = last - 1u;
+  }
+  if (!inside) {
+    return 0u;
+  }
+  let cellIndex = pyramidLevelIndex(level, baseFirst.x, baseFirst.y);
+  let heightMaximum = pyramid[pyramidOffset + cellIndex];
+  if (heightMaximum <= PYRAMID_EMPTY_MAXIMUM) {
+    return last + 1u;
+  }
+  let heightMinimum = pyramid[pyramidOffset + PYRAMID_MINIMUM_OFFSET + cellIndex];
+  let distanceLast = rayDistance(targetDistance, last, count);
+  let magnitude = max(abs(heightMaximum), abs(heightMinimum));
+  let dropFirst = curvature * distanceFirst * distanceFirst;
+  let dropLast = curvature * distanceLast * distanceLast;
+  let dropLow = min(dropFirst, dropLast);
+  let dropAbsolute = max(abs(dropFirst), abs(dropLast));
+  let numerator = (heightMaximum - eye) - dropLow +
+    SKIP_EPSILON * (magnitude + abs(eye) + dropAbsolute);
+  let upper = select(
+    (numerator / distanceLast) * (1.0 - SKIP_EPSILON),
+    (numerator / distanceFirst) * (1.0 + SKIP_EPSILON),
+    numerator >= 0.0
+  );
+  return select(0u, last + 1u, upper <= threshold);
+}
+// Returns (index of the first sample that must still be evaluated, coarsest level that skipped).
+// Every level is an independent valid skip, so the search starts at the level that worked last,
+// descends until one works, then climbs while coarser levels also work.
 fn skipSamples(
   observer: vec2<f32>,
   delta: vec2<f32>,
@@ -128,79 +169,40 @@ fn skipSamples(
   count: u32,
   eye: f32,
   curvature: f32,
-  threshold: f32
-) -> u32 {
-  var next = first;
+  threshold: f32,
+  startLevel: u32
+) -> vec2<u32> {
   let gridMaximum = vec2<f32>(f32(WIDTH - 1u), f32(HEIGHT - 1u));
   let baseFirst = vec2<u32>(floor(clamp(rayPosition(observer, delta, first, count), vec2<f32>(0.0), gridMaximum)));
   let distanceFirst = rayDistance(targetDistance, first, count);
-  for (var level = 0u; level < PYRAMID_LEVEL_COUNT; level++) {
-    let blockSize = pyramidLevelBlockSize(level);
-    let cell = baseFirst / vec2<u32>(blockSize);
-    let origin = vec2<f32>(cell * vec2<u32>(blockSize));
-    let size = f32(blockSize);
-    var exitFraction = 2.0;
-    if (delta.x > 0.0) {
-      exitFraction = min(exitFraction, (origin.x + size - observer.x) / delta.x);
-    } else if (delta.x < 0.0) {
-      exitFraction = min(exitFraction, (origin.x - observer.x) / delta.x);
-    }
-    if (delta.y > 0.0) {
-      exitFraction = min(exitFraction, (origin.y + size - observer.y) / delta.y);
-    } else if (delta.y < 0.0) {
-      exitFraction = min(exitFraction, (origin.y - observer.y) / delta.y);
-    }
-    var last = u32(clamp(floor(exitFraction * f32(count)), f32(first), f32(count - 1u)));
-    var inside = false;
-    for (var attempt = 0u; attempt < 4u; attempt++) {
-      let baseLast = vec2<u32>(floor(clamp(rayPosition(observer, delta, last, count), vec2<f32>(0.0), gridMaximum)));
-      if (all(baseLast / vec2<u32>(blockSize) == cell)) {
-        inside = true;
-        break;
-      }
-      if (last <= first) {
-        break;
-      }
-      last = last - 1u;
-    }
-    if (!inside) {
-      break;
-    }
-    let cellIndex = pyramidLevelIndex(level, baseFirst.x, baseFirst.y);
-    let heightMaximum = pyramid[pyramidOffset + cellIndex];
-    var skippable = heightMaximum <= PYRAMID_EMPTY_MAXIMUM;
-    if (!skippable) {
-      let heightMinimum = pyramid[pyramidOffset + PYRAMID_MINIMUM_OFFSET + cellIndex];
-      let distanceLast = rayDistance(targetDistance, last, count);
-      let magnitude = max(abs(heightMaximum), abs(heightMinimum));
-      let dropFirst = curvature * distanceFirst * distanceFirst;
-      let dropLast = curvature * distanceLast * distanceLast;
-      let dropLow = min(dropFirst, dropLast);
-      let dropAbsolute = max(abs(dropFirst), abs(dropLast));
-      let numerator = (heightMaximum - eye) - dropLow +
-        SKIP_EPSILON * (magnitude + abs(eye) + dropAbsolute);
-      let upper = select(
-        (numerator / distanceLast) * (1.0 - SKIP_EPSILON),
-        (numerator / distanceFirst) * (1.0 + SKIP_EPSILON),
-        numerator >= 0.0
-      );
-      skippable = upper <= threshold;
-    }
-    if (!skippable) {
-      break;
-    }
-    next = max(next, last + 1u);
+  var level = min(startLevel, PYRAMID_LEVEL_COUNT - 1u);
+  var next = trySkipLevel(level, observer, delta, targetDistance, first, count, baseFirst, distanceFirst, eye, curvature, threshold);
+  while (next == 0u && level > 0u) {
+    level = level - 1u;
+    next = trySkipLevel(level, observer, delta, targetDistance, first, count, baseFirst, distanceFirst, eye, curvature, threshold);
   }
-  return next;
+  if (next == 0u) {
+    return vec2<u32>(first, 0u);
+  }
+  while (level + 1u < PYRAMID_LEVEL_COUNT) {
+    let coarser = trySkipLevel(level + 1u, observer, delta, targetDistance, first, count, baseFirst, distanceFirst, eye, curvature, threshold);
+    if (coarser == 0u) {
+      break;
+    }
+    next = max(next, coarser);
+    level = level + 1u;
+  }
+  return vec2<u32>(next, level);
 }`
       : '';
   const thresholdStatement =
     traversal === 'pyramid'
       ? `
     let threshold = ${clearance ? 'maxSlope' : 'select(lowLimit, highLimit, maxSlope > lowLimit)'};
-    let next = skipSamples(observer, delta, targetDistance, sampleIndex, stepCount, eye, curvature, threshold);
-    if (next > sampleIndex) {
-      sampleIndex = next;
+    let skipped = skipSamples(observer, delta, targetDistance, sampleIndex, stepCount, eye, curvature, threshold, skipLevel);
+    if (skipped.x > sampleIndex) {
+      sampleIndex = skipped.x;
+      skipLevel = skipped.y;
       continue;
     }`
       : '';
@@ -279,13 +281,12 @@ fn traceSightLine(
   let stepCount = u32(ceil(max(abs(delta.x), abs(delta.y))));
   var maxSlope = -MAXIMUM_FLOAT;
   var tested = false;
-  var evaluatedCount = 0u;
   var sampleIndex = 1u;
+  var skipLevel = 0u;
   loop {
     if (sampleIndex >= stepCount) { break; }
     if (rayDistance(targetDistance, sampleIndex, stepCount) > stopDistance) { break; }${thresholdStatement}
     let current = sampleIndex;
-    evaluatedCount = evaluatedCount + 1u;
     sampleIndex = sampleIndex + 1u;
     let elevationSample = sampleElevation(rayPosition(observer, delta, current, stepCount));
     // Invalid samples never block.
@@ -300,13 +301,12 @@ fn traceSightLine(
           ? ''
           : `
       if (maxSlope > highLimit) {
-        return SightLineResult(evaluatedCount, 0.0);
+        return SightLineResult(HIDDEN, 0.0);
       }`
       }
     }
   }
   var code = MARGINAL;
-  if (evaluatedCount < 100000u) { return SightLineResult(evaluatedCount, 0.0); }
   if (maxSlope > highLimit) {
     code = HIDDEN;
   } else if (maxSlope <= lowLimit) {

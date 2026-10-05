@@ -20,7 +20,12 @@ export const DEFAULT_NEIGHBORHOOD_DEPTH = 2;
 
 /** Analytics column mapped to node color. */
 export type ExplorerColorColumn =
-  'community' | 'component' | 'degree' | 'pagerank' | 'core' | 'band';
+  | 'community'
+  | 'component'
+  | 'degree'
+  | 'pagerank'
+  | 'core'
+  | 'band';
 
 /** Analytics column mapped to node radius. */
 export type ExplorerNodeSize = 'uniform' | 'degree' | 'pagerank' | 'core';
@@ -250,7 +255,7 @@ export function createExplorerControls(
       <strong data-gpu-graph-index style="text-align:right">—</strong>
       <span style="color:#9dafc8">GPU pipeline</span>
       <strong data-gpu-graph-pipeline style="text-align:right">—</strong>
-      <span style="color:#9dafc8">Recipe columns</span>
+      <span style="color:#9dafc8">Analysis columns</span>
       <strong data-gpu-graph-iterations style="text-align:right">—</strong>
     </div>
 
@@ -328,31 +333,31 @@ export function createExplorerControls(
     const effect = props.getEffect();
     if (!effect || !status) return;
     const statistics = props.getStats();
-    const recipes = effect.recipeColumns;
+    const analysis = effect.analysisColumns;
     const interaction = props.getInteraction();
     const hover = interaction.hoverVertex === null ? 'none' : `${interaction.hoverVertex}`;
-    const pathState = !recipes
+    const pathState = !analysis
       ? ''
       : interaction.pathSource === null
         ? ' · path: click a node for endpoint A'
         : interaction.pathTarget === null
           ? ` · path A ${interaction.pathSource}, click a node for endpoint B`
           : ` · path A ${interaction.pathSource} to B ${interaction.pathTarget}`;
-    const recipeState = recipes
+    const analysisState = analysis
       ? ''
-      : ` · analytics columns unavailable (${effect.recipeColumnsSkipReason ?? 'unknown'})`;
+      : ` · analytics columns unavailable (${effect.analysisColumnsSkipReason ?? 'unknown'})`;
     for (const control of [color, nodeSize, depth]) {
-      if (control) control.disabled = !recipes;
+      if (control) control.disabled = !analysis;
     }
-    if (depth && recipes && document.activeElement !== depth) {
-      depth.value = `${recipes.currentNeighborhoodHops}`;
+    if (depth && analysis && document.activeElement !== depth) {
+      depth.value = `${analysis.currentNeighborhoodHops}`;
     }
     if (legend) {
-      const legendKey = `${recipes ? props.getColorColumn() : 'none'}:${recipes?.bandHopThresholds.length ?? 0}`;
+      const legendKey = `${analysis ? props.getColorColumn() : 'none'}:${analysis?.bandHopThresholds.length ?? 0}`;
       if (legendKey !== renderedLegendKey) {
         renderedLegendKey = legendKey;
-        legend.innerHTML = recipes
-          ? getLegendMarkup(props.getColorColumn(), recipes.bandHopThresholds)
+        legend.innerHTML = analysis
+          ? getLegendMarkup(props.getColorColumn(), analysis.bandHopThresholds)
           : getLegendMarkup(null, []);
       }
     }
@@ -388,7 +393,7 @@ export function createExplorerControls(
         : '';
     status.textContent =
       props.getLoadingStatus() ??
-      `${vertexCount.toLocaleString()} resident vertices · ${visibleEdges.toLocaleString()} / ${effect.graph.edgeCount.toLocaleString()} original edges drawn · ${effect.activeLayoutMode} GPU layout · ${effect.renderMode} · hover ${hover}${pathState}${recipeState}${boundedAnalysis}`;
+      `${vertexCount.toLocaleString()} resident vertices · ${visibleEdges.toLocaleString()} / ${effect.graph.edgeCount.toLocaleString()} original edges drawn · ${effect.activeLayoutMode} GPU layout · ${effect.renderMode} · hover ${hover}${pathState}${analysisState}${boundedAnalysis}`;
     if (framesPerSecond) {
       framesPerSecond.textContent = statistics?.framesPerSecond
         ? `${Math.round(statistics.framesPerSecond)} fps`
@@ -417,11 +422,11 @@ export function createExplorerControls(
         : 'compiling';
     }
     if (iterations) {
-      const recipeStats = statistics?.recipeColumns;
-      iterations.textContent = !recipes
+      const analysisStats = statistics?.analysisColumns;
+      iterations.textContent = !analysis
         ? 'skipped'
-        : recipeStats
-          ? `${recipeStats.completedStages}/${recipeStats.totalStages} stages · ${recipeStats.interactionEncodeCount} interactions`
+        : analysisStats
+          ? `${analysisStats.completedStages}/${analysisStats.totalStages} stages · ${analysisStats.interactionEncodeCount} interactions`
           : 'pending';
     }
   };

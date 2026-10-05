@@ -7,6 +7,7 @@ import {GPUCommandGraph} from '@luma.gl/gpgpu/gpu-core';
 import {getWebGPUTestDevice} from '@luma.gl/test-utils';
 import {expect, it} from 'vitest';
 import {GPUParameterBuffer, importGraphBuffer} from '../../../src/utils/gpu-contributor-utils';
+import {submitGraph} from '../../utils/gpu-contributor-test-utils';
 import {
   getGPUReliefBlendParameterValues,
   GPU_RELIEF_BLEND_VAT_ARCHAEOLOGICAL,
@@ -19,8 +20,7 @@ import {
   createInputBuffer,
   createOutputBuffer,
   readFloat32,
-  readUint32,
-  submitGraph
+  readUint32
 } from '../../utils/gpu-contributor-test-utils';
 import {computeBlendRVT, type RVTBlendLayer} from './relief-visualization-oracle';
 import {expectClose} from './relief-test-utils';

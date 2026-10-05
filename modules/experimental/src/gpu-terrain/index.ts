@@ -332,3 +332,41 @@ export type {
   GPUTerrainCastShadowProps,
   GPUTerrainCastShadowSettings
 } from './terrain-illumination/index';
+export {GPUPointHorizonVisibility} from './point-horizon/index';
+export type {GPUPointHorizonVisibilityProps} from './point-horizon/index';
+export {
+  decodeGPUTerrainHorizonUnorm16,
+  encodeGPUTerrainHorizonUnorm16,
+  getGPUSolarDirectNormalIrradiance,
+  getGPUSolarIrradianceParameterValues,
+  getGPUSolarIrradianceSunTable,
+  GPU_RELIEF_SHADING_CONTRAST_PIVOT,
+  GPU_SOLAR_IRRADIANCE_PARAMETER_LENGTH,
+  GPU_SOLAR_IRRADIANCE_SUN_TABLE_STRIDE,
+  GPU_TERRAIN_HORIZON_ANISOTROPIC_PARAMETER_LENGTH,
+  GPU_TERRAIN_HORIZON_DEFAULT_ANISOTROPY_AZIMUTH_DEGREES,
+  GPU_TERRAIN_HORIZON_DEFAULT_ANISOTROPY_LEVEL,
+  GPU_TERRAIN_HORIZON_DEFAULT_ANISOTROPY_MINIMUM_WEIGHT,
+  GPU_TERRAIN_HORIZON_UNORM16_STEP_DEGREES,
+  GPUSolarIrradiance,
+  unpackGPUTerrainHorizonUnorm16
+} from './terrain-illumination/index';
+export type {
+  GPUSolarIrradianceProps,
+  GPUSolarIrradianceSettings,
+  GPUSolarIrradianceSunTableOptions,
+  GPUTerrainHorizonAlgorithm,
+  GPUTerrainHorizonFormat
+} from './terrain-illumination/index';
+export {GPU_TERRAIN_DRAINAGE_NONE} from './hydrology/index';
+export type {GPUTerrainFlowRouting} from './hydrology/index';
+export {
+  getGPUTerrainSightLineParameterValues,
+  getGPUTerrainVisibilityToleranceParameterValues,
+  GPU_TERRAIN_SIGHT_LINE_PARAMETER_LENGTH,
+  GPU_TERRAIN_VISIBILITY_TOLERANCE_PARAMETER_LENGTH
+} from './terrain-analysis/index';
+export type {
+  GPUTerrainSightLineSettings,
+  GPUTerrainVisibilityToleranceSettings
+} from './terrain-analysis/index';

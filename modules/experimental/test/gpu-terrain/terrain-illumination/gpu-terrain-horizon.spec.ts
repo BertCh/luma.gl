@@ -7,6 +7,7 @@ import {GPUCommandGraph} from '@luma.gl/gpgpu/gpu-core';
 import {getWebGPUTestDevice} from '@luma.gl/test-utils';
 import {expect, it} from 'vitest';
 import {GPUParameterBuffer, importGraphBuffer} from '../../../src/utils/gpu-contributor-utils';
+import {submitGraph} from '../../utils/gpu-contributor-test-utils';
 import {
   decodeGPUTerrainHorizonUnorm16,
   encodeGPUTerrainHorizonUnorm16,
@@ -24,16 +25,17 @@ import {
   createInputBuffer,
   createOutputBuffer,
   readFloat32,
-  readUint32,
-  submitGraph
+  readUint32
 } from '../../utils/gpu-contributor-test-utils';
 import {
+  getAnisotropicWeightOracle,
   computeTerrainHorizon,
   createSmoothTerrain,
   decodeHorizonUnorm16Oracle,
   encodeHorizonUnorm16Oracle,
   type HorizonOracleResult
 } from './terrain-horizon-oracle';
+import {computeTerrainHorizonSweepBruteForce} from './terrain-horizon-sweep-oracle';
 
 type HorizonFixture = {
   run(settings: GPUTerrainHorizonSettings): Promise<HorizonOracleResult>;
@@ -370,7 +372,7 @@ it('GPUTerrainHorizon matches analytic and float64 horizons on a tilted high-ele
   console.log(`tilted plane: worst axis error ${worstAxis} deg, worst off-axis ${worstOther} deg`);
   expect(nonTrivial).toBeGreaterThan(1000);
   expect(worstAxis).toBeLessThan(2e-5);
-  expect(worstOther).toBeLessThan(5e-3);
+  expect(worstOther).toBeLessThan(2e-4);
   fixture.destroy();
 });
 
@@ -403,8 +405,9 @@ it('GPUTerrainHorizon matches float64 on a tilted plane with curvature and a lon
     cellSize: [10, 10],
     curvatureCoefficient: 6.8e-8
   });
-  // Axis sectors sample exact pixels (no interpolation); off-axis samples interpolate float32
-  // elevations near 4000 m, whose 4.9e-4 m spacing bounds the achievable agreement.
+  // Axis sectors sample exact pixels (no interpolation). Off-axis samples interpolate
+  // centre-relative differences, so the 4.9e-4 m float32 spacing near 4000 m no longer bounds the
+  // agreement (it did before the march subtracted the centre ahead of interpolation: 2e-3 deg).
   let worstAxis = 0;
   let worstOther = 0;
   let steep = 0;
@@ -420,7 +423,7 @@ it('GPUTerrainHorizon matches float64 on a tilted plane with curvature and a lon
   console.log(`curved tilted plane: worst axis ${worstAxis} deg, worst diagonal ${worstOther} deg`);
   expect(steep).toBeGreaterThan(1000);
   expect(worstAxis).toBeLessThan(2e-5);
-  expect(worstOther).toBeLessThan(5e-3);
+  expect(worstOther).toBeLessThan(2e-4);
   fixture.destroy();
 });
 
@@ -444,6 +447,7 @@ async function runExtendedHorizon(
     directionCount: number;
     maximumRadius: number;
     horizonFormat: GPUTerrainHorizonFormat;
+    algorithm?: 'march' | 'sweep';
   },
   settings: GPUTerrainHorizonSettings
 ): Promise<ExtendedOutputs> {
@@ -474,6 +478,7 @@ async function runExtendedHorizon(
       directionCount,
       maximumRadius: options.maximumRadius,
       horizonFormat,
+      algorithm: options.algorithm,
       elevation: {
         id: 'elevation',
         format: 'float32',
@@ -705,5 +710,79 @@ it('unorm16 horizon codec round-trips within half a step and flags invalid as 0'
       GPU_TERRAIN_HORIZON_UNORM16_STEP_DEGREES * 0.5 + 1e-6
     );
     expect(decoded).toBeCloseTo(decodeHorizonUnorm16Oracle(encodeHorizonUnorm16Oracle(angle)), 9);
+  }
+});
+
+it('GPUTerrainHorizon sweep algorithm matches the float64 digital-line oracle for every output', async () => {
+  const device = await getWebGPUTestDevice();
+  if (!device) {
+    return;
+  }
+  const width = 40;
+  const height = 33;
+  const directionCount = 16;
+  const elevation = createSmoothTerrain(width, height, 21);
+  for (const hole of [3 * width + 5, 3 * width + 6, 17 * width + 22, 32 * width + 39]) {
+    elevation[hole] = NaN;
+  }
+  const anisotropy = {azimuthDegrees: 315, level: 4, minimumWeight: 0.4};
+  for (const [maximumRadius, horizonFormat] of [
+    [12, 'float32'],
+    [60, 'unorm16']
+  ] as const) {
+    const settings = {
+      cellSize: [10, 10] as [number, number],
+      zFactor: 1.3,
+      curvatureCoefficient: 2e-4,
+      anisotropyAzimuthDegrees: anisotropy.azimuthDegrees,
+      anisotropyLevel: anisotropy.level,
+      anisotropyMinimumWeight: anisotropy.minimumWeight
+    };
+    const actual = await runExtendedHorizon(
+      device,
+      elevation,
+      {width, height, directionCount, maximumRadius, horizonFormat, algorithm: 'sweep'},
+      settings
+    );
+    const expected = computeTerrainHorizonSweepBruteForce({
+      width,
+      height,
+      elevation,
+      directionCount,
+      maximumRadius,
+      cellSize: [10, 10],
+      zFactor: 1.3,
+      curvatureCoefficient: 2e-4,
+      nadir: true
+    });
+    const horizonTolerance =
+      horizonFormat === 'unorm16' ? GPU_TERRAIN_HORIZON_UNORM16_STEP_DEGREES : 2e-3;
+    expectClose(actual.horizon, expected.horizon, horizonTolerance);
+    expectClose(actual.skyViewFactor, expected.skyViewFactor, 1e-5);
+    expectClose(actual.positiveOpenness, expected.positiveOpenness, 2e-3);
+    expectClose(actual.negativeOpenness, expected.negativeOpenness, 2e-3);
+    const pixelCount = width * height;
+    const expectedAnisotropic = Array.from({length: pixelCount}, (_, pixel) => {
+      if (expected.validity[pixel] !== 1) {
+        return NaN;
+      }
+      let weighted = 0;
+      let weights = 0;
+      for (let sector = 0; sector < directionCount; sector++) {
+        const weight = getAnisotropicWeightOracle(sector, directionCount, anisotropy);
+        const angle = expected.horizon[pixel * directionCount + sector];
+        weighted += weight * Math.sin((Math.max(angle, 0) * Math.PI) / 180);
+        weights += weight;
+      }
+      return 1 - weighted / weights;
+    });
+    expectClose(actual.anisotropicSkyViewFactor, expectedAnisotropic, 1e-5);
+    expect(actual.validity).toEqual(expected.validity);
+    // Non-trivial structure: real horizons, both signs, and a spread of sky-view factors.
+    const finite = actual.horizon.filter(Number.isFinite);
+    expect(Math.max(...finite)).toBeGreaterThan(5);
+    expect(Math.min(...finite)).toBeLessThan(-5);
+    const svf = actual.skyViewFactor.filter(Number.isFinite);
+    expect(Math.max(...svf) - Math.min(...svf)).toBeGreaterThan(0.05);
   }
 });

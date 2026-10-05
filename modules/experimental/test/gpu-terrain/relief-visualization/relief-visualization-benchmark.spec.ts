@@ -7,6 +7,7 @@ import {GPUCommandGraph} from '@luma.gl/gpgpu/gpu-core';
 import {getWebGPUTestDevice} from '@luma.gl/test-utils';
 import {it} from 'vitest';
 import {GPUParameterBuffer, importGraphBuffer} from '../../../src/utils/gpu-contributor-utils';
+import {submitGraph} from '../../utils/gpu-contributor-test-utils';
 import {
   getGPULocalDominanceParameterValues,
   GPULocalDominance
@@ -24,11 +25,7 @@ import {
   getGPUSimpleLocalReliefParameterValues,
   GPUSimpleLocalRelief
 } from '../../../src/gpu-terrain/relief-visualization/gpu-simple-local-relief';
-import {
-  createInputBuffer,
-  createOutputBuffer,
-  submitGraph
-} from '../../utils/gpu-contributor-test-utils';
+import {createInputBuffer, createOutputBuffer} from '../../utils/gpu-contributor-test-utils';
 import {createSmoothTerrain} from '../terrain-illumination/terrain-horizon-oracle';
 
 // Opt in with `VITE_RELIEF_VISUALIZATION_BENCHMARK=true npx vitest run --project headless <this file>`.
