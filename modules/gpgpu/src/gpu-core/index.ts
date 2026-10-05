@@ -178,6 +178,11 @@ export type {
 } from './gpu-workgroup-reduction-benchmark';
 export {GPUSegmentedSort} from './gpu-segmented-sort';
 export type {GPUSegmentedSortProps, GPUSortSegment} from './gpu-segmented-sort';
+export {GPUSegmentedReduction} from './gpu-segmented-reduction';
+export type {
+  GPUSegmentedReductionOperation,
+  GPUSegmentedReductionProps
+} from './gpu-segmented-reduction';
 export {GPUCompaction} from './gpu-compaction';
 export type {GPUCompactionInput, GPUCompactionProps} from './gpu-compaction';
 export {GPUFlagOffsets} from './gpu-flag-offsets';

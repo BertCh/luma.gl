@@ -64,19 +64,26 @@ costs; keeping a graph resident does not automatically make every workload faste
    intentionally empty batch, and a second nonempty batch. Changing the slider creates an actual
    new graph; its displayed population is not a multiplied sample.
 2. **Analyze the graph in the first frame.** `GPUGraphDeckEffect` builds forward and reverse
-   compressed adjacency, computes exact vertex degree and normalized dangling-aware PageRank, and
-   produces both weak-component and deterministic label-propagation community labels. Weak
-   components describe connectivity; community labels can separate tightly connected groups inside
-   one component. Their bounded iteration budget does not guarantee convergence.
-3. **Update interaction and layout in later frames.** GPU breadth-first search highlights the
-   selected vertex's bounded neighborhood when selection changes. Exact, flat-grid spatial, or
+   compressed adjacency for layout, and its `GPUGraphRecipeColumns` runs the map-graph network
+   recipes on one undirected view of the original batches: `GPUNetworkAnalyticsColumns` produces
+   normalized degree, PageRank, and core number plus weak-component and label-propagation community
+   labels. Weak components describe connectivity; community labels can separate tightly connected
+   groups inside one component. Their bounded iteration budget does not guarantee convergence.
+3. **Update interaction and layout in later frames.** Hovering a node writes one small input
+   buffer, and `GPUNetworkNeighborhood` recomputes its bounded hop neighborhood. Two clicks set path
+   endpoints; `GPUNetworkReachability` measures hop bands from the first and
+   `GPUNetworkPathExtraction` extracts the shortest path between them. These interaction recipes are
+   encoded only when their inputs change and never create pipelines. Exact, flat-grid spatial, or
    sampled force layout progressively advances the existing node positions.
 4. **Draw the same allocations through real deck.gl layers.** `GPUGraphNodeLayer` binds the actual
-   `float32x2` layout allocation as an instanced vertex attribute. Actual community, component,
-   degree, PageRank, and distance results control color; PageRank, degree, or a uniform value
-   controls size. One `GPUGraphEdgeLayer` draws each nonempty original source/target batch directly;
-   the empty middle batch remains in the complete graph and is never concatenated or repacked.
-   Visible edge instances can be capped without dropping any resident edge or vertex.
+   `float32x2` layout allocation as an instanced vertex attribute and every recipe output as a
+   row-aligned storage buffer: a color column with a linear or categorical scale, a size column,
+   the hover neighborhood mask, and path ranks. Choosing another column or domain rebinds a buffer
+   or rewrites one uniform block; it never rebuilds a pipeline. One `GPUGraphEdgeLayer` draws each
+   nonempty original source/target batch directly, highlighting edges inside the neighborhood and
+   along the path; the empty middle batch remains in the complete graph and is never concatenated
+   or repacked. Visible edge instances can be capped without dropping any resident edge or
+   vertex.
 
 The effect records compute into deck.gl's own WebGPU command encoder; deck.gl owns queue
 submission. The node-position allocation has both `Buffer.STORAGE` and `Buffer.VERTEX` usage, so
@@ -84,33 +91,35 @@ simulation can update the exact same memory that the node layer fetches as an in
 
 ## Try the controls
 
-- **Hover a node** to inspect its stable original vertex identifier and whether it is pinned.
-- **Click a node** to select it and highlight its GPU-computed neighborhood; click empty space to
-  clear the selection.
+- **Hover a node** to inspect its stable original vertex identifier and whether it is pinned, and to
+  highlight its GPU-computed neighborhood while the rest of the graph dims.
+- **Click two nodes** to draw the shortest path between them; a third click starts a new path, and
+  a click on empty space clears it.
 - **Change the graph size** to rebuild real resident vertices across fourteen keyboard-accessible
   steps, from 128 to 1,048,576.
 - **Choose a layout mode** to compare automatic, exact, spatial, and sampled GPU force paths.
-- **Choose a node color mode** to inspect community, weak-component, degree, PageRank, or
-  neighborhood-distance results.
-- **Choose a node size mode** to compare PageRank, degree, or uniform-size vertices.
+- **Color by** community, weak component, degree, PageRank, core number, or reachability band
+  (hops from the first path endpoint).
+- **Choose a node size** from PageRank, degree, core number, or a uniform value.
 - **Toggle original edges** to show or hide their bounded visible instances without changing the
   complete resident source batches.
 - **Pause or resume the layout** while preserving the live graph and interaction controls.
-- **Adjust neighborhood depth** to include between zero and eight unweighted relationship hops.
+- **Adjust hover neighborhood hops** to include between zero and eight unweighted relationship
+  hops.
 - **Drag a node** to move its existing GPU coordinates and pin it while the remaining graph moves.
 - **Release pins** to let every pinned vertex move again.
 - **Reset layout** to restore deterministic initial positions for unpinned vertices.
 - **Pan and zoom** by dragging empty space or using the scroll wheel in the orthographic view.
 
-These controls update small existing GPU selection, depth, pin, or position buffers; they do not
+These controls update small existing GPU hover, path, depth, pin, or position buffers; they do not
 rebuild a JavaScript graph or download vertex columns for every animation frame.
 
 ## What actually stays on the GPU
 
 After each selected fixture is uploaded, all original source and target edge chunks, compressed
-adjacency, degree counts, PageRank scores, weak-component identifiers, label-propagation
-communities, breadth-first distances, neighborhood masks, and progressive layout positions stay
-resident. Rendering does not concatenate edge batches, copy positions into a second vertex
+adjacency, degree, PageRank, and core-number columns, weak-component identifiers,
+label-propagation communities, reachability bands, neighborhood masks, path ranks, and progressive
+layout positions stay resident. Rendering does not concatenate edge batches, copy positions into a second vertex
 allocation, or read graph columns back to the CPU. At the largest setting, **every one of the
 1,048,576 original vertices remains rendered**; the **2,097,343 original directed edges** remain
 resident even when only **65,536 original edges** are visible.
@@ -119,12 +128,17 @@ The sampled-layout helper is supplied by the example as an injected callback. Th
 `@deck.gl-community/arrow-layers` package owns Deck imports, effects, and layers without importing
 the example; the public GPU Graph package remains renderer-independent.
 
-Interaction is not magically transfer-free: JavaScript writes explicit selection controls, pin
-flags, or dragged coordinates when requested. deck.gl's native asynchronous WebGPU picking also
+Interaction is not magically transfer-free: JavaScript writes explicit hover and path-endpoint
+controls, pin flags, or dragged coordinates when requested. deck.gl's native asynchronous WebGPU picking also
 returns a requested selected-vertex result to JavaScript. The returned `PickingInfo.index` is the
 stable original vertex identifier; it is not a download of graph positions, PageRank scores, or
 edge columns. deck.gl owns that picking implementation and its transfer size, so this example
 does not claim the separate native GPU Graph explorer's custom integer-readback contract.
+
+Known issue: deck.gl's asynchronous WebGPU picking currently converts the cursor with the WebGL
+bottom-left origin while reading WebGPU's top-left picking texture, so hover and clicks resolve to
+the vertically mirrored pixel. The fix belongs in deck.gl; the layers add no workaround that would
+flip twice once it lands.
 
 ## Boundaries and performance
 

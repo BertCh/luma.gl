@@ -126,19 +126,23 @@ implementations from the existing private `@deck.gl-community/arrow-layers` adap
 Use it when a social-network, service-dependency, fraud-investigation, or citation visualization
 already uses deck.gl and needs GPU graph results to become directly drawable attributes.
 
-The effect first encodes forward and reverse adjacency, vertex degree, normalized PageRank, weak
-components, and deterministic label-propagation communities. Later frames encode actual exact,
-flat-grid spatial, or sampled force layout into deck.gl's own command encoder; bounded
-neighborhood selection reruns only when interaction changes it. deck.gl remains responsible for
-queue submission. The writable layout allocation is also the node layer's `float32x2` instance
-vertex attribute. PageRank scores, degree counts, component and community labels, hop distances,
-and the selection mask remain GPU storage inputs; each nonempty original edge partition gets its
-own edge layer, without concatenation, buffer copies, or per-frame graph readback.
+The effect first encodes forward and reverse adjacency for layout, and its
+`GPUGraphRecipeColumns` runs the [map graph](/docs/api-reference/experimental/map-graphs) network
+recipes on an undirected view of the original edges: normalized degree, PageRank, and core number,
+weak-component and label-propagation community labels, a hover neighborhood, reachability bands,
+and a two-endpoint shortest path. Later frames encode actual exact, flat-grid spatial, or sampled
+force layout into deck.gl's own command encoder; the interaction recipes rerun only when hover or
+path endpoints change. deck.gl remains responsible for queue submission. The writable layout
+allocation is also the node layer's `float32x2` instance vertex attribute. Recipe columns, the
+neighborhood mask, and path ranks are bound as row-aligned storage buffers with uniform color and
+size scales, so changing the displayed column never rebuilds a pipeline; each nonempty original
+edge partition gets its own edge layer, without concatenation, buffer copies, or per-frame graph
+readback. The layers require WebGPU.
 
 The deterministic example fixture is uploaded once for each selected graph size. Resizing replaces
-its resident allocations and rebinds stable node and edge layers to their new buffers. Selecting,
-pinning, dragging, and changing neighborhood depth write only the necessary interaction controls or
-coordinates; they do not download graph columns. Every actual vertex remains rendered, including
+its resident allocations and rebinds stable node and edge layers to their new buffers. Hovering,
+choosing path endpoints, pinning, dragging, and changing neighborhood depth write only the
+necessary interaction controls or coordinates; they do not download graph columns. Every actual vertex remains rendered, including
 all **1,048,576 vertices** in point mode; only displayed original edges are capped. An explicitly
 requested native deck.gl pick returns the selected original vertex identifier to JavaScript. Its
 implementation and transfer size belong to deck.gl; it is

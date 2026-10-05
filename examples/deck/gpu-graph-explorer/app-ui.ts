@@ -3,6 +3,8 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {
+  type GPUGraphColor,
+  type GPUGraphColorScale,
   type GPUGraphDeckEffect,
   type GPUGraphDeckEffectStats
 } from '@deck.gl-community/arrow-layers';
@@ -11,12 +13,97 @@ import {
   GRAPH_EXPLORER_MAXIMUM_EXACT_VERTEX_COUNT,
   GRAPH_EXPLORER_SHOWCASE_DEFAULT_VERTEX_COUNT,
   GRAPH_EXPLORER_VERTEX_COUNTS,
-  type GraphExplorerColorMode,
-  type GraphExplorerLayoutMode,
-  type GraphExplorerNodeSizeMode
+  type GraphExplorerLayoutMode
 } from '../../experimental/gpu-graph-explorer/graph-data';
 
 export const DEFAULT_NEIGHBORHOOD_DEPTH = 2;
+
+/** Analytics column mapped to node color. */
+export type ExplorerColorColumn =
+  'community' | 'component' | 'degree' | 'pagerank' | 'core' | 'band';
+
+/** Analytics column mapped to node radius. */
+export type ExplorerNodeSize = 'uniform' | 'degree' | 'pagerank' | 'core';
+
+/**
+ * Seven categorical hues for label columns, legible on the dark canvas and without yellow. The
+ * length is deliberately prime: labels are minimum vertex IDs, which are often multiples of a power
+ * of two, and `label % 8` would then map every community to the same color.
+ */
+export const EXPLORER_CATEGORICAL_PALETTE: readonly GPUGraphColor[] = [
+  [86, 180, 233],
+  [230, 159, 0],
+  [0, 200, 150],
+  [240, 110, 170],
+  [160, 130, 255],
+  [170, 220, 70],
+  [230, 70, 70]
+];
+
+/** Low-to-high sequential ramp (blue to amber) whose low end stays visible on the canvas. */
+export const EXPLORER_SEQUENTIAL_PALETTE: readonly GPUGraphColor[] = [
+  [72, 84, 170],
+  [43, 130, 190],
+  [40, 176, 170],
+  [110, 208, 120],
+  [216, 226, 80],
+  [255, 196, 64]
+];
+
+/** Color of unreached reachability bands. */
+export const EXPLORER_NULL_COLOR: GPUGraphColor = [74, 84, 108];
+
+/** Tint of the A to B shortest path (nodes and edges). */
+export const EXPLORER_PATH_COLOR: [number, number, number] = [255, 240, 110];
+
+/**
+ * Tint of hover-neighborhood edges. Mutable tuples because deck's own `highlightColor` layer prop
+ * is typed `number[]` and intersects with the layer's `GPUGraphColor`.
+ */
+export const EXPLORER_NEIGHBORHOOD_EDGE_COLOR: [number, number, number] = [160, 200, 255];
+
+/**
+ * Domain of a normalized float column. Degree and PageRank are heavy tailed and normalized by their
+ * maximum, so a few hubs sit near 1 and nearly every other vertex below 0.2; mapping `[0, 1]`
+ * would paint the whole graph one color. Values above the upper bound clamp to the top color.
+ */
+export function getExplorerValueDomain(
+  column: ExplorerColorColumn | ExplorerNodeSize
+): readonly [number, number] {
+  return column === 'degree' || column === 'pagerank' ? [0, HEAVY_TAIL_DOMAIN_MAXIMUM] : [0, 1];
+}
+
+const HEAVY_TAIL_DOMAIN_MAXIMUM = 0.2;
+
+/** Returns the GPU color scale for a color column; changing it only rewrites a uniform block. */
+export function getExplorerColorScale(
+  column: ExplorerColorColumn,
+  bandCount: number
+): GPUGraphColorScale {
+  switch (column) {
+    case 'community':
+    case 'component':
+      return {
+        type: 'categorical',
+        palette: EXPLORER_CATEGORICAL_PALETTE,
+        nullColor: EXPLORER_NULL_COLOR
+      };
+    case 'band':
+      return {
+        type: 'linear',
+        domain: [0, Math.max(1, bandCount - 1)],
+        palette: EXPLORER_SEQUENTIAL_PALETTE,
+        nullColor: EXPLORER_NULL_COLOR
+      };
+    default:
+      return {
+        type: 'linear',
+        domain: getExplorerValueDomain(column),
+        palette: EXPLORER_SEQUENTIAL_PALETTE,
+        nullColor: EXPLORER_NULL_COLOR
+      };
+  }
+}
 
 export type GraphExplorerControls = {
   update: () => void;
@@ -29,10 +116,18 @@ export type GraphExplorerControlProps = {
   getPendingVertexCount: () => number | null;
   getLoadingStatus: () => string | null;
   getEdgesVisible: () => boolean;
+  getColorColumn: () => ExplorerColorColumn;
+  /** CPU-side interaction state: hovered vertex and the clicked path endpoints A and B. */
+  getInteraction: () => {
+    hoverVertex: number | null;
+    pathSource: number | null;
+    pathTarget: number | null;
+  };
   resize: (vertexCount: number) => void;
   setLayoutMode: (mode: GraphExplorerLayoutMode) => void;
-  setColorMode: (mode: GraphExplorerColorMode) => void;
-  setNodeSizeMode: (mode: GraphExplorerNodeSizeMode) => void;
+  setColorColumn: (column: ExplorerColorColumn) => void;
+  setNodeSize: (size: ExplorerNodeSize) => void;
+  setNeighborhoodHops: (hops: number) => void;
   setEdgesVisible: (visible: boolean) => void;
   setPaused: (paused: boolean) => void;
   redraw: (reason: string) => void;
@@ -103,11 +198,12 @@ export function createExplorerControls(
       <label>Color by
         <select data-gpu-graph-color aria-label="Node color encoding"
           style="display:block;width:100%;margin-top:4px">
-          <option value="community">Communities</option>
-          <option value="component">Components</option>
+          <option value="community">Community</option>
+          <option value="component">Component</option>
           <option value="degree">Degree</option>
           <option value="pagerank">PageRank</option>
-          <option value="distance">Distance</option>
+          <option value="core">Core number</option>
+          <option value="band">Reachability band</option>
         </select>
       </label>
       <label>Node size
@@ -115,6 +211,7 @@ export function createExplorerControls(
           style="display:block;width:100%;margin-top:4px">
           <option value="pagerank">PageRank</option>
           <option value="degree">Degree</option>
+          <option value="core">Core number</option>
           <option value="uniform">Uniform</option>
         </select>
       </label>
@@ -130,8 +227,8 @@ export function createExplorerControls(
       </select>
     </label>
 
-    <label style="display:block;margin-bottom:10px">Neighborhood depth
-      <input data-gpu-graph-depth aria-label="GPU neighborhood breadth-first search depth"
+    <label style="display:block;margin-bottom:10px">Hover neighborhood hops
+      <input data-gpu-graph-depth aria-label="Hover neighborhood hop radius"
         type="range" min="0" max="8" value="${DEFAULT_NEIGHBORHOOD_DEPTH}"
         style="display:block;width:100%;margin-top:5px;accent-color:#d692ff" />
     </label>
@@ -153,15 +250,12 @@ export function createExplorerControls(
       <strong data-gpu-graph-index style="text-align:right">—</strong>
       <span style="color:#9dafc8">GPU pipeline</span>
       <strong data-gpu-graph-pipeline style="text-align:right">—</strong>
-      <span style="color:#9dafc8">Bounded rounds</span>
+      <span style="color:#9dafc8">Recipe columns</span>
       <strong data-gpu-graph-iterations style="text-align:right">—</strong>
     </div>
 
     <div data-gpu-graph-legend aria-label="GPU graph visualization legend"
-      style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:11px 0;color:#b9c8df">
-      <span style="width:9px;height:9px;border-radius:50%;background:#42c9ff"></span>Community
-      <span style="width:9px;height:9px;border-radius:50%;background:#ffb04b"></span>Selected
-      <span style="width:9px;height:9px;border-radius:50%;background:#ad7bff"></span>Neighborhood
+      style="display:flex;gap:6px 10px;align-items:center;flex-wrap:wrap;margin:11px 0;color:#b9c8df">
     </div>
 
     <div style="display:flex;gap:6px;flex-wrap:wrap">
@@ -171,7 +265,7 @@ export function createExplorerControls(
     </div>
     <p data-gpu-graph-status role="status" aria-live="polite"
       style="margin:11px 0 3px;color:#b4c5df">Initializing WebGPU graph…</p>
-    <p style="margin:4px 0 0;color:#8293ad;font-size:11px">Click a node · drag to pin · scroll to zoom</p>`;
+    <p style="margin:4px 0 0;color:#8293ad;font-size:11px">Hover a node for its neighborhood · click two nodes for the shortest path · drag to pin · scroll to zoom</p>`;
   container.appendChild(panel);
 
   for (const control of panel.querySelectorAll<HTMLElement>('select, button')) {
@@ -204,6 +298,7 @@ export function createExplorerControls(
   const memory = panel.querySelector<HTMLElement>('[data-gpu-graph-memory]');
   const spatialIndex = panel.querySelector<HTMLElement>('[data-gpu-graph-index]');
   const pipeline = panel.querySelector<HTMLElement>('[data-gpu-graph-pipeline]');
+  const legend = panel.querySelector<HTMLElement>('[data-gpu-graph-legend]');
   const iterations = panel.querySelector<HTMLElement>('[data-gpu-graph-iterations]');
   const isolatedInteractionEvents = [
     'pointerdown',
@@ -227,12 +322,40 @@ export function createExplorerControls(
   let pendingVertexCount: number | null = null;
   let activeSizePointer: number | null = null;
   let paused = false;
+  let renderedLegendKey = '';
 
   const update = (): void => {
     const effect = props.getEffect();
     if (!effect || !status) return;
     const statistics = props.getStats();
-    const selected = effect.currentSelection === null ? 'none' : `${effect.currentSelection}`;
+    const recipes = effect.recipeColumns;
+    const interaction = props.getInteraction();
+    const hover = interaction.hoverVertex === null ? 'none' : `${interaction.hoverVertex}`;
+    const pathState = !recipes
+      ? ''
+      : interaction.pathSource === null
+        ? ' · path: click a node for endpoint A'
+        : interaction.pathTarget === null
+          ? ` · path A ${interaction.pathSource}, click a node for endpoint B`
+          : ` · path A ${interaction.pathSource} to B ${interaction.pathTarget}`;
+    const recipeState = recipes
+      ? ''
+      : ` · analytics columns unavailable (${effect.recipeColumnsSkipReason ?? 'unknown'})`;
+    for (const control of [color, nodeSize, depth]) {
+      if (control) control.disabled = !recipes;
+    }
+    if (depth && recipes && document.activeElement !== depth) {
+      depth.value = `${recipes.currentNeighborhoodHops}`;
+    }
+    if (legend) {
+      const legendKey = `${recipes ? props.getColorColumn() : 'none'}:${recipes?.bandHopThresholds.length ?? 0}`;
+      if (legendKey !== renderedLegendKey) {
+        renderedLegendKey = legendKey;
+        legend.innerHTML = recipes
+          ? getLegendMarkup(props.getColorColumn(), recipes.bandHopThresholds)
+          : getLegendMarkup(null, []);
+      }
+    }
     const vertexCount = effect.graph.vertexCount;
     const sizeIndex = GRAPH_EXPLORER_VERTEX_COUNTS.findIndex(count => count === vertexCount);
     const pendingGraph = props.getPendingVertexCount();
@@ -265,7 +388,7 @@ export function createExplorerControls(
         : '';
     status.textContent =
       props.getLoadingStatus() ??
-      `${vertexCount.toLocaleString()} resident vertices · ${visibleEdges.toLocaleString()} / ${effect.graph.edgeCount.toLocaleString()} original edges drawn · ${effect.activeLayoutMode} GPU layout · ${effect.renderMode} · selected ${selected}${boundedAnalysis}`;
+      `${vertexCount.toLocaleString()} resident vertices · ${visibleEdges.toLocaleString()} / ${effect.graph.edgeCount.toLocaleString()} original edges drawn · ${effect.activeLayoutMode} GPU layout · ${effect.renderMode} · hover ${hover}${pathState}${recipeState}${boundedAnalysis}`;
     if (framesPerSecond) {
       framesPerSecond.textContent = statistics?.framesPerSecond
         ? `${Math.round(statistics.framesPerSecond)} fps`
@@ -294,9 +417,12 @@ export function createExplorerControls(
         : 'compiling';
     }
     if (iterations) {
-      iterations.textContent = statistics
-        ? `P${statistics.pageRankIterations} · W${statistics.componentIterations} · L${statistics.communityIterations}`
-        : 'pending';
+      const recipeStats = statistics?.recipeColumns;
+      iterations.textContent = !recipes
+        ? 'skipped'
+        : recipeStats
+          ? `${recipeStats.completedStages}/${recipeStats.totalStages} stages · ${recipeStats.interactionEncodeCount} interactions`
+          : 'pending';
     }
   };
 
@@ -417,22 +543,24 @@ export function createExplorerControls(
   };
 
   const updateColorMode = (): void => {
-    const mode = color?.value;
+    const column = color?.value;
     if (
-      mode === 'community' ||
-      mode === 'component' ||
-      mode === 'degree' ||
-      mode === 'pagerank' ||
-      mode === 'distance'
+      column === 'community' ||
+      column === 'component' ||
+      column === 'degree' ||
+      column === 'pagerank' ||
+      column === 'core' ||
+      column === 'band'
     ) {
-      props.setColorMode(mode);
+      props.setColorColumn(column);
+      update();
     }
   };
 
   const updateNodeSizeMode = (): void => {
     const mode = nodeSize?.value;
-    if (mode === 'pagerank' || mode === 'degree' || mode === 'uniform') {
-      props.setNodeSizeMode(mode);
+    if (mode === 'pagerank' || mode === 'degree' || mode === 'core' || mode === 'uniform') {
+      props.setNodeSize(mode);
     }
   };
 
@@ -453,8 +581,8 @@ export function createExplorerControls(
   };
 
   const updateDepth = (): void => {
-    props.getEffect()?.setNeighborhoodDepth(Number(depth?.value ?? DEFAULT_NEIGHBORHOOD_DEPTH));
-    props.redraw('GPU Graph deck neighborhood depth changed');
+    props.setNeighborhoodHops(Number(depth?.value ?? DEFAULT_NEIGHBORHOOD_DEPTH));
+    props.redraw('GPU Graph deck neighborhood hops changed');
   };
   const resetLayout = (): void => {
     props.getEffect()?.requestReset();
@@ -529,4 +657,64 @@ export function createStandaloneContainer(): HTMLDivElement {
   });
   document.body.appendChild(container);
   return container;
+}
+
+function toCssColor(color: GPUGraphColor): string {
+  return `rgb(${color[0]}, ${color[1]}, ${color[2]})`;
+}
+
+function getSwatchMarkup(color: GPUGraphColor | string, label: string): string {
+  const background = typeof color === 'string' ? color : toCssColor(color);
+  return `<span style="display:inline-flex;align-items:center;gap:4px"><span style="width:9px;height:9px;border-radius:50%;background:${background}"></span>${label}</span>`;
+}
+
+function getGradientMarkup(low: string, high: string): string {
+  const stops = EXPLORER_SEQUENTIAL_PALETTE.map(toCssColor).join(', ');
+  return `<span style="display:inline-flex;align-items:center;gap:5px">${low}<span style="width:70px;height:8px;border-radius:4px;background:linear-gradient(90deg, ${stops})"></span>${high}</span>`;
+}
+
+/** Legend for the active color column plus the fixed hover and path encodings. */
+function getLegendMarkup(
+  column: ExplorerColorColumn | null,
+  bandHopThresholds: readonly number[]
+): string {
+  const parts: string[] = [];
+  switch (column) {
+    case 'community':
+    case 'component': {
+      const swatches = EXPLORER_CATEGORICAL_PALETTE.map(
+        entry =>
+          `<span style="width:9px;height:9px;border-radius:50%;background:${toCssColor(entry)}"></span>`
+      ).join('');
+      parts.push(
+        `<span style="display:inline-flex;align-items:center;gap:3px">${swatches} ${column} label mod 7</span>`
+      );
+      break;
+    }
+    case 'degree':
+    case 'pagerank':
+    case 'core':
+      parts.push(
+        getGradientMarkup(
+          'low',
+          column === 'core'
+            ? 'high · core number (normalized)'
+            : `high · ${column} (${HEAVY_TAIL_DOMAIN_MAXIMUM * 100}% of max and up)`
+        )
+      );
+      break;
+    case 'band': {
+      const lastHop = bandHopThresholds[bandHopThresholds.length - 1] ?? 0;
+      parts.push(getGradientMarkup('A', `${lastHop} hops from A`));
+      parts.push(getSwatchMarkup(EXPLORER_NULL_COLOR, 'unreached / no A'));
+      break;
+    }
+    default:
+      parts.push(getSwatchMarkup(EXPLORER_CATEGORICAL_PALETTE[0], 'uniform color'));
+  }
+  if (column !== null) {
+    parts.push(getSwatchMarkup('#ffffff', 'hovered neighborhood (others dim)'));
+    parts.push(getSwatchMarkup(EXPLORER_PATH_COLOR, 'shortest path A to B'));
+  }
+  return parts.join('');
 }

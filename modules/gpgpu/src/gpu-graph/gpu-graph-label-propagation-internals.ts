@@ -17,6 +17,14 @@ import {
   getViewElementOffset
 } from '../gpu-core/graph-data-view-utils';
 import type {GPUGraphLabelPropagation} from './gpu-graph-label-propagation';
+import {
+  importGPUGraphColumn,
+  importGPUGraphOverflow,
+  usesGPUGraphViews,
+  validateDistinctGPUGraphHandles,
+  type GPUGraphColumn,
+  type GPUGraphTopologyLike
+} from './gpu-graph-topology-view';
 
 const LABEL_PROPAGATION_WORKGROUP_SIZE = 256;
 const INVALID_COMMUNITY = 0xffffffff;
@@ -51,7 +59,7 @@ type LabelPropagationPassProps = {
 
 /** Adds synchronous deterministic neighborhood-majority community propagation. @internal */
 export function addGPUGraphLabelPropagationToGraphWithDispatchLimit<Parameters>(
-  propagation: GPUGraphLabelPropagation,
+  propagation: GPUGraphLabelPropagation<GPUGraphTopologyLike, GPUGraphColumn<'uint32'>>,
   commandGraph: GPUCommandGraph<Parameters>,
   maxComputeWorkgroupsPerDimension: number
 ): void {
@@ -62,41 +70,48 @@ export function addGPUGraphLabelPropagationToGraphWithDispatchLimit<Parameters>(
   const state: ImportedLabelPropagation = {
     id: propagation.id,
     vertexCount,
-    forwardOffsets: commandGraph.importGPUVector(
+    forwardOffsets: importGPUGraphColumn(
+      commandGraph,
       `${propagation.id}-forward-offsets`,
       propagation.topology.forward.offsets
-    ).data[0],
-    forwardNeighbors: commandGraph.importGPUVector(
+    ),
+    forwardNeighbors: importGPUGraphColumn(
+      commandGraph,
       `${propagation.id}-forward-neighbors`,
       propagation.topology.forward.neighbors
-    ).data[0],
-    forwardOverflow: commandGraph.importGPUVector(
+    ),
+    forwardOverflow: importGPUGraphOverflow(
+      commandGraph,
       `${propagation.id}-forward-overflow`,
       propagation.topology.forward.overflow
-    ).data[0],
+    ),
     ...(reverse
       ? {
-          reverseOffsets: commandGraph.importGPUVector(
+          reverseOffsets: importGPUGraphColumn(
+            commandGraph,
             `${propagation.id}-reverse-offsets`,
             reverse.offsets
-          ).data[0],
-          reverseNeighbors: commandGraph.importGPUVector(
+          ),
+          reverseNeighbors: importGPUGraphColumn(
+            commandGraph,
             `${propagation.id}-reverse-neighbors`,
             reverse.neighbors
-          ).data[0],
-          reverseOverflow: commandGraph.importGPUVector(
+          ),
+          reverseOverflow: importGPUGraphOverflow(
+            commandGraph,
             `${propagation.id}-reverse-overflow`,
             reverse.overflow
-          ).data[0]
+          )
         }
       : {}),
-    output: commandGraph.importGPUVector(`${propagation.id}-output`, propagation.output).data[0],
+    output: importGPUGraphColumn(commandGraph, `${propagation.id}-output`, propagation.output),
     ...(propagation.converged
       ? {
-          converged: commandGraph.importGPUVector(
+          converged: importGPUGraphColumn(
+            commandGraph,
             `${propagation.id}-converged`,
             propagation.converged
-          ).data[0]
+          )
         }
       : {}),
     ...(vertexCount > 0
@@ -111,6 +126,23 @@ export function addGPUGraphLabelPropagationToGraphWithDispatchLimit<Parameters>(
       : {}),
     maxComputeWorkgroupsPerDimension
   };
+  if (usesGPUGraphViews(propagation.topology, [propagation.output, propagation.converged])) {
+    validateDistinctGPUGraphHandles(
+      propagation.id,
+      [
+        state.forwardOffsets,
+        state.forwardNeighbors,
+        state.forwardOverflow,
+        ...(state.reverseOffsets
+          ? [state.reverseOffsets, state.reverseNeighbors!, state.reverseOverflow!]
+          : [])
+      ],
+      [
+        {name: 'output', view: state.output},
+        ...(state.converged ? [{name: 'converged', view: state.converged}] : [])
+      ]
+    );
+  }
 
   addInitializationPass(commandGraph, state);
   if (vertexCount === 0) return;

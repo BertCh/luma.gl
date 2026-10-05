@@ -12,6 +12,13 @@ export type {
 } from './gpu-graph';
 export {GPUGraphTopology} from './gpu-graph-topology';
 export type {GPUGraphAdjacency, GPUGraphTopologyProps} from './gpu-graph-topology';
+export {GPUGraphTopologyView} from './gpu-graph-topology-view';
+export type {
+  GPUGraphAdjacencyView,
+  GPUGraphColumn,
+  GPUGraphTopologyLike,
+  GPUGraphTopologyViewProps
+} from './gpu-graph-topology-view';
 export {GPUGraphDegree} from './gpu-graph-degree';
 export type {GPUGraphDegreeDirection, GPUGraphDegreeProps} from './gpu-graph-degree';
 export {GPUGraphBreadthFirstSearch} from './gpu-graph-breadth-first-search';

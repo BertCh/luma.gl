@@ -34,5 +34,6 @@ import './gpu-dataframe/lu-sort.spec';
 import './gpu-dataframe/lu-join.spec';
 import './gpu-raster';
 import './gpu-crossfilter';
+import './map-graphs';
 import './gpu-project/gpu-project.spec';
 import './gpu-project/projection-benchmark.spec';

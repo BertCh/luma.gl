@@ -9,6 +9,13 @@ import type {GPUData, GPUVector} from '@luma.gl/gpgpu/gpu-data';
 import type {GPUCommandGraph} from '../gpu-core/gpu-command-graph';
 import {addGPUGraphPageRankToGraphWithDispatchLimit} from './gpu-graph-page-rank-internals';
 import type {GPUGraphAdjacency, GPUGraphTopology} from './gpu-graph-topology';
+import {
+  GPUGraphTopologyView,
+  isGPUGraphViewColumn,
+  validateGPUGraphViewColumn,
+  type GPUGraphColumn,
+  type GPUGraphTopologyLike
+} from './gpu-graph-topology-view';
 
 const DEFAULT_PAGE_RANK_DAMPING = 0.85;
 const DEFAULT_PAGE_RANK_ITERATIONS = 40;
@@ -16,19 +23,25 @@ const MAXIMUM_PAGE_RANK_ITERATIONS = 1024;
 const SCALAR_BYTE_LENGTH = 4;
 
 /** Existing graph topology, caller-owned PageRank scores, and optional residual. */
-export type GPUGraphPageRankProps = {
+export type GPUGraphPageRankProps<
+  Topology extends GPUGraphTopologyLike = GPUGraphTopology,
+  Column extends GPUGraphColumn<'float32'> = GPUVector<'float32'>
+> = {
   /** Prefix for generated command-graph nodes and imported resources. */
   id?: string;
-  /** Existing GPU-resident graph topology; directed graphs require reverse adjacency. */
-  topology: GPUGraphTopology;
+  /**
+   * Existing GPU-resident graph topology or {@link GPUGraphTopologyView}; directed graphs require
+   * reverse adjacency.
+   */
+  topology: Topology;
   /** One caller-owned, packed floating-point PageRank score for each graph vertex. */
-  output: GPUVector<'float32'>;
+  output: Column;
   /** Probability of following an outgoing edge rather than teleporting. Defaults to 0.85. */
   damping?: number;
   /** Bounded number of compiled, normalized PageRank iterations. Defaults to 40. */
   iterations?: number;
   /** Optional caller-owned scalar receiving the final iteration's absolute rank change. */
-  residual?: GPUVector<'float32'>;
+  residual?: Column;
 };
 
 /**
@@ -39,22 +52,25 @@ export type GPUGraphPageRankProps = {
  * normalizing the published scores. Existing edge weights do not affect this unweighted metric.
  * Overflow in either required adjacency instead publishes zero scores and a zero residual.
  */
-export class GPUGraphPageRank {
+export class GPUGraphPageRank<
+  Topology extends GPUGraphTopologyLike = GPUGraphTopology,
+  Column extends GPUGraphColumn<'float32'> = GPUVector<'float32'>
+> {
   /** Prefix for generated command-graph nodes and imported resources. */
   readonly id: string;
   /** Existing caller-owned GPU graph topology. */
-  readonly topology: GPUGraphTopology;
+  readonly topology: Topology;
   /** Caller-owned, vertex-aligned floating-point PageRank scores. */
-  readonly output: GPUVector<'float32'>;
+  readonly output: Column;
   /** Probability of following an outgoing edge rather than teleporting. */
   readonly damping: number;
   /** Number of compiled, synchronized PageRank iterations. */
   readonly iterations: number;
   /** Optional caller-owned GPU-resident final absolute rank-change scalar. */
-  readonly residual?: GPUVector<'float32'>;
+  readonly residual?: Column;
 
   /** Validates existing caller-owned metadata without allocating, submitting, or reading work. */
-  constructor(props: GPUGraphPageRankProps) {
+  constructor(props: GPUGraphPageRankProps<Topology, Column>) {
     this.id = props.id ?? 'gpu-graph-page-rank';
     this.topology = props.topology;
     this.output = props.output;
@@ -76,11 +92,24 @@ export class GPUGraphPageRank {
       throw new Error(`${this.id} iterations must be a safe integer between one and 1024`);
     }
 
-    validatePageRankVector(this.output, this.topology.graph.vertexCount, `${this.id} output`);
+    validatePageRankColumn(this.output, this.topology.graph.vertexCount, `${this.id} output`);
     if (this.residual) {
-      validatePageRankVector(this.residual, 1, `${this.id} residual`);
+      validatePageRankColumn(this.residual, 1, `${this.id} residual`);
     }
-    validateDistinctPageRankOutputs(this);
+    const {topology, output, residual} = this;
+    if (
+      !(topology instanceof GPUGraphTopologyView) &&
+      !isGPUGraphViewColumn(output) &&
+      !(residual && isGPUGraphViewColumn(residual))
+    ) {
+      // Every input and output is physical here; generic narrowing does not prove it to TypeScript.
+      validateDistinctPageRankOutputs(
+        this.id,
+        topology,
+        output as GPUVector<'float32'>,
+        residual as GPUVector<'float32'> | undefined
+      );
+    }
   }
 
   /** Declares bounded graph ranking work without submitting commands or reading results. */
@@ -90,6 +119,19 @@ export class GPUGraphPageRank {
       commandGraph,
       commandGraph.device.limits.maxComputeWorkgroupsPerDimension
     );
+  }
+}
+
+/** Validates a physical or view column with its exact logical row count. */
+function validatePageRankColumn(
+  column: GPUGraphColumn<'float32'>,
+  length: number,
+  name: string
+): void {
+  if (isGPUGraphViewColumn(column)) {
+    validateGPUGraphViewColumn(column, 'float32', length, name);
+  } else {
+    validatePageRankVector(column, length, name);
   }
 }
 
@@ -127,8 +169,12 @@ function validatePageRankVector(vector: GPUVector<'float32'>, length: number, na
 }
 
 /** Keeps ranking scores and optional residual disjoint from every existing graph allocation. */
-function validateDistinctPageRankOutputs(pageRank: GPUGraphPageRank): void {
-  const topology = pageRank.topology;
+function validateDistinctPageRankOutputs(
+  id: string,
+  topology: GPUGraphTopology,
+  output: GPUVector<'float32'>,
+  residual: GPUVector<'float32'> | undefined
+): void {
   const inputVectors = [
     topology.graph.sourceVertices,
     topology.graph.targetVertices,
@@ -146,13 +192,13 @@ function validateDistinctPageRankOutputs(pageRank: GPUGraphPageRank): void {
   }
 
   const outputs = [
-    {name: 'output', vector: pageRank.output},
-    ...(pageRank.residual ? [{name: 'residual', vector: pageRank.residual}] : [])
+    {name: 'output', vector: output},
+    ...(residual ? [{name: 'residual', vector: residual}] : [])
   ];
   for (const {name, vector} of outputs) {
     const buffer = getPhysicalBuffer(vector.data[0]);
     if (allocations.has(buffer)) {
-      throw new Error(`${pageRank.id} ${name} must use a distinct physical buffer allocation`);
+      throw new Error(`${id} ${name} must use a distinct physical buffer allocation`);
     }
     allocations.add(buffer);
   }

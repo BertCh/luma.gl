@@ -8,9 +8,11 @@ import {
   GPUGraphNodeLayer,
   OrthographicView,
   type GPUGraphDeckEffectStats,
+  type GPUGraphNodeColumn,
+  type GPUGraphRecipeColumns,
   type PickingInfo
 } from '@deck.gl-community/arrow-layers';
-import {Buffer} from '@luma.gl/core';
+import {Buffer, type Device} from '@luma.gl/core';
 import {ArrowDeck} from '../arrow-deck';
 import {getDeckExampleProps, type DeckExampleDeviceOptions} from '../deck-example-device';
 import {
@@ -18,16 +20,20 @@ import {
   GRAPH_EXPLORER_MAX_VISIBLE_EDGES,
   GRAPH_EXPLORER_SHOWCASE_DEFAULT_VERTEX_COUNT,
   makeGraphExplorerDataset,
-  type GraphExplorerColorMode,
   type GraphExplorerDataset,
-  type GraphExplorerLayoutMode,
-  type GraphExplorerNodeSizeMode
+  type GraphExplorerLayoutMode
 } from '../../experimental/gpu-graph-explorer/graph-data';
 import {addGraphExplorerSampledLayoutToGraph} from '../../experimental/gpu-graph-explorer/graph-scale-layout';
 import {
   createExplorerControls,
   createStandaloneContainer,
-  DEFAULT_NEIGHBORHOOD_DEPTH
+  DEFAULT_NEIGHBORHOOD_DEPTH,
+  EXPLORER_NEIGHBORHOOD_EDGE_COLOR,
+  EXPLORER_PATH_COLOR,
+  getExplorerColorScale,
+  getExplorerValueDomain,
+  type ExplorerColorColumn,
+  type ExplorerNodeSize
 } from './app-ui';
 
 type GPUGraphExplorerDeckOptions = DeckExampleDeviceOptions & {
@@ -65,8 +71,13 @@ export function createGPUGraphExplorerDeck(
   let activeDevice: Device | null = null;
   let latestStats: GPUGraphDeckEffectStats | null = null;
   let currentLayoutMode = initialLayoutMode;
-  let currentColorMode: GraphExplorerColorMode = 'community';
-  let currentNodeSizeMode: GraphExplorerNodeSizeMode = 'pagerank';
+  let currentColorColumn: ExplorerColorColumn = 'community';
+  let currentNodeSize: ExplorerNodeSize = 'pagerank';
+  let currentHops = DEFAULT_NEIGHBORHOOD_DEPTH;
+  // CPU-only interaction state. Nothing here is ever read back from the GPU.
+  let hoverVertex: number | null = null;
+  let pathSource: number | null = null;
+  let pathTarget: number | null = null;
   let edgesVisible = initialDataset.vertexCount < GRAPH_EXPLORER_LINEAR_LAYOUT_VERTEX_COUNT;
   let pendingGraphVertexCount: number | null = null;
   let loadingStatus: string | null = null;
@@ -80,18 +91,24 @@ export function createGPUGraphExplorerDeck(
     getPendingVertexCount: () => pendingGraphVertexCount,
     getLoadingStatus: () => loadingStatus,
     getEdgesVisible: () => edgesVisible,
+    getColorColumn: () => currentColorColumn,
+    getInteraction: () => ({hoverVertex, pathSource, pathTarget}),
     resize: vertexCount => scheduleGraphResize(vertexCount),
     setLayoutMode: mode => {
       currentLayoutMode = mode;
       if (effect) scheduleGraphResize(effect.graph.vertexCount);
     },
-    setColorMode: mode => {
-      currentColorMode = mode;
+    setColorColumn: column => {
+      currentColorColumn = column;
       updateLayers('GPU Graph GPU visual color encoding changed');
     },
-    setNodeSizeMode: mode => {
-      currentNodeSizeMode = mode;
+    setNodeSize: size => {
+      currentNodeSize = size;
       updateLayers('GPU Graph GPU node sizing changed');
+    },
+    setNeighborhoodHops: hops => {
+      currentHops = hops;
+      effect?.setNeighborhoodHops(hops);
     },
     setEdgesVisible: visible => {
       edgesVisible = visible;
@@ -120,15 +137,16 @@ export function createGPUGraphExplorerDeck(
     layers: [],
     effects: [],
     getTooltip: info => getVertexTooltip(info, effect),
+    onHover: info => {
+      if (draggedVertex !== null) return;
+      setHoveredVertex(info.picked && info.index >= 0 ? info.index : null);
+    },
     onClick: info => {
-      effect?.setSelectedVertex(info.picked && info.index >= 0 ? info.index : null);
-      controls.update();
-      deck.redraw('GPU Graph deck selection changed');
+      clickVertex(info.picked && info.index >= 0 ? info.index : null);
     },
     onDragStart: (info, event) => {
       if (!effect || !info.picked || info.index < 0) return;
       draggedVertex = info.index;
-      effect.setSelectedVertex(draggedVertex);
       effect.setPinnedVertex(draggedVertex, true);
       updateDraggedVertex(effect, draggedVertex, info);
       controls.update();
@@ -217,10 +235,11 @@ export function createGPUGraphExplorerDeck(
     targetDeck: ArrowDeck<OrthographicView> = deck
   ): void {
     if (!activeDevice) return;
-    const previousDepth = effect?.currentNeighborhoodDepth ?? DEFAULT_NEIGHBORHOOD_DEPTH;
-    const previousSelection = effect?.currentSelection ?? 0;
     latestStats = null;
     draggedVertex = null;
+    hoverVertex = null;
+    pathSource = null;
+    pathTarget = null;
     if (nextDataset.vertexCount >= GRAPH_EXPLORER_LINEAR_LAYOUT_VERTEX_COUNT) {
       edgesVisible = false;
     }
@@ -234,17 +253,38 @@ export function createGPUGraphExplorerDeck(
         controls.update();
       }
     });
-    nextEffect.setNeighborhoodDepth(previousDepth);
-    nextEffect.setSelectedVertex(
-      previousSelection !== null && previousSelection < nextDataset.vertexCount
-        ? previousSelection
-        : null
-    );
+    nextEffect.setNeighborhoodHops(currentHops);
     effect = nextEffect;
     targetDeck.setProps({effects: [nextEffect], layers: createLayers(nextEffect)});
     controls.update();
     // Deck updates same-ID layer bindings at the start of its next animation frame. Drawing
     // synchronously here would reuse the previous effect's already-destroyed GPU allocations.
+  }
+
+  /** Sends hover to the recipe neighborhood; layers only re-bind a mask, nothing rebuilds. */
+  function setHoveredVertex(vertex: number | null): void {
+    if (!effect || vertex === hoverVertex) return;
+    hoverVertex = vertex;
+    effect.setHoverVertex(vertex);
+    updateLayers('GPU Graph hover neighborhood changed');
+  }
+
+  /** First click sets A, second sets B, third starts a new A; empty space clears. */
+  function clickVertex(vertex: number | null): void {
+    if (!effect) return;
+    if (vertex === null) {
+      pathSource = null;
+      pathTarget = null;
+    } else if (pathSource === null || pathTarget !== null) {
+      pathSource = vertex;
+      pathTarget = null;
+    } else if (vertex !== pathSource) {
+      pathTarget = vertex;
+    }
+    // Reachability bands need a source; A alone is expressed as the trivial path A to A, which
+    // the layers ignore until B is set because pathRanks are only bound with both endpoints.
+    effect.setPathEndpoints(pathSource, pathSource === null ? null : (pathTarget ?? pathSource));
+    updateLayers('GPU Graph shortest path endpoints changed');
   }
 
   /** Preserves stable layer IDs while custom layers rebind each newly owned physical buffer. */
@@ -258,6 +298,16 @@ export function createGPUGraphExplorerDeck(
   function createLayers(
     graphEffect: GPUGraphDeckEffect
   ): (GPUGraphEdgeLayer | GPUGraphNodeLayer)[] {
+    const recipes = graphEffect.recipeColumns;
+    const hasPath = Boolean(recipes) && pathSource !== null && pathTarget !== null;
+    const highlightMask = recipes && hoverVertex !== null ? recipes.neighborhoodMask : undefined;
+    const pathRanks = recipes && hasPath ? recipes.pathRanks : undefined;
+    const baseRadius = Math.max(1.4, Math.min(6, 60 / Math.sqrt(graphEffect.graph.vertexCount)));
+    const colorColumn = recipes ? getColorColumn(recipes, currentColorColumn) : undefined;
+    const sizeColumn =
+      recipes && currentNodeSize !== 'uniform'
+        ? recipes.columns[SIZE_COLUMN_NAMES[currentNodeSize]]
+        : undefined;
     const nonemptyChunkCount = graphEffect.graph.sourceVertices.data.filter(
       chunk => chunk.length > 0
     ).length;
@@ -284,7 +334,10 @@ export function createGPUGraphExplorerDeck(
                 source.buffer instanceof Buffer ? source.buffer : source.buffer.buffer,
               targetVertices:
                 target.buffer instanceof Buffer ? target.buffer : target.buffer.buffer,
-              distances: graphEffect.distances,
+              highlightMask,
+              pathRanks,
+              highlightColor: EXPLORER_NEIGHBORHOOD_EDGE_COLOR,
+              pathColor: EXPLORER_PATH_COLOR,
               edgeCount: visibleEdgeCount,
               opacity: graphEffect.graph.vertexCount > 1_024 ? 0.22 : 0.55
             })
@@ -297,19 +350,49 @@ export function createGPUGraphExplorerDeck(
       pickable: true,
       autoHighlight: true,
       positions: graphEffect.positions,
-      importance: graphEffect.importance,
-      degrees: graphEffect.degreeValues,
-      components: graphEffect.componentLabels,
-      communities: graphEffect.communityLabels,
-      distances: graphEffect.distances,
-      selectionMask: graphEffect.selectionMask,
-      colorMode: currentColorMode,
-      sizeMode: currentNodeSizeMode,
+      colorColumn,
+      colorScale: getExplorerColorScale(currentColorColumn, recipes?.bandHopThresholds.length ?? 0),
+      sizeColumn,
+      sizeScale: {
+        domain: getExplorerValueDomain(currentNodeSize),
+        range: [baseRadius * 0.7, baseRadius * 2.6]
+      },
+      radiusPixels: baseRadius,
+      highlightMask,
+      pathRanks,
+      pathColor: EXPLORER_PATH_COLOR,
       pointMode: graphEffect.renderMode === 'points',
       vertexCount: graphEffect.graph.vertexCount,
       opacity: 1
     });
     return [...edgeLayers, nodeLayer];
+  }
+}
+
+const SIZE_COLUMN_NAMES = {
+  degree: 'degree',
+  pagerank: 'pageRank',
+  core: 'coreNumber'
+} as const;
+
+/** Maps an explorer color column to the recipe output that the node layer reads. */
+function getColorColumn(
+  recipes: GPUGraphRecipeColumns,
+  column: ExplorerColorColumn
+): GPUGraphNodeColumn {
+  switch (column) {
+    case 'community':
+      return recipes.columns.community;
+    case 'component':
+      return recipes.columns.component;
+    case 'degree':
+      return recipes.columns.degree;
+    case 'pagerank':
+      return recipes.columns.pageRank;
+    case 'core':
+      return recipes.columns.coreNumber;
+    case 'band':
+      return {buffer: recipes.reachabilityBands, format: 'uint32'};
   }
 }
 
@@ -323,5 +406,5 @@ function updateDraggedVertex(effect: GPUGraphDeckEffect, vertex: number, info: P
 function getVertexTooltip(info: PickingInfo, effect: GPUGraphDeckEffect | null): string | null {
   if (!info.picked || info.index < 0 || !effect) return null;
   const state = effect.isVertexPinned(info.index) ? 'pinned' : 'movable';
-  return `Vertex ${info.index} · ${state}\nGPU communities · PageRank · neighborhood`;
+  return `Vertex ${info.index} · ${state}\nhover: neighborhood · click: path endpoints A, B`;
 }

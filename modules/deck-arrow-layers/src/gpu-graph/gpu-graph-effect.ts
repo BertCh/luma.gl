@@ -7,17 +7,19 @@ import {Buffer, type Device} from '@luma.gl/core';
 import {GPUCommandGraph, type CompiledGPUCommandGraph} from '@luma.gl/gpgpu/gpu-core';
 import {
   GPUGraph,
-  GPUGraphBreadthFirstSearch,
-  GPUGraphConnectedComponents,
-  GPUGraphDegree,
   GPUGraphForceLayout,
-  GPUGraphLabelPropagation,
-  GPUGraphPageRank,
   GPUGraphSpatialForceLayout,
   GPUGraphTopology,
   type GPUGraphAdjacency
 } from '@luma.gl/gpgpu/gpu-graph';
 import {GPUData, GPUVector} from '@luma.gl/gpgpu/gpu-data';
+import {
+  getGPUGraphRecipeColumnsSkipReason,
+  GPUGraphRecipeColumns,
+  type GPUGraphRecipeColumnsOptions,
+  type GPUGraphRecipeColumnsStats
+} from './gpu-graph-recipe-columns';
+
 /** Caller-owned graph input preserving original edge partitions and vertex allocations. */
 export type GPUGraphDeckDataset = {
   /** Number of stable zero-based graph vertices. */
@@ -33,8 +35,6 @@ export type GPUGraphDeckDataset = {
 };
 
 const SCALAR_BYTE_LENGTH = 4;
-const MAXIMUM_NEIGHBORHOOD_DEPTH = 8;
-const DEFAULT_NEIGHBORHOOD_DEPTH = 2;
 const GPU_GRAPH_DECK_MAXIMUM_EXACT_VERTEX_COUNT = 512;
 const GPU_GRAPH_DECK_LINEAR_LAYOUT_VERTEX_COUNT = 16_384;
 const GPU_GRAPH_DECK_POINT_VERTEX_COUNT = 65_536;
@@ -67,9 +67,8 @@ export type GPUGraphDeckEffectStats = {
   framesPerSecond: number;
   completedAnalysisStages: number;
   totalAnalysisStages: number;
-  pageRankIterations: number;
-  componentIterations: number;
-  communityIterations: number;
+  /** Recipe-column measurements, or `undefined` when recipe columns are disabled or skipped. */
+  recipeColumns?: GPUGraphRecipeColumnsStats;
 };
 
 /** Optional bounded layout selection and CPU-only diagnostic callback. */
@@ -77,6 +76,15 @@ export type GPUGraphDeckEffectOptions = {
   layoutMode?: GPUGraphDeckLayoutMode;
   pointMode?: boolean;
   maxVisibleEdges?: number;
+  /**
+   * Builds {@link GPUGraphRecipeColumns} (map-graph analytics columns, hover neighborhood mask,
+   * path ranks and reachability bands) as `effect.recipeColumns`. Defaults to `true`; the effect
+   * skips it automatically, recording `recipeColumnsSkipReason`, when the symmetrized adjacency
+   * exceeds the adapter's buffer limits. Pass `false` to opt out.
+   */
+  recipeColumns?: boolean;
+  /** Compile-time tuning forwarded to {@link GPUGraphRecipeColumns}. */
+  recipeColumnOptions?: GPUGraphRecipeColumnsOptions;
   onStats?: (stats: GPUGraphDeckEffectStats) => void;
   /** Adds an explicitly provided O(E + 4V) contributor without importing application code. */
   addSampledLayoutToGraph?: (
@@ -86,12 +94,20 @@ export type GPUGraphDeckEffectOptions = {
 };
 
 /**
- * Declares resident GPU Graph analytics and progressive layout inside deck.gl's own render encoder.
+ * Declares resident GPU Graph topology and progressive layout inside deck.gl's own render encoder,
+ * plus {@link GPUGraphRecipeColumns}, the row-aligned analytics outputs the graph layers consume.
  *
  * Construction compiles persistent graphs but never submits commands or reads a buffer. Original
  * source edge batches, including their empty middle partition, remain directly available to Deck
- * edge layers. The first ordinary frame encodes topology, PageRank, and weak components once;
- * every ordinary frame then encodes bounded neighborhood search and force integration.
+ * edge layers. The first ordinary frame encodes the directed topology once; every ordinary frame
+ * then encodes force integration.
+ *
+ * {@link GPUGraphRecipeColumns} owns every analytic (degree, PageRank, core number, components,
+ * communities, hover neighborhood, A to B path, reachability bands). Its topology and analytics
+ * encode once in the first frames and its interaction graph encodes only in frames after
+ * {@link setHoverVertex}, {@link setNeighborhoodHops} or {@link setPathEndpoints}. The recipe
+ * columns treat the graph as undirected; the effect's own directed topology serves only the
+ * force layout.
  */
 export class GPUGraphDeckEffect implements Effect {
   readonly id = 'gpu-graph-deck-effect';
@@ -101,11 +117,6 @@ export class GPUGraphDeckEffect implements Effect {
   readonly dataset: GPUGraphDeckDataset;
   readonly graph: GPUGraph;
   readonly topology: GPUGraphTopology;
-  readonly degree: GPUGraphDegree;
-  readonly pageRank: GPUGraphPageRank;
-  readonly components: GPUGraphConnectedComponents;
-  readonly communities: GPUGraphLabelPropagation;
-  readonly search: GPUGraphBreadthFirstSearch;
   readonly layout: GPUGraphForceLayout;
   readonly spatialLayout?: GPUGraphSpatialForceLayout;
   readonly activeLayoutMode: 'exact' | 'spatial' | 'sampled';
@@ -113,23 +124,23 @@ export class GPUGraphDeckEffect implements Effect {
   readonly renderedVertexCount: number;
   readonly renderedEdgeCount: number;
   readonly analysisGraph: CompiledGPUCommandGraph<void>;
-  readonly searchGraph?: CompiledGPUCommandGraph<void>;
   readonly frameGraph: CompiledGPUCommandGraph<void>;
+  /**
+   * Map-graph recipe outputs bound by the graph layers, or `undefined` when disabled through
+   * `recipeColumns: false` or skipped (see {@link recipeColumnsSkipReason}).
+   */
+  readonly recipeColumns?: GPUGraphRecipeColumns;
+  /** Why {@link recipeColumns} is absent, or `null` when it exists. */
+  readonly recipeColumnsSkipReason: string | null = null;
 
   private readonly buffers: Buffer[] = [];
   private readonly vectors: GPUVector[] = [];
-  private readonly seeds: GPUVector<'uint32'>;
-  private readonly seedCount: GPUVector<'uint32'>;
-  private readonly activeDepth: GPUVector<'uint32'>;
   private readonly pinned: GPUVector<'uint32'>;
   private readonly reset: GPUVector<'uint32'>;
   private readonly pinnedVertices = new Set<number>();
   private readonly onStats?: (stats: GPUGraphDeckEffectStats) => void;
   private readonly analysisStages: CompiledGPUCommandGraph<void>[];
-  private selectedVertex: number | null = 0;
-  private neighborhoodDepth = DEFAULT_NEIGHBORHOOD_DEPTH;
   private completedAnalysisStages = 0;
-  private searchPending = true;
   private frameCount = 0;
   private previousFrameTime = 0;
   private analysisEncodeMilliseconds = 0;
@@ -188,51 +199,6 @@ export class GPUGraphDeckEffect implements Effect {
       reverse: this.createAdjacency('reverse', dataset.vertexCount, this.graph.edgeCount),
       invalidEdgeCount: this.createScalarVector('invalid-edges', 'uint32', 1)
     });
-    this.degree = new GPUGraphDegree({
-      id: 'gpu-graph-deck-degree',
-      topology: this.topology,
-      output: this.createScalarVector('degrees', 'uint32', dataset.vertexCount)
-    });
-    this.pageRank = new GPUGraphPageRank({
-      id: 'gpu-graph-deck-page-rank',
-      topology: this.topology,
-      output: this.createScalarVector('importance', 'float32', dataset.vertexCount),
-      iterations: massiveGraph ? 2 : 12
-    });
-    this.components = new GPUGraphConnectedComponents({
-      id: 'gpu-graph-deck-components',
-      topology: this.topology,
-      output: this.createScalarVector('components', 'uint32', dataset.vertexCount),
-      iterations: massiveGraph ? 2 : 16
-    });
-    this.communities = new GPUGraphLabelPropagation({
-      id: 'gpu-graph-deck-communities',
-      topology: this.topology,
-      output: this.createScalarVector('communities', 'uint32', dataset.vertexCount),
-      iterations: massiveGraph ? 2 : 8
-    });
-
-    this.seeds = this.createScalarVector('seeds', 'uint32', 1, Uint32Array.of(0));
-    this.seedCount = this.createScalarVector('seed-count', 'uint32', 1, Uint32Array.of(1));
-    this.activeDepth = this.createScalarVector(
-      'active-depth',
-      'uint32',
-      1,
-      Uint32Array.of(DEFAULT_NEIGHBORHOOD_DEPTH)
-    );
-    this.search = new GPUGraphBreadthFirstSearch({
-      id: 'gpu-graph-deck-neighborhood',
-      topology: this.topology,
-      seeds: this.seeds,
-      seedCount: this.seedCount,
-      distances: this.createScalarVector('distances', 'uint32', dataset.vertexCount),
-      predecessors: this.createScalarVector('predecessors', 'uint32', dataset.vertexCount),
-      mask: this.createScalarVector('selection-mask', 'uint32', dataset.vertexCount),
-      maxDepth: MAXIMUM_NEIGHBORHOOD_DEPTH,
-      activeDepth: this.activeDepth,
-      direction: 'both'
-    });
-
     this.pinned = this.createScalarVector('pinned', 'uint32', dataset.vertexCount);
     this.reset = this.createScalarVector('reset', 'uint32', 1, Uint32Array.of(0));
     this.layout = new GPUGraphForceLayout({
@@ -283,75 +249,39 @@ export class GPUGraphDeckEffect implements Effect {
 
     const analysis = new GPUCommandGraph<void>(device, {id: 'gpu-graph-deck-analysis'});
     this.topology.addToGraph(analysis);
-    this.degree.addToGraph(analysis);
-    if (!massiveGraph) {
-      this.components.addToGraph(analysis);
-      this.communities.addToGraph(analysis);
-      this.pageRank.addToGraph(analysis);
-    }
     this.analysisGraph = analysis.compile();
     this.analysisStages = [this.analysisGraph];
-    if (massiveGraph) {
-      for (const [name, contributor] of [
-        ['components', this.components],
-        ['communities', this.communities],
-        ['page-rank', this.pageRank]
-      ] as const) {
-        const stage = new GPUCommandGraph<void>(device, {id: `gpu-graph-deck-${name}-analysis`});
-        contributor.addToGraph(stage);
-        this.analysisStages.push(stage.compile());
-      }
-    }
 
     const frame = new GPUCommandGraph<void>(device, {id: 'gpu-graph-deck-frame'});
     if (this.activeLayoutMode === 'sampled') {
-      const search = new GPUCommandGraph<void>(device, {id: 'gpu-graph-deck-selection'});
-      this.search.addToGraph(search);
-      this.searchGraph = search.compile();
       options.addSampledLayoutToGraph!(frame, this.layout);
+    } else if (this.spatialLayout) {
+      this.spatialLayout.addToGraph(frame);
     } else {
-      this.search.addToGraph(frame);
-      if (this.spatialLayout) this.spatialLayout.addToGraph(frame);
-      else this.layout.addToGraph(frame);
+      this.layout.addToGraph(frame);
     }
     this.frameGraph = frame.compile();
+
+    if (options.recipeColumns === false) {
+      this.recipeColumnsSkipReason = 'disabled by options.recipeColumns';
+    } else {
+      this.recipeColumnsSkipReason = getGPUGraphRecipeColumnsSkipReason(
+        device,
+        dataset.vertexCount,
+        this.graph.edgeCount
+      );
+      if (this.recipeColumnsSkipReason === null) {
+        this.recipeColumns = new GPUGraphRecipeColumns(device, this.graph, {
+          id: 'gpu-graph-deck-recipes',
+          ...options.recipeColumnOptions
+        });
+      }
+    }
   }
 
   /** Supplies the exact progressive allocation also bound as a Deck instance vertex attribute. */
   get positions(): Buffer {
     return this.getVectorBuffer(this.layout.positions);
-  }
-
-  get importance(): Buffer {
-    return this.getVectorBuffer(this.pageRank.output);
-  }
-
-  get componentLabels(): Buffer {
-    return this.getVectorBuffer(this.components.output);
-  }
-
-  get communityLabels(): Buffer {
-    return this.getVectorBuffer(this.communities.output);
-  }
-
-  get degreeValues(): Buffer {
-    return this.getVectorBuffer(this.degree.output);
-  }
-
-  get distances(): Buffer {
-    return this.getVectorBuffer(this.search.distances);
-  }
-
-  get selectionMask(): Buffer {
-    return this.getVectorBuffer(this.search.mask!);
-  }
-
-  get currentSelection(): number | null {
-    return this.selectedVertex;
-  }
-
-  get currentNeighborhoodDepth(): number {
-    return this.neighborhoodDepth;
   }
 
   setup(_context: EffectContext): void {}
@@ -369,10 +299,8 @@ export class GPUGraphDeckEffect implements Effect {
       this.completedAnalysisStages++;
       advancedAnalysis = true;
     }
-    if (this.searchGraph && this.searchPending && this.completedAnalysisStages > 0) {
-      this.searchGraph.encode(this.device.commandEncoder, {parameters: undefined});
-      this.searchPending = false;
-    }
+    this.recipeColumns?.encodeAnalytics(this.device.commandEncoder);
+    this.recipeColumns?.encodeInteraction(this.device.commandEncoder);
     const encoding = this.frameGraph.encode(this.device.commandEncoder, {parameters: undefined});
     this.frameCount++;
     const frameTime = performance.now();
@@ -389,24 +317,25 @@ export class GPUGraphDeckEffect implements Effect {
     }
   }
 
-  /** Publishes a genuinely picked stable source vertex without reading any graph column. */
-  setSelectedVertex(vertex: number | null): void {
-    if (vertex !== null && !this.isValidVertex(vertex)) return;
-    this.selectedVertex = vertex;
-    if (vertex === null) {
-      this.getVectorBuffer(this.seedCount).write(Uint32Array.of(0));
-    } else {
-      this.getVectorBuffer(this.seeds).write(Uint32Array.of(vertex));
-      this.getVectorBuffer(this.seedCount).write(Uint32Array.of(1));
-    }
-    this.searchPending = true;
+  /**
+   * Sets the hovered vertex of {@link GPUGraphRecipeColumns.neighborhoodMask}; `null` clears it.
+   * No-op without recipe columns. Never recompiles; the next frame re-encodes the interaction graph.
+   */
+  setHoverVertex(vertex: number | null): void {
+    this.recipeColumns?.setHoverVertex(vertex);
   }
 
-  /** Updates the existing GPU-resident dynamic hop limit without recompiling traversal passes. */
-  setNeighborhoodDepth(depth: number): void {
-    this.neighborhoodDepth = Math.max(0, Math.min(MAXIMUM_NEIGHBORHOOD_DEPTH, Math.round(depth)));
-    this.getVectorBuffer(this.activeDepth).write(Uint32Array.of(this.neighborhoodDepth));
-    this.searchPending = true;
+  /** Sets the recipe neighborhood radius (0 to 8). No-op without recipe columns. */
+  setNeighborhoodHops(hops: number): void {
+    this.recipeColumns?.setNeighborhoodHops(hops);
+  }
+
+  /**
+   * Sets the shortest-path endpoints A (rank 1) and B of {@link GPUGraphRecipeColumns.pathRanks};
+   * `null` for either clears the path. No-op without recipe columns.
+   */
+  setPathEndpoints(source: number | null, target: number | null): void {
+    this.recipeColumns?.setPathEndpoints(source, target);
   }
 
   /** Pins or releases exactly one original source vertex; no other rows are repacked. */
@@ -456,8 +385,8 @@ export class GPUGraphDeckEffect implements Effect {
     if (this.destroyed) return;
     this.destroyed = true;
     for (const stage of this.analysisStages) stage.destroy();
-    this.searchGraph?.destroy();
     this.frameGraph.destroy();
+    this.recipeColumns?.destroy();
     for (const vector of this.vectors.reverse()) vector.destroy();
     for (const buffer of this.buffers.reverse()) buffer.destroy();
   }
@@ -493,9 +422,7 @@ export class GPUGraphDeckEffect implements Effect {
         this.analysisStages.reduce(
           (total, stage) => total + stage.stats.physicalTransientBytes,
           0
-        ) +
-        (this.searchGraph?.stats.physicalTransientBytes ?? 0) +
-        this.frameGraph.stats.physicalTransientBytes,
+        ) + this.frameGraph.stats.physicalTransientBytes,
       spatialIndexBytes,
       analysisNodeCount: this.analysisStages.reduce(
         (total, stage) => total + stage.stats.nodeOrder.length,
@@ -507,9 +434,7 @@ export class GPUGraphDeckEffect implements Effect {
       framesPerSecond: this.smoothedFramesPerSecond,
       completedAnalysisStages: this.completedAnalysisStages,
       totalAnalysisStages: this.analysisStages.length,
-      pageRankIterations: this.pageRank.iterations,
-      componentIterations: this.components.iterations,
-      communityIterations: this.communities.iterations
+      recipeColumns: this.recipeColumns?.stats
     });
   }
 

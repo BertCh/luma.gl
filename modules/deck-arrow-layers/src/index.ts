@@ -33,9 +33,29 @@ export {
   type GPUGraphEdgeLayerProps
 } from './gpu-graph/gpu-graph-edge-layer';
 export {
+  GPU_GRAPH_MAXIMUM_PALETTE_LENGTH,
+  GPU_GRAPH_NULL_UINT32,
+  type GPUGraphColor,
+  type GPUGraphColorScale,
+  type GPUGraphColumnFormat,
+  type GPUGraphNodeColumn,
+  type GPUGraphSizeScale
+} from './gpu-graph/gpu-graph-columns';
+export {
   GPU_GRAPH_DECK_NODE_SHADER,
+  GPU_GRAPH_DEFAULT_COLOR_PALETTE,
   GPUGraphNodeLayer,
-  type GPUGraphDeckColorMode,
-  type GPUGraphDeckNodeSizeMode,
+  type GPUGraphLayerRenderStats,
   type GPUGraphNodeLayerProps
 } from './gpu-graph/gpu-graph-node-layer';
+export {
+  estimateGPUGraphRecipeColumnsFootprint,
+  getGPUGraphRecipeColumnsSkipReason,
+  GPUGraphRecipeColumns
+} from './gpu-graph/gpu-graph-recipe-columns';
+export type {
+  GPUGraphRecipeColumnName,
+  GPUGraphRecipeColumnsFootprint,
+  GPUGraphRecipeColumnsOptions,
+  GPUGraphRecipeColumnsStats
+} from './gpu-graph/gpu-graph-recipe-columns';

@@ -18,6 +18,14 @@ import {
   getViewElementOffset
 } from '../gpu-core/graph-data-view-utils';
 import type {GPUGraphCoreNumber} from './gpu-graph-core-number';
+import {
+  importGPUGraphColumn,
+  importGPUGraphOverflow,
+  usesGPUGraphViews,
+  validateDistinctGPUGraphHandles,
+  type GPUGraphColumn,
+  type GPUGraphTopologyLike
+} from './gpu-graph-topology-view';
 
 const CORE_NUMBER_WORKGROUP_SIZE = 256;
 const INVALID_CORE_NUMBER = 0xffffffff;
@@ -56,56 +64,63 @@ type CoreNumberPassProps = {
 
 /** Adds bounded, exact simple-weak-graph k-core refinement with explicit dispatch limits. */
 export function addGPUGraphCoreNumberToGraphWithDispatchLimit<Parameters>(
-  coreNumber: GPUGraphCoreNumber,
+  coreNumber: GPUGraphCoreNumber<GPUGraphTopologyLike, GPUGraphColumn<'uint32'>>,
   commandGraph: GPUCommandGraph<Parameters>,
   maxComputeWorkgroupsPerDimension: number
 ): void {
   const graph = coreNumber.topology.graph;
   const reverse = graph.directed ? coreNumber.topology.reverse : undefined;
-  const output = commandGraph.importGPUVector(`${coreNumber.id}-output`, coreNumber.output).data[0];
+  const output = importGPUGraphColumn(commandGraph, `${coreNumber.id}-output`, coreNumber.output);
   const state: ImportedCoreNumber = {
     id: coreNumber.id,
     vertexCount: graph.vertexCount,
     edgeCount: graph.edgeCount,
     iterations: coreNumber.iterations,
-    forwardOffsets: commandGraph.importGPUVector(
+    forwardOffsets: importGPUGraphColumn(
+      commandGraph,
       `${coreNumber.id}-forward-offsets`,
       coreNumber.topology.forward.offsets
-    ).data[0],
-    forwardNeighbors: commandGraph.importGPUVector(
+    ),
+    forwardNeighbors: importGPUGraphColumn(
+      commandGraph,
       `${coreNumber.id}-forward-neighbors`,
       coreNumber.topology.forward.neighbors
-    ).data[0],
-    forwardOverflow: commandGraph.importGPUVector(
+    ),
+    forwardOverflow: importGPUGraphOverflow(
+      commandGraph,
       `${coreNumber.id}-forward-overflow`,
       coreNumber.topology.forward.overflow
-    ).data[0],
+    ),
     ...(reverse
       ? {
-          reverseOffsets: commandGraph.importGPUVector(
+          reverseOffsets: importGPUGraphColumn(
+            commandGraph,
             `${coreNumber.id}-reverse-offsets`,
             reverse.offsets
-          ).data[0],
-          reverseNeighbors: commandGraph.importGPUVector(
+          ),
+          reverseNeighbors: importGPUGraphColumn(
+            commandGraph,
             `${coreNumber.id}-reverse-neighbors`,
             reverse.neighbors
-          ).data[0],
-          reverseOverflow: commandGraph.importGPUVector(
+          ),
+          reverseOverflow: importGPUGraphOverflow(
+            commandGraph,
             `${coreNumber.id}-reverse-overflow`,
             reverse.overflow
-          ).data[0]
+          )
         }
       : {}),
     output,
     converged: coreNumber.converged
-      ? commandGraph.importGPUVector(`${coreNumber.id}-converged`, coreNumber.converged).data[0]
+      ? importGPUGraphColumn(commandGraph, `${coreNumber.id}-converged`, coreNumber.converged)
       : createTransientView(commandGraph, `${coreNumber.id}-convergence-scratch`, 'uint32', 1),
     ...(coreNumber.degeneracy
       ? {
-          degeneracy: commandGraph.importGPUVector(
+          degeneracy: importGPUGraphColumn(
+            commandGraph,
             `${coreNumber.id}-degeneracy`,
             coreNumber.degeneracy
-          ).data[0]
+          )
         }
       : {}),
     ...(graph.vertexCount > 0 && coreNumber.iterations > 0
@@ -121,6 +136,25 @@ export function addGPUGraphCoreNumberToGraphWithDispatchLimit<Parameters>(
       : {}),
     maxComputeWorkgroupsPerDimension
   };
+  const {output: outputColumn, converged, degeneracy} = coreNumber;
+  if (usesGPUGraphViews(coreNumber.topology, [outputColumn, converged, degeneracy])) {
+    validateDistinctGPUGraphHandles(
+      coreNumber.id,
+      [
+        state.forwardOffsets,
+        state.forwardNeighbors,
+        state.forwardOverflow,
+        ...(state.reverseOffsets
+          ? [state.reverseOffsets, state.reverseNeighbors!, state.reverseOverflow!]
+          : [])
+      ],
+      [
+        {name: 'output', view: state.output},
+        {name: 'converged', view: state.converged},
+        ...(state.degeneracy ? [{name: 'degeneracy', view: state.degeneracy}] : [])
+      ]
+    );
+  }
 
   addInitializationPass(commandGraph, state);
   if (state.vertexCount > 0) {

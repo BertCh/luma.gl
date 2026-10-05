@@ -86,6 +86,11 @@
       "types": "./dist/gpu-trace/index.d.ts",
       "import": "./dist/gpu-trace/index.js",
       "require": "./dist/gpu-trace/index.cjs"
+    },
+    "./map-graphs": {
+      "types": "./dist/map-graphs/index.d.ts",
+      "import": "./dist/map-graphs/index.js",
+      "require": "./dist/map-graphs/index.cjs"
     }
   },
   "files": [

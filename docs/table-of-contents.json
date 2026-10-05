@@ -398,6 +398,7 @@
                   "api-reference/experimental/gpu-core/recipes"
                 ]
               },
+              "api-reference/experimental/map-graphs",
               {
                 "type": "category",
                 "label": "Compute Foundations",

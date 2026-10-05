@@ -633,3 +633,745 @@ boundary.
 gpgpu; each API has one public package owner and no compatibility export; public API documentation
 names ownership and submission responsibilities; and all existing consumers build against the
 graduated packages.
+
+## Map graph toolkit (initial versions)
+
+Status: initial, experimental. `@luma.gl/experimental/map-graphs` ships prebuilt command graphs for
+common map tasks, composed from the public primitives above. Each recipe is a `GPUMapGraphRecipe`
+class with typed graph-view inputs and outputs, per-frame parameters in storage views (no
+recompile), and GPU-side capacity and overflow reporting. User docs:
+[Map Graph Toolkit](../../docs/api-reference/experimental/map-graphs.md).
+
+Implemented (initial versions, node and headless WebGPU tests):
+
+- **Viewport tile and LOD selection** — `GPUTileLODSelection`: SSE refinement with foveation and
+  distance falloff, deterministic bucketed cost/count budget, residency stand-ins, requests with
+  priorities, indirect draw and dispatch; parity-tested against `GPUVirtualGeometrySelection`
+- **Point density and binning** — `GPUPointDensity`: grid and hexagon bins, count/sum/mean, smoothing,
+  extent, histogram, `r32float` texture; optional per-row `uint32` `mask` (nonzero includes) that
+  excludes rows from counts, sums, means, smoothing, extent and histogram with no recompile on mask
+  change. Hexagons read it in the keys kernel; grid binning adds one masked-copy pass
+- **Spatial join** — `GPUPointInPolygonJoin` and `GPUNearestFeatureJoin` over a per-encoding `GPUBVH`.
+  `GPUPairwisePointInPolygon` decides edges strictly above, below, or to one side of the point from
+  exact signs, so far near-collinear edges no longer make a point `uncertain`: on the explorer's SF
+  bike parking × ZIP data, 24 unassigned points (33 uncertain pairs) → 2,520 of 2,520 assigned,
+  0 uncertain. Uncertain pairs are never assigned and are counted in `uncertainCount`
+- **Terrain analysis** — `GPUTerrainDerivatives`, `GPUTerrainContours`, `GPUTerrainViewshed`;
+  contour draw records take `drawLayout` (`'instanced'` with `verticesPerInstance`, or
+  `'line-list'`)
+- **Time-windowed filtering** — `GPUTimeWindowFilter`, including trail clipping, double-single
+  epochs, and exact Int64 word timestamps (Arrow Int64 epoch ms without a CPU pass, playhead words
+  plus an f32 fraction, exact borrow-subtract). `makeArrowTemporalWordGPUVector` in `@luma.gl/arrow`
+  uploads Arrow `Int64`, `Timestamp`, `Date(ms)` and `Duration` batches as is; `Int64` fields with
+  `visgl:temporal-*` metadata are recognized. Tested across a low-word wrap, epochs near 1.7e12 ms
+  and before 1970, and fractional playheads against BigInt oracles
+- **Network reachability** — `GPUNetworkReachability`: chaotic Bellman-Ford over a compact frontier
+  queue with a round-stamped visited set (8.4-style representations), per-round indirect dispatch
+  with no gate nodes, workgroup-local multi-hop (`localIterations`, default 16), bands, cycle-safe
+  predecessors (strict-then-tie-level rule, `maxTieIterations`), and a convergence flag. 224×224
+  grid: 1,283 → 55 graph nodes and 12.8 → 0.8 ms CPU encode at equal converged costs (31 rounds
+  instead of 457). Predecessors cost +9 nodes and +0.2 ms encode. Path extraction now crosses
+  zero-weight edges and cycles
+- **Region picking and lasso statistics** — `GPURegionStatistics`, `GPURegionMask`,
+  `GPUPickRegionMask`, `GPURegionStatisticsReadback`; optional `drawInstanceCount`
+- **Zonal statistics** — `GPUZonalStatistics`: choropleth count, sum, weighted mean, min, max,
+  density, and extent over a point-in-polygon join; atomic sums or bitwise-reproducible
+  `sumOrder: 'sorted'`; `output.uncertainCount` reports unprovable pairs
+- **Buffer selection** — `GPUBufferSelection`: points within a per-frame distance of point or
+  segment features, as a mask and ascending stable IDs
+- **Spatial (Morton) feature sorting for joins** — `spatialSort`; M3 Pro, shuffled features:
+  point-in-polygon 14.4k cells × 250k points 218 → 6.7 ms, nearest feature 50k segments × 100k
+  points 309 → 4.1 ms; no gain on coherent features, so off by default
+- **Grid-index candidates for region statistics** — `GPURegionStatistics.spatialIndex`: statistics
+  only, 1.2–1.4x at 1M points and 3.7–4.3x at 4M points for 0.01–1% selections
+- **Network analysis** — `GPUNetworkPathExtraction` (bounded predecessor walks to compact routes and
+  edges), `GPUNetworkServiceAreas` (nearest facility, smallest-row ties, counts, served cost),
+  `GPUNetworkNeighborhood` (k-hop ego networks), `GPUNetworkAnalyticsColumns` (gpu-graph degree,
+  PageRank, components, core number, communities as normalized styling columns). Analytics run on a
+  `GPUGraphTopologyView`, so transient CSRs from `GPUCOOToCSR` can be analyzed
+- **View-based gpu-graph topology** — `GPUGraphTopologyView` for degree, PageRank, core number,
+  components, and label propagation over in-graph CSR views; existing `GPUGraphTopology` callers
+  unchanged
+- **Network statistics** — `GPUNetworkStatistics`: masked live counts, weak components (gpu-graph CC
+  on a masked adjacency), degree histograms (linear or log2) and deterministic integer-accumulated
+  modularity in one summary buffer. 100k vertices, 400k slots: 12.6 ms median
+- **Edge bundling** — `GPUEdgeBundling`: KDEEB as compute, fixed-point `atomic<u32>` density buffer
+  (no float-renderable texture or size cap), GPU work box, per-frame radius, lambda, smoothing and
+  active iterations; outputs `paths`, `startIndices` and a `drawIndirect` record. 10k edges × 16
+  points × 15 iterations at 256²: 9.8 ms, 50 nodes
+- **Attribute crossfilter** — `GPUAttributeCrossfilter`: linked histograms over separate column
+  views, own-brush exclusion, live-row `'auto'` domains, selection and compact IDs. 524,288 rows × 4
+  dimensions × 64 bins: brush to readback 2.8 ms median, 4.4 ms p95
+- **Residency arena for tiled and streamed rows** — `GPUResidencyArena` (one fixed buffer per
+  column, live mask, row tile slots, page allocator with non-contiguous pages, insert/evict/replace
+  with no allocation) and `GPUResidentRowSelection` (live mask, per-tile gate and predicates to
+  bounded IDs and an indirect count). M3 Pro, 1,048,576 rows: 10 nodes at any tile or chunk count,
+  against 1,249 for `GPUCompaction` over a 32-chunk vector; about 0.8 ms per queued encoding against
+  120 ms. `GPUTimeWindowFilter`, `GPUPointDensity` and `GPURegionStatistics` run over arena columns
+  unchanged; a negative control reproduces poopdeck.gl's dead-row histogram-domain failure
+- **Hydrology** — `GPUTerrainFlow`: Planchon–Darboux fill, D8 directions with flat/pit/outlet
+  classes, deterministic accumulation (cells, area, runoff), stream mask; outputs may share one
+  buffer over disjoint byte ranges
+- **Cost distance** — `GPUCostDistance` (tiled GPU-gated relaxation, cost limit, bands, back-links)
+  and `GPUCostDistancePath`; generated-transient collisions name the recipe; back-links use the
+  reachability tie rule, so paths through zero-friction plateaus reach a source (`maxTieIterations`)
+- **Raster zonal statistics** — `GPURasterZonalStatistics` over dense zone rasters with overflow;
+  bitwise-reproducible `sumOrder: 'sorted'`
+- **Origin–destination flows** — `GPUFlowAggregation`: grid, hexagon, or caller zones; hashed pair
+  aggregation with GPU overflow; deterministic weight-ranked top-K; zone in/out totals; time-window
+  or mask gate; Int64 word time gate; bitwise-reproducible `sumOrder: 'sorted'` (22 → 38 nodes;
+  1M rows × 64 zones 34.5 ms atomic vs 25.2 ms sorted, headless Chromium)
+- **Density clustering** — `GPUSpatialClustering`: DBSCAN with per-frame epsilon on an adaptive
+  lattice, lock-free union-find, canonical labels matching a CPU oracle exactly;
+  bitwise-reproducible centroids with `sumOrder: 'sorted'` (30k points: ~25 ms per submit plus
+  readback either way, dominated by DBSCAN)
+- **Trajectory metrics** — `GPUTrajectoryMetrics`: per-track length, duration, speeds, and stop
+  detection with a bounded stop list; f32, double-single, or exact Int64 word timestamps
+- **Temporal reduction** — `GPUTemporalReduction`: count, min, max, first and last per (cell,
+  coarse time bucket) with u32 atomics only (first/last by time, then lowest row), f32 or exact
+  Int64 word times, and an ascending occupied-slot compact list as the scrub draw source. f32
+  bucket edges use correctly rounded products, not WGSL division (2.5 ULP), so assignment matches
+  the CPU oracle on every adapter. CPU oracle, 1M skewed rows: 6 h buckets draw 4.4x and 24 h
+  buckets 16.7x fewer features than rows (1 h: 1.6x)
+- **Network subgraph filter** — `GPUNetworkSubgraphFilter`: half-open f32 vertex and edge ranges,
+  f32 or exact Int64 edge time windows and caller masks to symmetric vertex and edge masks
+  (undirected slot pairing), `dropIsolated`, counts, compact live IDs and an induced CSR, all
+  exact and per-frame without recompiling
+- **Network coarsening** — `GPUNetworkCoarsening`: dense group labels to supernode counts,
+  centroids, bounds and value sums plus a bounded, sorted superedge list (stable sort and segment,
+  not a hash table, so the kept prefix on overflow is deterministic); 64-bit fixed-point sums are
+  bitwise reproducible. 975k slots: about 15 ms per encode with readback at 1,024 groups, 25 ms at
+  60,000
+- **Adjacency matrix** — `GPUAdjacencyMatrix`: ordered `R×R` counts, fixed-point weight sums,
+  maxima and an optional `r32float` texture over a per-frame zoom window; `GPUAdjacencyMatrixOrder`
+  builds the order from group labels with two stable `GPUSort` passes and matches
+  `computeAdjacencyMatrixOrder` exactly
+- **Deterministic sums** — one shared sorted segmented sum, `getMapGraphSortedSumNodes`
+  (`map-graph-sorted-sums.ts`, stable radix sort, scan, gather, fixed 256-wide tree), used by zonal,
+  raster zonal, flow aggregation and clustering
+- **Kernel helper** — `createMapGraphKernelNode` keeps every declared binding in the auto layout
+  with a zero-cost phony reference (`_ = &binding;`) and omits an unset workload `variant`; a
+  headless test reproduces the former bind-group validation failure
+- **deck.gl rendering of network outputs** — analytics columns, neighborhood mask, reachability
+  bands and extracted paths render through `GPUGraphNodeLayer`/`GPUGraphEdgeLayer` as
+  storage-buffer columns with uniform scales: 0 pipeline rebuilds on column or scale change, 0
+  uniform-buffer writes per steady frame. Recipe-side resident cost ≈16E bytes for the symmetrized
+  CSR (89 KB at V=1,024/E=2,239; 5.5 MB at V=65,536/E=131,263)
+- **Real map demo** — `examples/deck/map-graphs-explorer` has 25 modes, one per recipe family, all
+  with 0 rebuilds under per-frame parameter changes
+- **Euclidean distance and allocation**: `GPUDistanceField`, an exact separable
+  (Felzenszwalb-Huttenlocher) distance transform with smallest-ID nearest-seed allocation, anisotropic
+  cells, per-frame seeds and `maxDistance` band mask, plus a jump-flood preview mode;
+  oracle-tested (allocation exact, distances within 1 ULP)
+- **Spatial interpolation and focal statistics** — `GPUInverseDistanceWeighting`: gather-form IDW
+  onto a raster over a per-encoding `GPUGridIndex` with in-cell ID sort, per-frame extent, radius,
+  power, nearest-`k` (ties by smallest row), minimum neighbors, exact hits, log-space weights, NaN
+  nodata, contour-ready output; `GPUFocalStatistics`: per-frame square or circle window mean, sum,
+  min, max, range, centered standard deviation, and count with nodata, validity, and edge
+  clipping; M3 Pro: IDW 50k samples to 512² in 1.7 ms (r with ~35 neighbors) and 2.9 ms (~138),
+  focal 1024² mean/std/min/max/count 0.75 ms (r=1), 5.2 ms (r=5), 17.4 ms (r=10)
+- **Polygon rasterization and raster join** — `GPUPolygonRasterization`: compute scan conversion of
+  GeoArrow polygons to a zone-ID raster (even-odd rings, unioned multipolygons, smallest feature row
+  wins, half-open center rule) with conservative boundary-cell flags, per-frame extent, GPU overflow;
+  `GPURasterJoin`: O(1)-per-point polygon aggregation (counts, sorted sums) with per-zone
+  boundary-point counts that bound the error against exact point-in-polygon
+- **Network accessibility**: `GPUNetworkSnapping` (nearest edge, fraction, snap distance, two seed
+  costs, exact scan or BVH join with a max snap distance), `GPUNetworkCostMatrix` (bounded
+  many-to-all matrix from lane-batched reachability, bit-identical across lane counts) and
+  `GPUNetworkAccessibility` (cumulative, gravity with exponential or power decay, 2SFCA; per-frame
+  threshold, decay and beta with no search re-run; deterministic fixed-order sums)
+- **Local spatial autocorrelation**: `GPUHotSpotAnalysis` (Getis-Ord Gi* z, p, 90/95/99% bins,
+  optional Benjamini-Hochberg FDR) and `GPULocalMoran` (local Moran's I, conditional-randomization
+  analytic z, spatial lag, HH/LL/HL/LH quadrants, optional FDR). Distance-band weights are evaluated
+  directly from a per-frame cell index, so radius changes need no rebuild. Moments come from
+  deterministic two-pass tree sums, with optional fixed moments and a mask. Tested against a CPU
+  oracle.
+- **Trajectory playhead and resampling** — `GPUTrajectoryPlayhead`: per-track binary search and
+  interpolation at a per-frame playhead (position, elevation, heading, speed, status with a
+  per-frame gap limit, segment row and fraction), compact active tracks with an indirect instance
+  count, f32 and exact Int64-word times; `GPUTrajectoryResample`: fixed-N resampling in time or arc
+  length into a dense `[tracks × N]` buffer
+- **Line simplification**: `GPULineSimplification`. Level-synchronous parallel Douglas-Peucker and
+  TD-TR into a monotone per-vertex importance column (GPU-gated rounds, convergence flag,
+  superset fallback at the cap). Per-frame tolerance gives a keep mask, ascending compact row IDs,
+  and per-line kept counts and starts with no recompile. Kept sets equal recursive Douglas-Peucker
+  at every tolerance once converged, and importance is bit-exact against a CPU oracle.
+- **Cell aggregation and zoom pyramids**: `GPUCellAggregation` (Quadbin keys from lng/lat in
+  integer-only WGSL, bit-exact against a BigInt reference; pre-keyed Quadbin/H3 `uint32x2` rows
+  as in CARTO), `GPUCellRollup` (sort-free `cellToParent` roll-up, bit-equal to direct
+  aggregation), `GPUCellPyramid` and `GPUCellLevelSelection` (per-frame level choice and indirect
+  draw words); exact counts, 64-bit fixed-point sums and extremes with u32 atomics; capacity and
+  overflow that propagates up the levels. Apple M-series, 1M points, capacity 2^20: 4.6–6 ms per
+  aggregation and 14 ms for a 6-level pyramid.
+- `GPUPointToCell`: lng/lat to H3, Quadbin, quadkey, geohash and S2 keys in WGSL. H3 `latLngToCell` is a new forward port with generated `faceIjkBaseCells` tables. Quadbin, quadkey and geohash are integer-exact. H3 and S2 are f32, with per-resolution mismatch rates measured against h3-js and an S2 oracle. `GPUCellGeometry` gives centres and boundaries for all five families plus A5. The H3 boundary is a port of `_faceIjkToCellBoundary` with face overage and distortion vertices, and it matches h3-js vertex counts for 100% of the cells tested.
+- `GPUCellTopology` (H3/Quadbin `gridDisk`, `gridDiskDistances`, `gridRing`, `cellToParent`, `cellToChildren`, all exact on the GPU) and `GPUCellCompaction` (`compactCells`/`uncompactCells`, capacity bounded). H3 neighbor stepping is a WGSL port of `h3NeighborRotations` with tables generated and verified against h3-js. Disks are an exact breadth-first search through pentagons and across faces.
+- `GPUCellCover`: polygon (with holes) to cell polyfill with `(feature id, cell)` capacity-bounded output. Quadbin supports `center`, `full` and `intersects`, exact against an f32-faithful oracle. H3 `center` uses a lattice-nearest-centre rule, so there is no sort and no duplicates. It matches h3-js `polygonToCells` exactly at res 3-7 and to within 12 of about 75,000 cells at res 8-10, all of them f32 centre-on-edge ties.
+- **Column classification**: `GPUColumnQuantiles` (exact quantiles by 8-bit radix select over
+  order-preserving keys, five interpolation rules, deck.gl/kepler percentile filter mask and
+  bounds), `GPUClassBreaks` (equal interval, quantile, standard deviation, head/tail, box plot,
+  maximum breaks, binned Fisher-Jenks natural breaks, custom; per-frame method and class count),
+  `GPUColorScale` (d3 continuous, quantize, threshold, quantile, ordinal scales into a packed
+  `rgba8` column, class ids, and legend counts), and `GPUBivariateClassification` (n x n classes,
+  value-by-alpha). All per-frame parameters live in buffers; the four compose in one graph with no
+  readback, and integer outputs match CPU oracles bit for bit.
+- **Column profile**: `GPUColumnProfile`, a fused per-frame statistics panel for up to 16 numeric
+  or dictionary-coded columns: exact counts, nulls, min and max, fixed-order Chan/Welford sum, mean
+  and variance (bitwise reproducible), per-frame or automatic histogram domains, HyperLogLog
+  distinct counts, and exact deterministic top-K categories, all matched against CPU oracles.
+- `GPUGroupStatistics`: GPU group-by on 32- or 64-bit keys with count, sum, mean, min, max, variance, standard deviation, skewness, kurtosis, median, per-frame percentiles, mode, unique count and per-row z-scores for up to four columns; exact integer statistics, fixed-order bitwise-reproducible moments, capacity-bounded sorted output; tested against a CPU oracle.
+- `GPUKeyJoin` (`key-join/`): left and inner attribute joins on u32 or u64 keys by stable radix sort plus binary search, with 1:1 gathers (f32/u32), 1:n aggregates (count, sum, mean, min, max with exact fixed-point sums), left and right matched flags, match counts, and bounded inner-row compaction; tested against a CPU oracle.
+- `GPUCellTableCompare`: outer join of two sorted cell tables (merge path by binary search and scan) with presence, before/after, exact fixed-point delta, ratio, percent change and Poisson or standardized z-scores, capacity-bounded with overflow.
+- **Line geometry**: `GPULineSegmentize`, `GPUGreatCircleArcs`, `GPULineSmooth`, and `GPULineChunk`. Densify (planar or great-circle), origin/destination great-circle arcs with unwrapped longitudes, Chaikin smoothing for open paths and closed rings, and chunk/substring by measure, all with per-frame resolution through count, scan and emit into a shared capacity-bounded `GPULinePathOutput` (clamped path offsets, overflow, source path and row, measures). Tested against f64 oracles, including antimeridian, capacity overflow and zero-recompile parameter changes.
+- **Geometry measures and geodesy**: `GPUGeometryMeasures`, `GPUGeodesicPairs`, and `GPUGeodesicDestination`. Per-feature and per-group length, perimeter, signed and absolute area (two hole rules), centroid, bounds and vertex count in planar, spherical (turf-compatible) and WGS84 (authalic area, Vincenty length) modes with local-origin compensated f32 sums and deterministic group reductions; geodesic distance, bearings, midpoints and destinations with f32 formulations that stay accurate from 1 m to antipodal, each with a measured error budget against f64 oracles.
+- **Linear referencing**: `GPULinearReferencing` and `GPULineLocate`. Points snap to the nearest of many polylines through the existing nearest-feature BVH join (ties on the smallest segment) and report path, segment, fraction, foot point, distance, measure along the path, side and signed offset; events are placed by distance or fraction with lateral offsets, tangents and angles, and a per-frame scale/offset for animation. Tested against f64 brute force on random polylines with zero recompiles across radii.
+- `GPUTerrainHorizon`, `GPUSolarShadowMask`, `GPUReliefShading`, `GPUTextureShading`, and `GPUSolarPosition` (`terrain-illumination/`): bounded ray-march horizon maps with sky-view factor and openness, per-frame soft solar shadows and sun+ambient illumination from the horizon map (two reads per pixel per frame), multidirectional (fixed or USGS MDOW) hillshade with a Swiss/Imhof relief blend and RGBA8 color, multi-scale DoG texture shading with per-frame detail, and NOAA sun position on CPU (`getSolarPosition`) and per row on GPU; every recipe tested against float64 oracles.
+- **Raster map algebra**: `GPURasterReclassify` (per-frame break tables, class values, class counts),
+  `GPUWeightedOverlay` (suitability over up to 16 layers with linear or table remaps, restricted
+  classes, weight normalization, nodata policies, score range), `GPURasterCellStatistics` (local
+  min/max/range/sum/mean/stdev/majority/minority/variety/count across up to 64 layers),
+  `GPURasterConditional` (`where` with per-frame comparisons and constants) and `GPURasterArithmetic`
+  (per-frame operation codes incl. normalized difference); oracle-tested
+- **Raster stretch and colormaps**: `GPURasterStretch`, exact GPU min/max, deterministic histogram and CDF,
+  linear/percentile/equalize stretches with gamma and sigmoidal contrast, LUT and rgba8 palette outputs, and
+  statistics restricted to a per-frame window and region mask ("stretch to visible extent"); oracle-tested
+- **Isolines and isobands on any raster**: `GPUIsolines` (two-endpoint marching-squares segments with
+  centre-average saddles, level and edge ids, per-frame levels and extent, deterministic polyline
+  stitching by fixed-round pointer jumping with closed rings) and `GPUIsobands` (per-sample band classes
+  plus capacity-bounded CCW band triangles from a combinatorial boundary walk, band window, indirect-draw
+  vertex count); oracle-tested, and band boundaries coincide bit for bit with the isolines
+- **Raster values to points and profiles**: `GPURasterSampling` (nearest, bilinear, Catmull-Rom bicubic at
+  points; per-frame method, extent, and strict or renormalized nodata handling; active point count) and
+  `GPURasterProfile` (elevation profiles along polylines at a per-frame spacing with distances, values,
+  cumulative gain/loss, per-path length/gain/loss/min/max, capacity-bounded with overflow); oracle-tested
+- `GPUParticleAdvection` (round 7, `particle-advection/`): RK2 particle advection through a NaN-aware
+  bilinear vector field, in-place state, Philox respawn keyed (seed, particle, generation) for exact
+  replays, drop rate, maximum age, minimum speed, data-space trail ring buffer, speed column
+- `GPULineIntegralConvolution` and `GPUStreamlines` (round 7, `flow-texture/`): animated LIC (Philox
+  noise, Hann window with phase ripple, independent output extent, r32float texture) and evenly
+  spaced streamlines pruned by priority in GPU-gated claim/decide rounds, equal to the greedy
+  Jobard-Lefer-style pass, as CSR polylines with capacity and convergence flags
+- `GPUDotDensity` and `GPURandomPointsInPolygon` (round 7, `dot-density/`): dasymetric dot density
+  with per-category counts, Bernoulli remainders, zoom-stable dot prefixes, Philox rejection sampling
+  in polygons with holes, optional weight mask, capacity-bounded compact output and failure count
+- **Neighbor search and spatial weights**: `GPUNeighborSearch` does exact kNN (k <= 32, ties
+  to the lowest ID) and distance-band queries, self or cross join, with masks. It writes a
+  `GPUSpatialWeights` CSR with rows in ascending ID order, distances, and binary, inverse-distance or
+  kernel weights (fixed or adaptive bandwidth) with optional row standardization. Capacity is
+  bounded with an overflow flag. Bounds, radius and weights are per-frame. The CSR is the shared
+  input of the round-7 global statistics and permutation recipes. Tested against a brute-force
+  oracle, with exact ID equality.
+- **Global spatial autocorrelation**: `GPUGlobalSpatialStatistics` reads a `GPUSpatialWeights`
+  CSR and computes global Moran's I, Geary's C, Getis-Ord General G, bivariate Moran's I and
+  BB/BW/WW join counts. Each comes with analytic expectation, normality and randomization variance,
+  z and p, following esda's definitions. General G and join-count variances use a cancellation-free
+  centered form, and bivariate Moran uses an exact randomization variance. Reductions are
+  deterministic and inputs can change per frame. The analytic moments are verified against exact
+  permutation enumeration, and GPU output against an f64 oracle.
+- **Permutation inference**: `GPULocalPermutationTest` does conditional-permutation pseudo
+  p-values for local Moran, local G and G* (esda `Moran_Local` and `G_Local`), with integer
+  exceedance counts, an optional Benjamini-Hochberg mask and a neighbor cap with an overflow flag.
+  `GPUGlobalPermutationTest` builds reference distributions for global Moran, Geary, General G and
+  bivariate Moran, with `p_sim`, `z_sim` and a histogram. Both use a private counter-based Philox
+  4x32-10. The global test also uses a keyed Feistel bijection, so there are no per-permutation
+  sorts. Results are seed-reproducible, and the seed and P change per frame. The RNG is checked
+  against Random123 known-answer vectors and is bit-identical between WGSL and TypeScript. Local
+  counts match an f32-emulating oracle exactly.
+- **Pair statistics** — `GPUVariogram` (omni/directional Matheron and Cressie-Hawkins semivariogram, CPU `fitVariogramModel`), `GPUSpatialCorrelogram` (Moran's I per cumulative or annulus distance band with normality/randomization z and peak bands), `GPURipley` (K, L, g with none/border/isotropic edge correction), and `GPUPointPatternIndices` (exact nearest neighbour, Clark-Evans, quadrat VMR) over one shared pair-histogram kernel: per-workgroup shared-memory 64-bit integer accumulators, fixed-point float terms, bitwise reproducible; M3 Pro: 100k points / 54M pairs in 10 ms, 20k all-pairs in 12 ms; tested against f64 CPU oracles
+- **Geographic distributions** — `GPUGeographicDistribution`: per-group or masked weighted mean centre, Weiszfeld median centre, standard distance, standard deviational ellipse (ArcGIS sqrt(2) convention), linear directional mean, and ellipse/circle polygon rings; fixed-order sorted sums, bitwise reproducible; tested against an f64 CPU oracle
+- `GPUEmergingHotSpots`: space-time Gi* over a lattice cube, per-cell Mann-Kendall trend (exact integer S, tie-corrected), and the 17-category ArcGIS emerging hot spot classification, with per-frame radius, window and thresholds.
+- `GPUOrdinaryLeastSquares`: deterministic OLS with intercept, optional ridge, standard errors, t statistics, R2, adjusted R2, log-likelihood, AIC, BIC, residual and fitted columns, Jarque-Bera, and Koenker Breusch-Pagan; tile-and-merge fixed-order accumulation, correlation-scaled Cholesky solve, status word for singular or short designs (spatial-regression)
+- `GPUGeographicallyWeightedRegression`: GWR with Gaussian and bisquare kernels, fixed or adaptive bandwidths, an on-GPU AICc bandwidth ladder (per-frame, no rebuild), local coefficients, local R-squared, hat diagonal and a global summary; brute-force O(n^2 * ladder) with fixed-order reductions.
+- `GPUCompositeScore`: min-max, z-score and exact percentile-rank scalers, per-indicator directions, weighted sum, weighted geometric mean and first-principal-component scores with per-frame weights, fixed-order column statistics, oracle-tested
+- `GPUInequality`: per-zone Gini, Theil T and L, Atkinson (any epsilon per frame), Hoover, Palma, Lorenz knots, weighted (population) variants, and the between/within Theil T decomposition with pooled Gini, deterministic with no atomics, tested against a float64 oracle.
+- `GPUCalendarBuckets`: exact Int64-millisecond to calendar columns (year, month, day, hour, minute, weekday with configurable week start, day of year, ISO week and week-year, quarter) plus a deterministic hour by weekday count matrix; fixed per-frame offset or per-row offset column for DST; tested bit-exact against a BigInt oracle and JS `Date`.
+- `GPUChangeDetection`: two-slice difference/log ratio/percent change, Welch t-test with Student-t p-value, Theil-Sen slope, Mann-Kendall S/Z/p, multiband change magnitude and direction, and significance classes, per-cell deterministic, oracle-tested
+
+Still open:
+
+- Demo findings from `map-graphs-explorer`:
+  - Explorer reachability mode should drop to `maxIterations` ≈ 48 (default `localIterations` 16):
+    640 rounds is 649 nodes, 48 is 57; it converges in 5.
+  - `GPUBufferSelection`, `GPUSpatialClustering` and `GPUTrajectoryMetrics` have no
+    `drawInstanceCount` output, so modes copy counts into draw records by hand.
+  - `GPUFlowAggregation` has no zone-count extent output, so its zone color range needs a readback;
+    `gridSize` is compile-time while the hexagon radius is per-frame.
+  - Region statistics grid-index cost scales with `candidateCapacity`, not region size.
+  - Unrolled iteration is still the dominant CPU cost: `GPUNetworkServiceAreas` 400 iterations is
+    1,212 nodes and 31–36 ms encode; `GPUCostDistance` 128 iterations is 271 nodes against 19–59
+    needed. A GPU Core "repeat while" node, or the frontier queue, would fix both.
+  - `GPUTerrainFlow` has no iteration count; `GPUCostDistance` friction calibration is
+    compile-time; `GPUTrajectoryMetrics` has no per-step speed, heading or acceleration;
+    `createMapGraphKernelNode` is not exported.
+  - Record viewshed and reachability benchmarks on real data.
+- deck.gl WebGPU picking is mirrored vertically: `deck-picker` converts the cursor with
+  `cssToDevicePixels([x, y], true)` (GL bottom-left) and reads WebGPU's top-left picking texture,
+  so the picked row is `height − 1 − y`. Fix in deck.gl core (`yInvert = device.type !== 'webgpu'`)
+  and add an off-center pick test; the graph layers add no workaround.
+- `GPUNetworkServiceAreas` still runs its own unrolled relax and gate loop; move it onto
+  `network-frontier.ts`. `createReachabilityGateNode` stays exported only for it.
+- A truncated tie phase leaves the deepest equal-cost plateau nodes without predecessors; the only
+  signal is `converged = 0`.
+- Extend `GPUGraphTopologyView` to the remaining gpu-graph algorithms (BFS, SSSP, modularity,
+  clustering, layouts) and migrate `GPUNetworkStatistics` off the `@internal`
+  `createNetworkAnalyticsTopology` / `defaultBuffer` adapter.
+- Native `mask` inputs for gpgpu `GPUGridBinning` and `GPUGridAggregation`, removing
+  `GPUPointDensity`'s masked-copy pass (one pass and N × 8 bytes).
+- Bridge `GPUTileLODSelection` to the residency arena: map its per-tile drawn mask (tile IDs) to arena
+  slots so `GPUResidentRowSelection` `tileMask` comes from the GPU.
+- Chunked (`GraphVectorView`) hierarchies and CSR inputs; 3D, f64, and geodesic variants. Tiled and
+  streamed rows go through `GPUResidencyArena`. `GPUCompaction` still emits chunks² scatter passes
+  for vector outputs (1,249 nodes at 32 chunks, remeasured); document it as a non-goal or route
+  vector outputs through one packed scatter. Unexplained: 1,249-node encodings queued 20 deep cost
+  120–140 ms each against 24 ms synced.
+- Attribute generated-ID collisions for every recipe: `createTransientView` and node IDs in gpu-core
+  should name the creating recipe. Today only cost-distance and relaxation transients do, through
+  `createRecipeTransientView`. Importing one buffer twice under different IDs throws "already in
+  use" (documented).
+- Graph layers: `highlightColor` collides with deck's `LayerProps.highlightColor` (readonly tuples
+  fail to compile); rename to `neighborhoodColor`. Add log and sqrt color scales for heavy-tailed
+  columns, and hash categorical colors (`value % palette.length` collides on power-of-two labels).
+  Hover reruns reachability and path too (3–5 ms encode at ≤65k vertices); split graphs if GPU time
+  matters. Port to deck.gl-community once that checkout is usable.
+- Edge bundling: a deck.gl layer or example drawing `paths` through the draw record; GPU-gated early
+  exit for unused iterations; benchmarks at 64 iterations and on low-contention scenes; chunked
+  positions; cos-lat correction for lon/lat input. f32 KDEEB amplifies ulp noise ~1000× per
+  iteration, so CPU parity holds only statistically past one iteration; the f64 `EPS` became a
+  4-quanta gradient floor.
+- `GPUNetworkStatistics` is single-graph (recipe-owned buffers under fixed IDs) and counts a
+  self-loop once, unlike `GPUGraphModularity`. `GPUAttributeCrossfilter` bins `uint32` as f32, exact
+  only to 2^24.
+- Arrow temporal relative-float32 path misreads `Date(ms)` columns (two int32 words per row); the
+  word path is correct.
+- Flow sorted mode does not share sorts between pair and zone keys (about 3 sorts and 3 scans per
+  encode). Raster atomic-versus-sorted cost is not measured, and atomic drift on Apple GPUs is not
+  demonstrated.
+- `trajectory-metrics-kernels.ts` and `flow-aggregation-kernels.ts` bind only what each body reads,
+  a workaround the kernel helper no longer needs.
+- Promote `map-graph-kernels.ts` helpers (linear kernel node builder, bounded compact publish) into
+  GPU Core if more consumers appear.
+- Package placement stays open (luma.gl versus a deck.gl-side module); luma.gl must not depend on
+  deck.gl either way. Projection-dependent recipes take their CRS contract from the
+  [GPU Project roadmap](./gpu-project-roadmap.md).
+- `GPUGridIndexQuery` dispatches one invocation per indexed object; region statistics uses a local
+  cell-range gather instead. Promote a cell-range-driven query into GPU Core. The grid path stays
+  O(N) when IDs or a mask are requested, and screen-space and pick selections are not indexed.
+- Promote `cost-distance/raster-relaxation.ts` (tiled min-relaxation, GPU-gated iteration) into
+  `gpu-raster` once a second consumer exists (only `GPUCostDistance` uses it); network reachability
+  no longer uses a gate, and raster relaxation could adopt the queue design for sparse activity.
+  Cross-tile hydrology and cost distance, flat routing, D-infinity, watershed labels, anisotropic
+  costs, and nearest-source allocation.
+- Flow pair keys are 32-bit (65535 zones); trajectories need geodesic distances; capacitated
+  location-allocation; OPTICS/HDBSCAN.
+- Round 4 recipes (`GPUTemporalReduction`, `GPUNetworkSubgraphFilter`, `GPUNetworkCoarsening`,
+  `GPUAdjacencyMatrix`) take packed views only, have no GPU timings except coarsening, and were
+  parity-tested on Apple Metal only. Open per recipe: a deterministic sum or mean column for
+  temporal reduction; u32 and i32 filter columns and feeding the induced CSR to
+  `GPUGraphTopologyView`; sparse-label relabelling and multi-level coarsening; per-slot balanced
+  binning for hub rows (both the matrix and slot pairing walk a whole row per invocation),
+  matrix-cell edge readback and a multi-resolution matrix.
+- Round 6, `GPUDistanceField` and its siblings in `distance-field/`:
+  - Euclidean direction output (ArcGIS "Euclidean Direction") and back-to-seed vectors; trivially
+    derivable from `nearestCells` but not shipped
+  - Sub-cell seed positions (distance to the seed point rather than its cell center), line/polygon
+    seeds without rasterizing them into `seedMask` first, and barriers (cost-distance covers those)
+  - Geodesic distances on longitude/latitude grids; cells are planar
+  - Multi-tile or streamed grids; one grid per recipe, at most 32768 cells per side
+  - Exact-mode row pass is one serial invocation per row (O(width log width) per row, uncoalesced
+    column reads); a workgroup-cooperative row pass or a transposed layout would be faster on
+    large grids
+- Round 6, `GPUInverseDistanceWeighting` and its siblings in `spatial-interpolation/`:
+  - Focal statistics: van Herk/Gil-Werman separable min/max and summed-area (or separable) mean/sum
+    for large square windows; workgroup-tile shared memory for the direct gather; majority, median,
+    and rank (histogram or sorting-network windows); annulus and custom kernel windows.
+  - IDW nearest-`k` keeps a private `(d^2, row)` list per invocation; at k = 16 it is ~6x slower than
+    radius-only mode on M3 Pro (16.9 vs 2.9 ms). Try a workgroup-shared candidate list or a radius
+    shrink once `k` are found. Barrier-aware IDW (obstacle mask), anisotropic search, and a
+    caller-supplied (shared) grid index instead of the per-recipe rebuild.
+  - Promote the in-cell ID sort into `GPUGridIndex` (deterministic in-cell order option); region
+    statistics and other gathers that sum floats over index cells need it too.
+  - Output count is `uint32`; contouring a count surface needs a float conversion.
+- Round 6, `GPUPolygonRasterization` and its siblings in `polygon-rasterization/`:
+  - Raster join follow-ups: an epsilon-to-resolution planner (pick cell size from a distance bound);
+    a built-in hybrid exact mode that sends boundary points through `GPUPointInPolygonJoin` (today
+    the caller wires `pointBoundaryMask`); tiling for rasters beyond one storage binding; per-frame
+    raster dimensions (they are compile-time); chunked (`GraphVectorView`) points; a `featureIds`
+    remap (zones are feature rows); one ID layer per overlap depth for overlapping-feature joins
+    (overlaps resolve to the smallest row only).
+  - `GPUPolygonRasterization` sorts and scans always run over the full `crossingCapacity`, and one
+    invocation fills one span (up to `width` atomics), so a raster-wide polygon fills rows serially
+    per thread. A two-level span split or an indirect dispatch sized by the crossing count would help
+    very wide rasters.
+  - Feed `GPURasterZonalStatistics` from `GPUPolygonRasterization` in the explorer demo, and reuse the
+    scan-conversion front end for polyfill / H3 cover and raster overlay.
+- Round 6, `GPUNetworkSnapping` and its siblings in `network-accessibility/`:
+  - The matrix is dense `rowCount x nodeCount` f32. The scoring pass binds all of it, so
+    `rowCount * nodeCount <= maxStorageBufferBindingSize / 4` (32M entries at 128 MB). Large
+    networks need a sparse within-`costLimit` (row, node, cost) list, or row tiling for the scoring
+    pass.
+  - Every lane batch is a separate `GPUNetworkReachability` with its own frontier transients, so
+    graph nodes grow as `ceil(rows / laneCount) * (maxIterations + 3)`: 976 nodes and 13 ms of CPU
+    encode for 2,304 rows. A reachability entry point with a lane count (per-lane seeds, a shared
+    frontier) would need one set of rounds. Lane expansion also copies the CSR `laneCount` times
+    per encoding (`laneCount * (nodeCount + 2 * edgeCount)` words).
+  - Opportunities attach to nodes (or to snapped seeds as matrix rows). No per-edge opportunity
+    mass and no snapping of origins inside the scoring pass: origin accessibility at a snapped
+    point means combining the two endpoint scores on the CPU, or snapping origins onto rows.
+  - `GPUNetworkSnapping` is planar (no geodesic distances). The BVH path picks the edge with the
+    join's own distance expression, then recomputes fraction and distance. Near-ties within an ulp
+    can differ from the exhaustive scan (the tests only exercise exact ties and clear winners).
+    Edges with an endpoint out of range become far-away segments in the BVH path, so a radius near
+    1e30 would match them.
+  - Radius-bounded UNA metrics (reach, closeness, betweenness) and many-to-many OD for
+    location-allocation could reuse `GPUNetworkCostMatrix`. Neither is built yet.
+- Round 6, `GPUHotSpotAnalysis` and its siblings in `spatial-autocorrelation/`:
+  - Permutation inference (pseudo p-values) for Gi* and local Moran. It needs a counter-based RNG.
+    Proposed design: Philox4x32-10 in WGSL (u32 math only, `mulhi` emulated with 16-bit limbs). The
+    counter is `(row, permutation, drawBlock, streamId)` and the key is a 64-bit seed from the
+    parameter buffer. Each `(row, permutation)` invocation draws `k_i` distinct indices from the other
+    `n - 1` included rows by a partial Fisher-Yates over a virtual index range: rejection on a small
+    per-thread set, or a Feistel bijection on `[0, n - 1)` so no state is stored. It sums the permuted
+    centered values and counts `|stat| >= |observed|` per row with integer atomics. Integer counts
+    and a counter RNG make it exact and seed-reproducible. Add a preview `P = 99` mode with refine on
+    idle; the cost is about `N * P * k`.
+  - ArcGIS-style total-randomization variance for local Moran as an alternative null. The current
+    conditional z takes the sign of `x_i - mean`, so it is discontinuous for values at the mean, as in
+    esda's folded permutation test.
+  - Global indices over the same neighbor loop: global Moran's I, Geary's C, General G, and an
+    incremental-Moran distance sweep for "optimized hot spot".
+  - k-nearest and inverse-distance weights, chunked `GraphVectorView` inputs, geodesic distances, and
+    space-time neighborhoods (emerging hot spot).
+  - The neighbor loop is unbounded. Cost is `O(sum of neighbor counts)`, so a radius covering most of
+    the data is `O(n^2)`. There is no neighbor cap or overflow flag yet.
+- Round 6, `GPUTrajectoryPlayhead` and its siblings in `trajectory-interpolation/`:
+  - Double-single (`timestampsLow`) time input for the playhead and resample (f32 relative and Int64
+    words are supported).
+  - Arc-length resampling sums per track in one invocation; long tracks load-balance poorly. Needs a
+    float (or deterministic fixed-point) segmented scan in GPU Core; `GPUSegmentedScan` is uint32-only.
+  - Heading of zero-length segments is 0 rather than the last moving heading; no shortest-angle
+    smoothing between segments (heading is piecewise constant, as is speed). Curved (Catmull-Rom)
+    interpolation and dead-reckoning extrapolation past the last fix are not implemented.
+  - Geodesic interpolation and antimeridian handling (planar only, project upstream).
+  - Chunked (`GraphVectorView`) inputs; residency-arena columns work today as packed views.
+  - Interior resample targets use a GPU f32 division (2.5 ulp), so at a path discontinuity (duplicate
+    timestamps with different positions, or a stationary step in arc length) a sample may fall on
+    either side; tests accept the oracle within 4 ulps of the target.
+  - Performance not measured yet (no benchmark run).
+- Round 6, `GPULineSimplification` and its siblings in `line-simplification/`:
+  - Each round unrolls 5 nodes, so the default 64 rounds is about 325 nodes. Deep shapes such as spirals
+    need up to `n - 2` rounds. Options are a persistent per-workgroup loop for short lines and a
+    shared GPU-gated loop primitive (the same issue as the network-reachability node count).
+  - The per-round dispatch covers every row, including rows already decided. Compacting the active
+    rows per round would help when lines are long and the tree is deep.
+  - Topology-preserving simplification, Visvalingam-Whyatt, a perpendicular-to-line metric option,
+    geodesic distances, double-single or Int64 timestamps for `'time-ratio'`, chunked inputs, and
+    polygon rings (a closed ring keeps its seam vertex, and the chord degenerates to a point).
+  - Subnormal-range coordinates are unsupported (GPUs may flush them). NaN inputs are undefined.
+  - No `drawIndirect` argument writer. Use `output.count` as the instance or vertex count.
+- Round 6, `GPUCellAggregation` and its siblings in `cell-aggregation/`:
+  - Forward H3 and A5 keying of points (`latLngToCell`) in WGSL. gpu-dggs only projects cells to
+    centers. H3 pyramids need pre-keyed rows today, and A5 is not supported, since there is no
+    parent or forward primitive.
+  - deck.gl consumers: binary/Arrow cell columns plus GPU instance counts in `H3HexagonLayer`,
+    `QuadbinLayer` and the CARTO `ClusterTileLayer` (see "Consumers" below). There is also no GPU
+    Quadbin center or bounds decode.
+  - `'any'` aggregation (a representative row value) and averages as a column: average is
+    `sumValues / counts` today. Multiple value columns need one recipe per column, and each repeats
+    the sort.
+  - Chunked (`GraphVectorView`) inputs; per-tile tables for tiled CARTO sources, which could go
+    through `GPUResidencyArena`.
+  - Hot cells serialize on atomics. A res-0 table of 1M rows hits one address, which costs little
+    on Apple but was not measured elsewhere.
+- Cross-cutting findings from round 6:
+  - Apple Metal fuses `a * b + c` into FMA, so a GPU result can differ by 1–16 ULP from a
+    correctly rounded CPU oracle on unquantized input. `line-simplification` blocks fusion with a
+    runtime zero loaded from memory; `cell-aggregation` keys points with integer-only WGSL. Audit
+    recipes whose parity relies on rounded products (for example `temporal-reduction` bucket
+    edges) with unquantized inputs, and add a shared no-fuse helper.
+  - A WGSL module that fails to compile (one used the reserved word `target`) produced all-zero
+    output with no error through the map-graph kernel node path. Surface shader compilation
+    errors in `createMapGraphKernelNode` or the graph compiler.
+  - `GPUGridIndex` leaves the order within a cell to atomics, so float sums over neighbors vary
+    between runs. `spatial-autocorrelation` builds its own stable cell index and
+    `spatial-interpolation` sorts IDs within each cell. Add a stable in-cell order option to
+    `GPUGridIndex` and per-frame index bounds.
+  - Round 6 recipes carry in-recipe versions of missing gpgpu primitives: polygon scan conversion,
+    exact distance transform and jump flooding, a two-word (64-bit key) sort, and a fixed-order
+    cell gather. Promote them to GPU Core when a second consumer appears.
+- Explorer findings for the round 6 recipes (modes `hot-spots`, `distance-field`, `raster-join`,
+  `cell-pyramid`, `playhead`, `accessibility`, `simplification`, `interpolation`):
+  - `GPUCellLevelSelection.drawArguments` always writes `firstInstance`, so on a device without
+    `indirect-first-instance` every level after the first draws nothing, with no validation error.
+    Add an option that leaves `firstInstance` at 0 and publishes the first row separately.
+  - `GPUCellPyramid` levels cannot share one slab, because outputs are checked against inputs per
+    buffer, not per byte range; the explorer ping-pongs two slabs. Make the check range-aware or
+    let the pyramid allocate its own level storage. Every level also has the finest capacity.
+  - `GPUCellLevelSelection.output.count` rejects the strided instance-count view of a
+    `DrawCommandBuffer`; accept a stride for one-row views.
+  - `GPURasterJoin` zone values use `NO_ZONE = 0xffffffff`, which cannot index per-zone values in a
+    raster layer; add a compact display output. Its cost follows `crossingCapacity`, not the
+    crossings used: with 12 convex polygons it was slower than the exact join.
+  - `GPUTrajectoryPlayhead` counts only active tracks on the GPU; add per-status counts.
+  - `GPUNetworkAccessibility` has no extent output, and `GPUNetworkSnapping` positions need an
+    interleave step before a segment layer can draw them.
+  - `GPUHotSpotAnalysis` and `GPULocalMoran` take FDR as a compile-time flag, so a toggle compiles
+    both variants; make it a parameter.
+  - `GPUInverseDistanceWeighting` has no GPU count of nodata cells, and its `counts` output is
+    `uint32`, so neither feeds a float colormap without a readback or conversion.
+  - `GPULineSimplification` has no indirect-draw writer, and its 64-round default unrolls 324
+    nodes where NYC trips converge in 15.
+- Round 7, `GPUPointToCell` and its siblings in `cell-indexing/`:
+  - `precision: 'double-single'` (hi/lo position columns) for exact H3 at res ≥ 10 and S2 at level ≥ 20. f32 math caps H3 at about res 12 and S2 at about level 20.
+  - No forward A5 (point to A5 key); A5 is geometry-only.
+  - Chunked `GraphVectorView` inputs are not supported (single packed views only, as in `GPUCellAggregation`).
+  - Quadkey/quadbin rows at zoom 27-29 differ from the f64 formula by at most one row (1.3-9.6%). Deep-zoom quadkey centres are f32-limited.
+  - No string conversion (H3/S2 tokens, geohash text); that stays on the CPU.
+- Round 7, `GPUCellTopology` and its siblings in `cell-topology/`:
+  - H3 disks cost one private breadth-first search per thread, about 217 cells at k = 8. This is unmeasured. A shared-memory or spiral (`gridDiskUnsafe`) fast path for cells away from pentagons is not done.
+  - No `gridDistance`, `gridPathCells`, local IJ, directed edges or vertexes.
+  - Uncompact has no dedupe of overlapping inputs, and its unclamped total is a u32.
+  - Compaction reuses `cell-aggregation/cell-table` internals (`getCellTableNodes`) and allocates an unused transient counts column.
+  - S2, A5 and geohash topology are not done.
+  - GPU tests cover H3 disk and ring only up to k = 4. The k = 5-8 strides are validated in the node spec only.
+- Round 7, `GPUCellCover` and its siblings in `cell-cover/`:
+  - H3 `full` / `intersects` containment (h3-js `containmentFull` / `containmentOverlapping`): needs cell-boundary-versus-polygon tests.
+  - `compactToParents` option. Callers can chain `GPUCellCompaction` per feature today, but the recipe has no built-in per-feature compaction.
+  - Each candidate loops over all edges of its feature (candidates x edges). There is no edge BVH or scanline acceleration for large polygons.
+  - H3 lattice cost grows as 1/cos(latitude) and is clamped at |lat| ≤ 89. The inradius constants for res 11-15 are extrapolated (divided by sqrt 7 per level).
+  - No antimeridian-crossing polygons, and no check for them. S2/geohash/quadkey cover is not done.
+  - Double-single H3 centres would remove the remaining edge ties at res ≥ 8.
+- Round 7, `GPUColumnQuantiles` and its siblings in `column-classification/`:
+  - Quantiles: a single-pass `precision: 'histogram'` fast path, grouped (per-cell) medians and
+    quantiles over a segmented sort, `uint32`/`sint32` columns, Int64 columns, more than 2^24 rows,
+    and chunked vector inputs.
+  - Class breaks: exact refinement of natural breaks inside the bins around each break; maximum
+    breaks without two full sorts every frame (gate the sorts, or a histogram approximation);
+    head/tail rounds unroll three nodes each (`maximumClassCount - 1` rounds), so a GPU-gated loop
+    primitive would shrink the graph; mapclassify's de-duplication of repeated quantile edges (ties
+    currently give empty classes); geometric/percentile/user-defined interval variants.
+  - Colour scale: interpolation in a perceptual colour space (OKLab), diverging scales with a
+    midpoint, NaN-safe descending domains, and a texture LUT output for raster layers (the same logic
+    as the planned raster stretch).
+  - Bivariate: more than 16 classes per axis; trivariate and value-by-saturation variants.
+  - deck.gl still needs a GPU-buffer attribute route to consume `colors` without a readback.
+- Round 7, `GPUColumnProfile` and its siblings in `column-profile/`:
+  - Histogram, HyperLogLog and category counts run as separate row passes per column (about four
+    pipelines per column) rather than one fused pass; one hot histogram bin serialises on one atomic.
+  - Medians and quantiles in the panel (wire `getColumnQuantileNodes` from `column-classification`),
+    skewness and kurtosis (M3/M4 in the moment record), and count-min sketches for very large
+    dictionaries.
+  - HyperLogLog large-range correction (not needed below 2^24 rows with a 32-bit hash), HLL++ bias
+    correction, more than 2^24 rows, and chunked vector inputs.
+- Round 7, `GPUGroupStatistics` and its siblings in `group-statistics/`:
+  - Approximate distinct counts (HyperLogLog) for very high-cardinality columns; `uniqueCount` is exact and needs a value sort.
+  - Weighted statistics and weighted quantiles; histograms / quantile sketches without a full value sort.
+  - A sort-free fast path for statistics that need no order (count, sum, mean, min, max could use a hash table instead of a key sort when keys are dense or small).
+  - Alternative quantile definitions (nearest rank, lower, higher, midpoint); only linear interpolation is implemented.
+  - Float64-grade sums for values beyond the fixed-point range (|v * sumScale| saturates near 2^62) and exact moments (moments use f32 shifted sums).
+  - Chunked vector inputs (`GraphVectorView`) are rejected; single packed views only.
+  - Groups whose spread is below the fixed-point mean resolution (m2 <= 2^-19 of the shifted sum of squares) are snapped to constant (variance 0, skewness/kurtosis NaN, z 0); a second exact-mean pass would remove this limit.
+- Round 7, `GPUKeyJoin` and its siblings in `key-join/`:
+  - Right and full outer joins (rightMatched plus compaction of unmatched right rows would cover them; not wired).
+  - Dictionary (string) keys and composite multi-column keys; callers must pre-encode to u32/u64.
+  - 1:n aggregates beyond count/sum/mean/min/max (median, mode, first/last by order column); hash-index probe path for pre-sorted or tiny right tables.
+  - A dedicated N-th-match gather (`many: 'first'` is the only 1:1 mode; no `last`).
+  - Aggregates of u32 columns (float32 only).
+- Round 7, `GPUCellTableCompare` and its siblings in `cell-table-compare/`:
+  - Compare of tables from different resolutions or families (needs a rollup of the finer table first; the recipe does not verify that the two tables agree).
+  - Compare of more than two tables (time series of N tables) and a mean/variance baseline over several prior periods.
+  - Other measures: minimum/maximum deltas, and `sumValues`-only tables (currently sums need the fixed-point `sums`).
+  - Standardized z-score reduction is a single workgroup (256 threads loop over the union rows); fine to ~1e6 rows, a multi-workgroup fixed tree would scale further.
+  - Ratio, percent change and z-scores are f32 divisions and not bit-exact to the CPU oracle (see section 5); the keys, presence, before, after and delta are exact.
+- Round 7, `GPULineSegmentize` and its siblings in `line-segmentize/`:
+  - Bounding-box clip (Liang-Barsky with count, scan and emit) and `circleVertices` were not built.
+  - Arcs are never split at the antimeridian (unwrapped longitudes only); near-antipodal pairs are not detected.
+  - `GPULineSmooth` is planar only and does not output `measures` or `sourceRows`; `GPULineChunk` has no per-path measure-range columns and no negative-from-end measures.
+  - Densify and arc emit loop over pieces inside one invocation per segment; very uneven piece counts underuse the GPU.
+  - Chunked (`GraphVectorView`) inputs are rejected. No `drawIndirect` writer: use `count`.
+- Round 7, `GPUGeometryMeasures` and its siblings in `geometry-measures/`:
+  - Validity checks (closure, orientation, self-intersection), `isClosed`/orientation columns, and per-group mean centre, standard distance and ellipse (stream D builds some of these as `geographic-distribution`).
+  - Geodesic-edge polygon areas (Karney) and rings around a pole; geographic group centroids average longitudes naively (wrong across the antimeridian).
+  - Cross-track and along-track distance, rhumb lines, and Vincenty direct with relative latitude output (destinations are bounded by the f32 latitude ulp).
+  - Per-feature work is one invocation per feature, so latency follows the largest feature; a segmented-reduction path for very large features is not built.
+  - Chunked (`GraphVectorView`) inputs are rejected.
+- Round 7, `GPULinearReferencing` and its siblings in `linear-referencing/`:
+  - Geodesic (longitude/latitude) snapping and measures; the join and measures are planar.
+  - k nearest candidates per point (map matching needs several candidates with their measures).
+  - Foot points could be emitted by `GPUNearestFeatureJoin` itself instead of a second projection pass.
+  - Side is relative to the chosen segment, so points exactly beyond a vertex on the outside of a corner report `0` or the side of the earlier segment.
+  - Measures at a vertex resolve to the following segment (upper bound); `angles` are `0` for zero-length tangents.
+  - Chunked (`GraphVectorView`) inputs are rejected.
+- Round 7, `GPUTerrainHorizon` and its siblings in `terrain-illumination/`:
+  - FFT texture shading (exact `|f|^alpha`) needs a graph-node wrapper for gpu-core `GPUFFT2D` and 2x padding (4096² for a 2048² tile, above its 2048 limit); the DoG pyramid follows the target slope only within about 0.2 in the mid band and rolls off near Nyquist and below `1 / (2 pi sigma_max)`.
+  - Texture shading runs at full resolution at every level (about 10 taps x `baseSigma * 2^levelCount` per pixel); a downsampled pyramid would make 7-8 levels cheap.
+  - Horizon march cost is O(pixels x sectors x steps) with direct global reads; a max-mip "horizon pyramid" (Timonen/Sloan) or shared-memory line sweep for axis sectors is not implemented.
+  - Horizon storage is float32 only; an `rg16float`/packed-f16 layout would halve the 268 MB of a 2048² x 16 map, and texture-array output for direct shader sampling is not offered.
+  - Ground distance uses the center row's cell size along the whole ray (fine for tiles, not for continent-scale geographic rasters).
+  - `GPUSolarIrradiance` (daily insolation integral over a sun path, sum of shadow x cos incidence) and per-pixel GPU sun position for globe-scale rasters are not built.
+  - `GPUReliefShading` color is packed RGBA8 in a `uint32` buffer only; no `rgba8unorm` storage-texture output helper (needs the shared texture-output helper proposed in research 04 section 4).
+  - The relief texture output and the horizon texture output are untested on GPU; texture paths are covered for `GPUSolarShadowMask` and `GPUTextureShading` only.
+- Round 7, `GPURasterReclassify` and its siblings in `raster-algebra/`:
+  - Not an expression compiler: longer formulas chain recipes (one storage round trip per step); a fused
+    `GPURasterCalculator` lowering a small expression AST to one kernel would remove the round trips
+  - Stacks are one packed band-sequential view; separate per-layer views are limited by the 8-binding
+    kernel limit (a gather into the stack is the caller's job), and chunked `GraphVectorView` inputs are rejected
+  - Weighted overlay supports up to 16 layers and a shared `maximumBreakCount` per layer table; fuzzy
+    memberships (ArcGIS Fuzzy Overlay: gaussian, large/small, MS functions) are not implemented
+  - Cell-statistics frequencies are `O(layerCount^2)` per cell (64 layers max); percentile/median across the
+    stack is not implemented
+  - Reclassify break tables must be sorted ascending (unsorted tables give a deterministic but meaningless
+    class); range-to-value tables with gaps ("unmatched" values) are not supported
+  - Scores with FMA-contracting backends differ from an unfused oracle by a few f32 roundings (bounded in tests)
+- Round 7, `GPURasterStretch` and its siblings in `raster-stretch/`:
+  - Classification breaks are not built here: quantile class breaks (inverse CDF, error one bin width) and
+    Jenks/natural breaks (histogram DP); stream A's `GPUClassBreaks` covers columns
+  - CLAHE (tile-wise clipped equalization) is not built
+  - One level of equal-width bins limits percentile resolution to `range / binCount`; an adaptive two-stage
+    histogram for heavy-tailed data is open
+  - Bin assignment uses a GPU-side `binCount / range` division (not correctly rounded), so cells within an f32
+    ULP of a bin edge may land in the neighbouring bin compared with an f64 reference
+  - Multi-band/RGB stretch, log/sqrt transfer functions, and an `rgba8unorm` LUT texture output are not offered
+  - Infinite cells are excluded from statistics (they clamp to 0 or 1 when applied); `validCount` is float32
+    (exact to 2^24); window coordinates are float32 (rasters up to 2^24 columns/rows)
+- Round 7, `GPUIsolines` and its siblings in `isolines/`:
+  - `GPUTerrainContours` still emits the old two-vertex records; it could be reimplemented on top of
+    `GPUIsolines` (left untouched: existing dir)
+  - Polylines are per level and tile-local: no joining across tiles, no smoothing or simplification
+    (chain into `GPULineSimplification` by hand)
+  - Isobands are a triangle soup: no stitched polygon rings, no vertex dedup or index buffer
+  - Neighbour lookup during stitching scans a cell's segments linearly (O(levels) per segment); isoband cells
+    loop over the bands between their lowest and highest class (O(bands) on steep cells)
+  - Infinite samples and NaN or unsorted levels/breaks give deterministic but unspecified geometry;
+    closed-right band intervals are not offered
+  - Coordinates are within a few ULP of an f32 oracle, not bit-exact (GPU division, FMA)
+- Round 7, `GPURasterSampling` and its siblings in `raster-sampling/`:
+  - Rasters are packed row-major buffers only: no texture input (hardware filtering) and no tiled or chunked
+    rasters
+  - Profile distances are planar; geodesic (great-circle or ellipsoidal) spacing is not implemented, nor
+    draping lines onto a raster in another CRS
+  - Profiles have no per-sample `validity` column; non-finite samples are only skipped in summaries
+  - Cumulative gain/loss and the path walk are serial per path (one invocation), slow for one very long path;
+    a segmented scan would parallelize it
+  - Per-path samples are capped at `min(2^24, (2^32 - 1) / (pathCount + 1))`, then truncated with overflow
+  - Sample counts can differ by one from an f64 reference when `length / spacing` is within an f32 ULP of an
+    integer
+- Round 7, `GPUParticleAdvection` and its siblings in `particle-advection/`:
+  - Time interpolation between two fields (`velocitiesNext` plus a blend factor) for animated forecasts
+  - Lon/lat-aware stepping (metres per second on a sphere) and wrap-around at the antimeridian
+  - Spawn weighted by speed or by a density raster instead of a uniform rectangle
+  - deck.gl consumption of the trail and position buffers without readback (generic GPU buffer attribute)
+- Round 7, `GPULineIntegralConvolution` and its siblings in `flow-texture/`:
+  - Streamline self-proximity: a line may loop back over its own cells (Jobard-Lefer also stops a line
+    near itself); size `stepsPerDirection` to the field or add a self-test
+  - Point-distance separation (`d_sep` / `d_test` against neighbouring points) instead of whole grid cells
+  - Seeding from neighbouring accepted lines (classic Jobard-Lefer growth) for denser coverage
+  - Indirect-dispatch gating of rounds after convergence (all `roundCount` rounds always dispatch)
+  - LIC: oriented (OLIC) and fast-LIC variants, contrast enhancement, and lon/lat-aware step lengths
+- Round 7, `GPUDotDensity` and its siblings in `dot-density/`:
+  - Triangle-area-weighted sampling (from caller triangles) or raster-CDF sampling for thin polygons and
+    for sparse masks, instead of bounding-box rejection
+  - Acceleration for very large polygons (per-candidate cost is linear in vertex count): edge grid or a
+    `GPUPolygonRasterization` zone lookup with exact tests only on boundary cells
+  - Interleaved draw order across categories (dots are grouped by slot, so later categories draw on top)
+  - Blue-noise / Poisson-disk thinning of dots at the current zoom
+- Round 7, `GPUNeighborSearch` and its siblings in `neighbor-search/`:
+  - Lon/lat inputs: equirectangular scaling plus an exact haversine re-rank of the final k.
+  - k > 32 (needs workgroup-memory top-k), and a BVH path for very uneven densities.
+  - Radius rows are insertion-sorted per thread, which is O(d^2) for a row of degree d. Use a segmented
+    sort for very wide bands.
+  - kNN scratch is `queryRows * k` ids and distances. A two-pass recompute variant would trade time
+    for memory.
+  - Targets outside `bounds` are excluded, so bounds must cover the data. There are no chunked
+    `GraphVectorView` inputs yet.
+  - The weights CSR could feed `GPUHotSpotAnalysis` and `GPULocalMoran`, which today evaluate an
+    implicit distance band. That would be a change in another dir.
+- Round 7, `GPUGlobalSpatialStatistics` and its siblings in `global-spatial-statistics/`:
+  - An internal 25-column `float32` scratch matrix (`25 * rows * 4` bytes) must fit the device's
+    maximum storage binding size. That allows about 1.3M rows at the 128 MiB default. Tile it by
+    column batch for larger inputs.
+  - The oracle and tests use dense `n x n` matrices, so GPU-versus-oracle tests stop at a few
+    thousand rows. Larger runs are only timed.
+  - Integer-valued sums (counts, binary degrees) are exact only below 2^24. Use u32 or
+    fixed-point sums beyond that.
+  - There is no lon/lat or chunked `GraphVectorView` support. Permutation inference for these
+    statistics lives in `GPUGlobalPermutationTest`.
+  - A spatial correlogram (statistics over B distance bands in one pass) is not implemented. That
+    needs per-band partial columns, or stream D's `GPUSpatialCorrelogram`.
+- Round 7, `GPULocalPermutationTest` and its siblings in `permutation-inference/`:
+  - Local Gi* uses a fixed self weight of 1. esda's float `star` values and its row standardization
+    after adding the diagonal are not modeled.
+  - Local Geary, local join counts, bivariate LISA, and multivariate or conditional LISA are not
+    implemented.
+  - The global test evaluates the Feistel bijection for each neighbor term, so it costs
+    `(P + 1) * nnz` Feistel evaluations. Caching per-permutation relabeled values in tiles would help
+    at large P.
+  - `maximumNeighbors <= 64`, because the swap list lives in private memory. Wider rows are not
+    tested, and sampling with replacement is not offered.
+  - The local test runs one invocation per row and loops over P. Splitting P across invocations, with
+    integer `atomicAdd` of counts, would balance skewed degree distributions.
+  - Promote the RNG module (see section 6).
+  - Wire `inference: 'permutation'` into `GPULocalMoran` and `GPUHotSpotAnalysis` (another dir).
+- Round 7, `GPUVariogram` and its siblings in `pair-statistics/`:
+  - Monte Carlo CSR envelopes for K/L and permutation inference for the correlogram (need a shared Philox RNG); cross-type K and marked patterns.
+  - Non-rectangular windows; kernel-smoothed pair correlation (spatstat `pcf`); quadrat and Clark-Evans p-values.
+  - Verify the border `lambda` convention and the isotropic weight cap against spatstat itself (`lambda = (n - 1) / A` chosen for consistency with `'none'`).
+  - Variogram `maxPairs` subsampling cap for very dense data, variogram cloud output, and ordinary kriging on top of the fitted model.
+  - Correlogram band count is capped at 64 (private per-row degree counters); analytic variance is f32 and loses accuracy when a band holds most pairs.
+  - Ship a cell-range-driven neighbour pass: dense clusters make per-focus work uneven (no load balancing beyond cell-ordered foci).
+- Round 7, `GPUGeographicDistribution` and its siblings in `geographic-distribution/`:
+  - Central feature (argmin of summed distances) and geodesic (lng/lat) variants; positions are planar f32, so centres and rings at ~1e5 coordinates are only accurate to a few f32 ulps even with the local origin.
+  - Validate the ellipse axis naming and angle against real ArcGIS Directional Distribution output (derived from the published formula, not compared with ArcGIS results).
+  - Weiszfeld unrolls six nodes per iteration (about 150 nodes at the default 24); a GPU-gated loop or a single multi-iteration kernel per group would cut node count.
+  - Chunked (`GraphVectorView`) inputs are rejected.
+- Round 7, `GPUEmergingHotSpots` and its siblings in `emerging-hot-spots/`:
+  - Permutation (pseudo) p-values and false discovery rate correction for the space-time Gi* bins.
+  - Irregular neighborhoods (CSR, k-nearest) and time-step intervals other than one slice; a slice limit of 256 comes from the O(slices^2) Mann-Kendall pass.
+  - Zero-count bins from `GPUTemporalReduction` are valid zeros; no sparse-cube input or per-bin missing mask for `uint32` counts.
+  - Space-time Gi* is O(bins * disc * window); a prefix-sum formulation would make large radii cheap.
+  - Category rule ambiguities are resolved by documented ordering (see TSDoc), not validated against ArcGIS output.
+- Round 7, `GPUOrdinaryLeastSquares` and its siblings in `spatial-regression/`:
+  - Moran's I of the residuals (composes with `GPULocalMoran` and global autocorrelation statistics from the autocorrelation recipes; not wired into this recipe)
+  - Original (non-studentized) Breusch-Pagan, White test, F statistic and its p-value, heteroskedasticity-robust (HC) standard errors
+  - Weighted least squares and ridge standard errors that account for shrinkage bias
+  - More than 15 predictors, and ill-conditioning diagnostics beyond the pivot test (condition number, VIF)
+  - Spatial lag and error models (2SLS, GM, ML) build on this recipe; not started
+  - GWR neighbour search is brute force over all rows (<= 65536); a grid or kNN index (CSR) would cut the cost for large n.
+  - GWR has no multiscale (MGWR) per-coefficient bandwidths, no local standard errors or pseudo-t values, no Poisson/logistic GWR, no geodesic or great-circle distances (planar positions only).
+  - GWR candidates with any singular location are rejected wholesale; there is no per-location fallback or ridge.
+  - Adaptive `k` is capped at 128 and the ladder at 32 candidates (compile-time).
+- Round 7, `GPUCompositeScore` and its siblings in `composite-indicators/`:
+  - Rank scaling runs one full `GPUSort` per indicator column (16 sorts at most); a single segmented sort over all columns would cut passes
+  - No robust (median/IQR) scaler, no supervised (regression-fitted) weights, no output rank or class column (feed the score to the classification recipes instead)
+  - PCA returns only the first component, by a fixed 64-step power iteration; a near-tied second eigenvalue converges slowly (the residual slot reports it)
+  - Parallel per-zone segment reduction: one thread walks a zone, so a single huge zone (or the pooled Gini) serializes; a tile-parallel Lorenz scan would fix it.
+  - f32 accumulation only: precision degrades for segments of millions of rows; compensated or fixed-point sums not done.
+  - Decomposition of Theil L and Atkinson (only Theil T is decomposed), and Gini decomposition with the overlap term.
+  - Confidence intervals and bootstrap for the indices; grouped/subgroup decomposition by more than one partition.
+  - Zero-valued rows are reported as NaN for Theil L and Atkinson (e >= 1) rather than excluded or epsilon-floored; no option to choose.
+- Round 7, `GPUCalendarBuckets` and its siblings in `calendar-buckets/`:
+  - Time zone transition table on the GPU (binary search of sorted transitions, R7 original design); today DST needs a caller-precomputed per-row offset column.
+  - Float32 relative or float64-split timestamp inputs; only Int64 words are accepted.
+  - Calendar bucket index output (month, week or day count from an origin) for direct use as `GPUTemporalReduction` or `GPUCellAggregation` keys.
+  - Chunked vector inputs (`GraphVectorView`) are rejected; single packed views only.
+  - Fiscal years, locale week rules other than a configurable first weekday, and non-Gregorian calendars.
+- Round 7, `GPUChangeDetection` and its siblings in `change-detection/`:
+  - Sen slope and Mann-Kendall are O(T^2) per thread; `sliceCount` for Sen is capped at 64, and large stacks would need a parallel-over-pairs variant
+  - Scalar statistics (t-test, Sen, Mann-Kendall, significance) are single band only; per-band variants and a multiband Hotelling/Mahalanobis test are not built
+  - Student-t p-value is float32 (about 1e-4 absolute); no f64-quality or exact-permutation path, and no Pettitt/CUSUM change-point or seasonal Mann-Kendall
+  - Significance does not apply multiple-comparison control (FDR); two-sample test assumes a fixed split slice (no per-cell breakpoint search)
+- Round 7 explorer findings (13 demo modes over the round-7 recipes):
+  - `GPUClassBreaks` bound 9 storage buffers in one kernel with all methods compiled; fixed by
+    packing head/tail breaks into the head/tail state buffer. `createMapGraphKernelNode` now
+    rejects kernels over the device's storage-buffer limit at declaration, so node specs (8-buffer
+    null device) catch this. GPU specs use the `'max'` feature level and cannot.
+  - Raster recipes assume row 0 at minimum y; DEMs are usually north-up. Add `rowOrigin: 'north'`
+    to isolines, isobands, sampling, profile and distance field.
+  - Recipe-internal resource ids (`${id}-total`) collide with caller imports of the same name.
+  - Missing glue: a uint32 to float32 cast node, a CSR-to-segments helper, a column-stack helper,
+    indirect draw records for isolines and path outputs, a per-vertex path id, and a quadrant
+    class output on `GPULocalPermutationTest`.
+  - Compile-time knobs users want live: `GPUNeighborSearch` k (an upper k with a per-frame limit)
+    and cell family in `GPUPointToCell`. `GPUSolarShadowMask` cannot take its sun from
+    `GPUSolarPosition` on the GPU.
+  - Costs: H3 grid disk k=8 is about 11 ms for one cell; adaptive GWR is about 5x a fixed ladder;
+    Weiszfeld median centre unrolls to about 150 nodes; streamline and stitching rounds dispatch
+    at capacity, not at convergence.

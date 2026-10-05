@@ -1,0 +1,705 @@
+// luma.gl
+// SPDX-License-Identifier: MIT
+// SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
+
+import {
+  createTransientView,
+  validatePackedUint32View,
+  validatePackedView,
+  type GPUCommandGraph,
+  type GPUCommandNode,
+  type GraphDataView
+} from '@luma.gl/gpgpu/gpu-core';
+import type {GPUMapGraphRecipe} from '../map-graph-types';
+import {createMapGraphKernelNode, type MapGraphKernelBinding} from '../map-graph-kernels';
+import {
+  validateGraphOutputsDisjointFromInputs,
+  validateGraphViewsBelongToGraph
+} from '../map-graph-utils';
+import {SPATIAL_AUTOCORRELATION_FLOAT_WGSL} from '../spatial-autocorrelation/spatial-autocorrelation-kernels';
+import {
+  GPU_EMERGING_HOT_SPOT_MAXIMUM_RADIUS,
+  GPU_EMERGING_HOT_SPOT_MAXIMUM_SLICE_COUNT,
+  GPU_EMERGING_HOT_SPOT_PARAMETER_LENGTH,
+  GPU_EMERGING_HOT_SPOT_STATISTICS_LENGTH
+} from './emerging-hot-spot-parameters';
+
+const OPERATION = 'GPUEmergingHotSpots';
+/** Bins reduced by one invocation in the first level of the deterministic global sums. */
+const BIN_BLOCK = 1024;
+const MAXIMUM_BIN_COUNT = 2 ** 31 - 1;
+
+/**
+ * Properties for {@link GPUEmergingHotSpots}.
+ *
+ * Per-frame (no rebuild or recompile): the contents of `values`, `mask` and `parameters` (radius,
+ * temporal window, critical z, trend significance and persistence thresholds). Compile-time:
+ * `gridWidth`, `gridHeight`, `sliceCount`, `maximumRadius`, the value format, and which optional
+ * views are present.
+ */
+export type GPUEmergingHotSpotsProps = {
+  /** Prefix for generated node and transient IDs. Defaults to `'emerging-hot-spots'`. */
+  id?: string;
+  /**
+   * Dense space-time cube indexed `cell * sliceCount + slice` with `cell = row * gridWidth +
+   * column`, the layout of `GPUTemporalReduction` output. A NaN bin is missing and excluded. A
+   * `uint32` view (for example `GPUTemporalReduction` `counts`) is read as `f32(count)`, every bin
+   * valid.
+   */
+  values: GraphDataView<'float32'> | GraphDataView<'uint32'>;
+  /** Lattice width in cells. Compile-time. */
+  gridWidth: number;
+  /** Lattice height in cells. Compile-time. */
+  gridHeight: number;
+  /** Slices per cell, at most `GPU_EMERGING_HOT_SPOT_MAXIMUM_SLICE_COUNT`. Compile-time. */
+  sliceCount: number;
+  /**
+   * Largest per-frame `radius` in cells, at most `GPU_EMERGING_HOT_SPOT_MAXIMUM_RADIUS`. Larger
+   * per-frame radii are clamped. Compile-time. Defaults to 4.
+   */
+  maximumRadius?: number;
+  /** Optional per-cell mask (`cellCount` rows): zero excludes every bin of the cell. */
+  mask?: GraphDataView<'uint32'>;
+  /**
+   * Per-frame parameters: a packed float32 view of at least
+   * `GPU_EMERGING_HOT_SPOT_PARAMETER_LENGTH` elements written with
+   * `getGPUEmergingHotSpotParameterValues`.
+   */
+  parameters: GraphDataView<'float32'>;
+  /** Caller-owned per-bin Gi* z-scores in cube layout; NaN for missing bins. */
+  giZScores: GraphDataView<'float32'>;
+  /** Caller-owned per-cell Mann-Kendall z of the Gi* series (continuity corrected). */
+  trendZ: GraphDataView<'float32'>;
+  /** Caller-owned per-cell two-sided Mann-Kendall p-value. */
+  trendP: GraphDataView<'float32'>;
+  /** Caller-owned per-cell Mann-Kendall statistic `S`, an exact integer. */
+  trendS: GraphDataView<'sint32'>;
+  /** Caller-owned per-cell category code from `GPU_EMERGING_HOT_SPOT_CATEGORIES`. */
+  category: GraphDataView<'uint32'>;
+  /** Caller-owned per-cell count of significant hot slices (`z >= criticalZ`). */
+  hotSliceCount: GraphDataView<'uint32'>;
+  /** Caller-owned per-cell count of significant cold slices (`z <= -criticalZ`). */
+  coldSliceCount: GraphDataView<'uint32'>;
+  /** Optional caller-owned `[n, mean, variance, standardDeviation]` of the valid bins. */
+  globalStatistics?: GraphDataView<'float32'>;
+};
+
+/**
+ * ArcGIS-style emerging hot spot analysis over a dense space-time cube on a regular lattice.
+ *
+ * Passes, each deterministic and free of float atomics:
+ * 1. Global `n`, mean and population standard deviation of valid bins: per-block sums over fixed
+ *    1024-bin blocks, then one invocation adding the block partials in order (mean first, then
+ *    the sum of squared deviations).
+ * 2. Space-time Gi* per bin with binary weights, the focal bin included:
+ *    `z = sum_j (x_j - X) / (S * sqrt((n k - k^2) / (n - 1)))` where `j` covers valid bins of cells
+ *    whose lattice offset satisfies `dx^2 + dy^2 <= radius^2` in the current and `temporalWindow`
+ *    previous slices, and `k` counts them. Neighbors are visited in a fixed order (offset rows,
+ *    offset columns, ascending slice). z is NaN for a missing bin, `n < 2`, `S = 0` or `k >= n`.
+ * 3. Per-cell Mann-Kendall test over the finite z series (NaN slices skipped): `S = sum_{i<j}
+ *    sign(z_j - z_i)` in exact integers, `Var = [n(n-1)(2n+5) - sum_t t(t-1)(2t+5)] / 18` with tie
+ *    groups of exactly equal f32 values, `z = (S - sign(S)) / sqrt(Var)` (0 when `S = 0` or
+ *    `Var <= 0`), and the two-sided p-value `erfc(|z| / sqrt(2))` with the Numerical Recipes
+ *    `erfcc` Chebyshev fit (relative error below 1.2e-7); `p = 1` when `Var <= 0`.
+ * 4. Classification into the 17 {@link GPU_EMERGING_HOT_SPOT_CATEGORIES}.
+ *
+ * Classification rules, evaluated on the finite z series (NaN slices skipped; the "final slice" is
+ * the last finite one). A slice is hot when `z >= criticalZ` and cold when `z <= -criticalZ`; `N` is
+ * the finite slice count, `H` and `C` the hot and cold counts, and "90%" is
+ * `persistentFraction * N`. The trend is significant when `trendP <= trendSignificanceLevel`.
+ * The final slice picks the track, then rules apply in order:
+ * - Final slice hot: New (`H = 1`), Consecutive (trailing hot run of at least 2, `H` equal to the
+ *   run, `H < 90%`), Intensifying / Diminishing / Persistent (`H >= 90%`, significant upward /
+ *   significant downward / no significant trend), Sporadic (`C = 0`), otherwise Oscillating.
+ * - Final slice cold: the mirror with Intensifying cold on a significant downward trend (the cold
+ *   intensifies) and Diminishing cold on a significant upward trend.
+ * - Final slice neither: Historical hot (`H >= 90%`), Historical cold (`C >= 90%`), Sporadic hot
+ *   (`H > 0`, `C = 0`, as ArcGIS defines it without requiring a hot final slice), Sporadic cold
+ *   (`C > 0`, `H = 0`), otherwise no pattern.
+ * Ordering decisions: New is tested before Oscillating, so a cell hot only in the final slice is New
+ * even with cold history; a cell with a cold final slice and `C = 1` is New cold even when 90% of
+ * its earlier slices were hot; mixed hot and cold history without a significant final slice has
+ * no pattern.
+ *
+ * Determinism: all sums run in a fixed order and integer statistics are exact, so repeated
+ * encodings on one device are bitwise identical.
+ *
+ * Non-goals: permutation p-values, FDR correction, irregular neighborhoods, time-step intervals
+ * other than one slice.
+ */
+export class GPUEmergingHotSpots implements GPUMapGraphRecipe {
+  /** Prefix for every node and transient ID. */
+  readonly id: string;
+  /** Stable recipe name. */
+  readonly recipe = 'emerging-hot-spots';
+  /** Validated properties. */
+  readonly props: GPUEmergingHotSpotsProps;
+
+  constructor(props: GPUEmergingHotSpotsProps) {
+    this.id = props.id ?? 'emerging-hot-spots';
+    this.props = props;
+    const id = this.id;
+    const {gridWidth, gridHeight, sliceCount} = props;
+    for (const [name, value] of [
+      ['gridWidth', gridWidth],
+      ['gridHeight', gridHeight],
+      ['sliceCount', sliceCount]
+    ] as const) {
+      if (!Number.isInteger(value) || value < 1) {
+        throw new Error(`${id} ${name} must be a positive integer`);
+      }
+    }
+    if (sliceCount > GPU_EMERGING_HOT_SPOT_MAXIMUM_SLICE_COUNT) {
+      throw new Error(
+        `${id} sliceCount must be at most ${GPU_EMERGING_HOT_SPOT_MAXIMUM_SLICE_COUNT}`
+      );
+    }
+    const cellCount = gridWidth * gridHeight;
+    const binCount = cellCount * sliceCount;
+    if (binCount > MAXIMUM_BIN_COUNT) {
+      throw new Error(`${id} gridWidth * gridHeight * sliceCount must be below 2^31`);
+    }
+    const maximumRadius = props.maximumRadius ?? 4;
+    if (
+      !Number.isInteger(maximumRadius) ||
+      maximumRadius < 0 ||
+      maximumRadius > GPU_EMERGING_HOT_SPOT_MAXIMUM_RADIUS
+    ) {
+      throw new Error(
+        `${id} maximumRadius must be an integer in 0..${GPU_EMERGING_HOT_SPOT_MAXIMUM_RADIUS}`
+      );
+    }
+    validatePackedView(props.values, ['float32', 'uint32'], `${id} values`);
+    if (props.values.length !== binCount) {
+      throw new Error(`${id} values length must equal gridWidth * gridHeight * sliceCount`);
+    }
+    validatePackedView(props.parameters, ['float32'], `${id} parameters`);
+    if (props.parameters.length < GPU_EMERGING_HOT_SPOT_PARAMETER_LENGTH) {
+      throw new Error(
+        `${id} parameters must hold ${GPU_EMERGING_HOT_SPOT_PARAMETER_LENGTH} float32 values`
+      );
+    }
+    if (props.mask) {
+      validatePackedUint32View(props.mask, `${id} mask`);
+      if (props.mask.length !== cellCount) {
+        throw new Error(`${id} mask length must equal gridWidth * gridHeight`);
+      }
+    }
+    validatePackedView(props.giZScores, ['float32'], `${id} giZScores`);
+    if (props.giZScores.length !== binCount) {
+      throw new Error(`${id} giZScores length must equal values length`);
+    }
+    validatePackedView(props.trendZ, ['float32'], `${id} trendZ`);
+    validatePackedView(props.trendP, ['float32'], `${id} trendP`);
+    validatePackedView(props.trendS, ['sint32'], `${id} trendS`);
+    validatePackedUint32View(props.category, `${id} category`);
+    validatePackedUint32View(props.hotSliceCount, `${id} hotSliceCount`);
+    validatePackedUint32View(props.coldSliceCount, `${id} coldSliceCount`);
+    for (const [name, view] of [
+      ['trendZ', props.trendZ],
+      ['trendP', props.trendP],
+      ['trendS', props.trendS],
+      ['category', props.category],
+      ['hotSliceCount', props.hotSliceCount],
+      ['coldSliceCount', props.coldSliceCount]
+    ] as const) {
+      if (view.length !== cellCount) {
+        throw new Error(`${id} ${name} length must equal gridWidth * gridHeight`);
+      }
+    }
+    if (props.globalStatistics) {
+      validatePackedView(props.globalStatistics, ['float32'], `${id} globalStatistics`);
+      if (props.globalStatistics.length < GPU_EMERGING_HOT_SPOT_STATISTICS_LENGTH) {
+        throw new Error(
+          `${id} globalStatistics must hold ${GPU_EMERGING_HOT_SPOT_STATISTICS_LENGTH} float32 values`
+        );
+      }
+    }
+    validateGraphOutputsDisjointFromInputs(
+      id,
+      [
+        props.giZScores,
+        props.trendZ,
+        props.trendP,
+        props.trendS,
+        props.category,
+        props.hotSliceCount,
+        props.coldSliceCount,
+        props.globalStatistics
+      ],
+      [props.values, props.parameters, props.mask]
+    );
+  }
+
+  /** Returns the emerging-hot-spot nodes in dependency order. */
+  getCommandNodes<Parameters>(
+    graph: GPUCommandGraph<Parameters>
+  ): readonly GPUCommandNode<Parameters>[] {
+    const {id, props} = this;
+    const {values, mask, parameters, giZScores, gridWidth, gridHeight, sliceCount} = props;
+    validateGraphViewsBelongToGraph(id, graph, [
+      values,
+      mask,
+      parameters,
+      giZScores,
+      props.trendZ,
+      props.trendP,
+      props.trendS,
+      props.category,
+      props.hotSliceCount,
+      props.coldSliceCount,
+      props.globalStatistics
+    ]);
+    const maximumRadius = props.maximumRadius ?? 4;
+    const cellCount = gridWidth * gridHeight;
+    const binCount = cellCount * sliceCount;
+    const blockCount = Math.ceil(binCount / BIN_BLOCK);
+    const valueType = values.format === 'uint32' ? 'u32' : 'f32';
+    const sumPartials = createTransientView(graph, `${id}-sum-partials`, 'float32', blockCount);
+    const countPartials = createTransientView(graph, `${id}-count-partials`, 'uint32', blockCount);
+    const squarePartials = createTransientView(
+      graph,
+      `${id}-square-partials`,
+      'float32',
+      blockCount
+    );
+    const statistics =
+      props.globalStatistics ??
+      createTransientView(
+        graph,
+        `${id}-statistics`,
+        'float32',
+        GPU_EMERGING_HOT_SPOT_STATISTICS_LENGTH
+      );
+
+    const declarations = /* wgsl */ `
+const GRID_WIDTH: u32 = ${gridWidth}u;
+const GRID_HEIGHT: u32 = ${gridHeight}u;
+const CELL_COUNT: u32 = ${cellCount}u;
+const SLICE_COUNT: u32 = ${sliceCount}u;
+const BIN_COUNT: u32 = ${binCount}u;
+const BIN_BLOCK: u32 = ${BIN_BLOCK}u;
+const MAXIMUM_RADIUS: f32 = ${maximumRadius}.0;
+${SPATIAL_AUTOCORRELATION_FLOAT_WGSL}
+
+fn readValue(bin: u32) -> f32 {
+  return f32(values[valuesOffset + bin]);
+}
+
+fn isBinValid(bin: u32, cell: u32) -> bool {
+  ${mask ? 'if (mask[maskOffset + cell] == 0u) { return false; }' : ''}
+  return isFiniteFloat(readValue(bin));
+}
+`;
+    const valuesBinding: MapGraphKernelBinding = {
+      name: 'values',
+      view: values,
+      type: valueType,
+      access: 'read'
+    };
+    const maskBindings: MapGraphKernelBinding[] = mask
+      ? [{name: 'mask', view: mask, type: 'u32', access: 'read'}]
+      : [];
+    const parametersBinding: MapGraphKernelBinding = {
+      name: 'parameters',
+      view: parameters,
+      type: 'f32',
+      access: 'read'
+    };
+    const statisticsBinding = (access: 'read' | 'read_write'): MapGraphKernelBinding => ({
+      name: 'statistics',
+      view: statistics,
+      type: 'f32',
+      access
+    });
+    const nodes: GPUCommandNode<Parameters>[] = [];
+
+    nodes.push(
+      createMapGraphKernelNode<Parameters>(graph, {
+        id: `${id}-block-sums`,
+        operation: OPERATION,
+        variant: 'block-sums',
+        bindings: [
+          valuesBinding,
+          ...maskBindings,
+          {
+            name: 'sumPartials',
+            view: sumPartials,
+            type: 'f32',
+            access: 'read_write'
+          },
+          {
+            name: 'countPartials',
+            view: countPartials,
+            type: 'u32',
+            access: 'read_write'
+          }
+        ],
+        invocationCount: blockCount,
+        declarations,
+        body: `let begin = index * BIN_BLOCK;
+  let end = min(begin + BIN_BLOCK, BIN_COUNT);
+  var sum = 0.0;
+  var count = 0u;
+  for (var bin = begin; bin < end; bin++) {
+    if (isBinValid(bin, bin / SLICE_COUNT)) {
+      sum += readValue(bin);
+      count++;
+    }
+  }
+  sumPartials[sumPartialsOffset + index] = sum;
+  countPartials[countPartialsOffset + index] = count;`
+      }),
+      createMapGraphKernelNode<Parameters>(graph, {
+        id: `${id}-mean`,
+        operation: OPERATION,
+        variant: 'mean',
+        bindings: [
+          {
+            name: 'sumPartials',
+            view: sumPartials,
+            type: 'f32',
+            access: 'read'
+          },
+          {
+            name: 'countPartials',
+            view: countPartials,
+            type: 'u32',
+            access: 'read'
+          },
+          statisticsBinding('read_write')
+        ],
+        invocationCount: 1,
+        declarations: `const BLOCK_COUNT: u32 = ${blockCount}u;`,
+        body: `var sum = 0.0;
+  var count = 0u;
+  for (var block = 0u; block < BLOCK_COUNT; block++) {
+    sum += sumPartials[sumPartialsOffset + block];
+    count += countPartials[countPartialsOffset + block];
+  }
+  statistics[statisticsOffset] = f32(count);
+  statistics[statisticsOffset + 1u] = select(0.0, sum / f32(count), count > 0u);
+  statistics[statisticsOffset + 2u] = 0.0;
+  statistics[statisticsOffset + 3u] = 0.0;`
+      }),
+      createMapGraphKernelNode<Parameters>(graph, {
+        id: `${id}-block-squares`,
+        operation: OPERATION,
+        variant: 'block-squares',
+        bindings: [
+          valuesBinding,
+          ...maskBindings,
+          statisticsBinding('read'),
+          {
+            name: 'squarePartials',
+            view: squarePartials,
+            type: 'f32',
+            access: 'read_write'
+          }
+        ],
+        invocationCount: blockCount,
+        declarations,
+        body: `let mean = statistics[statisticsOffset + 1u];
+  let begin = index * BIN_BLOCK;
+  let end = min(begin + BIN_BLOCK, BIN_COUNT);
+  var sum = 0.0;
+  for (var bin = begin; bin < end; bin++) {
+    if (isBinValid(bin, bin / SLICE_COUNT)) {
+      let centered = readValue(bin) - mean;
+      sum += centered * centered;
+    }
+  }
+  squarePartials[squarePartialsOffset + index] = sum;`
+      }),
+      createMapGraphKernelNode<Parameters>(graph, {
+        id: `${id}-deviation`,
+        operation: OPERATION,
+        variant: 'deviation',
+        bindings: [
+          {
+            name: 'squarePartials',
+            view: squarePartials,
+            type: 'f32',
+            access: 'read'
+          },
+          statisticsBinding('read_write')
+        ],
+        invocationCount: 1,
+        declarations: `const BLOCK_COUNT: u32 = ${blockCount}u;`,
+        body: `var sum = 0.0;
+  for (var block = 0u; block < BLOCK_COUNT; block++) {
+    sum += squarePartials[squarePartialsOffset + block];
+  }
+  let count = statistics[statisticsOffset];
+  let variance = select(0.0, sum / count, count > 0.0);
+  statistics[statisticsOffset + 2u] = variance;
+  statistics[statisticsOffset + 3u] = sqrt(variance);`
+      }),
+      createMapGraphKernelNode<Parameters>(graph, {
+        id: `${id}-gi-star`,
+        operation: OPERATION,
+        variant: 'gi-star',
+        bindings: [
+          valuesBinding,
+          ...maskBindings,
+          parametersBinding,
+          statisticsBinding('read'),
+          {
+            name: 'giZScores',
+            view: giZScores,
+            type: 'f32',
+            access: 'read_write'
+          }
+        ],
+        invocationCount: binCount,
+        declarations,
+        body: `let cell = index / SLICE_COUNT;
+  let slice = index % SLICE_COUNT;
+  var zScore = getQuietNaN(index);
+  let rawRadius = parameters[parametersOffset];
+  let rawWindow = parameters[parametersOffset + 1u];
+  let count = statistics[statisticsOffset];
+  let mean = statistics[statisticsOffset + 1u];
+  let variance = statistics[statisticsOffset + 2u];
+  let deviation = statistics[statisticsOffset + 3u];
+  if (isBinValid(index, cell) && isFiniteFloat(rawRadius) && isFiniteFloat(rawWindow) &&
+      rawRadius >= 0.0 && rawWindow >= 0.0) {
+    let radius = min(rawRadius, MAXIMUM_RADIUS);
+    let radiusSquared = radius * radius;
+    let reach = i32(floor(radius));
+    let windowSize = u32(min(floor(rawWindow), f32(SLICE_COUNT - 1u)));
+    let firstSlice = slice - min(windowSize, slice);
+    let column = i32(cell % GRID_WIDTH);
+    let row = i32(cell / GRID_WIDTH);
+    var neighborSum = 0.0;
+    var neighborCount = 0u;
+    for (var deltaRow = -reach; deltaRow <= reach; deltaRow++) {
+      let neighborRow = row + deltaRow;
+      if (neighborRow < 0 || neighborRow >= i32(GRID_HEIGHT)) {
+        continue;
+      }
+      for (var deltaColumn = -reach; deltaColumn <= reach; deltaColumn++) {
+        let neighborColumn = column + deltaColumn;
+        if (neighborColumn < 0 || neighborColumn >= i32(GRID_WIDTH) ||
+            f32(deltaRow * deltaRow + deltaColumn * deltaColumn) > radiusSquared) {
+          continue;
+        }
+        let neighborCell = u32(neighborRow) * GRID_WIDTH + u32(neighborColumn);
+        for (var neighborSlice = firstSlice; neighborSlice <= slice; neighborSlice++) {
+          let neighborBin = neighborCell * SLICE_COUNT + neighborSlice;
+          if (isBinValid(neighborBin, neighborCell)) {
+            neighborSum += readValue(neighborBin) - mean;
+            neighborCount++;
+          }
+        }
+      }
+    }
+    let weightSum = f32(neighborCount);
+    let spread = weightSum * (count - weightSum) / (count - 1.0);
+    if (count >= 2.0 && variance > 0.0 && spread > 0.0 && isFiniteFloat(spread)) {
+      zScore = neighborSum / (deviation * sqrt(spread));
+    }
+  }
+  giZScores[giZScoresOffset + index] = zScore;`
+      }),
+      createMapGraphKernelNode<Parameters>(graph, {
+        id: `${id}-mann-kendall`,
+        operation: OPERATION,
+        variant: 'mann-kendall',
+        bindings: [
+          parametersBinding,
+          {name: 'giZScores', view: giZScores, type: 'f32', access: 'read'},
+          {
+            name: 'trendZ',
+            view: props.trendZ,
+            type: 'f32',
+            access: 'read_write'
+          },
+          {
+            name: 'trendP',
+            view: props.trendP,
+            type: 'f32',
+            access: 'read_write'
+          },
+          {
+            name: 'trendS',
+            view: props.trendS,
+            type: 'i32',
+            access: 'read_write'
+          },
+          {
+            name: 'hotSliceCount',
+            view: props.hotSliceCount,
+            type: 'u32',
+            access: 'read_write'
+          },
+          {
+            name: 'coldSliceCount',
+            view: props.coldSliceCount,
+            type: 'u32',
+            access: 'read_write'
+          }
+        ],
+        invocationCount: cellCount,
+        declarations: `const SLICE_COUNT: u32 = ${sliceCount}u;
+${SPATIAL_AUTOCORRELATION_FLOAT_WGSL}`,
+        body: `let criticalZ = parameters[parametersOffset + 2u];
+  let base = index * SLICE_COUNT;
+  var statistic = 0;
+  var valid = 0u;
+  var hot = 0u;
+  var cold = 0u;
+  var tieTerm = 0u;
+  for (var first = 0u; first < SLICE_COUNT; first++) {
+    let firstValue = giZScores[giZScoresOffset + base + first];
+    if (!isFiniteFloat(firstValue)) {
+      continue;
+    }
+    valid++;
+    hot += select(0u, 1u, firstValue >= criticalZ);
+    cold += select(0u, 1u, firstValue <= -criticalZ);
+    var equalBefore = false;
+    var groupSize = 1u;
+    for (var second = 0u; second < SLICE_COUNT; second++) {
+      let secondValue = giZScores[giZScoresOffset + base + second];
+      if (second == first || !isFiniteFloat(secondValue)) {
+        continue;
+      }
+      if (second > first) {
+        statistic += select(select(0, -1, secondValue < firstValue), 1, secondValue > firstValue);
+      }
+      if (secondValue == firstValue) {
+        equalBefore = equalBefore || second < first;
+        groupSize++;
+      }
+    }
+    if (!equalBefore && groupSize > 1u) {
+      tieTerm += groupSize * (groupSize - 1u) * (2u * groupSize + 5u);
+    }
+  }
+  var numerator = 0u;
+  if (valid >= 2u) {
+    numerator = valid * (valid - 1u) * (2u * valid + 5u) - tieTerm;
+  }
+  var trendZScore = 0.0;
+  var trendPValue = 1.0;
+  if (numerator > 0u) {
+    let deviation = sqrt(f32(numerator) / 18.0);
+    if (statistic > 0) {
+      trendZScore = f32(statistic - 1) / deviation;
+    } else if (statistic < 0) {
+      trendZScore = f32(statistic + 1) / deviation;
+    }
+    trendPValue = getTwoSidedPValue(trendZScore);
+  }
+  trendZ[trendZOffset + index] = trendZScore;
+  trendP[trendPOffset + index] = trendPValue;
+  trendS[trendSOffset + index] = statistic;
+  hotSliceCount[hotSliceCountOffset + index] = hot;
+  coldSliceCount[coldSliceCountOffset + index] = cold;`
+      }),
+      createMapGraphKernelNode<Parameters>(graph, {
+        id: `${id}-classify`,
+        operation: OPERATION,
+        variant: 'classify',
+        bindings: [
+          parametersBinding,
+          {name: 'giZScores', view: giZScores, type: 'f32', access: 'read'},
+          {name: 'trendZ', view: props.trendZ, type: 'f32', access: 'read'},
+          {name: 'trendP', view: props.trendP, type: 'f32', access: 'read'},
+          {
+            name: 'hotSliceCount',
+            view: props.hotSliceCount,
+            type: 'u32',
+            access: 'read'
+          },
+          {
+            name: 'coldSliceCount',
+            view: props.coldSliceCount,
+            type: 'u32',
+            access: 'read'
+          },
+          {
+            name: 'category',
+            view: props.category,
+            type: 'u32',
+            access: 'read_write'
+          }
+        ],
+        invocationCount: cellCount,
+        declarations: `const SLICE_COUNT: u32 = ${sliceCount}u;
+${SPATIAL_AUTOCORRELATION_FLOAT_WGSL}`,
+        body: `let criticalZ = parameters[parametersOffset + 2u];
+  let trendLevel = parameters[parametersOffset + 3u];
+  let fraction = parameters[parametersOffset + 4u];
+  let base = index * SLICE_COUNT;
+  var valid = 0u;
+  var trailingHot = 0u;
+  var trailingCold = 0u;
+  var finalState = 0u;
+  for (var slice = 0u; slice < SLICE_COUNT; slice++) {
+    let zScore = giZScores[giZScoresOffset + base + slice];
+    if (!isFiniteFloat(zScore)) {
+      continue;
+    }
+    valid++;
+    if (zScore >= criticalZ) {
+      trailingHot++;
+      trailingCold = 0u;
+      finalState = 1u;
+    } else if (zScore <= -criticalZ) {
+      trailingCold++;
+      trailingHot = 0u;
+      finalState = 2u;
+    } else {
+      trailingHot = 0u;
+      trailingCold = 0u;
+      finalState = 0u;
+    }
+  }
+  let hot = hotSliceCount[hotSliceCountOffset + index];
+  let cold = coldSliceCount[coldSliceCountOffset + index];
+  let threshold = fraction * f32(valid);
+  let hotPersistent = f32(hot) >= threshold;
+  let coldPersistent = f32(cold) >= threshold;
+  let trendSignificant = trendP[trendPOffset + index] <= trendLevel;
+  let trendUp = trendSignificant && trendZ[trendZOffset + index] > 0.0;
+  let trendDown = trendSignificant && trendZ[trendZOffset + index] < 0.0;
+  var result = 0u;
+  if (valid > 0u) {
+    if (finalState == 1u) {
+      if (hot == 1u) {
+        result = 1u;
+      } else if (trailingHot >= 2u && trailingHot == hot && !hotPersistent) {
+        result = 2u;
+      } else if (hotPersistent) {
+        result = select(select(4u, 5u, trendDown), 3u, trendUp);
+      } else {
+        result = select(7u, 6u, cold == 0u);
+      }
+    } else if (finalState == 2u) {
+      if (cold == 1u) {
+        result = 9u;
+      } else if (trailingCold >= 2u && trailingCold == cold && !coldPersistent) {
+        result = 10u;
+      } else if (coldPersistent) {
+        result = select(select(12u, 13u, trendUp), 11u, trendDown);
+      } else {
+        result = select(15u, 14u, hot == 0u);
+      }
+    } else if (hot > 0u && hotPersistent) {
+      result = 8u;
+    } else if (cold > 0u && coldPersistent) {
+      result = 16u;
+    } else if (hot > 0u && cold == 0u) {
+      result = 6u;
+    } else if (cold > 0u && hot == 0u) {
+      result = 14u;
+    }
+  }
+  category[categoryOffset + index] = result;`
+      })
+    );
+    return nodes;
+  }
+}

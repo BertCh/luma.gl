@@ -54,34 +54,32 @@ it('GPU Graph deck.gl effect composes actual GPU analytics, zero-copy selection,
       effect.positions.usage & (Buffer.STORAGE | Buffer.VERTEX),
       'shared graph coordinates are simultaneously writable storage and vertex attributes'
     ).toBe(Buffer.STORAGE | Buffer.VERTEX);
-    expect(effect.importance, 'PageRank stays resident').toBe(
-      effect.pageRank.output.data[0].buffer
-    );
+    const recipes = effect.recipeColumns;
+    if (!recipes) throw new Error('The effect did not build its recipe columns');
+    expect(effect.recipeColumnsSkipReason, 'recipe columns are built for small graphs').toBe(null);
     expect(
-      effect.componentLabels,
-      'weak-component colors read the original GPU output allocation'
-    ).toBe(effect.components.output.data[0].buffer);
+      recipes.columns.community.buffer,
+      'community colors read the recipe label column, not a duplicate legacy analytic'
+    ).toBe(effect.recipeColumns?.columns.community.buffer);
     expect(
-      effect.communityLabels,
-      'community colors read real GPU label-propagation outputs, not weak-component aliases'
-    ).toBe(effect.communities.output.data[0].buffer);
-    expect(
-      effect.degreeValues,
-      'degree colors and node radii read their original caller-owned GPU output'
-    ).toBe(effect.degree.output.data[0].buffer);
-    expect(
-      effect.selectionMask,
-      'Deck highlighting reads source-aligned GPU neighborhood masks'
-    ).toBe(effect.search.mask!.data[0].buffer);
+      Object.keys(effect).filter(key =>
+        ['pageRank', 'components', 'communities', 'search'].includes(key)
+      ),
+      'the effect no longer runs its own duplicate analytics'
+    ).toEqual([]);
 
     effect.setPinnedVertex(7, true);
     effect.setVertexPosition(7, [0.375, -0.25]);
-    effect.setNeighborhoodDepth(2);
+    effect.setHoverVertex(0);
+    effect.setNeighborhoodHops(2);
     const firstEncoder = device.createCommandEncoder({id: 'gpu-graph-deck-effect-real-analysis'});
     effect.analysisGraph.encode(firstEncoder, {parameters: undefined});
+    recipes.encodeAnalytics(firstEncoder);
+    recipes.encodeInteraction(firstEncoder);
     effect.frameGraph.encode(firstEncoder, {parameters: undefined});
     device.submit(firstEncoder.finish());
 
+    const vertexCount = effect.graph.vertexCount;
     const [
       counts,
       reverseCounts,
@@ -89,19 +87,17 @@ it('GPU Graph deck.gl effect composes actual GPU analytics, zero-copy selection,
       communityLabels,
       degrees,
       importance,
-      distances,
       mask,
       pins,
       positions
     ] = await Promise.all([
       readUint32Vector(effect.topology.forward.count),
       readUint32Vector(effect.topology.reverse!.count),
-      readUint32Vector(effect.components.output),
-      readUint32Vector(effect.communities.output),
-      readUint32Vector(effect.degree.output),
-      readFloat32Vector(effect.pageRank.output),
-      readUint32Vector(effect.search.distances),
-      readUint32Vector(effect.search.mask!),
+      readBufferWords(recipes.columns.component.buffer, vertexCount),
+      readBufferWords(recipes.columns.community.buffer, vertexCount),
+      readBufferWords(recipes.rawColumns.degree.buffer, vertexCount),
+      readBufferFloats(recipes.rawColumns.pageRank.buffer, vertexCount),
+      readBufferWords(recipes.neighborhoodMask, vertexCount),
       readUint32Vector(effect.layout.pinned!),
       readFloat32Coordinates(effect.layout.positions)
     ]);
@@ -116,8 +112,8 @@ it('GPU Graph deck.gl effect composes actual GPU analytics, zero-copy selection,
     ).toBe(32);
     expect(
       degrees.reduce((sum, degree) => sum + degree, 0),
-      'actual resident vertex degrees account for every original directed edge'
-    ).toBe(effect.graph.edgeCount);
+      'recipe degrees account for both endpoints of every original edge (undirected view)'
+    ).toBe(2 * effect.graph.edgeCount);
     expect(componentLabels[64], 'disconnected component retains its minimum source ID').toBe(64);
     expect(
       componentLabels[effect.graph.vertexCount - 1],
@@ -125,10 +121,9 @@ it('GPU Graph deck.gl effect composes actual GPU analytics, zero-copy selection,
     ).toBe(effect.graph.vertexCount - 1);
     expect(
       Boolean(Math.abs(importance.reduce((sum, score) => sum + score, 0) - 1) < 5e-5),
-      'actual GPU PageRank sizing remains normalized'
+      'recipe PageRank sizing remains normalized'
     ).toBe(true);
-    expect(distances[0], 'GPU neighborhood root matches the stable selected vertex').toBe(0);
-    expect(mask[0], 'source-aligned mask highlights the selected vertex').toBe(1);
+    expect(mask[0], 'source-aligned mask highlights the hovered vertex').toBe(1);
     expect(mask[effect.graph.vertexCount - 1], 'disconnected vertices remain unselected').toBe(0);
     expect(pins[7], 'dragging pins the requested resident vertex row').toBe(1);
     expect(
@@ -140,18 +135,15 @@ it('GPU Graph deck.gl effect composes actual GPU analytics, zero-copy selection,
       'pinned Y survives force integration'
     ).toBe(true);
 
-    effect.setSelectedVertex(64);
-    effect.setNeighborhoodDepth(1);
-    const secondEncoder = device.createCommandEncoder({id: 'gpu-graph-deck-effect-selected-root'});
+    effect.setHoverVertex(64);
+    effect.setNeighborhoodHops(1);
+    const secondEncoder = device.createCommandEncoder({id: 'gpu-graph-deck-effect-hovered-root'});
+    recipes.encodeInteraction(secondEncoder);
     effect.frameGraph.encode(secondEncoder, {parameters: undefined});
     device.submit(secondEncoder.finish());
-    const [updatedDistances, updatedMask] = await Promise.all([
-      readUint32Vector(effect.search.distances),
-      readUint32Vector(effect.search.mask!)
-    ]);
-    expect(updatedDistances[64], 'newly picked stable source ID becomes the GPU root').toBe(0);
-    expect(updatedMask[64], 'new root directly updates the Deck highlight buffer').toBe(1);
-    expect(updatedMask[0], 'unrelated components stop receiving selection highlights').toBe(0);
+    const updatedMask = await readBufferWords(recipes.neighborhoodMask, vertexCount);
+    expect(updatedMask[64], 'new hover root directly updates the Deck highlight buffer').toBe(1);
+    expect(updatedMask[0], 'unrelated components stop receiving hover highlights').toBe(0);
   } finally {
     submitSpy.mockRestore();
     effect?.cleanup({} as EffectContext);
@@ -202,17 +194,19 @@ it('GPU Graph Deck effect executes real spatial indexing and community analytics
     try {
       const encoder = device.createCommandEncoder({id: 'gpu-graph-deck-real-spatial-showcase'});
       effect.analysisGraph.encode(encoder, {parameters: undefined});
+      effect.recipeColumns!.encodeAnalytics(encoder);
       effect.frameGraph.encode(encoder, {parameters: undefined});
       device.submit(encoder.finish());
 
+      const recipeColumns = effect.recipeColumns!;
       const [indexCount, indexOverflow, offsets, weakComponents, communityLabels, degrees] =
         await Promise.all([
           readUint32Vector(effect.spatialLayout.count),
           readUint32Vector(effect.spatialLayout.overflow),
           readUint32Vector(effect.spatialLayout.cellOffsets),
-          readUint32Vector(effect.components.output),
-          readUint32Vector(effect.communities.output),
-          readUint32Vector(effect.degree.output)
+          readBufferWords(recipeColumns.columns.component.buffer, dataset.vertexCount),
+          readBufferWords(recipeColumns.columns.community.buffer, dataset.vertexCount),
+          readBufferWords(recipeColumns.rawColumns.degree.buffer, dataset.vertexCount)
         ]);
 
       expect(indexCount[0], 'GPU grid accepts every bounded vertex').toBe(dataset.vertexCount);
@@ -222,8 +216,8 @@ it('GPU Graph Deck effect executes real spatial indexing and community analytics
       expect(communityLabels[8], 'majority-vote communities remain genuinely distinct').toBe(8);
       expect(
         degrees.reduce((sum, degree) => sum + degree, 0),
-        'real graph degrees remain exact in spatial layout mode'
-      ).toBe(effect.graph.edgeCount);
+        'real recipe degrees remain exact in spatial layout mode'
+      ).toBe(2 * effect.graph.edgeCount);
       expect(
         positionsReadSpy.mock.calls.length,
         'grid construction and coloring never download render positions'
@@ -278,8 +272,8 @@ it('GPU Graph Deck preserves every original GPU vertex and edge while sampling o
       undefined
     );
     expect(
-      Boolean(effect.searchGraph),
-      'sampled-layout selection has a separately schedulable real BFS'
+      Boolean(effect.recipeColumns),
+      'sampled layouts keep recipe columns, whose interaction graph schedules independently'
     ).toBe(true);
     expect(
       effect.graph.sourceVertices.data.map(chunk => chunk.length === 0),
@@ -290,33 +284,36 @@ it('GPU Graph Deck preserves every original GPU vertex and edge while sampling o
     try {
       const encoder = device.createCommandEncoder({id: 'gpu-graph-deck-real-sampled-point-layout'});
       effect.analysisGraph.encode(encoder, {parameters: undefined});
-      effect.searchGraph!.encode(encoder, {parameters: undefined});
+      const recipeColumns = effect.recipeColumns!;
+      recipeColumns.encodeAnalytics(encoder);
+      recipeColumns.setHoverVertex(0);
+      recipeColumns.encodeInteraction(encoder);
       effect.frameGraph.encode(encoder, {parameters: undefined});
       device.submit(encoder.finish());
 
-      const [forward, reverse, degrees, components, communities, importance, distances] =
+      const [forward, reverse, degrees, components, communities, importance, neighborhood] =
         await Promise.all([
           readUint32Vector(effect.topology.forward.count),
           readUint32Vector(effect.topology.reverse!.count),
-          readUint32Vector(effect.degree.output),
-          readUint32Vector(effect.components.output),
-          readUint32Vector(effect.communities.output),
-          readFloat32Vector(effect.pageRank.output),
-          readUint32Vector(effect.search.distances)
+          readBufferWords(recipeColumns.rawColumns.degree.buffer, dataset.vertexCount),
+          readBufferWords(recipeColumns.columns.component.buffer, dataset.vertexCount),
+          readBufferWords(recipeColumns.columns.community.buffer, dataset.vertexCount),
+          readBufferFloats(recipeColumns.rawColumns.pageRank.buffer, dataset.vertexCount),
+          readBufferWords(recipeColumns.neighborhoodMask, dataset.vertexCount)
         ]);
       expect(forward[0], 'sampled layout retains every forward edge').toBe(effect.graph.edgeCount);
       expect(reverse[0], 'sampled layout retains every reverse edge').toBe(effect.graph.edgeCount);
       expect(
         degrees.reduce((sum, degree) => sum + degree, 0),
         'complete GPU degree accounting is independent of the edge-only render limit'
-      ).toBe(effect.graph.edgeCount);
+      ).toBe(2 * effect.graph.edgeCount);
       expect(components[8], 'full-graph weak components still cross the source bridge').toBe(0);
       expect(communities[8], 'full-graph majority labels retain a distinct community').toBe(8);
       expect(
         Boolean(Math.abs(importance.reduce((sum, score) => sum + score, 0) - 1) < 5e-5),
         'full-graph GPU PageRank remains normalized in sampled force mode'
       ).toBe(true);
-      expect(distances[0], 'independently scheduled BFS resolves the actual selection').toBe(0);
+      expect(neighborhood[0], 'independently scheduled hover neighborhood marks its seed').toBe(1);
       expect(
         positionsReadSpy.mock.calls.length,
         'sampled forces, analytics, and points never read resident positions back'
@@ -460,12 +457,12 @@ it('GPU Graph deck.gl renders real source-chunk layers and asynchronously picks 
     ).toEqual(['auto', 'exact', 'spatial', 'sampled']);
     expect(
       Array.from(colorMode?.options ?? [], option => option.value),
-      'Deck color choices bind real resident analytic buffers'
-    ).toEqual(['community', 'component', 'degree', 'pagerank', 'distance']);
+      'Deck color choices bind real resident recipe columns'
+    ).toEqual(['community', 'component', 'degree', 'pagerank', 'core', 'band']);
     expect(
       Array.from(nodeSize?.options ?? [], option => option.value),
       'Deck node radii consume actual GPU PageRank or degree results'
-    ).toEqual(['pagerank', 'degree', 'uniform']);
+    ).toEqual(['pagerank', 'degree', 'core', 'uniform']);
     expect(status?.getAttribute('aria-live'), 'live status is screen-reader safe').toBe('polite');
 
     const layers = deck.props.layers ?? [];
@@ -515,7 +512,7 @@ it('GPU Graph deck.gl renders real source-chunk layers and asynchronously picks 
     effect.setPinnedVertex(0, true);
     effect.setVertexPosition(0, [0, 0]);
     const positionsReadSpy = vi.spyOn(effect.positions, 'readAsync');
-    const importanceReadSpy = vi.spyOn(effect.importance, 'readAsync');
+    const importanceReadSpy = vi.spyOn(effect.recipeColumns!.columns.pageRank.buffer, 'readAsync');
     const submitSpy = vi.spyOn(device, 'submit');
     try {
       deck.redraw('real WebGPU GPU Graph deck rendering and picking regression');
@@ -573,6 +570,22 @@ it('GPU Graph deck.gl renders real source-chunk layers and asynchronously picks 
         importanceReadSpy.mock.calls.length,
         'node sizing and picking never download GPU PageRank scores'
       ).toBe(0);
+
+      if (!colorMode) throw new Error('Deck did not mount its color control');
+      colorMode.value = 'degree';
+      colorMode.dispatchEvent(new Event('change', {bubbles: true}));
+      const degreeLayer = deck.props.layers?.find(layer => layer instanceof GPUGraphNodeLayer);
+      expect(
+        degreeLayer instanceof GPUGraphNodeLayer && degreeLayer.props.colorColumn?.buffer,
+        'switching the color column only rebinds a recipe column through props'
+      ).toBe(effect.recipeColumns?.columns.degree.buffer);
+      expect(
+        degreeLayer instanceof GPUGraphNodeLayer && degreeLayer.props.colorScale?.type,
+        'normalized float columns use a linear scale'
+      ).toBe('linear');
+      expect(deck.props.effects?.[0], 'switching color never rebuilds the effect').toBe(effect);
+      colorMode.value = 'community';
+      colorMode.dispatchEvent(new Event('change', {bubbles: true}));
 
       if (!graphScale) throw new Error('Deck did not mount its accessible graph-size slider');
       const previousPositions = effect.positions;
@@ -652,13 +665,13 @@ it('GPU Graph deck.gl renders real source-chunk layers and asynchronously picks 
         'same-ID Deck node models rebind their new resident vertex attribute'
       ).toBe(resizedEffect.positions);
       expect(
-        resizedNodeLayer.props.communities,
+        resizedNodeLayer.props.colorColumn?.buffer,
         'same-ID Deck models bind genuine resized GPU community labels'
-      ).toBe(resizedEffect.communityLabels);
+      ).toBe(resizedEffect.recipeColumns?.columns.community.buffer);
       expect(
-        resizedNodeLayer.props.degrees,
-        'same-ID Deck models bind genuine resized GPU vertex degrees'
-      ).toBe(resizedEffect.degreeValues);
+        resizedNodeLayer.props.sizeColumn?.buffer,
+        'same-ID Deck models bind genuine resized GPU PageRank sizing'
+      ).toBe(resizedEffect.recipeColumns?.columns.pageRank.buffer);
       expect(
         resizedEdgeLayers.map(layer => layer.id),
         'same-ID edge layers preserve every original source partition after resizing'
@@ -678,10 +691,12 @@ it('GPU Graph deck.gl renders real source-chunk layers and asynchronously picks 
       resizedEffect.setPinnedVertex(0, true);
       resizedEffect.setVertexPosition(0, [0, 0]);
       deck.redraw('rebuilt GPU Graph Deck models must render from new physical allocations');
+      const resizedRecipes = resizedEffect.recipeColumns!;
+      const resizedCount = resizedEffect.graph.vertexCount;
       const [resizedComponents, resizedCommunities, resizedDegrees] = await Promise.all([
-        readUint32Vector(resizedEffect.components.output),
-        readUint32Vector(resizedEffect.communities.output),
-        readUint32Vector(resizedEffect.degree.output)
+        readBufferWords(resizedRecipes.columns.component.buffer, resizedCount),
+        readBufferWords(resizedRecipes.columns.community.buffer, resizedCount),
+        readBufferWords(resizedRecipes.rawColumns.degree.buffer, resizedCount)
       ]);
       expect(resizedComponents[64], 'resized weak components retain the source bridge').toBe(0);
       expect(
@@ -691,7 +706,7 @@ it('GPU Graph deck.gl renders real source-chunk layers and asynchronously picks 
       expect(
         resizedDegrees.reduce((sum, degree) => sum + degree, 0),
         'resized node-degree visualizations consume actual GPU results'
-      ).toBe(resizedEffect.graph.edgeCount);
+      ).toBe(2 * resizedEffect.graph.edgeCount);
 
       const rebuiltOrigin = deck.getViewports()[0].project([0, 0, 0]);
       const resizedPick = await deck.pickObjectAsync({
@@ -882,10 +897,14 @@ async function readUint32Vector(vector: GPUVector<'uint32'>): Promise<number[]> 
   return Array.from(new Uint32Array(bytes.buffer, bytes.byteOffset, vector.length));
 }
 
-async function readFloat32Vector(vector: GPUVector<'float32'>): Promise<number[]> {
-  const chunk = vector.data[0];
-  const bytes = await (chunk.buffer as Buffer).readAsync(chunk.byteOffset, vector.length * 4);
-  return Array.from(new Float32Array(bytes.buffer, bytes.byteOffset, vector.length));
+async function readBufferWords(buffer: Buffer, count: number): Promise<number[]> {
+  const bytes = await buffer.readAsync(0, count * 4);
+  return Array.from(new Uint32Array(bytes.buffer, bytes.byteOffset, count));
+}
+
+async function readBufferFloats(buffer: Buffer, count: number): Promise<number[]> {
+  const bytes = await buffer.readAsync(0, count * 4);
+  return Array.from(new Float32Array(bytes.buffer, bytes.byteOffset, count));
 }
 
 async function readFloat32Coordinates(vector: GPUVector<'float32x2'>): Promise<number[]> {

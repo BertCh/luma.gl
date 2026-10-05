@@ -100,7 +100,9 @@ export type GPUPairwisePointInPolygonProps = GPUPairwisePointInPolygonBaseProps 
  * `ringOffsets` maps rings to flattened vertices. Rings close implicitly. Rings within one polygon
  * use even/odd fill semantics, while polygons within one multipolygon are unioned. Non-finite
  * coordinates, malformed offsets, invalid rings, and predicates that exceed the double-single
- * arithmetic envelope return `uncertain` rather than a silent inside/outside classification.
+ * arithmetic envelope return `uncertain` rather than a silent inside/outside classification. Only
+ * edges that can affect the result are tested against the envelope: an edge strictly above or below
+ * the point, or strictly to one side of it, is decided exactly from coordinate signs.
  */
 export class GPUPairwisePointInPolygon {
   readonly id: string;
@@ -430,6 +432,22 @@ fn classifyEdge(start: RelativePoint, end: RelativePoint) -> EdgeClassification 
   let upward = startYSign <= 0 && endYSign > 0;
   let downward = endYSign <= 0 && startYSign > 0;
   let straddlesY = upward || downward;
+  // Signs of the relative coordinates are exact, so edges decided by signs alone never consult the
+  // orientation envelope. An edge strictly on one side of the point's y can neither be crossed by
+  // the +x ray nor contain the point, however close its supporting line passes to the point.
+  if ((startYSign > 0 && endYSign > 0) || (startYSign < 0 && endYSign < 0)) {
+    return EdgeClassification(false, false, false);
+  }
+  if (straddlesY) {
+    let startXSign = geospatial_sign_normalized_fp64(start.x);
+    let endXSign = geospatial_sign_normalized_fp64(end.x);
+    if (startXSign > 0 && endXSign > 0) {
+      return EdgeClassification(true, false, false);
+    }
+    if (startXSign < 0 && endXSign < 0) {
+      return EdgeClassification(false, false, false);
+    }
+  }
   let orientation = getOrientation(start, end);
   if (orientation.uncertain) {
     return EdgeClassification(false, false, true);

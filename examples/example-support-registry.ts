@@ -93,6 +93,7 @@ import support82 from './deck/luspatial-taxi/mobile-support';
 import support83 from './deck/gpu-graph-explorer/mobile-support';
 import support84 from './deck/gpu-culled-trace/mobile-support';
 import support85 from './showcase/spectral-wave-lab/mobile-support';
+import support86 from './deck/map-graphs-explorer/mobile-support';
 
 /**
  * Metadata-only support registry. Importing this file never imports an example application.
@@ -184,6 +185,7 @@ export const EXAMPLE_SUPPORT_REGISTRY: Readonly<Record<string, ExampleSupportDef
   'deck/gpu-graph-explorer': support83,
   'deck/gpu-culled-trace': support84,
   'showcase/spectral-wave-lab': support85,
+  'deck/map-graphs-explorer': support86,
   'api/texture-compressed': standaloneSupport0,
   'integrations/hello-react': standaloneSupport1,
   'showcase/algebraic-varieties': standaloneSupport2,

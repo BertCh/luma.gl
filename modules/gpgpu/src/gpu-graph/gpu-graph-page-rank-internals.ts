@@ -18,6 +18,14 @@ import {
 } from '../gpu-core/graph-data-view-utils';
 import {getGPUReductionStrategy} from '../gpu-core/gpu-reduction';
 import type {GPUGraphPageRank} from './gpu-graph-page-rank';
+import {
+  importGPUGraphColumn,
+  importGPUGraphOverflow,
+  usesGPUGraphViews,
+  validateDistinctGPUGraphHandles,
+  type GPUGraphColumn,
+  type GPUGraphTopologyLike
+} from './gpu-graph-topology-view';
 
 const PAGE_RANK_WORKGROUP_SIZE = 256;
 
@@ -51,7 +59,7 @@ type PageRankPassProps = {
 
 /** Adds dangling-safe GPU PageRank using an explicit bounded dispatch limit. @internal */
 export function addGPUGraphPageRankToGraphWithDispatchLimit<Parameters>(
-  pageRank: GPUGraphPageRank,
+  pageRank: GPUGraphPageRank<GPUGraphTopologyLike, GPUGraphColumn<'float32'>>,
   commandGraph: GPUCommandGraph<Parameters>,
   maxComputeWorkgroupsPerDimension: number
 ): void {
@@ -60,10 +68,11 @@ export function addGPUGraphPageRankToGraphWithDispatchLimit<Parameters>(
   }
 
   const directed = pageRank.topology.graph.directed;
-  const forwardOffsets = commandGraph.importGPUVector(
+  const forwardOffsets = importGPUGraphColumn(
+    commandGraph,
     `${pageRank.id}-forward-offsets`,
     pageRank.topology.forward.offsets
-  ).data[0];
+  );
   const incoming = directed ? pageRank.topology.reverse! : pageRank.topology.forward;
   const state: ImportedPageRank = {
     id: pageRank.id,
@@ -71,33 +80,51 @@ export function addGPUGraphPageRankToGraphWithDispatchLimit<Parameters>(
     damping: pageRank.damping,
     forwardOffsets,
     incomingOffsets: directed
-      ? commandGraph.importGPUVector(`${pageRank.id}-incoming-offsets`, incoming.offsets).data[0]
+      ? importGPUGraphColumn(commandGraph, `${pageRank.id}-incoming-offsets`, incoming.offsets)
       : forwardOffsets,
-    incomingNeighbors: commandGraph.importGPUVector(
+    incomingNeighbors: importGPUGraphColumn(
+      commandGraph,
       `${pageRank.id}-incoming-neighbors`,
       incoming.neighbors
-    ).data[0],
-    overflow: commandGraph.importGPUVector(
+    ),
+    overflow: importGPUGraphOverflow(
+      commandGraph,
       `${pageRank.id}-forward-overflow`,
       pageRank.topology.forward.overflow
-    ).data[0],
+    ),
     ...(directed
       ? {
-          reverseOverflow: commandGraph.importGPUVector(
+          reverseOverflow: importGPUGraphOverflow(
+            commandGraph,
             `${pageRank.id}-incoming-overflow`,
             incoming.overflow
-          ).data[0]
+          )
         }
       : {}),
-    output: commandGraph.importGPUVector(`${pageRank.id}-output`, pageRank.output).data[0],
+    output: importGPUGraphColumn(commandGraph, `${pageRank.id}-output`, pageRank.output),
     ...(pageRank.residual
       ? {
-          residual: commandGraph.importGPUVector(`${pageRank.id}-residual`, pageRank.residual)
-            .data[0]
+          residual: importGPUGraphColumn(commandGraph, `${pageRank.id}-residual`, pageRank.residual)
         }
       : {}),
     maxComputeWorkgroupsPerDimension
   };
+  if (usesGPUGraphViews(pageRank.topology, [pageRank.output, pageRank.residual])) {
+    validateDistinctGPUGraphHandles(
+      pageRank.id,
+      [
+        state.forwardOffsets,
+        state.incomingOffsets,
+        state.incomingNeighbors,
+        state.overflow,
+        ...(state.reverseOverflow ? [state.reverseOverflow] : [])
+      ],
+      [
+        {name: 'output', view: state.output},
+        ...(state.residual ? [{name: 'residual', view: state.residual}] : [])
+      ]
+    );
+  }
 
   addInitializationPass(commandGraph, state);
   if (state.vertexCount === 0) {

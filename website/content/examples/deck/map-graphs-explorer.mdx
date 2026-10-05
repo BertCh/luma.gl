@@ -1,0 +1,21 @@
+---
+title: Map Graphs + deck.gl Explorer
+description: Run the luma.gl map-graph recipes on real open map data, compiled once and driven by per-frame GPU parameters.
+sidebar_custom_props:
+  description: Time windows, density, lasso statistics, spatial joins, isochrones, terrain, and tile LOD on a basemap.
+  backends: [webgpu]
+  difficulty: advanced
+  maturity: experimental
+  topics: [compute, maps, geospatial, deck.gl]
+---
+
+import {DeckMapGraphsExplorerExample} from '@site/src/examples';
+
+Each tab runs one family of [map graph recipes](/docs/api-reference/experimental/map-graphs) on open
+datasets from deck.gl-data. A mode compiles its `GPUCommandGraph` once, rewrites small parameter
+buffers every frame (viewport, time window, radius, source node, observer, screen-space error), and
+encodes into deck.gl's own frame encoder. deck.gl layers draw the outputs directly from GPU storage
+buffers and indirect draw records; only small summaries are read back. The footer's rebuild counter
+stays at zero while you drag sliders and the map.
+
+<DeckMapGraphsExplorerExample />

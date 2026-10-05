@@ -261,6 +261,11 @@
         "id": "deck/gpu-graph-explorer",
         "label": "GPU Graph + deck.gl: Network Explorer"
       },
+      {
+        "type": "doc",
+        "id": "deck/map-graphs-explorer",
+        "label": "Map Graphs + deck.gl: Recipe Explorer"
+      },
       "deck/gpu-culled-trace"
     ]
   }

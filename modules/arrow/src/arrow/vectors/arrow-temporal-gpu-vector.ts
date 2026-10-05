@@ -13,6 +13,8 @@ import {
   Duration,
   Field,
   Float32,
+  Int32,
+  Int64,
   List,
   Time,
   TimeUnit,
@@ -29,8 +31,13 @@ export type ArrowTemporalKind = 'date' | 'time' | 'timestamp' | 'duration';
 export type ArrowTemporalUnit = 'day' | 'second' | 'millisecond' | 'microsecond' | 'nanosecond';
 /** Temporal origin selection policy retained in output metadata. */
 export type ArrowTemporalOriginPolicy = 'first-valid' | 'zero';
-/** Supported non-interval Arrow temporal leaf types. */
-export type ArrowTemporalType = Date_ | Time | Timestamp | Duration;
+/**
+ * Supported non-interval Arrow temporal leaf types.
+ *
+ * Plain `Int64` and `Int32` columns count as temporal only when their field carries
+ * `visgl:temporal-kind` and `visgl:temporal-unit` metadata (see {@link TEMPORAL_KIND_METADATA_KEY}).
+ */
+export type ArrowTemporalType = Date_ | Time | Timestamp | Duration | Int64 | Int32;
 /** Supported scalar or variable-length Arrow temporal columns. */
 export type ArrowTemporalColumnType = ArrowTemporalType | List<ArrowTemporalType>;
 /** Prepared relative temporal output types. */
@@ -142,30 +149,57 @@ const makeFloat32ListData = makeData as (props: {
 
 const TEMPORAL_CONVERSION_SHADER_LAYOUT: ShaderLayout = {
   bindings: [
-    {name: 'sourceTemporalValues', type: 'read-only-storage', group: 0, location: 0},
-    {name: 'temporalConversionConfig', type: 'read-only-storage', group: 0, location: 1},
+    {
+      name: 'sourceTemporalValues',
+      type: 'read-only-storage',
+      group: 0,
+      location: 0
+    },
+    {
+      name: 'temporalConversionConfig',
+      type: 'read-only-storage',
+      group: 0,
+      location: 1
+    },
     {name: 'preparedTemporalValues', type: 'storage', group: 0, location: 2}
   ],
   attributes: []
 };
 
-/** Recover supported temporal metadata from one Arrow scalar or list column. */
+/**
+ * Recover supported temporal metadata from one Arrow scalar or list column.
+ *
+ * True Arrow temporal types (Date, Time, Timestamp, Duration) are always recognized. A plain
+ * `Int64` (or `Int32`) column is recognized only when its field, or its list child field, carries
+ * `visgl:temporal-kind` and `visgl:temporal-unit` metadata; otherwise this returns `null`.
+ *
+ * @param vector - Arrow vector or adapter-backed GPU vector.
+ * @param field - Optional Arrow field of a scalar column; list columns use their child field.
+ * @returns Temporal info, or `null` when the column is not temporal.
+ * @throws If integer metadata is present but has an invalid kind, unit, or bit width.
+ */
 export function getArrowTemporalVectorInfo(
   vector: Pick<Vector, 'type'> | Pick<GPUVector, 'dataType'>,
   field?: Field
 ): ArrowTemporalVectorInfo | null {
   const type = getArrowTemporalSourceType(vector);
   const leafType = getArrowTemporalLeafType(type);
-  if (!leafType) {
-    return null;
-  }
   const leafField = getArrowTemporalLeafField(type, field);
   const metadata = leafField?.metadata;
+  const leafInfo = leafType ? getArrowTemporalLeafInfo(leafType, metadata) : null;
+  if (!leafInfo) {
+    return null;
+  }
   return {
-    ...getArrowTemporalLeafInfo(leafType),
+    ...leafInfo,
     variableLength: DataType.isList(type),
     ...(metadata?.has(TEMPORAL_ORIGIN_METADATA_KEY)
-      ? {origin: parseTemporalOrigin(metadata.get(TEMPORAL_ORIGIN_METADATA_KEY)!, leafType)}
+      ? {
+          origin: parseTemporalOrigin(
+            metadata.get(TEMPORAL_ORIGIN_METADATA_KEY)!,
+            leafInfo.bitWidth
+          )
+        }
       : {}),
     ...(metadata?.has(TEMPORAL_ORIGIN_POLICY_METADATA_KEY)
       ? {
@@ -219,7 +253,10 @@ export async function convertArrowTemporalToGPUVector(
     const sourceVector =
       source instanceof GPUVector
         ? source
-        : makeArrowTemporalSourceGPUVector(device, source, {name: `${name}-source`, id});
+        : makeArrowTemporalSourceGPUVector(device, source, {
+            name: `${name}-source`,
+            id
+          });
     const ownsSourceVector = !(source instanceof GPUVector);
     try {
       return await convertArrowTemporalToGPUVectorOnGPU(device, sourceVector, temporalInfo, field, {
@@ -268,6 +305,141 @@ export async function convertArrowTemporalToGPUVectors<
     })
   );
   return Object.fromEntries(entries) as unknown as PreparedArrowTemporalGPUVectorMap<SourceVectors>;
+}
+
+/** Options for {@link makeArrowTemporalWordGPUVector}. */
+export type MakeArrowTemporalWordGPUVectorOptions = {
+  /** Stable GPU vector name. Defaults to `temporal-words`. */
+  name?: string;
+  /** Stable resource id prefix. Defaults to the vector name. */
+  id?: string;
+  /** Optional Arrow field; required to recognize a plain `Int64` column via `visgl:temporal-*` metadata. */
+  field?: Field;
+};
+
+/** Exact Int64 temporal words as a `uint32x2` GPU vector, plus the source temporal metadata. */
+export type ArrowTemporalWordGPUVector = {
+  /**
+   * One `uint32x2` row `(low, high)` per source row: the little-endian words of the signed 64-bit
+   * source value, in source units, with no origin subtracted. One chunk per Arrow batch.
+   */
+  vector: GPUVector<'uint32x2'>;
+  /**
+   * Source temporal metadata. `unit` is the unit of the values (for example `millisecond`), so
+   * callers scale windows and playheads to it. No `origin` is set: values are absolute.
+   */
+  temporalInfo: ArrowTemporalVectorInfo;
+  /** The Arrow field passed in options, when any. */
+  field?: Field;
+  /** Releases the uploaded buffers. */
+  destroy: () => void;
+};
+
+const IS_LITTLE_ENDIAN = new Uint8Array(new Uint32Array([1]).buffer)[0] === 1;
+
+/**
+ * Upload a scalar 64-bit Arrow temporal column as exact `uint32x2` words, with no CPU per-row pass.
+ *
+ * Supports `Timestamp`, `Date` (millisecond), `Duration`, `Time64`, and plain `Int64` columns whose
+ * field carries `visgl:temporal-kind` and `visgl:temporal-unit` metadata. Each Arrow batch is
+ * uploaded from a `Uint32Array` view over the batch's own values bytes (a sliced vector uploads only its rows),
+ * so a sliced vector uploads only its rows and no values are copied or converted on the CPU. Batch
+ * boundaries are preserved as GPUData chunks, which `graph.importGPUVector` turns into a vector
+ * view. A GPU kernel then subtracts a playhead exactly with a borrow-subtract.
+ *
+ * Use {@link convertArrowTemporalToGPUVector} instead for relative float32 values or 32-bit
+ * sources.
+ *
+ * @param device - Device that owns the uploaded buffers.
+ * @param source - Scalar 64-bit temporal Arrow vector.
+ * @param options - Name, id prefix, and optional Arrow field.
+ * @returns The word vector, source temporal info, and a `destroy` function.
+ * @throws If the source is not temporal, is a list, is 32-bit, has nulls, or the platform is
+ * big-endian.
+ */
+export function makeArrowTemporalWordGPUVector(
+  device: Device,
+  source: Vector<ArrowTemporalType>,
+  options: MakeArrowTemporalWordGPUVectorOptions = {}
+): ArrowTemporalWordGPUVector {
+  if (!IS_LITTLE_ENDIAN) {
+    throw new Error('makeArrowTemporalWordGPUVector requires a little-endian platform');
+  }
+  const temporalInfo = getArrowTemporalVectorInfo(source, options.field);
+  if (!temporalInfo) {
+    throw new Error(
+      'makeArrowTemporalWordGPUVector requires Date, Time, Timestamp, Duration, or Int64 with visgl:temporal-* metadata'
+    );
+  }
+  if (temporalInfo.variableLength) {
+    throw new Error('makeArrowTemporalWordGPUVector does not support List temporal columns');
+  }
+  if (temporalInfo.bitWidth !== 64) {
+    throw new Error(
+      'makeArrowTemporalWordGPUVector requires a 64-bit source; use convertArrowTemporalToGPUVector for 32-bit temporal values'
+    );
+  }
+  const name = options.name || 'temporal-words';
+  const id = options.id || name;
+  const bytesPerRow = BigInt64Array.BYTES_PER_ELEMENT;
+
+  const data: GPUData<'uint32x2'>[] = [];
+  try {
+    for (const [chunkIndex, sourceData] of source.data.entries()) {
+      validateArrowTemporalData(sourceData as Data<ArrowTemporalColumnType>);
+      const values = sourceData.values as ArrayBufferView | undefined;
+      // A view over the Arrow bytes: no element loop, no copy. Arrow's `Data.slice` already
+      // advances `values` to the first row, so `data.offset` must not be applied again.
+      // Date(ms) stores two int32 per row, hence the Uint32Array over the raw bytes.
+      const words = values
+        ? new Uint32Array(values.buffer, values.byteOffset, sourceData.length * 2)
+        : undefined;
+      const buffer = new DynamicBuffer(device, {
+        id: `${id}-temporal-words-${chunkIndex}`,
+        usage: Buffer.VERTEX | Buffer.STORAGE | Buffer.COPY_DST | Buffer.COPY_SRC,
+        ...(words && words.length > 0 ? {data: words} : {byteLength: bytesPerRow})
+      });
+      data.push(
+        new GPUData({
+          buffer,
+          dataType: sourceData.type,
+          format: 'uint32x2',
+          length: sourceData.length,
+          byteStride: bytesPerRow,
+          rowByteLength: bytesPerRow,
+          ownsBuffer: true
+        })
+      );
+    }
+  } catch (error) {
+    for (const chunk of data) {
+      chunk.destroy();
+    }
+    throw error;
+  }
+
+  const vector = new GPUVector({
+    type: 'data',
+    name,
+    dataType: source.type,
+    format: 'uint32x2',
+    data,
+    byteStride: bytesPerRow,
+    rowByteLength: bytesPerRow,
+    ownsData: true
+  });
+  let destroyed = false;
+  return {
+    vector,
+    temporalInfo,
+    ...(options.field ? {field: options.field} : {}),
+    destroy: () => {
+      if (!destroyed) {
+        destroyed = true;
+        vector.destroy();
+      }
+    }
+  };
 }
 
 function assertArrowTemporalVectorAlignment(
@@ -548,9 +720,8 @@ function resolveTemporalOrigin(
   temporalInfo: ArrowTemporalVectorInfo,
   options: ConvertArrowTemporalToGPUVectorOptions
 ): number | bigint {
-  const sourceType = getArrowTemporalSourceType(source);
   if (options.origin !== undefined) {
-    return parseTemporalOrigin(options.origin.toString(), getArrowTemporalLeafType(sourceType)!);
+    return parseTemporalOrigin(options.origin.toString(), temporalInfo.bitWidth);
   }
   if (temporalInfo.origin !== undefined) {
     return temporalInfo.origin;
@@ -586,7 +757,7 @@ function getRequiredArrowTemporalVectorInfo(
   const temporalInfo = getArrowTemporalVectorInfo(vector, field);
   if (!temporalInfo) {
     throw new Error(
-      'convertArrowTemporalToGPUVector requires Date, Time, Timestamp, Duration, or List thereof'
+      'convertArrowTemporalToGPUVector requires Date, Time, Timestamp, Duration, Int64 with visgl:temporal-* metadata, or List thereof'
     );
   }
   return temporalInfo;
@@ -606,7 +777,8 @@ function getArrowTemporalLeafType(type: DataType): ArrowTemporalType | null {
     (DataType.isDate(leafType) ||
       DataType.isTime(leafType) ||
       DataType.isTimestamp(leafType) ||
-      DataType.isDuration(leafType))
+      DataType.isDuration(leafType) ||
+      DataType.isInt(leafType))
     ? (leafType as ArrowTemporalType)
     : null;
 }
@@ -615,9 +787,22 @@ function getArrowTemporalLeafField(type: DataType, field?: Field): Field | undef
   return DataType.isList(type) ? type.children[0] : field;
 }
 
+const TEMPORAL_KINDS: readonly ArrowTemporalKind[] = ['date', 'time', 'timestamp', 'duration'];
+const TEMPORAL_UNITS: readonly ArrowTemporalUnit[] = [
+  'day',
+  'second',
+  'millisecond',
+  'microsecond',
+  'nanosecond'
+];
+
 function getArrowTemporalLeafInfo(
-  type: ArrowTemporalType
-): Omit<ArrowTemporalVectorInfo, 'variableLength'> {
+  type: ArrowTemporalType,
+  metadata?: Map<string, string>
+): Omit<ArrowTemporalVectorInfo, 'variableLength'> | null {
+  if (DataType.isInt(type)) {
+    return getArrowIntegerTemporalLeafInfo(type as Int32 | Int64, metadata);
+  }
   if (DataType.isDate(type)) {
     return {
       kind: 'date',
@@ -660,8 +845,51 @@ function getArrowTimeUnit(unit: TimeUnit): Exclude<ArrowTemporalUnit, 'day'> {
   }
 }
 
-function parseTemporalOrigin(origin: string, type: ArrowTemporalType): number | bigint {
-  return getArrowTemporalLeafInfo(type).bitWidth === 64 ? BigInt(origin) : Number(origin);
+/**
+ * Reads temporal info for a plain integer column from `visgl:temporal-*` field metadata.
+ * Returns `null` without a kind or unit (not temporal) and throws on invalid values.
+ */
+function getArrowIntegerTemporalLeafInfo(
+  type: Int32 | Int64,
+  metadata?: Map<string, string>
+): Omit<ArrowTemporalVectorInfo, 'variableLength'> | null {
+  if (!type.isSigned || (type.bitWidth !== 32 && type.bitWidth !== 64)) {
+    return null;
+  }
+  const kind = metadata?.get(TEMPORAL_KIND_METADATA_KEY);
+  const unit = metadata?.get(TEMPORAL_UNIT_METADATA_KEY);
+  if (kind === undefined && unit === undefined) {
+    return null;
+  }
+  if (!TEMPORAL_KINDS.includes(kind as ArrowTemporalKind)) {
+    throw new Error(
+      `Invalid ${TEMPORAL_KIND_METADATA_KEY} "${kind}"; expected one of ${TEMPORAL_KINDS.join(', ')}`
+    );
+  }
+  if (!TEMPORAL_UNITS.includes(unit as ArrowTemporalUnit)) {
+    throw new Error(
+      `Invalid ${TEMPORAL_UNIT_METADATA_KEY} "${unit}"; expected one of ${TEMPORAL_UNITS.join(', ')}`
+    );
+  }
+  if (unit === 'day' && kind !== 'date') {
+    throw new Error(`${TEMPORAL_UNIT_METADATA_KEY} "day" is only valid for kind "date"`);
+  }
+  const bitWidth = type.bitWidth as 32 | 64;
+  if (bitWidth === 32 && (kind === 'timestamp' || kind === 'duration')) {
+    throw new Error(`Int32 columns cannot carry ${TEMPORAL_KIND_METADATA_KEY} "${kind}"`);
+  }
+  return {
+    kind: kind as ArrowTemporalKind,
+    unit: unit as ArrowTemporalUnit,
+    bitWidth,
+    ...(kind === 'timestamp' && metadata?.has(TEMPORAL_TIMEZONE_METADATA_KEY)
+      ? {timezone: metadata.get(TEMPORAL_TIMEZONE_METADATA_KEY)}
+      : {})
+  };
+}
+
+function parseTemporalOrigin(origin: string, bitWidth: 32 | 64): number | bigint {
+  return bitWidth === 64 ? BigInt(origin) : Number(origin);
 }
 
 function getRelativeTemporalValue(value: number | bigint, origin: number | bigint): number {
@@ -715,8 +943,9 @@ function getArrowTemporalScalarDataBufferSource(
   if (!values) {
     return data.type.ArrayType === BigInt64Array ? new BigInt64Array(0) : new Int32Array(0);
   }
-  const startIndex = data.offset ?? 0;
-  return values.subarray(startIndex, startIndex + data.length) as Int32Array | BigInt64Array;
+  // Arrow's `Data.slice` already advances `values` to the first row; `data.offset` only applies
+  // to the validity bitmap and offset buffers, so it is not added here.
+  return values.subarray(0, data.length) as Int32Array | BigInt64Array;
 }
 
 function getNormalizedArrowValueOffsets(data: Data<List<any>>): Int32Array {
@@ -857,7 +1086,9 @@ function getGPUDataBuffer(data: GPUData): Buffer {
 
 async function waitForSubmittedWork(device: Device): Promise<void> {
   const queue = (
-    device as Device & {handle?: {queue?: {onSubmittedWorkDone?: () => Promise<void>}}}
+    device as Device & {
+      handle?: {queue?: {onSubmittedWorkDone?: () => Promise<void>}};
+    }
   ).handle?.queue;
   await queue?.onSubmittedWorkDone?.();
 }

@@ -21,8 +21,10 @@ adapts existing GPU results to real deck.gl layers; it does not replace the unde
 
 ## Graph effects and layers
 
-`GPUGraphDeckEffect` composes topology, vertex degree, PageRank, weak components, deterministic
-communities, neighborhood search, and progressive force layout inside deck.gl's existing frame.
+`GPUGraphDeckEffect` composes topology and progressive force layout inside deck.gl's existing
+frame, and its `GPUGraphRecipeColumns` runs the map-graph network recipes on a symmetrized CSR:
+normalized degree, PageRank and core number, component and community labels, a hover
+neighborhood mask, reachability bands, and the shortest path between two picked vertices.
 Deck owns queue submission; the effect retains original source and target edge partitions,
 including empty batches, without staging or reading graph data back to the CPU.
 
@@ -42,10 +44,24 @@ const dataset: GPUGraphDeckDataset = {
   velocities
 };
 const effect = new GPUGraphDeckEffect(device, dataset);
+const nodes = new GPUGraphNodeLayer({
+  id: 'nodes',
+  positions: effect.positions,
+  vertexCount: dataset.vertexCount,
+  colorColumn: effect.recipeColumns?.columns.pageRank,
+  colorScale: {type: 'linear', domain: [0, 0.2], palette: [[59, 76, 192], [244, 109, 67]]},
+  pathRanks: effect.recipeColumns?.pathRanks
+});
 ```
 
-`GPUGraphNodeLayer` consumes the exact progressive position allocation alongside resident community,
-component, degree, PageRank, distance, and selection outputs. Create one `GPUGraphEdgeLayer` per
+`GPUGraphNodeLayer` binds the exact progressive position allocation as its only vertex attribute.
+Every other input is a row-aligned storage buffer indexed by instance: a `colorColumn` and
+`sizeColumn` (`uint32` or `float32`) mapped through a `colorScale` and `sizeScale` held in uniforms,
+a `filterMask` that removes rows from both drawing and picking, a `highlightMask`, and `pathRanks`.
+Swapping a column or changing a scale never rebuilds a pipeline, and the style uniform block is
+uploaded only when its packed contents change; `getRenderStats()` counts draws, style uploads and
+rebindings. The layers require WebGPU and throw on WebGL2, because their producers are WebGPU
+compute and WebGL2 cannot read storage buffers in the vertex stage. Create one `GPUGraphEdgeLayer` per
 nonempty original edge partition to render caller-owned source and target buffers directly. Large
 graphs can retain every real vertex while limiting only the number of displayed original edges.
 

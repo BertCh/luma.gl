@@ -108,16 +108,21 @@ describe('GPU Graph native deck.gl resident layers', () => {
 
   test('fetches actual position vertices, GPU analytics, and stable original picking identifiers', () => {
     expect(GPU_GRAPH_DECK_NODE_SHADER).toContain('@location(0) nodePosition: vec2<f32>');
-    expect(GPU_GRAPH_DECK_NODE_SHADER).toContain('importance: array<f32>');
-    expect(GPU_GRAPH_DECK_NODE_SHADER).toContain('components: array<u32>');
-    expect(GPU_GRAPH_DECK_NODE_SHADER).toContain('communities: array<u32>');
-    expect(GPU_GRAPH_DECK_NODE_SHADER).toContain('let label = communities[index]');
-    expect(GPU_GRAPH_DECK_NODE_SHADER).toContain('u32(nodeStyle.vertexCount) / 4u');
-    expect(GPU_GRAPH_DECK_NODE_SHADER).toContain('min(label / communitySpan, 3u)');
+    for (const column of [
+      'colorColumn',
+      'sizeColumn',
+      'filterMask',
+      'highlightMask',
+      'pathRanks'
+    ]) {
+      expect(GPU_GRAPH_DECK_NODE_SHADER).toContain(`${column}: array<u32>`);
+    }
+    expect(GPU_GRAPH_DECK_NODE_SHADER).toContain('var<storage, read> colorColumn');
+    expect(GPU_GRAPH_DECK_NODE_SHADER).toContain('bitcast<f32>(raw)');
     expect(GPU_GRAPH_DECK_NODE_SHADER).toContain('0.78');
-    expect(GPU_GRAPH_DECK_NODE_SHADER).toContain('degrees: array<u32>');
-    expect(GPU_GRAPH_DECK_NODE_SHADER).toContain('distances: array<u32>');
-    expect(GPU_GRAPH_DECK_NODE_SHADER).toContain('selectionMask: array<u32>');
+    expect(GPU_GRAPH_DECK_NODE_SHADER).toContain('picking.isActive');
+    expect(GPU_GRAPH_DECK_NODE_SHADER).not.toContain('pickingActive');
+    expect(GPU_GRAPH_DECK_NODE_SHADER).toContain('filterMask[instanceIndex] == 0u');
     expect(GPU_GRAPH_DECK_NODE_SHADER).toContain('vertex + 1u');
     expect(GPU_GRAPH_DECK_NODE_SHADER).toContain('geometry.pickingColor');
     expect(GPU_GRAPH_DECK_NODE_SHADER).not.toMatch(/atomic\s*<\s*f32\s*>/);
@@ -138,8 +143,13 @@ describe('GPU Graph native deck.gl resident layers', () => {
       new URL('../src/gpu-graph/gpu-graph-effect.ts', import.meta.url),
       'utf8'
     );
-    expect(effectSource).toContain('GPUGraphDegree');
-    expect(effectSource).toContain('GPUGraphLabelPropagation');
+    expect(effectSource).toContain('GPUGraphRecipeColumns');
+    // Analytics live in the recipe columns only; the effect keeps no duplicate legacy copies.
+    expect(effectSource).not.toContain('GPUGraphDegree');
+    expect(effectSource).not.toContain('GPUGraphPageRank');
+    expect(effectSource).not.toContain('GPUGraphConnectedComponents');
+    expect(effectSource).not.toContain('GPUGraphLabelPropagation');
+    expect(effectSource).not.toContain('GPUGraphBreadthFirstSearch');
     expect(effectSource).toContain('GPUGraphSpatialForceLayout');
     expect(effectSource).toContain('addSampledLayoutToGraph');
     expect(effectSource).toContain('this.renderedVertexCount = dataset.vertexCount');
@@ -209,7 +219,7 @@ describe('GPU Graph native deck.gl resident layers', () => {
       expect(source).toContain(attribute);
     }
 
-    for (const mode of ['community', 'component', 'degree', 'pagerank', 'distance']) {
+    for (const mode of ['community', 'component', 'degree', 'pagerank', 'core', 'band']) {
       expect(source).toContain(`value="${mode}"`);
     }
 

@@ -13,12 +13,19 @@ import {
 } from '../gpu-core/gpu-dispatch-utils';
 import {getViewBinding, getViewElementOffset} from '../gpu-core/graph-data-view-utils';
 import type {GPUGraphDegree} from './gpu-graph-degree';
+import {
+  importGPUGraphColumn,
+  usesGPUGraphViews,
+  validateDistinctGPUGraphHandles,
+  type GPUGraphColumn,
+  type GPUGraphTopologyLike
+} from './gpu-graph-topology-view';
 
 const GRAPH_DEGREE_WORKGROUP_SIZE = 256;
 
 /** Adds one exact CSR degree pass using an explicit device dispatch limit. @internal */
 export function addGPUGraphDegreeToGraphWithDispatchLimit<Parameters>(
-  degree: GPUGraphDegree,
+  degree: GPUGraphDegree<GPUGraphTopologyLike, GPUGraphColumn<'uint32'>>,
   commandGraph: GPUCommandGraph<Parameters>,
   maxComputeWorkgroupsPerDimension: number
 ): void {
@@ -30,8 +37,11 @@ export function addGPUGraphDegreeToGraphWithDispatchLimit<Parameters>(
     degree.direction === 'incoming' && degree.topology.graph.directed
       ? degree.topology.reverse!
       : degree.topology.forward;
-  const offsets = commandGraph.importGPUVector(`${degree.id}-offsets`, adjacency.offsets).data[0];
-  const output = commandGraph.importGPUVector(`${degree.id}-output`, degree.output).data[0];
+  const offsets = importGPUGraphColumn(commandGraph, `${degree.id}-offsets`, adjacency.offsets);
+  const output = importGPUGraphColumn(commandGraph, `${degree.id}-output`, degree.output);
+  if (usesGPUGraphViews(degree.topology, [degree.output])) {
+    validateDistinctGPUGraphHandles(degree.id, [offsets], [{name: 'output', view: output}]);
+  }
   const dispatchLayout = getGPUGraphDegreeDispatchLayout(
     degree.topology.graph.vertexCount,
     maxComputeWorkgroupsPerDimension

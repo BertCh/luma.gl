@@ -40,6 +40,7 @@
     "test-coverage": "ocular-test headless --coverage",
     "test-geospatial-package": "node ./scripts/verify-experimental-geospatial-package.mjs",
     "test-gpu-raster-package": "node ./scripts/verify-experimental-gpu-raster-package.mjs",
+    "test-map-graphs-package": "node ./scripts/verify-experimental-map-graphs-package.mjs",
     "examples:typecheck": "node ./scripts/examples-typecheck.mjs",
     "examples:synchronize-mobile-support": "node ./scripts/examples/synchronize-mobile-support-metadata.mjs",
     "examples:test-mobile": "node ./scripts/playwright/mobile-example-smoke.mjs",

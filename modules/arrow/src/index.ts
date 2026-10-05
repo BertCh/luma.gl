@@ -83,6 +83,7 @@ export {
   getArrowTemporalVectorInfo,
   convertArrowTemporalToGPUVector,
   convertArrowTemporalToGPUVectors,
+  makeArrowTemporalWordGPUVector,
   TEMPORAL_KIND_METADATA_KEY,
   TEMPORAL_ORIGIN_METADATA_KEY,
   TEMPORAL_ORIGIN_POLICY_METADATA_KEY,
@@ -97,7 +98,9 @@ export {
   type ArrowTemporalVectorInfo,
   type PreparedArrowTemporalGPUVector,
   type ConvertArrowTemporalToGPUVectorOptions,
-  type ConvertArrowTemporalToGPUVectorsOptions
+  type ConvertArrowTemporalToGPUVectorsOptions,
+  type ArrowTemporalWordGPUVector,
+  type MakeArrowTemporalWordGPUVectorOptions
 } from './arrow/vectors/arrow-temporal-gpu-vector';
 export {
   expandArrowVector,

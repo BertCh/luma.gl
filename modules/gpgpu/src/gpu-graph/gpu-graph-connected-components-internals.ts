@@ -13,6 +13,14 @@ import {
 } from '../gpu-core/gpu-dispatch-utils';
 import {getViewBinding, getViewElementOffset} from '../gpu-core/graph-data-view-utils';
 import type {GPUGraphConnectedComponents} from './gpu-graph-connected-components';
+import {
+  importGPUGraphColumn,
+  importGPUGraphOverflow,
+  usesGPUGraphViews,
+  validateDistinctGPUGraphHandles,
+  type GPUGraphColumn,
+  type GPUGraphTopologyLike
+} from './gpu-graph-topology-view';
 
 const CONNECTED_COMPONENTS_WORKGROUP_SIZE = 256;
 const INVALID_COMPONENT = 0xffffffff;
@@ -43,7 +51,7 @@ type ConnectedComponentsPassProps = {
 
 /** Adds bounded GPU weak-component hooking using an explicit dispatch limit. @internal */
 export function addGPUGraphConnectedComponentsToGraphWithDispatchLimit<Parameters>(
-  components: GPUGraphConnectedComponents,
+  components: GPUGraphConnectedComponents<GPUGraphTopologyLike, GPUGraphColumn<'uint32'>>,
   commandGraph: GPUCommandGraph<Parameters>,
   maxComputeWorkgroupsPerDimension: number
 ): void {
@@ -54,29 +62,43 @@ export function addGPUGraphConnectedComponentsToGraphWithDispatchLimit<Parameter
   const state: ImportedConnectedComponents = {
     id: components.id,
     vertexCount: components.topology.graph.vertexCount,
-    offsets: commandGraph.importGPUVector(
+    offsets: importGPUGraphColumn(
+      commandGraph,
       `${components.id}-offsets`,
       components.topology.forward.offsets
-    ).data[0],
-    neighbors: commandGraph.importGPUVector(
+    ),
+    neighbors: importGPUGraphColumn(
+      commandGraph,
       `${components.id}-neighbors`,
       components.topology.forward.neighbors
-    ).data[0],
-    overflow: commandGraph.importGPUVector(
+    ),
+    overflow: importGPUGraphOverflow(
+      commandGraph,
       `${components.id}-overflow`,
       components.topology.forward.overflow
-    ).data[0],
-    output: commandGraph.importGPUVector(`${components.id}-output`, components.output).data[0],
+    ),
+    output: importGPUGraphColumn(commandGraph, `${components.id}-output`, components.output),
     ...(components.converged
       ? {
-          converged: commandGraph.importGPUVector(
+          converged: importGPUGraphColumn(
+            commandGraph,
             `${components.id}-converged`,
             components.converged
-          ).data[0]
+          )
         }
       : {}),
     maxComputeWorkgroupsPerDimension
   };
+  if (usesGPUGraphViews(components.topology, [components.output, components.converged])) {
+    validateDistinctGPUGraphHandles(
+      components.id,
+      [state.offsets, state.neighbors, state.overflow],
+      [
+        {name: 'output', view: state.output},
+        ...(state.converged ? [{name: 'converged', view: state.converged}] : [])
+      ]
+    );
+  }
 
   addInitializationPass(commandGraph, state);
   if (state.vertexCount === 0) {

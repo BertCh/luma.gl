@@ -241,6 +241,7 @@ describe('GPGPU example catalog navigation', () => {
     expect(readCategoryIdentifiers(finalEntry as ExampleCategory)).toEqual([
       'deck/luspatial-taxi',
       'deck/gpu-graph-explorer',
+      'deck/map-graphs-explorer',
       'deck/gpu-culled-trace'
     ]);
   });

@@ -9,25 +9,35 @@ import type {GPUData, GPUVector} from '@luma.gl/gpgpu/gpu-data';
 import type {GPUCommandGraph} from '../gpu-core/gpu-command-graph';
 import {addGPUGraphCoreNumberToGraphWithDispatchLimit} from './gpu-graph-core-number-internals';
 import type {GPUGraphAdjacency, GPUGraphTopology} from './gpu-graph-topology';
+import {
+  isGPUGraphViewColumn,
+  usesGPUGraphViews,
+  validateGPUGraphViewColumn,
+  type GPUGraphColumn,
+  type GPUGraphTopologyLike
+} from './gpu-graph-topology-view';
 
 const DEFAULT_CORE_NUMBER_ITERATIONS = 32;
 const MAXIMUM_CORE_NUMBER_ITERATIONS = 1024;
 const SCALAR_BYTE_LENGTH = 4;
 
 /** Existing graph topology and caller-owned k-core decomposition destinations. */
-export type GPUGraphCoreNumberProps = {
+export type GPUGraphCoreNumberProps<
+  Topology extends GPUGraphTopologyLike = GPUGraphTopology,
+  Column extends GPUGraphColumn<'uint32'> = GPUVector<'uint32'>
+> = {
   /** Prefix for generated command-graph nodes and imported-resource identifiers. */
   id?: string;
   /** Existing compressed adjacency; directed weak neighborhoods require reverse CSR. */
-  topology: GPUGraphTopology;
+  topology: Topology;
   /** One caller-owned unsigned core-number row per graph vertex. */
-  output: GPUVector<'uint32'>;
+  output: Column;
   /** Maximum synchronized core-refinement rounds; defaults to 32 and is bounded by 1,024. */
   iterations?: number;
   /** Optional caller-owned scalar reporting whether the core numbers reached a fixed point. */
-  converged?: GPUVector<'uint32'>;
+  converged?: Column;
   /** Optional caller-owned scalar receiving the maximum currently published core number. */
-  degeneracy?: GPUVector<'uint32'>;
+  degeneracy?: Column;
 };
 
 /**
@@ -42,22 +52,25 @@ export type GPUGraphCoreNumberProps = {
  * An isolated vertex has core number zero. Overflow in either required adjacency publishes
  * `0xffffffff` output and optional degeneracy sentinels and leaves convergence at zero.
  */
-export class GPUGraphCoreNumber {
+export class GPUGraphCoreNumber<
+  Topology extends GPUGraphTopologyLike = GPUGraphTopology,
+  Column extends GPUGraphColumn<'uint32'> = GPUVector<'uint32'>
+> {
   /** Prefix for generated command-graph nodes and imported resources. */
   readonly id: string;
   /** Existing caller-owned GPU graph topology. */
-  readonly topology: GPUGraphTopology;
+  readonly topology: Topology;
   /** Caller-owned, vertex-aligned unsigned core numbers. */
-  readonly output: GPUVector<'uint32'>;
+  readonly output: Column;
   /** Maximum number of compiled, globally synchronized refinement rounds. */
   readonly iterations: number;
   /** Optional caller-owned fixed-point convergence status. */
-  readonly converged?: GPUVector<'uint32'>;
+  readonly converged?: Column;
   /** Optional caller-owned maximum currently published core number. */
-  readonly degeneracy?: GPUVector<'uint32'>;
+  readonly degeneracy?: Column;
 
   /** Validates caller-owned metadata without allocating, submitting, or reading GPU work. */
-  constructor(props: GPUGraphCoreNumberProps) {
+  constructor(props: GPUGraphCoreNumberProps<Topology, Column>) {
     this.id = props.id ?? 'gpu-graph-core-number';
     this.topology = props.topology;
     this.output = props.output;
@@ -76,14 +89,16 @@ export class GPUGraphCoreNumber {
       throw new Error(`${this.id} iterations must be a safe integer between zero and 1024`);
     }
 
-    validateCoreNumberVector(this.output, this.topology.graph.vertexCount, `${this.id} output`);
+    validateColumn(this.output, this.topology.graph.vertexCount, `${this.id} output`);
     if (this.converged) {
-      validateCoreNumberVector(this.converged, 1, `${this.id} converged`);
+      validateColumn(this.converged, 1, `${this.id} converged`);
     }
     if (this.degeneracy) {
-      validateCoreNumberVector(this.degeneracy, 1, `${this.id} degeneracy`);
+      validateColumn(this.degeneracy, 1, `${this.id} degeneracy`);
     }
-    validateDistinctCoreNumberOutputs(this);
+    if (!usesGPUGraphViews(this.topology, [this.output, this.converged, this.degeneracy])) {
+      validateDistinctCoreNumberOutputs(this);
+    }
   }
 
   /** Declares bounded GPU core refinement without queue submission or CPU synchronization. */
@@ -93,6 +108,15 @@ export class GPUGraphCoreNumber {
       commandGraph,
       commandGraph.device.limits.maxComputeWorkgroupsPerDimension
     );
+  }
+}
+
+/** Validates a physical or view column with its exact logical row count. */
+function validateColumn(column: GPUGraphColumn<'uint32'>, length: number, name: string): void {
+  if (isGPUGraphViewColumn(column)) {
+    validateGPUGraphViewColumn(column, 'uint32', length, name);
+  } else {
+    validateCoreNumberVector(column, length, name);
   }
 }
 
@@ -128,8 +152,11 @@ function validateCoreNumberVector(vector: GPUVector<'uint32'>, length: number, n
 }
 
 /** Keeps caller-visible core outputs disjoint from graph sources, CSR, status, and peers. */
-function validateDistinctCoreNumberOutputs(coreNumber: GPUGraphCoreNumber): void {
-  const {topology} = coreNumber;
+function validateDistinctCoreNumberOutputs(
+  coreNumber: GPUGraphCoreNumber<GPUGraphTopologyLike, GPUGraphColumn<'uint32'>>
+): void {
+  // Only called when every topology input and output is a physical GPUVector.
+  const topology = coreNumber.topology as GPUGraphTopology;
   const inputVectors = [
     topology.graph.sourceVertices,
     topology.graph.targetVertices,
@@ -147,9 +174,13 @@ function validateDistinctCoreNumberOutputs(coreNumber: GPUGraphCoreNumber): void
   }
 
   const outputs = [
-    {name: 'output', vector: coreNumber.output},
-    ...(coreNumber.converged ? [{name: 'converged', vector: coreNumber.converged}] : []),
-    ...(coreNumber.degeneracy ? [{name: 'degeneracy', vector: coreNumber.degeneracy}] : [])
+    {name: 'output', vector: coreNumber.output as GPUVector<'uint32'>},
+    ...(coreNumber.converged
+      ? [{name: 'converged', vector: coreNumber.converged as GPUVector<'uint32'>}]
+      : []),
+    ...(coreNumber.degeneracy
+      ? [{name: 'degeneracy', vector: coreNumber.degeneracy as GPUVector<'uint32'>}]
+      : [])
   ];
   for (const {name, vector} of outputs) {
     const physicalBuffer = getPhysicalBuffer(vector.data[0]);

@@ -9,23 +9,33 @@ import type {GPUData, GPUVector} from '@luma.gl/gpgpu/gpu-data';
 import type {GPUCommandGraph} from '../gpu-core/gpu-command-graph';
 import {addGPUGraphConnectedComponentsToGraphWithDispatchLimit} from './gpu-graph-connected-components-internals';
 import type {GPUGraphAdjacency, GPUGraphTopology} from './gpu-graph-topology';
+import {
+  isGPUGraphViewColumn,
+  usesGPUGraphViews,
+  validateGPUGraphViewColumn,
+  type GPUGraphColumn,
+  type GPUGraphTopologyLike
+} from './gpu-graph-topology-view';
 
 const DEFAULT_COMPONENT_ITERATIONS = 32;
 const MAXIMUM_COMPONENT_ITERATIONS = 1024;
 const SCALAR_BYTE_LENGTH = 4;
 
 /** Caller-owned GPU graph topology, component labels, and optional convergence status. */
-export type GPUGraphConnectedComponentsProps = {
+export type GPUGraphConnectedComponentsProps<
+  Topology extends GPUGraphTopologyLike = GPUGraphTopology,
+  Column extends GPUGraphColumn<'uint32'> = GPUVector<'uint32'>
+> = {
   /** Prefix for generated command-graph node and imported-resource identifiers. */
   id?: string;
   /** Existing forward graph adjacency; reverse adjacency is not required. */
-  topology: GPUGraphTopology;
+  topology: Topology;
   /** One caller-owned packed unsigned component label for every graph vertex. */
-  output: GPUVector<'uint32'>;
+  output: Column;
   /** Bounded number of compiled relaxation and pointer-jumping iterations. Defaults to 32. */
   iterations?: number;
   /** Optional caller-owned scalar publishing whether the final iteration reached a fixed point. */
-  converged?: GPUVector<'uint32'>;
+  converged?: Column;
 };
 
 /**
@@ -36,20 +46,23 @@ export type GPUGraphConnectedComponentsProps = {
  * The optional convergence scalar is one only when the last compiled iteration reaches a fixed
  * point. Forward-adjacency overflow instead publishes `0xffffffff` labels and zero convergence.
  */
-export class GPUGraphConnectedComponents {
+export class GPUGraphConnectedComponents<
+  Topology extends GPUGraphTopologyLike = GPUGraphTopology,
+  Column extends GPUGraphColumn<'uint32'> = GPUVector<'uint32'>
+> {
   /** Prefix for generated command-graph node and imported-resource identifiers. */
   readonly id: string;
   /** Existing caller-owned GPU graph topology. */
-  readonly topology: GPUGraphTopology;
+  readonly topology: Topology;
   /** Caller-owned vertex-aligned component labels. */
-  readonly output: GPUVector<'uint32'>;
+  readonly output: Column;
   /** Number of compiled, explicitly synchronized component-relaxation iterations. */
   readonly iterations: number;
   /** Optional caller-owned GPU-resident convergence status. */
-  readonly converged?: GPUVector<'uint32'>;
+  readonly converged?: Column;
 
   /** Validates caller-owned graph metadata without allocating, submitting, or reading GPU work. */
-  constructor(props: GPUGraphConnectedComponentsProps) {
+  constructor(props: GPUGraphConnectedComponentsProps<Topology, Column>) {
     this.id = props.id ?? 'gpu-graph-connected-components';
     this.topology = props.topology;
     this.output = props.output;
@@ -63,11 +76,13 @@ export class GPUGraphConnectedComponents {
     ) {
       throw new Error(`${this.id} iterations must be a safe integer between one and 1024`);
     }
-    validateComponentVector(this.output, this.topology.graph.vertexCount, `${this.id} output`);
+    validateColumn(this.output, this.topology.graph.vertexCount, `${this.id} output`);
     if (this.converged) {
-      validateComponentVector(this.converged, 1, `${this.id} converged`);
+      validateColumn(this.converged, 1, `${this.id} converged`);
     }
-    validateDistinctComponentOutputs(this);
+    if (!usesGPUGraphViews(this.topology, [this.output, this.converged])) {
+      validateDistinctComponentOutputs(this);
+    }
   }
 
   /** Declares bounded weak-component passes without submitting commands or reading results. */
@@ -77,6 +92,15 @@ export class GPUGraphConnectedComponents {
       commandGraph,
       commandGraph.device.limits.maxComputeWorkgroupsPerDimension
     );
+  }
+}
+
+/** Validates a physical or view column with its exact logical row count. */
+function validateColumn(column: GPUGraphColumn<'uint32'>, length: number, name: string): void {
+  if (isGPUGraphViewColumn(column)) {
+    validateGPUGraphViewColumn(column, 'uint32', length, name);
+  } else {
+    validateComponentVector(column, length, name);
   }
 }
 
@@ -114,8 +138,11 @@ function validateComponentVector(vector: GPUVector<'uint32'>, length: number, na
 }
 
 /** Keeps component labels and optional convergence status disjoint from all graph allocations. */
-function validateDistinctComponentOutputs(components: GPUGraphConnectedComponents): void {
-  const topology = components.topology;
+function validateDistinctComponentOutputs(
+  components: GPUGraphConnectedComponents<GPUGraphTopologyLike, GPUGraphColumn<'uint32'>>
+): void {
+  // Only called when every topology input and output is a physical GPUVector.
+  const topology = components.topology as GPUGraphTopology;
   const inputVectors = [
     topology.graph.sourceVertices,
     topology.graph.targetVertices,
@@ -133,8 +160,10 @@ function validateDistinctComponentOutputs(components: GPUGraphConnectedComponent
   }
 
   const outputs = [
-    {name: 'output', vector: components.output},
-    ...(components.converged ? [{name: 'converged', vector: components.converged}] : [])
+    {name: 'output', vector: components.output as GPUVector<'uint32'>},
+    ...(components.converged
+      ? [{name: 'converged', vector: components.converged as GPUVector<'uint32'>}]
+      : [])
   ];
   for (const {name, vector} of outputs) {
     const buffer = getPhysicalBuffer(vector.data[0]);

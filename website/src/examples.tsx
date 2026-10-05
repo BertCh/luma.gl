@@ -109,6 +109,7 @@ const loadMillionRowCrossfilterExample = () =>
 const loadRasterLabExample = () => import('../../examples/showcase/raster-lab/app');
 const loadGPUSpatialTaxiExample = () => import('../../examples/deck/luspatial-taxi/app');
 const loadGPUGraphExplorerDeckExample = () => import('../../examples/deck/gpu-graph-explorer/app');
+const loadMapGraphsExplorerDeckExample = () => import('../../examples/deck/map-graphs-explorer/app');
 const loadFP64Example = () => import('../../examples/experimental/fp64/app');
 const loadGPUSortExample = () => import('../../examples/experimental/gpu-sort/src/app');
 const loadGPUDataAnalysisExample = () =>
@@ -563,6 +564,41 @@ export const DeckGPUGraphExplorerExample: React.FC<DeckArrowLayerExampleProps> =
         panel: {
           id: 'gpu-graph-explorer',
           title: 'GPU Graph + deck.gl Network Explorer',
+          devices: ['webgpu']
+        }
+      }}
+      showStats={false}
+      style={embedded ? DECK_ARROW_LAYER_EMBEDDED_STYLE : undefined}
+    />
+  );
+};
+
+/** Loads the map-graphs recipe explorer only when its WebGPU example is opened. */
+export const DeckMapGraphsExplorerExample: React.FC<DeckArrowLayerExampleProps> = ({
+  embedded = false
+}) => {
+  const {module, errorMessage} = useDeferredExampleModule(loadMapGraphsExplorerDeckExample);
+
+  if (!module) {
+    return (
+      <DeferredGPUExampleStatus
+        title="Map Graphs + deck.gl Explorer"
+        description="Loading map-graph recipes, open datasets, and direct deck.gl layers."
+        errorMessage={errorMessage}
+        embedded={embedded}
+        style={embedded ? DECK_ARROW_LAYER_EMBEDDED_STYLE : undefined}
+      />
+    );
+  }
+
+  return (
+    <ReactExample
+      component={DeckArrowLayerCanvas}
+      componentProps={{
+        createDeck: module.createMapGraphsExplorerDeck,
+        panel: {
+          id: 'map-graphs-explorer',
+          title: 'Map Graphs + deck.gl Explorer',
           devices: ['webgpu']
         }
       }}

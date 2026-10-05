@@ -93,6 +93,32 @@ Invalid endpoints are excluded and counted. `count` reports the complete number 
 adjacency entries even if neighbor capacity is insufficient; `overflow` makes truncation explicit.
 Neighbor order within each vertex is intentionally unspecified.
 
+## Analyze in-graph CSR views with GPUGraphTopologyView
+
+**Question: The adjacency already exists inside my command graph. Can I analyze it without
+copying it into `GPUVector`s?**
+
+`GPUGraphTopologyView` presents compressed sparse row adjacency that already exists as
+`GPUCommandGraph` views, such as transients written by `GPUCOOToCSR`, to `GPUGraphDegree`,
+`GPUGraphPageRank`, `GPUGraphCoreNumber`, `GPUGraphConnectedComponents`, and
+`GPUGraphLabelPropagation`. Their outputs may then also be graph views. Nothing is copied.
+
+```ts
+import {GPUGraphPageRank, GPUGraphTopologyView} from '@luma.gl/gpgpu/gpu-graph';
+
+const topology = new GPUGraphTopologyView({
+  vertexCount,
+  forward: {offsets: rowOffsets, neighbors: columns}
+});
+new GPUGraphPageRank({topology, output: rankView}).addToGraph(commandGraph);
+```
+
+`directed` defaults to whether `reverse` adjacency is supplied. Omit `overflow` for an exact CSR;
+each algorithm then clears its own zero word in a one-invocation pass. View packing and length are
+checked at construction; graph membership and output-versus-input buffer distinctness are checked
+when the algorithm is added to the graph. Other gpu-graph algorithms (breadth-first search,
+shortest paths, modularity, clustering, layouts) still take a `GPUGraphTopology`.
+
 ## Count relationships with GPUGraphDegree
 
 **Question: How many direct relationships does each vertex have?**

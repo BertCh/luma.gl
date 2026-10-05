@@ -9,23 +9,33 @@ import type {GPUData, GPUVector} from '@luma.gl/gpgpu/gpu-data';
 import type {GPUCommandGraph} from '../gpu-core/gpu-command-graph';
 import {addGPUGraphLabelPropagationToGraphWithDispatchLimit} from './gpu-graph-label-propagation-internals';
 import type {GPUGraphAdjacency, GPUGraphTopology} from './gpu-graph-topology';
+import {
+  isGPUGraphViewColumn,
+  usesGPUGraphViews,
+  validateGPUGraphViewColumn,
+  type GPUGraphColumn,
+  type GPUGraphTopologyLike
+} from './gpu-graph-topology-view';
 
 const DEFAULT_LABEL_ITERATIONS = 32;
 const MAXIMUM_LABEL_ITERATIONS = 1024;
 const SCALAR_BYTE_LENGTH = 4;
 
 /** Existing caller-owned graph adjacency, unsigned community labels, and optional GPU status. */
-export type GPUGraphLabelPropagationProps = {
+export type GPUGraphLabelPropagationProps<
+  Topology extends GPUGraphTopologyLike = GPUGraphTopology,
+  Column extends GPUGraphColumn<'uint32'> = GPUVector<'uint32'>
+> = {
   /** Prefix for generated command-graph node and imported-resource identifiers. */
   id?: string;
   /** Existing weak-neighborhood adjacency; directed graphs require reverse CSR. */
-  topology: GPUGraphTopology;
+  topology: Topology;
   /** One caller-owned packed unsigned community label for every stable graph vertex. */
-  output: GPUVector<'uint32'>;
+  output: Column;
   /** Bounded number of synchronous majority-vote iterations. Defaults to 32. */
   iterations?: number;
   /** Optional scalar set only when the final compiled iteration reaches a fixed point. */
-  converged?: GPUVector<'uint32'>;
+  converged?: Column;
 };
 
 /**
@@ -41,20 +51,23 @@ export type GPUGraphLabelPropagationProps = {
  * is neither Louvain nor Leiden, does not optimize modularity, and has worst-case
  * `O(sum(degree²))` work per iteration.
  */
-export class GPUGraphLabelPropagation {
+export class GPUGraphLabelPropagation<
+  Topology extends GPUGraphTopologyLike = GPUGraphTopology,
+  Column extends GPUGraphColumn<'uint32'> = GPUVector<'uint32'>
+> {
   /** Prefix for generated command-graph node and imported-resource identifiers. */
   readonly id: string;
   /** Existing caller-owned GPU graph topology. */
-  readonly topology: GPUGraphTopology;
+  readonly topology: Topology;
   /** Caller-owned vertex-aligned community labels. */
-  readonly output: GPUVector<'uint32'>;
+  readonly output: Column;
   /** Number of compiled, explicitly synchronized majority-vote iterations. */
   readonly iterations: number;
   /** Optional caller-owned GPU-resident final fixed-point status. */
-  readonly converged?: GPUVector<'uint32'>;
+  readonly converged?: Column;
 
   /** Validates graph metadata without allocating, submitting, destroying, or reading GPU work. */
-  constructor(props: GPUGraphLabelPropagationProps) {
+  constructor(props: GPUGraphLabelPropagationProps<Topology, Column>) {
     this.id = props.id ?? 'gpu-graph-label-propagation';
     this.topology = props.topology;
     this.output = props.output;
@@ -72,11 +85,13 @@ export class GPUGraphLabelPropagation {
       throw new Error(`${this.id} directed weak-neighbor votes require reverse adjacency`);
     }
 
-    validateLabelVector(this.output, this.topology.graph.vertexCount, `${this.id} output`);
+    validateColumn(this.output, this.topology.graph.vertexCount, `${this.id} output`);
     if (this.converged) {
-      validateLabelVector(this.converged, 1, `${this.id} converged`);
+      validateColumn(this.converged, 1, `${this.id} converged`);
     }
-    validateDistinctLabelOutputs(this);
+    if (!usesGPUGraphViews(this.topology, [this.output, this.converged])) {
+      validateDistinctLabelOutputs(this);
+    }
   }
 
   /** Declares bounded majority-vote passes without queue submission or CPU synchronization. */
@@ -86,6 +101,15 @@ export class GPUGraphLabelPropagation {
       commandGraph,
       commandGraph.device.limits.maxComputeWorkgroupsPerDimension
     );
+  }
+}
+
+/** Validates a physical or view column with its exact logical row count. */
+function validateColumn(column: GPUGraphColumn<'uint32'>, length: number, name: string): void {
+  if (isGPUGraphViewColumn(column)) {
+    validateGPUGraphViewColumn(column, 'uint32', length, name);
+  } else {
+    validateLabelVector(column, length, name);
   }
 }
 
@@ -123,8 +147,11 @@ function validateLabelVector(vector: GPUVector<'uint32'>, length: number, name: 
 }
 
 /** Protects graph inputs, CSR statuses, and caller-owned output allocations from physical alias. */
-function validateDistinctLabelOutputs(propagation: GPUGraphLabelPropagation): void {
-  const {topology} = propagation;
+function validateDistinctLabelOutputs(
+  propagation: GPUGraphLabelPropagation<GPUGraphTopologyLike, GPUGraphColumn<'uint32'>>
+): void {
+  // Only called when every topology input and output is a physical GPUVector.
+  const topology = propagation.topology as GPUGraphTopology;
   const inputVectors = [
     topology.graph.sourceVertices,
     topology.graph.targetVertices,
@@ -142,8 +169,10 @@ function validateDistinctLabelOutputs(propagation: GPUGraphLabelPropagation): vo
   }
 
   const outputs = [
-    {name: 'output', vector: propagation.output},
-    ...(propagation.converged ? [{name: 'converged', vector: propagation.converged}] : [])
+    {name: 'output', vector: propagation.output as GPUVector<'uint32'>},
+    ...(propagation.converged
+      ? [{name: 'converged', vector: propagation.converged as GPUVector<'uint32'>}]
+      : [])
   ];
   for (const {name, vector} of outputs) {
     const buffer = getPhysicalBuffer(vector.data[0]);
