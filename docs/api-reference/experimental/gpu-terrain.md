@@ -441,7 +441,11 @@ float32 rasters, each with an optional `r32float` or `rgba32float` storage textu
 - `GPUTextureShading` approximates Leland Brown's texture shading (fractional Laplacian
   `|f|^alpha`) with a cascade of separable Gaussian levels (`sigma_k = baseSigma * 2^k`) summed as
   weighted band differences. Nodata uses normalized convolution. `detail` (alpha), the band
-  weights, and gain are per frame.
+  weights, and gain are per frame. `hasNodata: false` (default `true`) promises an all-valid
+  elevation and blurs one channel instead of value plus validity, which is exact and about halves
+  the blur cost. `downsampleLevels` (default `true`) computes levels with incremental sigma of at
+  least 4 pixels on a 2x decimated grid and upsamples bilinearly; output stays within 1% of the exact
+  output range (measured 0.1-0.27%), and `false` restores the exact full-resolution cascade.
 - `GPUSolarPosition` evaluates the NOAA solar position for every row of a longitude/latitude
   column at one per-frame instant. It writes azimuth, altitude (with optional refraction), and a
   daylight flag. `getSolarPosition` is the float64 CPU version used to drive the shadow mask.
@@ -521,7 +525,10 @@ or geographic cells) with flat, pit, and outlet classes, flow accumulation in ce
 optionally weighted by a per-cell runoff view, and a stream mask with a per-frame threshold.
 Filling is a GPU-gated tiled min-relaxation and accumulation a deterministic pull over dependency
 order with downstream walking; both stop early on the GPU and report convergence flags, so
-nothing is read back and accumulation is bit-reproducible.
+nothing is read back and accumulation is bit-reproducible. `maxFillIterations` and
+`maxFlatIterations` default to 512 (up to 1024); after 96 plain tiled iterations each phase adds
+directional row and column sweeps so serpentine and spiral basins converge. Check `fillConverged`
+and `flatsConverged` for longer ones.
 
 ```ts
 graph.add(new GPUTerrainFlow({

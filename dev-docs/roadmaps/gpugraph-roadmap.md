@@ -1474,3 +1474,272 @@ Still open:
   - Costs: H3 grid disk k=8 is about 11 ms for one cell; adaptive GWR is about 5x a fixed ladder;
     Weiszfeld median centre unrolls to about 150 nodes; streamline and stitching rounds dispatch
     at capacity, not at convergence.
+
+## GPU spatial analysis: prior-art review and next tranches
+
+Reviewed 2026-10-05 against GeoPandas / Shapely 2 / GEOS, DuckDB spatial, Apache Sedona (SedonaDB),
+the PySAL family (libpysal, esda, spreg, mgwr, spopt, segregation, tobler, access, momepy, giddy,
+pointpats, spaghetti), RAPIDS cuSpatial and other GPU systems (HeavyDB, Kinetica, FDBSCAN, jump
+flooding), PostGIS / pgRouting / MobilityDB / h3-pg, the CARTO Analytics Toolbox and BigQuery /
+Snowflake / Databricks geospatial, and Turf.js with the browser ecosystem (JSTS, polygon clipping,
+d3-delaunay, h3-js, geotiff.js, DuckDB-WASM). Round 7 had already covered turf measurement, esda
+statistics and kepler/CARTO parity, so this review looks for what is still missing. Every
+"have" below was checked against the source on `map-contributors`.
+
+### Where the field is
+
+- cuSpatial stopped publishing at RAPIDS 25.06 and no replacement has been named. The live GPU
+  vector reference is now SedonaDB's GPU spatial join, which runs on NVIDIA RT cores. It evaluates
+  every named predicate through one DE-9IM relate path, has no `dwithin` or kNN on the GPU, and
+  needs batches of about 100k before it beats the CPU.
+- PySAL (meta-package v26.07, libpysal 4.15) is converging on `libpysal.graph.Graph` as its one
+  weights object. That is the same joint as our `GPUSpatialWeights` CSR. `mgwr` and `spaghetti`
+  are dormant, so a maintained GPU GWR or network point-pattern implementation has no competition.
+- GeoPandas 1.1 has no GPU work on its roadmap. Turf 7.4 is shipping correctness releases. JSTS is
+  in maintenance.
+- No other browser library does WebGPU vector or statistical analysis. Our differentiators are
+  bounded outputs with GPU overflow flags, fixed-order deterministic reductions, f64 and CPU
+  oracles, and per-frame parameters that need no recompile. SedonaDB and cuSpatial return
+  unordered pairs, which makes ours unusual.
+
+### Layering lessons
+
+Each reference project is a small set of joints plus many consumers. Ours already line up with
+them, and the gaps are at the joints.
+
+| Joint | Reference | Ours | Action |
+| --- | --- | --- | --- |
+| Geometry array | Shapely ufuncs, GeoArrow, GEOMETRY column | GeoArrow offsets views | Keep. Factor one shared segment table so the join, measures and new geometry contributors stop each re-deriving segments |
+| Candidate / matched pair table | `STRtree.query` index pairs; sjoin, overlay and clip all consume it | `GPUSpatialJoinPairs`, sorted `(left, right)` | Keep. Expose the bounding-box candidate stage on its own so relate, distance and intersection kernels share it |
+| Predicate | One DE-9IM engine (GEOS RelateNG, SedonaDB); named predicates are masks over it | One kernel per predicate (`intersects`, `contains`, `within`, `dwithin`) | Move to a single relate classification (tranche S1) |
+| Weights | `libpysal.graph.Graph` with builders, transforms and set algebra | `GPUSpatialWeights` CSR, 4 producers, `row`/`binary`/`kernel`/`symmetrize` | Add the algebra on the CSR (tranche S2). Keep the CSR as the only neighbor currency |
+| Group key | SQL window `OVER (PARTITION BY cluster)`, GeoPandas `dissolve(by=)` | `GPUGroupStatistics` over a `uint32` label | Add per-group geometry so a cluster label gives outlines and centers (tranche S3) |
+| Cell key | CARTO, Mosaic and h3-pg turn joins into equi-joins on H3 or Quadbin | cell indexing, topology, cover, aggregation, `GPUKeyJoin` | Add a core/border flag and set outlines (tranche S3) |
+| Prepared geometry | GEOS `PreparedGeometry`; "prepared" is a headline GeoPandas roadmap item | The BVH is rebuilt every encoding | Add a static right-hand side so animated points reuse the polygon BVH (tranche S1) |
+| Named tool or workflow | CARTO Workflows, QGIS models, ArcGIS tools | Contributors compose inside a `GPUCommandGraph` | Ship named recipes as builder functions, not classes (see recipes below) |
+
+Conventions to adopt from them:
+- Every statistic emits its "explain" columns (neighbor count, z, p, class) next to the primary
+  result, as CARTO's procedures do.
+- Each contributor documents a measured CPU/GPU crossover and offers `strategy: 'scan' | 'indexed'`
+  where both exist. SedonaDB and HeavyDB both lose to the CPU on small joins.
+- Parity tables pin a reference release: esda 2.10 / PySAL v26.07 for statistics, Shapely 2.1 /
+  GEOS for predicates, h3-js for cells. Keep running those as oracles.
+
+### Tranche S1: predicates and joins (P1)
+
+Three of the five reviews independently ranked this first.
+
+- **`GPUSegmentIntersection`** (M): segment–segment intersections over BVH candidate pairs. Per
+  pair it classifies the crossing as proper, touch, collinear or overlap, uses exact orientation
+  signs, and flags uncertain pairs as the point-in-polygon join does. Output is capacity-bounded
+  and sorted. It gives turf `lineIntersect`, `kinks`, self-intersection and `lineSplit` points.
+  It also supplies noding for `gpu-network` and the building block for the next item. turf's naive
+  O(nm) `lineIntersect` stalls at about 10^4 segments, so this is a real browser win.
+- **`GPUSpatialPredicateJoin` relate engine** (M–L): one per-pair DE-9IM classification for all
+  nine geometry-kind pairs. The existing predicates become masks over it, and it adds `covers`,
+  `coveredBy`, `touches`, `crosses`, `overlaps`, `equals` and `containsProperly`, plus an optional
+  per-pair `relate` output and a pattern filter. Add `how: 'anti'` to emit unmatched left IDs,
+  since `disjoint` as a pair list is unbounded. `touches` between polygons cross-checks
+  `GPUContiguityWeights`. SedonaDB's predicate list is the acceptance list and Shapely is the
+  oracle.
+- **`GPUGeometryValidity`** (S once the item above exists): a per-feature bitmask for unclosed or
+  short rings, NaN, repeated vertices, ring orientation, self-intersection, holes outside the shell
+  and crossing rings. It answers the "polygons must be valid" caveat in the join doc with a mask
+  users can filter on, and repair stays on the CPU.
+- **`GPUNearestFeatureJoin` v2** (M): `k` nearest (best-first BVH, lowest-ID ties), all-ties mode,
+  `maxDistance`, and distance, foot-point and segment columns. This matches `sjoin_nearest` and the
+  PostGIS `<->` operator with `LIMIT k`. Also add line/line, line/polygon and polygon/polygon
+  minimum distance columns, which cuSpatial had and we do not.
+- **Static right-hand side** (S): keep the right-side BVH across encodings when the geometry has
+  not changed, as a `prepared` handle on the join and the nearest join. This reuses a build. It
+  does not cache results.
+
+### Tranche S2: spatial weights and statistics on weights (P1)
+
+This is the core of the entry's purpose ("our value is spatial weights, stats on weights").
+
+- **`GPUSpatialWeightsAlgebra`** (M): union, intersection, difference and symmetric difference as
+  per-row two-pointer merges (rows are already sorted), `higherOrder(k)`, an explicit self weight,
+  `subgraph(mask)`, block weights from group IDs, and a summary of cardinality, S0/S1/S2,
+  asymmetry and isolate count. This covers the libpysal `Graph` set operations. Also add the
+  missing `D` and `V` transforms to `GPUSpatialWeightsTransform`.
+- **`GPUNeighborhoodSummary`** (S): per-row weighted mean, sum, min, max, standard deviation,
+  median (k ≤ 32), mode (categorical lag) and entropy over a CSR. It is momepy `describe` and the
+  generalized lag, and it feeds segregation and morphometrics.
+- **`GPUSpatialRegressionDiagnostics`** (M): LM-lag, LM-error, their robust forms, LM-SARMA,
+  Anselin-Kelejian and Moran's I of residuals, computed from `GPUOrdinaryLeastSquares` residuals,
+  `GPUSpatialLag` and fixed-order traces. This turns our OLS into the GeoDa "fit OLS, then which
+  spatial model?" panel.
+- **Rate smoothing and tails** (S): empirical-Bayes rate standardization in front of
+  `GPULocalMoran` and `GPUGlobalSpatialStatistics` (esda `Moran_Rate` and `Moran_Local_Rate`), and
+  esda 2.10's `alternative` tail option on the permutation tests. Raw rates over small
+  denominators are the most common source of false hot spots.
+
+### Tranche S3: group geometry, cell outlines and isochrones (P1)
+
+Closes the "cluster, then show it" loop that PostGIS window functions and turf users rely on.
+
+- **`GPUGroupGeometry`** (S): per-label bounds, mean and weighted center, medoid, standard ellipse
+  and count. It reuses `GPUGroupStatistics` and the `GPUGeographicDistribution` kernels over a
+  label column. Document `GPUSpatialClustering` with `minPoints = 1` as PostGIS
+  `ST_ClusterWithin`.
+- **`GPUGroupConvexHull`** (M): monotone-chain hulls per label over a segmented sort, bounded with
+  overflow and lowest-index ties. Use it for cluster and hot-region outlines and trajectory
+  footprints. A raster closing of `GPUDistanceField` is the concave option (P2). Exact alpha shapes
+  stay on the CPU.
+- **`GPUCellSetOutline`** (S): boundary edges of a cell set (H3 `cellsToMultiPolygon` without ring
+  assembly) from `GPUCellTopology` neighbors. It is the cheapest way to draw an isochrone or a
+  significant region as one outline.
+- **Network isochrone polygons** (M): splat edge-interpolated `GPUNetworkServiceAreas` costs to a
+  raster and run `GPUIsobands`, or outline the reached cells with `GPUCellSetOutline`. The
+  isochrone outline is the most requested routing visual we cannot draw today.
+- **Core/border flag on `GPUCellCover`** (S): mark cells that lie entirely inside the polygon
+  (Mosaic "chips"), so tessellated joins skip the exact test for core cells.
+
+### Tranche S4: trajectories against places (P1/P2)
+
+MobilityDB shows a tier between our trajectory contributors and the zone tools.
+
+- **Zone entry and exit events** (M, P1): crossings of trajectory segments with polygon edges
+  through the BVH, with interpolated times. Bounded events per track give dwell time per zone and
+  visits per POI. Composes `GPUTrajectoryPlayhead`, the BVH and the predicate join.
+- **Encounters** (M, P2): pairs of tracks within distance d during the same time bucket, using a
+  (cell, time bucket) grid over `GPUTrajectoryResample` output. This is MobilityDB `tdwithin`.
+- **Hausdorff and discrete Fréchet distance** (S–M, P2): per-pair track or ring similarity with a
+  workgroup reduction, for track grouping and comparing boundary vintages.
+
+### Tranche S5: change of support and neighborhood indices (P2)
+
+- **`GPUArealInterpolation`** (M): area-weighted transfer of extensive, intensive and categorical
+  variables between zone systems or onto H3 and hexagons. Shared-cell counts come from
+  `GPUPolygonRasterization` on a common fine grid, with an optional dasymetric mask raster. Output
+  is an area-share `GPUSpatialWeights`, so `GPUSpatialLag` performs the transfer. Accuracy is
+  bounded by resolution, never exact polygon intersection, and is documented as such. Also add
+  `GPUPycnophylactic` (focal mean plus a zone rescale, fixed iterations). Together these cover
+  tobler and CARTO `ENRICH_POLYGONS`.
+- **`GPUSegregation`** (M): aspatial D, isolation, interaction, entropy and Atkinson, spatial
+  versions via kernel weights, local per-unit indices, and a multiscale profile over a bandwidth
+  ladder. Composes `GPUNeighborhoodSummary`, `GPUInequality` and `GPUGlobalPermutationTest`.
+- **Distribution dynamics** (M): `GPUTransitionMatrix`, `GPUSpatialMarkov` and `GPULISAMarkov` as
+  exact integer histograms over `GPUClassBreaks`, `GPUSpatialLag` and `GPULocalMoran` quadrants
+  per period (giddy), plus pooled class breaks and GADF goodness of fit, so a time slider keeps one
+  legend.
+- **Space-time tests** (M): Knox, modified Knox and Mantel interaction tests with
+  Feistel-permuted times (pointpats). A space-time scan statistic (Kulldorff, CARTO
+  `DETECT_SPACETIME_ANOMALIES`) is L, after Knox.
+- **Floating catchments on any weights** (S): `GPUNetworkAccessibility` already does 2SFCA with
+  decay on network costs. Accept any `GPUSpatialWeights` (Euclidean kernel) and add 3SFCA and Huff
+  gravity trade areas.
+- **Spatial 2SLS / GM error** (M–L): spreg `GM_Lag` and `GM_Error` with instruments from
+  `GPUSpatialLag`, GPU-reduced moments and tiny CPU solves. It follows the S2 diagnostics.
+
+### Tranche S6: geometry utilities (P2)
+
+- **Render-only buffer geometry** (M): per-vertex offset outlines with round joins for points,
+  lines and rings, with a per-frame distance (planar or geodesic). Overlaps are left alone; the
+  renderer or `GPUDistanceField` handles the union look. Queries keep using `dwithin` and
+  `GPUBufferSelection`. This covers turf `buffer` and `lineOffset` for the picture only.
+- **Label point** (S–M): pole of inaccessibility through fixed refinement rounds over
+  point-segment distance, for labeling 10^5 polygons during pan (polylabel).
+- **Coverage simplification** (M): simplify shared arcs once, found through contiguity edge keys,
+  with `GPULineSimplification`, so choropleths stay gap-free at low zoom (Shapely 2.1
+  `simplify_coverage`, PostGIS `ST_CoverageSimplify`).
+- **Shape descriptors** (S): compactness (Polsby-Popper, Schwartzberg), convexity (needs the
+  hull), elongation and orientation, clockwise and sliver flags from `GPUGeometryMeasures`. Add
+  momepy neighbor alignment through `GPUNeighborhoodSummary`.
+- **Line density** (M): line length per grid cell or per polygon (QGIS "Line density", "Sum line
+  lengths").
+- **Raster connected components** (M): `r.clump`, sieve filters and patch metrics. It builds on
+  `GPUGraphConnectedComponents`, which spike repair already uses.
+- **Small generators** (S): square, hex, triangle and point grids from an extent ("fishnet then
+  join"), rectangle clip (Liang-Barsky, Sutherland-Hodgman per ring), and map coloring (greedy
+  parallel coloring over contiguity, via gpu-graph once it exists upstream).
+- **Clustering extras** (S–M): FDBSCAN's dense-box shortcut in `GPUSpatialClustering` (a cell
+  holding at least `minPoints` points is all core), deterministic k-means, and Ripley F, G and J
+  next to K, L and g.
+
+### P3 and later
+
+SKATER-style minimum spanning tree over contiguity (needs an upstream MST), network K function
+(spaghetti), GWR Monte Carlo non-stationarity test and local condition number, kNN-neighborhood
+kriging prediction, feature-space kNN ("similar locations"), endpoint line merge, a turn-restriction
+line graph, map matching, Hilbert keys (upstream, next to `GPUBVH`), and circle and sector
+generators.
+
+### Named recipes
+
+Ship these as parameterised builder functions that add a chain to a caller's graph and return
+named output views, as CARTO Workflows templates do. They are not new classes. Each one exists
+today except where an item above is marked.
+
+| Recipe | Chain |
+| --- | --- |
+| Hot spot analysis | `GPUPointToCell` → `GPUCellAggregation` → `GPULatticeWeights` or `GPUNeighborSearch` → `GPUHotSpotAnalysis` (FDR) → `GPULocalPermutationTest` → `GPUClassBreaks` → `GPUColorScale` |
+| Rate cluster map | EB rates (S2) → `GPUContiguityWeights` → `GPUSpatialWeightsTransform` → `GPULocalMoran` → `GPULocalPermutationTest` → quadrant colors |
+| Points-in-polygons choropleth | `GPUPointInPolygonJoin` or `GPUSpatialPredicateJoin` → `GPUZonalStatistics` / `GPUGroupStatistics` → `GPUClassBreaks` → `GPUColorScale` |
+| Space-time hot spots | `GPUCalendarBuckets` → `GPUCellAggregation` → `GPUEmergingHotSpots` → `GPUColorScale` |
+| Cluster and outline | `GPUSpatialClustering` → `GPUGroupGeometry` + `GPUGroupConvexHull` (S3) → `GPUGeometryMeasures` |
+| Spatial regression | `GPUOrdinaryLeastSquares` → `GPUSpatialRegressionDiagnostics` (S2) → residual `GPULocalMoran`; `GPUGeographicallyWeightedRegression` for local fits |
+| Drive-time catchment | `GPUNetworkSnapping` → `GPUNetworkServiceAreas` → isochrone polygon (S3) → `GPUPointInPolygonJoin` → `GPUZonalStatistics` |
+| Straight-line catchments | `GPUDistanceField` allocation (raster Voronoi) → `GPURasterZonalStatistics` |
+| Change of support | `GPUPolygonRasterization` → `GPUArealInterpolation` (S5) → `GPUSpatialLag` |
+| Fleet dwell | `GPUTrajectoryMetrics` stops or zone events (S4) → `GPUPointInPolygonJoin` → `GPUGroupStatistics` |
+| Period comparison | two `GPUCellAggregation` → `GPUCellTableCompare` → diverging `GPUClassBreaks` |
+
+Also add a cross-reference table to the user doc, keyed by turf, PostGIS, GeoPandas, PySAL and
+QGIS tool names, so people moving from those libraries can find the matching contributor.
+
+### Deliberately not building
+
+- **Vector overlay:** union, intersection, difference, dissolve geometry, exact buffer, polygonize,
+  noding output, `make_valid` and `ST_Subdivide`. Output is unbounded and needs robust topology.
+  cuSpatial never shipped overlay and SedonaDB's GPU path does not attempt it. Use polyclip-ts,
+  JSTS or GEOS-wasm through Arrow adapters. The bounded substitutes are areal interpolation, cell
+  roll-ups and boundaries drawn where neighboring groups differ.
+- **Exact vector Voronoi, Delaunay and concave hulls:** they need exact predicates, and
+  d3-delaunay is fast on the CPU. A CPU-built triangulation can be uploaded as `GPUSpatialWeights`
+  (Delaunay weights). Raster Voronoi already exists in `GPUDistanceField`.
+- **Regionalization search and location solvers:** AZP, max-p, Ward-spatial, p-median, MCLP,
+  TSP/VRP and contraction hierarchies are sequential or MILP problems. We contribute cost
+  matrices, MST edges and partition evaluation, not the solvers.
+- **Likelihood-based spatial models:** ML lag and error, panel, SUR, regimes, probit and MGWR
+  backfitting are control-flow heavy with little value on a web map.
+- **Other layers:** quadtree indexes (the sort-based BVH and grid subsume them), a SQL front end
+  or dataframe layer, CRS handling, S2 spherical predicates, GeometryCollection, and service-style
+  features (geocoding, enrichment catalogues, tiling).
+
+Upstream asks for luma gpgpu: minimum spanning tree and graph coloring in gpu-graph, Hilbert keys
+and sort next to `GPUBVH`, and a reusable bounding-box candidate-pair stage shared by the join
+contributors.
+
+### Status after the 2026-10-05 build round
+
+Every P1 and P2 item above now has a first version on `map-contributors`, except the ones listed as
+open below. Each contributor has a headless GPU spec against a CPU oracle. Where a reference
+library exists, the fixtures pin its values: spreg 1.9.1, esda 2.10, libpysal 4.15, giddy,
+pointpats, segregation 2.6, tobler and Shapely 2.1.2.
+
+| Tranche | Shipped | Still open |
+| --- | --- | --- |
+| S1 | `GPUSegmentIntersection` and `GPUGeometryValidity` (exact 256-bit orientation fallback, Morton-sorted BVH); relate engine in `GPUSpatialPredicateJoin` (DE-9IM for all nine kind pairs, seven new predicates, `relate` output and patterns, `how: 'anti'`); `GPUSpatialJoinPrepared` for the predicate and point-in-polygon joins; `GPUSpatialJoinCandidates`; `GPUNearestFeatureJoin` k-nearest with lowest-ID or all ties, `maxDistance`, foot points and segment IDs for every kind pair; `GPUNearestFeatureWeights` (k-nearest output to `GPUSpatialWeights`, libpysal 4.15 `KNN`) | Relate is still about 10x slower than GEOS on few pairs of large polygons (about 10 ms for 100 pairs, against 1 ms); pattern and distance are compile-time; `lineSplit` and `gpu-network` noding; nearest join to `GPUSpatialWeights` adapter |
+| S2 | `GPUSpatialWeightsAlgebra` (set operations, `higherOrder`, self weight, subgraph, block), `GPUSpatialWeightsSummary`, `double` and `variance` transforms; `GPUNeighborhoodSummary`; `GPUEmpiricalBayesRates`; `alternative` tails on both permutation tests; `GPUSpatialRegressionDiagnostics` (LM tests, residual Moran); `GPUSpatialTwoStageLeastSquares` (`GM_Lag` with Anselin-Kelejian); `folded` tail (esda 2.10); `GPUSpatialEmpiricalBayesRates` (esda `Spatial_Rate`, `Spatial_Empirical_Bayes`); `GPUSpatialErrorGM` (spreg `GM_Error`); `GPUSpatialWeightsTranspose` (CSR transpose, so diagnostics and 2SLS no longer need a symmetric pattern and match spreg 1.9.1 on directed kNN) | `W²X` instruments |
+| S3 | `GPUGroupGeometry`, `GPUGroupConvexHull` (exact lattice orientation); `GPUCellSetOutline` (H3, Quadbin) with ring output through `GPUSegmentRingAssembly` (closed shells and holes, GeoArrow offsets, polygon layout for the point-in-polygon join); `output.core` on `GPUCellCover`; `GPUNetworkIsochrones` in gpu-network (raster isobands or cell outlines) | Isoband triangles are not turned into rings; isochrones carry no facility labels; H3 pentagon rings are untested; one hull chain per group runs serially |
+| S4 | `GPUZoneEvents` (enter/exit, dwell, visits), `GPUTrajectoryEncounters`, `GPUTrackSimilarity` (Hausdorff, discrete Fréchet up to 256 vertices) | Resample-to-common-clock helper for encounters; crossing positions; sparse (track, zone) output |
+| S5 | `GPUArealInterpolation` (area-share weights; `GPUSpatialLag` now takes cross weights and several columns), `GPUPycnophylactic`, `GPUSegregation`; `GPUClassAssignment`, `GPUTransitionMatrix`, `GPUSpatialMarkov`, `GPULISAMarkov`; `GPUKnoxTest`, `GPUMantelTest`; `GPUCatchmentAccessibility` (2SFCA, 3SFCA), `GPUHuffTradeAreas`; `GPUClassificationFit` (mapclassify 2.11 ADCM, GADF, tss); `GPUSpatialErrorGM` (`GM_Error`) | Kulldorff scan; a fast path for unweighted areal interpolation |
+| S6 | `GPUOutlineGeometry`, `GPULabelPoint`, `GPUShapeDescriptors`, `GPULineDensity` (grid), `GPUGridGenerator`, `GPURectangleClip`; `GPUCoverageSimplification`; `GPURasterSieve` and `GPURasterPatchMetrics` in gpu-raster; dense-box option in `GPUSpatialClustering`, `GPUKMeans`, `GPURipleyDistanceFunctions` (F, G, J); `GPUMapColoring`; `GPULineLengthPerPolygon` (QGIS Sum line lengths) | Topology-preserving coverage simplification; k-means convergence test; Ripley edge corrections beyond border |
+
+Fix round (same day), driven by the recipes and the explorer demo:
+- **Exact orientation:** relate and the point-in-polygon join use the exact orientation of `GPUSegmentIntersection`. The upstream pairwise classifier was never wrong, but it marked up to 60% of near-edge rows uncertain; the join now re-decides those exactly at no measurable cost.
+- **Relate engine speed:** one 64-lane workgroup per pair with box pruning brought realistic polygons from about 1 s to about 10 ms, and a new `engine: 'auto' | 'fast' | 'relate'` prop selects the kernel. Metal fused the fast kernels' f32 orientation test into an FMA, so `contains`/`within` missed polygons sharing boundary runs; every predicate kernel now uses the exact sign.
+- **`spatialSort`:** now on by default from 256 features for the point-in-polygon join, the nearest join and buffer selection. Shuffled input runs 50–125x faster; coherent input costs about 1 ms more.
+- **Storage-buffer limit:** the `GPUCellSetOutline` groups kernel bound 9 storage buffers. Specs did not catch it because the test device requests `featureLevel: 'max'`. A spec on a `'core'` device now guards it, and an audit at default limits found no other kernel over 8.
+- **Recipe adapters:** removed through `GPULocalMoran` `quadrantGating`, `GPUGroupStatistics` `keyCount` (dense tables), and integer columns in `GPUClassBreaks` and `GPUColorScale`. `GPUZoneEvents` reports separate overflow diagnostics.
+- **Explorer:** 17 new modes and 9 extended ones, grouped into categories in the panel, so every contributor and recipe of this round has a mode.
+- **Graph imports:** importing the same buffer into one graph twice throws. Import it once and share the view.
+
+Platform findings from this round:
+- The Metal compiler removes float `twoSum` residuals, so error-free transforms cannot certify orientation signs here. `GPUSegmentIntersection` uses an exact integer fallback instead. Check whether the point-in-polygon join's fp64 uncertainty path is affected the same way. Its spec passes, but it may not exercise the residual.
+- WGSL rejects a constant NaN, and `x == x` is not a reliable NaN test, so use bit tests.
+- `pass` and `final` are reserved words in WGSL.
+- `GPUSpatialRegressionDiagnostics` accumulated `W'Z` over each row's own neighbors only, so a directed pattern (kNN) missed every link `j -> i` without `i -> j` and biased the Moran variance. It now transposes `W` with `GPUSpatialWeightsTranspose`, and the spec pins spreg 1.9.1 on directed kNN scenes.

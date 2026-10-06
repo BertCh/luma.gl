@@ -332,6 +332,41 @@ imagery, or CPU result is read by the contributor. Cross-tile region identity re
 global region merges, polygon-zonal metrics, and exact integer intensity aggregation remain
 separate future integrations.
 
+## Patch metrics and sieving
+
+`GPURasterPatchMetrics` and `GPURasterSieve` are companions to `GPURasterConnectedComponents` and
+`GPURasterDenseComponents`. Both read dense labels (`0` is background) and take the same optional
+`labelValidity`, `converged`, `componentCount`, and `overflow` guards as
+`GPURasterRegionMeasurements`; the sparse labels of `GPURasterConnectedComponents` must go through
+`GPURasterDenseComponents` first.
+
+- `GPURasterPatchMetrics` writes per-patch columns, where row `r` is label `r + 1`: `pixelCounts`,
+  `areas`, `perimeterFaceCounts`, `perimeters` (length in CRS units through `affine`), and the
+  inclusive bounding box `minColumns`, `minRows`, `maxColumns`, `maxRows`. Faces on the raster
+  edge count as perimeter unless `countRasterBorder` is `false`. It also repeats the pixel count and
+  area so shape ratios (FRAGSTATS patch metrics, GRASS `r.object.geometry`) need one node set. All
+  sums are integer atomics, so results are exact and deterministic.
+- `GPURasterSieve` (GDAL `gdal_sieve`, GRASS `r.reclass.area`) removes patches smaller than
+  `minimumPixels`. `mode: 'remove'` (default) turns them into background. `mode: 'merge'` gives each
+  small patch the label of its largest neighbor that is not small (lowest label on ties; `connectivity`
+  4 or 8) and removes it when it has none. `minimumPixels` is per-frame, written with
+  `getGPURasterSieveParameterValues` into `parameters`. Outputs are `labels`, optional `patchTargets`
+  (final label per patch) and `sievedCount`. Merging is a single pass. A clump labeling never has
+  touching labels, so `'merge'` is meant for segmentation label rasters.
+
+```ts
+graph.add(new GPURasterPatchMetrics({
+  width, height, labels: denseLabels, labelValidity, converged, componentCount, overflow,
+  affine: rasterMetadata.affine,
+  output: {pixelCounts, areas, perimeters, minColumns, minRows, maxColumns, maxRows}
+}));
+graph.add(new GPURasterSieve({
+  width, height, labels: denseLabels, patchCapacity: 256, parameters: sieveParameters.importToGraph(graph),
+  mode: 'merge', connectivity: 8, output: {labels: sievedLabels, sievedCount}
+}));
+sieveParameters.write(getGPURasterSieveParameterValues({minimumPixels: 16}));
+```
+
 ## Marching-squares contour classification
 
 Use `GPURasterContourClassifier` when another GPU algorithm needs to know where a scalar

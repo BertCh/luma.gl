@@ -12,7 +12,7 @@ releases without a deprecation period.
 ## Overview
 
 `@luma.gl/experimental/gpu-network` provides analysis contributors for networks stored as CSR
-adjacency (`offsets`, `neighbors`, optional `weights`): weighted reachability and isochrones, path
+adjacency (`offsets`, `neighbors`, optional `weights`): weighted reachability and isochrones (isoband or cell-outline polygons), path
 extraction, service areas, neighborhoods, snapping, cost matrices, accessibility scores, subgraph
 filters, coarsening, network statistics, node-aligned analytics columns, origin-destination flow
 aggregation, edge bundling, and adjacency-matrix images. Each contributor declares resources and
@@ -102,13 +102,16 @@ Single- or multi-source shortest-path costs over a directed CSR road network wit
 band counts, predecessors, and a convergence flag. Relaxation is chaotic Bellman-Ford over a compact
 GPU frontier queue with a round-stamped visited set: each of the `maxIterations` rounds is one
 indirect dispatch sized by the previous round's pushes, so converged frames dispatch nothing and
-nothing is read back. Within a round each workgroup chains up to `localIterations` (default 16)
+nothing is read back. Within a round each workgroup chains up to `localIterations` (default 32)
 hops through workgroup memory, so a path of `h` hops needs about `h / localIterations` rounds; costs
 are identical for every setting. Predecessors are cycle-safe: the smallest strictly cheaper tight
 in-neighbor, or across equal-cost (zero-weight) edges the smallest tight in-neighbor one BFS level
 closer to a strict entry or a source, found in up to `maxTieIterations` extra rounds (default 4).
 `maxIterations` counts rounds, one graph node each, not hops. With the default `localIterations`,
-a budget of about `h / 16` plus a few rounds suffices; 48 covers the demo networks.
+a budget of about `h / 22` plus a few rounds suffices; 48 covers the demo networks.
+`recommendReachabilityIterations()` suggests a first-guess `maxIterations` from the network size, and
+`adaptReachabilityIterations()` grows or shrinks it from the last frame's `iterationCount` and
+`converged` readback.
 Build CSR on the GPU with `GPUCOOToCSR`; a reverse CSR gives "cost to reach" isochrones.
 
 ```ts
@@ -124,7 +127,7 @@ graph.add(new GPUNetworkReachability({
 Network analysis over the same directed CSR road network as `GPUNetworkReachability`.
 
 - `GPUNetworkPathExtraction` walks a reachability predecessor array from per-frame targets. It publishes ordered (source to target) node lists and resolved CSR edge lists as `GPUCompactOutput`s, together with per-target offsets, costs, and found flags. Each walk is bounded by a compile-time `maxPathLength`, so cyclic or garbage predecessors terminate and raise `overflow`.
-- `GPUNetworkServiceAreas` assigns every node to its nearest per-frame facility. Ties go to the smallest facility row. It also reports per-facility node counts and the total cost each facility serves. It composes `GPUNetworkReachability` with a GPU-gated min-label pass over the tight shortest-path edges.
+- `GPUNetworkServiceAreas` assigns every node to its nearest per-frame facility. Ties go to the smallest facility row. It also reports per-facility node counts and the total cost each facility serves. It composes `GPUNetworkReachability` with a frontier-based min-label pass over the tight shortest-path edges. `labelIterations` bounds the label rounds (default `min(maxIterations, 32)`) and `localIterations` sets the hops chained per round in both phases (default 16), so large-diameter grids converge at the defaults.
 - `GPUNetworkNeighborhood` publishes k-hop ego networks around per-frame seeds, with per-frame `k` up to a compile-time `maxHops`. Outputs are hop distances, masks, and compact node and induced-edge IDs.
 - `GPUNetworkAnalyticsColumns` runs `gpu-graph` degree, PageRank, connected components, core number, and label-propagation communities directly on the caller's CSR views through a `GPUGraphTopologyView`, so a transient CSR built in the same graph by `GPUCOOToCSR` works as well as imported buffers. It publishes node-aligned columns, optionally normalized to `[0, 1]` with a GPU extent.
 
@@ -237,7 +240,8 @@ Accessibility over the same directed CSR road network as `GPUNetworkReachability
   per-frame `maxSnapDistance`, and `overflow` reports when capacity runs out.
 - `GPUNetworkCostMatrix` computes a bounded many-to-all cost matrix: one shortest-path search per
   row, from that row's seeds (`seedRows`, or `seedsPerRow: 2` for snapped points) to every node.
-  It batches `laneCount` rows (default 32) into one `GPUNetworkReachability` over a lane-expanded
+  It batches `laneCount` rows (default `recommendLaneCount()`: about 1M expanded nodes per batch,
+  at least 32 lanes, within 128 MB of scratch, at most `rowCount`) into one `GPUNetworkReachability` over a lane-expanded
   copy of the CSR. Lane `l`, node `u` becomes node `l * nodeCount + u`, so the frontier rounds,
   hop chaining, per-frame `costLimit`, and convergence flag serve all lanes at once. The matrix is
   bit-identical for every `laneCount`. Rows set the number of searches, so put the smaller side on
@@ -266,6 +270,45 @@ scoreGraph.add(new GPUNetworkAccessibility({costs: matrixView, opportunityWeight
   parameters: scoring.importToGraph(scoreGraph), cumulative, gravity}));
 scoring.write(encodeGPUNetworkAccessibilityParameters({threshold: 1800, decay: 'exponential', beta: 0.002}));
 ```
+
+### `GPUNetworkIsochrones`
+
+Isochrone polygons from a CSR network (pgRouting `pgr_drivingDistance` with a buffer, QGIS service
+area polygons). Costs come from the caller (`costs`, for example `GPUNetworkServiceAreas.costs`) or
+from `sources`, which runs `GPUNetworkReachability` and writes `costs`.
+
+- **Raster path.** Every edge is sampled at up to `raster.maximumSamplesPerEdge` points. The cost is
+  interpolated linearly from the source node along the edge weight, and the minimum (default) or
+  maximum cost is written to the pixels within the walking buffer (`bufferRadius`, with cost
+  `cost + walkCostPerUnit * distance`) using integer atomics on order-preserving float bits, so the
+  result is independent of thread order. The raster feeds `GPUIsobands`: band `k` is cost in
+  `[breaks[k - 1], breaks[k])`, and the last band is beyond the last break, which includes unreached
+  space. The default `lastBand` is `breakCount - 1`, so unreached space gets no triangles.
+- **Cell path.** Nodes with cost at most `cellCostLimit` are keyed to H3 or Quadbin cells
+  (`GPUCellAggregation`, or `GPUPointToCell` then `GPUCellAggregation`) and outlined with
+  [`GPUCellSetOutline`](/docs/api-reference/experimental/gpu-spatial-analysis#gpucellsetoutline).
+  Positions must be longitude and latitude. `cellOutline.rings` (same options as
+  `GPUCellSetOutline` `rings`: `vertexTolerance`, `normalizeWinding`, `output`) chains the outline into
+  closed isochrone rings with shells, holes, shell assignment and an optional polygon layout
+  ([`GPUSegmentRingAssembly`](/docs/api-reference/experimental/gpu-spatial-analysis#gpusegmentringassembly)).
+  One run is one cost limit, so bands need one run each. The `polygons` output plugs into
+  `GPUPointInPolygonJoin` for "is this demand point inside the isochrone", which
+  `addDriveTimeCatchmentRecipe` wires as `isochrones.joinDemand`.
+- **Parameters.** Per-frame values are packed with
+  `getGPUNetworkIsochroneParameterValues({breakCount, extent, bufferRadius, walkCostPerUnit,
+  firstBand, lastBand, cellCostLimit})` into a 12-element float32 view. `breaks` is a float32 view
+  whose length is the maximum break count. The raster size, `maximumBufferPixels` (default 6, at most
+  16), `maximumSamplesPerEdge` (default 64, at most 1024), `unreachedCost` (default 1e30) and the
+  mode are compile-time.
+- **Accuracy.** Pixel accurate. Edges are straight node-to-node segments, the outer contour is inset
+  by up to one pixel (interpolation toward `unreachedCost`), and the effective buffer is at least half
+  a pixel diagonal, truncated at `maximumBufferPixels`. The raster is planar in the units of
+  `nodePositions`, so use projected meters for an isotropic buffer. An edge longer than
+  `maximumSamplesPerEdge * bufferRadius / 2` leaves gaps.
+- **Limits.** `GPUNetworkServiceAreas` facility labels are not available, because costs are the
+  multi-source minimum of `GPUNetworkReachability`; use one run per facility for per-facility
+  polygons. The cell path samples reached nodes only, so long edges on sparse networks drop cells.
+  The rings follow the cell outline, so they have cell resolution, and they are not exercised on H3 pentagon or icosahedron-edge cells.
 
 ### Rendering network contributor outputs with deck.gl
 
@@ -348,10 +391,11 @@ per-zone outgoing and incoming totals. An optional caller mask and per-frame tim
 pair table, while `totalCount > ids.length` only means the list was truncated to the top K.
 
 The time gate accepts the same three timestamp forms as `GPUTimeWindowFilter`, including exact
-`Int64` words with a `uint32` word window. Weight sums use atomic float addition by default;
-`sumOrder: 'sorted'` sorts rows by pair and by zone and sums each group in a fixed tree, so
-`flowWeights`, `zoneOutWeights` and `zoneInWeights` are bitwise reproducible, at the cost of
-three sorts and scans per encoding (38 instead of 22 nodes).
+`Int64` words with a `uint32` word window. `sumOrder` defaults to `'sorted'`: rows are sorted by pair and by zone and each group is summed in a
+fixed tree, so `flowWeights`, `zoneOutWeights` and `zoneInWeights` are bitwise reproducible, at the
+cost of three sorts and scans per encoding (38 instead of 22 nodes). `'atomic'` uses float
+compare-exchange addition and serializes when rows share a pair (1M rows on one pair: 12-17 s against
+22 ms sorted); it is faster only when nearly every row has its own pair.
 
 ```ts
 graph.add(new GPUFlowAggregation({

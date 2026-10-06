@@ -88,6 +88,24 @@ See [GPUFFT2D](./api-reference/experimental/gpu-core/gpu-fft2d) for the migratio
 
 **@luma.gl/experimental**
 
+- `sumOrder` now defaults to `'sorted'`, so float sums and means are bitwise reproducible, for
+  `GPURasterZonalStatistics`, `GPUFlowAggregation` and `GPUSpatialClustering`. `GPUZonalStatistics`
+  defaults to `'sorted'` when every point-rate input is packed and to `'atomic'` when chunked.
+  Last-bit differences against previous atomic output are expected. Pass `sumOrder: 'atomic'` for the
+  old behavior, which is faster only with many scattered zones or nearly unique flow pairs.
+- Iteration defaults rose: `GPUCostDistance.maxIterations` 64 to 512 (new `sweepAfterIteration`,
+  default 96), `GPUTerrainFlow.maxFillIterations` and `maxFlatIterations` 128 to 512 (sweeps after 96).
+  Converged results are unchanged; unconverged graphs now unroll more nodes per phase.
+- `GPUTextureShading` computes coarse cascade levels on a decimated grid by default
+  (`downsampleLevels: true`). Output differs from before by at most 1% of the output range (measured
+  0.1-0.27%); pass `downsampleLevels: false` for the exact cascade.
+- `GPUGeographicallyWeightedRegression` bisquare-fixed fits sum in grid cell order, shifting results
+  by about 1e-5 relative to before; they stay deterministic.
+- Network defaults changed. `GPUNetworkReachability.localIterations` 16 to 32 (costs are identical;
+  rounds needed drop). `GPUNetworkCostMatrix.laneCount` is `recommendLaneCount()` (at least 32, about
+  1M expanded nodes per batch, capped by 128 MB scratch and `rowCount`) instead of 32; results are
+  identical, scratch memory grows. `GPUNetworkServiceAreas` labels with a frontier pass bounded by new
+  `labelIterations`.
 - OIT fullscreen resolution is now exposed as `createABufferResolveCompositeShaderPass()` and
   `createWBOITResolveCompositeShaderPass()`. `WBOITRenderer.capture()` returns the accumulation and
   revealage bindings for inserting the WBOIT resolve into a larger shader-pass stack.

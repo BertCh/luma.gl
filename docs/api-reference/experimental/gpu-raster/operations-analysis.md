@@ -100,11 +100,16 @@ back-links from a per-frame target into a compact cell list. The cost surface fe
 ```ts
 graph.add(new GPUCostDistance({
   width, height, friction, settings: settings.importToGraph(graph),
-  sources: sources.importToGraph(graph), costs, backLinks, converged, maxIterations: 64
+  sources: sources.importToGraph(graph), costs, backLinks, converged, maxIterations: 512
 }));
 graph.add(new GPUCostDistancePath({width, height, backLinks, target: target.importToGraph(graph), output}));
 settings.write(getGPUCostDistanceParameterValues({cellSize: [10, 10], costLimit: 5000}));
 ```
+
+`maxIterations` defaults to 512. After `sweepAfterIteration` iterations (default 96) relaxation adds
+directional tile sweeps that carry a front along a whole row or column of tiles, so long corridors and
+spirals converge in far fewer iterations; open terrain converges before the switch. Pass
+`sweepAfterIteration >= maxIterations` for plain tiled passes only.
 
 Back-links are cycle-safe across zero-cost plateaus: a cell links to its strictly cheaper tight
 neighbor or, when it was reached only across zero-cost moves, to the equal-cost neighbor one tie
@@ -129,11 +134,12 @@ graph.add(new GPURasterZonalStatistics({
 }));
 ```
 
-Sums and means use float atomics by default, so their last bits can vary between runs.
-`sumOrder: 'sorted'` stably sorts cells by zone ID and reduces each zone in a fixed tree (the same
-sorted segmented sum as `GPUZonalStatistics`), making `sums` and `means` bitwise reproducible on
-one device at the cost of a radix sort, scan, and gather over all cells. Counts, minimums, and
-maximums are exact either way.
+`sumOrder` defaults to `'sorted'`: cells are stably sorted by zone ID and each zone is reduced in a
+fixed tree (the same sorted segmented sum as `GPUZonalStatistics`), so `sums` and `means` are bitwise
+reproducible on one device, at about 6-25 ms at 2048x2048 for any zone layout. `'atomic'` skips the
+sort and is at most about 1.5x faster, only with 1000 or more spatially scattered zones; it can be
+10-60x slower when neighboring cells share a zone, because float compare-exchange atomics contend on
+one address, and its last bits can vary between runs. Counts, minimums, and maximums are exact either way.
 
 ## `GPUDistanceField`
 
