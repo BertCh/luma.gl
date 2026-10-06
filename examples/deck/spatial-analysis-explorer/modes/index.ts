@@ -46,6 +46,23 @@ import {geomorphometryMode} from './geomorphometry-mode';
 import {reliefVisualizationMode} from './relief-visualization-mode';
 import {drainageMode} from './drainage-mode';
 import {terrainFeaturesMode} from './terrain-features-mode';
+import {recipesMode} from './recipes-mode';
+import {patchesMode} from './patches-mode';
+import {lineDensityMode} from './line-density-mode';
+import {geometryToolsMode} from './geometry-tools-mode';
+import {tradeAreasMode} from './trade-areas-mode';
+import {knoxMode} from './knox-mode';
+import {markovMode} from './markov-mode';
+import {segregationMode} from './segregation-mode';
+import {arealInterpolationMode} from './areal-interpolation-mode';
+import {encountersMode} from './encounters-mode';
+import {zoneEventsMode} from './zone-events-mode';
+import {isochronesMode} from './isochrones-mode';
+import {coverageMode} from './coverage-mode';
+import {ratesMode} from './rates-mode';
+import {validityMode} from './validity-mode';
+import {crossingsMode} from './crossings-mode';
+import {relateMode} from './relate-mode';
 
 /**
  * Registered explorer modes, in tab order.
@@ -96,5 +113,22 @@ export const SPATIAL_ANALYSIS_MODES: readonly SpatialAnalysisModeDefinition[] = 
   geomorphometryMode,
   reliefVisualizationMode,
   drainageMode,
-  terrainFeaturesMode
+  terrainFeaturesMode,
+  relateMode,
+  validityMode,
+  crossingsMode,
+  ratesMode,
+  coverageMode,
+  isochronesMode,
+  zoneEventsMode,
+  encountersMode,
+  arealInterpolationMode,
+  segregationMode,
+  markovMode,
+  knoxMode,
+  tradeAreasMode,
+  geometryToolsMode,
+  lineDensityMode,
+  patchesMode,
+  recipesMode
 ];

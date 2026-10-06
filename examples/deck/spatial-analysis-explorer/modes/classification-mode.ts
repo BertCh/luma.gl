@@ -45,7 +45,16 @@ import {
   type GPUClassBreaksMethod,
   type GPUColorScaleType
 } from '@luma.gl/experimental/gpu-dataframe';
-import {GPUPointDensity} from '@luma.gl/experimental/gpu-spatial-analysis';
+import {
+  GPU_CLASSIFICATION_FIT_ADAM,
+  GPU_CLASSIFICATION_FIT_ADCM,
+  GPU_CLASSIFICATION_FIT_GADF,
+  GPU_CLASSIFICATION_FIT_GVF,
+  GPU_CLASSIFICATION_FIT_SUMMARY_LENGTH,
+  GPUClassAssignment,
+  GPUClassificationFit,
+  GPUPointDensity
+} from '@luma.gl/experimental/gpu-spatial-analysis';
 import {importGraphBuffer} from '../graph-buffers';
 import {LocalMetricProjection} from '../spatial-analysis-data';
 import type {
@@ -211,6 +220,8 @@ type Summary = {
   bivariateBreaksY: Float32Array;
   profileStatistics: Float32Array;
   profileHistograms: Uint32Array;
+  /** `GPUClassificationFit` summary: GADF, ADCM, ADAM, GVF, TSS. */
+  fit: Float32Array;
 };
 
 export const classificationMode: SpatialAnalysisModeDefinition = {
@@ -222,12 +233,15 @@ export const classificationMode: SpatialAnalysisModeDefinition = {
     'GPUClassBreaks',
     'GPUColorScale',
     'GPUBivariateClassification',
-    'GPUColumnProfile'
+    'GPUColumnProfile',
+    'GPUClassAssignment',
+    'GPUClassificationFit'
   ],
   description:
     'Kepler-style choropleth of New York trip vertices: bin, percentile-filter, classify and ' +
     'color on the GPU. Change method, class count, palette or percentile range live; the ' +
-    'colors are drawn from the GPU buffer with no readback.',
+    'colors are drawn from the GPU buffer with no readback. The fit panel scores the current ' +
+    'scheme (GADF, GVF); try each method at one class count to compare schemes.',
   initialViewState: {longitude: -73.985, latitude: 40.735, zoom: 12.2},
 
   async create(context) {
@@ -324,6 +338,15 @@ export const classificationMode: SpatialAnalysisModeDefinition = {
       'profile-histograms',
       PROFILE_COLUMN_NAMES.length * PROFILE_HISTOGRAM_BINS * 4
     );
+    const fitClasses = cellFloats('fit-classes');
+    const fitCounts = resources.createBuffer('fit-counts', (MAXIMUM_CLASS_COUNT + 1) * 4);
+    const fitMedians = resources.createBuffer('fit-medians', (MAXIMUM_CLASS_COUNT + 1) * 4);
+    const fitAbsolute = resources.createBuffer('fit-absolute', (MAXIMUM_CLASS_COUNT + 1) * 4);
+    const fitSquared = resources.createBuffer('fit-squared', (MAXIMUM_CLASS_COUNT + 1) * 4);
+    const fitSummary = resources.createBuffer(
+      'fit-summary',
+      GPU_CLASSIFICATION_FIT_SUMMARY_LENGTH * 4
+    );
     const readbackLayout: {buffer: Buffer; byteLength: number}[] = [
       {buffer: breaks, byteLength: (MAXIMUM_CLASS_COUNT + 1) * 4},
       {buffer: classCountBuffer, byteLength: 4},
@@ -341,7 +364,8 @@ export const classificationMode: SpatialAnalysisModeDefinition = {
       {
         buffer: profileHistograms,
         byteLength: PROFILE_COLUMN_NAMES.length * PROFILE_HISTOGRAM_BINS * 4
-      }
+      },
+      {buffer: fitSummary, byteLength: GPU_CLASSIFICATION_FIT_SUMMARY_LENGTH * 4}
     ];
     const readbackByteLength = readbackLayout.reduce((total, part) => total + part.byteLength, 0);
     const readbackRing = resources.track(
@@ -373,9 +397,10 @@ export const classificationMode: SpatialAnalysisModeDefinition = {
     let main: CompiledGPUCommandGraph<void> | null = null;
     let bivariateGraph: CompiledGPUCommandGraph<void> | null = null;
     let profileGraph: CompiledGPUCommandGraph<void> | null = null;
+    let fitGraph: CompiledGPUCommandGraph<void> | null = null;
 
     function buildGraphs(): void {
-      for (const graph of [main, bivariateGraph, profileGraph]) {
+      for (const graph of [main, bivariateGraph, profileGraph, fitGraph]) {
         if (graph) resources.release(graph);
       }
       const gridSize = binning === 'grid' ? GRID_SIZE : HEXAGON_GRID_SIZE;
@@ -598,6 +623,40 @@ export const classificationMode: SpatialAnalysisModeDefinition = {
         })
       );
       profileGraph = resources.track(profile.compile());
+
+      // Fit graph: assigns every filtered cell to its class of the chosen breaks (independent of
+      // the display scale) and scores the classification. The fit is compiled for the maximum
+      // class count; classes above the produced count stay empty and add nothing.
+      const fit = new GPUCommandGraph<void>(device, {id: `classification-fit-${binning}`});
+      const fitBind = createImporter(fit);
+      const fitValues = fitBind.float(countValues, cellCount);
+      const assigned = fitBind.word(fitClasses, cellCount);
+      fit.add(
+        new GPUClassAssignment({
+          id: 'fit-assign',
+          values: fitValues,
+          breaks: fitBind.float(breaks, MAXIMUM_CLASS_COUNT + 1),
+          classCount: fitBind.word(classCountBuffer, 1),
+          mask: fitBind.word(filterMask, cellCount),
+          output: assigned
+        })
+      );
+      fit.add(
+        new GPUClassificationFit({
+          id: 'fit',
+          values: fitValues,
+          classes: assigned,
+          classCount: MAXIMUM_CLASS_COUNT,
+          output: {
+            counts: fitBind.word(fitCounts, MAXIMUM_CLASS_COUNT + 1),
+            medians: fitBind.float(fitMedians, MAXIMUM_CLASS_COUNT + 1),
+            absoluteDeviations: fitBind.float(fitAbsolute, MAXIMUM_CLASS_COUNT + 1),
+            squaredDeviations: fitBind.float(fitSquared, MAXIMUM_CLASS_COUNT + 1),
+            summary: fitBind.float(fitSummary, GPU_CLASSIFICATION_FIT_SUMMARY_LENGTH)
+          }
+        })
+      );
+      fitGraph = resources.track(fit.compile());
       gridReadout?.setValue(
         `${gridSize[0]} × ${gridSize[1]} ${binning === 'grid' ? 'cells' : 'hexagons'}`
       );
@@ -811,6 +870,10 @@ export const classificationMode: SpatialAnalysisModeDefinition = {
         'breaks are computed; the custom method uses fixed edges 0, 1, 2, 4 … 256.'
     );
     const legendBlock = createPanelBlock();
+    const fitBlock = createPanelBlock();
+    /** Fit remembered per method for the current data and class count, to compare schemes. */
+    let fitByMethod = new Map<GPUClassBreaksMethod, {gadf: number; gvf: number}>();
+    let fitKey = '';
     context.controls.addReadout('Points', formatCount(pointCount));
     const gridReadout = context.controls.addReadout('Grid');
     const cellReadout = context.controls.addReadout('Cell size');
@@ -818,6 +881,8 @@ export const classificationMode: SpatialAnalysisModeDefinition = {
     const filterReadout = context.controls.addReadout('Filter bounds (count)');
     const quartileReadout = context.controls.addReadout('Quartiles (count)');
     const classReadout = context.controls.addReadout('Classes produced');
+    const fitReadout = context.controls.addReadout('Fit GADF / GVF');
+    const fitDeviationReadout = context.controls.addReadout('Fit ADCM / ADAM');
     const profileReadouts = PROFILE_COLUMN_NAMES.map(name => ({
       summary: context.controls.addReadout(name),
       histogram: context.controls.addReadout(`${name.split(' ')[0]} hist.`)
@@ -922,6 +987,38 @@ export const classificationMode: SpatialAnalysisModeDefinition = {
         }
       }
       renderLegend(summary);
+      renderFit(summary);
+    }
+
+    function renderFit(summary: Summary): void {
+      const gadf = summary.fit[GPU_CLASSIFICATION_FIT_GADF];
+      const gvf = summary.fit[GPU_CLASSIFICATION_FIT_GVF];
+      fitReadout.setValue(`${gadf.toFixed(3)} / ${gvf.toFixed(3)}`);
+      fitDeviationReadout.setValue(
+        `${formatCompact(summary.fit[GPU_CLASSIFICATION_FIT_ADCM])} / ` +
+          `${formatCompact(summary.fit[GPU_CLASSIFICATION_FIT_ADAM])}`
+      );
+      // Scores are only comparable on the same cells, so forget them when the data or k changes.
+      const key = `${binning}|${lastBoundsKey}|${lowerPercentile}|${upperPercentile}|${summary.classCount}`;
+      if (key !== fitKey) {
+        fitKey = key;
+        fitByMethod = new Map();
+      }
+      fitByMethod.set(method, {gadf, gvf});
+      if (!fitBlock) return;
+      const rows = GPU_CLASS_BREAKS_METHODS.map(value => {
+        const entry = fitByMethod.get(value);
+        const width = entry ? Math.max(0, Math.min(1, entry.gadf)) * 100 : 0;
+        return (
+          `<div style="display:flex;align-items:center;gap:6px;margin-top:2px;${value === method ? 'color:#fff' : ''}">` +
+          `<span style="width:116px;flex:none;font:10px ui-monospace,monospace">${escapeHtml(METHOD_LABELS[value].replace(/ \(.*\)/, ''))}</span>` +
+          `<span style="flex:1;height:6px;background:rgba(255,255,255,.08);border-radius:3px"><span style="display:block;height:6px;border-radius:3px;width:${width.toFixed(1)}%;background:#7ac8ff"></span></span>` +
+          `<span style="width:80px;text-align:right;font:10px ui-monospace,monospace">${entry ? `${entry.gadf.toFixed(3)} / ${entry.gvf.toFixed(3)}` : '–'}</span></div>`
+        );
+      });
+      fitBlock.innerHTML =
+        `<div>Goodness of fit at ${summary.classCount} classes: GADF / GVF per method tried (higher is better)</div>` +
+        rows.join('');
     }
 
     async function readSummary(commandEncoder: CommandEncoder): Promise<void> {
@@ -968,6 +1065,7 @@ export const classificationMode: SpatialAnalysisModeDefinition = {
           PROFILE_COLUMN_NAMES.length * GPU_COLUMN_PROFILE_STATISTIC_COUNT
         );
         const histogramValues = words(PROFILE_COLUMN_NAMES.length * PROFILE_HISTOGRAM_BINS);
+        const fitValues = floats(GPU_CLASSIFICATION_FIT_SUMMARY_LENGTH);
         applySummary({
           breaks: breaksValues,
           classCount,
@@ -979,7 +1077,8 @@ export const classificationMode: SpatialAnalysisModeDefinition = {
           bivariateBreaksX: breaksX,
           bivariateBreaksY: breaksY,
           profileStatistics: profileValues,
-          profileHistograms: histogramValues
+          profileHistograms: histogramValues,
+          fit: fitValues
         });
       } catch {
         // The ring or device was destroyed while the read was in flight.
@@ -990,11 +1089,11 @@ export const classificationMode: SpatialAnalysisModeDefinition = {
 
     const instance: SpatialAnalysisModeInstance = {
       getCompiledGraphs: () =>
-        [main, bivariateGraph, profileGraph].filter(
+        [main, bivariateGraph, profileGraph, fitGraph].filter(
           (graph): graph is CompiledGPUCommandGraph<void> => graph !== null
         ),
       encode(commandEncoder, frame) {
-        if (!main || !bivariateGraph || !profileGraph) return;
+        if (!main || !bivariateGraph || !profileGraph || !fitGraph) return;
         const viewBounds = getViewportMetricBounds(frame.viewport, projection);
         let currentHexagonRadius = 0;
         if (binning === 'hexagon') {
@@ -1025,6 +1124,7 @@ export const classificationMode: SpatialAnalysisModeDefinition = {
           main.encode(commandEncoder, {parameters: undefined});
           if (bivariate) bivariateGraph.encode(commandEncoder, {parameters: undefined});
           profileGraph.encode(commandEncoder, {parameters: undefined});
+          fitGraph.encode(commandEncoder, {parameters: undefined});
           dirtyFrames = Math.max(0, dirtyFrames - 1);
         }
         if (
@@ -1069,6 +1169,7 @@ export const classificationMode: SpatialAnalysisModeDefinition = {
       destroy() {
         destroyed = true;
         legendBlock?.remove();
+        fitBlock?.remove();
         resources.destroy();
       }
     };

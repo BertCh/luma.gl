@@ -27,7 +27,9 @@
  */
 
 import type {Layer} from '@deck.gl/core';
-import {GPUCommandGraph} from '@luma.gl/gpgpu/gpu-core';
+import type {Buffer} from '@luma.gl/core';
+import {GPUCommandGraph, type GraphDataView} from '@luma.gl/gpgpu/gpu-core';
+import type {GPUSpatialWeights} from '@luma.gl/experimental/gpu-spatial-analysis';
 import {
   getGPUCompositeScoreParameterValues,
   getGPUInequalityParameterValues,
@@ -45,8 +47,39 @@ import {
   type GPUGeographicallyWeightedRegressionKernel,
   getGPUGeographicallyWeightedRegressionParameterValues,
   getGPUOrdinaryLeastSquaresParameterValues,
+  getGPUNeighborSearchParameterValues,
+  GPU_NEIGHBOR_SEARCH_PARAMETER_LENGTH,
+  GPUNeighborSearch,
   GPUGeographicallyWeightedRegression,
   GPUOrdinaryLeastSquares,
+  GPUSpatialRegressionDiagnostics,
+  GPUSpatialTwoStageLeastSquares,
+  GPUSpatialErrorGM,
+  GPU_SPATIAL_ERROR_GM_STATUS_OK,
+  GPU_SPATIAL_ERROR_GM_SUMMARY_LAMBDA,
+  GPU_SPATIAL_ERROR_GM_SUMMARY_LENGTH,
+  GPU_SPATIAL_ERROR_GM_SUMMARY_MOMENT_OBJECTIVE,
+  GPU_SPATIAL_ERROR_GM_SUMMARY_PSEUDO_R_SQUARED,
+  GPU_SPATIAL_ERROR_GM_SUMMARY_SIGMA_SQUARED,
+  GPU_SPATIAL_ERROR_GM_TABLE_STRIDE,
+  GPU_SPATIAL_REGRESSION_DIAGNOSTICS_SUMMARY_LENGTH,
+  GPU_SPATIAL_REGRESSION_DIAGNOSTICS_SUMMARY_MORAN_EXPECTATION,
+  GPU_SPATIAL_REGRESSION_DIAGNOSTICS_SUMMARY_MORAN_I,
+  GPU_SPATIAL_REGRESSION_DIAGNOSTICS_TESTS_LENGTH,
+  GPU_SPATIAL_REGRESSION_DIAGNOSTICS_TEST_LM_ERROR,
+  GPU_SPATIAL_REGRESSION_DIAGNOSTICS_TEST_LM_LAG,
+  GPU_SPATIAL_REGRESSION_DIAGNOSTICS_TEST_LM_SARMA,
+  GPU_SPATIAL_REGRESSION_DIAGNOSTICS_TEST_MORAN_RESIDUALS,
+  GPU_SPATIAL_REGRESSION_DIAGNOSTICS_TEST_ROBUST_LM_ERROR,
+  GPU_SPATIAL_REGRESSION_DIAGNOSTICS_TEST_ROBUST_LM_LAG,
+  GPU_SPATIAL_REGRESSION_DIAGNOSTICS_TEST_STRIDE,
+  GPU_SPATIAL_TWO_STAGE_LEAST_SQUARES_SUMMARY_ANSELIN_KELEJIAN,
+  GPU_SPATIAL_TWO_STAGE_LEAST_SQUARES_SUMMARY_ANSELIN_KELEJIAN_P_VALUE,
+  GPU_SPATIAL_TWO_STAGE_LEAST_SQUARES_SUMMARY_LENGTH,
+  GPU_SPATIAL_TWO_STAGE_LEAST_SQUARES_SUMMARY_MORAN_I,
+  GPU_SPATIAL_TWO_STAGE_LEAST_SQUARES_SUMMARY_PSEUDO_R_SQUARED,
+  GPU_SPATIAL_TWO_STAGE_LEAST_SQUARES_SUMMARY_SIGMA_SQUARED,
+  GPU_SPATIAL_TWO_STAGE_LEAST_SQUARES_TABLE_STRIDE,
   GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_SUMMARY,
   GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_SUMMARY_LENGTH,
   GPU_ORDINARY_LEAST_SQUARES_PARAMETER_LENGTH,
@@ -80,10 +113,12 @@ import {formatCount, SpatialAnalysisResources} from '../spatial-analysis-resourc
 import {CellGridLayer} from './regression-layers';
 import {SummaryReader} from './summary-reader';
 
-type RegressionView = 'ols' | 'gwr' | 'composite' | 'inequality';
+type RegressionView = 'ols' | 'spatial' | 'error' | 'gwr' | 'composite' | 'inequality';
 
 const VIEWS: readonly {id: RegressionView; label: string}[] = [
   {id: 'ols', label: 'Ordinary least squares (GPUOrdinaryLeastSquares)'},
+  {id: 'spatial', label: 'Spatial diagnostics and 2SLS (GPUSpatialRegressionDiagnostics)'},
+  {id: 'error', label: 'Spatial error model, generalized moments (GPUSpatialErrorGM)'},
   {id: 'gwr', label: 'Geographically weighted (GPUGeographicallyWeightedRegression)'},
   {id: 'composite', label: 'Composite score (GPUCompositeScore)'},
   {id: 'inequality', label: 'Inequality by band (GPUInequality)'}
@@ -134,6 +169,10 @@ export const regressionMode: SpatialAnalysisModeDefinition = {
   title: 'Regression',
   contributors: [
     'GPUOrdinaryLeastSquares',
+    'GPUSpatialRegressionDiagnostics',
+    'GPUSpatialTwoStageLeastSquares',
+    'GPUSpatialErrorGM',
+    'GPUNeighborSearch',
     'GPUGeographicallyWeightedRegression',
     'GPUCompositeScore',
     'GPUInequality'
@@ -141,7 +180,10 @@ export const regressionMode: SpatialAnalysisModeDefinition = {
   description:
     'Why do some Manhattan cells hold more points of interest? Global OLS, locally varying GWR ' +
     'coefficients, a weight-slider composite index and Lorenz curves, all computed on the GPU ' +
-    'from road, taxi and POI columns. Every control rewrites a parameter or input buffer.',
+    'from road, taxi and POI columns. The Spatial view tests OLS residuals for a spatial lag or ' +
+    'error and fits the lag model by two-stage least squares; the Spatial error view fits the ' +
+    'error model (lambda) and compares it with OLS. Both take distance-band or kNN weights. ' +
+    'Sliders rewrite parameter buffers; the weights choice and k rebuild (labelled).',
   initialViewState: VIEW_STATE,
 
   async create(context) {
@@ -164,6 +206,12 @@ export const regressionMode: SpatialAnalysisModeDefinition = {
     switch (view) {
       case 'ols':
         instance = createOlsView(context, resources, study);
+        break;
+      case 'spatial':
+        instance = createSpatialView(context, resources, study);
+        break;
+      case 'error':
+        instance = createErrorView(context, resources, study);
         break;
       case 'gwr':
         instance = createGwrView(context, resources, study);
@@ -1400,6 +1448,742 @@ function createInequalityView(
           valueRange: metricRange,
           inset: 0,
           color: [255, 255, 255, 200]
+        })
+      ];
+    }
+  };
+}
+
+// ---------------------------------------------------------------------------------------------
+// Shared stage of the spatial views: inputs, weights search and the weights controls
+// ---------------------------------------------------------------------------------------------
+
+type WeightsKind = 'band' | 'knn';
+
+/** Slot capacity per row of the weights (radius 600 m reaches about 20 cells; kNN k is at most 24). */
+const SPATIAL_SLOTS_PER_ROW = 28;
+const MAXIMUM_NEIGHBOR_COUNT = 24;
+const KNN_DEBOUNCE_MILLISECONDS = 350;
+
+function readWeightsFromUrl(): {kind: WeightsKind; neighborCount: number} {
+  const parameters =
+    typeof window === 'undefined' ? null : new URLSearchParams(window.location.search);
+  const requestedK = Number(parameters?.get('k'));
+  return {
+    kind: parameters?.get('weights') === 'knn' ? 'knn' : 'band',
+    neighborCount:
+      Number.isInteger(requestedK) && requestedK >= 2 && requestedK <= MAXIMUM_NEIGHBOR_COUNT
+        ? requestedK
+        : 8
+  };
+}
+
+/** Weights chosen by the last navigation, or by `?weights=knn&k=` at load. */
+let requestedWeights = readWeightsFromUrl();
+let pendingNeighborCountTimer: ReturnType<typeof setTimeout> | undefined;
+
+/** Re-enters the mode with other weights; the search topology (mode, k) is compile-time. */
+function navigateWeights(kind: WeightsKind, neighborCount: number): void {
+  requestedWeights = {kind, neighborCount};
+  globalThis.spatialAnalysisExplorer?.selectMode('regression');
+}
+
+/** Buffers, weights graph views and controls shared by the spatial diagnostics and GM error views. */
+type SpatialStage = {
+  capacity: number;
+  positions: Buffer;
+  predictors: Buffer;
+  response: Buffer;
+  rowOfCell: Buffer;
+  searchOverflow: Buffer;
+  totalNeighbors: Buffer;
+  predictorView: GraphDataView<'float32'>;
+  responseView: GraphDataView<'float32'>;
+  weights: GPUSpatialWeights;
+  /** Writes the search parameters for the current weights choice. */
+  writeSearch: () => void;
+  /** Adds the weights selector and its slider. Call before the other controls. */
+  addControls: () => void;
+  /** Formats the weight-links readout from the summary words. */
+  formatLinks: (totalWord: number, overflowWord: number) => string;
+};
+
+function createSpatialStage(
+  context: SpatialAnalysisModeContext,
+  resources: SpatialAnalysisResources,
+  graph: GPUCommandGraph<void>,
+  study: CellStudy,
+  onChange: () => void
+): SpatialStage {
+  const {rowCount} = study;
+  const predictorCount = 3;
+  const capacity = rowCount * SPATIAL_SLOTS_PER_ROW;
+  const {kind, neighborCount} = requestedWeights;
+  let radiusMeters = 360;
+
+  let minimumX = Infinity;
+  let minimumY = Infinity;
+  let maximumX = -Infinity;
+  let maximumY = -Infinity;
+  for (let row = 0; row < rowCount; row++) {
+    minimumX = Math.min(minimumX, study.positions[row * 2]);
+    maximumX = Math.max(maximumX, study.positions[row * 2]);
+    minimumY = Math.min(minimumY, study.positions[row * 2 + 1]);
+    maximumY = Math.max(maximumY, study.positions[row * 2 + 1]);
+  }
+  const margin = study.cellSize;
+  const bounds: [number, number, number, number] = [
+    minimumX - margin,
+    minimumY - margin,
+    maximumX + margin,
+    maximumY + margin
+  ];
+
+  const positions = resources.createBuffer('positions', study.positions);
+  const predictors = resources.createBuffer('predictors', study.predictors);
+  const response = resources.createBuffer('response', study.response);
+  const rowOfCell = resources.createBuffer('row-of-cell', study.rowOfCell);
+  const offsets = resources.createBuffer('offsets', (rowCount + 1) * 4);
+  const neighbors = resources.createBuffer('neighbors', capacity * 4);
+  const weightValues = resources.createBuffer('weights', capacity * 4);
+  const searchOverflow = resources.createBuffer('search-overflow', 4);
+  const totalNeighbors = resources.createBuffer('total-neighbors', 4);
+  const searchParameters = resources.createParameterBuffer(
+    'search-parameters',
+    'float32',
+    GPU_NEIGHBOR_SEARCH_PARAMETER_LENGTH
+  );
+  const weights = {
+    offsets: importGraphBuffer(graph, 'offsets', offsets, 'uint32', rowCount + 1),
+    neighbors: importGraphBuffer(graph, 'neighbors', neighbors, 'uint32', capacity),
+    weights: importGraphBuffer(graph, 'weights', weightValues, 'float32', capacity)
+  };
+  // The distance band is a symmetric pattern (at 360 m the 250 m cells are exactly queen
+  // contiguity). Plain kNN weights are directed: i lists j without j listing i.
+  graph.add(
+    new GPUNeighborSearch({
+      id: 'weights-search',
+      mode: kind === 'knn' ? 'knn' : 'radius',
+      k: kind === 'knn' ? neighborCount : undefined,
+      gridSize: [64, 64],
+      positions: importGraphBuffer(graph, 'positions', positions, 'float32x2', rowCount),
+      parameters: searchParameters.importToGraph(graph),
+      weights,
+      overflow: importGraphBuffer(graph, 'search-overflow', searchOverflow, 'uint32', 1),
+      totalNeighbors: importGraphBuffer(graph, 'total-neighbors', totalNeighbors, 'uint32', 1)
+    })
+  );
+
+  const writeSearch = () => {
+    searchParameters.write(
+      getGPUNeighborSearchParameterValues({
+        bounds,
+        radius: kind === 'knn' ? Infinity : radiusMeters,
+        weightKind: 'binary',
+        rowStandardize: true
+      })
+    );
+    onChange();
+  };
+
+  return {
+    capacity,
+    positions,
+    predictors,
+    response,
+    rowOfCell,
+    searchOverflow,
+    totalNeighbors,
+    predictorView: importGraphBuffer(
+      graph,
+      'predictors',
+      predictors,
+      'float32',
+      rowCount * predictorCount
+    ),
+    responseView: importGraphBuffer(graph, 'response', response, 'float32', rowCount),
+    weights,
+    writeSearch,
+    addControls: () => {
+      clearTimeout(pendingNeighborCountTimer);
+      context.controls.addSelect<WeightsKind>({
+        label: 'Weights (rebuild: band is symmetric, kNN is directed and compiles k)',
+        options: [
+          {value: 'band', label: 'Distance band / queen contiguity (symmetric)'},
+          {value: 'knn', label: 'k nearest neighbors (asymmetric)'}
+        ],
+        value: kind,
+        onChange: value => navigateWeights(value, neighborCount)
+      });
+      if (kind === 'knn') {
+        context.controls.addSlider({
+          label: 'Neighbors k (compile-time: rebuilds when you stop moving)',
+          min: 2,
+          max: MAXIMUM_NEIGHBOR_COUNT,
+          step: 1,
+          value: neighborCount,
+          format: value => `k = ${value}`,
+          onChange: value => {
+            clearTimeout(pendingNeighborCountTimer);
+            if (value === neighborCount) return;
+            pendingNeighborCountTimer = setTimeout(
+              () => navigateWeights('knn', value),
+              KNN_DEBOUNCE_MILLISECONDS
+            );
+          }
+        });
+      } else {
+        context.controls.addSlider({
+          label: 'Distance band (per-frame parameter; 360 m = queen contiguity)',
+          min: 360,
+          max: 600,
+          step: 40,
+          value: radiusMeters,
+          format: value => `${value} m`,
+          onChange: value => {
+            radiusMeters = value;
+            writeSearch();
+          }
+        });
+      }
+    },
+    formatLinks: (totalWord, overflowWord) => {
+      const stored = Math.min(totalWord, capacity);
+      return `${formatCount(stored)} (mean degree ${(stored / rowCount).toFixed(1)}, ${kind === 'knn' ? 'directed' : 'symmetric'}) / ${overflowWord ? 'OVERFLOW' : 'ok'}`;
+    }
+  };
+}
+
+// ---------------------------------------------------------------------------------------------
+// View: spatial regression (diagnostics and two-stage least squares)
+// ---------------------------------------------------------------------------------------------
+
+type SpatialMap = 'ols' | 'lag' | 'response';
+
+const DIAGNOSTIC_ROWS: readonly {label: string; row: number}[] = [
+  {label: 'LM-lag', row: GPU_SPATIAL_REGRESSION_DIAGNOSTICS_TEST_LM_LAG},
+  {label: 'LM-error', row: GPU_SPATIAL_REGRESSION_DIAGNOSTICS_TEST_LM_ERROR},
+  {label: 'Robust LM-lag', row: GPU_SPATIAL_REGRESSION_DIAGNOSTICS_TEST_ROBUST_LM_LAG},
+  {label: 'Robust LM-error', row: GPU_SPATIAL_REGRESSION_DIAGNOSTICS_TEST_ROBUST_LM_ERROR},
+  {label: 'LM-SARMA', row: GPU_SPATIAL_REGRESSION_DIAGNOSTICS_TEST_LM_SARMA}
+];
+
+function formatP(value: number): string {
+  if (!Number.isFinite(value)) return 'n/a';
+  return value < 0.001 ? 'p < 0.001' : `p ${value.toFixed(3)}`;
+}
+
+/** Adds the OLS fit that both spatial views start from and returns its buffers. */
+function addSpatialOls(
+  graph: GPUCommandGraph<void>,
+  resources: SpatialAnalysisResources,
+  stage: SpatialStage,
+  rowCount: number
+) {
+  const olsCoefficients = resources.createBuffer('ols-coefficients', 4 * 4);
+  const olsStandardErrors = resources.createBuffer('ols-standard-errors', 4 * 4);
+  const olsTStatistics = resources.createBuffer('ols-t-statistics', 4 * 4);
+  const olsSummary = resources.createBuffer('ols-summary', 16 * 4);
+  const olsStatus = resources.createBuffer('ols-status', 4);
+  const olsResiduals = resources.createBuffer('ols-residuals', rowCount * 4);
+  const olsParameters = resources.createParameterBuffer(
+    'ols-parameters',
+    'float32',
+    GPU_ORDINARY_LEAST_SQUARES_PARAMETER_LENGTH,
+    getGPUOrdinaryLeastSquaresParameterValues(0)
+  );
+  const residualView = importGraphBuffer(graph, 'ols-residuals', olsResiduals, 'float32', rowCount);
+  graph.add(
+    new GPUOrdinaryLeastSquares({
+      id: 'ols',
+      predictors: stage.predictorView,
+      response: stage.responseView,
+      predictorCount: 3,
+      parameters: olsParameters.importToGraph(graph),
+      output: {
+        coefficients: importGraphBuffer(graph, 'ols-coefficients', olsCoefficients, 'float32', 4),
+        standardErrors: importGraphBuffer(graph, 'ols-se', olsStandardErrors, 'float32', 4),
+        tStatistics: importGraphBuffer(graph, 'ols-t', olsTStatistics, 'float32', 4),
+        summary: importGraphBuffer(graph, 'ols-summary', olsSummary, 'float32', 16),
+        status: importGraphBuffer(graph, 'ols-status', olsStatus, 'uint32', 1),
+        residuals: residualView
+      }
+    })
+  );
+  return {
+    olsCoefficients,
+    olsStandardErrors,
+    olsTStatistics,
+    olsSummary,
+    olsStatus,
+    olsResiduals,
+    residualView
+  };
+}
+
+/** Adds `GPUSpatialRegressionDiagnostics` on the OLS residuals and returns its buffers. */
+function addSpatialDiagnostics(
+  graph: GPUCommandGraph<void>,
+  resources: SpatialAnalysisResources,
+  stage: SpatialStage,
+  residualView: GraphDataView<'float32'>
+) {
+  const tests = resources.createBuffer(
+    'tests',
+    GPU_SPATIAL_REGRESSION_DIAGNOSTICS_TESTS_LENGTH * 4
+  );
+  const diagnosticsSummary = resources.createBuffer(
+    'diagnostics-summary',
+    GPU_SPATIAL_REGRESSION_DIAGNOSTICS_SUMMARY_LENGTH * 4
+  );
+  const diagnosticsStatus = resources.createBuffer('diagnostics-status', 4);
+  graph.add(
+    new GPUSpatialRegressionDiagnostics({
+      id: 'diagnostics',
+      weights: stage.weights,
+      predictors: stage.predictorView,
+      response: stage.responseView,
+      residuals: residualView,
+      predictorCount: 3,
+      output: {
+        tests: importGraphBuffer(
+          graph,
+          'tests',
+          tests,
+          'float32',
+          GPU_SPATIAL_REGRESSION_DIAGNOSTICS_TESTS_LENGTH
+        ),
+        summary: importGraphBuffer(
+          graph,
+          'diagnostics-summary',
+          diagnosticsSummary,
+          'float32',
+          GPU_SPATIAL_REGRESSION_DIAGNOSTICS_SUMMARY_LENGTH
+        ),
+        status: importGraphBuffer(graph, 'diagnostics-status', diagnosticsStatus, 'uint32', 1)
+      }
+    })
+  );
+  return {tests, diagnosticsSummary, diagnosticsStatus};
+}
+
+function createSpatialView(
+  context: SpatialAnalysisModeContext,
+  resources: SpatialAnalysisResources,
+  study: CellStudy
+): ViewInstance {
+  const {rowCount} = study;
+  const predictorCount = 3;
+  let mapKind: SpatialMap = 'ols';
+  let dirty = true;
+  let sigma = 1;
+
+  const graph = new GPUCommandGraph<void>(context.device, {id: 'regression-spatial'});
+  const stage = createSpatialStage(context, resources, graph, study, () => {
+    dirty = true;
+  });
+  const ols = addSpatialOls(graph, resources, stage, rowCount);
+  const {olsSummary, olsStatus, olsResiduals} = ols;
+  const {tests, diagnosticsSummary, diagnosticsStatus} = addSpatialDiagnostics(
+    graph,
+    resources,
+    stage,
+    ols.residualView
+  );
+  const tableLength = (predictorCount + 2) * GPU_SPATIAL_TWO_STAGE_LEAST_SQUARES_TABLE_STRIDE;
+  const table = resources.createBuffer('two-stage-table', tableLength * 4);
+  const twoStageSummary = resources.createBuffer(
+    'two-stage-summary',
+    GPU_SPATIAL_TWO_STAGE_LEAST_SQUARES_SUMMARY_LENGTH * 4
+  );
+  const twoStageStatus = resources.createBuffer('two-stage-status', 4);
+  const twoStageResiduals = resources.createBuffer('two-stage-residuals', rowCount * 4);
+  graph.add(
+    new GPUSpatialTwoStageLeastSquares({
+      id: 'two-stage',
+      weights: stage.weights,
+      predictors: stage.predictorView,
+      response: stage.responseView,
+      predictorCount,
+      output: {
+        table: importGraphBuffer(graph, 'two-stage-table', table, 'float32', tableLength),
+        summary: importGraphBuffer(
+          graph,
+          'two-stage-summary',
+          twoStageSummary,
+          'float32',
+          GPU_SPATIAL_TWO_STAGE_LEAST_SQUARES_SUMMARY_LENGTH
+        ),
+        status: importGraphBuffer(graph, 'two-stage-status', twoStageStatus, 'uint32', 1),
+        residuals: importGraphBuffer(
+          graph,
+          'two-stage-residuals',
+          twoStageResiduals,
+          'float32',
+          rowCount
+        )
+      }
+    })
+  );
+  const compiled = resources.track(graph.compile());
+
+  stage.addControls();
+  context.controls.addSelect<SpatialMap>({
+    label: 'Residual map',
+    options: [
+      {value: 'ols', label: 'OLS residuals'},
+      {value: 'lag', label: 'Spatial-lag model residuals (2SLS)'},
+      {value: 'response', label: 'Observed log POI count'}
+    ],
+    value: mapKind,
+    onChange: value => {
+      mapKind = value;
+      context.updateLayers();
+    }
+  });
+  context.controls.addLegend({
+    title: 'Residual: observed - fitted (about +/- 2 sigma)',
+    gradient: {...DIVERGING_GRADIENT, minimumLabel: '-2σ', maximumLabel: '+2σ'}
+  });
+  context.controls.addNote(
+    'Fit OLS, then ask which spatial model: the diagnostics test OLS residuals for a spatial lag ' +
+      'and for spatially correlated errors; two-stage least squares then fits the lag model ' +
+      'with instruments [1, X, WX] and reports rho and the Anselin-Kelejian test on its residuals. ' +
+      'Both accept the directed kNN weights; the Spatial error view fits the error model.'
+  );
+  context.controls.addReadout('Cells (rows)', formatCount(rowCount));
+  const linksReadout = context.controls.addReadout('Weight links / overflow');
+  const diagnosticReadouts = DIAGNOSTIC_ROWS.map(entry =>
+    context.controls.addReadout(`${entry.label} (OLS)`)
+  );
+  const moranReadout = context.controls.addReadout('Residual Moran I (E[I]), z');
+  const moranPReadout = context.controls.addReadout('Residual Moran p (two-sided)');
+  const olsReadout = context.controls.addReadout('OLS R² / sigma²');
+  const coefficientReadouts = ['Intercept', ...PREDICTOR_NAMES, 'rho (spatial lag)'].map(name =>
+    context.controls.addReadout(`2SLS ${name}`)
+  );
+  const twoStageReadout = context.controls.addReadout('2SLS pseudo R² / sigma²');
+  const moranTwoStageReadout = context.controls.addReadout('2SLS residual Moran I');
+  const akReadout = context.controls.addReadout('Anselin-Kelejian (2SLS)');
+  const statusReadout = context.controls.addReadout('Status (OLS / diag / 2SLS)');
+  context.controls.addReadout('Data', study.attribution);
+  stage.writeSearch();
+
+  const diagnosticsBytes = GPU_SPATIAL_REGRESSION_DIAGNOSTICS_TESTS_LENGTH * 4;
+  const summaryBytes = GPU_SPATIAL_REGRESSION_DIAGNOSTICS_SUMMARY_LENGTH * 4;
+  const twoStageSummaryBytes = GPU_SPATIAL_TWO_STAGE_LEAST_SQUARES_SUMMARY_LENGTH * 4;
+  const reader = new SummaryReader(
+    resources,
+    'spatial',
+    [
+      {buffer: tests, size: diagnosticsBytes},
+      {buffer: diagnosticsSummary, size: summaryBytes},
+      {buffer: table, size: tableLength * 4},
+      {buffer: twoStageSummary, size: twoStageSummaryBytes},
+      {buffer: olsSummary, size: 64},
+      {buffer: olsStatus, size: 4},
+      {buffer: diagnosticsStatus, size: 4},
+      {buffer: twoStageStatus, size: 4},
+      {buffer: stage.searchOverflow, size: 4},
+      {buffer: stage.totalNeighbors, size: 4}
+    ],
+    bytes => {
+      const floats = new Float32Array(bytes);
+      const words = new Uint32Array(bytes);
+      let cursor = 0;
+      const take = (length: number) => {
+        const slice = floats.subarray(cursor, cursor + length);
+        cursor += length;
+        return slice;
+      };
+      const testValues = take(GPU_SPATIAL_REGRESSION_DIAGNOSTICS_TESTS_LENGTH);
+      const diagnostics = take(GPU_SPATIAL_REGRESSION_DIAGNOSTICS_SUMMARY_LENGTH);
+      const tableValues = take(tableLength);
+      const twoStage = take(GPU_SPATIAL_TWO_STAGE_LEAST_SQUARES_SUMMARY_LENGTH);
+      const olsValues = take(16);
+      const [olsStatusWord, diagnosticsStatusWord, twoStageStatusWord, overflowWord, totalWord] =
+        words.subarray(cursor, cursor + 5);
+      const stride = GPU_SPATIAL_REGRESSION_DIAGNOSTICS_TEST_STRIDE;
+      DIAGNOSTIC_ROWS.forEach((entry, index) => {
+        diagnosticReadouts[index].setValue(
+          `${formatNumber(testValues[entry.row * stride])}, ${formatP(testValues[entry.row * stride + 2])}`
+        );
+      });
+      const moranRow = GPU_SPATIAL_REGRESSION_DIAGNOSTICS_TEST_MORAN_RESIDUALS * stride;
+      moranReadout.setValue(
+        `${formatNumber(diagnostics[GPU_SPATIAL_REGRESSION_DIAGNOSTICS_SUMMARY_MORAN_I])} (${formatNumber(diagnostics[GPU_SPATIAL_REGRESSION_DIAGNOSTICS_SUMMARY_MORAN_EXPECTATION], 4)}), z ${formatNumber(testValues[moranRow], 2)}`
+      );
+      moranPReadout.setValue(formatP(testValues[moranRow + 2]));
+      olsReadout.setValue(
+        `${formatNumber(olsValues[GPU_ORDINARY_LEAST_SQUARES_SUMMARY_R_SQUARED])} / ${formatNumber(olsValues[GPU_ORDINARY_LEAST_SQUARES_SUMMARY_SIGMA_SQUARED])}`
+      );
+      const tableStride = GPU_SPATIAL_TWO_STAGE_LEAST_SQUARES_TABLE_STRIDE;
+      coefficientReadouts.forEach((readout, index) => {
+        const base = index * tableStride;
+        readout.setValue(
+          `${formatNumber(tableValues[base])} ± ${formatNumber(tableValues[base + 1])} (z ${formatNumber(tableValues[base + 2], 1)}, ${formatP(tableValues[base + 3])})`
+        );
+      });
+      twoStageReadout.setValue(
+        `${formatNumber(twoStage[GPU_SPATIAL_TWO_STAGE_LEAST_SQUARES_SUMMARY_PSEUDO_R_SQUARED])} / ${formatNumber(twoStage[GPU_SPATIAL_TWO_STAGE_LEAST_SQUARES_SUMMARY_SIGMA_SQUARED])}`
+      );
+      moranTwoStageReadout.setValue(
+        formatNumber(twoStage[GPU_SPATIAL_TWO_STAGE_LEAST_SQUARES_SUMMARY_MORAN_I])
+      );
+      akReadout.setValue(
+        `${formatNumber(twoStage[GPU_SPATIAL_TWO_STAGE_LEAST_SQUARES_SUMMARY_ANSELIN_KELEJIAN], 2)}, ${formatP(twoStage[GPU_SPATIAL_TWO_STAGE_LEAST_SQUARES_SUMMARY_ANSELIN_KELEJIAN_P_VALUE])}`
+      );
+      statusReadout.setValue(`${olsStatusWord} / ${diagnosticsStatusWord} / ${twoStageStatusWord}`);
+      linksReadout.setValue(stage.formatLinks(totalWord, overflowWord));
+      sigma = Math.sqrt(Math.max(0, olsValues[GPU_ORDINARY_LEAST_SQUARES_SUMMARY_SIGMA_SQUARED]));
+      context.updateLayers();
+    }
+  );
+
+  const responseRange: [number, number] = [
+    getQuantile(study.response, 0),
+    getQuantile(study.response, 1)
+  ];
+  return {
+    getCompiledGraphs: () => [compiled],
+    encode(commandEncoder, frame) {
+      if (dirty || frame.frameIndex < 3) {
+        compiled.encode(commandEncoder, {parameters: undefined});
+        dirty = false;
+        reader.request(commandEncoder);
+      } else {
+        reader.flush(commandEncoder);
+      }
+    },
+    getLayers(): Layer[] {
+      const values =
+        mapKind === 'ols' ? olsResiduals : mapKind === 'lag' ? twoStageResiduals : stage.response;
+      const isResidual = mapKind !== 'response';
+      return [
+        new CellGridLayer({
+          id: 'spatial-cells',
+          coordinateOrigin: [study.origin[0], study.origin[1], 0],
+          positionOffset: study.gridOrigin,
+          cellSize: study.cellSize,
+          columns: study.columns,
+          cellCount: study.cellCount,
+          values,
+          indices: stage.rowOfCell,
+          colormap: isResidual ? 'diverging' : 'viridis',
+          valueRange: isResidual ? [-2 * sigma, 2 * sigma] : responseRange,
+          color: [255, 255, 255, 215]
+        })
+      ];
+    }
+  };
+}
+
+// ---------------------------------------------------------------------------------------------
+// View: spatial error model (generalized moments)
+// ---------------------------------------------------------------------------------------------
+
+type ErrorMap = 'ols' | 'error' | 'response';
+
+function createErrorView(
+  context: SpatialAnalysisModeContext,
+  resources: SpatialAnalysisResources,
+  study: CellStudy
+): ViewInstance {
+  const {rowCount} = study;
+  const predictorCount = 3;
+  let mapKind: ErrorMap = 'error';
+  let dirty = true;
+  let sigma = 1;
+
+  const graph = new GPUCommandGraph<void>(context.device, {id: 'regression-error'});
+  const stage = createSpatialStage(context, resources, graph, study, () => {
+    dirty = true;
+  });
+  const ols = addSpatialOls(graph, resources, stage, rowCount);
+  const {tests, diagnosticsSummary} = addSpatialDiagnostics(
+    graph,
+    resources,
+    stage,
+    ols.residualView
+  );
+  const tableLength = (predictorCount + 2) * GPU_SPATIAL_ERROR_GM_TABLE_STRIDE;
+  const table = resources.createBuffer('error-table', tableLength * 4);
+  const errorSummary = resources.createBuffer(
+    'error-summary',
+    GPU_SPATIAL_ERROR_GM_SUMMARY_LENGTH * 4
+  );
+  const errorStatus = resources.createBuffer('error-status', 4);
+  const errorResiduals = resources.createBuffer('error-residuals', rowCount * 4);
+  graph.add(
+    new GPUSpatialErrorGM({
+      id: 'error-gm',
+      weights: stage.weights,
+      predictors: stage.predictorView,
+      response: stage.responseView,
+      predictorCount,
+      output: {
+        table: importGraphBuffer(graph, 'error-table', table, 'float32', tableLength),
+        summary: importGraphBuffer(
+          graph,
+          'error-summary',
+          errorSummary,
+          'float32',
+          GPU_SPATIAL_ERROR_GM_SUMMARY_LENGTH
+        ),
+        status: importGraphBuffer(graph, 'error-status', errorStatus, 'uint32', 1),
+        residuals: importGraphBuffer(graph, 'error-residuals', errorResiduals, 'float32', rowCount)
+      }
+    })
+  );
+  const compiled = resources.track(graph.compile());
+
+  stage.addControls();
+  context.controls.addSelect<ErrorMap>({
+    label: 'Residual map',
+    options: [
+      {value: 'error', label: 'GM error residuals u = y - Xb'},
+      {value: 'ols', label: 'OLS residuals'},
+      {value: 'response', label: 'Observed log POI count'}
+    ],
+    value: mapKind,
+    onChange: value => {
+      mapKind = value;
+      context.updateLayers();
+    }
+  });
+  context.controls.addLegend({
+    title: 'Residual: observed - fitted (about +/- 2 sigma of OLS)',
+    gradient: {...DIVERGING_GRADIENT, minimumLabel: '-2σ', maximumLabel: '+2σ'}
+  });
+  context.controls.addNote(
+    'GPUSpatialErrorGM (spreg GM_Error): OLS residuals u give the moments of lambda in ' +
+      'u = lambda W u + e; the model is then refit on the spatially filtered y and X. The ' +
+      'coefficients below compare OLS with the GM error fit; lambda has no standard error.'
+  );
+  context.controls.addReadout('Cells (rows)', formatCount(rowCount));
+  const linksReadout = context.controls.addReadout('Weight links / overflow');
+  const lambdaReadout = context.controls.addReadout('lambda (spatial error)');
+  const sigmaReadout = context.controls.addReadout('GM sigma² / pseudo R²');
+  const objectiveReadout = context.controls.addReadout('Moment objective');
+  const olsReadout = context.controls.addReadout('OLS sigma² / R²');
+  const lmErrorReadout = context.controls.addReadout('LM-error (OLS residuals)');
+  const moranReadout = context.controls.addReadout('OLS residual Moran I, z');
+  const coefficientReadouts = ['Intercept', ...PREDICTOR_NAMES].map(name =>
+    context.controls.addReadout(`${name}: OLS → GM error`)
+  );
+  const statusReadout = context.controls.addReadout('Status (OLS / GM)');
+  context.controls.addReadout('Data', study.attribution);
+  stage.writeSearch();
+
+  const testsBytes = GPU_SPATIAL_REGRESSION_DIAGNOSTICS_TESTS_LENGTH * 4;
+  const diagnosticsBytes = GPU_SPATIAL_REGRESSION_DIAGNOSTICS_SUMMARY_LENGTH * 4;
+  const reader = new SummaryReader(
+    resources,
+    'error',
+    [
+      {buffer: table, size: tableLength * 4},
+      {buffer: errorSummary, size: GPU_SPATIAL_ERROR_GM_SUMMARY_LENGTH * 4},
+      {buffer: ols.olsCoefficients, size: 16},
+      {buffer: ols.olsTStatistics, size: 16},
+      {buffer: ols.olsSummary, size: 64},
+      {buffer: tests, size: testsBytes},
+      {buffer: diagnosticsSummary, size: diagnosticsBytes},
+      {buffer: ols.olsStatus, size: 4},
+      {buffer: errorStatus, size: 4},
+      {buffer: stage.searchOverflow, size: 4},
+      {buffer: stage.totalNeighbors, size: 4}
+    ],
+    bytes => {
+      const floats = new Float32Array(bytes);
+      const words = new Uint32Array(bytes);
+      let cursor = 0;
+      const take = (length: number) => {
+        const slice = floats.subarray(cursor, cursor + length);
+        cursor += length;
+        return slice;
+      };
+      const tableValues = take(tableLength);
+      const error = take(GPU_SPATIAL_ERROR_GM_SUMMARY_LENGTH);
+      const olsCoefficients = take(4);
+      const olsT = take(4);
+      const olsValues = take(16);
+      const testValues = take(GPU_SPATIAL_REGRESSION_DIAGNOSTICS_TESTS_LENGTH);
+      const diagnostics = take(GPU_SPATIAL_REGRESSION_DIAGNOSTICS_SUMMARY_LENGTH);
+      const [olsStatusWord, errorStatusWord, overflowWord, totalWord] = words.subarray(
+        cursor,
+        cursor + 4
+      );
+      const lambda = error[GPU_SPATIAL_ERROR_GM_SUMMARY_LAMBDA];
+      lambdaReadout.setValue(
+        errorStatusWord === GPU_SPATIAL_ERROR_GM_STATUS_OK ? formatNumber(lambda) : 'fit failed'
+      );
+      sigmaReadout.setValue(
+        `${formatNumber(error[GPU_SPATIAL_ERROR_GM_SUMMARY_SIGMA_SQUARED])} / ${formatNumber(error[GPU_SPATIAL_ERROR_GM_SUMMARY_PSEUDO_R_SQUARED])}`
+      );
+      objectiveReadout.setValue(
+        formatNumber(error[GPU_SPATIAL_ERROR_GM_SUMMARY_MOMENT_OBJECTIVE], 4)
+      );
+      olsReadout.setValue(
+        `${formatNumber(olsValues[GPU_ORDINARY_LEAST_SQUARES_SUMMARY_SIGMA_SQUARED])} / ${formatNumber(olsValues[GPU_ORDINARY_LEAST_SQUARES_SUMMARY_R_SQUARED])}`
+      );
+      const stride = GPU_SPATIAL_REGRESSION_DIAGNOSTICS_TEST_STRIDE;
+      const lmErrorRow = GPU_SPATIAL_REGRESSION_DIAGNOSTICS_TEST_LM_ERROR * stride;
+      lmErrorReadout.setValue(
+        `${formatNumber(testValues[lmErrorRow])}, ${formatP(testValues[lmErrorRow + 2])}`
+      );
+      const moranRow = GPU_SPATIAL_REGRESSION_DIAGNOSTICS_TEST_MORAN_RESIDUALS * stride;
+      moranReadout.setValue(
+        `${formatNumber(diagnostics[GPU_SPATIAL_REGRESSION_DIAGNOSTICS_SUMMARY_MORAN_I])}, z ${formatNumber(testValues[moranRow], 2)}`
+      );
+      coefficientReadouts.forEach((readout, index) => {
+        const base = index * GPU_SPATIAL_ERROR_GM_TABLE_STRIDE;
+        readout.setValue(
+          `${formatNumber(olsCoefficients[index])} (t ${formatNumber(olsT[index], 1)}) → ${formatNumber(tableValues[base])} ± ${formatNumber(tableValues[base + 1])} (z ${formatNumber(tableValues[base + 2], 1)})`
+        );
+      });
+      statusReadout.setValue(`${olsStatusWord} / ${errorStatusWord}`);
+      linksReadout.setValue(stage.formatLinks(totalWord, overflowWord));
+      sigma = Math.sqrt(Math.max(0, olsValues[GPU_ORDINARY_LEAST_SQUARES_SUMMARY_SIGMA_SQUARED]));
+      context.updateLayers();
+    }
+  );
+
+  const responseRange: [number, number] = [
+    getQuantile(study.response, 0),
+    getQuantile(study.response, 1)
+  ];
+  return {
+    getCompiledGraphs: () => [compiled],
+    encode(commandEncoder, frame) {
+      if (dirty || frame.frameIndex < 3) {
+        compiled.encode(commandEncoder, {parameters: undefined});
+        dirty = false;
+        reader.request(commandEncoder);
+      } else {
+        reader.flush(commandEncoder);
+      }
+    },
+    getLayers(): Layer[] {
+      const values =
+        mapKind === 'ols'
+          ? ols.olsResiduals
+          : mapKind === 'error'
+            ? errorResiduals
+            : stage.response;
+      const isResidual = mapKind !== 'response';
+      return [
+        new CellGridLayer({
+          id: 'error-cells',
+          coordinateOrigin: [study.origin[0], study.origin[1], 0],
+          positionOffset: study.gridOrigin,
+          cellSize: study.cellSize,
+          columns: study.columns,
+          cellCount: study.cellCount,
+          values,
+          indices: stage.rowOfCell,
+          colormap: isResidual ? 'diverging' : 'viridis',
+          valueRange: isResidual ? [-2 * sigma, 2 * sigma] : responseRange,
+          color: [255, 255, 255, 215]
         })
       ];
     }

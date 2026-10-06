@@ -12,24 +12,39 @@
  * compiled: the rebuild counter stays 0. The graphs run only when an input changed (the data is
  * static), and `GPUHistogram` counts the classes on the GPU so the only readback is a handful of
  * integers.
+ *
+ * Local Moran has a compile-time quadrant gating choice (`GPULocalMoran` `quadrantGating`):
+ * analytic p-value, none (the ungated quadrant of every row), or gated by a conditional
+ * permutation test (`GPULocalPermutationTest`, whose pseudo p-value tail `alternative` is also
+ * compile-time). Every gating and every alternative is precompiled and selected between at run
+ * time, so changing either is still a graph switch and a buffer write, never a rebuild.
+ * `GPUGlobalPermutationTest` reports the pseudo p-value of the global Moran's I for the same tail.
  */
 
 import type {Layer} from '@deck.gl/core';
 import {
   GPUCommandGraph,
+  GPUElementwise,
   GPUHistogram,
   GPUReadbackRing,
   type CompiledGPUCommandGraph
 } from '@luma.gl/gpgpu/gpu-core';
 import {
   getGPUNeighborSearchParameterValues,
+  getGPUPermutationParameterValues,
   getGPUSpatialAutocorrelationParameterValues,
+  GPUGlobalPermutationTest,
   GPUHotSpotAnalysis,
   GPULocalMoran,
+  GPULocalPermutationTest,
   GPUNeighborSearch,
+  GPU_GLOBAL_PERMUTATION_RESULT,
+  GPU_PERMUTATION_PARAMETER_LENGTH,
   GPU_NEIGHBOR_SEARCH_PARAMETER_LENGTH,
   GPU_SPATIAL_AUTOCORRELATION_PARAMETER_LENGTH,
-  GPU_SPATIAL_AUTOCORRELATION_STATISTICS_LENGTH
+  GPU_SPATIAL_AUTOCORRELATION_STATISTICS_LENGTH,
+  type GPULocalMoranQuadrantGating,
+  type GPUPermutationAlternative
 } from '@luma.gl/experimental/gpu-spatial-analysis';
 import {importGraphBuffer} from '../graph-buffers';
 import {SpatialAnalysisPointLayer, type SpatialAnalysisColor} from '../spatial-analysis-layers';
@@ -45,7 +60,14 @@ const GI_BIN_COUNT = 7;
 const MORAN_CLASS_COUNT = 5;
 /** Summary words: class counts, global statistics, then the neighbor-search overflow flag. */
 const OVERFLOW_WORD = GI_BIN_COUNT + GPU_SPATIAL_AUTOCORRELATION_STATISTICS_LENGTH;
-const SUMMARY_WORDS = OVERFLOW_WORD + 1;
+const PERMUTATION_OVERFLOW_WORD = OVERFLOW_WORD + 1;
+const PERMUTATION_RESULTS_WORD = PERMUTATION_OVERFLOW_WORD + 1;
+const PERMUTATION_COUNTS_WORD = PERMUTATION_RESULTS_WORD + GPU_GLOBAL_PERMUTATION_RESULT.length;
+const SUMMARY_WORDS = PERMUTATION_COUNTS_WORD + 2;
+/** Largest per-frame permutation count (compile-time bound of the permutation tests). */
+const MAXIMUM_PERMUTATIONS = 499;
+/** Largest neighbor count `GPULocalPermutationTest` tests per row; denser rows are skipped. */
+const PERMUTATION_MAXIMUM_NEIGHBORS = 64;
 /** Neighbor slots reserved per point in the weights CSR (capped at every other point). */
 const SLOTS_PER_ROW = 1024;
 /** A class value no category can take, so negative Gi* bins (large uint32) are never "no data". */
@@ -75,6 +97,17 @@ const MORAN_COLORS: Record<number, SpatialAnalysisColor> = {
 };
 
 type Statistic = 'gi-star' | 'local-moran';
+/** `'permutation'` gates the ungated Moran quadrant by a conditional permutation test. */
+type Gating = GPULocalMoranQuadrantGating | 'permutation';
+type Alternative = Exclude<GPUPermutationAlternative, 'less'>;
+
+const ALTERNATIVES: readonly {value: Alternative; label: string}[] = [
+  {value: 'directed', label: 'Directed (esda default, tail on the observed side)'},
+  {value: 'two-sided', label: 'Two-sided (doubled smaller tail)'},
+  {value: 'greater', label: 'Greater (large observed statistic)'},
+  {value: 'lesser', label: 'Less (small observed statistic)'},
+  {value: 'folded', label: 'Folded (|sim - mean| at least |obs - mean|)'}
+];
 
 type Variant = {
   compiled: CompiledGPUCommandGraph<void>;
@@ -83,10 +116,18 @@ type Variant = {
 export const hotSpotsMode: SpatialAnalysisModeDefinition = {
   id: 'hot-spots',
   title: 'Hot spots',
-  contributors: ['GPUHotSpotAnalysis', 'GPULocalMoran', 'GPUHistogram'],
+  contributors: [
+    'GPUHotSpotAnalysis',
+    'GPULocalMoran',
+    'GPULocalPermutationTest',
+    'GPUGlobalPermutationTest',
+    'GPUHistogram'
+  ],
   description:
     'Where is bike-parking capacity unusually high or low compared with its neighbors? Getis-Ord ' +
-    'Gi* hot and cold spots or local Moran quadrants over San Francisco, from a per-frame radius.',
+    'Gi* hot and cold spots or local Moran quadrants over San Francisco. Pick Local Moran, then ' +
+    'switch the quadrant gating (analytic, none, permutation) and the pseudo p-value alternative ' +
+    'and read the per-quadrant counts.',
   initialViewState: {longitude: -122.435, latitude: 37.765, zoom: 12.2},
 
   async create(context) {
@@ -109,6 +150,10 @@ export const hotSpotsMode: SpatialAnalysisModeDefinition = {
     const bounds = [minimumX - 10, minimumY - 10, maximumX + 10, maximumY + 10] as const;
 
     let statistic: Statistic = 'gi-star';
+    let gating: Gating = 'analytic';
+    let alternative: Alternative = 'directed';
+    let permutations = 199;
+    let seed = 1;
     let falseDiscoveryRate = false;
     let radiusMeters = 400;
     let weightsDirty = true;
@@ -157,6 +202,25 @@ export const hotSpotsMode: SpatialAnalysisModeDefinition = {
         )
       }
     } as const;
+    // Permutation gating: the ungated Moran quadrant, the permutation `significant` mask and their
+    // product (written to the shared quadrant output) all live here.
+    const permutation = {
+      ungatedQuadrants: resources.createBuffer('moran-ungated-quadrants', pointCount * 4),
+      exceedances: resources.createBuffer('perm-exceedances', pointCount * 4),
+      pseudoPValues: resources.createBuffer('perm-pseudo-p', pointCount * 4),
+      significant: resources.createBuffer('perm-significant', pointCount * 4),
+      overflow: resources.createBuffer('perm-overflow', 4),
+      significantCounts: resources.createBuffer('perm-significant-counts', 2 * 4),
+      globalResults: resources.createBuffer(
+        'perm-global-results',
+        GPU_GLOBAL_PERMUTATION_RESULT.length * 4
+      )
+    };
+    const permutationParameters = resources.createParameterBuffer(
+      'permutation-parameters',
+      'uint32',
+      GPU_PERMUTATION_PARAMETER_LENGTH
+    );
     const readbackRing = resources.track(
       new GPUReadbackRing(device, {id: 'hot-spots-summary', byteLength: SUMMARY_WORDS * 4})
     );
@@ -191,9 +255,14 @@ export const hotSpotsMode: SpatialAnalysisModeDefinition = {
 
     // FDR is a compile-time option of both contributors, so both settings are compiled up front and the
     // toggle selects between graphs that share one set of output buffers.
-    function compileVariant(kind: Statistic, fdr: boolean): Variant {
+    function compileVariant(
+      kind: Statistic,
+      fdr: boolean,
+      variantGating: Gating = 'analytic',
+      variantAlternative: Alternative = 'directed'
+    ): Variant {
       const graph = new GPUCommandGraph<void>(device, {
-        id: `hot-spots-${kind}${fdr ? '-fdr' : ''}`
+        id: `hot-spots-${kind}${fdr ? '-fdr' : ''}-${variantGating}-${variantAlternative}`
       });
       const weights = importWeights(graph);
       const values = importGraphBuffer(graph, 'values', valuesBuffer, 'float32', pointCount);
@@ -230,13 +299,17 @@ export const hotSpotsMode: SpatialAnalysisModeDefinition = {
           })
         );
       } else {
-        const quadrants = importGraphBuffer(
-          graph,
-          'quadrants',
-          output.classes,
-          'uint32',
-          pointCount
-        );
+        const classes = importGraphBuffer(graph, 'quadrants', output.classes, 'uint32', pointCount);
+        const quadrants =
+          variantGating === 'permutation'
+            ? importGraphBuffer(
+                graph,
+                'ungated-quadrants',
+                permutation.ungatedQuadrants,
+                'uint32',
+                pointCount
+              )
+            : classes;
         graph.add(
           new GPULocalMoran({
             id: 'local-moran',
@@ -246,13 +319,93 @@ export const hotSpotsMode: SpatialAnalysisModeDefinition = {
             zScores,
             quadrants,
             globalStatistics: statistics,
+            quadrantGating: variantGating === 'analytic' ? 'analytic' : 'none',
             falseDiscoveryRate: fdr
           })
         );
+        if (variantGating === 'permutation') {
+          const permutationView = permutationParameters.importToGraph(graph);
+          const significant = importGraphBuffer(
+            graph,
+            'perm-significant',
+            permutation.significant,
+            'uint32',
+            pointCount
+          );
+          graph.add(
+            new GPULocalPermutationTest({
+              id: 'local-permutation',
+              weights,
+              values,
+              statistic: 'localMoran',
+              alternative: variantAlternative,
+              parameters: permutationView,
+              maximumPermutations: MAXIMUM_PERMUTATIONS,
+              maximumNeighbors: PERMUTATION_MAXIMUM_NEIGHBORS,
+              exceedances: importGraphBuffer(
+                graph,
+                'perm-exceedances',
+                permutation.exceedances,
+                'uint32',
+                pointCount
+              ),
+              pseudoPValues: importGraphBuffer(
+                graph,
+                'perm-pseudo-p',
+                permutation.pseudoPValues,
+                'float32',
+                pointCount
+              ),
+              significant,
+              overflow: importGraphBuffer(graph, 'perm-overflow', permutation.overflow, 'uint32', 1)
+            })
+          );
+          graph.add(
+            new GPUHistogram({
+              id: 'perm-significant-counts',
+              input: significant,
+              output: importGraphBuffer(
+                graph,
+                'perm-significant-counts',
+                permutation.significantCounts,
+                'uint32',
+                2
+              ),
+              edges: [0, 1, 2]
+            })
+          );
+          graph.add(
+            new GPUElementwise<'uint32'>({
+              id: 'gate-quadrants',
+              operation: 'multiply',
+              input: quadrants,
+              inputB: significant,
+              output: classes
+            })
+          );
+          graph.add(
+            new GPUGlobalPermutationTest({
+              id: 'global-permutation',
+              weights,
+              values,
+              statistic: 'moran',
+              alternative: variantAlternative,
+              parameters: permutationView,
+              maximumPermutations: MAXIMUM_PERMUTATIONS,
+              results: importGraphBuffer(
+                graph,
+                'perm-global-results',
+                permutation.globalResults,
+                'float32',
+                GPU_GLOBAL_PERMUTATION_RESULT.length
+              )
+            })
+          );
+        }
         graph.add(
           new GPUHistogram({
             id: 'local-moran-counts',
-            input: quadrants,
+            input: classes,
             output: importGraphBuffer(graph, 'counts', output.counts, 'uint32', MORAN_CLASS_COUNT),
             edges: [0, 1, 2, 3, 4, 5]
           })
@@ -261,19 +414,34 @@ export const hotSpotsMode: SpatialAnalysisModeDefinition = {
       return {compiled: resources.track(graph.compile())};
     }
 
-    const variants: Record<`${Statistic}:${'plain' | 'fdr'}`, Variant> = {
+    const variants: Record<`${Statistic}:${'plain' | 'fdr'}` | 'local-moran:none', Variant> = {
       'gi-star:plain': compileVariant('gi-star', false),
       'gi-star:fdr': compileVariant('gi-star', true),
       'local-moran:plain': compileVariant('local-moran', false),
-      'local-moran:fdr': compileVariant('local-moran', true)
+      'local-moran:fdr': compileVariant('local-moran', true),
+      'local-moran:none': compileVariant('local-moran', false, 'none')
     };
-    const getActiveVariant = () => variants[`${statistic}:${falseDiscoveryRate ? 'fdr' : 'plain'}`];
-
+    const permutationVariants = Object.fromEntries(
+      ALTERNATIVES.map(({value}) => [
+        value,
+        compileVariant('local-moran', false, 'permutation', value)
+      ])
+    ) as Record<Alternative, Variant>;
+    const getActiveVariant = () => {
+      if (statistic === 'local-moran' && gating === 'none') return variants['local-moran:none'];
+      if (statistic === 'local-moran' && gating === 'permutation') {
+        return permutationVariants[alternative];
+      }
+      return variants[`${statistic}:${falseDiscoveryRate ? 'fdr' : 'plain'}`];
+    };
     const writeParameters = () => {
       searchParameters.write(
         getGPUNeighborSearchParameterValues({bounds, radius: radiusMeters, weightKind: 'binary'})
       );
       parameters.write(getGPUSpatialAutocorrelationParameterValues({significanceLevel}));
+      permutationParameters.write(
+        getGPUPermutationParameterValues({seed, permutations, significanceLevel})
+      );
       weightsDirty = true;
       dirty = true;
       needsReadback = true;
@@ -288,7 +456,7 @@ export const hotSpotsMode: SpatialAnalysisModeDefinition = {
       value: statistic,
       onChange: value => {
         statistic = value;
-        significanceControl.setDisabled(statistic === 'gi-star');
+        updateEnabled();
         dirty = true;
         needsReadback = true;
         updateLegendNote();
@@ -296,6 +464,60 @@ export const hotSpotsMode: SpatialAnalysisModeDefinition = {
       }
     });
     void statisticSelect;
+    const gatingSelect = context.controls.addSelect<Gating>({
+      label: 'Moran quadrant gating (compile-time option, all variants precompiled)',
+      options: [
+        {value: 'analytic', label: 'Analytic p-value (default)'},
+        {value: 'none', label: 'None: ungated quadrant of every row'},
+        {value: 'permutation', label: 'Conditional permutation test'}
+      ],
+      value: gating,
+      onChange: value => {
+        gating = value;
+        updateEnabled();
+        updateLegendNote();
+        dirty = true;
+        needsReadback = true;
+      }
+    });
+    const alternativeSelect = context.controls.addSelect<Alternative>({
+      label: 'Permutation alternative (compile-time option, all variants precompiled)',
+      options: [...ALTERNATIVES],
+      value: alternative,
+      onChange: value => {
+        alternative = value;
+        dirty = true;
+        needsReadback = true;
+      }
+    });
+    context.controls.addNote(
+      'Folded is symmetric about the simulated mean. On skewed data, low-low rows sit in the ' +
+        'short tail and drop out, so folded keeps far fewer points than two-sided.'
+    );
+    const permutationsControl = context.controls.addSlider({
+      label: 'Permutations (per-frame parameter)',
+      min: 49,
+      max: MAXIMUM_PERMUTATIONS,
+      step: 50,
+      value: permutations,
+      format: value => `${value}`,
+      onChange: value => {
+        permutations = value;
+        writeParameters();
+      }
+    });
+    const seedControl = context.controls.addSlider({
+      label: 'Permutation seed (per-frame parameter)',
+      min: 1,
+      max: 20,
+      step: 1,
+      value: seed,
+      format: value => `${value}`,
+      onChange: value => {
+        seed = value;
+        writeParameters();
+      }
+    });
     context.controls.addSlider({
       label: 'Neighborhood radius (per-frame parameter)',
       min: 100,
@@ -320,8 +542,7 @@ export const hotSpotsMode: SpatialAnalysisModeDefinition = {
         writeParameters();
       }
     });
-    significanceControl.setDisabled(true);
-    context.controls.addToggle({
+    const fdrToggle = context.controls.addToggle({
       label: 'Benjamini-Hochberg FDR (compile-time option, both variants precompiled)',
       value: falseDiscoveryRate,
       onChange: value => {
@@ -330,6 +551,17 @@ export const hotSpotsMode: SpatialAnalysisModeDefinition = {
         needsReadback = true;
       }
     });
+    const updateEnabled = () => {
+      const moran = statistic === 'local-moran';
+      const permutationGated = moran && gating === 'permutation';
+      gatingSelect.setDisabled(!moran);
+      alternativeSelect.setDisabled(!permutationGated);
+      permutationsControl.setDisabled(!permutationGated);
+      seedControl.setDisabled(!permutationGated);
+      significanceControl.setDisabled(!moran || gating === 'none');
+      fdrToggle.setDisabled(moran && gating !== 'analytic');
+    };
+    updateEnabled();
     context.controls.addToggle({
       label: 'Show not significant points',
       value: showNotSignificant,
@@ -365,8 +597,15 @@ export const hotSpotsMode: SpatialAnalysisModeDefinition = {
         statistic === 'gi-star'
           ? 'Gi*: binary distance-band weights, the point itself included (selfWeight 1). Bins are 90/95/99% ' +
               'two-sided confidence, or BH-FDR corrected.'
-          : 'Moran: the point itself excluded, conditional-randomization z-score; quadrants are ' +
+          : gating === 'analytic'
+            ? 'Moran: the point itself excluded, conditional-randomization z-score; quadrants are ' +
               'shown where p is at most the significance level (BH-FDR corrected if on).'
+            : gating === 'none'
+              ? 'Moran, ungated: every point with a nonzero centered value and lag gets its ' +
+                'quadrant, so the quadrant counts add up to nearly all points.'
+              : 'Moran gated by GPULocalPermutationTest (conditional permutation, the pseudo p-value ' +
+                'tail chosen above); points with more than 64 neighbors are not tested, so reduce ' +
+                'the radius if the readout reports skipped rows. FDR does not apply.'
       );
     updateLegendNote();
     context.controls.addReadout('Points', formatCount(pointCount));
@@ -375,6 +614,12 @@ export const hotSpotsMode: SpatialAnalysisModeDefinition = {
     const coldReadout = context.controls.addReadout('Cold 99 / 95 / 90% (LL)');
     const outlierReadout = context.controls.addReadout('Outliers LH / HL');
     const insignificantReadout = context.controls.addReadout('Not significant');
+    const quadrantReadout = context.controls.addReadout('Quadrant points HH / LH / LL / HL');
+    const quadrantTotalReadout = context.controls.addReadout('Points with a quadrant (of n)');
+    const permutationReadout = context.controls.addReadout(
+      'Permutation significant / not (p ≤ level)'
+    );
+    const globalReadout = context.controls.addReadout('Global Moran I / pseudo p / z_sim');
     const momentsReadout = context.controls.addReadout('Mean / std. deviation');
     const capacityReadout = context.controls.addReadout('Neighbor capacity');
     context.controls.addReadout('Data', parking.attribution);
@@ -407,6 +652,29 @@ export const hotSpotsMode: SpatialAnalysisModeDefinition = {
         destinationOffset: OVERFLOW_WORD * 4,
         size: 4
       });
+      const reportedPermutation = statistic === 'local-moran' && gating === 'permutation';
+      if (reportedPermutation) {
+        commandEncoder.copyBufferToBuffer({
+          sourceBuffer: permutation.overflow,
+          destinationBuffer: ticket.buffer,
+          destinationOffset: PERMUTATION_OVERFLOW_WORD * 4,
+          size: 4
+        });
+        commandEncoder.copyBufferToBuffer({
+          sourceBuffer: permutation.globalResults,
+          destinationBuffer: ticket.buffer,
+          destinationOffset: PERMUTATION_RESULTS_WORD * 4,
+          size: GPU_GLOBAL_PERMUTATION_RESULT.length * 4
+        });
+      }
+      if (reportedPermutation) {
+        commandEncoder.copyBufferToBuffer({
+          sourceBuffer: permutation.significantCounts,
+          destinationBuffer: ticket.buffer,
+          destinationOffset: PERMUTATION_COUNTS_WORD * 4,
+          size: 8
+        });
+      }
       ticket.markEncoded({byteOffset: 0, byteLength: SUMMARY_WORDS * 4});
       readbackPending = true;
       needsReadback = false;
@@ -422,18 +690,48 @@ export const hotSpotsMode: SpatialAnalysisModeDefinition = {
           coldReadout.setValue(`${count(0)} / ${count(1)} / ${count(2)}`);
           outlierReadout.setValue('n/a (Moran only)');
           insignificantReadout.setValue(count(3));
+          quadrantReadout.setValue('n/a (Moran only)');
+          quadrantTotalReadout.setValue('n/a (Moran only)');
+          globalReadout.setValue('n/a (Moran only)');
+          permutationReadout.setValue('n/a (Moran only)');
         } else {
           // Quadrant codes 0 (none), 1 HH, 2 LH, 3 LL, 4 HL are histogram rows 0..4.
           hotReadout.setValue(count(1));
           coldReadout.setValue(count(3));
           outlierReadout.setValue(`${count(2)} / ${count(4)}`);
           insignificantReadout.setValue(count(0));
+          quadrantReadout.setValue(`${count(1)} / ${count(2)} / ${count(3)} / ${count(4)}`);
+          const withQuadrant = words[1] + words[2] + words[3] + words[4];
+          quadrantTotalReadout.setValue(
+            `${formatCount(withQuadrant)} of ${formatCount(pointCount)} (${(
+              (100 * withQuadrant) / pointCount
+            ).toFixed(1)}%)`
+          );
+          permutationReadout.setValue(
+            reportedPermutation
+              ? `${count(PERMUTATION_COUNTS_WORD + 1)} / ${count(PERMUTATION_COUNTS_WORD)}`
+              : 'n/a (permutation gating only)'
+          );
+          if (reportedPermutation) {
+            const base = PERMUTATION_RESULTS_WORD;
+            globalReadout.setValue(
+              `${floats[base + GPU_GLOBAL_PERMUTATION_RESULT.observed].toFixed(3)} / ` +
+                `${floats[base + GPU_GLOBAL_PERMUTATION_RESULT.pseudoPValue].toFixed(4)} / ` +
+                `${floats[base + GPU_GLOBAL_PERMUTATION_RESULT.zSimulated].toFixed(2)}`
+            );
+          } else {
+            globalReadout.setValue('n/a (permutation gating only)');
+          }
         }
         const mean = floats[GI_BIN_COUNT + 1];
         const deviation = floats[GI_BIN_COUNT + 3];
         momentsReadout.setValue(`${mean.toFixed(2)} / ${deviation.toFixed(2)} spaces`);
         capacityReadout.setValue(
-          words[OVERFLOW_WORD] === 0 ? 'ok' : 'overflow: neighbors truncated, reduce the radius'
+          words[OVERFLOW_WORD] !== 0
+            ? 'overflow: neighbors truncated, reduce the radius'
+            : reportedPermutation && words[PERMUTATION_OVERFLOW_WORD] !== 0
+              ? `ok; rows over ${PERMUTATION_MAXIMUM_NEIGHBORS} neighbors skipped by the permutation test`
+              : 'ok'
         );
       } catch {
         // The ring or device was destroyed while the read was in flight.
@@ -446,7 +744,8 @@ export const hotSpotsMode: SpatialAnalysisModeDefinition = {
     const instance: SpatialAnalysisModeInstance = {
       getCompiledGraphs: () => [
         searchCompiled,
-        ...Object.values(variants).map(variant => variant.compiled)
+        ...Object.values(variants).map(variant => variant.compiled),
+        ...Object.values(permutationVariants).map(variant => variant.compiled)
       ],
       encode(commandEncoder, frame) {
         // The data is static: results only change with the radius, level, statistic or FDR.

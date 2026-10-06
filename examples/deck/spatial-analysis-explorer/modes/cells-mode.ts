@@ -18,6 +18,11 @@
  * - Zones graph (H3 and Quadbin): `GPUCellCover` polyfills three hand-drawn Manhattan zones
  *   (one with a hole), `GPUCellCompaction` compacts the cover, and two more decodes draw both sets.
  *
+ * - Outline graph (H3 and Quadbin, part of the index graph): `GPUCellSetOutline` turns the sorted
+ *   aggregated table into boundary segments, once for the plain set boundary and once with a
+ *   group label per cell (a count tier), which adds the borders between tiers. `GPUCellCover`'s
+ *   optional `core` column flags the zone cells that are provably inside their polygon.
+ *
  * Family, resolution and containment are compile-time (the output stride, kernels and key layouts
  * differ), so changing them rebuilds the graphs once after a short debounce; the footer counts
  * those rebuilds. Everything else (sampling mask, click position, k, toggles) is a buffer write
@@ -32,6 +37,7 @@
 import type {Layer} from '@deck.gl/core';
 import type {Buffer} from '@luma.gl/core';
 import {
+  DrawCommandBuffer,
   GPUCommandGraph,
   GPUReadbackRing,
   type CompiledGPUCommandGraph,
@@ -42,6 +48,7 @@ import {
   GPUCellCompaction,
   GPUCellCover,
   GPUCellGeometry,
+  GPUCellSetOutline,
   GPUCellTopology,
   GPUPointToCell,
   GPU_CELL_GEOMETRY_H3_MAXIMUM_VERTEX_COUNT,
@@ -50,6 +57,7 @@ import {
   type GPUCellCoverContainment,
   type GPUCellIndexFamily
 } from '@luma.gl/experimental/gpu-spatial-analysis';
+import {COORDINATE_SYSTEM} from '@deck.gl/core';
 import {importGraphBuffer} from '../graph-buffers';
 import {LocalMetricProjection} from '../spatial-analysis-data';
 import {SpatialAnalysisSegmentLayer} from '../spatial-analysis-layers';
@@ -60,6 +68,8 @@ import type {
 } from '../spatial-analysis-mode';
 import {formatCount, SpatialAnalysisResources} from '../spatial-analysis-resources';
 import {CellBoundaryLayer} from './cells-layers';
+import {HullOutlineLayer} from './clusters-layers';
+import {addKernelPass} from './mode-kernels';
 import {formatCompiledGraphTiming, measureCompiledGraph} from './vector-timing';
 
 type FamilySettings = {
@@ -137,7 +147,31 @@ const CANDIDATE_CAPACITY = 1 << 20;
 const DISK_RADIUS = GPU_CELL_TOPOLOGY_MAXIMUM_RADIUS;
 const REBUILD_DEBOUNCE_MILLISECONDS = 250;
 const AUTO_MEASURE_FRAME = 45;
-const SUMMARY_FIXED_WORDS = 11;
+/** Segments of each `GPUCellSetOutline` output. */
+const OUTLINE_CAPACITY = 1 << 17;
+/** Rings of the assembled outline. */
+const RING_CAPACITY = 1 << 12;
+/** Count tiers (group labels) of the group-border outline: `min(floor(log2(count)), 4)`. */
+const TIER_COLORS = [
+  [90, 110, 190, 255],
+  [70, 190, 210, 255],
+  [110, 220, 130, 255],
+  [250, 210, 80, 255],
+  [255, 110, 90, 255]
+] as const;
+/** Cover fill colors by `core` flag: border cells, then core cells. */
+const CORE_COLORS = [
+  [255, 150, 60, 215],
+  [60, 215, 140, 215]
+] as const;
+const SUMMARY_FIXED_WORDS = 18;
+/** Colors of the assembled outline rings, by ring index. */
+const RING_COLORS = [
+  [255, 255, 255, 255],
+  [255, 214, 64, 255],
+  [120, 230, 255, 255],
+  [255, 150, 200, 255]
+] as const;
 const ZONE_COLORS = [
   [78, 201, 255, 200],
   [255, 148, 72, 200],
@@ -243,6 +277,28 @@ function importCellBuffer<Format extends Parameters<typeof importGraphBuffer>[3]
 /** Decoded output of one `GPUCellGeometry` node: fixed-stride boundaries plus vertex counts. */
 type GeometryBuffers = {boundaries: Buffer; vertexCounts: Buffer; stride: number; rows: number};
 
+type OutlineMode = 'off' | 'boundary' | 'rings' | 'groups';
+
+/** Caller-owned outputs of one `GPUCellSetOutline` plus the indirect draw record of its count. */
+type OutlineBuffers = {
+  /** Closed rings of the outline (`GPUCellSetOutline` `rings`), when ring assembly compiled. */
+  rings: {
+    offsets: Buffer;
+    counts: Buffer;
+    positions: Buffer;
+    count: Buffer;
+    overflow: Buffer;
+    openSegments: Buffer;
+  } | null;
+  /** `float32x4` `lng0, lat0, lng1, lat1` per segment. */
+  endpoints: Buffer;
+  /** Group label per segment (grouped outline only). */
+  groups: Buffer | null;
+  count: Buffer;
+  overflow: Buffer;
+  drawCommands: DrawCommandBuffer;
+};
+
 /** Everything that depends on the compile-time choices; replaced on a rebuild. */
 type Pipeline = {
   serial: number;
@@ -259,8 +315,20 @@ type Pipeline = {
   tableCount: Buffer | null;
   tableOverflow: Buffer | null;
   tableTotal: Buffer | null;
+  /** Boundary of the aggregated table (H3 and Quadbin) and its borders between count tiers. */
+  outline: OutlineBuffers | null;
+  groupOutline: OutlineBuffers | null;
+  /** Compiled outline graphs, encoded after the index graph; a failed outline is absent. */
+  outlineGraphs: readonly CompiledGPUCommandGraph<void>[];
+  outlineErrors: readonly string[];
   cover:
-    | (GeometryBuffers & {featureIds: Buffer; count: Buffer; overflow: Buffer; total: Buffer})
+    | (GeometryBuffers & {
+        featureIds: Buffer;
+        core: Buffer;
+        count: Buffer;
+        overflow: Buffer;
+        total: Buffer;
+      })
     | null;
   compacted: (GeometryBuffers & {count: Buffer; overflow: Buffer}) | null;
   selection:
@@ -287,12 +355,14 @@ export const cellsMode: SpatialAnalysisModeDefinition = {
     'GPUCellGeometry',
     'GPUCellTopology',
     'GPUCellCover',
-    'GPUCellCompaction'
+    'GPUCellCompaction',
+    'GPUCellSetOutline'
   ],
   description:
     'Trip vertices keyed to H3, Quadbin, quadkey, geohash or S2 cells on the GPU, counted per ' +
     'cell and drawn as cell polygons. Click a cell for its grid disk; toggle the polyfill of ' +
-    'three Manhattan zones and its compacted set.',
+    'three Manhattan zones, its compacted set and which cover cells are core. Outline the cell ' +
+    'set or the borders between count tiers.',
   initialViewState: {longitude: -73.985, latitude: 40.745, zoom: 11.7},
 
   async create(context) {
@@ -338,6 +408,8 @@ export const cellsMode: SpatialAnalysisModeDefinition = {
     let showCells = true;
     let showZones = false;
     let showCompacted = false;
+    let outlineMode: OutlineMode = 'boundary';
+    let showCore = false;
     let valueMaximum = 1;
     let serial = 0;
     let pipeline: Pipeline | null = null;
@@ -413,6 +485,8 @@ export const cellsMode: SpatialAnalysisModeDefinition = {
         })
       );
       let geometryInput: GraphDataView<'uint32x2'> = rawCellsView;
+      let outline: OutlineBuffers | null = null;
+      let groupOutline: OutlineBuffers | null = null;
       if (tabular && tableCells && tableCounts && tableCount && tableOverflow && tableTotal) {
         const tableCellsView = importCellBuffer(
           indexGraph,
@@ -421,6 +495,14 @@ export const cellsMode: SpatialAnalysisModeDefinition = {
           'uint32x2',
           TABLE_CAPACITY
         );
+        const tableCountsView = importCellBuffer(
+          indexGraph,
+          'table-counts',
+          tableCounts,
+          'uint32',
+          TABLE_CAPACITY
+        );
+        const tableCountView = importCellBuffer(indexGraph, 'table-count', tableCount, 'uint32', 1);
         indexGraph.add(
           new GPUCellAggregation({
             id: 'aggregate',
@@ -429,14 +511,8 @@ export const cellsMode: SpatialAnalysisModeDefinition = {
             cells: rawCellsView,
             output: {
               cells: tableCellsView,
-              counts: importCellBuffer(
-                indexGraph,
-                'table-counts',
-                tableCounts,
-                'uint32',
-                TABLE_CAPACITY
-              ),
-              count: importCellBuffer(indexGraph, 'table-count', tableCount, 'uint32', 1),
+              counts: tableCountsView,
+              count: tableCountView,
               overflow: importCellBuffer(indexGraph, 'table-overflow', tableOverflow, 'uint32', 1),
               totalCount: importCellBuffer(indexGraph, 'table-total', tableTotal, 'uint32', 1)
             }
@@ -470,6 +546,164 @@ export const cellsMode: SpatialAnalysisModeDefinition = {
       );
       const compiledIndex = owned.track(indexGraph.compile());
 
+      // Outline graphs (H3 and Quadbin), each compiled on its own; the ring assembly falls back to
+      // plain segments if it does not compile on the device.
+      const outlineGraphs: CompiledGPUCommandGraph<void>[] = [];
+      const outlineErrors: string[] = [];
+      if (tabular && tableCells && tableCounts && tableCount) {
+        const buildOutline = (
+          name: string,
+          grouped: boolean,
+          withRings: boolean
+        ): OutlineBuffers | null => {
+          try {
+            const graph = new GPUCommandGraph<void>(device, {
+              id: `cells-${name}-${pipelineSerial}`
+            });
+            const view = <Format extends Parameters<typeof importGraphBuffer>[3]>(
+              suffix: string,
+              buffer: Buffer,
+              format: Format,
+              length: number
+            ) => importCellBuffer(graph, `${name}-${suffix}`, buffer, format, length);
+            const tableCellsView = view('table-cells', tableCells, 'uint32x2', TABLE_CAPACITY);
+            const tableCountView = view('table-count', tableCount, 'uint32', 1);
+            let tableGroupsView: GraphDataView<'uint32'> | undefined;
+            if (grouped) {
+              // A count tier per table row: the group label whose borders are drawn.
+              const tableGroups = create(`${name}-table-groups`, TABLE_CAPACITY * 4);
+              tableGroupsView = view('table-groups', tableGroups, 'uint32', TABLE_CAPACITY);
+              addKernelPass(graph, {
+                id: `${name}-count-tiers`,
+                invocationCount: TABLE_CAPACITY,
+                bindings: [
+                  {
+                    name: 'counts',
+                    view: view('table-counts', tableCounts, 'uint32', TABLE_CAPACITY),
+                    type: 'u32',
+                    access: 'read'
+                  },
+                  {name: 'groups', view: tableGroupsView, type: 'u32', access: 'read_write'}
+                ],
+                body: `let value = counts[countsOffset + index];
+  var tier = 0u;
+  if (value > 0u) { tier = min(firstLeadingBit(value), 4u); }
+  groups[groupsOffset + index] = tier;`
+              });
+            }
+            const endpoints = create(`${name}-endpoints`, OUTLINE_CAPACITY * 16);
+            const groups = grouped ? create(`${name}-groups`, OUTLINE_CAPACITY * 4) : null;
+            const outlineCount = create(`${name}-count`, 4);
+            const outlineOverflow = create(`${name}-overflow`, 4);
+            let rings: OutlineBuffers['rings'] = null;
+            let ringOptions: ConstructorParameters<typeof GPUCellSetOutline>[0]['rings'];
+            if (withRings) {
+              const ringOffsets = create(`${name}-ring-offsets`, (RING_CAPACITY + 1) * 4);
+              const ringCounts = create(`${name}-ring-counts`, RING_CAPACITY * 4);
+              rings = {
+                offsets: ringOffsets,
+                counts: ringCounts,
+                positions: create(`${name}-ring-positions`, OUTLINE_CAPACITY * 8),
+                count: create(`${name}-ring-count`, 4),
+                overflow: create(`${name}-ring-overflow`, 4),
+                openSegments: create(`${name}-ring-open`, 4)
+              };
+              const ringOffsetsView = view(
+                'ring-offsets',
+                ringOffsets,
+                'uint32',
+                RING_CAPACITY + 1
+              );
+              ringOptions = {
+                normalizeWinding: true,
+                output: {
+                  ringOffsets: ringOffsetsView,
+                  positions: view('ring-positions', rings.positions, 'float32x2', OUTLINE_CAPACITY),
+                  count: view('ring-count', rings.count, 'uint32', 1),
+                  overflow: view('ring-overflow', rings.overflow, 'uint32', 1),
+                  openSegmentCount: view('ring-open', rings.openSegments, 'uint32', 1)
+                }
+              };
+              // Vertex count of every ring (offsets past the ring count repeat the last offset, so
+              // unused rings are empty), which the ring outline layer reads.
+              addKernelPass(graph, {
+                id: `${name}-ring-counts`,
+                invocationCount: RING_CAPACITY,
+                bindings: [
+                  {name: 'offsets', view: ringOffsetsView, type: 'u32', access: 'read'},
+                  {
+                    name: 'counts',
+                    view: view('ring-vertex-counts', ringCounts, 'uint32', RING_CAPACITY),
+                    type: 'u32',
+                    access: 'read_write'
+                  }
+                ],
+                body: `counts[countsOffset + index] = offsets[offsetsOffset + index + 1u] - offsets[offsetsOffset + index];`
+              });
+            }
+            graph.add(
+              new GPUCellSetOutline({
+                id: name,
+                family: selectedFamily as 'h3' | 'quadbin',
+                cells: tableCellsView,
+                count: tableCountView,
+                groups: tableGroupsView,
+                rings: ringOptions,
+                output: {
+                  rows: view(
+                    'rows',
+                    create(`${name}-rows`, OUTLINE_CAPACITY * 4),
+                    'uint32',
+                    OUTLINE_CAPACITY
+                  ),
+                  cells: view(
+                    'cells',
+                    create(`${name}-cells`, OUTLINE_CAPACITY * 8),
+                    'uint32x2',
+                    OUTLINE_CAPACITY
+                  ),
+                  edgeIndices: view(
+                    'edges',
+                    create(`${name}-edges`, OUTLINE_CAPACITY * 4),
+                    'uint32',
+                    OUTLINE_CAPACITY
+                  ),
+                  endpoints: view('endpoints', endpoints, 'float32x4', OUTLINE_CAPACITY),
+                  groups: groups ? view('groups', groups, 'uint32', OUTLINE_CAPACITY) : undefined,
+                  count: view('count', outlineCount, 'uint32', 1),
+                  overflow: view('overflow', outlineOverflow, 'uint32', 1)
+                }
+              })
+            );
+            const compiled = owned.track(graph.compile());
+            const drawCommands = owned.track(
+              new DrawCommandBuffer(device, {
+                id: `cells-${pipelineSerial}-${name}-draw`,
+                type: 'draw',
+                commands: [{vertexCount: 6, instanceCount: 0}]
+              })
+            );
+            outlineGraphs.push(compiled);
+            return {
+              rings,
+              endpoints,
+              groups,
+              count: outlineCount,
+              overflow: outlineOverflow,
+              drawCommands
+            };
+          } catch (error) {
+            outlineErrors.push(
+              `${name}${withRings ? ' with rings' : ''}: ${error instanceof Error ? error.message : String(error)}`
+            );
+            return null;
+          }
+        };
+        outline = buildOutline('outline', false, true);
+        if (!outline) outline = buildOutline('outline', false, false);
+        groupOutline = buildOutline('group-outline', true, false);
+      }
+
       let zonesGraph: CompiledGPUCommandGraph<void> | null = null;
       let selectionGraph: CompiledGPUCommandGraph<void> | null = null;
       let cover: Pipeline['cover'] = null;
@@ -480,6 +714,7 @@ export const cellsMode: SpatialAnalysisModeDefinition = {
         // Zones graph: cover, compaction and two decodes.
         const coverCells = create('cover-cells', COVER_CAPACITY * 8);
         const coverFeatureIds = create('cover-feature-ids', COVER_CAPACITY * 4);
+        const coverCore = create('cover-core', COVER_CAPACITY * 4);
         const coverCount = create('cover-count', 4);
         const coverOverflow = create('cover-overflow', 4);
         const coverTotal = create('cover-total', 4);
@@ -547,6 +782,7 @@ export const cellsMode: SpatialAnalysisModeDefinition = {
                 'uint32',
                 COVER_CAPACITY
               ),
+              core: importCellBuffer(graph, 'cover-core', coverCore, 'uint32', COVER_CAPACITY),
               cells: coverCellsView,
               count: coverCountView,
               overflow: importCellBuffer(graph, 'cover-overflow', coverOverflow, 'uint32', 1),
@@ -601,6 +837,7 @@ export const cellsMode: SpatialAnalysisModeDefinition = {
         cover = {
           ...coverGeometry,
           featureIds: coverFeatureIds,
+          core: coverCore,
           count: coverCount,
           overflow: coverOverflow,
           total: coverTotal
@@ -699,7 +936,7 @@ export const cellsMode: SpatialAnalysisModeDefinition = {
         };
       }
 
-      const summaryWords = SUMMARY_FIXED_WORDS + (tabular ? TABLE_CAPACITY : 0);
+      const summaryWords = SUMMARY_FIXED_WORDS + (tabular ? TABLE_CAPACITY + COVER_CAPACITY : 0);
       const readbackRing = owned.track(
         new GPUReadbackRing(device, {
           id: `cells-summary-${pipelineSerial}`,
@@ -716,6 +953,10 @@ export const cellsMode: SpatialAnalysisModeDefinition = {
         zonesGraph,
         selectionGraph,
         cells,
+        outline,
+        groupOutline,
+        outlineGraphs,
+        outlineErrors,
         tableCounts,
         tableCount,
         tableOverflow,
@@ -730,7 +971,7 @@ export const cellsMode: SpatialAnalysisModeDefinition = {
         zonesDirty: true,
         selectionDirty: true,
         summaryRequested: true,
-        graphCount: 1 + (zonesGraph ? 1 : 0) + (selectionGraph ? 1 : 0)
+        graphCount: 1 + outlineGraphs.length + (zonesGraph ? 1 : 0) + (selectionGraph ? 1 : 0)
       };
     };
 
@@ -838,6 +1079,28 @@ export const cellsMode: SpatialAnalysisModeDefinition = {
         context.updateLayers();
       }
     });
+    context.controls.addSelect<OutlineMode>({
+      label: 'Cell-set outline (GPUCellSetOutline, H3 and Quadbin)',
+      options: [
+        {value: 'off', label: 'Off'},
+        {value: 'boundary', label: 'Boundary of the occupied set (segments)'},
+        {value: 'rings', label: 'Assembled closed rings (shells and holes)'},
+        {value: 'groups', label: 'Group borders (count tiers) plus boundary'}
+      ],
+      value: outlineMode,
+      onChange: value => {
+        outlineMode = value;
+        context.updateLayers();
+      }
+    });
+    context.controls.addToggle({
+      label: 'Cover cells by core / border (GPUCellCover core flag)',
+      value: showCore,
+      onChange: value => {
+        showCore = value;
+        context.updateLayers();
+      }
+    });
     context.controls.addButton({
       label: 'Measure graphs (outside frame)',
       onClick: () => void measureGraphs()
@@ -856,6 +1119,17 @@ export const cellsMode: SpatialAnalysisModeDefinition = {
       }
     });
     context.controls.addLegend({
+      title: 'Outline tiers (points per cell: 1, 2-3, 4-7, 8-15, 16+) and cover core flag',
+      entries: [
+        ...TIER_COLORS.map((color, index) => ({
+          color,
+          label: ['1', '2-3', '4-7', '8-15', '16+'][index]
+        })),
+        {color: CORE_COLORS[1], label: 'core cell'},
+        {color: CORE_COLORS[0], label: 'border cell'}
+      ]
+    });
+    context.controls.addLegend({
       title: 'Zone cover (fill), selected disk (cyan, fades with distance)',
       entries: [
         ...ZONE_NAMES.map((name, index) => ({color: ZONE_COLORS[index], label: name})),
@@ -872,6 +1146,10 @@ export const cellsMode: SpatialAnalysisModeDefinition = {
     const diskReadout = context.controls.addReadout('Disk cells at k = 8');
     const coverReadout = context.controls.addReadout('Cover cells');
     const compactReadout = context.controls.addReadout('Compacted cells');
+    const coreReadout = context.controls.addReadout('Cover core / border cells');
+    const outlineReadout = context.controls.addReadout('Set boundary segments');
+    const ringsReadout = context.controls.addReadout('Assembled rings');
+    const groupOutlineReadout = context.controls.addReadout('Group-border segments');
     const sizeReadout = context.controls.addReadout('GPU buffers');
     const encodeReadout = context.controls.addReadout('Encodes (index / total graphs)');
     const indexTimingReadout = context.controls.addReadout('Index graph');
@@ -936,6 +1214,10 @@ export const cellsMode: SpatialAnalysisModeDefinition = {
         diskReadout.setValue('-');
         coverReadout.setValue('-');
         compactReadout.setValue('-');
+        coreReadout.setValue('H3 / Quadbin only');
+        outlineReadout.setValue('H3 / Quadbin only');
+        ringsReadout.setValue('H3 / Quadbin only');
+        groupOutlineReadout.setValue('H3 / Quadbin only');
       }
       context.updateLayers();
     };
@@ -960,7 +1242,14 @@ export const cellsMode: SpatialAnalysisModeDefinition = {
         [active.cover?.total ?? null, 5],
         [active.compacted?.count ?? null, 6],
         [active.compacted?.overflow ?? null, 7],
-        [active.selection?.counts ?? null, 8]
+        [active.selection?.counts ?? null, 8],
+        [active.outline?.count ?? null, 11],
+        [active.outline?.overflow ?? null, 12],
+        [active.groupOutline?.count ?? null, 13],
+        [active.groupOutline?.overflow ?? null, 14],
+        [active.outline?.rings?.count ?? null, 15],
+        [active.outline?.rings?.overflow ?? null, 16],
+        [active.outline?.rings?.openSegments ?? null, 17]
       ];
       for (const [source, word] of sources) {
         if (!source) continue;
@@ -985,6 +1274,14 @@ export const cellsMode: SpatialAnalysisModeDefinition = {
           destinationBuffer: ticket.buffer,
           destinationOffset: SUMMARY_FIXED_WORDS * 4,
           size: TABLE_CAPACITY * 4
+        });
+      }
+      if (active.cover) {
+        commandEncoder.copyBufferToBuffer({
+          sourceBuffer: active.cover.core,
+          destinationBuffer: ticket.buffer,
+          destinationOffset: (SUMMARY_FIXED_WORDS + TABLE_CAPACITY) * 4,
+          size: COVER_CAPACITY * 4
         });
       }
       ticket.markEncoded({byteOffset: 0, byteLength: active.summaryWords * 4});
@@ -1016,6 +1313,30 @@ export const cellsMode: SpatialAnalysisModeDefinition = {
             context.updateLayers();
           }
         }
+        if (active.outline) {
+          outlineReadout.setValue(
+            `${formatCount(words[11])} segments${words[12] ? ' (OVERFLOW, clamped)' : ''}`
+          );
+        }
+        if (active.groupOutline) {
+          groupOutlineReadout.setValue(
+            `${formatCount(words[13])} segments (${formatCount(
+              Math.max(0, words[13] - words[11])
+            )} more than the boundary)${words[14] ? ' (OVERFLOW, clamped)' : ''}`
+          );
+        }
+        if (active.outline?.rings) {
+          ringsReadout.setValue(
+            `${formatCount(words[15])} rings, ${formatCount(words[17])} open segments${
+              words[16] ? ' (OVERFLOW)' : ''
+            }`
+          );
+        }
+        for (const message of active.outlineErrors) {
+          (message.includes('with rings') ? ringsReadout : outlineReadout).setValue(
+            `unavailable: ${message}`
+          );
+        }
         if (active.selection) {
           selectionReadout.setValue(hexKey(words[9], words[10]));
           diskReadout.setValue(formatCount(words[8]));
@@ -1023,6 +1344,15 @@ export const cellsMode: SpatialAnalysisModeDefinition = {
         if (active.cover) {
           coverReadout.setValue(
             `${formatCount(words[3])} (${formatCount(words[5])} unclamped${words[4] ? ', OVERFLOW' : ''})`
+          );
+          const coverRows = Math.min(words[3], COVER_CAPACITY);
+          let coreCells = 0;
+          for (let row = 0; row < coverRows; row++) {
+            coreCells += words[SUMMARY_FIXED_WORDS + TABLE_CAPACITY + row] === 1 ? 1 : 0;
+          }
+          coreReadout.setValue(
+            `${formatCount(coreCells)} core / ${formatCount(coverRows - coreCells)} border ` +
+              `(${coverRows > 0 ? ((100 * coreCells) / coverRows).toFixed(0) : 0}% core)`
           );
           const fewer = words[3] > 0 ? (1 - words[6] / words[3]) * 100 : 0;
           compactReadout.setValue(
@@ -1077,7 +1407,12 @@ export const cellsMode: SpatialAnalysisModeDefinition = {
       getCompiledGraphs: () => {
         const active = pipeline;
         if (!active) return [];
-        return [active.indexGraph, active.zonesGraph, active.selectionGraph].filter(
+        return [
+          active.indexGraph,
+          ...active.outlineGraphs,
+          active.zonesGraph,
+          active.selectionGraph
+        ].filter(
           (graph): graph is CompiledGPUCommandGraph<void> => graph !== null
         ) as CompiledGPUCommandGraph<never>[];
       },
@@ -1090,6 +1425,21 @@ export const cellsMode: SpatialAnalysisModeDefinition = {
           active.indexGraph.encode(commandEncoder, {parameters: undefined});
           active.indexDirty = false;
           indexEncodes++;
+          for (const outlineGraph of active.outlineGraphs) {
+            outlineGraph.encode(commandEncoder, {parameters: undefined});
+          }
+          // The outline contributors have no draw count: copy each clamped segment count into the
+          // instance-count word of its indirect record.
+          for (const outline of [active.outline, active.groupOutline]) {
+            if (!outline) continue;
+            commandEncoder.copyBufferToBuffer({
+              sourceBuffer: outline.count,
+              sourceOffset: 0,
+              destinationBuffer: outline.drawCommands.buffer,
+              destinationOffset: 4,
+              size: 4
+            });
+          }
         }
         if (active.zonesGraph && active.zonesDirty) {
           active.zonesGraph.encode(commandEncoder, {parameters: undefined});
@@ -1147,6 +1497,49 @@ export const cellsMode: SpatialAnalysisModeDefinition = {
             );
           }
         }
+        if (tabular && active.outline && outlineMode !== 'off') {
+          if (outlineMode === 'groups' && active.groupOutline) {
+            layers.push(
+              new SpatialAnalysisSegmentLayer({
+                id: `cells-group-outline-${active.serial}`,
+                coordinateSystem: COORDINATE_SYSTEM.LNGLAT,
+                segments: active.groupOutline.endpoints,
+                drawCommands: active.groupOutline.drawCommands,
+                values: active.groupOutline.groups,
+                valueFormat: 'uint32',
+                colormap: 'category',
+                palette: TIER_COLORS,
+                widthPixels: 3.5
+              })
+            );
+          }
+          if (outlineMode === 'rings' && active.outline.rings) {
+            layers.push(
+              new HullOutlineLayer({
+                id: `cells-set-rings-${active.serial}`,
+                coordinateSystem: COORDINATE_SYSTEM.LNGLAT,
+                hullOffsets: active.outline.rings.offsets,
+                hullCounts: active.outline.rings.counts,
+                hullPositions: active.outline.rings.positions,
+                slotCount: OUTLINE_CAPACITY,
+                groupCount: RING_CAPACITY,
+                palette: RING_COLORS,
+                widthPixels: 2.6
+              })
+            );
+          } else {
+            layers.push(
+              new SpatialAnalysisSegmentLayer({
+                id: `cells-set-outline-${active.serial}`,
+                coordinateSystem: COORDINATE_SYSTEM.LNGLAT,
+                segments: active.outline.endpoints,
+                drawCommands: active.outline.drawCommands,
+                widthPixels: 2.6,
+                color: [255, 255, 255, 245]
+              })
+            );
+          }
+        }
         if (tabular && showZones && active.cover && active.compacted) {
           layers.push(
             new SpatialAnalysisSegmentLayer({
@@ -1164,10 +1557,10 @@ export const cellsMode: SpatialAnalysisModeDefinition = {
               stride: active.cover.stride,
               instanceCount: COVER_CAPACITY,
               rowCounts: active.cover.count,
-              values: active.cover.featureIds,
+              values: showCore ? active.cover.core : active.cover.featureIds,
               mode: 'fill',
               colorMode: 'category',
-              palette: ZONE_COLORS,
+              palette: showCore ? CORE_COLORS : ZONE_COLORS,
               opacity: showCompacted ? 0.45 : 1
             }),
             new CellBoundaryLayer({

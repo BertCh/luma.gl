@@ -31,6 +31,8 @@ const QUADBIN_CELL_SHADER = /* wgsl */ `
 struct QuadbinStyle {
   // log10 points per square kilometer at the low and high end of the colormap, opacity, inset
   range: vec4<f32>,
+  // color mode (0 density, 1 mean value), mean value at the low and high end of the colormap
+  value: vec4<f32>,
 };
 
 @group(0) @binding(auto) var<uniform> quadbinStyle: QuadbinStyle;
@@ -38,6 +40,7 @@ struct QuadbinStyle {
 @group(0) @binding(auto) var<storage, read> quadbinKeysOdd: array<vec2<u32>>;
 @group(0) @binding(auto) var<storage, read> quadbinCountsEven: array<u32>;
 @group(0) @binding(auto) var<storage, read> quadbinCountsOdd: array<u32>;
+@group(0) @binding(auto) var<storage, read> quadbinValues: array<f32>;
 @group(0) @binding(auto) var<storage, read> quadbinActiveLevel: array<u32>;
 @group(0) @binding(auto) var<storage, read> quadbinFirstRow: array<u32>;
 
@@ -125,7 +128,13 @@ fn getCountColor(t: f32) -> vec3<f32> {
   let density = f32(count) / (edgeKilometers * edgeKilometers);
   let t = (log2(max(density, 1.0e-3)) * 0.30103 - quadbinStyle.range.x) /
     max(quadbinStyle.range.y - quadbinStyle.range.x, 1.0e-3);
-  output.color = vec4<f32>(getCountColor(t), quadbinStyle.range.z);
+  var colorT = t;
+  if (quadbinStyle.value.x > 0.5) {
+    // Mean of the per-point value: the summed value (f32, already divided by the fixed-point scale).
+    let mean = quadbinValues[row] / f32(count);
+    colorT = (mean - quadbinStyle.value.y) / max(quadbinStyle.value.z - quadbinStyle.value.y, 1.0e-3);
+  }
+  output.color = vec4<f32>(getCountColor(colorT), quadbinStyle.range.z);
   return output;
 }
 
@@ -156,6 +165,15 @@ export type QuadbinCellLayerProps = LayerProps & {
   drawCommands: DrawCommandBuffer;
   /** `[minimum, maximum]` of log10 points per square kilometer mapped to the colormap. */
   densityLogRange: readonly [number, number];
+  /**
+   * `float32` summed value per cell row (`GPUCellTable.sumValues`), read when `colorByMeanValue`
+   * is set. Defaults to `countsEven`, which is never read in the density mode.
+   */
+  values?: Buffer;
+  /** Colors by the mean of `values` per point instead of point density. */
+  colorByMeanValue?: boolean;
+  /** `[minimum, maximum]` mean value mapped to the colormap when `colorByMeanValue` is set. */
+  meanValueRange?: readonly [number, number];
   /** Fill opacity, 0-1. Defaults to 0.78. */
   opacity?: number;
   /** Fraction of the cell edge trimmed on every side so neighbors show a seam. Defaults to 0.02. */
@@ -211,8 +229,25 @@ export class QuadbinCellLayer extends Layer<QuadbinCellLayerProps> {
 
   override draw({renderPass}: {renderPass: RenderPass}): void {
     const {model, styleBuffer} = this.state as {model: Model; styleBuffer: Buffer};
-    const {densityLogRange, opacity = 0.78, inset = 0.02} = this.props;
-    styleBuffer.write(Float32Array.of(densityLogRange[0], densityLogRange[1], opacity, inset));
+    const {
+      densityLogRange,
+      opacity = 0.78,
+      inset = 0.02,
+      colorByMeanValue = false,
+      meanValueRange = [0, 1]
+    } = this.props;
+    styleBuffer.write(
+      Float32Array.of(
+        densityLogRange[0],
+        densityLogRange[1],
+        opacity,
+        inset,
+        colorByMeanValue ? 1 : 0,
+        meanValueRange[0],
+        meanValueRange[1],
+        0
+      )
+    );
     // Bind pipeline and bindings with an empty draw, then replay the GPU-written record.
     model.setInstanceCount(0);
     model.draw(renderPass);
@@ -233,6 +268,7 @@ export class QuadbinCellLayer extends Layer<QuadbinCellLayerProps> {
       quadbinKeysOdd: this.props.cellsOdd,
       quadbinCountsEven: this.props.countsEven,
       quadbinCountsOdd: this.props.countsOdd,
+      quadbinValues: this.props.values ?? this.props.countsEven,
       quadbinActiveLevel: this.props.activeLevel,
       quadbinFirstRow: this.props.firstRow
     };

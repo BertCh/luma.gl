@@ -27,12 +27,14 @@ import {
   fitVariogramModel,
   evaluateVariogramModel,
   getGPUPointPatternIndicesParameterValues,
+  getGPURipleyDistanceParameterValues,
   getGPURipleyParameterValues,
   getGPUSpatialCorrelogramParameterValues,
   getGPUVariogramParameterValues,
   GPU_CLARK_EVANS_LENGTH,
   GPU_POINT_PATTERN_INDICES_PARAMETER_LENGTH,
   GPU_QUADRAT_STATISTICS_LENGTH,
+  GPU_RIPLEY_DISTANCE_PARAMETER_LENGTH,
   GPU_RIPLEY_PARAMETER_LENGTH,
   GPU_SPATIAL_CORRELOGRAM_NO_BAND,
   GPU_SPATIAL_CORRELOGRAM_PARAMETER_LENGTH,
@@ -41,6 +43,7 @@ import {
   GPU_VARIOGRAM_STATISTICS_LENGTH,
   GPUPointPatternIndices,
   GPURipley,
+  GPURipleyDistanceFunctions,
   GPUSpatialCorrelogram,
   GPUVariogram,
   type GPURipleyEdgeCorrection,
@@ -78,6 +81,8 @@ const GROUP_COUNT = 6;
 /** Neighbor-search lattice of the pair statistics (compile-time; speed only). */
 const GRID_SIZE: readonly [number, number] = [64, 64];
 const RIPLEY_RADII = 30;
+/** Reference lattice of the empty-space function F (compile-time). */
+const REFERENCE_GRID: readonly [number, number] = [47, 47];
 const LAG_COUNT = 20;
 const DIRECTION_COUNT = 4;
 const BAND_COUNT = 20;
@@ -99,6 +104,9 @@ const GROUP_COLORS: readonly (readonly [number, number, number])[] = [
 // Float32 word offsets of the readback summary.
 type SummaryLayoutKey =
   | 'rippleL'
+  | 'ripleyG'
+  | 'ripleyF'
+  | 'ripleyJ'
   | 'semivariances'
   | 'variogramPairs'
   | 'variogramDistances'
@@ -124,6 +132,9 @@ const SUMMARY_LAYOUT = (() => {
     offset += words;
   };
   add('rippleL', RIPLEY_RADII);
+  add('ripleyG', RIPLEY_RADII);
+  add('ripleyF', RIPLEY_RADII);
+  add('ripleyJ', RIPLEY_RADII);
   add('semivariances', LAG_COUNT * DIRECTION_COUNT);
   add('variogramPairs', LAG_COUNT * DIRECTION_COUNT);
   add('variogramDistances', LAG_COUNT * DIRECTION_COUNT);
@@ -172,12 +183,13 @@ export const pointPatternMode: SpatialAnalysisModeDefinition = {
     'GPUVariogram',
     'GPUSpatialCorrelogram',
     'GPURipley',
+    'GPURipleyDistanceFunctions',
     'GPUPointPatternIndices',
     'GPUGeographicDistribution'
   ],
   description:
     'Where do the points of interest of each category sit, and how clustered are they? Mean ' +
-    'centres, standard distances and deviational ellipses per category; Ripley L(r) - r, ' +
+    'centres, standard distances and deviational ellipses per category; Ripley L(r) - r and G, F and J, ' +
     'Clark-Evans, quadrats, a semivariogram and a correlogram for the selected category, over a ' +
     'window that can follow the map.',
   initialViewState: {longitude: -73.985, latitude: 40.735, zoom: 12.2},
@@ -286,6 +298,11 @@ export const pointPatternMode: SpatialAnalysisModeDefinition = {
 
     const parameterBuffers = {
       ripley: resources.createParameterBuffer('ripley', 'float32', GPU_RIPLEY_PARAMETER_LENGTH),
+      ripleyDistance: resources.createParameterBuffer(
+        'ripley-distance',
+        'float32',
+        GPU_RIPLEY_DISTANCE_PARAMETER_LENGTH
+      ),
       variogram: resources.createParameterBuffer(
         'variogram',
         'float32',
@@ -311,6 +328,9 @@ export const pointPatternMode: SpatialAnalysisModeDefinition = {
     // Pattern outputs.
     const outputs = {
       lMinusR: resources.createBuffer('l-minus-r', RIPLEY_RADII * 4),
+      ripleyG: resources.createBuffer('ripley-g', RIPLEY_RADII * 4),
+      ripleyF: resources.createBuffer('ripley-f', RIPLEY_RADII * 4),
+      ripleyJ: resources.createBuffer('ripley-j', RIPLEY_RADII * 4),
       semivariances: resources.createBuffer('semivariances', LAG_COUNT * DIRECTION_COUNT * 4),
       variogramPairs: resources.createBuffer('variogram-pairs', LAG_COUNT * DIRECTION_COUNT * 4),
       variogramDistances: resources.createBuffer(
@@ -381,6 +401,20 @@ export const pointPatternMode: SpatialAnalysisModeDefinition = {
             RIPLEY_RADII
           ),
           lMinusR: view('lMinusR', 'float32', RIPLEY_RADII)
+        })
+      );
+      patternGraph.add(
+        new GPURipleyDistanceFunctions({
+          id: 'ripley-distance',
+          positions,
+          mask,
+          parameters: parameterBuffers.ripleyDistance.importToGraph(patternGraph),
+          gridSize: GRID_SIZE,
+          referenceGrid: REFERENCE_GRID,
+          radiusCount: RIPLEY_RADII,
+          g: view('ripleyG', 'float32', RIPLEY_RADII),
+          f: view('ripleyF', 'float32', RIPLEY_RADII),
+          j: view('ripleyJ', 'float32', RIPLEY_RADII)
         })
       );
       patternGraph.add(
@@ -534,6 +568,13 @@ export const pointPatternMode: SpatialAnalysisModeDefinition = {
       parameterBuffers.ripley.write(
         getGPURipleyParameterValues({bounds, maximumDistance, edgeCorrection})
       );
+      parameterBuffers.ripleyDistance.write(
+        getGPURipleyDistanceParameterValues({
+          bounds,
+          maximumDistance,
+          edgeCorrection: edgeCorrection === 'none' ? 'none' : 'border'
+        })
+      );
       parameterBuffers.variogram.write(
         getGPUVariogramParameterValues({
           bounds,
@@ -617,7 +658,7 @@ export const pointPatternMode: SpatialAnalysisModeDefinition = {
       }
     });
     context.controls.addSelect<GPURipleyEdgeCorrection>({
-      label: 'Ripley edge correction (per-frame parameter)',
+      label: 'Edge correction (K/L; G, F, J use border)',
       options: [
         {value: 'isotropic', label: 'Isotropic (Ripley 1977)'},
         {value: 'border', label: 'Border (reduced sample)'},
@@ -776,16 +817,18 @@ export const pointPatternMode: SpatialAnalysisModeDefinition = {
     });
     context.controls.addNote(
       'Discs are mean centres; circles are standard distances, ellipses the standard deviational ' +
-        'ellipse. Charts: Ripley L(r) - r (above 0 is clustered), the empirical semivariogram ' +
+        'ellipse. Charts: Ripley L(r) - r (above 0 is clustered), G and F against the complete-spatial-randomness curve and J (below 1 is clustered), the empirical semivariogram ' +
         '(points sized by pair count) with its fitted model and the variance as sill, and ' +
         "Moran's I per distance band (filled where |z| > 1.96)."
     );
 
     const rippleChart = new MiniChart('Ripley L(r) - r', 'm');
+    const distanceChart = new MiniChart('Ripley G (blue), F (orange), CSR (grey)', 'm');
+    const jChart = new MiniChart('Ripley J = (1 - G) / (1 - F), CSR = 1', 'm');
     const variogramChart = new MiniChart('Semivariogram of POI taxi activity', 'm');
     const correlogramChart = new MiniChart("Correlogram: Moran's I by band", 'm');
     const readoutAnchor = document.querySelector('[data-mode-readouts]');
-    for (const chart of [rippleChart, variogramChart, correlogramChart]) {
+    for (const chart of [rippleChart, distanceChart, jChart, variogramChart, correlogramChart]) {
       chart.insertBefore(readoutAnchor);
     }
 
@@ -797,6 +840,10 @@ export const pointPatternMode: SpatialAnalysisModeDefinition = {
     const quadratReadout = context.controls.addReadout('Quadrats VMR (12 x 12)');
     const quadratTestReadout = context.controls.addReadout('Quadrat chi-square (df), p');
     const rippleReadout = context.controls.addReadout('Ripley max L - r (at r)');
+    const nearestFunctionReadout = context.controls.addReadout(
+      'Ripley G, F vs CSR (max distance / 3)'
+    );
+    const jReadout = context.controls.addReadout('Ripley J (max distance / 3)');
     const modelReadout = context.controls.addReadout('Variogram nugget / sill / range');
     const peakReadout = context.controls.addReadout('Correlogram first peak / max z band');
     const countReadout = context.controls.addReadout('Distribution: count');
@@ -871,6 +918,44 @@ export const pointPatternMode: SpatialAnalysisModeDefinition = {
         referenceLines: [{y: 0, color: '#7f90ad', dashed: true}],
         xRange: [0, maximumDistance]
       });
+
+      // Ripley G, F and J against complete spatial randomness: 1 - exp(-lambda pi r^2).
+      const includedCount = getSlice('clarkEvans', GPU_CLARK_EVANS_LENGTH)[0];
+      const windowArea =
+        (currentBounds[2] - currentBounds[0]) * (currentBounds[3] - currentBounds[1]);
+      const intensity = includedCount / windowArea;
+      const theory = radii.map(radius => 1 - Math.exp(-intensity * Math.PI * radius * radius));
+      const ripleyG = getSlice('ripleyG', RIPLEY_RADII);
+      const ripleyF = getSlice('ripleyF', RIPLEY_RADII);
+      const ripleyJ = getSlice('ripleyJ', RIPLEY_RADII);
+      distanceChart.update({
+        series: [
+          {kind: 'line', x: radii, y: theory, color: '#7f90ad'},
+          {kind: 'line', x: radii, y: ripleyG, color: '#4ec9ff'},
+          {kind: 'line', x: radii, y: ripleyF, color: '#ff9448'}
+        ],
+        xRange: [0, maximumDistance]
+      });
+      jChart.update({
+        series: [{kind: 'line', x: radii, y: ripleyJ, color: '#57eba8'}],
+        referenceLines: [{y: 1, color: '#7f90ad', dashed: true}],
+        xRange: [0, maximumDistance]
+      });
+      // Report at a third of the maximum distance, before G and F saturate at 1.
+      const reportIndex = Math.floor(RIPLEY_RADII / 3) - 1;
+      const reportRadius = formatNumber(radii[reportIndex], 0);
+      nearestFunctionReadout.setValue(
+        Number.isFinite(ripleyG[reportIndex])
+          ? `G ${formatNumber(ripleyG[reportIndex], 2)}, F ${formatNumber(ripleyF[reportIndex], 2)} vs CSR ${formatNumber(theory[reportIndex], 2)} at ${reportRadius} m`
+          : 'n/a'
+      );
+      jReadout.setValue(
+        Number.isFinite(ripleyJ[reportIndex])
+          ? `${formatNumber(ripleyJ[reportIndex], 2)} at ${reportRadius} m (${
+              ripleyJ[reportIndex] < 1 ? 'clustered' : 'regular'
+            })`
+          : 'n/a'
+      );
 
       // Variogram: aggregate sectors for 'all', otherwise one sector.
       const semivariances = getSlice('semivariances', LAG_COUNT * DIRECTION_COUNT);
@@ -1067,6 +1152,9 @@ export const pointPatternMode: SpatialAnalysisModeDefinition = {
           size: words * 4
         });
       copy('lMinusR', 'rippleL', RIPLEY_RADII);
+      copy('ripleyG', 'ripleyG', RIPLEY_RADII);
+      copy('ripleyF', 'ripleyF', RIPLEY_RADII);
+      copy('ripleyJ', 'ripleyJ', RIPLEY_RADII);
       copy('semivariances', 'semivariances', LAG_COUNT * DIRECTION_COUNT);
       copy('variogramPairs', 'variogramPairs', LAG_COUNT * DIRECTION_COUNT);
       copy('variogramDistances', 'variogramDistances', LAG_COUNT * DIRECTION_COUNT);
@@ -1234,7 +1322,8 @@ export const pointPatternMode: SpatialAnalysisModeDefinition = {
       },
       destroy() {
         destroyed = true;
-        for (const chart of [rippleChart, variogramChart, correlogramChart]) chart.destroy();
+        for (const chart of [rippleChart, distanceChart, jChart, variogramChart, correlogramChart])
+          chart.destroy();
         resources.destroy();
       }
     };

@@ -2,6 +2,12 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {groupModesByCategory} from './modes/mode-categories';
+
+/** Documentation page for the spatial-analysis contributors. */
+const DOCS_URL =
+  'https://github.com/BertCh/luma.gl/blob/map-contributors/docs/api-reference/experimental/gpu-spatial-analysis.md';
+
 type LegendColor = readonly (number | undefined)[];
 
 /** Handle returned by control builders so modes can update a control programmatically. */
@@ -123,8 +129,21 @@ export function createSpatialAnalysisPanel(
       <strong style="font-size:15px;letter-spacing:-.2px">Spatial Analysis</strong>
       <span style="padding:2px 8px;border-radius:99px;background:#123a45;color:#80eadb;font-size:10px;font-weight:700;letter-spacing:.4px">WEBGPU</span>
     </div>
-    <p style="margin:5px 0 10px;color:#a9b8d0">luma.gl analysis contributors compiled once per mode,
+    <p data-intro style="margin:5px 0 4px;color:#a9b8d0">luma.gl analysis contributors compiled once per mode,
       parameters rewritten every frame, outputs drawn by deck.gl straight from GPU buffers.</p>
+    <div style="margin:0 0 8px;color:#7f90ad;font-size:11px">${tabs.length} modes &middot;
+      <a data-docs href="${DOCS_URL}" target="_blank" rel="noopener" style="color:#80eadb">Documentation</a></div>
+    <style>
+      [data-spatial-analysis-panel] [data-category-select]{display:none}
+      @media (max-width: 600px) {
+        [data-spatial-analysis-panel]{padding:10px !important;max-height:58% !important;top:8px !important;left:8px !important;width:calc(100% - 16px) !important}
+        [data-spatial-analysis-panel] [data-intro]{display:none}
+        [data-spatial-analysis-panel] [data-categories]{display:none !important}
+        [data-spatial-analysis-panel] [data-category-select]{display:block}
+      }
+    </style>
+    <div data-categories style="display:flex;flex-wrap:wrap;gap:4px 10px;margin-bottom:6px"></div>
+    <select data-category-select aria-label="Mode category" style="width:100%;box-sizing:border-box;margin-bottom:6px;background:#0d1730;color:#edf4ff;border:1px solid #2a3c66;border-radius:6px;padding:4px 6px;font:inherit"></select>
     <div data-tabs style="display:flex;flex-wrap:wrap;gap:4px"></div>
     <div data-mode style="margin-top:12px"></div>
     <div data-footer style="margin-top:12px;padding-top:8px;border-top:1px solid #22314f;color:#7f90ad;font-size:11px"></div>
@@ -135,17 +154,59 @@ export function createSpatialAnalysisPanel(
   const modeArea = panel.querySelector<HTMLDivElement>('[data-mode]')!;
   const footer = panel.querySelector<HTMLDivElement>('[data-footer]')!;
   const basemapStatus = panel.querySelector<HTMLDivElement>('[data-basemap]')!;
+  const categoryStrip = panel.querySelector<HTMLDivElement>('[data-categories]')!;
+  const categorySelect = panel.querySelector<HTMLSelectElement>('[data-category-select]')!;
+  const groups = groupModesByCategory(tabs);
   const tabButtons = new Map<string, HTMLButtonElement>();
-  for (const tab of tabs) {
+  const categoryButtons = new Map<string, HTMLButtonElement>();
+  const categoryOfMode = new Map<string, string>();
+  let activeCategoryId = groups[0]?.id ?? '';
+
+  for (const group of groups) {
     const button = document.createElement('button');
     button.type = 'button';
-    button.textContent = tab.title;
-    button.dataset['modeTab'] = tab.id;
+    button.textContent = `${group.title} ${group.tabs.length}`;
+    button.dataset['modeCategory'] = group.id;
     button.style.cssText =
-      'background:#13203f;color:#c8d6f0;border:1px solid #2a3c66;border-radius:99px;padding:3px 9px;font:inherit;font-size:11px;cursor:pointer';
-    button.addEventListener('click', () => onSelectMode(tab.id));
-    tabStrip.appendChild(button);
-    tabButtons.set(tab.id, button);
+      'background:none;border:0;border-bottom:2px solid transparent;color:#a9b8d0;padding:2px 0;font:inherit;font-size:11px;cursor:pointer';
+    button.addEventListener('click', () => showCategory(group.id));
+    categoryStrip.appendChild(button);
+    categoryButtons.set(group.id, button);
+    const option = document.createElement('option');
+    option.value = group.id;
+    option.textContent = `${group.title} (${group.tabs.length})`;
+    categorySelect.appendChild(option);
+    for (const tab of group.tabs) {
+      categoryOfMode.set(tab.id, group.id);
+      const tabButton = document.createElement('button');
+      tabButton.type = 'button';
+      tabButton.textContent = tab.title;
+      tabButton.dataset['modeTab'] = tab.id;
+      tabButton.dataset['modeTabCategory'] = group.id;
+      tabButton.style.cssText =
+        'background:#13203f;color:#c8d6f0;border:1px solid #2a3c66;border-radius:99px;padding:3px 9px;font:inherit;font-size:11px;cursor:pointer';
+      tabButton.addEventListener('click', () => onSelectMode(tab.id));
+      tabStrip.appendChild(tabButton);
+      tabButtons.set(tab.id, tabButton);
+    }
+  }
+  categorySelect.addEventListener('change', () => showCategory(categorySelect.value));
+  showCategory(activeCategoryId);
+
+  /** Shows only the tabs of one category. */
+  function showCategory(categoryId: string): void {
+    activeCategoryId = categoryId;
+    categorySelect.value = categoryId;
+    for (const [id, button] of categoryButtons) {
+      const active = id === categoryId;
+      button.style.color = active ? '#ffffff' : '#a9b8d0';
+      button.style.borderBottomColor = active ? '#2b5bd7' : 'transparent';
+      button.setAttribute('aria-pressed', String(active));
+    }
+    for (const button of tabButtons.values()) {
+      button.hidden = button.dataset['modeTabCategory'] !== categoryId;
+      button.style.display = button.hidden ? 'none' : '';
+    }
   }
   let statusElement: HTMLDivElement | null = null;
 
@@ -172,6 +233,8 @@ export function createSpatialAnalysisPanel(
       return createControlSection(controls, readouts);
     },
     setActiveTab(id) {
+      const categoryId = categoryOfMode.get(id);
+      if (categoryId && categoryId !== activeCategoryId) showCategory(categoryId);
       for (const [tabId, button] of tabButtons) {
         const active = tabId === id;
         button.style.background = active ? '#2b5bd7' : '#13203f';

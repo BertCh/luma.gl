@@ -11,18 +11,22 @@
  * through `GPURegionStatisticsReadback` for the readouts.
  */
 
-import type {Layer} from '@deck.gl/core';
+import type {Layer, Viewport} from '@deck.gl/core';
 import type {Buffer} from '@luma.gl/core';
 import {
   GPUCommandGraph,
   GPUGridIndex,
   type CompiledGPUCommandGraph,
-  type GPUGridIndexView
+  type GPUGridIndexView,
+  type GraphDataView
 } from '@luma.gl/gpgpu/gpu-core';
 import {
   getGPURegionStatisticsSummaryLength,
+  GPUPickRegionMask,
+  GPURegionMask,
   GPURegionStatistics,
   GPURegionStatisticsReadback,
+  type GPURegionSelection,
   type GPURegionStatisticsResult
 } from '@luma.gl/experimental/gpu-spatial-analysis';
 import {importGraphBuffer, submitGraph} from '../graph-buffers';
@@ -34,6 +38,17 @@ import type {
   SpatialAnalysisPointerEvent
 } from '../spatial-analysis-mode';
 import {formatCount, SpatialAnalysisResources} from '../spatial-analysis-resources';
+import {
+  addRackPickPasses,
+  createRackPickBuffers,
+  getPickMatrix,
+  getPickWindow,
+  PICK_RESULT_PAIRS,
+  PICK_TARGET_SIZE,
+  PICK_WINDOW_SIZE,
+  type RackPickBuffers
+} from './lasso-layers';
+import {SummaryReader} from './summary-reader';
 import {
   type CompiledGraphTiming,
   formatCompiledGraphTiming,
@@ -81,7 +96,29 @@ const PRESET_LASSO: readonly (readonly [number, number])[] = [
   [-122.3905, 37.792]
 ];
 
-type SelectionKind = 'polygon' | 'radius';
+type SelectionKind = 'polygon' | 'radius' | 'rectangle';
+/**
+ * How the selection reaches `GPURegionStatistics`: `direct` hands it the shape, `mask` computes a
+ * 0/1 mask with `GPURegionMask` first, `pick` builds the mask from an index-picking texture with
+ * `GPUPickRegionMask`.
+ */
+type SelectionPath = 'direct' | 'mask' | 'pick';
+/** One compiled graph: a direct shape, a mask-path shape (circles reuse the polygon), or pick. */
+type GraphKey = 'polygon' | 'radius' | 'rectangle' | 'mask-polygon' | 'mask-rectangle' | 'pick';
+const ALL_GRAPH_KEYS: readonly GraphKey[] = [
+  'polygon',
+  'radius',
+  'rectangle',
+  'mask-polygon',
+  'mask-rectangle',
+  'pick'
+];
+
+function getGraphKey(path: SelectionPath, shape: SelectionKind): GraphKey {
+  if (path === 'pick') return 'pick';
+  if (path === 'mask') return shape === 'rectangle' ? 'mask-rectangle' : 'mask-polygon';
+  return shape;
+}
 type PointSource = 'racks' | 'jittered';
 
 /** Buffers, grid index and compiled graphs for one point source. */
@@ -99,18 +136,31 @@ type PointSet = {
   objectIds: Buffer;
   indexCount: Buffer;
   indexOverflow: Buffer;
-  compiledByKind: Map<SelectionKind, CompiledGPUCommandGraph<void>>;
+  compiledByKind: Map<GraphKey, CompiledGPUCommandGraph<void>>;
+  /** Output of `GPURegionMask` (mask path). */
+  regionMaskBuffer: Buffer;
+  regionMaskOverflow: Buffer;
+  /** Buffers of the index-picking path. */
+  pick: RackPickBuffers;
+  /** Reads the mask-contributor overflow flags and the pick result header. */
+  extraReader: SummaryReader | null;
 };
 type Point = readonly [number, number];
 
 export const lassoMode: SpatialAnalysisModeDefinition = {
   id: 'lasso',
   title: 'Lasso stats',
-  contributors: ['GPURegionStatistics', 'GPURegionStatisticsReadback'],
+  contributors: [
+    'GPURegionStatistics',
+    'GPURegionStatisticsReadback',
+    'GPURegionMask',
+    'GPUPickRegionMask'
+  ],
   description:
     'Bike-parking racks inside a lasso or circle, summarized on the GPU: count, spaces sum/mean/' +
-    'min/max and a histogram. Use "Draw lasso" then drag on the map, or switch to a circle and ' +
-    'click. The shape is a per-frame parameter; only a small summary is read back.',
+    'min/max and a histogram. Use "Draw lasso" then drag on the map, or switch to a circle or ' +
+    'rectangle. Selection path "mask" runs GPURegionMask first and "pick" selects the racks under a ' +
+    'click through GPUPickRegionMask; the shape is a per-frame parameter either way.',
   initialViewState: {longitude: -122.415, latitude: 37.78, zoom: 13.5},
 
   async create(context) {
@@ -126,6 +176,7 @@ export const lassoMode: SpatialAnalysisModeDefinition = {
     const vertexBuffer = resources.createBuffer('vertices', VERTEX_CAPACITY * 8);
     const vertexCount = resources.createParameterBuffer('vertex-count', 'uint32', 1);
     const circleParameters = resources.createParameterBuffer('circle', 'float32', 3);
+    const rectangleParameters = resources.createParameterBuffer('rectangle', 'float32', 4);
     const readback = resources.track(
       new GPURegionStatisticsReadback(device, {id: 'lasso-readback', binCount: HISTOGRAM_BINS})
     );
@@ -133,6 +184,11 @@ export const lassoMode: SpatialAnalysisModeDefinition = {
     // Interaction state (meters around the dataset origin).
     const presetLasso = getPresetLasso(bikeParking.positions, projection);
     let kind: SelectionKind = 'polygon';
+    let path: SelectionPath = 'direct';
+    let rectangleCorners: [Point, Point] | null = null;
+    /** Click position of the pick path as `[longitude, latitude]`, re-projected every frame. */
+    let pickCoordinate: readonly [number, number] | null = null;
+    let extraResult = {regionMaskOverflow: 0, pickOverflow: 0, pickCount: 0, pickResultOverflow: 0};
     let vertices: Point[] = [...presetLasso];
     let circleCenter: Point = getCentroid(vertices);
     let circleRadius = 700;
@@ -172,7 +228,14 @@ export const lassoMode: SpatialAnalysisModeDefinition = {
       const objectIds = setResources.createBuffer('object-ids', count * 4);
       const indexCount = setResources.createBuffer('index-count', 4);
       const indexOverflow = setResources.createBuffer('index-overflow', 4);
+      const regionMaskBuffer = setResources.createBuffer('region-mask', count * 4);
+      const regionMaskOverflow = setResources.createBuffer('region-mask-overflow', 4);
+      const pick = createRackPickBuffers(setResources, count);
       const set: PointSet = {
+        regionMaskBuffer,
+        regionMaskOverflow,
+        pick,
+        extraReader: null,
         count,
         positions,
         spaces,
@@ -214,6 +277,25 @@ export const lassoMode: SpatialAnalysisModeDefinition = {
       for (const [graphKind, graph] of compileGraphs(set, useGridIndex, useMask, 'main')) {
         set.compiledByKind.set(graphKind, graph);
       }
+      set.extraReader = new SummaryReader(
+        setResources,
+        `lasso-extra-${pointSetCount}`,
+        [
+          {buffer: regionMaskOverflow, size: 4},
+          {buffer: pick.overflow, size: 4},
+          {buffer: pick.result, size: 8}
+        ],
+        bytes => {
+          const words = new Uint32Array(bytes);
+          extraResult = {
+            regionMaskOverflow: words[0],
+            pickOverflow: words[1],
+            pickCount: words[2],
+            pickResultOverflow: words[3]
+          };
+          showExtraReadout();
+        }
+      );
       return set;
     }
 
@@ -245,43 +327,100 @@ export const lassoMode: SpatialAnalysisModeDefinition = {
       withGridIndex: boolean,
       withMask: boolean,
       tag: string,
-      kinds: readonly SelectionKind[] = ['polygon', 'radius']
-    ): Map<SelectionKind, CompiledGPUCommandGraph<void>> {
-      const compiled = new Map<SelectionKind, CompiledGPUCommandGraph<void>>();
-      for (const graphKind of kinds) {
-        const id = `lasso-${graphKind}-${tag}-${withGridIndex ? 'grid' : 'brute'}`;
+      keys: readonly GraphKey[] = ALL_GRAPH_KEYS
+    ): Map<GraphKey, CompiledGPUCommandGraph<void>> {
+      const compiled = new Map<GraphKey, CompiledGPUCommandGraph<void>>();
+      for (const graphKey of keys) {
+        const direct = graphKey === 'polygon' || graphKey === 'radius' || graphKey === 'rectangle';
+        // The grid candidate path only supports direct shapes, not mask selections.
+        const gridForKey = withGridIndex && direct;
+        const id = `lasso-${graphKey}-${tag}-${gridForKey ? 'grid' : 'brute'}`;
         const graph = new GPUCommandGraph<void>(device, {id});
+        const positions = importGraphBuffer(
+          graph,
+          'positions',
+          set.positionsBuffer,
+          'float32x2',
+          set.count
+        );
+        const polygonShape = () => ({
+          kind: 'polygon' as const,
+          vertices: importGraphBuffer(
+            graph,
+            'vertices',
+            vertexBuffer,
+            'float32x2',
+            VERTEX_CAPACITY
+          ),
+          vertexCount: vertexCount.importToGraph(graph)
+        });
+        let selection: GPURegionSelection;
+        let extraMask: GraphDataView<'uint32'> | undefined;
+        if (graphKey === 'polygon') {
+          selection = polygonShape();
+        } else if (graphKey === 'radius') {
+          selection = {kind: 'radius', circle: circleParameters.importToGraph(graph)};
+        } else if (graphKey === 'rectangle') {
+          selection = {kind: 'rectangle', bounds: rectangleParameters.importToGraph(graph)};
+        } else if (graphKey === 'pick') {
+          const {result} = addRackPickPasses(graph, device, {
+            id: 'lasso-pick',
+            positions: set.positionsBuffer,
+            count: set.count,
+            buffers: set.pick
+          });
+          extraMask = importGraphBuffer(graph, 'pick-mask', set.pick.mask, 'uint32', set.count);
+          graph.add(
+            new GPUPickRegionMask({
+              id: 'lasso-pick-region-mask',
+              result,
+              outputMask: extraMask,
+              overflow: importGraphBuffer(graph, 'pick-overflow', set.pick.overflow, 'uint32', 1)
+            })
+          );
+          selection = {kind: 'mask', mask: extraMask};
+        } else {
+          extraMask = importGraphBuffer(
+            graph,
+            'region-mask',
+            set.regionMaskBuffer,
+            'uint32',
+            set.count
+          );
+          graph.add(
+            new GPURegionMask({
+              id: 'lasso-region-mask',
+              positions,
+              region:
+                graphKey === 'mask-polygon'
+                  ? polygonShape()
+                  : {kind: 'rectangle', bounds: rectangleParameters.importToGraph(graph)},
+              outputMask: extraMask,
+              overflow: importGraphBuffer(
+                graph,
+                'region-mask-overflow',
+                set.regionMaskOverflow,
+                'uint32',
+                1
+              )
+            })
+          );
+          selection = {kind: 'mask', mask: extraMask};
+        }
         graph.add(
           new GPURegionStatistics({
             id,
-            selection:
-              graphKind === 'polygon'
-                ? {
-                    kind: 'polygon',
-                    vertices: importGraphBuffer(
-                      graph,
-                      'vertices',
-                      vertexBuffer,
-                      'float32x2',
-                      VERTEX_CAPACITY
-                    ),
-                    vertexCount: vertexCount.importToGraph(graph)
-                  }
-                : {kind: 'radius', circle: circleParameters.importToGraph(graph)},
-            positions: importGraphBuffer(
-              graph,
-              'positions',
-              set.positionsBuffer,
-              'float32x2',
-              set.count
-            ),
+            selection,
+            ...(selection.kind === 'mask' ? {} : {positions}),
             values: importGraphBuffer(graph, 'spaces', set.valuesBuffer, 'float32', set.count),
             histogram: {binCount: HISTOGRAM_BINS, domain: HISTOGRAM_DOMAIN},
-            outputMask: withMask
-              ? importGraphBuffer(graph, 'mask', set.maskBuffer, 'uint32', set.count)
-              : undefined,
+            // A mask selection already is the mask; the contributor rejects a second outputMask.
+            outputMask:
+              withMask && selection.kind !== 'mask'
+                ? importGraphBuffer(graph, 'mask', set.maskBuffer, 'uint32', set.count)
+                : undefined,
             summary: importGraphBuffer(graph, 'summary', summaryBuffer, 'uint32', summaryLength),
-            spatialIndex: withGridIndex
+            spatialIndex: gridForKey
               ? {
                   kind: 'grid',
                   index: importGridIndexView(graph, set),
@@ -292,7 +431,7 @@ export const lassoMode: SpatialAnalysisModeDefinition = {
               : undefined
           })
         );
-        compiled.set(graphKind, set.resources.track(graph.compile()));
+        compiled.set(graphKey, set.resources.track(graph.compile()));
       }
       return compiled;
     }
@@ -355,7 +494,7 @@ export const lassoMode: SpatialAnalysisModeDefinition = {
       measurement.controller = new AbortController();
       const {signal} = measurement.controller;
       const target = pointSet;
-      const measuredKind = kind;
+      const measuredKind = getGraphKey('direct', kind);
       const gridIsActive = useGridIndex;
       const current = target.compiledByKind.get(measuredKind);
       let temporary: CompiledGPUCommandGraph<void> | undefined;
@@ -363,6 +502,10 @@ export const lassoMode: SpatialAnalysisModeDefinition = {
       measurement.done = new Promise<void>(resolve => (finish = resolve));
       try {
         if (!current) return;
+        if (path !== 'direct') {
+          timingStatusReadout.setValue('times the direct path; switch Selection path to direct');
+          return;
+        }
         timingStatusReadout.setValue('measuring...');
         // Temporary graph for the other setting; not returned from getCompiledGraphs.
         temporary = compileGraphs(target, !gridIsActive, useMask, 'measure', [measuredKind]).get(
@@ -409,7 +552,8 @@ export const lassoMode: SpatialAnalysisModeDefinition = {
       label: 'Selection shape (one compiled graph each)',
       options: [
         {value: 'polygon', label: 'Lasso polygon'},
-        {value: 'radius', label: 'Circle'}
+        {value: 'radius', label: 'Circle'},
+        {value: 'rectangle', label: 'Rectangle (drag on the map)'}
       ],
       value: kind,
       onChange: value => {
@@ -417,7 +561,29 @@ export const lassoMode: SpatialAnalysisModeDefinition = {
         drawingArmed = false;
         context.setMapDragEnabled(true);
         circleCleared = false;
+        cpuSignature = '';
         updateStatus();
+      }
+    });
+    context.controls.addSelect<SelectionPath>({
+      label: 'Selection path (every path compiled up front; switching never recompiles)',
+      options: [
+        {value: 'direct', label: 'Direct: GPURegionStatistics takes the shape'},
+        {value: 'mask', label: 'Mask: GPURegionMask, then statistics over the mask'},
+        {value: 'pick', label: 'Pick: click racks via GPUPickRegionMask'}
+      ],
+      value: path,
+      onChange: value => {
+        path = value;
+        drawingArmed = false;
+        context.setMapDragEnabled(true);
+        circleCleared = false;
+        cpuSignature = '';
+        latestResult = null;
+        updateStatus();
+        updateOptionReadouts();
+        showExtraReadout();
+        context.updateLayers();
       }
     });
     context.controls.addSlider({
@@ -436,6 +602,7 @@ export const lassoMode: SpatialAnalysisModeDefinition = {
       label: 'Draw lasso',
       onClick: () => {
         kind = 'polygon';
+        if (path === 'pick') path = 'direct';
         drawingArmed = true;
         context.setMapDragEnabled(false);
         updateStatus();
@@ -455,6 +622,8 @@ export const lassoMode: SpatialAnalysisModeDefinition = {
       onClick: () => {
         vertices = [];
         circleCleared = true;
+        rectangleCorners = null;
+        pickCoordinate = null;
         updateStatus();
       }
     });
@@ -506,7 +675,8 @@ export const lassoMode: SpatialAnalysisModeDefinition = {
       title: 'Bike-parking locations',
       entries: [
         {color: [120, 150, 200, 150], label: 'All locations'},
-        {color: [255, 190, 60, 255], label: 'Selected (GPU mask)'},
+        {color: [255, 190, 60, 255], label: 'Selected (statistics mask)'},
+        {color: [255, 110, 200, 255], label: 'Selected (GPURegionMask / GPUPickRegionMask)'},
         {color: [90, 240, 220, 255], label: 'Selection outline'}
       ]
     });
@@ -518,6 +688,7 @@ export const lassoMode: SpatialAnalysisModeDefinition = {
     const histogramReadout = context.controls.addReadout(`Histogram 0-${HISTOGRAM_DOMAIN[1]}`);
     const outsideReadout = context.controls.addReadout('Above histogram');
     const flagReadout = context.controls.addReadout('Flags');
+    const maskReadout = context.controls.addReadout('Mask contributor', 'direct path: none');
     const pointCountReadout = context.controls.addReadout('Locations', formatCount(pointSet.count));
     const optionReadout = context.controls.addReadout('Region path');
     const gridOnReadout = context.controls.addReadout('Grid index on', '...');
@@ -536,11 +707,37 @@ export const lassoMode: SpatialAnalysisModeDefinition = {
     );
 
     function updateOptionReadouts(): void {
+      if (path !== 'direct') {
+        optionReadout.setValue(
+          path === 'mask'
+            ? 'GPURegionMask (brute force) then statistics over the mask'
+            : 'index-picking texture, GPUPickRegionMask, statistics over the mask'
+        );
+        return;
+      }
       optionReadout.setValue(
         (useGridIndex
           ? `grid ${GRID_SIZE[0]}x${GRID_SIZE[1]}, capacity ${formatCount(Math.max(1, Math.ceil(pointSet.count * candidateFraction)))}`
           : 'brute force') + (useMask ? ' + mask' : ', statistics only')
       );
+    }
+
+    function showExtraReadout(): void {
+      if (path === 'direct') {
+        maskReadout.setValue('direct path: none');
+      } else if (path === 'mask') {
+        maskReadout.setValue(
+          `GPURegionMask ${kind === 'rectangle' ? 'rectangle' : kind === 'radius' ? 'circle as 64-gon polygon' : 'polygon'}, overflow ${extraResult.regionMaskOverflow ? 'YES' : 'no'}`
+        );
+      } else {
+        maskReadout.setValue(
+          pickCoordinate
+            ? `${formatCount(extraResult.pickCount)} picked pixels in a ${PICK_WINDOW_SIZE}px window, ` +
+                `${latestResult ? formatCount(latestResult.selectedCount) : '...'} racks; pick overflow ` +
+                `${extraResult.pickResultOverflow || extraResult.pickOverflow ? 'YES' : 'no'} (capacity ${formatCount(PICK_RESULT_PAIRS)})`
+            : 'click a rack on the map'
+        );
+      }
     }
     updateOptionReadouts();
 
@@ -549,8 +746,12 @@ export const lassoMode: SpatialAnalysisModeDefinition = {
         context.setStatus(
           drawing ? 'Drawing lasso... release to close' : 'Drag on the map to draw a lasso'
         );
+      } else if (path === 'pick') {
+        context.setStatus('Click or drag over the racks to pick the ones under the cursor');
       } else if (kind === 'radius') {
         context.setStatus('Click or drag on the map to move the circle');
+      } else if (kind === 'rectangle') {
+        context.setStatus('Drag on the map to draw a rectangle');
       } else {
         context.setStatus('');
       }
@@ -558,25 +759,92 @@ export const lassoMode: SpatialAnalysisModeDefinition = {
     updateStatus();
 
     /** Uploads the active shape and rebuilds the CPU outline. */
-    function writeSelection(): void {
+    function writeSelection(viewport: Viewport): void {
       const outline = new Float32Array(OUTLINE_CAPACITY * 4).fill(Number.NaN);
-      if (kind === 'polygon') {
-        const count = Math.min(vertices.length, VERTEX_CAPACITY);
+      const writePolygon = (polygon: readonly Point[], signaturePrefix: string) => {
+        const count = Math.min(polygon.length, VERTEX_CAPACITY);
         const packed = new Float32Array(VERTEX_CAPACITY * 2);
-        vertices.slice(0, count).forEach((vertex, index) => packed.set(vertex, index * 2));
+        polygon.slice(0, count).forEach((vertex, index) => packed.set(vertex, index * 2));
         vertexBuffer.write(packed);
         vertexCount.write(Uint32Array.of(count));
         if (count >= 2) {
           for (let index = 0; index < count; index++) {
-            const next = vertices[(index + 1) % count];
-            outline.set([...vertices[index], ...next], index * 4);
+            const next = polygon[(index + 1) % count];
+            outline.set([...polygon[index], ...next], index * 4);
           }
         }
-        const polygon = vertices.slice(0, count);
+        const clipped = polygon.slice(0, count);
         const owner = pointSet;
-        updateCpuCount(`polygon:${polygon.join(',')}`, () =>
-          countInsidePolygon(owner.positions, polygon)
+        updateCpuCount(`${signaturePrefix}:${clipped.join(',')}`, () =>
+          countInsidePolygon(owner.positions, clipped)
         );
+      };
+      if (path === 'pick') {
+        const owner = pointSet;
+        let window: Uint32Array<ArrayBuffer> = Uint32Array.of(0, 0, 0, 0);
+        if (pickCoordinate) {
+          const pixel = viewport.project([pickCoordinate[0], pickCoordinate[1]]);
+          window = getPickWindow(viewport, [pixel[0], pixel[1]]);
+          const scaleX = viewport.width / PICK_TARGET_SIZE;
+          const scaleY = viewport.height / PICK_TARGET_SIZE;
+          const corners: Point[] = [
+            [window[0], window[1]],
+            [window[0] + window[2], window[1]],
+            [window[0] + window[2], window[1] + window[3]],
+            [window[0], window[1] + window[3]]
+          ].map(([x, y]) => {
+            const [longitude, latitude] = viewport.unproject([x * scaleX, y * scaleY]);
+            return projection.project(longitude, latitude);
+          }) as Point[];
+          for (let index = 0; index < 4; index++) {
+            outline.set([...corners[index], ...corners[(index + 1) % 4]], index * 4);
+          }
+        }
+        owner.pick.region.write(window);
+        owner.pick.matrix.write(getPickMatrix(viewport, bikeParking.origin));
+        cpuSignature = 'pick';
+        cpuCount = -2;
+      } else if (kind === 'polygon') {
+        writePolygon(vertices, 'polygon');
+      } else if (kind === 'rectangle') {
+        const corners = rectangleCorners;
+        const bounds = corners
+          ? [
+              Math.min(corners[0][0], corners[1][0]),
+              Math.min(corners[0][1], corners[1][1]),
+              Math.max(corners[0][0], corners[1][0]),
+              Math.max(corners[0][1], corners[1][1])
+            ]
+          : [Number.NaN, Number.NaN, Number.NaN, Number.NaN];
+        rectangleParameters.write(Float32Array.from(bounds));
+        if (corners) {
+          const [x0, y0, x1, y1] = bounds;
+          const ring: Point[] = [
+            [x0, y0],
+            [x1, y0],
+            [x1, y1],
+            [x0, y1]
+          ];
+          for (let index = 0; index < 4; index++) {
+            outline.set([...ring[index], ...ring[(index + 1) % 4]], index * 4);
+          }
+        }
+        const owner = pointSet;
+        updateCpuCount(`rectangle:${bounds.join(',')}`, () =>
+          corners ? countInsideRectangle(owner.positions, bounds) : 0
+        );
+      } else if (path === 'mask') {
+        // The mask path has no circle shape: the circle is a 64-gon polygon over the same graph.
+        const ring: Point[] = circleCleared
+          ? []
+          : Array.from({length: CIRCLE_SEGMENTS}, (_, index) => {
+              const angle = (index / CIRCLE_SEGMENTS) * Math.PI * 2;
+              return [
+                circleCenter[0] + Math.cos(angle) * circleRadius,
+                circleCenter[1] + Math.sin(angle) * circleRadius
+              ] as Point;
+            });
+        writePolygon(ring, 'circle-polygon');
       } else {
         const radius = circleCleared ? Number.NaN : circleRadius;
         circleParameters.write(Float32Array.of(circleCenter[0], circleCenter[1], radius));
@@ -634,9 +902,11 @@ export const lassoMode: SpatialAnalysisModeDefinition = {
         `${formatCount(result.selectedCount)} of ${formatCount(pointCount)}`
       );
       cpuReadout.setValue(
-        cpuCount < 0
-          ? 'recounting...'
-          : `${formatCount(cpuCount)} ${matches ? '(match)' : '(differs or in flight)'}`
+        cpuCount === -2
+          ? 'n/a (selection comes from the picking texture)'
+          : cpuCount < 0
+            ? 'recounting...'
+            : `${formatCount(cpuCount)} ${matches ? '(match)' : '(differs or in flight)'}`
       );
       valueReadout.setValue(formatCount(result.valueCount));
       sumReadout.setValue(`${formatCount(result.sum)} / ${result.mean.toFixed(2)}`);
@@ -649,6 +919,7 @@ export const lassoMode: SpatialAnalysisModeDefinition = {
         result.candidatesTruncated ? 'candidates truncated' : ''
       ].filter(Boolean);
       flagReadout.setValue(flags.length > 0 ? flags.join(', ') : 'none');
+      showExtraReadout();
     }
 
     function toMeters(event: SpatialAnalysisPointerEvent): Point | null {
@@ -660,6 +931,12 @@ export const lassoMode: SpatialAnalysisModeDefinition = {
       if (!center) return false;
       circleCenter = center;
       circleCleared = false;
+      return true;
+    }
+
+    function setPickCoordinate(event: SpatialAnalysisPointerEvent): boolean {
+      if (!event.coordinate) return false;
+      pickCoordinate = event.coordinate;
       return true;
     }
 
@@ -689,15 +966,19 @@ export const lassoMode: SpatialAnalysisModeDefinition = {
     const instance: SpatialAnalysisModeInstance = {
       getCompiledGraphs: () => compiledGraphs,
       encode(commandEncoder, frame) {
-        const compiled = pointSet.compiledByKind.get(kind);
+        const compiled = pointSet.compiledByKind.get(getGraphKey(path, kind));
         if (!compiled) return;
         if (autoMeasurePending && ++framesSinceBuild >= AUTO_MEASURE_FRAME) {
           autoMeasurePending = false;
           void measureGridIndex();
         }
         // Per-frame parameters: shape vertices or circle, rewritten without recompiling.
-        writeSelection();
+        writeSelection(frame.viewport);
         compiled.encode(commandEncoder, {parameters: undefined});
+        if (path !== 'direct') {
+          if (frame.frameIndex % READBACK_INTERVAL_FRAMES === 0) pointSet.extraReader?.markStale();
+          pointSet.extraReader?.flush(commandEncoder);
+        }
         if (frame.frameIndex >= nextTicketFrame) {
           const ticket = readback.encodeRead(commandEncoder, summaryBuffer);
           if (ticket) {
@@ -719,7 +1000,18 @@ export const lassoMode: SpatialAnalysisModeDefinition = {
           bikeParking.origin[1],
           0
         ];
-        const {positionsBuffer, maskBuffer, count: pointCount} = pointSet;
+        const {positionsBuffer, count: pointCount} = pointSet;
+        // Direct selections draw the statistics mask; the mask and pick paths draw the mask their
+        // own contributor wrote, so the picture proves that contributor's output.
+        const maskBuffer =
+          path === 'mask'
+            ? pointSet.regionMaskBuffer
+            : path === 'pick'
+              ? pointSet.pick.mask
+              : pointSet.maskBuffer;
+        const showSelected = path !== 'direct' || useMask;
+        const selectedColor: [number, number, number, number] =
+          path === 'direct' ? [255, 190, 60, 255] : [255, 110, 200, 255];
         const dense = pointCount > DENSE_POINT_COUNT;
         const layers: Layer[] = [
           new SpatialAnalysisPointLayer({
@@ -730,7 +1022,7 @@ export const lassoMode: SpatialAnalysisModeDefinition = {
             radiusPixels: dense ? 1 : 2.4,
             color: dense ? [120, 150, 200, 40] : [120, 150, 200, 150]
           }),
-          ...(useMask
+          ...(showSelected
             ? [
                 new SpatialAnalysisPointLayer({
                   id: 'lasso-selected-points',
@@ -741,7 +1033,9 @@ export const lassoMode: SpatialAnalysisModeDefinition = {
                   values: maskBuffer,
                   valueFormat: 'uint32',
                   colormap: 'mask',
-                  color: dense ? [255, 190, 60, 80] : [255, 190, 60, 255],
+                  color: dense
+                    ? [selectedColor[0], selectedColor[1], selectedColor[2], 80]
+                    : selectedColor,
                   noDataColor: [0, 0, 0, 0]
                 })
               ]
@@ -758,11 +1052,19 @@ export const lassoMode: SpatialAnalysisModeDefinition = {
         return layers;
       },
       onClick(event) {
+        if (path === 'pick') return setPickCoordinate(event);
         if (kind === 'radius') return setCircleCenter(event);
         return false;
       },
       onDragStart(event) {
+        if (path === 'pick') return setPickCoordinate(event);
         if (kind === 'radius') return setCircleCenter(event);
+        if (kind === 'rectangle') {
+          const corner = toMeters(event);
+          if (!corner) return false;
+          rectangleCorners = [corner, corner];
+          return true;
+        }
         if (!drawingArmed) return false;
         drawing = true;
         vertices = [];
@@ -772,15 +1074,20 @@ export const lassoMode: SpatialAnalysisModeDefinition = {
         return true;
       },
       onDrag(event) {
-        if (kind === 'radius') {
+        if (path === 'pick') {
+          setPickCoordinate(event);
+        } else if (kind === 'radius') {
           setCircleCenter(event);
+        } else if (kind === 'rectangle') {
+          const corner = toMeters(event);
+          if (corner && rectangleCorners) rectangleCorners = [rectangleCorners[0], corner];
         } else if (drawing) {
           appendVertex(event);
           if (vertices.length >= VERTEX_CAPACITY) finishDrawing();
         }
       },
       onDragEnd(event) {
-        if (kind === 'polygon' && drawing) {
+        if (path !== 'pick' && kind === 'polygon' && drawing) {
           appendVertex(event);
           finishDrawing();
         }
@@ -853,6 +1160,16 @@ function countInsidePolygon(positions: Float32Array, polygon: readonly Point[]):
       if (yi > y !== yj > y && x < ((xj - xi) * (y - yi)) / (yj - yi) + xi) inside = !inside;
     }
     if (inside) count++;
+  }
+  return count;
+}
+
+function countInsideRectangle(positions: Float32Array, bounds: readonly number[]): number {
+  let count = 0;
+  for (let row = 0; row < positions.length / 2; row++) {
+    const x = positions[row * 2];
+    const y = positions[row * 2 + 1];
+    if (x >= bounds[0] && x <= bounds[2] && y >= bounds[1] && y <= bounds[3]) count++;
   }
   return count;
 }

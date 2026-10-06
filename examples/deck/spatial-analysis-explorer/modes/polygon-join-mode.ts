@@ -14,6 +14,11 @@
  *
  * `spatialSort` is a compile-time option: the toggle rebuilds the graph over the same buffers, and
  * "Measure spatialSort on vs off" times a temporary graph of the other setting outside the frame.
+ *
+ * "Prepared ZIP index" (compile-time: rebuilds the graph) hands the join a `GPUSpatialJoinPrepared`
+ * handle over the ZIP polygons. Its bounds and BVH are built on the first encoding and reused while
+ * the points move every frame; a readout counts the builds against the encoded frames, and the contrast
+ * toggle invalidates the handle every frame to show the cost of rebuilding.
  */
 
 import type {Layer} from '@deck.gl/core';
@@ -24,7 +29,8 @@ import {
 } from '@luma.gl/gpgpu/gpu-core';
 import {
   GPU_SPATIAL_JOIN_NO_FEATURE,
-  GPUPointInPolygonJoin
+  GPUPointInPolygonJoin,
+  GPUSpatialJoinPrepared
 } from '@luma.gl/experimental/gpu-spatial-analysis';
 import {importGraphBuffer} from '../graph-buffers';
 import {SpatialAnalysisPointLayer, SpatialAnalysisSegmentLayer} from '../spatial-analysis-layers';
@@ -55,7 +61,7 @@ const CATEGORY_COLORS = [
 export const polygonJoinMode: SpatialAnalysisModeDefinition = {
   id: 'polygon-join',
   title: 'Polygon join',
-  contributors: ['GPUPointInPolygonJoin'],
+  contributors: ['GPUPointInPolygonJoin', 'GPUSpatialJoinPrepared'],
   description:
     'Bike-parking points are joined to ZIP-code polygons on the GPU every frame while they drift. ' +
     'Each point takes the color of its containing polygon outline; gray points fall in no polygon.',
@@ -88,44 +94,62 @@ export const polygonJoinMode: SpatialAnalysisModeDefinition = {
       zips.outlineFeatureRows
     );
 
-    const buildGraph = (spatialSort: boolean): CompiledGPUCommandGraph<void> => {
+    /** A compiled graph with the prepared handle it uses, when any. */
+    type BuiltGraph = {
+      compiled: CompiledGPUCommandGraph<void>;
+      prepared: GPUSpatialJoinPrepared | null;
+    };
+    const buildGraph = (spatialSort: boolean, usePrepared: boolean): BuiltGraph => {
       const graph = new GPUCommandGraph<void>(device, {
-        id: `polygon-join-${spatialSort ? 'sorted' : 'unsorted'}`
+        id: `polygon-join-${spatialSort ? 'sorted' : 'unsorted'}${usePrepared ? '-prepared' : ''}`
       });
+      const polygons = {
+        kind: 'polygons' as const,
+        positions: importGraphBuffer(
+          graph,
+          'polygon-positions',
+          polygonPositions,
+          'float32x2',
+          zips.polygonPositions.length / 2
+        ),
+        featureOffsets: importGraphBuffer(
+          graph,
+          'feature-offsets',
+          featureOffsets,
+          'uint32',
+          zips.featureOffsets.length
+        ),
+        polygonOffsets: importGraphBuffer(
+          graph,
+          'polygon-offsets',
+          polygonOffsets,
+          'uint32',
+          zips.polygonOffsets.length
+        ),
+        ringOffsets: importGraphBuffer(
+          graph,
+          'ring-offsets',
+          ringOffsets,
+          'uint32',
+          zips.ringOffsets.length
+        )
+      };
+      // The ZIP polygons never change, so their bounds and BVH are built once and reused.
+      const prepared = usePrepared
+        ? new GPUSpatialJoinPrepared({id: 'zip-prepared', geometry: polygons, spatialSort})
+        : null;
+      if (prepared) graph.add(prepared);
       graph.add(
         new GPUPointInPolygonJoin({
           id: 'polygon-join',
           points: importGraphBuffer(graph, 'points', positionsBuffer, 'float32x2', pointCount),
-          polygonPositions: importGraphBuffer(
-            graph,
-            'polygon-positions',
-            polygonPositions,
-            'float32x2',
-            zips.polygonPositions.length / 2
-          ),
-          featureOffsets: importGraphBuffer(
-            graph,
-            'feature-offsets',
-            featureOffsets,
-            'uint32',
-            zips.featureOffsets.length
-          ),
-          polygonOffsets: importGraphBuffer(
-            graph,
-            'polygon-offsets',
-            polygonOffsets,
-            'uint32',
-            zips.polygonOffsets.length
-          ),
-          ringOffsets: importGraphBuffer(
-            graph,
-            'ring-offsets',
-            ringOffsets,
-            'uint32',
-            zips.ringOffsets.length
-          ),
+          polygonPositions: polygons.positions,
+          featureOffsets: polygons.featureOffsets,
+          polygonOffsets: polygons.polygonOffsets,
+          ringOffsets: polygons.ringOffsets,
           candidateCapacity: Math.max(1024, pointCount * 4),
-          spatialSort,
+          // With a prepared handle the sort order belongs to the handle.
+          ...(prepared ? {prepared} : {spatialSort}),
           pointFeatureIds: importGraphBuffer(
             graph,
             'point-features',
@@ -144,10 +168,26 @@ export const polygonJoinMode: SpatialAnalysisModeDefinition = {
           candidateCount: importGraphBuffer(graph, 'candidate-count', candidateCount, 'uint32', 1)
         })
       );
-      return graph.compile();
+      return {compiled: graph.compile(), prepared};
+    };
+    /** Tracks a built graph so it is destroyed before the handle that its graph imports. */
+    const trackBuilt = (built: BuiltGraph): BuiltGraph => {
+      if (built.prepared) {
+        const {prepared} = built;
+        resources.track({destroy: () => prepared.destroy()});
+      }
+      resources.track(built.compiled);
+      return built;
+    };
+    const releaseBuilt = (built: BuiltGraph) => {
+      resources.release(built.compiled);
+      built.prepared?.destroy();
     };
     let spatialSort = false;
-    let compiled = resources.track(buildGraph(spatialSort));
+    let usePrepared = false;
+    let invalidateEveryFrame = false;
+    let built = trackBuilt(buildGraph(spatialSort, usePrepared));
+    let compiled = built.compiled;
 
     const summaryWords = featureCount + 2;
     const readbackRing = new GPUReadbackRing(device, {
@@ -170,6 +210,20 @@ export const polygonJoinMode: SpatialAnalysisModeDefinition = {
     let readbackPending = false;
     let countRangeMaximum = Math.max(1, Math.ceil((pointCount / featureCount) * 3));
 
+    const replaceGraph = () => {
+      const previous = built;
+      built = trackBuilt(buildGraph(spatialSort, usePrepared));
+      compiled = built.compiled;
+      builtFrames = 0;
+      // Deck still draws with buffers only; the old graph is freed once no frame can encode it.
+      requestAnimationFrame(() =>
+        requestAnimationFrame(() => {
+          if (!destroyed) releaseBuilt(previous);
+        })
+      );
+    };
+    let builtFrames = 0;
+
     context.controls.addToggle({
       label: 'Animate points (per-frame join)',
       value: animate,
@@ -179,18 +233,27 @@ export const polygonJoinMode: SpatialAnalysisModeDefinition = {
       }
     });
     context.controls.addToggle({
+      label: 'Prepared ZIP index (compile-time: rebuilds graph)',
+      value: usePrepared,
+      onChange: value => {
+        usePrepared = value;
+        replaceGraph();
+        if (measuring) measureAgain = true;
+      }
+    });
+    context.controls.addToggle({
+      label: 'Invalidate the prepared index every frame (contrast)',
+      value: invalidateEveryFrame,
+      onChange: value => {
+        invalidateEveryFrame = value;
+      }
+    });
+    context.controls.addToggle({
       label: 'spatialSort (compile-time: rebuilds graph)',
       value: spatialSort,
       onChange: value => {
         spatialSort = value;
-        const previous = compiled;
-        compiled = resources.track(buildGraph(spatialSort));
-        // Deck still draws with buffers only; the old graph is freed once no frame can encode it.
-        requestAnimationFrame(() =>
-          requestAnimationFrame(() => {
-            if (!destroyed) resources.release(previous);
-          })
-        );
+        replaceGraph();
         if (measuring) measureAgain = true;
       }
     });
@@ -228,6 +291,7 @@ export const polygonJoinMode: SpatialAnalysisModeDefinition = {
     const sortedReadout = context.controls.addReadout('spatialSort on', '...');
     const unsortedReadout = context.controls.addReadout('spatialSort off', '...');
     const speedupReadout = context.controls.addReadout('Speedup', '...');
+    const preparedReadout = context.controls.addReadout('ZIP index builds', 'not prepared');
     context.controls.addNote(
       'Timed outside the frame: GPU timestamps when the device has timestamp-query, otherwise wall clock / 8 repetitions (upper bound). ' +
         'spatialSort pays off for thousands of incoherent features; 25 ZIPs gain nothing.'
@@ -295,10 +359,12 @@ export const polygonJoinMode: SpatialAnalysisModeDefinition = {
       unsortedReadout.setValue('measuring...');
       speedupReadout.setValue('...');
       let temporary: CompiledGPUCommandGraph<void> | null = null;
+      let temporaryBuilt: BuiltGraph | null = null;
       try {
         const activeSort = spatialSort;
         const active = compiled;
-        temporary = buildGraph(!activeSort);
+        temporaryBuilt = buildGraph(!activeSort, usePrepared);
+        temporary = temporaryBuilt.compiled;
         const options = {parameters: undefined, completionBuffer: overflow, signal: context.signal};
         const activeTiming = await measureCompiledGraph(device, active, options);
         const otherTiming = await measureCompiledGraph(device, temporary, options);
@@ -316,6 +382,7 @@ export const polygonJoinMode: SpatialAnalysisModeDefinition = {
         }
       } finally {
         temporary?.destroy();
+        temporaryBuilt?.prepared?.destroy();
         measuring = false;
         if (measureAgain && !destroyed) void measureSpatialSort();
       }
@@ -340,7 +407,17 @@ export const polygonJoinMode: SpatialAnalysisModeDefinition = {
           }
           positionsBuffer.write(animated);
         }
+        if (invalidateEveryFrame) built.prepared?.invalidate();
         compiled.encode(commandEncoder, {parameters: undefined});
+        builtFrames++;
+        if (built.prepared && frame.frameIndex % READBACK_INTERVAL === 0) {
+          preparedReadout.setValue(
+            `${built.prepared.encodedBuildCount} in ${formatCount(builtFrames)} frames` +
+              (invalidateEveryFrame ? ' (rebuilding every frame)' : ' (reused)')
+          );
+        } else if (!built.prepared && frame.frameIndex % READBACK_INTERVAL === 0) {
+          preparedReadout.setValue('not prepared (bounds and BVH rebuilt every frame)');
+        }
         if (!readbackPending && frame.frameIndex % READBACK_INTERVAL === 0) {
           void readSummary(commandEncoder);
         }
