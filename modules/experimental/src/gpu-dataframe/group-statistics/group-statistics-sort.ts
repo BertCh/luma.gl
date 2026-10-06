@@ -137,6 +137,8 @@ export function getGroupStructureNodes<Parameters>(
     operation: string;
     keys: GraphDataView<'uint32'> | GraphDataView<'uint32x2'>;
     mask?: GraphDataView<'uint32'>;
+    /** Dense mode: `uint32` keys in `[0, keyCount)` index the groups directly. */
+    keyCount?: number;
     output: {
       keys: GraphDataView<'uint32'> | GraphDataView<'uint32x2'>;
       counts: GraphDataView<'uint32'>;
@@ -150,6 +152,8 @@ export function getGroupStructureNodes<Parameters>(
   const rowCount = props.keys.length;
   const capacity = output.counts.length;
   const twoWords = props.keys.format === 'uint32x2';
+  const keyCount = props.keyCount;
+  const dense = keyCount !== undefined;
   const u32 = (name: string, length: number) =>
     createTransientView(graph, `${id}-${name}`, 'uint32', length);
   const nodes: GPUCommandNode<Parameters>[] = [];
@@ -180,6 +184,7 @@ export function getGroupStructureNodes<Parameters>(
   var isValid = low != 0xffffffffu;`
       }
   ${props.mask ? 'if (mask[maskOffset + index] == 0u) {\n    isValid = false;\n  }' : ''}
+  ${dense ? `if (low >= ${keyCount}u) {\n    isValid = false;\n  }` : ''}
   if (!isValid) {
     low = 0xffffffffu;
     ${twoWords ? 'high = 0xffffffffu;' : ''}
@@ -267,38 +272,83 @@ ${keyDeclarations}`,
     })
   );
 
-  // 4. Exclusive scan of heads gives each head its group index.
-  const groupIndices = u32('group-indices', rowCount);
-  nodes.push(
-    ...new GPUScan({
-      id: `${id}-scan`,
-      input: heads,
-      output: groupIndices,
-      mode: 'exclusive'
-    }).getCommandNodes(graph)
-  );
-
-  // 5. Offsets of the first `capacity + 1` groups, the unclamped total, and per-position groups.
   const offsets = u32('offsets', capacity + 1);
   const groupTotal = u32('group-total', 1);
   const positionGroups = u32('position-groups', rowCount);
-  nodes.push(
-    createWGSLKernelNode<Parameters>(graph, {
-      id: `${id}-offsets`,
-      operation,
-      variant: 'offsets',
-      bindings: [
-        readBinding('heads', heads),
-        readBinding('groupIndices', groupIndices),
-        readBinding('validCount', validCount),
-        writeBinding('offsets', offsets),
-        writeBinding('groupTotal', groupTotal),
-        writeBinding('positionGroups', positionGroups)
-      ],
-      invocationCount: rowCount,
-      declarations: `const ROW_COUNT: u32 = ${rowCount}u;
+  if (dense) {
+    // 4-5 (dense). The group of a position is its key; offsets are binary-searched lower bounds,
+    // so keys without rows get empty ranges.
+    nodes.push(
+      createWGSLKernelNode<Parameters>(graph, {
+        id: `${id}-dense-offsets`,
+        operation,
+        variant: 'dense-offsets',
+        bindings: [
+          ...sortedBindings(),
+          readBinding('validCount', validCount),
+          writeBinding('offsets', offsets),
+          writeBinding('groupTotal', groupTotal)
+        ],
+        invocationCount: capacity + 1,
+        body: `var low = 0u;
+  var high = validCount[validCountOffset];
+  while (low < high) {
+    let middle = (low + high) / 2u;
+    if (sortedLow[sortedLowOffset + middle] < index) {
+      low = middle + 1u;
+    } else {
+      high = middle;
+    }
+  }
+  offsets[offsetsOffset + index] = low;
+  if (index == 0u) {
+    groupTotal[groupTotalOffset] = ${capacity}u;
+  }`
+      }),
+      createWGSLKernelNode<Parameters>(graph, {
+        id: `${id}-dense-position-groups`,
+        operation,
+        variant: 'dense-position-groups',
+        bindings: [
+          ...sortedBindings(),
+          readBinding('validCount', validCount),
+          writeBinding('positionGroups', positionGroups)
+        ],
+        invocationCount: rowCount,
+        body: `positionGroups[positionGroupsOffset + index] =
+    select(0xffffffffu, sortedLow[sortedLowOffset + index], index < validCount[validCountOffset]);`
+      })
+    );
+  } else {
+    // 4. Exclusive scan of heads gives each head its group index.
+    const groupIndices = u32('group-indices', rowCount);
+    nodes.push(
+      ...new GPUScan({
+        id: `${id}-scan`,
+        input: heads,
+        output: groupIndices,
+        mode: 'exclusive'
+      }).getCommandNodes(graph)
+    );
+
+    // 5. Offsets of the first `capacity + 1` groups, the unclamped total, and per-position groups.
+    nodes.push(
+      createWGSLKernelNode<Parameters>(graph, {
+        id: `${id}-offsets`,
+        operation,
+        variant: 'offsets',
+        bindings: [
+          readBinding('heads', heads),
+          readBinding('groupIndices', groupIndices),
+          readBinding('validCount', validCount),
+          writeBinding('offsets', offsets),
+          writeBinding('groupTotal', groupTotal),
+          writeBinding('positionGroups', positionGroups)
+        ],
+        invocationCount: rowCount,
+        declarations: `const ROW_COUNT: u32 = ${rowCount}u;
 const CAPACITY: u32 = ${capacity}u;`,
-      body: `let isHead = heads[headsOffset + index] != 0u;
+        body: `let isHead = heads[headsOffset + index] != 0u;
   let group = groupIndices[groupIndicesOffset + index] + select(0u, 1u, isHead) - 1u;
   let isValid = index < validCount[validCountOffset];
   positionGroups[positionGroupsOffset + index] = select(0xffffffffu, group, isValid && group < CAPACITY);
@@ -313,8 +363,9 @@ const CAPACITY: u32 = ${capacity}u;`,
       offsets[offsetsOffset + total] = validCount[validCountOffset];
     }
   }`
-    })
-  );
+      })
+    );
+  }
 
   // 6. Group index per source row (every row appears once in the permutation).
   const rowGroups = u32('row-groups', rowCount);
@@ -335,22 +386,39 @@ const CAPACITY: u32 = ${capacity}u;`,
   );
 
   // 7. Output keys and counts, one invocation per output row.
-  nodes.push(
-    createWGSLKernelNode<Parameters>(graph, {
-      id: `${id}-groups`,
-      operation,
-      variant: 'groups',
-      bindings: [
-        readBinding('offsets', offsets),
-        readBinding('groupTotal', groupTotal),
-        ...sortedBindings(),
-        writeBinding('keysOut', output.keys),
-        writeBinding('countsOut', output.counts)
-      ],
-      invocationCount: capacity,
-      declarations: `const CAPACITY: u32 = ${capacity}u;
+  if (dense) {
+    nodes.push(
+      createWGSLKernelNode<Parameters>(graph, {
+        id: `${id}-groups`,
+        operation,
+        variant: 'dense-groups',
+        bindings: [
+          readBinding('offsets', offsets),
+          writeBinding('keysOut', output.keys),
+          writeBinding('countsOut', output.counts)
+        ],
+        invocationCount: capacity,
+        body: `keysOut[keysOutOffset + index] = index;
+  countsOut[countsOutOffset + index] = offsets[offsetsOffset + index + 1u] - offsets[offsetsOffset + index];`
+      })
+    );
+  } else {
+    nodes.push(
+      createWGSLKernelNode<Parameters>(graph, {
+        id: `${id}-groups`,
+        operation,
+        variant: 'groups',
+        bindings: [
+          readBinding('offsets', offsets),
+          readBinding('groupTotal', groupTotal),
+          ...sortedBindings(),
+          writeBinding('keysOut', output.keys),
+          writeBinding('countsOut', output.counts)
+        ],
+        invocationCount: capacity,
+        declarations: `const CAPACITY: u32 = ${capacity}u;
 const GROUP_NONE: u32 = ${GROUP_NONE}u;`,
-      body: `if (index >= min(groupTotal[groupTotalOffset], CAPACITY)) {
+        body: `if (index >= min(groupTotal[groupTotalOffset], CAPACITY)) {
     ${twoWords ? 'keysOut[keysOutOffset + 2u * index] = 0xffffffffu;\n    keysOut[keysOutOffset + 2u * index + 1u] = 0xffffffffu;' : 'keysOut[keysOutOffset + index] = 0xffffffffu;'}
     countsOut[countsOutOffset + index] = 0u;
     return;
@@ -363,8 +431,9 @@ const GROUP_NONE: u32 = ${GROUP_NONE}u;`,
       : 'keysOut[keysOutOffset + index] = key.y;'
   }
   countsOut[countsOutOffset + index] = offsets[offsetsOffset + index + 1u] - begin;`
-    })
-  );
+      })
+    );
+  }
 
   // 8. Clamped count, overflow and total.
   nodes.push(

@@ -40,8 +40,9 @@ import {
 } from './raster-relaxation';
 
 const OPERATION = 'GPUCostDistance';
-const DEFAULT_MAXIMUM_ITERATIONS = 64;
+const DEFAULT_MAXIMUM_ITERATIONS = 512;
 const DEFAULT_MAXIMUM_TIE_ITERATIONS = 8;
+const DEFAULT_SWEEP_AFTER_ITERATION = 96;
 
 /** Number of float32 values read from {@link GPUCostDistanceProps.settings}. */
 export const GPU_COST_DISTANCE_PARAMETER_LENGTH = 8;
@@ -108,8 +109,17 @@ export type GPUCostDistanceProps = {
   sourceCount?: GraphDataView<'uint32'>;
   /** Optional per-cell mask; a nonzero cell is a source at cost 0. Per-frame contents. */
   sourceMask?: GraphDataView<'uint32'>;
-  /** Number of unrolled gated relaxation iterations, 1 to `GPU_RASTER_MAXIMUM_ITERATIONS`. Compile-time. Defaults to 64. */
+  /** Number of unrolled gated relaxation iterations, 1 to `GPU_RASTER_MAXIMUM_ITERATIONS`. Compile-time. Defaults to 512. */
   maxIterations?: number;
+  /**
+   * Iteration index at which relaxation switches from plain tiled passes to a cycle of tiled and
+   * directional tile sweeps (right, left, down, up). Compile-time. Defaults to 96. Plain tiled
+   * passes move a front one 16x16 tile per iteration; a sweep pass carries it along a whole row or
+   * column of tiles, so long corridors, serpentines, and spirals converge in far fewer iterations.
+   * Open terrain normally converges before the switch and is unaffected. Set it to `maxIterations`
+   * or more to keep plain tiled passes only.
+   */
+  sweepAfterIteration?: number;
   /**
    * Number of unrolled gated tie-level iterations, 1 to `GPU_RASTER_MAXIMUM_ITERATIONS`. Compile-time.
    * Defaults to 8. Used only when `backLinks` is requested: each iteration propagates the tie level
@@ -357,6 +367,7 @@ fn getQuietNaN() -> f32 { var bits = 0x7fc00000u; return bitcast<f32>(bits); }`,
       cellSizeMode,
       maxIterations
     };
+    const sweepAfterIteration = props.sweepAfterIteration ?? DEFAULT_SWEEP_AFTER_ITERATION;
     const {relaxation, resetNodes} = createRasterTiledRelaxation<Parameters>(
       graph,
       relaxationProps,
@@ -389,6 +400,7 @@ fn getQuietNaN() -> f32 { var bits = 0x7fc00000u; return bitcast<f32>(bits); }`,
       ...createRasterTiledRelaxationNodes<Parameters>(graph, {
         ...relaxationProps,
         relaxation,
+        sweepAfterIteration,
         values: props.costs,
         auxiliary,
         settings: props.settings,

@@ -53,10 +53,14 @@ export type GPURasterZonalStatisticsOutput = {
 
 /**
  * How per-zone sums (and means) are accumulated.
- * - `'atomic'`: float compare-exchange atomics. Fast, but the last bits of `sums` and `means`
- *   depend on accumulation order and can differ between encodings.
- * - `'sorted'`: cells are stably sorted by zone and reduced per zone in a fixed tree, so `sums`
- *   and `means` are bitwise reproducible across encodings on one device.
+ * - `'sorted'` (default): cells are stably sorted by zone and reduced per zone in a fixed tree, so
+ *   `sums` and `means` are bitwise reproducible across encodings on one device. Cost is roughly
+ *   flat (about 10 to 25 ms at 2048x2048 on an Apple M3 Pro) whatever the zone layout.
+ * - `'atomic'`: float compare-exchange atomics. The last bits of `sums` and `means` depend on
+ *   accumulation order and can differ between encodings. Only worthwhile for many (1000 or more)
+ *   spatially scattered zones, where it is up to about 1.5x faster. It is 10 to 60x slower when
+ *   many cells in a wave share a zone, which is the normal case for contiguous administrative
+ *   polygons and for few zones, because every lane retries a compare-exchange on the same address.
  */
 export type GPURasterZonalStatisticsSumOrder = 'atomic' | 'sorted';
 
@@ -95,9 +99,10 @@ export type GPURasterZonalStatisticsProps = {
    */
   ignoredZone?: number;
   /**
-   * Accumulation order for `sums` and `means`. Defaults to `'atomic'`. Compile-time.
-   * `'sorted'` makes them bitwise reproducible at the cost of a radix sort of all cells, a scan,
-   * and a gather per encoding. Counts, minimums, and maximums are exact either way.
+   * Accumulation order for `sums` and `means`. Defaults to `'sorted'`. Compile-time.
+   * `'sorted'` makes them bitwise reproducible and avoids same-address atomic contention, at the
+   * cost of a radix sort of all cells, a scan, and a gather per encoding. `'atomic'` skips the sort
+   * and only wins for many scattered zones. Counts, minimums, and maximums are exact either way.
    */
   sumOrder?: GPURasterZonalStatisticsSumOrder;
   /** Per-zone result columns, rewritten on every encoding. Which columns exist is compile-time. */
@@ -128,14 +133,15 @@ const COLUMN_OPERATIONS = [
  * needs are scheduled. Empty zones produce counts of 0, sums of 0, and NaN means, minimums, and
  * maximums. Zones with cells but no valid values count in `cellCounts` only.
  *
- * Determinism: counts, minimums, and maximums are exact. With the default `sumOrder: 'atomic'`,
- * sums and means accumulate with float atomics, so their last bits depend on accumulation order
- * and can differ between runs. With `sumOrder: 'sorted'` the cells are stably sorted by zone ID,
- * scanned into zone offsets, and each zone is reduced with a fixed tree, so `sums` and `means`
- * (sum divided by `valueCounts`) are bitwise reproducible across encodings on one device. This
- * adds a sort over `width * height` cells, a scan, a gather, and one segmented reduction per
- * encoding, which is markedly slower than atomics on large grids. Results may still differ from a
- * sequential CPU sum in the last bits, and between devices.
+ * Determinism: counts, minimums, and maximums are exact. With the default `sumOrder: 'sorted'`
+ * the cells are stably sorted by zone ID, scanned into zone offsets, and each zone is reduced with
+ * a fixed tree, so `sums` and `means` (sum divided by `valueCounts`) are bitwise reproducible
+ * across encodings on one device. This adds a sort over `width * height` cells, a scan, a gather,
+ * and one segmented reduction per encoding, but it avoids the same-address contention that makes
+ * float atomics 10 to 60x slower on contiguous zones. With `sumOrder: 'atomic'`, sums and means
+ * accumulate with float atomics, so their last bits depend on accumulation order and can differ
+ * between runs. Results may still differ from a sequential CPU sum in the last bits, and between
+ * devices.
  *
  * Non-goals:
  * - No median, percentiles, or standard deviation.
@@ -157,7 +163,7 @@ export class GPURasterZonalStatistics implements GPUCommandNodeProducer {
     this.id = props.id ?? 'raster-zonal-statistics';
     this.props = props;
     const {id} = this;
-    this.sumOrder = props.sumOrder ?? 'atomic';
+    this.sumOrder = props.sumOrder ?? 'sorted';
     if (this.sumOrder !== 'atomic' && this.sumOrder !== 'sorted') {
       throw new Error(`${id} sumOrder must be atomic or sorted`);
     }

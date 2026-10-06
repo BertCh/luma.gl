@@ -37,7 +37,8 @@ async function runTextureShading(
   elevation: Float32Array,
   levelCount: number,
   baseSigma: number,
-  settingsList: GPUTextureShadingSettings[]
+  settingsList: GPUTextureShadingSettings[],
+  options: {downsampleLevels?: boolean; hasNodata?: boolean; rangeTolerance?: number} = {}
 ): Promise<void> {
   const elevationBuffer = createInputBuffer(device, elevation);
   const outputBuffer = createOutputBuffer(device, PIXEL_COUNT);
@@ -55,6 +56,8 @@ async function runTextureShading(
       height: HEIGHT,
       levelCount,
       baseSigma,
+      downsampleLevels: options.downsampleLevels ?? false,
+      hasNodata: options.hasNodata,
       elevation: {
         id: 'elevation',
         format: 'float32',
@@ -82,8 +85,25 @@ async function runTextureShading(
       gain: values.gain ?? 1,
       weights: getWeights(values)
     });
-    // Elevations span ~200 m; float32 cascades keep ~1e-4 m agreement.
-    expectClose(await readFloat32(outputBuffer, PIXEL_COUNT), expected, 2e-3);
+    const actual = await readFloat32(outputBuffer, PIXEL_COUNT);
+    if (options.rangeTolerance === undefined) {
+      // Elevations span ~200 m; float32 cascades keep ~1e-4 m agreement.
+      expectClose(actual, expected, 2e-3);
+    } else {
+      const finite = expected.filter(Number.isFinite);
+      const range = Math.max(...finite) - Math.min(...finite);
+      let maximumDifference = 0;
+      for (let pixel = 0; pixel < PIXEL_COUNT; pixel++) {
+        expect(Number.isNaN(actual[pixel])).toBe(Number.isNaN(expected[pixel]));
+        if (Number.isFinite(expected[pixel])) {
+          maximumDifference = Math.max(
+            maximumDifference,
+            Math.abs(actual[pixel] - expected[pixel])
+          );
+        }
+      }
+      expect(maximumDifference).toBeLessThan(options.rangeTolerance * range);
+    }
     expect(await readUint32(validityBuffer, PIXEL_COUNT)).toEqual(
       expected.map(value => (Number.isNaN(value) ? 0 : 1))
     );
@@ -110,6 +130,42 @@ it('GPUTextureShading matches the normalized-convolution oracle with per-frame w
   ]);
   await runTextureShading(device, elevation, 1, 1.5, [{detail: 0.5}]);
   await runTextureShading(device, elevation, 6, 1, [{detail: 0.7}]);
+});
+
+it('GPUTextureShading downsampled levels stay within 1% of the exact output, with a nodata hole', async () => {
+  const device = await getWebGPUTestDevice();
+  if (!device) {
+    return;
+  }
+  const solid = createSmoothTerrain(WIDTH, HEIGHT, 13);
+  const holed = solid.slice();
+  for (let row = 18; row < 30; row++) {
+    for (let column = 20; column < 34; column++) {
+      holed[row * WIDTH + column] = NaN;
+    }
+  }
+  for (const elevation of [solid, holed]) {
+    for (const levelCount of [4, 6]) {
+      await runTextureShading(device, elevation, levelCount, 1, [{detail: 0.5}, {detail: 1}], {
+        downsampleLevels: true,
+        rangeTolerance: 0.01
+      });
+    }
+  }
+});
+
+it('GPUTextureShading hasNodata false is exact on all-valid terrain', async () => {
+  const device = await getWebGPUTestDevice();
+  if (!device) {
+    return;
+  }
+  const elevation = createSmoothTerrain(WIDTH, HEIGHT, 5);
+  await runTextureShading(device, elevation, 6, 1, [{detail: 0.5}], {hasNodata: false});
+  await runTextureShading(device, elevation, 6, 1, [{detail: 0.5}], {
+    hasNodata: false,
+    downsampleLevels: true,
+    rangeTolerance: 0.01
+  });
 });
 
 it('GPUTextureShading returns zero on flat terrain and writes a texture', async () => {

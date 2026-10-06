@@ -10,3 +10,4 @@ import './network-coarsening';
 import './adjacency-matrix';
 import './network-subgraph-filter';
 import './network-accessibility';
+import './network-isochrones';

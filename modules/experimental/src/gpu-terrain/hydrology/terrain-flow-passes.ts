@@ -29,6 +29,15 @@ export type TerrainFlowGrid = {
   cellSizeMode: GPUTerrainCellSizeMode;
 };
 
+/**
+ * Plain tiled iterations before fill and flat resolution switch to directional row and column sweeps.
+ * Open terrain converges earlier and never sweeps; long corridors and spirals then cross a whole tile
+ * row or column per pass instead of one tile.
+ *
+ * @internal
+ */
+export const TERRAIN_FLOW_SWEEP_AFTER_ITERATION = 96;
+
 /** Longest downstream walk of one thread within one accumulation round. @internal */
 export const TERRAIN_FLOW_MAXIMUM_WALK_LENGTH = 1024;
 
@@ -94,6 +103,7 @@ export function createTerrainFlowFillNodes<Parameters>(
   const relaxNodes = createRasterTiledRelaxationNodes<Parameters>(graph, {
     ...relaxationProps,
     relaxation,
+    sweepAfterIteration: TERRAIN_FLOW_SWEEP_AFTER_ITERATION,
     values: props.filled,
     auxiliary: props.elevation,
     settings: props.settings,

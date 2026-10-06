@@ -13,6 +13,8 @@ export type {
 } from './gpu-network-snapping';
 export {GPUNetworkCostMatrix} from './gpu-network-cost-matrix';
 export type {GPUNetworkCostMatrixProps} from './gpu-network-cost-matrix';
+export {recommendLaneCount} from './network-accessibility-lanes';
+export type {RecommendLaneCountOptions} from './network-accessibility-lanes';
 export {
   GPUNetworkAccessibility,
   GPU_NETWORK_ACCESSIBILITY_PARAMETER_LENGTH,

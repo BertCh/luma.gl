@@ -82,6 +82,8 @@ type Scene = {
   variance?: 'sample' | 'population';
   fractions: number[];
   capacity: number;
+  /** Dense mode: `uint32` keys in `[0, keyCount)` index the output rows; `capacity` equals it. */
+  keyCount?: number;
 };
 
 type ActualColumn = Partial<Record<keyof GPUGroupStatisticsColumnOutput, number[]>>;
@@ -216,6 +218,7 @@ async function createRun(harness: Harness, scene: Scene) {
     mask: importGraphBuffer(graph, 'mask', maskBuffer, 'uint32', rows),
     columns,
     variance: scene.variance,
+    keyCount: scene.keyCount,
     percentiles: parameters?.importToGraph(graph),
     sumScale: SUM_SCALE,
     output: {
@@ -329,7 +332,11 @@ function expectMatchesOracle(
   label: string
 ): GroupStatisticsOracleResult {
   const expected = computeGroupStatisticsOnCPU({
-    keys: scene.keys,
+    // Dense mode skips keys outside [0, keyCount) like reserved keys.
+    keys:
+      scene.keyCount === undefined
+        ? scene.keys
+        : scene.keys.map(key => (key >= BigInt(scene.keyCount!) ? 0xffffffffn : key)),
     keyBits: scene.keyBits,
     mask: scene.mask,
     columns: scene.columns.map(column => column.values),
@@ -339,27 +346,44 @@ function expectMatchesOracle(
     capacity: scene.capacity
   });
   const groupCount = expected.groups.length;
+  const dense = scene.keyCount !== undefined;
+  const groupByKey = new Map(expected.groups.map(group => [Number(group.key), group]));
   const emptyKey = scene.keyBits === 64 ? 0xffffffffffffffffn : 0xffffffffn;
-  expect(actual.total, `${label} total`).toBe(expected.totalCount);
-  expect(actual.count, `${label} count`).toBe(groupCount);
-  expect(actual.overflow, `${label} overflow`).toBe(expected.totalCount > scene.capacity ? 1 : 0);
-  expect(actual.keys.slice(0, groupCount), `${label} keys`).toEqual(
-    expected.groups.map(group => group.key)
-  );
-  expect(actual.counts.slice(0, groupCount), `${label} counts`).toEqual(
-    expected.groups.map(group => group.count)
-  );
-  for (let row = groupCount; row < scene.capacity; row++) {
-    expect(actual.keys[row], `${label} tail key ${row}`).toBe(emptyKey);
-    expect(actual.counts[row], `${label} tail count ${row}`).toBe(0);
+  if (dense) {
+    expect(actual.total, `${label} total`).toBe(scene.keyCount);
+    expect(actual.count, `${label} count`).toBe(scene.keyCount);
+    expect(actual.overflow, `${label} overflow`).toBe(0);
+    for (let key = 0; key < scene.capacity; key++) {
+      expect(actual.keys[key], `${label} key ${key}`).toBe(BigInt(key));
+      expect(actual.counts[key], `${label} count of key ${key}`).toBe(
+        groupByKey.get(key)?.count ?? 0
+      );
+    }
+  } else {
+    expect(actual.total, `${label} total`).toBe(expected.totalCount);
+    expect(actual.count, `${label} count`).toBe(groupCount);
+    expect(actual.overflow, `${label} overflow`).toBe(expected.totalCount > scene.capacity ? 1 : 0);
+    expect(actual.keys.slice(0, groupCount), `${label} keys`).toEqual(
+      expected.groups.map(group => group.key)
+    );
+    expect(actual.counts.slice(0, groupCount), `${label} counts`).toEqual(
+      expected.groups.map(group => group.count)
+    );
+    for (let row = groupCount; row < scene.capacity; row++) {
+      expect(actual.keys[row], `${label} tail key ${row}`).toBe(emptyKey);
+      expect(actual.counts[row], `${label} tail count ${row}`).toBe(0);
+    }
   }
   const fractionCount = scene.fractions.length;
   for (const [columnIndex, column] of scene.columns.entries()) {
     const wanted = new Set(column.statistics);
     const out = actual.columns[columnIndex];
     for (let group = 0; group < scene.capacity; group++) {
-      const isTail = group >= groupCount;
-      const stats = isTail ? undefined : expected.groups[group].columns[columnIndex];
+      const stats = dense
+        ? groupByKey.get(group)?.columns[columnIndex]
+        : group >= groupCount
+          ? undefined
+          : expected.groups[group].columns[columnIndex];
       const where = `${label} column ${columnIndex} group ${group}`;
       if (out.counts) {
         expect(out.counts[group], `${where} counts`).toBe(stats?.count ?? 0);
@@ -787,5 +811,118 @@ it('GPUGroupStatistics treats a large constant group as zero variance despite me
   expect(actual.columns[0].kurtosis![group]).toBeNaN();
   expect(actual.columns[0].zScores!.slice(0, 5000).every(z => z === 0)).toBe(true);
   run.destroy();
+  harness.destroy();
+});
+
+it('GPUGroupStatistics dense mode returns one row per key with empty keys at count 0 and NaN', async () => {
+  const device = await getWebGPUTestDevice();
+  if (!device) {
+    return;
+  }
+  const keyCount = 60;
+  const random = createRandom(77);
+  const emptyKeys = new Set([3, 17, 59]);
+  const keys: bigint[] = [];
+  for (let row = 0; row < 3000; row++) {
+    let key = Math.floor(random() * keyCount);
+    if (emptyKeys.has(key)) {
+      key = (key + 1) % keyCount;
+    }
+    // Out-of-range and reserved keys are skipped like masked rows.
+    if (random() < 0.05) {
+      key = random() < 0.5 ? keyCount + Math.floor(random() * 40) : 0xffffffff;
+    }
+    keys.push(BigInt(key));
+  }
+  const rows = keys.length;
+  const mask = Uint32Array.from({length: rows}, () => (random() < 0.9 ? 1 : 0));
+  const first = new Float32Array(rows);
+  const second = new Float32Array(rows);
+  for (let row = 0; row < rows; row++) {
+    first[row] =
+      Number(keys[row]) === 5 ? NaN : random() < 0.05 ? NaN : quantize(random() * 50 - 10);
+    second[row] = 1 + Math.floor(random() * 5);
+  }
+  const scene: Scene = {
+    keyBits: 32,
+    keys,
+    mask,
+    columns: [
+      {
+        values: first,
+        statistics: ['count', 'sum', 'mean', 'minimum', 'maximum', 'variance', 'zScore']
+      },
+      {values: second, statistics: ['median', 'percentiles', 'mode', 'uniqueCount']}
+    ],
+    fractions: [0.25, 0.75],
+    capacity: keyCount,
+    keyCount
+  };
+  const harness = new Harness(device);
+  const run = await createRun(harness, scene);
+  try {
+    run.poison();
+    const actual = await run.run();
+    expectMatchesOracle(actual, scene, 'dense');
+    // Keys 3, 17 and 59 have no rows, key 5 has rows with no finite value.
+    for (const key of [3, 17, 59]) {
+      expect(actual.counts[key]).toBe(0);
+      expect(Number.isNaN(actual.columns[0].means![key])).toBe(true);
+      expect(actual.columns[0].counts![key]).toBe(0);
+    }
+    expect(actual.counts[5]).toBeGreaterThan(0);
+    expect(actual.columns[0].counts![5]).toBe(0);
+    expect(Number.isNaN(actual.columns[0].minimums![5])).toBe(true);
+    expect(actual.counts.reduce((total, count) => total + count, 0)).toBeGreaterThan(2000);
+    // New contents, same graph.
+    const nextKeys = Uint32Array.from(keys, key => (Number(key) + 1) % keyCount);
+    run.keysBuffer.write(nextKeys);
+    const next = await run.run();
+    const shifted = {...scene, keys: Array.from(nextKeys, key => BigInt(key))};
+    expectMatchesOracle(next, shifted, 'dense shifted');
+  } finally {
+    run.destroy();
+    harness.destroy();
+  }
+}, 120000);
+
+it('GPUGroupStatistics dense mode validates its options', async () => {
+  const device = await getWebGPUTestDevice();
+  if (!device) {
+    return;
+  }
+  const harness = new Harness(device);
+  const graph = new GPUCommandGraph(device, {id: 'dense-validation'});
+  const view = (words: number) =>
+    importGraphBuffer(graph, `v${harness.buffers.length}`, harness.output(words), 'uint32', words);
+  const pairView = (rows: number) =>
+    importGraphBuffer(
+      graph,
+      `v${harness.buffers.length}`,
+      harness.output(rows * 2),
+      'uint32x2',
+      rows
+    );
+  const output = (rows: number) => ({
+    keys: view(rows),
+    counts: view(rows),
+    count: view(1),
+    overflow: view(1)
+  });
+  expect(
+    () => new GPUGroupStatistics({keys: view(8), keyCount: 4, columns: [], output: output(5)})
+  ).toThrow(/exactly keyCount/);
+  expect(
+    () =>
+      new GPUGroupStatistics({
+        keys: pairView(8),
+        keyCount: 4,
+        columns: [],
+        output: {...output(4), keys: pairView(4)}
+      })
+  ).toThrow(/uint32 keys/);
+  expect(
+    () => new GPUGroupStatistics({keys: view(8), keyCount: 0, columns: [], output: output(4)})
+  ).toThrow(/keyCount/);
   harness.destroy();
 });

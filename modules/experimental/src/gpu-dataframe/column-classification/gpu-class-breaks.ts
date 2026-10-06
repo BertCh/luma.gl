@@ -83,8 +83,13 @@ export type GPUClassBreaksOutput = {
 export type GPUClassBreaksProps = {
   /** Prefix for generated node and transient IDs. Defaults to `'class-breaks'`. */
   id?: string;
-  /** Packed float32 column. NaN rows are skipped; infinities count only toward the end classes. */
-  values: GraphDataView<'float32'>;
+  /**
+   * Packed float32 column. NaN rows are skipped; infinities count only toward the end classes.
+   * A `uint32` or `sint32` column (for example point counts) is also accepted: one internal pass
+   * converts it to f32 (exact up to 2^24 in magnitude, rounded to nearest beyond) before the
+   * classification, which then behaves as for the converted float column. Topology: the format.
+   */
+  values: GraphDataView<'float32'> | GraphDataView<'uint32'> | GraphDataView<'sint32'>;
   /** Optional packed `uint32` row mask; zero skips the row. */
   mask?: GraphDataView<'uint32'>;
   /**
@@ -206,7 +211,7 @@ export class GPUClassBreaks implements GPUCommandNodeProducer {
         throw new Error(`${id} ${name} must be a single packed view, not a chunked vector`);
       }
     }
-    validatePackedView(props.values, ['float32'], `${id} values`);
+    validatePackedView(props.values, ['float32', 'uint32', 'sint32'], `${id} values`);
     const rowCount = props.values.length;
     if (rowCount < 1 || rowCount > MAXIMUM_ROW_COUNT) {
       throw new Error(`${id} values must hold between 1 and 2^24 rows`);
@@ -248,16 +253,20 @@ export class GPUClassBreaks implements GPUCommandNodeProducer {
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
     const {id, props, methods, quantileCount} = this;
-    const {values, mask, parameters, output, maximumClassCount} = props;
+    const {mask, parameters, output, maximumClassCount} = props;
     validateGraphViewsBelongToGraph(id, graph, [
-      values,
+      props.values,
       mask,
       parameters,
       output.breaks,
       output.classCount,
       output.classCounts
     ]);
-    const rowCount = values.length;
+    const rowCount = props.values.length;
+    const integerFormat = props.values.format === 'float32' ? undefined : props.values.format;
+    const values: GraphDataView<'float32'> = integerFormat
+      ? createTransientView(graph, `${id}-float-values`, 'float32', rowCount)
+      : (props.values as GraphDataView<'float32'>);
     const has = (method: GPUClassBreaksMethod) => methods.includes(method);
     const usesQuantiles = has('quantile') || has('box-plot');
     const usesStandardDeviation = has('standard-deviation');
@@ -305,6 +314,24 @@ export class GPUClassBreaks implements GPUCommandNodeProducer {
     const methodRead = `state[stateOffset + ${CLASS_BREAKS_STATE.method}u]`;
     const classCountRead = `state[stateOffset + ${CLASS_BREAKS_STATE.classCount}u]`;
     const nodes: GPUCommandNode<Parameters>[] = [];
+
+    // 0. Integer columns are converted to f32 once; every later stage reads the float view.
+    if (integerFormat) {
+      const integerType = integerFormat === 'uint32' ? 'u32' : 'i32';
+      nodes.push(
+        createWGSLKernelNode<Parameters>(graph, {
+          id: `${id}-integer-values`,
+          operation: OPERATION,
+          variant: 'integer-values',
+          bindings: [
+            {name: 'integers', view: props.values, type: integerType, access: 'read'},
+            {name: 'floats', view: values, type: 'f32', access: 'read_write'}
+          ],
+          invocationCount: rowCount,
+          body: 'floats[floatsOffset + index] = f32(integers[integersOffset + index]);'
+        })
+      );
+    }
 
     // 1. Decode the per-frame method and class count, and reset every accumulator.
     const prepareBindings: WGSLKernelBinding[] = [
@@ -475,12 +502,12 @@ const HEADER: u32 = ${GPU_CLASS_BREAKS_PARAMETER_HEADER_LENGTH}u;`,
 
     // 6. Maximum breaks: sort the finite keys, sort the gaps between distinct neighbours.
     if (has('maximum-breaks')) {
-      nodes.push(...this.getMaximumBreaksNodes(graph, {state, extremes, edges, edgeState}));
+      nodes.push(...this.getMaximumBreaksNodes(graph, {values, state, extremes, edges, edgeState}));
     }
 
     // 7. Natural breaks: histogram, class cost matrix, dynamic program, backtrack.
     if (has('natural-breaks')) {
-      nodes.push(...this.getNaturalBreaksNodes(graph, {state, extremes, edges, edgeState}));
+      nodes.push(...this.getNaturalBreaksNodes(graph, {values, state, extremes, edges, edgeState}));
     }
 
     // 8. Closed-form edges for equal interval, quantile, standard deviation, box plot, custom.
@@ -699,6 +726,8 @@ const MAXIMUM_CLASS_COUNT: u32 = ${maximumClassCount}u;`,
   private getMaximumBreaksNodes<Parameters>(
     graph: GPUCommandGraph<Parameters>,
     shared: {
+      /** The float32 view of the values (converted when the column is integer). */
+      values: GraphDataView<'float32'>;
       state: GraphDataView<'uint32'>;
       extremes: GraphDataView<'uint32'>;
       edges: GraphDataView<'float32'>;
@@ -706,7 +735,8 @@ const MAXIMUM_CLASS_COUNT: u32 = ${maximumClassCount}u;`,
     }
   ): GPUCommandNode<Parameters>[] {
     const {id, props} = this;
-    const {values, mask, maximumClassCount} = props;
+    const {values} = shared;
+    const {mask, maximumClassCount} = props;
     const rowCount = values.length;
     const prefix = `${id}-maximum-breaks`;
     const u32 = (name: string) =>
@@ -852,6 +882,8 @@ const MAXIMUM_CLASS_COUNT: u32 = ${maximumClassCount}u;`,
   private getNaturalBreaksNodes<Parameters>(
     graph: GPUCommandGraph<Parameters>,
     shared: {
+      /** The float32 view of the values (converted when the column is integer). */
+      values: GraphDataView<'float32'>;
       state: GraphDataView<'uint32'>;
       extremes: GraphDataView<'uint32'>;
       edges: GraphDataView<'float32'>;
@@ -859,7 +891,8 @@ const MAXIMUM_CLASS_COUNT: u32 = ${maximumClassCount}u;`,
     }
   ): GPUCommandNode<Parameters>[] {
     const {id, props, naturalBreaksBinCount: binCount} = this;
-    const {values, mask, maximumClassCount} = props;
+    const {values} = shared;
+    const {mask, maximumClassCount} = props;
     const rowCount = values.length;
     const prefix = `${id}-natural-breaks`;
     const histogram = createTransientView(graph, `${prefix}-histogram`, 'uint32', binCount);

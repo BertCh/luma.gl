@@ -287,10 +287,10 @@ ${TERRAIN_WGSL_HELPERS}
 ${getTerrainGroundCellSizeWGSL(cellSizeMode, TERRAIN_GEOMORPHOMETRY_CELL_SLOTS)}
 
 // Directions in GRASS order: NE, N, NW, W, SW, S, SE, E.
-var<private> DIRECTION_COLUMN = array<i32, 8>(1, 0, -1, -1, -1, 0, 1, 1);
-var<private> DIRECTION_NORTH = array<i32, 8>(1, 1, 1, 0, -1, -1, -1, 0);
+const DIRECTION_COLUMN = array<i32, 8>(1, 0, -1, -1, -1, 0, 1, 1);
+const DIRECTION_NORTH = array<i32, 8>(1, 1, 1, 0, -1, -1, -1, 0);
 // Landform codes by minus count (row) and plus count (column); 0 marks impossible pairs.
-var<private> FORM_TABLE = array<u32, 81>(
+const FORM_TABLE = array<u32, 81>(
   1u, 1u, 1u, 8u, 8u, 9u, 9u, 9u, 10u,
   1u, 1u, 8u, 8u, 8u, 9u, 9u, 9u, 0u,
   1u, 4u, 6u, 6u, 7u, 7u, 9u, 0u, 0u,

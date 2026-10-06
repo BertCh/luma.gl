@@ -47,7 +47,7 @@ export const GPU_NETWORK_REACHABILITY_MAXIMUM_TIE_ITERATIONS = 1024;
 
 const DEFAULT_MAXIMUM_ITERATIONS = 64;
 const DEFAULT_MAXIMUM_TIE_ITERATIONS = 4;
-const DEFAULT_LOCAL_ITERATIONS = 16;
+const DEFAULT_LOCAL_ITERATIONS = 32;
 
 /**
  * Properties for {@link GPUNetworkReachability}.
@@ -73,14 +73,23 @@ export type GPUNetworkReachabilityProps = {
   sourceCount?: GraphDataView<'uint32'>;
   /**
    * Compile-time number of unrolled relaxation rounds (graph nodes), 1 to 1024. Defaults to 64.
-   * Each round covers up to `localIterations` hops along a chain, so a network whose longest
-   * shortest path has `h` hops needs about `ceil(h / localIterations) + 1` rounds.
+   * Each round covers up to `localIterations` hops along a chain, in practice about
+   * `0.85 * localIterations` (13.6 hops at 16, 28 at 32, 50 at 64 on a grid), so a network whose
+   * longest shortest path has `h` hops needs about `ceil(h / (0.7 * localIterations)) + 4` rounds.
+   *
+   * Cost: every round is one graph node (one dispatch, roughly 20 to 30 us) whether or not its
+   * queue is empty, on top of a fixed 1.5 to 2 ms submit and readback floor. Real work is small
+   * below about 500k nodes, so oversizing `maxIterations` costs time on low-diameter graphs while
+   * undersizing leaves `converged` at 0. See `recommendReachabilityIterations` and
+   * `adaptReachabilityIterations` for sizing from node count and from last frame's result.
    */
   maxIterations?: number;
   /**
    * Compile-time number of hops one workgroup chains inside a single round dispatch, 1 to 64.
-   * Defaults to 16. `1` is the pure round-per-hop queue algorithm. Costs are identical for every
-   * value; only the number of rounds needed to converge, and the work per round, change.
+   * Defaults to 32. `1` is the pure round-per-hop queue algorithm. Costs are identical for every
+   * value; only the number of rounds needed to converge, and the work per round, change. Longer
+   * chains cut rounds (and so graph nodes) for narrow single-source wavefronts; wide frontiers,
+   * such as lane-expanded batches, serialize the chain in one workgroup and prefer about 16.
    */
   localIterations?: number;
   /**

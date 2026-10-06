@@ -20,6 +20,7 @@ import {
 } from '../../utils/gpu-contributor-test-utils';
 import {
   buildCSR,
+  createGridNetwork,
   createRandomNetwork,
   dijkstra,
   NONE,
@@ -35,6 +36,8 @@ type ServiceOptions = {
   facilityCount?: number;
   costLimit?: number;
   maxIterations?: number;
+  /** Leave `maxIterations` and every other iteration prop at the class defaults. */
+  defaultIterations?: boolean;
   activeIterations?: number;
 };
 
@@ -114,7 +117,7 @@ function createServiceFixture(
     facilityCosts: facilityCosts?.importToGraph(graph),
     facilityCount: facilityCount?.importToGraph(graph),
     costLimit: costLimit?.importToGraph(graph),
-    maxIterations: options.maxIterations ?? 32,
+    maxIterations: options.defaultIterations ? undefined : (options.maxIterations ?? 32),
     activeIterations: activeIterations?.importToGraph(graph),
     assignments: importGraphBuffer(
       graph,
@@ -437,3 +440,37 @@ it('GPUNetworkServiceAreas reports convergence against the iteration limit', asy
   compiled.destroy();
   destroyFixture(fixture);
 });
+
+it('GPUNetworkServiceAreas converges at default props on a large-diameter grid', async () => {
+  const device = await getWebGPUTestDevice();
+  if (!device) {
+    return;
+  }
+  const side = 224;
+  const nodeCount = side * side;
+  const csr = buildCSR(nodeCount, createGridNetwork(7, side, side));
+  for (const facilityCount of [8, 1]) {
+    const facilityNodes = Array.from(
+      {length: facilityCount},
+      (_, row) => (row * 6151 + 97) % nodeCount
+    );
+    const fixture = createServiceFixture(device, csr, nodeCount, {
+      facilities: facilityNodes,
+      defaultIterations: true
+    });
+    const compiled = fixture.graph.compile();
+    expect(compiled.stats.nodeOrder.length).toBeLessThanOrEqual(120);
+    submitGraph(device, compiled, undefined);
+    await expectMatchesOracle(
+      fixture,
+      csr,
+      facilityNodes.map(node => ({node, cost: 0})),
+      facilityCount,
+      Infinity,
+      false
+    );
+    expect(await readUint32(fixture.convergedBuffer, 1)).toEqual([1]);
+    compiled.destroy();
+    destroyFixture(fixture);
+  }
+}, 60000);

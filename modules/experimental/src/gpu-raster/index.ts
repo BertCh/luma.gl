@@ -435,3 +435,21 @@ export type {
   GPURasterZonalStatisticsProps,
   GPURasterZonalStatisticsSumOrder
 } from './raster-zonal-statistics/index';
+
+export {
+  getGPURasterSieveParameterValues,
+  GPU_RASTER_SIEVE_PARAMETER_LENGTH,
+  GPURasterPatchMetrics,
+  GPURasterSieve
+} from './raster-patches/index';
+
+export type {
+  GPURasterPatchLabels,
+  GPURasterPatchMetricsOutput,
+  GPURasterPatchMetricsProps,
+  GPURasterSieveConnectivity,
+  GPURasterSieveMode,
+  GPURasterSieveOutput,
+  GPURasterSieveParameters,
+  GPURasterSieveProps
+} from './raster-patches/index';

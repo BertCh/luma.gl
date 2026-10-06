@@ -234,7 +234,9 @@ const contributorExportNames = [
   'GPUStreamlines',
   'GPUChangeDetection',
   'GPURasterExtremaPyramid',
-  'GPUParameterBuffer'
+  'GPUParameterBuffer',
+  'GPURasterSieve',
+  'GPURasterPatchMetrics'
 ];
 
 for (const exportName of contributorExportNames) {

@@ -122,6 +122,18 @@ export type GPUGroupStatisticsProps = {
   keys: GraphDataView<'uint32'> | GraphDataView<'uint32x2'>;
   /** Optional per-row mask; zero skips the row. */
   mask?: GraphDataView<'uint32'>;
+  /**
+   * Dense mode. When set, `keys` must be `uint32` with group keys in `[0, keyCount)` and the
+   * output tables are indexed by key: `output.keys.length` and every per-group view must hold
+   * exactly `keyCount` rows, row `k` describes key `k`, and keys without rows stay in the table
+   * with `counts` 0, NaN float statistics (mean, minimum, maximum, variance, standard deviation,
+   * skewness, kurtosis, median, percentiles, mode) and 0 sums and unique counts. `output.keys[k]`
+   * is `k`, `output.count` and `output.totalCount` are `keyCount` and `overflow` is 0. Rows whose
+   * key is outside the range (or all-ones) are skipped like masked rows. No key sort of the
+   * output is needed, so dense choropleth tables line up with feature rows. Topology.
+   * Defaults to the compact table of occupied keys.
+   */
+  keyCount?: number;
   /** Zero to four value columns. */
   columns: readonly GPUGroupStatisticsColumn[];
   /** `'sample'` (n - 1, default, as d3 and kepler) or `'population'` (n). Stdev and z-scores follow it. */
@@ -254,6 +266,17 @@ export class GPUGroupStatistics implements GPUCommandNodeProducer {
       validatePackedUint32View(mask, `${id} mask`);
       if (mask.length !== rowCount) {
         throw new Error(`${id} mask must have the same length as keys`);
+      }
+    }
+    if (props.keyCount !== undefined) {
+      if (!Number.isInteger(props.keyCount) || props.keyCount < 1 || props.keyCount >= 0xffffffff) {
+        throw new Error(`${id} keyCount must be an integer in [1, 2^32 - 2]`);
+      }
+      if (keys.format !== 'uint32') {
+        throw new Error(`${id} keyCount needs uint32 keys`);
+      }
+      if (output.keys.length !== props.keyCount) {
+        throw new Error(`${id} output.keys must hold exactly keyCount rows`);
       }
     }
     validatePackedView(output.keys, [keys.format as 'uint32' | 'uint32x2'], `${id} output.keys`);
@@ -424,6 +447,7 @@ export class GPUGroupStatistics implements GPUCommandNodeProducer {
       operation: OPERATION,
       keys: props.keys,
       mask: props.mask,
+      keyCount: props.keyCount,
       output: props.output
     });
     const result: GPUCommandNode<Parameters>[] = [...nodes];

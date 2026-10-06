@@ -83,7 +83,9 @@ it('GPURasterZonalStatistics prefixes IDs and schedules only requested columns',
   );
   expect(fullIds).toContain('zonal-overflow-reset');
   for (const name of ['cellCounts', 'valueCounts', 'sums', 'means', 'minimums', 'maximums']) {
-    expect(fullIds.some(id => id.startsWith(`zonal-${name}`))).toBe(true);
+    // The default sorted order computes sums in the shared `zonal-sorted-*` nodes.
+    const prefix = name === 'sums' ? 'zonal-sorted-' : `zonal-${name}`;
+    expect(fullIds.some(id => id.startsWith(prefix))).toBe(true);
   }
 });
 
@@ -152,7 +154,7 @@ it('GPURasterZonalStatistics rejects aliasing and foreign graphs', () => {
   ).toThrow(/target graph/);
 });
 
-it('GPURasterZonalStatistics sumOrder defaults to atomic and sorted adds the sort nodes', () => {
+it('GPURasterZonalStatistics sumOrder defaults to sorted and atomic skips the sort nodes', () => {
   const outputs = (graph: GPUCommandGraph) => ({
     sums: createTransientView(graph, 'o-sums', 'float32', CAPACITY),
     means: createTransientView(graph, 'o-means', 'float32', CAPACITY)
@@ -162,17 +164,6 @@ it('GPURasterZonalStatistics sumOrder defaults to atomic and sorted adds the sor
     createProps(defaultGraph, {output: outputs(defaultGraph)}),
     defaultGraph
   );
-  const atomicGraph = new GPUCommandGraph(createNullWebGPUDevice());
-  const atomicIds = getNodeIds(
-    createProps(atomicGraph, {
-      output: outputs(atomicGraph),
-      sumOrder: 'atomic'
-    }),
-    atomicGraph
-  );
-  expect(atomicIds).toEqual(defaultIds);
-  expect(defaultIds.some(id => id.includes('-sorted-'))).toBe(false);
-
   const sortedGraph = new GPUCommandGraph(createNullWebGPUDevice());
   const sortedIds = getNodeIds(
     createProps(sortedGraph, {
@@ -181,10 +172,21 @@ it('GPURasterZonalStatistics sumOrder defaults to atomic and sorted adds the sor
     }),
     sortedGraph
   );
-  expect(sortedIds.some(id => id.startsWith('zonal-sorted-sort'))).toBe(true);
-  expect(sortedIds).toContain('zonal-sorted-gather-sums');
-  expect(sortedIds).toContain('zonal-means');
-  expect(sortedIds.length).toBeGreaterThan(defaultIds.length);
+  expect(sortedIds).toEqual(defaultIds);
+  expect(defaultIds.some(id => id.startsWith('zonal-sorted-sort'))).toBe(true);
+  expect(defaultIds).toContain('zonal-sorted-gather-sums');
+  expect(defaultIds).toContain('zonal-means');
+
+  const atomicGraph = new GPUCommandGraph(createNullWebGPUDevice());
+  const atomicIds = getNodeIds(
+    createProps(atomicGraph, {
+      output: outputs(atomicGraph),
+      sumOrder: 'atomic'
+    }),
+    atomicGraph
+  );
+  expect(atomicIds.some(id => id.includes('-sorted-'))).toBe(false);
+  expect(atomicIds.length).toBeLessThan(defaultIds.length);
 
   // Minimum-only requests never need the sort even when sorted is requested.
   const minGraph = new GPUCommandGraph(createNullWebGPUDevice());

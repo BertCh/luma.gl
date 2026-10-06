@@ -178,7 +178,7 @@ function createFixture(device: Device, options: FixtureOptions): Fixture {
       sourceCosts: sourceCosts?.importToGraph(graph),
       sourceCount: sourceCount?.importToGraph(graph),
       sourceMask: maskBuffer ? view('mask', 'uint32', cellCount) : undefined,
-      maxIterations: options.maxIterations ?? 64,
+      maxIterations: options.maxIterations,
       maxTieIterations: options.maxTieIterations,
       costs: view('costs', 'float32', cellCount),
       backLinks: buffers.backLinks ? view('backLinks', 'uint32', cellCount) : undefined,
@@ -612,6 +612,59 @@ it('GPUCostDistance reports non-convergence when maxIterations is too small', as
   destroyFixture(fixture);
   destroyFixture(second);
 });
+
+/** Corridors 4 cells wide separated by 4-thick walls; the wall gaps alternate sides. */
+function createSerpentineFriction(size: number): Float32Array {
+  const friction = new Float32Array(size * size).fill(1);
+  for (let row = 0; row < size; row++) {
+    if ((row & 7) < 4) continue;
+    const gapOnLeft = (row >> 3) % 2 === 0;
+    for (let column = 0; column < size; column++) {
+      const inGap = gapOnLeft ? column < 8 : column >= size - 8;
+      if (!inGap) friction[row * size + column] = NaN;
+    }
+  }
+  return friction;
+}
+
+/** Nested square corridors 4 cells wide; each wall ring has one gap on alternating sides. */
+function createSpiralFriction(size: number): Float32Array {
+  const friction = new Float32Array(size * size).fill(1);
+  for (let row = 0; row < size; row++) {
+    for (let column = 0; column < size; column++) {
+      const ring = Math.min(row, column, size - 1 - row, size - 1 - column);
+      if ((ring & 7) < 4) continue;
+      const gapOnLeft = (ring >> 3) % 2 === 0;
+      const inGap =
+        Math.abs(row - (size >> 1)) < 2 && (gapOnLeft ? column < size >> 1 : column >= size >> 1);
+      if (!inGap) friction[row * size + column] = NaN;
+    }
+  }
+  return friction;
+}
+
+for (const [name, createFriction] of [
+  ['serpentine', createSerpentineFriction],
+  ['spiral', createSpiralFriction]
+] as const) {
+  for (const size of [256, 512]) {
+    it(`GPUCostDistance converges at defaults on a ${size}x${size} ${name} and matches Dijkstra`, async () => {
+      const device = await getWebGPUTestDevice();
+      if (!device) return;
+      const friction = createFriction(size);
+      const fixture = createFixture(device, {width: size, height: size, friction, sources: [0]});
+      const compiled = await run(device, fixture);
+      const {converged, iterationCount} = await readIterations(fixture);
+      console.log(`cost-distance ${name} ${size}^2 iterations: ${iterationCount}`);
+      expect(converged).toBe(1);
+      const oracle = computeCostDistance(getOracleOptions(fixture, [{cell: 0, cost: 0}]));
+      expect(Number.isFinite(oracle[size * size - 1]) || name === 'spiral').toBe(true);
+      expectCostsClose(await readCosts(fixture), oracle);
+      compiled.destroy();
+      destroyFixture(fixture);
+    }, 120000);
+  }
+}
 
 it('GPUCostDistance handles a single-cell grid and an empty source count', async () => {
   const device = await getWebGPUTestDevice();

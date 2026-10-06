@@ -1149,28 +1149,28 @@ it('GPUNetworkReachability gives zero-weight plateaus acyclic predecessors that 
   }
 }, 120000);
 
-it('GPUNetworkReachability chains 64 hops of a 100-edge zero chain with the default tie rounds and reports truncation', async () => {
+it('GPUNetworkReachability chains 128 hops of a 200-edge zero chain with the default tie rounds and reports truncation', async () => {
   const device = await getWebGPUTestDevice();
   if (!device) {
     return;
   }
-  const edges = Array.from({length: 100}, (_, node) => [node, node + 1, 0] as NetworkEdge);
-  // Default localIterations is 16, so 4 tie rounds chain 64 hops and 100 hops are truncated.
-  const csr = buildCSR(101, edges);
-  const fixture = createReachabilityFixture(device, csr, 101, {sources: [0]});
+  const edges = Array.from({length: 200}, (_, node) => [node, node + 1, 0] as NetworkEdge);
+  // Default localIterations is 32, so 4 tie rounds chain 128 hops and 200 hops are truncated.
+  const csr = buildCSR(201, edges);
+  const fixture = createReachabilityFixture(device, csr, 201, {sources: [0]});
   expect(fixture.props.maxTieIterations).toBeUndefined();
   fixture.graph.add(new GPUNetworkReachability(fixture.props));
   const compiled = fixture.graph.compile();
   submitGraph(device, compiled, undefined);
-  const predecessors = await readUint32(fixture.predecessorsBuffer, 101);
+  const predecessors = await readUint32(fixture.predecessorsBuffer, 201);
   expect(await readUint32(fixture.convergedBuffer, 1)).toEqual([0]);
   expect(predecessors.slice(0, 40)).toEqual([NONE, ...Array.from({length: 39}, (_, i) => i)]);
   compiled.destroy();
   destroyFixture(fixture);
   await expectTieParity(
     device,
-    {name: 'default depth', nodeCount: 101, edges, sources: [0]},
-    16,
+    {name: 'default depth', nodeCount: 201, edges, sources: [0]},
+    32,
     8
   );
 });

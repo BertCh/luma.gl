@@ -40,3 +40,4 @@ import './raster-sampling';
 import './particle-advection';
 import './flow-texture';
 import './change-detection';
+import './raster-patches';

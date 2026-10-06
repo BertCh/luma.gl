@@ -293,8 +293,8 @@ const WIDTH: u32 = ${width}u;
 const HEIGHT: u32 = ${height}u;
 const SHIFT_COUNT: u32 = ${shifts.count}u;
 const NORMALIZATION: f32 = ${getWGSLFloatLiteral(shifts.normalization)};
-var<private> SHIFTS: array<vec2<i32>, ${shifts.count}> = array<vec2<i32>, ${shifts.count}>(${offsets});
-var<private> FACTORS: array<f32, ${shifts.count}> = array<f32, ${shifts.count}>(${factors});`,
+const SHIFTS = array<vec2<i32>, ${shifts.count}>(${offsets});
+const FACTORS = array<f32, ${shifts.count}>(${factors});`,
         body: `let isValid = validity[validityOffset + index] != 0u;
   var value = getNaN(index);
   if (isValid) {
@@ -309,11 +309,10 @@ var<private> FACTORS: array<f32, ${shifts.count}> = array<f32, ${shifts.count}>(
       let sampleRow = clamp(row - offset.x, 0, i32(HEIGHT) - 1);
       let sampleColumn = clamp(column - offset.y, 0, i32(WIDTH) - 1);
       let sampleIndex = u32(sampleRow) * WIDTH + u32(sampleColumn);
-      if (validity[validityOffset + sampleIndex] != 0u) {
-        let rise = verticalExaggeration * (center - values[valuesOffset + sampleIndex]) + observerHeight;
-        if (rise > 0.0) {
-          sum += rise * FACTORS[shift];
-        }
+      // Canonical values carry NaN for invalid samples, so rise is NaN and fails the comparison.
+      let rise = verticalExaggeration * (center - values[valuesOffset + sampleIndex]) + observerHeight;
+      if (rise > 0.0) {
+        sum += rise * FACTORS[shift];
       }
     }
     value = sum / (observerHeight * NORMALIZATION);

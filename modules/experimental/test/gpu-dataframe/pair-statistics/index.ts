@@ -7,3 +7,4 @@ import './gpu-variogram.spec';
 import './gpu-spatial-correlogram.spec';
 import './gpu-ripley.spec';
 import './gpu-point-pattern-indices.spec';
+import './gpu-ripley-distance-functions.spec';

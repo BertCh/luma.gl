@@ -51,7 +51,15 @@ export type GPUColorScaleProps = {
    * Packed values. `float32` serves every scale except `ordinal`; `uint32` category codes select
    * the `ordinal` scale at compile time (the `scale` parameter is then ignored).
    */
-  values: GraphDataView<'float32'> | GraphDataView<'uint32'>;
+  values: GraphDataView<'float32'> | GraphDataView<'uint32'> | GraphDataView<'sint32'>;
+  /**
+   * How an integer `values` view is read. `'ordinal'` (default) treats `uint32` codes as
+   * categories for the `ordinal` scale, as above. `'numeric'` converts the integers to f32 on
+   * read (exact up to 2^24 in magnitude) and applies the per-frame `scale` parameter as for a
+   * float column, so a count column can be colored without a cast pass. A `sint32` view is
+   * always numeric. Ignored for `float32`. Topology.
+   */
+  integerValues?: 'ordinal' | 'numeric';
   /** Optional packed `uint32` row mask; zero makes the row no-data. */
   mask?: GraphDataView<'uint32'>;
   /**
@@ -151,7 +159,13 @@ export class GPUColorScale implements GPUCommandNodeProducer {
     if (rows < 1) {
       throw new Error(`${id} needs at least one row`);
     }
-    validatePackedView(props.values, ['float32', 'uint32'], `${id} values`);
+    validatePackedView(props.values, ['float32', 'uint32', 'sint32'], `${id} values`);
+    if (
+      props.integerValues !== undefined &&
+      !['ordinal', 'numeric'].includes(props.integerValues)
+    ) {
+      throw new Error(`${id} integerValues must be 'ordinal' or 'numeric'`);
+    }
     validatePackedView(props.domain, ['float32'], `${id} domain`);
     validatePackedUint32View(props.palette, `${id} palette`);
     validatePackedView(props.parameters, ['float32'], `${id} parameters`);
@@ -227,11 +241,21 @@ export class GPUColorScale implements GPUCommandNodeProducer {
       output.classCounts
     ]);
     const rows = props.values.length;
-    const isOrdinal = props.values.format === 'uint32';
+    const isOrdinal = props.values.format === 'uint32' && props.integerValues !== 'numeric';
+    const integerType =
+      props.values.format === 'float32'
+        ? undefined
+        : props.values.format === 'uint32'
+          ? 'u32'
+          : 'i32';
     const classes =
       output.classIndices ?? createTransientView(graph, `${id}-classes`, 'uint32', rows);
     const positions = createTransientView(graph, `${id}-positions`, 'float32', rows);
-    const read = (name: string, view: GraphDataView, type: 'u32' | 'f32'): WGSLKernelBinding => ({
+    const read = (
+      name: string,
+      view: GraphDataView,
+      type: 'u32' | 'i32' | 'f32'
+    ): WGSLKernelBinding => ({
       name,
       view,
       type,
@@ -267,9 +291,9 @@ ${COLOR_SCALE_WGSL}`;
       createWGSLKernelNode<Parameters>(graph, {
         id: `${id}-classify`,
         operation: OPERATION,
-        variant: isOrdinal ? 'classify-ordinal' : 'classify',
+        variant: isOrdinal ? 'classify-ordinal' : integerType ? 'classify-integer' : 'classify',
         bindings: [
-          read('values', props.values, isOrdinal ? 'u32' : 'f32'),
+          read('values', props.values, integerType ?? 'f32'),
           ...(props.mask ? [read('rowMask', props.mask, 'u32')] : []),
           read('domain', props.domain, 'f32'),
           ...(props.domainCount ? [read('domainCountIn', props.domainCount, 'u32')] : []),
@@ -292,7 +316,7 @@ ${declarations}`,
   if (paletteCount == 0u) {
     return;
   }
-    ${isOrdinal ? ORDINAL_BODY : getFloatBody(props)}`
+    ${isOrdinal ? ORDINAL_BODY : getFloatBody(props, integerType !== undefined)}`
       })
     );
 
@@ -368,7 +392,7 @@ const ORDINAL_BODY = /* wgsl */ `let code = values[valuesOffset + index];
     classes[classesOffset + index] = code;
   }`;
 
-function getFloatBody(props: GPUColorScaleProps): string {
+function getFloatBody(props: GPUColorScaleProps, isInteger: boolean): string {
   const domainCountSource = props.domainCount
     ? `let classTotal = domainCountIn[domainCountInOffset];
   domainCount = select(0u, min(classTotal, MAXIMUM_DOMAIN_COUNT) + 1u, classTotal > 0u);`
@@ -379,7 +403,7 @@ function getFloatBody(props: GPUColorScaleProps): string {
   if (domainCount == 0u) {
     return;
   }
-  let value = values[valuesOffset + index];
+  let value = ${isInteger ? 'f32(values[valuesOffset + index])' : 'values[valuesOffset + index]'};
   if (isNanBits(value)) {
     return;
   }

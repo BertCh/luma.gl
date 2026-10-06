@@ -206,3 +206,22 @@ it('GPUNetworkCostMatrix honors a cost limit and partial last batches on a grid'
   });
   expect(truncated.converged).toBe(0);
 });
+
+it('GPUNetworkCostMatrix default laneCount is bit-identical to laneCount 1', async () => {
+  const device = await getWebGPUTestDevice();
+  if (!device) {
+    return;
+  }
+  const width = 12;
+  const nodeCount = width * width;
+  const {edges} = createGridFixture(5, width, width);
+  const csr = buildCSR(nodeCount, edges);
+  const rows: AccessibilitySeed[][] = Array.from({length: nodeCount}, (_, row) => [
+    {node: row, cost: 0}
+  ]);
+  const options = {maxIterations: 32};
+  const defaults = await runCostMatrix(device, csr, nodeCount, rows, options);
+  const single = await runCostMatrix(device, csr, nodeCount, rows, {...options, laneCount: 1});
+  expect(defaults.converged).toBe(1);
+  expect(new Uint32Array(defaults.matrix.buffer)).toEqual(new Uint32Array(single.matrix.buffer));
+});

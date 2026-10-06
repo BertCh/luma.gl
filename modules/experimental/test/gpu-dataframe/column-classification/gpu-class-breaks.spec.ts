@@ -100,6 +100,7 @@ function createHarness(
     withMask: boolean;
     naturalBreaksBinCount: number;
     methods?: GPUClassBreaksMethod[];
+    valueFormat?: 'float32' | 'uint32' | 'sint32';
   }
 ): Harness {
   const {rows, withMask, naturalBreaksBinCount} = props;
@@ -121,7 +122,7 @@ function createHarness(
   const graph = new GPUCommandGraph(device, {id: 'class-breaks-graph'});
   const contributor = new GPUClassBreaks({
     id: 'breaks',
-    values: importGraphBuffer(graph, 'values', valuesBuffer, 'float32', rows),
+    values: importGraphBuffer(graph, 'values', valuesBuffer, props.valueFormat ?? 'float32', rows),
     mask: maskBuffer ? importGraphBuffer(graph, 'mask', maskBuffer, 'uint32', rows) : undefined,
     parameters: parameterBuffer.importToGraph(graph),
     maximumClassCount: MAXIMUM_CLASS_COUNT,
@@ -148,7 +149,13 @@ function createHarness(
   const harness: Harness = {
     buildCount: 0,
     async run(values, mask, parameters) {
-      valuesBuffer.write(values);
+      valuesBuffer.write(
+        props.valueFormat === 'uint32'
+          ? Uint32Array.from(values)
+          : props.valueFormat === 'sint32'
+            ? Int32Array.from(values)
+            : values
+      );
       if (maskBuffer) {
         maskBuffer.write(mask ?? new Uint32Array(rows).fill(1));
       }
@@ -446,3 +453,37 @@ it('GPUClassBreaks scales to 1M rows', async () => {
     harness.destroy();
   }
 }, 180000);
+
+it('GPUClassBreaks classifies uint32 and sint32 columns like the converted float column', async () => {
+  const device = await getWebGPUTestDevice();
+  if (!device) {
+    return;
+  }
+  const rows = 4000;
+  const binCount = 256;
+  for (const valueFormat of ['uint32', 'sint32'] as const) {
+    const harness = createHarness(device, {
+      rows,
+      withMask: true,
+      naturalBreaksBinCount: binCount,
+      valueFormat
+    });
+    try {
+      const random = createRandom(valueFormat === 'uint32' ? 5 : 6);
+      const mask = new Uint32Array(rows).map(() => (random() < 0.85 ? 1 : 0));
+      for (const [frameIndex, frame] of FRAMES.entries()) {
+        // Count-like integers: many ties, a heavy tail, and negatives for sint32.
+        const values = new Float32Array(rows).map(() => {
+          const count = Math.floor(3 / (1 - random() * 0.999) ** 1.5);
+          return valueFormat === 'sint32' ? count - 4 : count;
+        });
+        const result = await harness.run(values, mask, frame);
+        checkFrame(result, values, mask, frame, binCount);
+        expect(result.classCount, `${valueFormat} frame ${frameIndex}`).toBeGreaterThan(0);
+      }
+      expect(harness.buildCount).toBe(1);
+    } finally {
+      harness.destroy();
+    }
+  }
+}, 120000);

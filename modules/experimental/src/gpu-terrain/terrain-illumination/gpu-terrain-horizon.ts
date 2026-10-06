@@ -1092,7 +1092,7 @@ const SECTOR: u32 = ${props.sector}u;
 const DIRECTION_COUNT: u32 = ${props.directionCount}u;
 const DIRECTION: vec2<f32> = vec2<f32>(${getWGSLFloatLiteral(props.direction[0])}, ${getWGSLFloatLiteral(props.direction[1])});
 const STEP_COUNT: u32 = ${props.stepCount}u;
-var<private> STEP_DISTANCES: array<f32, ${props.stepCount}> = array<f32, ${props.stepCount}>(${props.distances});
+const STEP_DISTANCES: array<f32, ${props.stepCount}> = array<f32, ${props.stepCount}>(${props.distances});
 ${TERRAIN_ILLUMINATION_WGSL_CONSTANTS}
 ${zenithOutput?.declarations ?? ''}
 ${getTerrainGroundCellSizeWGSL(props.cellSizeMode, {

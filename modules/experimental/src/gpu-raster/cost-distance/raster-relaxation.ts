@@ -331,6 +331,15 @@ export function createRasterTiledRelaxationNodes<Parameters>(
     declarations: string;
     /** In-tile repetitions per global iteration. Defaults to `2 * RASTER_RELAXATION_TILE_SIZE`. */
     innerIterations?: number;
+    /**
+     * Enables directional tile sweeps after this many plain tiled iterations. From then on the
+     * unrolled iterations cycle through tiled, right, left, down, and up passes. A sweep pass runs
+     * one workgroup per tile row (or column) that walks its tiles in order, so a front travels along
+     * a whole row or column of tiles in one pass instead of one tile. That removes the
+     * one-tile-per-iteration limit on long corridors and spirals, while open terrain (which
+     * converges in the plain phase) pays nothing. Undefined disables sweeps.
+     */
+    sweepAfterIteration?: number;
   }
 ): GPUCommandNode<Parameters>[] {
   const {relaxation} = props;
@@ -353,9 +362,8 @@ var<workgroup> tileActive: u32;
 var<workgroup> tileChanged: u32;
 var<workgroup> tileChangedAtomic: atomic<u32>;
 ${props.declarations}`;
-  const body = /* wgsl */ `
-  let tileIndex = workgroupIndex;
-  if (tileIndex >= TILE_COUNT) { return; }
+  const relaxTileFunction = /* wgsl */ `
+fn relaxTile(tileIndex: u32, localInvocationIndex: u32) {
   let tileColumn = tileIndex % TILES_X;
   let tileRow = tileIndex / TILES_X;
   // The gate increments status[2] after each relaxation, so it is this relaxation's index.
@@ -438,16 +446,45 @@ ${props.declarations}`;
   if (localInvocationIndex == 0u && atomicLoad(&tileChangedAtomic) != 0u) {
     atomicMax(&tileStamps[tileStampsOffset + tileIndex], iteration + 2u);
     atomicStore(&status[statusOffset], 1u);
+  }
+}`;
+  const tiledBody = /* wgsl */ `
+  if (workgroupIndex >= TILE_COUNT) { return; }
+  relaxTile(workgroupIndex, localInvocationIndex);`;
+  const getSweepBody = (vertical: boolean, reverse: boolean) => /* wgsl */ `
+  let lineCount = ${vertical ? relaxation.tilesX : Math.ceil(props.height / tileSize)}u;
+  let stepCount = ${vertical ? Math.ceil(props.height / tileSize) : relaxation.tilesX}u;
+  if (workgroupIndex >= lineCount) { return; }
+  for (var step = 0u; step < stepCount; step++) {
+    let position = ${reverse ? 'stepCount - 1u - step' : 'step'};
+    let tileIndex = ${vertical ? 'position * TILES_X + workgroupIndex' : 'workgroupIndex * TILES_X + position'};
+    relaxTile(tileIndex, localInvocationIndex);
+    // Publish this tile's cells to the next tile's halo load within the workgroup.
+    storageBarrier();
+    workgroupBarrier();
   }`;
   const nodes: GPUCommandNode<Parameters>[] = [];
+  const sweepPasses = [
+    {variant: 'sweep-right', body: getSweepBody(false, false)},
+    {variant: 'sweep-left', body: getSweepBody(false, true)},
+    {variant: 'sweep-down', body: getSweepBody(true, false)},
+    {variant: 'sweep-up', body: getSweepBody(true, true)}
+  ];
   for (let iteration = 0; iteration < props.maxIterations; iteration++) {
     const nodeId = `${props.id}-relax-${iteration}`;
     const {condition, extraResources} = getRasterIterationCondition<Parameters>(state, nodeId);
+    // After the plain phase the schedule cycles tiled, right, left, down, up.
+    const cycleIndex =
+      props.sweepAfterIteration === undefined || iteration < props.sweepAfterIteration
+        ? 0
+        : (iteration - props.sweepAfterIteration) % (sweepPasses.length + 1);
+    const pass =
+      cycleIndex === 0 ? {variant: 'tiled-relax', body: tiledBody} : sweepPasses[cycleIndex - 1];
     nodes.push(
       createWGSLKernelNode<Parameters>(graph, {
         id: nodeId,
         operation: props.operation,
-        variant: 'tiled-relax',
+        variant: pass.variant,
         bindings: [
           {name: 'values', view: props.values, type: 'atomic<u32>', access: 'read_write'},
           {name: 'auxiliary', view: props.auxiliary, type: 'f32', access: 'read'},
@@ -463,8 +500,8 @@ ${props.declarations}`;
         invocationCount: state.invocationCount,
         workgroupSize: WORKGROUP_SIZE,
         guardIndex: false,
-        declarations,
-        body,
+        declarations: `${declarations}\n${relaxTileFunction}`,
+        body: pass.body,
         condition,
         extraResources
       }),

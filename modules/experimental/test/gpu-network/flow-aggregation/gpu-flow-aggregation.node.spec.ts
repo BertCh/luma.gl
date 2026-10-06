@@ -191,6 +191,7 @@ it('GPUFlowAggregation schedules ids zones in order', () => {
   const graph = new GPUCommandGraph(device);
   const ids = new GPUFlowAggregation(
     createProps(graph, {
+      sumOrder: 'atomic',
       weights: createTransientView(graph, 'weights', 'float32', 10),
       flowCounts: createTransientView(graph, 'flow-counts', 'uint32', 4),
       flowOriginZoneIds: createTransientView(graph, 'flow-origin', 'uint32', 4),
@@ -321,6 +322,9 @@ it('GPUFlowAggregation validates word time windows and sumOrder', () => {
   );
   expect(contributor.sumOrder).toBe('sorted');
   expect(contributor.getCommandNodes(graph).length).toBeGreaterThan(0);
+  const defaultGraph = new GPUCommandGraph(device);
+  const defaultContributor = new GPUFlowAggregation(createProps(defaultGraph, {}));
+  expect(defaultContributor.sumOrder).toBe('sorted');
   device.destroy();
 });
 

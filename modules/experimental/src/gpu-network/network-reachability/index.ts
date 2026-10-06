@@ -10,3 +10,12 @@ export {
   GPU_NETWORK_REACHABILITY_MAXIMUM_TIE_ITERATIONS
 } from './gpu-network-reachability';
 export type {GPUNetworkReachabilityProps} from './gpu-network-reachability';
+export {
+  adaptReachabilityIterations,
+  recommendReachabilityIterations
+} from './network-reachability-tuning';
+export type {
+  ReachabilityIterationsAdaptationProps,
+  ReachabilityIterationsRecommendation,
+  ReachabilityIterationsRecommendationProps
+} from './network-reachability-tuning';

@@ -18,9 +18,10 @@ import {
 } from '../../utils/gpu-contributor-utils';
 import {GPUNetworkReachability} from '../network-reachability/index';
 import {ACCESSIBILITY_NONE} from './network-accessibility-passes';
+import {recommendLaneCount} from './network-accessibility-lanes';
 
 const OPERATION = 'GPUNetworkCostMatrix';
-const DEFAULT_LANE_COUNT = 32;
+const DEFAULT_LOCAL_ITERATIONS = 16;
 
 /**
  * Properties for {@link GPUNetworkCostMatrix}.
@@ -61,13 +62,14 @@ export type GPUNetworkCostMatrixProps = {
   costLimit?: GraphDataView<'float32'>;
   /**
    * Compile-time rows searched together in one lane-expanded reachability pass. Defaults to
-   * `min(rowCount, 32)`. Scratch memory grows with `laneCount * (nodeCount + 2 * edgeCount)` words
+   * `recommendLaneCount()`: about 1M expanded nodes per batch (at least 32 lanes), within 128 MB of
+   * scratch, at most `rowCount`. Scratch memory grows with `laneCount * (nodeCount + 2 * edgeCount)` words
    * and the command node count with `ceil(rowCount / laneCount) * (maxIterations + 2)`.
    */
   laneCount?: number;
   /** Rounds of every batch, as `GPUNetworkReachability.maxIterations`. Defaults to 64. */
   maxIterations?: number;
-  /** Hops chained per workgroup per round, as `GPUNetworkReachability.localIterations`. */
+  /** Hops chained per workgroup per round, as `GPUNetworkReachability.localIterations`. Defaults to 16, which suits lane-expanded searches. */
   localIterations?: number;
   /**
    * Row-major `[rowCount x nodeCount]` minimum cost from row seeds to every node, `+Infinity` when
@@ -167,7 +169,13 @@ export class GPUNetworkCostMatrix implements GPUCommandNodeProducer {
     if (!Number.isSafeInteger(this.seedsPerRow) || this.seedsPerRow < 1) {
       throw new Error(`${id} seedsPerRow must be a positive integer`);
     }
-    this.laneCount = props.laneCount ?? Math.min(this.rowCount, DEFAULT_LANE_COUNT);
+    this.laneCount =
+      props.laneCount ??
+      recommendLaneCount({
+        rowCount: this.rowCount,
+        nodeCount: this.nodeCount,
+        edgeCount: props.neighbors.length
+      });
     if (
       !Number.isSafeInteger(this.laneCount) ||
       this.laneCount < 1 ||
@@ -354,7 +362,7 @@ const SEEDS_PER_ROW: u32 = ${seedsPerRow}u;`,
           sourceCosts: props.seedCosts,
           costLimit: props.costLimit,
           maxIterations: props.maxIterations,
-          localIterations: props.localIterations,
+          localIterations: props.localIterations ?? DEFAULT_LOCAL_ITERATIONS,
           costs: getSubView(graph, props.costs, batch * laneCount * nodeCount, batchNodeCount),
           converged: batchConverged ? getSubView(graph, batchConverged, batch, 1) : undefined
         }).getCommandNodes(graph)

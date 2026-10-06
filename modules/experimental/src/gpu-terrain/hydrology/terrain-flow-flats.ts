@@ -12,7 +12,7 @@ import {
   createRasterTiledRelaxation,
   createRasterTiledRelaxationNodes
 } from '../../gpu-raster/cost-distance/raster-relaxation';
-import type {TerrainFlowGrid} from './terrain-flow-passes';
+import {TERRAIN_FLOW_SWEEP_AFTER_ITERATION, type TerrainFlowGrid} from './terrain-flow-passes';
 
 const OPERATION = 'GPUTerrainFlow';
 
@@ -164,6 +164,7 @@ export function createTerrainFlowFlatNodes<Parameters>(
     const relaxNodes = createRasterTiledRelaxationNodes<Parameters>(graph, {
       ...relaxationProps,
       relaxation,
+      sweepAfterIteration: TERRAIN_FLOW_SWEEP_AFTER_ITERATION,
       values,
       auxiliary,
       settings: props.settings,

@@ -199,6 +199,7 @@ export {
   evaluateVariogramModel,
   fitVariogramModel,
   getGPUPointPatternIndicesParameterValues,
+  getGPURipleyDistanceParameterValues,
   getGPURipleyParameterValues,
   getGPUSpatialCorrelogramParameterValues,
   getGPUVariogramParameterValues,
@@ -208,6 +209,7 @@ export {
   GPU_POINT_PATTERN_INDICES_PARAMETER_LENGTH,
   GPU_QUADRAT_MAXIMUM_COUNT,
   GPU_QUADRAT_STATISTICS_LENGTH,
+  GPU_RIPLEY_DISTANCE_PARAMETER_LENGTH,
   GPU_RIPLEY_EDGE_CORRECTION,
   GPU_RIPLEY_PARAMETER_LENGTH,
   GPU_RIPLEY_WEIGHT_CAP,
@@ -218,12 +220,16 @@ export {
   GPU_VARIOGRAM_STATISTICS_LENGTH,
   GPUPointPatternIndices,
   GPURipley,
+  GPURipleyDistanceFunctions,
   GPUSpatialCorrelogram,
   GPUVariogram
 } from './pair-statistics/index';
 export type {
   GPUPointPatternIndicesParameters,
   GPUPointPatternIndicesProps,
+  GPURipleyDistanceEdgeCorrection,
+  GPURipleyDistanceFunctionsProps,
+  GPURipleyDistanceParameters,
   GPURipleyEdgeCorrection,
   GPURipleyParameters,
   GPURipleyProps,

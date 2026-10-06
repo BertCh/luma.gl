@@ -43,10 +43,10 @@ it('GPUNetworkServiceAreas schedules reachability, label propagation, and option
   expect(ids.slice(labelStart, labelStart + 8)).toEqual([
     'service-label-initialize',
     'service-label-seed',
-    'service-label-relax-0',
-    'service-label-gate-0',
-    'service-label-relax-1',
-    'service-label-gate-1',
+    'service-label-tight-edges',
+    'service-label-frontier-seed',
+    'service-label-round-0',
+    'service-label-round-1',
     'service-finalize',
     expect.stringMatching(/^service-facility-node-counts/)
   ]);
@@ -58,7 +58,10 @@ it('GPUNetworkServiceAreas schedules reachability, label propagation, and option
     .map(node => node.id);
   expect(minimalIds).toContain('network-service-areas-label-seed');
   expect(minimalIds).not.toContain('network-service-areas-finalize');
-  expect(minimalIds.filter(id => id.includes('-label-relax-')).length).toBe(64);
+  expect(minimalIds.filter(id => id.includes('-label-round-')).length).toBe(32);
+  expect(minimalIds.some(id => id.includes('-label-gate-'))).toBe(false);
+  // Default props must stay within the graph node budget (was 198 with hop-per-round gating).
+  expect(minimalIds.length).toBeLessThanOrEqual(120);
   expect(minimalIds.some(id => id.includes('facility-'))).toBe(false);
 
   const emptyGraph = new GPUCommandGraph(device);
@@ -100,6 +103,10 @@ it('GPUNetworkServiceAreas validates props', () => {
   );
   for (const maxIterations of [0, 1025, 1.5]) {
     expect(() => create({maxIterations})).toThrow(/maxIterations/);
+    expect(() => create({labelIterations: maxIterations})).toThrow(/labelIterations/);
+  }
+  for (const localIterations of [0, 65, 1.5]) {
+    expect(() => create({localIterations})).toThrow(/localIterations/);
   }
   expect(() =>
     create({costs: createTransientView(graph, 'uint-costs', 'uint32', 8) as never})

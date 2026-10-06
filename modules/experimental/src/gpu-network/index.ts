@@ -58,7 +58,8 @@ export {
   GPU_NETWORK_SNAPPING_NONE,
   GPUNetworkAccessibility,
   GPUNetworkCostMatrix,
-  GPUNetworkSnapping
+  GPUNetworkSnapping,
+  recommendLaneCount
 } from './network-accessibility/index';
 export type {
   GPUNetworkAccessibilityCatchment,
@@ -67,7 +68,8 @@ export type {
   GPUNetworkAccessibilityProps,
   GPUNetworkCostMatrixProps,
   GPUNetworkSnappingProps,
-  GPUNetworkSnappingSeedDirection
+  GPUNetworkSnappingSeedDirection,
+  RecommendLaneCountOptions
 } from './network-accessibility/index';
 
 export {
@@ -100,13 +102,20 @@ export type {
 } from './network-coarsening/index';
 
 export {
+  adaptReachabilityIterations,
   GPU_NETWORK_REACHABILITY_MAXIMUM_ITERATIONS,
   GPU_NETWORK_REACHABILITY_MAXIMUM_LOCAL_ITERATIONS,
   GPU_NETWORK_REACHABILITY_MAXIMUM_TIE_ITERATIONS,
   GPU_NETWORK_REACHABILITY_NONE,
-  GPUNetworkReachability
+  GPUNetworkReachability,
+  recommendReachabilityIterations
 } from './network-reachability/index';
-export type {GPUNetworkReachabilityProps} from './network-reachability/index';
+export type {
+  GPUNetworkReachabilityProps,
+  ReachabilityIterationsAdaptationProps,
+  ReachabilityIterationsRecommendation,
+  ReachabilityIterationsRecommendationProps
+} from './network-reachability/index';
 
 export {
   decodeGPUNetworkStatistics,
@@ -140,3 +149,17 @@ export type {
   GPUNetworkSubgraphFilterProps,
   GPUNetworkSubgraphFilterState
 } from './network-subgraph-filter/index';
+
+export {
+  getGPUNetworkIsochroneParameterValues,
+  GPU_NETWORK_ISOCHRONES_PARAMETER_LENGTH,
+  GPUNetworkIsochrones
+} from './network-isochrones/index';
+
+export type {
+  GPUNetworkIsochroneCellOutline,
+  GPUNetworkIsochroneRaster,
+  GPUNetworkIsochroneSettings,
+  GPUNetworkIsochronesMode,
+  GPUNetworkIsochronesProps
+} from './network-isochrones/index';

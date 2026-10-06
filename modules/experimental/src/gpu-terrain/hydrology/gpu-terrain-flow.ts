@@ -207,7 +207,11 @@ export type GPUTerrainFlowProps = {
   cellSizeMode?: GPUTerrainCellSizeMode;
   /** Fill depressions before routing flow. Defaults to false. Compile-time. */
   fillDepressions?: boolean;
-  /** Maximum gated fill iterations in `[1, 1024]`. Defaults to 128. Compile-time. */
+  /**
+   * Maximum gated fill iterations in `[1, 1024]`. Defaults to 512. Compile-time. After 96 plain tiled
+   * iterations the fill adds directional row and column sweeps, so long serpentine or spiral basins
+   * converge; read `fillConverged` for basins that are still longer.
+   */
   maxFillIterations?: number;
   /**
    * Route flow across flats (Barnes, Lehman and Mulla 2014): cells of class `flat` that are
@@ -217,7 +221,7 @@ export type GPUTerrainFlowProps = {
    * Compile-time.
    */
   resolveFlats?: boolean;
-  /** Maximum gated iterations of each flat-resolution relaxation in `[1, 1024]`. Defaults to 128. Compile-time. */
+  /** Maximum gated iterations of each flat-resolution relaxation in `[1, 1024]`. Defaults to 512. Compile-time. */
   maxFlatIterations?: number;
   /**
    * Flow routing used for `accumulation` and `streams`. `flowDirections` and `cellClasses` are
@@ -333,8 +337,8 @@ export class GPUTerrainFlow implements GPUCommandNodeProducer {
     if (!['cells', 'area'].includes(props.accumulationUnits ?? 'cells')) {
       throw new Error(`${id} accumulationUnits must be cells or area`);
     }
-    validateRasterIterations(id, 'maxFillIterations', props.maxFillIterations ?? 128);
-    validateRasterIterations(id, 'maxFlatIterations', props.maxFlatIterations ?? 128);
+    validateRasterIterations(id, 'maxFillIterations', props.maxFillIterations ?? 512);
+    validateRasterIterations(id, 'maxFlatIterations', props.maxFlatIterations ?? 512);
     if (!['d8', 'd-infinity', 'mfd-freeman', 'mfd-quinn'].includes(props.flowRouting ?? 'd8')) {
       throw new Error(`${id} flowRouting must be d8, d-infinity, mfd-freeman, or mfd-quinn`);
     }
@@ -434,7 +438,7 @@ export class GPUTerrainFlow implements GPUCommandNodeProducer {
         ...createTerrainFlowFillNodes(graph, {
           ...grid,
           id,
-          maxIterations: props.maxFillIterations ?? 128,
+          maxIterations: props.maxFillIterations ?? 512,
           elevation,
           filled,
           settings: props.settings,
@@ -475,7 +479,7 @@ export class GPUTerrainFlow implements GPUCommandNodeProducer {
         ...createTerrainFlowFlatNodes(graph, {
           ...grid,
           id,
-          maxIterations: props.maxFlatIterations ?? 128,
+          maxIterations: props.maxFlatIterations ?? 512,
           elevation,
           surface,
           settings: props.settings,

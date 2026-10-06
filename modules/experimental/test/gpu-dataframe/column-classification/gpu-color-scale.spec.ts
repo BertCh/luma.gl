@@ -49,7 +49,9 @@ type Frame = {
 };
 
 type FixtureConfig = {
-  values: Float32Array | Uint32Array;
+  values: Float32Array | Uint32Array | Int32Array;
+  /** Reads a `uint32` column as numbers instead of category codes. */
+  integerValues?: 'ordinal' | 'numeric';
   mask?: Uint32Array;
   maximumDomainCount: number;
   maximumPaletteCount: number;
@@ -68,7 +70,6 @@ type Fixture = {
 
 function createFixture(device: Device, config: FixtureConfig): Fixture {
   const rows = config.values.length;
-  const isOrdinal = config.values instanceof Uint32Array;
   const wanted = config.outputs ?? {colors: true, classIndices: true, classCounts: true};
   const graph = new GPUCommandGraph(device, {id: 'color-scale-graph'});
   const buffers: Buffer[] = [];
@@ -125,21 +126,18 @@ function createFixture(device: Device, config: FixtureConfig): Fixture {
   graph.add(
     new GPUColorScale({
       id: 'scale',
-      values: isOrdinal
-        ? importGraphBuffer(
-            graph,
-            'values',
-            track(createInputBuffer(device, config.values)),
-            'uint32',
-            rows
-          )
-        : importGraphBuffer(
-            graph,
-            'values',
-            track(createInputBuffer(device, config.values)),
-            'float32',
-            rows
-          ),
+      values: importGraphBuffer(
+        graph,
+        'values',
+        track(createInputBuffer(device, config.values)),
+        config.values instanceof Float32Array
+          ? 'float32'
+          : config.values instanceof Int32Array
+            ? 'sint32'
+            : 'uint32',
+        rows
+      ) as never,
+      integerValues: config.integerValues,
       mask: config.mask
         ? importGraphBuffer(
             graph,
@@ -245,7 +243,10 @@ function getOracle(config: FixtureConfig, frame: Frame): ColorScaleOracleResult 
         : 0
       : (frame.options.domainCount ?? frame.domain.length);
   return computeColorScaleOnCPU({
-    values: config.values,
+    values:
+      config.integerValues === 'numeric' || config.values instanceof Int32Array
+        ? Float32Array.from(config.values)
+        : (config.values as Float32Array | Uint32Array),
     mask: config.mask,
     domain,
     activeDomainCount,
@@ -792,3 +793,58 @@ function expectParityQuick(actual: FrameResult, expected: ColorScaleOracleResult
     );
   }
 }
+
+it('GPUColorScale colors uint32 and sint32 columns numerically with integerValues', async () => {
+  const device = await getWebGPUTestDevice();
+  if (!device) {
+    return;
+  }
+  const random = createRandom(31);
+  const rows = 500;
+  const counts = Uint32Array.from({length: rows}, () => Math.floor(random() * 40));
+  counts[0] = 0xffffffff - 5;
+  const signed = Int32Array.from(counts, (count, row) => (row === 0 ? -7 : count - 20));
+  const mask = Uint32Array.from({length: rows}, () => (random() < 0.9 ? 1 : 0));
+  const palette = Array.from({length: 6}, (_, index) =>
+    packGPUColor(index * 40, 255 - index * 40, index, 255)
+  );
+  const frames: Frame[] = [
+    {
+      domain: [-Infinity, 5, 10, 20, 30, Infinity],
+      palette,
+      options: {scale: 'threshold', noDataColor: NO_DATA}
+    },
+    {
+      domain: [0, 40],
+      palette: palette.slice(0, 4),
+      options: {scale: 'quantize', noDataColor: NO_DATA, clamp: true}
+    }
+  ];
+  for (const [label, config] of [
+    ['uint32', {values: counts, integerValues: 'numeric', mask}],
+    ['sint32', {values: signed, mask}]
+  ] as const) {
+    const fixture = createFixture(device, {
+      ...config,
+      maximumDomainCount: 6,
+      maximumPaletteCount: 6
+    });
+    try {
+      for (const [index, frame] of frames.entries()) {
+        const actual = await fixture.run(frame);
+        const expected = expectParity(
+          actual,
+          {...config, maximumDomainCount: 6, maximumPaletteCount: 6},
+          frame,
+          true,
+          `${label} frame ${index}`
+        );
+        // The numeric path is not the ordinal path: several classes occur.
+        expect(new Set(actual.classIndices).size).toBeGreaterThanOrEqual(3);
+        expect(Array.from(actual.classCounts)).toEqual(Array.from(expected.classCounts));
+      }
+    } finally {
+      fixture.destroy();
+    }
+  }
+}, 120000);

@@ -55,3 +55,13 @@ export {
   GPU_QUADRAT_STATISTICS_LENGTH
 } from './point-pattern-indices-parameters';
 export type {GPUPointPatternIndicesParameters} from './point-pattern-indices-parameters';
+export {GPURipleyDistanceFunctions} from './gpu-ripley-distance-functions';
+export type {GPURipleyDistanceFunctionsProps} from './gpu-ripley-distance-functions';
+export {
+  getGPURipleyDistanceParameterValues,
+  GPU_RIPLEY_DISTANCE_PARAMETER_LENGTH
+} from './ripley-distance-parameters';
+export type {
+  GPURipleyDistanceEdgeCorrection,
+  GPURipleyDistanceParameters
+} from './ripley-distance-parameters';

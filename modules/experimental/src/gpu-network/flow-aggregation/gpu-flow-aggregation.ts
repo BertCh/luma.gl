@@ -117,9 +117,14 @@ export type GPUFlowAggregationTimeWindow = {
 /**
  * Order in which float weight sums are accumulated.
  *
- * - `'atomic'`: compare-exchange float addition. Fast; rounding order depends on GPU scheduling.
- * - `'sorted'`: rows are stably sorted by key and reduced per key in a fixed tree, so sums are
- *   bitwise identical across runs and devices. Costs extra sort, scan, and gather passes.
+ * - `'sorted'` (default): rows are stably sorted by key and reduced per key in a fixed tree, so sums
+ *   are bitwise identical across runs and devices. Costs extra sort, scan, and gather passes; about
+ *   13-24 ms for 1M rows whether flows are concentrated or spread over 4096 pairs.
+ * - `'atomic'`: compare-exchange float addition, rounding order depends on GPU scheduling. Skips the
+ *   sorts, and was about 4x faster (21 ms against 85 ms for 1M rows) only when almost every row has
+ *   its own pair (about 600k distinct pairs). Lanes that share a pair or zone retry on one address
+ *   and serialize: 1M rows over 4096 pairs took 70 ms against 13 ms, and 1M rows with 90% on one
+ *   pair took 12-17 seconds against 22 ms.
  */
 export type GPUFlowAggregationSumOrder = 'atomic' | 'sorted';
 
@@ -146,7 +151,7 @@ export type GPUFlowAggregationProps = {
   destinationZoneIds?: GraphDataView<'uint32'>;
   /**
    * Float weight sum order for `flowWeights`, `zoneOutWeights`, and `zoneInWeights`. Compile-time.
-   * Defaults to `'atomic'`.
+   * Defaults to `'sorted'`.
    */
   sumOrder?: GPUFlowAggregationSumOrder;
   /** Optional per-row weight with one row per flow row. Non-finite weights are ignored in sums. Per-frame contents. */
@@ -208,11 +213,12 @@ export type GPUFlowAggregationProps = {
  * rewritten each encoding with sentinels (`0xffffffff` IDs, zero counts and weights). Zone totals
  * count every accepted row, including rows whose pair overflowed the table.
  *
- * Counts are exact. With `sumOrder: 'atomic'` (default) float sums use atomic addition, so their
- * rounding order is not deterministic (small integer weights stay exact). With `sumOrder: 'sorted'`
- * every float sum (`flowWeights`, `zoneOutWeights`, `zoneInWeights`) is accumulated in source row
+ * Counts are exact. With `sumOrder: 'sorted'` (default) every float sum (`flowWeights`, `zoneOutWeights`, `zoneInWeights`) is accumulated in source row
  * order within each key by a fixed tree, so it is bitwise identical across runs and devices, at the
  * cost of a stable sort, a scan, and gather passes per sum (about 3 sorts for pair and zone sums).
+ * With `sumOrder: 'atomic'` float sums use compare-exchange atomic addition, so their rounding order
+ * is not deterministic (small integer weights stay exact), and rows that share a pair or zone
+ * serialize on one address; use it only when nearly every row has a distinct pair.
  * Weight ranking uses the final float sum either way.
  *
  * The time gate accepts float timestamps (optionally double-single) or exact Int64 word timestamps
@@ -241,7 +247,7 @@ export class GPUFlowAggregation implements GPUCommandNodeProducer {
     this.props = props;
     const id = this.id;
     const {zones, output, weights} = props;
-    this.sumOrder = props.sumOrder ?? 'atomic';
+    this.sumOrder = props.sumOrder ?? 'sorted';
     if (this.sumOrder !== 'atomic' && this.sumOrder !== 'sorted') {
       throw new Error(`${id} sumOrder must be atomic or sorted`);
     }

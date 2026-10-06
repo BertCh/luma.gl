@@ -28,6 +28,7 @@ import {
   type TerrainFlowOracleResult
 } from './terrain-flow-oracle';
 import {toBits} from '../terrain-test-utils';
+import {createSerpentineDEM, fillDepressionsPriorityFlood} from './terrain-flow-corridors';
 
 type FlowOptions = {
   settings?: GPUTerrainFlowSettings;
@@ -493,4 +494,22 @@ it('GPUTerrainFlow publishes both convergence flags into one summary buffer', as
   expect(toBits(actual.filled)).toEqual(toBits(expected.filled));
   expect(toBits(actual.accumulation)).toEqual(toBits(expected.accumulation));
   shared.destroy();
+});
+
+it('GPUTerrainFlow fills a 256x256 serpentine corridor at default iterations', async () => {
+  const device = await getWebGPUTestDevice();
+  if (!device) {
+    return;
+  }
+  // Before directional sweeps a fill front advanced about one tile per iteration and this corridor
+  // (about 32k cells long) never converged within the default iteration budget.
+  const size = 256;
+  for (const mode of ['pit', 'drain'] as const) {
+    const elevation = createSerpentineDEM(size, mode);
+    const fixture = createFlowFixture(device, elevation, size, size, {fillDepressions: true});
+    const actual = await fixture.run();
+    expect(actual.fillConverged).toBe(1);
+    expect(toBits(actual.filled)).toEqual(toBits(fillDepressionsPriorityFlood(elevation, size)));
+    fixture.destroy();
+  }
 });

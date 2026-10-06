@@ -2,10 +2,8 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import {Buffer} from '@luma.gl/core';
 import {
   createTransientView,
-  getBoundedDispatchLayout,
   GPUGroupAggregation,
   validatePackedUint32View,
   validatePackedView,
@@ -17,17 +15,25 @@ import type {GPUCommandNodeProducer} from '@luma.gl/gpgpu/gpu-core';
 import {validateGraphViewsBelongToGraph} from '../../utils/gpu-contributor-utils';
 import {
   GPU_NETWORK_REACHABILITY_MAXIMUM_ITERATIONS,
+  GPU_NETWORK_REACHABILITY_MAXIMUM_LOCAL_ITERATIONS,
   GPUNetworkReachability
 } from '../network-reachability/gpu-network-reachability';
-import {createReachabilityGateNode} from '../network-reachability/network-reachability-passes';
+import {
+  createFrontierState,
+  getFrontierPhaseLayout,
+  type FrontierPhase
+} from '../network-reachability/network-frontier';
 import {
   createServiceAreasFinalizeNode,
+  createServiceAreasLabelFrontierSeedNode,
   createServiceAreasLabelInitializeNode,
-  createServiceAreasLabelRelaxNode,
-  createServiceAreasLabelSeedNode
+  createServiceAreasLabelRoundNode,
+  createServiceAreasLabelSeedNode,
+  createServiceAreasTightEdgesNode
 } from './network-service-areas-passes';
 
 const DEFAULT_MAXIMUM_ITERATIONS = 64;
+const DEFAULT_MAXIMUM_LABEL_ITERATIONS = 32;
 
 /**
  * Properties for {@link GPUNetworkServiceAreas}.
@@ -57,11 +63,25 @@ export type GPUNetworkServiceAreasProps = {
   /** Optional one-row cost cutoff; nodes beyond it stay unassigned. Per-frame. */
   costLimit?: GraphDataView<'float32'>;
   /**
-   * Compile-time iteration bound for EACH of the two phases, 1 to
-   * `GPU_NETWORK_REACHABILITY_MAXIMUM_ITERATIONS`. Defaults to 64.
+   * Compile-time round bound of the cost phase, 1 to `GPU_NETWORK_REACHABILITY_MAXIMUM_ITERATIONS`.
+   * Defaults to 64.
    */
   maxIterations?: number;
-  /** Optional one-row per-frame iteration limit for each phase, clamped to `maxIterations`. */
+  /**
+   * Compile-time round bound of the label phase, 1 to
+   * `GPU_NETWORK_REACHABILITY_MAXIMUM_ITERATIONS`. Each round is one graph node. Defaults to
+   * `min(maxIterations, 32)`.
+   */
+  labelIterations?: number;
+  /**
+   * Hops one workgroup chains per round in both phases, 1 to 64. Defaults to 16. A network whose
+   * longest shortest path has `h` hops needs about `ceil(h / localIterations) + 1` rounds.
+   */
+  localIterations?: number;
+  /**
+   * Optional one-row per-frame round limit for each phase, clamped to the phase's compile-time
+   * bound.
+   */
   activeIterations?: GraphDataView<'uint32'>;
   /**
    * Per-node assigned facility row, or `GPU_NETWORK_REACHABILITY_NONE` when no facility reaches
@@ -91,10 +111,11 @@ export type GPUNetworkServiceAreasProps = {
  * Ties are broken deterministically: when several facilities achieve the minimum cost at a node,
  * the smallest facility row wins.
  *
- * Design: two phases rather than one packed (cost, facility) relaxation. Phase 1 composes
+ * Design: two frontier phases rather than one packed (cost, facility) relaxation. Phase 1 composes
  * {@link GPUNetworkReachability} with the facilities as multi-source seeds and yields exact f32
  * costs plus the GPU convergence gate. Phase 2 propagates the minimum facility label over the
- * tight-edge subgraph: an edge `u -> v` is tight when `costs[u] + weight == costs[v]` in f32
+ * tight-edge subgraph with the same compact frontier rounds (atomic minimum, workgroup-chained
+ * hops, no gate nodes), seeded from the facility nodes: an edge `u -> v` is tight when `costs[u] + weight == costs[v]` in f32
  * (zero-weight edges included, so zero-cost connectors keep their facility). The label fixpoint
  * is the smallest facility row among all facilities that achieve the minimum cost, regardless of
  * atomic scheduling. A packed relaxation is not used because WGSL has no 64-bit atomics, so
@@ -113,13 +134,20 @@ export class GPUNetworkServiceAreas implements GPUCommandNodeProducer {
   readonly id: string;
   /** Validated properties. */
   readonly props: GPUNetworkServiceAreasProps;
-  /** Resolved compile-time iteration bound per phase. */
+  /** Resolved compile-time round bound of the cost phase. */
   readonly maxIterations: number;
+  /** Resolved compile-time round bound of the label phase. */
+  readonly labelIterations: number;
+  /** Resolved hops chained per round. */
+  readonly localIterations: number;
 
   constructor(props: GPUNetworkServiceAreasProps) {
     this.id = props.id ?? 'network-service-areas';
     this.props = props;
     this.maxIterations = props.maxIterations ?? DEFAULT_MAXIMUM_ITERATIONS;
+    this.labelIterations =
+      props.labelIterations ?? Math.min(this.maxIterations, DEFAULT_MAXIMUM_LABEL_ITERATIONS);
+    this.localIterations = props.localIterations ?? 16;
     const {id} = this;
     for (const [name, view] of [
       ['offsets', props.offsets],
@@ -195,6 +223,24 @@ export class GPUNetworkServiceAreas implements GPUCommandNodeProducer {
         `${id} maxIterations must be an integer in [1, ${GPU_NETWORK_REACHABILITY_MAXIMUM_ITERATIONS}]`
       );
     }
+    if (
+      !Number.isSafeInteger(this.labelIterations) ||
+      this.labelIterations < 1 ||
+      this.labelIterations > GPU_NETWORK_REACHABILITY_MAXIMUM_ITERATIONS
+    ) {
+      throw new Error(
+        `${id} labelIterations must be an integer in [1, ${GPU_NETWORK_REACHABILITY_MAXIMUM_ITERATIONS}]`
+      );
+    }
+    if (
+      !Number.isSafeInteger(this.localIterations) ||
+      this.localIterations < 1 ||
+      this.localIterations > GPU_NETWORK_REACHABILITY_MAXIMUM_LOCAL_ITERATIONS
+    ) {
+      throw new Error(
+        `${id} localIterations must be an integer in [1, ${GPU_NETWORK_REACHABILITY_MAXIMUM_LOCAL_ITERATIONS}]`
+      );
+    }
     const outputs = [
       props.assignments,
       props.costs,
@@ -226,13 +272,13 @@ export class GPUNetworkServiceAreas implements GPUCommandNodeProducer {
   }
 
   /**
-   * Returns the reachability nodes, then label initialize, seed, gated relax and gate pairs, and
-   * optional finalize and per-facility aggregation nodes.
+   * Returns the reachability nodes, then label initialize, seed, tight-edge, frontier seed and
+   * `labelIterations` label round nodes, and optional finalize and per-facility aggregation nodes.
    */
   getCommandNodes<Parameters>(
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
-    const {id, props, maxIterations} = this;
+    const {id, props, maxIterations, labelIterations, localIterations} = this;
     validateGraphViewsBelongToGraph(id, graph, getViews(props));
     const nodeCount = props.assignments.length;
     const costs = props.costs ?? createTransientView(graph, `${id}-costs`, 'float32', nodeCount);
@@ -240,23 +286,23 @@ export class GPUNetworkServiceAreas implements GPUCommandNodeProducer {
       ? createTransientView(graph, `${id}-reachability-converged`, 'uint32', 1)
       : undefined;
     const labels = props.assignments;
-    const frontierA = createTransientView(graph, `${id}-label-frontier-a`, 'uint32', nodeCount);
-    const frontierB = createTransientView(graph, `${id}-label-frontier-b`, 'uint32', nodeCount);
-    const status = createTransientView(graph, `${id}-label-status`, 'uint32', 4);
-    // The indirect command lives in its own buffer: one buffer must not be both an indirect
-    // argument and storage-written within one dispatch.
-    const dispatch = createTransientView(
-      graph,
-      `${id}-label-dispatch`,
-      'uint32',
-      3,
-      Buffer.STORAGE | Buffer.INDIRECT
-    );
-    const relaxLayout = getBoundedDispatchLayout(
-      'GPUNetworkServiceAreas',
+    const phase: FrontierPhase = {
+      maxRounds: labelIterations,
+      stampBase: 0,
+      controlWordOffset: 0,
+      dispatchSlotOffset: 0
+    };
+    const layout = getFrontierPhaseLayout(labelIterations);
+    const state = createFrontierState(graph, `${id}-label`, {
       nodeCount,
-      256,
-      graph.device.limits.maxComputeWorkgroupsPerDimension
+      controlWordCount: layout.controlWordCount,
+      dispatchSlotCount: layout.dispatchSlotCount
+    });
+    const tightBits = createTransientView(
+      graph,
+      `${id}-label-tight-bits`,
+      'uint32',
+      Math.max(1, Math.ceil(props.neighbors.length / 32))
     );
     const csr = {offsets: props.offsets, neighbors: props.neighbors, weights: props.weights};
     const nodes: GPUCommandNode<Parameters>[] = [
@@ -270,6 +316,7 @@ export class GPUNetworkServiceAreas implements GPUCommandNodeProducer {
         sourceCount: props.facilityCount,
         costLimit: props.costLimit,
         maxIterations,
+        localIterations: props.localIterations,
         activeIterations: props.activeIterations,
         costs,
         predecessors: props.predecessors,
@@ -278,13 +325,11 @@ export class GPUNetworkServiceAreas implements GPUCommandNodeProducer {
       createServiceAreasLabelInitializeNode<Parameters>(graph, {
         id: `${id}-label-initialize`,
         nodeCount,
-        maxIterations,
-        relaxLayout,
+        maxIterations: labelIterations,
+        state,
+        phase,
         labels,
-        frontierA,
-        frontierB,
-        status,
-        dispatch,
+        tightBits,
         activeIterations: props.activeIterations
       })
     ];
@@ -296,34 +341,39 @@ export class GPUNetworkServiceAreas implements GPUCommandNodeProducer {
           facilities: props.facilities,
           facilityCosts: props.facilityCosts,
           facilityCount: props.facilityCount,
-          costLimit: props.costLimit,
           costs,
-          labels,
-          frontier: frontierA
+          labels
         })
       );
     }
-    for (let iteration = 0; iteration < maxIterations; iteration++) {
-      const even = iteration % 2 === 0;
+    nodes.push(
+      createServiceAreasTightEdgesNode<Parameters>(graph, {
+        id: `${id}-label-tight-edges`,
+        nodeCount,
+        csr,
+        costs,
+        tightBits
+      }),
+      createServiceAreasLabelFrontierSeedNode<Parameters>(graph, {
+        id: `${id}-label-frontier-seed`,
+        nodeCount,
+        state,
+        phase,
+        labels
+      })
+    );
+    for (let round = 0; round < labelIterations; round++) {
       nodes.push(
-        createServiceAreasLabelRelaxNode<Parameters>(graph, {
-          id: `${id}-label-relax-${iteration}`,
+        createServiceAreasLabelRoundNode<Parameters>(graph, {
+          id: `${id}-label-round-${round}`,
           nodeCount,
+          state,
+          phase,
+          round,
+          localIterations,
           csr,
-          costs,
-          current: even ? frontierA : frontierB,
-          next: even ? frontierB : frontierA,
-          labels,
-          status,
-          dispatch
-        }),
-        createReachabilityGateNode<Parameters>(graph, {
-          id: `${id}-label-gate-${iteration}`,
-          iteration,
-          maxIterations,
-          status,
-          dispatch,
-          activeIterations: props.activeIterations
+          tightBits,
+          labels
         })
       );
     }
@@ -331,7 +381,8 @@ export class GPUNetworkServiceAreas implements GPUCommandNodeProducer {
       nodes.push(
         createServiceAreasFinalizeNode<Parameters>(graph, {
           id: `${id}-finalize`,
-          status,
+          state,
+          phase,
           reachabilityConverged,
           converged: props.converged
         })
