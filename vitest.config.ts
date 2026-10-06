@@ -142,6 +142,8 @@ const browserBenchmarkTestPatterns = [
   'modules/experimental/test/gpu-terrain/relief-visualization/relief-visualization-benchmark.spec.ts',
   'modules/experimental/test/gpu-terrain/terrain-illumination/terrain-illumination-benchmark.spec.ts',
   'modules/experimental/test/gpu-spatial-analysis/spatial-join/spatial-join-benchmark.spec.ts',
+  'modules/experimental/test/gpu-spatial-analysis/neighbor-search/neighbor-search-benchmark.spec.ts',
+  'modules/experimental/test/gpu-spatial-analysis/spatial-regression/gwr-benchmark.spec.ts',
   'modules/gpgpu/test/gpu-core/gpu-kernel-benchmark.spec.ts',
   'modules/gpgpu/test/gpu-core/gpu-fragmentation-benchmark.spec.ts',
   'modules/gpgpu/test/gpu-core/gpu-spatial-query-benchmark.spec.ts',

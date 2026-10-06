@@ -177,11 +177,37 @@ export function getKernelWeight(kernel: string, distance: number, bandwidth: num
 /** CPU transform of a CSR. Returns new weights aligned with `csr.neighbors`. */
 export function computeTransformOracle(
   csr: OracleCSR,
-  operation: 'row' | 'binary' | 'kernel' | 'symmetrize',
-  options: {kernel?: string; bandwidth?: number | 'adaptive'} = {}
+  operation: 'row' | 'binary' | 'kernel' | 'symmetrize' | 'double' | 'variance',
+  options: {kernel?: string; bandwidth?: number | 'adaptive'; doubleSum?: 'one' | 'rows'} = {}
 ): number[] {
   const rows = csr.offsets.length - 1;
   const result = csr.weights.slice();
+  if (operation === 'double') {
+    const s0 = csr.weights.reduce((sum, weight) => sum + weight, 0);
+    const scale = (options.doubleSum === 'rows' ? rows : 1) / s0;
+    return csr.weights.map(weight => (s0 > 0 && Number.isFinite(scale) ? weight * scale : 0));
+  }
+  if (operation === 'variance') {
+    // libpysal W.transform = 'V': s_ij = w_ij / sqrt(sum_j w_ij^2); w' = s * n / sum(s).
+    const norms: number[] = [];
+    let q = 0;
+    for (let row = 0; row < rows; row++) {
+      let squares = 0;
+      for (let slot = csr.offsets[row]; slot < csr.offsets[row + 1]; slot++) {
+        squares += csr.weights[slot] ** 2;
+      }
+      norms.push(Math.sqrt(squares));
+      for (let slot = csr.offsets[row]; slot < csr.offsets[row + 1]; slot++) {
+        q += norms[row] > 0 ? csr.weights[slot] / norms[row] : 0;
+      }
+    }
+    for (let row = 0; row < rows; row++) {
+      for (let slot = csr.offsets[row]; slot < csr.offsets[row + 1]; slot++) {
+        result[slot] = norms[row] > 0 && q > 0 ? (csr.weights[slot] / norms[row]) * (rows / q) : 0;
+      }
+    }
+    return result;
+  }
   for (let row = 0; row < rows; row++) {
     const begin = csr.offsets[row];
     const end = csr.offsets[row + 1];

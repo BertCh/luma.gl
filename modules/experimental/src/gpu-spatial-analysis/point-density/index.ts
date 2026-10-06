@@ -9,7 +9,8 @@ export type {
   GPUPointDensityOutput,
   GPUPointDensityProps,
   GPUPointDensitySmoothing,
-  GPUPointDensityStatistic
+  GPUPointDensityStatistic,
+  GPUPointDensitySumAccumulation
 } from './gpu-point-density';
 export {
   getGPUPointDensityHexagonCell,
@@ -17,4 +18,7 @@ export {
   getGPUPointDensityHexagonGridSize,
   GPU_POINT_DENSITY_HEXAGON_WGSL
 } from './point-density-hexagon';
-export {createGPUPointDensityGaussianKernel} from './point-density-smoothing';
+export {
+  createGPUPointDensityGaussianKernel,
+  createGPUPointDensityGaussianKernel1D
+} from './point-density-smoothing';

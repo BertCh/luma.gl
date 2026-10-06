@@ -31,6 +31,12 @@ import {
   validatePermutationInputs
 } from './permutation-inference-kernels';
 import {PERMUTATION_RANDOM_WGSL} from './permutation-random';
+import {
+  getAlternativeMultiplier,
+  getExceedanceCountWGSL,
+  resolvePermutationAlternative,
+  type GPUPermutationAlternative
+} from './permutation-alternative';
 
 const OPERATION = 'GPULocalPermutationTest';
 
@@ -66,6 +72,11 @@ export type GPULocalPermutationTestProps = {
   /** Local statistic. Compile-time. */
   statistic: GPULocalPermutationStatistic;
   /**
+   * Tail of the pseudo p-value (see {@link GPUPermutationAlternative}). Compile-time. Defaults to
+   * `'directed'`, the folded count of earlier releases and esda's legacy default.
+   */
+  alternative?: GPUPermutationAlternative;
+  /**
    * Per-frame uint32 parameters of at least `GPU_PERMUTATION_PARAMETER_LENGTH` elements written with
    * `getGPUPermutationParameterValues`.
    */
@@ -77,9 +88,12 @@ export type GPULocalPermutationTestProps = {
    * included neighbors are not tested and set `overflow`. Defaults to 32.
    */
   maximumNeighbors?: number;
-  /** Caller-owned esda-folded exceedance count per row, or `GPU_LOCAL_PERMUTATION_NOT_TESTED`. */
+  /**
+   * Caller-owned exceedance count `M` per row (numerator of the pseudo p-value; esda-folded for
+   * `'directed'`), or `GPU_LOCAL_PERMUTATION_NOT_TESTED`.
+   */
   exceedances: GraphDataView<'uint32'>;
-  /** Caller-owned pseudo p-value `(exceedances + 1) / (P + 1)` per row, quiet NaN if not tested. */
+  /** Caller-owned pseudo p-value `min(m (exceedances + 1), P + 1) / (P + 1)` per row (`m` is 2 for `'two-sided'`, else 1), quiet NaN if not tested. */
   pseudoPValues: GraphDataView<'float32'>;
   /** Optional caller-owned observed local statistic per row (esda scaling), NaN if not tested. */
   observed?: GraphDataView<'float32'>;
@@ -133,6 +147,7 @@ export class GPULocalPermutationTest implements GPUCommandNodeProducer {
     if (!['localMoran', 'localG', 'localGStar'].includes(props.statistic)) {
       throw new Error(`${id} unknown statistic ${props.statistic}`);
     }
+    resolvePermutationAlternative(id, props.alternative);
     const maximumNeighbors = props.maximumNeighbors ?? 32;
     if (
       !Number.isInteger(maximumNeighbors) ||
@@ -202,6 +217,9 @@ export class GPULocalPermutationTest implements GPUCommandNodeProducer {
       props.overflow
     ]);
     const rows = props.values.length;
+    const alternative = resolvePermutationAlternative(id, props.alternative);
+    const multiplier = getAlternativeMultiplier(alternative);
+    const folded = alternative === 'folded';
     const maximumNeighbors = props.maximumNeighbors ?? 32;
     const inputs = getPermutationInputNodes<Parameters>(graph, {
       ...props,
@@ -321,7 +339,13 @@ fn readSwap(
   let focus = compactX[compactXOffset + position];
   let permutations = readPermutationCount();
   let key = readSeedKey();
-  var larger = 0u;
+  var greater = 0u;
+  var lesser = 0u;
+  var folded = 0u;
+  var total = 0.0;
+  var mean = 0.0;
+  // 'folded' needs the simulated mean first: sweep 0 sums, sweep 1 counts (same deterministic stream).
+  for (var sweep = 0u; sweep < ${folded ? 2 : 1}u; sweep++) {
   for (var permutation = 0u; permutation < permutations; permutation++) {
     var stream = createPhiloxStream(key, index, permutation, RANDOM_TAG);
     var swapPositions: array<u32, ${maximumNeighbors}>;
@@ -348,12 +372,21 @@ fn readSwap(
       drawn++;
       let drawnPosition = chosen + select(0u, 1u, chosen >= position);
       lag += weights[weightsOffset + slot] * compactX[compactXOffset + drawnPosition];`)}
-    larger += select(0u, 1u, getLocalTerm(focus, lag) >= observed);
+    let simulated = getLocalTerm(focus, lag);
+    ${
+      folded
+        ? `if (sweep == 0u) {
+      total += simulated;
+    } else {
+      folded += select(0u, 1u, abs(simulated - mean) >= abs(observed - mean));
+    }`
+        : `greater += select(0u, 1u, simulated >= observed);
+    lesser += select(0u, 1u, simulated <= observed);`
+    }
   }
-  if (permutations - larger < larger) {
-    larger = permutations - larger;
+  mean = total / f32(permutations);
   }
-  exceedances[exceedancesOffset + index] = larger;`
+  exceedances[exceedancesOffset + index] = ${getExceedanceCountWGSL(alternative)};`
       })
     );
 
@@ -463,7 +496,7 @@ const NOT_TESTED_KEY: u32 = ${notTestedKey}u;`,
     // p_(k) <= k level / m with p = (count + 1) / (P + 1), cross-multiplied so that only
     // correctly rounded f32 products are compared.
     let count = sortedKeys[sortedKeysOffset + index];
-    if (f32(count + 1u) * f32(tested) <= f32(rank) * readSignificanceLevel() * f32(readPermutationCount() + 1u)) {
+    if (f32(min(${multiplier}u * (count + 1u), readPermutationCount() + 1u)) * f32(tested) <= f32(rank) * readSignificanceLevel() * f32(readPermutationCount() + 1u)) {
       atomicMax(&counters[countersOffset + 1u], rank);
     }
   }`
@@ -493,7 +526,7 @@ const NOT_TESTED_KEY: u32 = ${notTestedKey}u;`,
     const significantWGSL = ranks
       ? `let rank = ranks[ranksOffset + index];
   significant[significantOffset + index] = select(0u, 1u, tested && rank > 0u && rank <= counters[countersOffset + 1u]);`
-      : 'significant[significantOffset + index] = select(0u, 1u, tested && f32(count + 1u) <= readSignificanceLevel() * f32(readPermutationCount() + 1u));';
+      : `significant[significantOffset + index] = select(0u, 1u, tested && f32(min(${multiplier}u * (count + 1u), readPermutationCount() + 1u)) <= readSignificanceLevel() * f32(readPermutationCount() + 1u));`;
     nodes.push(
       createWGSLKernelNode<Parameters>(graph, {
         id: `${id}-classify`,
@@ -505,7 +538,7 @@ const NOT_TESTED_KEY: u32 = ${notTestedKey}u;`,
 const NOT_TESTED: u32 = ${GPU_LOCAL_PERMUTATION_NOT_TESTED}u;`,
         body: `let count = exceedances[exceedancesOffset + index];
   let tested = count != NOT_TESTED;
-  let pValue = f32(count + 1u) / f32(readPermutationCount() + 1u);
+  let pValue = f32(min(${multiplier}u * (count + 1u), readPermutationCount() + 1u)) / f32(readPermutationCount() + 1u);
   pseudoPValues[pseudoPValuesOffset + index] = select(bitcast<f32>(0x7fc00000u | (index & 0u)), pValue, tested);
   ${props.significant ? significantWGSL : ''}`
       })

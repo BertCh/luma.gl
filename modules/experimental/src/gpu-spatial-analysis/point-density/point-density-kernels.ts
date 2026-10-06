@@ -209,3 +209,170 @@ export function createPointDensityFinalizeNode<Parameters>(
   ${props.means ? 'means[meansOffset + index] = mean;' : ''}`
   });
 }
+
+/** Items combined by one workgroup of {@link createPointDensityWorkgroupSumNode}. @internal */
+const WORKGROUP_SUM_SIZE = 256;
+
+/**
+ * Writes one row-major grid cell key per position in `keys`, or `0xffffffff` for non-finite and
+ * out-of-bounds rows. Uses the same cell arithmetic as `GPUGridBinning`.
+ *
+ * @internal
+ */
+export function createPointDensityGridKeysNode<Parameters>(
+  graph: GPUCommandGraph<Parameters>,
+  props: {
+    id: string;
+    positions: GraphDataView;
+    keys: GraphDataView<'uint32'>;
+    keyStart: number;
+    gridSize: readonly [number, number];
+    bounds: PointDensityResolvedBounds;
+  }
+): GPUCommandNode<Parameters> {
+  const bindings: WGSLKernelBinding[] = [
+    {name: 'positions', view: props.positions, type: 'f32', access: 'read'},
+    {name: 'keys', view: props.keys, type: 'u32', access: 'read_write'}
+  ];
+  const boundsIsView = !Array.isArray(props.bounds);
+  if (boundsIsView) {
+    bindings.push({
+      name: 'boundsValues',
+      view: props.bounds as GraphDataView,
+      type: 'f32',
+      access: 'read'
+    });
+  }
+  const literal = boundsIsView
+    ? undefined
+    : (props.bounds as readonly number[]).map(getWGSLFloatLiteral);
+  const boundsSource = literal
+    ? `let minimumX = ${literal[0]}; let minimumY = ${literal[1]};
+  let maximumX = ${literal[2]}; let maximumY = ${literal[3]};`
+    : `let minimumX = boundsValues[boundsValuesOffset];
+  let minimumY = boundsValues[boundsValuesOffset + 1u];
+  let maximumX = boundsValues[boundsValuesOffset + 2u];
+  let maximumY = boundsValues[boundsValuesOffset + 3u];`;
+  return createWGSLKernelNode<Parameters>(graph, {
+    id: props.id,
+    operation: OPERATION,
+    variant: 'grid-keys',
+    bindings,
+    invocationCount: props.positions.length,
+    declarations: `const KEY_START: u32 = ${props.keyStart}u;
+const COLUMNS: u32 = ${props.gridSize[0]}u;
+const ROWS: u32 = ${props.gridSize[1]}u;
+fn getCoordinate(value: f32, minimum: f32, maximum: f32, size: u32) -> u32 {
+  if (maximum == minimum || value == minimum) { return 0u; }
+  if (value == maximum) { return size - 1u; }
+  return min(u32((value - minimum) / (maximum - minimum) * f32(size)), size - 1u);
+}`,
+    body: `${boundsSource}
+  let x = positions[positionsOffset + index * 2u];
+  let y = positions[positionsOffset + index * 2u + 1u];
+  var key = 0xffffffffu;
+  let finite = x == x && y == y && abs(x) <= 3.402823466e+38 && abs(y) <= 3.402823466e+38;
+  let inX = x >= minimumX && x <= maximumX && (maximumX != minimumX || x == minimumX);
+  let inY = y >= minimumY && y <= maximumY && (maximumY != minimumY || y == minimumY);
+  if (maximumX >= minimumX && maximumY >= minimumY && finite && inX && inY) {
+    key = getCoordinate(y, minimumY, maximumY, ROWS) * COLUMNS + getCoordinate(x, minimumX, maximumX, COLUMNS);
+  }
+  keys[keysOffset + KEY_START + index] = key;`
+  });
+}
+
+/** Sets every float sum cell to zero. @internal */
+export function createPointDensityClearSumsNode<Parameters>(
+  graph: GPUCommandGraph<Parameters>,
+  id: string,
+  sums: GraphDataView<'float32'>
+): GPUCommandNode<Parameters> {
+  return createWGSLKernelNode<Parameters>(graph, {
+    id,
+    operation: OPERATION,
+    variant: 'clear-sums',
+    bindings: [{name: 'sums', view: sums, type: 'atomic<u32>', access: 'read_write'}],
+    invocationCount: sums.length,
+    body: 'atomicStore(&sums[sumsOffset + index], 0u);'
+  });
+}
+
+/**
+ * Adds one chunk of weights into per-cell float sums with workgroup-local pre-aggregation.
+ *
+ * Each 256-thread workgroup stages its rows in shared memory; every row sums the rows that
+ * share its key (in row order) and only the first row of each key issues one compare-exchange
+ * float add. Rows that share a cell collapse by up to 256x before reaching global memory, so hotspot
+ * cells no longer serialize one compare-exchange loop per point. Rows with key at or above
+ * `cellCount` or a non-finite weight contribute nothing. `sums` must be cleared beforehand. The
+ * add order across workgroups is nondeterministic.
+ *
+ * @internal
+ */
+export function createPointDensityWorkgroupSumNode<Parameters>(
+  graph: GPUCommandGraph<Parameters>,
+  props: {
+    id: string;
+    weights: GraphDataView<'float32'>;
+    keys: GraphDataView<'uint32'>;
+    /** Row of `keys` matching the first weight of this chunk. */
+    keyStart: number;
+    sums: GraphDataView<'float32'>;
+  }
+): GPUCommandNode<Parameters> {
+  const size = WORKGROUP_SUM_SIZE;
+  return createWGSLKernelNode<Parameters>(graph, {
+    id: props.id,
+    operation: OPERATION,
+    variant: 'workgroup-sums',
+    bindings: [
+      {name: 'weights', view: props.weights, type: 'f32', access: 'read'},
+      {name: 'keys', view: props.keys, type: 'u32', access: 'read'},
+      {name: 'sums', view: props.sums, type: 'atomic<u32>', access: 'read_write'}
+    ],
+    workgroupSize: size,
+    invocationCount: props.weights.length,
+    guardIndex: false,
+    declarations: `const KEY_START: u32 = ${props.keyStart}u;
+const CELL_COUNT: u32 = ${props.sums.length}u;
+var<workgroup> sortKeys: array<u32, ${size}>;
+var<workgroup> sortValues: array<f32, ${size}>;
+fn atomicAddFloat(destination: ptr<storage, atomic<u32>, read_write>, value: f32) {
+  var oldBits = atomicLoad(destination);
+  loop {
+    let newBits = bitcast<u32>(bitcast<f32>(oldBits) + value);
+    let result = atomicCompareExchangeWeak(destination, oldBits, newBits);
+    if (result.exchanged) { break; }
+    oldBits = result.old_value;
+  }
+}`,
+    // No early return: every invocation of a workgroup must reach the barriers.
+    body: `let lane = localInvocationIndex;
+  var key = 0xffffffffu;
+  var value = 0.0;
+  if (index < INVOCATION_COUNT) {
+    let weight = weights[weightsOffset + index];
+    let rowKey = keys[keysOffset + KEY_START + index];
+    if (weight == weight && abs(weight) <= 3.402823466e+38 && rowKey < CELL_COUNT) {
+      key = rowKey;
+      value = weight;
+    }
+  }
+  sortKeys[lane] = key;
+  sortValues[lane] = value;
+  workgroupBarrier();
+  // Every row sums the rows of its workgroup that share its key, in row order. Only the first
+  // row of each key issues the global add, so no sort or scan is needed.
+  var runSum = 0.0;
+  var isFirst = true;
+  for (var other = 0u; other < ${size}u; other = other + 1u) {
+    if (sortKeys[other] == key) {
+      runSum = runSum + sortValues[other];
+      isFirst = isFirst && other >= lane;
+    }
+  }
+  if (isFirst && key < CELL_COUNT) {
+    atomicAddFloat(&sums[sumsOffset + key], runSum);
+  }`
+  });
+}

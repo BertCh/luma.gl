@@ -208,7 +208,12 @@ export type GPUZonalStatisticsProps = {
    * and are required for densities with `kind: 'feature-rows'`. Per-frame contents.
    */
   areas?: GraphDataView<'float32'>;
-  /** Accumulation order of sums and weight sums. Defaults to `'atomic'`. Compile-time. */
+  /**
+   * Accumulation order of sums and weight sums. Defaults to `'sorted'` when every point-rate input
+   * is packed (sorted sums require packed views), else `'atomic'`. Sorted sums are bitwise
+   * reproducible and bounded in cost. `'atomic'` skips the sort but serializes when many points
+   * share a feature, because float compare-exchange atomics retry on one address. Compile-time.
+   */
   sumOrder?: GPUZonalStatisticsSumOrder;
   /** Caller-owned outputs. At least one must be present. */
   output: GPUZonalStatisticsOutput;
@@ -260,7 +265,9 @@ const OUTPUT_NAMES = [
  * scheduling. With `sumOrder: 'atomic'`, sums and weight sums use compare-exchange float
  * addition whose order depends on GPU scheduling: results can differ in the last bits between
  * runs and devices (and from a sequential CPU sum). With `sumOrder: 'sorted'` they are bitwise
- * reproducible on one device, at the cost of a stable sort of the points by feature row.
+ * reproducible on one device, at the cost of a stable sort of the points by feature row. The
+ * sorted order is the default: the same compare-exchange pattern measured 10-600x slower than
+ * sorted sums on contended keys in raster zonal statistics and flow aggregation.
  *
  * ## Non-goals
  *
@@ -285,9 +292,9 @@ export class GPUZonalStatistics implements GPUCommandNodeProducer {
   constructor(props: GPUZonalStatisticsProps) {
     this.id = props.id ?? 'zonal-statistics';
     this.props = props;
-    this.sumOrder = props.sumOrder ?? 'atomic';
-    const {id} = this;
     const {features, output, values, weights, areas} = props;
+    this.sumOrder = props.sumOrder ?? getDefaultZonalSumOrder(props);
+    const {id} = this;
     if (this.sumOrder !== 'atomic' && this.sumOrder !== 'sorted') {
       throw new Error(`${id} sumOrder must be atomic or sorted`);
     }
@@ -744,4 +751,12 @@ export class GPUZonalStatistics implements GPUCommandNodeProducer {
     }
     return nodes;
   }
+}
+
+/** Sorted sums need packed point-rate views; chunked inputs fall back to atomic sums. */
+function getDefaultZonalSumOrder(props: GPUZonalStatisticsProps): GPUZonalStatisticsSumOrder {
+  const {features, output, values, weights} = props;
+  const rows = features.kind === 'polygons' ? output.pointFeatureRows : features.pointFeatureRows;
+  const views = [features.kind === 'polygons' ? props.points : undefined, values, weights, rows];
+  return views.some(view => view instanceof GraphVectorView) ? 'atomic' : 'sorted';
 }

@@ -4,6 +4,7 @@
 
 import {
   createTransientView,
+  GPUGridIndex,
   GraphVectorView,
   validatePackedUint32View,
   validatePackedView,
@@ -20,8 +21,11 @@ import {
 import {getCholeskyWGSL} from './spatial-regression-solve';
 import {
   GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_ADAPTIVE_BANDWIDTH_FACTOR,
+  GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_MAXIMUM_DEFAULT_GRID_DIMENSION,
+  GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_MAXIMUM_INDEXED_ROW_COUNT,
   GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_MAXIMUM_LADDER_LENGTH,
   GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_MAXIMUM_NEIGHBOR_COUNT,
+  GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_MINIMUM_INDEXED_ROW_COUNT,
   GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_MAXIMUM_PREDICTOR_COUNT,
   GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_MAXIMUM_ROW_COUNT,
   GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_MINIMUM_VARIANCE,
@@ -36,6 +40,8 @@ const OPERATION = 'GPUGeographicallyWeightedRegression';
 const TILE_ROWS = 256;
 /** Float32 values per row of the packed local statistics scratch. */
 const LOCAL_STRIDE = 5;
+/** Default `maxStorageBufferBindingSize`; bounds the per-candidate scratch. */
+const MAXIMUM_SCRATCH_BYTES = 134217728;
 
 /** Caller-owned outputs of {@link GPUGeographicallyWeightedRegression}. */
 export type GPUGeographicallyWeightedRegressionOutput = {
@@ -93,6 +99,15 @@ export type GPUGeographicallyWeightedRegressionProps = {
   maximumBandwidthCount?: number;
   /** Largest adaptive `k`, 1 to 128. Compile-time. Default 128. */
   maximumNeighborCount?: number;
+  /**
+   * Dimensions `[columns, rows]` of the internal `GPUGridIndex` over the included rows, or `false`
+   * for none. Compile-time. Defaults to a square grid of about 8 rows per cell (at most 1024 per
+   * axis) when there are at least 1024 rows, otherwise none. The domain is the extent of the
+   * included rows, recomputed every encoding. The index is used by bisquare kernels with fixed
+   * bandwidths; Gaussian and adaptive encodings ignore it and scan every row. Aim for a few
+   * cells across the typical bandwidth.
+   */
+  indexGridSize?: readonly [number, number] | false;
   /** Caller-owned outputs. */
   output: GPUGeographicallyWeightedRegressionOutput;
 };
@@ -126,12 +141,21 @@ export type GPUGeographicallyWeightedRegressionProps = {
  * Cholesky solve. Original-space intercepts are recovered as `b0 - sum b_c x_ic`. A predictor
  * that is constant over a location's neighbourhood makes that location singular.
  *
- * Complexity: one thread per location scans every row once per candidate (and once more to select
- * k-th nearest distances and to evaluate the final fit), so the work is `O(n^2 * ladder * p^2)`
- * with `n <= 65536`. No grid is used; scans run in row order so every sum has a fixed order. It is
- * a first version meant for thousands of locations. Candidate RSS and trace are reduced by
- * 256-row tiles merged in tile order. No float atomics: results are bitwise reproducible on one
- * adapter.
+ * Complexity: one thread per location evaluates every candidate (and once more to select k-th
+ * nearest distances and to evaluate the final fit). Bisquare kernels with fixed bandwidths have
+ * bounded support, so they visit only the rows in the `GPUGridIndex` cells covering the bandwidth
+ * (`indexGridSize`, built by default from 1024 rows): the work is `O(n * neighbours * ladder * p^2)`
+ * and the 65,536-row limit of the scan is lifted to 1,048,576 rows (the scan limit existed because
+ * `n^2` work per candidate becomes unusable; the indexed limit is the `rows * ladder * 8` byte
+ * per-candidate scratch fitting one 128 MiB storage binding). Gaussian kernels (unbounded, no
+ * cutoff is assumed) and adaptive bandwidths (the k-th neighbour distance comes from a full scan)
+ * still scan every row in `O(n^2)`; a grid-enabled instance accepts them but the caller must keep
+ * `n` practical. The grid path sums rows in cell order (ascending row ID inside each cell) instead
+ * of row order, so results differ from the scan only by float rounding (about 1e-5 in
+ * coefficients); sums stay in a fixed order and no float atomics are used, so results are bitwise
+ * reproducible on one adapter. Candidate RSS and trace are reduced by 256-row tiles merged in
+ * tile order. Very clustered data puts many rows in one cell and the in-cell ID ranking costs
+ * `O(cell size^2)`.
  */
 export class GPUGeographicallyWeightedRegression implements GPUCommandNodeProducer {
   /** Prefix for every node and transient ID. */
@@ -146,6 +170,8 @@ export class GPUGeographicallyWeightedRegression implements GPUCommandNodeProduc
   readonly maximumBandwidthCount: number;
   /** Largest adaptive `k`. */
   readonly maximumNeighborCount: number;
+  /** Grid index dimensions `[columns, rows]`, or null when no index is built. */
+  readonly indexGridSize: readonly [number, number] | null;
 
   constructor(props: GPUGeographicallyWeightedRegressionProps) {
     this.id = props.id ?? 'geographically-weighted-regression';
@@ -201,9 +227,47 @@ export class GPUGeographicallyWeightedRegression implements GPUCommandNodeProduc
     if (this.rowCount < 1) {
       throw new Error(`${id} needs at least one row`);
     }
-    if (this.rowCount > GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_MAXIMUM_ROW_COUNT) {
+    if (props.indexGridSize === false) {
+      this.indexGridSize = null;
+    } else if (props.indexGridSize) {
+      const [columns, gridRows] = props.indexGridSize;
+      if (
+        !Number.isInteger(columns) ||
+        !Number.isInteger(gridRows) ||
+        columns < 1 ||
+        gridRows < 1 ||
+        columns * gridRows >= 0xffffffff
+      ) {
+        throw new Error(
+          `${id} indexGridSize must be two positive integers with columns * rows < 2^32 - 1`
+        );
+      }
+      this.indexGridSize = [columns, gridRows];
+    } else if (this.rowCount >= GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_MINIMUM_INDEXED_ROW_COUNT) {
+      const dimension = Math.min(
+        GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_MAXIMUM_DEFAULT_GRID_DIMENSION,
+        Math.max(1, Math.ceil(Math.sqrt(this.rowCount / 8)))
+      );
+      this.indexGridSize = [dimension, dimension];
+    } else {
+      this.indexGridSize = null;
+    }
+    if (
+      !this.indexGridSize &&
+      this.rowCount > GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_MAXIMUM_ROW_COUNT
+    ) {
       throw new Error(
-        `${id} supports at most ${GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_MAXIMUM_ROW_COUNT} rows`
+        `${id} supports at most ${GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_MAXIMUM_ROW_COUNT} rows without a grid index`
+      );
+    }
+    if (
+      this.indexGridSize &&
+      (this.rowCount > GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_MAXIMUM_INDEXED_ROW_COUNT ||
+        this.rowCount * this.maximumBandwidthCount * 8 > MAXIMUM_SCRATCH_BYTES)
+    ) {
+      throw new Error(
+        `${id} supports at most ${GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_MAXIMUM_INDEXED_ROW_COUNT} rows ` +
+          `and rows * maximumBandwidthCount * 8 <= ${MAXIMUM_SCRATCH_BYTES} with a grid index`
       );
     }
     validatePackedView(props.predictors, ['float32'], `${id} predictors`);
@@ -270,8 +334,15 @@ export class GPUGeographicallyWeightedRegression implements GPUCommandNodeProduc
   getCommandNodes<Parameters>(
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
-    const {props, id, rowCount, coefficientCount, maximumBandwidthCount, maximumNeighborCount} =
-      this;
+    const {
+      props,
+      id,
+      rowCount,
+      coefficientCount,
+      maximumBandwidthCount,
+      maximumNeighborCount,
+      indexGridSize
+    } = this;
     const {output, predictorCount, positions, predictors, response, parameters} = props;
     validateGraphViewsBelongToGraph(id, graph, [
       positions,
@@ -282,8 +353,11 @@ export class GPUGeographicallyWeightedRegression implements GPUCommandNodeProduc
       ...Object.values(output)
     ]);
     const tileCount = Math.ceil(rowCount / TILE_ROWS);
-    const transient = (name: string, format: 'uint32' | 'float32', length: number) =>
-      createTransientView(graph, `${id}-${name}`, format, Math.max(length, 1));
+    const transient = <Format extends 'uint32' | 'float32' | 'float32x2'>(
+      name: string,
+      format: Format,
+      length: number
+    ) => createTransientView(graph, `${id}-${name}`, format, Math.max(length, 1));
     const rowValid = transient('row-valid', 'uint32', rowCount);
     const tileResponse = transient('tile-response', 'float32', tileCount * 2);
     const tileTotal = transient('tile-total', 'float32', tileCount);
@@ -304,6 +378,18 @@ export class GPUGeographicallyWeightedRegression implements GPUCommandNodeProduc
       output.summary ??
       transient('summary', 'float32', GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_SUMMARY_LENGTH);
     const locals = transient('locals', 'uint32', rowCount * LOCAL_STRIDE);
+
+    const indexCellCount = indexGridSize ? indexGridSize[0] * indexGridSize[1] : 0;
+    const tileBounds = indexGridSize ? transient('tile-bounds', 'float32', tileCount * 4) : null;
+    const gridBounds = indexGridSize ? transient('grid-bounds', 'float32', 4) : null;
+    const gridPositions = indexGridSize ? transient('grid-positions', 'float32x2', rowCount) : null;
+    const cellOffsets = indexGridSize
+      ? transient('cell-offsets', 'uint32', indexCellCount + 1)
+      : null;
+    const objectIds = indexGridSize ? transient('object-ids', 'uint32', rowCount) : null;
+    const sortedIds = indexGridSize ? transient('sorted-ids', 'uint32', rowCount + 4) : null;
+    const indexCount = indexGridSize ? transient('index-count', 'uint32', 1) : null;
+    const indexOverflow = indexGridSize ? transient('index-overflow', 'uint32', 1) : null;
 
     const read = (name: string, view: GraphDataView, type: 'u32' | 'f32'): WGSLKernelBinding => ({
       name,
@@ -335,7 +421,11 @@ ${GWR_COMMON_WGSL}`;
     const fitDeclarations = `${common}
 ${CANDIDATE_COUNT_WGSL}
 ${getCholeskyWGSL(P)}
-${getFitWGSL(P)}`;
+${getFitWGSL(P, indexGridSize)}`;
+    // Bindings of the grid candidate path, shared by the candidate and final fit kernels.
+    const gridBindings: WGSLKernelBinding[] = indexGridSize
+      ? [read('cellOffsets', cellOffsets!, 'u32'), read('sortedIds', sortedIds!, 'u32')]
+      : [];
     const mask = props.mask;
     const nodes: GPUCommandNode<Parameters>[] = [];
 
@@ -429,6 +519,134 @@ ${getFitWGSL(P)}`;
       })
     );
 
+    if (indexGridSize) {
+      nodes.push(
+        createWGSLKernelNode<Parameters>(graph, {
+          id: `${id}-tile-bounds`,
+          operation: OPERATION,
+          variant: 'tile-bounds',
+          bindings: [
+            read('positions', positions, 'f32'),
+            read('rowValid', rowValid, 'u32'),
+            write('tileBounds', tileBounds!, 'f32')
+          ],
+          invocationCount: tileCount,
+          declarations: common,
+          body: `let firstRow = index * TILE_ROWS;
+  let endRow = min(firstRow + TILE_ROWS, ROW_COUNT);
+  var bounds = vec4f(SENTINEL, SENTINEL, -SENTINEL, -SENTINEL);
+  for (var row = firstRow; row < endRow; row++) {
+    if (rowValid[rowValidOffset + row] != 0u) {
+      let x = positions[positionsOffset + 2u * row];
+      let y = positions[positionsOffset + 2u * row + 1u];
+      bounds = vec4f(min(bounds.x, x), min(bounds.y, y), max(bounds.z, x), max(bounds.w, y));
+    }
+  }
+  for (var component = 0u; component < 4u; component++) {
+    tileBounds[tileBoundsOffset + 4u * index + component] = bounds[component];
+  }`
+        }),
+        // Extent of the included rows; non-finite when there are none, so the index accepts nothing.
+        createWGSLKernelNode<Parameters>(graph, {
+          id: `${id}-grid-bounds`,
+          operation: OPERATION,
+          variant: 'grid-bounds',
+          bindings: [
+            read('tileBounds', tileBounds!, 'f32'),
+            write('gridBounds', gridBounds!, 'f32')
+          ],
+          invocationCount: 1,
+          declarations: common,
+          body: `var bounds = vec4f(SENTINEL, SENTINEL, -SENTINEL, -SENTINEL);
+  for (var tile = 0u; tile < TILE_COUNT; tile++) {
+    let base = tileBoundsOffset + 4u * tile;
+    bounds = vec4f(
+      min(bounds.x, tileBounds[base]), min(bounds.y, tileBounds[base + 1u]),
+      max(bounds.z, tileBounds[base + 2u]), max(bounds.w, tileBounds[base + 3u])
+    );
+  }
+  let isEmpty = bounds.x > bounds.z || bounds.y > bounds.w;
+  let invalid = bitcast<f32>(0x7fc00000u | (index & 0u));
+  for (var component = 0u; component < 4u; component++) {
+    gridBounds[gridBoundsOffset + component] = select(bounds[component], invalid, isEmpty);
+  }`
+        }),
+        // The grid index has no mask, so excluded rows become NaN points, which it ignores.
+        createWGSLKernelNode<Parameters>(graph, {
+          id: `${id}-grid-positions`,
+          operation: OPERATION,
+          variant: 'grid-positions',
+          bindings: [
+            read('positions', positions, 'f32'),
+            read('rowValid', rowValid, 'u32'),
+            write('gridPositions', gridPositions!, 'f32')
+          ],
+          invocationCount: rowCount,
+          declarations: common,
+          body: `let included = rowValid[rowValidOffset + index] != 0u;
+  let invalid = bitcast<f32>(0x7fc00000u | (index & 0u));
+  gridPositions[gridPositionsOffset + index * 2u] =
+    select(invalid, positions[positionsOffset + index * 2u], included);
+  gridPositions[gridPositionsOffset + index * 2u + 1u] =
+    select(invalid, positions[positionsOffset + index * 2u + 1u], included);`
+        }),
+        ...new GPUGridIndex({
+          id: `${id}-grid-index`,
+          positions: gridPositions!,
+          gridSize: [indexGridSize[0], indexGridSize[1]],
+          bounds: [0, 0, 1, 1],
+          boundsBuffer: gridBounds!,
+          cellOffsets: cellOffsets!,
+          objectIds: objectIds!,
+          count: indexCount!,
+          overflow: indexOverflow!
+        }).getCommandNodes(graph),
+        // GPUGridIndex scatters IDs with atomics, so in-cell order varies between runs. Rank every
+        // ID within its cell to restore ascending row order before any float sum depends on it.
+        createWGSLKernelNode<Parameters>(graph, {
+          id: `${id}-sort-cells`,
+          operation: OPERATION,
+          variant: 'sort-cells',
+          bindings: [
+            read('cellOffsets', cellOffsets!, 'u32'),
+            read('objectIds', objectIds!, 'u32'),
+            read('indexCount', indexCount!, 'u32'),
+            read('gridBounds', gridBounds!, 'f32'),
+            write('sortedIds', sortedIds!, 'u32')
+          ],
+          invocationCount: rowCount,
+          declarations: `const INDEX_CELL_COUNT: u32 = ${indexCellCount}u;
+const ROW_COUNT: u32 = ${rowCount}u;`,
+          body: `// The fit kernels are at the storage buffer limit, so the extent travels after the IDs.
+  if (index < 4u) {
+    sortedIds[sortedIdsOffset + ROW_COUNT + index] = bitcast<u32>(gridBounds[gridBoundsOffset + index]);
+  }
+  if (index >= min(indexCount[indexCountOffset], ROW_COUNT)) {
+    return;
+  }
+  let row = objectIds[objectIdsOffset + index];
+  // Largest cell whose first slot is at or before this slot.
+  var low = 0u;
+  var high = INDEX_CELL_COUNT - 1u;
+  while (low < high) {
+    let middle = low + (high - low + 1u) / 2u;
+    if (cellOffsets[cellOffsetsOffset + middle] <= index) {
+      low = middle;
+    } else {
+      high = middle - 1u;
+    }
+  }
+  let start = cellOffsets[cellOffsetsOffset + low];
+  let end = cellOffsets[cellOffsetsOffset + low + 1u];
+  var rank = 0u;
+  for (var slot = start; slot < end; slot++) {
+    rank += select(0u, 1u, objectIds[objectIdsOffset + slot] < row);
+  }
+  sortedIds[sortedIdsOffset + start + rank] = row;`
+        })
+      );
+    }
+
     nodes.push(
       createWGSLKernelNode<Parameters>(graph, {
         id: `${id}-candidates`,
@@ -440,6 +658,7 @@ ${getFitWGSL(P)}`;
           read('response', response, 'f32'),
           read('rowValid', rowValid, 'u32'),
           read('params', parameters, 'f32'),
+          ...gridBindings,
           write('candidateScratch', candidateScratch, 'f32')
         ],
         invocationCount: rowCount,
@@ -594,6 +813,7 @@ ${CANDIDATE_COUNT_WGSL}`,
           read('rowValid', rowValid, 'u32'),
           read('params', parameters, 'f32'),
           read('selection', selection, 'f32'),
+          ...gridBindings,
           write('coefficients', output.coefficients, 'f32'),
           write('locals', locals, 'u32')
         ],
@@ -700,9 +920,13 @@ fn isFiniteBits(x: f32) -> bool {
 `;
 
 // Needs the bindings positions, predictors, response, rowValid and params, plus the Cholesky helpers.
-function getFitWGSL(coefficientCount: number): string {
+function getFitWGSL(
+  coefficientCount: number,
+  indexGridSize: readonly [number, number] | null
+): string {
   const P = coefficientCount;
   return /* wgsl */ `
+${indexGridSize ? getGridWGSL(indexGridSize) : ''}
 struct LocalFit {
   ok: bool,
   hat: f32,
@@ -800,11 +1024,8 @@ fn fitLocation(i: u32, bandwidth: f32) -> LocalFit {
   let origin = getPosition(i);
   let originBase = predictorsOffset + i * PREDICTOR_COUNT;
   z[0] = 1.0;
-  for (var row = 0u; row < ROW_COUNT; row++) {
-    if (rowValid[rowValidOffset + row] == 0u) {
-      continue;
-    }
-    let delta = getPosition(row) - origin;
+  ${getCandidateLoopWGSL(
+    `let delta = getPosition(row) - origin;
     let weight = getWeight(sqrt(dot(delta, delta)), bandwidth);
     if (!(weight > 0.0)) {
       continue;
@@ -820,8 +1041,9 @@ fn fitLocation(i: u32, bandwidth: f32) -> LocalFit {
       for (var c = 0u; c <= r; c++) {
         a[r * P + c] = a[r * P + c] + weighted * z[c];
       }
-    }
-  }
+    }`,
+    Boolean(indexGridSize)
+  )}
   fit.weightSum = a[0];
   fit.weightedResponse = b[0];
   var scale: array<f32, ${P}>;
@@ -860,11 +1082,8 @@ fn getLocalR2(i: u32, bandwidth: f32, fit: LocalFit) -> f32 {
   let weightedMean = fit.weightedResponse / fit.weightSum;
   var residualSum = 0.0;
   var totalSum = 0.0;
-  for (var row = 0u; row < ROW_COUNT; row++) {
-    if (rowValid[rowValidOffset + row] == 0u) {
-      continue;
-    }
-    let delta = getPosition(row) - origin;
+  ${getCandidateLoopWGSL(
+    `let delta = getPosition(row) - origin;
     let weight = getWeight(sqrt(dot(delta, delta)), bandwidth);
     if (!(weight > 0.0)) {
       continue;
@@ -876,9 +1095,97 @@ fn getLocalR2(i: u32, bandwidth: f32, fit: LocalFit) -> f32 {
     }
     let y = response[responseOffset + row];
     residualSum = residualSum + weight * (y - prediction) * (y - prediction);
-    totalSum = totalSum + weight * (y - weightedMean) * (y - weightedMean);
-  }
+    totalSum = totalSum + weight * (y - weightedMean) * (y - weightedMean);`,
+    Boolean(indexGridSize)
+  )}
   return select(getNaN(), 1.0 - residualSum / totalSum, totalSum > 0.0);
+}
+`;
+}
+
+/**
+ * Loop over the candidate rows of a location (`origin`, `bandwidth` in scope) running `body` with
+ * `row` bound. Without a grid every row is visited in order. With one, bounded fixed-bandwidth
+ * fits (bisquare, fixed) visit only the sorted contents of the cells covering the bandwidth, one
+ * contiguous slot range per grid row; other encodings still visit every row.
+ */
+function getCandidateLoopWGSL(body: string, hasGrid: boolean): string {
+  if (!hasGrid) {
+    return `for (var row = 0u; row < ROW_COUNT; row++) {
+    if (rowValid[rowValidOffset + row] == 0u) {
+      continue;
+    }
+    ${body}
+  }`;
+  }
+  return `let useGrid = isGridBandwidth(bandwidth);
+  let range = select(vec4u(0u, 0u, 0u, 0u), getGridRange(origin, bandwidth), useGrid);
+  let gridRowCount = select(1u, range.w - range.z + 1u, useGrid);
+  for (var gridRowStep = 0u; gridRowStep < gridRowCount; gridRowStep++) {
+    var firstSlot = 0u;
+    var endSlot = ROW_COUNT;
+    if (useGrid) {
+      let cellRow = (range.z + gridRowStep) * INDEX_WIDTH;
+      firstSlot = cellOffsets[cellOffsetsOffset + cellRow + range.x];
+      endSlot = cellOffsets[cellOffsetsOffset + cellRow + range.y + 1u];
+    }
+    for (var slot = firstSlot; slot < endSlot; slot++) {
+      var row = slot;
+      if (useGrid) {
+        row = sortedIds[sortedIdsOffset + slot];
+      }
+      if (rowValid[rowValidOffset + row] == 0u) {
+        continue;
+      }
+      ${body}
+    }
+  }`;
+}
+
+function getGridWGSL(indexGridSize: readonly [number, number]): string {
+  return /* wgsl */ `
+const INDEX_WIDTH: u32 = ${indexGridSize[0]}u;
+const INDEX_HEIGHT: u32 = ${indexGridSize[1]}u;
+
+// Same cell mapping as GPUGridIndex.
+fn getGridCoordinate(value: f32, minimum: f32, maximum: f32, size: u32) -> u32 {
+  if (maximum == minimum || value == minimum) { return 0u; }
+  if (value == maximum) { return size - 1u; }
+  if (minimum < 0.0 && maximum > 0.0) {
+    let scale = max(abs(minimum), abs(maximum));
+    let scaledValue = value / scale;
+    let scaledMinimum = minimum / scale;
+    let scaledMaximum = maximum / scale;
+    return min(
+      u32((scaledValue - scaledMinimum) / (scaledMaximum - scaledMinimum) * f32(size)),
+      size - 1u
+    );
+  }
+  return min(u32((value - minimum) / (maximum - minimum) * f32(size)), size - 1u);
+}
+
+// Bisquare with a fixed bandwidth has bounded support, so the grid is exact for it.
+fn isGridBandwidth(bandwidth: f32) -> bool {
+  return params[paramsOffset] > 0.5 && params[paramsOffset + 1u] < 0.5 &&
+    bandwidth > 0.0 && isFiniteBits(bandwidth);
+}
+
+// Inclusive cell range (columnLow, columnHigh, rowLow, rowHigh) covering distance < bandwidth.
+// The reach is padded for f32 rounding of the box edges; rows in the padding get weight 0 or
+// a weight below 1e-8 and the exact distance test in the weight rejects the rest.
+fn getGridRange(origin: vec2f, bandwidth: f32) -> vec4u {
+  let boundsBase = sortedIdsOffset + ROW_COUNT;
+  let minimum = vec2f(bitcast<f32>(sortedIds[boundsBase]), bitcast<f32>(sortedIds[boundsBase + 1u]));
+  let maximum = vec2f(bitcast<f32>(sortedIds[boundsBase + 2u]), bitcast<f32>(sortedIds[boundsBase + 3u]));
+  let reach = vec2f(bandwidth * 1.0001) + abs(origin) * 2.4e-7;
+  let low = clamp(origin - reach, minimum, maximum);
+  let high = clamp(origin + reach, minimum, maximum);
+  return vec4u(
+    getGridCoordinate(low.x, minimum.x, maximum.x, INDEX_WIDTH),
+    getGridCoordinate(high.x, minimum.x, maximum.x, INDEX_WIDTH),
+    getGridCoordinate(low.y, minimum.y, maximum.y, INDEX_HEIGHT),
+    getGridCoordinate(high.y, minimum.y, maximum.y, INDEX_HEIGHT)
+  );
 }
 `;
 }

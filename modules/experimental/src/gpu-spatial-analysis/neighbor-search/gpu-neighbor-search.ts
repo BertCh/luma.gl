@@ -249,11 +249,17 @@ export class GPUNeighborSearch implements GPUCommandNodeProducer {
       ? [{name: 'queryPositions', view: queryPositions, type: 'f32', access: 'read'}]
       : [];
     const queryName = crossJoin ? 'queryPositions' : 'positions';
-    const readQueryWGSL = `let x = ${queryName}[${queryName}Offset + index * 2u];
-  let y = ${queryName}[${queryName}Offset + index * 2u + 1u];`;
-    const selfCondition = crossJoin ? 'true' : 'neighbor != index';
+    const readQueryWGSL = (row: string) => `let x = ${queryName}[${queryName}Offset + ${row} * 2u];
+  let y = ${queryName}[${queryName}Offset + ${row} * 2u + 1u];`;
+    const selfCondition = crossJoin ? 'true' : 'neighbor != queryIndex';
     // A self join applies the target mask to the query rows too unless a query mask is given.
     const queryMask = props.queryMask ?? (crossJoin ? undefined : props.mask);
+    // Threads of the search kernels walk the valid queries in grid-cell order, so neighboring
+    // threads search neighboring cells (coalesced reads, coherent control flow) however the
+    // input is ordered. The thread's query row (`row`) is where its results are written, so
+    // outputs are identical to launching in row order. A self join whose query set equals the
+    // target set reuses the target index; otherwise the queries get an index of their own.
+    const sharesTargetIndex = !crossJoin && !props.queryMask;
 
     const gridBounds = createTransientView(graph, `${id}-grid-bounds`, 'float32', 4);
     const gridPositions = createTransientView(
@@ -264,6 +270,14 @@ export class GPUNeighborSearch implements GPUCommandNodeProducer {
     );
     const cellOffsets = createTransientView(graph, `${id}-cell-offsets`, 'uint32', cellCount + 1);
     const sortedRows = createTransientView(graph, `${id}-sorted-rows`, 'uint32', targetRows);
+    // Target `[x, y, row]` triples (coordinates as float bits) in cell order: the search loops
+    // read them sequentially instead of gathering, and one binding carries all three.
+    const sortedTargets = createTransientView(
+      graph,
+      `${id}-sorted-targets`,
+      'uint32',
+      targetRows * 3
+    );
     const gridCount = createTransientView(graph, `${id}-grid-count`, 'uint32', 1);
     const gridOverflow = createTransientView(graph, `${id}-grid-overflow`, 'uint32', 1);
     const counts =
@@ -271,6 +285,16 @@ export class GPUNeighborSearch implements GPUCommandNodeProducer {
     const starts = createTransientView(graph, `${id}-starts`, 'uint32', queryRows);
     const distances =
       weights.distances ?? createTransientView(graph, `${id}-distances`, 'float32', capacity);
+    const queryOrder = sharesTargetIndex
+      ? sortedRows
+      : createTransientView(graph, `${id}-query-order`, 'uint32', queryRows);
+    // Valid query `[x, y, row]` triples in cell order; a shared index reuses the target triples.
+    const sortedQueries = sharesTargetIndex
+      ? sortedTargets
+      : createTransientView(graph, `${id}-sorted-queries`, 'uint32', queryRows * 3);
+    const queryCount = sharesTargetIndex
+      ? gridCount
+      : createTransientView(graph, `${id}-query-count`, 'uint32', 1);
 
     const nodes: GPUCommandNode<Parameters>[] = [
       // The upstream grid index takes its domain from a buffer, so the per-frame lattice (cells at
@@ -358,19 +382,159 @@ export class GPUNeighborSearch implements GPUCommandNodeProducer {
         invocationCount: queryRows,
         declarations: latticeWGSL,
         body: `let lattice = readLattice();
-  ${readQueryWGSL}
+  ${readQueryWGSL('index')}
   let included = ${queryMask ? 'queryMask[queryMaskOffset + index] != 0u' : 'true'};
   counts[countsOffset + index] = select(0u, 1u, included && isPointValid(lattice, x, y));`
       })
     ];
 
+    if (!sharesTargetIndex) {
+      const queryGridPositions = createTransientView(
+        graph,
+        `${id}-query-grid-positions`,
+        'float32x2',
+        queryRows
+      );
+      nodes.push(
+        createWGSLKernelNode<Parameters>(graph, {
+          id: `${id}-query-grid-positions`,
+          operation: OPERATION,
+          variant: 'query-grid-positions',
+          bindings: [
+            ...(crossJoin
+              ? queryBinding
+              : [
+                  {
+                    name: 'positions',
+                    view: positions,
+                    type: 'f32' as const,
+                    access: 'read' as const
+                  }
+                ]),
+            {name: 'parameters', view: parameters, type: 'f32', access: 'read'},
+            ...(queryMask
+              ? [
+                  {
+                    name: 'queryMask',
+                    view: queryMask,
+                    type: 'u32' as const,
+                    access: 'read' as const
+                  }
+                ]
+              : []),
+            {
+              name: 'queryGridPositions',
+              view: queryGridPositions,
+              type: 'f32',
+              access: 'read_write'
+            }
+          ],
+          invocationCount: queryRows,
+          declarations: latticeWGSL,
+          body: `let lattice = readLattice();
+  ${readQueryWGSL('index')}
+  let included = ${queryMask ? 'queryMask[queryMaskOffset + index] != 0u' : 'true'} && isPointValid(lattice, x, y);
+  let invalid = bitcast<f32>(0x7fc00000u | (index & 0u));
+  queryGridPositions[queryGridPositionsOffset + index * 2u] = select(invalid, x, included);
+  queryGridPositions[queryGridPositionsOffset + index * 2u + 1u] = select(invalid, y, included);`
+        }),
+        // Only the cell order of the queries is used; the cell offsets are scratch.
+        ...new GPUGridIndex({
+          id: `${id}-query-grid-index`,
+          positions: queryGridPositions,
+          gridSize: [gridSize[0], gridSize[1]],
+          bounds: [0, 0, 1, 1],
+          boundsBuffer: gridBounds,
+          cellOffsets: createTransientView(
+            graph,
+            `${id}-query-cell-offsets`,
+            'uint32',
+            cellCount + 1
+          ),
+          objectIds: queryOrder,
+          count: queryCount,
+          overflow: createTransientView(graph, `${id}-query-grid-overflow`, 'uint32', 1)
+        }).getCommandNodes(graph)
+      );
+    }
+    // Kernels bind at most 8 storage buffers, so the target and query triples are single buffers
+    // and a shared index binds each of them once under the target names.
+    const queryBufferName = sharesTargetIndex ? 'sortedTargets' : 'sortedQueries';
+    const queryCountName = sharesTargetIndex ? 'gridCount' : 'queryCount';
     const searchBindings: WGSLKernelBinding[] = [
-      {name: 'positions', view: positions, type: 'f32', access: 'read'},
-      ...queryBinding,
+      {name: 'sortedTargets', view: sortedTargets, type: 'u32', access: 'read'},
+      ...(sharesTargetIndex
+        ? []
+        : [
+            {
+              name: 'sortedQueries',
+              view: sortedQueries,
+              type: 'u32' as const,
+              access: 'read' as const
+            }
+          ]),
       {name: 'parameters', view: parameters, type: 'f32', access: 'read'},
-      {name: 'sortedRows', view: sortedRows, type: 'u32', access: 'read'},
-      {name: 'cellOffsets', view: cellOffsets, type: 'u32', access: 'read'}
+      {name: 'cellOffsets', view: cellOffsets, type: 'u32', access: 'read'},
+      {name: queryCountName, view: queryCount, type: 'u32', access: 'read'}
     ];
+    // Maps the thread to the valid query at that cell-order slot and reads its point; surplus
+    // threads (invalid queries have no work and a zero count from the query-valid pass) return.
+    const threadToRowWGSL = `if (index >= ${queryCountName}[${queryCountName}Offset]) {
+    return;
+  }
+  let queryIndex = ${queryBufferName}[${queryBufferName}Offset + index * 3u + 2u];
+  let x = bitcast<f32>(${queryBufferName}[${queryBufferName}Offset + index * 3u]);
+  let y = bitcast<f32>(${queryBufferName}[${queryBufferName}Offset + index * 3u + 1u]);`;
+
+    nodes.push(
+      createWGSLKernelNode<Parameters>(graph, {
+        id: `${id}-sorted-targets`,
+        operation: OPERATION,
+        variant: 'sorted-targets',
+        bindings: [
+          {name: 'positions', view: positions, type: 'f32', access: 'read'},
+          {name: 'sortedRows', view: sortedRows, type: 'u32', access: 'read'},
+          {name: 'gridCount', view: gridCount, type: 'u32', access: 'read'},
+          {name: 'sortedTargets', view: sortedTargets, type: 'u32', access: 'read_write'}
+        ],
+        invocationCount: targetRows,
+        body: `if (index >= gridCount[gridCountOffset]) {
+    return;
+  }
+  let row = sortedRows[sortedRowsOffset + index];
+  sortedTargets[sortedTargetsOffset + index * 3u] = bitcast<u32>(positions[positionsOffset + row * 2u]);
+  sortedTargets[sortedTargetsOffset + index * 3u + 1u] = bitcast<u32>(positions[positionsOffset + row * 2u + 1u]);
+  sortedTargets[sortedTargetsOffset + index * 3u + 2u] = row;`
+      })
+    );
+    if (!sharesTargetIndex) {
+      nodes.push(
+        createWGSLKernelNode<Parameters>(graph, {
+          id: `${id}-sorted-queries`,
+          operation: OPERATION,
+          variant: 'sorted-queries',
+          bindings: [
+            {
+              name: 'queryPositions',
+              view: queryPositions ?? positions,
+              type: 'f32',
+              access: 'read'
+            },
+            {name: 'queryOrder', view: queryOrder, type: 'u32', access: 'read'},
+            {name: 'queryCount', view: queryCount, type: 'u32', access: 'read'},
+            {name: 'sortedQueries', view: sortedQueries, type: 'u32', access: 'read_write'}
+          ],
+          invocationCount: queryRows,
+          body: `if (index >= queryCount[queryCountOffset]) {
+    return;
+  }
+  let row = queryOrder[queryOrderOffset + index];
+  sortedQueries[sortedQueriesOffset + index * 3u] = bitcast<u32>(queryPositions[queryPositionsOffset + row * 2u]);
+  sortedQueries[sortedQueriesOffset + index * 3u + 1u] = bitcast<u32>(queryPositions[queryPositionsOffset + row * 2u + 1u]);
+  sortedQueries[sortedQueriesOffset + index * 3u + 2u] = row;`
+        })
+      );
+    }
 
     let knnIds: GraphDataView<'uint32'> | undefined;
     let knnDistances: GraphDataView<'float32'> | undefined;
@@ -391,12 +555,12 @@ export class GPUNeighborSearch implements GPUCommandNodeProducer {
           invocationCount: queryRows,
           declarations: `${latticeWGSL}
 ${getInsertNeighborWGSL(k)}`,
-          body: `var found = 0u;
+          body: `${threadToRowWGSL}
+  var found = 0u;
   var bestDistances: array<f32, ${k}>;
   var bestIds: array<u32, ${k}>;
-  if (counts[countsOffset + index] != 0u) {
+  if (counts[countsOffset + queryIndex] != 0u) {
     let lattice = readLattice();
-    ${readQueryWGSL}
     ${getNearestNeighborSearchWGSL(selfCondition)}
   }
   // Re-sort the selected neighbors by ID (insertion sort over at most K entries).
@@ -413,10 +577,10 @@ ${getInsertNeighborWGSL(k)}`,
     bestDistances[destination] = distanceSquared;
   }
   for (var slot = 0u; slot < found; slot++) {
-    knnIds[knnIdsOffset + index * K + slot] = bestIds[slot];
-    knnDistances[knnDistancesOffset + index * K + slot] = sqrt(bestDistances[slot]);
+    knnIds[knnIdsOffset + queryIndex * K + slot] = bestIds[slot];
+    knnDistances[knnDistancesOffset + queryIndex * K + slot] = sqrt(bestDistances[slot]);
   }
-  counts[countsOffset + index] = found;`
+  counts[countsOffset + queryIndex] = found;`
         })
       );
     } else {
@@ -431,15 +595,15 @@ ${getInsertNeighborWGSL(k)}`,
           ],
           invocationCount: queryRows,
           declarations: latticeWGSL,
-          body: `var count = 0u;
-  if (counts[countsOffset + index] != 0u) {
+          body: `${threadToRowWGSL}
+  var count = 0u;
+  if (counts[countsOffset + queryIndex] != 0u) {
     let lattice = readLattice();
-    ${readQueryWGSL}
     ${getRadiusNeighborLoopWGSL(`if (${selfCondition}) {
           count++;
         }`)}
   }
-  counts[countsOffset + index] = count;`
+  counts[countsOffset + queryIndex] = count;`
         })
       );
     }
@@ -523,11 +687,11 @@ const CAPACITY: u32 = ${capacity}u;`,
           ],
           invocationCount: queryRows,
           declarations: latticeWGSL,
-          body: `let begin = offsets[offsetsOffset + index];
-  let end = offsets[offsetsOffset + index + 1u];
+          body: `${threadToRowWGSL}
+  let begin = offsets[offsetsOffset + queryIndex];
+  let end = offsets[offsetsOffset + queryIndex + 1u];
   if (end > begin) {
     let lattice = readLattice();
-    ${readQueryWGSL}
     var next = begin;
     ${getRadiusNeighborLoopWGSL(`if (${selfCondition} && next < end) {
           neighbors[neighborsOffset + next] = neighbor;

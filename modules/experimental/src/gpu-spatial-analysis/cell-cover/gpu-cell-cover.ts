@@ -41,6 +41,16 @@ export type GPUCellCoverOutput = {
   featureIds: GraphDataView<'uint32'>;
   /** Cell keys as two little-endian `uint32` words (`low`, `high`), the Arrow `Uint64` layout. */
   cells: GraphDataView<'uint32x2'>;
+  /**
+   * Optional core flag per output cell, same length as `cells`: 1 when the cell is a core cell
+   * (Mosaic "chip" terminology), provably inside the feature, 0 for border cells. A join may skip
+   * the exact point-in-polygon test for points that fall in core cells. Conservative: a cell is
+   * core only when its center is inside and no polygon edge enters the cell (its bounding box for
+   * H3) grown by a small safety margin (about 2e-4 degrees plus 0.1% of the cell size), so cells
+   * touching the boundary or within f32 error of it are reported as border. Cells that are not
+   * core may still lie entirely inside. Rows past `count` are not written.
+   */
+  core?: GraphDataView<'uint32'>;
   /** One-row scalar receiving `min(totalCount, capacity)`. */
   count: GraphDataView<'uint32'>;
   /** One-row scalar receiving 1 when any capacity overflowed. */
@@ -109,7 +119,8 @@ const DEFAULT_ID = 'cell-cover';
  * and resolutions above about 16 are below f32 position resolution. H3 `'center'` compares the f32
  * cell center to the polygon, so it can differ from `h3.polygonToCells` for centers within about
  * 1e-5 degrees of an edge, and for the f32 forward index mismatches described in `H3_INDEX_WGSL`.
- * H3 lattices are clamped to latitudes within 89 degrees, and cost grows as longitude spacing
+ * With `output.core`, cells provably inside the polygon are flagged so joins can skip the exact
+ * test for them (see {@link GPUCellCoverOutput.core}). H3 lattices are clamped to latitudes within 89 degrees, and cost grows as longitude spacing
  * divided by cos(latitude).
  */
 export class GPUCellCover implements GPUCommandNodeProducer {
@@ -173,6 +184,12 @@ export class GPUCellCover implements GPUCommandNodeProducer {
     if (output.featureIds.length < 1) {
       throw new Error(`${id} output capacity must be at least 1`);
     }
+    if (output.core) {
+      validatePackedUint32View(output.core, `${id} output.core`);
+      if (output.core.length !== output.featureIds.length) {
+        throw new Error(`${id} output.core must have the same length as output.featureIds`);
+      }
+    }
     for (const [name, view] of [
       ['count', output.count],
       ['overflow', output.overflow],
@@ -187,7 +204,14 @@ export class GPUCellCover implements GPUCommandNodeProducer {
     }
     validateGraphOutputsDisjointFromInputs(
       id,
-      [output.featureIds, output.cells, output.count, output.overflow, output.totalCount],
+      [
+        output.featureIds,
+        output.cells,
+        output.core,
+        output.count,
+        output.overflow,
+        output.totalCount
+      ],
       [
         props.polygonPositions,
         props.featureOffsets,
@@ -212,6 +236,7 @@ export class GPUCellCover implements GPUCommandNodeProducer {
       props.featureIds,
       output.featureIds,
       output.cells,
+      output.core,
       output.count,
       output.overflow,
       output.totalCount
@@ -221,6 +246,7 @@ export class GPUCellCover implements GPUCommandNodeProducer {
       family: props.family,
       resolution: props.resolution,
       containment: this.containment,
+      computeCore: Boolean(output.core),
       featureCount,
       candidateCapacity,
       polygonPositions: props.polygonPositions,
@@ -267,7 +293,8 @@ export class GPUCellCover implements GPUCommandNodeProducer {
         candidateCells,
         featureIds: props.featureIds,
         outputFeatureIds: output.featureIds,
-        outputCells: output.cells
+        outputCells: output.cells,
+        outputCore: output.core
       }),
       createCoverFinalizeNode<Parameters>(graph, context, {
         starts,

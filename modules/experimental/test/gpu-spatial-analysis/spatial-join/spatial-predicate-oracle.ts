@@ -12,7 +12,20 @@ export type OracleFeature =
   | {kind: 'lines'; vertices: OraclePoint[]}
   | {kind: 'polygons'; polygons: OraclePoint[][][]};
 
-export type OraclePredicate = 'intersects' | 'contains' | 'within' | 'dwithin';
+export type OracleRelationalPredicate =
+  | 'covers'
+  | 'coveredBy'
+  | 'touches'
+  | 'crosses'
+  | 'overlaps'
+  | 'equals'
+  | 'containsProperly';
+export type OraclePredicate =
+  | 'intersects'
+  | 'contains'
+  | 'within'
+  | 'dwithin'
+  | OracleRelationalPredicate;
 type Location = 'exterior' | 'interior' | 'boundary';
 
 /**
@@ -156,6 +169,14 @@ export function evaluateOraclePredicate(
   }
   if (predicate === 'within') {
     return evaluateOraclePredicate('contains', right, left);
+  }
+  if (!['intersects', 'contains', 'dwithin'].includes(predicate)) {
+    return evaluateRelationalPredicate(
+      predicate as OracleRelationalPredicate,
+      evaluateOracleRelate(left, right),
+      getOracleDimension(left),
+      getOracleDimension(right)
+    );
   }
   const scaledLeft = scaled(left);
   const scaledRight = scaled(right);
@@ -421,4 +442,169 @@ export function generateRandomFeatures(
     }
   }
   return features;
+}
+
+/** Topological dimension of an oracle feature. */
+export function getOracleDimension(feature: OracleFeature): 0 | 1 | 2 {
+  return feature.kind === 'points' ? 0 : feature.kind === 'lines' ? 1 : 2;
+}
+
+/** Dimension of the set a feature assigns to one location class (`2` is an open set). */
+function getPartDimension(feature: OracleFeature, location: Location): number {
+  if (location === 'exterior') {
+    return 2;
+  }
+  if (feature.kind === 'points') {
+    return 0;
+  }
+  if (feature.kind === 'lines') {
+    return location === 'interior' ? 1 : 0;
+  }
+  return location === 'interior' ? 2 : 1;
+}
+
+const LOCATIONS: Location[] = ['interior', 'boundary', 'exterior'];
+
+/**
+ * The DE-9IM matrix of one pair, as the nine-character OGC string (`II IB IE BI BB BE EI EB EE`),
+ * by lattice sampling (see {@link SCALE}).
+ *
+ * A cell holds the dimension of `part(left) intersect part(right)`. Two open parts (polygon
+ * interiors, exteriors) that share a lattice point meet in an area. A one-dimensional part meeting
+ * an open part, or the closed lattice point of another one-dimensional part, is relatively open or a
+ * point; two one-dimensional parts meet in a segment exactly when two neighboring lattice points
+ * and their midpoint (checked on a doubled lattice) all lie in the cell. Valid because every vertex
+ * is on the half-integer lattice and every edge is axis-aligned or at 45 degrees.
+ */
+export function evaluateOracleRelate(left: OracleFeature, right: OracleFeature): string {
+  if (isEmpty(left) || isEmpty(right)) {
+    return 'FFFFFFFFF';
+  }
+  const scaledLeft = scaled(left);
+  const scaledRight = scaled(right);
+  const doubledLeft = scaleFeature(scaledLeft, 2);
+  const doubledRight = scaleFeature(scaledRight, 2);
+  const [minX, minY, maxX, maxY] = getBounds([scaledLeft, scaledRight]);
+  const dimensions = new Array<number>(9).fill(-1);
+  dimensions[8] = 2;
+  const lineCells: Set<number>[] = Array.from({length: 9}, () => new Set<number>());
+  const key = (x: number, y: number) => (x - minX + 2) * (maxY - minY + 5) + (y - minY + 2);
+  for (let x = minX; x <= maxX; x++) {
+    for (let y = minY; y <= maxY; y++) {
+      const leftLocation = locate(scaledLeft, [x, y]);
+      const rightLocation = locate(scaledRight, [x, y]);
+      const cell = LOCATIONS.indexOf(leftLocation) * 3 + LOCATIONS.indexOf(rightLocation);
+      const leftDimension = getPartDimension(left, leftLocation);
+      const rightDimension = getPartDimension(right, rightLocation);
+      const dimension = Math.min(leftDimension, rightDimension);
+      if (leftDimension === 2 && rightDimension === 2) {
+        dimensions[cell] = 2;
+      } else if (dimension === 1 && leftDimension === 1 && rightDimension === 1) {
+        lineCells[cell].add(key(x, y));
+        dimensions[cell] = Math.max(dimensions[cell], 0);
+      } else {
+        dimensions[cell] = Math.max(dimensions[cell], dimension);
+      }
+    }
+  }
+  for (let cell = 0; cell < 9; cell++) {
+    if (dimensions[cell] >= 1 || lineCells[cell].size === 0) {
+      continue;
+    }
+    const leftLocation = LOCATIONS[Math.floor(cell / 3)];
+    const rightLocation = LOCATIONS[cell % 3];
+    search: for (let x = minX; x <= maxX; x++) {
+      for (let y = minY; y <= maxY; y++) {
+        if (!lineCells[cell].has(key(x, y))) {
+          continue;
+        }
+        for (const [dx, dy] of [
+          [1, 0],
+          [0, 1],
+          [1, 1],
+          [1, -1]
+        ]) {
+          if (
+            lineCells[cell].has(key(x + dx, y + dy)) &&
+            locate(doubledLeft, [2 * x + dx, 2 * y + dy]) === leftLocation &&
+            locate(doubledRight, [2 * x + dx, 2 * y + dy]) === rightLocation
+          ) {
+            dimensions[cell] = 1;
+            break search;
+          }
+        }
+      }
+    }
+  }
+  return dimensions.map(dimension => (dimension < 0 ? 'F' : String(dimension))).join('');
+}
+
+function scaleFeature(feature: OracleFeature, factor: number): OracleFeature {
+  const scale = ([x, y]: OraclePoint): OraclePoint => [x * factor, y * factor];
+  if (feature.kind === 'points') {
+    return {kind: 'points', vertex: scale(feature.vertex)};
+  }
+  if (feature.kind === 'lines') {
+    return {kind: 'lines', vertices: feature.vertices.map(scale)};
+  }
+  return {
+    kind: 'polygons',
+    polygons: feature.polygons.map(polygon => polygon.map(ring => ring.map(scale)))
+  };
+}
+
+/** Whether a nine-character DE-9IM string matches an OGC pattern of `T F * 0 1 2`. */
+export function matchesRelatePattern(matrix: string, pattern: string): boolean {
+  return [...pattern].every((character, cell) => {
+    const value = matrix[cell];
+    if (character === '*') {
+      return true;
+    }
+    if (character === 'T') {
+      return value !== 'F';
+    }
+    return character === value;
+  });
+}
+
+/** OGC named predicate from a DE-9IM matrix, written out from the Simple Features definitions. */
+export function evaluateRelationalPredicate(
+  predicate: OracleRelationalPredicate | 'intersects' | 'contains' | 'within',
+  matrix: string,
+  leftDimension: number,
+  rightDimension: number
+): boolean {
+  const any = (...patterns: string[]) =>
+    patterns.some(pattern => matchesRelatePattern(matrix, pattern));
+  switch (predicate) {
+    case 'intersects':
+      return !matchesRelatePattern(matrix, 'FF*FF****');
+    case 'contains':
+      return any('T*****FF*');
+    case 'within':
+      return any('T*F**F***');
+    case 'covers':
+      return any('T*****FF*', '*T****FF*', '***T**FF*', '****T*FF*');
+    case 'coveredBy':
+      return any('T*F**F***', '*TF**F***', '**FT*F***', '**F*TF***');
+    case 'touches':
+      return any('FT*******', 'F**T*****', 'F***T****');
+    case 'crosses':
+      if (leftDimension < rightDimension) {
+        return any('T*T******');
+      }
+      if (leftDimension > rightDimension) {
+        return any('T*****T**');
+      }
+      return leftDimension === 1 && any('0********');
+    case 'overlaps':
+      if (leftDimension !== rightDimension) {
+        return false;
+      }
+      return leftDimension === 1 ? any('1*T***T**') : any('T*T***T**');
+    case 'equals':
+      return any('T*F**FFF*');
+    case 'containsProperly':
+      return any('T**FF*FF*');
+  }
 }

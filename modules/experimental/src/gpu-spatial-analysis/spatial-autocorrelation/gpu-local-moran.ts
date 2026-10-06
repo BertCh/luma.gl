@@ -30,6 +30,12 @@ import {GPU_LOCAL_MORAN_QUADRANT} from './spatial-autocorrelation-parameters';
 const OPERATION = 'GPULocalMoran';
 
 /**
+ * How `GPULocalMoran` gates the `quadrants` output: `'analytic'` reports a quadrant only where
+ * the analytic p-value (or BH-FDR) is significant, `'none'` reports it for every included row.
+ */
+export type GPULocalMoranQuadrantGating = 'analytic' | 'none';
+
+/**
  * Properties for {@link GPULocalMoran}.
  *
  * Per-frame (no rebuild or recompile): the contents of `weights`, `values`, `mask` and
@@ -81,6 +87,15 @@ export type GPULocalMoranProps = {
   neighborCounts?: GraphDataView<'uint32'>;
   /** Optional caller-owned `[n, mean, variance, standardDeviation]` actually used this frame. */
   globalStatistics?: GraphDataView<'float32'>;
+  /**
+   * Compile-time. `'analytic'` (default) writes `quadrants` only where the analytic test is
+   * significant. `'none'` writes the ungated quadrant (the signs of the centered value and the
+   * spatial lag) for every included row with a nonzero centered value and nonzero lag, so a
+   * caller can gate by another test such as `GPULocalPermutationTest`. Rows that are excluded,
+   * islands, or exactly at the mean get 0. `pValues` are unaffected. Cannot be combined with
+   * `falseDiscoveryRate`.
+   */
+  quadrantGating?: GPULocalMoranQuadrantGating;
   /**
    * Compile-time. When true, quadrant significance uses Benjamini-Hochberg false discovery rate
    * correction at the per-frame `significanceLevel` over all rows with a finite z. Adds one
@@ -161,6 +176,9 @@ export class GPULocalMoran implements GPUCommandNodeProducer {
       if (view && view.length !== rows) {
         throw new Error(`${id} ${name} length must equal the weights row count`);
       }
+    }
+    if (props.quadrantGating === 'none' && props.falseDiscoveryRate) {
+      throw new Error(`${id} quadrantGating 'none' cannot be combined with falseDiscoveryRate`);
     }
     validateGraphOutputsDisjointFromInputs(
       id,
@@ -292,7 +310,7 @@ const ROWS: u32 = ${rows}u;`;
       return nodes;
     }
     const falseDiscoveryRate =
-      props.falseDiscoveryRate && props.quadrants
+      props.falseDiscoveryRate && props.quadrants && props.quadrantGating !== 'none'
         ? getFalseDiscoveryRateNodes<Parameters>(graph, {
             id: `${id}-fdr`,
             operation: OPERATION,
@@ -348,7 +366,9 @@ const ROWS: u32 = ${rows}u;`;
     falseDiscoveryRate
       ? `let rank = ranks[ranksOffset + index];
   let significant = finite && rank > 0u && rank <= counters[countersOffset + 1u];`
-      : 'let significant = finite && pValue <= readParameter(0u);'
+      : props.quadrantGating === 'none'
+        ? 'let significant = isFiniteFloat(statistics[statisticsOffset + index]);'
+        : 'let significant = finite && pValue <= readParameter(0u);'
   }
   let centered = statistics[statisticsOffset + index];
   let lag = spatialLag[spatialLagOffset + index];

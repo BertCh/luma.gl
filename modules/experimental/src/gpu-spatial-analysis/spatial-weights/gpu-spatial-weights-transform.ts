@@ -3,6 +3,8 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {
+  createTransientView,
+  GPUReduction,
   validatePackedView,
   type GPUCommandGraph,
   type GPUCommandNode,
@@ -24,7 +26,13 @@ export type GPUSpatialWeightsKernel =
   | 'uniform';
 
 /** Transform applied to the weights of a {@link GPUSpatialWeights}. */
-export type GPUSpatialWeightsTransformOperation = 'row' | 'binary' | 'kernel' | 'symmetrize';
+export type GPUSpatialWeightsTransformOperation =
+  | 'row'
+  | 'binary'
+  | 'kernel'
+  | 'symmetrize'
+  | 'double'
+  | 'variance';
 
 /**
  * Properties for {@link GPUSpatialWeightsTransform}.
@@ -42,6 +50,15 @@ export type GPUSpatialWeightsTransformProps = {
    * - `'symmetrize'`: `(w_ij + w_ji) / 2`, with a missing reverse slot counting as 0. The sparsity pattern
    *   is not changed, so it needs a symmetric pattern (contiguity, lattice, distance band) to give
    *   a symmetric result. `output` must be a different view than `weights.weights`.
+   * - `'double'`: double standardization `w_ij / S0` with `S0 = sum_ij w_ij` (the PySAL `D`
+   *   transform, all weights sum to 1; see `doubleSum` for the sum-to-`n` variant). A zero or
+   *   non-finite `S0` gives all-zero weights.
+   * - `'variance'`: variance-stabilizing transform (PySAL `V`, Tiefelsdorf, Boots and Kozak
+   *   1999): `s_ij = w_ij / sqrt(sum_j w_ij^2)`, `Q = sum_ij s_ij`, `w'_ij = s_ij * n / Q` with `n`
+   *   the row count. Rows with no positive weight stay zero; a zero `Q` gives all-zero weights.
+   *
+   * `'double'` and `'variance'` need one global sum: per-row partials, a fixed-order `GPUReduction`
+   * sum, then an apply pass, so results are deterministic.
    */
   operation: GPUSpatialWeightsTransformOperation;
   /** Weights to transform. Only `weights.weights` is written (to `output`). */
@@ -53,6 +70,12 @@ export type GPUSpatialWeightsTransformProps = {
    * is also read by other nodes in the same graph.
    */
   output?: GraphDataView<'float32'>;
+  /**
+   * Total of the `'double'` transform: `'one'` (default) scales by `1 / S0` so all weights sum to
+   * 1, as the libpysal `W.transform = 'D'` formula; `'rows'` scales by `n / S0` so they sum to the
+   * row count `n` (the Anselin double standardization, same mean row sum as `'row'`).
+   */
+  doubleSum?: 'one' | 'rows';
   /** Kernel profile for `'kernel'`. Defaults to `'triangular'`. */
   kernel?: GPUSpatialWeightsKernel;
   /**
@@ -90,8 +113,12 @@ export class GPUSpatialWeightsTransform implements GPUCommandNodeProducer {
     const id = props.id ?? 'spatial-weights-transform';
     this.id = id;
     this.props = props;
-    if (!['row', 'binary', 'kernel', 'symmetrize'].includes(props.operation)) {
-      throw new Error(`${id} operation must be 'row', 'binary', 'kernel' or 'symmetrize'`);
+    if (
+      !['row', 'binary', 'kernel', 'symmetrize', 'double', 'variance'].includes(props.operation)
+    ) {
+      throw new Error(
+        `${id} operation must be 'row', 'binary', 'kernel', 'symmetrize', 'double' or 'variance'`
+      );
     }
     validateGPUSpatialWeights(id, props.weights);
     if (props.output) {
@@ -112,6 +139,9 @@ export class GPUSpatialWeightsTransform implements GPUCommandNodeProducer {
       if (!['gaussian', 'triangular', 'epanechnikov', 'bisquare', 'uniform'].includes(kernel)) {
         throw new Error(`${id} unknown kernel ${kernel}`);
       }
+    }
+    if (props.doubleSum !== undefined && !['one', 'rows'].includes(props.doubleSum)) {
+      throw new Error(`${id} doubleSum must be 'one' or 'rows'`);
     }
     if (props.operation === 'symmetrize' && this.isInPlace()) {
       throw new Error(`${id} 'symmetrize' needs an output view separate from weights.weights`);
@@ -188,6 +218,78 @@ export class GPUSpatialWeightsTransform implements GPUCommandNodeProducer {
   let scale = select(0.0, 1.0 / sum, sum > 0.0 && isFiniteFloat(sum));
   for (var slot = begin; slot < end; slot++) {
     ${write('slot', `${read('slot')} * scale`)}
+  }`
+        })
+      ];
+    }
+    if (operation === 'double' || operation === 'variance') {
+      // Per-row partial, fixed-order global sum, then one apply pass over the rows.
+      const partials = createTransientView(graph, `${id}-partials`, 'float32', rows);
+      const total = createTransientView(graph, `${id}-total`, 'float32', 1);
+      const variance = operation === 'variance';
+      const squareSum = `var squares = 0.0;
+  var sum = 0.0;
+  for (var slot = begin; slot < end; slot++) {
+    let value = ${read('slot')};
+    sum += value;
+    squares += value * value;
+  }
+  let norm = sqrt(squares);
+  let valid = norm > 0.0 && isFiniteFloat(norm) && isFiniteFloat(sum);`;
+      const factor = variance
+        ? `let totalValue = total[totalOffset];
+  let scale = select(0.0, f32(ROWS) / totalValue, totalValue > 0.0 && isFiniteFloat(totalValue));`
+        : `let totalValue = total[totalOffset];
+  let scale = select(0.0, ${
+    props.doubleSum === 'rows' ? 'f32(ROWS)' : '1.0'
+  } / totalValue, totalValue > 0.0 && isFiniteFloat(totalValue));`;
+      return [
+        createWGSLKernelNode<Parameters>(graph, {
+          id: `${id}-partials`,
+          operation: OPERATION,
+          variant: `${operation}-partials`,
+          bindings: [
+            ...bindings,
+            {name: 'partials', view: partials, type: 'f32', access: 'read_write'}
+          ],
+          invocationCount: rows,
+          declarations: finite,
+          body: `${rowBounds}
+  ${
+    variance
+      ? `${squareSum}
+  partials[partialsOffset + index] = select(0.0, sum / norm, valid);`
+      : `var sum = 0.0;
+  for (var slot = begin; slot < end; slot++) {
+    sum += ${read('slot')};
+  }
+  partials[partialsOffset + index] = select(0.0, sum, isFiniteFloat(sum));`
+  }`
+        }),
+        ...new GPUReduction({
+          id: `${id}-reduce`,
+          input: partials,
+          output: total,
+          operation: 'sum'
+        }).getCommandNodes(graph),
+        createWGSLKernelNode<Parameters>(graph, {
+          id: `${id}-apply`,
+          operation: OPERATION,
+          variant: `${operation}-apply`,
+          bindings: [...bindings, {name: 'total', view: total, type: 'f32', access: 'read'}],
+          invocationCount: rows,
+          declarations: `${finite}\nconst ROWS: u32 = ${rows}u;`,
+          body: `${rowBounds}
+  ${factor}
+  ${
+    variance
+      ? `${squareSum}
+  let rowScale = select(0.0, scale / norm, valid);`
+      : 'let rowScale = scale;'
+  }
+  for (var slot = begin; slot < end; slot++) {
+    let result = ${read('slot')} * rowScale;
+    ${write('slot', 'select(0.0, result, isFiniteFloat(result) && result >= 0.0)')}
   }`
         })
       ];

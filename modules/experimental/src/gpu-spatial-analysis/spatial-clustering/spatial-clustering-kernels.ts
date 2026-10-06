@@ -12,6 +12,8 @@ export type SpatialClusteringGridViews = {
   positions: GraphDataView<'float32x2'>;
   parameters: GraphDataView<'float32'>;
   sortedRows: GraphDataView<'uint32'>;
+  /** One-row count of valid points: the prefix of `sortedRows` that holds rows. */
+  gridCount: GraphDataView<'uint32'>;
   /** `cellCount + 1` exclusive offsets from `GPUGridIndex` over the full `COLUMNS x ROWS` lattice. */
   cellOffsets: GraphDataView<'uint32'>;
 };
@@ -137,12 +139,24 @@ function getNeighborLoopWGSL(action: string, keepGoing: string = 'true'): string
   }`;
 }
 
+/**
+ * Maps the thread to a point: threads walk the valid points in grid-cell order (the order of
+ * `sortedRows`), so neighboring threads search neighboring cells whatever the input order. Defines
+ * `point`, the row the thread owns; surplus threads (excluded points) return. Results are written
+ * by row, so they do not depend on the mapping.
+ */
+const THREAD_TO_POINT_WGSL = `if (index >= gridCount[gridCountOffset]) {
+    return;
+  }
+  let point = sortedRows[sortedRowsOffset + index];`;
+
 function getGridBindings(views: SpatialClusteringGridViews): WGSLKernelBinding[] {
   return [
     {name: 'positions', view: views.positions, type: 'f32', access: 'read'},
     {name: 'parameters', view: views.parameters, type: 'f32', access: 'read'},
     {name: 'sortedRows', view: views.sortedRows, type: 'u32', access: 'read'},
-    {name: 'cellOffsets', view: views.cellOffsets, type: 'u32', access: 'read'}
+    {name: 'cellOffsets', view: views.cellOffsets, type: 'u32', access: 'read'},
+    {name: 'gridCount', view: views.gridCount, type: 'u32', access: 'read'}
   ];
 }
 
@@ -220,35 +234,137 @@ export function createSpatialClusteringGridPositionsNode<Parameters>(
   });
 }
 
-/** Writes the core flag of every point: valid and at least `minimumPoints` neighbors. @internal */
+/**
+ * Writes the core flag of every point: valid and at least `minimumPoints` neighbors. With
+ * `boxCounts`, a point whose dense box already holds `minimumPoints` points is core without a
+ * neighbor scan (every point of a box is within epsilon of every other). @internal
+ */
 export function createSpatialClusteringCoreNode<Parameters>(
   graph: GPUCommandGraph<Parameters>,
   props: SpatialClusteringGridViews & {
     id: string;
     gridSize: readonly [number, number];
     coreFlags: GraphDataView<'uint32'>;
+    boxCounts?: GraphDataView<'uint32'>;
+  }
+): GPUCommandNode<Parameters> {
+  const {boxCounts} = props;
+  return createWGSLKernelNode<Parameters>(graph, {
+    id: props.id,
+    operation: OPERATION,
+    variant: boxCounts ? 'core-dense-box' : 'core',
+    bindings: [
+      ...getGridBindings(props),
+      {name: 'coreFlags', view: props.coreFlags, type: 'u32', access: 'read_write'},
+      ...(boxCounts
+        ? [{name: 'boxCounts', view: boxCounts, type: 'u32' as const, access: 'read' as const}]
+        : [])
+    ],
+    invocationCount: props.positions.length,
+    declarations: getSpatialClusteringSharedWGSL(props.gridSize[0], props.gridSize[1]),
+    body: `${THREAD_TO_POINT_WGSL}
+  let lattice = readLattice();
+  let x = positions[positionsOffset + point * 2u];
+  let y = positions[positionsOffset + point * 2u + 1u];
+  var isCore = 0u;
+  if (isPointValid(lattice, x, y)) {
+    ${
+      boxCounts
+        ? `if (boxCounts[boxCountsOffset + point] >= lattice.minimumPoints) {
+      isCore = 1u;
+    } else {`
+        : '{'
+    }
+      var neighborCount = 0u;
+      ${getNeighborLoopWGSL('neighborCount++;', 'neighborCount < lattice.minimumPoints')}
+      isCore = select(0u, 1u, neighborCount >= lattice.minimumPoints);
+    }
+  }
+  coreFlags[coreFlagsOffset + point] = isCore;`
+  });
+}
+
+/**
+ * Writes the dense-box key `(boxX, boxY)` of every valid point, a virtual grid with side
+ * `0.7 * epsilon` (diagonal `0.99 * epsilon`), or the invalid key `(0xffffffff, 0xffffffff)` for
+ * excluded points and for points whose box index would exceed 2^16 (where the f32 quotient could
+ * misplace a point by a noticeable fraction of a box). @internal
+ */
+export function createSpatialClusteringBoxKeysNode<Parameters>(
+  graph: GPUCommandGraph<Parameters>,
+  props: {
+    id: string;
+    positions: GraphDataView<'float32x2'>;
+    parameters: GraphDataView<'float32'>;
+    gridSize: readonly [number, number];
+    boxHigh: GraphDataView<'uint32'>;
+    boxLow: GraphDataView<'uint32'>;
   }
 ): GPUCommandNode<Parameters> {
   return createWGSLKernelNode<Parameters>(graph, {
     id: props.id,
     operation: OPERATION,
-    variant: 'core',
+    variant: 'box-keys',
     bindings: [
-      ...getGridBindings(props),
-      {name: 'coreFlags', view: props.coreFlags, type: 'u32', access: 'read_write'}
+      {name: 'positions', view: props.positions, type: 'f32', access: 'read'},
+      {name: 'parameters', view: props.parameters, type: 'f32', access: 'read'},
+      {name: 'boxHigh', view: props.boxHigh, type: 'u32', access: 'read_write'},
+      {name: 'boxLow', view: props.boxLow, type: 'u32', access: 'read_write'}
     ],
     invocationCount: props.positions.length,
-    declarations: getSpatialClusteringSharedWGSL(props.gridSize[0], props.gridSize[1]),
+    declarations: `${getSpatialClusteringSharedWGSL(props.gridSize[0], props.gridSize[1])}
+const BOX_SIDE_FACTOR: f32 = 0.7;
+const MAXIMUM_BOX_INDEX: f32 = 65536.0;`,
     body: `let lattice = readLattice();
   let x = positions[positionsOffset + index * 2u];
   let y = positions[positionsOffset + index * 2u + 1u];
-  var isCore = 0u;
+  var high = 0xffffffffu;
+  var low = 0xffffffffu;
   if (isPointValid(lattice, x, y)) {
-    var neighborCount = 0u;
-    ${getNeighborLoopWGSL('neighborCount++;', 'neighborCount < lattice.minimumPoints')}
-    isCore = select(0u, 1u, neighborCount >= lattice.minimumPoints);
+    let side = parameters[parametersOffset + 4u] * BOX_SIDE_FACTOR;
+    let boxX = floor((x - lattice.minimumX) / side);
+    let boxY = floor((y - lattice.minimumY) / side);
+    if (boxX >= 0.0 && boxX < MAXIMUM_BOX_INDEX && boxY >= 0.0 && boxY < MAXIMUM_BOX_INDEX) {
+      high = u32(boxX);
+      low = u32(boxY);
+    }
   }
-  coreFlags[coreFlagsOffset + index] = isCore;`
+  boxHigh[boxHighOffset + index] = high;
+  boxLow[boxLowOffset + index] = low;`
+  });
+}
+
+/**
+ * Writes, per point, the number of points in its dense box (0 for points without a box). Runs over
+ * the sorted box order of `getKeyPairSortNodes` and `getKeyGroupNodes`. @internal
+ */
+export function createSpatialClusteringBoxCountsNode<Parameters>(
+  graph: GPUCommandGraph<Parameters>,
+  props: {
+    id: string;
+    sortedItems: GraphDataView<'uint32'>;
+    groupIndex: GraphDataView<'uint32'>;
+    groupStarts: GraphDataView<'uint32'>;
+    boxHigh: GraphDataView<'uint32'>;
+    boxCounts: GraphDataView<'uint32'>;
+  }
+): GPUCommandNode<Parameters> {
+  return createWGSLKernelNode<Parameters>(graph, {
+    id: props.id,
+    operation: OPERATION,
+    variant: 'box-counts',
+    bindings: [
+      {name: 'sortedItems', view: props.sortedItems, type: 'u32', access: 'read'},
+      {name: 'groupIndex', view: props.groupIndex, type: 'u32', access: 'read'},
+      {name: 'groupStarts', view: props.groupStarts, type: 'u32', access: 'read'},
+      {name: 'boxHigh', view: props.boxHigh, type: 'u32', access: 'read'},
+      {name: 'boxCounts', view: props.boxCounts, type: 'u32', access: 'read_write'}
+    ],
+    invocationCount: props.sortedItems.length,
+    body: `let item = sortedItems[sortedItemsOffset + index];
+  let group = groupIndex[groupIndexOffset + index] - 1u;
+  let count = groupStarts[groupStartsOffset + group + 1u] - groupStarts[groupStartsOffset + group];
+  boxCounts[boxCountsOffset + item] = select(0u, count, boxHigh[boxHighOffset + item] != 0xffffffffu);`
   });
 }
 
@@ -329,14 +445,15 @@ fn unite(first: u32, second: u32) {
     b = findRoot(high);
   }
 }`,
-    body: `if (coreFlags[coreFlagsOffset + index] == 0u) {
+    body: `${THREAD_TO_POINT_WGSL}
+  if (coreFlags[coreFlagsOffset + point] == 0u) {
     return;
   }
   let lattice = readLattice();
-  let x = positions[positionsOffset + index * 2u];
-  let y = positions[positionsOffset + index * 2u + 1u];
-  ${getNeighborLoopWGSL(`if (neighbor < index && coreFlags[coreFlagsOffset + neighbor] != 0u) {
-            unite(index, neighbor);
+  let x = positions[positionsOffset + point * 2u];
+  let y = positions[positionsOffset + point * 2u + 1u];
+  ${getNeighborLoopWGSL(`if (neighbor < point && coreFlags[coreFlagsOffset + neighbor] != 0u) {
+            unite(point, neighbor);
           }`)}`
   });
 }
@@ -402,12 +519,13 @@ export function createSpatialClusteringBorderNode<Parameters>(
     ],
     invocationCount: props.positions.length,
     declarations: getSpatialClusteringSharedWGSL(props.gridSize[0], props.gridSize[1]),
-    body: `if (coreFlags[coreFlagsOffset + index] != 0u) {
+    body: `${THREAD_TO_POINT_WGSL}
+  if (coreFlags[coreFlagsOffset + point] != 0u) {
     return;
   }
   let lattice = readLattice();
-  let x = positions[positionsOffset + index * 2u];
-  let y = positions[positionsOffset + index * 2u + 1u];
+  let x = positions[positionsOffset + point * 2u];
+  let y = positions[positionsOffset + point * 2u + 1u];
   if (!isPointValid(lattice, x, y)) {
     return;
   }
@@ -415,7 +533,7 @@ export function createSpatialClusteringBorderNode<Parameters>(
   ${getNeighborLoopWGSL(`if (coreFlags[coreFlagsOffset + neighbor] != 0u) {
             bestRoot = min(bestRoot, rootLabels[rootLabelsOffset + neighbor]);
           }`)}
-  rootLabels[rootLabelsOffset + index] = bestRoot;`
+  rootLabels[rootLabelsOffset + point] = bestRoot;`
   });
 }
 

@@ -126,6 +126,7 @@ it('GPUSpatialClustering orders cluster outputs and publishes last', () => {
   const ids = new GPUSpatialClustering({
     ...createProps(graph, {}, 16),
     id: 'dbscan',
+    sumOrder: 'atomic',
     clusters: createCluster(graph, 4),
     clusterSizes: createTransientView(graph, 'sizes', 'uint32', 4),
     clusterCentroids: createTransientView(graph, 'centroids', 'float32x2', 4)
@@ -284,9 +285,9 @@ it('GPUSpatialClustering schedules sort nodes for centroids only with sumOrder s
       .getCommandNodes(graph)
       .map(node => node.id);
   };
-  const defaults = getIds({});
-  expect(getIds({sumOrder: 'atomic'})).toEqual(defaults);
-  const sorted = getIds({sumOrder: 'sorted'});
+  const defaults = getIds({sumOrder: 'atomic'});
+  expect(getIds({})).toEqual(getIds({sumOrder: 'sorted'}));
+  const sorted = getIds({});
   expect(new Set(sorted).size).toBe(sorted.length);
   expect(sorted.at(-1)).toBe('dbscan-publish');
   expect(defaults.some(id => id.startsWith('dbscan-cluster-sums-sort'))).toBe(false);

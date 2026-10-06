@@ -78,14 +78,40 @@ export function validateDisjointOutputs(
   }
 }
 
-/** Creates BVH transients over feature bounds and returns the BVH and its nodes. @internal */
+/**
+ * Caller-owned BVH output storage that outlives one encoding. @internal
+ *
+ * Used by {@link getFeatureBVHNodes} so a prepared right-hand side keeps its tree between
+ * encodings instead of using graph transients, whose memory the graph may alias after their last use.
+ */
+export type SpatialJoinBVHStorage = {
+  /** `2 * leafCapacity - 1` node minima. */
+  nodeMinima: GraphDataView<'float32x2'>;
+  /** `2 * leafCapacity - 1` node maxima. */
+  nodeMaxima: GraphDataView<'float32x2'>;
+  /** `2 * leafCapacity - 1` child pairs. */
+  nodeChildren: GraphDataView<'uint32x2'>;
+  /** `leafCapacity` leaf feature rows. */
+  leafIds: GraphDataView<'uint32'>;
+  /** One-row source row count. */
+  count: GraphDataView<'uint32'>;
+  /** One-row overflow flag. */
+  overflow: GraphDataView<'uint32'>;
+};
+
+/**
+ * Creates BVH storage over feature bounds and returns the BVH and its nodes. @internal
+ *
+ * Storage is graph transient unless `storage` is given.
+ */
 export function getFeatureBVHNodes<Parameters>(
   graph: GPUCommandGraph<Parameters>,
   id: string,
   minima: GraphDataView<'float32x2'>,
   maxima: GraphDataView<'float32x2'>,
   leafCapacity: number,
-  sourceIds?: GraphDataView<'uint32'>
+  sourceIds?: GraphDataView<'uint32'>,
+  storage?: SpatialJoinBVHStorage
 ): {bvh: GPUBVH; nodes: readonly GPUCommandNode<Parameters>[]} {
   const nodeCount = 2 * leafCapacity - 1;
   const bvh = new GPUBVH({
@@ -94,14 +120,38 @@ export function getFeatureBVHNodes<Parameters>(
     maxima,
     sourceIds,
     leafCapacity,
-    nodeMinima: createTransientView(graph, `${id}-bvh-node-minima`, 'float32x2', nodeCount),
-    nodeMaxima: createTransientView(graph, `${id}-bvh-node-maxima`, 'float32x2', nodeCount),
-    nodeChildren: createTransientView(graph, `${id}-bvh-node-children`, 'uint32x2', nodeCount),
-    leafIds: createTransientView(graph, `${id}-bvh-leaf-ids`, 'uint32', leafCapacity),
-    count: createTransientView(graph, `${id}-bvh-count`, 'uint32', 1),
-    overflow: createTransientView(graph, `${id}-bvh-overflow`, 'uint32', 1)
+    nodeMinima:
+      storage?.nodeMinima ??
+      createTransientView(graph, `${id}-bvh-node-minima`, 'float32x2', nodeCount),
+    nodeMaxima:
+      storage?.nodeMaxima ??
+      createTransientView(graph, `${id}-bvh-node-maxima`, 'float32x2', nodeCount),
+    nodeChildren:
+      storage?.nodeChildren ??
+      createTransientView(graph, `${id}-bvh-node-children`, 'uint32x2', nodeCount),
+    leafIds:
+      storage?.leafIds ?? createTransientView(graph, `${id}-bvh-leaf-ids`, 'uint32', leafCapacity),
+    count: storage?.count ?? createTransientView(graph, `${id}-bvh-count`, 'uint32', 1),
+    overflow: storage?.overflow ?? createTransientView(graph, `${id}-bvh-overflow`, 'uint32', 1)
   });
   return {bvh, nodes: bvh.getCommandNodes(graph)};
+}
+
+/** Feature count from which `spatialSort` defaults to on (see {@link getDefaultSpatialSort}). @internal */
+export const SPATIAL_SORT_MINIMUM_FEATURES = 256;
+
+/**
+ * Default of `spatialSort`: on from {@link SPATIAL_SORT_MINIMUM_FEATURES} features. Measured with
+ * `spatial-join-benchmark.spec.ts`: shuffled features cost 50 to 140 times more per encoding
+ * unsorted (point-in-polygon, 14,400 features and 250,000 points: 236.7 ms against 4.6 ms;
+ * nearest, 50,000 segments and 100,000 points: 333.6 ms against 2.4 ms), while coherent features
+ * lose about 1 ms (3.2 ms against 4.3 ms), and below a few hundred features the BVH is too shallow
+ * for the order to matter.
+ *
+ * @internal
+ */
+export function getDefaultSpatialSort(featureCount: number): boolean {
+  return featureCount >= SPATIAL_SORT_MINIMUM_FEATURES;
 }
 
 /**
@@ -121,11 +171,12 @@ export function getSortedFeatureBVHNodes<Parameters>(
   minima: GraphDataView<'float32x2'>,
   maxima: GraphDataView<'float32x2'>,
   leafCapacity: number,
-  spatialSort: boolean
+  spatialSort: boolean,
+  storage?: SpatialJoinBVHStorage
 ): {bvh: GPUBVH; nodes: readonly GPUCommandNode<Parameters>[]} {
   const featureCount = minima.length;
   if (!spatialSort || featureCount < 2) {
-    return getFeatureBVHNodes(graph, id, minima, maxima, leafCapacity);
+    return getFeatureBVHNodes(graph, id, minima, maxima, leafCapacity, undefined, storage);
   }
   const sceneBounds = createTransientView(graph, `${id}-sort-scene-bounds`, 'float32', 4);
   const keys = createTransientView(graph, `${id}-sort-keys`, 'uint32', featureCount);
@@ -281,7 +332,8 @@ fn quantizeAxis(value: f32, minimum: f32, maximum: f32) -> u32 {
     sortedMinima,
     sortedMaxima,
     leafCapacity,
-    sortedRows
+    sortedRows,
+    storage
   );
   nodes.push(...bvhNodes);
   return {bvh, nodes};
@@ -487,7 +539,7 @@ export function getSpatialJoinProbeNodes<Parameters>(
     id: string;
     operation: string;
     points: GraphDataView<'float32x2'> | GraphVectorView<'float32x2'>;
-    bvh: GPUBVH;
+    bvh: Pick<GPUBVH, 'nodeMinima' | 'nodeMaxima' | 'leafIds' | 'internalNodeCount'>;
     featureCount: number;
     candidateCapacity: number;
     state: GraphDataView<'uint32'>;

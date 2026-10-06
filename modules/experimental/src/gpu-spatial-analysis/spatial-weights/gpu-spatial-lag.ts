@@ -28,8 +28,23 @@ const OPERATION = 'GPUSpatialLag';
 export type GPUSpatialLagProps = {
   /** Prefix for generated node IDs. Defaults to `'spatial-lag'`. */
   id?: string;
-  /** Per-row values `y`. Length must equal the weights row count (square weights). */
+  /**
+   * Per-source values `y`, row-major with `columnCount` columns: `sourceCount * columnCount`
+   * entries. Without `sourceCount` the weights are square and this is `rows * columnCount`.
+   */
   values: GraphDataView<'float32'>;
+  /**
+   * Number of neighbor-ID rows of `values`. Defaults to the weights row count (square weights).
+   * Set it for cross weights (query rows to target neighbors), for example the area-share weights
+   * of `GPUArealInterpolation` (rows are targets, neighbors are sources). Neighbors at or above
+   * `sourceCount` are skipped. `mask` requires square weights.
+   */
+  sourceCount?: number;
+  /**
+   * Number of value columns lagged at once. Defaults to 1. Column `c` of row `i` is
+   * `output[i * columnCount + c]`; `normalize` divides each row by the same weight sum.
+   */
+  columnCount?: number;
   /** Weights `W` whose neighbor IDs index `values`. */
   weights: GPUSpatialWeights;
   /** Optional selection (`rows` entries): zero rows output 0 and zero neighbors are skipped. */
@@ -40,7 +55,7 @@ export type GPUSpatialLagProps = {
    * weight sum is zero output 0. Defaults to false.
    */
   normalize?: boolean;
-  /** Caller-owned lag output with `rows` entries. */
+  /** Caller-owned lag output with `rows * columnCount` entries. */
   output: GraphDataView<'float32'>;
 };
 
@@ -66,11 +81,32 @@ export class GPUSpatialLag implements GPUCommandNodeProducer {
     const rows = validateGPUSpatialWeights(id, props.weights);
     validatePackedView(props.values, ['float32'], `${id} values`);
     validatePackedView(props.output, ['float32'], `${id} output`);
-    if (props.values.length !== rows) {
-      throw new Error(`${id} values length must equal the weights row count`);
+    const sourceCount = props.sourceCount ?? rows;
+    const columnCount = props.columnCount ?? 1;
+    for (const [name, value] of [
+      ['sourceCount', sourceCount],
+      ['columnCount', columnCount]
+    ] as const) {
+      if (!Number.isSafeInteger(value) || value < 1) {
+        throw new Error(`${id} ${name} must be a positive integer`);
+      }
     }
-    if (props.output.length !== rows) {
-      throw new Error(`${id} output length must equal the weights row count`);
+    if (props.values.length !== sourceCount * columnCount) {
+      throw new Error(
+        props.sourceCount === undefined && columnCount === 1
+          ? `${id} values length must equal the weights row count`
+          : `${id} values length must equal sourceCount * columnCount`
+      );
+    }
+    if (props.output.length !== rows * columnCount) {
+      throw new Error(
+        columnCount === 1
+          ? `${id} output length must equal the weights row count`
+          : `${id} output length must equal rows * columnCount`
+      );
+    }
+    if (props.mask && sourceCount !== rows) {
+      throw new Error(`${id} mask requires square weights (sourceCount equal to the row count)`);
     }
     if (props.mask) {
       validatePackedUint32View(props.mask, `${id} mask`);
@@ -106,6 +142,8 @@ export class GPUSpatialLag implements GPUCommandNodeProducer {
       weights.weights
     ]);
     const rows = weights.offsets.length - 1;
+    const sourceCount = props.sourceCount ?? rows;
+    const columnCount = props.columnCount ?? 1;
     return [
       createWGSLKernelNode<Parameters>(graph, {
         id: `${id}-lag`,
@@ -121,16 +159,19 @@ export class GPUSpatialLag implements GPUCommandNodeProducer {
             : []),
           {name: 'output', view: output, type: 'f32', access: 'read_write'}
         ],
-        invocationCount: rows,
-        declarations: `const ROWS: u32 = ${rows}u;`,
-        body: `var lag = 0.0;
+        invocationCount: rows * columnCount,
+        declarations: `const ROWS: u32 = ${sourceCount}u;
+const COLUMNS: u32 = ${columnCount}u;`,
+        body: `let row = index / COLUMNS;
+  let column = index % COLUMNS;
+  var lag = 0.0;
   var weightSum = 0.0;
-  if (${mask ? 'mask[maskOffset + index] != 0u' : 'true'}) {
-    for (var slot = offsets[offsetsOffset + index]; slot < offsets[offsetsOffset + index + 1u]; slot++) {
+  if (${mask ? 'mask[maskOffset + row] != 0u' : 'true'}) {
+    for (var slot = offsets[offsetsOffset + row]; slot < offsets[offsetsOffset + row + 1u]; slot++) {
       let neighbor = neighbors[neighborsOffset + slot];
       if (neighbor < ROWS && ${mask ? 'mask[maskOffset + neighbor] != 0u' : 'true'}) {
         let weight = weights[weightsOffset + slot];
-        lag += weight * values[valuesOffset + neighbor];
+        lag += weight * values[valuesOffset + neighbor * COLUMNS + column];
         weightSum += weight;
       }
     }

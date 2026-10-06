@@ -283,3 +283,57 @@ it('GPULocalMoran applies Benjamini-Hochberg FDR to quadrant significance', asyn
     }
   }
 }, 120000);
+
+it("GPULocalMoran quadrantGating 'none' reports ungated quadrants from the signs of c and lag", async () => {
+  const device = await getWebGPUTestDevice();
+  if (!device) {
+    return;
+  }
+  const scene = createAutocorrelatedScene(41, 2500, [6]);
+  const weights = createDistanceBandWeights(scene.positions, 6, {rowStandardize: true});
+  const parameters: GPUSpatialAutocorrelationParameters = {significanceLevel: 0.05};
+  const gated = createSpatialAutocorrelationHarness(device, {
+    contributor: 'local-moran',
+    scene,
+    weights: toCsr(weights)
+  });
+  const ungated = createSpatialAutocorrelationHarness(device, {
+    contributor: 'local-moran',
+    scene,
+    weights: toCsr(weights),
+    quadrantGating: 'none'
+  });
+  try {
+    const analytic = await gated.run(parameters);
+    const result = await ungated.run(parameters);
+    const mean = result.globalStatistics[1];
+    let nonzero = 0;
+    let beyondAnalytic = 0;
+    for (let row = 0; row < scene.values.length; row++) {
+      const centered = scene.values[row] - mean;
+      // Rows within f32 rounding of a sign boundary are ambiguous.
+      if (Math.abs(centered) < 1e-3 || Math.abs(result.spatialLag[row]) < 1e-3) {
+        continue;
+      }
+      expect(result.quadrants[row], `row ${row}`).toBe(
+        getQuadrant(centered, result.spatialLag[row])
+      );
+      if (result.quadrants[row] !== 0) {
+        nonzero++;
+        // The ungated quadrant agrees with the analytic one wherever that is reported.
+        if (analytic.quadrants[row] !== 0) {
+          expect(analytic.quadrants[row]).toBe(result.quadrants[row]);
+        } else {
+          beyondAnalytic++;
+        }
+      }
+    }
+    expect(nonzero).toBeGreaterThan(scene.values.length * 0.9);
+    expect(beyondAnalytic).toBeGreaterThan(0);
+    // z-scores and p-values are unaffected.
+    expect(result.zScores).toEqual(analytic.zScores);
+  } finally {
+    gated.destroy();
+    ungated.destroy();
+  }
+}, 120000);

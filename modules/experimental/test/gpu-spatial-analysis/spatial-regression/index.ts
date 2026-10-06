@@ -4,3 +4,7 @@
 
 import './ordinary-least-squares.spec';
 import './geographically-weighted-regression.spec';
+import './geographically-weighted-regression-grid.spec';
+import './spatial-regression-diagnostics.spec';
+import './spatial-two-stage-least-squares.spec';
+import './spatial-error-gm.spec';

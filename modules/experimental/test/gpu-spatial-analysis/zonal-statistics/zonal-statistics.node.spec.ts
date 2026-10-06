@@ -228,7 +228,11 @@ it('GPUZonalStatistics schedules the atomic nodes in order', () => {
   const ids = getNodeIds(
     createRowsProps(
       graph,
-      {weights: view(graph, 'weights', 'float32', POINT_COUNT), areas: f('areas')},
+      {
+        weights: view(graph, 'weights', 'float32', POINT_COUNT),
+        areas: f('areas'),
+        sumOrder: 'atomic'
+      },
       {
         counts: view(graph, 'c', 'uint32', FEATURE_COUNT),
         valueCounts: view(graph, 'vc', 'uint32', FEATURE_COUNT),

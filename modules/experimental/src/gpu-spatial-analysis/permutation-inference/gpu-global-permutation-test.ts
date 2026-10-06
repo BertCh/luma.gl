@@ -26,6 +26,12 @@ import {
   validatePermutationInputs
 } from './permutation-inference-kernels';
 import {PERMUTATION_RANDOM_WGSL} from './permutation-random';
+import {
+  getAlternativeMultiplier,
+  getExceedanceCountWGSL,
+  resolvePermutationAlternative,
+  type GPUPermutationAlternative
+} from './permutation-alternative';
 
 const OPERATION = 'GPUGlobalPermutationTest';
 
@@ -40,9 +46,9 @@ export type GPUGlobalPermutationStatistic = 'moran' | 'geary' | 'getisOrdG' | 'b
 export const GPU_GLOBAL_PERMUTATION_RESULT = {
   /** Observed statistic. */
   observed: 0,
-  /** esda `p_sim`: `(larger + 1) / (P + 1)` with the folded exceedance count. */
+  /** esda `p_sim`: `min(m (M + 1), P + 1) / (P + 1)` for the chosen `alternative` (`m` is 2 for two-sided, else 1). */
   pseudoPValue: 1,
-  /** Folded exceedance count `larger` (an exact integer). */
+  /** Exceedance count `M` of the chosen `alternative` (an exact integer; folded for 'directed'). */
   exceedances: 2,
   /** Permutation count `P` used. */
   permutations: 3,
@@ -82,6 +88,11 @@ export type GPUGlobalPermutationTestProps = {
   mask?: GraphDataView<'uint32'>;
   /** Global statistic. Compile-time. */
   statistic: GPUGlobalPermutationStatistic;
+  /**
+   * Tail of the pseudo p-value (see {@link GPUPermutationAlternative}). Compile-time. Defaults to
+   * `'directed'`, the folded count of earlier releases and esda's legacy default.
+   */
+  alternative?: GPUPermutationAlternative;
   /**
    * Per-frame uint32 parameters of at least `GPU_PERMUTATION_PARAMETER_LENGTH` elements written with
    * `getGPUPermutationParameterValues`.
@@ -135,6 +146,7 @@ export class GPUGlobalPermutationTest implements GPUCommandNodeProducer {
     if (!['moran', 'geary', 'getisOrdG', 'bivariateMoran'].includes(props.statistic)) {
       throw new Error(`${id} unknown statistic ${props.statistic}`);
     }
+    resolvePermutationAlternative(id, props.alternative);
     if (props.statistic === 'bivariateMoran' && !props.secondValues) {
       throw new Error(`${id} bivariateMoran requires secondValues`);
     }
@@ -191,6 +203,8 @@ export class GPUGlobalPermutationTest implements GPUCommandNodeProducer {
     ]);
     const rows = props.values.length;
     const bivariate = statistic === 'bivariateMoran';
+    const alternative = resolvePermutationAlternative(id, props.alternative);
+    const multiplier = getAlternativeMultiplier(alternative);
     const inputs = getPermutationInputNodes<Parameters>(graph, {
       ...props,
       secondValues: bivariate ? props.secondValues : undefined,
@@ -365,14 +379,16 @@ const BINS: u32 = ${bins}u;`,
   let scale = ${scaleWGSL};
   let observedSum = pairSums[pairSumsOffset];
   let observed = scale * observedSum;
-  var larger = 0u;
+  var greater = 0u;
+  var lesser = 0u;
   var total = 0.0;
   var minimum = 3.0e38;
   var maximum = -3.0e38;
   for (var permutation = 1u; permutation <= permutations; permutation++) {
     let pairSum = pairSums[pairSumsOffset + permutation];
     let simulated = scale * pairSum;
-    larger += select(0u, 1u, pairSum >= observedSum);
+    greater += select(0u, 1u, pairSum >= observedSum);
+    lesser += select(0u, 1u, pairSum <= observedSum);
     total += simulated;
     minimum = min(minimum, simulated);
     maximum = max(maximum, simulated);
@@ -392,13 +408,20 @@ const BINS: u32 = ${bins}u;`,
     squares += deviation * deviation;
   }
   let standardDeviation = sqrt(squares / f32(permutations));
-  if (permutations - larger < larger) {
-    larger = permutations - larger;
+  ${
+    alternative === 'folded'
+      ? `var folded = 0u;
+  let observedDistance = abs(observed - mean);
+  for (var permutation = 1u; permutation <= permutations; permutation++) {
+    folded += select(0u, 1u, abs(scale * pairSums[pairSumsOffset + permutation] - mean) >= observedDistance);
+  }`
+      : ''
   }
+  let larger = ${getExceedanceCountWGSL(alternative)};
   let zSimulated = (observed - mean) / standardDeviation;
   let validZ = standardDeviation > 0.0 && isFiniteFloat(zSimulated);
   results[resultsOffset + ${R.observed}u] = select(getQuietNaN(0u), observed, isFiniteFloat(observed));
-  results[resultsOffset + ${R.pseudoPValue}u] = f32(larger + 1u) / f32(permutations + 1u);
+  results[resultsOffset + ${R.pseudoPValue}u] = f32(min(${multiplier}u * (larger + 1u), permutations + 1u)) / f32(permutations + 1u);
   results[resultsOffset + ${R.exceedances}u] = f32(larger);
   results[resultsOffset + ${R.permutations}u] = f32(permutations);
   results[resultsOffset + ${R.simulatedMean}u] = mean;

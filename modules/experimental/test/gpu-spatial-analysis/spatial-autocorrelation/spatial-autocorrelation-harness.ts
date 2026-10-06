@@ -16,6 +16,7 @@ import {
   getGPUSpatialAutocorrelationParameterValues,
   GPUHotSpotAnalysis,
   GPULocalMoran,
+  type GPULocalMoranQuadrantGating,
   GPU_SPATIAL_AUTOCORRELATION_PARAMETER_LENGTH,
   type GPUSpatialAutocorrelationParameters
 } from '../../../src/gpu-spatial-analysis/spatial-autocorrelation';
@@ -90,6 +91,8 @@ export function createSpatialAutocorrelationHarness(
     parameters?: GPUSpatialAutocorrelationParameters;
     gridSize?: readonly [number, number];
     falseDiscoveryRate?: boolean;
+    /** Local Moran only. */
+    quadrantGating?: GPULocalMoranQuadrantGating;
     /** Gi* only. */
     selfWeight?: number;
   }
@@ -206,6 +209,7 @@ export function createSpatialAutocorrelationHarness(
         })
       : new GPULocalMoran({
           ...common,
+          quadrantGating: options.quadrantGating,
           localI: importGraphBuffer(graph, 'local-i', outputs.localI, 'float32', rows),
           spatialLag: importGraphBuffer(graph, 'spatial-lag', outputs.spatialLag, 'float32', rows),
           quadrants: importGraphBuffer(graph, 'quadrants', outputs.quadrants, 'uint32', rows)

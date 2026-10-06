@@ -12,6 +12,36 @@ import {getPermutationSeedKey} from '../../../src/gpu-spatial-analysis/permutati
 
 const f32 = Math.fround;
 
+/** Oracle alternative; `'directed'` is the folded count of earlier releases. */
+export type OracleAlternative = 'directed' | 'two-sided' | 'greater' | 'lesser' | 'folded';
+
+/** Exceedance count `M` and p-value multiplier for the alternative (esda calculate_significance). */
+export function getOracleExceedance(
+  alternative: OracleAlternative,
+  greater: number,
+  lesser: number,
+  permutations: number,
+  folded = 0
+): {count: number; multiplier: number} {
+  switch (alternative) {
+    case 'folded':
+      return {count: folded, multiplier: 1};
+    case 'greater':
+      return {count: greater, multiplier: 1};
+    case 'lesser':
+      return {count: lesser, multiplier: 1};
+    case 'two-sided':
+      return {count: Math.min(greater, lesser), multiplier: 2};
+    default:
+      return {count: Math.min(greater, permutations - greater), multiplier: 1};
+  }
+}
+
+/** Pseudo p-value `min(m (M + 1), R + 1) / (R + 1)`. */
+export function getOraclePValue(count: number, multiplier: number, permutations: number): number {
+  return Math.min(multiplier * (count + 1), permutations + 1) / (permutations + 1);
+}
+
 /** A CPU spatial-weights CSR (neighbor IDs ascending within each row). */
 export type CPUSpatialWeights = {
   offsets: Uint32Array;
@@ -151,6 +181,7 @@ export function computeLocalPermutationOracle(input: {
   permutations: number;
   significanceLevel: number;
   maximumNeighbors: number;
+  alternative?: OracleAlternative;
 }): LocalPermutationOracle {
   const {weights, values, statistic, permutations} = input;
   const rowCount = values.length;
@@ -176,6 +207,12 @@ export function computeLocalPermutationOracle(input: {
     significantFalseDiscoveryRate: [],
     overflow: 0
   };
+  const multipliers = getOracleExceedance(
+    input.alternative ?? 'directed',
+    0,
+    0,
+    permutations
+  ).multiplier;
   for (let row = 0; row < rowCount; row++) {
     const position = positions[row];
     const slots = position >= 0 ? getNeighborSlots(weights, positions, row) : [];
@@ -196,7 +233,9 @@ export function computeLocalPermutationOracle(input: {
     const focus = compactX[position];
     const observed = term(focus, observedLag);
     const others = count - 1;
-    let larger = 0;
+    let greater = 0;
+    let lesser = 0;
+    const simulatedValues: number[] = [];
     for (let permutation = 0; permutation < permutations; permutation++) {
       const stream = new PhiloxStream(key, row, permutation, LOCAL_PERMUTATION_RANDOM_TAG);
       const swaps = new Map<number, number>();
@@ -210,11 +249,22 @@ export function computeLocalPermutationOracle(input: {
         const drawnPosition = chosen + (chosen >= position ? 1 : 0);
         lag = f32(lag + f32(weights.weights[slot] * compactX[drawnPosition]));
       }
-      larger += term(focus, lag) >= observed ? 1 : 0;
+      const simulated = term(focus, lag);
+      greater += simulated >= observed ? 1 : 0;
+      lesser += simulated <= observed ? 1 : 0;
+      simulatedValues.push(simulated);
     }
-    if (permutations - larger < larger) {
-      larger = permutations - larger;
-    }
+    const simulatedMean = simulatedValues.reduce((a, b) => a + b, 0) / permutations;
+    const folded = simulatedValues.filter(
+      value => Math.abs(value - simulatedMean) >= Math.abs(observed - simulatedMean)
+    ).length;
+    const {count: larger} = getOracleExceedance(
+      input.alternative ?? 'directed',
+      greater,
+      lesser,
+      permutations,
+      folded
+    );
     result.exceedances.push(larger);
     const x = values[row];
     result.observed.push(
@@ -229,8 +279,15 @@ export function computeLocalPermutationOracle(input: {
   const scale = f32(permutations + 1);
   for (const exceedance of result.exceedances) {
     const tested = exceedance !== 0xffffffff;
-    result.pseudoPValues.push(tested ? (exceedance + 1) / (permutations + 1) : NaN);
-    result.significant.push(tested && f32(exceedance + 1) <= f32(level * scale) ? 1 : 0);
+    result.pseudoPValues.push(
+      tested ? getOraclePValue(exceedance, multipliers, permutations) : NaN
+    );
+    result.significant.push(
+      tested &&
+        f32(Math.min(multipliers * (exceedance + 1), permutations + 1)) <= f32(level * scale)
+        ? 1
+        : 0
+    );
   }
   // Benjamini-Hochberg over the tested rows, sorted by count then row (a stable sort).
   const tested = result.exceedances
@@ -241,7 +298,10 @@ export function computeLocalPermutationOracle(input: {
   let threshold = 0;
   for (const [index, entry] of tested.entries()) {
     const rank = index + 1;
-    if (f32(f32(entry.exceedance + 1) * f32(m)) <= f32(f32(f32(rank) * level) * scale)) {
+    if (
+      f32(f32(Math.min(multipliers * (entry.exceedance + 1), permutations + 1)) * f32(m)) <=
+      f32(f32(f32(rank) * level) * scale)
+    ) {
       threshold = rank;
     }
   }
@@ -262,6 +322,9 @@ export type GlobalPermutationOracle = {
   pairSums: number[];
   exceedances: number;
   pseudoPValue: number;
+  /** Tail counts #{sim >= observed} and #{sim <= observed}. */
+  greater: number;
+  lesser: number;
   simulatedMean: number;
   simulatedStandardDeviation: number;
   zSimulated: number;
@@ -279,6 +342,7 @@ export function computeGlobalPermutationOracle(input: {
   statistic: 'moran' | 'geary' | 'getisOrdG' | 'bivariateMoran';
   seed: number;
   permutations: number;
+  alternative?: OracleAlternative;
 }): GlobalPermutationOracle {
   const {weights, values, statistic, permutations} = input;
   const bivariate = statistic === 'bivariateMoran';
@@ -328,11 +392,20 @@ export function computeGlobalPermutationOracle(input: {
     bivariateMoran: count / (s0 * Math.sqrt(sumSquares * sumSquaresY))
   }[statistic];
   const simulated = pairSums.slice(1).map(sum => scale * sum);
-  let larger = pairSums.slice(1).filter(sum => sum >= pairSums[0]).length;
-  if (permutations - larger < larger) {
-    larger = permutations - larger;
-  }
+  const greater = pairSums.slice(1).filter(sum => sum >= pairSums[0]).length;
+  const lesser = pairSums.slice(1).filter(sum => sum <= pairSums[0]).length;
   const mean = simulated.reduce((a, b) => a + b, 0) / permutations;
+  const observedStatistic = scale * pairSums[0];
+  const folded = simulated.filter(
+    value => Math.abs(value - mean) >= Math.abs(observedStatistic - mean)
+  ).length;
+  const {count: larger, multiplier} = getOracleExceedance(
+    input.alternative ?? 'directed',
+    greater,
+    lesser,
+    permutations,
+    folded
+  );
   const standardDeviation = Math.sqrt(
     simulated.reduce((total, value) => total + (value - mean) ** 2, 0) / permutations
   );
@@ -342,7 +415,9 @@ export function computeGlobalPermutationOracle(input: {
     simulated,
     pairSums,
     exceedances: larger,
-    pseudoPValue: (larger + 1) / (permutations + 1),
+    pseudoPValue: getOraclePValue(larger, multiplier, permutations),
+    greater,
+    lesser,
     simulatedMean: mean,
     simulatedStandardDeviation: standardDeviation,
     zSimulated: (observed - mean) / standardDeviation

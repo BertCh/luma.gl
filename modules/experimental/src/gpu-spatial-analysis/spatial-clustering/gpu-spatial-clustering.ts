@@ -22,8 +22,11 @@ import {
   validateGraphViewsBelongToGraph,
   validateCompactOutput
 } from '../../utils/gpu-contributor-utils';
+import {getKeyGroupNodes, getKeyPairSortNodes} from '../spatial-weights/key-pair-grouping';
 import {
   createSpatialClusteringBorderNode,
+  createSpatialClusteringBoxCountsNode,
+  createSpatialClusteringBoxKeysNode,
   createSpatialClusteringGridBoundsNode,
   createSpatialClusteringGridPositionsNode,
   createSpatialClusteringCentroidsNode,
@@ -94,24 +97,38 @@ export type GPUSpatialClusteringProps = {
   clusterSizes?: GraphDataView<'uint32'>;
   /**
    * Optional per-cluster mean member position, `(0, 0)` for rows at or beyond the cluster count;
-   * requires `clusters`. Length equals `clusters.ids.length`. With the default
-   * `sumOrder: 'atomic'` sums use f32 atomics, so the order of accumulation (and the last bits of
-   * the result) varies between runs. With `sumOrder: 'sorted'` the sums are bitwise reproducible
-   * across repeated encodings on one device: labels are canonical (independent of GPU scheduling),
+   * requires `clusters`. With `sumOrder: 'atomic'` sums use f32 atomics, so
+   * the order of accumulation (and the last bits of the result) varies between runs. With the
+   * default `sumOrder: 'sorted'` the sums are bitwise reproducible across repeated encodings on one
+   * device: labels are canonical (independent of GPU scheduling),
    * so cluster slots and memberships are fixed, and members are summed in a fixed order.
    */
   clusterCentroids?: GraphDataView<'float32x2'>;
   /**
-   * Accumulation order of the centroid sums. Compile-time; defaults to `'atomic'`.
+   * Accumulation order of the centroid sums. Compile-time; defaults to `'sorted'`.
    *
-   * - `'atomic'`: f32 atomic sums; fastest, last bits vary between runs.
    * - `'sorted'`: stable sort of members by cluster slot, then a fixed-order segmented tree sum;
    *   bitwise reproducible on one device for identical inputs (adds a sort and two gathers).
-   *   Reproducibility across different devices or drivers is not promised.
+   *   Reproducibility across different devices or drivers is not promised. Cost is flat whatever
+   *   the cluster sizes.
+   * - `'atomic'`: f32 compare-exchange atomic sums, last bits vary between runs. Members of one
+   *   cluster retry on one address and serialize, so a few large clusters (typical for DBSCAN)
+   *   make it slow; measured about 1.2x slower overall than `'sorted'` on 200k points in 4 blobs.
    *
    * Only affects `clusterCentroids`: `clusterSizes` are exact integer counts either way.
    */
   sumOrder?: 'atomic' | 'sorted';
+  /**
+   * FDBSCAN's dense-box shortcut. Compile-time; default `false`. Points are binned into a virtual
+   * grid of boxes with side `0.7 * epsilon`, so every pair of points in one box is within epsilon.
+   * A box holding at least `minimumPoints` points makes all of its points core without scanning
+   * their neighbors. The result is identical to the plain algorithm (the shortcut only decides core
+   * flags the scan would also reach), and the extra cost is two radix sorts of the points by box.
+   * It pays off when epsilon is large relative to the point spacing so most points are core and
+   * neighborhoods are crowded; sparse data gains nothing. Points whose box index exceeds 2^16
+   * (extent over `0.7 * epsilon * 65536`) simply skip the shortcut.
+   */
+  denseBoxShortcut?: boolean;
 };
 
 /**
@@ -136,7 +153,8 @@ export type GPUSpatialClusteringProps = {
  * and optional `GPUCompaction`, `GPUGroupAggregation` and publish nodes for cluster outputs.
  *
  * Non-goals: OPTICS or HDBSCAN, geodesic distances, 3D points, chunked positions, incremental
- * clustering across frames, and cluster shapes or hulls.
+ * clustering across frames, and cluster shapes or hulls (compose `GPUGroupGeometry` and
+ * `GPUGroupConvexHull` over the cluster labels).
  */
 export class GPUSpatialClustering implements GPUCommandNodeProducer {
   /** Prefix for every node and transient ID. */
@@ -236,6 +254,47 @@ export class GPUSpatialClustering implements GPUCommandNodeProducer {
     );
   }
 
+  /** Bins the points into dense boxes and writes each point's box population. */
+  private _getBoxCountNodes<Parameters>(
+    graph: GPUCommandGraph<Parameters>,
+    boxCounts: GraphDataView<'uint32'>
+  ): GPUCommandNode<Parameters>[] {
+    const {id, props} = this;
+    const rows = props.positions.length;
+    const boxHigh = createTransientView(graph, `${id}-box-high`, 'uint32', rows);
+    const boxLow = createTransientView(graph, `${id}-box-low`, 'uint32', rows);
+    const boxSort = getKeyPairSortNodes(graph, `${id}-box`, OPERATION, rows, boxHigh, boxLow);
+    const boxGroups = getKeyGroupNodes(
+      graph,
+      `${id}-box`,
+      OPERATION,
+      rows,
+      boxHigh,
+      boxLow,
+      boxSort.sortedItems
+    );
+    return [
+      createSpatialClusteringBoxKeysNode<Parameters>(graph, {
+        id: `${id}-box-keys`,
+        positions: props.positions,
+        parameters: props.parameters,
+        gridSize: props.gridSize,
+        boxHigh,
+        boxLow
+      }),
+      ...boxSort.nodes,
+      ...boxGroups.nodes,
+      createSpatialClusteringBoxCountsNode<Parameters>(graph, {
+        id: `${id}-box-counts`,
+        sortedItems: boxSort.sortedItems,
+        groupIndex: boxGroups.groupIndex,
+        groupStarts: boxGroups.groupStarts,
+        boxHigh,
+        boxCounts
+      })
+    ];
+  }
+
   /** Returns the clustering nodes in dependency order; the publish node, when any, is last. */
   getCommandNodes<Parameters>(
     graph: GPUCommandGraph<Parameters>
@@ -328,10 +387,14 @@ export class GPUSpatialClustering implements GPUCommandNodeProducer {
       props.rootRows ?? createTransientView(graph, `${id}-root-labels`, 'uint32', rows);
     const rootFlags = createTransientView(graph, `${id}-root-flags`, 'uint32', rows);
     const clusterOffsets = createTransientView(graph, `${id}-cluster-offsets`, 'uint32', rows);
+    const boxCounts = props.denseBoxShortcut
+      ? createTransientView(graph, `${id}-box-counts`, 'uint32', rows)
+      : undefined;
     const gridViews = {
       positions,
       parameters,
       sortedRows,
+      gridCount,
       cellOffsets
     };
 
@@ -361,11 +424,21 @@ export class GPUSpatialClustering implements GPUCommandNodeProducer {
         count: gridCount,
         overflow: gridOverflow
       }).getCommandNodes(graph),
+      ...(boxCounts ? this._getBoxCountNodes(graph, boxCounts) : []),
+      // The core pass visits valid points only, so excluded rows need their zero flag first.
+      createFillNode<Parameters>(graph, {
+        id: `${id}-core-flags-clear`,
+        operation: 'GPUSpatialClustering',
+        view: coreFlags,
+        type: 'u32',
+        value: '0u'
+      }),
       createSpatialClusteringCoreNode<Parameters>(graph, {
         id: `${id}-core`,
         ...gridViews,
         gridSize,
-        coreFlags
+        coreFlags,
+        boxCounts
       }),
       createSpatialClusteringParentsInitNode<Parameters>(graph, {
         id: `${id}-parents-init`,
@@ -457,7 +530,7 @@ export class GPUSpatialClustering implements GPUCommandNodeProducer {
     if (props.clusterCentroids && sizes && memberXs && memberYs) {
       const sumsX = createTransientView(graph, `${id}-cluster-sum-values-x`, 'float32', capacity);
       const sumsY = createTransientView(graph, `${id}-cluster-sum-values-y`, 'float32', capacity);
-      if (props.sumOrder === 'sorted') {
+      if (props.sumOrder !== 'atomic') {
         // Labels at or above the capacity (and noise) sort last and never contribute; `sizes`
         // counts exactly the labels below the capacity, as the segmented sum requires.
         nodes.push(

@@ -5,3 +5,4 @@
 import './permutation-random.spec';
 import './gpu-local-permutation-test.spec';
 import './gpu-global-permutation-test.spec';
+import './gpu-permutation-alternative.spec';

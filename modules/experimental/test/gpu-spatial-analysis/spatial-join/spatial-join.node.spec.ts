@@ -91,6 +91,7 @@ it('GPUPointInPolygonJoin schedules nodes in dependency order', () => {
     'j-probe',
     'j-expand',
     'j-classify',
+    'j-exact',
     'j-resolve',
     'j-assign',
     'j-collect-matches',

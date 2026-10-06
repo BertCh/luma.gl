@@ -24,3 +24,4 @@ export {
   GPU_PERMUTATION_PARAMETER_LENGTH
 } from './permutation-parameters';
 export type {GPUPermutationParameters} from './permutation-parameters';
+export type {GPUPermutationAlternative} from './permutation-alternative';

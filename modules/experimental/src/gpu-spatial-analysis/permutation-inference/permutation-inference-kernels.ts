@@ -20,8 +20,8 @@ import {
 import {SPATIAL_AUTOCORRELATION_FLOAT_WGSL} from '../spatial-autocorrelation/spatial-autocorrelation-kernels';
 import {GPU_PERMUTATION_PARAMETER_LENGTH} from './permutation-parameters';
 
-/** Rows reduced by one workgroup in the first level of the deterministic column sums. */
-const BLOCK_ROWS = 4096;
+/** Rows reduced by one workgroup in the first level of the deterministic column sums. @internal */
+export const BLOCK_ROWS = 4096;
 
 /** `rowPositions` value of an excluded row. @internal */
 export const PERMUTATION_INVALID_POSITION = 0xffffffff;

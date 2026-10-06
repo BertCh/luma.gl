@@ -29,9 +29,12 @@ import {
 } from '../../utils/gpu-contributor-utils';
 import {
   createPointDensityClearOverflowNode,
+  createPointDensityClearSumsNode,
   createPointDensityFinalizeNode,
+  createPointDensityGridKeysNode,
   createPointDensityHexagonKeysNode,
   createPointDensityMaskedPositionsNode,
+  createPointDensityWorkgroupSumNode,
   type PointDensityResolvedBounds
 } from './point-density-kernels';
 
@@ -40,6 +43,15 @@ export type GPUPointDensityBinning = 'grid' | 'hexagon';
 
 /** Statistic written to `output.values`, the field used for smoothing, extent, histogram, and texture. */
 export type GPUPointDensityStatistic = 'count' | 'sum' | 'mean';
+
+/**
+ * How weighted per-cell sums are accumulated. `'workgroup'` (default) pre-aggregates rows that
+ * share a cell inside each workgroup, so hotspot cells stay fast (1M points in one cell: tens of
+ * milliseconds). `'atomic'` adds every row with a global compare-exchange float atomic: it skips
+ * the key pass but serializes on cells that many points share (seconds at 1M points per cell).
+ * Both are order-dependent in the last float bits.
+ */
+export type GPUPointDensitySumAccumulation = 'workgroup' | 'atomic';
 
 /**
  * Inclusive `[minX, minY, maxX, maxY]` domain.
@@ -54,15 +66,45 @@ export type GPUPointDensityBounds =
 
 /** Optional square-grid smoothing applied to the field with `GPUConvolution` (zero boundary). */
 export type GPUPointDensitySmoothing = {
-  /** Row-major kernel weights, at least `kernelWidth * kernelHeight` rows. Per-frame contents. */
-  kernel: GraphDataView<'float32'>;
+  /**
+   * Dense row-major kernel weights, at least `kernelWidth * kernelHeight` rows. Per-frame contents.
+   * Required unless `separableKernel` is set; use it only for non-separable kernels.
+   */
+  kernel?: GraphDataView<'float32'>;
+  /**
+   * Two 1D kernels whose outer product is the 2D kernel (`weight(x, y) = horizontal[x] * vertical[y]`,
+   * for example a Gaussian). Runs two 1D passes, O(cells * (kernelWidth + kernelHeight)) instead of
+   * O(cells * kernelWidth * kernelHeight). Matches the dense path within float32 rounding.
+   * Takes precedence over `kernel`. Per-frame contents.
+   */
+  separableKernel?: {
+    /** At least `kernelWidth` float32 rows. */
+    horizontal: GraphDataView<'float32'>;
+    /** At least `kernelHeight` float32 rows. */
+    vertical: GraphDataView<'float32'>;
+  };
   /** Positive odd kernel width. Compile-time. */
   kernelWidth: number;
   /** Positive odd kernel height. Compile-time. */
   kernelHeight: number;
-  /** Forwarded to `GPUConvolution`. Defaults to `'auto'`. */
+  /**
+   * Forwarded to `GPUConvolution` for the dense kernel. Defaults to `'auto'`. Ignored with
+   * `separableKernel`, whose 1D passes always run the direct strategy.
+   */
   strategy?: GPUConvolutionStrategy;
 };
+
+function getSmoothingKernelViews(
+  smoothing: GPUPointDensitySmoothing | undefined
+): GraphDataView<'float32'>[] {
+  if (!smoothing) {
+    return [];
+  }
+  if (smoothing.separableKernel) {
+    return [smoothing.separableKernel.horizontal, smoothing.separableKernel.vertical];
+  }
+  return smoothing.kernel ? [smoothing.kernel] : [];
+}
 
 /** Caller-owned results. Every view must belong to the target graph and use its own buffer. */
 export type GPUPointDensityOutput = {
@@ -117,6 +159,8 @@ export type GPUPointDensityProps = {
    * compile-time; a one-row float32 view is per-frame.
    */
   hexagonRadius?: number | GraphDataView<'float32'>;
+  /** Weighted sum accumulation. Defaults to `'workgroup'`. Ignored without `weights`. */
+  sumAccumulation?: GPUPointDensitySumAccumulation;
   /** Field statistic. Defaults to `'count'`. `'sum'` and `'mean'` require `weights`. */
   statistic?: GPUPointDensityStatistic;
   /** Optional smoothing, grid binning only. */
@@ -224,9 +268,34 @@ export class GPUPointDensity implements GPUCommandNodeProducer {
           throw new Error(`${id} smoothing kernel sizes must be positive odd integers`);
         }
       }
-      validatePackedView(smoothing.kernel, ['float32'], `${id} smoothing.kernel`);
-      if (smoothing.kernel.length < smoothing.kernelWidth * smoothing.kernelHeight) {
-        throw new Error(`${id} smoothing.kernel is shorter than kernelWidth * kernelHeight`);
+      const {separableKernel} = smoothing;
+      if (separableKernel) {
+        validatePackedView(
+          separableKernel.horizontal,
+          ['float32'],
+          `${id} smoothing.separableKernel.horizontal`
+        );
+        validatePackedView(
+          separableKernel.vertical,
+          ['float32'],
+          `${id} smoothing.separableKernel.vertical`
+        );
+        if (
+          separableKernel.horizontal.length < smoothing.kernelWidth ||
+          separableKernel.vertical.length < smoothing.kernelHeight
+        ) {
+          throw new Error(
+            `${id} smoothing.separableKernel is shorter than kernelWidth or kernelHeight`
+          );
+        }
+      } else {
+        if (!smoothing.kernel) {
+          throw new Error(`${id} smoothing requires kernel or separableKernel`);
+        }
+        validatePackedView(smoothing.kernel, ['float32'], `${id} smoothing.kernel`);
+        if (smoothing.kernel.length < smoothing.kernelWidth * smoothing.kernelHeight) {
+          throw new Error(`${id} smoothing.kernel is shorter than kernelWidth * kernelHeight`);
+        }
       }
     }
 
@@ -288,7 +357,7 @@ export class GPUPointDensity implements GPUCommandNodeProducer {
       ...(mask ? [mask] : []),
       ...(Array.isArray(props.bounds) ? [] : [props.bounds as GraphDataView]),
       ...(typeof props.hexagonRadius === 'object' ? [props.hexagonRadius] : []),
-      ...(smoothing ? [smoothing.kernel] : [])
+      ...getSmoothingKernelViews(smoothing)
     ].map(view => view.buffer);
     if (
       new Set(writableBuffers).size !== writableBuffers.length ||
@@ -312,7 +381,7 @@ export class GPUPointDensity implements GPUCommandNodeProducer {
       mask,
       boundsView,
       radiusView,
-      smoothing?.kernel,
+      ...getSmoothingKernelViews(smoothing),
       output.values,
       output.counts,
       output.sums,
@@ -383,15 +452,19 @@ export class GPUPointDensity implements GPUCommandNodeProducer {
         )
       );
       if (sums && weights) {
-        nodes.push(
-          ...new GPUGroupAggregation({
-            id: `${id}-sums`,
-            keys,
-            values: weights,
-            output: sums,
-            operation: 'sum'
-          }).getCommandNodes(graph)
-        );
+        if (props.sumAccumulation === 'atomic') {
+          nodes.push(
+            ...new GPUGroupAggregation({
+              id: `${id}-sums`,
+              keys,
+              values: weights,
+              output: sums,
+              operation: 'sum'
+            }).getCommandNodes(graph)
+          );
+        } else {
+          nodes.push(...createWorkgroupSumNodes(graph, `${id}-sums`, weights, keys, sums));
+        }
       }
     } else {
       // Grid kernels have no mask input: masked rows become NaN positions, which they ignore.
@@ -430,17 +503,38 @@ export class GPUPointDensity implements GPUCommandNodeProducer {
         }).getCommandNodes(graph)
       );
       if (sums && weights) {
-        nodes.push(
-          ...new GPUGridAggregation({
-            id: `${id}-sums`,
-            positions: gridPositions,
-            weights,
-            output: sums,
-            operation: 'sum',
-            gridSize,
-            bounds
-          }).getCommandNodes(graph)
-        );
+        if (props.sumAccumulation === 'atomic') {
+          nodes.push(
+            ...new GPUGridAggregation({
+              id: `${id}-sums`,
+              positions: gridPositions,
+              weights,
+              output: sums,
+              operation: 'sum',
+              gridSize,
+              bounds
+            }).getCommandNodes(graph)
+          );
+        } else {
+          const keys = createTransientView(graph, `${id}-grid-keys`, 'uint32', positions.length);
+          let keyStart = 0;
+          for (const [chunkIndex, chunk] of getGraphViewChunks(gridPositions).entries()) {
+            if (chunk.length > 0) {
+              nodes.push(
+                createPointDensityGridKeysNode(graph, {
+                  id: `${id}-sums-grid-keys-${chunkIndex}`,
+                  positions: chunk,
+                  keys,
+                  keyStart,
+                  gridSize,
+                  bounds
+                })
+              );
+            }
+            keyStart += chunk.length;
+          }
+          nodes.push(...createWorkgroupSumNodes(graph, `${id}-sums`, weights, keys, sums));
+        }
       }
     }
     nodes.push(
@@ -453,12 +547,37 @@ export class GPUPointDensity implements GPUCommandNodeProducer {
         means: output.means
       })
     );
-    if (smoothing) {
+    if (smoothing?.separableKernel) {
+      const rowPass = createTransientView(graph, `${id}-smooth-rows`, 'float32', cellCount);
+      const sharedProps = {width: gridSize[0], height: gridSize[1], boundary: 'zero'} as const;
+      nodes.push(
+        ...new GPUConvolution({
+          ...sharedProps,
+          id: `${id}-smooth-horizontal`,
+          input: field,
+          kernel: smoothing.separableKernel.horizontal,
+          output: rowPass,
+          kernelWidth: smoothing.kernelWidth,
+          kernelHeight: 1,
+          strategy: 'direct'
+        }).getCommandNodes(graph),
+        ...new GPUConvolution({
+          ...sharedProps,
+          id: `${id}-smooth-vertical`,
+          input: rowPass,
+          kernel: smoothing.separableKernel.vertical,
+          output: output.values,
+          kernelWidth: 1,
+          kernelHeight: smoothing.kernelHeight,
+          strategy: 'direct'
+        }).getCommandNodes(graph)
+      );
+    } else if (smoothing) {
       nodes.push(
         ...new GPUConvolution({
           id: `${id}-smooth`,
           input: field,
-          kernel: smoothing.kernel,
+          kernel: smoothing.kernel!,
           output: output.values,
           width: gridSize[0],
           height: gridSize[1],
@@ -530,4 +649,31 @@ function validatePointDensityBounds(id: string, bounds: GPUPointDensityBounds): 
   ) {
     throw new Error(`${id} bounds view must be one float32x4 row or four float32 rows`);
   }
+}
+
+/** Clears `sums`, then adds each weight chunk through workgroup-local pre-aggregation. */
+function createWorkgroupSumNodes<Parameters>(
+  graph: GPUCommandGraph<Parameters>,
+  id: string,
+  weights: GraphDataView<'float32'> | GraphVectorView<'float32'>,
+  keys: GraphDataView<'uint32'>,
+  sums: GraphDataView<'float32'>
+): GPUCommandNode<Parameters>[] {
+  const nodes = [createPointDensityClearSumsNode(graph, `${id}-clear`, sums)];
+  let keyStart = 0;
+  for (const [chunkIndex, chunk] of getGraphViewChunks(weights).entries()) {
+    if (chunk.length > 0) {
+      nodes.push(
+        createPointDensityWorkgroupSumNode(graph, {
+          id: `${id}-workgroup-${chunkIndex}`,
+          weights: chunk,
+          keys,
+          keyStart,
+          sums
+        })
+      );
+    }
+    keyStart += chunk.length;
+  }
+  return nodes;
 }

@@ -13,6 +13,7 @@ import {
   getGPUPointDensityHexagonGridSize,
   GPUPointDensity
 } from '../../../src/gpu-spatial-analysis/point-density';
+import {createGPUPointDensityGaussianKernel1D} from '../../../src/gpu-spatial-analysis/point-density/point-density-smoothing';
 import {
   createInputBuffer,
   createOutputBuffer,
@@ -431,3 +432,183 @@ it('GPUPointDensity handles empty input', async () => {
   compiled.destroy();
   destroyAll([positionsBuffer, ...buffers]);
 });
+
+it('GPUPointDensity separable smoothing matches the dense kernel within 1e-5', async () => {
+  const device = await getWebGPUTestDevice();
+  if (!device) {
+    return;
+  }
+  const width = 64;
+  const height = 48;
+  const positions = Float32Array.from(createSeededPoints(11, 3000, [0, 0, width, height]));
+  const cases = [
+    {radius: 5, sigma: undefined},
+    {radius: 8, sigma: 2}
+  ];
+  for (const {radius, sigma} of cases) {
+    const size = 2 * radius + 1;
+    const support = getGPUConvolutionSupport(device, {
+      width,
+      height,
+      kernelWidth: size,
+      kernelHeight: size,
+      boundary: 'zero'
+    });
+    if (!support.supported) {
+      continue;
+    }
+    const dense = createGPUPointDensityGaussianKernel(radius, sigma);
+    const line = createGPUPointDensityGaussianKernel1D(radius, sigma);
+    const results: Float32Array[] = [];
+    for (const separable of [false, true]) {
+      const positionsBuffer = createInputBuffer(device, positions);
+      const valuesBuffer = createOutputBuffer(device, width * height);
+      const graph = new GPUCommandGraph(device, {id: `density-separable-${separable}`});
+      const kernels = separable
+        ? [
+            new GPUParameterBuffer(device, {
+              id: 'line',
+              format: 'float32',
+              length: size,
+              values: line
+            })
+          ]
+        : [
+            new GPUParameterBuffer(device, {
+              id: 'dense',
+              format: 'float32',
+              length: size * size,
+              values: dense
+            })
+          ];
+      const lineView = separable ? kernels[0].importToGraph(graph) : undefined!;
+      graph.add(
+        new GPUPointDensity({
+          positions: importGraphBuffer(graph, 'positions', positionsBuffer, 'float32x2', 3000),
+          bounds: [0, 0, width, height],
+          gridSize: [width, height],
+          smoothing: separable
+            ? {
+                separableKernel: {
+                  horizontal: lineView,
+                  vertical: lineView
+                },
+                kernelWidth: size,
+                kernelHeight: size
+              }
+            : {
+                kernel: kernels[0].importToGraph(graph),
+                kernelWidth: size,
+                kernelHeight: size,
+                strategy: 'direct'
+              },
+          output: {
+            values: importGraphBuffer(graph, 'values', valuesBuffer, 'float32', width * height)
+          }
+        })
+      );
+      const compiled = graph.compile();
+      submitGraph(device, compiled, undefined);
+      results.push(await readFloat32(valuesBuffer, width * height));
+      compiled.destroy();
+      kernels[0].destroy();
+      destroyAll([positionsBuffer, valuesBuffer]);
+    }
+    let maximumDifference = 0;
+    let maximumValue = 0;
+    for (let index = 0; index < results[0].length; index++) {
+      maximumDifference = Math.max(
+        maximumDifference,
+        Math.abs(results[0][index] - results[1][index])
+      );
+      maximumValue = Math.max(maximumValue, results[0][index]);
+    }
+    expect(maximumValue).toBeGreaterThan(0);
+    expect(maximumDifference).toBeLessThan(1e-5);
+  }
+});
+
+it('GPUPointDensity smoothing requires a kernel or separableKernel', async () => {
+  const device = await getWebGPUTestDevice();
+  if (!device) {
+    return;
+  }
+  const positionsBuffer = createInputBuffer(device, new Float32Array(2));
+  const valuesBuffer = createOutputBuffer(device, 4);
+  const graph = new GPUCommandGraph(device, {id: 'density-no-kernel'});
+  expect(
+    () =>
+      new GPUPointDensity({
+        positions: importGraphBuffer(graph, 'positions', positionsBuffer, 'float32x2', 1),
+        bounds: [0, 0, 2, 2],
+        gridSize: [2, 2],
+        smoothing: {kernelWidth: 3, kernelHeight: 3},
+        output: {values: importGraphBuffer(graph, 'values', valuesBuffer, 'float32', 4)}
+      })
+  ).toThrow(/kernel or separableKernel/);
+  destroyAll([positionsBuffer, valuesBuffer]);
+});
+
+for (const binning of ['grid', 'hexagon'] as const) {
+  for (const sumAccumulation of ['workgroup', 'atomic'] as const) {
+    it(`GPUPointDensity ${binning} sums match the CPU when most points share one cell (${sumAccumulation})`, async () => {
+      const device = await getWebGPUTestDevice();
+      if (!device) {
+        return;
+      }
+      const bounds = [0, 0, 16, 16] as const;
+      const rowCount = 20000;
+      const gridSize: [number, number] =
+        binning === 'grid' ? [16, 16] : getGPUPointDensityHexagonGridSize([0, 0, 16, 16], 1);
+      const cellCount = gridSize[0] * gridSize[1];
+      const uniform = createSeededPoints(11, rowCount, [0, 0, 16, 16]);
+      const positions = uniform.slice();
+      const weights: number[] = [];
+      for (let row = 0; row < rowCount; row++) {
+        if (row % 10 !== 0) {
+          positions[row * 2] = Math.fround(7.25 + (row % 7) * 0.01);
+          positions[row * 2 + 1] = Math.fround(9.25 + (row % 5) * 0.01);
+        }
+        weights.push(Math.fround(0.25 + ((row * 37) % 101) / 50));
+      }
+      weights[3] = Number.NaN;
+      const positionsBuffer = createInputBuffer(device, Float32Array.from(positions));
+      const weightsBuffer = createInputBuffer(device, Float32Array.from(weights));
+      const valuesBuffer = createOutputBuffer(device, cellCount);
+      const countsBuffer = createOutputBuffer(device, cellCount);
+      const sumsBuffer = createOutputBuffer(device, cellCount);
+      const graph = new GPUCommandGraph(device, {id: `density-hotspot-${binning}`});
+      graph.add(
+        new GPUPointDensity({
+          positions: importGraphBuffer(graph, 'positions', positionsBuffer, 'float32x2', rowCount),
+          weights: importGraphBuffer(graph, 'weights', weightsBuffer, 'float32', rowCount),
+          bounds,
+          gridSize,
+          binning,
+          hexagonRadius: binning === 'hexagon' ? 1 : undefined,
+          sumAccumulation,
+          statistic: 'sum',
+          output: {
+            values: importGraphBuffer(graph, 'values', valuesBuffer, 'float32', cellCount),
+            counts: importGraphBuffer(graph, 'counts', countsBuffer, 'uint32', cellCount),
+            sums: importGraphBuffer(graph, 'sums', sumsBuffer, 'float32', cellCount)
+          }
+        })
+      );
+      const compiled = graph.compile();
+      submitGraph(device, compiled, undefined);
+      const oracle =
+        binning === 'grid'
+          ? computeGridDensity(positions, weights, [...bounds], gridSize)
+          : computeHexagonDensity(positions, weights, [...bounds], gridSize, 1);
+      expect(await readUint32(countsBuffer, cellCount)).toEqual(oracle.counts);
+      const sums = await readFloat32(sumsBuffer, cellCount);
+      expect(Math.max(...oracle.sums)).toBeGreaterThan(10000);
+      for (const [index, expected] of oracle.sums.entries()) {
+        expect(Math.abs(sums[index] - expected)).toBeLessThanOrEqual(1e-4 * Math.max(1, expected));
+      }
+      compiled.destroy();
+      destroyAll([positionsBuffer, weightsBuffer, valuesBuffer, countsBuffer, sumsBuffer]);
+    });
+  }
+}

@@ -16,9 +16,23 @@ export {GPUBufferSelection} from './gpu-buffer-selection';
 export type {GPUBufferSelectionProps} from './gpu-buffer-selection';
 export {GPUSpatialPredicateJoin} from './gpu-spatial-predicate-join';
 export type {
+  GPUSpatialJoinHow,
   GPUSpatialPredicate,
   GPUSpatialPredicateJoinProps
 } from './gpu-spatial-predicate-join';
+export {GPUSpatialJoinPrepared} from './spatial-join-prepared';
+export type {
+  GPUSpatialJoinPreparedProps,
+  GPUSpatialJoinPreparedStorage
+} from './spatial-join-prepared';
+export {GPUSpatialJoinCandidates} from './spatial-join-candidates';
+export type {GPUSpatialJoinCandidatesProps} from './spatial-join-candidates';
+export {
+  formatGPUSpatialRelate,
+  GPU_SPATIAL_RELATE_CELLS,
+  packGPUSpatialRelate
+} from './spatial-relate-types';
+export type {GPUSpatialRelatePattern} from './spatial-relate-types';
 export type {
   GPUSpatialJoinGeometry,
   GPUSpatialJoinLines,
@@ -26,3 +40,11 @@ export type {
   GPUSpatialJoinPoints,
   GPUSpatialJoinPolygons
 } from './spatial-join-types';
+export {GPU_NEAREST_NO_SEGMENT} from './nearest-types';
+export type {
+  GPUNearestFeatureGeometry,
+  GPUNearestQueryGeometry,
+  GPUNearestTieMode
+} from './nearest-types';
+export {GPUNearestFeatureWeights} from './gpu-nearest-feature-weights';
+export type {GPUNearestFeatureWeightsProps} from './gpu-nearest-feature-weights';

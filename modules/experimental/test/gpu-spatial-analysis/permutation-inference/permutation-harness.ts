@@ -13,6 +13,7 @@ import {
   GPU_PERMUTATION_PARAMETER_LENGTH,
   type GPUGlobalPermutationStatistic,
   type GPULocalPermutationStatistic,
+  type GPUPermutationAlternative,
   type GPUPermutationParameters
 } from '../../../src/gpu-spatial-analysis/permutation-inference';
 import {
@@ -112,6 +113,7 @@ export function createLocalPermutationHarness(
     maximumPermutations?: number;
     maximumNeighbors?: number;
     falseDiscoveryRate?: boolean;
+    alternative?: GPUPermutationAlternative;
   }
 ) {
   const {scene} = options;
@@ -131,6 +133,7 @@ export function createLocalPermutationHarness(
     maximumPermutations: options.maximumPermutations ?? 999,
     maximumNeighbors: options.maximumNeighbors,
     falseDiscoveryRate: options.falseDiscoveryRate,
+    alternative: options.alternative,
     exceedances: importGraphBuffer(graph, 'exceedances', outputs.exceedances, 'uint32', rows),
     pseudoPValues: importGraphBuffer(graph, 'pseudo-p', outputs.pseudoPValues, 'float32', rows),
     observed: importGraphBuffer(graph, 'observed', outputs.observed, 'float32', rows),
@@ -195,6 +198,7 @@ export function createGlobalPermutationHarness(
     parameters: GPUPermutationParameters;
     maximumPermutations: number;
     histogramBins?: number;
+    alternative?: GPUPermutationAlternative;
   }
 ) {
   const {scene, maximumPermutations} = options;
@@ -209,6 +213,7 @@ export function createGlobalPermutationHarness(
   const contributor = new GPUGlobalPermutationTest({
     ...importScene(graph, scene, buffers),
     statistic: options.statistic,
+    alternative: options.alternative,
     maximumPermutations,
     results: importGraphBuffer(
       graph,

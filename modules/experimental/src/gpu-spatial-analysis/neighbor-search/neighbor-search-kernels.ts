@@ -112,7 +112,7 @@ ${NEIGHBOR_SEARCH_FLOAT_WGSL}
 /**
  * WGSL statements that visit every valid target within the 3x3 cell neighborhood of `(x, y)` and
  * inside the distance band, running `action` with `neighbor` (target row) and `distanceSquared`
- * in scope. Requires bindings `positions`, `sortedRows`, `cellOffsets` and locals `lattice`, `x`,
+ * in scope. Requires bindings `sortedTargets` (`[x bits, y bits, row]` triples in cell order, `u32`), `cellOffsets` and locals `lattice`, `x`,
  * `y`. The visiting order is fixed but not by ID; callers sort.
  *
  * @internal
@@ -130,9 +130,9 @@ export function getRadiusNeighborLoopWGSL(action: string): string {
     let cellBegin = cellOffsets[cellOffsetsOffset + rowBase + firstColumn];
     let cellEnd = cellOffsets[cellOffsetsOffset + rowBase + lastColumn + 1u];
     for (var cellSlot = cellBegin; cellSlot < cellEnd; cellSlot++) {
-      let neighbor = sortedRows[sortedRowsOffset + cellSlot];
-      let deltaX = positions[positionsOffset + neighbor * 2u] - x;
-      let deltaY = positions[positionsOffset + neighbor * 2u + 1u] - y;
+      let neighbor = sortedTargets[sortedTargetsOffset + cellSlot * 3u + 2u];
+      let deltaX = bitcast<f32>(sortedTargets[sortedTargetsOffset + cellSlot * 3u]) - x;
+      let deltaY = bitcast<f32>(sortedTargets[sortedTargetsOffset + cellSlot * 3u + 1u]) - y;
       let distanceSquared = deltaX * deltaX + deltaY * deltaY;
       if (distanceSquared <= lattice.radiusSquared) {
         ${action}
@@ -152,7 +152,7 @@ export function getRadiusNeighborLoopWGSL(action: string): string {
  * `g` is shrunk by an absolute slack covering f32 rounding of cell assignment, and the test is
  * strict, so ties at the k-th distance are always fully resolved by the lowest ID.
  *
- * Requires bindings `positions`, `sortedRows`, `cellOffsets`, locals `lattice`, `x`, `y`, `index`,
+ * Requires bindings `sortedTargets` (`[x bits, y bits, row]` triples in cell order, `u32`), `cellOffsets`, locals `lattice`, `x`, `y`, `index`,
  * and a WGSL constant `K`. `selfCondition` filters candidates (for example `neighbor != index`).
  *
  * @internal
@@ -162,10 +162,10 @@ export function getNearestNeighborSearchWGSL(selfCondition: string): string {
     begin: string,
     end: string
   ) => `for (var cellSlot = ${begin}; cellSlot < ${end}; cellSlot++) {
-          let neighbor = sortedRows[sortedRowsOffset + cellSlot];
+          let neighbor = sortedTargets[sortedTargetsOffset + cellSlot * 3u + 2u];
           if (${selfCondition}) {
-            let deltaX = positions[positionsOffset + neighbor * 2u] - x;
-            let deltaY = positions[positionsOffset + neighbor * 2u + 1u] - y;
+            let deltaX = bitcast<f32>(sortedTargets[sortedTargetsOffset + cellSlot * 3u]) - x;
+            let deltaY = bitcast<f32>(sortedTargets[sortedTargetsOffset + cellSlot * 3u + 1u]) - y;
             let distanceSquared = deltaX * deltaX + deltaY * deltaY;
             if (!lattice.bounded || distanceSquared <= lattice.radiusSquared) {
               insertNeighbor(&bestDistances, &bestIds, &found, distanceSquared, neighbor);

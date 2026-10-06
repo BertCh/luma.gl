@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {EXACT_ORIENTATION_WGSL} from '../segment-intersection/exact-orientation-wgsl';
 import {getWGSLFloatLiteral} from '../../utils/wgsl-kernel-nodes';
 import {SPATIAL_JOIN_WGSL_HELPERS} from './spatial-join-passes';
 import type {GPUSpatialJoinGeometry} from './spatial-join-types';
@@ -17,28 +18,79 @@ export type SpatialPredicateSide = {
 };
 
 /** Public predicates of the join. @internal */
-export type SpatialPredicateName = 'intersects' | 'contains' | 'within' | 'dwithin';
+export type SpatialPredicateName =
+  | SpatialLegacyPredicateName
+  | 'covers'
+  | 'coveredBy'
+  | 'touches'
+  | 'crosses'
+  | 'overlaps'
+  | 'equals'
+  | 'containsProperly'
+  | 'relate';
+
+/** Predicates with dedicated short-circuiting kernels. @internal */
+export type SpatialLegacyPredicateName = 'intersects' | 'contains' | 'within' | 'dwithin';
 
 /**
  * Planar f32 predicates shared by every side and predicate.
  *
- * `orient` is exact whenever the products and their difference are exactly representable (for
- * example small integers and dyadic rationals); otherwise near-degenerate configurations may be
- * classified either way. Callers needing robust point-in-polygon decisions use the
- * double-single path of `GPUPairwisePointInPolygon`, which the join selects for point/polygon pairs.
+ * `orient` is the exact sign (see {@link getSpatialPredicateCommonWGSL}). A plain f32 determinant
+ * is not usable here: compilers fuse `a * b - c * d` into an FMA, so even the orientation of an edge
+ * against itself is not exactly zero, and edges shared by two polygons stopped being collinear
+ * (the fast `contains`/`within` kernels then rejected polygons that share a boundary run).
  *
  * @internal
  */
-export const SPATIAL_PREDICATE_COMMON_WGSL = /* wgsl */ `${SPATIAL_JOIN_WGSL_HELPERS}
+export const SPATIAL_PREDICATE_COMMON_WGSL = getSpatialPredicateCommonWGSL(true);
+
+/**
+ * Returns {@link SPATIAL_PREDICATE_COMMON_WGSL}, optionally with exact orientation tests.
+ *
+ * With `trackUncertainty`, `orient` returns the exact sign (`-1.0`, `0.0` or `1.0`) of the
+ * determinant from the shared `orientSign` (an f32 filter with an exact 256-bit integer fallback,
+ * see `exact-orientation-wgsl.ts`), so `orient == 0` proves collinearity for any finite f32 input.
+ * It sets the invocation-private `uncertainOrientation` flag only when no sign exists: non-finite
+ * coordinates, or product exponents spanning more than 200 bits. Callers must not use the
+ * magnitude of the result.
+ *
+ * @internal
+ */
+export function getSpatialPredicateCommonWGSL(trackUncertainty: boolean): string {
+  const orient = trackUncertainty
+    ? `${EXACT_ORIENTATION_WGSL}
+var<private> uncertainOrientation: bool = false;
 fn orient(a: vec2f, b: vec2f, c: vec2f) -> f32 {
+  // Coincident points make the determinant exactly zero. Shared edges hit this constantly, and an
+  // exact zero is the one answer the f32 filter cannot certify (it falls to the slow exact path).
+  if ((c.x == a.x && c.y == a.y) || (c.x == b.x && c.y == b.y) || (a.x == b.x && a.y == b.y)) {
+    return 0.0;
+  }
+  let sign = orientSign(a, b, c);
+  if (sign == 2) {
+    uncertainOrientation = true;
+    return 0.0;
+  }
+  return f32(sign);
+}`
+    : `fn orient(a: vec2f, b: vec2f, c: vec2f) -> f32 {
   return (b.x - a.x) * (c.y - a.y) - (b.y - a.y) * (c.x - a.x);
-}
+}`;
+  return /* wgsl */ `${SPATIAL_JOIN_WGSL_HELPERS}
+${orient}
 fn onSegment(a: vec2f, b: vec2f, q: vec2f) -> bool {
-  return orient(a, b, q) == 0.0 &&
-    q.x >= min(a.x, b.x) && q.x <= max(a.x, b.x) &&
-    q.y >= min(a.y, b.y) && q.y <= max(a.y, b.y);
+  // The range test comes first so a sign that cannot matter is never reported as uncertain.
+  return q.x >= min(a.x, b.x) && q.x <= max(a.x, b.x) &&
+    q.y >= min(a.y, b.y) && q.y <= max(a.y, b.y) &&
+    orient(a, b, q) == 0.0;
+}
+// True when the bounding boxes of segments a-b and c-d do not touch: no intersection is possible.
+fn boxesDisjoint(a: vec2f, b: vec2f, c: vec2f, d: vec2f) -> bool {
+  return max(a.x, b.x) < min(c.x, d.x) || max(c.x, d.x) < min(a.x, b.x) ||
+    max(a.y, b.y) < min(c.y, d.y) || max(c.y, d.y) < min(a.y, b.y);
 }
 fn segmentsIntersect(a: vec2f, b: vec2f, c: vec2f, d: vec2f) -> bool {
+  if (boxesDisjoint(a, b, c, d)) { return false; }
   let o1 = orient(a, b, c);
   let o2 = orient(a, b, d);
   let o3 = orient(c, d, a);
@@ -68,6 +120,7 @@ fn crossProduct(a: vec2f, b: vec2f) -> f32 { return a.x * b.y - a.y * b.x; }
 // Parameters t in the open interval (0, 1) along a-b where segment c-d crosses or overlaps it.
 // Returns (count, t1, t2). Requires a != b.
 fn edgeBreaks(a: vec2f, b: vec2f, c: vec2f, d: vec2f) -> vec3f {
+  if (boxesDisjoint(a, b, c, d)) { return vec3f(0.0); }
   let ab = b - a;
   let cd = d - c;
   let denominator = crossProduct(ab, cd);
@@ -86,14 +139,23 @@ fn edgeBreaks(a: vec2f, b: vec2f, c: vec2f, d: vec2f) -> vec3f {
     }
     return vec3f(count, first, second);
   }
+  // Orientation signs decide whether c-d crosses the open segment a-b. The divisions below only
+  // place the break: deciding with them let a shared endpoint round to t = 0.99999994, whose
+  // sliver piece was then classified by a rounded midpoint.
+  let o3 = orient(c, d, a);
+  let o4 = orient(c, d, b);
+  if (!((o3 > 0.0 && o4 < 0.0) || (o3 < 0.0 && o4 > 0.0))) { return vec3f(0.0); }
+  let o1 = orient(a, b, c);
+  let o2 = orient(a, b, d);
+  if ((o1 > 0.0 && o2 > 0.0) || (o1 < 0.0 && o2 < 0.0)) { return vec3f(0.0); }
   let t = crossProduct(c - a, cd) / denominator;
-  let u = crossProduct(c - a, ab) / denominator;
-  if (t > 0.0 && t < 1.0 && u >= 0.0 && u <= 1.0) { return vec3f(1.0, t, 0.0); }
+  if (t > 0.0 && t < 1.0) { return vec3f(1.0, t, 0.0); }
   return vec3f(0.0);
 }
 `;
+}
 
-function getMinimumRingVertices(kind: SpatialPredicateSide['kind']): number {
+export function getMinimumRingVertices(kind: SpatialPredicateSide['kind']): number {
   return kind === 'points' ? 1 : kind === 'lines' ? 2 : 3;
 }
 
@@ -102,13 +164,16 @@ function getMinimumRingVertices(kind: SpatialPredicateSide['kind']): number {
  *
  * Points yield one degenerate edge, linestrings yield open edges and polygon rings close
  * implicitly. Rings with too few vertices are skipped. `body` may `return` or `continue`.
+ * With `strided`, each ring's edges are visited `relateStride` apart from `relateLane` (private
+ * variables of the relate engine), which splits the loop across the lanes of a workgroup.
  */
-function forEachEdge(
+export function forEachEdge(
   side: SpatialPredicateSide,
   feature: string,
   a: string,
   b: string,
-  body: string
+  body: string,
+  strided = false
 ): string {
   const p = side.prefix;
   const edgeCount = side.kind === 'points' ? '1u' : side.kind === 'lines' ? `${p}n - 1u` : `${p}n`;
@@ -123,7 +188,7 @@ function forEachEdge(
     let ${p}ve = ${p}RingVertexEnd(${p}r);
     if (${p}ve <= ${p}vs || ${p}ve - ${p}vs < ${getMinimumRingVertices(side.kind)}u) { continue; }
     let ${p}n = ${p}ve - ${p}vs;
-    for (var ${p}k = 0u; ${p}k < ${edgeCount}; ${p}k++) {
+    for (var ${p}k = ${strided ? 'relateLane' : '0u'}; ${p}k < ${edgeCount}; ${p}k += ${strided ? 'relateStride' : '1u'}) {
       let ${a} = ${p}Vertex(${p}vs + ${p}k);
       let ${b} = ${p}Vertex(${p}vs + ${next});
       ${body}
@@ -132,7 +197,7 @@ function forEachEdge(
 }
 
 /** Declares the per-side accessors and geometry queries used by the predicate functions. */
-function getSideWGSL(side: SpatialPredicateSide): string {
+export function getSideWGSL(side: SpatialPredicateSide): string {
   const p = side.prefix;
   const P = p.toUpperCase();
   const {kind} = side;
@@ -448,6 +513,8 @@ const DISTANCE_SQ: f32 = ${getWGSLFloatLiteral(squared)};
 fn pairMatches(l: u32, r: u32) -> bool { return pairDistanceSq(l, r) <= DISTANCE_SQ; }`;
       break;
     }
+    default:
+      throw new Error(`predicate ${predicate} is evaluated by the relate engine`);
   }
   return `${SPATIAL_PREDICATE_COMMON_WGSL}
 ${getSideWGSL(left)}

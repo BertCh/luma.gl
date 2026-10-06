@@ -136,6 +136,7 @@ it('GPUGeographicallyWeightedRegression validates props', () => {
   );
   expectThrows(
     graph => ({
+      indexGridSize: false,
       positions: createTransientView(graph, `pos-${serial++}`, 'float32x2', 65537),
       predictors: createTransientView(graph, `pr-${serial++}`, 'float32', 65537 * 2),
       response: createTransientView(graph, `re-${serial++}`, 'float32', 65537),
@@ -143,7 +144,7 @@ it('GPUGeographicallyWeightedRegression validates props', () => {
         coefficients: createTransientView(graph, `co-${serial++}`, 'float32', 65537 * 3)
       }
     }),
-    /at most 65536/
+    /at most 65536 rows without a grid index/
   );
 });
 

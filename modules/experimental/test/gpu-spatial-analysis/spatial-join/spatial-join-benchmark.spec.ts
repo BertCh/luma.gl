@@ -5,6 +5,7 @@
 import type {Device} from '@luma.gl/core';
 import {getWebGPUTestDevice} from '@luma.gl/test-utils';
 import {expect, it} from 'vitest';
+import './spatial-relate-benchmark';
 import {createRandom, type OraclePolygonFeature} from './spatial-join-oracle';
 import {
   createNearestJoinRun,

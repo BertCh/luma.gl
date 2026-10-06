@@ -4,6 +4,7 @@
 
 import {
   createTransientView,
+  type GPUBVH,
   validatePackedUint32View,
   validatePackedView,
   type GPUCommandGraph,
@@ -14,6 +15,7 @@ import {
   GPU_POINT_IN_POLYGON_CLASSIFICATION,
   GPUPairwisePointInPolygon
 } from '../../geospatial/gpu-pairwise-point-in-polygon';
+import {EXACT_ORIENTATION_WGSL} from '../segment-intersection/exact-orientation-wgsl';
 import {createWGSLKernelNode} from '../../utils/wgsl-kernel-nodes';
 import type {
   GPUCompactOutput,
@@ -32,6 +34,7 @@ import {
   createSpatialJoinClearNode,
   createSpatialJoinFinalizeNode,
   getSortedFeatureBVHNodes,
+  getDefaultSpatialSort,
   getNextPowerOfTwo,
   getSpatialJoinAssignNodes,
   getSpatialJoinCollectNodes,
@@ -40,6 +43,8 @@ import {
   validateDisjointOutputs,
   validateMatchingChunks
 } from './spatial-join-passes';
+import {isSameSpatialJoinGeometry} from './spatial-join-geometry';
+import type {GPUSpatialJoinPrepared} from './spatial-join-prepared';
 
 const OPERATION = 'GPUPointInPolygonJoin';
 
@@ -64,6 +69,14 @@ export type GPUPointInPolygonJoinProps = {
   polygonOffsets: GraphDataView<'uint32'>;
   /** Ring-to-vertex offsets with a terminal entry. Rings close implicitly. */
   ringOffsets: GraphDataView<'uint32'>;
+  /**
+   * Optional prepared (static) polygon set over the same `polygonPositions`, `featureOffsets`,
+   * `polygonOffsets` and `ringOffsets` views. Its bounds and BVH are reused across encodings until
+   * the handle is invalidated, so animated points query a fixed polygon tree without rebuilding
+   * it. The handle must be added to the graph before the join. Its `leafCapacity` and
+   * `spatialSort` replace this join's. Reuses a build only; assignments are recomputed every encoding.
+   */
+  prepared?: GPUSpatialJoinPrepared;
   /** Optional stable feature IDs written instead of feature rows. */
   featureIds?: GraphDataView<'uint32'>;
   /** Maximum `(point, feature)` bounding-box candidates per encoding. */
@@ -83,9 +96,9 @@ export type GPUPointInPolygonJoinProps = {
    * features and 250,000 points: shuffled rows drop from 218 ms to 6.7 ms per encoding (about 9,500
    * to 61 BVH nodes visited per point); row-major rows are 6.0 ms unsorted and 5.6 ms sorted.
    *
-   * Enable it when features are not already spatially coherent in row order and the feature count
-   * is large; leave it off for coherent data or small feature sets, where the extra sort passes
-   * cost more than the traversal they save.
+   * Defaults to on from 256 features and off below, where the BVH is too shallow for the order to
+   * matter. On coherent data the sort costs about 1 ms; pass `false` to skip it. Candidate order is
+   * then unspecified (the point-in-polygon result is not affected).
    */
   spatialSort?: boolean;
   /** Per-point containing feature ID or row, or `GPU_SPATIAL_JOIN_NO_FEATURE`. Chunked like `points`. */
@@ -201,7 +214,22 @@ export class GPUPointInPolygonJoin implements GPUCommandNodeProducer {
       throw new Error(`${id} leafCapacity must be a positive power of two`);
     }
     this.includeBoundary = props.includeBoundary ?? true;
-    this.spatialSort = props.spatialSort ?? false;
+    this.spatialSort =
+      props.prepared?.spatialSort ?? props.spatialSort ?? getDefaultSpatialSort(this.featureCount);
+    if (props.prepared) {
+      this.leafCapacity = props.prepared.leafCapacity;
+      if (
+        !isSameSpatialJoinGeometry(props.prepared.geometry, {
+          kind: 'polygons',
+          positions: props.polygonPositions,
+          featureOffsets: props.featureOffsets,
+          polygonOffsets: props.polygonOffsets,
+          ringOffsets: props.ringOffsets
+        })
+      ) {
+        throw new Error(`${id} prepared must index the same polygon views`);
+      }
+    }
     validateDisjointOutputs(
       id,
       [
@@ -255,36 +283,49 @@ export class GPUPointInPolygonJoin implements GPUCommandNodeProducer {
     const pairRowCount = 2 * candidateCapacity + 1;
     const nodes: GPUCommandNode<Parameters>[] = [];
 
-    const minima = createTransientView(graph, `${id}-feature-minima`, 'float32x2', featureCount);
-    const maxima = createTransientView(graph, `${id}-feature-maxima`, 'float32x2', featureCount);
-    if (featureCount > 0) {
-      nodes.push(
-        createSpatialJoinBoundsNode<Parameters>(graph, {
-          id: `${id}-bounds`,
-          operation: OPERATION,
-          featureCount,
-          source: {
-            kind: 'polygons',
-            polygonPositions: props.polygonPositions,
-            featureOffsets: props.featureOffsets,
-            polygonOffsets: props.polygonOffsets,
-            ringOffsets: props.ringOffsets
-          },
-          minima,
-          maxima
-        })
-      );
+    if (props.prepared && !props.prepared.isDeclaredIn(graph)) {
+      throw new Error(`${id} requires prepared to be added to the graph first`);
     }
-    const {bvh, nodes: bvhNodes} = getSortedFeatureBVHNodes(
-      graph,
-      id,
-      OPERATION,
-      minima,
-      maxima,
-      leafCapacity,
-      this.spatialSort
-    );
-    nodes.push(...bvhNodes);
+    let bvh: Pick<
+      GPUBVH,
+      'nodeMinima' | 'nodeMaxima' | 'leafIds' | 'overflow' | 'internalNodeCount'
+    >;
+    if (props.prepared) {
+      const {storage} = props.prepared;
+      bvh = {...storage, internalNodeCount: props.prepared.bvhInternalNodeCount};
+    } else {
+      const minima = createTransientView(graph, `${id}-feature-minima`, 'float32x2', featureCount);
+      const maxima = createTransientView(graph, `${id}-feature-maxima`, 'float32x2', featureCount);
+      if (featureCount > 0) {
+        nodes.push(
+          createSpatialJoinBoundsNode<Parameters>(graph, {
+            id: `${id}-bounds`,
+            operation: OPERATION,
+            featureCount,
+            source: {
+              kind: 'polygons',
+              polygonPositions: props.polygonPositions,
+              featureOffsets: props.featureOffsets,
+              polygonOffsets: props.polygonOffsets,
+              ringOffsets: props.ringOffsets
+            },
+            minima,
+            maxima
+          })
+        );
+      }
+      const built = getSortedFeatureBVHNodes(
+        graph,
+        id,
+        OPERATION,
+        minima,
+        maxima,
+        leafCapacity,
+        this.spatialSort
+      );
+      nodes.push(...built.nodes);
+      bvh = built.bvh;
+    }
 
     const state = createTransientView(graph, `${id}-state`, 'uint32', 4);
     const assignment = createTransientView(graph, `${id}-assignment`, 'uint32', pointCount);
@@ -376,6 +417,88 @@ export class GPUPointInPolygonJoin implements GPUCommandNodeProducer {
           output: pairClassifications
         }).addToGraph(graph)
       )
+    );
+    // The double-single classifier answers `uncertain` whenever a determinant is within 2^-20 of
+    // its product magnitudes. Re-decide those candidates with the exact orientation predicate, so
+    // `uncertain` is left only for non-finite input, malformed offsets and degenerate rings.
+    nodes.push(
+      createWGSLKernelNode<Parameters>(graph, {
+        id: `${id}-exact`,
+        operation: OPERATION,
+        variant: 'exact',
+        bindings: [
+          {name: 'pairPoints', view: pairPoints, type: 'f32', access: 'read'},
+          {name: 'pairGeometryOffsets', view: pairGeometryOffsets, type: 'u32', access: 'read'},
+          {name: 'polygonPositions', view: props.polygonPositions, type: 'f32', access: 'read'},
+          {name: 'polygonOffsets', view: props.polygonOffsets, type: 'u32', access: 'read'},
+          {name: 'ringOffsets', view: props.ringOffsets, type: 'u32', access: 'read'},
+          {name: 'state', view: state, type: 'u32', access: 'read'},
+          {
+            name: 'pairClassifications',
+            view: pairClassifications,
+            type: 'u32',
+            access: 'read_write'
+          }
+        ],
+        invocationCount: candidateCapacity,
+        declarations: `const CANDIDATE_CAPACITY: u32 = ${candidateCapacity}u;
+const POLYGON_COUNT: u32 = ${props.polygonOffsets.length - 1}u;
+const RING_COUNT: u32 = ${props.ringOffsets.length - 1}u;
+const OUTSIDE: u32 = ${GPU_POINT_IN_POLYGON_CLASSIFICATION.outside}u;
+const INSIDE: u32 = ${GPU_POINT_IN_POLYGON_CLASSIFICATION.inside}u;
+const BOUNDARY: u32 = ${GPU_POINT_IN_POLYGON_CLASSIFICATION.boundary}u;
+const UNCERTAIN: u32 = ${GPU_POINT_IN_POLYGON_CLASSIFICATION.uncertain}u;
+${EXACT_ORIENTATION_WGSL}
+fn readVertex(vertexIndex: u32) -> vec2f {
+  return vec2f(
+    polygonPositions[polygonPositionsOffset + vertexIndex * 2u],
+    polygonPositions[polygonPositionsOffset + vertexIndex * 2u + 1u]
+  );
+}
+// Exact even/odd classification, or UNCERTAIN when some orientation has no sign.
+fn classifyExactly(point: vec2f, geometryStart: u32, geometryEnd: u32) -> u32 {
+  var geometryInside = false;
+  for (var polygonIndex = geometryStart; polygonIndex < geometryEnd; polygonIndex++) {
+    let polygonStart = polygonOffsets[polygonOffsetsOffset + polygonIndex];
+    let polygonEnd = polygonOffsets[polygonOffsetsOffset + polygonIndex + 1u];
+    if (polygonStart >= polygonEnd || polygonEnd > RING_COUNT) { return UNCERTAIN; }
+    var polygonInside = false;
+    for (var ringIndex = polygonStart; ringIndex < polygonEnd; ringIndex++) {
+      let ringStart = ringOffsets[ringOffsetsOffset + ringIndex];
+      let ringEnd = ringOffsets[ringOffsetsOffset + ringIndex + 1u];
+      if (ringEnd < ringStart + 3u) { return UNCERTAIN; }
+      var previous = readVertex(ringEnd - 1u);
+      for (var vertexIndex = ringStart; vertexIndex < ringEnd; vertexIndex++) {
+        let current = readVertex(vertexIndex);
+        let sign = orientSign(previous, current, point);
+        if (sign == 2) { return UNCERTAIN; }
+        if (sign == 0 &&
+            point.x >= min(previous.x, current.x) && point.x <= max(previous.x, current.x) &&
+            point.y >= min(previous.y, current.y) && point.y <= max(previous.y, current.y)) {
+          return BOUNDARY;
+        }
+        if ((previous.y > point.y) != (current.y > point.y)) {
+          if ((current.y > previous.y && sign > 0) || (current.y < previous.y && sign < 0)) {
+            polygonInside = !polygonInside;
+          }
+        }
+        previous = current;
+      }
+    }
+    geometryInside = geometryInside || polygonInside;
+  }
+  return select(OUTSIDE, INSIDE, geometryInside);
+}`,
+        body: `let activeCount = min(state[stateOffset], CANDIDATE_CAPACITY);
+  if (index >= activeCount) { return; }
+  let row = index * 2u + 1u;
+  if (pairClassifications[pairClassificationsOffset + row] != UNCERTAIN) { return; }
+  let geometryStart = pairGeometryOffsets[pairGeometryOffsetsOffset + row];
+  let geometryEnd = pairGeometryOffsets[pairGeometryOffsetsOffset + row + 1u];
+  if (geometryStart > geometryEnd || geometryEnd > POLYGON_COUNT) { return; }
+  let point = vec2f(pairPoints[pairPointsOffset + row * 2u], pairPoints[pairPointsOffset + row * 2u + 1u]);
+  pairClassifications[pairClassificationsOffset + row] = classifyExactly(point, geometryStart, geometryEnd);`
+      })
     );
     nodes.push(
       createWGSLKernelNode<Parameters>(graph, {

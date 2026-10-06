@@ -11,8 +11,25 @@ export const GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_MAXIMUM_LADDER_LENGTH = 32;
 /** Largest compile-time `k` of adaptive (k-th nearest neighbour) bandwidths. */
 export const GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_MAXIMUM_NEIGHBOR_COUNT = 128;
 
-/** Largest row count: every location scans every row, so the cost grows with `rows^2 * ladder`. */
+/**
+ * Largest row count without a grid index: every location scans every row, so the cost grows with
+ * `rows^2 * ladder`.
+ */
 export const GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_MAXIMUM_ROW_COUNT = 65536;
+
+/**
+ * Largest row count with a grid index. Bounded fixed-bandwidth fits then visit only nearby cells,
+ * so the cost grows with `rows * neighbours`; the limit is the per-candidate scratch
+ * (`rows * ladder * 8` bytes must fit one 128 MiB storage binding) and `rows^2` cost remains for
+ * Gaussian and adaptive encodings.
+ */
+export const GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_MAXIMUM_INDEXED_ROW_COUNT = 1048576;
+
+/** Smallest row count for which the grid index is built by default. */
+export const GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_MINIMUM_INDEXED_ROW_COUNT = 1024;
+
+/** Largest default grid dimension per axis. */
+export const GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_MAXIMUM_DEFAULT_GRID_DIMENSION = 1024;
 
 /** Header float32 slots before the ladder in the parameter view. */
 export const GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_PARAMETER_HEADER_LENGTH = 4;

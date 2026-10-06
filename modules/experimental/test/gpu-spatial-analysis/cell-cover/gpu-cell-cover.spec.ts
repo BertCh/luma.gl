@@ -33,12 +33,14 @@ import {
   type CoverFeature,
   type CoverResult
 } from './cell-cover-oracle';
+import {isCellInsideFeature} from './cell-cover-core-oracle';
 
 type CoverRun = CoverResult & {
   count: number;
   overflow: number;
   total: number;
   featureIds: number[];
+  core: number[];
 };
 
 async function runCover(
@@ -69,6 +71,7 @@ async function runCover(
   const outputBuffers = {
     featureIds: output(outputCapacity),
     cells: output(2 * outputCapacity),
+    core: output(outputCapacity),
     count: output(1),
     overflow: output(1),
     total: output(1)
@@ -132,6 +135,7 @@ async function runCover(
           'uint32x2',
           outputCapacity
         ),
+        core: importGraphBuffer(graph, 'out-core', outputBuffers.core, 'uint32', outputCapacity),
         count: importGraphBuffer(graph, 'out-count', outputBuffers.count, 'uint32', 1),
         overflow: importGraphBuffer(graph, 'out-overflow', outputBuffers.overflow, 'uint32', 1),
         totalCount: importGraphBuffer(graph, 'out-total', outputBuffers.total, 'uint32', 1)
@@ -145,7 +149,9 @@ async function runCover(
   const [total] = await readUint32(outputBuffers.total, 1);
   const ids = await readUint32(outputBuffers.featureIds, outputCapacity);
   const words = await readUint32(outputBuffers.cells, 2 * outputCapacity);
+  const core = await readUint32(outputBuffers.core, outputCapacity);
   const result: CoverRun = {
+    core: core.slice(0, count),
     count,
     overflow,
     total,
@@ -353,4 +359,61 @@ it('GPUCellCover h3 center matches h3-js polygonToCells', async () => {
     `h3 center GPU vs h3-js disagreements: ${report.join('; ')}; near-edge centers ${nearEdge}, other ${otherCause}`
   );
   expect(totalDisagreements).toBeLessThanOrEqual(20);
+});
+
+it('GPUCellCover core flag is sound, conservative and nonzero (quadbin and h3)', async () => {
+  const device = await getWebGPUTestDevice();
+  if (!device) {
+    return;
+  }
+  const cases: {family: 'quadbin' | 'h3'; resolution: number; features: CoverFeature[]}[] = [
+    {family: 'quadbin', resolution: 8, features: createQuadbinScene().slice(0, 4)},
+    {family: 'quadbin', resolution: 10, features: createQuadbinScene().slice(0, 1)},
+    {
+      family: 'h3',
+      resolution: 5,
+      features: roundFeatures([
+        [[createStarPolygon(5, [8.5, 47.2], 1.2, 13)]],
+        [
+          [
+            createRectangleRing([-100.5, 39.5, -97.5, 42]),
+            createRectangleRing([-99.5, 40.3, -98.7, 41.1]).reverse()
+          ]
+        ]
+      ])
+    }
+  ];
+  for (const {family, resolution, features} of cases) {
+    const label = `${family} res ${resolution}`;
+    for (const containment of family === 'h3'
+      ? (['center'] as const)
+      : (['center', 'intersects'] as const)) {
+      const run = await runCover(device, features, {
+        family,
+        resolution,
+        containment,
+        candidateCapacity: 400000,
+        outputCapacity: 20000
+      });
+      expect(run.overflow, `${label} overflow`).toBe(0);
+      expect(run.count, `${label} count`).toBeGreaterThan(20);
+      expect(run.core.every(flag => flag === 0 || flag === 1)).toBe(true);
+      const coreCount = run.core.reduce((sum, flag) => sum + flag, 0);
+      // Interior cells exist, and border cells (near the boundary or the hole) stay unflagged.
+      expect(coreCount, `${label} ${containment} core`).toBeGreaterThan(0);
+      expect(coreCount, `${label} ${containment} border`).toBeLessThan(run.count);
+      for (let row = 0; row < run.count; row++) {
+        if (run.core[row]) {
+          expect(
+            isCellInsideFeature(features[run.featureRows[row]], family, run.cells[row]),
+            `${label} ${containment} core cell ${run.cells[row].toString(16)} is inside`
+          ).toBe(true);
+        }
+      }
+      // Cells in the output keep their keys: the core bit never leaks into them.
+      for (const cell of run.cells) {
+        expect(cell >> 63n).toBe(0n);
+      }
+    }
+  }
 });

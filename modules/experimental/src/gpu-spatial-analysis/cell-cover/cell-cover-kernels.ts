@@ -6,6 +6,7 @@ import type {GPUCommandGraph, GPUCommandNode, GraphDataView} from '@luma.gl/gpgp
 import {dggs} from '@luma.gl/shadertools';
 import {CELL_KEY_WGSL, QUADBIN_TILE_WGSL, getCellKeyLayout} from '../cell-aggregation/cell-keys';
 import {H3_INDEX_WGSL} from '../cell-indexing/h3-index-wgsl';
+import {H3_BOUNDARY_WGSL} from '../cell-indexing/h3-boundary-wgsl';
 import {
   createWGSLKernelNode,
   getWGSLFloatLiteral,
@@ -21,6 +22,16 @@ const OPERATION = 'GPUCellCover';
 /** Containment modes in shader constant order. @internal */
 export const CELL_COVER_MODE_CODES = {center: 0, full: 1, intersects: 2} as const;
 
+/**
+ * Bit of a candidate's high key word that carries the core flag between the test and write
+ * kernels. Quadbin and H3 keys leave bit 63 reserved (zero), so it never collides with the key.
+ * @internal
+ */
+export const CELL_COVER_CORE_BIT = 0x80000000;
+
+/** Absolute slack in degrees added around a cell before the core test (f32 tile edge error). @internal */
+export const CELL_COVER_CORE_MARGIN_DEGREES = 2e-4;
+
 /** Number of `uint32` words per feature in the candidate range table. @internal */
 export const CELL_COVER_RANGE_STRIDE = 8;
 
@@ -30,6 +41,8 @@ export type CellCoverKernelContext = {
   family: 'quadbin' | 'h3';
   resolution: number;
   containment: keyof typeof CELL_COVER_MODE_CODES;
+  /** Whether the test kernel also decides the core flag (bit 31 of the candidate's high word). */
+  computeCore: boolean;
   featureCount: number;
   candidateCapacity: number;
   polygonPositions: GraphDataView<'float32x2'>;
@@ -291,6 +304,8 @@ const CANDIDATE_CAPACITY: u32 = ${candidateCapacity}u;
 const RANGE_STRIDE: u32 = ${CELL_COVER_RANGE_STRIDE}u;
 const MODE: u32 = ${mode}u;
 const RESOLUTION: u32 = ${resolution}u;
+const CORE_BIT: u32 = ${CELL_COVER_CORE_BIT}u;
+const CORE_MARGIN: f32 = ${getWGSLFloatLiteral(CELL_COVER_CORE_MARGIN_DEGREES)};
 `;
   let evaluation: string;
   if (family === 'quadbin') {
@@ -323,9 +338,18 @@ fn coverTileLatitude(row: f32) -> f32 {
   var key = vec2u(0u);
   if (accepted) {
     key = cellGetKey(quadbinGetCompactKey(x, y), ${layout.headerHigh}u, RESOLUTION, ${layout.lowBit}u);
+    ${
+      context.computeCore
+        ? `// Core: the centre is inside and no polygon edge enters the cell grown by a safety margin.
+    let slack = vec2f(CORE_MARGIN + 0.001 * (lng1 - lng0));
+    if (coverContains(feature, centre) && !coverEdgesHitRect(feature, vec2f(lng0, latSouth) - slack, vec2f(lng1, latNorth) + slack)) {
+      key.x = key.x | CORE_BIT;
+    }`
+        : ''
+    }
   }`;
   } else {
-    declarations += `${dggs.source}\n${H3_INDEX_WGSL}`;
+    declarations += `${dggs.source}\n${H3_INDEX_WGSL}\n${context.computeCore ? H3_BOUNDARY_WGSL : ''}`;
     evaluation = `let width = ranges[rangeBase];
   let originLng = bitcast<f32>(ranges[rangeBase + 2u]);
   let originLat = bitcast<f32>(ranges[rangeBase + 3u]);
@@ -347,6 +371,22 @@ fn coverTileLatitude(row: f32) -> f32 {
     let nearestRow = floor((centre.y - originLat) / spacingLat + 0.5);
     if (nearestColumn == f32(column) && nearestRow == f32(row) && coverContains(feature, centre)) {
       key = cell;
+      ${
+        context.computeCore
+          ? `// Core: no polygon edge enters the bounding box of the cell boundary, grown by a margin.
+      let boundary = cellIndexH3GetBoundary(cell);
+      var lo = boundary.points[0];
+      var hi = boundary.points[0];
+      for (var vertex = 1u; vertex < boundary.count; vertex++) {
+        lo = min(lo, boundary.points[vertex]);
+        hi = max(hi, boundary.points[vertex]);
+      }
+      let slack = vec2f(CORE_MARGIN) + 0.001 * (hi - lo);
+      if (boundary.count > 0u && hi.x - lo.x < 90.0 && !coverEdgesHitRect(feature, lo - slack, hi + slack)) {
+        key.x = key.x | CORE_BIT;
+      }`
+          : ''
+      }
     }
   }
   let accepted = key.x != 0u || key.y != 0u;`;
@@ -390,6 +430,7 @@ export function createCoverWriteNode<Parameters>(
     featureIds?: GraphDataView<'uint32'>;
     outputFeatureIds: GraphDataView<'uint32'>;
     outputCells: GraphDataView<'uint32x2'>;
+    outputCore?: GraphDataView<'uint32'>;
   }
 ): GPUCommandNode<Parameters> {
   const bindings: WGSLKernelBinding[] = [
@@ -404,6 +445,9 @@ export function createCoverWriteNode<Parameters>(
     {name: 'outputFeatureIds', view: views.outputFeatureIds, type: 'u32', access: 'read_write'},
     {name: 'outputCells', view: views.outputCells, type: 'u32', access: 'read_write'}
   );
+  if (views.outputCore) {
+    bindings.push({name: 'outputCore', view: views.outputCore, type: 'u32', access: 'read_write'});
+  }
   return createWGSLKernelNode<Parameters>(graph, {
     id: `${context.id}-write`,
     operation: OPERATION,
@@ -411,7 +455,8 @@ export function createCoverWriteNode<Parameters>(
     bindings,
     invocationCount: context.candidateCapacity,
     declarations: `${getFindFeatureWGSL(context.featureCount)}
-const OUTPUT_CAPACITY: u32 = ${views.outputFeatureIds.length}u;`,
+const OUTPUT_CAPACITY: u32 = ${views.outputFeatureIds.length}u;
+const CORE_BIT: u32 = ${CELL_COVER_CORE_BIT}u;`,
     body: `var beforeCount = 0u;
   if (index > 0u) { beforeCount = accepted[acceptedOffset + index - 1u]; }
   let afterCount = accepted[acceptedOffset + index];
@@ -423,7 +468,9 @@ const OUTPUT_CAPACITY: u32 = ${views.outputFeatureIds.length}u;`,
     views.featureIds ? 'featureIds[featureIdsOffset + feature]' : 'feature'
   };
   outputCells[outputCellsOffset + 2u * slot] = candidateCells[candidateCellsOffset + 2u * index];
-  outputCells[outputCellsOffset + 2u * slot + 1u] = candidateCells[candidateCellsOffset + 2u * index + 1u];`
+  let highWord = candidateCells[candidateCellsOffset + 2u * index + 1u];
+  outputCells[outputCellsOffset + 2u * slot + 1u] = highWord & ~CORE_BIT;
+  ${views.outputCore ? 'outputCore[outputCoreOffset + slot] = select(0u, 1u, (highWord & CORE_BIT) != 0u);' : ''}`
   });
 }
 

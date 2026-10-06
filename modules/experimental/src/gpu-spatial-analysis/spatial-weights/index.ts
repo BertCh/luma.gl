@@ -16,3 +16,24 @@ export type {
 } from './gpu-spatial-weights-transform';
 export {GPUSpatialLag} from './gpu-spatial-lag';
 export type {GPUSpatialLagProps} from './gpu-spatial-lag';
+export {
+  GPUSpatialWeightsAlgebra,
+  GPU_SPATIAL_WEIGHTS_MAXIMUM_ORDER
+} from './gpu-spatial-weights-algebra';
+export type {
+  GPUSpatialWeightsAlgebraBaseProps,
+  GPUSpatialWeightsAlgebraProps,
+  GPUSpatialWeightsBinaryProps,
+  GPUSpatialWeightsBlockProps,
+  GPUSpatialWeightsCombineRule,
+  GPUSpatialWeightsHigherOrderProps,
+  GPUSpatialWeightsSelfWeightProps,
+  GPUSpatialWeightsSubgraphProps
+} from './gpu-spatial-weights-algebra';
+export {
+  GPUSpatialWeightsSummary,
+  GPU_SPATIAL_WEIGHTS_SUMMARY_LAYOUT
+} from './gpu-spatial-weights-summary';
+export type {GPUSpatialWeightsSummaryProps} from './gpu-spatial-weights-summary';
+export {GPUSpatialWeightsTranspose} from './gpu-spatial-weights-transpose';
+export type {GPUSpatialWeightsTransposeProps} from './gpu-spatial-weights-transpose';

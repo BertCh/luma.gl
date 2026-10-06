@@ -5,7 +5,7 @@
 export {GPUHotSpotAnalysis} from './gpu-hot-spot-analysis';
 export type {GPUHotSpotAnalysisProps} from './gpu-hot-spot-analysis';
 export {GPULocalMoran} from './gpu-local-moran';
-export type {GPULocalMoranProps} from './gpu-local-moran';
+export type {GPULocalMoranProps, GPULocalMoranQuadrantGating} from './gpu-local-moran';
 export {
   getGPUSpatialAutocorrelationParameterValues,
   GPU_HOT_SPOT_CRITICAL_Z_SCORES,

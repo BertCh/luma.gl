@@ -23,6 +23,7 @@ import {
   submitGraph
 } from '../../utils/gpu-contributor-test-utils';
 import {createRandom, joinNearestSegments} from './spatial-join-oracle';
+import './gpu-nearest-feature-join-neighbors.spec';
 
 type Point = [number, number];
 

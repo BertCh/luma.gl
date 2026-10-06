@@ -67,8 +67,8 @@ export type GPUBufferSelectionProps = {
   leafCapacity?: number;
   /**
    * Morton-sorts features before the BVH build, forwarded to `GPUNearestFeatureJoin`. Compile-time.
-   * Results are identical either way; enable it for large feature sets that are not spatially
-   * coherent in row order. Default false.
+   * Results are identical either way. Defaults to on from 256 features, as in
+   * `GPUNearestFeatureJoin`; pass `false` to skip it.
    */
   spatialSort?: boolean;
   /** Optional per-point 0/1 mask, chunked like `points`. Rewritten on every encoding. */
