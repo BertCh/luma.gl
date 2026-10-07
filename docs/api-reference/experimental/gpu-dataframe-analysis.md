@@ -357,10 +357,18 @@ const model = fitVariogramModel({distances, semivariances, pairCounts}, {model: 
   `Jest`). `G` is the nearest-neighbour distance function of the events, `F` the empty-space function
   over a `referenceGrid` lattice of reference locations, and `J = (1 - G) / (1 - F)` (below 1 is
   clustered, above 1 regular). `parameters` (`getGPURipleyDistanceParameterValues`) hold `bounds`,
-  `maximumDistance` and `edgeCorrection` (`'border'`, the default, or `'none'`); `gridSize`,
-  `referenceGrid` and `radiusCount` are compile-time. Outputs are `g`, `f`, `j` and `radii`, with NaN
-  where a value is undefined. Integer atomics keep it bitwise reproducible. There is no Kaplan-Meier,
-  Hanisch or isotropic correction. F depends on the reference lattice, so keep it coprime with the
+  `maximumDistance` and `edgeCorrection` (`'border'`, the default, `'kaplan-meier'`, `'hanisch'` or
+  `'none'`, switchable per frame without recompiling); `gridSize`, `referenceGrid` and `radiusCount` are
+  compile-time. Outputs are `g`, `f`, `j` and `radii`, with NaN where a value is undefined. Integer atomics
+  keep it bitwise reproducible. `'border'` is spatstat `rs`. `'kaplan-meier'` is spatstat `km`, with hazards
+  binned on the radius grid, exact including the censoring of points that have no neighbor within
+  `maximumDistance`. `'hanisch'` is spatstat `han` for G and Chiu-Stoyan style weights for F, with 14-bit
+  fixed-point weights (relative error about 1e-4); a point with no neighbor within `maximumDistance` but a
+  border distance of at least `maximumDistance` enters the denominator at `d = maximumDistance`, so G is
+  slightly high unless every point has a neighbor in range. The corrections are checked against an f64
+  oracle written from the spatstat definitions, not against spatstat itself, and K and L (`GPURipley`) have
+  no Kaplan-Meier or Hanisch option. The pass uses 8 channels per radius (a `radiusCount` of 256 still fits
+  the default 16 KB of workgroup memory exactly). F depends on the reference lattice, so keep it coprime with the
   window so no reference location sits exactly on a radius.
 - `GPUPointPatternIndices`: exact nearest neighbour per row (ring search, ties to the smallest row),
   Clark-Evans `[n, observed, expected, R, standardError, z]`, and quadrat counts with

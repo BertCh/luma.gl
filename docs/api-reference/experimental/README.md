@@ -63,6 +63,7 @@ stable Engine models and Shadertools passes.
 | [GPU Crossfilter](/docs/api-reference/experimental/gpu-crossfilter) | Linked GPU filtering, histograms, aggregates, and rendering masks. |
 | [Geospatial kernels](/docs/api-reference/experimental/geospatial) | Projection, distance, point-in-polygon, nearest-feature, grid-index, and spatial-query operations. |
 | [GPU Spatial Analysis](/docs/api-reference/experimental/gpu-spatial-analysis) | Analysis contributors composed from the geospatial kernels and GPU Core: spatial weights and statistics, joins, density, cells, lines, trajectories, and regression. |
+| [GPU Spatial Analysis cross-reference](/docs/api-reference/experimental/gpu-spatial-analysis-cross-reference) | Task-organised map from turf, PostGIS, GeoPandas, PySAL, QGIS, ArcGIS and CARTO tool names to the matching contributor. |
 | [GPU Terrain](/docs/api-reference/experimental/gpu-terrain) | Elevation-tile analysis contributors: slope, contours, viewshed, hydrology, solar shadows, and relief shading. |
 | [GPU Network](/docs/api-reference/experimental/gpu-network) | CSR network analysis contributors: reachability, service areas, accessibility, flow aggregation, and edge bundling. |
 

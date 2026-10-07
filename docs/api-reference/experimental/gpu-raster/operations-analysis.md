@@ -106,6 +106,12 @@ graph.add(new GPUCostDistancePath({width, height, backLinks, target: target.impo
 settings.write(getGPUCostDistanceParameterValues({cellSize: [10, 10], costLimit: 5000}));
 ```
 
+`frictionParameters` (a `GraphDataView` of `[scale, offset]`, per frame; its presence is compile-time)
+applies `friction = value * scale + offset` on top of the band's own calibration, so a friction slider is a
+buffer write. Results that are negative or non-finite are impassable. Relaxation uses one gate node per four
+rounds, so the unrolled loop has about a third fewer nodes (271 to 189 in the explorer, converging after 43
+of 128 iterations).
+
 `maxIterations` defaults to 512. After `sweepAfterIteration` iterations (default 96) relaxation adds
 directional tile sweeps that carry a front along a whole row or column of tiles, so long corridors and
 spirals converge in far fewer iterations; open terrain converges before the switch. Pass
@@ -334,6 +340,19 @@ graph.add(new GPUIsobands({
 lineParameters.write(getGPUIsolinesParameterValues({width, height, levelCount: 5, extent}));
 bandParameters.write(getGPUIsobandsParameterValues({width, height, breakCount: 5, extent})); // no recompile
 ```
+
+`GPUIsobands` can also write the band boundary as edges: `output.edges` (`float32x4`), `edgeBands`,
+`edgeCount`, `edgeOverflow` and an optional `edgeTotalCount`. Edges are counter-clockwise with the band on
+the left; an edge shared by two cells cancels, and a zero-area cell (one or two samples exactly on the
+lower break) writes none, so edges lying on a break leave no slits.
+
+`GPUIsobandRings` chains those edges into closed rings with `GPUSegmentRingAssembly`, grouped by band, so
+every band comes as shells and holes (holes attach within a band) and, optionally, GeoArrow polygons with
+`polygonGroups`. Props: `width`, `height`, `values`, `breaks`, `parameters` (same packing as
+`GPUIsobands`), a compile-time `edgeCapacity`, `vertexTolerance`, `splitTouchingRings` and `output` (the
+`GPUSegmentRingAssembly` outputs plus optional `edgeCount` and `edgeOverflow`). Unlike the triangle fill it
+gives true boundary geometry, but filling it for display needs polygon triangulation or rasterization
+(`GPUPolygonRasterization` gives an exact even-odd fill at raster resolution).
 
 Outputs are ordered by count, `GPUScan`, and scatter, so they are deterministic; capacities are
 `segments.length` and `triangleBands.length`, with clamped `count`, `overflow`, and `totalCount`

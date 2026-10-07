@@ -528,7 +528,12 @@ order with downstream walking; both stop early on the GPU and report convergence
 nothing is read back and accumulation is bit-reproducible. `maxFillIterations` and
 `maxFlatIterations` default to 512 (up to 1024); after 96 plain tiled iterations each phase adds
 directional row and column sweeps so serpentine and spiral basins converge. Check `fillConverged`
-and `flatsConverged` for longer ones.
+and `flatsConverged` for longer ones. The optional one-row outputs `fillIterations`, `flatsIterations` (the
+sum of the three flat relaxations) and `accumulationIterations` report the iterations executed, including
+the final unchanged one, so a budget can be tuned (the SF terrain used 14 of 256 fill and 2 of 128
+accumulation rounds). Every unrolled loop has one gate node per four rounds; rounds after convergence
+inside a group are idempotent no-ops, so results and counts are unchanged and the graph has about a third
+fewer nodes.
 
 ```ts
 graph.add(new GPUTerrainFlow({
@@ -566,7 +571,7 @@ for example one imported from TauDEM or Whitebox), plus `streams` or `accumulati
 - `GPUTerrainWatersheds`: labels every cell with its nearest downstream pour point (nested pour
   points give nested watersheds). Without pour points it labels drainage basins by their outlet or
   pit cell.
-- `GPUTerrainStreamOrder`: Strahler order on the stream mask.
+- `GPUTerrainStreamOrder`: Strahler order on the stream mask, with an optional `iterationCount` output.
 - `GPUTerrainHydrologicIndices`: computes, from contributing area in m²
   (`accumulationUnits: 'area'`, any routing):
   - specific catchment area `a = A / b`;

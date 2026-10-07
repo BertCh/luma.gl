@@ -56,16 +56,16 @@ The sections below group the contributors by task.
 | Section | Contributors |
 | --- | --- |
 | Spatial weights | `GPUNeighborSearch`, `GPUContiguityWeights`, `GPULatticeWeights`, `GPUSpatialWeightsTransform`, `GPUSpatialWeightsAlgebra`, `GPUSpatialWeightsSummary`, `GPUSpatialWeightsTranspose`, `GPUSpatialLag`, `GPUMapColoring` |
-| Spatial statistics | `GPUGlobalSpatialStatistics`, `GPUHotSpotAnalysis`, `GPULocalMoran`, `GPULocalPermutationTest`, `GPUGlobalPermutationTest`, `GPUNeighborhoodSummary`, `GPUEmpiricalBayesRates`, `GPUSpatialEmpiricalBayesRates`, `GPUSpatialClustering`, `GPUKMeans`, `GPUGroupGeometry`, `GPUGroupConvexHull`, `GPUEmergingHotSpots`, `GPUGeographicDistribution`, `GPURegionStatistics`, `GPUZonalStatistics`, `GPUFocalStatistics` |
-| Distribution dynamics and space-time tests | `GPUClassAssignment`, `GPUClassificationFit`, `GPUTransitionMatrix`, `GPUSpatialMarkov`, `GPULISAMarkov`, `GPUKnoxTest`, `GPUMantelTest` |
+| Spatial statistics | `GPUGlobalSpatialStatistics`, `GPUHotSpotAnalysis`, `GPULocalMoran`, `GPULocalPermutationTest`, `GPUGlobalPermutationTest`, `GPUNeighborhoodSummary`, `GPUEmpiricalBayesRates`, `GPUSpatialEmpiricalBayesRates`, `GPUSpatialClustering`, `GPUKMeans`, `GPUSpatialWeightsMinimumSpanningTree`, `GPUSkaterRegions`, `GPURegionPartitionEvaluation`, `GPUGroupGeometry`, `GPUGroupConvexHull`, `GPUEmergingHotSpots`, `GPUGeographicDistribution`, `GPURegionStatistics`, `GPUZonalStatistics`, `GPUFocalStatistics`, `GPUSimilarLocations` |
+| Distribution dynamics and space-time tests | `GPUClassAssignment`, `GPUClassificationFit`, `GPUTransitionMatrix`, `GPUSpatialMarkov`, `GPULISAMarkov`, `GPUKnoxTest`, `GPUMantelTest`, `GPUSpatialScanStatistic` |
 | Accessibility and change of support | `GPUCatchmentAccessibility`, `GPUHuffTradeAreas`, `GPUArealInterpolation`, `GPUPycnophylactic`, `GPUSegregation` |
 | Spatial joins | `GPUSpatialPredicateJoin`, `GPUSpatialJoinPrepared`, `GPUSpatialJoinCandidates`, `GPUPointInPolygonJoin`, `GPUNearestFeatureJoin`, `GPUNearestFeatureWeights`, `GPUBufferSelection` |
 | Geometry validity and intersections | `GPUSegmentIntersection`, `GPUGeometryValidity` |
-| Density & interpolation | `GPUPointDensity`, `GPUInverseDistanceWeighting`, `GPUDotDensity`, `GPURandomPointsInPolygon` |
+| Density & interpolation | `GPUPointDensity`, `GPUInverseDistanceWeighting`, `GPUKriging`, `GPUDotDensity`, `GPURandomPointsInPolygon` |
 | Cells (DGGS) | `GPUCellAggregation`, `GPUCellRollup`, `GPUCellPyramid`, `GPUCellLevelSelection`, `GPUPointToCell`, `GPUCellGeometry`, `GPUCellTopology`, `GPUCellCompaction`, `GPUCellCover`, `GPUCellSetOutline`, `GPUSegmentRingAssembly`, `GPUCellTableCompare` |
-| Lines & trajectories | `GPULineSegmentize`, `GPUGreatCircleArcs`, `GPULineSmooth`, `GPULineChunk`, `GPUGeometryMeasures`, `GPUGeodesicPairs`, `GPUGeodesicDestination`, `GPULinearReferencing`, `GPULineLocate`, `GPULineSimplification`, `GPUCoverageSimplification`, `GPUTrajectoryMetrics`, `GPUTrajectoryPlayhead`, `GPUTrajectoryResample`, `GPUZoneEvents`, `GPUTrajectoryEncounters`, `GPUTrackSimilarity` |
-| Geometry utilities | `GPUOutlineGeometry`, `GPULabelPoint`, `GPUShapeDescriptors`, `GPULineDensity`, `GPULineLengthPerPolygon`, `GPUGridGenerator`, `GPURectangleClip` |
-| Regression | `GPUOrdinaryLeastSquares`, `GPUSpatialRegressionDiagnostics`, `GPUSpatialTwoStageLeastSquares`, `GPUSpatialErrorGM`, `GPUGeographicallyWeightedRegression` |
+| Lines & trajectories | `GPULineSegmentize`, `GPUGreatCircleArcs`, `GPULineSmooth`, `GPULineChunk`, `GPULineSplit`, `GPULineMerge`, `GPUGeometryMeasures`, `GPUGeodesicPairs`, `GPUGeodesicDestination`, `GPULinearReferencing`, `GPULineLocate`, `GPULineSimplification`, `GPUCoverageSimplification`, `GPUTrajectoryMetrics`, `GPUTrajectoryPlayhead`, `GPUTrajectoryResample`, `GPUZoneEvents`, `GPUTrajectoryEncounters`, `addClockEncounters`, `GPUTrackSimilarity` |
+| Geometry utilities | `GPUOutlineGeometry`, `GPULabelPoint`, `GPUShapeDescriptors`, `GPULineDensity`, `GPULineLengthPerPolygon`, `GPUGridGenerator`, `GPUShapeGenerator`, `GPUHilbertKeys`, `GPURectangleClip` |
+| Regression | `GPUOrdinaryLeastSquares`, `GPUSpatialRegressionDiagnostics`, `GPUSpatialTwoStageLeastSquares`, `GPUSpatialErrorGM`, `GPUGeographicallyWeightedRegression`, `GPUGeographicallyWeightedRegressionNonstationarityTest` |
 | Recipes | `addHotSpotAnalysisRecipe` and eleven more prebuilt chains |
 | Cross-reference | turf, PostGIS, GeoPandas, PySAL, QGIS and ArcGIS tools mapped to contributors |
 
@@ -496,6 +496,10 @@ neighbor scan. Labels, roots and core flags are identical to the plain algorithm
 still scans neighbors, so the measured gain on 200,000 clustered points is only 3 to 9 percent, and
 the option is off by default. Points whose box index exceeds 2^16 skip the shortcut.
 
+`drawInstanceCount` (a one-row `uint32`, needs `clusters`) receives the clamped cluster count, so a layer
+can draw one instance per cluster: import an indirect draw record's instance count with
+`graph.importGPUData(id, drawCommands.getInstanceCountData(0))` and pass the view.
+
 `sumOrder` defaults to `'sorted'` (stable sort of members by cluster, then a fixed-order segmented sum):
 because labels are canonical, `clusterCentroids` is bitwise reproducible across encodings on one device,
 and cluster sizes are exact either way. `'atomic'` skips the sorts but uses float atomics, so last bits vary
@@ -504,10 +508,10 @@ between runs. Behavior change: last-bit differences versus the previous atomic d
 ### `GPUKMeans`
 
 Deterministic k-means over planar points (scikit-learn `KMeans`, PostGIS `ST_ClusterKMeans`). Props:
-`positions`, `k` (1 to 256), `iterations` (1 to 64, fixed, no convergence test), `initialization`
+`positions`, `k` (1 to 256), `iterations` (1 to 64, a maximum), `tolerance`, `initialization`
 (`'first-valid'` by default, or `'kmeans++'` with `seed`) and the outputs `labels` (cluster or noise),
 `centers` (`k` rows), optional `sizes` and `squaredDistances` (the explain column; its sum is the
-inertia). Each point goes to the nearest center with lowest-ID ties, means are fixed-order sorted
+inertia) and `convergence`. Each point goes to the nearest center with lowest-ID ties, means are fixed-order sorted
 segmented sums, and an empty center keeps its position. Results are bitwise reproducible per seed.
 Each iteration adds a sort, so memory grows with `iterations * points`. `'kmeans++'` uses `log`,
 which WGSL does not pin down across devices.
@@ -516,6 +520,50 @@ which WGSL does not pin down across devices.
 graph.add(new GPUKMeans({positions, k: 8, iterations: 20, initialization: 'kmeans++', seed: 3,
   labels, centers, sizes}));
 ```
+
+`iterations` is a cap: a cap that is too low reports `converged` 0 (first-valid initialization needs 20 to 30
+iterations on taxi data at `k = 16`), and the largest shift usually falls straight to exactly 0, a true
+Lloyd fixed point, so a tolerance relative to the data extent is enough. `tolerance` (compile-time, default 0) is a convergence threshold on the largest center shift. After an
+iteration whose shift is at most `tolerance`, the later assign and update kernels return early, so the
+result equals running every iteration when `tolerance` is 0 (an exact fixed point). The optional
+`convergence` output is two `uint32` rows, `[iterationsUsed, converged]`. There is no GPU loop exit yet,
+so the per-iteration sorts still run: the saving is kernel work, not dispatches.
+
+### `GPUSpatialWeightsMinimumSpanningTree`, `GPUSkaterRegions`, and `GPURegionPartitionEvaluation`
+
+Spatially constrained regionalization over a contiguity graph (PySAL spopt `SpanningForest` and SKATER,
+Assuncao et al. 2006).
+
+- `GPUSpatialWeightsMinimumSpanningTree`: Boruvka minimum spanning forest over a symmetric
+  `GPUSpatialWeights`. The edge cost is the squared Euclidean distance between (optionally standardized)
+  attribute rows. A total order of `(cost, lower-row CSR slot)` makes the forest unique and equal to
+  Kruskal under that order, with integer atomics and no float races. Outputs are `treeEdgeFlags` (per
+  CSR slot), `componentLabels` (the minimum row of each tree) and, optionally, a compact `edges` list with
+  `edgeEndpoints`, `edgeCosts` and `standardizedValues`. It unrolls `ceil(log2 rows)` rounds. Tied costs
+  can pick different edges than scipy's traversal order, with the same total cost.
+- `GPUSkaterRegions`: greedy SKATER cuts of that tree. Each step evaluates the sum-of-squared-deviation
+  reduction of every tree edge in parallel (Euler-tour side sums) and applies the best one, ties to the
+  lowest slot, while honoring `minimumRegionSize`. The target region count and the minimum size are
+  per-frame `parameters` words (`GPU_SKATER_PARAMETER_REGION_COUNT`, `GPU_SKATER_PARAMETER_MINIMUM_SIZE`);
+  `maximumRegionCount - 1` steps are compile-time, so the partition with k regions is a prefix of the one
+  with k + 1. Outputs are `labels` (the row index of each region's top), `regionCount`, `cutEdges` and
+  `cutGains`. The partitions equal spopt `SpanningForest` (squared-Euclidean metric) exactly, including
+  floors and islands; spopt's `islands='increase'` adds the tree count to `n_clusters`, while here the
+  target counts every region.
+- `GPURegionPartitionEvaluation`: scores any label column (SKATER, `GPUSpatialClustering`, `GPUKMeans`):
+  region count, within, between and total sum of squared deviations, smallest and largest region, the
+  fraction of weights-graph links that cross regions (a compactness proxy) and the number of ignored
+  rows, plus per-label sizes and within-region deviations. The cost is `O(labelCapacity * rows)`.
+
+```ts
+graph.add(new GPUSpatialWeightsMinimumSpanningTree({weights, attributes, attributeCount: 3, treeEdgeFlags, componentLabels}));
+graph.add(new GPUSkaterRegions({weights, attributes, attributeCount: 3, treeEdgeFlags, parameters: skater.importToGraph(graph),
+  maximumRegionCount: 12, labels, regionCount}));
+```
+
+Cost: the publish and apply kernels are single-threaded and each SKATER step is
+`O(sum of side sizes)`, which suits thousands of units and is quadratic on path-like trees of 100,000
+rows or more.
 
 ### `GPUGroupGeometry`
 
@@ -562,7 +610,11 @@ capacity ran out).
 - A hull over the per-group cap is dropped whole. Groups are admitted in group order until the total
   capacity runs out, and the first group that does not fit and all later ones are dropped (`counts` 0,
   `sizes` still true).
-- The chain is one invocation per group, so one group with millions of points runs serially. For a
+- `prefilterLevels` (0 to 4, `GPU_GROUP_CONVEX_HULL_MAXIMUM_PREFILTER_LEVELS`; default 2 from 8192 rows)
+  discards points inside nested octagon-like filters before the chain. For one 500k-point disk the median
+  went from 551 ms (level 0) to 36, 8.8 and 7.6 ms (levels 1 to 3); 64 groups of 500k: 33 to 7.3 ms. With
+  4096 small groups the levels cost 2 to 3 ms (3.0 ms at level 0), so set 0 there.
+- The chain is one invocation per group, so a group whose points are all on the hull stays serial. For a
   concave outline, close a raster `GPUDistanceField`; exact alpha shapes stay on the CPU.
 
 ### `GPUNeighborhoodSummary`
@@ -825,6 +877,37 @@ focalParameters.write(
 - Cost is `(2r + 1)^2` reads per cell; see Status and limitations for the still-open separable and
   summed-area variants.
 
+### `GPUSimilarLocations`
+
+Ranks rows by weighted Euclidean distance, in standardized attribute space, to a reference row or the mean
+of several selected rows (the ArcGIS Similarity Search task; checked against NumPy, SciPy and scikit-learn distances). Props: `attributes` (row-major `rowCount * attributeCount`), `attributeCount`,
+`selection` (a `uint32` mask of the reference rows), optional `mask`, per-frame `parameters`
+(`getGPUSimilarLocationsParameterValues`: result count, most or least similar, reference exclusion and
+attribute weights), `standardization` (`'zscore'`, population, or `'rank'`, percentile; compile-time) and
+`maximumResultCount`.
+
+- Outputs: `ranks` (0 is the most similar; unranked rows hold `GPU_SIMILAR_LOCATIONS_NO_RANK`),
+  `distances` (NaN when unranked), `topIds` (the best rows in rank order) and `count`.
+- Rows with a non-finite attribute or a zero mask are never ranked. A stable `GPUSort` on the distance bits
+  keeps ties on the lowest ID.
+- `'rank'` standardization uses a quadratic scan, so it suits tens of thousands of rows, not millions.
+
+### `GPULocalOutlierFactor`
+
+Local Outlier Factor (Breunig 2000; geo `OutlierDetection`, scikit-learn `LocalOutlierFactor`, Sedona
+`ST_LocalOutlierFactor`) over a kNN table. `neighbors` is a `GPUSpatialWeights` with `distances`, typically
+`GPUNeighborSearch` in `'knn'` mode as a self join; the weight values are unused. Per row it writes
+`kDistance` (the largest neighbor distance), `localReachabilityDensity = 1 / (mean max(kDistance_j, d_ij) +
+densityFloor)` and `lof = mean(lrd_j) / lrd_i`, which equals `-negative_outlier_factor_`. Optional outputs
+are an `outlier` mask (`lof > threshold`) and a one-row `outlierCount` (integer atomics, deterministic).
+`parameters` (`getGPULocalOutlierFactorParameterValues({threshold = 1.5, densityFloor = 1e-10})`) change per
+frame without recompiling. The floor keeps coincident clusters finite at density `1 / densityFloor`, and
+points whose neighbors are such duplicates score enormous values, as in scikit-learn, so use a `k` above
+the duplicate count or a larger floor. A row with no neighbors gets kDistance 0, density 0 and lof 1 and is
+never flagged. A radius-mode table works, but the k-distance is then the largest in-band distance. Against
+a pinned scikit-learn run (24 points with `k = 5`, and a duplicate case) kDistance was within 2e-6 relative
+and lof within 1e-4, with the mask and count exact.
+
 ## Distribution dynamics & space-time tests
 
 Distribution dynamics contributors use period-major columns: period `t` of row `i` is at
@@ -921,6 +1004,33 @@ count, time-close pair count, expected value, permutation mean and variance, gre
 the pseudo p-values (greater, lesser, two-sided, `(1 + count) / (P + 1)`) and the z-score. The Kulldorff
 space-time scan is not provided.
 
+### `GPUSpatialScanStatistic`
+
+Kulldorff's Poisson scan statistic (SaTScan, CARTO `DETECT_SPACETIME_ANOMALIES`) over zones, which are
+cells or points, with `cases` (`uint32`) and a `baseline` (population or expected counts) per zone and
+optional time bucket (`zone * timeBuckets + bucket`). The null model is a Poisson process with
+`E[cases] = baseline * C / sum(baseline)`.
+
+- Windows: the `k` nearest zones of every center (the `'circle'` shape never splits equidistant zones;
+  `'nearest'` is plain k-nearest), up to `maximumWindowZones` (at most 32) and a population share. With
+  `timeBuckets > 1` each window is a cylinder over every run of up to `maximumTimeBuckets` buckets.
+- Outputs: the most likely cluster plus greedy, non-overlapping secondary clusters (no shared zone) in
+  `clusterIndices` (`GPU_SCAN_STATISTIC_CLUSTER_INDEX`) and `clusterStatistics`
+  (`GPU_SCAN_STATISTIC_CLUSTER`: LLR, observed, expected, p, radius, ratio); `statistics` (the observed
+  maximum then the maximum of every Monte Carlo replicate), `summary` (`GPU_SCAN_STATISTIC_SUMMARY`) and
+  an optional per-zone best LLR `zoneStatistics`.
+- Monte Carlo: cases are redistributed multinomially in proportion to the baseline with the Philox
+  streams of the permutation contributors, and `p = (1 + #{max_rep >= LLR}) / (P + 1)`; secondary clusters
+  use the same replicate maxima. The result is deterministic (integer atomics, fixed-order reductions).
+  Limits, the seed and the replicate count are per-frame parameters
+  (`getGPUSpatialScanParameterValues`), up to the compile-time `maximumPermutations` (at most 16384).
+- Limits: only the Poisson model for high rates. Bernoulli and ordinal models, low-rate and
+  both-direction scans, elliptic windows and Gumbel p-values are not provided. The replicate table needs
+  `(maximumPermutations + 1) * zones * timeBuckets <= 2^25` words and the cost is about
+  `(P + 1) * zones * maximumWindowZones * timeBuckets^2`. Draws use `mulhigh`, so replicate maxima match
+  an f64 oracle almost always but not bit-exactly; LLR below about 1e-3 is approximate in f32; `baseline`
+  must be finite and non-negative.
+
 ## Accessibility & change of support
 
 ### `GPUCatchmentAccessibility`
@@ -980,6 +1090,10 @@ raster) and pass the two zone views, so H3 or hexagon rasters work too.
 - Categorical share `(t, k)` is the overlap area with sources of class `k` divided by the area of `t`
   covered by any source, so it sums to 1 where covered.
 - On overflow the offsets clamp to capacity, `overflow` is 1 and `totalPairs` gives the size needed.
+- `unweightedFastPath` (default on, used when there are no `cellWeights`) takes pair areas from run lengths
+  and zone areas from counts instead of per-cell accumulation. Results are bitwise identical; it was 1.4x
+  faster on the explorer's graph, about 35 percent on 384 by 384 zone denominators and about equal for the
+  overlap denominator, where the two radix sorts dominate.
 - Cell centers decide membership, so every area is a cell count and accuracy is about one cell along every
   boundary; slivers smaller than a cell can be missed. It is never an exact polygon intersection. f32 sums
   are exact up to 2^24 cells per zone. Results are deterministic.
@@ -1126,7 +1240,31 @@ a piece shorter than about one ulp is not, so a line starting one ulp outside a 
 `crosses` piece classified as boundary. Point/polygon pairs use the robust double-single classifier alone
 (they do not get the exact re-decision of `GPUPointInPolygonJoin`), and pairs it cannot certify are
 counted in `uncertainCount`. The legacy kernels for pairs other than point/polygon do not track
-uncertainty and report 0. The pattern and the `dwithin` distance are compile-time.
+uncertainty and report 0.
+
+**Per-frame distance and pattern.** `distance` is a `number` or a `GraphDataView<'float32'>`, and `pattern`
+is a `GPUSpatialRelatePattern` or a `GraphDataView<'uint32'>`. A view is read from a parameter buffer, so
+it changes without recompiling and gives bit-identical results to the compile-time value (a negative, NaN
+or infinite distance selects nothing). Fill a pattern view with `packGPUSpatialRelatePattern(pattern,
+slotCount)`, which writes `GPU_SPATIAL_RELATE_PATTERN_WORDS` (2) words per slot; unused slots are zero and
+match nothing, and the helper rejects patterns that admit disjoint geometries. Size `candidateCapacity`
+for the largest distance. `predicate` stays compile-time because it selects the kernel family; for a
+per-frame predicate choice use `predicate: 'relate'` with patterns.
+
+**Relate performance.** Per-edge break parameters are collected in one pass (up to 24 per edge) and the
+covers scan runs only when a collinear edge exists. The workgroup relate kernel also builds a per-pair
+y-slab index of each polygon side in workgroup memory (32 slabs, 1280 entries per side), so point location
+scans the closing edges and the query's slab instead of every edge; features under 48 edges, with a
+degenerate y extent or over 1280 entries use the plain scan. Results are identical. On 100 polygon pairs
+the batched breaks and the slab index took relate from about 7.5 ms to 4.3 to 5 ms, against about 1 ms for
+GEOS: the break collection, covers scan and vertex loops are still `O(n * m)`, and about 2 ms of the
+remaining time is fixed graph and readback cost.
+
+**`onAttribute: {left, right}`** (GeoPandas `sjoin(on_attribute=)`). Two `uint32` key views, one per left
+row and one per right row. A pair survives only when the keys are equal. The filter empties candidate
+slots before the exact kernels, so `candidateCount` stays the bounding-box count before filtering, and
+`how: 'anti'` then reports left rows with no key-equal match. Its presence is compile-time and its
+contents are per-frame. Defaults are unchanged.
 
 #### Engine selection
 
@@ -1226,6 +1364,17 @@ the current `k`-th distance, which is exact and deterministic.
   exceeded. Distances are f32, so near-equal distances can order differently from a double reference, and
   tie order and the foot point at exact vertex ties depend on evaluation order.
 
+- `exclusive` skips features whose ID equals the query's ID (`featureIds[row]` or the row, and optional
+  `queryIds`, which require `exclusive`), so the `k` neighbors are the nearest other features
+  (`STRtree.query_nearest(exclusive=True)`, `sjoin_nearest` self-joins). It compares IDs, not geometry
+  equality, which is the same when IDs are unique per geometry. Both modes support it.
+- `neighborQueryPoints` (`float32x2`, the layout of `neighborIds`) is the point of the query geometry
+  nearest to the feature, NaN in unused slots. `(neighborQueryPoints, neighborFootPoints)` is
+  `shapely.shortest_line` or `ops.nearest_points` for every point, line and polygon pair. Ties between
+  parallel edges return the first in vertex order, which can differ from GEOS.
+- `onAttribute: {left, right}` (as on `GPUSpatialPredicateJoin`) finds the nearest key-equal feature:
+  the filter runs inside the traversal, and nearest-feature mode filters candidates in the reduce passes.
+
 ```ts
 graph.add(new GPUNearestFeatureJoin({
   points, features: {kind: 'lines', positions, lineOffsets},
@@ -1270,12 +1419,46 @@ from 256 features and `false` below; pass `false` to turn it off. With shuffled 
 50–125x faster; with spatially coherent features it is about 1 ms slower. `GPUSpatialJoinPrepared` still
 defaults to `false`.
 
+`spatialSort` orders the features along a Hilbert curve (the default) or a Morton curve
+(`spatialSortCurve: 'morton'`, a prop of the three joins above, type `SpatialSortCurve`) before the BVH build.
+Results are identical; in paired runs the Hilbert joins were 10 to 15 percent faster (point-in-polygon,
+nearest, buffer selection). The prepared join and `GPUZoneEvents` have no curve prop and use Hilbert.
+
+### `GPUPairGather`, `GPUOffsetExpansion`, and `GPUBoundsFilter`
+
+Dataframe joints around the joins.
+
+- **`GPUPairGather`** merges join output with attribute columns (GeoPandas `sjoin` and `sjoin_nearest`
+  merges, `distance_col`). The input is `pairs` (a `GPUSpatialPredicateJoin` pair output) or `neighbors`
+  (the dense `[query, slot]` lists of `GPUNearestFeatureJoin`, flattened by stable compaction).
+  `how: 'inner'` emits matched rows, and `'left'` appends the unmatched left rows (`unmatchedLeft`, the
+  anti-join output, derived automatically for neighbors) with `rightRows = GPU_PAIR_GATHER_NO_ROW` and
+  NaN or `0xffffffff` in the right and slot columns. `leftColumns` and `rightColumns` gather `float32` or
+  `uint32` columns by row, and `slotColumns` carry slot-aligned columns such as `neighborDistances`. The
+  output order is matched pairs then unmatched, which is not GeoPandas' left order (sort by
+  `(left, right)` to compare). It is bounded by `output.leftRows.length`, and `overflow` ORs the input
+  flags. Chunked `GraphVectorView` inputs are unsupported.
+- **`GPUOffsetExpansion`** gives the owner index and local index of every child row from an offsets view
+  (`explode`, `get_coordinates(return_index=True)`, `get_parts(return_index=True)`) by binary search per row.
+  Empty ranges yield no rows, `ownerMap` chains levels (vertex to ring to polygon to feature), and the
+  output is bounded with `count`, `overflow` and `totalCount`. Offsets monotonicity is not checked.
+- **`GPUBoundsFilter`** is a `.cx`-style mask and compaction over `float32x4` feature bounds with a
+  per-frame box (`getGPUBoundsFilterParameterValues`). Modes are `'intersects'`, `'within'` and
+  `'contains'`, with closed comparisons and non-finite bounds rejected. It is bounds-level only, and OGC
+  `envelope.within(box)` rejects bounds that only touch the border where this accepts them, so refine
+  with `GPUSpatialPredicateJoin`.
+
+Matched GeoPandas 1.2.0 `sjoin` (inner 11 pairs, left 32 rows) and `sjoin_nearest` with ties and
+`distance_col`, and `explode` and `get_coordinates` indices, exactly.
+
 ### `GPUBufferSelection`
 
 Selects points within a per-frame planar distance (inclusive) of point or segment features. A
 polyline is passed as consecutive segment rows. The contributor composes `GPUNearestFeatureJoin`. Unlike
 the join's unordered `matches`, it writes a source-aligned 0/1 mask and stable IDs in ascending row
 order, with a clamped count and overflow that covers both the output capacity and the join.
+`output.drawInstanceCount` (one `uint32` row, requires `output`) receives the clamped selected count
+from the publish node, so it can be bound as an indirect draw instance count.
 
 ```ts
 graph.add(new GPUBufferSelection({
@@ -1342,6 +1525,10 @@ every bit except `badOrientation`.
 | `ringClosure?` | `'implicit'` (default) or `'explicit'`, which sets `unclosedRing` |
 | `orientation?` | `'counter-clockwise-shell'` (default), `'clockwise-shell'` or `'ignore'` |
 
+`lines` (`{kind: 'lines', positions, lineOffsets}`) and `points` replace `polygons` for the other kinds
+(Shapely `is_valid`, `is_valid_reason` on lines and points). Lines report `nonFinite` and `tooFewPoints`,
+points report `nonFinite`; neither needs an intersection list.
+
 Not checked: interior connectivity (holes touching at two points), nested holes, nested polygons of a
 multipolygon, and rings that leave the shell only through boundary vertices. Repeated vertices are reported
 although OGC accepts them. Hole containment tests one off-boundary vertex per hole.
@@ -1350,6 +1537,55 @@ although OGC accepts them. Hole containment tests one off-boundary vertex per ho
 graph.add(new GPUGeometryValidity({polygons, mask, overflow, intersectionCapacity: 1024}));
 // on the CPU: (mask[i] & GPU_GEOMETRY_VALIDITY_STRUCTURAL_MASK) === 0 means structurally valid
 ```
+
+### `GPUGeometryPredicates`
+
+Per-feature columns for points, linestrings or polygons (Shapely `is_simple`, `is_ring`, `is_closed`,
+`is_ccw`, `get_num_points`, `count_coordinates`, `get_num_interior_rings`, `get_num_geometries`,
+`extract_unique_points`, `equals_exact`, `equals_identical`). Each output is optional and `uint32` (0 or 1
+for booleans): `isSimple`, `isRing`, `isClosed`, `isCcw`, `numPoints`, `numCoordinates`,
+`numInteriorRings` and `numGeometries`.
+
+- `isSimple` and `isRing` use `GPUSegmentIntersection` in self mode, so they need `intersectionCapacity`
+  and `overflow`; features after an overflow can be wrong. A polygon is simple when no ring meets itself
+  (Shapely 2.1). `isCcw` follows the GEOS `Orientation::isCCW` rule (the JTS 1.19 flat-top algorithm) for
+  linestrings and is 0 for other kinds, as in Shapely.
+- `other` (same kind and feature count) enables `equalsExact` (per-frame `tolerance` through
+  `getGPUGeometryPredicatesParameterValues`) and `equalsIdentical`, which compare feature `i` with
+  feature `i`. The distance is f32.
+- `uniquePositions` and `uniqueOffsets` give `extract_unique_points`: first-occurrence order, as Shapely,
+  with `-0` equal to `0`.
+- Limits: one thread per feature in the row-wise kernels (a huge single feature is serial); the
+  self-mode look-ahead is 1024; an empty polygon gives 0 geometries where Shapely gives 1. Open:
+  `equals_exact(normalize=True)`, multilinestring and multipoint layouts.
+
+### `GPUMinimumClearance`
+
+Per-feature `shapely.minimum_clearance` and `minimum_clearance_line` for linestrings and
+(multi)polygons: the smallest distance one vertex could move to make the feature invalid, as the minimum
+over vertices of the distance to every other vertex and to every segment that does not have that vertex as
+an endpoint (GEOS rule, repeated points ignored). Props: `geometry` (lines or polygons), and at least one
+output of `clearances` (`float32`, `Infinity` when none), `lines` (`float32x4`, vertex and nearest point,
+NaN when none) and `vertexIds` (`uint32` row of the fragile vertex, `0xffffffff` when none). A segment
+table and BVH feed one branch-and-bound probe per vertex, restricted to its own feature, then two integer
+`atomicMin` passes (distance, then lowest vertex row), so results are deterministic. Parity with Shapely
+2.1.2 is within 2e-5 relative on 52 multipolygons and 69 linestrings; line end points can come out in the
+opposite order and tied pairs can differ from GEOS (the distance never does). Coordinates are
+origin-relative f32, so tiled copies shifted by thousands of units agree to about 4e-4. Not provided:
+multipoints.
+
+### `GPUCoverageValidity`
+
+Polygon coverage validity (Shapely `coverage_is_valid`, `coverage_invalid_edges(gap_width)`). One BVH over
+all segments writes a per-segment flag word (`unmatched`, `crossing`, `gap`, `overlap`, `uncertain` bits),
+optional per-polygon counts, a total and `isValid`. `gapWidth` is per-frame through
+`getGPUCoverageValidityParameterValues`. The output has one row per vertex and cannot overflow. Rules found
+by probing GEOS: matched edges are skipped and flagged only when both interiors are on the same side, a
+T-junction touch counts, and a gap is endpoints within `gapWidth` plus a mutual projection overlap larger
+than `gapWidth` (strict). It agreed with Shapely on 28 scenes with 40 gap cases and on 158 of 160 random
+jitter cases. The misses are a vertex of an overlapping neighbor within `gapWidth` of an edge, which GEOS
+flags and this does not, and a matched edge lying inside a third polygon, which is not flagged (that
+polygon's own segments are).
 
 ## Density & interpolation
 
@@ -1442,6 +1678,27 @@ idwParameters.write(
   `elevation: {id, format: 'float32', storage: {kind: 'buffer', values: surface}}`; NaN cells
   clear their marching-squares cells.
 
+### `GPUKriging`
+
+Local ordinary kriging on a raster (PyKrige `OrdinaryKriging` with `n_closest_points`, GSTAT, ArcGIS Kriging).
+For every output cell the `k <= 16` nearest samples within the radius form a `(k + 1) x (k + 1)` system
+under a fitted variogram, solved per invocation by pivoted Gaussian elimination in f32 (the variogram is
+normalized by its total sill and the prediction is relative to the nearest value). The samples come from
+the same internal `GPUGridIndex` as `GPUInverseDistanceWeighting`.
+
+- Props: `positions`, `values` (NaN skips), optional `mask`, `parameters` (`getGPUKrigingParameterValues`,
+  at least 12 float32), `width`, `height`, `indexGridSize`, `indexBounds`, `maximumNeighborCount` (1 to 16,
+  compile-time) and `output: {values, variance?}`.
+- Per frame: extent, radius, `k`, minimum neighbors, model (`'spherical'`, `'exponential'` or `'gaussian'`,
+  the `fitVariogramModel` convention) and nugget, sill and range. Pass `sill + nugget` as PyKrige's "sill"
+  when comparing, since PyKrige's value is the total sill.
+- `values` is a row-major raster and nodata (too few neighbors, a singular system, duplicate sample
+  positions in a neighborhood) is NaN. `variance` is the kriging variance, 0 at exact hits, NaN at nodata.
+- Pinned to PyKrige 1.7.3 with 8 closest points (exponential, spherical and Gaussian within 0.2 on values
+  near 70, and 1 percent on variance). Kernels bind at most 8 storage buffers. Global and universal
+  kriging, anisotropy and cross-validation are not provided, and `radius: Infinity` scans the whole index
+  per cell.
+
 ### `GPUDotDensity` and `GPURandomPointsInPolygon`
 
 Dasymetric dot-density maps: `value * dotsPerUnit` random dots inside each polygon, per category,
@@ -1478,6 +1735,13 @@ parameters.write(
   and is counted in `failedCount`.
 - Containment is an even-odd test over all rings of the feature (holes excluded); this equals
   multipolygon containment for valid geometry. Cost per candidate is linear in the feature's vertices.
+
+**`GPURandomPointsOnLine`** places `counts` points per line uniformly in arc length (`GeoSeries.sample_points`
+on lines). The Philox key is `(line, rank, 0, 0)` with key `(seed, 3)`, so the prefix of points is stable
+as counts grow. Outputs are a bounded `positions` buffer and a compact `points` record (`ids` = line row,
+`count`, `overflow`, `totalCount`), plus optional `fractions`. Parameters reuse
+`getGPUDotDensityParameterValues` (`seed`). Points matched `LineString.interpolate` at the pinned Philox
+fractions to 2e-5 relative. Not provided: `cluster_poisson` sampling.
 
 ## Cells (DGGS)
 
@@ -1641,6 +1905,28 @@ graph.add(new GPUCellCompaction({
 - **Determinism.** All operations are integer-only, with fixed sort orders. GPU results equal the
   CPU oracles (h3-js and BigInt Quadbin) bit for bit, including padding.
 
+### `GPUCellGridPath` and `GPUCellMeasures`
+
+H3 gap kernels (`family: 'h3'`), integer-exact where possible.
+
+- **`GPUCellGridPath`** (h3 `grid_distance`, `grid_path_cells`, `are_neighbor_cells`): per pair,
+  `origins` and `destinations` (`uint32x2`) give `output.distances` (the H3 `gridDistance`, or
+  `GPU_CELL_GRID_DISTANCE_UNDEFINED` = `0xffffffff` where H3 fails: invalid input, resolution mismatch,
+  non-adjacent base cells, behind a pentagon's deleted sector, masked), `output.cells` (`gridPathCells`,
+  stride `maximumPathLength` up to 256, zero padded) and `output.counts` (the true length `distance + 1`;
+  above `maximumPathLength` means overflow, 0 means no path). Omit `cells` for distance only;
+  `are_neighbor_cells` is `distance == 1`. It is `cellToLocalIjk` with pentagon rotations and an
+  integer cube-round. Known deviations: about 0.2% of random pairs differ from H3 by one adjacent cell at
+  exact rounding ties (H3 rounds with double noise), and paths crossing pentagon base cells fail
+  (`counts = 0`) in about 6% of those cases. Distances matched h3 4.5.0 on 355 of 355 pairs, failures
+  included.
+- **`GPUCellMeasures`** (h3 `cell_area`, `edge_length`, `is_pentagon`): `areas` (km2), `perimeters`,
+  `edgeLengths` (stride `maximumEdgeCount` 6 to 10, great-circle km between consecutive
+  `cellToBoundary` vertices), `edgeCounts` and `pentagons`. Single-face hexagons are exact from lattice
+  offsets, within 1e-6 relative at resolutions 0 to 15. Pentagons and cells straddling a face edge use f32
+  boundary vectors: 6e-7 at resolution 0, 2e-5 at 2, 2.5e-4 at 4 and about 1e-2 at 6, so treat them as
+  unreliable beyond resolution 5. Open: directed edges and vertexes.
+
 ### `GPUCellCover`
 
 Polyfills polygons (with holes) into Quadbin or H3 cells, like CARTO `QUADBIN_POLYFILL` /
@@ -1782,6 +2068,13 @@ graph.add(new GPUSegmentRingAssembly({
   (`GPU_SEGMENT_RING_ASSEMBLY_FLAG_TOUCHING` 1, `_DANGLING` 2, `_CONFLICT` 4) expose the ambiguity.
 - **Open chains** (dangling ends, tolerance misses, truncated input) emit no ring and are counted in
   `openSegmentCount`.
+- **Cancelling pairs.** `cancelOpposingSegments` removes exact `a -> b` and `b -> a` pairs within a group
+  before tracing (they are flagged `GPU_SEGMENT_RING_ASSEMBLY_FLAG_CANCELLED`, 8, and not counted as open).
+  `GPUIsobandRings` uses it for the edges shared by two cells. `output.polygons.polygonGroups` gives the
+  group of each polygon's shell.
+- **H3 pentagons.** Rings of three mid-latitude pentagons (resolutions 2, 3 and 5, alone, in disks, as holes
+  and open rings) equal h3-js `cellsToMultiPolygon`. The two polar pentagons enclose a pole, so their rings
+  have no planar lng/lat orientation.
 - **Bounded output.** Rings are written whole, as a prefix: `count` is the number written, `overflow` is 1
   when ring or vertex capacity dropped rings, and `totalCount` is the full ring count.
 - **Polygon layout.** `output.polygons` regroups the rings as GeoArrow polygons (a shell, then its holes;
@@ -1891,7 +2184,7 @@ on the Earth (turf `area`, `length`, `centroid`, `bbox`, `distance`, `bearing`, 
 graph.add(new GPUGeometryMeasures({
   positions, geometryType: 'polygons',
   ringOffsets, featureRingOffsets, // feature -> rings -> vertices
-  coordinateSystem: 'wgs84', // or 'planar', 'spherical'
+  coordinateSystem: 'wgs84', // or 'planar', 'spherical', 'geodesic'
   holeRule: 'winding', // or 'first-ring-exterior'
   output: {areas, lengths, centroids, bounds, vertexCounts},
   groupIds, groupCount: 12,
@@ -1921,12 +2214,37 @@ graph.add(new GPUGeodesicDestination({origins, bearings, distances,
 - Groups: features are stably sorted by group ID and one workgroup per group reduces them with a
   fixed tree, so group sums are bitwise reproducible. Group centroids are area- (or length-)
   weighted means of feature centroids.
+- `'geodesic'` (`pyproj.Geod.geometry_area_perimeter`, geo `GeodesicArea`): lengths and perimeters are
+  Vincenty geodesic lengths, as `'wgs84'`, and polygon areas follow geodesic edges on the WGS84
+  ellipsoid. Edges of 20 km or more are sampled along the geodesic (spans of at most 250 km, at most 16)
+  and summed as a chord plus the exact parabolic-segment bulge in local equal-area coordinates, so f32
+  never subtracts two huge areas. Within 1e-6 relative of pyproj on regional and continental polygons
+  (perimeter 8e-6), where `'wgs84'` straight edges are off by up to 30% on very long edges. Centroids
+  still use straight equal-area edges, edges where Vincenty does not converge stay straight, and edges
+  under 20 km ignore the bulge.
+- `output.extremeVertices` (`uint32x4`): per feature `[argMinX, argMinY, argMaxX, argMaxY]` as global
+  `positions` rows, lowest row on ties, `0xffffffff` for empty features. Geographic x is the unwrapped
+  longitude of `bounds`. Per feature only (rejected in `groupOutput`).
+- `geometryType: 'points'`: every ring is one point or multipoint. Outputs are lengths (0), centroids
+  (vertex mean, as Shapely `MultiPoint.centroid`), bounds, vertex counts and `extremeVertices`;
+  `areas` and `signedAreas` are rejected. Group centroids weight by vertex count.
 - `GPUGeodesicPairs`: distance, initial and final bearing (degrees clockwise from north in
   `(-180, 180]`), and midpoint per pair. `'sphere'` uses a Vincenty-form central angle that is well
   conditioned from millimeters to antipodal; `'wgs84'` runs Vincenty's inverse with a compile-time
   iteration cap and reports non-converged (near-antipodal) pairs, which fall back to the sphere.
 - `GPUGeodesicDestination`: destination and final bearing from origin, bearing and distance
   columns, on the sphere or by Vincenty's direct solution.
+- `model: 'rhumb'` on both classes (turf `rhumbDistance`, `rhumbBearing`, `rhumbDestination`; geo `Rhumb`):
+  a line of constant bearing on a sphere of `radius` (default 6371008.8 m). Pairs give `distances` (in
+  `radius` units), `initialBearings` equal to `finalBearings` (constant, in `(-180, 180]`) and the rhumb
+  `midpoints`. The destination longitude is continuous with the origin, and `finalBearings` flips to the
+  opposite north-south sense when a move overshoots a pole and is reflected, as turf does (the reflected
+  case is approximate). Longitude differences take the short way across the antimeridian, latitudes clamp
+  at 89.9999 degrees, equal-latitude edges use the east-west limit `cos(lat)`, and the Mercator-stretched
+  latitude difference is an `atanh` of a cancellation-free ratio. Sphere only (turf and geo are spherical
+  too), `converged` is `'wgs84'`-only, and the model switch is compile-time. Distance error against an f64
+  closed form was 0.74 m (6e-8 relative) over 12,108 km and bearings were within 1e-4 degrees. Rhumb length
+  in `GPUGeometryMeasures` and rhumb densify in `GPULineSegmentize` are not provided.
 - Precision (f32 vs f64 oracles, Apple Metal): WGS84 lengths 9e-8 m at 1 m, 0.78 m at 12,000 km;
   WGS84 and spherical box areas within 3e-7 relative from 100 m blocks to 2,000 km boxes;
   sphere pair distances 1e-7 m at 1 m and 0.9 m at 10,000 km; destinations within 1 m, bounded by
@@ -1970,11 +2288,82 @@ locateParameters.write(getGPULineLocateParameterValues({measureOffset: elapsedMe
   segment, unit tangent, angle (degrees counter-clockwise from +x, the deck.gl `getAngle`
   convention) and status (`2` for empty or out-of-range paths, NaN position).
 - Cumulative measures are a per-path Neumaier-compensated f32 prefix (optionally output as
-  `vertexMeasures`). Planar only: project geographic data first.
+  `vertexMeasures`). Planar by default: project geographic data first, or use `'spherical'` below.
+- `output.normalizedMeasures` (both coordinate systems) is `measures / pathLength`, 0 for zero-length
+  paths and NaN when unmatched (Shapely `line_locate_point(normalized=True)`).
+  `GPULineLocate({measureMode: 'fraction'})` is `line_interpolate_point(normalized=True)`.
+- `coordinateSystem: 'spherical'` on both classes: positions are longitude and latitude in degrees and
+  segments are great-circle arcs. `distances`, `measures`, `signedOffsets` and the search `radius` are
+  meters on a sphere of `sphereRadius` (default 6371008.8; `radius` already names the search radius).
+  The foot point is the closest point on the arc (geo `HaversineClosestPoint`), with a longitude that is
+  continuous with the segment start, so it can exceed 180 across the antimeridian. `distances` is the
+  cross-track distance and `measures` the along-track measure. `GPULineLocate` slerps along the arc
+  (`Geod.fwd`, `npts`): `tangents` are `(east, north)` compass components, offsets move along the left
+  compass bearing in meters and `angles` are counter-clockwise from east. Limits: the search is brute
+  force, points times segments, with no BVH and no overflow (`candidateCapacity`, `leafCapacity` and
+  `spatialSort` are ignored); arcs over about 179 degrees are unsupported. Against `pyproj.Geod(a=6371008.8,
+  f=0)` the worst error was 1.5 m for distance, 0.8 m for measure and 1.7 m for the foot point.
+
+### `GPULineSplit` and `GPULineMerge`
+
+`GPULineSplit` splits linestrings at every crossing, touch, shared vertex and overlap end (turf `lineSplit`
+against the union of the lines; verified against Shapely `unary_union`). It reuses `GPUSegmentIntersection`
+in self mode, groups the split events by segment with a stable `GPUSort`, removes duplicates and writes
+GeoArrow-layout pieces. Props: `lines` (`{kind: 'lines', positions, lineOffsets}`), `intersectionCapacity`,
+`pieces`, optional `spatialSort`, `leafCapacity` and `uncertainCount`. `pieces` holds `lineIds` (the
+source line of each piece), `offsets`, `positions` (split points included), `count`, and optional
+`vertexCount`, `overflow`, `totalCount` and `totalVertexCount`. Pieces are ordered by source line, then
+traversal order. Splits at line ends are ignored, and a line with fewer than two vertices yields no piece.
+When pieces, vertices or `intersectionCapacity` overflow, a suffix of pieces is dropped and `overflow` is
+set.
+
+`GPULineMerge` is the inverse (Shapely `linemerge`, turf `lineMerge`): it joins linestrings at endpoints
+shared by exactly two line ends (an exact f32 match) into maximal chains. Junctions of three or more ends
+stop a chain, a closed line never joins itself, and lines with fewer than two vertices are ignored. With
+`directed: true` (Shapely `line_merge(directed=True)`) only a line end meeting a line start joins, chains
+follow the input direction and `lineReversed` is all 0.
+Props: `positions`, `lineOffsets` and `output: {chainOffsets, positions, count, lineChains?, lineOrders?,
+lineReversed?}`. The result is deterministic: chains are ordered by their lowest line, paths start at the
+lower endpoint ID and cycles start at their lowest line and are emitted closed. One thread walks each
+chain, so a chain of `n` lines takes `n` serial steps. Merging with a tolerance is not provided.
+
+```ts
+graph.add(new GPULineSplit({
+  lines: {kind: 'lines', positions, lineOffsets}, intersectionCapacity: 1 << 16,
+  pieces: {lineIds, offsets, positions: piecePositions, count, vertexCount, overflow}
+}));
+graph.add(new GPULineMerge({positions, lineOffsets, output: {chainOffsets, positions: merged, count}}));
+```
+
+`GPUNetworkNoding` in [GPU Network](/docs/api-reference/experimental/gpu-network) builds a routable
+network from the pieces.
+
+### `GPULineClipByPolygon` and `GPUSharedPaths`
+
+`GPULineClipByPolygon` clips linestrings to polygons (GeoPandas `clip(lines, polygons)`, Shapely
+`intersection(line, polygon)`); `mode: 'outside'` is `difference`. It is bounded because it never computes
+a new intersection between two polygons: every output vertex is an input vertex or a crossing of one line
+segment with one polygon edge. `GPUSegmentIntersection` lists the crossings, each segment's crossings are
+ranked in place (pairs arrive sorted by line segment) and deduplicated into sub-pieces. Sub-pieces inside a
+collinear overlap are boundary and count as inside; the rest are classified by `GPUPointInPolygonJoin` at
+their midpoint, and kept sub-pieces that continue each other merge. Several polygon features act as their
+union. Props: `lines`, `polygons`, `mode`, `intersectionCapacity`, `candidateCapacity`, `pieces` (the
+`GPULineSplitPieces` layout) and `uncertainCount`. Overflow of pairs, candidates, pieces or vertices sets
+`pieces.overflow`. Limits: a line is not noded at its own crossings, a line running over itself keeps both
+traversals (Shapely dedupes), a point-only touch yields no piece (`keep_geom_type=True`), and a sub-piece a
+few f32 ulps long beside an edge can be misclassified. Against Shapely 2.1.2, 52 lines in both modes
+matched on total length (under 2e-3) and piece end points.
+
+`GPUSharedPaths` is Shapely `shared_paths(a, b)` for many line pairs. Collinear overlaps from
+`GPUSegmentIntersection` are oriented along the left line, tagged forward or backward by the exact sign of
+the segment directions, and chained into one polyline per (left line, right line, direction). The output
+`GPUSharedPathsRuns` has `leftLineIds`, `rightLineIds`, `forward`, `offsets`, `positions`, counts and
+`overflow`. Closed left lines are cut at their first vertex, a chain walk is serial per run, and two
+coincident right segments emit duplicate runs.
 
 ### `GPULineSimplification`
 
-Douglas-Peucker simplification of many polylines or tracks, stored as rows sorted by line and
+Douglas-Peucker (and approximate Visvalingam-Whyatt) simplification of many polylines or tracks, stored as rows sorted by line and
 delimited by `trackOffsets` (the `GPUTrajectoryMetrics` layout). It runs in two parts: a
 per-vertex `importance` column computed once, and a per-frame selection at a tolerance from a
 parameter buffer. Changing the tolerance re-runs only the mask, compaction, and publish nodes.
@@ -2018,7 +2407,20 @@ toleranceParameters.write(getGPULineSimplificationParameterValues({tolerance: 2}
   simplify-js behave the same way). `'time-ratio'` is TD-TR's synchronized Euclidean distance,
   which needs float32 `timestamps`.
 - Use tile- or view-local coordinates. Simplified lines may self-intersect, because topology is
-  not preserved.
+  not preserved (Douglas-Peucker and Visvalingam alike).
+
+**Visvalingam-Whyatt.** `method: 'visvalingam'` writes each vertex's effective triangle area (squared
+position units) into `importance`, and the per-frame `tolerance` is then an area: a vertex is kept when
+`importance > tolerance`, and endpoints are always kept. The selection outputs are the same as for
+Douglas-Peucker. Each round removes every surviving vertex whose area is the smallest within
+`neighborhoodRadius` steps both ways (1 to 8, default 3, compile-time), then unlinks them; the effective
+area is the maximum of its own area and those of its removed neighbors, which is the sequential running
+maximum. It is approximate: the sequential heap order cannot be parallelised exactly. Against
+`simplification.simplify_coords_vw` on 3000-vertex random walks the kept set differed by 3.1, 0.65 and 0.13
+percent of vertices at radius 1, 2 and 3, and lines up to 300 vertices matched exactly at radius 3. It needs
+about 31 rounds for 300 vertices and 55 for 3000; `maximumRounds` (default 256) caps them, and undecided
+rows get `+Infinity` (a superset). Not supported: `metric: 'time-ratio'` and topology-preserving VW
+(`simplify_coords_vwp`).
 
 ### `GPUCoverageSimplification`
 
@@ -2044,9 +2446,42 @@ graph.add(new GPUCoverageSimplification({
 toleranceBuffer.write(getGPULineSimplificationParameterValues({tolerance: 0.05}));
 ```
 
-It is not topology preserving: at a large tolerance arcs can cross each other or a ring can collapse below
-three vertices. One thread walks each arc, so one huge arc is a serial walk, and non-finite vertices are
-not supported. A shared arc that crosses a ring start keeps one extra vertex.
+Topology preservation: arc endpoints (junctions and ring starts) are always kept and a ring never keeps
+fewer than three vertices (the farthest original vertices are restored, even with `topologyRounds: 0`).
+Then up to `topologyRounds` (compile-time, default 4, 0 turns the repair off) rounds compact the
+simplified rings, run `GPUSegmentIntersection` with exact predicates and, for every pair of segments that
+cross, touch or overlap without sharing a coverage point, restore the original vertex farthest from each
+segment (one Douglas-Peucker split; decisions go through point IDs, so neighbors still agree).
+`output.topologyStats` (4 `uint32`, length `GPU_COVERAGE_SIMPLIFICATION_TOPOLOGY_STATS_LENGTH`) reports
+the crossings before repair, the crossings remaining, the vertices restored and a candidate-pair overflow
+flag; `topologyPairCapacity` (default `max(256, 4 * vertices)`) sizes the candidate list. Residual crossings
+are reported, never hidden, and input that already crosses itself cannot be repaired (it counts in both
+numbers). On a wavy-strip scene the repaired output passes Shapely `coverage_is_valid`, where plain
+Douglas-Peucker gave three invalid polygons. The criterion is distance, not area (Shapely's
+`simplify_coverage` is area based and keeps a different vertex set), and there is no guarantee of zero
+residual within the round cap.
+
+`simplifyBoundary: false` (Shapely `coverage_simplify(simplify_boundary=False)`) keeps every vertex that
+touches an unshared edge and simplifies only the shared arcs.
+
+One thread walks each arc, so one huge arc is a serial walk (and a long dropped span costs a serial walk
+per kept vertex), and non-finite vertices are not supported. A shared arc that crosses a ring start keeps
+one extra vertex.
+
+### `GPUCoverageDissolve`
+
+Dissolves a polygon coverage by a per-polygon `uint32` label (GeoPandas `dissolve(by, method='coverage')`,
+Shapely `coverage_union_all` per label). An edge is dropped when another polygon with the same label has
+the same edge (snapped point IDs, `(min, max)` keys). Kept edges are oriented interior-left and chained by
+`GPUSegmentRingAssembly` with the label as the group, so the output has shells, holes and
+`polygons.polygonGroups`. Vertices at nodes are kept, as GEOS does. This is not the excluded vector
+overlay: a coverage has no crossings, so the result is a subset of the input edges and is bounded by the
+input vertex count plus one closing vertex per ring, with ring and vertex capacities and an overflow flag.
+The input must be a valid coverage (check it with [`GPUCoverageValidity`](#gpucoveragevalidity)).
+`snapTolerance` snaps vertices and the output uses the first vertex's coordinates. Dissolve edge sets,
+area, parts and holes matched `gdf.dissolve(method='coverage')` exactly on 5 scenes and 18 labels. The
+per-ring area walk is serial per ring. The directory is `polygon-coverage-topology/` because `.gitignore`
+ignores `coverage-*/`.
 
 ### `GPUTrajectoryMetrics`
 
@@ -2069,6 +2504,13 @@ graph.add(new GPUTrajectoryMetrics({
 }));
 stopParameters.write(getGPUTrajectoryMetricsParameterValues({stopSpeedThreshold: 0.5, stopMinimumDuration: 300}));
 ```
+
+Optional per-vertex columns (`positions.length` float32 rows) describe the step that ends at each row:
+`stepSpeeds` (distance over delta time, 0 if the delta time is not positive), `stepHeadings` (`atan2(dy,
+dx)` in radians, 0 for a zero-distance step) and `stepAccelerations` (`(speed_i - speed_{i-1}) /
+deltaTime_i`, 0 for the first two rows of a track). The first row of a track and rows outside tracks are 0,
+so a drawn segment takes the value of its end row. `stops.drawInstanceCount` (one `uint32` row) receives
+the clamped stop count, for example an indirect draw record's instance count.
 
 ### `GPUTrajectoryPlayhead` and `GPUTrajectoryResample`
 
@@ -2119,6 +2561,12 @@ graph.add(new GPUTrajectoryResample({
 }));
 ```
 
+`spacing: 'clock'` samples every track at the instants of one shared clock (a per-frame `clock` view
+`[start, step]`, packed with `getGPUTrajectoryClockParameterValues` or, for Int64 timestamps,
+`getGPUTrajectoryClockWordParameterValues`; `GPU_TRAJECTORY_CLOCK_PARAMETER_LENGTH` words). Column `k` is the
+same instant for every track and the sample is NaN outside a track's own time span, which is the layout
+`GPUTrajectoryEncounters` expects.
+
 - Sample `k` targets `total * k / (sampleCount - 1)`; the last sample is the last row exactly. It
   uses the playhead's search and duplicate rule. Single-row tracks repeat that row; empty tracks
   write zeros.
@@ -2157,10 +2605,19 @@ graph.add(new GPUZoneEvents({
 }));
 ```
 
+`events.eventPositions` (`float32x2`) holds the interpolated crossing position of each event. `visitTable`
+is a sparse `(track, zone)` table that replaces the dense matrices for large `trackCount * zoneCount`: rows
+are ordered by track, then zone, with `output` (a `GPUCompactOutput`: `ids` is the track, plus `count`,
+`overflow` and `totalCount`) and the columns `zones`, `visits`, `dwellTimes`, `firstEnterTimes` and
+`lastExitTimes` (see `GPUZoneVisitTableOutput`). `addFleetDwellZoneEventsRecipe` forwards both outputs. Times are
+relative to the track start, a track that starts inside has first enter 0, and an open visit has last exit
+equal to the track duration. The table is built from the dense per-cell state, so it bounds the output, not
+the working memory.
+
 Limits: the scratch of `candidateCapacity` rows is sorted (three stable `GPUSort` passes) every encoding;
 the walk and dwell kernels use one invocation per track; the dense matrices cost `trackCount * zoneCount`
 rows; samples exactly on an edge follow the half-open rule and can disagree with other predicates by one
-event; zones with overlapping rings are not supported (even-odd); crossing positions are not exported.
+event; zones with overlapping rings are not supported (even-odd); at equal timestamps the crossing position is not unique.
 
 Diagnostics: the optional `diagnostics` prop takes four one-row `uint32` views, `candidateCount`,
 `candidateOverflow`, `trackOverflow` and `eventOverflow`.
@@ -2199,23 +2656,35 @@ graph.add(new GPUTrajectoryEncounters({
 }));
 ```
 
+`addClockEncounters(graph, props)` builds the shared-clock chain in one call: it resamples all tracks
+onto one clock (`GPUTrajectoryResample` with `spacing: 'clock'`, a per-frame `[start, step]` buffer) and
+feeds `GPUTrajectoryEncounters`, so tracks need not cover the same window. Optional `bucketTimes` and
+`samples` outputs expose the clock and the resampled tracks (`AddClockEncountersProps`, `ClockEncounters`).
+
 ### `GPUTrackSimilarity`
 
-Discrete Hausdorff (symmetric, vertex-based, unbounded length) and discrete Frechet (vertex-based) distances
-for given pairs of tracks or rings; they match Shapely without densification (`hausdorff_distance`,
-`frechet_distance`). Inputs are `positionsA` and `offsetsA` (optionally `positionsB` and `offsetsB`, by
+Hausdorff (symmetric, vertex-to-segment as GEOS computes it, unbounded length) and discrete Frechet
+(vertex-based) distances for given pairs of tracks or rings (`hausdorff_distance(a, b, densify)`,
+`frechet_distance(a, b, densify)`). Behavior change: Hausdorff used to be vertex-to-vertex, which agreed
+with Shapely only by coincidence; it now measures from the (densified) vertices to the other polyline's
+segments, so values can be slightly smaller than before. Inputs are `positionsA` and `offsetsA` (optionally `positionsB` and `offsetsB`, by
 default the same set), `pairA`, `pairB` (`uint32` views) and an optional GPU-written `activePairCount`.
-Outputs are `hausdorff`, `frechet` and `status` (bits of `GPU_TRACK_SIMILARITY_STATUS`: `emptyTrack` 1,
-`frechetCapExceeded` 2, `invalidPair` 4). Skipped pairs get NaN. Frechet is limited to
-`maxFrechetVertices` per track (default 128, at most 256, one workgroup); a longer pair reports
-`frechetCapExceeded` with a NaN Frechet while its Hausdorff is still computed. Rings are open vertex
+Outputs are `hausdorff`, `frechet`, optional `maxDistance` (largest vertex-to-vertex distance per pair, Sedona
+`ST_MaxDistance`, original vertices) and `status` (bits of `GPU_TRACK_SIMILARITY_STATUS`: `emptyTrack` 1,
+`frechetCapExceeded` 2, `invalidPair` 4). Skipped pairs get NaN. `densify` (0 or in `[1/4096, 1]`, compile-time) splits each segment into `round(1/densify)` parts, as
+Shapely does; the virtual vertices are computed on the fly. Frechet sweeps the longer track in strips of
+256 lanes, so only the shorter (densified) track is capped: `maxFrechetVertices` is 1 to 2048 (default
+256). A pair over the cap reports `frechetCapExceeded` with a NaN Frechet while its Hausdorff is still
+computed. Polygon boundaries are passed as closed vertex lists. Against Shapely 2.1.2 (GEOS 3.13.1) all
+three measures were within 2e-4 relative on line and polygon-boundary pairs, including a 700 by 300 Frechet
+over three strips. Rings are open vertex
 sequences, so Frechet is sensitive to the start and the orientation. Pairs can come straight from
 `GPUTrajectoryEncounters` (`ids`, `partners` and `output.count`).
 
 ```ts
 graph.add(new GPUTrackSimilarity({
   positionsA, offsetsA, pairA: pairs.output.ids, pairB: partners, activePairCount: pairs.output.count,
-  hausdorff, frechet, status, maxFrechetVertices: 128
+  hausdorff, frechet, maxDistance, status, maxFrechetVertices: 256, densify: 0.25
 }));
 ```
 
@@ -2235,7 +2704,84 @@ vertices: per input vertex a round-join disc fan plus a quad to the next vertex,
 degenerate. There is no capacity and no overflow. Overlaps are not unioned, so it is for drawing only;
 queries use `dwithin` and `GPUBufferSelection`. Spherical mode converts meters with each vertex's local
 east and north scale (equirectangular, not geodesic; wrong near the poles and across the antimeridian).
-There are no negative buffers and no one-sided offset.
+There are no negative buffers. A one-sided offset line is [`GPUOffsetCurve`](#gpuoffsetcurve-and-gpuvertexsnap).
+
+### `GPUOffsetCurve` and `GPUVertexSnap`
+
+`GPUOffsetCurve` is a one-sided offset of lines and rings (`shapely.offset_curve`, geo `OffsetCurve`);
+a positive distance is to the left of the path direction. Per vertex it writes a round arc
+(`quadSegments` per quarter circle), a mitre (clipped beyond `mitreLimit`, default 5) or a bevel on the
+outside of a turn, the single intersection point on the inside, and a plain normal offset at path ends.
+The output has `getGPUOffsetCurveRowsPerVertex` rows per vertex (`2q + 1` round, 2 otherwise); the optional
+`output.counts` gives the distinct points per vertex and padding repeats the last point. Distance and mitre
+limit are per-frame. It is render-grade: GEOS loop removal is not done, so tight inside corners can
+self-cross. GEOS clamps `quad_segs` to at least 8, so round-join parity is pinned at 8 and 16; GEOS
+leaves the corner at a ring's first vertex open on the outside and this closes it. Points were within 2e-4
+of Shapely 2.1.2. Planar only, rings are implicit-closed.
+
+`GPUVertexSnap` is the vertex-to-vertex subset of `shapely.snap`: each vertex with a reference vertex
+strictly closer than the per-frame `tolerance` moves to the nearest one (lowest row on ties) and the layout
+is unchanged. Optional pairwise mode (`featureOffsets` and `referenceOffsets`) and `output.referenceRows`.
+It is `O(V * R)`. Segment insertion and snapping onto segments, which GEOS also does, are out of scope.
+It matched Shapely on 60 random lines.
+
+### `GPUAffineTransform`, `GPUGeometryOrientation`, and `GPUGeometryCleanup`
+
+Geometry edits that keep the GeoArrow layout. `GPUAffineTransform` is `shapely.affinity` (`affine_transform`,
+`translate`, `scale`, `rotate`, `skew`): either one per-frame matrix packed by
+`getGPUAffineTransformParameters({rotate, scale, skew, translate, origin})` (applied as scale, skew,
+rotate, translate about one origin) or per-feature `featureTransforms` (6 floats per feature, Shapely
+order). The origin is a point, or `'center'` or `'centroid'` computed per feature on the GPU (compile-time
+`origins`); it is computed once from the input, where Shapely recomputes `'center'` at each step, which
+differs only for skew about the center. Agreement was within 0.03 at coordinates near 1e5 (f32 spacing
+0.0078).
+
+`GPUGeometryOrientation` is `shapely.reverse` (`mode: 'reverse'`) or `orient_polygons` (`mode:
+'orient-polygons'`, which needs `polygonOffsets` and a per-frame `exteriorClockwise`). The layout is
+unchanged and `reversedRings` flags are optional. The sign comes from an f32 shoelace sum, which differs
+from GEOS only for self-intersecting rings.
+
+`GPUGeometryCleanup` is `remove_repeated_points(tolerance)` and `set_precision(grid_size, mode='pointwise')`:
+`gridSize` snaps half-up as GEOS does, and `tolerance` removes repeats with the exact GEOS semantics (first
+and last kept, inclusive tolerance against the previous kept vertex). The output is compacted `positions`
+with republished `ringOffsets`, `count`, `overflow`, `totalCount` and `collapsedRings` (polygon rings with
+fewer than 3 surviving vertices are emptied, where GEOS raises). GEOS `set_precision(pointwise)` does not
+drop repeats, so use `removeRepeatedPoints: false` for exact parity. Both outputs matched Shapely exactly
+on 5 parameter sets by 24 features. Points are not supported, the kernels are one thread per ring, and
+`normalize` is not provided.
+
+### `GPUMinimumBounds`
+
+Per feature (from `positions`, `ringOffsets` and optional `featureRingOffsets`) or per `uint32` label group
+(`labels` and `groupCount`): the minimum-area rotated rectangle (`rectangleCorners`, four counter-clockwise
+corners, and `rectangleSizes` = width, height, angle, area), the minimum bounding circle (`circles` = cx, cy,
+r), the longest line (`longestLines`, `diameters`) and the envelope (`bounds`). Equivalents: Shapely
+`oriented_envelope`, `minimum_rotated_rectangle`, `minimum_bounding_circle`, `minimum_bounding_radius`;
+Sedona `ST_LongestLine`, `ST_MaxDistance`. It is built on `GPUGroupConvexHull` (exact lattice hull) with one
+thread per group over the hull. Hulls over `maximumHullVertices` (default 256) set the hull overflow bit in
+`overflow` and write NaN; `hullSizes` optionally reports the true hull vertex counts. Rectangle ties (areas
+within 1e-6 relative) go to the lowest hull edge, and the circle is Welzl in a hash-shuffled fixed order
+with the radius recomputed as the largest hull distance, so it always covers. Parity is by area and radius,
+not vertex order: rectangle area within 2e-4 relative, radius 1e-4, diameter 1e-4. Cost is `O(h^2)` per
+group, and near-collinear circumcenters fall back to the diametral circle.
+
+### `GPUPolygonTriangulation`
+
+Earcut on the GPU (`earcut`, deck.gl `PolygonLayer` tessellation, geo `TriangulateEarcut`, Sedona
+`ST_TriangulatePolygon` as earcut, not constrained Delaunay). Props: `polygons: {positions, polygonOffsets,
+ringOffsets}`, `indices`, `valid` and optional `triangleCount` and `maximumWork` (default 4M steps, roughly
+rings of a few thousand vertices). The first ring is the shell and the others holes, with any winding.
+Polygon `p` owns exactly `3 * (vertices + 2 * holes - 2)` index slots, so no count pass is needed
+(`getPolygonTriangulationIndexCount(vertexCount, ringCount, polygonCount)` sizes the buffer), and indices
+are rows of `positions`. Unused slots (dropped collinear or duplicate vertices, failed polygons) hold the
+degenerate triangle `(first, first, first)`, so the whole buffer is drawable. `valid[p]` is 1 when the
+triangulation completed and 0 for shells under 3 vertices, self-intersecting rings, scratch overflow or
+exceeded `maximumWork` (the slice is then all degenerate). One invocation per polygon, so it scales with
+polygon count, not ring size; there is no z-order hashing. Orientation tests use the exact predicate of
+`GPUSegmentIntersection`. Every polygon must have a shell of at least 3 vertices and no empty rings, or
+later slices shift. Triangle area equaled Shapely `area` and the triangle count equaled the `earcut` npm
+package on 14 hand-built cases (order differs), and area matched on 60 random polygons. Delaunay variants
+stay excluded.
 
 ### `GPULabelPoint`
 
@@ -2305,9 +2851,48 @@ Grid geometry (turf `squareGrid`, `hexGrid`, `triangleGrid`, `pointGrid`, QGIS c
 `ST_SquareGrid`). Props: `gridType` (`'square'`, `'hex'`, `'triangle'` or `'point'`), `columns`, `rows`,
 `parameters` (`getGPUGridGeneratorParameterValues({minX, minY, cellWidth, cellHeight})`) and
 `output: {positions?, centers?}`. Size the outputs with `getGPUGridCellCount` and
-`getGPUGridVerticesPerCell`. Hexagons are pointy-top (`cellWidth` is flat to flat), triangles come in
+`getGPUGridVerticesPerCell`. Hexagons are pointy-top by default (`cellWidth` is flat to flat), triangles come in
 alternating strips with half-cell row shifts (not turf's exact layout), and the point grid sits at cell
-centers. There is no extent clipping, and the cell counts are compile-time.
+centers. The cell counts are compile-time.
+
+- `hexOrientation: 'flat'` (GeoPandas `make_grid(flat_topped=True)`): `cellWidth` is still the
+  flat-to-flat distance (GeoPandas `cell_size`), columns step `1.5 * R`, rows step `cellWidth`, odd
+  columns shift up half a cell, and the ring is counter-clockwise from angle 0. The lattice is anchored at
+  `(minX - R / 2, minY)`, where GeoPandas starts half a cell off the offset. Matched GeoPandas to 1e-5 on
+  16 cells.
+- `extent` and `output.intersects` (GeoPandas `make_grid(intersect=True)`): a per-cell `uint32` flag
+  against a polygon (even-odd rings, holes, multi-polygon) with exact orientation predicates. Boundary
+  contact counts, and point grids test the center. Cost is cells times extent edges. It is a flag, not a
+  compaction: compact it with `GPUCompaction` for the subset. Matched Shapely `intersects` on five grid
+  types (240 cells). Not provided: `make_grid` `corners`.
+
+### `GPUShapeGenerator`
+
+Circles, sectors and ellipses around per-feature centers and radii (turf `circle`, `sector`, `ellipse`).
+Props include `shape` (`GPUShapeType`), `centers`, `radii`, optional sector `bearings` and ellipse
+`rotations`, `coordinateSystem` (`'planar'`, or `'geodesic'` with spherical destination and radii in
+meters; `GPUShapeCoordinateSystem`), compile-time `maximumSegments` and per-frame `parameters`
+(`getGPUShapeGeneratorParameterValues`). The segment count and the radius scale are per-frame, up to
+`maximumSegments`; size outputs with `getGPUShapeVertexCount` and `getGPUShapeMinimumSegments`. The output
+is packed rings plus GeoArrow-style `offsets` (feature `f` starts at `f * V`) and an optional
+`vertexCount`. Circles and sectors match turf 7.4 exactly (pinned). The ellipse spaces its vertices
+uniformly in the parameter, not by arc length, and coincident sector bearings keep their center spokes.
+Geodesic f32 coordinates round to about 0.5 m.
+
+### `GPUHilbertKeys`
+
+2D Hilbert curve index (order 1 to 16, `uint32`) of points, or of feature box centers (`minima` and
+`maxima`), within per-frame `bounds` `[minX, minY, maxX, maxY]` (or the GPU-reduced bounds of the valid
+items when omitted; items outside are clamped to the border cells). `output.keys` holds the keys,
+bit-exact against the CPU `xy2d` on exactly representable data, and optional `sortedRows` and `sortedKeys`
+give the stable curve-order permutation from a radix `GPUSort`. Invalid items get key `4^order`
+(`getGPUHilbertInvalidKey(order)`, `0xffffffff` at order 16) and sort last. Cell borders depend on the f32
+`(v - min) / extent`, and keys beyond order 16 (two words) are not provided.
+
+The Hilbert order clusters better than Morton: a CPU tree-cost proxy (sum of node perimeters of a complete
+binary BVH over 16,000 boxes) was 27 percent lower on uniform, 21 percent on clustered and 15 percent on
+road-like data. The joins' `spatialSort` now uses it by default (see
+[Spatial sort default](#spatial-sort-default)).
 
 ### `GPURectangleClip`
 
@@ -2419,8 +3004,11 @@ parameters.write(
   invalid `k` or `n - 2 - tr S <= 0` score NaN.
 - Outputs: `coefficients` (`row * (predictorCount + 1) + column`, column 0 intercept), optional
   `localR2`, `fitted`, `residuals`, `hatDiagonal`, `localStatus` (0 ok, 1 singular, 2 excluded),
-  `bandwidthScores`, `selectedBandwidth` (`[index, value]`) and `summary` (RSS, trace of S, AICc,
+  `bandwidthScores`, `selectedBandwidth` (`[index, value]`), `localConditionNumber` and `summary` (RSS, trace of S, AICc,
   global R-squared, n, has-valid-candidate flag).
+- `localConditionNumber` is the mgwr `local_collinearity` local condition number: the singular-value
+  ratio of the kernel-weighted, column-normalized design (above 30 flags collinearity). It is pinned to
+  mgwr 2.2.1 (bisquare and gaussian, fixed and adaptive) and is f32-accurate.
 - Rows with a zero mask or a non-finite position, predictor or response are excluded as
   calibration locations and as neighbours.
 - Numerics: the design is centred on the focal row and Jacobi-equilibrated before the shared
@@ -2433,6 +3021,18 @@ parameters.write(
   each location scans nearby cells only. The row cap rises from 65,536 to 1,048,576 with the grid, and
   `'bisquare'` fixed-bandwidth fits sum in cell order (about 1e-5 relative to the earlier row-order sums, still
   deterministic).
+
+### `GPUGeographicallyWeightedRegressionNonstationarityTest`
+
+Monte Carlo test of coefficient non-stationarity (mgwr `spatial_variability`, GWR4). It permutes the
+observations among the locations with the Philox/Feistel bijection of the permutation contributors, refits
+at the selected bandwidth and compares the standard deviation of each local coefficient with the observed
+one. The pseudo p-value is `(g + 1) / (P + 1)`. Outputs are `table` (six floats per coefficient), `summary`
+(`GPU_GWR_NONSTATIONARITY_SUMMARY`, `GPU_GWR_NONSTATIONARITY_TABLE`, `GPU_GWR_NONSTATIONARITY_TABLE_STRIDE`)
+and an optional `standardDeviations` (the reference distribution). The per-permutation standard deviations
+match mgwr 2.2.1 to 3e-15 (CPU oracle) and 2e-3 (GPU). The bandwidth stays at the value the regression
+selected (mgwr re-selects it for every permutation). The cost is `O(P * n^2 * p^2)` with a full scan (no
+grid index).
 
 ### `GPUSpatialRegressionDiagnostics`
 
@@ -2470,7 +3070,10 @@ graph.add(new GPUSpatialRegressionDiagnostics({
 
 The spatial lag model `y = rho W y + X b + e` by two-stage least squares (spreg `GM_Lag` with `w_lags = 1`),
 with instruments `[1, X, WX]`. Props: `weights`, `predictors`, `response`, `predictorCount` (1 to 8),
-optional `tileRowCount` and `output: {table, summary, status, residuals?}`.
+optional `tileRowCount`, `instrumentOrder` and `output: {table, summary, status, residuals?}`.
+`instrumentOrder: 2` (compile-time, default 1) adds `W^2 X` (spreg `w_lags=2`, instruments `[1, X, WX,
+W^2 X]`), evaluated per row from the two-hop neighborhood with no extra buffers; it is pinned to spreg
+1.9.1 `GM_Lag(w_lags=2)` on three scenes.
 
 - `table`: `(k + 2) x 4` f32 rows of `[coefficient, se, z, two-sided normal p]` in spreg order: the
   intercept, then `X`, then `rho` last.
@@ -2483,7 +3086,7 @@ optional `tileRowCount` and `output: {table, summary, status, residuals?}`.
 - `residuals`: the structural residuals `u = y - Z delta`, which can be passed to later diagnostics.
 
 The coefficients, standard errors, `sigma2`, pseudo R2 and Anselin-Kelejian statistic match spreg on a
-144-row scene within 5e-3 (coefficients) to 2e-2 (z, AK). `W^2 X` instruments, robust and HAC variants,
+144-row scene within 5e-3 (coefficients) to 2e-2 (z, AK). Robust and HAC variants,
 `GM_Combo` and maximum-likelihood models are not provided. For the spatial error model see
 [`GPUSpatialErrorGM`](#gpuspatialerrorgm).
 
@@ -2579,6 +3182,8 @@ Notes:
 
 ## Cross-reference
 
+See the [task-organized cross-reference](/docs/api-reference/experimental/gpu-spatial-analysis-cross-reference).
+
 Contributors live in `@luma.gl/experimental/gpu-spatial-analysis` unless the entry says
 `(network)`, `(raster)` or `(dataframe)`, meaning `gpu-network`, `gpu-raster` and `gpu-dataframe`.
 Recipes are the `add...Recipe` builder functions. "Not built" rows point at the library to use
@@ -2592,8 +3197,8 @@ bounded outputs and does not read back; the CPU libraries return unbounded geome
 | `area`, `length`, `centroid`, `bbox`, `center` | `GPUGeometryMeasures` (area, length or perimeter, centroid, bounds per feature and per group) |
 | `centerOfMass` | `GPUGeometryMeasures` centroid; `GPUGroupGeometry` for weighted centers of label groups |
 | `pointOnFeature` | `GPULabelPoint` (pole of inaccessibility) |
-| `distance`, `bearing`, `midpoint` | `GPUGeodesicPairs` |
-| `destination` | `GPUGeodesicDestination` |
+| `distance`, `bearing`, `midpoint`, `rhumbDistance`, `rhumbBearing` | `GPUGeodesicPairs` (`model: 'rhumb'` for the rhumb forms) |
+| `destination`, `rhumbDestination` | `GPUGeodesicDestination` |
 | `greatCircle` | `GPUGreatCircleArcs` |
 | `along`, `lineSliceAlong` | `GPULineLocate` |
 | `lineChunk`, `lineSegment` | `GPULineChunk`, `GPULineSegmentize` |
@@ -2616,7 +3221,7 @@ bounded outputs and does not read back; the CPU libraries return unbounded geome
 | `randomPoint` inside polygons, `sample` | `GPURandomPointsInPolygon`, `GPUDotDensity` |
 | `hexbin`-style counting, `pointsWithinPolygon` + count | `GPUPointDensity`; `GPUCellAggregation` for H3 or Quadbin cells |
 | `standardDeviationalEllipse`, `centralMean`, `medianCenter` (turf-extra) | `GPUGeographicDistribution`, `GPUGroupGeometry` |
-| `union`, `intersect`, `difference`, `dissolve`, `voronoi`, `tin`, `concave` | Not built. Use polyclip-ts, JSTS, d3-delaunay; raster Voronoi is `GPUDistanceField` (raster); boundaries between groups are `GPUCellSetOutline` |
+| `union`, `intersect`, `difference`, `dissolve`, `voronoi`, `tin`, `concave` | Not built, except `GPUCoverageDissolve` (a valid coverage by label) and `GPULineClipByPolygon` (lines only). Use polyclip-ts, JSTS, d3-delaunay; raster Voronoi is `GPUDistanceField` (raster); boundaries between groups are `GPUCellSetOutline` |
 | `polygonize` | `GPUSegmentRingAssembly` for already-noded directed segments (cell outlines, isochrone outlines): closed rings with shells and holes. Crossing or unnoded lines are not built (use JSTS) |
 
 ### PostGIS
@@ -2634,9 +3239,17 @@ bounded outputs and does not read back; the CPU libraries return unbounded geome
 | `ST_ClusterKMeans` | `GPUKMeans` |
 | `ST_ConvexHull` per group | `GPUGroupConvexHull` |
 | `ST_Segmentize` | `GPULineSegmentize` |
-| `ST_Simplify`, `ST_SimplifyVW` | `GPULineSimplification` |
+| `ST_Simplify`, `ST_SimplifyVW` | `GPULineSimplification` (`method: 'visvalingam'` is approximate) |
 | `ST_CoverageSimplify` | `GPUCoverageSimplification` |
-| `ST_IsValid`, `ST_IsValidDetail` | `GPUGeometryValidity` |
+| `ST_IsValid`, `ST_IsValidDetail` | `GPUGeometryValidity` (polygons, lines, points) |
+| `ST_IsSimple`, `ST_IsRing`, `ST_IsClosed`, `ST_NPoints`, `ST_NumInteriorRings`, `ST_NumGeometries` | `GPUGeometryPredicates` |
+| `ST_MinimumClearance`, `ST_MinimumClearanceLine` | `GPUMinimumClearance` |
+| `ST_MinimumBoundingCircle`, `ST_OrientedEnvelope`, `ST_LongestLine`, `ST_MaxDistance` | `GPUMinimumBounds` |
+| `ST_Affine`, `ST_Translate`, `ST_Scale`, `ST_Rotate`, `ST_Reverse`, `ST_ForcePolygonCW`, `ST_RemoveRepeatedPoints`, `ST_SnapToGrid` | `GPUAffineTransform`, `GPUGeometryOrientation`, `GPUGeometryCleanup` |
+| `ST_OffsetCurve`, `ST_Snap` | `GPUOffsetCurve` (no loop removal), `GPUVertexSnap` (vertex to vertex) |
+| `ST_TriangulatePolygon` | `GPUPolygonTriangulation` (earcut, not constrained Delaunay) |
+| `ST_CoverageUnion`, `ST_CoverageInvalidEdges`, `ST_CoverageIsValid` | `GPUCoverageDissolve`, `GPUCoverageValidity` |
+| `ST_LocalOutlierFactor` (Sedona) | `GPULocalOutlierFactor` |
 | `ST_ClipByBox2D` | `GPURectangleClip` |
 | `ST_LineInterpolatePoint`, `ST_LocateAlong` | `GPULineLocate` |
 | `ST_LineLocatePoint`, `ST_ClosestPoint` on lines | `GPULinearReferencing` |
@@ -2675,9 +3288,18 @@ bounded outputs and does not read back; the CPU libraries return unbounded geome
 | `shapely.segmentize` | `GPULineSegmentize` |
 | `shapely.clip_by_rect`, `GeoDataFrame.clip` (rectangle) | `GPURectangleClip` |
 | `shapely.line_interpolate_point`, `.project` | `GPULineLocate`, `GPULinearReferencing` |
-| `shapely.hausdorff_distance`, `.frechet_distance` | `GPUTrackSimilarity` |
-| `shapely.set_precision`, `GeoSeries.buffer` (as geometry) | Not built |
-| `overlay`, `dissolve`, `unary_union`, `voronoi_polygons`, `delaunay_triangles`, `concave_hull`, `make_valid` | Not built; see turf/PostGIS notes |
+| `shapely.hausdorff_distance`, `.frechet_distance` (with `densify`) | `GPUTrackSimilarity` |
+| `shapely.set_precision` (pointwise), `remove_repeated_points`, `reverse`, `orient_polygons`, `affinity.*` | `GPUGeometryCleanup`, `GPUGeometryOrientation`, `GPUAffineTransform` |
+| `GeoSeries.buffer` (as geometry) | Not built |
+| `shapely.offset_curve`, `snap` | `GPUOffsetCurve`, `GPUVertexSnap` (partial, see their sections) |
+| `shapely.minimum_rotated_rectangle`, `oriented_envelope`, `minimum_bounding_circle`, `minimum_bounding_radius` | `GPUMinimumBounds` |
+| `shapely.minimum_clearance`, `minimum_clearance_line` | `GPUMinimumClearance` |
+| `shapely.is_simple`, `is_ring`, `is_closed`, `is_ccw`, `get_num_points`, `extract_unique_points`, `equals_exact` | `GPUGeometryPredicates` |
+| `GeoSeries.dissolve(method='coverage')`, `shapely.coverage_union_all`, `coverage_is_valid`, `coverage_invalid_edges` | `GPUCoverageDissolve`, `GPUCoverageValidity` |
+| `geopandas.clip(lines, polygon)`, `shapely.shared_paths` | `GPULineClipByPolygon`, `GPUSharedPaths` |
+| `sjoin` merge, `sjoin_nearest(distance_col)`, `explode`, `get_parts`, `.cx` | `GPUPairGather`, `GPUOffsetExpansion`, `GPUBoundsFilter` |
+| `GeoSeries.make_grid`, `sample_points` (lines) | `GPUGridGenerator` (`hexOrientation`, `extent`), `GPURandomPointsOnLine` |
+| `overlay`, `dissolve`, `unary_union`, `voronoi_polygons`, `delaunay_triangles`, `concave_hull`, `make_valid` | Not built; see turf/PostGIS notes. `dissolve(method='coverage')` is `GPUCoverageDissolve`, and `clip` of lines by a polygon is `GPULineClipByPolygon` |
 | `shapely.polygonize`, `polygonize_full` | `GPUSegmentRingAssembly` for already-noded segments (no noding, no cut edges or dangles output; open chains are counted in `openSegmentCount`) |
 | `shapely.minimum_bounding_circle`, `oriented_envelope` | `GPUShapeDescriptors` (elongation, orientation); `GPUGroupGeometry` (bounds, ellipse) |
 | `tobler.area_interpolate` | `GPUArealInterpolation`; recipe `addChangeOfSupportRecipe` |
