@@ -1,0 +1,441 @@
+// luma.gl
+// SPDX-License-Identifier: MIT
+// SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
+
+import {defineScene} from '../scene';
+import {storyFromMarkdown} from '../story-markdown';
+import narrative from './wildfire-shapes.md?raw';
+import type {WildfireShapesOptions} from './wildfire-shapes.compute';
+
+const YEAR_COLORS = [
+  {color: [232, 90, 60, 255], label: '2020'},
+  {color: [240, 170, 50, 255], label: '2021'},
+  {color: [70, 190, 150, 255], label: '2022'},
+  {color: [110, 140, 235, 255], label: '2023'}
+] as const;
+
+const METRIC_LEGENDS: Record<
+  string,
+  {title: string; unit?: string; sqrt?: boolean; labels?: [string, string]}
+> = {
+  area: {title: 'Fire area', unit: 'acres', sqrt: true},
+  perimeter: {title: 'Perimeter', unit: 'km'},
+  areaDistortion: {title: 'Planar area / WGS84 area', labels: ['1.0', 'larger']},
+  vertices: {title: 'Vertices per fire', unit: 'vertices', sqrt: true},
+  polsbyPopper: {title: 'Polsby-Popper compactness', labels: ['stringy', 'round']},
+  schwartzberg: {title: 'Schwartzberg compactness', labels: ['stringy', 'round']},
+  elongation: {title: 'Elongation', labels: ['round', 'line-like']},
+  convexity: {title: 'Convexity (area / hull area)', labels: ['wraps around', 'convex']}
+};
+
+export default defineScene<WildfireShapesOptions>({
+  id: 'wildfire-shapes',
+  title: 'Do big fires get stringier?',
+  chapter: 'geometry',
+  order: 6,
+  summary:
+    'Area, perimeter and compactness of 90 western US fires (2020 to 2023): GPUGeometryMeasures in four coordinate systems and GPUShapeDescriptors for compactness, elongation and convexity, with the multi-polygon hole-rule trap and a caveat about perimeter detail.',
+  contributors: ['GPUGeometryMeasures', 'GPUShapeDescriptors'],
+  datasets: [{id: 'poopdeck-wildfires', role: 'final fire perimeters, 2020 to 2023'}],
+  initialView: {longitude: -116.5, latitude: 40, zoom: 4.2},
+
+  options: [
+    {
+      kind: 'select',
+      id: 'metric',
+      label: 'Color by',
+      group: 'Display',
+      apply: 'param',
+      default: 'polsbyPopper',
+      help: 'Which per-fire GPU column colors the polygons and dots. Switching is a buffer copy; no graph is rebuilt.',
+      options: [
+        {value: 'year', label: 'Perimeter year'},
+        {
+          value: 'area',
+          label: 'Area',
+          help: 'GPUGeometryMeasures areas in the chosen Area system.'
+        },
+        {
+          value: 'perimeter',
+          label: 'Perimeter',
+          help: 'GPUGeometryMeasures lengths over every ring.'
+        },
+        {
+          value: 'areaDistortion',
+          label: 'Planar / WGS84 area',
+          help: 'How much Web Mercator inflates each fire.'
+        },
+        {
+          value: 'vertices',
+          label: 'Vertices',
+          help: 'Number of vertex rows, a proxy for mapping detail.'
+        },
+        {
+          value: 'polsbyPopper',
+          label: 'Polsby-Popper compactness',
+          help: '4 pi A / P^2, 1 for a circle.'
+        },
+        {
+          value: 'schwartzberg',
+          label: 'Schwartzberg compactness',
+          help: 'Circle perimeter over fire perimeter, sqrt of Polsby-Popper.'
+        },
+        {
+          value: 'elongation',
+          label: 'Elongation',
+          help: '0 for a round fire, toward 1 for a line.'
+        },
+        {value: 'convexity', label: 'Convexity', help: 'Area over convex hull area.'},
+        {value: 'sliver', label: 'Sliver flag', help: 'Polsby-Popper below the sliver threshold.'}
+      ]
+    },
+    {
+      kind: 'select',
+      id: 'ramp',
+      label: 'Color ramp',
+      group: 'Display',
+      apply: 'param',
+      default: 'magma',
+      help: 'Ramp for scalar metrics. The legend uses the same table.',
+      options: [
+        {value: 'magma', label: 'Magma'},
+        {value: 'viridis', label: 'Viridis'},
+        {value: 'inferno', label: 'Inferno'},
+        {value: 'cividis', label: 'Cividis (color-blind optimised)'}
+      ]
+    },
+    {
+      kind: 'slider',
+      id: 'opacity',
+      label: 'Fill opacity',
+      group: 'Display',
+      apply: 'param',
+      min: 0.2,
+      max: 1,
+      step: 0.05,
+      default: 0.85,
+      help: 'Opacity of the filled polygons.'
+    },
+    {
+      kind: 'toggle',
+      id: 'showOutlines',
+      label: 'Outlines',
+      group: 'Display',
+      apply: 'param',
+      default: true,
+      help: 'Ring edges of the shown fires (340,000 segments from one buffer).'
+    },
+    {
+      kind: 'toggle',
+      id: 'showMarkers',
+      label: 'Centroid dots',
+      group: 'Display',
+      apply: 'param',
+      default: true,
+      help: 'A dot at the WGS84 centroid of every fire, so small fires stay visible when zoomed out. The centroids are a GPUGeometryMeasures output.'
+    },
+    {
+      kind: 'toggle',
+      id: 'showAxes',
+      label: 'Major axes',
+      group: 'Display',
+      apply: 'param',
+      default: false,
+      help: 'The major axis of every fire from GPUShapeDescriptors orientation, longer for more elongated fires. Built from the readback table.'
+    },
+    {
+      kind: 'select',
+      id: 'year',
+      label: 'Perimeter year',
+      group: 'Filter',
+      apply: 'param',
+      default: 'all',
+      help: 'Shows the fires of one year. Hidden fires leave the colors, charts and readouts.',
+      options: [
+        {value: 'all', label: 'All years'},
+        {value: '2020', label: '2020'},
+        {value: '2021', label: '2021'},
+        {value: '2022', label: '2022'},
+        {value: '2023', label: '2023'}
+      ]
+    },
+    {
+      kind: 'slider',
+      id: 'minAcres',
+      label: 'Smallest fire',
+      group: 'Filter',
+      apply: 'param',
+      min: 1000,
+      max: 50000,
+      step: 500,
+      default: 1000,
+      unit: 'acres',
+      help: 'Hides fires below this size (NIFC acres). All fires in the archive are at least 1,000 acres.'
+    },
+    {
+      kind: 'select',
+      id: 'areaSystem',
+      label: 'Area system',
+      group: 'GPUGeometryMeasures',
+      apply: 'param',
+      default: 'wgs84',
+      disabledWhen: state => state.metric !== 'area' && state.metric !== 'perimeter',
+      help: 'Which of the four measure sets feeds Area and Perimeter. All four run in one graph, so this is a column switch, not a rebuild.',
+      options: [
+        {
+          value: 'planar',
+          label: 'Planar (Web Mercator meters)',
+          help: 'Euclidean on projected coordinates: areas inflate by 1 / cos^2 of latitude.'
+        },
+        {
+          value: 'spherical',
+          label: 'Spherical (mean radius)',
+          help: 'Haversine and Chamberlain-Duquette on a sphere.'
+        },
+        {
+          value: 'wgs84',
+          label: 'WGS84 authalic sphere',
+          help: 'Vincenty edges, equal-area latitude: matches the NIFC acres.'
+        },
+        {
+          value: 'geodesic',
+          label: 'Geodesic edges',
+          help: 'Edges of 20 km or more follow geodesics; the same on fires of this size.'
+        }
+      ]
+    },
+    {
+      kind: 'select',
+      id: 'holeRule',
+      label: 'Hole rule',
+      group: 'GPUGeometryMeasures',
+      apply: 'compile',
+      default: 'winding',
+      help: 'How the rings of one fire combine. winding sums signed areas (shells counter-clockwise add, holes clockwise subtract). first-ring-exterior takes the first ring as the shell and every other ring as a hole, which is wrong for multi-polygon fires. Rebuilds both graphs.',
+      options: [
+        {value: 'winding', label: 'Winding (GeoJSON)'},
+        {value: 'first-ring-exterior', label: 'First ring is the exterior'}
+      ]
+    },
+    {
+      kind: 'select',
+      id: 'largeRings',
+      label: 'Large-ring path',
+      group: 'GPUGeometryMeasures',
+      apply: 'compile',
+      default: 'cooperative',
+      help: 'A ring of more than 512 vertices is measured by a 64-lane workgroup (cooperative); serial turns that off (cooperativeRingRows 0) and one invocation walks it. Same numbers to float precision, different latency. Rebuilds the measures graph.',
+      options: [
+        {value: 'cooperative', label: 'Cooperative above 512 vertices'},
+        {value: 'serial', label: 'Serial'}
+      ]
+    },
+    {
+      kind: 'select',
+      id: 'convexityMethod',
+      label: 'Convexity method',
+      group: 'GPUShapeDescriptors',
+      apply: 'compile',
+      default: 'auto',
+      help: 'The hull algorithm behind convexity. Gift wrapping marches a private hull per fire (cost: vertices times hull vertices); the monotone chain sorts (O(n log n), about thirty small passes). auto picks the chain when fires average at least 256 vertices. Rebuilds the shape graph.',
+      options: [
+        {value: 'auto', label: 'Auto'},
+        {value: 'gift-wrapping', label: 'Gift wrapping'},
+        {value: 'monotone-chain', label: 'Monotone chain'}
+      ]
+    },
+    {
+      kind: 'slider',
+      id: 'sliverThreshold',
+      label: 'Sliver threshold',
+      group: 'GPUShapeDescriptors',
+      apply: 'param',
+      min: 0.01,
+      max: 0.3,
+      step: 0.01,
+      default: 0.05,
+      disabledWhen: state => state.metric !== 'sliver',
+      help: 'Polsby-Popper below this flags a fire as a sliver (0.05 is about a 1:60 rectangle). A parameter-buffer write.'
+    }
+  ],
+
+  story: storyFromMarkdown<WildfireShapesOptions>(narrative, {
+    fires: {
+      camera: {longitude: -116.5, latitude: 40, zoom: 4.2, transitionMs: 1400},
+      options: {metric: 'year', showMarkers: true},
+      controls: ['year', 'minAcres'],
+      readouts: ['fireCount', 'nifcAcres'],
+      callout: {coordinate: [-121.09, 40.32], text: 'Dixie: 179 polygons'}
+    },
+    area: {
+      camera: {longitude: -121.6, latitude: 38.6, zoom: 6.6, transitionMs: 1800},
+      options: {metric: 'area', areaSystem: 'wgs84'},
+      controls: ['areaSystem', 'metric'],
+      readouts: ['medianRatio', 'gpuAcres', 'nifcAcres']
+    },
+    multipart: {
+      camera: {longitude: -121.7, latitude: 38.4, zoom: 7.2, transitionMs: 1800},
+      options: {metric: 'area', areaSystem: 'wgs84'},
+      controls: ['holeRule'],
+      readouts: ['worstError', 'medianRatio'],
+      callout: {coordinate: [-121.78, 37.88], text: 'SCU Lightning Complex: 11 polygons'}
+    },
+    compactness: {
+      camera: {longitude: -116.5, latitude: 40, zoom: 4.2, transitionMs: 1800},
+      options: {metric: 'polsbyPopper', showMarkers: true},
+      controls: ['metric', 'ramp', 'year'],
+      readouts: ['medianCompactness', 'areaCompactness', 'trendChart', 'classChart']
+    },
+    axes: {
+      camera: {longitude: -121.6, latitude: 38.8, zoom: 6.4, transitionMs: 1800},
+      options: {metric: 'elongation', showAxes: true},
+      controls: ['metric', 'showAxes', 'convexityMethod'],
+      readouts: ['areaElongation', 'selected']
+    },
+    detail: {
+      camera: {longitude: -121.09, latitude: 40.3, zoom: 8.2, transitionMs: 1800},
+      options: {metric: 'vertices', showMarkers: false},
+      controls: ['metric', 'largeRings'],
+      readouts: ['areaVertices', 'areaCompactness', 'metricChart']
+    }
+  }),
+
+  legends: state => {
+    if (state.metric === 'year') {
+      return [
+        {
+          kind: 'categories',
+          title: 'Perimeter year',
+          entries: YEAR_COLORS,
+          note: 'Dots mark the centroid of every fire; zoom in for the polygons.'
+        }
+      ];
+    }
+    if (state.metric === 'sliver') {
+      return [
+        {
+          kind: 'categories',
+          title: 'Sliver flag',
+          entries: [
+            {color: [150, 160, 175, 200], label: 'compact enough'},
+            {
+              color: [226, 96, 80, 255],
+              label: `sliver (Polsby-Popper < ${state.sliverThreshold.toFixed(2)})`
+            }
+          ]
+        }
+      ];
+    }
+    const spec = METRIC_LEGENDS[state.metric];
+    return [
+      {
+        kind: 'ramp',
+        id: 'value',
+        title: spec.title,
+        ramp: state.ramp,
+        extent: 'gpu',
+        sqrtScale: spec.sqrt,
+        unit: spec.unit,
+        labels: spec.labels
+      }
+    ];
+  },
+
+  readouts: [
+    {
+      id: 'fireCount',
+      label: 'Fires shown',
+      format: 'integer',
+      help: 'Fires that pass the year and size filters.'
+    },
+    {
+      id: 'nifcAcres',
+      label: 'NIFC acres, shown fires',
+      format: 'integer',
+      help: 'Sum of the acres attribute of the archive.'
+    },
+    {
+      id: 'gpuAcres',
+      label: 'GPU acres, WGS84',
+      format: 'integer',
+      help: 'Sum of GPUGeometryMeasures WGS84 areas of the shown fires, in acres.'
+    },
+    {
+      id: 'medianRatio',
+      label: 'Median GPU / NIFC',
+      help: 'Median of GPU WGS84 area over the NIFC acres. The NIFC acres come from the same polygons, so 1.00 validates the measure.'
+    },
+    {
+      id: 'worstError',
+      label: 'Largest area error',
+      help: 'The shown fire whose GPU WGS84 area differs most from the NIFC acres under the current hole rule.'
+    },
+    {
+      id: 'medianCompactness',
+      label: 'Median compactness',
+      help: 'Median Polsby-Popper of the shown fires.'
+    },
+    {
+      id: 'areaCompactness',
+      label: 'Rank correlation, area vs compactness',
+      help: 'Spearman rank correlation of fire area and Polsby-Popper across the shown fires. Negative: bigger fires are less compact.'
+    },
+    {
+      id: 'areaVertices',
+      label: 'Rank correlation, area vs vertices',
+      help: 'Spearman rank correlation of fire area and vertex count: how much more detail big fires carry.'
+    },
+    {
+      id: 'areaElongation',
+      label: 'Rank correlation, area vs elongation',
+      help: 'Spearman rank correlation of fire area and elongation.'
+    },
+    {id: 'metricChart', label: 'Distribution of the colored metric', kind: 'chart'},
+    {id: 'trendChart', label: 'Compactness by fire size', kind: 'chart'},
+    {id: 'classChart', label: 'Compactness by acreage class', kind: 'chart'},
+    {
+      id: 'selected',
+      label: 'Selected fire',
+      layout: 'block',
+      help: 'Click a fire to read its descriptors and outline it in yellow. Click it again to clear.'
+    }
+  ],
+
+  snippet: state => `import {GPUCommandGraph} from '@luma.gl/gpgpu/gpu-core';
+import {
+  getGPUShapeDescriptorsParameterValues,
+  GPUGeometryMeasures,
+  GPUShapeDescriptors
+} from '@luma.gl/experimental/gpu-spatial-analysis';
+
+// One feature per fire: featureRingOffsets maps fires to rings, ringOffsets to vertices.
+const graph = new GPUCommandGraph(device, {id: 'wildfires'});
+graph.add(new GPUGeometryMeasures({
+  positions: lngLat,                    // float32x2 lon/lat (planar: Web Mercator meters)
+  ringOffsets, featureRingOffsets,
+  geometryType: 'polygons',
+  coordinateSystem: '${state.areaSystem}',
+  holeRule: '${state.holeRule}',${state.largeRings === 'serial' ? '\n  cooperativeRingRows: 0,' : ''}
+  output: {areas, lengths, centroids, vertexCounts}
+}));
+graph.add(new GPUShapeDescriptors({
+  positions: webMercatorMeters,         // planar coordinates
+  ringOffsets, featureRingOffsets,
+  holeRule: '${state.holeRule}',
+  convexityMethod: '${state.convexityMethod}',
+  parameters,                           // [sliverThreshold, 0, 0, 0], a per-frame write
+  output: {polsbyPopper, elongation, orientation, convexity, sliver}
+}));
+const compiled = graph.compile();
+shapeParameters.write(getGPUShapeDescriptorsParameterValues({sliverThreshold: ${state.sliverThreshold}}));
+compiled.encode(commandEncoder, {parameters: undefined});`,
+
+  about: {
+    what: '`GPUGeometryMeasures` returns area, perimeter, centroid, bounds and vertex count of every polygon feature in one pass, in planar, spherical, WGS84 or geodesic coordinates. `GPUShapeDescriptors` builds on it: Polsby-Popper and Schwartzberg compactness, convexity, elongation, orientation and a sliver flag.',
+    why: 'Shape statistics are how you ask whether a district gerrymanders, a parcel is a sliver or a burn scar is stringy. Doing it on the GPU means the numbers follow a filter or a different hole rule immediately, for every feature at once.',
+    howToRead:
+      'Dark on the magma ramp is stringy (low compactness), bright is round. Dots mark each fire so small ones stay visible when zoomed out. Perimeter dates are the date of the final NIFC record, not ignition. The archive is a subset: it does not hold every large fire of these years (for example the August Complex). Compactness depends on mapping detail, so correlation with size is not causation.'
+  },
+
+  create: async ctx => (await import('./wildfire-shapes.compute')).createWildfireShapes(ctx)
+});

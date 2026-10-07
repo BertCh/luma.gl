@@ -1,0 +1,4 @@
+# chicago-tracts (and shared Chicago helpers)
+Build order: chicago-community-areas, chicago-lodes-od is optional first (writes wac_by_tract.csv), chicago-tracts, then chicago-nature, chicago-places (+chicago-facilities), chicago-lodes-od, chicago-311-rats. `validate.py` checks all seven outputs. Run each with `geo-venv/bin/python -I build.py`.
+Sources (all in scratchpad raw/): Census cartographic boundary cb_2022_17_tract_500k (public domain); CDC/ATSDR SVI 2022 Illinois tracts https://svi.cdc.gov/Documents/Data/2022/csv/states/Illinois.csv; CDC PLACES cwsq-ngmh (Socrata, IL / Cook, 12 measures); ACS 2020-2024 5-yr B19301/B19013 via api.censusreporter.org (no key); LODES8 il_od_main_JT00_2021 / il_wac_S000_JT00_2021 from lehd.ces.census.gov.
+Tracts whose representative point lies in the city are kept whole (not clipped) so shared edges stay exact.
