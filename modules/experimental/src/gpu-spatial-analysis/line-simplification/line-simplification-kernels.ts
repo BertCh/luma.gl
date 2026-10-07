@@ -291,9 +291,12 @@ export function createLineImportanceRoundNodes<Parameters>(
     importance: GraphDataView<'float32'>;
     status: GraphDataView<'uint32'>;
     gate: LineRoundGate<Parameters>;
+    /** Open intervals with at most this many interior rows are solved whole; 0 disables. */
+    finishSpanLimit?: number;
   }
 ): GPUCommandNode<Parameters>[] {
   const {scratch, gate} = props;
+  const finishSpanLimit = props.finishSpanLimit ?? 0;
   const rowCount = props.importance.length;
   const anchors: WGSLKernelBinding[] = [
     {
@@ -350,24 +353,135 @@ export function createLineImportanceRoundNodes<Parameters>(
   const position = (row: string, component: 0 | 1) =>
     `positions[positionsOffset + 2u * ${row} + ${component}u]`;
   const time = (row: string) => `timestamps[timestampsOffset + ${row}]`;
-  const distanceExpression = isTimeRatio
-    ? `lineTimeRatioDistance(${position('index', 0)}, ${position('index', 1)}, ${time('index')},
-      ${position('leftAnchor', 0)}, ${position('leftAnchor', 1)}, ${time('leftAnchor')},
-      ${position('rightAnchor', 0)}, ${position('rightAnchor', 1)}, ${time('rightAnchor')})`
-    : `lineSegmentDistance(${position('index', 0)}, ${position('index', 1)},
-      ${position('leftAnchor', 0)}, ${position('leftAnchor', 1)},
-      ${position('rightAnchor', 0)}, ${position('rightAnchor', 1)})`;
+  const getDistanceExpression = (row: string, left: string, right: string) =>
+    isTimeRatio
+      ? `lineTimeRatioDistance(${position(row, 0)}, ${position(row, 1)}, ${time(row)},
+      ${position(left, 0)}, ${position(left, 1)}, ${time(left)},
+      ${position(right, 0)}, ${position(right, 1)}, ${time(right)})`
+      : `lineSegmentDistance(${position(row, 0)}, ${position(row, 1)},
+      ${position(left, 0)}, ${position(left, 1)},
+      ${position(right, 0)}, ${position(right, 1)})`;
+  const distanceExpression = getDistanceExpression('index', 'leftAnchor', 'rightAnchor');
 
-  return [
-    createWGSLKernelNode<Parameters>(graph, {
-      ...gated,
-      id: `${props.id}-reset`,
-      variant: 'importance-reset',
-      bindings: [...anchors, bestKeys, bestRows],
-      body: `${UNDECIDED_WGSL('index')}
+  const resetNode =
+    finishSpanLimit > 0
+      ? createWGSLKernelNode<Parameters>(graph, {
+          ...gated,
+          id: `${props.id}-reset`,
+          variant: `importance-reset-finish-${props.metric}`,
+          bindings: [
+            {name: 'positions', view: props.positions, type: 'f32', access: 'read'},
+            {
+              name: 'leftAnchors',
+              view: scratch.leftAnchors,
+              type: 'atomic<u32>',
+              access: 'read_write'
+            },
+            {
+              name: 'rightAnchors',
+              view: scratch.rightAnchors,
+              type: 'atomic<u32>',
+              access: 'read_write'
+            },
+            bestKeys,
+            bestRows,
+            {name: 'importance', view: props.importance, type: 'u32', access: 'read_write'},
+            ...(isTimeRatio && props.timestamps
+              ? [{name: 'timestamps', view: props.timestamps, type: 'f32', access: 'read'} as const]
+              : [])
+          ],
+          declarations: `${LINE_SIMPLIFICATION_METRIC_WGSL}
+const FINISH_SPAN_LIMIT: u32 = ${finishSpanLimit}u;
+
+// Distance key of a row against the chord (left, right), as in the distance node.
+fn getDistanceKey(row: u32, leftAnchor: u32, rightAnchor: u32) -> u32 {
+  let distance = ${getDistanceExpression('row', 'leftAnchor', 'rightAnchor')};
+  return select(bitcast<u32>(distance), 0u, distance <= 0.0);
+}
+
+// Decides every interior row of the open interval (first, last) with the recursion the rounds
+// would run, depth first from one lane. Importance is min(key, parent) where parent is the
+// importance of the split that created the interval; both children of a split row inherit that
+// row's importance as parent because it never exceeds either anchor's.
+fn finishInterval(first: u32, last: u32) {
+  lineOpaqueZero = first >> 31u;
+  var stackLeft: array<u32, ${finishSpanLimit}>;
+  var stackRight: array<u32, ${finishSpanLimit}>;
+  var stackParent: array<u32, ${finishSpanLimit}>;
+  stackLeft[0] = first;
+  stackRight[0] = last;
+  stackParent[0] = min(importance[importanceOffset + first], importance[importanceOffset + last]);
+  var depth = 1u;
+  while (depth > 0u) {
+    depth--;
+    let left = stackLeft[depth];
+    let right = stackRight[depth];
+    let parent = stackParent[depth];
+    var bestKey = 0u;
+    var bestRow = 0xffffffffu;
+    for (var row = left + 1u; row < right; row++) {
+      let key = getDistanceKey(row, left, right);
+      // Strict comparison keeps the smallest row on ties.
+      if (key > bestKey) {
+        bestKey = key;
+        bestRow = row;
+      }
+    }
+    if (bestKey == 0u) {
+      for (var row = left + 1u; row < right; row++) {
+        importance[importanceOffset + row] = 0u;
+        atomicStore(&leftAnchors[leftAnchorsOffset + row], row);
+        atomicStore(&rightAnchors[rightAnchorsOffset + row], row);
+      }
+      continue;
+    }
+    let splitImportance = min(bestKey, parent);
+    importance[importanceOffset + bestRow] = splitImportance;
+    atomicStore(&leftAnchors[leftAnchorsOffset + bestRow], bestRow);
+    atomicStore(&rightAnchors[rightAnchorsOffset + bestRow], bestRow);
+    if (bestRow > left + 1u) {
+      stackLeft[depth] = left;
+      stackRight[depth] = bestRow;
+      stackParent[depth] = splitImportance;
+      depth++;
+    }
+    if (right > bestRow + 1u) {
+      stackLeft[depth] = bestRow;
+      stackRight[depth] = right;
+      stackParent[depth] = splitImportance;
+      depth++;
+    }
+  }
+}`,
+          // Atomic loads and stores make the finishing lane's writes to the anchors of its own
+          // interval defined for the other lanes of that interval, which read them concurrently.
+          body: `let leftAnchor = atomicLoad(&leftAnchors[leftAnchorsOffset + index]);
+  let rightAnchor = atomicLoad(&rightAnchors[rightAnchorsOffset + index]);
+  if (!(leftAnchor < index && index < rightAnchor)) {
+    return;
+  }
+  if (rightAnchor - leftAnchor - 1u <= FINISH_SPAN_LIMIT) {
+    // The first interior row finishes the whole interval; its siblings have nothing to reset.
+    if (index == leftAnchor + 1u) {
+      finishInterval(leftAnchor, rightAnchor);
+    }
+    return;
+  }
   atomicStore(&bestKeys[bestKeysOffset + leftAnchor], 0u);
   atomicStore(&bestRows[bestRowsOffset + leftAnchor], 0xffffffffu);`
-    }),
+        })
+      : createWGSLKernelNode<Parameters>(graph, {
+          ...gated,
+          id: `${props.id}-reset`,
+          variant: 'importance-reset',
+          bindings: [...anchors, bestKeys, bestRows],
+          body: `${UNDECIDED_WGSL('index')}
+  atomicStore(&bestKeys[bestKeysOffset + leftAnchor], 0u);
+  atomicStore(&bestRows[bestRowsOffset + leftAnchor], 0xffffffffu);`
+        });
+
+  return [
+    resetNode,
     createWGSLKernelNode<Parameters>(graph, {
       ...gated,
       id: `${props.id}-distance`,

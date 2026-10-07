@@ -218,16 +218,25 @@ export class GPUWeightedOverlay implements GPUCommandNodeProducer {
         variant: 'score',
         bindings,
         invocationCount: cellCount,
+        // The range reduction needs workgroup barriers, so every invocation runs the body.
+        guardIndex: !rangeKeys,
         declarations: `const LAYER_COUNT: u32 = ${layerCount}u;
 const CELL_COUNT: u32 = ${cellCount}u;
 const MAXIMUM_BREAK_COUNT: u32 = ${maximumBreakCount}u;
+${
+  rangeKeys
+    ? `var<workgroup> tileMinimum: array<u32, 256>;
+var<workgroup> tileMaximum: array<u32, 256>;`
+    : ''
+}
 ${getRasterAlgebraValueWGSL(props.noDataValue)}
 ${hasTables ? getBreakSearchWGSL('countBreaksBelow', 'remapBreaks') : ''}
 fn getOrderedKey(value: f32) -> u32 {
   let bits = bitcast<u32>(value);
   return bits ^ select(0x80000000u, 0xffffffffu, (bits >> 31u) != 0u);
 }`,
-        body: `let normalizeWeights = params[paramsOffset] != 0.0;
+        body: `${rangeKeys ? 'var minimumKey = 0xffffffffu;\n  var maximumKey = 0u;\n  if (index < CELL_COUNT) {' : ''}
+  let normalizeWeights = params[paramsOffset] != 0.0;
   let ignoreNoData = params[paramsOffset + 1u] != 0.0;
   var sum = 0.0;
   var weightSum = 0.0;
@@ -286,8 +295,24 @@ fn getOrderedKey(value: f32) -> u32 {
     rangeKeys
       ? `if (isScoreDefined) {
     let key = getOrderedKey(score);
-    atomicMin(&rangeKeys[rangeKeysOffset], key);
-    atomicMax(&rangeKeys[rangeKeysOffset + 1u], key);
+    minimumKey = key;
+    maximumKey = key;
+  }
+  }
+  // Combine the workgroup's keys in a tree; one pair of global atomics per workgroup, not per cell.
+  tileMinimum[localInvocationIndex] = minimumKey;
+  tileMaximum[localInvocationIndex] = maximumKey;
+  workgroupBarrier();
+  for (var stride = 128u; stride > 0u; stride = stride >> 1u) {
+    if (localInvocationIndex < stride) {
+      tileMinimum[localInvocationIndex] = min(tileMinimum[localInvocationIndex], tileMinimum[localInvocationIndex + stride]);
+      tileMaximum[localInvocationIndex] = max(tileMaximum[localInvocationIndex], tileMaximum[localInvocationIndex + stride]);
+    }
+    workgroupBarrier();
+  }
+  if (localInvocationIndex == 0u && tileMinimum[0] <= tileMaximum[0]) {
+    atomicMin(&rangeKeys[rangeKeysOffset], tileMinimum[0]);
+    atomicMax(&rangeKeys[rangeKeysOffset + 1u], tileMaximum[0]);
   }`
       : ''
   }`

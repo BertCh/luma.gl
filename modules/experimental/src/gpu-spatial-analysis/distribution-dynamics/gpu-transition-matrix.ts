@@ -18,6 +18,10 @@ import {
 
 const OPERATION = 'GPUTransitionMatrix';
 const MAXIMUM_CLASS_COUNT = 64;
+/** Largest cell count (plus one ignored slot) kept in a workgroup-private histogram, in words (8 KiB). */
+const MAXIMUM_PRIVATE_CELLS = 2048;
+/** Transitions counted per invocation of the privatised kernel, to amortise the tile flush. */
+const PRIVATE_ITEMS_PER_INVOCATION = 16;
 
 /** Caller-owned outputs of {@link GPUTransitionMatrix}. */
 export type GPUTransitionMatrixOutput = {
@@ -197,6 +201,88 @@ export class GPUTransitionMatrix implements GPUCommandNodeProducer {
 const CLASSES: u32 = ${classCount}u;
 const CONDITIONS: u32 = ${conditionCount}u;
 const CELLS: u32 = ${cellCount}u;`;
+    const transitions = rows * (periods - periodLag);
+    // Workgroup-privatised histogram: every workgroup counts a tile of transitions in shared
+    // memory and flushes its non-zero cells with one global atomic each, instead of one global
+    // atomic per transition on a handful of hot cells. Counts stay exact integers.
+    const privatized = cellCount + 1 <= MAXIMUM_PRIVATE_CELLS;
+    const countBindings = [
+      {name: 'classes', view: classes, type: 'u32' as const, access: 'read' as const},
+      ...(conditionClasses
+        ? [
+            {
+              name: 'conditions',
+              view: conditionClasses,
+              type: 'u32' as const,
+              access: 'read' as const
+            }
+          ]
+        : []),
+      ...(mask ? [{name: 'mask', view: mask, type: 'u32' as const, access: 'read' as const}] : []),
+      {
+        name: 'counts',
+        view: output.counts,
+        type: 'atomic<u32>' as const,
+        access: 'read_write' as const
+      },
+      ...(output.ignored
+        ? [
+            {
+              name: 'ignored',
+              view: output.ignored,
+              type: 'atomic<u32>' as const,
+              access: 'read_write' as const
+            }
+          ]
+        : [])
+    ];
+    const createPrivateCountNode = () =>
+      createWGSLKernelNode<Parameters>(graph, {
+        id: `${id}-count`,
+        operation: OPERATION,
+        variant: 'count-private',
+        bindings: countBindings,
+        invocationCount: Math.ceil(transitions / PRIVATE_ITEMS_PER_INVOCATION),
+        guardIndex: false,
+        declarations: `${constants}
+const TRANSITIONS: u32 = ${transitions}u;
+const ITEMS: u32 = ${PRIVATE_ITEMS_PER_INVOCATION}u;
+const TILE_SIZE: u32 = 256u;
+// Slot CELLS counts the transitions that are not counted.
+var<workgroup> tile: array<atomic<u32>, ${cellCount + 1}>;`,
+        body: `for (var cell = localInvocationIndex; cell <= CELLS; cell += TILE_SIZE) {
+    atomicStore(&tile[cell], 0u);
+  }
+  workgroupBarrier();
+  let tileStart = (index - localInvocationIndex) * ITEMS;
+  for (var item = 0u; item < ITEMS; item++) {
+    let transition = tileStart + item * TILE_SIZE + localInvocationIndex;
+    if (transition < TRANSITIONS) {
+      let period = transition / ROWS;
+      let row = transition - period * ROWS;
+      let fromClass = classes[classesOffset + transition];
+      let toClass = classes[classesOffset + transition + ${periodLag}u * ROWS];
+      let condition = ${conditionClasses ? 'conditions[conditionsOffset + transition]' : '0u'};
+      let selected = ${mask ? 'mask[maskOffset + row] != 0u' : 'true'};
+      if (selected && fromClass < CLASSES && toClass < CLASSES && condition < CONDITIONS) {
+        atomicAdd(&tile[(condition * CLASSES + fromClass) * CLASSES + toClass], 1u);
+      } else {
+        atomicAdd(&tile[CELLS], 1u);
+      }
+    }
+  }
+  workgroupBarrier();
+  for (var cell = localInvocationIndex; cell <= CELLS; cell += TILE_SIZE) {
+    let value = atomicLoad(&tile[cell]);
+    if (value > 0u) {
+      if (cell < CELLS) {
+        atomicAdd(&counts[countsOffset + cell], value);
+      } else {
+        ${output.ignored ? 'atomicAdd(&ignored[ignoredOffset], value);' : ''}
+      }
+    }
+  }`
+      });
     const nodes: GPUCommandNode<Parameters>[] = [
       createWGSLKernelNode<Parameters>(graph, {
         id: `${id}-clear`,
@@ -220,40 +306,42 @@ const CELLS: u32 = ${cellCount}u;`;
         body: `counts[countsOffset + index] = 0u;
   ${output.ignored ? 'if (index == 0u) { ignored[ignoredOffset] = 0u; }' : ''}`
       }),
-      createWGSLKernelNode<Parameters>(graph, {
-        id: `${id}-count`,
-        operation: OPERATION,
-        variant: 'count',
-        bindings: [
-          {name: 'classes', view: classes, type: 'u32', access: 'read'},
-          ...(conditionClasses
-            ? [
-                {
-                  name: 'conditions',
-                  view: conditionClasses,
-                  type: 'u32' as const,
-                  access: 'read' as const
-                }
-              ]
-            : []),
-          ...(mask
-            ? [{name: 'mask', view: mask, type: 'u32' as const, access: 'read' as const}]
-            : []),
-          {name: 'counts', view: output.counts, type: 'atomic<u32>', access: 'read_write'},
-          ...(output.ignored
-            ? [
-                {
-                  name: 'ignored',
-                  view: output.ignored,
-                  type: 'atomic<u32>' as const,
-                  access: 'read_write' as const
-                }
-              ]
-            : [])
-        ],
-        invocationCount: rows * (periods - periodLag),
-        declarations: constants,
-        body: `let period = index / ROWS;
+      privatized
+        ? createPrivateCountNode()
+        : createWGSLKernelNode<Parameters>(graph, {
+            id: `${id}-count`,
+            operation: OPERATION,
+            variant: 'count',
+            bindings: [
+              {name: 'classes', view: classes, type: 'u32', access: 'read'},
+              ...(conditionClasses
+                ? [
+                    {
+                      name: 'conditions',
+                      view: conditionClasses,
+                      type: 'u32' as const,
+                      access: 'read' as const
+                    }
+                  ]
+                : []),
+              ...(mask
+                ? [{name: 'mask', view: mask, type: 'u32' as const, access: 'read' as const}]
+                : []),
+              {name: 'counts', view: output.counts, type: 'atomic<u32>', access: 'read_write'},
+              ...(output.ignored
+                ? [
+                    {
+                      name: 'ignored',
+                      view: output.ignored,
+                      type: 'atomic<u32>' as const,
+                      access: 'read_write' as const
+                    }
+                  ]
+                : [])
+            ],
+            invocationCount: rows * (periods - periodLag),
+            declarations: constants,
+            body: `let period = index / ROWS;
   let row = index - period * ROWS;
   let fromClass = classes[classesOffset + index];
   let toClass = classes[classesOffset + index + ${periodLag}u * ROWS];
@@ -264,7 +352,7 @@ const CELLS: u32 = ${cellCount}u;`;
   } else {
     ${output.ignored ? 'atomicAdd(&ignored[ignoredOffset], 1u);' : ''}
   }`
-      })
+          })
     ];
     if (output.probabilities || output.rowTotals) {
       nodes.push(

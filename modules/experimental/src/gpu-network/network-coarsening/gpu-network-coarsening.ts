@@ -166,6 +166,8 @@ export type GPUNetworkCoarseningProps = {
 
 const OPERATION = 'GPUNetworkCoarsening';
 const GROUP_ACC_STRIDE = 10;
+/** Sorted slots folded per invocation when accumulating superedge counts and weights. */
+const SEGMENT_RUN_LENGTH = 16;
 const WORD = GPU_NETWORK_COARSENING_SUMMARY_WORD;
 
 /** Shared WGSL for the 64-bit signed fixed-point accumulators. */
@@ -634,6 +636,8 @@ ${getFixedPointSource(scale)}`,
   var dropped = 0u;
   var intra = 0u;
   var inter = 0u;
+  var intraWeightLow = 0u;
+  var intraWeightHigh = 0u;
   for (var slot = rowBegin; slot < rowEnd; slot++) {
     var key = SENTINEL_KEY;
     let targetVertex = neighbors[neighborsOffset + slot];
@@ -649,15 +653,11 @@ ${getFixedPointSource(scale)}`,
         } else if (sourceLabel == targetLabel) {
           intra++;
           ${
-            intraAcc
-              ? `let intraBase = sourceLabel * 3u;
-          atomicAdd(&intraAcc[intraAccOffset + intraBase], 1u);
-          ${
             hasIntraWeight
               ? `let quantizedWeight = quantize(${props.weights ? 'weights[weightsOffset + slot]' : '1.0'});
-          ${getFixedPointAddSource('intraAcc', 'intraAccOffset + intraBase + 1u', 'quantizedWeight')}`
-              : ''
-          }`
+          let previousLow = intraWeightLow;
+          intraWeightLow += quantizedWeight.x;
+          intraWeightHigh += quantizedWeight.y + select(0u, 1u, intraWeightLow < previousLow);`
               : ''
           }
         } else {
@@ -667,6 +667,23 @@ ${getFixedPointSource(scale)}`,
       }
     }
     sortKeys[sortKeysOffset + slot] = key;
+  }
+  ${
+    intraAcc
+      ? `// Every intra-group slot of a row lands in the row's own group, so the row folds its intra
+  // count and 64-bit fixed-point weight locally and issues one atomic set instead of one per slot
+  // (integer addition is associative, so the sums are unchanged).
+  if (intra > 0u) {
+    let intraBase = sourceLabel * 3u;
+    atomicAdd(&intraAcc[intraAccOffset + intraBase], intra);
+    ${
+      hasIntraWeight
+        ? `let rowIntraWeight = vec2<u32>(intraWeightLow, intraWeightHigh);
+    ${getFixedPointAddSource('intraAcc', 'intraAccOffset + intraBase + 1u', 'rowIntraWeight')}`
+        : ''
+    }
+  }`
+      : ''
   }
   if (counted > 0u) { atomicAdd(&stats[statsOffset + ${WORD.countedEdgeCount}u], counted); }
   if (dropped > 0u) { atomicAdd(&stats[statsOffset + ${WORD.droppedEdgeCount}u], dropped); }
@@ -812,40 +829,72 @@ ${getFixedPointSource(scale)}`,
         });
       }
     }
+    // Each invocation owns SEGMENT_RUN_LENGTH consecutive sorted slots and folds every run of one
+    // key locally (count and 64-bit fixed-point weight), flushing one atomic set per run. A heavy
+    // superedge then costs one atomic set per run instead of one per slot on a single address;
+    // integer addition is associative, so counts and weights are unchanged.
+    const flushRun = `if (runCount > 0u) {
+      atomicAdd(&edgeCounts[edgeCountsOffset + runSegment], runCount);
+      ${
+        segmentWeightAcc
+          ? `let runWeight = vec2<u32>(runWeightLow, runWeightHigh);
+      ${getFixedPointAddSource('segmentWeightAcc', 'segmentWeightAccOffset + 2u * runSegment', 'runWeight')}`
+          : ''
+      }
+    }`;
     nodes.push(
       createWGSLKernelNode<Parameters>(graph, {
         id: `${id}-segments`,
         operation: OPERATION,
         variant: 'segments',
         bindings: segmentBindings,
-        invocationCount: slotCount,
+        invocationCount: Math.ceil(slotCount / SEGMENT_RUN_LENGTH),
         declarations: `const SENTINEL_KEY: u32 = ${sentinelKey}u;
 const GROUP_CAPACITY: u32 = ${groupCapacity}u;
 const EDGE_CAPACITY: u32 = ${edgeCapacity}u;
+const SLOT_COUNT: u32 = ${slotCount}u;
 ${getFixedPointSource(scale)}`,
-        body: `let key = sortedKeys[sortedKeysOffset + index];
-  if (key == SENTINEL_KEY) {
-    return;
+        body: `let first = index * ${SEGMENT_RUN_LENGTH}u;
+  let last = min(first + ${SEGMENT_RUN_LENGTH}u, SLOT_COUNT);
+  var runSegment = 0xffffffffu;
+  var runCount = 0u;
+  var runWeightLow = 0u;
+  var runWeightHigh = 0u;
+  for (var position = first; position < last; position++) {
+    let key = sortedKeys[sortedKeysOffset + position];
+    if (key == SENTINEL_KEY) {
+      break;
+    }
+    var isStart = true;
+    if (position > 0u) {
+      isStart = sortedKeys[sortedKeysOffset + position - 1u] != key;
+    }
+    let segment = segmentScan[segmentScanOffset + position] + select(0u, 1u, isStart) - 1u;
+    if (segment != runSegment) {
+      ${flushRun}
+      runSegment = segment;
+      runCount = 0u;
+      runWeightLow = 0u;
+      runWeightHigh = 0u;
+    }
+    if (segment >= EDGE_CAPACITY) {
+      continue;
+    }
+    if (isStart) {
+      edgeIds[edgeIdsOffset + segment] = key / GROUP_CAPACITY;
+      edgeTargets[edgeTargetsOffset + segment] = key % GROUP_CAPACITY;
+    }
+    runCount++;
+    ${
+      segmentWeightAcc
+        ? `let quantizedWeight = quantize(${props.weights ? 'weights[weightsOffset + sortedIndices[sortedIndicesOffset + position]]' : '1.0'});
+    let previousLow = runWeightLow;
+    runWeightLow += quantizedWeight.x;
+    runWeightHigh += quantizedWeight.y + select(0u, 1u, runWeightLow < previousLow);`
+        : ''
+    }
   }
-  var isStart = true;
-  if (index > 0u) {
-    isStart = sortedKeys[sortedKeysOffset + index - 1u] != key;
-  }
-  let segment = segmentScan[segmentScanOffset + index] + select(0u, 1u, isStart) - 1u;
-  if (segment >= EDGE_CAPACITY) {
-    return;
-  }
-  if (isStart) {
-    edgeIds[edgeIdsOffset + segment] = key / GROUP_CAPACITY;
-    edgeTargets[edgeTargetsOffset + segment] = key % GROUP_CAPACITY;
-  }
-  atomicAdd(&edgeCounts[edgeCountsOffset + segment], 1u);
-  ${
-    segmentWeightAcc
-      ? `let quantizedWeight = quantize(${props.weights ? 'weights[weightsOffset + sortedIndices[sortedIndicesOffset + index]]' : '1.0'});
-  ${getFixedPointAddSource('segmentWeightAcc', 'segmentWeightAccOffset + 2u * segment', 'quantizedWeight')}`
-      : ''
-  }`
+  ${flushRun}`
       })
     );
     if (segmentWeightAcc && props.edgeWeights) {

@@ -205,3 +205,100 @@ export function findCoverageGaps(polygons: OraclePolygons, keepMask: readonly nu
   }
   return problems;
 }
+
+/** Exact integer image of an f32 value, scaled by 2^80 (values must be multiples of 2^-80). */
+const toExact = (value: number) => BigInt(value * 2 ** 80);
+
+function exactOrientation(
+  a: readonly number[],
+  b: readonly number[],
+  c: readonly number[]
+): -1 | 0 | 1 {
+  const determinant =
+    (toExact(b[0]) - toExact(a[0])) * (toExact(c[1]) - toExact(a[1])) -
+    (toExact(b[1]) - toExact(a[1])) * (toExact(c[0]) - toExact(a[0]));
+  return determinant > 0n ? 1 : determinant < 0n ? -1 : 0;
+}
+
+const inBox = (p: readonly number[], a: readonly number[], b: readonly number[]) =>
+  p[0] >= Math.min(a[0], b[0]) &&
+  p[0] <= Math.max(a[0], b[0]) &&
+  p[1] >= Math.min(a[1], b[1]) &&
+  p[1] <= Math.max(a[1], b[1]);
+
+function segmentsIntersect(
+  a: readonly number[],
+  b: readonly number[],
+  c: readonly number[],
+  d: readonly number[]
+): boolean {
+  const o1 = exactOrientation(a, b, c);
+  const o2 = exactOrientation(a, b, d);
+  const o3 = exactOrientation(c, d, a);
+  const o4 = exactOrientation(c, d, b);
+  if (o1 !== o2 && o3 !== o4) return true;
+  return (
+    (o1 === 0 && inBox(c, a, b)) ||
+    (o2 === 0 && inBox(d, a, b)) ||
+    (o3 === 0 && inBox(a, c, d)) ||
+    (o4 === 0 && inBox(b, c, d))
+  );
+}
+
+/**
+ * Exact count of topology violations in simplified rings: pairs of ring segments that intersect
+ * although they share no endpoint coordinate. Identical segments (a shared edge, in either
+ * direction) and segments that only meet at a shared endpoint are legitimate. `positions` and
+ * `ringOffsets` use the layout of the contributor output (rings close implicitly).
+ */
+export function countCoverageCrossings(
+  positions: ArrayLike<number>,
+  ringOffsets: ArrayLike<number>
+): number {
+  type Segment = {a: [number, number]; b: [number, number]};
+  const segments: Segment[] = [];
+  for (let ring = 0; ring < ringOffsets.length - 1; ring++) {
+    const begin = ringOffsets[ring];
+    const end = ringOffsets[ring + 1];
+    for (let vertex = begin; vertex < end; vertex++) {
+      const next = vertex + 1 === end ? begin : vertex + 1;
+      const a: [number, number] = [positions[2 * vertex], positions[2 * vertex + 1]];
+      const b: [number, number] = [positions[2 * next], positions[2 * next + 1]];
+      if (a[0] !== b[0] || a[1] !== b[1]) segments.push({a, b});
+    }
+  }
+  const same = (p: readonly number[], q: readonly number[]) => p[0] === q[0] && p[1] === q[1];
+  let crossings = 0;
+  for (let first = 0; first < segments.length; first++) {
+    const s = segments[first];
+    for (let second = first + 1; second < segments.length; second++) {
+      const t = segments[second];
+      if (
+        Math.max(s.a[0], s.b[0]) < Math.min(t.a[0], t.b[0]) ||
+        Math.max(t.a[0], t.b[0]) < Math.min(s.a[0], s.b[0]) ||
+        Math.max(s.a[1], s.b[1]) < Math.min(t.a[1], t.b[1]) ||
+        Math.max(t.a[1], t.b[1]) < Math.min(s.a[1], s.b[1])
+      ) {
+        continue;
+      }
+      const identical = (same(s.a, t.a) && same(s.b, t.b)) || (same(s.a, t.b) && same(s.b, t.a));
+      if (identical) continue;
+      const shares = same(s.a, t.a) || same(s.a, t.b) || same(s.b, t.a) || same(s.b, t.b);
+      if (shares) {
+        // Sharing a point is fine unless the segments also overlap along a line.
+        const collinear =
+          exactOrientation(s.a, s.b, t.a) === 0 && exactOrientation(s.a, s.b, t.b) === 0;
+        if (!collinear) continue;
+        const sharedStart = same(s.a, t.a) || same(s.a, t.b) ? s.a : s.b;
+        const sOther = sharedStart === s.a ? s.b : s.a;
+        const tOther = same(sharedStart, t.a) ? t.b : t.a;
+        const dot =
+          (sOther[0] - sharedStart[0]) * (tOther[0] - sharedStart[0]) +
+          (sOther[1] - sharedStart[1]) * (tOther[1] - sharedStart[1]);
+        if (dot <= 0) continue;
+      }
+      if (segmentsIntersect(s.a, s.b, t.a, t.b)) crossings++;
+    }
+  }
+  return crossings;
+}

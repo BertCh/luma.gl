@@ -23,8 +23,14 @@ export type KeyPairSort<Parameters> = {
 };
 
 /**
- * Sorts items `0..count-1` by the 64-bit key `(keyHigh, keyLow)` with two stable 32-bit radix sorts
+ * Sorts items `0..count-1` by the 64-bit key `(keyHigh, keyLow)` with two stable radix sorts
  * (low half first, then high half). Items whose key is `(0xffffffff, 0xffffffff)` sort last.
+ *
+ * `keyBits` narrows the radix sorts (one pass per digit of `keyBits`) when every valid key half
+ * is a small ID. A half sorted with `bits` bits compares only its low `bits` bits, so the invalid
+ * `0xffffffff` becomes `2^bits - 1` and still sorts last as long as every valid value is at most
+ * `2^bits - 2`, for example `bits = getSortKeyBits(idCount)` for IDs below `idCount`. The result
+ * is identical to the full-width sort.
  *
  * @internal
  */
@@ -34,7 +40,8 @@ export function getKeyPairSortNodes<Parameters>(
   operation: string,
   count: number,
   keyHigh: GraphDataView<'uint32'>,
-  keyLow: GraphDataView<'uint32'>
+  keyLow: GraphDataView<'uint32'>,
+  keyBits?: {high?: number; low?: number}
 ): KeyPairSort<Parameters> {
   const itemIds = createTransientView(graph, `${id}-item-ids`, 'uint32', count);
   const sortedLow = createTransientView(graph, `${id}-sorted-low`, 'uint32', count);
@@ -56,7 +63,8 @@ export function getKeyPairSortNodes<Parameters>(
       keys: keyLow,
       values: itemIds,
       outputKeys: sortedLow,
-      outputValues: lowOrder
+      outputValues: lowOrder,
+      keyBits: keyBits?.low
     }).getCommandNodes(graph),
     createWGSLKernelNode<Parameters>(graph, {
       id: `${id}-gather-high`,
@@ -75,7 +83,8 @@ export function getKeyPairSortNodes<Parameters>(
       keys: gatheredHigh,
       values: lowOrder,
       outputKeys: sortedHigh,
-      outputValues: sortedItems
+      outputValues: sortedItems,
+      keyBits: keyBits?.high
     }).getCommandNodes(graph)
   ];
   return {nodes, sortedItems};

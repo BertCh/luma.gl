@@ -73,13 +73,13 @@ export type ZonalStatisticsPlanInput = {
   hasWeights: boolean;
   /** Whether caller-provided per-feature areas were given. */
   hasAreas: boolean;
-  /** Whether sums use the sorted segmented reduction. */
+  /** Whether sums use the sorted segmented reduction (it needs no per-feature counts). */
   sorted: boolean;
 };
 
 /** Resolves which statistics are computed, including transients for derived statistics. @internal */
 export function getZonalStatisticsPlan(input: ZonalStatisticsPlanInput): ZonalStatisticsPlan {
-  const {outputs, extentStatistic, hasWeights, hasAreas, sorted} = input;
+  const {outputs, extentStatistic, hasWeights, hasAreas} = input;
   const extent = outputs.extent ? extentStatistic : undefined;
   const needMeans = outputs.means || extent === 'mean';
   const needDensities = outputs.densities || extent === 'density';
@@ -88,12 +88,7 @@ export function getZonalStatisticsPlan(input: ZonalStatisticsPlanInput): ZonalSt
   const needSums = outputs.sums || needMeans || extent === 'sum';
   const needValueCounts = outputs.valueCounts || (needMeans && !hasWeights);
   const needWeightSums = outputs.weightSums || (needMeans && hasWeights);
-  const needCounts =
-    outputs.counts ||
-    needDensities ||
-    outputs.extent ||
-    (sorted && (needSums || needWeightSums)) ||
-    extent === 'count';
+  const needCounts = outputs.counts || needDensities || outputs.extent || extent === 'count';
   return {
     needCounts,
     needValueCounts,

@@ -45,6 +45,7 @@ export type SpatialJoinRunOptions = {
   spatialSort: boolean;
   candidateCapacity: number;
   leafCapacity?: number;
+  spatialSortCurve?: 'morton' | 'hilbert';
 };
 
 /** Compiles a point-in-polygon join over `features` and `points`. */
@@ -107,6 +108,7 @@ export function createPolygonJoinRun(
       candidateCapacity: options.candidateCapacity,
       leafCapacity: options.leafCapacity,
       spatialSort: options.spatialSort,
+      spatialSortCurve: options.spatialSortCurve,
       pointFeatureIds: importGraphBuffer(graph, 'ids', ids, 'uint32', pointCount),
       featureCounts: importGraphBuffer(graph, 'counts', counts, 'uint32', featureCount),
       overflow: importGraphBuffer(graph, 'overflow', overflow, 'uint32', 1),
@@ -178,6 +180,7 @@ export function createNearestJoinRun(
       candidateCapacity: options.candidateCapacity,
       leafCapacity: options.leafCapacity,
       spatialSort: options.spatialSort,
+      spatialSortCurve: options.spatialSortCurve,
       nearestFeatureIds: importGraphBuffer(graph, 'ids', ids, 'uint32', pointCount),
       nearestDistances: importGraphBuffer(graph, 'distances', distances, 'float32', pointCount),
       featureCounts: importGraphBuffer(graph, 'counts', counts, 'uint32', featureCount),

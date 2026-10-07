@@ -78,6 +78,13 @@ export type GPUSpatialTwoStageLeastSquaresProps = {
    * `max(64, ceil(rows / 4096))`.
    */
   tileRowCount?: number;
+  /**
+   * Instrument order (spreg `w_lags`), compile-time: 1 (the default) instruments `W y` with
+   * `[1, X, W X]`, 2 with `[1, X, W X, W^2 X]`, where `W^2 X = W (W X)` is evaluated per row from
+   * the two-hop neighborhood, so no extra storage buffers are bound. The instrument count is
+   * `(order + 1) * predictorCount` columns.
+   */
+  instrumentOrder?: 1 | 2;
   /** Caller-owned outputs. */
   output: GPUSpatialTwoStageLeastSquaresOutput;
 };
@@ -106,8 +113,8 @@ export type GPUSpatialTwoStageLeastSquaresProps = {
  * over the rows of the transposed CSR, so the sparsity pattern of `weights` may be asymmetric
  * (`T = sum w_ij^2 + sum w_ij w_ji` only involves pairs present in both directions).
  *
- * Instruments with `W^2 X` (`w_lags = 2`), the robust and heteroskedastic variants, and spatial
- * error models (`GM_Error`) are not included.
+ * `instrumentOrder: 2` adds `W^2 X` to the instruments (`w_lags = 2`). The robust and heteroskedastic variants, and spatial
+ * error models (`GM_Error`) are not included here.
  */
 export class GPUSpatialTwoStageLeastSquares implements GPUCommandNodeProducer {
   /** Prefix for every node and transient ID. */
@@ -120,6 +127,8 @@ export class GPUSpatialTwoStageLeastSquares implements GPUCommandNodeProducer {
   readonly tileRowCount: number;
   /** Number of accumulation tiles. */
   readonly tileCount: number;
+  /** Instrument order, 1 or 2. */
+  readonly instrumentOrder: 1 | 2;
 
   constructor(props: GPUSpatialTwoStageLeastSquaresProps) {
     const id = props.id ?? 'spatial-two-stage-least-squares';
@@ -175,6 +184,11 @@ export class GPUSpatialTwoStageLeastSquares implements GPUCommandNodeProducer {
         throw new Error(`${id} output.residuals must hold one row per input row`);
       }
     }
+    const instrumentOrder = props.instrumentOrder ?? 1;
+    if (instrumentOrder !== 1 && instrumentOrder !== 2) {
+      throw new Error(`${id} instrumentOrder must be 1 or 2`);
+    }
+    this.instrumentOrder = instrumentOrder;
     if (props.tileRowCount !== undefined) {
       if (!Number.isInteger(props.tileRowCount) || props.tileRowCount < 1) {
         throw new Error(`${id} tileRowCount must be a positive integer`);
@@ -206,7 +220,7 @@ export class GPUSpatialTwoStageLeastSquares implements GPUCommandNodeProducer {
   getCommandNodes<Parameters>(
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
-    const {id, props, rowCount, tileRowCount, tileCount} = this;
+    const {id, props, rowCount, tileRowCount, tileCount, instrumentOrder} = this;
     const {weights, output, predictorCount: k} = props;
     validateGraphViewsBelongToGraph(id, graph, [
       props.predictors,
@@ -219,10 +233,11 @@ export class GPUSpatialTwoStageLeastSquares implements GPUCommandNodeProducer {
       output.status,
       output.residuals
     ]);
-    const m = 2 * k;
+    const m = (instrumentOrder + 1) * k;
     const q = k + 1;
     const momentCount = m * m + m * q + m + q;
-    const meanCount = 2 * k + 2;
+    // Means: x (k), W x (k), W y, y, then W^2 x (k) for instrument order 2.
+    const meanCount = (instrumentOrder + 1) * k + 2;
     const workspaceLength = meanCount + q;
     const transient = (name: string, length: number) =>
       createTransientView(graph, `${id}-${name}`, 'float32', length);
@@ -249,6 +264,7 @@ export class GPUSpatialTwoStageLeastSquares implements GPUCommandNodeProducer {
     const transposedLagResidual = transient('transposed-lag-residual', rowCount);
     const constants = `const ROWS: u32 = ${rowCount}u;
 const K: u32 = ${k}u;
+const ORDER: u32 = ${instrumentOrder}u;
 const M: u32 = ${m}u;
 const Q: u32 = ${q}u;
 const TILE_ROWS: u32 = ${tileRowCount}u;
@@ -311,10 +327,14 @@ ${getCenteredRowWGSL()}`;
   var sums: array<f32, ${meanCount}>;
   for (var row = firstRow; row < lastRow; row++) {
     var lagged: array<f32, ${k}>;
-    let lagResponse = getLags(row, &lagged);
+    var twiceLagged: array<f32, ${k}>;
+    let lagResponse = getLags(row, &lagged, &twiceLagged, ORDER == 2u);
     for (var column = 0u; column < K; column++) {
       sums[column] = sums[column] + design[designOffset + row * K + column];
       sums[K + column] = sums[K + column] + lagged[column];
+      if (ORDER == 2u) {
+        sums[2u * K + 2u + column] = sums[2u * K + 2u + column] + twiceLagged[column];
+      }
     }
     sums[2u * K] = sums[2u * K] + lagResponse;
     sums[2u * K + 1u] = sums[2u * K + 1u] + response[responseOffset + row];
@@ -351,7 +371,7 @@ ${getCenteredRowWGSL()}`;
     var h: array<f32, ${m}>;
     var z: array<f32, ${q}>;
     var centeredResponse = 0.0;
-    getCenteredRow(row, &h, &z, &centeredResponse);
+    getCenteredRow(row, &h, &z, &centeredResponse, true);
     for (var a = 0u; a < M; a++) {
       for (var b = 0u; b < M; b++) {
         partial[base + a * M + b] += h[a] * h[b];
@@ -408,7 +428,7 @@ ${getSolveWGSL(m, q)}`,
     var h: array<f32, ${m}>;
     var z: array<f32, ${q}>;
     var centeredResponse = 0.0;
-    getCenteredRow(row, &h, &z, &centeredResponse);
+    getCenteredRow(row, &h, &z, &centeredResponse, false);
     var residual = centeredResponse;
     for (var b = 0u; b < Q; b++) {
       residual = residual - z[b] * workspace[workspaceOffset + W_DELTA + b];
@@ -526,7 +546,8 @@ ${getSolveWGSL(m, q)}`,
   var sums: array<f32, ${q}>;
   for (var row = firstRow; row < lastRow; row++) {
     var lagged: array<f32, ${k}>;
-    let lagResponse = getLags(row, &lagged);
+    var twiceLagged: array<f32, ${k}>;
+    let lagResponse = getLags(row, &lagged, &twiceLagged, false);
     let product = transposedLagResidual[transposedLagResidualOffset + row];
     for (var column = 0u; column < K; column++) {
       let centered = design[designOffset + row * K + column] - workspace[workspaceOffset + column];
@@ -568,10 +589,18 @@ ${getFinishWGSL(k)}`,
   }
 }
 
-/** `getLags`: `W x` for every predictor and `W y` in one slot-order loop over the row. */
+/**
+ * `getLags`: `W x` for every predictor and `W y` in one slot-order loop over the row. With
+ * `needSecond`, also `W^2 x = W (W x)`, summed over the two-hop neighborhood in slot order.
+ */
 function getLagWGSL(): string {
   return /* wgsl */ `
-fn getLags(row: u32, lagged: ptr<function, array<f32, K>>) -> f32 {
+fn getLags(
+  row: u32,
+  lagged: ptr<function, array<f32, K>>,
+  twiceLagged: ptr<function, array<f32, K>>,
+  needSecond: bool
+) -> f32 {
   var lagResponse = 0.0;
   for (var slot = offsets[offsetsOffset + row]; slot < offsets[offsetsOffset + row + 1u]; slot++) {
     let neighbor = neighbors[neighborsOffset + slot];
@@ -582,6 +611,22 @@ fn getLags(row: u32, lagged: ptr<function, array<f32, K>>) -> f32 {
     lagResponse += weight * response[responseOffset + neighbor];
     for (var column = 0u; column < K; column++) {
       (*lagged)[column] += weight * design[designOffset + neighbor * K + column];
+    }
+    if (needSecond) {
+      var inner: array<f32, K>;
+      for (var second = offsets[offsetsOffset + neighbor]; second < offsets[offsetsOffset + neighbor + 1u]; second++) {
+        let farther = neighbors[neighborsOffset + second];
+        if (farther >= ROWS) {
+          continue;
+        }
+        let farWeight = weights[weightsOffset + second];
+        for (var column = 0u; column < K; column++) {
+          inner[column] += farWeight * design[designOffset + farther * K + column];
+        }
+      }
+      for (var column = 0u; column < K; column++) {
+        (*twiceLagged)[column] += weight * inner[column];
+      }
     }
   }
   return lagResponse;
@@ -600,15 +645,20 @@ fn getCenteredRow(
   row: u32,
   h: ptr<function, array<f32, M>>,
   z: ptr<function, array<f32, Q>>,
-  centeredResponse: ptr<function, f32>
+  centeredResponse: ptr<function, f32>,
+  needSecond: bool
 ) {
   var lagged: array<f32, K>;
-  let lagResponse = getLags(row, &lagged);
+  var twiceLagged: array<f32, K>;
+  let lagResponse = getLags(row, &lagged, &twiceLagged, needSecond);
   for (var column = 0u; column < K; column++) {
     let centered = design[designOffset + row * K + column] - workspace[workspaceOffset + column];
     (*h)[column] = centered;
     (*z)[column] = centered;
     (*h)[K + column] = lagged[column] - workspace[workspaceOffset + K + column];
+    if (ORDER == 2u && needSecond) {
+      (*h)[2u * K + column] = twiceLagged[column] - workspace[workspaceOffset + 2u * K + 2u + column];
+    }
   }
   (*z)[K] = lagResponse - workspace[workspaceOffset + 2u * K];
   *centeredResponse = response[responseOffset + row] - workspace[workspaceOffset + 2u * K + 1u];

@@ -230,30 +230,151 @@ export class GPULocalMoran implements GPUCommandNodeProducer {
       operation: OPERATION
     });
     const nodes = inputs.nodes;
-    const sharedWGSL = `${SPATIAL_AUTOCORRELATION_FLOAT_WGSL}
-const MOMENTS: u32 = ${rows}u;
+    const constantsWGSL = `const MOMENTS: u32 = ${rows}u;
 const ROWS: u32 = ${rows}u;`;
-    const spatialLag =
-      props.spatialLag ?? createTransientView(graph, `${id}-spatial-lag`, 'float32', rows);
-    const neighborCounts =
-      props.neighborCounts ?? createTransientView(graph, `${id}-neighbor-counts`, 'uint32', rows);
+    const floatWGSL = `${SPATIAL_AUTOCORRELATION_FLOAT_WGSL}
+${constantsWGSL}`;
+    // `readParameter` needs the `parameters` binding, so only kernels that bind it include it.
+    const parameterWGSL = `${getSpatialAutocorrelationSharedWGSL()}
+${constantsWGSL}`;
+    const {HIGH_HIGH, LOW_HIGH, LOW_LOW, HIGH_LOW, NOT_SIGNIFICANT} = GPU_LOCAL_MORAN_QUADRANT;
+    const wantsClassify = Boolean(props.quadrants || props.pValues);
+    const falseDiscoveryRate =
+      wantsClassify &&
+      props.falseDiscoveryRate &&
+      props.quadrants &&
+      props.quadrantGating !== 'none'
+        ? getFalseDiscoveryRateNodes<Parameters>(graph, {
+            id: `${id}-fdr`,
+            operation: OPERATION,
+            zScores,
+            parameters,
+            levelExpressions: ['readParameter(0u)']
+          })
+        : undefined;
+
+    // The per-row epilogues (local I, quadrant and p-value) are pure functions of values the
+    // neighbor kernel already holds, so they are fused into it when its bindings still fit the
+    // device limit: this removes one read-modify pass over `statistics`, `spatialLag` and
+    // `zScores` per epilogue. Without fusion (the FDR classification needs the global ranks
+    // first), they run as separate passes over the stored lag.
+    const storageBufferLimit = graph.device.limits.maxStorageBuffersPerShaderStage;
+    const getBindingCount = (fuseLocalI: boolean, fuseClassify: boolean) => {
+      const storesLag =
+        Boolean(props.spatialLag) ||
+        (Boolean(props.localI) && !fuseLocalI) ||
+        (wantsClassify && !fuseClassify);
+      return (
+        5 +
+        (storesLag ? 1 : 0) +
+        (props.neighborCounts ? 1 : 0) +
+        (props.localI && fuseLocalI ? 1 : 0) +
+        (fuseClassify ? 1 + (props.quadrants ? 1 : 0) + (props.pValues ? 1 : 0) : 0)
+      );
+    };
+    const canFuseClassify = wantsClassify && !falseDiscoveryRate;
+    let fuseLocalI = Boolean(props.localI);
+    let fuseClassify = canFuseClassify;
+    if (getBindingCount(fuseLocalI, fuseClassify) > storageBufferLimit) {
+      fuseLocalI = false;
+    }
+    if (getBindingCount(fuseLocalI, fuseClassify) > storageBufferLimit) {
+      fuseClassify = false;
+      fuseLocalI = Boolean(props.localI) && getBindingCount(true, false) <= storageBufferLimit;
+    }
+    const storesLag =
+      Boolean(props.spatialLag) ||
+      (Boolean(props.localI) && !fuseLocalI) ||
+      (wantsClassify && !fuseClassify);
+    const spatialLag = storesLag
+      ? (props.spatialLag ?? createTransientView(graph, `${id}-spatial-lag`, 'float32', rows))
+      : undefined;
+
+    const classifyWGSL = (
+      zScoreName: string,
+      centeredName: string,
+      lagName: string,
+      gate: string
+    ) => `let pValue = select(getQuietNaN(index), getTwoSidedPValue(${zScoreName}), isFiniteFloat(${zScoreName}));
+  ${gate}
+  var quadrant = ${NOT_SIGNIFICANT}u;
+  if (significant) {
+    if (${centeredName} > 0.0 && ${lagName} > 0.0) {
+      quadrant = ${HIGH_HIGH}u;
+    } else if (${centeredName} < 0.0 && ${lagName} > 0.0) {
+      quadrant = ${LOW_HIGH}u;
+    } else if (${centeredName} < 0.0 && ${lagName} < 0.0) {
+      quadrant = ${LOW_LOW}u;
+    } else if (${centeredName} > 0.0 && ${lagName} < 0.0) {
+      quadrant = ${HIGH_LOW}u;
+    }
+  }
+  ${props.quadrants ? 'quadrants[quadrantsOffset + index] = quadrant;' : ''}
+  ${props.pValues ? 'pValues[pValuesOffset + index] = pValue;' : ''}`;
+    const gateWGSL = (zScoreName: string, centeredName: string) =>
+      props.quadrantGating === 'none'
+        ? `let significant = isFiniteFloat(${centeredName});`
+        : `let significant = isFiniteFloat(${zScoreName}) && pValue <= readParameter(0u);`;
+
+    const neighborBindings: WGSLKernelBinding[] = [
+      {name: 'offsets', view: weights.offsets, type: 'u32', access: 'read'},
+      {name: 'neighbors', view: weights.neighbors, type: 'u32', access: 'read'},
+      {name: 'weights', view: weights.weights, type: 'f32', access: 'read'},
+      {name: 'statistics', view: inputs.statistics, type: 'f32', access: 'read'},
+      {name: 'zScores', view: zScores, type: 'f32', access: 'read_write'}
+    ];
+    if (spatialLag) {
+      neighborBindings.push({
+        name: 'spatialLag',
+        view: spatialLag,
+        type: 'f32',
+        access: 'read_write'
+      });
+    }
+    if (props.neighborCounts) {
+      neighborBindings.push({
+        name: 'neighborCounts',
+        view: props.neighborCounts,
+        type: 'u32',
+        access: 'read_write'
+      });
+    }
+    if (props.localI && fuseLocalI) {
+      neighborBindings.push({
+        name: 'localI',
+        view: props.localI,
+        type: 'f32',
+        access: 'read_write'
+      });
+    }
+    if (fuseClassify) {
+      neighborBindings.push({name: 'parameters', view: parameters, type: 'f32', access: 'read'});
+      if (props.quadrants) {
+        neighborBindings.push({
+          name: 'quadrants',
+          view: props.quadrants,
+          type: 'u32',
+          access: 'read_write'
+        });
+      }
+      if (props.pValues) {
+        neighborBindings.push({
+          name: 'pValues',
+          view: props.pValues,
+          type: 'f32',
+          access: 'read_write'
+        });
+      }
+    }
 
     nodes.push(
       createWGSLKernelNode<Parameters>(graph, {
         id: `${id}-neighbors`,
         operation: OPERATION,
-        variant: 'local-moran',
-        bindings: [
-          {name: 'offsets', view: weights.offsets, type: 'u32', access: 'read'},
-          {name: 'neighbors', view: weights.neighbors, type: 'u32', access: 'read'},
-          {name: 'weights', view: weights.weights, type: 'f32', access: 'read'},
-          {name: 'statistics', view: inputs.statistics, type: 'f32', access: 'read'},
-          {name: 'zScores', view: zScores, type: 'f32', access: 'read_write'},
-          {name: 'spatialLag', view: spatialLag, type: 'f32', access: 'read_write'},
-          {name: 'neighborCounts', view: neighborCounts, type: 'u32', access: 'read_write'}
-        ],
+        variant: `local-moran${props.localI && fuseLocalI ? '-local-i' : ''}${fuseClassify ? '-classify' : ''}`,
+        bindings: neighborBindings,
         invocationCount: rows,
-        declarations: sharedWGSL,
+        declarations: fuseClassify ? parameterWGSL : floatWGSL,
         body: `let centered = statistics[statisticsOffset + index];
   var zScore = getQuietNaN(index);
   var lag = getQuietNaN(index);
@@ -279,12 +400,22 @@ const ROWS: u32 = ${rows}u;`;
     }
   }
   zScores[zScoresOffset + index] = zScore;
-  spatialLag[spatialLagOffset + index] = lag;
-  neighborCounts[neighborCountsOffset + index] = neighborCount;`
+  ${spatialLag ? 'spatialLag[spatialLagOffset + index] = lag;' : ''}
+  ${props.neighborCounts ? 'neighborCounts[neighborCountsOffset + index] = neighborCount;' : ''}
+  ${
+    props.localI && fuseLocalI
+      ? `{
+    let scale = (statistics[statisticsOffset + MOMENTS] - 1.0) / statistics[statisticsOffset + MOMENTS + 3u];
+    // Excluded rows keep their NaN centered value; islands have a zero lag and so I = 0.
+    localI[localIOffset + index] = select(centered * lag * scale, getQuietNaN(index), !isFiniteFloat(centered));
+  }`
+      : ''
+  }
+  ${fuseClassify ? classifyWGSL('zScore', 'centered', 'lag', gateWGSL('zScore', 'centered')) : ''}`
       })
     );
 
-    if (props.localI) {
+    if (props.localI && !fuseLocalI) {
       nodes.push(
         createWGSLKernelNode<Parameters>(graph, {
           id: `${id}-local-i`,
@@ -292,11 +423,11 @@ const ROWS: u32 = ${rows}u;`;
           variant: 'local-i',
           bindings: [
             {name: 'statistics', view: inputs.statistics, type: 'f32', access: 'read'},
-            {name: 'spatialLag', view: spatialLag, type: 'f32', access: 'read'},
+            {name: 'spatialLag', view: spatialLag!, type: 'f32', access: 'read'},
             {name: 'localI', view: props.localI, type: 'f32', access: 'read_write'}
           ],
           invocationCount: rows,
-          declarations: sharedWGSL,
+          declarations: floatWGSL,
           body: `let centered = statistics[statisticsOffset + index];
   let lag = spatialLag[spatialLagOffset + index];
   let scale = (statistics[statisticsOffset + MOMENTS] - 1.0) / statistics[statisticsOffset + MOMENTS + 3u];
@@ -306,19 +437,9 @@ const ROWS: u32 = ${rows}u;`;
       );
     }
 
-    if (!props.quadrants && !props.pValues) {
+    if (!wantsClassify || fuseClassify) {
       return nodes;
     }
-    const falseDiscoveryRate =
-      props.falseDiscoveryRate && props.quadrants && props.quadrantGating !== 'none'
-        ? getFalseDiscoveryRateNodes<Parameters>(graph, {
-            id: `${id}-fdr`,
-            operation: OPERATION,
-            zScores,
-            parameters,
-            levelExpressions: ['readParameter(0u)']
-          })
-        : undefined;
     if (falseDiscoveryRate) {
       nodes.push(...falseDiscoveryRate.nodes);
     }
@@ -326,7 +447,7 @@ const ROWS: u32 = ${rows}u;`;
       {name: 'parameters', view: parameters, type: 'f32', access: 'read'},
       {name: 'statistics', view: inputs.statistics, type: 'f32', access: 'read'},
       {name: 'zScores', view: zScores, type: 'f32', access: 'read'},
-      {name: 'spatialLag', view: spatialLag, type: 'f32', access: 'read'}
+      {name: 'spatialLag', view: spatialLag!, type: 'f32', access: 'read'}
     ];
     if (falseDiscoveryRate) {
       classifyBindings.push(
@@ -350,7 +471,6 @@ const ROWS: u32 = ${rows}u;`;
         access: 'read_write'
       });
     }
-    const {HIGH_HIGH, LOW_HIGH, LOW_LOW, HIGH_LOW, NOT_SIGNIFICANT} = GPU_LOCAL_MORAN_QUADRANT;
     nodes.push(
       createWGSLKernelNode<Parameters>(graph, {
         id: `${id}-classify`,
@@ -360,32 +480,17 @@ const ROWS: u32 = ${rows}u;`;
         invocationCount: rows,
         declarations: getSpatialAutocorrelationSharedWGSL(),
         body: `let zScore = zScores[zScoresOffset + index];
-  let finite = isFiniteFloat(zScore);
-  let pValue = select(getQuietNaN(index), getTwoSidedPValue(zScore), finite);
-  ${
-    falseDiscoveryRate
-      ? `let rank = ranks[ranksOffset + index];
-  let significant = finite && rank > 0u && rank <= counters[countersOffset + 1u];`
-      : props.quadrantGating === 'none'
-        ? 'let significant = isFiniteFloat(statistics[statisticsOffset + index]);'
-        : 'let significant = finite && pValue <= readParameter(0u);'
-  }
   let centered = statistics[statisticsOffset + index];
   let lag = spatialLag[spatialLagOffset + index];
-  var quadrant = ${NOT_SIGNIFICANT}u;
-  if (significant) {
-    if (centered > 0.0 && lag > 0.0) {
-      quadrant = ${HIGH_HIGH}u;
-    } else if (centered < 0.0 && lag > 0.0) {
-      quadrant = ${LOW_HIGH}u;
-    } else if (centered < 0.0 && lag < 0.0) {
-      quadrant = ${LOW_LOW}u;
-    } else if (centered > 0.0 && lag < 0.0) {
-      quadrant = ${HIGH_LOW}u;
-    }
-  }
-  ${props.quadrants ? 'quadrants[quadrantsOffset + index] = quadrant;' : ''}
-  ${props.pValues ? 'pValues[pValuesOffset + index] = pValue;' : ''}`
+  ${classifyWGSL(
+    'zScore',
+    'centered',
+    'lag',
+    falseDiscoveryRate
+      ? `let rank = ranks[ranksOffset + index];
+  let significant = isFiniteFloat(zScore) && rank > 0u && rank <= counters[countersOffset + 1u];`
+      : gateWGSL('zScore', 'centered')
+  )}`
       })
     );
     return nodes;

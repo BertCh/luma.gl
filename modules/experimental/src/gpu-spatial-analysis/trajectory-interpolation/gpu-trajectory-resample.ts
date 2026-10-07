@@ -15,13 +15,14 @@ import {
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph
 } from '../../utils/gpu-contributor-utils';
+import {GPU_TRAJECTORY_CLOCK_PARAMETER_LENGTH} from './trajectory-clock-parameters';
 import {
   createTrajectoryArcLengthNode,
   createTrajectoryResampleNode
 } from './trajectory-interpolation-kernels';
 
 /** How {@link GPUTrajectoryResample} spaces samples along each track. */
-export type GPUTrajectoryResampleSpacing = 'time' | 'arc-length';
+export type GPUTrajectoryResampleSpacing = 'time' | 'arc-length' | 'clock';
 
 /**
  * Properties for {@link GPUTrajectoryResample}.
@@ -47,16 +48,24 @@ export type GPUTrajectoryResampleProps = {
   sampleCount: number;
   /**
    * `'time'` (default) spaces samples uniformly between the first and last timestamp;
-   * `'arc-length'` spaces them uniformly along the planar path length.
+   * `'arc-length'` spaces them uniformly along the planar path length; `'clock'` samples every
+   * track at the shared instants `start + k * step` of `clock` (see below).
    */
   spacing?: GPUTrajectoryResampleSpacing;
+  /**
+   * Per-frame shared clock, required for `spacing: 'clock'` and invalid otherwise. Float32 from
+   * `getGPUTrajectoryClockParameterValues` for float32 timestamps, or uint32 from
+   * `getGPUTrajectoryClockWordParameterValues` for word timestamps. Changing the start or step
+   * only rewrites this buffer; the compiled graph is reused.
+   */
+  clock?: GraphDataView<'float32'> | GraphDataView<'uint32'>;
   /** Dense `[trackCount × sampleCount]` positions, row `track * sampleCount + k`. */
   samples: GraphDataView<'float32x2'>;
   /** Optional dense elevations aligned with `samples`. Requires `elevations`. */
   sampleElevations?: GraphDataView<'float32'>;
   /**
-   * Optional dense sample times relative to each track's first timestamp, in the timestamps' unit.
-   * Requires `timestamps`.
+   * Optional dense sample times, in the timestamps' unit: relative to each track's first timestamp,
+   * or with `spacing: 'clock'` relative to the clock start (`k * step`). Requires `timestamps`.
    */
   sampleTimes?: GraphDataView<'float32'>;
 };
@@ -72,6 +81,12 @@ export type GPUTrajectoryResampleProps = {
  * found by the same upper-bound search as `GPUTrajectoryPlayhead`, so duplicate timestamps and
  * zero-length steps resolve to their last row and never divide by zero. A single-row track
  * repeats that row; an empty track writes zeros (derive validity from `trackOffsets`).
+ *
+ * Common clock: with `spacing: 'clock'` column `k` means the same instant `start + k * step` for
+ * every track, the dense input `GPUTrajectoryEncounters` needs. A track is interpolated only
+ * while that instant lies inside its own time range; before its first and after its last sample,
+ * and for empty tracks, the position (and elevation) is NaN, which downstream contributors read as
+ * "absent". `sampleCount` is then the number of clock steps.
  *
  * Composition: in arc-length mode one per-track kernel sums step lengths sequentially in row order
  * (deterministic, but O(track length) per invocation); then one kernel with one invocation per
@@ -96,8 +111,25 @@ export class GPUTrajectoryResample implements GPUCommandNodeProducer {
     if (props.trackOffsets.length < 2) {
       throw new Error(`${id} trackOffsets must contain at least two rows`);
     }
-    if (this.spacing !== 'time' && this.spacing !== 'arc-length') {
-      throw new Error(`${id} spacing must be 'time' or 'arc-length'`);
+    if (this.spacing !== 'time' && this.spacing !== 'arc-length' && this.spacing !== 'clock') {
+      throw new Error(`${id} spacing must be 'time', 'arc-length' or 'clock'`);
+    }
+    if (this.spacing === 'clock') {
+      if (!props.clock) {
+        throw new Error(`${id} clock is required for clock spacing`);
+      }
+      if (!props.timestamps) {
+        throw new Error(`${id} timestamps are required for clock spacing`);
+      }
+      const clockFormat = props.timestamps.format === 'uint32x2' ? 'uint32' : 'float32';
+      validatePackedView(props.clock, [clockFormat], `${id} clock`);
+      if (props.clock.length < GPU_TRAJECTORY_CLOCK_PARAMETER_LENGTH) {
+        throw new Error(
+          `${id} clock must hold ${GPU_TRAJECTORY_CLOCK_PARAMETER_LENGTH} ${clockFormat} values`
+        );
+      }
+    } else if (props.clock) {
+      throw new Error(`${id} clock requires spacing 'clock'`);
     }
     if (!Number.isInteger(props.sampleCount) || props.sampleCount < 1) {
       throw new Error(`${id} sampleCount must be a positive integer`);
@@ -140,7 +172,7 @@ export class GPUTrajectoryResample implements GPUCommandNodeProducer {
     validateGraphOutputsDisjointFromInputs(
       id,
       [props.samples, props.sampleElevations, props.sampleTimes],
-      [props.positions, props.elevations, props.timestamps, props.trackOffsets]
+      [props.positions, props.elevations, props.timestamps, props.trackOffsets, props.clock]
     );
   }
 
@@ -154,6 +186,7 @@ export class GPUTrajectoryResample implements GPUCommandNodeProducer {
       props.elevations,
       props.timestamps,
       props.trackOffsets,
+      props.clock,
       props.samples,
       props.sampleElevations,
       props.sampleTimes
@@ -185,7 +218,9 @@ export class GPUTrajectoryResample implements GPUCommandNodeProducer {
         id: `${id}-samples`,
         positions: props.positions,
         elevations: props.elevations,
-        timestamps: this.spacing === 'time' || props.sampleTimes ? props.timestamps : undefined,
+        timestamps:
+          this.spacing !== 'arc-length' || props.sampleTimes ? props.timestamps : undefined,
+        clock: props.clock,
         trackOffsets: props.trackOffsets,
         cumulativeLengths,
         samples: props.samples,

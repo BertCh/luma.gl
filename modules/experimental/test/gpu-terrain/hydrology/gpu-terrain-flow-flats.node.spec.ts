@@ -35,22 +35,22 @@ it('GPUTerrainFlow resolveFlats adds the flat resolution nodes after the directi
   expect(ids[direction + 1]).toBe('flow-flats-prepare');
   expect(ids).toContain('flow-flats-lower-relax-reset');
   expect(ids).toContain('flow-flats-higher-relax-2');
-  expect(ids).toContain('flow-flats-maximum-relax-gate-2');
+  expect(ids).toContain('flow-flats-maximum-relax-gate-0');
   expect(ids).not.toContain('flow-flats-lower-relax-3');
   expect(ids.indexOf('flow-flats-prepare-maximum')).toBeGreaterThan(
-    ids.indexOf('flow-flats-higher-relax-gate-2')
+    ids.indexOf('flow-flats-higher-relax-gate-0')
   );
   expect(ids.indexOf('flow-flats-mask')).toBeLessThan(ids.indexOf('flow-flats-route'));
   expect(ids).not.toContain('flow-flats-finalize');
 });
 
-it('GPUTerrainFlow resolveFlats node count is two resets plus two nodes per iteration per pass', () => {
+it('GPUTerrainFlow resolveFlats node count is two resets plus one node per iteration (and one seed kernel) and one gate per four iterations per pass', () => {
   const baseline = createFlow();
   const baselineCount = baseline.flow.getCommandNodes(baseline.graph).length;
   const {graph, flow} = createFlow(() => ({resolveFlats: true, maxFlatIterations: 4}));
   const withFlats = flow.getCommandNodes(graph).length;
-  // classes become a transient; two prepare kernels, mask, route, and three relaxation passes.
-  expect(withFlats - baselineCount).toBe(2 + 1 + 1 + 3 * (2 + 2 * 4));
+  // classes become a transient; two prepare kernels, one edge seed kernel, mask, route, and three relaxation passes.
+  expect(withFlats - baselineCount).toBe(2 + 1 + 1 + 1 + 3 * (2 + 4 + 1));
 });
 
 it('GPUTerrainFlow flatsConverged adds a finalize node and requires resolveFlats', () => {
@@ -66,11 +66,36 @@ it('GPUTerrainFlow flatsConverged adds a finalize node and requires resolveFlats
   expect(ids[ids.length - 1]).toBe('flow-flats-finalize');
   expect(() =>
     createFlow(graph => ({flatsConverged: createTransientView(graph, 'flag', 'uint32', 1)}))
-  ).toThrow(/flatsConverged requires resolveFlats/);
+  ).toThrow(/flatsConverged and flatsIterations require resolveFlats/);
 });
 
 it('GPUTerrainFlow validates maxFlatIterations', () => {
   expect(() => createFlow(() => ({resolveFlats: true, maxFlatIterations: 0}))).toThrow(
     /maxFlatIterations/
   );
+});
+
+it('GPUTerrainFlow iteration outputs add finalize nodes and need their stage', () => {
+  const plain = createFlow(() => ({resolveFlats: true, fillDepressions: true, streams: undefined}));
+  const plainIds = plain.flow.getCommandNodes(plain.graph).map(node => node.id);
+  const counted = createFlow(graph => ({
+    resolveFlats: true,
+    fillDepressions: true,
+    fillIterations: createTransientView(graph, 'fill-iterations', 'uint32', 1),
+    flatsIterations: createTransientView(graph, 'flats-iterations', 'uint32', 1)
+  }));
+  const ids = counted.flow.getCommandNodes(counted.graph).map(node => node.id);
+  expect(ids.length).toBe(plainIds.length + 2);
+  expect(ids).toContain('flow-fill-finalize');
+  expect(ids).toContain('flow-flats-finalize');
+  expect(() =>
+    createFlow(graph => ({
+      fillIterations: createTransientView(graph, 'fill-iterations', 'uint32', 1)
+    }))
+  ).toThrow(/fillIterations requires fillDepressions/);
+  expect(() =>
+    createFlow(graph => ({
+      flatsIterations: createTransientView(graph, 'flats-iterations', 'uint32', 1)
+    }))
+  ).toThrow(/require resolveFlats/);
 });

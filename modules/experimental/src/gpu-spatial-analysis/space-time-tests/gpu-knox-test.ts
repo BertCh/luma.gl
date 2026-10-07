@@ -262,9 +262,13 @@ const ROWS: u32 = ${rows}u;`,
           {name: 'pairPartials', view: pairPartials, type: 'u32', access: 'read_write'}
         ],
         invocationCount: slotCount * blocks,
-        declarations: common,
-        body: `let slot = index / BLOCKS;
-  let block = index - slot * BLOCKS;
+        declarations: `${common}
+const SLOT_COUNT: u32 = ${slotCount}u;`,
+        // Slot-fastest: the invocations of a warp share a block, so they walk the same rows and
+        // read each CSR entry as one broadcast load; only the permuted time is a gather. Rows are
+        // interleaved across blocks (row = block + k * BLOCKS) to even out skewed row lengths.
+        body: `let block = index / SLOT_COUNT;
+  let slot = index - block * SLOT_COUNT;
   let permutations = readPermutationCount();
   var count = 0u;
   var pairCount = 0u;
@@ -272,9 +276,7 @@ const ROWS: u32 = ${rows}u;`,
     let keys = getFeistelRoundKeys(readSeedKey(), select(0u, slot - 1u, slot > 0u));
     let halfBits = getFeistelHalfBits(ROWS);
     let threshold = readTimeThreshold();
-    let firstRow = block * ROWS_PER_BLOCK;
-    let endRow = min(firstRow + ROWS_PER_BLOCK, ROWS);
-    for (var row = firstRow; row < endRow; row++) {
+    for (var row = block; row < ROWS; row += BLOCKS) {
       let time = times[timesOffset + getPermutedRow(row, slot, keys, halfBits)];
       for (var entry = offsets[offsetsOffset + row]; entry < offsets[offsetsOffset + row + 1u]; entry++) {
         let other = neighbors[neighborsOffset + entry];
@@ -288,7 +290,7 @@ const ROWS: u32 = ${rows}u;`,
       }
     }
   }
-  partials[partialsOffset + index] = count;
+  partials[partialsOffset + block * SLOT_COUNT + slot] = count;
   if (slot == 0u) {
     pairPartials[pairPartialsOffset + block] = pairCount;
   }`
@@ -303,11 +305,13 @@ const ROWS: u32 = ${rows}u;`,
           {name: 'statistics', view: statistics, type: 'u32', access: 'read_write'}
         ],
         invocationCount: statistics.length,
-        declarations: common,
+        declarations: `${common}
+const SLOT_COUNT: u32 = ${slotCount}u;`,
+        // Adjacent invocations read adjacent slots of one block: coalesced.
         body: `var total = 0u;
   if (index <= readPermutationCount()) {
     for (var block = 0u; block < BLOCKS; block++) {
-      total += partials[partialsOffset + index * BLOCKS + block];
+      total += partials[partialsOffset + block * SLOT_COUNT + index];
     }
   }
   statistics[statisticsOffset + index] = total;`

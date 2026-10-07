@@ -243,7 +243,6 @@ const STATUS_BOUNDARY: u32 = 1u;
 const STATUS_OUTSIDE: u32 = 2u;`;
 
     // 1. Lookup: per point zone and status.
-    const needsCounts = Boolean(output.counts || output.sums);
     const pointZones =
       output.pointZones ?? createTransientView(graph, `${id}-point-zones`, 'uint32', pointCount);
     const pointStatus = createTransientView(graph, `${id}-point-status`, 'uint32', pointCount);
@@ -297,9 +296,8 @@ ${POLYGON_RASTER_EXTENT_WGSL}`,
     );
 
     // 2. Aggregation with integer atomics.
-    const counts =
-      output.counts ??
-      (needsCounts ? createTransientView(graph, `${id}-counts`, 'uint32', zoneCount) : undefined);
+    // The sorted sums below find zone sizes by binary search, so counts are built on request only.
+    const counts = output.counts;
     const tallies =
       output.unassignedBoundaryCount || output.outsideCount
         ? createTransientView(graph, `${id}-tallies`, 'uint32', 2)
@@ -419,7 +417,6 @@ fn isFiniteValue(value: f32) -> bool { return (bitcast<u32>(value) & 0x7fffffffu
           operation: OPERATION,
           segmentCount: zoneCount,
           segmentKeys: pointZones,
-          segmentCounts: counts!,
           reductions: [{name: 'sums', contributions, output: output.sums}]
         })
       );

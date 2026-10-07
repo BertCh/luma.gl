@@ -10,8 +10,24 @@ export {
   GPUGridGenerator
 } from './gpu-grid-generator';
 export type {
+  GPUGridGeneratorExtent,
   GPUGridGeneratorOutput,
   GPUGridGeneratorParameters,
   GPUGridGeneratorProps,
   GPUGridType
 } from './gpu-grid-generator';
+export {
+  getGPUShapeGeneratorParameterValues,
+  getGPUShapeMinimumSegments,
+  getGPUShapeVertexCount,
+  GPU_SHAPE_GENERATOR_EARTH_RADIUS,
+  GPU_SHAPE_GENERATOR_PARAMETER_LENGTH,
+  GPUShapeGenerator
+} from './gpu-shape-generator';
+export type {
+  GPUShapeCoordinateSystem,
+  GPUShapeGeneratorOutput,
+  GPUShapeGeneratorParameters,
+  GPUShapeGeneratorProps,
+  GPUShapeType
+} from './gpu-shape-generator';

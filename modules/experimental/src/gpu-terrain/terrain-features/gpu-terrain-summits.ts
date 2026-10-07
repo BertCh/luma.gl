@@ -362,6 +362,20 @@ fn evaluateSummit(column: i32, row: i32, index: u32) -> bool {
   let extentX = getDiscExtent(radius, cell.x);
   let extentY = getDiscExtent(radius, cell.y);
   let ownHeight = elevationValues[elevationValuesOffset + index];
+  // Cheap rejection first: almost every pixel has a higher disc pixel among its 8 neighbors, so the
+  // wide scan below only runs for 3x3 local maxima. Every rejection here would also be reached by
+  // the full scan (higher pixel, or an incomplete neighborhood under 'reject'), so results match.
+  for (var nearY = -1; nearY <= 1; nearY++) {
+    for (var nearX = -1; nearX <= 1; nearX++) {
+      let nearPixel = vec2<i32>(column + nearX, row + nearY);
+      if ((nearX == 0 && nearY == 0) || !isInDisc(nearPixel, centre, cell, radiusSquared)) { continue; }
+      if (nearPixel.x < 0 || nearPixel.y < 0 || nearPixel.x >= i32(WIDTH) || nearPixel.y >= i32(HEIGHT)) { continue; }
+      let nearIndex = u32(nearPixel.y) * WIDTH + u32(nearPixel.x);
+      if (elevationValidity[elevationValidityOffset + nearIndex] == 0u) { continue; }
+      let nearHeight = elevationValues[elevationValuesOffset + nearIndex];
+      if (nearHeight > ownHeight || (nearHeight == ownHeight && nearIndex < index)) { return false; }
+    }
+  }
   var ringHeight = 0.0;
   var hasRing = false;
   for (var offsetY = -extentY; offsetY <= extentY; offsetY++) {

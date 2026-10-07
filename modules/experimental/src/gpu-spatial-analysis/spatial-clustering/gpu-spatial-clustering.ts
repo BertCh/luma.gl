@@ -93,6 +93,12 @@ export type GPUSpatialClusteringProps = {
    * above the capacity are still written to `labels` but excluded from sizes and centroids.
    */
   clusters?: GPUCompactOutput;
+  /**
+   * Optional packed one-row view that receives the clamped cluster count (`clusters.count`),
+   * typically an indirect draw record's `instanceCount` imported with
+   * `graph.importGPUData(id, drawCommands.getInstanceCountData(0))`. Requires `clusters`.
+   */
+  drawInstanceCount?: GraphDataView<'uint32'>;
   /** Optional per-cluster member count (core and border points); requires `clusters`. Length equals `clusters.ids.length`. */
   clusterSizes?: GraphDataView<'uint32'>;
   /**
@@ -220,6 +226,15 @@ export class GPUSpatialClustering implements GPUCommandNodeProducer {
         throw new Error(`${id} clusters.ids must hold at least one row`);
       }
     }
+    if (props.drawInstanceCount) {
+      validatePackedUint32View(props.drawInstanceCount, `${id} drawInstanceCount`);
+      if (props.drawInstanceCount.length < 1) {
+        throw new Error(`${id} drawInstanceCount must contain one uint32 row`);
+      }
+      if (!props.clusters) {
+        throw new Error(`${id} drawInstanceCount requires clusters`);
+      }
+    }
     if ((props.clusterSizes || props.clusterCentroids) && !props.clusters) {
       throw new Error(`${id} clusterSizes and clusterCentroids require clusters`);
     }
@@ -248,7 +263,8 @@ export class GPUSpatialClustering implements GPUCommandNodeProducer {
         props.clusters?.overflow,
         props.clusters?.totalCount,
         props.clusterSizes,
-        props.clusterCentroids
+        props.clusterCentroids,
+        props.drawInstanceCount
       ],
       [props.positions, props.parameters, props.sourceIds]
     );
@@ -314,7 +330,8 @@ export class GPUSpatialClustering implements GPUCommandNodeProducer {
       clusters?.overflow,
       clusters?.totalCount,
       props.clusterSizes,
-      props.clusterCentroids
+      props.clusterCentroids,
+      props.drawInstanceCount
     ]);
     const rows = positions.length;
     const capacity = clusters?.ids.length ?? 0;
@@ -366,7 +383,8 @@ export class GPUSpatialClustering implements GPUCommandNodeProducer {
             id: `${id}-publish`,
             operation: OPERATION,
             totalCount: clusterCount,
-            output: clusters
+            output: clusters,
+            extraCounts: props.drawInstanceCount ? [props.drawInstanceCount] : []
           })
         );
       }
@@ -539,7 +557,6 @@ export class GPUSpatialClustering implements GPUCommandNodeProducer {
             operation: OPERATION,
             segmentCount: capacity,
             segmentKeys: props.labels,
-            segmentCounts: sizes,
             reductions: [
               {name: 'x', contributions: memberXs, output: sumsX},
               {name: 'y', contributions: memberYs, output: sumsY}
@@ -581,7 +598,8 @@ export class GPUSpatialClustering implements GPUCommandNodeProducer {
         operation: OPERATION,
         totalCount: clusterCount,
         compactIds: rootIds,
-        output: clusters
+        output: clusters,
+        extraCounts: props.drawInstanceCount ? [props.drawInstanceCount] : []
       })
     );
     return nodes;

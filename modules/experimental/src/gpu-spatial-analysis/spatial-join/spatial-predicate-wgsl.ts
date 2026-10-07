@@ -477,6 +477,31 @@ fn pairContains(outer: u32, inner: u32) -> bool {
 }`;
 }
 
+/** Reads a `dwithin` distance from a bound storage row each time instead of a WGSL constant. @internal */
+export type SpatialDistanceParameter = {
+  /** WGSL expression of type `f32` that reads the distance, such as `row[rowOffset]`. */
+  expression: string;
+};
+
+/**
+ * Returns WGSL declaring `distanceLimitSq() -> f32`, the squared `dwithin` distance in f32. With a
+ * number it is a compile-time constant. With a {@link SpatialDistanceParameter} it is read from the
+ * bound row on every call; a negative, NaN or infinite distance gives -1, which no pair satisfies.
+ * Both squares are one f32 multiply, so the two forms agree bit for bit.
+ *
+ * @internal
+ */
+export function getDistanceLimitWGSL(distance: number | SpatialDistanceParameter): string {
+  if (typeof distance === 'number') {
+    const squared = Math.fround(Math.fround(distance) * Math.fround(distance));
+    return `fn distanceLimitSq() -> f32 { return ${getWGSLFloatLiteral(squared)}; }`;
+  }
+  return `fn distanceLimitSq() -> f32 {
+  let distance = ${distance.expression};
+  return select(-1.0, distance * distance, distance >= 0.0 && distance <= 3.4028234e38);
+}`;
+}
+
 /**
  * Returns module-scope WGSL declaring `pairMatches(left, right) -> bool` for one predicate.
  *
@@ -489,7 +514,7 @@ export function getSpatialPredicateWGSL(
   left: SpatialPredicateSide,
   right: SpatialPredicateSide,
   predicate: SpatialPredicateName,
-  distance: number
+  distance: number | SpatialDistanceParameter
 ): string {
   let predicateWGSL: string;
   switch (predicate) {
@@ -506,11 +531,10 @@ fn pairMatches(l: u32, r: u32) -> bool { return pairContains(l, r); }`;
 fn pairMatches(l: u32, r: u32) -> bool { return pairContains(r, l); }`;
       break;
     case 'dwithin': {
-      const squared = Math.fround(Math.fround(distance) * Math.fround(distance));
       predicateWGSL = `${getIntersectsWGSL(left, right)}
 ${getDistanceWGSL(left)}
-const DISTANCE_SQ: f32 = ${getWGSLFloatLiteral(squared)};
-fn pairMatches(l: u32, r: u32) -> bool { return pairDistanceSq(l, r) <= DISTANCE_SQ; }`;
+${getDistanceLimitWGSL(distance)}
+fn pairMatches(l: u32, r: u32) -> bool { return pairDistanceSq(l, r) <= distanceLimitSq(); }`;
       break;
     }
     default:

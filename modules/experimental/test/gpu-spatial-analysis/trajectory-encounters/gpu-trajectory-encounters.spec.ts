@@ -246,3 +246,31 @@ it('GPUTrajectoryEncounters clamps the distance to the cell size and flags overf
   expect(starved.overflow).toBe(1);
   device.destroy?.();
 });
+
+it('GPUTrajectoryEncounters falls back to the three-pass sort when the packed key exceeds 32 bits', async () => {
+  const device = await getWebGPUTestDevice();
+  if (!device) {
+    return;
+  }
+  // 12 track bits + 12 partner bits + 9 bucket bits = 33 > 32, so the stable LSD chain runs.
+  const trackCount = 2100;
+  const bucketCount = 260;
+  const samples = createSamples(11, trackCount, bucketCount);
+  const expected = computeEncountersOracle(samples, trackCount, bucketCount, 3, undefined, BOUNDS);
+  expect(expected.length).toBeGreaterThan(100);
+  const actual = await runEncounters(device, samples, trackCount, bucketCount, {
+    distance: 3,
+    cellSize: 10,
+    hitCapacity: 1 << 17,
+    pairCapacity: 1 << 14
+  });
+  expect(actual.overflow).toBe(0);
+  expect(actual.count).toBe(expected.length);
+  for (const [index, pair] of expected.entries()) {
+    const label = `pair ${index} (${pair.track}, ${pair.partner})`;
+    expect([actual.ids[index], actual.partners[index]], label).toEqual([pair.track, pair.partner]);
+    expect(actual.first[index], label).toBe(pair.firstBucket);
+    expect(actual.counts[index], label).toBe(pair.bucketCount);
+  }
+  device.destroy?.();
+}, 120_000);

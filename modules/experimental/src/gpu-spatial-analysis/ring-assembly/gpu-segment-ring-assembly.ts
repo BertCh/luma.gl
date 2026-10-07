@@ -25,6 +25,8 @@ import {
 } from '../../utils/gpu-contributor-utils';
 
 const OPERATION = 'GPUSegmentRingAssembly';
+/** Lanes per workgroup; a workgroup owns this many rings and sums its larger rings cooperatively. */
+const RING_LANES = 64;
 
 /** Sentinel for "no ring", "no segment" and "no shell" in uint32 outputs (`0xffffffff`). */
 export const GPU_SEGMENT_RING_ASSEMBLY_NONE = 0xffffffff;
@@ -34,6 +36,13 @@ export const GPU_SEGMENT_RING_ASSEMBLY_FLAG_TOUCHING = 1;
 export const GPU_SEGMENT_RING_ASSEMBLY_FLAG_DANGLING = 2;
 /** `segmentFlags` bit: the chosen continuation was already taken by a lower-index segment. */
 export const GPU_SEGMENT_RING_ASSEMBLY_FLAG_CONFLICT = 4;
+
+/**
+ * `segmentFlags` bit: the segment and an exactly opposite segment (same group, end and start
+ * vertices matching within the tolerance) were cancelled by `cancelOpposingSegments`; neither is on
+ * a ring and neither counts as open.
+ */
+export const GPU_SEGMENT_RING_ASSEMBLY_FLAG_CANCELLED = 8;
 
 /** Which side of a directed segment the filled region lies on. */
 export type GPUSegmentRingAssemblyInteriorSide = 'left' | 'right';
@@ -55,6 +64,13 @@ export type GPUSegmentRingPolygonOutput = {
   polygonOffsets: GraphDataView<'uint32'>;
   /** Two-row `[0, polygonCount]`: one feature holding every polygon. */
   featureOffsets: GraphDataView<'uint32'>;
+  /**
+   * Optional group label of each polygon (its shell's group), length `ringCapacity`; unused
+   * polygons hold `0xffffffff` ({@link GPU_SEGMENT_RING_ASSEMBLY_NONE}). Needs the `groups`
+   * input. With one feature per polygon (an identity feature offset table) it maps a
+   * `GPUPolygonRasterization` zone row to its group.
+   */
+  polygonGroups?: GraphDataView<'uint32'>;
 };
 
 /**
@@ -80,8 +96,9 @@ export type GPUSegmentRingAssemblyOutput = {
   /**
    * Optional owning shell per ring: a shell's own ring index; a hole's innermost enclosing shell
    * (smallest area, lowest index on ties, same group when `groups` is set), or
-   * {@link GPU_SEGMENT_RING_ASSEMBLY_NONE} when no shell contains it. Costs one pass over every
-   * written vertex per hole.
+   * {@link GPU_SEGMENT_RING_ASSEMBLY_NONE} when no shell contains it. Each hole tests every shell's
+   * bounding box (four comparisons) and walks the vertices only of shells whose box contains its
+   * probe point.
    */
   ringShells?: GraphDataView<'uint32'>;
   /** Optional group label per ring (needs the `groups` input). */
@@ -143,6 +160,15 @@ export type GPUSegmentRingAssemblyProps = {
    */
   geographic?: boolean;
   /**
+   * Remove pairs of exactly opposite segments (`a -> b` and `b -> a` in one group, within the
+   * vertex tolerance) before chaining. Such pairs are zero-width slits or ridges where a region is
+   * cut by a line of zero thickness, for example band boundaries of `GPUIsobandRings` on samples
+   * that equal a break; left in, they pinch rings into spikes and strand chains. Pairs match one
+   * to one by lowest segment index; both segments get
+   * {@link GPU_SEGMENT_RING_ASSEMBLY_FLAG_CANCELLED}. Defaults to false.
+   */
+  cancelOpposingSegments?: boolean;
+  /**
    * Split rings that touch themselves at a vertex into separate rings (two holes meeting at a
    * corner, a hole pinched to its shell) at the cost of a second tracing pass. Regions touching at
    * a vertex are always separate rings. Without it the rule keeps interior wedges tight, so
@@ -177,8 +203,9 @@ export type GPUSegmentRingAssemblyProps = {
  *
  * Rings are written as GeoArrow-style `ringOffsets` plus `positions`. Signed area and orientation
  * identify shells and holes; `ringShells` assigns each hole to its innermost enclosing shell by
- * ray casting a point of the hole's first edge against every shell (work proportional to holes
- * times written vertices). `polygons` regroups the rings into polygon topology for
+ * ray casting a point of the hole's first edge against every shell whose bounding box contains it
+ * (`holes * shells` box tests plus the vertices of the shells that pass; ring statistics give each
+ * lane its own ring and sum rings above 64 vertices cooperatively, so a single huge ring does not serialize them). `polygons` regroups the rings into polygon topology for
  * `GPUPointInPolygonJoin`. Output order and results are deterministic (integer atomics only).
  *
  * Limits: matching is geometric, so shared vertices must agree within the tolerance (exact for
@@ -269,6 +296,17 @@ export class GPUSegmentRingAssembly implements GPUCommandNodeProducer {
       if (polygons.positions.length !== output.positions.length) {
         throw new Error(`${id} output.polygons.positions must match output.positions length`);
       }
+      if (polygons.polygonGroups) {
+        if (!props.groups) {
+          throw new Error(`${id} output.polygons.polygonGroups needs the groups input`);
+        }
+        validatePackedUint32View(polygons.polygonGroups, `${id} output.polygons.polygonGroups`);
+        if (polygons.polygonGroups.length !== ringCapacity) {
+          throw new Error(
+            `${id} output.polygons.polygonGroups must have ${ringCapacity} rows (the ring capacity)`
+          );
+        }
+      }
       for (const [name, view, length] of [
         ['ringOffsets', polygons.ringOffsets, ringCapacity + 1],
         ['polygonOffsets', polygons.polygonOffsets, ringCapacity + 1],
@@ -334,7 +372,8 @@ export class GPUSegmentRingAssembly implements GPUCommandNodeProducer {
     const sortedKeys = u32('sorted-keys');
     const sortedIds = u32('sorted-ids');
     const claim = u32('claim');
-    const counters = u32('counters', 2);
+    const cancelOpposing = Boolean(props.cancelOpposingSegments);
+    const counters = u32('counters', 3);
     const next = u32('next');
     const alternatives = u32('alternatives');
     const swapped = u32('swapped');
@@ -412,7 +451,7 @@ fn ringHash(qx: i32, qy: i32, group: u32) -> u32 {
         segments,
         `ids[idsOffset + index] = index;
   claim[claimOffset + index] = 0xffffffffu;
-  if (index == 0u) { counters[countersOffset] = 0u; counters[countersOffset + 1u] = 0u; }
+  if (index == 0u) { counters[countersOffset] = 0u; counters[countersOffset + 1u] = 0u; counters[countersOffset + 2u] = 0u; }
   var key = 0xffffffffu;
   if (index < ${validRowsExpression}) {
     let start = vec2f(endpoints[endpointsOffset + 4u * index], endpoints[endpointsOffset + 4u * index + 1u]);
@@ -432,6 +471,81 @@ fn ringHash(qx: i32, qy: i32, group: u32) -> u32 {
       }).getCommandNodes(graph)
     );
 
+    // 1b. Cancel exactly opposite segment pairs.
+    if (cancelOpposing) {
+      nodes.push(
+        kernel(
+          'cancel',
+          [
+            read('endpoints', props.endpoints, 'f32'),
+            ...countBinding,
+            ...groupBinding,
+            read('sortedKeys', sortedKeys),
+            read('sortedIds', sortedIds),
+            write('flags', segmentFlags),
+            {name: 'counters', view: counters, type: 'atomic<u32>', access: 'read_write'}
+          ],
+          segments,
+          `flags[flagsOffset + index] = 0u;
+  if (index >= ${validRowsExpression}) { return; }
+  let partner = findReverse(index);
+  if (partner != ${none} && findReverse(partner) == index) {
+    flags[flagsOffset + index] = ${GPU_SEGMENT_RING_ASSEMBLY_FLAG_CANCELLED}u;
+    atomicAdd(&counters[countersOffset + 2u], 1u);
+  }`,
+          `${hashFunctions}
+const TOLERANCE: f32 = ${getWGSLFloatLiteral(tolerance)};
+fn ringStart(row: u32) -> vec2f {
+  return vec2f(endpoints[endpointsOffset + 4u * row], endpoints[endpointsOffset + 4u * row + 1u]);
+}
+fn ringEnd(row: u32) -> vec2f {
+  return vec2f(endpoints[endpointsOffset + 4u * row + 2u], endpoints[endpointsOffset + 4u * row + 3u]);
+}
+// Lowest segment that starts where 'index' ends and ends where it starts.
+fn findReverse(index: u32) -> u32 {
+  let valid = ${validRowsExpression};
+  let origin = ringStart(index);
+  let vertex = ringEnd(index);
+  let group = ${groupOf('index')};
+  let qx = ringQuantize(vertex.x);
+  let qy = ringQuantize(vertex.y);
+  var seen = array<u32, 9>();
+  var seenCount = 0u;
+  var best = ${none};
+  for (var dy = -1; dy <= 1; dy++) {
+    for (var dx = -1; dx <= 1; dx++) {
+      let hash = ringHash(qx + dx, qy + dy, group);
+      var duplicate = false;
+      for (var j = 0u; j < seenCount; j++) { duplicate = duplicate || seen[j] == hash; }
+      if (duplicate) { continue; }
+      seen[seenCount] = hash;
+      seenCount++;
+      var low = 0u;
+      var high = ${segments}u;
+      while (low < high) {
+        let middle = low + (high - low) / 2u;
+        if (sortedKeys[sortedKeysOffset + middle] < hash) { low = middle + 1u; } else { high = middle; }
+      }
+      var position = low;
+      while (position < ${segments}u && sortedKeys[sortedKeysOffset + position] == hash) {
+        let candidate = sortedIds[sortedIdsOffset + position];
+        position++;
+        if (candidate >= valid || candidate == index) { continue; }
+        let candidateStart = ringStart(candidate);
+        let candidateEnd = ringEnd(candidate);
+        if (abs(candidateStart.x - vertex.x) > TOLERANCE || abs(candidateStart.y - vertex.y) > TOLERANCE) { continue; }
+        if (abs(candidateEnd.x - origin.x) > TOLERANCE || abs(candidateEnd.y - origin.y) > TOLERANCE) { continue; }
+        if (${hasGroups ? `groups[groupsOffset + candidate] != group` : 'false'}) { continue; }
+        best = min(best, candidate);
+      }
+    }
+  }
+  return best;
+}`
+        )
+      );
+    }
+
     // 2. Choose each segment's continuation.
     const sideSign = interiorSide === 'left' ? '1.0' : '-1.0';
     nodes.push(
@@ -450,7 +564,13 @@ fn ringHash(qx: i32, qy: i32, group: u32) -> u32 {
         segments,
         `next[nextOffset + index] = ${none};
   alt[altOffset + index] = ${none};
-  flags[flagsOffset + index] = 0u;
+  ${
+    cancelOpposing
+      ? `let carried = flags[flagsOffset + index] & ${GPU_SEGMENT_RING_ASSEMBLY_FLAG_CANCELLED}u;
+  flags[flagsOffset + index] = carried;
+  if (carried != 0u) { return; }`
+      : 'flags[flagsOffset + index] = 0u;'
+  }
   let valid = ${validRowsExpression};
   if (index >= valid) { return; }
   let origin = ringStart(index);
@@ -485,6 +605,7 @@ fn ringHash(qx: i32, qy: i32, group: u32) -> u32 {
         let candidate = sortedIds[sortedIdsOffset + position];
         position++;
         if (candidate >= valid || candidate == index) { continue; }
+        ${cancelOpposing ? `if ((flags[flagsOffset + candidate] & ${GPU_SEGMENT_RING_ASSEMBLY_FLAG_CANCELLED}u) != 0u) { continue; }` : ''}
         let candidateStart = ringStart(candidate);
         if (abs(candidateStart.x - vertex.x) > TOLERANCE || abs(candidateStart.y - vertex.y) > TOLERANCE) { continue; }
         if (${hasGroups ? `groups[groupsOffset + candidate] != group` : 'false'}) { continue; }
@@ -797,36 +918,132 @@ fn ringScaled(delta: vec2f, latitude: f32) -> vec2f {
       )
     );
 
-    // 8. Ring statistics: area, hole flag, group, shell assignment.
+    // 8. Ring statistics: area, hole flag, bounds, group, shell assignment.
     const ringAreas = output.ringAreas ?? transient('ring-areas', 'float32', ringCapacity);
     const ringIsHole = output.ringIsHole ?? u32('ring-is-hole', ringCapacity);
+    const needsShells = Boolean(output.ringShells ?? output.polygons);
+    // Ring bounds let the shell search reject a shell with four comparisons instead of walking it.
+    const ringBounds = needsShells
+      ? createTransientView(graph, `${id}-ring-bounds`, 'float32', ringCapacity * 4)
+      : undefined;
     nodes.push(
-      kernel(
-        'ring-stats',
-        [
+      // Block hybrid: workgroup w owns rings [RING_LANES * w, RING_LANES * w + RING_LANES). Phase 1:
+      // every lane sums its own ring serially when it has at most RING_LANES vertices (bit-identical
+      // to the former one-thread-per-ring kernel). Phase 2: the workgroup visits the larger rings of
+      // its block in ascending order and splits each across the lanes with a fixed-order tree. Thread
+      // count stays the ring count rounded up to RING_LANES, and one huge ring no longer serializes
+      // the stage.
+      createWGSLKernelNode<Parameters>(graph, {
+        id: `${id}-ring-stats`,
+        operation: OPERATION,
+        variant: 'ring-stats',
+        bindings: [
           read('ringOffsets', output.ringOffsets),
           read('positions', output.positions, 'f32'),
           read('ringCount', ringCount),
           write('areas', ringAreas, 'f32'),
-          write('isHole', ringIsHole)
+          write('isHole', ringIsHole),
+          ...(ringBounds ? [write('bounds', ringBounds, 'f32')] : [])
         ],
-        ringCapacity,
-        `areas[areasOffset + index] = 0.0;
-  isHole[isHoleOffset + index] = 0u;
-  if (index >= ringCount[ringCountOffset]) { return; }
-  let first = ringOffsets[ringOffsetsOffset + index];
-  let last = ringOffsets[ringOffsetsOffset + index + 1u];
-  let origin = vec2f(positions[positionsOffset + 2u * first], positions[positionsOffset + 2u * first + 1u]);
-  var sum = 0.0;
-  for (var vertex = first; vertex + 1u < last; vertex++) {
-    let a = vec2f(positions[positionsOffset + 2u * vertex], positions[positionsOffset + 2u * vertex + 1u]) - origin;
-    let b = vec2f(positions[positionsOffset + 2u * vertex + 2u], positions[positionsOffset + 2u * vertex + 3u]) - origin;
-    sum += a.x * b.y - b.x * a.y;
-  }
+        invocationCount: Math.ceil(ringCapacity / RING_LANES) * RING_LANES,
+        workgroupSize: RING_LANES,
+        guardIndex: false,
+        declarations: `const RING_CAPACITY: u32 = ${ringCapacity}u;
+const RING_LANES: u32 = ${RING_LANES}u;
+const BOUNDS_LARGE: f32 = 3.0e38;
+var<workgroup> largeBits: array<atomic<u32>, 2>;
+var<workgroup> largeBitsCopy: array<u32, 2>;
+var<workgroup> largeFirst: array<u32, ${RING_LANES}>;
+var<workgroup> largeLast: array<u32, ${RING_LANES}>;
+var<workgroup> partialSum: array<f32, ${RING_LANES}>;
+var<workgroup> partialMinimum: array<vec2f, ${RING_LANES}>;
+var<workgroup> partialMaximum: array<vec2f, ${RING_LANES}>;
+fn getVertex(vertex: u32) -> vec2f {
+  return vec2f(positions[positionsOffset + 2u * vertex], positions[positionsOffset + 2u * vertex + 1u]);
+}
+fn publishRing(ring: u32, sum: f32, minimum: vec2f, maximum: vec2f) {
   let area = 0.5 * sum;
-  areas[areasOffset + index] = area;
-  isHole[isHoleOffset + index] = select(0u, 1u, area * ${getWGSLFloatLiteral(shellSign)} < 0.0);`
-      )
+  areas[areasOffset + ring] = area;
+  isHole[isHoleOffset + ring] = select(0u, 1u, area * ${getWGSLFloatLiteral(shellSign)} < 0.0);
+  ${ringBounds ? 'bounds[boundsOffset + 4u * ring] = minimum.x; bounds[boundsOffset + 4u * ring + 1u] = minimum.y; bounds[boundsOffset + 4u * ring + 2u] = maximum.x; bounds[boundsOffset + 4u * ring + 3u] = maximum.y;' : ''}
+}`,
+        body: `let lane = localInvocationIndex;
+  let ringBase = workgroupIndex * RING_LANES;
+  let ownRing = ringBase + lane;
+  // Phase 1: this lane's own ring, serially when small; larger rings are queued for phase 2.
+  if (ownRing < RING_CAPACITY) {
+    if (ownRing >= ringCount[ringCountOffset]) {
+      publishRing(ownRing, 0.0, vec2f(0.0), vec2f(0.0));
+    } else {
+      let first = ringOffsets[ringOffsetsOffset + ownRing];
+      let last = ringOffsets[ringOffsetsOffset + ownRing + 1u];
+      if (last - first <= RING_LANES) {
+        let origin = getVertex(first);
+        var sum = 0.0;
+        var minimum = origin;
+        var maximum = origin;
+        for (var vertex = first; vertex + 1u < last; vertex++) {
+          let p = getVertex(vertex);
+          let q = getVertex(vertex + 1u);
+          minimum = min(minimum, q);
+          maximum = max(maximum, q);
+          let a = p - origin;
+          let b = q - origin;
+          sum += a.x * b.y - b.x * a.y;
+        }
+        publishRing(ownRing, sum, minimum, maximum);
+      } else {
+        largeFirst[lane] = first;
+        largeLast[lane] = last;
+        atomicOr(&largeBits[lane / 32u], 1u << (lane % 32u));
+      }
+    }
+  }
+  workgroupBarrier();
+  if (lane == 0u) {
+    largeBitsCopy[0] = atomicLoad(&largeBits[0]);
+    largeBitsCopy[1] = atomicLoad(&largeBits[1]);
+  }
+  // Phase 2: every barrier below is in workgroup-uniform control flow (the queue is read through
+  // workgroupUniformLoad), and the queued rings are visited in ascending order.
+  for (var word = 0u; word < 2u; word++) {
+    var pending = workgroupUniformLoad(&largeBitsCopy[word]);
+    while (pending != 0u) {
+      let slot = word * 32u + firstTrailingBit(pending);
+      pending = pending & (pending - 1u);
+      let first = workgroupUniformLoad(&largeFirst[slot]);
+      let last = workgroupUniformLoad(&largeLast[slot]);
+      let origin = getVertex(first);
+      var sum = 0.0;
+      var minimum = vec2f(BOUNDS_LARGE);
+      var maximum = vec2f(-BOUNDS_LARGE);
+      for (var vertex = first + lane; vertex + 1u < last; vertex += RING_LANES) {
+        let p = getVertex(vertex);
+        let q = getVertex(vertex + 1u);
+        minimum = min(minimum, q);
+        maximum = max(maximum, q);
+        let a = p - origin;
+        let b = q - origin;
+        sum += a.x * b.y - b.x * a.y;
+      }
+      partialSum[lane] = sum;
+      partialMinimum[lane] = minimum;
+      partialMaximum[lane] = maximum;
+      workgroupBarrier();
+      for (var stride = RING_LANES / 2u; stride > 0u; stride = stride / 2u) {
+        if (lane < stride) {
+          partialSum[lane] += partialSum[lane + stride];
+          partialMinimum[lane] = min(partialMinimum[lane], partialMinimum[lane + stride]);
+          partialMaximum[lane] = max(partialMaximum[lane], partialMaximum[lane + stride]);
+        }
+        workgroupBarrier();
+      }
+      if (lane == 0u) {
+        publishRing(ringBase + slot, partialSum[0], min(partialMinimum[0], origin), max(partialMaximum[0], origin));
+      }
+    }
+  }`
+      })
     );
     const ringGroups =
       output.ringGroups ?? (hasGroups ? u32('ring-groups', ringCapacity) : undefined);
@@ -860,6 +1077,7 @@ fn ringScaled(delta: vec2f, latitude: f32) -> vec2f {
             read('ringCount', ringCount),
             read('areas', ringAreas, 'f32'),
             read('isHole', ringIsHole),
+            read('ringBounds', ringBounds as GraphDataView<'float32'>, 'f32'),
             write('shells', ringShells),
             ...(ringGroups ? [read('ringGroups', ringGroups)] : [])
           ],
@@ -882,6 +1100,12 @@ fn ringScaled(delta: vec2f, latitude: f32) -> vec2f {
     ${ringGroups ? 'if (ringGroups[ringGroupsOffset + shell] != ringGroups[ringGroupsOffset + index]) { continue; }' : ''}
     let area = abs(areas[areasOffset + shell]);
     if (best != ${none} && area >= bestArea) { continue; }
+    // A probe outside the shell's bounding box (or left of it, where a closed ring crosses the ray
+    // an even number of times) cannot be inside: skip the vertex walk.
+    let shellBounds = vec4f(
+      ringBounds[ringBoundsOffset + 4u * shell], ringBounds[ringBoundsOffset + 4u * shell + 1u],
+      ringBounds[ringBoundsOffset + 4u * shell + 2u], ringBounds[ringBoundsOffset + 4u * shell + 3u]);
+    if (probe.y < shellBounds.y || probe.y > shellBounds.w || probe.x < shellBounds.x || probe.x > shellBounds.z) { continue; }
     var inside = false;
     let shellFirst = ringOffsets[ringOffsetsOffset + shell];
     let shellLast = ringOffsets[ringOffsetsOffset + shell + 1u];
@@ -980,6 +1204,26 @@ fn ringScaled(delta: vec2f, latitude: f32) -> vec2f {
     polygonStarts[polygonStartsOffset + shellScan[shellScanOffset + index] - 1u] = index;
   }`
         ),
+        ...(polygons.polygonGroups && ringGroups
+          ? [
+              kernel(
+                'polygon-groups',
+                [
+                  read('shellScan', shellScan),
+                  read('polygonStarts', polygonStarts),
+                  read('sortedIds', sortedPolygonIds),
+                  read('ringGroups', ringGroups),
+                  write('polygonGroups', polygons.polygonGroups)
+                ],
+                ringCapacity,
+                `var group = ${none};
+  if (index < shellScan[shellScanOffset + ${ringCapacity - 1}u]) {
+    group = ringGroups[ringGroupsOffset + sortedIds[sortedIdsOffset + polygonStarts[polygonStartsOffset + index]]];
+  }
+  polygonGroups[polygonGroupsOffset + index] = group;`
+              )
+            ]
+          : []),
         kernel(
           'polygon-counts',
           [
@@ -1074,7 +1318,7 @@ fn ringScaled(delta: vec2f, latitude: f32) -> vec2f {
               : [])
           ],
           1,
-          `${output.openSegmentCount ? 'outOpen[outOpenOffset] = counters[countersOffset];' : ''}
+          `${output.openSegmentCount ? 'outOpen[outOpenOffset] = counters[countersOffset] - counters[countersOffset + 2u];' : ''}
   ${output.touchingSegmentCount ? 'outTouching[outTouchingOffset] = counters[countersOffset + 1u];' : ''}`
         )
       );

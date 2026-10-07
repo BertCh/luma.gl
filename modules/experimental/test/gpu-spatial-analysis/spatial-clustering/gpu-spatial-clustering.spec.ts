@@ -49,6 +49,7 @@ type HarnessResult = {
   count: number;
   overflow: number;
   totalCount: number;
+  drawInstanceCount: number;
   sizes: number[];
   centroids: number[];
 };
@@ -74,6 +75,7 @@ function createHarness(device: Device, options: HarnessOptions) {
     | 'count'
     | 'overflow'
     | 'totalCount'
+    | 'drawInstanceCount'
     | 'sizes'
     | 'centroids',
     Buffer
@@ -86,6 +88,7 @@ function createHarness(device: Device, options: HarnessOptions) {
     count: createOutputBuffer(device, 1),
     overflow: createOutputBuffer(device, 1),
     totalCount: createOutputBuffer(device, 1),
+    drawInstanceCount: createOutputBuffer(device, 1),
     sizes: createOutputBuffer(device, capacity),
     centroids: createOutputBuffer(device, capacity * 2)
   };
@@ -107,6 +110,13 @@ function createHarness(device: Device, options: HarnessOptions) {
       overflow: importGraphBuffer(graph, 'overflow', outputs.overflow, 'uint32', 1),
       totalCount: importGraphBuffer(graph, 'total-count', outputs.totalCount, 'uint32', 1)
     },
+    drawInstanceCount: importGraphBuffer(
+      graph,
+      'draw-instance-count',
+      outputs.drawInstanceCount,
+      'uint32',
+      1
+    ),
     clusterSizes: importGraphBuffer(graph, 'sizes', outputs.sizes, 'uint32', capacity),
     clusterCentroids: importGraphBuffer(
       graph,
@@ -142,6 +152,7 @@ function createHarness(device: Device, options: HarnessOptions) {
         count,
         overflow: (await readUint32(outputs.overflow, 1))[0],
         totalCount: (await readUint32(outputs.totalCount, 1))[0],
+        drawInstanceCount: (await readUint32(outputs.drawInstanceCount, 1))[0],
         sizes: await readUint32(outputs.sizes, capacity),
         centroids: await readFloat32(outputs.centroids, capacity * 2)
       };
@@ -175,6 +186,7 @@ function expectMatchesOracle(
   expect(result.count).toBe(bounded);
   expect(result.totalCount).toBe(oracle.clusterCount);
   expect(result.overflow).toBe(oracle.clusterCount > capacity ? 1 : 0);
+  expect(result.drawInstanceCount).toBe(result.count);
   expect(result.ids).toEqual(oracle.clusterRoots.slice(0, bounded));
   expect(result.sizes.slice(0, bounded)).toEqual(oracle.clusterSizes.slice(0, bounded));
   expect(result.sizes.slice(bounded)).toEqual(new Array(capacity - bounded).fill(0));

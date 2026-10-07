@@ -92,6 +92,11 @@ it('GPUTerrainVectorRuggedness schedules normals and window kernels', () => {
     'terrain-vector-ruggedness-normals',
     'terrain-vector-ruggedness-window'
   ]);
+  expect(
+    create({radius: 4, id: 'wide-vrm'})
+      .getCommandNodes(graph)
+      .map(node => node.id)
+  ).toEqual(['wide-vrm-elevation', 'wide-vrm-normals', 'wide-vrm-window-rows', 'wide-vrm-window']);
   expect(GPU_TERRAIN_VECTOR_RUGGEDNESS_PARAMETER_LENGTH).toBe(8);
   expect(Array.from(getGPUTerrainVectorRuggednessParameterValues({cellSize: [2, 3]}))).toEqual([
     2, 3, 1, 0, 0, 0, 0, 0

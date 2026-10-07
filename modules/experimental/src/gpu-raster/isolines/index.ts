@@ -18,3 +18,5 @@ export {
   GPU_ISOBANDS_PARAMETER_LENGTH
 } from './isobands-parameters';
 export type {GPUIsobandsSettings} from './isobands-parameters';
+export {GPUIsobandRings} from './gpu-isoband-rings';
+export type {GPUIsobandRingsOutput, GPUIsobandRingsProps} from './gpu-isoband-rings';

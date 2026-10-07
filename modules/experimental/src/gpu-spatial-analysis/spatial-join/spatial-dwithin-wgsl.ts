@@ -2,10 +2,10 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import {getWGSLFloatLiteral} from '../../utils/wgsl-kernel-nodes';
 import {
   forEachEdge,
   getSpatialPredicateWGSL,
+  type SpatialDistanceParameter,
   type SpatialPredicateSide
 } from './spatial-predicate-wgsl';
 
@@ -29,16 +29,13 @@ export const SPATIAL_DWITHIN_WORKGROUP_SIZE = 64;
 export function getSpatialDwithinWorkgroupWGSL(
   left: SpatialPredicateSide,
   right: SpatialPredicateSide,
-  distance: number
+  distance: number | SpatialDistanceParameter
 ): string {
   const size = SPATIAL_DWITHIN_WORKGROUP_SIZE;
-  const squared = Math.fround(Math.fround(distance) * Math.fround(distance));
-  const reach = Math.fround(squared * 1.001 + 1e-30);
   return `${getSpatialPredicateWGSL(left, right, 'dwithin', distance)}
 var<private> relateLane: u32 = 0u;
 var<private> relateStride: u32 = 1u;
 var<workgroup> dwithinMatched: atomic<u32>;
-const DWITHIN_REACH_SQ: f32 = ${getWGSLFloatLiteral(reach)};
 // Squared gap between the bounding boxes of segments a-b and c-d (zero when they overlap).
 fn boxGapSq(a: vec2f, b: vec2f, c: vec2f, d: vec2f) -> f32 {
   let gap = max(max(min(a, b) - max(c, d), min(c, d) - max(a, b)), vec2f(0.0));
@@ -47,7 +44,9 @@ fn boxGapSq(a: vec2f, b: vec2f, c: vec2f, d: vec2f) -> f32 {
 fn dwithinWorkgroupPair(l: u32, r: u32, valid: bool, lane: u32) -> bool {
   relateLane = lane;
   relateStride = ${size}u;
-  if (valid && !(leftFirst(l).z == 0.0 || rightFirst(r).z == 0.0)) {
+  let limitSq = distanceLimitSq();
+  let reachSq = limitSq * 1.001 + 1e-30;
+  if (valid && limitSq >= 0.0 && !(leftFirst(l).z == 0.0 || rightFirst(r).z == 0.0)) {
     // Bounding box of the right feature.
     var rightLow = vec2f(FLOAT32_MAXIMUM);
     var rightHigh = vec2f(-FLOAT32_MAXIMUM);
@@ -66,14 +65,14 @@ fn dwithinWorkgroupPair(l: u32, r: u32, valid: bool, lane: u32) -> bool {
       'a',
       'b',
       `if (matched) { break; }
-    if (boxGapSq(a, b, rightLow, rightHigh) > DWITHIN_REACH_SQ) { continue; }
+    if (boxGapSq(a, b, rightLow, rightHigh) > reachSq) { continue; }
     ${forEachEdge(
       right,
       'r',
       'c',
       'd',
-      `if (boxGapSq(a, b, c, d) > DWITHIN_REACH_SQ) { continue; }
-      if (segmentDistanceSq(a, b, c, d) <= DISTANCE_SQ) { matched = true; break; }`
+      `if (boxGapSq(a, b, c, d) > reachSq) { continue; }
+      if (segmentDistanceSq(a, b, c, d) <= limitSq) { matched = true; break; }`
     )}`,
       true
     )}

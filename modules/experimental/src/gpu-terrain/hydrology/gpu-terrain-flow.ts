@@ -136,7 +136,10 @@ function validateTerrainFlowOutputAliasing(id: string, props: GPUTerrainFlowProp
     ['streams', props.streams],
     ['fillConverged', props.fillConverged],
     ['accumulationConverged', props.accumulationConverged],
-    ['flatsConverged', props.flatsConverged]
+    ['flatsConverged', props.flatsConverged],
+    ['fillIterations', props.fillIterations],
+    ['flatsIterations', props.flatsIterations],
+    ['accumulationIterations', props.accumulationIterations]
   ] as const;
   validateGraphOutputsDisjointFromInputs(
     id,
@@ -273,6 +276,12 @@ export type GPUTerrainFlowProps = {
    * `resolveFlats`.
    */
   flatsConverged?: GraphDataView<'uint32'>;
+  /** One row: gated fill iterations executed (including the final unchanged one). Requires `fillDepressions`. Presence is compile-time. */
+  fillIterations?: GraphDataView<'uint32'>;
+  /** One row: total iterations executed by the three flat-resolution relaxations. Requires `resolveFlats`. Presence is compile-time. */
+  flatsIterations?: GraphDataView<'uint32'>;
+  /** One row: gated accumulation rounds executed. Requires `accumulation` or `streams`. Presence is compile-time. */
+  accumulationIterations?: GraphDataView<'uint32'>;
 };
 
 /**
@@ -342,8 +351,14 @@ export class GPUTerrainFlow implements GPUCommandNodeProducer {
     if (!['d8', 'd-infinity', 'mfd-freeman', 'mfd-quinn'].includes(props.flowRouting ?? 'd8')) {
       throw new Error(`${id} flowRouting must be d8, d-infinity, mfd-freeman, or mfd-quinn`);
     }
-    if (props.flatsConverged && !props.resolveFlats) {
-      throw new Error(`${id} flatsConverged requires resolveFlats`);
+    if ((props.flatsConverged || props.flatsIterations) && !props.resolveFlats) {
+      throw new Error(`${id} flatsConverged and flatsIterations require resolveFlats`);
+    }
+    if (props.fillIterations && !props.fillDepressions) {
+      throw new Error(`${id} fillIterations requires fillDepressions`);
+    }
+    if (props.accumulationIterations && !props.accumulation && !props.streams) {
+      throw new Error(`${id} accumulationIterations requires accumulation or streams`);
     }
     validateRasterIterations(
       id,
@@ -392,7 +407,10 @@ export class GPUTerrainFlow implements GPUCommandNodeProducer {
     for (const [name, view] of [
       ['fillConverged', props.fillConverged],
       ['accumulationConverged', props.accumulationConverged],
-      ['flatsConverged', props.flatsConverged]
+      ['flatsConverged', props.flatsConverged],
+      ['fillIterations', props.fillIterations],
+      ['flatsIterations', props.flatsIterations],
+      ['accumulationIterations', props.accumulationIterations]
     ] as const) {
       if (view) {
         validatePackedUint32View(view, `${id} ${name}`);
@@ -422,7 +440,10 @@ export class GPUTerrainFlow implements GPUCommandNodeProducer {
       props.streams,
       props.fillConverged,
       props.accumulationConverged,
-      props.flatsConverged
+      props.flatsConverged,
+      props.fillIterations,
+      props.flatsIterations,
+      props.accumulationIterations
     ]);
     const cellCount = width * height;
     const grid = {width, height, cellSizeMode};
@@ -442,7 +463,8 @@ export class GPUTerrainFlow implements GPUCommandNodeProducer {
           elevation,
           filled,
           settings: props.settings,
-          converged: props.fillConverged
+          converged: props.fillConverged,
+          iterationCount: props.fillIterations
         })
       );
       surface = filled;
@@ -487,6 +509,7 @@ export class GPUTerrainFlow implements GPUCommandNodeProducer {
           directions: props.flowDirections,
           receivers,
           converged: props.flatsConverged,
+          iterationCount: props.flatsIterations,
           cellClass: GPU_TERRAIN_FLOW_CELL_CLASS
         })
       );
@@ -507,7 +530,8 @@ export class GPUTerrainFlow implements GPUCommandNodeProducer {
         settings: props.settings,
         runoff: props.runoff,
         area: (props.accumulationUnits ?? 'cells') === 'area',
-        converged: props.accumulationConverged
+        converged: props.accumulationConverged,
+        iterationCount: props.accumulationIterations
       };
       nodes.push(
         ...(flowRouting === 'd8'

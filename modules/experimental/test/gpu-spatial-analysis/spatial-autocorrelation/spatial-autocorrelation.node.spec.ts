@@ -318,20 +318,16 @@ it('spatial-autocorrelation contributors create deterministic node IDs', () => {
     const hotSpot = new GPUHotSpotAnalysis(createHotSpotProps(graph, {falseDiscoveryRate}));
     const hotSpotIds = hotSpot.getCommandNodes(graph).map(node => node.id);
     for (const step of [
-      'validity',
-      'block-offsets',
-      'value-sum-blocks',
-      'value-sum-total',
-      'count-sum-total',
+      'moments-blocks',
       'moments-mean',
       'center',
-      'square-sum-total',
       'moments-variance',
-      'neighbors',
-      'classify'
+      'neighbors'
     ]) {
       expect(hotSpotIds).toContain(`hot-spot-analysis-${step}`);
     }
+    // Without FDR the classification is fused into the neighbor kernel.
+    expect(hotSpotIds.includes('hot-spot-analysis-classify')).toBe(falseDiscoveryRate);
     expect(hotSpotIds.some(id => id.includes('cell-'))).toBe(false);
     expect(hotSpotIds.includes('hot-spot-analysis-fdr-thresholds')).toBe(falseDiscoveryRate);
     expect(new Set(hotSpotIds).size).toBe(hotSpotIds.length);
@@ -339,9 +335,10 @@ it('spatial-autocorrelation contributors create deterministic node IDs', () => {
     const moranGraph = new GPUCommandGraph(device);
     const moran = new GPULocalMoran(createLocalMoranProps(moranGraph, {falseDiscoveryRate}));
     const moranIds = moran.getCommandNodes(moranGraph).map(node => node.id);
-    for (const step of ['neighbors', 'local-i', 'classify']) {
-      expect(moranIds).toContain(`local-moran-${step}`);
-    }
+    expect(moranIds).toContain('local-moran-neighbors');
+    // The local-I epilogue is always fused; the classification only without FDR.
+    expect(moranIds.includes('local-moran-local-i')).toBe(false);
+    expect(moranIds.includes('local-moran-classify')).toBe(falseDiscoveryRate);
     expect(moranIds.includes('local-moran-fdr-ranks')).toBe(falseDiscoveryRate);
   }
   // Without bins or p-values there is no classify node.

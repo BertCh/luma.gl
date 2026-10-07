@@ -11,3 +11,7 @@ import './adjacency-matrix';
 import './network-subgraph-filter';
 import './network-accessibility';
 import './network-isochrones';
+import './network-noding';
+import './network-k-function';
+import './network-line-graph';
+import './map-matching';

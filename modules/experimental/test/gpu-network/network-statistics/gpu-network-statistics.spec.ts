@@ -36,6 +36,7 @@ type FixtureOptions = {
   nodeCount: number;
   edges: readonly NetworkEdge[];
   directed?: boolean;
+  countSelfLoopsTwice?: boolean;
   vertexMask?: Uint32Array;
   edgeMask?: Uint32Array;
   communities?: Uint32Array;
@@ -93,6 +94,7 @@ class Fixture {
       offsets: importView('offsets', offsets, nodeCount + 1),
       neighbors: importView('neighbors', neighbors, slotCount),
       directed: options.directed,
+      countSelfLoopsTwice: options.countSelfLoopsTwice,
       vertexMask:
         this.vertexMaskBuffer && importView('vertex-mask', this.vertexMaskBuffer, nodeCount),
       edgeMask: this.edgeMaskBuffer && importView('edge-mask', this.edgeMaskBuffer, slotCount),
@@ -127,6 +129,7 @@ class Fixture {
       nodeCount: options.nodeCount,
       csr: this.csr,
       directed: options.directed,
+      countSelfLoopsTwice: options.countSelfLoopsTwice,
       vertexMask: options.vertexMask,
       edgeMask: options.edgeMask,
       communities: options.communities,
@@ -432,6 +435,84 @@ it('GPUNetworkStatistics undirected modularity matches GPUGraphModularity', asyn
   fixture.destroy();
 });
 
+it('GPUNetworkStatistics undirected modularity matches GPUGraphModularity with self-loops counted twice', async () => {
+  const device = await getWebGPUTestDevice();
+  if (!device) return;
+  const nodeCount = 200;
+  const edges = [
+    ...createUndirectedEdges(51, nodeCount, 500),
+    [5, 5, 1] as NetworkEdge,
+    [9, 9, 1] as NetworkEdge
+  ];
+  const labels = createLabels(nodeCount, 7);
+  const fixture = new Fixture(device, {
+    nodeCount,
+    edges,
+    communities: labels,
+    countSelfLoopsTwice: true
+  });
+  const words = await fixture.run();
+  expectMatches(words, fixture.oracle());
+  const decoded = decodeGPUNetworkStatistics(words);
+  expect(decoded.selfLoopSlotCount).toBe(2);
+
+  const roads = edges.filter(edge => edge[0] <= edge[1]);
+  const buffers: Buffer[] = [];
+  const vector = (values: Uint32Array | number) => {
+    const length = typeof values === 'number' ? values : values.length;
+    const buffer = device.createBuffer({
+      byteLength: Math.max(length, 1) * 4,
+      usage: Buffer.STORAGE | Buffer.COPY_SRC | Buffer.COPY_DST
+    });
+    if (typeof values !== 'number') buffer.write(values);
+    buffers.push(buffer);
+    return {buffer, length};
+  };
+  const make = <Format extends 'uint32' | 'float32'>(
+    values: Uint32Array | number,
+    format: Format
+  ) => {
+    const {buffer, length} = vector(values);
+    return new GPUVector<Format>({
+      type: 'buffer',
+      name: 'v',
+      buffer,
+      format,
+      length
+    });
+  };
+  const graph = new GPUGraph({
+    vertexCount: nodeCount,
+    sourceVertices: make(
+      Uint32Array.from(roads, edge => edge[0]),
+      'uint32'
+    ),
+    targetVertices: make(
+      Uint32Array.from(roads, edge => edge[1]),
+      'uint32'
+    ),
+    directed: false
+  });
+  const output = make(1, 'float32');
+  const commandGraph = new GPUCommandGraph(device, {
+    id: 'reference-modularity'
+  });
+  new GPUGraphModularity({
+    id: 'reference',
+    graph,
+    communities: make(labels, 'uint32'),
+    output
+  }).addToGraph(commandGraph);
+  const compiled = commandGraph.compile();
+  submitGraph(device, compiled, undefined);
+  const bytes = await (output.data[0].buffer as Buffer).readAsync();
+  const reference = new Float32Array(bytes.buffer, bytes.byteOffset, 1)[0];
+  expect(Math.abs(decoded.modularity - reference)).toBeLessThan(1e-5);
+  compiled.destroy();
+  for (const buffer of buffers) buffer.destroy();
+  fixture.destroy();
+});
+
 it('GPUNetworkStatistics times a 100k-vertex, 400k-slot encoding', async () => {
   const device = await getWebGPUTestDevice();
   if (!device) return;
@@ -460,3 +541,35 @@ it('GPUNetworkStatistics times a 100k-vertex, 400k-slot encoding', async () => {
   );
   fixture.destroy();
 }, 120_000);
+
+it('GPUNetworkStatistics matches the oracle on a hub-and-spoke graph across many workgroups', async () => {
+  const device = await getWebGPUTestDevice();
+  if (!device) return;
+  // 1500 vertices span six workgroups; vertex 0 is a hub with a row far longer than the others,
+  // and degree 0 vertices stay isolated. Log2 bins and linear bins both run.
+  const nodeCount = 1500;
+  const edges: NetworkEdge[] = [];
+  for (let leaf = 1; leaf < 1200; leaf++) edges.push([0, leaf, 1]);
+  for (let vertex = 1200; vertex < 1400; vertex += 2) edges.push([vertex, vertex + 1, 1]);
+  const vertexMask = createMask(nodeCount, 0.05, 3);
+  vertexMask[0] = 1; // keep the hub live
+  for (const binning of ['linear', 'log2'] as const) {
+    for (const binCount of [8, 400]) {
+      // 400 bins exceed the workgroup-memory histogram, so that case runs the global path.
+      const fixture = new Fixture(device, {
+        nodeCount,
+        edges: createSymmetricEdges(edges),
+        communities: createLabels(nodeCount, 9),
+        vertexMask,
+        binCount,
+        binning
+      });
+      const words = await fixture.run();
+      expectMatches(words, fixture.oracle());
+      expect(
+        decodeGPUNetworkStatistics(words, {degreeBinCount: binCount}).maxTotalDegree
+      ).toBeGreaterThan(1000);
+      fixture.destroy();
+    }
+  }
+});

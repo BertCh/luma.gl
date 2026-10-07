@@ -36,14 +36,19 @@ const MAXIMUM_RADIUS_COUNT = 256;
 /** Largest number of reference locations of F: counts stay exact `u32` sums. */
 const MAXIMUM_REFERENCE_COUNT = 2 ** 24;
 
-/** Accumulator channels per radius of one function: raw, border numerator, border subtract, border denominator. */
-const CHANNEL_COUNT = 4;
+/**
+ * Accumulator channels per radius of one function: 0 raw, 1 border numerator, 2 border subtract,
+ * 3 border denominator, 4 uncensored observations (Kaplan-Meier events), 5 censored observations,
+ * 6 Hanisch weights of uncensored observations (fixed point), 7 Hanisch weight of observations
+ * with no neighbor within the maximum distance (slot 0 only).
+ */
+const CHANNEL_COUNT = 8;
 
 /**
  * Properties for {@link GPURipleyDistanceFunctions}.
  *
  * Per-frame (no rebuild or recompile): the contents of `positions`, `mask` and `parameters`
- * (window bounds, maximum distance, edge-correction mode). Compile-time: the row count,
+ * (window bounds, maximum distance, edge-correction mode: none, border, Kaplan-Meier, Hanisch). Compile-time: the row count,
  * `gridSize`, `referenceGrid`, `radiusCount` and which optional outputs are present.
  */
 export type GPURipleyDistanceFunctionsProps = {
@@ -111,8 +116,20 @@ export type GPURipleyDistanceFunctionsProps = {
  * - `'border'` (reduced sample, spatstat `correction = "rs"`): with `b_i` the distance from a
  *   point to the window boundary, `G(r) = #{i: d_i <= r, b_i >= r} / #{i: b_i >= r}`, and the same
  *   for F over the reference locations. It is NaN when no point is farther than `r` from the
- *   boundary. The Kaplan-Meier and Hanisch estimators are not implemented, and `'border'` is
- *   conservative: it throws away points near the edge.
+ *   boundary. `'border'` is conservative: it throws away points near the edge.
+ * - `'kaplan-meier'` (spatstat `"km"`): every point is an observation `o = min(d, b)`, uncensored
+ *   when `d <= b`. With events `D_s` and censorings `C_s` binned on the radius grid and
+ *   `N_s = #{o in slot >= s}`, `G(r_s) = 1 - prod_{t <= s} (1 - D_t / N_t)`; the same for F over
+ *   the reference locations. Points with no neighbor within `maximumDistance` are censored at
+ *   their border distance (or never, when it exceeds `maximumDistance`), so it is exact.
+ * - `'hanisch'` (spatstat `"han"` for G, the Chiu-Stoyan weighting `"cs"` for F): uncensored points
+ *   (`d <= b`) are weighted by `1 / |W eroded by d|` (rectangle area `(w - 2d) (h - 2d)`), and
+ *   `G(r) = sum_{d <= r} weight / sum weight`. Weights are accumulated in 14-bit fixed point
+ *   (relative error about 1e-4) and capped at 1024 times the window area ratio. A point with no
+ *   neighbor within `maximumDistance` has an unknown `d`: if its border distance is at least
+ *   `maximumDistance` it enters the denominator with `d = maximumDistance` (a lower bound on its
+ *   weight, so G is biased slightly high), otherwise it is exactly censored. The estimate is
+ *   exact when every point has a neighbor within `maximumDistance`.
  * - `J(r) = (1 - G(r)) / (1 - F(r))`, NaN where either function is NaN or `F(r) >= 1`.
  * - Undefined results (`n < 2` for G, `n < 1` for F, zero reference count, an empty border set)
  *   are quiet NaN.
@@ -208,6 +225,25 @@ export class GPURipleyDistanceFunctions implements GPUCommandNodeProducer {
 const RADIUS_COUNT: u32 = ${radiusCount}u;
 const PI: f32 = 3.14159265358979;
 `;
+    // Needs the Lattice type, so only the kernels that include the shared pair-statistics WGSL.
+    const observationWGSL = /* wgsl */ `${constantsWGSL}
+const HANISCH_SCALE: f32 = 16384.0;
+const HANISCH_CAP: f32 = 1024.0;
+
+// Fixed-point Hanisch weight |W| / |W eroded by distance| of one observation; at most 2^24.
+fn getHanischAmount(lattice: Lattice, distance: f32) -> u32 {
+  let width = lattice.maximumX - lattice.minimumX;
+  let height = lattice.maximumY - lattice.minimumY;
+  let eroded = max(width - 2.0 * distance, 0.0) * max(height - 2.0 * distance, 0.0);
+  let ratio = select(HANISCH_CAP, min(width * height / eroded, HANISCH_CAP), eroded > 0.0);
+  return u32(ratio * HANISCH_SCALE + 0.5);
+}
+
+// Slot of a censoring distance; slots at or above RADIUS_COUNT lie beyond every radius.
+fn getCensorSlot(distance: f32, step: f32) -> u32 {
+  return min(u32(max(ceil(distance / step) - 1.0, 0.0)), RADIUS_COUNT);
+}
+`;
     // G: one focus per event, nearest other event within the maximum distance.
     const histogram = getPairHistogramNodes<Parameters>(graph, {
       id: `${id}-g`,
@@ -220,7 +256,7 @@ const PI: f32 = 3.14159265358979;
       slotCount: radiusCount,
       channelCount: CHANNEL_COUNT,
       pairOrder: 'ordered',
-      declarations: constantsWGSL,
+      declarations: observationWGSL,
       focusPrologue: `var nearestDistance = lattice.maximumDistance;
     var hasNeighbor = false;
     let borderDistance = min(min(x - lattice.minimumX, lattice.maximumX - x), min(y - lattice.minimumY, lattice.maximumY - y));
@@ -230,13 +266,24 @@ const PI: f32 = 3.14159265358979;
             }
             hasNeighbor = true;`,
       focusEpilogue: `accumulate(borderCount, 3u, 1u);
+    var annulus = 0u;
     if (hasNeighbor) {
       let scaled = nearestDistance / lattice.maximumDistance * f32(RADIUS_COUNT);
-      let annulus = min(u32(max(ceil(scaled) - 1.0, 0.0)), RADIUS_COUNT - 1u);
+      annulus = min(u32(max(ceil(scaled) - 1.0, 0.0)), RADIUS_COUNT - 1u);
       accumulate(annulus, 0u, 1u);
       if (annulus < borderCount) {
         accumulate(annulus, 1u, 1u);
         accumulate(borderCount, 2u, 1u);
+      }
+    }
+    // Kaplan-Meier and Hanisch: observed when the neighbor is no farther than the border.
+    if (hasNeighbor && nearestDistance <= borderDistance) {
+      accumulate(annulus, 4u, 1u);
+      accumulate(annulus, 6u, getHanischAmount(lattice, nearestDistance));
+    } else {
+      accumulate(getCensorSlot(borderDistance, lattice.maximumDistance / f32(RADIUS_COUNT)), 5u, 1u);
+      if (!hasNeighbor && borderDistance >= lattice.maximumDistance) {
+        accumulate(0u, 7u, getHanischAmount(lattice, lattice.maximumDistance));
       }
     }`
     });
@@ -247,7 +294,7 @@ const PI: f32 = 3.14159265358979;
       graph,
       `${id}-f-accumulators`,
       'uint32',
-      (radiusCount + 1) * CHANNEL_COUNT
+      (radiusCount + 1) * CHANNEL_COUNT * 2
     );
     nodes.push(
       createFillNode<Parameters>(graph, {
@@ -262,9 +309,9 @@ const PI: f32 = 3.14159265358979;
         operation: OPERATION,
         variant: 'f-reference',
         bindings: [
-          {name: 'positions', view: positions, type: 'f32', access: 'read'},
           {name: 'parameters', view: parameters, type: 'f32', access: 'read'},
-          {name: 'sortedRows', view: inputs.sortedRows, type: 'u32', access: 'read'},
+          // Cell-ordered `[x bits, y bits, row]` triples built for the G histogram.
+          {name: 'sortedPoints', view: histogram.sortedPoints, type: 'u32', access: 'read'},
           {name: 'cellOffsets', view: inputs.cellOffsets, type: 'u32', access: 'read'},
           {
             name: 'referenceAccumulators',
@@ -275,13 +322,18 @@ const PI: f32 = 3.14159265358979;
         ],
         invocationCount: referenceCount,
         declarations: `${getPairStatisticsSharedWGSL(gridSize)}
-${constantsWGSL}
+${observationWGSL}
 const REFERENCE_COLUMNS: u32 = ${referenceGrid[0]}u;
 const REFERENCE_ROWS: u32 = ${referenceGrid[1]}u;
 const CHANNELS: u32 = ${CHANNEL_COUNT}u;
 
-fn addReference(slot: u32, channel: u32) {
-  atomicAdd(&referenceAccumulators[referenceAccumulatorsOffset + slot * CHANNELS + channel], 1u);
+// Exact unsigned 64-bit sums: low and high words per accumulator, carry from the atomicAdd result.
+fn addReference(slot: u32, channel: u32, amount: u32) {
+  let word = (referenceAccumulatorsOffset + slot * CHANNELS + channel) * 2u;
+  let previous = atomicAdd(&referenceAccumulators[word], amount);
+  if (previous > 0xffffffffu - amount) {
+    atomicAdd(&referenceAccumulators[word + 1u], 1u);
+  }
 }`,
         body: `let lattice = readLattice();
   if (lattice.valid) {
@@ -304,9 +356,8 @@ fn addReference(slot: u32, channel: u32) {
       let begin = cellOffsets[cellOffsetsOffset + rowBase + firstColumn];
       let end = cellOffsets[cellOffsetsOffset + rowBase + lastColumn + 1u];
       for (var candidateSlot = begin; candidateSlot < end; candidateSlot++) {
-        let event = sortedRows[sortedRowsOffset + candidateSlot];
-        let deltaX = positions[positionsOffset + event * 2u] - x;
-        let deltaY = positions[positionsOffset + event * 2u + 1u] - y;
+        let deltaX = bitcast<f32>(sortedPoints[sortedPointsOffset + candidateSlot * 3u]) - x;
+        let deltaY = bitcast<f32>(sortedPoints[sortedPointsOffset + candidateSlot * 3u + 1u]) - y;
         let distanceSquared = deltaX * deltaX + deltaY * deltaY;
         if (distanceSquared <= lattice.radiusSquared && (!hasEvent || distanceSquared < nearestSquared)) {
           nearestSquared = distanceSquared;
@@ -314,14 +365,25 @@ fn addReference(slot: u32, channel: u32) {
         }
       }
     }
-    addReference(borderCount, 3u);
+    addReference(borderCount, 3u, 1u);
+    let nearestDistance = sqrt(nearestSquared);
+    var annulus = 0u;
     if (hasEvent) {
-      let scaled = sqrt(nearestSquared) / lattice.maximumDistance * f32(RADIUS_COUNT);
-      let annulus = min(u32(max(ceil(scaled) - 1.0, 0.0)), RADIUS_COUNT - 1u);
-      addReference(annulus, 0u);
+      let scaled = nearestDistance / lattice.maximumDistance * f32(RADIUS_COUNT);
+      annulus = min(u32(max(ceil(scaled) - 1.0, 0.0)), RADIUS_COUNT - 1u);
+      addReference(annulus, 0u, 1u);
       if (annulus < borderCount) {
-        addReference(annulus, 1u);
-        addReference(borderCount, 2u);
+        addReference(annulus, 1u, 1u);
+        addReference(borderCount, 2u, 1u);
+      }
+    }
+    if (hasEvent && nearestDistance <= borderDistance) {
+      addReference(annulus, 4u, 1u);
+      addReference(annulus, 6u, getHanischAmount(lattice, nearestDistance));
+    } else {
+      addReference(getCensorSlot(borderDistance, lattice.maximumDistance / f32(RADIUS_COUNT)), 5u, 1u);
+      if (!hasEvent && borderDistance >= lattice.maximumDistance) {
+        addReference(0u, 7u, getHanischAmount(lattice, lattice.maximumDistance));
       }
     }
   }`
@@ -363,7 +425,51 @@ fn readEvents(slot: u32, channel: u32) -> u32 {
 }
 
 fn readReferences(slot: u32, channel: u32) -> u32 {
-  return referenceAccumulators[referenceAccumulatorsOffset + slot * CHANNELS + channel];
+  return referenceAccumulators[referenceAccumulatorsOffset + (slot * CHANNELS + channel) * 2u];
+}
+
+// Full 64-bit sum as f32, for the fixed-point Hanisch weights.
+fn readWeight(reference: bool, slot: u32, channel: u32) -> f32 {
+  let word = (slot * CHANNELS + channel) * 2u;
+  if (reference) {
+    return f32(referenceAccumulators[referenceAccumulatorsOffset + word + 1u]) * 4294967296.0 +
+      f32(referenceAccumulators[referenceAccumulatorsOffset + word]);
+  }
+  return f32(accumulators[accumulatorsOffset + word + 1u]) * 4294967296.0 +
+    f32(accumulators[accumulatorsOffset + word]);
+}
+
+fn readObserved(reference: bool, slot: u32, channel: u32) -> f32 {
+  return select(f32(readEvents(slot, channel)), f32(readReferences(slot, channel)), reference);
+}
+
+// Kaplan-Meier estimate of the distribution function at radius slot last, with hazards
+// binned on the radius grid (events before censoring within a slot), as spatstat does.
+fn getKaplanMeier(reference: bool, total: f32, last: u32) -> f32 {
+  var survival = 1.0;
+  var atRisk = total;
+  for (var slot = 0u; slot <= last; slot++) {
+    let observed = readObserved(reference, slot, 4u);
+    if (atRisk >= 1.0 && observed > 0.0) {
+      survival = survival * (1.0 - observed / atRisk);
+    }
+    atRisk = atRisk - observed - readObserved(reference, slot, 5u);
+  }
+  return 1.0 - survival;
+}
+
+// Hanisch estimate: weighted observed fraction up to last over the total observed weight.
+fn getHanisch(reference: bool, last: u32) -> f32 {
+  var numerator = 0.0;
+  var denominator = readWeight(reference, 0u, 7u);
+  for (var slot = 0u; slot < RADIUS_COUNT; slot++) {
+    let weight = readWeight(reference, slot, 6u);
+    denominator = denominator + weight;
+    if (slot <= last) {
+      numerator = numerator + weight;
+    }
+  }
+  return select(getQuietNaN(last), numerator / denominator, denominator > 0.0);
 }
 
 fn getEventPrefix(channel: u32, last: u32) -> u32 {
@@ -383,7 +489,8 @@ fn getReferencePrefix(channel: u32, last: u32) -> u32 {
 }`,
         body: `let nan = getQuietNaN(index);
   let n = f32(cellOffsets[cellOffsetsOffset + CELL_COUNT]);
-  let border = parameters[parametersOffset + 5u] > 0.5;
+  let mode = u32(parameters[parametersOffset + 5u] + 0.5);
+  let border = mode == 1u;
   let maximumDistance = parameters[parametersOffset + 4u];
   let valid = isFiniteFloat(parameters[parametersOffset]) && isFiniteFloat(maximumDistance) && maximumDistance > 0.0;
   var gValue = nan;
@@ -397,6 +504,11 @@ fn getReferencePrefix(channel: u32, last: u32) -> u32 {
     } else {
       gValue = f32(getEventPrefix(0u, index)) / n;
     }
+    if (mode == 2u) {
+      gValue = getKaplanMeier(false, n, index);
+    } else if (mode == 3u) {
+      gValue = getHanisch(false, index);
+    }
   }
   if (valid && n >= 1.0) {
     if (border) {
@@ -406,6 +518,11 @@ fn getReferencePrefix(channel: u32, last: u32) -> u32 {
       }
     } else {
       fValue = f32(getReferencePrefix(0u, index)) / REFERENCE_COUNT;
+    }
+    if (mode == 2u) {
+      fValue = getKaplanMeier(true, REFERENCE_COUNT, index);
+    } else if (mode == 3u) {
+      fValue = getHanisch(true, index);
     }
   }
   ${props.g ? 'g[gOffset + index] = gValue;' : ''}

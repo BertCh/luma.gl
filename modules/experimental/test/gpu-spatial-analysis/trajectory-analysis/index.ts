@@ -4,3 +4,4 @@
 
 import './gpu-trajectory-metrics.spec';
 import './gpu-trajectory-metrics-time.spec';
+import './gpu-trajectory-metrics-steps.spec';

@@ -94,6 +94,14 @@ export type GPUCostDistanceProps = {
    * impassable barriers; zero friction is allowed.
    */
   friction: GPURasterBand;
+  /**
+   * Optional per-frame friction calibration with at least 2 float32 values
+   * `[scale, offset]`, applied after the band's own calibration: `friction = value * scale +
+   * offset`. Presence is compile-time; contents are per-frame, so a slider can change the cost
+   * surface without recompiling. Absent means the identity. Results that turn negative or
+   * non-finite are impassable like any other invalid friction.
+   */
+  frictionParameters?: GraphDataView<'float32'>;
   /** Per-frame settings with at least 8 float32 values, see {@link getGPUCostDistanceParameterValues}. */
   settings: GraphDataView<'float32'>;
   /** Cell size interpretation. Compile-time. Defaults to `'uniform'`. */
@@ -210,7 +218,8 @@ export class GPUCostDistance implements GPUCommandNodeProducer {
     for (const [name, view] of [
       ['sourceCosts', props.sourceCosts],
       ['costs', props.costs],
-      ['bandThresholds', props.bandThresholds]
+      ['bandThresholds', props.bandThresholds],
+      ['frictionParameters', props.frictionParameters]
     ] as const) {
       if (view) {
         validatePackedView(view, ['float32'], `${id} ${name}`);
@@ -253,6 +262,9 @@ export class GPUCostDistance implements GPUCommandNodeProducer {
         throw new Error(`${id} ${name} must contain exactly one row`);
       }
     }
+    if (props.frictionParameters && props.frictionParameters.length < 2) {
+      throw new Error(`${id} frictionParameters must contain at least 2 values`);
+    }
     const needsThresholds = Boolean(props.bands || props.bandCounts);
     if (needsThresholds !== Boolean(props.bandThresholds)) {
       throw new Error(`${id} bandThresholds is required exactly when bands or bandCounts is given`);
@@ -280,7 +292,8 @@ export class GPUCostDistance implements GPUCommandNodeProducer {
         props.sourceCosts,
         props.sourceCount,
         props.sourceMask,
-        props.bandThresholds
+        props.bandThresholds,
+        props.frictionParameters
       ]
     );
   }
@@ -295,6 +308,7 @@ export class GPUCostDistance implements GPUCommandNodeProducer {
     validateTerrainBandBelongsToGraph(id, graph, props.friction, []);
     validateGraphViewsBelongToGraph(id, graph, [
       props.settings,
+      props.frictionParameters,
       props.sources,
       props.sourceCosts,
       props.sourceCount,
@@ -348,13 +362,27 @@ export class GPUCostDistance implements GPUCommandNodeProducer {
             view: auxiliary,
             type: 'f32',
             access: 'read_write'
-          }
+          },
+          ...(props.frictionParameters
+            ? [
+                {
+                  name: 'frictionParameters',
+                  view: props.frictionParameters,
+                  type: 'f32' as const,
+                  access: 'read' as const
+                }
+              ]
+            : [])
         ],
         invocationCount: cellCount,
         declarations: /* wgsl */ `
 fn isFiniteValue(value: f32) -> bool { return (bitcast<u32>(value) & 0x7fffffffu) < 0x7f800000u; }
 fn getQuietNaN() -> f32 { var bits = 0x7fc00000u; return bitcast<f32>(bits); }`,
-        body: `let value = frictionValues[frictionValuesOffset + index];
+        body: `${
+          props.frictionParameters
+            ? 'let value = frictionValues[frictionValuesOffset + index] * frictionParameters[frictionParametersOffset] + frictionParameters[frictionParametersOffset + 1u];'
+            : 'let value = frictionValues[frictionValuesOffset + index];'
+        }
   let passable = frictionValidity[frictionValidityOffset + index] != 0u && isFiniteValue(value) && value >= 0.0;
   auxiliary[auxiliaryOffset + index] = select(getQuietNaN(), value, passable);`
       })
@@ -404,13 +432,13 @@ fn getQuietNaN() -> f32 { var bits = 0x7fc00000u; return bitcast<f32>(bits); }`,
         values: props.costs,
         auxiliary,
         settings: props.settings,
+        additiveEdgeCosts: true,
         declarations: /* wgsl */ `
 ${EDGE_COST_WGSL}
-fn getRelaxationCandidate(neighborValue: f32, neighborAuxiliary: f32, centerAuxiliary: f32, centerRow: u32, direction: u32) -> f32 {
-  let candidate = neighborValue + getEdgeCost(direction, centerRow, neighborAuxiliary, centerAuxiliary);
-  if (candidate > settings[settingsOffset + 4u]) { return getInfinity(); }
-  return candidate;
-}`
+fn getRelaxationEdgeCost(neighborAuxiliary: f32, centerAuxiliary: f32, centerRow: u32, direction: u32) -> f32 {
+  return getEdgeCost(direction, centerRow, neighborAuxiliary, centerAuxiliary);
+}
+fn getRelaxationLimit() -> f32 { return settings[settingsOffset + 4u]; }`
       })
     );
     let tie: {levels: GraphDataView<'float32'>; masks: GraphDataView<'float32'>} | undefined;
@@ -654,11 +682,13 @@ ${STRICT_PREDECESSOR_WGSL}`,
         values: levels,
         auxiliary: masks,
         settings: props.settings,
+        additiveEdgeCosts: true,
         declarations: /* wgsl */ `
-fn getRelaxationCandidate(neighborValue: f32, neighborAuxiliary: f32, centerAuxiliary: f32, centerRow: u32, direction: u32) -> f32 {
+fn getRelaxationEdgeCost(neighborAuxiliary: f32, centerAuxiliary: f32, centerRow: u32, direction: u32) -> f32 {
   if (((u32(centerAuxiliary) >> direction) & 1u) == 0u) { return getInfinity(); }
-  return neighborValue + 1.0;
-}`
+  return 1.0;
+}
+fn getRelaxationLimit() -> f32 { return getInfinity(); }`
       })
     );
     const bindings: WGSLKernelBinding[] = [

@@ -28,7 +28,8 @@ export function computeRipleyDistanceFunctionsOnCPU(
 ): RipleyDistanceOracleResult {
   const [minX, minY, maxX, maxY] = parameters.bounds;
   const maximumDistance = parameters.maximumDistance;
-  const border = (parameters.edgeCorrection ?? 'border') === 'border';
+  const mode = parameters.edgeCorrection ?? 'border';
+  const border = mode === 'border';
   const events: [number, number][] = [];
   for (let row = 0; row < scene.positions.length / 2; row++) {
     const x = scene.positions[2 * row];
@@ -64,10 +65,67 @@ export function computeRipleyDistanceFunctionsOnCPU(
   const j: number[] = [];
   const gDenominators: number[] = [];
   const fDenominators: number[] = [];
+  const windowWidth = maxX - minX;
+  const windowHeight = maxY - minY;
+  // Weight |W| / |W eroded by distance|, capped like the GPU kernel.
+  const getHanischWeight = (distance: number) => {
+    const eroded =
+      Math.max(windowWidth - 2 * distance, 0) * Math.max(windowHeight - 2 * distance, 0);
+    return eroded > 0 ? Math.min((windowWidth * windowHeight) / eroded, 1024) : 1024;
+  };
+  const step = maximumDistance / radiusCount;
+  const getSlot = (distance: number) => Math.max(Math.ceil(distance / step) - 1, 0);
+  /** Kaplan-Meier on the radius grid: hazards per slot, events before censoring. */
+  const estimateKaplanMeier = (
+    samples: {distance: number; border: number}[],
+    slotIndex: number
+  ) => {
+    const events = new Array<number>(radiusCount + 1).fill(0);
+    const censored = new Array<number>(radiusCount + 1).fill(0);
+    for (const sample of samples) {
+      if (sample.distance <= sample.border) {
+        events[Math.min(getSlot(sample.distance), radiusCount)]++;
+      } else {
+        censored[Math.min(getSlot(sample.border), radiusCount)]++;
+      }
+    }
+    let atRisk = samples.length;
+    let survival = 1;
+    for (let slot = 0; slot <= slotIndex; slot++) {
+      if (atRisk >= 1 && events[slot] > 0) survival *= 1 - events[slot] / atRisk;
+      atRisk -= events[slot] + censored[slot];
+    }
+    return {
+      hits: (1 - survival) * samples.length,
+      denominator: samples.length,
+      size: samples.length
+    };
+  };
+  /** Hanisch weighting with the GPU's treatment of points that have no neighbor within the maximum. */
+  const estimateHanisch = (samples: {distance: number; border: number}[], radius: number) => {
+    let numerator = 0;
+    let denominator = 0;
+    for (const sample of samples) {
+      if (sample.distance > maximumDistance) {
+        if (sample.border >= maximumDistance) denominator += getHanischWeight(maximumDistance);
+      } else if (sample.distance <= sample.border) {
+        const weight = getHanischWeight(sample.distance);
+        denominator += weight;
+        if (sample.distance <= radius) numerator += weight;
+      }
+    }
+    return {hits: numerator, denominator, size: samples.length};
+  };
   const estimate = (samples: {distance: number; border: number}[], radius: number) => {
+    if (mode === 'kaplan-meier') {
+      return estimateKaplanMeier(samples, Math.round((radius / maximumDistance) * radiusCount) - 1);
+    }
+    if (mode === 'hanisch') {
+      return estimateHanisch(samples, radius);
+    }
     const eligible = border ? samples.filter(sample => sample.border >= radius) : samples;
     const hits = eligible.filter(sample => sample.distance <= radius).length;
-    return {hits, denominator: eligible.length};
+    return {hits, denominator: eligible.length, size: eligible.length};
   };
   for (let b = 0; b < radiusCount; b++) {
     const radius = (maximumDistance * (b + 1)) / radiusCount;
@@ -89,8 +147,8 @@ export function computeRipleyDistanceFunctionsOnCPU(
         ? (1 - gValue) / (1 - fValue)
         : NaN
     );
-    gDenominators.push(gEstimate.denominator);
-    fDenominators.push(fEstimate.denominator);
+    gDenominators.push(gEstimate.size);
+    fDenominators.push(fEstimate.size);
   }
   return {radii, g, f, j, gDenominators, fDenominators};
 }

@@ -149,10 +149,13 @@ it('GPUInequality emits deterministic node IDs and only the passes its outputs n
     })
   );
   const fullIds = full.getCommandNodes(graph).map(node => node.id);
-  expect(fullIds.slice(-4)).toEqual([
+  expect(fullIds.slice(-7)).toEqual([
     'full-publish-indices',
     'full-publish-moments',
     'full-global-sums',
+    'full-global-gini-tile-totals',
+    'full-global-gini-tile-prefix',
+    'full-global-gini-tile-area',
     'full-global-gini'
   ]);
   expect(new Set(fullIds).size).toBe(fullIds.length);

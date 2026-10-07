@@ -188,8 +188,8 @@ it('GPUEmergingHotSpots creates deterministic nodes', () => {
     'eh-block-squares',
     'eh-deviation',
     'eh-gi-star',
-    'eh-mann-kendall',
-    'eh-classify'
+    // Mann-Kendall and the category classification share one pass over each cell's series.
+    'eh-mann-kendall'
   ]);
   const secondGraph = new GPUCommandGraph(device);
   const again = new GPUEmergingHotSpots(createProps(secondGraph, {id: 'eh'}));
@@ -204,7 +204,7 @@ it('GPUEmergingHotSpots creates deterministic nodes', () => {
       values: createTransientView(countsGraph, 'counts', 'uint32', 60)
     })
   );
-  expect(counts.getCommandNodes(countsGraph)).toHaveLength(7);
+  expect(counts.getCommandNodes(countsGraph)).toHaveLength(6);
   device.destroy();
 });
 

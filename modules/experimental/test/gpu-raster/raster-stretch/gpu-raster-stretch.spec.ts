@@ -503,3 +503,22 @@ it('GPURasterStretch supports output subsets', async () => {
   expect(colorResult.result.colors!.some(color => color !== 0)).toBe(true);
   colorsOnly.destroy();
 });
+
+it('GPURasterStretch matches the CPU oracle over many workgroup tiles (privatized histogram and tree reduction)', async () => {
+  const device = await getWebGPUTestDevice();
+  if (!device) {
+    return;
+  }
+  // 199 x 157 = 31243 cells: several tiles of the workgroup-private reduce and histogram passes,
+  // with a ragged last tile.
+  const scene = createIntegerScene(9, 199, 157);
+  const harness = createHarness(device, {scene, palette: PALETTE});
+  for (const frame of [
+    {mode: 'linear'},
+    {mode: 'percentile', percentiles: [2, 98]},
+    {mode: 'equalize'}
+  ] as GPURasterStretchSettings[]) {
+    await checkFrame(harness, scene, frame, {palette: PALETTE});
+  }
+  harness.destroy();
+});

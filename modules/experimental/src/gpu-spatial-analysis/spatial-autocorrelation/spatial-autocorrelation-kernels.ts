@@ -11,8 +11,12 @@ import {
   type GPUCommandNode,
   type GraphDataView
 } from '@luma.gl/gpgpu/gpu-core';
-import {createFillNode, createWGSLKernelNode} from '../../utils/wgsl-kernel-nodes';
-import {createSegmentSumNode, getSortKeyBits} from '../../utils/sorted-segment-sums';
+import {
+  createFillNode,
+  createWGSLKernelNode,
+  type WGSLKernelBinding
+} from '../../utils/wgsl-kernel-nodes';
+import {getSortKeyBits} from '../../utils/sorted-segment-sums';
 import {validateGPUSpatialWeights, type GPUSpatialWeights} from '../spatial-weights/index';
 import {
   GPU_SPATIAL_AUTOCORRELATION_PARAMETER_LENGTH,
@@ -21,6 +25,9 @@ import {
 
 /** Rows reduced by one workgroup in the first level of the deterministic global sums. */
 const BLOCK_ROWS = 4096;
+
+/** Threads of the moment-sum workgroups. */
+const MOMENT_WORKGROUP_SIZE = 256;
 
 /** Key of a non-finite z-score in the false-discovery-rate sort; sorts after every finite one. */
 const INVALID_P_VALUE_KEY = 0x7f800001;
@@ -175,100 +182,116 @@ export function getSpatialAutocorrelationInputNodes<Parameters>(
   const sharedWGSL = getSpatialAutocorrelationSharedWGSL();
   const nodes: GPUCommandNode<Parameters>[] = [];
 
-  const validity = createTransientView(graph, `${id}-validity`, 'uint32', rows);
-  const valueContributions = createTransientView(graph, `${id}-value-terms`, 'float32', rows);
-  const countContributions = createTransientView(graph, `${id}-count-terms`, 'float32', rows);
-  const blockOffsets = createTransientView(graph, `${id}-block-offsets`, 'uint32', blockCount + 1);
-  const totalOffsets = createTransientView(graph, `${id}-total-offsets`, 'uint32', 2);
   const valuePartials = createTransientView(graph, `${id}-value-partials`, 'float32', blockCount);
-  const valueTotal = createTransientView(graph, `${id}-value-total`, 'float32', 1);
-  const countPartials = createTransientView(graph, `${id}-count-partials`, 'float32', blockCount);
-  const countTotal = createTransientView(graph, `${id}-count-total`, 'float32', 1);
-  const squareContributions = createTransientView(graph, `${id}-square-terms`, 'float32', rows);
+  const countPartials = createTransientView(graph, `${id}-count-partials`, 'uint32', blockCount);
   const squarePartials = createTransientView(graph, `${id}-square-partials`, 'float32', blockCount);
-  const squareTotal = createTransientView(graph, `${id}-square-total`, 'float32', 1);
   const statistics = createTransientView(graph, `${id}-statistics`, 'float32', rows + 4);
-
+  const maskBindings: WGSLKernelBinding[] = mask
+    ? [{name: 'mask', view: mask, type: 'u32', access: 'read'}]
+    : [];
+  const blockDeclarations = `${SPATIAL_AUTOCORRELATION_FLOAT_WGSL}
+const MOMENTS: u32 = ${rows}u;
+const ROW_COUNT: u32 = ${rows}u;
+const BLOCK_ROWS: u32 = ${BLOCK_ROWS}u;
+const WORKGROUP_SIZE: u32 = ${MOMENT_WORKGROUP_SIZE}u;
+fn isRowValid(row: u32) -> bool {
+  return ${mask ? 'mask[maskOffset + row] != 0u && ' : ''}isFiniteFloat(values[valuesOffset + row]);
+}`;
+  // Each level-1 workgroup reduces one block of rows: thread t sums rows block + t, + 256, ... and a
+  // fixed binary tree combines the threads, so the order depends only on the shape and the sums
+  // are bitwise reproducible. Validity is evaluated in place (no per-row validity or term
+  // buffers), and the level-2 kernels also finish the moments, so the front end is four kernels.
   nodes.push(
     createWGSLKernelNode<Parameters>(graph, {
-      id: `${id}-validity`,
+      id: `${id}-moments-blocks`,
       operation,
-      variant: 'validity',
+      variant: 'moments-blocks',
       bindings: [
         {name: 'values', view: values, type: 'f32', access: 'read'},
-        ...(mask
-          ? [{name: 'mask', view: mask, type: 'u32' as const, access: 'read' as const}]
-          : []),
-        {name: 'validity', view: validity, type: 'u32', access: 'read_write'},
-        {name: 'valueTerms', view: valueContributions, type: 'f32', access: 'read_write'},
-        {name: 'countTerms', view: countContributions, type: 'f32', access: 'read_write'}
+        ...maskBindings,
+        {name: 'valuePartials', view: valuePartials, type: 'f32', access: 'read_write'},
+        {name: 'countPartials', view: countPartials, type: 'u32', access: 'read_write'}
       ],
-      invocationCount: rows,
-      declarations: SPATIAL_AUTOCORRELATION_FLOAT_WGSL,
-      body: `let value = values[valuesOffset + index];
-  let included = ${mask ? 'mask[maskOffset + index] != 0u' : 'true'};
-  let valid = included && isFiniteFloat(value);
-  validity[validityOffset + index] = select(0u, 1u, valid);
-  valueTerms[valueTermsOffset + index] = select(0.0, value, valid);
-  countTerms[countTermsOffset + index] = select(0.0, 1.0, valid);`
-    }),
-    createWGSLKernelNode<Parameters>(graph, {
-      id: `${id}-block-offsets`,
-      operation,
-      variant: 'block-offsets',
-      bindings: [
-        {name: 'blockOffsets', view: blockOffsets, type: 'u32', access: 'read_write'},
-        {name: 'totalOffsets', view: totalOffsets, type: 'u32', access: 'read_write'}
-      ],
-      invocationCount: blockCount + 1,
-      declarations: `const ROW_COUNT: u32 = ${rows}u;
-const BLOCK_ROWS: u32 = ${BLOCK_ROWS}u;
-const BLOCK_COUNT: u32 = ${blockCount}u;`,
-      body: `blockOffsets[blockOffsetsOffset + index] = min(index * BLOCK_ROWS, ROW_COUNT);
-  if (index == 0u) {
-    totalOffsets[totalOffsetsOffset] = 0u;
-    totalOffsets[totalOffsetsOffset + 1u] = BLOCK_COUNT;
+      workgroupSize: MOMENT_WORKGROUP_SIZE,
+      invocationCount: blockCount * MOMENT_WORKGROUP_SIZE,
+      guardIndex: false,
+      declarations: `${blockDeclarations}
+var<workgroup> partialSums: array<f32, ${MOMENT_WORKGROUP_SIZE}>;
+var<workgroup> partialCounts: array<u32, ${MOMENT_WORKGROUP_SIZE}>;`,
+      // No early return: every invocation of a workgroup must reach the barriers.
+      body: `let block = index / WORKGROUP_SIZE;
+  let isInRange = index < INVOCATION_COUNT;
+  var sum = 0.0;
+  var count = 0u;
+  if (isInRange) {
+    let end = min((block + 1u) * BLOCK_ROWS, ROW_COUNT);
+    for (var row = block * BLOCK_ROWS + localInvocationIndex; row < end; row += WORKGROUP_SIZE) {
+      if (isRowValid(row)) {
+        sum += values[valuesOffset + row];
+        count++;
+      }
+    }
+  }
+  partialSums[localInvocationIndex] = sum;
+  partialCounts[localInvocationIndex] = count;
+  workgroupBarrier();
+  for (var stride = WORKGROUP_SIZE / 2u; stride > 0u; stride = stride / 2u) {
+    if (localInvocationIndex < stride) {
+      partialSums[localInvocationIndex] += partialSums[localInvocationIndex + stride];
+      partialCounts[localInvocationIndex] += partialCounts[localInvocationIndex + stride];
+    }
+    workgroupBarrier();
+  }
+  if (isInRange && localInvocationIndex == 0u) {
+    valuePartials[valuePartialsOffset + block] = partialSums[0];
+    countPartials[countPartialsOffset + block] = partialCounts[0];
   }`
-    }),
-    ...getTotalSumNodes<Parameters>(graph, {
-      id: `${id}-value-sum`,
-      operation,
-      input: valueContributions,
-      partials: valuePartials,
-      output: valueTotal,
-      blockOffsets,
-      totalOffsets
-    }),
-    ...getTotalSumNodes<Parameters>(graph, {
-      id: `${id}-count-sum`,
-      operation,
-      input: countContributions,
-      partials: countPartials,
-      output: countTotal,
-      blockOffsets,
-      totalOffsets
     }),
     createWGSLKernelNode<Parameters>(graph, {
       id: `${id}-moments-mean`,
       operation,
       variant: 'moments-mean',
       bindings: [
-        {name: 'countTotal', view: countTotal, type: 'f32', access: 'read'},
-        {name: 'valueTotal', view: valueTotal, type: 'f32', access: 'read'},
+        {name: 'valuePartials', view: valuePartials, type: 'f32', access: 'read'},
+        {name: 'countPartials', view: countPartials, type: 'u32', access: 'read'},
         {name: 'parameters', view: parameters, type: 'f32', access: 'read'},
         {name: 'statistics', view: statistics, type: 'f32', access: 'read_write'}
       ],
-      invocationCount: 1,
+      workgroupSize: MOMENT_WORKGROUP_SIZE,
+      invocationCount: MOMENT_WORKGROUP_SIZE,
+      guardIndex: false,
       declarations: `${sharedWGSL}
-const MOMENTS: u32 = ${rows}u;`,
-      body: `var count = countTotal[countTotalOffset];
-  var mean = select(getQuietNaN(index), valueTotal[valueTotalOffset] / count, count >= 1.0);
-  if (readParameter(1u) != 0.0) {
-    count = readParameter(2u);
-    mean = readParameter(3u);
+const MOMENTS: u32 = ${rows}u;
+const BLOCK_COUNT: u32 = ${blockCount}u;
+const WORKGROUP_SIZE: u32 = ${MOMENT_WORKGROUP_SIZE}u;
+var<workgroup> partialSums: array<f32, ${MOMENT_WORKGROUP_SIZE}>;
+var<workgroup> partialCounts: array<u32, ${MOMENT_WORKGROUP_SIZE}>;`,
+      body: `var sum = 0.0;
+  var count = 0u;
+  for (var block = localInvocationIndex; block < BLOCK_COUNT; block += WORKGROUP_SIZE) {
+    sum += valuePartials[valuePartialsOffset + block];
+    count += countPartials[countPartialsOffset + block];
   }
-  statistics[statisticsOffset + MOMENTS] = count;
-  statistics[statisticsOffset + MOMENTS + 1u] = mean;`
+  partialSums[localInvocationIndex] = sum;
+  partialCounts[localInvocationIndex] = count;
+  workgroupBarrier();
+  for (var stride = WORKGROUP_SIZE / 2u; stride > 0u; stride = stride / 2u) {
+    if (localInvocationIndex < stride) {
+      partialSums[localInvocationIndex] += partialSums[localInvocationIndex + stride];
+      partialCounts[localInvocationIndex] += partialCounts[localInvocationIndex + stride];
+    }
+    workgroupBarrier();
+  }
+  if (localInvocationIndex == 0u) {
+    var total = f32(partialCounts[0]);
+    var mean = select(getQuietNaN(index), partialSums[0] / total, total >= 1.0);
+    if (readParameter(1u) != 0.0) {
+      total = readParameter(2u);
+      mean = readParameter(3u);
+    }
+    statistics[statisticsOffset + MOMENTS] = total;
+    statistics[statisticsOffset + MOMENTS + 1u] = mean;
+  }`
     }),
     createWGSLKernelNode<Parameters>(graph, {
       id: `${id}-center`,
@@ -276,33 +299,48 @@ const MOMENTS: u32 = ${rows}u;`,
       variant: 'center',
       bindings: [
         {name: 'values', view: values, type: 'f32', access: 'read'},
-        {name: 'validity', view: validity, type: 'u32', access: 'read'},
+        ...maskBindings,
         {name: 'statistics', view: statistics, type: 'f32', access: 'read_write'},
-        {name: 'squareTerms', view: squareContributions, type: 'f32', access: 'read_write'}
+        {name: 'squarePartials', view: squarePartials, type: 'f32', access: 'read_write'}
       ],
-      invocationCount: rows,
-      declarations: `const MOMENTS: u32 = ${rows}u;`,
-      body: `let valid = validity[validityOffset + index] != 0u;
-  let centered = values[valuesOffset + index] - statistics[statisticsOffset + MOMENTS + 1u];
-  // Excluded rows store quiet NaN, which every later kernel reads as "not a focus row".
-  statistics[statisticsOffset + index] = select(bitcast<f32>(0x7fc00000u | (index & 0u)), centered, valid);
-  squareTerms[squareTermsOffset + index] = select(0.0, centered * centered, valid);`
-    }),
-    ...getTotalSumNodes<Parameters>(graph, {
-      id: `${id}-square-sum`,
-      operation,
-      input: squareContributions,
-      partials: squarePartials,
-      output: squareTotal,
-      blockOffsets,
-      totalOffsets
+      workgroupSize: MOMENT_WORKGROUP_SIZE,
+      invocationCount: blockCount * MOMENT_WORKGROUP_SIZE,
+      guardIndex: false,
+      declarations: `${blockDeclarations}
+var<workgroup> partialSums: array<f32, ${MOMENT_WORKGROUP_SIZE}>;`,
+      // Centers each row and reduces the squared deviations of its block in the same pass.
+      body: `let block = index / WORKGROUP_SIZE;
+  let isInRange = index < INVOCATION_COUNT;
+  var sum = 0.0;
+  if (isInRange) {
+    let mean = statistics[statisticsOffset + MOMENTS + 1u];
+    let end = min((block + 1u) * BLOCK_ROWS, ROW_COUNT);
+    for (var row = block * BLOCK_ROWS + localInvocationIndex; row < end; row += WORKGROUP_SIZE) {
+      let valid = isRowValid(row);
+      let centered = values[valuesOffset + row] - mean;
+      // Excluded rows store quiet NaN, which every later kernel reads as "not a focus row".
+      statistics[statisticsOffset + row] = select(getQuietNaN(row), centered, valid);
+      sum += select(0.0, centered * centered, valid);
+    }
+  }
+  partialSums[localInvocationIndex] = sum;
+  workgroupBarrier();
+  for (var stride = WORKGROUP_SIZE / 2u; stride > 0u; stride = stride / 2u) {
+    if (localInvocationIndex < stride) {
+      partialSums[localInvocationIndex] += partialSums[localInvocationIndex + stride];
+    }
+    workgroupBarrier();
+  }
+  if (isInRange && localInvocationIndex == 0u) {
+    squarePartials[squarePartialsOffset + block] = partialSums[0];
+  }`
     }),
     createWGSLKernelNode<Parameters>(graph, {
       id: `${id}-moments-variance`,
       operation,
       variant: 'moments-variance',
       bindings: [
-        {name: 'squareTotal', view: squareTotal, type: 'f32', access: 'read'},
+        {name: 'squarePartials', view: squarePartials, type: 'f32', access: 'read'},
         {name: 'parameters', view: parameters, type: 'f32', access: 'read'},
         {name: 'statistics', view: statistics, type: 'f32', access: 'read_write'},
         ...(props.globalStatistics
@@ -316,63 +354,49 @@ const MOMENTS: u32 = ${rows}u;`,
             ]
           : [])
       ],
-      invocationCount: 1,
+      workgroupSize: MOMENT_WORKGROUP_SIZE,
+      invocationCount: MOMENT_WORKGROUP_SIZE,
+      guardIndex: false,
       declarations: `${sharedWGSL}
-const MOMENTS: u32 = ${rows}u;`,
-      body: `let count = statistics[statisticsOffset + MOMENTS];
-  let mean = statistics[statisticsOffset + MOMENTS + 1u];
-  var sumOfSquares = squareTotal[squareTotalOffset];
-  var variance = select(getQuietNaN(index), sumOfSquares / count, count >= 1.0);
-  if (readParameter(1u) != 0.0) {
-    variance = readParameter(4u);
-    sumOfSquares = variance * count;
+const MOMENTS: u32 = ${rows}u;
+const BLOCK_COUNT: u32 = ${blockCount}u;
+const WORKGROUP_SIZE: u32 = ${MOMENT_WORKGROUP_SIZE}u;
+var<workgroup> partialSums: array<f32, ${MOMENT_WORKGROUP_SIZE}>;`,
+      body: `var sum = 0.0;
+  for (var block = localInvocationIndex; block < BLOCK_COUNT; block += WORKGROUP_SIZE) {
+    sum += squarePartials[squarePartialsOffset + block];
   }
-  statistics[statisticsOffset + MOMENTS + 2u] = variance;
-  statistics[statisticsOffset + MOMENTS + 3u] = sumOfSquares;
-  ${
-    props.globalStatistics
-      ? `globalStatistics[globalStatisticsOffset] = count;
-  globalStatistics[globalStatisticsOffset + 1u] = mean;
-  globalStatistics[globalStatisticsOffset + 2u] = variance;
-  globalStatistics[globalStatisticsOffset + 3u] = sqrt(variance);`
-      : ''
+  partialSums[localInvocationIndex] = sum;
+  workgroupBarrier();
+  for (var stride = WORKGROUP_SIZE / 2u; stride > 0u; stride = stride / 2u) {
+    if (localInvocationIndex < stride) {
+      partialSums[localInvocationIndex] += partialSums[localInvocationIndex + stride];
+    }
+    workgroupBarrier();
+  }
+  if (localInvocationIndex == 0u) {
+    let count = statistics[statisticsOffset + MOMENTS];
+    let mean = statistics[statisticsOffset + MOMENTS + 1u];
+    var sumOfSquares = partialSums[0];
+    var variance = select(getQuietNaN(index), sumOfSquares / count, count >= 1.0);
+    if (readParameter(1u) != 0.0) {
+      variance = readParameter(4u);
+      sumOfSquares = variance * count;
+    }
+    statistics[statisticsOffset + MOMENTS + 2u] = variance;
+    statistics[statisticsOffset + MOMENTS + 3u] = sumOfSquares;
+    ${
+      props.globalStatistics
+        ? `globalStatistics[globalStatisticsOffset] = count;
+    globalStatistics[globalStatisticsOffset + 1u] = mean;
+    globalStatistics[globalStatisticsOffset + 2u] = variance;
+    globalStatistics[globalStatisticsOffset + 3u] = sqrt(variance);`
+        : ''
+    }
   }`
     })
   );
   return {nodes, statistics};
-}
-
-/** Two fixed-order tree-sum levels: one workgroup per block of rows, then one over the blocks. */
-function getTotalSumNodes<Parameters>(
-  graph: GPUCommandGraph<Parameters>,
-  props: {
-    id: string;
-    operation: string;
-    input: GraphDataView<'float32'>;
-    partials: GraphDataView<'float32'>;
-    output: GraphDataView<'float32'>;
-    blockOffsets: GraphDataView<'uint32'>;
-    totalOffsets: GraphDataView<'uint32'>;
-  }
-): GPUCommandNode<Parameters>[] {
-  return [
-    createSegmentSumNode<Parameters>(graph, {
-      id: `${props.id}-blocks`,
-      operation: props.operation,
-      segmentCount: props.partials.length,
-      input: props.input,
-      segmentOffsets: props.blockOffsets,
-      output: props.partials
-    }),
-    createSegmentSumNode<Parameters>(graph, {
-      id: `${props.id}-total`,
-      operation: props.operation,
-      segmentCount: 1,
-      input: props.partials,
-      segmentOffsets: props.totalOffsets,
-      output: props.output
-    })
-  ];
 }
 
 /** Views produced by {@link getFalseDiscoveryRateNodes}. @internal */

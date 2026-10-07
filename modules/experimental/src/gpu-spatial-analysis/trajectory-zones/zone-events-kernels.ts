@@ -440,7 +440,11 @@ export function createZoneSortedColumnsNode<Parameters>(
   });
 }
 
-/** Seeds per `(track, zone)` state from the initial point-in-polygon parity. @internal */
+/**
+ * Seeds per `(track, zone)` state from the initial point-in-polygon parity. With the optional
+ * span views the first enter time starts at -1 (never entered) or 0 (starts inside) and the last
+ * exit time at 0. @internal
+ */
 export function createZoneSeedNode<Parameters>(
   graph: GPUCommandGraph<Parameters>,
   props: {
@@ -451,25 +455,41 @@ export function createZoneSeedNode<Parameters>(
     enterTimes: GraphDataView<'float32'>;
     dwellTimes: GraphDataView<'float32'>;
     visitCounts: GraphDataView<'uint32'>;
+    firstEnterTimes?: GraphDataView<'float32'>;
+    lastExitTimes?: GraphDataView<'float32'>;
   }
 ): GPUCommandNode<Parameters> {
+  const bindings: WGSLKernelBinding[] = [
+    {name: 'initialInside', view: props.initialInside, type: 'u32', access: 'read'},
+    {name: 'walkState', view: props.walkState, type: 'u32', access: 'read_write'},
+    {name: 'enterTimes', view: props.enterTimes, type: 'f32', access: 'read_write'},
+    {name: 'dwellTimes', view: props.dwellTimes, type: 'f32', access: 'read_write'},
+    {name: 'visitCounts', view: props.visitCounts, type: 'u32', access: 'read_write'}
+  ];
+  const hasSpans = Boolean(props.firstEnterTimes && props.lastExitTimes);
+  if (props.firstEnterTimes && props.lastExitTimes) {
+    bindings.push(
+      {name: 'firstEnterTimes', view: props.firstEnterTimes, type: 'f32', access: 'read_write'},
+      {name: 'lastExitTimes', view: props.lastExitTimes, type: 'f32', access: 'read_write'}
+    );
+  }
   return createWGSLKernelNode<Parameters>(graph, {
     id: props.id,
     operation: OPERATION,
-    variant: 'seed',
-    bindings: [
-      {name: 'initialInside', view: props.initialInside, type: 'u32', access: 'read'},
-      {name: 'walkState', view: props.walkState, type: 'u32', access: 'read_write'},
-      {name: 'enterTimes', view: props.enterTimes, type: 'f32', access: 'read_write'},
-      {name: 'dwellTimes', view: props.dwellTimes, type: 'f32', access: 'read_write'},
-      {name: 'visitCounts', view: props.visitCounts, type: 'u32', access: 'read_write'}
-    ],
+    variant: hasSpans ? 'seed-spans' : 'seed',
+    bindings,
     invocationCount: props.cellCount,
     body: `let inside = initialInside[initialInsideOffset + index] & 1u;
   walkState[walkStateOffset + index] = inside;
   enterTimes[enterTimesOffset + index] = 0.0;
   dwellTimes[dwellTimesOffset + index] = 0.0;
-  visitCounts[visitCountsOffset + index] = inside;`
+  visitCounts[visitCountsOffset + index] = inside;${
+    hasSpans
+      ? `
+  firstEnterTimes[firstEnterTimesOffset + index] = select(-1.0, 0.0, inside == 1u);
+  lastExitTimes[lastExitTimesOffset + index] = 0.0;`
+      : ''
+  }`
   });
 }
 
@@ -632,12 +652,15 @@ export function createZoneCloseNode<Parameters>(
     walkState: GraphDataView<'uint32'>;
     enterTimes: GraphDataView<'float32'>;
     dwellTimes: GraphDataView<'float32'>;
+    /** Receives the track duration for still-open visits. */
+    lastExitTimes?: GraphDataView<'float32'>;
   }
 ): GPUCommandNode<Parameters> {
+  const lastExitTimes = props.lastExitTimes;
   return createWGSLKernelNode<Parameters>(graph, {
     id: props.id,
     operation: OPERATION,
-    variant: props.isWordMode ? 'close-words' : 'close',
+    variant: `${props.isWordMode ? 'close-words' : 'close'}${lastExitTimes ? '-spans' : ''}`,
     bindings: [
       {
         name: 'timestamps',
@@ -648,7 +671,10 @@ export function createZoneCloseNode<Parameters>(
       {name: 'trackOffsets', view: props.trackOffsets, type: 'u32', access: 'read'},
       {name: 'walkState', view: props.walkState, type: 'u32', access: 'read'},
       {name: 'enterTimes', view: props.enterTimes, type: 'f32', access: 'read'},
-      {name: 'dwellTimes', view: props.dwellTimes, type: 'f32', access: 'read_write'}
+      {name: 'dwellTimes', view: props.dwellTimes, type: 'f32', access: 'read_write'},
+      ...(lastExitTimes
+        ? [{name: 'lastExitTimes', view: lastExitTimes, type: 'f32', access: 'read_write'} as const]
+        : [])
     ],
     invocationCount: props.shape.trackCount * props.shape.zoneCount,
     declarations: `${getTrackConstants(props.shape)}
@@ -658,7 +684,9 @@ ${getTimeSource(props.isWordMode)}`,
   let firstRow = trackOffsets[trackOffsetsOffset + track];
   let lastRow = trackOffsets[trackOffsetsOffset + track + 1u] - 1u;
   let duration = rowTimeDifference(lastRow, firstRow);
-  dwellTimes[dwellTimesOffset + index] = dwellTimes[dwellTimesOffset + index] + (duration - enterTimes[enterTimesOffset + index]);`
+  dwellTimes[dwellTimesOffset + index] = dwellTimes[dwellTimesOffset + index] + (duration - enterTimes[enterTimesOffset + index]);${
+    lastExitTimes ? '\n  lastExitTimes[lastExitTimesOffset + index] = duration;' : ''
+  }`
   });
 }
 
@@ -668,6 +696,8 @@ export type ZoneGatherColumn = {
   destination: GraphDataView;
   /** Bit pattern written at and after the kept count: `0xffffffff` for IDs, `0` for floats. */
   sentinel: string;
+  /** Words copied per event, 2 for a `float32x2` column. Defaults to 1. */
+  stride?: number;
 };
 
 /** Copies up to three sorted columns to the first `capacity` compact slots. @internal */
@@ -696,9 +726,12 @@ export function createZoneGatherNode<Parameters>(
         access: 'read_write'
       }
     );
-    lines.push(
-      `destination${columnIndex}[destination${columnIndex}Offset + index] = select(${column.sentinel}, source${columnIndex}[source${columnIndex}Offset + row], isLive);`
-    );
+    const stride = column.stride ?? 1;
+    for (let word = 0; word < stride; word++) {
+      lines.push(
+        `destination${columnIndex}[destination${columnIndex}Offset + index * ${stride}u + ${word}u] = select(${column.sentinel}, source${columnIndex}[source${columnIndex}Offset + row * ${stride}u + ${word}u], isLive);`
+      );
+    }
   }
   return createWGSLKernelNode<Parameters>(graph, {
     id: props.id,
@@ -791,5 +824,204 @@ export function createZoneDiagnosticsNode<Parameters>(
     declarations: `${getTrackConstants(props.shape)}
 const EVENT_CAPACITY: u32 = ${props.eventCapacity}u;`,
     body: lines.join('\n  ')
+  });
+}
+
+/**
+ * Interpolated crossing position of every sorted event: `previous + along * (current - previous)`
+ * on the segment ending at the event's row. Slots at and after the event count are zero. @internal
+ */
+export function createZoneSortedPositionsNode<Parameters>(
+  graph: GPUCommandGraph<Parameters>,
+  props: {
+    id: string;
+    shape: ZoneEventsShape;
+    state: GraphDataView<'uint32'>;
+    order: GraphDataView<'uint32'>;
+    candidatePairs: GraphDataView<'uint32x2'>;
+    candidateParameters: GraphDataView<'float32'>;
+    positions: GraphDataView<'float32x2'>;
+    sortedPositions: GraphDataView<'float32x2'>;
+  }
+): GPUCommandNode<Parameters> {
+  return createWGSLKernelNode<Parameters>(graph, {
+    id: props.id,
+    operation: OPERATION,
+    variant: 'sorted-positions',
+    bindings: [
+      {name: 'state', view: props.state, type: 'u32', access: 'read'},
+      {name: 'order', view: props.order, type: 'u32', access: 'read'},
+      {name: 'candidatePairs', view: props.candidatePairs, type: 'u32', access: 'read'},
+      {name: 'candidateParameters', view: props.candidateParameters, type: 'f32', access: 'read'},
+      {name: 'positions', view: props.positions, type: 'f32', access: 'read'},
+      {name: 'sortedPositions', view: props.sortedPositions, type: 'f32', access: 'read_write'}
+    ],
+    invocationCount: props.shape.candidateCapacity,
+    body: `var crossing = vec2f(0.0, 0.0);
+  if (index < state[stateOffset + 1u]) {
+    let slot = order[orderOffset + index];
+    let row = candidatePairs[candidatePairsOffset + slot * 2u];
+    let along = candidateParameters[candidateParametersOffset + slot];
+    let previous = vec2f(positions[positionsOffset + (row - 1u) * 2u], positions[positionsOffset + (row - 1u) * 2u + 1u]);
+    let current = vec2f(positions[positionsOffset + row * 2u], positions[positionsOffset + row * 2u + 1u]);
+    crossing = previous + along * (current - previous);
+  }
+  sortedPositions[sortedPositionsOffset + index * 2u] = crossing.x;
+  sortedPositions[sortedPositionsOffset + index * 2u + 1u] = crossing.y;`
+  });
+}
+
+/**
+ * Per-track walk over the sorted events that records, for each `(track, zone)`, the first enter
+ * time (when the track did not start inside) and the last exit time. Cells never entered keep
+ * the seeded -1 first enter time. @internal
+ */
+export function createZoneSpanNode<Parameters>(
+  graph: GPUCommandGraph<Parameters>,
+  props: {
+    id: string;
+    shape: ZoneEventsShape;
+    state: GraphDataView<'uint32'>;
+    sortedTracks: GraphDataView<'uint32'>;
+    sortedZones: GraphDataView<'uint32'>;
+    sortedTimes: GraphDataView<'float32'>;
+    eventTypes: GraphDataView<'uint32'>;
+    firstEnterTimes: GraphDataView<'float32'>;
+    lastExitTimes: GraphDataView<'float32'>;
+  }
+): GPUCommandNode<Parameters> {
+  return createWGSLKernelNode<Parameters>(graph, {
+    id: props.id,
+    operation: OPERATION,
+    variant: 'span',
+    bindings: [
+      {name: 'state', view: props.state, type: 'u32', access: 'read'},
+      {name: 'sortedTracks', view: props.sortedTracks, type: 'u32', access: 'read'},
+      {name: 'sortedZones', view: props.sortedZones, type: 'u32', access: 'read'},
+      {name: 'sortedTimes', view: props.sortedTimes, type: 'f32', access: 'read'},
+      {name: 'eventTypes', view: props.eventTypes, type: 'u32', access: 'read'},
+      {name: 'firstEnterTimes', view: props.firstEnterTimes, type: 'f32', access: 'read_write'},
+      {name: 'lastExitTimes', view: props.lastExitTimes, type: 'f32', access: 'read_write'}
+    ],
+    invocationCount: props.shape.trackCount,
+    declarations: getTrackConstants(props.shape),
+    body: `let eventTotal = state[stateOffset + 1u];
+  var low = 0u;
+  var high = eventTotal;
+  loop {
+    if (low >= high) { break; }
+    let middle = (low + high) / 2u;
+    if (sortedTracks[sortedTracksOffset + middle] < index) { low = middle + 1u; } else { high = middle; }
+  }
+  var event = low;
+  loop {
+    if (event >= eventTotal || sortedTracks[sortedTracksOffset + event] != index) { break; }
+    let cell = index * ZONE_COUNT + sortedZones[sortedZonesOffset + event];
+    let eventTime = sortedTimes[sortedTimesOffset + event];
+    if (eventTypes[eventTypesOffset + event] == 0u) {
+      if (firstEnterTimes[firstEnterTimesOffset + cell] < 0.0) {
+        firstEnterTimes[firstEnterTimesOffset + cell] = eventTime;
+      }
+    } else {
+      lastExitTimes[lastExitTimesOffset + cell] = eventTime;
+    }
+    event = event + 1u;
+  }`
+  });
+}
+
+/** Flags every `(track, zone)` cell with at least one visit and writes the identity cell ids. @internal */
+export function createZoneTableFlagsNode<Parameters>(
+  graph: GPUCommandGraph<Parameters>,
+  props: {
+    id: string;
+    cellCount: number;
+    visitCounts: GraphDataView<'uint32'>;
+    flags: GraphDataView<'uint32'>;
+    cellIds: GraphDataView<'uint32'>;
+  }
+): GPUCommandNode<Parameters> {
+  return createWGSLKernelNode<Parameters>(graph, {
+    id: props.id,
+    operation: OPERATION,
+    variant: 'table-flags',
+    bindings: [
+      {name: 'visitCounts', view: props.visitCounts, type: 'u32', access: 'read'},
+      {name: 'flags', view: props.flags, type: 'u32', access: 'read_write'},
+      {name: 'cellIds', view: props.cellIds, type: 'u32', access: 'read_write'}
+    ],
+    invocationCount: props.cellCount,
+    body: `cellIds[cellIdsOffset + index] = index;
+  flags[flagsOffset + index] = select(0u, 1u, visitCounts[visitCountsOffset + index] > 0u);`
+  });
+}
+
+/** One column of the `(track, zone)` table. @internal */
+export type ZoneTableColumn = {
+  /** `'track'` and `'zone'` derive from the cell index; `'value'` copies `source[cell]`. */
+  kind: 'track' | 'zone' | 'value';
+  /** Dense per-cell source for `'value'` columns. */
+  source?: GraphDataView<'uint32'> | GraphDataView<'float32'>;
+  destination: GraphDataView<'uint32'> | GraphDataView<'float32'>;
+};
+
+/** Number of storage bindings a table column needs. @internal */
+export function getZoneTableColumnBindingCount(column: ZoneTableColumn): number {
+  return column.kind === 'value' ? 2 : 1;
+}
+
+/**
+ * Copies table columns for the compacted cells. Slots at and after the kept count receive
+ * sentinels (`0xffffffff` for integers, 0 for floats). @internal
+ */
+export function createZoneTableGatherNode<Parameters>(
+  graph: GPUCommandGraph<Parameters>,
+  props: {
+    id: string;
+    capacity: number;
+    zoneCount: number;
+    keptTotal: GraphDataView<'uint32'>;
+    keptCells: GraphDataView<'uint32'>;
+    columns: readonly ZoneTableColumn[];
+  }
+): GPUCommandNode<Parameters> {
+  const bindings: WGSLKernelBinding[] = [
+    {name: 'keptTotal', view: props.keptTotal, type: 'u32', access: 'read'},
+    {name: 'keptCells', view: props.keptCells, type: 'u32', access: 'read'}
+  ];
+  const lines: string[] = [];
+  for (const [columnIndex, column] of props.columns.entries()) {
+    const type = column.destination.format === 'float32' ? 'f32' : 'u32';
+    const sentinel = type === 'f32' ? '0.0' : '0xffffffffu';
+    bindings.push({
+      name: `destination${columnIndex}`,
+      view: column.destination,
+      type,
+      access: 'read_write'
+    });
+    let value: string;
+    if (column.kind === 'value' && column.source) {
+      bindings.push({name: `source${columnIndex}`, view: column.source, type, access: 'read'});
+      value = `source${columnIndex}[source${columnIndex}Offset + cell]`;
+    } else {
+      value = column.kind === 'track' ? 'cell / ZONE_COUNT' : 'cell % ZONE_COUNT';
+    }
+    lines.push(
+      `destination${columnIndex}[destination${columnIndex}Offset + index] = select(${sentinel}, ${value}, isLive);`
+    );
+  }
+  if (bindings.length > 8) {
+    throw new Error(`${props.id} needs more than 8 storage bindings`);
+  }
+  return createWGSLKernelNode<Parameters>(graph, {
+    id: props.id,
+    operation: OPERATION,
+    variant: 'table-gather',
+    bindings,
+    invocationCount: props.capacity,
+    declarations: `const ZONE_COUNT: u32 = ${props.zoneCount}u;`,
+    body: `let isLive = index < keptTotal[keptTotalOffset];
+  let cell = select(0u, keptCells[keptCellsOffset + index], isLive);
+  ${lines.join('\n  ')}`
   });
 }

@@ -24,6 +24,8 @@ export class GraphRig {
   readonly graph: GPUCommandGraph;
   private readonly buffers: Buffer[] = [];
   private serial = 0;
+  /** Submits the compiled graph again (after `run`), for timing. */
+  resubmit: () => void = () => {};
 
   constructor(
     readonly device: Device,
@@ -74,6 +76,7 @@ export class GraphRig {
     }
     const compiled = this.graph.compile();
     submitGraph(this.device, compiled, undefined);
+    this.resubmit = () => submitGraph(this.device, compiled, undefined);
     this.buffers.push({destroy: () => compiled.destroy()} as Buffer);
   }
 

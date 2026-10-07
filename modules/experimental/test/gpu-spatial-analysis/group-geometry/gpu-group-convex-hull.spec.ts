@@ -39,7 +39,12 @@ async function runHull(
   positions: Float32Array,
   labels: Uint32Array,
   groupCount: number,
-  options: {maximumVerticesPerGroup?: number; totalCapacity?: number; noiseLabel?: number} = {}
+  options: {
+    maximumVerticesPerGroup?: number;
+    totalCapacity?: number;
+    noiseLabel?: number;
+    prefilterLevels?: number;
+  } = {}
 ): Promise<Hulls> {
   const rows = labels.length;
   const capacity = options.totalCapacity ?? rows + groupCount;
@@ -70,6 +75,7 @@ async function runHull(
       labels: importGraphBuffer(graph, 'labels', input(labels), 'uint32', rows),
       groupCount,
       noiseLabel: options.noiseLabel,
+      prefilterLevels: options.prefilterLevels,
       maximumVerticesPerGroup: options.maximumVerticesPerGroup ?? 1024,
       totalCapacity: capacity,
       output: {
@@ -283,4 +289,81 @@ it('GPUGroupConvexHull matches the oracle above the chunk prefilter threshold', 
   const actual = await runHull(device, positions, labels, groupCount);
   expect(actual.overflow).toBe(0);
   expect(actual.hulls).toEqual(expected.hulls);
+});
+
+it('GPUGroupConvexHull gives the same hulls for every prefilter level count', async () => {
+  const device = await getWebGPUTestDevice();
+  if (!device) {
+    return;
+  }
+  // Group 0: a large disk, group 1: points on a circle (almost all are hull vertices, so the
+  // prefilter barely shrinks them), group 2: collinear, group 3: empty, group 4: a small blob
+  // that straddles chunk boundaries. Lattice-rounded coordinates produce duplicates.
+  const random = createRandom(23);
+  const rows = 40000;
+  const groupCount = 5;
+  const positions = new Float32Array(rows * 2);
+  const labels = new Uint32Array(rows);
+  for (let row = 0; row < rows; row++) {
+    const group = row < 20000 ? 0 : row < 22000 ? 1 : row < 22300 ? 2 : 4;
+    labels[row] = group;
+    const angle = random() * Math.PI * 2;
+    if (group === 2) {
+      positions[row * 2] = 1e6 + (row % 11);
+      positions[row * 2 + 1] = 2e6 + (row % 11) * 3;
+    } else if (group === 1) {
+      positions[row * 2] = 1e6 + 500 + Math.round(Math.cos(angle) * 4000) / 8;
+      positions[row * 2 + 1] = 2e6 + Math.round(Math.sin(angle) * 4000) / 8;
+    } else {
+      const radius = Math.sqrt(random()) * (group === 4 ? 5 : 50);
+      positions[row * 2] = 1e6 + 1000 + Math.round(radius * Math.cos(angle) * 4) / 4;
+      positions[row * 2 + 1] = 2e6 + Math.round(radius * Math.sin(angle) * 4) / 4;
+    }
+  }
+  const expected = computeGroupConvexHullOracle(
+    positions,
+    getOracleGroupKeys(positions, labels, groupCount),
+    groupCount
+  );
+  expect(expected.hulls[1].length, 'the circle keeps many vertices').toBeGreaterThan(200);
+  for (const prefilterLevels of [0, 1, 2, 3, 4]) {
+    const actual = await runHull(device, positions, labels, groupCount, {
+      prefilterLevels,
+      maximumVerticesPerGroup: 4096
+    });
+    expect(actual.overflow, `levels ${prefilterLevels}`).toBe(0);
+    expect(actual.hulls, `levels ${prefilterLevels}`).toEqual(expected.hulls);
+  }
+});
+
+it('GPUGroupConvexHull handles sparse groups: empty first, middle and last groups, excluded labels', async () => {
+  const device = await getWebGPUTestDevice();
+  if (!device) {
+    return;
+  }
+  // 1000 groups of which only 0, 17, 18 and 998 own rows; labels 1000 and 5000 (out of range) are
+  // excluded, so the last group 999 stays empty. Group boundaries come from binary search in the sorted keys.
+  const random = createRandom(5);
+  const groupCount = 1000;
+  const used = [998, 17, 0, 18, 5000, 17, 0, 998];
+  const rows = 600;
+  const positions = new Float32Array(rows * 2);
+  const labels = new Uint32Array(rows);
+  for (let row = 0; row < rows; row++) {
+    labels[row] = used[row % used.length];
+    positions[row * 2] = 100 * (row % used.length) + random() * 50;
+    positions[row * 2 + 1] = random() * 50;
+  }
+  labels[3] = 1000;
+  const expected = computeGroupConvexHullOracle(
+    positions,
+    getOracleGroupKeys(positions, labels, groupCount),
+    groupCount
+  );
+  const actual = await runHull(device, positions, labels, groupCount, {totalCapacity: rows});
+  expect(actual.overflow).toBe(0);
+  expect(actual.hulls).toEqual(expected.hulls);
+  expect(actual.hulls[998].length).toBeGreaterThan(2);
+  expect(actual.hulls[999]).toEqual([]);
+  expect(actual.hulls[500]).toEqual([]);
 });

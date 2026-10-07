@@ -21,6 +21,17 @@ import {
 import {createNullWebGPUDevice} from '../../utils/gpu-contributor-test-utils';
 import {createBand} from '../terrain-test-utils';
 
+/** Collapses the consecutive pyramid builder node ids into one '<pyramid>' marker. */
+function withoutPyramidNodes(ids: string[]): string[] {
+  return ids.reduce<string[]>((result, id) => {
+    const isPyramid = /-pyramid-level/.test(id);
+    if (!isPyramid || result.at(-1) !== '<pyramid>') {
+      result.push(isPyramid ? '<pyramid>' : id);
+    }
+    return result;
+  }, []);
+}
+
 it('GPUTerrainDerivatives schedules gradients and the shade kernel', () => {
   const device = createNullWebGPUDevice();
   const graph = new GPUCommandGraph(device);
@@ -254,11 +265,10 @@ it('GPUTerrainViewshed pyramid and tolerance variants schedule nodes within 8 bi
   expect(GPU_TERRAIN_VISIBILITY.marginal).toBe(4);
   const pyramid = create({traversal: 'pyramid'});
   const pyramidNodes = pyramid.getCommandNodes(graph);
-  expect(pyramidNodes.map(node => node.id)).toEqual([
+  // The pyramid builder may fuse its coarse levels into fewer nodes; only its presence matters.
+  expect(withoutPyramidNodes(pyramidNodes.map(node => node.id))).toEqual([
     `${pyramid.id}-elevation`,
-    `${pyramid.id}-pyramid-level-0`,
-    `${pyramid.id}-pyramid-level-1`,
-    `${pyramid.id}-pyramid-level-2`,
+    '<pyramid>',
     `${pyramid.id}-viewshed`
   ]);
   // elevation values, validity, pyramid, settings, visibility
@@ -325,11 +335,9 @@ it('GPUTerrainLineOfSight validates and schedules within 8 bindings', () => {
     clearance: createTransientView(graph, 'los-clearance', 'float32', 5)
   });
   const fullNodes = full.getCommandNodes(graph);
-  expect(fullNodes.map(node => node.id)).toEqual([
+  expect(withoutPyramidNodes(fullNodes.map(node => node.id))).toEqual([
     `${full.id}-elevation`,
-    `${full.id}-pyramid-level-0`,
-    `${full.id}-pyramid-level-1`,
-    `${full.id}-pyramid-level-2`,
+    '<pyramid>',
     `${full.id}-line-of-sight`
   ]);
   // values, validity, pyramid, settings, pairs, pairHeights, visibility, clearance

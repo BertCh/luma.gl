@@ -18,10 +18,10 @@ export const GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_MAXIMUM_NEIGHBOR_COUNT = 128
 export const GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_MAXIMUM_ROW_COUNT = 65536;
 
 /**
- * Largest row count with a grid index. Bounded fixed-bandwidth fits then visit only nearby cells,
- * so the cost grows with `rows * neighbours`; the limit is the per-candidate scratch
+ * Largest row count with a grid index. Bisquare fits (fixed or adaptive bandwidth) then visit only
+ * nearby cells, so the cost grows with `rows * neighbours`; the limit is the per-candidate scratch
  * (`rows * ladder * 8` bytes must fit one 128 MiB storage binding) and `rows^2` cost remains for
- * Gaussian and adaptive encodings.
+ * Gaussian kernels.
  */
 export const GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_MAXIMUM_INDEXED_ROW_COUNT = 1048576;
 

@@ -19,3 +19,9 @@ export type {
   GPUTrajectoryPlayheadTime,
   GPUTrajectoryPlayheadStatus
 } from './trajectory-playhead-parameters';
+export {
+  getGPUTrajectoryClockParameterValues,
+  getGPUTrajectoryClockWordParameterValues,
+  GPU_TRAJECTORY_CLOCK_PARAMETER_LENGTH
+} from './trajectory-clock-parameters';
+export type {GPUTrajectoryClock} from './trajectory-clock-parameters';

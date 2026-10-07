@@ -151,7 +151,7 @@ export type GPUNetworkSubgraphFilterProps = {
  * Ranges live in a float32 `parameters` view and never recompile (see
  * {@link getGPUNetworkSubgraphFilterParameterValues}); all arithmetic is integer or comparison, so
  * results are exact and deterministic. Optional outputs: counts, compact live vertex and slot ids
- * (stable ascending, via `GPUScan`), and an induced CSR from a prefix sum over live degree.
+ * (stable ascending, via `GPUScan`), and an induced CSR from the same prefix sum over the live-slot mask.
  *
  * Add the contributor to one graph at a time. It owns no GPU resources.
  */
@@ -527,12 +527,14 @@ export class GPUNetworkSubgraphFilter implements GPUCommandNodeProducer {
       );
     }
 
-    // Induced edges: a slot also needs both endpoints and, when paired, its reverse slot. A row's
-    // slots belong to one invocation, so writes never race.
+    // Induced edges: a slot also needs both endpoints and, when paired, its reverse slot. One
+    // invocation owns one slot, so a hub row spreads over many invocations instead of serialising
+    // its O(degree) pairing searches on one thread. Each slot finds its row with a binary search
+    // over `offsets`, and only its own result is written, so writes never race.
     const pairing = pairSlots
       ? `var live = sourceLive && ownMask[ownMaskOffset + slot] != 0u && neighbor < NODE_COUNT;
-    if (live && neighbor != index) {
-      // The j-th slot index -> neighbor pairs with the j-th slot neighbor -> index. A missing
+    if (live && neighbor != row) {
+      // The j-th slot row -> neighbor pairs with the j-th slot neighbor -> row. A missing
       // reverse slot leaves the slot's own result in force.
       var ordinal = 0u;
       for (var earlier = rowBegin; earlier < slot; earlier++) {
@@ -541,7 +543,7 @@ export class GPUNetworkSubgraphFilter implements GPUCommandNodeProducer {
       let reverseEnd = min(offsets[offsetsOffset + neighbor + 1u], SLOT_COUNT);
       var seen = 0u;
       for (var reverse = offsets[offsetsOffset + neighbor]; reverse < reverseEnd; reverse++) {
-        if (neighbors[neighborsOffset + reverse] == index) {
+        if (neighbors[neighborsOffset + reverse] == row) {
           if (seen == ordinal) {
             live = ownMask[ownMaskOffset + reverse] != 0u;
             break;
@@ -585,18 +587,32 @@ export class GPUNetworkSubgraphFilter implements GPUCommandNodeProducer {
           access: 'read_write'
         }
       ],
-      nodeCount,
-      `let sourceLive = vertexMask[vertexMaskOffset + index] != 0u;
-  let rowBegin = offsets[offsetsOffset + index];
-  let rowEnd = min(offsets[offsetsOffset + index + 1u], SLOT_COUNT);
-  for (var slot = rowBegin; slot < rowEnd; slot++) {
-    let neighbor = neighbors[neighborsOffset + slot];
-    ${pairing}
-    if (live) {
-      live = vertexMask[vertexMaskOffset + neighbor] != 0u;
+      slotCount,
+      `let slot = index;
+  // Owner row: the last row whose offset is at or before the slot.
+  var low = 0u;
+  var high = NODE_COUNT - 1u;
+  while (low < high) {
+    let middle = (low + high + 1u) / 2u;
+    if (offsets[offsetsOffset + middle] <= slot) {
+      low = middle;
+    } else {
+      high = middle - 1u;
     }
-    edgeMask[edgeMaskOffset + slot] = select(0u, 1u, live);
-  }`,
+  }
+  let row = low;
+  let rowBegin = offsets[offsetsOffset + row];
+  let rowEnd = min(offsets[offsetsOffset + row + 1u], SLOT_COUNT);
+  if (slot < rowBegin || slot >= rowEnd) {
+    return;
+  }
+  let sourceLive = vertexMask[vertexMaskOffset + row] != 0u;
+  let neighbor = neighbors[neighborsOffset + slot];
+  ${pairing}
+  if (live) {
+    live = vertexMask[vertexMaskOffset + neighbor] != 0u;
+  }
+  edgeMask[edgeMaskOffset + slot] = select(0u, 1u, live);`,
       `const NODE_COUNT: u32 = ${nodeCount}u;
 const SLOT_COUNT: u32 = ${slotCount}u;`
     );
@@ -755,10 +771,15 @@ const SLOT_COUNT: u32 = ${slotCount}u;`
     const addCompaction = (
       step: string,
       flags: GraphDataView<'uint32'>,
-      compact: GPUCompactOutput
+      compact: GPUCompactOutput,
+      offsets: GraphDataView<'uint32'> = createTransientView(
+        graph,
+        `${id}-${step}-offsets`,
+        'uint32',
+        flags.length
+      )
     ) => {
       const rowCount = flags.length;
-      const offsets = createTransientView(graph, `${id}-${step}-offsets`, 'uint32', rowCount);
       const total = createTransientView(graph, `${id}-${step}-total`, 'uint32', 1);
       nodes.push(
         ...new GPUScan({
@@ -803,49 +824,65 @@ const ROW_COUNT: u32 = ${rowCount}u;`
       );
     };
     if (output.liveVertices) addCompaction('live-vertices', output.vertexMask, output.liveVertices);
-    if (output.liveEdgeSlots) addCompaction('live-slots', output.edgeMask, output.liveEdgeSlots);
+    // The slot prefix sum is shared by the live-slot list and the induced CSR, which is the classic
+    // mask -> scan -> compact pipeline and keeps every pass balanced over slots, not rows.
+    const slotPrefix =
+      output.liveEdgeSlots || output.inducedCSR
+        ? createTransientView(graph, `${id}-live-slots-offsets`, 'uint32', slotCount)
+        : undefined;
+    if (output.liveEdgeSlots) {
+      addCompaction('live-slots', output.edgeMask, output.liveEdgeSlots, slotPrefix);
+    } else if (slotPrefix) {
+      nodes.push(
+        ...new GPUScan({
+          id: `${id}-live-slots-scan`,
+          input: output.edgeMask,
+          output: slotPrefix
+        }).getCommandNodes(graph)
+      );
+    }
 
-    // Induced CSR: live degree per vertex, exclusive scan to offsets, scatter live slots.
+    // Induced CSR: row offsets are the slot prefix at each row start, and every live slot scatters
+    // to its prefix position (a row's live slots stay contiguous and in order).
     const csr = output.inducedCSR;
-    if (csr) {
-      const degree = createTransientView(graph, `${id}-live-degree`, 'uint32', nodeCount + 1);
+    if (csr && slotPrefix) {
+      const prefixSource = `fn getPrefix(slot: u32) -> u32 {
+  if (slot >= SLOT_COUNT) {
+    return edgeMask[edgeMaskOffset + SLOT_COUNT - 1u] + slotPrefix[slotPrefixOffset + SLOT_COUNT - 1u];
+  }
+  return slotPrefix[slotPrefixOffset + slot];
+}`;
       kernel(
-        'live-degree',
-        'live-degree',
+        'induced-offsets',
+        'induced-offsets',
         [
           {name: 'offsets', view: props.offsets, type: 'u32', access: 'read'},
+          {name: 'edgeMask', view: output.edgeMask, type: 'u32', access: 'read'},
+          {name: 'slotPrefix', view: slotPrefix, type: 'u32', access: 'read'},
           {
-            name: 'edgeMask',
-            view: output.edgeMask,
+            name: 'inducedOffsets',
+            view: csr.offsets,
             type: 'u32',
-            access: 'read'
+            access: 'read_write'
           },
           {
-            name: 'degreeOut',
-            view: degree,
+            name: 'overflowOut',
+            view: csr.overflow,
             type: 'u32',
             access: 'read_write'
           }
         ],
         nodeCount + 1,
-        `var liveCount = 0u;
-  if (index < NODE_COUNT) {
-    let rowBegin = offsets[offsetsOffset + index];
-    let rowEnd = min(offsets[offsetsOffset + index + 1u], SLOT_COUNT);
-    for (var slot = rowBegin; slot < rowEnd; slot++) {
-      liveCount += select(0u, 1u, edgeMask[edgeMaskOffset + slot] != 0u);
-    }
-  }
-  degreeOut[degreeOutOffset + index] = liveCount;`,
+        `let base = getPrefix(offsets[offsetsOffset]);
+  let value = getPrefix(offsets[offsetsOffset + index]) - base;
+  inducedOffsets[inducedOffsetsOffset + index] = value;
+  if (index == NODE_COUNT) {
+    overflowOut[overflowOutOffset] = select(0u, 1u, value > CAPACITY);
+  }`,
         `const NODE_COUNT: u32 = ${nodeCount}u;
-const SLOT_COUNT: u32 = ${slotCount}u;`
-      );
-      nodes.push(
-        ...new GPUScan({
-          id: `${id}-induced-scan`,
-          input: degree,
-          output: csr.offsets
-        }).getCommandNodes(graph)
+const SLOT_COUNT: u32 = ${slotCount}u;
+const CAPACITY: u32 = ${csr.neighbors.length}u;
+${prefixSource}`
       );
       const scatterBindings: WGSLKernelBinding[] = [
         {name: 'offsets', view: props.offsets, type: 'u32', access: 'read'},
@@ -861,21 +898,10 @@ const SLOT_COUNT: u32 = ${slotCount}u;`
           type: 'u32',
           access: 'read'
         },
-        {
-          name: 'inducedOffsets',
-          view: csr.offsets,
-          type: 'u32',
-          access: 'read'
-        },
+        {name: 'slotPrefix', view: slotPrefix, type: 'u32', access: 'read'},
         {
           name: 'inducedNeighbors',
           view: csr.neighbors,
-          type: 'u32',
-          access: 'read_write'
-        },
-        {
-          name: 'overflowOut',
-          view: csr.overflow,
           type: 'u32',
           access: 'read_write'
         }
@@ -892,26 +918,21 @@ const SLOT_COUNT: u32 = ${slotCount}u;`
         'induced-scatter',
         'induced-scatter',
         scatterBindings,
-        nodeCount,
-        `if (index == 0u) {
-    overflowOut[overflowOutOffset] =
-      select(0u, 1u, inducedOffsets[inducedOffsetsOffset + NODE_COUNT] > CAPACITY);
+        slotCount,
+        `let firstSlot = min(offsets[offsetsOffset], SLOT_COUNT);
+  let endSlot = min(offsets[offsetsOffset + NODE_COUNT], SLOT_COUNT);
+  if (index < firstSlot || index >= endSlot || edgeMask[edgeMaskOffset + index] == 0u) {
+    return;
   }
-  var position = inducedOffsets[inducedOffsetsOffset + index];
-  let rowBegin = offsets[offsetsOffset + index];
-  let rowEnd = min(offsets[offsetsOffset + index + 1u], SLOT_COUNT);
-  for (var slot = rowBegin; slot < rowEnd; slot++) {
-    if (edgeMask[edgeMaskOffset + slot] != 0u) {
-      if (position < CAPACITY) {
-        inducedNeighbors[inducedNeighborsOffset + position] = neighbors[neighborsOffset + slot];
-        ${csr.sourceSlots ? 'inducedSlots[inducedSlotsOffset + position] = slot;' : ''}
-      }
-      position++;
-    }
+  let position = slotPrefix[slotPrefixOffset + index] - getPrefix(firstSlot);
+  if (position < CAPACITY) {
+    inducedNeighbors[inducedNeighborsOffset + position] = neighbors[neighborsOffset + index];
+    ${csr.sourceSlots ? 'inducedSlots[inducedSlotsOffset + position] = index;' : ''}
   }`,
         `const NODE_COUNT: u32 = ${nodeCount}u;
 const SLOT_COUNT: u32 = ${slotCount}u;
-const CAPACITY: u32 = ${csr.neighbors.length}u;`
+const CAPACITY: u32 = ${csr.neighbors.length}u;
+${prefixSource}`
       );
     }
     return nodes;

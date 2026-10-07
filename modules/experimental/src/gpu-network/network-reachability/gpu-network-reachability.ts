@@ -24,7 +24,8 @@ import {
   createReachabilityTieLevelNode,
   createReachabilityTiePredecessorsNode,
   createReachabilityTieRootsNode,
-  createReachabilityTieSeedNode
+  createReachabilityTieSeedNode,
+  createReachabilityUnresolvedCountNode
 } from './network-reachability-passes';
 import {
   createFrontierState,
@@ -97,14 +98,28 @@ export type GPUNetworkReachabilityProps = {
    * reached only across equal-cost edges a predecessor, 1 to 1024. Defaults to 4. Only used when
    * `predecessors` is given. Each round chains up to `localIterations` hops along a zero-weight
    * plateau, so a plateau `d` hops deep needs about `ceil(d / localIterations)` rounds. When a
-   * plateau is deeper, its deepest nodes keep `GPU_NETWORK_REACHABILITY_NONE` and `converged` is 0.
+   * plateau is deeper, its deepest nodes keep `GPU_NETWORK_REACHABILITY_NONE`, `converged` is 0 and
+   * `unresolvedCount` counts them.
    */
   maxTieIterations?: number;
   /** Optional one-row per-frame round limit, clamped to `maxIterations`. */
   activeIterations?: GraphDataView<'uint32'>;
   /** Optional one-row per-frame cost cutoff. Candidates above it stay unreached. */
   costLimit?: GraphDataView<'float32'>;
-  /** Per-node minimum cost, `+Infinity` when unreached. Its length defines the node count. */
+  /**
+   * Compile-time number of independent searches ("lanes") that share one CSR. With `laneCount > 1`,
+   * `costs` holds `laneCount` consecutive blocks of `nodeCount` costs (lane `l`, node `u` is
+   * `l * nodeCount + u`) and `offsets` still describes the single network of `nodeCount` nodes.
+   * `sources` and `sourceCosts` address expanded nodes. Every lane then reads the same
+   * offsets, neighbors and weights, so no per-lane copy of the CSR is needed and lanes that visit
+   * the same node share cache lines. Costs are bit-identical to searching a lane-expanded copy of
+   * the CSR. Not supported together with `predecessors` or `unresolvedCount`. Defaults to 1.
+   */
+  laneCount?: number;
+  /**
+   * Per-node minimum cost, `+Infinity` when unreached. Its length is `laneCount * nodeCount`; with
+   * one lane it defines the node count.
+   */
   costs: GraphDataView<'float32'>;
   /**
    * Optional per-node predecessor on a shortest path, or `GPU_NETWORK_REACHABILITY_NONE` for
@@ -125,6 +140,13 @@ export type GPUNetworkReachabilityProps = {
    * the tie-level phase finished; 0 when a round limit stopped either.
    */
   converged?: GraphDataView<'uint32'>;
+  /**
+   * Optional one-row count of reached nodes that have no predecessor although they are not sources
+   * or strict-predecessor roots, because the tie-level phase stopped at `maxTieIterations` before
+   * reaching them. 0 means every reached node has its tie-rule predecessor. Requires
+   * `predecessors`. Unlike `converged`, it names how many nodes are affected.
+   */
+  unresolvedCount?: GraphDataView<'uint32'>;
   /**
    * Optional one-row count of relaxation rounds executed: rounds below the limit whose queue was
    * not empty, and at least one when the limit is above zero.
@@ -182,6 +204,8 @@ export class GPUNetworkReachability implements GPUCommandNodeProducer {
   readonly localIterations: number;
   /** Resolved compile-time round count of the tie-level phase. */
   readonly maxTieIterations: number;
+  /** Resolved compile-time number of lanes sharing the CSR. */
+  readonly laneCount: number;
 
   constructor(props: GPUNetworkReachabilityProps) {
     this.id = props.id ?? 'network-reachability';
@@ -189,6 +213,7 @@ export class GPUNetworkReachability implements GPUCommandNodeProducer {
     this.maxIterations = props.maxIterations ?? DEFAULT_MAXIMUM_ITERATIONS;
     this.localIterations = props.localIterations ?? DEFAULT_LOCAL_ITERATIONS;
     this.maxTieIterations = props.maxTieIterations ?? DEFAULT_MAXIMUM_TIE_ITERATIONS;
+    this.laneCount = props.laneCount ?? 1;
     const {id} = this;
     for (const [name, view] of [
       ['offsets', props.offsets],
@@ -200,6 +225,7 @@ export class GPUNetworkReachability implements GPUCommandNodeProducer {
       ['bands', props.bands],
       ['bandCounts', props.bandCounts],
       ['converged', props.converged],
+      ['unresolvedCount', props.unresolvedCount],
       ['iterationCount', props.iterationCount]
     ] as const) {
       if (view) {
@@ -221,8 +247,17 @@ export class GPUNetworkReachability implements GPUCommandNodeProducer {
     if (nodeCount < 1) {
       throw new Error(`${id} costs must contain at least one node`);
     }
-    if (props.offsets.length !== nodeCount + 1) {
-      throw new Error(`${id} offsets must contain one more row than costs`);
+    if (!Number.isSafeInteger(this.laneCount) || this.laneCount < 1) {
+      throw new Error(`${id} laneCount must be a positive integer`);
+    }
+    if (this.laneCount > 1 && (props.predecessors || props.unresolvedCount)) {
+      throw new Error(`${id} laneCount > 1 does not support predecessors or unresolvedCount`);
+    }
+    if (nodeCount % this.laneCount !== 0) {
+      throw new Error(`${id} costs length must be a multiple of laneCount`);
+    }
+    if (props.offsets.length !== nodeCount / this.laneCount + 1) {
+      throw new Error(`${id} offsets must contain one more row than costs per lane`);
     }
     if (props.weights.length !== props.neighbors.length) {
       throw new Error(`${id} weights length must equal neighbors length`);
@@ -235,6 +270,7 @@ export class GPUNetworkReachability implements GPUCommandNodeProducer {
       ['activeIterations', props.activeIterations],
       ['costLimit', props.costLimit],
       ['converged', props.converged],
+      ['unresolvedCount', props.unresolvedCount],
       ['iterationCount', props.iterationCount]
     ] as const) {
       if (view && view.length !== 1) {
@@ -286,12 +322,16 @@ export class GPUNetworkReachability implements GPUCommandNodeProducer {
         `${id} maxTieIterations must be an integer in [1, ${GPU_NETWORK_REACHABILITY_MAXIMUM_TIE_ITERATIONS}]`
       );
     }
+    if (props.unresolvedCount && !props.predecessors) {
+      throw new Error(`${id} unresolvedCount requires predecessors`);
+    }
     const outputs = [
       props.costs,
       props.predecessors,
       props.bands,
       props.bandCounts,
       props.converged,
+      props.unresolvedCount,
       props.iterationCount
     ]
       .filter(view => view !== undefined)
@@ -405,7 +445,8 @@ export class GPUNetworkReachability implements GPUCommandNodeProducer {
           localIterations,
           csr,
           hasCostLimit,
-          costs: props.costs
+          costs: props.costs,
+          laneNodeCount: this.laneCount > 1 ? nodeCount / this.laneCount : undefined
         })
       );
     }
@@ -417,7 +458,8 @@ export class GPUNetworkReachability implements GPUCommandNodeProducer {
           state,
           tiePhase,
           levels,
-          tieBits
+          tieBits,
+          unresolvedCount: props.unresolvedCount
         }),
         createReachabilityPredecessorsNode<Parameters>(graph, {
           id: `${id}-predecessors`,
@@ -487,6 +529,18 @@ export class GPUNetworkReachability implements GPUCommandNodeProducer {
         })
       );
     }
+    if (props.predecessors && levels && props.unresolvedCount) {
+      nodes.push(
+        createReachabilityUnresolvedCountNode<Parameters>(graph, {
+          id: `${id}-unresolved-count`,
+          nodeCount,
+          costs: props.costs,
+          levels,
+          predecessors: props.predecessors,
+          unresolvedCount: props.unresolvedCount
+        })
+      );
+    }
     if (props.converged || props.iterationCount) {
       nodes.push(
         createReachabilityFinalizeNode<Parameters>(graph, {
@@ -544,6 +598,7 @@ function getViews(props: GPUNetworkReachabilityProps): (GraphDataView | undefine
     props.bands,
     props.bandCounts,
     props.converged,
+    props.unresolvedCount,
     props.iterationCount
   ];
 }

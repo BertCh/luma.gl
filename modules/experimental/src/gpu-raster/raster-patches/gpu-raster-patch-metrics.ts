@@ -24,6 +24,8 @@ import {
 import {
   createPatchKeysNode,
   getPatchLabelViews,
+  getPatchRunSegmentsBody,
+  getPatchSegmentCount,
   validatePatchLabels,
   type GPURasterPatchLabels
 } from './patch-labels';
@@ -162,7 +164,6 @@ export class GPURasterPatchMetrics implements GPUCommandNodeProducer {
     const {node: keysNode, keys} = createPatchKeysNode(graph, id, OPERATION, props, patchCapacity);
     const nodes: GPUCommandNode<Parameters>[] = [keysNode];
     const pixelCounts = output.pixelCounts ?? view('pixel-counts', patchCapacity);
-    const pixelLength = width * height;
     const geometry = `const WIDTH: u32 = ${width}u;
 const HEIGHT: u32 = ${height}u;`;
 
@@ -182,11 +183,11 @@ const HEIGHT: u32 = ${height}u;`;
           {name: 'keys', view: keys, type: 'u32', access: 'read'},
           {name: 'pixelCounts', view: pixelCounts, type: 'atomic<u32>', access: 'read_write'}
         ],
-        invocationCount: pixelLength,
-        body: `let key = keys[keysOffset + index];
-  if (key != 0u) {
-    atomicAdd(&pixelCounts[pixelCountsOffset + key - 1u], 1u);
-  }`
+        invocationCount: getPatchSegmentCount(width, height),
+        declarations: geometry,
+        body: getPatchRunSegmentsBody(width, {
+          onRun: 'atomicAdd(&pixelCounts[pixelCountsOffset + runKey - 1u], runEnd - runStart);'
+        })
       })
     );
 
@@ -242,17 +243,14 @@ const HEIGHT: u32 = ${height}u;`;
             },
             {name: 'maxRows', view: extents.maxRows, type: 'atomic<u32>', access: 'read_write'}
           ],
-          invocationCount: pixelLength,
+          invocationCount: getPatchSegmentCount(width, height),
           declarations: geometry,
-          body: `let key = keys[keysOffset + index];
-  if (key != 0u) {
-    let column = index % WIDTH;
-    let row = index / WIDTH;
-    atomicMin(&minColumns[minColumnsOffset + key - 1u], column);
-    atomicMin(&minRows[minRowsOffset + key - 1u], row);
-    atomicMax(&maxColumns[maxColumnsOffset + key - 1u], column);
-    atomicMax(&maxRows[maxRowsOffset + key - 1u], row);
-  }`
+          body: getPatchRunSegmentsBody(width, {
+            onRun: `atomicMin(&minColumns[minColumnsOffset + runKey - 1u], runStart);
+        atomicMin(&minRows[minRowsOffset + runKey - 1u], row);
+        atomicMax(&maxColumns[maxColumnsOffset + runKey - 1u], runEnd - 1u);
+        atomicMax(&maxRows[maxRowsOffset + runKey - 1u], row);`
+          })
         }),
         createWGSLKernelNode<Parameters>(graph, {
           id: `${id}-extents-empty`,
@@ -299,7 +297,7 @@ const HEIGHT: u32 = ${height}u;`;
             {name: 'acrossRows', view: acrossRows, type: 'atomic<u32>', access: 'read_write'},
             {name: 'acrossColumns', view: acrossColumns, type: 'atomic<u32>', access: 'read_write'}
           ],
-          invocationCount: pixelLength,
+          invocationCount: getPatchSegmentCount(width, height),
           declarations: `${geometry}
 const COUNT_BORDER: bool = ${countBorder};
 
@@ -312,19 +310,18 @@ fn isExposed(column: u32, row: u32, dx: i32, dy: i32, key: u32) -> bool {
   }
   return keys[keysOffset + u32(neighborRow) * WIDTH + u32(neighborColumn)] != key;
 }`,
-          body: `let key = keys[keysOffset + index];
-  if (key != 0u) {
-    let column = index % WIDTH;
-    let row = index / WIDTH;
-    var rowFaces = 0u;
-    var columnFaces = 0u;
-    if (isExposed(column, row, 0, -1, key)) { rowFaces++; }
-    if (isExposed(column, row, 0, 1, key)) { rowFaces++; }
-    if (isExposed(column, row, -1, 0, key)) { columnFaces++; }
-    if (isExposed(column, row, 1, 0, key)) { columnFaces++; }
-    if (rowFaces > 0u) { atomicAdd(&acrossRows[acrossRowsOffset + key - 1u], rowFaces); }
-    if (columnFaces > 0u) { atomicAdd(&acrossColumns[acrossColumnsOffset + key - 1u], columnFaces); }
-  }`
+          // Exposed faces fold per run so the per-pixel loop only accumulates locally and each run
+          // issues at most two atomics.
+          body: getPatchRunSegmentsBody(width, {
+            declareRunState: 'var runRowFaces = 0u;\n  var runColumnFaces = 0u;',
+            onRunStart: 'runRowFaces = 0u;\n      runColumnFaces = 0u;',
+            onPixel: `if (isExposed(column, row, 0, -1, key)) { runRowFaces++; }
+      if (isExposed(column, row, 0, 1, key)) { runRowFaces++; }
+      if (isExposed(column, row, -1, 0, key)) { runColumnFaces++; }
+      if (isExposed(column, row, 1, 0, key)) { runColumnFaces++; }`,
+            onRun: `if (runRowFaces > 0u) { atomicAdd(&acrossRows[acrossRowsOffset + runKey - 1u], runRowFaces); }
+        if (runColumnFaces > 0u) { atomicAdd(&acrossColumns[acrossColumnsOffset + runKey - 1u], runColumnFaces); }`
+          })
         })
       );
       const finalizeBindings: WGSLKernelBinding[] = [

@@ -85,9 +85,8 @@ it('node ids carry the contributor prefix and grow with the iteration limit', ()
     'w-pointer-init',
     'w-pointer-reset',
     'w-pointer-round-0',
-    'w-pointer-gate-0',
     'w-pointer-round-1',
-    'w-pointer-gate-1',
+    'w-pointer-gate-0',
     'w-labels'
   ]);
   const pourIds = watersheds({id: 'p', maxIterations: 1, pourPoints: view('uint32', 4)})

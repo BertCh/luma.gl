@@ -3,3 +3,4 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import './gpu-grid-generator.spec';
+import './gpu-shape-generator.spec';

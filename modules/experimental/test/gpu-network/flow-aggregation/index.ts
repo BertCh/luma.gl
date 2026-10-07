@@ -3,3 +3,4 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import './gpu-flow-aggregation.spec';
+import './gpu-flow-aggregation-active-grid.spec';

@@ -105,8 +105,9 @@ it('GPUIsolines validates views and schedules deterministic nodes', () => {
     }
   });
   const stitchedNodes = stitched.getCommandNodes(graph).map(node => node.id);
-  // ceil(log2(40)) + 1 = 7 rounds.
-  expect(stitchedNodes.filter(id => /^stitched-jump-\d+$/.test(id))).toHaveLength(7);
+  // ceil(log2(40)) + 1 = 7 rounds, rounded up to 8 because rounds are gated in pairs.
+  expect(stitchedNodes.filter(id => /^stitched-jump-\d+$/.test(id))).toHaveLength(8);
+  expect(stitchedNodes.filter(id => /^stitched-jump-gate-\d+$/.test(id))).toHaveLength(4);
   expect(new Set(stitchedNodes).size).toBe(stitchedNodes.length);
 
   expect(() => new GPUIsolines({...base, width: 1, output: output()})).toThrow(/width/);

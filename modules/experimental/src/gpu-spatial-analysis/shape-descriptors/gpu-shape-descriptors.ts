@@ -24,6 +24,7 @@ import {
   createOrientationNode,
   GPU_SHAPE_DESCRIPTORS_PARAMETER_LENGTH
 } from './shape-descriptors-kernels';
+import {canUseMonotoneChainConvexity, getMonotoneChainConvexityNodes} from './convexity-hull';
 
 const OPERATION = 'GPUShapeDescriptors';
 
@@ -67,6 +68,19 @@ export function getGPUShapeDescriptorsParameterValues(
   target.set([sliverThreshold, 0, 0, 0]);
   return target;
 }
+
+/**
+ * How {@link GPUShapeDescriptors} computes `convexity`: `'gift-wrapping'` marches a private hull
+ * per feature in one invocation (`O(vertices * hull vertices)` each, no extra passes, best for many
+ * small features); `'monotone-chain'` builds every feature's hull with `GPUGroupConvexHull`
+ * (`O(n log n)` total, balanced for large or skewed features, but about thirty small passes);
+ * `'auto'` picks `'monotone-chain'` when features average at least
+ * {@link GPU_SHAPE_DESCRIPTORS_MONOTONE_CHAIN_AVERAGE_VERTICES} vertices.
+ */
+export type GPUShapeDescriptorsConvexityMethod = 'auto' | 'gift-wrapping' | 'monotone-chain';
+
+/** Average vertices per feature from which `convexityMethod: 'auto'` uses the monotone chain. */
+export const GPU_SHAPE_DESCRIPTORS_MONOTONE_CHAIN_AVERAGE_VERTICES = 256;
 
 /** Per-feature output columns of {@link GPUShapeDescriptors}. Every column is optional. */
 export type GPUShapeDescriptorsOutput = {
@@ -118,6 +132,8 @@ export type GPUShapeDescriptorsProps = {
   featureRingOffsets?: GraphDataView<'uint32'>;
   /** How rings combine; see `GPUGeometryMeasures`. Default `'winding'`. */
   holeRule?: GPUGeometryHoleRule;
+  /** Hull algorithm behind `output.convexity`. Default `'auto'`. */
+  convexityMethod?: GPUShapeDescriptorsConvexityMethod;
   /** Per-frame packed float32 view of at least 4 elements, written with {@link getGPUShapeDescriptorsParameterValues}. */
   parameters: GraphDataView<'float32'>;
   /** Per-feature output columns; at least one is required. */
@@ -135,7 +151,8 @@ export type GPUShapeDescriptorsProps = {
  * centroid in Neumaier-compensated f32 (one invocation per feature, deterministic); small nodes
  * derive the descriptors. Convexity runs a private gift-wrapping hull per feature with O(1)
  * memory, so its cost is O(vertices * hull vertices) per feature and grows with the largest
- * feature (a shared per-label hull from `GPUGroupConvexHull` can replace it when available).
+ * feature; `convexityMethod: 'monotone-chain'` (chosen by `'auto'` for large average features)
+ * uses `GPUGroupConvexHull` instead, which is O(n log n) and balanced across skewed features.
  * Orientation and elongation weight holes by the hole rule, so a polygon with a large hole is
  * described by its area, not its outline. Use planar coordinates: for longitude/latitude input,
  * project first (geographic descriptors are open).
@@ -155,6 +172,8 @@ export class GPUShapeDescriptors implements GPUCommandNodeProducer {
   readonly featureCount: number;
   /** Resolved hole rule. */
   readonly holeRule: GPUGeometryHoleRule;
+  /** Whether convexity uses the sort-based monotone chain hull instead of gift wrapping. */
+  readonly useMonotoneChainConvexity: boolean;
 
   constructor(props: GPUShapeDescriptorsProps) {
     this.id = props.id ?? 'shape-descriptors';
@@ -192,6 +211,20 @@ export class GPUShapeDescriptors implements GPUCommandNodeProducer {
     this.featureCount = props.featureRingOffsets
       ? props.featureRingOffsets.length - 1
       : props.ringOffsets.length - 1;
+    const convexityMethod = props.convexityMethod ?? 'auto';
+    if (!['auto', 'gift-wrapping', 'monotone-chain'].includes(convexityMethod)) {
+      throw new Error(`${id} convexityMethod must be 'auto', 'gift-wrapping' or 'monotone-chain'`);
+    }
+    const canChain = canUseMonotoneChainConvexity(props.positions.length, this.featureCount);
+    if (convexityMethod === 'monotone-chain' && !canChain) {
+      throw new Error(`${id} monotone-chain convexity supports fewer than 2^24 rows and features`);
+    }
+    this.useMonotoneChainConvexity =
+      canChain &&
+      (convexityMethod === 'monotone-chain' ||
+        (convexityMethod === 'auto' &&
+          props.positions.length >=
+            GPU_SHAPE_DESCRIPTORS_MONOTONE_CHAIN_AVERAGE_VERTICES * this.featureCount));
     validatePackedView(props.parameters, ['float32'], `${id} parameters`);
     if (props.parameters.length < GPU_SHAPE_DESCRIPTORS_PARAMETER_LENGTH) {
       throw new Error(
@@ -308,14 +341,25 @@ export class GPUShapeDescriptors implements GPUCommandNodeProducer {
       );
     }
     if (output.convexity && areas) {
-      nodes.push(
-        createConvexityNode<Parameters>(graph, {
-          ...ringInputs,
-          id: `${id}-convexity`,
-          areas,
-          convexities: output.convexity
-        })
-      );
+      if (this.useMonotoneChainConvexity) {
+        nodes.push(
+          ...getMonotoneChainConvexityNodes<Parameters>(graph, {
+            ...ringInputs,
+            id: `${id}-convexity`,
+            areas,
+            convexities: output.convexity
+          })
+        );
+      } else {
+        nodes.push(
+          createConvexityNode<Parameters>(graph, {
+            ...ringInputs,
+            id: `${id}-convexity`,
+            areas,
+            convexities: output.convexity
+          })
+        );
+      }
     }
     return nodes;
   }

@@ -4,3 +4,4 @@
 
 import './gpu-inverse-distance-weighting.spec';
 import './gpu-focal-statistics.spec';
+import './gpu-kriging.spec';

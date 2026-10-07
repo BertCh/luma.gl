@@ -74,7 +74,9 @@ it('GPUKnoxTest matches the Feistel permutation oracle exactly', async () => {
   if (!device) return;
   for (const {count, radius, threshold, permutations, seed} of [
     {count: 240, radius: 9, threshold: 3, permutations: 99, seed: 7},
-    {count: 37, radius: 40, threshold: 25.5, permutations: 31, seed: 123456789012}
+    {count: 37, radius: 40, threshold: 25.5, permutations: 31, seed: 123456789012},
+    // More rows than blocks, not a multiple of them: the interleaved row walk wraps around.
+    {count: 701, radius: 6, threshold: 4, permutations: 40, seed: 99}
   ]) {
     const {positions, times} = createEvents(count, 5);
     const csr = buildBand(positions, radius);
@@ -312,5 +314,36 @@ it('GPUKnoxTest reproduces the pointpats Knox statistic and expectation', async 
   // pointpats reports P(X > observed) (scipy poisson.sf); getKnoxPoissonPValue is P(X >= observed).
   const expected = result[GPU_SPACE_TIME_SUMMARY.expected];
   expect(Math.abs(getKnoxPoissonPValue(30, expected) - 0.6465526)).toBeLessThan(1e-3);
+  rig.destroy();
+});
+
+it('GPUMantelTest matches the oracle with more rows than blocks and a skewed pair list', async () => {
+  const device = await getWebGPUTestDevice();
+  if (!device) return;
+  // 600 rows (more than the 256 blocks, with a ragged last pass); the clustered core makes some
+  // rows list far more pairs than others.
+  const {positions, times} = createEvents(600, 21);
+  const csr = buildBand(positions, 9);
+  const permutations = 40;
+  const seed = 5;
+  const rig = new AnalysisRig(device);
+  const statistics = rig.output('float32', 64 + 1);
+  rig.run(
+    new GPUMantelTest({
+      pairs: uploadPairs(rig, csr),
+      times: rig.input(times, 'float32'),
+      parameters: rig.input(getGPUSpaceTimeParameterValues({seed, permutations}), 'uint32'),
+      maximumPermutations: 64,
+      statistics,
+      summary: rig.output('float32', GPU_SPACE_TIME_SUMMARY_LENGTH)
+    })
+  );
+  const expected = computeMantelOracle(csr, times, seed, permutations);
+  const actual = await rig.readFloat(statistics);
+  const degrees = csr.offsets.slice(1).map((end, row) => end - csr.offsets[row]);
+  expect(Math.max(...degrees)).toBeGreaterThan(2 * (csr.neighbors.length / 600));
+  for (let slot = 0; slot <= permutations; slot++) {
+    expect(Math.abs(actual[slot] - expected[slot]), `slot ${slot}`).toBeLessThan(2e-4);
+  }
   rig.destroy();
 });

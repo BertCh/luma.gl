@@ -29,15 +29,16 @@ export type TwoStageOracleResult = {
 };
 
 /**
- * Float64 oracle of spreg `GM_Lag` with `w_lags = 1`, from the matrix definitions:
- * `Z = [1, X, Wy]`, `H = [1, X, WX]`, `delta = (Z'PZ)^-1 Z'Py`, `sigma2 = u'u / n` (spreg `sig2n`),
+ * Float64 oracle of spreg `GM_Lag` with `w_lags = instrumentOrder`, from the matrix definitions:
+ * `Z = [1, X, Wy]`, `H = [1, X, WX]` (plus `W^2 X` for order 2), `delta = (Z'PZ)^-1 Z'Py`, `sigma2 = u'u / n` (spreg `sig2n`),
  * `cov = sigma2 (Z'PZ)^-1`. Coefficients are reordered to (intercept, X, rho).
  */
 export function fitSpatialTwoStageLeastSquaresOnCPU(
   weights: DiagnosticsOracleWeights,
   predictors: Float32Array,
   response: Float32Array,
-  predictorCount: number
+  predictorCount: number,
+  instrumentOrder: 1 | 2 = 1
 ): TwoStageOracleResult {
   const n = response.length;
   const k = predictorCount;
@@ -49,7 +50,8 @@ export function fitSpatialTwoStageLeastSquaresOnCPU(
   const wy = multiply(w, y);
   const wx = multiply(w, x);
   const z = x.map((row, i) => [1, ...row, wy[i][0]]);
-  const h = x.map((row, i) => [1, ...row, ...wx[i]]);
+  const w2x = instrumentOrder === 2 ? multiply(w, wx) : wx.map(() => []);
+  const h = x.map((row, i) => [1, ...row, ...wx[i], ...w2x[i]]);
   const ht = transpose(h);
   const zt = transpose(z);
   const projector = multiply(multiply(h, invertMatrix(multiply(ht, h))), ht);

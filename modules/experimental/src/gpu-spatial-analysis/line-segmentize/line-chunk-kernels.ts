@@ -6,6 +6,7 @@ import type {GPUCommandGraph, GPUCommandNode, GraphDataView} from '@luma.gl/gpgp
 import {createWGSLKernelNode, type WGSLKernelBinding} from '../../utils/wgsl-kernel-nodes';
 import {GEODESIC_WGSL} from '../geometry-measures/geodesic-wgsl';
 import type {GPULineCoordinateSystem} from './line-segmentize-types';
+import {BALANCED_SEARCH_WORKGROUP_SIZE, getBalancedSearchSource} from './balanced-search';
 
 /**
  * Words per output piece in the internal piece column:
@@ -265,11 +266,18 @@ export function createPieceEmitNode<Parameters>(
     operation: props.operation,
     variant: 'piece-emit',
     bindings,
-    invocationCount: props.vertexStarts.length,
+    // One invocation per output vertex (not per piece), so a piece spanning a long path copies in
+    // parallel instead of serializing one lane (see balanced-search).
+    invocationCount: props.outputPositions.length,
+    workgroupSize: BALANCED_SEARCH_WORKGROUP_SIZE,
+    guardIndex: false,
     declarations: `const CAPACITY: u32 = ${props.outputPositions.length}u;
 const STRIDE: u32 = ${LINE_PIECE_STRIDE}u;
 const PIECE_COPY: u32 = ${PIECE_COPY}u;
 ${spherical ? GEODESIC_WGSL : ''}
+${getBalancedSearchSource(props.vertexStarts.length)}
+fn balancedStart(piece: u32) -> u32 { return vertexStarts[vertexStartsOffset + piece]; }
+fn balancedCount(piece: u32) -> u32 { return pieces[piecesOffset + piece * STRIDE + 6u]; }
 
 fn getMeasure(row: u32) -> f32 {
   return rowMeasures[rowMeasuresOffset + row];
@@ -306,22 +314,18 @@ fn writeVertex(outputRow: u32, vertex: vec2<f32>, measure: f32, sourceRow: u32) 
   ${props.outputMeasures ? 'outputMeasures[outputMeasuresOffset + outputRow] = measure;' : ''}
   ${props.outputSourceRows ? 'outputSourceRows[outputSourceRowsOffset + outputRow] = sourceRow;' : ''}
 }`,
-    body: /* wgsl */ `let base = piecesOffset + index * STRIDE;
-  let vertexCount = pieces[base + 6u];
-  if (vertexCount == 0u) {
+    body: /* wgsl */ `let piece = findBalancedOwner(index, workgroupIndex * BALANCED_LANES, localInvocationIndex);
+  if (piece == BALANCED_NONE) {
     return;
   }
-  let outputStart = vertexStarts[vertexStartsOffset + index];
-  if (outputStart >= CAPACITY) {
-    return;
-  }
+  let base = piecesOffset + piece * STRIDE;
+  let local = index - vertexStarts[vertexStartsOffset + piece];
   let flags = pieces[base + 3u];
   let firstInterior = pieces[base + 4u];
   let interiorEnd = pieces[base + 5u];
   if ((flags & PIECE_COPY) != 0u) {
-    for (var row = firstInterior; row < interiorEnd; row++) {
-      writeVertex(outputStart + row - firstInterior, getVertex(row), getMeasure(row), row);
-    }
+    let row = firstInterior + local;
+    writeVertex(index, getVertex(row), getMeasure(row), row);
     return;
   }
   let pathStart = pieces[base + 7u];
@@ -332,16 +336,14 @@ fn writeVertex(outputRow: u32, vertex: vec2<f32>, measure: f32, sourceRow: u32) 
   // segments (the path has at least two rows because its length is positive).
   let startSegment = clamp(firstInterior, pathStart + 1u, pathEnd - 1u) - 1u;
   let endSegment = clamp(interiorEnd, pathStart + 1u, pathEnd - 1u) - 1u;
-  writeVertex(outputStart, interpolate(startSegment, startMeasure), startMeasure, startSegment);
-  for (var row = firstInterior; row < interiorEnd; row++) {
-    writeVertex(outputStart + 1u + row - firstInterior, getVertex(row), getMeasure(row), row);
-  }
-  writeVertex(
-    outputStart + 1u + interiorEnd - firstInterior,
-    interpolate(endSegment, endMeasure),
-    endMeasure,
-    endSegment
-  );`
+  if (local == 0u) {
+    writeVertex(index, interpolate(startSegment, startMeasure), startMeasure, startSegment);
+  } else if (local <= interiorEnd - firstInterior) {
+    let row = firstInterior + local - 1u;
+    writeVertex(index, getVertex(row), getMeasure(row), row);
+  } else {
+    writeVertex(index, interpolate(endSegment, endMeasure), endMeasure, endSegment);
+  }`
   });
 }
 

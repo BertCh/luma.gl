@@ -87,7 +87,8 @@ export type GPUNeighborhoodSummaryProps = {
   output?: GraphDataView<'float32'>;
   /**
    * Compile-time capacity of the median buffer, in `[1, 64]`. Members beyond it set `overflow`
-   * and the row's median is quiet NaN. Defaults to 32.
+   * and the row's median is quiet NaN. It also sizes the private member cache of the categorical
+   * `modes` and `entropy` (larger rows stay exact but take a slower scan). Defaults to 32.
    */
   maximumNeighbors?: number;
   /** Caller-owned one-row flag: 1 when a row with the median requested exceeded `maximumNeighbors`. */
@@ -469,6 +470,7 @@ ${getMemberWGSL(row => `isFiniteFloat(values[valuesOffset + ${row}])`)}`,
           invocationCount: rows,
           declarations: `${constants}
 const NO_MODE: u32 = ${GPU_NEIGHBORHOOD_SUMMARY_NO_MODE}u;
+const MAXIMUM_NEIGHBORS: u32 = ${maximumNeighbors}u;
 ${getMemberWGSL(() => 'true')}`,
           body: `let nan = getQuietNaN(index);
   if (!(${maskedWGSL('index')})) {
@@ -478,45 +480,85 @@ ${getMemberWGSL(() => 'true')}`,
   }
   let range = getMemberRange(index);
   let visits = range.y - range.x + FOCAL_COUNT;
+  // Decode the members once. Up to MAXIMUM_NEIGHBORS of them are kept in private arrays so the
+  // quadratic frequency scan below reads registers instead of re-decoding every member (four
+  // global loads) for every pair; larger rows take the unbounded decoding scan.
+  var memberCategories: array<u32, ${maximumNeighbors}>;
+  var memberWeights: array<f32, ${maximumNeighbors}>;
+  var memberCount = 0u;
   var weightSum = 0.0;
   for (var visit = 0u; visit < visits; visit++) {
     let member = getMember(index, range.x, visit);
     if (member.valid) {
       weightSum += member.weight;
+      if (memberCount < MAXIMUM_NEIGHBORS) {
+        memberCategories[memberCount] = categories[categoriesOffset + member.row];
+        memberWeights[memberCount] = member.weight;
+      }
+      memberCount++;
     }
   }
   var bestCategory = NO_MODE;
   var bestFrequency = -1.0;
   var entropyTotal = 0.0;
-  for (var visit = 0u; visit < visits; visit++) {
-    let member = getMember(index, range.x, visit);
-    if (!member.valid) {
-      continue;
-    }
-    let category = categories[categoriesOffset + member.row];
-    // Frequency of this category, summed in member order, at its first occurrence only.
-    var frequency = 0.0;
-    var firstOccurrence = true;
-    for (var other = 0u; other < visits; other++) {
-      let candidate = getMember(index, range.x, other);
-      if (candidate.valid && categories[categoriesOffset + candidate.row] == category) {
-        if (other < visit) {
-          firstOccurrence = false;
-          break;
+  if (memberCount <= MAXIMUM_NEIGHBORS) {
+    for (var member = 0u; member < memberCount; member++) {
+      let category = memberCategories[member];
+      // Frequency of this category, summed in member order, at its first occurrence only.
+      var frequency = 0.0;
+      var firstOccurrence = true;
+      for (var other = 0u; other < memberCount; other++) {
+        if (memberCategories[other] == category) {
+          if (other < member) {
+            firstOccurrence = false;
+            break;
+          }
+          frequency += memberWeights[other];
         }
-        frequency += candidate.weight;
+      }
+      if (!firstOccurrence) {
+        continue;
+      }
+      if (frequency > bestFrequency || (frequency == bestFrequency && category < bestCategory)) {
+        bestFrequency = frequency;
+        bestCategory = category;
+      }
+      if (frequency > 0.0) {
+        let share = frequency / weightSum;
+        entropyTotal -= share * log(share);
       }
     }
-    if (!firstOccurrence) {
-      continue;
-    }
-    if (frequency > bestFrequency || (frequency == bestFrequency && category < bestCategory)) {
-      bestFrequency = frequency;
-      bestCategory = category;
-    }
-    if (frequency > 0.0) {
-      let share = frequency / weightSum;
-      entropyTotal -= share * log(share);
+  } else {
+    for (var visit = 0u; visit < visits; visit++) {
+      let member = getMember(index, range.x, visit);
+      if (!member.valid) {
+        continue;
+      }
+      let category = categories[categoriesOffset + member.row];
+      // Frequency of this category, summed in member order, at its first occurrence only.
+      var frequency = 0.0;
+      var firstOccurrence = true;
+      for (var other = 0u; other < visits; other++) {
+        let candidate = getMember(index, range.x, other);
+        if (candidate.valid && categories[categoriesOffset + candidate.row] == category) {
+          if (other < visit) {
+            firstOccurrence = false;
+            break;
+          }
+          frequency += candidate.weight;
+        }
+      }
+      if (!firstOccurrence) {
+        continue;
+      }
+      if (frequency > bestFrequency || (frequency == bestFrequency && category < bestCategory)) {
+        bestFrequency = frequency;
+        bestCategory = category;
+      }
+      if (frequency > 0.0) {
+        let share = frequency / weightSum;
+        entropyTotal -= share * log(share);
+      }
     }
   }
   ${props.modes ? 'modes[modesOffset + index] = bestCategory;' : ''}

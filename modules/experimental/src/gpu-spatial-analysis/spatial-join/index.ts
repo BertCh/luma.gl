@@ -30,12 +30,15 @@ export type {GPUSpatialJoinCandidatesProps} from './spatial-join-candidates';
 export {
   formatGPUSpatialRelate,
   GPU_SPATIAL_RELATE_CELLS,
-  packGPUSpatialRelate
+  GPU_SPATIAL_RELATE_PATTERN_WORDS,
+  packGPUSpatialRelate,
+  packGPUSpatialRelatePattern
 } from './spatial-relate-types';
 export type {GPUSpatialRelatePattern} from './spatial-relate-types';
 export type {
   GPUSpatialJoinGeometry,
   GPUSpatialJoinLines,
+  GPUSpatialJoinOnAttribute,
   GPUSpatialJoinPairs,
   GPUSpatialJoinPoints,
   GPUSpatialJoinPolygons
@@ -48,3 +51,4 @@ export type {
 } from './nearest-types';
 export {GPUNearestFeatureWeights} from './gpu-nearest-feature-weights';
 export type {GPUNearestFeatureWeightsProps} from './gpu-nearest-feature-weights';
+export type {SpatialSortCurve} from './spatial-join-passes';

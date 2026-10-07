@@ -65,7 +65,7 @@ type Fixture = {
 function createFixture(
   device: Device,
   scene: LineSimplificationScene,
-  options: {maximumRounds?: number; capacity?: number} = {}
+  options: {maximumRounds?: number; capacity?: number; finishSpanLimit?: number} = {}
 ): Fixture {
   const rowCount = scene.positions.length / 2;
   const lineCount = scene.trackOffsets.length - 1;
@@ -114,6 +114,7 @@ function createFixture(
       timestamps: importGraphBuffer(importanceGraph, 'times', timestamps, 'float32', rowCount),
       metric: scene.metric,
       maximumRounds: options.maximumRounds,
+      finishSpanLimit: options.finishSpanLimit,
       importance: importGraphBuffer(importanceGraph, 'importance', importance, 'float32', rowCount),
       status: {
         converged: importGraphBuffer(importanceGraph, 'converged', converged, 'uint32', 1),
@@ -235,7 +236,8 @@ async function expectSceneParity(
   scene: LineSimplificationScene,
   tolerances: readonly number[]
 ): Promise<void> {
-  const fixture = createFixture(device, scene);
+  // Rounds only (finishSpanLimit 0): the CPU oracle mirrors the level rounds exactly.
+  const fixture = createFixture(device, scene, {finishSpanLimit: 0});
   const actual = await fixture.computeImportance();
   const expected = computeParallelImportance(scene, 64);
   expect(actual.converged).toBe(1);
@@ -253,6 +255,26 @@ async function expectSceneParity(
   }
   expect(fixture.getCompileCount()).toBe(0);
   fixture.destroy();
+
+  // Default finishing of small intervals: identical converged importance in fewer rounds.
+  const finishing = createFixture(device, scene);
+  const finished = await finishing.computeImportance();
+  expect(finished.converged).toBe(1);
+  expect(finished.roundCount).toBeLessThanOrEqual(expected.roundCount);
+  expect(Array.from(finished.importanceBits)).toEqual(Array.from(expected.importanceBits));
+  for (const tolerance of tolerances) {
+    const kept = expectSelectionParity(
+      await finishing.select(tolerance),
+      scene,
+      finished.importanceBits,
+      tolerance,
+      scene.positions.length / 2
+    );
+    expect(kept, `finishing tolerance ${tolerance}`).toEqual(
+      simplifyDouglasPeucker(scene, tolerance)
+    );
+  }
+  finishing.destroy();
 }
 
 it('GPULineSimplification matches the oracle and Douglas-Peucker on corner cases', async () => {
@@ -332,7 +354,7 @@ it('GPULineSimplification reports a deep spiral that hits the round cap', async 
   const maximumRounds = 6;
   expect(full.roundCount).toBeGreaterThan(maximumRounds);
 
-  const capped = createFixture(device, scene, {maximumRounds});
+  const capped = createFixture(device, scene, {maximumRounds, finishSpanLimit: 0});
   const actual = await capped.computeImportance();
   const expected = computeParallelImportance(scene, maximumRounds);
   expect(actual.converged).toBe(0);
@@ -347,7 +369,8 @@ it('GPULineSimplification reports a deep spiral that hits the round cap', async 
   capped.destroy();
 
   const uncapped = createFixture(device, scene, {
-    maximumRounds: full.roundCount
+    maximumRounds: full.roundCount,
+    finishSpanLimit: 0
   });
   const converged = await uncapped.computeImportance();
   expect(converged.converged).toBe(1);
@@ -359,6 +382,38 @@ it('GPULineSimplification reports a deep spiral that hits the round cap', async 
     );
   }
   uncapped.destroy();
+});
+
+it('GPULineSimplification finishes small spirals within one round and keeps large ones exact', async () => {
+  const device = await getWebGPUTestDevice();
+  if (!device) {
+    return;
+  }
+  // A 30-interior-row spiral needs several rounds; the finishing lane solves it in the first.
+  const small = createSpiralScene(32);
+  const smallRounds = computeParallelImportance(small, 1024);
+  expect(smallRounds.roundCount).toBeGreaterThan(4);
+  const smallFixture = createFixture(device, small, {maximumRounds: 1});
+  const smallResult = await smallFixture.computeImportance();
+  expect(smallResult.converged).toBe(1);
+  expect(smallResult.roundCount).toBe(1);
+  expect(Array.from(smallResult.importanceBits)).toEqual(Array.from(smallRounds.importanceBits));
+  smallFixture.destroy();
+
+  // A long spiral: rounds shrink it until the remainder fits, and the result stays exact.
+  const large = createSpiralScene(300);
+  const largeRounds = computeParallelImportance(large, 1024);
+  const largeFixture = createFixture(device, large, {maximumRounds: 1024});
+  const largeResult = await largeFixture.computeImportance();
+  expect(largeResult.converged).toBe(1);
+  expect(largeResult.roundCount).toBeLessThan(largeRounds.roundCount);
+  expect(Array.from(largeResult.importanceBits)).toEqual(Array.from(largeRounds.importanceBits));
+  for (const tolerance of [0.5, 2, 5]) {
+    expect((await largeFixture.select(tolerance)).ids).toEqual(
+      simplifyDouglasPeucker(large, tolerance)
+    );
+  }
+  largeFixture.destroy();
 });
 
 it('GPULineSimplification computes importance and selection in one graph', async () => {

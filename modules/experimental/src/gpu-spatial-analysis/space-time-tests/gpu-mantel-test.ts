@@ -32,8 +32,13 @@ import {
 } from './space-time-parameters';
 
 const OPERATION = 'GPUMantelTest';
-/** Float words per (permutation, block) partial: `sum x, sum x^2, sum y, sum y^2, sum x y`. */
-const PARTIAL_STRIDE = 5;
+/**
+ * Float words per (permutation, block) partial: `sum y, sum y^2, sum x y`. The spatial moments
+ * `sum x` and `sum x^2` do not depend on the permutation, so they are computed once per block.
+ */
+const PARTIAL_STRIDE = 3;
+/** Largest block count of the observed-moment pass, which has no per-permutation parallelism. */
+const MAXIMUM_PAIR_STAT_BLOCKS = 4096;
 
 /**
  * Properties for {@link GPUMantelTest}.
@@ -164,8 +169,17 @@ export class GPUMantelTest implements GPUCommandNodeProducer {
     const [blocks, rowsPerBlock] = getSpaceTimeBlocks(rows);
     const slotCount = maximumPermutations + 1;
     const common = getSpaceTimeCommonWGSL(rows, maximumPermutations, blocks, rowsPerBlock);
-    const pairCounts = createTransientView(graph, `${id}-pair-counts`, 'uint32', blocks);
-    const pairSums = createTransientView(graph, `${id}-pair-sums`, 'float32', blocks * 2);
+    // pair-stats is one pass over the pairs with no permutation axis, so it takes more blocks
+    // than the (permutation, block) kernels to fill the device.
+    const pairStatBlocks = Math.min(MAXIMUM_PAIR_STAT_BLOCKS, rows);
+    const pairCounts = createTransientView(graph, `${id}-pair-counts`, 'uint32', pairStatBlocks);
+    const pairSums = createTransientView(graph, `${id}-pair-sums`, 'float32', pairStatBlocks * 2);
+    const spatialMoments = createTransientView(
+      graph,
+      `${id}-spatial-moments`,
+      'float32',
+      blocks * 2
+    );
     const pairCount = createTransientView(graph, `${id}-pair-count`, 'uint32', 1);
     const shift = createTransientView(graph, `${id}-shift`, 'float32', 2);
     const partials = createTransientView(
@@ -190,15 +204,14 @@ export class GPUMantelTest implements GPUCommandNodeProducer {
           {name: 'pairCounts', view: pairCounts, type: 'u32', access: 'read_write'},
           {name: 'pairSums', view: pairSums, type: 'f32', access: 'read_write'}
         ],
-        invocationCount: blocks,
+        invocationCount: pairStatBlocks,
         declarations: `const ROWS: u32 = ${rows}u;
-const ROWS_PER_BLOCK: u32 = ${rowsPerBlock}u;`,
+const PAIR_STAT_BLOCKS: u32 = ${pairStatBlocks}u;`,
+        // Rows interleave across blocks, so neighboring invocations read neighboring CSR rows.
         body: `var count = 0u;
   var sumDistance = 0.0;
   var sumTime = 0.0;
-  let firstRow = index * ROWS_PER_BLOCK;
-  let endRow = min(firstRow + ROWS_PER_BLOCK, ROWS);
-  for (var row = firstRow; row < endRow; row++) {
+  for (var row = index; row < ROWS; row += PAIR_STAT_BLOCKS) {
     for (var entry = offsets[offsetsOffset + row]; entry < offsets[offsetsOffset + row + 1u]; entry++) {
       let other = neighbors[neighborsOffset + entry];
       if (other > row && other < ROWS) {
@@ -223,7 +236,7 @@ const ROWS_PER_BLOCK: u32 = ${rowsPerBlock}u;`,
           {name: 'shift', view: shift, type: 'f32', access: 'read_write'}
         ],
         invocationCount: 1,
-        declarations: `const BLOCKS: u32 = ${blocks}u;`,
+        declarations: `const BLOCKS: u32 = ${pairStatBlocks}u;`,
         body: `var count = 0u;
   var sumDistance = 0.0;
   var sumTime = 0.0;
@@ -245,12 +258,16 @@ const ROWS_PER_BLOCK: u32 = ${rowsPerBlock}u;`,
           ...pairBindings,
           {name: 'parameters', view: parameters, type: 'u32', access: 'read'},
           {name: 'shift', view: shift, type: 'f32', access: 'read'},
-          {name: 'partials', view: partials, type: 'f32', access: 'read_write'}
+          {name: 'partials', view: partials, type: 'f32', access: 'read_write'},
+          {name: 'spatialMoments', view: spatialMoments, type: 'f32', access: 'read_write'}
         ],
         invocationCount: slotCount * blocks,
-        declarations: common,
-        body: `let slot = index / BLOCKS;
-  let block = index - slot * BLOCKS;
+        declarations: `${common}
+const SLOT_COUNT: u32 = ${slotCount}u;`,
+        // Slot-fastest with interleaved rows (see the Knox partials): a warp shares its block, so
+        // each CSR entry is a broadcast load. Slot 0 also writes the permutation-invariant moments.
+        body: `let block = index / SLOT_COUNT;
+  let slot = index - block * SLOT_COUNT;
   let permutations = readPermutationCount();
   var sumX = 0.0;
   var sumXX = 0.0;
@@ -262,17 +279,17 @@ const ROWS_PER_BLOCK: u32 = ${rowsPerBlock}u;`,
     let halfBits = getFeistelHalfBits(ROWS);
     let shiftDistance = shift[shiftOffset];
     let shiftTime = shift[shiftOffset + 1u];
-    let firstRow = block * ROWS_PER_BLOCK;
-    let endRow = min(firstRow + ROWS_PER_BLOCK, ROWS);
-    for (var row = firstRow; row < endRow; row++) {
+    for (var row = block; row < ROWS; row += BLOCKS) {
       let time = times[timesOffset + getPermutedRow(row, slot, keys, halfBits)];
       for (var entry = offsets[offsetsOffset + row]; entry < offsets[offsetsOffset + row + 1u]; entry++) {
         let other = neighbors[neighborsOffset + entry];
         if (other > row && other < ROWS) {
           let x = distances[distancesOffset + entry] - shiftDistance;
           let y = abs(time - times[timesOffset + getPermutedRow(other, slot, keys, halfBits)]) - shiftTime;
-          sumX += x;
-          sumXX += x * x;
+          if (slot == 0u) {
+            sumX += x;
+            sumXX += x * x;
+          }
           sumY += y;
           sumYY += y * y;
           sumXY += x * y;
@@ -280,12 +297,14 @@ const ROWS_PER_BLOCK: u32 = ${rowsPerBlock}u;`,
       }
     }
   }
-  let base = partialsOffset + index * ${PARTIAL_STRIDE}u;
-  partials[base] = sumX;
-  partials[base + 1u] = sumXX;
-  partials[base + 2u] = sumY;
-  partials[base + 3u] = sumYY;
-  partials[base + 4u] = sumXY;`
+  let base = partialsOffset + (block * SLOT_COUNT + slot) * ${PARTIAL_STRIDE}u;
+  partials[base] = sumY;
+  partials[base + 1u] = sumYY;
+  partials[base + 2u] = sumXY;
+  if (slot == 0u) {
+    spatialMoments[spatialMomentsOffset + 2u * block] = sumX;
+    spatialMoments[spatialMomentsOffset + 2u * block + 1u] = sumXX;
+  }`
       }),
       createWGSLKernelNode<Parameters>(graph, {
         id: `${id}-reduce`,
@@ -294,11 +313,13 @@ const ROWS_PER_BLOCK: u32 = ${rowsPerBlock}u;`,
         bindings: [
           {name: 'parameters', view: parameters, type: 'u32', access: 'read'},
           {name: 'partials', view: partials, type: 'f32', access: 'read'},
+          {name: 'spatialMoments', view: spatialMoments, type: 'f32', access: 'read'},
           {name: 'pairCount', view: pairCount, type: 'u32', access: 'read'},
           {name: 'statistics', view: statistics, type: 'f32', access: 'read_write'}
         ],
         invocationCount: statistics.length,
-        declarations: common,
+        declarations: `${common}
+const SLOT_COUNT: u32 = ${slotCount}u;`,
         body: `var result = 0.0;
   if (index <= readPermutationCount()) {
     var sumX = 0.0;
@@ -307,12 +328,12 @@ const ROWS_PER_BLOCK: u32 = ${rowsPerBlock}u;`,
     var sumYY = 0.0;
     var sumXY = 0.0;
     for (var block = 0u; block < BLOCKS; block++) {
-      let base = partialsOffset + (index * BLOCKS + block) * ${PARTIAL_STRIDE}u;
-      sumX += partials[base];
-      sumXX += partials[base + 1u];
-      sumY += partials[base + 2u];
-      sumYY += partials[base + 3u];
-      sumXY += partials[base + 4u];
+      let base = partialsOffset + (block * SLOT_COUNT + index) * ${PARTIAL_STRIDE}u;
+      sumX += spatialMoments[spatialMomentsOffset + 2u * block];
+      sumXX += spatialMoments[spatialMomentsOffset + 2u * block + 1u];
+      sumY += partials[base];
+      sumYY += partials[base + 1u];
+      sumXY += partials[base + 2u];
     }
     let count = f32(pairCount[pairCountOffset]);
     let covariance = sumXY - sumX * sumY / count;

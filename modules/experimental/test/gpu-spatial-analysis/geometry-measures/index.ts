@@ -4,3 +4,6 @@
 
 import './gpu-geometry-measures.spec';
 import './gpu-geodesic.spec';
+import './gpu-geometry-measures-extensions.spec';
+import './gpu-rhumb.spec';
+import './gpu-geometry-measures-cooperative.spec';

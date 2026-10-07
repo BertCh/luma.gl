@@ -329,6 +329,12 @@ export type GPUTerrainHorizonProps = {
    * against 109 ms). Prefer `'march'` for small radii and `'sweep'` near the full tile radius.
    */
   algorithm?: GPUTerrainHorizonAlgorithm;
+  /**
+   * Upper bound on `pixels * steps * sectors` one `'march'` dispatch may cost; the sectors are
+   * split over as many dispatches as needed (at least one sector each) so a dispatch stays short
+   * on large tiles. Results do not depend on it. Defaults to 2^30.
+   */
+  maximumStepsPerDispatch?: number;
   /** Cell size interpretation. Defaults to `'uniform'`. */
   cellSizeMode?: GPUTerrainCellSizeMode;
   /** Direction in which the row index increases. Defaults to `'south'` (north-up rasters). */
@@ -542,8 +548,9 @@ function getTerrainHorizonAnisotropicWeightWGSL(directionCount: number): string 
  * meaning. Measured on 1024^2 with 16 sectors: 98.6 ms against 411 ms at radius 256 and 40.6 ms
  * against 1474 ms at radius 1023 on an Apple-silicon laptop.
  *
- * One node per sector keeps each dispatch short on large tiles; sums accumulate in fixed sector
- * order, so results are deterministic. Invalid centers receive NaN and validity 0. Pixels closer
+ * The march runs all sectors of a pixel in one invocation, in chunks of sectors sized so one dispatch
+ * stays under about 2^30 sample steps; sums accumulate in fixed sector order, so results are
+ * deterministic and identical to one dispatch per sector. Invalid centers receive NaN and validity 0. Pixels closer
  * than `maximumRadius` to the tile edge see a truncated horizon: pass a tile with a
  * `maximumRadius` halo for seamless results (`GPURasterHaloStage` contract).
  */
@@ -610,6 +617,12 @@ export class GPUTerrainHorizon implements GPUCommandNodeProducer {
       if (props.width > TERRAIN_SWEEP_MAX_EXTENT || props.height > TERRAIN_SWEEP_MAX_EXTENT) {
         throw new Error(`${id} sweep supports extents up to ${TERRAIN_SWEEP_MAX_EXTENT}`);
       }
+    }
+    if (
+      props.maximumStepsPerDispatch !== undefined &&
+      !(Number.isFinite(props.maximumStepsPerDispatch) && props.maximumStepsPerDispatch > 0)
+    ) {
+      throw new Error(`${id} maximumStepsPerDispatch must be positive`);
     }
     validateTerrainHorizonView(
       id,
@@ -679,7 +692,7 @@ export class GPUTerrainHorizon implements GPUCommandNodeProducer {
     );
   }
 
-  /** Returns elevation canonicalization, one march node per sector, finalize, and texture nodes. */
+  /** Returns elevation canonicalization, the fused march (or one sweep node per sector), finalize, and texture nodes. */
   getCommandNodes<Parameters>(
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
@@ -733,7 +746,36 @@ export class GPUTerrainHorizon implements GPUCommandNodeProducer {
       this.algorithm === 'sweep'
         ? createTransientView(graph, `${id}-sweep-hull`, 'uint32', pixelCount)
         : undefined;
-    for (let sector = 0; sector < directionCount; sector++) {
+    // The march fuses sectors into few kernels: sums stay in registers and are stored once per
+    // chunk, the centre is loaded once, and every sector of a pixel is written by one thread.
+    // An odd sector count with packed unorm16 codes shares words between neighbouring pixels, which
+    // only the one-sector-per-dispatch path can update safely.
+    const fusedMarch = !hull && !(this.horizonFormat === 'unorm16' && directionCount % 2 === 1);
+    if (fusedMarch) {
+      nodes.push(
+        ...getFusedMarchNodes(graph, {
+          id,
+          width,
+          height,
+          directionCount,
+          rowDirection,
+          distances,
+          stepCount: this.stepDistances.length,
+          maximumStepsPerDispatch: props.maximumStepsPerDispatch ?? FUSED_MARCH_STEP_BUDGET,
+          cellSizeMode,
+          elevationValues,
+          elevationValidity,
+          settings: props.settings,
+          horizonFormat: this.horizonFormat,
+          horizon: props.horizon,
+          sineSum,
+          angleSum,
+          anisotropicSum,
+          nadirSum
+        })
+      );
+    }
+    for (let sector = 0; !fusedMarch && sector < directionCount; sector++) {
       const direction = getGPUTerrainHorizonDirection(sector, directionCount, rowDirection);
       if (hull) {
         nodes.push(
@@ -1016,6 +1058,252 @@ function getSweepSectorNodes<Parameters>(
   return nodes;
 }
 
+/** Pixel access and bilinear sampling shared by the per-sector and the fused march kernels. */
+const HORIZON_MARCH_SAMPLE_WGSL = `fn isValidPixel(column: u32, row: u32) -> bool {
+  return elevationValidity[elevationValidityOffset + row * WIDTH + column] != 0u;
+}
+fn getElevation(column: u32, row: u32) -> f32 {
+  return elevationValues[elevationValuesOffset + row * WIDTH + column];
+}
+// Bilinear elevation relative to \`origin\` at an in-grid pixel-center position; .y is 0 when any
+// corner is invalid. Corners are made origin-relative before interpolating, so the interpolation
+// rounds at the scale of the local relief instead of the absolute elevation (at 4000 m the absolute
+// form loses about 2.4e-4 m, 1.4e-3 degrees over one 10 m step).
+fn sampleElevation(position: vec2<f32>, origin: f32) -> vec2<f32> {
+  let base = vec2<u32>(floor(position));
+  let next = min(base + vec2<u32>(1u), vec2<u32>(WIDTH - 1u, HEIGHT - 1u));
+  let fraction = position - floor(position);
+  // Canonical elevation is NaN exactly where a pixel is invalid: one bit test per corner replaces
+  // four validity loads.
+  let corner00 = getElevation(base.x, base.y);
+  let corner10 = getElevation(next.x, base.y);
+  let corner01 = getElevation(base.x, next.y);
+  let corner11 = getElevation(next.x, next.y);
+  if (!isFiniteValue(corner00) || !isFiniteValue(corner10) ||
+      !isFiniteValue(corner01) || !isFiniteValue(corner11)) {
+    return vec2<f32>(0.0, 0.0);
+  }
+  let top = mix(corner00 - origin, corner10 - origin, fraction.x);
+  let bottom = mix(corner01 - origin, corner11 - origin, fraction.x);
+  return vec2<f32>(mix(top, bottom, fraction.y), 1.0);
+}`;
+
+/** Sample steps (pixels x steps x sectors) one fused march dispatch may cost, to bound its duration. */
+const FUSED_MARCH_STEP_BUDGET = 2 ** 30;
+
+/**
+ * Builds the fused ray-march kernels: each invocation marches every sector of its pixel in order,
+ * `sectorsPerChunk` sectors per dispatch. Per sector the arithmetic is that of
+ * {@link getHorizonNode}; the sums add in the same sector order, kept in registers and stored once
+ * per chunk (read back only when a later chunk continues them), so results are bit-identical to
+ * one dispatch per sector with far less memory traffic and no per-sector dispatch.
+ */
+function getFusedMarchNodes<Parameters>(
+  graph: GPUCommandGraph<Parameters>,
+  props: {
+    id: string;
+    width: number;
+    height: number;
+    directionCount: number;
+    rowDirection: GPUTerrainRowDirection;
+    distances: string;
+    stepCount: number;
+    maximumStepsPerDispatch: number;
+    cellSizeMode: GPUTerrainCellSizeMode;
+    elevationValues: GraphDataView<'float32'>;
+    elevationValidity: GraphDataView<'uint32'>;
+    settings: GraphDataView<'float32'>;
+    horizonFormat: GPUTerrainHorizonFormat;
+    horizon?: GraphDataView<'float32'> | GraphDataView<'uint32'>;
+    sineSum?: GraphDataView<'float32'>;
+    angleSum?: GraphDataView<'float32'>;
+    anisotropicSum?: GraphDataView<'float32'>;
+    nadirSum?: GraphDataView<'float32'>;
+  }
+): GPUCommandNode<Parameters>[] {
+  const {directionCount} = props;
+  const hasZenith = Boolean(
+    props.horizon || props.sineSum || props.angleSum || props.anisotropicSum
+  );
+  const zenithOutput = hasZenith
+    ? getTerrainHorizonSectorOutput({
+        sector: 0,
+        directionCount,
+        horizonFormat: props.horizonFormat,
+        horizon: props.horizon,
+        sineSum: props.sineSum,
+        angleSum: props.angleSum,
+        anisotropicSum: props.anisotropicSum,
+        mode: 'zenith',
+        reservedBindingCount: 3 + (props.nadirSum ? 1 : 0)
+      })
+    : undefined;
+  const nadirOutput = props.nadirSum
+    ? getTerrainHorizonSectorOutput({
+        sector: 0,
+        directionCount,
+        nadirSum: props.nadirSum,
+        mode: 'nadir',
+        reservedBindingCount: 3 + (zenithOutput?.bindings.length ?? 0)
+      })
+    : undefined;
+  const bindings: WGSLKernelBinding[] = [
+    {name: 'elevationValues', view: props.elevationValues, type: 'f32', access: 'read'},
+    {name: 'elevationValidity', view: props.elevationValidity, type: 'u32', access: 'read'},
+    {name: 'settings', view: props.settings, type: 'f32', access: 'read'},
+    ...(zenithOutput?.bindings ?? []),
+    ...(nadirOutput?.bindings ?? [])
+  ];
+  const nadir = Boolean(nadirOutput);
+  const pixelCount = props.width * props.height;
+  const sectorsPerChunk = Math.max(
+    1,
+    Math.min(
+      directionCount,
+      Math.floor(props.maximumStepsPerDispatch / (pixelCount * props.stepCount))
+    )
+  );
+  const directions = Array.from({length: directionCount}, (_, sector) => {
+    const [x, y] = getGPUTerrainHorizonDirection(sector, directionCount, props.rowDirection);
+    return `vec2<f32>(${getWGSLFloatLiteral(x)}, ${getWGSLFloatLiteral(y)})`;
+  }).join(', ');
+  const format = props.horizonFormat;
+  const statements: string[] = [];
+  if (props.horizon) {
+    statements.push(
+      format === 'unorm16'
+        ? `// Both sectors of a word belong to this pixel (even sector count), so no other thread shares it.
+      let element = pixel * DIRECTION_COUNT + sector;
+      let wordIndex = horizonOffset + (element >> 1u);
+      let shift = (element & 1u) * 16u;
+      horizon[wordIndex] = (horizon[wordIndex] & ~(0xffffu << shift)) |
+        (encodeHorizonUnorm16(horizonAngle) << shift);`
+        : 'horizon[horizonOffset + pixel * DIRECTION_COUNT + sector] = horizonAngle;'
+    );
+  }
+  if (props.sineSum || props.anisotropicSum) {
+    statements.push(
+      'let sineTerm = sin(max(horizonAngle, 0.0) * DEGREES_TO_RADIANS);',
+      ...(props.sineSum
+        ? ['sineAccumulator = select(sineAccumulator + sineTerm, sineTerm, sector == 0u);']
+        : []),
+      ...(props.anisotropicSum
+        ? [
+            'let anisotropicTerm = getAnisotropicWeight(sector) * sineTerm;',
+            'anisotropicAccumulator = select(anisotropicAccumulator + anisotropicTerm, anisotropicTerm, sector == 0u);'
+          ]
+        : [])
+    );
+  }
+  if (props.angleSum) {
+    statements.push(
+      'angleAccumulator = select(angleAccumulator + horizonAngle, horizonAngle, sector == 0u);'
+    );
+  }
+  const loads = [
+    props.sineSum
+      ? 'var sineAccumulator = select(0.0, sineSum[sineSumOffset + pixel], FIRST_SECTOR > 0u);'
+      : '',
+    props.angleSum
+      ? 'var angleAccumulator = select(0.0, angleSum[angleSumOffset + pixel], FIRST_SECTOR > 0u);'
+      : '',
+    props.anisotropicSum
+      ? 'var anisotropicAccumulator = select(0.0, anisotropicSum[anisotropicSumOffset + pixel], FIRST_SECTOR > 0u);'
+      : '',
+    props.nadirSum
+      ? 'var nadirAccumulator = select(0.0, nadirSum[nadirSumOffset + pixel], FIRST_SECTOR > 0u);'
+      : ''
+  ].join('\n  ');
+  const stores = [
+    props.sineSum ? 'sineSum[sineSumOffset + pixel] = sineAccumulator;' : '',
+    props.angleSum ? 'angleSum[angleSumOffset + pixel] = angleAccumulator;' : '',
+    props.anisotropicSum
+      ? 'anisotropicSum[anisotropicSumOffset + pixel] = anisotropicAccumulator;'
+      : '',
+    props.nadirSum ? 'nadirSum[nadirSumOffset + pixel] = nadirAccumulator;' : ''
+  ].join('\n  ');
+  const nodes: GPUCommandNode<Parameters>[] = [];
+  for (let first = 0, chunk = 0; first < directionCount; first += sectorsPerChunk, chunk++) {
+    const end = Math.min(directionCount, first + sectorsPerChunk);
+    nodes.push(
+      createWGSLKernelNode<Parameters>(graph, {
+        id: `${props.id}-horizon-march-${chunk}`,
+        operation: 'GPUTerrainHorizon',
+        variant: `march-fused-${props.cellSizeMode}${nadir ? '-nadir' : ''}`,
+        bindings,
+        invocationCount: pixelCount,
+        declarations: `const WIDTH: u32 = ${props.width}u;
+const HEIGHT: u32 = ${props.height}u;
+const FIRST_SECTOR: u32 = ${first}u;
+const END_SECTOR: u32 = ${end}u;
+const DIRECTION_COUNT: u32 = ${directionCount}u;
+const DIRECTIONS: array<vec2<f32>, ${directionCount}> = array<vec2<f32>, ${directionCount}>(${directions});
+const STEP_COUNT: u32 = ${props.stepCount}u;
+const STEP_DISTANCES: array<f32, ${props.stepCount}> = array<f32, ${props.stepCount}>(${props.distances});
+${TERRAIN_ILLUMINATION_WGSL_CONSTANTS}
+${zenithOutput?.declarations ?? ''}
+${getTerrainGroundCellSizeWGSL(props.cellSizeMode, {
+  cellSizeIndex: 0,
+  northEdgeIndex: 4
+})}
+${HORIZON_MARCH_SAMPLE_WGSL}`,
+        body: `let pixel = index;
+  let column = index % WIDTH;
+  let row = index / WIDTH;
+  let zFactor = settings[settingsOffset + 2u];
+  let curvature = settings[settingsOffset + 3u];
+  let maximumDistance = settings[settingsOffset + 6u];
+  let groundCell = getGroundCellSize(row);
+  let centerValid = isValidPixel(column, row);
+  let centerElevation = select(0.0, getElevation(column, row), centerValid);
+  let limit = vec2<f32>(f32(WIDTH - 1u), f32(HEIGHT - 1u));
+  let center = vec2<f32>(f32(column), f32(row));
+  ${loads}
+  for (var sector = FIRST_SECTOR; sector < END_SECTOR; sector++) {
+    let direction = DIRECTIONS[sector];
+    let groundStep = length(direction * groundCell);
+    var horizonAngle = getNaN(index);
+    var nadirAngle = getNaN(index);
+    if (centerValid && groundStep > 0.0 && isFiniteValue(groundStep)) {
+      var hasSample = false;
+      var maximumTangent = 0.0;
+      var maximumNadirTangent = 0.0;
+      for (var stepIndex = 0u; stepIndex < STEP_COUNT; stepIndex++) {
+        let stepDistance = STEP_DISTANCES[stepIndex];
+        let position = center + direction * stepDistance;
+        if (any(position < vec2<f32>(0.0)) || any(position > limit)) { break; }
+        let groundDistance = stepDistance * groundStep;
+        if (maximumDistance > 0.0 && groundDistance > maximumDistance) { break; }
+        let elevationSample = sampleElevation(position, centerElevation);
+        if (elevationSample.y == 0.0) { continue; }
+        let rise = zFactor * elevationSample.x -
+          curvature * groundDistance * groundDistance;
+        let tangent = rise / groundDistance;
+        if (!hasSample || tangent > maximumTangent) { maximumTangent = tangent; }
+        ${
+          nadir
+            ? `// Inverted terrain: the elevation difference flips sign, the curvature drop does not.
+        let nadirRise = -zFactor * elevationSample.x -
+          curvature * groundDistance * groundDistance;
+        let nadirTangent = nadirRise / groundDistance;
+        if (!hasSample || nadirTangent > maximumNadirTangent) { maximumNadirTangent = nadirTangent; }`
+            : ''
+        }
+        hasSample = true;
+      }
+      horizonAngle = select(0.0, atan(maximumTangent) * RADIANS_TO_DEGREES, hasSample);
+      ${nadir ? 'nadirAngle = select(0.0, atan(maximumNadirTangent) * RADIANS_TO_DEGREES, hasSample);' : ''}
+    }
+    ${statements.join('\n    ')}
+    ${nadir ? 'nadirAccumulator = select(nadirAccumulator + nadirAngle, nadirAngle, sector == 0u);' : ''}
+  }
+  ${stores}`
+      })
+    );
+  }
+  return nodes;
+}
+
 /** Builds the ray-march kernel for one horizon sector. */
 function getHorizonNode<Parameters>(
   graph: GPUCommandGraph<Parameters>,
@@ -1099,28 +1387,7 @@ ${getTerrainGroundCellSizeWGSL(props.cellSizeMode, {
   cellSizeIndex: 0,
   northEdgeIndex: 4
 })}
-fn isValidPixel(column: u32, row: u32) -> bool {
-  return elevationValidity[elevationValidityOffset + row * WIDTH + column] != 0u;
-}
-fn getElevation(column: u32, row: u32) -> f32 {
-  return elevationValues[elevationValuesOffset + row * WIDTH + column];
-}
-// Bilinear elevation relative to \`origin\` at an in-grid pixel-center position; .y is 0 when any
-// corner is invalid. Corners are made origin-relative before interpolating, so the interpolation
-// rounds at the scale of the local relief instead of the absolute elevation (at 4000 m the absolute
-// form loses about 2.4e-4 m, 1.4e-3 degrees over one 10 m step).
-fn sampleElevation(position: vec2<f32>, origin: f32) -> vec2<f32> {
-  let base = vec2<u32>(floor(position));
-  let next = min(base + vec2<u32>(1u), vec2<u32>(WIDTH - 1u, HEIGHT - 1u));
-  let fraction = position - floor(position);
-  if (!isValidPixel(base.x, base.y) || !isValidPixel(next.x, base.y) ||
-      !isValidPixel(base.x, next.y) || !isValidPixel(next.x, next.y)) {
-    return vec2<f32>(0.0, 0.0);
-  }
-  let top = mix(getElevation(base.x, base.y) - origin, getElevation(next.x, base.y) - origin, fraction.x);
-  let bottom = mix(getElevation(base.x, next.y) - origin, getElevation(next.x, next.y) - origin, fraction.x);
-  return vec2<f32>(mix(top, bottom, fraction.y), 1.0);
-}`,
+${HORIZON_MARCH_SAMPLE_WGSL}`,
     body: `let pixel = index;
   let column = index % WIDTH;
   let row = index / WIDTH;

@@ -85,7 +85,12 @@ it('GPUTransitionMatrix matches the oracle for conditions, period lag and invali
   if (!device) return;
   for (const {rows, periods, classCount, conditionCount, periodLag, seed} of [
     {rows: 700, periods: 6, classCount: 5, conditionCount: 1, periodLag: 1, seed: 1},
-    {rows: 333, periods: 7, classCount: 4, conditionCount: 3, periodLag: 2, seed: 2}
+    {rows: 333, periods: 7, classCount: 4, conditionCount: 3, periodLag: 2, seed: 2},
+    // Several workgroup tiles with a partial last tile (workgroup-private histogram).
+    {rows: 5003, periods: 5, classCount: 5, conditionCount: 1, periodLag: 1, seed: 3},
+    {rows: 3001, periods: 4, classCount: 6, conditionCount: 7, periodLag: 1, seed: 5},
+    // 64 * 64 cells exceed the private histogram: global atomics.
+    {rows: 2100, periods: 4, classCount: 64, conditionCount: 1, periodLag: 1, seed: 4}
   ]) {
     const random = createSeededRandom(seed);
     const classes = Uint32Array.from({length: rows * periods}, () =>

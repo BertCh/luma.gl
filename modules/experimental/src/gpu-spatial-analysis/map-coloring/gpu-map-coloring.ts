@@ -71,7 +71,7 @@ export type GPUMapColoringProps = {
   /** Seed of the hashed priorities. Default 0. Different seeds give different valid colorings. */
   seed?: number;
   /**
-   * Compile-time cap on rounds, in `[1, 1024]`. Default 64. Each round adds three nodes, and
+   * Compile-time cap on rounds, in `[1, 1024]`. Default 64. Each round adds two nodes, and
    * rounds after convergence are skipped on the GPU. Hashed priorities need about `O(log n)` rounds
    * on map graphs; the longest decreasing-priority chain bounds the count.
    */
@@ -85,9 +85,8 @@ export type GPUMapColoringProps = {
  * **Algorithm.** Every row gets a priority from a seeded integer hash of its ID; ties between equal
  * hashes go to the lowest ID. In each round every uncolored row whose priority is higher than
  * every uncolored neighbor takes the lowest color not used by its colored neighbors (first free
- * slot of 32-color bit windows). Such rows are never adjacent, and decisions are computed from
- * the previous round's colors in one pass and applied in a second, so there are no races. The
- * result equals sequential greedy coloring in priority order and is deterministic for a given
+ * slot of 32-color bit windows). Such rows are never adjacent. Each round is one fused pass that
+ * reads and writes colors with atomics (see the kernel comment); the result equals sequential greedy coloring in priority order and is deterministic for a given
  * `seed`.
  *
  * **Quality.** The color count is not minimal: greedy coloring uses at most `maxDegree + 1`
@@ -167,7 +166,6 @@ export class GPUMapColoring implements GPUCommandNodeProducer {
     ]);
     const rows = colors.length;
     const seed = props.seed ?? 0;
-    const pending = createTransientView(graph, `${id}-pending`, 'uint32', rows);
     const state = createRasterIterationState(graph, `${id}-rounds`, OPERATION, rows, id);
     const colorCount =
       props.colorCount ?? createTransientView(graph, `${id}-color-count`, 'uint32', 1);
@@ -182,13 +180,6 @@ fn priorityHash(value: u32) -> u32 {
   h = h * 0x846ca68bu;
   h = h ^ (h >> 16u);
   return h;
-}
-
-// True when row \`other\` outranks row \`row\`: larger hash, then lower ID.
-fn outranks(other: u32, row: u32) -> bool {
-  let otherHash = priorityHash(other);
-  let rowHash = priorityHash(row);
-  return otherHash > rowHash || (otherHash == rowHash && other < row);
 }`;
 
     const nodes: GPUCommandNode<Parameters>[] = [
@@ -217,71 +208,81 @@ fn outranks(other: u32, row: u32) -> bool {
       const roundId = `${id}-round-${round}`;
       const gate = getRasterIterationCondition<Parameters>(state, roundId);
       nodes.push(
+        // One fused pass per round. A row colors itself as soon as every higher-priority neighbor
+        // is colored, reading neighbor colors with atomic loads while other rows write theirs. That
+        // is race free for the result: an uncolored row only ever sees colored neighbors that
+        // outrank it (a lower-priority neighbor waits for this row), and those colors are final, so
+        // the outcome is still sequential greedy in priority order for any scheduling. Rows that
+        // see a neighbor colored earlier in the same round finish sooner than in a two-phase
+        // round, so fewer rounds are needed.
         createWGSLKernelNode<Parameters>(graph, {
           id: `${roundId}-select`,
           operation: OPERATION,
-          variant: 'select',
+          variant: 'select-apply',
           bindings: [
             {name: 'offsets', view: weights.offsets, type: 'u32', access: 'read'},
             {name: 'neighbors', view: weights.neighbors, type: 'u32', access: 'read'},
-            {name: 'colors', view: colors, type: 'u32', access: 'read'},
-            {name: 'pending', view: pending, type: 'u32', access: 'read_write'}
-          ],
-          invocationCount: rows,
-          declarations: priorityWGSL,
-          body: `var chosen = UNCOLORED;
-  if (colors[colorsOffset + index] == UNCOLORED) {
-    let begin = offsets[offsetsOffset + index];
-    let end = offsets[offsetsOffset + index + 1u];
-    var blocked = false;
-    for (var slot = begin; slot < end; slot++) {
-      let other = neighbors[neighborsOffset + slot];
-      if (other != index && colors[colorsOffset + other] == UNCOLORED && outranks(other, index)) {
-        blocked = true;
-        break;
-      }
-    }
-    if (!blocked) {
-      var base = 0u;
-      for (var window = 0u; window <= (end - begin) / 32u; window++) {
-        var used = 0u;
-        for (var slot = begin; slot < end; slot++) {
-          let other = neighbors[neighborsOffset + slot];
-          let color = colors[colorsOffset + other];
-          if (other != index && color != UNCOLORED && color >= base && color < base + 32u) {
-            used = used | (1u << (color - base));
-          }
-        }
-        if (used != 0xffffffffu) {
-          chosen = base + firstTrailingBit(~used);
-          break;
-        }
-        base += 32u;
-      }
-    }
-  }
-  pending[pendingOffset + index] = chosen;`,
-          condition: gate.condition,
-          extraResources: gate.extraResources
-        }),
-        createWGSLKernelNode<Parameters>(graph, {
-          id: `${roundId}-apply`,
-          operation: OPERATION,
-          variant: 'apply',
-          bindings: [
-            {name: 'pending', view: pending, type: 'u32', access: 'read'},
-            {name: 'colors', view: colors, type: 'u32', access: 'read_write'},
+            {name: 'colors', view: colors, type: 'atomic<u32>', access: 'read_write'},
             {name: 'status', view: state.status, type: 'atomic<u32>', access: 'read_write'},
             {name: 'colorCount', view: colorCount, type: 'atomic<u32>', access: 'read_write'}
           ],
           invocationCount: rows,
-          declarations: `const UNCOLORED: u32 = ${GPU_MAP_COLORING_UNCOLORED}u;`,
-          body: `let chosen = pending[pendingOffset + index];
-  if (chosen != UNCOLORED) {
-    colors[colorsOffset + index] = chosen;
-    atomicMax(&colorCount[colorCountOffset], chosen + 1u);
-  } else if (colors[colorsOffset + index] == UNCOLORED) {
+          declarations: priorityWGSL,
+          body: `if (atomicLoad(&colors[colorsOffset + index]) != UNCOLORED) {
+    return;
+  }
+  let begin = offsets[offsetsOffset + index];
+  let end = offsets[offsetsOffset + index + 1u];
+  let rowHash = priorityHash(index);
+  // One neighbor pass finds both a blocking (uncolored, higher-priority) neighbor and the used
+  // colors of the first 32-color window.
+  var used = 0u;
+  var blocked = false;
+  for (var slot = begin; slot < end; slot++) {
+    let other = neighbors[neighborsOffset + slot];
+    if (other == index) {
+      continue;
+    }
+    let color = atomicLoad(&colors[colorsOffset + other]);
+    if (color == UNCOLORED) {
+      let otherHash = priorityHash(other);
+      if (otherHash > rowHash || (otherHash == rowHash && other < index)) {
+        blocked = true;
+        break;
+      }
+    } else if (color < 32u) {
+      used = used | (1u << color);
+    }
+  }
+  if (blocked) {
     atomicStore(&status[statusOffset], 1u);
+    return;
+  }
+  var chosen = UNCOLORED;
+  if (used != 0xffffffffu) {
+    chosen = firstTrailingBit(~used);
+  } else {
+    // Rare: 32 or more colors used around this row; scan the following windows.
+    var base = 32u;
+    for (var window = 1u; window <= (end - begin) / 32u; window++) {
+      var windowUsed = 0u;
+      for (var slot = begin; slot < end; slot++) {
+        let other = neighbors[neighborsOffset + slot];
+        let color = atomicLoad(&colors[colorsOffset + other]);
+        if (other != index && color != UNCOLORED && color >= base && color < base + 32u) {
+          windowUsed = windowUsed | (1u << (color - base));
+        }
+      }
+      if (windowUsed != 0xffffffffu) {
+        chosen = base + firstTrailingBit(~windowUsed);
+        break;
+      }
+      base += 32u;
+    }
+  }
+  if (chosen != UNCOLORED) {
+    atomicStore(&colors[colorsOffset + index], chosen);
+    atomicMax(&colorCount[colorCountOffset], chosen + 1u);
   }`,
           condition: gate.condition,
           extraResources: gate.extraResources

@@ -694,7 +694,6 @@ export class GPUZonalStatistics implements GPUCommandNodeProducer {
           operation: OPERATION,
           segmentCount: featureCount,
           segmentKeys: pointFeatureRows as GraphDataView<'uint32'>,
-          segmentCounts: counts!,
           sumContributions: sumContributions as GraphDataView<'float32'> | undefined,
           weightContributions: weightContributions as GraphDataView<'float32'> | undefined,
           sums: plan.needSums ? sums : undefined,

@@ -114,6 +114,7 @@ function createFixture(
     useLines?: boolean;
     unweighted?: boolean;
     groupless?: boolean;
+    reduction?: 'auto' | 'chunked' | 'sorted';
   } = {}
 ): Fixture {
   const rows = scene.positions.length / 2;
@@ -183,6 +184,7 @@ function createFixture(
           : undefined,
       parameters: parameterBuffer.importToGraph(graph),
       medianIterations: MEDIAN_ITERATIONS,
+      reduction: options.reduction,
       polygonVertexCount: VERTEX_COUNT,
       output: {
         counts: view('counts', 'uint32'),
@@ -246,6 +248,34 @@ function expectClose(name: string, actual: number[], expected: number[], toleran
   }
 }
 
+/** Weighted sum of Euclidean distances per group, over the rows the oracle includes, in f64. */
+function computeMedianObjectives(
+  scene: Scene,
+  medianCenters: number[],
+  options: {useLines?: boolean; unweighted?: boolean; groupless?: boolean}
+): number[] {
+  const objectives = new Array<number>(scene.groupCount).fill(0);
+  const rowCount = scene.positions.length / 2;
+  for (let row = 0; row < rowCount; row++) {
+    const x = scene.positions[row * 2];
+    const y = scene.positions[row * 2 + 1];
+    const weight = options.unweighted || !scene.weights ? 1 : scene.weights[row];
+    const group = options.groupless || !scene.groupIds ? 0 : scene.groupIds[row];
+    const included =
+      Number.isFinite(x) &&
+      Number.isFinite(y) &&
+      Number.isFinite(weight) &&
+      weight > 0 &&
+      group < scene.groupCount &&
+      (!scene.mask || scene.mask[row] !== 0);
+    if (included) {
+      objectives[group] +=
+        weight * Math.hypot(x - medianCenters[group * 2], y - medianCenters[group * 2 + 1]);
+    }
+  }
+  return objectives;
+}
+
 function expectParity(
   actual: GeographicDistributionOracleResult,
   scene: Scene,
@@ -254,6 +284,10 @@ function expectParity(
     useLines?: boolean;
     unweighted?: boolean;
     groupless?: boolean;
+    /** Weiszfeld is ill-conditioned for groups of a few dozen rows; callers may loosen it. */
+    medianTolerance?: number;
+    /** Skip the median location check (ill-conditioned) and compare the median objective instead. */
+    medianByObjective?: boolean;
   } = {}
 ) {
   const expected = computeGeographicDistribution({
@@ -271,7 +305,28 @@ function expectParity(
   // Positions near 1e5 have an f32 ulp of 0.0078, so centres and rings compare to a few ulps.
   expectClose('weightSums', actual.weightSums, expected.weightSums, 1e-3 * 100);
   expectClose('meanCenters', actual.meanCenters, expected.meanCenters, 0.05);
-  expectClose('medianCenters', actual.medianCenters, expected.medianCenters, 0.1);
+  if (options.medianByObjective) {
+    // The objective is flat near the minimiser, so f32 locations off by ~1 unit still agree to
+    // f32 rounding of the distance sums: 1e-5 relative is ~80 ulps of headroom.
+    const actualObjectives = computeMedianObjectives(scene, actual.medianCenters, options);
+    const expectedObjectives = computeMedianObjectives(scene, expected.medianCenters, options);
+    for (let group = 0; group < scene.groupCount; group++) {
+      if (expected.counts[group] === 0) {
+        continue;
+      }
+      expect(
+        actualObjectives[group],
+        `medianObjective[${group}] ${actualObjectives[group]} vs ${expectedObjectives[group]}`
+      ).toBeLessThanOrEqual(expectedObjectives[group] * (1 + 1e-5) + 1e-6);
+    }
+  } else {
+    expectClose(
+      'medianCenters',
+      actual.medianCenters,
+      expected.medianCenters,
+      options.medianTolerance ?? 0.1
+    );
+  }
   expectClose('standardDistances', actual.standardDistances, expected.standardDistances, 0.05);
   // Ellipse: axes relative to scale; angle only where the ellipse is not nearly circular.
   for (let group = 0; group < scene.groupCount; group++) {
@@ -513,4 +568,77 @@ it('GPUGeographicDistribution changes parameters between encodings without rebui
   expect(loose.medianConverged.slice(0, 3)).toEqual([1, 1, 1]);
   expect(fixture.rebuildCount).toBe(0);
   fixture.destroy();
+});
+
+it('GPUGeographicDistribution chunked and sorted reductions agree with the oracle and each other', async () => {
+  const device = await getWebGPUTestDevice();
+  if (!device) {
+    return;
+  }
+  // 20000 rows span many 256-row tiles and chunks (not a multiple of the tile); 200 groups use
+  // one lane per group with a single slice; 300 groups exceed the chunked limit.
+  const cases: [number, number, number, boolean][] = [
+    [11, 20000, 1, true],
+    [12, 20000, 7, true],
+    [13, 9000, 200, true],
+    [14, 9000, 300, false]
+  ];
+  for (const [seed, rows, groupCount, canChunk] of cases) {
+    const scene = createScene(seed, rows, groupCount, true);
+    const parameters = {origin: [100000, 200000] as [number, number]};
+    const strategies: ('chunked' | 'sorted')[] = canChunk ? ['sorted', 'chunked'] : ['sorted'];
+    const results = [];
+    for (const reduction of strategies) {
+      const fixture = createFixture(device, scene, {useLines: true, reduction});
+      const actual = await fixture.run(parameters);
+      try {
+        expectParity(actual, scene, parameters, {
+          useLines: true,
+          medianByObjective: groupCount >= 100
+        });
+      } catch (error) {
+        throw new Error(`${reduction} groups ${groupCount}: ${(error as Error).message}`);
+      }
+      // Bitwise reproducible across encodings of one graph.
+      const again = await fixture.run(parameters);
+      expect(again.meanCenters).toEqual(actual.meanCenters);
+      expect(again.medianCenters).toEqual(actual.medianCenters);
+      expect(again.ellipses).toEqual(actual.ellipses);
+      results.push(actual);
+      fixture.destroy();
+    }
+    if (results.length === 2) {
+      expect(results[0].counts).toEqual(results[1].counts);
+      expectClose('mean agreement', results[0].meanCenters, results[1].meanCenters, 0.05);
+      // Both reductions follow the same Weiszfeld iteration, so they agree far more tightly than
+      // either does with the f64 oracle on small groups.
+      expectClose('median agreement', results[0].medianCenters, results[1].medianCenters, 0.05);
+    }
+  }
+});
+
+it('GPUGeographicDistribution chunked reduction handles a single included row and an all-excluded input', async () => {
+  const device = await getWebGPUTestDevice();
+  if (!device) {
+    return;
+  }
+  const single: Scene = {
+    positions: Float32Array.from([3, 4]),
+    groupCount: 1
+  };
+  const one = createFixture(device, single, {reduction: 'chunked'});
+  const oneResult = await one.run({});
+  expect(oneResult.counts).toEqual([1]);
+  expect(oneResult.meanCenters).toEqual([3, 4]);
+  one.destroy();
+  const excluded: Scene = {
+    positions: new Float32Array(600).fill(NaN),
+    groupCount: 1
+  };
+  const none = createFixture(device, excluded, {reduction: 'chunked'});
+  const noneResult = await none.run({});
+  expect(noneResult.counts).toEqual([0]);
+  expect(noneResult.weightSums).toEqual([0]);
+  expect(noneResult.meanCenters[0]).toBeNaN();
+  none.destroy();
 });

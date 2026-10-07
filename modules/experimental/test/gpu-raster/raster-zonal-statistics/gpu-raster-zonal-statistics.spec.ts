@@ -545,3 +545,48 @@ it('GPURasterZonalStatistics sumOrder sorted matches the oracle with calibration
   compiled.destroy();
   destroyFixture(fixture);
 });
+
+for (const [zoneCapacity, sumOrder] of [
+  [100, 'sorted'],
+  [100, 'atomic'],
+  [1000, 'sorted'],
+  // 4 columns x 4 bytes x 5000 zones exceeds workgroup storage: per-column aggregation fallback.
+  [5000, 'sorted']
+] as const) {
+  it(`GPURasterZonalStatistics matches the oracle across many workgroup tiles (${zoneCapacity} zones, ${sumOrder})`, async () => {
+    const device = await getWebGPUTestDevice();
+    if (!device) {
+      return;
+    }
+    const width = 163;
+    const height = 101;
+    const random = createRandom(zoneCapacity);
+    const count = width * height;
+    const zones = new Uint32Array(count);
+    const values = new Float32Array(count);
+    const validity = new Uint32Array(count);
+    for (let index = 0; index < count; index++) {
+      // Contiguous runs (the normal rasterised-polygon case) with a few out-of-range cells.
+      zones[index] =
+        random() < 0.01 ? zoneCapacity + 3 : Math.floor((index / count) * zoneCapacity);
+      values[index] = random() < 0.05 ? Number.NaN : Math.round((random() * 200 - 100) * 4) / 4;
+      validity[index] = random() < 0.1 ? 0 : 1;
+    }
+    const data = {zones, values, validity};
+    const fixture = createFixture(device, {
+      width,
+      height,
+      data,
+      zoneCapacity,
+      withValidity: true,
+      sumOrder
+    });
+    const compiled = fixture.graph.compile();
+    submitGraph(device, compiled, undefined);
+    const expected = computeZonalStatistics(zones, values, {zoneCapacity, validity});
+    expect(expected.overflow).toBe(1);
+    await expectMatchesOracle(fixture, expected);
+    compiled.destroy();
+    destroyFixture(fixture);
+  });
+}

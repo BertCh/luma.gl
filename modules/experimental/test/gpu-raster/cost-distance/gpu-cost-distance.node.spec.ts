@@ -66,7 +66,7 @@ it('exports constants and packs settings', () => {
   );
 });
 
-it('GPUCostDistance prefixes every node ID and grows two nodes per iteration', () => {
+it('GPUCostDistance prefixes every node ID and grows one node per iteration and one gate per four', () => {
   const device = createNullWebGPUDevice();
   const countNodes = (maxIterations: number) => {
     const graph = new GPUCommandGraph(device);
@@ -87,7 +87,7 @@ it('GPUCostDistance prefixes every node ID and grows two nodes per iteration', (
   };
   const small = countNodes(2);
   const large = countNodes(5);
-  expect(large.length - small.length).toBe(6);
+  expect(large.length - small.length).toBe(4);
   for (const node of large) {
     expect(node.id.startsWith('cd-')).toBe(true);
   }

@@ -374,3 +374,49 @@ it('GPUNeighborSearch is bitwise reproducible across submissions', async () => {
   expect(second.weightBits).toEqual(first.weightBits);
   harness.destroy();
 });
+
+it('GPUNeighborSearch kNN cell pruning matches the oracle on mixed density with border points', async () => {
+  const device = await getWebGPUTestDevice();
+  if (!device) {
+    return;
+  }
+  // A dense cluster next to a sparse background: queries hold k candidates after a ring or two
+  // and then skip far cells (rows, row-clipped column ranges, end cells), while background
+  // queries must keep expanding. Points on exact multiples of the cell width probe the borders.
+  const random = createSeededRandom(41);
+  const values: number[] = [];
+  for (let row = 0; row < 500; row++) {
+    values.push(40 + random() * 5, 40 + random() * 5);
+  }
+  for (let row = 0; row < 700; row++) {
+    values.push(random() * 100, random() * 100);
+  }
+  for (let row = 0; row < 120; row++) {
+    values.push(Math.floor(random() * 21) * 5, Math.floor(random() * 21) * 5);
+  }
+  const positions = new Float32Array(values);
+  const rows = positions.length / 2;
+  for (const gridSize of [
+    [20, 20],
+    [64, 7],
+    [100, 100]
+  ] as const) {
+    for (const k of [1, 16, 32]) {
+      const parameters: GPUNeighborSearchParameters = {bounds: BOUNDS};
+      const harness = createNeighborSearchHarness(device, {
+        mode: 'knn',
+        k,
+        positions,
+        capacity: rows * k,
+        parameters,
+        gridSize
+      });
+      expectMatchesOracle(
+        await harness.run(),
+        {mode: 'knn', k, positions, parameters},
+        `mixed grid ${gridSize} k=${k}`
+      );
+      harness.destroy();
+    }
+  }
+}, 120000);

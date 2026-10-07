@@ -15,3 +15,18 @@ export type {
   GPUOutlineGeometryProps,
   GPUOutlineGeometryType
 } from './gpu-outline-geometry';
+export {
+  getGPUOffsetCurveParameterValues,
+  getGPUOffsetCurveRowsPerVertex,
+  GPU_OFFSET_CURVE_DEFAULT_MITRE_LIMIT,
+  GPU_OFFSET_CURVE_DEFAULT_QUAD_SEGMENTS,
+  GPU_OFFSET_CURVE_PARAMETER_LENGTH,
+  GPUOffsetCurve
+} from './gpu-offset-curve';
+export type {
+  GPUOffsetCurveGeometryType,
+  GPUOffsetCurveJoinStyle,
+  GPUOffsetCurveOutput,
+  GPUOffsetCurveParameters,
+  GPUOffsetCurveProps
+} from './gpu-offset-curve';

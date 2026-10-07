@@ -102,7 +102,7 @@ for (const [name, createScene] of [
     const harness = createHarness(device, scene);
     try {
       const frames: GPURipleyDistanceParameters[] = [];
-      for (const edgeCorrection of ['none', 'border'] as const) {
+      for (const edgeCorrection of ['none', 'border', 'kaplan-meier', 'hanisch'] as const) {
         frames.push({bounds: BOUNDS, maximumDistance: 10, edgeCorrection});
         frames.push({bounds: BOUNDS, maximumDistance: 150, edgeCorrection});
         frames.push({bounds: [20, 10, 80, 70], maximumDistance: 8, edgeCorrection});
@@ -122,8 +122,13 @@ for (const [name, createScene] of [
         expect(result.f.some(value => value > 0.01)).toBe(true);
         for (let b = 0; b < RADIUS_COUNT; b++) {
           // Allow a couple of distances that land within f32 rounding of a radius.
-          const gTolerance = 3 / Math.max(oracle.gDenominators[b], 1) + 1e-5;
-          const fTolerance = 3 / Math.max(oracle.fDenominators[b], 1) + 1e-5;
+          const weighted =
+            frame.edgeCorrection === 'kaplan-meier' || frame.edgeCorrection === 'hanisch';
+          const slack = weighted ? 4 : 1;
+          const gTolerance =
+            (3 * slack) / Math.max(oracle.gDenominators[b], 1) + (weighted ? 1e-3 : 1e-5);
+          const fTolerance =
+            (3 * slack) / Math.max(oracle.fDenominators[b], 1) + (weighted ? 1e-3 : 1e-5);
           expectClose(
             `${label} radius ${b}`,
             result.radii[b],

@@ -230,12 +230,18 @@ fn sampleElevation(position: vec2<f32>) -> vec2<f32> {
   let base = vec2<u32>(floor(clamped));
   let next = min(base + vec2<u32>(1u), vec2<u32>(WIDTH - 1u, HEIGHT - 1u));
   let fraction = clamped - floor(clamped);
-  if (!isValidPixel(base.x, base.y) || !isValidPixel(next.x, base.y) ||
-      !isValidPixel(base.x, next.y) || !isValidPixel(next.x, next.y)) {
+  // Canonical elevation is NaN exactly where a pixel is invalid, so one bit test per corner
+  // replaces four validity loads; the interpolation below is unchanged.
+  let corner00 = getElevation(base.x, base.y);
+  let corner10 = getElevation(next.x, base.y);
+  let corner01 = getElevation(base.x, next.y);
+  let corner11 = getElevation(next.x, next.y);
+  if (!isFiniteValue(corner00) || !isFiniteValue(corner10) ||
+      !isFiniteValue(corner01) || !isFiniteValue(corner11)) {
     return vec2<f32>(0.0, 0.0);
   }
-  let top = mix(getElevation(base.x, base.y), getElevation(next.x, base.y), fraction.x);
-  let bottom = mix(getElevation(base.x, next.y), getElevation(next.x, next.y), fraction.x);
+  let top = mix(corner00, corner10, fraction.x);
+  let bottom = mix(corner01, corner11, fraction.x);
   return vec2<f32>(mix(top, bottom, fraction.y), 1.0);
 }
 fn rayPosition(observer: vec2<f32>, delta: vec2<f32>, sampleIndex: u32, count: u32) -> vec2<f32> {

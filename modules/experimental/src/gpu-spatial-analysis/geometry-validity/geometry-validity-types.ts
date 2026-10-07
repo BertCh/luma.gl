@@ -34,10 +34,15 @@ export const GPU_GEOMETRY_VALIDITY_BIT = {
    */
   badOrientation: 1 << 7,
   /** A predicate could not be certified (non-finite input or an extreme exponent range). */
-  uncertain: 1 << 8
+  uncertain: 1 << 8,
+  /**
+   * Lines only: a linestring has one vertex, or two or more vertices that are all equal (Shapely
+   * "Too few points in geometry component"). An empty linestring is valid.
+   */
+  tooFewPoints: 1 << 9
 } as const;
 
-/** Union of every bit that makes a polygon structurally invalid: all bits except `badOrientation`. */
+/** Union of every bit that makes a geometry structurally invalid: all bits except `badOrientation`. */
 export const GPU_GEOMETRY_VALIDITY_STRUCTURAL_MASK =
   GPU_GEOMETRY_VALIDITY_BIT.nonFinite |
   GPU_GEOMETRY_VALIDITY_BIT.unclosedRing |
@@ -46,7 +51,8 @@ export const GPU_GEOMETRY_VALIDITY_STRUCTURAL_MASK =
   GPU_GEOMETRY_VALIDITY_BIT.selfIntersection |
   GPU_GEOMETRY_VALIDITY_BIT.crossingRings |
   GPU_GEOMETRY_VALIDITY_BIT.holeOutsideShell |
-  GPU_GEOMETRY_VALIDITY_BIT.uncertain;
+  GPU_GEOMETRY_VALIDITY_BIT.uncertain |
+  GPU_GEOMETRY_VALIDITY_BIT.tooFewPoints;
 
 /** Ring orientation convention checked by `GPUGeometryValidity`. */
 export type GPUGeometryValidityOrientation =

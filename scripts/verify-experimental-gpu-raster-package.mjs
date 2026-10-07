@@ -226,6 +226,7 @@ const contributorExportNames = [
   'GPUWeightedOverlay',
   'GPURasterStretch',
   'GPUIsobands',
+  'GPUIsobandRings',
   'GPUIsolines',
   'GPURasterProfile',
   'GPURasterSampling',

@@ -122,9 +122,11 @@ export type GPUCompositeScoreProps = {
  *   zero correlations and zero loadings; the explained-variance ratio divides by the number of
  *   non-constant columns.
  *
- * Determinism: no float atomics. Column min and max use `atomicMin`/`atomicMax` on order-preserving
- * u32 keys (exact). Means and centered (co)variances are two-pass fixed-order sums: one thread per
- * (256-row tile, column) sums in row order, then one thread per column merges tiles in tile order.
+ * Determinism: no atomics at all. Column min and max (order-preserving u32 keys, exact) and the
+ * valid-row count are per-tile reductions merged in tile order. Means and centered (co)variances are
+ * two-pass fixed-order sums: one thread per (256-row tile, column) sums in row order, then one thread
+ * per column merges tiles in tile order. The covariance is symmetric, so only the upper triangle
+ * of (column, column) pairs is accumulated and mirrored when merging.
  * The power iteration runs in a single thread. Results are bitwise reproducible on one adapter.
  */
 export class GPUCompositeScore implements GPUCommandNodeProducer {
@@ -238,11 +240,17 @@ export class GPUCompositeScore implements GPUCommandNodeProducer {
       length: number
     ) => createTransientView(graph, `${id}-${name}`, format, Math.max(length, 1));
     const rowValid = transient('row-valid', 'uint32', rowCount);
-    const minKeys = transient('min-keys', 'uint32', indicatorCount);
-    const maxKeys = transient('max-keys', 'uint32', indicatorCount);
     const validCount = transient('valid-count', 'uint32', 1);
     const tileSums = transient('tile-sums', 'float32', tileCount * indicatorCount);
-    const tileMoments = transient('tile-moments', 'float32', tileCount * momentCount);
+    // Per (tile, column) ordered-key extremes and per tile valid-row count, merged by 'means'.
+    const tileMinKeys = transient('tile-min-keys', 'uint32', tileCount * indicatorCount);
+    const tileMaxKeys = transient('tile-max-keys', 'uint32', tileCount * indicatorCount);
+    const tileCounts = transient('tile-counts', 'uint32', tileCount);
+    // The covariance matrix is symmetric: one partial per unordered pair (i <= j).
+    const pairCount = enablePrincipalComponent
+      ? (indicatorCount * (indicatorCount + 1)) / 2
+      : indicatorCount;
+    const tileMoments = transient('tile-moments', 'float32', tileCount * pairCount);
     const moments = transient('moments', 'float32', momentCount);
     const statistics =
       output.columnStatistics ??
@@ -272,29 +280,11 @@ const ROW_COUNT: u32 = ${rowCount}u;
 const TILE_ROWS: u32 = ${TILE_ROWS}u;
 const TILE_COUNT: u32 = ${tileCount}u;
 const MOMENT_COUNT: u32 = ${momentCount}u;
+const PAIR_COUNT: u32 = ${pairCount}u;
 const FULL_MOMENTS: bool = ${enablePrincipalComponent};
 const MAXIMUM_COLUMNS: u32 = ${GPU_COMPOSITE_SCORE_MAXIMUM_INDICATOR_COUNT}u;
 ${COMPOSITE_SCORE_WGSL}`;
     const nodes: GPUCommandNode<Parameters>[] = [];
-
-    nodes.push(
-      createWGSLKernelNode<Parameters>(graph, {
-        id: `${id}-init`,
-        operation: OPERATION,
-        variant: 'init',
-        bindings: [
-          write('minKeys', minKeys, 'u32'),
-          write('maxKeys', maxKeys, 'u32'),
-          write('validCount', validCount, 'u32')
-        ],
-        invocationCount: indicatorCount,
-        body: `minKeys[minKeysOffset + index] = 0xffffffffu;
-  maxKeys[maxKeysOffset + index] = 0u;
-  if (index == 0u) {
-    validCount[validCountOffset] = 0u;
-  }`
-      })
-    );
 
     nodes.push(
       createWGSLKernelNode<Parameters>(graph, {
@@ -304,10 +294,7 @@ ${COMPOSITE_SCORE_WGSL}`;
         bindings: [
           read('indicators', indicators, 'f32'),
           ...(props.mask ? [read('rowMask', props.mask, 'u32')] : []),
-          write('rowValid', rowValid, 'u32'),
-          write('minKeys', minKeys, 'atomic<u32>'),
-          write('maxKeys', maxKeys, 'atomic<u32>'),
-          write('validCount', validCount, 'atomic<u32>')
+          write('rowValid', rowValid, 'u32')
         ],
         invocationCount: rowCount,
         declarations,
@@ -319,16 +306,7 @@ ${COMPOSITE_SCORE_WGSL}`;
       isValid = false;
     }
   }
-  rowValid[rowValidOffset + index] = select(0u, 1u, isValid);
-  if (!isValid) {
-    return;
-  }
-  atomicAdd(&validCount[validCountOffset], 1u);
-  for (var column = 0u; column < COLUMN_COUNT; column++) {
-    let key = getOrderedKey(indicators[base + column]);
-    atomicMin(&minKeys[minKeysOffset + column], key);
-    atomicMax(&maxKeys[maxKeysOffset + column], key);
-  }`
+  rowValid[rowValidOffset + index] = select(0u, 1u, isValid);`
       })
     );
 
@@ -340,7 +318,10 @@ ${COMPOSITE_SCORE_WGSL}`;
         bindings: [
           read('indicators', indicators, 'f32'),
           read('rowValid', rowValid, 'u32'),
-          write('tileSums', tileSums, 'f32')
+          write('tileSums', tileSums, 'f32'),
+          write('tileMinKeys', tileMinKeys, 'u32'),
+          write('tileMaxKeys', tileMaxKeys, 'u32'),
+          write('tileCounts', tileCounts, 'u32')
         ],
         invocationCount: tileCount * indicatorCount,
         declarations,
@@ -349,12 +330,25 @@ ${COMPOSITE_SCORE_WGSL}`;
   let firstRow = tile * TILE_ROWS;
   let endRow = min(firstRow + TILE_ROWS, ROW_COUNT);
   var sum = 0.0;
+  var count = 0u;
+  var minimumKey = 0xffffffffu;
+  var maximumKey = 0u;
   for (var row = firstRow; row < endRow; row++) {
     if (rowValid[rowValidOffset + row] != 0u) {
-      sum = sum + indicators[indicatorsOffset + row * COLUMN_COUNT + column];
+      let value = indicators[indicatorsOffset + row * COLUMN_COUNT + column];
+      sum = sum + value;
+      count = count + 1u;
+      let key = getOrderedKey(value);
+      minimumKey = min(minimumKey, key);
+      maximumKey = max(maximumKey, key);
     }
   }
-  tileSums[tileSumsOffset + index] = sum;`
+  tileSums[tileSumsOffset + index] = sum;
+  tileMinKeys[tileMinKeysOffset + index] = minimumKey;
+  tileMaxKeys[tileMaxKeysOffset + index] = maximumKey;
+  if (column == 0u) {
+    tileCounts[tileCountsOffset + tile] = count;
+  }`
       })
     );
 
@@ -365,23 +359,32 @@ ${COMPOSITE_SCORE_WGSL}`;
         variant: 'means',
         bindings: [
           read('tileSums', tileSums, 'f32'),
-          read('minKeys', minKeys, 'u32'),
-          read('maxKeys', maxKeys, 'u32'),
-          read('validCount', validCount, 'u32'),
+          read('tileMinKeys', tileMinKeys, 'u32'),
+          read('tileMaxKeys', tileMaxKeys, 'u32'),
+          read('tileCounts', tileCounts, 'u32'),
+          write('validCount', validCount, 'u32'),
           write('statistics', statistics, 'f32')
         ],
         invocationCount: indicatorCount,
         declarations,
-        body: `let count = validCount[validCountOffset];
+        body: `var count = 0u;
   var sum = 0.0;
+  var minimumKey = 0xffffffffu;
+  var maximumKey = 0u;
   for (var tile = 0u; tile < TILE_COUNT; tile++) {
+    count = count + tileCounts[tileCountsOffset + tile];
     sum = sum + tileSums[tileSumsOffset + tile * COLUMN_COUNT + index];
+    minimumKey = min(minimumKey, tileMinKeys[tileMinKeysOffset + tile * COLUMN_COUNT + index]);
+    maximumKey = max(maximumKey, tileMaxKeys[tileMaxKeysOffset + tile * COLUMN_COUNT + index]);
+  }
+  if (index == 0u) {
+    validCount[validCountOffset] = count;
   }
   let nan = getNaN();
   let hasRows = count != 0u;
   let base = statisticsOffset + index * 4u;
-  statistics[base] = select(nan, decodeOrderedKey(minKeys[minKeysOffset + index]), hasRows);
-  statistics[base + 1u] = select(nan, decodeOrderedKey(maxKeys[maxKeysOffset + index]), hasRows);
+  statistics[base] = select(nan, decodeOrderedKey(minimumKey), hasRows);
+  statistics[base + 1u] = select(nan, decodeOrderedKey(maximumKey), hasRows);
   statistics[base + 2u] = select(nan, sum / f32(max(count, 1u)), hasRows);`
       })
     );
@@ -397,15 +400,21 @@ ${COMPOSITE_SCORE_WGSL}`;
           read('statistics', statistics, 'f32'),
           write('tileMoments', tileMoments, 'f32')
         ],
-        invocationCount: tileCount * momentCount,
+        invocationCount: tileCount * pairCount,
         declarations,
-        body: `let tile = index / MOMENT_COUNT;
-  let moment = index % MOMENT_COUNT;
-  var left = moment;
-  var right = moment;
+        body: `let tile = index / PAIR_COUNT;
+  let pair = index % PAIR_COUNT;
+  var left = pair;
+  var right = pair;
   if (FULL_MOMENTS) {
-    left = moment / COLUMN_COUNT;
-    right = moment % COLUMN_COUNT;
+    // Unrank the upper-triangle pair index into (left <= right).
+    left = 0u;
+    var remaining = pair;
+    while (remaining >= COLUMN_COUNT - left) {
+      remaining = remaining - (COLUMN_COUNT - left);
+      left = left + 1u;
+    }
+    right = left + remaining;
   }
   let leftMean = statistics[statisticsOffset + left * 4u + 2u];
   let rightMean = statistics[statisticsOffset + right * 4u + 2u];
@@ -437,8 +446,17 @@ ${COMPOSITE_SCORE_WGSL}`;
         declarations,
         body: `let count = validCount[validCountOffset];
   var sum = 0.0;
+  var pair = index;
+  if (FULL_MOMENTS) {
+    // Mirror the lower triangle onto the upper one; the products commute, so this is exact.
+    let first = index / COLUMN_COUNT;
+    let second = index % COLUMN_COUNT;
+    let low = min(first, second);
+    let high = max(first, second);
+    pair = low * COLUMN_COUNT - (low * (low - 1u)) / 2u + (high - low);
+  }
   for (var tile = 0u; tile < TILE_COUNT; tile++) {
-    sum = sum + tileMoments[tileMomentsOffset + tile * MOMENT_COUNT + index];
+    sum = sum + tileMoments[tileMomentsOffset + tile * PAIR_COUNT + pair];
   }
   let moment = select(getNaN(), sum / f32(max(count, 1u)), count != 0u);
   moments[momentsOffset + index] = moment;

@@ -197,7 +197,7 @@ fn ${p}First(f: u32) -> vec3f {
 
 /**
  * Declares `pairResult(queryRow, featureRow)`: the minimum planar distance between two geometries,
- * the nearest point on the feature, and the absolute start-vertex index of the feature edge that
+ * the nearest point on the feature, the nearest point on the query, and the absolute start-vertex index of the feature edge that
  * attains it.
  *
  * Distance is the minimum over all usable edge pairs (the first minimum in vertex order wins, so
@@ -219,6 +219,7 @@ export function getNearestPairWGSL(query: NearestSide, feature: NearestSide): st
       if (distanceSq < result.distanceSq) {
         result.distanceSq = distanceSq;
         result.foot = segmentFoot(qa, qb, ra, rb);
+        result.queryFoot = segmentFoot(ra, rb, qa, qb);
         result.segment = ${featureSegment};
         if (distanceSq == 0.0) { return result; }
       }`
@@ -230,7 +231,7 @@ export function getNearestPairWGSL(query: NearestSide, feature: NearestSide): st
   if (result.distanceSq > 0.0) {
     let first = rFirst(rowF);
     if (first.z > 0.0 && qContains(first.xy, rowQ)) {
-      return PairResult(0.0, first.xy, NO_SEGMENT);
+      return PairResult(0.0, first.xy, NO_SEGMENT, first.xy);
     }
   }`
       : '';
@@ -240,14 +241,14 @@ export function getNearestPairWGSL(query: NearestSide, feature: NearestSide): st
   if (result.distanceSq > 0.0) {
     let first = qFirst(rowQ);
     if (first.z > 0.0 && rContains(first.xy, rowF)) {
-      return PairResult(0.0, first.xy, NO_SEGMENT);
+      return PairResult(0.0, first.xy, NO_SEGMENT, first.xy);
     }
   }`
       : '';
   return `
-struct PairResult { distanceSq: f32, foot: vec2f, segment: u32 }
+struct PairResult { distanceSq: f32, foot: vec2f, segment: u32, queryFoot: vec2f }
 fn pairResult(rowQ: u32, rowF: u32) -> PairResult {
-  var result = PairResult(FLOAT32_MAXIMUM, vec2f(0.0), NO_SEGMENT);
+  var result = PairResult(FLOAT32_MAXIMUM, vec2f(0.0), NO_SEGMENT, vec2f(0.0));
   ${outer}${queryInFeature}${featureInQuery}
   return result;
 }
@@ -270,6 +271,11 @@ export type NearestTraversalOptions = {
   chunkFirstRow: number;
   /** Query geometry kind, for the usable-ring minimum. */
   queryKind: NearestSide['kind'];
+  /**
+   * Candidate filter read from the tail of `nodeData`: `[id, key]` words per query row from
+   * `queryBase`, then per feature row from `featureBase` (word offsets inside `nodeData`).
+   */
+  filter?: {exclusive: boolean; onAttribute: boolean; queryBase: number; featureBase: number};
 };
 
 /**
@@ -377,6 +383,14 @@ fn boxLower(node: u32, queryMinimum: vec2f, queryMaximum: vec2f) -> f32 {
     }
     let featureRow = nodeData[nodeDataOffset + node * ${NEAREST_NODE_WORDS}u + 4u];
     if (featureRow >= FEATURE_COUNT) { continue; }
+    ${
+      options.filter
+        ? `let queryFilter = nodeDataOffset + ${options.filter.queryBase}u + row * 2u;
+    let featureFilter = nodeDataOffset + ${options.filter.featureBase}u + featureRow * 2u;
+    ${options.filter.exclusive ? 'if (nodeData[queryFilter] == nodeData[featureFilter]) { continue; }' : ''}
+    ${options.filter.onAttribute ? 'if (nodeData[queryFilter + 1u] != nodeData[featureFilter + 1u]) { continue; }' : ''}`
+        : ''
+    }
     let candidate = pairResult(index, featureRow).distanceSq;
     if (!(candidate < FLOAT32_MAXIMUM) || candidate > bound) { continue; }
     // Find the slot of (candidate, featureRow) in the ordered list.

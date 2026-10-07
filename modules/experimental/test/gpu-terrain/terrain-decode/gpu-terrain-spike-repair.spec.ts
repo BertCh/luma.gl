@@ -321,3 +321,27 @@ it('GPUTerrainSpikeRepair supports a non-default step', async () => {
   expect(gpu.statistics[S.repairedPixelCount]).toBe(9);
   device.destroy?.();
 });
+
+it('GPUTerrainSpikeRepair counts label runs correctly across strips, rows and nodata', async () => {
+  const device = await getWebGPUTestDevice();
+  if (!device) {
+    return;
+  }
+  // 37 x 29 = 1073 pixels is not a multiple of the 16-pixel counting strips, and blocks start
+  // mid-strip, wrap across row ends, interleave labels (one-pixel-wide column) and contain nodata.
+  const width = 37;
+  const height = 29;
+  const terrain = createTerrain(width, height);
+  addBlock(terrain, width, 3, 4, 1, 12, 256);
+  addBlock(terrain, width, 10, 2, 7, 3, -256);
+  addBlock(terrain, width, 20, 14, 17, 2, 512);
+  addBlock(terrain, width, 5, 22, 9, 7, 256);
+  const validity = new Uint32Array(width * height).fill(1);
+  for (const index of [23 * width + 7, 24 * width + 8, 15 * width + 30, 0, width * height - 1]) {
+    validity[index] = 0;
+  }
+  const {gpu} = await expectMatchesOracle(device, terrain, validity, width, height);
+  expect(gpu.statistics[S.shiftedComponentCount]).toBeGreaterThan(0);
+  expect(gpu.statistics[S.repairedPixelCount]).toBeGreaterThan(0);
+  device.destroy?.();
+});

@@ -276,6 +276,52 @@ it('GPUCellAggregation quadbin point keys and tables match the CPU reference', a
   }
 });
 
+it('GPUCellAggregation folds hot cells that span many accumulation tiles exactly', async () => {
+  const device = await getWebGPUTestDevice();
+  if (!device) {
+    return;
+  }
+  const fixture = new Fixture(device);
+  const random = createRandom(77);
+  // 40000 rows: most share one coarse cell (runs of many 256-row tiles), the rest are spread so
+  // runs also end mid-tile, and a handful of rows are NaN.
+  const points: number[] = [];
+  for (let index = 0; index < 40000; index++) {
+    if (index % 10 < 7) {
+      points.push(10 + random() * 0.001, 20 + random() * 0.001);
+    } else if (index % 10 < 9) {
+      points.push(10.5 + (index % 7) * 0.2, 20.2 + (index % 5) * 0.2);
+    } else {
+      points.push(random() * 360 - 180, random() * 170 - 85);
+    }
+  }
+  const positions = Float32Array.from(points);
+  positions[20] = NaN;
+  positions[99] = NaN;
+  const rows = positions.length / 2;
+  const values = createValues(5, rows);
+  const resolution = 8;
+  const expected = aggregateCellsOnCPU({
+    family: 'quadbin',
+    resolution,
+    keys: getQuadbinPointKeys(positions, resolution),
+    values,
+    sumScale: SUM_SCALE
+  });
+  const aggregation = createAggregation(fixture, {
+    family: 'quadbin',
+    resolution,
+    positions,
+    values,
+    capacity: rows
+  });
+  const actual = await aggregation.run(values, new Uint32Array(rows).fill(1));
+  expectTable(actual, expected, rows, 'hot cells');
+  expect(Math.max(...expected.map(cell => cell.count))).toBeGreaterThan(20000);
+  aggregation.compiled.destroy();
+  fixture.destroy();
+});
+
 it('GPUCellAggregation follows per-frame masks and values without recompiling', async () => {
   const device = await getWebGPUTestDevice();
   if (!device) {

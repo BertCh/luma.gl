@@ -30,6 +30,12 @@ export const GPU_RASTER_EXTREMA_PYRAMID_EMPTY_MAXIMUM = -3.4028234663852886e38;
 /** Value of a minimum cell whose footprint holds no valid pixel (+FLT_MAX). */
 export const GPU_RASTER_EXTREMA_PYRAMID_EMPTY_MINIMUM = 3.4028234663852886e38;
 
+/** Pyramid levels reduced per fused dispatch: a 16 x 16 tile of base cells down to one cell. */
+const FUSED_LEVELS_PER_DISPATCH = 4;
+
+/** Edge, in base-level cells, of the tile one workgroup of the fused reduction owns. */
+const FUSED_TILE_SIZE = 16;
+
 /** Largest supported `firstBlockSize`. */
 const MAXIMUM_FIRST_BLOCK_SIZE = 256;
 
@@ -291,7 +297,7 @@ export class GPURasterExtremaPyramid implements GPUCommandNodeProducer {
     }
   }
 
-  /** Returns canonicalization nodes followed by one `${id}-level-${L}` node per level. */
+  /** Returns canonicalization nodes, the level-0 node and one fused node per four further levels. */
   getCommandNodes<Parameters>(
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
@@ -322,7 +328,8 @@ export class GPURasterExtremaPyramid implements GPUCommandNodeProducer {
 }
 
 /**
- * Creates the per-level kernel nodes `${id}-level-${L}` of a pyramid from canonical values.
+ * Creates the kernel nodes of a pyramid from canonical values: `${id}-level-0`, then one
+ * `${id}-levels-${first}-${last}` node per group of up to four further levels.
  *
  * `combined` is an alternative to `maximum` / `minimum`: one view of `2 * layout.length` floats with
  * maximum levels at `[0, length)` and minimum levels at `[length, 2 * length)`.
@@ -439,40 +446,103 @@ ${header}`,
   ${write}`
         })
       );
-    } else {
-      const below = layout.levels[level.level - 1];
-      const reduce = (array: string, base: string, sentinel: string, comparison: string) => `var ${
-        comparison === '>' ? 'maximumValue' : 'minimumValue'
-      } = ${sentinel};
-  for (var child = 0u; child < 4u; child++) {
-    let childColumn = 2u * cellColumn + (child & 1u);
-    let childRow = 2u * cellRow + (child >> 1u);
-    if (childColumn < BELOW_WIDTH && childRow < BELOW_HEIGHT) {
-      let value = ${array}[${base} + BELOW_OFFSET + childRow * BELOW_WIDTH + childColumn];
-      if (value ${comparison} ${comparison === '>' ? 'maximumValue' : 'minimumValue'}) { ${
-        comparison === '>' ? 'maximumValue' : 'minimumValue'
-      } = value; }
     }
+  }
+
+  // Levels above 0 are built several per dispatch. A workgroup loads a 16 x 16 tile of an already
+  // written base level into workgroup memory and reduces it 16 -> 8 -> 4 -> 2 -> 1, writing each
+  // level's cells as it goes, so `L` levels cost ceil(L / 4) dispatches (and one read of the base
+  // level) instead of `L` dispatches that each re-read the level below. The reduction is the same
+  // 2 x 2 tree in the same child order as before; children outside the level read as the empty
+  // sentinel, which never wins a strict comparison, so results are bit-identical.
+  for (
+    let baseIndex = 0;
+    baseIndex < layout.levels.length - 1;
+    baseIndex += FUSED_LEVELS_PER_DISPATCH
+  ) {
+    const base = layout.levels[baseIndex];
+    const stageLevels = layout.levels.slice(
+      baseIndex + 1,
+      baseIndex + 1 + FUSED_LEVELS_PER_DISPATCH
+    );
+    const tilesX = Math.ceil(base.width / FUSED_TILE_SIZE);
+    const tilesY = Math.ceil(base.height / FUSED_TILE_SIZE);
+    const stages = stageLevels.map((stageLevel, stageIndex) => {
+      const inputSize = FUSED_TILE_SIZE >> stageIndex;
+      const outputSize = inputSize >> 1;
+      const reduce = (
+        array: string,
+        comparison: '>' | '<',
+        name: string
+      ) => `for (var child = 0u; child < 4u; child++) {
+      let value = ${array}[(2u * stageY + (child >> 1u)) * ${inputSize}u + 2u * stageX + (child & 1u)];
+      if (value ${comparison} ${name}) { ${name} = value; }
+    }`;
+      const isLast = stageIndex === stageLevels.length - 1;
+      const levelCell = `LEVEL_OFFSET_${stageIndex}`;
+      return `
+  // Level ${stageLevel.level}: ${outputSize} x ${outputSize} cells per tile.
+  {
+    let isStageThread = localInvocationIndex < ${outputSize * outputSize}u;
+    let stageX = localInvocationIndex % ${outputSize}u;
+    let stageY = localInvocationIndex / ${outputSize}u;
+    var maximumValue = EMPTY_MAXIMUM;
+    var minimumValue = EMPTY_MINIMUM;
+    if (isStageThread) {
+      ${hasMaximum ? reduce('tileMaximum', '>', 'maximumValue') : ''}
+      ${hasMinimum ? reduce('tileMinimum', '<', 'minimumValue') : ''}
+    }
+    workgroupBarrier();
+    if (isStageThread) {
+      ${hasMaximum ? `tileMaximum[localInvocationIndex] = maximumValue;` : ''}
+      ${hasMinimum ? `tileMinimum[localInvocationIndex] = minimumValue;` : ''}
+      let cellColumn = tileX * ${outputSize}u + stageX;
+      let cellRow = tileY * ${outputSize}u + stageY;
+      if (cellColumn < ${stageLevel.width}u && cellRow < ${stageLevel.height}u) {
+        let cellIndex = ${levelCell} + cellRow * ${stageLevel.width}u + cellColumn;
+        ${hasMaximum ? `${maximumArray}[${maximumBase} + cellIndex] = maximumValue;` : ''}
+        ${hasMinimum ? `${minimumArray}[${minimumBase} + cellIndex] = minimumValue;` : ''}
+      }
+    }
+    ${isLast ? '' : 'workgroupBarrier();'}
   }`;
-      nodes.push(
-        createWGSLKernelNode<Parameters>(graph, {
-          id: `${id}-level-${level.level}`,
-          operation: 'GPURasterExtremaPyramid',
-          variant: 'reduce',
-          bindings: outputBindings,
-          invocationCount: cellCount,
-          declarations: `const BELOW_WIDTH: u32 = ${below.width}u;
-const BELOW_HEIGHT: u32 = ${below.height}u;
-const BELOW_OFFSET: u32 = ${below.offset}u;
-${header}`,
-          body: `let cellColumn = index % LEVEL_WIDTH;
-  let cellRow = index / LEVEL_WIDTH;
-  ${hasMaximum ? reduce(maximumArray, maximumBase, 'EMPTY_MAXIMUM', '>') : 'let maximumValue = 0.0;'}
-  ${hasMinimum ? reduce(minimumArray, minimumBase, 'EMPTY_MINIMUM', '<') : 'let minimumValue = 0.0;'}
-  ${write}`
-        })
-      );
-    }
+    });
+    nodes.push(
+      createWGSLKernelNode<Parameters>(graph, {
+        id: `${id}-levels-${stageLevels[0].level}-${stageLevels[stageLevels.length - 1].level}`,
+        operation: 'GPURasterExtremaPyramid',
+        variant: 'reduce-fused',
+        workgroupSize: FUSED_TILE_SIZE * FUSED_TILE_SIZE,
+        bindings: outputBindings,
+        invocationCount: tilesX * tilesY * FUSED_TILE_SIZE * FUSED_TILE_SIZE,
+        guardIndex: false,
+        declarations: `const EMPTY_MAXIMUM: f32 = ${emptyMaximum};
+const EMPTY_MINIMUM: f32 = ${emptyMinimum};
+const BASE_WIDTH: u32 = ${base.width}u;
+const BASE_HEIGHT: u32 = ${base.height}u;
+const BASE_OFFSET: u32 = ${base.offset}u;
+const TILES_X: u32 = ${tilesX}u;
+${stageLevels.map((stageLevel, stageIndex) => `const LEVEL_OFFSET_${stageIndex}: u32 = ${stageLevel.offset}u;`).join('\n')}
+${hasMaximum ? `var<workgroup> tileMaximum: array<f32, ${FUSED_TILE_SIZE * FUSED_TILE_SIZE}>;` : ''}
+${hasMinimum ? `var<workgroup> tileMinimum: array<f32, ${FUSED_TILE_SIZE * FUSED_TILE_SIZE}>;` : ''}`,
+        body: `let tileIndex = (index - localInvocationIndex) / ${FUSED_TILE_SIZE * FUSED_TILE_SIZE}u;
+  let tileX = tileIndex % TILES_X;
+  let tileY = tileIndex / TILES_X;
+  let baseColumn = tileX * ${FUSED_TILE_SIZE}u + localInvocationIndex % ${FUSED_TILE_SIZE}u;
+  let baseRow = tileY * ${FUSED_TILE_SIZE}u + localInvocationIndex / ${FUSED_TILE_SIZE}u;
+  var baseMaximum = EMPTY_MAXIMUM;
+  var baseMinimum = EMPTY_MINIMUM;
+  if (baseColumn < BASE_WIDTH && baseRow < BASE_HEIGHT) {
+    let baseCell = BASE_OFFSET + baseRow * BASE_WIDTH + baseColumn;
+    ${hasMaximum ? `baseMaximum = ${maximumArray}[${maximumBase} + baseCell];` : ''}
+    ${hasMinimum ? `baseMinimum = ${minimumArray}[${minimumBase} + baseCell];` : ''}
+  }
+  ${hasMaximum ? 'tileMaximum[localInvocationIndex] = baseMaximum;' : '_ = baseMaximum;'}
+  ${hasMinimum ? 'tileMinimum[localInvocationIndex] = baseMinimum;' : '_ = baseMinimum;'}
+  workgroupBarrier();
+  ${stages.join('\n')}`
+      })
+    );
   }
   return nodes;
 }

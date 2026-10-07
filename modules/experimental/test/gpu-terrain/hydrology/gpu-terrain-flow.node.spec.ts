@@ -86,19 +86,19 @@ it('GPUTerrainFlow prefixes node ids and grows with iteration limits', () => {
   });
   const largeNodes = large.getCommandNodes(largeGraph);
   expect(largeNodes.every(node => node.id.startsWith('big-'))).toBe(true);
-  // Fill adds two resets, an init, and 2 nodes per iteration.
+  // Fill adds two resets, an init, one node per iteration, and one gate per four iterations.
   const withoutFill = createLarge({
     id: 'nofill',
     maxAccumulationIterations: 7,
     streams: createTransientView(largeGraph, 'streams2', 'uint32', 30)
   }).getCommandNodes(largeGraph);
-  expect(largeNodes.length - withoutFill.length).toBe(2 * 5 + 3);
+  expect(largeNodes.length - withoutFill.length).toBe(3 + 5 + 2);
   const moreRounds = createLarge({
     id: 'rounds',
     maxAccumulationIterations: 9,
     streams: createTransientView(largeGraph, 'streams3', 'uint32', 30)
   }).getCommandNodes(largeGraph);
-  expect(moreRounds.length - withoutFill.length).toBe(4);
+  expect(moreRounds.length - withoutFill.length).toBe(2 + 1);
   // Direction-only requests skip accumulation entirely.
   expect(
     create({id: 'dir'})

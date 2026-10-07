@@ -48,12 +48,53 @@ function createWalkingTracks(seed: number, trackCount: number): FixtureRow[][] {
   return tracks;
 }
 
-type EventKey = [track: number, zone: number, time: number, type: number];
+type EventKey = [track: number, zone: number, time: number, type: number, x: number, y: number];
 
-function getKeys(events: {track: number; zone: number; time: number; type: number}[]): EventKey[] {
+function getKeys(
+  events: {
+    track: number;
+    zone: number;
+    time: number;
+    type: number;
+    x: number;
+    y: number;
+  }[]
+): EventKey[] {
   return events
-    .map((event): EventKey => [event.track, event.zone, event.time, event.type])
+    .map((event): EventKey => [event.track, event.zone, event.time, event.type, event.x, event.y])
     .sort((a, b) => a[0] - b[0] || a[1] - b[1] || a[2] - b[2]);
+}
+
+/** Sparse table: one row per visited `(track, zone)` cell, ordered by cell. */
+function expectTableParity(actual: ZoneGPUResult, expected: ZoneOracleResult, label: string): void {
+  const zoneCount = ZONE_COUNT;
+  const cells = expected.visitCounts.flatMap((visits, cell) => (visits > 0 ? [cell] : []));
+  const {table} = actual;
+  expect(table.count, `${label} table count`).toBe(cells.length);
+  expect(table.totalCount, `${label} table total`).toBe(cells.length);
+  expect(table.overflow, `${label} table overflow`).toBe(0);
+  for (const [row, cell] of cells.entries()) {
+    const track = Math.floor(cell / zoneCount);
+    expect([table.tracks[row], table.zones[row]], `${label} table key ${row}`).toEqual([
+      track,
+      cell % zoneCount
+    ]);
+    expect(table.visits[row], `${label} table visits ${row}`).toBe(expected.visitCounts[cell]);
+    const tolerance = 2e-3 + 1e-4 * Math.abs(expected.dwellTimes[cell]);
+    expect(Math.abs(table.dwellTimes[row] - expected.dwellTimes[cell])).toBeLessThanOrEqual(
+      tolerance
+    );
+    expect(
+      Math.abs(table.firstEnterTimes[row] - expected.firstEnterTimes[cell])
+    ).toBeLessThanOrEqual(2e-3 + 1e-5 * expected.firstEnterTimes[cell]);
+    expect(Math.abs(table.lastExitTimes[row] - expected.lastExitTimes[cell])).toBeLessThanOrEqual(
+      2e-3 + 1e-5 * expected.lastExitTimes[cell]
+    );
+  }
+  // Rows past the count hold sentinels.
+  if (cells.length < table.tracks.length) {
+    expect(table.tracks[cells.length]).toBe(0xffffffff);
+  }
 }
 
 function expectParity(actual: ZoneGPUResult, expected: ZoneOracleResult, label: string): void {
@@ -61,7 +102,9 @@ function expectParity(actual: ZoneGPUResult, expected: ZoneOracleResult, label: 
     track: actual.tracks[index],
     zone: actual.zones[index],
     time: actual.times[index],
-    type: actual.types[index]
+    type: actual.types[index],
+    x: actual.positions[2 * index],
+    y: actual.positions[2 * index + 1]
   }));
   expect(actual.count, `${label} count`).toBe(expected.events.length);
   expect(actual.totalCount, `${label} total`).toBe(expected.events.length);
@@ -80,7 +123,27 @@ function expectParity(actual: ZoneGPUResult, expected: ZoneOracleResult, label: 
     expect(actualKeys[index].slice(0, 2), `${label} event ${index}`).toEqual(key.slice(0, 2));
     expect(actualKeys[index][3], `${label} type ${index}`).toBe(key[3]);
     expect(Math.abs(actualKeys[index][2] - key[2])).toBeLessThanOrEqual(1e-3 + 1e-5 * key[2]);
+    // Crossing positions interpolate the same segment parameter. Events of one track and zone
+    // with equal times (zero-duration segments) have no defined order, so skip those.
+    const isTied = [index - 1, index + 1].some(
+      other =>
+        other >= 0 &&
+        other < expectedKeys.length &&
+        expectedKeys[other][0] === key[0] &&
+        expectedKeys[other][1] === key[1] &&
+        expectedKeys[other][2] === key[2]
+    );
+    if (isTied) {
+      continue;
+    }
+    expect(Math.abs(actualKeys[index][4] - key[4]), `${label} x ${index}`).toBeLessThanOrEqual(
+      0.05
+    );
+    expect(Math.abs(actualKeys[index][5] - key[5]), `${label} y ${index}`).toBeLessThanOrEqual(
+      0.05
+    );
   }
+  expectTableParity(actual, expected, label);
   expect(actual.visitCounts, `${label} visits`).toEqual(expected.visitCounts);
   expect(actual.trackEventCounts, `${label} track counts`).toEqual(expected.trackEventCounts);
   for (const [index, dwell] of expected.dwellTimes.entries()) {
@@ -243,5 +306,30 @@ it('GPUZoneEvents bounds events per track and flags overflow', async () => {
   expect(sized.candidateOverflow).toBe(0);
   expect(sized.overflow).toBe(0);
   expect(sized.count).toBe(expected.events.length);
+  device.destroy?.();
+});
+
+it('GPUZoneEvents bounds the sparse table and reports its total', async () => {
+  const device = await getWebGPUTestDevice();
+  if (!device) {
+    return;
+  }
+  const tracks = packTracks(createWalkingTracks(11, 300));
+  const expected = computeZoneEventsOracle(tracks, EDGES, ZONE_COUNT);
+  const visited = expected.visitCounts.filter(visits => visits > 0).length;
+  expect(visited).toBeGreaterThan(20);
+  const result = await runZoneEvents(device, tracks, EDGES, {
+    zoneCount: ZONE_COUNT,
+    candidateCapacity: 4096,
+    maxEventsPerTrack: 1000,
+    eventCapacity: 2048,
+    tableCapacity: 10
+  });
+  expect(result.table.totalCount).toBe(visited);
+  expect(result.table.count).toBe(10);
+  expect(result.table.overflow).toBe(1);
+  // The kept rows are the first ten visited cells in track, zone order.
+  const firstCells = expected.visitCounts.flatMap((v, cell) => (v > 0 ? [cell] : [])).slice(0, 10);
+  expect(result.table.tracks.slice(0, 10)).toEqual(firstCells.map(cell => Math.floor(cell / 3)));
   device.destroy?.();
 });

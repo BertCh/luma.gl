@@ -42,6 +42,7 @@ type FixtureOptions = {
   parameterFormat?: 'uint32' | 'float32';
   parameters?: GPUEdgeBundlingParameterValues;
   withIndices?: boolean;
+  geographic?: boolean;
 };
 
 type Fixture = {
@@ -104,6 +105,7 @@ function createFixture(device: Device, scene: Scene, options: FixtureOptions = {
     pointsPerEdge,
     iterations,
     densityResolution,
+    geographic: options.geographic,
     parameters: parameterBuffer?.importToGraph(graph),
     paths: importGraphBuffer(graph, 'paths', pathsBuffer, 'float32x2', edgeCount * pointsPerEdge),
     startIndices:
@@ -113,7 +115,8 @@ function createFixture(device: Device, scene: Scene, options: FixtureOptions = {
       drawRecordBuffer && importGraphBuffer(graph, 'draw-record', drawRecordBuffer, 'uint32', 4)
   });
   graph.add(contributor);
-  const nodeCount = 4 + 3 * iterations + (options.withIndices ? 1 : 0);
+  const nodeCount =
+    4 + 3 * iterations + (options.withIndices ? 1 : 0) + (options.parameters ? 1 : 0);
   const compiled = graph.compile();
   return {
     edgeCount,
@@ -558,6 +561,58 @@ it('GPUEdgeBundling is scale and translation invariant', async () => {
   expect(maximum).toBeLessThan(1e-4);
   a.destroy();
   b.destroy();
+});
+
+it('GPUEdgeBundling geographic input matches planar bundling of cos-latitude scaled longitude', async () => {
+  const device = await getWebGPUTestDevice();
+  if (!device) {
+    return;
+  }
+  const planar = createClusteredScene(24, 30, 33);
+  // Map the 0..100 scene to lon/lat degrees: 40 degrees of longitude by 10 of latitude near 60 N.
+  const geographic: Scene = {
+    ...planar,
+    positions: Float32Array.from(planar.positions, (value, i) =>
+      i % 2 ? 55 + value * 0.1 : -20 + value * 0.4
+    )
+  };
+  // The GPU takes the mid-latitude from the live edge endpoints only.
+  let minLat = Infinity;
+  let maxLat = -Infinity;
+  for (const vertex of [...geographic.sources, ...geographic.targets]) {
+    const latitude = geographic.positions[vertex * 2 + 1];
+    minLat = Math.min(minLat, latitude);
+    maxLat = Math.max(maxLat, latitude);
+  }
+  const xScale = Math.cos((0.5 * (minLat + maxLat) * Math.PI) / 180);
+  const scaled: Scene = {
+    ...geographic,
+    positions: Float32Array.from(geographic.positions, (value, i) =>
+      i % 2 ? value : value * xScale
+    )
+  };
+  const options = {pointsPerEdge: 12, iterations: 1, densityResolution: 96};
+  const a = createFixture(device, geographic, {...options, geographic: true});
+  const b = createFixture(device, scaled, options);
+  const flat = createFixture(device, geographic, options);
+  const pathsA = await a.run();
+  const pathsB = await b.run();
+  const pathsFlat = await flat.run();
+  const side = bundleEdgesOracle(oracleFor(scaled, b)).box[2];
+  let maximum = 0;
+  let flatMaximum = 0;
+  for (let i = 0; i < pathsA.length; i++) {
+    const mapped = i % 2 ? pathsB[i] : pathsB[i] / xScale;
+    const factor = i % 2 ? 1 : xScale;
+    maximum = Math.max(maximum, Math.abs(pathsA[i] - mapped) * factor);
+    flatMaximum = Math.max(flatMaximum, Math.abs(pathsA[i] - pathsFlat[i]) * factor);
+  }
+  expect(maximum / side).toBeLessThan(1e-4);
+  // Without the correction the density is stretched east-west and the paths differ.
+  expect(flatMaximum / side).toBeGreaterThan(1e-3);
+  a.destroy();
+  b.destroy();
+  flat.destroy();
 });
 
 it('GPUEdgeBundling measures 10k edges x 16 points x 15 iterations at 256 squared', async () => {

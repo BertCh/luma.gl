@@ -17,6 +17,11 @@ import {
 } from '../../utils/wgsl-kernel-nodes';
 import type {GPUCommandNodeProducer} from '@luma.gl/gpgpu/gpu-core';
 import {validateGraphViewsBelongToGraph} from '../../utils/gpu-contributor-utils';
+import {
+  createRasterGatedLoopNodes,
+  createRasterIterationResetNode,
+  createRasterIterationState
+} from '../cost-distance/raster-relaxation';
 import {GPU_ISOLINES_PARAMETER_LENGTH} from './isolines-parameters';
 import {
   getIsolinesCornersWGSL,
@@ -505,71 +510,99 @@ ${declarations}`,
       getLinkWGSL()
     );
 
-    // Pointer jumping on the predecessor links with a fixed round count. Each node tracks its
-    // jump pointer, the smallest key seen (heads of open chains have key 0, every other node
-    // index + 1, so a ring converges on its smallest index), the distance to that node, and the
-    // number of steps its pointer spans.
-    const roundCount = Math.ceil(Math.log2(capacity)) + 1;
-    const stateNames = ['pointer', 'key', 'distance', 'span'] as const;
-    const states = [0, 1].map(
-      copy =>
-        Object.fromEntries(
-          stateNames.map(name => [name, transient(`jump-${copy}-${name}`)])
-        ) as Record<(typeof stateNames)[number], GraphDataView<'uint32'>>
-    );
+    // Pointer jumping on the predecessor links. Each node tracks its jump pointer, the smallest key
+    // seen (heads of open chains have key 0, every other node index + 1, so a ring converges on its
+    // smallest index), the distance to that node, and the number of steps its pointer spans.
+    //
+    // The four fields of one node live in one 16-byte record, because every round gathers all of
+    // them at the jump target: one cache line instead of four.
+    //
+    // The round budget covers the worst case (one chain of `capacity` segments), but the rounds are
+    // gated by a GPU convergence flag: a round that lowers no key proves every window already spans
+    // its whole chain or ring (otherwise the node 2^r steps from the minimum would see it through
+    // its jump), after which keys and distances are fixed and open-chain pointers sit on their
+    // head. Short contour chains therefore need about log2(longest chain) rounds, not
+    // log2(capacity). Rounds run in gated pairs, and an even count leaves the ping-pong result in
+    // `states[0]` whatever round the gate stops at.
+    const roundCount = 2 * Math.ceil((Math.ceil(Math.log2(capacity)) + 1) / 2);
+    const states = [0, 1].map(copy => transient(`jump-${copy}-state`, 4 * capacity));
     kernel(
       'jump-init',
-      [read('previous', previous), ...stateNames.map(name => write(`${name}Out`, states[0][name]))],
+      [read('previous', previous), write('stateOut', states[0])],
       `let hasPrevious = previous[previousOffset + index] != NONE;
-  pointerOut[pointerOutOffset + index] =
-    select(index, previous[previousOffset + index], hasPrevious);
-  keyOut[keyOutOffset + index] = select(0u, index + 1u, hasPrevious);
-  distanceOut[distanceOutOffset + index] = 0u;
-  spanOut[spanOutOffset + index] = select(0u, 1u, hasPrevious);`
+  let base = stateOutOffset + 4u * index;
+  stateOut[base] = select(index, previous[previousOffset + index], hasPrevious);
+  stateOut[base + 1u] = select(0u, index + 1u, hasPrevious);
+  stateOut[base + 2u] = 0u;
+  stateOut[base + 3u] = select(0u, 1u, hasPrevious);`
     );
-    for (let round = 0; round < roundCount; round++) {
-      const from = states[round % 2];
-      const to = states[(round + 1) % 2];
-      kernel(
-        `jump-${round}`,
-        [
-          ...stateNames.map(name => read(`${name}In`, from[name])),
-          ...stateNames.map(name => write(`${name}Out`, to[name]))
-        ],
-        `let jump = pointerIn[pointerInOffset + index];
-  let ownKey = keyIn[keyInOffset + index];
-  let jumpKey = keyIn[keyInOffset + jump];
+    const jumpState = createRasterIterationState<Parameters>(
+      graph,
+      `${id}-jump`,
+      OPERATION,
+      capacity,
+      id
+    );
+    nodes.push(
+      createRasterIterationResetNode<Parameters>(graph, {
+        id: `${id}-jump-reset`,
+        operation: OPERATION,
+        state: jumpState
+      }),
+      ...createRasterGatedLoopNodes<Parameters>(graph, {
+        id: `${id}-jump`,
+        operation: OPERATION,
+        state: jumpState,
+        maxIterations: roundCount,
+        groupSize: 2,
+        createRound: ({nodeId, iteration, groupOffset, condition, extraResources}) =>
+          createWGSLKernelNode<Parameters>(graph, {
+            id: nodeId,
+            operation: OPERATION,
+            variant: 'jump',
+            bindings: [
+              read('stateIn', states[iteration % 2]),
+              write('stateOut', states[(iteration + 1) % 2]),
+              {name: 'status', view: jumpState.status, type: 'atomic<u32>', access: 'read_write'}
+            ],
+            invocationCount: jumpState.invocationCount,
+            body: `let ownBase = stateInOffset + 4u * index;
+  let jump = stateIn[ownBase];
+  let jumpBase = stateInOffset + 4u * jump;
+  let ownKey = stateIn[ownBase + 1u];
+  let jumpKey = stateIn[jumpBase + 1u];
   let ownWins = ownKey <= jumpKey;
-  keyOut[keyOutOffset + index] = select(jumpKey, ownKey, ownWins);
-  distanceOut[distanceOutOffset + index] = select(
-    distanceIn[distanceInOffset + jump] + spanIn[spanInOffset + index],
-    distanceIn[distanceInOffset + index],
+  let outBase = stateOutOffset + 4u * index;
+  stateOut[outBase] = stateIn[jumpBase];
+  stateOut[outBase + 1u] = select(jumpKey, ownKey, ownWins);
+  stateOut[outBase + 2u] = select(
+    stateIn[jumpBase + 2u] + stateIn[ownBase + 3u],
+    stateIn[ownBase + 2u],
     ownWins
   );
-  spanOut[spanOutOffset + index] =
-    spanIn[spanInOffset + index] + spanIn[spanInOffset + jump];
-  pointerOut[pointerOutOffset + index] = pointerIn[pointerInOffset + jump];`
-      );
-    }
-    const final = states[roundCount % 2];
+  stateOut[outBase + 3u] = stateIn[ownBase + 3u] + stateIn[jumpBase + 3u];
+  if (!ownWins && (atomicLoad(&status[statusOffset]) & ${1 << groupOffset}u) == 0u) {
+    atomicOr(&status[statusOffset], ${1 << groupOffset}u);
+  }`,
+            condition,
+            extraResources
+          })
+      })
+    );
+    const final = states[0];
 
     // Head and rank per segment; bit 31 of the rank marks a closed ring.
     const headOf = transient('head-of');
     const rankOf = transient('rank-of');
     kernel(
       'resolve',
-      [
-        read('pointerIn', final.pointer),
-        read('keyIn', final.key),
-        read('distanceIn', final.distance),
-        write('headOut', headOf),
-        write('rankOut', rankOf)
-      ],
-      `let key = keyIn[keyInOffset + index];
+      [read('stateIn', final), write('headOut', headOf), write('rankOut', rankOf)],
+      `let base = stateInOffset + 4u * index;
+  let key = stateIn[base + 1u];
   let isRing = key != 0u;
-  headOut[headOutOffset + index] = select(pointerIn[pointerInOffset + index], key - 1u, isRing);
+  headOut[headOutOffset + index] = select(stateIn[base], key - 1u, isRing);
   rankOut[rankOutOffset + index] =
-    distanceIn[distanceInOffset + index] | select(0u, 0x80000000u, isRing);`
+    stateIn[base + 2u] | select(0u, 0x80000000u, isRing);`
     );
 
     // Chain lengths via integer atomicMax, then head flags (1 open, 2 closed).

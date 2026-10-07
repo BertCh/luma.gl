@@ -44,6 +44,7 @@ export {
   GPUFlowAggregation
 } from './flow-aggregation/index';
 export type {
+  GPUFlowAggregationActiveGridSize,
   GPUFlowAggregationBounds,
   GPUFlowAggregationProps,
   GPUFlowAggregationSumOrder,
@@ -163,3 +164,51 @@ export type {
   GPUNetworkIsochronesMode,
   GPUNetworkIsochronesProps
 } from './network-isochrones/index';
+
+export {
+  GPUNetworkNoding,
+  GPU_NETWORK_NODING_NONE
+} from './network-noding/index';
+
+export type {
+  GPUNetworkNodingCSR,
+  GPUNetworkNodingEdges,
+  GPUNetworkNodingNodes,
+  GPUNetworkNodingProps
+} from './network-noding/index';
+
+export {
+  GPUNetworkKFunction,
+  GPU_NETWORK_K_FUNCTION_MAXIMUM_BAND_COUNT,
+  GPU_NETWORK_K_FUNCTION_PARAMETER_LENGTH,
+  getGPUNetworkKFunctionParameterValues
+} from './network-k-function/index';
+
+export type {
+  GPUNetworkKFunctionProps,
+  GPUNetworkKFunctionSettings
+} from './network-k-function/index';
+
+export {
+  GPUNetworkLineGraph,
+  GPU_NETWORK_LINE_GRAPH_PARAMETER_LENGTH,
+  getGPUNetworkLineGraphParameterValues
+} from './network-line-graph/index';
+
+export type {
+  GPUNetworkLineGraphProps,
+  GPUNetworkLineGraphSettings
+} from './network-line-graph/index';
+
+export {
+  GPUMapMatching,
+  GPU_MAP_MATCHING_NONE,
+  GPU_MAP_MATCHING_PARAMETER_LENGTH,
+  encodeGPUMapMatchingParameters
+} from './map-matching/index';
+
+export type {
+  GPUMapMatchingOutput,
+  GPUMapMatchingParameters,
+  GPUMapMatchingProps
+} from './map-matching/index';

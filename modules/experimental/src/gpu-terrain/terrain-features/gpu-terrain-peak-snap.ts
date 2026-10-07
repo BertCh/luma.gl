@@ -369,9 +369,21 @@ export class GPUTerrainPeakSnap implements GPUCommandNodeProducer {
         operation: 'GPUTerrainPeakSnap',
         variant: `disc-${cellSizeMode}`,
         bindings: searchBindings,
-        invocationCount: candidateCount,
+        // One 256-thread workgroup per candidate: a disc holds up to (2 * 64 + 1)^2 pixels.
+        invocationCount: candidateCount * 256,
+        workgroupSize: 256,
+        guardIndex: false,
         declarations: `const WIDTH: u32 = ${width}u;
 const HEIGHT: u32 = ${height}u;
+const CANDIDATE_COUNT: u32 = ${candidateCount}u;
+var<workgroup> reduceIndex: array<u32, 256>;
+var<workgroup> reduceHeight: array<f32, 256>;
+// True when (height, index) beats the incumbent: higher first, lower index on ties, any pixel beats none.
+fn isBetterPixel(height: f32, pixelIndex: u32, incumbentHeight: f32, incumbentIndex: u32) -> bool {
+  if (pixelIndex == NO_INDEX) { return false; }
+  return incumbentIndex == NO_INDEX || height > incumbentHeight ||
+    (height == incumbentHeight && pixelIndex < incumbentIndex);
+}
 const MAXIMUM_RADIUS_PIXELS: i32 = ${maximumRadiusPixels};
 const NO_INDEX: u32 = 0xffffffffu;
 const STATUS_UNCHANGED: u32 = ${codes.unchanged}u;
@@ -408,7 +420,13 @@ fn sampleElevation(position: vec2<f32>, seed: u32) -> f32 {
   let bottom = mix(getElevation(base.x, next.y), getElevation(next.x, next.y), fraction.x);
   return mix(top, bottom, fraction.y);
 }
-fn snapCandidate(index: u32, candidate: vec2<f32>) {
+var<private> snapNearest: vec2<i32>;
+var<private> snapCell: vec2<f32>;
+var<private> snapRadiusSquared: f32;
+var<private> snapExtent: vec2<i32>;
+var<private> snapDemHeight: f32;
+// Validates the candidate and sets up the disc search. Returns false when snapStatus is final.
+fn prepareSnap(index: u32, candidate: vec2<f32>, isLeader: bool) -> bool {
   snapStatus = STATUS_OUTSIDE;
   snapPosition = candidate;
   snapHeight = getNan(index);
@@ -416,7 +434,7 @@ fn snapCandidate(index: u32, candidate: vec2<f32>) {
   if (!(isFiniteValue(candidate.x) && isFiniteValue(candidate.y) &&
       candidate.x >= 0.0 && candidate.y >= 0.0 &&
       candidate.x <= f32(WIDTH - 1u) && candidate.y <= f32(HEIGHT - 1u))) {
-    return;
+    return false;
   }
   let demHeight = sampleElevation(candidate, index);
   snapHeight = demHeight;
@@ -427,30 +445,26 @@ fn snapCandidate(index: u32, candidate: vec2<f32>) {
   ${props.candidateRadii ? 'let candidateRadius = candidateRadii[candidateRadiiOffset + index];\n  if (isFiniteValue(candidateRadius) && candidateRadius > 0.0) { requested = candidateRadius; }' : ''}
   if (!(isFiniteValue(cell.x) && isFiniteValue(cell.y) && cell.x > 0.0 && cell.y > 0.0 &&
       isFiniteValue(requested) && requested > 0.0)) {
-    return;
+    return false;
   }
-  ${props.overflow ? 'if (isRadiusClamped(requested, cell)) { atomicMax(&overflowValues[overflowValuesOffset], 1u); }' : ''}
+  ${props.overflow ? 'if (isLeader && isRadiusClamped(requested, cell)) { atomicMax(&overflowValues[overflowValuesOffset], 1u); }' : ''}
   let radius = getEffectiveRadius(requested, cell);
   let radiusSquared = radius * radius;
   let extentX = getDiscExtent(radius, cell.x);
   let extentY = getDiscExtent(radius, cell.y);
-  var bestIndex = NO_INDEX;
-  var bestHeight = 0.0;
-  for (var offsetY = -extentY; offsetY <= extentY; offsetY++) {
-    for (var offsetX = -extentX; offsetX <= extentX; offsetX++) {
-      let pixel = nearest + vec2<i32>(offsetX, offsetY);
-      if (pixel.x < 0 || pixel.y < 0 || pixel.x >= i32(WIDTH) || pixel.y >= i32(HEIGHT)) { continue; }
-      if (!isInDisc(pixel, candidate, cell, radiusSquared)) { continue; }
-      if (!isValidPixel(u32(pixel.x), u32(pixel.y))) { continue; }
-      let pixelIndex = u32(pixel.y) * WIDTH + u32(pixel.x);
-      let pixelHeight = elevationValues[elevationValuesOffset + pixelIndex];
-      if (bestIndex == NO_INDEX || pixelHeight > bestHeight ||
-          (pixelHeight == bestHeight && pixelIndex < bestIndex)) {
-        bestIndex = pixelIndex;
-        bestHeight = pixelHeight;
-      }
-    }
-  }
+  snapNearest = nearest;
+  snapCell = cell;
+  snapRadiusSquared = radiusSquared;
+  snapExtent = vec2<i32>(extentX, extentY);
+  snapDemHeight = demHeight;
+  return true;
+}
+// Applies the move, height, and ring policies to the disc maximum found by the cooperative scan.
+fn finishSnap(index: u32, candidate: vec2<f32>, bestIndex: u32, bestHeight: f32) {
+  let nearest = snapNearest;
+  let cell = snapCell;
+  let radiusSquared = snapRadiusSquared;
+  let demHeight = snapDemHeight;
   if (bestIndex == NO_INDEX) { return; }
   let bestPixel = vec2<i32>(i32(bestIndex % WIDTH), i32(bestIndex / WIDTH));
   if (settings[settingsOffset + 7u] != 0.0 &&
@@ -482,14 +496,65 @@ fn snapCandidate(index: u32, candidate: vec2<f32>) {
   snapHeight = bestHeight;
   snapDistanceValue = sqrt(moveSquared);
 }`,
-        body: `let candidate = vec2<f32>(candidates[candidatesOffset + 2u * index], candidates[candidatesOffset + 2u * index + 1u]);
-  snapCandidate(index, candidate);
-  let resultBase = resultsOffset + 5u * index;
-  results[resultBase] = snapStatus;
-  results[resultBase + 1u] = bitcast<u32>(snapPosition.x);
-  results[resultBase + 2u] = bitcast<u32>(snapPosition.y);
-  results[resultBase + 3u] = bitcast<u32>(snapHeight);
-  results[resultBase + 4u] = bitcast<u32>(snapDistanceValue);`
+        body: `let candidateIndex = workgroupIndex;
+  let isLeader = localInvocationIndex == 0u;
+  let inRange = candidateIndex < CANDIDATE_COUNT;
+  var candidate = vec2<f32>(0.0, 0.0);
+  if (inRange) {
+    candidate = vec2<f32>(candidates[candidatesOffset + 2u * candidateIndex], candidates[candidatesOffset + 2u * candidateIndex + 1u]);
+  }
+  snapStatus = STATUS_OUTSIDE;
+  snapPosition = candidate;
+  snapHeight = getNan(candidateIndex);
+  snapDistanceValue = 0.0;
+  let prepared = inRange && prepareSnap(candidateIndex, candidate, isLeader);
+  // The whole workgroup scans one candidate's disc; the (height, -index) maximum is order independent.
+  var bestIndex = NO_INDEX;
+  var bestHeight = 0.0;
+  if (prepared) {
+    let extent = snapExtent;
+    let spanX = u32(2 * extent.x + 1);
+    let scanCount = spanX * u32(2 * extent.y + 1);
+    for (var scan = localInvocationIndex; scan < scanCount; scan += 256u) {
+      let offsetX = i32(scan % spanX) - extent.x;
+      let offsetY = i32(scan / spanX) - extent.y;
+      let pixel = snapNearest + vec2<i32>(offsetX, offsetY);
+      if (pixel.x < 0 || pixel.y < 0 || pixel.x >= i32(WIDTH) || pixel.y >= i32(HEIGHT)) { continue; }
+      if (!isInDisc(pixel, candidate, snapCell, snapRadiusSquared)) { continue; }
+      if (!isValidPixel(u32(pixel.x), u32(pixel.y))) { continue; }
+      let pixelIndex = u32(pixel.y) * WIDTH + u32(pixel.x);
+      let pixelHeight = elevationValues[elevationValuesOffset + pixelIndex];
+      if (isBetterPixel(pixelHeight, pixelIndex, bestHeight, bestIndex)) {
+        bestIndex = pixelIndex;
+        bestHeight = pixelHeight;
+      }
+    }
+  }
+  reduceIndex[localInvocationIndex] = bestIndex;
+  reduceHeight[localInvocationIndex] = bestHeight;
+  workgroupBarrier();
+  for (var stride = 128u; stride > 0u; stride = stride >> 1u) {
+    if (localInvocationIndex < stride) {
+      let otherIndex = reduceIndex[localInvocationIndex + stride];
+      let otherHeight = reduceHeight[localInvocationIndex + stride];
+      if (isBetterPixel(otherHeight, otherIndex, reduceHeight[localInvocationIndex], reduceIndex[localInvocationIndex])) {
+        reduceIndex[localInvocationIndex] = otherIndex;
+        reduceHeight[localInvocationIndex] = otherHeight;
+      }
+    }
+    workgroupBarrier();
+  }
+  if (isLeader && inRange) {
+    if (prepared && reduceIndex[0] != NO_INDEX) {
+      finishSnap(candidateIndex, candidate, reduceIndex[0], reduceHeight[0]);
+    }
+    let resultBase = resultsOffset + 5u * candidateIndex;
+    results[resultBase] = snapStatus;
+    results[resultBase + 1u] = bitcast<u32>(snapPosition.x);
+    results[resultBase + 2u] = bitcast<u32>(snapPosition.y);
+    results[resultBase + 3u] = bitcast<u32>(snapHeight);
+    results[resultBase + 4u] = bitcast<u32>(snapDistanceValue);
+  }`
       }),
       createWGSLKernelNode<Parameters>(graph, {
         id: `${id}-unpack`,

@@ -127,10 +127,12 @@ const COLUMN_OPERATIONS = [
  * Computes per-zone count, sum, mean, minimum, and maximum of a raster band, where zones are a
  * pre-rasterized grid of dense zone IDs.
  *
- * The value band is canonicalized (calibration, nodata, validity, non-finite samples), one kernel
- * derives a zone mask and a value mask (and the optional overflow flag), and one
- * `GPUGroupAggregation` runs per requested column. Only kernels and masks that a requested column
- * needs are scheduled. Empty zones produce counts of 0, sums of 0, and NaN means, minimums, and
+ * The value band is canonicalized (calibration, nodata, validity, non-finite samples). Counts,
+ * minimums, and maximums are reduced together (with the optional overflow flag) in one pass over
+ * the cells using workgroup-private per-zone tables and one global merge per workgroup, when
+ * `zoneCapacity` words per requested column fit in workgroup storage. Otherwise, and for atomic
+ * sums and means, a kernel derives zone and value masks and one `GPUGroupAggregation` runs per
+ * requested column. Only kernels and masks that a requested column needs are scheduled. Empty zones produce counts of 0, sums of 0, and NaN means, minimums, and
  * maximums. Zones with cells but no valid values count in `cellCounts` only.
  *
  * Determinism: counts, minimums, and maximums are exact. With the default `sumOrder: 'sorted'`
@@ -229,15 +231,31 @@ export class GPURasterZonalStatistics implements GPUCommandNodeProducer {
     ]);
     const cellCount = width * height;
     const sortedSums = this.sumOrder === 'sorted' && Boolean(output.sums || output.means);
-    const needsZoneMask = Boolean(output.cellCounts) || sortedSums;
-    const needsValueMask = COLUMN_OPERATIONS.some(
-      ([name]) => name !== 'cellCounts' && output[name]
+    const needsValueColumn = Boolean(
+      output.valueCounts || output.sums || output.means || output.minimums || output.maximums
     );
+    // Counts, minimums and maximums are reduced together in ONE pass with workgroup-private
+    // tables (see `getFusedStatisticsNodes`) whenever the tables fit in workgroup memory. Without
+    // that pass every column re-reads zones and a mask through its own `GPUGroupAggregation`.
+    const fusedColumnCount = [
+      output.cellCounts,
+      output.valueCounts || (sortedSums && output.means),
+      output.minimums,
+      output.maximums
+    ].filter(Boolean).length;
+    const fused =
+      fusedColumnCount > 0 &&
+      fusedColumnCount * 4 * zoneCapacity <= graph.device.limits.maxComputeWorkgroupStorageSize;
+    // Masks only feed the per-column aggregations that the fused pass replaces.
+    const needsZoneMask = !fused && Boolean(output.cellCounts);
+    const needsValueMask = fused
+      ? !sortedSums && Boolean(output.sums || output.means)
+      : COLUMN_OPERATIONS.some(([name]) => name !== 'cellCounts' && output[name]);
     const nodes: GPUCommandNode<Parameters>[] = [];
 
     let canonicalValues: GraphDataView<'float32'> | undefined;
     let canonicalValidity: GraphDataView<'uint32'> | undefined;
-    if (needsValueMask) {
+    if (needsValueColumn) {
       const source = getTerrainElevationNodes(
         graph,
         `${id}-values`,
@@ -275,11 +293,14 @@ export class GPURasterZonalStatistics implements GPUCommandNodeProducer {
     const contributions = sortedSums
       ? createTransientView(graph, `${id}-contributions`, 'float32', cellCount)
       : undefined;
-    if (zoneMask || valueMask || overflow) {
+    // The fused pass also raises the overflow flag, so the mask kernel only does when it is absent.
+    const maskOverflow = fused ? undefined : overflow;
+    if (zoneMask || valueMask || sortRows || maskOverflow) {
+      const needsValues = Boolean(valueMask || sortRows);
       const bindings: WGSLKernelBinding[] = [
         {name: 'zones', view: zones, type: 'u32', access: 'read'}
       ];
-      if (valueMask) {
+      if (needsValues) {
         bindings.push(
           {
             name: 'values',
@@ -292,14 +313,16 @@ export class GPURasterZonalStatistics implements GPUCommandNodeProducer {
             view: canonicalValidity!,
             type: 'u32',
             access: 'read'
-          },
-          {
-            name: 'valueMask',
-            view: valueMask,
-            type: 'u32',
-            access: 'read_write'
           }
         );
+      }
+      if (valueMask) {
+        bindings.push({
+          name: 'valueMask',
+          view: valueMask,
+          type: 'u32',
+          access: 'read_write'
+        });
       }
       if (zoneMask) {
         bindings.push({
@@ -325,10 +348,10 @@ export class GPURasterZonalStatistics implements GPUCommandNodeProducer {
           }
         );
       }
-      if (overflow) {
+      if (maskOverflow) {
         bindings.push({
           name: 'overflowFlag',
-          view: overflow,
+          view: maskOverflow,
           type: 'atomic<u32>',
           access: 'read_write'
         });
@@ -347,28 +370,26 @@ fn isFiniteValue(value: f32) -> bool { return (bitcast<u32>(value) & 0x7fffffffu
   let inZone = zone < CAPACITY && zone != IGNORED;
   ${zoneMask ? 'zoneMask[zoneMaskOffset + index] = select(0u, 1u, inZone);' : ''}
   ${
-    valueMask
+    needsValues
       ? `let value = values[valuesOffset + index];
-  valueMask[valueMaskOffset + index] = select(0u, 1u, inZone && validity[validityOffset + index] != 0u && isFiniteValue(value));`
+  let isValid = inZone && validity[validityOffset + index] != 0u && isFiniteValue(value);`
       : ''
   }
+  ${valueMask ? 'valueMask[valueMaskOffset + index] = select(0u, 1u, isValid);' : ''}
   ${
     sortRows
       ? `sortRows[sortRowsOffset + index] = select(CAPACITY, zone, inZone);
-  contributions[contributionsOffset + index] = select(0.0, values[valuesOffset + index], valueMask[valueMaskOffset + index] != 0u);`
+  contributions[contributionsOffset + index] = select(0.0, value, isValid);`
       : ''
   }
-  ${overflow ? 'if (zone >= CAPACITY && zone != IGNORED) {\n    atomicStore(&overflowFlag[overflowFlagOffset], 1u);\n  }' : ''}`
+  ${maskOverflow ? 'if (zone >= CAPACITY && zone != IGNORED) {\n    atomicStore(&overflowFlag[overflowFlagOffset], 1u);\n  }' : ''}`
         })
       );
     }
 
-    // Sorted sums need cell counts per zone (segment sizes) and, for means, value counts.
-    const cellCountsView =
-      output.cellCounts ??
-      (sortedSums
-        ? createTransientView(graph, `${id}-cell-counts`, 'uint32', zoneCapacity)
-        : undefined);
+    // Sorted sums find segment sizes by binary search, so cell counts are only built on request;
+    // means still need value counts.
+    const cellCountsView = output.cellCounts;
     const valueCountsView =
       output.valueCounts ??
       (sortedSums && output.means
@@ -378,7 +399,24 @@ fn isFiniteValue(value: f32) -> bool { return (bitcast<u32>(value) & 0x7fffffffu
       cellCounts: cellCountsView,
       valueCounts: valueCountsView
     };
-    if (sortedSums) {
+    if (fused) {
+      nodes.push(
+        ...getFusedStatisticsNodes<Parameters>(graph, {
+          id,
+          zones,
+          values: canonicalValues,
+          validity: canonicalValidity,
+          zoneCapacity,
+          ignoredZone,
+          cellCount,
+          cellCounts: cellCountsView,
+          valueCounts: valueCountsView,
+          minimums: output.minimums,
+          maximums: output.maximums,
+          overflow
+        })
+      );
+    } else if (sortedSums) {
       for (const name of ['cellCounts', 'valueCounts'] as const) {
         if (!output[name] && countViews[name]) {
           nodes.push(
@@ -400,6 +438,9 @@ fn isFiniteValue(value: f32) -> bool { return (bitcast<u32>(value) & 0x7fffffffu
         continue;
       }
       if (sortedSums && (name === 'sums' || name === 'means')) {
+        continue;
+      }
+      if (fused && name !== 'sums' && name !== 'means') {
         continue;
       }
       const common = {
@@ -431,7 +472,6 @@ fn isFiniteValue(value: f32) -> bool { return (bitcast<u32>(value) & 0x7fffffffu
           operation: 'GPURasterZonalStatistics',
           segmentCount: zoneCapacity,
           segmentKeys: sortRows!,
-          segmentCounts: cellCountsView!,
           reductions: [{name: 'sums', contributions: contributions!, output: sumsView}]
         })
       );
@@ -469,4 +509,194 @@ fn isFiniteValue(value: f32) -> bool { return (bitcast<u32>(value) & 0x7fffffffu
     }
     return nodes;
   }
+}
+
+const FUSED_WORKGROUP_SIZE = 256;
+
+/**
+ * One-pass zone reduction of counts, minimums and maximums with workgroup-private tables.
+ *
+ * Each workgroup walks a contiguous tile of `cellsPerThread * 256` cells, accumulates into
+ * `var<workgroup>` atomic tables (shared-memory atomics, no global traffic), and merges the non-empty
+ * entries into the global result once per workgroup. Compared with one `GPUGroupAggregation` per
+ * column, zones and values are read once instead of once per column, the zone and value masks are
+ * never materialised, and global atomic traffic is at most `zoneCapacity` per tile instead of one
+ * per cell. Minimums and maximums use order-preserving u32 keys (the same encoding as the core
+ * aggregation), so counts, minimums and maximums stay exact.
+ *
+ * The table size is `zoneCapacity` words per requested column, so callers must check that it
+ * fits in workgroup storage first.
+ */
+function getFusedStatisticsNodes<Parameters>(
+  graph: GPUCommandGraph<Parameters>,
+  props: {
+    id: string;
+    zones: GraphDataView<'uint32'>;
+    values?: GraphDataView<'float32'>;
+    validity?: GraphDataView<'uint32'>;
+    zoneCapacity: number;
+    ignoredZone: number;
+    cellCount: number;
+    cellCounts?: GraphDataView<'uint32'>;
+    valueCounts?: GraphDataView<'uint32'>;
+    minimums?: GraphDataView<'float32'>;
+    maximums?: GraphDataView<'float32'>;
+    overflow?: GraphDataView<'uint32'>;
+  }
+): GPUCommandNode<Parameters>[] {
+  const {id, zoneCapacity, cellCount} = props;
+  const columns = [
+    {name: 'cellCounts', view: props.cellCounts, initial: '0u', merge: 'atomicAdd'},
+    {name: 'valueCounts', view: props.valueCounts, initial: '0u', merge: 'atomicAdd'},
+    {name: 'minimums', view: props.minimums, initial: '0xffffffffu', merge: 'atomicMin'},
+    {name: 'maximums', view: props.maximums, initial: '0u', merge: 'atomicMax'}
+  ].filter(column => column.view) as {
+    name: string;
+    view: GraphDataView;
+    initial: string;
+    merge: string;
+  }[];
+  const needsValues = Boolean(props.valueCounts || props.minimums || props.maximums);
+  const cellsPerThread = Math.min(64, Math.max(8, Math.ceil(zoneCapacity / 32)));
+  const nodes: GPUCommandNode<Parameters>[] = [];
+
+  // Global results start at the merge identity; the tables merge into them atomically.
+  nodes.push(
+    createWGSLKernelNode<Parameters>(graph, {
+      id: `${id}-zone-reduce-init`,
+      operation: 'GPURasterZonalStatistics',
+      variant: 'zone-reduce-init',
+      bindings: columns.map(column => ({
+        name: column.name,
+        view: column.view,
+        type: 'u32' as const,
+        access: 'read_write' as const
+      })),
+      invocationCount: zoneCapacity,
+      body: columns
+        .map(column => `${column.name}[${column.name}Offset + index] = ${column.initial};`)
+        .join('\n  ')
+    })
+  );
+
+  const bindings: WGSLKernelBinding[] = [
+    {name: 'zones', view: props.zones, type: 'u32', access: 'read'}
+  ];
+  if (needsValues) {
+    bindings.push(
+      {name: 'values', view: props.values!, type: 'f32', access: 'read'},
+      {name: 'validity', view: props.validity!, type: 'u32', access: 'read'}
+    );
+  }
+  for (const column of columns) {
+    bindings.push({
+      name: column.name,
+      view: column.view,
+      type: 'atomic<u32>',
+      access: 'read_write'
+    });
+  }
+  if (props.overflow) {
+    bindings.push({
+      name: 'overflowFlag',
+      view: props.overflow,
+      type: 'atomic<u32>',
+      access: 'read_write'
+    });
+  }
+  const tables = columns
+    .map(column => `var<workgroup> local_${column.name}: array<atomic<u32>, ${zoneCapacity}>;`)
+    .join('\n');
+  const hasMinimum = Boolean(props.minimums);
+  const hasMaximum = Boolean(props.maximums);
+  nodes.push(
+    createWGSLKernelNode<Parameters>(graph, {
+      id: `${id}-zone-reduce`,
+      operation: 'GPURasterZonalStatistics',
+      variant: 'zone-reduce',
+      bindings,
+      invocationCount: Math.ceil(cellCount / cellsPerThread),
+      guardIndex: false,
+      declarations: `const CAPACITY: u32 = ${zoneCapacity}u;
+const IGNORED: u32 = ${props.ignoredZone}u;
+const CELL_COUNT: u32 = ${cellCount}u;
+const CELLS_PER_THREAD: u32 = ${cellsPerThread}u;
+${tables}
+fn isFiniteValue(value: f32) -> bool { return (bitcast<u32>(value) & 0x7fffffffu) < 0x7f800000u; }
+fn encodeOrderedFloat(value: f32) -> u32 {
+  let bits = bitcast<u32>(value);
+  return select(bits ^ 0x80000000u, ~bits, (bits & 0x80000000u) != 0u);
+}`,
+      body: `for (var slot = localInvocationIndex; slot < CAPACITY; slot += ${FUSED_WORKGROUP_SIZE}u) {
+    ${columns.map(column => `atomicStore(&local_${column.name}[slot], ${column.initial});`).join('\n    ')}
+  }
+  workgroupBarrier();
+  let tileStart = (index - localInvocationIndex) * CELLS_PER_THREAD;
+  for (var step = 0u; step < CELLS_PER_THREAD; step++) {
+    let cell = tileStart + step * ${FUSED_WORKGROUP_SIZE}u + localInvocationIndex;
+    if (cell >= CELL_COUNT) {
+      break;
+    }
+    let zone = zones[zonesOffset + cell];
+    if (zone >= CAPACITY || zone == IGNORED) {
+      ${props.overflow ? 'if (zone != IGNORED) {\n        atomicStore(&overflowFlag[overflowFlagOffset], 1u);\n      }' : ''}
+      continue;
+    }
+    ${props.cellCounts ? 'atomicAdd(&local_cellCounts[zone], 1u);' : ''}
+    ${
+      needsValues
+        ? `let value = values[valuesOffset + cell];
+    if (validity[validityOffset + cell] != 0u && isFiniteValue(value)) {
+      ${props.valueCounts ? 'atomicAdd(&local_valueCounts[zone], 1u);' : ''}
+      ${hasMinimum || hasMaximum ? 'let key = encodeOrderedFloat(value);' : ''}
+      ${hasMinimum ? 'atomicMin(&local_minimums[zone], key);' : ''}
+      ${hasMaximum ? 'atomicMax(&local_maximums[zone], key);' : ''}
+    }`
+        : ''
+    }
+  }
+  workgroupBarrier();
+  for (var slot = localInvocationIndex; slot < CAPACITY; slot += ${FUSED_WORKGROUP_SIZE}u) {
+    ${columns
+      .map(
+        column => `let partial_${column.name} = atomicLoad(&local_${column.name}[slot]);
+    if (partial_${column.name} != ${column.initial}) {
+      ${column.merge}(&${column.name}[${column.name}Offset + slot], partial_${column.name});
+    }`
+      )
+      .join('\n    ')}
+  }`
+    })
+  );
+
+  // Decode the order-preserving keys in place; empty zones become NaN.
+  const decoded = columns.filter(
+    column => column.name === 'minimums' || column.name === 'maximums'
+  );
+  if (decoded.length > 0) {
+    nodes.push(
+      createWGSLKernelNode<Parameters>(graph, {
+        id: `${id}-zone-reduce-decode`,
+        operation: 'GPURasterZonalStatistics',
+        variant: 'zone-reduce-decode',
+        bindings: decoded.map(column => ({
+          name: column.name,
+          view: column.view,
+          type: 'u32' as const,
+          access: 'read_write' as const
+        })),
+        invocationCount: zoneCapacity,
+        declarations: `fn decodeOrderedKey(key: u32) -> u32 {
+  return select(~key, key ^ 0x80000000u, (key & 0x80000000u) != 0u);
+}`,
+        body: decoded
+          .map(
+            column => `let key_${column.name} = ${column.name}[${column.name}Offset + index];
+  ${column.name}[${column.name}Offset + index] = select(decodeOrderedKey(key_${column.name}), 0x7fc00000u, key_${column.name} == ${column.initial});`
+          )
+          .join('\n  ')
+      })
+    );
+  }
+  return nodes;
 }

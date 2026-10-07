@@ -15,7 +15,6 @@ import {
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph
 } from '../../utils/gpu-contributor-utils';
-import {createSegmentSumNode} from '../../utils/sorted-segment-sums';
 import {
   type GPUSpatialWeights,
   validateGPUSpatialWeights
@@ -23,6 +22,10 @@ import {
 import {getGPUSegregationLayout} from './segregation-layout';
 
 const OPERATION = 'GPUSegregation';
+/** Lanes of the reduction workgroups (one workgroup per block of units, or per output column). */
+const LANES = 256;
+/** Columns a block-reduction round reduces together, so each barrier round serves several terms. */
+const COLUMN_BATCH = 8;
 
 /** Largest supported number of groups. */
 export const GPU_SEGREGATION_MAXIMUM_GROUPS = 16;
@@ -133,9 +136,12 @@ export type GPUSegregationProps = {
  *
  * Algorithm: one fused pass over each CSR for the environments (this does not compose
  * `GPUNeighborhoodSummary`: it summarizes one column per pass and writes packed columns, so K
- * groups would cost K passes plus interleave copies), one kernel producing every per-unit term of
- * the sums as a `terms x units` table, and one fixed-order tree reduction per term (one
- * workgroup per term, bitwise reproducible). Cost per scale is O(nonzeros * K + units * K^2).
+ * groups would cost K passes plus interleave copies), then one kernel that computes every per-unit
+ * term of the sums and reduces them in the same workgroup (shared-memory trees, `COLUMN_BATCH`
+ * terms per barrier round) into one partial per (term, block of 256 units), and one fixed-order
+ * tree per term over the block partials (bitwise reproducible). The `terms x units` table is never
+ * materialized, so the sums cost one read of the environment instead of a write and a read of
+ * `(2 + 2K + K^2)` columns. Cost per scale is O(nonzeros * K + units * K^2).
  * Precision is float32: indices are sums over units, so expect about 1e-5 relative error against
  * a float64 reference for moderate populations.
  */
@@ -265,62 +271,135 @@ fn entropyTerm(share: f32) -> f32 {
   return select(0.0, -share * log(share), share > 0.0);
 }`;
 
-    // Totals X_m and T, one fixed-order tree reduction per column. Shared by every scale unless
-    // `spatialForm` is 'smoothed-population', which totals each scale's smoothed table.
-    const termOffsets = createTransientView(graph, `${id}-term-offsets`, 'uint32', termCount + 1);
-    const totalOffsets = createTransientView(graph, `${id}-total-offsets`, 'uint32', K + 2);
+    // Block partials and fixed-order column totals, both fused tree reductions. A kernel that
+    // fills `columnValues` for its unit and calls `reduceColumns(lane, group)` writes one partial
+    // per (column, block of units); `addColumnTotals` then sums each column's partials.
+    const unitGroups = Math.ceil(unitCount / LANES);
+    const reductionDeclarations = (columns: number, base: string) => `${base}
+const LANES: u32 = ${LANES}u;
+const GROUPS: u32 = ${unitGroups}u;
+const COLUMNS: u32 = ${columns}u;
+const COLUMN_BATCH: u32 = ${COLUMN_BATCH}u;
+var<private> columnValues: array<f32, ${columns}>;
+var<workgroup> batchScratch: array<f32, ${COLUMN_BATCH * LANES}>;
+fn reduceColumns(lane: u32, group: u32) {
+  for (var first = 0u; first < COLUMNS; first += COLUMN_BATCH) {
+    workgroupBarrier();
+    for (var slot = 0u; slot < COLUMN_BATCH; slot++) {
+      let column = first + slot;
+      batchScratch[slot * LANES + lane] = select(0.0, columnValues[min(column, COLUMNS - 1u)], column < COLUMNS);
+    }
+    workgroupBarrier();
+    for (var stride = LANES / 2u; stride > 0u; stride = stride / 2u) {
+      if (lane < stride) {
+        for (var slot = 0u; slot < COLUMN_BATCH; slot++) {
+          batchScratch[slot * LANES + lane] += batchScratch[slot * LANES + lane + stride];
+        }
+      }
+      workgroupBarrier();
+    }
+    if (lane < COLUMN_BATCH && first + lane < COLUMNS) {
+      partials[partialsOffset + (first + lane) * GROUPS + group] = batchScratch[lane * LANES];
+    }
+  }
+}`;
+    const addColumnTotals = (
+      label: string,
+      partials: GraphDataView<'float32'>,
+      columns: number,
+      output: GraphDataView<'float32'>,
+      collected?: {view: GraphDataView<'float32'>; base: number}
+    ) =>
+      createWGSLKernelNode<Parameters>(graph, {
+        id: `${id}-${label}`,
+        operation: OPERATION,
+        variant: 'column-totals',
+        bindings: [
+          {name: 'partials', view: partials, type: 'f32', access: 'read'},
+          {name: 'output', view: output, type: 'f32', access: 'read_write'},
+          ...(collected
+            ? [
+                {
+                  name: 'collected',
+                  view: collected.view,
+                  type: 'f32' as const,
+                  access: 'read_write' as const
+                }
+              ]
+            : [])
+        ],
+        invocationCount: columns * LANES,
+        guardIndex: false,
+        declarations: `const LANES: u32 = ${LANES}u;
+const GROUPS: u32 = ${unitGroups}u;
+var<workgroup> scratch: array<f32, ${LANES}>;`,
+        // One workgroup per column; lane l sums partials l, l + 256, ... then a fixed tree.
+        body: `let column = index / LANES;
+  let lane = localInvocationIndex;
+  var sum = 0.0;
+  for (var group = lane; group < GROUPS; group += LANES) {
+    sum += partials[partialsOffset + column * GROUPS + group];
+  }
+  scratch[lane] = sum;
+  workgroupBarrier();
+  for (var stride = LANES / 2u; stride > 0u; stride = stride / 2u) {
+    if (lane < stride) {
+      scratch[lane] += scratch[lane + stride];
+    }
+    workgroupBarrier();
+  }
+  if (lane == 0u) {
+    output[outputOffset + column] = scratch[0];
+    ${collected ? `collected[collectedOffset + ${collected.base}u + column] = scratch[0];` : ''}
+  }`
+      });
+
+    // Totals X_m and T. Shared by every scale unless `spatialForm` is 'smoothed-population',
+    // which totals each scale's smoothed table.
     const allTotals = createTransientView(
       graph,
       `${id}-all-totals`,
       'float32',
       scales.length * (K + 1)
     );
-    const offsetKernel = (name: string, view: GraphDataView<'uint32'>, count: number) =>
-      createWGSLKernelNode<Parameters>(graph, {
-        id: `${id}-${name}`,
-        operation: OPERATION,
-        variant: 'segment-offsets',
-        bindings: [{name: 'segmentOffsets', view, type: 'u32', access: 'read_write'}],
-        invocationCount: count + 1,
-        body: `segmentOffsets[segmentOffsetsOffset + index] = index * ${unitCount}u;`
-      });
-    nodes.push(
-      offsetKernel('total-offsets', totalOffsets, K + 1),
-      offsetKernel('term-offsets', termOffsets, termCount)
-    );
     const smoothedPopulation = props.spatialForm === 'smoothed-population';
-    const addTotals = (label: string, counts: GraphDataView<'float32'>) => {
-      const totalTerms = createTransientView(
+    const addTotals = (label: string, counts: GraphDataView<'float32'>, scaleIndex?: number) => {
+      const totalPartials = createTransientView(
         graph,
-        `${id}-${label}-terms`,
+        `${id}-${label}-partials`,
         'float32',
-        (K + 1) * unitCount
+        (K + 1) * unitGroups
       );
       const totals = createTransientView(graph, `${id}-${label}`, 'float32', K + 1);
       nodes.push(
         createWGSLKernelNode<Parameters>(graph, {
-          id: `${id}-${label}-terms`,
+          id: `${id}-${label}-partials`,
           operation: OPERATION,
-          variant: 'total-terms',
+          variant: 'total-partials',
           bindings: [
             {name: 'groupCounts', view: counts, type: 'f32', access: 'read'},
-            {name: 'totalTerms', view: totalTerms, type: 'f32', access: 'read_write'}
+            {name: 'partials', view: totalPartials, type: 'f32', access: 'read_write'}
           ],
-          invocationCount: unitCount,
-          declarations,
-          body: `for (var group = 0u; group < K; group++) {
-    totalTerms[totalTermsOffset + group * UNITS + index] = countAt(index, group);
+          invocationCount: unitGroups * LANES,
+          guardIndex: false,
+          declarations: reductionDeclarations(K + 1, declarations),
+          body: `let lane = localInvocationIndex;
+  let group = (index - lane) / LANES;
+  if (index < UNITS) {
+    for (var column = 0u; column < K; column++) {
+      columnValues[column] = countAt(index, column);
+    }
+    columnValues[K] = unitTotal(index);
   }
-  totalTerms[totalTermsOffset + K * UNITS + index] = unitTotal(index);`
+  reduceColumns(lane, group);`
         }),
-        createSegmentSumNode<Parameters>(graph, {
-          id: `${id}-${label}`,
-          operation: OPERATION,
-          segmentCount: K + 1,
-          input: totalTerms,
-          segmentOffsets: totalOffsets,
-          output: totals
-        })
+        addColumnTotals(
+          label,
+          totalPartials,
+          K + 1,
+          totals,
+          scaleIndex === undefined ? undefined : {view: allTotals, base: scaleIndex * (K + 1)}
+        )
       );
       return totals;
     };
@@ -376,13 +455,13 @@ fn getDiversity() -> f32 {
         'float32',
         unitCount
       );
-      const terms = createTransientView(
-        graph,
-        `${scaleId}-terms`,
-        'float32',
-        termCount * unitCount
-      );
       const sums = createTransientView(graph, `${scaleId}-sums`, 'float32', termCount);
+      const termPartials = createTransientView(
+        graph,
+        `${scaleId}-term-partials`,
+        'float32',
+        termCount * unitGroups
+      );
       // In the smoothed-population form the indices treat the smoothed table as the population.
       const counts = smoothedPopulation ? environment : groupCounts;
       nodes.push(
@@ -439,9 +518,10 @@ fn getDiversity() -> f32 {
   environmentTotal[environmentTotalOffset + index] = unitTotal(index);`
         })
       );
-      const scaleTotals = sharedTotals ?? addTotals(`scale-${scaleIndex}-totals`, counts);
+      const scaleTotals =
+        sharedTotals ?? addTotals(`scale-${scaleIndex}-totals`, counts, scaleIndex);
       nodes.push(
-        collectTotals(scaleIndex, scaleTotals),
+        ...(sharedTotals ? [collectTotals(scaleIndex, scaleTotals)] : []),
         createWGSLKernelNode<Parameters>(graph, {
           id: `${scaleId}-terms`,
           operation: OPERATION,
@@ -451,48 +531,38 @@ fn getDiversity() -> f32 {
             {name: 'environment', view: environment, type: 'f32', access: 'read'},
             {name: 'environmentTotal', view: environmentTotal, type: 'f32', access: 'read'},
             {name: 'totals', view: scaleTotals, type: 'f32', access: 'read'},
-            {name: 'terms', view: terms, type: 'f32', access: 'read_write'}
+            {name: 'partials', view: termPartials, type: 'f32', access: 'read_write'}
           ],
-          invocationCount: unitCount,
-          declarations: environmentDeclarations,
-          body: `let unitPopulation = unitTotal(index);
-  var entropy = 0.0;
-  var absolute = 0.0;
-  for (var group = 0u; group < K; group++) {
-    let share = getShare(index, group);
-    let deviation = abs(share - getPopulationShare(group));
-    entropy += entropyTerm(share);
-    absolute += deviation;
-    terms[termsOffset + (2u + group) * UNITS + index] = unitPopulation * deviation;
-    let base = max(1.0 - share, 0.0);
-    let atkinson = select(0.0, pow(base, 1.0 - ATKINSON_B) * pow(share, ATKINSON_B), base > 0.0 && share > 0.0);
-    terms[termsOffset + (2u + K + group) * UNITS + index] = unitPopulation * atkinson;
-    for (var other = 0u; other < K; other++) {
-      terms[termsOffset + (2u + 2u * K + group * K + other) * UNITS + index] =
-        countAt(index, group) * getShare(index, other);
+          invocationCount: unitGroups * LANES,
+          guardIndex: false,
+          declarations: reductionDeclarations(termCount, environmentDeclarations),
+          body: `let lane = localInvocationIndex;
+  let group = (index - lane) / LANES;
+  if (index < UNITS) {
+    let unitPopulation = unitTotal(index);
+    var entropy = 0.0;
+    var absolute = 0.0;
+    for (var member = 0u; member < K; member++) {
+      let share = getShare(index, member);
+      let deviation = abs(share - getPopulationShare(member));
+      entropy += entropyTerm(share);
+      absolute += deviation;
+      columnValues[2u + member] = unitPopulation * deviation;
+      let base = max(1.0 - share, 0.0);
+      let atkinson = select(0.0, pow(base, 1.0 - ATKINSON_B) * pow(share, ATKINSON_B), base > 0.0 && share > 0.0);
+      columnValues[2u + K + member] = unitPopulation * atkinson;
+      for (var other = 0u; other < K; other++) {
+        columnValues[2u + 2u * K + member * K + other] = countAt(index, member) * getShare(index, other);
+      }
     }
+    columnValues[0] = unitPopulation * entropy;
+    columnValues[1] = unitPopulation * absolute;
   }
-  terms[termsOffset + index] = unitPopulation * entropy;
-  terms[termsOffset + UNITS + index] = unitPopulation * absolute;`
+  reduceColumns(lane, group);`
         }),
-        createSegmentSumNode<Parameters>(graph, {
-          id: `${scaleId}-sums`,
-          operation: OPERATION,
-          segmentCount: termCount,
-          input: terms,
-          segmentOffsets: termOffsets,
-          output: sums
-        }),
-        createWGSLKernelNode<Parameters>(graph, {
-          id: `${scaleId}-collect`,
-          operation: OPERATION,
-          variant: 'collect',
-          bindings: [
-            {name: 'sums', view: sums, type: 'f32', access: 'read'},
-            {name: 'allSums', view: allSums, type: 'f32', access: 'read_write'}
-          ],
-          invocationCount: termCount,
-          body: `allSums[allSumsOffset + ${scaleIndex * termCount}u + index] = sums[sumsOffset + index];`
+        addColumnTotals(`${scaleId}-sums`, termPartials, termCount, sums, {
+          view: allSums,
+          base: scaleIndex * termCount
         })
       );
       if (local && (local.environment || local.entropy || local.dissimilarity || local.theil)) {

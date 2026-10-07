@@ -3,3 +3,4 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import './gpu-trajectory-encounters.spec';
+import './clock-encounters.spec';

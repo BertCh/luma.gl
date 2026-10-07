@@ -362,6 +362,29 @@ it('GPUAdjacencyMatrix rewrites bins for a new zoom window without recompiling',
   fixture.destroy();
 });
 
+it('GPUAdjacencyMatrix culls rows outside a zoom window, including mirrored rows', async () => {
+  const device = await getWebGPUTestDevice();
+  if (!device) return;
+  const nodeCount = 200;
+  const fixture = new Fixture(device, {
+    nodeCount,
+    edges: createMatrixEdges(61, nodeCount, 1500),
+    resolution: 8,
+    mirrorSlots: true,
+    order: createPermutation(nodeCount, 5)
+  });
+  for (const window of [
+    // Row and column ranges that overlap, are disjoint, and sit past the node count.
+    {rowStart: 10, rowEnd: 60, colStart: 40, colEnd: 120},
+    {rowStart: 0, rowEnd: 30, colStart: 150, colEnd: 200},
+    {rowStart: 180, rowEnd: 260, colStart: 0, colEnd: 25}
+  ]) {
+    fixture.setWindow(window);
+    expectMatches(await fixture.run(), fixture.oracle({window}));
+  }
+  fixture.destroy();
+});
+
 it('GPUAdjacencyMatrix writes an r32float texture of the counts', async () => {
   const device = await getWebGPUTestDevice();
   if (!device) return;

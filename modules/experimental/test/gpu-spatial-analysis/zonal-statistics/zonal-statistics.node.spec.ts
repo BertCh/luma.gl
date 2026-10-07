@@ -284,17 +284,15 @@ it('GPUZonalStatistics schedules sort, scan, and segmented sums only for sorted 
     graph
   );
   for (const id of [
-    'z-count-aggregation-clear',
     'z-prepare',
     'z-sort-prepare',
-    'z-segment-total',
+    'z-segment-offsets',
     'z-gather-sums',
     'z-reduce-sums'
   ]) {
     expect(ids, id).toContain(id);
   }
   expect(ids.some(id => id.startsWith('z-sort-') && id !== 'z-sort-prepare')).toBe(true);
-  expect(ids.some(id => id.startsWith('z-segment-scan'))).toBe(true);
   expect(ids.some(id => id.includes('aggregation') && id.includes('sum'))).toBe(false);
 
   // Minima alone never need the sort.
@@ -391,7 +389,7 @@ it('getZonalStatisticsPlan derives transient statistics', () => {
       hasAreas: false,
       sorted: true
     }).needCounts
-  ).toBe(true);
+  ).toBe(false);
   expect(
     getZonalStatisticsPlan({
       outputs: {...none, extent: true},

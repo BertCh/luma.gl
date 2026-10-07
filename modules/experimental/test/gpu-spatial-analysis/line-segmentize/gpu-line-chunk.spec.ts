@@ -189,3 +189,63 @@ it('GPULineChunk chunks spherical paths across the antimeridian', async () => {
   }
   fixture.destroy();
 });
+
+/**
+ * Axis-aligned staircase paths with integer step lengths: every row measure is an exact integer in
+ * f32 whatever the summation order, so chunk boundaries cannot flip on rounding.
+ */
+function createWalkPaths(seed: number, lengths: number[]): FlatPaths {
+  const random = createRandom(seed);
+  return createFlatPaths(
+    lengths.map(length => {
+      let x = Math.floor(random() * 50);
+      let y = Math.floor(random() * 50);
+      return Array.from({length}, (_, row) => {
+        if (row > 0) {
+          const step = (random() < 0.5 ? -1 : 1) * (1 + Math.floor(random() * 4));
+          if (random() < 0.5) {
+            x += step;
+          } else {
+            y += step;
+          }
+        }
+        return [x, y];
+      });
+    })
+  );
+}
+
+it('GPULineChunk handles long paths whose prefix spans many scan tiles and pieces spanning many rows', async () => {
+  const device = await getWebGPUTestDevice();
+  if (!device) {
+    return;
+  }
+  // Path lengths around the 64-row tile size (63, 64, 65, 129; every path is longer than the substring start)
+  // and one 2600-row path, so the
+  // cooperative prefix, the tile carry and the per-vertex emit all see partial and full tiles.
+  const paths = createWalkPaths(13, [30, 63, 2600, 64, 65, 129, 40]);
+  const pathCount = paths.pathOffsets.length - 1;
+  const capacity = 12000;
+  const chunked = createChunkFixture(device, paths, {mode: 'chunk', capacity, pathCapacity: 800});
+  for (const chunkLength of [900, 13, 13.5, 1e6]) {
+    const actual = await chunked.run(getGPULineChunkParameterValues({chunkLength}));
+    const expected = chunkPaths(paths, {mode: 'chunk', chunkLength, pathCapacity: 800});
+    expectLinePathParity(actual, expected, capacity, 2e-5 * 600, 2e-5);
+  }
+  chunked.destroy();
+  const substring = createChunkFixture(device, paths, {
+    mode: 'substring',
+    capacity,
+    pathCapacity: pathCount
+  });
+  // One piece per path that copies almost the whole 2600-row path.
+  for (const range of [
+    {startMeasure: 7.5, endMeasure: 1e9},
+    {startMeasure: 12.5, endMeasure: 4000.25}
+  ]) {
+    const actual = await substring.run(getGPULineChunkParameterValues(range));
+    const expected = chunkPaths(paths, {mode: 'substring', ...range, pathCapacity: pathCount});
+    expectLinePathParity(actual, expected, capacity, 2e-5 * 600, 2e-5);
+  }
+  substring.destroy();
+});

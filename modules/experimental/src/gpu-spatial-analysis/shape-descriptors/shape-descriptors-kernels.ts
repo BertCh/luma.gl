@@ -10,7 +10,7 @@ import type {GPUGeometryHoleRule} from '../geometry-measures/index';
 export const GPU_SHAPE_DESCRIPTORS_PARAMETER_LENGTH = 4;
 
 /** Inputs shared by the kernels that walk feature rings. @internal */
-type FeatureRingInputs = {
+export type FeatureRingInputs = {
   id: string;
   operation: string;
   positions: GraphDataView<'float32x2'>;
@@ -19,7 +19,7 @@ type FeatureRingInputs = {
   featureCount: number;
 };
 
-function getRingBindings(props: FeatureRingInputs): WGSLKernelBinding[] {
+export function getRingBindings(props: FeatureRingInputs): WGSLKernelBinding[] {
   const bindings: WGSLKernelBinding[] = [
     {name: 'positions', view: props.positions, type: 'f32', access: 'read'},
     {name: 'ringOffsets', view: props.ringOffsets, type: 'u32', access: 'read'}
@@ -35,7 +35,7 @@ function getRingBindings(props: FeatureRingInputs): WGSLKernelBinding[] {
   return bindings;
 }
 
-function getRingDeclarations(props: FeatureRingInputs): string {
+export function getRingDeclarations(props: FeatureRingInputs): string {
   return /* wgsl */ `
 const ROW_COUNT: u32 = ${props.positions.length}u;
 const RING_COUNT: u32 = ${props.ringOffsets.length - 1}u;

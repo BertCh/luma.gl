@@ -58,6 +58,9 @@ export const GPU_TERRAIN_SPIKE_REPAIR_DEFAULT_COMPONENT_ITERATIONS = 32;
 
 /** Largest magnitude of the Terrarium-step multiple `k` that is voted on. */
 const MAXIMUM_STEP_MULTIPLE = 127;
+
+/** Consecutive pixels one `sizes` invocation counts, flushing one atomic per label run. */
+const SIZE_RUN_LENGTH = 16;
 const COMPONENT_BIT_COUNT = 8;
 const SCALAR_MAXIMUM_SIZE = 0;
 const SCALAR_MAIN_LABEL = 1;
@@ -453,7 +456,7 @@ fn getEdge(pixel: u32, direction: u32) -> u32 {
       })
     );
 
-    // Component sizes, valid pixel count and the pre-repair jump count.
+    // Component sizes and the pre-repair jump count (the valid pixel count is summed in main-size).
     nodes.push(
       createWGSLKernelNode<Parameters>(graph, {
         id: `${id}-sizes`,
@@ -464,30 +467,53 @@ fn getEdge(pixel: u32, direction: u32) -> u32 {
           {name: 'validity', view: sourceValidity, type: 'u32', access: 'read'},
           {name: 'labels', view: labels, type: 'u32', access: 'read'},
           {name: 'componentSize', view: componentSize, type: 'atomic<u32>', access: 'read_write'},
-          {name: 'scalars', view: scalars, type: 'atomic<u32>', access: 'read_write'},
           {name: 'statistics', view: statistics, type: 'atomic<u32>', access: 'read_write'}
         ],
-        invocationCount: pixelCount,
-        declarations: `${declarations}${pixelHelpers}`,
-        body: `if (!isValidPixel(index)) {
-    return;
-  }
-  let label = labels[labelsOffset + index];
-  if (label < PIXEL_COUNT) {
-    atomicAdd(&componentSize[componentSizeOffset + label], 1u);
-  }
-  atomicAdd(&scalars[scalarsOffset + ${SCALAR_VALID_COUNT}u], 1u);
-  let value = values[valuesOffset + index];
-  var count = 0u;
-  for (var direction = 0u; direction < 4u; direction += 2u) {
-    let neighbor = getNeighbor(index, direction);
-    if (neighbor != NO_VERTEX && isValidPixel(neighbor) &&
-        abs(value - values[valuesOffset + neighbor]) > JUMP) {
-      count++;
+        invocationCount: Math.ceil(pixelCount / SIZE_RUN_LENGTH),
+        declarations: `${declarations}${pixelHelpers}
+const RUN_LENGTH: u32 = ${SIZE_RUN_LENGTH}u;`,
+        // Labels are component minima, so a row-major strip is mostly one label. Each invocation
+        // owns RUN_LENGTH consecutive pixels and flushes one atomicAdd per label run (and one for
+        // the jumps) instead of one per pixel: the main component's size counter is a single
+        // address that every one of its pixels would otherwise hit.
+        body: `var runLabel = NO_VERTEX;
+  var runLength = 0u;
+  var jumps = 0u;
+  let first = index * RUN_LENGTH;
+  for (var offset = 0u; offset < RUN_LENGTH; offset++) {
+    let pixel = first + offset;
+    if (pixel >= PIXEL_COUNT) {
+      break;
+    }
+    if (!isValidPixel(pixel)) {
+      continue;
+    }
+    let label = labels[labelsOffset + pixel];
+    if (label < PIXEL_COUNT) {
+      if (label == runLabel) {
+        runLength++;
+      } else {
+        if (runLength > 0u) {
+          atomicAdd(&componentSize[componentSizeOffset + runLabel], runLength);
+        }
+        runLabel = label;
+        runLength = 1u;
+      }
+    }
+    let value = values[valuesOffset + pixel];
+    for (var direction = 0u; direction < 4u; direction += 2u) {
+      let neighbor = getNeighbor(pixel, direction);
+      if (neighbor != NO_VERTEX && isValidPixel(neighbor) &&
+          abs(value - values[valuesOffset + neighbor]) > JUMP) {
+        jumps++;
+      }
     }
   }
-  if (count > 0u) {
-    atomicAdd(&statistics[statisticsOffset + ${word.jumpCount}u], count);
+  if (runLength > 0u) {
+    atomicAdd(&componentSize[componentSizeOffset + runLabel], runLength);
+  }
+  if (jumps > 0u) {
+    atomicAdd(&statistics[statisticsOffset + ${word.jumpCount}u], jumps);
   }`
       })
     );
@@ -506,6 +532,9 @@ fn getEdge(pixel: u32, direction: u32) -> u32 {
         body: `let size = componentSize[componentSizeOffset + index];
   if (size > 0u) {
     atomicMax(&scalars[scalarsOffset + ${SCALAR_MAXIMUM_SIZE}u], size);
+    // Component sizes partition the valid pixels, so their sum is the valid pixel count: one
+    // atomic per component instead of one per pixel on a single address.
+    atomicAdd(&scalars[scalarsOffset + ${SCALAR_VALID_COUNT}u], size);
   }`
       }),
       createWGSLKernelNode<Parameters>(graph, {
@@ -538,33 +567,80 @@ fn getEdge(pixel: u32, direction: u32) -> u32 {
           {name: 'voteCount', view: voteCount, type: 'atomic<u32>', access: 'read_write'},
           {name: 'bitCount', view: bitCount, type: 'atomic<u32>', access: 'read_write'}
         ],
-        invocationCount: pixelCount,
-        declarations: `${declarations}${pixelHelpers}${voteHelpers}`,
-        body: `if (!isValidPixel(index)) {
-    return;
+        invocationCount: Math.ceil(pixelCount / SIZE_RUN_LENGTH),
+        declarations: `${declarations}${pixelHelpers}${voteHelpers}
+const RUN_LENGTH: u32 = ${SIZE_RUN_LENGTH}u;
+var<private> runBits: array<u32, ${COMPONENT_BIT_COUNT}>;
+var<private> runSeams: u32;
+var<private> runVotes: u32;
+// Adds the counters of the finished label run, one atomic per non-zero counter.
+fn flushRun(label: u32) {
+  if (runSeams > 0u) {
+    atomicAdd(&seamCount[seamCountOffset + label], runSeams);
   }
-  let label = labels[labelsOffset + index];
-  if (label >= PIXEL_COUNT) {
-    return;
-  }
-  let value = values[valuesOffset + index];
-  for (var direction = 0u; direction < 4u; direction++) {
-    let neighbor = getNeighbor(index, direction);
-    if (neighbor == NO_VERTEX || !isValidPixel(neighbor) ||
-        labels[labelsOffset + neighbor] == label) {
-      continue;
-    }
-    atomicAdd(&seamCount[seamCountOffset + label], 1u);
-    let key = getVoteKey(value - values[valuesOffset + neighbor]);
-    if (key == 0u) {
-      continue;
-    }
-    atomicAdd(&voteCount[voteCountOffset + label], 1u);
+  if (runVotes > 0u) {
+    atomicAdd(&voteCount[voteCountOffset + label], runVotes);
     for (var bit = 0u; bit < BIT_COUNT; bit++) {
-      if (((key >> bit) & 1u) != 0u) {
-        atomicAdd(&bitCount[bitCountOffset + label * BIT_COUNT + bit], 1u);
+      if (runBits[bit] > 0u) {
+        atomicAdd(&bitCount[bitCountOffset + label * BIT_COUNT + bit], runBits[bit]);
       }
     }
+  }
+  runSeams = 0u;
+  runVotes = 0u;
+  for (var bit = 0u; bit < BIT_COUNT; bit++) {
+    runBits[bit] = 0u;
+  }
+}`,
+        // As in sizes: one invocation owns a strip of RUN_LENGTH pixels and accumulates seam, vote
+        // and bit counters per label run, so a long seam of one component costs a few atomics per
+        // strip instead of up to ten per seam pixel on the same addresses. Counts are integers, so
+        // the result is independent of the grouping.
+        body: `var runLabel = NO_VERTEX;
+  runSeams = 0u;
+  runVotes = 0u;
+  for (var bit = 0u; bit < BIT_COUNT; bit++) {
+    runBits[bit] = 0u;
+  }
+  let first = index * RUN_LENGTH;
+  for (var offset = 0u; offset < RUN_LENGTH; offset++) {
+    let pixel = first + offset;
+    if (pixel >= PIXEL_COUNT) {
+      break;
+    }
+    if (!isValidPixel(pixel)) {
+      continue;
+    }
+    let label = labels[labelsOffset + pixel];
+    if (label >= PIXEL_COUNT) {
+      continue;
+    }
+    if (label != runLabel) {
+      if (runLabel != NO_VERTEX) {
+        flushRun(runLabel);
+      }
+      runLabel = label;
+    }
+    let value = values[valuesOffset + pixel];
+    for (var direction = 0u; direction < 4u; direction++) {
+      let neighbor = getNeighbor(pixel, direction);
+      if (neighbor == NO_VERTEX || !isValidPixel(neighbor) ||
+          labels[labelsOffset + neighbor] == label) {
+        continue;
+      }
+      runSeams++;
+      let key = getVoteKey(value - values[valuesOffset + neighbor]);
+      if (key == 0u) {
+        continue;
+      }
+      runVotes++;
+      for (var bit = 0u; bit < BIT_COUNT; bit++) {
+        runBits[bit] += (key >> bit) & 1u;
+      }
+    }
+  }
+  if (runLabel != NO_VERTEX) {
+    flushRun(runLabel);
   }`
       })
     );
@@ -596,29 +672,52 @@ fn getCandidateKey(label: u32) -> u32 {
           {name: 'bitCount', view: bitCount, type: 'u32', access: 'read'},
           {name: 'agreeCount', view: agreeCount, type: 'atomic<u32>', access: 'read_write'}
         ],
-        invocationCount: pixelCount,
-        declarations: `${declarations}${pixelHelpers}${voteHelpers}${candidateHelper}`,
-        body: `if (!isValidPixel(index)) {
-    return;
-  }
-  let label = labels[labelsOffset + index];
-  if (label >= PIXEL_COUNT) {
-    return;
-  }
-  let candidate = getCandidateKey(label);
-  if (candidate == 0u) {
-    return;
-  }
-  let value = values[valuesOffset + index];
-  for (var direction = 0u; direction < 4u; direction++) {
-    let neighbor = getNeighbor(index, direction);
-    if (neighbor == NO_VERTEX || !isValidPixel(neighbor) ||
-        labels[labelsOffset + neighbor] == label) {
+        invocationCount: Math.ceil(pixelCount / SIZE_RUN_LENGTH),
+        declarations: `${declarations}${pixelHelpers}${voteHelpers}${candidateHelper}
+const RUN_LENGTH: u32 = ${SIZE_RUN_LENGTH}u;`,
+        // Strip-per-invocation with one atomic per label run, as in votes. The candidate key is
+        // read again only when the label changes.
+        body: `var runLabel = NO_VERTEX;
+  var candidate = 0u;
+  var runAgree = 0u;
+  let first = index * RUN_LENGTH;
+  for (var offset = 0u; offset < RUN_LENGTH; offset++) {
+    let pixel = first + offset;
+    if (pixel >= PIXEL_COUNT) {
+      break;
+    }
+    if (!isValidPixel(pixel)) {
       continue;
     }
-    if (getVoteKey(value - values[valuesOffset + neighbor]) == candidate) {
-      atomicAdd(&agreeCount[agreeCountOffset + label], 1u);
+    let label = labels[labelsOffset + pixel];
+    if (label >= PIXEL_COUNT) {
+      continue;
     }
+    if (label != runLabel) {
+      if (runAgree > 0u) {
+        atomicAdd(&agreeCount[agreeCountOffset + runLabel], runAgree);
+      }
+      runAgree = 0u;
+      runLabel = label;
+      candidate = getCandidateKey(label);
+    }
+    if (candidate == 0u) {
+      continue;
+    }
+    let value = values[valuesOffset + pixel];
+    for (var direction = 0u; direction < 4u; direction++) {
+      let neighbor = getNeighbor(pixel, direction);
+      if (neighbor == NO_VERTEX || !isValidPixel(neighbor) ||
+          labels[labelsOffset + neighbor] == label) {
+        continue;
+      }
+      if (getVoteKey(value - values[valuesOffset + neighbor]) == candidate) {
+        runAgree++;
+      }
+    }
+  }
+  if (runAgree > 0u) {
+    atomicAdd(&agreeCount[agreeCountOffset + runLabel], runAgree);
   }`
       })
     );

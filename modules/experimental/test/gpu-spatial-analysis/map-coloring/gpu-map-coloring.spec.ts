@@ -163,3 +163,15 @@ it('GPUMapColoring reports non-convergence when the round cap is too small', asy
   expect(result.colors.some(color => color !== GPU_MAP_COLORING_UNCOLORED)).toBe(true);
   expect(result.conflicts).toBe(0);
 });
+
+it('GPUMapColoring fused rounds still equal sequential greedy on a large grid', async () => {
+  const device = await getWebGPUTestDevice();
+  if (!device) return;
+  // Many rows per workgroup so rows color against neighbors written in the same round.
+  for (const seed of [1, 5]) {
+    const result = await runColoring(device, createSquareGrid(60, 50), {seed, upload: true});
+    expect(result.colors).toEqual(computeMapColoringOracle(result.csr, seed));
+    expect(result.converged).toBe(1);
+    expect(result.conflicts).toBe(0);
+  }
+});

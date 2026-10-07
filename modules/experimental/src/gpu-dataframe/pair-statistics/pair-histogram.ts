@@ -9,7 +9,11 @@ import {
   type GraphDataView
 } from '@luma.gl/gpgpu/gpu-core';
 import {createWGSLKernelNode, type WGSLKernelBinding} from '../../utils/wgsl-kernel-nodes';
-import {createPairStatisticsClearNode, getPairStatisticsSharedWGSL} from './pair-statistics-grid';
+import {
+  createPairStatisticsClearNode,
+  getPairStatisticsSharedWGSL,
+  getPairStatisticsSortedPointsNodes
+} from './pair-statistics-grid';
 
 /** Focus rows per pair-histogram workgroup. */
 export const PAIR_HISTOGRAM_WORKGROUP_SIZE = 64;
@@ -46,7 +50,10 @@ export type PairHistogramProps = {
   /** Number of accumulator channels per slot, for example count, sum and distance. */
   channelCount: number;
   /**
-   * `'unordered'` visits each pair once (`neighbor > focus`); `'ordered'` visits both `(i, j)` and
+   * `'unordered'` visits each pair exactly once, from whichever row comes first in cell order, so
+   * `focus` may be the lower or the higher row: the action must be symmetric in the two rows, and
+   * `deltaX`/`deltaY` are always oriented from the lower to the higher row ID (so a direction
+   * folded modulo a half turn does not depend on cell order). `'ordered'` visits both `(i, j)` and
    * `(j, i)` (`neighbor != focus`), for asymmetric pair weights or per-focus tallies.
    */
   pairOrder: 'unordered' | 'ordered';
@@ -61,7 +68,8 @@ export type PairHistogramProps = {
   focusPrologue?: string;
   /**
    * WGSL run once per visited pair within `maximumDistance`, with `focus`, `neighbor`, `x`, `y`,
-   * `deltaX`, `deltaY` (neighbor minus focus), `distanceSquared` and `pairDistance` in scope. It
+   * `deltaX`, `deltaY` (neighbor minus focus; see `pairOrder` for unordered pairs),
+   * `distanceSquared` and `pairDistance` in scope. It
    * calls `accumulate(slot, channel, amount)` with a `u32` amount (use `quantizePairAmount` for
    * non-negative floats). Must not `return`; `continue` skips the pair.
    */
@@ -78,6 +86,11 @@ export type PairHistogram<Parameters> = {
    * low and high `u32` words of an exact unsigned 64-bit sum.
    */
   accumulators: GraphDataView<'uint32'>;
+  /**
+   * Included rows in cell order as `[x bits, y bits, row]` triples (`3 * rows` words, only the
+   * first `3 * n` written), for follow-up kernels that scan the same neighborhoods.
+   */
+  sortedPoints: GraphDataView<'uint32'>;
 };
 
 /**
@@ -116,9 +129,13 @@ export function validatePairHistogramShape(
  * point: the contributor scales a non-negative term to at most about `2^24` before
  * `quantizePairAmount`, which leaves 40 bits of headroom (about 10^12 pairs per accumulator).
  *
- * Cost is the number of candidate pairs in the 3x3 neighborhoods. When `maximumDistance` covers the
- * extent the lattice has one cell and this is a plain all-pairs loop, `n^2 / 2` (unordered) or
- * `n^2` (ordered) pair visits.
+ * Cost is the number of candidate pairs in the 3x3 neighborhoods. Candidates are read from a
+ * cell-ordered copy of the points (sequential loads, no dependent gather). An unordered histogram
+ * walks only the forward half of the stencil (the rest of the focus cell, then the cell to its
+ * right and the three cells below): in cell order that is two contiguous slot ranges, each pair is
+ * met once, and no ID test is needed, which halves the candidate reads and distance tests of the
+ * naive 3x3 loop. When `maximumDistance` covers the extent the lattice has one cell and this is a
+ * plain all-pairs loop, `n^2 / 2` (unordered) or `n^2` (ordered) pair visits.
  *
  * WGSL helpers for finishing kernels are in {@link getPairHistogramReadWGSL}.
  *
@@ -143,18 +160,51 @@ export function getPairHistogramNodes<Parameters>(
     accumulatorCount * 2
   );
   const rows = positions.length;
-  const neighborTest = props.pairOrder === 'unordered' ? 'neighbor > focus' : 'neighbor != focus';
+  const isOrdered = props.pairOrder === 'ordered';
+  const sorted = getPairStatisticsSortedPointsNodes<Parameters>(graph, {
+    id,
+    operation,
+    positions,
+    sortedRows,
+    cellOffsets,
+    gridSize
+  });
   const workgroupSize = PAIR_HISTOGRAM_WORKGROUP_SIZE;
+  // Visits the candidate slots [begin, end) of the cell-ordered points.
+  const visitCandidates = (
+    begin: string,
+    end: string
+  ) => `for (var candidateSlot = ${begin}; candidateSlot < ${end}; candidateSlot++) {
+        let neighbor = sortedPoints[sortedPointsOffset + candidateSlot * 3u + 2u];
+        if (${isOrdered ? 'neighbor != focus' : 'true'}) {
+          let neighborX = bitcast<f32>(sortedPoints[sortedPointsOffset + candidateSlot * 3u]);
+          let neighborY = bitcast<f32>(sortedPoints[sortedPointsOffset + candidateSlot * 3u + 1u]);
+          ${
+            isOrdered
+              ? `let deltaX = neighborX - x;
+          let deltaY = neighborY - y;`
+              : `// Oriented from the lower to the higher row ID, whichever row is the focus.
+          let focusIsLower = focus < neighbor;
+          let deltaX = select(x - neighborX, neighborX - x, focusIsLower);
+          let deltaY = select(y - neighborY, neighborY - y, focusIsLower);`
+          }
+          let distanceSquared = deltaX * deltaX + deltaY * deltaY;
+          if (distanceSquared <= lattice.radiusSquared) {
+            let pairDistance = sqrt(distanceSquared);
+            ${props.pairAction}
+          }
+        }
+      }`;
   const nodes: GPUCommandNode<Parameters>[] = [
+    ...sorted.nodes,
     createPairStatisticsClearNode<Parameters>(graph, `${id}-clear`, operation, accumulators),
     createWGSLKernelNode<Parameters>(graph, {
       id: `${id}-pairs`,
       operation,
       variant: `pair-histogram-${props.pairOrder}`,
       bindings: [
-        {name: 'positions', view: positions, type: 'f32', access: 'read'},
         {name: 'parameters', view: parameters, type: 'f32', access: 'read'},
-        {name: 'sortedRows', view: sortedRows, type: 'u32', access: 'read'},
+        {name: 'sortedPoints', view: sorted.sortedPoints, type: 'u32', access: 'read'},
         {name: 'cellOffsets', view: cellOffsets, type: 'u32', access: 'read'},
         ...extraBindings,
         {
@@ -200,32 +250,36 @@ ${props.declarations ?? ''}`,
   let lattice = readLattice();
   let includedCount = cellOffsets[cellOffsetsOffset + CELL_COUNT];
   if (index < INVOCATION_COUNT && index < includedCount && lattice.valid) {
-    let focus = sortedRows[sortedRowsOffset + index];
-    let x = positions[positionsOffset + focus * 2u];
-    let y = positions[positionsOffset + focus * 2u + 1u];
+    let focus = sortedPoints[sortedPointsOffset + index * 3u + 2u];
+    let x = bitcast<f32>(sortedPoints[sortedPointsOffset + index * 3u]);
+    let y = bitcast<f32>(sortedPoints[sortedPointsOffset + index * 3u + 1u]);
     ${props.focusPrologue ?? ''}
     let column = getCellColumn(lattice, x);
     let row = getCellRow(lattice, y);
     let firstColumn = max(column, 1u) - 1u;
     let lastColumn = min(column + 1u, lattice.columns - 1u);
-    let firstRow = max(row, 1u) - 1u;
+    ${
+      isOrdered
+        ? `let firstRow = max(row, 1u) - 1u;
     let lastRow = min(row + 1u, lattice.rows - 1u);
     for (var cellRow = firstRow; cellRow <= lastRow; cellRow++) {
       let rowBase = cellRow * lattice.columns;
       let begin = cellOffsets[cellOffsetsOffset + rowBase + firstColumn];
       let end = cellOffsets[cellOffsetsOffset + rowBase + lastColumn + 1u];
-      for (var candidateSlot = begin; candidateSlot < end; candidateSlot++) {
-        let neighbor = sortedRows[sortedRowsOffset + candidateSlot];
-        if (${neighborTest}) {
-          let deltaX = positions[positionsOffset + neighbor * 2u] - x;
-          let deltaY = positions[positionsOffset + neighbor * 2u + 1u] - y;
-          let distanceSquared = deltaX * deltaX + deltaY * deltaY;
-          if (distanceSquared <= lattice.radiusSquared) {
-            let pairDistance = sqrt(distanceSquared);
-            ${props.pairAction}
-          }
-        }
-      }
+      ${visitCandidates('begin', 'end')}
+    }`
+        : `// Forward half stencil: the cells after the focus cell in row-major cell order. The rest
+    // of the focus row up to the right neighbor cell is one slot range, the row below another.
+    {
+      let rowEnd = cellOffsets[cellOffsetsOffset + row * lattice.columns + lastColumn + 1u];
+      ${visitCandidates('index + 1u', 'rowEnd')}
+    }
+    if (row + 1u < lattice.rows) {
+      let rowBase = (row + 1u) * lattice.columns;
+      let begin = cellOffsets[cellOffsetsOffset + rowBase + firstColumn];
+      let end = cellOffsets[cellOffsetsOffset + rowBase + lastColumn + 1u];
+      ${visitCandidates('begin', 'end')}
+    }`
     }
     ${props.focusEpilogue ?? ''}
   }
@@ -243,7 +297,7 @@ ${props.declarations ?? ''}`,
   }`
     })
   ];
-  return {nodes, accumulators};
+  return {nodes, accumulators, sortedPoints: sorted.sortedPoints};
 }
 
 /**

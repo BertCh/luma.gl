@@ -327,10 +327,12 @@ export class GPUAdjacencyMatrix implements GPUCommandNodeProducer {
   let rowEnd = NODE_COUNT;
   let colStart = 0u;
   let colEnd = NODE_COUNT;`;
+    // One kernel bins every requested statistic, so the CSR is walked once and the bin math is
+    // shared. It needs one storage binding per optional input and output, so when that exceeds the
+    // device limit each statistic gets its own kernel, as before.
     const addBinKernel = (
       step: string,
-      target: GraphDataView<'uint32'>,
-      kind: 'count' | 'weight'
+      targets: readonly {kind: 'count' | 'weight'; view: GraphDataView<'uint32'>}[]
     ) => {
       const bindings: WGSLKernelBinding[] = [
         {name: 'offsets', view: props.offsets, type: 'u32', access: 'read'},
@@ -366,7 +368,7 @@ export class GPUAdjacencyMatrix implements GPUCommandNodeProducer {
           access: 'read'
         });
       }
-      if (kind === 'weight') {
+      if (targets.some(target => target.kind === 'weight')) {
         bindings.push({
           name: 'weights',
           view: props.weights!,
@@ -374,13 +376,30 @@ export class GPUAdjacencyMatrix implements GPUCommandNodeProducer {
           access: 'read'
         });
       }
-      bindings.push({
-        name: 'cells',
-        view: target,
-        type: 'atomic<u32>',
-        access: 'read_write'
-      });
-      const amount = kind === 'count' ? '1u' : `fixedWeight(weights[weightsOffset + slot])`;
+      for (const {kind, view} of targets) {
+        bindings.push({
+          name: `${kind}Cells`,
+          view,
+          type: 'atomic<u32>',
+          access: 'read_write'
+        });
+      }
+      const amountSource = (kind: 'count' | 'weight') =>
+        kind === 'count' ? '1u' : `fixedWeight(weights[weightsOffset + slot])`;
+      const addSource = (cell: string) =>
+        targets
+          .map(
+            ({kind}) =>
+              `atomicAdd(&${kind}Cells[${kind}CellsOffset + ${cell}], ${amountSource(kind)});`
+          )
+          .join('\n      ');
+      const mirrorSource = (cell: string) =>
+        targets
+          .map(
+            ({kind}) =>
+              `atomicAdd(&${kind}Cells[${kind}CellsOffset + ${cell}], ${amountSource(kind)});`
+          )
+          .join('\n      ');
       nodes.push(
         createWGSLKernelNode<Parameters>(graph, {
           id: `${id}-${step}`,
@@ -409,6 +428,11 @@ fn getBin(position: u32, start: u32, end: u32) -> u32 {
     return;
   }
   let source = ${props.order ? 'order[orderOffset + index]' : 'index'};
+  // A row contributes only from its own row position, or, when mirrored, from its column
+  // position too. Skipping every other row keeps a zoomed window O(window rows), not O(slots).
+  if (!((source >= rowStart && source < rowEnd)${mirror ? ' || (source >= colStart && source < colEnd)' : ''})) {
+    return;
+  }
   let rowBegin = offsets[offsetsOffset + index];
   let rowEnd2 = offsets[offsetsOffset + index + 1u];
   for (var slot = rowBegin; slot < rowEnd2; slot++) {
@@ -419,14 +443,15 @@ fn getBin(position: u32, start: u32, end: u32) -> u32 {
     ${props.vertexMask ? 'if (vertexMask[vertexMaskOffset + neighbor] == 0u) { continue; }' : ''}
     ${props.edgeMask ? 'if (edgeMask[edgeMaskOffset + slot] == 0u) { continue; }' : ''}
     let targetPosition = ${props.order ? 'order[orderOffset + neighbor]' : 'neighbor'};
-    let amount = ${amount};
     if (source >= rowStart && source < rowEnd && targetPosition >= colStart && targetPosition < colEnd) {
-      atomicAdd(&cells[cellsOffset + getBin(source, rowStart, rowEnd) * RESOLUTION + getBin(targetPosition, colStart, colEnd)], amount);
+      let cell = getBin(source, rowStart, rowEnd) * RESOLUTION + getBin(targetPosition, colStart, colEnd);
+      ${addSource('cell')}
     }
     ${
       mirror
         ? `if (targetPosition != source && targetPosition >= rowStart && targetPosition < rowEnd && source >= colStart && source < colEnd) {
-      atomicAdd(&cells[cellsOffset + getBin(targetPosition, rowStart, rowEnd) * RESOLUTION + getBin(source, colStart, colEnd)], amount);
+      let mirrorCell = getBin(targetPosition, rowStart, rowEnd) * RESOLUTION + getBin(source, colStart, colEnd);
+      ${mirrorSource('mirrorCell')}
     }`
         : ''
     }
@@ -434,14 +459,38 @@ fn getBin(position: u32, start: u32, end: u32) -> u32 {
         })
       );
     };
-    addBinKernel('bin-counts', output.counts, 'count');
+    const binTargets: {kind: 'count' | 'weight'; view: GraphDataView<'uint32'>}[] = [
+      {kind: 'count', view: output.counts}
+    ];
     if (output.weightSums) {
-      addBinKernel('bin-weights', output.weightSums, 'weight');
+      binTargets.push({kind: 'weight', view: output.weightSums});
+    }
+    const fusedBindingCount =
+      2 +
+      windowBinding.length +
+      Number(Boolean(props.order)) +
+      Number(Boolean(props.vertexMask)) +
+      Number(Boolean(props.edgeMask)) +
+      Number(binTargets.length > 1) +
+      binTargets.length;
+    if (
+      binTargets.length === 1 ||
+      fusedBindingCount <= graph.device.limits.maxStorageBuffersPerShaderStage
+    ) {
+      addBinKernel(binTargets.length === 1 ? 'bin-counts' : 'bin', binTargets);
+    } else {
+      addBinKernel('bin-counts', [binTargets[0]]);
+      addBinKernel('bin-weights', [binTargets[1]]);
     }
 
     if (output.maxCount || output.maxWeightSum) {
+      // One workgroup-local maximum per workgroup, then one global atomicMax per workgroup instead
+      // of one per cell on a single address.
       const bindings: WGSLKernelBinding[] = [];
-      let body = '';
+      let load = '';
+      let reduce = '';
+      let flush = '';
+      let shared = '';
       if (output.maxCount) {
         bindings.push(
           {name: 'counts', view: output.counts, type: 'u32', access: 'read'},
@@ -452,7 +501,12 @@ fn getBin(position: u32, start: u32, end: u32) -> u32 {
             access: 'read_write'
           }
         );
-        body += 'atomicMax(&maxCountOut[maxCountOutOffset], counts[countsOffset + index]);\n  ';
+        shared += 'var<workgroup> sharedCounts: array<u32, 256>;\n';
+        load +=
+          'sharedCounts[localInvocationIndex] = select(0u, counts[countsOffset + index], inRange);\n  ';
+        reduce +=
+          'sharedCounts[localInvocationIndex] = max(sharedCounts[localInvocationIndex], sharedCounts[localInvocationIndex + stride]);\n      ';
+        flush += 'atomicMax(&maxCountOut[maxCountOutOffset], sharedCounts[0]);\n    ';
       }
       if (output.maxWeightSum) {
         bindings.push(
@@ -469,7 +523,12 @@ fn getBin(position: u32, start: u32, end: u32) -> u32 {
             access: 'read_write'
           }
         );
-        body += 'atomicMax(&maxSumOut[maxSumOutOffset], sums[sumsOffset + index]);';
+        shared += 'var<workgroup> sharedSums: array<u32, 256>;\n';
+        load +=
+          'sharedSums[localInvocationIndex] = select(0u, sums[sumsOffset + index], inRange);\n  ';
+        reduce +=
+          'sharedSums[localInvocationIndex] = max(sharedSums[localInvocationIndex], sharedSums[localInvocationIndex + stride]);\n      ';
+        flush += 'atomicMax(&maxSumOut[maxSumOutOffset], sharedSums[0]);\n    ';
       }
       nodes.push(
         createWGSLKernelNode<Parameters>(graph, {
@@ -478,7 +537,18 @@ fn getBin(position: u32, start: u32, end: u32) -> u32 {
           variant: 'maxima',
           bindings,
           invocationCount: resolution * resolution,
-          body
+          guardIndex: false,
+          declarations: shared,
+          // No early return: every invocation of a workgroup must reach the barriers.
+          body: `let inRange = index < INVOCATION_COUNT;
+  ${load}workgroupBarrier();
+  for (var stride = 128u; stride > 0u; stride = stride >> 1u) {
+    if (localInvocationIndex < stride) {
+      ${reduce}}
+    workgroupBarrier();
+  }
+  if (localInvocationIndex == 0u) {
+    ${flush}}`
         })
       );
     }

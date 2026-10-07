@@ -105,6 +105,19 @@ fn getCellRow(lattice: Lattice, y: f32) -> u32 {
   return min(u32(floor((y - lattice.minimumY) / lattice.cellHeight)), lattice.rows - 1u);
 }
 
+// Distance along one axis from position (in cell queryCell) to the near edge of cell; zero
+// for the query cell itself. A lower bound of the distance to any point of that cell, up to the
+// rounding slack the callers subtract.
+fn getAxisGap(position: f32, minimum: f32, cellSize: f32, queryCell: i32, cell: i32) -> f32 {
+  if (cell < queryCell) {
+    return position - (minimum + f32(cell + 1) * cellSize);
+  }
+  if (cell > queryCell) {
+    return (minimum + f32(cell) * cellSize) - position;
+  }
+  return 0.0;
+}
+
 ${NEIGHBOR_SEARCH_FLOAT_WGSL}
 `;
 }
@@ -188,22 +201,47 @@ export function getNearestNeighborSearchWGSL(selfCondition: string): string {
     let endRow = min(queryRow + ring, lastRow);
     for (var cellRow = firstRow; cellRow <= endRow; cellRow++) {
       let rowBase = u32(cellRow) * COLUMNS;
+      // Cell-level pruning once K candidates are held: a cell whose near edges are farther than
+      // the k-th best cannot contribute (strict test, so k-th distance ties are still visited).
+      let rowGap = max(getAxisGap(y, lattice.minimumY, lattice.cellHeight, queryRow, cellRow) - slack, 0.0);
+      let rowGapSquared = rowGap * rowGap;
+      if (found == K && bestDistances[K - 1u] < rowGapSquared) {
+        continue;
+      }
       if (abs(cellRow - queryRow) == ring) {
-        let cellBegin = cellOffsets[cellOffsetsOffset + rowBase + u32(firstColumn)];
-        let cellEnd = cellOffsets[cellOffsetsOffset + rowBase + u32(endColumn) + 1u];
-        ${visit('cellBegin', 'cellEnd')}
-      } else {
-        if (queryColumn - ring >= 0) {
-          let cell = rowBase + u32(queryColumn - ring);
-          let cellBegin = cellOffsets[cellOffsetsOffset + cell];
-          let cellEnd = cellOffsets[cellOffsetsOffset + cell + 1u];
+        // A full row of the ring: only the columns within reach of the k-th best are visited.
+        var rangeFirst = firstColumn;
+        var rangeEnd = endColumn;
+        if (found == K) {
+          let reach = sqrt(max(bestDistances[K - 1u] - rowGapSquared, 0.0)) + slack;
+          let lowColumn = floor((x - reach - lattice.minimumX) / lattice.cellWidth);
+          let highColumn = floor((x + reach - lattice.minimumX) / lattice.cellWidth);
+          rangeFirst = max(firstColumn, i32(clamp(lowColumn, -1.0, f32(lastColumn))));
+          rangeEnd = min(endColumn, i32(clamp(highColumn, -1.0, f32(lastColumn))));
+        }
+        if (rangeFirst <= rangeEnd) {
+          let cellBegin = cellOffsets[cellOffsetsOffset + rowBase + u32(rangeFirst)];
+          let cellEnd = cellOffsets[cellOffsetsOffset + rowBase + u32(rangeEnd) + 1u];
           ${visit('cellBegin', 'cellEnd')}
         }
+      } else {
+        if (queryColumn - ring >= 0) {
+          let columnGap = max(getAxisGap(x, lattice.minimumX, lattice.cellWidth, queryColumn, queryColumn - ring) - slack, 0.0);
+          if (!(found == K && bestDistances[K - 1u] < columnGap * columnGap + rowGapSquared)) {
+            let cell = rowBase + u32(queryColumn - ring);
+            let cellBegin = cellOffsets[cellOffsetsOffset + cell];
+            let cellEnd = cellOffsets[cellOffsetsOffset + cell + 1u];
+            ${visit('cellBegin', 'cellEnd')}
+          }
+        }
         if (queryColumn + ring <= lastColumn) {
-          let cell = rowBase + u32(queryColumn + ring);
-          let cellBegin = cellOffsets[cellOffsetsOffset + cell];
-          let cellEnd = cellOffsets[cellOffsetsOffset + cell + 1u];
-          ${visit('cellBegin', 'cellEnd')}
+          let columnGap = max(getAxisGap(x, lattice.minimumX, lattice.cellWidth, queryColumn, queryColumn + ring) - slack, 0.0);
+          if (!(found == K && bestDistances[K - 1u] < columnGap * columnGap + rowGapSquared)) {
+            let cell = rowBase + u32(queryColumn + ring);
+            let cellBegin = cellOffsets[cellOffsetsOffset + cell];
+            let cellEnd = cellOffsets[cellOffsetsOffset + cell + 1u];
+            ${visit('cellBegin', 'cellEnd')}
+          }
         }
       }
     }

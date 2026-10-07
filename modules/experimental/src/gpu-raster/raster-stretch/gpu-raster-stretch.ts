@@ -30,6 +30,9 @@ const OPERATION = 'GPURasterStretch';
 const DEFAULT_BIN_COUNT = 1024;
 const DEFAULT_LUT_SIZE = 256;
 const MAXIMUM_PALETTE_SIZE = 65536;
+const STATISTICS_WORKGROUP_SIZE = 256;
+/** Cells each thread folds into registers before the workgroup combines its tile. */
+const REDUCE_CELLS_PER_THREAD = 16;
 
 /** Caller-owned outputs of {@link GPURasterStretch}. At least one is required. */
 export type GPURasterStretchOutput = {
@@ -215,6 +218,9 @@ export class GPURasterStretch implements GPUCommandNodeProducer {
     const needsApply = Boolean(output.stretched || output.colors);
     const needsLut = Boolean(output.lut || output.lutColors);
     const paletteSize = props.palette?.length ?? 0;
+    // The histogram is privatized per workgroup whenever one copy fits in workgroup storage.
+    const privatizeHistogram = binCount * 4 <= graph.device.limits.maxComputeWorkgroupStorageSize;
+    const histogramCellsPerThread = Math.min(64, Math.max(8, Math.ceil(binCount / 32)));
 
     const cellInputs: WGSLKernelBinding[] = [
       {name: 'values', view: props.values, type: 'f32', access: 'read'}
@@ -285,6 +291,8 @@ fn readStatisticsValue(index: u32, value: ptr<function, f32>) -> bool {
   keys[keysOffset + 2u] = 0u;
   keys[keysOffset + 3u] = 0u;`
       }),
+      // One workgroup folds a tile of cells in registers, combines the tile in workgroup memory with
+      // a tree, and issues three global atomics, instead of three same-address atomics per cell.
       createWGSLKernelNode<Parameters>(graph, {
         id: `${id}-reduce`,
         operation: OPERATION,
@@ -294,21 +302,53 @@ fn readStatisticsValue(index: u32, value: ptr<function, f32>) -> bool {
           paramsBinding,
           {name: 'keys', view: keys, type: 'atomic<u32>', access: 'read_write'}
         ],
-        invocationCount: cellCount,
+        invocationCount: Math.ceil(cellCount / REDUCE_CELLS_PER_THREAD),
+        guardIndex: false,
         declarations: `${statisticsWGSL}
+const CELL_COUNT: u32 = ${cellCount}u;
+const CELLS_PER_THREAD: u32 = ${REDUCE_CELLS_PER_THREAD}u;
+var<workgroup> tileMinimum: array<u32, ${STATISTICS_WORKGROUP_SIZE}>;
+var<workgroup> tileMaximum: array<u32, ${STATISTICS_WORKGROUP_SIZE}>;
+var<workgroup> tileCount: array<u32, ${STATISTICS_WORKGROUP_SIZE}>;
 fn getOrderedKey(value: f32) -> u32 {
   let bits = bitcast<u32>(value);
   return bits ^ select(0x80000000u, 0xffffffffu, (bits >> 31u) != 0u);
 }`,
-        body: `var value = 0.0;
-  if (!readStatisticsValue(index, &value)) {
-    return;
+        body: `var minimumKey = 0xffffffffu;
+  var maximumKey = 0u;
+  var includedCount = 0u;
+  let tileStart = (index - localInvocationIndex) * CELLS_PER_THREAD;
+  for (var step = 0u; step < CELLS_PER_THREAD; step++) {
+    let cell = tileStart + step * ${STATISTICS_WORKGROUP_SIZE}u + localInvocationIndex;
+    if (cell >= CELL_COUNT) {
+      break;
+    }
+    var value = 0.0;
+    if (readStatisticsValue(cell, &value)) {
+      let key = getOrderedKey(value);
+      minimumKey = min(minimumKey, key);
+      maximumKey = max(maximumKey, key);
+      includedCount++;
+    }
   }
-  atomicAdd(&keys[keysOffset + 2u], 1u);
-  if (params[paramsOffset + 4u] == 0.0) {
-    let key = getOrderedKey(value);
-    atomicMin(&keys[keysOffset], key);
-    atomicMax(&keys[keysOffset + 1u], key);
+  tileMinimum[localInvocationIndex] = minimumKey;
+  tileMaximum[localInvocationIndex] = maximumKey;
+  tileCount[localInvocationIndex] = includedCount;
+  workgroupBarrier();
+  for (var stride = ${STATISTICS_WORKGROUP_SIZE / 2}u; stride > 0u; stride = stride >> 1u) {
+    if (localInvocationIndex < stride) {
+      tileMinimum[localInvocationIndex] = min(tileMinimum[localInvocationIndex], tileMinimum[localInvocationIndex + stride]);
+      tileMaximum[localInvocationIndex] = max(tileMaximum[localInvocationIndex], tileMaximum[localInvocationIndex + stride]);
+      tileCount[localInvocationIndex] = tileCount[localInvocationIndex] + tileCount[localInvocationIndex + stride];
+    }
+    workgroupBarrier();
+  }
+  if (localInvocationIndex == 0u && tileCount[0] > 0u) {
+    atomicAdd(&keys[keysOffset + 2u], tileCount[0]);
+    if (params[paramsOffset + 4u] == 0.0) {
+      atomicMin(&keys[keysOffset], tileMinimum[0]);
+      atomicMax(&keys[keysOffset + 1u], tileMaximum[0]);
+    }
   }`
       }),
       // 2. Domain, bin scale and bin width.
@@ -358,16 +398,53 @@ fn decodeOrderedKey(key: u32) -> f32 {
       createWGSLKernelNode<Parameters>(graph, {
         id: `${id}-histogram`,
         operation: OPERATION,
-        variant: 'histogram',
+        variant: privatizeHistogram ? 'histogram-private' : 'histogram',
         bindings: [
           ...statisticsInputs,
           paramsBinding,
           {name: 'state', view: state, type: 'f32', access: 'read'},
           {name: 'histogram', view: histogram, type: 'atomic<u32>', access: 'read_write'}
         ],
-        invocationCount: cellCount,
-        declarations: statisticsWGSL,
-        body: `var value = 0.0;
+        invocationCount: privatizeHistogram
+          ? Math.ceil(cellCount / histogramCellsPerThread)
+          : cellCount,
+        guardIndex: !privatizeHistogram,
+        declarations: privatizeHistogram
+          ? `${statisticsWGSL}
+const CELL_COUNT: u32 = ${cellCount}u;
+const CELLS_PER_THREAD: u32 = ${histogramCellsPerThread}u;
+var<workgroup> localHistogram: array<atomic<u32>, ${binCount}>;`
+          : statisticsWGSL,
+        // Privatized: a tile of cells fills a workgroup-memory histogram, which merges once per
+        // non-empty bin. Same bin per cell, integer counts, so the result is identical.
+        body: privatizeHistogram
+          ? `for (var bin = localInvocationIndex; bin < BIN_COUNT; bin += ${STATISTICS_WORKGROUP_SIZE}u) {
+    atomicStore(&localHistogram[bin], 0u);
+  }
+  workgroupBarrier();
+  let domainMin = state[stateOffset];
+  let domainMax = state[stateOffset + 1u];
+  let binScale = state[stateOffset + 2u];
+  let tileStart = (index - localInvocationIndex) * CELLS_PER_THREAD;
+  for (var step = 0u; step < CELLS_PER_THREAD; step++) {
+    let cell = tileStart + step * ${STATISTICS_WORKGROUP_SIZE}u + localInvocationIndex;
+    if (cell >= CELL_COUNT) {
+      break;
+    }
+    var value = 0.0;
+    if (readStatisticsValue(cell, &value) && value >= domainMin && value <= domainMax) {
+      let bin = min(u32((value - domainMin) * binScale), BIN_COUNT - 1u);
+      atomicAdd(&localHistogram[bin], 1u);
+    }
+  }
+  workgroupBarrier();
+  for (var bin = localInvocationIndex; bin < BIN_COUNT; bin += ${STATISTICS_WORKGROUP_SIZE}u) {
+    let partial = atomicLoad(&localHistogram[bin]);
+    if (partial != 0u) {
+      atomicAdd(&histogram[histogramOffset + bin], partial);
+    }
+  }`
+          : `var value = 0.0;
   if (!readStatisticsValue(index, &value)) {
     return;
   }

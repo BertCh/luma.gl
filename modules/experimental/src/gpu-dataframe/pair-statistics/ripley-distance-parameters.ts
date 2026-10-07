@@ -7,8 +7,20 @@ import {validatePairStatisticsBounds} from './pair-statistics-parameters';
 /** Number of float32 elements in a `GPURipleyDistanceFunctions` parameter buffer. */
 export const GPU_RIPLEY_DISTANCE_PARAMETER_LENGTH = 8;
 
-/** Edge-correction mode of `GPURipleyDistanceFunctions`: none or the border (reduced sample) method. */
-export type GPURipleyDistanceEdgeCorrection = 'none' | 'border';
+/**
+ * Edge-correction mode of `GPURipleyDistanceFunctions`: none, the border (reduced sample, spatstat
+ * `"rs"`) method, the Kaplan-Meier estimator (`"km"`) or the Hanisch estimator (`"han"` for G, the
+ * Chiu-Stoyan weighting `"cs"` for F).
+ */
+export type GPURipleyDistanceEdgeCorrection = 'none' | 'border' | 'kaplan-meier' | 'hanisch';
+
+/** Float32 code of each {@link GPURipleyDistanceEdgeCorrection} in the parameter layout. */
+const EDGE_CORRECTION_CODES: Record<GPURipleyDistanceEdgeCorrection, number> = {
+  none: 0,
+  border: 1,
+  'kaplan-meier': 2,
+  hanisch: 3
+};
 
 /**
  * CPU description of the per-frame parameters of `GPURipleyDistanceFunctions`.
@@ -23,14 +35,17 @@ export type GPURipleyDistanceParameters = {
   bounds: readonly [number, number, number, number];
   /** Largest radius: radius `b` is `maximumDistance * (b + 1) / radiusCount`. */
   maximumDistance: number;
-  /** `'border'` (default) divides by the points farther from the window edge than `r`. */
+  /**
+   * `'border'` (default) divides by the points farther from the window edge than `r`;
+   * `'kaplan-meier'` and `'hanisch'` use every point (see `GPURipleyDistanceFunctions`).
+   */
   edgeCorrection?: GPURipleyDistanceEdgeCorrection;
 };
 
 /**
  * Packs `GPURipleyDistanceFunctions` parameters into the 8-element float32 layout
  * `[minX, minY, maxX, maxY, maximumDistance, edgeCorrectionCode, 0, 0]`, where the code is 0 for
- * `'none'` and 1 for `'border'`.
+ * `'none'`, 1 for `'border'`, 2 for `'kaplan-meier'` and 3 for `'hanisch'`.
  *
  * @param parameters Parameters to encode.
  * @param target Optional destination of at least 8 elements. A new array is returned when omitted.
@@ -52,13 +67,15 @@ export function getGPURipleyDistanceParameterValues(
     parameters.maximumDistance
   );
   const edgeCorrection = parameters.edgeCorrection ?? 'border';
-  if (edgeCorrection !== 'none' && edgeCorrection !== 'border') {
-    throw new Error(`Ripley distance functions edgeCorrection must be 'none' or 'border'`);
+  if (!Object.prototype.hasOwnProperty.call(EDGE_CORRECTION_CODES, edgeCorrection)) {
+    throw new Error(
+      `Ripley distance functions edgeCorrection must be 'none', 'border', 'kaplan-meier' or 'hanisch'`
+    );
   }
   target.set([
     ...parameters.bounds,
     parameters.maximumDistance,
-    edgeCorrection === 'border' ? 1 : 0,
+    EDGE_CORRECTION_CODES[edgeCorrection],
     0,
     0
   ]);

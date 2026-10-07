@@ -25,5 +25,6 @@ it('GPUEmpiricalBayesRates validates its props', () => {
     populations,
     standardizedRates: createTransientView(graph, 'z', 'float32', 10)
   }).getCommandNodes(graph);
-  expect(nodes.length).toBeGreaterThan(5);
+  // partials-a, totals-a, partials-b, summary, rates
+  expect(nodes.length).toBe(5);
 });

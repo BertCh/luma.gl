@@ -294,10 +294,13 @@ export {
   GPU_ISOBANDS_NO_DATA_CLASS,
   GPU_ISOBANDS_PARAMETER_LENGTH,
   GPU_ISOLINES_PARAMETER_LENGTH,
+  GPUIsobandRings,
   GPUIsobands,
   GPUIsolines
 } from './isolines/index';
 export type {
+  GPUIsobandRingsOutput,
+  GPUIsobandRingsProps,
   GPUIsobandsOutput,
   GPUIsobandsProps,
   GPUIsobandsSettings,

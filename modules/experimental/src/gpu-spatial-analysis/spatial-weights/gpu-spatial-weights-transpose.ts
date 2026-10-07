@@ -4,10 +4,7 @@
 
 import {
   createTransientView,
-  GPUGroupAggregation,
   GPUReduction,
-  GPUScan,
-  GPUSort,
   validatePackedUint32View,
   validatePackedView,
   type GPUCommandGraph,
@@ -16,11 +13,11 @@ import {
   type GraphDataView
 } from '@luma.gl/gpgpu/gpu-core';
 import {createWGSLKernelNode, getWGSLFloatLiteral} from '../../utils/wgsl-kernel-nodes';
-import {getSortKeyBits} from '../../utils/sorted-segment-sums';
 import {
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph
 } from '../../utils/gpu-contributor-utils';
+import {getSlotGroupingNodes} from './slot-grouping';
 import {type GPUSpatialWeights, validateGPUSpatialWeights} from './spatial-weights';
 
 const OPERATION = 'GPUSpatialWeightsTranspose';
@@ -62,8 +59,9 @@ export type GPUSpatialWeightsTransposeProps = {
  *
  * The result is deterministic and independent of any atomics ordering: slots are keyed by their
  * column and stable-sorted (so within a column they stay in source row order, which makes every
- * output row ascending), the per-column counts come from an integer group count, an exclusive scan
- * turns them into offsets, and a gather writes the transposed slots. Capacity is the input
+ * output row ascending), the output offsets are one binary search per column over the sorted keys
+ * (the sort already counted, so there is no atomic count or scan), and a gather writes the
+ * transposed slots. Capacity is the input
  * capacity (`nnz` cannot grow); slots of the output past `offsets[columnCount]` are written as
  * zero. `distances` are carried along when present.
  *
@@ -151,11 +149,17 @@ export class GPUSpatialWeightsTranspose implements GPUCommandNodeProducer {
     ) => createTransientView(graph, `${id}-${name}`, format, length);
     const slotKeys = transient('slot-keys', 'uint32', capacity);
     const slotIndices = transient('slot-indices', 'uint32', capacity);
-    const sortedKeys = transient('sorted-keys', 'uint32', capacity);
-    const sortedSlots = transient('sorted-slots', 'uint32', capacity);
-    const columnCounts = transient('column-counts', 'uint32', columns);
     const constants = `const ROWS: u32 = ${rows}u;
 const COLUMNS: u32 = ${columns}u;`;
+    const grouping = getSlotGroupingNodes<Parameters>(graph, {
+      id,
+      operation: OPERATION,
+      slotKeys,
+      slotIndices,
+      columns,
+      columnOffsets: output.offsets
+    });
+    const {sortedKeys, sortedSlots} = grouping;
     const nodes: GPUCommandNode<Parameters>[] = [
       createWGSLKernelNode<Parameters>(graph, {
         id: `${id}-slot-keys`,
@@ -175,38 +179,7 @@ const COLUMNS: u32 = ${columns}u;`;
   slotKeys[slotKeysOffset + index] = select(COLUMNS, neighbor, used);
   slotIndices[slotIndicesOffset + index] = index;`
       }),
-      ...new GPUGroupAggregation({
-        id: `${id}-column-counts`,
-        keys: slotKeys,
-        output: columnCounts
-      }).getCommandNodes(graph),
-      ...new GPUSort({
-        id: `${id}-sort`,
-        keys: slotKeys,
-        values: slotIndices,
-        outputKeys: sortedKeys,
-        outputValues: sortedSlots,
-        keyBits: getSortKeyBits(columns)
-      }).getCommandNodes(graph),
-      ...new GPUScan({
-        id: `${id}-column-scan`,
-        input: columnCounts,
-        output: output.offsets,
-        mode: 'exclusive'
-      }).getCommandNodes(graph),
-      createWGSLKernelNode<Parameters>(graph, {
-        id: `${id}-offsets-total`,
-        operation: OPERATION,
-        variant: 'offsets-total',
-        bindings: [
-          {name: 'counts', view: columnCounts, type: 'u32', access: 'read'},
-          {name: 'outputOffsets', view: output.offsets, type: 'u32', access: 'read_write'}
-        ],
-        invocationCount: 1,
-        declarations: constants,
-        body: `outputOffsets[outputOffsetsOffset + COLUMNS] =
-    outputOffsets[outputOffsetsOffset + COLUMNS - 1u] + counts[countsOffset + COLUMNS - 1u];`
-      }),
+      ...grouping.nodes,
       createWGSLKernelNode<Parameters>(graph, {
         id: `${id}-gather`,
         operation: OPERATION,

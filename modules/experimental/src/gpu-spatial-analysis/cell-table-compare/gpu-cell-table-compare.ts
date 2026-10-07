@@ -242,7 +242,9 @@ export class GPUCellTableCompare implements GPUCommandNodeProducer {
     // the clamped row counts. The scan has one extra row, so `prefix[capacityBefore]` is the total.
     const flags = transient('matched-flags', 'uint32', capacityBefore + 1);
     const prefix = transient('matched-prefix', 'uint32', capacityBefore + 1);
-    const counts = transient('counts', 'uint32', 2);
+    // `bounds[i]` is the lower bound of before row `i` in `after`, found once here and reused by the
+    // merge pass. The last two rows hold the clamped row counts of `before` and `after`.
+    const bounds = transient('after-bounds', 'uint32', capacityBefore + 3);
     const keyDeclarations = `const CAPACITY: u32 = ${capacity}u;
 const CAPACITY_BEFORE: u32 = ${capacityBefore}u;
 const CAPACITY_AFTER: u32 = ${capacityAfter}u;
@@ -283,7 +285,7 @@ fn isKeyLess(left: vec2u, right: vec2u) -> bool {
           read('afterCells', after.cells),
           read('afterCount', after.count),
           write('flags', flags),
-          write('counts', counts)
+          write('bounds', bounds)
         ],
         invocationCount: capacityBefore + 1,
         declarations: `${keyDeclarations}
@@ -291,13 +293,14 @@ ${searchFunction('lowerBoundAfter', 'After')}`,
         body: `let countBefore = min(beforeCount[beforeCountOffset], CAPACITY_BEFORE);
   let countAfter = min(afterCount[afterCountOffset], CAPACITY_AFTER);
   if (index == 0u) {
-    counts[countsOffset] = countBefore;
-    counts[countsOffset + 1u] = countAfter;
+    bounds[boundsOffset + CAPACITY_BEFORE + 1u] = countBefore;
+    bounds[boundsOffset + CAPACITY_BEFORE + 2u] = countAfter;
   }
   var isMatch = false;
   if (index < countBefore) {
     let key = getBeforeKey(index);
     let bound = lowerBoundAfter(key, countAfter);
+    bounds[boundsOffset + index] = bound;
     isMatch = bound < countAfter && all(getAfterKey(bound) == key);
   }
   flags[flagsOffset + index] = select(0u, 1u, isMatch);`
@@ -321,7 +324,7 @@ ${searchFunction('lowerBoundAfter', 'After')}`,
         bindings: [
           read('beforeCells', before.cells),
           read('afterCells', after.cells),
-          read('counts', counts),
+          read('bounds', bounds),
           read('prefix', prefix),
           write('cellsOut', output.cells),
           write('beforeRows', beforeRows),
@@ -330,10 +333,9 @@ ${searchFunction('lowerBoundAfter', 'After')}`,
         ],
         invocationCount: capacityBefore + capacityAfter,
         declarations: `${keyDeclarations}
-${searchFunction('lowerBoundBefore', 'Before')}
-${searchFunction('lowerBoundAfter', 'After')}`,
-        body: `let countBefore = counts[countsOffset];
-  let countAfter = counts[countsOffset + 1u];
+${searchFunction('lowerBoundBefore', 'Before')}`,
+        body: `let countBefore = bounds[boundsOffset + CAPACITY_BEFORE + 1u];
+  let countAfter = bounds[boundsOffset + CAPACITY_BEFORE + 2u];
   if (index == 0u) {
     total[totalOffset] = countBefore + countAfter - prefix[prefixOffset + CAPACITY_BEFORE];
   }
@@ -346,7 +348,7 @@ ${searchFunction('lowerBoundAfter', 'After')}`,
       return;
     }
     key = getBeforeKey(index);
-    let bound = lowerBoundAfter(key, countAfter);
+    let bound = bounds[boundsOffset + index];
     position = index + bound - prefix[prefixOffset + index];
     beforeRow = index;
     if (bound < countAfter && all(getAfterKey(bound) == key)) {

@@ -17,7 +17,8 @@
  * `dggs_h3_down_ap3`, `dggs_h3_down_ap3r`, `dggs_h3_down_ap7r`, `dggs_h3_hex2d_to_lnglat`) and
  * defines, all prefixed `cellIndexH3Boundary` or `CELL_INDEX_H3_BOUNDARY_`:
  *
- * - `struct CellIndexH3Boundary {count: u32, points: array<vec2f, 10>}`
+ * - `struct CellIndexH3Boundary {count: u32, points: array<vec2f, 10>, units: array<vec3f, 10>}`
+ *   (`units` are the same vertices as unit vectors, for exact spherical measures)
  * - `fn cellIndexH3GetBoundary(cell: vec2u) -> CellIndexH3Boundary` (one pass, all vertices)
  * - `fn cellIndexH3GetBoundaryVertexCount(cell: vec2u) -> u32` (0 for invalid cells)
  * - `fn cellIndexH3GetBoundaryVertex(cell: vec2u, vertexIndex: u32) -> vec2f`
@@ -37,6 +38,7 @@ const CELL_INDEX_H3_BOUNDARY_NEW_FACE: u32 = 2u;
 struct CellIndexH3Boundary {
   count : u32,
   points : array<vec2f, 10>,
+  units : array<vec3f, 10>,
 };
 
 // H3 _adjustOverageClassII, including the substrate-grid variant used for boundary vertices.
@@ -129,31 +131,35 @@ fn cellIndexH3BoundaryIsOnFaceEdge(coord: vec3i, adjustedResolution: u32) -> boo
   return coord.x + coord.y + coord.z == 3 * dggs_h3_get_max_dim_by_cii_resolution(adjustedResolution);
 }
 
-// Substrate hex2d point on \`face\` to lng/lat degrees (H3 _hex2dToGeo with substrate = 1). Projects
+// Substrate hex2d point on \`face\` to a unit vector (H3 _hex2dToGeo with substrate = 1). Projects
 // through the face's unit-vector basis instead of dggs_h3_hex2d_to_lnglat, whose sin/cos/atan2
 // azimuth-distance chain loses about 1e-4 degrees in f32.
-fn cellIndexH3BoundaryHex2dToLngLat(point: vec2f, face: u32, adjustedResolution: u32) -> vec2f {
+fn cellIndexH3BoundaryHex2dToUnitVector(point: vec2f, face: u32, adjustedResolution: u32) -> vec3f {
   var scale = DGGS_H3_RES0_U_GNOMONIC * DGGS_H3_ONETHIRD;
   for (var level = 0u; level < adjustedResolution; level++) {
     scale *= DGGS_H3_RSQRT7;
   }
   // \`adjustedResolution\` is always Class II here, so no extra aperture-7 factor applies.
-  let unitVector = normalize(
+  return normalize(
     dggs_h3_get_face_unit_vector_basis(face, 0u) +
     scale * (
       point.x * dggs_h3_get_face_unit_vector_basis(face, 1u) +
       point.y * dggs_h3_get_face_unit_vector_basis(face, 2u)
     )
   );
+}
+
+fn cellIndexH3BoundaryUnitVectorToLngLat(unitVector: vec3f) -> vec2f {
   return vec2f(
     atan2(unitVector.y, unitVector.x) * DGGS_RADIANS_TO_DEGREES,
     atan2(unitVector.z, length(unitVector.xy)) * DGGS_RADIANS_TO_DEGREES
   );
 }
 
-fn cellIndexH3BoundaryPush(boundary: ptr<function, CellIndexH3Boundary>, point: vec2f) {
+fn cellIndexH3BoundaryPush(boundary: ptr<function, CellIndexH3Boundary>, unitVector: vec3f) {
   if ((*boundary).count < CELL_INDEX_H3_BOUNDARY_MAX_VERTICES) {
-    (*boundary).points[(*boundary).count] = point;
+    (*boundary).points[(*boundary).count] = cellIndexH3BoundaryUnitVectorToLngLat(unitVector);
+    (*boundary).units[(*boundary).count] = unitVector;
     (*boundary).count += 1u;
   }
 }
@@ -230,7 +236,7 @@ fn cellIndexH3BoundaryFromFaceIJK(
           );
           cellIndexH3BoundaryPush(
             &boundary,
-            cellIndexH3BoundaryHex2dToLngLat(point, lastFace, adjustedResolution)
+            cellIndexH3BoundaryHex2dToUnitVector(point, lastFace, adjustedResolution)
           );
         }
       } else if (current.face != lastFace && lastOverage != CELL_INDEX_H3_BOUNDARY_FACE_EDGE) {
@@ -251,7 +257,7 @@ fn cellIndexH3BoundaryFromFaceIJK(
           );
           cellIndexH3BoundaryPush(
             &boundary,
-            cellIndexH3BoundaryHex2dToLngLat(point, center.face, adjustedResolution)
+            cellIndexH3BoundaryHex2dToUnitVector(point, center.face, adjustedResolution)
           );
         }
       }
@@ -260,7 +266,7 @@ fn cellIndexH3BoundaryFromFaceIJK(
     if (vert < vertexTotal) {
       cellIndexH3BoundaryPush(
         &boundary,
-        cellIndexH3BoundaryHex2dToLngLat(
+        cellIndexH3BoundaryHex2dToUnitVector(
           dggs_h3_ijk_to_hex2d(current.coord),
           current.face,
           adjustedResolution

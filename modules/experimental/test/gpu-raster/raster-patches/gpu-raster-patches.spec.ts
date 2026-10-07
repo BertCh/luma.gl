@@ -158,6 +158,45 @@ it('GPURasterPatchMetrics matches the oracle on clumps, with and without raster 
   }
 });
 
+it('GPURasterPatchMetrics run aggregation matches the oracle on one dominant patch, stripes and thin rasters', async () => {
+  const device = await getWebGPUTestDevice();
+  if (!device) return;
+  const cases: {width: number; height: number; build: (column: number, row: number) => number}[] = [
+    // One patch covers almost everything: long runs crossing several 16-column segments.
+    {width: 70, height: 9, build: (column, row) => (column === 33 && row === 4 ? 2 : 1)},
+    // Alternating labels inside every segment: runs of length 1 and 3, labels reused across rows.
+    {
+      width: 37,
+      height: 6,
+      build: (column, row) => ((column + row) % 4 === 3 ? 0 : 1 + (column % 3))
+    },
+    // One column and one row.
+    {width: 1, height: 20, build: (_column, row) => (row % 7 === 6 ? 0 : 1 + Math.floor(row / 7))},
+    {width: 33, height: 1, build: column => (column < 16 ? 1 : column < 17 ? 0 : 2)}
+  ];
+  for (const {width, height, build} of cases) {
+    const labels = new Uint32Array(width * height);
+    for (let row = 0; row < height; row++) {
+      for (let column = 0; column < width; column++) {
+        labels[row * width + column] = build(column, row);
+      }
+    }
+    const capacity = Math.max(...labels) + 1;
+    for (const countBorder of [true, false]) {
+      const result = await runMetrics(device, labels, width, height, capacity, countBorder);
+      expectMetrics(
+        result,
+        getAcceptedLabels(labels, {capacity}),
+        width,
+        height,
+        capacity,
+        countBorder
+      );
+      expect(result.pixelCounts.reduce((sum, count) => sum + count, 0)).toBeGreaterThan(0);
+    }
+  }
+});
+
 it('GPURasterPatchMetrics honors validity, capacity and upstream guards', async () => {
   const device = await getWebGPUTestDevice();
   if (!device) return;

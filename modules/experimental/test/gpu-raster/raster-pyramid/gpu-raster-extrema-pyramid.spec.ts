@@ -125,7 +125,9 @@ async function runPyramid(
 
 const CASES: {width: number; height: number}[] = [
   {width: 37, height: 23},
-  {width: 64, height: 64}
+  {width: 64, height: 64},
+  // Several 16 x 16 tiles at the base of the fused levels, with ragged edges.
+  {width: 131, height: 70}
 ];
 
 for (const {width, height} of CASES) {

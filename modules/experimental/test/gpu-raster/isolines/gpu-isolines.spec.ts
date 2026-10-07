@@ -529,3 +529,43 @@ it('GPUIsolines stitches a large smooth field with many long chains and rings', 
     100
   );
 });
+
+it('GPUIsolines stitches one very long ring and one very long open chain across many jump rounds', async () => {
+  const device = await getWebGPUTestDevice();
+  if (!device) {
+    return;
+  }
+  const width = 241;
+  const height = 241;
+  const ringValues = new Float32Array(width * height);
+  const snakeValues = new Float32Array(width * height);
+  for (let row = 0; row < height; row++) {
+    for (let column = 0; column < width; column++) {
+      ringValues[row * width + column] = 100 - Math.hypot(column - 120, row - 120);
+      // Wavy ramp: its contour is one long open chain spanning the raster height.
+      snakeValues[row * width + column] =
+        column * 0.01 + 0.3 * Math.sin(row * 0.12 + column * 0.02);
+    }
+  }
+  const harness = createHarness(device, {
+    width,
+    height,
+    maximumLevelCount: 1,
+    segmentCapacity: 4096,
+    polylines: true
+  });
+  const extent = [0, 0, width, height] as const;
+  const ringScene: IsolinesScene = {width, height, values: ringValues, levels: [10.3], extent};
+  const ring = await harness.run(ringScene);
+  const ringExpected = expectSegmentsMatch(ring, ringScene, 1, 'long ring');
+  const ringPolylines = expectPolylinesMatch(ring, ringExpected, 'long ring');
+  expect(ringPolylines).toHaveLength(1);
+  expect(ringPolylines[0].closed).toBe(true);
+  // 2 * pi * 90 cells with 1 to 2 segments per crossed cell needs more than 2^9 jump targets.
+  expect(ringPolylines[0].segmentIndices.length).toBeGreaterThan(520);
+
+  const snakeScene: IsolinesScene = {width, height, values: snakeValues, levels: [1.2], extent};
+  const snake = await harness.run(snakeScene);
+  const snakeExpected = expectSegmentsMatch(snake, snakeScene, 1, 'snake');
+  expectPolylinesMatch(snake, snakeExpected, 'snake');
+});

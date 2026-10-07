@@ -175,7 +175,8 @@ it('GPUTerrainVectorRuggedness matches the oracle for radius, border, and nodata
     mask[index] = 0;
   }
   const errors: Record<string, number> = {};
-  for (const radius of [1, 3]) {
+  // Radius 3 and 12 take the separable row/column path (12 clips every window to the grid).
+  for (const radius of [1, 3, 12]) {
     for (const borderMode of ['clamp', 'nodata'] as const) {
       for (const useMask of [false, true]) {
         const fixture = createFixture(

@@ -438,3 +438,45 @@ it('GPUInverseDistanceWeighting output feeds GPUTerrainContours in the same grap
     buffer.destroy();
   }
 });
+
+it('GPUInverseDistanceWeighting ring walk matches the oracle on clustered samples and an unbounded radius', async () => {
+  const device = await getWebGPUTestDevice();
+  if (!device) {
+    return;
+  }
+  // Most samples sit in one corner, a few are far away, and the raster extends past the index
+  // domain, so rings stop early near the cluster and run to the domain edge in the empty area.
+  const random = createRandom(9);
+  const sampleCount = 500;
+  const positions = new Float32Array(sampleCount * 2);
+  const values = new Float32Array(sampleCount);
+  for (let row = 0; row < sampleCount; row++) {
+    const isCluster = row < 450;
+    positions[2 * row] = isCluster ? random() * 8 : 20 + random() * 80;
+    positions[2 * row + 1] = isCluster ? random() * 6 : 10 + random() * 50;
+    values[row] = positions[2 * row] + 2 * positions[2 * row + 1] + random();
+  }
+  // Duplicated positions give equal distances that the row tie-break must order.
+  positions.copyWithin(2 * 21, 2 * 20, 2 * 20 + 2);
+  positions.copyWithin(2 * 31, 2 * 30, 2 * 30 + 2);
+  const scene: Scene = {
+    positions,
+    values,
+    width: 33,
+    height: 21,
+    indexGridSize: [48, 30],
+    indexBounds: [0, 0, 100, 60],
+    maximumNeighborCount: 10
+  };
+  const fixture = createFixture(device, scene);
+  for (const settings of [
+    {extent: [0, 0, 100, 60] as const, searchRadius: Infinity, power: 2, neighborCount: 7},
+    {extent: [-30, -20, 130, 80] as const, searchRadius: Infinity, power: 1.5, neighborCount: 10},
+    {extent: [0, 0, 100, 60] as const, searchRadius: 15, power: 2, neighborCount: 3},
+    {extent: [0, 0, 100, 60] as const, searchRadius: Infinity, power: 2, neighborCount: 1}
+  ]) {
+    expectParity(await fixture.run(settings), scene, settings);
+  }
+  expect(fixture.rebuildCount).toBe(0);
+  fixture.destroy();
+});

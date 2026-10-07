@@ -537,6 +537,57 @@ ${PAIR_STATISTICS_FLOAT_WGSL}`,
   return {nodes, sortedRows, cellOffsets, cellKeys, statistics};
 }
 
+/**
+ * Gathers the included rows into cell order as `[x bits, y bits, row]` `u32` triples, so pair
+ * loops read each candidate with three consecutive loads instead of a `sortedRows` load followed
+ * by a dependent gather from `positions`. The gather runs once per row; the pair loops read each
+ * row once per neighboring focus.
+ *
+ * @internal
+ */
+export function getPairStatisticsSortedPointsNodes<Parameters>(
+  graph: GPUCommandGraph<Parameters>,
+  props: {
+    id: string;
+    operation: string;
+    positions: GraphDataView<'float32x2'>;
+    sortedRows: GraphDataView<'uint32'>;
+    cellOffsets: GraphDataView<'uint32'>;
+    /** Maximum `[columns, rows]` of the cell lattice, as passed to the input nodes. */
+    gridSize: readonly [number, number];
+  }
+): {nodes: GPUCommandNode<Parameters>[]; sortedPoints: GraphDataView<'uint32'>} {
+  const {id, operation, positions, sortedRows, cellOffsets, gridSize} = props;
+  const rows = positions.length;
+  const sortedPoints = createTransientView(graph, `${id}-sorted-points`, 'uint32', rows * 3);
+  return {
+    sortedPoints,
+    nodes: [
+      createWGSLKernelNode<Parameters>(graph, {
+        id: `${id}-sorted-points`,
+        operation,
+        variant: 'sorted-points',
+        bindings: [
+          {name: 'positions', view: positions, type: 'f32', access: 'read'},
+          {name: 'sortedRows', view: sortedRows, type: 'u32', access: 'read'},
+          {name: 'cellOffsets', view: cellOffsets, type: 'u32', access: 'read'},
+          {name: 'sortedPoints', view: sortedPoints, type: 'u32', access: 'read_write'}
+        ],
+        invocationCount: rows,
+        declarations: `const CELL_COUNT: u32 = ${gridSize[0] * gridSize[1]}u;`,
+        // Excluded rows sort last and are never visited, so their slots stay unwritten.
+        body: `if (index >= cellOffsets[cellOffsetsOffset + CELL_COUNT]) {
+    return;
+  }
+  let row = sortedRows[sortedRowsOffset + index];
+  sortedPoints[sortedPointsOffset + index * 3u] = bitcast<u32>(positions[positionsOffset + row * 2u]);
+  sortedPoints[sortedPointsOffset + index * 3u + 1u] = bitcast<u32>(positions[positionsOffset + row * 2u + 1u]);
+  sortedPoints[sortedPointsOffset + index * 3u + 2u] = row;`
+      })
+    ]
+  };
+}
+
 /** Two fixed-order tree-sum levels: one workgroup per block of rows, then one over the blocks. */
 function getTotalSumNodes<Parameters>(
   graph: GPUCommandGraph<Parameters>,

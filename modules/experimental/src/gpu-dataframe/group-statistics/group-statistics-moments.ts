@@ -101,6 +101,10 @@ export type GroupColumnReductionNeeds = {
   zScore: boolean;
 };
 
+/** Largest group capacity accumulated in workgroup-private tables (5 words per group). */
+const PRIVATIZED_GROUP_LIMIT = 256;
+const ACCUMULATE_WORKGROUP_SIZE = 256;
+
 /**
  * Per-column reductions over the sorted group layout: finite counts, exact fixed-point sums and
  * means, ordered-key extremes (integer atomics, order independent), fixed-order moment sums (one
@@ -167,6 +171,7 @@ export function getColumnReductionNodes<Parameters>(
   );
 
   // 2. Accumulate with integer atomics, one invocation per source row.
+  const isPrivatized = capacity <= PRIVATIZED_GROUP_LIMIT;
   nodes.push(
     createWGSLKernelNode<Parameters>(graph, {
       id: `${id}-accumulate`,
@@ -181,9 +186,71 @@ export function getColumnReductionNodes<Parameters>(
         ...(maximumKeys ? [atomicBinding('maximumKeys', maximumKeys)] : [])
       ],
       invocationCount: rowCount,
-      declarations: `${getFixedPointWGSL(props.sumScale)}
+      // Few groups make every row contend on the same handful of global counters, so each
+      // workgroup first accumulates into workgroup-private tables and flushes once per group.
+      // Integer adds, mins and maxes are associative, so the result is unchanged and exact.
+      ...(isPrivatized
+        ? {
+            guardIndex: false,
+            workgroupSize: ACCUMULATE_WORKGROUP_SIZE,
+            declarations: `${getFixedPointWGSL(props.sumScale)}
+${GROUP_VALUE_KEY_WGSL}
+const GROUP_CAPACITY: u32 = ${capacity}u;
+var<workgroup> localCounts: array<atomic<u32>, ${capacity}>;
+${sums ? `var<workgroup> localSums: array<atomic<u32>, ${2 * capacity}>;` : ''}
+${minimumKeys ? `var<workgroup> localMinimums: array<atomic<u32>, ${capacity}>;` : ''}
+${maximumKeys ? `var<workgroup> localMaximums: array<atomic<u32>, ${capacity}>;` : ''}`,
+            // No early return: every invocation of a workgroup must reach the barriers.
+            body: `for (var slot = localInvocationIndex; slot < GROUP_CAPACITY; slot += ${ACCUMULATE_WORKGROUP_SIZE}u) {
+    atomicStore(&localCounts[slot], 0u);
+    ${sums ? 'atomicStore(&localSums[2u * slot], 0u);\n    atomicStore(&localSums[2u * slot + 1u], 0u);' : ''}
+    ${minimumKeys ? 'atomicStore(&localMinimums[slot], 0xffffffffu);' : ''}
+    ${maximumKeys ? 'atomicStore(&localMaximums[slot], 0u);' : ''}
+  }
+  workgroupBarrier();
+  if (index < INVOCATION_COUNT) {
+    let group = rowGroups[rowGroupsOffset + index];
+    let bits = valueBits[valueBitsOffset + index];
+    if (group != ${GROUP_NONE}u && isFiniteBits(bits)) {
+      atomicAdd(&localCounts[group], 1u);
+      ${
+        sums
+          ? `let value = cellScaleValue(bitcast<f32>(bits));
+      let previous = atomicAdd(&localSums[2u * group], value.y);
+      let high = value.x + select(0u, 1u, previous + value.y < previous);
+      if (high != 0u) {
+        atomicAdd(&localSums[2u * group + 1u], high);
+      }`
+          : ''
+      }
+      ${minimumKeys ? 'atomicMin(&localMinimums[group], getValueKey(bits));' : ''}
+      ${maximumKeys ? 'atomicMax(&localMaximums[group], getValueKey(bits));' : ''}
+    }
+  }
+  workgroupBarrier();
+  for (var slot = localInvocationIndex; slot < GROUP_CAPACITY; slot += ${ACCUMULATE_WORKGROUP_SIZE}u) {
+    let count = atomicLoad(&localCounts[slot]);
+    if (count != 0u) {
+      atomicAdd(&finiteCounts[finiteCountsOffset + slot], count);
+      ${
+        sums
+          ? `let localLow = atomicLoad(&localSums[2u * slot]);
+      let previous = atomicAdd(&sums[sumsOffset + 2u * slot], localLow);
+      let high = atomicLoad(&localSums[2u * slot + 1u]) + select(0u, 1u, previous + localLow < previous);
+      if (high != 0u) {
+        atomicAdd(&sums[sumsOffset + 2u * slot + 1u], high);
+      }`
+          : ''
+      }
+      ${minimumKeys ? 'atomicMin(&minimumKeys[minimumKeysOffset + slot], atomicLoad(&localMinimums[slot]));' : ''}
+      ${maximumKeys ? 'atomicMax(&maximumKeys[maximumKeysOffset + slot], atomicLoad(&localMaximums[slot]));' : ''}
+    }
+  }`
+          }
+        : {
+            declarations: `${getFixedPointWGSL(props.sumScale)}
 ${GROUP_VALUE_KEY_WGSL}`,
-      body: `let group = rowGroups[rowGroupsOffset + index];
+            body: `let group = rowGroups[rowGroupsOffset + index];
   if (group == ${GROUP_NONE}u) {
     return;
   }
@@ -204,6 +271,7 @@ ${GROUP_VALUE_KEY_WGSL}`,
   }
   ${minimumKeys ? 'atomicMin(&minimumKeys[minimumKeysOffset + group], getValueKey(bits));' : ''}
   ${maximumKeys ? 'atomicMax(&maximumKeys[maximumKeysOffset + group], getValueKey(bits));' : ''}`
+          })
     })
   );
 

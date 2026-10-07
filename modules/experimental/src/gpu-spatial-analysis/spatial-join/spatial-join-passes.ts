@@ -154,11 +154,23 @@ export function getDefaultSpatialSort(featureCount: number): boolean {
   return featureCount >= SPATIAL_SORT_MINIMUM_FEATURES;
 }
 
+/** Space-filling curve that orders features before the BVH build. @internal */
+export type SpatialSortCurve = 'morton' | 'hilbert';
+
 /**
- * Creates the BVH over feature bounds, optionally after a Morton (Z-order) sort of the features.
+ * Default `spatialSort` curve. Hilbert beat Morton by 10 to 15% of join GPU time in paired A/B runs
+ * (`spatial-join-curve-ab.spec.ts`: point-in-polygon, nearest and buffer selection, shuffled and
+ * coherent input) and was never slower beyond noise.
+ *
+ * @internal
+ */
+export const DEFAULT_SPATIAL_SORT_CURVE: SpatialSortCurve = 'hilbert';
+
+/**
+ * Creates the BVH over feature bounds, optionally after a Hilbert (default) or Morton (Z-order) sort of the features.
  *
  * With `spatialSort` and at least two features, features are reordered along a 16-bit-per-axis
- * Morton curve of their bound centers (empty or invalid features last) before the BVH build, and
+ * Hilbert (or Morton) curve of their bound centers (empty or invalid features last) before the BVH build, and
  * the BVH `leafIds` map back to the original feature rows. Without it, or for fewer than two
  * features, this is {@link getFeatureBVHNodes}. Nothing is read back.
  *
@@ -172,7 +184,8 @@ export function getSortedFeatureBVHNodes<Parameters>(
   maxima: GraphDataView<'float32x2'>,
   leafCapacity: number,
   spatialSort: boolean,
-  storage?: SpatialJoinBVHStorage
+  storage?: SpatialJoinBVHStorage,
+  spatialSortCurve: SpatialSortCurve = DEFAULT_SPATIAL_SORT_CURVE
 ): {bvh: GPUBVH; nodes: readonly GPUCommandNode<Parameters>[]} {
   const featureCount = minima.length;
   if (!spatialSort || featureCount < 2) {
@@ -262,7 +275,7 @@ var<workgroup> sharedMaxima: array<vec2f, 256>;`,
     createWGSLKernelNode<Parameters>(graph, {
       id: `${id}-sort-keys`,
       operation,
-      variant: 'sort-keys',
+      variant: spatialSortCurve === 'hilbert' ? 'sort-keys-hilbert' : 'sort-keys',
       bindings: [
         ...featureBindings,
         {name: 'sceneBounds', view: sceneBounds, type: 'f32', access: 'read'},
@@ -284,6 +297,27 @@ fn quantizeAxis(value: f32, minimum: f32, maximum: f32) -> u32 {
   if (!(extent > 0.0) || !isFiniteValue(extent)) { return 0u; }
   let normalized = clamp((value - minimum) / extent, 0.0, 1.0);
   return min(u32(normalized * 65535.0 + 0.5), 65535u);
+}
+// Classic xy2d on the 65536 x 65536 grid (same curve as GPUHilbertKeys at order 16).
+fn getHilbertIndex(cellX: u32, cellY: u32) -> u32 {
+  var x = cellX;
+  var y = cellY;
+  var key = 0u;
+  for (var s = 32768u; s > 0u; s = s >> 1u) {
+    let rx = select(0u, 1u, (x & s) != 0u);
+    let ry = select(0u, 1u, (y & s) != 0u);
+    key += s * s * ((3u * rx) ^ ry);
+    if (ry == 0u) {
+      if (rx == 1u) {
+        x = 65535u - x;
+        y = 65535u - y;
+      }
+      let swap = x;
+      x = y;
+      y = swap;
+    }
+  }
+  return key;
 }`,
       body: `sortRows[sortRowsOffset + index] = index;
   let center = readFeatureCenter(index);
@@ -291,7 +325,11 @@ fn quantizeAxis(value: f32, minimum: f32, maximum: f32) -> u32 {
   if (center.z > 0.5) {
     let quantizedX = quantizeAxis(center.x, sceneBounds[sceneBoundsOffset], sceneBounds[sceneBoundsOffset + 2u]);
     let quantizedY = quantizeAxis(center.y, sceneBounds[sceneBoundsOffset + 1u], sceneBounds[sceneBoundsOffset + 3u]);
-    key = spreadBits(quantizedX) | (spreadBits(quantizedY) << 1u);
+    key = ${
+      spatialSortCurve === 'hilbert'
+        ? 'getHilbertIndex(quantizedX, quantizedY)'
+        : 'spreadBits(quantizedX) | (spreadBits(quantizedY) << 1u)'
+    };
   }
   sortKeys[sortKeysOffset + index] = key;`
     })

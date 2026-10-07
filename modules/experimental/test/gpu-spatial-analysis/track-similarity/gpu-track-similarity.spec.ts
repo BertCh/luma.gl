@@ -22,8 +22,10 @@ import {createRandom} from '../trajectory-interpolation/trajectory-interpolation
 import {
   computeFrechetOracle,
   computeHausdorffOracle,
+  computeMaxDistanceOracle,
   type Polyline
 } from './track-similarity-oracle';
+import {SHAPELY_DENSIFY_CASES, SHAPELY_LONG_CASES} from './track-similarity-shapely-cases';
 
 /** Shapely 2.1.2 `hausdorff_distance` and `frechet_distance` of these vertex lists (no densify). */
 const SHAPELY_CASES: {a: Polyline; b: Polyline; hausdorff: number; frechet: number}[] = [
@@ -108,7 +110,7 @@ async function runSimilarity(
   setA: readonly Polyline[],
   setB: readonly Polyline[] | undefined,
   pairs: readonly [number, number][],
-  options: {maxFrechetVertices?: number; activePairCount?: number} = {}
+  options: {maxFrechetVertices?: number; activePairCount?: number; densify?: number} = {}
 ) {
   const graph = new GPUCommandGraph(device, {id: 'similarity-test'});
   const buffers: Buffer[] = [];
@@ -126,7 +128,12 @@ async function runSimilarity(
   const packedA = packSet(setA);
   const packedB = setB ? packSet(setB) : undefined;
   const pairCount = pairs.length;
-  const out = {hausdorff: output(pairCount), frechet: output(pairCount), status: output(pairCount)};
+  const out = {
+    hausdorff: output(pairCount),
+    frechet: output(pairCount),
+    maxDistance: output(pairCount),
+    status: output(pairCount)
+  };
   graph.add(
     new GPUTrackSimilarity({
       id: 'similarity',
@@ -162,7 +169,9 @@ async function runSimilarity(
             ),
       hausdorff: importGraphBuffer(graph, 'o-hausdorff', out.hausdorff, 'float32', pairCount),
       frechet: importGraphBuffer(graph, 'o-frechet', out.frechet, 'float32', pairCount),
+      maxDistance: importGraphBuffer(graph, 'o-max', out.maxDistance, 'float32', pairCount),
       status: importGraphBuffer(graph, 'o-status', out.status, 'uint32', pairCount),
+      densify: options.densify,
       maxFrechetVertices: options.maxFrechetVertices
     })
   );
@@ -171,6 +180,7 @@ async function runSimilarity(
   const result = {
     hausdorff: await readFloat32(out.hausdorff, pairCount),
     frechet: await readFloat32(out.frechet, pairCount),
+    maxDistance: await readFloat32(out.maxDistance, pairCount),
     status: await readUint32(out.status, pairCount)
   };
   compiled.destroy();
@@ -232,7 +242,7 @@ it('GPUTrackSimilarity matches the oracles on random pairs, empty tracks and inv
     return points;
   };
   // Lengths up to 70 cross the 64-lane Hausdorff stride; 130 exceeds the default Frechet cap.
-  const lengths = [1, 2, 3, 17, 33, 64, 65, 70, 0, 130, 40, 9];
+  const lengths = [1, 2, 3, 17, 33, 64, 65, 70, 0, 130, 40, 9, 131];
   const tracks = lengths.map(makeTrack);
   const pairs: [number, number][] = [];
   for (let a = 0; a < tracks.length; a++) {
@@ -241,7 +251,7 @@ it('GPUTrackSimilarity matches the oracles on random pairs, empty tracks and inv
     }
   }
   pairs.push([99, 0]);
-  const result = await runSimilarity(device, tracks, undefined, pairs);
+  const result = await runSimilarity(device, tracks, undefined, pairs, {maxFrechetVertices: 128});
   let compared = 0;
   for (const [index, [a, b]] of pairs.entries()) {
     const label = `pair ${a},${b}`;
@@ -262,7 +272,12 @@ it('GPUTrackSimilarity matches the oracles on random pairs, empty tracks and inv
       `${label} hausdorff`
     );
     compared++;
-    if (tracks[a].length > 128 || tracks[b].length > 128) {
+    expectClose(
+      result.maxDistance[index],
+      computeMaxDistanceOracle(tracks[a], tracks[b]),
+      `${label} maxDistance`
+    );
+    if (Math.min(tracks[a].length, tracks[b].length) > 128) {
       expect(result.status[index], label).toBe(STATUS.frechetCapExceeded);
       expect(result.frechet[index]).toBeNaN();
     } else {
@@ -307,5 +322,142 @@ it('GPUTrackSimilarity honors maxFrechetVertices and activePairCount', async () 
   expectClose(limited.frechet[0], computeFrechetOracle(a, b), 'frechet');
   expect(limited.frechet[0]).toBeGreaterThan(0.1);
   expect(limited.frechet[1]).toBeNaN();
+  device.destroy?.();
+});
+
+it('GPUTrackSimilarity matches Shapely densify, polygon boundaries and maximum distance', async () => {
+  const device = await getWebGPUTestDevice();
+  if (!device) {
+    return;
+  }
+  for (const testCase of SHAPELY_DENSIFY_CASES) {
+    const result = await runSimilarity(device, [testCase.a], [testCase.b], [[0, 0]], {
+      densify: testCase.densify
+    });
+    const label = `${testCase.kind} densify ${testCase.densify}`;
+    expectClose(result.hausdorff[0], testCase.hausdorff, `${label} hausdorff`);
+    expectClose(result.frechet[0], testCase.frechet, `${label} frechet`);
+    expectClose(result.maxDistance[0], testCase.maxDistance, `${label} maxDistance`);
+    expect(result.status[0], label).toBe(0);
+    expectClose(
+      computeHausdorffOracle(testCase.a, testCase.b, testCase.densify),
+      testCase.hausdorff,
+      `${label} oracle h`
+    );
+    expectClose(
+      computeFrechetOracle(testCase.a, testCase.b, testCase.densify),
+      testCase.frechet,
+      `${label} oracle f`
+    );
+  }
+  device.destroy?.();
+});
+
+/** Exactly representable f32 zig-zag, mirrored by the Shapely generator. */
+function createFormulaTrack(
+  count: number,
+  stepX: number,
+  stepY: number,
+  originX: number
+): Polyline {
+  return Array.from({length: count}, (_, index) => [
+    Math.fround(originX + index * stepX),
+    Math.fround(((index * 37) % 101) * stepY)
+  ]);
+}
+
+it('GPUTrackSimilarity runs Frechet beyond 256 vertices in strips and with densify', async () => {
+  const device = await getWebGPUTestDevice();
+  if (!device) {
+    return;
+  }
+  // 700 vertices on the lanes (three strips) against 300 vertices of the other track, both orders.
+  const longTrack = createFormulaTrack(700, 0.5, 0.25, 0);
+  const shortTrack = createFormulaTrack(300, 1.2, 0.3, 3);
+  const startTime = performance.now();
+  const strips = await runSimilarity(device, [longTrack], [shortTrack], [[0, 0]], {
+    maxFrechetVertices: 512
+  });
+  // Sanity timing: also proves the GPU path ran rather than the no-device early return.
+  console.log(
+    `track-similarity 700x300 Frechet+Hausdorff+maxDistance: ${(performance.now() - startTime).toFixed(1)} ms, ` +
+      `frechet ${strips.frechet[0]}`
+  );
+  expect(strips.status[0]).toBe(0);
+  expectClose(strips.frechet[0], SHAPELY_LONG_CASES.strips.frechet, 'strips frechet');
+  expectClose(strips.hausdorff[0], SHAPELY_LONG_CASES.strips.hausdorff, 'strips hausdorff');
+  const swapped = await runSimilarity(device, [shortTrack], [longTrack], [[0, 0]], {
+    maxFrechetVertices: 512
+  });
+  expectClose(swapped.frechet[0], SHAPELY_LONG_CASES.strips.frechet, 'swapped frechet');
+  // The shorter track (300) exceeds a 256 cap: flagged, Hausdorff still computed.
+  const capped = await runSimilarity(device, [longTrack], [shortTrack], [[0, 0]]);
+  expect(capped.status[0]).toBe(STATUS.frechetCapExceeded);
+  expect(capped.frechet[0]).toBeNaN();
+  // Densified: 100 x 40 vertices become 991 x 391 densified points at densify 0.1.
+  const smallA = createFormulaTrack(100, 0.5, 0.25, 0);
+  const smallB = createFormulaTrack(40, 1.25, 0.3, 3);
+  for (const expected of SHAPELY_LONG_CASES.densified) {
+    const result = await runSimilarity(device, [smallA], [smallB], [[0, 0]], {
+      densify: expected.densify,
+      maxFrechetVertices: 512
+    });
+    expect(result.status[0]).toBe(0);
+    expectClose(result.frechet[0], expected.frechet, `densify ${expected.densify} frechet`);
+    expectClose(result.hausdorff[0], expected.hausdorff, `densify ${expected.densify} hausdorff`);
+  }
+  device.destroy?.();
+});
+
+it('GPUTrackSimilarity handles very unbalanced track pairs and a closed loop against a long track', async () => {
+  const device = await getWebGPUTestDevice();
+  if (!device) {
+    return;
+  }
+  const random = createRandom(21);
+  const makeTrack = (count: number, spread: number): Polyline => {
+    const points: [number, number][] = [];
+    let [x, y] = [random() * 100, random() * 100];
+    for (let index = 0; index < count; index++) {
+      points.push([x, y]);
+      x += (random() - 0.5) * spread;
+      y += (random() - 0.5) * spread;
+    }
+    return points;
+  };
+  // Few points against thousands of segments (cooperative branch), many against few (chunked
+  // early-break branch), a single point, and 8 points (the cooperative threshold).
+  const tracks = [
+    makeTrack(5, 40),
+    makeTrack(2500, 2),
+    makeTrack(1, 1),
+    makeTrack(8, 30),
+    makeTrack(9, 30),
+    makeTrack(700, 6)
+  ];
+  const pairs: [number, number][] = [
+    [0, 1],
+    [1, 0],
+    [2, 1],
+    [1, 2],
+    [3, 5],
+    [5, 3],
+    [4, 1],
+    [1, 5]
+  ];
+  const result = await runSimilarity(device, tracks, undefined, pairs, {maxFrechetVertices: 16});
+  for (const [index, [a, b]] of pairs.entries()) {
+    const label = `pair ${a},${b}`;
+    expectClose(
+      result.hausdorff[index],
+      computeHausdorffOracle(tracks[a], tracks[b]),
+      `${label} hausdorff`
+    );
+    expectClose(
+      result.maxDistance[index],
+      computeMaxDistanceOracle(tracks[a], tracks[b]),
+      `${label} maxDistance`
+    );
+  }
   device.destroy?.();
 });

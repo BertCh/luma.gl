@@ -31,6 +31,8 @@ import {
 } from './temporal-reduction-parameters';
 
 const OPERATION = 'GPUTemporalReduction';
+/** Largest slot count reduced in workgroup-private tables (5 words per slot). */
+const PRIVATIZED_SLOT_LIMIT = 256;
 const NO_SLOT = '0xffffffffu';
 /** Largest slot count; `0xffffffff` is the internal "no slot" sentinel. */
 const MAXIMUM_SLOT_COUNT = 0xfffffffe;
@@ -347,8 +349,55 @@ ${isWordMode ? TIME_WORDS_WGSL : ''}`,
           write('lastTimeKeys', lastTimeKeys, 'atomic<u32>')
         ],
         invocationCount: rows,
-        declarations: ORDERED_KEY_WGSL,
-        body: `let slot = rowSlots[rowSlotsOffset + index];
+        // With few slots every row contends on the same handful of counters, so each workgroup
+        // reduces into workgroup-private tables and flushes once per occupied slot. Integer add,
+        // min and max are associative, so the result is unchanged.
+        ...(slotCount <= PRIVATIZED_SLOT_LIMIT
+          ? {
+              guardIndex: false,
+              declarations: `${ORDERED_KEY_WGSL}
+const SLOT_COUNT: u32 = ${slotCount}u;
+var<workgroup> localCounts: array<atomic<u32>, ${slotCount}>;
+var<workgroup> localMinimums: array<atomic<u32>, ${slotCount}>;
+var<workgroup> localMaximums: array<atomic<u32>, ${slotCount}>;
+var<workgroup> localFirstTimes: array<atomic<u32>, ${slotCount}>;
+var<workgroup> localLastTimes: array<atomic<u32>, ${slotCount}>;`,
+              // No early return: every invocation of a workgroup must reach the barriers.
+              body: `for (var slot = localInvocationIndex; slot < SLOT_COUNT; slot += 256u) {
+    atomicStore(&localCounts[slot], 0u);
+    atomicStore(&localMinimums[slot], 0xffffffffu);
+    atomicStore(&localMaximums[slot], 0u);
+    atomicStore(&localFirstTimes[slot], 0xffffffffu);
+    atomicStore(&localLastTimes[slot], 0u);
+  }
+  workgroupBarrier();
+  if (index < INVOCATION_COUNT) {
+    let slot = rowSlots[rowSlotsOffset + index];
+    if (slot != ${NO_SLOT}) {
+      let valueKey = getOrderedKey(values[valuesOffset + index]);
+      let timeKey = rowTimeKeys[rowTimeKeysOffset + index];
+      atomicAdd(&localCounts[slot], 1u);
+      atomicMin(&localMinimums[slot], valueKey);
+      atomicMax(&localMaximums[slot], valueKey);
+      atomicMin(&localFirstTimes[slot], timeKey);
+      atomicMax(&localLastTimes[slot], timeKey);
+    }
+  }
+  workgroupBarrier();
+  for (var slot = localInvocationIndex; slot < SLOT_COUNT; slot += 256u) {
+    let count = atomicLoad(&localCounts[slot]);
+    if (count != 0u) {
+      atomicAdd(&counts[countsOffset + slot], count);
+      atomicMin(&minKeys[minKeysOffset + slot], atomicLoad(&localMinimums[slot]));
+      atomicMax(&maxKeys[maxKeysOffset + slot], atomicLoad(&localMaximums[slot]));
+      atomicMin(&firstTimeKeys[firstTimeKeysOffset + slot], atomicLoad(&localFirstTimes[slot]));
+      atomicMax(&lastTimeKeys[lastTimeKeysOffset + slot], atomicLoad(&localLastTimes[slot]));
+    }
+  }`
+            }
+          : {
+              declarations: ORDERED_KEY_WGSL,
+              body: `let slot = rowSlots[rowSlotsOffset + index];
   if (slot == ${NO_SLOT}) {
     return;
   }
@@ -359,6 +408,7 @@ ${isWordMode ? TIME_WORDS_WGSL : ''}`,
   atomicMax(&maxKeys[maxKeysOffset + slot], valueKey);
   atomicMin(&firstTimeKeys[firstTimeKeysOffset + slot], timeKey);
   atomicMax(&lastTimeKeys[lastTimeKeysOffset + slot], timeKey);`
+            })
       })
     );
 

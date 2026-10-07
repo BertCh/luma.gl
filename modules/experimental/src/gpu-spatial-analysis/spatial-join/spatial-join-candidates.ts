@@ -70,7 +70,11 @@ export function getSpatialJoinCandidateNodes<Parameters>(
     leftMaxima: GraphDataView<'float32x2'>;
     tree: SpatialJoinCandidateTree;
     candidateCapacity: number;
-    margin: number;
+    /**
+     * Box expansion in coordinate units: a compile-time number, or a one-row float32 view read at
+     * every encoding (a negative, NaN or infinite value counts as 0).
+     */
+    margin: number | GraphDataView<'float32'>;
     state: GraphDataView<'uint32'>;
     candidatePairs: GraphDataView<'uint32x2'>;
   }
@@ -79,20 +83,29 @@ export function getSpatialJoinCandidateNodes<Parameters>(
   const nodes: GPUCommandNode<Parameters>[] = [];
   const leftCounts = createTransientView(graph, `${id}-left-counts`, 'uint32', leftCount);
   const leftOffsets = createTransientView(graph, `${id}-left-offsets`, 'uint32', leftCount);
+  const marginView = typeof props.margin === 'number' ? undefined : props.margin;
   const probeBindings = (extra: WGSLKernelBinding[]): WGSLKernelBinding[] => [
     {name: 'leftMinima', view: props.leftMinima, type: 'f32', access: 'read'},
     {name: 'leftMaxima', view: props.leftMaxima, type: 'f32', access: 'read'},
     {name: 'nodeMinima', view: tree.nodeMinima, type: 'f32', access: 'read'},
     {name: 'nodeMaxima', view: tree.nodeMaxima, type: 'f32', access: 'read'},
     {name: 'leafIds', view: tree.leafIds, type: 'u32', access: 'read'},
+    ...(marginView
+      ? [{name: 'marginRow', view: marginView, type: 'f32', access: 'read'} as const]
+      : []),
     ...extra
   ];
-  const margin = Math.fround(props.margin);
+  const marginWGSL = marginView
+    ? `fn getMargin() -> f32 {
+  let margin = marginRow[marginRowOffset];
+  return select(0.0, margin, margin >= 0.0 && margin <= 3.4028234e38);
+}`
+    : `fn getMargin() -> f32 { return ${formatSpatialJoinFloat(Math.fround(props.margin as number))}; }`;
   const probeDeclarations = `${SPATIAL_JOIN_WGSL_HELPERS}
 const INTERNAL_NODE_COUNT: u32 = ${tree.internalNodeCount}u;
 const RIGHT_COUNT: u32 = ${rightCount}u;
 const CANDIDATE_CAPACITY: u32 = ${candidateCapacity}u;
-const MARGIN: f32 = ${formatSpatialJoinFloat(margin)};
+${marginWGSL}
 fn nodeOverlaps(node: u32, queryMinimum: vec2f, queryMaximum: vec2f) -> bool {
   let component = node * 2u;
   let minimum = vec2f(nodeMinima[nodeMinimaOffset + component], nodeMinima[nodeMinimaOffset + component + 1u]);
@@ -107,8 +120,9 @@ fn nodeOverlaps(node: u32, queryMinimum: vec2f, queryMaximum: vec2f) -> bool {
   let boxMaximum = vec2f(leftMaxima[leftMaximaOffset + index * 2u], leftMaxima[leftMaximaOffset + index * 2u + 1u]);
   ${prologue}
   if (boxMinimum.x <= boxMaximum.x && boxMinimum.y <= boxMaximum.y) {
-    let queryMinimum = boxMinimum - vec2f(MARGIN);
-    let queryMaximum = boxMaximum + vec2f(MARGIN);
+    let margin = getMargin();
+    let queryMinimum = boxMinimum - vec2f(margin);
+    let queryMaximum = boxMaximum + vec2f(margin);
     var node = 0u;
     loop {
       if (nodeOverlaps(node, queryMinimum, queryMaximum)) {

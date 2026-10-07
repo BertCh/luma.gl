@@ -46,8 +46,40 @@ it('GPUCoverageSimplification validates props and declares nodes', () => {
         output: {...base.output, keepMask: view('uint32', 3)}
       })
   ).toThrow(/keepMask length/);
+  expect(() => new GPUCoverageSimplification({...base, topologyRounds: -1})).toThrow(
+    /topologyRounds/
+  );
+  expect(() => new GPUCoverageSimplification({...base, topologyPairCapacity: 0})).toThrow(
+    /topologyPairCapacity/
+  );
+  expect(
+    () =>
+      new GPUCoverageSimplification({
+        ...base,
+        output: {...base.output, topologyStats: view('uint32', 3)}
+      })
+  ).toThrow(/topologyStats/);
   const ids = new GPUCoverageSimplification(base).getCommandNodes(graph).map(node => node.id);
   expect(ids[0]).toBe('coverage-simplification-vertex-topology');
   expect(ids.at(-1)).toBe('coverage-simplification-emit-offsets');
   expect(ids).toContain('coverage-simplification-arcs-init');
+  expect(ids).toContain('coverage-simplification-ring-minimum');
+  expect(ids).toContain('coverage-simplification-round-0-classify');
+  // The measuring-only last round is built only when topologyStats consumes it.
+  expect(ids).not.toContain('coverage-simplification-round-4-classify');
+  expect(ids).toContain('coverage-simplification-round-3-classify');
+  const statsIds = new GPUCoverageSimplification({
+    ...base,
+    id: 'stats',
+    output: {...base.output, topologyStats: view('uint32', 4)}
+  })
+    .getCommandNodes(graph)
+    .map(node => node.id);
+  expect(statsIds).toContain('stats-round-4-classify');
+  expect(statsIds).not.toContain('stats-round-4-repair');
+  expect(ids).toContain('coverage-simplification-round-3-repair');
+  const plainIds = new GPUCoverageSimplification({...base, id: 'plain', topologyRounds: 0})
+    .getCommandNodes(graph)
+    .map(node => node.id);
+  expect(plainIds.some(id => id.includes('plain-round-'))).toBe(false);
 });

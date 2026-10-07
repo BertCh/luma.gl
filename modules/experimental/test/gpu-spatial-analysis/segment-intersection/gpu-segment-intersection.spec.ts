@@ -537,3 +537,29 @@ it('GPUSegmentIntersection agrees with Shapely on a pinned lattice scene', async
     ])
   );
 });
+
+it('GPUSegmentIntersection self mode on a shuffled multi-block scene equals the oracle', async () => {
+  const device = await getWebGPUTestDevice();
+  if (!device) {
+    return;
+  }
+  // Short random two-vertex lines in no spatial order: 4400 vertices (more than one bounds
+  // reduction block), spatialSort on, so self-mode probes walk the tree in leaf order and the
+  // sorted-order output must still equal the row-order oracle. A few long lines cross many.
+  const random = createRandom(23);
+  const scene: OracleSegmentFeature[] = [];
+  for (let row = 0; row < 2200; row++) {
+    const a = roundPoint([random() * 300, random() * 300]);
+    const b = roundPoint([a[0] + (random() - 0.5) * 8, a[1] + (random() - 0.5) * 8]);
+    scene.push(line(a, b));
+  }
+  for (const row of [100, 1000, 2100]) {
+    scene[row] = line(roundPoint([0, random() * 300]), roundPoint([300, random() * 300]));
+  }
+  const expected = intersectWithOracle(scene);
+  expect(expected.length).toBeGreaterThan(30);
+  for (const spatialSort of [true, false]) {
+    const result = await runIntersection(device, scene, undefined, {capacity: 20000, spatialSort});
+    expectMatchesOracle(result, expected, `shuffled self sort=${spatialSort}`);
+  }
+}, 120000);

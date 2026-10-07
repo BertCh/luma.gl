@@ -33,12 +33,15 @@ it('GPUKMeans validates props and declares nodes', () => {
     /initialization/
   );
   expect(() => new GPUKMeans({...base, seed: -1})).toThrow(/seed/);
+  expect(() => new GPUKMeans({...base, tolerance: -1})).toThrow(/tolerance/);
+  expect(() => new GPUKMeans({...base, convergence: view('uint32', 3)})).toThrow(/convergence/);
   expect(() => new GPUKMeans({...base, centers: view('float32x2', 4)})).toThrow(/centers length/);
   expect(() => new GPUKMeans({...base, sizes: view('uint32', 2)})).toThrow(/sizes length/);
   const first = new GPUKMeans(base).getCommandNodes(graph).map(node => node.id);
-  expect(first[0]).toBe('kmeans-prepare');
+  expect(first).toContain('kmeans-prepare');
   expect(first).toContain('kmeans-initial-centers');
   expect(first).toContain('kmeans-iteration-1-update');
+  expect(first).toContain('kmeans-iteration-1-converge');
   expect(first.at(-1)).toMatch(/kmeans-final-sizes/);
   const seeded = new GPUKMeans({...make(), id: 'seeded', initialization: 'kmeans++', seed: 9})
     .getCommandNodes(graph)

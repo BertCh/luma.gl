@@ -13,7 +13,7 @@ import {
 } from '@luma.gl/gpgpu/gpu-core';
 import {getCellKeyLayout, type GPUCellFamily} from '../cell-aggregation/cell-keys';
 import type {GPUCommandNodeProducer} from '@luma.gl/gpgpu/gpu-core';
-import {createPublishNode} from '../../utils/wgsl-kernel-nodes';
+import {createFillNode, createPublishNode} from '../../utils/wgsl-kernel-nodes';
 import {
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph
@@ -21,6 +21,9 @@ import {
 import {
   CELL_COVER_RANGE_STRIDE,
   createCoverCountNode,
+  createCoverRingFeatureNode,
+  createCoverSlabBasesNode,
+  createCoverSlabEdgesNode,
   createCoverFinalizeNode,
   createCoverTestNode,
   createCoverWriteNode,
@@ -95,11 +98,29 @@ export type GPUCellCoverProps = {
    * covered in order until the candidates run out.
    */
   candidateCapacity: number;
+  /**
+   * Compile-time. Builds a per-feature edge-slab index (edges bucketed by y) so each candidate
+   * tests only the edges near its latitude instead of every edge of its feature: the test cost per
+   * candidate drops from the feature's vertex count to roughly the edges crossing one slab. Results
+   * are identical, and features that do not fit the index (too few candidates, non-finite
+   * vertices, index capacity) test every edge as before. Needs GeoArrow offsets that are
+   * monotone. Defaults to `true` when `candidateCapacity * vertexCount` is at least 4 million
+   * (about where the extra passes pay for themselves), else `false`.
+   */
+  edgeSlabs?: boolean;
+  /**
+   * Compile-time. Capacity of the edge-slab index in (edge, slab) entries, over all features.
+   * Defaults to four times the vertex count, which holds polygons whose edges span a few slabs
+   * each; features that exceed it test every edge instead. Ignored without `edgeSlabs`.
+   */
+  edgeSlabEntryCapacity?: number;
   /** Capacity-bounded output. */
   output: GPUCellCoverOutput;
 };
 
 const DEFAULT_ID = 'cell-cover';
+/** Candidate capacity times vertex count from which the edge-slab index is built by default. */
+const EDGE_SLAB_DEFAULT_WORK = 4_000_000;
 
 /**
  * Polyfills polygon features with Quadbin or H3 cells.
@@ -132,6 +153,8 @@ export class GPUCellCover implements GPUCommandNodeProducer {
   readonly featureCount: number;
   /** Resolved containment. */
   readonly containment: GPUCellCoverContainment;
+  /** Whether the edge-slab index is built. */
+  readonly edgeSlabs: boolean;
 
   constructor(props: GPUCellCoverProps) {
     this.id = props.id ?? DEFAULT_ID;
@@ -160,6 +183,17 @@ export class GPUCellCover implements GPUCommandNodeProducer {
       }
     }
     this.featureCount = props.featureOffsets.length - 1;
+    this.edgeSlabs =
+      (props.edgeSlabs ??
+        props.candidateCapacity * props.polygonPositions.length >= EDGE_SLAB_DEFAULT_WORK) &&
+      props.ringOffsets.length >= 2 &&
+      props.polygonOffsets.length >= 2;
+    if (
+      props.edgeSlabEntryCapacity !== undefined &&
+      (!Number.isSafeInteger(props.edgeSlabEntryCapacity) || props.edgeSlabEntryCapacity < 1)
+    ) {
+      throw new Error(`${id} edgeSlabEntryCapacity must be a positive integer`);
+    }
     if (props.featureIds) {
       validatePackedUint32View(props.featureIds, `${id} featureIds`);
       if (props.featureIds.length !== this.featureCount) {
@@ -241,6 +275,13 @@ export class GPUCellCover implements GPUCommandNodeProducer {
       output.overflow,
       output.totalCount
     ]);
+    const vertexCount = props.polygonPositions.length;
+    const slabCapacities = this.edgeSlabs
+      ? {
+          slabCapacity: Math.floor(vertexCount / 4) + 1,
+          entryCapacity: props.edgeSlabEntryCapacity ?? Math.max(4 * vertexCount, 1024)
+        }
+      : undefined;
     const context: CellCoverKernelContext = {
       id,
       family: props.family,
@@ -249,6 +290,7 @@ export class GPUCellCover implements GPUCommandNodeProducer {
       computeCore: Boolean(output.core),
       featureCount,
       candidateCapacity,
+      edgeSlabs: slabCapacities,
       polygonPositions: props.polygonPositions,
       featureOffsets: props.featureOffsets,
       polygonOffsets: props.polygonOffsets,
@@ -272,15 +314,123 @@ export class GPUCellCover implements GPUCommandNodeProducer {
     );
     const total = createTransientView(graph, `${id}-total`, 'uint32', 1);
     const candidateOverflow = createTransientView(graph, `${id}-candidate-overflow`, 'uint32', 1);
+    const slabNodes: GPUCommandNode<Parameters>[] = [];
+    let slabViews:
+      | {
+          slabOffsets: GraphDataView<'uint32'>;
+          slabEntries: GraphDataView<'uint32x2'>;
+          nextVertex: GraphDataView<'uint32'>;
+          slabNumbers: GraphDataView<'uint32'>;
+        }
+      | undefined;
+    if (slabCapacities) {
+      // Edge-slab index: per-feature slab counts and bases, then a counting sort of the edges into
+      // slabs (count, scan, fill), all vertex-parallel. Entries are (first vertex, second vertex).
+      const {slabCapacity, entryCapacity} = slabCapacities;
+      const slabNumbers = createTransientView(
+        graph,
+        `${id}-slab-numbers`,
+        'uint32',
+        featureCount + 1
+      );
+      const slabStarts = createTransientView(
+        graph,
+        `${id}-slab-starts`,
+        'uint32',
+        featureCount + 1
+      );
+      const ringFeature = createTransientView(
+        graph,
+        `${id}-ring-feature`,
+        'uint32',
+        props.ringOffsets.length - 1
+      );
+      const nextVertex = createTransientView(graph, `${id}-next-vertex`, 'uint32', vertexCount);
+      const vertexFeature = createTransientView(
+        graph,
+        `${id}-vertex-feature`,
+        'uint32',
+        vertexCount
+      );
+      const slabCounters = createTransientView(
+        graph,
+        `${id}-slab-counters`,
+        'uint32',
+        slabCapacity + 1
+      );
+      const slabOffsets = createTransientView(
+        graph,
+        `${id}-slab-offsets`,
+        'uint32',
+        slabCapacity + 1
+      );
+      const slabEntries = createTransientView(
+        graph,
+        `${id}-slab-entries`,
+        'uint32x2',
+        entryCapacity
+      );
+      const clearCounters = (name: string) =>
+        createFillNode<Parameters>(graph, {
+          id: `${id}-slab-clear-${name}`,
+          operation: 'GPUCellCover',
+          view: slabCounters,
+          type: 'u32',
+          value: '0u'
+        });
+      slabNodes.push(
+        ...new GPUScan({
+          id: `${id}-slab-number-scan`,
+          input: slabNumbers,
+          output: slabStarts,
+          mode: 'exclusive'
+        }).getCommandNodes(graph),
+        createCoverSlabBasesNode<Parameters>(graph, context, {ranges, slabStarts}),
+        createCoverRingFeatureNode<Parameters>(graph, context, ringFeature),
+        clearCounters('count'),
+        createCoverSlabEdgesNode<Parameters>(graph, context, 'count', {
+          ranges,
+          nextVertex,
+          vertexFeature,
+          ringFeature,
+          slabCounters
+        }),
+        ...new GPUScan({
+          id: `${id}-slab-offset-scan`,
+          input: slabCounters,
+          output: slabOffsets,
+          mode: 'exclusive'
+        }).getCommandNodes(graph),
+        clearCounters('cursor'),
+        createCoverSlabEdgesNode<Parameters>(graph, context, 'fill', {
+          ranges,
+          nextVertex,
+          vertexFeature,
+          slabCounters,
+          slabOffsets,
+          slabEntries
+        })
+      );
+      slabViews = {slabOffsets, slabEntries, nextVertex, slabNumbers};
+    }
     return [
-      createCoverCountNode<Parameters>(graph, context, counts, ranges),
+      createCoverCountNode<Parameters>(graph, context, counts, ranges, slabViews?.slabNumbers),
       ...new GPUScan({
         id: `${id}-candidate-scan`,
         input: counts,
         output: starts,
         mode: 'exclusive'
       }).getCommandNodes(graph),
-      createCoverTestNode<Parameters>(graph, context, {ranges, starts, flags, candidateCells}),
+      ...slabNodes,
+      createCoverTestNode<Parameters>(graph, context, {
+        ranges,
+        starts,
+        flags,
+        candidateCells,
+        slabOffsets: slabViews?.slabOffsets,
+        slabEntries: slabViews?.slabEntries,
+        nextVertex: slabViews?.nextVertex
+      }),
       ...new GPUScan({
         id: `${id}-accept-scan`,
         input: flags,

@@ -20,6 +20,7 @@ import {
   createPairStatisticsClearNode,
   getPairStatisticsInputNodes,
   getPairStatisticsSharedWGSL,
+  getPairStatisticsSortedPointsNodes,
   getPairStatisticsTotalSumNodes,
   PAIR_STATISTICS_FLOAT_WGSL,
   validatePairStatisticsInputs
@@ -237,74 +238,120 @@ export class GPUPointPatternIndices implements GPUCommandNodeProducer {
         createTransientView(graph, `${id}-nearest-distances`, 'float32', rows);
       const ids =
         props.nearestNeighborIds ?? createTransientView(graph, `${id}-nearest-ids`, 'uint32', rows);
+      const sortedPoints = getPairStatisticsSortedPointsNodes<Parameters>(graph, {
+        id,
+        operation: OPERATION,
+        positions,
+        sortedRows: inputs.sortedRows,
+        cellOffsets: inputs.cellOffsets,
+        gridSize
+      });
       nodes.push(
+        ...sortedPoints.nodes,
         createWGSLKernelNode<Parameters>(graph, {
           id: `${id}-nearest`,
           operation: OPERATION,
           variant: 'nearest-neighbor',
           bindings: [
-            {name: 'positions', view: positions, type: 'f32', access: 'read'},
             {name: 'parameters', view: parameters, type: 'f32', access: 'read'},
             {name: 'sortedRows', view: inputs.sortedRows, type: 'u32', access: 'read'},
+            {name: 'sortedPoints', view: sortedPoints.sortedPoints, type: 'u32', access: 'read'},
             {name: 'cellOffsets', view: inputs.cellOffsets, type: 'u32', access: 'read'},
-            {name: 'cellKeys', view: inputs.cellKeys, type: 'u32', access: 'read'},
             {name: 'distances', view: distances, type: 'f32', access: 'read_write'},
             {name: 'ids', view: ids, type: 'u32', access: 'read_write'}
           ],
           invocationCount: rows,
           declarations: sharedWGSL,
+          // Thread `index` searches for the row at cell-order slot `index` (threads of a workgroup
+          // share cells: coalesced candidate reads, coherent ring loops) and writes the result at
+          // that row. Excluded rows sort last and only get the "no neighbor" result.
           body: `let lattice = readLattice();
+  let focus = sortedRows[sortedRowsOffset + index];
   var nearestDistance = getQuietNaN(index);
   var nearestId = 0xffffffffu;
-  if (cellKeys[cellKeysOffset + index] < CELL_COUNT && lattice.valid) {
-    let x = positions[positionsOffset + index * 2u];
-    let y = positions[positionsOffset + index * 2u + 1u];
-    let column = i32(getCellColumn(lattice, x));
-    let row = i32(getCellRow(lattice, y));
-    let columns = i32(lattice.columns);
-    let rowCount = i32(lattice.rows);
+  if (index < cellOffsets[cellOffsetsOffset + CELL_COUNT] && lattice.valid) {
+    let x = bitcast<f32>(sortedPoints[sortedPointsOffset + index * 3u]);
+    let y = bitcast<f32>(sortedPoints[sortedPointsOffset + index * 3u + 1u]);
+    let queryColumn = i32(getCellColumn(lattice, x));
+    let queryRow = i32(getCellRow(lattice, y));
+    let lastColumn = i32(lattice.columns) - 1;
+    let lastRow = i32(lattice.rows) - 1;
     var bestSquared = 3.0e38;
     var bestId = 0xffffffffu;
-    let minimumCell = min(lattice.cellWidth, lattice.cellHeight);
     let ringCount = max(lattice.columns, lattice.rows);
-    for (var ring = 0u; ring < ringCount; ring++) {
-      // Every point of ring k is at least (k - 1) cells away along an axis; shrink for rounding.
-      if (ring >= 2u && bestId != 0xffffffffu) {
-        let bound = f32(ring - 1u) * minimumCell * 0.998;
-        if (bound * bound > bestSquared) {
-          break;
+    // Absolute slack covering f32 rounding of the cell assignment (as in the kNN search).
+    let slack = (lattice.cellWidth + lattice.cellHeight) * 0.0009765625 +
+      (abs(lattice.minimumX) + abs(lattice.maximumX) + abs(lattice.minimumY) + abs(lattice.maximumY)) * 0.00000095367431640625;
+    for (var ringIndex = 0u; ringIndex < ringCount; ringIndex++) {
+      let ring = i32(ringIndex);
+      let firstColumn = max(queryColumn - ring, 0);
+      let endColumn = min(queryColumn + ring, lastColumn);
+      let firstRow = max(queryRow - ring, 0);
+      let endRow = min(queryRow + ring, lastRow);
+      for (var cellRow = firstRow; cellRow <= endRow; cellRow++) {
+        let rowBase = u32(cellRow) * lattice.columns;
+        // The top and bottom rows of the ring are full (one contiguous slot range, as cells are
+        // row major); the others only hold its two end cells.
+        let isFullRow = abs(cellRow - queryRow) == ring;
+        let step = select(max(2 * ring, 1), 1, isFullRow);
+        var columnRangeEnd = endColumn;
+        if (!isFullRow) {
+          columnRangeEnd = queryColumn + ring;
+        }
+        var cellColumn = select(queryColumn - ring, firstColumn, isFullRow);
+        loop {
+          if (cellColumn > columnRangeEnd) { break; }
+          if (cellColumn >= 0 && cellColumn <= lastColumn) {
+            var begin = cellOffsets[cellOffsetsOffset + rowBase + u32(cellColumn)];
+            var end = cellOffsets[cellOffsetsOffset + rowBase + u32(cellColumn) + 1u];
+            if (isFullRow) {
+              end = cellOffsets[cellOffsetsOffset + rowBase + u32(endColumn) + 1u];
+            }
+            for (var slot = begin; slot < end; slot++) {
+              let neighbor = sortedPoints[sortedPointsOffset + slot * 3u + 2u];
+              if (neighbor == focus) {
+                continue;
+              }
+              let deltaX = bitcast<f32>(sortedPoints[sortedPointsOffset + slot * 3u]) - x;
+              let deltaY = bitcast<f32>(sortedPoints[sortedPointsOffset + slot * 3u + 1u]) - y;
+              let distanceSquared = deltaX * deltaX + deltaY * deltaY;
+              if (distanceSquared < bestSquared || (distanceSquared == bestSquared && neighbor < bestId)) {
+                bestSquared = distanceSquared;
+                bestId = neighbor;
+              }
+            }
+          }
+          if (isFullRow) { break; }
+          cellColumn += step;
         }
       }
-      let radius = i32(ring);
-      for (var rowOffset = -radius; rowOffset <= radius; rowOffset++) {
-        let cellRow = row + rowOffset;
-        if (cellRow < 0 || cellRow >= rowCount) {
-          continue;
-        }
-        // The top and bottom rows of the ring are full; the others only hold its two end cells.
-        let step = select(2 * radius, 1, rowOffset == radius || rowOffset == -radius);
-        for (var columnOffset = -radius; columnOffset <= radius; columnOffset += step) {
-          let cellColumn = column + columnOffset;
-          if (cellColumn < 0 || cellColumn >= columns) {
-            continue;
-          }
-          let cell = u32(cellRow) * lattice.columns + u32(cellColumn);
-          let begin = cellOffsets[cellOffsetsOffset + cell];
-          let end = cellOffsets[cellOffsetsOffset + cell + 1u];
-          for (var slot = begin; slot < end; slot++) {
-            let neighbor = sortedRows[sortedRowsOffset + slot];
-            if (neighbor == index) {
-              continue;
-            }
-            let deltaX = positions[positionsOffset + neighbor * 2u] - x;
-            let deltaY = positions[positionsOffset + neighbor * 2u + 1u] - y;
-            let distanceSquared = deltaX * deltaX + deltaY * deltaY;
-            if (distanceSquared < bestSquared || (distanceSquared == bestSquared && neighbor < bestId)) {
-              bestSquared = distanceSquared;
-              bestId = neighbor;
-            }
-          }
-        }
+      // Clearance of the visited box on each side; a side at the lattice edge has nothing beyond
+      // it. Every unvisited point is at least that far away, so stop once the best is strictly
+      // closer (ties at the best distance therefore always resolve to the lowest ID).
+      var clearance = 3.0e38;
+      var open = false;
+      if (queryColumn - ring > 0) {
+        clearance = min(clearance, x - (lattice.minimumX + f32(queryColumn - ring) * lattice.cellWidth));
+        open = true;
+      }
+      if (queryColumn + ring < lastColumn) {
+        clearance = min(clearance, lattice.minimumX + f32(queryColumn + ring + 1) * lattice.cellWidth - x);
+        open = true;
+      }
+      if (queryRow - ring > 0) {
+        clearance = min(clearance, y - (lattice.minimumY + f32(queryRow - ring) * lattice.cellHeight));
+        open = true;
+      }
+      if (queryRow + ring < lastRow) {
+        clearance = min(clearance, lattice.minimumY + f32(queryRow + ring + 1) * lattice.cellHeight - y);
+        open = true;
+      }
+      if (!open) {
+        break;
+      }
+      let safeClearance = max(clearance - slack, 0.0);
+      if (bestId != 0xffffffffu && bestSquared < safeClearance * safeClearance) {
+        break;
       }
     }
     if (bestId != 0xffffffffu) {
@@ -312,8 +359,8 @@ export class GPUPointPatternIndices implements GPUCommandNodeProducer {
       nearestId = bestId;
     }
   }
-  distances[distancesOffset + index] = nearestDistance;
-  ids[idsOffset + index] = nearestId;`
+  distances[distancesOffset + focus] = nearestDistance;
+  ids[idsOffset + focus] = nearestId;`
         })
       );
 

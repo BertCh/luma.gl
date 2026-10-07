@@ -27,6 +27,18 @@ export type ZoneGPUResult = {
   types: number[];
   times: number[];
   rows: number[];
+  positions: number[];
+  table: {
+    count: number;
+    overflow: number;
+    totalCount: number;
+    tracks: number[];
+    zones: number[];
+    visits: number[];
+    dwellTimes: number[];
+    firstEnterTimes: number[];
+    lastExitTimes: number[];
+  };
   dwellTimes: number[];
   visitCounts: number[];
   trackEventCounts: number[];
@@ -46,6 +58,8 @@ export async function runZoneEvents(
     candidateCapacity: number;
     maxEventsPerTrack: number;
     eventCapacity: number;
+    /** Sparse table row capacity. Defaults to every `(track, zone)` cell. */
+    tableCapacity?: number;
     spatialSort?: boolean;
   }
 ): Promise<ZoneGPUResult> {
@@ -54,6 +68,7 @@ export async function runZoneEvents(
   const trackCount = tracks.trackOffsets.length - 1;
   const cellCount = trackCount * options.zoneCount;
   const {eventCapacity} = options;
+  const tableCapacity = options.tableCapacity ?? cellCount;
   const graph = new GPUCommandGraph(device, {id: 'zone-events-test'});
   const buffers: Buffer[] = [];
   const input = (values: Float32Array | Uint32Array) => {
@@ -77,6 +92,16 @@ export async function runZoneEvents(
     types: output(eventCapacity),
     times: output(eventCapacity),
     rows: output(eventCapacity),
+    positions: output(2 * eventCapacity),
+    tableIds: output(tableCapacity),
+    tableZones: output(tableCapacity),
+    tableVisits: output(tableCapacity),
+    tableDwell: output(tableCapacity),
+    tableFirst: output(tableCapacity),
+    tableLast: output(tableCapacity),
+    tableCount: output(1),
+    tableOverflow: output(1),
+    tableTotal: output(1),
     count: output(1),
     overflow: output(1),
     total: output(1),
@@ -133,7 +158,33 @@ export async function runZoneEvents(
         eventZones: importGraphBuffer(graph, 'o-zones', out.zones, 'uint32', eventCapacity),
         eventTypes: importGraphBuffer(graph, 'o-types', out.types, 'uint32', eventCapacity),
         eventTimes: importGraphBuffer(graph, 'o-times', out.times, 'float32', eventCapacity),
-        eventRows: importGraphBuffer(graph, 'o-rows', out.rows, 'uint32', eventCapacity)
+        eventRows: importGraphBuffer(graph, 'o-rows', out.rows, 'uint32', eventCapacity),
+        eventPositions: importGraphBuffer(
+          graph,
+          'o-positions',
+          out.positions,
+          'float32x2',
+          eventCapacity
+        )
+      },
+      visitTable: {
+        output: {
+          ids: importGraphBuffer(graph, 't-ids', out.tableIds, 'uint32', tableCapacity),
+          count: importGraphBuffer(graph, 't-count', out.tableCount, 'uint32', 1),
+          overflow: importGraphBuffer(graph, 't-overflow', out.tableOverflow, 'uint32', 1),
+          totalCount: importGraphBuffer(graph, 't-total', out.tableTotal, 'uint32', 1)
+        },
+        zones: importGraphBuffer(graph, 't-zones', out.tableZones, 'uint32', tableCapacity),
+        visits: importGraphBuffer(graph, 't-visits', out.tableVisits, 'uint32', tableCapacity),
+        dwellTimes: importGraphBuffer(graph, 't-dwell', out.tableDwell, 'float32', tableCapacity),
+        firstEnterTimes: importGraphBuffer(
+          graph,
+          't-first',
+          out.tableFirst,
+          'float32',
+          tableCapacity
+        ),
+        lastExitTimes: importGraphBuffer(graph, 't-last', out.tableLast, 'float32', tableCapacity)
       },
       dwellTimes: importGraphBuffer(graph, 'o-dwell', out.dwell, 'float32', cellCount),
       visitCounts: importGraphBuffer(graph, 'o-visits', out.visits, 'uint32', cellCount),
@@ -163,6 +214,7 @@ export async function runZoneEvents(
   const [count] = await readUint32(out.count, 1);
   const [overflow] = await readUint32(out.overflow, 1);
   const [totalCount] = await readUint32(out.total, 1);
+  const [tableCount] = await readUint32(out.tableCount, 1);
   const result: ZoneGPUResult = {
     count,
     overflow,
@@ -172,6 +224,18 @@ export async function runZoneEvents(
     types: await readUint32(out.types, eventCapacity),
     times: await readFloat32(out.times, eventCapacity),
     rows: await readUint32(out.rows, eventCapacity),
+    positions: await readFloat32(out.positions, 2 * eventCapacity),
+    table: {
+      count: tableCount,
+      overflow: (await readUint32(out.tableOverflow, 1))[0],
+      totalCount: (await readUint32(out.tableTotal, 1))[0],
+      tracks: await readUint32(out.tableIds, tableCapacity),
+      zones: await readUint32(out.tableZones, tableCapacity),
+      visits: await readUint32(out.tableVisits, tableCapacity),
+      dwellTimes: await readFloat32(out.tableDwell, tableCapacity),
+      firstEnterTimes: await readFloat32(out.tableFirst, tableCapacity),
+      lastExitTimes: await readFloat32(out.tableLast, tableCapacity)
+    },
     dwellTimes: await readFloat32(out.dwell, cellCount),
     visitCounts: await readUint32(out.visits, cellCount),
     trackEventCounts: await readUint32(out.trackCounts, trackCount),

@@ -175,6 +175,140 @@ export function createRasterIterationGateNode<Parameters>(
   });
 }
 
+/** Default number of unrolled iterations that share one gate node. @internal */
+export const RASTER_GATE_INTERVAL = 4;
+
+/**
+ * Returns a one-thread gate that closes `groupSize` consecutive gated iterations.
+ *
+ * Iteration `k` of the group records a change with `atomicOr(&status[0], 1u << k)`. The gate counts
+ * the iterations up to and including the first unchanged one (or the whole group), publishes
+ * convergence, and zeroes the indirect dispatch once converged or `maxIterations` ran. Iterations
+ * of a group that follow a converged one only re-run an idempotent fixpoint step, so results and
+ * counts match one gate per iteration while the graph needs one gate node per group.
+ *
+ * @internal
+ */
+export function createRasterIterationGroupGateNode<Parameters>(
+  graph: GPUCommandGraph<Parameters>,
+  props: {
+    id: string;
+    operation: string;
+    state: RasterIterationState;
+    maxIterations: number;
+    groupSize: number;
+  }
+): GPUCommandNode<Parameters> {
+  return createWGSLKernelNode<Parameters>(graph, {
+    id: props.id,
+    operation: props.operation,
+    variant: 'iteration-group-gate',
+    bindings: [
+      {name: 'status', view: props.state.status, type: 'u32', access: 'read_write'},
+      {name: 'dispatch', view: props.state.dispatch, type: 'u32', access: 'read_write'}
+    ],
+    invocationCount: 1,
+    body: `if (status[statusOffset + 1u] == 0u) { return; }
+  let changedBits = status[statusOffset + 0u];
+  status[statusOffset + 0u] = 0u;
+  var executed = ${props.groupSize}u;
+  var converged = false;
+  for (var round = 0u; round < ${props.groupSize}u; round++) {
+    if (((changedBits >> round) & 1u) == 0u) {
+      executed = round + 1u;
+      converged = true;
+      break;
+    }
+  }
+  let iterationCount = status[statusOffset + 2u] + executed;
+  status[statusOffset + 2u] = iterationCount;
+  if (converged) {
+    status[statusOffset + 1u] = 0u;
+    status[statusOffset + 3u] = 1u;
+    dispatch[dispatchOffset] = 0u;
+    return;
+  }
+  if (iterationCount >= ${props.maxIterations}u) {
+    status[statusOffset + 1u] = 0u;
+    dispatch[dispatchOffset] = 0u;
+  }`
+  });
+}
+
+/** Per-iteration context passed to the node factory of {@link createRasterGatedLoopNodes}. @internal */
+export type RasterGatedRound<Parameters> = {
+  /** Unique node ID of this iteration's kernel. */
+  nodeId: string;
+  /** Zero-based unrolled iteration index. */
+  iteration: number;
+  /** Position inside the gate group; also the status bit this iteration owns. */
+  groupOffset: number;
+  /** WGSL statement that records "something changed" for this iteration. */
+  markChangedWGSL: string;
+  /** Indirect GPU condition gating the kernel. */
+  condition: GPUCommandGraphNodeCondition<Parameters>;
+  /** Resource uses the kernel must declare. */
+  extraResources: GraphBufferUse[];
+};
+
+/**
+ * Unrolls `maxIterations` gated iterations with one gate node per `groupSize` iterations.
+ *
+ * `createRound` builds each iteration's kernel and must call `markChangedWGSL` whenever the
+ * iteration changed anything. The node count is `maxIterations + ceil(maxIterations / groupSize)`
+ * instead of `2 * maxIterations`.
+ *
+ * @internal
+ */
+export function createRasterGatedLoopNodes<Parameters>(
+  graph: GPUCommandGraph<Parameters>,
+  props: {
+    /** Prefix of the round node IDs; round `i` is `${id}-${i}`. */
+    id: string;
+    /** Prefix of the gate node IDs; the gate after round `i` is `${gateId}-${i}`. Defaults to `${id}-gate`. */
+    gateId?: string;
+    operation: string;
+    state: RasterIterationState;
+    maxIterations: number;
+    groupSize?: number;
+    createRound: (round: RasterGatedRound<Parameters>) => GPUCommandNode<Parameters>;
+  }
+): GPUCommandNode<Parameters>[] {
+  const groupSize = Math.min(props.groupSize ?? RASTER_GATE_INTERVAL, 32);
+  const nodes: GPUCommandNode<Parameters>[] = [];
+  for (let start = 0; start < props.maxIterations; start += groupSize) {
+    const size = Math.min(groupSize, props.maxIterations - start);
+    for (let groupOffset = 0; groupOffset < size; groupOffset++) {
+      const iteration = start + groupOffset;
+      const nodeId = `${props.id}-${iteration}`;
+      const {condition, extraResources} = getRasterIterationCondition<Parameters>(
+        props.state,
+        nodeId
+      );
+      nodes.push(
+        props.createRound({
+          nodeId,
+          iteration,
+          groupOffset,
+          markChangedWGSL: `atomicOr(&status[statusOffset], ${1 << groupOffset}u);`,
+          condition,
+          extraResources
+        })
+      );
+    }
+    nodes.push(
+      createRasterIterationGroupGateNode<Parameters>(graph, {
+        id: `${props.gateId ?? `${props.id}-gate`}-${start}`,
+        operation: props.operation,
+        state: props.state,
+        maxIterations: props.maxIterations,
+        groupSize: size
+      })
+    );
+  }
+  return nodes;
+}
+
 /** Publishes the converged flag and executed iteration count of one loop. @internal */
 export function createRasterIterationFinalizeNode<Parameters>(
   graph: GPUCommandGraph<Parameters>,
@@ -311,7 +445,7 @@ fn getRelaxationTile(cell: u32) -> u32 {
  * may be any finite or infinite float (no unsigned bit-order trick). A cell or neighbor whose
  * auxiliary value is NaN is excluded.
  *
- * `declarations` must define
+ * Unless `additiveEdgeCosts` is set, `declarations` must define
  * `fn getRelaxationCandidate(neighborValue: f32, neighborAuxiliary: f32, centerAuxiliary: f32, centerRow: u32, direction: u32) -> f32`
  * and may use the {@link getRasterGridWGSL} helpers and the `settings` binding.
  *
@@ -340,6 +474,19 @@ export function createRasterTiledRelaxationNodes<Parameters>(
      * converges in the plain phase) pays nothing. Undefined disables sweeps.
      */
     sweepAfterIteration?: number;
+    /** Iterations that share one gate node. Defaults to {@link RASTER_GATE_INTERVAL}. */
+    gateInterval?: number;
+    /**
+     * Opts into the additive-edge contract: `declarations` define
+     * `fn getRelaxationEdgeCost(neighborAuxiliary: f32, centerAuxiliary: f32, centerRow: u32, direction: u32) -> f32`
+     * and `fn getRelaxationLimit() -> f32` instead of `getRelaxationCandidate`. The candidate of a
+     * neighbor is then `neighborValue + edgeCost`, ignored when it exceeds the limit. Edge costs do
+     * not depend on the evolving values, so each invocation evaluates its eight edge costs once per
+     * tile visit instead of once per inner iteration (they can involve global settings reads,
+     * `cos`, `cosh` and `sqrt`). The result is bit-identical to the equivalent
+     * `getRelaxationCandidate`.
+     */
+    additiveEdgeCosts?: boolean;
   }
 ): GPUCommandNode<Parameters>[] {
   const {relaxation} = props;
@@ -348,6 +495,7 @@ export function createRasterTiledRelaxationNodes<Parameters>(
   const haloSize = tileSize + 2;
   const tilesX = relaxation.tilesX;
   const innerIterations = props.innerIterations ?? 2 * tileSize;
+  const additiveEdgeCosts = props.additiveEdgeCosts ?? false;
   const declarations = `${getRasterGridWGSL(props)}
 const TILE_SIZE: u32 = ${tileSize}u;
 const HALO_SIZE: u32 = ${haloSize}u;
@@ -366,8 +514,8 @@ ${props.declarations}`;
 fn relaxTile(tileIndex: u32, localInvocationIndex: u32) {
   let tileColumn = tileIndex % TILES_X;
   let tileRow = tileIndex / TILES_X;
-  // The gate increments status[2] after each relaxation, so it is this relaxation's index.
-  let iteration = atomicLoad(&status[statusOffset + 2u]);
+  // The gate adds each group's executed iterations to status[2]; GROUP_OFFSET is this round's place in the group.
+  let iteration = atomicLoad(&status[statusOffset + 2u]) + GROUP_OFFSET;
   if (localInvocationIndex == 0u) {
     var anyActive = 0u;
     for (var rowDelta = -1; rowDelta <= 1; rowDelta++) {
@@ -414,15 +562,34 @@ fn relaxTile(tileIndex: u32, localInvocationIndex: u32) {
   let originalValue = haloValues[haloCenter];
   let participates = column < GRID_WIDTH && row < GRID_HEIGHT && !isNaNValue(centerAuxiliary);
 
+  ${
+    additiveEdgeCosts
+      ? `// Loop-invariant: the edge costs depend only on the auxiliary values, never on the relaxed values.
+  var edgeCosts: array<f32, 8>;
+  if (participates) {
+    for (var direction = 0u; direction < 8u; direction++) {
+      let neighborHalo = u32(i32(haloCenter) + getD8RowOffset(direction) * i32(HALO_SIZE) + getD8ColumnOffset(direction));
+      let neighborAuxiliary = haloAuxiliary[neighborHalo];
+      edgeCosts[direction] = select(getRelaxationEdgeCost(neighborAuxiliary, centerAuxiliary, row, direction), getInfinity(), isNaNValue(neighborAuxiliary));
+    }
+  }
+  let relaxationLimit = getRelaxationLimit();`
+      : ''
+  }
   for (var inner = 0u; inner < INNER_ITERATIONS; inner++) {
     var best = haloValues[haloCenter];
     if (participates) {
       for (var direction = 0u; direction < 8u; direction++) {
         let neighborHalo = u32(i32(haloCenter) + getD8RowOffset(direction) * i32(HALO_SIZE) + getD8ColumnOffset(direction));
-        let neighborAuxiliary = haloAuxiliary[neighborHalo];
+        ${
+          additiveEdgeCosts
+            ? `let candidate = haloValues[neighborHalo] + edgeCosts[direction];
+        if (candidate <= relaxationLimit && candidate < best) { best = candidate; }`
+            : `let neighborAuxiliary = haloAuxiliary[neighborHalo];
         if (isNaNValue(neighborAuxiliary)) { continue; }
         let candidate = getRelaxationCandidate(haloValues[neighborHalo], neighborAuxiliary, centerAuxiliary, row, direction);
-        if (candidate < best) { best = candidate; }
+        if (candidate < best) { best = candidate; }`
+        }
       }
     }
     workgroupBarrier();
@@ -445,7 +612,7 @@ fn relaxTile(tileIndex: u32, localInvocationIndex: u32) {
   workgroupBarrier();
   if (localInvocationIndex == 0u && atomicLoad(&tileChangedAtomic) != 0u) {
     atomicMax(&tileStamps[tileStampsOffset + tileIndex], iteration + 2u);
-    atomicStore(&status[statusOffset], 1u);
+    atomicOr(&status[statusOffset], 1u << GROUP_OFFSET);
   }
 }`;
   const tiledBody = /* wgsl */ `
@@ -470,48 +637,50 @@ fn relaxTile(tileIndex: u32, localInvocationIndex: u32) {
     {variant: 'sweep-down', body: getSweepBody(true, false)},
     {variant: 'sweep-up', body: getSweepBody(true, true)}
   ];
-  for (let iteration = 0; iteration < props.maxIterations; iteration++) {
-    const nodeId = `${props.id}-relax-${iteration}`;
-    const {condition, extraResources} = getRasterIterationCondition<Parameters>(state, nodeId);
-    // After the plain phase the schedule cycles tiled, right, left, down, up.
-    const cycleIndex =
-      props.sweepAfterIteration === undefined || iteration < props.sweepAfterIteration
-        ? 0
-        : (iteration - props.sweepAfterIteration) % (sweepPasses.length + 1);
-    const pass =
-      cycleIndex === 0 ? {variant: 'tiled-relax', body: tiledBody} : sweepPasses[cycleIndex - 1];
-    nodes.push(
-      createWGSLKernelNode<Parameters>(graph, {
-        id: nodeId,
-        operation: props.operation,
-        variant: pass.variant,
-        bindings: [
-          {name: 'values', view: props.values, type: 'atomic<u32>', access: 'read_write'},
-          {name: 'auxiliary', view: props.auxiliary, type: 'f32', access: 'read'},
-          {name: 'settings', view: props.settings, type: 'f32', access: 'read'},
-          {
-            name: 'tileStamps',
-            view: relaxation.tileStamps,
-            type: 'atomic<u32>',
-            access: 'read_write'
-          },
-          {name: 'status', view: state.status, type: 'atomic<u32>', access: 'read_write'}
-        ],
-        invocationCount: state.invocationCount,
-        workgroupSize: WORKGROUP_SIZE,
-        guardIndex: false,
-        declarations: `${declarations}\n${relaxTileFunction}`,
-        body: pass.body,
-        condition,
-        extraResources
-      }),
-      createRasterIterationGateNode<Parameters>(graph, {
-        id: `${props.id}-relax-gate-${iteration}`,
-        operation: props.operation,
-        state,
-        maxIterations: props.maxIterations
-      })
-    );
-  }
+  nodes.push(
+    ...createRasterGatedLoopNodes<Parameters>(graph, {
+      id: `${props.id}-relax`,
+      gateId: `${props.id}-relax-gate`,
+      operation: props.operation,
+      state,
+      maxIterations: props.maxIterations,
+      groupSize: props.gateInterval,
+      createRound: ({nodeId, iteration, groupOffset, condition, extraResources}) => {
+        // After the plain phase the schedule cycles tiled, right, left, down, up.
+        const cycleIndex =
+          props.sweepAfterIteration === undefined || iteration < props.sweepAfterIteration
+            ? 0
+            : (iteration - props.sweepAfterIteration) % (sweepPasses.length + 1);
+        const pass =
+          cycleIndex === 0
+            ? {variant: 'tiled-relax', body: tiledBody}
+            : sweepPasses[cycleIndex - 1];
+        return createWGSLKernelNode<Parameters>(graph, {
+          id: nodeId,
+          operation: props.operation,
+          variant: pass.variant,
+          bindings: [
+            {name: 'values', view: props.values, type: 'atomic<u32>', access: 'read_write'},
+            {name: 'auxiliary', view: props.auxiliary, type: 'f32', access: 'read'},
+            {name: 'settings', view: props.settings, type: 'f32', access: 'read'},
+            {
+              name: 'tileStamps',
+              view: relaxation.tileStamps,
+              type: 'atomic<u32>',
+              access: 'read_write'
+            },
+            {name: 'status', view: state.status, type: 'atomic<u32>', access: 'read_write'}
+          ],
+          invocationCount: state.invocationCount,
+          workgroupSize: WORKGROUP_SIZE,
+          guardIndex: false,
+          declarations: `const GROUP_OFFSET: u32 = ${groupOffset}u;\n${declarations}\n${relaxTileFunction}`,
+          body: pass.body,
+          condition,
+          extraResources
+        });
+      }
+    })
+  );
   return nodes;
 }

@@ -51,6 +51,8 @@ function createFeatures(): Ring[][] {
     }
     features.push(rings);
   }
+  // One very large feature among small ones: the skew the monotone chain hull exists for.
+  features.splice(7, 0, [createStar(random, 2000, 2000, 900, 2500, 0.35, false)]);
   // Analytic shapes: a 10 x 2 rectangle rotated by 30 degrees (elongation 0.8, orientation 30 deg),
   // a unit square, and a thin sliver.
   const rotate = (x: number, y: number, angle: number) => [
@@ -85,8 +87,13 @@ function createFeatures(): Ring[][] {
   return features;
 }
 
-for (const holeRule of ['winding', 'first-ring-exterior'] as const) {
-  it(`GPUShapeDescriptors matches the f64 oracle with holeRule ${holeRule}`, async () => {
+const CASES = [
+  ['winding', 'gift-wrapping'],
+  ['first-ring-exterior', 'monotone-chain'],
+  ['winding', 'monotone-chain']
+] as const;
+for (const [holeRule, convexityMethod] of CASES) {
+  it(`GPUShapeDescriptors matches the f64 oracle with holeRule ${holeRule} and ${convexityMethod} convexity`, async () => {
     const device = await getWebGPUTestDevice();
     if (!device) {
       return;
@@ -127,6 +134,7 @@ for (const holeRule of ['winding', 'first-ring-exterior'] as const) {
           ringOffsets: inputs['ringOffsets'] as never,
           featureRingOffsets: inputs['featureRingOffsets'] as never,
           holeRule,
+          convexityMethod,
           parameters,
           output: {
             areas: outputs['areas'] as never,

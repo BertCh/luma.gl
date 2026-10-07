@@ -42,7 +42,8 @@ function createHarness(
   device: Device,
   scene: ReturnType<typeof createAnisotropicScene>,
   lagCount: number,
-  directionCount: number
+  directionCount: number,
+  gridSize: readonly [number, number] = [32, 32]
 ) {
   const binCount = lagCount * directionCount;
   return createPairStatisticsHarness(device, {
@@ -61,7 +62,7 @@ function createHarness(
         values: views.values!,
         mask: views.mask,
         parameters: views.parameters,
-        gridSize: [32, 32],
+        gridSize,
         lagCount,
         directionCount,
         semivariances: views.outputs.semivariances as never,
@@ -245,3 +246,45 @@ it('GPUVariogram reports NaN for empty lags and zero for constant values', async
     harness.destroy();
   }
 });
+
+it('GPUVariogram bins are bitwise independent of the cell lattice, including direction sectors', async () => {
+  const device = await getWebGPUTestDevice();
+  if (!device) {
+    return;
+  }
+  // The pair loop walks the forward half of the 3x3 cell stencil. Any lattice must meet every pair
+  // exactly once: a single cell (plain all-pairs), a thin strip, a lattice finer than the points
+  // and a coarse one all have to give the same integer pair sums.
+  const scene = createAnisotropicScene(11, 1800);
+  const lagCount = 8;
+  const directionCount = 4;
+  const frame: GPUVariogramParameters = {bounds: BOUNDS, maximumDistance: 9, azimuthOffset: 0.2};
+  let reference: Awaited<ReturnType<ReturnType<typeof createHarness>['run']>> | undefined;
+  for (const gridSize of [
+    [1, 1],
+    [1, 40],
+    [40, 1],
+    [5, 3],
+    [64, 64]
+  ] as const) {
+    const harness = createHarness(device, scene, lagCount, directionCount, gridSize);
+    try {
+      const result = await harness.run(getGPUVariogramParameterValues(frame));
+      const total = result.pairCounts.reduce((sum, count) => sum + count, 0);
+      expect(total, `grid ${gridSize}`).toBeGreaterThan(500);
+      if (!reference) {
+        reference = result;
+        continue;
+      }
+      expect(result.pairCounts, `grid ${gridSize} counts`).toEqual(reference.pairCounts);
+      expect(getFloatBits(result.semivariances), `grid ${gridSize} gamma`).toEqual(
+        getFloatBits(reference.semivariances)
+      );
+      expect(getFloatBits(result.meanDistances), `grid ${gridSize} distance`).toEqual(
+        getFloatBits(reference.meanDistances)
+      );
+    } finally {
+      harness.destroy();
+    }
+  }
+}, 120000);

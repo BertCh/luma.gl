@@ -56,6 +56,51 @@ export function formatGPUSpatialRelate(packed: number): string {
   return text;
 }
 
+/** Number of `uint32` words that hold one pattern in a per-frame pattern view. */
+export const GPU_SPATIAL_RELATE_PATTERN_WORDS = 2;
+
+/**
+ * Packs patterns into the `uint32` words of a per-frame pattern view (`pattern` of
+ * `GPUSpatialPredicateJoin` given as a view): {@link GPU_SPATIAL_RELATE_PATTERN_WORDS} words per
+ * pattern slot, the allowed-value mask of each cell in four bits (cells `0` to `7` in the first word,
+ * cell `8` in the low bits of the second). Slots past the given patterns are zero, and a zero mask
+ * matches nothing, so `slotCount` is the capacity of the view and fewer patterns are fine.
+ *
+ * Validates like the compile-time `pattern`: nine characters from `T`, `F`, `*`, `0`, `1`, `2`, and
+ * no pattern that admits disjoint geometries (only bounding-box candidates are enumerated).
+ * Write the result into a `GPUParameterBuffer` between encodings to change the pattern without a
+ * recompile.
+ */
+export function packGPUSpatialRelatePattern(
+  pattern: GPUSpatialRelatePattern,
+  slotCount: number
+): Uint32Array {
+  const patterns = getRelatePatterns(pattern);
+  if (patterns.length === 0) {
+    throw new Error('DE-9IM pattern must not be empty');
+  }
+  if (patterns.length > slotCount) {
+    throw new Error(`${patterns.length} DE-9IM patterns exceed the ${slotCount} pattern slots`);
+  }
+  if (doesRelatePatternAdmitDisjoint(patterns)) {
+    throw new Error(
+      'pattern admits disjoint geometries, which are not bounding-box candidates; ' +
+        "use how: 'anti' with predicate 'intersects' for disjoint"
+    );
+  }
+  const words = new Uint32Array(slotCount * GPU_SPATIAL_RELATE_PATTERN_WORDS);
+  patterns.forEach((text, slot) => {
+    const masks = parseRelatePattern(text);
+    let low = 0;
+    for (let cell = 0; cell < 8; cell++) {
+      low |= masks[cell] << (4 * cell);
+    }
+    words[slot * GPU_SPATIAL_RELATE_PATTERN_WORDS] = low >>> 0;
+    words[slot * GPU_SPATIAL_RELATE_PATTERN_WORDS + 1] = masks[8];
+  });
+  return words;
+}
+
 /** Returns the pattern list of a user pattern. @internal */
 export function getRelatePatterns(pattern: GPUSpatialRelatePattern): readonly string[] {
   return typeof pattern === 'string' ? [pattern] : pattern;
@@ -167,4 +212,25 @@ export function getRelateMatchesWGSL(patterns: readonly string[]): string {
     return terms.length ? `(${terms.join(' && ')})` : 'true';
   });
   return `fn relateMatches(m: u32) -> bool { return ${clauses.length ? clauses.join(' || ') : 'false'}; }`;
+}
+
+/**
+ * Returns WGSL `fn relateMatches(m: u32) -> bool` like {@link getRelateMatchesWGSL}, reading the
+ * patterns from the bound `u32` storage binding `patternWords` (laid out by
+ * {@link packGPUSpatialRelatePattern}) on every call. @internal
+ */
+export function getRelateMatchesParametersWGSL(slotCount: number): string {
+  return `fn relateMatches(m: u32) -> bool {
+  for (var slot = 0u; slot < ${slotCount}u; slot++) {
+    let low = patternWords[patternWordsOffset + slot * ${GPU_SPATIAL_RELATE_PATTERN_WORDS}u];
+    let high = patternWords[patternWordsOffset + slot * ${GPU_SPATIAL_RELATE_PATTERN_WORDS}u + 1u];
+    var matched = true;
+    for (var cell = 0u; cell < 9u; cell++) {
+      let mask = select((low >> (cell * 4u)) & 15u, high & 15u, cell == 8u);
+      if (((mask >> ((m >> (cell * 2u)) & 3u)) & 1u) == 0u) { matched = false; break; }
+    }
+    if (matched) { return true; }
+  }
+  return false;
+}`;
 }

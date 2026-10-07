@@ -210,13 +210,19 @@ export function createReachabilityRelaxNode<Parameters>(
     csr: NetworkReachabilityGraphViews;
     hasCostLimit: boolean;
     costs: GraphDataView<'float32'>;
+    /**
+     * Nodes per lane when `costs` holds several lanes of one shared CSR (lane `l`, node `u` is
+     * node `l * laneNodeCount + u`). The CSR is then read through `node % laneNodeCount` and the
+     * lane base is added to every target, so no per-lane copy of the CSR exists.
+     */
+    laneNodeCount?: number;
   }
 ): GPUCommandNode<Parameters> {
-  const {csr} = props;
+  const {csr, laneNodeCount} = props;
   return createFrontierRoundNode<Parameters>(graph, {
     id: props.id,
     operation: OPERATION,
-    variant: 'relax',
+    variant: laneNodeCount === undefined ? 'relax' : 'relax-lanes',
     state: props.state,
     phase: props.phase,
     round: props.round,
@@ -233,17 +239,23 @@ export function createReachabilityRelaxNode<Parameters>(
       }
     ],
     declarations: `${REACHABILITY_WGSL_CONSTANTS}
-const NODE_COUNT: u32 = ${props.nodeCount}u;
+const NODE_COUNT: u32 = ${laneNodeCount ?? props.nodeCount}u;
 const EDGE_COUNT: u32 = ${csr.neighbors.length}u;`,
     visitSource: `fn visit(node: u32) {
   let sourceCost = bitcast<f32>(atomicLoad(&costBits[costBitsOffset + node]));
-  let firstEdge = min(offsets[offsetsOffset + node], EDGE_COUNT);
-  let lastEdge = min(offsets[offsetsOffset + node + 1u], EDGE_COUNT);
+  ${
+    laneNodeCount === undefined
+      ? 'let csrNode = node; let laneBase = 0u;'
+      : 'let laneBase = (node / NODE_COUNT) * NODE_COUNT; let csrNode = node - laneBase;'
+  }
+  let firstEdge = min(offsets[offsetsOffset + csrNode], EDGE_COUNT);
+  let lastEdge = min(offsets[offsetsOffset + csrNode + 1u], EDGE_COUNT);
   ${props.hasCostLimit ? 'let costLimitValue = bitcast<f32>(atomicLoad(&control[FRONTIER_PARAMETER_0_WORD]));' : ''}
   for (var edgeIndex = firstEdge; edgeIndex < lastEdge; edgeIndex++) {
-    let targetNode = neighbors[neighborsOffset + edgeIndex];
+    let targetCsrNode = neighbors[neighborsOffset + edgeIndex];
     let weight = weights[weightsOffset + edgeIndex];
-    if (targetNode >= NODE_COUNT || !(weight >= 0.0)) { continue; }
+    if (targetCsrNode >= NODE_COUNT || !(weight >= 0.0)) { continue; }
+    let targetNode = laneBase + targetCsrNode;
     let candidate = sourceCost + weight;
     ${props.hasCostLimit ? 'if (candidate > costLimitValue) { continue; }' : ''}
     let candidateBits = select(bitcast<u32>(candidate), 0u, candidate == 0.0);
@@ -307,66 +319,6 @@ export function createReachabilityFinalizeNode<Parameters>(
       : ''
   }
   ${props.iterationCount ? 'iterationCount[iterationCountOffset] = frontierRoundCount;' : ''}`
-  });
-}
-
-/**
- * One-thread gate after relaxation `iteration`: clears the change flag, counts iterations, and
- * zeroes the relax dispatch once converged or once the per-frame iteration limit is reached.
- *
- * Not used by {@link GPUNetworkReachability} any more; kept for the `GPUNetworkServiceAreas` label
- * phase, which still runs the gated per-node relaxation.
- *
- * @internal
- */
-export function createReachabilityGateNode<Parameters>(
-  graph: GPUCommandGraph<Parameters>,
-  props: {
-    id: string;
-    iteration: number;
-    maxIterations: number;
-    status: GraphDataView<'uint32'>;
-    dispatch: GraphDataView<'uint32'>;
-    activeIterations?: GraphDataView<'uint32'>;
-  }
-): GPUCommandNode<Parameters> {
-  const bindings: WGSLKernelBinding[] = [
-    {name: 'status', view: props.status, type: 'u32', access: 'read_write'},
-    {
-      name: 'dispatch',
-      view: props.dispatch,
-      type: 'u32',
-      access: 'read_write'
-    }
-  ];
-  if (props.activeIterations) {
-    bindings.push({
-      name: 'activeIterations',
-      view: props.activeIterations,
-      type: 'u32',
-      access: 'read'
-    });
-  }
-  return createWGSLKernelNode<Parameters>(graph, {
-    id: props.id,
-    operation: OPERATION,
-    variant: 'gate',
-    bindings,
-    invocationCount: 1,
-    body: `if (status[statusOffset + 1u] == 0u) { return; }
-  let changed = status[statusOffset + 0u];
-  status[statusOffset + 0u] = 0u;
-  status[statusOffset + 2u] = status[statusOffset + 2u] + 1u;
-  if (changed == 0u) {
-    status[statusOffset + 1u] = 0u;
-    status[statusOffset + 3u] = 1u;
-    dispatch[dispatchOffset] = 0u;
-    return;
-  }
-  if (${props.iteration}u + 1u >= ${getRoundLimitSource(props.maxIterations, Boolean(props.activeIterations))}) {
-    status[statusOffset + 1u] = 0u;
-    dispatch[dispatchOffset] = 0u;
-  }`
   });
 }
 
@@ -507,20 +459,30 @@ export function createReachabilityTieInitializeNode<Parameters>(
     tiePhase: FrontierPhase;
     levels: GraphDataView<'uint32'>;
     tieBits: GraphDataView<'uint32'>;
+    unresolvedCount?: GraphDataView<'uint32'>;
   }
 ): GPUCommandNode<Parameters> {
   const {state, tiePhase} = props;
+  const bindings: WGSLKernelBinding[] = [
+    {name: 'levels', view: props.levels, type: 'u32', access: 'read_write'},
+    {name: 'tieBits', view: props.tieBits, type: 'u32', access: 'read_write'},
+    {name: 'control', view: state.control, type: 'u32', access: 'read_write'},
+    {name: 'dispatchEven', view: state.dispatchEven, type: 'u32', access: 'read_write'},
+    {name: 'dispatchOdd', view: state.dispatchOdd, type: 'u32', access: 'read_write'}
+  ];
+  if (props.unresolvedCount) {
+    bindings.push({
+      name: 'unresolvedCount',
+      view: props.unresolvedCount,
+      type: 'u32',
+      access: 'read_write'
+    });
+  }
   return createWGSLKernelNode<Parameters>(graph, {
     id: props.id,
     operation: OPERATION,
     variant: 'tie-initialize',
-    bindings: [
-      {name: 'levels', view: props.levels, type: 'u32', access: 'read_write'},
-      {name: 'tieBits', view: props.tieBits, type: 'u32', access: 'read_write'},
-      {name: 'control', view: state.control, type: 'u32', access: 'read_write'},
-      {name: 'dispatchEven', view: state.dispatchEven, type: 'u32', access: 'read_write'},
-      {name: 'dispatchOdd', view: state.dispatchOdd, type: 'u32', access: 'read_write'}
-    ],
+    bindings,
     invocationCount: Math.max(
       props.nodeCount,
       props.tieBits.length,
@@ -531,7 +493,11 @@ const NODE_COUNT: u32 = ${props.nodeCount}u;
 const TIE_WORD_COUNT: u32 = ${props.tieBits.length}u;`,
     body: `${getFrontierResetSource(tiePhase, {limit: `${tiePhase.maxRounds}u`})}
   if (index < NODE_COUNT) { levels[levelsOffset + index] = NONE; }
-  if (index < TIE_WORD_COUNT) { tieBits[tieBitsOffset + index] = 0u; }`
+  if (index < TIE_WORD_COUNT) { tieBits[tieBitsOffset + index] = 0u; }${
+    props.unresolvedCount
+      ? '\n  if (index == 0u) { unresolvedCount[unresolvedCountOffset] = 0u; }'
+      : ''
+  }`
   });
 }
 
@@ -749,5 +715,46 @@ ${TIE_EDGE_WGSL}`,
       atomicMin(&predecessors[predecessorsOffset + targetNode], index);
     }
   }`
+  });
+}
+
+/**
+ * Counts reached nodes (finite cost) that ended without a predecessor although they are not roots:
+ * a node is a root exactly when its tie level is 0 and it has no strict predecessor. Nonzero only
+ * when the tie-level phase was truncated. Runs after the tie predecessor pass; `unresolvedCount` is
+ * zeroed by the tie-initialize node. @internal
+ */
+export function createReachabilityUnresolvedCountNode<Parameters>(
+  graph: GPUCommandGraph<Parameters>,
+  props: {
+    id: string;
+    nodeCount: number;
+    costs: GraphDataView<'float32'>;
+    levels: GraphDataView<'uint32'>;
+    predecessors: GraphDataView<'uint32'>;
+    unresolvedCount: GraphDataView<'uint32'>;
+  }
+): GPUCommandNode<Parameters> {
+  return createWGSLKernelNode<Parameters>(graph, {
+    id: props.id,
+    operation: OPERATION,
+    variant: 'unresolved-count',
+    bindings: [
+      {name: 'costs', view: props.costs, type: 'f32', access: 'read'},
+      {name: 'levels', view: props.levels, type: 'u32', access: 'read'},
+      {name: 'predecessors', view: props.predecessors, type: 'u32', access: 'read'},
+      {
+        name: 'unresolvedCount',
+        view: props.unresolvedCount,
+        type: 'atomic<u32>',
+        access: 'read_write'
+      }
+    ],
+    invocationCount: props.nodeCount,
+    declarations: REACHABILITY_WGSL_CONSTANTS,
+    body: `if (bitcast<u32>(costs[costsOffset + index]) >= INFINITY_BITS) { return; }
+  if (predecessors[predecessorsOffset + index] != NONE) { return; }
+  if (levels[levelsOffset + index] == 0u) { return; }
+  atomicAdd(&unresolvedCount[unresolvedCountOffset], 1u);`
   });
 }

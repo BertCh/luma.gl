@@ -11,6 +11,7 @@ import {
   type GraphDataView
 } from '@luma.gl/gpgpu/gpu-core';
 import {createWGSLKernelNode, type WGSLKernelBinding} from '../../utils/wgsl-kernel-nodes';
+import {getBoundsReductionNodes} from '../hilbert-keys/bounds-reduction';
 
 /**
  * Builds a `GPUBVH` over segment bounds, optionally after a Morton (Z-order) sort of the segments.
@@ -57,8 +58,7 @@ export function getSegmentBVHNodes<Parameters>(
       {name: 'segmentMinima', view: minima, type: 'f32', access: 'read'},
       {name: 'segmentMaxima', view: maxima, type: 'f32', access: 'read'}
     ];
-    const declarations = `const FLOAT32_MAXIMUM: f32 = 3.402823466e+38;
-const SEGMENT_COUNT: u32 = ${segmentCount}u;
+    const declarations = `const SEGMENT_COUNT: u32 = ${segmentCount}u;
 fn readCenter(row: u32) -> vec3f {
   // (center.x, center.y, valid). Skipped segments have inverted bounds.
   let minimum = vec2f(segmentMinima[segmentMinimaOffset + row * 2u], segmentMinima[segmentMinimaOffset + row * 2u + 1u]);
@@ -67,49 +67,20 @@ fn readCenter(row: u32) -> vec3f {
   let center = minimum * 0.5 + maximum * 0.5;
   return vec3f(center, select(0.0, 1.0, valid));
 }`;
+    // Scene bounds of the segment centers, reduced across the whole device (not one workgroup).
     nodes.push(
-      createWGSLKernelNode<Parameters>(graph, {
-        id: `${id}-sort-scene-bounds`,
+      ...getBoundsReductionNodes<Parameters>(graph, {
+        id: `${id}-sort-scene`,
         operation,
         variant: 'sort-scene-bounds',
-        bindings: [
-          ...boundsBindings,
-          {name: 'sceneBounds', view: sceneBounds, type: 'f32', access: 'read_write'}
-        ],
-        invocationCount: 256,
-        guardIndex: false,
+        bindings: boundsBindings,
         declarations: `${declarations}
-var<workgroup> sharedMinima: array<vec2f, 256>;
-var<workgroup> sharedMaxima: array<vec2f, 256>;`,
-        body: `// Exactly one workgroup is dispatched, so index == localInvocationIndex.
-  var localMinimum = vec2f(FLOAT32_MAXIMUM);
-  var localMaximum = vec2f(-FLOAT32_MAXIMUM);
-  for (var row = localInvocationIndex; row < SEGMENT_COUNT; row += 256u) {
-    let center = readCenter(row);
-    if (center.z > 0.5) {
-      localMinimum = min(localMinimum, center.xy);
-      localMaximum = max(localMaximum, center.xy);
-    }
-  }
-  sharedMinima[localInvocationIndex] = localMinimum;
-  sharedMaxima[localInvocationIndex] = localMaximum;
-  workgroupBarrier();
-  for (var stride = 128u; stride > 0u; stride = stride >> 1u) {
-    if (localInvocationIndex < stride) {
-      sharedMinima[localInvocationIndex] = min(sharedMinima[localInvocationIndex], sharedMinima[localInvocationIndex + stride]);
-      sharedMaxima[localInvocationIndex] = max(sharedMaxima[localInvocationIndex], sharedMaxima[localInvocationIndex + stride]);
-    }
-    workgroupBarrier();
-  }
-  if (localInvocationIndex == 0u) {
-    let minimum = sharedMinima[0];
-    let maximum = sharedMaxima[0];
-    let hasValid = minimum.x <= maximum.x && minimum.y <= maximum.y;
-    sceneBounds[sceneBoundsOffset] = select(0.0, minimum.x, hasValid);
-    sceneBounds[sceneBoundsOffset + 1u] = select(0.0, minimum.y, hasValid);
-    sceneBounds[sceneBoundsOffset + 2u] = select(0.0, maximum.x, hasValid);
-    sceneBounds[sceneBoundsOffset + 3u] = select(0.0, maximum.y, hasValid);
-  }`
+fn readItem(row: u32) -> vec4f {
+  let center = readCenter(row);
+  return vec4f(center.xy, center.z, 0.0);
+}`,
+        itemCount: segmentCount,
+        output: sceneBounds
       })
     );
     nodes.push(
@@ -125,6 +96,7 @@ var<workgroup> sharedMaxima: array<vec2f, 256>;`,
         ],
         invocationCount: segmentCount,
         declarations: `${declarations}
+const FLOAT32_MAXIMUM: f32 = 3.402823466e+38;
 fn spreadBits(value: u32) -> u32 {
   var x = value & 0xffffu;
   x = (x | (x << 8u)) & 0x00ff00ffu;

@@ -20,6 +20,7 @@ import {
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph
 } from '../../utils/gpu-contributor-utils';
+import {RHUMB_WGSL} from './rhumb-wgsl';
 import {GEODESIC_WGSL, GPU_GEODESIC_MEAN_EARTH_RADIUS} from './geodesic-wgsl';
 import {
   getVincentyWGSL,
@@ -32,15 +33,15 @@ const OPERATION = 'GPUGeodesicPairs';
 
 /** Per-pair outputs of {@link GPUGeodesicPairs}; each optional, one row per pair. */
 export type GPUGeodesicPairsOutput = {
-  /** Geodesic distance in radius units (`'sphere'`) or meters (`'wgs84'`). */
+  /** Geodesic distance in radius units (`'sphere'`, `'rhumb'`) or meters (`'wgs84'`). */
   distances?: GraphDataView<'float32'>;
   /** Initial bearing at the origin, degrees clockwise from north in `(-180, 180]` (turf `bearing`). */
   initialBearings?: GraphDataView<'float32'>;
   /** Bearing on arrival at the target, degrees clockwise from north in `(-180, 180]`. */
   finalBearings?: GraphDataView<'float32'>;
   /**
-   * Great-circle midpoint, longitude continuous with the origin (turf `midpoint`). Spherical in
-   * both models.
+   * Great-circle midpoint (rhumb midpoint for `'rhumb'`), longitude continuous with the origin
+   * (turf `midpoint`). Spherical in every model.
    */
   midpoints?: GraphDataView<'float32x2'>;
   /** `'wgs84'` only: `1` when Vincenty converged, `0` for near-antipodal pairs (sphere fallback). */
@@ -63,6 +64,8 @@ export type GPUGeodesicPairsProps = {
   /**
    * `'sphere'` (default): haversine distance and spherical bearings on a sphere of `radius`.
    * `'wgs84'`: Vincenty's inverse solution on the WGS84 ellipsoid.
+   * `'rhumb'`: constant-bearing line on a sphere of `radius` (turf `rhumbDistance`,
+   * `rhumbBearing`); both bearings equal the line's bearing and `midpoints` is the rhumb midpoint.
    */
   model?: GPUGeodesicModel;
   /** Sphere radius. Defaults to {@link GPU_GEODESIC_MEAN_EARTH_RADIUS}; also the WGS84 fallback radius. */
@@ -81,7 +84,8 @@ export type GPUGeodesicPairsProps = {
  * trigonometry, so meter-scale pairs keep their precision. `'wgs84'` runs Vincenty's inverse in f32
  * with the short-line rewrites described on `getVincentyWGSL` and a compile-time iteration cap;
  * pairs that do not converge (within about 0.5 degrees of antipodal) fall back to the sphere result
- * with `converged = 0`. One invocation per pair; no reductions, so results are deterministic.
+ * with `converged = 0`. `'rhumb'` evaluates the Mercator-stretched closed form in `rhumb-wgsl.ts`
+ * (east-west limit, antimeridian short way, latitudes clamped at 89.9999 degrees). One invocation per pair; no reductions, so results are deterministic.
  */
 export class GPUGeodesicPairs implements GPUCommandNodeProducer {
   /** Prefix for every node ID. */
@@ -150,6 +154,7 @@ export class GPUGeodesicPairs implements GPUCommandNodeProducer {
       {name: 'targets', view: props.targets, type: 'f32', access: 'read'}
     ];
     const statements: string[] = [];
+    const rhumb = this.model === 'rhumb';
     const add = (name: keyof GPUGeodesicPairsOutput, type: 'f32' | 'u32', statement: string) => {
       const view = output[name];
       if (view) {
@@ -167,7 +172,11 @@ export class GPUGeodesicPairs implements GPUCommandNodeProducer {
     add(
       'midpoints',
       'f32',
-      `let midpoint = geodesicInterpolate(origin, targetPosition, geodesicCentralAngle(origin, targetPosition), 0.5);
+      `let midpoint = ${
+        rhumb
+          ? 'rhumbMidpoint(origin, targetPosition)'
+          : 'geodesicInterpolate(origin, targetPosition, geodesicCentralAngle(origin, targetPosition), 0.5)'
+      };
   midpoints[midpointsOffset + 2u * index] = midpoint.x;
   midpoints[midpointsOffset + 2u * index + 1u] = midpoint.y;`
     );
@@ -183,12 +192,21 @@ export class GPUGeodesicPairs implements GPUCommandNodeProducer {
         declarations: `${GEODESIC_WGSL}
 ${wgs84 ? getVincentyWGSL(this.iterations) : ''}
 ${SPHERE_PAIR_WGSL}
+${rhumb ? RHUMB_WGSL : ''}
 const RADIUS: f32 = ${getWGSLFloatLiteral(this.radius)};`,
         body: /* wgsl */ `let origin = vec2<f32>(origins[originsOffset + 2u * index], origins[originsOffset + 2u * index + 1u]);
   let targetPosition = vec2<f32>(targets[targetsOffset + 2u * index], targets[targetsOffset + 2u * index + 1u]);
-  var distance = geodesicCentralAngle(origin, targetPosition) * RADIUS;
-  var initialBearing = geodesicInitialBearingDegrees(origin, targetPosition);
-  var finalBearing = sphereFinalBearingDegrees(origin, targetPosition);
+  var distance = ${
+    rhumb ? 'rhumbAngle(origin, targetPosition)' : 'geodesicCentralAngle(origin, targetPosition)'
+  } * RADIUS;
+  var initialBearing = ${
+    rhumb
+      ? 'rhumbBearingDegrees(origin, targetPosition)'
+      : 'geodesicInitialBearingDegrees(origin, targetPosition)'
+  };
+  var finalBearing = ${
+    rhumb ? 'initialBearing' : 'sphereFinalBearingDegrees(origin, targetPosition)'
+  };
   var isConverged = true;
   ${
     wgs84
@@ -214,8 +232,8 @@ export function validateGeodesicOptions(
   radius: number,
   iterations: number
 ): void {
-  if (model !== 'sphere' && model !== 'wgs84') {
-    throw new Error(`${id} model must be 'sphere' or 'wgs84'`);
+  if (model !== 'sphere' && model !== 'wgs84' && model !== 'rhumb') {
+    throw new Error(`${id} model must be 'sphere', 'wgs84' or 'rhumb'`);
   }
   if (!Number.isFinite(radius) || radius <= 0) {
     throw new Error(`${id} radius must be a positive finite number`);

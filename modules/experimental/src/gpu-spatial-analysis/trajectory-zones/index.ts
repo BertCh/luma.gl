@@ -6,5 +6,6 @@ export {GPUZoneEvents, GPU_ZONE_EVENT_TYPE} from './gpu-zone-events';
 export type {
   GPUZoneEventsProps,
   GPUZoneEventOutput,
-  GPUZoneEventsDiagnostics
+  GPUZoneEventsDiagnostics,
+  GPUZoneVisitTableOutput
 } from './gpu-zone-events';

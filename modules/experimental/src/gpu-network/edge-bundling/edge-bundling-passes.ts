@@ -2,9 +2,13 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import type {GPUCommandGraph, GPUCommandNode, GraphDataView} from '@luma.gl/gpgpu/gpu-core';
 import {
-  createFillNode,
+  getBoundedDispatchLayout,
+  type GPUCommandGraph,
+  type GPUCommandNode,
+  type GraphDataView
+} from '@luma.gl/gpgpu/gpu-core';
+import {
   createWGSLKernelNode,
   getWGSLFloatLiteral,
   type WGSLKernelBinding
@@ -43,6 +47,8 @@ export type EdgeBundlingConstants = {
   fixedPointExponent: number;
   iterationCount: number;
   boxPadding: number;
+  /** Positions are lon/lat degrees: x is scaled by cos(mid-latitude) in the work box. */
+  geographic: boolean;
 };
 
 function getConstantsWGSL(constants: EdgeBundlingConstants, includeIteration?: number): string {
@@ -69,7 +75,7 @@ ${includeIteration === undefined ? '' : `const ITERATION: u32 = ${includeIterati
  * 2 lambda, 3 smoothing, 4 step scale (optional). A `uint32` view stores word 0 as an integer and
  * words 1 to 4 as float bit patterns; a `float32` view stores every word as a float.
  */
-function getParametersWGSL(parameters: EdgeBundlingParameterView | undefined): string {
+function getParameterReadersWGSL(parameters: EdgeBundlingParameterView | undefined): string {
   let readers: string;
   if (!parameters) {
     readers = /* wgsl */ `
@@ -97,8 +103,12 @@ fn readLambda() -> f32 { return clamp(${readFloat(2)}, 0.5, 0.9); }
 fn readSmoothing() -> f32 { return clamp(${readFloat(3)}, 0.0, 1.0); }
 fn readStepScale() -> f32 { return ${parameters.length > 4 ? `max(${readFloat(4)}, 0.0)` : '1.0'}; }`;
   }
-  return `${readers}
-fn isIterationActive() -> bool { return ITERATION < readActiveIterations(); }
+  return readers;
+}
+
+/** WGSL for the per-iteration radius, which needs the `ITERATION` constant. */
+function getIterationRadiusWGSL(): string {
+  return /* wgsl */ `
 fn getIterationRadius() -> f32 {
   var radius = readInitialRadius();
   let lambda = readLambda();
@@ -131,23 +141,48 @@ fn isEdgeLive(edge: u32) -> bool {
 }`;
 }
 
-const BOX_READ_WGSL = /* wgsl */ `
+/**
+ * WGSL that decodes the work box. `getBox()` returns (origin x, origin y, side, x scale): the
+ * square work box lives in a frame where x is multiplied by the x scale, which is 1 for planar
+ * input and the cosine of the mid-latitude of the live endpoints for geographic (lon/lat degree)
+ * input. `toWork` and `fromWork` convert between caller coordinates and normalized work-box
+ * coordinates.
+ */
+function getBoxReadWGSL(geographic: boolean): string {
+  return /* wgsl */ `
 fn decodeKey(key: u32) -> f32 {
   return bitcast<f32>(select(~key, key & 0x7fffffffu, (key & 0x80000000u) != 0u));
 }
-/** Returns (origin x, origin y, side) of the square work box. */
-fn getBox() -> vec3<f32> {
+fn getBox() -> vec4<f32> {
   if (boxKeys[boxKeysOffset] == 0xffffffffu) {
-    return vec3<f32>(0.0, 0.0, 1.0);
+    return vec4<f32>(0.0, 0.0, 1.0, 1.0);
   }
   let minX = decodeKey(boxKeys[boxKeysOffset]);
   let minY = decodeKey(boxKeys[boxKeysOffset + 1u]);
   let maxX = decodeKey(boxKeys[boxKeysOffset + 2u]);
   let maxY = decodeKey(boxKeys[boxKeysOffset + 3u]);
-  let extent = max(maxX - minX, maxY - minY);
+  ${
+    geographic
+      ? 'let xScale = max(cos(0.5 * (minY + maxY) * 0.017453292519943295), 0.01);'
+      : 'let xScale = 1.0;'
+  }
+  let extent = max((maxX - minX) * xScale, maxY - minY);
   let side = select(extent * BOX_SCALE, 1.0, !(extent > 0.0));
-  return vec3<f32>(0.5 * (minX + maxX) - 0.5 * side, 0.5 * (minY + maxY) - 0.5 * side, side);
+  return vec4<f32>(
+    0.5 * (minX + maxX) * xScale - 0.5 * side,
+    0.5 * (minY + maxY) - 0.5 * side,
+    side,
+    xScale
+  );
+}
+fn toWork(workBox: vec4<f32>, position: vec2<f32>) -> vec2<f32> {
+  return (vec2<f32>(position.x * workBox.w, position.y) - workBox.xy) / workBox.z;
+}
+fn fromWork(workBox: vec4<f32>, normalized: vec2<f32>) -> vec2<f32> {
+  let scaled = workBox.xy + normalized * workBox.z;
+  return vec2<f32>(scaled.x / workBox.w, scaled.y);
 }`;
+}
 
 /** Edge inputs shared by the passes that read the caller's geometry. @internal */
 export type EdgeBundlingInputs = {
@@ -177,6 +212,114 @@ function getInputBindings(inputs: EdgeBundlingInputs): WGSLKernelBinding[] {
     });
   }
   return bindings;
+}
+
+/** Words per iteration in the gate buffer: three `[x, y, z]` dispatch commands. @internal */
+export const EDGE_BUNDLING_GATE_WORDS_PER_ITERATION = 9;
+/** Workgroup size of the box reduction kernel. */
+const BOX_WORKGROUP_SIZE = 256;
+/** Workgroup size of the update kernel (one invocation per edge). */
+const UPDATE_WORKGROUP_SIZE = 64;
+
+/** Which kernel of an iteration a gate slot drives. @internal */
+export type EdgeBundlingGateSlot = 'clear' | 'splat' | 'update';
+const GATE_SLOT_INDEX: Record<EdgeBundlingGateSlot, number> = {clear: 0, splat: 1, update: 2};
+
+/** Indirect dispatch gate of one iteration kernel: the shared gate buffer and the iteration. @internal */
+export type EdgeBundlingGate = {view: GraphDataView<'uint32'>; iteration: number};
+
+function getGateCondition(
+  gate: EdgeBundlingGate | undefined,
+  id: string,
+  slot: EdgeBundlingGateSlot
+) {
+  if (!gate) {
+    return {};
+  }
+  const byteOffset =
+    gate.view.byteOffset +
+    4 * (gate.iteration * EDGE_BUNDLING_GATE_WORDS_PER_ITERATION + 3 * GATE_SLOT_INDEX[slot]);
+  return {
+    condition: {
+      id: `${id}-gate`,
+      source: 'gpu' as const,
+      mode: 'indirect' as const,
+      buffer: gate.view.buffer,
+      byteOffset
+    },
+    extraResources: [{buffer: gate.view, usage: 'indirect' as const}]
+  };
+}
+
+/**
+ * One-thread gate for every iteration: writes, per iteration, the indirect dispatch commands of
+ * the clear, splat and update kernels, with `x = 0` once the iteration is beyond
+ * `activeIterations` or the annealed radius has reached zero. Inactive iterations then dispatch
+ * no work at all. The radius sequence repeats the kernels' own multiplication so the cutoff
+ * matches exactly. @internal
+ */
+export function createEdgeBundlingGateNode<Parameters>(
+  graph: GPUCommandGraph<Parameters>,
+  props: {
+    id: string;
+    constants: EdgeBundlingConstants;
+    parameters: EdgeBundlingParameterView;
+    gate: GraphDataView<'uint32'>;
+  }
+): GPUCommandNode<Parameters> {
+  const {constants} = props;
+  const limit = graph.device.limits.maxComputeWorkgroupsPerDimension;
+  const layouts = {
+    clear: getBoundedDispatchLayout(
+      OPERATION,
+      constants.densityResolution * constants.densityResolution,
+      256,
+      limit
+    ),
+    splat: getBoundedDispatchLayout(
+      OPERATION,
+      constants.edgeCount * constants.pointsPerEdge,
+      256,
+      limit
+    ),
+    update: getBoundedDispatchLayout(OPERATION, constants.edgeCount, UPDATE_WORKGROUP_SIZE, limit)
+  };
+  const slots = (['clear', 'splat', 'update'] as const)
+    .map(
+      (
+        name,
+        slot
+      ) => `    gate[gateOffset + base + ${3 * slot}u] = select(0u, ${layouts[name].x}u, isActive);
+    gate[gateOffset + base + ${3 * slot + 1}u] = ${layouts[name].y}u;
+    gate[gateOffset + base + ${3 * slot + 2}u] = ${layouts[name].z}u;`
+    )
+    .join('\n');
+  return createWGSLKernelNode<Parameters>(graph, {
+    id: props.id,
+    operation: OPERATION,
+    variant: 'gate',
+    bindings: [
+      {
+        name: 'parameters',
+        view: props.parameters,
+        type: props.parameters.format === 'float32' ? 'f32' : 'u32',
+        access: 'read'
+      },
+      {name: 'gate', view: props.gate, type: 'u32', access: 'read_write'}
+    ],
+    invocationCount: 1,
+    declarations: `${getConstantsWGSL(constants)}
+${getParameterReadersWGSL(props.parameters)}`,
+    body: `let activeIterations = readActiveIterations();
+  var radius = readInitialRadius();
+  let lambda = readLambda();
+  for (var iteration = 0u; iteration < MAXIMUM_ITERATIONS; iteration++) {
+    let isActive = iteration < activeIterations && radius > RADIUS_EPSILON;
+    let base = iteration * ${EDGE_BUNDLING_GATE_WORDS_PER_ITERATION}u;
+${slots}
+    radius = radius * lambda;
+  }`
+  });
 }
 
 /** Resets the work-box keys to an empty box. @internal */
@@ -215,6 +358,7 @@ export function createEdgeBundlingBoxNode<Parameters>(
     id: props.id,
     operation: OPERATION,
     variant: 'box',
+    workgroupSize: BOX_WORKGROUP_SIZE,
     bindings: [
       ...getInputBindings(props.inputs),
       {
@@ -225,23 +369,55 @@ export function createEdgeBundlingBoxNode<Parameters>(
       }
     ],
     invocationCount: props.constants.edgeCount,
+    guardIndex: false,
     declarations: `${getConstantsWGSL(props.constants)}
 ${getEdgeHelpersWGSL(Boolean(props.inputs.mask))}
 fn encodeKey(value: f32) -> u32 {
   let bits = bitcast<u32>(value);
   return select(bits | 0x80000000u, ~bits, (bits & 0x80000000u) != 0u);
-}`,
-    body: `if (!isEdgeLive(index)) {
-    return;
+}
+var<workgroup> sharedBox: array<u32, ${4 * BOX_WORKGROUP_SIZE}>;`,
+    // Each workgroup reduces its edges' bounds in workgroup memory and issues four global atomics,
+    // instead of every edge issuing four atomics on the same four words. No early return: every
+    // invocation must reach the barriers.
+    body: `var lowX = 0xffffffffu;
+  var lowY = 0xffffffffu;
+  var highX = 0u;
+  var highY = 0u;
+  if (index < EDGE_COUNT && isEdgeLive(index)) {
+    let a = getVertexPosition(edgeSources[edgeSourcesOffset + index]);
+    let b = getVertexPosition(edgeTargets[edgeTargetsOffset + index]);
+    let low = min(a, b);
+    let high = max(a, b);
+    lowX = encodeKey(low.x);
+    lowY = encodeKey(low.y);
+    highX = encodeKey(high.x);
+    highY = encodeKey(high.y);
   }
-  let a = getVertexPosition(edgeSources[edgeSourcesOffset + index]);
-  let b = getVertexPosition(edgeTargets[edgeTargetsOffset + index]);
-  let low = min(a, b);
-  let high = max(a, b);
-  atomicMin(&boxKeys[boxKeysOffset], encodeKey(low.x));
-  atomicMin(&boxKeys[boxKeysOffset + 1u], encodeKey(low.y));
-  atomicMax(&boxKeys[boxKeysOffset + 2u], encodeKey(high.x));
-  atomicMax(&boxKeys[boxKeysOffset + 3u], encodeKey(high.y));`
+  sharedBox[localInvocationIndex] = lowX;
+  sharedBox[${BOX_WORKGROUP_SIZE}u + localInvocationIndex] = lowY;
+  sharedBox[${2 * BOX_WORKGROUP_SIZE}u + localInvocationIndex] = highX;
+  sharedBox[${3 * BOX_WORKGROUP_SIZE}u + localInvocationIndex] = highY;
+  workgroupBarrier();
+  for (var stride = ${BOX_WORKGROUP_SIZE / 2}u; stride > 0u; stride = stride >> 1u) {
+    if (localInvocationIndex < stride) {
+      let other = localInvocationIndex + stride;
+      sharedBox[localInvocationIndex] = min(sharedBox[localInvocationIndex], sharedBox[other]);
+      sharedBox[${BOX_WORKGROUP_SIZE}u + localInvocationIndex] =
+        min(sharedBox[${BOX_WORKGROUP_SIZE}u + localInvocationIndex], sharedBox[${BOX_WORKGROUP_SIZE}u + other]);
+      sharedBox[${2 * BOX_WORKGROUP_SIZE}u + localInvocationIndex] =
+        max(sharedBox[${2 * BOX_WORKGROUP_SIZE}u + localInvocationIndex], sharedBox[${2 * BOX_WORKGROUP_SIZE}u + other]);
+      sharedBox[${3 * BOX_WORKGROUP_SIZE}u + localInvocationIndex] =
+        max(sharedBox[${3 * BOX_WORKGROUP_SIZE}u + localInvocationIndex], sharedBox[${3 * BOX_WORKGROUP_SIZE}u + other]);
+    }
+    workgroupBarrier();
+  }
+  if (localInvocationIndex == 0u) {
+    atomicMin(&boxKeys[boxKeysOffset], sharedBox[0]);
+    atomicMin(&boxKeys[boxKeysOffset + 1u], sharedBox[${BOX_WORKGROUP_SIZE}u]);
+    atomicMax(&boxKeys[boxKeysOffset + 2u], sharedBox[${2 * BOX_WORKGROUP_SIZE}u]);
+    atomicMax(&boxKeys[boxKeysOffset + 3u], sharedBox[${3 * BOX_WORKGROUP_SIZE}u]);
+  }`
   });
 }
 
@@ -268,7 +444,7 @@ export function createEdgeBundlingInitializeNode<Parameters>(
     invocationCount: props.constants.edgeCount * props.constants.pointsPerEdge,
     declarations: `${getConstantsWGSL(props.constants)}
 ${getEdgeHelpersWGSL(Boolean(props.inputs.mask))}
-${BOX_READ_WGSL}`,
+${getBoxReadWGSL(props.constants.geographic)}`,
     body: `let edge = index / POINTS;
   let point = index % POINTS;
   if (!isEdgeLive(edge)) {
@@ -277,8 +453,8 @@ ${BOX_READ_WGSL}`,
     return;
   }
   let workBox = getBox();
-  let a = (getVertexPosition(edgeSources[edgeSourcesOffset + edge]) - workBox.xy) / workBox.z;
-  let b = (getVertexPosition(edgeTargets[edgeTargetsOffset + edge]) - workBox.xy) / workBox.z;
+  let a = toWork(workBox, getVertexPosition(edgeSources[edgeSourcesOffset + edge]));
+  let b = toWork(workBox, getVertexPosition(edgeTargets[edgeTargetsOffset + edge]));
   let t = f32(point) / f32(POINTS - 1u);
   var placed = a + (b - a) * t;
   if (point == 0u) {
@@ -294,14 +470,16 @@ ${BOX_READ_WGSL}`,
 /** Zeroes the density grid. @internal */
 export function createEdgeBundlingClearNode<Parameters>(
   graph: GPUCommandGraph<Parameters>,
-  props: {id: string; density: GraphDataView<'uint32'>}
+  props: {id: string; density: GraphDataView<'uint32'>; gate?: EdgeBundlingGate}
 ): GPUCommandNode<Parameters> {
-  return createFillNode<Parameters>(graph, {
+  return createWGSLKernelNode<Parameters>(graph, {
     id: props.id,
     operation: OPERATION,
-    view: props.density,
-    type: 'u32',
-    value: '0u'
+    variant: 'fill',
+    bindings: [{name: 'density', view: props.density, type: 'u32', access: 'read_write'}],
+    invocationCount: props.density.length,
+    body: 'density[densityOffset + index] = 0u;',
+    ...getGateCondition(props.gate, props.id, 'clear')
   });
 }
 
@@ -315,6 +493,7 @@ export function createEdgeBundlingSplatNode<Parameters>(
     parameters?: EdgeBundlingParameterView;
     work: GraphDataView<'float32x2'>;
     density: GraphDataView<'uint32'>;
+    gate?: EdgeBundlingGate;
   }
 ): GPUCommandNode<Parameters> {
   const {constants} = props;
@@ -342,14 +521,9 @@ export function createEdgeBundlingSplatNode<Parameters>(
     bindings,
     invocationCount: constants.edgeCount * constants.pointsPerEdge,
     declarations: `${getConstantsWGSL(constants, props.iteration)}
-${getParametersWGSL(props.parameters)}`,
-    body: `if (!isIterationActive()) {
-    return;
-  }
-  let radius = getIterationRadius();
-  if (!(radius > RADIUS_EPSILON)) {
-    return;
-  }
+${getParameterReadersWGSL(props.parameters)}
+${getIterationRadiusWGSL()}`,
+    body: `let radius = getIterationRadius();
   let px = work[workOffset + index * 2u];
   let py = work[workOffset + index * 2u + 1u];
   if (px < DEAD_LIMIT) {
@@ -379,7 +553,8 @@ ${getParametersWGSL(props.parameters)}`,
         }
       }
     }
-  }`
+  }`,
+    ...getGateCondition(props.gate, props.id, 'splat')
   });
 }
 
@@ -397,6 +572,7 @@ export function createEdgeBundlingUpdateNode<Parameters>(
     parameters?: EdgeBundlingParameterView;
     work: GraphDataView<'float32x2'>;
     density: GraphDataView<'uint32'>;
+    gate?: EdgeBundlingGate;
   }
 ): GPUCommandNode<Parameters> {
   const {constants} = props;
@@ -420,7 +596,8 @@ export function createEdgeBundlingUpdateNode<Parameters>(
     invocationCount: constants.edgeCount,
     workgroupSize: 64,
     declarations: `${getConstantsWGSL(constants, props.iteration)}
-${getParametersWGSL(props.parameters)}
+${getParameterReadersWGSL(props.parameters)}
+${getIterationRadiusWGSL()}
 fn readDensity(x: i32, y: i32) -> f32 {
   return f32(density[densityOffset + u32(y) * RESOLUTION + u32(x)]) * FIXED_POINT_INVERSE;
 }
@@ -440,13 +617,7 @@ fn sampleDensity(gx: f32, gy: f32) -> f32 {
     readDensity(x0, y1) * (1.0 - fx) * fy +
     readDensity(x1, y1) * fx * fy;
 }`,
-    body: `if (!isIterationActive()) {
-    return;
-  }
-  let radius = getIterationRadius();
-  if (!(radius > RADIUS_EPSILON)) {
-    return;
-  }
+    body: `let radius = getIterationRadius();
   let base = index * POINTS;
   if (work[workOffset + base * 2u] < DEAD_LIMIT) {
     return;
@@ -509,7 +680,8 @@ fn sampleDensity(gx: f32, gy: f32) -> f32 {
     }
     work[workOffset + (base + i) * 2u] = position.x;
     work[workOffset + (base + i) * 2u + 1u] = position.y;
-  }`
+  }`,
+    ...getGateCondition(props.gate, props.id, 'update')
   });
 }
 
@@ -538,7 +710,7 @@ export function createEdgeBundlingFinalizeNode<Parameters>(
     invocationCount: props.constants.edgeCount * props.constants.pointsPerEdge,
     declarations: `${getConstantsWGSL(props.constants)}
 ${getEdgeHelpersWGSL(Boolean(props.inputs.mask))}
-${BOX_READ_WGSL}`,
+${getBoxReadWGSL(props.constants.geographic)}`,
     body: `let edge = index / POINTS;
   let point = index % POINTS;
   let source = edgeSources[edgeSourcesOffset + edge];
@@ -554,7 +726,7 @@ ${BOX_READ_WGSL}`,
   } else {
     let workBox = getBox();
     let normalized = vec2<f32>(work[workOffset + index * 2u], work[workOffset + index * 2u + 1u]);
-    outputPoint = workBox.xy + normalized * workBox.z;
+    outputPoint = fromWork(workBox, normalized);
   }
   paths[pathsOffset + index * 2u] = outputPoint.x;
   paths[pathsOffset + index * 2u + 1u] = outputPoint.y;`

@@ -927,27 +927,29 @@ fn latFloorIndex(x: f32) -> i32 {
   return i32(LAT_FIRST[octave] + j - LAT_J0[octave]);
 }
 
-fn readCellValid(cell: u32) -> bool {
-  return elevationValidity[elevationValidityOffset + cell] != 0u &&
-    elevationValidity[elevationValidityOffset + cell + 1u] != 0u &&
-    elevationValidity[elevationValidityOffset + cell + WIDTH] != 0u &&
-    elevationValidity[elevationValidityOffset + cell + WIDTH + 1u] != 0u;
-}
-
 // Bilinear height relative to the eye. Each corner is (v - hi) - lo with the subtraction pinned by
 // opaque(): near the camera an f32 height formed after interpolation would carry the rounding of a
 // 4-digit height, about 1e-3 degrees at 2 m. Products are pinned too so the result does not depend
 // on the compiler's fused multiply-add choices (the pyramid bound relies on a stable value).
-fn bilinearRelative(cell: u32, fx: f32, fy: f32, hi: f32, lo: f32) -> f32 {
-  let a0 = opaque(elevationValues[elevationValuesOffset + cell] - hi) - lo;
-  let a1 = opaque(elevationValues[elevationValuesOffset + cell + 1u] - hi) - lo;
-  let c0 = opaque(elevationValues[elevationValuesOffset + cell + WIDTH] - hi) - lo;
-  let c1 = opaque(elevationValues[elevationValuesOffset + cell + WIDTH + 1u] - hi) - lo;
+// Returns (height, 1), or (0, 0) when a corner is invalid. Canonical elevation is NaN exactly where a
+// pixel is invalid, so one bit test per loaded corner replaces four validity loads.
+fn bilinearRelative(cell: u32, fx: f32, fy: f32, hi: f32, lo: f32) -> vec2<f32> {
+  let v00 = elevationValues[elevationValuesOffset + cell];
+  let v10 = elevationValues[elevationValuesOffset + cell + 1u];
+  let v01 = elevationValues[elevationValuesOffset + cell + WIDTH];
+  let v11 = elevationValues[elevationValuesOffset + cell + WIDTH + 1u];
+  if (!isFiniteValue(v00) || !isFiniteValue(v10) || !isFiniteValue(v01) || !isFiniteValue(v11)) {
+    return vec2<f32>(0.0, 0.0);
+  }
+  let a0 = opaque(v00 - hi) - lo;
+  let a1 = opaque(v10 - hi) - lo;
+  let c0 = opaque(v01 - hi) - lo;
+  let c1 = opaque(v11 - hi) - lo;
   let t1 = opaque(a0 - a1);
   let t2 = opaque(t1 - c0);
   let twist = t2 + c1;
   let rowSlope = (c0 - a0) + opaque(twist * fx);
-  return (a0 + opaque((a1 - a0) * fx)) + opaque(rowSlope * fy);
+  return vec2<f32>((a0 + opaque((a1 - a0) * fx)) + opaque(rowSlope * fy), 1.0);
 }
 
 // Bilinear height relative to (hi, lo) at a pixel-center position inside [0, W-1] x [0, H-1];
@@ -956,8 +958,7 @@ fn sampleRelative(column: f32, row: f32, hi: f32, lo: f32) -> vec2<f32> {
   let x0 = min(i32(floor(column)), WIDTH_I - 2);
   let y0 = min(i32(floor(row)), HEIGHT_I - 2);
   let cell = u32(y0) * WIDTH + u32(x0);
-  if (!readCellValid(cell)) { return vec2<f32>(0.0, 0.0); }
-  return vec2<f32>(bilinearRelative(cell, column - f32(x0), row - f32(y0), hi, lo), 1.0);
+  return bilinearRelative(cell, column - f32(x0), row - f32(y0), hi, lo);
 }
 
 fn sampleGround(column: f32, row: f32) -> vec2<f32> {
@@ -1072,8 +1073,9 @@ fn marchRay(eye: EyeState, sinA: f32, cosA: f32, q: f32, useQ: bool) -> RayResul
       ${skip}
       let cell = u32(p.yi) * WIDTH + u32(p.xi);
       evaluated = evaluated + 1u;
-      if (readCellValid(cell)) {
-        let hr = bilinearRelative(cell, p.fx, p.fy, eye.hi, eye.lo);
+      let relativeSample = bilinearRelative(cell, p.fx, p.fy, eye.hi, eye.lo);
+      if (relativeSample.y != 0.0) {
+        let hr = relativeSample.x;
         let t = hr / d - opaque(d * curvature);
         if (!has || t > tBest) {
           has = true;

@@ -17,11 +17,8 @@ import {
   validateGraphViewsBelongToGraph
 } from '../../utils/gpu-contributor-utils';
 import {createSegmentSumNode, getSortedSegmentSumNodes} from '../../utils/sorted-segment-sums';
-import {
-  getKeyGroupNodes,
-  getKeyPairSortNodes,
-  KEY_PAIR_INVALID
-} from '../spatial-weights/key-pair-grouping';
+import {getKeyGroupNodes, KEY_PAIR_INVALID} from '../spatial-weights/key-pair-grouping';
+import {getBoundedKeyPairSortNodes} from './bounded-key-pair-sort';
 import {
   type GPUSpatialWeights,
   validateGPUSpatialWeights
@@ -29,6 +26,8 @@ import {
 
 const OPERATION = 'GPUArealInterpolation';
 const INVALID = `${KEY_PAIR_INVALID}u`;
+/** Consecutive cells folded into runs by one zone-count thread. */
+const ZONE_COUNT_CHUNK = 8;
 
 /** Normalization of the area-share weights. */
 export type GPUArealInterpolationKind = 'extensive' | 'intensive';
@@ -113,6 +112,14 @@ export type GPUArealInterpolationProps = {
   totalPairs?: GraphDataView<'uint32'>;
   /** Optional categorical variable to turn into per-target category shares. */
   categories?: GPUArealCategories;
+  /**
+   * Compile-time. Without `cellWeights` every cell weighs 1, so pair areas are the lengths of the
+   * sorted pair runs and zone areas are the zone cell counts; the fast path computes exactly those
+   * and skips the mask gather, the per-pair segmented sum and the per-zone sort, scan, gather and
+   * segmented sums. Defaults to `true`; results are identical. Set `false` to force the generic
+   * weighted path (for A/B timing or tests). Ignored when `cellWeights` is given.
+   */
+  unweightedFastPath?: boolean;
 };
 
 /**
@@ -139,7 +146,7 @@ export type GPUArealInterpolationProps = {
  * smallest zone of either system, and use `cellWeights` for dasymetric refinement.
  *
  * Algorithm (deterministic): per cell `(t, s)` pair keys, two stable radix sorts of the cells
- * (`getKeyPairSortNodes`), run detection, a fixed-order segmented sum of the cell weights per
+ * (`getBoundedKeyPairSortNodes`, radix passes limited to the zone-id bit widths), run detection, a fixed-order segmented sum of the cell weights per
  * pair run (one workgroup per pair), a lower-bound search for the CSR offsets, and the same sorted
  * segmented reduction per zone for `A_s` and `B_t`. Cost is a few radix sorts over the cell count;
  * rows are ordered by target and slots by source, so the CSR invariants hold exactly. Tied cells
@@ -151,6 +158,11 @@ export type GPUArealInterpolationProps = {
  * once) over `weights`, using `alternateWeights` as its `weights.weights` for the other kind. When the
  * pairs exceed the slot capacity, `overflow` is 1, the offsets are clamped to the capacity and the
  * dropped pairs are the ones of the highest targets.
+ *
+ * Unweighted fast path (no `cellWeights`, `unweightedFastPath` not `false`): every cell has weight
+ * 1, so the pair areas are read off the run lengths and the zone totals off the zone counts. This
+ * removes two sorts, two scans and five reduction kernels of the generic path with identical
+ * results (counts are exact integers in float32 up to 2^24).
  */
 export class GPUArealInterpolation implements GPUCommandNodeProducer {
   /** Prefix for every node and transient ID. */
@@ -277,7 +289,10 @@ export class GPUArealInterpolation implements GPUCommandNodeProducer {
 
     const keyHigh = createTransientView(graph, `${id}-key-high`, 'uint32', cellCount);
     const keyLow = createTransientView(graph, `${id}-key-low`, 'uint32', cellCount);
-    const cellMask = createTransientView(graph, `${id}-cell-mask`, 'float32', cellCount);
+    const fastPath = !props.cellWeights && props.unweightedFastPath !== false;
+    const cellMask = fastPath
+      ? undefined
+      : createTransientView(graph, `${id}-cell-mask`, 'float32', cellCount);
     const pairSourceKey = overlapOnly
       ? createTransientView(graph, `${id}-source-key`, 'uint32', cellCount)
       : sourceZones;
@@ -290,7 +305,7 @@ export class GPUArealInterpolation implements GPUCommandNodeProducer {
       createWGSLKernelNode<Parameters>(graph, {
         id: `${id}-cell-keys`,
         operation: OPERATION,
-        variant: `cell-keys-${overlapOnly ? 'overlap' : 'zone'}${cellWeights ? '-masked' : ''}`,
+        variant: `cell-keys-${overlapOnly ? 'overlap' : 'zone'}${cellWeights ? '-masked' : ''}${fastPath ? '-fast' : ''}`,
         bindings: [
           {name: 'sourceZones', view: sourceZones, type: 'u32', access: 'read'},
           {name: 'targetZones', view: targetZones, type: 'u32', access: 'read'},
@@ -306,7 +321,16 @@ export class GPUArealInterpolation implements GPUCommandNodeProducer {
             : []),
           {name: 'keyHigh', view: keyHigh, type: 'u32', access: 'read_write'},
           {name: 'keyLow', view: keyLow, type: 'u32', access: 'read_write'},
-          {name: 'cellMask', view: cellMask, type: 'f32', access: 'read_write'},
+          ...(cellMask
+            ? [
+                {
+                  name: 'cellMask',
+                  view: cellMask,
+                  type: 'f32' as const,
+                  access: 'read_write' as const
+                }
+              ]
+            : []),
           ...(overlapOnly
             ? [
                 {
@@ -341,7 +365,7 @@ const TARGET_COUNT: u32 = ${targetCount}u;`,
   let valid = source < SOURCE_COUNT && targetRow < TARGET_COUNT && weight > 0.0;
   keyHigh[keyHighOffset + index] = select(${INVALID}, targetRow, valid);
   keyLow[keyLowOffset + index] = select(${INVALID}, source, valid);
-  cellMask[cellMaskOffset + index] = weight;
+  ${cellMask ? 'cellMask[cellMaskOffset + index] = weight;' : ''}
   ${
     overlapOnly
       ? `sourceKey[sourceKeyOffset + index] = select(${INVALID}, source, valid);
@@ -352,7 +376,16 @@ const TARGET_COUNT: u32 = ${targetCount}u;`,
     ];
 
     // Pair runs, one per distinct (target, source), in ascending (target, source) order.
-    const sort = getKeyPairSortNodes(graph, `${id}-cell`, OPERATION, cellCount, keyHigh, keyLow);
+    // Zone ids need only log2(zoneCount) radix bits per half; invalid cells hold all ones.
+    const sort = getBoundedKeyPairSortNodes(
+      graph,
+      `${id}-cell`,
+      OPERATION,
+      cellCount,
+      keyHigh,
+      keyLow,
+      {lowKeyLimit: sourceCount, highKeyLimit: targetCount}
+    );
     const groups = getKeyGroupNodes(
       graph,
       `${id}-cell`,
@@ -364,32 +397,35 @@ const TARGET_COUNT: u32 = ${targetCount}u;`,
     );
     nodes.push(...sort.nodes, ...groups.nodes);
 
-    const sortedMask = createTransientView(graph, `${id}-sorted-mask`, 'float32', cellCount);
     const areas = props.areas ?? createTransientView(graph, `${id}-areas`, 'float32', capacity);
-    nodes.push(
-      createWGSLKernelNode<Parameters>(graph, {
-        id: `${id}-gather-mask`,
-        operation: OPERATION,
-        variant: 'gather-mask',
-        bindings: [
-          {name: 'sortedItems', view: sort.sortedItems, type: 'u32', access: 'read'},
-          {name: 'cellMask', view: cellMask, type: 'f32', access: 'read'},
-          {name: 'sortedMask', view: sortedMask, type: 'f32', access: 'read_write'}
-        ],
-        invocationCount: cellCount,
-        body: 'sortedMask[sortedMaskOffset + index] = cellMask[cellMaskOffset + sortedItems[sortedItemsOffset + index]];'
-      }),
-      createSegmentSumNode<Parameters>(graph, {
-        id: `${id}-pair-areas`,
-        operation: OPERATION,
-        segmentCount: slotCount,
-        input: sortedMask,
-        segmentOffsets: groups.groupStarts,
-        output: areas
-      })
-    );
+    if (cellMask) {
+      const sortedMask = createTransientView(graph, `${id}-sorted-mask`, 'float32', cellCount);
+      nodes.push(
+        createWGSLKernelNode<Parameters>(graph, {
+          id: `${id}-gather-mask`,
+          operation: OPERATION,
+          variant: 'gather-mask',
+          bindings: [
+            {name: 'sortedItems', view: sort.sortedItems, type: 'u32', access: 'read'},
+            {name: 'cellMask', view: cellMask, type: 'f32', access: 'read'},
+            {name: 'sortedMask', view: sortedMask, type: 'f32', access: 'read_write'}
+          ],
+          invocationCount: cellCount,
+          body: 'sortedMask[sortedMaskOffset + index] = cellMask[cellMaskOffset + sortedItems[sortedItemsOffset + index]];'
+        }),
+        createSegmentSumNode<Parameters>(graph, {
+          id: `${id}-pair-areas`,
+          operation: OPERATION,
+          segmentCount: slotCount,
+          input: sortedMask,
+          segmentOffsets: groups.groupStarts,
+          output: areas
+        })
+      );
+    }
 
-    // Whole-zone (or overlap-only) areas of every source and target, by the same sorted reduction.
+    // Whole-zone (or overlap-only) areas of every source and target. Weighted: the sorted
+    // reduction. Unweighted fast path: the zone cell counts are the areas.
     const zoneTotals = (
       name: string,
       keys: GraphDataView<'uint32'>,
@@ -413,23 +449,58 @@ const TARGET_COUNT: u32 = ${targetCount}u;`,
             {name: 'keys', view: keys, type: 'u32', access: 'read'},
             {name: 'counts', view: counts, type: 'atomic<u32>', access: 'read_write'}
           ],
-          invocationCount: cellCount,
-          declarations: `const ZONE_COUNT: u32 = ${count}u;`,
-          body: `let key = keys[keysOffset + index];
-  if (key < ZONE_COUNT) {
-    atomicAdd(&counts[countsOffset + key], 1u);
+          // Zone rasters are spatially coherent, so a thread folds a chunk of consecutive cells
+          // into runs of equal keys and issues one atomic per run, not per cell. Integer sums, so
+          // the totals stay exact and independent of thread order.
+          invocationCount: Math.ceil(cellCount / ZONE_COUNT_CHUNK),
+          declarations: `const ZONE_COUNT: u32 = ${count}u;
+const CELL_COUNT: u32 = ${cellCount}u;
+const CHUNK: u32 = ${ZONE_COUNT_CHUNK}u;`,
+          body: `let end = min((index + 1u) * CHUNK, CELL_COUNT);
+  var runKey = 0xffffffffu;
+  var runLength = 0u;
+  for (var cell = index * CHUNK; cell < end; cell++) {
+    let key = keys[keysOffset + cell];
+    if (key != runKey) {
+      if (runKey < ZONE_COUNT) {
+        atomicAdd(&counts[countsOffset + runKey], runLength);
+      }
+      runKey = key;
+      runLength = 0u;
+    }
+    runLength++;
+  }
+  if (runKey < ZONE_COUNT) {
+    atomicAdd(&counts[countsOffset + runKey], runLength);
   }`
-        }),
-        ...getSortedSegmentSumNodes(graph, {
-          id: `${id}-${name}`,
-          operation: OPERATION,
-          segmentCount: count,
-          segmentKeys: keys,
-          segmentCounts: counts,
-          sumContributions: cellMask,
-          sums: totals
         })
       );
+      if (cellMask) {
+        nodes.push(
+          ...getSortedSegmentSumNodes(graph, {
+            id: `${id}-${name}`,
+            operation: OPERATION,
+            segmentCount: count,
+            segmentKeys: keys,
+            sumContributions: cellMask,
+            sums: totals
+          })
+        );
+      } else {
+        nodes.push(
+          createWGSLKernelNode<Parameters>(graph, {
+            id: `${id}-${name}-totals`,
+            operation: OPERATION,
+            variant: 'zone-totals-from-counts',
+            bindings: [
+              {name: 'counts', view: counts, type: 'u32', access: 'read'},
+              {name: 'totals', view: totals, type: 'f32', access: 'read_write'}
+            ],
+            invocationCount: count,
+            body: 'totals[totalsOffset + index] = f32(counts[countsOffset + index]);'
+          })
+        );
+      }
       return totals;
     };
     const sourceTotals = zoneTotals('source', pairSourceKey, sourceCount);
@@ -440,7 +511,7 @@ const TARGET_COUNT: u32 = ${targetCount}u;`,
       createWGSLKernelNode<Parameters>(graph, {
         id: `${id}-pair-keys`,
         operation: OPERATION,
-        variant: 'pair-keys',
+        variant: cellMask ? 'pair-keys' : 'pair-keys-run-lengths',
         bindings: [
           {name: 'sortedItems', view: sort.sortedItems, type: 'u32', access: 'read'},
           {name: 'groupStarts', view: groups.groupStarts, type: 'u32', access: 'read'},
@@ -448,7 +519,10 @@ const TARGET_COUNT: u32 = ${targetCount}u;`,
           {name: 'keyHigh', view: keyHigh, type: 'u32', access: 'read'},
           {name: 'keyLow', view: keyLow, type: 'u32', access: 'read'},
           {name: 'neighbors', view: weights.neighbors, type: 'u32', access: 'read_write'},
-          {name: 'pairTarget', view: pairTarget, type: 'u32', access: 'read_write'}
+          {name: 'pairTarget', view: pairTarget, type: 'u32', access: 'read_write'},
+          ...(cellMask
+            ? []
+            : [{name: 'areas', view: areas, type: 'f32' as const, access: 'read_write' as const}])
         ],
         invocationCount: slotCount,
         declarations: `const CELL_COUNT: u32 = ${cellCount}u;`,
@@ -461,7 +535,17 @@ const TARGET_COUNT: u32 = ${targetCount}u;`,
     targetRow = keyHigh[keyHighOffset + item];
   }
   neighbors[neighborsOffset + index] = neighbor;
-  pairTarget[pairTargetOffset + index] = targetRow;`
+  pairTarget[pairTargetOffset + index] = targetRow;${
+    cellMask
+      ? ''
+      : `
+  // Unit cell weights: the pair area is the run length.
+  var area = 0.0;
+  if (index < groupCount) {
+    area = f32(groupStarts[groupStartsOffset + index + 1u] - groupStarts[groupStartsOffset + index]);
+  }
+  areas[areasOffset + index] = area;`
+  }`
       }),
       createWGSLKernelNode<Parameters>(graph, {
         id: `${id}-offsets`,

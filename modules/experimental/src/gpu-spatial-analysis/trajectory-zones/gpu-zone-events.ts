@@ -40,10 +40,16 @@ import {
   createZoneProbeNode,
   createZoneSeedNode,
   createZoneSortedColumnsNode,
+  createZoneSortedPositionsNode,
   createZoneSortKeyNode,
+  createZoneSpanNode,
+  createZoneTableFlagsNode,
+  createZoneTableGatherNode,
   createZoneWalkNode,
+  getZoneTableColumnBindingCount,
   type ZoneEventsShape,
-  type ZoneGatherColumn
+  type ZoneGatherColumn,
+  type ZoneTableColumn
 } from './zone-events-kernels';
 
 const OPERATION = 'GPUZoneEvents';
@@ -78,6 +84,44 @@ export type GPUZoneEventOutput = {
    * and row `r`.
    */
   eventRows?: GraphDataView<'uint32'>;
+  /**
+   * Optional interpolated crossing position (x, y) of each event, in the units of `positions`:
+   * `positions[r - 1] + s * (positions[r] - positions[r - 1])` with the same intersection
+   * parameter `s` as the crossing time. Zero at and after `output.count`.
+   */
+  eventPositions?: GraphDataView<'float32x2'>;
+};
+
+/**
+ * Capacity-bounded sparse `(track, zone)` table of {@link GPUZoneEvents}: one row for every pair
+ * with at least one visit (an interval inside the zone, including one that is open at the start
+ * or end of the track).
+ *
+ * `output.ids.length` is the row capacity, fixed at compile time. Every column that is present
+ * must have exactly that many rows. Rows are ordered by track, then zone. `output.ids` holds the
+ * track index. Rows at and after `output.count` hold sentinels: `0xffffffff` for IDs, zones and
+ * visits, `0` for times. `output.overflow` is 1 when more pairs have visits than rows, and
+ * `output.totalCount` (when present) receives the unclamped number of such pairs.
+ */
+export type GPUZoneVisitTableOutput = {
+  /** Bounded compact result. `ids` holds the track index of each row. */
+  output: GPUCompactOutput;
+  /** Optional zone index of each row. */
+  zones?: GraphDataView<'uint32'>;
+  /** Optional number of maximal inside intervals, as `visitCounts`. */
+  visits?: GraphDataView<'uint32'>;
+  /** Optional total dwell time, as `dwellTimes`. */
+  dwellTimes?: GraphDataView<'float32'>;
+  /**
+   * Optional time of the first enter relative to the track's first timestamp. A track that starts
+   * inside the zone reports 0.
+   */
+  firstEnterTimes?: GraphDataView<'float32'>;
+  /**
+   * Optional time of the last exit relative to the track's first timestamp. A visit that is still
+   * open at the end of the track reports the track's duration.
+   */
+  lastExitTimes?: GraphDataView<'float32'>;
 };
 
 /**
@@ -148,6 +192,12 @@ export type GPUZoneEventsProps = {
    * starts inside a zone counts that first interval.
    */
   visitCounts?: GraphDataView<'uint32'>;
+  /**
+   * Optional sparse `(track, zone)` table of visits, dwell, first enter and last exit. It is
+   * built from the same dense per-cell state as `dwellTimes` and `visitCounts` (which stay
+   * transient when not requested), so it bounds the output size, not the per-encoding memory.
+   */
+  visitTable?: GPUZoneVisitTableOutput;
   /** Optional per-track number of events found, not clamped by `maxEventsPerTrack`. */
   trackEventCounts?: GraphDataView<'uint32'>;
   /**
@@ -192,8 +242,12 @@ export type GPUZoneEventsProps = {
  * `events.output.ids.length`; `diagnostics` reports each cause separately plus the candidate
  * count the scratch needed. After a candidate overflow every result may be missing events.
  *
- * Non-goals: geodesic crossings, crossing positions (derive them from `eventRows` and the segment),
- * zone polygons with orientation semantics, point-in-polygon tolerance for samples exactly on a
+ * Crossing positions: `events.eventPositions` holds the interpolated crossing point of each event.
+ * Sparse table: `visitTable` compacts the `(track, zone)` cells that have a visit into a bounded
+ * list with visits, total dwell, first enter and last exit, so large zone counts do not need to
+ * read dense matrices back.
+ *
+ * Non-goals: geodesic crossings, zone polygons with orientation semantics, point-in-polygon tolerance for samples exactly on a
  * boundary, and Double-single timestamps.
  */
 export class GPUZoneEvents implements GPUCommandNodeProducer {
@@ -281,6 +335,31 @@ export class GPUZoneEvents implements GPUCommandNodeProducer {
         }
       }
     }
+    if (events.eventPositions) {
+      validatePackedView(events.eventPositions, ['float32x2'], `${id} events.eventPositions`);
+      if (events.eventPositions.length !== capacity) {
+        throw new Error(`${id} events.eventPositions length must equal the event capacity`);
+      }
+    }
+    const {visitTable} = props;
+    if (visitTable) {
+      validateCompactOutput(`${id} visitTable`, visitTable.output);
+      const tableCapacity = visitTable.output.ids.length;
+      for (const [name, view, format] of [
+        ['zones', visitTable.zones, 'uint32'],
+        ['visits', visitTable.visits, 'uint32'],
+        ['dwellTimes', visitTable.dwellTimes, 'float32'],
+        ['firstEnterTimes', visitTable.firstEnterTimes, 'float32'],
+        ['lastExitTimes', visitTable.lastExitTimes, 'float32']
+      ] as const) {
+        if (view) {
+          validatePackedView(view, [format], `${id} visitTable.${name}`);
+          if (view.length !== tableCapacity) {
+            throw new Error(`${id} visitTable.${name} length must equal the table capacity`);
+          }
+        }
+      }
+    }
     for (const [name, view] of Object.entries(props.diagnostics ?? {})) {
       if (view) {
         validatePackedUint32View(view, `${id} diagnostics.${name}`);
@@ -304,6 +383,8 @@ export class GPUZoneEvents implements GPUCommandNodeProducer {
         events.eventTypes,
         events.eventTimes,
         events.eventRows,
+        events.eventPositions,
+        ...this.getTableViews(),
         props.dwellTimes,
         props.visitCounts,
         props.trackEventCounts,
@@ -341,6 +422,8 @@ export class GPUZoneEvents implements GPUCommandNodeProducer {
       events.eventTypes,
       events.eventTimes,
       events.eventRows,
+      events.eventPositions,
+      ...this.getTableViews(),
       props.dwellTimes,
       props.visitCounts,
       props.trackEventCounts,
@@ -521,6 +604,10 @@ export class GPUZoneEvents implements GPUCommandNodeProducer {
     const eventRanks = u32('event-ranks', capacity);
     const walkState = u32('walk-state', cellCount);
     const enterTimes = f32('enter-times', cellCount);
+    const {visitTable} = props;
+    const needsSpans = Boolean(visitTable?.firstEnterTimes || visitTable?.lastExitTimes);
+    const firstEnterTimes = needsSpans ? f32('first-enter-times', cellCount) : undefined;
+    const lastExitTimes = needsSpans ? f32('last-exit-times', cellCount) : undefined;
     const dwellTimes = props.dwellTimes ?? f32('dwell-times', cellCount);
     const visitCounts = props.visitCounts ?? u32('visit-counts', cellCount);
     const trackEventCounts = props.trackEventCounts ?? u32('track-event-counts', trackCount);
@@ -544,7 +631,9 @@ export class GPUZoneEvents implements GPUCommandNodeProducer {
         walkState,
         enterTimes,
         dwellTimes,
-        visitCounts
+        visitCounts,
+        firstEnterTimes,
+        lastExitTimes
       }),
       createZoneWalkNode<Parameters>(graph, {
         id: `${id}-walk`,
@@ -577,10 +666,50 @@ export class GPUZoneEvents implements GPUCommandNodeProducer {
         trackOffsets: props.trackOffsets,
         walkState,
         enterTimes,
-        dwellTimes
+        dwellTimes,
+        lastExitTimes
       })
     );
+    if (firstEnterTimes && lastExitTimes) {
+      // Runs before the close node, which overwrites the last exit of still-open visits.
+      nodes.splice(
+        nodes.length - 1,
+        0,
+        createZoneSpanNode<Parameters>(graph, {
+          id: `${id}-span`,
+          shape,
+          state,
+          sortedTracks,
+          sortedZones,
+          sortedTimes,
+          eventTypes,
+          firstEnterTimes,
+          lastExitTimes
+        })
+      );
+    }
 
+    let sortedPositions: GraphDataView<'float32x2'> | undefined;
+    if (events.eventPositions) {
+      sortedPositions = createTransientView(
+        graph,
+        `${id}-sorted-positions`,
+        'float32x2',
+        Math.max(capacity, 1)
+      );
+      nodes.push(
+        createZoneSortedPositionsNode<Parameters>(graph, {
+          id: `${id}-sorted-positions`,
+          shape,
+          state,
+          order,
+          candidatePairs,
+          candidateParameters,
+          positions: props.positions,
+          sortedPositions
+        })
+      );
+    }
     const keepFlags = u32('keep-flags', capacity);
     const rowIds = u32('row-ids', capacity);
     const keptRows = u32('kept-rows', capacity);
@@ -636,6 +765,14 @@ export class GPUZoneEvents implements GPUCommandNodeProducer {
     if (events.eventTimes) {
       columns.push({source: sortedTimes, destination: events.eventTimes, sentinel: '0u'});
     }
+    if (events.eventPositions && sortedPositions) {
+      columns.push({
+        source: sortedPositions,
+        destination: events.eventPositions,
+        sentinel: '0u',
+        stride: 2
+      });
+    }
     for (let first = 0, part = 0; first < columns.length; first += 3, part++) {
       nodes.push(
         createZoneGatherNode<Parameters>(graph, {
@@ -654,6 +791,132 @@ export class GPUZoneEvents implements GPUCommandNodeProducer {
         totalCount: keptTotal,
         output: events.output,
         overflowSources: [overflowFlag]
+      })
+    );
+    if (visitTable) {
+      nodes.push(
+        ...this.getTableNodes(graph, {
+          cellCount,
+          visitCounts,
+          dwellTimes,
+          firstEnterTimes,
+          lastExitTimes
+        })
+      );
+    }
+    return nodes;
+  }
+
+  /** Every output view of the optional visit table. */
+  private getTableViews(): (GraphDataView | undefined)[] {
+    const table = this.props.visitTable;
+    return table
+      ? [
+          table.output.ids,
+          table.output.count,
+          table.output.overflow,
+          table.output.totalCount,
+          table.zones,
+          table.visits,
+          table.dwellTimes,
+          table.firstEnterTimes,
+          table.lastExitTimes
+        ]
+      : [];
+  }
+
+  /** Compaction of the visited `(track, zone)` cells, gather kernels and the publish kernel. */
+  private getTableNodes<Parameters>(
+    graph: GPUCommandGraph<Parameters>,
+    cells: {
+      cellCount: number;
+      visitCounts: GraphDataView<'uint32'>;
+      dwellTimes: GraphDataView<'float32'>;
+      firstEnterTimes?: GraphDataView<'float32'>;
+      lastExitTimes?: GraphDataView<'float32'>;
+    }
+  ): GPUCommandNode<Parameters>[] {
+    const {id} = this;
+    const table = this.props.visitTable!;
+    const {cellCount} = cells;
+    const capacity = table.output.ids.length;
+    const u32 = (name: string, length: number) =>
+      createTransientView(graph, `${id}-${name}`, 'uint32', Math.max(length, 1));
+    const flags = u32('table-flags', cellCount);
+    const cellIds = u32('table-cell-ids', cellCount);
+    const keptCells = u32('table-kept-cells', cellCount);
+    const keptTotal = u32('table-kept-total', 1);
+    const nodes: GPUCommandNode<Parameters>[] = [
+      createZoneTableFlagsNode<Parameters>(graph, {
+        id: `${id}-table-flags`,
+        cellCount,
+        visitCounts: cells.visitCounts,
+        flags,
+        cellIds
+      }),
+      ...new GPUCompaction({
+        id: `${id}-table-cells`,
+        input: cellIds,
+        flags,
+        output: keptCells,
+        count: keptTotal
+      }).getCommandNodes(graph)
+    ];
+    const columns: ZoneTableColumn[] = [{kind: 'track', destination: table.output.ids}];
+    if (table.zones) {
+      columns.push({kind: 'zone', destination: table.zones});
+    }
+    if (table.visits) {
+      columns.push({kind: 'value', source: cells.visitCounts, destination: table.visits});
+    }
+    if (table.dwellTimes) {
+      columns.push({kind: 'value', source: cells.dwellTimes, destination: table.dwellTimes});
+    }
+    if (table.firstEnterTimes && cells.firstEnterTimes) {
+      columns.push({
+        kind: 'value',
+        source: cells.firstEnterTimes,
+        destination: table.firstEnterTimes
+      });
+    }
+    if (table.lastExitTimes && cells.lastExitTimes) {
+      columns.push({kind: 'value', source: cells.lastExitTimes, destination: table.lastExitTimes});
+    }
+    // Pack columns into kernels of at most 8 storage bindings (keptTotal and keptCells use 2).
+    let chunk: ZoneTableColumn[] = [];
+    let bindingCount = 2;
+    let part = 0;
+    const flush = () => {
+      if (chunk.length > 0) {
+        nodes.push(
+          createZoneTableGatherNode<Parameters>(graph, {
+            id: `${id}-table-gather-${part++}`,
+            capacity,
+            zoneCount: this.props.zoneCount,
+            keptTotal,
+            keptCells,
+            columns: chunk
+          })
+        );
+        chunk = [];
+        bindingCount = 2;
+      }
+    };
+    for (const column of columns) {
+      const columnBindings = getZoneTableColumnBindingCount(column);
+      if (bindingCount + columnBindings > 8) {
+        flush();
+      }
+      chunk.push(column);
+      bindingCount += columnBindings;
+    }
+    flush();
+    nodes.push(
+      createPublishNode<Parameters>(graph, {
+        id: `${id}-table-publish`,
+        operation: OPERATION,
+        totalCount: keptTotal,
+        output: table.output
       })
     );
     return nodes;

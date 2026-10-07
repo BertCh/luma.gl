@@ -4,7 +4,6 @@
 
 import {
   createTransientView,
-  GPUScan,
   GPUSegmentedReduction,
   GPUSort,
   GraphVectorView,
@@ -21,6 +20,7 @@ import {
   type WGSLKernelBinding
 } from '../../utils/wgsl-kernel-nodes';
 import {getSortKeyBits} from '../../utils/sorted-segment-sums';
+import {getSortedSegmentOffsetNodes} from '../../utils/sorted-segment-offsets';
 import {
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph
@@ -119,8 +119,8 @@ export type GPUGroupGeometryProps = {
  * ## Composition
  *
  * Labels are validated into one group key per row (noise and out-of-range labels become the
- * excluded key `groupCount`). Rows are stably sorted by that key with `GPUSort`, offsets come from
- * `GPUScan`, bounds use `GPUSegmentedReduction`, and the centers and the ellipse come from
+ * excluded key `groupCount`). Rows are stably sorted by that key with `GPUSort`, offsets are lower
+ * bounds found by binary search in the sorted keys (no counting atomics or scan), bounds use `GPUSegmentedReduction`, and the centers and the ellipse come from
  * {@link GPUGeographicDistribution} run on the same keys (two instances when weights are given).
  *
  * ## Medoid
@@ -315,22 +315,6 @@ export class GPUGroupGeometry implements GPUCommandNodeProducer {
   ${noiseCheck}
   groupKeys[groupKeysOffset + index] = select(GROUP_COUNT, label, valid);
   rowIndices[rowIndicesOffset + index] = index;`
-      ),
-      createFillNode<Parameters>(graph, {
-        id: `${id}-zero-counts`,
-        operation: OPERATION,
-        view: groupCounts,
-        type: 'u32',
-        value: '0u'
-      }),
-      kernel(
-        'count',
-        rows,
-        [read('groupKeys', groupKeys, 'u32'), write('groupCounts', groupCounts, 'atomic<u32>')],
-        `let group = groupKeys[groupKeysOffset + index];
-  if (group < GROUP_COUNT) {
-    atomicAdd(&groupCounts[groupCountsOffset + group], 1u);
-  }`
       )
     );
 
@@ -347,19 +331,14 @@ export class GPUGroupGeometry implements GPUCommandNodeProducer {
         outputValues: sortedIndices,
         keyBits: getSortKeyBits(groupCount)
       }).getCommandNodes(graph),
-      ...new GPUScan({
-        id: `${id}-segment-scan`,
-        input: groupCounts,
-        output: segmentOffsets,
-        mode: 'exclusive'
-      }).getCommandNodes(graph),
-      kernel(
-        'segment-total',
-        1,
-        [read('counts', groupCounts, 'u32'), write('segmentOffsets', segmentOffsets, 'u32')],
-        `segmentOffsets[segmentOffsetsOffset + ${groupCount}u] =
-    segmentOffsets[segmentOffsetsOffset + ${groupCount - 1}u] + counts[countsOffset + ${groupCount - 1}u];`
-      )
+      ...getSortedSegmentOffsetNodes(graph, {
+        id,
+        operation: OPERATION,
+        groupCount,
+        sortedGroupKeys: sortedKeys,
+        segmentOffsets,
+        counts: groupCounts
+      })
     );
 
     // 3. Bounds from sorted coordinates.

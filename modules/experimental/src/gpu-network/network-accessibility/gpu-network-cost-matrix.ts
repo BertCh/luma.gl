@@ -62,9 +62,10 @@ export type GPUNetworkCostMatrixProps = {
   costLimit?: GraphDataView<'float32'>;
   /**
    * Compile-time rows searched together in one lane-expanded reachability pass. Defaults to
-   * `recommendLaneCount()`: about 1M expanded nodes per batch (at least 32 lanes), within 128 MB of
-   * scratch, at most `rowCount`. Scratch memory grows with `laneCount * (nodeCount + 2 * edgeCount)` words
-   * and the command node count with `ceil(rowCount / laneCount) * (maxIterations + 2)`.
+   * `recommendLaneCount()`: about 1M expanded nodes per batch (at least 32 lanes), at most
+   * `rowCount`. Lanes share one CSR, so scratch memory is only the frontier state
+   * (`laneCount * nodeCount` words) and the command node count grows with
+   * `ceil(rowCount / laneCount) * (maxIterations + 2)`.
    */
   laneCount?: number;
   /** Rounds of every batch, as `GPUNetworkReachability.maxIterations`. Defaults to 64. */
@@ -85,8 +86,8 @@ export type GPUNetworkCostMatrixProps = {
  * row's seeds to every node of a directed CSR network.
  *
  * Rows are searched `laneCount` at a time. Each batch runs one `GPUNetworkReachability` over a
- * lane-expanded network that holds `laneCount` disjoint copies of the CSR (lane `l`, node `u` is
- * expanded node `l * nodeCount + u`), seeded only in each row's own lane, so the frontier rounds,
+ * lane-expanded network of `laneCount` disjoint lanes that all read the same CSR (lane `l`, node `u`
+ * is expanded node `l * nodeCount + u`; no per-lane copy is materialized), seeded only in each row's own lane, so the frontier rounds,
  * workgroup-local hop chaining, cost limit and convergence flag of reachability serve every lane
  * at once and the expanded cost array is exactly the batch's block of matrix rows. Costs are the
  * unique f32 fixpoint of the relaxations, so the matrix is bit-identical for every `laneCount`.
@@ -183,9 +184,8 @@ export class GPUNetworkCostMatrix implements GPUCommandNodeProducer {
     ) {
       throw new Error(`${id} laneCount must be an integer in [1, rowCount]`);
     }
-    const expandedEdgeCount = this.laneCount * props.neighbors.length;
-    if (this.laneCount * this.nodeCount >= ACCESSIBILITY_NONE || expandedEdgeCount >= 2 ** 32) {
-      throw new Error(`${id} laneCount * nodeCount and laneCount * edgeCount must fit in uint32`);
+    if (this.laneCount * this.nodeCount >= ACCESSIBILITY_NONE) {
+      throw new Error(`${id} laneCount * nodeCount must fit in uint32`);
     }
     this.batchCount = Math.ceil(this.rowCount / this.laneCount);
     validateGraphOutputsDisjointFromInputs(id, [props.costs, props.converged], getInputs(props));
@@ -195,7 +195,7 @@ export class GPUNetworkCostMatrix implements GPUCommandNodeProducer {
   }
 
   /**
-   * Returns the lane-expansion nodes (`expand-offsets`, `expand-edges`, `expand-seeds`), the
+   * Returns the seed expansion node (`expand-seeds`), the
    * nodes of one `GPUNetworkReachability` per batch (IDs `${id}-batch-${batch}-*`), and an optional
    * `converged` reduction.
    */
@@ -204,100 +204,15 @@ export class GPUNetworkCostMatrix implements GPUCommandNodeProducer {
   ): readonly GPUCommandNode<Parameters>[] {
     const {id, props, nodeCount, rowCount, laneCount, batchCount, seedsPerRow} = this;
     validateGraphViewsBelongToGraph(id, graph, [...getInputs(props), props.costs, props.converged]);
-    const edgeCount = props.neighbors.length;
     const seedCount = props.seedNodes.length;
     const nodes: GPUCommandNode<Parameters>[] = [];
 
-    const expandedOffsets = createTransientView(
-      graph,
-      `${id}-expanded-offsets`,
-      'uint32',
-      laneCount * nodeCount + 1
-    );
-    const expandedNeighbors = createTransientView(
-      graph,
-      `${id}-expanded-neighbors`,
-      'uint32',
-      Math.max(laneCount * edgeCount, 1)
-    );
-    const expandedWeights = createTransientView(
-      graph,
-      `${id}-expanded-weights`,
-      'float32',
-      Math.max(laneCount * edgeCount, 1)
-    );
     const expandedSeeds = createTransientView(
       graph,
       `${id}-expanded-seeds`,
       'uint32',
       Math.max(batchCount * seedCount, 1)
     );
-    nodes.push(
-      createWGSLKernelNode<Parameters>(graph, {
-        id: `${id}-expand-offsets`,
-        operation: OPERATION,
-        variant: 'expand-offsets',
-        bindings: [
-          {name: 'offsets', view: props.offsets, type: 'u32', access: 'read'},
-          {
-            name: 'expandedOffsets',
-            view: expandedOffsets,
-            type: 'u32',
-            access: 'read_write'
-          }
-        ],
-        invocationCount: laneCount * nodeCount + 1,
-        declarations: `const NODE_COUNT: u32 = ${nodeCount}u;
-const EDGE_COUNT: u32 = ${edgeCount}u;`,
-        body: `let lane = index / NODE_COUNT;
-  let node = index - lane * NODE_COUNT;
-  expandedOffsets[expandedOffsetsOffset + index] = lane * EDGE_COUNT + offsets[offsetsOffset + node];`
-      })
-    );
-    if (edgeCount > 0) {
-      nodes.push(
-        createWGSLKernelNode<Parameters>(graph, {
-          id: `${id}-expand-edges`,
-          operation: OPERATION,
-          variant: 'expand-edges',
-          bindings: [
-            {
-              name: 'neighbors',
-              view: props.neighbors,
-              type: 'u32',
-              access: 'read'
-            },
-            {
-              name: 'weights',
-              view: props.weights,
-              type: 'f32',
-              access: 'read'
-            },
-            {
-              name: 'expandedNeighbors',
-              view: expandedNeighbors,
-              type: 'u32',
-              access: 'read_write'
-            },
-            {
-              name: 'expandedWeights',
-              view: expandedWeights,
-              type: 'f32',
-              access: 'read_write'
-            }
-          ],
-          invocationCount: laneCount * edgeCount,
-          declarations: `const NODE_COUNT: u32 = ${nodeCount}u;
-const EDGE_COUNT: u32 = ${edgeCount}u;`,
-          body: `let lane = index / EDGE_COUNT;
-  let edge = index - lane * EDGE_COUNT;
-  let neighbor = neighbors[neighborsOffset + edge];
-  expandedNeighbors[expandedNeighborsOffset + index] =
-    select(${ACCESSIBILITY_NONE}u, lane * NODE_COUNT + neighbor, neighbor < NODE_COUNT);
-  expandedWeights[expandedWeightsOffset + index] = weights[weightsOffset + edge];`
-        })
-      );
-    }
     if (seedCount > 0) {
       const seedBindings: WGSLKernelBinding[] = [
         {
@@ -351,13 +266,14 @@ const SEEDS_PER_ROW: u32 = ${seedsPerRow}u;`,
     for (let batch = 0; batch < batchCount; batch++) {
       const batchLaneCount = Math.min(laneCount, rowCount - batch * laneCount);
       const batchNodeCount = batchLaneCount * nodeCount;
-      const batchEdgeCount = batchLaneCount * edgeCount;
       nodes.push(
         ...new GPUNetworkReachability({
           id: `${id}-batch-${batch}`,
-          offsets: getSubView(graph, expandedOffsets, 0, batchNodeCount + 1),
-          neighbors: getSubView(graph, expandedNeighbors, 0, batchEdgeCount),
-          weights: getSubView(graph, expandedWeights, 0, batchEdgeCount),
+          // Lanes share the one CSR; reachability maps expanded node `l * nodeCount + u` onto it.
+          offsets: props.offsets,
+          neighbors: props.neighbors,
+          weights: props.weights,
+          laneCount: batchLaneCount,
           sources: getSubView(graph, expandedSeeds, batch * seedCount, seedCount),
           sourceCosts: props.seedCosts,
           costLimit: props.costLimit,

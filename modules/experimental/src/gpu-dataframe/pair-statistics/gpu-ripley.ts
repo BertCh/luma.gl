@@ -198,6 +198,9 @@ export class GPURipley implements GPUCommandNodeProducer {
 const RADIUS_COUNT: u32 = ${radiusCount}u;
 const ISOTROPIC_SCALE: f32 = ${ISOTROPIC_SCALE}.0;
 const WEIGHT_CAP: f32 = ${GPU_RIPLEY_WEIGHT_CAP}.0;
+// The raw per-annulus pair counts feed K only for the uncorrected estimator, so the other modes
+// tally them only when the caller asked for pairCounts.
+const RAW_PAIRS: bool = ${Boolean(props.pairCounts)};
 const PI: f32 = 3.14159265358979;
 const HALF_PI: f32 = 1.57079632679490;
 `;
@@ -241,22 +244,28 @@ fn getIsotropicWeight(left: f32, bottom: f32, right: f32, top: f32, d: f32) -> f
     let right = lattice.maximumX - x;
     let top = lattice.maximumY - y;
     var borderCount = 0u;
+    // Border estimator: pairs of this focus below its border count, tallied in a register and
+    // added once per focus instead of once per pair (integer sums, so the result is identical).
+    var borderPairs = 0u;
     if (mode == 1u) {
       let borderDistance = min(min(left, right), min(bottom, top));
       borderCount = min(u32(floor(borderDistance / lattice.maximumDistance * f32(RADIUS_COUNT))), RADIUS_COUNT);
     }`,
       pairAction: `let scaled = pairDistance / lattice.maximumDistance * f32(RADIUS_COUNT);
             let annulus = min(u32(max(ceil(scaled) - 1.0, 0.0)), RADIUS_COUNT - 1u);
-            accumulate(annulus, 3u, 1u);
+            if (RAW_PAIRS || mode == 0u) {
+              accumulate(annulus, 3u, 1u);
+            }
             if (mode == 1u) {
               if (annulus < borderCount) {
                 accumulate(annulus, 0u, 1u);
-                accumulate(borderCount, 1u, 1u);
+                borderPairs++;
               }
             } else if (mode == 2u) {
               accumulate(annulus, 4u, quantizePairAmount(getIsotropicWeight(left, bottom, right, top, pairDistance) * ISOTROPIC_SCALE));
             }`,
       focusEpilogue: `if (mode == 1u) {
+      accumulate(borderCount, 1u, borderPairs);
       accumulate(borderCount, 2u, 1u);
     }`
     });

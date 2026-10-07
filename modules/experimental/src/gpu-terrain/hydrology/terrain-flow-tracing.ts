@@ -12,10 +12,9 @@ import {
 import {createWGSLKernelNode, type WGSLKernelBinding} from '../../utils/wgsl-kernel-nodes';
 import {
   createRasterIterationFinalizeNode,
-  createRasterIterationGateNode,
+  createRasterGatedLoopNodes,
   createRasterIterationResetNode,
-  createRasterIterationState,
-  getRasterIterationCondition
+  createRasterIterationState
 } from '../../gpu-raster/cost-distance/raster-relaxation';
 
 /**
@@ -114,6 +113,7 @@ export function createTerrainFlowPointerNodes<Parameters>(
     pointer: GraphDataView<'uint32'>;
     stops: TerrainFlowStopRule;
     converged?: GraphDataView<'uint32'>;
+    iterationCount?: GraphDataView<'uint32'>;
   }
 ): GPUCommandNode<Parameters>[] {
   const cellCount = props.width * props.height;
@@ -157,41 +157,42 @@ export function createTerrainFlowPointerNodes<Parameters>(
     {name: 'pointer', view: props.pointer, type: 'atomic<u32>', access: 'read_write'},
     {name: 'status', view: state.status, type: 'atomic<u32>', access: 'read_write'}
   ];
-  const roundBody = `let current = atomicLoad(&pointer[pointerOffset + index]);
+  const getRoundBody = (
+    markChangedWGSL: string
+  ) => `let current = atomicLoad(&pointer[pointerOffset + index]);
   let next = atomicLoad(&pointer[pointerOffset + current]);
   if (next != current) {
     atomicStore(&pointer[pointerOffset + index], next);
-    atomicStore(&status[statusOffset], 1u);
+    ${markChangedWGSL}
   }`;
-  for (let iteration = 0; iteration < props.maxIterations; iteration++) {
-    const nodeId = `${props.id}-pointer-round-${iteration}`;
-    const {condition, extraResources} = getRasterIterationCondition<Parameters>(state, nodeId);
-    nodes.push(
-      createWGSLKernelNode<Parameters>(graph, {
-        id: nodeId,
-        operation: props.operation,
-        variant: 'pointer-round',
-        bindings: roundBindings,
-        invocationCount: cellCount,
-        body: roundBody,
-        condition,
-        extraResources
-      }),
-      createRasterIterationGateNode<Parameters>(graph, {
-        id: `${props.id}-pointer-gate-${iteration}`,
-        operation: props.operation,
-        state,
-        maxIterations: props.maxIterations
-      })
-    );
-  }
-  if (props.converged) {
+  nodes.push(
+    ...createRasterGatedLoopNodes<Parameters>(graph, {
+      id: `${props.id}-pointer-round`,
+      gateId: `${props.id}-pointer-gate`,
+      operation: props.operation,
+      state,
+      maxIterations: props.maxIterations,
+      createRound: ({nodeId, markChangedWGSL, condition, extraResources}) =>
+        createWGSLKernelNode<Parameters>(graph, {
+          id: nodeId,
+          operation: props.operation,
+          variant: 'pointer-round',
+          bindings: roundBindings,
+          invocationCount: cellCount,
+          body: getRoundBody(markChangedWGSL),
+          condition,
+          extraResources
+        })
+    })
+  );
+  if (props.converged || props.iterationCount) {
     nodes.push(
       createRasterIterationFinalizeNode<Parameters>(graph, {
         id: `${props.id}-pointer-finalize`,
         operation: props.operation,
         state,
-        converged: props.converged
+        converged: props.converged,
+        iterationCount: props.iterationCount
       })
     );
   }

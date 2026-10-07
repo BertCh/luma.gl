@@ -106,7 +106,6 @@ it('GPUCompositeScore emits deterministic node IDs and compiles optional passes 
   const basic = new GPUCompositeScore(createProps(graph, {id: 'basic'}));
   const basicIds = basic.getCommandNodes(graph).map(node => node.id);
   expect(basicIds).toEqual([
-    'basic-init',
     'basic-validate',
     'basic-tile-sums',
     'basic-means',

@@ -46,6 +46,16 @@ it('getGPURipleyDistanceParameterValues packs and validates the layout', () => {
       edgeCorrection: 'none'
     })[5]
   ).toBe(0);
+  expect(
+    ['kaplan-meier', 'hanisch'].map(
+      edgeCorrection =>
+        getGPURipleyDistanceParameterValues({
+          bounds: [0, 1, 10, 11],
+          maximumDistance: 3,
+          edgeCorrection: edgeCorrection as 'hanisch'
+        })[5]
+    )
+  ).toEqual([2, 3]);
   expect(() =>
     getGPURipleyDistanceParameterValues({
       bounds: [0, 0, 1, 1],

@@ -8,7 +8,11 @@ import {createWGSLKernelNode} from '../../utils/wgsl-kernel-nodes';
 import {GPUPointInPolygonJoin} from '../spatial-join/index';
 import {GPUTrajectoryMetrics} from '../trajectory-analysis/index';
 import {GPUZoneEvents} from '../trajectory-zones/index';
-import type {GPUZoneEventOutput, GPUZoneEventsDiagnostics} from '../trajectory-zones/index';
+import type {
+  GPUZoneEventOutput,
+  GPUZoneEventsDiagnostics,
+  GPUZoneVisitTableOutput
+} from '../trajectory-zones/index';
 import {assertRecipe, getOrCreateView, RecipeBuilder, type GPURecipeResult} from './recipe-utils';
 
 const ID = 'GPUFleetDwellRecipe';
@@ -295,7 +299,10 @@ export type GPUFleetDwellZoneEventsRecipeProps = {
   maxEventsPerTrack: number;
   /** Event capacity (`events.output.ids` rows) when `events` is not given. Defaults to `trackCount * maxEventsPerTrack`. */
   eventCapacity?: number;
-  /** Caller-owned enter and exit event list. */
+  /**
+   * Caller-owned enter and exit event list. Passing `eventPositions` also writes the interpolated
+   * crossing position of every event (it is not created when omitted).
+   */
   events?: Omit<Partial<GPUZoneEventOutput>, 'output'> & {
     output?: Partial<GPUZoneEventOutput['output']>;
   };
@@ -307,6 +314,11 @@ export type GPUFleetDwellZoneEventsRecipeProps = {
   trackEventCounts?: GraphDataView<'uint32'>;
   /** Caller-owned split overflow flags and required candidate count of `GPUZoneEvents`. */
   diagnostics?: GPUZoneEventsDiagnostics;
+  /**
+   * Caller-owned sparse `(track, zone)` visit table, forwarded to `GPUZoneEvents` `visitTable`
+   * (visits, dwell, first enter and last exit per pair). Not created when omitted.
+   */
+  visitTable?: GPUZoneVisitTableOutput;
   /** Caller-owned per-zone statistics over visiting tracks. */
   table?: GPUFleetDwellZoneTable;
 };
@@ -321,7 +333,11 @@ export type GPUFleetDwellZoneEventsRecipeResult = GPURecipeResult & {
     types: GraphDataView<'uint32'>;
     times: GraphDataView<'float32'>;
     rows: GraphDataView<'uint32'>;
+    /** Crossing position per event; present only when `props.events.eventPositions` was given. */
+    positions?: GraphDataView<'float32x2'>;
   };
+  /** The caller's sparse visit table, when `props.visitTable` was given. */
+  visitTable?: GPUZoneVisitTableOutput;
   dwellTimes: GraphDataView<'float32'>;
   visitCounts: GraphDataView<'uint32'>;
   trackEventCounts: GraphDataView<'uint32'>;
@@ -347,7 +363,8 @@ export type GPUFleetDwellZoneEventsRecipeResult = GPURecipeResult & {
  * Chain: `GPUZoneEvents` -> adapter (zone key and visited mask per `(track, zone)` cell) ->
  * dense `GPUGroupStatistics` of dwell time keyed by zone, one row per zone. Unlike the stops variant this counts any time
  * spent inside a zone, moving or not, and needs no point-in-polygon join. `table.counts` is the
- * number of tracks that visited the zone.
+ * number of tracks that visited the zone. `events.eventPositions` and `visitTable` are optional
+ * pass-through outputs of `GPUZoneEvents` (crossing positions and a sparse `(track, zone)` table).
  */
 export function addFleetDwellZoneEventsRecipe<Parameters>(
   graph: GPUCommandGraph<Parameters>,
@@ -368,7 +385,8 @@ export function addFleetDwellZoneEventsRecipe<Parameters>(
     zones: getOrCreateView(graph, `${id}-event-zones`, 'uint32', eventCapacity, given.eventZones),
     types: getOrCreateView(graph, `${id}-event-types`, 'uint32', eventCapacity, given.eventTypes),
     times: getOrCreateView(graph, `${id}-event-times`, 'float32', eventCapacity, given.eventTimes),
-    rows: getOrCreateView(graph, `${id}-event-rows`, 'uint32', eventCapacity, given.eventRows)
+    rows: getOrCreateView(graph, `${id}-event-rows`, 'uint32', eventCapacity, given.eventRows),
+    positions: given.eventPositions
   };
   const dwellTimes = getOrCreateView(
     graph,
@@ -439,8 +457,10 @@ export function addFleetDwellZoneEventsRecipe<Parameters>(
         eventZones: events.zones,
         eventTypes: events.types,
         eventTimes: events.times,
-        eventRows: events.rows
+        eventRows: events.rows,
+        eventPositions: events.positions
       },
+      visitTable: props.visitTable,
       dwellTimes,
       visitCounts,
       trackEventCounts,
@@ -472,6 +492,7 @@ export function addFleetDwellZoneEventsRecipe<Parameters>(
   return {
     contributors: builder.contributors,
     events,
+    visitTable: props.visitTable,
     dwellTimes,
     visitCounts,
     trackEventCounts,

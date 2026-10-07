@@ -21,7 +21,6 @@ import {getSortedSegmentSumNodes} from '../../utils/sorted-segment-sums';
 import {createFillNode} from '../../utils/wgsl-kernel-nodes';
 import {GPU_GEODESIC_MEAN_EARTH_RADIUS} from '../geometry-measures/geodesic-wgsl';
 import {
-  createCellCountNode,
   createDensityNode,
   createRecordPublishNode,
   createWalkCountNode,
@@ -281,7 +280,6 @@ export class GPULineDensity implements GPUCommandNodeProducer {
       'float32',
       maximumRecords
     );
-    const cellCounts = createTransientView(graph, `${id}-cell-counts`, 'uint32', cellCount);
     return [
       createWalkCountNode<Parameters>(graph, {
         id: `${id}-count`,
@@ -322,26 +320,11 @@ export class GPULineDensity implements GPUCommandNodeProducer {
         overflow: output.overflow,
         totalRecords: output.totalRecords
       }),
-      createFillNode<Parameters>(graph, {
-        id: `${id}-fill-cell-counts`,
-        operation: OPERATION,
-        view: cellCounts,
-        type: 'u32',
-        value: '0u'
-      }),
-      createCellCountNode<Parameters>(graph, {
-        id: `${id}-cell-counts`,
-        operation: OPERATION,
-        cellCount,
-        keys,
-        cellCounts
-      }),
       ...getSortedSegmentSumNodes<Parameters>(graph, {
         id: `${id}-sum`,
         operation: OPERATION,
         segmentCount: cellCount,
         segmentKeys: keys,
-        segmentCounts: cellCounts,
         sumContributions: contributions,
         sums: output.lengths
       }),

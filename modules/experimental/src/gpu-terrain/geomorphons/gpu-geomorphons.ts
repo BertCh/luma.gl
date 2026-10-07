@@ -303,9 +303,8 @@ const FORM_TABLE = array<u32, 81>(
 );
 
 fn isElevationValid(column: i32, row: i32) -> bool {
-  let linear = u32(row) * WIDTH + u32(column);
-  return elevationValidity[elevationValidityOffset + linear] != 0u &&
-    isFiniteValue(elevation[elevationOffset + linear]);
+  // Canonical elevation is NaN exactly where a pixel is invalid, so no validity load is needed.
+  return isFiniteValue(elevation[elevationOffset + u32(row) * WIDTH + u32(column)]);
 }
 
 fn getElevation(column: i32, row: i32) -> f32 {
@@ -415,8 +414,9 @@ function getBody(props: GPUGeomorphonsProps): string {
         let sampleColumn = column + count * columnStep;
         let sampleRow = row + count * rowStep;
         if (sampleColumn < 0 || sampleColumn >= i32(WIDTH) || sampleRow < 0 || sampleRow >= i32(HEIGHT)) { break; }
-        if (!isElevationValid(sampleColumn, sampleRow)) { continue; }
-        let height = zFactor * (getElevation(sampleColumn, sampleRow) - centerElevation);
+        let sampleElevation = getElevation(sampleColumn, sampleRow);
+        if (!isFiniteValue(sampleElevation)) { continue; }
+        let height = zFactor * (sampleElevation - centerElevation);
         if (zenithCount == 0 || height * f32(zenithCount) > zenithHeight * f32(count)) {
           zenithHeight = height;
           zenithCount = count;

@@ -4,13 +4,13 @@
 
 import {
   createTransientView,
-  GPUScan,
   GPUSort,
   type GPUCommandGraph,
   type GPUCommandNode,
   type GraphDataView
 } from '@luma.gl/gpgpu/gpu-core';
 import {createWGSLKernelNode} from './wgsl-kernel-nodes';
+import {getSortedSegmentOffsetNodes} from './sorted-segment-offsets';
 
 const SEGMENT_WORKGROUP_SIZE = 256;
 
@@ -36,12 +36,11 @@ export type SortedSegmentReduction = {
 /**
  * Shared sorted segmented reduction used by zonal statistics, raster zonal statistics, flow
  * aggregation and spatial clustering. Reduces per-segment sums in a fixed order: stable sort by
- * segment key, exclusive scan of the counts into segment offsets, gather of contributions in sorted
- * order, and one segmented sum, so the results are bitwise reproducible.
+ * segment key, segment offsets by binary search over the sorted keys, gather of contributions in
+ * sorted order, and one segmented sum, so the results are bitwise reproducible.
  *
  * `segmentKeys` holds a segment key per row; keys at or above `segmentCount` sort last and never
- * contribute. `segmentCounts[s]` must equal the number of rows with key `s`, so that the scanned
- * offsets delimit each segment in the sorted order.
+ * contribute. Callers need no per-segment counts (no atomics, no scan).
  *
  * @internal
  */
@@ -53,7 +52,6 @@ export function getSortedSegmentSumNodes<Parameters>(
     operation: string;
     segmentCount: number;
     segmentKeys: GraphDataView<'uint32'>;
-    segmentCounts: GraphDataView<'uint32'>;
     sumContributions?: GraphDataView<'float32'>;
     weightContributions?: GraphDataView<'float32'>;
     sums?: GraphDataView<'float32'>;
@@ -62,7 +60,7 @@ export function getSortedSegmentSumNodes<Parameters>(
     reductions?: readonly SortedSegmentReduction[];
   }
 ): GPUCommandNode<Parameters>[] {
-  const {id, operation, segmentCount, segmentKeys, segmentCounts} = props;
+  const {id, operation, segmentCount, segmentKeys} = props;
   const pointCount = segmentKeys.length;
   const nodes: GPUCommandNode<Parameters>[] = [];
   const sortKeys = createTransientView(graph, `${id}-sort-keys`, 'uint32', pointCount);
@@ -97,6 +95,8 @@ export function getSortedSegmentSumNodes<Parameters>(
     }).getCommandNodes(graph)
   );
 
+  // The keys are sorted, so each segment offset is the lower bound of its key: one binary search
+  // per segment replaces the per-row atomic counting, the scan and the total fixup.
   const segmentOffsets = createTransientView(
     graph,
     `${id}-segment-offsets`,
@@ -104,26 +104,12 @@ export function getSortedSegmentSumNodes<Parameters>(
     segmentCount + 1
   );
   nodes.push(
-    ...new GPUScan({
-      id: `${id}-segment-scan`,
-      input: segmentCounts,
-      output: segmentOffsets,
-      mode: 'exclusive'
-    }).getCommandNodes(graph)
-  );
-  nodes.push(
-    createWGSLKernelNode<Parameters>(graph, {
-      id: `${id}-segment-total`,
+    ...getSortedSegmentOffsetNodes<Parameters>(graph, {
+      id,
       operation,
-      variant: 'segment-total',
-      bindings: [
-        {name: 'counts', view: segmentCounts, type: 'u32', access: 'read'},
-        {name: 'segmentOffsets', view: segmentOffsets, type: 'u32', access: 'read_write'}
-      ],
-      invocationCount: 1,
-      declarations: `const LAST_FEATURE: u32 = ${segmentCount - 1}u;`,
-      body: `segmentOffsets[segmentOffsetsOffset + LAST_FEATURE + 1u] =
-    segmentOffsets[segmentOffsetsOffset + LAST_FEATURE] + counts[countsOffset + LAST_FEATURE];`
+      groupCount: segmentCount,
+      sortedGroupKeys: sortedKeys,
+      segmentOffsets
     })
   );
 

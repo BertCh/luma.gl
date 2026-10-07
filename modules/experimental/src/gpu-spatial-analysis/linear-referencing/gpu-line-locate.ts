@@ -16,6 +16,7 @@ import {
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph
 } from '../../utils/gpu-contributor-utils';
+import {GPU_GEODESIC_MEAN_EARTH_RADIUS} from '../geometry-measures/geodesic-wgsl';
 import {createPathPrefixNode} from '../line-segmentize/line-segmentize-kernels';
 import {
   createLineLocateNode,
@@ -60,13 +61,18 @@ export function getGPULineLocateParameterValues(
   return target;
 }
 
+/** Coordinate interpretation of {@link GPULineLocate}. */
+export type GPULineLocateCoordinateSystem = 'planar' | 'spherical';
+
 /** Per-event outputs of {@link GPULineLocate}; `eventPaths.length` rows each. */
 export type GPULineLocateOutput = {
   /** Located (and laterally offset) positions; NaN for invalid events. */
   positions: GraphDataView<'float32x2'>;
   /** Segment index within the path, or `0xffffffff` for invalid events. */
   segmentIndices?: GraphDataView<'uint32'>;
-  /** Unit direction of the segment, `(0, 0)` on single-vertex paths and zero-length segments. */
+  /**
+   * Unit direction of the segment (`(east, north)` compass components at the located point for
+   * `'spherical'`), `(0, 0)` on single-vertex paths and zero-length segments. */
   tangents?: GraphDataView<'float32x2'>;
   /**
    * Segment direction in degrees counter-clockwise from the +x axis (deck.gl `getAngle`
@@ -86,7 +92,15 @@ export type GPULineLocateOutput = {
 export type GPULineLocateProps = {
   /** Prefix for generated node and transient IDs. Defaults to `'line-locate'`. */
   id?: string;
-  /** Packed planar path vertices sorted by path. */
+  /**
+   * `'planar'` (default) or `'spherical'`: positions are longitude/latitude degrees, segments are
+   * great-circle arcs, measures and offsets are in sphere-radius units (meters by default), and
+   * located positions are slerped along the arc.
+   */
+  coordinateSystem?: GPULineLocateCoordinateSystem;
+  /** Sphere radius for `'spherical'`. Defaults to {@link GPU_GEODESIC_MEAN_EARTH_RADIUS} (meters). */
+  sphereRadius?: number;
+  /** Packed path vertices sorted by path (longitude/latitude degrees for `'spherical'`). */
   positions: GraphDataView<'float32x2'>;
   /** `pathCount + 1` monotonic row offsets. */
   pathOffsets: GraphDataView<'uint32'>;
@@ -120,7 +134,13 @@ export type GPULineLocateProps = {
  * interpolates by measure. Lateral offsets move the point along the segment's left normal.
  * Events on empty or out-of-range paths are `invalid` with NaN positions.
  *
- * Planar only: measures are Euclidean in position units.
+ * `coordinateSystem: 'spherical'` measures in sphere-radius units (meters by default) and places
+ * events on great-circle arcs (Geod `npts`, `ST_LineInterpolatePoint` on a sphere). Tangents are
+ * the compass direction of the arc at the located point as `(east, north)`, offsets move along the
+ * left compass bearing, and `angles` follow the same CCW-from-east convention. `measureMode:
+ * 'fraction'` is shapely `line_interpolate_point(normalized=True)`. Precision is f32 (about 1 m).
+ *
+ * Planar by default: measures are Euclidean in position units.
  */
 export class GPULineLocate implements GPUCommandNodeProducer {
   /** Prefix for every node and transient ID. */
@@ -129,11 +149,17 @@ export class GPULineLocate implements GPUCommandNodeProducer {
   readonly props: GPULineLocateProps;
   /** Resolved measure mode. */
   readonly measureMode: 'distance' | 'fraction';
+  /** Resolved coordinate system. */
+  readonly coordinateSystem: GPULineLocateCoordinateSystem;
+  /** Resolved sphere radius. */
+  readonly sphereRadius: number;
 
   constructor(props: GPULineLocateProps) {
     this.id = props.id ?? 'line-locate';
     this.props = props;
     this.measureMode = props.measureMode ?? 'distance';
+    this.coordinateSystem = props.coordinateSystem ?? 'planar';
+    this.sphereRadius = props.sphereRadius ?? GPU_GEODESIC_MEAN_EARTH_RADIUS;
     const {id} = this;
     const {output} = props;
     const inputs = {
@@ -155,6 +181,12 @@ export class GPULineLocate implements GPUCommandNodeProducer {
     }
     if (this.measureMode !== 'distance' && this.measureMode !== 'fraction') {
       throw new Error(`${id} measureMode must be 'distance' or 'fraction'`);
+    }
+    if (this.coordinateSystem !== 'planar' && this.coordinateSystem !== 'spherical') {
+      throw new Error(`${id} coordinateSystem must be 'planar' or 'spherical'`);
+    }
+    if (!Number.isFinite(this.sphereRadius) || this.sphereRadius <= 0) {
+      throw new Error(`${id} sphereRadius must be a positive finite number`);
     }
     validatePackedView(props.positions, ['float32x2'], `${id} positions`);
     if (props.positions.length < 1) {
@@ -262,8 +294,8 @@ export class GPULineLocate implements GPUCommandNodeProducer {
         operation: OPERATION,
         positions: props.positions,
         pathOffsets: props.pathOffsets,
-        coordinateSystem: 'planar',
-        radius: 1,
+        coordinateSystem: this.coordinateSystem,
+        radius: this.coordinateSystem === 'spherical' ? this.sphereRadius : 1,
         rowMeasures: vertexMeasures
       }),
       createLineLocateNode<Parameters>(graph, {
@@ -277,6 +309,8 @@ export class GPULineLocate implements GPUCommandNodeProducer {
         eventOffsets: props.eventOffsets,
         parameters: props.parameters,
         measureMode: this.measureMode,
+        coordinateSystem: this.coordinateSystem,
+        sphereRadius: this.sphereRadius,
         results
       }),
       ...createPackedScatterNodes<Parameters>(graph, {

@@ -19,6 +19,13 @@ import {
   validateGraphViewsBelongToGraph,
   validateCompactOutput
 } from '../../utils/gpu-contributor-utils';
+import {
+  RASTER_GATE_INTERVAL,
+  createRasterIterationGroupGateNode,
+  createRasterIterationResetNode,
+  createRasterIterationState,
+  getRasterIterationCondition
+} from '../cost-distance/raster-relaxation';
 import {getFieldSamplingWGSL} from './flow-texture-field';
 import {PHILOX_WGSL} from './flow-texture-random';
 import {STREAMLINES_SEED_PURPOSE} from './streamlines-cpu';
@@ -436,19 +443,61 @@ fn getDirection(position: vec2<f32>, fieldExtent: vec4<f32>, directionSign: f32,
         value: '0u'
       })
     );
+    // Every round is gated on a GPU-written indirect dispatch: the gate after each group of rounds
+    // zeroes it once a round accepted no line (which, since the highest surviving line is always
+    // accepted, means no line is undecided), so the remaining rounds cost no GPU work instead of
+    // clearing the grid and sweeping every seed for nothing.
+    const iteration = createRasterIterationState(graph, `${id}-rounds`, OPERATION, seedCount, id);
+    nodes.push(
+      createRasterIterationResetNode<Parameters>(graph, {
+        id: `${id}-rounds-reset`,
+        operation: OPERATION,
+        state: iteration
+      })
+    );
+    // The gated dispatch has one thread per seed, so the grid clear strides over the grid.
+    const clearStride = Math.ceil(seedCount / 256) * 256;
     for (let round = 0; round < roundCount; round++) {
+      const groupOffset = round % RASTER_GATE_INTERVAL;
+      const claimGate = getRasterIterationCondition<Parameters>(
+        iteration,
+        `${id}-round-${round}-claim`
+      );
+      const decideGate = getRasterIterationCondition<Parameters>(
+        iteration,
+        `${id}-round-${round}-decide`
+      );
+      const clearGate = getRasterIterationCondition<Parameters>(
+        iteration,
+        `${id}-round-${round}-clear`
+      );
       nodes.push(
-        createFillNode<Parameters>(graph, {
+        createWGSLKernelNode<Parameters>(graph, {
           id: `${id}-round-${round}-clear`,
           operation: OPERATION,
-          view: undecidedMaximum,
-          type: 'u32',
-          value: '0u'
+          variant: 'clear-grid',
+          bindings: [
+            {
+              name: 'undecidedMaximum',
+              view: undecidedMaximum,
+              type: 'u32',
+              access: 'read_write'
+            }
+          ],
+          invocationCount: seedCount,
+          guardIndex: false,
+          condition: clearGate.condition,
+          extraResources: clearGate.extraResources,
+          body: `for (var cell = index; cell < ${gridCellCount}u; cell = cell + ${clearStride}u) {
+    undecidedMaximum[undecidedMaximumOffset + cell] = 0u;
+  }`
         }),
         createWGSLKernelNode<Parameters>(graph, {
           id: `${id}-round-${round}-claim`,
           operation: OPERATION,
           variant: 'claim',
+          condition: claimGate.condition,
+          extraResources: claimGate.extraResources,
           bindings: [
             {
               name: 'parameters',
@@ -519,6 +568,8 @@ fn getDirection(position: vec2<f32>, fieldExtent: vec4<f32>, directionSign: f32,
           id: `${id}-round-${round}-decide`,
           operation: OPERATION,
           variant: 'decide',
+          condition: decideGate.condition,
+          extraResources: decideGate.extraResources,
           bindings: [
             {
               name: 'parameters',
@@ -546,6 +597,12 @@ fn getDirection(position: vec2<f32>, fieldExtent: vec4<f32>, directionSign: f32,
               view: accepted,
               type: 'u32',
               access: 'read_write'
+            },
+            {
+              name: 'iterationStatus',
+              view: iteration.status,
+              type: 'atomic<u32>',
+              access: 'read_write'
             }
           ],
           invocationCount: seedCount,
@@ -567,11 +624,24 @@ fn getDirection(position: vec2<f32>, fieldExtent: vec4<f32>, directionSign: f32,
   // already has, and no line decided in this dispatch touches them, so the claimed span is the
   // greedy trim.
   status[statusOffset + index] = ${ACCEPTED}u;
+  atomicOr(&iterationStatus[iterationStatusOffset], ${1 << groupOffset}u);
   for (var slot = first; slot <= last; slot = slot + 1u) {
     accepted[acceptedOffset + getGridCell(readCandidate(slot))] = index + 1u;
   }`
         })
       );
+      const isGroupEnd = groupOffset === RASTER_GATE_INTERVAL - 1 || round === roundCount - 1;
+      if (isGroupEnd) {
+        nodes.push(
+          createRasterIterationGroupGateNode<Parameters>(graph, {
+            id: `${id}-round-gate-${round - groupOffset}`,
+            operation: OPERATION,
+            state: iteration,
+            maxIterations: roundCount,
+            groupSize: groupOffset + 1
+          })
+        );
+      }
     }
 
     // 3. Point counts, line flags and the convergence flag.

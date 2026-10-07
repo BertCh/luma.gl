@@ -30,9 +30,10 @@ import {getIsobandsCellWGSL} from './isobands-wgsl';
 const OPERATION = 'GPUIsobands';
 
 /**
- * Caller-owned outputs of {@link GPUIsobands}. Provide `bandClasses`, the geometry group
- * (`triangles`, `triangleBands`, `count`, `overflow`, optional `totalCount` and `vertexCount`), or
- * both.
+ * Caller-owned outputs of {@link GPUIsobands}. Provide any of `bandClasses`, the geometry group
+ * (`triangles`, `triangleBands`, `count`, `overflow`, optional `totalCount` and `vertexCount`) and
+ * the boundary edge group (`edges`, `edgeBands`, `edgeCount`, `edgeOverflow`, optional
+ * `edgeTotalCount`).
  */
 export type GPUIsobandsOutput = {
   /**
@@ -57,6 +58,21 @@ export type GPUIsobandsOutput = {
   totalCount?: GraphDataView<'uint32'>;
   /** Optional one-row scalar receiving `3 * count`, the vertex count of a non-indexed indirect draw. */
   vertexCount?: GraphDataView<'uint32'>;
+  /**
+   * Band boundary edges `(x0, y0, x1, y1)`, counter-clockwise around each band region (the band
+   * lies on the left). Edges shared by two cells cancel, so only true region boundaries remain:
+   * level segments, the raster border and borders against nodata cells. Chains of one band close
+   * into the region's rings (see `GPUIsobandRings`). The edge capacity is `edgeBands.length`.
+   */
+  edges?: GraphDataView<'float32x4'>;
+  /** Band index per edge. Its length is the edge capacity. */
+  edgeBands?: GraphDataView<'uint32'>;
+  /** One-row scalar receiving the edge count, clamped to the capacity. */
+  edgeCount?: GraphDataView<'uint32'>;
+  /** One-row scalar receiving 1 when more edges were produced than fit, otherwise 0. */
+  edgeOverflow?: GraphDataView<'uint32'>;
+  /** Optional one-row scalar receiving the unclamped edge count. */
+  edgeTotalCount?: GraphDataView<'uint32'>;
 };
 
 /**
@@ -119,6 +135,8 @@ export class GPUIsobands implements GPUCommandNodeProducer {
   readonly cellCount: number;
   /** Triangle capacity, or 0 without geometry output. */
   readonly triangleCapacity: number;
+  /** Boundary edge capacity, or 0 without edge output. */
+  readonly edgeCapacity: number;
 
   constructor(props: GPUIsobandsProps) {
     this.id = props.id ?? 'isobands';
@@ -152,8 +170,40 @@ export class GPUIsobands implements GPUCommandNodeProducer {
         `${id} geometry output needs triangles, triangleBands, count and overflow together`
       );
     }
-    if (!output.bandClasses && !hasGeometry) {
-      throw new Error(`${id} needs output.bandClasses or the geometry output`);
+    const edgeViews = [output.edges, output.edgeBands, output.edgeCount, output.edgeOverflow];
+    const hasEdges = edgeViews.some(view => view !== undefined);
+    if (hasEdges && edgeViews.some(view => view === undefined)) {
+      throw new Error(
+        `${id} edge output needs edges, edgeBands, edgeCount and edgeOverflow together`
+      );
+    }
+    if (!hasEdges && output.edgeTotalCount) {
+      throw new Error(`${id} edgeTotalCount belongs to the edge output`);
+    }
+    if (!output.bandClasses && !hasGeometry && !hasEdges) {
+      throw new Error(`${id} needs output.bandClasses, the geometry output or the edge output`);
+    }
+    this.edgeCapacity = output.edgeBands?.length ?? 0;
+    if (hasEdges) {
+      if (output.edges!.format !== 'float32x4') {
+        throw new Error(`${id} output.edges must be float32x4`);
+      }
+      validateRasterAlgebraView(id, 'output.edgeBands', output.edgeBands, 'uint32', 1);
+      if (output.edges!.length < this.edgeCapacity) {
+        throw new Error(
+          `${id} output.edges must hold edgeBands.length (${this.edgeCapacity}) rows`
+        );
+      }
+      for (const [name, view] of [
+        ['edgeCount', output.edgeCount],
+        ['edgeOverflow', output.edgeOverflow],
+        ['edgeTotalCount', output.edgeTotalCount]
+      ] as const) {
+        validateRasterAlgebraView(id, `output.${name}`, view, 'uint32', 1);
+      }
+      if (output.edges!.byteStride !== 16 || output.edges!.rowByteLength !== 16) {
+        throw new Error(`${id} output.edges must be packed float32x4`);
+      }
     }
     if (!hasGeometry && (output.totalCount || output.vertexCount)) {
       throw new Error(`${id} totalCount and vertexCount belong to the geometry output`);
@@ -188,11 +238,15 @@ export class GPUIsobands implements GPUCommandNodeProducer {
       output.count,
       output.overflow,
       output.totalCount,
-      output.vertexCount
+      output.vertexCount,
+      output.edgeBands,
+      output.edgeCount,
+      output.edgeOverflow,
+      output.edgeTotalCount
     ];
     validateRasterAlgebraAliasing(
       id,
-      [...writable, output.triangles] as (GraphDataView | undefined)[],
+      [...writable, output.triangles, output.edges] as (GraphDataView | undefined)[],
       [props.values, props.validity, props.breaks, props.parameters]
     );
   }
@@ -201,7 +255,7 @@ export class GPUIsobands implements GPUCommandNodeProducer {
   getCommandNodes<Parameters>(
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
-    const {id, props, maximumBreakCount, cellCount, triangleCapacity} = this;
+    const {id, props, maximumBreakCount, cellCount, triangleCapacity, edgeCapacity} = this;
     const {output, width, height} = props;
     validateRasterAlgebraGraph(id, graph, [
       props.values,
@@ -214,8 +268,16 @@ export class GPUIsobands implements GPUCommandNodeProducer {
       output.count,
       output.overflow,
       output.totalCount,
-      output.vertexCount
+      output.vertexCount,
+      output.edges,
+      output.edgeBands,
+      output.edgeCount,
+      output.edgeOverflow,
+      output.edgeTotalCount
     ]);
+    const noEdges = `const EMIT_EDGES: bool = false;
+fn writeEdge(index: u32, start: vec2<f32>, end: vec2<f32>, band: u32) {}`;
+    const noTriangles = `fn writeTriangle(index: u32, a: vec2<f32>, b: vec2<f32>, c: vec2<f32>, band: u32) {}`;
     const common = `const WIDTH: u32 = ${width}u;
 const HEIGHT: u32 = ${height}u;
 const MAXIMUM_BREAK_COUNT: u32 = ${maximumBreakCount}u;
@@ -270,7 +332,8 @@ ${getBreakSearchWGSL('countBreaksBelow', 'breaks')}`;
           ],
           invocationCount: cellCount,
           declarations: `${common}
-fn writeTriangle(index: u32, a: vec2<f32>, b: vec2<f32>, c: vec2<f32>, band: u32) {}
+${noTriangles}
+${noEdges}
 ${cellWGSL}`,
           // Every cell writes its count, so the scratch needs no clear.
           body: 'cellCountsOut[cellCountsOutOffset + index] = processCell(index, false, 0u);'
@@ -311,6 +374,7 @@ ${cellWGSL}`,
           invocationCount: cellCount,
           declarations: `${common}
 const CAPACITY: u32 = ${triangleCapacity}u;
+${noEdges}
 fn writeTriangle(index: u32, a: vec2<f32>, b: vec2<f32>, c: vec2<f32>, band: u32) {
   if (index >= CAPACITY) {
     return;
@@ -356,6 +420,103 @@ ${cellWGSL}`,
           })
         );
       }
+    }
+
+    if (output.edges && output.edgeBands && output.edgeCount && output.edgeOverflow) {
+      const cellWGSL = getIsobandsCellWGSL(Boolean(props.validity));
+      const edgeCounts = createTransientView(graph, `${id}-edge-cell-counts`, 'uint32', cellCount);
+      const edgeOffsets = createTransientView(
+        graph,
+        `${id}-edge-cell-offsets`,
+        'uint32',
+        cellCount
+      );
+      const edgeTotal = createTransientView(graph, `${id}-edge-total`, 'uint32', 1);
+      nodes.push(
+        createWGSLKernelNode<Parameters>(graph, {
+          id: `${id}-edge-count`,
+          operation: OPERATION,
+          variant: 'edge-count',
+          bindings: [
+            ...inputs,
+            {name: 'edgeCountsOut', view: edgeCounts, type: 'u32', access: 'read_write'}
+          ],
+          invocationCount: cellCount,
+          declarations: `${common}
+${noTriangles}
+const EMIT_EDGES: bool = true;
+fn writeEdge(index: u32, start: vec2<f32>, end: vec2<f32>, band: u32) {}
+${cellWGSL}`,
+          body: `processCell(index, false, 0u);
+  edgeCountsOut[edgeCountsOutOffset + index] = cellEdgeCount;`
+        })
+      );
+      nodes.push(
+        ...new GPUScan({
+          id: `${id}-edge-scan`,
+          input: edgeCounts,
+          output: edgeOffsets
+        }).getCommandNodes(graph)
+      );
+      nodes.push(
+        createWGSLKernelNode<Parameters>(graph, {
+          id: `${id}-edge-total`,
+          operation: OPERATION,
+          variant: 'edge-total',
+          bindings: [
+            {name: 'cellCountsIn', view: edgeCounts, type: 'u32', access: 'read'},
+            {name: 'cellOffsets', view: edgeOffsets, type: 'u32', access: 'read'},
+            {name: 'totalOut', view: edgeTotal, type: 'u32', access: 'read_write'}
+          ],
+          invocationCount: 1,
+          body: `totalOut[totalOutOffset] = cellOffsets[cellOffsetsOffset + ${cellCount - 1}u] + cellCountsIn[cellCountsInOffset + ${cellCount - 1}u];`
+        })
+      );
+      nodes.push(
+        createWGSLKernelNode<Parameters>(graph, {
+          id: `${id}-edge-scatter`,
+          operation: OPERATION,
+          variant: 'edge-scatter',
+          bindings: [
+            ...inputs,
+            {name: 'cellOffsets', view: edgeOffsets, type: 'u32', access: 'read'},
+            {name: 'edgesOut', view: output.edges, type: 'f32', access: 'read_write'},
+            {name: 'edgeBandsOut', view: output.edgeBands, type: 'u32', access: 'read_write'}
+          ],
+          invocationCount: cellCount,
+          declarations: `${common}
+const EDGE_CAPACITY: u32 = ${edgeCapacity}u;
+${noTriangles}
+const EMIT_EDGES: bool = true;
+fn writeEdge(index: u32, start: vec2<f32>, end: vec2<f32>, band: u32) {
+  if (index >= EDGE_CAPACITY) {
+    return;
+  }
+  let offset = edgesOutOffset + index * 4u;
+  edgesOut[offset] = start.x;
+  edgesOut[offset + 1u] = start.y;
+  edgesOut[offset + 2u] = end.x;
+  edgesOut[offset + 3u] = end.y;
+  edgeBandsOut[edgeBandsOutOffset + index] = band;
+}
+${cellWGSL}`,
+          body: `edgeBase = cellOffsets[cellOffsetsOffset + index];
+  processCell(index, true, 0u);`
+        })
+      );
+      nodes.push(
+        createPublishNode<Parameters>(graph, {
+          id: `${id}-edge-publish`,
+          operation: OPERATION,
+          totalCount: edgeTotal,
+          output: {
+            ids: output.edgeBands,
+            count: output.edgeCount,
+            overflow: output.edgeOverflow,
+            totalCount: output.edgeTotalCount
+          }
+        })
+      );
     }
     return nodes;
   }

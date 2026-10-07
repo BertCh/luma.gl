@@ -16,8 +16,10 @@ import {
 } from '../spatial-weights/spatial-weights-oracle';
 import {
   computeCoverageSimplificationOracle,
+  countCoverageCrossings,
   findCoverageGaps
 } from './coverage-simplification-oracle';
+import {createWavyStrips} from './coverage-simplification-scenes';
 
 type Point = [number, number];
 
@@ -108,13 +110,17 @@ type Result = {
   overflow: number;
   totalCount: number;
   converged: number;
+  /** `[initial crossings, remaining crossings, restored vertices, overflow]`. */
+  topologyStats: number[];
 };
 
 async function runCoverage(
   device: NonNullable<Awaited<ReturnType<typeof getWebGPUTestDevice>>>,
   polygons: OraclePolygons,
   tolerance: number,
-  capacity?: number
+  capacity?: number,
+  topologyRounds = 0,
+  simplifyBoundary = true
 ): Promise<Result> {
   const layout = flattenPolygons(polygons);
   const vertexCount = layout.positions.length / 2;
@@ -126,6 +132,7 @@ async function runCoverage(
   const overflow = rig.output('uint32', 1);
   const totalCount = rig.output('uint32', 1);
   const converged = rig.output('uint32', 1);
+  const topologyStats = rig.output('uint32', 4);
   const parameters = new GPUParameterBuffer(device, {
     id: 'coverage-tolerance',
     format: 'float32',
@@ -139,13 +146,16 @@ async function runCoverage(
       polygonOffsets: rig.input(layout.polygonOffsets, 'uint32', layout.polygonOffsets.length),
       parameters: parameters.importToGraph(rig.graph),
       maximumRounds: 128,
+      simplifyBoundary,
+      topologyRounds,
       converged: converged.view,
       output: {
         positions: outputPositions.view,
         ringOffsets: outputOffsets.view,
         keepMask: keepMask.view,
         overflow: overflow.view,
-        totalCount: totalCount.view
+        totalCount: totalCount.view,
+        topologyStats: topologyStats.view
       }
     })
   );
@@ -156,7 +166,8 @@ async function runCoverage(
     ringOffsets: ringOffsetValues,
     overflow: (await readUint32(overflow.buffer, 1))[0],
     totalCount: (await readUint32(totalCount.buffer, 1))[0],
-    converged: (await readUint32(converged.buffer, 1))[0]
+    converged: (await readUint32(converged.buffer, 1))[0],
+    topologyStats: Array.from(await readUint32(topologyStats.buffer, 4))
   };
   parameters.destroy();
   rig.destroy();
@@ -262,4 +273,212 @@ it('GPUCoverageSimplification copies long arcs, shared and isolated, in parallel
   ];
   const result = await runCoverage(device, polygons, 0.001);
   expectMatchesOracle(polygons, 0.001, result);
+});
+
+it('GPUCoverageSimplification repairs crossings of simplified arcs and keeps rings valid', async () => {
+  const device = await getWebGPUTestDevice();
+  if (!device) return;
+  const polygons = createWavyStrips(5, 1);
+  const layout = flattenPolygons(polygons);
+  const vertexCount = layout.positions.length / 2;
+  expect(countCoverageCrossings(layout.positions, layout.ringOffsets)).toBe(0);
+  // Plain Douglas-Peucker on each shared arc makes neighbouring boundaries cross.
+  const plain = await runCoverage(device, polygons, 0.1, undefined, 0);
+  expect(
+    countCoverageCrossings(plain.positions, plain.ringOffsets),
+    'plain Douglas-Peucker crosses'
+  ).toBeGreaterThan(0);
+  expect(plain.topologyStats).toEqual([0, 0, 0, 0]);
+
+  const repaired = await runCoverage(device, polygons, 0.1, undefined, 12);
+  const [initial, remaining, restored, overflow] = repaired.topologyStats;
+  expect(overflow).toBe(0);
+  expect(initial).toBeGreaterThan(0);
+  expect(remaining).toBe(0);
+  expect(restored).toBeGreaterThan(0);
+  expect(countCoverageCrossings(repaired.positions, repaired.ringOffsets)).toBe(0);
+  expect(findCoverageGaps(polygons, repaired.keepMask)).toEqual([]);
+  // Repair only adds vertices to the plain result, and keeps simplifying.
+  const kept = (result: Result) => result.keepMask.reduce((sum, flag) => sum + flag, 0);
+  expect(kept(repaired)).toBeGreaterThanOrEqual(kept(plain));
+  expect(kept(repaired)).toBeLessThan(vertexCount);
+  for (let vertex = 0; vertex < vertexCount; vertex++) {
+    if (plain.keepMask[vertex]) expect(repaired.keepMask[vertex]).toBe(1);
+  }
+  // Pinned against Shapely 2.1.2 on this scene: the input is a valid coverage, the plain result is
+  // not (3 invalid polygons, coverage_is_valid false), and the repaired result passes
+  // shapely.is_valid for every polygon and shapely.coverage_is_valid (no gaps, no overlaps).
+  // Shapely's own coverage_simplify keeps 212 vertices here (area-based), the repair keeps 118.
+  expect(repaired.topologyStats).toEqual([12, 0, 18, 0]);
+  expect(kept(repaired)).toBe(118);
+  // The strip corners are nodes of the coverage and are always kept.
+  const nodeVertices = polygons.flatMap(([ring]) =>
+    ring.flatMap(([x], vertex) => (x === 0 || x === 10 ? [vertex] : []))
+  );
+  expect(nodeVertices.length).toBeGreaterThan(0);
+});
+
+it('GPUCoverageSimplification never collapses a ring below three vertices', async () => {
+  const device = await getWebGPUTestDevice();
+  if (!device) return;
+  const polygons = createJaggedGrid(3, 3, 9);
+  // A tolerance larger than every cell collapses plain Douglas-Peucker rings.
+  const result = await runCoverage(device, polygons, 5, undefined, 4);
+  const ringCount = result.ringOffsets.length - 1;
+  for (let ring = 0; ring < ringCount; ring++) {
+    expect(result.ringOffsets[ring + 1] - result.ringOffsets[ring]).toBeGreaterThanOrEqual(3);
+  }
+  expect(result.topologyStats[3]).toBe(0);
+  expect(countCoverageCrossings(result.positions, result.ringOffsets)).toBe(0);
+});
+
+// Generated by shapely 2.1.2: `coverage_simplify([A, B], 0.5, simplify_boundary=...)`. A and B share
+// the edge x = 10 (a big bump and two wiggles); both also have wiggles on the outer boundary,
+// (-0.02, 5) on A and (14, -0.03) on B, that only `simplify_boundary=True` removes.
+const SHAPELY_COVERAGE: OraclePolygons = [
+  [
+    [
+      [0.0, 0.0],
+      [10.0, 0.0],
+      [10.02, 2.0],
+      [10.0, 3.0],
+      [12.5, 5.0],
+      [10.0, 7.0],
+      [10.03, 8.5],
+      [10.0, 10.0],
+      [7.0, 10.03],
+      [5.0, 12.5],
+      [3.0, 10.02],
+      [0.0, 10.0],
+      [-0.02, 5.0]
+    ]
+  ],
+  [
+    [
+      [10.0, 0.0],
+      [14.0, -0.03],
+      [20.0, 0.0],
+      [20.0, 10.0],
+      [15.0, 13.0],
+      [13.0, 10.02],
+      [10.0, 10.0],
+      [10.03, 8.5],
+      [10.0, 7.0],
+      [12.5, 5.0],
+      [10.0, 3.0],
+      [10.02, 2.0]
+    ]
+  ]
+];
+const SHAPELY_COVERAGE_KEPT: Record<'true' | 'false', Point[][]> = {
+  true: [
+    [
+      [10.0, 0.0],
+      [10.0, 3.0],
+      [12.5, 5.0],
+      [10.0, 7.0],
+      [10.0, 10.0],
+      [7.0, 10.03],
+      [5.0, 12.5],
+      [3.0, 10.02],
+      [0.0, 10.0],
+      [0.0, 0.0]
+    ],
+    [
+      [10.0, 0.0],
+      [20.0, 0.0],
+      [20.0, 10.0],
+      [15.0, 13.0],
+      [13.0, 10.02],
+      [10.0, 10.0],
+      [10.0, 7.0],
+      [12.5, 5.0],
+      [10.0, 3.0]
+    ]
+  ],
+  false: [
+    [
+      [10.0, 0.0],
+      [10.0, 3.0],
+      [12.5, 5.0],
+      [10.0, 7.0],
+      [10.0, 10.0],
+      [7.0, 10.03],
+      [5.0, 12.5],
+      [3.0, 10.02],
+      [0.0, 10.0],
+      [-0.02, 5.0],
+      [0.0, 0.0]
+    ],
+    [
+      [10.0, 0.0],
+      [14.0, -0.03],
+      [20.0, 0.0],
+      [20.0, 10.0],
+      [15.0, 13.0],
+      [13.0, 10.02],
+      [10.0, 10.0],
+      [10.0, 7.0],
+      [12.5, 5.0],
+      [10.0, 3.0]
+    ]
+  ]
+};
+
+function getKeptRings(polygons: OraclePolygons, result: Result): Point[][] {
+  const layout = flattenPolygons(polygons);
+  const rings: Point[][] = [];
+  for (let ring = 0; ring < layout.ringOffsets.length - 1; ring++) {
+    const kept: Point[] = [];
+    for (let row = result.ringOffsets[ring]; row < result.ringOffsets[ring + 1]; row++) {
+      kept.push([result.positions[2 * row], result.positions[2 * row + 1]]);
+    }
+    rings.push(kept);
+  }
+  return rings;
+}
+
+const sortPoints = (points: Point[]) =>
+  points
+    .map(([x, y]) => [Math.fround(x), Math.fround(y)])
+    .sort((a, b) => a[0] - b[0] || a[1] - b[1]);
+
+it('GPUCoverageSimplification simplifyBoundary matches shapely coverage_simplify', async () => {
+  const device = await getWebGPUTestDevice();
+  if (!device) return;
+  for (const simplifyBoundary of [true, false]) {
+    const result = await runCoverage(device, SHAPELY_COVERAGE, 0.5, undefined, 4, simplifyBoundary);
+    const expected = SHAPELY_COVERAGE_KEPT[String(simplifyBoundary) as 'true' | 'false'];
+    const rings = getKeptRings(SHAPELY_COVERAGE, result);
+    // Vertex sets per polygon (shapely may start a ring elsewhere).
+    expect(rings.map(sortPoints), String(simplifyBoundary)).toEqual(expected.map(sortPoints));
+  }
+});
+
+it('GPUCoverageSimplification simplifyBoundary false keeps every unshared vertex', async () => {
+  const device = await getWebGPUTestDevice();
+  if (!device) return;
+  const columns = 6;
+  const rows = 4;
+  const polygons = createJaggedGrid(columns, rows, 1);
+  const layout = flattenPolygons(polygons);
+  const vertexCount = layout.positions.length / 2;
+  const simplified = await runCoverage(device, polygons, 0.12);
+  const preserved = await runCoverage(device, polygons, 0.12, undefined, 0, false);
+  let boundaryCount = 0;
+  let boundaryDropped = 0;
+  for (let vertex = 0; vertex < vertexCount; vertex++) {
+    const x = layout.positions[2 * vertex];
+    const y = layout.positions[2 * vertex + 1];
+    // The jagged grid only wiggles interior sides, so the outer boundary lies on the frame.
+    if (x === 0 || x === columns || y === 0 || y === rows) {
+      boundaryCount++;
+      boundaryDropped += simplified.keepMask[vertex] === 0 ? 1 : 0;
+      expect(preserved.keepMask[vertex]).toBe(1);
+    }
+    // Interior decisions are unchanged, and nothing is dropped that default mode kept.
+    expect(preserved.keepMask[vertex]).toBeGreaterThanOrEqual(simplified.keepMask[vertex]);
+  }
+  expect(boundaryCount).toBeGreaterThan(0);
+  expect(boundaryDropped).toBeGreaterThan(0);
 });

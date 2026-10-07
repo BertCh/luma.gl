@@ -11,6 +11,7 @@ export type NetworkStatisticsOracleOptions = {
   nodeCount: number;
   csr: Pick<NetworkCSR, 'offsets' | 'neighbors'>;
   directed?: boolean;
+  countSelfLoopsTwice?: boolean;
   vertexMask?: ArrayLike<number>;
   edgeMask?: ArrayLike<number>;
   communities?: ArrayLike<number>;
@@ -39,6 +40,7 @@ export function computeNetworkStatisticsOracle(
 ): Uint32Array {
   const {nodeCount, csr, vertexMask, edgeMask, communities} = options;
   const directed = Boolean(options.directed);
+  const countTwice = Boolean(options.countSelfLoopsTwice) && !directed;
   const binCount = options.binCount ?? 32;
   const binning = options.binning ?? 'linear';
   const binWidth = options.binWidth ?? 1;
@@ -74,6 +76,9 @@ export function computeNetworkStatisticsOracle(
       inDegree[target]++;
       if (target === vertex) {
         selfLoops++;
+        if (countTwice) {
+          outDegree[vertex]++;
+        }
       }
       if (communities && communities[vertex] === communities[target]) {
         intra++;
@@ -125,7 +130,7 @@ export function computeNetworkStatisticsOracle(
   const valid = Boolean(communities) && invalidLabels === 0 && liveSlots > 0;
   if (valid) {
     // Mirror the single-workgroup finish: strided per-thread f32 sums, then a binary tree.
-    const slotCount = Math.fround(liveSlots);
+    const slotCount = Math.fround(liveSlots + (countTwice ? selfLoops : 0));
     const partial = new Float32Array(WORKGROUP_SIZE);
     for (let label = 0; label < nodeCount; label++) {
       const thread = label % WORKGROUP_SIZE;
@@ -141,7 +146,10 @@ export function computeNetworkStatisticsOracle(
       }
     }
     const resolution = Math.fround(options.resolution ?? 1);
-    modularity = Math.fround(Math.fround(intra / slotCount) - Math.fround(resolution * partial[0]));
+    modularity = Math.fround(
+      Math.fround((intra + (countTwice ? selfLoops : 0)) / slotCount) -
+        Math.fround(resolution * partial[0])
+    );
   }
 
   words[0] = liveVertices;

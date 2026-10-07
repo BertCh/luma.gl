@@ -132,3 +132,13 @@ export {
   GPU_SPATIAL_ERROR_GM_STATUS_TOO_FEW_ROWS,
   GPU_SPATIAL_ERROR_GM_STATUS_NON_FINITE
 } from './spatial-error-gm-parameters';
+export {GPUGeographicallyWeightedRegressionNonstationarityTest} from './gpu-geographically-weighted-regression-nonstationarity-test';
+export type {
+  GPUGeographicallyWeightedRegressionNonstationarityTestOutput,
+  GPUGeographicallyWeightedRegressionNonstationarityTestProps
+} from './gpu-geographically-weighted-regression-nonstationarity-test';
+export {
+  GPU_GWR_NONSTATIONARITY_SUMMARY,
+  GPU_GWR_NONSTATIONARITY_TABLE,
+  GPU_GWR_NONSTATIONARITY_TABLE_STRIDE
+} from './geographically-weighted-regression-nonstationarity-parameters';

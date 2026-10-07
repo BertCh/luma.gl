@@ -82,11 +82,15 @@ it('GPURasterZonalStatistics prefixes IDs and schedules only requested columns',
     fullGraph
   );
   expect(fullIds).toContain('zonal-overflow-reset');
-  for (const name of ['cellCounts', 'valueCounts', 'sums', 'means', 'minimums', 'maximums']) {
-    // The default sorted order computes sums in the shared `zonal-sorted-*` nodes.
-    const prefix = name === 'sums' ? 'zonal-sorted-' : `zonal-${name}`;
-    expect(fullIds.some(id => id.startsWith(prefix))).toBe(true);
+  // Counts, minimums and maximums share one workgroup-private pass (no per-column aggregation).
+  expect(fullIds).toContain('zonal-zone-reduce');
+  expect(fullIds).toContain('zonal-zone-reduce-decode');
+  for (const name of ['cellCounts', 'valueCounts', 'minimums', 'maximums']) {
+    expect(fullIds.some(id => id.startsWith(`zonal-${name}`))).toBe(false);
   }
+  // The default sorted order computes sums in the shared `zonal-sorted-*` nodes.
+  expect(fullIds.some(id => id.startsWith('zonal-sorted-'))).toBe(true);
+  expect(fullIds).toContain('zonal-means');
 });
 
 function expectConstructorToThrow(

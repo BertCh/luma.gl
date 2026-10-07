@@ -134,6 +134,33 @@ it('GPUContiguityWeights matches the oracle on a square grid for queen and rook'
   }
 });
 
+it('GPUContiguityWeights sorts narrow ID keys correctly at polygon counts around powers of two', async () => {
+  const device = await getWebGPUTestDevice();
+  if (!device) return;
+  // The pair and edge sorts compare only getSortKeyBits(count) bits; the invalid key then wraps to
+  // the largest key value, so the largest valid ID must stay below it.
+  for (const [columns, rows] of [
+    [3, 5],
+    [4, 4],
+    [31, 1],
+    [32, 1],
+    [1, 33]
+  ] as const) {
+    const polygons = createSquareGrid(columns, rows, columns * 100 + rows);
+    for (const criterion of ['queen', 'rook'] as const) {
+      const expected = computeContiguityOracle(polygons, criterion);
+      const {csr, overflow} = await runContiguity(device, polygons, criterion, {
+        capacity: expected.neighbors.length + 4
+      });
+      const label = `${columns}x${rows} ${criterion}`;
+      assertValidCSR(csr, polygons.length, label);
+      expect(csr.offsets, `${label} offsets`).toEqual(expected.offsets);
+      expect(csr.neighbors, `${label} neighbors`).toEqual(expected.neighbors);
+      expect(overflow).toBe(0);
+    }
+  }
+});
+
 it('GPUContiguityWeights matches the oracle on random rectangles (T-junctions, overlaps)', async () => {
   const device = await getWebGPUTestDevice();
   if (!device) return;

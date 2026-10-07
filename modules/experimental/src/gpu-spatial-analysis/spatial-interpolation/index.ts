@@ -7,11 +7,18 @@ export type {
   GPUInverseDistanceWeightingOutput,
   GPUInverseDistanceWeightingProps
 } from './gpu-inverse-distance-weighting';
+export {GPUKriging} from './gpu-kriging';
+export type {GPUKrigingOutput, GPUKrigingProps} from './gpu-kriging';
 export {GPUFocalStatistics} from './gpu-focal-statistics';
 export type {
   GPUFocalStatisticsOutput,
   GPUFocalStatisticsProps
 } from './gpu-focal-statistics';
+export {
+  getGPUKrigingParameterValues,
+  GPU_KRIGING_PARAMETER_LENGTH
+} from './kriging-parameters';
+export type {GPUKrigingSettings} from './kriging-parameters';
 export {
   getGPUFocalStatisticsParameterValues,
   getGPUInverseDistanceWeightingParameterValues,

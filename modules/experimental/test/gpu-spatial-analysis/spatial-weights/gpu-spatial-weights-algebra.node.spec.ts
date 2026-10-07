@@ -203,7 +203,7 @@ it('GPUSpatialWeightsSummary and the D/V transforms validate props', () => {
       .getCommandNodes(graph)
       .map(node => node.id)
       .at(-1)
-  ).toBe('spatial-weights-summary-counts');
+  ).toBe('spatial-weights-summary-totals');
   expect(
     () =>
       new GPUSpatialWeightsTransform({

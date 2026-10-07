@@ -14,22 +14,29 @@ import {
   GPU_GEODESIC_WGS84_SEMI_MAJOR_AXIS
 } from './geodesic-wgsl';
 import {getVincentyWGSL, GPU_GEODESIC_DEFAULT_ITERATIONS} from './geodesic-kernels';
+import {
+  COOPERATIVE_BODY_SOURCE,
+  COOPERATIVE_LANES,
+  getCooperativeSource,
+  getRingHelpersSource
+} from './feature-measures-cooperative';
 
 /** Coordinate interpretation of `GPUGeometryMeasures`. */
-export type GPUGeometryCoordinateSystem = 'planar' | 'spherical' | 'wgs84';
+export type GPUGeometryCoordinateSystem = 'planar' | 'spherical' | 'wgs84' | 'geodesic';
 
 /** How `GPUGeometryMeasures` combines the rings of one polygon feature. */
 export type GPUGeometryHoleRule = 'winding' | 'first-ring-exterior';
 
 /**
  * Words per feature or group in the internal stats column:
- * `[length, signedArea, area, centroidX, centroidY, minX, minY, maxX, maxY, vertexCount, featureCount]`
+ * `[length, signedArea, area, centroidX, centroidY, minX, minY, maxX, maxY, vertexCount, featureCount,
+ * argMinX, argMinY, argMaxX, argMaxY]` (the last four are vertex rows, `0xffffffff` when empty)
  * stored as u32 words (floats as their bit patterns), so the integer counts are never
  * reinterpreted as subnormal floats that a GPU may flush to zero.
  *
  * @internal
  */
-export const GEOMETRY_STATS_STRIDE = 11;
+export const GEOMETRY_STATS_STRIDE = 15;
 
 /** WGS84-derived constants of the authalic sphere, computed in f64. @internal */
 export function getAuthalicConstants(): {
@@ -61,7 +68,7 @@ function getMeasureConstantsSource(
 ): string {
   const authalic = getAuthalicConstants();
   const eccentricity = Math.sqrt(authalic.eccentricitySquared);
-  const areaRadius = coordinateSystem === 'wgs84' ? authalic.authalicRadius : radius;
+  const areaRadius = coordinateSystem === 'spherical' ? radius : authalic.authalicRadius;
   return /* wgsl */ `
 const RADIUS: f32 = ${getWGSLFloatLiteral(radius)};
 const AREA_RADIUS: f32 = ${getWGSLFloatLiteral(areaRadius)};
@@ -155,6 +162,75 @@ fn getGeodeticFromAuthalic(xi: f32) -> f32 {
 }
 `;
 
+/**
+ * WGSL of the `'geodesic'` polygon area. Each edge of at least `GEODESIC_AREA_MIN_LENGTH` meters is
+ * replaced by its geodesic: the geodesic is sampled with Vincenty's direct solution at the ends
+ * and midpoint of every `GEODESIC_AREA_SEGMENT_LENGTH` meter span (at most
+ * `GEODESIC_AREA_MAX_SEGMENTS` spans), in the Lambert equal-area coordinates of the area sum
+ * (`x` = unwrapped longitude in radians, `y` = authalic sine of latitude relative to the origin).
+ * A span contributes the cross product of its chord plus 4/3 of the cross product of its
+ * midpoint offset (the exact area of a parabolic segment), so the bulge of the geodesic over the
+ * Lambert-straight chord is summed from small local numbers and never from two large areas to the
+ * equator. Shorter edges, and edges where Vincenty does not converge, keep the straight chord.
+ */
+const GEODESIC_AREA_WGSL = /* wgsl */ `
+const GEODESIC_AREA_MIN_LENGTH: f32 = 20000.0;
+const GEODESIC_AREA_SEGMENT_LENGTH: f32 = 250000.0;
+const GEODESIC_AREA_MAX_SEGMENTS: f32 = 16.0;
+
+fn getGeodesicAreaPoint(
+  start: vec2<f32>,
+  startX: f32,
+  bearing: f32,
+  distance: f32,
+  origin: vec2<f32>
+) -> vec2<f32> {
+  let point = vincentyDirect(start, bearing, distance).destination;
+  return vec2<f32>(
+    startX + (point.x - start.x) * GEODESIC_DEGREES_TO_RADIANS,
+    getAreaY(point, origin)
+  );
+}
+
+fn getGeodesicEdgeCross(
+  position: vec2<f32>,
+  areaX: f32,
+  areaY: f32,
+  nextPosition: vec2<f32>,
+  nextAreaX: f32,
+  nextAreaY: f32,
+  origin: vec2<f32>
+) -> f32 {
+  let inverse = vincentyInverse(position, nextPosition);
+  if (!inverse.converged || inverse.distance < GEODESIC_AREA_MIN_LENGTH) {
+    return areaX * nextAreaY - nextAreaX * areaY;
+  }
+  let segments = clamp(ceil(inverse.distance / GEODESIC_AREA_SEGMENT_LENGTH), 1.0, GEODESIC_AREA_MAX_SEGMENTS);
+  var total = 0.0;
+  var startX = areaX;
+  var startY = areaY;
+  for (var segment = 0u; segment < u32(segments); segment++) {
+    var endX = nextAreaX;
+    var endY = nextAreaY;
+    if (f32(segment + 1u) < segments) {
+      let end = getGeodesicAreaPoint(
+        position, areaX, inverse.initialBearing, inverse.distance * f32(segment + 1u) / segments, origin
+      );
+      endX = end.x;
+      endY = end.y;
+    }
+    let middle = getGeodesicAreaPoint(
+      position, areaX, inverse.initialBearing, inverse.distance * (f32(segment) + 0.5) / segments, origin
+    );
+    let bulge = (middle.x - startX) * (endY - startY) - (endX - startX) * (middle.y - startY);
+    total += startX * endY - endX * startY + (4.0 / 3.0) * bulge;
+    startX = endX;
+    startY = endY;
+  }
+  return total;
+}
+`;
+
 /** Properties for {@link createFeatureMeasuresNode}. @internal */
 export type FeatureMeasuresNodeProps = {
   id: string;
@@ -164,11 +240,21 @@ export type FeatureMeasuresNodeProps = {
   featureRingOffsets?: GraphDataView<'uint32'>;
   featureCount: number;
   isPolygon: boolean;
+  /** Features are point sets: no edges, centroid is the vertex mean. */
+  isPoint?: boolean;
   holeRule: GPUGeometryHoleRule;
   coordinateSystem: GPUGeometryCoordinateSystem;
   radius: number;
   /** `featureCount * GEOMETRY_STATS_STRIDE` words. */
   featureStats: GraphDataView<'uint32'>;
+  /**
+   * Rings with more rows than this make a feature cooperative. With `cooperative` false the serial
+   * kernel skips such features; with `cooperative` true the kernel measures only them, one 64-lane
+   * workgroup per feature. 0 (default) disables the split.
+   */
+  cooperativeRingRows?: number;
+  /** Build the cooperative workgroup-per-feature kernel instead of the serial one. */
+  cooperative?: boolean;
 };
 
 /**
@@ -184,6 +270,8 @@ export function createFeatureMeasuresNode<Parameters>(
 ): GPUCommandNode<Parameters> {
   const {coordinateSystem} = props;
   const isGeographic = coordinateSystem !== 'planar';
+  const isEllipsoidal = coordinateSystem === 'wgs84' || coordinateSystem === 'geodesic';
+  const isGeodesic = coordinateSystem === 'geodesic';
   const bindings: WGSLKernelBinding[] = [
     {name: 'positions', view: props.positions, type: 'f32', access: 'read'},
     {name: 'ringOffsets', view: props.ringOffsets, type: 'u32', access: 'read'}
@@ -210,6 +298,11 @@ export function createFeatureMeasuresNode<Parameters>(
   const lengthSource = {
     planar: 'return length(b - a);',
     spherical: 'return geodesicCentralAngle(a, b) * RADIUS;',
+    geodesic: `let inverse = vincentyInverse(a, b);
+  if (inverse.converged) {
+    return inverse.distance;
+  }
+  return getWgs84Length(a, b);`,
     wgs84: `let inverse = vincentyInverse(a, b);
   if (inverse.converged) {
     return inverse.distance;
@@ -223,6 +316,8 @@ export function createFeatureMeasuresNode<Parameters>(
     planar: 'return position.y - origin.y;',
     spherical: 'return geodesicSinLatitudeDelta(position.y, origin.y);',
     wgs84:
+      'return getAuthalicSinDelta(sin(origin.y * GEODESIC_DEGREES_TO_RADIANS), geodesicSinLatitudeDelta(position.y, origin.y));',
+    geodesic:
       'return getAuthalicSinDelta(sin(origin.y * GEODESIC_DEGREES_TO_RADIANS), geodesicSinLatitudeDelta(position.y, origin.y));'
   }[coordinateSystem];
   const polygonCentroidY = {
@@ -230,25 +325,28 @@ export function createFeatureMeasuresNode<Parameters>(
     spherical:
       'asin(clamp(sin(origin.y * GEODESIC_DEGREES_TO_RADIANS) + centroid.y, -1.0, 1.0)) * GEODESIC_RADIANS_TO_DEGREES',
     wgs84:
+      'getGeodeticFromAuthalic(asin(clamp(getSinAuthalic(sin(origin.y * GEODESIC_DEGREES_TO_RADIANS)) + centroid.y, -1.0, 1.0))) * GEODESIC_RADIANS_TO_DEGREES',
+    geodesic:
       'getGeodeticFromAuthalic(asin(clamp(getSinAuthalic(sin(origin.y * GEODESIC_DEGREES_TO_RADIANS)) + centroid.y, -1.0, 1.0))) * GEODESIC_RADIANS_TO_DEGREES'
   }[coordinateSystem];
-  return createWGSLKernelNode<Parameters>(graph, {
-    id: props.id,
-    operation: props.operation,
-    variant: 'feature-measures',
-    bindings,
-    invocationCount: props.featureCount,
-    declarations: /* wgsl */ `
+  const edgeCrossSource = isGeodesic
+    ? `var edgeCross = cross;
+      if (IS_POLYGON) {
+        edgeCross = getGeodesicEdgeCross(position, areaX, areaY, nextPosition, nextAreaX, nextAreaY, origin);
+      }`
+    : 'let edgeCross = cross;';
+  const commonDeclarations = `
 const ROW_COUNT: u32 = ${props.positions.length}u;
 const RING_COUNT: u32 = ${props.ringOffsets.length - 1}u;
 const IS_POLYGON: bool = ${props.isPolygon};
+const IS_POINT: bool = ${props.isPoint ?? false};
 const FIRST_RING_EXTERIOR: bool = ${props.holeRule === 'first-ring-exterior'};
 const IS_GEOGRAPHIC: bool = ${isGeographic};
 const STATS_STRIDE: u32 = ${GEOMETRY_STATS_STRIDE}u;
 ${GEODESIC_WGSL}
 ${getMeasureConstantsSource(coordinateSystem, props.radius)}
 ${
-  coordinateSystem === 'wgs84'
+  isEllipsoidal
     ? `${getVincentyWGSL(GPU_GEODESIC_DEFAULT_ITERATIONS)}
 ${WGS84_WGSL}`
     : ''
@@ -265,6 +363,7 @@ fn getEdgeLength(a: vec2<f32>, b: vec2<f32>) -> f32 {
 fn getAreaY(position: vec2<f32>, origin: vec2<f32>) -> f32 {
   ${areaYSource}
 }
+${isGeodesic ? GEODESIC_AREA_WGSL : ''}
 
 // Neumaier compensated addition: sum.x holds the running sum, sum.y the compensation.
 fn addCompensated(sum: ptr<function, vec2<f32>>, value: f32) {
@@ -284,8 +383,87 @@ fn getCompensated(sum: vec2<f32>) -> f32 {
 fn writeStat(feature: u32, slot: u32, value: f32) {
   featureStats[featureStatsOffset + feature * STATS_STRIDE + slot] = bitcast<u32>(value);
 }
-`,
+`;
+  // Final per-feature statistics from the accumulators; `prefix` qualifies them (`acc.` in the cooperative kernel).
+  const getTailSource = (prefix: string): string =>
+    `  let crossSum = getCompensated(areaSum);
+  let totalLength = getCompensated(lengthSum);
+  let areaScale = select(1.0, AREA_RADIUS * AREA_RADIUS, IS_GEOGRAPHIC);
+  let signedArea = select(0.0, 0.5 * crossSum * areaScale, IS_POLYGON);
+  var centroid = vertexSum / f32(vertexCount);
+  var centroidX = origin.x + centroid.x;
+  var centroidY = origin.y + centroid.y;
+  // Centroids use the straight (Lambert) edges even when the area follows geodesics.
+  let straightCrossSum = getCompensated(straightSum);
+  if (IS_POLYGON && straightCrossSum != 0.0) {
+    centroid = vec2<f32>(getCompensated(momentX), getCompensated(momentY)) / (3.0 * straightCrossSum);
+    if (IS_GEOGRAPHIC) {
+      centroidX = origin.x + centroid.x * GEODESIC_RADIANS_TO_DEGREES;
+    } else {
+      centroidX = origin.x + centroid.x;
+    }
+    centroidY = ${polygonCentroidY};
+  } else if (!IS_POLYGON && totalLength > 0.0) {
+    centroid = vec2<f32>(getCompensated(lineMomentX), getCompensated(lineMomentY)) / totalLength;
+    centroidX = origin.x + centroid.x;
+    centroidY = origin.y + centroid.y;
+  }
+  writeStat(index, 0u, totalLength);
+  writeStat(index, 1u, signedArea);
+  writeStat(index, 2u, abs(signedArea));
+  writeStat(index, 3u, centroidX);
+  writeStat(index, 4u, centroidY);
+  writeStat(index, 5u, origin.x + boundsMin.x);
+  writeStat(index, 6u, origin.y + boundsMin.y);
+  writeStat(index, 7u, origin.x + boundsMax.x);
+  writeStat(index, 8u, origin.y + boundsMax.y);
+  featureStats[featureStatsOffset + index * STATS_STRIDE + 9u] = vertexCount;
+  featureStats[featureStatsOffset + index * STATS_STRIDE + 10u] = 1u;
+  for (var slot = 0u; slot < 4u; slot++) {
+    featureStats[featureStatsOffset + index * STATS_STRIDE + 11u + slot] = extremeRows[slot];
+  }`.replace(
+      /\b(areaSum|lengthSum|vertexSum|vertexCount|straightSum|momentX|momentY|lineMomentX|lineMomentY|boundsMin|boundsMax|extremeRows)\b/g,
+      name => `${prefix}${name}`
+    );
+
+  const cooperativeRingRows = props.cooperativeRingRows ?? 0;
+  const ringHelpers = getRingHelpersSource(Boolean(props.featureRingOffsets), cooperativeRingRows);
+  if (props.cooperative) {
+    // Every cooperative feature owns more than `cooperativeRingRows` rows, which bounds how many
+    // there can be and so how many workgroups are worth launching; they stride over the features.
+    const groupCount = Math.max(
+      1,
+      Math.min(props.featureCount, Math.floor(props.positions.length / (cooperativeRingRows + 1)))
+    );
+    return createWGSLKernelNode<Parameters>(graph, {
+      id: props.id,
+      operation: props.operation,
+      variant: 'feature-measures-cooperative',
+      bindings,
+      workgroupSize: COOPERATIVE_LANES,
+      invocationCount: groupCount * COOPERATIVE_LANES,
+      guardIndex: false,
+      declarations: `${commonDeclarations}
+${ringHelpers}
+${getCooperativeSource({
+  groupCount,
+  featureCount: props.featureCount,
+  edgeCrossSource,
+  tail: getTailSource('acc.')
+})}`,
+      body: COOPERATIVE_BODY_SOURCE
+    });
+  }
+  return createWGSLKernelNode<Parameters>(graph, {
+    id: props.id,
+    operation: props.operation,
+    variant: 'feature-measures',
+    bindings,
+    invocationCount: props.featureCount,
+    declarations:
+      cooperativeRingRows > 0 ? `${commonDeclarations}\n${ringHelpers}` : commonDeclarations,
     body: /* wgsl */ `
+  ${cooperativeRingRows > 0 ? 'if (isCooperativeFeature(index)) {\n    return;\n  }' : ''}
   ${ringRange}
   // Local origin: the first vertex of the first non-empty ring.
   var origin = vec2<f32>(0.0);
@@ -310,6 +488,9 @@ fn writeStat(feature: u32, slot: u32, value: f32) {
     }
     featureStats[featureStatsOffset + index * STATS_STRIDE + 9u] = 0u;
     featureStats[featureStatsOffset + index * STATS_STRIDE + 10u] = 1u;
+    for (var slot = 11u; slot < 15u; slot++) {
+      featureStats[featureStatsOffset + index * STATS_STRIDE + slot] = 0xffffffffu;
+    }
     return;
   }
   var lengthSum = vec2<f32>(0.0);
@@ -322,6 +503,8 @@ fn writeStat(feature: u32, slot: u32, value: f32) {
   var boundsMin = vec2<f32>(3.4e38);
   var boundsMax = vec2<f32>(-3.4e38);
   var vertexCount = 0u;
+  var extremeRows = vec4<u32>(0xffffffffu);
+  var straightSum = vec2<f32>(0.0);
   var isFirstRing = true;
   for (var ring = ringBegin; ring < ringEnd; ring++) {
     let rowBegin = min(ringOffsets[ringOffsetsOffset + ring], ROW_COUNT);
@@ -332,6 +515,7 @@ fn writeStat(feature: u32, slot: u32, value: f32) {
     }
     vertexCount += rowCount;
     var ringArea = vec2<f32>(0.0);
+    var ringStraightArea = vec2<f32>(0.0);
     var ringMomentX = vec2<f32>(0.0);
     var ringMomentY = vec2<f32>(0.0);
     let firstPosition = getPosition(rowBegin);
@@ -349,9 +533,33 @@ fn writeStat(feature: u32, slot: u32, value: f32) {
     var position = firstPosition;
     let edgeCount = select(rowCount - 1u, rowCount, IS_POLYGON);
     for (var vertex = 0u; vertex < rowCount; vertex++) {
+      // Strict comparisons keep the lowest vertex row on ties.
+      if (local.x < boundsMin.x) {
+        extremeRows.x = rowBegin + vertex;
+      }
+      if (local.y < boundsMin.y) {
+        extremeRows.y = rowBegin + vertex;
+      }
+      if (local.x > boundsMax.x) {
+        extremeRows.z = rowBegin + vertex;
+      }
+      if (local.y > boundsMax.y) {
+        extremeRows.w = rowBegin + vertex;
+      }
       boundsMin = min(boundsMin, local);
       boundsMax = max(boundsMax, local);
       vertexSum += local;
+      if (IS_POINT) {
+        // Point sets have no edges; longitudes unwrap against the shared origin.
+        if (vertex + 1u < rowCount) {
+          let nextPoint = getPosition(rowBegin + vertex + 1u);
+          local = nextPoint - origin;
+          if (IS_GEOGRAPHIC) {
+            local.x = geodesicWrapLongitudeDelta(nextPoint.x - origin.x);
+          }
+        }
+        continue;
+      }
       if (vertex >= edgeCount) {
         break;
       }
@@ -378,7 +586,9 @@ fn writeStat(feature: u32, slot: u32, value: f32) {
       addCompensated(&lineMomentX, edgeLength * 0.5 * (local.x + nextLocal.x));
       addCompensated(&lineMomentY, edgeLength * 0.5 * (local.y + nextLocal.y));
       let cross = areaX * nextAreaY - nextAreaX * areaY;
-      addCompensated(&ringArea, cross);
+      ${edgeCrossSource}
+      addCompensated(&ringArea, edgeCross);
+      addCompensated(&ringStraightArea, cross);
       addCompensated(&ringMomentX, (areaX + nextAreaX) * cross);
       addCompensated(&ringMomentY, (areaY + nextAreaY) * cross);
       position = nextPosition;
@@ -392,41 +602,12 @@ fn writeStat(feature: u32, slot: u32, value: f32) {
       ringFactor = select(-1.0, 1.0, isFirstRing) * ringSign;
     }
     addCompensated(&areaSum, ringFactor * getCompensated(ringArea));
+    addCompensated(&straightSum, ringFactor * getCompensated(ringStraightArea));
     addCompensated(&momentX, ringFactor * getCompensated(ringMomentX));
     addCompensated(&momentY, ringFactor * getCompensated(ringMomentY));
     isFirstRing = false;
   }
-  let crossSum = getCompensated(areaSum);
-  let totalLength = getCompensated(lengthSum);
-  let areaScale = select(1.0, AREA_RADIUS * AREA_RADIUS, IS_GEOGRAPHIC);
-  let signedArea = select(0.0, 0.5 * crossSum * areaScale, IS_POLYGON);
-  var centroid = vertexSum / f32(vertexCount);
-  var centroidX = origin.x + centroid.x;
-  var centroidY = origin.y + centroid.y;
-  if (IS_POLYGON && crossSum != 0.0) {
-    centroid = vec2<f32>(getCompensated(momentX), getCompensated(momentY)) / (3.0 * crossSum);
-    if (IS_GEOGRAPHIC) {
-      centroidX = origin.x + centroid.x * GEODESIC_RADIANS_TO_DEGREES;
-    } else {
-      centroidX = origin.x + centroid.x;
-    }
-    centroidY = ${polygonCentroidY};
-  } else if (!IS_POLYGON && totalLength > 0.0) {
-    centroid = vec2<f32>(getCompensated(lineMomentX), getCompensated(lineMomentY)) / totalLength;
-    centroidX = origin.x + centroid.x;
-    centroidY = origin.y + centroid.y;
-  }
-  writeStat(index, 0u, totalLength);
-  writeStat(index, 1u, signedArea);
-  writeStat(index, 2u, abs(signedArea));
-  writeStat(index, 3u, centroidX);
-  writeStat(index, 4u, centroidY);
-  writeStat(index, 5u, origin.x + boundsMin.x);
-  writeStat(index, 6u, origin.y + boundsMin.y);
-  writeStat(index, 7u, origin.x + boundsMax.x);
-  writeStat(index, 8u, origin.y + boundsMax.y);
-  featureStats[featureStatsOffset + index * STATS_STRIDE + 9u] = vertexCount;
-  featureStats[featureStatsOffset + index * STATS_STRIDE + 10u] = 1u;`
+${getTailSource('')}`
   });
 }
 
@@ -438,6 +619,7 @@ export type GeometryMeasureColumns = {
   centroids?: GraphDataView<'float32x2'>;
   bounds?: GraphDataView<'float32x4'>;
   vertexCounts?: GraphDataView<'uint32'>;
+  extremeVertices?: GraphDataView<'uint32x4'>;
   featureCounts?: GraphDataView<'uint32'>;
 };
 
@@ -489,6 +671,13 @@ export function createMeasuresScatterNode<Parameters>(
   }`
   );
   addColumn('vertexCounts', 'u32', 'vertexCounts[vertexCountsOffset + index] = getStatBits(9u);');
+  addColumn(
+    'extremeVertices',
+    'u32',
+    `for (var corner = 0u; corner < 4u; corner++) {
+    extremeVertices[extremeVerticesOffset + 4u * index + corner] = getStatBits(11u + corner);
+  }`
+  );
   addColumn(
     'featureCounts',
     'u32',
@@ -547,45 +736,6 @@ export function createGroupSortPrepareNode<Parameters>(
   });
 }
 
-/**
- * Finds each group's first row in the sorted keys (lower bound), `groupCount + 1` invocations.
- *
- * @internal
- */
-export function createGroupOffsetsNode<Parameters>(
-  graph: GPUCommandGraph<Parameters>,
-  props: {
-    id: string;
-    operation: string;
-    sortedKeys: GraphDataView<'uint32'>;
-    groupCount: number;
-    groupOffsets: GraphDataView<'uint32'>;
-  }
-): GPUCommandNode<Parameters> {
-  return createWGSLKernelNode<Parameters>(graph, {
-    id: props.id,
-    operation: props.operation,
-    variant: 'group-offsets',
-    bindings: [
-      {name: 'sortedKeys', view: props.sortedKeys, type: 'u32', access: 'read'},
-      {name: 'groupOffsets', view: props.groupOffsets, type: 'u32', access: 'read_write'}
-    ],
-    invocationCount: props.groupCount + 1,
-    declarations: `const KEY_COUNT: u32 = ${props.sortedKeys.length}u;`,
-    body: `var low = 0u;
-  var high = KEY_COUNT;
-  while (low < high) {
-    let middle = (low + high) / 2u;
-    if (sortedKeys[sortedKeysOffset + middle] < index) {
-      low = middle + 1u;
-    } else {
-      high = middle;
-    }
-  }
-  groupOffsets[groupOffsetsOffset + index] = low;`
-  });
-}
-
 const GROUP_WORKGROUP_SIZE = 128;
 const GROUP_SUM_SLOTS = 9;
 
@@ -604,6 +754,7 @@ export function createGroupReduceNode<Parameters>(
     id: string;
     operation: string;
     isPolygon: boolean;
+    isPoint?: boolean;
     groupCount: number;
     sortedIndices: GraphDataView<'uint32'>;
     groupOffsets: GraphDataView<'uint32'>;
@@ -627,6 +778,7 @@ export function createGroupReduceNode<Parameters>(
     declarations: `const STATS_STRIDE: u32 = ${GEOMETRY_STATS_STRIDE}u;
 const SUM_SLOTS: u32 = ${GROUP_SUM_SLOTS}u;
 const IS_POLYGON: bool = ${props.isPolygon};
+const IS_POINT: bool = ${props.isPoint ?? false};
 const ROW_COUNT: u32 = ${props.sortedIndices.length}u;
 // Slots: length, signedArea, area, weight, weightedX, weightedY, meanX, meanY, centroidCount.
 var<workgroup> partialSums: array<array<f32, ${GROUP_SUM_SLOTS}>, ${GROUP_WORKGROUP_SIZE}>;
@@ -662,7 +814,10 @@ fn getFeatureStat(word: u32) -> f32 {
       sums[2] += featureArea;
       if (vertexCount > 0u) {
         let centroid = vec2<f32>(getFeatureStat(base + 3u), getFeatureStat(base + 4u));
-        let weight = select(featureLength, featureArea, IS_POLYGON);
+        var weight = select(featureLength, featureArea, IS_POLYGON);
+        if (IS_POINT) {
+          weight = f32(vertexCount);
+        }
         sums[3] += weight;
         sums[4] += weight * centroid.x;
         sums[5] += weight * centroid.y;

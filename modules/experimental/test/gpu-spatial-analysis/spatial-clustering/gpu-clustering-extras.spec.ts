@@ -150,7 +150,13 @@ function createBlobs(seed: number, pointsPerBlob: number): Float32Array {
 async function runKMeans(
   device: Device,
   positions: Float32Array,
-  options: {k: number; iterations: number; initialization?: GPUKMeansInitialization; seed?: number}
+  options: {
+    k: number;
+    iterations: number;
+    tolerance?: number;
+    initialization?: GPUKMeansInitialization;
+    seed?: number;
+  }
 ) {
   const rows = positions.length / 2;
   const rig = new WeightsRig(device);
@@ -158,6 +164,7 @@ async function runKMeans(
   const centers = rig.output('float32x2', options.k);
   const sizes = rig.output('uint32', options.k);
   const squaredDistances = rig.output('float32', rows);
+  const convergence = rig.output('uint32', 2);
   rig.run(
     new GPUKMeans({
       positions: rig.input(positions, 'float32x2', rows),
@@ -165,14 +172,16 @@ async function runKMeans(
       labels: labels.view,
       centers: centers.view,
       sizes: sizes.view,
-      squaredDistances: squaredDistances.view
+      squaredDistances: squaredDistances.view,
+      convergence: convergence.view
     })
   );
   const result = {
     labels: await readUint32(labels.buffer, rows),
     centers: await readFloat32(centers.buffer, options.k * 2),
     sizes: await readUint32(sizes.buffer, options.k),
-    squaredDistances: await readFloat32(squaredDistances.buffer, rows)
+    squaredDistances: await readFloat32(squaredDistances.buffer, rows),
+    convergence: await readUint32(convergence.buffer, 2)
   };
   rig.destroy();
   return result;
@@ -208,6 +217,62 @@ it("GPUKMeans 'first-valid' matches the f64 Lloyd oracle and ignores non-finite 
       }
     }
   }
+});
+
+it('GPUKMeans center reduction handles many chunks, k=1, k not dividing 256, and k=256', async () => {
+  const device = await getWebGPUTestDevice();
+  if (!device) return;
+  // 20000 rows: 79 chunks of 256 rows, last chunk partial.
+  const positions = createBlobs(9, 6667);
+  const valid = positions.length / 2 - 2;
+  for (const [k, iterations] of [
+    [1, 3],
+    [13, 4],
+    [256, 3]
+  ]) {
+    const expected = computeKMeansOracle(positions, k, iterations);
+    const result = await runKMeans(device, positions, {k, iterations});
+    let mismatches = 0;
+    const histogram = new Array<number>(k).fill(0);
+    for (let row = 0; row < expected.labels.length; row++) {
+      if (result.labels[row] !== expected.labels[row]) mismatches++;
+      if (result.labels[row] !== GPU_SPATIAL_CLUSTERING_NOISE) histogram[result.labels[row]]++;
+    }
+    // f32 distances may flip a handful of near-ties against the f64 oracle.
+    expect(mismatches).toBeLessThanOrEqual(Math.ceil(0.005 * expected.labels.length));
+    expect(result.sizes).toEqual(histogram);
+    expect(result.sizes.reduce((sum, size) => sum + size, 0)).toBe(valid);
+    if (mismatches === 0) {
+      for (let index = 0; index < 2 * k; index++) {
+        expect(Math.abs(result.centers[index] - expected.centers[index])).toBeLessThan(
+          1e-2 * (1 + Math.abs(expected.centers[index]))
+        );
+      }
+    }
+    // Bitwise reproducible across two runs.
+    const again = await runKMeans(device, positions, {k, iterations});
+    expect(again.centers).toEqual(result.centers);
+  }
+});
+
+it('GPUKMeans stops at a fixed point and reports iterations used', async () => {
+  const device = await getWebGPUTestDevice();
+  if (!device) return;
+  const positions = createBlobs(5, 150);
+  const full = computeKMeansOracle(positions, 3, 30);
+  const result = await runKMeans(device, positions, {k: 3, iterations: 30});
+  // Early-out must not change the answer: it equals running every iteration.
+  expect(result.labels).toEqual(full.labels);
+  expect(result.sizes).toEqual(full.sizes);
+  expect(result.convergence[1]).toBe(1);
+  expect(result.convergence[0]).toBeGreaterThan(1);
+  expect(result.convergence[0]).toBeLessThan(30);
+  // A loose tolerance stops earlier; one iteration cannot converge from the first-valid seeds.
+  const loose = await runKMeans(device, positions, {k: 3, iterations: 30, tolerance: 50});
+  expect(loose.convergence[1]).toBe(1);
+  expect(loose.convergence[0]).toBeLessThan(result.convergence[0] + 1);
+  const single = await runKMeans(device, positions, {k: 3, iterations: 1});
+  expect(Array.from(single.convergence)).toEqual([1, 0]);
 });
 
 it('GPUKMeans leaves centers empty when there are fewer valid points than k', async () => {

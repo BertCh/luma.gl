@@ -11,10 +11,9 @@ import {
 import {getRasterGridWGSL} from '../../gpu-raster/cost-distance/raster-grid-utils';
 import {
   createRasterIterationFinalizeNode,
-  createRasterIterationGateNode,
+  createRasterGatedLoopNodes,
   createRasterIterationResetNode,
-  createRasterIterationState,
-  getRasterIterationCondition
+  createRasterIterationState
 } from '../../gpu-raster/cost-distance/raster-relaxation';
 import {TERRAIN_FLOW_MAXIMUM_WALK_LENGTH, type TerrainFlowGrid} from './terrain-flow-passes';
 
@@ -231,6 +230,7 @@ export function createTerrainFlowRoutingAccumulationNodes<Parameters>(
     runoff?: GraphDataView<'float32'>;
     area: boolean;
     converged?: GraphDataView<'uint32'>;
+    iterationCount?: GraphDataView<'uint32'>;
   }
 ): GPUCommandNode<Parameters>[] {
   const cellCount = props.width * props.height;
@@ -297,7 +297,9 @@ fn tryFinalize(cell: u32) -> bool {
   }
   return atomicCompareExchangeWeak(&acc[accOffset + cell], SENTINEL, bitcast<u32>(sum)).exchanged;
 }`;
-  const body = `if (!isFiniteValue(surface[surfaceOffset + index])) { return; }
+  const getBody = (
+    markChangedWGSL: string
+  ) => `if (!isFiniteValue(surface[surfaceOffset + index])) { return; }
   if (atomicLoad(&acc[accOffset + index]) != SENTINEL) { return; }
   var walk = index;
   var finalized = tryFinalize(index);
@@ -314,38 +316,37 @@ fn tryFinalize(cell: u32) -> bool {
     finalized = next != GRID_NONE;
   }
   if (atomicLoad(&acc[accOffset + index]) == SENTINEL) {
-    atomicStore(&status[statusOffset], 1u);
+    ${markChangedWGSL}
   }`;
-  for (let iteration = 0; iteration < props.maxIterations; iteration++) {
-    const nodeId = `${props.id}-accumulate-round-${iteration}`;
-    const {condition, extraResources} = getRasterIterationCondition<Parameters>(state, nodeId);
-    nodes.push(
-      createWGSLKernelNode<Parameters>(graph, {
-        id: nodeId,
-        operation: OPERATION,
-        variant: `accumulate-round-${props.routing}`,
-        bindings,
-        invocationCount: cellCount,
-        declarations,
-        body,
-        condition,
-        extraResources
-      }),
-      createRasterIterationGateNode<Parameters>(graph, {
-        id: `${props.id}-accumulate-gate-${iteration}`,
-        operation: OPERATION,
-        state,
-        maxIterations: props.maxIterations
-      })
-    );
-  }
-  if (props.converged) {
+  nodes.push(
+    ...createRasterGatedLoopNodes<Parameters>(graph, {
+      id: `${props.id}-accumulate-round`,
+      gateId: `${props.id}-accumulate-gate`,
+      operation: OPERATION,
+      state,
+      maxIterations: props.maxIterations,
+      createRound: ({nodeId, markChangedWGSL, condition, extraResources}) =>
+        createWGSLKernelNode<Parameters>(graph, {
+          id: nodeId,
+          operation: OPERATION,
+          variant: `accumulate-round-${props.routing}`,
+          bindings,
+          invocationCount: cellCount,
+          declarations,
+          body: getBody(markChangedWGSL),
+          condition,
+          extraResources
+        })
+    })
+  );
+  if (props.converged || props.iterationCount) {
     nodes.push(
       createRasterIterationFinalizeNode<Parameters>(graph, {
         id: `${props.id}-accumulate-finalize`,
         operation: OPERATION,
         state,
-        converged: props.converged
+        converged: props.converged,
+        iterationCount: props.iterationCount
       })
     );
   }

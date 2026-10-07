@@ -31,11 +31,35 @@ import {
   WEISZFELD_COINCIDENT_DISTANCE_SQUARED
 } from './geographic-distribution-kernels';
 import {GPU_GEOGRAPHIC_DISTRIBUTION_PARAMETER_LENGTH} from './geographic-distribution-parameters';
+import {GROUPED_SUM_MAXIMUM_GROUPS, getGroupedSumNodes} from './grouped-sum-reduction';
 
 const OPERATION = 'GPUGeographicDistribution';
 const MAXIMUM_MEDIAN_ITERATIONS = 256;
 const DEFAULT_MEDIAN_ITERATIONS = 24;
 const DEFAULT_POLYGON_VERTEX_COUNT = 64;
+
+/**
+ * WGSL for the Vardi-Zhang (2000) correction of a Weiszfeld step. Expects `stepX`/`stepY` (the
+ * plain Weiszfeld step over the non-coincident rows) in scope and scales them by `1 - gamma` with
+ * `gamma = min(1, eta / R)`, where `eta` is the weight of rows coincident with the iterate and
+ * `R` the length of the pull `sum(w d / |d|)` of the others. When `eta >= R` the iterate sits on
+ * a data point that is the median and the step is zero; otherwise the iterate leaves the point
+ * instead of being thrown off it by dropping the point's pull.
+ */
+function getVardiZhangWGSL(pullX: string, pullY: string, coincidentWeight: string): string {
+  return `let coincidentWeight = ${coincidentWeight};
+  if (coincidentWeight > 0.0) {
+    let pullLength = sqrt(${pullX} * ${pullX} + ${pullY} * ${pullY});
+    var gamma = 1.0;
+    if (pullLength > 0.0) {
+      gamma = min(1.0, coincidentWeight / pullLength);
+    }
+    stepX = stepX * (1.0 - gamma);
+    stepY = stepY * (1.0 - gamma);
+  }`;
+}
+/** Largest group count `reduction: 'auto'` reduces without sorting. */
+const AUTO_CHUNKED_MAXIMUM_GROUPS = 64;
 
 /**
  * Caller-owned outputs of {@link GPUGeographicDistribution}. Which views are present is
@@ -119,6 +143,21 @@ export type GPUGeographicDistributionProps = {
   medianIterations?: number;
   /** Vertices per ring of `ellipseVertices` and `circleVertices`, at least 3. Defaults to 64. */
   polygonVertexCount?: number;
+  /**
+   * How per-group sums are reduced. Compile-time. Defaults to `'auto'`.
+   *
+   * - `'chunked'`: no sort. Rows are cut into chunks, each workgroup keeps per-group partial sums
+   *   in shared memory and a second pass folds the partials in a fixed order. Every statistic
+   *   (and every Weiszfeld iteration) re-reads the rows once instead of through sorted copies.
+   *   Supports up to 256 groups; cost grows with `rows * groupCount`.
+   * - `'sorted'`: one stable sort by group, then fixed-order segmented tree sums over contiguous
+   *   segments. Any group count; the better choice for thousands of groups.
+   * - `'auto'`: `'chunked'` for at most 64 groups, otherwise `'sorted'`.
+   *
+   * Both are bitwise reproducible on one device; they differ from each other only by float32
+   * summation order.
+   */
+  reduction?: 'auto' | 'chunked' | 'sorted';
   /** Caller-owned outputs. At least one must be present. */
   output: GPUGeographicDistributionOutput;
 };
@@ -147,8 +186,12 @@ export type GPUGeographicDistributionProps = {
  *   (short) axis, `angle = -theta` wrapped to `(-pi/2, pi/2]`. The long axis points at
  *   `angle + pi/2`. A vertex is `M + R(angle) * (sigmaX cos t, sigmaY sin t)`.
  * - Median centre: Weiszfeld iteration `m <- m + sum(w d / |d|) / sum(w / |d|)` with `d = p - m`
- *   started at the mean centre, `medianIterations` fixed steps; a point within `1e-6` of the
- *   iterate is skipped in that step.
+ *   started at the mean centre, `medianIterations` fixed steps. A point within `1e-6` of the
+ *   iterate is left out of the sums and handled by the Vardi-Zhang (2000) correction: the step is
+ *   scaled by `1 - min(1, eta / R)` with `eta` the weight of the coincident points and `R` the
+ *   length of the others' pull, so an iterate that reaches a data point which is the median stays
+ *   there and one that is not leaves it. Without it the dropped point makes the iterate jump away
+ *   and the median can end worse than after fewer steps.
  * - Linear directional mean: line angle `a = atan2(dy, dx)` counter-clockwise from `+x`;
  *   `R = |sum(w cos a, w sin a)| / Nd` over non-degenerate lines (`Nd` is their weight sum),
  *   mean angle `atan2(sum w sin a, sum w cos a)` in `(-pi, pi]`, circular variance `1 - R`, mean
@@ -157,9 +200,10 @@ export type GPUGeographicDistributionProps = {
  *
  * ## Determinism
  *
- * No float atomics. Rows are stably sorted by group once; every sum (including each Weiszfeld
- * iteration) is a fixed-order segmented tree sum over the sorted rows, so results are bitwise
- * reproducible across encodings on one device. Sums differ from a sequential CPU sum only by
+ * No float atomics. With the `'sorted'` reduction rows are stably sorted by group once and every
+ * sum (including each Weiszfeld iteration) is a fixed-order segmented tree sum over the sorted
+ * rows; with the `'chunked'` reduction every sum is a fixed-order chunked tree. Either way results
+ * are bitwise reproducible across encodings on one device. Sums differ from a sequential CPU sum only by
  * float32 rounding.
  *
  * ## Non-goals
@@ -179,6 +223,8 @@ export class GPUGeographicDistribution implements GPUCommandNodeProducer {
   readonly medianIterations: number;
   /** Vertices per ring. */
   readonly polygonVertexCount: number;
+  /** Resolved reduction strategy. */
+  readonly reduction: 'chunked' | 'sorted';
 
   constructor(props: GPUGeographicDistributionProps) {
     this.id = props.id ?? 'geographic-distribution';
@@ -254,6 +300,21 @@ export class GPUGeographicDistribution implements GPUCommandNodeProducer {
         `${id} medianIterations must be an integer in [1, ${MAXIMUM_MEDIAN_ITERATIONS}]`
       );
     }
+    const reduction = props.reduction ?? 'auto';
+    if (reduction !== 'auto' && reduction !== 'chunked' && reduction !== 'sorted') {
+      throw new Error(`${id} reduction must be auto, chunked, or sorted`);
+    }
+    if (reduction === 'chunked' && this.groupCount > GROUPED_SUM_MAXIMUM_GROUPS) {
+      throw new Error(
+        `${id} chunked reduction supports at most ${GROUPED_SUM_MAXIMUM_GROUPS} groups`
+      );
+    }
+    this.reduction =
+      reduction === 'auto'
+        ? this.groupCount <= AUTO_CHUNKED_MAXIMUM_GROUPS
+          ? 'chunked'
+          : 'sorted'
+        : reduction;
     this.polygonVertexCount = props.polygonVertexCount ?? DEFAULT_POLYGON_VERTEX_COUNT;
     if (!Number.isInteger(this.polygonVertexCount) || this.polygonVertexCount < 3) {
       throw new Error(`${id} polygonVertexCount must be an integer of at least 3`);
@@ -350,166 +411,10 @@ export class GPUGeographicDistribution implements GPUCommandNodeProducer {
     const groupConstants = `const GROUP_COUNT: u32 = ${groupCount}u;`;
     const nodes: GPUCommandNode<Parameters>[] = [];
 
-    // 1. Row validity, sort keys and weights, then per-group counts.
-    const sortKeys = u32('sort-keys', rows);
-    const sortIndices = u32('sort-indices', rows);
-    const rowWeights = f32('row-weights', rows);
+    const chunked = this.reduction === 'chunked';
     const groupCounts = u32('group-counts', groupCount);
-    const prepareBindings = [read('positions', positions, 'f32')];
-    if (weights) {
-      prepareBindings.push(read('weights', weights, 'f32'));
-    }
-    if (groupIds) {
-      prepareBindings.push(read('groupIds', groupIds, 'u32'));
-    }
-    if (mask) {
-      prepareBindings.push(read('mask', mask, 'u32'));
-    }
-    prepareBindings.push(
-      write('sortKeys', sortKeys, 'u32'),
-      write('sortIndices', sortIndices, 'u32'),
-      write('rowWeights', rowWeights)
-    );
-    nodes.push(
-      kernel(
-        'prepare',
-        rows,
-        prepareBindings,
-        `let x = positions[positionsOffset + index * 2u];
-  let y = positions[positionsOffset + index * 2u + 1u];
-  var valid = isFiniteValue(x) && isFiniteValue(y);
-  var weight = 1.0;
-  ${weights ? 'weight = weights[weightsOffset + index]; valid = valid && isFiniteValue(weight) && weight > 0.0;' : ''}
-  var group = 0u;
-  ${groupIds ? 'group = groupIds[groupIdsOffset + index]; valid = valid && group < GROUP_COUNT;' : ''}
-  ${mask ? 'valid = valid && mask[maskOffset + index] != 0u;' : ''}
-  sortKeys[sortKeysOffset + index] = select(GROUP_COUNT, group, valid);
-  sortIndices[sortIndicesOffset + index] = index;
-  rowWeights[rowWeightsOffset + index] = select(0.0, weight, valid);`,
-        groupConstants
-      ),
-      createFillNode<Parameters>(graph, {
-        id: `${id}-zero-counts`,
-        operation: OPERATION,
-        view: groupCounts,
-        type: 'u32',
-        value: '0u'
-      }),
-      kernel(
-        'count',
-        rows,
-        [read('sortKeys', sortKeys, 'u32'), write('groupCounts', groupCounts, 'atomic<u32>')],
-        `let group = sortKeys[sortKeysOffset + index];
-  if (group < GROUP_COUNT) {
-    atomicAdd(&groupCounts[groupCountsOffset + group], 1u);
-  }`,
-        groupConstants
-      )
-    );
-
-    // 2. Stable sort by group and fixed segment offsets.
-    const sortedKeys = u32('sorted-keys', rows);
-    const sortedIndices = u32('sorted-indices', rows);
-    nodes.push(
-      ...new GPUSort({
-        id: `${id}-sort`,
-        keys: sortKeys,
-        values: sortIndices,
-        outputKeys: sortedKeys,
-        outputValues: sortedIndices,
-        keyBits: getSortKeyBits(groupCount)
-      }).getCommandNodes(graph)
-    );
-    const segmentOffsets = u32('segment-offsets', groupCount + 1);
-    nodes.push(
-      ...new GPUScan({
-        id: `${id}-segment-scan`,
-        input: groupCounts,
-        output: segmentOffsets,
-        mode: 'exclusive'
-      }).getCommandNodes(graph),
-      kernel(
-        'segment-total',
-        1,
-        [read('counts', groupCounts, 'u32'), write('segmentOffsets', segmentOffsets, 'u32')],
-        `segmentOffsets[segmentOffsetsOffset + ${groupCount}u] =
-    segmentOffsets[segmentOffsetsOffset + ${groupCount - 1}u] + counts[countsOffset + ${groupCount - 1}u];`
-      )
-    );
-    const sum = (name: string, input: GraphDataView<'float32'>, result: GraphDataView<'float32'>) =>
-      createSegmentSumNode<Parameters>(graph, {
-        id: `${id}-sum-${name}`,
-        operation: OPERATION,
-        segmentCount: groupCount,
-        input,
-        segmentOffsets,
-        output: result
-      });
-
-    // 3. Sorted local coordinates, then the weighted mean centre.
-    const sortedX = f32('sorted-x', rows);
-    const sortedY = f32('sorted-y', rows);
-    const sortedWeights = f32('sorted-weights', rows);
-    const weightedX = f32('weighted-x', rows);
-    const weightedY = f32('weighted-y', rows);
     const weightSums = f32('weight-sums', groupCount);
-    const sumX = f32('sum-x', groupCount);
-    const sumY = f32('sum-y', groupCount);
     const meanCenters = createTransientView(graph, `${id}-mean`, 'float32x2', groupCount);
-    nodes.push(
-      kernel(
-        'gather',
-        rows,
-        [
-          read('sortedIndices', sortedIndices, 'u32'),
-          read('positions', positions, 'f32'),
-          read('rowWeights', rowWeights, 'f32'),
-          read('parameters', parameters, 'f32'),
-          write('sortedX', sortedX),
-          write('sortedY', sortedY),
-          write('sortedWeights', sortedWeights)
-        ],
-        `let row = sortedIndices[sortedIndicesOffset + index];
-  let weight = rowWeights[rowWeightsOffset + row];
-  let isIncluded = weight > 0.0;
-  sortedX[sortedXOffset + index] = select(0.0, positions[positionsOffset + row * 2u] - parameters[parametersOffset], isIncluded);
-  sortedY[sortedYOffset + index] = select(0.0, positions[positionsOffset + row * 2u + 1u] - parameters[parametersOffset + 1u], isIncluded);
-  sortedWeights[sortedWeightsOffset + index] = weight;`
-      ),
-      kernel(
-        'weighted-coordinates',
-        rows,
-        [
-          read('sortedX', sortedX, 'f32'),
-          read('sortedY', sortedY, 'f32'),
-          read('sortedWeights', sortedWeights, 'f32'),
-          write('weightedX', weightedX),
-          write('weightedY', weightedY)
-        ],
-        `let weight = sortedWeights[sortedWeightsOffset + index];
-  weightedX[weightedXOffset + index] = weight * sortedX[sortedXOffset + index];
-  weightedY[weightedYOffset + index] = weight * sortedY[sortedYOffset + index];`
-      ),
-      sum('weight', sortedWeights, weightSums),
-      sum('x', weightedX, sumX),
-      sum('y', weightedY, sumY),
-      kernel(
-        'mean',
-        groupCount,
-        [
-          read('weightSums', weightSums, 'f32'),
-          read('sumX', sumX, 'f32'),
-          read('sumY', sumY, 'f32'),
-          write('mean', meanCenters)
-        ],
-        `let total = weightSums[weightSumsOffset + index];
-  let isEmpty = !(total > 0.0);
-  mean[meanOffset + index * 2u] = select(sumX[sumXOffset + index] / total, getQuietNaN(index), isEmpty);
-  mean[meanOffset + index * 2u + 1u] = select(sumY[sumYOffset + index] / total, getQuietNaN(index), isEmpty);`
-      )
-    );
-
-    // 4. Central second moments about the mean centre (two passes).
     const needSpread =
       output.standardDistances ||
       output.ellipses ||
@@ -519,66 +424,70 @@ export class GPUGeographicDistribution implements GPUCommandNodeProducer {
       output.standardDistances ?? (needSpread ? f32('standard-distances', groupCount) : undefined);
     const ellipses =
       output.ellipses ?? (output.ellipseVertices ? f32('ellipses', groupCount * 3) : undefined);
-    if (needSpread) {
-      const contributionXX = f32('contribution-xx', rows);
-      const contributionYY = f32('contribution-yy', rows);
-      const contributionXY = f32('contribution-xy', rows);
-      const sumXX = f32('sum-xx', groupCount);
-      const sumYY = f32('sum-yy', groupCount);
-      const sumXY = f32('sum-xy', groupCount);
-      nodes.push(
-        kernel(
-          'moments-diagonal',
-          rows,
-          [
-            read('sortedKeys', sortedKeys, 'u32'),
-            read('sortedX', sortedX, 'f32'),
-            read('sortedY', sortedY, 'f32'),
-            read('sortedWeights', sortedWeights, 'f32'),
-            read('mean', meanCenters, 'f32'),
-            write('contributionXX', contributionXX),
-            write('contributionYY', contributionYY)
-          ],
-          `let group = sortedKeys[sortedKeysOffset + index];
-  var xx = 0.0;
-  var yy = 0.0;
-  if (group < GROUP_COUNT) {
-    let weight = sortedWeights[sortedWeightsOffset + index];
-    let dx = sortedX[sortedXOffset + index] - mean[meanOffset + group * 2u];
-    let dy = sortedY[sortedYOffset + index] - mean[meanOffset + group * 2u + 1u];
-    xx = weight * dx * dx;
-    yy = weight * dy * dy;
+    // Chunked reduction: every pass re-derives a row's group and weight from the raw inputs.
+    const rowBindings: WGSLKernelBinding[] = [
+      read('positions', positions, 'f32'),
+      read('parameters', parameters, 'f32'),
+      ...(weights ? [read('weights', weights, 'f32')] : []),
+      ...(groupIds ? [read('groupIds', groupIds, 'u32')] : []),
+      ...(mask ? [read('mask', mask, 'u32')] : [])
+    ];
+    const rowDeclarations = `${GEOGRAPHIC_DISTRIBUTION_WGSL}
+struct RowData {
+  group: u32,
+  weight: f32,
+  x: f32,
+  y: f32
+}
+// An excluded row has group NO_GROUP (and weight 0); x and y are relative to the local origin.
+fn loadRow(row: u32) -> RowData {
+  var data = RowData(0xffffffffu, 0.0, 0.0, 0.0);
+  let x = positions[positionsOffset + row * 2u];
+  let y = positions[positionsOffset + row * 2u + 1u];
+  var valid = isFiniteValue(x) && isFiniteValue(y);
+  var weight = 1.0;
+  ${weights ? 'weight = weights[weightsOffset + row]; valid = valid && isFiniteValue(weight) && weight > 0.0;' : ''}
+  var group = 0u;
+  ${groupIds ? 'group = groupIds[groupIdsOffset + row]; valid = valid && group < GROUP_COUNT;' : ''}
+  ${mask ? 'valid = valid && mask[maskOffset + row] != 0u;' : ''}
+  if (valid) {
+    data = RowData(group, weight, x - parameters[parametersOffset], y - parameters[parametersOffset + 1u]);
   }
-  contributionXX[contributionXXOffset + index] = xx;
-  contributionYY[contributionYYOffset + index] = yy;`,
-          groupConstants
-        ),
-        kernel(
-          'moments-cross',
-          rows,
-          [
-            read('sortedKeys', sortedKeys, 'u32'),
-            read('sortedX', sortedX, 'f32'),
-            read('sortedY', sortedY, 'f32'),
-            read('sortedWeights', sortedWeights, 'f32'),
-            read('mean', meanCenters, 'f32'),
-            write('contributionXY', contributionXY)
-          ],
-          `let group = sortedKeys[sortedKeysOffset + index];
-  var xy = 0.0;
-  if (group < GROUP_COUNT) {
-    let weight = sortedWeights[sortedWeightsOffset + index];
-    let dx = sortedX[sortedXOffset + index] - mean[meanOffset + group * 2u];
-    let dy = sortedY[sortedYOffset + index] - mean[meanOffset + group * 2u + 1u];
-    xy = weight * dx * dy;
-  }
-  contributionXY[contributionXYOffset + index] = xy;`,
-          groupConstants
-        ),
-        sum('xx', contributionXX, sumXX),
-        sum('yy', contributionYY, sumYY),
-        sum('xy', contributionXY, sumXY)
-      );
+  return data;
+}`;
+    const grouped = (
+      name: string,
+      props: {
+        bindings?: WGSLKernelBinding[];
+        declarations?: string;
+        rowSnippet: string;
+        outputs: GraphDataView<'float32'>[];
+        countOutput?: GraphDataView<'uint32'>;
+        finish?: {bindings: WGSLKernelBinding[]; declarations?: string; body: string};
+        foldSuffix?: string;
+      }
+    ) =>
+      getGroupedSumNodes<Parameters>(graph, {
+        id: `${id}-${name}`,
+        operation: OPERATION,
+        rows,
+        groupCount,
+        bindings: [...rowBindings, ...(props.bindings ?? [])],
+        declarations: `${rowDeclarations}\n${props.declarations ?? ''}`,
+        rowSnippet: props.rowSnippet,
+        outputs: props.outputs,
+        countOutput: props.countOutput,
+        finish: props.finish,
+        foldSuffix: props.foldSuffix
+      });
+    const sumX = f32('sum-x', groupCount);
+    const sumY = f32('sum-y', groupCount);
+
+    const createSpreadNode = (
+      sumXX: GraphDataView<'float32'>,
+      sumYY: GraphDataView<'float32'>,
+      sumXY: GraphDataView<'float32'>
+    ) => {
       const finalizeBindings = [
         read('weightSums', weightSums, 'f32'),
         read('sumXX', sumXX, 'f32'),
@@ -592,12 +501,11 @@ export class GPUGeographicDistribution implements GPUCommandNodeProducer {
       if (ellipses) {
         finalizeBindings.push(write('ellipses', ellipses));
       }
-      nodes.push(
-        kernel(
-          'spread',
-          groupCount,
-          finalizeBindings,
-          `let total = weightSums[weightSumsOffset + index];
+      return kernel(
+        'spread',
+        groupCount,
+        finalizeBindings,
+        `let total = weightSums[weightSumsOffset + index];
   let isEmpty = !(total > 0.0);
   let varianceX = sumXX[sumXXOffset + index] / total;
   let varianceY = sumYY[sumYYOffset + index] / total;
@@ -628,110 +536,24 @@ export class GPUGeographicDistribution implements GPUCommandNodeProducer {
   ellipses[ellipsesOffset + index * 3u + 2u] = select(scale * sqrt(max(halfSum + radius, 0.0)), nan, isEmpty);`
       : ''
   }`
-        )
       );
-    }
-
-    // 5. Weiszfeld median centre, reusing the sorted order every iteration.
-    if (output.medianCenters || output.medianConverged) {
-      const median = createTransientView(graph, `${id}-median`, 'float32x2', groupCount);
-      const lastMoves = f32('median-moves', groupCount);
-      const contributionWeight = f32('median-contribution-weight', rows);
-      const contributionX = f32('median-contribution-x', rows);
-      const contributionY = f32('median-contribution-y', rows);
-      const sumMedianWeight = f32('median-sum-weight', groupCount);
-      const sumMedianX = f32('median-sum-x', groupCount);
-      const sumMedianY = f32('median-sum-y', groupCount);
-      const coincidentDistanceSquared = getWGSLFloatLiteral(WEISZFELD_COINCIDENT_DISTANCE_SQUARED);
-      nodes.push(
-        kernel(
-          'median-start',
-          groupCount,
-          [
-            read('mean', meanCenters, 'f32'),
-            write('median', median),
-            write('lastMoves', lastMoves)
-          ],
-          `median[medianOffset + index * 2u] = mean[meanOffset + index * 2u];
+    };
+    const createMedianStartNode = (
+      median: GraphDataView<'float32x2'>,
+      lastMoves: GraphDataView<'float32'>
+    ) =>
+      kernel(
+        'median-start',
+        groupCount,
+        [read('mean', meanCenters, 'f32'), write('median', median), write('lastMoves', lastMoves)],
+        `median[medianOffset + index * 2u] = mean[meanOffset + index * 2u];
   median[medianOffset + index * 2u + 1u] = mean[meanOffset + index * 2u + 1u];
   lastMoves[lastMovesOffset + index] = 0.0;`
-        )
       );
-      for (let iteration = 0; iteration < this.medianIterations; iteration++) {
-        const step = `median-${iteration}`;
-        nodes.push(
-          kernel(
-            `${step}-x`,
-            rows,
-            [
-              read('sortedKeys', sortedKeys, 'u32'),
-              read('sortedX', sortedX, 'f32'),
-              read('sortedY', sortedY, 'f32'),
-              read('sortedWeights', sortedWeights, 'f32'),
-              read('median', median, 'f32'),
-              write('contributionWeight', contributionWeight),
-              write('contributionX', contributionX)
-            ],
-            `let group = sortedKeys[sortedKeysOffset + index];
-  var inverseWeight = 0.0;
-  var deltaX = 0.0;
-  if (group < GROUP_COUNT) {
-    let dx = sortedX[sortedXOffset + index] - median[medianOffset + group * 2u];
-    let dy = sortedY[sortedYOffset + index] - median[medianOffset + group * 2u + 1u];
-    let distanceSquared = dx * dx + dy * dy;
-    if (distanceSquared > ${coincidentDistanceSquared}) {
-      inverseWeight = sortedWeights[sortedWeightsOffset + index] / sqrt(distanceSquared);
-      deltaX = inverseWeight * dx;
-    }
-  }
-  contributionWeight[contributionWeightOffset + index] = inverseWeight;
-  contributionX[contributionXOffset + index] = deltaX;`,
-            groupConstants
-          ),
-          kernel(
-            `${step}-y`,
-            rows,
-            [
-              read('sortedKeys', sortedKeys, 'u32'),
-              read('sortedY', sortedY, 'f32'),
-              read('contributionWeight', contributionWeight, 'f32'),
-              read('median', median, 'f32'),
-              write('contributionY', contributionY)
-            ],
-            `let group = sortedKeys[sortedKeysOffset + index];
-  var deltaY = 0.0;
-  if (group < GROUP_COUNT) {
-    deltaY = contributionWeight[contributionWeightOffset + index] * (sortedY[sortedYOffset + index] - median[medianOffset + group * 2u + 1u]);
-  }
-  contributionY[contributionYOffset + index] = deltaY;`,
-            groupConstants
-          ),
-          sum(`${step}-weight`, contributionWeight, sumMedianWeight),
-          sum(`${step}-x`, contributionX, sumMedianX),
-          sum(`${step}-y`, contributionY, sumMedianY),
-          kernel(
-            `${step}-update`,
-            groupCount,
-            [
-              read('sumWeight', sumMedianWeight, 'f32'),
-              read('sumX', sumMedianX, 'f32'),
-              read('sumY', sumMedianY, 'f32'),
-              write('median', median),
-              write('lastMoves', lastMoves)
-            ],
-            `let total = sumWeight[sumWeightOffset + index];
-  var stepX = 0.0;
-  var stepY = 0.0;
-  if (total > 0.0) {
-    stepX = sumX[sumXOffset + index] / total;
-    stepY = sumY[sumYOffset + index] / total;
-  }
-  median[medianOffset + index * 2u] = median[medianOffset + index * 2u] + stepX;
-  median[medianOffset + index * 2u + 1u] = median[medianOffset + index * 2u + 1u] + stepY;
-  lastMoves[lastMovesOffset + index] = sqrt(stepX * stepX + stepY * stepY);`
-          )
-        );
-      }
+    const createMedianPublishNode = (
+      median: GraphDataView<'float32x2'>,
+      lastMoves: GraphDataView<'float32'>
+    ) => {
       const medianBindings = [
         read('median', median, 'f32'),
         read('lastMoves', lastMoves, 'f32'),
@@ -743,64 +565,555 @@ export class GPUGeographicDistribution implements GPUCommandNodeProducer {
       if (output.medianConverged) {
         medianBindings.push(write('medianConverged', output.medianConverged, 'u32'));
       }
-      nodes.push(
-        kernel(
-          'median-publish',
-          groupCount,
-          medianBindings,
-          `${
-            output.medianCenters
-              ? `medianCenters[medianCentersOffset + index * 2u] = median[medianOffset + index * 2u] + parameters[parametersOffset];
+      return kernel(
+        'median-publish',
+        groupCount,
+        medianBindings,
+        `${
+          output.medianCenters
+            ? `medianCenters[medianCentersOffset + index * 2u] = median[medianOffset + index * 2u] + parameters[parametersOffset];
   medianCenters[medianCentersOffset + index * 2u + 1u] = median[medianOffset + index * 2u + 1u] + parameters[parametersOffset + 1u];`
-              : ''
-          }
+            : ''
+        }
   ${
     output.medianConverged
       ? `let isValid = isFiniteValue(median[medianOffset + index * 2u]);
   medianConverged[medianConvergedOffset + index] = select(0u, 1u, isValid && lastMoves[lastMovesOffset + index] <= parameters[parametersOffset + 5u]);`
       : ''
   }`
+      );
+    };
+    const createDirectionPublishNode = (
+      sumCosine: GraphDataView<'float32'>,
+      sumSine: GraphDataView<'float32'>,
+      sumLength: GraphDataView<'float32'>,
+      sumWeight: GraphDataView<'float32'>
+    ) =>
+      kernel(
+        'direction-publish',
+        groupCount,
+        [
+          read('sumCosine', sumCosine, 'f32'),
+          read('sumSine', sumSine, 'f32'),
+          read('sumLength', sumLength, 'f32'),
+          read('sumWeight', sumWeight, 'f32'),
+          read('parameters', parameters, 'f32'),
+          write('directionalMeans', output.directionalMeans!)
+        ],
+        `let total = sumWeight[sumWeightOffset + index];
+  let isEmpty = !(total > 0.0);
+  let cosine = sumCosine[sumCosineOffset + index];
+  let sine = sumSine[sumSineOffset + index];
+  let resultant = min(sqrt(cosine * cosine + sine * sine) / total, 1.0);
+  let hasAngle = cosine != 0.0 || sine != 0.0;
+  var angle = atan2(sine, cosine);
+  if (parameters[parametersOffset + 4u] > 0.5) {
+    angle = 0.5 * angle;
+  }
+  let nan = getQuietNaN(index);
+  directionalMeans[directionalMeansOffset + index * 3u] = select(angle, nan, isEmpty || !hasAngle);
+  directionalMeans[directionalMeansOffset + index * 3u + 1u] = select(1.0 - resultant, nan, isEmpty);
+  directionalMeans[directionalMeansOffset + index * 3u + 2u] = select(sumLength[sumLengthOffset + index] / total, nan, isEmpty);`
+      );
+    const createMeanNode = () =>
+      kernel(
+        'mean',
+        groupCount,
+        [
+          read('weightSums', weightSums, 'f32'),
+          read('sumX', sumX, 'f32'),
+          read('sumY', sumY, 'f32'),
+          write('mean', meanCenters)
+        ],
+        `let total = weightSums[weightSumsOffset + index];
+  let isEmpty = !(total > 0.0);
+  mean[meanOffset + index * 2u] = select(sumX[sumXOffset + index] / total, getQuietNaN(index), isEmpty);
+  mean[meanOffset + index * 2u + 1u] = select(sumY[sumYOffset + index] / total, getQuietNaN(index), isEmpty);`
+      );
+    if (chunked) {
+      // 1-3. One pass over the rows gives counts, weight sums and weighted coordinate sums.
+      nodes.push(
+        ...grouped('mean-sums', {
+          rowSnippet: `let data = loadRow(row);
+      group = data.group;
+      value0 = data.weight;
+      value1 = data.weight * data.x;
+      value2 = data.weight * data.y;`,
+          outputs: [weightSums, sumX, sumY],
+          countOutput: groupCounts
+        }),
+        createMeanNode()
+      );
+
+      // 4. Central second moments about the mean centre: one fused pass for xx, yy and xy.
+      if (needSpread) {
+        const sumXX = f32('sum-xx', groupCount);
+        const sumYY = f32('sum-yy', groupCount);
+        const sumXY = f32('sum-xy', groupCount);
+        nodes.push(
+          ...grouped('moments', {
+            bindings: [read('mean', meanCenters, 'f32')],
+            rowSnippet: `let data = loadRow(row);
+      group = data.group;
+      if (group != NO_GROUP) {
+        let dx = data.x - mean[meanOffset + group * 2u];
+        let dy = data.y - mean[meanOffset + group * 2u + 1u];
+        value0 = data.weight * dx * dx;
+        value1 = data.weight * dy * dy;
+        value2 = data.weight * dx * dy;
+      }`,
+            outputs: [sumXX, sumYY, sumXY]
+          }),
+          createSpreadNode(sumXX, sumYY, sumXY)
+        );
+      }
+
+      // 5. Weiszfeld median centre: each iteration is one fused row pass plus a fold whose lane 0
+      // applies the step, so no per-row contribution arrays are written or re-read.
+      if (output.medianCenters || output.medianConverged) {
+        const median = createTransientView(graph, `${id}-median`, 'float32x2', groupCount);
+        const lastMoves = f32('median-moves', groupCount);
+        const sumMedianWeight = f32('median-sum-weight', groupCount);
+        const sumMedianX = f32('median-sum-x', groupCount);
+        const sumMedianY = f32('median-sum-y', groupCount);
+        const sumMedianCoincident = f32('median-sum-coincident', groupCount);
+        const coincidentDistanceSquared = getWGSLFloatLiteral(
+          WEISZFELD_COINCIDENT_DISTANCE_SQUARED
+        );
+        nodes.push(createMedianStartNode(median, lastMoves));
+        for (let iteration = 0; iteration < this.medianIterations; iteration++) {
+          nodes.push(
+            ...grouped(`median-${iteration}`, {
+              bindings: [read('median', median, 'f32')],
+              rowSnippet: `let data = loadRow(row);
+      group = data.group;
+      if (group != NO_GROUP) {
+        let dx = data.x - median[medianOffset + group * 2u];
+        let dy = data.y - median[medianOffset + group * 2u + 1u];
+        let distanceSquared = dx * dx + dy * dy;
+        if (distanceSquared > ${coincidentDistanceSquared}) {
+          let inverseWeight = data.weight / sqrt(distanceSquared);
+          value0 = inverseWeight;
+          value1 = inverseWeight * dx;
+          value2 = inverseWeight * dy;
+        } else {
+          value3 = data.weight;
+        }
+      }`,
+              outputs: [sumMedianWeight, sumMedianX, sumMedianY, sumMedianCoincident],
+              foldSuffix: 'update',
+              finish: {
+                bindings: [write('median', median), write('lastMoves', lastMoves)],
+                body: `var stepX = 0.0;
+    var stepY = 0.0;
+    if (sum0 > 0.0) {
+      stepX = sum1 / sum0;
+      stepY = sum2 / sum0;
+    }
+    ${getVardiZhangWGSL('sum1', 'sum2', 'sum3')}
+    median[medianOffset + group * 2u] = median[medianOffset + group * 2u] + stepX;
+    median[medianOffset + group * 2u + 1u] = median[medianOffset + group * 2u + 1u] + stepY;
+    lastMoves[lastMovesOffset + group] = sqrt(stepX * stepX + stepY * stepY);`
+              }
+            })
+          );
+        }
+        nodes.push(createMedianPublishNode(median, lastMoves));
+      }
+
+      // 6. Linear directional mean: cosine, sine, length and weight sums in one fused pass.
+      if (output.directionalMeans && lineEnds) {
+        const sumCosine = f32('direction-sum-cosine', groupCount);
+        const sumSine = f32('direction-sum-sine', groupCount);
+        const sumLength = f32('direction-sum-length', groupCount);
+        const sumWeight = f32('direction-sum-weight', groupCount);
+        nodes.push(
+          ...grouped('direction', {
+            bindings: [read('lineEnds', lineEnds, 'f32')],
+            declarations: `
+fn getLineWeight(weight: f32, dx: f32, dy: f32) -> f32 {
+  let lengthSquared = dx * dx + dy * dy;
+  let isValid = weight > 0.0 && isFiniteValue(dx) && isFiniteValue(dy) && isFiniteValue(lengthSquared) && lengthSquared > 0.0;
+  return select(0.0, weight, isValid);
+}`,
+            rowSnippet: `let data = loadRow(row);
+      group = data.group;
+      if (group != NO_GROUP) {
+        let dx = lineEnds[lineEndsOffset + row * 2u] - positions[positionsOffset + row * 2u];
+        let dy = lineEnds[lineEndsOffset + row * 2u + 1u] - positions[positionsOffset + row * 2u + 1u];
+        let lineWeight = getLineWeight(data.weight, dx, dy);
+        if (lineWeight > 0.0) {
+          let lengthSquared = dx * dx + dy * dy;
+          var cosine = 0.0;
+          var sine = 0.0;
+          if (parameters[parametersOffset + 4u] > 0.5) {
+            cosine = (dx * dx - dy * dy) / lengthSquared;
+            sine = 2.0 * dx * dy / lengthSquared;
+          } else {
+            let lineLength = sqrt(lengthSquared);
+            cosine = dx / lineLength;
+            sine = dy / lineLength;
+          }
+          value0 = lineWeight * cosine;
+          value1 = lineWeight * sine;
+          value2 = lineWeight * sqrt(lengthSquared);
+          value3 = lineWeight;
+        }
+      }`,
+            outputs: [sumCosine, sumSine, sumLength, sumWeight]
+          }),
+          createDirectionPublishNode(sumCosine, sumSine, sumLength, sumWeight)
+        );
+      }
+    } else {
+      // 1. Row validity, sort keys and weights, then per-group counts.
+      const sortKeys = u32('sort-keys', rows);
+      const sortIndices = u32('sort-indices', rows);
+      const rowWeights = f32('row-weights', rows);
+      const prepareBindings = [read('positions', positions, 'f32')];
+      if (weights) {
+        prepareBindings.push(read('weights', weights, 'f32'));
+      }
+      if (groupIds) {
+        prepareBindings.push(read('groupIds', groupIds, 'u32'));
+      }
+      if (mask) {
+        prepareBindings.push(read('mask', mask, 'u32'));
+      }
+      prepareBindings.push(
+        write('sortKeys', sortKeys, 'u32'),
+        write('sortIndices', sortIndices, 'u32'),
+        write('rowWeights', rowWeights)
+      );
+      nodes.push(
+        kernel(
+          'prepare',
+          rows,
+          prepareBindings,
+          `let x = positions[positionsOffset + index * 2u];
+  let y = positions[positionsOffset + index * 2u + 1u];
+  var valid = isFiniteValue(x) && isFiniteValue(y);
+  var weight = 1.0;
+  ${weights ? 'weight = weights[weightsOffset + index]; valid = valid && isFiniteValue(weight) && weight > 0.0;' : ''}
+  var group = 0u;
+  ${groupIds ? 'group = groupIds[groupIdsOffset + index]; valid = valid && group < GROUP_COUNT;' : ''}
+  ${mask ? 'valid = valid && mask[maskOffset + index] != 0u;' : ''}
+  sortKeys[sortKeysOffset + index] = select(GROUP_COUNT, group, valid);
+  sortIndices[sortIndicesOffset + index] = index;
+  rowWeights[rowWeightsOffset + index] = select(0.0, weight, valid);`,
+          groupConstants
+        ),
+        createFillNode<Parameters>(graph, {
+          id: `${id}-zero-counts`,
+          operation: OPERATION,
+          view: groupCounts,
+          type: 'u32',
+          value: '0u'
+        }),
+        kernel(
+          'count',
+          rows,
+          [read('sortKeys', sortKeys, 'u32'), write('groupCounts', groupCounts, 'atomic<u32>')],
+          `let group = sortKeys[sortKeysOffset + index];
+  if (group < GROUP_COUNT) {
+    atomicAdd(&groupCounts[groupCountsOffset + group], 1u);
+  }`,
+          groupConstants
         )
       );
-    }
 
-    // 6. Linear directional mean.
-    if (output.directionalMeans && lineEnds) {
-      const contributionCosine = f32('direction-contribution-cosine', rows);
-      const contributionSine = f32('direction-contribution-sine', rows);
-      const contributionLength = f32('direction-contribution-length', rows);
-      const contributionWeight = f32('direction-contribution-weight', rows);
-      const sumCosine = f32('direction-sum-cosine', groupCount);
-      const sumSine = f32('direction-sum-sine', groupCount);
-      const sumLength = f32('direction-sum-length', groupCount);
-      const sumWeight = f32('direction-sum-weight', groupCount);
-      const lineHelpers = `
+      // 2. Stable sort by group and fixed segment offsets.
+      const sortedKeys = u32('sorted-keys', rows);
+      const sortedIndices = u32('sorted-indices', rows);
+      nodes.push(
+        ...new GPUSort({
+          id: `${id}-sort`,
+          keys: sortKeys,
+          values: sortIndices,
+          outputKeys: sortedKeys,
+          outputValues: sortedIndices,
+          keyBits: getSortKeyBits(groupCount)
+        }).getCommandNodes(graph)
+      );
+      const segmentOffsets = u32('segment-offsets', groupCount + 1);
+      nodes.push(
+        ...new GPUScan({
+          id: `${id}-segment-scan`,
+          input: groupCounts,
+          output: segmentOffsets,
+          mode: 'exclusive'
+        }).getCommandNodes(graph),
+        kernel(
+          'segment-total',
+          1,
+          [read('counts', groupCounts, 'u32'), write('segmentOffsets', segmentOffsets, 'u32')],
+          `segmentOffsets[segmentOffsetsOffset + ${groupCount}u] =
+    segmentOffsets[segmentOffsetsOffset + ${groupCount - 1}u] + counts[countsOffset + ${groupCount - 1}u];`
+        )
+      );
+      const sum = (
+        name: string,
+        input: GraphDataView<'float32'>,
+        result: GraphDataView<'float32'>
+      ) =>
+        createSegmentSumNode<Parameters>(graph, {
+          id: `${id}-sum-${name}`,
+          operation: OPERATION,
+          segmentCount: groupCount,
+          input,
+          segmentOffsets,
+          output: result
+        });
+
+      // 3. Sorted local coordinates, then the weighted mean centre.
+      const sortedX = f32('sorted-x', rows);
+      const sortedY = f32('sorted-y', rows);
+      const sortedWeights = f32('sorted-weights', rows);
+      const weightedX = f32('weighted-x', rows);
+      const weightedY = f32('weighted-y', rows);
+      nodes.push(
+        kernel(
+          'gather',
+          rows,
+          [
+            read('sortedIndices', sortedIndices, 'u32'),
+            read('positions', positions, 'f32'),
+            read('rowWeights', rowWeights, 'f32'),
+            read('parameters', parameters, 'f32'),
+            write('sortedX', sortedX),
+            write('sortedY', sortedY),
+            write('sortedWeights', sortedWeights)
+          ],
+          `let row = sortedIndices[sortedIndicesOffset + index];
+  let weight = rowWeights[rowWeightsOffset + row];
+  let isIncluded = weight > 0.0;
+  sortedX[sortedXOffset + index] = select(0.0, positions[positionsOffset + row * 2u] - parameters[parametersOffset], isIncluded);
+  sortedY[sortedYOffset + index] = select(0.0, positions[positionsOffset + row * 2u + 1u] - parameters[parametersOffset + 1u], isIncluded);
+  sortedWeights[sortedWeightsOffset + index] = weight;`
+        ),
+        kernel(
+          'weighted-coordinates',
+          rows,
+          [
+            read('sortedX', sortedX, 'f32'),
+            read('sortedY', sortedY, 'f32'),
+            read('sortedWeights', sortedWeights, 'f32'),
+            write('weightedX', weightedX),
+            write('weightedY', weightedY)
+          ],
+          `let weight = sortedWeights[sortedWeightsOffset + index];
+  weightedX[weightedXOffset + index] = weight * sortedX[sortedXOffset + index];
+  weightedY[weightedYOffset + index] = weight * sortedY[sortedYOffset + index];`
+        ),
+        sum('weight', sortedWeights, weightSums),
+        sum('x', weightedX, sumX),
+        sum('y', weightedY, sumY)
+      );
+      nodes.push(createMeanNode());
+
+      // 4. Central second moments about the mean centre (two passes).
+      if (needSpread) {
+        const contributionXX = f32('contribution-xx', rows);
+        const contributionYY = f32('contribution-yy', rows);
+        const contributionXY = f32('contribution-xy', rows);
+        const sumXX = f32('sum-xx', groupCount);
+        const sumYY = f32('sum-yy', groupCount);
+        const sumXY = f32('sum-xy', groupCount);
+        nodes.push(
+          kernel(
+            'moments-diagonal',
+            rows,
+            [
+              read('sortedKeys', sortedKeys, 'u32'),
+              read('sortedX', sortedX, 'f32'),
+              read('sortedY', sortedY, 'f32'),
+              read('sortedWeights', sortedWeights, 'f32'),
+              read('mean', meanCenters, 'f32'),
+              write('contributionXX', contributionXX),
+              write('contributionYY', contributionYY)
+            ],
+            `let group = sortedKeys[sortedKeysOffset + index];
+  var xx = 0.0;
+  var yy = 0.0;
+  if (group < GROUP_COUNT) {
+    let weight = sortedWeights[sortedWeightsOffset + index];
+    let dx = sortedX[sortedXOffset + index] - mean[meanOffset + group * 2u];
+    let dy = sortedY[sortedYOffset + index] - mean[meanOffset + group * 2u + 1u];
+    xx = weight * dx * dx;
+    yy = weight * dy * dy;
+  }
+  contributionXX[contributionXXOffset + index] = xx;
+  contributionYY[contributionYYOffset + index] = yy;`,
+            groupConstants
+          ),
+          kernel(
+            'moments-cross',
+            rows,
+            [
+              read('sortedKeys', sortedKeys, 'u32'),
+              read('sortedX', sortedX, 'f32'),
+              read('sortedY', sortedY, 'f32'),
+              read('sortedWeights', sortedWeights, 'f32'),
+              read('mean', meanCenters, 'f32'),
+              write('contributionXY', contributionXY)
+            ],
+            `let group = sortedKeys[sortedKeysOffset + index];
+  var xy = 0.0;
+  if (group < GROUP_COUNT) {
+    let weight = sortedWeights[sortedWeightsOffset + index];
+    let dx = sortedX[sortedXOffset + index] - mean[meanOffset + group * 2u];
+    let dy = sortedY[sortedYOffset + index] - mean[meanOffset + group * 2u + 1u];
+    xy = weight * dx * dy;
+  }
+  contributionXY[contributionXYOffset + index] = xy;`,
+            groupConstants
+          ),
+          sum('xx', contributionXX, sumXX),
+          sum('yy', contributionYY, sumYY),
+          sum('xy', contributionXY, sumXY)
+        );
+        nodes.push(createSpreadNode(sumXX, sumYY, sumXY));
+      }
+
+      // 5. Weiszfeld median centre, reusing the sorted order every iteration.
+      if (output.medianCenters || output.medianConverged) {
+        const median = createTransientView(graph, `${id}-median`, 'float32x2', groupCount);
+        const lastMoves = f32('median-moves', groupCount);
+        const contributionWeight = f32('median-contribution-weight', rows);
+        const contributionX = f32('median-contribution-x', rows);
+        const contributionY = f32('median-contribution-y', rows);
+        const sumMedianWeight = f32('median-sum-weight', groupCount);
+        const sumMedianX = f32('median-sum-x', groupCount);
+        const sumMedianY = f32('median-sum-y', groupCount);
+        const contributionCoincident = f32('median-contribution-coincident', rows);
+        const sumMedianCoincident = f32('median-sum-coincident', groupCount);
+        const coincidentDistanceSquared = getWGSLFloatLiteral(
+          WEISZFELD_COINCIDENT_DISTANCE_SQUARED
+        );
+        nodes.push(createMedianStartNode(median, lastMoves));
+        for (let iteration = 0; iteration < this.medianIterations; iteration++) {
+          const step = `median-${iteration}`;
+          nodes.push(
+            kernel(
+              `${step}-x`,
+              rows,
+              [
+                read('sortedKeys', sortedKeys, 'u32'),
+                read('sortedX', sortedX, 'f32'),
+                read('sortedY', sortedY, 'f32'),
+                read('sortedWeights', sortedWeights, 'f32'),
+                read('median', median, 'f32'),
+                write('contributionWeight', contributionWeight),
+                write('contributionX', contributionX),
+                write('contributionCoincident', contributionCoincident)
+              ],
+              `let group = sortedKeys[sortedKeysOffset + index];
+  var inverseWeight = 0.0;
+  var deltaX = 0.0;
+  var coincidentWeight = 0.0;
+  if (group < GROUP_COUNT) {
+    let dx = sortedX[sortedXOffset + index] - median[medianOffset + group * 2u];
+    let dy = sortedY[sortedYOffset + index] - median[medianOffset + group * 2u + 1u];
+    let distanceSquared = dx * dx + dy * dy;
+    if (distanceSquared > ${coincidentDistanceSquared}) {
+      inverseWeight = sortedWeights[sortedWeightsOffset + index] / sqrt(distanceSquared);
+      deltaX = inverseWeight * dx;
+    } else {
+      coincidentWeight = sortedWeights[sortedWeightsOffset + index];
+    }
+  }
+  contributionWeight[contributionWeightOffset + index] = inverseWeight;
+  contributionX[contributionXOffset + index] = deltaX;
+  contributionCoincident[contributionCoincidentOffset + index] = coincidentWeight;`,
+              groupConstants
+            ),
+            kernel(
+              `${step}-y`,
+              rows,
+              [
+                read('sortedKeys', sortedKeys, 'u32'),
+                read('sortedY', sortedY, 'f32'),
+                read('contributionWeight', contributionWeight, 'f32'),
+                read('median', median, 'f32'),
+                write('contributionY', contributionY)
+              ],
+              `let group = sortedKeys[sortedKeysOffset + index];
+  var deltaY = 0.0;
+  if (group < GROUP_COUNT) {
+    deltaY = contributionWeight[contributionWeightOffset + index] * (sortedY[sortedYOffset + index] - median[medianOffset + group * 2u + 1u]);
+  }
+  contributionY[contributionYOffset + index] = deltaY;`,
+              groupConstants
+            ),
+            sum(`${step}-weight`, contributionWeight, sumMedianWeight),
+            sum(`${step}-x`, contributionX, sumMedianX),
+            sum(`${step}-y`, contributionY, sumMedianY),
+            sum(`${step}-coincident`, contributionCoincident, sumMedianCoincident),
+            kernel(
+              `${step}-update`,
+              groupCount,
+              [
+                read('sumWeight', sumMedianWeight, 'f32'),
+                read('sumX', sumMedianX, 'f32'),
+                read('sumY', sumMedianY, 'f32'),
+                read('sumCoincident', sumMedianCoincident, 'f32'),
+                write('median', median),
+                write('lastMoves', lastMoves)
+              ],
+              `let total = sumWeight[sumWeightOffset + index];
+  var stepX = 0.0;
+  var stepY = 0.0;
+  if (total > 0.0) {
+    stepX = sumX[sumXOffset + index] / total;
+    stepY = sumY[sumYOffset + index] / total;
+  }
+  ${getVardiZhangWGSL('sumX[sumXOffset + index]', 'sumY[sumYOffset + index]', 'sumCoincident[sumCoincidentOffset + index]')}
+  median[medianOffset + index * 2u] = median[medianOffset + index * 2u] + stepX;
+  median[medianOffset + index * 2u + 1u] = median[medianOffset + index * 2u + 1u] + stepY;
+  lastMoves[lastMovesOffset + index] = sqrt(stepX * stepX + stepY * stepY);`
+            )
+          );
+        }
+        nodes.push(createMedianPublishNode(median, lastMoves));
+      }
+
+      // 6. Linear directional mean.
+      if (output.directionalMeans && lineEnds) {
+        const contributionCosine = f32('direction-contribution-cosine', rows);
+        const contributionSine = f32('direction-contribution-sine', rows);
+        const contributionLength = f32('direction-contribution-length', rows);
+        const contributionWeight = f32('direction-contribution-weight', rows);
+        const sumCosine = f32('direction-sum-cosine', groupCount);
+        const sumSine = f32('direction-sum-sine', groupCount);
+        const sumLength = f32('direction-sum-length', groupCount);
+        const sumWeight = f32('direction-sum-weight', groupCount);
+        const lineHelpers = `
 fn getLineWeight(weight: f32, dx: f32, dy: f32) -> f32 {
   let lengthSquared = dx * dx + dy * dy;
   let isValid = weight > 0.0 && isFiniteValue(dx) && isFiniteValue(dy) && isFiniteValue(lengthSquared) && lengthSquared > 0.0;
   return select(0.0, weight, isValid);
 }`;
-      const lineBindings = (outputs: WGSLKernelBinding[]) => [
-        read('sortedIndices', sortedIndices, 'u32'),
-        read('positions', positions, 'f32'),
-        read('lineEnds', lineEnds, 'f32'),
-        read('rowWeights', rowWeights, 'f32'),
-        ...outputs
-      ];
-      const lineSetup = `let row = sortedIndices[sortedIndicesOffset + index];
+        const lineBindings = (outputs: WGSLKernelBinding[]) => [
+          read('sortedIndices', sortedIndices, 'u32'),
+          read('positions', positions, 'f32'),
+          read('lineEnds', lineEnds, 'f32'),
+          read('rowWeights', rowWeights, 'f32'),
+          ...outputs
+        ];
+        const lineSetup = `let row = sortedIndices[sortedIndicesOffset + index];
   let dx = lineEnds[lineEndsOffset + row * 2u] - positions[positionsOffset + row * 2u];
   let dy = lineEnds[lineEndsOffset + row * 2u + 1u] - positions[positionsOffset + row * 2u + 1u];
   let weight = getLineWeight(rowWeights[rowWeightsOffset + row], dx, dy);`;
-      nodes.push(
-        kernel(
-          'direction-angles',
-          rows,
-          lineBindings([
-            read('parameters', parameters, 'f32'),
-            write('contributionCosine', contributionCosine),
-            write('contributionSine', contributionSine)
-          ]),
-          `${lineSetup}
+        nodes.push(
+          kernel(
+            'direction-angles',
+            rows,
+            lineBindings([
+              read('parameters', parameters, 'f32'),
+              write('contributionCosine', contributionCosine),
+              write('contributionSine', contributionSine)
+            ]),
+            `${lineSetup}
   var cosine = 0.0;
   var sine = 0.0;
   if (weight > 0.0) {
@@ -816,51 +1129,27 @@ fn getLineWeight(weight: f32, dx: f32, dy: f32) -> f32 {
   }
   contributionCosine[contributionCosineOffset + index] = weight * cosine;
   contributionSine[contributionSineOffset + index] = weight * sine;`,
-          lineHelpers
-        ),
-        kernel(
-          'direction-lengths',
-          rows,
-          lineBindings([
-            write('contributionLength', contributionLength),
-            write('contributionWeight', contributionWeight)
-          ]),
-          `${lineSetup}
+            lineHelpers
+          ),
+          kernel(
+            'direction-lengths',
+            rows,
+            lineBindings([
+              write('contributionLength', contributionLength),
+              write('contributionWeight', contributionWeight)
+            ]),
+            `${lineSetup}
   contributionLength[contributionLengthOffset + index] = weight * sqrt(dx * dx + dy * dy) * select(0.0, 1.0, weight > 0.0);
   contributionWeight[contributionWeightOffset + index] = weight;`,
-          lineHelpers
-        ),
-        sum('direction-cosine', contributionCosine, sumCosine),
-        sum('direction-sine', contributionSine, sumSine),
-        sum('direction-length', contributionLength, sumLength),
-        sum('direction-weight', contributionWeight, sumWeight),
-        kernel(
-          'direction-publish',
-          groupCount,
-          [
-            read('sumCosine', sumCosine, 'f32'),
-            read('sumSine', sumSine, 'f32'),
-            read('sumLength', sumLength, 'f32'),
-            read('sumWeight', sumWeight, 'f32'),
-            read('parameters', parameters, 'f32'),
-            write('directionalMeans', output.directionalMeans)
-          ],
-          `let total = sumWeight[sumWeightOffset + index];
-  let isEmpty = !(total > 0.0);
-  let cosine = sumCosine[sumCosineOffset + index];
-  let sine = sumSine[sumSineOffset + index];
-  let resultant = min(sqrt(cosine * cosine + sine * sine) / total, 1.0);
-  let hasAngle = cosine != 0.0 || sine != 0.0;
-  var angle = atan2(sine, cosine);
-  if (parameters[parametersOffset + 4u] > 0.5) {
-    angle = 0.5 * angle;
-  }
-  let nan = getQuietNaN(index);
-  directionalMeans[directionalMeansOffset + index * 3u] = select(angle, nan, isEmpty || !hasAngle);
-  directionalMeans[directionalMeansOffset + index * 3u + 1u] = select(1.0 - resultant, nan, isEmpty);
-  directionalMeans[directionalMeansOffset + index * 3u + 2u] = select(sumLength[sumLengthOffset + index] / total, nan, isEmpty);`
-        )
-      );
+            lineHelpers
+          ),
+          sum('direction-cosine', contributionCosine, sumCosine),
+          sum('direction-sine', contributionSine, sumSine),
+          sum('direction-length', contributionLength, sumLength),
+          sum('direction-weight', contributionWeight, sumWeight),
+          createDirectionPublishNode(sumCosine, sumSine, sumLength, sumWeight)
+        );
+      }
     }
 
     // 7. Published per-group columns and polygon rings.

@@ -21,6 +21,7 @@ import {
   type WGSLKernelBinding
 } from '../../utils/wgsl-kernel-nodes';
 import {getSortKeyBits} from '../../utils/sorted-segment-sums';
+import {getSortedSegmentOffsetNodes} from '../../utils/sorted-segment-offsets';
 import {
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph
@@ -35,6 +36,11 @@ const LATTICE_KEY_BITS = 30;
 const PREFILTER_MINIMUM_ROWS = 8192;
 /** Sorted rows handled by one prefilter invocation. */
 const PREFILTER_CHUNK_ROWS = 256;
+
+/** Largest `prefilterLevels` of {@link GPUGroupConvexHull}. */
+export const GPU_GROUP_CONVEX_HULL_MAXIMUM_PREFILTER_LEVELS = 4;
+/** Default prefilter level count for inputs of at least 8192 rows. */
+const DEFAULT_PREFILTER_LEVELS = 2;
 
 /** Bit of `overflow` set when a hull has more vertices than `maximumVerticesPerGroup`. */
 export const GPU_GROUP_CONVEX_HULL_GROUP_OVERFLOW = 1;
@@ -88,6 +94,13 @@ export type GPUGroupConvexHullProps = {
   maximumVerticesPerGroup: number;
   /** Capacity of `vertexIndices`: hulls that would overflow it are dropped and flagged. */
   totalCapacity: number;
+  /**
+   * Compile-time number of parallel prefilter levels before the per-group chain, 0 to
+   * {@link GPU_GROUP_CONVEX_HULL_MAXIMUM_PREFILTER_LEVELS}. Every level keeps only the hull
+   * vertices of each run of 256 consecutive candidates of a group, so the serial chain walks fewer
+   * rows. Defaults to 0 below 8192 rows and 2 above. The hull is identical for every value.
+   */
+  prefilterLevels?: number;
   /** Caller-owned outputs. */
   output: GPUGroupConvexHullOutput;
 };
@@ -121,11 +134,12 @@ export type GPUGroupConvexHullProps = {
  *
  * ## Cost
  *
- * Sorting and orientation are parallel. Inputs of at least 8192 rows first run a chunk prefilter:
- * every 256 consecutive sorted rows get their own monotone chain in parallel, and only chunk hull
- * vertices (the hull of a union is the hull of the chunk hulls) are compacted for the per-group
- * chain, so one group of millions of points no longer runs a serial walk over every row. The
- * result is identical with and without the prefilter.
+ * Sorting and orientation are parallel. Inputs of at least 8192 rows first run chunk prefilter
+ * levels (`prefilterLevels`, default 2): every 256 consecutive sorted rows of a group get their own
+ * monotone chain in parallel, and only chunk hull vertices (the hull of a union is the hull of the
+ * chunk hulls) are compacted, then the next level repeats on the survivors. The per-group chain
+ * (one thread per group) then walks only the final survivors, so one group of millions of points
+ * no longer runs a serial walk over every row. The result is identical for every level count.
  *
  * The contributor never compiles, encodes, submits or reads back.
  */
@@ -136,6 +150,8 @@ export class GPUGroupConvexHull implements GPUCommandNodeProducer {
   readonly props: GPUGroupConvexHullProps;
   /** Number of groups. */
   readonly groupCount: number;
+  /** Resolved number of parallel prefilter levels. */
+  readonly prefilterLevels: number;
 
   constructor(props: GPUGroupConvexHullProps) {
     this.id = props.id ?? 'group-convex-hull';
@@ -181,6 +197,17 @@ export class GPUGroupConvexHull implements GPUCommandNodeProducer {
     }
     if (!Number.isInteger(props.totalCapacity) || props.totalCapacity < 1) {
       throw new Error(`${id} totalCapacity must be a positive integer`);
+    }
+    this.prefilterLevels =
+      props.prefilterLevels ?? (rows >= PREFILTER_MINIMUM_ROWS ? DEFAULT_PREFILTER_LEVELS : 0);
+    if (
+      !Number.isInteger(this.prefilterLevels) ||
+      this.prefilterLevels < 0 ||
+      this.prefilterLevels > GPU_GROUP_CONVEX_HULL_MAXIMUM_PREFILTER_LEVELS
+    ) {
+      throw new Error(
+        `${id} prefilterLevels must be an integer in [0, ${GPU_GROUP_CONVEX_HULL_MAXIMUM_PREFILTER_LEVELS}]`
+      );
     }
     const groups = this.groupCount;
     const checks = [
@@ -254,7 +281,6 @@ export class GPUGroupConvexHull implements GPUCommandNodeProducer {
     const xs = f32('xs', rows);
     const ys = f32('ys', rows);
     const rowIndices = u32('row-indices', rows);
-    const groupCounts = u32('group-counts', groupCount);
     const noiseCheck =
       props.noiseLabel !== undefined && props.noiseLabel < groupCount
         ? `valid = valid && label != ${props.noiseLabel}u;`
@@ -283,22 +309,6 @@ export class GPUGroupConvexHull implements GPUCommandNodeProducer {
   xs[xsOffset + index] = select(0.0, x, valid);
   ys[ysOffset + index] = select(0.0, y, valid);
   rowIndices[rowIndicesOffset + index] = index;`
-      ),
-      createFillNode<Parameters>(graph, {
-        id: `${id}-zero-counts`,
-        operation: OPERATION,
-        view: groupCounts,
-        type: 'u32',
-        value: '0u'
-      }),
-      kernel(
-        'count',
-        rows,
-        [read('groupKeys', groupKeys, 'u32'), write('groupCounts', groupCounts, 'atomic<u32>')],
-        `let group = groupKeys[groupKeysOffset + index];
-  if (group < GROUP_COUNT) {
-    atomicAdd(&groupCounts[groupCountsOffset + group], 1u);
-  }`
       )
     );
 
@@ -419,20 +429,15 @@ export class GPUGroupConvexHull implements GPUCommandNodeProducer {
       }).getCommandNodes(graph)
     );
     const segmentOffsets = u32('segment-offsets', groupCount + 1);
+    // Group offsets are lower bounds in the sorted keys: no counting atomics, zero fill or scan.
     nodes.push(
-      ...new GPUScan({
-        id: `${id}-segment-scan`,
-        input: groupCounts,
-        output: segmentOffsets,
-        mode: 'exclusive'
-      }).getCommandNodes(graph),
-      kernel(
-        'segment-total',
-        1,
-        [read('counts', groupCounts, 'u32'), write('segmentOffsets', segmentOffsets, 'u32')],
-        `segmentOffsets[segmentOffsetsOffset + ${groupCount}u] =
-    segmentOffsets[segmentOffsetsOffset + ${groupCount - 1}u] + counts[countsOffset + ${groupCount - 1}u];`
-      )
+      ...getSortedSegmentOffsetNodes(graph, {
+        id,
+        operation: OPERATION,
+        groupCount,
+        sortedGroupKeys,
+        segmentOffsets
+      })
     );
     const sortedLatticeX = u32('sorted-lattice-x', rows);
     const sortedLatticeY = u32('sorted-lattice-y', rows);
@@ -453,40 +458,54 @@ export class GPUGroupConvexHull implements GPUCommandNodeProducer {
       )
     );
 
-    // 3b. Parallel chunk prefilter: keep only per-chunk hull vertices, compacted in sorted order.
+    // 3b. Parallel chunk prefilter levels: keep only per-chunk hull vertices, compacted in sorted
+    // order. Every level shrinks each group's candidates, so the serial chain walks few rows.
     let chainSegmentOffsets = segmentOffsets;
     let chainLatticeX = sortedLatticeX;
     let chainLatticeY = sortedLatticeY;
     let chainPermutation = permutation;
-    if (rows >= PREFILTER_MINIMUM_ROWS) {
+    for (let level = 0; level < this.prefilterLevels; level++) {
+      const levelId = `prefilter${level}`;
       const chunkCount = Math.ceil(rows / PREFILTER_CHUNK_ROWS);
-      const survivorFlags = u32('survivor-flags', rows);
-      const survivorOffsets = u32('survivor-offsets', rows);
-      const prefilterScratch = u32('prefilter-scratch', 2 * rows + 2);
-      const compactOffsets = u32('compact-offsets', groupCount + 1);
+      const survivorFlags = u32(`${levelId}-survivor-flags`, rows);
+      const survivorOffsets = u32(`${levelId}-survivor-offsets`, rows);
+      const prefilterScratch = u32(`${levelId}-scratch`, 2 * rows + 2);
+      const compactOffsets = u32(`${levelId}-compact-offsets`, groupCount + 1);
+      // Level 0 reads the sorted group keys; later levels find each run from the group offsets.
+      const runBindings =
+        level === 0
+          ? [read('groupKeys', sortedGroupKeys, 'u32')]
+          : [read('groupOffsets', chainSegmentOffsets, 'u32')];
+      const runLimit = level === 0 ? `${rows}u` : `groupOffsets[groupOffsetsOffset + GROUP_COUNT]`;
+      const runStart =
+        level === 0
+          ? `let key = groupKeys[groupKeysOffset + runBegin];
+    var runEnd = runBegin + 1u;
+    while (runEnd < chunkEnd && groupKeys[groupKeysOffset + runEnd] == key) {
+      runEnd++;
+    }`
+          : `let key = findGroup(runBegin);
+    let runEnd = min(chunkEnd, groupOffsets[groupOffsetsOffset + key + 1u]);`;
       nodes.push(
         kernel(
-          'prefilter',
+          levelId,
           chunkCount,
           [
-            read('groupKeys', sortedGroupKeys, 'u32'),
-            read('latticeX', sortedLatticeX, 'u32'),
-            read('latticeY', sortedLatticeY, 'u32'),
+            ...runBindings,
+            read('latticeX', chainLatticeX, 'u32'),
+            read('latticeY', chainLatticeY, 'u32'),
             write('flags', survivorFlags, 'u32'),
             write('scratch', prefilterScratch, 'u32')
           ],
           `let chunkStart = index * ${PREFILTER_CHUNK_ROWS}u;
-  let chunkEnd = min(chunkStart + ${PREFILTER_CHUNK_ROWS}u, ${rows}u);
-  for (var row = chunkStart; row < chunkEnd; row++) {
+  let slotEnd = min(chunkStart + ${PREFILTER_CHUNK_ROWS}u, ${rows}u);
+  for (var row = chunkStart; row < slotEnd; row++) {
     flags[flagsOffset + row] = 0u;
   }
+  let chunkEnd = min(slotEnd, ${runLimit});
   var runBegin = chunkStart;
   while (runBegin < chunkEnd) {
-    let key = groupKeys[groupKeysOffset + runBegin];
-    var runEnd = runBegin + 1u;
-    while (runEnd < chunkEnd && groupKeys[groupKeysOffset + runEnd] == key) {
-      runEnd++;
-    }
+    ${runStart}
     if (key < GROUP_COUNT) {
       let begin = runBegin;
       let base = 2u * begin;
@@ -528,19 +547,35 @@ export class GPUGroupConvexHull implements GPUCommandNodeProducer {
     }
     runBegin = runEnd;
   }`,
-          HULL_WGSL
+          level === 0
+            ? HULL_WGSL
+            : `${HULL_WGSL}
+// Largest group whose offset is at or before the row (skips empty groups).
+fn findGroup(row: u32) -> u32 {
+  var low = 0u;
+  var high = GROUP_COUNT;
+  while (low < high) {
+    let middle = (low + high + 1u) >> 1u;
+    if (groupOffsets[groupOffsetsOffset + middle] <= row) {
+      low = middle;
+    } else {
+      high = middle - 1u;
+    }
+  }
+  return low;
+}`
         ),
         ...new GPUScan({
-          id: `${id}-survivor-scan`,
+          id: `${id}-${levelId}-scan`,
           input: survivorFlags,
           output: survivorOffsets,
           mode: 'exclusive'
         }).getCommandNodes(graph),
         kernel(
-          'compact-offsets',
+          `${levelId}-offsets`,
           groupCount + 1,
           [
-            read('segmentOffsets', segmentOffsets, 'u32'),
+            read('segmentOffsets', chainSegmentOffsets, 'u32'),
             read('flags', survivorFlags, 'u32'),
             read('survivorOffsets', survivorOffsets, 'u32'),
             write('compactOffsets', compactOffsets, 'u32')
@@ -550,22 +585,22 @@ export class GPUGroupConvexHull implements GPUCommandNodeProducer {
   compactOffsets[compactOffsetsOffset + index] = select(survivorOffsets[survivorOffsetsOffset + min(begin, ${rows - 1}u)], total, begin >= ${rows}u);`
         )
       );
-      chainLatticeX = u32('compact-lattice-x', rows);
-      chainLatticeY = u32('compact-lattice-y', rows);
-      chainPermutation = u32('compact-permutation', rows);
+      const compactLatticeX = u32(`${levelId}-lattice-x`, rows);
+      const compactLatticeY = u32(`${levelId}-lattice-y`, rows);
+      const compactPermutation = u32(`${levelId}-permutation`, rows);
       nodes.push(
         kernel(
-          'compact',
+          `${levelId}-compact`,
           rows,
           [
             read('flags', survivorFlags, 'u32'),
             read('survivorOffsets', survivorOffsets, 'u32'),
-            read('permutation', permutation, 'u32'),
-            read('latticeX', sortedLatticeX, 'u32'),
-            read('latticeY', sortedLatticeY, 'u32'),
-            write('compactLatticeX', chainLatticeX, 'u32'),
-            write('compactLatticeY', chainLatticeY, 'u32'),
-            write('compactPermutation', chainPermutation, 'u32')
+            read('permutation', chainPermutation, 'u32'),
+            read('latticeX', chainLatticeX, 'u32'),
+            read('latticeY', chainLatticeY, 'u32'),
+            write('compactLatticeX', compactLatticeX, 'u32'),
+            write('compactLatticeY', compactLatticeY, 'u32'),
+            write('compactPermutation', compactPermutation, 'u32')
           ],
           `if (flags[flagsOffset + index] != 0u) {
     let slot = survivorOffsets[survivorOffsetsOffset + index];
@@ -575,6 +610,9 @@ export class GPUGroupConvexHull implements GPUCommandNodeProducer {
   }`
         )
       );
+      chainLatticeX = compactLatticeX;
+      chainLatticeY = compactLatticeY;
+      chainPermutation = compactPermutation;
       chainSegmentOffsets = compactOffsets;
     }
 

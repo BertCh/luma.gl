@@ -21,3 +21,9 @@ export type {
   GPUCellCompactOperation,
   GPUCellUncompactOperation
 } from './gpu-cell-compaction';
+export {
+  GPUCellGridPath,
+  GPU_CELL_GRID_DISTANCE_UNDEFINED,
+  GPU_CELL_GRID_PATH_MAXIMUM_PATH_LENGTH
+} from './gpu-cell-grid-path';
+export type {GPUCellGridPathOutput, GPUCellGridPathProps} from './gpu-cell-grid-path';

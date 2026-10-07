@@ -5,7 +5,7 @@
 import type {Buffer, Device} from '@luma.gl/core';
 import {GPUCommandGraph} from '@luma.gl/gpgpu/gpu-core';
 import {getWebGPUTestDevice} from '@luma.gl/test-utils';
-import {cellsToMultiPolygon, gridDisk, latLngToCell} from 'h3-js';
+import {cellsToMultiPolygon, getPentagons, gridDisk, latLngToCell} from 'h3-js';
 import {expect, it} from 'vitest';
 import {importGraphBuffer} from '../../../src/utils/gpu-contributor-utils';
 import {
@@ -66,6 +66,7 @@ type AssemblyOptions = {
   normalizeWinding?: boolean;
   geographic?: boolean;
   splitTouchingRings?: boolean;
+  cancelOpposingSegments?: boolean;
   count?: number;
   groups?: number[];
 };
@@ -254,6 +255,7 @@ async function runAssembly(
       normalizeWinding: options.normalizeWinding,
       geographic: options.geographic,
       splitTouchingRings: options.splitTouchingRings,
+      cancelOpposingSegments: options.cancelOpposingSegments,
       output: getRingOutput(graph, buffers, segments.length, options, withGroups)
     })
   );
@@ -583,6 +585,50 @@ it('GPUSegmentRingAssembly leaves unclosed chains open and flags them', async ()
   expect(truncated.open).toBe(6);
 });
 
+it('GPUSegmentRingAssembly cancels exactly opposite segment pairs when asked', async () => {
+  const device = await getWebGPUTestDevice();
+  if (!device) {
+    return;
+  }
+  // A square whose bottom edge carries a zero-width slit (a spike out and back), a spike hanging
+  // off a corner, and a lone opposite pair in another group that must not cancel across groups.
+  const square0 = polygonSegments(square(0, 0, 4, 4, true));
+  const slit: OracleSegment[] = [
+    [2, 0, 3, 0],
+    [3, 0, 2, 0]
+  ];
+  const spike: OracleSegment[] = [
+    [4, 4, 5, 5],
+    [5, 5, 4, 4]
+  ];
+  const scene = [...square0, ...slit, ...spike];
+  const options: AssemblyOptions = {
+    ringCapacity: 8,
+    vertexCapacity: 32,
+    tolerance: 0.01,
+    geographic: false
+  };
+  const without = await runAssembly(device, scene, options);
+  expect(without.flags.every(flag => flag === 0 || flag === 1 || flag === 2 || flag === 4)).toBe(
+    true
+  );
+  const run = await runAssembly(device, scene, {...options, cancelOpposingSegments: true});
+  expect(run.count).toBe(1);
+  expect(run.open).toBe(0);
+  expect(run.flags.slice(4)).toEqual([8, 8, 8, 8]);
+  expect(run.flags.slice(0, 4)).toEqual([0, 0, 0, 0]);
+  expect(run.segmentRings.slice(0, 4)).toEqual([0, 0, 0, 0]);
+  expect(run.segmentRings.slice(4)).toEqual([NONE, NONE, NONE, NONE]);
+  expect(run.areas[0]).toBeCloseTo(16, 3);
+  // Opposite segments in different groups stay.
+  const grouped = await runAssembly(device, [...slit], {
+    ...options,
+    cancelOpposingSegments: true,
+    groups: [0, 1]
+  });
+  expect(grouped.flags).toEqual([2, 2]);
+});
+
 it('GPUSegmentRingAssembly writes whole rings only when capacity is short', async () => {
   const device = await getWebGPUTestDevice();
   if (!device) {
@@ -642,6 +688,72 @@ function createH3Scene(resolution: number): bigint[] {
   return sortKeys([...first, ...second, ...third].map(h3ToBigInt));
 }
 
+/**
+ * Runs `GPUCellSetOutline` with ring assembly on an H3 set and checks every ring against h3-js
+ * `cellsToMultiPolygon`: same vertex sets, hole flags, orientation, polygon grouping and no open
+ * or touching segments.
+ */
+async function expectH3RingsMatchPolygons(
+  device: Device,
+  cells: bigint[],
+  label: string,
+  expectedHoleCount: number | null,
+  expectedMinimumPolygons: number
+) {
+  const polygons = cellsToMultiPolygon(cells.map(bigIntToH3), true) as [number, number][][][];
+  const expectedRings = polygons.flatMap((polygon, polygonIndex) =>
+    polygon.map((ring, ringIndex) => ({ring, polygonIndex, isHole: ringIndex > 0}))
+  );
+  const holeCount = expectedRings.filter(item => item.isHole).length;
+  expect(holeCount, `${label} hole count`).toBe(expectedHoleCount ?? holeCount);
+  expect(polygons.length, `${label} polygon count`).toBeGreaterThanOrEqual(expectedMinimumPolygons);
+  const result = await runOutlineRings(device, 'h3', cells, {
+    ringCapacity: 64,
+    vertexCapacity: 4096,
+    segmentCapacity: 4096
+  });
+  const {ring: run} = result;
+  expect(run.overflow, label).toBe(0);
+  expect(run.open, label).toBe(0);
+  expect(run.touching, label).toBe(0);
+  expect(run.count, label).toBe(expectedRings.length);
+  // Match each GPU ring to the h3-js ring with the same vertex set.
+  const matched = new Map<number, number>();
+  for (let ring = 0; ring < run.count; ring++) {
+    const vertices = run.positions.slice(run.offsets[ring], run.offsets[ring + 1] - 1);
+    expect(run.positions[run.offsets[ring + 1] - 1], `${label} closed`).toEqual(
+      run.positions[run.offsets[ring]]
+    );
+    const found = expectedRings.findIndex(
+      (item, index) =>
+        !new Set(matched.values()).has(index) &&
+        item.ring.length - 1 === vertices.length &&
+        vertices.every(vertex =>
+          item.ring.some(
+            point => Math.abs(point[0] - vertex[0]) < 1e-4 && Math.abs(point[1] - vertex[1]) < 1e-4
+          )
+        )
+    );
+    expect(found, `${label} ring ${ring} has an h3-js counterpart`).toBeGreaterThanOrEqual(0);
+    matched.set(ring, found);
+    expect(run.isHole[ring], `${label} hole flag ${ring}`).toBe(
+      expectedRings[found].isHole ? 1 : 0
+    );
+    expect(run.areas[ring] > 0, `${label} orientation ${ring}`).toBe(!expectedRings[found].isHole);
+  }
+  // Shell assignment equals the h3-js polygon grouping.
+  for (let ring = 0; ring < run.count; ring++) {
+    const expected = expectedRings[matched.get(ring)!];
+    const shell = run.shells[ring];
+    expect(shell, `${label} shell of ring ${ring}`).not.toBe(NONE);
+    expect(
+      expectedRings[matched.get(shell)!].polygonIndex,
+      `${label} polygon of ring ${ring}`
+    ).toBe(expected.polygonIndex);
+    expect(expectedRings[matched.get(shell)!].isHole).toBe(false);
+  }
+}
+
 it('GPUCellSetOutline rings of an H3 set equal h3-js cellsToMultiPolygon', async () => {
   const device = await getWebGPUTestDevice();
   if (!device) {
@@ -649,61 +761,64 @@ it('GPUCellSetOutline rings of an H3 set equal h3-js cellsToMultiPolygon', async
   }
   for (const resolution of [5, 6]) {
     const cells = createH3Scene(resolution);
-    const polygons = cellsToMultiPolygon(cells.map(bigIntToH3), true) as [number, number][][][];
-    const expectedRings = polygons.flatMap((polygon, polygonIndex) =>
-      polygon.map((ring, ringIndex) => ({ring, polygonIndex, isHole: ringIndex > 0}))
-    );
-    const holeCount = expectedRings.filter(item => item.isHole).length;
+    const polygons = cellsToMultiPolygon(cells.map(bigIntToH3), true);
+    const holeCount = polygons.reduce((sum, polygon) => sum + polygon.length - 1, 0);
     expect(holeCount, 'scene has holes').toBeGreaterThan(0);
-    expect(polygons.length, 'scene has several polygons').toBeGreaterThan(1);
-    const result = await runOutlineRings(device, 'h3', cells, {
-      ringCapacity: 64,
-      vertexCapacity: 4096,
-      segmentCapacity: 4096
-    });
-    const {ring: run} = result;
-    const label = `h3 res ${resolution}`;
-    expect(run.overflow, label).toBe(0);
-    expect(run.open, label).toBe(0);
-    expect(run.touching, label).toBe(0);
-    expect(run.count, label).toBe(expectedRings.length);
-    // Match each GPU ring to the h3-js ring with the same vertex set.
-    const matched = new Map<number, number>();
-    for (let ring = 0; ring < run.count; ring++) {
-      const vertices = run.positions.slice(run.offsets[ring], run.offsets[ring + 1] - 1);
-      expect(run.positions[run.offsets[ring + 1] - 1], `${label} closed`).toEqual(
-        run.positions[run.offsets[ring]]
+    await expectH3RingsMatchPolygons(device, cells, `h3 res ${resolution}`, holeCount, 2);
+  }
+});
+
+it('GPUCellSetOutline rings around H3 pentagons equal h3-js cellsToMultiPolygon', async () => {
+  const device = await getWebGPUTestDevice();
+  if (!device) {
+    return;
+  }
+  for (const resolution of [2, 3, 5]) {
+    const pentagons = getPentagons(resolution);
+    expect(pentagons.length).toBe(12);
+    // A lone pentagon, a disk around it, a ring around it (the pentagon is a hole) and a ring
+    // with the pentagon and two neighbors missing, for three mid-latitude pentagons. The two polar pentagons are left out: a ring around a pole has no planar lng/lat orientation.
+    for (const pentagon of [pentagons[3], pentagons[5], pentagons[8]]) {
+      const label = `pentagon ${pentagon} res ${resolution}`;
+      const disk1 = gridDisk(pentagon, 1);
+      const disk2 = gridDisk(pentagon, 2);
+      const ring2 = disk2.filter(cell => cell !== pentagon);
+      const ring2Missing = ring2.filter((_, index) => index !== 3 && index !== 4);
+      await expectH3RingsMatchPolygons(
+        device,
+        sortKeys([h3ToBigInt(pentagon)]),
+        `${label} alone`,
+        0,
+        1
       );
-      const found = expectedRings.findIndex(
-        (item, index) =>
-          !new Set(matched.values()).has(index) &&
-          item.ring.length - 1 === vertices.length &&
-          vertices.every(vertex =>
-            item.ring.some(
-              point =>
-                Math.abs(point[0] - vertex[0]) < 1e-4 && Math.abs(point[1] - vertex[1]) < 1e-4
-            )
-          )
+      await expectH3RingsMatchPolygons(
+        device,
+        sortKeys(disk1.map(h3ToBigInt)),
+        `${label} disk 1`,
+        0,
+        1
       );
-      expect(found, `${label} ring ${ring} has an h3-js counterpart`).toBeGreaterThanOrEqual(0);
-      matched.set(ring, found);
-      expect(run.isHole[ring], `${label} hole flag ${ring}`).toBe(
-        expectedRings[found].isHole ? 1 : 0
+      await expectH3RingsMatchPolygons(
+        device,
+        sortKeys(disk2.map(h3ToBigInt)),
+        `${label} disk 2`,
+        0,
+        1
       );
-      expect(run.areas[ring] > 0, `${label} orientation ${ring}`).toBe(
-        !expectedRings[found].isHole
+      await expectH3RingsMatchPolygons(
+        device,
+        sortKeys(ring2.map(h3ToBigInt)),
+        `${label} hole`,
+        1,
+        1
       );
-    }
-    // Shell assignment equals the h3-js polygon grouping.
-    for (let ring = 0; ring < run.count; ring++) {
-      const expected = expectedRings[matched.get(ring)!];
-      const shell = run.shells[ring];
-      expect(shell, `${label} shell of ring ${ring}`).not.toBe(NONE);
-      expect(
-        expectedRings[matched.get(shell)!].polygonIndex,
-        `${label} polygon of ring ${ring}`
-      ).toBe(expected.polygonIndex);
-      expect(expectedRings[matched.get(shell)!].isHole).toBe(false);
+      await expectH3RingsMatchPolygons(
+        device,
+        sortKeys(ring2Missing.map(h3ToBigInt)),
+        `${label} open ring`,
+        null,
+        1
+      );
     }
   }
 });
@@ -1078,4 +1193,95 @@ it('GPUSegmentRingAssembly polygon layout feeds GPUPointInPolygonJoin', async ()
   });
   expect(inside).toBeGreaterThan(20);
   expect(inside).toBeLessThan(points.length - 20);
+});
+
+function circleRing(
+  centerX: number,
+  centerY: number,
+  radius: number,
+  vertexCount: number,
+  counterClockwise: boolean
+): [number, number][] {
+  const ring: [number, number][] = [];
+  for (let index = 0; index < vertexCount; index++) {
+    const angle = (2 * Math.PI * index) / vertexCount;
+    ring.push([centerX + radius * Math.cos(angle), centerY + radius * Math.sin(angle)]);
+  }
+  return counterClockwise ? ring : ring.reverse();
+}
+
+it('GPUSegmentRingAssembly sums rings longer than the workgroup cooperatively and prunes shells by bounds', async () => {
+  const device = await getWebGPUTestDevice();
+  if (!device) {
+    return;
+  }
+  // Rings of 200, 150, 100, 80, 70, 66 and 40 vertices straddle the 64-lane serial/cooperative
+  // switch. The circle at x = 300 is a hole inside no shell (shell NONE), and the island ring
+  // sits inside the first hole, so the shell search has to reject some shells by bounding box and
+  // pick the innermost of the rest.
+  const scene = shuffle([
+    ...polygonSegments(circleRing(0, 0, 100, 200, true)),
+    ...polygonSegments(circleRing(0, 0, 60, 150, false)),
+    ...polygonSegments(circleRing(0, 0, 30, 100, true)),
+    ...polygonSegments(circleRing(500, 0, 50, 80, true)),
+    ...polygonSegments(circleRing(500, 0, 20, 70, false)),
+    ...polygonSegments(circleRing(300, 0, 10, 66, false)),
+    ...polygonSegments(circleRing(700, 0, 5, 40, true))
+  ]);
+  const options: AssemblyOptions = {
+    ringCapacity: 16,
+    vertexCapacity: scene.length + 16,
+    tolerance: 0.01,
+    geographic: false
+  };
+  const oracle = assembleRingsOnCPU(scene, {
+    ...options,
+    tolerance: 0.01,
+    interiorSide: 'left',
+    geographic: false
+  });
+  const run = await runAssembly(device, scene, options);
+  expectMatchesOracle(run, oracle, scene.length, 'large rings');
+  expect(run.count).toBe(7);
+  expect(run.shells.slice(0, 7).filter(shell => shell === NONE).length).toBe(1);
+});
+
+it('GPUSegmentRingAssembly mixes many small rings with several large rings per workgroup block', async () => {
+  const device = await getWebGPUTestDevice();
+  if (!device) {
+    return;
+  }
+  // 130 small squares and 5 rings above 64 vertices: ring statistics give each lane its own small
+  // ring and visit the large rings of a block cooperatively, so with 3 blocks at least two large
+  // rings share a block whatever order assembly lists them in.
+  const rings: [number, number][][] = [];
+  for (let index = 0; index < 130; index++) {
+    const x = (index % 20) * 10;
+    const y = Math.floor(index / 20) * 10;
+    rings.push([
+      [x, y],
+      [x + 6, y],
+      [x + 6, y + 6],
+      [x, y + 6]
+    ]);
+  }
+  for (let index = 0; index < 5; index++) {
+    rings.push(circleRing(1000 + index * 100, 0, 30, 70 + index * 40, index % 2 === 0));
+  }
+  const scene = shuffle(rings.flatMap(ring => polygonSegments(ring)));
+  const options: AssemblyOptions = {
+    ringCapacity: 160,
+    vertexCapacity: scene.length + 200,
+    tolerance: 0.01,
+    geographic: false
+  };
+  const oracle = assembleRingsOnCPU(scene, {
+    ...options,
+    tolerance: 0.01,
+    interiorSide: 'left',
+    geographic: false
+  });
+  const run = await runAssembly(device, scene, options);
+  expectMatchesOracle(run, oracle, scene.length, 'mixed ring sizes');
+  expect(run.count).toBe(135);
 });

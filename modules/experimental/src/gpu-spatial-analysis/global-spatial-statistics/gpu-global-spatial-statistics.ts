@@ -4,9 +4,6 @@
 
 import {
   createTransientView,
-  GPUGroupAggregation,
-  GPUScan,
-  GPUSort,
   validatePackedUint32View,
   validatePackedView,
   type GPUCommandGraph,
@@ -19,7 +16,7 @@ import {
   createWGSLKernelNode,
   type WGSLKernelBinding
 } from '../../utils/wgsl-kernel-nodes';
-import {createSegmentSumNode, getSortKeyBits} from '../../utils/sorted-segment-sums';
+import {createSegmentSumNode} from '../../utils/sorted-segment-sums';
 import {
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph
@@ -28,6 +25,7 @@ import {
   type GPUSpatialWeights,
   validateGPUSpatialWeights
 } from '../spatial-weights/spatial-weights';
+import {getSlotGroupingNodes} from '../spatial-weights/slot-grouping';
 import {SPATIAL_AUTOCORRELATION_FLOAT_WGSL} from '../spatial-autocorrelation/spatial-autocorrelation-kernels';
 import {
   GPU_GLOBAL_SPATIAL_STATISTICS_LAYOUT,
@@ -258,9 +256,6 @@ ${SPATIAL_AUTOCORRELATION_FLOAT_WGSL}`;
     const slotRows = createTransientView(graph, `${id}-slot-rows`, 'uint32', capacity);
     const transposeKeys = createTransientView(graph, `${id}-transpose-keys`, 'uint32', capacity);
     const slotIds = createTransientView(graph, `${id}-slot-ids`, 'uint32', capacity);
-    const sortedKeys = createTransientView(graph, `${id}-sorted-keys`, 'uint32', capacity);
-    const sortedSlots = createTransientView(graph, `${id}-sorted-slots`, 'uint32', capacity);
-    const columnCounts = createTransientView(graph, `${id}-column-counts`, 'uint32', rows);
     const columnOffsets = createTransientView(graph, `${id}-column-offsets`, 'uint32', rows + 1);
     const joinCounters = createTransientView(graph, `${id}-join-counters`, 'uint32', 3);
 
@@ -277,6 +272,17 @@ ${SPATIAL_AUTOCORRELATION_FLOAT_WGSL}`;
         : []),
       ...(mask ? [{name: 'mask', view: mask, type: 'u32' as const, access: 'read' as const}] : [])
     ];
+    // Deterministic transpose for the column sums: stable sort of the slots by neighbor, then
+    // per-column offsets by binary search of the sorted keys (no atomic count, no scan).
+    const grouping = getSlotGroupingNodes<Parameters>(graph, {
+      id: `${id}-transpose`,
+      operation: OPERATION,
+      slotKeys: transposeKeys,
+      slotIndices: slotIds,
+      columns: rows,
+      columnOffsets
+    });
+    const {sortedSlots} = grouping;
     const nodes: GPUCommandNode<Parameters>[] = [
       createWGSLKernelNode<Parameters>(graph, {
         id: `${id}-include`,
@@ -341,13 +347,6 @@ ${SPATIAL_AUTOCORRELATION_FLOAT_WGSL}`;
     select(0.0, 1.0, included && values[valuesOffset + index] != 0.0);`
       }),
       // Deterministic transpose: the source row of every slot, then a stable sort by neighbor.
-      createFillNode<Parameters>(graph, {
-        id: `${id}-slot-rows-clear`,
-        operation: OPERATION,
-        view: slotRows,
-        type: 'u32',
-        value: `${rows}u`
-      }),
       createWGSLKernelNode<Parameters>(graph, {
         id: `${id}-slot-rows`,
         operation: OPERATION,
@@ -359,12 +358,12 @@ ${SPATIAL_AUTOCORRELATION_FLOAT_WGSL}`;
         ],
         invocationCount: rows,
         declarations: constantsWGSL,
-        body: `if (isFiniteFloat(centered[centeredOffset + index * 2u])) {
-    let begin = min(offsets[offsetsOffset + index], CAPACITY);
-    let end = min(offsets[offsetsOffset + index + 1u], CAPACITY);
-    for (var slot = begin; slot < end; slot++) {
-      slotRows[slotRowsOffset + slot] = index;
-    }
+        // Every used slot is written (excluded rows write the sentinel ROWS), so no clear pass.
+        body: `let source = select(ROWS, index, isFiniteFloat(centered[centeredOffset + index * 2u]));
+  let begin = min(offsets[offsetsOffset + index], CAPACITY);
+  let end = min(offsets[offsetsOffset + index + 1u], CAPACITY);
+  for (var slot = begin; slot < end; slot++) {
+    slotRows[slotRowsOffset + slot] = source;
   }`
       }),
       createWGSLKernelNode<Parameters>(graph, {
@@ -372,6 +371,7 @@ ${SPATIAL_AUTOCORRELATION_FLOAT_WGSL}`;
         operation: OPERATION,
         variant: 'transpose-keys',
         bindings: [
+          {name: 'offsets', view: weights.offsets, type: 'u32', access: 'read'},
           {name: 'slotRows', view: slotRows, type: 'u32', access: 'read'},
           {name: 'neighbors', view: weights.neighbors, type: 'u32', access: 'read'},
           {name: 'centered', view: centered, type: 'f32', access: 'read'},
@@ -380,7 +380,8 @@ ${SPATIAL_AUTOCORRELATION_FLOAT_WGSL}`;
         ],
         invocationCount: capacity,
         declarations: constantsWGSL,
-        body: `let source = slotRows[slotRowsOffset + index];
+        body: `let used = index < min(offsets[offsetsOffset + ROWS], CAPACITY);
+  let source = select(ROWS, slotRows[slotRowsOffset + index], used);
   let neighbor = neighbors[neighborsOffset + index];
   var key = ROWS;
   if (source < ROWS && neighbor < ROWS && neighbor != source &&
@@ -390,25 +391,7 @@ ${SPATIAL_AUTOCORRELATION_FLOAT_WGSL}`;
   transposeKeys[transposeKeysOffset + index] = key;
   slotIds[slotIdsOffset + index] = index;`
       }),
-      ...new GPUGroupAggregation({
-        id: `${id}-column-counts`,
-        keys: transposeKeys,
-        output: columnCounts
-      }).getCommandNodes(graph),
-      ...new GPUScan({
-        id: `${id}-column-scan`,
-        input: columnCounts,
-        output: columnOffsets,
-        mode: 'exclusive'
-      }).getCommandNodes(graph),
-      ...new GPUSort({
-        id: `${id}-transpose-sort`,
-        keys: transposeKeys,
-        values: slotIds,
-        outputKeys: sortedKeys,
-        outputValues: sortedSlots,
-        keyBits: getSortKeyBits(rows)
-      }).getCommandNodes(graph),
+      ...grouping.nodes,
       createFillNode<Parameters>(graph, {
         id: `${id}-join-clear`,
         operation: OPERATION,
@@ -521,7 +504,6 @@ fn findWeight(row: u32, column: u32) -> f32 {
         variant: 'columns',
         bindings: [
           {name: 'columnOffsets', view: columnOffsets, type: 'u32', access: 'read'},
-          {name: 'columnCounts', view: columnCounts, type: 'u32', access: 'read'},
           {name: 'sortedSlots', view: sortedSlots, type: 'u32', access: 'read'},
           {name: 'slotRows', view: slotRows, type: 'u32', access: 'read'},
           {name: 'weights', view: weights.weights, type: 'f32', access: 'read'},
@@ -533,7 +515,7 @@ fn findWeight(row: u32, column: u32) -> f32 {
         // Slots of one column are in ascending slot order (stable sort), so sums are fixed-order.
         body: `let included = isFiniteFloat(centered[centeredOffset + index * 2u]);
   let begin = columnOffsets[columnOffsetsOffset + index];
-  let end = begin + columnCounts[columnCountsOffset + index];
+  let end = columnOffsets[columnOffsetsOffset + index + 1u];
   var columnWeight = 0.0;
   var inDegree = 0u;
   var columnLag = 0.0;

@@ -17,24 +17,33 @@ import {
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph
 } from '../../utils/gpu-contributor-utils';
-import {GPUIsobands, GPU_ISOBANDS_PARAMETER_LENGTH} from '../../gpu-raster/isolines/index';
-import type {GPUIsobandsOutput} from '../../gpu-raster/isolines/index';
+import {
+  GPUIsobandRings,
+  GPUIsobands,
+  GPU_ISOBANDS_PARAMETER_LENGTH
+} from '../../gpu-raster/isolines/index';
+import type {GPUIsobandRingsOutput, GPUIsobandsOutput} from '../../gpu-raster/isolines/index';
 import {GPUCellAggregation} from '../../gpu-spatial-analysis/cell-aggregation/index';
 import type {GPUCellTable} from '../../gpu-spatial-analysis/cell-aggregation/index';
 import {GPUPointToCell} from '../../gpu-spatial-analysis/cell-indexing/index';
 import {GPUCellSetOutline} from '../../gpu-spatial-analysis/cell-set-outline/index';
+import type {GPUSegmentRingAssemblyOutput} from '../../gpu-spatial-analysis/ring-assembly/index';
 import type {
   GPUCellSetOutlineOutput,
   GPUCellSetOutlineRings
 } from '../../gpu-spatial-analysis/cell-set-outline/index';
+import {GPUNetworkServiceAreas} from '../network-analysis/gpu-network-service-areas';
 import {GPUNetworkReachability} from '../network-reachability/gpu-network-reachability';
 import {GPU_NETWORK_ISOCHRONES_PARAMETER_LENGTH} from './network-isochrones-parameters';
 import {
   createIsochronesBandParametersNode,
+  createIsochronesCellFacilityNodes,
   createIsochronesDecodeNode,
   createIsochronesNodeMaskNode,
   createIsochronesSplatNode,
+  createIsochronesTriangleFacilityNode,
   getIsochronesEncodedInitialValue,
+  GPU_NETWORK_ISOCHRONES_MAXIMUM_RASTER_FACILITIES,
   type GPUNetworkIsochronesMode
 } from './network-isochrones-passes';
 
@@ -80,6 +89,33 @@ export type GPUNetworkIsochroneRaster = {
   output: GPUIsobandsOutput & {
     /** Optional `width * height` float32 cost raster, row 0 at `minY`. */
     values?: GraphDataView<'float32'>;
+    /**
+     * Optional `width * height` uint32 facility row (index into `sources`) of the edge sample that
+     * set each pixel's cost, `0xffffffff` for unreached pixels. Needs `assignments`, mode `'min'`
+     * and at most 255 sources. The facility shares the pixel word with the cost, which then keeps
+     * its top 24 bits (relative precision 2^-15, rounded down); ties go to the lowest facility row.
+     */
+    pixelFacilities?: GraphDataView<'uint32'>;
+    /**
+     * Optional facility row per isoband triangle (length `triangleBands.length`), taken from the
+     * raster sample nearest to the triangle centroid that has a facility; `0xffffffff` past
+     * `count`. Needs `pixelFacilities` and the triangle output.
+     */
+    triangleFacilities?: GraphDataView<'uint32'>;
+  };
+  /**
+   * Optional closed band rings (`GPUIsobandRings`): shells and holes per cost band as GeoArrow
+   * offsets, in the raster's units. `rings.output.ringGroups` receives the band of each ring. Bands
+   * of several facilities that touch merge into one ring; use the cell path with `byFacility` for
+   * rings that never mix facilities.
+   */
+  rings?: {
+    /** Compile-time capacity of the intermediate boundary edge list, see `GPUIsobandRings`. */
+    edgeCapacity: number;
+    /** Vertex matching distance in raster units, see `GPUIsobandRings`. */
+    vertexTolerance?: number;
+    /** Caller-owned ring outputs. */
+    output: GPUIsobandRingsOutput;
   };
 };
 
@@ -96,6 +132,20 @@ export type GPUNetworkIsochroneCellOutline = {
   table?: GPUCellTable;
   /** Row capacity of the transient table when `table` is omitted. Defaults to the node count. */
   tableCapacity?: number;
+  /**
+   * Label every reached cell with the facility (row of `sources`) of its cheapest reached node and
+   * outline each facility separately: the outline gets the labels as `groups`, so borders between
+   * facilities are emitted from both sides, `output.groups` carries the facility of each segment
+   * and rings never mix facilities (give `rings.output.ringGroups` to read each ring's facility).
+   * Needs `assignments`. Cells are labelled by their lowest-cost node, ties to the lowest facility
+   * row. Quadbin cells are keyed through `GPUPointToCell`, like H3.
+   */
+  byFacility?: boolean;
+  /**
+   * Optional caller-owned facility row per table row (`table.cells.length` rows, `0xffffffff` past
+   * the cell count). Needs `byFacility`. Defaults to a graph transient.
+   */
+  cellFacilities?: GraphDataView<'uint32'>;
   /** Caller-owned boundary segments of the reached cells. */
   output: GPUCellSetOutlineOutput;
   /**
@@ -136,6 +186,19 @@ export type GPUNetworkIsochronesProps = {
   costs: GraphDataView<'float32'>;
   /** Optional facility nodes that start a multi-source search writing `costs`. */
   sources?: GraphDataView<'uint32'>;
+  /**
+   * Optional per-node facility row (index into the facilities) of the nearest facility,
+   * `GPU_NETWORK_REACHABILITY_NONE` where none reaches it. Like `costs` it is an input (for
+   * example `GPUNetworkServiceAreas.assignments`) unless `sources` is given, in which case this
+   * contributor writes it: the search is then a `GPUNetworkServiceAreas` run (nearest-facility
+   * allocation, ties to the lowest row) rather than a plain multi-source `GPUNetworkReachability`,
+   * and `costs` is the same minimum cost either way. It enables the facility-labelled outputs
+   * (`raster.output.pixelFacilities`, `triangleFacilities`, `cellOutline.byFacility`). Length
+   * `costs.length`.
+   */
+  assignments?: GraphDataView<'uint32'>;
+  /** Compile-time label-phase rounds of the allocation (with `assignments`), see `GPUNetworkServiceAreas`. */
+  labelIterations?: number;
   /** Optional per-source starting cost. */
   sourceCosts?: GraphDataView<'float32'>;
   /** Optional one-row active source count. */
@@ -208,7 +271,8 @@ export class GPUNetworkIsochrones implements GPUCommandNodeProducer {
       ['costs', props.costs],
       ['breaks', props.breaks],
       ['parameters', props.parameters],
-      ['sources', props.sources]
+      ['sources', props.sources],
+      ['assignments', props.assignments]
     ] as const) {
       if ((view as unknown) instanceof GraphVectorView) {
         throw new Error(`${id} ${name} must be a single packed view, not a chunked vector`);
@@ -252,6 +316,15 @@ export class GPUNetworkIsochrones implements GPUCommandNodeProducer {
         }
       }
     }
+    if (props.assignments) {
+      validatePackedUint32View(props.assignments, `${id} assignments`);
+      if (props.assignments.length !== this.nodeCount) {
+        throw new Error(`${id} assignments length must equal the node count`);
+      }
+    }
+    if (props.labelIterations !== undefined && !(props.assignments && props.sources)) {
+      throw new Error(`${id} labelIterations needs sources and assignments`);
+    }
     this.mode = raster?.mode ?? 'min';
     if (this.mode !== 'min' && this.mode !== 'max') {
       throw new Error(`${id} raster.mode must be 'min' or 'max'`);
@@ -285,6 +358,51 @@ export class GPUNetworkIsochrones implements GPUCommandNodeProducer {
       if (!Number.isSafeInteger(pixelCount) || pixelCount > 0x7fffffff) {
         throw new Error(`${id} raster width * height must fit in 31 bits`);
       }
+      if (raster.output.pixelFacilities) {
+        if (!props.assignments) {
+          throw new Error(`${id} raster.output.pixelFacilities needs assignments`);
+        }
+        if (this.mode !== 'min') {
+          throw new Error(`${id} raster.output.pixelFacilities needs raster.mode 'min'`);
+        }
+        if (
+          props.sources &&
+          props.sources.length > GPU_NETWORK_ISOCHRONES_MAXIMUM_RASTER_FACILITIES
+        ) {
+          throw new Error(
+            `${id} raster.output.pixelFacilities supports at most ${GPU_NETWORK_ISOCHRONES_MAXIMUM_RASTER_FACILITIES} sources`
+          );
+        }
+        validatePackedUint32View(
+          raster.output.pixelFacilities,
+          `${id} raster.output.pixelFacilities`
+        );
+        if (raster.output.pixelFacilities.length < pixelCount) {
+          throw new Error(`${id} raster.output.pixelFacilities must hold width * height rows`);
+        }
+      }
+      if (raster.output.triangleFacilities) {
+        if (!raster.output.pixelFacilities || !raster.output.triangles) {
+          throw new Error(
+            `${id} raster.output.triangleFacilities needs pixelFacilities and the triangle output`
+          );
+        }
+        validatePackedUint32View(
+          raster.output.triangleFacilities,
+          `${id} raster.output.triangleFacilities`
+        );
+        if (raster.output.triangleFacilities.length !== raster.output.triangleBands!.length) {
+          throw new Error(
+            `${id} raster.output.triangleFacilities length must equal triangleBands length`
+          );
+        }
+      }
+      if (
+        raster.rings &&
+        (!Number.isInteger(raster.rings.edgeCapacity) || raster.rings.edgeCapacity < 1)
+      ) {
+        throw new Error(`${id} raster.rings.edgeCapacity must be a positive integer`);
+      }
       if (raster.output.values) {
         validatePackedView(raster.output.values, ['float32'], `${id} raster.output.values`);
         if (raster.output.values.length < pixelCount) {
@@ -295,6 +413,15 @@ export class GPUNetworkIsochrones implements GPUCommandNodeProducer {
     if (cellOutline) {
       if (cellOutline.family !== 'h3' && cellOutline.family !== 'quadbin') {
         throw new Error(`${id} cellOutline.family must be 'h3' or 'quadbin'`);
+      }
+      if (cellOutline.byFacility && !props.assignments) {
+        throw new Error(`${id} cellOutline.byFacility needs assignments`);
+      }
+      if (cellOutline.cellFacilities && !cellOutline.byFacility) {
+        throw new Error(`${id} cellOutline.cellFacilities needs cellOutline.byFacility`);
+      }
+      if (cellOutline.byFacility && !cellOutline.output.groups) {
+        throw new Error(`${id} cellOutline.byFacility needs cellOutline.output.groups`);
       }
       if (
         cellOutline.tableCapacity !== undefined &&
@@ -314,15 +441,17 @@ export class GPUNetworkIsochrones implements GPUCommandNodeProducer {
       props.sourceCosts,
       props.sourceCount,
       props.costLimit,
-      ...(props.sources ? [] : [props.costs])
+      ...(props.sources ? [] : [props.costs, props.assignments])
     ];
     validateGraphOutputsDisjointFromInputs(
       id,
       [
-        ...(props.sources ? [props.costs] : []),
+        ...(props.sources ? [props.costs, props.assignments] : []),
+        cellOutline?.cellFacilities,
         ...Object.values(raster?.output ?? {}),
         ...Object.values(cellOutline?.output ?? {}),
-        ...getRingOutputViews(cellOutline),
+        ...getRingOutputViews(cellOutline?.rings?.output),
+        ...getRingOutputViews(raster?.rings?.output),
         ...(cellOutline?.table ? Object.values(cellOutline.table) : [])
       ],
       inputs
@@ -351,13 +480,33 @@ export class GPUNetworkIsochrones implements GPUCommandNodeProducer {
       props.costLimit,
       props.breaks,
       props.parameters,
+      props.assignments,
+      cellOutline?.cellFacilities,
       ...Object.values(raster?.output ?? {}),
       ...Object.values(cellOutline?.output ?? {}),
-      ...getRingOutputViews(cellOutline),
+      ...getRingOutputViews(cellOutline?.rings?.output),
+      ...getRingOutputViews(raster?.rings?.output),
       ...(cellOutline?.table ? Object.values(cellOutline.table) : [])
     ]);
     const nodes: GPUCommandNode<Parameters>[] = [];
-    if (props.sources) {
+    if (props.sources && props.assignments) {
+      nodes.push(
+        ...new GPUNetworkServiceAreas({
+          id: `${id}-search`,
+          offsets: props.offsets,
+          neighbors: props.neighbors,
+          weights: props.weights,
+          facilities: props.sources,
+          facilityCosts: props.sourceCosts,
+          facilityCount: props.sourceCount,
+          costLimit: props.costLimit,
+          maxIterations: props.maxIterations,
+          labelIterations: props.labelIterations,
+          assignments: props.assignments,
+          costs: props.costs
+        }).getCommandNodes(graph)
+      );
+    } else if (props.sources) {
       nodes.push(
         ...new GPUNetworkReachability({
           id: `${id}-search`,
@@ -415,7 +564,8 @@ export class GPUNetworkIsochrones implements GPUCommandNodeProducer {
           costs: props.costs,
           nodePositions: props.nodePositions,
           parameters: props.parameters,
-          encoded
+          encoded,
+          assignments: raster.output.pixelFacilities ? props.assignments : undefined
         }),
         createIsochronesDecodeNode<Parameters>(graph, {
           id: `${id}-decode`,
@@ -423,7 +573,8 @@ export class GPUNetworkIsochrones implements GPUCommandNodeProducer {
           unreachedCost: raster.unreachedCost ?? DEFAULT_UNREACHED_COST,
           encoded,
           values,
-          pixelCount
+          pixelCount,
+          pixelFacilities: raster.output.pixelFacilities
         }),
         ...new GPUIsobands({
           id: `${id}-isobands`,
@@ -439,10 +590,44 @@ export class GPUNetworkIsochrones implements GPUCommandNodeProducer {
             count: raster.output.count,
             overflow: raster.output.overflow,
             totalCount: raster.output.totalCount,
-            vertexCount: raster.output.vertexCount
+            vertexCount: raster.output.vertexCount,
+            edges: raster.output.edges,
+            edgeBands: raster.output.edgeBands,
+            edgeCount: raster.output.edgeCount,
+            edgeOverflow: raster.output.edgeOverflow,
+            edgeTotalCount: raster.output.edgeTotalCount
           }
         }).getCommandNodes(graph)
       );
+      if (raster.output.triangleFacilities) {
+        nodes.push(
+          createIsochronesTriangleFacilityNode<Parameters>(graph, {
+            id: `${id}-triangle-facilities`,
+            width,
+            height,
+            triangles: raster.output.triangles!,
+            triangleCount: raster.output.count!,
+            parameters: props.parameters,
+            pixelFacilities: raster.output.pixelFacilities!,
+            triangleFacilities: raster.output.triangleFacilities
+          })
+        );
+      }
+      if (raster.rings) {
+        nodes.push(
+          ...new GPUIsobandRings({
+            id: `${id}-rings`,
+            width,
+            height,
+            values,
+            breaks: props.breaks,
+            parameters: bandParameters,
+            edgeCapacity: raster.rings.edgeCapacity,
+            vertexTolerance: raster.rings.vertexTolerance,
+            output: raster.rings.output
+          }).getCommandNodes(graph)
+        );
+      }
     }
 
     if (cellOutline) {
@@ -456,13 +641,15 @@ export class GPUNetworkIsochrones implements GPUCommandNodeProducer {
         })
       );
       const capacity = cellOutline.tableCapacity ?? nodeCount;
+      let cellFacilities: GraphDataView<'uint32'> | undefined;
       const table: GPUCellTable = cellOutline.table ?? {
         cells: createTransientView(graph, `${id}-reached-cells`, 'uint32x2', capacity),
         counts: createTransientView(graph, `${id}-reached-counts`, 'uint32', capacity),
         count: createTransientView(graph, `${id}-reached-count`, 'uint32', 1),
         overflow: createTransientView(graph, `${id}-reached-overflow`, 'uint32', 1)
       };
-      if (cellOutline.family === 'quadbin') {
+      const byFacility = Boolean(cellOutline.byFacility);
+      if (cellOutline.family === 'quadbin' && !byFacility) {
         nodes.push(
           ...new GPUCellAggregation({
             id: `${id}-reached-table`,
@@ -478,7 +665,7 @@ export class GPUNetworkIsochrones implements GPUCommandNodeProducer {
         nodes.push(
           ...new GPUPointToCell({
             id: `${id}-node-cells`,
-            family: 'h3',
+            family: cellOutline.family,
             resolution: cellOutline.resolution,
             positions: props.nodePositions,
             mask,
@@ -486,12 +673,35 @@ export class GPUNetworkIsochrones implements GPUCommandNodeProducer {
           }).getCommandNodes(graph),
           ...new GPUCellAggregation({
             id: `${id}-reached-table`,
-            family: 'h3',
+            family: cellOutline.family,
             resolution: cellOutline.resolution,
             cells: nodeCells,
             output: table
           }).getCommandNodes(graph)
         );
+        if (byFacility) {
+          cellFacilities =
+            cellOutline.cellFacilities ??
+            createTransientView(graph, `${id}-cell-facilities`, 'uint32', capacity);
+          nodes.push(
+            ...createIsochronesCellFacilityNodes<Parameters>(graph, {
+              id: `${id}-cell-facilities`,
+              nodeCount,
+              nodeCells,
+              tableCells: table.cells,
+              tableCount: table.count,
+              costs: props.costs,
+              assignments: props.assignments!,
+              cellMinimumCosts: createTransientView(
+                graph,
+                `${id}-cell-minimum-costs`,
+                'uint32',
+                capacity
+              ),
+              cellFacilities
+            })
+          );
+        }
       }
       nodes.push(
         ...new GPUCellSetOutline({
@@ -499,6 +709,7 @@ export class GPUNetworkIsochrones implements GPUCommandNodeProducer {
           family: cellOutline.family,
           cells: table.cells,
           count: table.count,
+          groups: cellFacilities,
           output: cellOutline.output,
           rings: cellOutline.rings
         }).getCommandNodes(graph)
@@ -508,9 +719,8 @@ export class GPUNetworkIsochrones implements GPUCommandNodeProducer {
   }
 }
 
-/** Views of the optional ring output, with the nested polygon layout flattened. */
-function getRingOutputViews(cellOutline: GPUNetworkIsochroneCellOutline | undefined) {
-  const output = cellOutline?.rings?.output;
+/** Views of an optional ring output, with the nested polygon layout flattened. */
+function getRingOutputViews(output: GPUSegmentRingAssemblyOutput | undefined): GraphDataView[] {
   if (!output) {
     return [];
   }

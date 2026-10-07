@@ -265,41 +265,90 @@ export const INEQUALITY_GLOBAL_SUMS_BODY = /* wgsl */ `let nan = getNaN();
   summary[summaryOffset + 1u] = between;
   summary[summaryOffset + 2u] = within;`;
 
-/** Body of the single-thread pooled Gini kernel over the globally value-sorted rows. */
-export function getInequalityGlobalGiniBody(weightExpression: string): string {
-  return /* wgsl */ `var totalWeight = 0.0;
-  var totalIncome = 0.0;
-  for (var position = 0u; position < ROW_COUNT; position++) {
+/** Rows per tile of the tiled pooled-Gini passes. */
+export const INEQUALITY_GINI_TILE_ROWS = 256;
+
+/**
+ * Body of the pooled-Gini tile totals kernel (one thread per tile of the globally value-sorted
+ * rows): sums weight and weighted income of the tile's valid rows. Valid rows are a prefix of the
+ * sorted order, so a tile past the prefix is empty.
+ */
+export function getInequalityGiniTileTotalsBody(weightExpression: string): string {
+  return /* wgsl */ `let firstPosition = index * GINI_TILE_ROWS;
+  let endPosition = min(firstPosition + GINI_TILE_ROWS, ROW_COUNT);
+  var tileWeight = 0.0;
+  var tileIncome = 0.0;
+  for (var position = firstPosition; position < endPosition; position++) {
     if (sortedValueKeys[sortedValueKeysOffset + position] == 0xffffffffu) {
       break;
     }
     let row = sortedRows[sortedRowsOffset + position];
     let w = ${weightExpression};
-    totalWeight = totalWeight + w;
-    totalIncome = totalIncome + w * values[valuesOffset + row];
+    tileWeight = tileWeight + w;
+    tileIncome = tileIncome + w * values[valuesOffset + row];
   }
-  if (!(totalIncome > 0.0)) {
+  tileTotals[tileTotalsOffset + 2u * index] = tileWeight;
+  tileTotals[tileTotalsOffset + 2u * index + 1u] = tileIncome;`;
+}
+
+/**
+ * Body of the single-thread kernel that turns the tile totals into exclusive tile prefixes and the
+ * pooled totals. It walks `ROW_COUNT / GINI_TILE_ROWS` tiles, not rows.
+ */
+export const INEQUALITY_GINI_TILE_PREFIX_BODY = /* wgsl */ `var cumulativeWeight = 0.0;
+  var cumulativeIncome = 0.0;
+  for (var tile = 0u; tile < GINI_TILE_COUNT; tile++) {
+    let base = tileTotalsOffset + 2u * tile;
+    let tileWeight = tileTotals[base];
+    let tileIncome = tileTotals[base + 1u];
+    tileTotals[base] = cumulativeWeight;
+    tileTotals[base + 1u] = cumulativeIncome;
+    cumulativeWeight = cumulativeWeight + tileWeight;
+    cumulativeIncome = cumulativeIncome + tileIncome;
+  }
+  pooledTotals[pooledTotalsOffset] = cumulativeWeight;
+  pooledTotals[pooledTotalsOffset + 1u] = cumulativeIncome;`;
+
+/**
+ * Body of the pooled-Gini tile walk (one thread per tile): the trapezoid area of the Lorenz curve
+ * over the tile's rows, starting from the exclusive prefix of the earlier tiles.
+ */
+export function getInequalityGiniTileAreaBody(weightExpression: string): string {
+  return /* wgsl */ `let totalWeight = pooledTotals[pooledTotalsOffset];
+  let totalIncome = pooledTotals[pooledTotalsOffset + 1u];
+  var area = 0.0;
+  if (totalIncome > 0.0) {
+    let firstPosition = index * GINI_TILE_ROWS;
+    let endPosition = min(firstPosition + GINI_TILE_ROWS, ROW_COUNT);
+    var cumulativeWeight = tileTotals[tileTotalsOffset + 2u * index];
+    var cumulativeIncome = tileTotals[tileTotalsOffset + 2u * index + 1u];
+    var previousP = cumulativeWeight / totalWeight;
+    var previousL = cumulativeIncome / totalIncome;
+    for (var position = firstPosition; position < endPosition; position++) {
+      if (sortedValueKeys[sortedValueKeysOffset + position] == 0xffffffffu) {
+        break;
+      }
+      let row = sortedRows[sortedRowsOffset + position];
+      let w = ${weightExpression};
+      cumulativeWeight = cumulativeWeight + w;
+      cumulativeIncome = cumulativeIncome + w * values[valuesOffset + row];
+      let nextP = cumulativeWeight / totalWeight;
+      let nextL = cumulativeIncome / totalIncome;
+      area = area + (nextP - previousP) * (previousL + nextL);
+      previousP = nextP;
+      previousL = nextL;
+    }
+  }
+  tileAreas[tileAreasOffset + index] = area;`;
+}
+
+/** Body of the single-thread kernel that sums the tile areas into the pooled Gini. */
+export const INEQUALITY_GINI_FINISH_BODY = /* wgsl */ `if (!(pooledTotals[pooledTotalsOffset + 1u] > 0.0)) {
     summary[summaryOffset + 3u] = getNaN();
     return;
   }
-  var cumulativeWeight = 0.0;
-  var cumulativeIncome = 0.0;
-  var previousP = 0.0;
-  var previousL = 0.0;
-  var trapezoidArea = 0.0;
-  for (var position = 0u; position < ROW_COUNT; position++) {
-    if (sortedValueKeys[sortedValueKeysOffset + position] == 0xffffffffu) {
-      break;
-    }
-    let row = sortedRows[sortedRowsOffset + position];
-    let w = ${weightExpression};
-    cumulativeWeight = cumulativeWeight + w;
-    cumulativeIncome = cumulativeIncome + w * values[valuesOffset + row];
-    let nextP = cumulativeWeight / totalWeight;
-    let nextL = cumulativeIncome / totalIncome;
-    trapezoidArea = trapezoidArea + (nextP - previousP) * (previousL + nextL);
-    previousP = nextP;
-    previousL = nextL;
+  var area = 0.0;
+  for (var tile = 0u; tile < GINI_TILE_COUNT; tile++) {
+    area = area + tileAreas[tileAreasOffset + tile];
   }
-  summary[summaryOffset + 3u] = 1.0 - trapezoidArea;`;
-}
+  summary[summaryOffset + 3u] = 1.0 - area;`;

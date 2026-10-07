@@ -18,6 +18,8 @@ import {
 import {
   createPatchKeysNode,
   getPatchLabelViews,
+  getPatchRunSegmentsBody,
+  getPatchSegmentCount,
   validatePatchLabels,
   type GPURasterPatchLabels
 } from './patch-labels';
@@ -189,11 +191,11 @@ const HEIGHT: u32 = ${height}u;`;
           {name: 'keys', view: keys, type: 'u32', access: 'read'},
           {name: 'pixelCounts', view: pixelCounts, type: 'atomic<u32>', access: 'read_write'}
         ],
-        invocationCount: pixelLength,
-        body: `let key = keys[keysOffset + index];
-  if (key != 0u) {
-    atomicAdd(&pixelCounts[pixelCountsOffset + key - 1u], 1u);
-  }`
+        invocationCount: getPatchSegmentCount(width, height),
+        declarations: geometry,
+        body: getPatchRunSegmentsBody(width, {
+          onRun: 'atomicAdd(&pixelCounts[pixelCountsOffset + runKey - 1u], runEnd - runStart);'
+        })
       })
     ];
 

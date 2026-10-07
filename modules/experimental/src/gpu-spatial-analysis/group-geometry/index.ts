@@ -6,6 +6,7 @@ export {GPUGroupGeometry, GPU_GROUP_GEOMETRY_NO_MEDOID} from './gpu-group-geomet
 export type {GPUGroupGeometryOutput, GPUGroupGeometryProps} from './gpu-group-geometry';
 export {
   GPU_GROUP_CONVEX_HULL_GROUP_OVERFLOW,
+  GPU_GROUP_CONVEX_HULL_MAXIMUM_PREFILTER_LEVELS,
   GPU_GROUP_CONVEX_HULL_TOTAL_OVERFLOW,
   GPUGroupConvexHull
 } from './gpu-group-convex-hull';

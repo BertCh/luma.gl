@@ -404,6 +404,7 @@ it('GPUBufferSelection clamps output and reports overflow when capacity is too s
   const outputCount = fixture.importOutput('count', 1);
   const outputOverflow = fixture.importOutput('overflow', 1);
   const outputTotal = fixture.importOutput('total', 1);
+  const drawInstanceCount = fixture.importOutput('draw-instance-count', 1);
   fixture.graph.add(
     new GPUBufferSelection({
       points: fixture.importInput(
@@ -415,6 +416,7 @@ it('GPUBufferSelection clamps output and reports overflow when capacity is too s
       features: getSegmentFeatures(fixture, segments),
       distance: fixture.distance.importToGraph(fixture.graph),
       candidateCapacity: 100000,
+      drawInstanceCount: drawInstanceCount.view,
       output: {
         ids: outputIds.view,
         count: outputCount.view,
@@ -431,6 +433,62 @@ it('GPUBufferSelection clamps output and reports overflow when capacity is too s
   expect(await readUint32(outputIds.buffer, capacity)).toEqual(expectedIds.slice(0, capacity));
   expect(await readUint32(outputOverflow.buffer, 1)).toEqual([1]);
   expect(await readUint32(outputTotal.buffer, 1)).toEqual([expectedIds.length]);
+  // The draw count is the clamped count, never the total.
+  expect(await readUint32(drawInstanceCount.buffer, 1)).toEqual([capacity]);
+  compiled.destroy();
+  fixture.destroy();
+});
+
+it('GPUBufferSelection drawInstanceCount follows the per-frame distance and needs output', async () => {
+  const device = await getWebGPUTestDevice();
+  if (!device) {
+    return;
+  }
+  const {points, segments} = createRandomScene(43, 800, [4, 12]);
+  const fixture = createFixture(device, 4);
+  const outputIds = fixture.importOutput('ids', points.length);
+  const outputCount = fixture.importOutput('count', 1);
+  const outputOverflow = fixture.importOutput('overflow', 1);
+  const drawInstanceCount = fixture.importOutput('draw-instance-count', 1);
+  const pointsView = fixture.importInput(
+    'points',
+    Float32Array.from(points.flat()),
+    'float32x2',
+    points.length
+  );
+  const features = getSegmentFeatures(fixture, segments);
+  const distance = fixture.distance.importToGraph(fixture.graph);
+  expect(
+    () =>
+      new GPUBufferSelection({
+        points: pointsView,
+        features,
+        distance,
+        candidateCapacity: 100000,
+        outputMask: fixture.importOutput('mask', points.length).view,
+        drawInstanceCount: drawInstanceCount.view
+      })
+  ).toThrow(/requires output/);
+  fixture.graph.add(
+    new GPUBufferSelection({
+      points: pointsView,
+      features,
+      distance,
+      candidateCapacity: 100000,
+      drawInstanceCount: drawInstanceCount.view,
+      output: {ids: outputIds.view, count: outputCount.view, overflow: outputOverflow.view}
+    })
+  );
+  const compiled = fixture.graph.compile();
+  const distances = getOracleDistances(points, segments);
+  for (const radius of [4, 12]) {
+    fixture.distance.write(Float32Array.of(radius));
+    submitGraph(device, compiled, undefined);
+    const expectedCount = getIds(getOracleSelection(distances, radius)).length;
+    expect(expectedCount).toBeGreaterThan(0);
+    expect(await readUint32(drawInstanceCount.buffer, 1)).toEqual([expectedCount]);
+    expect(await readUint32(outputCount.buffer, 1)).toEqual([expectedCount]);
+  }
   compiled.destroy();
   fixture.destroy();
 });

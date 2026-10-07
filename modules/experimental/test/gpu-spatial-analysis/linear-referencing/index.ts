@@ -3,3 +3,4 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import './gpu-linear-referencing.spec';
+import './gpu-linear-referencing-spherical.spec';

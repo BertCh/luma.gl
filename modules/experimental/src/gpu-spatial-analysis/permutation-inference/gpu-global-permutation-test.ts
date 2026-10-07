@@ -35,6 +35,9 @@ import {
 
 const OPERATION = 'GPUGlobalPermutationTest';
 
+/** Threads of the single finalize workgroup. */
+const FINALIZE_WORKGROUP_SIZE = 256;
+
 /** Rows per workgroup block of the per-permutation pair sums. */
 const PAIR_BLOCK_ROWS = 2048;
 const PAIR_WORKGROUP_SIZE = 256;
@@ -360,7 +363,7 @@ fn getPermutedPosition(position: u32, permutation: u32, count: u32, halfBits: u3
       finalizeBindings.push({
         name: 'histogram',
         view: props.histogram,
-        type: 'u32',
+        type: 'atomic<u32>',
         access: 'read_write'
       });
     }
@@ -370,83 +373,133 @@ fn getPermutedPosition(position: u32, permutation: u32, count: u32, halfBits: u3
         operation: OPERATION,
         variant: 'finalize',
         bindings: finalizeBindings,
-        invocationCount: 1,
+        // One workgroup: the passes over the P pair sums are strided across its 256 threads and
+        // combined by fixed binary trees (integer counts, minimum and maximum are exact in any
+        // order), instead of one invocation walking P up to 2^20 values several times.
+        workgroupSize: FINALIZE_WORKGROUP_SIZE,
+        invocationCount: FINALIZE_WORKGROUP_SIZE,
+        guardIndex: false,
         declarations: `${getPermutationParameterWGSL(maximumPermutations)}
 ${PERMUTATION_FLOAT_WGSL}
-const BINS: u32 = ${bins}u;`,
-        body: `let permutations = readPermutationCount();
+const BINS: u32 = ${bins}u;
+const WORKGROUP_SIZE: u32 = ${FINALIZE_WORKGROUP_SIZE}u;
+var<workgroup> scratchFloat: array<f32, ${FINALIZE_WORKGROUP_SIZE}>;
+var<workgroup> scratchCount: array<u32, ${FINALIZE_WORKGROUP_SIZE}>;
+
+// Each reduction ends with a barrier so the scratch can be reused; all threads get the result.
+fn reduceFloat(local: u32, value: f32, mode: u32) -> f32 {
+  scratchFloat[local] = value;
+  workgroupBarrier();
+  for (var stride = WORKGROUP_SIZE / 2u; stride > 0u; stride = stride / 2u) {
+    if (local < stride) {
+      let other = scratchFloat[local + stride];
+      scratchFloat[local] = select(select(scratchFloat[local] + other, max(scratchFloat[local], other), mode == 2u), min(scratchFloat[local], other), mode == 1u);
+    }
+    workgroupBarrier();
+  }
+  let result = scratchFloat[0];
+  workgroupBarrier();
+  return result;
+}
+
+fn reduceCount(local: u32, value: u32) -> u32 {
+  scratchCount[local] = value;
+  workgroupBarrier();
+  for (var stride = WORKGROUP_SIZE / 2u; stride > 0u; stride = stride / 2u) {
+    if (local < stride) {
+      scratchCount[local] += scratchCount[local + stride];
+    }
+    workgroupBarrier();
+  }
+  let result = scratchCount[0];
+  workgroupBarrier();
+  return result;
+}`,
+        body: `let local = localInvocationIndex;
+  let permutations = readPermutationCount();
   let count = totals[totalsOffset + ${T.count}u];
   let scale = ${scaleWGSL};
   let observedSum = pairSums[pairSumsOffset];
   let observed = scale * observedSum;
-  var greater = 0u;
-  var lesser = 0u;
-  var total = 0.0;
-  var minimum = 3.0e38;
-  var maximum = -3.0e38;
-  for (var permutation = 1u; permutation <= permutations; permutation++) {
+  var greaterPart = 0u;
+  var lesserPart = 0u;
+  var totalPart = 0.0;
+  var minimumPart = 3.0e38;
+  var maximumPart = -3.0e38;
+  for (var permutation = 1u + local; permutation <= permutations; permutation += WORKGROUP_SIZE) {
     let pairSum = pairSums[pairSumsOffset + permutation];
     let simulated = scale * pairSum;
-    greater += select(0u, 1u, pairSum >= observedSum);
-    lesser += select(0u, 1u, pairSum <= observedSum);
-    total += simulated;
-    minimum = min(minimum, simulated);
-    maximum = max(maximum, simulated);
+    greaterPart += select(0u, 1u, pairSum >= observedSum);
+    lesserPart += select(0u, 1u, pairSum <= observedSum);
+    totalPart += simulated;
+    minimumPart = min(minimumPart, simulated);
+    maximumPart = max(maximumPart, simulated);
     ${props.referenceDistribution ? 'referenceDistribution[referenceDistributionOffset + permutation - 1u] = simulated;' : ''}
   }
   ${
     props.referenceDistribution
-      ? `for (var permutation = permutations + 1u; permutation <= MAXIMUM_PERMUTATIONS; permutation++) {
+      ? `for (var permutation = permutations + 1u + local; permutation <= MAXIMUM_PERMUTATIONS; permutation += WORKGROUP_SIZE) {
     referenceDistribution[referenceDistributionOffset + permutation - 1u] = getQuietNaN(permutation);
   }`
       : ''
   }
+  let greater = reduceCount(local, greaterPart);
+  let lesser = reduceCount(local, lesserPart);
+  let total = reduceFloat(local, totalPart, 0u);
+  let minimum = reduceFloat(local, minimumPart, 1u);
+  let maximum = reduceFloat(local, maximumPart, 2u);
   let mean = total / f32(permutations);
-  var squares = 0.0;
-  for (var permutation = 1u; permutation <= permutations; permutation++) {
+  var squaresPart = 0.0;
+  for (var permutation = 1u + local; permutation <= permutations; permutation += WORKGROUP_SIZE) {
     let deviation = scale * pairSums[pairSumsOffset + permutation] - mean;
-    squares += deviation * deviation;
+    squaresPart += deviation * deviation;
   }
+  let squares = reduceFloat(local, squaresPart, 0u);
   let standardDeviation = sqrt(squares / f32(permutations));
   ${
     alternative === 'folded'
-      ? `var folded = 0u;
+      ? `var foldedPart = 0u;
   let observedDistance = abs(observed - mean);
-  for (var permutation = 1u; permutation <= permutations; permutation++) {
-    folded += select(0u, 1u, abs(scale * pairSums[pairSumsOffset + permutation] - mean) >= observedDistance);
-  }`
+  for (var permutation = 1u + local; permutation <= permutations; permutation += WORKGROUP_SIZE) {
+    foldedPart += select(0u, 1u, abs(scale * pairSums[pairSumsOffset + permutation] - mean) >= observedDistance);
+  }
+  let folded = reduceCount(local, foldedPart);`
       : ''
   }
-  let larger = ${getExceedanceCountWGSL(alternative)};
-  let zSimulated = (observed - mean) / standardDeviation;
-  let validZ = standardDeviation > 0.0 && isFiniteFloat(zSimulated);
-  results[resultsOffset + ${R.observed}u] = select(getQuietNaN(0u), observed, isFiniteFloat(observed));
-  results[resultsOffset + ${R.pseudoPValue}u] = f32(min(${multiplier}u * (larger + 1u), permutations + 1u)) / f32(permutations + 1u);
-  results[resultsOffset + ${R.exceedances}u] = f32(larger);
-  results[resultsOffset + ${R.permutations}u] = f32(permutations);
-  results[resultsOffset + ${R.simulatedMean}u] = mean;
-  results[resultsOffset + ${R.simulatedStandardDeviation}u] = standardDeviation;
-  results[resultsOffset + ${R.zSimulated}u] = select(getQuietNaN(1u), zSimulated, validZ);
-  results[resultsOffset + ${R.pZSimulated}u] = select(getQuietNaN(1u), 0.5 * getTwoSidedPValue(zSimulated), validZ);
-  results[resultsOffset + ${R.minimum}u] = minimum;
-  results[resultsOffset + ${R.maximum}u] = maximum;
-  results[resultsOffset + 10u] = 0.0;
-  results[resultsOffset + 11u] = 0.0;
   ${
     props.histogram
-      ? `for (var bin = 0u; bin < BINS; bin++) {
-    histogram[histogramOffset + bin] = 0u;
+      ? `for (var bin = local; bin < BINS; bin += WORKGROUP_SIZE) {
+    atomicStore(&histogram[histogramOffset + bin], 0u);
   }
+  storageBarrier();
+  workgroupBarrier();
   let range = maximum - minimum;
-  for (var permutation = 1u; permutation <= permutations; permutation++) {
+  for (var permutation = 1u + local; permutation <= permutations; permutation += WORKGROUP_SIZE) {
     let simulated = scale * pairSums[pairSumsOffset + permutation];
     var bin = 0u;
     if (range > 0.0 && isFiniteFloat(range)) {
       bin = min(u32(max(floor((simulated - minimum) / range * f32(BINS)), 0.0)), BINS - 1u);
     }
-    histogram[histogramOffset + bin] = histogram[histogramOffset + bin] + 1u;
+    atomicAdd(&histogram[histogramOffset + bin], 1u);
   }`
       : ''
+  }
+  if (local == 0u) {
+    let larger = ${getExceedanceCountWGSL(alternative)};
+    let zSimulated = (observed - mean) / standardDeviation;
+    let validZ = standardDeviation > 0.0 && isFiniteFloat(zSimulated);
+    results[resultsOffset + ${R.observed}u] = select(getQuietNaN(0u), observed, isFiniteFloat(observed));
+    results[resultsOffset + ${R.pseudoPValue}u] = f32(min(${multiplier}u * (larger + 1u), permutations + 1u)) / f32(permutations + 1u);
+    results[resultsOffset + ${R.exceedances}u] = f32(larger);
+    results[resultsOffset + ${R.permutations}u] = f32(permutations);
+    results[resultsOffset + ${R.simulatedMean}u] = mean;
+    results[resultsOffset + ${R.simulatedStandardDeviation}u] = standardDeviation;
+    results[resultsOffset + ${R.zSimulated}u] = select(getQuietNaN(1u), zSimulated, validZ);
+    results[resultsOffset + ${R.pZSimulated}u] = select(getQuietNaN(1u), 0.5 * getTwoSidedPValue(zSimulated), validZ);
+    results[resultsOffset + ${R.minimum}u] = minimum;
+    results[resultsOffset + ${R.maximum}u] = maximum;
+    results[resultsOffset + 10u] = 0.0;
+    results[resultsOffset + 11u] = 0.0;
   }`
       })
     );

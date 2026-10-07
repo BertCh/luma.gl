@@ -7,3 +7,5 @@ export type {
   GPUTrajectoryEncountersProps,
   GPUTrajectoryEncounterOutput
 } from './gpu-trajectory-encounters';
+export {addClockEncounters} from './clock-encounters';
+export type {AddClockEncountersProps, ClockEncounters} from './clock-encounters';

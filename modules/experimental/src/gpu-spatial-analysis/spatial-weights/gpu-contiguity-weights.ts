@@ -12,11 +12,8 @@ import {
   type GraphDataView
 } from '@luma.gl/gpgpu/gpu-core';
 import type {GPUCommandNodeProducer} from '@luma.gl/gpgpu/gpu-core';
-import {
-  createFillNode,
-  createWGSLKernelNode,
-  getWGSLFloatLiteral
-} from '../../utils/wgsl-kernel-nodes';
+import {createWGSLKernelNode, getWGSLFloatLiteral} from '../../utils/wgsl-kernel-nodes';
+import {getSortKeyBits} from '../../utils/sorted-segment-sums';
 import {
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph
@@ -104,7 +101,7 @@ export type GPUContiguityWeightsProps = {
  * distinct point a dense ID, keys each ring edge by `(min, max)` of its endpoint IDs and groups the
  * edges the same way. Every group of equal keys emits the directed polygon pairs `(i, j)` between
  * its distinct polygons; the pair list is sorted by `(i, j)`, deduplicated and compacted into CSR
- * (row counts by integer atomics, then a scan). Output is deterministic. A point shared by `m`
+ * (a scan marks the unique pairs and one binary search per row gives the CSR offsets). Output is deterministic. A point shared by `m`
  * polygons costs `O(m^2)` pairs, which is fine for map data but not for thousands of polygons
  * touching one point.
  *
@@ -346,7 +343,9 @@ fn quantise(value: f32) -> u32 {
         OPERATION,
         vertexCount,
         edgeHigh,
-        edgeLow
+        edgeLow,
+        // Point IDs are below vertexCount: a narrow radix sort, invalid keys still sort last.
+        {high: getSortKeyBits(vertexCount), low: getSortKeyBits(vertexCount)}
       );
       itemGroups = getKeyGroupNodes(
         graph,
@@ -413,19 +412,18 @@ fn quantise(value: f32) -> u32 {
         output: pairStarts,
         mode: 'exclusive'
       }).getCommandNodes(graph),
-      createFillNode<Parameters>(graph, {
-        id: `${id}-pair-high-fill`,
+      // Both key halves of every pair slot start invalid; one pass instead of two fills.
+      createWGSLKernelNode<Parameters>(graph, {
+        id: `${id}-pair-fill`,
         operation: OPERATION,
-        view: pairHigh,
-        type: 'u32',
-        value: INVALID
-      }),
-      createFillNode<Parameters>(graph, {
-        id: `${id}-pair-low-fill`,
-        operation: OPERATION,
-        view: pairLow,
-        type: 'u32',
-        value: INVALID
+        variant: 'pair-fill',
+        bindings: [
+          {name: 'pairHigh', view: pairHigh, type: 'u32', access: 'read_write'},
+          {name: 'pairLow', view: pairLow, type: 'u32', access: 'read_write'}
+        ],
+        invocationCount: pairCapacity,
+        body: `pairHigh[pairHighOffset + index] = ${INVALID};
+  pairLow[pairLowOffset + index] = ${INVALID};`
       }),
       createWGSLKernelNode<Parameters>(graph, {
         id: `${id}-pair-emit`,
@@ -455,12 +453,12 @@ fn quantise(value: f32) -> u32 {
       OPERATION,
       pairCapacity,
       pairHigh,
-      pairLow
+      pairLow,
+      // Polygon IDs are below polygonCount: a narrow radix sort, invalid keys still sort last.
+      {high: getSortKeyBits(polygonCount), low: getSortKeyBits(polygonCount)}
     );
     const isUnique = createTransientView(graph, `${id}-unique`, 'uint32', pairCapacity);
     const uniqueRank = createTransientView(graph, `${id}-unique-rank`, 'uint32', pairCapacity);
-    const rowCounts = createTransientView(graph, `${id}-row-counts`, 'uint32', polygonCount);
-    const rowStarts = createTransientView(graph, `${id}-row-starts`, 'uint32', polygonCount);
     nodes.push(
       ...pairSort.nodes,
       createWGSLKernelNode<Parameters>(graph, {
@@ -490,45 +488,50 @@ fn quantise(value: f32) -> u32 {
         output: uniqueRank,
         mode: 'exclusive'
       }).getCommandNodes(graph),
-      createFillNode<Parameters>(graph, {
-        id: `${id}-row-counts-clear`,
-        operation: OPERATION,
-        view: rowCounts,
-        type: 'u32',
-        value: '0u'
-      }),
-      createWGSLKernelNode<Parameters>(graph, {
-        id: `${id}-row-counts`,
-        operation: OPERATION,
-        variant: 'row-counts',
-        bindings: [
-          {name: 'sortedPairs', view: pairSort.sortedItems, type: 'u32', access: 'read'},
-          {name: 'pairHigh', view: pairHigh, type: 'u32', access: 'read'},
-          {name: 'isUnique', view: isUnique, type: 'u32', access: 'read'},
-          {name: 'rowCounts', view: rowCounts, type: 'atomic<u32>', access: 'read_write'}
-        ],
-        invocationCount: pairCapacity,
-        body: `if (isUnique[isUniqueOffset + index] != 0u) {
-    let row = pairHigh[pairHighOffset + sortedPairs[sortedPairsOffset + index]];
-    atomicAdd(&rowCounts[rowCountsOffset + row], 1u);
-  }`
-      }),
-      ...new GPUScan({
-        id: `${id}-row-scan`,
-        input: rowCounts,
-        output: rowStarts,
-        mode: 'exclusive'
-      }).getCommandNodes(graph),
+      // CSR offsets without a per-row count: the pairs are sorted by row, so row r starts at the
+      // number of unique pairs before the first sorted pair whose row is at least r. One binary
+      // search per row replaces the atomic row counts, their clear and the scan.
       createWGSLKernelNode<Parameters>(graph, {
         id: `${id}-offsets`,
         operation: OPERATION,
         variant: 'offsets',
         bindings: [
-          {name: 'rowCounts', view: rowCounts, type: 'u32', access: 'read'},
-          {name: 'rowStarts', view: rowStarts, type: 'u32', access: 'read'},
+          {name: 'sortedPairs', view: pairSort.sortedItems, type: 'u32', access: 'read'},
+          {name: 'pairHigh', view: pairHigh, type: 'u32', access: 'read'},
+          {name: 'isUnique', view: isUnique, type: 'u32', access: 'read'},
+          {name: 'uniqueRank', view: uniqueRank, type: 'u32', access: 'read'},
+          {name: 'offsets', view: weights.offsets, type: 'u32', access: 'read_write'}
+        ],
+        invocationCount: polygonCount + 1,
+        declarations: `const CAPACITY: u32 = ${capacity}u;
+const PAIR_CAPACITY: u32 = ${pairCapacity}u;`,
+        body: `var low = 0u;
+  var high = PAIR_CAPACITY;
+  while (low < high) {
+    let middle = (low + high) / 2u;
+    if (pairHigh[pairHighOffset + sortedPairs[sortedPairsOffset + middle]] < index) {
+      low = middle + 1u;
+    } else {
+      high = middle;
+    }
+  }
+  var start = 0u;
+  if (low < PAIR_CAPACITY) {
+    start = uniqueRank[uniqueRankOffset + low];
+  } else {
+    start = uniqueRank[uniqueRankOffset + PAIR_CAPACITY - 1u] + isUnique[isUniqueOffset + PAIR_CAPACITY - 1u];
+  }
+  offsets[offsetsOffset + index] = min(start, CAPACITY);`
+      }),
+      createWGSLKernelNode<Parameters>(graph, {
+        id: `${id}-totals`,
+        operation: OPERATION,
+        variant: 'totals',
+        bindings: [
+          {name: 'isUnique', view: isUnique, type: 'u32', access: 'read'},
+          {name: 'uniqueRank', view: uniqueRank, type: 'u32', access: 'read'},
           {name: 'pairCounts', view: pairCounts, type: 'u32', access: 'read'},
           {name: 'pairStarts', view: pairStarts, type: 'u32', access: 'read'},
-          {name: 'offsets', view: weights.offsets, type: 'u32', access: 'read_write'},
           {name: 'overflow', view: props.overflow, type: 'u32', access: 'read_write'},
           ...(props.totalNeighbors
             ? [
@@ -541,20 +544,14 @@ fn quantise(value: f32) -> u32 {
               ]
             : [])
         ],
-        invocationCount: polygonCount + 1,
-        declarations: `const ROWS: u32 = ${polygonCount}u;
-const CAPACITY: u32 = ${capacity}u;
+        invocationCount: 1,
+        declarations: `const CAPACITY: u32 = ${capacity}u;
 const PAIR_CAPACITY: u32 = ${pairCapacity}u;
 const VERTEX_COUNT: u32 = ${vertexCount}u;`,
-        body: `if (index < ROWS) {
-    offsets[offsetsOffset + index] = min(rowStarts[rowStartsOffset + index], CAPACITY);
-  } else {
-    let total = rowStarts[rowStartsOffset + ROWS - 1u] + rowCounts[rowCountsOffset + ROWS - 1u];
-    let pairTotal = pairStarts[pairStartsOffset + VERTEX_COUNT - 1u] + pairCounts[pairCountsOffset + VERTEX_COUNT - 1u];
-    offsets[offsetsOffset + ROWS] = min(total, CAPACITY);
-    overflow[overflowOffset] = select(0u, 1u, total > CAPACITY || pairTotal > PAIR_CAPACITY);
-    ${props.totalNeighbors ? 'totalNeighbors[totalNeighborsOffset] = total;' : ''}
-  }`
+        body: `let total = uniqueRank[uniqueRankOffset + PAIR_CAPACITY - 1u] + isUnique[isUniqueOffset + PAIR_CAPACITY - 1u];
+  let pairTotal = pairStarts[pairStartsOffset + VERTEX_COUNT - 1u] + pairCounts[pairCountsOffset + VERTEX_COUNT - 1u];
+  overflow[overflowOffset] = select(0u, 1u, total > CAPACITY || pairTotal > PAIR_CAPACITY);
+  ${props.totalNeighbors ? 'totalNeighbors[totalNeighborsOffset] = total;' : ''}`
       }),
       createWGSLKernelNode<Parameters>(graph, {
         id: `${id}-emit`,

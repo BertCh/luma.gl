@@ -112,6 +112,31 @@ it('GPUCellCover returns deterministic node ids', () => {
   expect(new Set(first).size).toBe(first.length);
 });
 
+it('GPUCellCover edge-slab nodes build within the storage binding limit', () => {
+  for (const family of ['quadbin', 'h3'] as const) {
+    for (const withCore of [false, true]) {
+      const graph = new GPUCommandGraph(createNullWebGPUDevice(), {
+        id: `cell-cover-slabs-${family}`
+      });
+      const base = createProps(graph, {family, resolution: 5, edgeSlabs: true});
+      const core = createTransientView(graph, `core-${serial++}`, 'uint32', 16);
+      const props = withCore ? {...base, output: {...base.output, core}} : base;
+      const cover = new GPUCellCover(props);
+      expect(cover.edgeSlabs).toBe(true);
+      const ids = cover.getCommandNodes(graph).map(node => node.id);
+      expect(ids).toContain('cell-cover-slab-edges-count');
+      expect(ids).toContain('cell-cover-slab-edges-fill');
+      expect(new Set(ids).size).toBe(ids.length);
+    }
+  }
+  // Off by default for small problems.
+  const graph = new GPUCommandGraph(createNullWebGPUDevice(), {id: 'cell-cover-slabs-default'});
+  expect(new GPUCellCover(createProps(graph)).edgeSlabs).toBe(false);
+  expect(
+    () => new GPUCellCover(createProps(graph, {edgeSlabs: true, edgeSlabEntryCapacity: 0}))
+  ).toThrow(/edgeSlabEntryCapacity/);
+});
+
 it('Quadbin oracle: full tile rectangle covers exactly that tile; modes nest', () => {
   const [west, south, east, north] = [8.0, 46.0, 9.0, 47.0];
   const features: CoverFeature[] = roundFeatures([

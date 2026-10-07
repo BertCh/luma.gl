@@ -152,6 +152,68 @@ fn hashBits(bits: u32) -> u32 {
 }
 `;
 
+/** Largest slot count counted in workgroup memory (4 KiB of `atomic<u32>`). */
+const PRIVATIZED_SLOT_LIMIT = 1024;
+
+/**
+ * Builds the `declarations` and `body` of a one-row-one-slot counting kernel. `slotBody` is the
+ * body of `fn getSlot(index: u32) -> u32` that returns the slot or `NO_SLOT`. Small tables are
+ * counted in a workgroup-private atomic table and flushed with one global atomic per non-empty
+ * slot per workgroup, so global atomic traffic drops from one per row to at most one per slot
+ * per workgroup (skewed columns no longer serialise on a few hot counters). Large tables keep one
+ * global atomic per row.
+ */
+function getPrivatizedCountingKernel(options: {
+  slotCount: number;
+  targetName: string;
+  /** WGSL expression of the first slot's index in the target. */
+  targetBase: string;
+  declarations: string;
+  slotBody: string;
+}): {declarations: string; body: string; guardIndex?: boolean; workgroupSize: number} {
+  const {slotCount, targetName, targetBase, slotBody} = options;
+  const slotFunction = `const NO_SLOT: u32 = 0xffffffffu;
+fn getSlot(index: u32) -> u32 {
+  ${slotBody}
+}`;
+  const target = `${targetName}[${targetName}Offset + ${targetBase} + `;
+  if (slotCount > PRIVATIZED_SLOT_LIMIT || slotCount < 1) {
+    return {
+      workgroupSize: COLUMN_PROFILE_WORKGROUP_SIZE,
+      declarations: `${options.declarations}\n${slotFunction}`,
+      body: `let slot = getSlot(index);
+  if (slot != NO_SLOT) {
+    atomicAdd(&${target}slot], 1u);
+  }`
+    };
+  }
+  return {
+    declarations: `${options.declarations}
+${slotFunction}
+var<workgroup> localCounts: array<atomic<u32>, ${slotCount}>;`,
+    // No early return: every invocation of a workgroup must reach the barriers.
+    body: `for (var slot = localInvocationIndex; slot < ${slotCount}u; slot += ${COLUMN_PROFILE_WORKGROUP_SIZE}u) {
+    atomicStore(&localCounts[slot], 0u);
+  }
+  workgroupBarrier();
+  if (index < INVOCATION_COUNT) {
+    let slot = getSlot(index);
+    if (slot != NO_SLOT) {
+      atomicAdd(&localCounts[slot], 1u);
+    }
+  }
+  workgroupBarrier();
+  for (var slot = localInvocationIndex; slot < ${slotCount}u; slot += ${COLUMN_PROFILE_WORKGROUP_SIZE}u) {
+    let count = atomicLoad(&localCounts[slot]);
+    if (count != 0u) {
+      atomicAdd(&${target}slot], count);
+    }
+  }`,
+    guardIndex: false,
+    workgroupSize: COLUMN_PROFILE_WORKGROUP_SIZE
+  };
+}
+
 /** Per-column HyperLogLog hash seed, `(column + 1) * 0x9e3779b9` modulo 2^32. @internal */
 export function getColumnProfileHashSeed(column: number): number {
   return Math.imul(column + 1, 0x9e3779b9) >>> 0;
@@ -399,25 +461,30 @@ fn isFiniteBits(x: f32) -> bool {
             write('histogram', output.histograms!, 'atomic<u32>')
           ],
           invocationCount: rowCount,
-          declarations: `const BIN_COUNT: u32 = ${histogramBinCount}u;
+          ...getPrivatizedCountingKernel({
+            slotCount: histogramBinCount,
+            targetName: 'histogram',
+            targetBase: `COLUMN * BIN_COUNT`,
+            declarations: `const BIN_COUNT: u32 = ${histogramBinCount}u;
 const COLUMN: u32 = ${columnIndex}u;
 ${BIN_WGSL}`,
-          body: `${mask ? 'if (rowMask[rowMaskOffset + index] == 0u) {\n    return;\n  }' : ''}
+            slotBody: `${mask ? 'if (rowMask[rowMaskOffset + index] == 0u) {\n    return NO_SLOT;\n  }' : ''}
   let value = values[valuesOffset + index];
   if ((bitcast<u32>(value) & 0x7f800000u) == 0x7f800000u) {
-    return;
+    return NO_SLOT;
   }
   let base = domainsOffset + COLUMN * ${DOMAIN_STRIDE}u;
   let mode = domains[base + 3u];
   let lo = domains[base];
   if (mode == 0.0 || value < lo || value > domains[base + 1u]) {
-    return;
+    return NO_SLOT;
   }
   var bin = 0u;
   if (mode == 1.0) {
     bin = getBinIndex(value, lo, domains[base + 2u]);
   }
-  atomicAdd(&histogram[histogramOffset + COLUMN * BIN_COUNT + bin], 1u);`
+  return bin;`
+          })
         })
       );
     }
@@ -470,13 +537,19 @@ ${HASH_WGSL}`,
             write('categoryCounts', categoryCounts, 'atomic<u32>')
           ],
           invocationCount: rowCount,
-          declarations: `const CATEGORY_COUNT: u32 = ${column.categoryCount}u;
+          ...getPrivatizedCountingKernel({
+            slotCount: column.categoryCount,
+            targetName: 'categoryCounts',
+            targetBase: 'BASE',
+            declarations: `const CATEGORY_COUNT: u32 = ${column.categoryCount}u;
 const BASE: u32 = ${column.categoryBase}u;`,
-          body: `${mask ? 'if (rowMask[rowMaskOffset + index] == 0u) {\n    return;\n  }' : ''}
+            slotBody: `${mask ? 'if (rowMask[rowMaskOffset + index] == 0u) {\n    return NO_SLOT;\n  }' : ''}
   let code = values[valuesOffset + index];
   if (code < CATEGORY_COUNT) {
-    atomicAdd(&categoryCounts[categoryCountsOffset + BASE + code], 1u);
-  }`
+    return code;
+  }
+  return NO_SLOT;`
+          })
         })
       );
     }

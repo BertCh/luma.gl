@@ -352,8 +352,9 @@ const INTERNAL_NODE_COUNT: u32 = ${bvh.internalNodeCount}u;
 const PAIR_CAPACITY: u32 = ${pairCapacity}u;
 fn pairHit(left: u32, right: u32, withGeometry: bool) -> SegmentHit {
   var none = SegmentHit(KIND_NONE, vec2f(0.0), vec2f(0.0));
-  if (!leftValid(left) || !rightValid(right)) { return none; }
+  // The ID test needs no table read, so it goes first: half of all self-mode candidates fail it.
   if (SELF && right <= left) { return none; }
+  if (!leftValid(left) || !rightValid(right)) { return none; }
   if (SAME_FEATURE && leftFeature(left) != rightFeature(right)) { return none; }
   var hit = classifySegments(leftStart(left), leftEnd(left), rightStart(right), rightEnd(right), withGeometry);
   if (SELF && (hit.kind == KIND_TOUCH || hit.kind == KIND_COLLINEAR_TOUCH) &&
@@ -375,10 +376,24 @@ fn nodeOverlaps(node: u32, queryMinimum: vec2f, queryMaximum: vec2f) -> bool {
       {name: 'nodeMaxima', view: bvh.nodeMaxima, type: 'f32', access: 'read'},
       {name: 'leafIds', view: bvh.leafIds, type: 'u32', access: 'read'}
     ];
-    const probeBody = (leafBody: string, prologue: string, epilogue: string) => `${prologue}
-  if (leftValid(index)) {
-    let start = leftStart(index);
-    let end = leftEnd(index);
+    // Self mode with a Morton-sorted tree: thread `i` probes with the segment at leaf slot `i`, so
+    // the threads of a workgroup start from neighboring leaves and walk nearly the same nodes (one
+    // coherent traversal, shared node reads) whatever order the input lists its segments in.
+    // Results go to the probe segment's own row, so outputs equal those of row-order probing.
+    // Requires every segment to own a leaf (the default leaf capacity does).
+    const probeInLeafOrder = isSelfMode && this.spatialSort && this.leafCapacity >= leftSlotCount;
+    const probeBody = (leafBody: string, prologue: string, epilogue: string) => `${
+      probeInLeafOrder
+        ? `let leftRow = leafIds[leafIdsOffset + index];
+  if (leftRow >= RIGHT_COUNT) {
+    return;
+  }`
+        : 'let leftRow = index;'
+    }
+  ${prologue}
+  if (leftValid(leftRow)) {
+    let start = leftStart(leftRow);
+    let end = leftEnd(leftRow);
     let queryMinimum = min(start, end);
     let queryMaximum = max(start, end);
     var node = 0u;
@@ -389,7 +404,7 @@ fn nodeOverlaps(node: u32, queryMinimum: vec2f, queryMaximum: vec2f) -> bool {
           continue;
         }
         let rightRow = leafIds[leafIdsOffset + node - INTERNAL_NODE_COUNT];
-        if (rightRow < RIGHT_COUNT && pairHit(index, rightRow, false).kind != KIND_NONE) {
+        if (rightRow < RIGHT_COUNT && pairHit(leftRow, rightRow, false).kind != KIND_NONE) {
           ${leafBody}
         }
       }
@@ -417,7 +432,7 @@ fn nodeOverlaps(node: u32, queryMinimum: vec2f, queryMaximum: vec2f) -> bool {
         body: probeBody(
           'found = found + 1u;',
           'var found = 0u;',
-          'counts[countsOffset + index] = found;'
+          'counts[countsOffset + leftRow] = found;'
         )
       })
     );
@@ -457,9 +472,9 @@ fn nodeOverlaps(node: u32, queryMinimum: vec2f, queryMaximum: vec2f) -> bool {
         invocationCount: leftSlotCount,
         declarations: pairDeclarations,
         body: probeBody(
-          `let slot = offsets[offsetsOffset + index] + found;
+          `let slot = offsets[offsetsOffset + leftRow] + found;
           if (slot < PAIR_CAPACITY) {
-            pairLeft[pairLeftOffset + slot] = index;
+            pairLeft[pairLeftOffset + slot] = leftRow;
             pairRight[pairRightOffset + slot] = rightRow;
           }
           found = found + 1u;`,

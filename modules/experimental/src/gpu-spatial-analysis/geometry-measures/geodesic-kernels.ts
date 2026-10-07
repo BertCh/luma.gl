@@ -5,8 +5,11 @@
 import {getWGSLFloatLiteral} from '../../utils/wgsl-kernel-nodes';
 import {GPU_GEODESIC_WGS84_FLATTENING, GPU_GEODESIC_WGS84_SEMI_MAJOR_AXIS} from './geodesic-wgsl';
 
-/** Earth model of the geodesic column contributors. */
-export type GPUGeodesicModel = 'sphere' | 'wgs84';
+/**
+ * Earth model of the geodesic column contributors: great circles on a sphere, Vincenty on WGS84,
+ * or `'rhumb'` lines of constant bearing on a sphere (turf `rhumb*`, `geo` `Rhumb`).
+ */
+export type GPUGeodesicModel = 'sphere' | 'wgs84' | 'rhumb';
 
 /** Default compile-time Vincenty iteration count. */
 export const GPU_GEODESIC_DEFAULT_ITERATIONS = 16;

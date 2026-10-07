@@ -218,11 +218,70 @@ export class GPUHotSpotAnalysis implements GPUCommandNodeProducer {
         access: 'read_write'
       });
     }
+    const wantsClassify = Boolean(props.bins || props.pValues);
+    const falseDiscoveryRate =
+      wantsClassify && props.falseDiscoveryRate && props.bins
+        ? getFalseDiscoveryRateNodes<Parameters>(graph, {
+            id: `${id}-fdr`,
+            operation: OPERATION,
+            zScores,
+            parameters,
+            levelExpressions: GPU_HOT_SPOT_SIGNIFICANCE_LEVELS.map(getWGSLFloatLiteral)
+          })
+        : undefined;
+    // Without FDR the bin and p-value are pure functions of the row's z-score, so they are
+    // written by the neighbor kernel itself (one pass less over `zScores`); the FDR variant needs
+    // the global ranks first and keeps its separate classify pass.
+    const fuseClassify = wantsClassify && !falseDiscoveryRate;
+    const [critical90, critical95, critical99] =
+      GPU_HOT_SPOT_CRITICAL_Z_SCORES.map(getWGSLFloatLiteral);
+    const levelSource = falseDiscoveryRate
+      ? `let rank = ranks[ranksOffset + index];
+    if (rank > 0u && rank <= counters[countersOffset + 3u]) {
+      level = 3;
+    } else if (rank > 0u && rank <= counters[countersOffset + 2u]) {
+      level = 2;
+    } else if (rank > 0u && rank <= counters[countersOffset + 1u]) {
+      level = 1;
+    }`
+      : `let absoluteZ = abs(zScore);
+    level = select(select(select(0, 1, absoluteZ >= ${critical90}), 2, absoluteZ >= ${critical95}), 3, absoluteZ >= ${critical99});`;
+    const classifyOutputBindings: WGSLKernelBinding[] = [];
+    if (props.bins) {
+      classifyOutputBindings.push({
+        name: 'bins',
+        view: props.bins,
+        type: 'i32',
+        access: 'read_write'
+      });
+    }
+    if (props.pValues) {
+      classifyOutputBindings.push({
+        name: 'pValues',
+        view: props.pValues,
+        type: 'f32',
+        access: 'read_write'
+      });
+    }
+    const classifyWGSL = `let finite = isFiniteFloat(zScore);
+  var level = 0;
+  if (finite) {
+    ${levelSource}
+  }
+  ${props.bins ? 'bins[binsOffset + index] = select(level, -level, zScore < 0.0);' : ''}
+  ${
+    props.pValues
+      ? 'pValues[pValuesOffset + index] = select(getQuietNaN(index), getTwoSidedPValue(zScore), finite);'
+      : ''
+  }`;
+    if (fuseClassify) {
+      neighborBindings.push(...classifyOutputBindings);
+    }
     nodes.push(
       createWGSLKernelNode<Parameters>(graph, {
         id: `${id}-neighbors`,
         operation: OPERATION,
-        variant: 'gi-star',
+        variant: fuseClassify ? 'gi-star-classify' : 'gi-star',
         bindings: neighborBindings,
         invocationCount: rows,
         declarations: `${sharedWGSL}
@@ -249,23 +308,14 @@ const SELF_WEIGHT: f32 = ${getWGSLFloatLiteral(selfWeight)};`,
     }
   }
   zScores[zScoresOffset + index] = zScore;
-  ${props.neighborCounts ? 'neighborCounts[neighborCountsOffset + index] = neighborCount;' : ''}`
+  ${props.neighborCounts ? 'neighborCounts[neighborCountsOffset + index] = neighborCount;' : ''}
+  ${fuseClassify ? classifyWGSL : ''}`
       })
     );
 
-    if (!props.bins && !props.pValues) {
+    if (!wantsClassify || fuseClassify) {
       return nodes;
     }
-    const falseDiscoveryRate =
-      props.falseDiscoveryRate && props.bins
-        ? getFalseDiscoveryRateNodes<Parameters>(graph, {
-            id: `${id}-fdr`,
-            operation: OPERATION,
-            zScores,
-            parameters,
-            levelExpressions: GPU_HOT_SPOT_SIGNIFICANCE_LEVELS.map(getWGSLFloatLiteral)
-          })
-        : undefined;
     if (falseDiscoveryRate) {
       nodes.push(...falseDiscoveryRate.nodes);
     }
@@ -278,50 +328,17 @@ const SELF_WEIGHT: f32 = ${getWGSLFloatLiteral(selfWeight)};`,
         {name: 'counters', view: falseDiscoveryRate.counters, type: 'u32', access: 'read'}
       );
     }
-    if (props.bins) {
-      classifyBindings.push({name: 'bins', view: props.bins, type: 'i32', access: 'read_write'});
-    }
-    if (props.pValues) {
-      classifyBindings.push({
-        name: 'pValues',
-        view: props.pValues,
-        type: 'f32',
-        access: 'read_write'
-      });
-    }
-    const [critical90, critical95, critical99] =
-      GPU_HOT_SPOT_CRITICAL_Z_SCORES.map(getWGSLFloatLiteral);
-    const levelSource = falseDiscoveryRate
-      ? `let rank = ranks[ranksOffset + index];
-    if (rank > 0u && rank <= counters[countersOffset + 3u]) {
-      level = 3;
-    } else if (rank > 0u && rank <= counters[countersOffset + 2u]) {
-      level = 2;
-    } else if (rank > 0u && rank <= counters[countersOffset + 1u]) {
-      level = 1;
-    }`
-      : `let absoluteZ = abs(zScore);
-    level = select(select(select(0, 1, absoluteZ >= ${critical90}), 2, absoluteZ >= ${critical95}), 3, absoluteZ >= ${critical99});`;
+    classifyBindings.push(...classifyOutputBindings);
     nodes.push(
       createWGSLKernelNode<Parameters>(graph, {
         id: `${id}-classify`,
         operation: OPERATION,
-        variant: falseDiscoveryRate ? 'classify-fdr' : 'classify',
+        variant: 'classify-fdr',
         bindings: classifyBindings,
         invocationCount: rows,
         declarations: SPATIAL_AUTOCORRELATION_FLOAT_WGSL,
         body: `let zScore = zScores[zScoresOffset + index];
-  let finite = isFiniteFloat(zScore);
-  var level = 0;
-  if (finite) {
-    ${levelSource}
-  }
-  ${props.bins ? 'bins[binsOffset + index] = select(level, -level, zScore < 0.0);' : ''}
-  ${
-    props.pValues
-      ? 'pValues[pValuesOffset + index] = select(getQuietNaN(index), getTwoSidedPValue(zScore), finite);'
-      : ''
-  }`
+  ${classifyWGSL}`
       })
     );
     return nodes;

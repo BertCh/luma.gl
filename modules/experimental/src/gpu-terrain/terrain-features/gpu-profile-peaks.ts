@@ -17,6 +17,11 @@ import {
   getWGSLFloatLiteral,
   type WGSLKernelBinding
 } from '../../utils/wgsl-kernel-nodes';
+import {
+  createRasterGatedLoopNodes,
+  createRasterIterationResetNode,
+  createRasterIterationState
+} from '../../gpu-raster/cost-distance/raster-relaxation';
 import type {GPUCompactOutput} from '../../utils/gpu-contributor-types';
 import type {GPUCommandNodeProducer} from '@luma.gl/gpgpu/gpu-core';
 import {
@@ -486,38 +491,62 @@ fn walkSide(start: u32, count: u32, local: u32, peak: f32, direction: i32) -> Si
       })
     );
 
-    // Phase 2: suppression rounds.
+    // Phase 2: suppression rounds. The rounds are GPU-gated: once a round decides no candidate the
+    // remaining unrolled rounds are skipped by their indirect dispatch instead of re-scanning all
+    // samples, so dense profiles pay for the rounds they need rather than for `nmsRounds`.
     const scanRadius = Math.floor(nms) + 1;
-    for (let round = 0; round < nmsRounds; round++) {
+    if (nmsRounds > 0) {
+      const suppression = createRasterIterationState(graph, `${id}-nms`, OPERATION, sampleCount);
       nodes.push(
-        createWGSLKernelNode<Parameters>(graph, {
-          id: `${id}-nms-${round}`,
+        createRasterIterationResetNode<Parameters>(graph, {
+          id: `${id}-nms-reset`,
           operation: OPERATION,
-          variant: 'suppression',
-          bindings: [
-            {name: 'profileOffsets', view: props.offsets, type: 'u32', access: 'read'},
-            {
-              name: 'candidateProminence',
-              view: candidateProminence,
-              type: 'f32',
-              access: 'read'
-            },
-            {name: 'candidateDelta', view: candidateDelta, type: 'f32', access: 'read'},
-            {
-              name: 'candidateState',
-              view: candidateState,
-              type: 'atomic<u32>',
-              access: 'read_write'
-            }
-          ],
-          invocationCount: sampleCount,
-          declarations: `${common}
+          state: suppression
+        }),
+        ...createRasterGatedLoopNodes<Parameters>(graph, {
+          id: `${id}-nms`,
+          gateId: `${id}-nms-gate`,
+          operation: OPERATION,
+          state: suppression,
+          maxIterations: nmsRounds,
+          createRound: ({nodeId, markChangedWGSL, condition, extraResources}) =>
+            createWGSLKernelNode<Parameters>(graph, {
+              id: nodeId,
+              operation: OPERATION,
+              variant: 'suppression',
+              bindings: [
+                {name: 'profileOffsets', view: props.offsets, type: 'u32', access: 'read'},
+                {
+                  name: 'candidateProminence',
+                  view: candidateProminence,
+                  type: 'f32',
+                  access: 'read'
+                },
+                {name: 'candidateDelta', view: candidateDelta, type: 'f32', access: 'read'},
+                {
+                  name: 'candidateState',
+                  view: candidateState,
+                  type: 'atomic<u32>',
+                  access: 'read_write'
+                },
+                {
+                  name: 'status',
+                  view: suppression.status,
+                  type: 'atomic<u32>',
+                  access: 'read_write'
+                }
+              ],
+              invocationCount: sampleCount,
+              condition,
+              extraResources,
+              declarations: `${common}
 const NMS_RADIUS: f32 = ${getWGSLFloatLiteral(nms)};
 const SCAN_RADIUS: u32 = ${scanRadius}u;
 const STATE_UNDECIDED: u32 = ${STATE_UNDECIDED}u;
 const STATE_KEPT: u32 = ${STATE_KEPT}u;
 const STATE_SUPPRESSED: u32 = ${STATE_SUPPRESSED}u;`,
-          body: `if (atomicLoad(&candidateState[candidateStateOffset + index]) != STATE_UNDECIDED) { return; }
+              // Every decision marks the round as changed; the gate stops after a round without one.
+              body: `if (atomicLoad(&candidateState[candidateStateOffset + index]) != STATE_UNDECIDED) { return; }
   let range = findProfile(index);
   let start = range.x;
   let count = range.y - range.x;
@@ -543,6 +572,7 @@ const STATE_SUPPRESSED: u32 = ${STATE_SUPPRESSED}u;`,
       if (distance > NMS_RADIUS) { continue; }
       if (state == STATE_KEPT) {
         atomicStore(&candidateState[candidateStateOffset + index], STATE_SUPPRESSED);
+        ${markChangedWGSL}
         return;
       }
       undecided = true;
@@ -550,7 +580,9 @@ const STATE_SUPPRESSED: u32 = ${STATE_SUPPRESSED}u;`,
   }
   if (!undecided) {
     atomicStore(&candidateState[candidateStateOffset + index], STATE_KEPT);
+    ${markChangedWGSL}
   }`
+            })
         })
       );
     }

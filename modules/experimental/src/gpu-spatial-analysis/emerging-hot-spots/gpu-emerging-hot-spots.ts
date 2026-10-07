@@ -31,7 +31,12 @@ import {
 
 const OPERATION = 'GPUEmergingHotSpots';
 /** Bins reduced by one invocation in the first level of the deterministic global sums. */
-const BIN_BLOCK = 1024;
+/** Bins reduced by one workgroup in the first level of the moment sums. */
+const BIN_BLOCK = 4096;
+/** Threads of the moment-sum workgroups. */
+const MOMENT_WORKGROUP_SIZE = 256;
+/** Threads per workgroup of the space-time Gi* kernel; each workgroup covers whole cells. */
+const GI_WORKGROUP_SIZE = 256;
 const MAXIMUM_BIN_COUNT = 2 ** 31 - 1;
 
 /**
@@ -372,28 +377,23 @@ fn isBinValid(bin: u32, cell: u32) -> bool {
           {name: 'weights', view: weights.weights, type: 'f32', access: 'read'}
         ]
       : [];
-    const weightsGiBody = `let cell = index / SLICE_COUNT;
-  let slice = index % SLICE_COUNT;
-  var zScore = getQuietNaN(index);
-  let rawWindow = parameters[parametersOffset + 1u];
-  let count = statistics[statisticsOffset];
-  let mean = statistics[statisticsOffset + 1u];
-  let variance = statistics[statisticsOffset + 2u];
-  let deviation = statistics[statisticsOffset + 3u];
-  if (isBinValid(index, cell) && isFiniteFloat(rawWindow) && rawWindow >= 0.0) {
-    let windowSize = u32(min(floor(rawWindow), f32(SLICE_COUNT - 1u)));
-    let firstSlice = slice - min(windowSize, slice);
-    var weightedSum = 0.0;
-    var weightSum = 0.0;
-    var squareSum = 0.0;
+    // Space-time Gi* by temporal factoring. The window sum over slices [first, slice] of the
+    // neighbor sums equals the sum over those slices of per-slice ("instant") neighbor sums, so
+    // each workgroup computes the instant sums of its cells once (one thread per (cell, slice),
+    // consecutive threads reading consecutive slices) into workgroup memory and every bin then adds
+    // at most `window + 1` instants. The work is n * T * (k + window) instead of the
+    // n * T * k * window of re-walking the neighbors for every window slice.
+    const cellsPerGroup = Math.max(1, Math.floor(GI_WORKGROUP_SIZE / sliceCount));
+    const instantWGSL = weights
+      ? `var weighted = 0.0;
+    var weightTotal = 0.0;
+    var squareTotal = 0.0;
+    let bin = cell * SLICE_COUNT + slice;
     // The focal cell has weight SELF_WEIGHT; its CSR row never lists the cell itself.
-    for (var neighborSlice = firstSlice; SELF_WEIGHT != 0.0 && neighborSlice <= slice; neighborSlice++) {
-      let neighborBin = cell * SLICE_COUNT + neighborSlice;
-      if (isBinValid(neighborBin, cell)) {
-        weightedSum += SELF_WEIGHT * (readValue(neighborBin) - mean);
-        weightSum += SELF_WEIGHT;
-        squareSum += SELF_WEIGHT * SELF_WEIGHT;
-      }
+    if (SELF_WEIGHT != 0.0 && isBinValid(bin, cell)) {
+      weighted += SELF_WEIGHT * (readValue(bin) - mean);
+      weightTotal += SELF_WEIGHT;
+      squareTotal += SELF_WEIGHT * SELF_WEIGHT;
     }
     for (var slot = offsets[offsetsOffset + cell]; slot < offsets[offsetsOffset + cell + 1u]; slot++) {
       let neighborCell = neighbors[neighborsOffset + slot];
@@ -401,21 +401,103 @@ fn isBinValid(bin: u32, cell: u32) -> bool {
         continue;
       }
       let weight = weights[weightsOffset + slot];
-      for (var neighborSlice = firstSlice; neighborSlice <= slice; neighborSlice++) {
-        let neighborBin = neighborCell * SLICE_COUNT + neighborSlice;
+      let neighborBin = neighborCell * SLICE_COUNT + slice;
+      if (isBinValid(neighborBin, neighborCell)) {
+        weighted += weight * (readValue(neighborBin) - mean);
+        weightTotal += weight;
+        squareTotal += weight * weight;
+      }
+    }
+    instantWeighted[local] = weighted;
+    instantWeight[local] = weightTotal;
+    instantSquare[local] = squareTotal;`
+      : `var weighted = 0.0;
+    var neighborCount = 0u;
+    let column = i32(cell % GRID_WIDTH);
+    let row = i32(cell / GRID_WIDTH);
+    for (var deltaRow = -reach; deltaRow <= reach; deltaRow++) {
+      let neighborRow = row + deltaRow;
+      if (neighborRow < 0 || neighborRow >= i32(GRID_HEIGHT)) {
+        continue;
+      }
+      for (var deltaColumn = -reach; deltaColumn <= reach; deltaColumn++) {
+        let neighborColumn = column + deltaColumn;
+        if (neighborColumn < 0 || neighborColumn >= i32(GRID_WIDTH) ||
+            f32(deltaRow * deltaRow + deltaColumn * deltaColumn) > radiusSquared) {
+          continue;
+        }
+        let neighborCell = u32(neighborRow) * GRID_WIDTH + u32(neighborColumn);
+        let neighborBin = neighborCell * SLICE_COUNT + slice;
         if (isBinValid(neighborBin, neighborCell)) {
-          weightedSum += weight * (readValue(neighborBin) - mean);
-          weightSum += weight;
-          squareSum += weight * weight;
+          weighted += readValue(neighborBin) - mean;
+          neighborCount++;
         }
       }
     }
-    let spread = (count * squareSum - weightSum * weightSum) / (count - 1.0);
-    if (count >= 2.0 && variance > 0.0 && spread > 0.0 && isFiniteFloat(spread)) {
-      zScore = weightedSum / (deviation * sqrt(spread));
+    instantWeighted[local] = weighted;
+    instantWeight[local] = f32(neighborCount);
+    instantSquare[local] = 0.0;`;
+    const windowSumWGSL = weights
+      ? `var weightedSum = 0.0;
+    var weightSum = 0.0;
+    var squareSum = 0.0;
+    for (var windowSlice = firstSlice; windowSlice <= slice; windowSlice++) {
+      let slot = cellInGroup * SLICE_COUNT + windowSlice;
+      weightedSum += instantWeighted[slot];
+      weightSum += instantWeight[slot];
+      squareSum += instantSquare[slot];
+    }`
+      : `var weightedSum = 0.0;
+    var weightSum = 0.0;
+    for (var windowSlice = firstSlice; windowSlice <= slice; windowSlice++) {
+      let slot = cellInGroup * SLICE_COUNT + windowSlice;
+      weightedSum += instantWeighted[slot];
+      weightSum += instantWeight[slot];
     }
+    let squareSum = weightSum;`;
+    // Lattice weights are 1, so the squared-weight sum equals the weight sum; the weights path
+    // keeps the squared-weight sum separately.
+    const giBody = `let group = index / ${GI_WORKGROUP_SIZE}u;
+  let local = localInvocationIndex;
+  let cellInGroup = local / SLICE_COUNT;
+  let slice = local % SLICE_COUNT;
+  let cell = group * CELLS_PER_GROUP + cellInGroup;
+  let isActive = index < INVOCATION_COUNT && cellInGroup < CELLS_PER_GROUP && cell < CELL_COUNT;
+  let rawRadius = ${weights ? '0.0' : 'parameters[parametersOffset]'};
+  let rawWindow = parameters[parametersOffset + 1u];
+  let count = statistics[statisticsOffset];
+  let mean = statistics[statisticsOffset + 1u];
+  let variance = statistics[statisticsOffset + 2u];
+  let deviation = statistics[statisticsOffset + 3u];
+  let parametersValid = isFiniteFloat(rawRadius) && isFiniteFloat(rawWindow) && rawRadius >= 0.0 && rawWindow >= 0.0;
+  let radius = min(rawRadius, MAXIMUM_RADIUS);
+  let radiusSquared = radius * radius;
+  let reach = i32(floor(radius));
+  instantWeighted[local] = 0.0;
+  instantWeight[local] = 0.0;
+  instantSquare[local] = 0.0;
+  if (isActive && parametersValid) {
+    ${instantWGSL}
   }
-  giZScores[giZScoresOffset + index] = zScore;`;
+  // Every invocation reaches the barrier.
+  workgroupBarrier();
+  if (isActive) {
+    var zScore = getQuietNaN(index);
+    if (parametersValid && isBinValid(cell * SLICE_COUNT + slice, cell)) {
+      let windowSize = u32(min(floor(rawWindow), f32(SLICE_COUNT - 1u)));
+      let firstSlice = slice - min(windowSize, slice);
+      ${windowSumWGSL}
+      ${
+        weights
+          ? 'let spread = (count * squareSum - weightSum * weightSum) / (count - 1.0);'
+          : 'let spread = weightSum * (count - weightSum) / (count - 1.0);'
+      }
+      if (count >= 2.0 && variance > 0.0 && spread > 0.0 && isFiniteFloat(spread)) {
+        zScore = weightedSum / (deviation * sqrt(spread));
+      }
+    }
+    giZScores[giZScoresOffset + cell * SLICE_COUNT + slice] = zScore;
+  }`;
     const nodes: GPUCommandNode<Parameters>[] = [];
 
     nodes.push(
@@ -439,20 +521,42 @@ fn isBinValid(bin: u32, cell: u32) -> bool {
             access: 'read_write'
           }
         ],
-        invocationCount: blockCount,
-        declarations,
-        body: `let begin = index * BIN_BLOCK;
-  let end = min(begin + BIN_BLOCK, BIN_COUNT);
+        // One workgroup per block: strided per-thread partials (coalesced reads) and a fixed tree.
+        workgroupSize: MOMENT_WORKGROUP_SIZE,
+        invocationCount: blockCount * MOMENT_WORKGROUP_SIZE,
+        guardIndex: false,
+        declarations: `${declarations}
+var<workgroup> partialSums: array<f32, ${MOMENT_WORKGROUP_SIZE}>;
+var<workgroup> partialCounts: array<u32, ${MOMENT_WORKGROUP_SIZE}>;`,
+        // No early return: every invocation of a workgroup must reach the barriers.
+        body: `let block = index / ${MOMENT_WORKGROUP_SIZE}u;
+  let isInRange = index < INVOCATION_COUNT;
   var sum = 0.0;
   var count = 0u;
-  for (var bin = begin; bin < end; bin++) {
-    if (isBinValid(bin, bin / SLICE_COUNT)) {
-      sum += readValue(bin);
-      count++;
+  if (isInRange) {
+    let begin = block * BIN_BLOCK;
+    let end = min(begin + BIN_BLOCK, BIN_COUNT);
+    for (var bin = begin + localInvocationIndex; bin < end; bin += ${MOMENT_WORKGROUP_SIZE}u) {
+      if (isBinValid(bin, bin / SLICE_COUNT)) {
+        sum += readValue(bin);
+        count++;
+      }
     }
   }
-  sumPartials[sumPartialsOffset + index] = sum;
-  countPartials[countPartialsOffset + index] = count;`
+  partialSums[localInvocationIndex] = sum;
+  partialCounts[localInvocationIndex] = count;
+  workgroupBarrier();
+  for (var stride = ${MOMENT_WORKGROUP_SIZE / 2}u; stride > 0u; stride = stride / 2u) {
+    if (localInvocationIndex < stride) {
+      partialSums[localInvocationIndex] += partialSums[localInvocationIndex + stride];
+      partialCounts[localInvocationIndex] += partialCounts[localInvocationIndex + stride];
+    }
+    workgroupBarrier();
+  }
+  if (isInRange && localInvocationIndex == 0u) {
+    sumPartials[sumPartialsOffset + block] = partialSums[0];
+    countPartials[countPartialsOffset + block] = partialCounts[0];
+  }`
       }),
       createWGSLKernelNode<Parameters>(graph, {
         id: `${id}-mean`,
@@ -501,19 +605,36 @@ fn isBinValid(bin: u32, cell: u32) -> bool {
             access: 'read_write'
           }
         ],
-        invocationCount: blockCount,
-        declarations,
-        body: `let mean = statistics[statisticsOffset + 1u];
-  let begin = index * BIN_BLOCK;
-  let end = min(begin + BIN_BLOCK, BIN_COUNT);
+        workgroupSize: MOMENT_WORKGROUP_SIZE,
+        invocationCount: blockCount * MOMENT_WORKGROUP_SIZE,
+        guardIndex: false,
+        declarations: `${declarations}
+var<workgroup> partialSums: array<f32, ${MOMENT_WORKGROUP_SIZE}>;`,
+        body: `let block = index / ${MOMENT_WORKGROUP_SIZE}u;
+  let isInRange = index < INVOCATION_COUNT;
+  let mean = statistics[statisticsOffset + 1u];
   var sum = 0.0;
-  for (var bin = begin; bin < end; bin++) {
-    if (isBinValid(bin, bin / SLICE_COUNT)) {
-      let centered = readValue(bin) - mean;
-      sum += centered * centered;
+  if (isInRange) {
+    let begin = block * BIN_BLOCK;
+    let end = min(begin + BIN_BLOCK, BIN_COUNT);
+    for (var bin = begin + localInvocationIndex; bin < end; bin += ${MOMENT_WORKGROUP_SIZE}u) {
+      if (isBinValid(bin, bin / SLICE_COUNT)) {
+        let centered = readValue(bin) - mean;
+        sum += centered * centered;
+      }
     }
   }
-  squarePartials[squarePartialsOffset + index] = sum;`
+  partialSums[localInvocationIndex] = sum;
+  workgroupBarrier();
+  for (var stride = ${MOMENT_WORKGROUP_SIZE / 2}u; stride > 0u; stride = stride / 2u) {
+    if (localInvocationIndex < stride) {
+      partialSums[localInvocationIndex] += partialSums[localInvocationIndex + stride];
+    }
+    workgroupBarrier();
+  }
+  if (isInRange && localInvocationIndex == 0u) {
+    squarePartials[squarePartialsOffset + block] = partialSums[0];
+  }`
       }),
       createWGSLKernelNode<Parameters>(graph, {
         id: `${id}-deviation`,
@@ -542,7 +663,7 @@ fn isBinValid(bin: u32, cell: u32) -> bool {
       createWGSLKernelNode<Parameters>(graph, {
         id: `${id}-gi-star`,
         operation: OPERATION,
-        variant: 'gi-star',
+        variant: weights ? 'gi-star-weights' : 'gi-star',
         bindings: [
           valuesBinding,
           ...maskBindings,
@@ -556,63 +677,20 @@ fn isBinValid(bin: u32, cell: u32) -> bool {
             access: 'read_write'
           }
         ],
-        invocationCount: binCount,
-        declarations,
-        body: weights
-          ? weightsGiBody
-          : `let cell = index / SLICE_COUNT;
-  let slice = index % SLICE_COUNT;
-  var zScore = getQuietNaN(index);
-  let rawRadius = parameters[parametersOffset];
-  let rawWindow = parameters[parametersOffset + 1u];
-  let count = statistics[statisticsOffset];
-  let mean = statistics[statisticsOffset + 1u];
-  let variance = statistics[statisticsOffset + 2u];
-  let deviation = statistics[statisticsOffset + 3u];
-  if (isBinValid(index, cell) && isFiniteFloat(rawRadius) && isFiniteFloat(rawWindow) &&
-      rawRadius >= 0.0 && rawWindow >= 0.0) {
-    let radius = min(rawRadius, MAXIMUM_RADIUS);
-    let radiusSquared = radius * radius;
-    let reach = i32(floor(radius));
-    let windowSize = u32(min(floor(rawWindow), f32(SLICE_COUNT - 1u)));
-    let firstSlice = slice - min(windowSize, slice);
-    let column = i32(cell % GRID_WIDTH);
-    let row = i32(cell / GRID_WIDTH);
-    var neighborSum = 0.0;
-    var neighborCount = 0u;
-    for (var deltaRow = -reach; deltaRow <= reach; deltaRow++) {
-      let neighborRow = row + deltaRow;
-      if (neighborRow < 0 || neighborRow >= i32(GRID_HEIGHT)) {
-        continue;
-      }
-      for (var deltaColumn = -reach; deltaColumn <= reach; deltaColumn++) {
-        let neighborColumn = column + deltaColumn;
-        if (neighborColumn < 0 || neighborColumn >= i32(GRID_WIDTH) ||
-            f32(deltaRow * deltaRow + deltaColumn * deltaColumn) > radiusSquared) {
-          continue;
-        }
-        let neighborCell = u32(neighborRow) * GRID_WIDTH + u32(neighborColumn);
-        for (var neighborSlice = firstSlice; neighborSlice <= slice; neighborSlice++) {
-          let neighborBin = neighborCell * SLICE_COUNT + neighborSlice;
-          if (isBinValid(neighborBin, neighborCell)) {
-            neighborSum += readValue(neighborBin) - mean;
-            neighborCount++;
-          }
-        }
-      }
-    }
-    let weightSum = f32(neighborCount);
-    let spread = weightSum * (count - weightSum) / (count - 1.0);
-    if (count >= 2.0 && variance > 0.0 && spread > 0.0 && isFiniteFloat(spread)) {
-      zScore = neighborSum / (deviation * sqrt(spread));
-    }
-  }
-  giZScores[giZScoresOffset + index] = zScore;`
+        workgroupSize: GI_WORKGROUP_SIZE,
+        invocationCount: Math.ceil(cellCount / cellsPerGroup) * GI_WORKGROUP_SIZE,
+        guardIndex: false,
+        declarations: `${declarations}
+const CELLS_PER_GROUP: u32 = ${cellsPerGroup}u;
+var<workgroup> instantWeighted: array<f32, ${GI_WORKGROUP_SIZE}>;
+var<workgroup> instantWeight: array<f32, ${GI_WORKGROUP_SIZE}>;
+var<workgroup> instantSquare: array<f32, ${GI_WORKGROUP_SIZE}>;`,
+        body: giBody
       }),
       createWGSLKernelNode<Parameters>(graph, {
         id: `${id}-mann-kendall`,
         operation: OPERATION,
-        variant: 'mann-kendall',
+        variant: 'mann-kendall-classify',
         bindings: [
           parametersBinding,
           {name: 'giZScores', view: giZScores, type: 'f32', access: 'read'},
@@ -645,42 +723,69 @@ fn isBinValid(bin: u32, cell: u32) -> bool {
             view: props.coldSliceCount,
             type: 'u32',
             access: 'read_write'
+          },
+          {
+            name: 'category',
+            view: props.category,
+            type: 'u32',
+            access: 'read_write'
           }
         ],
         invocationCount: cellCount,
         declarations: `const SLICE_COUNT: u32 = ${sliceCount}u;
 ${SPATIAL_AUTOCORRELATION_FLOAT_WGSL}`,
+        // The series is read once into private memory (compacted to its finite values) and the
+        // pair loop visits each unordered pair once: the sign sums over i < j, and tie groups are
+        // found by marking, from the first member, every later equal member in a bitset.
         body: `let criticalZ = parameters[parametersOffset + 2u];
+  let trendLevel = parameters[parametersOffset + 3u];
+  let fraction = parameters[parametersOffset + 4u];
   let base = index * SLICE_COUNT;
+  var series: array<f32, SLICE_COUNT>;
+  var hasEqualBefore: array<u32, ${Math.ceil(sliceCount / 32)}>;
   var statistic = 0;
   var valid = 0u;
   var hot = 0u;
   var cold = 0u;
   var tieTerm = 0u;
-  for (var first = 0u; first < SLICE_COUNT; first++) {
-    let firstValue = giZScores[giZScoresOffset + base + first];
-    if (!isFiniteFloat(firstValue)) {
-      continue;
+  var trailingHot = 0u;
+  var trailingCold = 0u;
+  var finalState = 0u;
+  for (var slice = 0u; slice < SLICE_COUNT; slice++) {
+    let value = giZScores[giZScoresOffset + base + slice];
+    if (isFiniteFloat(value)) {
+      series[valid] = value;
+      valid++;
+      if (value >= criticalZ) {
+        hot++;
+        trailingHot++;
+        trailingCold = 0u;
+        finalState = 1u;
+      } else if (value <= -criticalZ) {
+        cold++;
+        trailingCold++;
+        trailingHot = 0u;
+        finalState = 2u;
+      } else {
+        trailingHot = 0u;
+        trailingCold = 0u;
+        finalState = 0u;
+      }
     }
-    valid++;
-    hot += select(0u, 1u, firstValue >= criticalZ);
-    cold += select(0u, 1u, firstValue <= -criticalZ);
-    var equalBefore = false;
+  }
+  for (var first = 0u; first < valid; first++) {
+    let firstValue = series[first];
     var groupSize = 1u;
-    for (var second = 0u; second < SLICE_COUNT; second++) {
-      let secondValue = giZScores[giZScoresOffset + base + second];
-      if (second == first || !isFiniteFloat(secondValue)) {
-        continue;
-      }
-      if (second > first) {
-        statistic += select(select(0, -1, secondValue < firstValue), 1, secondValue > firstValue);
-      }
+    for (var second = first + 1u; second < valid; second++) {
+      let secondValue = series[second];
+      statistic += select(select(0, -1, secondValue < firstValue), 1, secondValue > firstValue);
       if (secondValue == firstValue) {
-        equalBefore = equalBefore || second < first;
         groupSize++;
+        hasEqualBefore[second / 32u] |= 1u << (second % 32u);
       }
     }
-    if (!equalBefore && groupSize > 1u) {
+    let isFirstMember = (hasEqualBefore[first / 32u] & (1u << (first % 32u))) == 0u;
+    if (isFirstMember && groupSize > 1u) {
       tieTerm += groupSize * (groupSize - 1u) * (2u * groupSize + 5u);
     }
   }
@@ -703,75 +808,13 @@ ${SPATIAL_AUTOCORRELATION_FLOAT_WGSL}`,
   trendP[trendPOffset + index] = trendPValue;
   trendS[trendSOffset + index] = statistic;
   hotSliceCount[hotSliceCountOffset + index] = hot;
-  coldSliceCount[coldSliceCountOffset + index] = cold;`
-      }),
-      createWGSLKernelNode<Parameters>(graph, {
-        id: `${id}-classify`,
-        operation: OPERATION,
-        variant: 'classify',
-        bindings: [
-          parametersBinding,
-          {name: 'giZScores', view: giZScores, type: 'f32', access: 'read'},
-          {name: 'trendZ', view: props.trendZ, type: 'f32', access: 'read'},
-          {name: 'trendP', view: props.trendP, type: 'f32', access: 'read'},
-          {
-            name: 'hotSliceCount',
-            view: props.hotSliceCount,
-            type: 'u32',
-            access: 'read'
-          },
-          {
-            name: 'coldSliceCount',
-            view: props.coldSliceCount,
-            type: 'u32',
-            access: 'read'
-          },
-          {
-            name: 'category',
-            view: props.category,
-            type: 'u32',
-            access: 'read_write'
-          }
-        ],
-        invocationCount: cellCount,
-        declarations: `const SLICE_COUNT: u32 = ${sliceCount}u;
-${SPATIAL_AUTOCORRELATION_FLOAT_WGSL}`,
-        body: `let criticalZ = parameters[parametersOffset + 2u];
-  let trendLevel = parameters[parametersOffset + 3u];
-  let fraction = parameters[parametersOffset + 4u];
-  let base = index * SLICE_COUNT;
-  var valid = 0u;
-  var trailingHot = 0u;
-  var trailingCold = 0u;
-  var finalState = 0u;
-  for (var slice = 0u; slice < SLICE_COUNT; slice++) {
-    let zScore = giZScores[giZScoresOffset + base + slice];
-    if (!isFiniteFloat(zScore)) {
-      continue;
-    }
-    valid++;
-    if (zScore >= criticalZ) {
-      trailingHot++;
-      trailingCold = 0u;
-      finalState = 1u;
-    } else if (zScore <= -criticalZ) {
-      trailingCold++;
-      trailingHot = 0u;
-      finalState = 2u;
-    } else {
-      trailingHot = 0u;
-      trailingCold = 0u;
-      finalState = 0u;
-    }
-  }
-  let hot = hotSliceCount[hotSliceCountOffset + index];
-  let cold = coldSliceCount[coldSliceCountOffset + index];
+  coldSliceCount[coldSliceCountOffset + index] = cold;
   let threshold = fraction * f32(valid);
   let hotPersistent = f32(hot) >= threshold;
   let coldPersistent = f32(cold) >= threshold;
-  let trendSignificant = trendP[trendPOffset + index] <= trendLevel;
-  let trendUp = trendSignificant && trendZ[trendZOffset + index] > 0.0;
-  let trendDown = trendSignificant && trendZ[trendZOffset + index] < 0.0;
+  let trendSignificant = trendPValue <= trendLevel;
+  let trendUp = trendSignificant && trendZScore > 0.0;
+  let trendDown = trendSignificant && trendZScore < 0.0;
   var result = 0u;
   if (valid > 0u) {
     if (finalState == 1u) {

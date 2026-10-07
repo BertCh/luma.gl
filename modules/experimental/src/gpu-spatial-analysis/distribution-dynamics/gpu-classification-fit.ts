@@ -19,6 +19,8 @@ import {
 } from '../../utils/gpu-contributor-utils';
 
 const OPERATION = 'GPUClassificationFit';
+/** Lanes of the per-class statistics workgroup. */
+const STATS_WORKGROUP_SIZE = 256;
 const MAXIMUM_CLASS_COUNT = 256;
 
 /** Rows of the optional `summary` output of {@link GPUClassificationFit}. */
@@ -97,14 +99,15 @@ export type GPUClassificationFitProps = {
  *
  * Method: a stable sort by value key, then a stable sort by class, leaves every class as a
  * contiguous ascending-value segment (plus the value-ordered list of all counted rows for the
- * overall statistics). Each class invocation binary-searches its segment bounds, reads the exact
- * medians at their positions and sums its segment in sorted order, so the work is two radix sorts
- * plus one pass over the values in total, with no atomics and bit-reproducible results. Rows are
+ * overall statistics). Each class workgroup binary-searches its segment bounds, reads the exact
+ * medians at their positions and sums its segment with strided lanes and a fixed-order tree
+ * reduction, so the work is two radix sorts plus one pass over the values in total, with no
+ * atomics and bit-reproducible results. Rows are
  * counted only when they have a class below `classCount`, pass the mask, and hold a finite value
  * (NaN and infinities are skipped).
  *
- * Deviations from mapclassify: sums and the median average are float32 (and accumulate in sorted
- * order rather than index order), so results agree to float32 precision, not bitwise. Requires at
+ * Deviations from mapclassify: sums and the median average are float32 (and accumulate in a
+ * fixed tree order rather than index order), so results agree to float32 precision, not bitwise. Requires at
  * least one row.
  */
 export class GPUClassificationFit implements GPUCommandNodeProducer {
@@ -282,8 +285,27 @@ const UNCOUNTED_KEY: u32 = 0xffffffffu;`;
             access: 'read_write'
           }
         ],
-        invocationCount: classCount + 1,
+        // One workgroup per class slot (plus the all-rows slot): the lanes stride over the slot's
+        // sorted segment and tree-reduce each sum, so the depth is segment / 256 + log 256, not
+        // the whole segment on one invocation. Every lane reaches every barrier.
+        invocationCount: (classCount + 1) * STATS_WORKGROUP_SIZE,
+        guardIndex: false,
         declarations: `${constants}
+const LANES: u32 = ${STATS_WORKGROUP_SIZE}u;
+var<workgroup> scratch: array<f32, ${STATS_WORKGROUP_SIZE}>;
+
+fn reduceSum(value: f32, lane: u32) -> f32 {
+  workgroupBarrier();
+  scratch[lane] = value;
+  workgroupBarrier();
+  for (var stride = LANES / 2u; stride > 0u; stride = stride / 2u) {
+    if (lane < stride) {
+      scratch[lane] += scratch[lane + stride];
+    }
+    workgroupBarrier();
+  }
+  return scratch[0];
+}
 
 // First position in sortedClassKeys whose key is at least bound.
 fn lowerBound(bound: u32) -> u32 {
@@ -309,33 +331,38 @@ fn valueAt(slot: u32, position: u32) -> f32 {
   );
   return values[valuesOffset + row];
 }`,
-        body: `let slot = index;
+        body: `let slot = index / LANES;
+  let lane = localInvocationIndex;
   let start = select(lowerBound(slot), 0u, slot == CLASSES);
   let end = lowerBound(select(slot + 1u, CLASSES, slot == CLASSES));
   let count = end - start;
-  counts[countsOffset + slot] = count;
   var median = 0.0;
-  var absolute = 0.0;
-  var squared = 0.0;
   if (count > 0u) {
     let lower = valueAt(slot, start + (count - 1u) / 2u);
     let upper = valueAt(slot, start + count / 2u);
     median = lower + (upper - lower) * 0.5;
-    var sum = 0.0;
-    for (var position = start; position < end; position++) {
-      sum += valueAt(slot, position);
-    }
-    let mean = sum / f32(count);
-    for (var position = start; position < end; position++) {
-      let value = valueAt(slot, position);
-      absolute += abs(value - median);
-      let centered = value - mean;
-      squared += centered * centered;
-    }
   }
-  medians[mediansOffset + slot] = median;
-  absoluteDeviations[absoluteDeviationsOffset + slot] = absolute;
-  squaredDeviations[squaredDeviationsOffset + slot] = squared;`
+  var partialSum = 0.0;
+  for (var position = start + lane; position < end; position += LANES) {
+    partialSum += valueAt(slot, position);
+  }
+  let mean = reduceSum(partialSum, lane) / f32(max(count, 1u));
+  var partialAbsolute = 0.0;
+  var partialSquared = 0.0;
+  for (var position = start + lane; position < end; position += LANES) {
+    let value = valueAt(slot, position);
+    partialAbsolute += abs(value - median);
+    let centered = value - mean;
+    partialSquared += centered * centered;
+  }
+  let absolute = reduceSum(partialAbsolute, lane);
+  let squared = reduceSum(partialSquared, lane);
+  if (lane == 0u) {
+    counts[countsOffset + slot] = count;
+    medians[mediansOffset + slot] = median;
+    absoluteDeviations[absoluteDeviationsOffset + slot] = absolute;
+    squaredDeviations[squaredDeviationsOffset + slot] = squared;
+  }`
       })
     ];
     if (output.summary) {

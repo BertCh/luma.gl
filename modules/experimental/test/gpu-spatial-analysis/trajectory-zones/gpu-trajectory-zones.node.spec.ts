@@ -121,12 +121,14 @@ it('GPUTrackSimilarity validates props and the Frechet cap', () => {
     frechet: view('float32', 2)
   };
   const similarity = new GPUTrackSimilarity(props);
-  expect(similarity.frechetWorkgroupSize).toBe(128);
+  expect(similarity.maxFrechetVertices).toBe(256);
+  expect(similarity.densifySubdivisions).toBe(1);
   expect(similarity.getCommandNodes(graph).length).toBe(3);
-  expect(new GPUTrackSimilarity({...props, maxFrechetVertices: 33}).frechetWorkgroupSize).toBe(64);
-  expect(() => new GPUTrackSimilarity({...props, maxFrechetVertices: 257})).toThrow(
+  expect(new GPUTrackSimilarity({...props, densify: 0.25}).densifySubdivisions).toBe(4);
+  expect(() => new GPUTrackSimilarity({...props, maxFrechetVertices: 2049})).toThrow(
     /maxFrechetVertices/
   );
+  expect(() => new GPUTrackSimilarity({...props, densify: 1.5})).toThrow(/densify/);
   expect(() => new GPUTrackSimilarity({...props, positionsB: view('float32x2', 2)})).toThrow(
     /together/
   );

@@ -136,3 +136,61 @@ export function createPatchKeysNode<Parameters>(
   });
   return {node, keys};
 }
+
+/** Columns scanned serially by one invocation of a run-aggregated patch kernel. @internal */
+export const PATCH_SEGMENT_LENGTH = 16;
+
+/** Invocation count of a run-aggregated patch kernel: one per row segment. @internal */
+export function getPatchSegmentCount(width: number, height: number): number {
+  return height * Math.ceil(width / PATCH_SEGMENT_LENGTH);
+}
+
+/**
+ * Returns a WGSL kernel body (with `WIDTH` and a `keys` binding in scope) that scans one
+ * {@link PATCH_SEGMENT_LENGTH}-column row segment per invocation and calls `onRun` once per
+ * maximal run of equal nonzero keys inside the segment, with `runKey`, `runStart`, `runEnd`
+ * (exclusive) and `row` in scope.
+ *
+ * Per-patch reductions (counts, extents, perimeter faces) otherwise issue one atomic per pixel at
+ * the patch's single counter, which serializes a large patch at that address. Folding each run
+ * locally first cuts the atomics by up to the segment length on large patches, and the integer
+ * results are unchanged. `onPixel` runs for every nonzero-key pixel (`column`, `row`, `key` in
+ * scope) and `onRunStart` resets `runState` variables declared by `declareRunState`.
+ *
+ * @internal
+ */
+export function getPatchRunSegmentsBody(
+  width: number,
+  props: {
+    onRun: string;
+    declareRunState?: string;
+    onRunStart?: string;
+    onPixel?: string;
+  }
+): string {
+  return `let segmentsPerRow = ${Math.ceil(width / PATCH_SEGMENT_LENGTH)}u;
+  let row = index / segmentsPerRow;
+  let segmentStart = (index % segmentsPerRow) * ${PATCH_SEGMENT_LENGTH}u;
+  let segmentEnd = min(segmentStart + ${PATCH_SEGMENT_LENGTH}u, WIDTH);
+  let rowBase = row * WIDTH;
+  var runKey = 0u;
+  var runStart = segmentStart;
+  ${props.declareRunState ?? ''}
+  // The extra iteration at segmentEnd sees a sentinel key that flushes the last run.
+  for (var column = segmentStart; column <= segmentEnd; column++) {
+    var key = 0xffffffffu;
+    if (column < segmentEnd) {
+      key = keys[keysOffset + rowBase + column];
+    }
+    if (key != runKey) {
+      if (runKey != 0u) {
+        let runEnd = column;
+        ${props.onRun}
+      }
+      runKey = key;
+      runStart = column;
+      ${props.onRunStart ?? ''}
+    }
+    ${props.onPixel ? `if (column < segmentEnd && key != 0u) {\n      ${props.onPixel}\n    }` : ''}
+  }`;
+}

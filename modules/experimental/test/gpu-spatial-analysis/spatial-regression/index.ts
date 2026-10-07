@@ -8,3 +8,5 @@ import './geographically-weighted-regression-grid.spec';
 import './spatial-regression-diagnostics.spec';
 import './spatial-two-stage-least-squares.spec';
 import './spatial-error-gm.spec';
+import './geographically-weighted-regression-nonstationarity.spec';
+import './geographically-weighted-regression-adaptive-grid.spec';

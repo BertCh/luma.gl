@@ -163,6 +163,9 @@ export class GPURasterReclassify implements GPUCommandNodeProducer {
         })
       );
     }
+    const privatizeCounts =
+      Boolean(output.classCounts) &&
+      (maximumBreakCount + 1) * 4 <= graph.device.limits.maxComputeWorkgroupStorageSize;
     const bindings: WGSLKernelBinding[] = [
       {name: 'source', view: props.values, type: 'f32', access: 'read'},
       {name: 'breaks', view: props.breaks, type: 'f32', access: 'read'},
@@ -200,11 +203,24 @@ export class GPURasterReclassify implements GPUCommandNodeProducer {
         variant: 'classify',
         bindings,
         invocationCount: rowCount,
+        // Class counts accumulate in a workgroup-private table (merged once per non-empty class)
+        // when it fits, which takes the per-cell global atomic off a handful of hot addresses.
+        guardIndex: !privatizeCounts,
         declarations: `const MAXIMUM_BREAK_COUNT: u32 = ${maximumBreakCount}u;
+${privatizeCounts ? `var<workgroup> localCounts: array<atomic<u32>, ${maximumBreakCount + 1}>;` : ''}
 const NO_DATA_CLASS: u32 = 0xffffffffu;
 ${getRasterAlgebraValueWGSL(props.noDataValue)}
 ${getBreakSearchWGSL('countBreaksBelow', 'breaks')}`,
-        body: `let value = source[sourceOffset + index];
+        body: `${
+          privatizeCounts
+            ? `for (var slot = localInvocationIndex; slot <= MAXIMUM_BREAK_COUNT; slot += 256u) {
+    atomicStore(&localCounts[slot], 0u);
+  }
+  workgroupBarrier();
+  if (index < INVOCATION_COUNT) {`
+            : ''
+        }
+  let value = source[sourceOffset + index];
   var isValid = !isNoDataValue(value);
   ${props.validity ? 'isValid = isValid && validity[validityOffset + index] != 0u;' : ''}
   let breakCountValue = params[paramsOffset];
@@ -220,7 +236,23 @@ ${getBreakSearchWGSL('countBreaksBelow', 'breaks')}`,
       ? `reclassifiedOut[reclassifiedOutOffset + index] = select(getNaN(), classValues[classValuesOffset + min(classIndex, MAXIMUM_BREAK_COUNT)], isValid);`
       : ''
   }
-  ${output.classCounts ? 'if (isValid) {\n    atomicAdd(&countsOut[countsOutOffset + classIndex], 1u);\n  }' : ''}`
+  ${
+    !output.classCounts
+      ? ''
+      : privatizeCounts
+        ? `if (isValid) {
+    atomicAdd(&localCounts[classIndex], 1u);
+  }
+  }
+  workgroupBarrier();
+  for (var slot = localInvocationIndex; slot <= MAXIMUM_BREAK_COUNT; slot += 256u) {
+    let partial = atomicLoad(&localCounts[slot]);
+    if (partial != 0u) {
+      atomicAdd(&countsOut[countsOutOffset + slot], partial);
+    }
+  }`
+        : 'if (isValid) {\n    atomicAdd(&countsOut[countsOutOffset + classIndex], 1u);\n  }'
+  }`
       })
     );
     return nodes;

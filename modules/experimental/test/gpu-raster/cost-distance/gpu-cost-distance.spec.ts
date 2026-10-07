@@ -66,6 +66,7 @@ type FixtureOptions = {
   thresholds?: number[];
   maxIterations?: number;
   maxTieIterations?: number;
+  frictionParameters?: number[];
   backLinks?: boolean;
   path?: {target: number; capacity: number};
 };
@@ -81,6 +82,7 @@ type Fixture = {
   sourceCount?: GPUParameterBuffer<'uint32'>;
   target?: GPUParameterBuffer<'uint32'>;
   thresholds?: GPUParameterBuffer<'float32'>;
+  frictionParameters?: GPUParameterBuffer<'float32'>;
   /** Buffers that the options did not request are absent at runtime. */
   buffers: Record<BufferName, Buffer>;
   parameters: GPUParameterBuffer[];
@@ -134,6 +136,13 @@ function createFixture(device: Device, options: FixtureOptions): Fixture {
   const thresholds = options.thresholds
     ? createParameter('thresholds', 'float32', options.thresholds)
     : undefined;
+  const frictionParameters = options.frictionParameters
+    ? (createParameter(
+        'friction-parameters',
+        'float32',
+        options.frictionParameters
+      ) as GPUParameterBuffer<'float32'>)
+    : undefined;
   const target = options.path
     ? createParameter('target', 'uint32', [options.path.target])
     : undefined;
@@ -172,6 +181,7 @@ function createFixture(device: Device, options: FixtureOptions): Fixture {
           values: importGraphBuffer(graph, 'cd-friction', frictionBuffer, 'float32', cellCount)
         }
       },
+      frictionParameters: frictionParameters?.importToGraph(graph),
       settings: settings.importToGraph(graph),
       cellSizeMode: options.cellSizeMode,
       sources: sources?.importToGraph(graph),
@@ -221,6 +231,7 @@ function createFixture(device: Device, options: FixtureOptions): Fixture {
     sourceCount,
     target,
     thresholds,
+    frictionParameters,
     buffers: {...buffers, friction: frictionBuffer},
     parameters
   };
@@ -567,6 +578,38 @@ it('GPUCostDistance changes cost limit and friction per frame without recompilin
     await readCosts(fixture),
     computeCostDistance(getOracleOptions(fixture, seeds, doubled, changed))
   );
+  compiled.destroy();
+  destroyFixture(fixture);
+});
+
+it('GPUCostDistance applies frictionParameters scale and offset per frame', async () => {
+  const device = await getWebGPUTestDevice();
+  if (!device) return;
+  const width = 40;
+  const height = 30;
+  const friction = createRandomFriction(width, height, 5);
+  const source = 10 * width + 12;
+  const fixture = createFixture(device, {
+    width,
+    height,
+    friction,
+    sources: [source],
+    frictionParameters: [2, 0.5]
+  });
+  const compiled = await run(device, fixture);
+  const seeds = [{cell: source, cost: 0}];
+  const calibrate = (scale: number, offset: number) =>
+    Float32Array.from(friction, value => value * scale + offset);
+  expectCostsClose(
+    await readCosts(fixture),
+    computeCostDistance(getOracleOptions(fixture, seeds, undefined, calibrate(2, 0.5)))
+  );
+  const first = await readIterations(fixture);
+  expect(first.converged).toBe(1);
+  expect(first.iterationCount).toBeGreaterThan(0);
+  fixture.frictionParameters!.write(Float32Array.of(1, 0));
+  submitGraph(device, compiled, undefined);
+  expectCostsClose(await readCosts(fixture), computeCostDistance(getOracleOptions(fixture, seeds)));
   compiled.destroy();
   destroyFixture(fixture);
 });

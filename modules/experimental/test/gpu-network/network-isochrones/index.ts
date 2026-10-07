@@ -4,3 +4,4 @@
 
 import './gpu-network-isochrones.spec';
 import './gpu-network-isochrones.node.spec';
+import './gpu-network-isochrones-facilities.spec';

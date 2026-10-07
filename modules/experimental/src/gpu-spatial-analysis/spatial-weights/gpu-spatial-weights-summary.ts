@@ -4,8 +4,6 @@
 
 import {
   createTransientView,
-  GPUGroupAggregation,
-  GPUReduction,
   validatePackedUint32View,
   validatePackedView,
   type GPUCommandGraph,
@@ -14,14 +12,19 @@ import {
   type GraphDataView
 } from '@luma.gl/gpgpu/gpu-core';
 import {createWGSLKernelNode, getWGSLFloatLiteral} from '../../utils/wgsl-kernel-nodes';
-import {getSortedSegmentSumNodes} from '../../utils/sorted-segment-sums';
 import {
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph
 } from '../../utils/gpu-contributor-utils';
+import {getSlotGroupingNodes} from './slot-grouping';
 import {type GPUSpatialWeights, validateGPUSpatialWeights} from './spatial-weights';
 
 const OPERATION = 'GPUSpatialWeightsSummary';
+
+/** Rows reduced by one workgroup in the first level of the global reductions. */
+const SUMMARY_BLOCK_ROWS = 4096;
+/** Threads of the reduction workgroups. */
+const SUMMARY_WORKGROUP_SIZE = 256;
 
 /** Element positions of the `statistics` and `counts` outputs of {@link GPUSpatialWeightsSummary}. */
 export const GPU_SPATIAL_WEIGHTS_SUMMARY_LAYOUT = {
@@ -134,8 +137,8 @@ export class GPUSpatialWeightsSummary implements GPUCommandNodeProducer {
       length: number
     ) => createTransientView(graph, `${id}-${name}`, format, length);
     const slotKeys = view('slot-keys', 'uint32', capacity);
-    const slotWeights = view('slot-weights', 'float32', capacity);
-    const columnCounts = view('column-counts', 'uint32', rows);
+    const slotIndices = view('slot-indices', 'uint32', capacity);
+    const columnOffsets = view('column-offsets', 'uint32', rows + 1);
     const columnSums = view('column-sums', 'float32', rows);
     const rowSums = view('row-sums', 'float32', rows);
     const s1Partials = view('s1-partials', 'float32', rows);
@@ -144,6 +147,14 @@ export class GPUSpatialWeightsSummary implements GPUCommandNodeProducer {
     const isolates = view('isolates', 'uint32', rows);
     const cardinality = props.cardinality ?? view('cardinality', 'uint32', rows);
     const constants = `const ROWS: u32 = ${rows}u;`;
+    const grouping = getSlotGroupingNodes<Parameters>(graph, {
+      id: `${id}-columns`,
+      operation: OPERATION,
+      slotKeys,
+      slotIndices,
+      columns: rows,
+      columnOffsets
+    });
     const nodes: GPUCommandNode<Parameters>[] = [
       // Column sums: group the used slots by neighbor, in slot order, so the sums are reproducible.
       createWGSLKernelNode<Parameters>(graph, {
@@ -153,30 +164,36 @@ export class GPUSpatialWeightsSummary implements GPUCommandNodeProducer {
         bindings: [
           {name: 'offsets', view: weights.offsets, type: 'u32', access: 'read'},
           {name: 'neighbors', view: weights.neighbors, type: 'u32', access: 'read'},
-          {name: 'weights', view: weights.weights, type: 'f32', access: 'read'},
           {name: 'slotKeys', view: slotKeys, type: 'u32', access: 'read_write'},
-          {name: 'slotWeights', view: slotWeights, type: 'f32', access: 'read_write'}
+          {name: 'slotIndices', view: slotIndices, type: 'u32', access: 'read_write'}
         ],
         invocationCount: capacity,
         declarations: constants,
         body: `let neighbor = neighbors[neighborsOffset + index];
   let used = index < offsets[offsetsOffset + ROWS] && neighbor < ROWS;
   slotKeys[slotKeysOffset + index] = select(ROWS, neighbor, used);
-  slotWeights[slotWeightsOffset + index] = select(0.0, weights[weightsOffset + index], used);`
+  slotIndices[slotIndicesOffset + index] = index;`
       }),
-      ...new GPUGroupAggregation({
-        id: `${id}-column-counts`,
-        keys: slotKeys,
-        output: columnCounts
-      }).getCommandNodes(graph),
-      ...getSortedSegmentSumNodes(graph, {
-        id: `${id}-columns`,
+      ...grouping.nodes,
+      // One invocation per column: short segments (the degree) do not deserve a workgroup each.
+      createWGSLKernelNode<Parameters>(graph, {
+        id: `${id}-column-sums`,
         operation: OPERATION,
-        segmentCount: rows,
-        segmentKeys: slotKeys,
-        segmentCounts: columnCounts,
-        sumContributions: slotWeights,
-        sums: columnSums
+        variant: 'column-sums',
+        bindings: [
+          {name: 'columnOffsets', view: columnOffsets, type: 'u32', access: 'read'},
+          {name: 'sortedSlots', view: grouping.sortedSlots, type: 'u32', access: 'read'},
+          {name: 'weights', view: weights.weights, type: 'f32', access: 'read'},
+          {name: 'columnSums', view: columnSums, type: 'f32', access: 'read_write'}
+        ],
+        invocationCount: rows,
+        // Slots of one column are in ascending slot order (stable sort), so the sum order is fixed.
+        body: `var sum = 0.0;
+  for (var position = columnOffsets[columnOffsetsOffset + index];
+      position < columnOffsets[columnOffsetsOffset + index + 1u]; position++) {
+    sum += weights[weightsOffset + sortedSlots[sortedSlotsOffset + position]];
+  }
+  columnSums[columnSumsOffset + index] = sum;`
       }),
       createWGSLKernelNode<Parameters>(graph, {
         id: `${id}-rows`,
@@ -258,61 +275,166 @@ fn findWeight(row: u32, column: u32) -> f32 {
   isolates[isolatesOffset + index] = select(0u, 1u, count == 0u);`
       })
     ];
-    const reduce = <Format extends 'uint32' | 'float32'>(
-      name: string,
-      input: GraphDataView<Format>,
-      operation: 'sum' | 'min' | 'max'
-    ) => {
-      const output = view(`total-${name}`, input.format as Format, 1);
-      nodes.push(
-        ...new GPUReduction({id: `${id}-reduce-${name}`, input, output, operation}).getCommandNodes(
-          graph
-        )
-      );
-      return output;
-    };
-    const s0 = reduce('s0', rowSums, 'sum');
-    const s1 = reduce('s1', s1Partials, 'sum');
-    const s2 = reduce('s2', s2Partials, 'sum');
-    const asymmetricTotal = reduce('asymmetric', asymmetric, 'sum');
-    const isolateTotal = reduce('isolates', isolates, 'sum');
-    const minimum = reduce('minimum', cardinality, 'min');
-    const maximum = reduce('maximum', cardinality, 'max');
+    // The seven global reductions (S0, S1, S2, asymmetric slots, isolates, minimum and maximum
+    // cardinality) share one blocked pass over the per-row values and one combining workgroup,
+    // instead of seven separate reduction chains. Fixed-shape trees keep the sums reproducible.
+    const blockCount = Math.ceil(rows / SUMMARY_BLOCK_ROWS);
+    const floatPartials = view('float-partials', 'float32', 3 * blockCount);
+    const countPartials = view('count-partials', 'uint32', 4 * blockCount);
     nodes.push(
       createWGSLKernelNode<Parameters>(graph, {
-        id: `${id}-statistics`,
+        id: `${id}-blocks`,
         operation: OPERATION,
-        variant: 'statistics',
+        variant: 'blocks',
         bindings: [
-          {name: 's0', view: s0, type: 'f32', access: 'read'},
-          {name: 's1', view: s1, type: 'f32', access: 'read'},
-          {name: 's2', view: s2, type: 'f32', access: 'read'},
-          {name: 'statistics', view: statistics, type: 'f32', access: 'read_write'}
+          {name: 'rowSums', view: rowSums, type: 'f32', access: 'read'},
+          {name: 's1Partials', view: s1Partials, type: 'f32', access: 'read'},
+          {name: 's2Partials', view: s2Partials, type: 'f32', access: 'read'},
+          {name: 'asymmetric', view: asymmetric, type: 'u32', access: 'read'},
+          {name: 'isolates', view: isolates, type: 'u32', access: 'read'},
+          {name: 'cardinality', view: cardinality, type: 'u32', access: 'read'},
+          {name: 'floatPartials', view: floatPartials, type: 'f32', access: 'read_write'},
+          {name: 'countPartials', view: countPartials, type: 'u32', access: 'read_write'}
         ],
-        invocationCount: 1,
-        body: `statistics[statisticsOffset] = s0[s0Offset];
-  statistics[statisticsOffset + 1u] = 0.5 * s1[s1Offset];
-  statistics[statisticsOffset + 2u] = s2[s2Offset];`
+        workgroupSize: SUMMARY_WORKGROUP_SIZE,
+        invocationCount: blockCount * SUMMARY_WORKGROUP_SIZE,
+        guardIndex: false,
+        declarations: `${constants}
+const BLOCK_ROWS: u32 = ${SUMMARY_BLOCK_ROWS}u;
+const BLOCK_COUNT: u32 = ${blockCount}u;
+const WORKGROUP_SIZE: u32 = ${SUMMARY_WORKGROUP_SIZE}u;
+var<workgroup> partialS0: array<f32, ${SUMMARY_WORKGROUP_SIZE}>;
+var<workgroup> partialS1: array<f32, ${SUMMARY_WORKGROUP_SIZE}>;
+var<workgroup> partialS2: array<f32, ${SUMMARY_WORKGROUP_SIZE}>;
+var<workgroup> partialAsymmetric: array<u32, ${SUMMARY_WORKGROUP_SIZE}>;
+var<workgroup> partialIsolates: array<u32, ${SUMMARY_WORKGROUP_SIZE}>;
+var<workgroup> partialMinimum: array<u32, ${SUMMARY_WORKGROUP_SIZE}>;
+var<workgroup> partialMaximum: array<u32, ${SUMMARY_WORKGROUP_SIZE}>;`,
+        // No early return: every invocation of a workgroup must reach the barriers.
+        body: `let block = index / WORKGROUP_SIZE;
+  let local = localInvocationIndex;
+  let isInRange = index < INVOCATION_COUNT;
+  var s0 = 0.0;
+  var s1 = 0.0;
+  var s2 = 0.0;
+  var asymmetricCount = 0u;
+  var isolateCount = 0u;
+  var minimum = 0xffffffffu;
+  var maximum = 0u;
+  if (isInRange) {
+    let end = min((block + 1u) * BLOCK_ROWS, ROWS);
+    for (var row = block * BLOCK_ROWS + local; row < end; row += WORKGROUP_SIZE) {
+      s0 += rowSums[rowSumsOffset + row];
+      s1 += s1Partials[s1PartialsOffset + row];
+      s2 += s2Partials[s2PartialsOffset + row];
+      asymmetricCount += asymmetric[asymmetricOffset + row];
+      isolateCount += isolates[isolatesOffset + row];
+      let degree = cardinality[cardinalityOffset + row];
+      minimum = min(minimum, degree);
+      maximum = max(maximum, degree);
+    }
+  }
+  partialS0[local] = s0;
+  partialS1[local] = s1;
+  partialS2[local] = s2;
+  partialAsymmetric[local] = asymmetricCount;
+  partialIsolates[local] = isolateCount;
+  partialMinimum[local] = minimum;
+  partialMaximum[local] = maximum;
+  workgroupBarrier();
+  for (var stride = WORKGROUP_SIZE / 2u; stride > 0u; stride = stride / 2u) {
+    if (local < stride) {
+      partialS0[local] += partialS0[local + stride];
+      partialS1[local] += partialS1[local + stride];
+      partialS2[local] += partialS2[local + stride];
+      partialAsymmetric[local] += partialAsymmetric[local + stride];
+      partialIsolates[local] += partialIsolates[local + stride];
+      partialMinimum[local] = min(partialMinimum[local], partialMinimum[local + stride]);
+      partialMaximum[local] = max(partialMaximum[local], partialMaximum[local + stride]);
+    }
+    workgroupBarrier();
+  }
+  if (isInRange && local == 0u) {
+    floatPartials[floatPartialsOffset + block] = partialS0[0];
+    floatPartials[floatPartialsOffset + BLOCK_COUNT + block] = partialS1[0];
+    floatPartials[floatPartialsOffset + 2u * BLOCK_COUNT + block] = partialS2[0];
+    countPartials[countPartialsOffset + block] = partialAsymmetric[0];
+    countPartials[countPartialsOffset + BLOCK_COUNT + block] = partialIsolates[0];
+    countPartials[countPartialsOffset + 2u * BLOCK_COUNT + block] = partialMinimum[0];
+    countPartials[countPartialsOffset + 3u * BLOCK_COUNT + block] = partialMaximum[0];
+  }`
       }),
       createWGSLKernelNode<Parameters>(graph, {
-        id: `${id}-counts`,
+        id: `${id}-totals`,
         operation: OPERATION,
-        variant: 'counts',
+        variant: 'totals',
         bindings: [
           {name: 'offsets', view: weights.offsets, type: 'u32', access: 'read'},
-          {name: 'asymmetric', view: asymmetricTotal, type: 'u32', access: 'read'},
-          {name: 'isolates', view: isolateTotal, type: 'u32', access: 'read'},
-          {name: 'minimum', view: minimum, type: 'u32', access: 'read'},
-          {name: 'maximum', view: maximum, type: 'u32', access: 'read'},
+          {name: 'floatPartials', view: floatPartials, type: 'f32', access: 'read'},
+          {name: 'countPartials', view: countPartials, type: 'u32', access: 'read'},
+          {name: 'statistics', view: statistics, type: 'f32', access: 'read_write'},
           {name: 'counts', view: counts, type: 'u32', access: 'read_write'}
         ],
-        invocationCount: 1,
-        declarations: constants,
-        body: `counts[countsOffset] = offsets[offsetsOffset + ROWS];
-  counts[countsOffset + 1u] = asymmetric[asymmetricOffset];
-  counts[countsOffset + 2u] = isolates[isolatesOffset];
-  counts[countsOffset + 3u] = minimum[minimumOffset];
-  counts[countsOffset + 4u] = maximum[maximumOffset];`
+        workgroupSize: SUMMARY_WORKGROUP_SIZE,
+        invocationCount: SUMMARY_WORKGROUP_SIZE,
+        guardIndex: false,
+        declarations: `${constants}
+const BLOCK_COUNT: u32 = ${blockCount}u;
+const WORKGROUP_SIZE: u32 = ${SUMMARY_WORKGROUP_SIZE}u;
+var<workgroup> partialS0: array<f32, ${SUMMARY_WORKGROUP_SIZE}>;
+var<workgroup> partialS1: array<f32, ${SUMMARY_WORKGROUP_SIZE}>;
+var<workgroup> partialS2: array<f32, ${SUMMARY_WORKGROUP_SIZE}>;
+var<workgroup> partialAsymmetric: array<u32, ${SUMMARY_WORKGROUP_SIZE}>;
+var<workgroup> partialIsolates: array<u32, ${SUMMARY_WORKGROUP_SIZE}>;
+var<workgroup> partialMinimum: array<u32, ${SUMMARY_WORKGROUP_SIZE}>;
+var<workgroup> partialMaximum: array<u32, ${SUMMARY_WORKGROUP_SIZE}>;`,
+        body: `let local = localInvocationIndex;
+  var s0 = 0.0;
+  var s1 = 0.0;
+  var s2 = 0.0;
+  var asymmetricCount = 0u;
+  var isolateCount = 0u;
+  var minimum = 0xffffffffu;
+  var maximum = 0u;
+  for (var block = local; block < BLOCK_COUNT; block += WORKGROUP_SIZE) {
+    s0 += floatPartials[floatPartialsOffset + block];
+    s1 += floatPartials[floatPartialsOffset + BLOCK_COUNT + block];
+    s2 += floatPartials[floatPartialsOffset + 2u * BLOCK_COUNT + block];
+    asymmetricCount += countPartials[countPartialsOffset + block];
+    isolateCount += countPartials[countPartialsOffset + BLOCK_COUNT + block];
+    minimum = min(minimum, countPartials[countPartialsOffset + 2u * BLOCK_COUNT + block]);
+    maximum = max(maximum, countPartials[countPartialsOffset + 3u * BLOCK_COUNT + block]);
+  }
+  partialS0[local] = s0;
+  partialS1[local] = s1;
+  partialS2[local] = s2;
+  partialAsymmetric[local] = asymmetricCount;
+  partialIsolates[local] = isolateCount;
+  partialMinimum[local] = minimum;
+  partialMaximum[local] = maximum;
+  workgroupBarrier();
+  for (var stride = WORKGROUP_SIZE / 2u; stride > 0u; stride = stride / 2u) {
+    if (local < stride) {
+      partialS0[local] += partialS0[local + stride];
+      partialS1[local] += partialS1[local + stride];
+      partialS2[local] += partialS2[local + stride];
+      partialAsymmetric[local] += partialAsymmetric[local + stride];
+      partialIsolates[local] += partialIsolates[local + stride];
+      partialMinimum[local] = min(partialMinimum[local], partialMinimum[local + stride]);
+      partialMaximum[local] = max(partialMaximum[local], partialMaximum[local + stride]);
+    }
+    workgroupBarrier();
+  }
+  if (local == 0u) {
+    statistics[statisticsOffset] = partialS0[0];
+    statistics[statisticsOffset + 1u] = 0.5 * partialS1[0];
+    statistics[statisticsOffset + 2u] = partialS2[0];
+    counts[countsOffset] = offsets[offsetsOffset + ROWS];
+    counts[countsOffset + 1u] = partialAsymmetric[0];
+    counts[countsOffset + 2u] = partialIsolates[0];
+    counts[countsOffset + 3u] = partialMinimum[0];
+    counts[countsOffset + 4u] = partialMaximum[0];
+  }`
       })
     );
     return nodes;

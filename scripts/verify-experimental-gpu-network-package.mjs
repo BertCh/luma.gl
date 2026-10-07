@@ -42,7 +42,11 @@ const contributorExportNames = [
   'GPUNetworkCostMatrix',
   'GPUNetworkAccessibility',
   'GPUParameterBuffer',
-  'GPUNetworkIsochrones'
+  'GPUNetworkIsochrones',
+  'GPUNetworkNoding',
+  'GPUNetworkKFunction',
+  'GPUNetworkLineGraph',
+  'GPUMapMatching'
 ];
 
 for (const exportName of contributorExportNames) {

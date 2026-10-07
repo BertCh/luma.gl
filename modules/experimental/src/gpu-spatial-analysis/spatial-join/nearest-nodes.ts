@@ -26,11 +26,16 @@ import type {
   NearestSide
 } from './nearest-types';
 import type {GPUSpatialJoinPrepared} from './spatial-join-prepared';
+import type {GPUSpatialJoinOnAttribute} from './spatial-join-types';
 import {
   createSpatialJoinBoundsNode,
   getChunkNodeId,
-  getSortedFeatureBVHNodes
+  getSortedFeatureBVHNodes,
+  type SpatialSortCurve
 } from './spatial-join-passes';
+
+/** u32 words per `(query, slot)` of the foot-point scratch: foot x/y, segment, query-point x/y. */
+const EXTRA_WORDS = 5;
 
 /** Query side of the k-nearest mode: chunked points or one geometry set. @internal */
 export type NearestQuerySource =
@@ -63,12 +68,17 @@ export type NearestNeighborNodeProps = {
   capacity: number;
   leafCapacity: number;
   spatialSort: boolean;
+  spatialSortCurve?: SpatialSortCurve;
   maxDistance?: GraphDataView<'float32'>;
   featureIds?: GraphDataView<'uint32'>;
   neighborIds: GraphDataView<'uint32'>;
   neighborCounts: GraphDataView<'uint32'>;
   neighborDistances?: GraphDataView<'float32'>;
   neighborFootPoints?: GraphDataView<'float32x2'>;
+  neighborQueryPoints?: GraphDataView<'float32x2'>;
+  exclusive?: boolean;
+  queryIds?: GraphDataView<'uint32'>;
+  onAttribute?: GPUSpatialJoinOnAttribute;
   neighborSegmentIndices?: GraphDataView<'uint32'>;
   overflow: GraphDataView<'uint32'>;
 };
@@ -250,6 +260,7 @@ export function getNearestBVHNodes<Parameters>(
     featureCount: number;
     leafCapacity: number;
     spatialSort: boolean;
+    spatialSortCurve?: SpatialSortCurve;
     prepared?: GPUSpatialJoinPrepared;
   }
 ): {bvh: NearestBVH; nodes: readonly GPUCommandNode<Parameters>[]} {
@@ -287,7 +298,9 @@ export function getNearestBVHNodes<Parameters>(
     minima,
     maxima,
     props.leafCapacity,
-    props.spatialSort
+    props.spatialSort,
+    undefined,
+    props.spatialSortCurve
   );
   nodes.push(...built.nodes);
   return {bvh: built.bvh, nodes};
@@ -315,16 +328,22 @@ export function getNearestNeighborNodes<Parameters>(
     featureCount,
     leafCapacity: props.leafCapacity,
     spatialSort: props.spatialSort,
+    spatialSortCurve: props.spatialSortCurve,
     prepared: props.prepared
   });
   nodes.push(...bvhNodes);
 
   // One packed node table: min.xy, max.xy as f32 bits, and the feature row of leaves.
+  // The tail holds the candidate filter: `[id, key]` per query row, then per feature row. It rides
+  // in this buffer because a polygon/polygon traversal already binds eight storage buffers.
+  const hasFilter = Boolean(props.exclusive || props.onAttribute);
+  const queryFilterBase = bvh.nodeCount * NEAREST_NODE_WORDS;
+  const featureFilterBase = queryFilterBase + 2 * queryCount;
   const nodeData = createTransientView(
     graph,
     `${id}-node-data`,
     'uint32',
-    bvh.nodeCount * NEAREST_NODE_WORDS
+    featureFilterBase + (hasFilter ? 2 * featureCount : 0)
   );
   nodes.push(
     createWGSLKernelNode<Parameters>(graph, {
@@ -348,6 +367,48 @@ const NO_FEATURE: u32 = 0xffffffffu;`,
   nodeData[base + 4u] = select(NO_FEATURE, leafIds[leafIdsOffset + index - INTERNAL_NODE_COUNT], index >= INTERNAL_NODE_COUNT);`
     })
   );
+
+  if (hasFilter) {
+    const filterBindings: WGSLKernelBinding[] = [
+      {name: 'nodeData', view: nodeData, type: 'u32', access: 'read_write'}
+    ];
+    const optionalInputs: [string, GraphDataView<'uint32'> | undefined][] = [
+      ['queryIds', props.exclusive ? props.queryIds : undefined],
+      ['featureIds', props.exclusive ? props.featureIds : undefined],
+      ['queryKeys', props.onAttribute?.left],
+      ['featureKeys', props.onAttribute?.right]
+    ];
+    for (const [name, view] of optionalInputs) {
+      if (view) {
+        filterBindings.push({name, view, type: 'u32', access: 'read'});
+      }
+    }
+    const read = (name: string, fallback: string) =>
+      optionalInputs.find(([inputName, view]) => inputName === name && view)
+        ? `${name}[${name}Offset + index]`
+        : fallback;
+    nodes.push(
+      createWGSLKernelNode<Parameters>(graph, {
+        id: `${id}-filter`,
+        operation,
+        variant: 'filter',
+        bindings: filterBindings,
+        invocationCount: Math.max(queryCount, featureCount, 1),
+        declarations: `const QUERY_COUNT: u32 = ${queryCount}u;
+const FEATURE_COUNT: u32 = ${featureCount}u;`,
+        body: `if (index < QUERY_COUNT) {
+    let base = nodeDataOffset + ${queryFilterBase}u + index * 2u;
+    nodeData[base] = ${read('queryIds', 'index')};
+    nodeData[base + 1u] = ${read('queryKeys', '0u')};
+  }
+  if (index < FEATURE_COUNT) {
+    let base = nodeDataOffset + ${featureFilterBase}u + index * 2u;
+    nodeData[base] = ${read('featureIds', 'index')};
+    nodeData[base + 1u] = ${read('featureKeys', '0u')};
+  }`
+      })
+    );
+  }
 
   // Polygon ring ranges for the feature side and for a polygon query side.
   let featureRings: GraphDataView<'uint32x2'> | undefined;
@@ -470,9 +531,16 @@ const STRIDE: u32 = ${stride}u;`,
     access
   });
   const stackSize = bvh.levelCount + 2;
-  const needsFootPass = Boolean(props.neighborFootPoints || props.neighborSegmentIndices);
+  const needsFootPass = Boolean(
+    props.neighborFootPoints || props.neighborQueryPoints || props.neighborSegmentIndices
+  );
   const extras = needsFootPass
-    ? createTransientView(graph, `${id}-extras`, 'uint32', Math.max(queryCount, 1) * capacity * 3)
+    ? createTransientView(
+        graph,
+        `${id}-extras`,
+        'uint32',
+        Math.max(queryCount, 1) * capacity * EXTRA_WORDS
+      )
     : undefined;
 
   for (const dispatch of dispatches) {
@@ -483,7 +551,15 @@ const STRIDE: u32 = ${stride}u;`,
       internalNodeCount: bvh.internalNodeCount,
       stackSize,
       chunkFirstRow: dispatch.firstRow,
-      queryKind: dispatch.kind
+      queryKind: dispatch.kind,
+      filter: hasFilter
+        ? {
+            exclusive: Boolean(props.exclusive),
+            onAttribute: Boolean(props.onAttribute),
+            queryBase: queryFilterBase,
+            featureBase: featureFilterBase
+          }
+        : undefined
     });
     const sideWGSL = `${NEAREST_COMMON_WGSL}${getNearestSideWGSL(dispatch.side)}${getNearestSideWGSL(featureSide)}${getNearestPairWGSL(dispatch.side, featureSide)}`;
     nodes.push(
@@ -525,10 +601,12 @@ const CHUNK_FIRST_ROW: u32 = ${dispatch.firstRow}u;`,
   let header = topkOffset + row * STRIDE;
   if (slot >= topk[header]) { return; }
   let result = pairResult(localQuery, topk[header + 3u + slot * 2u]);
-  let output = extrasOffset + (row * CAPACITY + slot) * 3u;
+  let output = extrasOffset + (row * CAPACITY + slot) * ${EXTRA_WORDS}u;
   extras[output] = bitcast<u32>(result.foot.x);
   extras[output + 1u] = bitcast<u32>(result.foot.y);
-  extras[output + 2u] = result.segment;`
+  extras[output + 2u] = result.segment;
+  extras[output + 3u] = bitcast<u32>(result.queryFoot.x);
+  extras[output + 4u] = bitcast<u32>(result.queryFoot.y);`
         })
       );
     }
@@ -600,6 +678,14 @@ const NO_FEATURE: u32 = 0xffffffffu;`,
           access: 'read_write'
         });
       }
+      if (props.neighborQueryPoints) {
+        bindings.push({
+          name: 'queryPoints',
+          view: props.neighborQueryPoints,
+          type: 'u32',
+          access: 'read_write'
+        });
+      }
       if (props.neighborSegmentIndices) {
         bindings.push({
           name: 'segmentIndices',
@@ -621,12 +707,18 @@ const NO_SEGMENT: u32 = 0xffffffffu;`,
           body: `let query = index / CAPACITY;
   let slot = index % CAPACITY;
   let valid = slot < topk[topkOffset + query * STRIDE];
-  let source = extrasOffset + index * 3u;
+  let source = extrasOffset + index * ${EXTRA_WORDS}u;
   ${
     props.neighborFootPoints
       ? `// Unused slots hold a quiet NaN so a missing neighbor is never mistaken for the origin.
   footPoints[footPointsOffset + index * 2u] = select(0x7fc00000u, extras[source], valid);
   footPoints[footPointsOffset + index * 2u + 1u] = select(0x7fc00000u, extras[source + 1u], valid);`
+      : ''
+  }
+  ${
+    props.neighborQueryPoints
+      ? `queryPoints[queryPointsOffset + index * 2u] = select(0x7fc00000u, extras[source + 3u], valid);
+  queryPoints[queryPointsOffset + index * 2u + 1u] = select(0x7fc00000u, extras[source + 4u], valid);`
       : ''
   }
   ${props.neighborSegmentIndices ? 'segmentIndices[segmentIndicesOffset + index] = select(NO_SEGMENT, extras[source + 2u], valid);' : ''}`

@@ -10,7 +10,8 @@ import {
 } from '../../gpu-raster/cost-distance/raster-grid-utils';
 import {
   createRasterTiledRelaxation,
-  createRasterTiledRelaxationNodes
+  createRasterTiledRelaxationNodes,
+  getRasterRelaxationTileWGSL
 } from '../../gpu-raster/cost-distance/raster-relaxation';
 import {TERRAIN_FLOW_SWEEP_AFTER_ITERATION, type TerrainFlowGrid} from './terrain-flow-passes';
 
@@ -64,6 +65,7 @@ export function createTerrainFlowFlatNodes<Parameters>(
     directions?: GraphDataView<'uint32'>;
     receivers?: GraphDataView<'uint32'>;
     converged?: GraphDataView<'uint32'>;
+    iterationCount?: GraphDataView<'uint32'>;
     cellClass: {draining: number; flat: number; pit: number; outlet: number; invalid: number};
   }
 ): GPUCommandNode<Parameters>[] {
@@ -127,21 +129,6 @@ export function createTerrainFlowFlatNodes<Parameters>(
   higherValues[higherValuesOffset + index] = select(getInfinity(), 1.0, isHighEdge);`
   });
 
-  const prepareMaximum = createWGSLKernelNode<Parameters>(graph, {
-    id: `${props.id}-flats-prepare-maximum`,
-    operation: OPERATION,
-    variant: 'flats-prepare-maximum',
-    bindings: [
-      {name: 'higherValues', view: higherValues, type: 'f32', access: 'read'},
-      {name: 'maximumValues', view: maximumValues, type: 'f32', access: 'read_write'}
-    ],
-    invocationCount: cellCount,
-    declarations: FLOAT_HELPERS_WGSL,
-    // Negated awayFromHigher so a min-relaxation computes the component maximum; unreached = 0.
-    body: `let higher = higherValues[higherValuesOffset + index];
-  maximumValues[maximumValuesOffset + index] = select(0.0, -higher, isFiniteValue(higher));`
-  });
-
   const buildRelaxation = (
     suffix: string,
     values: GraphDataView<'float32'>,
@@ -179,6 +166,64 @@ fn getRelaxationCandidate(neighborValue: f32, neighborAuxiliary: f32, centerAuxi
   const lower = buildRelaxation('lower', lowerValues, lowerAuxiliary, 'neighborValue + 1.0');
   const higher = buildRelaxation('higher', higherValues, higherAuxiliary, 'neighborValue + 1.0');
   const maximum = buildRelaxation('maximum', maximumValues, props.surface, 'neighborValue');
+
+  const tileWGSL = getRasterRelaxationTileWGSL(props.width);
+  // Marks the tiles of the lower and higher hop-count seeds (finite starting values).
+  const seedEdges = createWGSLKernelNode<Parameters>(graph, {
+    id: `${props.id}-flats-seed-edges`,
+    operation: OPERATION,
+    variant: 'flats-seed-edges',
+    bindings: [
+      {name: 'lowerValues', view: lowerValues, type: 'f32', access: 'read'},
+      {name: 'higherValues', view: higherValues, type: 'f32', access: 'read'},
+      {
+        name: 'lowerStamps',
+        view: lower.relaxation.tileStamps,
+        type: 'atomic<u32>',
+        access: 'read_write'
+      },
+      {
+        name: 'higherStamps',
+        view: higher.relaxation.tileStamps,
+        type: 'atomic<u32>',
+        access: 'read_write'
+      }
+    ],
+    invocationCount: cellCount,
+    declarations: `${FLOAT_HELPERS_WGSL}\n${tileWGSL}`,
+    body: `if (isFiniteValue(lowerValues[lowerValuesOffset + index])) {
+    atomicMax(&lowerStamps[lowerStampsOffset + getRelaxationTile(index)], 1u);
+  }
+  if (isFiniteValue(higherValues[higherValuesOffset + index])) {
+    atomicMax(&higherStamps[higherStampsOffset + getRelaxationTile(index)], 1u);
+  }`
+  });
+
+  // Negated awayFromHigher so a min-relaxation computes the component maximum; unreached = 0. The
+  // finite (negative) starting values are the seeds of the maximum relaxation.
+  const prepareMaximum = createWGSLKernelNode<Parameters>(graph, {
+    id: `${props.id}-flats-prepare-maximum`,
+    operation: OPERATION,
+    variant: 'flats-prepare-maximum',
+    bindings: [
+      {name: 'higherValues', view: higherValues, type: 'f32', access: 'read'},
+      {name: 'maximumValues', view: maximumValues, type: 'f32', access: 'read_write'},
+      {
+        name: 'maximumStamps',
+        view: maximum.relaxation.tileStamps,
+        type: 'atomic<u32>',
+        access: 'read_write'
+      }
+    ],
+    invocationCount: cellCount,
+    declarations: `${FLOAT_HELPERS_WGSL}\n${tileWGSL}`,
+    body: `let higher = higherValues[higherValuesOffset + index];
+  let reached = isFiniteValue(higher);
+  maximumValues[maximumValuesOffset + index] = select(0.0, -higher, reached);
+  if (reached) {
+    atomicMax(&maximumStamps[maximumStampsOffset + getRelaxationTile(index)], 1u);
+  }`
+  });
 
   const maskNode = createWGSLKernelNode<Parameters>(graph, {
     id: `${props.id}-flats-mask`,
@@ -264,16 +309,17 @@ fn getRelaxationCandidate(neighborValue: f32, neighborAuxiliary: f32, centerAuxi
   const nodes: GPUCommandNode<Parameters>[] = [
     prepareEdges,
     ...lower.resetNodes,
-    ...lower.relaxNodes,
     ...higher.resetNodes,
+    ...maximum.resetNodes,
+    seedEdges,
+    ...lower.relaxNodes,
     ...higher.relaxNodes,
     prepareMaximum,
-    ...maximum.resetNodes,
     ...maximum.relaxNodes,
     maskNode,
     routeNode
   ];
-  if (props.converged) {
+  if (props.converged || props.iterationCount) {
     nodes.push(
       createWGSLKernelNode<Parameters>(graph, {
         id: `${props.id}-flats-finalize`,
@@ -288,14 +334,43 @@ fn getRelaxationCandidate(neighborValue: f32, neighborAuxiliary: f32, centerAuxi
             type: 'u32',
             access: 'read'
           },
-          {name: 'converged', view: props.converged, type: 'u32', access: 'read_write'}
+          ...(props.converged
+            ? [
+                {
+                  name: 'converged',
+                  view: props.converged,
+                  type: 'u32' as const,
+                  access: 'read_write' as const
+                }
+              ]
+            : []),
+          ...(props.iterationCount
+            ? [
+                {
+                  name: 'iterationCount',
+                  view: props.iterationCount,
+                  type: 'u32' as const,
+                  access: 'read_write' as const
+                }
+              ]
+            : [])
         ],
         invocationCount: 1,
         // Status word 3 is 1 only when a relaxation iteration changed nothing.
-        body: `converged[convergedOffset] = select(0u, 1u,
+        body: `${
+          props.converged
+            ? `converged[convergedOffset] = select(0u, 1u,
     lowerStatus[lowerStatusOffset + 3u] == 1u &&
     higherStatus[higherStatusOffset + 3u] == 1u &&
     maximumStatus[maximumStatusOffset + 3u] == 1u);`
+            : ''
+        }
+  ${
+    props.iterationCount
+      ? `iterationCount[iterationCountOffset] = lowerStatus[lowerStatusOffset + 2u] +
+    higherStatus[higherStatusOffset + 2u] + maximumStatus[maximumStatusOffset + 2u];`
+      : ''
+  }`
       })
     );
   }

@@ -54,11 +54,9 @@ it('GPUNetworkCostMatrix schedules lane expansion and one reachability per batch
   expect(contributor.nodeCount).toBe(8);
   expect(contributor.batchCount).toBe(3);
   const ids = contributor.getCommandNodes(graph).map(node => node.id);
-  expect(ids.slice(0, 3)).toEqual([
-    'matrix-expand-offsets',
-    'matrix-expand-edges',
-    'matrix-expand-seeds'
-  ]);
+  // Lanes share the CSR, so only the seeds are expanded.
+  expect(ids[0]).toBe('matrix-expand-seeds');
+  expect(ids.some(id => id.includes('expand-offsets') || id.includes('expand-edges'))).toBe(false);
   for (const batch of [0, 1, 2]) {
     expect(ids).toContain(`matrix-batch-${batch}-seed`);
     expect(ids).toContain(`matrix-batch-${batch}-relax-2`);

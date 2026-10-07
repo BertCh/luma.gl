@@ -10,6 +10,7 @@ import {
 } from '../../utils/wgsl-kernel-nodes';
 import {GEODESIC_WGSL} from '../geometry-measures/geodesic-wgsl';
 import type {GPULineCoordinateSystem} from './line-segmentize-types';
+import {BALANCED_SEARCH_WORKGROUP_SIZE, getBalancedSearchSource} from './balanced-search';
 
 /**
  * WGSL `findPath(row) -> u32`: upper-bound binary search over the bound `pathOffsets`
@@ -84,9 +85,23 @@ export type PathPrefixNodeProps = {
   rowShifts?: GraphDataView<'float32'>;
 };
 
+/** Lanes of the workgroup that scans one path in {@link createPathPrefixNode}. */
+const PREFIX_LANES = 64;
+
 /**
- * Builds the per-path sequential prefix: cumulative measures (Neumaier-compensated f32 sum in row
- * order, so the result is deterministic) and longitude unwrapping shifts. One invocation per path.
+ * Builds the per-path prefix: cumulative measures and longitude unwrapping shifts.
+ *
+ * Block hybrid: workgroup `w` owns paths `[PREFIX_LANES * w, PREFIX_LANES * w + PREFIX_LANES)`.
+ * Phase 1: every lane walks its own path serially when it has at most `PREFIX_LANES` rows, with a
+ * Neumaier-compensated f32 sum in row order (deterministic, and bit-identical to the former
+ * one-thread-per-path kernel); longer paths are queued. Phase 2: the workgroup visits the queued
+ * paths of its block in ascending order and scans each cooperatively in tiles of `PREFIX_LANES`
+ * segments: each tile is a Hillis-Steele inclusive scan in workgroup memory, and the running total
+ * carries between tiles in compensated form. That cuts the dependent chain of a path of `n` rows
+ * from `n` global read-modify-write steps to `n / 64` tiles of 6 scan rounds, so one very long path
+ * no longer stalls the stage, while many short paths still cost one thread each (not one
+ * workgroup each). Shifts are sums of multiples of 360, exact in f32 either way; long-path
+ * measures differ from the serial sum only by f32 rounding (about `log2(64)` roundings per tile).
  *
  * @internal
  */
@@ -120,45 +135,137 @@ export function createPathPrefixNode<Parameters>(
       access: 'read_write'
     });
   }
+  const {rowMeasures, rowShifts} = props;
   return createWGSLKernelNode<Parameters>(graph, {
     id: props.id,
     operation: props.operation,
     variant: 'path-prefix',
     bindings,
-    invocationCount: pathCount,
-    declarations: `const ROW_COUNT: u32 = ${props.positions.length}u;
+    invocationCount: Math.ceil(pathCount / PREFIX_LANES) * PREFIX_LANES,
+    workgroupSize: PREFIX_LANES,
+    guardIndex: false,
+    declarations: `const PATH_COUNT: u32 = ${pathCount}u;
+const ROW_COUNT: u32 = ${props.positions.length}u;
+const PREFIX_LANES: u32 = ${PREFIX_LANES}u;
+var<workgroup> largeBits: array<atomic<u32>, 2>;
+var<workgroup> largeBitsCopy: array<u32, 2>;
+var<workgroup> largeStart: array<u32, ${PREFIX_LANES}>;
+var<workgroup> largeEnd: array<u32, ${PREFIX_LANES}>;
+var<workgroup> prefixCarry: array<f32, 3>;
+var<workgroup> tileLengths: array<f32, ${PREFIX_LANES}>;
+var<workgroup> tileShifts: array<f32, ${PREFIX_LANES}>;
 ${getLineGeometrySource(props.coordinateSystem, props.radius)}`,
-    body: /* wgsl */ `let pathStart = min(pathOffsets[pathOffsetsOffset + index], ROW_COUNT);
-  let pathEnd = min(max(pathOffsets[pathOffsetsOffset + index + 1u], pathStart), ROW_COUNT);
-  if (pathEnd > pathStart) {
-    var sum = 0.0;
-    var compensation = 0.0;
-    var shift = 0.0;
-    var previous = getPosition(pathStart);
-    ${props.rowMeasures ? 'rowMeasures[rowMeasuresOffset + pathStart] = 0.0;' : ''}
-    ${props.rowShifts ? 'rowShifts[rowShiftsOffset + pathStart] = 0.0;' : ''}
-    for (var row = pathStart + 1u; row < pathEnd; row++) {
-      let current = getPosition(row);
-      ${
-        props.rowMeasures
-          ? `let segmentLength = getSegmentLength(previous, current);
-      let nextSum = sum + segmentLength;
-      if (abs(sum) >= abs(segmentLength)) {
-        compensation = compensation + ((sum - nextSum) + segmentLength);
+    body: /* wgsl */ `let lane = localInvocationIndex;
+  let pathBase = workgroupIndex * PREFIX_LANES;
+  let ownPath = pathBase + lane;
+  // Phase 1: this lane's own path, serially when small; larger paths are queued for phase 2.
+  if (ownPath < PATH_COUNT) {
+    let first = min(pathOffsets[pathOffsetsOffset + ownPath], ROW_COUNT);
+    let last = min(max(pathOffsets[pathOffsetsOffset + ownPath + 1u], first), ROW_COUNT);
+    if (last > first) {
+      if (last - first <= PREFIX_LANES) {
+        var sum = 0.0;
+        var compensation = 0.0;
+        var shift = 0.0;
+        var previous = getPosition(first);
+        ${rowMeasures ? 'rowMeasures[rowMeasuresOffset + first] = 0.0;' : ''}
+        ${rowShifts ? 'rowShifts[rowShiftsOffset + first] = 0.0;' : ''}
+        for (var row = first + 1u; row < last; row++) {
+          let current = getPosition(row);
+          ${
+            rowMeasures
+              ? `let segmentLength = getSegmentLength(previous, current);
+          let nextSum = sum + segmentLength;
+          if (abs(sum) >= abs(segmentLength)) {
+            compensation = compensation + ((sum - nextSum) + segmentLength);
+          } else {
+            compensation = compensation + ((segmentLength - nextSum) + sum);
+          }
+          sum = nextSum;
+          rowMeasures[rowMeasuresOffset + row] = sum + compensation;`
+              : ''
+          }
+          ${
+            rowShifts
+              ? `shift = shift - 360.0 * round((current.x - previous.x) / 360.0);
+          rowShifts[rowShiftsOffset + row] = shift;`
+              : ''
+          }
+          previous = current;
+        }
       } else {
-        compensation = compensation + ((segmentLength - nextSum) + sum);
+        largeStart[lane] = first;
+        largeEnd[lane] = last;
+        atomicOr(&largeBits[lane / 32u], 1u << (lane % 32u));
       }
-      sum = nextSum;
-      rowMeasures[rowMeasuresOffset + row] = sum + compensation;`
-          : ''
+    }
+  }
+  workgroupBarrier();
+  if (lane == 0u) {
+    largeBitsCopy[0] = atomicLoad(&largeBits[0]);
+    largeBitsCopy[1] = atomicLoad(&largeBits[1]);
+  }
+  // Phase 2: every barrier below is in workgroup-uniform control flow (the queue is read through
+  // workgroupUniformLoad), and the queued paths are visited in ascending order.
+  for (var word = 0u; word < 2u; word++) {
+    var pending = workgroupUniformLoad(&largeBitsCopy[word]);
+    while (pending != 0u) {
+      let slot = word * 32u + firstTrailingBit(pending);
+      pending = pending & (pending - 1u);
+      let pathStart = workgroupUniformLoad(&largeStart[slot]);
+      let pathEnd = workgroupUniformLoad(&largeEnd[slot]);
+      if (lane == 0u) {
+        ${rowMeasures ? 'rowMeasures[rowMeasuresOffset + pathStart] = 0.0;' : ''}
+        ${rowShifts ? 'rowShifts[rowShiftsOffset + pathStart] = 0.0;' : ''}
+        prefixCarry[0] = 0.0;
+        prefixCarry[1] = 0.0;
+        prefixCarry[2] = 0.0;
       }
-      ${
-        props.rowShifts
-          ? `shift = shift - 360.0 * round((current.x - previous.x) / 360.0);
-      rowShifts[rowShiftsOffset + row] = shift;`
-          : ''
+      for (var tileStart = pathStart + 1u; tileStart < pathEnd; tileStart += PREFIX_LANES) {
+        let row = tileStart + lane;
+        var segmentLength = 0.0;
+        var segmentShift = 0.0;
+        if (row < pathEnd) {
+          let previous = getPosition(row - 1u);
+          let current = getPosition(row);
+          ${rowMeasures ? 'segmentLength = getSegmentLength(previous, current);' : ''}
+          ${rowShifts ? 'segmentShift = -360.0 * round((current.x - previous.x) / 360.0);' : ''}
+        }
+        tileLengths[lane] = segmentLength;
+        tileShifts[lane] = segmentShift;
+        workgroupBarrier();
+        for (var offset = 1u; offset < PREFIX_LANES; offset = offset << 1u) {
+          var addedLength = 0.0;
+          var addedShift = 0.0;
+          if (lane >= offset) {
+            addedLength = tileLengths[lane - offset];
+            addedShift = tileShifts[lane - offset];
+          }
+          workgroupBarrier();
+          tileLengths[lane] += addedLength;
+          tileShifts[lane] += addedShift;
+          workgroupBarrier();
+        }
+        if (row < pathEnd) {
+          ${rowMeasures ? 'rowMeasures[rowMeasuresOffset + row] = (prefixCarry[0] + tileLengths[lane]) + prefixCarry[1];' : ''}
+          ${rowShifts ? 'rowShifts[rowShiftsOffset + row] = prefixCarry[2] + tileShifts[lane];' : ''}
+        }
+        workgroupBarrier();
+        if (lane == 0u) {
+          // Neumaier-compensated carry of the tile total into the running measure.
+          let total = tileLengths[PREFIX_LANES - 1u];
+          let sum = prefixCarry[0];
+          let nextSum = sum + total;
+          if (abs(sum) >= abs(total)) {
+            prefixCarry[1] += (sum - nextSum) + total;
+          } else {
+            prefixCarry[1] += (total - nextSum) + sum;
+          }
+          prefixCarry[0] = nextSum;
+          prefixCarry[2] += tileShifts[PREFIX_LANES - 1u];
+        }
+        workgroupBarrier();
       }
-      previous = current;
     }
   }`
   });
@@ -317,9 +424,16 @@ export function createSegmentizeEmitNode<Parameters>(
     operation: props.operation,
     variant: 'emit',
     bindings,
-    invocationCount: props.positions.length,
+    // One invocation per output vertex (not per input row), so a segment cut into 1024 pieces does
+    // not serialize one lane while its neighbors finish after a single write.
+    invocationCount: props.outputPositions.length,
+    workgroupSize: BALANCED_SEARCH_WORKGROUP_SIZE,
+    guardIndex: false,
     declarations: `const CAPACITY: u32 = ${props.outputPositions.length}u;
 ${getLineGeometrySource(props.coordinateSystem, props.radius)}
+${getBalancedSearchSource(props.positions.length)}
+fn balancedStart(row: u32) -> u32 { return starts[startsOffset + row]; }
+fn balancedCount(row: u32) -> u32 { return counts[countsOffset + row]; }
 
 fn writeVertex(outputRow: u32, vertex: vec2<f32>, measure: f32, sourceRow: u32) {
   if (outputRow >= CAPACITY) {
@@ -330,24 +444,24 @@ fn writeVertex(outputRow: u32, vertex: vec2<f32>, measure: f32, sourceRow: u32) 
   ${writeMeasures ? 'outputMeasures[outputMeasuresOffset + outputRow] = measure;' : ''}
   ${props.outputSourceRows ? 'outputSourceRows[outputSourceRowsOffset + outputRow] = sourceRow;' : ''}
 }`,
-    body: /* wgsl */ `let count = counts[countsOffset + index];
-  if (count == 0u) {
+    body: /* wgsl */ `let row = findBalancedOwner(index, workgroupIndex * BALANCED_LANES, localInvocationIndex);
+  if (row == BALANCED_NONE) {
     return;
   }
-  let outputStart = starts[startsOffset + index];
-  var start = getPosition(index);
-  ${spherical && props.rowShifts ? 'start.x = start.x + rowShifts[rowShiftsOffset + index];' : ''}
-  let measure = ${writeMeasures ? 'rowMeasures[rowMeasuresOffset + index]' : '0.0'};
-  writeVertex(outputStart, start, measure, index);
-  if (count > 1u) {
-    let end = getPosition(index + 1u);
-    let segmentLength = getSegmentLength(start, end);
-    ${spherical ? 'let angle = geodesicCentralAngle(start, end);' : ''}
-    for (var piece = 1u; piece < count; piece++) {
-      let fraction = f32(piece) / f32(count);
-      writeVertex(outputStart + piece, ${interpolate}, measure + segmentLength * fraction, index);
-    }
-  }`
+  let count = counts[countsOffset + row];
+  let piece = index - starts[startsOffset + row];
+  var start = getPosition(row);
+  ${spherical && props.rowShifts ? 'start.x = start.x + rowShifts[rowShiftsOffset + row];' : ''}
+  let measure = ${writeMeasures ? 'rowMeasures[rowMeasuresOffset + row]' : '0.0'};
+  if (piece == 0u) {
+    writeVertex(index, start, measure, row);
+    return;
+  }
+  let end = getPosition(row + 1u);
+  let segmentLength = getSegmentLength(start, end);
+  ${spherical ? 'let angle = geodesicCentralAngle(start, end);' : ''}
+  let fraction = f32(piece) / f32(count);
+  writeVertex(index, ${interpolate}, measure + segmentLength * fraction, row);`
   });
 }
 
@@ -475,11 +589,17 @@ export function createArcEmitNode<Parameters>(
     operation: props.operation,
     variant: 'emit',
     bindings,
-    invocationCount: props.sources.length,
+    // One invocation per output vertex, so long arcs do not serialize a lane (see balanced-search).
+    invocationCount: props.outputPositions.length,
+    workgroupSize: BALANCED_SEARCH_WORKGROUP_SIZE,
+    guardIndex: false,
     declarations: `${GEODESIC_WGSL}
 const RADIUS: f32 = ${getWGSLFloatLiteral(props.radius)};
 const CAPACITY: u32 = ${props.outputPositions.length}u;
 ${ARC_GEOMETRY_WGSL}
+${getBalancedSearchSource(props.sources.length)}
+fn balancedStart(row: u32) -> u32 { return starts[startsOffset + row]; }
+fn balancedCount(row: u32) -> u32 { return counts[countsOffset + row]; }
 
 fn writeVertex(outputRow: u32, vertex: vec2<f32>, measure: f32, sourceRow: u32) {
   if (outputRow >= CAPACITY) {
@@ -490,24 +610,31 @@ fn writeVertex(outputRow: u32, vertex: vec2<f32>, measure: f32, sourceRow: u32) 
   ${props.outputMeasures ? 'outputMeasures[outputMeasuresOffset + outputRow] = measure;' : ''}
   ${props.outputSourceRows ? 'outputSourceRows[outputSourceRowsOffset + outputRow] = sourceRow;' : ''}
 }`,
-    body: /* wgsl */ `let count = counts[countsOffset + index];
-  let outputStart = starts[startsOffset + index];
-  let source = getSource(index);
-  var destination = getTarget(index);
+    body: /* wgsl */ `let pair = findBalancedOwner(index, workgroupIndex * BALANCED_LANES, localInvocationIndex);
+  if (pair == BALANCED_NONE) {
+    return;
+  }
+  let segments = counts[countsOffset + pair] - 1u;
+  let vertex = index - starts[startsOffset + pair];
+  let source = getSource(pair);
+  if (vertex == 0u) {
+    writeVertex(index, source, 0.0, pair);
+    return;
+  }
+  var destination = getTarget(pair);
   destination.x = source.x + geodesicWrapLongitudeDelta(destination.x - source.x);
   let angle = geodesicCentralAngle(source, destination);
-  let segments = count - 1u;
-  writeVertex(outputStart, source, 0.0, index);
-  for (var vertex = 1u; vertex < segments; vertex++) {
-    let fraction = f32(vertex) / f32(segments);
-    writeVertex(
-      outputStart + vertex,
-      geodesicInterpolate(source, destination, angle, fraction),
-      angle * RADIUS * fraction,
-      index
-    );
+  if (vertex == segments) {
+    writeVertex(index, destination, angle * RADIUS, pair);
+    return;
   }
-  writeVertex(outputStart + segments, destination, angle * RADIUS, index);`
+  let fraction = f32(vertex) / f32(segments);
+  writeVertex(
+    index,
+    geodesicInterpolate(source, destination, angle, fraction),
+    angle * RADIUS * fraction,
+    pair
+  );`
   });
 }
 

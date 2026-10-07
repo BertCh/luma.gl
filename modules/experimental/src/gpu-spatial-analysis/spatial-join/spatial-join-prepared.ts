@@ -52,7 +52,7 @@ export type GPUSpatialJoinPreparedProps = {
   /** Power-of-two BVH leaf slots. Defaults to the next power of two of the feature count. */
   leafCapacity?: number;
   /**
-   * Reorder features along a Morton curve before the build. Tightens the tree for large,
+   * Reorder features along a Hilbert curve before the build. Tightens the tree for large,
    * spatially incoherent right-hand sides. Candidate order is then unspecified, so it is only
    * accepted by joins that do not promise sorted output (`GPUPointInPolygonJoin`). Default false.
    */
@@ -100,7 +100,7 @@ export class GPUSpatialJoinPrepared implements GPUCommandNodeProducer {
   readonly featureCount: number;
   /** Resolved power-of-two BVH leaf capacity. */
   readonly leafCapacity: number;
-  /** Whether features are Morton sorted before the build. */
+  /** Whether features are spatially sorted before the build. */
   readonly spatialSort: boolean;
   /** Number of encodings that rebuilt the index so far (counted on the CPU at encode time). */
   encodedBuildCount = 0;

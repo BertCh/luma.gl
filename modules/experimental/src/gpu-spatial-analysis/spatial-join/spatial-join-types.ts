@@ -108,3 +108,16 @@ export type GPUSpatialJoinPairs = {
   /** Optional one-row scalar receiving the unclamped number of matched pairs. */
   totalCount?: GraphDataView<'uint32'>;
 };
+
+/**
+ * Key columns for an attribute-equality join condition (GeoPandas `sjoin(on_attribute=...)`).
+ *
+ * A pair survives only when the left key equals the right key, on top of the spatial condition.
+ * The keys are per-frame buffer contents; whether the option is present is compile-time.
+ */
+export type GPUSpatialJoinOnAttribute = {
+  /** One `uint32` key per left row (per query row for `GPUNearestFeatureJoin`). */
+  left: GraphDataView<'uint32'>;
+  /** One `uint32` key per right row (per feature row for `GPUNearestFeatureJoin`). */
+  right: GraphDataView<'uint32'>;
+};

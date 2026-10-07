@@ -37,14 +37,45 @@ import {
   type LineImportanceScratch
 } from './line-simplification-kernels';
 import {GPU_LINE_SIMPLIFICATION_PARAMETER_LENGTH} from './line-simplification-parameters';
+import {
+  createVisvalingamInitNode,
+  createVisvalingamRoundNodes,
+  createVisvalingamUnresolvedNode,
+  type VisvalingamScratch
+} from './visvalingam-kernels';
 
 const OPERATION = 'GPULineSimplification';
 
 /** Default compile-time cap on Douglas-Peucker rounds. */
 export const GPU_LINE_SIMPLIFICATION_DEFAULT_MAXIMUM_ROUNDS = 64;
 
+/**
+ * Default `finishSpanLimit`: Douglas-Peucker intervals with at most this many interior rows are
+ * solved whole by one lane instead of one level per round.
+ */
+export const GPU_LINE_SIMPLIFICATION_DEFAULT_FINISH_SPAN_LIMIT = 32;
+
+/** Largest accepted `finishSpanLimit`. */
+export const GPU_LINE_SIMPLIFICATION_MAXIMUM_FINISH_SPAN_LIMIT = 128;
+
 /** Largest accepted compile-time round cap. */
 export const GPU_LINE_SIMPLIFICATION_MAXIMUM_ROUNDS = 1024;
+
+/** Default compile-time cap on Visvalingam-Whyatt rounds (`method: 'visvalingam'`). */
+export const GPU_LINE_SIMPLIFICATION_DEFAULT_VISVALINGAM_ROUNDS = 256;
+
+/** Default `neighborhoodRadius` of `method: 'visvalingam'`. */
+export const GPU_LINE_SIMPLIFICATION_DEFAULT_NEIGHBORHOOD_RADIUS = 3;
+
+/** Largest accepted `neighborhoodRadius`. */
+export const GPU_LINE_SIMPLIFICATION_MAXIMUM_NEIGHBORHOOD_RADIUS = 8;
+
+/**
+ * Simplification algorithm. `'douglas-peucker'` (default) is exact recursive Douglas-Peucker (or
+ * TD-TR with the `'time-ratio'` metric); `'visvalingam'` is Visvalingam-Whyatt effective-area
+ * simplification, approximated by parallel rounds (see {@link GPULineSimplification}).
+ */
+export type GPULineSimplificationMethod = 'douglas-peucker' | 'visvalingam';
 
 /** Optional scalar diagnostics of the importance pass. */
 export type GPULineSimplificationStatus = {
@@ -103,6 +134,19 @@ export type GPULineSimplificationProps = {
    */
   timestamps?: GraphDataView<'float32'>;
   /**
+   * Simplification algorithm. Default `'douglas-peucker'`. With `'visvalingam'` the importance of a
+   * vertex is its effective triangle area in squared position units, the tolerance is an area, the
+   * `'segment'` metric applies, and `timestamps` are ignored.
+   */
+  method?: GPULineSimplificationMethod;
+  /**
+   * `method: 'visvalingam'` only. A vertex is removed in a round when its triangle area is the
+   * smallest among the surviving vertices within this many steps on both sides, in `[1, 8]`.
+   * Default 3. Larger values follow the sequential smallest-area-first order more closely and need
+   * more rounds; `1` is fastest and deviates the most. Compile-time.
+   */
+  neighborhoodRadius?: number;
+  /**
    * Distance used by the importance pass. `'segment'` (default) is the Euclidean distance from a
    * vertex to the chord segment between the interval's anchors (perpendicular distance when the
    * vertex projects inside the chord, distance to the nearer anchor otherwise, as in GEOS and
@@ -121,11 +165,22 @@ export type GPULineSimplificationProps = {
    */
   computeImportance?: boolean;
   /**
-   * Compile-time cap on level-synchronous rounds, in `[1, 1024]`. Default 64. A balanced split
+   * Compile-time cap on level-synchronous rounds, in `[1, 1024]`. Default 64 (256 for
+   * `method: 'visvalingam'`). A balanced split
    * tree needs about `log2(n)` rounds; adversarial shapes (spirals) need up to `n - 2`. Each round
    * adds five nodes, and rounds after convergence are skipped on the GPU.
    */
   maximumRounds?: number;
+  /**
+   * Douglas-Peucker only. An open interval with at most this many interior rows is solved
+   * completely by one lane (explicit-stack recursion, same distances, ties and importance as the
+   * level rounds) instead of one split level per round, which removes the long tail of rounds
+   * that a few small intervals otherwise need and so also lowers `roundCount`. In `[0, 128]`,
+   * default {@link GPU_LINE_SIMPLIFICATION_DEFAULT_FINISH_SPAN_LIMIT}; `0` runs rounds only.
+   * Converged importance is identical for every value; only the round count and what a
+   * `maximumRounds` cap leaves undecided change. Compile-time.
+   */
+  finishSpanLimit?: number;
   /** Optional convergence diagnostics; only with `computeImportance`. */
   status?: GPULineSimplificationStatus;
   /**
@@ -167,8 +222,29 @@ export type GPULineSimplificationProps = {
  * not exceed the operand, so a CPU oracle with `Math.fround` reproduces importance bit for bit.
  * Inputs must be finite and avoid the subnormal range (GPUs may flush subnormals).
  *
+ * **Visvalingam-Whyatt** (`method: 'visvalingam'`). The importance of a vertex is its effective
+ * area: the area of the triangle with its surviving neighbors when it is removed, raised to the
+ * largest effective area of any neighbor removed before it (so importance is monotone along removal
+ * order). That is the order of the `geo` crate and the Python `simplification` package, which
+ * remove the smallest triangle first and keep a vertex when its area exceeds the tolerance.
+ * Instead of a heap, every round removes each surviving vertex whose `(area, row)` is smaller than
+ * that of all surviving vertices within `neighborhoodRadius` steps on both sides: an independent
+ * set that is unlinked in parallel. Areas use only correctly rounded f32 `+`, `-`, `*`, so a CPU
+ * mirror reproduces importance bit for bit. Rounds needed grow slowly with the line length (about
+ * 55 for 3000 random-walk vertices at radius 3). When `converged` is 0, undecided rows get
+ * importance `+Infinity`, so the kept set is a superset.
+ *
+ * **Visvalingam exactness.** Heap order is inherently sequential: removing a small triangle two or
+ * more steps away can lower a neighbor's area below a vertex that a local test already removed, so
+ * the parallel result equals the sequential one only up to that effect. Measured against
+ * `simplification.cutil.simplify_coords_vw` on random walks of 3000 vertices at five tolerances,
+ * the kept set differs in 3.1 percent of vertices at `neighborhoodRadius` 1, 0.65 percent at 2 and
+ * 0.13 percent at 3 (the default); on smooth noisy curves 0.9, 0.09 and 0 percent. Small lines
+ * (up to 120 vertices) match exactly at radius 3. Treat the result as an approximation of
+ * Visvalingam-Whyatt, not as bit-identical to the heap.
+ *
  * Non-goals: topology preservation (simplified lines may self-intersect or cross each other),
- * Visvalingam-Whyatt, geodesic distances (project first), double-single or Int64 timestamps for
+ * topology-preserving Visvalingam (`simplify_coords_vwp`), geodesic distances (project first), double-single or Int64 timestamps for
  * `'time-ratio'`, and chunked inputs.
  */
 export class GPULineSimplification implements GPUCommandNodeProducer {
@@ -176,10 +252,16 @@ export class GPULineSimplification implements GPUCommandNodeProducer {
   readonly id: string;
   /** Validated properties. */
   readonly props: GPULineSimplificationProps;
+  /** Simplification algorithm. */
+  readonly method: GPULineSimplificationMethod;
+  /** Visvalingam neighborhood radius. */
+  readonly neighborhoodRadius: number;
   /** Distance metric. */
   readonly metric: GPULineSimplificationMetric;
   /** Compile-time round cap. */
   readonly maximumRounds: number;
+  /** Largest open interval solved whole by one lane (Douglas-Peucker). */
+  readonly finishSpanLimit: number;
   /** Whether the importance rounds are part of this contributor. */
   readonly computeImportance: boolean;
 
@@ -187,9 +269,27 @@ export class GPULineSimplification implements GPUCommandNodeProducer {
     this.id = props.id ?? 'line-simplification';
     this.props = props;
     this.metric = props.metric ?? 'segment';
-    this.maximumRounds = props.maximumRounds ?? GPU_LINE_SIMPLIFICATION_DEFAULT_MAXIMUM_ROUNDS;
+    this.method = props.method ?? 'douglas-peucker';
+    this.neighborhoodRadius =
+      props.neighborhoodRadius ?? GPU_LINE_SIMPLIFICATION_DEFAULT_NEIGHBORHOOD_RADIUS;
+    this.maximumRounds =
+      props.maximumRounds ??
+      (this.method === 'visvalingam'
+        ? GPU_LINE_SIMPLIFICATION_DEFAULT_VISVALINGAM_ROUNDS
+        : GPU_LINE_SIMPLIFICATION_DEFAULT_MAXIMUM_ROUNDS);
     this.computeImportance = props.computeImportance ?? true;
-    const {id, metric, maximumRounds} = this;
+    this.finishSpanLimit =
+      props.finishSpanLimit ?? GPU_LINE_SIMPLIFICATION_DEFAULT_FINISH_SPAN_LIMIT;
+    if (
+      !Number.isSafeInteger(this.finishSpanLimit) ||
+      this.finishSpanLimit < 0 ||
+      this.finishSpanLimit > GPU_LINE_SIMPLIFICATION_MAXIMUM_FINISH_SPAN_LIMIT
+    ) {
+      throw new Error(
+        `${this.id} finishSpanLimit must be an integer in [0, ${GPU_LINE_SIMPLIFICATION_MAXIMUM_FINISH_SPAN_LIMIT}]`
+      );
+    }
+    const {id, metric, maximumRounds, method, neighborhoodRadius} = this;
     const {selection, status} = props;
     for (const [name, view] of [
       ['positions', props.positions],
@@ -200,6 +300,23 @@ export class GPULineSimplification implements GPUCommandNodeProducer {
     ] as const) {
       if ((view as unknown) instanceof GraphVectorView) {
         throw new Error(`${id} ${name} must be a single packed view, not a chunked vector`);
+      }
+    }
+    if (method !== 'douglas-peucker' && method !== 'visvalingam') {
+      throw new Error(`${id} method must be 'douglas-peucker' or 'visvalingam'`);
+    }
+    if (method === 'visvalingam') {
+      if (metric !== 'segment') {
+        throw new Error(`${id} method 'visvalingam' does not support metric '${metric}'`);
+      }
+      if (
+        !Number.isSafeInteger(neighborhoodRadius) ||
+        neighborhoodRadius < 1 ||
+        neighborhoodRadius > GPU_LINE_SIMPLIFICATION_MAXIMUM_NEIGHBORHOOD_RADIUS
+      ) {
+        throw new Error(
+          `${id} neighborhoodRadius must be an integer in [1, ${GPU_LINE_SIMPLIFICATION_MAXIMUM_NEIGHBORHOOD_RADIUS}]`
+        );
       }
     }
     if (metric !== 'segment' && metric !== 'time-ratio') {
@@ -341,9 +458,79 @@ export class GPULineSimplification implements GPUCommandNodeProducer {
     return nodes;
   }
 
+  private _getVisvalingamNodes<Parameters>(
+    graph: GPUCommandGraph<Parameters>
+  ): GPUCommandNode<Parameters>[] {
+    const {props, id, maximumRounds} = this;
+    const rowCount = props.positions.length;
+    const scratch: VisvalingamScratch = {
+      previousRows: createTransientView(graph, `${id}-previous-rows`, 'uint32', rowCount),
+      nextRows: createTransientView(graph, `${id}-next-rows`, 'uint32', rowCount),
+      areaKeys: createTransientView(graph, `${id}-area-keys`, 'uint32', rowCount),
+      floorKeys: createTransientView(graph, `${id}-floor-keys`, 'uint32', rowCount),
+      pendingFlags: createTransientView(graph, `${id}-pending-flags`, 'uint32', rowCount)
+    };
+    const state = createRasterIterationState(graph, `${id}-rounds`, OPERATION, rowCount, id);
+    const nodes: GPUCommandNode<Parameters>[] = [
+      createRasterIterationResetNode<Parameters>(graph, {
+        id: `${id}-rounds-reset`,
+        operation: OPERATION,
+        state
+      }),
+      createVisvalingamInitNode<Parameters>(graph, {
+        id: `${id}-init`,
+        trackOffsets: props.trackOffsets,
+        scratch,
+        importance: props.importance
+      })
+    ];
+    for (let round = 0; round < maximumRounds; round++) {
+      const roundId = `${id}-round-${round}`;
+      nodes.push(
+        ...createVisvalingamRoundNodes<Parameters>(graph, {
+          id: roundId,
+          neighborhoodRadius: this.neighborhoodRadius,
+          positions: props.positions,
+          scratch,
+          importance: props.importance,
+          status: state.status,
+          gate: getRasterIterationCondition<Parameters>(state, roundId)
+        }),
+        createRasterIterationGateNode<Parameters>(graph, {
+          id: `${roundId}-gate`,
+          operation: OPERATION,
+          state,
+          maxIterations: maximumRounds
+        })
+      );
+    }
+    nodes.push(
+      createVisvalingamUnresolvedNode<Parameters>(graph, {
+        id: `${id}-unresolved`,
+        scratch,
+        importance: props.importance
+      })
+    );
+    if (props.status?.converged || props.status?.roundCount) {
+      nodes.push(
+        createRasterIterationFinalizeNode<Parameters>(graph, {
+          id: `${id}-status`,
+          operation: OPERATION,
+          state,
+          converged: props.status.converged,
+          iterationCount: props.status.roundCount
+        })
+      );
+    }
+    return nodes;
+  }
+
   private _getImportanceNodes<Parameters>(
     graph: GPUCommandGraph<Parameters>
   ): GPUCommandNode<Parameters>[] {
+    if (this.method === 'visvalingam') {
+      return this._getVisvalingamNodes(graph);
+    }
     const {props, id, maximumRounds} = this;
     const rowCount = props.positions.length;
     const scratch: LineImportanceScratch = {
@@ -378,7 +565,8 @@ export class GPULineSimplification implements GPUCommandNodeProducer {
           scratch,
           importance: props.importance,
           status: state.status,
-          gate: getRasterIterationCondition<Parameters>(state, roundId)
+          gate: getRasterIterationCondition<Parameters>(state, roundId),
+          finishSpanLimit: this.finishSpanLimit
         }),
         createRasterIterationGateNode<Parameters>(graph, {
           id: `${roundId}-gate`,

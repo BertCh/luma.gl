@@ -186,3 +186,39 @@ it('GPUNetworkReachability graph size is one node per round for the explorer pro
   expect(countNodes(640) - countNodes(48)).toBe(640 - 48);
   expect(countNodes(48)).toBeLessThan(60);
 });
+
+it('GPUNetworkReachability lanes share one CSR and validate their layout', () => {
+  const device = createNullWebGPUDevice();
+  const graph = new GPUCommandGraph(device);
+  // 8 nodes per lane, 3 lanes: offsets describe one lane, costs hold every lane.
+  const lanes = createProps(graph, {
+    laneCount: 3,
+    costs: createTransientView(graph, 'lane-costs', 'float32', 24)
+  });
+  const nodes = new GPUNetworkReachability({...lanes, id: 'lanes'}).getCommandNodes(graph);
+  expect(nodes.some(node => node.id === 'lanes-relax-0')).toBe(true);
+  expect(
+    () =>
+      new GPUNetworkReachability(
+        createProps(new GPUCommandGraph(device), {
+          laneCount: 3,
+          costs: createTransientView(new GPUCommandGraph(device), 'bad-costs', 'float32', 25)
+        })
+      )
+  ).toThrow(/multiple of laneCount/);
+  expect(
+    () =>
+      new GPUNetworkReachability({
+        ...lanes,
+        predecessors: createTransientView(graph, 'lane-predecessors', 'uint32', 24)
+      })
+  ).toThrow(/does not support predecessors/);
+  // Expanded offsets (the old layout) no longer match once lanes share the CSR.
+  expect(
+    () =>
+      new GPUNetworkReachability({
+        ...lanes,
+        offsets: createTransientView(graph, 'expanded-offsets', 'uint32', 25)
+      })
+  ).toThrow(/offsets must contain one more row/);
+});

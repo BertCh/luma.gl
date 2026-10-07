@@ -22,6 +22,7 @@ import {
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph
 } from '../../utils/gpu-contributor-utils';
+import {getRectangleScanWGSL, getRingScanWGSL} from './grid-neighbor-scan';
 import {GPU_INVERSE_DISTANCE_WEIGHTING_PARAMETER_LENGTH} from './spatial-interpolation-parameters';
 
 const OPERATION = 'GPUInverseDistanceWeighting';
@@ -92,7 +93,10 @@ export type GPUInverseDistanceWeightingProps = {
  * `d^2 <= radius^2` contribute. With a per-frame `k > 0`, the `k` nearest contributors are kept by
  * `(d^2, row)`, so equal distances keep the smallest row, and their weights are summed in that
  * order. An exact hit (`d^2 == 0`) returns that sample's value; several exact hits return the one
- * with the smallest row. Weights are accumulated in log space with a running maximum
+ * with the smallest row. With `k > 0` the cell walks index cells in rings around its own cell and
+ * stops once the `k`-th nearest is closer than the visited block's border, so an unbounded radius
+ * costs `O(k)` candidates per cell instead of every sample; the kept set is the same because the
+ * `(d^2, row)` order is total. Weights are accumulated in log space with a running maximum
  * (`exp2(log2 w - max)`), so tiny distances and large powers do not overflow f32.
  *
  * Output cell `(x, y)` samples its center `extentMin + (x + 0.5, y + 0.5) * cellSize`, with row 0
@@ -351,7 +355,7 @@ ${WEIGHT_ACCUMULATOR_WGSL}`,
 }
 
 /** Same cell mapping as `GPUGridIndex`, plus finiteness and NaN helpers. */
-const GRID_COORDINATE_WGSL = /* wgsl */ `
+export const GRID_COORDINATE_WGSL = /* wgsl */ `
 fn isFiniteValue(value: f32) -> bool { return (bitcast<u32>(value) & 0x7fffffffu) < 0x7f800000u; }
 fn isNanValue(value: f32) -> bool { return (bitcast<u32>(value) & 0x7fffffffu) > 0x7f800000u; }
 // WGSL rejects NaN constants, so build one from a runtime bit pattern.
@@ -453,6 +457,22 @@ function getGatherBody(hasMask: boolean, hasCounts: boolean, hasNeighborLimit: b
     }
   }`
     : '';
+  const visit = `let value = sampleValues[sampleValuesOffset + sample];
+        if (isNanValue(value)) {
+          continue;
+        }
+        ${hasMask ? 'if (sampleMask[sampleMaskOffset + sample] == 0u) {\n          continue;\n        }' : ''}
+        let position = vec2f(positions[positionsOffset + 2u * sample], positions[positionsOffset + 2u * sample + 1u]);
+        let delta = position - center;
+        let distanceSquared = dot(delta, delta);
+        if (!(distanceSquared <= radiusSquared)) {
+          continue;
+        }
+        if (distanceSquared == 0.0 && sample < exactRow) {
+          exactRow = sample;
+          exactValue = value;
+        }
+        ${contribute}`;
   return `let column = index % WIDTH;
   let rasterRow = index / WIDTH;
   let extentMin = vec2f(params[paramsOffset], params[paramsOffset + 1u]);
@@ -487,29 +507,17 @@ function getGatherBody(hasMask: boolean, hasCounts: boolean, hasNeighborLimit: b
     rowLow = rowLow - min(rowLow, 1u);
     let columnHigh = min(getCoordinate(clampedMax.x, DOMAIN_MIN.x, DOMAIN_MAX.x, INDEX_WIDTH) + 1u, INDEX_WIDTH - 1u);
     let rowHigh = min(getCoordinate(clampedMax.y, DOMAIN_MIN.y, DOMAIN_MAX.y, INDEX_HEIGHT) + 1u, INDEX_HEIGHT - 1u);
-    for (var indexRow = rowLow; indexRow <= rowHigh; indexRow++) {
-      // Cells of one index row are contiguous in cellOffsets, so the row span is one slot range.
-      let start = cellOffsets[cellOffsetsOffset + indexRow * INDEX_WIDTH + columnLow];
-      let end = cellOffsets[cellOffsetsOffset + indexRow * INDEX_WIDTH + columnHigh + 1u];
-      for (var slot = start; slot < end; slot++) {
-        let sample = sortedIds[sortedIdsOffset + slot];
-        let value = sampleValues[sampleValuesOffset + sample];
-        if (isNanValue(value)) {
-          continue;
-        }
-        ${hasMask ? 'if (sampleMask[sampleMaskOffset + sample] == 0u) {\n          continue;\n        }' : ''}
-        let position = vec2f(positions[positionsOffset + 2u * sample], positions[positionsOffset + 2u * sample + 1u]);
-        let delta = position - center;
-        let distanceSquared = dot(delta, delta);
-        if (!(distanceSquared <= radiusSquared)) {
-          continue;
-        }
-        if (distanceSquared == 0.0 && sample < exactRow) {
-          exactRow = sample;
-          exactValue = value;
-        }
-        ${contribute}
-      }
+    // With a per-frame k, the k nearest are order independent (total order (d^2, row)), so an
+    // expanding-ring walk may stop early. Radius-only sums depend on the visiting order, so they
+    // keep the fixed sorted row-major sweep.
+    ${
+      hasNeighborLimit
+        ? `if (neighborLimit > 0u) {
+      ${getRingScanWGSL(visit)}
+    } else {
+      ${getRectangleScanWGSL(visit)}
+    }`
+        : getRectangleScanWGSL(visit)
     }
   }
   ${nearestFinish}

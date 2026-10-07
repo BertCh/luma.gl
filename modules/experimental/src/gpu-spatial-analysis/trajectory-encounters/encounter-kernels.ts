@@ -86,8 +86,8 @@ export function createEncounterPositionsNode<Parameters>(
 }
 
 /**
- * One invocation per sample: scans the 3x3 xy cells of its own bucket and appends a hit for every
- * higher-ID track within the distance. Appended order is unspecified. @internal
+ * One invocation per sample: scans the half shell (own cell plus four forward neighbours) of its
+ * own bucket and appends a hit, as `(lower, higher)` track, for every track within the distance. Appended order is unspecified. @internal
  */
 export function createEncounterScanNode<Parameters>(
   graph: GPUCommandGraph<Parameters>,
@@ -145,32 +145,39 @@ fn getCoordinate(value: f32, minimum: f32, maximum: f32, size: u32) -> u32 {
   let limit = min(searchDistance, CELL_SIZE);
   let column = getCoordinate(x, MINIMUM_X, MAXIMUM_X, COLUMNS);
   let row = getCoordinate(y, MINIMUM_Y, MAXIMUM_Y, ROWS);
-  let firstColumn = select(column - 1u, 0u, column == 0u);
-  let lastColumn = min(column + 1u, COLUMNS - 1u);
-  let firstRow = select(row - 1u, 0u, row == 0u);
-  let lastRow = min(row + 1u, ROWS - 1u);
-  for (var neighborRow = firstRow; neighborRow <= lastRow; neighborRow++) {
-    for (var neighborColumn = firstColumn; neighborColumn <= lastColumn; neighborColumn++) {
-      let cell = (bucket * ROWS + neighborRow) * COLUMNS + neighborColumn;
-      let cellBegin = cellOffsets[cellOffsetsOffset + cell];
-      let cellEnd = cellOffsets[cellOffsetsOffset + cell + 1u];
-      for (var entry = cellBegin; entry < cellEnd; entry++) {
-        let other = objectIds[objectIdsOffset + entry];
-        let otherTrack = other / BUCKET_COUNT;
-        if (otherTrack <= track) { continue; }
-        let offset = vec2f(
-          positions[positionsOffset + other * 3u] - x,
-          positions[positionsOffset + other * 3u + 1u] - y
-        );
-        let separation = length(offset);
-        if (separation <= limit) {
-          let slot = atomicAdd(&state[stateOffset], 1u);
-          if (slot < HIT_CAPACITY) {
-            hitPairs[hitPairsOffset + slot * 2u] = track;
-            hitPairs[hitPairsOffset + slot * 2u + 1u] = otherTrack;
-            hitBuckets[hitBucketsOffset + slot] = bucket;
-            hitDistances[hitDistancesOffset + slot] = separation;
-          }
+  // Half-shell traversal: the own cell plus the four forward neighbours (east, and the three
+  // cells of the next row at columns -1, 0, +1). Every unordered pair of adjacent cells is visited
+  // from exactly one side, so each pair is tested once instead of twice. Inside the own cell the
+  // higher track is the partner. A track has one sample per bucket, so another cell never holds
+  // the same track.
+  for (var shell = 0u; shell < 5u; shell++) {
+    var neighborColumn = column;
+    var neighborRow = row;
+    if (shell == 1u) { neighborColumn = column + 1u; }
+    else if (shell == 2u) { neighborColumn = column - 1u; neighborRow = row + 1u; }
+    else if (shell == 3u) { neighborRow = row + 1u; }
+    else if (shell == 4u) { neighborColumn = column + 1u; neighborRow = row + 1u; }
+    // Unsigned wrap of column - 1u at column 0 gives a value above COLUMNS, rejected here.
+    if (neighborColumn >= COLUMNS || neighborRow >= ROWS) { continue; }
+    let cell = (bucket * ROWS + neighborRow) * COLUMNS + neighborColumn;
+    let cellBegin = cellOffsets[cellOffsetsOffset + cell];
+    let cellEnd = cellOffsets[cellOffsetsOffset + cell + 1u];
+    for (var entry = cellBegin; entry < cellEnd; entry++) {
+      let other = objectIds[objectIdsOffset + entry];
+      let otherTrack = other / BUCKET_COUNT;
+      if (shell == 0u && otherTrack <= track) { continue; }
+      let offset = vec2f(
+        positions[positionsOffset + other * 3u] - x,
+        positions[positionsOffset + other * 3u + 1u] - y
+      );
+      let separation = length(offset);
+      if (separation <= limit) {
+        let slot = atomicAdd(&state[stateOffset], 1u);
+        if (slot < HIT_CAPACITY) {
+          hitPairs[hitPairsOffset + slot * 2u] = min(track, otherTrack);
+          hitPairs[hitPairsOffset + slot * 2u + 1u] = max(track, otherTrack);
+          hitBuckets[hitBucketsOffset + slot] = bucket;
+          hitDistances[hitDistancesOffset + slot] = separation;
         }
       }
     }
@@ -240,6 +247,58 @@ export function createEncounterSortKeyNode<Parameters>(
   });
 }
 
+/** Bit widths of the packed `(track, partner, bucket)` sort key. @internal */
+export type EncounterKeyBits = {track: number; partner: number; bucket: number};
+
+/**
+ * Writes one packed sort key per hit slot, `track << (partner + bucket bits) | partner << bucket
+ * bits | bucket`, and the identity values. A single sort of this key gives the same
+ * `(track, partner, bucket)` order as the three-pass stable chain, because `(track, partner,
+ * bucket)` is unique per hit. Slots at and after the hit count get a key above every real one
+ * (track field `TRACK_COUNT`). Only valid when the three widths sum to at most 32 bits.
+ * @internal
+ */
+export function createEncounterCompositeKeyNode<Parameters>(
+  graph: GPUCommandGraph<Parameters>,
+  props: {
+    id: string;
+    shape: EncounterShape;
+    bits: EncounterKeyBits;
+    state: GraphDataView<'uint32'>;
+    hitPairs: GraphDataView<'uint32x2'>;
+    hitBuckets: GraphDataView<'uint32'>;
+    keys: GraphDataView<'uint32'>;
+    identity: GraphDataView<'uint32'>;
+  }
+): GPUCommandNode<Parameters> {
+  const {bits} = props;
+  return createWGSLKernelNode<Parameters>(graph, {
+    id: props.id,
+    operation: OPERATION,
+    variant: 'sort-key-composite',
+    bindings: [
+      {name: 'state', view: props.state, type: 'u32', access: 'read'},
+      {name: 'hitPairs', view: props.hitPairs, type: 'u32', access: 'read'},
+      {name: 'hitBuckets', view: props.hitBuckets, type: 'u32', access: 'read'},
+      {name: 'identity', view: props.identity, type: 'u32', access: 'read_write'},
+      {name: 'keys', view: props.keys, type: 'u32', access: 'read_write'}
+    ],
+    invocationCount: props.shape.hitCapacity,
+    declarations: `${getShapeConstants(props.shape)}
+const PARTNER_SHIFT: u32 = ${bits.bucket}u;
+const TRACK_SHIFT: u32 = ${bits.bucket + bits.partner}u;`,
+    body: `let activeCount = min(state[stateOffset], HIT_CAPACITY);
+  identity[identityOffset + index] = index;
+  var key = TRACK_COUNT << TRACK_SHIFT;
+  if (index < activeCount) {
+    key = (hitPairs[hitPairsOffset + index * 2u] << TRACK_SHIFT)
+      | (hitPairs[hitPairsOffset + index * 2u + 1u] << PARTNER_SHIFT)
+      | hitBuckets[hitBucketsOffset + index];
+  }
+  keys[keysOffset + index] = key;`
+  });
+}
+
 /** Gathers the sorted hit columns. Slots at and after the hit count get sentinels. @internal */
 export function createEncounterSortedHitsNode<Parameters>(
   graph: GPUCommandGraph<Parameters>,
@@ -248,14 +307,61 @@ export function createEncounterSortedHitsNode<Parameters>(
     shape: EncounterShape;
     state: GraphDataView<'uint32'>;
     order: GraphDataView<'uint32'>;
-    hitPairs: GraphDataView<'uint32x2'>;
-    hitBuckets: GraphDataView<'uint32'>;
+    hitPairs?: GraphDataView<'uint32x2'>;
+    hitBuckets?: GraphDataView<'uint32'>;
     hitDistances: GraphDataView<'float32'>;
     sortedPartners: GraphDataView<'uint32'>;
     sortedBuckets: GraphDataView<'uint32'>;
     sortedDistances: GraphDataView<'float32'>;
+    /**
+     * Composite path: the sorted packed keys and their widths. Tracks, partners and buckets are
+     * unpacked from them, so `hitPairs`, `hitBuckets` and the key gathers are not needed.
+     */
+    composite?: {
+      sortedKeys: GraphDataView<'uint32'>;
+      sortedTracks: GraphDataView<'uint32'>;
+      bits: EncounterKeyBits;
+    };
   }
 ): GPUCommandNode<Parameters> {
+  if (props.composite) {
+    const {sortedKeys, sortedTracks, bits} = props.composite;
+    return createWGSLKernelNode<Parameters>(graph, {
+      id: props.id,
+      operation: OPERATION,
+      variant: 'sorted-hits-composite',
+      bindings: [
+        {name: 'state', view: props.state, type: 'u32', access: 'read'},
+        {name: 'order', view: props.order, type: 'u32', access: 'read'},
+        {name: 'sortedKeys', view: sortedKeys, type: 'u32', access: 'read'},
+        {name: 'hitDistances', view: props.hitDistances, type: 'f32', access: 'read'},
+        {name: 'sortedTracks', view: sortedTracks, type: 'u32', access: 'read_write'},
+        {name: 'sortedPartners', view: props.sortedPartners, type: 'u32', access: 'read_write'},
+        {name: 'sortedBuckets', view: props.sortedBuckets, type: 'u32', access: 'read_write'},
+        {name: 'sortedDistances', view: props.sortedDistances, type: 'f32', access: 'read_write'}
+      ],
+      invocationCount: props.shape.hitCapacity,
+      declarations: `${getShapeConstants(props.shape)}
+const BUCKET_MASK: u32 = ${(2 ** bits.bucket - 1) >>> 0}u;
+const PARTNER_MASK: u32 = ${(2 ** bits.partner - 1) >>> 0}u;
+const PARTNER_SHIFT: u32 = ${bits.bucket}u;
+const TRACK_SHIFT: u32 = ${bits.bucket + bits.partner}u;`,
+      body: `if (index >= min(state[stateOffset], HIT_CAPACITY)) {
+    sortedTracks[sortedTracksOffset + index] = 0xffffffffu;
+    sortedPartners[sortedPartnersOffset + index] = 0xffffffffu;
+    sortedBuckets[sortedBucketsOffset + index] = 0xffffffffu;
+    sortedDistances[sortedDistancesOffset + index] = 0.0;
+    return;
+  }
+  let key = sortedKeys[sortedKeysOffset + index];
+  sortedTracks[sortedTracksOffset + index] = key >> TRACK_SHIFT;
+  sortedPartners[sortedPartnersOffset + index] = (key >> PARTNER_SHIFT) & PARTNER_MASK;
+  sortedBuckets[sortedBucketsOffset + index] = key & BUCKET_MASK;
+  sortedDistances[sortedDistancesOffset + index] = hitDistances[hitDistancesOffset + order[orderOffset + index]];`
+    });
+  }
+  const hitPairs = props.hitPairs!;
+  const hitBuckets = props.hitBuckets!;
   return createWGSLKernelNode<Parameters>(graph, {
     id: props.id,
     operation: OPERATION,
@@ -263,8 +369,8 @@ export function createEncounterSortedHitsNode<Parameters>(
     bindings: [
       {name: 'state', view: props.state, type: 'u32', access: 'read'},
       {name: 'order', view: props.order, type: 'u32', access: 'read'},
-      {name: 'hitPairs', view: props.hitPairs, type: 'u32', access: 'read'},
-      {name: 'hitBuckets', view: props.hitBuckets, type: 'u32', access: 'read'},
+      {name: 'hitPairs', view: hitPairs, type: 'u32', access: 'read'},
+      {name: 'hitBuckets', view: hitBuckets, type: 'u32', access: 'read'},
       {name: 'hitDistances', view: props.hitDistances, type: 'f32', access: 'read'},
       {name: 'sortedPartners', view: props.sortedPartners, type: 'u32', access: 'read_write'},
       {name: 'sortedBuckets', view: props.sortedBuckets, type: 'u32', access: 'read_write'},
@@ -469,5 +575,43 @@ export function createEncounterOverflowNode<Parameters>(
     invocationCount: 1,
     declarations: getShapeConstants(props.shape),
     body: 'flag[flagOffset] = select(0u, 1u, state[stateOffset] > HIT_CAPACITY);'
+  });
+}
+
+/**
+ * Writes the time of every clock bucket, `k * step`, relative to the clock start. The step is read
+ * from the per-frame clock parameters (float32 `[start, step, ...]`, or word `[..., stepBits]`).
+ * @internal
+ */
+export function createClockBucketTimesNode<Parameters>(
+  graph: GPUCommandGraph<Parameters>,
+  props: {
+    id: string;
+    isWordMode: boolean;
+    bucketCount: number;
+    clock: GraphDataView<'float32'> | GraphDataView<'uint32'>;
+    bucketTimes: GraphDataView<'float32'>;
+  }
+): GPUCommandNode<Parameters> {
+  return createWGSLKernelNode<Parameters>(graph, {
+    id: props.id,
+    operation: OPERATION,
+    variant: props.isWordMode ? 'clock-bucket-times-words' : 'clock-bucket-times',
+    bindings: [
+      {
+        name: 'clockParameters',
+        view: props.clock,
+        type: props.isWordMode ? 'u32' : 'f32',
+        access: 'read'
+      },
+      {name: 'bucketTimes', view: props.bucketTimes, type: 'f32', access: 'read_write'}
+    ],
+    invocationCount: props.bucketCount,
+    body: `let step = ${
+      props.isWordMode
+        ? 'bitcast<f32>(clockParameters[clockParametersOffset + 3u])'
+        : 'clockParameters[clockParametersOffset + 1u]'
+    };
+  bucketTimes[bucketTimesOffset + index] = f32(index) * step;`
   });
 }

@@ -153,17 +153,13 @@ fn readLayer(layer: u32, cell: u32, value: ptr<function, f32>) -> bool {
   *value = sample;
   return !isNoDataValue(sample);
 }`;
-    const setup = `let propagateNoData = params[paramsOffset] != 0.0;
+    // Valid-layer counting rides along with each kernel's own layer sweep, so every kernel reads
+    // the stack once (moments twice with a standard deviation) instead of one extra counting sweep.
+    const setupPrefix = `let propagateNoData = params[paramsOffset] != 0.0;
   let minimumCountValue = params[paramsOffset + 1u];
   let minimumCount = max(u32(clamp(select(1.0, minimumCountValue, isFiniteValue(minimumCountValue)), 0.0, 4294967040.0)), 1u);
-  var count = 0u;
-  for (var layer = 0u; layer < LAYER_COUNT; layer++) {
-    var value = 0.0;
-    if (readLayer(layer, index, &value)) {
-      count += 1u;
-    }
-  }
-  let isDefined = count >= minimumCount && (!propagateNoData || count == LAYER_COUNT);
+  var count = 0u;`;
+    const setupSuffix = `let isDefined = count >= minimumCount && (!propagateNoData || count == LAYER_COUNT);
   let nan = getNaN();`;
     const forEachValid = (
       statement: string
@@ -190,9 +186,10 @@ fn readLayer(layer: u32, cell: u32, value: ptr<function, f32>) -> bool {
           ],
           invocationCount: cellCount,
           declarations,
-          body: `${setup}
+          body: `${setupPrefix}
   var sum = 0.0;
-  ${forEachValid('sum = sum + value;')}
+  ${forEachValid('sum = sum + value;\n    count += 1u;')}
+  ${setupSuffix}
   let mean = sum / f32(max(count, 1u));
   ${output.sum ? 'sumOut[sumOutOffset + index] = select(nan, sum, isDefined);' : ''}
   ${output.mean ? 'meanOut[meanOutOffset + index] = select(nan, mean, isDefined);' : ''}
@@ -221,18 +218,18 @@ fn readLayer(layer: u32, cell: u32, value: ptr<function, f32>) -> bool {
           ],
           invocationCount: cellCount,
           declarations,
-          body: `${setup}
+          body: `${setupPrefix}
   var minimum = 0.0;
   var maximum = 0.0;
-  var seen = false;
-  ${forEachValid(`if (!seen) {
+  ${forEachValid(`if (count == 0u) {
       minimum = value;
       maximum = value;
-      seen = true;
     } else {
       minimum = min(minimum, value);
       maximum = max(maximum, value);
-    }`)}
+    }
+    count += 1u;`)}
+  ${setupSuffix}
   ${output.minimum ? 'minimumOut[minimumOutOffset + index] = select(nan, minimum, isDefined);' : ''}
   ${output.maximum ? 'maximumOut[maximumOutOffset + index] = select(nan, maximum, isDefined);' : ''}
   ${output.range ? 'rangeOut[rangeOutOffset + index] = select(nan, maximum - minimum, isDefined);' : ''}`
@@ -254,24 +251,26 @@ fn readLayer(layer: u32, cell: u32, value: ptr<function, f32>) -> bool {
           invocationCount: cellCount,
           workgroupSize: 64,
           declarations,
-          body: `${setup}
+          // Valid values are gathered once into a private array in layer order, so the pairwise
+          // frequency comparison reads registers/private memory instead of re-reading the stack
+          // LAYER_COUNT times per layer. Order is preserved, so first-occurrence rules are unchanged.
+          body: `${setupPrefix}
+  var gathered: array<f32, ${layerCount}>;
+  ${forEachValid('gathered[count] = value;\n    count += 1u;')}
+  ${setupSuffix}
   var majority = 0.0;
   var majorityCount = 0u;
   var minority = 0.0;
   var minorityCount = 0xffffffffu;
   var variety = 0u;
-  for (var layer = 0u; layer < LAYER_COUNT; layer++) {
-    var value = 0.0;
-    if (!readLayer(layer, index, &value)) {
-      continue;
-    }
+  for (var position = 0u; position < count; position++) {
+    let value = gathered[position];
     var frequency = 0u;
     var isFirst = true;
-    for (var other = 0u; other < LAYER_COUNT; other++) {
-      var otherValue = 0.0;
-      if (readLayer(other, index, &otherValue) && otherValue == value) {
+    for (var other = 0u; other < count; other++) {
+      if (gathered[other] == value) {
         frequency += 1u;
-        if (other < layer) {
+        if (other < position) {
           isFirst = false;
         }
       }

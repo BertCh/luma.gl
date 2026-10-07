@@ -11,13 +11,13 @@ import {
 import type {GPUTerrainCellSizeMode} from '../terrain-analysis/index';
 import {getRasterGridWGSL} from '../../gpu-raster/cost-distance/raster-grid-utils';
 import {
-  createRasterIterationGateNode,
+  createRasterGatedLoopNodes,
   createRasterIterationResetNode,
   createRasterIterationState,
   createRasterIterationFinalizeNode,
   createRasterTiledRelaxation,
   createRasterTiledRelaxationNodes,
-  getRasterIterationCondition
+  getRasterRelaxationTileWGSL
 } from '../../gpu-raster/cost-distance/raster-relaxation';
 
 const OPERATION = 'GPUTerrainFlow';
@@ -56,6 +56,7 @@ export function createTerrainFlowFillNodes<Parameters>(
     filled: GraphDataView<'float32'>;
     settings: GraphDataView<'float32'>;
     converged?: GraphDataView<'uint32'>;
+    iterationCount?: GraphDataView<'uint32'>;
   }
 ): GPUCommandNode<Parameters>[] {
   const relaxationProps = {
@@ -69,7 +70,9 @@ export function createTerrainFlowFillNodes<Parameters>(
   const {relaxation, resetNodes} = createRasterTiledRelaxation<Parameters>(
     graph,
     relaxationProps,
-    true
+    // Only tiles holding a boundary cell are seeded: interior cells start at +infinity and can only
+    // be lowered once a finite neighbor tile exists, so iteration 0 skips the untouched interior.
+    false
   );
   const initialize = createWGSLKernelNode<Parameters>(graph, {
     id: `${props.id}-fill-init`,
@@ -78,10 +81,16 @@ export function createTerrainFlowFillNodes<Parameters>(
     bindings: [
       {name: 'elevation', view: props.elevation, type: 'f32', access: 'read'},
       {name: 'settings', view: props.settings, type: 'f32', access: 'read'},
-      {name: 'filled', view: props.filled, type: 'u32', access: 'read_write'}
+      {name: 'filled', view: props.filled, type: 'u32', access: 'read_write'},
+      {
+        name: 'tileStamps',
+        view: relaxation.tileStamps,
+        type: 'atomic<u32>',
+        access: 'read_write'
+      }
     ],
     invocationCount: props.width * props.height,
-    declarations: getRasterGridWGSL(props),
+    declarations: `${getRasterGridWGSL(props)}\n${getRasterRelaxationTileWGSL(props.width)}`,
     // Boundary cells keep their elevation, other valid cells start at +infinity and are lowered.
     // The phony assignment keeps 'settings' in the pipeline layout (grid helpers may not read it).
     body: `_ = settings[settingsOffset];
@@ -98,7 +107,10 @@ export function createTerrainFlowFillNodes<Parameters>(
       break;
     }
   }
-  filled[filledOffset + index] = bitcast<u32>(select(getInfinity(), elevationValue, boundary));`
+  filled[filledOffset + index] = bitcast<u32>(select(getInfinity(), elevationValue, boundary));
+  if (boundary) {
+    atomicMax(&tileStamps[tileStampsOffset + getRelaxationTile(index)], 1u);
+  }`
   });
   const relaxNodes = createRasterTiledRelaxationNodes<Parameters>(graph, {
     ...relaxationProps,
@@ -115,13 +127,14 @@ fn getRelaxationCandidate(neighborValue: f32, neighborAuxiliary: f32, centerAuxi
 }`
   });
   const nodes = [...resetNodes, initialize, ...relaxNodes];
-  if (props.converged) {
+  if (props.converged || props.iterationCount) {
     nodes.push(
       createRasterIterationFinalizeNode<Parameters>(graph, {
         id: `${props.id}-fill-finalize`,
         operation: OPERATION,
         state: relaxation.state,
-        converged: props.converged
+        converged: props.converged,
+        iterationCount: props.iterationCount
       })
     );
   }
@@ -231,6 +244,7 @@ export function createTerrainFlowAccumulationNodes<Parameters>(
     runoff?: GraphDataView<'float32'>;
     area: boolean;
     converged?: GraphDataView<'uint32'>;
+    iterationCount?: GraphDataView<'uint32'>;
   }
 ): GPUCommandNode<Parameters>[] {
   const cellCount = props.width * props.height;
@@ -295,7 +309,7 @@ fn tryFinalize(cell: u32) -> bool {
   return atomicCompareExchangeWeak(&acc[accOffset + cell], SENTINEL, bitcast<u32>(sum)).exchanged;
 }`;
   // The phony assignment keeps 'settings' in the pipeline layout when weights ignore ground area.
-  const body = `_ = settings[settingsOffset];
+  const getBody = (markChangedWGSL: string) => `_ = settings[settingsOffset];
   if (!isFiniteValue(elevation[elevationOffset + index])) { return; }
   if (atomicLoad(&acc[accOffset + index]) != SENTINEL) { return; }
   if (tryFinalize(index)) {
@@ -306,38 +320,37 @@ fn tryFinalize(cell: u32) -> bool {
     }
   }
   if (atomicLoad(&acc[accOffset + index]) == SENTINEL) {
-    atomicStore(&status[statusOffset], 1u);
+    ${markChangedWGSL}
   }`;
-  for (let iteration = 0; iteration < props.maxIterations; iteration++) {
-    const nodeId = `${props.id}-accumulate-round-${iteration}`;
-    const {condition, extraResources} = getRasterIterationCondition<Parameters>(state, nodeId);
-    nodes.push(
-      createWGSLKernelNode<Parameters>(graph, {
-        id: nodeId,
-        operation: OPERATION,
-        variant: 'accumulate-round',
-        bindings,
-        invocationCount: cellCount,
-        declarations,
-        body,
-        condition,
-        extraResources
-      }),
-      createRasterIterationGateNode<Parameters>(graph, {
-        id: `${props.id}-accumulate-gate-${iteration}`,
-        operation: OPERATION,
-        state,
-        maxIterations: props.maxIterations
-      })
-    );
-  }
-  if (props.converged) {
+  nodes.push(
+    ...createRasterGatedLoopNodes<Parameters>(graph, {
+      id: `${props.id}-accumulate-round`,
+      gateId: `${props.id}-accumulate-gate`,
+      operation: OPERATION,
+      state,
+      maxIterations: props.maxIterations,
+      createRound: ({nodeId, markChangedWGSL, condition, extraResources}) =>
+        createWGSLKernelNode<Parameters>(graph, {
+          id: nodeId,
+          operation: OPERATION,
+          variant: 'accumulate-round',
+          bindings,
+          invocationCount: cellCount,
+          declarations,
+          body: getBody(markChangedWGSL),
+          condition,
+          extraResources
+        })
+    })
+  );
+  if (props.converged || props.iterationCount) {
     nodes.push(
       createRasterIterationFinalizeNode<Parameters>(graph, {
         id: `${props.id}-accumulate-finalize`,
         operation: OPERATION,
         state,
-        converged: props.converged
+        converged: props.converged,
+        iterationCount: props.iterationCount
       })
     );
   }

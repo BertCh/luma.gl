@@ -45,6 +45,7 @@ it('GPUEdgeBundling schedules box, initialize, per-iteration, finalize, and indi
     'bundle-box-reset',
     'bundle-box',
     'bundle-initialize',
+    'bundle-gate',
     'bundle-clear-0',
     'bundle-splat-0',
     'bundle-update-0',

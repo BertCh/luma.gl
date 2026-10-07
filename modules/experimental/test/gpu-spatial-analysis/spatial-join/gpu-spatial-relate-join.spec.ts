@@ -6,9 +6,10 @@ import type {Buffer, Device} from '@luma.gl/core';
 import {GPUCommandGraph} from '@luma.gl/gpgpu/gpu-core';
 import {getWebGPUTestDevice} from '@luma.gl/test-utils';
 import {expect, it} from 'vitest';
-import {importGraphBuffer} from '../../../src/utils/gpu-contributor-utils';
+import {GPUParameterBuffer, importGraphBuffer} from '../../../src/utils/gpu-contributor-utils';
 import {
   formatGPUSpatialRelate,
+  packGPUSpatialRelatePattern,
   GPU_SPATIAL_JOIN_NO_FEATURE,
   GPUPointInPolygonJoin,
   GPUSpatialJoinCandidates,
@@ -40,6 +41,8 @@ const INTERSECTS_PATTERNS = ['T********', '*T*******', '***T*****', '****T****']
 type RunOptions = {
   predicate: GPUSpatialPredicate;
   pattern?: string | string[];
+  distance?: number;
+  engine?: 'auto' | 'fast' | 'relate';
   how?: 'inner' | 'anti';
   relate?: boolean;
   prepared?: boolean;
@@ -134,6 +137,8 @@ async function runJoin(
       right,
       predicate: options.predicate,
       pattern: options.pattern,
+      distance: options.distance,
+      engine: options.engine,
       how: options.how,
       excludeSameRow: options.excludeSameRow,
       prepared,
@@ -779,4 +784,182 @@ it('GPUSpatialPredicateJoin relate still counts non-finite input as uncertain', 
     {predicate: 'crosses'}
   );
   expect(result.pairs).toEqual([[0, 1]]);
+});
+
+type PerFrameSetting = {pattern?: string | string[]; distance?: number};
+
+/** Runs one compiled join with per-frame pattern and distance views, once per setting. */
+async function runPerFrame(
+  device: Device,
+  leftKind: OracleFeature['kind'],
+  lefts: OracleFeature[],
+  rightKind: OracleFeature['kind'],
+  rights: OracleFeature[],
+  predicate: GPUSpatialPredicate,
+  engine: 'fast' | 'relate',
+  settings: PerFrameSetting[]
+): Promise<{pairs: [number, number][]; matrices: string[]}[]> {
+  const graph = new GPUCommandGraph(device, {id: 'per-frame-join'});
+  const buffers: Buffer[] = [];
+  const left = createGeometry(device, graph, 'left', leftKind, lefts, buffers);
+  const right = createGeometry(device, graph, 'right', rightKind, rights, buffers);
+  const capacity = Math.max(lefts.length * rights.length, 1);
+  const patternSlots = 4;
+  const patternBuffer = new GPUParameterBuffer(device, {
+    id: 'pattern',
+    format: 'uint32',
+    length: patternSlots * 2
+  });
+  const distanceBuffer = new GPUParameterBuffer(device, {
+    id: 'distance',
+    format: 'float32',
+    length: 1
+  });
+  const output = (name: string, length: number) => {
+    const buffer = createOutputBuffer(device, length);
+    buffers.push(buffer);
+    return {buffer, view: importGraphBuffer(graph, name, buffer, 'uint32', length)};
+  };
+  const leftIds = output('left-ids', capacity);
+  const rightIds = output('right-ids', capacity);
+  const count = output('count', 1);
+  const overflow = output('overflow', 1);
+  const relate = output('relate', capacity);
+  const isRelate = predicate === 'relate';
+  graph.add(
+    new GPUSpatialPredicateJoin({
+      left,
+      right,
+      predicate,
+      pattern: isRelate ? patternBuffer.importToGraph(graph) : undefined,
+      distance: predicate === 'dwithin' ? distanceBuffer.importToGraph(graph) : undefined,
+      engine: isRelate ? undefined : engine,
+      candidateCapacity: capacity,
+      pairs: {
+        leftIds: leftIds.view,
+        rightIds: rightIds.view,
+        count: count.view,
+        overflow: overflow.view
+      },
+      relate: predicate === 'dwithin' ? undefined : relate.view
+    })
+  );
+  const compiled = graph.compile();
+  const results: {pairs: [number, number][]; matrices: string[]}[] = [];
+  for (const setting of settings) {
+    if (setting.pattern !== undefined) {
+      patternBuffer.write(packGPUSpatialRelatePattern(setting.pattern, patternSlots));
+    }
+    if (setting.distance !== undefined) {
+      distanceBuffer.write(Float32Array.of(setting.distance));
+    }
+    submitGraph(device, compiled, undefined);
+    const [countValue] = await readUint32(count.buffer, 1);
+    expect((await readUint32(overflow.buffer, 1))[0]).toBe(0);
+    const lefted = await readUint32(leftIds.buffer, capacity);
+    const righted = await readUint32(rightIds.buffer, capacity);
+    const matrices = await readUint32(relate.buffer, capacity);
+    results.push({
+      pairs: lefted.slice(0, countValue).map((row, slot) => [row, righted[slot]]),
+      matrices: matrices.slice(0, countValue).map(formatGPUSpatialRelate)
+    });
+  }
+  compiled.destroy();
+  patternBuffer.destroy();
+  distanceBuffer.destroy();
+  for (const buffer of buffers) {
+    buffer.destroy();
+  }
+  return results;
+}
+
+it('GPUSpatialPredicateJoin per-frame relate pattern equals the compile-time pattern', async () => {
+  const device = await getWebGPUTestDevice();
+  if (!device) {
+    return;
+  }
+  const {lefts, rights} = getScene('polygons', 'polygons');
+  const settings: PerFrameSetting[] = [
+    {pattern: 'T*T***T**'},
+    {pattern: 'T*****FF*'},
+    {pattern: ['T*F**F***', 'FT*******']},
+    {pattern: INTERSECTS_PATTERNS},
+    {pattern: 'T*T***T**'}
+  ];
+  const results = await runPerFrame(
+    device,
+    'polygons',
+    lefts,
+    'polygons',
+    rights,
+    'relate',
+    'relate',
+    settings
+  );
+  let total = 0;
+  for (const [index, setting] of settings.entries()) {
+    const expected = await runJoin(device, 'polygons', lefts, 'polygons', rights, {
+      predicate: 'relate',
+      pattern: setting.pattern,
+      relate: true
+    });
+    expect(results[index].pairs, JSON.stringify(setting.pattern)).toEqual(expected.pairs);
+    expect(results[index].matrices).toEqual(expected.matrices);
+    total += expected.pairs.length;
+  }
+  expect(total).toBeGreaterThan(20);
+  // The first and last settings repeat one pattern: a rewrite round-trips.
+  expect(results[4]).toEqual(results[0]);
+  expect(results[0].pairs).not.toEqual(results[1].pairs);
+  // Packing rejects what the compile-time pattern rejects.
+  expect(() => packGPUSpatialRelatePattern('FF*FF****', 2)).toThrow(/disjoint/);
+  expect(() => packGPUSpatialRelatePattern(['T*****FF*', 'T*F**F***', '*T*******'], 2)).toThrow(
+    /slots/
+  );
+});
+
+it('GPUSpatialPredicateJoin per-frame dwithin distance equals the compile-time distance', async () => {
+  const device = await getWebGPUTestDevice();
+  if (!device) {
+    return;
+  }
+  for (const [leftKind, rightKind] of [
+    ['polygons', 'polygons'],
+    ['lines', 'polygons'],
+    ['points', 'lines']
+  ] as const) {
+    const {lefts, rights} = getScene(leftKind, rightKind);
+    // The invalid values select nothing and a zero distance equals intersects.
+    const distances = [0.5, 2, 0, 6, -1, Number.NaN, 2];
+    for (const engine of ['fast', 'relate'] as const) {
+      const results = await runPerFrame(
+        device,
+        leftKind,
+        lefts,
+        rightKind,
+        rights,
+        'dwithin',
+        engine,
+        distances.map(distance => ({distance}))
+      );
+      let total = 0;
+      for (const [index, distance] of distances.entries()) {
+        const label = `${leftKind}/${rightKind} ${engine} distance ${distance}`;
+        if (distance < 0 || Number.isNaN(distance)) {
+          expect(results[index].pairs, label).toEqual([]);
+          continue;
+        }
+        const expected = await runJoin(device, leftKind, lefts, rightKind, rights, {
+          predicate: 'dwithin',
+          distance,
+          engine
+        });
+        expect(results[index].pairs, label).toEqual(expected.pairs);
+        total += expected.pairs.length;
+      }
+      expect(total, `${leftKind}/${rightKind} ${engine}`).toBeGreaterThan(0);
+      expect(results[1].pairs.length).toBeGreaterThanOrEqual(results[0].pairs.length);
+      expect(results[3].pairs.length).toBeGreaterThanOrEqual(results[1].pairs.length);
+    }
+  }
 });

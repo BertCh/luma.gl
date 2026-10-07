@@ -18,10 +18,11 @@ import {
   validateGraphViewsBelongToGraph
 } from '../../utils/gpu-contributor-utils';
 import {getSortKeyBits} from '../../utils/sorted-segment-sums';
+import {createSortedSegmentOffsetsNode} from '../../utils/sorted-segment-offsets';
 import {GPU_GEODESIC_MEAN_EARTH_RADIUS} from './geodesic-wgsl';
+import {COOPERATIVE_RING_ROWS} from './feature-measures-cooperative';
 import {
   createFeatureMeasuresNode,
-  createGroupOffsetsNode,
   createGroupReduceNode,
   createGroupSortPrepareNode,
   createMeasuresScatterNode,
@@ -54,10 +55,17 @@ export type GPUGeometryMeasuresOutput = {
   bounds?: GraphDataView<'float32x4'>;
   /** Number of vertex rows. */
   vertexCounts?: GraphDataView<'uint32'>;
+  /**
+   * Per-feature extreme vertices, `[argMinX, argMinY, argMaxX, argMaxY]` as global rows of
+   * `positions` (the vertex holding the smallest x, smallest y, largest x and largest y; the
+   * lowest row wins ties; geographic x is the unwrapped longitude of `bounds`). Empty features
+   * report `0xffffffff` in every word. Per-feature only.
+   */
+  extremeVertices?: GraphDataView<'uint32x4'>;
 };
 
 /** Per-group outputs of {@link GPUGeometryMeasures}; `groupCount` rows each. */
-export type GPUGeometryMeasuresGroupOutput = GPUGeometryMeasuresOutput & {
+export type GPUGeometryMeasuresGroupOutput = Omit<GPUGeometryMeasuresOutput, 'extremeVertices'> & {
   /** Number of features with this group ID. */
   featureCounts?: GraphDataView<'uint32'>;
 };
@@ -74,11 +82,15 @@ export type GPUGeometryMeasuresProps = {
   id?: string;
   /**
    * Packed vertex positions: planar coordinates, or longitude/latitude degrees for `'spherical'`
-   * and `'wgs84'`.
+   * `'wgs84'` and `'geodesic'`.
    */
   positions: GraphDataView<'float32x2'>;
-  /** `'lines'` (paths) or `'polygons'` (closed rings). */
-  geometryType: 'lines' | 'polygons';
+  /**
+   * `'lines'` (paths), `'polygons'` (closed rings) or `'points'` (point sets: every ring is one
+   * multi-point, or one point, with centroid = vertex mean as shapely's `MultiPoint.centroid`;
+   * lengths are zero and `areas` and `signedAreas` are unavailable).
+   */
+  geometryType: 'lines' | 'polygons' | 'points';
   /**
    * `ringCount + 1` monotonic vertex offsets; ring (or path) `r` owns rows
    * `[ringOffsets[r], ringOffsets[r + 1])`. Rings close implicitly; a repeated closing vertex just
@@ -96,6 +108,10 @@ export type GPUGeometryMeasuresProps = {
    * `'spherical'`: haversine lengths and Chamberlain-Duquette areas on a sphere of `radius`.
    * `'wgs84'`: Vincenty edge lengths on the WGS84 ellipsoid (Lambert's formula where Vincenty does
    * not converge) and areas on the WGS84 authalic sphere.
+   * `'geodesic'`: the same lengths and perimeters (geodesic edges on the WGS84 ellipsoid), and
+   * polygon areas whose edges follow geodesics too, as `pyproj.Geod.geometry_area_perimeter`
+   * and GeographicLib. Edges of 20 km or more are sampled along the geodesic (see
+   * {@link GPUGeometryMeasures}); centroids still use straight edges of the equal-area projection.
    */
   coordinateSystem?: GPUGeometryCoordinateSystem;
   /**
@@ -110,6 +126,12 @@ export type GPUGeometryMeasuresProps = {
    * winding (one polygon per feature).
    */
   holeRule?: GPUGeometryHoleRule;
+  /**
+   * Compile-time. A feature owning a ring of more than this many vertex rows is measured by one
+   * 64-lane workgroup instead of one invocation (see {@link GPUGeometryMeasures}); every other
+   * feature keeps the serial path. Default 512; 0 disables the cooperative path.
+   */
+  cooperativeRingRows?: number;
   /** Per-feature outputs. */
   output?: GPUGeometryMeasuresOutput;
   /** Optional per-feature group IDs; IDs at or above `groupCount` are ignored. */
@@ -124,12 +146,19 @@ export type GPUGeometryMeasuresProps = {
  * Measures many line or polygon features at once: length or perimeter, area, signed area,
  * centroid, bounds and vertex count per feature, and optionally per group (turf `area`, `length`,
  * `centroid`/`centerOfMass`, `bbox`; PostGIS `ST_Area`, `ST_Length`, `ST_Perimeter`, `ST_Centroid`,
- * `ST_Envelope`, `ST_NPoints`).
+ * `ST_Envelope`, `ST_NPoints`), plus per-feature extreme vertices (argmin and argmax of x and y).
  *
  * **Features.** One invocation per feature walks its rings in row order with Neumaier-compensated
  * f32 sums in coordinates relative to the feature's first vertex, so coordinates far from the
  * origin (projected meters, Web Mercator) keep their small-scale precision, and results are
  * deterministic. Latency grows with the largest feature's vertex count.
+ *
+ * **Large rings.** A feature that owns a ring of more than `cooperativeRingRows` (default 512)
+ * vertices is measured by one 64-lane workgroup: each lane runs the same loop over a contiguous
+ * chunk of the ring (geographic longitudes unwrapped by an exclusive scan of the chunks' steps)
+ * and the lane partials are merged in lane order with Neumaier addition. A million-vertex ring
+ * then costs a chain of 16k vertices instead of 1M. Such features can differ from the serial
+ * walk by f32 summation order only; all other features are unchanged bit for bit.
  *
  * **Geographic modes.** Areas are shoelace areas in the Lambert cylindrical equal-area projection
  * (`x` = longitude in radians, `y` = sine of latitude), the Chamberlain-Duquette formula turf uses:
@@ -144,6 +173,18 @@ export type GPUGeometryMeasuresProps = {
  * features with a fixed tree (bitwise reproducible). Group centroids are the area- or
  * length-weighted mean of feature centroids; geographic group centroids average longitudes
  * naively and are wrong for groups straddling the antimeridian.
+ *
+ * **Geodesic areas.** `coordinateSystem: 'geodesic'` replaces every edge of 20 km or more by its
+ * geodesic, sampled with Vincenty's direct solution at the ends and midpoint of spans of at most
+ * 250 km (at most 16 spans) and summed as a chord plus its exact parabolic-segment bulge, in the
+ * same equal-area coordinates (local origin) as `'wgs84'`, so the f32 sum never subtracts two
+ * large areas to the equator. Against GeographicLib (`pyproj.Geod.geometry_area_perimeter`) this
+ * measured within 1e-6 relative on regional and continental polygons (straight equal-area edges are off by up to 30% on the longest); edges shorter than 20 km keep straight
+ * equal-area edges (their bulge is below f32 position noise). Perimeter is the Vincenty length.
+ *
+ * **Points.** `geometryType: 'points'` reports vertex counts, bounds, extreme vertices and the
+ * vertex-mean centroid; group centroids weight features by vertex count, so they equal the mean
+ * of all member points.
  *
  * Empty features report zero length/area, zero vertices and NaN centroid and bounds.
  */
@@ -160,6 +201,8 @@ export class GPUGeometryMeasures implements GPUCommandNodeProducer {
   readonly holeRule: GPUGeometryHoleRule;
   /** Resolved sphere radius. */
   readonly radius: number;
+  /** Resolved ring size above which a feature is measured cooperatively (0 disables). */
+  readonly cooperativeRingRows: number;
 
   constructor(props: GPUGeometryMeasuresProps) {
     this.id = props.id ?? 'geometry-measures';
@@ -167,6 +210,7 @@ export class GPUGeometryMeasures implements GPUCommandNodeProducer {
     this.coordinateSystem = props.coordinateSystem ?? 'planar';
     this.holeRule = props.holeRule ?? 'winding';
     this.radius = props.radius ?? GPU_GEODESIC_MEAN_EARTH_RADIUS;
+    this.cooperativeRingRows = props.cooperativeRingRows ?? COOPERATIVE_RING_ROWS;
     const {id} = this;
     const output = props.output ?? {};
     const groupOutput = props.groupOutput ?? {};
@@ -181,14 +225,19 @@ export class GPUGeometryMeasures implements GPUCommandNodeProducer {
         throw new Error(`${id} ${name} must be a single packed view, not a chunked vector`);
       }
     }
-    if (props.geometryType !== 'lines' && props.geometryType !== 'polygons') {
-      throw new Error(`${id} geometryType must be 'lines' or 'polygons'`);
+    if (!['lines', 'polygons', 'points'].includes(props.geometryType)) {
+      throw new Error(`${id} geometryType must be 'lines', 'polygons' or 'points'`);
     }
-    if (!['planar', 'spherical', 'wgs84'].includes(this.coordinateSystem)) {
-      throw new Error(`${id} coordinateSystem must be 'planar', 'spherical' or 'wgs84'`);
+    if (!['planar', 'spherical', 'wgs84', 'geodesic'].includes(this.coordinateSystem)) {
+      throw new Error(
+        `${id} coordinateSystem must be 'planar', 'spherical', 'wgs84' or 'geodesic'`
+      );
     }
     if (this.holeRule !== 'winding' && this.holeRule !== 'first-ring-exterior') {
       throw new Error(`${id} holeRule must be 'winding' or 'first-ring-exterior'`);
+    }
+    if (!Number.isSafeInteger(this.cooperativeRingRows) || this.cooperativeRingRows < 0) {
+      throw new Error(`${id} cooperativeRingRows must be a non-negative integer`);
     }
     if (!Number.isFinite(this.radius) || this.radius <= 0) {
       throw new Error(`${id} radius must be a positive finite number`);
@@ -263,21 +312,39 @@ export class GPUGeometryMeasures implements GPUCommandNodeProducer {
       'uint32',
       featureCount * GEOMETRY_STATS_STRIDE
     );
+    const featureNodeProps = {
+      id: `${id}-features`,
+      operation: OPERATION,
+      positions: props.positions,
+      ringOffsets: props.ringOffsets,
+      featureRingOffsets: props.featureRingOffsets,
+      featureCount,
+      isPolygon,
+      isPoint: props.geometryType === 'points',
+      holeRule: this.holeRule,
+      coordinateSystem: this.coordinateSystem,
+      radius: this.radius,
+      featureStats
+    };
+    // Rings of at most the threshold can never make a feature cooperative.
+    const hasCooperativeFeatures =
+      this.cooperativeRingRows > 0 && props.positions.length > this.cooperativeRingRows;
     const nodes: GPUCommandNode<Parameters>[] = [
       createFeatureMeasuresNode<Parameters>(graph, {
-        id: `${id}-features`,
-        operation: OPERATION,
-        positions: props.positions,
-        ringOffsets: props.ringOffsets,
-        featureRingOffsets: props.featureRingOffsets,
-        featureCount,
-        isPolygon,
-        holeRule: this.holeRule,
-        coordinateSystem: this.coordinateSystem,
-        radius: this.radius,
-        featureStats
+        ...featureNodeProps,
+        cooperativeRingRows: hasCooperativeFeatures ? this.cooperativeRingRows : 0
       })
     ];
+    if (hasCooperativeFeatures) {
+      nodes.push(
+        createFeatureMeasuresNode<Parameters>(graph, {
+          ...featureNodeProps,
+          id: `${id}-features-cooperative`,
+          cooperative: true,
+          cooperativeRingRows: this.cooperativeRingRows
+        })
+      );
+    }
     if (Object.values(output).some(Boolean)) {
       nodes.push(
         createMeasuresScatterNode<Parameters>(graph, {
@@ -345,17 +412,19 @@ export class GPUGeometryMeasures implements GPUCommandNodeProducer {
         outputValues: sortedIndices,
         keyBits: getSortKeyBits(groupCount)
       }).getCommandNodes(graph),
-      createGroupOffsetsNode<Parameters>(graph, {
+      createSortedSegmentOffsetsNode<Parameters>(graph, {
         id: `${id}-group-offsets`,
         operation: OPERATION,
+        variant: 'group-offsets',
+        segmentCount: groupCount,
         sortedKeys,
-        groupCount,
-        groupOffsets
+        segmentOffsets: groupOffsets
       }),
       createGroupReduceNode<Parameters>(graph, {
         id: `${id}-group-reduce`,
         operation: OPERATION,
         isPolygon: this.props.geometryType === 'polygons',
+        isPoint: this.props.geometryType === 'points',
         groupCount,
         sortedIndices,
         groupOffsets,
@@ -387,6 +456,7 @@ function validateMeasureColumns(
     centroids: 'float32x2',
     bounds: 'float32x4',
     vertexCounts: 'uint32',
+    extremeVertices: 'uint32x4',
     featureCounts: 'uint32'
   } as const;
   for (const [column, view] of Object.entries(columns) as [
@@ -396,7 +466,7 @@ function validateMeasureColumns(
     if (!view) {
       continue;
     }
-    if (!(column in formats)) {
+    if (!(column in formats) || (name === 'groupOutput' && column === 'extremeVertices')) {
       throw new Error(`${id} ${name}.${column} is not a measure column`);
     }
     validatePackedView(view, [formats[column]], `${id} ${name}.${column}`);

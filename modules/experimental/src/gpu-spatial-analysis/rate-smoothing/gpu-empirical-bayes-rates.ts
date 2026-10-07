@@ -17,12 +17,10 @@ import {
   validateGraphViewsBelongToGraph
 } from '../../utils/gpu-contributor-utils';
 import {SPATIAL_AUTOCORRELATION_FLOAT_WGSL} from '../spatial-autocorrelation/spatial-autocorrelation-kernels';
-import {
-  BLOCK_ROWS,
-  getColumnSumNodes
-} from '../permutation-inference/permutation-inference-kernels';
 
 const OPERATION = 'GPUEmpiricalBayesRates';
+/** Lanes of the reduction workgroups. */
+const LANES = 256;
 
 /** Fields of the `summary` view of {@link GPUEmpiricalBayesRates}. */
 export const GPU_EMPIRICAL_BAYES_SUMMARY = {
@@ -85,8 +83,9 @@ export type GPUEmpiricalBayesRatesProps = {
  * - Smoothed rate: `r = w y + (1 - w) m` with `w = a / (a + m / b)`, exactly `Empirical_Bayes.r`;
  *   esda does not clamp `a`, so `w` can leave `[0, 1]` when `a < 0`, and `summary` exposes `a`.
  *
- * The totals are reduced in a fixed order (two workgroup tree levels), so results are bitwise
- * reproducible. Compose it in front of a statistic in one graph: write `standardizedRates` into a
+ * The totals are reduced in a fixed order (a workgroup tree per block of rows, then a tree over
+ * the block partials), straight from `events` and `populations` with no intermediate table, so
+ * results are bitwise reproducible. Compose it in front of a statistic in one graph: write `standardizedRates` into a
  * transient view and pass that view as `values`. For the neighborhood-pooled variant (esda
  * `Spatial_Empirical_Bayes`) use {@link GPUSpatialEmpiricalBayesRates}.
  */
@@ -161,82 +160,119 @@ export class GPUEmpiricalBayesRates implements GPUCommandNodeProducer {
       props.summary
     ]);
     const rows = events.length;
-    const blockCount = Math.ceil(rows / BLOCK_ROWS);
-    const matrix = createTransientView(graph, `${id}-matrix`, 'float32', 4 * rows);
+    const groups = Math.ceil(rows / LANES);
+    const partialsA = createTransientView(graph, `${id}-partials-a`, 'float32', 3 * groups);
+    const partialsB = createTransientView(graph, `${id}-partials-b`, 'float32', groups);
     const totalsA = createTransientView(graph, `${id}-totals-a`, 'float32', 3);
-    const totalsB = createTransientView(graph, `${id}-totals-b`, 'float32', 1);
     const summary =
       props.summary ??
       createTransientView(graph, `${id}-summary`, 'float32', GPU_EMPIRICAL_BAYES_SUMMARY.length);
     const S = GPU_EMPIRICAL_BAYES_SUMMARY;
     const constants = `const ROWS: u32 = ${rows}u;
+const LANES: u32 = ${LANES}u;
+const GROUPS: u32 = ${groups}u;
 ${SPATIAL_AUTOCORRELATION_FLOAT_WGSL}
-fn getMatrixIndex(column: u32, row: u32) -> u32 {
-  return column * ROWS + row;
+var<workgroup> scratch: array<f32, ${LANES}>;
+// Fixed-order tree sum of one value per lane. Every lane of the workgroup must call it together.
+fn reduceSum(value: f32, lane: u32) -> f32 {
+  workgroupBarrier();
+  scratch[lane] = value;
+  workgroupBarrier();
+  for (var stride = LANES / 2u; stride > 0u; stride = stride / 2u) {
+    if (lane < stride) {
+      scratch[lane] += scratch[lane + stride];
+    }
+    workgroupBarrier();
+  }
+  return scratch[0];
 }`;
     const maskBinding: WGSLKernelBinding[] = mask
       ? [{name: 'mask', view: mask, type: 'u32', access: 'read'}]
       : [];
     const includedWGSL = `${mask ? 'mask[maskOffset + index] != 0u && ' : ''}isFiniteFloat(e) && isFiniteFloat(b) && b > 0.0`;
+    // Reads this lane's row; `included` is false for the padding lanes of the last block.
+    const readRowWGSL = `var e = 0.0;
+  var b = 0.0;
+  var included = false;
+  if (index < ROWS) {
+    e = events[eventsOffset + index];
+    b = populations[populationsOffset + index];
+    included = ${includedWGSL};
+  }`;
     const nodes: GPUCommandNode<Parameters>[] = [
+      // Block partials of (count, sum e, sum b): one workgroup per block of rows.
       createWGSLKernelNode<Parameters>(graph, {
-        id: `${id}-inclusion`,
+        id: `${id}-partials-a`,
         operation: OPERATION,
-        variant: 'inclusion',
+        variant: 'partials-a',
         bindings: [
           {name: 'events', view: events, type: 'f32', access: 'read'},
           {name: 'populations', view: populations, type: 'f32', access: 'read'},
           ...maskBinding,
-          {name: 'matrix', view: matrix, type: 'f32', access: 'read_write'}
+          {name: 'partialsA', view: partialsA, type: 'f32', access: 'read_write'}
         ],
-        invocationCount: rows,
+        invocationCount: groups * LANES,
+        guardIndex: false,
         declarations: constants,
-        body: `let e = events[eventsOffset + index];
-  let b = populations[populationsOffset + index];
-  let included = ${includedWGSL};
-  matrix[matrixOffset + getMatrixIndex(0u, index)] = select(0.0, 1.0, included);
-  matrix[matrixOffset + getMatrixIndex(1u, index)] = select(0.0, e, included);
-  matrix[matrixOffset + getMatrixIndex(2u, index)] = select(0.0, b, included);`
+        body: `let lane = localInvocationIndex;
+  let group = (index - lane) / LANES;
+  ${readRowWGSL}
+  let count = reduceSum(select(0.0, 1.0, included), lane);
+  let eventSum = reduceSum(select(0.0, e, included), lane);
+  let populationSum = reduceSum(select(0.0, b, included), lane);
+  if (lane == 0u) {
+    partialsA[partialsAOffset + group] = count;
+    partialsA[partialsAOffset + GROUPS + group] = eventSum;
+    partialsA[partialsAOffset + 2u * GROUPS + group] = populationSum;
+  }`
       }),
-      ...getColumnSumNodes<Parameters>(graph, {
-        id: `${id}-sum-a`,
-        operation: OPERATION,
-        matrix,
-        rows,
-        blockCount,
-        first: 0,
-        count: 3,
-        totals: totalsA
-      }),
+      // One workgroup per column sums the block partials: lane l takes blocks l, l + 256, ...
       createWGSLKernelNode<Parameters>(graph, {
-        id: `${id}-deviations`,
+        id: `${id}-totals-a`,
         operation: OPERATION,
-        variant: 'deviations',
+        variant: 'totals-a',
+        bindings: [
+          {name: 'partialsA', view: partialsA, type: 'f32', access: 'read'},
+          {name: 'totalsA', view: totalsA, type: 'f32', access: 'read_write'}
+        ],
+        invocationCount: 3 * LANES,
+        guardIndex: false,
+        declarations: constants,
+        body: `let lane = localInvocationIndex;
+  let column = index / LANES;
+  var sum = 0.0;
+  for (var group = lane; group < GROUPS; group += LANES) {
+    sum += partialsA[partialsAOffset + column * GROUPS + group];
+  }
+  let total = reduceSum(sum, lane);
+  if (lane == 0u) {
+    totalsA[totalsAOffset + column] = total;
+  }`
+      }),
+      // The deviations about the pooled rate need the totals first, so this is the second pass.
+      createWGSLKernelNode<Parameters>(graph, {
+        id: `${id}-partials-b`,
+        operation: OPERATION,
+        variant: 'partials-b',
         bindings: [
           {name: 'events', view: events, type: 'f32', access: 'read'},
           {name: 'populations', view: populations, type: 'f32', access: 'read'},
           ...maskBinding,
           {name: 'totalsA', view: totalsA, type: 'f32', access: 'read'},
-          {name: 'matrix', view: matrix, type: 'f32', access: 'read_write'}
+          {name: 'partialsB', view: partialsB, type: 'f32', access: 'read_write'}
         ],
-        invocationCount: rows,
+        invocationCount: groups * LANES,
+        guardIndex: false,
         declarations: constants,
-        body: `let e = events[eventsOffset + index];
-  let b = populations[populationsOffset + index];
-  let included = ${includedWGSL};
+        body: `let lane = localInvocationIndex;
+  let group = (index - lane) / LANES;
+  ${readRowWGSL}
   let pooledRate = totalsA[totalsAOffset + 1u] / totalsA[totalsAOffset + 2u];
   let deviation = e / b - pooledRate;
-  matrix[matrixOffset + getMatrixIndex(3u, index)] = select(0.0, b * deviation * deviation, included);`
-      }),
-      ...getColumnSumNodes<Parameters>(graph, {
-        id: `${id}-sum-b`,
-        operation: OPERATION,
-        matrix,
-        rows,
-        blockCount,
-        first: 3,
-        count: 1,
-        totals: totalsB
+  let total = reduceSum(select(0.0, b * deviation * deviation, included), lane);
+  if (lane == 0u) {
+    partialsB[partialsBOffset + group] = total;
+  }`
       }),
       createWGSLKernelNode<Parameters>(graph, {
         id: `${id}-summary`,
@@ -244,23 +280,33 @@ fn getMatrixIndex(column: u32, row: u32) -> u32 {
         variant: 'summary',
         bindings: [
           {name: 'totalsA', view: totalsA, type: 'f32', access: 'read'},
-          {name: 'totalsB', view: totalsB, type: 'f32', access: 'read'},
+          {name: 'partialsB', view: partialsB, type: 'f32', access: 'read'},
           {name: 'summary', view: summary, type: 'f32', access: 'read_write'}
         ],
-        invocationCount: 1,
-        body: `let count = totalsA[totalsAOffset];
-  let eventSum = totalsA[totalsAOffset + 1u];
-  let populationSum = totalsA[totalsAOffset + 2u];
-  let pooledRate = eventSum / populationSum;
-  let weightedVariance = totalsB[totalsBOffset] / populationSum;
-  summary[summaryOffset + ${S.count}u] = count;
-  summary[summaryOffset + ${S.eventSum}u] = eventSum;
-  summary[summaryOffset + ${S.populationSum}u] = populationSum;
-  summary[summaryOffset + ${S.pooledRate}u] = pooledRate;
-  summary[summaryOffset + ${S.weightedRateVariance}u] = weightedVariance;
-  summary[summaryOffset + ${S.priorVariance}u] = weightedVariance - pooledRate / (populationSum / count);
-  for (var field = ${S.priorVariance + 1}u; field < ${S.length}u; field++) {
-    summary[summaryOffset + field] = 0.0;
+        invocationCount: LANES,
+        guardIndex: false,
+        declarations: constants,
+        body: `let lane = localInvocationIndex;
+  var sum = 0.0;
+  for (var group = lane; group < GROUPS; group += LANES) {
+    sum += partialsB[partialsBOffset + group];
+  }
+  let deviationSum = reduceSum(sum, lane);
+  if (lane == 0u) {
+    let count = totalsA[totalsAOffset];
+    let eventSum = totalsA[totalsAOffset + 1u];
+    let populationSum = totalsA[totalsAOffset + 2u];
+    let pooledRate = eventSum / populationSum;
+    let weightedVariance = deviationSum / populationSum;
+    summary[summaryOffset + ${S.count}u] = count;
+    summary[summaryOffset + ${S.eventSum}u] = eventSum;
+    summary[summaryOffset + ${S.populationSum}u] = populationSum;
+    summary[summaryOffset + ${S.pooledRate}u] = pooledRate;
+    summary[summaryOffset + ${S.weightedRateVariance}u] = weightedVariance;
+    summary[summaryOffset + ${S.priorVariance}u] = weightedVariance - pooledRate / (populationSum / count);
+    for (var field = ${S.priorVariance + 1}u; field < ${S.length}u; field++) {
+      summary[summaryOffset + field] = 0.0;
+    }
   }`
       })
     ];

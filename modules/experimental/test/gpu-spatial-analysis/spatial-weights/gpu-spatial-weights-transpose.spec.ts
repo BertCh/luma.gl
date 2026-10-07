@@ -140,6 +140,32 @@ it('GPUSpatialWeightsTranspose handles rectangular cross weights, isolates and e
   }
 });
 
+it('GPUSpatialWeightsTranspose handles hub columns and column counts at radix-key boundaries', async () => {
+  const device = await getWebGPUTestDevice();
+  if (!device) return;
+  // Offsets come from a binary search of the sorted keys, so exercise a column that every row
+  // lists (a hub), empty columns on both sides, and column counts just around powers of two,
+  // where the sentinel key (columns) needs the last representable key value.
+  for (const columns of [1, 2, 3, 15, 16, 17, 31, 32, 33]) {
+    const rows = 40;
+    const csr: OracleCSR = {offsets: [0], neighbors: [], weights: [], distances: []};
+    for (let row = 0; row < rows; row++) {
+      const listed = new Set<number>([0, columns - 1]);
+      if (columns > 4) {
+        listed.add(1 + ((row * 7) % (columns - 2)));
+      }
+      for (const column of [...listed].sort((a, b) => a - b)) {
+        csr.neighbors.push(column);
+        csr.weights.push(Math.fround(1 + ((row + column) % 5) * 0.5));
+        csr.distances.push(0);
+      }
+      csr.offsets.push(csr.neighbors.length);
+    }
+    const {result} = await runTranspose(device, csr, columns, {slack: 9});
+    expectSameCSR(result, computeTransposeOracle(csr, columns), `hub ${columns}`);
+  }
+});
+
 it('GPUSpatialWeightsTranspose is an involution and drops out-of-range neighbors', async () => {
   const device = await getWebGPUTestDevice();
   if (!device) return;

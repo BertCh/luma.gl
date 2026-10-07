@@ -25,6 +25,7 @@ import {
   createTrajectoryFinalizeNode,
   createTrajectoryQualifyNodes,
   createTrajectoryRowIdsNode,
+  createTrajectoryStepColumnsNode,
   createTrajectorySplitPositionsNode,
   createTrajectoryStepsNodes,
   createTrajectoryStopGatherNodes,
@@ -43,6 +44,12 @@ import {GPU_TRAJECTORY_METRICS_PARAMETER_LENGTH} from './trajectory-metrics-para
 export type GPUTrajectoryStopOutput = {
   /** Bounded compact result. `ids` holds the track index of each stop. */
   output: GPUCompactOutput;
+  /**
+   * Optional one row receiving the clamped stop count (`output.count`), typically an indirect draw
+   * record's `instanceCount` imported with `graph.importGPUData(id, drawCommands.getInstanceCountData(0))`,
+   * so a stop layer needs no count copy.
+   */
+  drawInstanceCount?: GraphDataView<'uint32'>;
   /** Optional first row of each dwell (the sample where the slow run begins). */
   startRows?: GraphDataView<'uint32'>;
   /** Optional last row of each dwell, inclusive. */
@@ -106,6 +113,27 @@ export type GPUTrajectoryMetricsProps = {
   averageSpeeds?: GraphDataView<'float32'>;
   /** Optional per-track maximum step speed (0 without steps). */
   maximumSpeeds?: GraphDataView<'float32'>;
+  /**
+   * Optional per-row (per-vertex) speed of the step that ends at the row, `positions.length`
+   * rows: `distance / deltaTime` when `deltaTime > 0`, otherwise 0. The first row of every track
+   * and rows outside every track are 0. A segment between rows `i - 1` and `i` takes its value
+   * from row `i`.
+   */
+  stepSpeeds?: GraphDataView<'float32'>;
+  /**
+   * Optional per-row heading in radians of the step that ends at the row, `positions.length`
+   * rows: `atan2(deltaY, deltaX)` in `(-pi, pi]`, measured counter-clockwise from +x of the planar
+   * positions. Zero-distance steps, the first row of every track and rows outside every track
+   * are 0.
+   */
+  stepHeadings?: GraphDataView<'float32'>;
+  /**
+   * Optional per-row acceleration of the step that ends at the row, `positions.length` rows:
+   * `(speed_i - speed_{i-1}) / deltaTime_i` in position units per time unit squared. 0 for the
+   * first two rows of every track, rows outside every track, and steps with a non-positive
+   * `deltaTime`.
+   */
+  stepAccelerations?: GraphDataView<'float32'>;
   /** Optional per-track number of qualifying stops, `trackCount` rows. Not clamped by the stop capacity. */
   trackStopCounts?: GraphDataView<'uint32'>;
   /** Optional bounded stop list. */
@@ -132,6 +160,11 @@ export type GPUTrajectoryMetricsProps = {
  *   `a - 1` through `b` and lasts `t_b - t_{a-1}`. It is a stop when that duration is at least
  *   `stopMinimumDuration`. Its centroid is the mean position of those `b - a + 2` rows. Dwells
  *   never merge across a track boundary.
+ *
+ * - Optional per-row columns describe the step that ends at each row: `stepSpeeds`,
+ *   `stepHeadings` (`atan2(deltaY, deltaX)`, 0 for zero-distance steps) and `stepAccelerations`
+ *   (`(speed_i - speed_{i-1}) / deltaTime_i`, 0 without a previous step in the track). They are
+ *   0 for the first row of a track, so a drawn segment takes the value of its end row.
  *
  * Composition: one per-row step kernel, `GPUSegmentedReduction` for lengths, maximum speeds and
  * centroid sums, one per-track finalize kernel, and for stops `GPUCompaction` of run starts and
@@ -196,6 +229,19 @@ export class GPUTrajectoryMetrics implements GPUCommandNodeProducer {
         throw new Error(`${id} ${name} length must equal the track count`);
       }
     }
+    for (const [name, view] of [
+      ['stepSpeeds', props.stepSpeeds],
+      ['stepHeadings', props.stepHeadings],
+      ['stepAccelerations', props.stepAccelerations]
+    ] as const) {
+      if (!view) {
+        continue;
+      }
+      validatePackedView(view, ['float32'], `${id} ${name}`);
+      if (view.length !== props.positions.length) {
+        throw new Error(`${id} ${name} length must equal positions length`);
+      }
+    }
     if (props.trackStopCounts) {
       validatePackedUint32View(props.trackStopCounts, `${id} trackStopCounts`);
       if (props.trackStopCounts.length !== trackCount) {
@@ -205,6 +251,12 @@ export class GPUTrajectoryMetrics implements GPUCommandNodeProducer {
     const {stops} = props;
     if (stops) {
       validateCompactOutput(id, stops.output);
+      if (stops.drawInstanceCount) {
+        validatePackedUint32View(stops.drawInstanceCount, `${id} stops.drawInstanceCount`);
+        if (stops.drawInstanceCount.length < 1) {
+          throw new Error(`${id} stops.drawInstanceCount must contain one uint32 row`);
+        }
+      }
       const capacity = stops.output.ids.length;
       for (const [name, view, format] of [
         ['startRows', stops.startRows, 'uint32'],
@@ -239,6 +291,9 @@ export class GPUTrajectoryMetrics implements GPUCommandNodeProducer {
         props.averageSpeeds ||
         props.maximumSpeeds ||
         props.trackStopCounts ||
+        props.stepSpeeds ||
+        props.stepHeadings ||
+        props.stepAccelerations ||
         stops
       )
     ) {
@@ -251,11 +306,15 @@ export class GPUTrajectoryMetrics implements GPUCommandNodeProducer {
         props.trackDurations,
         props.averageSpeeds,
         props.maximumSpeeds,
+        props.stepSpeeds,
+        props.stepHeadings,
+        props.stepAccelerations,
         props.trackStopCounts,
         stops?.output.ids,
         stops?.output.count,
         stops?.output.overflow,
         stops?.output.totalCount,
+        stops?.drawInstanceCount,
         stops?.startRows,
         stops?.endRows,
         stops?.centroids,
@@ -284,11 +343,15 @@ export class GPUTrajectoryMetrics implements GPUCommandNodeProducer {
       props.trackDurations,
       props.averageSpeeds,
       props.maximumSpeeds,
+      props.stepSpeeds,
+      props.stepHeadings,
+      props.stepAccelerations,
       props.trackStopCounts,
       stops?.output.ids,
       stops?.output.count,
       stops?.output.overflow,
       stops?.output.totalCount,
+      stops?.drawInstanceCount,
       stops?.startRows,
       stops?.endRows,
       stops?.centroids,
@@ -330,6 +393,21 @@ export class GPUTrajectoryMetrics implements GPUCommandNodeProducer {
         runEndFlags
       })
     );
+
+    if (props.stepSpeeds || props.stepHeadings || props.stepAccelerations) {
+      nodes.push(
+        createTrajectoryStepColumnsNode<Parameters>(graph, {
+          id: `${id}-step-columns`,
+          positions: props.positions,
+          timestamps: props.timestamps,
+          timestampsLow: props.timestampsLow,
+          trackOffsets: props.trackOffsets,
+          stepSpeeds: props.stepSpeeds,
+          stepHeadings: props.stepHeadings,
+          stepAccelerations: props.stepAccelerations
+        })
+      );
+    }
 
     const trackLengths =
       props.trackLengths ??
@@ -541,7 +619,8 @@ export class GPUTrajectoryMetrics implements GPUCommandNodeProducer {
           id: `${id}-publish`,
           operation: 'GPUTrajectoryMetrics',
           totalCount: stopTotal,
-          output: stops.output
+          output: stops.output,
+          extraCounts: stops.drawInstanceCount ? [stops.drawInstanceCount] : []
         })
       );
     } else if (props.trackStopCounts) {

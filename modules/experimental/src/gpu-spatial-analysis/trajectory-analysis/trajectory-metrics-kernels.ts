@@ -307,6 +307,85 @@ ${getStepSource(hasRuns)}`,
   });
 }
 
+/** Properties for {@link createTrajectoryStepColumnsNode}. @internal */
+export type TrajectoryStepColumnsProps = TrajectoryTimeViews & {
+  id: string;
+  positions: GraphDataView<'float32x2'>;
+  trackOffsets: GraphDataView<'uint32'>;
+  stepSpeeds?: GraphDataView<'float32'>;
+  stepHeadings?: GraphDataView<'float32'>;
+  stepAccelerations?: GraphDataView<'float32'>;
+};
+
+/**
+ * Builds the per-row kernel that writes the speed, heading and acceleration of the step ending at
+ * each row (0 for the first row of a track and for rows outside every track). Every output word is
+ * rewritten on every encoding. At most seven storage bindings (double-single times).
+ *
+ * @internal
+ */
+export function createTrajectoryStepColumnsNode<Parameters>(
+  graph: GPUCommandGraph<Parameters>,
+  props: TrajectoryStepColumnsProps
+): GPUCommandNode<Parameters> {
+  const trackCount = props.trackOffsets.length - 1;
+  const bindings: WGSLKernelBinding[] = [
+    {name: 'positions', view: props.positions, type: 'f32', access: 'read'},
+    ...getTrajectoryTimeBindings(props),
+    {name: 'trackOffsets', view: props.trackOffsets, type: 'u32', access: 'read'}
+  ];
+  for (const [name, view] of [
+    ['stepSpeeds', props.stepSpeeds],
+    ['stepHeadings', props.stepHeadings],
+    ['stepAccelerations', props.stepAccelerations]
+  ] as const) {
+    if (view) {
+      bindings.push({name, view, type: 'f32', access: 'read_write'});
+    }
+  }
+  return createWGSLKernelNode<Parameters>(graph, {
+    id: props.id,
+    operation: OPERATION,
+    variant: 'step-columns',
+    bindings,
+    invocationCount: props.positions.length,
+    declarations: `${getTrackSearchSource(trackCount)}
+${getTrajectoryTimeSource(getTrajectoryTimeMode(props))}
+${getStepSource(false)}
+
+fn getStepSpeed(row: u32) -> f32 {
+  let duration = getStepDuration(row);
+  if (duration > 0.0) {
+    return getStepDistance(row) / duration;
+  }
+  return 0.0;
+}`,
+    body: /* wgsl */ `
+  var speed = 0.0;
+  var heading = 0.0;
+  var acceleration = 0.0;
+  let track = findTrack(index);
+  if (track != NO_TRACK) {
+    let trackStart = trackOffsets[trackOffsetsOffset + track];
+    if (index > trackStart) {
+      speed = getStepSpeed(index);
+      let deltaX = positions[positionsOffset + 2u * index] - positions[positionsOffset + 2u * (index - 1u)];
+      let deltaY = positions[positionsOffset + 2u * index + 1u] - positions[positionsOffset + 2u * (index - 1u) + 1u];
+      if (deltaX != 0.0 || deltaY != 0.0) {
+        heading = atan2(deltaY, deltaX);
+      }
+      let duration = getStepDuration(index);
+      if (index - 1u > trackStart && duration > 0.0) {
+        acceleration = (speed - getStepSpeed(index - 1u)) / duration;
+      }
+    }
+  }
+  ${props.stepSpeeds ? 'stepSpeeds[stepSpeedsOffset + index] = speed;' : ''}
+  ${props.stepHeadings ? 'stepHeadings[stepHeadingsOffset + index] = heading;' : ''}
+  ${props.stepAccelerations ? 'stepAccelerations[stepAccelerationsOffset + index] = acceleration;' : ''}`
+  });
+}
+
 /** Properties for {@link createTrajectoryFinalizeNode}. @internal */
 export type TrajectoryFinalizeProps = TrajectoryTimeViews & {
   id: string;

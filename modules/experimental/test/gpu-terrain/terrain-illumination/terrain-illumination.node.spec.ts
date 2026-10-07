@@ -63,9 +63,24 @@ it('GPUTerrainHorizon validates props and schedules one node per sector', () => 
   expect(contributor.id).toBe('terrain-horizon');
   expect(contributor.requiredHalo).toBe(4);
   const nodeIds = contributor.getCommandNodes(graph).map(node => node.id);
-  expect(nodeIds.filter(id => /-horizon-\d$/.test(id))).toHaveLength(8);
+  // A tiny grid fits every sector into one fused march chunk.
+  expect(nodeIds.filter(id => /-horizon-march-\d$/.test(id))).toHaveLength(1);
+  expect(nodeIds.filter(id => /-horizon-\d$/.test(id))).toHaveLength(0);
   expect(nodeIds.at(-1)).toBe('terrain-horizon-sky-view');
   expect(() => create({skyViewFactor: undefined})).toThrow(/at least one output/);
+  // A large tile exceeds the dispatch step budget, so the sectors split into several march chunks.
+  const wide = create({
+    id: 'wide-horizon',
+    width: 4096,
+    height: 4096,
+    elevation: createBand(graph, 'wide-elevation', 4096 * 4096),
+    skyViewFactor: createTransientView(graph, 'wide-svf', 'float32', 4096 * 4096),
+    maximumRadius: 64
+  });
+  expect(
+    wide.getCommandNodes(graph).filter(node => /-horizon-march-\d$/.test(node.id))
+  ).toHaveLength(8);
+  expect(() => create({maximumStepsPerDispatch: 0})).toThrow(/maximumStepsPerDispatch/);
   expect(() => create({directionCount: 3})).toThrow(/directionCount/);
   expect(() => create({directionCount: 65})).toThrow(/directionCount/);
   expect(() => create({maximumRadius: 0})).toThrow(/maximumRadius/);

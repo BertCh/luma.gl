@@ -279,6 +279,37 @@ it('GPUTerrainHorizon supports north rows, Web Mercator cells, and sky-view-only
   skyOnly.destroy();
 });
 
+it('GPUTerrainHorizon gives identical results however the sectors are split over dispatches', async () => {
+  const device = await getWebGPUTestDevice();
+  if (!device) {
+    return;
+  }
+  const width = 37;
+  const height = 29;
+  const elevation = createSmoothTerrain(width, height, 11);
+  elevation[7 * width + 9] = NaN;
+  elevation[20 * width + 30] = NaN;
+  const settings: GPUTerrainHorizonSettings = {cellSize: [10, 12], zFactor: 1.5};
+  for (const directionCount of [8, 7]) {
+    const options = {width, height, directionCount, maximumRadius: 14, stepGrowth: 1.2};
+    const fused = createHorizonFixture(device, elevation, options);
+    // One sector per dispatch: sums continue through the buffers between chunks.
+    const chunked = createHorizonFixture(device, elevation, {
+      ...options,
+      maximumStepsPerDispatch: 1
+    });
+    const fusedResult = await fused.run(settings);
+    const chunkedResult = await chunked.run(settings);
+    // The two kernels are compiled separately, so fused multiply-add choices may differ by an ulp.
+    expectClose(chunkedResult.horizon, fusedResult.horizon, 1e-4);
+    expectClose(chunkedResult.skyViewFactor, fusedResult.skyViewFactor, 1e-6);
+    expectClose(chunkedResult.positiveOpenness, fusedResult.positiveOpenness, 1e-4);
+    expect(chunkedResult.validity).toEqual(fusedResult.validity);
+    fused.destroy();
+    chunked.destroy();
+  }
+});
+
 // Fast-math checks: Metal may fuse or reassociate `zFactor * (z - z0)` and `rise / distance`, which
 // would turn a flat plane at a large elevation into spurious nonzero horizons.
 it('GPUTerrainHorizon keeps a high-elevation flat plane exactly flat for any z factor', async () => {
@@ -669,10 +700,11 @@ it('GPUTerrainHorizon unorm16 horizon matches the quantised float32 horizon', as
     expect(nanCount).toBe(2 * directionCount);
     expect(worstCodeDifference).toBeLessThanOrEqual(1);
     expect(exactMatches).toBeGreaterThan((elementCount - nanCount) * 0.99);
-    // Sums use the unquantised angle: identical to the float32 run.
-    expect(packed.skyViewFactor).toEqual(reference.skyViewFactor);
-    expect(packed.positiveOpenness).toEqual(reference.positiveOpenness);
-    expect(packed.negativeOpenness).toEqual(reference.negativeOpenness);
+    // Sums use the unquantised angle: equal to the float32 run up to the fused multiply-add choices
+    // of the two separately compiled kernels (an ulp).
+    expectClose(packed.skyViewFactor, reference.skyViewFactor, 1e-6);
+    expectClose(packed.positiveOpenness, reference.positiveOpenness, 1e-4);
+    expectClose(packed.negativeOpenness, reference.negativeOpenness, 1e-4);
     // Structure: codes are spread over a real range, not all one value.
     expect(new Set(packed.horizonWords).size).toBeGreaterThan(50);
   }

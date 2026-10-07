@@ -23,6 +23,7 @@ import {
 } from '../../utils/gpu-contributor-utils';
 import {
   createEncounterClearNode,
+  createEncounterCompositeKeyNode,
   createEncounterOverflowNode,
   createEncounterPositionsNode,
   createEncounterReduceNodes,
@@ -30,6 +31,7 @@ import {
   createEncounterScanNode,
   createEncounterSortedHitsNode,
   createEncounterSortKeyNode,
+  type EncounterKeyBits,
   type EncounterShape
 } from './encounter-kernels';
 
@@ -127,10 +129,10 @@ export type GPUTrajectoryEncountersProps = {
  * Semantics: this is a discrete approximation. Two tracks that pass within the distance between
  * two buckets are missed; choose `bucketCount` so the distance travelled per bucket is small
  * compared with `distance`, or treat results as encounters sampled at bucket times. Samples on a
- * common clock are required (column `k` means the same instant for every track). With
- * `GPUTrajectoryResample` that holds when every track covers the same time window; otherwise build
- * the dense table from `GPUTrajectoryPlayhead` evaluations or a custom resample and mark absent
- * samples with NaN or `trackValid`.
+ * common clock are required (column `k` means the same instant for every track). Use
+ * {@link addClockEncounters} (`GPUTrajectoryResample` with `spacing: 'clock'`) to build that table
+ * for tracks with different time windows, or supply your own table and mark absent samples with
+ * NaN or `trackValid`.
  *
  * Bounds: `pairs.output.overflow` is 1 when the hit scratch overflowed (after which pairs may be
  * missing or have too-small counts), when more pairs exist than `pairs.output.ids.length`, or when
@@ -321,71 +323,106 @@ export class GPUTrajectoryEncounters implements GPUCommandNodeProducer {
       })
     );
 
-    // Stable LSD chain: bucket, then partner, then track gives (track, partner, bucket) order.
+    // Sort hits into (track, partner, bucket) order. When the three fields fit one 32-bit key, a
+    // single radix sort of the packed key replaces the three-pass stable LSD chain (same total key
+    // bits, but one key kernel, one sort setup and no per-field gathers). Larger problems fall
+    // back to the chain: bucket, then partner, then track.
+    const keyBits: EncounterKeyBits = {
+      track: getKeyBits(props.trackCount),
+      partner: getKeyBits(props.trackCount - 1),
+      bucket: getKeyBits(props.bucketCount - 1)
+    };
+    const isComposite = keyBits.track + keyBits.partner + keyBits.bucket <= 32;
     const identity = u32('identity', capacity);
-    const bucketKeys = u32('bucket-keys', capacity);
-    const bucketSortedKeys = u32('bucket-sorted-keys', capacity);
-    const bucketOrder = u32('bucket-order', capacity);
-    const partnerKeys = u32('partner-keys', capacity);
-    const partnerSortedKeys = u32('partner-sorted-keys', capacity);
-    const partnerOrder = u32('partner-order', capacity);
-    const trackKeys = u32('track-keys', capacity);
     const sortedTracks = u32('sorted-tracks', capacity);
     const order = u32('order', capacity);
-    nodes.push(
-      createEncounterSortKeyNode<Parameters>(graph, {
-        id: `${id}-bucket-keys`,
-        shape,
-        variant: 'bucket',
-        state,
-        hitPairs,
-        hitBuckets,
-        keys: bucketKeys,
-        identity
-      }),
-      ...new GPUSort({
-        id: `${id}-bucket-sort`,
-        keys: bucketKeys,
-        values: identity,
-        outputKeys: bucketSortedKeys,
-        outputValues: bucketOrder,
-        keyBits: getKeyBits(props.bucketCount - 1)
-      }).getCommandNodes(graph),
-      createEncounterSortKeyNode<Parameters>(graph, {
-        id: `${id}-partner-keys`,
-        shape,
-        variant: 'partner',
-        state,
-        order: bucketOrder,
-        hitPairs,
-        keys: partnerKeys
-      }),
-      ...new GPUSort({
-        id: `${id}-partner-sort`,
-        keys: partnerKeys,
-        values: bucketOrder,
-        outputKeys: partnerSortedKeys,
-        outputValues: partnerOrder,
-        keyBits: getKeyBits(props.trackCount - 1)
-      }).getCommandNodes(graph),
-      createEncounterSortKeyNode<Parameters>(graph, {
-        id: `${id}-track-keys`,
-        shape,
-        variant: 'track',
-        state,
-        order: partnerOrder,
-        hitPairs,
-        keys: trackKeys
-      }),
-      ...new GPUSort({
-        id: `${id}-track-sort`,
-        keys: trackKeys,
-        values: partnerOrder,
-        outputKeys: sortedTracks,
-        outputValues: order,
-        keyBits: getKeyBits(props.trackCount)
-      }).getCommandNodes(graph)
-    );
+    let sortedKeys: GraphDataView<'uint32'> | undefined;
+    if (isComposite) {
+      const compositeKeys = u32('composite-keys', capacity);
+      sortedKeys = u32('composite-sorted-keys', capacity);
+      nodes.push(
+        createEncounterCompositeKeyNode<Parameters>(graph, {
+          id: `${id}-composite-keys`,
+          shape,
+          bits: keyBits,
+          state,
+          hitPairs,
+          hitBuckets,
+          keys: compositeKeys,
+          identity
+        }),
+        ...new GPUSort({
+          id: `${id}-composite-sort`,
+          keys: compositeKeys,
+          values: identity,
+          outputKeys: sortedKeys,
+          outputValues: order,
+          keyBits: keyBits.track + keyBits.partner + keyBits.bucket
+        }).getCommandNodes(graph)
+      );
+    } else {
+      const bucketKeys = u32('bucket-keys', capacity);
+      const bucketSortedKeys = u32('bucket-sorted-keys', capacity);
+      const bucketOrder = u32('bucket-order', capacity);
+      const partnerKeys = u32('partner-keys', capacity);
+      const partnerSortedKeys = u32('partner-sorted-keys', capacity);
+      const partnerOrder = u32('partner-order', capacity);
+      const trackKeys = u32('track-keys', capacity);
+      nodes.push(
+        createEncounterSortKeyNode<Parameters>(graph, {
+          id: `${id}-bucket-keys`,
+          shape,
+          variant: 'bucket',
+          state,
+          hitPairs,
+          hitBuckets,
+          keys: bucketKeys,
+          identity
+        }),
+        ...new GPUSort({
+          id: `${id}-bucket-sort`,
+          keys: bucketKeys,
+          values: identity,
+          outputKeys: bucketSortedKeys,
+          outputValues: bucketOrder,
+          keyBits: keyBits.bucket
+        }).getCommandNodes(graph),
+        createEncounterSortKeyNode<Parameters>(graph, {
+          id: `${id}-partner-keys`,
+          shape,
+          variant: 'partner',
+          state,
+          order: bucketOrder,
+          hitPairs,
+          keys: partnerKeys
+        }),
+        ...new GPUSort({
+          id: `${id}-partner-sort`,
+          keys: partnerKeys,
+          values: bucketOrder,
+          outputKeys: partnerSortedKeys,
+          outputValues: partnerOrder,
+          keyBits: keyBits.partner
+        }).getCommandNodes(graph),
+        createEncounterSortKeyNode<Parameters>(graph, {
+          id: `${id}-track-keys`,
+          shape,
+          variant: 'track',
+          state,
+          order: partnerOrder,
+          hitPairs,
+          keys: trackKeys
+        }),
+        ...new GPUSort({
+          id: `${id}-track-sort`,
+          keys: trackKeys,
+          values: partnerOrder,
+          outputKeys: sortedTracks,
+          outputValues: order,
+          keyBits: keyBits.track
+        }).getCommandNodes(graph)
+      );
+    }
 
     const sortedPartners = u32('sorted-partners', capacity);
     const sortedBuckets = u32('sorted-buckets', capacity);
@@ -401,12 +438,13 @@ export class GPUTrajectoryEncounters implements GPUCommandNodeProducer {
         shape,
         state,
         order,
-        hitPairs,
-        hitBuckets,
+        hitPairs: isComposite ? undefined : hitPairs,
+        hitBuckets: isComposite ? undefined : hitBuckets,
         hitDistances,
         sortedPartners,
         sortedBuckets,
-        sortedDistances
+        sortedDistances,
+        composite: sortedKeys ? {sortedKeys, sortedTracks, bits: keyBits} : undefined
       }),
       createEncounterRunFlagsNode<Parameters>(graph, {
         id: `${id}-run-flags`,

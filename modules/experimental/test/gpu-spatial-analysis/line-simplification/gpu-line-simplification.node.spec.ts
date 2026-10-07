@@ -103,6 +103,8 @@ it('GPULineSimplification parameter helper packs and validates the tolerance', (
 it('GPULineSimplification validates props', () => {
   expectThrows(() => ({maximumRounds: 0}), /maximumRounds/);
   expectThrows(() => ({maximumRounds: 1025}), /maximumRounds/);
+  expectThrows(() => ({finishSpanLimit: -1}), /finishSpanLimit/);
+  expectThrows(() => ({finishSpanLimit: 129}), /finishSpanLimit/);
   expectThrows(() => ({metric: 'line' as never}), /metric/);
   expectThrows(() => ({metric: 'time-ratio'}), /requires timestamps/);
   expectThrows(

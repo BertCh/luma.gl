@@ -41,6 +41,8 @@ export function createFlowZoneNode<Parameters>(
     gridSize: readonly [number, number];
     bounds: FlowResolvedBounds;
     radius?: number | GraphDataView<'float32'>;
+    /** Optional per-frame `[columns, rows]`, clamped to `1..gridSize` (the compile-time capacity). */
+    activeGridSize?: GraphDataView<'uint32'>;
   }
 ): GPUCommandNode<Parameters> {
   const bindings: WGSLKernelBinding[] = [
@@ -64,6 +66,14 @@ export function createFlowZoneNode<Parameters>(
       access: 'read'
     });
   }
+  if (props.activeGridSize) {
+    bindings.push({
+      name: 'activeGridSizeValues',
+      view: props.activeGridSize,
+      type: 'u32',
+      access: 'read'
+    });
+  }
   const literal = boundsIsView
     ? undefined
     : (props.bounds as readonly number[]).map(getWGSLFloatLiteral);
@@ -84,13 +94,13 @@ export function createFlowZoneNode<Parameters>(
   let validRadius = radius > 0.0 && radius <= MAXIMUM_FLOAT;
   if (finite && inside && validRadius) {
     let cell = getPointDensityHexagonCell(x, y, minimumX, minimumY, radius);
-    if (cell.x >= 0 && cell.y >= 0 && u32(cell.x) < COLUMNS && u32(cell.y) < ROWS) {
-      zone = u32(cell.y) * COLUMNS + u32(cell.x);
+    if (cell.x >= 0 && cell.y >= 0 && u32(cell.x) < columns && u32(cell.y) < rows) {
+      zone = u32(cell.y) * columns + u32(cell.x);
     }
   }`
       : `if (finite && inside) {
-    zone = getCoordinate(y, minimumY, maximumY, ROWS) * COLUMNS +
-      getCoordinate(x, minimumX, maximumX, COLUMNS);
+    zone = getCoordinate(y, minimumY, maximumY, rows) * columns +
+      getCoordinate(x, minimumX, maximumX, columns);
   }`;
   return createWGSLKernelNode<Parameters>(graph, {
     id: props.id,
@@ -111,6 +121,12 @@ fn getCoordinate(value: f32, minimum: f32, maximum: f32, size: u32) -> u32 {
   return min(u32((value - minimum) / (maximum - minimum) * f32(size)), size - 1u);
 }`,
     body: `${boundsSource}
+  ${
+    props.activeGridSize
+      ? `let columns = clamp(activeGridSizeValues[activeGridSizeValuesOffset], 1u, COLUMNS);
+  let rows = clamp(activeGridSizeValues[activeGridSizeValuesOffset + 1u], 1u, ROWS);`
+      : 'let columns = COLUMNS;\n  let rows = ROWS;'
+  }
   let x = positions[positionsOffset + index * 2u];
   let y = positions[positionsOffset + index * 2u + 1u];
   var zone = NO_ZONE;
@@ -215,7 +231,12 @@ const NO_ZONE: u32 = 0xffffffffu;`,
   });
 }
 
-/** slotKeys[slot] = tableKeys[slot] and slotIndices[slot] = slot, one row per hash slot. @internal */
+/**
+ * slotKeys[slot] = tableKeys[slot] and slotIndices[slot] = slot, one row per hash slot. Empty slots
+ * get the key `zoneCount * zoneCount`, one above every pair key, so the sort needs only
+ * `ceil(log2(zoneCount^2 + 1))` key bits instead of 32 and empty slots still sort last in slot
+ * order. @internal
+ */
 export function createFlowSlotKeysNode<Parameters>(
   graph: GPUCommandGraph<Parameters>,
   props: {
@@ -223,6 +244,7 @@ export function createFlowSlotKeysNode<Parameters>(
     tableKeys: GraphDataView<'uint32'>;
     slotKeys: GraphDataView<'uint32'>;
     slotIndices: GraphDataView<'uint32'>;
+    zoneCount: number;
   }
 ): GPUCommandNode<Parameters> {
   return createWGSLKernelNode<Parameters>(graph, {
@@ -245,15 +267,18 @@ export function createFlowSlotKeysNode<Parameters>(
       }
     ],
     invocationCount: props.tableKeys.length,
-    body: `slotKeys[slotKeysOffset + index] = tableKeys[tableKeysOffset + index];
+    declarations: `const EMPTY_SLOT_KEY: u32 = ${props.zoneCount * props.zoneCount}u;`,
+    body: `let key = tableKeys[tableKeysOffset + index];
+  slotKeys[slotKeysOffset + index] = select(key, EMPTY_SLOT_KEY, key == 0xffffffffu);
   slotIndices[slotIndicesOffset + index] = index;`
   });
 }
 
 /**
  * Writes one ascending sort key per pair-key-ordered slot such that ascending order is descending
- * weight (or count). The key is `0xffffffff` only for empty slots: counts are at least one and
- * finite weight sums never map to the all-ones ordered pattern.
+ * weight (or count). With weights the key is `0xffffffff` only for empty slots: finite weight sums
+ * never map to the all-ones ordered pattern. With counts the key is `rowCounts.length - count`
+ * and empty slots take `rowCounts.length` (see {@link getFlowWeightKeyBits}).
  *
  * @internal
  */
@@ -313,15 +338,21 @@ export function createFlowWeightKeysNode<Parameters>(
       let bits = bitcast<u32>(weight);
       let ordered = bits ^ select(0x80000000u, 0xffffffffu, (bits >> 31u) != 0u);
       key = ~ordered;`
-    : 'key = ~rowCounts[rowCountsOffset + row];';
+    : 'key = ROW_TOTAL - rowCounts[rowCountsOffset + row];';
   return createWGSLKernelNode<Parameters>(graph, {
     id: props.id,
     operation: OPERATION,
     variant: 'weight-keys',
     bindings,
     invocationCount: props.slotsByPair.length,
+    // Without weights the key is `ROW_TOTAL - count`: ascending is descending count, a stored pair
+    // has at least one and at most `ROW_TOTAL` rows, so stored keys stay below `ROW_TOTAL`, which
+    // empty slots take. The sort then needs only `bits(ROW_TOTAL)` key bits.
+    declarations: props.rowWeights
+      ? undefined
+      : `const ROW_TOTAL: u32 = ${props.rowCounts.length}u;`,
     body: `let slot = slotsByPair[slotsByPairOffset + index];
-  var key = 0xffffffffu;
+  var key = ${props.rowWeights ? '0xffffffffu' : 'ROW_TOTAL'};
   if (tableKeys[tableKeysOffset + slot] != 0xffffffffu) {
     let row = tableValues[tableValuesOffset + slot];
     ${keySource}
@@ -749,4 +780,36 @@ var<workgroup> partialSums: array<f32, ${SEGMENT_WORKGROUP_SIZE}>;`,
     rowWeights[rowWeightsOffset + row] = partialSums[0];
   }`
   });
+}
+
+/**
+ * Writes a `float32` `[minimum, maximum]` pair from a `uint32` `[minimum, maximum]` pair, so the
+ * extent of integer zone counts can feed float color ranges directly.
+ *
+ * @internal
+ */
+export function createFlowExtentToFloatNode<Parameters>(
+  graph: GPUCommandGraph<Parameters>,
+  props: {
+    id: string;
+    extent: GraphDataView<'uint32'>;
+    output: GraphDataView<'float32'>;
+  }
+): GPUCommandNode<Parameters> {
+  return createWGSLKernelNode<Parameters>(graph, {
+    id: props.id,
+    operation: OPERATION,
+    variant: 'extent-to-float',
+    bindings: [
+      {name: 'extentIn', view: props.extent, type: 'u32', access: 'read'},
+      {name: 'extentOut', view: props.output, type: 'f32', access: 'read_write'}
+    ],
+    invocationCount: 2,
+    body: `extentOut[extentOutOffset + index] = f32(extentIn[extentInOffset + index]);`
+  });
+}
+
+/** Radix key bits that {@link createFlowWeightKeysNode} needs: 32 with weights, else count bits. @internal */
+export function getFlowWeightKeyBits(hasWeights: boolean, rowTotal: number): number {
+  return hasWeights ? 32 : Math.max(1, Math.floor(rowTotal).toString(2).length);
 }

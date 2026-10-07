@@ -16,7 +16,11 @@ import {
   readUint32,
   submitGraph
 } from '../../utils/gpu-contributor-test-utils';
-import {SPREG_ASYMMETRIC_KNN_REFERENCE, SPREG_TWO_STAGE_REFERENCE} from './spreg-reference';
+import {
+  SPREG_ASYMMETRIC_KNN_REFERENCE,
+  SPREG_TWO_STAGE_ORDER_TWO_REFERENCE,
+  SPREG_TWO_STAGE_REFERENCE
+} from './spreg-reference';
 import {createNearestNeighborScene} from './spatial-regression-diagnostics-oracle';
 import {
   createLagScene,
@@ -27,7 +31,12 @@ import {
 type Scene = ReturnType<typeof createLagScene>;
 type Result = {status: number; table: Float32Array; summary: Float32Array; residuals: Float32Array};
 
-async function runTwoStage(device: Device, scene: Scene, tileRowCount?: number): Promise<Result> {
+async function runTwoStage(
+  device: Device,
+  scene: Scene,
+  tileRowCount?: number,
+  instrumentOrder?: 1 | 2
+): Promise<Result> {
   const rows = scene.response.length;
   const k = scene.predictorCount;
   const tableLength = (k + 2) * 4;
@@ -86,6 +95,7 @@ async function runTwoStage(device: Device, scene: Scene, tileRowCount?: number):
       ),
       predictorCount: k,
       tileRowCount,
+      instrumentOrder,
       output: {
         table: importGraphBuffer(graph, 'table', tableBuffer, 'float32', tableLength),
         summary: importGraphBuffer(
@@ -255,4 +265,50 @@ it('GPUSpatialTwoStageLeastSquares matches spreg GM_Lag on asymmetric directed k
     expect(Math.abs(actual.summary[6] - reference.anselinKelejian[1])).toBeLessThan(1e-2);
     expect(actual.summary[5]).toBeGreaterThan(0.5);
   }
+});
+
+it('GPUSpatialTwoStageLeastSquares instrumentOrder 2 matches spreg GM_Lag(w_lags=2) and the oracle', async () => {
+  const device = await getWebGPUTestDevice();
+  if (!device) {
+    return;
+  }
+  const scenes = [
+    [createLagScene(12, 21, 0.5, true), SPREG_TWO_STAGE_ORDER_TWO_REFERENCE.lattice],
+    [
+      createNearestNeighborScene(60, 3, 13, 0.6, false),
+      SPREG_TWO_STAGE_ORDER_TWO_REFERENCE.scene_60_13
+    ],
+    [
+      createNearestNeighborScene(90, 3, 29, 0.6, false),
+      SPREG_TWO_STAGE_ORDER_TWO_REFERENCE.scene_90_29
+    ]
+  ] as const;
+  for (const [scene, reference] of scenes) {
+    const actual = await runTwoStage(device, scene, undefined, 2);
+    expect(actual.status).toBe(0);
+    reference.betas.forEach((beta, row) => {
+      expectClose(`order 2 beta ${row}`, actual.table[row * 4], beta, 5e-3, 0.05);
+      expectClose(
+        `order 2 se ${row}`,
+        actual.table[row * 4 + 1],
+        reference.standardErrors[row],
+        1e-2,
+        1e-3
+      );
+    });
+    expectClose('order 2 sigma2', actual.summary[1], reference.sigma2, 5e-3, 1e-3);
+    expectClose('order 2 pr2', actual.summary[3], reference.pseudoRSquared, 2e-3, 1e-3);
+    expectClose('order 2 AK', actual.summary[5], reference.anselinKelejian[0], 2e-2, 0.05);
+  }
+  const lattice = createLagScene(12, 21, 0.5, true);
+  expectParity(
+    await runTwoStage(device, lattice, 7, 2),
+    fitSpatialTwoStageLeastSquaresOnCPU(
+      lattice.weights,
+      lattice.predictors,
+      lattice.response,
+      lattice.predictorCount,
+      2
+    )
+  );
 });

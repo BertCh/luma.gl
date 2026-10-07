@@ -18,16 +18,27 @@ import {
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph
 } from '../../utils/gpu-contributor-utils';
-import {getSortedSegmentSumNodes} from '../../utils/sorted-segment-sums';
 import {GPU_SPATIAL_CLUSTERING_NOISE} from './spatial-clustering-parameters';
 
 const OPERATION = 'GPUKMeans';
 const NO_ROW = '0xffffffffu';
+/** Workgroup size of the per-iteration center reductions. */
+const REDUCTION_WORKGROUP_SIZE = 256;
+/** Largest number of lane slices that split one cluster's work inside a chunk. */
+const MAXIMUM_SLICES = 16;
+/** Largest number of point chunks (workgroups) the partial pass launches. */
+const MAXIMUM_CHUNKS = 256;
+
+/** Formats a finite JavaScript number as a WGSL `f32` literal. */
+function formatWGSLFloat(value: number): string {
+  const text = String(Math.fround(value));
+  return /[.e]/.test(text) ? text : `${text}.0`;
+}
 
 /** Largest `k`. */
 export const GPU_KMEANS_MAXIMUM_CLUSTERS = 256;
 
-/** Largest `iterations`: every Lloyd iteration adds a sort and several scans to the graph. */
+/** Largest `iterations`: every Lloyd iteration adds several dispatches to the graph. */
 export const GPU_KMEANS_MAXIMUM_ITERATIONS = 64;
 
 /** How {@link GPUKMeans} picks the initial centers. */
@@ -47,10 +58,27 @@ export type GPUKMeansProps = {
   /** Number of clusters, an integer in `[1, 256]`. Compile-time. */
   k: number;
   /**
-   * Number of Lloyd iterations (assign then update), an integer in `[1, 64]`. Compile-time and
-   * fixed: there is no convergence test, which keeps the result a pure function of the inputs.
+   * Maximum number of Lloyd iterations (assign then update), an integer in `[1, 64]`.
+   * Compile-time. The graph always holds this many iterations, but once an iteration moves no
+   * center by more than `tolerance` the remaining ones early-out inside their kernels (see
+   * `tolerance`), so the result is still a pure function of the inputs.
    */
   iterations: number;
+  /**
+   * Convergence tolerance: an iteration converges when the largest center shift (Euclidean, in
+   * position units) is at most this value. Compile-time, finite and `>= 0`; default `0`, which
+   * stops only at an exact fixed point and so gives the same result as running every iteration.
+   * A positive value trades exactness for fewer iterations. After convergence the assign and
+   * update kernels return immediately; the per-iteration dispatches remain in the graph (there is
+   * no GPU loop exit), so the saving is in kernel work, not dispatch count.
+   */
+  tolerance?: number;
+  /**
+   * Optional caller-owned two-row `uint32` output: `[iterationsUsed, converged]`. `iterationsUsed`
+   * is how many iterations moved centers (1 to `iterations`), `converged` is `1` when the last one
+   * shifted every center by at most `tolerance`, and `0` when `iterations` ran out first.
+   */
+  convergence?: GraphDataView<'uint32'>;
   /**
    * `'first-valid'` (default) uses the `k` lowest-index points with finite coordinates as the
    * initial centers. `'kmeans++'` draws them with D-squared weighting from a seeded hash, so
@@ -85,16 +113,17 @@ export type GPUKMeansProps = {
  *   squared distance to the nearest chosen center, by an exponential race `-ln(u) / w` whose
  *   minimum is found with integer atomics, lowest row first on ties.
  * - Each of the `iterations` rounds assigns every point to the nearest center, the lowest center
- *   ID winning ties, and moves each center to the mean of its members. Means use the fixed-order
- *   sorted segmented sum, so sums are bitwise reproducible on one device. A final assignment
+ *   ID winning ties, and moves each center to the mean of its members. Means use a fixed-order chunked
+ *   reduction (no sort, no atomics), so sums are bitwise reproducible on one device. A final assignment
  *   against the last centers produces `labels`, `sizes` and `squaredDistances`.
  *
  * Results are reproducible for identical inputs on one device. `log` is not exactly specified by
  * WGSL, so `'kmeans++'` draws may differ between devices; `'first-valid'` has no such caveat apart
  * from f32 distance rounding.
  *
- * Cost: one sort of all points per iteration, so memory grows with `iterations * points`.
- * Non-goals: convergence tests, empty-cluster reseeding, weighted points, 3D points, k-medoids.
+ * Cost per iteration: an `O(n k)` assignment and an `O(n k)` shared-memory reduction over `n`
+ * points (two dispatches); no sort, so memory does not grow with `iterations`.
+ * Non-goals: empty-cluster reseeding, weighted points, 3D points, k-medoids.
  */
 export class GPUKMeans implements GPUCommandNodeProducer {
   /** Prefix for every node and transient ID. */
@@ -135,6 +164,18 @@ export class GPUKMeans implements GPUCommandNodeProducer {
     ) {
       throw new Error(`${id} seed must be an integer in [0, 2^32 - 1]`);
     }
+    if (
+      props.tolerance !== undefined &&
+      (!Number.isFinite(props.tolerance) || props.tolerance < 0)
+    ) {
+      throw new Error(`${id} tolerance must be a finite number >= 0`);
+    }
+    if (props.convergence) {
+      validatePackedUint32View(props.convergence, `${id} convergence`);
+      if (props.convergence.length !== 2) {
+        throw new Error(`${id} convergence must hold two uint32 rows`);
+      }
+    }
     validatePackedUint32View(props.labels, `${id} labels`);
     if (props.labels.length !== rows) {
       throw new Error(`${id} labels length must equal positions length`);
@@ -157,7 +198,7 @@ export class GPUKMeans implements GPUCommandNodeProducer {
     }
     validateGraphOutputsDisjointFromInputs(
       id,
-      [props.labels, props.centers, props.sizes, props.squaredDistances],
+      [props.labels, props.centers, props.sizes, props.squaredDistances, props.convergence],
       [props.positions]
     );
   }
@@ -173,7 +214,8 @@ export class GPUKMeans implements GPUCommandNodeProducer {
       labels,
       centers,
       props.sizes,
-      props.squaredDistances
+      props.squaredDistances,
+      props.convergence
     ]);
     const rows = positions.length;
     const seed = props.seed ?? 0;
@@ -188,8 +230,21 @@ export class GPUKMeans implements GPUCommandNodeProducer {
     const xs = view('xs', 'float32', rows);
     const ys = view('ys', 'float32', rows);
     const sizes = props.sizes ?? view('sizes', 'uint32', k);
-    const sumsX = view('sums-x', 'float32', k);
-    const sumsY = view('sums-y', 'float32', k);
+    // Word 0: converged flag, word 1: iterations used, word 2: largest center shift (f32 bits;
+    // non-negative floats order like their bit patterns, so atomicMax works).
+    const state = view('state', 'uint32', 3);
+    const tolerance = props.tolerance ?? 0;
+    // Update step: a sort-free, atomic-free deterministic reduction. Points are cut into
+    // `chunkCount` contiguous chunks of `chunkSize` rows (a multiple of the tile width); each
+    // workgroup keeps per-cluster partial counts and sums for its chunk, then one workgroup per
+    // cluster folds the chunk partials in a fixed order.
+    const chunkCount = Math.min(MAXIMUM_CHUNKS, Math.ceil(rows / REDUCTION_WORKGROUP_SIZE));
+    const chunkSize =
+      Math.ceil(rows / chunkCount / REDUCTION_WORKGROUP_SIZE) * REDUCTION_WORKGROUP_SIZE;
+    const slices = Math.min(MAXIMUM_SLICES, Math.floor(REDUCTION_WORKGROUP_SIZE / k));
+    const partialCounts = view('partial-counts', 'uint32', k * chunkCount);
+    const partialSumsX = view('partial-sums-x', 'float32', k * chunkCount);
+    const partialSumsY = view('partial-sums-y', 'float32', k * chunkCount);
     const sharedWGSL = `const K: u32 = ${k}u;
 const NOISE: u32 = ${GPU_SPATIAL_CLUSTERING_NOISE}u;
 
@@ -202,6 +257,13 @@ fn getQuietNaN(seed: u32) -> f32 {
 }`;
 
     const nodes: GPUCommandNode<Parameters>[] = [
+      createFillNode<Parameters>(graph, {
+        id: `${id}-state-clear`,
+        operation: OPERATION,
+        view: state,
+        type: 'u32',
+        value: '0u'
+      }),
       createWGSLKernelNode<Parameters>(graph, {
         id: `${id}-prepare`,
         operation: OPERATION,
@@ -296,9 +358,11 @@ fn getQuietNaN(seed: u32) -> f32 {
               {name: 'bestKey', view: bestKey, type: 'atomic<u32>', access: 'read_write'}
             ],
             invocationCount: rows,
+            guardIndex: false,
             declarations: `${sharedWGSL}
 const ROUND_SEED: u32 = ${roundSeed}u;
 const FIRST_ROUND: bool = ${round === 0};
+var<workgroup> groupBestKey: atomic<u32>;
 
 fn hashRow(row: u32) -> u32 {
   var h = row ^ ROUND_SEED;
@@ -309,15 +373,27 @@ fn hashRow(row: u32) -> u32 {
   h = h ^ (h >> 16u);
   return h;
 }`,
-            body: `var key = 0xffffffffu;
-  if (validFlags[validFlagsOffset + index] != 0u) {
+            // Each workgroup folds its minimum in shared memory first, so the global word sees one
+            // atomic per workgroup instead of one per point.
+            body: `if (localInvocationIndex == 0u) {
+    atomicStore(&groupBestKey, 0xffffffffu);
+  }
+  workgroupBarrier();
+  var key = 0xffffffffu;
+  if (index < INVOCATION_COUNT && validFlags[validFlagsOffset + index] != 0u) {
     // Exponential race: the minimum of -ln(u) / w samples a row with probability proportional to w.
     let weight = select(minDistance[minDistanceOffset + index], 1.0, FIRST_ROUND);
     let uniform = (f32(hashRow(index) >> 8u) + 0.5) / 16777216.0;
     key = select(0x7f800000u, bitcast<u32>(-log(uniform) / weight), weight > 0.0);
-    atomicMin(&bestKey[bestKeyOffset], key);
+    atomicMin(&groupBestKey, key);
+    keys[keysOffset + index] = key;
+  } else if (index < INVOCATION_COUNT) {
+    keys[keysOffset + index] = key;
   }
-  keys[keysOffset + index] = key;`
+  workgroupBarrier();
+  if (localInvocationIndex == 0u) {
+    atomicMin(&bestKey[bestKeyOffset], atomicLoad(&groupBestKey));
+  }`
           }),
           createWGSLKernelNode<Parameters>(graph, {
             id: `${roundId}-row`,
@@ -381,6 +457,9 @@ const ROUND: u32 = ${round}u;`,
           {name: 'positions', view: positions, type: 'f32', access: 'read'},
           {name: 'centers', view: centers, type: 'f32', access: 'read'},
           {name: 'labels', view: labels, type: 'u32', access: 'read_write'},
+          ...(withDistances
+            ? []
+            : [{name: 'state', view: state, type: 'u32' as const, access: 'read' as const}]),
           ...(withDistances && props.squaredDistances
             ? [
                 {
@@ -394,7 +473,15 @@ const ROUND: u32 = ${round}u;`,
         ],
         invocationCount: rows,
         declarations: sharedWGSL,
-        body: `let x = positions[positionsOffset + index * 2u];
+        body: `${
+          withDistances
+            ? ''
+            : `// Converged: centers no longer move, so labels are already final.
+  if (state[stateOffset] != 0u) {
+    return;
+  }
+  `
+        }let x = positions[positionsOffset + index * 2u];
   let y = positions[positionsOffset + index * 2u + 1u];
   var best = NOISE;
   var bestDistance = getQuietNaN(index);
@@ -418,38 +505,166 @@ const ROUND: u32 = ${round}u;`,
       const iterationId = `${id}-iteration-${iteration}`;
       nodes.push(
         assignNode(`${iterationId}-assign`, false),
-        ...new GPUGroupAggregation({
-          id: `${iterationId}-sizes`,
-          keys: labels,
-          output: sizes
-        }).getCommandNodes(graph),
-        ...getSortedSegmentSumNodes<Parameters>(graph, {
-          id: `${iterationId}-sums`,
+        createWGSLKernelNode<Parameters>(graph, {
+          id: `${iterationId}-partial`,
           operation: OPERATION,
-          segmentCount: k,
-          segmentKeys: labels,
-          segmentCounts: sizes,
-          reductions: [
-            {name: 'x', contributions: xs, output: sumsX},
-            {name: 'y', contributions: ys, output: sumsY}
-          ]
+          variant: 'partial',
+          bindings: [
+            {name: 'labels', view: labels, type: 'u32', access: 'read'},
+            {name: 'xs', view: xs, type: 'f32', access: 'read'},
+            {name: 'ys', view: ys, type: 'f32', access: 'read'},
+            {name: 'state', view: state, type: 'u32', access: 'read'},
+            {name: 'partialCounts', view: partialCounts, type: 'u32', access: 'read_write'},
+            {name: 'partialSumsX', view: partialSumsX, type: 'f32', access: 'read_write'},
+            {name: 'partialSumsY', view: partialSumsY, type: 'f32', access: 'read_write'}
+          ],
+          workgroupSize: REDUCTION_WORKGROUP_SIZE,
+          invocationCount: chunkCount * REDUCTION_WORKGROUP_SIZE,
+          guardIndex: false,
+          declarations: `${sharedWGSL}
+const ROWS: u32 = ${rows}u;
+const CHUNK_SIZE: u32 = ${chunkSize}u;
+const CHUNK_COUNT: u32 = ${chunkCount}u;
+const TILE_COUNT: u32 = ${chunkSize / REDUCTION_WORKGROUP_SIZE}u;
+const SLICES: u32 = ${slices}u;
+const LANES: u32 = ${slices * k}u;
+var<workgroup> tileLabels: array<u32, ${REDUCTION_WORKGROUP_SIZE}>;
+var<workgroup> tileXs: array<f32, ${REDUCTION_WORKGROUP_SIZE}>;
+var<workgroup> tileYs: array<f32, ${REDUCTION_WORKGROUP_SIZE}>;
+var<workgroup> laneCounts: array<u32, ${REDUCTION_WORKGROUP_SIZE}>;
+var<workgroup> laneSumsX: array<f32, ${REDUCTION_WORKGROUP_SIZE}>;
+var<workgroup> laneSumsY: array<f32, ${REDUCTION_WORKGROUP_SIZE}>;`,
+          // Every barrier sits in uniform control flow: the tile loop has a constant trip count and
+          // the converged / out-of-range cases only change the data (noise labels match no cluster).
+          body: `let chunk = index / ${REDUCTION_WORKGROUP_SIZE}u;
+  let converged = state[stateOffset] != 0u;
+  let begin = chunk * CHUNK_SIZE;
+  let end = min(begin + CHUNK_SIZE, ROWS);
+  let lane = localInvocationIndex;
+  let cluster = lane % K;
+  let slice = lane / K;
+  var count = 0u;
+  var sumX = 0.0;
+  var sumY = 0.0;
+  for (var tile = 0u; tile < TILE_COUNT; tile++) {
+    let row = begin + tile * ${REDUCTION_WORKGROUP_SIZE}u + lane;
+    var label = NOISE;
+    var x = 0.0;
+    var y = 0.0;
+    if (!converged && row < end) {
+      label = labels[labelsOffset + row];
+      x = xs[xsOffset + row];
+      y = ys[ysOffset + row];
+    }
+    tileLabels[lane] = label;
+    tileXs[lane] = x;
+    tileYs[lane] = y;
+    workgroupBarrier();
+    if (lane < LANES) {
+      // Lane (slice, cluster) owns tile entries slice, slice + SLICES, ...: a fixed order.
+      for (var entry = slice; entry < ${REDUCTION_WORKGROUP_SIZE}u; entry += SLICES) {
+        if (tileLabels[entry] == cluster) {
+          count++;
+          sumX += tileXs[entry];
+          sumY += tileYs[entry];
+        }
+      }
+    }
+    workgroupBarrier();
+  }
+  laneCounts[lane] = count;
+  laneSumsX[lane] = sumX;
+  laneSumsY[lane] = sumY;
+  workgroupBarrier();
+  if (lane < K) {
+    var chunkCountTotal = 0u;
+    var chunkSumX = 0.0;
+    var chunkSumY = 0.0;
+    for (var sliceIndex = 0u; sliceIndex < SLICES; sliceIndex++) {
+      chunkCountTotal += laneCounts[sliceIndex * K + lane];
+      chunkSumX += laneSumsX[sliceIndex * K + lane];
+      chunkSumY += laneSumsY[sliceIndex * K + lane];
+    }
+    let slot = lane * CHUNK_COUNT + chunk;
+    partialCounts[partialCountsOffset + slot] = chunkCountTotal;
+    partialSumsX[partialSumsXOffset + slot] = chunkSumX;
+    partialSumsY[partialSumsYOffset + slot] = chunkSumY;
+  }`
         }),
         createWGSLKernelNode<Parameters>(graph, {
           id: `${iterationId}-update`,
           operation: OPERATION,
           variant: 'update',
           bindings: [
-            {name: 'sizes', view: sizes, type: 'u32', access: 'read'},
-            {name: 'sumsX', view: sumsX, type: 'f32', access: 'read'},
-            {name: 'sumsY', view: sumsY, type: 'f32', access: 'read'},
-            {name: 'centers', view: centers, type: 'f32', access: 'read_write'}
+            {name: 'partialCounts', view: partialCounts, type: 'u32', access: 'read'},
+            {name: 'partialSumsX', view: partialSumsX, type: 'f32', access: 'read'},
+            {name: 'partialSumsY', view: partialSumsY, type: 'f32', access: 'read'},
+            {name: 'sizes', view: sizes, type: 'u32', access: 'read_write'},
+            {name: 'centers', view: centers, type: 'f32', access: 'read_write'},
+            {name: 'state', view: state, type: 'atomic<u32>', access: 'read_write'}
           ],
-          invocationCount: k,
-          body: `let size = sizes[sizesOffset + index];
-  if (size > 0u) {
-    centers[centersOffset + index * 2u] = sumsX[sumsXOffset + index] / f32(size);
-    centers[centersOffset + index * 2u + 1u] = sumsY[sumsYOffset + index] / f32(size);
+          workgroupSize: REDUCTION_WORKGROUP_SIZE,
+          invocationCount: k * REDUCTION_WORKGROUP_SIZE,
+          guardIndex: false,
+          declarations: `const CHUNK_COUNT: u32 = ${chunkCount}u;
+var<workgroup> reducedCounts: array<u32, ${REDUCTION_WORKGROUP_SIZE}>;
+var<workgroup> reducedSumsX: array<f32, ${REDUCTION_WORKGROUP_SIZE}>;
+var<workgroup> reducedSumsY: array<f32, ${REDUCTION_WORKGROUP_SIZE}>;`,
+          // One workgroup per cluster: strided per-lane sums over the chunk partials, then a fixed
+          // binary tree, so the sums are bitwise reproducible. Lane 0 then moves the center.
+          body: `let cluster = index / ${REDUCTION_WORKGROUP_SIZE}u;
+  let lane = localInvocationIndex;
+  var count = 0u;
+  var sumX = 0.0;
+  var sumY = 0.0;
+  for (var chunk = lane; chunk < CHUNK_COUNT; chunk += ${REDUCTION_WORKGROUP_SIZE}u) {
+    let slot = cluster * CHUNK_COUNT + chunk;
+    count += partialCounts[partialCountsOffset + slot];
+    sumX += partialSumsX[partialSumsXOffset + slot];
+    sumY += partialSumsY[partialSumsYOffset + slot];
+  }
+  reducedCounts[lane] = count;
+  reducedSumsX[lane] = sumX;
+  reducedSumsY[lane] = sumY;
+  workgroupBarrier();
+  for (var stride = ${REDUCTION_WORKGROUP_SIZE / 2}u; stride > 0u; stride = stride / 2u) {
+    if (lane < stride) {
+      reducedCounts[lane] += reducedCounts[lane + stride];
+      reducedSumsX[lane] += reducedSumsX[lane + stride];
+      reducedSumsY[lane] += reducedSumsY[lane + stride];
+    }
+    workgroupBarrier();
+  }
+  // Converged: centers no longer move; the partials are stale and the final sizes come later.
+  if (lane == 0u && atomicLoad(&state[stateOffset]) == 0u) {
+    let size = reducedCounts[0];
+    sizes[sizesOffset + cluster] = size;
+    if (size > 0u) {
+      let nextX = reducedSumsX[0] / f32(size);
+      let nextY = reducedSumsY[0] / f32(size);
+      let deltaX = nextX - centers[centersOffset + cluster * 2u];
+      let deltaY = nextY - centers[centersOffset + cluster * 2u + 1u];
+      atomicMax(&state[stateOffset + 2u], bitcast<u32>(sqrt(deltaX * deltaX + deltaY * deltaY)));
+      centers[centersOffset + cluster * 2u] = nextX;
+      centers[centersOffset + cluster * 2u + 1u] = nextY;
+    }
   }`
+        }),
+        createWGSLKernelNode<Parameters>(graph, {
+          id: `${iterationId}-converge`,
+          operation: OPERATION,
+          variant: 'converge',
+          bindings: [{name: 'state', view: state, type: 'u32', access: 'read_write'}],
+          invocationCount: 1,
+          declarations: `const TOLERANCE: f32 = ${formatWGSLFloat(tolerance)};`,
+          body: `if (state[stateOffset] != 0u) {
+    return;
+  }
+  state[stateOffset + 1u] = state[stateOffset + 1u] + 1u;
+  if (bitcast<f32>(state[stateOffset + 2u]) <= TOLERANCE) {
+    state[stateOffset] = 1u;
+  }
+  state[stateOffset + 2u] = 0u;`
         })
       );
     }
@@ -461,6 +676,21 @@ const ROUND: u32 = ${round}u;`,
         output: sizes
       }).getCommandNodes(graph)
     );
+    if (props.convergence) {
+      nodes.push(
+        createWGSLKernelNode<Parameters>(graph, {
+          id: `${id}-publish-convergence`,
+          operation: OPERATION,
+          variant: 'publish-convergence',
+          bindings: [
+            {name: 'state', view: state, type: 'u32', access: 'read'},
+            {name: 'convergence', view: props.convergence, type: 'u32', access: 'read_write'}
+          ],
+          invocationCount: 2,
+          body: `convergence[convergenceOffset + index] = state[stateOffset + 1u - index];`
+        })
+      );
+    }
     return nodes;
   }
 }

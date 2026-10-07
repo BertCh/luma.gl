@@ -164,6 +164,9 @@ export type CellTableNodesProps = {
   extraCounts?: readonly GraphDataView<'uint32'>[];
 };
 
+/** Rows folded per workgroup by the accumulation passes of {@link getCellTableNodes}. */
+const ACCUMULATE_TILE_SIZE = 256;
+
 /** Returns whether compact keys at this layout need a high word. @internal */
 export function hasCellKeyHighWord(layout: CellKeyLayout): boolean {
   return layout.width + 1 > 32;
@@ -477,17 +480,55 @@ ${CELL_KEY_WGSL}`,
             ? [{name: 'sums', view: sums, type: 'atomic<u32>', access: 'read_write'} as const]
             : [])
         ],
+        workgroupSize: ACCUMULATE_TILE_SIZE,
         invocationCount: rowCount,
-        declarations: getFixedPointWGSL(props.sumScale),
-        body: `let cell = rowCells[rowCellsOffset + index];
-  if (cell == 0xffffffffu) {
+        guardIndex: false,
+        declarations: `${getFixedPointWGSL(props.sumScale)}
+const TILE_SIZE: u32 = ${ACCUMULATE_TILE_SIZE}u;
+const NO_CELL: u32 = 0xffffffffu;
+var<workgroup> tileCells: array<u32, ${ACCUMULATE_TILE_SIZE}>;
+${sums ? `var<workgroup> tileHigh: array<u32, ${ACCUMULATE_TILE_SIZE}>;\nvar<workgroup> tileLow: array<u32, ${ACCUMULATE_TILE_SIZE}>;` : ''}
+${childTable ? `var<workgroup> tileCounts: array<u32, ${ACCUMULATE_TILE_SIZE}>;` : ''}`,
+        // Rows are in cell order, so a cell's rows are contiguous. A segmented inclusive scan over
+        // the tile folds each run of equal cells in shared memory, and only the last row of a run
+        // issues the global atomics: a hot cell costs one atomic per tile instead of one per row.
+        // Integer sums are associative modulo 2^64, so the result is unchanged. Barriers are in
+        // uniform control flow (constant-bound loop, no early return).
+        body: `let lane = localInvocationIndex;
+  var cell = NO_CELL;
+  ${sums ? 'var value = vec2u(0u, 0u);' : ''}
+  ${childTable ? 'var childCount = 0u;' : ''}
+  if (index < INVOCATION_COUNT) {
+    cell = rowCells[rowCellsOffset + index];
+    if (cell != NO_CELL) {
+      ${sums ? `value = ${contribution};` : ''}
+      ${childTable ? 'childCount = childCounts[childCountsOffset + index];' : ''}
+    }
+  }
+  tileCells[lane] = cell;
+  ${sums ? 'tileHigh[lane] = value.x;\n  tileLow[lane] = value.y;' : ''}
+  ${childTable ? 'tileCounts[lane] = childCount;' : ''}
+  workgroupBarrier();
+  for (var stride = 1u; stride < TILE_SIZE; stride = stride << 1u) {
+    ${sums ? 'var addValue = vec2u(0u, 0u);' : ''}
+    ${childTable ? 'var addCount = 0u;' : ''}
+    if (lane >= stride && tileCells[lane - stride] == cell) {
+      ${sums ? 'addValue = vec2u(tileHigh[lane - stride], tileLow[lane - stride]);' : ''}
+      ${childTable ? 'addCount = tileCounts[lane - stride];' : ''}
+    }
+    workgroupBarrier();
+    ${sums ? 'value = cellAddI64(value, addValue);\n    tileHigh[lane] = value.x;\n    tileLow[lane] = value.y;' : ''}
+    ${childTable ? 'childCount += addCount;\n    tileCounts[lane] = childCount;' : ''}
+    workgroupBarrier();
+  }
+  let isRunEnd = lane == TILE_SIZE - 1u || tileCells[lane + 1u] != cell;
+  if (cell == NO_CELL || !isRunEnd) {
     return;
   }
-  ${childTable ? 'atomicAdd(&countsOut[countsOutOffset + cell], childCounts[childCountsOffset + index]);' : ''}
+  ${childTable ? 'atomicAdd(&countsOut[countsOutOffset + cell], childCount);' : ''}
   ${
     sums
-      ? `let value = ${contribution};
-  let previous = atomicAdd(&sums[sumsOffset + 2u * cell], value.y);
+      ? `let previous = atomicAdd(&sums[sumsOffset + 2u * cell], value.y);
   let high = value.x + select(0u, 1u, previous + value.y < previous);
   if (high != 0u) {
     atomicAdd(&sums[sumsOffset + 2u * cell + 1u], high);
@@ -539,14 +580,49 @@ ${CELL_KEY_WGSL}`,
               ]
             : [])
         ],
+        workgroupSize: ACCUMULATE_TILE_SIZE,
         invocationCount: rowCount,
-        declarations: ORDERED_KEY_WGSL,
-        body: `let cell = rowCells[rowCellsOffset + index];
-  if (cell == 0xffffffffu) {
+        guardIndex: false,
+        declarations: `${ORDERED_KEY_WGSL}
+const TILE_SIZE: u32 = ${ACCUMULATE_TILE_SIZE}u;
+const NO_CELL: u32 = 0xffffffffu;
+var<workgroup> tileCells: array<u32, ${ACCUMULATE_TILE_SIZE}>;
+${minimumKeys ? `var<workgroup> tileMinimums: array<u32, ${ACCUMULATE_TILE_SIZE}>;` : ''}
+${maximumKeys ? `var<workgroup> tileMaximums: array<u32, ${ACCUMULATE_TILE_SIZE}>;` : ''}`,
+        // Same run-folding scheme as the sum pass, with min / max in place of the 64-bit add.
+        body: `let lane = localInvocationIndex;
+  var cell = NO_CELL;
+  ${minimumKeys ? 'var minimumKey = 0xffffffffu;' : ''}
+  ${maximumKeys ? 'var maximumKey = 0u;' : ''}
+  if (index < INVOCATION_COUNT) {
+    cell = rowCells[rowCellsOffset + index];
+    if (cell != NO_CELL) {
+      ${minimumKeys ? `minimumKey = getOrderedKey(${minimumSource});` : ''}
+      ${maximumKeys ? `maximumKey = getOrderedKey(${maximumSource});` : ''}
+    }
+  }
+  tileCells[lane] = cell;
+  ${minimumKeys ? 'tileMinimums[lane] = minimumKey;' : ''}
+  ${maximumKeys ? 'tileMaximums[lane] = maximumKey;' : ''}
+  workgroupBarrier();
+  for (var stride = 1u; stride < TILE_SIZE; stride = stride << 1u) {
+    ${minimumKeys ? 'var otherMinimum = 0xffffffffu;' : ''}
+    ${maximumKeys ? 'var otherMaximum = 0u;' : ''}
+    if (lane >= stride && tileCells[lane - stride] == cell) {
+      ${minimumKeys ? 'otherMinimum = tileMinimums[lane - stride];' : ''}
+      ${maximumKeys ? 'otherMaximum = tileMaximums[lane - stride];' : ''}
+    }
+    workgroupBarrier();
+    ${minimumKeys ? 'minimumKey = min(minimumKey, otherMinimum);\n    tileMinimums[lane] = minimumKey;' : ''}
+    ${maximumKeys ? 'maximumKey = max(maximumKey, otherMaximum);\n    tileMaximums[lane] = maximumKey;' : ''}
+    workgroupBarrier();
+  }
+  let isRunEnd = lane == TILE_SIZE - 1u || tileCells[lane + 1u] != cell;
+  if (cell == NO_CELL || !isRunEnd) {
     return;
   }
-  ${minimumKeys ? `atomicMin(&minimumKeys[minimumKeysOffset + cell], getOrderedKey(${minimumSource}));` : ''}
-  ${maximumKeys ? `atomicMax(&maximumKeys[maximumKeysOffset + cell], getOrderedKey(${maximumSource}));` : ''}`
+  ${minimumKeys ? 'atomicMin(&minimumKeys[minimumKeysOffset + cell], minimumKey);' : ''}
+  ${maximumKeys ? 'atomicMax(&maximumKeys[maximumKeysOffset + cell], maximumKey);' : ''}`
       })
     );
   }

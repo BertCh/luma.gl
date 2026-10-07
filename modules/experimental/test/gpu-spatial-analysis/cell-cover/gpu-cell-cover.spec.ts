@@ -53,6 +53,8 @@ async function runCover(
     candidateCapacity: number;
     outputCapacity: number;
     featureIds?: number[];
+    edgeSlabs?: boolean;
+    edgeSlabEntryCapacity?: number;
   }
 ): Promise<CoverRun> {
   const arrays = flattenCoverFeatures(features);
@@ -120,6 +122,8 @@ async function runCover(
           )
         : undefined,
       candidateCapacity: options.candidateCapacity,
+      edgeSlabs: options.edgeSlabs,
+      edgeSlabEntryCapacity: options.edgeSlabEntryCapacity,
       output: {
         featureIds: importGraphBuffer(
           graph,
@@ -414,6 +418,79 @@ it('GPUCellCover core flag is sound, conservative and nonzero (quadbin and h3)',
       for (const cell of run.cells) {
         expect(cell >> 63n).toBe(0n);
       }
+    }
+  }
+});
+
+/** Features with many edges: random stars, a comb with horizontal and vertical edges, holes. */
+function createDenseScene(): CoverFeature[] {
+  const comb: number[][] = [[-20, 10]];
+  for (let tooth = 0; tooth < 40; tooth++) {
+    const x = -20 + tooth * 0.5;
+    comb.push([x, 10], [x, 12 + (tooth % 3)], [x + 0.25, 12 + (tooth % 3)], [x + 0.25, 10]);
+  }
+  comb.push([0, 8], [-20, 8]);
+  return roundFeatures([
+    [[createStarPolygon(3, [8.31, 47.13], 2.4, 400)]],
+    [
+      [
+        createStarPolygon(9, [-100, 40], 4, 300),
+        createStarPolygon(10, [-100, 40], 1.2, 120).reverse()
+      ],
+      [createStarPolygon(12, [-90, 38], 1.5, 60)]
+    ],
+    [[comb]],
+    [],
+    [[createStarPolygon(15, [150.3, -33.9], 1.7, 12)]],
+    // A feature with a non-finite vertex never uses slabs; it must still cover as before.
+    [[[...createStarPolygon(21, [20.3, 55.2], 2.5, 50), [Number.NaN, 55]]]]
+  ]);
+}
+
+it('GPUCellCover edge slabs give the same cells and core flags as testing every edge', async () => {
+  const device = await getWebGPUTestDevice();
+  if (!device) {
+    return;
+  }
+  const features = createDenseScene();
+  const cases: {
+    family: 'quadbin' | 'h3';
+    resolution: number;
+    containment: GPUCellCoverContainment;
+  }[] = [
+    {family: 'quadbin', resolution: 9, containment: 'center'},
+    {family: 'quadbin', resolution: 9, containment: 'full'},
+    {family: 'quadbin', resolution: 10, containment: 'intersects'},
+    {family: 'h3', resolution: 4, containment: 'center'}
+  ];
+  for (const {family, resolution, containment} of cases) {
+    const label = `${family} res ${resolution} ${containment}`;
+    const options = {
+      family,
+      resolution,
+      containment,
+      candidateCapacity: 2_000_000,
+      outputCapacity: 60000
+    };
+    const reference = await runCover(device, features, {...options, edgeSlabs: false});
+    expect(reference.overflow, `${label} reference overflow`).toBe(0);
+    expect(reference.count, `${label} reference count`).toBeGreaterThan(50);
+    // Default capacity, then a tiny capacity so that most features fall back mid-way.
+    for (const edgeSlabEntryCapacity of [undefined, 900]) {
+      const slabbed = await runCover(device, features, {
+        ...options,
+        edgeSlabs: true,
+        edgeSlabEntryCapacity
+      });
+      const tag = `${label} capacity ${edgeSlabEntryCapacity ?? 'default'}`;
+      expect(slabbed.overflow, `${tag} overflow`).toBe(0);
+      expect(slabbed.total, `${tag} total`).toBe(reference.total);
+      expect(slabbed.featureRows, `${tag} features`).toEqual(reference.featureRows);
+      expect(
+        slabbed.cells.map(cell => cell.toString(16)),
+        `${tag} cells`
+      ).toEqual(reference.cells.map(cell => cell.toString(16)));
+      expect(slabbed.core, `${tag} core`).toEqual(reference.core);
     }
   }
 });

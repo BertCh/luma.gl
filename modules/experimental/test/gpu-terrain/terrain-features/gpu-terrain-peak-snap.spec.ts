@@ -477,6 +477,70 @@ it('GPUTerrainPeakSnap matches the oracle on random candidates and per-candidate
   }
 });
 
+it('GPUTerrainPeakSnap matches the oracle with discs far wider than one workgroup (radius 40, 300 candidates)', async () => {
+  const device = await getWebGPUTestDevice();
+  if (!device) {
+    return;
+  }
+  // A radius-40 disc holds about 5000 pixels, so each candidate's workgroup strides 20 times and
+  // the reduction must reproduce the sequential (height, lowest index) winner, including on a
+  // plateau, at grid edges and beside nodata.
+  const width = 120;
+  const height = 90;
+  const values = createNoise(width, height, 500, 21);
+  const validity = new Uint32Array(width * height).fill(1);
+  for (let row = 30; row < 36; row++) {
+    for (let column = 50; column < 70; column++) {
+      validity[row * width + column] = 0;
+    }
+  }
+  for (let row = 60; row < 64; row++) {
+    for (let column = 10; column < 30; column++) {
+      values[row * width + column] = 777;
+    }
+  }
+  let state = 987;
+  const random = (count: number) => {
+    state = (Math.imul(state, 1664525) + 1013904223) >>> 0;
+    return (state >>> 8) % count;
+  };
+  const candidates: number[] = [];
+  for (let index = 0; index < 300; index++) {
+    candidates.push(random(4 * (width - 1)) / 4, random(4 * (height - 1)) / 4);
+  }
+  const settings = {
+    radius: 40,
+    maximumMove: 60,
+    maximumHeightChange: 1e9,
+    cellSize: [1, 1],
+    interior: false
+  } as const;
+  const fixture = createPeakSnapFixture(device, {
+    values,
+    validity,
+    width,
+    height,
+    candidates,
+    settings,
+    contributor: {maximumRadiusPixels: 48}
+  });
+  const result = await fixture.run();
+  const expected = computeTerrainPeakSnap(
+    values,
+    validity,
+    width,
+    height,
+    candidates,
+    undefined,
+    undefined,
+    getGPUTerrainPeakSnapParameterValues(settings),
+    {maximumRadiusPixels: 48}
+  );
+  expectMatchesOracle(result, expected);
+  expect(expected.status).toContain(S.snapped);
+  fixture.destroy();
+});
+
 it('GPUTerrainPeakSnap clamps the radius to maximumRadiusPixels and raises overflow', async () => {
   const device = await getWebGPUTestDevice();
   if (!device) {

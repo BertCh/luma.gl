@@ -19,6 +19,7 @@ import {
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph
 } from '../../utils/gpu-contributor-utils';
+import {RHUMB_WGSL} from './rhumb-wgsl';
 import {GEODESIC_WGSL, GPU_GEODESIC_MEAN_EARTH_RADIUS} from './geodesic-wgsl';
 import {
   getVincentyWGSL,
@@ -53,9 +54,13 @@ export type GPUGeodesicDestinationProps = {
   origins: GraphDataView<'float32x2'>;
   /** Initial bearings in degrees clockwise from north, aligned with `origins`. */
   bearings: GraphDataView<'float32'>;
-  /** Distances in radius units (`'sphere'`) or meters (`'wgs84'`), aligned with `origins`. */
+  /** Distances in radius units (`'sphere'`, `'rhumb'`) or meters (`'wgs84'`), aligned with `origins`. */
   distances: GraphDataView<'float32'>;
-  /** `'sphere'` (default) or `'wgs84'` (Vincenty's direct solution). */
+  /**
+   * `'sphere'` (default), `'wgs84'` (Vincenty's direct solution) or `'rhumb'` (constant-bearing
+   * line on a sphere of `radius`, turf `rhumbDestination`; a destination past a pole is reflected
+   * back across it and its final bearing flips north/south).
+   */
   model?: GPUGeodesicModel;
   /** Sphere radius. Defaults to {@link GPU_GEODESIC_MEAN_EARTH_RADIUS}. */
   radius?: number;
@@ -167,6 +172,7 @@ export class GPUGeodesicDestination implements GPUCommandNodeProducer {
       statements.push('converged[convergedOffset + index] = select(0u, 1u, isConverged);');
     }
     const wgs84 = this.model === 'wgs84';
+    const rhumb = this.model === 'rhumb';
     return [
       createWGSLKernelNode<Parameters>(graph, {
         id: `${id}-destination`,
@@ -177,6 +183,7 @@ export class GPUGeodesicDestination implements GPUCommandNodeProducer {
         declarations: `${GEODESIC_WGSL}
 ${wgs84 ? getVincentyWGSL(this.iterations) : ''}
 ${SPHERE_PAIR_WGSL}
+${this.model === 'rhumb' ? RHUMB_WGSL : ''}
 const RADIUS: f32 = ${getWGSLFloatLiteral(this.radius)};`,
         body: /* wgsl */ `let origin = vec2<f32>(origins[originsOffset + 2u * index], origins[originsOffset + 2u * index + 1u]);
   let bearing = bearings[bearingsOffset + index];
@@ -187,7 +194,12 @@ const RADIUS: f32 = ${getWGSLFloatLiteral(this.radius)};`,
   let destination = direct.destination;
   let finalBearing = direct.finalBearing;
   let isConverged = direct.converged;`
-      : `let destination = geodesicDestination(origin, bearing, distance / RADIUS);
+      : rhumb
+        ? `let rhumbResult = rhumbDestination(origin, bearing, distance / RADIUS);
+  let destination = rhumbResult.destination;
+  let finalBearing = rhumbResult.finalBearing;
+  let isConverged = true;`
+        : `let destination = geodesicDestination(origin, bearing, distance / RADIUS);
   let finalBearing = sphereFinalBearingDegrees(origin, destination);
   let isConverged = true;`
   }

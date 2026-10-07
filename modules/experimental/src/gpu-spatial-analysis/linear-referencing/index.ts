@@ -4,6 +4,7 @@
 
 export {GPULinearReferencing} from './gpu-linear-referencing';
 export type {
+  GPULinearReferencingCoordinateSystem,
   GPULinearReferencingOutput,
   GPULinearReferencingProps
 } from './gpu-linear-referencing';
@@ -13,6 +14,7 @@ export {
   GPULineLocate
 } from './gpu-line-locate';
 export type {
+  GPULineLocateCoordinateSystem,
   GPULineLocateOutput,
   GPULineLocateParameters,
   GPULineLocateProps

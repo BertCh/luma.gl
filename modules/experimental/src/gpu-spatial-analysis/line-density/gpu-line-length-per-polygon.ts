@@ -463,19 +463,23 @@ fn isInside(point: vec2f, ringStart: u32, ringEnd: u32) -> bool {
       })
     );
 
-    // Per-pair keys and contributions; segment counts via integer atomics are order independent.
-    const counts =
-      output.segmentCounts ?? createTransientView(graph, `${id}-counts`, 'uint32', polygonCount);
+    // Per-pair keys and contributions. Segment counts (integer atomics, order independent) are
+    // only built for the public `segmentCounts` output; the sums find segment sizes by search.
+    const counts = output.segmentCounts;
     const keys = createTransientView(graph, `${id}-keys`, 'uint32', maximumCandidatePairs);
     const weighted = createTransientView(graph, `${id}-weighted`, 'float32', maximumCandidatePairs);
+    if (counts) {
+      nodes.push(
+        createFillNode<Parameters>(graph, {
+          id: `${id}-fill-counts`,
+          operation: OPERATION,
+          view: counts,
+          type: 'u32',
+          value: '0u'
+        })
+      );
+    }
     nodes.push(
-      createFillNode<Parameters>(graph, {
-        id: `${id}-fill-counts`,
-        operation: OPERATION,
-        view: counts,
-        type: 'u32',
-        value: '0u'
-      }),
       createWGSLKernelNode<Parameters>(graph, {
         id: `${id}-finish-pairs`,
         operation: OPERATION,
@@ -487,7 +491,16 @@ fn isInside(point: vec2f, ringStart: u32, ringEnd: u32) -> bool {
           {name: 'segmentWeights', view: segmentWeights, type: 'f32', access: 'read'},
           {name: 'keys', view: keys, type: 'u32', access: 'read_write'},
           {name: 'weighted', view: weighted, type: 'f32', access: 'read_write'},
-          {name: 'counts', view: counts, type: 'atomic<u32>', access: 'read_write'}
+          ...(counts
+            ? [
+                {
+                  name: 'counts',
+                  view: counts,
+                  type: 'atomic<u32>' as const,
+                  access: 'read_write' as const
+                }
+              ]
+            : [])
         ],
         invocationCount: maximumCandidatePairs,
         declarations: `const NO_FEATURE: u32 = 0xffffffffu;
@@ -500,7 +513,7 @@ const POLYGON_COUNT: u32 = ${polygonCount}u;`,
   if (segment != NO_FEATURE && feature < POLYGON_COUNT && inside > 0.0) {
     key = feature;
     contribution = inside * segmentWeights[segmentWeightsOffset + segment];
-    atomicAdd(&counts[countsOffset + feature], 1u);
+    ${counts ? 'atomicAdd(&counts[countsOffset + feature], 1u);' : ''}
   }
   keys[keysOffset + index] = key;
   weighted[weightedOffset + index] = contribution;`
@@ -510,7 +523,6 @@ const POLYGON_COUNT: u32 = ${polygonCount}u;`,
         operation: OPERATION,
         segmentCount: polygonCount,
         segmentKeys: keys,
-        segmentCounts: counts,
         sumContributions: insideLengths,
         sums: output.lengths,
         reductions: output.weightedLengths

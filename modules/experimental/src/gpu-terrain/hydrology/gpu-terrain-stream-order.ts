@@ -2,13 +2,17 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import type {GPUCommandGraph, GPUCommandNode, GraphDataView} from '@luma.gl/gpgpu/gpu-core';
+import {
+  validatePackedUint32View,
+  type GPUCommandGraph,
+  type GPUCommandNode,
+  type GraphDataView
+} from '@luma.gl/gpgpu/gpu-core';
 import {
   createRasterIterationFinalizeNode,
-  createRasterIterationGateNode,
+  createRasterGatedLoopNodes,
   createRasterIterationResetNode,
   createRasterIterationState,
-  getRasterIterationCondition,
   validateRasterIterations
 } from '../../gpu-raster/cost-distance/raster-relaxation';
 import {createWGSLKernelNode, type WGSLKernelBinding} from '../../utils/wgsl-kernel-nodes';
@@ -62,6 +66,8 @@ export type GPUTerrainStreamOrderProps = {
   streamOrder: GraphDataView<'uint32'>;
   /** One row set to 1 when every stream cell resolved. Conservative: can be 0 when the last round finished everything. */
   converged?: GraphDataView<'uint32'>;
+  /** Optional one-row output: gated rounds executed. */
+  iterationCount?: GraphDataView<'uint32'>;
   /** Maximum gated rounds in `[1, 1024]`. Defaults to 64. Compile-time. */
   maxIterations?: number;
 };
@@ -99,7 +105,13 @@ export class GPUTerrainStreamOrder implements GPUCommandNodeProducer {
     validateTerrainTracingCellView(id, 'streams', props.streams, 'uint32', cellCount);
     validateTerrainTracingCellView(id, 'streamOrder', props.streamOrder, 'uint32', cellCount);
     validateTerrainTracingConvergedView(id, props.converged);
-    const outputs = [props.streamOrder, props.converged];
+    if (props.iterationCount) {
+      validatePackedUint32View(props.iterationCount, `${id} iterationCount`);
+      if (props.iterationCount.length !== 1) {
+        throw new Error(`${id} iterationCount must contain one row`);
+      }
+    }
+    const outputs = [props.streamOrder, props.converged, props.iterationCount];
     validateGraphOutputsDisjointFromInputs(id, outputs, [props.flowDirections, props.streams]);
     validateTerrainBuffersDistinct(id, outputs, []);
   }
@@ -114,7 +126,8 @@ export class GPUTerrainStreamOrder implements GPUCommandNodeProducer {
       props.flowDirections,
       props.streams,
       props.streamOrder,
-      props.converged
+      props.converged,
+      props.iterationCount
     ]);
     const cellCount = width * height;
     const maxIterations = props.maxIterations ?? 64;
@@ -179,7 +192,9 @@ fn tryFinalize(cell: u32) -> bool {
   }
   return atomicCompareExchangeWeak(&order[orderOffset + cell], SENTINEL, result).exchanged;
 }`;
-    const body = `if (atomicLoad(&order[orderOffset + index]) != SENTINEL) { return; }
+    const getBody = (
+      markChangedWGSL: string
+    ) => `if (atomicLoad(&order[orderOffset + index]) != SENTINEL) { return; }
   if (tryFinalize(index)) {
     var walk = getFlowReceiver(index, flowDirections[flowDirectionsOffset + index]);
     for (var step = 0u; step < MAX_WALK_LENGTH; step++) {
@@ -188,38 +203,37 @@ fn tryFinalize(cell: u32) -> bool {
     }
   }
   if (atomicLoad(&order[orderOffset + index]) == SENTINEL) {
-    atomicStore(&status[statusOffset], 1u);
+    ${markChangedWGSL}
   }`;
-    for (let iteration = 0; iteration < maxIterations; iteration++) {
-      const nodeId = `${id}-order-round-${iteration}`;
-      const {condition, extraResources} = getRasterIterationCondition<Parameters>(state, nodeId);
-      nodes.push(
-        createWGSLKernelNode<Parameters>(graph, {
-          id: nodeId,
-          operation: OPERATION,
-          variant: 'order-round',
-          bindings,
-          invocationCount: cellCount,
-          declarations,
-          body,
-          condition,
-          extraResources
-        }),
-        createRasterIterationGateNode<Parameters>(graph, {
-          id: `${id}-order-gate-${iteration}`,
-          operation: OPERATION,
-          state,
-          maxIterations
-        })
-      );
-    }
-    if (props.converged) {
+    nodes.push(
+      ...createRasterGatedLoopNodes<Parameters>(graph, {
+        id: `${id}-order-round`,
+        gateId: `${id}-order-gate`,
+        operation: OPERATION,
+        state,
+        maxIterations,
+        createRound: ({nodeId, markChangedWGSL, condition, extraResources}) =>
+          createWGSLKernelNode<Parameters>(graph, {
+            id: nodeId,
+            operation: OPERATION,
+            variant: 'order-round',
+            bindings,
+            invocationCount: cellCount,
+            declarations,
+            body: getBody(markChangedWGSL),
+            condition,
+            extraResources
+          })
+      })
+    );
+    if (props.converged || props.iterationCount) {
       nodes.push(
         createRasterIterationFinalizeNode<Parameters>(graph, {
           id: `${id}-order-finalize`,
           operation: OPERATION,
           state,
-          converged: props.converged
+          converged: props.converged,
+          iterationCount: props.iterationCount
         })
       );
     }

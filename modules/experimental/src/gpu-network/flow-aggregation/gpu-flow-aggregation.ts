@@ -7,6 +7,7 @@ import {
   GPUGroupAggregation,
   GPUHashIndex,
   GPUHashIndexQuery,
+  GPUReduction,
   GPUScan,
   GPUSort,
   GPU_HASH_INDEX_STATISTICS_LENGTH,
@@ -34,6 +35,7 @@ import {getTimeWindowClassifyNodes} from '../../gpu-dataframe/time-window-filter
 import {
   createFlowContributionNodes,
   createFlowDecodeZonesNode,
+  createFlowExtentToFloatNode,
   createFlowGatherIdsNode,
   createFlowGatherValuesNode,
   createFlowPairKeysNode,
@@ -43,6 +45,7 @@ import {
   createFlowSlotKeysNode,
   createFlowSortedGatherNode,
   createFlowWeightKeysNode,
+  getFlowWeightKeyBits,
   createFlowZoneNode,
   type FlowResolvedBounds
 } from './flow-aggregation-kernels';
@@ -60,10 +63,24 @@ export type GPUFlowAggregationBounds =
   | GraphDataView<'float32'>;
 
 /**
+ * Per-frame lattice size of grid and hexagon zones: a packed `uint32` view of at least two rows
+ * `[columns, rows]`, for example a `GPUParameterBuffer` with `format: 'uint32'`.
+ *
+ * Each value is clamped to `1..gridSize` of the compile-time capacity. Zone IDs are row-major in
+ * the active size (`row * columns + column`), cells outside it are rejected, and zone outputs keep
+ * their capacity length: rows at and after `columns * rows` stay zero. Pair keys are built with the
+ * capacity zone count, so ranking and ties are unaffected by the active size beyond the zone IDs.
+ * Pair this with a per-frame hexagon `radius` so the lattice always covers the bounds.
+ */
+export type GPUFlowAggregationActiveGridSize = GraphDataView<'uint32'>;
+
+/**
  * How rows are assigned origin and destination zones.
  *
  * `kind`, `gridSize`, and `zoneCount` are compile-time. Literal bounds and a literal radius are
- * compile-time; GPU bounds and a GPU radius are per-frame.
+ * compile-time; GPU bounds and a GPU radius are per-frame. `gridSize` is the capacity of the
+ * lattice: with `activeGridSize` the lattice size is per-frame and `gridSize` is only its upper
+ * bound.
  */
 export type GPUFlowAggregationZones =
   | {
@@ -71,16 +88,20 @@ export type GPUFlowAggregationZones =
       kind: 'grid';
       /** Domain covered by the cells. */
       bounds: GPUFlowAggregationBounds;
-      /** `[columns, rows]` positive integers. Compile-time. */
+      /** `[columns, rows]` positive integers. Compile-time capacity. */
       gridSize: readonly [number, number];
+      /** Optional per-frame `[columns, rows]` of the lattice in use. See {@link GPUFlowAggregationActiveGridSize}. */
+      activeGridSize?: GraphDataView<'uint32'>;
     }
   | {
       /** Pointy-top odd-r hexagons, same lattice as `GPUPointDensity`. */
       kind: 'hexagon';
       /** Domain covered by the lattice. Points outside it are rejected. */
       bounds: GPUFlowAggregationBounds;
-      /** `[columns, rows]` positive integers. Compile-time. */
+      /** `[columns, rows]` positive integers. Compile-time capacity. */
       gridSize: readonly [number, number];
+      /** Optional per-frame `[columns, rows]` of the lattice in use. See {@link GPUFlowAggregationActiveGridSize}. */
+      activeGridSize?: GraphDataView<'uint32'>;
       /** Center-to-vertex radius. A number is compile-time; a one-row float32 view is per-frame. */
       radius: number | GraphDataView<'float32'>;
     }
@@ -188,6 +209,14 @@ export type GPUFlowAggregationProps = {
   zoneInWeights?: GraphDataView<'float32'>;
   /** Optional one row receiving the clamped flow count, for an indirect instanced draw. */
   drawInstanceCount?: GraphDataView<'uint32'>;
+  /**
+   * Optional two `float32` rows `[minimum, maximum]` of the nonzero per-origin-zone counts (both 0
+   * when no zone has a count). Computed on the GPU, so a color range needs no readback. Layers can
+   * take it directly as a `[min, max]` extent buffer.
+   */
+  zoneOutCountExtent?: GraphDataView<'float32'>;
+  /** Same as `zoneOutCountExtent` for per-destination-zone counts. */
+  zoneInCountExtent?: GraphDataView<'float32'>;
 };
 
 /**
@@ -309,6 +338,12 @@ export class GPUFlowAggregation implements GPUCommandNodeProducer {
         throw new Error(`${id} destinations length must equal origins length`);
       }
       validateFlowBounds(id, zones.bounds);
+      if (zones.activeGridSize) {
+        validatePackedUint32View(zones.activeGridSize, `${id} activeGridSize`);
+        if (zones.activeGridSize.length < 2) {
+          throw new Error(`${id} activeGridSize must contain two uint32 rows [columns, rows]`);
+        }
+      }
       if (zones.kind === 'hexagon') {
         const radius = zones.radius;
         if (typeof radius === 'number') {
@@ -429,6 +464,17 @@ export class GPUFlowAggregation implements GPUCommandNodeProducer {
       }
     }
     for (const [name, view] of [
+      ['zoneOutCountExtent', props.zoneOutCountExtent],
+      ['zoneInCountExtent', props.zoneInCountExtent]
+    ] as const) {
+      if (view) {
+        validatePackedView(view, ['float32'], `${id} ${name}`);
+        if (view.length !== 2) {
+          throw new Error(`${id} ${name} must contain two float32 rows`);
+        }
+      }
+    }
+    for (const [name, view] of [
       ['zoneOutWeights', props.zoneOutWeights],
       ['zoneInWeights', props.zoneInWeights],
       ['flowWeights', props.flowWeights]
@@ -502,7 +548,8 @@ export class GPUFlowAggregation implements GPUCommandNodeProducer {
                 zoneStart,
                 gridSize: zones.gridSize,
                 bounds,
-                radius: zones.kind === 'hexagon' ? zones.radius : undefined
+                radius: zones.kind === 'hexagon' ? zones.radius : undefined,
+                activeGridSize: zones.activeGridSize
               })
             );
           }
@@ -730,14 +777,17 @@ export class GPUFlowAggregation implements GPUCommandNodeProducer {
         id: `${id}-slot-keys`,
         tableKeys,
         slotKeys,
-        slotIndices
+        slotIndices,
+        zoneCount
       }),
       ...new GPUSort({
         id: `${id}-sort-pairs`,
         keys: slotKeys,
         values: slotIndices,
         outputKeys: sortedPairKeys,
-        outputValues: slotsByPair
+        outputValues: slotsByPair,
+        // Pair keys are below zoneCount^2, which empty slots take (see createFlowSlotKeysNode).
+        keyBits: Math.max(1, (zoneCount * zoneCount).toString(2).length)
       }).getCommandNodes(graph),
       createFlowWeightKeysNode(graph, {
         id: `${id}-weight-keys`,
@@ -753,7 +803,8 @@ export class GPUFlowAggregation implements GPUCommandNodeProducer {
         keys: weightKeys,
         values: slotsByPair,
         outputKeys: sortedWeightKeys,
-        outputValues: rankedSlots
+        outputValues: rankedSlots,
+        keyBits: getFlowWeightKeyBits(Boolean(rowWeights), rowCounts.length)
       }).getCommandNodes(graph)
     );
 
@@ -815,10 +866,27 @@ export class GPUFlowAggregation implements GPUCommandNodeProducer {
       })
     );
 
-    for (const [name, keys, counts, sums] of [
-      ['out', acceptedOriginZones, props.zoneOutCounts, props.zoneOutWeights],
-      ['in', acceptedDestinationZones, props.zoneInCounts, props.zoneInWeights]
+    for (const [name, keys, requestedCounts, sums, extent] of [
+      [
+        'out',
+        acceptedOriginZones,
+        props.zoneOutCounts,
+        props.zoneOutWeights,
+        props.zoneOutCountExtent
+      ],
+      [
+        'in',
+        acceptedDestinationZones,
+        props.zoneInCounts,
+        props.zoneInWeights,
+        props.zoneInCountExtent
+      ]
     ] as const) {
+      const counts =
+        requestedCounts ??
+        (extent
+          ? createTransientView(graph, `${id}-zone-${name}-extent-counts`, 'uint32', zoneCount)
+          : undefined);
       if (counts) {
         nodes.push(
           ...new GPUGroupAggregation({
@@ -828,26 +896,31 @@ export class GPUFlowAggregation implements GPUCommandNodeProducer {
           }).getCommandNodes(graph)
         );
       }
+      if (counts && extent) {
+        // Extent over occupied zones only: any nonzero count selects a row.
+        const countExtent = createTransientView(graph, `${id}-zone-${name}-extent`, 'uint32', 2);
+        nodes.push(
+          ...new GPUReduction({
+            id: `${id}-zone-${name}-extent`,
+            input: counts,
+            mask: counts,
+            output: countExtent,
+            operation: 'extent'
+          }).getCommandNodes(graph),
+          createFlowExtentToFloatNode(graph, {
+            id: `${id}-zone-${name}-extent-float`,
+            extent: countExtent,
+            output: extent
+          })
+        );
+      }
       if (sums && weights && contributions) {
-        const zoneCounts =
-          counts ??
-          createTransientView(graph, `${id}-zone-${name}-sum-counts`, 'uint32', zoneCount);
-        if (!counts) {
-          nodes.push(
-            ...new GPUGroupAggregation({
-              id: `${id}-zone-${name}-sum-counts`,
-              keys,
-              output: zoneCounts
-            }).getCommandNodes(graph)
-          );
-        }
         nodes.push(
           ...getSortedSegmentSumNodes<Parameters>(graph, {
             id: `${id}-zone-${name}-sorted`,
             operation: 'GPUFlowAggregation',
             segmentCount: zoneCount,
             segmentKeys: keys,
-            segmentCounts: zoneCounts,
             sumContributions: contributions,
             sums
           })
@@ -883,7 +956,8 @@ export class GPUFlowAggregation implements GPUCommandNodeProducer {
       zones.kind !== 'ids' && !Array.isArray(zones.bounds)
         ? (zones.bounds as GraphDataView)
         : undefined,
-      zones.kind === 'hexagon' && typeof zones.radius !== 'number' ? zones.radius : undefined
+      zones.kind === 'hexagon' && typeof zones.radius !== 'number' ? zones.radius : undefined,
+      zones.kind !== 'ids' ? zones.activeGridSize : undefined
     ];
   }
 
@@ -904,7 +978,9 @@ export class GPUFlowAggregation implements GPUCommandNodeProducer {
       props.zoneInCounts,
       props.zoneOutWeights,
       props.zoneInWeights,
-      props.drawInstanceCount
+      props.drawInstanceCount,
+      props.zoneOutCountExtent,
+      props.zoneInCountExtent
     ];
   }
 }

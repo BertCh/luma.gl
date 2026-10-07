@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-/** Largest predictor count of `GPUSpatialTwoStageLeastSquares` (the instrument set has `2k` columns). */
+/** Largest predictor count of `GPUSpatialTwoStageLeastSquares` (the instrument set has `(order + 1) k` columns). */
 export const GPU_SPATIAL_TWO_STAGE_LEAST_SQUARES_MAXIMUM_PREDICTOR_COUNT = 8;
 
 /** Number of float32 values per `table` row: coefficient, standard error, z statistic, p-value. */

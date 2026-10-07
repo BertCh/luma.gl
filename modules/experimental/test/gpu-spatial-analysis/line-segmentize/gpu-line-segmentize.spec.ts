@@ -312,3 +312,41 @@ it('GPUGreatCircleArcs reports overflow and clamps offsets', async () => {
   expect(actual.pathOffsets).toEqual([0, 9, 18, 20]);
   fixture.destroy();
 });
+
+it('GPULineSegmentize matches the oracle for long paths and one segment cut into many pieces', async () => {
+  const device = await getWebGPUTestDevice();
+  if (!device) {
+    return;
+  }
+  const random = createRandom(31);
+  const walk = (length: number) => {
+    let x = random() * 50;
+    let y = random() * 50;
+    return Array.from({length}, () => {
+      x += (random() - 0.5) * 8;
+      y += (random() - 0.5) * 8;
+      return [x, y];
+    });
+  };
+  // Row counts around the 64-row prefix tile, one 2000-row path, and a 2-vertex path of length
+  // 5000 that is cut into 1000 pieces by the segment length below.
+  const paths = createFlatPaths([
+    walk(63),
+    walk(64),
+    walk(65),
+    walk(2000),
+    [
+      [0, 0],
+      [5000, 0]
+    ],
+    walk(3)
+  ]);
+  const capacity = 60000;
+  const fixture = createSegmentizeFixture(device, paths, {capacity, maximumPieces: 1024});
+  for (const maximumSegmentLength of [5, 0, 41.3]) {
+    const actual = await fixture.run(getGPULineSegmentizeParameterValues({maximumSegmentLength}));
+    const expected = segmentizePaths(paths, {maximumSegmentLength, maximumPieces: 1024});
+    expectLinePathParity(actual, expected, capacity, 2e-3, 2e-5);
+  }
+  fixture.destroy();
+});

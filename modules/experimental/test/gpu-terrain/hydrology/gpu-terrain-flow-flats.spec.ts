@@ -268,6 +268,34 @@ it('GPUTerrainFlow resolveFlats drains a plateau through one boundary gap', asyn
   expect(result.accumulation[gap]).toBe(width * height);
 });
 
+it('GPUTerrainFlow resolveFlats seeds only the tiles it needs on a plateau spanning many tiles', async () => {
+  const device = await getWebGPUTestDevice();
+  if (!device) {
+    return;
+  }
+  // 100x70 cells cover 7x5 relaxation tiles. The single outlet sits in the last tile, so the hop
+  // fields have to travel through tiles that held no seed in iteration 0.
+  const width = 100;
+  const height = 70;
+  const elevation = Float32Array.from({length: width * height}, (_, cell) => {
+    const column = cell % width;
+    const row = Math.floor(cell / width);
+    const onRing = column === 0 || row === 0 || column === width - 1 || row === height - 1;
+    return onRing ? 20 : 10;
+  });
+  const gap = (height - 20) * width + (width - 1);
+  elevation[gap] = 5;
+  const {result, resolvedCount} = await expectMatchesOracle(
+    device,
+    'multi-tile plateau',
+    elevation,
+    width,
+    height
+  );
+  expect(resolvedCount).toBeGreaterThan(5000);
+  expect(countClass(result.classes, CELL_CLASS.flat)).toBe(0);
+});
+
 it('GPUTerrainFlow resolveFlats routes away from the higher side of a flat', async () => {
   const device = await getWebGPUTestDevice();
   if (!device) {

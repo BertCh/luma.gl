@@ -344,6 +344,15 @@ fn readSwap(
   var folded = 0u;
   var total = 0.0;
   var mean = 0.0;
+  // The row's included neighbor weights in slot order, read once: a permutation only reassigns
+  // values to slots, so the per-draw work is the random draw and one value gather, not four
+  // CSR gathers (offsets, neighbor, neighbor position, weight) per slot per permutation.
+  var slotWeights: array<f32, ${maximumNeighbors}>;
+  var neighborTotal = 0u;
+  ${neighborLoopWGSL(`if (neighborTotal < MAXIMUM_NEIGHBORS) {
+      slotWeights[neighborTotal] = weights[weightsOffset + slot];
+      neighborTotal++;
+    }`)}
   // 'folded' needs the simulated mean first: sweep 0 sums, sweep 1 counts (same deterministic stream).
   for (var sweep = 0u; sweep < ${folded ? 2 : 1}u; sweep++) {
   for (var permutation = 0u; permutation < permutations; permutation++) {
@@ -351,9 +360,9 @@ fn readSwap(
     var swapPositions: array<u32, ${maximumNeighbors}>;
     var swapValues: array<u32, ${maximumNeighbors}>;
     var swapCount = 0u;
-    var drawn = 0u;
     var lag = 0.0;
-    ${neighborLoopWGSL(`// Partial Fisher-Yates over the other included rows' virtual positions [0, others).
+    for (var drawn = 0u; drawn < neighborTotal; drawn++) {
+      // Partial Fisher-Yates over the other included rows' virtual positions [0, others).
       let pick = drawn + nextPhiloxBelow(&stream, others - drawn);
       let chosen = readSwap(&swapPositions, &swapValues, swapCount, pick);
       if (pick != drawn) {
@@ -369,9 +378,9 @@ fn readSwap(
         swapValues[entry] = displaced;
         swapCount = max(swapCount, entry + 1u);
       }
-      drawn++;
       let drawnPosition = chosen + select(0u, 1u, chosen >= position);
-      lag += weights[weightsOffset + slot] * compactX[compactXOffset + drawnPosition];`)}
+      lag += slotWeights[drawn] * compactX[compactXOffset + drawnPosition];
+    }
     let simulated = getLocalTerm(focus, lag);
     ${
       folded

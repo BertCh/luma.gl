@@ -409,6 +409,47 @@ it('GPUEmergingHotSpots matches the space-time oracle across per-frame parameter
   }
 }, 120000);
 
+/** Series lengths around the Gi* workgroup tiling: whole cells per 256 threads, leftover threads, one cell per group. */
+it('GPUEmergingHotSpots matches the oracle for slice counts that tile the Gi* workgroup unevenly', async () => {
+  const device = await getWebGPUTestDevice();
+  if (!device) {
+    return;
+  }
+  for (const sliceCount of [1, 2, 100, 129, 256]) {
+    const gridWidth = 6;
+    const gridHeight = 5;
+    const random = createSeededRandom(30 + sliceCount);
+    const values = new Float32Array(gridWidth * gridHeight * sliceCount);
+    for (let cell = 0; cell < gridWidth * gridHeight; cell++) {
+      const hot = cell % gridWidth < 2 && Math.floor(cell / gridWidth) < 3;
+      for (let slice = 0; slice < sliceCount; slice++) {
+        values[cell * sliceCount + slice] = random() * 2 + (hot ? 3 + (4 * slice) / sliceCount : 0);
+      }
+    }
+    values[3] = NaN;
+    const mask = new Uint32Array(gridWidth * gridHeight).fill(1);
+    mask[8] = 0;
+    const cube = {gridWidth, gridHeight, sliceCount, values, mask};
+    const harness = createHarness(device, cube, {maximumRadius: 2});
+    try {
+      for (const frame of [
+        {radius: 1, temporalWindow: 0},
+        {radius: 2, temporalWindow: 7},
+        // Windows at or above the series length clamp to a prefix sum of the whole series.
+        {radius: 1.5, temporalWindow: 400}
+      ]) {
+        const label = `slices ${sliceCount} ${JSON.stringify(frame)}`;
+        const result = await harness.run(frame);
+        const packed = getGPUEmergingHotSpotParameterValues(frame);
+        expectZScoresClose(result.giZScores, computeSpaceTimeGiStar(cube, packed, 2), label);
+        expectCellsMatchOracle(result, cube, frame, label);
+      }
+    } finally {
+      harness.destroy();
+    }
+  }
+}, 120000);
+
 it('GPUEmergingHotSpots accepts uint32 counts like GPUTemporalReduction output', async () => {
   const device = await getWebGPUTestDevice();
   if (!device) {

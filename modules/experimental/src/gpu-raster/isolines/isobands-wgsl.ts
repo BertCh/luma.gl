@@ -10,7 +10,14 @@
  * The including kernel must declare `values`, optional `validity`, `breaks` and `params` bindings,
  * the constants `WIDTH`, `HEIGHT`, `MAXIMUM_BREAK_COUNT`, the helper functions from
  * `getRasterAlgebraValueWGSL` and `getBreakSearchWGSL('countBreaksBelow', 'breaks')`, and a
- * `writeTriangle(index, a, b, c, band)` function (a no-op in the count kernel).
+ * `writeTriangle(index, a, b, c, band)` function (a no-op in the count kernel), the constant
+ * `EMIT_EDGES` and a `writeEdge(index, start, end, band)` function. With `EMIT_EDGES` true the
+ * cell walk also counts (`cellEdgeCount`) and writes the band boundary edges (counter-clockwise,
+ * so the band lies on the left): level segments always, and cell border edges only where the
+ * neighbouring cell does not carry the same edge, so edges shared by two cells cancel. A cell whose
+ * band region has zero area (one or two in-band corners, exactly on the lower break)
+ * writes no edges, and its neighbours then keep their own border edge there. The
+ * including kernel sets `edgeBase` to the first edge index of the cell before a writing walk.
  *
  * @internal
  */
@@ -35,6 +42,14 @@ var<private> pieceVertexCount: u32;
 var<private> pieceFirst: vec2<f32>;
 var<private> piecePrevious: vec2<f32>;
 var<private> emittedTriangles: u32;
+var<private> cellEventWalks: array<u32, 12>;
+var<private> pieceNextIsLevel: bool;
+var<private> pieceLastWalk: u32;
+var<private> cellEdgeCount: u32;
+var<private> bandHasLow: bool;
+var<private> bandHasHigh: bool;
+var<private> bandIsSliver: bool;
+var<private> edgeBase: u32;
 var<private> EDGE_START: array<u32, 4> = array<u32, 4>(0u, 1u, 3u, 0u);
 var<private> EDGE_END: array<u32, 4> = array<u32, 4>(1u, 2u, 2u, 3u);
 
@@ -83,8 +98,9 @@ fn getEventPosition(cellEvent: u32) -> vec2<f32> {
   return getCrossingPosition((cellEvent >> 2u) & 1u, index);
 }
 
-fn pushEvent(cellEvent: u32) {
+fn pushEvent(cellEvent: u32, walk: u32) {
   cellEvents[cellEventCount] = cellEvent;
+  cellEventWalks[cellEventCount] = walk;
   cellEventCount++;
 }
 
@@ -94,21 +110,21 @@ fn buildEvents() {
     let startState = bandStates[walk];
     let endState = bandStates[(walk + 1u) % 4u];
     if (startState == 1u) {
-      pushEvent(walk << 3u);
+      pushEvent(walk << 3u, walk);
     }
     if (startState < endState) {
       if (startState == 0u) {
-        pushEvent(1u | (walk << 3u));
+        pushEvent(1u | (walk << 3u), walk);
       }
       if (endState == 2u) {
-        pushEvent(2u | 4u | (walk << 3u));
+        pushEvent(2u | 4u | (walk << 3u), walk);
       }
     } else if (startState > endState) {
       if (startState == 2u) {
-        pushEvent(1u | 4u | (walk << 3u));
+        pushEvent(1u | 4u | (walk << 3u), walk);
       }
       if (endState == 0u) {
-        pushEvent(2u | (walk << 3u));
+        pushEvent(2u | (walk << 3u), walk);
       }
     }
   }
@@ -146,21 +162,109 @@ fn findCrossingEvent(level: u32, edge: u32) -> u32 {
   return NO_EVENT;
 }
 
-fn pushPieceVertex(cellEvent: u32, shouldWrite: bool, baseTriangle: u32, band: u32) {
-  var position = vec2<f32>(0.0, 0.0);
+fn getBandState(value: f32) -> u32 {
+  if (bandHasLow && value < bandLow) {
+    return 0u;
+  }
+  if (bandHasHigh && value >= bandHigh) {
+    return 2u;
+  }
+  return 1u;
+}
+
+// True when the current band's region in a cell with these corner values has zero area: one or two
+// corners are in the band (so every region vertex lies on the segment between them), every in-band
+// corner equals the lower break exactly (so the crossings sit on those corners), and none is above
+// the band.
+fn isSliverBand(corners: array<f32, 4>) -> bool {
+  var bandCornerCount = 0u;
+  for (var corner = 0u; corner < 4u; corner++) {
+    let state = getBandState(corners[corner]);
+    if (state == 2u) {
+      return false;
+    }
+    if (state == 1u) {
+      if (!bandHasLow || corners[corner] != bandLow) {
+        return false;
+      }
+      bandCornerCount++;
+    }
+  }
+  return bandCornerCount == 1u || bandCornerCount == 2u;
+}
+
+// True when the neighbouring cell across the cell border 'walk' (0 bottom, 1 right, 2 top, 3 left)
+// exists and has no nodata corner, so it carries the same border edge in the same band.
+fn isBorderShared(walk: u32) -> bool {
+  var neighbourColumn = i32(cellColumn);
+  var neighbourRow = i32(cellRow);
+  if (walk == 0u) {
+    neighbourRow -= 1;
+  } else if (walk == 1u) {
+    neighbourColumn += 1;
+  } else if (walk == 2u) {
+    neighbourRow += 1;
+  } else {
+    neighbourColumn -= 1;
+  }
+  if (neighbourColumn < 0 || neighbourRow < 0 || neighbourColumn >= i32(CELL_COLUMNS) || neighbourRow >= i32(HEIGHT - 1u)) {
+    return false;
+  }
+  let neighbour = u32(neighbourRow) * CELL_COLUMNS + u32(neighbourColumn);
+  var neighbourValues: array<f32, 4>;
+  for (var corner = 0u; corner < 4u; corner++) {
+    let sample = getSampleIndex(neighbour, corner);
+    if (!isSampleValid(sample)) {
+      return false;
+    }
+    neighbourValues[corner] = values[valuesOffset + sample];
+  }
+  // A zero-area neighbour region writes no edges, so this cell must keep its own.
+  return !isSliverBand(neighbourValues);
+}
+
+fn emitPieceEdge(a: vec2<f32>, b: vec2<f32>, isLevel: bool, walk: u32, shouldWrite: bool, band: u32) {
+  if (a.x == b.x && a.y == b.y) {
+    return;
+  }
+  if (bandIsSliver || (!isLevel && isBorderShared(walk))) {
+    return;
+  }
   if (shouldWrite) {
+    writeEdge(edgeBase + cellEdgeCount, a, b, band);
+  }
+  cellEdgeCount++;
+}
+
+fn pushPieceVertex(cellEvent: u32, walk: u32, shouldWrite: bool, baseTriangle: u32, band: u32) {
+  var position = vec2<f32>(0.0, 0.0);
+  if (shouldWrite || EMIT_EDGES) {
     position = getEventPosition(cellEvent);
   }
   if (pieceVertexCount == 0u) {
     pieceFirst = position;
-  } else if (pieceVertexCount >= 2u) {
-    if (shouldWrite) {
-      writeTriangle(baseTriangle + emittedTriangles, pieceFirst, piecePrevious, position, band);
+  } else {
+    if (EMIT_EDGES) {
+      emitPieceEdge(piecePrevious, position, pieceNextIsLevel, pieceLastWalk, shouldWrite, band);
     }
-    emittedTriangles++;
+    if (pieceVertexCount >= 2u) {
+      if (shouldWrite) {
+        writeTriangle(baseTriangle + emittedTriangles, pieceFirst, piecePrevious, position, band);
+      }
+      emittedTriangles++;
+    }
   }
+  pieceNextIsLevel = false;
+  pieceLastWalk = walk;
   piecePrevious = position;
   pieceVertexCount++;
+}
+
+// Closing edge of the piece: a level segment when the piece has crossings, else a border edge.
+fn finishPiece(isLevel: bool, shouldWrite: bool, band: u32) {
+  if (EMIT_EDGES && pieceVertexCount >= 3u) {
+    emitPieceEdge(piecePrevious, pieceFirst, isLevel, pieceLastWalk, shouldWrite, band);
+  }
 }
 
 fn setupBand(band: u32, breakCount: u32) -> bool {
@@ -185,6 +289,9 @@ fn setupBand(band: u32, breakCount: u32) -> bool {
     lowMask |= select(0u, 1u << corner, state >= 1u);
     highMask |= select(0u, 1u << corner, state == 2u);
   }
+  bandHasLow = hasLow;
+  bandHasHigh = hasHigh;
+  bandIsSliver = isSliverBand(cornerValues);
   bandMasks[0] = lowMask;
   bandMasks[1] = highMask;
   let centre = ((cornerValues[0] + cornerValues[1]) + (cornerValues[2] + cornerValues[3])) * 0.25;
@@ -210,8 +317,9 @@ fn processBand(shouldWrite: bool, baseTriangle: u32, band: u32, breakCount: u32)
     if (cellEventCount == 4u) {
       pieceVertexCount = 0u;
       for (var i = 0u; i < 4u; i++) {
-        pushPieceVertex(cellEvents[i], shouldWrite, baseTriangle, band);
+        pushPieceVertex(cellEvents[i], cellEventWalks[i], shouldWrite, baseTriangle, band);
       }
+      finishPiece(false, shouldWrite, band);
     }
     return emittedTriangles;
   }
@@ -222,11 +330,15 @@ fn processBand(shouldWrite: bool, baseTriangle: u32, band: u32, breakCount: u32)
     }
     pieceVertexCount = 0u;
     var current = i;
+    pieceNextIsLevel = false;
     for (var arc = 0u; arc < 8u; arc++) {
+      if (arc > 0u) {
+        pieceNextIsLevel = true;
+      }
       visited |= 1u << current;
       var exitIndex = current;
       for (var stepIndex = 0u; stepIndex < 12u; stepIndex++) {
-        pushPieceVertex(cellEvents[exitIndex], shouldWrite, baseTriangle, band);
+        pushPieceVertex(cellEvents[exitIndex], cellEventWalks[exitIndex], shouldWrite, baseTriangle, band);
         if ((cellEvents[exitIndex] & 3u) == 2u) {
           break;
         }
@@ -239,6 +351,7 @@ fn processBand(shouldWrite: bool, baseTriangle: u32, band: u32, breakCount: u32)
         break;
       }
     }
+    finishPiece(true, shouldWrite, band);
   }
   return emittedTriangles;
 }
@@ -271,6 +384,7 @@ fn loadCell(cell: u32) -> bool {
 
 // Triangles of every emitted band in a cell, in band order.
 fn processCell(cell: u32, shouldWrite: bool, baseTriangle: u32) -> u32 {
+  cellEdgeCount = 0u;
   if (!loadCell(cell)) {
     return 0u;
   }

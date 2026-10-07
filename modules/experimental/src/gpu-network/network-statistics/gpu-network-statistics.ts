@@ -174,6 +174,15 @@ export type GPUNetworkStatisticsProps = {
   neighbors: GraphDataView<'uint32'>;
   /** Treat slots as directed edges. Default false. */
   directed?: boolean;
+  /**
+   * Compile-time, undirected only (ignored when `directed`). When true, a self-loop stored once in
+   * the CSR counts twice in its vertex's degree, in the degree histograms and maxima, and in the
+   * modularity volumes, matching `GPUGraphModularity` and the usual convention that a loop adds 2
+   * to a degree. Default false: a self-loop counts once, like the stored slot count and
+   * `GPUNetworkAnalyticsColumns`. `liveSlotCount`, `liveEdgeCount` and `selfLoopSlotCount` are
+   * unaffected (the edge count already counts a loop once).
+   */
+  countSelfLoopsTwice?: boolean;
   /** Optional per-vertex mask, nonzero = live. */
   vertexMask?: GraphDataView<'uint32'>;
   /**
@@ -207,6 +216,9 @@ export type GPUNetworkStatisticsProps = {
 
 const WORKGROUP_SIZE = 256;
 
+/** Largest `3 * degreeBinCount` kept in workgroup memory by the degree pass (4 KiB). */
+const MAXIMUM_PRIVATE_HISTOGRAM_WORDS = 1024;
+
 /**
  * Reduces a CSR network to a compact statistics summary for a graph stats panel: live
  * vertex/edge/slot counts, weak component count and largest size, isolated vertices, maximum
@@ -216,7 +228,8 @@ const WORKGROUP_SIZE = 256;
  *
  * Summary layout: words `0..15` are the header ({@link GPU_NETWORK_STATISTICS_WORD}, words 14 and
  * 15 reserved zeros), then out-degree, in-degree and total-degree histograms of `degreeBinCount`
- * bins each. Undirected: in = out = total = live row length (not doubled). Directed: total = in +
+ * bins each. Undirected: in = out = total = live row length (not doubled; a self-loop counts once unless
+ * `countSelfLoopsTwice`). Directed: total = in +
  * out. Degree statistics cover live vertices only.
  *
  * Degrees are not computed with `GPUGraphDegree`: that algorithm subtracts CSR offsets, which
@@ -231,7 +244,8 @@ const WORKGROUP_SIZE = 256;
  * Modularity uses exact `u32` atomic sums (intra-community slots and per-label degree sums) and a
  * single-workgroup f32 finish, so it is deterministic. `GPUGraphModularity` accumulates floats
  * with atomics and is therefore order dependent; it is deliberately not used. Undirected:
- * `Q = intra/2m - gamma * sum_c (d_c/2m)^2` with `2m = liveSlotCount`; directed:
+ * `Q = intra/2m - gamma * sum_c (d_c/2m)^2` with `2m = liveSlotCount` (plus `selfLoopSlotCount` and
+ * `intra` plus the self-loops with `countSelfLoopsTwice`); directed:
  * `Q = intra/m - gamma * sum_c out_c in_c / m^2` with `m = liveSlotCount`. Counts are `u32`, so a
  * graph with 2^32 or more live slots overflows. Invalid (no live slots, no communities or an
  * out-of-range label) gives modularity 0 and `modularityValid` 0.
@@ -349,6 +363,7 @@ export class GPUNetworkStatistics implements GPUCommandNodeProducer {
       props.output
     ]);
     const directed = Boolean(props.directed);
+    const countTwice = Boolean(props.countSelfLoopsTwice) && !directed;
     const hasCommunities = Boolean(props.communities);
     const word = GPU_NETWORK_STATISTICS_WORD;
     const operation = 'GPUNetworkStatistics';
@@ -450,32 +465,56 @@ export class GPUNetworkStatistics implements GPUCommandNodeProducer {
         variant: 'slots',
         bindings: passOneBindings,
         invocationCount: nodeCount,
-        declarations: `const NODE_COUNT: u32 = ${nodeCount}u;`,
-        body: `let vertexLive = ${isLive('index')};
-  let rowBegin = offsets[offsetsOffset + index];
-  let rowEnd = offsets[offsetsOffset + index + 1u];
-  var liveCount = 0u;
-  var selfCount = 0u;
-  for (var slot = rowBegin; slot < rowEnd; slot++) {
-    let neighbor = neighbors[neighborsOffset + slot];
-    var slotLive = vertexLive && neighbor < NODE_COUNT;
-    ${props.vertexMask ? 'if (slotLive) { slotLive = vertexMask[vertexMaskOffset + neighbor] != 0u; }' : ''}
-    ${props.edgeMask ? 'if (slotLive) { slotLive = edgeMask[edgeMaskOffset + slot] != 0u; }' : ''}
-    maskedOut[maskedOutOffset + slot] = select(0xffffffffu, neighbor, slotLive);
-    if (slotLive) {
-      liveCount++;
-      if (neighbor == index) {
-        selfCount++;
+        guardIndex: false,
+        declarations: `const NODE_COUNT: u32 = ${nodeCount}u;
+var<workgroup> localLiveSlots: atomic<u32>;
+var<workgroup> localSelfSlots: atomic<u32>;`,
+        // Slot counts fold in workgroup memory so the two summary words take one global atomic per
+        // workgroup instead of one per vertex. No early return: every invocation must reach the
+        // barriers.
+        body: `if (localInvocationIndex == 0u) {
+    atomicStore(&localLiveSlots, 0u);
+    atomicStore(&localSelfSlots, 0u);
+  }
+  workgroupBarrier();
+  if (index < NODE_COUNT) {
+    let vertexLive = ${isLive('index')};
+    let rowBegin = offsets[offsetsOffset + index];
+    let rowEnd = offsets[offsetsOffset + index + 1u];
+    var liveCount = 0u;
+    var selfCount = 0u;
+    for (var slot = rowBegin; slot < rowEnd; slot++) {
+      let neighbor = neighbors[neighborsOffset + slot];
+      var slotLive = vertexLive && neighbor < NODE_COUNT;
+      ${props.vertexMask ? 'if (slotLive) { slotLive = vertexMask[vertexMaskOffset + neighbor] != 0u; }' : ''}
+      ${props.edgeMask ? 'if (slotLive) { slotLive = edgeMask[edgeMaskOffset + slot] != 0u; }' : ''}
+      maskedOut[maskedOutOffset + slot] = select(0xffffffffu, neighbor, slotLive);
+      if (slotLive) {
+        liveCount++;
+        if (neighbor == index) {
+          selfCount++;
+        }
+        ${inDegree ? 'atomicAdd(&inDegree[inDegreeOffset + neighbor], 1u);' : ''}
       }
-      ${inDegree ? 'atomicAdd(&inDegree[inDegreeOffset + neighbor], 1u);' : ''}
+    }
+    outDegree[outDegreeOffset + index] = liveCount${countTwice ? ' + selfCount' : ''};
+    if (liveCount > 0u) {
+      atomicAdd(&localLiveSlots, liveCount);
+    }
+    if (selfCount > 0u) {
+      atomicAdd(&localSelfSlots, selfCount);
     }
   }
-  outDegree[outDegreeOffset + index] = liveCount;
-  if (liveCount > 0u) {
-    atomicAdd(&summary[summaryOffset + ${word.liveSlotCount}u], liveCount);
-  }
-  if (selfCount > 0u) {
-    atomicAdd(&summary[summaryOffset + ${word.selfLoopSlotCount}u], selfCount);
+  workgroupBarrier();
+  if (localInvocationIndex == 0u) {
+    let workgroupLive = atomicLoad(&localLiveSlots);
+    let workgroupSelf = atomicLoad(&localSelfSlots);
+    if (workgroupLive > 0u) {
+      atomicAdd(&summary[summaryOffset + ${word.liveSlotCount}u], workgroupLive);
+    }
+    if (workgroupSelf > 0u) {
+      atomicAdd(&summary[summaryOffset + ${word.selfLoopSlotCount}u], workgroupSelf);
+    }
   }`
       })
     );
@@ -514,20 +553,13 @@ export class GPUNetworkStatistics implements GPUCommandNodeProducer {
             view: componentSize,
             type: 'atomic<u32>',
             access: 'read_write'
-          },
-          {
-            name: 'summary',
-            view: output,
-            type: 'atomic<u32>',
-            access: 'read_write'
           }
         ],
         invocationCount: nodeCount,
         body: `if (!(${isLive('index')})) {
     return;
   }
-  atomicAdd(&componentSize[componentSizeOffset + labels[labelsOffset + index]], 1u);
-  atomicAdd(&summary[summaryOffset + ${word.liveVertexCount}u], 1u);`
+  atomicAdd(&componentSize[componentSizeOffset + labels[labelsOffset + index]], 1u);`
       })
     );
 
@@ -594,6 +626,21 @@ export class GPUNetworkStatistics implements GPUCommandNodeProducer {
       type: 'atomic<u32>',
       access: 'read_write'
     });
+    const privatizeDegrees = 3 * degreeBinCount <= MAXIMUM_PRIVATE_HISTOGRAM_WORDS;
+    const degreeDeclarations = `const NODE_COUNT: u32 = ${nodeCount}u;
+const BIN_COUNT: u32 = ${degreeBinCount}u;
+const HISTOGRAM_BASE: u32 = ${GPU_NETWORK_STATISTICS_HEADER_LENGTH}u;
+${binSource}`;
+    // Per-community degree sums stay global: they spread over one address per label.
+    const communityStatements = hasCommunities
+      ? `let label = communities[communitiesOffset + index];
+  if (label >= NODE_COUNT) {
+    atomicAdd(&summary[summaryOffset + ${word.modularityValid}u], 1u);
+  } else {
+    atomicAdd(&outSum[outSumOffset + label], outValue);
+    ${inSum ? 'atomicAdd(&inSum[inSumOffset + label], inValue);' : ''}
+  }`
+      : '';
     nodes.push(
       createWGSLKernelNode<Parameters>(graph, {
         id: `${id}-degrees`,
@@ -601,16 +648,77 @@ export class GPUNetworkStatistics implements GPUCommandNodeProducer {
         variant: 'degrees',
         bindings: degreeBindings,
         invocationCount: nodeCount,
-        declarations: `const NODE_COUNT: u32 = ${nodeCount}u;
-const BIN_COUNT: u32 = ${degreeBinCount}u;
-const HISTOGRAM_BASE: u32 = ${GPU_NETWORK_STATISTICS_HEADER_LENGTH}u;
-${binSource}`,
-        body: `if (!(${isLive('index')})) {
+        // Privatized: each workgroup folds its vertices into workgroup-memory histograms, maxima
+        // and counters, then flushes once, so the ~10 summary words take one global atomic per
+        // bin per workgroup instead of up to ten per vertex on the same addresses. It needs
+        // 3 * binCount + 5 words of workgroup memory, so wide histograms keep the global path.
+        ...(privatizeDegrees
+          ? {
+              workgroupSize: WORKGROUP_SIZE,
+              guardIndex: false,
+              declarations: `${degreeDeclarations}
+var<workgroup> localHistogram: array<atomic<u32>, ${3 * degreeBinCount}>;
+var<workgroup> localMaxima: array<atomic<u32>, 3>;
+var<workgroup> localCounts: array<atomic<u32>, 2>;`,
+              body: `for (var bin = localInvocationIndex; bin < ${3 * degreeBinCount}u; bin += ${WORKGROUP_SIZE}u) {
+    atomicStore(&localHistogram[bin], 0u);
+  }
+  if (localInvocationIndex < 3u) {
+    atomicStore(&localMaxima[localInvocationIndex], 0u);
+  }
+  if (localInvocationIndex < 2u) {
+    atomicStore(&localCounts[localInvocationIndex], 0u);
+  }
+  workgroupBarrier();
+  if (index < NODE_COUNT && ${isLive('index')}) {
+    let outValue = outDegree[outDegreeOffset + index];
+    let inValue = ${inDegree ? 'inDegree[inDegreeOffset + index]' : 'outValue'};
+    let totalValue = ${directed ? 'outValue + inValue' : 'outValue'};
+    atomicAdd(&localCounts[1], 1u);
+    if (totalValue == 0u) {
+      atomicAdd(&localCounts[0], 1u);
+    }
+    atomicMax(&localMaxima[0], outValue);
+    atomicMax(&localMaxima[1], inValue);
+    atomicMax(&localMaxima[2], totalValue);
+    atomicAdd(&localHistogram[getBin(outValue)], 1u);
+    atomicAdd(&localHistogram[BIN_COUNT + getBin(inValue)], 1u);
+    atomicAdd(&localHistogram[2u * BIN_COUNT + getBin(totalValue)], 1u);
+    ${communityStatements}
+  }
+  workgroupBarrier();
+  for (var bin = localInvocationIndex; bin < ${3 * degreeBinCount}u; bin += ${WORKGROUP_SIZE}u) {
+    let binCount = atomicLoad(&localHistogram[bin]);
+    if (binCount > 0u) {
+      atomicAdd(&summary[summaryOffset + HISTOGRAM_BASE + bin], binCount);
+    }
+  }
+  if (localInvocationIndex < 3u) {
+    let workgroupMaximum = atomicLoad(&localMaxima[localInvocationIndex]);
+    if (workgroupMaximum > 0u) {
+      atomicMax(&summary[summaryOffset + ${word.maxOutDegree}u + localInvocationIndex], workgroupMaximum);
+    }
+  }
+  if (localInvocationIndex == 3u) {
+    let workgroupIsolated = atomicLoad(&localCounts[0]);
+    if (workgroupIsolated > 0u) {
+      atomicAdd(&summary[summaryOffset + ${word.isolatedVertexCount}u], workgroupIsolated);
+    }
+    let workgroupLive = atomicLoad(&localCounts[1]);
+    if (workgroupLive > 0u) {
+      atomicAdd(&summary[summaryOffset + ${word.liveVertexCount}u], workgroupLive);
+    }
+  }`
+            }
+          : {
+              declarations: degreeDeclarations,
+              body: `if (!(${isLive('index')})) {
     return;
   }
   let outValue = outDegree[outDegreeOffset + index];
   let inValue = ${inDegree ? 'inDegree[inDegreeOffset + index]' : 'outValue'};
   let totalValue = ${directed ? 'outValue + inValue' : 'outValue'};
+  atomicAdd(&summary[summaryOffset + ${word.liveVertexCount}u], 1u);
   if (totalValue == 0u) {
     atomicAdd(&summary[summaryOffset + ${word.isolatedVertexCount}u], 1u);
   }
@@ -620,17 +728,8 @@ ${binSource}`,
   atomicAdd(&summary[summaryOffset + HISTOGRAM_BASE + getBin(outValue)], 1u);
   atomicAdd(&summary[summaryOffset + HISTOGRAM_BASE + BIN_COUNT + getBin(inValue)], 1u);
   atomicAdd(&summary[summaryOffset + HISTOGRAM_BASE + 2u * BIN_COUNT + getBin(totalValue)], 1u);
-  ${
-    hasCommunities
-      ? `let label = communities[communitiesOffset + index];
-  if (label >= NODE_COUNT) {
-    atomicAdd(&summary[summaryOffset + ${word.modularityValid}u], 1u);
-  } else {
-    atomicAdd(&outSum[outSumOffset + label], outValue);
-    ${inSum ? 'atomicAdd(&inSum[inSumOffset + label], inValue);' : ''}
-  }`
-      : ''
-  }`
+  ${communityStatements}`
+            })
       })
     );
 
@@ -737,7 +836,8 @@ var<workgroup> sharedCount: array<u32, ${WORKGROUP_SIZE}>;
 var<workgroup> sharedLargest: array<u32, ${WORKGROUP_SIZE}>;
 var<workgroup> sharedSum: array<f32, ${WORKGROUP_SIZE}>;`,
         body: `let liveSlots = summary[summaryOffset + ${word.liveSlotCount}u];
-  let totalSlots = f32(liveSlots);
+  let selfLoops = summary[summaryOffset + ${word.selfLoopSlotCount}u];
+  let totalSlots = f32(liveSlots${countTwice ? ' + selfLoops' : ''});
   var componentCount = 0u;
   var largest = 0u;
   var termSum = 0.0;
@@ -763,9 +863,8 @@ var<workgroup> sharedSum: array<f32, ${WORKGROUP_SIZE}>;`,
     workgroupBarrier();
   }
   if (localInvocationIndex == 0u) {
-    let selfLoops = summary[summaryOffset + ${word.selfLoopSlotCount}u];
     let invalidLabels = summary[summaryOffset + ${word.modularityValid}u];
-    let intra = summary[summaryOffset + ${word.intraCommunitySlotCount}u];
+    let intra = summary[summaryOffset + ${word.intraCommunitySlotCount}u]${countTwice ? ' + selfLoops' : ''};
     summary[summaryOffset + ${word.componentCount}u] = sharedCount[0];
     summary[summaryOffset + ${word.largestComponentSize}u] = sharedLargest[0];
     summary[summaryOffset + ${word.componentsConverged}u] = select(0u, 1u, converged[convergedOffset] != 0u);

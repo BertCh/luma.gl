@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {Buffer} from '@luma.gl/core';
 import {
   createTransientView,
   validatePackedUint32View,
@@ -17,6 +18,8 @@ import {
   createEdgeBundlingBoxResetNode,
   createEdgeBundlingClearNode,
   createEdgeBundlingFinalizeNode,
+  createEdgeBundlingGateNode,
+  EDGE_BUNDLING_GATE_WORDS_PER_ITERATION,
   createEdgeBundlingIndicesNode,
   createEdgeBundlingInitializeNode,
   createEdgeBundlingSplatNode,
@@ -145,6 +148,14 @@ export type GPUEdgeBundlingProps = {
    * so a fixed draw layout keeps working.
    */
   edgeMask?: GraphDataView<'uint32'>;
+  /**
+   * Compile-time. When true, `positions` are `[longitude, latitude]` degrees and the work box
+   * scales longitude by the cosine of the mid-latitude of the live endpoints (computed on the GPU
+   * every encoding, clamped to at least 0.01), so kernel radius, advection and density are
+   * isotropic on the ground rather than stretched east-west. Output stays in degrees with exact
+   * endpoints. Default false (planar coordinates).
+   */
+  geographic?: boolean;
   /** Compile-time control points per edge, 2 to 64. Defaults to 16. */
   pointsPerEdge?: number;
   /** Compile-time maximum iteration count, 1 to 64. Defaults to 15. */
@@ -184,13 +195,15 @@ export type GPUEdgeBundlingProps = {
  * radius anneals as `radius0 * lambda^k`. Endpoints are pinned.
  *
  * All lengths are relative to a square work box computed on the GPU every encoding from live-edge
- * endpoints (bounding square, side padded by 5% per side), so results are scale invariant. The
+ * endpoints (bounding square, side padded by 5% per side), so results are scale invariant. With
+ * `geographic`, longitude is first scaled by the cosine of the mid-latitude. The
  * density is a storage buffer, so there is no float-renderable texture requirement or texture
  * size cap. Weights are quantized to `2^k` units, with `k` from
  * {@link getGPUEdgeBundlingFixedPointExponent}, which cannot overflow.
  *
  * Per iteration: clear, splat, update (advect, resample, smooth in one invocation per edge).
- * Extra iteration nodes beyond `activeIterations` return immediately.
+ * With `parameters`, a GPU gate zeroes the indirect dispatch of every iteration beyond
+ * `activeIterations`, so unused iterations cost no GPU work (only their empty command slots).
  */
 export class GPUEdgeBundling implements GPUCommandNodeProducer {
   /** Prefix for every node and transient ID. */
@@ -306,8 +319,9 @@ export class GPUEdgeBundling implements GPUCommandNodeProducer {
   }
 
   /**
-   * Returns box reset and accumulate, initialize, three nodes per iteration, finalize, and an
-   * optional indices node: `7 + 3 * iterations` nodes at most.
+   * Returns box reset and accumulate, initialize, an iteration gate (only with `parameters`),
+   * three nodes per iteration, finalize, and an optional indices node: `6 + 3 * iterations` nodes
+   * at most. With `parameters`, iterations beyond `activeIterations` dispatch no work.
    */
   getCommandNodes<Parameters>(
     graph: GPUCommandGraph<Parameters>
@@ -334,7 +348,8 @@ export class GPUEdgeBundling implements GPUCommandNodeProducer {
       densityResolution,
       fixedPointExponent: this.fixedPointExponent,
       iterationCount: iterations,
-      boxPadding: GPU_EDGE_BUNDLING_WORK_BOX_PADDING
+      boxPadding: GPU_EDGE_BUNDLING_WORK_BOX_PADDING,
+      geographic: Boolean(props.geographic)
     };
     const inputs = {
       positions: props.positions,
@@ -350,6 +365,17 @@ export class GPUEdgeBundling implements GPUCommandNodeProducer {
       densityResolution * densityResolution
     );
     const work = createTransientView(graph, `${id}-work`, 'float32x2', edgeCount * pointsPerEdge);
+    // With per-frame parameters, one gate node writes every iteration's indirect dispatch so
+    // iterations beyond `activeIterations` dispatch nothing. Without them all iterations run.
+    const gate = props.parameters
+      ? createTransientView(
+          graph,
+          `${id}-gate`,
+          'uint32',
+          iterations * EDGE_BUNDLING_GATE_WORDS_PER_ITERATION,
+          Buffer.STORAGE | Buffer.INDIRECT
+        )
+      : undefined;
     const nodes: GPUCommandNode<Parameters>[] = [
       createEdgeBundlingBoxResetNode<Parameters>(graph, {
         id: `${id}-box-reset`,
@@ -369,18 +395,30 @@ export class GPUEdgeBundling implements GPUCommandNodeProducer {
         work
       })
     ];
+    if (gate && props.parameters) {
+      nodes.push(
+        createEdgeBundlingGateNode<Parameters>(graph, {
+          id: `${id}-gate`,
+          constants,
+          parameters: props.parameters,
+          gate
+        })
+      );
+    }
     for (let iteration = 0; iteration < iterations; iteration++) {
       const iterationProps = {
         constants,
         iteration,
         parameters: props.parameters,
         work,
-        density
+        density,
+        gate: gate && {view: gate, iteration}
       };
       nodes.push(
         createEdgeBundlingClearNode<Parameters>(graph, {
           id: `${id}-clear-${iteration}`,
-          density
+          density,
+          gate: iterationProps.gate
         }),
         createEdgeBundlingSplatNode<Parameters>(graph, {
           id: `${id}-splat-${iteration}`,

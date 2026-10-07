@@ -587,3 +587,31 @@ it('GPUNetworkSubgraphFilter pairs undirected slots whose per-slot values differ
     fixture.destroy();
   }
 });
+
+it('GPUNetworkSubgraphFilter pairs and compacts a star with a hub row and parallel edges', async () => {
+  const device = await getWebGPUTestDevice();
+  if (!device) return;
+  // One hub row of 2000 slots with a few parallel edges, a size where the hub must not be
+  // serialised on one invocation and a binary row search must cross many empty rows.
+  const leafCount = 2000;
+  const nodeCount = leafCount + 4;
+  const edges: NetworkEdge[] = [];
+  for (let leaf = 1; leaf <= leafCount; leaf++) edges.push([0, leaf, 1]);
+  for (const leaf of [3, 3, 17, 1999]) edges.push([0, leaf, 1]);
+  edges.push([leafCount + 1, leafCount + 1, 1]);
+  const fixture = new Fixture(device, {
+    nodeCount,
+    edges: createSymmetricEdges(edges),
+    vertexColumnCount: 1,
+    edgeColumnCount: 1,
+    symmetric: true,
+    dropIsolated: true
+  });
+  fixture.setState({vertexRanges: [[0, 70]], edgeRanges: [[20, 80]]});
+  const actual = await fixture.run();
+  const expected = fixture.oracle();
+  expectMatches(actual, expected);
+  expect(expected.counts[1]).toBeGreaterThan(0);
+  expect(expected.counts[1]).toBeLessThan(2 * edges.length);
+  fixture.destroy();
+});

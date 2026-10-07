@@ -13,3 +13,4 @@ import './gpu-point-in-polygon-exact-probe.spec';
 import './gpu-spatial-relate-scale.spec';
 import './gpu-spatial-small-shared-boundary.spec';
 import './gpu-nearest-feature-weights.spec';
+import './spatial-join-options.spec';

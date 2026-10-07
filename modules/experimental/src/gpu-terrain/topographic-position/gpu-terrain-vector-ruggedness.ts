@@ -36,6 +36,9 @@ import {
   validateTerrainRowDirection
 } from '../terrain-grid-utils';
 
+/** Window radius from which the window sum runs as two separable passes instead of one square loop. */
+const SEPARABLE_RADIUS = 3;
+
 /** Number of float32 values read from `GPUTerrainVectorRuggednessProps.settings`. */
 export const GPU_TERRAIN_VECTOR_RUGGEDNESS_PARAMETER_LENGTH = 8;
 
@@ -113,8 +116,9 @@ export type GPUTerrainVectorRuggednessProps = {
  *
  * A first kernel derives a unit surface normal per cell with Horn's 3x3 method; a second sums the
  * normals of the `(2 * radius + 1)` square window (clipped to the raster and to cells with a valid
- * normal) and returns `1 - |sum| / count`, clamped to `[0, 1]`. The window sum is a direct loop,
- * so cost grows as O(radius^2) per pixel; it is intended for radii up to about 8. An invalid
+ * normal) and returns `1 - |sum| / count`, clamped to `[0, 1]`. Radii below 3 sum the square window
+ * directly; from radius 3 the clipped box sum runs as a row pass and a column pass (two kernels
+ * instead of one), so cost is O(radius) per pixel instead of O(radius^2). An invalid
  * centre normal gives NaN and validity 0. Satisfies the `GPURasterHaloStage` contract with
  * `requiredHalo = radius + 1`.
  */
@@ -267,24 +271,34 @@ ${getTerrainGroundCellSizeWGSL(props.cellSizeMode ?? 'uniform', TERRAIN_GEOMORPH
         access: 'read_write'
       });
     }
-    const windowNode = createWGSLKernelNode<Parameters>(graph, {
-      id: `${id}-window`,
-      operation: 'GPUTerrainVectorRuggedness',
-      variant: `window-radius-${radius}`,
-      bindings,
-      invocationCount: pixelCount,
-      declarations: `const WIDTH: i32 = ${width};
-const HEIGHT: i32 = ${height};
-const RADIUS: i32 = ${radius};
-${TERRAIN_WGSL_HELPERS}`,
-      body: `let row = i32(index) / WIDTH;
-  let column = i32(index) % WIDTH;
-  let invalidValue = bitcast<f32>(0x7fc00000u | (index & 0u));
+    const finishBody = (
+      sumExpression: string
+    ) => `let invalidValue = bitcast<f32>(0x7fc00000u | (index & 0u));
   let isValid = isFiniteValue(normalX[normalXOffset + index]);
   var vectorSum = vec3<f32>(0.0);
   var count = 0.0;
   if (isValid) {
-    for (var sampleRow = max(row - RADIUS, 0); sampleRow <= min(row + RADIUS, HEIGHT - 1); sampleRow++) {
+    ${sumExpression}
+  }
+  // count >= 1 whenever the centre normal is valid.
+  let ruggedness = clamp(1.0 - length(vectorSum) / max(count, 1.0), 0.0, 1.0);
+  ${props.vectorRuggedness ? 'vrmValues[vrmValuesOffset + index] = select(invalidValue, ruggedness, isValid);' : ''}
+  ${props.validity ? 'validityValues[validityValuesOffset + index] = select(0u, 1u, isValid);' : ''}`;
+    if (radius < SEPARABLE_RADIUS) {
+      // Small windows: summing the (2r + 1)^2 normals directly is cheaper than two extra passes.
+      const windowNode = createWGSLKernelNode<Parameters>(graph, {
+        id: `${id}-window`,
+        operation: 'GPUTerrainVectorRuggedness',
+        variant: `window-radius-${radius}`,
+        bindings,
+        invocationCount: pixelCount,
+        declarations: `const WIDTH: i32 = ${width};
+const HEIGHT: i32 = ${height};
+const RADIUS: i32 = ${radius};
+${TERRAIN_WGSL_HELPERS}`,
+        body: `let row = i32(index) / WIDTH;
+  let column = i32(index) % WIDTH;
+  ${finishBody(`for (var sampleRow = max(row - RADIUS, 0); sampleRow <= min(row + RADIUS, HEIGHT - 1); sampleRow++) {
       for (var sampleColumn = max(column - RADIUS, 0); sampleColumn <= min(column + RADIUS, WIDTH - 1); sampleColumn++) {
         let sampleIndex = u32(sampleRow * WIDTH + sampleColumn);
         let normalXValue = normalX[normalXOffset + sampleIndex];
@@ -293,13 +307,76 @@ ${TERRAIN_WGSL_HELPERS}`,
           count += 1.0;
         }
       }
+    }`)}`
+      });
+      return [...source.nodes, normalNode, windowNode];
+    }
+    // Large windows: the clipped box sum of valid unit normals is separable, so a row pass followed
+    // by a column pass costs O(r) per pixel instead of O(r^2). Normals have magnitude 1, so plain
+    // float32 sums stay well conditioned (unlike elevation, no large offset cancels).
+    const rowSums = (['x', 'y', 'z'] as const).map(component =>
+      createTransientView(graph, `${id}-row-sum-${component}`, 'float32', pixelCount)
+    );
+    const rowCounts = createTransientView(graph, `${id}-row-count`, 'uint32', pixelCount);
+    const rowNode = createWGSLKernelNode<Parameters>(graph, {
+      id: `${id}-window-rows`,
+      operation: 'GPUTerrainVectorRuggedness',
+      variant: `window-rows-radius-${radius}`,
+      bindings: [
+        {name: 'normalX', view: normals[0], type: 'f32', access: 'read'},
+        {name: 'normalY', view: normals[1], type: 'f32', access: 'read'},
+        {name: 'normalZ', view: normals[2], type: 'f32', access: 'read'},
+        {name: 'rowSumX', view: rowSums[0], type: 'f32', access: 'read_write'},
+        {name: 'rowSumY', view: rowSums[1], type: 'f32', access: 'read_write'},
+        {name: 'rowSumZ', view: rowSums[2], type: 'f32', access: 'read_write'},
+        {name: 'rowCounts', view: rowCounts, type: 'u32', access: 'read_write'}
+      ],
+      invocationCount: pixelCount,
+      declarations: `const WIDTH: i32 = ${width};
+const RADIUS: i32 = ${radius};
+${TERRAIN_WGSL_HELPERS}`,
+      body: `let column = i32(index) % WIDTH;
+  let rowStart = i32(index) - column;
+  var sum = vec3<f32>(0.0);
+  var count = 0u;
+  for (var sampleColumn = max(column - RADIUS, 0); sampleColumn <= min(column + RADIUS, WIDTH - 1); sampleColumn++) {
+    let sampleIndex = u32(rowStart + sampleColumn);
+    let normalXValue = normalX[normalXOffset + sampleIndex];
+    if (isFiniteValue(normalXValue)) {
+      sum += vec3<f32>(normalXValue, normalY[normalYOffset + sampleIndex], normalZ[normalZOffset + sampleIndex]);
+      count += 1u;
     }
   }
-  // count >= 1 whenever the centre normal is valid.
-  let ruggedness = clamp(1.0 - length(vectorSum) / max(count, 1.0), 0.0, 1.0);
-  ${props.vectorRuggedness ? 'vrmValues[vrmValuesOffset + index] = select(invalidValue, ruggedness, isValid);' : ''}
-  ${props.validity ? 'validityValues[validityValuesOffset + index] = select(0u, 1u, isValid);' : ''}`
+  rowSumX[rowSumXOffset + index] = sum.x;
+  rowSumY[rowSumYOffset + index] = sum.y;
+  rowSumZ[rowSumZOffset + index] = sum.z;
+  rowCounts[rowCountsOffset + index] = count;`
     });
-    return [...source.nodes, normalNode, windowNode];
+    const columnNode = createWGSLKernelNode<Parameters>(graph, {
+      id: `${id}-window`,
+      operation: 'GPUTerrainVectorRuggedness',
+      variant: `window-columns-radius-${radius}`,
+      bindings: [
+        {name: 'normalX', view: normals[0], type: 'f32', access: 'read'},
+        {name: 'rowSumX', view: rowSums[0], type: 'f32', access: 'read'},
+        {name: 'rowSumY', view: rowSums[1], type: 'f32', access: 'read'},
+        {name: 'rowSumZ', view: rowSums[2], type: 'f32', access: 'read'},
+        {name: 'rowCounts', view: rowCounts, type: 'u32', access: 'read'},
+        ...bindings.slice(3)
+      ],
+      invocationCount: pixelCount,
+      declarations: `const WIDTH: i32 = ${width};
+const HEIGHT: i32 = ${height};
+const RADIUS: i32 = ${radius};
+${TERRAIN_WGSL_HELPERS}`,
+      body: `let row = i32(index) / WIDTH;
+  let column = i32(index) % WIDTH;
+  ${finishBody(`for (var sampleRow = max(row - RADIUS, 0); sampleRow <= min(row + RADIUS, HEIGHT - 1); sampleRow++) {
+      let sampleIndex = u32(sampleRow * WIDTH + column);
+      vectorSum += vec3<f32>(rowSumX[rowSumXOffset + sampleIndex], rowSumY[rowSumYOffset + sampleIndex], rowSumZ[rowSumZOffset + sampleIndex]);
+      count += f32(rowCounts[rowCountsOffset + sampleIndex]);
+    }`)}`
+    });
+    return [...source.nodes, normalNode, rowNode, columnNode];
   }
 }

@@ -309,12 +309,15 @@ ${hasPaths ? FIND_PATH_WGSL : ''}`,
   let base = index * VERTICES_PER_INPUT;
   let center = getPosition(index);
   // Round join and cap disc: JOIN_SEGMENTS counter-clockwise triangles around the vertex.
+  // Each rim point is shared by two triangles, so it is computed once (one sin/cos per segment).
+  var rimA = offsetPoint(center, vec2<f32>(1.0, 0.0), distance);
   for (var k = 0u; k < JOIN_SEGMENTS; k++) {
-    let angleA = TAU * f32(k) / f32(JOIN_SEGMENTS);
     let angleB = TAU * f32(k + 1u) / f32(JOIN_SEGMENTS);
+    let rimB = offsetPoint(center, vec2<f32>(cos(angleB), sin(angleB)), distance);
     writeVertex(3u * k, base, center);
-    writeVertex(3u * k + 1u, base, offsetPoint(center, vec2<f32>(cos(angleA), sin(angleA)), distance));
-    writeVertex(3u * k + 2u, base, offsetPoint(center, vec2<f32>(cos(angleB), sin(angleB)), distance));
+    writeVertex(3u * k + 1u, base, rimA);
+    writeVertex(3u * k + 2u, base, rimB);
+    rimA = rimB;
   }
   // Rectangle toward the next vertex, or a degenerate pair of triangles.
   var nextRow = ROW_COUNT;
@@ -345,7 +348,7 @@ ${hasPaths ? FIND_PATH_WGSL : ''}`,
  *
  * @internal
  */
-const FIND_PATH_WGSL = /* wgsl */ `
+export const FIND_PATH_WGSL = /* wgsl */ `
 const NO_PATH: u32 = 0xffffffffu;
 
 fn findPath(row: u32) -> u32 {

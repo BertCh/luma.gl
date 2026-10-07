@@ -43,6 +43,7 @@ const ROWS: i32 = ${constants.rows};
 const CAPACITY: u32 = ${constants.capacity}u;
 const RADIUS: f32 = ${getWGSLFloatLiteral(constants.radius)};
 const INFINITE: f32 = 3.0e38;
+const EMITS_PIECES: bool = ${emit};
 ${spherical ? GEODESIC_WGSL : ''}
 ${FIND_PATH_WGSL}
 
@@ -109,6 +110,10 @@ fn walkSegment(row: u32, slot: u32) -> u32 {
   var stepsX = u32(abs(endX - cx));
   var stepsY = u32(abs(endY - cy));
   let pieceCount = stepsX + stepsY + 1u;
+  // The counting pass only needs the piece count; walking the cells would be wasted work.
+  if (!EMITS_PIECES) {
+    return pieceCount;
+  }
   let stepX = select(-1, 1, delta.x > 0.0);
   let stepY = select(-1, 1, delta.y > 0.0);
   var tMaxX = INFINITE;
@@ -207,34 +212,6 @@ export function createWalkEmitNode<Parameters>(
     invocationCount: props.constants.positions.length,
     declarations: getWalkSegmentSource(props.constants, true),
     body: 'walkSegment(index, starts[startsOffset + index]);'
-  });
-}
-
-/** Counts records per cell with integer atomics (order independent). @internal */
-export function createCellCountNode<Parameters>(
-  graph: GPUCommandGraph<Parameters>,
-  props: {
-    id: string;
-    operation: string;
-    cellCount: number;
-    keys: GraphDataView<'uint32'>;
-    cellCounts: GraphDataView<'uint32'>;
-  }
-): GPUCommandNode<Parameters> {
-  return createWGSLKernelNode<Parameters>(graph, {
-    id: props.id,
-    operation: props.operation,
-    variant: 'cell-counts',
-    bindings: [
-      {name: 'keys', view: props.keys, type: 'u32', access: 'read'},
-      {name: 'cellCounts', view: props.cellCounts, type: 'atomic<u32>', access: 'read_write'}
-    ],
-    invocationCount: props.keys.length,
-    declarations: `const CELL_COUNT: u32 = ${props.cellCount}u;`,
-    body: `let key = keys[keysOffset + index];
-  if (key < CELL_COUNT) {
-    atomicAdd(&cellCounts[cellCountsOffset + key], 1u);
-  }`
   });
 }
 

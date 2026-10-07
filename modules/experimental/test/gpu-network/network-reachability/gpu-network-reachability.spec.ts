@@ -45,6 +45,7 @@ type ReachabilityOptions = {
   maxTieIterations?: number;
   activeIterations?: number;
   costLimit?: number;
+  withUnresolvedCount?: boolean;
   id?: string;
 };
 
@@ -65,6 +66,7 @@ type ReachabilityFixture = {
   bandsBuffer?: Buffer;
   bandCountsBuffer?: Buffer;
   convergedBuffer: Buffer;
+  unresolvedCountBuffer?: Buffer;
   iterationCountBuffer: Buffer;
   props: GPUNetworkReachabilityProps;
 };
@@ -90,6 +92,9 @@ function createReachabilityFixture(
   const predecessorsBuffer = createOutputBuffer(device, nodeCount);
   const convergedBuffer = createOutputBuffer(device, 1);
   const iterationCountBuffer = createOutputBuffer(device, 1);
+  const unresolvedCountBuffer = options.withUnresolvedCount
+    ? createOutputBuffer(device, 1)
+    : undefined;
   const parameters: GPUParameterBuffer[] = [];
   const createParameter = <Format extends 'uint32' | 'float32'>(
     name: string,
@@ -170,6 +175,9 @@ function createReachabilityFixture(
         )
       : undefined,
     converged: importGraphBuffer(graph, `${prefix}-converged`, convergedBuffer, 'uint32', 1),
+    unresolvedCount:
+      unresolvedCountBuffer &&
+      importGraphBuffer(graph, `${prefix}-unresolved`, unresolvedCountBuffer, 'uint32', 1),
     iterationCount: importGraphBuffer(
       graph,
       `${prefix}-iterations`,
@@ -189,6 +197,7 @@ function createReachabilityFixture(
       predecessorsBuffer,
       convergedBuffer,
       iterationCountBuffer,
+      ...(unresolvedCountBuffer ? [unresolvedCountBuffer] : []),
       ...(bandsBuffer ? [bandsBuffer] : []),
       ...(bandCountsBuffer ? [bandCountsBuffer] : [])
     ],
@@ -205,6 +214,7 @@ function createReachabilityFixture(
     bandsBuffer,
     bandCountsBuffer,
     convergedBuffer,
+    unresolvedCountBuffer,
     iterationCountBuffer,
     props
   };
@@ -1191,6 +1201,43 @@ it('GPUNetworkReachability reports a truncated tie phase with only deeper platea
   ]);
   // More rounds finish the plateau and set the flag.
   await expectTieParity(device, testCase, 1, 21);
+});
+
+it('GPUNetworkReachability counts reached nodes a truncated tie phase left without predecessors', async () => {
+  const device = await getWebGPUTestDevice();
+  if (!device) {
+    return;
+  }
+  const edges = Array.from({length: 20}, (_, node) => [node, node + 1, 0] as NetworkEdge);
+  const csr = buildCSR(21, edges);
+  // A zero-weight chain of 21 nodes from source 0; nodes beyond the tie rounds stay unresolved.
+  for (const [maxTieIterations, expected] of [
+    [5, 15],
+    [10, 10],
+    [21, 0]
+  ] as const) {
+    const fixture = createReachabilityFixture(device, csr, 21, {
+      sources: [0],
+      maxIterations: 24,
+      localIterations: 1,
+      maxTieIterations,
+      withUnresolvedCount: true
+    });
+    fixture.graph.add(new GPUNetworkReachability(fixture.props));
+    const compiled = fixture.graph.compile();
+    // Encode twice: the count is rewritten, not accumulated.
+    submitGraph(device, compiled, undefined);
+    submitGraph(device, compiled, undefined);
+    expect(
+      await readUint32(fixture.unresolvedCountBuffer!, 1),
+      `rounds ${maxTieIterations}`
+    ).toEqual([expected]);
+    const predecessors = await readUint32(fixture.predecessorsBuffer, 21);
+    expect(predecessors.filter((value, node) => node > 0 && value === NONE).length).toBe(expected);
+    expect(await readUint32(fixture.convergedBuffer, 1)).toEqual([expected === 0 ? 1 : 0]);
+    compiled.destroy();
+    destroyFixture(fixture);
+  }
 });
 
 it('GPUNetworkReachability recomputes ties when weights change without recompiling', async () => {

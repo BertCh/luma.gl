@@ -128,8 +128,10 @@ export type GPUCellSetOutlineRings = {
  *
  * One thread per cell decodes the cell boundary, finds the neighbor across each edge, looks it up
  * in the sorted cell set with a binary search and keeps the edges whose neighbor is absent (or
- * belongs to another group). Kept edges are compacted by an inclusive scan, so the output has no
- * atomics and is ordered by (row, edge index).
+ * belongs to another group). Each cell records its kept edges as a bitmask, an inclusive scan over
+ * the per-cell kept counts gives every cell its output offset, and the cell's thread writes its own
+ * edges, so the output has no atomics and is ordered by (row, edge index). The scan covers one entry
+ * per cell, not one per candidate edge slot.
  *
  * The neighbor across an H3 edge is the neighbor (H3 neighbor stepping, exact across faces and
  * pentagons) whose center is nearest the edge midpoint (longitude differences wrapped and scaled
@@ -246,8 +248,11 @@ export class GPUCellSetOutline implements GPUCommandNodeProducer {
     const rows = props.cells.length;
     const slotCount = rows * edgeSlots;
     const capacity = output.rows.length;
-    const flags = createTransientView(graph, `${id}-flags`, 'uint32', slotCount);
-    const accepted = createTransientView(graph, `${id}-accepted`, 'uint32', slotCount);
+    // One bitmask (bit `e` = edge `e` kept) and one kept-edge count per row, so the compaction scan
+    // runs over `rows` entries instead of `rows * edgeSlots` (10x fewer for H3, 4x for Quadbin).
+    const masks = createTransientView(graph, `${id}-masks`, 'uint32', rows);
+    const flags = createTransientView(graph, `${id}-flags`, 'uint32', rows);
+    const accepted = createTransientView(graph, `${id}-accepted`, 'uint32', rows);
     const candidateEndpoints = createTransientView(
       graph,
       `${id}-candidate-endpoints`,
@@ -266,6 +271,7 @@ export class GPUCellSetOutline implements GPUCommandNodeProducer {
       classifyBindings.push({name: 'groups', view: props.groups, type: 'u32', access: 'read'});
     }
     classifyBindings.push(
+      {name: 'masks', view: masks, type: 'u32', access: 'read_write'},
       {name: 'flags', view: flags, type: 'u32', access: 'read_write'},
       {name: 'candidateEndpoints', view: candidateEndpoints, type: 'f32', access: 'read_write'}
     );
@@ -293,16 +299,16 @@ ${CLASSIFY_COMMON_WGSL.replace(
 )}
 ${isH3 ? H3_CLASSIFY_WGSL : QUADBIN_CLASSIFY_WGSL}`,
       body: `let validRows = ${props.count ? 'min(rowCount[rowCountOffset], ROWS)' : 'ROWS'};
-  for (var slot = 0u; slot < EDGE_SLOTS; slot++) {
-    flags[flagsOffset + index * EDGE_SLOTS + slot] = 0u;
-  }
+  masks[masksOffset + index] = 0u;
   if (index < validRows) {
     outlineClassifyRow(index, validRows);
-  }`
+  }
+  flags[flagsOffset + index] = countOneBits(masks[masksOffset + index]);`
     });
 
     const writeBindings: WGSLKernelBinding[] = [
       {name: 'accepted', view: accepted, type: 'u32', access: 'read'},
+      {name: 'masks', view: masks, type: 'u32', access: 'read'},
       {name: 'candidateEndpoints', view: candidateEndpoints, type: 'f32', access: 'read'},
       {name: 'cells', view: props.cells, type: 'u32', access: 'read'},
       {name: 'outRows', view: output.rows, type: 'u32', access: 'read_write'},
@@ -315,23 +321,28 @@ ${isH3 ? H3_CLASSIFY_WGSL : QUADBIN_CLASSIFY_WGSL}`,
       operation: OPERATION,
       variant: 'write',
       bindings: writeBindings,
-      invocationCount: slotCount,
+      invocationCount: rows,
       declarations: `const EDGE_SLOTS: u32 = ${edgeSlots}u;
 const OUTPUT_CAPACITY: u32 = ${capacity}u;`,
-      body: `var beforeCount = 0u;
-  if (index > 0u) { beforeCount = accepted[acceptedOffset + index - 1u]; }
-  let afterCount = accepted[acceptedOffset + index];
-  if (afterCount == beforeCount) { return; }
-  let outputSlot = afterCount - 1u;
-  if (outputSlot >= OUTPUT_CAPACITY) { return; }
-  let row = index / EDGE_SLOTS;
-  outRows[outRowsOffset + outputSlot] = row;
-  outEdges[outEdgesOffset + outputSlot] = index % EDGE_SLOTS;
-  outCells[outCellsOffset + 2u * outputSlot] = cells[cellsOffset + 2u * row];
-  outCells[outCellsOffset + 2u * outputSlot + 1u] = cells[cellsOffset + 2u * row + 1u];
-  for (var component = 0u; component < 4u; component++) {
-    outEndpoints[outEndpointsOffset + 4u * outputSlot + component] =
-      candidateEndpoints[candidateEndpointsOffset + 4u * index + component];
+      // One thread per row writes its kept edges at consecutive slots, in edge order.
+      body: `let mask = masks[masksOffset + index];
+  if (mask == 0u) { return; }
+  var outputSlot = 0u;
+  if (index > 0u) { outputSlot = accepted[acceptedOffset + index - 1u]; }
+  for (var edge = 0u; edge < EDGE_SLOTS; edge++) {
+    if ((mask & (1u << edge)) == 0u) { continue; }
+    if (outputSlot < OUTPUT_CAPACITY) {
+      let candidate = index * EDGE_SLOTS + edge;
+      outRows[outRowsOffset + outputSlot] = index;
+      outEdges[outEdgesOffset + outputSlot] = edge;
+      outCells[outCellsOffset + 2u * outputSlot] = cells[cellsOffset + 2u * index];
+      outCells[outCellsOffset + 2u * outputSlot + 1u] = cells[cellsOffset + 2u * index + 1u];
+      for (var component = 0u; component < 4u; component++) {
+        outEndpoints[outEndpointsOffset + 4u * outputSlot + component] =
+          candidateEndpoints[candidateEndpointsOffset + 4u * candidate + component];
+      }
+    }
+    outputSlot++;
   }`
     });
     // The group column is written by its own pass: with it the write kernel would bind nine
@@ -344,19 +355,22 @@ const OUTPUT_CAPACITY: u32 = ${capacity}u;`,
             variant: 'write-groups',
             bindings: [
               {name: 'accepted', view: accepted, type: 'u32', access: 'read'},
+              {name: 'masks', view: masks, type: 'u32', access: 'read'},
               {name: 'groups', view: props.groups, type: 'u32', access: 'read'},
               {name: 'outGroups', view: output.groups, type: 'u32', access: 'read_write'}
             ],
-            invocationCount: slotCount,
-            declarations: `const EDGE_SLOTS: u32 = ${edgeSlots}u;
-const OUTPUT_CAPACITY: u32 = ${capacity}u;`,
-            body: `var beforeCount = 0u;
-  if (index > 0u) { beforeCount = accepted[acceptedOffset + index - 1u]; }
-  let afterCount = accepted[acceptedOffset + index];
-  if (afterCount == beforeCount) { return; }
-  let outputSlot = afterCount - 1u;
-  if (outputSlot >= OUTPUT_CAPACITY) { return; }
-  outGroups[outGroupsOffset + outputSlot] = groups[groupsOffset + index / EDGE_SLOTS];`
+            invocationCount: rows,
+            declarations: `const OUTPUT_CAPACITY: u32 = ${capacity}u;`,
+            body: `let keptCount = countOneBits(masks[masksOffset + index]);
+  if (keptCount == 0u) { return; }
+  var outputSlot = 0u;
+  if (index > 0u) { outputSlot = accepted[acceptedOffset + index - 1u]; }
+  let group = groups[groupsOffset + index];
+  for (var kept = 0u; kept < keptCount; kept++) {
+    if (outputSlot + kept < OUTPUT_CAPACITY) {
+      outGroups[outGroupsOffset + outputSlot + kept] = group;
+    }
+  }`
           })
         : null;
 
@@ -369,8 +383,8 @@ const OUTPUT_CAPACITY: u32 = ${capacity}u;`,
         {name: 'total', view: total, type: 'u32', access: 'read_write'}
       ],
       invocationCount: 1,
-      declarations: `const SLOT_COUNT: u32 = ${slotCount}u;`,
-      body: 'total[totalOffset] = accepted[acceptedOffset + SLOT_COUNT - 1u];'
+      declarations: `const ROW_COUNT: u32 = ${rows}u;`,
+      body: 'total[totalOffset] = accepted[acceptedOffset + ROW_COUNT - 1u];'
     });
 
     const ringNodes = props.rings
@@ -425,7 +439,7 @@ function getOutputViews(output: GPUCellSetOutlineOutput) {
   ];
 }
 
-/** Shared helpers: sorted-set lookup and edge emission. Needs `cells`, `flags`, `candidateEndpoints`. */
+/** Shared helpers: sorted-set lookup and edge emission. Needs `cells`, `masks`, `candidateEndpoints`. */
 const CLASSIFY_COMMON_WGSL = /* wgsl */ `
 const OUTLINE_NO_ROW: u32 = 0xffffffffu;
 
@@ -469,7 +483,7 @@ fn outlineHasSameSideNeighbor(row: u32, neighbor: vec2u, validRows: u32) -> bool
 
 fn outlineEmit(row: u32, edge: u32, a: vec2f, b: vec2f) {
   let slot = row * EDGE_SLOTS + edge;
-  flags[flagsOffset + slot] = 1u;
+  masks[masksOffset + row] = masks[masksOffset + row] | (1u << edge);
   candidateEndpoints[candidateEndpointsOffset + 4u * slot] = a.x;
   candidateEndpoints[candidateEndpointsOffset + 4u * slot + 1u] = a.y;
   candidateEndpoints[candidateEndpointsOffset + 4u * slot + 2u] = b.x;

@@ -114,6 +114,34 @@ fn getPlayheadElapsed(row: u32) -> f32 {
 `;
 }
 
+/**
+ * WGSL common-clock helpers over the `clock` binding. `getClockOffset(firstRow)` is the clock start
+ * minus the track's first sample time (exact for words before the f32 round); `getClockStep()` is
+ * the f32 step between consecutive samples.
+ */
+function getClockSource(isWordMode: boolean): string {
+  return isWordMode
+    ? /* wgsl */ `
+fn getClockOffset(firstRow: u32) -> f32 {
+  let start = vec2<u32>(clockParameters[clockParametersOffset], clockParameters[clockParametersOffset + 1u]);
+  return timeWordsDifference(start, bitcast<f32>(clockParameters[clockParametersOffset + 2u]), getTimeWords(firstRow), 0.0);
+}
+
+fn getClockStep() -> f32 {
+  return bitcast<f32>(clockParameters[clockParametersOffset + 3u]);
+}
+`
+    : /* wgsl */ `
+fn getClockOffset(firstRow: u32) -> f32 {
+  return clockParameters[clockParametersOffset] - timestamps[timestampsOffset + firstRow];
+}
+
+fn getClockStep() -> f32 {
+  return clockParameters[clockParametersOffset + 1u];
+}
+`;
+}
+
 /** WGSL that clamps the row range of track `index` to `[0, ROW_COUNT]`. */
 const TRACK_RANGE_SOURCE = /* wgsl */ `
   let trackStart = min(trackOffsets[trackOffsetsOffset + track], ROW_COUNT);
@@ -459,6 +487,11 @@ export type TrajectoryResampleNodeProps = {
   samples: GraphDataView<'float32x2'>;
   sampleElevations?: GraphDataView<'float32'>;
   sampleTimes?: GraphDataView<'float32'>;
+  /**
+   * Per-frame common clock (`'clock'` spacing): float32 `[start, step, 0, 0]`, or uint32 words
+   * `[startLow, startHigh, startFraction, stepBits]` for word timestamps.
+   */
+  clock?: GraphDataView<'float32'> | GraphDataView<'uint32'>;
   rowCount: number;
   trackCount: number;
   sampleCount: number;
@@ -476,6 +509,7 @@ export function createTrajectoryResampleNode<Parameters>(
   props: TrajectoryResampleNodeProps
 ): GPUCommandNode<Parameters> {
   const isArcLength = Boolean(props.cumulativeLengths);
+  const isClock = Boolean(props.clock);
   const timestamps = props.timestamps;
   const isWordMode = timestamps?.format === 'uint32x2';
   const readsElevations = Boolean(props.elevations && props.sampleElevations);
@@ -490,6 +524,14 @@ export function createTrajectoryResampleNode<Parameters>(
   ];
   if (timestamps) {
     bindings.push(getTimestampsBinding(timestamps));
+  }
+  if (props.clock) {
+    bindings.push({
+      name: 'clockParameters',
+      view: props.clock,
+      type: isWordMode ? 'u32' : 'f32',
+      access: 'read'
+    });
   }
   if (props.cumulativeLengths) {
     bindings.push({
@@ -540,20 +582,23 @@ export function createTrajectoryResampleNode<Parameters>(
   // Time at the sample: the targetProgress itself in time mode, interpolated row times in arc mode.
   const timeSource = !props.sampleTimes
     ? ''
-    : isArcLength
-      ? `let startTime = getRowTimeDifference(row0, trackStart);
+    : isClock
+      ? 'time = f32(sampleIndex) * clockStep;'
+      : isArcLength
+        ? `let startTime = getRowTimeDifference(row0, trackStart);
     let endTime = getRowTimeDifference(row1, trackStart);
     time = select(startTime + (endTime - startTime) * fraction, endTime, fraction >= 1.0);`
-      : 'time = targetProgress;';
+        : 'time = targetProgress;';
   return createWGSLKernelNode<Parameters>(graph, {
     id: props.id,
     operation: RESAMPLE_OPERATION,
-    variant: isArcLength ? 'arc-length' : 'time',
+    variant: isClock ? (isWordMode ? 'clock-words' : 'clock') : isArcLength ? 'arc-length' : 'time',
     bindings,
     invocationCount: props.trackCount * props.sampleCount,
     declarations: `const ROW_COUNT: u32 = ${props.rowCount}u;
 const SAMPLE_COUNT: u32 = ${props.sampleCount}u;
 ${timestamps ? getRowTimeSource(isWordMode) : ''}
+${isClock ? getClockSource(isWordMode) : ''}
 ${progressSource}
 fn getPosition(row: u32) -> vec2<f32> {
   return vec2<f32>(positions[positionsOffset + 2u * row], positions[positionsOffset + 2u * row + 1u]);
@@ -564,11 +609,18 @@ fn getPosition(row: u32) -> vec2<f32> {
   var position = vec2<f32>(0.0, 0.0);
   var elevation = 0.0;
   var time = 0.0;
+  ${isClock ? 'let clockStep = getClockStep();\n  var isAbsent = trackEnd <= trackStart;' : ''}
   if (trackEnd > trackStart) {
     let lastRow = trackEnd - 1u;
     let total = getProgress(lastRow, trackStart);
     var targetProgress = 0.0;
-    if (SAMPLE_COUNT > 1u) {
+    ${
+      isClock
+        ? `targetProgress = getClockOffset(trackStart) + f32(sampleIndex) * clockStep;
+    isAbsent = !(targetProgress >= 0.0 && targetProgress <= total);`
+        : ''
+    }
+    if (${isClock ? 'false' : 'SAMPLE_COUNT > 1u'}) {
       targetProgress = select(
         total * (f32(sampleIndex) / f32(SAMPLE_COUNT - 1u)),
         total,
@@ -616,6 +668,15 @@ fn getPosition(row: u32) -> vec2<f32> {
         : ''
     }
     ${timeSource}
+  }
+  ${
+    isClock
+      ? `if (isAbsent) {
+    // A runtime expression keeps the quiet-NaN bit pattern out of const evaluation.
+    position = vec2<f32>(bitcast<f32>(0x7fc00000u | (index & 0u)));
+    elevation = position.x;
+  }`
+      : ''
   }
   samples[samplesOffset + 2u * index] = position.x;
   samples[samplesOffset + 2u * index + 1u] = position.y;

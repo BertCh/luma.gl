@@ -23,9 +23,13 @@ import {
   GPU_INEQUALITY_PARAMETER_LENGTH
 } from './inequality-parameters';
 import {
-  getInequalityGlobalGiniBody,
+  getInequalityGiniTileAreaBody,
+  getInequalityGiniTileTotalsBody,
   getInequalityKeysBody,
   getInequalityZoneStatsBody,
+  INEQUALITY_GINI_FINISH_BODY,
+  INEQUALITY_GINI_TILE_PREFIX_BODY,
+  INEQUALITY_GINI_TILE_ROWS,
   INEQUALITY_GLOBAL_SUMS_BODY,
   INEQUALITY_HELPERS_WGSL,
   INEQUALITY_STAT,
@@ -138,8 +142,7 @@ export type GPUInequalityProps = {
  * fixed order. No atomics are used at all, so results are bitwise reproducible on one adapter.
  *
  * Cost: one thread walks a whole zone, O(segment length) serial work, so one zone holding most
- * rows serializes the pass; the pooled Gini and the global sums are single-thread passes over all
- * rows or zones. Sums are plain f32 in sorted order, so precision degrades for segments of
+ * rows serializes the pass; the global sums are a single-thread pass over zones (the pooled Gini is tiled: its depth is rows / 256 + 256). Sums are plain f32 in sorted order, so precision degrades for segments of
  * millions of rows.
  */
 export class GPUInequality implements GPUCommandNodeProducer {
@@ -435,21 +438,75 @@ ${INEQUALITY_HELPERS_WGSL}`;
           body: INEQUALITY_GLOBAL_SUMS_BODY
         })
       );
+      // Pooled Gini by tiles: per-tile totals, a prefix over tiles only, per-tile Lorenz areas, and
+      // a sum over tiles. Depth is O(rows / tile + tile) instead of two serial passes over all rows.
+      const tileCount = Math.ceil(rowCount / INEQUALITY_GINI_TILE_ROWS);
+      const tileTotals = transient('gini-tile-totals', 'float32', 2 * tileCount);
+      const tileAreas = transient('gini-tile-areas', 'float32', tileCount);
+      const pooledTotals = transient('gini-pooled-totals', 'float32', 2);
+      const tileDeclarations = `${declarations}
+const GINI_TILE_ROWS: u32 = ${INEQUALITY_GINI_TILE_ROWS}u;
+const GINI_TILE_COUNT: u32 = ${tileCount}u;`;
+      const sortedReads = [
+        read('sortedValueKeys', sortedValueKeys, 'u32'),
+        read('sortedRows', sortedRows, 'u32'),
+        read('values', values, 'f32'),
+        ...(weights ? [read('weights', weights, 'f32')] : [])
+      ];
+      nodes.push(
+        createWGSLKernelNode<Parameters>(graph, {
+          id: `${id}-global-gini-tile-totals`,
+          operation: OPERATION,
+          variant: 'global-gini-tile-totals',
+          bindings: [...sortedReads, write('tileTotals', tileTotals, 'f32')],
+          invocationCount: tileCount,
+          declarations: tileDeclarations,
+          body: getInequalityGiniTileTotalsBody(weightExpression)
+        })
+      );
+      nodes.push(
+        createWGSLKernelNode<Parameters>(graph, {
+          id: `${id}-global-gini-tile-prefix`,
+          operation: OPERATION,
+          variant: 'global-gini-tile-prefix',
+          bindings: [
+            write('tileTotals', tileTotals, 'f32'),
+            write('pooledTotals', pooledTotals, 'f32')
+          ],
+          invocationCount: 1,
+          declarations: tileDeclarations,
+          body: INEQUALITY_GINI_TILE_PREFIX_BODY
+        })
+      );
+      nodes.push(
+        createWGSLKernelNode<Parameters>(graph, {
+          id: `${id}-global-gini-tile-area`,
+          operation: OPERATION,
+          variant: 'global-gini-tile-area',
+          bindings: [
+            ...sortedReads,
+            read('tileTotals', tileTotals, 'f32'),
+            read('pooledTotals', pooledTotals, 'f32'),
+            write('tileAreas', tileAreas, 'f32')
+          ],
+          invocationCount: tileCount,
+          declarations: tileDeclarations,
+          body: getInequalityGiniTileAreaBody(weightExpression)
+        })
+      );
       nodes.push(
         createWGSLKernelNode<Parameters>(graph, {
           id: `${id}-global-gini`,
           operation: OPERATION,
           variant: 'global-gini',
           bindings: [
-            read('sortedValueKeys', sortedValueKeys, 'u32'),
-            read('sortedRows', sortedRows, 'u32'),
-            read('values', values, 'f32'),
-            ...(weights ? [read('weights', weights, 'f32')] : []),
+            read('tileAreas', tileAreas, 'f32'),
+            read('pooledTotals', pooledTotals, 'f32'),
             write('summary', output.globalSummary, 'f32')
           ],
           invocationCount: 1,
-          declarations,
-          body: getInequalityGlobalGiniBody(weightExpression)
+          declarations: tileDeclarations,
+          body: INEQUALITY_GINI_FINISH_BODY
         })
       );
     }

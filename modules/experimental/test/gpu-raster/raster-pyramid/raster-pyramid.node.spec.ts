@@ -55,7 +55,7 @@ it('getGPURasterExtremaPyramidLayout computes levels, widths, offsets and length
   );
 });
 
-it('GPURasterExtremaPyramid schedules one node per level with at most 8 bindings', () => {
+it('GPURasterExtremaPyramid schedules level 0 plus one fused node per four levels with at most 8 bindings', () => {
   const device = createNullWebGPUDevice();
   const graph = new GPUCommandGraph(device);
   const layout = getGPURasterExtremaPyramidLayout(37, 23);
@@ -81,9 +81,11 @@ it('GPURasterExtremaPyramid schedules one node per level with at most 8 bindings
   const contributor = create();
   expect(contributor.layout.length).toBe(84);
   const ids = contributor.getCommandNodes(graph).map(node => node.id);
-  expect(ids.filter(id => id.startsWith('raster-extrema-pyramid-level-'))).toEqual(
-    [0, 1, 2, 3, 4].map(level => `raster-extrema-pyramid-level-${level}`)
-  );
+  // Five levels: level 0 scans pixels, levels 1 to 4 share one workgroup-tile dispatch.
+  expect(ids.filter(id => id.startsWith('raster-extrema-pyramid-level'))).toEqual([
+    'raster-extrema-pyramid-level-0',
+    'raster-extrema-pyramid-levels-1-4'
+  ]);
   expect(ids.some(id => id.startsWith('raster-extrema-pyramid-elevation'))).toBe(true);
   expect(
     create({
@@ -98,8 +100,8 @@ it('GPURasterExtremaPyramid schedules one node per level with at most 8 bindings
       )
     })
       .getCommandNodes(graph)
-      .filter(node => node.id.startsWith('p-level-')).length
-  ).toBe(4);
+      .filter(node => node.id.startsWith('p-level')).length
+  ).toBe(2);
 
   expect(() => create({maximum: undefined, minimum: undefined})).toThrow(/at least one output/);
   expect(() =>
@@ -121,9 +123,7 @@ it('GPURasterExtremaPyramid schedules one node per level with at most 8 bindings
     validity,
     combined
   });
-  expect(combinedNodes.map(node => node.id)).toEqual(
-    [0, 1, 2, 3, 4].map(level => `c-level-${level}`)
-  );
+  expect(combinedNodes.map(node => node.id)).toEqual(['c-level-0', 'c-levels-1-4']);
   expect(combinedNodes.every(node => (node.resources ?? []).length <= 3)).toBe(true);
   expect(() =>
     createRasterExtremaPyramidNodes(graph, {
@@ -196,4 +196,19 @@ it('the hierarchical oracle equals the direct definition', () => {
       }
     }
   }
+});
+
+it('GPURasterExtremaPyramid fuses levels in groups of four', () => {
+  const graph = new GPUCommandGraph(createNullWebGPUDevice());
+  // 64x64 at block 1: levels 0..6 -> level 0, levels 1-4, levels 5-6.
+  const layout = getGPURasterExtremaPyramidLayout(64, 64, {firstBlockSize: 1});
+  expect(layout.levels.length).toBe(7);
+  const nodes = createRasterExtremaPyramidNodes(graph, {
+    id: 'f',
+    layout,
+    values: createTransientView(graph, 'f-values', 'float32', 4096),
+    validity: createTransientView(graph, 'f-validity', 'uint32', 4096),
+    combined: createTransientView(graph, 'f-combined', 'float32', 2 * layout.length)
+  });
+  expect(nodes.map(node => node.id)).toEqual(['f-level-0', 'f-levels-1-4', 'f-levels-5-6']);
 });

@@ -208,3 +208,28 @@ it('GPUClassificationFit handles an empty class and a constant column like mapcl
   expectClose([actual.summary[GPU_CLASSIFICATION_FIT_GADF]], [0.9444444444444444], 'gadf');
   rig.destroy();
 });
+
+it('GPUClassificationFit reduces a heavily skewed class split across many lanes', async () => {
+  const device = await getWebGPUTestDevice();
+  if (!device) return;
+  const random = createSeededRandom(11);
+  const classCount = 4;
+  const rowCount = 20011;
+  const values: number[] = [];
+  const classes: number[] = [];
+  for (let row = 0; row < rowCount; row++) {
+    values.push(Math.round(random() * 400) / 8 - 10);
+    // 97% in class 0, a handful in class 2, none in class 1 or 3.
+    classes.push(random() < 0.97 ? 0 : random() < 0.5 ? 2 : NO_CLASS);
+  }
+  const rig = new AnalysisRig(device);
+  const actual = await runFit(rig, values, classes, classCount);
+  const oracle = computeFitOracle(values, classes, classCount);
+  expect(actual.counts).toEqual(oracle.counts);
+  expect(actual.counts[0]).toBeGreaterThan(19000);
+  expectClose(actual.medians, oracle.medians, 'medians', 1e-6);
+  expectClose(actual.absolute, oracle.absolute, 'absolute', 1e-4);
+  expectClose(actual.squared, oracle.squared, 'squared', 1e-3);
+  expectClose([actual.summary[GPU_CLASSIFICATION_FIT_GADF]], [oracle.gadf], 'gadf', 1e-3);
+  rig.destroy();
+});

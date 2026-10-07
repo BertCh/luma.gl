@@ -131,8 +131,10 @@ it('GPUProfilePeaks validates props and schedules its nodes', () => {
   expect(create({window: 40}).nms).toBe(10);
   expect(build().map(node => node.id)).toEqual([
     'profile-peaks-candidates',
+    'profile-peaks-nms-reset',
     'profile-peaks-nms-0',
     'profile-peaks-nms-1',
+    'profile-peaks-nms-gate-0',
     'profile-peaks-outputs'
   ]);
   const target = graphForNodes();
@@ -155,9 +157,11 @@ it('GPUProfilePeaks validates props and schedules its nodes', () => {
     }
   });
   const ids = full.getCommandNodes(target).map(node => node.id);
-  expect(ids.slice(0, 5)).toEqual([
+  expect(ids.slice(0, 7)).toEqual([
     'peaks-candidates',
+    'peaks-nms-reset',
     'peaks-nms-0',
+    'peaks-nms-gate-0',
     'peaks-converged-reset',
     'peaks-converged',
     'peaks-outputs'

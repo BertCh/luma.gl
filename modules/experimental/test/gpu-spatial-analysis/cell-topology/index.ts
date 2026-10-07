@@ -5,3 +5,4 @@
 import './h3-neighbor-wgsl.spec';
 import './gpu-cell-topology.spec';
 import './gpu-cell-compaction.spec';
+import './gpu-cell-grid-path.spec';

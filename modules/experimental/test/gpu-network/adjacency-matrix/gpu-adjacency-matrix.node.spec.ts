@@ -98,8 +98,8 @@ it('GPUAdjacencyMatrix returns deterministic node ids', () => {
     'adjacency-matrix-zero-weight-sums',
     'adjacency-matrix-zero-max-count',
     'adjacency-matrix-zero-max-weight-sum',
-    'adjacency-matrix-bin-counts',
-    'adjacency-matrix-bin-weights',
+    // Counts and weight sums share one binning kernel while its bindings fit the device limit.
+    'adjacency-matrix-bin',
     'adjacency-matrix-maxima'
   ]);
 });

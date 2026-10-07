@@ -373,3 +373,30 @@ it('GPUNetworkCoarsening is exact on a larger graph', async () => {
   expectMatches(await fixture.run(), fixture);
   fixture.destroy();
 });
+
+for (const directed of [false, true]) {
+  it(`GPUNetworkCoarsening matches the oracle with few heavy groups (${directed ? 'directed' : 'undirected'})`, async () => {
+    const device = await getWebGPUTestDevice();
+    if (!device) return;
+    // Three groups and thousands of edges: every superedge is a run far longer than one
+    // invocation's chunk of sorted slots, and every row folds many intra-group slots.
+    const nodeCount = 600;
+    const edges = createRandomCoarseningEdges(77, nodeCount, 6000, directed);
+    const fixture = new Fixture(device, {
+      nodeCount,
+      csr: buildCoarseningCSR(nodeCount, edges),
+      labels: createLabels(nodeCount, 3, 78),
+      groupCapacity: 3,
+      edgeCapacity: 8,
+      directed,
+      positions: createPositions(nodeCount, 79),
+      vertexValues: createValues(nodeCount, 80),
+      weighted: true
+    });
+    const result = await fixture.run();
+    const expected = expectMatches(result, fixture);
+    expect(expected.edges.length).toBeGreaterThan(0);
+    expect(expected.edges[0].count).toBeGreaterThan(100);
+    fixture.destroy();
+  });
+}

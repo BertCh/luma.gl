@@ -440,3 +440,142 @@ it('GPUArealInterpolation plus GPUSpatialLag matches tobler area_interpolate on 
   expectClose(await intensive.readFloat32(), TOBLER_INTENSIVE, 'tobler intensive', 1e-5, 1e-5);
   rig.destroy();
 });
+
+for (const denominator of ['zone', 'overlap'] as const) {
+  it(`GPUArealInterpolation unweighted fast path equals the generic path bitwise (${denominator})`, async () => {
+    const device = await getWebGPUTestDevice();
+    if (!device) return;
+    const width = 384;
+    const height = 384;
+    const source = createBlockZones(width, height, 37, 29, {holeSeed: 4, holeRate: 0.05});
+    const target = createBlockZones(width, height, 23, 41, {
+      shiftX: 5,
+      shiftY: 7,
+      holeSeed: 9,
+      holeRate: 0.08
+    });
+    const expected = computeArealOracle({
+      sourceZones: source.zones,
+      targetZones: target.zones,
+      sourceCount: source.zoneCount,
+      targetCount: target.zoneCount,
+      denominator
+    });
+    const capacity = expected.neighbors.length + 3;
+    const results: {weights: number[]; alternate: number[]; areas: number[]; offsets: number[]}[] =
+      [];
+    const milliseconds: number[] = [];
+    for (const unweightedFastPath of [true, false]) {
+      const rig = new GraphRig(device);
+      const offsets = rig.output('uint32', target.zoneCount + 1);
+      const neighbors = rig.output('uint32', capacity);
+      const weights = rig.output('float32', capacity);
+      const alternate = rig.output('float32', capacity);
+      const areas = rig.output('float32', capacity);
+      const overflow = rig.output('uint32', 1);
+      const producer = new GPUArealInterpolation({
+        sourceZones: rig.input(source.zones, 'uint32'),
+        targetZones: rig.input(target.zones, 'uint32'),
+        sourceCount: source.zoneCount,
+        targetCount: target.zoneCount,
+        denominator,
+        unweightedFastPath,
+        weights: {offsets: offsets.view, neighbors: neighbors.view, weights: weights.view},
+        alternateWeights: alternate.view,
+        areas: areas.view,
+        overflow: overflow.view
+      });
+      const start = performance.now();
+      rig.run(producer);
+      await offsets.readUint32();
+      await offsets.readUint32();
+      const frames = 20;
+      const frameStart = performance.now();
+      for (let frame = 0; frame < frames; frame++) rig.resubmit();
+      await offsets.readUint32();
+      milliseconds.push((performance.now() - frameStart) / frames);
+      void start;
+      results.push({
+        offsets: await offsets.readUint32(),
+        weights: (await weights.readFloat32()).slice(0, expected.neighbors.length),
+        alternate: (await alternate.readFloat32()).slice(0, expected.neighbors.length),
+        areas: (await areas.readFloat32()).slice(0, expected.neighbors.length)
+      });
+      rig.destroy();
+    }
+    expect(results[0].offsets).toEqual(expected.offsets);
+    expect(results[0].offsets).toEqual(results[1].offsets);
+    expect(results[0].weights).toEqual(results[1].weights);
+    expect(results[0].alternate).toEqual(results[1].alternate);
+    expect(results[0].areas).toEqual(results[1].areas);
+    expect(results[0].areas.some(area => area > 0)).toBe(true);
+    // Timing is a wall-clock sanity print , not an assertion.
+    console.log(
+      `areal fast path (${denominator}) per frame: ${milliseconds[0].toFixed(1)} ms ` +
+        `vs generic ${milliseconds[1].toFixed(1)} ms`
+    );
+  });
+}
+
+// The pair sort only sorts the bits that zone ids use, so check zone counts around powers of two
+// (the invalid key must stay above the largest valid id) and a larger system, with holes.
+for (const [sourceColumns, sourceRows, targetColumns, targetRows] of [
+  [5, 3, 4, 4], // 15 sources, 16 targets
+  [4, 4, 17, 1], // 16 sources, 17 targets
+  [17, 1, 3, 5], // 17 sources, 15 targets
+  [1, 1, 1, 1], // single zones
+  [55, 54, 50, 60] // about 3000 zones each
+] as const) {
+  it(`GPUArealInterpolation sorts only the zone-id bits (${sourceColumns}x${sourceRows} sources, ${targetColumns}x${targetRows} targets)`, async () => {
+    const device = await getWebGPUTestDevice();
+    if (!device) return;
+    const width = 110;
+    const height = 100;
+    const source = createBlockZones(
+      width,
+      height,
+      Math.ceil(width / sourceColumns),
+      Math.ceil(height / sourceRows),
+      {holeSeed: 3, holeRate: 0.07}
+    );
+    const target = createBlockZones(
+      width,
+      height,
+      Math.ceil(width / targetColumns),
+      Math.ceil(height / targetRows),
+      {shiftX: 1, shiftY: 2, holeSeed: 8, holeRate: 0.1}
+    );
+    const expected = computeArealOracle({
+      sourceZones: source.zones,
+      targetZones: target.zones,
+      sourceCount: source.zoneCount,
+      targetCount: target.zoneCount,
+      denominator: 'overlap'
+    });
+    const pairCount = expected.neighbors.length;
+    const rig = new GraphRig(device);
+    const offsets = rig.output('uint32', target.zoneCount + 1);
+    const neighbors = rig.output('uint32', pairCount + 3);
+    const weights = rig.output('float32', pairCount + 3);
+    const areas = rig.output('float32', pairCount + 3);
+    const overflow = rig.output('uint32', 1);
+    rig.run(
+      new GPUArealInterpolation({
+        sourceZones: rig.input(source.zones, 'uint32'),
+        targetZones: rig.input(target.zones, 'uint32'),
+        sourceCount: source.zoneCount,
+        targetCount: target.zoneCount,
+        denominator: 'overlap',
+        weights: {offsets: offsets.view, neighbors: neighbors.view, weights: weights.view},
+        areas: areas.view,
+        overflow: overflow.view
+      })
+    );
+    expect((await overflow.readUint32())[0]).toBe(0);
+    expect(await offsets.readUint32()).toEqual(expected.offsets);
+    expect((await neighbors.readUint32()).slice(0, pairCount)).toEqual(expected.neighbors);
+    expectClose((await areas.readFloat32()).slice(0, pairCount), expected.areas, 'areas');
+    expectClose((await weights.readFloat32()).slice(0, pairCount), expected.extensive, 'weights');
+    rig.destroy();
+  });
+}
