@@ -589,7 +589,7 @@ export async function createFlightCorridors(
       // A balance has no meaning below the design-sheet support threshold. NaN uses the raster
       // layer's transparent no-data path, rather than turning quiet cells into a neutral field.
       body: `let total = east[eastOffset + index] + west[westOffset + index];
-  let noData = bitcast<f32>(0x7fc00000u);
+  let noData = bitcast<f32>(0x7fc00000u | (index & 0u));
   balance[balanceOffset + index] = select(noData, (east[eastOffset + index] - west[westOffset + index]) / total, total >= ${DIRECTION_BALANCE_MINIMUM_DENSITY});`
     });
     const reader = new SummaryReader(
