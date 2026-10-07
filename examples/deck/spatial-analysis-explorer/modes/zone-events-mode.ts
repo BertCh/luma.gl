@@ -3,23 +3,25 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 /**
- * Trajectories against zones. One compiled graph (`addFleetDwellZoneEventsRecipe`) runs
- * `GPUZoneEvents` over every New York trip against jittered zip-code-like zones, then
- * `GPUGroupStatistics` rolls the dense `(track, zone)` dwell and visit matrices up to one table row
- * per zone. Enter and exit events are drawn by a custom layer that interpolates each crossing
- * position on the GPU from the event row and time; a playhead (a parameter write, never a
- * recompile) makes the markers pulse as the trips cross zone borders. The zone fill reads the
- * statistics table directly. Only the per-track event cap rebuilds the graph.
+ * Trajectories against zones. One compiled graph runs `GPUZoneEvents` over every New York trip
+ * against jittered zip-code-like zones. It writes the enter and exit events with their interpolated
+ * crossing positions (`eventPositions`, drawn directly, never read back) and a sparse `(trip,
+ * zone)` visit table (visits, dwell, first enter, last exit). `GPUGroupStatistics` then rolls the
+ * sparse table up to one row per zone for the zone fill, and a one-shot readback ranks the longest
+ * `(trip, zone)` dwells. A playhead (a parameter write, never a recompile) makes the markers pulse
+ * as the trips cross zone borders. Only the per-track event cap rebuilds the graph.
  */
 
 import type {Layer} from '@deck.gl/core';
 import type {CommandEncoder} from '@luma.gl/core';
 import {
+  createTransientView,
   DrawCommandBuffer,
   GPUCommandGraph,
   type CompiledGPUCommandGraph
 } from '@luma.gl/gpgpu/gpu-core';
-import {addFleetDwellZoneEventsRecipe} from '@luma.gl/experimental/gpu-spatial-analysis';
+import {GPUGroupStatistics} from '@luma.gl/experimental/gpu-dataframe';
+import {GPUZoneEvents} from '@luma.gl/experimental/gpu-spatial-analysis';
 import {importGraphBuffer} from '../graph-buffers';
 import {createSeededRandom, LocalMetricProjection} from '../spatial-analysis-data';
 import {SpatialAnalysisPointLayer, SpatialAnalysisSegmentLayer} from '../spatial-analysis-layers';
@@ -28,6 +30,7 @@ import type {
   SpatialAnalysisModeInstance
 } from '../spatial-analysis-mode';
 import {formatCount, SpatialAnalysisResources} from '../spatial-analysis-resources';
+import {addKernelPass} from './mode-kernels';
 import {SummaryReader} from './summary-reader';
 import {ZoneChoroplethLayer, ZoneEventMarkerLayer} from './zone-events-layers';
 
@@ -41,6 +44,8 @@ const RECORD_MARKERS = 0;
 const RECORD_ZONES = 1;
 const RECORD_BYTE_LENGTH = 16;
 const NO_ZONE = 0xffffffff;
+/** Rows of the longest-dwell ranking shown in the panel. */
+const TOP_DWELL_COUNT = 5;
 
 type Metric = 'dwell' | 'mean' | 'visitors';
 const METRIC_INDEX: Record<Metric, number> = {dwell: 0, mean: 1, visitors: 2};
@@ -222,6 +227,8 @@ export const zoneEventsMode: SpatialAnalysisModeDefinition = {
     const edgeCount = grid.edgeZones.length;
     const cellCount = trackCount * ZONE_COUNT;
     const maximumCapacity = trackCount * MAXIMUM_EVENTS_PER_TRACK;
+    // A trip rarely visits more zones than it has events; overflow is reported in the panel.
+    const tableCapacity = trackCount * MAXIMUM_EVENTS_PER_TRACK;
 
     let maxEventsPerTrack = 4;
     let metric: Metric = 'dwell';
@@ -256,12 +263,14 @@ export const zoneEventsMode: SpatialAnalysisModeDefinition = {
     const eventZones = resources.createBuffer('event-zones', maximumCapacity * 4);
     const eventTypes = resources.createBuffer('event-types', maximumCapacity * 4);
     const eventTimes = resources.createBuffer('event-times', maximumCapacity * 4);
-    const eventRows = resources.createBuffer('event-rows', maximumCapacity * 4);
+    const eventPositions = resources.createBuffer('event-positions', maximumCapacity * 8);
     const eventCount = resources.createBuffer('event-count', 4);
     const eventOverflow = resources.createBuffer('event-overflow', 4);
-    const dwellTimes = resources.createBuffer('dwell-times', cellCount * 4);
-    const visitCounts = resources.createBuffer('visit-counts', cellCount * 4);
-    const trackEventCounts = resources.createBuffer('track-event-counts', trackCount * 4);
+    const visitTracks = resources.createBuffer('visit-tracks', tableCapacity * 4);
+    const visitZones = resources.createBuffer('visit-zones', tableCapacity * 4);
+    const visitDwell = resources.createBuffer('visit-dwell', tableCapacity * 4);
+    const visitCount = resources.createBuffer('visit-count', 4);
+    const visitOverflow = resources.createBuffer('visit-overflow', 4);
     const tableKeys = resources.createBuffer('table-keys', ZONE_COUNT * 4);
     const tableCounts = resources.createBuffer('table-counts', ZONE_COUNT * 4);
     const tableCount = resources.createBuffer('table-count', 4);
@@ -292,48 +301,97 @@ export const zoneEventsMode: SpatialAnalysisModeDefinition = {
         format: Format,
         length: number
       ) => importGraphBuffer(graph, name, buffer, format, length);
-      addFleetDwellZoneEventsRecipe(graph, {
-        id: 'zone-events',
-        positions: importGraphBuffer(graph, 'positions', positionsBuffer, 'float32x2', rowCount),
-        timestamps: view('timestamps', timestampsBuffer, 'float32', rowCount),
-        trackOffsets: view('track-offsets', offsetsBuffer, 'uint32', trackCount + 1),
-        edgeStarts: importGraphBuffer(
-          graph,
-          'edge-starts',
-          edgeStartsBuffer,
-          'float32x2',
-          edgeCount
-        ),
-        edgeEnds: importGraphBuffer(graph, 'edge-ends', edgeEndsBuffer, 'float32x2', edgeCount),
-        edgeZones: view('edge-zones', edgeZonesBuffer, 'uint32', edgeCount),
-        zoneCount: ZONE_COUNT,
-        candidateCapacity: CANDIDATE_CAPACITY,
-        maxEventsPerTrack,
-        eventCapacity,
-        events: {
-          output: {
-            ids: view('event-tracks', eventTracks, 'uint32', eventCapacity),
-            count: view('event-count', eventCount, 'uint32', 1),
-            overflow: view('event-overflow', eventOverflow, 'uint32', 1)
+      const visitCountView = view('visit-count', visitCount, 'uint32', 1);
+      const visitZonesView = view('visit-zones', visitZones, 'uint32', tableCapacity);
+      const visitDwellView = view('visit-dwell', visitDwell, 'float32', tableCapacity);
+      graph.add(
+        new GPUZoneEvents({
+          id: 'zone-events',
+          positions: importGraphBuffer(graph, 'positions', positionsBuffer, 'float32x2', rowCount),
+          timestamps: view('timestamps', timestampsBuffer, 'float32', rowCount),
+          trackOffsets: view('track-offsets', offsetsBuffer, 'uint32', trackCount + 1),
+          edgeStarts: importGraphBuffer(
+            graph,
+            'edge-starts',
+            edgeStartsBuffer,
+            'float32x2',
+            edgeCount
+          ),
+          edgeEnds: importGraphBuffer(graph, 'edge-ends', edgeEndsBuffer, 'float32x2', edgeCount),
+          edgeZones: view('edge-zones', edgeZonesBuffer, 'uint32', edgeCount),
+          zoneCount: ZONE_COUNT,
+          candidateCapacity: CANDIDATE_CAPACITY,
+          maxEventsPerTrack,
+          events: {
+            output: {
+              ids: view('event-tracks', eventTracks, 'uint32', eventCapacity),
+              count: view('event-count', eventCount, 'uint32', 1),
+              overflow: view('event-overflow', eventOverflow, 'uint32', 1)
+            },
+            eventZones: view('event-zones', eventZones, 'uint32', eventCapacity),
+            eventTypes: view('event-types', eventTypes, 'uint32', eventCapacity),
+            eventTimes: view('event-times', eventTimes, 'float32', eventCapacity),
+            eventPositions: importGraphBuffer(
+              graph,
+              'event-positions',
+              eventPositions,
+              'float32x2',
+              eventCapacity
+            )
           },
-          eventZones: view('event-zones', eventZones, 'uint32', eventCapacity),
-          eventTypes: view('event-types', eventTypes, 'uint32', eventCapacity),
-          eventTimes: view('event-times', eventTimes, 'float32', eventCapacity),
-          eventRows: view('event-rows', eventRows, 'uint32', eventCapacity)
-        },
-        dwellTimes: view('dwell-times', dwellTimes, 'float32', cellCount),
-        visitCounts: view('visit-counts', visitCounts, 'uint32', cellCount),
-        trackEventCounts: view('track-event-counts', trackEventCounts, 'uint32', trackCount),
-        table: {
-          keys: view('table-keys', tableKeys, 'uint32', ZONE_COUNT),
-          counts: view('table-counts', tableCounts, 'uint32', ZONE_COUNT),
-          count: view('table-count', tableCount, 'uint32', 1),
-          overflow: view('table-overflow', tableOverflow, 'uint32', 1),
-          sumValues: view('table-sums', tableSums, 'float32', ZONE_COUNT),
-          means: view('table-means', tableMeans, 'float32', ZONE_COUNT),
-          maximums: view('table-maximums', tableMaximums, 'float32', ZONE_COUNT)
-        }
+          visitTable: {
+            output: {
+              ids: view('visit-tracks', visitTracks, 'uint32', tableCapacity),
+              count: visitCountView,
+              overflow: view('visit-overflow', visitOverflow, 'uint32', 1)
+            },
+            zones: visitZonesView,
+            dwellTimes: visitDwellView
+          }
+        })
+      );
+      // Per-zone roll-up of the sparse table: rows past the count are masked out.
+      const visitMask = createTransientView(graph, 'visit-mask', 'uint32', tableCapacity);
+      addKernelPass(graph, {
+        id: 'zone-events-visit-mask',
+        invocationCount: tableCapacity,
+        bindings: [
+          {
+            name: 'visitCount',
+            view: visitCountView,
+            type: 'u32',
+            access: 'read'
+          },
+          {name: 'mask', view: visitMask, type: 'u32', access: 'read_write'}
+        ],
+        body: 'mask[maskOffset + index] = select(0u, 1u, index < visitCount[visitCountOffset]);'
       });
+      graph.add(
+        new GPUGroupStatistics({
+          id: 'zone-events-zone-statistics',
+          keys: visitZonesView,
+          keyCount: ZONE_COUNT,
+          mask: visitMask,
+          columns: [
+            {
+              values: visitDwellView,
+              statistics: ['sum', 'mean', 'maximum'],
+              output: {
+                sums: createTransientView(graph, 'zone-sum-words', 'uint32x2', ZONE_COUNT),
+                sumValues: view('table-sums', tableSums, 'float32', ZONE_COUNT),
+                means: view('table-means', tableMeans, 'float32', ZONE_COUNT),
+                maximums: view('table-maximums', tableMaximums, 'float32', ZONE_COUNT)
+              }
+            }
+          ],
+          output: {
+            keys: view('table-keys', tableKeys, 'uint32', ZONE_COUNT),
+            counts: view('table-counts', tableCounts, 'uint32', ZONE_COUNT),
+            count: view('table-count', tableCount, 'uint32', 1),
+            overflow: view('table-overflow', tableOverflow, 'uint32', 1)
+          }
+        })
+      );
       compiled = resources.track(graph.compile());
       dirty = true;
     }
@@ -465,12 +523,17 @@ export const zoneEventsMode: SpatialAnalysisModeDefinition = {
       ]
     });
     context.controls.addNote(
-      'Click a zone to read its visits and dwell. Events are computed once.'
+      'Click a zone to read its visits and dwell. Events are computed once. The dwell ' +
+        'ranking below comes from the sparse (trip, zone) visit table.'
     );
     context.controls.addReadout('Trips', formatCount(trackCount));
     context.controls.addReadout('Zones', `${ZONE_COUNT} (${formatCount(edgeCount)} edges)`);
     const eventReadout = context.controls.addReadout('Events');
     const visitReadout = context.controls.addReadout('Zone visits / total dwell');
+    const visitTableReadout = context.controls.addReadout('Visit table (trip, zone) rows');
+    const topDwellReadouts = Array.from({length: TOP_DWELL_COUNT}, (_, rank) =>
+      context.controls.addReadout(`Longest dwell #${rank + 1}`)
+    );
     const clockReadout = context.controls.addReadout('Playhead');
     context.controls.addReadout('Data', `${trips.attribution}; zones synthetic jittered grid`);
 
@@ -527,6 +590,50 @@ export const zoneEventsMode: SpatialAnalysisModeDefinition = {
       }
     );
 
+    // One-shot ranking of the longest (trip, zone) dwells from the sparse visit table.
+    const visitSummary = new SummaryReader(
+      resources,
+      'zone-events-visits',
+      [
+        {buffer: visitCount, size: 4},
+        {buffer: visitOverflow, size: 4},
+        {buffer: visitTracks, size: tableCapacity * 4},
+        {buffer: visitZones, size: tableCapacity * 4},
+        {buffer: visitDwell, size: tableCapacity * 4}
+      ],
+      bytes => {
+        if (destroyed) return;
+        const words = new Uint32Array(bytes);
+        const floats = new Float32Array(bytes);
+        const count = Math.min(words[0], tableCapacity);
+        const tracksStart = 2;
+        const zonesStart = 2 + tableCapacity;
+        const dwellStart = 2 + 2 * tableCapacity;
+        const best: {row: number; dwell: number}[] = [];
+        for (let row = 0; row < count; row++) {
+          const dwell = floats[dwellStart + row];
+          if (best.length < TOP_DWELL_COUNT || dwell > best[best.length - 1].dwell) {
+            best.push({row, dwell});
+            best.sort((a, b) => b.dwell - a.dwell);
+            best.length = Math.min(best.length, TOP_DWELL_COUNT);
+          }
+        }
+        visitTableReadout.setValue(
+          `${formatCount(words[0])} of ${formatCount(tableCapacity)}` +
+            `${words[1] ? ' OVERFLOW (zone fill is truncated)' : ''}` +
+            ` (dense would be ${formatCount(cellCount)})`
+        );
+        topDwellReadouts.forEach((readout, rank) => {
+          const entry = best[rank];
+          readout.setValue(
+            entry
+              ? `trip ${words[tracksStart + entry.row]} in zone ${words[zonesStart + entry.row] + 1}: ${formatDuration(entry.dwell)}`
+              : '–'
+          );
+        });
+      }
+    );
+
     writeChoropleth();
     writeSelection();
     buildGraph();
@@ -551,8 +658,10 @@ export const zoneEventsMode: SpatialAnalysisModeDefinition = {
           });
           dirty = false;
           summary.markStale();
+          visitSummary.markStale();
         }
         summary.flush(commandEncoder);
+        visitSummary.flush(commandEncoder);
       },
       getLayers() {
         const coordinateOrigin: [number, number, number] = [trips.origin[0], trips.origin[1], 0];
@@ -589,11 +698,10 @@ export const zoneEventsMode: SpatialAnalysisModeDefinition = {
           new ZoneEventMarkerLayer({
             id: 'zone-events-markers',
             coordinateOrigin,
-            positions: positionsBuffer,
+            positions: eventPositions,
             timestamps: timestampsBuffer,
             trackOffsets: offsetsBuffer,
             eventTracks,
-            eventRows,
             eventTimes,
             eventTypes,
             extent: playheadParameters.buffer,
@@ -635,6 +743,7 @@ export const zoneEventsMode: SpatialAnalysisModeDefinition = {
       destroy() {
         destroyed = true;
         summary.stop();
+        visitSummary.stop();
         resources.destroy();
       }
     };

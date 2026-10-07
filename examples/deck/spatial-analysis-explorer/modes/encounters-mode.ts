@@ -4,14 +4,15 @@
 
 /**
  * Encounters between trips, and how alike the encountering trips are. Encounters need every trip on
- * one clock, which raw taxi trips do not share, so the trips are padded on the CPU into one common
- * window: before pickup and after drop-off a trip sits far outside the lattice (an absent sample).
- * `GPUTrajectoryResample` then samples every padded trip at the same instants and
- * `GPUTrajectoryEncounters` lists the pairs within the distance in the same time bucket. The
- * distance is a per-frame buffer write. `GPUTrackSimilarity` then scores each encounter pair
- * (Hausdorff) over the full trips, and a second instance scores the clicked trip against every trip
- * to color the whole trip layer. Three small kernels written with the explorer's kernel helper
- * gather connector segments and vehicle positions straight from the dense sample table.
+ * one clock, which raw taxi trips do not share (each has its own pickup and drop-off time).
+ * `addClockEncounters` resamples every trip onto one shared clock (`GPUTrajectoryResample` with
+ * `spacing: 'clock'`: a trip is absent, NaN, outside its own span) and feeds
+ * `GPUTrajectoryEncounters`, which lists the pairs within the distance in the same time bucket.
+ * The distance and the clock step are per-frame buffer writes. `GPUTrackSimilarity` then scores each
+ * encounter pair (Hausdorff) over the full trips, and a second instance scores the clicked trip
+ * against every trip to color the whole trip layer. Two small kernels written with the explorer's
+ * kernel helper gather connector segments and vehicle positions straight from the dense sample
+ * table.
  */
 
 import type {Layer} from '@deck.gl/core';
@@ -19,10 +20,10 @@ import type {CommandEncoder} from '@luma.gl/core';
 import {GPUCommandGraph} from '@luma.gl/gpgpu/gpu-core';
 import {
   GPU_TRACK_SIMILARITY_STATUS,
-  GPUTrackSimilarity,
-  GPUTrajectoryEncounters,
-  GPUTrajectoryResample
+  GPUTrackSimilarity
 } from '@luma.gl/experimental/gpu-spatial-analysis';
+import {addClockEncounters} from '@luma.gl/experimental/gpu-spatial-analysis';
+import {getGPUTrajectoryClockParameterValues} from '@luma.gl/experimental/gpu-spatial-analysis';
 import {importGraphBuffer} from '../graph-buffers';
 import {LocalMetricProjection} from '../spatial-analysis-data';
 import {SpatialAnalysisPointLayer, SpatialAnalysisSegmentLayer} from '../spatial-analysis-layers';
@@ -41,10 +42,6 @@ const CELL_SIZE = 150;
 const HIT_CAPACITY = 1 << 20;
 const PAIR_CAPACITY = 16384;
 const MAXIMUM_FRECHET_VERTICES = 256;
-/** Position of a trip outside its own time span: far outside every lattice. */
-const PARKED = 1e6;
-/** Seconds between a trip's real span and its parked pad, so pad interpolation stays off-map. */
-const PAD_SECONDS = 2;
 const SIMILARITY_RANGE_METERS = 2500;
 const NO_TRACK = 0xffffffff;
 const SIMILARITY_COLORS = [
@@ -57,49 +54,6 @@ const SIMILARITY_COLORS = [
 
 type Similarity = 'hausdorff' | 'frechet';
 type ConnectorTime = 'first' | 'bucket';
-
-type PaddedTrips = {
-  positions: Float32Array;
-  timestamps: Float32Array;
-  offsets: Uint32Array;
-};
-
-/** Pads every trip to span `[0, duration]`, parked far away outside its own span. */
-function padTrips(
-  positions: Float32Array,
-  timestamps: Float32Array,
-  offsets: Uint32Array,
-  duration: number
-): PaddedTrips {
-  const trackCount = offsets.length - 1;
-  const paddedPositions: number[] = [];
-  const paddedTimestamps: number[] = [];
-  const paddedOffsets = new Uint32Array(trackCount + 1);
-  const push = (x: number, y: number, time: number) => {
-    paddedPositions.push(x, y);
-    paddedTimestamps.push(time);
-  };
-  for (let track = 0; track < trackCount; track++) {
-    paddedOffsets[track] = paddedTimestamps.length;
-    const first = offsets[track];
-    const last = offsets[track + 1] - 1;
-    if (timestamps[first] > 0) push(PARKED, PARKED, 0);
-    if (timestamps[first] > PAD_SECONDS) push(PARKED, PARKED, timestamps[first] - PAD_SECONDS);
-    for (let row = first; row <= last; row++) {
-      push(positions[row * 2], positions[row * 2 + 1], timestamps[row]);
-    }
-    if (timestamps[last] + PAD_SECONDS < duration) {
-      push(PARKED, PARKED, timestamps[last] + PAD_SECONDS);
-    }
-    if (timestamps[last] < duration) push(PARKED, PARKED, duration);
-  }
-  paddedOffsets[trackCount] = paddedTimestamps.length;
-  return {
-    positions: Float32Array.from(paddedPositions),
-    timestamps: Float32Array.from(paddedTimestamps),
-    offsets: paddedOffsets
-  };
-}
 
 /** Central 98 percent of a strided coordinate sample, for the lattice bounds. */
 function getCentralRange(values: Float32Array, offset: number): [number, number] {
@@ -121,8 +75,8 @@ export const encountersMode: SpatialAnalysisModeDefinition = {
   contributors: ['GPUTrajectoryEncounters', 'GPUTrackSimilarity', 'GPUTrajectoryResample'],
   description:
     'Pairs of taxi trips within a distance of each other in the same time bucket, drawn as ' +
-    'connectors. Drag the distance and time sliders; click a trip to color every trip by its ' +
-    'Hausdorff or Frechet distance to it.',
+    'connectors. Drag the distance, clock step and time sliders (all buffer writes); click a ' +
+    'trip to color every trip by its Hausdorff or Frechet distance to it.',
   initialViewState: {longitude: -73.985, latitude: 40.74, zoom: 12},
 
   async create(context) {
@@ -140,8 +94,6 @@ export const encountersMode: SpatialAnalysisModeDefinition = {
     for (let row = 0; row < rowCount; row++) {
       rebasedTimestamps[row] = trips.vertexTimestamps[row] - epoch;
     }
-    const padded = padTrips(trips.vertexPositions, rebasedTimestamps, trips.tripOffsets, duration);
-    const paddedRowCount = padded.timestamps.length;
     const [minX, maxX] = getCentralRange(trips.vertexPositions, 0);
     const [minY, maxY] = getCentralRange(trips.vertexPositions, 1);
     const bounds: [number, number, number, number] = [
@@ -172,6 +124,8 @@ export const encountersMode: SpatialAnalysisModeDefinition = {
     }
     const tripSegmentCount = tripSegmentTracks.length;
 
+    const defaultClockStep = duration / (BUCKET_COUNT - 1);
+    let clockStep = Math.round(defaultClockStep);
     let distance = 50;
     let similarity: Similarity = 'hausdorff';
     let connectorTime: ConnectorTime = 'bucket';
@@ -185,9 +139,7 @@ export const encountersMode: SpatialAnalysisModeDefinition = {
 
     const positionsBuffer = resources.createBuffer('positions', trips.vertexPositions);
     const offsetsBuffer = resources.createBuffer('offsets', trips.tripOffsets);
-    const paddedPositionsBuffer = resources.createBuffer('padded-positions', padded.positions);
-    const paddedTimestampsBuffer = resources.createBuffer('padded-timestamps', padded.timestamps);
-    const paddedOffsetsBuffer = resources.createBuffer('padded-offsets', padded.offsets);
+    const timestampsBuffer = resources.createBuffer('timestamps', rebasedTimestamps);
     const samplesBuffer = resources.createBuffer('samples', sampleCount * 8);
     const tripSegmentsBuffer = resources.createBuffer(
       'trip-segments',
@@ -224,6 +176,12 @@ export const encountersMode: SpatialAnalysisModeDefinition = {
       1,
       Float32Array.of(distance)
     );
+    const clockParameter = resources.createParameterBuffer(
+      'clock',
+      'float32',
+      4,
+      getGPUTrajectoryClockParameterValues({start: 0, step: clockStep})
+    );
     const viewParameters = resources.createParameterBuffer('view', 'float32', 4);
     const selectionParameter = resources.createParameterBuffer(
       'selection',
@@ -233,44 +191,6 @@ export const encountersMode: SpatialAnalysisModeDefinition = {
     );
 
     // --- Graphs --------------------------------------------------------------------------------
-    const resampleGraph = new GPUCommandGraph<void>(device, {id: 'encounters-resample'});
-    resampleGraph.add(
-      new GPUTrajectoryResample({
-        id: 'encounters-resample',
-        positions: importGraphBuffer(
-          resampleGraph,
-          'padded-positions',
-          paddedPositionsBuffer,
-          'float32x2',
-          paddedRowCount
-        ),
-        timestamps: importGraphBuffer(
-          resampleGraph,
-          'padded-timestamps',
-          paddedTimestampsBuffer,
-          'float32',
-          paddedRowCount
-        ),
-        trackOffsets: importGraphBuffer(
-          resampleGraph,
-          'padded-offsets',
-          paddedOffsetsBuffer,
-          'uint32',
-          trackCount + 1
-        ),
-        sampleCount: BUCKET_COUNT,
-        spacing: 'time',
-        samples: importGraphBuffer(
-          resampleGraph,
-          'samples',
-          samplesBuffer,
-          'float32x2',
-          sampleCount
-        )
-      })
-    );
-    const resampleCompiled = resources.track(resampleGraph.compile());
-
     const encountersGraph = new GPUCommandGraph<void>(device, {id: 'encounters-pairs'});
     const pairView = <Format extends 'uint32' | 'float32'>(
       name: string,
@@ -295,35 +215,42 @@ export const encountersMode: SpatialAnalysisModeDefinition = {
     const pairIdsView = pairView('pair-ids', pairIds, 'uint32');
     const pairPartnersView = pairView('pair-partners', pairPartners, 'uint32');
     const pairCountView = pairView('pair-count', pairCount, 'uint32', 1);
-    encountersGraph.add(
-      new GPUTrajectoryEncounters({
-        id: 'encounters',
-        samples: importGraphBuffer(
-          encountersGraph,
-          'samples',
-          samplesBuffer,
-          'float32x2',
-          sampleCount
-        ),
-        trackCount,
-        bucketCount: BUCKET_COUNT,
-        distance: distanceParameter.importToGraph(encountersGraph),
-        cellSize: CELL_SIZE,
-        bounds,
-        hitCapacity: HIT_CAPACITY,
-        pairs: {
-          output: {
-            ids: pairIdsView,
-            count: pairCountView,
-            overflow: pairView('pair-overflow', pairOverflow, 'uint32', 1)
-          },
-          partners: pairPartnersView,
-          firstBuckets: pairView('pair-first-buckets', pairFirstBuckets, 'uint32'),
-          minimumDistances: pairView('pair-minimum-distances', pairMinimumDistances, 'float32'),
-          bucketCounts: pairView('pair-bucket-counts', pairBucketCounts, 'uint32')
-        }
-      })
-    );
+    addClockEncounters(encountersGraph, {
+      id: 'encounters',
+      positions: trackPositions,
+      timestamps: importGraphBuffer(
+        encountersGraph,
+        'timestamps',
+        timestampsBuffer,
+        'float32',
+        rowCount
+      ),
+      trackOffsets,
+      clock: clockParameter.importToGraph(encountersGraph),
+      bucketCount: BUCKET_COUNT,
+      samples: importGraphBuffer(
+        encountersGraph,
+        'samples',
+        samplesBuffer,
+        'float32x2',
+        sampleCount
+      ),
+      distance: distanceParameter.importToGraph(encountersGraph),
+      cellSize: CELL_SIZE,
+      bounds,
+      hitCapacity: HIT_CAPACITY,
+      pairs: {
+        output: {
+          ids: pairIdsView,
+          count: pairCountView,
+          overflow: pairView('pair-overflow', pairOverflow, 'uint32', 1)
+        },
+        partners: pairPartnersView,
+        firstBuckets: pairView('pair-first-buckets', pairFirstBuckets, 'uint32'),
+        minimumDistances: pairView('pair-minimum-distances', pairMinimumDistances, 'float32'),
+        bucketCounts: pairView('pair-bucket-counts', pairBucketCounts, 'uint32')
+      }
+    });
     encountersGraph.add(
       new GPUTrackSimilarity({
         id: 'encounters-pair-similarity',
@@ -517,6 +444,27 @@ export const encountersMode: SpatialAnalysisModeDefinition = {
         writeView();
       }
     });
+    const clockReadout = context.controls.addReadout('Common clock');
+    const describeClock = () =>
+      clockReadout.setValue(
+        `${BUCKET_COUNT} buckets of ${clockStep} s from 0:00 to ${formatClock((BUCKET_COUNT - 1) * clockStep)} (NaN outside a trip's span)`
+      );
+    describeClock();
+    context.controls.addSlider({
+      label: 'Clock step (per-frame buffer)',
+      min: Math.max(2, Math.round(defaultClockStep / 4)),
+      max: Math.round(defaultClockStep * 2),
+      step: 1,
+      value: clockStep,
+      format: value => `${value} s`,
+      onChange: value => {
+        clockStep = value;
+        clockParameter.write(getGPUTrajectoryClockParameterValues({start: 0, step: clockStep}));
+        describeClock();
+        encountersDirty = true;
+        writeView();
+      }
+    });
     context.controls.addSelect<ConnectorTime>({
       label: 'Connectors drawn at',
       options: [
@@ -535,7 +483,7 @@ export const encountersMode: SpatialAnalysisModeDefinition = {
       max: BUCKET_COUNT - 1,
       step: 1,
       value: bucket,
-      format: value => formatClock((value / (BUCKET_COUNT - 1)) * duration),
+      format: value => formatClock(value * clockStep),
       onChange: value => {
         bucket = value;
         writeView();
@@ -570,10 +518,6 @@ export const encountersMode: SpatialAnalysisModeDefinition = {
         'readout scores how alike each pair of full trips is.'
     );
     context.controls.addReadout('Trips', formatCount(trackCount));
-    context.controls.addReadout(
-      'Common clock',
-      `${BUCKET_COUNT} buckets of ${(duration / (BUCKET_COUNT - 1)).toFixed(0)} s (trips parked outside their span)`
-    );
     const pairReadout = context.controls.addReadout('Encounter pairs');
     const pairSimilarityReadout = context.controls.addReadout('Pair Hausdorff');
     const selectedSimilarityReadout = context.controls.addReadout('Within 500 m of selected');
@@ -656,20 +600,9 @@ export const encountersMode: SpatialAnalysisModeDefinition = {
     selectTrack(startTrack);
     writeView();
 
-    let resampled = false;
-
     const instance: SpatialAnalysisModeInstance = {
-      getCompiledGraphs: () => [
-        resampleCompiled,
-        encountersCompiled,
-        viewCompiled,
-        selectionCompiled
-      ],
+      getCompiledGraphs: () => [encountersCompiled, viewCompiled, selectionCompiled],
       encode(commandEncoder: CommandEncoder) {
-        if (!resampled) {
-          resampleCompiled.encode(commandEncoder, {parameters: undefined});
-          resampled = true;
-        }
         if (encountersDirty) {
           encountersCompiled.encode(commandEncoder, {parameters: undefined});
           encountersDirty = false;

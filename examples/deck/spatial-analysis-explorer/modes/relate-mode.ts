@@ -10,10 +10,12 @@
  * same predicate lists the queries that match nothing, and `GPUSpatialJoinCandidates` shows the bounding
  * box candidates that the exact predicate filters down.
  *
- * Predicate, pattern and query-set kind are compile-time choices (the graph is rebuilt and labelled
- * so). Query positions, dragging and the invalidate-every-frame comparison are buffer writes only.
+ * Predicate and query-set kind are compile-time choices (the graph is rebuilt and labelled so): the
+ * predicate picks the kernel family. The DE-9IM pattern of `relate` and the distance of `dwithin` are
+ * per-frame parameter buffers, so changing them is a buffer write and the rebuild counter stays at
+ * zero. Query positions, dragging and the invalidate-every-frame comparison are buffer writes too.
  * The pair table (a few hundred rows) is read back; the picture colors ZIP outlines by match count
- * and queries by matched or unmatched from it.
+ * and queries by matched or unmatched from it. The graph time is measured outside the frame.
  */
 
 import type {Layer} from '@deck.gl/core';
@@ -26,6 +28,10 @@ import {
   type GPUSpatialJoinGeometry,
   type GPUSpatialPredicate
 } from '@luma.gl/experimental/gpu-spatial-analysis';
+import {
+  GPU_SPATIAL_RELATE_PATTERN_WORDS,
+  packGPUSpatialRelatePattern
+} from '@luma.gl/experimental/gpu-spatial-analysis';
 import type {Buffer} from '@luma.gl/core';
 import {importGraphBuffer} from '../graph-buffers';
 import {SpatialAnalysisSegmentLayer} from '../spatial-analysis-layers';
@@ -37,6 +43,7 @@ import {LocalMetricProjection, type SpatialAnalysisPolygons} from '../spatial-an
 import {formatCount, SpatialAnalysisResources} from '../spatial-analysis-resources';
 import {SummaryReader} from './summary-reader';
 import {findContainingFeature} from './raster-join-layers';
+import {formatCompiledGraphTiming, measureCompiledGraph} from './vector-timing';
 
 type QuerySet = 'polygons' | 'lines';
 type RelatePredicate = Extract<
@@ -52,6 +59,7 @@ type RelatePredicate = Extract<
   | 'equals'
   | 'containsProperly'
   | 'relate'
+  | 'dwithin'
 >;
 
 const PREDICATES: readonly RelatePredicate[] = [
@@ -65,17 +73,38 @@ const PREDICATES: readonly RelatePredicate[] = [
   'overlaps',
   'equals',
   'containsProperly',
-  'relate'
+  'relate',
+  'dwithin'
 ];
-/** Patterns that cannot match disjoint geometries (the engine rejects those). */
+/**
+ * Patterns that cannot match disjoint geometries (the engine rejects those). A value holds one
+ * pattern, or several joined by `|` (an any-of list); see {@link parsePattern}.
+ */
 const PATTERNS: readonly {value: string; label: string}[] = [
   {value: 'T*T***T**', label: 'T*T***T** interiors overlap, both have exterior'},
   {value: '212101212', label: '212101212 areas partially overlap'},
   {value: 'T*****FF*', label: 'T*****FF* contains'},
   {value: 'T*F**F***', label: 'T*F**F*** within'},
   {value: '*T*******', label: '*T******* left interior meets right boundary'},
-  {value: 'FT*******', label: 'FT******* only boundary-interior contact'}
+  {value: 'FT*******', label: 'FT******* only boundary-interior contact'},
+  {
+    value: 'T********|*T*******|***T*****|****T****',
+    label: 'any of four: intersects (a list of patterns)'
+  }
 ];
+/** Most patterns an any-of list may hold: slots of the per-frame pattern buffer. */
+const PATTERN_SLOTS = 4;
+const MAXIMUM_DISTANCE = 3000;
+const DEFAULT_DISTANCE = 400;
+/** Frame at which the graph time is measured once, outside the frame. */
+const AUTO_MEASURE_FRAME = 40;
+/** Milliseconds after the last pattern or distance change before the graph is timed again. */
+const REMEASURE_DELAY = 500;
+
+/** Splits a {@link PATTERNS} value into its DE-9IM patterns. */
+function parsePattern(value: string): string[] {
+  return value.split('|');
+}
 /** Per-frame drift speed of unpinned queries, radians per second. */
 const DRIFT_SPEED = 0.35;
 const ZIP_COLOR = [160, 178, 205, 150] as const;
@@ -296,6 +325,12 @@ function writeScene(
   });
 }
 
+/** Names the kernel family a join resolved to. */
+function describeEngine(join: GPUSpatialPredicateJoin): string {
+  if (join.usesRelateEngine) return 'relate';
+  return join.usesWorkgroupDistance ? 'workgroup distance' : 'fast';
+}
+
 type Build = {
   resources: SpatialAnalysisResources;
   compiled: CompiledGPUCommandGraph<void>;
@@ -307,6 +342,7 @@ type Build = {
   positionsBuffer: Buffer;
   segmentsBuffer: Buffer;
   segmentRowsBuffer: Buffer;
+  pairCountBuffer: Buffer;
   matchedFlags: Buffer;
   unmatchedFlags: Buffer;
   rightCounts: Buffer;
@@ -323,7 +359,7 @@ export const relateMode: SpatialAnalysisModeDefinition = {
   contributors: ['GPUSpatialPredicateJoin', 'GPUSpatialJoinPrepared', 'GPUSpatialJoinCandidates'],
   description:
     'Movable query shapes are related to ZIP-code polygons by any DE-9IM predicate on the GPU. ' +
-    'Drag a shape, switch predicate or anti join, and hover a ZIP for its relate matrices.',
+    'Drag a shape, switch predicate or anti join, change the pattern or the dwithin distance live (no rebuild, the graph time updates), and hover a ZIP for its relate matrices.',
   initialViewState: {longitude: -122.44, latitude: 37.76, zoom: 11.7},
 
   async create(context) {
@@ -344,6 +380,25 @@ export const relateMode: SpatialAnalysisModeDefinition = {
 
     let predicate: RelatePredicate = 'intersects';
     let pattern = PATTERNS[0].value;
+    let distanceMeters = DEFAULT_DISTANCE;
+    // Per-frame parameter buffers: they outlive graph rebuilds and are rewritten every encoding.
+    const patternParameters = resources.createParameterBuffer(
+      'pattern',
+      'uint32',
+      PATTERN_SLOTS * GPU_SPATIAL_RELATE_PATTERN_WORDS
+    );
+    const distanceParameters = resources.createParameterBuffer(
+      'distance',
+      'float32',
+      1,
+      Float32Array.of(DEFAULT_DISTANCE)
+    );
+    const writePattern = () =>
+      patternParameters.write(packGPUSpatialRelatePattern(parsePattern(pattern), PATTERN_SLOTS));
+    writePattern();
+    let measuring = false;
+    let measureTimer: ReturnType<typeof setTimeout> | undefined;
+    let autoMeasureScheduled = false;
     let querySet: QuerySet = 'polygons';
     let engine: 'auto' | 'fast' | 'relate' = 'auto';
     let antiView = false;
@@ -442,7 +497,9 @@ export const relateMode: SpatialAnalysisModeDefinition = {
         left,
         right,
         predicate,
-        ...(predicate === 'relate' ? {pattern} : {}),
+        // Per-frame views: the pattern and the distance are never compiled in.
+        ...(predicate === 'relate' ? {pattern: patternParameters.importToGraph(graph)} : {}),
+        ...(predicate === 'dwithin' ? {distance: distanceParameters.importToGraph(graph)} : {}),
         candidateCapacity,
         prepared
       };
@@ -456,7 +513,10 @@ export const relateMode: SpatialAnalysisModeDefinition = {
           overflow: view('pair-overflow', pairOverflow, 'uint32', 1),
           totalCount: view('pair-total', pairTotal, 'uint32', 1)
         },
-        relate: view('relate', relateBuffer, 'uint32', pairCapacity),
+        // dwithin has no DE-9IM matrix.
+        ...(predicate === 'dwithin'
+          ? {}
+          : {relate: view('relate', relateBuffer, 'uint32', pairCapacity)}),
         uncertainCount: view('uncertain', uncertain, 'uint32', 1),
         candidateCount: view('candidate-total', candidateTotal, 'uint32', 1)
       });
@@ -464,7 +524,7 @@ export const relateMode: SpatialAnalysisModeDefinition = {
       const antiJoin = new GPUSpatialPredicateJoin({
         ...common,
         // 'fast' exists only for the four legacy predicates.
-        ...(['intersects', 'contains', 'within'].includes(predicate) ? {engine} : {}),
+        ...(['intersects', 'contains', 'within', 'dwithin'].includes(predicate) ? {engine} : {}),
         id: 'relate-anti',
         how: 'anti',
         unmatched: {
@@ -495,13 +555,14 @@ export const relateMode: SpatialAnalysisModeDefinition = {
         resources: build,
         compiled,
         prepared,
-        engineText: `inner ${innerJoin.usesRelateEngine ? 'relate' : 'fast'} (matrix output), anti ${antiJoin.usesRelateEngine ? 'relate' : 'fast'}`,
+        engineText: `inner ${describeEngine(innerJoin)}${predicate === 'dwithin' ? '' : ' (matrix output)'}, anti ${describeEngine(antiJoin)}`,
         kind: querySet,
         scene,
         reader: undefined as unknown as SummaryReader,
         positionsBuffer,
         segmentsBuffer,
         segmentRowsBuffer,
+        pairCountBuffer: pairCount,
         matchedFlags,
         unmatchedFlags,
         rightCounts,
@@ -546,10 +607,19 @@ export const relateMode: SpatialAnalysisModeDefinition = {
         matrices: context.controls.addReadout('Relate matrices', '...'),
         flags: context.controls.addReadout('Overflow / uncertain', '...'),
         engine: context.controls.addReadout('Engine path', '...'),
+        timing: context.controls.addReadout('Graph time (joins + candidates)', '...'),
         reuse: context.controls.addReadout('Right-side BVH builds', '...')
       };
       return handles;
     })();
+
+    /** The predicate with its per-frame parameter, for readouts and the tooltip. */
+    const describePredicate = () =>
+      predicate === 'relate'
+        ? `pattern ${parsePattern(pattern).join(' | ')}`
+        : predicate === 'dwithin'
+          ? `dwithin ${distanceMeters} m`
+          : predicate;
 
     const handleSummary = (build: Build, bytes: ArrayBuffer) => {
       if (destroyed || build !== active) return;
@@ -602,11 +672,11 @@ export const relateMode: SpatialAnalysisModeDefinition = {
           'the complement of the pairs'
       );
       pairsReadout.candidates.setValue(
-        `${formatCount(words[4])} candidate pairs, ${formatCount(words[2])} pass ${
-          predicate === 'relate' ? `pattern ${pattern}` : predicate
-        }`
+        `${formatCount(words[4])} candidate pairs, ${formatCount(words[2])} pass ${describePredicate()}`
       );
-      pairsReadout.matrices.setValue(topMatrices || 'none');
+      pairsReadout.matrices.setValue(
+        predicate === 'dwithin' ? 'none: dwithin has no matrix' : topMatrices || 'none'
+      );
       pairsReadout.flags.setValue(
         `${words[1] || words[6] || words[8] ? 'OVERFLOW' : 'no'} / ${formatCount(words[3])} pairs`
       );
@@ -618,10 +688,38 @@ export const relateMode: SpatialAnalysisModeDefinition = {
       );
     };
 
+    /** Times the active graph outside the frame (GPU timestamps when available). */
+    const measureGraph = async () => {
+      if (measuring || destroyed) return;
+      measuring = true;
+      const build = active;
+      try {
+        const timing = await measureCompiledGraph(device, build.compiled, {
+          parameters: undefined,
+          completionBuffer: build.pairCountBuffer
+        });
+        if (!destroyed && build === active) {
+          pairsReadout.timing.setValue(
+            `${formatCompiledGraphTiming(timing)} at ${describePredicate()}`
+          );
+        }
+      } catch {
+        // The build was released, or the device was destroyed, while measuring.
+      } finally {
+        measuring = false;
+      }
+    };
+    /** Re-times shortly after the last per-frame parameter change. */
+    const scheduleMeasure = () => {
+      clearTimeout(measureTimer);
+      measureTimer = setTimeout(() => void measureGraph(), REMEASURE_DELAY);
+    };
+
     const rebuild = () => {
       const previous = active;
       active = buildScene();
       pinned.length = 0;
+      autoMeasureScheduled = false;
       if (previous) {
         requestAnimationFrame(() =>
           requestAnimationFrame(() => {
@@ -642,12 +740,25 @@ export const relateMode: SpatialAnalysisModeDefinition = {
       }
     });
     context.controls.addSelect({
-      label: 'DE-9IM pattern for predicate "relate" (compile-time)',
+      label: 'DE-9IM pattern for predicate "relate" (per-frame: no rebuild)',
       options: PATTERNS,
       value: pattern,
       onChange: value => {
         pattern = value;
-        if (predicate === 'relate') rebuild();
+        writePattern();
+        if (predicate === 'relate') scheduleMeasure();
+      }
+    });
+    context.controls.addSlider({
+      label: 'dwithin distance (per-frame parameter: no rebuild)',
+      min: 0,
+      max: MAXIMUM_DISTANCE,
+      step: 50,
+      value: distanceMeters,
+      format: value => `${value} m`,
+      onChange: value => {
+        distanceMeters = value;
+        if (predicate === 'dwithin') scheduleMeasure();
       }
     });
     context.controls.addSelect<'auto' | 'fast' | 'relate'>({
@@ -698,6 +809,10 @@ export const relateMode: SpatialAnalysisModeDefinition = {
       }
     });
     context.controls.addButton({
+      label: 'Measure graph time',
+      onClick: () => void measureGraph()
+    });
+    context.controls.addButton({
       label: 'Release dragged shapes',
       onClick: () => {
         pinned.length = 0;
@@ -714,7 +829,9 @@ export const relateMode: SpatialAnalysisModeDefinition = {
     });
     context.controls.addNote(
       'The ZIP index is a GPUSpatialJoinPrepared handle shared by the predicate join, the anti join and the candidate stage. ' +
-        'It builds on the first frame only; tick the contrast toggle to rebuild it every frame.'
+        'It builds on the first frame only; tick the contrast toggle to rebuild it every frame. ' +
+        'Pattern and distance are parameter buffers written every frame; only the predicate, the engine and the query kind rebuild. ' +
+        'The graph time is measured outside the frame after the first frames and shortly after a pattern or distance change.'
     );
     context.controls.addReadout(
       'ZIP rings',
@@ -732,10 +849,16 @@ export const relateMode: SpatialAnalysisModeDefinition = {
         build.positionsBuffer.write(build.scene.positions);
         build.segmentsBuffer.write(build.scene.segments);
         if (invalidateEveryFrame) build.prepared.invalidate();
+        writePattern();
+        distanceParameters.write(Float32Array.of(distanceMeters));
         build.compiled.encode(commandEncoder, {parameters: undefined});
         build.frames++;
         build.reader.markStale();
         build.reader.flush(commandEncoder);
+        if (!autoMeasureScheduled && build.frames >= AUTO_MEASURE_FRAME) {
+          autoMeasureScheduled = true;
+          void measureGraph();
+        }
       },
       getLayers() {
         const coordinateOrigin: [number, number, number] = [zips.origin[0], zips.origin[1], 0];
@@ -818,11 +941,15 @@ export const relateMode: SpatialAnalysisModeDefinition = {
         const [x, y] = projection.project(event.coordinate[0], event.coordinate[1]);
         const row = findContainingFeature(zips, x, y);
         if (row < 0) return null;
-        const label = predicate === 'relate' ? `relate ${pattern}` : predicate;
+        const label = describePredicate();
         const lines = active.pairs
           .filter(pair => pair.right === row)
           .slice(0, 6)
-          .map(pair => `query ${pair.left}: ${formatGPUSpatialRelate(pair.matrix & 0x3ffff)}`);
+          .map(pair =>
+            predicate === 'dwithin'
+              ? `query ${pair.left}`
+              : `query ${pair.left}: ${formatGPUSpatialRelate(pair.matrix & 0x3ffff)}`
+          );
         return (
           `ZIP ${zips.featureNames[row] ?? zips.featureIds[row]}\n` +
           (lines.length ? `${label} matches (DE-9IM)\n${lines.join('\n')}` : `no query ${label}`)
@@ -830,6 +957,7 @@ export const relateMode: SpatialAnalysisModeDefinition = {
       },
       destroy() {
         destroyed = true;
+        clearTimeout(measureTimer);
         active.resources.destroy();
         resources.destroy();
       }

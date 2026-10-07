@@ -4,9 +4,12 @@
 
 /**
  * Spatial interpolation of scattered San Francisco elevation samples. Four thousand random land
- * points sample the terrain raster; `GPUInverseDistanceWeighting` rebuilds a grid index over them
- * and interpolates a 256 x 192 raster that follows the camera (the extent is a parameter buffer
- * rewritten from the viewport each frame). `GPUFocalStatistics` then runs over that raster with a
+ * points sample the terrain raster; `GPUInverseDistanceWeighting` and `GPUKriging` (local ordinary
+ * kriging over the k nearest samples under a variogram fitted on the CPU to the read-back
+ * `GPUVariogram` bins) each rebuild a grid index over them and interpolate a 256 x 192 raster that
+ * follows the camera (the extent is a parameter buffer rewritten from the viewport each frame).
+ * A one-line blend kernel picks the method per frame from a parameter buffer, so the IDW versus
+ * kriging selector is a buffer write; the kriging variance is its own output and map. `GPUFocalStatistics` then runs over that raster with a
  * per-frame window radius and shape, and `GPUTerrainContours` extracts contours from the smoothed
  * mean, all in one compiled graph. Power, radius, nearest-k, minimum neighbors, focal radius and
  * shape, contour interval, and the resample button are buffer writes; the statistic select only
@@ -35,6 +38,19 @@ import {
   GPUInverseDistanceWeighting,
   type GPUFocalStatisticsShape
 } from '@luma.gl/experimental/gpu-spatial-analysis';
+import {
+  getGPUKrigingParameterValues,
+  GPU_KRIGING_PARAMETER_LENGTH,
+  GPUKriging
+} from '@luma.gl/experimental/gpu-spatial-analysis';
+import {
+  fitVariogramModel,
+  getGPUVariogramParameterValues,
+  GPU_VARIOGRAM_PARAMETER_LENGTH,
+  GPUVariogram,
+  type VariogramModel,
+  type VariogramModelType
+} from '@luma.gl/experimental/gpu-dataframe';
 import {GPUTerrainContours} from '@luma.gl/experimental/gpu-terrain';
 import {importGraphBuffer} from '../graph-buffers';
 import {createSeededRandom, LocalMetricProjection} from '../spatial-analysis-data';
@@ -49,6 +65,8 @@ import {
   SpatialAnalysisResources
 } from '../spatial-analysis-resources';
 import {createExtentFollowingSegmentLayer} from './interpolation-layers';
+import {addKernelPass} from './mode-kernels';
+import {SummaryReader} from './summary-reader';
 import {formatCompiledGraphTiming, measureCompiledGraph} from './vector-timing';
 
 const SAMPLE_COUNT = 4000;
@@ -62,6 +80,10 @@ const MAXIMUM_FOCAL_RADIUS = 8;
 /** Compile-time number of contour level slots; level `k` is `interval * (k + 1)`. */
 const CONTOUR_LEVEL_COUNT = 12;
 const CONTOUR_SEGMENT_CAPACITY = 12000;
+/** Variogram lag bins over `[0, VARIOGRAM_RANGE_FRACTION * extent width]`. */
+const LAG_COUNT = 20;
+const VARIOGRAM_RANGE_FRACTION = 0.4;
+const VARIOGRAM_GRID_SIZE: readonly [number, number] = [24, 24];
 const INDEX_GRID_SIZE: readonly [number, number] = [48, 48];
 const READBACK_INTERVAL_FRAMES = 20;
 const AUTO_MEASURE_FRAME = 40;
@@ -71,16 +93,19 @@ const ExtentFollowingSegmentLayer = createExtentFollowingSegmentLayer([
   RASTER_HEIGHT
 ]);
 
-type Statistic = 'mean' | 'min' | 'max' | 'standardDeviation';
+type Statistic = 'mean' | 'min' | 'max' | 'standardDeviation' | 'krigingVariance';
+type Method = 'idw' | 'kriging';
 
 export const interpolationMode: SpatialAnalysisModeDefinition = {
   id: 'interpolation',
   title: 'Interpolate',
-  contributors: ['GPUInverseDistanceWeighting', 'GPUFocalStatistics'],
+  contributors: ['GPUInverseDistanceWeighting', 'GPUKriging', 'GPUVariogram', 'GPUFocalStatistics'],
   description:
-    'Four thousand scattered elevation samples are interpolated on the GPU with inverse distance ' +
-    'weighting onto a raster that follows the camera, smoothed with focal statistics and ' +
-    'contoured. Power, radius, nearest-k and window size are per-frame parameters.',
+    'Four thousand scattered elevation samples are interpolated on the GPU onto a raster that ' +
+    'follows the camera, by inverse distance weighting or by local ordinary kriging with a ' +
+    'variogram fitted to the samples. Switch the method, then view the kriging variance map to ' +
+    'see where the samples constrain the surface. Smoothed with focal statistics and contoured; ' +
+    'power, radius, neighbors and window size are per-frame parameters.',
   initialViewState: {longitude: -122.44, latitude: 37.755, zoom: 11.6},
 
   async create(context) {
@@ -117,8 +142,14 @@ export const interpolationMode: SpatialAnalysisModeDefinition = {
     const positionsBuffer = resources.createBuffer('positions', positionValues);
     const valuesBuffer = resources.createBuffer('values', sampleValues);
     const surfaceBuffer = resources.createBuffer('surface', CELL_COUNT * 4);
+    const idwSurfaceBuffer = resources.createBuffer('idw-surface', CELL_COUNT * 4);
+    const krigingSurfaceBuffer = resources.createBuffer('kriging-surface', CELL_COUNT * 4);
+    const krigingVarianceBuffer = resources.createBuffer('kriging-variance', CELL_COUNT * 4);
+    const semivarianceBuffer = resources.createBuffer('semivariances', LAG_COUNT * 4);
+    const pairCountBuffer = resources.createBuffer('variogram-pairs', LAG_COUNT * 4);
+    const meanDistanceBuffer = resources.createBuffer('variogram-distances', LAG_COUNT * 4);
     const countsBuffer = resources.createBuffer('counts', CELL_COUNT * 4);
-    const focalBuffers: Record<Statistic, Buffer> = {
+    const focalBuffers: Record<Exclude<Statistic, 'krigingVariance'>, Buffer> = {
       mean: resources.createBuffer('focal-mean', CELL_COUNT * 4),
       min: resources.createBuffer('focal-min', CELL_COUNT * 4),
       max: resources.createBuffer('focal-max', CELL_COUNT * 4),
@@ -131,6 +162,17 @@ export const interpolationMode: SpatialAnalysisModeDefinition = {
       'float32',
       GPU_INVERSE_DISTANCE_WEIGHTING_PARAMETER_LENGTH
     );
+    const krigingParameters = resources.createParameterBuffer(
+      'kriging-parameters',
+      'float32',
+      GPU_KRIGING_PARAMETER_LENGTH
+    );
+    const variogramParameters = resources.createParameterBuffer(
+      'variogram-parameters',
+      'float32',
+      GPU_VARIOGRAM_PARAMETER_LENGTH
+    );
+    const methodParameters = resources.createParameterBuffer('method-parameters', 'float32', 4);
     const focalParameters = resources.createParameterBuffer(
       'focal-parameters',
       'float32',
@@ -161,17 +203,33 @@ export const interpolationMode: SpatialAnalysisModeDefinition = {
 
     const graph = new GPUCommandGraph<void>(device, {id: 'interpolation'});
     const surfaceView = importGraphBuffer(graph, 'surface', surfaceBuffer, 'float32', CELL_COUNT);
+    const positionsView = importGraphBuffer(
+      graph,
+      'positions',
+      positionsBuffer,
+      'float32x2',
+      SAMPLE_COUNT
+    );
+    const valuesView = importGraphBuffer(graph, 'values', valuesBuffer, 'float32', SAMPLE_COUNT);
+    const idwSurfaceView = importGraphBuffer(
+      graph,
+      'idw-surface',
+      idwSurfaceBuffer,
+      'float32',
+      CELL_COUNT
+    );
+    const krigingSurfaceView = importGraphBuffer(
+      graph,
+      'kriging-surface',
+      krigingSurfaceBuffer,
+      'float32',
+      CELL_COUNT
+    );
     graph.add(
       new GPUInverseDistanceWeighting({
         id: 'idw',
-        positions: importGraphBuffer(
-          graph,
-          'positions',
-          positionsBuffer,
-          'float32x2',
-          SAMPLE_COUNT
-        ),
-        values: importGraphBuffer(graph, 'values', valuesBuffer, 'float32', SAMPLE_COUNT),
+        positions: positionsView,
+        values: valuesView,
         parameters: idwParameters.importToGraph(graph),
         width: RASTER_WIDTH,
         height: RASTER_HEIGHT,
@@ -179,11 +237,55 @@ export const interpolationMode: SpatialAnalysisModeDefinition = {
         indexBounds: terrainBounds,
         maximumNeighborCount: MAXIMUM_NEIGHBOR_COUNT,
         output: {
-          values: surfaceView,
+          values: idwSurfaceView,
           counts: importGraphBuffer(graph, 'counts', countsBuffer, 'uint32', CELL_COUNT)
         }
       })
     );
+    graph.add(
+      new GPUKriging({
+        id: 'kriging',
+        positions: positionsView,
+        values: valuesView,
+        parameters: krigingParameters.importToGraph(graph),
+        width: RASTER_WIDTH,
+        height: RASTER_HEIGHT,
+        indexGridSize: INDEX_GRID_SIZE,
+        indexBounds: terrainBounds,
+        maximumNeighborCount: MAXIMUM_NEIGHBOR_COUNT,
+        output: {
+          values: krigingSurfaceView,
+          variance: importGraphBuffer(
+            graph,
+            'kriging-variance',
+            krigingVarianceBuffer,
+            'float32',
+            CELL_COUNT
+          )
+        }
+      })
+    );
+    // The method selector: a parameter-buffer word chooses which surface feeds focal statistics.
+    addKernelPass(graph, {
+      id: 'select-method',
+      bindings: [
+        {name: 'idwSurface', view: idwSurfaceView, type: 'f32', access: 'read'},
+        {name: 'krigingSurface', view: krigingSurfaceView, type: 'f32', access: 'read'},
+        {
+          name: 'method',
+          view: methodParameters.importToGraph(graph),
+          type: 'f32',
+          access: 'read'
+        },
+        {name: 'surface', view: surfaceView, type: 'f32', access: 'read_write'}
+      ],
+      invocationCount: CELL_COUNT,
+      body: `surface[surfaceOffset + index] = select(
+    idwSurface[idwSurfaceOffset + index],
+    krigingSurface[krigingSurfaceOffset + index],
+    method[methodOffset] > 0.5
+  );`
+    });
     const focalMean = importGraphBuffer(
       graph,
       'focal-mean',
@@ -251,10 +353,69 @@ export const interpolationMode: SpatialAnalysisModeDefinition = {
     );
     const compiled: CompiledGPUCommandGraph<void> = resources.track(graph.compile());
 
+    // The empirical variogram of the samples runs in its own small graph, only when the samples
+    // change; the CPU fits a model to its read-back bins.
+    const variogramGraph = new GPUCommandGraph<void>(device, {id: 'interpolation-variogram'});
+    variogramGraph.add(
+      new GPUVariogram({
+        id: 'variogram',
+        positions: importGraphBuffer(
+          variogramGraph,
+          'positions',
+          positionsBuffer,
+          'float32x2',
+          SAMPLE_COUNT
+        ),
+        values: importGraphBuffer(variogramGraph, 'values', valuesBuffer, 'float32', SAMPLE_COUNT),
+        parameters: variogramParameters.importToGraph(variogramGraph),
+        gridSize: VARIOGRAM_GRID_SIZE,
+        lagCount: LAG_COUNT,
+        semivariances: importGraphBuffer(
+          variogramGraph,
+          'semivariances',
+          semivarianceBuffer,
+          'float32',
+          LAG_COUNT
+        ),
+        pairCounts: importGraphBuffer(
+          variogramGraph,
+          'pair-counts',
+          pairCountBuffer,
+          'uint32',
+          LAG_COUNT
+        ),
+        meanDistances: importGraphBuffer(
+          variogramGraph,
+          'mean-distances',
+          meanDistanceBuffer,
+          'float32',
+          LAG_COUNT
+        )
+      })
+    );
+    const variogramCompiled: CompiledGPUCommandGraph<void> = resources.track(
+      variogramGraph.compile()
+    );
+    const variogramMaximumDistance =
+      VARIOGRAM_RANGE_FRACTION * (terrainBounds[2] - terrainBounds[0]);
+    variogramParameters.write(
+      getGPUVariogramParameterValues({
+        bounds: terrainBounds,
+        maximumDistance: variogramMaximumDistance
+      })
+    );
+
     // --- State ---------------------------------------------------------------------------------
     let power = 2;
     let searchRadius = 900;
     let neighborCount = 0;
+    let method: Method = 'idw';
+    let krigingNeighborCount = 12;
+    let variogramType: VariogramModelType = 'spherical';
+    let variogramModel: VariogramModel | null = null;
+    let variogramBins: {distances: number[]; semivariances: number[]; pairCounts: number[]} | null =
+      null;
+    let variogramStale = true;
     let minimumNeighborCount = 1;
     let focalRadius = 2;
     let focalShape: GPUFocalStatisticsShape = 'circle';
@@ -280,6 +441,83 @@ export const interpolationMode: SpatialAnalysisModeDefinition = {
         })
       );
     }
+    function getSampleVariance(): number {
+      let sum = 0;
+      let sumOfSquares = 0;
+      for (const value of sampleValues) {
+        sum += value;
+        sumOfSquares += value * value;
+      }
+      const mean = sum / SAMPLE_COUNT;
+      return Math.max(sumOfSquares / SAMPLE_COUNT - mean * mean, 1);
+    }
+    function getKrigingVariogram() {
+      if (variogramModel) return variogramModel;
+      // Until the first read-back arrives: a plausible spherical model from the sample variance.
+      const variance = getSampleVariance();
+      return {
+        model: variogramType,
+        nugget: 0.05 * variance,
+        sill: 0.95 * variance,
+        range: 0.5 * variogramMaximumDistance
+      };
+    }
+    function writeKrigingParameters(): void {
+      const {model, nugget, sill, range} = getKrigingVariogram();
+      krigingParameters.write(
+        getGPUKrigingParameterValues({
+          extent: viewBounds,
+          searchRadius,
+          neighborCount: krigingNeighborCount,
+          minimumNeighborCount: Math.max(minimumNeighborCount, 3),
+          variogram: {model, nugget: Math.max(nugget, 1e-6), sill: Math.max(sill, 1e-6), range}
+        })
+      );
+    }
+    function writeMethodParameters(): void {
+      methodParameters.write(new Float32Array([method === 'kriging' ? 1 : 0, 0, 0, 0]));
+    }
+    function fitVariogram(): void {
+      if (!variogramBins) return;
+      try {
+        variogramModel = fitVariogramModel(variogramBins, {model: variogramType});
+      } catch {
+        variogramModel = null;
+      }
+      const model = variogramModel;
+      variogramReadout.setValue(
+        model
+          ? `${model.nugget.toFixed(0)} / ${model.sill.toFixed(0)} m² / ${model.range.toFixed(0)} m`
+          : 'not fitted'
+      );
+      writeKrigingParameters();
+      context.updateLayers();
+    }
+    const variogramReader = new SummaryReader(
+      resources,
+      'interpolation-variogram',
+      [
+        {buffer: semivarianceBuffer, size: LAG_COUNT * 4},
+        {buffer: pairCountBuffer, size: LAG_COUNT * 4},
+        {buffer: meanDistanceBuffer, size: LAG_COUNT * 4}
+      ],
+      bytes => {
+        const floats = new Float32Array(bytes);
+        const counts = new Uint32Array(bytes);
+        const bins = {
+          distances: [] as number[],
+          semivariances: [] as number[],
+          pairCounts: [] as number[]
+        };
+        for (let lag = 0; lag < LAG_COUNT; lag++) {
+          bins.semivariances.push(floats[lag]);
+          bins.pairCounts.push(counts[LAG_COUNT + lag]);
+          bins.distances.push(floats[2 * LAG_COUNT + lag]);
+        }
+        variogramBins = bins;
+        fitVariogram();
+      }
+    );
     function writeFocalParameters(): void {
       focalParameters.write(
         getGPUFocalStatisticsParameterValues({radius: focalRadius, shape: focalShape})
@@ -294,17 +532,56 @@ export const interpolationMode: SpatialAnalysisModeDefinition = {
       );
     }
     writeIdwParameters();
+    writeKrigingParameters();
+    writeMethodParameters();
     writeFocalParameters();
     writeLevels();
 
     // --- Controls ------------------------------------------------------------------------------
+    context.controls.addSelect<Method>({
+      label: 'Interpolation method (parameter-buffer switch)',
+      options: [
+        {value: 'idw', label: 'Inverse distance weighting'},
+        {value: 'kriging', label: 'Ordinary kriging (local, variogram-based)'}
+      ],
+      value: method,
+      onChange: value => {
+        method = value;
+        writeMethodParameters();
+      }
+    });
+    context.controls.addSelect<VariogramModelType>({
+      label: 'Kriging variogram model (CPU refit of the bins)',
+      options: [
+        {value: 'spherical', label: 'Spherical'},
+        {value: 'exponential', label: 'Exponential'},
+        {value: 'gaussian', label: 'Gaussian'}
+      ],
+      value: variogramType,
+      onChange: value => {
+        variogramType = value;
+        fitVariogram();
+      }
+    });
+    context.controls.addSlider({
+      label: 'Kriging neighbors k (per-frame)',
+      min: 3,
+      max: MAXIMUM_NEIGHBOR_COUNT,
+      step: 1,
+      value: krigingNeighborCount,
+      onChange: value => {
+        krigingNeighborCount = value;
+        writeKrigingParameters();
+      }
+    });
     context.controls.addSelect<Statistic>({
       label: 'Focal statistic shown (output buffer swap)',
       options: [
         {value: 'mean', label: 'Mean (smoothed surface)'},
         {value: 'min', label: 'Minimum'},
         {value: 'max', label: 'Maximum'},
-        {value: 'standardDeviation', label: 'Standard deviation (roughness)'}
+        {value: 'standardDeviation', label: 'Standard deviation (roughness)'},
+        {value: 'krigingVariance', label: 'Kriging variance (uncertainty map)'}
       ],
       value: statistic,
       onChange: value => {
@@ -418,6 +695,7 @@ export const interpolationMode: SpatialAnalysisModeDefinition = {
         generateSamples();
         positionsBuffer.write(positionValues);
         valuesBuffer.write(sampleValues);
+        variogramStale = true;
       }
     });
     context.controls.addLegend({
@@ -434,10 +712,12 @@ export const interpolationMode: SpatialAnalysisModeDefinition = {
     });
     context.controls.addNote(
       'Cells with no sample inside the radius are nodata (transparent). Raise the radius or ' +
-        'lower the minimum neighbors to fill them; the focal window shrinks near nodata.'
+        'lower the minimum neighbors to fill them; the focal window shrinks near nodata. ' +
+        'Kriging needs at least 3 neighbors and its variance map is dark near samples.'
     );
     context.controls.addReadout('Samples', formatCount(SAMPLE_COUNT));
     context.controls.addReadout('Raster', `${RASTER_WIDTH} × ${RASTER_HEIGHT} cells`);
+    const variogramReadout = context.controls.addReadout('Variogram nugget / sill / range');
     const cellSizeReadout = context.controls.addReadout('Cell size');
     const nodataReadout = context.controls.addReadout('IDW nodata cells');
     const timingReadout = context.controls.addReadout('Graph time (all stages)');
@@ -496,15 +776,22 @@ export const interpolationMode: SpatialAnalysisModeDefinition = {
     };
 
     const instance: SpatialAnalysisModeInstance = {
-      getCompiledGraphs: () => [compiled],
+      getCompiledGraphs: () => [compiled, variogramCompiled],
       encode(commandEncoder, frame) {
         encodedFrames++;
         viewBounds = getViewportMetricBounds(frame.viewport, projection);
         writeIdwParameters();
+        writeKrigingParameters();
+        if (variogramStale) {
+          variogramStale = false;
+          variogramCompiled.encode(commandEncoder, {parameters: undefined});
+          variogramReader.markStale();
+        }
         cellSizeReadout.setValue(
           `${((viewBounds[2] - viewBounds[0]) / RASTER_WIDTH).toFixed(0)} m`
         );
         compiled.encode(commandEncoder, {parameters: undefined});
+        variogramReader.flush(commandEncoder);
         for (let level = 0; level < CONTOUR_LEVEL_COUNT; level++) {
           // Instance-count word of record `level` (16-byte records of four uint32 words).
           commandEncoder.copyBufferToBuffer({
@@ -525,7 +812,11 @@ export const interpolationMode: SpatialAnalysisModeDefinition = {
       },
       getLayers() {
         const layers: Layer[] = [];
-        const isSpread = statistic === 'standardDeviation';
+        const isVariance = statistic === 'krigingVariance';
+        const isSpread = statistic === 'standardDeviation' || isVariance;
+        const totalSill = variogramModel
+          ? variogramModel.nugget + variogramModel.sill
+          : getSampleVariance();
         layers.push(
           new SpatialAnalysisRasterLayer({
             id: `interpolation-${statistic}`,
@@ -533,10 +824,15 @@ export const interpolationMode: SpatialAnalysisModeDefinition = {
             gridSize: [RASTER_WIDTH, RASTER_HEIGHT],
             bounds: idwParameters.buffer,
             rowOrigin: 'south',
-            values: focalBuffers[statistic],
+            values:
+              statistic === 'krigingVariance' ? krigingVarianceBuffer : focalBuffers[statistic],
             valueFormat: 'float32',
             colormap: isSpread ? 'inferno' : 'viridis',
-            valueRange: isSpread ? [0, 30] : [0, maximumElevation],
+            valueRange: isVariance
+              ? [0, Math.max(totalSill * 0.5, 1)]
+              : isSpread
+                ? [0, 30]
+                : [0, maximumElevation],
             noDataColor: [0, 0, 0, 0],
             color: [255, 255, 255, 200]
           })

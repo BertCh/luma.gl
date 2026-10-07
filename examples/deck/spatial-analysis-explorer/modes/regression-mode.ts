@@ -16,7 +16,12 @@
  * - GWR: `GPUGeographicallyWeightedRegression` with an AICc bandwidth ladder compiled once; kernel,
  *   bandwidth mode, the choice between "auto (AICc)" and one ladder value, and the plotted
  *   coefficient are buffer writes or layer props. A single-ladder-value run is encoded when an
- *   input changes, not every frame (brute force, `O(n^2 * ladder)`).
+ *   input changes, not every frame (brute force, `O(n^2 * ladder)`). The local condition number
+ *   (mgwr `local_collinearity`) is a map toggle, and `GPUGeographicallyWeightedRegressionNonstationarityTest`
+ *   is a second compiled graph run by a button: it permutes the observations among the cells,
+ *   refits at the selected bandwidth and reports a Monte Carlo p-value per coefficient.
+ * - Spatial: diagnostics and `GPUSpatialTwoStageLeastSquares`, whose instrument order (`WX` or
+ *   `WX` and `W²X`, spreg `w_lags`) is compile-time and re-enters the mode.
  * - Composite: `GPUCompositeScore` with live weight, direction, scaler and aggregation controls.
  * - Inequality: `GPUInequality` per latitude band, with a Lorenz curve chart drawn from the
  *   knots read back (a small summary).
@@ -47,6 +52,8 @@ import {
   type GPUGeographicallyWeightedRegressionKernel,
   getGPUGeographicallyWeightedRegressionParameterValues,
   getGPUOrdinaryLeastSquaresParameterValues,
+  getGPUPermutationParameterValues,
+  GPU_PERMUTATION_PARAMETER_LENGTH,
   getGPUNeighborSearchParameterValues,
   GPU_NEIGHBOR_SEARCH_PARAMETER_LENGTH,
   GPUNeighborSearch,
@@ -95,6 +102,12 @@ import {
   GPU_ORDINARY_LEAST_SQUARES_SUMMARY_ROW_COUNT,
   GPU_ORDINARY_LEAST_SQUARES_SUMMARY_SIGMA_SQUARED,
   getGPUGeographicallyWeightedRegressionParameterLength
+} from '@luma.gl/experimental/gpu-spatial-analysis';
+import {
+  GPUGeographicallyWeightedRegressionNonstationarityTest,
+  GPU_GWR_NONSTATIONARITY_SUMMARY,
+  GPU_GWR_NONSTATIONARITY_TABLE,
+  GPU_GWR_NONSTATIONARITY_TABLE_STRIDE
 } from '@luma.gl/experimental/gpu-spatial-analysis';
 import {importGraphBuffer} from '../graph-buffers';
 import {
@@ -174,6 +187,7 @@ export const regressionMode: SpatialAnalysisModeDefinition = {
     'GPUSpatialErrorGM',
     'GPUNeighborSearch',
     'GPUGeographicallyWeightedRegression',
+    'GPUGeographicallyWeightedRegressionNonstationarityTest',
     'GPUCompositeScore',
     'GPUInequality'
   ],
@@ -182,8 +196,11 @@ export const regressionMode: SpatialAnalysisModeDefinition = {
     'coefficients, a weight-slider composite index and Lorenz curves, all computed on the GPU ' +
     'from road, taxi and POI columns. The Spatial view tests OLS residuals for a spatial lag or ' +
     'error and fits the lag model by two-stage least squares; the Spatial error view fits the ' +
-    'error model (lambda) and compares it with OLS. Both take distance-band or kNN weights. ' +
-    'Sliders rewrite parameter buffers; the weights choice and k rebuild (labelled).',
+    'error model (lambda) and compares it with OLS. Both take distance-band or kNN weights; the ' +
+    'lag model can use W²X instruments too (rebuilds, labelled). The GWR view maps the local ' +
+    'condition number and runs a Monte Carlo test of which coefficient surfaces vary beyond ' +
+    'chance (button, p-value per coefficient). Sliders rewrite parameter buffers; the weights ' +
+    'choice and k rebuild (labelled).',
   initialViewState: VIEW_STATE,
 
   async create(context) {
@@ -627,6 +644,11 @@ const GWR_LADDER_LENGTH = 8;
 const ADAPTIVE_LADDER = [12, 20, 30, 45, 65, 90, 110, 128];
 const FIXED_LADDER = [350, 500, 700, 1000, 1400, 2000, 2800, 4000];
 const COEFFICIENT_COLUMNS = ['Intercept', ...PREDICTOR_NAMES];
+/** Default and largest permutation counts of the Monte Carlo test (the latter is compile-time). */
+const GWR_TEST_PERMUTATIONS = 19;
+const GWR_TEST_MAXIMUM_PERMUTATIONS = 99;
+/** Local condition numbers above this value flag a nearly collinear local design (mgwr, Wheeler). */
+const CONDITION_NUMBER_WARNING = 30;
 
 type GwrMap = 'coefficient' | 'localR2';
 
@@ -644,12 +666,30 @@ function createGwrView(
   let dirty = true;
   let coefficientTable = new Float32Array(rowCount * 4);
   let coefficientRange: [number, number] = [-1, 1];
+  let conditionMap = false;
+  let permutations = GWR_TEST_PERMUTATIONS;
+  let testRequested = false;
+  let testEncoded = false;
+  let testStatusReadout: {setValue: (value: string) => void} | undefined;
 
   const positions = resources.createBuffer('positions', study.positions);
   const predictors = resources.createBuffer('predictors', study.predictors);
   const response = resources.createBuffer('response', study.response);
   const rowOfCell = resources.createBuffer('row-of-cell', study.rowOfCell);
   const coefficients = resources.createBuffer('coefficients', rowCount * 4 * 4);
+  const conditionNumbers = resources.createBuffer('condition-numbers', rowCount * 4);
+  const coefficientCount = 4;
+  const testTableLength = coefficientCount * GPU_GWR_NONSTATIONARITY_TABLE_STRIDE;
+  const testTable = resources.createBuffer('test-table', testTableLength * 4);
+  const testSummary = resources.createBuffer(
+    'test-summary',
+    GPU_GWR_NONSTATIONARITY_SUMMARY.length * 4
+  );
+  const permutationParameters = resources.createParameterBuffer(
+    'permutation-parameters',
+    'uint32',
+    GPU_PERMUTATION_PARAMETER_LENGTH
+  );
   const localR2Buffer = resources.createBuffer('local-r2', rowCount * 4);
   const localStatus = resources.createBuffer('local-status', rowCount * 4);
   const bandwidthScores = resources.createBuffer('bandwidth-scores', GWR_LADDER_LENGTH * 4);
@@ -691,6 +731,13 @@ function createGwrView(
         ),
         localR2: importGraphBuffer(graph, 'local-r2', localR2Buffer, 'float32', rowCount),
         localStatus: importGraphBuffer(graph, 'local-status', localStatus, 'uint32', rowCount),
+        localConditionNumber: importGraphBuffer(
+          graph,
+          'condition-numbers',
+          conditionNumbers,
+          'float32',
+          rowCount
+        ),
         bandwidthScores: importGraphBuffer(
           graph,
           'bandwidth-scores',
@@ -741,6 +788,52 @@ function createGwrView(
   );
   const compiledOls = resources.track(olsGraph.compile());
 
+  // The Monte Carlo test reads the regression's inputs and outputs from its own compiled graph.
+  const testGraph = new GPUCommandGraph<void>(context.device, {id: 'regression-gwr-test'});
+  testGraph.add(
+    new GPUGeographicallyWeightedRegressionNonstationarityTest({
+      id: 'gwr-test',
+      positions: importGraphBuffer(testGraph, 'positions', positions, 'float32x2', rowCount),
+      predictors: importGraphBuffer(testGraph, 'predictors', predictors, 'float32', rowCount * 3),
+      predictorCount: 3,
+      response: importGraphBuffer(testGraph, 'response', response, 'float32', rowCount),
+      bandwidthParameters: parameters.importToGraph(testGraph),
+      selectedBandwidth: importGraphBuffer(
+        testGraph,
+        'selected-bandwidth',
+        selectedBandwidth,
+        'float32',
+        2
+      ),
+      coefficients: importGraphBuffer(
+        testGraph,
+        'coefficients',
+        coefficients,
+        'float32',
+        rowCount * coefficientCount
+      ),
+      parameters: permutationParameters.importToGraph(testGraph),
+      maximumPermutations: GWR_TEST_MAXIMUM_PERMUTATIONS,
+      maximumBandwidthCount: GWR_LADDER_LENGTH,
+      maximumNeighborCount: 128,
+      output: {
+        table: importGraphBuffer(testGraph, 'test-table', testTable, 'float32', testTableLength),
+        summary: importGraphBuffer(
+          testGraph,
+          'test-summary',
+          testSummary,
+          'float32',
+          GPU_GWR_NONSTATIONARITY_SUMMARY.length
+        )
+      }
+    })
+  );
+  const compiledTest = resources.track(testGraph.compile());
+  const writePermutations = () => {
+    permutationParameters.write(getGPUPermutationParameterValues({seed: 20260, permutations}));
+  };
+  writePermutations();
+
   const getLadder = () => (bandwidthMode === 'adaptive' ? ADAPTIVE_LADDER : FIXED_LADDER);
   const writeParameters = () => {
     const ladder = getLadder();
@@ -755,6 +848,8 @@ function createGwrView(
       )
     );
     dirty = true;
+    testEncoded = false;
+    testStatusReadout?.setValue('inputs changed: run again');
   };
   context.controls.addSelect<string>({
     label: 'Bandwidth (parameter: the whole ladder is searched by AICc, or one value)',
@@ -829,13 +924,49 @@ function createGwrView(
       context.updateLayers();
     }
   });
+  context.controls.addToggle({
+    label: 'Map the local condition number (collinearity of the local design, mgwr)',
+    value: conditionMap,
+    onChange: value => {
+      conditionMap = value;
+      context.updateLayers();
+    }
+  });
+  context.controls.addSlider({
+    label: 'Monte Carlo permutations (parameter)',
+    min: 9,
+    max: GWR_TEST_MAXIMUM_PERMUTATIONS,
+    step: 10,
+    value: permutations,
+    onChange: value => {
+      permutations = Math.round(value);
+      writePermutations();
+      testEncoded = false;
+      testStatusReadout?.setValue('inputs changed: run again');
+    }
+  });
+  context.controls.addButton({
+    label: 'Run Monte Carlo test (permute the cells, refit at the selected bandwidth)',
+    onClick: () => {
+      testRequested = true;
+      testStatusReadout?.setValue('running...');
+    }
+  });
   context.controls.addLegend({
     title: 'Local coefficient (blue negative, orange positive; 5th to 95th percentile)',
     gradient: DIVERGING_GRADIENT
   });
   context.controls.addLegend({title: 'Local R² (0 to 1)', gradient: VIRIDIS_GRADIENT});
+  context.controls.addLegend({
+    title: 'Local condition number (1 to 30; above 30 the local fit is unreliable)',
+    gradient: {...VIRIDIS_GRADIENT, minimumLabel: '1', maximumLabel: '30+'}
+  });
   context.controls.addNote(
-    'Brute force O(n² x ladder): the graph is encoded when an input changes, not every frame.'
+    'Brute force O(n² x ladder): the graph is encoded when an input changes, not every frame. ' +
+      'The Monte Carlo test reshuffles which cell holds which observation, refits every cell at ' +
+      'the selected bandwidth and counts the shuffles whose coefficient surface varies at least ' +
+      'as much as the observed one: a small p means real spatial variation (cost: permutations x ' +
+      'one fit pass).'
   );
   context.controls.addReadout('Cells (rows)', formatCount(rowCount));
   const selectedReadout = context.controls.addReadout('Selected bandwidth');
@@ -845,6 +976,13 @@ function createGwrView(
   const rSquaredReadout = context.controls.addReadout('R²: GWR / OLS');
   const singularReadout = context.controls.addReadout('Singular locations');
   const spreadReadout = context.controls.addReadout('Coefficient 5-95%');
+  const conditionReadout = context.controls.addReadout(
+    'Local condition number (median / max / > 30)'
+  );
+  testStatusReadout = context.controls.addReadout('Monte Carlo test', 'press the button');
+  const testReadouts = COEFFICIENT_COLUMNS.map(name =>
+    context.controls.addReadout(`Monte Carlo p: ${name}`)
+  );
   context.controls.addReadout('Data', study.attribution);
   writeParameters();
   describeLadder();
@@ -876,7 +1014,10 @@ function createGwrView(
       {buffer: localR2Buffer, size: rowCount * 4},
       {buffer: localStatus, size: rowCount * 4},
       {buffer: olsCoefficients, size: 16},
-      {buffer: olsSummary, size: 64}
+      {buffer: olsSummary, size: 64},
+      {buffer: testTable, size: testTableLength * 4},
+      {buffer: testSummary, size: GPU_GWR_NONSTATIONARITY_SUMMARY.length * 4},
+      {buffer: conditionNumbers, size: rowCount * 4}
     ],
     bytes => {
       const floats = new Float32Array(bytes);
@@ -905,6 +1046,34 @@ function createGwrView(
         count * Math.log(rss / count) +
         count * Math.log(2 * Math.PI) +
         (count * (count + 4)) / (count - 2 - 4);
+      const testBase = olsBase + 20;
+      const testValues = floats.subarray(testBase, testBase + testTableLength);
+      const testSummaryValues = floats.subarray(
+        testBase + testTableLength,
+        testBase + testTableLength + GPU_GWR_NONSTATIONARITY_SUMMARY.length
+      );
+      const conditionBase = testBase + testTableLength + GPU_GWR_NONSTATIONARITY_SUMMARY.length;
+      const conditionValues = floats.slice(conditionBase, conditionBase + rowCount);
+      const finiteConditions = conditionValues.filter(Number.isFinite);
+      const flagged = finiteConditions.filter(value => value > CONDITION_NUMBER_WARNING).length;
+      conditionReadout.setValue(
+        finiteConditions.length > 0
+          ? `${formatNumber(getQuantile(finiteConditions, 0.5), 2)} / ${formatNumber(getQuantile(finiteConditions, 1), 2)} / ${formatCount(flagged)}`
+          : 'n/a'
+      );
+      const testPermutations = testSummaryValues[GPU_GWR_NONSTATIONARITY_SUMMARY.permutations];
+      if (testEncoded && testPermutations > 0) {
+        testReadouts.forEach((readout, index) => {
+          const base = index * GPU_GWR_NONSTATIONARITY_TABLE_STRIDE;
+          const exceedances = testValues[base + GPU_GWR_NONSTATIONARITY_TABLE.exceedances];
+          readout.setValue(
+            `${formatP(testValues[base + GPU_GWR_NONSTATIONARITY_TABLE.pseudoPValue])} (spread ${formatNumber(testValues[base + GPU_GWR_NONSTATIONARITY_TABLE.observedStandardDeviation])}, ${formatCount(exceedances)} of ${testPermutations} permutations as variable)`
+          );
+        });
+        testStatusReadout?.setValue(
+          `${testPermutations} permutations, ${formatCount(testSummaryValues[GPU_GWR_NONSTATIONARITY_SUMMARY.failedFitCount])} singular refits`
+        );
+      }
       const getSummary = (slot: number) => gwr[slot];
       const valid = getSummary(GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_SUMMARY.HAS_VALID_CANDIDATE);
       const ladder = getLadder();
@@ -936,11 +1105,18 @@ function createGwrView(
   );
 
   return {
-    getCompiledGraphs: () => [compiled, compiledOls],
+    getCompiledGraphs: () => [compiled, compiledOls, compiledTest],
     encode(commandEncoder, frame) {
-      if (dirty || frame.frameIndex < 3) {
-        compiled.encode(commandEncoder, {parameters: undefined});
+      if (dirty || frame.frameIndex < 3 || testRequested) {
+        if (dirty || frame.frameIndex < 3) {
+          compiled.encode(commandEncoder, {parameters: undefined});
+        }
         if (frame.frameIndex < 3) compiledOls.encode(commandEncoder, {parameters: undefined});
+        if (testRequested) {
+          compiledTest.encode(commandEncoder, {parameters: undefined});
+          testRequested = false;
+          testEncoded = true;
+        }
         dirty = false;
         reader.request(commandEncoder);
       } else {
@@ -949,7 +1125,7 @@ function createGwrView(
       }
     },
     getLayers(): Layer[] {
-      const localMap = mapKind === 'localR2';
+      const localMap = mapKind === 'localR2' || conditionMap;
       return [
         new CellGridLayer({
           id: 'gwr-cells',
@@ -958,12 +1134,16 @@ function createGwrView(
           cellSize: study.cellSize,
           columns: study.columns,
           cellCount: study.cellCount,
-          values: localMap ? localR2Buffer : coefficients,
+          values: conditionMap ? conditionNumbers : localMap ? localR2Buffer : coefficients,
           valueStride: localMap ? 1 : 4,
           valueOffset: localMap ? 0 : coefficientColumn,
           indices: rowOfCell,
           colormap: localMap ? 'viridis' : 'diverging',
-          valueRange: localMap ? [0, 1] : coefficientRange,
+          valueRange: conditionMap
+            ? [1, CONDITION_NUMBER_WARNING]
+            : localMap
+              ? [0, 1]
+              : coefficientRange,
           color: [255, 255, 255, 215]
         })
       ];
@@ -1482,6 +1662,18 @@ function readWeightsFromUrl(): {kind: WeightsKind; neighborCount: number} {
 let requestedWeights = readWeightsFromUrl();
 let pendingNeighborCountTimer: ReturnType<typeof setTimeout> | undefined;
 
+/** Instrument order of the 2SLS view (spreg `w_lags`), chosen by the last navigation or `?lags=2`. */
+let requestedInstrumentOrder: 1 | 2 =
+  typeof window !== 'undefined' && new URLSearchParams(window.location.search).get('lags') === '2'
+    ? 2
+    : 1;
+
+/** Re-enters the mode with another instrument order, which is compile-time. */
+function navigateInstrumentOrder(order: 1 | 2): void {
+  requestedInstrumentOrder = order;
+  globalThis.spatialAnalysisExplorer?.selectMode('regression');
+}
+
 /** Re-enters the mode with other weights; the search topology (mode, k) is compile-time. */
 function navigateWeights(kind: WeightsKind, neighborCount: number): void {
   requestedWeights = {kind, neighborCount};
@@ -1805,6 +1997,7 @@ function createSpatialView(
       predictors: stage.predictorView,
       response: stage.responseView,
       predictorCount,
+      instrumentOrder: requestedInstrumentOrder,
       output: {
         table: importGraphBuffer(graph, 'two-stage-table', table, 'float32', tableLength),
         summary: importGraphBuffer(
@@ -1828,6 +2021,15 @@ function createSpatialView(
   const compiled = resources.track(graph.compile());
 
   stage.addControls();
+  context.controls.addSelect<string>({
+    label: 'Instruments of the lag model (compile-time: re-enters the mode)',
+    options: [
+      {value: '1', label: '[1, X, WX] (spreg w_lags = 1)'},
+      {value: '2', label: '[1, X, WX, W²X] (spreg w_lags = 2)'}
+    ],
+    value: String(requestedInstrumentOrder),
+    onChange: value => navigateInstrumentOrder(value === '2' ? 2 : 1)
+  });
   context.controls.addSelect<SpatialMap>({
     label: 'Residual map',
     options: [
@@ -1848,7 +2050,8 @@ function createSpatialView(
   context.controls.addNote(
     'Fit OLS, then ask which spatial model: the diagnostics test OLS residuals for a spatial lag ' +
       'and for spatially correlated errors; two-stage least squares then fits the lag model ' +
-      'with instruments [1, X, WX] and reports rho and the Anselin-Kelejian test on its residuals. ' +
+      'with instruments [1, X, WX] (or also W²X, selectable) and reports rho and the Anselin-Kelejian ' +
+      'test on its residuals. ' +
       'Both accept the directed kNN weights; the Spatial error view fits the error model.'
   );
   context.controls.addReadout('Cells (rows)', formatCount(rowCount));

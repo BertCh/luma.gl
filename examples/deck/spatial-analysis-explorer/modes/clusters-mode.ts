@@ -48,8 +48,14 @@ const CLUSTER_CAPACITY = 2048;
 const READBACK_INTERVAL_FRAMES = 12;
 /** Padding added around the data extent so every point is inside the inclusive bounds. */
 const BOUNDS_PADDING_METERS = 10;
-/** Lloyd iterations of `GPUKMeans` (compile-time, fixed). */
-const KMEANS_ITERATIONS = 8;
+/** Most Lloyd iterations of `GPUKMeans` (compile-time); the graph stops early on convergence. */
+const KMEANS_ITERATIONS = 48;
+/**
+ * K-means convergence tolerance as a fraction of the data extent diagonal: the largest center shift
+ * that counts as settled. Measured on the demo data the shift falls from tens of meters straight to
+ * zero (an exact fixed point after 22-29 iterations), so this only guards against f32 noise.
+ */
+const KMEANS_TOLERANCE_EXTENT_FRACTION = 1e-4;
 /** Compile-time `k` range of the k-means slider (the contributor allows up to 256). */
 const KMEANS_MAXIMUM_K = 64;
 const KMEANS_DEFAULT_K = 16;
@@ -61,7 +67,8 @@ const HULL_MAXIMUM_VERTICES = 256;
 const HULL_CAPACITY = 1 << 14;
 const REBUILD_DEBOUNCE_MILLISECONDS = 250;
 const AUTO_MEASURE_FRAME = 40;
-const SUMMARY_HEADER_WORDS = 5;
+/** Header words: cluster count, stored count, overflow flags, then k-means iterations and converged. */
+const SUMMARY_HEADER_WORDS = 7;
 const ELLIPSE_SEGMENTS = 48;
 /** Period in meters of the demo weight sawtooth along x. */
 const WEIGHT_PERIOD_METERS = 250;
@@ -150,6 +157,8 @@ type ClusterSet = {
   pointCount: number;
   resources: SpatialAnalysisResources;
   bounds: [number, number, number, number];
+  /** K-means convergence tolerance in meters. */
+  kmeansTolerance: number;
   parameters: GPUParameterBuffer<'float32'>;
   clusterGraph: CompiledGPUCommandGraph<void>;
   shapeGraph: CompiledGPUCommandGraph<void>;
@@ -162,6 +171,8 @@ type ClusterSet = {
   clusterCount: ClusterBuffer | null;
   clusterStoredCount: ClusterBuffer | null;
   clusterOverflow: ClusterBuffer | null;
+  /** K-means only: `[iterationsUsed, converged]`. */
+  convergence: ClusterBuffer | null;
   sizes: ClusterBuffer;
   centroids: ClusterBuffer;
   geometryCounts: ClusterBuffer;
@@ -203,7 +214,8 @@ export const clustersMode: SpatialAnalysisModeDefinition = {
   description:
     'DBSCAN or k-means of taxi points on the GPU, then per-cluster convex hulls, standard ' +
     'ellipses, bounds, mean and weighted centers and medoids. Drag epsilon and the minimum ' +
-    'neighborhood size, or switch method and k; toggle the shapes to compare them.',
+    'neighborhood size, or switch method and k (k-means stops early and reports its iterations); ' +
+    'toggle the shapes to compare them.',
   initialViewState: {longitude: -73.985, latitude: 40.722, zoom: 12.2},
 
   async create(context) {
@@ -305,7 +317,8 @@ export const clustersMode: SpatialAnalysisModeDefinition = {
       pointCount: number,
       parameters: GPUParameterBuffer<'float32'>,
       outputs: DbscanOutputs,
-      denseBoxShortcut: boolean
+      denseBoxShortcut: boolean,
+      drawCommands?: DrawCommandBuffer
     ): CompiledGPUCommandGraph<void> => {
       const graph = new GPUCommandGraph<void>(device, {id});
       const clusterIds = resources.createBuffer('cluster-ids', CLUSTER_CAPACITY * 4);
@@ -354,6 +367,10 @@ export const clustersMode: SpatialAnalysisModeDefinition = {
               1
             )
           },
+          // The clamped cluster count lands directly in the indirect draw record.
+          drawInstanceCount: drawCommands
+            ? graph.importGPUData('draw-instance-count', drawCommands.getInstanceCountData(0))
+            : undefined,
           clusterSizes: importGraphBuffer(
             graph,
             'cluster-sizes',
@@ -400,6 +417,8 @@ export const clustersMode: SpatialAnalysisModeDefinition = {
         maxX + BOUNDS_PADDING_METERS,
         maxY + BOUNDS_PADDING_METERS
       ];
+      const kmeansTolerance =
+        Math.hypot(maxX - minX, maxY - minY) * KMEANS_TOLERANCE_EXTENT_FRACTION;
       // Demo weights: a sawtooth in x (1 to 4 over WEIGHT_PERIOD_METERS), so within one
       // neighborhood the weighted center visibly separates from the plain mean center.
       const weightValues = new Float32Array(pointCount);
@@ -427,6 +446,14 @@ export const clustersMode: SpatialAnalysisModeDefinition = {
 
       // Clustering graph.
       const isDbscan = setConfig.method === 'dbscan';
+      const drawCommands = resources.track(
+        new DrawCommandBuffer(device, {
+          id: `clusters-${setSerial}-draw`,
+          type: 'draw',
+          commands: [{vertexCount: 6, instanceCount: isDbscan ? 0 : setConfig.k}]
+        })
+      );
+      let convergence: ClusterBuffer | null = null;
       const groupCount = isDbscan ? CLUSTER_CAPACITY : setConfig.k;
       let labels: ClusterBuffer;
       let sizes: ClusterBuffer;
@@ -443,11 +470,13 @@ export const clustersMode: SpatialAnalysisModeDefinition = {
           pointCount,
           parameters,
           dbscan,
-          setConfig.denseBoxShortcut
+          setConfig.denseBoxShortcut,
+          drawCommands
         );
       } else {
         labels = resources.createBuffer('labels', pointCount * 4);
         sizes = resources.createBuffer('sizes', setConfig.k * 4);
+        convergence = resources.createBuffer('convergence', 8);
         centroids = resources.createBuffer('centers', setConfig.k * 8);
         const graph = new GPUCommandGraph<void>(device, {id: `clusters-kmeans-${setSerial}`});
         graph.add(
@@ -462,6 +491,8 @@ export const clustersMode: SpatialAnalysisModeDefinition = {
             ),
             k: setConfig.k,
             iterations: KMEANS_ITERATIONS,
+            tolerance: kmeansTolerance,
+            convergence: importGraphBuffer(graph, 'convergence', convergence, 'uint32', 2),
             initialization: setConfig.initialization,
             seed: setConfig.seed,
             labels: importGraphBuffer(graph, 'labels', labels, 'uint32', pointCount),
@@ -575,13 +606,6 @@ export const clustersMode: SpatialAnalysisModeDefinition = {
       );
       const shapeGraph = resources.track(shapes.compile());
 
-      const drawCommands = resources.track(
-        new DrawCommandBuffer(device, {
-          id: `clusters-${setSerial}-draw`,
-          type: 'draw',
-          commands: [{vertexCount: 6, instanceCount: isDbscan ? 0 : setConfig.k}]
-        })
-      );
       // Summary: header words, then sizes, geometry counts, hull counts, mean and weighted centers
       // and medoids of every group.
       const summaryByteLength = SUMMARY_HEADER_WORDS * 4 + groupCount * (4 + 4 + 4 + 8 + 8 + 4);
@@ -598,6 +622,7 @@ export const clustersMode: SpatialAnalysisModeDefinition = {
         pointCount,
         resources,
         bounds,
+        kmeansTolerance,
         parameters,
         clusterGraph,
         shapeGraph,
@@ -608,6 +633,7 @@ export const clustersMode: SpatialAnalysisModeDefinition = {
         clusterCount: dbscan?.clusterCount ?? null,
         clusterStoredCount: dbscan?.clusterStoredCount ?? null,
         clusterOverflow: dbscan?.clusterOverflow ?? null,
+        convergence,
         sizes,
         centroids,
         geometryCounts,
@@ -845,6 +871,7 @@ export const clustersMode: SpatialAnalysisModeDefinition = {
     const hullReadout = context.controls.addReadout('Hulls (largest, overflow)');
     const centerReadout = context.controls.addReadout('Largest cluster: weighted - mean');
     const medoidReadout = context.controls.addReadout('Largest cluster: medoid - mean');
+    const convergenceReadout = context.controls.addReadout('K-means convergence');
     const timingReadout = context.controls.addReadout('DBSCAN graph timing');
     const attributionReadout = context.controls.addReadout('Data', active.data.attribution);
 
@@ -874,6 +901,7 @@ export const clustersMode: SpatialAnalysisModeDefinition = {
       copy(set.clusterOverflow, 4);
       copy(set.geometryOverflow, 4);
       copy(set.hullOverflow, 4);
+      copy(set.convergence, 8);
       copy(set.sizes, groups * 4);
       copy(set.geometryCounts, groups * 4);
       copy(set.hullCounts, groups * 4);
@@ -931,10 +959,17 @@ export const clustersMode: SpatialAnalysisModeDefinition = {
               }`
             : `K-means k = ${set.config.k}, ${set.config.initialization}${
                 set.config.initialization === 'kmeans++' ? ` seed ${set.config.seed}` : ''
-              }, ${KMEANS_ITERATIONS} iterations`
+              }, up to ${KMEANS_ITERATIONS} iterations`
         );
         geometryReadout.setValue(
           geometryMatches ? 'equal for every cluster' : 'MISMATCH (a group count differs)'
+        );
+        convergenceReadout.setValue(
+          isDbscan
+            ? 'n/a (DBSCAN)'
+            : words[6]
+              ? `converged after ${words[5]} of ${KMEANS_ITERATIONS} iterations (shift <= ${set.kmeansTolerance.toFixed(1)} m)`
+              : `not converged: stopped at the ${words[5]} iteration cap`
         );
         const hullOverflow = words[4];
         const hullFlags = [
@@ -1061,17 +1096,6 @@ export const clustersMode: SpatialAnalysisModeDefinition = {
             );
           }
           set.clusterGraph.encode(commandEncoder, {parameters: undefined});
-          if (set.clusterStoredCount) {
-            // The contributor has no drawInstanceCount: copy the stored cluster count into the
-            // indirect record's instance-count word (second uint32 of the 16-byte record).
-            commandEncoder.copyBufferToBuffer({
-              sourceBuffer: set.clusterStoredCount,
-              sourceOffset: 0,
-              destinationBuffer: set.drawCommands.buffer,
-              destinationOffset: 4,
-              size: 4
-            });
-          }
           set.shapeGraph.encode(commandEncoder, {parameters: undefined});
           readbackWanted = true;
         }

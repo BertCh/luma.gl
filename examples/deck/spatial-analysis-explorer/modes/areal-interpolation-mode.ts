@@ -17,6 +17,10 @@
  *    iteration count is compile-time, so a ladder of graphs is compiled up front and the slider
  *    picks one; a readback proves that every ZIP total is preserved.
  *
+ * 5. Without dasymetric weights `GPUArealInterpolation` takes its unweighted fast path (pair areas
+ *    from run lengths, zone areas from counts); a button times it against the generic weighted
+ *    path on scratch outputs, outside the frame.
+ *
  * The graphs run only when an input changed. Small readbacks feed the conservation readouts.
  */
 
@@ -50,6 +54,7 @@ import {formatCount, SpatialAnalysisResources} from '../spatial-analysis-resourc
 import {createZipLocator, getPolygonBounds} from './areal-interpolation-layers';
 import {addKernelPass} from './mode-kernels';
 import {SummaryReader} from './summary-reader';
+import {formatCompiledGraphTiming, formatSpeedup, measureCompiledGraph} from './vector-timing';
 
 /** Shared raster of both zone systems. Compile-time. */
 const RASTER_WIDTH = 320;
@@ -400,6 +405,95 @@ export const arealInterpolationMode: SpatialAnalysisModeDefinition = {
       square: buildTargetGraph('square')
     };
 
+    // Fast path A/B: the same areal interpolation over the current zone rasters, compiled with and
+    // without the unweighted fast path into scratch outputs, timed outside the frame on demand.
+    const scratchOffsets = resources.createBuffer('timing-offsets', (targetCount + 1) * 4);
+    const scratchNeighbors = resources.createBuffer('timing-neighbors', PAIR_CAPACITY * 4);
+    const scratchExtensive = resources.createBuffer('timing-extensive', PAIR_CAPACITY * 4);
+    const scratchIntensive = resources.createBuffer('timing-intensive', PAIR_CAPACITY * 4);
+    const scratchOverflow = resources.createBuffer('timing-overflow', 4);
+    const buildTimingGraph = (unweightedFastPath: boolean): CompiledGPUCommandGraph<void> => {
+      const graph = new GPUCommandGraph<void>(device, {
+        id: `areal-timing-${unweightedFastPath ? 'fast' : 'generic'}`
+      });
+      graph.add(
+        new GPUArealInterpolation({
+          id: 'areal-timing',
+          sourceZones: importGraphBuffer(graph, 'source-zones', sourceZones, 'uint32', cellCount),
+          targetZones: importGraphBuffer(graph, 'target-zones', targetZones, 'uint32', cellCount),
+          sourceCount,
+          targetCount,
+          denominator: 'overlap',
+          mode: 'extensive',
+          unweightedFastPath,
+          weights: {
+            offsets: importGraphBuffer(
+              graph,
+              'pair-offsets',
+              scratchOffsets,
+              'uint32',
+              targetCount + 1
+            ),
+            neighbors: importGraphBuffer(
+              graph,
+              'pair-neighbors',
+              scratchNeighbors,
+              'uint32',
+              PAIR_CAPACITY
+            ),
+            weights: importGraphBuffer(
+              graph,
+              'pair-extensive',
+              scratchExtensive,
+              'float32',
+              PAIR_CAPACITY
+            )
+          },
+          alternateWeights: importGraphBuffer(
+            graph,
+            'pair-intensive',
+            scratchIntensive,
+            'float32',
+            PAIR_CAPACITY
+          ),
+          overflow: importGraphBuffer(graph, 'pair-overflow', scratchOverflow, 'uint32', 1)
+        })
+      );
+      return graph.compile();
+    };
+    let measuring = false;
+    let destroyed = false;
+    const measureFastPath = async (): Promise<void> => {
+      if (measuring || destroyed) return;
+      measuring = true;
+      fastPathButton.setDisabled(true);
+      const fast = buildTimingGraph(true);
+      const generic = buildTimingGraph(false);
+      try {
+        const options = {parameters: undefined, completionBuffer: scratchOverflow};
+        const fastTiming = await measureCompiledGraph(device, fast, options);
+        const genericTiming = await measureCompiledGraph(device, generic, options);
+        if (destroyed) return;
+        fastPathReadout.setValue(
+          `${formatCompiledGraphTiming(fastTiming)} (${fast.stats.nodeOrder.length} nodes)`
+        );
+        genericPathReadout.setValue(
+          `${formatCompiledGraphTiming(genericTiming)} (${generic.stats.nodeOrder.length} nodes)`
+        );
+        fastPathSpeedupReadout.setValue(
+          formatSpeedup(genericTiming.milliseconds, fastTiming.milliseconds)
+        );
+      } catch {
+        // Device destroyed or measurement aborted.
+      } finally {
+        fast.destroy();
+        generic.destroy();
+        measuring = false;
+        if (!destroyed) fastPathButton.setDisabled(false);
+      }
+    };
+    let measuredOnce = false;
+
     // Pycnophylactic ladder: iterations are compile-time, the slider picks a rung.
     const pycnoGraphs = ITERATION_LADDER.map(iterations => {
       const graph = new GPUCommandGraph<void>(device, {id: `areal-pycno-${iterations}`});
@@ -608,6 +702,10 @@ export const arealInterpolationMode: SpatialAnalysisModeDefinition = {
             : `no (${formatCount(flags[4])} / ${formatCount(flags[5])} of ${formatCount(CROSSING_CAPACITY)})`
         );
         context.updateLayers();
+        if (!measuredOnce) {
+          measuredOnce = true;
+          setTimeout(() => void measureFastPath(), 300);
+        }
       }
     );
     const pycnoReader = new SummaryReader(
@@ -759,6 +857,18 @@ export const arealInterpolationMode: SpatialAnalysisModeDefinition = {
         'extensive shares of every ZIP sum to 1). Pycnophylactic smoothing keeps each ZIP total exactly; ' +
         'its iteration count is a compile-time property, so each slider step selects a precompiled graph.'
     );
+    const fastPathButton = context.controls.addButton({
+      label: 'Time unweighted fast path vs generic path',
+      onClick: () => void measureFastPath()
+    });
+    const fastPathReadout = context.controls.addReadout('Unweighted fast path', '...');
+    const genericPathReadout = context.controls.addReadout('Generic weighted path', '...');
+    const fastPathSpeedupReadout = context.controls.addReadout('Fast path speedup', '...');
+    context.controls.addNote(
+      'No dasymetric weights here, so GPUArealInterpolation reads pair areas off run lengths and ' +
+        'zone areas off counts (identical results). Timed on scratch outputs outside the frame: ' +
+        'GPU timestamps when available, else wall clock.'
+    );
     context.controls.addReadout('Data', `${parking.attribution}; ${zips.attribution}`);
     writeDisplayParameter();
     updateGeometryReadouts();
@@ -855,6 +965,7 @@ export const arealInterpolationMode: SpatialAnalysisModeDefinition = {
         return `ZIP ${zips.featureNames[feature] ?? zips.featureIds[feature]}: ${sourceTotals[feature].toFixed(0)} spaces, ${formatDensity(sourceDensities[feature])} per km2`;
       },
       destroy() {
+        destroyed = true;
         smallReader.stop();
         pycnoReader.stop();
         resources.destroy();

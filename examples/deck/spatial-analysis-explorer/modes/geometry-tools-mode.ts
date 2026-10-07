@@ -26,7 +26,7 @@ import type {
 } from '../spatial-analysis-mode';
 import {formatCount, SpatialAnalysisResources} from '../spatial-analysis-resources';
 import {PairSegmentLayer, PolygonFanLayer} from './geometry-layers';
-import {TriangleListLayer} from './geometry-tools-layers';
+import {createShapeOverlay, TriangleListLayer} from './geometry-tools-layers';
 import {addKernelPass} from './mode-kernels';
 import {SummaryReader} from './summary-reader';
 
@@ -72,15 +72,25 @@ function getStatistics(values: Float32Array): Statistics {
 export const geometryToolsMode: SpatialAnalysisModeDefinition = {
   id: 'geometry-tools',
   title: 'Geometry tools',
-  contributors: ['GPUOutlineGeometry', 'GPULabelPoint', 'GPUShapeDescriptors', 'GPURectangleClip'],
+  contributors: [
+    'GPUOutlineGeometry',
+    'GPULabelPoint',
+    'GPUShapeDescriptors',
+    'GPURectangleClip',
+    'GPUShapeGenerator',
+    'GPUHilbertKeys'
+  ],
   description:
     'San Francisco ZIP codes colored by a shape descriptor, each with its inscribed label ' +
     'circle and long-axis glyph. Pick a descriptor, grow the outline buffer, then drag the ' +
-    'rectangle (or click) to clip the polygons on the GPU.',
+    'rectangle (or click) to clip the polygons on the GPU. Circles, sectors or ellipses are ' +
+    'generated around every bike-parking point (radius and segment sliders) and colored by the ' +
+    "point's position on a Hilbert curve, with the curve drawn through the sorted points.",
   initialViewState: {longitude: -122.44, latitude: 37.76, zoom: 11.3},
 
   async create(context) {
     const zones = await context.data.getSanFranciscoZipCodes();
+    const parking = await context.data.getSanFranciscoBikeParking();
     context.signal.throwIfAborted();
     const {device} = context;
     const projection = new LocalMetricProjection(zones.origin);
@@ -128,6 +138,8 @@ export const geometryToolsMode: SpatialAnalysisModeDefinition = {
     let statistics: Record<(typeof DESCRIPTOR_NAMES)[number], Statistics> | null = null;
     let radii: Float32Array | null = null;
     let descriptorColumns: Record<(typeof DESCRIPTOR_NAMES)[number], Float32Array> | null = null;
+
+    const overlay = createShapeOverlay(context, resources, parking);
 
     // Inputs.
     const positionsBuffer = resources.createBuffer('positions', zones.polygonPositions);
@@ -737,7 +749,12 @@ export const geometryToolsMode: SpatialAnalysisModeDefinition = {
     };
 
     const instance: SpatialAnalysisModeInstance = {
-      getCompiledGraphs: () => [compiledShape, compiledOutline, compiledClip],
+      getCompiledGraphs: () => [
+        compiledShape,
+        compiledOutline,
+        compiledClip,
+        ...overlay.getCompiledGraphs()
+      ],
       encode(commandEncoder, frame) {
         if (frame.frameIndex < 2) {
           compiledShape.encode(commandEncoder, {parameters: undefined});
@@ -752,6 +769,7 @@ export const geometryToolsMode: SpatialAnalysisModeDefinition = {
           clipReader.request(commandEncoder);
           clipDirty = false;
         }
+        overlay.encode(commandEncoder, frame.frameIndex);
         shapeReader.flush(commandEncoder);
         clipReader.flush(commandEncoder);
       },
@@ -829,6 +847,7 @@ export const geometryToolsMode: SpatialAnalysisModeDefinition = {
             })
           );
         }
+        layers.push(...overlay.getLayers(coordinateOrigin));
         if (showClip) {
           layers.push(
             new PairSegmentLayer({
@@ -897,6 +916,7 @@ export const geometryToolsMode: SpatialAnalysisModeDefinition = {
         if (dragging) context.setMapDragEnabled(true);
         shapeReader.stop();
         clipReader.stop();
+        overlay.stop();
         resources.destroy();
       }
     };

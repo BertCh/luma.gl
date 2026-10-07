@@ -11,7 +11,7 @@
  * invalid, so the coast is where water leaves the grid.
  *
  * The graph is encoded only when an input changed: every output persists in its buffer, and the
- * fill plus accumulation rounds are the expensive part. Readbacks are one 16-byte summary
+ * fill plus accumulation rounds are the expensive part. Readbacks are one 24-byte summary
  * (convergence flags and the stream cell count from `GPUHistogram`) through `GPUReadbackRing`.
  */
 
@@ -103,6 +103,8 @@ export const hydrologyMode: SpatialAnalysisModeDefinition = {
     // so each output is its own buffer and the readback copies them side by side.
     const fillConvergedBuffer = resources.createBuffer('fill-converged', 4);
     const accumulationConvergedBuffer = resources.createBuffer('accumulation-converged', 4);
+    const fillIterationsBuffer = resources.createBuffer('fill-iterations', 4);
+    const accumulationIterationsBuffer = resources.createBuffer('accumulation-iterations', 4);
     const streamCountsBuffer = resources.createBuffer('stream-counts', 8);
     const flowSettings = resources.createParameterBuffer(
       'flow-settings',
@@ -115,7 +117,7 @@ export const hydrologyMode: SpatialAnalysisModeDefinition = {
       GPU_TERRAIN_DERIVATIVES_PARAMETER_LENGTH
     );
     const readbackRing = resources.track(
-      new GPUReadbackRing(device, {id: 'hydrology-summary', byteLength: 16})
+      new GPUReadbackRing(device, {id: 'hydrology-summary', byteLength: 24})
     );
 
     const graph = new GPUCommandGraph<void>(device, {id: 'hydrology'});
@@ -162,6 +164,20 @@ export const hydrologyMode: SpatialAnalysisModeDefinition = {
       'uint32',
       1
     );
+    const fillIterations = importGraphBuffer(
+      graph,
+      'fill-iterations',
+      fillIterationsBuffer,
+      'uint32',
+      1
+    );
+    const accumulationIterations = importGraphBuffer(
+      graph,
+      'accumulation-iterations',
+      accumulationIterationsBuffer,
+      'uint32',
+      1
+    );
     const streamCounts = importGraphBuffer(graph, 'stream-counts', streamCountsBuffer, 'uint32', 2);
     graph.add(
       new GPUTerrainDerivatives({
@@ -192,7 +208,9 @@ export const hydrologyMode: SpatialAnalysisModeDefinition = {
         accumulation,
         streams,
         fillConverged,
-        accumulationConverged
+        accumulationConverged,
+        fillIterations,
+        accumulationIterations
       })
     );
     graph.add(
@@ -350,7 +368,9 @@ export const hydrologyMode: SpatialAnalysisModeDefinition = {
       [
         [fillConvergedBuffer, 0, 4],
         [accumulationConvergedBuffer, 4, 4],
-        [streamCountsBuffer, 8, 8]
+        [streamCountsBuffer, 8, 8],
+        [fillIterationsBuffer, 16, 4],
+        [accumulationIterationsBuffer, 20, 4]
       ].forEach(([sourceBuffer, destinationOffset, size]) => {
         commandEncoder.copyBufferToBuffer({
           sourceBuffer: sourceBuffer as Buffer,
@@ -359,16 +379,14 @@ export const hydrologyMode: SpatialAnalysisModeDefinition = {
           size: size as number
         });
       });
-      ticket.markEncoded({byteOffset: 0, byteLength: 16});
+      ticket.markEncoded({byteOffset: 0, byteLength: 24});
       readbackPending = true;
       try {
         const bytes = await ticket.read();
         if (destroyed) return;
-        const words = new Uint32Array(bytes.buffer, bytes.byteOffset, 4);
-        const fillText = words[0] ? 'fill yes' : `fill no (${MAXIMUM_FILL_ITERATIONS} limit)`;
-        const accumulationText = words[1]
-          ? 'accumulation yes'
-          : `accumulation no (${MAXIMUM_ACCUMULATION_ITERATIONS} limit)`;
+        const words = new Uint32Array(bytes.buffer, bytes.byteOffset, 6);
+        const fillText = `fill ${words[0] ? 'yes' : 'no'} after ${words[4]} of ${MAXIMUM_FILL_ITERATIONS}`;
+        const accumulationText = `accumulation ${words[1] ? 'yes' : 'no'} after ${words[5]} of ${MAXIMUM_ACCUMULATION_ITERATIONS}`;
         convergedReadout.setValue(`${fillText}, ${accumulationText}`);
         streamReadout.setValue(
           `${formatCount(words[3])} of ${formatCount(landCellCount)} land cells`

@@ -137,6 +137,11 @@ export const bufferMode: SpatialAnalysisModeDefinition = {
             overflow: importGraphBuffer(graph, 'output-overflow', outputOverflow, 'uint32', 1),
             totalCount: importGraphBuffer(graph, 'output-total', outputTotal, 'uint32', 1)
           },
+          // The clamped selected count lands directly in the indirect draw record.
+          drawInstanceCount: graph.importGPUData(
+            'draw-instance-count',
+            drawCommands.getInstanceCountData(0)
+          ),
           distances: importGraphBuffer(graph, 'distances', distances, 'float32', pointCount),
           overflow: importGraphBuffer(graph, 'join-overflow', joinOverflow, 'uint32', 1)
         })
@@ -382,15 +387,6 @@ export const bufferMode: SpatialAnalysisModeDefinition = {
         }
         distance.write(Float32Array.of(currentDistance));
         compiled.encode(commandEncoder, {parameters: undefined});
-        // The contributor has no drawInstanceCount: copy the stored count into the instance-count word
-        // (second uint32) of the indirect draw record.
-        commandEncoder.copyBufferToBuffer({
-          sourceBuffer: outputCount,
-          sourceOffset: 0,
-          destinationBuffer: drawCommands.buffer,
-          destinationOffset: 4,
-          size: 4
-        });
         if (!readbackPending && frame.frameIndex % READBACK_INTERVAL === 0) {
           void readSummary(commandEncoder);
         }

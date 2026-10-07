@@ -20,6 +20,7 @@ import {
  *   `colors` output of GPURasterStretch).
  * - `IsobandTriangleLayer` draws the GPUIsobands triangle soup with a GPU-written indirect vertex
  *   count and colors each triangle by its band index through a packed palette.
+ * - `ZoneBandRasterLayer` draws the polygon-rasterized fill of the GPUIsobandRings polygons, by band.
  * - `PolylineLayer` draws the stitched GPUIsolines polylines: one instance per vertex, segment
  *   `(vertex i, vertex i + 1)`, skipped where `i + 1` starts the next polyline.
  */
@@ -58,13 +59,20 @@ export type IsobandTriangleLayerProps = SpatialAnalysisRasterLayerProps &
     triangles: Buffer;
     /** Band index per triangle. */
     triangleBands: Buffer;
+    /**
+     * Optional facility row per triangle (`GPUNetworkIsochrones` `triangleFacilities`). When set,
+     * the triangle color is `palette[facility]` shaded from light (band 0) to dark (last band)
+     * instead of the band palette.
+     */
+    triangleFacilities?: Buffer;
   };
 
 /**
  * Isoband triangles colored by band. `values` is the packed rgba8 palette (uint32), and `extent`
  * a float32 buffer whose first value is the break count: band `b` samples the palette at
  * `(b + 0.5) / (breakCount + 1)`. `drawCommands[drawCommandIndex].vertexCount` must hold `3 *
- * triangleCount`; `positionScale`/`positionOffset` map the contributor's frame to meters.
+ * triangleCount`; `positionScale`/`positionOffset` map the contributor's frame to meters. With
+ * `triangleFacilities` the color comes from the style `palette` by facility, shaded by band.
  */
 export class IsobandTriangleLayer extends SpatialAnalysisRasterLayer {
   static override layerName = 'IsobandTriangleLayer';
@@ -79,9 +87,27 @@ export class IsobandTriangleLayer extends SpatialAnalysisRasterLayer {
     if (markerIndex < 0) {
       throw new Error('IsobandTriangleLayer could not find the raster binding block');
     }
+    const {triangleFacilities} = this.props as unknown as IsobandTriangleLayerProps;
+    const facilityBinding = triangleFacilities
+      ? '@group(0) @binding(auto) var<storage, read> bandFacilities: array<u32>;'
+      : '';
+    const colorSource = triangleFacilities
+      ? `let facility = bandFacilities[vertexIndex / 3u];
+  let base = spatialAnalysisStyle.palette[facility % max(spatialAnalysisStyle.paletteSize, 1u)];
+  let shade = mix(1.15, 0.5, clamp(f32(band) / (breakCount + 1.0), 0.0, 1.0));
+  output.color = vec4<f32>(clamp(base.rgb * shade, vec3<f32>(0.0), vec3<f32>(1.0)), base.a);`
+      : `let t = clamp((f32(band) + 0.5) / (breakCount + 1.0), 0.0, 0.9999);
+  let packedColor = styleValues[u32(t * f32(paletteSize))];
+  output.color = vec4<f32>(
+    f32(packedColor & 255u),
+    f32((packedColor >> 8u) & 255u),
+    f32((packedColor >> 16u) & 255u),
+    f32(packedColor >> 24u)
+  ) / 255.0;`;
     return `${source.slice(0, markerIndex)}
 @group(0) @binding(auto) var<storage, read> bandTriangles: array<vec2<f32>>;
 @group(0) @binding(auto) var<storage, read> bandIds: array<u32>;
+${facilityBinding}
 
 struct BandVertexOutput {
   @builtin(position) position: vec4<f32>,
@@ -93,14 +119,7 @@ struct BandVertexOutput {
   let band = bandIds[vertexIndex / 3u];
   let breakCount = max(styleExtent[0], 0.0);
   let paletteSize = max(arrayLength(&styleValues), 1u);
-  let t = clamp((f32(band) + 0.5) / (breakCount + 1.0), 0.0, 0.9999);
-  let packedColor = styleValues[u32(t * f32(paletteSize))];
-  output.color = vec4<f32>(
-    f32(packedColor & 255u),
-    f32((packedColor >> 8u) & 255u),
-    f32((packedColor >> 16u) & 255u),
-    f32(packedColor >> 24u)
-  ) / 255.0;
+  ${colorSource}
   output.position = projectSpatialAnalysisPosition(getSpatialAnalysisPosition(bandTriangles[vertexIndex]));
   return output;
 }
@@ -112,11 +131,13 @@ struct BandVertexOutput {
   }
 
   protected override getBindings(placeholder: Buffer): Record<string, Buffer> {
-    const {triangles, triangleBands} = this.props as unknown as IsobandTriangleLayerProps;
+    const {triangles, triangleBands, triangleFacilities} = this
+      .props as unknown as IsobandTriangleLayerProps;
     return {
       ...this.getStyleBindings(placeholder),
       bandTriangles: triangles,
-      bandIds: triangleBands
+      bandIds: triangleBands,
+      ...(triangleFacilities ? {bandFacilities: triangleFacilities} : {})
     };
   }
 
@@ -195,5 +216,72 @@ export class PolylineLayer extends SpatialAnalysisSegmentLayer {
   protected override getBindings(placeholder: Buffer): Record<string, Buffer> {
     const {polylineOffsets} = this.props as unknown as PolylineLayerProps;
     return {...super.getBindings(placeholder), segmentIds: polylineOffsets};
+  }
+}
+
+/** Extra props of {@link ZoneBandRasterLayer}. */
+export type ZoneBandRasterLayerProps = SpatialAnalysisRasterLayerProps &
+  SpatialAnalysisInstanceProps & {
+    /** `uint32` band per zone row (for example the polygon groups of the ring assembly). */
+    zoneBands: Buffer;
+    /** Packed rgba8 `uint32` band palette (a ramp sampled by band). */
+    bandPalette: Buffer;
+  };
+
+/**
+ * Draws a `GPUPolygonRasterization` zone raster (`values`, uint32, `0xffffffff` where no polygon
+ * covers the cell) colored by band: the zone row indexes `zoneBands`, and the band samples the
+ * packed palette (`bandPalette`, uint32) at `(band + 0.5) / (breakCount + 1)`. `extent` is a float32
+ * buffer whose first value is the break count. Cells are drawn as the exact even-odd fill of the
+ * GPU-assembled shell and hole rings, at raster resolution.
+ */
+export class ZoneBandRasterLayer extends SpatialAnalysisRasterLayer {
+  static override layerName = 'ZoneBandRasterLayer';
+
+  constructor(props: ZoneBandRasterLayerProps) {
+    super(props);
+  }
+
+  protected override getShaderSource(): string {
+    const source = super.getShaderSource();
+    const markerIndex = source.indexOf(RASTER_BINDINGS_MARKER);
+    if (markerIndex < 0) {
+      throw new Error('ZoneBandRasterLayer could not find the raster binding block');
+    }
+    const withBindings = `${source.slice(0, markerIndex)}
+@group(0) @binding(auto) var<storage, read> zoneBandIds: array<u32>;
+@group(0) @binding(auto) var<storage, read> zoneBandPalette: array<u32>;
+${source.slice(markerIndex)}`;
+    const patched = withBindings.replace(
+      'let color = getSpatialAnalysisColor(getSpatialAnalysisValueRow(u32(row * columns + column)));',
+      `let zone = styleValues[u32(row * columns + column)];
+  if (zone == 0xffffffffu) {
+    discard;
+  }
+  let band = zoneBandIds[zone];
+  let breakCount = max(styleExtent[0], 0.0);
+  let paletteSize = max(arrayLength(&zoneBandPalette), 1u);
+  let t = clamp((f32(band) + 0.5) / (breakCount + 1.0), 0.0, 0.9999);
+  let packedColor = zoneBandPalette[u32(t * f32(paletteSize))];
+  let color = vec4<f32>(
+    f32(packedColor & 255u),
+    f32((packedColor >> 8u) & 255u),
+    f32((packedColor >> 16u) & 255u),
+    f32(packedColor >> 24u)
+  ) / 255.0;`
+    );
+    if (patched === withBindings) {
+      throw new Error('ZoneBandRasterLayer could not patch the raster fragment shader');
+    }
+    return patched;
+  }
+
+  protected override getBindings(placeholder: Buffer): Record<string, Buffer> {
+    const {zoneBands, bandPalette} = this.props as unknown as ZoneBandRasterLayerProps;
+    return {
+      ...super.getBindings(placeholder),
+      zoneBandIds: zoneBands,
+      zoneBandPalette: bandPalette
+    };
   }
 }

@@ -63,6 +63,13 @@ import {ratesMode} from './rates-mode';
 import {validityMode} from './validity-mode';
 import {crossingsMode} from './crossings-mode';
 import {relateMode} from './relate-mode';
+import {nodingMode} from './noding-mode';
+import {scanStatisticMode} from './scan-statistic-mode';
+import {similarLocationsMode} from './similar-locations-mode';
+import {regionsMode} from './regions-mode';
+import {networkKFunctionMode} from './network-k-function-mode';
+import {mapMatchingMode} from './map-matching-mode';
+import {edgeBundlingMode} from './edge-bundling-mode';
 
 /**
  * Registered explorer modes, in tab order.
@@ -130,5 +137,12 @@ export const SPATIAL_ANALYSIS_MODES: readonly SpatialAnalysisModeDefinition[] = 
   geometryToolsMode,
   lineDensityMode,
   patchesMode,
-  recipesMode
+  recipesMode,
+  nodingMode,
+  scanStatisticMode,
+  similarLocationsMode,
+  regionsMode,
+  networkKFunctionMode,
+  mapMatchingMode,
+  edgeBundlingMode
 ];

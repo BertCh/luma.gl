@@ -221,6 +221,11 @@ export const drainageMode: SpatialAnalysisModeDefinition = {
     const widthBuffers = ORDER_WIDTHS.map((_, index) => float32Cells(`stream-width-${index}`));
     const flagNames = ['fill', 'flats', 'accumulation', 'hand', 'basins', 'watersheds', 'order'];
     const flagBuffers = flagNames.map(name => resources.createBuffer(`${name}-converged`, 4));
+    // Iterations executed by the fill, flat resolution, accumulation and stream order loops.
+    const iterationNames = ['fill', 'flats', 'accumulation', 'order'];
+    const iterationBuffers = iterationNames.map(name =>
+      resources.createBuffer(`${name}-iterations`, 4)
+    );
     const streamCountsBuffer = resources.createBuffer('stream-counts', 8);
     const orderHistogramBuffer = resources.createBuffer('order-histogram', ORDER_BIN_COUNT * 4);
     const flowSettings = resources.createParameterBuffer(
@@ -429,6 +434,8 @@ export const drainageMode: SpatialAnalysisModeDefinition = {
       const streamOrder = view('stream-order', streamOrderBuffer, 'uint32');
       const flag = (index: number) =>
         view(`${flagNames[index]}-converged`, flagBuffers[index], 'uint32', 1);
+      const iterations = (index: number) =>
+        view(`${iterationNames[index]}-iterations`, iterationBuffers[index], 'uint32', 1);
       // The routing surface is the filled elevation; its NaNs mark invalid cells.
       const filledBand = {
         id: 'filled',
@@ -462,8 +469,10 @@ export const drainageMode: SpatialAnalysisModeDefinition = {
           accumulation,
           streams,
           fillConverged: flag(0),
-          ...(resolveFlats ? {flatsConverged: flag(1)} : {}),
-          accumulationConverged: flag(2)
+          fillIterations: iterations(0),
+          ...(resolveFlats ? {flatsConverged: flag(1), flatsIterations: iterations(1)} : {}),
+          accumulationConverged: flag(2),
+          accumulationIterations: iterations(2)
         })
       );
       graph.add(
@@ -507,7 +516,8 @@ export const drainageMode: SpatialAnalysisModeDefinition = {
           flowDirections: directions,
           streams,
           streamOrder,
-          converged: flag(6)
+          converged: flag(6),
+          iterationCount: iterations(3)
         })
       );
       graph.add(
@@ -652,19 +662,22 @@ export const drainageMode: SpatialAnalysisModeDefinition = {
       [
         ...flagBuffers.map(buffer => ({buffer, size: 4})),
         {buffer: streamCountsBuffer, size: 8},
-        {buffer: orderHistogramBuffer, size: ORDER_BIN_COUNT * 4}
+        {buffer: orderHistogramBuffer, size: ORDER_BIN_COUNT * 4},
+        ...iterationBuffers.map(buffer => ({buffer, size: 4}))
       ],
       bytes => {
         if (destroyed) return;
         const words = new Uint32Array(bytes);
-        const flag = (index: number, label: string, limit: number) =>
-          words[index] ? `${label} yes` : `${label} NO (${limit} limit)`;
+        const iterationBase = 9 + ORDER_BIN_COUNT;
+        const flag = (index: number, label: string, limit: number, iterationIndex: number) =>
+          `${label} ${words[index] ? 'yes' : 'NO'} ${words[iterationBase + iterationIndex]}/${limit}`;
         convergedHandle.setValue(
           [
-            flag(0, 'fill', MAXIMUM_FILL_ITERATIONS),
-            resolveFlats ? flag(1, 'flats', MAXIMUM_FLAT_ITERATIONS) : 'flats off',
-            flag(2, 'accumulation', MAXIMUM_ACCUMULATION_ITERATIONS),
-            words[3] && words[4] && words[5] && words[6] ? 'tracing yes' : 'tracing NO'
+            flag(0, 'fill', MAXIMUM_FILL_ITERATIONS, 0),
+            resolveFlats ? flag(1, 'flats', MAXIMUM_FLAT_ITERATIONS, 1) : 'flats off',
+            flag(2, 'accumulation', MAXIMUM_ACCUMULATION_ITERATIONS, 2),
+            words[3] && words[4] && words[5] && words[6] ? 'tracing yes' : 'tracing NO',
+            `order ${words[iterationBase + 3]} rounds`
           ].join(', ')
         );
         streamHandle.setValue(

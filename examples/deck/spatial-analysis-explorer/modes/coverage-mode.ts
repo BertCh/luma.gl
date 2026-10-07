@@ -7,6 +7,10 @@
  *
  * - `GPUCoverageSimplification` simplifies every arc shared by two polygons once, so neighbors keep
  *   identical vertices along their common boundary. The tolerance is a parameter-buffer write.
+ *   It is topology-preserving: arc endpoints are fixed, a ring keeps at least three vertices, and a
+ *   few rounds of crossing detection (`GPUSegmentIntersection`, exact predicates) restore the
+ *   original vertex farthest from every simplified segment that crosses another. A toggle swaps in
+ *   a second compiled graph without the repair, to show the crossings plain Douglas-Peucker makes.
  * - An independent `GPULineSimplification` of every ring (importance once, selection per tolerance)
  *   is the control: each polygon decides alone, so neighbors disagree about shared vertices and the
  *   shared boundary opens gaps and overlaps. A small CPU check over the two read-back keep masks
@@ -49,6 +53,8 @@ const NEIGHBORS_PER_POLYGON = 24;
 /** Douglas-Peucker round cap (compile-time); the SF rings have up to about 1,000 vertices. */
 const MAXIMUM_ROUNDS = 256;
 const MAXIMUM_SEED = 31;
+/** Compile-time detect-and-repair rounds of the topology-preserving coverage graph. */
+const TOPOLOGY_ROUNDS = 6;
 const REBUILD_DEBOUNCE_MILLISECONDS = 200;
 const FILL_PALETTE = [
   [78, 201, 255, 255],
@@ -88,6 +94,9 @@ export const coverageMode: SpatialAnalysisModeDefinition = {
   description:
     'San Francisco ZIP codes as a coverage. Drag the tolerance: shared boundaries stay gap-free ' +
     '(white) while independent per-polygon simplification (red) opens gaps, marked by yellow dots. ' +
+    'The coverage result is topology-preserving: arc ends stay fixed, rings keep three vertices, ' +
+    'and simplified segments that would cross are repaired (readouts show crossings found, fixed ' +
+    'and remaining; toggle "Preserve topology" to compare). ' +
     'Fills are a GPU map coloring of the rook contiguity graph; the seed picks another coloring.',
   initialViewState: {longitude: -122.44, latitude: 37.76, zoom: 11.6},
 
@@ -160,6 +169,9 @@ export const coverageMode: SpatialAnalysisModeDefinition = {
     const coverageKeepMask = resources.createBuffer('coverage-keep-mask', vertexCount * 4);
     const coverageOverflow = resources.createBuffer('coverage-overflow', 4);
     const coverageConverged = resources.createBuffer('coverage-converged', 4);
+    const coverageTopology = resources.createBuffer('coverage-topology', 16);
+    // Crossings of the input itself, from one repair-graph run at tolerance 0 (a copy of the stats).
+    const baselineTopology = resources.createBuffer('baseline-topology', 16);
 
     // Independent per-ring simplification.
     const importance = resources.createBuffer('importance', vertexCount * 4);
@@ -223,8 +235,10 @@ export const coverageMode: SpatialAnalysisModeDefinition = {
       return resources.track(graph.compile());
     };
 
-    const buildCoverageGraph = (): CompiledGPUCommandGraph<void> => {
-      const graph = new GPUCommandGraph<void>(device, {id: 'coverage-simplification'});
+    const buildCoverageGraph = (topologyRounds: number): CompiledGPUCommandGraph<void> => {
+      const graph = new GPUCommandGraph<void>(device, {
+        id: `coverage-simplification-${topologyRounds}`
+      });
       graph.add(
         new GPUCoverageSimplification({
           id: 'coverage',
@@ -239,6 +253,7 @@ export const coverageMode: SpatialAnalysisModeDefinition = {
           ),
           parameters: parameterBuffer.importToGraph(graph),
           maximumRounds: MAXIMUM_ROUNDS,
+          topologyRounds,
           converged: importAll(graph, 'coverage-converged', coverageConverged, 'uint32', 1),
           output: {
             positions: importAll(
@@ -262,7 +277,8 @@ export const coverageMode: SpatialAnalysisModeDefinition = {
               'uint32',
               vertexCount
             ),
-            overflow: importAll(graph, 'coverage-overflow', coverageOverflow, 'uint32', 1)
+            overflow: importAll(graph, 'coverage-overflow', coverageOverflow, 'uint32', 1),
+            topologyStats: importAll(graph, 'coverage-topology', coverageTopology, 'uint32', 4)
           }
         })
       );
@@ -317,7 +333,8 @@ export const coverageMode: SpatialAnalysisModeDefinition = {
       })
     );
     const compiledSelection = resources.track(selectionGraph.compile());
-    const compiledCoverage = buildCoverageGraph();
+    const compiledRepaired = buildCoverageGraph(TOPOLOGY_ROUNDS);
+    const compiledPlain = buildCoverageGraph(0);
 
     let seed = 0;
     let compiledColoring = buildColoringGraph(seed);
@@ -329,6 +346,8 @@ export const coverageMode: SpatialAnalysisModeDefinition = {
     let view: ViewId = 'both';
     let showFill = true;
     let showOriginal = true;
+    let repairTopology = true;
+    let baselineEncoded = false;
     let markerCount = 0;
     let destroyed = false;
     let rebuildTimer: ReturnType<typeof setTimeout> | undefined;
@@ -344,6 +363,14 @@ export const coverageMode: SpatialAnalysisModeDefinition = {
       format: value => formatMeters(10 ** value),
       onChange: value => {
         logTolerance = value;
+      }
+    });
+    context.controls.addToggle({
+      label: `Preserve topology (${TOPOLOGY_ROUNDS} repair rounds; swaps compiled graphs)`,
+      value: repairTopology,
+      onChange: value => {
+        repairTopology = value;
+        appliedTolerance = Number.NaN;
       }
     });
     context.controls.addSelect<ViewId>({
@@ -414,7 +441,10 @@ export const coverageMode: SpatialAnalysisModeDefinition = {
       'Independent simplification decides each ring alone, so a vertex on a shared boundary can be ' +
         'kept by one polygon and dropped by its neighbor: that is where gaps and overlaps open. ' +
         'The coverage contributor shares the decision through point IDs, so its count stays 0. ' +
-        'Neither guarantees topology: very large tolerances can collapse small rings.'
+        'With "Preserve topology" on, simplified segments that would cross are found with exact ' +
+        'predicates and the farthest original vertex is restored, rings keep three vertices, and ' +
+        'nodes never move; turn it off to see the crossings and collapsed rings of plain ' +
+        'Douglas-Peucker. The independent control never preserves topology.'
     );
     context.controls.addReadout(
       'Polygons / rings / vertices',
@@ -429,6 +459,12 @@ export const coverageMode: SpatialAnalysisModeDefinition = {
     const independentKeptReadout = context.controls.addReadout('Independent kept vertices');
     const gapReadout = context.controls.addReadout('Gap vertices (coverage / independent)');
     const collapsedReadout = context.controls.addReadout('Collapsed rings (< 3 vertices)');
+    const inputCrossingsReadout = context.controls.addReadout('Crossings in the input itself');
+    const crossingsFoundReadout = context.controls.addReadout('Crossings found (before repair)');
+    const crossingsRemainingReadout = context.controls.addReadout(
+      'Crossings remaining / fixed (0 on a clean input)'
+    );
+    const restoredReadout = context.controls.addReadout('Vertices restored by repair');
     const convergenceReadout = context.controls.addReadout('Simplification converged');
     context.controls.addReadout('Data', zones.attribution);
 
@@ -450,6 +486,8 @@ export const coverageMode: SpatialAnalysisModeDefinition = {
         weightOverflow: next(1),
         coverageOverflow: next(1),
         coverageConverged: next(1),
+        coverageTopology: next(4),
+        baselineTopology: next(4),
         importanceConverged: next(1),
         keptOverflow: next(1),
         coverageMask: next(vertexCount),
@@ -470,6 +508,8 @@ export const coverageMode: SpatialAnalysisModeDefinition = {
         {buffer: weightOverflow, size: 4},
         {buffer: coverageOverflow, size: 4},
         {buffer: coverageConverged, size: 4},
+        {buffer: coverageTopology, size: 16},
+        {buffer: baselineTopology, size: 16},
         {buffer: importanceConverged, size: 4},
         {buffer: keptOverflow, size: 4},
         {buffer: coverageKeepMask, size: vertexCount * 4},
@@ -514,6 +554,24 @@ export const coverageMode: SpatialAnalysisModeDefinition = {
             (100 * independentKept) / vertexCount
           ).toFixed(1)}%)${at(layoutWords.keptOverflow) ? ', OVERFLOW' : ''}`
         );
+        const [found, remaining, restored, pairOverflow] = [0, 1, 2, 3].map(
+          word => words[layoutWords.coverageTopology + word]
+        );
+        inputCrossingsReadout.setValue(
+          `${formatCount(words[layoutWords.baselineTopology])} (overlaps the data already has; repair cannot remove them)`
+        );
+        if (repairTopology) {
+          const overflowNote = pairOverflow ? ' (candidate list OVERFLOW: lower bounds)' : '';
+          crossingsFoundReadout.setValue(`${formatCount(found)}${overflowNote}`);
+          crossingsRemainingReadout.setValue(
+            `${formatCount(remaining)} / ${formatCount(Math.max(found - remaining, 0))}`
+          );
+          restoredReadout.setValue(formatCount(restored));
+        } else {
+          crossingsFoundReadout.setValue('repair off');
+          crossingsRemainingReadout.setValue('not checked');
+          restoredReadout.setValue('0');
+        }
         convergenceReadout.setValue(
           `coverage ${at(layoutWords.coverageConverged) ? 'yes' : 'NO'}, independent importance ${
             at(layoutWords.importanceConverged) ? 'yes' : 'NO (superset of DP)'
@@ -570,7 +628,8 @@ export const coverageMode: SpatialAnalysisModeDefinition = {
     const instance: SpatialAnalysisModeInstance = {
       getCompiledGraphs: () => [
         compiledColoring,
-        compiledCoverage,
+        compiledRepaired,
+        compiledPlain,
         compiledImportance,
         compiledSelection
       ],
@@ -586,12 +645,26 @@ export const coverageMode: SpatialAnalysisModeDefinition = {
           summary.markStale();
         }
         const tolerance = Math.fround(10 ** logTolerance);
-        if (tolerance !== appliedTolerance) {
+        if (!baselineEncoded) {
+          // One detection pass over the unsimplified geometry: the defects the input already has.
+          baselineEncoded = true;
+          parameterBuffer.write(
+            getGPULineSimplificationParameterValues({tolerance: 0}, parameterValues)
+          );
+          compiledRepaired.encode(commandEncoder, {parameters: undefined});
+          commandEncoder.copyBufferToBuffer({
+            sourceBuffer: coverageTopology,
+            destinationBuffer: baselineTopology,
+            size: 16
+          });
+        } else if (tolerance !== appliedTolerance) {
           appliedTolerance = tolerance;
           parameterBuffer.write(
             getGPULineSimplificationParameterValues({tolerance}, parameterValues)
           );
-          compiledCoverage.encode(commandEncoder, {parameters: undefined});
+          (repairTopology ? compiledRepaired : compiledPlain).encode(commandEncoder, {
+            parameters: undefined
+          });
           compiledSelection.encode(commandEncoder, {parameters: undefined});
           toleranceReadout.setValue(formatMeters(tolerance));
           summary.markStale();

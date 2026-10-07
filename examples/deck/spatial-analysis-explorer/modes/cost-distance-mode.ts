@@ -5,13 +5,14 @@
 /**
  * Least-cost travel over the San Francisco elevation raster, entirely on the GPU. Two compiled
  * graphs share caller-owned buffers. The cost graph computes slope (`GPUTerrainDerivatives`), a
- * friction surface from it (`1 + weight * (slope / 10 degrees)^2`, a small mode-local kernel
- * because the contributor's friction calibration is compile-time) and the accumulated cost, back-links,
+ * friction surface from it (`1 + weight * (slope / 10 degrees)^2`, a small mode-local kernel)
+ * and the accumulated cost, back-links,
  * isochrone bands and convergence flags (`GPUCostDistance`). The path graph follows the back-links
  * from the destination (`GPUCostDistancePath`) and converts the cell list to line segments that a
  * layer draws with an indirect instance count. Sea (elevation 0) is invalid and impassable.
  *
- * The source cell, destination cell, slope weight and cost limit are parameter buffer writes.
+ * The source cell, destination cell, slope weight, base friction (`frictionParameters`, the
+ * contributor's per-frame friction calibration) and cost limit are parameter buffer writes.
  * The cost graph is encoded only when the source, weight or limit changed (relaxation is the
  * expensive part); the path graph also re-encodes when only the destination moved.
  */
@@ -85,8 +86,10 @@ export const costDistanceMode: SpatialAnalysisModeDefinition = {
   contributors: ['GPUCostDistance', 'GPUCostDistancePath', 'GPUTerrainDerivatives'],
   description:
     'Least-cost travel over San Francisco terrain, where steep slopes are expensive. Choose ' +
-    'whether a click places the source or the destination; slope weight, cost limit, source ' +
-    'and destination are buffer writes, never a recompile.',
+    'whether a click places the source or the destination; slope weight, base friction ' +
+    '(GPUCostDistance frictionParameters), cost limit, source and destination are buffer ' +
+    'writes, never a recompile. The Converged readout shows iterations used of the unrolled ' +
+    'budget.',
   initialViewState: {longitude: -122.445, latitude: 37.758, zoom: 12.2},
 
   async create(context) {
@@ -133,6 +136,7 @@ export const costDistanceMode: SpatialAnalysisModeDefinition = {
       GPU_COST_DISTANCE_PARAMETER_LENGTH
     );
     const slopeWeight = resources.createParameterBuffer('slope-weight', 'float32', 1);
+    const frictionParameters = resources.createParameterBuffer('friction-parameters', 'float32', 2);
     const sources = resources.createParameterBuffer('sources', 'uint32', 1);
     const target = resources.createParameterBuffer('target', 'uint32', 1);
     const bandThresholds = resources.createParameterBuffer(
@@ -203,6 +207,7 @@ export const costDistanceMode: SpatialAnalysisModeDefinition = {
             cellCount
           )
         },
+        frictionParameters: frictionParameters.importToGraph(costGraph),
         settings: costSettings.importToGraph(costGraph),
         cellSizeMode: 'uniform',
         sources: sources.importToGraph(costGraph),
@@ -283,6 +288,7 @@ export const costDistanceMode: SpatialAnalysisModeDefinition = {
     let display: Display = 'cost';
     let placement: Placement = 'source';
     let slopeWeightValue = 2;
+    let baseFrictionValue = 0;
     let limitKilometers = 25;
     let sourceCell = getDefaultCell(SOURCE_LONGITUDE_LATITUDE, [0.35, 0.4]);
     let destinationCell = getDefaultCell(DESTINATION_LONGITUDE_LATITUDE, [0.8, 0.7]);
@@ -346,6 +352,8 @@ export const costDistanceMode: SpatialAnalysisModeDefinition = {
         Float32Array.from({length: BAND_COUNT}, (_, band) => ((band + 1) * getRange()) / BAND_COUNT)
       );
       slopeWeight.write(Float32Array.of(slopeWeightValue));
+      // friction = value * scale + offset, applied on the GPU by GPUCostDistance.
+      frictionParameters.write(Float32Array.of(1, baseFrictionValue));
       costDirty = true;
       pathDirty = true;
     };
@@ -400,6 +408,18 @@ export const costDistanceMode: SpatialAnalysisModeDefinition = {
       format: value => (value === 0 ? '0 (straight line)' : `${value}`),
       onChange: value => {
         slopeWeightValue = value;
+        writeSettings();
+      }
+    });
+    context.controls.addSlider({
+      label: 'Base friction added (per-frame)',
+      min: 0,
+      max: 4,
+      step: 0.25,
+      value: baseFrictionValue,
+      format: value => (value === 0 ? '0 (none)' : `+${value} per meter`),
+      onChange: value => {
+        baseFrictionValue = value;
         writeSettings();
       }
     });

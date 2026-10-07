@@ -44,10 +44,15 @@ type Metric = 'pageRank' | 'degree' | 'coreNumber' | 'community';
 
 const VIEWS: readonly View[] = ['route', 'service-areas', 'neighborhood', 'analytics'];
 const WALK_SPEED = 1.4;
-/** Route solver round bound (each round covers up to 16 hops); the GPU stops once costs converge. */
-const ROUTE_MAXIMUM_ITERATIONS = 64;
+/**
+ * Frontier round bound of the route and service-area solvers. Each round chains up to
+ * `LOCAL_ITERATIONS` hops, so about 38 rounds cover Manhattan's longest path; the frontier empties
+ * on the GPU once costs converge and later rounds dispatch nothing.
+ */
+const ROUTE_MAXIMUM_ITERATIONS = 48;
+const LOCAL_ITERATIONS = 16;
 const ROUTE_MAXIMUM_PATH = 4096;
-const SERVICE_MAXIMUM_ITERATIONS = 384;
+const SERVICE_MAXIMUM_ITERATIONS = 48;
 const FACILITY_COUNT = 6;
 const MAXIMUM_HOPS = 48;
 const NODE_CAPACITY = 32768;
@@ -328,6 +333,7 @@ export const networkAnalysisMode: SpatialAnalysisModeDefinition = {
           ...csr,
           sources: origin.importToGraph(routeGraph),
           maxIterations: ROUTE_MAXIMUM_ITERATIONS,
+          localIterations: LOCAL_ITERATIONS,
           costs: costsView,
           predecessors: predecessorsView,
           converged: importOutput(routeGraph, 'route-converged', routeConverged, 'uint32', 1),
@@ -374,6 +380,7 @@ export const networkAnalysisMode: SpatialAnalysisModeDefinition = {
         facilities: facilities.importToGraph(serviceGraph),
         costLimit: serviceCostLimit.importToGraph(serviceGraph),
         maxIterations: SERVICE_MAXIMUM_ITERATIONS,
+        localIterations: LOCAL_ITERATIONS,
         assignments: importOutput(
           serviceGraph,
           'service-assignments',

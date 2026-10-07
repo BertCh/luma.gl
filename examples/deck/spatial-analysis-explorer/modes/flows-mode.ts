@@ -30,6 +30,9 @@ type ZoneTotals = 'departures' | 'arrivals';
 type Bounds = [number, number, number, number];
 
 const SQRT3 = Math.sqrt(3);
+/** Smallest zone size on the slider: it sets the compile-time lattice capacity. */
+const MINIMUM_ZONE_SIZE = 250;
+const MAXIMUM_ZONE_SIZE = 900;
 const TOP_FLOW_COUNT = 256;
 const PAIR_CAPACITY = 2048;
 const MAXIMUM_ZONE_COUNT = 65535;
@@ -54,9 +57,13 @@ type FlowGraph = {
   resources: SpatialAnalysisResources;
   compiled: CompiledGPUCommandGraph<void>;
   zoneKind: ZoneKind;
-  zoneSize: number;
-  gridSize: [number, number];
+  /** Compile-time lattice capacity (the grid size at the smallest zone size). */
+  capacityGridSize: [number, number];
+  /** Zone capacity: `capacityGridSize[0] * capacityGridSize[1]`. Zone outputs have this length. */
   zoneCount: number;
+  /** GPU `[min, max]` of the occupied per-zone departure and arrival counts. */
+  zoneOutExtent: Buffer;
+  zoneInExtent: Buffer;
   flowOriginZoneIds: Buffer;
   flowDestinationZoneIds: Buffer;
   flowWeights: Buffer;
@@ -76,8 +83,10 @@ type FlowGraph = {
  * last vertex). One compiled `GPUFlowAggregation` assigns hexagon or grid zones, gates rows by a
  * per-frame time window, counts (or sums distance for) every origin-destination pair in a GPU hash
  * table, ranks the pairs, and writes the top 256 flows, per-zone departure and arrival totals, and
- * the indirect arc count. Window, weights and totals selection change per frame; zone kind, zone
- * size and self-flow exclusion are compile-time and rebuild the graph.
+ * the indirect arc count. Window, weights, totals selection and the zone size (the lattice size and
+ * hexagon radius are per-frame parameters under a compile-time capacity) change per frame; only
+ * the zone kind and self-flow exclusion are compile-time and rebuild the graph. The zone color
+ * range is the GPU-computed extent of the per-zone counts, so it needs no readback.
  */
 export const flowsMode: SpatialAnalysisModeDefinition = {
   id: 'flows',
@@ -139,6 +148,8 @@ export const flowsMode: SpatialAnalysisModeDefinition = {
     const destinationsBuffer = resources.createBuffer('destinations', destinations);
     const timestampsBuffer = resources.createBuffer('departure-times', departureTimes);
     const weightsBuffer = resources.createBuffer('weights', tripWeights);
+    const radiusBuffer = resources.createParameterBuffer('radius', 'float32', 1);
+    const activeGridSizeBuffer = resources.createParameterBuffer('active-grid-size', 'uint32', 2);
     const windowBuffer = resources.createParameterBuffer(
       'window',
       'float32',
@@ -156,7 +167,6 @@ export const flowsMode: SpatialAnalysisModeDefinition = {
     const span = Math.max(1, timeEnd - timeStart);
     let windowStart = 0;
     let windowLength = Math.ceil(span) + 1;
-    let zoneValueMaximum = 20;
 
     let graph: FlowGraph | null = null;
     let serial = 0;
@@ -173,8 +183,28 @@ export const flowsMode: SpatialAnalysisModeDefinition = {
         : [Math.ceil(width / size), Math.ceil(height / size)];
     }
 
+    /** Lattice size in use, from the current zone size (per-frame, never rebuilds). */
+    let activeGridSize = getGridSize(zoneKind, zoneSize);
+
+    function applyZoneSize(): void {
+      activeGridSize = getGridSize(zoneKind, zoneSize);
+      radiusBuffer.write(Float32Array.of(zoneSize));
+      activeGridSizeBuffer.write(Uint32Array.of(activeGridSize[0], activeGridSize[1]));
+      framesSinceRebuild = READBACK_INTERVAL_FRAMES; // refresh the totals immediately
+      zoneReadout.setValue(
+        `${activeGridSize[0]} × ${activeGridSize[1]} ${zoneKind === 'hexagon' ? 'hexagons' : 'cells'} ` +
+          `(${formatCount(activeGridSize[0] * activeGridSize[1])} zones, capacity ` +
+          `${formatCount(getZoneCapacity())})`
+      );
+    }
+
+    function getZoneCapacity(): number {
+      const capacity = getGridSize(zoneKind, MINIMUM_ZONE_SIZE);
+      return capacity[0] * capacity[1];
+    }
+
     function buildGraph(): void {
-      const gridSize = getGridSize(zoneKind, zoneSize);
+      const gridSize = getGridSize(zoneKind, MINIMUM_ZONE_SIZE);
       const zoneCount = gridSize[0] * gridSize[1];
       if (zoneCount > MAXIMUM_ZONE_COUNT) {
         throw new Error(`Zone count ${zoneCount} exceeds ${MAXIMUM_ZONE_COUNT}`);
@@ -197,6 +227,8 @@ export const flowsMode: SpatialAnalysisModeDefinition = {
       const flowWeights = graphResources.createBuffer('flow-weights', TOP_FLOW_COUNT * 4);
       const zoneOutCounts = graphResources.createBuffer('zone-out', zoneCount * 4);
       const zoneInCounts = graphResources.createBuffer('zone-in', zoneCount * 4);
+      const zoneOutExtent = graphResources.createBuffer('zone-out-extent', 8);
+      const zoneInExtent = graphResources.createBuffer('zone-in-extent', 8);
       const drawCommands = graphResources.track(
         new DrawCommandBuffer(device, {
           id: `flows-draw-${serial}`,
@@ -217,8 +249,19 @@ export const flowsMode: SpatialAnalysisModeDefinition = {
           id: 'flows',
           zones:
             zoneKind === 'hexagon'
-              ? {kind: 'hexagon', bounds, gridSize, radius: zoneSize}
-              : {kind: 'grid', bounds, gridSize},
+              ? {
+                  kind: 'hexagon',
+                  bounds,
+                  gridSize,
+                  activeGridSize: activeGridSizeBuffer.importToGraph(commandGraph),
+                  radius: radiusBuffer.importToGraph(commandGraph)
+                }
+              : {
+                  kind: 'grid',
+                  bounds,
+                  gridSize,
+                  activeGridSize: activeGridSizeBuffer.importToGraph(commandGraph)
+                },
           origins: importGraphBuffer(
             commandGraph,
             'origins',
@@ -295,6 +338,20 @@ export const flowsMode: SpatialAnalysisModeDefinition = {
             'uint32',
             zoneCount
           ),
+          zoneOutCountExtent: importGraphBuffer(
+            commandGraph,
+            'zone-out-extent',
+            zoneOutExtent,
+            'float32',
+            2
+          ),
+          zoneInCountExtent: importGraphBuffer(
+            commandGraph,
+            'zone-in-extent',
+            zoneInExtent,
+            'float32',
+            2
+          ),
           drawInstanceCount: commandGraph.importGPUData(
             'arcs',
             drawCommands.getInstanceCountData(0)
@@ -306,9 +363,10 @@ export const flowsMode: SpatialAnalysisModeDefinition = {
         resources: graphResources,
         compiled,
         zoneKind,
-        zoneSize,
-        gridSize,
+        capacityGridSize: gridSize,
         zoneCount,
+        zoneOutExtent,
+        zoneInExtent,
         flowOriginZoneIds,
         flowDestinationZoneIds,
         flowWeights,
@@ -322,11 +380,7 @@ export const flowsMode: SpatialAnalysisModeDefinition = {
         readbackRing,
         serial
       };
-      framesSinceRebuild = READBACK_INTERVAL_FRAMES; // read the new graph's totals immediately
-      zoneReadout.setValue(
-        `${gridSize[0]} × ${gridSize[1]} ${zoneKind === 'hexagon' ? 'hexagons' : 'cells'} ` +
-          `(${formatCount(zoneCount)} zones)`
-      );
+      applyZoneSize();
     }
 
     context.controls.addSelect<ZoneKind>({
@@ -338,21 +392,21 @@ export const flowsMode: SpatialAnalysisModeDefinition = {
       value: zoneKind,
       onChange: value => {
         zoneKind = value;
+        activeGridSize = getGridSize(zoneKind, zoneSize);
         buildGraph();
         context.updateLayers();
       }
     });
-    context.controls.addSelect<string>({
-      label: 'Zone size (compile-time; hexagon radius / cell size)',
-      options: [
-        {value: '250', label: '250 m'},
-        {value: '400', label: '400 m'},
-        {value: '700', label: '700 m'}
-      ],
-      value: String(zoneSize),
+    context.controls.addSlider({
+      label: 'Zone size (per-frame; hexagon radius / cell size)',
+      min: MINIMUM_ZONE_SIZE,
+      max: MAXIMUM_ZONE_SIZE,
+      step: 10,
+      value: zoneSize,
+      format: value => `${value} m`,
       onChange: value => {
-        zoneSize = Number(value);
-        buildGraph();
+        zoneSize = value;
+        applyZoneSize();
         context.updateLayers();
       }
     });
@@ -447,8 +501,8 @@ export const flowsMode: SpatialAnalysisModeDefinition = {
       }
     });
     context.controls.addLegend({
-      title: 'Zone totals (sqrt scale)',
-      gradient: {colors: VIRIDIS_STOPS, minimumLabel: '0', maximumLabel: 'busiest zone'}
+      title: 'Zone totals (sqrt scale, GPU extent of occupied zones)',
+      gradient: {colors: VIRIDIS_STOPS, minimumLabel: 'quietest zone', maximumLabel: 'busiest zone'}
     });
     const zoneReadout = context.controls.addReadout('Zones');
     const windowReadout = context.controls.addReadout('Window');
@@ -462,8 +516,8 @@ export const flowsMode: SpatialAnalysisModeDefinition = {
     const largestFlowReadout = context.controls.addReadout('Largest flow');
     context.controls.addNote(
       'Departure times are rebased to the first trip (t - ' +
-        `${timeStart.toFixed(0)} s) before upload. Zone totals and readouts come from a ` +
-        'small readback (2 × zones u32) every 15 frames; the zone color range follows it.'
+        `${timeStart.toFixed(0)} s) before upload. The zone color range is a GPU extent output. ` +
+        'Readouts come from a small readback (2 × zone capacity u32) every 15 frames.'
     );
     context.controls.addReadout('Trips outside lattice', formatCount(outsideCount));
     context.controls.addReadout('Data', trips.attribution);
@@ -526,15 +580,6 @@ export const flowsMode: SpatialAnalysisModeDefinition = {
         largestFlowReadout.setValue(
           `${flowUnit === 'trips' ? formatCount(largestWeight) : largestWeight.toFixed(1)} ${flowUnit}`
         );
-        // The contributor has no extent output, so the zone color range comes from this readback.
-        const maximum = Math.max(
-          1,
-          zoneTotals === 'departures' ? busiestOrigin : busiestDestination
-        );
-        if (maximum !== zoneValueMaximum) {
-          zoneValueMaximum = maximum;
-          context.updateLayers();
-        }
       } catch {
         // The ring or device was destroyed while the read was in flight.
       } finally {
@@ -581,14 +626,14 @@ export const flowsMode: SpatialAnalysisModeDefinition = {
           new SpatialAnalysisRasterLayer({
             id: `flows-zones-${graph.serial}`,
             coordinateOrigin,
-            gridSize: graph.gridSize,
+            gridSize: activeGridSize,
             bounds,
             binning: graph.zoneKind,
-            hexagonRadius: graph.zoneSize,
+            hexagonRadius: zoneSize,
             values: zoneTotals === 'departures' ? graph.zoneOutCounts : graph.zoneInCounts,
             valueFormat: 'uint32',
             colormap: 'viridis',
-            valueRange: [0, zoneValueMaximum],
+            extent: zoneTotals === 'departures' ? graph.zoneOutExtent : graph.zoneInExtent,
             sqrtScale: true,
             discardAtOrBelow: 0,
             color: [255, 255, 255, 120]
@@ -602,9 +647,9 @@ export const flowsMode: SpatialAnalysisModeDefinition = {
             flowCount: graph.count,
             drawCommands: graph.drawCommands,
             zoneKind: graph.zoneKind,
-            gridSize: graph.gridSize,
+            gridSize: activeGridSize,
             bounds,
-            hexagonRadius: graph.zoneSize,
+            hexagonRadius: zoneSize,
             originColor: [...ORIGIN_COLOR],
             destinationColor: [...DESTINATION_COLOR]
           })

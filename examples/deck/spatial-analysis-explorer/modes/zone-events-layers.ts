@@ -16,8 +16,8 @@ import {
  * Bespoke layers for the Zone events mode. Like the contours layers they reuse the shared style
  * uniform, bindings and lifecycle and replace only the shader body:
  *
- * - `ZoneEventMarkerLayer` draws one pulse per GPUZoneEvents event. The crossing position is
- *   interpolated on the GPU from the event row and the event time, so no position is ever read back.
+ * - `ZoneEventMarkerLayer` draws one pulse per GPUZoneEvents event at the crossing position that
+ *   `GPUZoneEvents` interpolated (`events.eventPositions`), so no position is ever read back.
  * - `ZoneChoroplethLayer` fills fan-triangulated zones and colors each by a row of the per-zone
  *   statistics table that GPUGroupStatistics wrote (keys ascending, so the shader scans for it).
  */
@@ -58,14 +58,12 @@ function stripStyleValueBindings(source: string): string {
 
 /** Extra props of {@link ZoneEventMarkerLayer}. */
 export type ZoneEventMarkerLayerProps = SpatialAnalysisPointLayerProps & {
-  /** `float32` sample times relative to the dataset epoch, one per `positions` row. */
+  /** `float32` sample times relative to the dataset epoch, one per trip sample row. */
   timestamps: Buffer;
   /** `uint32` first-row offsets per track (`trackCount + 1` rows). */
   trackOffsets: Buffer;
   /** `uint32` track index per event (`events.output.ids`). */
   eventTracks: Buffer;
-  /** `uint32` segment end row per event. */
-  eventRows: Buffer;
   /** `float32` crossing time per event, relative to the track's first timestamp. */
   eventTimes: Buffer;
   /** `uint32` event type per event (0 enter, 1 exit). */
@@ -73,7 +71,8 @@ export type ZoneEventMarkerLayerProps = SpatialAnalysisPointLayerProps & {
 };
 
 /**
- * Enter and exit pulses at the interpolated crossing position. `extent` holds `[playhead,
+ * Enter and exit pulses at the crossing position. The layer's `positions` buffer is the
+ * `float32x2` `eventPositions` output of `GPUZoneEvents`. `extent` holds `[playhead,
  * fadeSeconds, showAll]` (seconds on the dataset clock): an event pulses and fades during the
  * `fadeSeconds` after the playhead passes it; with `showAll` the other events stay as faint dots.
  * The instance count comes from `drawCommands`.
@@ -99,7 +98,6 @@ export class ZoneEventMarkerLayer extends SpatialAnalysisPointLayer {
 @group(0) @binding(auto) var<storage, read> eventTimestamps: array<f32>;
 @group(0) @binding(auto) var<storage, read> eventOffsets: array<u32>;
 @group(0) @binding(auto) var<storage, read> eventTracks: array<u32>;
-@group(0) @binding(auto) var<storage, read> eventRows: array<u32>;
 @group(0) @binding(auto) var<storage, read> eventTimes: array<f32>;
 @group(0) @binding(auto) var<storage, read> eventTypes: array<u32>;
 ${source.slice(markerIndex)}`;
@@ -107,13 +105,8 @@ ${source.slice(markerIndex)}`;
       .replace(
         original,
         `let eventTrack = eventTracks[instanceIndex];
-  let eventRow = max(eventRows[instanceIndex], 1u);
-  let trackStart = eventOffsets[eventTrack];
-  let epoch = eventTimestamps[trackStart];
-  let startTime = eventTimestamps[eventRow - 1u] - epoch;
-  let endTime = eventTimestamps[eventRow] - epoch;
-  let along = clamp((eventTimes[instanceIndex] - startTime) / max(endTime - startTime, 1e-6), 0.0, 1.0);
-  let source = mix(pointPositions[eventRow - 1u], pointPositions[eventRow], along);
+  let epoch = eventTimestamps[eventOffsets[eventTrack]];
+  let source = pointPositions[instanceIndex];
   let playhead = styleExtent[0];
   let fadeSeconds = max(styleExtent[1], 1.0);
   let age = playhead - (epoch + eventTimes[instanceIndex]);
@@ -144,7 +137,6 @@ ${source.slice(markerIndex)}`;
       eventTimestamps: props.timestamps,
       eventOffsets: props.trackOffsets,
       eventTracks: props.eventTracks,
-      eventRows: props.eventRows,
       eventTimes: props.eventTimes,
       eventTypes: props.eventTypes
     };

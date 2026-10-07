@@ -46,6 +46,7 @@ import {
   GPURipleyDistanceFunctions,
   GPUSpatialCorrelogram,
   GPUVariogram,
+  type GPURipleyDistanceEdgeCorrection,
   type GPURipleyEdgeCorrection,
   type GPUSpatialCorrelogramVarianceAssumption,
   type VariogramModel,
@@ -191,7 +192,8 @@ export const pointPatternMode: SpatialAnalysisModeDefinition = {
     'Where do the points of interest of each category sit, and how clustered are they? Mean ' +
     'centres, standard distances and deviational ellipses per category; Ripley L(r) - r and G, F and J, ' +
     'Clark-Evans, quadrats, a semivariogram and a correlogram for the selected category, over a ' +
-    'window that can follow the map.',
+    'window that can follow the map. Switch the edge correction of G, F and J between border, ' +
+    'Kaplan-Meier, Hanisch and none to see how the estimators differ near the window edge.',
   initialViewState: {longitude: -73.985, latitude: 40.735, zoom: 12.2},
 
   async create(context) {
@@ -258,6 +260,7 @@ export const pointPatternMode: SpatialAnalysisModeDefinition = {
     let windowChoice: WindowChoice = 'extent';
     let maximumDistance = 800;
     let edgeCorrection: GPURipleyEdgeCorrection = 'isotropic';
+    let distanceEdgeCorrection: GPURipleyDistanceEdgeCorrection = 'border';
     let varianceAssumption: GPUSpatialCorrelogramVarianceAssumption = 'randomization';
     let azimuthDegrees = 60;
     let directionChoice = 'all';
@@ -572,7 +575,7 @@ export const pointPatternMode: SpatialAnalysisModeDefinition = {
         getGPURipleyDistanceParameterValues({
           bounds,
           maximumDistance,
-          edgeCorrection: edgeCorrection === 'none' ? 'none' : 'border'
+          edgeCorrection: distanceEdgeCorrection
         })
       );
       parameterBuffers.variogram.write(
@@ -658,7 +661,7 @@ export const pointPatternMode: SpatialAnalysisModeDefinition = {
       }
     });
     context.controls.addSelect<GPURipleyEdgeCorrection>({
-      label: 'Edge correction (K/L; G, F, J use border)',
+      label: 'Edge correction of K / L (per-frame)',
       options: [
         {value: 'isotropic', label: 'Isotropic (Ripley 1977)'},
         {value: 'border', label: 'Border (reduced sample)'},
@@ -667,6 +670,20 @@ export const pointPatternMode: SpatialAnalysisModeDefinition = {
       value: edgeCorrection,
       onChange: value => {
         edgeCorrection = value;
+        writePatternParameters();
+      }
+    });
+    context.controls.addSelect<GPURipleyDistanceEdgeCorrection>({
+      label: 'Edge correction of G, F, J (per-frame)',
+      options: [
+        {value: 'border', label: 'Border (reduced sample, rs)'},
+        {value: 'kaplan-meier', label: 'Kaplan-Meier (km)'},
+        {value: 'hanisch', label: 'Hanisch (G) / Chiu-Stoyan (F)'},
+        {value: 'none', label: 'None (biased low near the edge)'}
+      ],
+      value: distanceEdgeCorrection,
+      onChange: value => {
+        distanceEdgeCorrection = value;
         writePatternParameters();
       }
     });

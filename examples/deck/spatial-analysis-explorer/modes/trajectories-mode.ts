@@ -39,12 +39,31 @@ const VIRIDIS_COLORS = [
   [253, 231, 37]
 ] as const;
 
-type ColorMetric = 'average' | 'maximum';
+type ColorMetric = 'average' | 'maximum' | 'speed' | 'heading' | 'acceleration';
 
-/** Fixed color ranges in meters per second for each trail metric. */
+/** Fixed color ranges of each trail metric: m/s, m/s, m/s, radians, m/s squared. */
 const METRIC_RANGES: Record<ColorMetric, readonly [number, number]> = {
   average: [2, 14],
-  maximum: [5, 35]
+  maximum: [5, 35],
+  speed: [0, 20],
+  heading: [-Math.PI, Math.PI],
+  acceleration: [-2, 2]
+};
+
+const METRIC_UNITS: Record<ColorMetric, string> = {
+  average: 'm/s',
+  maximum: 'm/s',
+  speed: 'm/s',
+  heading: 'rad',
+  acceleration: 'm/s²'
+};
+
+const METRIC_DESCRIPTIONS: Record<ColorMetric, string> = {
+  average: 'average speed of each trip (per-track column)',
+  maximum: 'maximum step speed of each trip (per-track column)',
+  speed: 'speed of each step (per-vertex column)',
+  heading: 'heading of each step, radians from east (per-vertex column)',
+  acceleration: 'acceleration of each step (per-vertex column)'
 };
 
 /**
@@ -52,9 +71,11 @@ const METRIC_RANGES: Record<ColorMetric, readonly [number, number]> = {
  * length, average speed, maximum speed, per-trip stop counts and a bounded list of stops (dwells:
  * maximal runs of steps slower than a speed threshold that last at least a minimum duration, with
  * their centroid and duration). The stop thresholds are per-frame parameters, so moving the
- * sliders never recompiles. Trails are colored by their trip's metric through a per-segment
- * track index, and the stop count feeds an indirect draw of stop circles without readback; only
- * a small, throttled per-track summary is read back for the panel.
+ * sliders never recompiles. Trails are colored either by their trip's metric (per-track columns
+ * through a per-segment track index) or by the per-step speed, heading or acceleration columns
+ * (through a per-segment end-vertex index). The contributor writes the stop count straight into
+ * the indirect draw record (`drawInstanceCount`); only a small, throttled per-track summary is
+ * read back for the panel.
  *
  * Timestamps are uploaded as float32 seconds since the first sample of the dataset: the contributor
  * has no double-single time support, so an application epoch must keep values small enough for f32.
@@ -64,9 +85,10 @@ export const trajectoriesMode: SpatialAnalysisModeDefinition = {
   title: 'Trajectories',
   contributors: ['GPUTrajectoryMetrics'],
   description:
-    'Per-trip metrics and stop detection for taxi trips. Trails are colored by average or ' +
-    'maximum speed; circles mark stops, sized by duration. Stop speed threshold and minimum ' +
-    'duration are per-frame parameters, so the stop list updates on the GPU without recompiling.',
+    'Per-trip metrics and stop detection for taxi trips. Trails are colored by trip average or ' +
+    'maximum speed, or by per-step speed, heading or acceleration (pick in the selector); ' +
+    'circles mark stops, sized by duration. Stop speed threshold and minimum duration are ' +
+    'per-frame parameters, so the stop list updates on the GPU without recompiling.',
   initialViewState: {longitude: -73.985, latitude: 40.74, zoom: 12.6},
 
   async create(context) {
@@ -92,6 +114,8 @@ export const trajectoriesMode: SpatialAnalysisModeDefinition = {
     }
     const segments = new Float32Array(segmentCount * 4);
     const segmentTrips = new Uint32Array(segmentCount);
+    // The per-step columns describe the step that ends at a vertex: a segment uses its end vertex.
+    const segmentEndVertices = new Uint32Array(segmentCount);
     let row = 0;
     for (let trip = 0; trip < tripCount; trip++) {
       const first = trips.tripOffsets[trip];
@@ -99,6 +123,7 @@ export const trajectoriesMode: SpatialAnalysisModeDefinition = {
       for (let vertex = first; vertex < last; vertex++, row++) {
         segments.set(trips.vertexPositions.subarray(vertex * 2, vertex * 2 + 4), row * 4);
         segmentTrips[row] = trip;
+        segmentEndVertices[row] = vertex + 1;
       }
     }
 
@@ -107,6 +132,13 @@ export const trajectoriesMode: SpatialAnalysisModeDefinition = {
     const offsetsBuffer = resources.createBuffer('track-offsets', trips.tripOffsets);
     const segmentsBuffer = resources.createBuffer('segments', segments);
     const segmentTripsBuffer = resources.createBuffer('segment-trips', segmentTrips);
+    const segmentEndVerticesBuffer = resources.createBuffer(
+      'segment-end-vertices',
+      segmentEndVertices
+    );
+    const stepSpeedsBuffer = resources.createBuffer('step-speeds', vertexCount * 4);
+    const stepHeadingsBuffer = resources.createBuffer('step-headings', vertexCount * 4);
+    const stepAccelerationsBuffer = resources.createBuffer('step-accelerations', vertexCount * 4);
     const trackLengthsBuffer = resources.createBuffer('track-lengths', tripCount * 4);
     const trackDurationsBuffer = resources.createBuffer('track-durations', tripCount * 4);
     const averageSpeedsBuffer = resources.createBuffer('average-speeds', tripCount * 4);
@@ -125,7 +157,7 @@ export const trajectoriesMode: SpatialAnalysisModeDefinition = {
       'float32',
       GPU_TRAJECTORY_METRICS_PARAMETER_LENGTH
     );
-    // The contributor has no drawInstanceCount: the stop count is copied into the record each frame.
+    // The contributor writes the clamped stop count into the record's instance-count word.
     const drawCommands = resources.track(
       new DrawCommandBuffer(device, {
         id: 'trajectories-stop-draw',
@@ -188,6 +220,27 @@ export const trajectoriesMode: SpatialAnalysisModeDefinition = {
           'float32',
           tripCount
         ),
+        stepSpeeds: importGraphBuffer(
+          graph,
+          'step-speeds',
+          stepSpeedsBuffer,
+          'float32',
+          vertexCount
+        ),
+        stepHeadings: importGraphBuffer(
+          graph,
+          'step-headings',
+          stepHeadingsBuffer,
+          'float32',
+          vertexCount
+        ),
+        stepAccelerations: importGraphBuffer(
+          graph,
+          'step-accelerations',
+          stepAccelerationsBuffer,
+          'float32',
+          vertexCount
+        ),
         trackStopCounts: importGraphBuffer(
           graph,
           'track-stop-counts',
@@ -202,6 +255,10 @@ export const trajectoriesMode: SpatialAnalysisModeDefinition = {
             overflow: importGraphBuffer(graph, 'stop-overflow', stopOverflowBuffer, 'uint32', 1),
             totalCount: importGraphBuffer(graph, 'stop-total', stopTotalBuffer, 'uint32', 1)
           },
+          drawInstanceCount: graph.importGPUData(
+            'stop-draw-count',
+            drawCommands.getInstanceCountData(0)
+          ),
           startRows: importGraphBuffer(
             graph,
             'stop-start-rows',
@@ -271,15 +328,19 @@ export const trajectoriesMode: SpatialAnalysisModeDefinition = {
     const describeRange = () => {
       const [minimum, maximum] = METRIC_RANGES[colorMetric];
       rangeNote.setValue(
-        `Trail color scale: ${minimum} to ${maximum} m/s (${(minimum * METERS_PER_SECOND_TO_KILOMETERS_PER_HOUR).toFixed(0)} to ${(maximum * METERS_PER_SECOND_TO_KILOMETERS_PER_HOUR).toFixed(0)} km/h), ${colorMetric} speed of each trip.`
+        `Trail color scale: ${minimum.toFixed(1)} to ${maximum.toFixed(1)} ${METRIC_UNITS[colorMetric]}, ` +
+          `${METRIC_DESCRIPTIONS[colorMetric]}.`
       );
     };
     describeRange();
     context.controls.addSelect<ColorMetric>({
       label: 'Colour trails by',
       options: [
-        {value: 'average', label: 'Average speed'},
-        {value: 'maximum', label: 'Maximum speed'}
+        {value: 'average', label: 'Trip average speed'},
+        {value: 'maximum', label: 'Trip maximum speed'},
+        {value: 'speed', label: 'Step speed (per vertex)'},
+        {value: 'heading', label: 'Step heading (per vertex)'},
+        {value: 'acceleration', label: 'Step acceleration (per vertex)'}
       ],
       value: colorMetric,
       onChange: value => {
@@ -289,11 +350,11 @@ export const trajectoriesMode: SpatialAnalysisModeDefinition = {
       }
     });
     context.controls.addLegend({
-      title: 'Trail color: trip speed (slow to fast)',
+      title: 'Trail color: selected metric (low to high, ranges in the note above)',
       gradient: {
         colors: VIRIDIS_COLORS,
-        minimumLabel: 'slow',
-        maximumLabel: 'fast'
+        minimumLabel: 'low',
+        maximumLabel: 'high'
       }
     });
     context.controls.addLegend({
@@ -414,14 +475,6 @@ export const trajectoriesMode: SpatialAnalysisModeDefinition = {
           )
         );
         compiled.encode(commandEncoder, {parameters: undefined});
-        // Instance-count word of the 16-byte draw record: the clamped number of listed stops.
-        commandEncoder.copyBufferToBuffer({
-          sourceBuffer: stopCountBuffer,
-          sourceOffset: 0,
-          destinationBuffer: drawCommands.buffer,
-          destinationOffset: 4,
-          size: 4
-        });
         if (
           !readbackPending &&
           (readbackRequested || frame.frameIndex % READBACK_INTERVAL_FRAMES === 0)
@@ -430,6 +483,20 @@ export const trajectoriesMode: SpatialAnalysisModeDefinition = {
         }
       },
       getLayers(): Layer[] {
+        const getTrailValues = () =>
+          colorMetric === 'average' || colorMetric === 'maximum'
+            ? {
+                values: colorMetric === 'average' ? averageSpeedsBuffer : maximumSpeedsBuffer,
+                valueIndices: segmentTripsBuffer
+              }
+            : {
+                values: {
+                  speed: stepSpeedsBuffer,
+                  heading: stepHeadingsBuffer,
+                  acceleration: stepAccelerationsBuffer
+                }[colorMetric],
+                valueIndices: segmentEndVerticesBuffer
+              };
         const coordinateOrigin: [number, number, number] = [trips.origin[0], trips.origin[1], 0];
         return [
           new SpatialAnalysisSegmentLayer({
@@ -437,9 +504,8 @@ export const trajectoriesMode: SpatialAnalysisModeDefinition = {
             coordinateOrigin,
             segments: segmentsBuffer,
             instanceCount: segmentCount,
-            values: colorMetric === 'average' ? averageSpeedsBuffer : maximumSpeedsBuffer,
+            ...getTrailValues(),
             valueFormat: 'float32',
-            valueIndices: segmentTripsBuffer,
             colormap: 'viridis',
             valueRange: METRIC_RANGES[colorMetric],
             color: [255, 255, 255, 215],

@@ -3,14 +3,18 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 /**
- * Network isochrones over the New York street graph. One compiled graph converts the directed edge
- * list to CSR (`GPUCOOToCSR`) and runs two `GPUNetworkIsochrones` producers: a raster producer
- * that searches from the clicked source (`GPUNetworkReachability` inside), splats edge-interpolated
- * costs plus a walking buffer to a viewport raster and contours it into filled bands
- * (`GPUIsobands`); and a cell producer that reads the same node costs and outlines the Quadbin or
- * H3 cells that contain reached nodes (`GPUCellSetOutline`). The source, time budget, band count,
- * walking buffer, transport and raster extent are buffer writes; only the cell family and
- * resolution recompile the graph.
+ * Network isochrones over the New York street graph from up to six clickable facilities. One
+ * compiled graph converts the directed edge list to CSR (`GPUCOOToCSR`) and runs two
+ * `GPUNetworkIsochrones` producers: a raster producer that allocates every node to its nearest
+ * facility (`GPUNetworkServiceAreas` inside), splats edge-interpolated costs plus a walking buffer
+ * to a viewport raster and contours it into filled bands (`GPUIsobands`), with the facility of
+ * every pixel and band triangle; and a cell producer that reads the same node costs and
+ * allocation, labels each reached Quadbin or H3 cell with the facility of its cheapest node and
+ * outlines the cells per facility (`GPUCellSetOutline` with groups, then ring assembly), so rings
+ * are colored by facility and never mix facilities. Clicking the map adds a facility (clicking a
+ * facility's node removes it); the facility count, time budget, band count, walking buffer,
+ * transport and raster extent are buffer writes. Only the cell family and resolution recompile
+ * the graph.
  */
 
 import {COORDINATE_SYSTEM, type Layer} from '@deck.gl/core';
@@ -66,9 +70,18 @@ const TRIANGLE_CAPACITY = 800_000;
 const SEGMENT_CAPACITY = 300_000;
 const PALETTE_SIZE = 64;
 const RING_CAPACITY = 2048;
+/** Compile-time facility capacity; the active count is a per-frame parameter. */
+const MAXIMUM_FACILITIES = 6;
+/** One color per facility (the layer palettes hold eight). */
+const FACILITY_COLORS: readonly (readonly [number, number, number, number])[] = [
+  [255, 99, 71, 200],
+  [64, 170, 255, 200],
+  [110, 220, 110, 200],
+  [255, 200, 50, 200],
+  [200, 120, 255, 200],
+  [255, 140, 200, 200]
+];
 const RING_VERTEX_CAPACITY = 32768;
-const SHELL_COLOR = [255, 255, 255, 255] as const;
-const HOLE_COLOR = [255, 60, 200, 255] as const;
 const DEMAND_INSIDE_COLOR = [90, 255, 160, 255] as const;
 const DEMAND_OUTSIDE_COLOR = [150, 155, 170, 70] as const;
 const RECORD_OUTLINE = 0;
@@ -88,6 +101,8 @@ const BAND_ALPHA = 175;
 const ROAD_COLOR = [150, 160, 180, 70] as const;
 
 type View = 'bands' | 'cells' | 'both';
+type BandColor = 'facility' | 'ramp';
+type ClickAction = 'add' | 'replace';
 type CellChoice = 'quadbin-16' | 'quadbin-17' | 'h3-8' | 'h3-9';
 
 const CELL_CHOICES: Record<
@@ -123,7 +138,8 @@ export const isochronesMode: SpatialAnalysisModeDefinition = {
   title: 'Isochrones',
   contributors: [
     'GPUNetworkIsochrones',
-    'GPUNetworkReachability',
+    'GPUNetworkServiceAreas',
+    'GPUPointToCell',
     'GPUIsobands',
     'GPUCellAggregation',
     'GPUCellSetOutline',
@@ -132,8 +148,10 @@ export const isochronesMode: SpatialAnalysisModeDefinition = {
     'GPUCOOToCSR'
   ],
   description:
-    'Walking-time polygons on the New York street graph, built on the GPU. Click to place the ' +
-    'source; drag the time, band, and walking-buffer sliders, or switch to the cell-outline view.',
+    'Walking-time polygons on the New York street graph, built on the GPU from up to six ' +
+    'facilities. Click the map to add a facility (click one to remove it); every node goes to its ' +
+    'nearest facility, and bands and rings are colored by facility. Drag the time, band, and ' +
+    'walking-buffer sliders, or switch to the cell-ring view.',
   initialViewState: {longitude: -73.985, latitude: 40.755, zoom: 13.3},
 
   async create(context) {
@@ -161,11 +179,17 @@ export const isochronesMode: SpatialAnalysisModeDefinition = {
     let budgetMinutes = 15;
     let bandCount = 4;
     let bufferMeters = 40;
-    let view: View = 'bands';
+    let view: View = 'both';
+    let bandColor: BandColor = 'facility';
+    let clickAction: ClickAction = 'add';
     let cellChoice: CellChoice = 'quadbin-17';
     let showRoads = true;
     let showDemand = true;
-    let sourceNode = findNearestNode(roads.nodePositions, projection.project(...DEFAULT_SOURCE));
+    const facilityNodes: number[] = [
+      findNearestNode(roads.nodePositions, projection.project(...DEFAULT_SOURCE)),
+      findNearestNode(roads.nodePositions, projection.project(-73.9772, 40.7527)),
+      findNearestNode(roads.nodePositions, projection.project(-73.9935, 40.7506))
+    ].filter((node, index, nodes) => nodes.indexOf(node) === index);
     let extent: [number, number, number, number] | null = null;
     let extentKey = '';
     let dirty = true;
@@ -207,16 +231,23 @@ export const isochronesMode: SpatialAnalysisModeDefinition = {
     );
     const polygonOffsets = resources.createBuffer('polygon-offsets', (RING_CAPACITY + 1) * 4);
     const polygonFeatureOffsets = resources.createBuffer('polygon-feature-offsets', 8);
-    const ringStyle = resources.createBuffer('ring-style', Uint32Array.of(0, 1));
     const costs = resources.createBuffer('costs', nodeCount * 4);
-    const segmentsBuffer = resources.createBuffer('segments', roads.segments);
-    const sourcePosition = resources.createBuffer('source-position', 8);
-    const sources = resources.createParameterBuffer(
-      'sources',
-      'uint32',
-      1,
-      Uint32Array.of(sourceNode)
+    const assignments = resources.createBuffer('assignments', nodeCount * 4);
+    const pixelFacilities = resources.createBuffer(
+      'pixel-facilities',
+      RASTER_WIDTH * RASTER_HEIGHT * 4
     );
+    const triangleFacilities = resources.createBuffer('triangle-facilities', TRIANGLE_CAPACITY * 4);
+    const outlineGroups = resources.createBuffer('outline-groups', SEGMENT_CAPACITY * 4);
+    const ringGroups = resources.createBuffer('ring-groups', RING_CAPACITY * 4);
+    const facilityIdentity = resources.createBuffer(
+      'facility-identity',
+      Uint32Array.from({length: 8}, (_, index) => index)
+    );
+    const segmentsBuffer = resources.createBuffer('segments', roads.segments);
+    const facilityPositions = resources.createBuffer('facility-positions', MAXIMUM_FACILITIES * 8);
+    const sources = resources.createParameterBuffer('sources', 'uint32', MAXIMUM_FACILITIES);
+    const sourceCount = resources.createParameterBuffer('source-count', 'uint32', 1);
     const costLimit = resources.createParameterBuffer('cost-limit', 'float32', 1);
     const breaks = resources.createParameterBuffer('breaks', 'float32', MAXIMUM_BREAKS);
     const parameters = resources.createParameterBuffer(
@@ -301,6 +332,13 @@ export const isochronesMode: SpatialAnalysisModeDefinition = {
         2
       );
       const costsView = importGraphBuffer(graph, 'costs', costs, 'float32', nodeCount);
+      const assignmentsView = importGraphBuffer(
+        graph,
+        'assignments',
+        assignments,
+        'uint32',
+        nodeCount
+      );
       const breaksView = breaks.importToGraph(graph);
       const parametersView = parameters.importToGraph(graph);
       graph.add(
@@ -318,6 +356,8 @@ export const isochronesMode: SpatialAnalysisModeDefinition = {
           ),
           costs: costsView,
           sources: sources.importToGraph(graph),
+          sourceCount: sourceCount.importToGraph(graph),
+          assignments: assignmentsView,
           costLimit: costLimit.importToGraph(graph),
           maxIterations: MAXIMUM_ITERATIONS,
           breaks: breaksView,
@@ -329,6 +369,20 @@ export const isochronesMode: SpatialAnalysisModeDefinition = {
             maximumBufferPixels: MAXIMUM_BUFFER_PIXELS,
             maximumSamplesPerEdge: MAXIMUM_SAMPLES_PER_EDGE,
             output: {
+              pixelFacilities: importGraphBuffer(
+                graph,
+                'pixel-facilities',
+                pixelFacilities,
+                'uint32',
+                RASTER_WIDTH * RASTER_HEIGHT
+              ),
+              triangleFacilities: importGraphBuffer(
+                graph,
+                'triangle-facilities',
+                triangleFacilities,
+                'uint32',
+                TRIANGLE_CAPACITY
+              ),
               triangles: importGraphBuffer(
                 graph,
                 'triangles',
@@ -377,11 +431,13 @@ export const isochronesMode: SpatialAnalysisModeDefinition = {
             nodeCount
           ),
           costs: costsView,
+          assignments: assignmentsView,
           breaks: breaksView,
           parameters: parametersView,
           cellOutline: {
             family: choice.family,
             resolution: choice.resolution,
+            byFacility: true,
             table: {
               cells: importGraphBuffer(graph, 'table-cells', tableCells, 'uint32x2', nodeCount),
               counts: importGraphBuffer(graph, 'table-counts', tableCounts, 'uint32', nodeCount),
@@ -416,6 +472,13 @@ export const isochronesMode: SpatialAnalysisModeDefinition = {
                   graph,
                   'ring-shells',
                   ringShells,
+                  'uint32',
+                  RING_CAPACITY
+                ),
+                ringGroups: importGraphBuffer(
+                  graph,
+                  'ring-groups',
+                  ringGroups,
                   'uint32',
                   RING_CAPACITY
                 ),
@@ -467,6 +530,13 @@ export const isochronesMode: SpatialAnalysisModeDefinition = {
                 'float32x4',
                 SEGMENT_CAPACITY
               ),
+              groups: importGraphBuffer(
+                graph,
+                'outline-groups',
+                outlineGroups,
+                'uint32',
+                SEGMENT_CAPACITY
+              ),
               count: importGraphBuffer(graph, 'outline-count', outlineCount, 'uint32', 1),
               overflow: importGraphBuffer(graph, 'outline-overflow', outlineOverflow, 'uint32', 1),
               totalCount: importGraphBuffer(graph, 'outline-total', outlineTotal, 'uint32', 1)
@@ -507,13 +577,22 @@ export const isochronesMode: SpatialAnalysisModeDefinition = {
       dirty = true;
     };
 
-    const sourceReadout = context.controls.addReadout('Source node');
-    const writeSource = (node: number) => {
-      sourceNode = node;
-      sources.write(Uint32Array.of(node));
-      sourcePosition.write(roads.nodePositions.subarray(node * 2, node * 2 + 2));
-      sourceReadout.setValue(`#${formatCount(node)}`);
+    const facilityReadout = context.controls.addReadout('Facilities (click to add or remove)');
+    const writeFacilities = () => {
+      const words = new Uint32Array(MAXIMUM_FACILITIES);
+      const positionValues = new Float32Array(MAXIMUM_FACILITIES * 2);
+      facilityNodes.forEach((node, facility) => {
+        words[facility] = node;
+        positionValues.set(roads.nodePositions.subarray(node * 2, node * 2 + 2), facility * 2);
+      });
+      sources.write(words);
+      sourceCount.write(Uint32Array.of(facilityNodes.length));
+      facilityPositions.write(positionValues);
+      facilityReadout.setValue(
+        `${facilityNodes.length} of ${MAXIMUM_FACILITIES}: ${facilityNodes.map(node => `#${formatCount(node)}`).join(', ')}`
+      );
       dirty = true;
+      context.updateLayers();
     };
 
     context.controls.addSelect<View>({
@@ -527,6 +606,29 @@ export const isochronesMode: SpatialAnalysisModeDefinition = {
       onChange: value => {
         view = value;
         context.updateLayers();
+      }
+    });
+    context.controls.addSelect<BandColor>({
+      label: 'Band color (raster view)',
+      options: [
+        {value: 'facility', label: 'Facility hue, shaded by band'},
+        {value: 'ramp', label: 'Cost ramp (near to far)'}
+      ],
+      value: bandColor,
+      onChange: value => {
+        bandColor = value;
+        context.updateLayers();
+      }
+    });
+    context.controls.addSelect<ClickAction>({
+      label: 'Click action',
+      options: [
+        {value: 'add', label: 'Add a facility (click a facility to remove it)'},
+        {value: 'replace', label: 'Replace all facilities with one'}
+      ],
+      value: clickAction,
+      onChange: value => {
+        clickAction = value;
       }
     });
     context.controls.addSelect<Transport>({
@@ -609,12 +711,12 @@ export const isochronesMode: SpatialAnalysisModeDefinition = {
       }
     });
     context.controls.addLegend({
-      title: 'Isochrone rings (cell view)',
-      entries: [
-        {color: SHELL_COLOR, label: 'Shell'},
-        {color: HOLE_COLOR, label: 'Hole'},
-        {color: DEMAND_INSIDE_COLOR, label: 'Point of interest inside'}
-      ]
+      title: 'Facilities (rings and bands share the hue of the nearest facility)',
+      entries: FACILITY_COLORS.map((color, index) => ({color, label: `Facility ${index + 1}`}))
+    });
+    context.controls.addLegend({
+      title: 'Cell view',
+      entries: [{color: DEMAND_INSIDE_COLOR, label: 'Point of interest inside the isochrone'}]
     });
     context.controls.addLegend({
       title: 'Isochrone bands (near to far, within the time budget)',
@@ -625,8 +727,9 @@ export const isochronesMode: SpatialAnalysisModeDefinition = {
       }
     });
     context.controls.addNote(
-      'Click the map to move the source. Pixels past the last threshold stay empty; the raster ' +
-        'follows the viewport, so zoom in for finer polygons.'
+      'Click the map to add facilities (up to six). Pixels past the last threshold stay empty; ' +
+        'the raster follows the viewport, so zoom in for finer polygons. Rings never mix ' +
+        'facilities: where two catchments meet, each ring runs along the shared border.'
     );
     context.controls.addReadout('Nodes', formatCount(nodeCount));
     context.controls.addReadout('Directed edges', formatCount(edgeCount));
@@ -701,7 +804,7 @@ export const isochronesMode: SpatialAnalysisModeDefinition = {
 
     writeWeights();
     writeBudget();
-    writeSource(sourceNode);
+    writeFacilities();
     buildGraph();
     summary.markStale();
 
@@ -788,12 +891,13 @@ export const isochronesMode: SpatialAnalysisModeDefinition = {
         if (view !== 'cells') {
           layers.push(
             new IsobandTriangleLayer({
-              id: 'isochrones-bands',
+              id: `isochrones-bands-${bandColor}`,
               coordinateOrigin,
               gridSize: [1, 1],
               bounds: [0, 0, 1, 1],
               triangles,
               triangleBands,
+              ...(bandColor === 'facility' ? {triangleFacilities, palette: FACILITY_COLORS} : {}),
               values: paletteBuffer,
               valueFormat: 'uint32',
               colormap: 'category',
@@ -810,12 +914,12 @@ export const isochronesMode: SpatialAnalysisModeDefinition = {
               coordinateSystem: COORDINATE_SYSTEM.LNGLAT,
               segments: ringPositions,
               polylineOffsets: ringOffsets,
-              valueIndices: ringIsHole,
+              valueIndices: ringGroups,
               extent: ringCount,
-              values: ringStyle,
+              values: facilityIdentity,
               valueFormat: 'uint32',
               colormap: 'category',
-              palette: [SHELL_COLOR, HOLE_COLOR],
+              palette: FACILITY_COLORS.map(color => [color[0], color[1], color[2], 255] as const),
               instanceCount: RING_VERTEX_CAPACITY,
               widthPixels: 3.5
             })
@@ -840,12 +944,23 @@ export const isochronesMode: SpatialAnalysisModeDefinition = {
         }
         layers.push(
           new SpatialAnalysisPointLayer({
-            id: 'isochrones-source',
+            id: 'isochrones-facility-halo',
             coordinateOrigin,
-            positions: sourcePosition,
-            instanceCount: 1,
-            radiusPixels: 7,
+            positions: facilityPositions,
+            instanceCount: facilityNodes.length,
+            radiusPixels: 10,
             color: [255, 255, 255, 255]
+          }),
+          new SpatialAnalysisPointLayer({
+            id: 'isochrones-facilities',
+            coordinateOrigin,
+            positions: facilityPositions,
+            instanceCount: facilityNodes.length,
+            radiusPixels: 7,
+            values: facilityIdentity,
+            valueFormat: 'uint32',
+            colormap: 'category',
+            palette: FACILITY_COLORS.map(color => [color[0], color[1], color[2], 255] as const)
           })
         );
         return layers;
@@ -853,7 +968,19 @@ export const isochronesMode: SpatialAnalysisModeDefinition = {
       onClick(event) {
         if (!event.coordinate) return false;
         const [x, y] = projection.project(event.coordinate[0], event.coordinate[1]);
-        writeSource(findNearestNode(roads.nodePositions, [x, y]));
+        const node = findNearestNode(roads.nodePositions, [x, y]);
+        const existing = facilityNodes.indexOf(node);
+        if (clickAction === 'replace') {
+          facilityNodes.splice(0, facilityNodes.length, node);
+        } else if (existing >= 0) {
+          if (facilityNodes.length > 1) facilityNodes.splice(existing, 1);
+        } else if (facilityNodes.length >= MAXIMUM_FACILITIES) {
+          facilityNodes.shift();
+          facilityNodes.push(node);
+        } else {
+          facilityNodes.push(node);
+        }
+        writeFacilities();
         return true;
       },
       destroy() {

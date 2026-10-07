@@ -37,11 +37,15 @@ import {
 } from './road-network-utils';
 
 /**
- * Compile-time relaxation round limit. Each round is one graph node covering up to 16 hops
- * (`localIterations`), so Manhattan's longest drive (about 380 hops) needs about 25 rounds; the
- * graph stops early on the GPU once costs converge and reports `converged` honestly otherwise.
+ * Compile-time relaxation round limit. Each round is one graph node covering about 14 hops
+ * (`localIterations` 16, roughly 0.85 hops per local iteration), so Manhattan's longest drive
+ * (about 380 hops) needs about 38 rounds. The frontier empties on the GPU as soon as costs
+ * converge (about 5 rounds for a 15 minute budget) and later rounds dispatch nothing, so 48 rounds
+ * cost 57 graph nodes rather than the 649 of 640 rounds. `converged` reports a truncated run.
  */
-const MAXIMUM_ITERATIONS = 64;
+const MAXIMUM_ITERATIONS = 48;
+/** Hops one workgroup chains per round; 16 suits the wide frontiers of a road network. */
+const LOCAL_ITERATIONS = 16;
 const BAND_COUNT = 4;
 const BAND_FRACTIONS = [0.25, 0.5, 0.75, 1] as const;
 const READBACK_INTERVAL_FRAMES = 15;
@@ -146,6 +150,7 @@ export const reachabilityMode: SpatialAnalysisModeDefinition = {
         costLimit: costLimit.importToGraph(graph),
         bandThresholds: bandThresholds.importToGraph(graph),
         maxIterations: MAXIMUM_ITERATIONS,
+        localIterations: LOCAL_ITERATIONS,
         costs: importGraphBuffer(graph, 'costs', costs, 'float32', nodeCount),
         bands: importGraphBuffer(graph, 'bands', bands, 'uint32', nodeCount),
         bandCounts: importGraphBuffer(graph, 'band-counts', bandCounts, 'uint32', BAND_COUNT),

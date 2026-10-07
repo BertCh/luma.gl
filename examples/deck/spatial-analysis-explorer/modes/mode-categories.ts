@@ -39,6 +39,7 @@ export const SPATIAL_ANALYSIS_MODE_CATEGORIES: readonly SpatialAnalysisModeCateg
       'relate',
       'validity',
       'crossings',
+      'noding',
       'simplification'
     ]
   },
@@ -51,7 +52,9 @@ export const SPATIAL_ANALYSIS_MODE_CATEGORIES: readonly SpatialAnalysisModeCateg
       'group-statistics',
       'classification',
       'rates',
-      'segregation'
+      'segregation',
+      'similar-locations',
+      'regions'
     ]
   },
   {
@@ -67,7 +70,16 @@ export const SPATIAL_ANALYSIS_MODE_CATEGORIES: readonly SpatialAnalysisModeCateg
   {
     id: 'networks',
     title: 'Networks',
-    modeIds: ['network-analysis', 'reachability', 'accessibility', 'isochrones', 'coverage']
+    modeIds: [
+      'network-analysis',
+      'reachability',
+      'accessibility',
+      'isochrones',
+      'coverage',
+      'network-k-function',
+      'map-matching',
+      'edge-bundling'
+    ]
   },
   {
     id: 'time',
@@ -81,6 +93,7 @@ export const SPATIAL_ANALYSIS_MODE_CATEGORIES: readonly SpatialAnalysisModeCateg
       'encounters',
       'zone-events',
       'knox',
+      'scan-statistic',
       'markov'
     ]
   },

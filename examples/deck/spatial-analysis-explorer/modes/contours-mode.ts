@@ -24,6 +24,14 @@
  * one set of buffers instead of 32 slots, line segments drawn as 6-vertex quads straight from the
  * contributor output (no draw-record repacking), optional stitching into polylines and rings, and
  * matching filled bands that share vertices with the lines bit for bit.
+ *
+ * "Band rings" adds a third compiled graph with `GPUIsobandRings`: the band boundary edges of the
+ * same raster, chained on the GPU into closed polygon rings (shells and holes per band, GeoArrow
+ * offsets, one group per band). `GPUPolygonRasterization` then scan-converts those polygons (one
+ * feature per polygon) into a zone raster, which is drawn colored by the band of each polygon's
+ * shell: the exact even-odd fill of the assembled shells and holes at raster resolution. The ring
+ * outlines come straight from the contributor buffers and the panel counts rings, shells and
+ * holes, open segments and overflow.
  */
 
 import type {Layer} from '@deck.gl/core';
@@ -38,6 +46,7 @@ import {
   getGPUDistanceFieldParameterValues,
   getGPUIsobandsParameterValues,
   getGPUIsolinesParameterValues,
+  getGPUPolygonRasterizationExtentValues,
   getGPURasterStretchParameterValues,
   GPU_DISTANCE_FIELD_PARAMETER_LENGTH,
   GPU_ISOBANDS_PARAMETER_LENGTH,
@@ -46,9 +55,11 @@ import {
   GPUDistanceField,
   GPUIsobands,
   GPUIsolines,
+  GPUPolygonRasterization,
   GPURasterStretch,
   type GPURasterStretchMode
 } from '@luma.gl/experimental/gpu-raster';
+import {GPUIsobandRings} from '@luma.gl/experimental/gpu-raster';
 import {
   getGPUTerrainDerivativesParameterValues,
   GPU_TERRAIN_DERIVATIVES_PARAMETER_LENGTH,
@@ -66,7 +77,13 @@ import {
   getViewportMetricBounds,
   SpatialAnalysisResources
 } from '../spatial-analysis-resources';
-import {IsobandTriangleLayer, PackedColorRasterLayer, PolylineLayer} from './contours-layers';
+import {
+  IsobandTriangleLayer,
+  PackedColorRasterLayer,
+  PolylineLayer,
+  ZoneBandRasterLayer
+} from './contours-layers';
+import {SummaryReader} from './summary-reader';
 import {
   formatCompiledGraphTiming,
   measureCompiledGraph,
@@ -80,6 +97,15 @@ const PROVISIONAL_LEVEL_COUNT = 24;
 /** Compile-time capacities of the contributor outputs; overflow flags are shown in the panel. */
 const SEGMENT_CAPACITY = 400_000;
 const TRIANGLE_CAPACITY = 1_000_000;
+/** Compile-time capacities of the band ring output (edges bound the ring vertex count). */
+const RING_EDGE_CAPACITY = 400_000;
+const RING_CAPACITY = 16_384;
+/** Vertex tolerance of the ring assembly, in meters (boundary vertices are bit-identical). */
+const RING_VERTEX_TOLERANCE = 0.0001;
+/** Compile-time capacity of the polygon rasterization (edge, row) crossings. */
+const CROSSING_CAPACITY = 600_000;
+const SHELL_COLOR: SpatialAnalysisColor = [255, 255, 255, 235];
+const HOLE_COLOR: SpatialAnalysisColor = [255, 60, 200, 235];
 const HISTOGRAM_BIN_COUNT = 1024;
 const LUT_SIZE = 256;
 const PALETTE_SIZE = 256;
@@ -163,11 +189,19 @@ type Readback = {
 export const contoursMode: SpatialAnalysisModeDefinition = {
   id: 'contours',
   title: 'Contours',
-  contributors: ['GPURasterStretch', 'GPUIsolines', 'GPUIsobands'],
+  contributors: [
+    'GPURasterStretch',
+    'GPUIsolines',
+    'GPUIsobands',
+    'GPUIsobandRings',
+    'GPUSegmentRingAssembly'
+  ],
   description:
     'Stretch a San Francisco raster (elevation, slope or distance to bike parking) with ' +
     'percentile, equalize, gamma and sigmoid controls, then draw filled bands and contour lines ' +
-    'from GPU buffers. Levels are an interval or quantile-style classes of the stretch curve.',
+    'from GPU buffers. Levels are an interval or quantile-style classes of the stretch curve. ' +
+    'The band polygons are closed shell and hole rings assembled on the GPU ("Band rings"), ' +
+    'filled by polygon rasterization; switch on "Filled bands" for the exact triangle fill.',
   initialViewState: {longitude: -122.44, latitude: 37.735, zoom: 11.6},
 
   async create(context) {
@@ -289,6 +323,36 @@ export const contoursMode: SpatialAnalysisModeDefinition = {
         ]
       })
     );
+    const ringOffsetsBuffer = resources.createBuffer('ring-offsets', (RING_CAPACITY + 1) * 4);
+    const ringPositionsBuffer = resources.createBuffer('ring-positions', RING_EDGE_CAPACITY * 8);
+    const ringBandsBuffer = resources.createBuffer('ring-bands', RING_CAPACITY * 4);
+    const ringIsHoleBuffer = resources.createBuffer('ring-is-hole', RING_CAPACITY * 4);
+    const ringCountBuffer = resources.createBuffer('ring-count', 4);
+    const ringOverflowBuffer = resources.createBuffer('ring-overflow', 4);
+    const ringOpenBuffer = resources.createBuffer('ring-open', 4);
+    const ringEdgeCountBuffer = resources.createBuffer('ring-edge-count', 4);
+    const ringEdgeOverflowBuffer = resources.createBuffer('ring-edge-overflow', 4);
+    const ringStyleBuffer = resources.createBuffer('ring-style', Uint32Array.of(0, 1));
+    const polygonPositionsBuffer = resources.createBuffer(
+      'polygon-positions',
+      RING_EDGE_CAPACITY * 8
+    );
+    const polygonRingOffsetsBuffer = resources.createBuffer(
+      'polygon-ring-offsets',
+      (RING_CAPACITY + 1) * 4
+    );
+    const polygonOffsetsBuffer = resources.createBuffer('polygon-offsets', (RING_CAPACITY + 1) * 4);
+    const polygonFeatureOffsetsBuffer = resources.createBuffer('polygon-feature-offsets', 8);
+    const polygonGroupsBuffer = resources.createBuffer('polygon-groups', RING_CAPACITY * 4);
+    // One feature per polygon: the zone raster then holds the polygon row.
+    const polygonFeaturesBuffer = resources.createBuffer(
+      'polygon-features',
+      Uint32Array.from({length: RING_CAPACITY + 1}, (_, index) => index)
+    );
+    const zonesBuffer = resources.createBuffer('zones', cellCount * 4);
+    const zoneOverflowBuffer = resources.createBuffer('zone-overflow', 4);
+    const crossingCountBuffer = resources.createBuffer('crossing-count', 4);
+    const zoneExtent = resources.createParameterBuffer('zone-extent', 'float32', 4);
     const readbackRing = resources.track(
       new GPUReadbackRing(device, {id: 'contours-readback', byteLength: READ_BYTE_LENGTH})
     );
@@ -515,6 +579,132 @@ export const contoursMode: SpatialAnalysisModeDefinition = {
     };
     const plainGraph = compileAnalysis(false);
     const stitchedGraph = compileAnalysis(true);
+    const ringsGraph = (() => {
+      const graph = new GPUCommandGraph<void>(device, {id: 'contours-rings'});
+      const polygonPositionsView = importGraphBuffer(
+        graph,
+        'polygon-positions',
+        polygonPositionsBuffer,
+        'float32x2',
+        RING_EDGE_CAPACITY
+      );
+      const polygonRingOffsetsView = importGraphBuffer(
+        graph,
+        'polygon-ring-offsets',
+        polygonRingOffsetsBuffer,
+        'uint32',
+        RING_CAPACITY + 1
+      );
+      const polygonOffsetsView = importGraphBuffer(
+        graph,
+        'polygon-offsets',
+        polygonOffsetsBuffer,
+        'uint32',
+        RING_CAPACITY + 1
+      );
+      graph.add(
+        new GPUIsobandRings({
+          id: 'band-rings',
+          width,
+          height,
+          values: importGraphBuffer(graph, 'values', valuesBuffer, 'float32', cellCount),
+          validity: importGraphBuffer(graph, 'validity', validityBuffer, 'uint32', cellCount),
+          breaks: importGraphBuffer(graph, 'levels', levelsBuffer, 'float32', LEVEL_SLOT_COUNT),
+          parameters: isobandParameters.importToGraph(graph),
+          edgeCapacity: RING_EDGE_CAPACITY,
+          vertexTolerance: RING_VERTEX_TOLERANCE,
+          output: {
+            ringOffsets: importGraphBuffer(
+              graph,
+              'ring-offsets',
+              ringOffsetsBuffer,
+              'uint32',
+              RING_CAPACITY + 1
+            ),
+            positions: importGraphBuffer(
+              graph,
+              'ring-positions',
+              ringPositionsBuffer,
+              'float32x2',
+              RING_EDGE_CAPACITY
+            ),
+            ringGroups: importGraphBuffer(
+              graph,
+              'ring-bands',
+              ringBandsBuffer,
+              'uint32',
+              RING_CAPACITY
+            ),
+            ringIsHole: importGraphBuffer(
+              graph,
+              'ring-is-hole',
+              ringIsHoleBuffer,
+              'uint32',
+              RING_CAPACITY
+            ),
+            polygons: {
+              positions: polygonPositionsView,
+              ringOffsets: polygonRingOffsetsView,
+              polygonOffsets: polygonOffsetsView,
+              featureOffsets: importGraphBuffer(
+                graph,
+                'polygon-feature-offsets',
+                polygonFeatureOffsetsBuffer,
+                'uint32',
+                2
+              ),
+              polygonGroups: importGraphBuffer(
+                graph,
+                'polygon-groups',
+                polygonGroupsBuffer,
+                'uint32',
+                RING_CAPACITY
+              )
+            },
+            count: importGraphBuffer(graph, 'ring-count', ringCountBuffer, 'uint32', 1),
+            overflow: importGraphBuffer(graph, 'ring-overflow', ringOverflowBuffer, 'uint32', 1),
+            openSegmentCount: importGraphBuffer(graph, 'ring-open', ringOpenBuffer, 'uint32', 1),
+            edgeCount: importGraphBuffer(graph, 'edge-count', ringEdgeCountBuffer, 'uint32', 1),
+            edgeOverflow: importGraphBuffer(
+              graph,
+              'edge-overflow',
+              ringEdgeOverflowBuffer,
+              'uint32',
+              1
+            )
+          }
+        })
+      );
+      graph.add(
+        new GPUPolygonRasterization({
+          id: 'band-zones',
+          width,
+          height,
+          extent: zoneExtent.importToGraph(graph),
+          polygonPositions: polygonPositionsView,
+          featureOffsets: importGraphBuffer(
+            graph,
+            'polygon-features',
+            polygonFeaturesBuffer,
+            'uint32',
+            RING_CAPACITY + 1
+          ),
+          polygonOffsets: polygonOffsetsView,
+          ringOffsets: polygonRingOffsetsView,
+          crossingCapacity: CROSSING_CAPACITY,
+          zones: importGraphBuffer(graph, 'zones', zonesBuffer, 'uint32', cellCount),
+          overflow: importGraphBuffer(graph, 'zone-overflow', zoneOverflowBuffer, 'uint32', 1),
+          crossingCount: importGraphBuffer(
+            graph,
+            'crossing-count',
+            crossingCountBuffer,
+            'uint32',
+            1
+          )
+        })
+      );
+      return resources.track(graph.compile());
+    })();
 
     // --- State ---------------------------------------------------------------------------------
     let source: Source = 'elevation';
@@ -530,9 +720,11 @@ export const contoursMode: SpatialAnalysisModeDefinition = {
     let smoothPalette = true;
     let stretchToView = false;
     let showRaster = true;
-    let showBands = true;
+    let showBands = false;
     let showLines = true;
     let stitchPolylines = false;
+    let showRings = true;
+    let ringFill = true;
     let rasterOpacity = 0.85;
     let bandOpacity = 0.55;
     let dirty = true;
@@ -704,6 +896,14 @@ export const contoursMode: SpatialAnalysisModeDefinition = {
       derivativesSettings.write(getGPUTerrainDerivativesParameterValues({cellSize}));
       distanceSettings.write(
         getGPUDistanceFieldParameterValues({bounds: flippedExtent, gridSize: [width, height]})
+      );
+      zoneExtent.write(
+        getGPUPolygonRasterizationExtentValues(
+          flippedExtent[0],
+          flippedExtent[1],
+          (flippedExtent[2] - flippedExtent[0]) / width,
+          (flippedExtent[3] - flippedExtent[1]) / height
+        )
       );
     }
 
@@ -904,6 +1104,30 @@ export const contoursMode: SpatialAnalysisModeDefinition = {
         context.updateLayers();
       }
     });
+    context.controls.addToggle({
+      label: 'Band rings (GPUIsobandRings, third compiled graph)',
+      value: showRings,
+      onChange: value => {
+        showRings = value;
+        dirty = true;
+        context.updateLayers();
+      }
+    });
+    context.controls.addToggle({
+      label: 'Fill band rings (polygon rasterization of the rings)',
+      value: ringFill,
+      onChange: value => {
+        ringFill = value;
+        context.updateLayers();
+      }
+    });
+    context.controls.addLegend({
+      title: 'Band rings: shell and hole outlines',
+      entries: [
+        {color: SHELL_COLOR, label: 'Shell (counter-clockwise)'},
+        {color: HOLE_COLOR, label: 'Hole (clockwise)'}
+      ]
+    });
     context.controls.addLegend({
       title: 'Bands: class index through the palette (low to high); thick white line = every 5th',
       gradient: {
@@ -930,6 +1154,8 @@ export const contoursMode: SpatialAnalysisModeDefinition = {
     const lineReadout = context.controls.addReadout('Segments');
     const polylineReadout = context.controls.addReadout('Polylines');
     const bandReadout = context.controls.addReadout('Band triangles');
+    const ringReadout = context.controls.addReadout('Band rings (shells / holes)');
+    const ringHealthReadout = context.controls.addReadout('Ring edges, open, fill crossings');
     const activeReadout = context.controls.addReadout('Active graph');
     const encodeReadout = context.controls.addReadout('Last encode (CPU)');
     const plainReadout = context.controls.addReadout('Plain graph');
@@ -937,6 +1163,38 @@ export const contoursMode: SpatialAnalysisModeDefinition = {
     context.controls.addButton({label: 'Measure both graphs', onClick: () => void measure()});
     context.controls.addReadout('Seeds (distance)', `${formatCount(seedCount)} bike parking sites`);
     context.controls.addReadout('Data', `${terrain.attribution}; ${parking.attribution}`);
+
+    const ringSummary = new SummaryReader(
+      resources,
+      'contours-rings',
+      [
+        {buffer: ringCountBuffer, size: 4},
+        {buffer: ringOverflowBuffer, size: 4},
+        {buffer: ringOpenBuffer, size: 4},
+        {buffer: ringEdgeCountBuffer, size: 4},
+        {buffer: ringEdgeOverflowBuffer, size: 4},
+        {buffer: zoneOverflowBuffer, size: 4},
+        {buffer: crossingCountBuffer, size: 4},
+        {buffer: ringIsHoleBuffer, size: RING_CAPACITY * 4}
+      ],
+      bytes => {
+        if (destroyed) return;
+        const words = new Uint32Array(bytes);
+        const count = Math.min(words[0], RING_CAPACITY);
+        let holes = 0;
+        for (let ring = 0; ring < count; ring++) holes += words[7 + ring] ? 1 : 0;
+        ringReadout.setValue(
+          `${formatCount(count - holes)} / ${formatCount(holes)}${words[1] ? ' OVERFLOW' : ''}`
+        );
+        ringHealthReadout.setValue(
+          `${formatCount(words[3])} of ${formatCount(RING_EDGE_CAPACITY)}` +
+            `${words[4] ? ' EDGE OVERFLOW' : ''}, ${formatCount(words[2])} open, ` +
+            `${formatCount(words[6])} of ${formatCount(CROSSING_CAPACITY)} crossings` +
+            `${words[5] ? ' CROSSING OVERFLOW' : ''}`
+        );
+      }
+    );
+    ringReadout.setValue('computing');
 
     // --- Readback ------------------------------------------------------------------------------
     function describeReadback(readback: Readback): void {
@@ -1103,7 +1361,7 @@ export const contoursMode: SpatialAnalysisModeDefinition = {
       source === 'elevation' ? elevationBuffer : source === 'slope' ? slopeBuffer : distanceBuffer;
 
     const instance: SpatialAnalysisModeInstance = {
-      getCompiledGraphs: () => [prepared, plainGraph, stitchedGraph],
+      getCompiledGraphs: () => [prepared, plainGraph, stitchedGraph, ringsGraph],
       encode(commandEncoder, frame) {
         if (stretchToView) {
           const viewBounds = getViewportMetricBounds(frame.viewport, projection);
@@ -1121,7 +1379,10 @@ export const contoursMode: SpatialAnalysisModeDefinition = {
           prepareEncoded = true;
           dirty = true;
         }
-        if (!dirty || readbackPending) return;
+        if (!dirty || readbackPending) {
+          ringSummary.flush(commandEncoder);
+          return;
+        }
         commandEncoder.copyBufferToBuffer({
           sourceBuffer: getSourceBuffer(),
           sourceOffset: 0,
@@ -1142,12 +1403,17 @@ export const contoursMode: SpatialAnalysisModeDefinition = {
         copyWord(segmentCountBuffer, RECORD_SEGMENTS, 1);
         copyWord(polylineVertexCountBuffer, RECORD_POLYLINES, 1);
         copyWord(bandVertexCountBuffer, RECORD_BANDS, 0);
+        if (showRings) {
+          ringsGraph.encode(commandEncoder, {parameters: undefined});
+          ringSummary.markStale();
+        }
         activeReadout.setValue(stitchPolylines ? 'stitched' : 'plain');
         encodeReadout.setValue(`${encoding.stats.cpuEncodeTimeMilliseconds.toFixed(2)} ms`);
         // Every readback also confirms the result: levels derived from it may request one more
         // encode, which then reads back unchanged levels and settles.
         dirty = false;
         void readStatistics(commandEncoder, stretchGeneration, stitchPolylines);
+        ringSummary.flush(commandEncoder);
       },
       getLayers() {
         const layers: Layer[] = [];
@@ -1189,6 +1455,41 @@ export const contoursMode: SpatialAnalysisModeDefinition = {
             })
           );
         }
+        if (showRings) {
+          if (ringFill) {
+            layers.push(
+              new ZoneBandRasterLayer({
+                id: 'contours-ring-fill',
+                coordinateOrigin: origin,
+                gridSize: [width, height],
+                bounds,
+                rowOrigin: 'north',
+                values: zonesBuffer,
+                valueFormat: 'uint32',
+                zoneBands: polygonGroupsBuffer,
+                bandPalette: paletteBuffer,
+                extent: isobandParameters.buffer,
+                opacity: bandOpacity
+              })
+            );
+          }
+          layers.push(
+            new PolylineLayer({
+              id: 'contours-ring-outlines',
+              ...frameProps,
+              segments: ringPositionsBuffer,
+              polylineOffsets: ringOffsetsBuffer,
+              valueIndices: ringIsHoleBuffer,
+              extent: ringCountBuffer,
+              values: ringStyleBuffer,
+              valueFormat: 'uint32',
+              colormap: 'category',
+              palette: [SHELL_COLOR, HOLE_COLOR],
+              instanceCount: RING_EDGE_CAPACITY,
+              widthPixels: 1.6
+            })
+          );
+        }
         if (showLines) {
           const lineStyle = {
             ...frameProps,
@@ -1224,6 +1525,7 @@ export const contoursMode: SpatialAnalysisModeDefinition = {
       },
       destroy() {
         destroyed = true;
+        ringSummary.stop();
         resources.destroy();
       }
     };
