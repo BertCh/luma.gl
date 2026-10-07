@@ -1,0 +1,123 @@
+{
+ "id": "chicago-roads",
+ "version": 1,
+ "kind": "network",
+ "count": 77140,
+ "nodeCount": 29557,
+ "bbox": [
+  -87.8539,
+  41.64461,
+  -87.52458,
+  42.02264
+ ],
+ "crs": "EPSG:4326",
+ "columns": {
+  "nodes": {
+   "file": "nodes.bin",
+   "dtype": "float32",
+   "components": 2,
+   "length": 29557,
+   "note": "node lon/lat"
+  },
+  "edgeSource": {
+   "file": "edgeSource.bin",
+   "dtype": "uint32",
+   "components": 1,
+   "length": 77140,
+   "note": "edges sorted by (source, target); directed, two-way streets appear in both directions"
+  },
+  "edgeTarget": {
+   "file": "edgeTarget.bin",
+   "dtype": "uint32",
+   "components": 1,
+   "length": 77140
+  },
+  "edgeLength": {
+   "file": "edgeLength.bin",
+   "dtype": "float32",
+   "components": 1,
+   "length": 77140,
+   "unit": "m",
+   "note": "true length of the (simplified) edge in metres"
+  },
+  "edgeClass": {
+   "file": "edgeClass.bin",
+   "dtype": "uint8",
+   "components": 1,
+   "length": 77140,
+   "categories": [
+    "motorway",
+    "trunk",
+    "primary",
+    "secondary",
+    "tertiary",
+    "residential",
+    "service/other"
+   ]
+  },
+  "edgeSpeed": {
+   "file": "edgeSpeed.bin",
+   "dtype": "uint8",
+   "components": 1,
+   "length": 77140,
+   "unit": "km/h",
+   "note": "OSM maxspeed where tagged (mph converted), else class default [88,64,48,48,40,40,32]"
+  },
+  "edgeTravelTime": {
+   "file": "edgeTravelTime.bin",
+   "dtype": "float32",
+   "components": 1,
+   "length": 77140,
+   "unit": "s",
+   "note": "length / speed, free-flow, no intersection delay"
+  },
+  "edgeOneway": {
+   "file": "edgeOneway.bin",
+   "dtype": "uint8",
+   "components": 1,
+   "length": 77140,
+   "note": "1 if the OSM way is one-way (no reverse edge), 0 for two-way streets"
+  },
+  "edgeReverse": {
+   "file": "edgeReverse.bin",
+   "dtype": "uint32",
+   "components": 1,
+   "length": 77140,
+   "note": "index of the opposite-direction edge, 4294967295 if none (one-way)"
+  },
+  "nodeEdgeOffsets": {
+   "file": "nodeEdgeOffsets.bin",
+   "dtype": "uint32",
+   "components": 1,
+   "length": 29558,
+   "note": "CSR: out-edges of node i are edges nodeEdgeOffsets[i]..nodeEdgeOffsets[i+1]-1"
+  },
+  "edgePathOffsets": {
+   "file": "edgePathOffsets.bin",
+   "dtype": "uint32",
+   "components": 1,
+   "length": 77141,
+   "note": "n+1 offsets into edgeVertices"
+  },
+  "edgeVertices": {
+   "file": "edgeVertices.bin",
+   "dtype": "float32",
+   "components": 2,
+   "length": 176659,
+   "note": "edge polyline lon/lat, oriented source -> target"
+  }
+ },
+ "properties": {
+  "description": "OpenStreetMap driveable street network clipped to the City of Chicago, simplified (degree-2 nodes merged), largest strongly connected component. Directed edges, CSR-sorted by source.",
+  "licence": "ODbL 1.0",
+  "attribution": "\u00a9 OpenStreetMap contributors",
+  "osmExtract": "BBBike Chicago extract, Chicago.osm.pbf",
+  "storyNotes": [
+   "29,557 intersections and 77,140 directed edges (27,799 two-way street pairs plus 21,542 one-way edges); 10,323 directed km of road in the largest strongly connected component.",
+   "Directed km by class: motorway 432, trunk 38, primary 230, secondary 1,686, tertiary 1,298, residential 6,478, service/other 161.",
+   "The Chicago grid shows: 4,541 four-way intersections (15% of nodes with 4 out-edges).",
+   "Expressways (I-90/94 Dan Ryan and Kennedy, I-55 Stevenson, I-290 Eisenhower) are modelled as motorway edges and are the fast corridors for isochrones.",
+   "Median edge length 102 m, longest 5,049 m."
+  ]
+ }
+}

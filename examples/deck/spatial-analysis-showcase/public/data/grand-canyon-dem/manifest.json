@@ -1,0 +1,85 @@
+{
+ "id": "grand-canyon-dem",
+ "version": 1,
+ "kind": "raster",
+ "count": 4194304,
+ "bbox": [
+  -112.27581024169923,
+  35.95786083520059,
+  -111.92424774169923,
+  36.24191957538869
+ ],
+ "crs": "EPSG:4326",
+ "raster": {
+  "file": "dem.png",
+  "encoding": "terrarium",
+  "width": 2048,
+  "height": 2048,
+  "bounds": [
+   -112.27581024169923,
+   35.95786083520059,
+   -111.92424774169923,
+   36.24191957538869
+  ],
+  "boundsMercator": [
+   -12498486.024508167,
+   4294824.636030411,
+   -12459350.266026158,
+   4333960.394512422
+  ],
+  "projection": "EPSG:3857",
+  "cellSizeMercatorM": 19.109257071294063,
+  "cellSizeGroundM": 15.440107977971211,
+  "noData": null,
+  "unit": "m",
+  "verticalQuantisationM": 0.5,
+  "webMercatorTile": {
+   "zoom": 13,
+   "tileSize": 256,
+   "originPixel": [
+    394522,
+    821777
+   ]
+  }
+ },
+ "properties": {
+  "source": "AWS Terrain Tiles (Mapzen/Tilezen) built from USGS 3DEP/NED",
+  "places": {
+   "Grand Canyon Village": {
+    "lon": -112.1401,
+    "lat": 36.0544,
+    "elevationM": 2098.5
+   },
+   "Phantom Ranch": {
+    "lon": -112.0953,
+    "lat": 36.107,
+    "elevationM": 830.5
+   },
+   "Colorado River at Bright Angel Creek": {
+    "lon": -112.093,
+    "lat": 36.106,
+    "elevationM": 844.5
+   },
+   "Yavapai Point": {
+    "lon": -112.118,
+    "lat": 36.066,
+    "elevationM": 2149.5
+   },
+   "North Rim Bright Angel Point": {
+    "lon": -112.0525,
+    "lat": 36.192,
+    "elevationM": 2097.0
+   }
+  },
+  "minElevationM": 688.0,
+  "maxElevationM": 2626.0,
+  "storyNotes": [
+   "~32 km window at 15.4 m ground resolution; relief 688 to 2626 m (about 1.9 km of canyon depth rim to river).",
+   "Colorado River runs through the inner gorge near the bottom of the window: flow accumulation should light it up as the trunk stream; Bright Angel Creek is the main north-bank tributary at Phantom Ranch.",
+   "Stratified Redwall/Supai/Tonto terraces make contours bunch into cliffs with wide flat benches: the Tonto Platform is a natural cost-distance corridor.",
+   "South Rim sits near 2100 m and North Rim near 2500 m: watersheds on each rim drain through different side canyons, a clean divide demo.",
+   "Hiking cost distance: Bright Angel Trail and the North/South Kaibab trails exploit side-canyon fault lines; a slope-based cost surface should rediscover similar routes from Grand Canyon Village to Phantom Ranch.",
+   "Web Mercator pixels (Terrarium); use cellSizeMode web-mercator with northEdge/southEdge from boundsMercator."
+  ]
+ }
+}

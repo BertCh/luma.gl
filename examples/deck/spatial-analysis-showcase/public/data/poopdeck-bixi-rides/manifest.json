@@ -1,0 +1,98 @@
+{
+  "id": "poopdeck-bixi-rides",
+  "version": 1,
+  "kind": "trajectories",
+  "count": 8365,
+  "bbox": [
+    -73.75482177734375,
+    45.41523742675781,
+    -73.44918823242188,
+    45.70248794555664
+  ],
+  "crs": "EPSG:4326",
+  "columns": {
+    "pathOffsets": {
+      "file": "pathOffsets.bin",
+      "dtype": "uint32",
+      "components": 1,
+      "length": 8366
+    },
+    "vertices": {
+      "file": "vertices.bin",
+      "dtype": "float32",
+      "components": 2,
+      "length": 155354
+    },
+    "timestamp": {
+      "file": "timestamp.bin",
+      "dtype": "uint32",
+      "components": 1,
+      "length": 155354,
+      "unit": "seconds since 2024-08-15T11:30:00.000Z"
+    },
+    "startTime": {
+      "file": "startTime.bin",
+      "dtype": "uint32",
+      "components": 1,
+      "length": 8365,
+      "unit": "seconds since 2024-08-15T11:30:00.000Z"
+    },
+    "endTime": {
+      "file": "endTime.bin",
+      "dtype": "uint32",
+      "components": 1,
+      "length": 8365,
+      "unit": "seconds since 2024-08-15T11:30:00.000Z"
+    },
+    "durationMin": {
+      "file": "durationMin.bin",
+      "dtype": "float32",
+      "components": 1,
+      "length": 8365,
+      "unit": "minutes, whole ride (before the window clip)"
+    },
+    "tripId": {
+      "file": "tripId.bin",
+      "dtype": "float32",
+      "components": 1,
+      "length": 8365,
+      "description": "BIXI trip id in the poopdeck archive"
+    }
+  },
+  "properties": {
+    "timeOriginMs": 1723721400000,
+    "timeRangeMs": [
+      1723721400000,
+      1723730400000
+    ],
+    "vertexCount": 155354,
+    "source": {
+      "manifestUrl": "https://tiles.poopdeck.gl/data/bixi-points/manifest.json",
+      "name": "bixi-points",
+      "description": "",
+      "attribution": "",
+      "layer": "default",
+      "exportedFrom": "stt-export.mjs",
+      "zoom": 10,
+      "window": {
+        "bbox": [
+          -180,
+          -90,
+          180,
+          90
+        ],
+        "time": [
+          1723721400000,
+          1723730400000
+        ]
+      },
+      "featuresInWindow": 8372,
+      "sampled": false
+    },
+    "droppedAttributes": [],
+    "rawVertexCount": 1066746,
+    "simplifyToleranceMeters": 2,
+    "window": "rides on 2024-08-15, 11:30-14:00 UTC (07:30-10:00 America/Montreal), clipped to the window",
+    "notes": "Routes are OSRM bicycle-profile paths between the start and end station, with times interpolated along the route. They are not GPS traces."
+  }
+}

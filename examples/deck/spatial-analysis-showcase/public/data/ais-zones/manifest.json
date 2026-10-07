@@ -1,0 +1,42 @@
+{
+ "id": "ais-zones",
+ "version": 1,
+ "kind": "polygons",
+ "count": 63,
+ "bbox": [
+  -74.3124244513796,
+  40.39595350000002,
+  -73.81990819999999,
+  40.83269439999998
+ ],
+ "crs": "EPSG:4326",
+ "geometry": {
+  "type": "polygons",
+  "file": "zones.geojson"
+ },
+ "properties": {
+  "kinds": [
+   "anchorage",
+   "channel",
+   "terminal",
+   "gate",
+   "tourist",
+   "ferry"
+  ],
+  "kindCounts": {
+   "anchorage": 36,
+   "channel": 21,
+   "terminal": 3,
+   "gate": 1,
+   "tourist": 1,
+   "ferry": 1
+  },
+  "companion": "ais-vessels",
+  "attribution": "NOAA Coast Survey ENCDirect (public domain) for anchorages and channels; terminal/gate/ferry/tourist polygons are hand-drawn approximations",
+  "storyNotes": [
+   "36 official general anchorages (33 CFR 110.155) in the Upper/Lower Bay, Hudson and Raritan Bay.",
+   "21 maintained channels dissolved by fairway name (Ambrose, Anchorage, Kill Van Kull, Arthur Kill, Newark Bay ...).",
+   "Terminal, bridge, ferry-lane and tourist-area polygons are approximate and flagged \"(approx.)\" in their names."
+  ]
+ }
+}

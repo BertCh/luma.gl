@@ -1,0 +1,107 @@
+{
+  "id": "openflights",
+  "version": 1,
+  "kind": "flows",
+  "count": 18930,
+  "bbox": [
+    -179.8769989013672,
+    -54.843299865722656,
+    179.34100341796875,
+    78.24610137939453
+  ],
+  "crs": "EPSG:4326",
+  "columns": {
+    "locations": {
+      "file": "position.bin",
+      "dtype": "float32",
+      "components": 2,
+      "length": 3257
+    },
+    "degree": {
+      "file": "degree.bin",
+      "dtype": "uint16",
+      "components": 1,
+      "length": 3257,
+      "description": "distinct connected airports"
+    },
+    "routeCount": {
+      "file": "routeCount.bin",
+      "dtype": "uint32",
+      "components": 1,
+      "length": 3257,
+      "description": "airline-route records touching the airport"
+    },
+    "origin": {
+      "file": "origin.bin",
+      "dtype": "uint32",
+      "components": 1,
+      "length": 18930,
+      "description": "index into locations; origin IATA < destination IATA (undirected pair)"
+    },
+    "destination": {
+      "file": "destination.bin",
+      "dtype": "uint32",
+      "components": 1,
+      "length": 18930
+    },
+    "count": {
+      "file": "count.bin",
+      "dtype": "uint16",
+      "components": 1,
+      "length": 18930,
+      "description": "airline-route records on the pair, both directions"
+    },
+    "airlineCount": {
+      "file": "airlineCount.bin",
+      "dtype": "uint16",
+      "components": 1,
+      "length": 18930,
+      "description": "distinct airlines serving the pair"
+    },
+    "directedForward": {
+      "file": "directedForward.bin",
+      "dtype": "uint16",
+      "components": 1,
+      "length": 18930,
+      "description": "records origin->destination"
+    },
+    "directedBackward": {
+      "file": "directedBackward.bin",
+      "dtype": "uint16",
+      "components": 1,
+      "length": 18930,
+      "description": "records destination->origin"
+    },
+    "distanceKm": {
+      "file": "distanceKm.bin",
+      "dtype": "float32",
+      "components": 1,
+      "length": 18930,
+      "description": "great-circle length"
+    }
+  },
+  "table": {
+    "file": "airports.csv",
+    "columns": [
+      "index",
+      "iata",
+      "name",
+      "city",
+      "country"
+    ],
+    "note": "row i describes locations[i]"
+  },
+  "properties": {
+    "airportCount": 3257,
+    "edgeCount": 18930,
+    "dataVintage": "OpenFlights data is community-maintained and largely frozen around June 2014",
+    "attribution": "OpenFlights.org (airports.dat, routes.dat), Open Database License 1.0",
+    "storyNotes": [
+      "Top hubs by distinct destinations: AMS (248), FRA (244), CDG (240), IST (235), ATL (217), ORD (206), PEK (205), MUC (192).",
+      "3257 airports and 18930 undirected pairs; the median airport has degree 3 while the busiest has 248 - a heavy-tailed hub-and-spoke network.",
+      "Longest pair: DFW-SYD at 13808 km; 22% of pairs are under 500 km.",
+      "747 airports (23%) are leaves with a single connection - the spokes that network coarsening collapses first.",
+      "Data is frozen around 2014: it has no post-2014 routes or carriers, so treat it as a structural network, not current traffic."
+    ]
+  }
+}

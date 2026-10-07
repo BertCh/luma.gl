@@ -1,0 +1,46 @@
+{
+ "id": "poopdeck-mrms-storm3d-outages",
+ "version": 1,
+ "crs": "EPSG:4326",
+ "kind": "table",
+ "count": 40291,
+ "bbox": [
+  -124.7258,
+  24.4981,
+  -66.9499,
+  49.3844
+ ],
+ "columns": {
+  "fips": {
+   "file": "fips.bin",
+   "dtype": "uint32",
+   "length": 40291,
+   "description": "five-digit county FIPS as an integer; join to us-counties"
+  },
+  "timestamp": {
+   "file": "time.bin",
+   "dtype": "uint32",
+   "length": 40291,
+   "unit": "seconds since 2024-05-21T12:00:00Z"
+  },
+  "customersOut": {
+   "file": "customersOut.bin",
+   "dtype": "uint32",
+   "length": 40291,
+   "description": "customers without power at the snapshot"
+  }
+ },
+ "properties": {
+  "timeOriginMs": 1716292800000,
+  "timeRangeMs": [
+   1716292800000,
+   1716357600000
+  ],
+  "source": {
+   "manifestUrl": "https://tiles.poopdeck.gl/data/mrms-storm3d-outages/manifest.json",
+   "name": "mrms-storm3d-outages",
+   "exportedFrom": "poopdeck-severe-may2024/build.mjs"
+  },
+  "note": "One row per county and 15-minute snapshot with at least one customer out. Geometry comes from us-counties."
+ }
+}

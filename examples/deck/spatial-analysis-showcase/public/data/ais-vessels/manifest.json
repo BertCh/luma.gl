@@ -1,0 +1,106 @@
+{
+ "id": "ais-vessels",
+ "version": 1,
+ "kind": "trajectories",
+ "count": 897,
+ "bbox": [
+  -74.29988098144531,
+  40.45000076293945,
+  -73.75005340576172,
+  40.79999923706055
+ ],
+ "crs": "EPSG:4326",
+ "columns": {
+  "pathOffsets": {
+   "file": "pathOffsets.bin",
+   "dtype": "uint32",
+   "components": 1,
+   "length": 898
+  },
+  "vertices": {
+   "file": "vertices.bin",
+   "dtype": "float32",
+   "components": 2,
+   "length": 124780
+  },
+  "timestamp": {
+   "file": "timestamp.bin",
+   "dtype": "uint32",
+   "components": 1,
+   "length": 124780,
+   "unit": "seconds since 2024-06-12T00:00:00Z"
+  },
+  "speed": {
+   "file": "speed.bin",
+   "dtype": "float32",
+   "components": 1,
+   "length": 124780,
+   "unit": "knots (SOG)"
+  },
+  "heading": {
+   "file": "heading.bin",
+   "dtype": "uint16",
+   "components": 1,
+   "length": 124780,
+   "unit": "degrees true; falls back to COG when heading unavailable"
+  },
+  "mmsi": {
+   "file": "mmsi.bin",
+   "dtype": "uint32",
+   "components": 1,
+   "length": 897,
+   "description": "per path; public AIS MMSI"
+  },
+  "vesselIndex": {
+   "file": "vesselIndex.bin",
+   "dtype": "uint32",
+   "components": 1,
+   "length": 897,
+   "description": "dense vessel id 0..vesselCount-1 (a vessel can have several paths after gaps > 20 min)"
+  },
+  "category": {
+   "file": "category.bin",
+   "dtype": "uint8",
+   "components": 1,
+   "length": 897,
+   "categories": [
+    "cargo",
+    "tanker",
+    "passenger",
+    "tug",
+    "fishing",
+    "pleasure",
+    "other"
+   ]
+  },
+  "length": {
+   "file": "length.bin",
+   "dtype": "float32",
+   "components": 1,
+   "length": 897,
+   "unit": "m, 0 = unknown"
+  },
+  "aisVesselType": {
+   "file": "aisVesselType.bin",
+   "dtype": "uint16",
+   "components": 1,
+   "length": 897,
+   "description": "raw AIS ship-type code"
+  }
+ },
+ "properties": {
+  "day": "2024-06-12",
+  "vesselCount": 471,
+  "sourceSampling": "one fix per minute (NOAA), stationary vessels thinned to one per 5 min",
+  "zonesDataset": "ais-zones",
+  "categoryRule": "AIS type 70-79 cargo, 80-89 tanker, 60-69 passenger, 31/32/52 tug, 30 fishing, 36/37 pleasure, else other",
+  "attribution": "NOAA Office for Coastal Management / U.S. Coast Guard Navigation Center, Nationwide AIS 2024 (CC0 1.0)",
+  "storyNotes": [
+   "471 vessels in NY/NJ Harbor on 2024-06-12 (UTC): 52 cargo, 33 tanker, 268 passenger, 219 tug, 22 fishing, 185 pleasure, 118 other paths.",
+   "Busiest UTC hour is 19:00 with 6905 fixes; quietest is 6:00 with 3076.",
+   "Fastest fix 44.9 kn; 247 tracks barely move (moored, anchored or at terminals).",
+   "Traffic funnels through the Narrows under the Verrazzano-Narrows Bridge (about 40.606 N, 74.045 W) between the Lower and Upper Bay: the natural gate for zone-crossing events.",
+   "Ferries and tugs make repeated crossings of the Upper Bay all day, giving many close encounters; deep-draft cargo/tankers follow Ambrose and Anchorage Channels to Port Newark-Elizabeth and Bayonne."
+  ]
+ }
+}

@@ -1,0 +1,897 @@
+{
+ "id": "us-counties",
+ "version": 1,
+ "kind": "polygons",
+ "count": 3109,
+ "bbox": [
+  -124.7258,
+  24.4981,
+  -66.9499,
+  49.3844
+ ],
+ "crs": "EPSG:4326",
+ "columns": {
+  "vertices": {
+   "file": "vertices.bin",
+   "dtype": "float32",
+   "components": 2,
+   "length": 52063
+  },
+  "ringOffsets": {
+   "file": "ringOffsets.bin",
+   "dtype": "uint32",
+   "components": 1,
+   "length": 3156
+  },
+  "polygonRingOffsets": {
+   "file": "polygonRingOffsets.bin",
+   "dtype": "uint32",
+   "components": 1,
+   "length": 3139
+  },
+  "countyPolygonOffsets": {
+   "file": "countyPolygonOffsets.bin",
+   "dtype": "uint32",
+   "components": 1,
+   "length": 3110
+  },
+  "fips": {
+   "file": "fips.bin",
+   "dtype": "uint32",
+   "components": 1,
+   "length": 3109,
+   "description": "Five-digit county FIPS as integer (e.g. 1001, 48201)"
+  },
+  "stateFips": {
+   "file": "stateFips.bin",
+   "dtype": "uint8",
+   "components": 1,
+   "length": 3109,
+   "description": "State FIPS"
+  },
+  "centroid": {
+   "file": "centroid.bin",
+   "dtype": "float32",
+   "components": 2,
+   "length": 3109,
+   "description": "Area-weighted centroid lon/lat (computed in EPSG:5070)"
+  },
+  "landArea": {
+   "file": "landArea.bin",
+   "dtype": "float32",
+   "components": 1,
+   "length": 3109,
+   "unit": "km2",
+   "description": "Land area (Census cartographic boundary ALAND)"
+  },
+  "population": {
+   "file": "population.bin",
+   "dtype": "float32",
+   "components": 1,
+   "length": 3109,
+   "description": "Total population, ACS 2018-2022 (via CDC/ATSDR SVI 2022)"
+  },
+  "popDensity": {
+   "file": "popDensity.bin",
+   "dtype": "float32",
+   "components": 1,
+   "length": 3109,
+   "unit": "per km2"
+  },
+  "poverty150": {
+   "file": "poverty150.bin",
+   "dtype": "float32",
+   "components": 1,
+   "length": 3109,
+   "unit": "percent",
+   "description": "Percent persons below 150% poverty"
+  },
+  "unemployment": {
+   "file": "unemployment.bin",
+   "dtype": "float32",
+   "components": 1,
+   "length": 3109,
+   "unit": "percent",
+   "description": "Percent civilian (16+) unemployed, ACS 2018-2022"
+  },
+  "housingBurden": {
+   "file": "housingBurden.bin",
+   "dtype": "float32",
+   "components": 1,
+   "length": 3109,
+   "unit": "percent",
+   "description": "Percent housing cost-burdened households"
+  },
+  "noHighSchool": {
+   "file": "noHighSchool.bin",
+   "dtype": "float32",
+   "components": 1,
+   "length": 3109,
+   "unit": "percent",
+   "description": "Percent persons (25+) with no high school diploma"
+  },
+  "noHealthInsurance": {
+   "file": "noHealthInsurance.bin",
+   "dtype": "float32",
+   "components": 1,
+   "length": 3109,
+   "unit": "percent",
+   "description": "Percent uninsured in civilian noninstitutionalised population"
+  },
+  "age65plus": {
+   "file": "age65plus.bin",
+   "dtype": "float32",
+   "components": 1,
+   "length": 3109,
+   "unit": "percent",
+   "description": "Percent persons aged 65+"
+  },
+  "age17under": {
+   "file": "age17under.bin",
+   "dtype": "float32",
+   "components": 1,
+   "length": 3109,
+   "unit": "percent",
+   "description": "Percent persons aged 17 and younger"
+  },
+  "disability": {
+   "file": "disability.bin",
+   "dtype": "float32",
+   "components": 1,
+   "length": 3109,
+   "unit": "percent",
+   "description": "Percent civilians with a disability"
+  },
+  "singleParent": {
+   "file": "singleParent.bin",
+   "dtype": "float32",
+   "components": 1,
+   "length": 3109,
+   "unit": "percent",
+   "description": "Percent single-parent households with children under 18"
+  },
+  "limitedEnglish": {
+   "file": "limitedEnglish.bin",
+   "dtype": "float32",
+   "components": 1,
+   "length": 3109,
+   "unit": "percent",
+   "description": "Percent persons (5+) with limited English"
+  },
+  "minorityShare": {
+   "file": "minorityShare.bin",
+   "dtype": "float32",
+   "components": 1,
+   "length": 3109,
+   "unit": "percent",
+   "description": "Percent racial or ethnic minority (all but non-Hispanic white alone)"
+  },
+  "multiUnit": {
+   "file": "multiUnit.bin",
+   "dtype": "float32",
+   "components": 1,
+   "length": 3109,
+   "unit": "percent",
+   "description": "Percent housing in structures with 10+ units"
+  },
+  "mobileHomes": {
+   "file": "mobileHomes.bin",
+   "dtype": "float32",
+   "components": 1,
+   "length": 3109,
+   "unit": "percent",
+   "description": "Percent mobile homes"
+  },
+  "crowding": {
+   "file": "crowding.bin",
+   "dtype": "float32",
+   "components": 1,
+   "length": 3109,
+   "unit": "percent",
+   "description": "Percent occupied housing units with more people than rooms"
+  },
+  "noVehicle": {
+   "file": "noVehicle.bin",
+   "dtype": "float32",
+   "components": 1,
+   "length": 3109,
+   "unit": "percent",
+   "description": "Percent households with no vehicle"
+  },
+  "groupQuarters": {
+   "file": "groupQuarters.bin",
+   "dtype": "float32",
+   "components": 1,
+   "length": 3109,
+   "unit": "percent",
+   "description": "Percent persons in group quarters"
+  },
+  "noInternet": {
+   "file": "noInternet.bin",
+   "dtype": "float32",
+   "components": 1,
+   "length": 3109,
+   "unit": "percent",
+   "description": "Percent households without internet subscription"
+  },
+  "sviOverall": {
+   "file": "sviOverall.bin",
+   "dtype": "float32",
+   "components": 1,
+   "length": 3109,
+   "unit": "percentile 0-1",
+   "description": "SVI overall percentile ranking (0-1)"
+  },
+  "sviTheme1": {
+   "file": "sviTheme1.bin",
+   "dtype": "float32",
+   "components": 1,
+   "length": 3109,
+   "unit": "percentile 0-1",
+   "description": "SVI theme 1 socioeconomic status percentile"
+  },
+  "sviTheme2": {
+   "file": "sviTheme2.bin",
+   "dtype": "float32",
+   "components": 1,
+   "length": 3109,
+   "unit": "percentile 0-1",
+   "description": "SVI theme 2 household characteristics percentile"
+  },
+  "sviTheme3": {
+   "file": "sviTheme3.bin",
+   "dtype": "float32",
+   "components": 1,
+   "length": 3109,
+   "unit": "percentile 0-1",
+   "description": "SVI theme 3 racial & ethnic minority status percentile"
+  },
+  "sviTheme4": {
+   "file": "sviTheme4.bin",
+   "dtype": "float32",
+   "components": 1,
+   "length": 3109,
+   "unit": "percentile 0-1",
+   "description": "SVI theme 4 housing type & transportation percentile"
+  },
+  "popWhiteNH": {
+   "file": "popWhiteNH.bin",
+   "dtype": "float32",
+   "components": 1,
+   "length": 3109,
+   "description": "Non-Hispanic white alone = population - minority (SVI definition)"
+  },
+  "popBlack": {
+   "file": "popBlack.bin",
+   "dtype": "float32",
+   "components": 1,
+   "length": 3109,
+   "description": "Black/African American non-Hispanic (counts, ACS 2018-2022)"
+  },
+  "popHispanic": {
+   "file": "popHispanic.bin",
+   "dtype": "float32",
+   "components": 1,
+   "length": 3109,
+   "description": "Hispanic or Latino (counts, ACS 2018-2022)"
+  },
+  "popAsian": {
+   "file": "popAsian.bin",
+   "dtype": "float32",
+   "components": 1,
+   "length": 3109,
+   "description": "Asian non-Hispanic (counts, ACS 2018-2022)"
+  },
+  "popAIAN": {
+   "file": "popAIAN.bin",
+   "dtype": "float32",
+   "components": 1,
+   "length": 3109,
+   "description": "American Indian/Alaska Native non-Hispanic (counts, ACS 2018-2022)"
+  },
+  "popNHPI": {
+   "file": "popNHPI.bin",
+   "dtype": "float32",
+   "components": 1,
+   "length": 3109,
+   "description": "Native Hawaiian/Pacific Islander non-Hispanic (counts, ACS 2018-2022)"
+  },
+  "popTwoMore": {
+   "file": "popTwoMore.bin",
+   "dtype": "float32",
+   "components": 1,
+   "length": 3109,
+   "description": "Two or more races non-Hispanic (counts, ACS 2018-2022)"
+  },
+  "popOtherRace": {
+   "file": "popOtherRace.bin",
+   "dtype": "float32",
+   "components": 1,
+   "length": 3109,
+   "description": "Other race non-Hispanic (counts, ACS 2018-2022)"
+  },
+  "popMinority": {
+   "file": "popMinority.bin",
+   "dtype": "float32",
+   "components": 1,
+   "length": 3109,
+   "description": "All non-(non-Hispanic white alone) persons"
+  },
+  "rucc2023": {
+   "file": "rucc2023.bin",
+   "dtype": "float32",
+   "components": 1,
+   "length": 3109,
+   "description": "USDA ERS Rural-Urban Continuum Code 2023: 1-3 metro, 4-9 nonmetro (1 = most urban, 9 = most rural)"
+  },
+  "population2020": {
+   "file": "population2020.bin",
+   "dtype": "float32",
+   "components": 1,
+   "length": 3109,
+   "description": "2020 Census resident population (via USDA ERS)"
+  },
+  "uic2013": {
+   "file": "uic2013.bin",
+   "dtype": "float32",
+   "components": 1,
+   "length": 3109,
+   "description": "USDA ERS Urban Influence Code 2013 (1-12)"
+  },
+  "medianHouseholdIncome": {
+   "file": "medianHouseholdIncome.bin",
+   "dtype": "float32",
+   "components": 1,
+   "length": 3109,
+   "unit": "USD 2022",
+   "description": "Median household income 2022 (Census SAIPE via USDA ERS)"
+  },
+  "laborForce2023": {
+   "file": "laborForce2023.bin",
+   "dtype": "float32",
+   "components": 1,
+   "length": 3109,
+   "description": "Civilian labour force 2023 (BLS LAUS)"
+  },
+  "unemploymentRate2000": {
+   "file": "unemploymentRate2000.bin",
+   "dtype": "float32",
+   "components": 1,
+   "length": 3109,
+   "unit": "percent",
+   "description": "Annual average unemployment rate 2000 (BLS LAUS via USDA ERS)"
+  },
+  "unemploymentRate2001": {
+   "file": "unemploymentRate2001.bin",
+   "dtype": "float32",
+   "components": 1,
+   "length": 3109,
+   "unit": "percent",
+   "description": "Annual average unemployment rate 2001 (BLS LAUS via USDA ERS)"
+  },
+  "unemploymentRate2002": {
+   "file": "unemploymentRate2002.bin",
+   "dtype": "float32",
+   "components": 1,
+   "length": 3109,
+   "unit": "percent",
+   "description": "Annual average unemployment rate 2002 (BLS LAUS via USDA ERS)"
+  },
+  "unemploymentRate2003": {
+   "file": "unemploymentRate2003.bin",
+   "dtype": "float32",
+   "components": 1,
+   "length": 3109,
+   "unit": "percent",
+   "description": "Annual average unemployment rate 2003 (BLS LAUS via USDA ERS)"
+  },
+  "unemploymentRate2004": {
+   "file": "unemploymentRate2004.bin",
+   "dtype": "float32",
+   "components": 1,
+   "length": 3109,
+   "unit": "percent",
+   "description": "Annual average unemployment rate 2004 (BLS LAUS via USDA ERS)"
+  },
+  "unemploymentRate2005": {
+   "file": "unemploymentRate2005.bin",
+   "dtype": "float32",
+   "components": 1,
+   "length": 3109,
+   "unit": "percent",
+   "description": "Annual average unemployment rate 2005 (BLS LAUS via USDA ERS)"
+  },
+  "unemploymentRate2006": {
+   "file": "unemploymentRate2006.bin",
+   "dtype": "float32",
+   "components": 1,
+   "length": 3109,
+   "unit": "percent",
+   "description": "Annual average unemployment rate 2006 (BLS LAUS via USDA ERS)"
+  },
+  "unemploymentRate2007": {
+   "file": "unemploymentRate2007.bin",
+   "dtype": "float32",
+   "components": 1,
+   "length": 3109,
+   "unit": "percent",
+   "description": "Annual average unemployment rate 2007 (BLS LAUS via USDA ERS)"
+  },
+  "unemploymentRate2008": {
+   "file": "unemploymentRate2008.bin",
+   "dtype": "float32",
+   "components": 1,
+   "length": 3109,
+   "unit": "percent",
+   "description": "Annual average unemployment rate 2008 (BLS LAUS via USDA ERS)"
+  },
+  "unemploymentRate2009": {
+   "file": "unemploymentRate2009.bin",
+   "dtype": "float32",
+   "components": 1,
+   "length": 3109,
+   "unit": "percent",
+   "description": "Annual average unemployment rate 2009 (BLS LAUS via USDA ERS)"
+  },
+  "unemploymentRate2010": {
+   "file": "unemploymentRate2010.bin",
+   "dtype": "float32",
+   "components": 1,
+   "length": 3109,
+   "unit": "percent",
+   "description": "Annual average unemployment rate 2010 (BLS LAUS via USDA ERS)"
+  },
+  "unemploymentRate2011": {
+   "file": "unemploymentRate2011.bin",
+   "dtype": "float32",
+   "components": 1,
+   "length": 3109,
+   "unit": "percent",
+   "description": "Annual average unemployment rate 2011 (BLS LAUS via USDA ERS)"
+  },
+  "unemploymentRate2012": {
+   "file": "unemploymentRate2012.bin",
+   "dtype": "float32",
+   "components": 1,
+   "length": 3109,
+   "unit": "percent",
+   "description": "Annual average unemployment rate 2012 (BLS LAUS via USDA ERS)"
+  },
+  "unemploymentRate2013": {
+   "file": "unemploymentRate2013.bin",
+   "dtype": "float32",
+   "components": 1,
+   "length": 3109,
+   "unit": "percent",
+   "description": "Annual average unemployment rate 2013 (BLS LAUS via USDA ERS)"
+  },
+  "unemploymentRate2014": {
+   "file": "unemploymentRate2014.bin",
+   "dtype": "float32",
+   "components": 1,
+   "length": 3109,
+   "unit": "percent",
+   "description": "Annual average unemployment rate 2014 (BLS LAUS via USDA ERS)"
+  },
+  "unemploymentRate2015": {
+   "file": "unemploymentRate2015.bin",
+   "dtype": "float32",
+   "components": 1,
+   "length": 3109,
+   "unit": "percent",
+   "description": "Annual average unemployment rate 2015 (BLS LAUS via USDA ERS)"
+  },
+  "unemploymentRate2016": {
+   "file": "unemploymentRate2016.bin",
+   "dtype": "float32",
+   "components": 1,
+   "length": 3109,
+   "unit": "percent",
+   "description": "Annual average unemployment rate 2016 (BLS LAUS via USDA ERS)"
+  },
+  "unemploymentRate2017": {
+   "file": "unemploymentRate2017.bin",
+   "dtype": "float32",
+   "components": 1,
+   "length": 3109,
+   "unit": "percent",
+   "description": "Annual average unemployment rate 2017 (BLS LAUS via USDA ERS)"
+  },
+  "unemploymentRate2018": {
+   "file": "unemploymentRate2018.bin",
+   "dtype": "float32",
+   "components": 1,
+   "length": 3109,
+   "unit": "percent",
+   "description": "Annual average unemployment rate 2018 (BLS LAUS via USDA ERS)"
+  },
+  "unemploymentRate2019": {
+   "file": "unemploymentRate2019.bin",
+   "dtype": "float32",
+   "components": 1,
+   "length": 3109,
+   "unit": "percent",
+   "description": "Annual average unemployment rate 2019 (BLS LAUS via USDA ERS)"
+  },
+  "unemploymentRate2020": {
+   "file": "unemploymentRate2020.bin",
+   "dtype": "float32",
+   "components": 1,
+   "length": 3109,
+   "unit": "percent",
+   "description": "Annual average unemployment rate 2020 (BLS LAUS via USDA ERS)"
+  },
+  "unemploymentRate2021": {
+   "file": "unemploymentRate2021.bin",
+   "dtype": "float32",
+   "components": 1,
+   "length": 3109,
+   "unit": "percent",
+   "description": "Annual average unemployment rate 2021 (BLS LAUS via USDA ERS)"
+  },
+  "unemploymentRate2022": {
+   "file": "unemploymentRate2022.bin",
+   "dtype": "float32",
+   "components": 1,
+   "length": 3109,
+   "unit": "percent",
+   "description": "Annual average unemployment rate 2022 (BLS LAUS via USDA ERS)"
+  },
+  "unemploymentRate2023": {
+   "file": "unemploymentRate2023.bin",
+   "dtype": "float32",
+   "components": 1,
+   "length": 3109,
+   "unit": "percent",
+   "description": "Annual average unemployment rate 2023 (BLS LAUS via USDA ERS)"
+  },
+  "places_access2_ageAdj": {
+   "file": "places_access2_ageAdj.bin",
+   "dtype": "float32",
+   "components": 1,
+   "length": 3109,
+   "unit": "percent",
+   "description": "CDC PLACES age-adjusted prevalence: no health insurance (18-64) (adults)"
+  },
+  "places_arthritis_ageAdj": {
+   "file": "places_arthritis_ageAdj.bin",
+   "dtype": "float32",
+   "components": 1,
+   "length": 3109,
+   "unit": "percent",
+   "description": "CDC PLACES age-adjusted prevalence: arthritis (adults)"
+  },
+  "places_binge_ageAdj": {
+   "file": "places_binge_ageAdj.bin",
+   "dtype": "float32",
+   "components": 1,
+   "length": 3109,
+   "unit": "percent",
+   "description": "CDC PLACES age-adjusted prevalence: binge drinking (adults)"
+  },
+  "places_bphigh_ageAdj": {
+   "file": "places_bphigh_ageAdj.bin",
+   "dtype": "float32",
+   "components": 1,
+   "length": 3109,
+   "unit": "percent",
+   "description": "CDC PLACES age-adjusted prevalence: high blood pressure (adults)"
+  },
+  "places_bpmed_ageAdj": {
+   "file": "places_bpmed_ageAdj.bin",
+   "dtype": "float32",
+   "components": 1,
+   "length": 3109,
+   "unit": "percent",
+   "description": "CDC PLACES age-adjusted prevalence: taking BP medication (adults)"
+  },
+  "places_cancer_ageAdj": {
+   "file": "places_cancer_ageAdj.bin",
+   "dtype": "float32",
+   "components": 1,
+   "length": 3109,
+   "unit": "percent",
+   "description": "CDC PLACES age-adjusted prevalence: cancer (non-skin) (adults)"
+  },
+  "places_casthma_ageAdj": {
+   "file": "places_casthma_ageAdj.bin",
+   "dtype": "float32",
+   "components": 1,
+   "length": 3109,
+   "unit": "percent",
+   "description": "CDC PLACES age-adjusted prevalence: current asthma (adults)"
+  },
+  "places_chd_ageAdj": {
+   "file": "places_chd_ageAdj.bin",
+   "dtype": "float32",
+   "components": 1,
+   "length": 3109,
+   "unit": "percent",
+   "description": "CDC PLACES age-adjusted prevalence: coronary heart disease (adults)"
+  },
+  "places_checkup_ageAdj": {
+   "file": "places_checkup_ageAdj.bin",
+   "dtype": "float32",
+   "components": 1,
+   "length": 3109,
+   "unit": "percent",
+   "description": "CDC PLACES age-adjusted prevalence: annual checkup (adults)"
+  },
+  "places_cholscreen_ageAdj": {
+   "file": "places_cholscreen_ageAdj.bin",
+   "dtype": "float32",
+   "components": 1,
+   "length": 3109,
+   "unit": "percent",
+   "description": "CDC PLACES age-adjusted prevalence: cholesterol screening (adults)"
+  },
+  "places_cognition_ageAdj": {
+   "file": "places_cognition_ageAdj.bin",
+   "dtype": "float32",
+   "components": 1,
+   "length": 3109,
+   "unit": "percent",
+   "description": "CDC PLACES age-adjusted prevalence: cognitive disability (adults)"
+  },
+  "places_colon_screen_ageAdj": {
+   "file": "places_colon_screen_ageAdj.bin",
+   "dtype": "float32",
+   "components": 1,
+   "length": 3109,
+   "unit": "percent",
+   "description": "CDC PLACES age-adjusted prevalence: colorectal cancer screening (adults)"
+  },
+  "places_copd_ageAdj": {
+   "file": "places_copd_ageAdj.bin",
+   "dtype": "float32",
+   "components": 1,
+   "length": 3109,
+   "unit": "percent",
+   "description": "CDC PLACES age-adjusted prevalence: COPD (adults)"
+  },
+  "places_csmoking_ageAdj": {
+   "file": "places_csmoking_ageAdj.bin",
+   "dtype": "float32",
+   "components": 1,
+   "length": 3109,
+   "unit": "percent",
+   "description": "CDC PLACES age-adjusted prevalence: current cigarette smoking (adults)"
+  },
+  "places_csmoking_crude": {
+   "file": "places_csmoking_crude.bin",
+   "dtype": "float32",
+   "components": 1,
+   "length": 3109,
+   "unit": "percent",
+   "description": "CDC PLACES crude prevalence: current cigarette smoking (adults)"
+  },
+  "places_dental_ageAdj": {
+   "file": "places_dental_ageAdj.bin",
+   "dtype": "float32",
+   "components": 1,
+   "length": 3109,
+   "unit": "percent",
+   "description": "CDC PLACES age-adjusted prevalence: dental visit (adults)"
+  },
+  "places_depression_ageAdj": {
+   "file": "places_depression_ageAdj.bin",
+   "dtype": "float32",
+   "components": 1,
+   "length": 3109,
+   "unit": "percent",
+   "description": "CDC PLACES age-adjusted prevalence: depression (adults)"
+  },
+  "places_depression_crude": {
+   "file": "places_depression_crude.bin",
+   "dtype": "float32",
+   "components": 1,
+   "length": 3109,
+   "unit": "percent",
+   "description": "CDC PLACES crude prevalence: depression (adults)"
+  },
+  "places_diabetes_ageAdj": {
+   "file": "places_diabetes_ageAdj.bin",
+   "dtype": "float32",
+   "components": 1,
+   "length": 3109,
+   "unit": "percent",
+   "description": "CDC PLACES age-adjusted prevalence: diagnosed diabetes (adults)"
+  },
+  "places_diabetes_crude": {
+   "file": "places_diabetes_crude.bin",
+   "dtype": "float32",
+   "components": 1,
+   "length": 3109,
+   "unit": "percent",
+   "description": "CDC PLACES crude prevalence: diagnosed diabetes (adults)"
+  },
+  "places_disability_ageAdj": {
+   "file": "places_disability_ageAdj.bin",
+   "dtype": "float32",
+   "components": 1,
+   "length": 3109,
+   "unit": "percent",
+   "description": "CDC PLACES age-adjusted prevalence: any disability (adults)"
+  },
+  "places_ghlth_ageAdj": {
+   "file": "places_ghlth_ageAdj.bin",
+   "dtype": "float32",
+   "components": 1,
+   "length": 3109,
+   "unit": "percent",
+   "description": "CDC PLACES age-adjusted prevalence: fair or poor health (adults)"
+  },
+  "places_hearing_ageAdj": {
+   "file": "places_hearing_ageAdj.bin",
+   "dtype": "float32",
+   "components": 1,
+   "length": 3109,
+   "unit": "percent",
+   "description": "CDC PLACES age-adjusted prevalence: hearing disability (adults)"
+  },
+  "places_highchol_ageAdj": {
+   "file": "places_highchol_ageAdj.bin",
+   "dtype": "float32",
+   "components": 1,
+   "length": 3109,
+   "unit": "percent",
+   "description": "CDC PLACES age-adjusted prevalence: high cholesterol (adults)"
+  },
+  "places_indeplive_ageAdj": {
+   "file": "places_indeplive_ageAdj.bin",
+   "dtype": "float32",
+   "components": 1,
+   "length": 3109,
+   "unit": "percent",
+   "description": "CDC PLACES age-adjusted prevalence: independent living disability (adults)"
+  },
+  "places_lpa_ageAdj": {
+   "file": "places_lpa_ageAdj.bin",
+   "dtype": "float32",
+   "components": 1,
+   "length": 3109,
+   "unit": "percent",
+   "description": "CDC PLACES age-adjusted prevalence: no leisure-time physical activity (adults)"
+  },
+  "places_lpa_crude": {
+   "file": "places_lpa_crude.bin",
+   "dtype": "float32",
+   "components": 1,
+   "length": 3109,
+   "unit": "percent",
+   "description": "CDC PLACES crude prevalence: no leisure-time physical activity (adults)"
+  },
+  "places_mammouse_ageAdj": {
+   "file": "places_mammouse_ageAdj.bin",
+   "dtype": "float32",
+   "components": 1,
+   "length": 3109,
+   "unit": "percent",
+   "description": "CDC PLACES age-adjusted prevalence: mammography (adults)"
+  },
+  "places_mhlth_ageAdj": {
+   "file": "places_mhlth_ageAdj.bin",
+   "dtype": "float32",
+   "components": 1,
+   "length": 3109,
+   "unit": "percent",
+   "description": "CDC PLACES age-adjusted prevalence: mental health not good for >=14 days (adults)"
+  },
+  "places_mhlth_crude": {
+   "file": "places_mhlth_crude.bin",
+   "dtype": "float32",
+   "components": 1,
+   "length": 3109,
+   "unit": "percent",
+   "description": "CDC PLACES crude prevalence: mental health not good for >=14 days (adults)"
+  },
+  "places_mobility_ageAdj": {
+   "file": "places_mobility_ageAdj.bin",
+   "dtype": "float32",
+   "components": 1,
+   "length": 3109,
+   "unit": "percent",
+   "description": "CDC PLACES age-adjusted prevalence: mobility disability (adults)"
+  },
+  "places_obesity_ageAdj": {
+   "file": "places_obesity_ageAdj.bin",
+   "dtype": "float32",
+   "components": 1,
+   "length": 3109,
+   "unit": "percent",
+   "description": "CDC PLACES age-adjusted prevalence: obesity (adults)"
+  },
+  "places_obesity_crude": {
+   "file": "places_obesity_crude.bin",
+   "dtype": "float32",
+   "components": 1,
+   "length": 3109,
+   "unit": "percent",
+   "description": "CDC PLACES crude prevalence: obesity (adults)"
+  },
+  "places_phlth_ageAdj": {
+   "file": "places_phlth_ageAdj.bin",
+   "dtype": "float32",
+   "components": 1,
+   "length": 3109,
+   "unit": "percent",
+   "description": "CDC PLACES age-adjusted prevalence: physical health not good for >=14 days (adults)"
+  },
+  "places_selfcare_ageAdj": {
+   "file": "places_selfcare_ageAdj.bin",
+   "dtype": "float32",
+   "components": 1,
+   "length": 3109,
+   "unit": "percent",
+   "description": "CDC PLACES age-adjusted prevalence: self-care disability (adults)"
+  },
+  "places_sleep_ageAdj": {
+   "file": "places_sleep_ageAdj.bin",
+   "dtype": "float32",
+   "components": 1,
+   "length": 3109,
+   "unit": "percent",
+   "description": "CDC PLACES age-adjusted prevalence: short sleep (<7h) (adults)"
+  },
+  "places_stroke_ageAdj": {
+   "file": "places_stroke_ageAdj.bin",
+   "dtype": "float32",
+   "components": 1,
+   "length": 3109,
+   "unit": "percent",
+   "description": "CDC PLACES age-adjusted prevalence: stroke (adults)"
+  },
+  "places_teethlost_ageAdj": {
+   "file": "places_teethlost_ageAdj.bin",
+   "dtype": "float32",
+   "components": 1,
+   "length": 3109,
+   "unit": "percent",
+   "description": "CDC PLACES age-adjusted prevalence: all teeth lost (65+) (adults)"
+  },
+  "places_vision_ageAdj": {
+   "file": "places_vision_ageAdj.bin",
+   "dtype": "float32",
+   "components": 1,
+   "length": 3109,
+   "unit": "percent",
+   "description": "CDC PLACES age-adjusted prevalence: vision disability (adults)"
+  }
+ },
+ "geometry": {
+  "type": "polygons",
+  "file": "counties.geojson",
+  "binary": {
+   "countyPolygonOffsets": "countyPolygonOffsets",
+   "polygonRingOffsets": "polygonRingOffsets",
+   "ringOffsets": "ringOffsets",
+   "vertices": "vertices",
+   "note": "GeoArrow-style: county i owns polygons [cPO[i], cPO[i+1]); polygon p owns rings [pRO[p], pRO[p+1]) (first = exterior, CCW; rest = holes, CW); ring r owns vertices [rO[r], rO[r+1]). Rings are closed (first vertex repeated). Adjacent counties share identical vertices (queen/rook contiguity can be built by exact vertex match)."
+  }
+ },
+ "properties": {
+  "order": "sorted by 5-digit FIPS; every other county dataset (us-elections, us-county-mortality) is aligned to this order",
+  "names": "names.json holds fips/name/state arrays in the same order",
+  "coverage": "Contiguous US + DC (3109 counties). Alaska, Hawaii and territories dropped.",
+  "boundaries": "Census cartographic boundary file cb_2022_us_county_20m (1:20,000,000), coordinates rounded to 5 decimals",
+  "connecticut": "Connecticut appears as its 9 planning regions (2022 Census vintage; SVI 2022, PLACES and ERS use them). MIT election returns are reported for the 8 legacy counties, so us-elections columns are NaN for CT.",
+  "nan": "Missing values are NaN (float32).",
+  "missingIncomePerCapita": "ACS per-capita income needs a Census API key; medianHouseholdIncome (SAIPE 2022) shipped instead.",
+  "sources": {
+   "boundaries": "US Census Bureau cb_2022_us_county_20m",
+   "svi": "CDC/ATSDR SVI 2022 county (ACS 2018-2022)",
+   "places": "CDC PLACES county data, 2024 release (model-based estimates from BRFSS 2022; a few measures BRFSS 2021)",
+   "ers": "USDA ERS Rural-Urban Continuum Codes 2023; Unemployment & median household income file (BLS LAUS, Census SAIPE)"
+  },
+  "storyNotes": [
+   "Age-adjusted diabetes prevalence (CDC PLACES 2024, BRFSS 2022) is strongly clustered: global Moran's I = 0.70 on queen contiguity. 249 high-high LISA counties (p<0.01), concentrated in TX (62), MS (50), LA (28), GA (27), AL (25), AR (23) - the Deep South / Black Belt / Appalachian 'diabetes belt'.",
+   "Diabetes range: 6.0% to 21.5% (max: Dimmit, TX); 408 low-low counties, led by CO (45), MT (43), WI (41), MN (38), NY (35), SD (30).",
+   "Median household income 2022 ranges $28,972 (McDowell, WV) to $167,605 (Loudoun, VA); Moran's I = 0.61.",
+   "Diabetes vs median household income correlation r = -0.60 across counties: a good candidate for OLS residual maps, spatial lag/error and GWR (coefficient varies by region).",
+   "Minority share is as spatially clustered as diabetes (Moran's I = 0.70): Black Belt, Texas-border and Native American reservation counties stand out; most populous county Los Angeles, CA (9,936,690).",
+   "Rural-urban continuum: 1180 metro counties (codes 1-3) and 1929 nonmetro; mean diabetes prevalence 10.8% metro vs 11.4% nonmetro.",
+   "Contiguity: 9,102 queen edges, mean 5.9 neighbours, max 14; 2 true islands (Nantucket MA, San Juan WA) have no neighbours - exercise the island handling of weights.",
+   "Connecticut appears as 9 planning regions (2022 vintage); Alaska and Hawaii dropped (3,109 contiguous counties + DC)."
+  ]
+ }
+}

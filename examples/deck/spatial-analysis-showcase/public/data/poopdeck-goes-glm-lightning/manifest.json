@@ -1,0 +1,54 @@
+{
+ "id": "poopdeck-goes-glm-lightning",
+ "version": 1,
+ "crs": "EPSG:4326",
+ "kind": "points",
+ "count": 150000,
+ "bbox": [
+  -112.7012,
+  24.0002,
+  -66.0016,
+  49.9973
+ ],
+ "columns": {
+  "position": {
+   "file": "position.bin",
+   "dtype": "float32",
+   "components": 2,
+   "length": 150000
+  },
+  "timestamp": {
+   "file": "time.bin",
+   "dtype": "uint32",
+   "length": 150000,
+   "unit": "seconds since 2024-05-21T12:00:00Z"
+  },
+  "energy": {
+   "file": "energy.bin",
+   "dtype": "float32",
+   "length": 150000,
+   "unit": "femtojoules (optical energy of the flash)"
+  },
+  "area": {
+   "file": "area.bin",
+   "dtype": "float32",
+   "length": 150000,
+   "unit": "km2 (flash footprint)"
+  }
+ },
+ "properties": {
+  "timeOriginMs": 1716292800000,
+  "timeRangeMs": [
+   1716292800000,
+   1716357600000
+  ],
+  "source": {
+   "manifestUrl": "https://tiles.poopdeck.gl/data/goes-glm-lightning/manifest.json",
+   "name": "goes-glm-lightning",
+   "exportedFrom": "poopdeck-severe-may2024/build.mjs"
+  },
+  "flashesInWindow": 346450,
+  "sampleFraction": 0.4329629095107519,
+  "sampled": true
+ }
+}

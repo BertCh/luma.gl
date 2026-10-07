@@ -1,0 +1,85 @@
+{
+ "id": "poopdeck-mrms-storm3d-warnings",
+ "version": 1,
+ "crs": "EPSG:4326",
+ "kind": "polygons",
+ "count": 750,
+ "bbox": [
+  -99.57,
+  25.44,
+  -71.17,
+  45.9
+ ],
+ "columns": {
+  "vertices": {
+   "file": "vertices.bin",
+   "dtype": "float32",
+   "components": 2,
+   "length": 5123
+  },
+  "ringOffsets": {
+   "file": "ringOffsets.bin",
+   "dtype": "uint32",
+   "length": 751
+  },
+  "polygonRingOffsets": {
+   "file": "polygonRingOffsets.bin",
+   "dtype": "uint32",
+   "length": 751
+  },
+  "startTime": {
+   "file": "startTime.bin",
+   "dtype": "uint32",
+   "length": 750,
+   "unit": "seconds since 2024-05-21T12:00:00Z (this polygon version becomes valid)"
+  },
+  "endTime": {
+   "file": "endTime.bin",
+   "dtype": "uint32",
+   "length": 750,
+   "unit": "seconds since 2024-05-21T12:00:00Z (this polygon version is replaced or expires)"
+  },
+  "issueTime": {
+   "file": "issueTime.bin",
+   "dtype": "uint32",
+   "length": 750,
+   "unit": "seconds since 2024-05-21T12:00:00Z (first version of the same warning)"
+  },
+  "warning": {
+   "file": "warning.bin",
+   "dtype": "uint32",
+   "length": 750,
+   "description": "dense id of the chain of versions of one warning"
+  },
+  "partFeature": {
+   "file": "partFeature.bin",
+   "dtype": "uint32",
+   "length": 750,
+   "description": "feature of each polygon part (one part per feature)"
+  },
+  "phenomenon": {
+   "file": "phenomenon.bin",
+   "dtype": "uint8",
+   "length": 750,
+   "categories": [
+    "TO",
+    "SV",
+    "FF"
+   ]
+  }
+ },
+ "properties": {
+  "timeOriginMs": 1716292800000,
+  "timeRangeMs": [
+   1716292800000,
+   1716357600000
+  ],
+  "source": {
+   "manifestUrl": "https://tiles.poopdeck.gl/data/mrms-storm3d-warnings/manifest.json",
+   "name": "mrms-storm3d-warnings",
+   "exportedFrom": "poopdeck-severe-may2024/build.mjs"
+  },
+  "warningCount": 284,
+  "note": "TO tornado, SV severe thunderstorm, FF flash flood."
+ }
+}

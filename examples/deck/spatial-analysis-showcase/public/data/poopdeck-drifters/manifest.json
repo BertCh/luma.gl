@@ -1,0 +1,81 @@
+{
+  "id": "poopdeck-drifters",
+  "version": 1,
+  "kind": "trajectories",
+  "count": 2811,
+  "bbox": [
+    -179.99899291992188,
+    -77.0989990234375,
+    180,
+    80.65699768066406
+  ],
+  "crs": "EPSG:4326",
+  "columns": {
+    "pathOffsets": {
+      "file": "pathOffsets.bin",
+      "dtype": "uint32",
+      "length": 2812
+    },
+    "vertices": {
+      "file": "vertices.bin",
+      "dtype": "float32",
+      "components": 2,
+      "length": 292112
+    },
+    "timestamp": {
+      "file": "time.bin",
+      "dtype": "uint32",
+      "unit": "seconds since 2017-01-01T00:00:00.000Z",
+      "length": 292112
+    },
+    "sst": {
+      "file": "sst.bin",
+      "dtype": "uint8",
+      "unit": "deg C = value * 0.2 - 5; 255 = none",
+      "length": 292112
+    },
+    "trackId": {
+      "file": "trackId.bin",
+      "dtype": "uint16",
+      "length": 2811
+    },
+    "releaseTime": {
+      "file": "releaseTime.bin",
+      "dtype": "uint32",
+      "unit": "seconds since 2017-01-01T00:00:00.000Z",
+      "length": 2811
+    },
+    "deployed": {
+      "file": "deployed.bin",
+      "dtype": "uint8",
+      "unit": "1 = first fix after 5 Jan (new deployment or new record)",
+      "length": 2811
+    },
+    "daily": {
+      "file": "daily.bin",
+      "dtype": "float32",
+      "components": 2,
+      "length": 87141,
+      "unit": "lon, lat at release + 0..30 days; NaN = no fix"
+    }
+  },
+  "properties": {
+    "timeOriginMs": 1483228800000,
+    "leadDays": 30,
+    "clipDays": 60,
+    "window": [
+      "2017-01-01",
+      "2017-12-31"
+    ],
+    "trackCount": 2811,
+    "pieceCount": 2811,
+    "sstOffset": -5,
+    "sstScale": 0.2,
+    "thinning": "about 12-hourly fixes (the archive is 6-hourly)",
+    "validDailyPositions": 79535,
+    "source": {
+      "archive": "https://tiles.poopdeck.gl/data/drifters/manifest.json",
+      "exporter": "stt-export.mjs --stitch drifter_id,segment --clip-time"
+    }
+  }
+}

@@ -1,0 +1,58 @@
+{
+ "id": "plate-boundaries",
+ "version": 1,
+ "kind": "lines",
+ "count": 5824,
+ "bbox": [
+  -179.999999,
+  -66.163,
+  179.999999,
+  86.805
+ ],
+ "crs": "EPSG:4326",
+ "columns": {
+  "pathOffsets": {
+   "file": "pathOffsets.bin",
+   "dtype": "uint32",
+   "components": 1,
+   "length": 5825
+  },
+  "vertices": {
+   "file": "vertices.bin",
+   "dtype": "float32",
+   "components": 2,
+   "length": 11648
+  },
+  "stepClass": {
+   "file": "stepClass.bin",
+   "dtype": "uint8",
+   "length": 5824,
+   "categories": [
+    "SUB: subduction zone",
+    "OCB: oceanic convergent boundary",
+    "CCB: continental convergent boundary",
+    "OSR: oceanic spreading ridge",
+    "CRB: continental rift boundary",
+    "OTF: oceanic transform fault",
+    "CTF: continental transform fault"
+   ]
+  },
+  "convergence": {
+   "file": "convergence.bin",
+   "dtype": "float32",
+   "length": 5824,
+   "unit": "mm/a",
+   "note": "rate at which the two plates approach (negative = they separate)"
+  },
+  "rightLateral": {
+   "file": "rightLateral.bin",
+   "dtype": "float32",
+   "length": 5824,
+   "unit": "mm/a"
+  }
+ },
+ "properties": {
+  "source": "Bird (2003), PB2002, via github.com/fraxen/tectonicplates (ODC-BY 1.0)",
+  "note": "One line per ~100 km boundary step. Boundaries that crossed the antimeridian were split in the source."
+ }
+}

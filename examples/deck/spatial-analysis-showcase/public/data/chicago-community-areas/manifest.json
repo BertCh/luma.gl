@@ -1,0 +1,143 @@
+{
+ "id": "chicago-community-areas",
+ "version": 1,
+ "kind": "polygons",
+ "count": 77,
+ "bbox": [
+  -87.94011,
+  41.64454,
+  -87.52414,
+  42.02304
+ ],
+ "crs": "EPSG:4326",
+ "columns": {
+  "vertices": {
+   "file": "vertices.bin",
+   "dtype": "float32",
+   "components": 2,
+   "length": 12280
+  },
+  "ringOffsets": {
+   "file": "ringOffsets.bin",
+   "dtype": "uint32",
+   "components": 1,
+   "length": 81
+  },
+  "polygonRingOffsets": {
+   "file": "polygonRingOffsets.bin",
+   "dtype": "uint32",
+   "components": 1,
+   "length": 80
+  },
+  "partFeature": {
+   "file": "partFeature.bin",
+   "dtype": "uint32",
+   "components": 1,
+   "length": 79
+  },
+  "areaId": {
+   "file": "areaId.bin",
+   "dtype": "uint8",
+   "components": 1,
+   "length": 77
+  },
+  "areaKm2": {
+   "file": "areaKm2.bin",
+   "dtype": "float32",
+   "components": 1,
+   "length": 77
+  }
+ },
+ "geometry": {
+  "type": "polygons",
+  "file": "community-areas.geojson"
+ },
+ "names": [
+  "Rogers Park",
+  "West Ridge",
+  "Uptown",
+  "Lincoln Square",
+  "North Center",
+  "Lake View",
+  "Lincoln Park",
+  "Near North Side",
+  "Edison Park",
+  "Norwood Park",
+  "Jefferson Park",
+  "Forest Glen",
+  "North Park",
+  "Albany Park",
+  "Portage Park",
+  "Irving Park",
+  "Dunning",
+  "Montclare",
+  "Belmont Cragin",
+  "Hermosa",
+  "Avondale",
+  "Logan Square",
+  "Humboldt Park",
+  "West Town",
+  "Austin",
+  "West Garfield Park",
+  "East Garfield Park",
+  "Near West Side",
+  "North Lawndale",
+  "South Lawndale",
+  "Lower West Side",
+  "Loop",
+  "Near South Side",
+  "Armour Square",
+  "Douglas",
+  "Oakland",
+  "Fuller Park",
+  "Grand Boulevard",
+  "Kenwood",
+  "Washington Park",
+  "Hyde Park",
+  "Woodlawn",
+  "South Shore",
+  "Chatham",
+  "Avalon Park",
+  "South Chicago",
+  "Burnside",
+  "Calumet Heights",
+  "Roseland",
+  "Pullman",
+  "South Deering",
+  "East Side",
+  "West Pullman",
+  "Riverdale",
+  "Hegewisch",
+  "Garfield Ridge",
+  "Archer Heights",
+  "Brighton Park",
+  "Mckinley Park",
+  "Bridgeport",
+  "New City",
+  "West Elsdon",
+  "Gage Park",
+  "Clearing",
+  "West Lawn",
+  "Chicago Lawn",
+  "West Englewood",
+  "Englewood",
+  "Greater Grand Crossing",
+  "Ashburn",
+  "Auburn Gresham",
+  "Beverly",
+  "Washington Heights",
+  "Mount Greenwood",
+  "Morgan Park",
+  "Ohare",
+  "Edgewater"
+ ],
+ "properties": {
+  "description": "77 official Chicago community areas; feature i has areaId i+1. Binary polygons are GeoArrow-style: polygon p (a polygon part) owns rings polygonRingOffsets[p]..[p+1], ring r owns vertices ringOffsets[r]..[r+1]; partFeature maps part -> feature index. Topology-preserving simplification (~4 m), shared edges identical.",
+  "storyNotes": [
+   "The 77 community areas are fixed since the 1920s Chicago School of sociology; most city statistics (health, housing, demographics) are published by them.",
+   "Largest: Ohare (34.5 km2, includes O'Hare); smallest: Oakland (1.57 km2).",
+   "Names are the official portal names; area 76 (O'Hare) is a thin corridor connected to the city only by a strip, a good test of queen vs rook contiguity and island handling.",
+   "A classic 77-unit benchmark geography (the PySAL \"chicago\" example) so results can be cross-checked against GeoDa/PySAL."
+  ]
+ }
+}

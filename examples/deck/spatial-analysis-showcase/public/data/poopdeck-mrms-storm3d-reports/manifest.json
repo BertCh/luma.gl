@@ -1,0 +1,58 @@
+{
+ "id": "poopdeck-mrms-storm3d-reports",
+ "version": 1,
+ "crs": "EPSG:4326",
+ "kind": "points",
+ "count": 860,
+ "bbox": [
+  -109.73,
+  25.64,
+  -71.05,
+  47.94
+ ],
+ "columns": {
+  "position": {
+   "file": "position.bin",
+   "dtype": "float32",
+   "components": 2,
+   "length": 860
+  },
+  "timestamp": {
+   "file": "time.bin",
+   "dtype": "uint32",
+   "length": 860,
+   "unit": "seconds since 2024-05-21T12:00:00Z"
+  },
+  "magnitude": {
+   "file": "magnitude.bin",
+   "dtype": "float32",
+   "length": 860,
+   "unit": "hail inches, wind mph, tornado EF/NaN, 0 or NaN when not reported"
+  },
+  "kind": {
+   "file": "kind.bin",
+   "dtype": "uint8",
+   "length": 860,
+   "categories": [
+    "tornado",
+    "wind",
+    "hail",
+    "flood",
+    "damage",
+    "other"
+   ]
+  }
+ },
+ "properties": {
+  "timeOriginMs": 1716292800000,
+  "timeRangeMs": [
+   1716292800000,
+   1716357600000
+  ],
+  "source": {
+   "manifestUrl": "https://tiles.poopdeck.gl/data/mrms-storm3d-reports/manifest.json",
+   "name": "mrms-storm3d-reports",
+   "exportedFrom": "poopdeck-severe-may2024/build.mjs"
+  }
+ }
+}

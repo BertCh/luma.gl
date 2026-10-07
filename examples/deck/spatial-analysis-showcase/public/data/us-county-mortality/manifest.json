@@ -1,0 +1,139 @@
+{
+ "id": "us-county-mortality",
+ "version": 1,
+ "kind": "table",
+ "count": 3109,
+ "crs": "EPSG:4326",
+ "bbox": [
+  -124.7258,
+  24.4981,
+  -66.9499,
+  49.3844
+ ],
+ "columns": {
+  "deaths": {
+   "file": "deaths.bin",
+   "dtype": "float32",
+   "components": 1,
+   "length": 3109,
+   "description": "Motor-vehicle crash deaths 2017-2023 (sum of FARS FATALS, county of crash)",
+   "unit": "deaths"
+  },
+  "population": {
+   "file": "population.bin",
+   "dtype": "float32",
+   "components": 1,
+   "length": 3109,
+   "description": "2020 Census resident population (exposure; person-years = 7 x population)",
+   "unit": "persons"
+  },
+  "personYears": {
+   "file": "personYears.bin",
+   "dtype": "float32",
+   "components": 1,
+   "length": 3109,
+   "description": "Population at risk, person-years over the 7 years",
+   "unit": "person-years"
+  },
+  "fatalCrashes": {
+   "file": "fatalCrashes.bin",
+   "dtype": "float32",
+   "components": 1,
+   "length": 3109,
+   "description": "Number of fatal crashes in the 7 years",
+   "unit": "crashes"
+  },
+  "ruralDeaths": {
+   "file": "ruralDeaths.bin",
+   "dtype": "float32",
+   "components": 1,
+   "length": 3109,
+   "description": "Deaths in crashes coded rural (FARS RUR_URB=1)",
+   "unit": "deaths"
+  },
+  "rawRate": {
+   "file": "rawRate.bin",
+   "dtype": "float32",
+   "components": 1,
+   "length": 3109,
+   "description": "Raw annual deaths per 100,000 residents (unsmoothed: unstable where population is small)",
+   "unit": "per 100k per year"
+  },
+  "deaths2017": {
+   "file": "deaths2017.bin",
+   "dtype": "float32",
+   "components": 1,
+   "length": 3109,
+   "description": "Motor-vehicle crash deaths in 2017",
+   "unit": "deaths"
+  },
+  "deaths2018": {
+   "file": "deaths2018.bin",
+   "dtype": "float32",
+   "components": 1,
+   "length": 3109,
+   "description": "Motor-vehicle crash deaths in 2018",
+   "unit": "deaths"
+  },
+  "deaths2019": {
+   "file": "deaths2019.bin",
+   "dtype": "float32",
+   "components": 1,
+   "length": 3109,
+   "description": "Motor-vehicle crash deaths in 2019",
+   "unit": "deaths"
+  },
+  "deaths2020": {
+   "file": "deaths2020.bin",
+   "dtype": "float32",
+   "components": 1,
+   "length": 3109,
+   "description": "Motor-vehicle crash deaths in 2020",
+   "unit": "deaths"
+  },
+  "deaths2021": {
+   "file": "deaths2021.bin",
+   "dtype": "float32",
+   "components": 1,
+   "length": 3109,
+   "description": "Motor-vehicle crash deaths in 2021",
+   "unit": "deaths"
+  },
+  "deaths2022": {
+   "file": "deaths2022.bin",
+   "dtype": "float32",
+   "components": 1,
+   "length": 3109,
+   "description": "Motor-vehicle crash deaths in 2022",
+   "unit": "deaths"
+  },
+  "deaths2023": {
+   "file": "deaths2023.bin",
+   "dtype": "float32",
+   "components": 1,
+   "length": 3109,
+   "description": "Motor-vehicle crash deaths in 2023",
+   "unit": "deaths"
+  }
+ },
+ "properties": {
+  "alignedTo": "us-counties (same row order, sorted by FIPS)",
+  "event": "Motor-vehicle traffic crash deaths (FARS), county where the crash occurred",
+  "usage": "Empirical Bayes: counts = deaths, population at risk = personYears (or population). Rate = deaths / personYears.",
+  "why": "CDC WONDER cannot be fetched programmatically and CDC county overdose data suppress counts of 1-9; FARS has exact unsuppressed counts for every county.",
+  "caveats": [
+   "Counts are deaths by county of crash, not residence; population is 2020 Census residents, so tourist/transit counties are inflated.",
+   "Connecticut crashes are assigned to the 9 planning regions by crash latitude/longitude (raw 5m boundaries); Alaska/Hawaii excluded.",
+   "Crashes with a county code that does not match a us-counties FIPS are dropped."
+  ],
+  "sources": "NHTSA FARS 2017-2023 final annual files (static.nhtsa.gov/nhtsa/downloads/FARS), public domain; population: US Census 2020 via USDA ERS",
+  "storyNotes": [
+   "275,368 deaths in 7 years; national raw rate 11.9 per 100k per year.",
+   "Small counties (<5,000 residents, n=307): raw rates range 7-174 per 100k (5th-95th pct) vs 5-21 for counties over 100,000 (n=599); the spread is mostly sampling noise, ideal for empirical Bayes shrinkage.",
+   "Highest raw rates (mostly tiny counties, unreliable): Loving, TX 6027; Kenedy, TX 612; Esmeralda, NV 510; Glasscock, TX 346; Mineral, CO 314.",
+   "Highest raw rates among counties over 100,000 residents: Robeson, NC 48.3; Navajo, AZ 40.3; Coconino, AZ 34.3; Ector, TX 29.9.",
+   "8 counties had zero deaths in 7 years (rate exactly 0, a classic EB artefact); 355 had fewer than 10.",
+   "Annual deaths in the covered counties: 2017: 37,276, 2018: 36,625, 2019: 36,178, 2020: 38,851, 2021: 43,059, 2022: 42,510, 2023: 40,869 (2020-2021 jump despite less driving)."
+  ]
+ }
+}

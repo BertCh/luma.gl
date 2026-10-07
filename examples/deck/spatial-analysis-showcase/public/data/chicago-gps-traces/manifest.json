@@ -1,0 +1,101 @@
+{
+ "id": "chicago-gps-traces",
+ "version": 1,
+ "kind": "trajectories",
+ "count": 200,
+ "bbox": [
+  -87.83374,
+  41.65208,
+  -87.52523,
+  42.01797
+ ],
+ "crs": "EPSG:4326",
+ "columns": {
+  "pathOffsets": {
+   "file": "pathOffsets.bin",
+   "dtype": "uint32",
+   "components": 1,
+   "length": 201,
+   "note": "trace i = vertices pathOffsets[i]..pathOffsets[i+1]-1"
+  },
+  "vertices": {
+   "file": "vertices.bin",
+   "dtype": "float32",
+   "components": 2,
+   "length": 27605,
+   "note": "SIMULATED noisy GPS fixes lon/lat"
+  },
+  "timestamp": {
+   "file": "timestamp.bin",
+   "dtype": "uint32",
+   "components": 1,
+   "length": 27605,
+   "unit": "seconds since 2023-06-05T00:00:00 (simulated Monday, local time)"
+  },
+  "truthPosition": {
+   "file": "truthPosition.bin",
+   "dtype": "float32",
+   "components": 2,
+   "length": 27605,
+   "note": "noise-free position on the true route, for validation"
+  },
+  "truthEdge": {
+   "file": "truthEdge.bin",
+   "dtype": "uint32",
+   "components": 1,
+   "length": 27605,
+   "note": "chicago-roads edge index the vehicle was on at each fix"
+  },
+  "truthEdgeOffset": {
+   "file": "truthEdgeOffset.bin",
+   "dtype": "float32",
+   "components": 1,
+   "length": 27605,
+   "unit": "m",
+   "note": "distance along the true edge from its source"
+  },
+  "routeOffsets": {
+   "file": "routeOffsets.bin",
+   "dtype": "uint32",
+   "components": 1,
+   "length": 201,
+   "note": "ground-truth edge sequence of trace i = routeEdges[routeOffsets[i]..routeOffsets[i+1]-1]"
+  },
+  "routeEdges": {
+   "file": "routeEdges.bin",
+   "dtype": "uint32",
+   "components": 1,
+   "length": 15926,
+   "note": "chicago-roads directed edge indices in travel order"
+  },
+  "noiseSigma": {
+   "file": "noiseSigma.bin",
+   "dtype": "float32",
+   "components": 1,
+   "length": 200,
+   "unit": "m",
+   "note": "per-trace Gaussian noise std dev (isotropic)"
+  },
+  "sampleInterval": {
+   "file": "sampleInterval.bin",
+   "dtype": "uint8",
+   "components": 1,
+   "length": 200,
+   "unit": "s",
+   "note": "nominal per-trace sampling interval"
+  }
+ },
+ "properties": {
+  "description": "SIMULATED (synthetic) GPS traces for map matching: random shortest paths on chicago-roads, sampled every 5-15 s with 10-25 m Gaussian noise and occasional dropouts. Ground-truth edge sequences are included. Not real vehicle data.",
+  "simulated": true,
+  "roadsDataset": "chicago-roads",
+  "licence": "Synthetic, derived from OpenStreetMap data (ODbL 1.0)",
+  "attribution": "\u00a9 OpenStreetMap contributors",
+  "storyNotes": [
+   "SIMULATED data: 200 traces, 27,605 fixes, produced by routing random origin-destination pairs (7-25 min free-flow) on chicago-roads; not real vehicles.",
+   "Noise: per-trace Gaussian sigma 10-25 m per axis (radial RMS error 25.7 m), sampling every 5-15 s, 0-3 dropouts of 30-90 s per trace; speed is 55-85% of the posted limit.",
+   "Median trace has 123 fixes over 22 min; routes cross 15,926 edges in total (median 78 per trace).",
+   "Ground truth: truthEdge per fix and routeEdges per trace let a map-matching tool report edge accuracy; noise on dense downtown blocks (~100 m) is comparable to block spacing, so it is genuinely ambiguous there."
+  ]
+ }
+}

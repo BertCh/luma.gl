@@ -1,0 +1,50 @@
+{
+ "id": "chicago-facilities",
+ "version": 1,
+ "kind": "points",
+ "count": 876,
+ "bbox": [
+  -87.84104,
+  41.65259,
+  -87.52799,
+  42.02109
+ ],
+ "crs": "EPSG:4326",
+ "columns": {
+  "position": {
+   "file": "position.bin",
+   "dtype": "float32",
+   "components": 2,
+   "length": 876
+  },
+  "category": {
+   "file": "category.bin",
+   "dtype": "uint8",
+   "components": 1,
+   "length": 876,
+   "categories": [
+    "hospital",
+    "library",
+    "cps_school",
+    "fire_station"
+   ]
+  },
+  "tract": {
+   "file": "tract.bin",
+   "dtype": "uint16",
+   "components": 1,
+   "length": 876
+  }
+ },
+ "namesCsv": "names.csv",
+ "properties": {
+  "description": "Public facilities in Chicago for location-allocation / coverage: hospitals (Overture places, de-duplicated within 300 m, approximate), Chicago Public Library branches, CPS schools (SY2024-25 locations), CFD fire stations. names.csv rows align with the columns.",
+  "storyNotes": [
+   "hospital 53, library 82, cps_school 649, fire_station 92 facilities.",
+   "Hospitals come from Overture (the city hospital list is a 2011 file) so the count is approximate; verify before citing.",
+   "CPS schools (~650 incl. charters) far outnumber fire stations (~90): good for contrasting 5-minute vs 15-minute coverage standards.",
+   "Small, well-defined point sets suited to coverage-gap, p-median and nearest-facility scenes."
+  ]
+ },
+ "license": "City of Chicago Data Portal Terms of Use (libraries x8fc-8rcq, CPS hexd-c4gn, fire stations 28km-gtjn); hospitals from Overture Maps (CDLA-Permissive-2.0)"
+}

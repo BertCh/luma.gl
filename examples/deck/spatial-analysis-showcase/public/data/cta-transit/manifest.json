@@ -1,0 +1,1083 @@
+{
+ "id": "cta-transit",
+ "version": 1,
+ "kind": "network",
+ "count": 10601,
+ "bbox": [
+  -87.90422,
+  41.64417,
+  -87.52571,
+  42.03288
+ ],
+ "crs": "EPSG:4326",
+ "columns": {
+  "stopPosition": {
+   "file": "stopPosition.bin",
+   "dtype": "float32",
+   "components": 2,
+   "length": 10601,
+   "note": "stops: bus stops + rail stations (platforms merged into parent station)"
+  },
+  "stopMode": {
+   "file": "stopMode.bin",
+   "dtype": "uint8",
+   "components": 1,
+   "length": 10601,
+   "categories": [
+    "bus",
+    "rail"
+   ]
+  },
+  "stopRouteCount": {
+   "file": "stopRouteCount.bin",
+   "dtype": "uint8",
+   "components": 1,
+   "length": 10601,
+   "note": "distinct routes serving the stop on the sample weekday"
+  },
+  "stopWeekdayTrips": {
+   "file": "stopWeekdayTrips.bin",
+   "dtype": "uint16",
+   "components": 1,
+   "length": 10601,
+   "note": "scheduled departures on the sample weekday"
+  },
+  "stopPeakTrips": {
+   "file": "stopPeakTrips.bin",
+   "dtype": "uint16",
+   "components": 1,
+   "length": 10601,
+   "note": "scheduled departures 07:00-08:59 on the sample weekday"
+  },
+  "stopWheelchair": {
+   "file": "stopWheelchair.bin",
+   "dtype": "uint8",
+   "components": 1,
+   "length": 10601,
+   "categories": [
+    "unknown",
+    "accessible",
+    "not accessible"
+   ],
+   "note": "GTFS wheelchair_boarding"
+  },
+  "stopRouteOffsets": {
+   "file": "stopRouteOffsets.bin",
+   "dtype": "uint32",
+   "components": 1,
+   "length": 10602,
+   "note": "CSR over stopRoutes: routes of stop i are stopRoutes[offsets[i]..offsets[i+1]-1]"
+  },
+  "stopRoutes": {
+   "file": "stopRoutes.bin",
+   "dtype": "uint16",
+   "components": 1,
+   "length": 13865,
+   "note": "index into properties.routes"
+  },
+  "hopSource": {
+   "file": "hopSource.bin",
+   "dtype": "uint32",
+   "components": 1,
+   "length": 11539,
+   "note": "transit hops: consecutive stops of a trip, weekday service; indices into stops"
+  },
+  "hopTarget": {
+   "file": "hopTarget.bin",
+   "dtype": "uint32",
+   "components": 1,
+   "length": 11539
+  },
+  "hopSeconds": {
+   "file": "hopSeconds.bin",
+   "dtype": "float32",
+   "components": 1,
+   "length": 11539,
+   "unit": "s",
+   "note": "median scheduled in-vehicle time"
+  },
+  "hopTrips": {
+   "file": "hopTrips.bin",
+   "dtype": "uint16",
+   "components": 1,
+   "length": 11539,
+   "note": "weekday trips using the hop"
+  },
+  "hopMode": {
+   "file": "hopMode.bin",
+   "dtype": "uint8",
+   "components": 1,
+   "length": 11539,
+   "categories": [
+    "bus",
+    "rail"
+   ]
+  },
+  "shapePathOffsets": {
+   "file": "shapePathOffsets.bin",
+   "dtype": "uint32",
+   "components": 1,
+   "length": 17302,
+   "note": "n+1 offsets into shapeVertices (route shapes clipped to the city bbox + 1 km)"
+  },
+  "shapeVertices": {
+   "file": "shapeVertices.bin",
+   "dtype": "float32",
+   "components": 2,
+   "length": 50733
+  },
+  "shapeRoute": {
+   "file": "shapeRoute.bin",
+   "dtype": "uint16",
+   "components": 1,
+   "length": 17301,
+   "note": "index into properties.routes"
+  },
+  "shapeDirection": {
+   "file": "shapeDirection.bin",
+   "dtype": "uint8",
+   "components": 1,
+   "length": 17301
+  }
+ },
+ "properties": {
+  "description": "CTA GTFS aggregates: bus stops and rail stations with route counts and weekday frequency, route shapes, and a weekday stop-to-stop hop graph with median scheduled times. Derived from the CTA GTFS feed; contains no full timetable.",
+  "licence": "CTA Developer License Agreement and Terms of Use (limited licence to use/distribute/derive for assisting transit riders or promoting public transportation; no stand-alone resale; credit optional)",
+  "attribution": "Data provided by Chicago Transit Authority",
+  "routes": [
+   {
+    "id": "1",
+    "short": "1",
+    "name": "Bronzeville/Union Station",
+    "type": "bus",
+    "color": "#99999C"
+   },
+   {
+    "id": "2",
+    "short": "2",
+    "name": "Hyde Park Express",
+    "type": "bus",
+    "color": "#b71234"
+   },
+   {
+    "id": "3",
+    "short": "3",
+    "name": "King Drive",
+    "type": "bus",
+    "color": "#99999C"
+   },
+   {
+    "id": "4",
+    "short": "4",
+    "name": "Cottage Grove",
+    "type": "bus",
+    "color": "#414145"
+   },
+   {
+    "id": "X4",
+    "short": "X4",
+    "name": "Cottage Grove Express",
+    "type": "bus",
+    "color": "#b71234"
+   },
+   {
+    "id": "N5",
+    "short": "N5",
+    "name": "South Shore Night Bus",
+    "type": "bus",
+    "color": "#99999C"
+   },
+   {
+    "id": "6",
+    "short": "6",
+    "name": "Jackson Park Express",
+    "type": "bus",
+    "color": "#b71234"
+   },
+   {
+    "id": "7",
+    "short": "7",
+    "name": "Harrison",
+    "type": "bus",
+    "color": "#99999C"
+   },
+   {
+    "id": "8",
+    "short": "8",
+    "name": "Halsted",
+    "type": "bus",
+    "color": "#99999C"
+   },
+   {
+    "id": "8A",
+    "short": "8A",
+    "name": "South Halsted",
+    "type": "bus",
+    "color": "#99999C"
+   },
+   {
+    "id": "9",
+    "short": "9",
+    "name": "Ashland",
+    "type": "bus",
+    "color": "#414145"
+   },
+   {
+    "id": "X9",
+    "short": "X9",
+    "name": "Ashland Express",
+    "type": "bus",
+    "color": "#b71234"
+   },
+   {
+    "id": "10",
+    "short": "10",
+    "name": "Obama Presidential Center/Museum of Science & Industry Express ",
+    "type": "bus",
+    "color": "#b71234"
+   },
+   {
+    "id": "11",
+    "short": "11",
+    "name": "Lincoln",
+    "type": "bus",
+    "color": "#99999C"
+   },
+   {
+    "id": "12",
+    "short": "12",
+    "name": "Roosevelt",
+    "type": "bus",
+    "color": "#414145"
+   },
+   {
+    "id": "J14",
+    "short": "J14",
+    "name": "Jeffery Jump",
+    "type": "bus",
+    "color": "#0065bd"
+   },
+   {
+    "id": "15",
+    "short": "15",
+    "name": "Jeffery Local",
+    "type": "bus",
+    "color": "#99999C"
+   },
+   {
+    "id": "18",
+    "short": "18",
+    "name": "16th/18th",
+    "type": "bus",
+    "color": "#99999C"
+   },
+   {
+    "id": "20",
+    "short": "20",
+    "name": "Madison",
+    "type": "bus",
+    "color": "#414145"
+   },
+   {
+    "id": "21",
+    "short": "21",
+    "name": "Cermak",
+    "type": "bus",
+    "color": "#99999C"
+   },
+   {
+    "id": "22",
+    "short": "22",
+    "name": "Clark",
+    "type": "bus",
+    "color": "#99999C"
+   },
+   {
+    "id": "24",
+    "short": "24",
+    "name": "Wentworth",
+    "type": "bus",
+    "color": "#99999C"
+   },
+   {
+    "id": "26",
+    "short": "26",
+    "name": "South Shore Express",
+    "type": "bus",
+    "color": "#b71234"
+   },
+   {
+    "id": "28",
+    "short": "28",
+    "name": "Stony Island",
+    "type": "bus",
+    "color": "#99999C"
+   },
+   {
+    "id": "29",
+    "short": "29",
+    "name": "State",
+    "type": "bus",
+    "color": "#99999C"
+   },
+   {
+    "id": "31",
+    "short": "31",
+    "name": "31st",
+    "type": "bus",
+    "color": "#99999C"
+   },
+   {
+    "id": "30",
+    "short": "30",
+    "name": "South Chicago",
+    "type": "bus",
+    "color": "#99999C"
+   },
+   {
+    "id": "34",
+    "short": "34",
+    "name": "South Michigan",
+    "type": "bus",
+    "color": "#414145"
+   },
+   {
+    "id": "35",
+    "short": "35",
+    "name": "31st/35th",
+    "type": "bus",
+    "color": "#414145"
+   },
+   {
+    "id": "36",
+    "short": "36",
+    "name": "Broadway",
+    "type": "bus",
+    "color": "#99999C"
+   },
+   {
+    "id": "37",
+    "short": "37",
+    "name": "Sedgwick",
+    "type": "bus",
+    "color": "#99999C"
+   },
+   {
+    "id": "39",
+    "short": "39",
+    "name": "Pershing",
+    "type": "bus",
+    "color": "#99999C"
+   },
+   {
+    "id": "43",
+    "short": "43",
+    "name": "43rd",
+    "type": "bus",
+    "color": "#99999C"
+   },
+   {
+    "id": "44",
+    "short": "44",
+    "name": "Wallace/Racine",
+    "type": "bus",
+    "color": "#99999C"
+   },
+   {
+    "id": "47",
+    "short": "47",
+    "name": "47th",
+    "type": "bus",
+    "color": "#414145"
+   },
+   {
+    "id": "48",
+    "short": "48",
+    "name": "South Damen",
+    "type": "bus",
+    "color": "#99999C"
+   },
+   {
+    "id": "49",
+    "short": "49",
+    "name": "Western",
+    "type": "bus",
+    "color": "#414145"
+   },
+   {
+    "id": "49B",
+    "short": "49B",
+    "name": "North Western",
+    "type": "bus",
+    "color": "#99999C"
+   },
+   {
+    "id": "X49",
+    "short": "X49",
+    "name": "Western Express",
+    "type": "bus",
+    "color": "#b71234"
+   },
+   {
+    "id": "50",
+    "short": "50",
+    "name": "Damen",
+    "type": "bus",
+    "color": "#99999C"
+   },
+   {
+    "id": "51",
+    "short": "51",
+    "name": "51st",
+    "type": "bus",
+    "color": "#99999C"
+   },
+   {
+    "id": "52",
+    "short": "52",
+    "name": "Kedzie",
+    "type": "bus",
+    "color": "#99999C"
+   },
+   {
+    "id": "52A",
+    "short": "52A",
+    "name": "South Kedzie",
+    "type": "bus",
+    "color": "#99999C"
+   },
+   {
+    "id": "53",
+    "short": "53",
+    "name": "Pulaski",
+    "type": "bus",
+    "color": "#414145"
+   },
+   {
+    "id": "53A",
+    "short": "53A",
+    "name": "South Pulaski",
+    "type": "bus",
+    "color": "#99999C"
+   },
+   {
+    "id": "54",
+    "short": "54",
+    "name": "Cicero",
+    "type": "bus",
+    "color": "#414145"
+   },
+   {
+    "id": "54A",
+    "short": "54A",
+    "name": "North Cicero/Skokie Blvd.",
+    "type": "bus",
+    "color": "#99999C"
+   },
+   {
+    "id": "54B",
+    "short": "54B",
+    "name": "South Cicero",
+    "type": "bus",
+    "color": "#99999C"
+   },
+   {
+    "id": "55",
+    "short": "55",
+    "name": "Garfield",
+    "type": "bus",
+    "color": "#414145"
+   },
+   {
+    "id": "55A",
+    "short": "55A",
+    "name": "55th/Austin",
+    "type": "bus",
+    "color": "#99999C"
+   },
+   {
+    "id": "55N",
+    "short": "55N",
+    "name": "55th/Narragansett",
+    "type": "bus",
+    "color": "#99999C"
+   },
+   {
+    "id": "56",
+    "short": "56",
+    "name": "Milwaukee",
+    "type": "bus",
+    "color": "#99999C"
+   },
+   {
+    "id": "57",
+    "short": "57",
+    "name": "Laramie",
+    "type": "bus",
+    "color": "#99999C"
+   },
+   {
+    "id": "59",
+    "short": "59",
+    "name": "59th/61st",
+    "type": "bus",
+    "color": "#99999C"
+   },
+   {
+    "id": "60",
+    "short": "60",
+    "name": "Blue Island/26th",
+    "type": "bus",
+    "color": "#414145"
+   },
+   {
+    "id": "62",
+    "short": "62",
+    "name": "Archer",
+    "type": "bus",
+    "color": "#99999C"
+   },
+   {
+    "id": "62H",
+    "short": "62H",
+    "name": "Archer/Harlem",
+    "type": "bus",
+    "color": "#99999C"
+   },
+   {
+    "id": "63",
+    "short": "63",
+    "name": "63rd",
+    "type": "bus",
+    "color": "#414145"
+   },
+   {
+    "id": "63W",
+    "short": "63W",
+    "name": "West 63rd",
+    "type": "bus",
+    "color": "#99999C"
+   },
+   {
+    "id": "65",
+    "short": "65",
+    "name": "Grand",
+    "type": "bus",
+    "color": "#99999C"
+   },
+   {
+    "id": "66",
+    "short": "66",
+    "name": "Chicago",
+    "type": "bus",
+    "color": "#414145"
+   },
+   {
+    "id": "67",
+    "short": "67",
+    "name": "67th/69th/71st",
+    "type": "bus",
+    "color": "#99999C"
+   },
+   {
+    "id": "68",
+    "short": "68",
+    "name": "Northwest Highway",
+    "type": "bus",
+    "color": "#99999C"
+   },
+   {
+    "id": "70",
+    "short": "70",
+    "name": "Division",
+    "type": "bus",
+    "color": "#99999C"
+   },
+   {
+    "id": "71",
+    "short": "71",
+    "name": "71st/South Shore",
+    "type": "bus",
+    "color": "#99999C"
+   },
+   {
+    "id": "72",
+    "short": "72",
+    "name": "North",
+    "type": "bus",
+    "color": "#414145"
+   },
+   {
+    "id": "73",
+    "short": "73",
+    "name": "Armitage",
+    "type": "bus",
+    "color": "#99999C"
+   },
+   {
+    "id": "74",
+    "short": "74",
+    "name": "Fullerton",
+    "type": "bus",
+    "color": "#414145"
+   },
+   {
+    "id": "75",
+    "short": "75",
+    "name": "74th/75th",
+    "type": "bus",
+    "color": "#99999C"
+   },
+   {
+    "id": "76",
+    "short": "76",
+    "name": "Diversey",
+    "type": "bus",
+    "color": "#99999C"
+   },
+   {
+    "id": "77",
+    "short": "77",
+    "name": "Belmont",
+    "type": "bus",
+    "color": "#414145"
+   },
+   {
+    "id": "78",
+    "short": "78",
+    "name": "Montrose",
+    "type": "bus",
+    "color": "#99999C"
+   },
+   {
+    "id": "79",
+    "short": "79",
+    "name": "79th",
+    "type": "bus",
+    "color": "#414145"
+   },
+   {
+    "id": "80",
+    "short": "80",
+    "name": "Irving Park",
+    "type": "bus",
+    "color": "#99999C"
+   },
+   {
+    "id": "81",
+    "short": "81",
+    "name": "Lawrence",
+    "type": "bus",
+    "color": "#414145"
+   },
+   {
+    "id": "81W",
+    "short": "81W",
+    "name": "West Lawrence",
+    "type": "bus",
+    "color": "#99999C"
+   },
+   {
+    "id": "82",
+    "short": "82",
+    "name": "Kimball/Homan",
+    "type": "bus",
+    "color": "#414145"
+   },
+   {
+    "id": "84",
+    "short": "84",
+    "name": "Peterson",
+    "type": "bus",
+    "color": "#99999C"
+   },
+   {
+    "id": "95",
+    "short": "95",
+    "name": "95th",
+    "type": "bus",
+    "color": "#414145"
+   },
+   {
+    "id": "85",
+    "short": "85",
+    "name": "Central",
+    "type": "bus",
+    "color": "#414145"
+   },
+   {
+    "id": "85A",
+    "short": "85A",
+    "name": "North Central",
+    "type": "bus",
+    "color": "#99999C"
+   },
+   {
+    "id": "86",
+    "short": "86",
+    "name": "Narragansett/Ridgeland",
+    "type": "bus",
+    "color": "#99999C"
+   },
+   {
+    "id": "87",
+    "short": "87",
+    "name": "87th",
+    "type": "bus",
+    "color": "#99999C"
+   },
+   {
+    "id": "88",
+    "short": "88",
+    "name": "Higgins",
+    "type": "bus",
+    "color": "#99999C"
+   },
+   {
+    "id": "90",
+    "short": "90",
+    "name": "Harlem",
+    "type": "bus",
+    "color": "#99999C"
+   },
+   {
+    "id": "91",
+    "short": "91",
+    "name": "Austin",
+    "type": "bus",
+    "color": "#99999C"
+   },
+   {
+    "id": "92",
+    "short": "92",
+    "name": "Foster",
+    "type": "bus",
+    "color": "#99999C"
+   },
+   {
+    "id": "93",
+    "short": "93",
+    "name": "California/Dodge",
+    "type": "bus",
+    "color": "#99999C"
+   },
+   {
+    "id": "94",
+    "short": "94",
+    "name": "California",
+    "type": "bus",
+    "color": "#99999C"
+   },
+   {
+    "id": "96",
+    "short": "96",
+    "name": "Lunt",
+    "type": "bus",
+    "color": "#99999C"
+   },
+   {
+    "id": "97",
+    "short": "97",
+    "name": "Skokie",
+    "type": "bus",
+    "color": "#99999C"
+   },
+   {
+    "id": "100",
+    "short": "100",
+    "name": "Jeffery Manor Express",
+    "type": "bus",
+    "color": "#b71234"
+   },
+   {
+    "id": "103",
+    "short": "103",
+    "name": "West 103rd",
+    "type": "bus",
+    "color": "#99999C"
+   },
+   {
+    "id": "106",
+    "short": "106",
+    "name": "East 103rd",
+    "type": "bus",
+    "color": "#99999C"
+   },
+   {
+    "id": "108",
+    "short": "108",
+    "name": "Halsted/95th",
+    "type": "bus",
+    "color": "#99999C"
+   },
+   {
+    "id": "111",
+    "short": "111",
+    "name": "111th/King Drive",
+    "type": "bus",
+    "color": "#99999C"
+   },
+   {
+    "id": "111A",
+    "short": "111A",
+    "name": "Pullman Shuttle",
+    "type": "bus",
+    "color": "#99999C"
+   },
+   {
+    "id": "112",
+    "short": "112",
+    "name": "Vincennes/111th",
+    "type": "bus",
+    "color": "#99999C"
+   },
+   {
+    "id": "115",
+    "short": "115",
+    "name": "Pullman/115th",
+    "type": "bus",
+    "color": "#99999C"
+   },
+   {
+    "id": "119",
+    "short": "119",
+    "name": "Michigan/119th",
+    "type": "bus",
+    "color": "#99999C"
+   },
+   {
+    "id": "120",
+    "short": "120",
+    "name": "Ogilvie/Streeterville Express",
+    "type": "bus",
+    "color": "#b71234"
+   },
+   {
+    "id": "121",
+    "short": "121",
+    "name": "Union/Streeterville Express",
+    "type": "bus",
+    "color": "#b71234"
+   },
+   {
+    "id": "124",
+    "short": "124",
+    "name": "Navy Pier",
+    "type": "bus",
+    "color": "#99999C"
+   },
+   {
+    "id": "125",
+    "short": "125",
+    "name": "Water Tower Express",
+    "type": "bus",
+    "color": "#b71234"
+   },
+   {
+    "id": "126",
+    "short": "126",
+    "name": "Jackson",
+    "type": "bus",
+    "color": "#99999C"
+   },
+   {
+    "id": "134",
+    "short": "134",
+    "name": "Stockton/LaSalle Express",
+    "type": "bus",
+    "color": "#b71234"
+   },
+   {
+    "id": "135",
+    "short": "135",
+    "name": "Clarendon/LaSalle Express",
+    "type": "bus",
+    "color": "#b71234"
+   },
+   {
+    "id": "136",
+    "short": "136",
+    "name": "Sheridan/LaSalle Express",
+    "type": "bus",
+    "color": "#b71234"
+   },
+   {
+    "id": "143",
+    "short": "143",
+    "name": "Stockton/Michigan Express",
+    "type": "bus",
+    "color": "#b71234"
+   },
+   {
+    "id": "146",
+    "short": "146",
+    "name": "Inner Lake Shore/Michigan Express",
+    "type": "bus",
+    "color": "#b71234"
+   },
+   {
+    "id": "147",
+    "short": "147",
+    "name": "Outer DuSable Lake Shore Express",
+    "type": "bus",
+    "color": "#b71234"
+   },
+   {
+    "id": "148",
+    "short": "148",
+    "name": "Clarendon/Michigan Express",
+    "type": "bus",
+    "color": "#b71234"
+   },
+   {
+    "id": "151",
+    "short": "151",
+    "name": "Sheridan",
+    "type": "bus",
+    "color": "#99999C"
+   },
+   {
+    "id": "152",
+    "short": "152",
+    "name": "Addison",
+    "type": "bus",
+    "color": "#99999C"
+   },
+   {
+    "id": "155",
+    "short": "155",
+    "name": "Devon",
+    "type": "bus",
+    "color": "#99999C"
+   },
+   {
+    "id": "156",
+    "short": "156",
+    "name": "LaSalle",
+    "type": "bus",
+    "color": "#99999C"
+   },
+   {
+    "id": "157",
+    "short": "157",
+    "name": "Streeterville/Taylor",
+    "type": "bus",
+    "color": "#99999C"
+   },
+   {
+    "id": "165",
+    "short": "165",
+    "name": "West 65th",
+    "type": "bus",
+    "color": "#99999C"
+   },
+   {
+    "id": "169",
+    "short": "169",
+    "name": "69th/UPS Express",
+    "type": "bus",
+    "color": "#99999C"
+   },
+   {
+    "id": "171",
+    "short": "171",
+    "name": "U. of Chicago/Hyde Park",
+    "type": "bus",
+    "color": "#99999C"
+   },
+   {
+    "id": "172",
+    "short": "172",
+    "name": "U. of Chicago/Kenwood",
+    "type": "bus",
+    "color": "#99999C"
+   },
+   {
+    "id": "192",
+    "short": "192",
+    "name": "University of Chicago Hospitals Express",
+    "type": "bus",
+    "color": "#99999C"
+   },
+   {
+    "id": "201",
+    "short": "201",
+    "name": "Central/Ridge",
+    "type": "bus",
+    "color": "#99999C"
+   },
+   {
+    "id": "206",
+    "short": "206",
+    "name": "Evanston Circulator",
+    "type": "bus",
+    "color": "#99999C"
+   },
+   {
+    "id": "Red",
+    "short": "",
+    "name": "Red Line",
+    "type": "rail",
+    "color": "#C60C30"
+   },
+   {
+    "id": "P",
+    "short": "",
+    "name": "Purple Line",
+    "type": "rail",
+    "color": "#522398"
+   },
+   {
+    "id": "Y",
+    "short": "",
+    "name": "Yellow Line",
+    "type": "rail",
+    "color": "#F9E300"
+   },
+   {
+    "id": "Blue",
+    "short": "",
+    "name": "Blue Line",
+    "type": "rail",
+    "color": "#00A1DE"
+   },
+   {
+    "id": "Pink",
+    "short": "",
+    "name": "Pink Line",
+    "type": "rail",
+    "color": "#E27EA6"
+   },
+   {
+    "id": "G",
+    "short": "",
+    "name": "Green Line",
+    "type": "rail",
+    "color": "#009B3A"
+   },
+   {
+    "id": "Org",
+    "short": "",
+    "name": "Orange Line",
+    "type": "rail",
+    "color": "#F9461C"
+   },
+   {
+    "id": "Brn",
+    "short": "",
+    "name": "Brown Line",
+    "type": "rail",
+    "color": "#62361B"
+   }
+  ],
+  "sampleDate": "2026-09-16",
+  "storyNotes": [
+   "10,466 bus stops and 135 rail stations inside the Chicago bbox; 132 routes (8 'L' lines).",
+   "Busiest stops by weekday departures: 95th/Dan Ryan (1804); Jefferson Park Transit Center (1714); Clark/Lake (1104).",
+   "Stops/terminals with the most routes: 95th/Dan Ryan (13), Michigan & Washington (13), Washington & Clark/Dearborn (12); 'rail' mode marks any stop where an L line calls (bus bays at rail terminals are merged into the station).",
+   "11,539 weekday hops form a ready-made transit graph; median bus hop 43 s, median rail hop 120 s.",
+   "Sample service day is Wednesday 2026-09-16; the published feed only covers 2026-09-11 to 2026-11-30.",
+   "9,967 of 10,601 stops lie inside the city limits; the rest are inner suburbs within ~1 km of the boundary."
+  ]
+ }
+}

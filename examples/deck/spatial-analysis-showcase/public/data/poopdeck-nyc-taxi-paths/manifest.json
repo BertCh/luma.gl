@@ -1,0 +1,86 @@
+{
+  "id": "poopdeck-nyc-taxi-paths",
+  "version": 1,
+  "kind": "trajectories",
+  "count": 9000,
+  "bbox": [
+    -74.01800537109375,
+    40.670814514160156,
+    -73.88738250732422,
+    40.82911682128906
+  ],
+  "crs": "EPSG:4326",
+  "columns": {
+    "pathOffsets": {
+      "file": "pathOffsets.bin",
+      "dtype": "uint32",
+      "length": 9001
+    },
+    "vertices": {
+      "file": "vertices.bin",
+      "dtype": "float32",
+      "components": 2,
+      "length": 411178
+    },
+    "startTime": {
+      "file": "startTime.bin",
+      "dtype": "uint32",
+      "unit": "seconds since 2015-01-02T07:59:00.000Z",
+      "length": 9000
+    },
+    "endTime": {
+      "file": "endTime.bin",
+      "dtype": "uint32",
+      "unit": "seconds since 2015-01-02T07:59:00.000Z",
+      "length": 9000
+    },
+    "timestamp": {
+      "file": "time.bin",
+      "dtype": "uint32",
+      "unit": "seconds since 2015-01-02T07:59:00.000Z",
+      "length": 411178
+    },
+    "fare_amount": {
+      "file": "fare_amount.bin",
+      "dtype": "float32",
+      "length": 9000
+    },
+    "trip_distance": {
+      "file": "trip_distance.bin",
+      "dtype": "float32",
+      "length": 9000
+    }
+  },
+  "properties": {
+    "timeOriginMs": 1420185540000,
+    "timeRangeMs": [
+      1420185540000,
+      1420187460000
+    ],
+    "vertexCount": 411178,
+    "source": {
+      "manifestUrl": "https://tiles.poopdeck.gl/data/nyc-taxi-paths/manifest.json",
+      "name": "nyc-taxi-paths",
+      "description": "",
+      "attribution": "",
+      "layer": "default",
+      "exportedFrom": "stt-export.mjs",
+      "zoom": 10,
+      "window": {
+        "bbox": [
+          -74.03,
+          40.68,
+          -73.9,
+          40.82
+        ],
+        "time": [
+          1420185600000,
+          1420187400000
+        ]
+      },
+      "featuresInWindow": 17797,
+      "sampled": true
+    },
+    "droppedAttributes": []
+  }
+}

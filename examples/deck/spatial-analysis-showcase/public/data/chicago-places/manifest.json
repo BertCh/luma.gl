@@ -1,0 +1,68 @@
+{
+ "id": "chicago-places",
+ "version": 1,
+ "kind": "points",
+ "count": 105808,
+ "bbox": [
+  -87.9397,
+  41.64461,
+  -87.52477,
+  42.0228
+ ],
+ "crs": "EPSG:4326",
+ "columns": {
+  "position": {
+   "file": "position.bin",
+   "dtype": "float32",
+   "components": 2,
+   "length": 105808
+  },
+  "category": {
+   "file": "category.bin",
+   "dtype": "uint8",
+   "components": 1,
+   "length": 105808,
+   "categories": [
+    "restaurant_cafe",
+    "bar_nightlife",
+    "grocery",
+    "health",
+    "school_education",
+    "park_recreation",
+    "transit",
+    "retail",
+    "finance_business",
+    "personal_services",
+    "arts_culture",
+    "worship_community",
+    "lodging",
+    "other"
+   ]
+  },
+  "confidence": {
+   "file": "confidence.bin",
+   "dtype": "uint8",
+   "components": 1,
+   "length": 105808,
+   "note": "percent"
+  },
+  "tract": {
+   "file": "tract.bin",
+   "dtype": "uint16",
+   "components": 1,
+   "length": 105808,
+   "note": "index into chicago-tracts features; 65535 = none"
+  }
+ },
+ "properties": {
+  "description": "Overture Maps Foundation places (release 2026-09-23.1) inside the City of Chicago, open, confidence >= 0.5, mapped to 14 broad categories from Overture taxonomy.",
+  "license": "Overture Places: CDLA-Permissive-2.0 (most sources), Apache-2.0 (Foursquare), CC0 (AllThePlaces) per docs.overturemaps.org/attribution/places",
+  "storyNotes": [
+   "105,808 open places; by category: finance_business 38,117, health 12,403, restaurant_cafe 11,585, retail 10,308, worship_community 7,027, personal_services 6,664, other 5,295, arts_culture 3,315.",
+   "1,255 grocery/convenience places vs 11,585 restaurants/cafes: food-access (food desert) stories by tract.",
+   "240 transit-tagged places (bus/train stations) are noisy relative to the CTA GTFS; treat as a proxy.",
+   "Places are denser downtown and along commercial corridors: strong spatial clustering for Ripley K / cross-K.",
+   "Overture merges several commercial sources, so POI counts follow business-data coverage, not ground truth: weak in some South/West side tracts."
+  ]
+ }
+}

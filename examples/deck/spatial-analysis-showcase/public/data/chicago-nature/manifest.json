@@ -1,0 +1,98 @@
+{
+ "id": "chicago-nature",
+ "version": 1,
+ "kind": "points",
+ "count": 43557,
+ "bbox": [
+  -87.91585,
+  41.64468,
+  -87.5249,
+  42.02289
+ ],
+ "crs": "EPSG:4326",
+ "columns": {
+  "position": {
+   "file": "position.bin",
+   "dtype": "float32",
+   "components": 2,
+   "length": 43557
+  },
+  "timestamp": {
+   "file": "time.bin",
+   "dtype": "uint32",
+   "components": 1,
+   "length": 43557,
+   "unit": "seconds since 2023-01-01T00:00:00 (Chicago local clock time, stored as if UTC)"
+  },
+  "category": {
+   "file": "category.bin",
+   "dtype": "uint8",
+   "components": 1,
+   "length": 43557,
+   "categories": [
+    "Plants",
+    "Birds",
+    "Insects",
+    "Fungi",
+    "Mammals",
+    "Spiders and kin",
+    "Amphibians and reptiles",
+    "Snails and mussels",
+    "Fish",
+    "Other life"
+   ],
+   "note": "iNaturalist iconic taxon, grouped"
+  },
+  "researchGrade": {
+   "file": "researchGrade.bin",
+   "dtype": "uint8",
+   "components": 1,
+   "length": 43557,
+   "note": "1 = community-confirmed identification (iNaturalist research grade)"
+  },
+  "introduced": {
+   "file": "introduced.bin",
+   "dtype": "uint8",
+   "components": 1,
+   "length": 43557,
+   "note": "1 = taxon is introduced (non-native) in Chicago according to iNaturalist establishment means"
+  },
+  "species": {
+   "file": "species.bin",
+   "dtype": "uint32",
+   "components": 1,
+   "length": 43557,
+   "note": "dense taxon index (distinct taxa observed), for richness counts"
+  },
+  "communityArea": {
+   "file": "communityArea.bin",
+   "dtype": "uint8",
+   "components": 1,
+   "length": 43557,
+   "note": "1-77, 0 = missing"
+  },
+  "tract": {
+   "file": "tract.bin",
+   "dtype": "uint16",
+   "components": 1,
+   "length": 43557,
+   "note": "index into chicago-tracts features (precomputed point-in-polygon join, validation column)"
+  }
+ },
+ "properties": {
+  "description": "iNaturalist observations of wild plants, animals and fungi inside the City of Chicago, calendar year 2023: openly licensed (CC0, CC BY, CC BY-NC), not captive or cultivated, not location-obscured, positional accuracy 250 m or better, with an observation time. Sorted by time.",
+  "source": "https://api.inaturalist.org/v1/observations?place_id=49906&d1=2023-01-01&d2=2023-12-31&licensed=true (queried 2026-10-06)",
+  "license": "Each observation keeps its own licence (CC0, CC BY 4.0 or CC BY-NC 4.0); attribute \"iNaturalist contributors\". Non-commercial use.",
+  "timeNote": "Timestamps are local wall-clock times; no timezone conversion.",
+  "filtering": "56,043 licensed observations fetched; 43,557 kept after the wild/precise/timed/inside-city filters.",
+  "storyNotes": [
+   "43,557 wild observations of 4,823 taxa in 2023; by group: Plants (15,258), Birds (11,198), Insects (10,353), Fungi (3,762), Mammals (1,089).",
+   "Seasonality: peak month 7 (6,554), quietest month 12 (551); hourly peak at 11:00. Busiest days 2023-06-21 (667) and 2023-04-29 (641); 2023-04-28..05-01 was the City Nature Challenge weekend; the median day has 84.",
+   "Research grade 63.0%; introduced (non-native) taxa 15.7% of observations.",
+   "Most observed: Red-winged Blackbird (436), American Robin (412), Mallard (401), Canada Goose (342), Feral Pigeon (333).",
+   "Busiest community areas: Lincoln Park (5,526), Uptown (4,887), Lincoln Square (4,142).",
+   "Densest ~500 m cell centred near 41.9625N, -87.6325E holds 3,455 observations.",
+   "Observations follow observers: parks, lakefront and nature areas dominate, so counts measure observer effort as much as biodiversity."
+  ]
+ }
+}

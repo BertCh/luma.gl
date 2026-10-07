@@ -1,0 +1,70 @@
+{
+ "id": "poopdeck-mrms-precip-tracks",
+ "version": 1,
+ "crs": "EPSG:4326",
+ "kind": "trajectories",
+ "count": 289,
+ "bbox": [
+  -104.0945,
+  24.0143,
+  -70.9678,
+  48.6489
+ ],
+ "columns": {
+  "pathOffsets": {
+   "file": "pathOffsets.bin",
+   "dtype": "uint32",
+   "length": 290
+  },
+  "vertices": {
+   "file": "vertices.bin",
+   "dtype": "float32",
+   "components": 2,
+   "length": 2029
+  },
+  "timestamp": {
+   "file": "time.bin",
+   "dtype": "uint32",
+   "length": 2029,
+   "unit": "seconds since 2024-05-21T12:00:00Z"
+  },
+  "reflectivity": {
+   "file": "reflectivity.bin",
+   "dtype": "float32",
+   "length": 2029,
+   "unit": "dBZ at the cell"
+  },
+  "startTime": {
+   "file": "startTime.bin",
+   "dtype": "uint32",
+   "length": 289,
+   "unit": "seconds since 2024-05-21T12:00:00Z"
+  },
+  "endTime": {
+   "file": "endTime.bin",
+   "dtype": "uint32",
+   "length": 289,
+   "unit": "seconds since 2024-05-21T12:00:00Z"
+  },
+  "peakDbz": {
+   "file": "peakDbz.bin",
+   "dtype": "float32",
+   "length": 289,
+   "unit": "dBZ"
+  }
+ },
+ "properties": {
+  "timeOriginMs": 1716292800000,
+  "timeRangeMs": [
+   1716292800000,
+   1716357600000
+  ],
+  "source": {
+   "manifestUrl": "https://tiles.poopdeck.gl/data/mrms-precip-tracks/manifest.json",
+   "name": "mrms-precip-tracks",
+   "exportedFrom": "poopdeck-severe-may2024/build.mjs"
+  },
+  "vertexCount": 2029,
+  "note": "Hourly pieces of the archive chained by matching end and start vertices; chains under 3 vertices or 15 minutes dropped."
+ }
+}

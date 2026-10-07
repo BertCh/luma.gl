@@ -1,0 +1,90 @@
+{
+ "id": "chicago-crashes",
+ "version": 1,
+ "kind": "points",
+ "count": 109711,
+ "bbox": [
+  -87.93399,
+  41.64467,
+  -87.52459,
+  42.02275
+ ],
+ "crs": "EPSG:4326",
+ "columns": {
+  "position": {
+   "file": "position.bin",
+   "dtype": "float32",
+   "components": 2,
+   "length": 109711
+  },
+  "timestamp": {
+   "file": "timestamp.bin",
+   "dtype": "uint32",
+   "components": 1,
+   "length": 109711,
+   "unit": "seconds since 2023-01-01T00:00:00 (Chicago local time as published; not UTC)"
+  },
+  "severity": {
+   "file": "severity.bin",
+   "dtype": "uint8",
+   "components": 1,
+   "length": 109711,
+   "categories": [
+    "no injury",
+    "reported, not evident",
+    "non-incapacitating",
+    "incapacitating",
+    "fatal"
+   ]
+  },
+  "injuries": {
+   "file": "injuries.bin",
+   "dtype": "uint8",
+   "components": 1,
+   "length": 109711,
+   "note": "total persons injured"
+  },
+  "fatalities": {
+   "file": "fatalities.bin",
+   "dtype": "uint8",
+   "components": 1,
+   "length": 109711
+  },
+  "edgeIndex": {
+   "file": "edgeIndex.bin",
+   "dtype": "uint32",
+   "components": 1,
+   "length": 109711,
+   "note": "index into chicago-roads edges (one representative direction of the street; use edgeReverse for the other); 4294967295 = no edge within 60 m"
+  },
+  "edgeOffset": {
+   "file": "edgeOffset.bin",
+   "dtype": "float32",
+   "components": 1,
+   "length": 109711,
+   "unit": "m",
+   "note": "distance along the edge from its source node (fraction of snapped polyline x edgeLength)"
+  },
+  "snapDistance": {
+   "file": "snapDistance.bin",
+   "dtype": "uint8",
+   "components": 1,
+   "length": 109711,
+   "unit": "m",
+   "note": "distance from crash point to edge, rounded, capped at 255"
+  }
+ },
+ "properties": {
+  "description": "City of Chicago traffic crashes in 2023 (CPD-reported, crash_date in 2023) with position, time, severity, and a precomputed snap to chicago-roads (edgeIndex + edgeOffset) for network K-function / linear referencing.",
+  "roadsDataset": "chicago-roads",
+  "snapMaxDistanceMeters": 60.0,
+  "licence": "City of Chicago Data Portal Terms of Use (open public data)",
+  "storyNotes": [
+   "109,711 crashes with coordinates in 2023 (1043 dropped for missing/invalid location); 23,280 people injured, 150 killed in 142 fatal crashes.",
+   "98.9% snap within 60 m of a drivable edge (median snap 11.0 m); the rest have no drivable edge nearby (e.g. lots, alleys, edges outside the strongly connected component) and carry edgeIndex 4294967295.",
+   "Busiest edge: 151 crashes on one block of LAKE SHORE DR SB. Rush hour: 15:00 is the peak hour; busiest weekday Friday.",
+   "Most common primary cause after 'unable to determine'/'not applicable': Failing To Yield Right-Of-Way (12,360).",
+   "Severity mix: 85% no injury; 2,018 incapacitating or fatal. Streets with most crashes: Western Ave (2,936), Pulaski Rd (2,924), Cicero Ave (2,601), Ashland Ave (2,359), Halsted St (2,093). Crashes are confined to the street graph, so a planar K-function over-states clustering that a network K corrects."
+  ]
+ }
+}

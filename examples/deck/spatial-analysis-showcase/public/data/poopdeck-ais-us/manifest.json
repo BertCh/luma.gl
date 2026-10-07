@@ -1,0 +1,118 @@
+{
+  "id": "poopdeck-ais-us",
+  "version": 1,
+  "kind": "trajectories",
+  "count": 15555,
+  "bbox": [
+    -127.32572174072266,
+    24.000219345092773,
+    -66.08399963378906,
+    49.494529724121094
+  ],
+  "crs": "EPSG:4326",
+  "columns": {
+    "pathOffsets": {
+      "file": "pathOffsets.bin",
+      "dtype": "uint32",
+      "length": 15556
+    },
+    "vertices": {
+      "file": "vertices.bin",
+      "dtype": "float32",
+      "components": 2,
+      "length": 432834
+    },
+    "startTime": {
+      "file": "startTime.bin",
+      "dtype": "uint32",
+      "unit": "seconds since 2023-01-09T00:00:00.000Z",
+      "length": 15555
+    },
+    "endTime": {
+      "file": "endTime.bin",
+      "dtype": "uint32",
+      "unit": "seconds since 2023-01-09T00:00:00.000Z",
+      "length": 15555
+    },
+    "timestamp": {
+      "file": "time.bin",
+      "dtype": "uint32",
+      "unit": "seconds since 2023-01-09T00:00:00.000Z",
+      "length": 432834
+    },
+    "speed": {
+      "file": "speed.bin",
+      "dtype": "uint8",
+      "note": "per-vertex, quantised",
+      "scale": 0.5,
+      "noData": 255,
+      "length": 432834
+    },
+    "length": {
+      "file": "length.bin",
+      "dtype": "float32",
+      "length": 15555
+    },
+    "width": {
+      "file": "width.bin",
+      "dtype": "float32",
+      "length": 15555
+    },
+    "mmsi": {
+      "file": "mmsi.bin",
+      "dtype": "uint32",
+      "length": 15555
+    },
+    "vesselIndex": {
+      "file": "vesselIndex.bin",
+      "dtype": "uint32",
+      "length": 15555
+    },
+    "vessel_type": {
+      "file": "vessel_type.bin",
+      "dtype": "uint8",
+      "categories": [
+        "towing",
+        "passenger",
+        "other",
+        "cargo",
+        "special",
+        "tanker",
+        "fishing"
+      ],
+      "length": 15555
+    }
+  },
+  "properties": {
+    "timeOriginMs": 1673222400000,
+    "timeRangeMs": [
+      1673222400000,
+      1673308799000
+    ],
+    "vertexCount": 432834,
+    "source": {
+      "manifestUrl": "https://tiles.poopdeck.gl/data/ais-all-us/manifest.json",
+      "name": "ais-all-us-new",
+      "description": "",
+      "attribution": "",
+      "layer": "default",
+      "exportedFrom": "stt-export.mjs",
+      "zoom": 0,
+      "window": {
+        "bbox": [
+          -130,
+          24,
+          -65,
+          49.5
+        ],
+        "time": [
+          1673222400000,
+          1673308799000
+        ]
+      },
+      "featuresInWindow": 15555,
+      "sampled": false
+    },
+    "droppedAttributes": []
+  }
+}

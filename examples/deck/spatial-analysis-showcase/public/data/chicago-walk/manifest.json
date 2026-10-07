@@ -1,0 +1,92 @@
+{
+ "id": "chicago-walk",
+ "version": 1,
+ "kind": "network",
+ "count": 65682,
+ "nodeCount": 25535,
+ "bbox": [
+  -87.6669,
+  41.85619,
+  -87.59963,
+  41.90362
+ ],
+ "crs": "EPSG:4326",
+ "columns": {
+  "nodes": {
+   "file": "nodes.bin",
+   "dtype": "float32",
+   "components": 2,
+   "length": 25535
+  },
+  "edgeSource": {
+   "file": "edgeSource.bin",
+   "dtype": "uint32",
+   "components": 1,
+   "length": 65682,
+   "note": "directed; every walkway appears in both directions; sorted by source"
+  },
+  "edgeTarget": {
+   "file": "edgeTarget.bin",
+   "dtype": "uint32",
+   "components": 1,
+   "length": 65682
+  },
+  "edgeLength": {
+   "file": "edgeLength.bin",
+   "dtype": "float32",
+   "components": 1,
+   "length": 65682,
+   "unit": "m"
+  },
+  "edgeClass": {
+   "file": "edgeClass.bin",
+   "dtype": "uint8",
+   "components": 1,
+   "length": 65682,
+   "categories": [
+    "sidewalk",
+    "crossing",
+    "path/pedestrian",
+    "street",
+    "steps"
+   ]
+  },
+  "edgeTravelTime": {
+   "file": "edgeTravelTime.bin",
+   "dtype": "float32",
+   "components": 1,
+   "length": 65682,
+   "unit": "s",
+   "note": "length / 4.8 km/h; crossings carry no signal delay"
+  },
+  "nodeEdgeOffsets": {
+   "file": "nodeEdgeOffsets.bin",
+   "dtype": "uint32",
+   "components": 1,
+   "length": 25536
+  },
+  "edgePathOffsets": {
+   "file": "edgePathOffsets.bin",
+   "dtype": "uint32",
+   "components": 1,
+   "length": 65683
+  },
+  "edgeVertices": {
+   "file": "edgeVertices.bin",
+   "dtype": "float32",
+   "components": 2,
+   "length": 144532
+  }
+ },
+ "properties": {
+  "description": "OpenStreetMap pedestrian network (sidewalks, crossings, paths, walkable streets) of the Loop and neighbouring areas, simplified, largest connected component, both directions.",
+  "licence": "ODbL 1.0",
+  "attribution": "\u00a9 OpenStreetMap contributors",
+  "storyNotes": [
+   "25,535 nodes and 65,682 directed edges (32,841 walkable links) in the Loop, Near North, Near West and Near South sides.",
+   "Walkway km by class (one direction): sidewalk 448, crossing 53, path/pedestrian 174, street 186, steps 7.",
+   "Sidewalks and crossings are mapped as separate ways, so walk isochrones can be compared with street-centreline isochrones from chicago-roads.",
+   "Median link 12 m; walking speed fixed at 4.8 km/h."
+  ]
+ }
+}

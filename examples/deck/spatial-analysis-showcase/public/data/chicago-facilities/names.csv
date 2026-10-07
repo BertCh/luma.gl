@@ -1,0 +1,877 @@
+type,name
+hospital,Shriners Hospitals for Children Chicago
+hospital,"Nasilowski, Pawel, Md - Medical Center"
+hospital,Central and Addison Medical Center
+hospital,Beverly Medical Center
+hospital,Roseland Community Hospital
+hospital,Family Medical Center
+hospital,Loretto Hospital
+hospital,RML Specialty Hospital - Chicago
+hospital,Mt Sinai Hospital
+hospital,Harrison Medical Center
+hospital,Saint Anthony Hospital
+hospital,Saint Anthony Hospital Center
+hospital,Holy Cross Hospital
+hospital,Children's Medical Center 1900 W. 47th St.
+hospital,U Of I Hospital
+hospital,"Uic Medical Center1801 W Taylor,chicago"
+hospital,Rush University Medical Center GI
+hospital,RUSH Specialty Hospital - Critical Illness Recovery
+hospital,Uic Hospital
+hospital,Rush Medical Center
+hospital,University of Illinois Hospital
+hospital,St. Marys Hospital
+hospital,St Bernard Hospital
+hospital,Roseland Community Hospital
+hospital,Body And Mind Medical Center
+hospital,St Mary & Elizabeth Medical Center
+hospital,Northwestern Hospital Downtown
+hospital,Kindred Hospital Chicago North
+hospital,Ravenswood Hospital Medical Center
+hospital,North Shore Evanston Hospital
+hospital,Thorek Memorial Hospital
+hospital,Weiss Memorial Hospital
+hospital,Ann & Robert H. Lurie Children's Hospital Research Center
+hospital,St. Joseph Hospital
+hospital,University of Chicago Hospital-Mitchell
+hospital,Presence Resurrection Medical Center
+hospital,Swedish Covenant Hospital Foster Medical Pavillion
+hospital,Pak American Medical Center
+hospital,Methodist Hospital of Chicago
+hospital,Thorek Hospital & Medical Center
+hospital,Bernard Mitchell Hospital
+hospital,Jesse Brown V.A Medical Center
+hospital,University of Chicago Comer Children's Hospital
+hospital,North Western Hospital
+hospital,Jackson Park Hospital
+hospital,Advocate Trinity Hospital
+hospital,South Shore Hospital
+hospital,La Rabida Children's Hospital
+hospital,Northwestern Memorial Hospital Arkes Pavilion
+hospital,Insight Hospital & Medical Center Chicago
+hospital,University Of Chicago Comer Children's Hospital
+hospital,Foresight Hospital And Health Systems
+hospital,Northwestern Memorial Hospital Outpatient MRI
+library,Chicago Public Library - Albany Park
+library,Chicago Public Library - Altgeld
+library,Chicago Public Library - Archer Heights
+library,Chicago Public Library - Austin
+library,Chicago Public Library - Austin-Irving
+library,Chicago Public Library - Avalon
+library,Chicago Public Library - Back of the Yards
+library,Chicago Public Library - Beverly
+library,Chicago Public Library - Bezazian
+library,Chicago Public Library - Blackstone
+library,Chicago Public Library - Brainerd
+library,Chicago Public Library - Brighton Park
+library,Chicago Public Library - Bucktown-Wicker Park
+library,Chicago Public Library - Budlong Woods
+library,Chicago Public Library - Canaryville
+library,Chicago Public Library - Chicago Bee
+library,Chicago Public Library - Chicago Lawn
+library,Chicago Public Library - Chinatown
+library,Chicago Public Library - Clearing
+library,Chicago Public Library - Coleman
+library,"Chicago Public Library - Daley, Richard J."
+library,"Chicago Public Library - Daley, Richard M."
+library,Chicago Public Library - Douglass
+library,Chicago Public Library - Dunning
+library,Chicago Public Library - Edgebrook
+library,Chicago Public Library - Edgewater
+library,Chicago Public Library - Gage Park
+library,Chicago Public Library - Galewood-Mont Clare
+library,Chicago Public Library - Garfield Ridge
+library,Chicago Public Library - Greater Grand Crossing
+library,Chicago Public Library - Hall
+library,Chicago Public Library - Harold Washtington Library Center
+library,Chicago Public Library - Hegewisch
+library,Chicago Public Library - Humboldt Park
+library,Chicago Public Library - Independence
+library,Chicago Public Library - Jefferson Park
+library,Chicago Public Library - Jeffery Manor
+library,Chicago Public Library - Kelly
+library,Chicago Public Library - King
+library,Chicago Public Library - Legler Regional
+library,Chicago Public Library - Lincoln Belmont
+library,Chicago Public Library - Lincoln Park
+library,Chicago Public Library - Little Italy
+library,Chicago Public Library - Little Village
+library,Chicago Public Library - Logan Square
+library,Chicago Public Library - Lozano
+library,Chicago Public Library - Manning
+library,Chicago Public Library - Mayfair
+library,Chicago Public Library - McKinley Park
+library,Chicago Public Library - Merlo
+library,Chicago Public Library - Mount Greenwood
+library,Chicago Public Library - Near North
+library,Chicago Public Library - North Austin
+library,Chicago Public Library - North Pulaski
+library,Chicago Public Library - Northtown
+library,Chicago Public Library - Obama Presidential Center Library
+library,Chicago Public Library - Oriole Park
+library,Chicago Public Library - Portage-Cragin
+library,Chicago Public Library - Pullman
+library,Chicago Public Library - Roden
+library,Chicago Public Library - Rogers Park
+library,Chicago Public Library - Scottsdale
+library,Chicago Public Library - Sherman Park
+library,Chicago Public Library - South Chicago
+library,Chicago Public Library - South Shore
+library,Chicago Public Library - Sulzer Regional Library
+library,Chicago Public Library - Thurgood Marshall
+library,Chicago Public Library - Toman
+library,Chicago Public Library - Uptown
+library,Chicago Public Library - Vodak-East Side
+library,Chicago Public Library - Walker
+library,Chicago Public Library - Water Works
+library,Chicago Public Library - West Belmont
+library,Chicago Public Library - West Chicago Avenue
+library,Chicago Public Library - West Englewood
+library,Chicago Public Library - West Lawn
+library,Chicago Public Library - West Loop
+library,Chicago Public Library - West Pullman
+library,Chicago Public Library - West Town
+library,"Chicago Public Library - Whitney M. Young, Jr."
+library,Chicago Public Library - Woodson Regional Library
+library,Chicago Public Library - Wrightwood-Ashburn
+cps_school,NOBLE - COMER (HS)
+cps_school,NOBLE - BAKER HS (HS)
+cps_school,CHICAGO VOCATIONAL HS (HS)
+cps_school,DUNBAR HS (HS)
+cps_school,SIMEON HS (HS)
+cps_school,BOGAN HS (HS)
+cps_school,FENGER HS (HS)
+cps_school,HARLAN HS (HS)
+cps_school,HIRSCH HS (HS)
+cps_school,HYDE PARK HS (HS)
+cps_school,MORGAN PARK HS (HS)
+cps_school,PHILLIPS HS (HS)
+cps_school,DAWES (ES)
+cps_school,DENEEN (ES)
+cps_school,CHICAGO AGRICULTURE HS (HS)
+cps_school,CHICAGO MILITARY HS (HS)
+cps_school,JULIAN HS (HS)
+cps_school,AVALON PARK (ES)
+cps_school,BARNARD (ES)
+cps_school,JOPLIN (ES)
+cps_school,HAMPTON (ES)
+cps_school,HALEY (ES)
+cps_school,BROWNELL (ES)
+cps_school,BOUCHET (ES)
+cps_school,BURNHAM (ES)
+cps_school,BURNSIDE (ES)
+cps_school,DAISY BATES (ES)
+cps_school,CARNEGIE (ES)
+cps_school,CARROLL (ES)
+cps_school,CLISSOLD (ES)
+cps_school,COLES (ES)
+cps_school,COOK (ES)
+cps_school,SMITH (ES)
+cps_school,DIXON (ES)
+cps_school,DOOLITTLE (ES)
+cps_school,TURNER-DREW (ES)
+cps_school,METCALFE (ES)
+cps_school,ESMOND (ES)
+cps_school,FERNWOOD (ES)
+cps_school,FISKE (ES)
+cps_school,FORT DEARBORN (ES)
+cps_school,FOSTER PARK (ES)
+cps_school,FARMER (ES)
+cps_school,GILLESPIE (ES)
+cps_school,OWENS (ES)
+cps_school,GRESHAM (ES)
+cps_school,WOODLAWN (ES)
+cps_school,HOYNE (ES)
+cps_school,CUFFE (ES)
+cps_school,KERSHAW (ES)
+cps_school,OWEN (ES)
+cps_school,WELLS ES (ES)
+cps_school,PARKER (ES)
+cps_school,PARK MANOR (ES)
+cps_school,HARVARD (ES)
+cps_school,KIPLING (ES)
+cps_school,KOZMINSKI (ES)
+cps_school,GREEN (ES)
+cps_school,MADISON (ES)
+cps_school,MANN (ES)
+cps_school,TILL (ES)
+cps_school,MCDADE (ES)
+cps_school,MOUNT VERNON (ES)
+cps_school,MURRAY (ES)
+cps_school,BROWN R (ES)
+cps_school,NEIL (ES)
+cps_school,OGLESBY (ES)
+cps_school,WASHINGTON H ES (ES)
+cps_school,PERSHING (ES)
+cps_school,GARVEY (ES)
+cps_school,PIRIE (ES)
+cps_school,RAY (ES)
+cps_school,REAVIS (ES)
+cps_school,REVERE (ES)
+cps_school,RUGGLES (ES)
+cps_school,RYDER (ES)
+cps_school,SHOOP (ES)
+cps_school,SCHMID (ES)
+cps_school,DUNNE (ES)
+cps_school,COLEMON (ES)
+cps_school,VANDERPOEL (ES)
+cps_school,LAVIZZO (ES)
+cps_school,WADSWORTH (ES)
+cps_school,WARREN (ES)
+cps_school,WHISTLER (ES)
+cps_school,ROBINSON (ES)
+cps_school,DULLES (ES)
+cps_school,ASHE (ES)
+cps_school,TANNER (ES)
+cps_school,ASHBURN (ES)
+cps_school,MAYS (ES)
+cps_school,HIGGINS (ES)
+cps_school,LENART (ES)
+cps_school,KING ES (ES)
+cps_school,WESTCOTT (ES)
+cps_school,MCDOWELL (ES)
+cps_school,WHITE (ES)
+cps_school,EARHART (ES)
+cps_school,BOWEN HS (HS)
+cps_school,WOODSON (ES)
+cps_school,BLACK (ES)
+cps_school,EVERS (ES)
+cps_school,WACKER (ES)
+cps_school,HUGHES L (ES)
+cps_school,JACKSON M (ES)
+cps_school,SOUTH SHORE ES (ES)
+cps_school,SOUTH SHORE INTL HS (HS)
+cps_school,GOODE HS (HS)
+cps_school,DYETT ARTS HS (HS)
+cps_school,ENGLEWOOD STEM HS (HS)
+cps_school,URBAN PREP - BRONZEVILLE HS (HS)
+cps_school,BARTON (ES)
+cps_school,U OF C - NKO (ES)
+cps_school,LEARN - SOUTH CHICAGO (ES)
+cps_school,NOBLE - BUTLER HS (HS)
+cps_school,BROOKS HS (HS)
+cps_school,WASHINGTON HS (HS)
+cps_school,KENWOOD HS (HS)
+cps_school,CLAY (ES)
+cps_school,KING HS (HS)
+cps_school,CARVER MILITARY HS (HS)
+cps_school,CORLISS HS (HS)
+cps_school,ADDAMS (ES)
+cps_school,BENNETT (ES)
+cps_school,BRADWELL (ES)
+cps_school,BRIGHT (ES)
+cps_school,CARVER G (ES)
+cps_school,ALDRIDGE (ES)
+cps_school,CURTIS (ES)
+cps_school,GALLISTEL (ES)
+cps_school,GRISSOM (ES)
+cps_school,ARIEL (ES)
+cps_school,CULLEN (ES)
+cps_school,NINOS HEROES (ES)
+cps_school,HARTE (ES)
+cps_school,MARSH (ES)
+cps_school,OKEEFFE (ES)
+cps_school,PARKSIDE (ES)
+cps_school,POE (ES)
+cps_school,PULLMAN (ES)
+cps_school,MIRELES (ES)
+cps_school,SHOESMITH (ES)
+cps_school,NEW SULLIVAN (ES)
+cps_school,TAYLOR (ES)
+cps_school,THORP J (ES)
+cps_school,WASHINGTON G ES (ES)
+cps_school,POWELL (ES)
+cps_school,DUBOIS (ES)
+cps_school,SADLOWSKI (ES)
+cps_school,ASPIRA - HAUGAN (ES)
+cps_school,PROSSER HS (HS)
+cps_school,NORTH-GRAND HS (HS)
+cps_school,FOREMAN HS (HS)
+cps_school,KELVYN PARK HS (HS)
+cps_school,LANE TECH HS (HS)
+cps_school,ROOSEVELT HS (HS)
+cps_school,STEINMETZ HS (HS)
+cps_school,VON STEUBEN HS (HS)
+cps_school,HENRY (ES)
+cps_school,HIBBARD (ES)
+cps_school,DARWIN (ES)
+cps_school,CHASE (ES)
+cps_school,CHOPIN (ES)
+cps_school,CLEVELAND (ES)
+cps_school,MARINE LEADERSHIP AT AMES HS (HS)
+cps_school,BARRY (ES)
+cps_school,BATEMAN (ES)
+cps_school,EDISON (ES)
+cps_school,BRENTANO (ES)
+cps_school,BRIDGE (ES)
+cps_school,CAMERON (ES)
+cps_school,CANTY (ES)
+cps_school,DEVER (ES)
+cps_school,FALCONER (ES)
+cps_school,BELMONT-CRAGIN (ES)
+cps_school,FUNSTON (ES)
+cps_school,GOETHE (ES)
+cps_school,GRAY (ES)
+cps_school,CASALS (ES)
+cps_school,PICCOLO (ES)
+cps_school,MCAULIFFE (ES)
+cps_school,HAUGAN (ES)
+cps_school,VON LINNE (ES)
+cps_school,LLOYD (ES)
+cps_school,LOCKE J (ES)
+cps_school,LOWELL (ES)
+cps_school,LYON (ES)
+cps_school,NORTHWEST (ES)
+cps_school,HANSON PARK (ES)
+cps_school,LOGAN SQUARE (ES)
+cps_school,MOOS (ES)
+cps_school,MOZART (ES)
+cps_school,MURPHY (ES)
+cps_school,NIXON (ES)
+cps_school,NOBEL (ES)
+cps_school,WEST PARK (ES)
+cps_school,PORTAGE PARK (ES)
+cps_school,REILLY (ES)
+cps_school,REINBERG (ES)
+cps_school,SCAMMON (ES)
+cps_school,SCHUBERT (ES)
+cps_school,SMYSER (ES)
+cps_school,STOWE (ES)
+cps_school,RICKOVER MILITARY HS (HS)
+cps_school,THORP O (ES)
+cps_school,VOLTA (ES)
+cps_school,ALBANY PARK (ES)
+cps_school,YATES (ES)
+cps_school,CHICAGO ACADEMY ES (ES)
+cps_school,AVONDALE-LOGANDALE (ES)
+cps_school,CHICAGO ACADEMY HS (HS)
+cps_school,NORTH RIVER (ES)
+cps_school,PRIETO (ES)
+cps_school,CAMRAS (ES)
+cps_school,LORCA (ES)
+cps_school,DISNEY II HS (HS)
+cps_school,HANCOCK HS (HS)
+cps_school,FARRAGUT HS (HS)
+cps_school,GAGE PARK HS (HS)
+cps_school,KELLY HS (HS)
+cps_school,HUBBARD HS (HS)
+cps_school,HEDGES (ES)
+cps_school,LARA (ES)
+cps_school,HOLDEN (ES)
+cps_school,DAVIS N (ES)
+cps_school,CHRISTOPHER (ES)
+cps_school,CURIE HS (HS)
+cps_school,JUAREZ HS (HS)
+cps_school,ARMOUR (ES)
+cps_school,BURROUGHS (ES)
+cps_school,LITTLE VILLAGE (ES)
+cps_school,CARSON (ES)
+cps_school,COOPER (ES)
+cps_school,CORKERY (ES)
+cps_school,PEREZ (ES)
+cps_school,HEARST (ES)
+cps_school,EBERHART (ES)
+cps_school,EDWARDS (ES)
+cps_school,EVERETT (ES)
+cps_school,KANOON (ES)
+cps_school,TELPOCHCALLI (ES)
+cps_school,GARY (ES)
+cps_school,ORTIZ DE DOMINGUEZ (ES)
+cps_school,GREENE (ES)
+cps_school,GRIMES (ES)
+cps_school,GUNSAULUS (ES)
+cps_school,HURLEY (ES)
+cps_school,PILSEN (ES)
+cps_school,JUNGMAN (ES)
+cps_school,SAUCEDO (ES)
+cps_school,HAMLINE (ES)
+cps_school,HAMMOND (ES)
+cps_school,FINKL (ES)
+cps_school,ZAPATA (ES)
+cps_school,CARDENAS (ES)
+cps_school,FAIRFIELD (ES)
+cps_school,MCCORMICK (ES)
+cps_school,NIGHTINGALE (ES)
+cps_school,PASTEUR (ES)
+cps_school,PECK (ES)
+cps_school,RUIZ (ES)
+cps_school,PICKARD (ES)
+cps_school,CHAVEZ (ES)
+cps_school,SAWYER (ES)
+cps_school,SEWARD (ES)
+cps_school,COLUMBIA EXPLORERS (ES)
+cps_school,SHIELDS (ES)
+cps_school,STEVENSON (ES)
+cps_school,SANDOVAL (ES)
+cps_school,WHITNEY (ES)
+cps_school,WHITTIER (ES)
+cps_school,WORLD LANGUAGE HS (HS)
+cps_school,TARKINGTON (ES)
+cps_school,MONARCAS ACADEMY (ES)
+cps_school,TWAIN (ES)
+cps_school,MADERO (ES)
+cps_school,WALSH (ES)
+cps_school,DALEY (ES)
+cps_school,TALMAN (ES)
+cps_school,LEE (ES)
+cps_school,BRIGHTON PARK (ES)
+cps_school,EVERGREEN (ES)
+cps_school,OROZCO (ES)
+cps_school,DURKIN PARK (ES)
+cps_school,CALMECA (ES)
+cps_school,SPRY HS (HS)
+cps_school,SOCIAL JUSTICE HS (HS)
+cps_school,INFINITY HS (HS)
+cps_school,MULTICULTURAL ARTS HS (HS)
+cps_school,HERNANDEZ (ES)
+cps_school,SOLORIO HS (HS)
+cps_school,AZUELA (ES)
+cps_school,SHIELDS MIDDLE (ES)
+cps_school,BACK OF THE YARDS HS (HS)
+cps_school,SPRY ES (ES)
+cps_school,RICHARDSON (ES)
+cps_school,SOR JUANA (ES)
+cps_school,ROWE (ES)
+cps_school,LAKE VIEW HS (HS)
+cps_school,MATHER HS (HS)
+cps_school,SCHURZ HS (HS)
+cps_school,TAFT HS (HS)
+cps_school,LINCOLN PARK HS (HS)
+cps_school,HITCH (ES)
+cps_school,NORTHSIDE PREP HS (HS)
+cps_school,TUBMAN (ES)
+cps_school,AUDUBON (ES)
+cps_school,BEAUBIEN (ES)
+cps_school,BELDING (ES)
+cps_school,BELL (ES)
+cps_school,BLAINE (ES)
+cps_school,BUDLONG (ES)
+cps_school,BURLEY (ES)
+cps_school,BURR (ES)
+cps_school,COONLEY (ES)
+cps_school,DRUMMOND (ES)
+cps_school,EDGEBROOK (ES)
+cps_school,FARNSWORTH (ES)
+cps_school,GARVY (ES)
+cps_school,JAHN (ES)
+cps_school,JAMIESON (ES)
+cps_school,ORIOLE PARK (ES)
+cps_school,PALMER (ES)
+cps_school,HAMILTON (ES)
+cps_school,HAWTHORNE (ES)
+cps_school,LOZANO (ES)
+cps_school,LASALLE (ES)
+cps_school,LINCOLN (ES)
+cps_school,MAYER (ES)
+cps_school,MCPHERSON (ES)
+cps_school,INTER-AMERICAN (ES)
+cps_school,NETTELHORST (ES)
+cps_school,NEWBERRY (ES)
+cps_school,NORWOOD PARK (ES)
+cps_school,ONAHAN (ES)
+cps_school,PETERSON (ES)
+cps_school,PRESCOTT (ES)
+cps_school,PRUSSING (ES)
+cps_school,PULASKI (ES)
+cps_school,RAVENSWOOD (ES)
+cps_school,SAUGANASH (ES)
+cps_school,SOLOMON (ES)
+cps_school,WILDWOOD (ES)
+cps_school,WATERS (ES)
+cps_school,EDISON PARK (ES)
+cps_school,ALCOTT HS (HS)
+cps_school,ALCOTT ES (ES)
+cps_school,OGDEN ES (ES)
+cps_school,DISNEY II ES (ES)
+cps_school,KENNEDY HS (HS)
+cps_school,BYRNE (ES)
+cps_school,CASSELL (ES)
+cps_school,DORE (ES)
+cps_school,KELLOGG (ES)
+cps_school,HALE (ES)
+cps_school,KINZIE (ES)
+cps_school,MOUNT GREENWOOD (ES)
+cps_school,KELLER (ES)
+cps_school,SUTHERLAND (ES)
+cps_school,KIPP - ASCEND (ES)
+cps_school,NLCP - COLLINS HS (HS)
+cps_school,KIPP - ACADEMY (ES)
+cps_school,JONES HS (HS)
+cps_school,PAYTON HS (HS)
+cps_school,RICHARDS HS (HS)
+cps_school,WESTINGHOUSE HS (HS)
+cps_school,MANLEY HS (HS)
+cps_school,MARSHALL HS (HS)
+cps_school,TILDEN HS (HS)
+cps_school,WELLS HS (HS)
+cps_school,HEFFERAN (ES)
+cps_school,HENDERSON (ES)
+cps_school,HENDRICKS (ES)
+cps_school,SOUTH LOOP (ES)
+cps_school,HERZL (ES)
+cps_school,HOLMES (ES)
+cps_school,CHALMERS (ES)
+cps_school,YOUNG HS (HS)
+cps_school,CLEMENTE HS (HS)
+cps_school,BASS (ES)
+cps_school,NICHOLSON (ES)
+cps_school,CLARK ES (ES)
+cps_school,BEIDLER (ES)
+cps_school,BROWN W (ES)
+cps_school,BURBANK (ES)
+cps_school,BURKE (ES)
+cps_school,BRUNSON (ES)
+cps_school,CARTER (ES)
+cps_school,GINSBURG (ES)
+cps_school,LANGFORD (ES)
+cps_school,CROWN (ES)
+cps_school,HEALY (ES)
+cps_school,DEWEY (ES)
+cps_school,DRAKE (ES)
+cps_school,EARLE (ES)
+cps_school,ELLINGTON (ES)
+cps_school,ERICSON (ES)
+cps_school,KELLMAN (ES)
+cps_school,FRANKLIN (ES)
+cps_school,FULTON (ES)
+cps_school,RANDOLPH (ES)
+cps_school,GRAHAM ES (ES)
+cps_school,GREGORY (ES)
+cps_school,HAINES (ES)
+cps_school,HAY (ES)
+cps_school,HOWE (ES)
+cps_school,HUGHES C (ES)
+cps_school,GALILEO (ES)
+cps_school,OTIS (ES)
+cps_school,OTOOLE (ES)
+cps_school,LAWNDALE (ES)
+cps_school,LEWIS (ES)
+cps_school,LIBBY (ES)
+cps_school,LOVETT (ES)
+cps_school,MANIERRE (ES)
+cps_school,MARQUETTE (ES)
+cps_school,FARADAY (ES)
+cps_school,MASON (ES)
+cps_school,CHICAGO WORLD LANGUAGE ACADEMY (ES)
+cps_school,MINOSO (ES)
+cps_school,MCKAY (ES)
+cps_school,MITCHELL (ES)
+cps_school,MORRILL (ES)
+cps_school,SHERIDAN (ES)
+cps_school,NASH (ES)
+cps_school,IRVING (ES)
+cps_school,PENN (ES)
+cps_school,PLAMONDON (ES)
+cps_school,WARD L (ES)
+cps_school,SAYRE (ES)
+cps_school,SHERMAN (ES)
+cps_school,SHERWOOD (ES)
+cps_school,SKINNER (ES)
+cps_school,SMYTH (ES)
+cps_school,SPENCER (ES)
+cps_school,SUMNER (ES)
+cps_school,TALCOTT (ES)
+cps_school,PRITZKER (ES)
+cps_school,NATIONAL TEACHERS (ES)
+cps_school,LINDBLOM HS (HS)
+cps_school,SUDER (ES)
+cps_school,TILTON (ES)
+cps_school,WARD J (ES)
+cps_school,WEBSTER (ES)
+cps_school,WENTWORTH (ES)
+cps_school,YOUNG ES (ES)
+cps_school,BEETHOVEN (ES)
+cps_school,BOND (ES)
+cps_school,CLARK HS (HS)
+cps_school,DOUGLASS HS (HS)
+cps_school,BEASLEY (ES)
+cps_school,SALAZAR (ES)
+cps_school,CATHER (ES)
+cps_school,DETT (ES)
+cps_school,DVORAK (ES)
+cps_school,MORTON (ES)
+cps_school,JENSEN (ES)
+cps_school,JOHNSON (ES)
+cps_school,MOLLISON (ES)
+cps_school,MCNAIR (ES)
+cps_school,MELODY (ES)
+cps_school,PHOENIX MILITARY HS (HS)
+cps_school,LELAND (ES)
+cps_school,DE DIEGO (ES)
+cps_school,RABY HS (HS)
+cps_school,STAGG (ES)
+cps_school,SABIN (ES)
+cps_school,CLAREMONT (ES)
+cps_school,DEPRIEST (ES)
+cps_school,WILLIAMS HS (HS)
+cps_school,BRONZEVILLE HS (HS)
+cps_school,ORR HS (HS)
+cps_school,COLLINS STEAM HS (HS)
+cps_school,FRAZIER PROSPECTIVE (ES)
+cps_school,AIR FORCE HS (HS)
+cps_school,AUSTIN CCA HS (HS)
+cps_school,LASALLE II (ES)
+cps_school,DAVIS M (ES)
+cps_school,OGDEN HS (HS)
+cps_school,SKINNER NORTH (ES)
+cps_school,STEM (ES)
+cps_school,CRANE MEDICAL HS (HS)
+cps_school,KIPP - ONE (ES)
+cps_school,BRONZEVILLE CLASSICAL (ES)
+cps_school,DIRKSEN (ES)
+cps_school,AMUNDSEN HS (HS)
+cps_school,SENN HS (HS)
+cps_school,SULLIVAN HS (HS)
+cps_school,DECATUR (ES)
+cps_school,GREELEY (ES)
+cps_school,CHAPPELL (ES)
+cps_school,CLINTON (ES)
+cps_school,ARMSTRONG G (ES)
+cps_school,MOSAIC (ES)
+cps_school,JORDAN (ES)
+cps_school,EBINGER (ES)
+cps_school,FIELD (ES)
+cps_school,GALE (ES)
+cps_school,GOUDY (ES)
+cps_school,HAYT (ES)
+cps_school,KILMER (ES)
+cps_school,PEIRCE (ES)
+cps_school,ROGERS (ES)
+cps_school,STONE (ES)
+cps_school,SWIFT (ES)
+cps_school,UPLIFT HS (HS)
+cps_school,BRENNEMANN (ES)
+cps_school,MCCUTCHEON (ES)
+cps_school,NEW FIELD (ES)
+cps_school,COURTENAY (ES)
+cps_school,DISNEY (ES)
+cps_school,WEST RIDGE (ES)
+cps_school,CICS - AVALON/SOUTH SHORE (ES)
+cps_school,CICS - LOOMIS (ES)
+cps_school,CICS - WRIGHTWOOD (ES)
+cps_school,CICS - ELLISON HS (HS)
+cps_school,CICS - LONGWOOD (HS)
+cps_school,PERSPECTIVES - LEADERSHIP HS (HS)
+cps_school,PERSPECTIVES - TECH HS (HS)
+cps_school,PERSPECTIVES - MATH & SCI HS (HS)
+cps_school,U OF C - DONOGHUE (ES)
+cps_school,U OF C - WOODLAWN HS (HS)
+cps_school,NOBLE - JOHNSON HS (HS)
+cps_school,LEARN - PERKINS (ES)
+cps_school,NOBLE - HANSBERRY HS (HS)
+cps_school,YCCS - PROGRESSIVE LEADERSHIP (HS)
+cps_school,YCCS - YOUTH DEVELOPMENT (HS)
+cps_school,YCCS - SULLIVAN (HS)
+cps_school,CHICAGO EXCEL HS (HS)
+cps_school,YCCS - CHATHAM (HS)
+cps_school,PATHWAYS - ASHBURN HS (HS)
+cps_school,GREAT LAKES (ES)
+cps_school,ART IN MOTION (HS)
+cps_school,OMBUDSMAN - ROSELAND HS (HS)
+cps_school,CICS - PRAIRIE (ES)
+cps_school,CICS - BOND (ES)
+cps_school,EPIC HS (HS)
+cps_school,YCCS - OLIVE HARVEY (HS)
+cps_school,CHICAGO COLLEGIATE (HS)
+cps_school,EXCEL SOUTH SHORE HS (HS)
+cps_school,SAFE ACHIEVE HS (HS)
+cps_school,SAFE ACHIEVE ES (ES)
+cps_school,ASPIRA - EARLY COLLEGE HS (HS)
+cps_school,CHIARTS HS (HS)
+cps_school,CICS - IRVING PARK (ES)
+cps_school,CICS - WEST BELDEN (ES)
+cps_school,ERIE (ES)
+cps_school,NOBLE - PRITZKER HS (HS)
+cps_school,ACERO - FUENTES (ES)
+cps_school,ACERO - SANTIAGO (ES)
+cps_school,ACERO - CLEMENTE (ES)
+cps_school,YCCS - ASPIRA PANTOJA (HS)
+cps_school,YCCS - ASSOCIATION HOUSE (HS)
+cps_school,YCCS - CAMPOS (HS)
+cps_school,CHRISTOPHER HOUSE (ES)
+cps_school,INTRINSIC HS (HS)
+cps_school,NOBLE - ITW SPEER HS (HS)
+cps_school,VAUGHN HS (HS)
+cps_school,PATHWAYS - AVONDALE HS (HS)
+cps_school,ASPIRA - BUSINESS & FINANCE HS (HS)
+cps_school,PATHWAYS - HUMBOLDT PARK HS (HS)
+cps_school,GLOBAL CITIZENSHIP (ES)
+cps_school,NAMASTE (ES)
+cps_school,ACERO - ZIZUMBO (ES)
+cps_school,ACERO - TORRES (ES)
+cps_school,ACERO - DE LAS CASAS (ES)
+cps_school,ACERO - PAZ (ES)
+cps_school,ACERO - TAMAYO (ES)
+cps_school,ACERO - GARCIA HS (HS)
+cps_school,ACERO - MARQUEZ (ES)
+cps_school,ACERO - CISNEROS (ES)
+cps_school,INSTITUTO - HEALTH HS (HS)
+cps_school,ACERO - IDAR (ES)
+cps_school,YCCS - LATINO YOUTH (HS)
+cps_school,YCCS - YOUTH CONNECTION (HS)
+cps_school,INSTITUTO - JUSTICE HS (HS)
+cps_school,ACERO - SOTO HS (HS)
+cps_school,ACERO - BRIGHTON PARK (ES)
+cps_school,HORIZON - SOUTHWEST (ES)
+cps_school,PATHWAYS - BRIGHTON PARK HS (HS)
+cps_school,YORK HS (HS)
+cps_school,PEACE AND EDUCATION HS (HS)
+cps_school,THOMAS (ES)
+cps_school,NOBLE - MANSUETO HS (HS)
+cps_school,CICS - BUCKTOWN (ES)
+cps_school,CICS - NORTHTOWN HS (HS)
+cps_school,NORTHSIDE LEARNING HS (HS)
+cps_school,BEARD (ES)
+cps_school,DEVRY HS (HS)
+cps_school,FISHER (ES)
+cps_school,CATALPA (ES)
+cps_school,VICK (ES)
+cps_school,BLAIR (ES)
+cps_school,LOCKE A (ES)
+cps_school,CATALYST - CIRCLE ROCK (ES)
+cps_school,CICS - BASIL (ES)
+cps_school,CICS - WASHINGTON PARK (ES)
+cps_school,LEARN - BUTLER (ES)
+cps_school,LEARN - CAMPBELL (ES)
+cps_school,LEARN - EXCEL (ES)
+cps_school,LEGACY (ES)
+cps_school,NOBLE - NOBLE HS (HS)
+cps_school,NOBLE - GOLDER HS (HS)
+cps_school,NOBLE - RAUNER HS (HS)
+cps_school,NOBLE - ROWE CLARK HS (HS)
+cps_school,NOBLE - UIC HS (HS)
+cps_school,NLCP - CHRISTIANA HS (HS)
+cps_school,PERSPECTIVES - JOSLIN HS (HS)
+cps_school,PLATO (ES)
+cps_school,POLARIS (ES)
+cps_school,PROVIDENCE ENGLEWOOD (ES)
+cps_school,CHICAGO TECH HS (HS)
+cps_school,NOBLE - BULLS HS (HS)
+cps_school,NOBLE - MUCHIN HS (HS)
+cps_school,CATALYST - MARIA ES (ES)
+cps_school,MONTESSORI ENGLEWOOD (ES)
+cps_school,NOBLE - DRW HS (HS)
+cps_school,LEGAL PREP HS (HS)
+cps_school,YCCS - SCHOLASTIC ACHIEVEMENT (HS)
+cps_school,YCCS - MCKINLEY (HS)
+cps_school,YCCS - CCA ACADEMY (HS)
+cps_school,YCCS - INNOVATIONS (HS)
+cps_school,YCCS - WEST TOWN (HS)
+cps_school,YCCS - WEST (HS)
+cps_school,LEARN - 7 (ES)
+cps_school,KIPP - BLOOM (ES)
+cps_school,LEARN - MIDDLE (ES)
+cps_school,NOBLE - ACADEMY HS (HS)
+cps_school,EXCEL SOUTHWEST HS (HS)
+cps_school,SOUTHSIDE HS (HS)
+cps_school,SIMPSON HS (HS)
+cps_school,GRAHAM HS (HS)
+cps_school,JEFFERSON HS (HS)
+cps_school,RUDOLPH (ES)
+cps_school,EXCEL ENGLEWOOD HS (HS)
+cps_school,OMBUDSMAN - SOUTH HS (HS)
+cps_school,OMBUDSMAN - WEST HS (HS)
+cps_school,MOVING EVEREST (ES)
+cps_school,VIRTUAL ACADEMY HS (HS)
+cps_school,VIRTUAL ACADEMY ES (ES)
+cps_school,CATALYST - MARIA HS (HS)
+cps_school,URBAN PREP - ENGLEWOOD HS (HS)
+cps_school,CHICAGO MATH & SCIENCE HS (HS)
+cps_school,AHS - PASSAGES (ES)
+cps_school,ACERO - DE LA CRUZ (ES)
+cps_school,YCCS - TRUMAN (HS)
+cps_school,STOCK (ES)
+cps_school,OMBUDSMAN - NORTHWEST HS (HS)
+cps_school,SAFE ACHIEVE WEST HS (HS)
+fire_station,Fire station E5
+fire_station,Fire station E11
+fire_station,Fire station E81
+fire_station,Fire station E22
+fire_station,Fire station E50
+fire_station,Fire station E68
+fire_station,Fire station E7
+fire_station,Fire station E91
+fire_station,Fire station E92
+fire_station,Fire station E89
+fire_station,Fire station E47
+fire_station,Fire station E70/E59
+fire_station,Fire station E28
+fire_station,Fire station E44
+fire_station,Fire station E109
+fire_station,Fire station E119
+fire_station,Fire station E56
+fire_station,Fire station E129
+fire_station,Fire station E83
+fire_station,Fire station E8
+fire_station,Fire station E73
+fire_station,Fire station E14
+fire_station,Fire station E71
+fire_station,Fire station E108
+fire_station,Fire station E23
+fire_station,Fire station E18
+fire_station,Fire station E106
+fire_station,Fire station E16
+fire_station,Fire station E1
+fire_station,Fire station E116
+fire_station,Fire station E117
+fire_station,Fire station E112
+fire_station,Fire station E102
+fire_station,Fire station E101
+fire_station,Fire station E65
+fire_station,Fire station E95
+fire_station,Fire station E123
+fire_station,Fire station E110
+fire_station,Fire station E60
+fire_station,Fire station E4
+fire_station,Fire station E98
+fire_station,Fire station E124
+fire_station,Fire station E104
+fire_station,Fire station E122
+fire_station,Fire station E86
+fire_station,Fire station E97
+fire_station,Fire station E74
+fire_station,Fire station E38
+fire_station,Fire station E15
+fire_station,Fire station E126
+fire_station,Fire station E103
+fire_station,Fire station E32
+fire_station,Fire station E57
+fire_station,Fire station E78
+fire_station,Fire station E88
+fire_station,Fire station E107
+fire_station,Fire station E64
+fire_station,Fire station E84
+fire_station,Fire station E120
+fire_station,Fire station E49
+fire_station,Fire station E94
+fire_station,Fire station E35
+fire_station,Fire station E75
+fire_station,Fire station E115
+fire_station,Fire station E42
+fire_station,Fire station E55
+fire_station,Fire station E63
+fire_station,Fire station E113
+fire_station,Fire station E30
+fire_station,Fire station E121
+fire_station,Fire station E93
+fire_station,Fire station E80
+fire_station,Fire station E76
+fire_station,Fire station E69
+fire_station,Fire station E13
+fire_station,Fire station E39
+fire_station,Fire station E29
+fire_station,Fire station E43
+fire_station,Fire station E96
+fire_station,Fire station E62
+fire_station,Fire station E72
+fire_station,Fire station E54
+fire_station,Fire station E46
+fire_station,Fire station E127
+fire_station,Fire station E45
+fire_station,Fire station E125
+fire_station,Fire station E99
+fire_station,Fire station E19
+fire_station,Fire station E26
+fire_station,Fire station E82
+fire_station,Fire station E34
+fire_station,Fire station E79

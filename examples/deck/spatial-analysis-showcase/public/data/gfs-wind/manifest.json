@@ -1,0 +1,173 @@
+{
+ "id": "gfs-wind",
+ "version": 1,
+ "kind": "raster",
+ "count": 27693,
+ "bbox": [
+  -105.0,
+  12.0,
+  -60.0,
+  50.0
+ ],
+ "crs": "EPSG:4326",
+ "raster": {
+  "file": "wind10m_00.png",
+  "encoding": "rg-uv-8bit",
+  "width": 181,
+  "height": 153,
+  "bounds": [
+   -105.125,
+   11.875,
+   -59.875,
+   50.125
+  ],
+  "cellSizeDeg": 0.25,
+  "unit": "m/s",
+  "noData": null
+ },
+ "properties": {
+  "model": "NOAA GFS 0.25 deg",
+  "run": "2024-09-26T12:00:00Z",
+  "validStart": "2024-09-26T12:00:00Z",
+  "wind10m": {
+   "files": [
+    "wind10m_00.png",
+    "wind10m_01.png",
+    "wind10m_02.png",
+    "wind10m_03.png",
+    "wind10m_04.png",
+    "wind10m_05.png",
+    "wind10m_06.png",
+    "wind10m_07.png",
+    "wind10m_08.png",
+    "wind10m_09.png",
+    "wind10m_10.png",
+    "wind10m_11.png",
+    "wind10m_12.png",
+    "wind10m_13.png",
+    "wind10m_14.png",
+    "wind10m_15.png",
+    "wind10m_16.png",
+    "wind10m_17.png",
+    "wind10m_18.png",
+    "wind10m_19.png",
+    "wind10m_20.png",
+    "wind10m_21.png",
+    "wind10m_22.png",
+    "wind10m_23.png"
+   ],
+   "forecastHours": [
+    0,
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7,
+    8,
+    9,
+    10,
+    11,
+    12,
+    13,
+    14,
+    15,
+    16,
+    17,
+    18,
+    19,
+    20,
+    21,
+    22,
+    23
+   ],
+   "uRange": [
+    -36.0,
+    45.0
+   ],
+   "vRange": [
+    -36.0,
+    41.0
+   ],
+   "decode": "u = uMin + R/255*(uMax-uMin); v = vMin + G/255*(vMax-vMin)",
+   "maxSpeedMs": 45.33430159565894,
+   "maxSpeedFrame": 14,
+   "maxSpeedLonLat": [
+    -83.75,
+    28.75
+   ],
+   "width": 181,
+   "height": 153,
+   "rowOrder": "north to south",
+   "lats": [
+    50.0,
+    12.0
+   ],
+   "lons": [
+    -105.0,
+    -60.0
+   ],
+   "stepHours": 1,
+   "level": "10 m above ground"
+  },
+  "jet250hPa": {
+   "files": [
+    "jet250_00.png",
+    "jet250_01.png",
+    "jet250_02.png",
+    "jet250_03.png",
+    "jet250_04.png",
+    "jet250_05.png",
+    "jet250_06.png",
+    "jet250_07.png"
+   ],
+   "forecastHours": [
+    0,
+    3,
+    6,
+    9,
+    12,
+    15,
+    18,
+    21
+   ],
+   "uRange": [
+    -32.0,
+    78.0
+   ],
+   "vRange": [
+    -52.0,
+    62.0
+   ],
+   "decode": "u = uMin + R/255*(uMax-uMin); v = vMin + G/255*(vMax-vMin)",
+   "maxSpeedMs": 78.0994996395932,
+   "maxSpeedFrame": 4,
+   "maxSpeedLonLat": [
+    -71.75,
+    44.75
+   ],
+   "width": 181,
+   "height": 153,
+   "rowOrder": "north to south",
+   "lats": [
+    50.0,
+    12.0
+   ],
+   "lons": [
+    -105.0,
+    -60.0
+   ],
+   "stepHours": 3,
+   "level": "250 hPa"
+  },
+  "attribution": "NOAA / NCEP Global Forecast System (public domain)",
+  "storyNotes": [
+   "Hurricane Helene made landfall near Perry, Florida (Big Bend) as a category 4 at ~03:10Z on 2024-09-27: it sits at frames 14-15 of the hourly 10 m stack (run 2024-09-26 12Z).",
+   "Peak GFS 10 m speed in the crop is 45 m/s at frame 14 near lon/lat -83.75, 28.75; the cyclonic eye and outer rainbands make a vivid particle-advection and LIC spiral.",
+   "The 250 hPa jet reaches 78 m/s in the crop; a trough over the central US steered Helene north, a classic streamline/jet story.",
+   "Grid is 0.25 deg, 181 x 153 cells, rows north to south, cell centres at 0.25 deg multiples; bounds in the manifest extend half a cell.",
+   "8-bit quantisation: step is (max-min)/255 per component (about 0.3-0.4 m/s); use bilinear sampling of decoded u/v in the shader, never of the encoded colour pair across the dateline."
+  ]
+ }
+}
