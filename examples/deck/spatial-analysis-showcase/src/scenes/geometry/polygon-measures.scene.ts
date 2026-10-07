@@ -2,11 +2,42 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {CREDITS, joinCredits} from '../../cartography/credits';
+import {getClassTableLegend, makeClassTable} from '../../cartography/class-table';
+import {ground} from '../../cartography/grounds';
 import {defineScene, type LegendSpec} from '../scene';
 import {B3_PALETTE} from './b3-palette';
 import type {PolygonMeasuresOptions, PolygonMetric} from './polygon-measures.compute';
 
-const VALIDITY_COLORS = [B3_PALETTE[3], B3_PALETTE[5], B3_PALETTE[7]] as const;
+// Keep this declarative scene loadable by static story gates; compute owns matching GPU tables.
+const POLYGON_AREA_CLASSES = makeClassTable({
+  breaks: [500e6, 1e9, 2e9, 5e9, 10e9],
+  scheme: 'YlOrBr',
+  unit: 'km²',
+  labels: ['0–500', '500–1k', '1k–2k', '2k–5k', '5k–10k', '10k+'],
+  noData: {label: 'No area'}
+});
+const POLYGON_DISTORTION_CLASSES = makeClassTable({
+  breaks: [1.05, 1.2, 1.5, 2],
+  scheme: 'PuRd',
+  unit: '×',
+  labels: ['1.00–1.05×', '1.05–1.20×', '1.20–1.50×', '1.50–2.00×', '2.00×+']
+});
+const POLYGON_COMPACTNESS_CLASSES = makeClassTable({
+  breaks: [0.1, 0.25, 0.4, 0.6],
+  scheme: 'BuGn',
+  unit: 'Polsby-Popper',
+  labels: ['< 0.10', '0.10–0.25', '0.25–0.40', '0.40–0.60', '0.60–1.00']
+});
+const POLYGON_VALIDITY_CLASSES = makeClassTable({
+  breaks: [0.5, 1.5],
+  colors: [
+    [140, 149, 160, 255],
+    [230, 159, 0, 255],
+    [213, 94, 0, 255]
+  ],
+  labels: ['No bits set', 'Orientation convention only', 'Structural defect']
+});
 
 const METRIC_TITLES: Record<PolygonMetric, string> = {
   area: 'Area',
@@ -22,27 +53,6 @@ const METRIC_TITLES: Record<PolygonMetric, string> = {
   validity: 'Validity',
   mapColor: 'Map color'
 };
-
-const formatKm2 = (value: number) =>
-  `${(value / 1e6).toLocaleString('en-US', {maximumFractionDigits: value < 5e7 ? 1 : 0})} km²`;
-const formatKm = (value: number) =>
-  `${(value / 1000).toLocaleString('en-US', {maximumFractionDigits: value < 1e5 ? 1 : 0})} km`;
-
-function formatMetricValue(metric: PolygonMetric, value: number): string {
-  switch (metric) {
-    case 'area':
-    case 'groupArea':
-      return formatKm2(value);
-    case 'perimeter':
-      return formatKm(value);
-    case 'areaDistortion':
-      return `${value.toFixed(2)}×`;
-    case 'vertices':
-      return Math.round(value).toLocaleString('en-US');
-    default:
-      return value.toFixed(2);
-  }
-}
 
 /**
  * Polygon measures, shape descriptors, label points, validity and map coloring on real polygon
@@ -65,10 +75,19 @@ export default defineScene<PolygonMeasuresOptions>({
   ],
   datasets: [
     {id: 'us-counties', role: 'continental polygon coverage'},
+    {id: 'us-states', role: 'matching dissolved state-outline context'},
     {id: 'chicago-community-areas', role: 'city-scale polygons'},
     {id: 'chicago-tracts', role: 'many small polygons'}
   ],
   initialView: {longitude: -96, latitude: 38.2, zoom: 3.45},
+  basemap: ground('paperSheet'),
+  furniture: {
+    title: {
+      title: 'Polygon measures',
+      subtitle: 'Area, form and validity depend on representation'
+    },
+    credit: joinCredits(CREDITS.usCensus, CREDITS.cityOfChicago)
+  },
 
   options: [
     {
@@ -309,6 +328,50 @@ export default defineScene<PolygonMeasuresOptions>({
     },
     {
       kind: 'select',
+      id: 'areaClassification',
+      label: 'Compare area classes',
+      group: 'Measures',
+      apply: 'param',
+      default: 'fixed-log',
+      display: 'segmented',
+      options: [
+        {value: 'fixed-log', label: 'Fixed log'},
+        {value: 'quantile', label: 'Quantile'},
+        {value: 'equal-interval', label: 'Equal interval'}
+      ],
+      help: 'The published fixed YlOrBr table remains the reference while this compares common alternatives.'
+    },
+    {
+      kind: 'toggle',
+      id: 'showDeflate',
+      label: 'Deflate about GPU centroid',
+      group: 'Display',
+      apply: 'param',
+      default: false
+    },
+    {
+      kind: 'toggle',
+      id: 'showLabelSearch',
+      label: 'Show search grid',
+      group: 'Label points',
+      apply: 'param',
+      default: false
+    },
+    {
+      kind: 'select',
+      id: 'coloringMethod',
+      label: 'Colour assignment',
+      group: 'Map colouring',
+      apply: 'param',
+      default: 'algorithm',
+      display: 'segmented',
+      options: [
+        {value: 'algorithm', label: 'GPU greedy'},
+        {value: 'naive-fips-mod', label: 'Naive FIPS mod'}
+      ]
+    },
+    {
+      kind: 'select',
       id: 'metric',
       label: 'Colour polygons by',
       group: 'Display',
@@ -379,21 +442,6 @@ export default defineScene<PolygonMeasuresOptions>({
       ]
     },
     {
-      kind: 'select',
-      id: 'ramp',
-      label: 'Colour ramp',
-      group: 'Display',
-      apply: 'param',
-      default: 'viridis',
-      options: [
-        {value: 'viridis', label: 'Viridis'},
-        {value: 'magma', label: 'Magma'},
-        {value: 'inferno', label: 'Inferno'},
-        {value: 'cividis', label: 'Cividis'}
-      ],
-      help: 'Used by the continuous metrics. The legend uses the same ramp table.'
-    },
-    {
       kind: 'slider',
       id: 'opacity',
       label: 'Fill opacity',
@@ -418,105 +466,121 @@ export default defineScene<PolygonMeasuresOptions>({
 
   story: [
     {
-      id: 'question',
-      title: 'How big is each county, really?',
-      body: `Which county is the largest in the contiguous United States, and by how much? Answering needs an **area**, and area depends on the coordinate system you measure in.
-
-\`GPUGeometryMeasures\` computes the area of all 3,109 counties in one pass. The map shows the **WGS84 ellipsoid** areas (the reference): large counties in the arid West (San Bernardino, CA) dominate and the eastern counties are tiny. Click any county to see its numbers, or change **Coordinate system** below to compare how the area is measured.`,
+      id: 'area-classes',
+      title: 'Area classes',
+      headline: 'Area is skewed before it is mapped',
+      textAlternative: 'WGS84 county areas use a fixed class table with state-outline context.',
+      body: `WGS84 is the reference area. The fixed YlOrBr km² table is shared by the layer, legend and histogram; compare log, quantile and equal-interval breaks without silently changing that reference. {{areaClasses}}`,
       camera: {longitude: -96, latitude: 38.2, zoom: 3.45, transitionMs: 1200},
-      options: {dataset: 'us-counties', metric: 'area', areaSystem: 'wgs84'},
+      optionsMode: 'fresh',
+      options: {
+        dataset: 'us-counties',
+        metric: 'area',
+        areaSystem: 'wgs84',
+        areaClassification: 'fixed-log'
+      },
       highlight: {readout: 'areaWgs84'},
-      controls: ['areaSystem'],
-      readouts: ['areaWgs84']
+      controls: ['areaClassification', 'areaSystem'],
+      readouts: ['features', 'areaWgs84', 'areaClasses'],
+      stage: 'measures'
     },
     {
-      id: 'flat-map-lies',
-      title: 'A flat map overstates northern counties',
-      body: `Measure the same polygons as **planar Web Mercator metres** and divide by the ellipsoidal area: the colour now shows how much a flat web map inflates each county. Mercator stretches area by about 1 / cos²(latitude): Whatcom County, Washington is overstated 2.3 times, Florida's counties about 1.5, and the whole lower 48 measures 13.3 million km² on the flat plane against 7.84 million on the ellipsoid.
-
-Read the legend as a ratio: 1.0 means the flat measure is honest. Switch **Coordinate system** below to *Spherical*: the sphere is within about half a percent of the ellipsoid, which is why \`GPUGeometryMeasures\` treats it as a turf-compatible shortcut. The planar column is the one that is wrong at this scale.`,
-      options: {metric: 'areaDistortion'},
+      id: 'flat-map',
+      title: 'Flat-map inflation',
+      headline: 'The flat map inflates northern area',
+      textAlternative:
+        'Ratio increases with latitude; deflated polygons show planar-to-WGS84 correction around GPU centroids.',
+      body: `The ratio is **planar / WGS84**. Deflate is explanatory geometry: each triangle scales about its GPU centroid by \`1 / sqrt(planar / WGS84)\`. It does not replace Web Mercator. The ratio-versus-latitude scatter includes the Mercator theory curve and equal-true-size reference geometry.`,
+      optionsMode: 'fresh',
+      options: {dataset: 'us-counties', metric: 'areaDistortion', showDeflate: true},
       highlight: {readout: 'distortion'},
-      controls: ['areaSystem', 'metric'],
-      readouts: ['distortion', 'areaPlanar', 'areaWgs84']
+      controls: ['showDeflate'],
+      readouts: ['distortion', 'areaPlanar', 'areaWgs84'],
+      stage: 'measures'
     },
     {
-      id: 'how-round',
-      title: 'How round, how elongated?',
-      body: `Now the **shape** of each community area in Chicago. \`GPUShapeDescriptors\` turns every polygon into compactness (Polsby-Popper \`4πA/P²\`, Schwartzberg), elongation, convexity and a principal-axis direction, the measures behind gerrymandering tests and QGIS compactness.
-
-Bright areas are compact; dark ones are ragged or thin. Turn on **Long-axis glyphs** below to draw each polygon's principal axis, longer where the shape is more elongated: Chicago's lakefront areas line up with the shore. The **Sliver threshold** slider flags the weakest shapes (set **Colour polygons by** to *Slivers* to see them).`,
+      id: 'compactness',
+      title: 'Compactness',
+      headline: 'Roundness needs reference shapes',
+      textAlternative:
+        'Chicago compactness classes include a long-axis glyph and an area-equivalent circle.',
+      body: `Polsby-Popper compares every community area with a circle of equal area. The fixed BuGn classes are calibrated against circle, square and sliver silhouettes; long axis and reference circle make a selected value inspectable. Boundary detail changes perimeter.`,
       camera: {longitude: -87.68, latitude: 41.83, zoom: 9.4, transitionMs: 1600},
-      options: {dataset: 'chicago-community-areas', metric: 'compactness', showAxes: true},
+      optionsMode: 'fresh',
+      options: {
+        dataset: 'chicago-community-areas',
+        metric: 'compactness',
+        showAxes: true,
+        showInscribed: true
+      },
       highlight: {readout: 'meanCompactness'},
       controls: ['showAxes', 'sliverThreshold', 'metric'],
-      readouts: ['meanCompactness', 'slivers']
+      readouts: ['meanCompactness', 'slivers', 'selected'],
+      stage: 'shape'
     },
     {
-      id: 'label-points',
-      title: 'Where should the label go?',
-      body: `The centroid is not always inside the polygon. \`GPULabelPoint\` finds the **pole of inaccessibility**, the point farthest from every edge (the polylabel idea; turf \`pointOnFeature\`), and its \`distances\` output is the radius of the largest circle around it.
-
-Turn on **Label points**, **Inscribed circles** and **Centroids** below: orange label points sit inside every area while pink centroids can fall outside a concave shape. Raise **Initial search grid** or **Refinement candidates** to see the trade between cost and accuracy on the long O'Hare corridor in the northwest.`,
+      id: 'label-point',
+      title: 'Label point',
+      headline: 'A label point must stay inside',
+      textAlternative:
+        'Centroid, interior label point and circle are distinct marks; a named loaded feature shows grid and refinement.',
+      body: `Centroid, label point and clearance circle are distinct marks. The O’Hare specimen is resolved from loaded names, then its selected initial grid and refinement lattice are drawn. Grid size and candidate count explain the approximation rather than claiming an exact label.`,
       camera: {zoom: 9.55, longitude: -87.7, latitude: 41.84, transitionMs: 1200},
+      optionsMode: 'fresh',
       options: {
         showLabels: true,
         showInscribed: true,
         showCentroids: true,
         showAxes: false,
-        metric: 'area'
+        metric: 'area',
+        showLabelSearch: true
       },
       highlight: {readout: 'centroidOutside'},
-      controls: [
-        'showLabels',
-        'showInscribed',
-        'showCentroids',
-        'initialGridSize',
-        'refinementCandidates'
-      ],
-      readouts: ['centroidOutside']
+      controls: ['initialGridSize', 'refinementCandidates', 'showLabelSearch'],
+      readouts: ['centroidOutside', 'labelClearance', 'labelSearch'],
+      stage: 'label'
     },
     {
       id: 'validity',
       title: 'Is the layer clean?',
-      body: `Before any overlay or join, check the geometry. \`GPUGeometryValidity\` writes a per-polygon bitmask (self-intersection, repeated vertices, crossing rings, holes outside the shell, orientation) with exact predicates and nothing read back.
-
-Chicago's census tracts wind their shells **clockwise**. Under the RFC 7946 convention every one is flagged amber (orientation only): a convention, not a topology error. Here **Ring orientation convention** is set to *Clockwise shells*, so the layer is all green (try *Counter-clockwise shells*). Switch **Inject six test defects** on: a bow-tie and a spike (self-intersection), a NaN and a repeated vertex turn red, a reversed ring turns amber, and the unclosed ring only shows with **Ring closure** set to *Explicit*. The real US counties layer trips one check on its own: six counties repeat a vertex.`,
+      headline: 'Convention differs from structural failure',
+      textAlternative:
+        'Neutral, amber and vermilion map classes distinguish valid geometry, convention-only orientation and structural bits.',
+      body: `\`GPUGeometryValidity\` writes a per-polygon bitmask. Orientation is a convention; self-intersection, repeated coordinates and other structural bits are not. Colour plus redundant defect outlines separate those meanings. The bar chart is resolved from per-bit counts; overflow is reported separately.`,
       camera: {longitude: -87.68, latitude: 41.83, zoom: 9.9, transitionMs: 1400},
       options: {
         dataset: 'chicago-tracts',
         metric: 'validity',
-        orientation: 'clockwise-shell',
+        orientation: 'counter-clockwise-shell',
         showLabels: false,
         showInscribed: false,
         showCentroids: false
       },
       highlight: {readout: 'validity'},
-      controls: ['orientation', 'injectDefects', 'ringClosure'],
-      readouts: ['validity']
+      controls: ['orientation', 'injectDefects'],
+      readouts: ['validity', 'validityConvention', 'validityStructural', 'validityOverflow'],
+      optionsMode: 'fresh',
+      stage: 'validity'
     },
     {
-      id: 'map-colouring',
-      title: 'Colour the map so neighbours differ',
-      body: `A categorical map needs touching polygons to have different colours. \`GPUContiguityWeights\` finds the neighbours and \`GPUMapColoring\` runs a Jones-Plassmann parallel greedy colouring over them: in each round every polygon that out-ranks its uncoloured neighbours picks the lowest free colour.
-
-The readout shows how many colours the result needed, how many conflicts remain (0 means a proper colouring) and how many rounds ran. Try another **Priority seed** below: each seed is a different valid colouring, and the count (at most max-degree + 1, typically 5 to 7) can change. Setting **Adjacency for colouring** to *Queen* also separates polygons that only meet at a corner.`,
+      id: 'colouring',
+      title: 'Neighbour colouring',
+      headline: 'Neighbour colours are nominal categories',
+      textAlternative:
+        'White seams make conflicts visible in a naive FIPS-mod comparison and a greedy nominal assignment.',
+      body: `Compare naive FIPS-mod classes with the GPU greedy colouring. The Set3-like palette is nominal, while white seams expose conflicts. Rook and queen change the graph; the rounds chart reports convergence. The greedy count is an upper bound, and generalised boundaries do not model nested-hole connectivity. Next: *Turn points and lines into new shapes around Chicago.*`,
       camera: {longitude: -96, latitude: 38.2, zoom: 3.45, transitionMs: 1600},
-      options: {dataset: 'us-counties', metric: 'mapColor', orientation: 'counter-clockwise-shell'},
+      optionsMode: 'fresh',
+      options: {
+        dataset: 'us-counties',
+        metric: 'mapColor',
+        coloringMethod: 'algorithm',
+        contiguity: 'rook'
+      },
       highlight: {readout: 'coloring'},
-      controls: ['colorSeed', 'contiguity'],
-      readouts: ['coloring']
-    },
-    {
-      id: 'limits',
-      title: 'Limits and things to try',
-      body: `**Limits.** Planar and spherical measures are only as good as the system you choose: pick the planar projection for your region. Spherical areas treat edges as straight in an equal-area projection, so very long edges and rings that enclose a pole are not supported. Validity does not check interior connectivity or nested holes; repair stays on the CPU. Map colouring is greedy, so the colour count is an upper bound, not the minimum. Tooltips and clicks use a small readback taken when the controls settle.
-
-**Try it.** Set **Hole rule** to *First ring is the shell* on US counties and watch the total area drop: second islands are subtracted. Switch **Adjacency for colouring** to *Queen* and compare the colour count. Set **Polygon layer** to *Chicago census tracts* and drag **Sliver threshold** until a few percent are flagged.`,
-      options: {dataset: 'us-counties', metric: 'area', holeRule: 'winding'},
-      highlight: {readout: 'areaWgs84'},
-      controls: ['holeRule', 'contiguity', 'dataset', 'sliverThreshold'],
-      readouts: ['areaWgs84', 'coloring', 'slivers']
+      controls: ['coloringMethod', 'contiguity'],
+      readouts: ['coloring', 'adjacencies'],
+      stage: 'colouring'
     }
   ],
 
@@ -530,7 +594,25 @@ The readout shows how many colours the result needed, how many conflicts remain 
   legends: state => {
     const legends: LegendSpec[] = [];
     const metric = state.metric;
-    if (metric === 'sliver') {
+    if (metric === 'area') {
+      legends.push(
+        getClassTableLegend(POLYGON_AREA_CLASSES, {title: 'WGS84 area', layout: 'list'})
+      );
+    } else if (metric === 'areaDistortion') {
+      legends.push(
+        getClassTableLegend(POLYGON_DISTORTION_CLASSES, {
+          title: 'Planar / WGS84 area',
+          layout: 'list'
+        })
+      );
+    } else if (metric === 'compactness') {
+      legends.push(
+        getClassTableLegend(POLYGON_COMPACTNESS_CLASSES, {
+          title: 'Polsby-Popper compactness',
+          layout: 'list'
+        })
+      );
+    } else if (metric === 'sliver') {
       legends.push({
         kind: 'categories',
         title: 'Slivers',
@@ -543,16 +625,13 @@ The readout shows how many colours the result needed, how many conflicts remain 
         ]
       });
     } else if (metric === 'validity') {
-      legends.push({
-        kind: 'categories',
-        title: 'Validity',
-        entries: [
-          {color: [...VALIDITY_COLORS[0], 255], label: 'Valid'},
-          {color: [...VALIDITY_COLORS[1], 255], label: 'Orientation only'},
-          {color: [...VALIDITY_COLORS[2], 255], label: 'Structural defect'}
-        ],
-        note: 'Structural: self-intersection, repeated vertex, NaN, crossing rings, hole outside shell, unclosed ring.'
-      });
+      legends.push(
+        getClassTableLegend(POLYGON_VALIDITY_CLASSES, {
+          title: 'Validity status',
+          layout: 'list',
+          note: 'Amber is convention-only; vermilion is structural.'
+        })
+      );
     } else if (metric === 'mapColor') {
       legends.push({
         kind: 'categories',
@@ -565,14 +644,9 @@ The readout shows how many colours the result needed, how many conflicts remain 
       });
     } else {
       legends.push({
-        kind: 'ramp',
-        id: 'value',
+        kind: 'categories',
         title: METRIC_TITLES[metric],
-        ramp: state.ramp,
-        extent: 'gpu',
-        sqrtScale: metric === 'area' || metric === 'vertices',
-        format: value => formatMetricValue(metric, value),
-        labels: undefined
+        entries: [{color: [100, 120, 145, 255], label: 'Continuous GPU value'}]
       });
     }
     const overlays: {color: [number, number, number, number]; label: string}[] = [];
@@ -594,6 +668,7 @@ The readout shows how many colours the result needed, how many conflicts remain 
 
   readouts: [
     {id: 'features', label: 'Polygons', format: 'integer'},
+    {id: 'areaClasses', label: 'Area class counts'},
     {id: 'vertices', label: 'Vertices', format: 'integer'},
     {id: 'areaWgs84', label: 'Total area, WGS84', help: 'Sum of the ellipsoidal areas.'},
     {id: 'areaSphere', label: 'Total area, sphere'},
@@ -607,6 +682,7 @@ The readout shows how many colours the result needed, how many conflicts remain 
       label: 'Worst planar overstatement',
       help: 'Largest planar / ellipsoid area ratio and where it occurs.'
     },
+    {id: 'distortionScatter', label: 'Ratio / latitude', kind: 'chart'},
     {id: 'meanCompactness', label: 'Mean compactness'},
     {id: 'slivers', label: 'Slivers', help: 'Polygons below the sliver threshold.'},
     {
@@ -614,12 +690,19 @@ The readout shows how many colours the result needed, how many conflicts remain 
       label: 'Centroids outside polygon',
       help: 'Concave shapes whose area-weighted centroid is not inside them.'
     },
+    {id: 'labelClearance', label: 'Selected clearance'},
+    {id: 'labelSearch', label: 'Grid / candidates', hood: true},
     {
       id: 'validity',
       label: 'Validity bits set',
       help: 'Features with each bit of the validity mask.'
     },
+    {id: 'validityConvention', label: 'Convention only'},
+    {id: 'validityStructural', label: 'Structural defects'},
+    {id: 'validityOverflow', label: 'Validity overflow', hood: true},
+    {id: 'validityBits', label: 'Validity bits', kind: 'chart'},
     {id: 'coloring', label: 'Map colouring'},
+    {id: 'coloringRounds', label: 'Greedy rounds', kind: 'chart'},
     {
       id: 'adjacencies',
       label: 'Neighbour slots',
@@ -627,6 +710,14 @@ The readout shows how many colours the result needed, how many conflicts remain 
       help: 'Directed adjacency entries of the contiguity graph.'
     },
     {id: 'selected', label: 'Selected polygon', help: 'Click a polygon to select it.'}
+  ],
+
+  pipeline: [
+    {id: 'measures', label: 'Measure', detail: 'Area systems and planar/WGS84 ratio.'},
+    {id: 'shape', label: 'Describe', detail: 'Compactness, long axis and reference circle.'},
+    {id: 'label', label: 'Place', detail: 'Initial grid and refinement candidates.'},
+    {id: 'validity', label: 'Validate', detail: 'Convention and structural bits.'},
+    {id: 'colouring', label: 'Colour', detail: 'Contiguity and greedy rounds.'}
   ],
 
   snippet: state => {

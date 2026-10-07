@@ -1,0 +1,104 @@
+/* Screen-anchored chart card. Map chrome: --map-* tokens only. */
+
+.map-inset {
+  position: absolute;
+  z-index: 17;
+  width: max-content;
+  min-width: 160px;
+  max-width: min(360px, 45%);
+  color: var(--map-ink);
+  font-family: var(--map-font);
+  font-size: var(--fs-sm, 12px);
+  background: color-mix(in srgb, var(--map-furniture-bg) 92%, transparent);
+  -webkit-backdrop-filter: blur(6px) saturate(1.1);
+  backdrop-filter: blur(6px) saturate(1.1);
+  border: 1px solid color-mix(in srgb, var(--map-ink) 14%, transparent);
+  border-radius: var(--radius-chrome, 8px);
+  box-shadow: var(--e2, 0 2px 8px rgb(0 0 0 / 0.16));
+}
+.map-inset[hidden] {
+  display: none;
+}
+.map-inset[data-corner^='top'] {
+  top: var(--map-inset-margin, 12px);
+}
+.map-inset[data-corner^='bottom'] {
+  bottom: var(--map-inset-margin, 12px);
+}
+.map-inset[data-corner$='right'] {
+  right: var(--map-inset-margin, 12px);
+}
+.map-inset[data-corner$='left'] {
+  left: var(--map-inset-margin, 12px);
+}
+
+.map-inset-toggle {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  min-height: 32px;
+  padding: 6px 12px;
+  color: var(--map-ink);
+  font: inherit;
+  font-weight: 600;
+  text-align: left;
+  background: none;
+  border: 0;
+  cursor: pointer;
+}
+.map-inset-toggle svg {
+  flex: none;
+  margin-left: auto;
+  color: var(--map-ink-muted);
+  transition: transform 0.15s var(--ease, ease);
+}
+.map-inset.is-collapsed .map-inset-toggle svg {
+  transform: rotate(180deg);
+}
+.map-inset-toggle:focus-visible {
+  outline: 2px solid var(--map-accent);
+  outline-offset: -2px;
+  border-radius: var(--radius-chrome, 8px);
+}
+.map-inset-title {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.map-inset-body {
+  padding: 0 10px 10px;
+  overflow: auto;
+  max-height: 50vh;
+}
+.map-inset-body > * {
+  max-width: 100%;
+}
+.map-inset.is-collapsed .map-inset-body {
+  display: none;
+}
+
+@media (max-width: 900px) {
+  .map-inset.is-collapsed {
+    min-width: 0;
+    border-radius: 999px;
+  }
+  .map-inset.is-collapsed .map-inset-toggle {
+    min-height: 36px;
+    padding: 6px 12px 6px 14px;
+  }
+}
+
+@media (pointer: coarse) {
+  .map-inset-toggle {
+    min-height: 44px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .map-inset-toggle svg {
+    transition: none;
+  }
+}

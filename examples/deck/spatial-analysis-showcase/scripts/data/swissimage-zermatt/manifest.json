@@ -1,0 +1,41 @@
+{
+  "id": "swissimage-zermatt",
+  "version": 1,
+  "kind": "raster",
+  "count": 262144,
+  "bbox": [7.743988037109375, 46.018899738911934, 7.749481201171875, 46.02271417608516],
+  "crs": "EPSG:3857",
+  "raster": {
+    "width": 512,
+    "height": 512,
+    "bounds": [7.743988037109375, 46.018899738911934, 7.749481201171875, 46.02271417608516],
+    "projection": "EPSG:3857",
+    "cellSizeGroundM": 0.83,
+    "file": "2024.png",
+    "encoding": "rgba8",
+    "unit": "sRGB",
+    "date": "2024",
+    "description": "Natural-colour SWISSIMAGE orthophoto, downsampled from zoom 18 WMTS tiles"
+  },
+  "rasters": {
+    "prior": {
+      "width": 512,
+      "height": 512,
+      "bounds": [7.743988037109375, 46.018899738911934, 7.749481201171875, 46.02271417608516],
+      "projection": "EPSG:3857",
+      "cellSizeGroundM": 0.83,
+      "file": "2018.png",
+      "encoding": "rgba8",
+      "unit": "sRGB",
+      "date": "2018",
+      "description": "Earlier natural-colour SWISSIMAGE observation used as the structural prior"
+    }
+  },
+  "properties": {
+    "source": "SWISSIMAGE Journey through time WMTS",
+    "attribution": "© swisstopo",
+    "tileMatrix": 18,
+    "sourcePixels": [1024, 1024],
+    "displayPixels": [512, 512]
+  }
+}

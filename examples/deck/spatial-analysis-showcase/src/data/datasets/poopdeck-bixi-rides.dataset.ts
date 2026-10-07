@@ -8,7 +8,7 @@ export default {
   license:
     'ODbL 1.0 (OSRM routes on OpenStreetMap) and Creative Commons Attribution (BIXI Montreal trip history)',
   attribution:
-    'BIXI Montréal open data; © OpenStreetMap contributors; routes via OSRM; poopdeck.gl',
+    'BIXI Montréal open data (CC BY); routes via OSRM on © OpenStreetMap contributors (ODbL); poopdeck.gl',
   sourceUrl: 'https://tiles.poopdeck.gl/data/bixi-points/manifest.json',
   approxBytes: 2_031_552,
   bbox: [-73.755, 45.415, -73.449, 45.702]

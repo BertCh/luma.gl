@@ -3,6 +3,7 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {COORDINATE_SYSTEM, type Layer} from '@deck.gl/core';
+import {HURRICANE_CLASS} from '../../cartography/hue-registry';
 import {
   getGPUTimeWindowParameterValues,
   GPU_TIME_WINDOW_PARAMETER_LENGTH,
@@ -26,7 +27,6 @@ import {
   getCategoryOfWind,
   getStormLabel,
   HURRICANE_CATEGORIES,
-  HURRICANE_CATEGORY_COLORS,
   loadHurricaneTracks
 } from './hurricane-data';
 
@@ -42,9 +42,9 @@ export type HurricaneSeasonOptions = {
   showTrails: boolean;
   trailDays: number;
   tailFade: number;
-  headColor: 'wind' | 'peak' | 'season';
+  headColor: 'wind' | 'peak';
+  denominator: 'active' | 'share';
   headSize: number;
-  ramp: 'viridis' | 'magma' | 'inferno' | 'cividis';
   showBackdrop: boolean;
   backdropOpacity: number;
 };
@@ -95,7 +95,6 @@ export async function createHurricaneSeason(
   const categoryBuffer = resources.createBuffer('category', storms.category);
   const windBuffer = resources.createBuffer('wind', storms.wind);
   const maxCategoryBuffer = resources.createBuffer('max-category', storms.maxCategoryWords);
-  const seasonBuffer = resources.createBuffer('season', Float32Array.from(storms.season));
   const trackMaskBuffer = resources.createBuffer('track-mask', new Uint32Array(trackCount).fill(1));
   const segmentMaskBuffer = resources.createBuffer(
     'segment-mask',
@@ -346,7 +345,8 @@ export async function createHurricaneSeason(
   let destroyed = false;
   let statusStale = true;
   let chartDay = -1;
-  let aliveByDay = new Float64Array(DAYS_IN_YEAR);
+  let lastDenominator: HurricaneSeasonOptions['denominator'] = ctx.options.denominator;
+  let activeByDay = Array.from({length: 4}, () => new Float64Array(DAYS_IN_YEAR));
   let selectedSeasonCount = 0;
 
   function writeMasks(): void {
@@ -369,34 +369,96 @@ export async function createHurricaneSeason(
       'seasonsShown',
       `${first} to ${last}: ${selected} storms in ${last - first + 1} seasons, ${(selected / selectedSeasonCount).toFixed(1)} per season`
     );
-    // Average storms alive on each day of the year in those seasons.
-    aliveByDay = new Float64Array(DAYS_IN_YEAR);
+    // Each selected storm contributes one classed active mark per day. The campfire is smoothed
+    // later, but its four bands always come from the same selected storms as the map.
+    activeByDay = Array.from({length: 4}, () => new Float64Array(DAYS_IN_YEAR));
     for (let track = 0; track < trackCount; track++) {
       if (!trackMask[track]) continue;
-      const alive = new Set<number>();
+      const strongestByDay = new Map<number, number>();
       for (let vertex = storms.offsets[track]; vertex < storms.offsets[track + 1]; vertex++) {
-        alive.add(Math.min(DAYS_IN_YEAR - 1, Math.floor(days[vertex])));
+        const day = Math.min(DAYS_IN_YEAR - 1, Math.floor(days[vertex]));
+        strongestByDay.set(day, Math.max(strongestByDay.get(day) ?? 0, storms.wind[vertex]));
       }
-      for (const day of alive) aliveByDay[day] += 1 / selectedSeasonCount;
+      for (const [day, wind] of strongestByDay) {
+        const category = getCategoryOfWind(wind);
+        const band = category === 0 ? 0 : category === 1 ? 1 : category <= 3 ? 2 : 3;
+        activeByDay[band][day] += 1;
+      }
     }
     chartDay = -1;
-    updateSparkline();
+    updateCampfire();
     statusStale = true;
     ctx.requestLayers();
   }
 
-  function updateSparkline(): void {
+  function updateCampfire(): void {
     const day = Math.min(DAYS_IN_YEAR - 1, Math.max(0, Math.floor(playhead)));
-    if (day === chartDay) return;
+    if (day === chartDay && ctx.options.denominator === lastDenominator) return;
     chartDay = day;
-    ctx.setChart('aliveSpark', {
-      kind: 'sparkline',
-      values: aliveByDay,
-      highlight: day,
-      height: 44,
-      description:
-        'Average number of storms alive on each day of the year in the chosen seasons. The dot is the playhead day.'
+    lastDenominator = ctx.options.denominator;
+    const divisor = ctx.options.denominator === 'share' ? selectedSeasonCount : 1;
+    const smooth = (values: Float64Array) =>
+      Float64Array.from(values, (_, index) => {
+        let total = 0;
+        let count = 0;
+        for (
+          let neighbor = Math.max(0, index - 2);
+          neighbor <= Math.min(DAYS_IN_YEAR - 1, index + 2);
+          neighbor++
+        ) {
+          total += values[neighbor] / divisor;
+          count++;
+        }
+        return total / count;
+      });
+    const bands = activeByDay.map(smooth);
+    const cumulative = bands.map((band, index) =>
+      Float64Array.from(
+        band,
+        (value, dayIndex) =>
+          value + bands.slice(0, index).reduce((sum, lower) => sum + lower[dayIndex], 0)
+      )
+    );
+    const x = Array.from({length: 245}, (_, index) => index + 120);
+    const labels = ['TD', 'TS', 'hurricane (Cat 1–2)', 'major (Cat 3–5)'];
+    ctx.setChart('seasonCampfire', {
+      kind: 'line',
+      series: cumulative.map((band, index) => ({
+        label: labels[index],
+        x,
+        y: band.slice(120, 365),
+        area: true,
+        color: index,
+        width: 1.2
+      })),
+      xLabel: 'month (May–Dec)',
+      yLabel:
+        ctx.options.denominator === 'share' ? 'share of selected seasons active' : 'storms active',
+      formatX: value => formatDayOfYear(value),
+      formatY: value =>
+        ctx.options.denominator === 'share' ? `${(value * 100).toFixed(0)}%` : value.toFixed(0),
+      markers: [
+        {x: day, label: 'playhead'},
+        {x: 252, label: 'NHC climatological reference: 10 Sep'}
+      ],
+      height: 150,
+      description: `Five-day-smoothed stacked active storm bands from 1 May to 31 December, shown as ${ctx.options.denominator === 'share' ? 'share of selected seasons active' : 'storms active'}. The 10 September rule is an external NHC climatological reference, not a result calculated from this subset.`
     });
+    const totals = activeByDay.map(band => band.reduce((sum, value) => sum + value, 0));
+    const peak = Math.max(
+      ...Array.from({length: DAYS_IN_YEAR}, (_, index) =>
+        activeByDay.reduce((sum, band) => sum + band[index], 0)
+      )
+    );
+    ctx.setReadout('peakActive', `${peak.toFixed(0)} storms active (unsmoothed selected total)`);
+    ctx.setReadout(
+      'peakShare',
+      `${((peak / selectedSeasonCount) * 100).toFixed(1)}% of selected seasons active`
+    );
+    ctx.setReadout(
+      'categoryComposition',
+      labels.map((label, index) => `${label} ${totals[index].toFixed(0)}`).join(' · ')
+    );
   }
 
   // ---- Readback ----------------------------------------------------------------------------------
@@ -461,6 +523,10 @@ export async function createHurricaneSeason(
         case 'seasons':
           writeMasks();
           break;
+        case 'denominator':
+          chartDay = -1;
+          updateCampfire();
+          break;
         case 'time':
         case 'playing':
         case 'speed':
@@ -487,7 +553,7 @@ export async function createHurricaneSeason(
         'clock',
         `${formatDayOfYear(playhead)}, ${String(hours % 24).padStart(2, '0')}:00 UTC`
       );
-      updateSparkline();
+      updateCampfire();
 
       playheadParameters.write(
         getGPUTrajectoryPlayheadParameterValues({
@@ -551,7 +617,7 @@ export async function createHurricaneSeason(
             valueFormat: 'uint32',
             valueIndices: segmentEndsBuffer,
             colormap: 'category',
-            palette: HURRICANE_CATEGORY_COLORS,
+            palette: HURRICANE_CLASS[ctx.ground()],
             widthPixels: 2.6
           })
         );
@@ -562,21 +628,14 @@ export async function createHurricaneSeason(
               values: headCategory,
               valueFormat: 'uint32' as const,
               colormap: 'category' as const,
-              palette: HURRICANE_CATEGORY_COLORS
+              palette: HURRICANE_CLASS[ctx.ground()]
             }
-          : options.headColor === 'peak'
-            ? {
-                values: maxCategoryBuffer,
-                valueFormat: 'uint32' as const,
-                colormap: 'category' as const,
-                palette: HURRICANE_CATEGORY_COLORS
-              }
-            : {
-                values: seasonBuffer,
-                valueFormat: 'float32' as const,
-                valueRange: [FIRST_SEASON, LAST_SEASON] as const,
-                colormap: options.ramp
-              };
+          : {
+              values: maxCategoryBuffer,
+              valueFormat: 'uint32' as const,
+              colormap: 'category' as const,
+              palette: HURRICANE_CLASS[ctx.ground()]
+            };
       layers.push(
         new SpatialAnalysisPointLayer({
           id: 'season-head-halo',

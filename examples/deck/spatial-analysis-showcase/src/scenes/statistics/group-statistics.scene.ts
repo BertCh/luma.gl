@@ -2,11 +2,15 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {getClassTableLegend} from '../../cartography/class-table';
+import {CREDITS, joinCredits} from '../../cartography/credits';
+import {CHICAGO, CITY_FRAMES, labelsFor} from '../../cartography/gazetteer';
+import {ground} from '../../cartography/grounds';
+import {EFFORT_CAVEAT} from '../../cartography/hue-registry';
 import {defineScene, type LegendSpec} from '../scene';
 import {GROUP_METRICS} from './b5-group-metrics';
-import {formatCompact, getLegendData} from './b5-legend-bus';
-import {NATURE_CATEGORY_COLORS} from './b5-palettes';
 import type {GroupStatisticsLegend, GroupStatisticsOptions} from './group-statistics.compute';
+import {getMetricLegendCopy} from './group-statistics.style';
 
 const NATURE_GROUPS = [
   'Plants',
@@ -21,33 +25,180 @@ const NATURE_GROUPS = [
   'Other life'
 ] as const;
 
+/** The lakefront of the North Side, where the busiest areas are. */
+const NORTH_LAKEFRONT_BOUNDS = [-87.72, 41.86, -87.58, 42.02] as const;
+/** The North Side, wide enough to show tracts of the busiest areas. */
+const NORTH_SIDE_BOUNDS = [-87.8, 41.9, -87.6, 42.02] as const;
+
+const CHICAGO_FRAME = {...CITY_FRAMES.chicago, transitionMs: 1400};
+
+const CREDIT = joinCredits(
+  CREDITS.iNaturalist,
+  CREDITS.cityOfChicago,
+  'US Census ACS 2018-2022 via CDC SVI 2022 (public domain)',
+  CREDITS.colorBrewer
+);
+
+/** The cartouche of one step (the standing sample line is set from the data at create). */
+const cartouche = (
+  title: string,
+  subtitle: string,
+  chips: readonly string[] = ['Observer effort']
+) => ({title, subtitle, chips});
+
+/** Names that orient the reader in every step, from the Chicago gazetteer (drawn above the data). */
+const ORIENTATION = labelsFor(CHICAGO, ['lake-michigan']);
+
+function getLegends(
+  state: GroupStatisticsOptions,
+  data: Readonly<Record<string, unknown>>
+): LegendSpec[] {
+  const shared = data['groupStatistics'] as GroupStatisticsLegend | undefined;
+  if (!shared) return [];
+  const legends: LegendSpec[] = [];
+  const metric =
+    GROUP_METRICS.find(
+      entry => entry.id === (state.zoning === 'areas' ? state.metric : 'perThousand')
+    ) ?? GROUP_METRICS[0];
+  if (state.zoning === 'areas' && state.view === 'counts') {
+    legends.push({
+      kind: 'size',
+      title: 'Records per area',
+      layout: 'nested',
+      entries: shared.circleEntries,
+      color: shared.circleColor,
+      unit: 'records',
+      note: 'Circle area is proportional to the count, on one scale for every area.'
+    });
+    return legends;
+  }
+  const copy = getMetricLegendCopy(metric);
+  if (metric.family === 'hour' && state.zoning === 'areas') {
+    legends.push({
+      kind: 'cyclic',
+      title: 'Median hour of the day',
+      colors: shared.hourColors,
+      labels: ['0:00', '6:00', '12:00', '18:00'],
+      note: 'Three-hour classes; the ring wraps at midnight.'
+    });
+    if (state.minimumObservations > 0) {
+      legends.push({
+        kind: 'categories',
+        title: 'Withheld',
+        entries: [
+          {
+            color: shared.noDataColor,
+            label: `Fewer than ${state.minimumObservations} observations`,
+            shape: 'hatch'
+          }
+        ]
+      });
+    }
+    return legends;
+  }
+  const swipeNote =
+    state.zoning === 'swipe'
+      ? ' Counts are for the tracts on the right; both sides share the classes.'
+      : state.zoning === 'tracts'
+        ? ' Counts are tracts.'
+        : '';
+  legends.push(
+    getClassTableLegend(shared.table, {
+      title: copy.title,
+      id: 'classes',
+      basis: copy.basis,
+      counts: shared.counts,
+      interactive: true,
+      layout: 'list',
+      note: `${shared.table.method ?? ''}${copy.note ? ` ${copy.note}` : ''}${swipeNote}`.trim()
+    })
+  );
+  return legends;
+}
+
+function getSnippet(state: GroupStatisticsOptions): string {
+  return `import {GPUGroupStatistics, GPUKeyJoin} from '@luma.gl/experimental/gpu-dataframe';
+
+// keys: community area index per record (0xffffffff = none); a dense table of 77 groups.
+// mask: one word per record, rewritten from the filters (group ${state.natureGroup}, hours ${state.hours[0]} to ${state.hours[1]}, identification ${state.gradeFilter}).
+graph.add(new GPUGroupStatistics({
+  keys: observationArea, mask: filterMask, keyCount: 77,
+  variance: '${state.variance}', percentiles,        // fractions [${state.lowerFraction}, 0.5, ${state.upperFraction}] are a per-frame buffer
+  columns: [
+    {values: hour, statistics: ['mean', 'median', 'standardDeviation', 'percentiles', 'mode'], output: hourOutput},
+    {values: researchGrade, statistics: ['sum', 'mean'], output: gradeOutput},
+    {values: category, statistics: ['mode', 'uniqueCount'], output: categoryOutput},
+    {values: taxon, statistics: ['uniqueCount'], output: taxonOutput},
+    {values: introduced, statistics: ['mean'], output: introducedOutput}
+  ],
+  output: {keys, counts, count, overflow}
+}));
+
+// 1:n join: sum what lives in the tracts of each area. Income is joined as income x residents,
+// so the area mean is weighted by people.
+graph.add(new GPUKeyJoin({
+  leftKeys: areaIds, rightKeys: tractArea,
+  aggregates: [
+    {operation: 'sum', column: population, output: populationSum},
+    {operation: 'sum', column: incomeTimesPopulation, output: incomeSum},
+    {operation: 'sum', column: populationWithIncome, output: incomePopulation},
+    {operation: 'count', output: tractCount}
+  ],
+  output: {}
+}));
+
+// Gather the area value onto every tract (${state.joinKind} join). Areas under ${state.minimumObservations} records are masked out.
+graph.add(new GPUKeyJoin({
+  kind: '${state.joinKind}', leftKeys: tractArea, rightKeys: areaIds,
+  rightMask: areaHasEnoughRecords,
+  gather: [{column: areaValue, output: tractValue}],
+  output: {matched${state.joinKind === 'inner' ? ',\n    rows: {ids, count, overflow}' : ''}}
+}));`;
+}
+
 export default defineScene<GroupStatisticsOptions>({
   id: 'group-statistics',
   title: 'Wildlife by community area, joined to who lives there',
   chapter: 'statistics',
-  order: 6,
+  order: 3,
   summary:
-    'Group 43,600 Chicago nature observations by community area and compute a dozen statistics per area on the GPU, then join census attributes by key to turn counts into rates and paint area results back onto tracts.',
+    'Group iNaturalist records by community area on the GPU, divide them by the residents a key join adds up, withhold the small groups, and see how the answer changes with the filter and with the zoning.',
   contributors: ['GPUGroupStatistics', 'GPUKeyJoin'],
   datasets: [
     {
       id: 'chicago-nature',
-      role: '43,557 observations with hour, group, species, research grade, introduced flag and community area'
+      role: 'iNaturalist records with hour, group, taxon, research grade, introduced flag and community area'
     },
     {id: 'chicago-community-areas', role: 'the 77 groups'},
-    {id: 'chicago-tracts', role: '791 tracts with population, income and poverty'}
+    {id: 'chicago-tracts', role: 'census tracts with population, income and records per tract'}
   ],
-  initialView: {longitude: -87.68, latitude: 41.84, zoom: 9.9},
+  initialView: {...CITY_FRAMES.chicago},
 
   options: [
     {
       kind: 'select',
+      id: 'view',
+      label: 'Show',
+      group: 'Map',
+      apply: 'param',
+      display: 'segmented',
+      default: 'rates',
+      disabledWhen: state => state.zoning !== 'areas',
+      help: 'Counts are drawn as circles sized by the records of each area, over unfilled areas. The statistic below is drawn as a classed fill. Both read the same GPU group table; this only picks which one is drawn.',
+      options: [
+        {value: 'counts', label: 'Records'},
+        {value: 'rates', label: 'Per 1,000 residents'}
+      ]
+    },
+    {
+      kind: 'select',
       id: 'metric',
-      label: 'Statistic mapped',
+      label: 'Statistic',
       group: 'Map',
       apply: 'param',
       default: 'perThousand',
-      help: 'All statistics are computed in one graph run; a small kernel picks the slot the layer reads, so switching never recompiles.',
+      disabledWhen: state => state.zoning !== 'areas',
+      help: 'Every statistic is computed in one graph run; a small kernel picks the slot the layer reads, so switching never recompiles. Tracts always show the rate.',
       options: GROUP_METRICS.map(metric => ({
         value: metric.id,
         label: metric.label,
@@ -56,16 +207,51 @@ export default defineScene<GroupStatisticsOptions>({
     },
     {
       kind: 'select',
-      id: 'level',
-      label: 'Draw',
+      id: 'classification',
+      label: 'Rate classes',
       group: 'Map',
       apply: 'param',
-      default: 'areas',
-      help: 'Community areas are the groups. Tracts show the result of a second GPUKeyJoin that gathers the area value onto every tract of the area.',
+      display: 'segmented',
+      default: 'manual',
+      disabledWhen: state => state.metric !== 'perThousand' || state.zoning !== 'areas',
+      help: 'Manual breaks are roughly logarithmic because the rates are heavy-tailed. Quantile and equal-interval breaks are computed once from the unfiltered rates and then frozen, so filters change colours, never classes.',
       options: [
-        {value: 'areas', label: 'Community areas (the groups)'},
-        {value: 'tracts', label: 'Census tracts (via key join)'}
+        {value: 'manual', label: 'Manual'},
+        {value: 'quantile', label: 'Quantile'},
+        {value: 'equal', label: 'Equal'}
       ]
+    },
+    {
+      kind: 'select',
+      id: 'zoning',
+      label: 'Zoning',
+      group: 'Map',
+      apply: 'param',
+      display: 'segmented',
+      default: 'areas',
+      help: 'Community areas are the groups. Tracts show the records of each tract over its residents, on the same classes. The swipe draws both with a divider.',
+      options: [
+        {value: 'areas', label: 'Areas'},
+        {value: 'tracts', label: 'Tracts'},
+        {value: 'swipe', label: 'Swipe'}
+      ]
+    },
+    {
+      kind: 'slider',
+      id: 'minimumObservations',
+      label: 'Minimum observations',
+      group: 'Small groups',
+      apply: 'param',
+      min: 0,
+      max: 500,
+      step: 10,
+      default: 0,
+      unit: 'records',
+      describe: value =>
+        value === 0
+          ? 'No area is withheld'
+          : `Areas with fewer than ${value} records are withheld and hatched`,
+      help: 'A statistic computed from a handful of records says little. Areas under this many records in the filter are withheld (NaN in the display kernel), hatched on the map, and masked out of the tract join.'
     },
     {
       kind: 'select',
@@ -74,7 +260,7 @@ export default defineScene<GroupStatisticsOptions>({
       group: 'Filter (GPU mask)',
       apply: 'param',
       default: 'ALL',
-      help: 'A GPU kernel builds the row mask from these options; GPUGroupStatistics skips masked rows. A four-word parameter write.',
+      help: 'A kernel builds the row mask from these options; GPUGroupStatistics skips masked rows. A handful of parameter words, no rebuild.',
       options: [
         {value: 'ALL', label: 'All groups'},
         ...NATURE_GROUPS.map(group => ({value: group, label: group}))
@@ -91,7 +277,7 @@ export default defineScene<GroupStatisticsOptions>({
       step: 1,
       default: [0, 24],
       format: value => `${value}:00`,
-      help: 'Keep observations from the first hour up to (not including) the second. Birders start early; insects and plants peak around midday.'
+      help: 'Keep records from the first hour up to, not including, the second.'
     },
     {
       kind: 'select',
@@ -100,51 +286,53 @@ export default defineScene<GroupStatisticsOptions>({
       group: 'Filter (GPU mask)',
       apply: 'param',
       default: 'all',
-      help: 'Restrict to observations whose identification the community has confirmed (research grade), or not yet.',
+      help: 'Keep only records whose identification the community has confirmed (research grade), or only those not yet confirmed.',
       options: [
-        {value: 'all', label: 'All observations'},
+        {value: 'all', label: 'All records'},
         {value: 'research', label: 'Research grade'},
         {value: 'unconfirmed', label: 'Not yet confirmed'}
       ]
     },
     {
-      kind: 'select',
-      id: 'variance',
-      label: 'Variance kind',
-      group: 'Statistics',
-      apply: 'compile',
-      default: 'sample',
-      help: 'Sample (n - 1, as d3 and kepler.gl) or population (n) variance for the standard deviation and the per-row z-score. Compile-time: compiles another graph.',
-      options: [
-        {value: 'sample', label: 'Sample (n - 1)'},
-        {value: 'population', label: 'Population (n)'}
-      ]
-    },
-    {
       kind: 'slider',
       id: 'lowerFraction',
-      label: 'Lower percentile of the hour',
-      group: 'Statistics',
+      label: 'Lower percentile',
+      group: 'Hour statistics',
       apply: 'param',
       min: 0.05,
       max: 0.45,
       step: 0.05,
       default: 0.1,
       format: value => `P${Math.round(value * 100)}`,
-      help: 'The percentiles fractions of GPUGroupStatistics are a per-frame parameter buffer.'
+      help: 'The lower percentile of the observation hour. The fractions of GPUGroupStatistics are a per-frame parameter buffer; the rose chart colours the hours between the two percentiles.'
     },
     {
       kind: 'slider',
       id: 'upperFraction',
-      label: 'Upper percentile of the hour',
-      group: 'Statistics',
+      label: 'Upper percentile',
+      group: 'Hour statistics',
       apply: 'param',
       min: 0.55,
       max: 0.95,
       step: 0.05,
       default: 0.9,
       format: value => `P${Math.round(value * 100)}`,
-      help: 'Upper quantile of the observation hour.'
+      help: 'The upper percentile of the observation hour.'
+    },
+    {
+      kind: 'select',
+      id: 'variance',
+      label: 'Variance kind',
+      group: 'Hour statistics',
+      apply: 'compile',
+      display: 'segmented',
+      default: 'sample',
+      expert: true,
+      help: 'Sample (n - 1, as d3 and kepler.gl) or population (n) variance behind the spread of the hour in the tooltip. Compile-time: compiles another graph.',
+      options: [
+        {value: 'sample', label: 'Sample (n - 1)'},
+        {value: 'population', label: 'Population (n)'}
+      ]
     },
     {
       kind: 'select',
@@ -152,227 +340,322 @@ export default defineScene<GroupStatisticsOptions>({
       label: 'Join kind (areas onto tracts)',
       group: 'Key join',
       apply: 'compile',
+      display: 'segmented',
       default: 'left',
-      help: 'Left keeps every tract aligned with its row; inner also compacts the matched tract rows into a list. Both gather the area statistic. Compile-time.',
+      expert: true,
+      help: 'Left keeps every tract aligned with its row; inner also compacts the matched tract rows into a list. Both gather the area statistic, and areas below the minimum are masked out. Compile-time.',
       options: [
-        {value: 'left', label: 'Left join (every tract keeps its row)'},
-        {value: 'inner', label: 'Inner join (compact the matched tracts)'}
+        {value: 'left', label: 'Left'},
+        {value: 'inner', label: 'Inner'}
       ]
-    },
-    {
-      kind: 'slider',
-      id: 'minimumObservations',
-      label: 'Right-side mask: areas with at least',
-      group: 'Key join',
-      apply: 'param',
-      min: 0,
-      max: 5000,
-      step: 250,
-      default: 0,
-      unit: 'observations',
-      help: 'The area table is the right side of the tract join. Areas below this many observations are masked out: their tracts do not match and the area is drawn gray.'
-    },
-    {
-      kind: 'toggle',
-      id: 'showObservations',
-      label: 'Show observations colored by hour z-score',
-      group: 'Display',
-      apply: 'param',
-      default: false,
-      help: 'GPUGroupStatistics also writes a z-score per observation: how unusual its hour is inside its own area. Blue is earlier than the area average, red later.'
-    },
-    {
-      kind: 'toggle',
-      id: 'outlines',
-      label: 'Tract outlines',
-      group: 'Display',
-      apply: 'param',
-      default: false,
-      help: 'Draw tract boundaries more boldly when drawing tracts.'
     }
   ],
 
   readouts: [
-    {id: 'observations', label: 'Observations in the filter'},
     {
-      id: 'groups',
-      label: 'Groups',
-      help: 'Rows of the dense group table (community areas 1 to 77).'
+      id: 'observations',
+      label: 'Records in the filter',
+      help: 'Rows that pass the GPU mask and carry an area key. Records outside every area get no key and are skipped.'
     },
-    {id: 'highest', label: 'Highest areas'},
-    {id: 'lowest', label: 'Lowest areas'},
-    {id: 'join', label: 'Key join result'},
+    {
+      id: 'citywideRate',
+      label: 'Citywide rate',
+      emphasis: 'tile',
+      help: 'All records in the filter over all residents: the number every area is compared with.'
+    },
+    {
+      id: 'medianRate',
+      label: 'Median area rate',
+      help: 'The middle of the area rates: the typical area, usually below the citywide rate because a few busy areas pull the city figure up.'
+    },
+    {id: 'threshold', label: 'Minimum observations'},
+    {
+      id: 'suppressedAreas',
+      label: 'Areas withheld',
+      emphasis: 'tile',
+      help: 'Areas with fewer records in the filter than the minimum.'
+    },
+    {
+      id: 'suppressedShare',
+      label: 'Share of records in them',
+      help: 'The records of the withheld areas, as a share of all records in the filter.'
+    },
+    {
+      id: 'suppressedPeople',
+      label: 'Residents of the withheld areas',
+      emphasis: 'tile',
+      help: 'Residents the join adds up over the tracts of the withheld areas.'
+    },
+    {
+      id: 'runs',
+      label: 'Records per area',
+      kind: 'chart',
+      help: 'The sorted runs: one bar per group, largest first, on a log scale. Grey bars are withheld. Click a bar to outline the area.'
+    },
+    {
+      id: 'hours',
+      label: 'Records by hour',
+      kind: 'chart',
+      help: 'The selected area, or the busiest one when none is selected, against the citywide shape. Click an area on the map to change it.'
+    },
+    {
+      id: 'hourSpan',
+      label: 'Hours between the percentiles',
+      help: 'The lower and upper percentile of the hour in the selected area, from the percentile sliders.'
+    },
+    {
+      id: 'earliestMedian',
+      label: 'Earliest median hour',
+      help: 'Among the areas that are not withheld.'
+    },
+    {
+      id: 'latestMedian',
+      label: 'Latest median hour',
+      help: 'Among the areas that are not withheld.'
+    },
+    {
+      id: 'spearman',
+      label: 'Rank correlation, income and rate',
+      emphasis: 'tile',
+      help: "Spearman's rho between population-weighted income and records per 1,000 residents, over the areas that are not withheld. An association between areas, not a cause."
+    },
+    {
+      id: 'joinResult',
+      label: 'Key join result',
+      help: 'How many tracts the gather join matched to an area that passes the minimum (left join), or kept (inner join).'
+    },
+    {
+      id: 'incomeScatter',
+      label: 'Income against rate',
+      kind: 'chart',
+      help: 'One dot per area that is not withheld: weighted income on x, records per 1,000 residents on a log y axis. Click a dot to find the area.'
+    },
+    {
+      id: 'tractMax',
+      label: 'Highest tract rate',
+      emphasis: 'tile',
+      help: 'The largest records-per-1,000 value of any tract. Tracts with few residents swing widely.'
+    },
+    {
+      id: 'notTopInside',
+      label: 'Tracts below the top class inside top-class areas',
+      help: 'Tracts whose rate is under the top class although their community area is in it.'
+    },
+    {
+      id: 'topOutside',
+      label: 'Top-class tracts outside top-class areas',
+      help: 'Tracts in the top class that sit in an area whose average rate is lower.'
+    },
+    {id: 'emptyTracts', label: 'Tracts with no record at all'},
     {
       id: 'selected',
       label: 'Selected area',
-      help: 'Click an area to pin all its statistics; hover shows them too.'
+      help: 'Click an area to pin it; hover shows its statistics too.'
+    },
+    {
+      id: 'groups',
+      label: 'Groups in the table',
+      hood: true,
+      help: 'Rows of the dense group table (community areas 1 to 77), and the capacity flag.'
     }
   ],
 
-  legends: state => {
-    const data = getLegendData<GroupStatisticsLegend>('group-statistics');
-    const metric = GROUP_METRICS.find(entry => entry.id === state.metric) ?? GROUP_METRICS[0];
-    const legends: LegendSpec[] = [];
-    if (metric.kind === 'category') {
-      legends.push({
-        kind: 'categories',
-        title: metric.label,
-        entries: (data?.modalGroups ?? []).map(type => ({
-          color: NATURE_CATEGORY_COLORS[type.index] ?? [150, 150, 150, 255],
-          label: `${type.name}: ${type.areas} areas`
-        })),
-        note: 'The mode of the category column per area.'
-      });
-    } else {
-      legends.push({
-        kind: 'ramp',
-        id: 'value',
-        title: metric.label,
-        ramp:
-          metric.id.startsWith('hour') &&
-          metric.id !== 'hourSd' &&
-          metric.id !== 'hourSkew' &&
-          metric.id !== 'hourKurtosis'
-            ? 'cividis'
-            : 'magma',
-        extent: 'gpu',
-        unit: metric.unit,
-        format: value => formatCompact(value)
-      });
+  pipeline: [
+    {id: 'mask', label: 'Mask', detail: 'A kernel turns the filters into one mask word per record'},
+    {
+      id: 'sort',
+      label: 'Sort by area',
+      detail: 'A stable radix sort puts each area in one run of rows'
+    },
+    {
+      id: 'runs',
+      label: 'Runs',
+      detail: 'One binary search per key finds the run; its length is the count'
+    },
+    {
+      id: 'stats',
+      label: 'Stats',
+      detail: 'Exact counts and sums; a value sort per group for median, percentiles and mode'
+    },
+    {
+      id: 'join',
+      label: 'Join',
+      detail: 'Sort the tracts by key, sum onto the areas, gather the area value back'
     }
-    if (state.showObservations) {
-      legends.push({
-        kind: 'ramp',
-        title: 'Observation hour vs. area average (z-score)',
-        ramp: 'diverging',
-        extent: [-2.5, 2.5],
-        labels: ['earlier', 'later']
-      });
-    }
-    return legends;
+  ],
+
+  legends: getLegends,
+
+  basemap: ground('paperCity'),
+  furniture: {
+    title: cartouche('Where is nature logged, per resident?', 'Records per area, 2023'),
+    credit: CREDIT,
+    caveat: EFFORT_CAVEAT
   },
+  annotations: ORIENTATION,
 
-  snippet:
-    state => `import {GPUGroupStatistics, GPUKeyJoin} from '@luma.gl/experimental/gpu-dataframe';
-
-// keys: community area index per observation (0xffffffff = none); dense table of 77 groups.
-graph.add(new GPUGroupStatistics({
-  keys: observationArea, mask: filterMask, keyCount: 77,
-  variance: '${state.variance}', percentiles,         // per-frame fractions [${state.lowerFraction}, 0.5, ${state.upperFraction}]
-  columns: [
-    {values: hour, statistics: ['mean', 'median', 'standardDeviation', 'percentiles',
-      'mode', 'uniqueCount', 'skewness', 'kurtosis', 'minimum', 'maximum', 'zScore'], output: hourOutput},
-    {values: grade, statistics: ['sum', 'mean'], output: gradeOutput},
-    {values: category, statistics: ['mode', 'uniqueCount'], output: categoryOutput},
-    {values: species, statistics: ['uniqueCount'], output: speciesOutput},
-    {values: introduced, statistics: ['mean'], output: introducedOutput}
-  ],
-  output: {keys, counts, count, overflow}
-}));
-
-// 1:n join: sums and means of the tracts inside each area.
-graph.add(new GPUKeyJoin({
-  leftKeys: areaIds, rightKeys: tractArea,
-  aggregates: [
-    {operation: 'sum', column: population, output: populationSum},
-    {operation: 'mean', column: perCapitaIncome, output: incomeMean},
-    {operation: 'count', output: tractCount}
-  ],
-  output: {}
-}));
-
-// Gather the area statistic onto every tract (${state.joinKind} join).
-graph.add(new GPUKeyJoin({
-  kind: '${state.joinKind}', leftKeys: tractArea, rightKeys: areaIds,
-  rightMask: areaHasEnoughObservations,                     // areas below ${state.minimumObservations} observations are ignored
-  gather: [{column: areaStatistic, output: tractStatistic}],
-  output: {matched${state.joinKind === 'inner' ? ',\n    rows: {ids, count, overflow}' : ''}}
-}));`,
+  snippet: getSnippet,
 
   about: {
-    what: '`GPUGroupStatistics` groups rows by a 32- or 64-bit key and computes kepler-style statistics per group and value column on the GPU: count, sum, mean, minimum, maximum, variance, standard deviation, skewness, kurtosis, median, percentiles, mode, distinct count and a per-row z-score. `GPUKeyJoin` attaches a right table to a left table by key, as a 1:1 gather or a 1:n aggregate, left or inner.',
-    why: 'Almost every dashboard is "group by and join": sightings by area, rates by population, areas back onto tracts. Doing it on the GPU keeps the table next to the data, so changing a filter recomputes 43,600 rows in a frame and nothing is read back except a few kilobytes of results.',
+    what: '`GPUGroupStatistics` groups rows by a 32- or 64-bit key and computes statistics per group on the GPU: counts, sums, means, deviations, median, percentiles, mode and distinct counts. Here the key is the community area of a record and the table is dense, so empty areas keep a row. `GPUKeyJoin` attaches a right table to a left table by key, as a 1:1 gather or a 1:n aggregate, left or inner: it adds up the residents and the income of the tracts of each area, and paints the area value back onto the tracts.',
+    why: 'Almost every dashboard is "group by, then join": records by area, rates by population, areas back onto tracts. Doing it on the GPU keeps the table next to the data, so a filter regroups every record in a frame and only a few kilobytes are read back.',
     howToRead:
-      'Each community area is one group. Its colour is the chosen statistic of the observations inside it. Switch to tracts to see the same value gathered by key. Hover for the full statistics of an area. Matches pandas groupby/merge, numpy percentiles and d3 statistics.'
+      'Circles are counts, sized by area; fills are rates, classed. Hatched areas are withheld because too few records stand behind them. Class breaks are computed once from the unfiltered table, so colours change with a filter and classes do not. The hour is treated as a plain number, not a circle, which is fine for a daytime pastime and wrong for night-time groups. Population comes from the American Community Survey (estimates), the denominator of every rate: records follow observers, so a rate here measures how much a place is watched as well as what lives there. Matches pandas groupby and merge, numpy percentiles and d3 statistics.'
   },
 
   create: async ctx => (await import('./group-statistics.compute')).createGroupStatistics(ctx),
 
   story: [
     {
-      id: 'question',
-      title: 'Where is nature watched the most, per resident?',
-      body: 'People logged **43,557 wild plants, animals and fungi** in Chicago on iNaturalist in 2023. Counting them by community area is a *group by*, and the raw count rewards big parks: Lincoln Park has the most (5,526), then Uptown (4,887) and Lincoln Square (4,142).\n\n`GPUGroupStatistics` groups every observation by its community area on the GPU. `GPUKeyJoin` then attaches the **population** of the 791 tracts inside each area by key, so with **Statistic mapped** set below the map shows **observations per 1,000 residents**. Citywide that is 16; North Park stands out at 165, ten times the average, and Lincoln Square (98), Uptown (85) and South Deering (82) follow. Observations follow observers, so a rate here measures how much a place is watched as much as what lives there: always ask what the denominator is.',
-      options: {metric: 'perThousand'},
-      camera: {longitude: -87.68, latitude: 41.84, zoom: 9.9},
-      controls: ['metric'],
-      readouts: ['highest', 'lowest'],
-      highlight: {readout: 'highest'}
+      id: 'counts-vs-rates',
+      title: 'Counting is not comparing',
+      headline: 'Counts follow parks and people; rates divide',
+      textAlternative:
+        'Map of the Chicago community areas with proportional circles for the number of nature records in each: the largest circles lie on the North Side. Switching to rates fills each area from pale yellow to dark blue.',
+      body: 'Each circle is a community area, sized by the records logged there (**{{observations}}**). Switch **Show** to *Per 1,000 residents*: the same records divided by the people who live there, against **{{citywideRate}}** citywide, with a median area at **{{medianRate}}**. The busiest area is not the most watched per resident.\n\n*Counts need symbols; rates earn a fill.*',
+      options: {view: 'counts', metric: 'perThousand', zoning: 'areas', minimumObservations: 0},
+      optionsMode: 'fresh',
+      controls: ['view'],
+      readouts: ['observations', 'citywideRate', 'medianRate'],
+      camera: CHICAGO_FRAME,
+      basemap: ground('paperCity'),
+      furniture: {
+        title: cartouche(
+          'Where is nature logged, per resident?',
+          'Records per area, then per 1,000 residents, 2023'
+        ),
+        credit: CREDIT,
+        caveat: EFFORT_CAVEAT
+      },
+      annotations: labelsFor(CHICAGO, ['lake-michigan', 'loop'], {loop: {minZoom: 10.2}}),
+      stage: 'runs'
     },
     {
-      id: 'many-statistics',
-      title: 'One pass, a dozen statistics',
-      body: 'The graph computes, per area and in one run: count, mean, median, percentiles, standard deviation, skewness, kurtosis, mode, distinct count, research-grade observations, the introduced share and the number of distinct taxa. Set **Statistic mapped** to **Research-grade share**: the mean of the 0/1 research-grade column, the observations whose identification other iNaturalist users confirmed. Citywide 63.0% reach research grade; Woodlawn (80%) and Uptown (78%) run well above that, while Lincoln Park (51%) sits near the bottom of the busy areas.\n\nHover any area to read every statistic at once. Rows are sorted by key with a radix sort, counts and sums use exact 64-bit integer atomics, and the moments use a fixed-order reduction, so results are bitwise reproducible.',
-      options: {metric: 'researchShare'},
-      controls: ['metric'],
-      readouts: ['highest', 'selected']
-    },
-    {
-      id: 'richness',
-      title: 'How many different species?',
-      body: 'Set **Statistic mapped** to **Species richness (distinct taxa)**: `GPUGroupStatistics` counts the unique values of the taxon column per area. Lincoln Square (1,435 taxa), Lincoln Park (1,379) and North Park (1,316) lead, then Uptown (1,030): citywide the 43,557 observations cover 4,823 taxa.\n\nRichness climbs with the number of observations, so compare it with the **Observations** map before reading it as biodiversity. Then try **Introduced share**: 15.7% of observations are non-native, but Logan Square reaches 41% and the Loop 29%, while Washington Park and South Shore sit near 5%.',
-      options: {metric: 'richness'},
-      controls: ['metric'],
-      readouts: ['highest', 'selected']
+      id: 'group-by',
+      title: 'One sort turns rows into groups',
+      headline: 'Small groups are too small to trust',
+      textAlternative:
+        'Chicago community areas in green by research-grade share; hatched grey areas are withheld because they hold too few records. A bar chart ranks the areas by records.',
+      body: "`GPUGroupStatistics` sorts the records by area key, so every area becomes one run, then reads each run. The map shows each area's research-grade share. Some runs are short: drag **Minimum observations** and areas under **{{threshold}}** are withheld and hatched, **{{suppressedAreas}}**, holding **{{suppressedShare}}** but **{{suppressedPeople}}**. Why small numbers mislead is in *Small numbers, loud maps*.\n\n*Withhold what the data cannot support.*",
+      options: {view: 'rates', metric: 'researchShare', zoning: 'areas', minimumObservations: 30},
+      optionsMode: 'fresh',
+      controls: ['minimumObservations'],
+      readouts: ['suppressedAreas', 'suppressedShare', 'suppressedPeople', 'runs'],
+      camera: CHICAGO_FRAME,
+      furniture: {
+        title: cartouche(
+          'Which groups are too small to trust?',
+          'Research-grade share of the records; small areas withheld'
+        ),
+        credit: CREDIT,
+        caveat: EFFORT_CAVEAT
+      },
+      stage: 'sort'
     },
     {
       id: 'time-of-day',
       title: 'When do people go out looking?',
-      body: "Set **Statistic mapped** to **Median hour of day**, then use the **Lower percentile of the hour** and **Upper percentile of the hour** sliders: the range between them says how concentrated an area's observations are in time. The percentile fractions are a parameter buffer; drag the sliders and watch the map update with no rebuild.\n\nCitywide the median observation is made at 13:00 and the middle 80% fall between 8:00 and 18:00. A few areas run later (Lincoln Square's median is 16:00): the story is in the spread, which depends on who goes where and when. Try **Most common hour (mode)** to see each area's busiest hour.",
-      options: {metric: 'hourMedian', lowerFraction: 0.1, upperFraction: 0.9},
-      controls: ['metric', 'lowerFraction', 'upperFraction']
-    },
-    {
-      id: 'mode',
-      title: 'The most common group',
-      body: 'The **mode** of the group column per area is the kind of life seen most often, and **distinct groups** counts how many of the ten groups appear. Plants lead in 48 of the 77 areas, birds in 16 (Uptown alone has 2,564 bird observations, thanks to the lakefront), insects in 11 and fungi in two. All ten groups are seen in 18 areas.\n\nThe mode is exact: ties resolve to the smallest category code. Switch **Statistic mapped** to *Distinct groups* to see which areas see them all.',
-      options: {metric: 'modalGroup'},
-      controls: ['metric']
-    },
-    {
-      id: 'filters',
-      title: 'Filter on the GPU, recompute in a frame',
-      body: 'Pick **Group** *Birds*, restrict the **Hour of day** to 5:00 to 9:00, or keep only **Identification** *Research grade*. A kernel builds the row mask from four words and `GPUGroupStatistics` regroups all 43,600 rows. Early morning belongs to birders: 4,642 observations were made between 5:00 and 9:00 and 62% of them are birds, against 26% of all observations.\n\nSet **Statistic mapped** to **Observations** or **Research-grade share** for that slice, and turn on **Show observations colored by hour z-score** to draw the per-row z-score the contributor also writes: each observation coloured by how early or late it is compared with its own area.',
-      options: {metric: 'count', natureGroup: 'Birds', hours: [5, 9]},
-      controls: ['natureGroup', 'hours', 'gradeFilter', 'metric', 'showObservations'],
-      readouts: ['observations']
+      headline: 'Neighbourhoods look at nature at different hours',
+      textAlternative:
+        'North Side areas coloured by median hour of day on a cyclic ring of three-hour classes, with hatched grey areas withheld; a rose chart shows the records of one area by hour.',
+      body: 'Each area gets its median hour, coloured on a ring because late evening and early morning are neighbours. It runs from **{{earliestMedian}}** to **{{latestMedian}}**; areas under **{{threshold}}** are withheld, so no median rests on a handful of records. Click an area, then set **Lower percentile** and **Upper percentile**: the rose colours **{{hourSpan}}**.\n\n*Time of day is cyclic: its legend is a ring.*',
+      options: {
+        view: 'rates',
+        metric: 'hourMedian',
+        zoning: 'areas',
+        minimumObservations: 100,
+        lowerFraction: 0.1,
+        upperFraction: 0.9
+      },
+      optionsMode: 'fresh',
+      controls: ['lowerFraction', 'upperFraction'],
+      readouts: ['hours', 'hourSpan', 'earliestMedian', 'latestMedian'],
+      camera: {bounds: NORTH_LAKEFRONT_BOUNDS, transitionMs: 1600},
+      furniture: {
+        title: cartouche(
+          'When do people go out looking?',
+          'Median hour of day per area; small areas withheld'
+        ),
+        credit: CREDIT,
+        caveat: EFFORT_CAVEAT
+      },
+      stage: 'stats'
     },
     {
       id: 'join',
-      title: 'Joins by key: tracts and areas',
-      body: 'Switch **Draw** to *Census tracts*. A second `GPUKeyJoin` takes the area table as its **right side** and gathers the chosen statistic onto each of the 791 tracts by community-area key. Set **Statistic mapped** to **Mean tract per-capita income** or **Mean tract poverty** (the other join: a 1:n mean of the tracts in each area) to see how wildlife watching and socio-economics line up, remembering that observations also follow access to parks.\n\nRaise **Right-side mask: areas with at least** to drop areas with few observations: their tracts no longer match. Change **Join kind** to *Inner*: the join then also compacts the matched tract rows, reported in **Key join result**.',
-      options: {
-        level: 'tracts',
-        metric: 'poverty',
-        natureGroup: 'ALL',
-        hours: [0, 24],
-        minimumObservations: 500
+      title: 'Who lives where people look?',
+      headline: 'Wealthier areas tend to log more per resident',
+      textAlternative:
+        'Chicago community areas in blue by population-weighted per-capita income, with a scatter plot of income against records per 1,000 residents, one dot per area.',
+      body: '`GPUKeyJoin` sums residents and income times residents over the tracts of each area, so income is weighted by people: a plain mean of tract incomes would count a tiny tract like a crowded one. Flip **Statistic** to compare maps, and raise **Minimum observations**. Rank correlation with the rate: **{{spearman}}**; the gather back onto tracts: **{{joinResult}}**.\n\n*An area average is not a person (ecological fallacy).*',
+      options: {view: 'rates', metric: 'income', zoning: 'areas', minimumObservations: 30},
+      optionsMode: 'fresh',
+      controls: ['metric', 'minimumObservations'],
+      readouts: ['spearman', 'joinResult', 'incomeScatter'],
+      camera: CHICAGO_FRAME,
+      furniture: {
+        title: cartouche(
+          'Who lives where people look?',
+          'Population-weighted per-capita income, ACS 2018-2022',
+          ['Observer effort', 'Estimates']
+        ),
+        credit: CREDIT,
+        caveat: EFFORT_CAVEAT
       },
-      controls: ['level', 'metric', 'minimumObservations', 'joinKind'],
-      readouts: ['join']
+      stage: 'join'
     },
     {
-      id: 'limits',
-      title: 'Limits and things to try',
-      body: 'iNaturalist counts are opportunistic: they measure where people look and upload, not how much wildlife there is, and an area with a popular nature walk can outweigh a larger wild one. Per-resident rates mislead where few people live; population is the 2018-2022 ACS count. Averaging tract incomes ignores tract size.\n\nTry: **Skewness of the hour** and **Excess kurtosis of the hour** in **Statistic mapped**; **Variance kind** *Population*; a different **Upper percentile of the hour** for fungi; **Join kind** *Inner* with a high right-side mask; **Introduced share** for plants only.',
-      options: {
-        metric: 'introducedShare',
-        natureGroup: 'Plants',
-        hours: [0, 24],
-        level: 'areas',
-        minimumObservations: 0
+      id: 'zoning',
+      title: 'Do smaller zones tell the same story?',
+      headline: 'The same records read differently at tract scale',
+      textAlternative:
+        'North Side split by a divider: community areas on the left and census tracts on the right, both classed by records per 1,000 residents on the same blue scale; many tracts inside dark areas are paler.',
+      body: 'Same records, same classes, different zones. Drag the divider between areas and tracts (**Zoning** holds the other views): inside the darkest-class areas, **{{notTopInside}}** are themselves in a lighter class, while **{{topOutside}}** outside them reach the top class. The busiest tract reaches **{{tractMax}}**. This is the **modifiable areal unit problem**: the answer depends on the zoning.\n\n*The unit of analysis is a cartographic decision.*',
+      options: {view: 'rates', metric: 'perThousand', zoning: 'swipe', minimumObservations: 0},
+      optionsMode: 'fresh',
+      controls: ['zoning'],
+      readouts: ['tractMax', 'notTopInside', 'topOutside', 'emptyTracts'],
+      camera: {bounds: NORTH_SIDE_BOUNDS, transitionMs: 1600},
+      compare: {labels: ['Community areas', 'Census tracts'], position: 0.5},
+      furniture: {
+        title: cartouche(
+          'Do smaller zones tell the same story?',
+          'Records per 1,000 residents: areas | tracts, same classes',
+          ['Observer effort', 'Estimates']
+        ),
+        credit: CREDIT,
+        caveat: EFFORT_CAVEAT
       },
-      controls: ['metric', 'natureGroup', 'variance', 'upperFraction', 'joinKind']
+      stage: 'join'
+    },
+    {
+      id: 'filters',
+      title: 'What if you only count some records?',
+      headline: 'Filters change the rows; the groups follow',
+      textAlternative:
+        'Chicago community areas classed by records per 1,000 residents for birds logged in the early morning; most areas are hatched grey because too few records remain.',
+      body: 'Choose a **Group**, an **Hour of day** range or an **Identification** grade: a kernel rewrites the row mask from a few parameter words and `GPUGroupStatistics` regroups **{{observations}}** in the next frame, with no rebuild. Rates move, and **{{suppressedAreas}}** now fall under the threshold.\n\n*Every filter is a new question; the groups answer it again.*',
+      options: {
+        view: 'rates',
+        metric: 'perThousand',
+        zoning: 'areas',
+        natureGroup: 'Birds',
+        hours: [5, 10],
+        minimumObservations: 30
+      },
+      optionsMode: 'fresh',
+      controls: ['natureGroup', 'hours', 'gradeFilter'],
+      readouts: ['observations', 'suppressedAreas', 'citywideRate'],
+      camera: CHICAGO_FRAME,
+      furniture: {
+        title: cartouche(
+          'What if you only count some records?',
+          'Records per 1,000 residents in the filtered slice'
+        ),
+        credit: CREDIT,
+        caveat: EFFORT_CAVEAT
+      },
+      stage: 'mask'
     }
   ]
 });

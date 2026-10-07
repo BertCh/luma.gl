@@ -3,7 +3,10 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {defineScene} from '../scene';
+import {joinCredits} from '../../cartography/credits';
+import {ground} from '../../cartography/grounds';
 import type {MigrationFlywaysOptions} from './migration-flyways.compute';
+import {MOVEMENT_CREDITS} from './movement-style';
 import {
   MIGRATION_SEASONS,
   MIGRATION_SPECIES_COLORS,
@@ -16,7 +19,7 @@ export default defineScene<MigrationFlywaysOptions>({
   id: 'migration-flyways',
   title: 'Which way do the harriers and spoonbills fly?',
   chapter: 'movement',
-  order: 11,
+  order: 7,
   summary:
     "101 GPS-tracked animal-years of marsh harriers, Montagu's harriers and spoonbills from the Low Countries: line density turns two hundred thousand fixes into flyways, by species and season, and a Frechet comparison asks whether a bird repeats its own route.",
   contributors: ['GPULineDensity', 'GPUTrajectoryResample', 'GPUTrackSimilarity'],
@@ -24,6 +27,16 @@ export default defineScene<MigrationFlywaysOptions>({
     {id: 'poopdeck-animals', role: 'GPS tracks of 42 birds, years folded onto one calendar'}
   ],
   initialView: EUROPE_AFRICA_VIEW,
+  basemap: ground('night', {labels: 'none'}),
+  furniture: {
+    title: {
+      title: 'Where birds concentrate',
+      subtitle: 'Track length per cell · years folded',
+      chips: ['Track kilometres are not birds']
+    },
+    scaleBar: {units: 'metric'},
+    credit: joinCredits(MOVEMENT_CREDITS.birds)
+  },
 
   options: [
     {
@@ -226,12 +239,23 @@ export default defineScene<MigrationFlywaysOptions>({
       help: 'For each latitude row of the density grid, the longitude of the median track length (line) and of the 10th to 90th percentile (band). A narrow band is a bottleneck; the vertical rule is the probe latitude.'
     },
     {
+      id: 'evidenceChart',
+      label: 'What sample makes this map?',
+      kind: 'chart',
+      help: 'Tagged animal-years with at least two recorded fixes in the selected season, by species. Tagged years are repeated measurements of a small convenience sample, not a population count.'
+    },
+    {
       id: 'fidelityChart',
       label: 'Does a bird repeat its own route?',
       kind: 'chart',
       help: 'Share of pairs at each route distance for the same bird in two different years, for two different birds of one species and for two species. If the same-bird curve sits left of the others, birds are faithful to their route.'
     },
     {id: 'birds', label: 'Tracks'},
+    {
+      id: 'evidence',
+      label: 'Mapped tracking evidence',
+      help: 'The animal-years, individual birds and recorded fixes actually feeding the selected seasonal density. Origin rings are averages of each species’ first recorded positions.'
+    },
     {id: 'flyway', label: 'Flyway density'},
     {id: 'busiest', label: 'Busiest cell'},
     {
@@ -351,6 +375,9 @@ graph.add(new GPUTrackSimilarity({
   story: [
     {
       id: 'the-question',
+      headline: 'Dense tracks reveal a flyway',
+      textAlternative: 'A luminous density map of Europe and Africa shows bird flyways.',
+      optionsMode: 'fresh',
       title: "Where do the Low Countries' raptors and spoonbills spend the winter?",
       body: "Forty-two birds from Flanders, the Netherlands and the border between them carried GPS tags that logged a fix about every hour, thinned here to one every two hours: **55 marsh harrier**, **23 Montagu's harrier** and **23 spoonbill** animal-years, 226,000 fixes in all. The source is the poopdeck.gl `animals` archive, which folds every tagged year onto one calendar year, so a bird tracked for six years appears as six overlapping tracks.\n\nThe lines are colored by species. The glow behind them is what the next step builds. Where do the harriers go, and do the spoonbills follow them?",
       camera: {...EUROPE_AFRICA_VIEW, transitionMs: 1200},
@@ -358,7 +385,24 @@ graph.add(new GPUTrackSimilarity({
       readouts: ['birds', 'selected']
     },
     {
+      id: 'sample',
+      headline: 'A bright corridor is a sample, not a census',
+      textAlternative:
+        'Map labels mark the mean first recorded locations for each tracked species, alongside a bar chart of the animal-years in the sample.',
+      optionsMode: 'fresh',
+      title: 'First inspect the tracking evidence',
+      body: 'The density is built from a **convenience sample**: 42 tagged birds, with several years from some of the same individuals. The ring labels mark each species’ mean first recorded position and the bar chart counts the tagged animal-years that actually contribute at least two fixes to the selected season. Those are inputs to a route-density estimate, not counts of birds using a corridor.\n\nChange **Season** and **Species**. The **Mapped tracking evidence** readout changes with the tracks and fixes that enter the calculation. This is why a narrow bright band is evidence about these tagged routes, not a measured share of the population.',
+      options: {season: 'year', species: 'all', showTracks: true, trackOpacity: 0.25},
+      camera: {...EUROPE_AFRICA_VIEW, transitionMs: 1200},
+      highlight: {readout: 'evidence'},
+      controls: ['season', 'species'],
+      readouts: ['evidence', 'evidenceChart']
+    },
+    {
       id: 'line-density',
+      headline: 'Every cell counts track length',
+      textAlternative: 'A gridded density surface replaces overlapping routes.',
+      optionsMode: 'fresh',
       title: 'Summing the track length of every cell',
       body: '**`GPULineDensity`** clips every segment of every track to a grid and adds up the great-circle length that falls in each cell, then divides by the exact spherical area of the cell. A cell that many birds cross in many years is bright; a cell crossed once is dim. This is the QGIS "line density" tool, run on 226,000 fixes in one GPU pass.\n\nSlide **Cell size** below: coarser cells smooth the corridors, finer ones follow single tracks, and nothing recompiles because the size is a parameter write. Switch **Cell value** to *Track length* and the northern cells darken, because a degree of longitude gets narrower toward the pole. Turn **Square-root color scale** off to see only the busiest cells.',
       options: {showTracks: true, trackOpacity: 0.25},
@@ -368,6 +412,9 @@ graph.add(new GPUTrackSimilarity({
     },
     {
       id: 'species',
+      headline: 'Species use different corridors',
+      textAlternative: 'Species routes appear over a shared flyway surface.',
+      optionsMode: 'fresh',
       title: 'Three species, three flyways',
       body: "Pick a species in **Species** below. **Marsh and Montagu's harriers** leave the Low Countries, funnel through Iberia and across the Strait of Gibraltar, and fan out over the Sahel from Senegal to Mali, where the median bird on 15 January is at about 14 N. **Spoonbills** do not: most winter on the Atlantic coast of France and Iberia, a few hundred kilometers from home, and none of these tags went south of 33 N.\n\nEach species is a different set of paths, so the first time you pick one the shell builds a graph for it (the **rebuild** badge); after that the pick is instant.",
       options: {species: 'marsh', showTracks: false},
@@ -377,6 +424,9 @@ graph.add(new GPUTrackSimilarity({
     },
     {
       id: 'bottleneck',
+      headline: 'Cell size changes the bottleneck',
+      textAlternative: 'A density grid changes resolution over a narrow passage.',
+      optionsMode: 'fresh',
       title: 'Where does the flyway pinch?',
       body: 'Choose the **Autumn** passage for all species and drag **Probe latitude** below. The chart shows, for every latitude row, the longitude range that holds the central 80% of the track length. At **50 N** the harriers leave from a belt only about 2 degrees wide (Belgium and the Netherlands); at **37 N** the band is still only a few degrees wide, the funnel of southern Iberia and the Strait of Gibraltar, and farther south it fans out over the Sahara and the Sahel.\n\nA narrow band is a bottleneck: whatever happens in that strip (a wind farm, a drained wetland, a hunting season) happens to most of the population. The readout gives the width in kilometers.',
       options: {species: 'all', season: 'autumn', probeLatitude: 37, showTracks: false},
@@ -387,6 +437,9 @@ graph.add(new GPUTrackSimilarity({
     },
     {
       id: 'spring',
+      headline: 'Season changes the route picture',
+      textAlternative: 'Spring and autumn densities are compared on one map.',
+      optionsMode: 'fresh',
       title: 'Do they come back the way they left?',
       body: "Set **Season** to *Spring* and compare it with *Autumn*. Marsh harriers run north on almost the same corridor they used in autumn, a few weeks earlier than Montagu's harriers, which cross 20 N about a month later (early April against early March). Pick **Montagu's harrier** in **Species** and look at the central Mediterranean: one spring track comes north through Italy, a route no autumn track uses.\n\nOne track is an anecdote, not a loop migration: with 23 animal-years of Montagu's harrier all you can say is that the return trip is a little less tidy than the departure.",
       options: {season: 'spring', species: 'montagu', showTracks: true, trackOpacity: 0.5},
@@ -396,6 +449,9 @@ graph.add(new GPUTrackSimilarity({
     },
     {
       id: 'fidelity',
+      headline: 'A long track is not many birds',
+      textAlternative: 'One selected route is compared with the population density.',
+      optionsMode: 'fresh',
       title: 'Does a bird repeat its own route?',
       body: '**`GPUTrajectoryResample`** rebuilds every track as 96 points and **`GPUTrackSimilarity`** scores all 5,050 pairs with the discrete **Frechet distance**: the shortest leash that lets two walkers follow their routes in order. The chart compares pairs that are the same bird in two different years against pairs of different birds, for tracks with enough days of data.\n\nSet **Color tracks by** to *Route distance to the selected track* and click a track: its other tagged years (yellow) should be the coldest lines if birds are faithful to a route. Use **Minimum days of data** to include or drop short tags, and **Route distance** to switch to Hausdorff.\n\nThe honest limits: tags are on 42 birds, only a few of which have two or more complete years; the years are folded onto one calendar; and Frechet on 96 points describes the shape of a route, not every detour. **Try:** set the minimum to 300 days and see how the same-bird curve changes.',
       options: {

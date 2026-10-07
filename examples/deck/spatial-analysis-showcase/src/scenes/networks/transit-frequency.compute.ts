@@ -17,6 +17,14 @@ import {
   type GraphDataView
 } from '@luma.gl/gpgpu/gpu-core';
 import {importGraphBuffer} from '../../engine/graph-buffers';
+import {
+  getServiceClassColors,
+  getServiceClassIndex,
+  getServiceClassLabel,
+  formatServiceHeadway,
+  SERVICE_LABELS,
+  SERVICE_BREAKS
+} from './randstad-network-cartography';
 import {SpatialAnalysisRasterLayer, SpatialAnalysisSegmentLayer} from '../../engine/layers';
 import {formatCount, SpatialAnalysisResources} from '../../engine/resources';
 import {SummaryReader} from '../../engine/summary-reader';
@@ -33,11 +41,9 @@ import {
 export type TransitFrequencyOptions = {
   modeFilter: string;
   cellMeters: number;
-  colorMax: number;
-  scale: 'sqrt' | 'linear';
-  hideBelow: number;
-  ramp: 'viridis' | 'magma' | 'inferno' | 'cividis';
-  opacity: number;
+  representation: 'cells' | 'routes' | 'both';
+  frequentOnly: boolean;
+  serviceStyle: 'continuous' | 'classes';
   showRoutes: boolean;
 };
 
@@ -46,6 +52,7 @@ const ROWS = 384;
 const CELL_COUNT = COLUMNS * ROWS;
 const WINDOW_HOURS = TRANSIT_WINDOW_SECONDS / 3600;
 const TOP_LINES = 8;
+const CONTINUOUS_SERVICE_MAXIMUM = 60;
 
 type Variant = {
   key: string;
@@ -111,6 +118,8 @@ export async function createTransitFrequency(
     'float32',
     GPU_LINE_DENSITY_PARAMETER_LENGTH
   );
+  const dataFrameBuffer = resources.createBuffer('data-frame', 4 * 4 * 4);
+  const hoverCellBuffer = resources.createBuffer('hover-cell', 4 * 4 * 4);
 
   // ---- Line density graphs: one per mode filter, compiled on first use --------------------------
   const variants = new Map<string, Variant>();
@@ -242,6 +251,43 @@ export async function createTransitFrequency(
   if (activeFilter !== 'all') createVariant(activeFilter);
   let cells = new Float32Array(CELL_COUNT);
   let gridMin: [number, number] = [0, 0];
+  let hoveredCell = -1;
+  let legendGround: 'light' | 'dark' | null = null;
+
+  /** A deterministic, scene-local comparison: each segment contributes to its midpoint cell. */
+  function getBusiestCellSummary(cellMeters: number): number {
+    const minX = center[0] - (COLUMNS * cellMeters) / 2;
+    const minY = center[1] - (ROWS * cellMeters) / 2;
+    const totals = new Map<number, number>();
+    for (let segment = 0; segment < segmentCount; segment++) {
+      const offset = segment * 4;
+      const x0 = trips.segments[offset];
+      const y0 = trips.segments[offset + 1];
+      const x1 = trips.segments[offset + 2];
+      const y1 = trips.segments[offset + 3];
+      const column = Math.floor(((x0 + x1) / 2 - minX) / cellMeters);
+      const row = Math.floor(((y0 + y1) / 2 - minY) / cellMeters);
+      if (column < 0 || column >= COLUMNS || row < 0 || row >= ROWS) continue;
+      const key = row * COLUMNS + column;
+      const length = Math.hypot(x1 - x0, y1 - y0);
+      totals.set(key, (totals.get(key) ?? 0) + length);
+    }
+    let busiest = 0;
+    for (const length of totals.values()) busiest = Math.max(busiest, length);
+    return busiest / cellMeters / WINDOW_HOURS;
+  }
+
+  const busiestByCellSize = [200, 400, 800].map(getBusiestCellSummary);
+  ctx.setChart('cellComparison', {
+    kind: 'bars',
+    height: 112,
+    values: busiestByCellSize,
+    labels: ['200 m', '400 m', '800 m'],
+    yLabel: 'busiest veh/h',
+    formatY: value => value.toFixed(0),
+    description:
+      'Busiest data-derived grid cell at each size. This deterministic midpoint summary uses the same scheduled segments and fixed two-hour normalisation as the map; the map itself clips every segment exactly.'
+  });
 
   function getGrid() {
     const cellMeters = ctx.options.cellMeters;
@@ -254,6 +300,79 @@ export async function createTransitFrequency(
       min,
       max: [min[0] + COLUMNS * cellMeters, min[1] + ROWS * cellMeters] as [number, number]
     };
+  }
+
+  function writeDataFrame(): void {
+    const frame = new Float32Array([
+      minX,
+      minY,
+      maxX,
+      minY,
+      maxX,
+      minY,
+      maxX,
+      maxY,
+      maxX,
+      maxY,
+      minX,
+      maxY,
+      minX,
+      maxY,
+      minX,
+      minY
+    ]);
+    dataFrameBuffer.write(frame);
+  }
+
+  function publishFurniture(): void {
+    ctx.setFurniture({
+      title: {
+        subtitle: `Scheduled service · 07:00–09:00 CEST · ${ctx.options.cellMeters} m cells`,
+        sample: '3 July 2026 · timetable, not observed vehicles'
+      },
+      scaleBar: {units: 'metric'}
+    });
+  }
+
+  function publishLegendGround(): void {
+    const ground = ctx.ground();
+    if (ground === legendGround) return;
+    legendGround = ground;
+    ctx.setLegendData('ground', ground);
+  }
+
+  function updateHoverCell(cell: number): void {
+    if (cell === hoveredCell) return;
+    hoveredCell = cell;
+    if (cell >= 0) {
+      const column = cell % COLUMNS;
+      const row = Math.floor(cell / COLUMNS);
+      const west = gridMin[0] + column * ctx.options.cellMeters;
+      const south = gridMin[1] + row * ctx.options.cellMeters;
+      const east = west + ctx.options.cellMeters;
+      const north = south + ctx.options.cellMeters;
+      hoverCellBuffer.write(
+        new Float32Array([
+          west,
+          south,
+          east,
+          south,
+          east,
+          south,
+          east,
+          north,
+          east,
+          north,
+          west,
+          north,
+          west,
+          north,
+          west,
+          south
+        ])
+      );
+    }
+    ctx.requestLayers();
   }
 
   function writeGridParameters(): void {
@@ -311,17 +430,38 @@ export async function createTransitFrequency(
       for (let cell = 0; cell < CELL_COUNT; cell++) {
         if (cells[cell] > 0) values[cursor++] = toVehiclesPerHour(cells[cell]);
       }
-      const maximum = ctx.options.colorMax;
-      ctx.setChart(
-        'concentration',
-        histogramChart(binValues(values, 0, maximum, 20), 0, maximum, {
-          xLabel: `vehicles per hour through a ${ctx.options.cellMeters} m cell (last bin: and above)`,
+      if (ctx.options.serviceStyle === 'classes') {
+        const classCounts = new Float64Array(SERVICE_LABELS.length);
+        for (const value of values) classCounts[getServiceClassIndex(value)]++;
+        ctx.setChart('concentration', {
+          kind: 'bars',
+          height: 120,
+          values: classCounts,
+          labels: SERVICE_LABELS,
+          colors: getServiceClassColors(ctx.ground() === 'dark').map((color, index) =>
+            ctx.options.frequentOnly && index < 3
+              ? ([color[0], color[1], color[2], 70] as const)
+              : color
+          ),
+          highlight: ctx.options.frequentOnly ? [3, 4, 5] : undefined,
           yLabel: 'cells',
-          formatX: value => `${Math.round(value)}`,
-          description:
-            'Histogram of the occupied grid cells by the vehicles per hour that cross them. Most cells see a few vehicles an hour; a few corridors see over a hundred.'
-        })
-      );
+          description: ctx.options.frequentOnly
+            ? 'Cells by the six fixed scheduled-service classes. The highlighted retained classes begin at 8 both-direction vehicles per hour, the approximate 15-minute-per-direction analytical threshold.'
+            : 'Cells by the six fixed scheduled-service classes used by the raster, tooltip and legend.'
+        });
+      } else {
+        const maximum = CONTINUOUS_SERVICE_MAXIMUM;
+        ctx.setChart(
+          'concentration',
+          histogramChart(binValues(values, 0, maximum, 20), 0, maximum, {
+            xLabel: `vehicles per hour through a ${ctx.options.cellMeters} m cell (last bin: and above)`,
+            yLabel: 'cells',
+            formatX: value => `${Math.round(value)}`,
+            description:
+              'Continuous square-root 0–60 veh/h view of occupied cells; the final bin contains values at or above 60.'
+          })
+        );
+      }
     }
   );
 
@@ -410,6 +550,9 @@ export async function createTransitFrequency(
   );
 
   writeGridParameters();
+  writeDataFrame();
+  publishFurniture();
+  publishLegendGround();
   ctx.setReadout(
     'trips',
     `${formatCount(trackCount)} trips, ${formatCount(segmentCount)} segments`
@@ -442,6 +585,13 @@ export async function createTransitFrequency(
           break;
         case 'cellMeters':
           writeGridParameters();
+          publishFurniture();
+          updateHoverCell(-1);
+          ctx.requestLayers();
+          break;
+        case 'serviceStyle':
+        case 'frequentOnly':
+          densityDirty = true;
           ctx.requestLayers();
           break;
         default:
@@ -450,6 +600,8 @@ export async function createTransitFrequency(
     },
 
     onThemeChange() {
+      publishLegendGround();
+      densityDirty = true;
       ctx.requestLayers();
     },
 
@@ -473,46 +625,92 @@ export async function createTransitFrequency(
 
     getLayers() {
       const options = ctx.options;
-      const dark = ctx.theme() === 'dark';
+      const dark = ctx.ground() === 'dark';
+      publishLegendGround();
       const grid = getGrid();
       const layers: Layer[] = [];
-      if (options.showRoutes) {
+      const showRoutes = options.showRoutes && options.representation !== 'cells';
+      if (showRoutes) {
         layers.push(
           new SpatialAnalysisSegmentLayer({
             id: 'frequency-routes',
             coordinateOrigin,
             segments: segmentsBuffer,
             instanceCount: segmentCount,
-            widthPixels: 1,
-            color: dark ? [190, 200, 220, 18] : [60, 70, 90, 28]
+            widthPixels: options.representation === 'routes' ? 1.4 : 0.7,
+            color: dark
+              ? [225, 229, 240, options.representation === 'routes' ? 150 : 52]
+              : [44, 50, 62, options.representation === 'routes' ? 160 : 58]
           })
         );
       }
+      if (options.representation !== 'routes')
+        layers.push(
+          new SpatialAnalysisRasterLayer({
+            id: 'frequency-density',
+            coordinateOrigin,
+            gridSize: [COLUMNS, ROWS],
+            bounds: [grid.min[0], grid.min[1], grid.max[0], grid.max[1]],
+            values: lengthsBuffer,
+            valueFormat: 'float32',
+            colormap: 'magma',
+            valueScale: 1 / (options.cellMeters * WINDOW_HOURS),
+            valueRange: [0, CONTINUOUS_SERVICE_MAXIMUM],
+            sqrtScale: true,
+            discardAtOrBelow: 0,
+            ...(options.serviceStyle === 'classes'
+              ? {
+                  classBreaks: SERVICE_BREAKS,
+                  classColors: getServiceClassColors(dark).map((color, index) =>
+                    options.frequentOnly && index < 3
+                      ? ([color[0], color[1], color[2], 42] as const)
+                      : color
+                  )
+                }
+              : {}),
+            outlineClasses: {
+              color: dark ? [14, 17, 22, 90] : [255, 255, 255, 100],
+              widthPixels: 0.35
+            },
+            opacity: 0.88
+          })
+        );
       layers.push(
-        new SpatialAnalysisRasterLayer({
-          id: 'frequency-density',
+        new SpatialAnalysisSegmentLayer({
+          id: 'frequency-data-frame',
           coordinateOrigin,
-          gridSize: [COLUMNS, ROWS],
-          bounds: [grid.min[0], grid.min[1], grid.max[0], grid.max[1]],
-          values: lengthsBuffer,
-          valueFormat: 'float32',
-          colormap: options.ramp,
-          valueScale: 1 / (options.cellMeters * WINDOW_HOURS),
-          valueRange: [0, options.colorMax],
-          sqrtScale: options.scale === 'sqrt',
-          discardAtOrBelow: options.hideBelow,
-          opacity: options.opacity
+          segments: dataFrameBuffer,
+          instanceCount: 4,
+          widthPixels: 0.9,
+          dashArray: [5, 4],
+          color: dark ? [235, 240, 255, 150] : [42, 52, 72, 145]
         })
       );
+      if (hoveredCell >= 0) {
+        layers.push(
+          new SpatialAnalysisSegmentLayer({
+            id: 'frequency-hover-cell',
+            coordinateOrigin,
+            segments: hoverCellBuffer,
+            instanceCount: 4,
+            widthPixels: 2,
+            color: dark ? [255, 255, 255, 245] : [20, 28, 42, 235]
+          })
+        );
+      }
       return layers;
     },
 
     getTooltip(event) {
       const cell = cellAt(event.coordinate);
-      if (cell < 0) return null;
+      if (cell < 0) {
+        updateHoverCell(-1);
+        return null;
+      }
+      updateHoverCell(cell);
       const perHour = toVehiclesPerHour(cells[cell]);
       return cells[cell] > 0
-        ? `about ${perHour.toFixed(perHour < 10 ? 1 : 0)} vehicles / h through this ${ctx.options.cellMeters} m cell`
+        ? `${getServiceClassLabel(perHour)} · ${perHour.toFixed(perHour < 10 ? 1 : 0)} veh/h through this ${ctx.options.cellMeters} m cell · ${formatServiceHeadway(perHour)}`
         : null;
     },
 

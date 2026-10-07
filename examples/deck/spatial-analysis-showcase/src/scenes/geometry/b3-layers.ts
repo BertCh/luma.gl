@@ -14,6 +14,7 @@ import {Buffer, type RenderPass} from '@luma.gl/core';
 import {Model} from '@luma.gl/engine';
 import type {DrawCommandBuffer} from '@luma.gl/gpgpu/gpu-core';
 import {COLORMAP_INDEXES, getRampWgsl, type RampName} from '../../engine/ramps';
+import type {ClassTable} from '../../cartography/types';
 import {B3_PALETTE} from './b3-palette';
 
 /**
@@ -56,9 +57,9 @@ const PALETTE_WGSL = B3_PALETTE.map(
 ).join(', ');
 
 /** How a scalar value becomes a color. */
-export type B3ValueMapping = 'ramp' | 'category' | 'flag';
+export type B3ValueMapping = 'ramp' | 'category' | 'flag' | 'class';
 
-const STYLE_BYTE_LENGTH = 112;
+const STYLE_BYTE_LENGTH = 448;
 
 export const B3_COMMON_WGSL = /* wgsl */ `
 struct GeometryStyle {
@@ -76,6 +77,12 @@ struct GeometryStyle {
   extraFloats: vec4<f32>,
   extraWords: vec4<u32>,
   secondaryColor: vec4<f32>,
+  classPalette: array<vec4<f32>, 16>,
+  classBreaks: array<vec4<f32>, 4>,
+  classCount: u32,
+  _classPadding0: u32,
+  _classPadding1: u32,
+  _classPadding2: u32,
 };
 
 @group(0) @binding(auto) var<uniform> geometryStyle: GeometryStyle;
@@ -96,6 +103,15 @@ fn getGeometryColor(value: f32) -> vec4<f32> {
   if (mapping == 1u) {
     let palette = array<vec3<f32>, 8>(${PALETTE_WGSL});
     return vec4<f32>(palette[u32(max(value, 0.0)) % 8u], geometryStyle.color.a);
+  }
+  if (mapping == 3u) {
+    var classIndex = 0u;
+    for (var index = 0u; index + 1u < geometryStyle.classCount; index = index + 1u) {
+      if (value >= geometryStyle.classBreaks[index / 4u][index % 4u]) {
+        classIndex = index + 1u;
+      }
+    }
+    return geometryStyle.classPalette[classIndex];
   }
   let range = geometryStyle.valueRange;
   var t = clamp((value - range.x) / max(range.y - range.x, 1e-20), 0.0, 1.0);
@@ -417,6 +433,12 @@ export type B3StyleProps = {
   valueRange?: readonly [number, number];
   /** Apply `sqrt` after normalising, matching a `sqrtScale` legend. */
   sqrtScale?: boolean;
+  /** One fixed classification shared with a `classes` legend. */
+  classTable?: ClassTable;
+  /** Explicit fixed thresholds override `classTable.breaks`. */
+  classBreaks?: readonly number[];
+  /** Explicit fixed colours override `classTable.colors`. */
+  classColors?: readonly B3Color[];
   /** Offset added to every position before projection (for example `[-360, 0]` degrees). */
   positionOffset?: readonly [number, number];
 };
@@ -510,12 +532,30 @@ export abstract class B3BaseLayer<PropsT extends LayerProps & B3StyleProps> exte
     words[11] = this.getValueSource();
     words[12] = this.getPathOffsetCount();
     floats[13] = this.getDirectionScale();
-    words[20] = {ramp: 0, category: 1, flag: 2}[this.props.valueMapping ?? 'ramp'];
+    words[20] = {ramp: 0, category: 1, flag: 2, class: 3}[this.props.valueMapping ?? 'ramp'];
     words[21] = this.props.sqrtScale ? 1 : 0;
     words[22] = this.getStride();
     words[23] = this.getClosed();
     const [sr, sg, sb, sa = 0] = this.props.secondaryColor ?? [0, 0, 0, 0];
     floats.set([sr / 255, sg / 255, sb / 255, sa / 255], 24);
+    if ((this.props.valueMapping ?? 'ramp') === 'class') {
+      const classBreaks = (this.props.classBreaks ?? this.props.classTable?.breaks ?? []).slice(
+        0,
+        15
+      );
+      const classColors = this.props.classColors ?? this.props.classTable?.colors ?? [];
+      words[108] = classBreaks.length + 1;
+      floats.set(classBreaks, 92);
+      for (let index = 0; index < 16; index++) {
+        const color = classColors[index] ??
+          classColors[classColors.length - 1] ?? [255, 255, 255, 255];
+        const [classRed, classGreen, classBlue, classAlpha = 255] = color;
+        floats.set(
+          [classRed / 255, classGreen / 255, classBlue / 255, classAlpha / 255],
+          28 + index * 4
+        );
+      }
+    }
     styleBuffer.write(new Uint8Array(data));
     this.drawInstances(model, renderPass);
   }

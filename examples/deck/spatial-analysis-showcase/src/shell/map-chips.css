@@ -1,0 +1,74 @@
+/* Status chips over the map. Map chrome: --map-* tokens only. */
+
+.map-chips {
+  position: absolute;
+  top: var(--map-chips-top, 64px);
+  right: var(--map-chips-right, 12px);
+  z-index: 18;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 6px;
+  max-width: calc(100% - 24px);
+  pointer-events: none;
+}
+.map-chips:empty {
+  display: none;
+}
+
+.map-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-height: 24px;
+  padding: 2px 10px;
+  box-sizing: border-box;
+  color: var(--map-ink);
+  font-family: var(--map-font);
+  font-size: var(--fs-xs, 11px);
+  line-height: 1.2;
+  background: color-mix(in srgb, var(--map-furniture-bg) 92%, transparent);
+  -webkit-backdrop-filter: blur(6px);
+  backdrop-filter: blur(6px);
+  border: 1px solid color-mix(in srgb, var(--map-ink) 18%, transparent);
+  border-radius: 999px;
+  box-shadow: var(--e1, 0 1px 3px rgb(0 0 0 / 0.16));
+}
+.map-chip[data-tone='warn'] {
+  border-color: var(--map-accent);
+}
+.map-chip[data-tone='warn']::before {
+  content: '';
+  flex: none;
+  width: 7px;
+  height: 7px;
+  background: var(--map-accent);
+  border-radius: 50%;
+}
+.map-chip.is-action {
+  font: inherit;
+  font-family: var(--map-font);
+  font-size: var(--fs-xs, 11px);
+  pointer-events: auto;
+  cursor: pointer;
+}
+.map-chip.is-action:hover {
+  border-color: var(--map-accent);
+}
+.map-chip.is-action:focus-visible {
+  outline: 2px solid var(--map-accent);
+  outline-offset: 2px;
+}
+.map-chip-strong {
+  font-weight: 600;
+}
+.map-chip-dot {
+  color: var(--map-ink-muted);
+}
+
+@media (pointer: coarse) {
+  .map-chip.is-action {
+    min-height: 44px;
+    padding: 2px 14px;
+  }
+}

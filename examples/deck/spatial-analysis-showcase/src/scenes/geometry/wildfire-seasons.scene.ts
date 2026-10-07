@@ -3,6 +3,9 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {playbackOptions} from '../../engine/playback';
+import {CREDITS, joinCredits} from '../../cartography/credits';
+import {ground} from '../../cartography/grounds';
+import {getSizeLegendEntries} from '../../cartography/proportional';
 import {defineScene} from '../scene';
 import {storyFromMarkdown} from '../story-markdown';
 import narrative from './wildfire-seasons.md?raw';
@@ -17,14 +20,27 @@ const formatWildfireDay = (days: number) => {
 
 export default defineScene<WildfireSeasonsOptions>({
   id: 'wildfire-seasons',
-  title: 'Four fire seasons, in order',
+  title: 'Perimeter records through time',
   chapter: 'geometry',
-  order: 7,
+  order: 6,
   summary:
-    'Playback of 90 western US fire perimeters (2020 to 2023) by their NIFC dates: GPUTimeWindowFilter windows and fades the fires on the GPU while GPUGeometryMeasures measures every fire and the acres per year, with a cumulative acres chart.',
+    'Playback of a western-perimeter subset by record date: GPUTimeWindowFilter windows and fades fires while GPUGeometryMeasures checks mapped acreage.',
   contributors: ['GPUTimeWindowFilter', 'GPUGeometryMeasures'],
   datasets: [{id: 'poopdeck-wildfires', role: 'final fire perimeters, 2020 to 2023'}],
   initialView: {longitude: -116.5, latitude: 40, zoom: 4.2},
+  basemap: ground('night'),
+  furniture: {
+    title: {title: 'Wildfire perimeter records', subtitle: 'Record date, not ignition or growth'},
+    credit: joinCredits(CREDITS.usgs, 'NIFC perimeter records (public domain)'),
+    caveat: 'The record date is an archive field; this subset is not a fire-growth chronology.',
+    clock: {
+      option: 'time',
+      time: {origin: '2020-01-01T00:00:00Z', unit: 'days'},
+      zones: ['UTC'],
+      show: 'date',
+      progress: [140, 1450]
+    }
+  },
 
   options: [
     ...playbackOptions<WildfireSeasonsOptions>({
@@ -37,7 +53,7 @@ export default defineScene<WildfireSeasonsOptions>({
         format: formatWildfireDay,
         help: 'Day of the NIFC perimeter record, from 20 May 2020 to 3 Jan 2024. Not the ignition date.'
       },
-      playing: true,
+      playing: false,
       speed: {
         kind: 'select',
         options: [
@@ -89,22 +105,6 @@ export default defineScene<WildfireSeasonsOptions>({
         {value: 'age', label: 'Age (fade weight)'},
         {value: 'year', label: 'Perimeter year'},
         {value: 'sizeClass', label: 'Acreage class'}
-      ]
-    },
-    {
-      kind: 'select',
-      id: 'ramp',
-      label: 'Age ramp',
-      group: 'Display',
-      apply: 'param',
-      default: 'magma',
-      disabledWhen: state => state.colorBy !== 'age',
-      help: 'Ramp of the age fade weight: bright is newly mapped.',
-      options: [
-        {value: 'magma', label: 'Magma'},
-        {value: 'viridis', label: 'Viridis'},
-        {value: 'inferno', label: 'Inferno'},
-        {value: 'cividis', label: 'Cividis (color-blind optimised)'}
       ]
     },
     {
@@ -173,35 +173,57 @@ export default defineScene<WildfireSeasonsOptions>({
     }
   ],
 
+  timeline: {
+    time: 'time',
+    play: 'play',
+    speed: 'speed',
+    format: formatWildfireDay,
+    ticks: [
+      {at: 366, label: '2021'},
+      {at: 731, label: '2022'},
+      {at: 1096, label: '2023'}
+    ]
+  },
+
   story: storyFromMarkdown<WildfireSeasonsOptions>(narrative, {
-    'all-fires': {
+    records: {
+      headline: 'These are final perimeter records',
       camera: {longitude: -116.5, latitude: 40, zoom: 4.2, transitionMs: 1400},
-      options: {play: false, time: 1450, trailDays: 1461, colorBy: 'year'},
-      controls: ['colorBy', 'trailDays'],
-      readouts: ['cumulative', 'totalGpu', 'totalNifc']
+      optionsMode: 'fresh',
+      options: {play: false, time: 1450, trailDays: 1461, colorBy: 'age'},
+      controls: ['trailDays'],
+      readouts: ['firesShown', 'totalGpu', 'totalNifc']
     },
     play: {
+      headline: 'Record dates arrive through the seasons',
       camera: {longitude: -116.5, latitude: 40, zoom: 4.2, transitionMs: 1400},
-      options: {play: true, time: 140, speed: '1', trailDays: 365, tailFade: 0.6, colorBy: 'age'},
+      optionsMode: 'fresh',
+      options: {play: false, time: 140, speed: '1', trailDays: 365, tailFade: 0.6, colorBy: 'age'},
       controls: ['play', 'time', 'speed', 'loop'],
       readouts: ['date', 'firesShown', 'cumulative', 'cumulativeChart']
     },
     window: {
+      headline: 'A fading window is GPU state',
       camera: {longitude: -120, latitude: 41, zoom: 5.2, transitionMs: 1600},
+      optionsMode: 'fresh',
       options: {play: false, time: 263, trailDays: 60, tailFade: 0.8, colorBy: 'age'},
       controls: ['trailDays', 'tailFade', 'time'],
       readouts: ['date', 'firesShown', 'gpuCount', 'newest']
     },
-    acres: {
+    ledger: {
+      headline: 'GPU acres reproduce source polygons',
       camera: {longitude: -116.5, latitude: 40, zoom: 4.2, transitionMs: 1400},
-      options: {play: false, time: 1450, trailDays: 1461, colorBy: 'year', groupBy: 'year'},
-      controls: ['groupBy', 'areaSystem', 'colorBy'],
-      readouts: ['totalGpu', 'totalNifc', 'groupFires', 'yearChart']
+      optionsMode: 'fresh',
+      options: {play: false, time: 1450, trailDays: 1461, colorBy: 'age', groupBy: 'year'},
+      controls: ['areaSystem'],
+      readouts: ['totalGpu', 'totalNifc', 'medianRelativeDifference', 'ledgerChart']
     },
-    follow: {
+    tour: {
+      headline: 'A few records dominate this subset',
       camera: {longitude: -120, latitude: 40, zoom: 5.5, transitionMs: 1400},
+      optionsMode: 'fresh',
       options: {
-        play: true,
+        play: false,
         time: 220,
         speed: '2',
         trailDays: 120,
@@ -209,18 +231,28 @@ export default defineScene<WildfireSeasonsOptions>({
         colorBy: 'age',
         follow: true
       },
-      controls: ['follow', 'speed', 'highlightNewest'],
-      readouts: ['date', 'newest']
+      controls: ['play', 'speed', 'highlightNewest'],
+      readouts: ['date', 'newest', 'cumulative']
     }
   }),
 
   legends: state => {
+    const sizeLegend = {
+      kind: 'size' as const,
+      title: 'Agency acres (symbol area)',
+      layout: 'nested' as const,
+      entries: getSizeLegendEntries(1_000_000, 16, {
+        minRadiusPixels: 2,
+        format: value => `${Math.round(value / 1000)}k acres`
+      })
+    };
     if (state.colorBy === 'age') {
       return [
+        sizeLegend,
         {
           kind: 'ramp',
           title: 'Age of the perimeter',
-          ramp: state.ramp,
+          ramp: 'fire',
           extent: [0, 1],
           labels: ['older', 'newly mapped']
         }
@@ -228,6 +260,7 @@ export default defineScene<WildfireSeasonsOptions>({
     }
     if (state.colorBy === 'year') {
       return [
+        sizeLegend,
         {
           kind: 'categories',
           title: 'Perimeter year',
@@ -241,6 +274,7 @@ export default defineScene<WildfireSeasonsOptions>({
       ];
     }
     return [
+      sizeLegend,
       {
         kind: 'categories',
         title: 'Acreage class',
@@ -293,7 +327,7 @@ export default defineScene<WildfireSeasonsOptions>({
       id: 'totalGpu',
       label: 'GPU acres, all fires',
       format: 'integer',
-      help: 'GPUGeometryMeasures area of all 90 fires in the chosen area system.'
+      help: 'GPUGeometryMeasures area of every loaded fire in the chosen area system.'
     },
     {
       id: 'totalNifc',
@@ -307,7 +341,9 @@ export default defineScene<WildfireSeasonsOptions>({
       help: 'GPUGeometryMeasures featureCounts per group (2020 / 2021 / 2022 / 2023, or the four acreage classes).'
     },
     {id: 'cumulativeChart', label: 'Cumulative acres', kind: 'chart'},
-    {id: 'yearChart', label: 'Acres per group', kind: 'chart'}
+    {id: 'yearChart', label: 'Acres per group', kind: 'chart'},
+    {id: 'ledgerChart', label: 'GPU minus agency acres', kind: 'chart'},
+    {id: 'medianRelativeDifference', label: 'Median relative difference'}
   ],
 
   snippet: state => `import {

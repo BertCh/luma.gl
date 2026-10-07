@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {ground} from '../../cartography/grounds';
+import {getClassTableLegend, makeClassTable} from '../../cartography/class-table';
 import {defineScene, type LegendSpec, type OptionSpec} from '../scene';
 import type {JobAccessibilityOptions} from './job-accessibility.compute';
 
@@ -104,9 +106,9 @@ const options: readonly OptionSpec<JobAccessibilityOptions>[] = [
     apply: 'compile',
     default: '256',
     options: [
-      {value: '128', label: '128 tracts (81% of jobs)'},
-      {value: '256', label: '256 tracts (90% of jobs)'},
-      {value: '384', label: '384 tracts (95% of jobs)'}
+      {value: '128', label: '128 retained tracts'},
+      {value: '256', label: '256 retained tracts'},
+      {value: '384', label: '384 retained tracts'}
     ],
     help: 'The job-richest census tracts, one shortest-path search each. The row count is the shape of the matrix, so changing it rebuilds both graphs. Scratch and matrix memory grow with it.'
   },
@@ -229,23 +231,36 @@ const options: readonly OptionSpec<JobAccessibilityOptions>[] = [
     apply: 'param',
     default: false,
     help: 'Orange segments from each opportunity to its snapped point on the nearest walkable edge.'
-  },
-  {
-    kind: 'select',
-    id: 'ramp',
-    label: 'Colour ramp',
-    group: 'Layers',
-    apply: 'param',
-    default: 'inferno',
-    options: [
-      {value: 'inferno', label: 'Inferno'},
-      {value: 'magma', label: 'Magma'},
-      {value: 'viridis', label: 'Viridis'},
-      {value: 'cividis', label: 'Cividis (colour-blind optimised)'}
-    ],
-    help: 'The accessibility score is drawn on a square-root scale clipped at the 98th percentile.'
   }
 ];
+
+// Published comparison tables. The renderer, legend and tooltip deliberately share these breaks;
+// they are not a quantile ramp that shifts as a control changes.
+const CUMULATIVE_CLASSES = makeClassTable({
+  breaks: [1, 5_000, 25_000, 100_000, 250_000],
+  scheme: 'YlGnBu',
+  reverse: true,
+  labels: ['0 jobs', '1–5k jobs', '5–25k jobs', '25–100k jobs', '100–250k jobs', '>250k jobs'],
+  unit: 'jobs',
+  noData: {color: [130, 130, 130, 255], label: 'zero / no reachable jobs'},
+  method: 'Authored cumulative opportunity classes; zero is neutral grey.'
+});
+const GRAVITY_CLASSES = makeClassTable({
+  breaks: [5_000, 20_000, 60_000, 150_000],
+  scheme: 'YlGnBu',
+  reverse: true,
+  unit: 'decay-weighted jobs',
+  noData: {color: [130, 130, 130, 255], label: 'zero / no reachable jobs'},
+  method: 'Frozen comparison classes derived from the retained opportunity rows.'
+});
+const TWO_STEP_CLASSES = makeClassTable({
+  breaks: [2, 8, 20, 50],
+  scheme: 'YlGnBu',
+  reverse: true,
+  unit: 'jobs per 1,000 competing workers',
+  noData: {color: [130, 130, 130, 255], label: 'zero / no reachable jobs'},
+  method: 'Frozen 2SFCA comparison classes; zero is neutral grey.'
+});
 
 export default defineScene<JobAccessibilityOptions>({
   id: 'job-accessibility',
@@ -261,6 +276,11 @@ export default defineScene<JobAccessibilityOptions>({
     {id: 'chicago-tracts', role: 'jobs and workers'}
   ],
   initialView: {longitude: -87.69, latitude: 41.83, zoom: 9.9},
+  basemap: ground('paperCity'),
+  furniture: {
+    title: {title: 'Jobs reachable without a car'},
+    credit: 'LEHD · CTA · Census · OpenStreetMap contributors (ODbL)'
+  },
   options,
 
   readouts: [
@@ -277,8 +297,14 @@ export default defineScene<JobAccessibilityOptions>({
     {
       id: 'opportunityShare',
       label: 'Jobs in the rows',
+      kind: 'chart',
       help: 'Share of all Chicago jobs (LEHD 2021) that sit in the opportunity tracts the matrix searches from.'
     },
+    {id: 'topOpportunity', label: 'Top loaded opportunity'},
+    {id: 'selectedRow', label: 'Selected matrix row'},
+    {id: 'decayChart', label: 'Decay response', kind: 'chart'},
+    {id: 'transitComparison', label: 'Walk / scheduled CTA comparison', kind: 'chart'},
+    {id: 'competitionComparison', label: 'Cumulative / 2SFCA comparison', kind: 'chart'},
     {
       id: 'snapped',
       label: 'Snapped opportunities',
@@ -327,35 +353,28 @@ export default defineScene<JobAccessibilityOptions>({
     {
       id: 'top',
       label: 'Top of the scale',
-      help: '98th percentile (the end of the colour ramp) and the maximum.'
+      help: 'Maximum observed score, reported against the fixed class table.'
     }
   ],
 
   legends: state => {
-    const unit =
+    const table =
       state.measure === 'cumulative'
-        ? `jobs within ${state.thresholdMinutes} min`
+        ? CUMULATIVE_CLASSES
         : state.measure === 'two-step'
-          ? 'jobs per competing worker'
-          : 'decay-weighted jobs';
+          ? TWO_STEP_CLASSES
+          : GRAVITY_CLASSES;
     const legends: LegendSpec[] = [
-      {
-        kind: 'ramp',
+      getClassTableLegend(table, {
         id: 'score',
-        title: 'Accessibility score',
-        ramp: state.ramp,
-        extent: 'gpu',
-        sqrtScale: true,
-        unit,
-        format: value =>
-          value === 0
-            ? '0'
-            : value >= 1000
-              ? `${(value / 1000).toFixed(0)}k`
-              : value < 1
-                ? value.toExponential(1)
-                : value.toFixed(0)
-      }
+        title:
+          state.measure === 'two-step'
+            ? '2SFCA jobs per 1,000 competing workers'
+            : state.measure === 'cumulative'
+              ? `Jobs within ${state.thresholdMinutes} minutes`
+              : 'Decay-weighted jobs',
+        note: table.method
+      })
     ];
     legends.push({
       kind: 'categories',
@@ -422,82 +441,85 @@ scoring.write(encodeGPUNetworkAccessibilityParameters(${
     what: '`GPUNetworkSnapping` puts each opportunity (here a census tract with its jobs) onto the nearest walkable street edge and returns two seeds with their costs. `GPUNetworkCostMatrix` searches from every opportunity over the reversed walk-plus-transit network and keeps a matrix of travel times to every node. `GPUNetworkAccessibility` then scores each node from that matrix.',
     why: 'Accessibility is the planning question behind transit equity: not "how far is the nearest bus stop" but "how many jobs can a person from this block reach in 45 minutes". Splitting the expensive search from the cheap scoring lets you explore thresholds and decay functions interactively.',
     howToRead:
-      'Brighter streets reach more jobs. The scale is a square root, clipped at the 98th percentile, so the Loop does not wash out the rest of the map. Compare the map with and without transit, and look along the L lines: access follows the rail corridors.'
+      'Brighter streets occupy higher fixed authored classes. Zero is neutral grey; cumulative and 2SFCA use different labelled units. The scheduled CTA comparison uses median hops and expected half-headway waiting, not observed reliability.'
   },
 
   create: async ctx => (await import('./job-accessibility.compute')).createJobAccessibility(ctx),
 
   story: [
     {
-      id: 'the-question',
-      controls: ['transit', 'thresholdMinutes'],
-      readouts: ['median', 'reached'],
-      title: 'How many jobs can you reach in 45 minutes without a car?',
-      body: 'Chicago has about 1.3 million jobs, and a quarter of them sit in a single downtown tract. For a resident without a car the reachable share depends on where they live and on the CTA. This map colours every walkable intersection by the **number of jobs reachable within 45 minutes** of walking and riding buses and trains, using 2021 LEHD workplace counts for the 256 job-richest tracts (90% of all jobs).\n\nThe bright spines follow the L lines out of the Loop. The dark patches in between are neighbourhoods where the nearest train is a long walk away. Switch **Ride the CTA** and move the **Travel-time threshold** below to see who gains.',
-      camera: {longitude: -87.7, latitude: 41.84, zoom: 9.9, transitionMs: 1200},
+      id: 'opportunities',
+      title: 'Jobs are not evenly distributed',
+      headline: 'Opportunity comes before travel.',
+      textAlternative:
+        'Tract outlines and hollow circles sized by loaded workplace jobs; the adjacent chart reports their live shares.',
+      optionsMode: 'fresh',
+      controls: ['showOpportunities'],
+      readouts: ['opportunityShare', 'topOpportunity'],
+      options: {showOpportunities: true, showTransit: false},
+      camera: {longitude: -87.7, latitude: 41.84, zoom: 10.2},
+      body: 'Hollow circles are area-scaled workplace jobs in the retained, loaded tracts. The share chart and top-tract annotation are calculated from those rows, rather than asserting a city total or a downtown share.'
+    },
+    {
+      id: 'walk',
+      title: 'Walking draws a small labour market',
+      headline: 'The threshold has fixed job classes.',
+      textAlternative:
+        'Classed cumulative walk-only accessibility with visible zero streets and a metric scale bar.',
+      optionsMode: 'fresh',
+      controls: ['thresholdMinutes', 'walkSpeed'],
+      readouts: ['reached', 'median'],
+      options: {transit: false, measure: 'cumulative', thresholdMinutes: 30},
+      body: 'Walking-only scores use the published zero, 1–5k, 5–25k, 25–100k, 100–250k and >250k job classes. Zero stays a neutral street, not missing data.'
+    },
+    {
+      id: 'transit',
+      title: 'Transit opens narrow corridors',
+      headline: 'Scheduled CTA changes the same classes.',
+      textAlternative:
+        'The same cumulative classes compare walking with the scheduled CTA network while rail remains neutral and cased.',
+      optionsMode: 'fresh',
+      controls: ['transit', 'waitFactor'],
+      readouts: ['transitComparison', 'median', 'encodes'],
       options: {transit: true, measure: 'cumulative', thresholdMinutes: 45, showTransit: true},
-      highlight: {readout: 'median'}
+      body: 'This uses scheduled median hops and expected half-headway waiting: a scheduled approximation, not a reliability percentile. The fixed classes make the walk and CTA comparison legible.'
     },
     {
-      id: 'snapping',
-      controls: ['showSnaps', 'maxSnapDistance', 'seedDirection'],
-      readouts: ['snapDistance', 'snapped'],
-      title: 'Opportunities must be on the street first',
-      body: 'A tract centroid is somewhere inside a block, not on a street. `GPUNetworkSnapping` finds the nearest walkable edge for every opportunity, the fraction along it, and the two **seed costs** (walking time to each end of the edge). Those become a two-seed start for the search, so an opportunity mid-block is reached from both ends.\n\nThe **Snap lines** below are on in the Loop: each orange segment is the walk from the tract centroid to the street. Try **Maximum snap distance** and **Seed direction** below: a one-ended seed behaves like a one-way street.',
-      camera: {longitude: -87.64, latitude: 41.88, zoom: 12.4, transitionMs: 1400},
-      options: {showSnaps: true, showOpportunities: true, showStops: true},
-      highlight: {readout: 'snapDistance'}
+      id: 'matrix-row',
+      title: 'One row is one destination',
+      headline: 'A retained opportunity has street bands.',
+      textAlternative:
+        'Snap leaders link retained opportunity centroids to streets and a selected matrix row is shown in ten-minute travel bands.',
+      optionsMode: 'fresh',
+      controls: ['showSnaps', 'maxSnapDistance', 'opportunityRows'],
+      readouts: ['matrix', 'selectedRow', 'snapDistance'],
+      options: {showSnaps: true, showOpportunities: true, transit: true},
+      camera: {longitude: -87.64, latitude: 41.88, zoom: 12.2},
+      body: 'Each retained opportunity is snapped before the reverse cost-matrix search. The selected row is copied from the retained matrix for a local ten-minute band display; it does not trigger a CPU matrix readback.'
     },
     {
-      id: 'cost-matrix',
-      controls: ['transit', 'opportunityRows', 'laneCount'],
-      readouts: ['matrix', 'matrixTime'],
-      title: 'One search per opportunity: the cost matrix',
-      body: '`GPUNetworkCostMatrix` runs a bounded shortest-path search from each opportunity over the **reversed** network (so the cost it stores is from every node *to* the opportunity) and keeps every result: 256 rows by about 51,000 nodes, 52 MiB. The searches are batched into lanes of 32 so the GPU stays busy, and the numbers are bit-identical for every lane count.\n\nThe network is walking on every street but the expressways, plus the CTA: board a stop (paying half the headway as wait), ride the GTFS hop graph, alight. This step opens with **Ride the CTA** off, so the matrix is for walking alone; switch it on and the matrix is re-computed with the transit hops. **Matrix time (snap + searches)** shows what that costs, and **Opportunity tracts (matrix rows)** and **Searches per batch (lanes)** change the matrix itself.',
-      camera: {longitude: -87.7, latitude: 41.84, zoom: 9.9, transitionMs: 1400},
-      options: {showSnaps: false, showStops: false, transit: false},
-      highlight: {readout: 'matrixTime'}
-    },
-    {
-      id: 'rescoring',
-      controls: ['transit', 'thresholdMinutes'],
+      id: 'decay',
+      title: 'A threshold is a cliff',
+      headline: 'Decay re-scores without another search.',
+      textAlternative:
+        'A chart compares the cumulative threshold cliff with exponential and power decay responses linked to the threshold and beta controls.',
+      optionsMode: 'fresh',
+      controls: ['thresholdMinutes', 'beta', 'measure'],
       readouts: ['scoreTime', 'matrixTime', 'encodes'],
-      title: 'Re-scoring is nearly free',
-      body: 'Walking alone reaches almost nothing outside downtown. Turn **Ride the CTA** back on, then drag the **Travel-time threshold** between 15 and 60 minutes: `GPUNetworkAccessibility` re-reads the retained matrix and sums the jobs within the threshold for every node, deterministically and without atomics. Compare **Re-score time** with **Matrix time (snap + searches)** and watch **Encodes (matrix / score)**: the score count moves, the matrix count does not.\n\nThe cumulative measure is a cliff: a job 44 minutes away counts fully, one 46 minutes away not at all.',
-      options: {transit: true, thresholdMinutes: 30},
-      highlight: {readout: 'scoreTime'}
+      options: {transit: true, measure: 'gravity-exponential', thresholdMinutes: 45, beta: 1},
+      body: 'The cumulative, exponential and power responses are charted from the current scoring controls. Only the score graph changes when threshold or decay changes; the matrix encode count remains fixed.'
     },
     {
-      id: 'gravity',
-      controls: ['measure', 'beta', 'thresholdMinutes'],
-      readouts: ['top'],
-      title: 'Soft thresholds: gravity decay',
-      body: 'A gravity measure replaces the cliff with a **decay function**: opportunities count for less the farther they are. `exp(-beta * minutes / 10)` is the exponential form; the power form `(c / c0)^-beta` keeps a heavier tail. The decay kind, `beta` and the power floor `minimumCost` are four floats in a parameter buffer.\n\nThe step opens on the exponential form: change **Exponential decay (beta)** below, or switch **Accessibility measure** to the power form and tune **Power decay exponent** and **Power decay floor** in the All controls tab. The map smooths and the ranking of neighbourhoods shifts, yet no search ran. A steep beta approximates "only walking distance matters"; a shallow one rewards the reach of the L.',
-      options: {measure: 'gravity-exponential', thresholdMinutes: 60, beta: 1.2},
-      highlight: {readout: 'top'}
-    },
-    {
-      id: 'two-step',
+      id: 'competition',
+      title: 'Jobs per competing worker',
+      headline: 'Competition changes accessibility counts.',
+      textAlternative:
+        'Fixed cumulative and 2SFCA comparisons label the latter as jobs per 1,000 competing workers.',
+      optionsMode: 'fresh',
       controls: ['measure', 'thresholdMinutes'],
-      readouts: ['top', 'median'],
-      title: 'Jobs per competing worker: 2SFCA',
-      body: 'More jobs within reach does not help if hundreds of thousands of other workers can reach the same ones. The **two-step floating catchment area** (2SFCA) divides each opportunity’s jobs by the workers who can reach it, then sums those ratios for every origin. Here demand is the workers who live in each tract (LEHD resident workers) placed on the nearest street.\n\nRead the map as *jobs per competing worker*. The downtown spine falls from first to merely good, and outlying areas with few competitors rise.',
-      options: {measure: 'two-step', thresholdMinutes: 45},
-      highlight: {readout: 'top'}
-    },
-    {
-      id: 'limits',
-      controls: [
-        'waitFactor',
-        'matrixLimitMinutes',
-        'walkSpeed',
-        'opportunityRows',
-        'seedDirection'
-      ],
-      title: 'Limits, and things to try',
-      body: 'This is an average-weekday, schedule-free model: the wait is half the headway of all departures from a stop, transfers between routes at a stop are free, and in-vehicle times are the median scheduled hop. Jobs are workplace counts per tract, noise-infused by the Census for privacy, and each tract is a single point. Only the 256 largest job tracts are opportunities (90% of jobs), and the walk network excludes expressways but not unsafe crossings.\n\nTry, with the controls below: set **Waiting at stops** to 0 and then 2; lengthen the **Search horizon (matrix cost limit)** to 90 minutes; raise **Walking speed** to 1.6 m/s; compare 128 and 384 tracts in **Opportunity tracts (matrix rows)**; switch **Seed direction** to forward; and use the BVH **Snapping search** (in the All controls tab).',
-      camera: {longitude: -87.7, latitude: 41.84, zoom: 10.0, transitionMs: 1200},
-      options: {measure: 'cumulative', thresholdMinutes: 45}
+      readouts: ['competitionComparison', 'median', 'mean', 'top'],
+      options: {transit: true, measure: 'two-step', thresholdMinutes: 45},
+      body: '2SFCA divides jobs by workers able to reach each opportunity and is shown as jobs per 1,000 competing workers. It shares the scheduled, centroid and retained-row limitations of this demonstration.'
     }
   ]
 });

@@ -4,3 +4,4 @@ Licence: ODbL 1.0 for the routes ("© OpenStreetMap contributors"); trip data CC
 Window: 11:30-14:00 UTC = 07:30-10:00 local, rides clipped to the window, 8,365 rides, 2 m Douglas-Peucker (1.07 M to 155 k vertices).
 Steps: `sh build.sh <scratch dir>` (needs the sibling poopdeck.gl checkout used by stt-export.mjs).
 Routes are derived, not GPS. Archive times are real UTC (profile peaks at 12-13 UTC).
+Attribution: the archive manifest's `source.attribution` is empty, so `simplify.mjs` writes `BIXI Montréal open data (CC BY); routes via OSRM on © OpenStreetMap contributors (ODbL); poopdeck.gl` into `properties.source.attribution` of the showcase manifest, the same text as the dataset descriptor.

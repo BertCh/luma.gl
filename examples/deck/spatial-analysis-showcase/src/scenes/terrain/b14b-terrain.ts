@@ -54,6 +54,8 @@ export type AlpsTerrain = {
   validity: Uint32Array;
   /** Lowest and highest elevation. */
   elevationRange: readonly [number, number];
+  /** `[west, south, east, north]` degrees of the raster's outer edges, from the manifest. */
+  lngLatBounds: readonly [number, number, number, number];
   /** `[longitude, latitude]` layer coordinate origin (the bbox center). */
   origin: [number, number];
   projection: LocalMetricProjection;
@@ -213,6 +215,7 @@ export function prepareAlpsTerrain(dataset: LoadedDataset, stride = 1): AlpsTerr
     elevation,
     validity,
     elevationRange: [minimum, maximum],
+    lngLatBounds: [west, south, east, north],
     origin,
     projection,
     bounds,

@@ -13,7 +13,6 @@ import {GPUCommandGraph, type CompiledGPUCommandGraph} from '@luma.gl/gpgpu/gpu-
 import {SpatialAnalysisPointLayer, SpatialAnalysisSegmentLayer} from '../../engine/layers';
 import {addKernelPass} from '../../engine/mode-kernels';
 import {createPlaybackClock} from '../../engine/playback';
-import type {RampName} from '../../engine/ramps';
 import {SpatialAnalysisResources} from '../../engine/resources';
 import {SummaryReader} from '../../engine/summary-reader';
 import type {SceneContext, SceneInstance} from '../scene';
@@ -49,7 +48,6 @@ export type WildfireSeasonsOptions = {
   trailDays: number;
   tailFade: number;
   colorBy: 'age' | 'year' | 'sizeClass';
-  ramp: Extract<RampName, 'viridis' | 'magma' | 'inferno' | 'cividis'>;
   areaSystem: 'planar' | 'spherical' | 'wgs84' | 'geodesic';
   groupBy: 'year' | 'sizeClass';
   showOutlines: boolean;
@@ -84,6 +82,7 @@ export async function createWildfireSeasons(
   // ---- Buffers ------------------------------------------------------------------------------------
   const lngLatBuffer = resources.createBuffer('lnglat', layout.lngLat);
   const planarBuffer = resources.createBuffer('planar', data.mercator);
+  const acreageValues = resources.createBuffer('agency-acres', data.acres);
   const ringOffsetsBuffer = resources.createBuffer('ring-offsets', layout.ringOffsets);
   const featureRingsBuffer = resources.createBuffer('feature-rings', layout.featureRingOffsets);
   const groupIdsBuffer = resources.createBuffer('group-ids', Uint32Array.from(data.yearIndex));
@@ -443,6 +442,25 @@ export async function createWildfireSeasons(
         areaAcres.reduce((a, b) => a + b, 0)
       );
       ctx.setReadout('totalNifc', nifc);
+      const relativeDifferences = Array.from(
+        areaAcres,
+        (acres, fire) => Math.abs(acres - data.acres[fire]) / Math.max(data.acres[fire], 1)
+      ).sort((left, right) => left - right);
+      const medianDifference = relativeDifferences[Math.floor(relativeDifferences.length / 2)] ?? 0;
+      const maximumDifference = relativeDifferences.at(-1) ?? 0;
+      ctx.setReadout(
+        'medianRelativeDifference',
+        `${(medianDifference * 100).toFixed(1)}% median; ${(maximumDifference * 100).toFixed(1)}% max`
+      );
+      ctx.setChart('ledgerChart', {
+        kind: 'scatter',
+        x: Array.from(data.acres),
+        y: Array.from(areaAcres, (acres, fire) => acres - data.acres[fire]),
+        xLabel: 'agency acres',
+        yLabel: 'GPU − agency acres',
+        description:
+          'One point per loaded perimeter; the vertical difference is GPU WGS84 area minus the agency acreage.'
+      });
       ctx.setReadout('groupFires', Array.from(groupFires).join(' / '));
       dirty.chart = true;
       updateReadouts(clock.time);
@@ -540,9 +558,9 @@ export async function createWildfireSeasons(
           instanceCount: fill.triangleCount,
           values: display,
           valueMapping: age ? 'ramp' : 'category',
-          colormap: options.ramp,
+          colormap: 'fire',
           valueRange: [0, 1],
-          color: [255, 255, 255, 215]
+          color: [255, 255, 255, (ctx.getViewport()?.zoom ?? 0) >= 5.7 ? 215 : 75]
         })
       );
       if (options.showOutlines) {
@@ -569,10 +587,17 @@ export async function createWildfireSeasons(
             coordinateSystem: COORDINATE_SYSTEM.LNGLAT,
             positions: centroids,
             instanceCount: count,
-            radiusPixels: 4,
+            radiusPixels: 16,
+            radiusMinPixels: 2,
+            radiusMaxPixels: 16,
+            sizeValues: acreageValues,
+            sizeMaximumValue: 1_000_000,
+            sizeScale: 'sqrt',
+            shape: 'ring',
+            outlineColor: dark ? [229, 233, 240, 220] : [31, 41, 51, 210],
             values: age ? display : displayCategory,
             valueFormat: age ? 'float32' : 'uint32',
-            colormap: age ? options.ramp : 'category',
+            colormap: age ? 'fire' : 'category',
             palette,
             valueRange: [0, 1],
             noDataColor: [0, 0, 0, 0]

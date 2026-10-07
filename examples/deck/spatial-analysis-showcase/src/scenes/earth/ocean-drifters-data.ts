@@ -66,6 +66,21 @@ export type DrifterSet = TrackSet & {
   firstMonthOffsets: Uint32Array;
 };
 
+/**
+ * Moves a longitude to the copy of the world closest to a neighbouring longitude.
+ *
+ * Deck's line layers draw coordinates literally. Keeping a Pacific segment as `179` to `-179`
+ * would therefore paint it across the whole map; dropping that segment (the previous behaviour)
+ * silently biased the density and twin comparison. The returned longitude is allowed outside
+ * `[-180, 180]`, which is the standard unwrapped representation of a dateline crossing.
+ */
+export function unwrapLongitudeNear(referenceLongitude: number, longitude: number): number {
+  let unwrapped = longitude;
+  while (unwrapped - referenceLongitude > 180) unwrapped -= 360;
+  while (unwrapped - referenceLongitude < -180) unwrapped += 360;
+  return unwrapped;
+}
+
 /** Loads `poopdeck-drifters`. */
 export function loadDrifters(dataset: LoadedDataset): DrifterSet {
   const pieceOffsets = dataset.column<Uint32Array>('pathOffsets');
@@ -120,10 +135,14 @@ export function loadDrifters(dataset: LoadedDataset): DrifterSet {
         Number.isFinite(daily[a]) &&
         Number.isFinite(daily[a + 1]) &&
         Number.isFinite(daily[b]) &&
-        Number.isFinite(daily[b + 1]) &&
-        Math.abs(daily[b] - daily[a]) < 180;
+        Number.isFinite(daily[b + 1]);
       if (finite) {
-        dailySegments.set([daily[a], daily[a + 1], daily[b], daily[b + 1]], row * 4);
+        // Do not discard dateline crossings. Each daily segment is unwrapped independently so
+        // GPULineDensity and the visible twin trails take the short Pacific route.
+        dailySegments.set(
+          [daily[a], daily[a + 1], unwrapLongitudeNear(daily[a], daily[b]), daily[b + 1]],
+          row * 4
+        );
         dailySegmentValid[row] = 1;
       } else {
         dailySegments.fill(Number.NaN, row * 4, row * 4 + 4);

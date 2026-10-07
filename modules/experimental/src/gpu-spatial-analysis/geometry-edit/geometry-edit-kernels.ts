@@ -342,6 +342,66 @@ fn readSnappedPoint(row: u32, gridSize: f32) -> vec2<f32> {
 }
 `;
 
+/** Properties for {@link createCleanupPointsNode}. @internal */
+export type CleanupPointsNodeProps = {
+  id: string;
+  operation: string;
+  positions: GraphDataView<'float32x2'>;
+  parameters: GraphDataView<'float32'>;
+  outputPositions: GraphDataView<'float32x2'>;
+  /** One-row scalar receiving the clamped point count. */
+  count: GraphDataView<'uint32'>;
+  /** One-row scalar receiving `1` when the point capacity overflowed, otherwise `0`. */
+  overflow: GraphDataView<'uint32'>;
+  /** Optional one-row scalar receiving the unclamped point count. */
+  totalCount?: GraphDataView<'uint32'>;
+};
+
+/**
+ * Builds the point-input cleanup node. Each row is an independent Point feature, so the kernel
+ * snaps coordinates without applying repeated-point removal across rows and publishes the output
+ * counts from invocation zero.
+ *
+ * @internal
+ */
+export function createCleanupPointsNode<Parameters>(
+  graph: GPUCommandGraph<Parameters>,
+  props: CleanupPointsNodeProps
+): GPUCommandNode<Parameters> {
+  const bindings: WGSLKernelBinding[] = [
+    {name: 'positions', view: props.positions, type: 'f32', access: 'read'},
+    {name: 'parameters', view: props.parameters, type: 'f32', access: 'read'},
+    {name: 'outputPositions', view: props.outputPositions, type: 'f32', access: 'read_write'},
+    {name: 'countOut', view: props.count, type: 'u32', access: 'read_write'},
+    {name: 'overflowOut', view: props.overflow, type: 'u32', access: 'read_write'}
+  ];
+  if (props.totalCount) {
+    bindings.push({name: 'totalOut', view: props.totalCount, type: 'u32', access: 'read_write'});
+  }
+  return createWGSLKernelNode<Parameters>(graph, {
+    id: props.id,
+    operation: props.operation,
+    variant: 'cleanup-points',
+    bindings,
+    invocationCount: props.positions.length,
+    declarations: `const POINT_COUNT: u32 = ${props.positions.length}u;
+const CAPACITY: u32 = ${props.outputPositions.length}u;
+${SNAP_SOURCE}`,
+    body: /* wgsl */ `
+  if (index == 0u) {
+    countOut[countOutOffset] = min(POINT_COUNT, CAPACITY);
+    overflowOut[overflowOutOffset] = select(0u, 1u, POINT_COUNT > CAPACITY);
+    ${props.totalCount ? 'totalOut[totalOutOffset] = POINT_COUNT;' : ''}
+  }
+  if (index >= CAPACITY) {
+    return;
+  }
+  let point = readSnappedPoint(index, parameters[parametersOffset]);
+  outputPositions[outputPositionsOffset + 2u * index] = point.x;
+  outputPositions[outputPositionsOffset + 2u * index + 1u] = point.y;`
+  });
+}
+
 /**
  * Builds the per-ring node that decides which vertices survive snapping and repeated-point
  * removal. One invocation per ring walks its vertices in order, so the result matches GEOS

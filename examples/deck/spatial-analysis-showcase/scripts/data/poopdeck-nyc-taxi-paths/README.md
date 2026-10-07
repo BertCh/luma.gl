@@ -12,3 +12,5 @@
 - Time: `timestamp` is `uint32` seconds since `properties.timeOriginMs` (07:59:00).
 - Caveats: routes and per-vertex times are derived by a routing engine between the recorded endpoints; they
   are not GPS traces, so speeds describe the road network model, not observed traffic.
+- Attribution: the upstream manifest leaves `properties.source.attribution` empty; `build.sh` fills it
+  (and the description) after the export so the credit travels with the data.

@@ -70,7 +70,7 @@
       "manifestUrl": "https://tiles.poopdeck.gl/data/bixi-points/manifest.json",
       "name": "bixi-points",
       "description": "",
-      "attribution": "",
+      "attribution": "BIXI Montréal open data (CC BY); routes via OSRM on © OpenStreetMap contributors (ODbL); poopdeck.gl",
       "layer": "default",
       "exportedFrom": "stt-export.mjs",
       "zoom": 10,

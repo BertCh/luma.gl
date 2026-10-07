@@ -40,33 +40,55 @@ import {
   GPUReadbackRing,
   type CompiledGPUCommandGraph
 } from '@luma.gl/gpgpu/gpu-core';
-import {formatCount, SpatialAnalysisResources} from '../../engine/resources';
-import type {SceneContext, SceneInstance} from '../scene';
-import {addBreaksSelectPass, createGraphImporter} from './b5-classify';
+import {getClassCounts} from '../../cartography/breaks';
 import {
-  createByteReader,
-  createChoroplethGeometry,
-  formatNumber,
-  getOutlineColor,
-  getQuantile,
-  getSortedFinite
-} from './b5-common';
-import {clearLegendData, formatCompact, formatSparkline, setLegendData} from './b5-legend-bus';
-import {CLASS_PALETTES, getStopPalette, packColor} from './b5-palettes';
+  getClassIndexOf,
+  getClassLabel,
+  getClassTableLayerProps,
+  makeClassTable
+} from '../../cartography/class-table';
+import {hexToRgba, MAP_INK, NO_DATA_COLOR} from '../../cartography/hue-registry';
+import {formatCount, formatPercent, formatOrdinal, liveText} from '../../cartography/live-text';
+import type {ClassColor, ClassTable, LngLat, MapAnnotation} from '../../cartography/types';
+import {SpatialAnalysisPolygonLayer, SpatialAnalysisSegmentLayer} from '../../engine/layers';
+import {SpatialAnalysisResources} from '../../engine/resources';
+import type {SceneContext, SceneInstance, TooltipContent, TooltipRow} from '../scene';
+import {getHairlineColor, getStateLineStyle} from '../weights/hot-spots.style';
+import {addBreaksSelectPass, createGraphImporter} from './b5-classify';
+import {createByteReader, getQuantile, getSortedFinite} from './b5-common';
 import {getCountyVariable} from './b5-variables';
+import {createCountyGeometry} from './choropleth-classes.geometry';
+import {
+  formatClassValue,
+  getBinUsage,
+  getBivariatePalette,
+  getGoodnessOfAbsoluteDeviationFit,
+  getMethodScheme,
+  getNoDataLabel,
+  getPackedNoDataColor,
+  getRankShare,
+  getSchemeColors,
+  isDivergingMethod,
+  LOG_VARIABLES,
+  makeBaselineTable,
+  METHOD_LABELS,
+  packColors
+} from './choropleth-classes.style';
 
 /** Option state of the choropleth-classes scene. */
 export type ChoroplethClassesOptions = {
   variable: string;
   method: GPUClassBreaksMethod;
   classCount: number;
+  /** The frozen classification drawn left of the swipe divider, or `'none'`. */
+  compareBaseline: 'none' | 'equal-interval' | 'quantile';
+  /** Which data-driven annotations the step shows. */
+  annotationSet: 'none' | 'outlier' | 'methods' | 'extremes' | 'counts';
   scale: 'threshold' | 'quantize' | 'linear' | 'sqrt' | 'pow' | 'log' | 'symlog';
   smoothBlend: boolean;
   clamp: boolean;
   exponent: number;
   logFloorExponent: number;
-  palette: string;
-  reversePalette: boolean;
   lowerPercentile: number;
   upperPercentile: number;
   quantileInterpolation: 'linear' | 'lower' | 'higher' | 'nearest' | 'midpoint';
@@ -76,40 +98,47 @@ export type ChoroplethClassesOptions = {
   naturalBreaksBinCount: string;
   bivariate: boolean;
   bivariateVariable: string;
-  bivariateClasses: number;
   bivariateMethod: 'quantile' | 'equal-interval';
   valueByAlpha: boolean;
   minimumAlpha: number;
-  noDataColor: 'transparent' | 'gray';
   histogramBins: string;
   hllPrecision: string;
   outlines: boolean;
 };
 
-/** Data the legends read. */
+/** Data the legends read, stored with `ctx.setLegendData('classes', ...)`. */
 export type ClassesLegendData = {
-  classCount: number;
-  breaks: number[];
+  /** The class table of the live (GPU) classification: layer, legend and tooltip read it. */
+  table: ClassTable;
+  /** Counties per class. */
   counts: number[];
-  colors: number[];
-  unit: string;
-  methodLabel: string;
-  bivariate: {
-    n: number;
-    counts: number[];
-    edgesX: number[];
-    edgesY: number[];
-    colors: number[];
-  } | null;
-  fits: {method: string; label: string; gadf: number; gvf: number}[];
-  fitClassCount: number;
+  /** Equal-width bins of the filtered values (`GPUColumnProfile`), spanning the table extent. */
+  histogram: number[];
+  /** The frozen classification left of the swipe divider, or `null`. */
+  baseline: ClassTable | null;
+  /** Counties per class of the frozen classification. */
+  baselineCounts: number[];
+  /**
+   * Which classification the map shows: `'a'` while the toggle compare holds the frozen side, else
+   * `'b'` (the live GPU classification, also during a swipe where the legend follows side b).
+   */
+  side: 'a' | 'b';
+  /** Bivariate tertile edges and counts per palette cell, or `null` when off. */
+  bivariate: {edgesX: number[]; edgesY: number[]; counts: number[]} | null;
+  /** True when a percentile cut removes counties from the classification. */
+  cut: boolean;
 };
 
 const MAXIMUM_CLASS_COUNT = 9;
+/** Bivariate maps are 3 x 3 (tertiles). The contributors are compiled for up to 4 classes. */
+const BIVARIATE_SIZE = 3;
 const MAXIMUM_BIVARIATE_CLASS_COUNT = 4;
 const QUANTILE_PROBABILITIES = [0.25, 0.5, 0.75] as const;
 const MAXIMUM_PROFILE_BINS = 96;
 const TOP_CATEGORY_COUNT = 10;
+/** Profile columns: the mapped value, the second variable, rural-urban codes, log10 of the value. */
+const PROFILE_COLUMN = {value: 0, second: 1, rucc: 2, logValue: 3} as const;
+const PROFILE_COLUMN_COUNT = 4;
 const RUCC_LABELS = [
   '?',
   'metro 1M+',
@@ -124,71 +153,13 @@ const RUCC_LABELS = [
 ];
 const READBACK_INTERVAL_FRAMES = 6;
 const ENCODED_FRAMES_AFTER_CHANGE = 3;
-const NO_DATA_TRANSPARENT = packColor(0, 0, 0, 0);
-const NO_DATA_GRAY = packColor(140, 140, 150, 110);
-/** Value-by-alpha ramps from 5,000 to 500,000 residents: small, noisy counties fade. */
+const NO_CLASS = 0xffffffff;
+/** Value-by-alpha ramps from 5,000 to 500,000 residents on a log scale: small counties fade. */
 const ALPHA_POPULATION_DOMAIN: readonly [number, number] = [5000, 500000];
-
-export const METHOD_LABELS: Record<GPUClassBreaksMethod, string> = {
-  quantile: 'Quantile',
-  'equal-interval': 'Equal interval',
-  'standard-deviation': 'Standard deviation',
-  'head-tail': 'Head/tail breaks',
-  'box-plot': 'Box plot (6 classes)',
-  'maximum-breaks': 'Maximum breaks',
-  'natural-breaks': 'Natural breaks (Jenks)',
-  custom: 'Custom round-number edges'
-};
-
-/** Stevens-style bivariate corners: low/low, high X, high Y, high/high. */
-const BIVARIATE_CORNERS = {
-  lowLow: [232, 232, 232],
-  highX: [200, 90, 90],
-  highY: [100, 172, 190],
-  highHigh: [87, 66, 73]
-} as const;
-
-/** Returns the colour of one bivariate class. */
-function getBivariateColor(n: number, x: number, y: number): [number, number, number] {
-  const tx = n > 1 ? x / (n - 1) : 0;
-  const ty = n > 1 ? y / (n - 1) : 0;
-  const mix = (channel: 0 | 1 | 2) =>
-    Math.round(
-      BIVARIATE_CORNERS.lowLow[channel] * (1 - tx) * (1 - ty) +
-        BIVARIATE_CORNERS.highX[channel] * tx * (1 - ty) +
-        BIVARIATE_CORNERS.highY[channel] * (1 - tx) * ty +
-        BIVARIATE_CORNERS.highHigh[channel] * tx * ty
-    );
-  return [mix(0), mix(1), mix(2)];
-}
-
-/** Merges histogram bins down to at most `target` so a sparkline stays short. */
-function rebin(bins: ArrayLike<number>, target: number): number[] {
-  const group = Math.max(1, Math.ceil(bins.length / target));
-  const merged: number[] = [];
-  for (let start = 0; start < bins.length; start += group) {
-    let total = 0;
-    for (let index = start; index < Math.min(start + group, bins.length); index++)
-      total += bins[index];
-    merged.push(total);
-  }
-  return merged;
-}
-
-/** Round-number class edges spanning the 2nd to 98th percentile. */
-function getRoundEdges(sorted: Float64Array, classCount: number): number[] {
-  const lo = getQuantile(sorted, 0.02);
-  const hi = getQuantile(sorted, 0.98);
-  const span = Math.max(hi - lo, 1e-9);
-  const rough = span / classCount;
-  const magnitude = 10 ** Math.floor(Math.log10(rough));
-  const step = [1, 2, 2.5, 5, 10].map(m => m * magnitude).find(value => value >= rough) ?? rough;
-  const start = Math.floor(lo / step) * step;
-  const edges = Array.from({length: classCount + 1}, (_, index) => start + index * step);
-  edges[0] = Math.min(edges[0], sorted[0]);
-  edges[classCount] = Math.max(edges[classCount], sorted[sorted.length - 1]);
-  return edges;
-}
+const ALPHA_LOG_DOMAIN: readonly [number, number] = [
+  Math.log10(ALPHA_POPULATION_DOMAIN[0]),
+  Math.log10(ALPHA_POPULATION_DOMAIN[1])
+];
 
 type Summary = {
   breaks: Float32Array;
@@ -208,12 +179,31 @@ type Summary = {
   classIndices: Uint32Array;
 };
 
+/** Round-number class edges spanning the 2nd to 98th percentile. */
+function getRoundEdges(sorted: Float64Array, classCount: number): number[] {
+  const lo = getQuantile(sorted, 0.02);
+  const hi = getQuantile(sorted, 0.98);
+  const span = Math.max(hi - lo, 1e-9);
+  const rough = span / classCount;
+  const magnitude = 10 ** Math.floor(Math.log10(rough));
+  const step = [1, 2, 2.5, 5, 10].map(m => m * magnitude).find(value => value >= rough) ?? rough;
+  const start = Math.floor(lo / step) * step;
+  const edges = Array.from({length: classCount + 1}, (_, index) => start + index * step);
+  edges[0] = Math.min(edges[0], sorted[0]);
+  edges[classCount] = Math.max(edges[classCount], sorted[sorted.length - 1]);
+  return edges;
+}
+
 /**
  * Choropleth classification of US counties, entirely on the GPU: `GPUColumnQuantiles` (percentile
- * filter), `GPUClassBreaks` (8 methods), `GPUColorScale` (scale type and palette), `GPUClassAssignment`
- * and `GPUClassificationFit` (goodness of fit), `GPUBivariateClassification` (two variables and
- * value-by-alpha) and `GPUColumnProfile` (field summary). Every control except the natural-breaks
- * bin count is a parameter or palette write.
+ * filter), `GPUClassBreaks` (8 methods), `GPUColorScale` (scale type and the exact ColorBrewer
+ * palette), `GPUClassAssignment` and `GPUClassificationFit` (goodness of fit),
+ * `GPUBivariateClassification` (two variables and value-by-alpha) and `GPUColumnProfile` (the
+ * histogram of the legend and the distribution chart). The map layer reads the packed rgba8 colours
+ * of `GPUColorScale` directly, so a recolour never leaves the GPU. The swipe compare draws a
+ * frozen CPU classification (equal interval or quantile, same counties) on the left side over the
+ * same value buffer. Every control except the natural-breaks bin count and the profile settings is
+ * a parameter or palette write.
  */
 export async function createChoroplethClasses(
   ctx: SceneContext<ChoroplethClassesOptions>
@@ -221,18 +211,28 @@ export async function createChoroplethClasses(
   const counties = ctx.datasets.get('us-counties');
   const {device} = ctx;
   const resources = new SpatialAnalysisResources(device, 'choropleth-classes');
-  const geometry = createChoroplethGeometry(resources, counties);
-  const n = geometry.featureCount;
-  const features = counties.geojson?.features ?? [];
-  const nameOf = (row: number): string => {
-    const properties = features[row]?.properties;
-    return properties ? `${properties.name}, ${properties.state}` : `County ${row}`;
-  };
+  const geometry = createCountyGeometry(resources, counties, ctx.datasets.get('us-states'));
+  const features = geometry.features;
+  const n = features.length;
+  const getProperty = (row: number, key: string): string =>
+    String(features[row]?.properties?.[key] ?? '');
+  const nameOf = (row: number): string =>
+    `${getProperty(row, 'name')}, ${getProperty(row, 'state')}`;
   const population = counties.column<Float32Array>('population');
+  const landArea = counties.column<Float32Array>('landArea');
+  const getLabelPoint = (row: number): LngLat => geometry.mesh.labelPoints[row] as LngLat;
+  const findRow = (name: string, state: string): number =>
+    features.findIndex(
+      feature => feature.properties?.['name'] === name && feature.properties?.['state'] === state
+    );
 
   const xBuffer = resources.createBuffer('x-values', n * 4);
   const yBuffer = resources.createBuffer('y-values', n * 4);
-  const alphaBuffer = resources.createBuffer('alpha-values', population);
+  const logXBuffer = resources.createBuffer('log-x-values', n * 4);
+  const alphaBuffer = resources.createBuffer(
+    'alpha-values',
+    Float32Array.from(population, value => (value > 0 ? Math.log10(value) : Number.NaN))
+  );
   const occupiedBuffer = resources.createBuffer('occupied', n * 4);
   const filterMask = resources.createBuffer('filter-mask', n * 4);
   const colors = resources.createBuffer('colors', n * 4);
@@ -294,22 +294,21 @@ export async function createChoroplethClasses(
     'bivariate-counts',
     MAXIMUM_BIVARIATE_CLASS_COUNT ** 2 * 4
   );
-  const profileColumnCount = 3;
   const profileStatistics = resources.createBuffer(
     'profile-statistics',
-    profileColumnCount * GPU_COLUMN_PROFILE_STATISTIC_COUNT * 4
+    PROFILE_COLUMN_COUNT * GPU_COLUMN_PROFILE_STATISTIC_COUNT * 4
   );
   const profileHistograms = resources.createBuffer(
     'profile-histograms',
-    profileColumnCount * MAXIMUM_PROFILE_BINS * 4
+    PROFILE_COLUMN_COUNT * MAXIMUM_PROFILE_BINS * 4
   );
   const topCategories = resources.createBuffer(
     'top-categories',
-    profileColumnCount * TOP_CATEGORY_COUNT * 4
+    PROFILE_COLUMN_COUNT * TOP_CATEGORY_COUNT * 4
   );
   const topCategoryCounts = resources.createBuffer(
     'top-category-counts',
-    profileColumnCount * TOP_CATEGORY_COUNT * 4
+    PROFILE_COLUMN_COUNT * TOP_CATEGORY_COUNT * 4
   );
   const ruccCodes = resources.createBuffer('rucc-codes', n * 4);
   const fitCounts = resources.createBuffer('fit-counts', (MAXIMUM_CLASS_COUNT + 1) * 4);
@@ -333,11 +332,11 @@ export async function createChoroplethClasses(
     {buffer: axisBreaksY, byteLength: (MAXIMUM_BIVARIATE_CLASS_COUNT + 1) * 4},
     {
       buffer: profileStatistics,
-      byteLength: profileColumnCount * GPU_COLUMN_PROFILE_STATISTIC_COUNT * 4
+      byteLength: PROFILE_COLUMN_COUNT * GPU_COLUMN_PROFILE_STATISTIC_COUNT * 4
     },
-    {buffer: profileHistograms, byteLength: profileColumnCount * MAXIMUM_PROFILE_BINS * 4},
-    {buffer: topCategories, byteLength: profileColumnCount * TOP_CATEGORY_COUNT * 4},
-    {buffer: topCategoryCounts, byteLength: profileColumnCount * TOP_CATEGORY_COUNT * 4},
+    {buffer: profileHistograms, byteLength: PROFILE_COLUMN_COUNT * MAXIMUM_PROFILE_BINS * 4},
+    {buffer: topCategories, byteLength: PROFILE_COLUMN_COUNT * TOP_CATEGORY_COUNT * 4},
+    {buffer: topCategoryCounts, byteLength: PROFILE_COLUMN_COUNT * TOP_CATEGORY_COUNT * 4},
     {buffer: fitSummary, byteLength: GPU_CLASSIFICATION_FIT_SUMMARY_LENGTH * 4},
     {buffer: classIndices, byteLength: n * 4}
   ];
@@ -346,7 +345,8 @@ export async function createChoroplethClasses(
     new GPUReadbackRing(device, {id: 'classes-summary', byteLength: readbackByteLength})
   );
 
-  // CPU copies of the selected variables, for the round-number edges, value filters and tooltips.
+  // CPU copies of the selected variables, for the round-number edges, the frozen baseline,
+  // the rank in tooltips and the readouts that are not GPU outputs.
   let xColumn: Float32Array = new Float32Array(n);
   let yColumn: Float32Array = new Float32Array(n);
   let sortedX: Float64Array = new Float64Array(0);
@@ -354,19 +354,34 @@ export async function createChoroplethClasses(
   let loadedBivariateVariable = '';
 
   let writtenClassCount = 0;
-  let activePalette: Uint32Array = new Uint32Array(0);
+  let writtenPaletteKey = '';
+  /** The palette written to the GPU, one RGBA colour per class (what the legend swatches show). */
+  let activeColors: ClassColor[] = [];
   let latestSummary: Summary | null = null;
+  let currentTable: ClassTable | null = null;
   let dirtyFrames = ENCODED_FRAMES_AFTER_CHANGE;
   let lastReadbackFrame = -READBACK_INTERVAL_FRAMES;
   let readbackWanted = true;
   let readbackPending = false;
   let destroyed = false;
   let selectedRow = -1;
+  let selectionSegments = 0;
+  let hoverRow = -1;
+  let legendHighlight: number[] | null = null;
   let parameterVersion = 0;
   let activeNaturalBins = Number(ctx.options.naturalBreaksBinCount);
   let activeProfileBins = Number(ctx.options.histogramBins);
   let activeHllPrecision = ctx.options.hllPrecision;
   let exactDistinct = 0;
+  let furnitureKey = '';
+
+  /** The frozen classification of the swipe compare, recomputed only when its inputs change. */
+  let baselineKey = '';
+  let baselineTable: ClassTable | null = null;
+  let baselineCounts: number[] = [];
+  /** What the compare divider shows now (`'a'` is only reported by the hold-to-compare toggle). */
+  let compareShowing: 'a' | 'b' | 'both' = 'both';
+  let legendData: Omit<ClassesLegendData, 'side'> | null = null;
 
   /** Method comparison sweep state. */
   let sweep: {queue: GPUClassBreaksMethod[]; current: GPUClassBreaksMethod} | null = null;
@@ -377,6 +392,30 @@ export async function createChoroplethClasses(
   let bivariateGraph: CompiledGPUCommandGraph<void> | null = null;
   let profileGraph: CompiledGPUCommandGraph<void> | null = null;
   let fitGraph: CompiledGPUCommandGraph<void> | null = null;
+
+  // Counties that anchor the data-driven annotations, found by name in the data.
+  const cookRow = findRow('Cook', 'IL');
+  const maricopaRow = findRow('Maricopa', 'AZ');
+  const loudounRow = findRow('Loudoun', 'VA');
+  const losAngelesRow = findRow('Los Angeles', 'CA');
+  /**
+   * The county with the most land among those in the lowest quintile of both residents and
+   * density: a large, nearly empty county of the West.
+   */
+  const emptyRow = (() => {
+    const populationEdge = getQuantile(getSortedFinite(population), 0.2);
+    const densityEdge = getQuantile(
+      getSortedFinite(counties.column<Float32Array>('popDensity')),
+      0.2
+    );
+    const density = counties.column<Float32Array>('popDensity');
+    let best = -1;
+    for (let row = 0; row < n; row++) {
+      if (!(population[row] < populationEdge) || !(density[row] < densityEdge)) continue;
+      if (best < 0 || landArea[row] > landArea[best]) best = row;
+    }
+    return best;
+  })();
 
   function buildGraphs(): void {
     for (const graph of [main, bivariateGraph, profileGraph, fitGraph]) {
@@ -531,7 +570,8 @@ export async function createChoroplethClasses(
         columns: [
           {values: profileBind.float(xBuffer, n)},
           {values: profileBind.float(yBuffer, n)},
-          {kind: 'category', values: profileBind.word(ruccCodes, n), categoryCount: 10}
+          {kind: 'category', values: profileBind.word(ruccCodes, n), categoryCount: 10},
+          {values: profileBind.float(logXBuffer, n)}
         ],
         mask: profileBind.word(filterMask, n),
         histogramBinCount: activeProfileBins,
@@ -540,13 +580,13 @@ export async function createChoroplethClasses(
         output: {
           statistics: profileBind.float(
             profileStatistics,
-            profileColumnCount * GPU_COLUMN_PROFILE_STATISTIC_COUNT
+            PROFILE_COLUMN_COUNT * GPU_COLUMN_PROFILE_STATISTIC_COUNT
           ),
-          histograms: profileBind.word(profileHistograms, profileColumnCount * activeProfileBins),
-          topCategories: profileBind.word(topCategories, profileColumnCount * TOP_CATEGORY_COUNT),
+          histograms: profileBind.word(profileHistograms, PROFILE_COLUMN_COUNT * activeProfileBins),
+          topCategories: profileBind.word(topCategories, PROFILE_COLUMN_COUNT * TOP_CATEGORY_COUNT),
           topCategoryCounts: profileBind.word(
             topCategoryCounts,
-            profileColumnCount * TOP_CATEGORY_COUNT
+            PROFILE_COLUMN_COUNT * TOP_CATEGORY_COUNT
           )
         }
       })
@@ -583,6 +623,16 @@ export async function createChoroplethClasses(
       })
     );
     fitGraph = resources.track(fit.compile());
+    publishCost();
+  }
+
+  /** The cost line of the card: counties and GPU passes of the graphs that run every frame. */
+  function publishCost(): void {
+    const passes = [main, profileGraph, fitGraph].reduce(
+      (total, graph) => total + (graph?.stats.nodeOrder.length ?? 0),
+      0
+    );
+    ctx.setCost({records: n, passes});
   }
 
   /** Loads the chosen variables into the value buffers when they changed. */
@@ -592,12 +642,16 @@ export async function createChoroplethClasses(
       loadedVariable = variable;
       xColumn = counties.column<Float32Array>(variable);
       xBuffer.write(xColumn);
+      logXBuffer.write(
+        Float32Array.from(xColumn, value => (value > 0 ? Math.log10(value) : Number.NaN))
+      );
       const occupied = new Uint32Array(n);
       for (let row = 0; row < n; row++) occupied[row] = Number.isFinite(xColumn[row]) ? 1 : 0;
       occupiedBuffer.write(occupied);
       sortedX = getSortedFinite(xColumn);
       exactDistinct = new Set(sortedX).size;
       latestSummary = null;
+      baselineKey = '';
     }
     if (bivariateVariable !== loadedBivariateVariable) {
       loadedBivariateVariable = bivariateVariable;
@@ -606,30 +660,65 @@ export async function createChoroplethClasses(
     }
   }
 
+  function getEffectiveMethod(): GPUClassBreaksMethod {
+    return sweep ? sweep.current : ctx.options.method;
+  }
+
+  /** Identity of the palette the GPU should hold: scheme and ground (the class count is separate). */
+  function getPaletteKey(): string {
+    return `${getMethodScheme(ctx.options.variable, getEffectiveMethod())}|${ctx.ground()}`;
+  }
+
+  /**
+   * Writes the exact published ColorBrewer table of the scheme (sequential hue of the variable, or
+   * RdBu around the mean, PuOr around the median) to the palette buffer `GPUColorScale` reads.
+   */
   function writePalette(classCount: number): void {
-    writtenClassCount = classCount;
-    const stops = (CLASS_PALETTES[ctx.options.palette] ?? CLASS_PALETTES.ylorrd).stops;
-    const ordered = ctx.options.reversePalette ? [...stops].reverse() : stops;
-    activePalette = getStopPalette(ordered, classCount, 235);
+    writtenClassCount = Math.min(Math.max(classCount, 1), MAXIMUM_CLASS_COUNT);
+    writtenPaletteKey = getPaletteKey();
+    activeColors = getSchemeColors(
+      getMethodScheme(ctx.options.variable, getEffectiveMethod()),
+      writtenClassCount,
+      ctx.ground()
+    );
     const padded = new Uint32Array(MAXIMUM_CLASS_COUNT);
-    padded.set(activePalette);
+    padded.set(packColors(activeColors));
     paletteBuffer.write(padded);
   }
 
   function writeBivariatePalette(): void {
     const palette = new Uint32Array(MAXIMUM_BIVARIATE_CLASS_COUNT ** 2);
-    const size = ctx.options.bivariateClasses;
-    for (let y = 0; y < size; y++) {
-      for (let x = 0; x < size; x++) {
-        const [r, g, b] = getBivariateColor(size, x, y);
-        palette[y * size + x] = packColor(r, g, b, 240);
-      }
-    }
+    const source = packColors(getBivariatePalette(ctx.ground()));
+    palette.set(source.subarray(0, BIVARIATE_SIZE ** 2));
     bivariatePaletteBuffer.write(palette);
   }
 
-  function getEffectiveMethod(): GPUClassBreaksMethod {
-    return sweep ? sweep.current : ctx.options.method;
+  /** Recomputes the frozen left-hand classification when its inputs (not the live method) change. */
+  function updateBaseline(): void {
+    const options = ctx.options;
+    if (options.compareBaseline === 'none' || options.bivariate || sortedX.length === 0) {
+      baselineTable = null;
+      baselineKey = '';
+      ctx.setReadout('gadfBaseline', null);
+      return;
+    }
+    const ground = ctx.ground();
+    const key = `${options.variable}|${options.compareBaseline}|${options.classCount}|${ground}`;
+    if (key === baselineKey) return;
+    baselineKey = key;
+    const variable = getCountyVariable(options.variable);
+    baselineTable = makeBaselineTable({
+      values: xColumn,
+      method: options.compareBaseline,
+      classCount: options.classCount,
+      scheme: getMethodScheme(options.variable, 'quantile'),
+      ground,
+      unit: variable.unit,
+      noDataLabel: getNoDataLabel(options.lowerPercentile, options.upperPercentile)
+    });
+    baselineCounts = getClassCounts(xColumn, baselineTable.breaks);
+    const gadf = getGoodnessOfAbsoluteDeviationFit(sortedX, baselineTable.breaks);
+    ctx.setReadout('gadfBaseline', gadf.toFixed(2));
   }
 
   /** Rewrites every per-frame parameter buffer from the options. */
@@ -638,6 +727,8 @@ export async function createChoroplethClasses(
     const options = ctx.options;
     const method = getEffectiveMethod();
     const requestedClassCount = options.classCount;
+    const wanted = Math.min(latestSummary?.classCount || requestedClassCount, MAXIMUM_CLASS_COUNT);
+    if (wanted !== writtenClassCount || getPaletteKey() !== writtenPaletteKey) writePalette(wanted);
     quantileParameters.write(
       getGPUColumnQuantilesParameterValues({
         quantiles: QUANTILE_PROBABILITIES,
@@ -659,24 +750,20 @@ export async function createChoroplethClasses(
         MAXIMUM_CLASS_COUNT
       )
     );
-    const classCount = latestSummary?.classCount || requestedClassCount;
-    if (classCount !== writtenClassCount) writePalette(Math.min(classCount, MAXIMUM_CLASS_COUNT));
+    const noDataColor = getPackedNoDataColor(ctx.ground());
     scaleParameters.write(
       getGPUColorScaleParameterValues({
-        scale: (options.scale === 'threshold' ? 'threshold' : options.scale) as GPUColorScaleType,
+        scale: options.scale as GPUColorScaleType,
         domainCount: writtenClassCount + 1,
         paletteCount: writtenClassCount,
         interpolation: options.smoothBlend && options.scale !== 'threshold' ? 'linear' : 'step',
         clamp: options.clamp,
-        noDataColor: options.noDataColor === 'gray' ? NO_DATA_GRAY : NO_DATA_TRANSPARENT,
+        noDataColor,
         logFloor: 10 ** options.logFloorExponent,
         exponent: options.exponent
       })
     );
-    const axisSettings = {
-      method: options.bivariateMethod,
-      classCount: options.bivariateClasses
-    };
+    const axisSettings = {method: options.bivariateMethod, classCount: BIVARIATE_SIZE};
     axisXParameters.write(
       getGPUClassBreaksParameterValues(axisSettings, MAXIMUM_BIVARIATE_CLASS_COUNT)
     );
@@ -685,20 +772,23 @@ export async function createChoroplethClasses(
     );
     bivariateParameters.write(
       getGPUBivariateClassificationParameterValues({
-        classCountX: options.bivariateClasses,
-        classCountY: options.bivariateClasses,
-        noDataColor: options.noDataColor === 'gray' ? NO_DATA_GRAY : NO_DATA_TRANSPARENT,
+        classCountX: BIVARIATE_SIZE,
+        classCountY: BIVARIATE_SIZE,
+        noDataColor,
+        // Opacity follows log10 of the population, linear between 5,000 and 500,000 residents.
         valueByAlpha: options.valueByAlpha
-          ? {domain: ALPHA_POPULATION_DOMAIN, minimumAlpha: options.minimumAlpha}
+          ? {domain: ALPHA_LOG_DOMAIN, minimumAlpha: options.minimumAlpha}
           : undefined
       })
     );
     writeBivariatePalette();
+    updateBaseline();
     parameterVersion++;
     dirtyFrames = ENCODED_FRAMES_AFTER_CHANGE;
     readbackWanted = true;
   }
 
+  /** Class edges as the legend shows them: the breaks, or the scale's own steps for other scales. */
   const getLegendEdges = (summary: Summary, k: number): number[] => {
     const edges: number[] = [];
     const first = summary.breaks[0];
@@ -733,99 +823,336 @@ export async function createChoroplethClasses(
     return edges;
   };
 
-  function publishLegend(summary: Summary): void {
-    const k = Math.min(summary.classCount, MAXIMUM_CLASS_COUNT);
+  const statistic = (
+    summary: Summary,
+    column: number,
+    field: keyof typeof GPU_COLUMN_PROFILE_STATISTIC
+  ): number =>
+    summary.profileStatistics[
+      column * GPU_COLUMN_PROFILE_STATISTIC_COUNT + GPU_COLUMN_PROFILE_STATISTIC[field]
+    ];
+
+  /** The histogram bins of one profile column. */
+  const getProfileBins = (summary: Summary, column: number): number[] =>
+    Array.from(
+      summary.profileHistograms.subarray(
+        column * activeProfileBins,
+        (column + 1) * activeProfileBins
+      )
+    );
+
+  /** The class table of the live classification, from the GPU breaks and the written palette. */
+  function buildTable(summary: Summary, gadf: number, gvf: number): ClassTable {
     const options = ctx.options;
     const variable = getCountyVariable(options.variable);
-    const edges = getLegendEdges(summary, k);
-    const n2 = options.bivariateClasses;
-    const bivariateColorsList: number[] = [];
-    for (let y = 0; y < n2; y++) {
-      for (let x = 0; x < n2; x++) {
-        const [r, g, b] = getBivariateColor(n2, x, y);
-        bivariateColorsList.push(packColor(r, g, b, 255));
+    const classCount = Math.min(summary.classCount, MAXIMUM_CLASS_COUNT);
+    const edges = getLegendEdges(summary, classCount);
+    const method = getEffectiveMethod();
+    const continuous =
+      options.scale === 'threshold'
+        ? ''
+        : `, ${options.scale} colour scale (class ranges follow the scale)`;
+    return makeClassTable({
+      breaks: edges.slice(1, classCount),
+      colors: activeColors.slice(0, classCount),
+      unit: variable.unit,
+      extent: [edges[0], edges[classCount]],
+      format: formatClassValue,
+      method: `${METHOD_LABELS[method]}, GADF ${gadf.toFixed(2)}, GVF ${gvf.toFixed(2)}${continuous}`,
+      noData: {
+        label: getNoDataLabel(options.lowerPercentile, options.upperPercentile),
+        count: Math.max(0, n - summary.validCount)
+      }
+    });
+  }
+
+  /** Marker of the hovered county on the distribution chart. */
+  function publishDistribution(hoverValue: number | null): void {
+    const summary = latestSummary;
+    const table = getDisplayedTable();
+    if (!summary || !table) return;
+    const options = ctx.options;
+    const variable = getCountyVariable(options.variable);
+    const log = LOG_VARIABLES.has(options.variable);
+    const column = log ? PROFILE_COLUMN.logValue : PROFILE_COLUMN.value;
+    const low = statistic(summary, column, 'minimum');
+    const high = statistic(summary, column, 'maximum');
+    if (!Number.isFinite(low) || !Number.isFinite(high) || !(high > low)) {
+      ctx.setChart('distribution', null);
+      return;
+    }
+    const transform = (value: number) => (log ? Math.log10(Math.max(value, 1e-6)) : value);
+    ctx.setChart('distribution', {
+      kind: 'histogram',
+      values: getProfileBins(summary, column),
+      xDomain: [low, high],
+      breaks: table.breaks.map(transform),
+      classColors: table.colors,
+      formatX: log ? value => formatClassValue(10 ** value) : formatClassValue,
+      xLabel: `${variable.label} (${variable.unit})${log ? ', log scale' : ''}`,
+      yLabel: 'Counties',
+      height: 120,
+      ...(hoverValue !== null && Number.isFinite(hoverValue)
+        ? {now: transform(hoverValue), nowLabel: formatClassValue(hoverValue)}
+        : {}),
+      description: `Histogram of ${variable.label.toLowerCase()} over counties with the class edges of the current method${log ? ' on a logarithmic axis' : ''}.`
+    });
+  }
+
+  /** Data-driven annotations of the step: notes and county labels read from the data. */
+  function publishAnnotations(): void {
+    const summary = latestSummary;
+    const options = ctx.options;
+    if (options.annotationSet === 'none' || !summary || options.bivariate) {
+      ctx.setAnnotations('classes', null);
+      return;
+    }
+    const variable = getCountyVariable(options.variable);
+    const classCount = summary.classCount;
+    const valueText = (row: number) => `${formatClassValue(xColumn[row])} ${variable.unit}`;
+    const classText = (row: number) => {
+      const classIndex = summary.classIndices[row];
+      return classIndex === NO_CLASS ? 'excluded' : `class ${classIndex + 1} of ${classCount}`;
+    };
+    const list: MapAnnotation[] = [];
+    if (options.annotationSet === 'outlier' || options.annotationSet === 'extremes') {
+      let highest = -1;
+      let lowest = -1;
+      for (let row = 0; row < n; row++) {
+        if (!Number.isFinite(xColumn[row])) continue;
+        if (highest < 0 || xColumn[row] > xColumn[highest]) highest = row;
+        if (lowest < 0 || xColumn[row] < xColumn[lowest]) lowest = row;
+      }
+      const note = (row: number, label: string): MapAnnotation => ({
+        kind: 'note',
+        coordinate: getLabelPoint(row),
+        title: valueText(row),
+        text: `${nameOf(row)}: ${label}`
+      });
+      if (highest >= 0) list.push(note(highest, 'highest value'));
+      if (options.annotationSet === 'extremes' && lowest >= 0 && lowest !== highest) {
+        list.push(note(lowest, 'lowest value'));
+      }
+    } else if (options.annotationSet === 'methods') {
+      for (const row of [cookRow, maricopaRow, loudounRow]) {
+        if (row < 0) continue;
+        list.push({
+          kind: 'point',
+          coordinate: getLabelPoint(row),
+          text: nameOf(row),
+          detail: classText(row),
+          rank: 'subject',
+          priority: 3
+        });
+      }
+    } else if (options.annotationSet === 'counts') {
+      if (losAngelesRow >= 0) {
+        list.push({
+          kind: 'note',
+          coordinate: getLabelPoint(losAngelesRow),
+          title: valueText(losAngelesRow),
+          text: `${nameOf(losAngelesRow)}: ${classText(losAngelesRow)}`
+        });
+      }
+      if (emptyRow >= 0) {
+        list.push({
+          kind: 'note',
+          coordinate: getLabelPoint(emptyRow),
+          title: valueText(emptyRow),
+          text: liveText('{name}: {area:integer} km² of land, {classText}', {
+            name: nameOf(emptyRow),
+            area: landArea[emptyRow],
+            classText: classText(emptyRow)
+          })
+        });
       }
     }
-    setLegendData<ClassesLegendData>('choropleth-classes', {
-      classCount: k,
-      breaks: edges,
-      counts: Array.from(summary.classCounts.subarray(0, k)),
-      colors: Array.from(activePalette.subarray(0, k)),
-      unit: variable.unit,
-      methodLabel: METHOD_LABELS[getEffectiveMethod()],
+    ctx.setAnnotations('classes', list.length ? list : null);
+  }
+
+  /** Cartouche subtitle and chips from the live variable and method (the claim stays the step's). */
+  function publishFurniture(summary: Summary): void {
+    const options = ctx.options;
+    const variable = getCountyVariable(options.variable);
+    const other = getCountyVariable(options.bivariateVariable);
+    const modelled = (id: string) => id.startsWith('places_');
+    const chips = [
+      ...(modelled(options.variable) || (options.bivariate && modelled(options.bivariateVariable))
+        ? ['Modelled']
+        : []),
+      ...(!modelled(options.variable) || options.bivariate ? ['Estimates'] : [])
+    ];
+    const subtitle = options.bivariate
+      ? `${variable.label} (across) by ${other.label} (up), tertiles`
+      : options.variable === 'population' && options.annotationSet === 'counts'
+        ? 'Counts on unequal areas: the wrong map'
+        : `${variable.label}, ${variable.unit}; ${METHOD_LABELS[getEffectiveMethod()]}, ${summary.classCount} classes`;
+    const sample = `${formatCount(n)} counties of the contiguous US (Alaska and Hawaii not in the data)`;
+    const key = `${subtitle}|${chips.join(',')}`;
+    if (key === furnitureKey) return;
+    furnitureKey = key;
+    ctx.setFurniture({title: {subtitle, sample, chips}});
+  }
+
+  /** The classification the map shows: the frozen side while the toggle holds side a. */
+  function getDisplayedTable(): ClassTable | null {
+    return compareShowing === 'a' && baselineTable && !ctx.options.bivariate
+      ? baselineTable
+      : currentTable;
+  }
+
+  /** Hands the legend its data, with the side the map shows. */
+  function pushLegend(): void {
+    if (!legendData) return;
+    ctx.setLegendData('classes', {
+      ...legendData,
+      baseline: baselineTable,
+      baselineCounts,
+      side: getDisplayedTable() === baselineTable && baselineTable ? 'a' : 'b'
+    } satisfies ClassesLegendData);
+  }
+
+  function publishSummary(summary: Summary, gadf: number, gvf: number): void {
+    const options = ctx.options;
+    const variable = getCountyVariable(options.variable);
+    const classCount = Math.min(summary.classCount, MAXIMUM_CLASS_COUNT);
+    const counts = Array.from(summary.classCounts.subarray(0, classCount));
+    const table = buildTable(summary, gadf, gvf);
+    currentTable = table;
+    const histogram = getProfileBins(summary, PROFILE_COLUMN.value);
+    const bivariateCountsList = Array.from(
+      summary.bivariateCounts.subarray(0, BIVARIATE_SIZE ** 2)
+    );
+    legendData = {
+      table,
+      counts,
+      histogram,
+      baseline: baselineTable,
+      baselineCounts,
       bivariate: {
-        n: n2,
-        counts: Array.from(summary.bivariateCounts.subarray(0, n2 * n2)),
-        edgesX: Array.from(summary.bivariateBreaksX.subarray(0, n2 + 1)),
-        edgesY: Array.from(summary.bivariateBreaksY.subarray(0, n2 + 1)),
-        colors: bivariateColorsList
+        edgesX: Array.from(summary.bivariateBreaksX.subarray(0, BIVARIATE_SIZE + 1)),
+        edgesY: Array.from(summary.bivariateBreaksY.subarray(0, BIVARIATE_SIZE + 1)),
+        counts: bivariateCountsList
       },
-      fits: GPU_CLASS_BREAKS_METHODS.filter(method => fitTable.has(method)).map(method => ({
-        method,
-        label: METHOD_LABELS[method].replace(/ \(.*\)/, ''),
-        gadf: fitTable.get(method)!.gadf,
-        gvf: fitTable.get(method)!.gvf
-      })),
-      fitClassCount: k
-    });
-    ctx.setLegendExtent('classes', [0, parameterVersion]);
+      cut: options.lowerPercentile > 0 || options.upperPercentile < 100
+    };
+    pushLegend();
+
+    // Readouts the story cites.
+    const valid = summary.validCount;
+    const edges = getLegendEdges(summary, classCount);
+    const maximum = sortedX.length ? sortedX[sortedX.length - 1] : Number.NaN;
+    ctx.setReadout('lowestShare', valid ? formatPercent(counts[0] / valid, 1) : null);
+    ctx.setReadout('outsideLowest', `${formatCount(valid - counts[0])} counties`);
+    ctx.setReadout('largest', `${formatClassValue(maximum)} ${variable.unit}`);
+    ctx.setReadout('classEdges', edges.map(formatClassValue).join(' | '));
+    ctx.setReadout('gadf', gadf.toFixed(2));
+    ctx.setReadout('gvf', gvf.toFixed(2));
+    ctx.setReadout(
+      'meanSd',
+      `${formatClassValue(statistic(summary, PROFILE_COLUMN.value, 'mean'))} ${variable.unit}, SD ${formatClassValue(statistic(summary, PROFILE_COLUMN.value, 'standardDeviation'))}`
+    );
+    const middle = (classCount - 1) / 2;
+    ctx.setReadout(
+      'neutralShare',
+      isDivergingMethod(getEffectiveMethod()) && Number.isInteger(middle) && valid
+        ? formatPercent(counts[middle] / valid, 0)
+        : null
+    );
+    const usage = getBinUsage(
+      sortedX,
+      summary.filterBounds[0],
+      summary.filterBounds[1],
+      activeNaturalBins
+    );
+    ctx.setReadout('binsUsed', `${formatCount(usage.used)} of ${formatCount(activeNaturalBins)}`);
+    ctx.setReadout('firstBinShare', formatPercent(usage.firstShare, 0));
+
+    // Area and population of the darkest class: counts on unequal areas map size.
+    let totalArea = 0;
+    let totalPopulation = 0;
+    let topArea = 0;
+    let topPopulation = 0;
+    for (let row = 0; row < n; row++) {
+      const classIndex = summary.classIndices[row];
+      if (classIndex === NO_CLASS) continue;
+      totalArea += landArea[row];
+      totalPopulation += population[row];
+      if (classIndex === classCount - 1) {
+        topArea += landArea[row];
+        topPopulation += population[row];
+      }
+    }
+    ctx.setReadout('topAreaShare', totalArea ? formatPercent(topArea / totalArea, 1) : null);
+    ctx.setReadout(
+      'topPopulationShare',
+      totalPopulation ? formatPercent(topPopulation / totalPopulation, 1) : null
+    );
+
+    // Bivariate cells in palette order: row * 3 + column, column = first variable, row = second.
+    const bivariateTotal = bivariateCountsList.reduce((total, count) => total + count, 0);
+    const cell = (index: number) =>
+      bivariateTotal
+        ? `${formatCount(bivariateCountsList[index])} counties (${formatPercent(bivariateCountsList[index] / bivariateTotal, 0)})`
+        : null;
+    ctx.setReadout(
+      'deprived',
+      options.bivariate ? cell(BIVARIATE_SIZE * (BIVARIATE_SIZE - 1)) : null
+    );
+    ctx.setReadout('bothHigh', options.bivariate ? cell(BIVARIATE_SIZE ** 2 - 1) : null);
+    let small = 0;
+    for (let row = 0; row < n; row++) {
+      if (population[row] < ALPHA_POPULATION_DOMAIN[0]) small++;
+    }
+    ctx.setReadout('smallCounties', `${formatCount(small)} of ${formatCount(n)} counties`);
+
+    publishDistribution(hoverRow >= 0 ? xColumn[hoverRow] : null);
+    publishAnnotations();
+    publishFurniture(summary);
+    ctx.requestLayers();
   }
 
   function applySummary(summary: Summary, version: number): void {
-    const previousClassCount = latestSummary?.classCount;
+    // A readback of an earlier parameter state (another variable or method) is stale: the
+    // changed parameters already asked for a new one.
+    if (version !== parameterVersion) return;
     latestSummary = summary;
     const options = ctx.options;
     const variable = getCountyVariable(options.variable);
-    const bivariateVariable = getCountyVariable(options.bivariateVariable);
     ctx.setReadout('valid', `${formatCount(summary.validCount)} of ${formatCount(n)} counties`);
     ctx.setReadout(
       'filter',
-      `${formatCompact(summary.filterBounds[0])} to ${formatCompact(summary.filterBounds[1])} ${variable.unit}`
+      `${formatClassValue(summary.filterBounds[0])} to ${formatClassValue(summary.filterBounds[1])} ${variable.unit}`
     );
     ctx.setReadout(
       'quartiles',
-      `${Array.from(summary.quantiles, formatCompact).join(' / ')} ${variable.unit}`
+      `${Array.from(summary.quantiles, formatClassValue).join(' / ')} ${variable.unit}`
     );
     ctx.setReadout(
       'classes',
       `${summary.classCount} produced of ${options.method === 'box-plot' ? 6 : options.classCount} requested`
     );
-    const statistic = (column: number, field: keyof typeof GPU_COLUMN_PROFILE_STATISTIC) =>
-      summary.profileStatistics[
-        column * GPU_COLUMN_PROFILE_STATISTIC_COUNT + GPU_COLUMN_PROFILE_STATISTIC[field]
-      ];
     const precision = Number(activeHllPrecision);
     const unfiltered = options.lowerPercentile === 0 && options.upperPercentile === 100;
     ctx.setReadout(
       'profile',
-      `mean ${formatCompact(statistic(0, 'mean'))}, sd ${formatCompact(statistic(0, 'standardDeviation'))}, ~${formatNumber(statistic(0, 'distinctEstimate'))} distinct values (HyperLogLog p=${precision}, error about ${(104 / Math.sqrt(2 ** precision)).toFixed(1)}%${unfiltered ? `; exact ${formatNumber(exactDistinct)}` : ''})`
+      `mean ${formatClassValue(statistic(summary, PROFILE_COLUMN.value, 'mean'))}, sd ${formatClassValue(statistic(summary, PROFILE_COLUMN.value, 'standardDeviation'))}, about ${formatCount(statistic(summary, PROFILE_COLUMN.value, 'distinctEstimate'))} distinct values (HyperLogLog p=${precision}, error about ${(104 / Math.sqrt(2 ** precision)).toFixed(1)}%${unfiltered ? `; exact ${formatCount(exactDistinct)}` : ''})`
     );
     const topCodes: string[] = [];
-    const categoryBase = 2 * TOP_CATEGORY_COUNT;
+    const categoryBase = PROFILE_COLUMN.rucc * TOP_CATEGORY_COUNT;
     for (let slot = 0; slot < TOP_CATEGORY_COUNT; slot++) {
       const code = summary.topCategories[categoryBase + slot];
       const count = summary.topCategoryCounts[categoryBase + slot];
-      if (code !== 0xffffffff && count > 0) {
+      if (code !== NO_CLASS && count > 0) {
         topCodes.push(`${code} ${RUCC_LABELS[code] ?? ''} (${formatCount(count)})`);
       }
     }
     ctx.setReadout('rucc', topCodes.slice(0, 4).join('; ') || 'none');
-    ctx.setReadout(
-      'histogram',
-      `${formatCompact(statistic(0, 'minimum'))} ${formatSparkline(rebin(summary.profileHistograms.subarray(0, activeProfileBins), 32))} ${formatCompact(statistic(0, 'maximum'))}`
-    );
-    ctx.setReadout(
-      'histogramY',
-      options.bivariate
-        ? `${bivariateVariable.label}: ${formatCompact(statistic(1, 'minimum'))} ${formatSparkline(rebin(summary.profileHistograms.subarray(activeProfileBins, 2 * activeProfileBins), 32))} ${formatCompact(statistic(1, 'maximum'))}`
-        : 'bivariate off'
-    );
     const gadf = summary.fit[GPU_CLASSIFICATION_FIT_GADF];
     const gvf = summary.fit[GPU_CLASSIFICATION_FIT_GVF];
-    ctx.setReadout('fit', `${gadf.toFixed(3)} / ${gvf.toFixed(3)}`);
     ctx.setReadout(
       'deviations',
-      `${formatCompact(summary.fit[GPU_CLASSIFICATION_FIT_ADCM])} / ${formatCompact(summary.fit[GPU_CLASSIFICATION_FIT_ADAM])}`
+      `${formatClassValue(summary.fit[GPU_CLASSIFICATION_FIT_ADCM])} / ${formatClassValue(summary.fit[GPU_CLASSIFICATION_FIT_ADAM])}`
     );
 
     // Fit scores are only comparable on the same counties and class count.
@@ -836,23 +1163,27 @@ export async function createChoroplethClasses(
     }
     if (version === parameterVersion) {
       fitTable.set(getEffectiveMethod(), {gadf, gvf});
-      ctx.setReadout(
+      const compared = GPU_CLASS_BREAKS_METHODS.filter(method => fitTable.has(method));
+      ctx.setChart(
         'methodFits',
-        fitTable.size > 1
-          ? GPU_CLASS_BREAKS_METHODS.filter(method => fitTable.has(method))
-              .map(
-                method =>
-                  `${METHOD_LABELS[method].split(' (')[0]} ${fitTable.get(method)!.gadf.toFixed(2)}`
-              )
-              .join(' · ')
-          : 'press "Compare all methods"'
+        compared.length > 1
+          ? {
+              kind: 'bars',
+              values: compared.map(method => fitTable.get(method)!.gadf),
+              labels: compared.map(method => METHOD_LABELS[method].replace(/ \(.*\)/, '')),
+              horizontal: true,
+              highlight: [compared.indexOf(getEffectiveMethod())],
+              xLabel: 'GADF (higher is better)'
+            }
+          : null
       );
     }
-    if (summary.classCount > 0 && summary.classCount !== previousClassCount) {
-      if (summary.classCount !== writtenClassCount) {
-        writePalette(summary.classCount);
-        writeParameters();
-      }
+    // The palette must have as many colours as the method produced classes (head/tail and
+    // maximum breaks may return fewer than requested): rewrite it and wait for the next summary.
+    const paletteMatches = summary.classCount === writtenClassCount;
+    if (summary.classCount > 0 && !paletteMatches) {
+      writePalette(summary.classCount);
+      writeParameters();
     }
     if (sweep && version === parameterVersion) {
       const next = sweep.queue.shift();
@@ -864,8 +1195,7 @@ export async function createChoroplethClasses(
         writeParameters();
       }
     }
-    publishLegend(summary);
-    ctx.requestLayers();
+    if (summary.classCount > 0 && paletteMatches) publishSummary(summary, gadf, gvf);
   }
 
   async function readSummary(commandEncoder: CommandEncoder): Promise<void> {
@@ -900,10 +1230,10 @@ export async function createChoroplethClasses(
         bivariateCounts: read.words(MAXIMUM_BIVARIATE_CLASS_COUNT ** 2),
         bivariateBreaksX: read.floats(MAXIMUM_BIVARIATE_CLASS_COUNT + 1),
         bivariateBreaksY: read.floats(MAXIMUM_BIVARIATE_CLASS_COUNT + 1),
-        profileStatistics: read.floats(profileColumnCount * GPU_COLUMN_PROFILE_STATISTIC_COUNT),
-        profileHistograms: read.words(profileColumnCount * MAXIMUM_PROFILE_BINS),
-        topCategories: read.words(profileColumnCount * TOP_CATEGORY_COUNT),
-        topCategoryCounts: read.words(profileColumnCount * TOP_CATEGORY_COUNT),
+        profileStatistics: read.floats(PROFILE_COLUMN_COUNT * GPU_COLUMN_PROFILE_STATISTIC_COUNT),
+        profileHistograms: read.words(PROFILE_COLUMN_COUNT * MAXIMUM_PROFILE_BINS),
+        topCategories: read.words(PROFILE_COLUMN_COUNT * TOP_CATEGORY_COUNT),
+        topCategoryCounts: read.words(PROFILE_COLUMN_COUNT * TOP_CATEGORY_COUNT),
         fit: read.floats(GPU_CLASSIFICATION_FIT_SUMMARY_LENGTH),
         classIndices: read.words(n)
       };
@@ -917,38 +1247,86 @@ export async function createChoroplethClasses(
 
   ruccCodes.write(
     Uint32Array.from(counties.column<Float32Array>('rucc2023'), value =>
-      Number.isFinite(value) ? Math.round(value) : 0xffffffff
+      Number.isFinite(value) ? Math.round(value) : NO_CLASS
     )
   );
-  writePalette(ctx.options.classCount);
   loadVariables();
+  writePalette(ctx.options.classCount);
   buildGraphs();
   writeParameters();
+  ctx.setFurniture({
+    title: {
+      sample: `${formatCount(n)} counties of the contiguous US (Alaska and Hawaii not in the data)`
+    }
+  });
 
-  const describeRow = (row: number): string => {
+  /** The tooltip of one county: value with its class swatch, class, percentile, population. */
+  const describeRow = (row: number): TooltipContent => {
     const options = ctx.options;
     const variable = getCountyVariable(options.variable);
-    const lines = [
-      nameOf(row),
-      `${variable.label}: ${formatCompact(xColumn[row])} ${variable.unit}`
-    ];
-    if (latestSummary) {
-      const classIndex = latestSummary.classIndices[row];
-      if (classIndex !== 0xffffffff && classIndex < latestSummary.classCount) {
-        lines.push(
-          `Class ${classIndex + 1} of ${latestSummary.classCount} (${formatCompact(latestSummary.breaks[classIndex])} to ${formatCompact(latestSummary.breaks[classIndex + 1])})`
-        );
-      } else {
-        lines.push('Filtered out by the percentile range');
+    const value = xColumn[row];
+    const summary = latestSummary;
+    // The class of the classification the map shows: the frozen side while the toggle holds it.
+    const table = getDisplayedTable();
+    const onBaseline = table !== null && table === baselineTable;
+    const rows: TooltipRow[] = [];
+    let note: string | undefined;
+    if (!Number.isFinite(value)) {
+      rows.push({label: variable.label, value: 'No data', emphasis: true});
+    } else {
+      const classIndex = onBaseline
+        ? getClassIndexOf(table, value)
+        : (summary?.classIndices[row] ?? NO_CLASS);
+      const classified =
+        table && summary && classIndex !== NO_CLASS && classIndex < table.colors.length;
+      rows.push({
+        label: variable.label,
+        value: formatClassValue(value),
+        unit: variable.unit,
+        swatch: classified ? table.colors[classIndex] : undefined,
+        emphasis: true
+      });
+      if (classified) {
+        rows.push({
+          label: 'Class',
+          value: `${classIndex + 1} of ${table.colors.length}`,
+          unit: getClassLabel(table, classIndex)
+        });
+      } else if (summary) {
+        note = 'Excluded by the percentile cut';
       }
+      rows.push({
+        label: 'Rank',
+        value: `${formatOrdinal(Math.round(getRankShare(sortedX, value) * 100))} percentile`,
+        unit: 'of counties'
+      });
     }
     if (options.bivariate) {
-      lines.push(
-        `${getCountyVariable(options.bivariateVariable).label}: ${formatCompact(yColumn[row])} ${getCountyVariable(options.bivariateVariable).unit}`
-      );
+      const other = getCountyVariable(options.bivariateVariable);
+      rows.push({
+        label: other.label,
+        value: formatClassValue(yColumn[row]),
+        unit: other.unit
+      });
     }
-    lines.push(`Population ${formatNumber(population[row])}`);
-    return lines.join('\n');
+    rows.push({label: 'Population', value: formatCount(population[row]), unit: 'residents'});
+    return {
+      title: getProperty(row, 'name'),
+      subtitle: getProperty(row, 'state'),
+      rows,
+      note,
+      anchor: getLabelPoint(row),
+      highlight: {kind: 'polygon', rings: geometry.getRings(row)}
+    };
+  };
+
+  /** Clears the hover marker of the distribution chart and returns no tooltip. */
+  const clearHover = (): null => {
+    if (hoverRow !== -1) {
+      hoverRow = -1;
+      publishDistribution(null);
+    }
+    return null;
   };
 
   return {
@@ -971,13 +1349,12 @@ export async function createChoroplethClasses(
       if (id === 'variable' || id === 'bivariateVariable' || id === 'classCount') {
         latestSummary = null;
       }
-      if (id === 'palette' || id === 'reversePalette')
-        writePalette(writtenClassCount || ctx.options.classCount);
-      if (id === 'method' || id === 'classCount' || id === 'variable') {
-        // A manual change ends a method comparison.
-        sweep = null;
+      if (id === 'variable' || id === 'method' || id === 'classCount' || id === 'scale') {
+        // A manual change ends a method comparison and a legend isolation.
+        if (id !== 'scale') sweep = null;
+        legendHighlight = null;
       }
-      if (id === 'outlines' || id === 'bivariate') ctx.requestLayers();
+      if (id === 'annotationSet') publishAnnotations();
       writeParameters();
       ctx.requestLayers();
     },
@@ -1012,39 +1389,169 @@ export async function createChoroplethClasses(
     },
 
     getLayers() {
-      const layers: Layer[] = [
-        geometry.createFillLayer(`classes-${ctx.options.bivariate ? 'bivariate' : 'classes'}`, {
-          values: ctx.options.bivariate ? bivariateColors : colors,
-          mode: 'packed',
-          selectedRow,
-          fillOpacity: 0.92
-        })
-      ];
-      if (ctx.options.outlines) {
+      const options = ctx.options;
+      const ground = ctx.ground();
+      const origin: [number, number, number] = [geometry.origin[0], geometry.origin[1], 0];
+      const noDataColor = NO_DATA_COLOR[ground];
+      const common = {
+        coordinateOrigin: origin,
+        triangles: geometry.buffers.triangles,
+        features: geometry.buffers.triangleFeatures,
+        vertexCount: geometry.buffers.vertexCount,
+        // Opaque on the paper sheet: translucency would blend the class colours with the ground.
+        opacity: 1
+      };
+      const layers: Layer[] = [];
+      const comparing = !options.bivariate && baselineTable !== null;
+      if (comparing && baselineTable) {
+        // Side a: the frozen classification over the same value buffer, exact class colours.
         layers.push(
-          geometry.createOutlineLayer('classes-outline', getOutlineColor(ctx.theme(), 80), 0.7)
+          new SpatialAnalysisPolygonLayer({
+            id: 'classes-fill-a',
+            ...common,
+            values: xBuffer,
+            valueFormat: 'float32',
+            colormap: 'greys',
+            ...getClassTableLayerProps(baselineTable),
+            noDataColor,
+            compareSide: 'a'
+          })
+        );
+      }
+      const side = comparing ? ('b' as const) : undefined;
+      if (options.bivariate) {
+        layers.push(
+          new SpatialAnalysisPolygonLayer({
+            id: 'classes-fill-b',
+            ...common,
+            values: bivariateColors,
+            valueFormat: 'uint32',
+            colormap: 'rgba'
+          })
+        );
+      } else if (legendHighlight && options.scale === 'threshold') {
+        // An isolated legend class: the same exact palette over the class indices, others dimmed.
+        layers.push(
+          new SpatialAnalysisPolygonLayer({
+            id: 'classes-fill-b',
+            ...common,
+            values: classIndices,
+            valueFormat: 'uint32',
+            colormap: 'category',
+            palette: activeColors,
+            noDataValue: NO_CLASS,
+            noDataColor,
+            highlightClasses: legendHighlight,
+            compareSide: side
+          })
+        );
+      } else {
+        // Side b: the packed rgba8 colours of GPUColorScale, drawn as they are.
+        layers.push(
+          new SpatialAnalysisPolygonLayer({
+            id: 'classes-fill-b',
+            ...common,
+            values: colors,
+            valueFormat: 'uint32',
+            colormap: 'rgba',
+            compareSide: side
+          })
+        );
+      }
+      if (options.outlines) {
+        layers.push(
+          new SpatialAnalysisSegmentLayer({
+            id: 'classes-county-lines',
+            coordinateOrigin: origin,
+            segments: geometry.buffers.outline,
+            instanceCount: geometry.buffers.outlineCount,
+            // Tier 3: a thin hairline over thousands of polygons, never a dark mesh.
+            widthPixels: n > 2000 ? 0.4 : 0.5,
+            color: getHairlineColor(ground)
+          })
+        );
+      }
+      if (geometry.stateLines) {
+        // The zone-boundary tier, always on in county steps.
+        const line = getStateLineStyle(ground);
+        layers.push(
+          new SpatialAnalysisSegmentLayer({
+            id: 'classes-state-lines',
+            coordinateOrigin: origin,
+            segments: geometry.stateLines.buffer,
+            instanceCount: geometry.stateLines.segmentCount,
+            widthPixels: line.widthPixels,
+            color: line.color,
+            outlineColor: line.casing,
+            outlineWidthPixels: (line.casingPixels - line.widthPixels) / 2
+          })
+        );
+      }
+      if (selectedRow >= 0 && selectionSegments > 0) {
+        // The pinned county: an achromatic ink core over a ground-colour casing.
+        const ink = hexToRgba(MAP_INK[ground].ink);
+        const halo = hexToRgba(MAP_INK[ground].halo);
+        layers.push(
+          new SpatialAnalysisSegmentLayer({
+            id: 'classes-selection',
+            coordinateOrigin: origin,
+            segments: geometry.selectionBuffer,
+            instanceCount: selectionSegments,
+            widthPixels: 2.5,
+            color: ink,
+            outlineColor: halo,
+            outlineWidthPixels: 1
+          })
         );
       }
       return layers;
+    },
+
+    // The class tables and the packed colours are authored per ground, so a flip rewrites them.
+    onGroundChange() {
+      baselineKey = '';
+      writeParameters();
+      ctx.requestLayers();
     },
 
     onThemeChange() {
       ctx.requestLayers();
     },
 
+    onCompareChange(state) {
+      compareShowing = state.showing;
+      pushLegend();
+      publishDistribution(hoverRow >= 0 ? xColumn[hoverRow] : null);
+    },
+
+    onLegendFilter(_id, classes) {
+      legendHighlight = classes ? [...classes] : null;
+      ctx.requestLayers();
+    },
+
     getTooltip(event) {
-      if (!event.coordinate) return null;
-      const row = geometry.locator.locate(event.coordinate[0], event.coordinate[1]);
-      return row >= 0 ? describeRow(row) : null;
+      if (!event.coordinate) return clearHover();
+      const hit = geometry.locator.find(event.coordinate);
+      if (!hit) return clearHover();
+      if (hit.index !== hoverRow) {
+        hoverRow = hit.index;
+        publishDistribution(xColumn[hit.index]);
+      }
+      return describeRow(hit.index);
     },
 
     onClick(event) {
       if (!event.coordinate) return false;
-      const row = geometry.locator.locate(event.coordinate[0], event.coordinate[1]);
+      const hit = geometry.locator.find(event.coordinate);
+      const row = hit ? hit.index : -1;
       selectedRow = row === selectedRow ? -1 : row;
+      selectionSegments = geometry.setSelection(selectedRow);
+      const tooltip = selectedRow >= 0 ? describeRow(selectedRow) : null;
       ctx.setReadout(
         'selected',
-        selectedRow >= 0 ? describeRow(selectedRow).replace(/\n/g, ' | ') : null
+        tooltip
+          ? `${tooltip.title}, ${tooltip.subtitle}: ${(tooltip.rows ?? []).map(item => `${item.label} ${item.value}${item.unit ? ` ${item.unit}` : ''}`).join(' | ')}`
+          : null
       );
       ctx.requestLayers();
       return true;
@@ -1052,7 +1559,7 @@ export async function createChoroplethClasses(
 
     destroy() {
       destroyed = true;
-      clearLegendData('choropleth-classes');
+      ctx.setAnnotations('classes', null);
       resources.destroy();
     }
   };

@@ -5,6 +5,7 @@
 import type {LoadedDataset} from '../../data/catalog';
 import type {LocalMetricProjection} from '../../engine/projection';
 import {createZoneRaster, type ZoneRaster} from './b11-zone-raster';
+import {TAXI_DAY_START_HOUR} from './taxi-flows-constants';
 
 /** Planar origin shared by every Chicago flow layer. */
 export const CHICAGO_ORIGIN: [number, number] = [-87.68, 41.84];
@@ -18,9 +19,13 @@ export type FlowSource = {
   zoneNames: readonly string[];
   /** Planar meters per zone. */
   centers: Float32Array;
+  /** `[longitude, latitude]` per zone, in the same order as `centers`. */
+  centerLngLat: Float32Array;
+  /** Area of each zone in square kilometres (the denominator of every density). */
+  zoneAreaKm2: Float32Array;
   origin: Uint32Array;
   destination: Uint32Array;
-  /** Pickup hour as float32 (taxi only). */
+  /** Pickup hour counted from the start of the taxi day, 0 = 04:00 (taxi only, integers 0-23). */
   hour: Float32Array | null;
   /** 0 weekday, 1 weekend (taxi only). */
   dayType: Uint8Array | null;
@@ -38,6 +43,7 @@ export function readTaxiSource(
   projection: LocalMetricProjection
 ): FlowSource {
   const centers = taxi.projectColumn('locations', projection.origin);
+  const centerLngLat = taxi.column<Float32Array>('locations');
   const zoneNames = taxi.properties.areaNames as string[];
   const origin = taxi.column<Uint32Array>('hourlyOrigin');
   const destination = taxi.column<Uint32Array>('hourlyDestination');
@@ -55,7 +61,8 @@ export function readTaxiSource(
     trips[row] = count[row];
     revenue[row] = count[row] * fare[row];
     rideHours[row] = (count[row] * seconds[row]) / 3600;
-    hour[row] = hourBytes[row];
+    // Taxi-day hours: 04:00 is hour 0 and 03:00 is hour 23, so windows cross midnight in one piece.
+    hour[row] = (hourBytes[row] - TAXI_DAY_START_HOUR + 24) % 24;
   }
   const raster = createZoneRaster(
     areas.geojson!,
@@ -64,12 +71,19 @@ export function readTaxiSource(
     properties => Number(properties.id) - 1,
     180
   );
+  const zoneAreaKm2 = new Float32Array(zoneNames.length);
+  for (const feature of areas.geojson!.features) {
+    const properties = feature.properties ?? {};
+    zoneAreaKm2[Number(properties.id) - 1] = Number(properties.areaKm2);
+  }
   return {
     id: 'taxi',
     rowCount,
     zoneCount: zoneNames.length,
     zoneNames,
     centers,
+    centerLngLat,
+    zoneAreaKm2,
     origin,
     destination,
     hour,
@@ -92,6 +106,7 @@ export function readCommuteSource(
   projection: LocalMetricProjection
 ): FlowSource {
   const centers = lodes.projectColumn('locations', projection.origin);
+  const centerLngLat = lodes.column<Float32Array>('locations');
   const features = tracts.geojson!.features;
   const zoneNames = features.map(feature => {
     const properties = feature.properties ?? {};
@@ -110,12 +125,15 @@ export function readCommuteSource(
       properties.index === undefined ? featureIndex : Number(properties.index),
     150
   );
+  const zoneAreaKm2 = Float32Array.from(tracts.column<Float32Array>('areaKm2'));
   return {
     id: 'commute',
     rowCount: jobs.length,
     zoneCount: zoneNames.length,
     zoneNames,
     centers,
+    centerLngLat,
+    zoneAreaKm2,
     origin: lodes.column<Uint32Array>('origin'),
     destination: lodes.column<Uint32Array>('destination'),
     hour: null,

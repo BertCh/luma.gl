@@ -5,6 +5,7 @@
 import type {Layer} from '@deck.gl/core';
 import {GPUTrajectoryMetrics} from '@luma.gl/experimental/gpu-spatial-analysis';
 import {GPUCommandGraph} from '@luma.gl/gpgpu/gpu-core';
+import {US} from '../../cartography/gazetteer';
 import {importGraphBuffer} from '../../engine/graph-buffers';
 import type {RampName} from '../../engine/ramps';
 import {formatCount, SpatialAnalysisResources} from '../../engine/resources';
@@ -215,6 +216,29 @@ export async function createJetStream(
         ? `median |derived - reported| = ${getMedian(differences).toFixed(1)} kn over ${formatCount(differences.length)} steps`
         : 'n/a'
     );
+    // The two arrows make the signed quantity spatial: orange reads as a tailwind along an
+    // eastbound route, purple as a headwind along a westbound route. Their anchors are verified
+    // airport gazetteer locations, rather than coordinates embedded in the story.
+    ctx.setAnnotations('wind-direction', [
+      {
+        kind: 'arrow',
+        id: 'tailwind',
+        from: US.places.den.lngLat,
+        to: US.places.ord.lngLat,
+        text: `eastbound: ${(difference / 2).toFixed(0)} kn tailwind`,
+        tone: 'signal',
+        priority: 8
+      },
+      {
+        kind: 'arrow',
+        id: 'headwind',
+        from: US.places.ord.lngLat,
+        to: US.places.den.lngLat,
+        text: `westbound: ${(difference / 2).toFixed(0)} kn headwind`,
+        tone: 'muted',
+        priority: 7
+      }
+    ]);
 
     const centers = Array.from(
       {length: histogramBins},

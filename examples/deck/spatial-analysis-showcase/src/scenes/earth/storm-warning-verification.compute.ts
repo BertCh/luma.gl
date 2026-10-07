@@ -28,11 +28,9 @@ import {ChoroplethFillLayer} from '../statistics/b5-choropleth-layer';
 import {buildPolygonMesh, getPolygonLayout} from '../statistics/b5-geometry';
 import type {SceneContext, SceneInstance} from '../scene';
 import {
-  binValues,
   formatInteger,
   formatStormClock,
   formatStormHourMinute,
-  histogramChart,
   projectToStormFrame,
   quantile,
   seriesChart,
@@ -64,17 +62,17 @@ export const VERDICT_LABELS = [
   'Active warning of another type',
   'Verified by a matching warning'
 ] as const;
-/** Verdict colors: unwarned (magenta), another type (gray), verified (blue). */
+/** Verdict colors: unwarned (magenta), hazard mismatch (amber), verified (teal). */
 export const VERDICT_COLORS: readonly (readonly [number, number, number, number])[] = [
-  [235, 60, 160, 255],
-  [176, 176, 190, 255],
-  [30, 150, 235, 255]
+  [190, 45, 135, 255],
+  [215, 140, 35, 255],
+  [0, 128, 128, 255]
 ];
 /** Warning fill colors by phenomenon: tornado, severe thunderstorm, flash flood. */
 export const WARNING_COLORS: readonly (readonly [number, number, number, number])[] = [
   [220, 50, 47, 255],
-  [240, 190, 40, 255],
-  [60, 170, 90, 255]
+  [230, 135, 30, 255],
+  [38, 150, 145, 255]
 ];
 export const WARNING_LABELS = [
   'Tornado warning',
@@ -231,6 +229,9 @@ export async function createStormWarningVerification(
   const candidateCount = resources.createBuffer('candidate-count', 4);
   const reportResults = resources.createBuffer('report-results', reportCount * 16);
   const verdictCodes = resources.createBuffer('verdict-codes', reportCount * 4);
+  const verifiedReportIds = resources.createBuffer('verified-report-ids', reportCount * 4);
+  const mismatchReportIds = resources.createBuffer('mismatch-report-ids', reportCount * 4);
+  const missedReportIds = resources.createBuffer('missed-report-ids', reportCount * 4);
   const polygonHits = resources.createBuffer('polygon-hits', warningCount * 4);
   const verifyParameters = resources.createParameterBuffer('verify', 'float32', PARAMETER_LENGTH);
   const toleranceParameters = resources.createParameterBuffer('tolerance', 'float32', 1);
@@ -270,6 +271,7 @@ export async function createStormWarningVerification(
     verdict: Uint8Array;
     leadMinutes: Float32Array;
     warning: Float32Array;
+    spatial: Uint8Array;
     polygonHits: Uint32Array;
   } | null = null;
 
@@ -387,6 +389,7 @@ export async function createStormWarningVerification(
   let grace = parameters[parametersOffset];
   let total = min(pairCount[pairCountOffset], ${PAIR_CAPACITY}u);
   var verdict = 0.0;
+  var spatial = 0.0;
   var bestLead = -1.0e9;
   var chain = -1.0;
   for (var pair = 0u; pair < total; pair = pair + 1u) {
@@ -394,6 +397,7 @@ export async function createStormWarningVerification(
     if (owner < index) { continue; }
     if (owner > index) { break; }
     let polygon = rightIds[rightIdsOffset + pair];
+    spatial = 1.0;
     let base = polygon * 8u;
     let validFrom = polygonInfo[polygonInfoOffset + base];
     let validUntil = polygonInfo[polygonInfoOffset + base + 1u] + grace;
@@ -412,7 +416,7 @@ export async function createStormWarningVerification(
   results[resultsOffset + index * 4u] = verdict;
   results[resultsOffset + index * 4u + 1u] = select(-1.0, bestLead, verdict > 1.5);
   results[resultsOffset + index * 4u + 2u] = chain;
-  results[resultsOffset + index * 4u + 3u] = 0.0;
+  results[resultsOffset + index * 4u + 3u] = spatial;
   verdicts[verdictsOffset + index] = u32(verdict);`
     });
     // Reports each warning version verified (same two tests, from the polygon's side).
@@ -600,6 +604,9 @@ export async function createStormWarningVerification(
   let statusStale = true;
   let selectedReport = -1;
   let chartMarker = -1;
+  let verifiedReportCount = 0;
+  let mismatchReportCount = 0;
+  let missedReportCount = 0;
 
   ctx.setReadout(
     'inputs',
@@ -678,24 +685,40 @@ export async function createStormWarningVerification(
     const verdict = new Uint8Array(reportCount);
     const leadMinutes = new Float32Array(reportCount).fill(Number.NaN);
     const warning = new Float32Array(reportCount);
+    const spatial = new Uint8Array(reportCount);
     const byKind = kindNames.map(() => [0, 0]);
+    const verifiedIds = new Uint32Array(reportCount);
+    const mismatchIds = new Uint32Array(reportCount);
+    const missedIds = new Uint32Array(reportCount);
+    verifiedReportCount = 0;
+    mismatchReportCount = 0;
+    missedReportCount = 0;
     const leads: number[] = [];
     let verified = 0;
     let anyActive = 0;
+    let spatialReports = 0;
     for (let report = 0; report < reportCount; report++) {
       const code = Math.round(floats[resultStart + report * 4]);
       verdict[report] = code;
       warning[report] = floats[resultStart + report * 4 + 2];
+      spatial[report] = floats[resultStart + report * 4 + 3] > 0.5 ? 1 : 0;
+      spatialReports += spatial[report];
       byKind[reportKinds[report]][0]++;
       if (code >= 1) anyActive++;
       if (code === 2) {
+        verifiedIds[verifiedReportCount++] = report;
         verified++;
         byKind[reportKinds[report]][1]++;
         const minutes = floats[resultStart + report * 4 + 1] / 60;
         leadMinutes[report] = minutes;
         leads.push(minutes);
       }
+      if (code === 1) mismatchIds[mismatchReportCount++] = report;
+      if (code === 0) missedIds[missedReportCount++] = report;
     }
+    verifiedReportIds.write(verifiedIds);
+    mismatchReportIds.write(mismatchIds);
+    missedReportIds.write(missedIds);
     const hits = words.slice(hitStart, hitStart + warningCount);
     const chainHit = new Uint8Array(chainCount);
     for (let polygon = 0; polygon < warningCount; polygon++) {
@@ -703,7 +726,7 @@ export async function createStormWarningVerification(
     }
     let warningsVerified = 0;
     for (const hit of chainHit) warningsVerified += hit;
-    results = {verdict, leadMinutes, warning, polygonHits: hits};
+    results = {verdict, leadMinutes, warning, spatial, polygonHits: hits};
     const share = verified / Math.max(1, reportCount);
     ctx.setReadout(
       'verifiedShare',
@@ -732,19 +755,53 @@ export async function createStormWarningVerification(
       `${formatCount(words[0])} pairs of ${formatCount(PAIR_CAPACITY)} (${words[1] ? 'OVERFLOW' : 'no overflow'}); ${formatCount(words[3])} candidates of ${formatCount(CANDIDATE_CAPACITY)}`
     );
     const medianLead = leads.length ? quantile(leads, 0.5) : Number.NaN;
-    ctx.setChart(
-      'leadChart',
-      histogramChart(binValues(leads, 0, 60, 12), 0, 60, {
-        xLabel: 'minutes from first issue to the report (60+ in the last bar)',
-        yLabel: 'reports',
-        formatX: value => value.toFixed(0),
-        markers: Number.isFinite(medianLead)
-          ? [{x: Math.min(60, medianLead), label: 'median'}]
-          : [],
-        description:
-          'Histogram of lead time: minutes between the first issue of the matching warning and the storm report.'
-      })
-    );
+    const leadClasses = ['<0 late', '0–5', '5–10', '10–20', '20–30', '30–45', '45+ min', 'miss'];
+    const leadCounts = new Float64Array(leadClasses.length);
+    for (let report = 0; report < reportCount; report++) {
+      if (verdict[report] !== 2) {
+        leadCounts[7]++;
+        continue;
+      }
+      const minutes = leadMinutes[report];
+      const bucket =
+        minutes < 0
+          ? 0
+          : minutes < 5
+            ? 1
+            : minutes < 10
+              ? 2
+              : minutes < 20
+                ? 3
+                : minutes < 30
+                  ? 4
+                  : minutes < 45
+                    ? 5
+                    : 6;
+      leadCounts[bucket]++;
+    }
+    ctx.setChart('leadChart', {
+      kind: 'bars',
+      values: leadCounts,
+      labels: leadClasses,
+      colors: [
+        [190, 45, 135, 255],
+        [235, 245, 200, 255],
+        [199, 233, 180, 255],
+        [127, 205, 187, 255],
+        [65, 182, 196, 255],
+        [44, 127, 184, 255],
+        [37, 52, 148, 255],
+        [190, 45, 135, 150]
+      ],
+      xLabel: 'lead-time class; misses are retained',
+      yLabel: 'reports',
+      guides: [{y: 0, label: `N = ${reportCount}`}],
+      markers: Number.isFinite(medianLead)
+        ? [{x: 0, label: `median ${medianLead.toFixed(0)} min`}]
+        : [{x: 0, label: 'zero lead'}],
+      description:
+        'Ordered lead-time classes retain negative late reports and a separate miss bucket. Zero lead and total N are marked.'
+    });
     ctx.setChart('kindChart', {
       kind: 'bars',
       values: byKind.map(([total, hit]) => (total ? (hit / total) * 100 : 0)),
@@ -756,6 +813,21 @@ export async function createStormWarningVerification(
       yDomain: [0, 100],
       highlight: [],
       description: 'Share of reports of each kind that fell inside a matching active warning.'
+    });
+    ctx.setChart('funnelChart', {
+      kind: 'bars',
+      values: [reportCount, spatialReports, anyActive, verified],
+      labels: [
+        `all reports (${formatInteger(reportCount)}; 100%)`,
+        `touching ≥1 polygon (${formatInteger(spatialReports)}; ${((spatialReports / Math.max(1, reportCount)) * 100).toFixed(0)}%)`,
+        `time-valid polygon (${formatInteger(anyActive)}; ${((anyActive / Math.max(1, reportCount)) * 100).toFixed(0)}%)`,
+        `hazard-compatible (${formatInteger(verified)}; ${((verified / Math.max(1, reportCount)) * 100).toFixed(0)}%)`
+      ],
+      height: 130,
+      yLabel: 'N',
+      highlight: [3],
+      description:
+        'Monotone report-side funnel: unique reports at every stage, each with N and percent of all reports.'
     });
     updateTimelineChart(true);
     describeSelection();
@@ -852,6 +924,10 @@ export async function createStormWarningVerification(
       ctx.requestLayers();
     },
 
+    onGroundChange() {
+      ctx.requestLayers();
+    },
+
     encode(commandEncoder, frame) {
       const options = ctx.options;
       playhead = clock.advance(frame);
@@ -880,7 +956,7 @@ export async function createStormWarningVerification(
 
     getLayers() {
       const options = ctx.options;
-      const dark = ctx.theme() === 'dark';
+      const dark = ctx.ground() === 'dark';
       const layers: Layer[] = [];
       if (options.showWarnings) {
         layers.push(
@@ -941,6 +1017,47 @@ export async function createStormWarningVerification(
             palette
           })
         );
+        if (byVerdict) {
+          // Shape is a second, monochrome-safe channel: discs are verified, diamonds retain
+          // spatial-but-wrong-hazard reports, and rings retain reports with no active warning.
+          layers.push(
+            new SpatialAnalysisPointLayer({
+              id: 'storm-report-verified-disc',
+              ...lngLatDraw,
+              positions: reportLngLatBuffer,
+              ids: verifiedReportIds,
+              instanceCount: verifiedReportCount,
+              radiusPixels: options.reportSize + 0.7,
+              shape: 'circle',
+              color: VERDICT_COLORS[2],
+              outlineColor: dark ? [10, 12, 18, 255] : [255, 255, 255, 255],
+              outlineWidthPixels: 1
+            }),
+            new SpatialAnalysisPointLayer({
+              id: 'storm-report-hazard-mismatch-diamond',
+              ...lngLatDraw,
+              positions: reportLngLatBuffer,
+              ids: mismatchReportIds,
+              instanceCount: mismatchReportCount,
+              radiusPixels: options.reportSize + 1,
+              shape: 'diamond',
+              color: VERDICT_COLORS[1],
+              outlineColor: dark ? [10, 12, 18, 255] : [255, 255, 255, 255],
+              outlineWidthPixels: 1
+            }),
+            new SpatialAnalysisPointLayer({
+              id: 'storm-report-no-warning-ring',
+              ...lngLatDraw,
+              positions: reportLngLatBuffer,
+              ids: missedReportIds,
+              instanceCount: missedReportCount,
+              radiusPixels: options.reportSize + 1.2,
+              shape: 'ring',
+              color: VERDICT_COLORS[0],
+              outlineWidthPixels: 1.6
+            })
+          );
+        }
       }
       return layers;
     },

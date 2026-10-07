@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {CREDITS, joinCredits} from '../../cartography/credits';
+import {ground} from '../../cartography/grounds';
 import {defineScene} from '../scene';
 import {storyFromMarkdown} from '../story-markdown';
 import narrative from './wildfire-shapes.md?raw';
@@ -32,14 +34,37 @@ export default defineScene<WildfireShapesOptions>({
   id: 'wildfire-shapes',
   title: 'Do big fires get stringier?',
   chapter: 'geometry',
-  order: 6,
+  order: 7,
   summary:
-    'Area, perimeter and compactness of 90 western US fires (2020 to 2023): GPUGeometryMeasures in four coordinate systems and GPUShapeDescriptors for compactness, elongation and convexity, with the multi-polygon hole-rule trap and a caveat about perimeter detail.',
+    'Mapped wildfire perimeters compared for compactness, multipart accounting and detail sensitivity with GPU geometry measures and shape descriptors.',
   contributors: ['GPUGeometryMeasures', 'GPUShapeDescriptors'],
   datasets: [{id: 'poopdeck-wildfires', role: 'final fire perimeters, 2020 to 2023'}],
   initialView: {longitude: -116.5, latitude: 40, zoom: 4.2},
+  basemap: ground('paperSheet'),
+  furniture: {
+    title: {
+      title: 'Mapped perimeter shape',
+      subtitle: 'Compactness is conditional on boundary detail'
+    },
+    scaleBar: {units: 'metric'},
+    credit: joinCredits(CREDITS.usgs, 'NIFC perimeter records (public domain)')
+  },
 
   options: [
+    {
+      kind: 'select',
+      id: 'shapeView',
+      label: 'Shape view',
+      group: 'Display',
+      apply: 'param',
+      default: 'map',
+      options: [
+        {value: 'map', label: 'Mapped perimeters'},
+        {value: 'gallery', label: 'Equal-size silhouettes'},
+        {value: 'detail', label: 'Prepared detail comparison'}
+      ],
+      help: 'Equal-size silhouettes preserve outline shape while removing acreage from the display.'
+    },
     {
       kind: 'select',
       id: 'metric',
@@ -87,21 +112,6 @@ export default defineScene<WildfireShapesOptions>({
         },
         {value: 'convexity', label: 'Convexity', help: 'Area over convex hull area.'},
         {value: 'sliver', label: 'Sliver flag', help: 'Polsby-Popper below the sliver threshold.'}
-      ]
-    },
-    {
-      kind: 'select',
-      id: 'ramp',
-      label: 'Color ramp',
-      group: 'Display',
-      apply: 'param',
-      default: 'magma',
-      help: 'Ramp for scalar metrics. The legend uses the same table.',
-      options: [
-        {value: 'magma', label: 'Magma'},
-        {value: 'viridis', label: 'Viridis'},
-        {value: 'inferno', label: 'Inferno'},
-        {value: 'cividis', label: 'Cividis (color-blind optimised)'}
       ]
     },
     {
@@ -260,43 +270,53 @@ export default defineScene<WildfireShapesOptions>({
   ],
 
   story: storyFromMarkdown<WildfireShapesOptions>(narrative, {
-    fires: {
+    gallery: {
+      headline: 'Equal size reveals shape, not acreage',
       camera: {longitude: -116.5, latitude: 40, zoom: 4.2, transitionMs: 1400},
-      options: {metric: 'year', showMarkers: true},
-      controls: ['year', 'minAcres'],
-      readouts: ['fireCount', 'nifcAcres'],
-      callout: {coordinate: [-121.09, 40.32], text: 'Dixie: 179 polygons'}
+      optionsMode: 'fresh',
+      options: {metric: 'polsbyPopper', showMarkers: false, shapeView: 'gallery'},
+      controls: ['shapeView'],
+      readouts: ['fireCount', 'medianCompactness', 'selected']
     },
-    area: {
+    multipart: {
+      headline: 'One fire may contain many polygons',
       camera: {longitude: -121.6, latitude: 38.6, zoom: 6.6, transitionMs: 1800},
-      options: {metric: 'area', areaSystem: 'wgs84'},
+      optionsMode: 'fresh',
+      options: {metric: 'area', areaSystem: 'wgs84', shapeView: 'map'},
       controls: ['areaSystem', 'metric'],
       readouts: ['medianRatio', 'gpuAcres', 'nifcAcres']
     },
-    multipart: {
-      camera: {longitude: -121.7, latitude: 38.4, zoom: 7.2, transitionMs: 1800},
-      options: {metric: 'area', areaSystem: 'wgs84'},
-      controls: ['holeRule'],
-      readouts: ['worstError', 'medianRatio'],
-      callout: {coordinate: [-121.78, 37.88], text: 'SCU Lightning Complex: 11 polygons'}
-    },
     compactness: {
+      headline: 'Rings need an explicit hole rule',
+      camera: {longitude: -121.7, latitude: 38.4, zoom: 7.2, transitionMs: 1800},
+      optionsMode: 'fresh',
+      options: {metric: 'polsbyPopper', areaSystem: 'wgs84', shapeView: 'map'},
+      controls: ['holeRule'],
+      readouts: ['worstError', 'medianRatio', 'selected']
+    },
+    trend: {
+      headline: 'Compactness describes mapped outlines',
       camera: {longitude: -116.5, latitude: 40, zoom: 4.2, transitionMs: 1800},
-      options: {metric: 'polsbyPopper', showMarkers: true},
-      controls: ['metric', 'ramp', 'year'],
+      optionsMode: 'fresh',
+      options: {metric: 'polsbyPopper', showMarkers: true, shapeView: 'map'},
+      controls: ['year'],
       readouts: ['medianCompactness', 'areaCompactness', 'trendChart', 'classChart']
     },
-    axes: {
+    detail: {
+      headline: 'More vertices can lengthen perimeter',
+      camera: {longitude: -121.09, latitude: 40.3, zoom: 8.2, transitionMs: 1800},
+      optionsMode: 'fresh',
+      options: {metric: 'vertices', showMarkers: false, shapeView: 'detail'},
+      controls: ['shapeView', 'largeRings'],
+      readouts: ['detailOriginalVertices', 'detailDensity', 'areaVertices', 'metricChart']
+    },
+    'other-shapes': {
+      headline: 'One index cannot describe every form',
       camera: {longitude: -121.6, latitude: 38.8, zoom: 6.4, transitionMs: 1800},
-      options: {metric: 'elongation', showAxes: true},
+      optionsMode: 'fresh',
+      options: {metric: 'elongation', showAxes: true, shapeView: 'map'},
       controls: ['metric', 'showAxes', 'convexityMethod'],
       readouts: ['areaElongation', 'selected']
-    },
-    detail: {
-      camera: {longitude: -121.09, latitude: 40.3, zoom: 8.2, transitionMs: 1800},
-      options: {metric: 'vertices', showMarkers: false},
-      controls: ['metric', 'largeRings'],
-      readouts: ['areaVertices', 'areaCompactness', 'metricChart']
     }
   }),
 
@@ -326,13 +346,30 @@ export default defineScene<WildfireShapesOptions>({
         }
       ];
     }
+    if (state.metric === 'polsbyPopper') {
+      return [
+        {
+          kind: 'categories',
+          title: 'Polsby-Popper compactness',
+          unit: 'PP',
+          note: 'Fixed reference classes; strongest colour is the stringiest perimeter.',
+          entries: [
+            {color: [127, 0, 0, 255], label: '< 0.05 · stringiest'},
+            {color: [203, 24, 29, 255], label: '0.05–0.15'},
+            {color: [252, 146, 114, 255], label: '0.15–0.30'},
+            {color: [254, 224, 210, 255], label: '0.30–0.50'},
+            {color: [255, 247, 236, 255], label: '≥ 0.50'}
+          ]
+        }
+      ];
+    }
     const spec = METRIC_LEGENDS[state.metric];
     return [
       {
         kind: 'ramp',
         id: 'value',
         title: spec.title,
-        ramp: state.ramp,
+        ramp: 'ylorrd',
         extent: 'gpu',
         sqrtScale: spec.sqrt,
         unit: spec.unit,
@@ -393,6 +430,8 @@ export default defineScene<WildfireShapesOptions>({
     {id: 'metricChart', label: 'Distribution of the colored metric', kind: 'chart'},
     {id: 'trendChart', label: 'Compactness by fire size', kind: 'chart'},
     {id: 'classChart', label: 'Compactness by acreage class', kind: 'chart'},
+    {id: 'detailOriginalVertices', label: 'Original ring vertices'},
+    {id: 'detailDensity', label: 'Vertices per kilometre'},
     {
       id: 'selected',
       label: 'Selected fire',
@@ -434,7 +473,7 @@ compiled.encode(commandEncoder, {parameters: undefined});`,
     what: '`GPUGeometryMeasures` returns area, perimeter, centroid, bounds and vertex count of every polygon feature in one pass, in planar, spherical, WGS84 or geodesic coordinates. `GPUShapeDescriptors` builds on it: Polsby-Popper and Schwartzberg compactness, convexity, elongation, orientation and a sliver flag.',
     why: 'Shape statistics are how you ask whether a district gerrymanders, a parcel is a sliver or a burn scar is stringy. Doing it on the GPU means the numbers follow a filter or a different hole rule immediately, for every feature at once.',
     howToRead:
-      'Dark on the magma ramp is stringy (low compactness), bright is round. Dots mark each fire so small ones stay visible when zoomed out. Perimeter dates are the date of the final NIFC record, not ignition. The archive is a subset: it does not hold every large fire of these years (for example the August Complex). Compactness depends on mapping detail, so correlation with size is not causation.'
+      'The fixed compactness classes put the strongest colour on the lowest Polsby-Popper values. Dots mark each fire so small ones stay visible when zoomed out. Perimeter dates are record dates, not ignition. Compactness depends on mapped boundary detail, so its relation to acreage is descriptive rather than causal.'
   },
 
   create: async ctx => (await import('./wildfire-shapes.compute')).createWildfireShapes(ctx)

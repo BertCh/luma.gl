@@ -2,6 +2,9 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {CREDITS, joinCredits} from '../../cartography/credits';
+import {WORLD, labelsFor} from '../../cartography/gazetteer';
+import {ground} from '../../cartography/grounds';
 import {defineScene} from '../scene';
 import type {HurricaneFamiliesOptions} from './hurricane-families.compute';
 import {
@@ -11,14 +14,25 @@ import {
 } from './hurricane-data';
 
 const BASIN_VIEW = {longitude: -55, latitude: 29, zoom: 3.05};
+const cartouche = (title: string, subtitle: string) => ({
+  title,
+  subtitle,
+  chips: ['route similarity'] as const
+});
+const FAMILY_LABELS = labelsFor(WORLD, [
+  'atlantic-ocean',
+  'caribbean-sea',
+  'gulf-of-mexico',
+  'sargasso-sea'
+]);
 
 export default defineScene<HurricaneFamiliesOptions>({
   id: 'hurricane-families',
-  title: 'Do Atlantic hurricanes follow a few routes?',
+  title: 'Do hurricane routes form stable families?',
   chapter: 'earth',
-  order: 10,
+  order: 5,
   summary:
-    'Every Atlantic storm since 1980 (739 tracks from NOAA IBTrACS) resampled to equal-length routes, all 273,000 pairs scored with Frechet distance on the GPU and clustered into track families with k-means. Click a storm to color every other by how far its route is from it.',
+    'Resample Atlantic storm tracks, score route similarity, then test whether k-means summaries remain useful as their settings change. Select a storm to compare it with the closest route and its rendered discrete-Frechet leash.',
   contributors: ['GPUTrajectoryResample', 'GPUTrackSimilarity', 'GPUKMeans'],
   datasets: [{id: 'ibtracs-north-atlantic', role: 'storm tracks (IBTrACS, 1980-2025)'}],
   initialView: BASIN_VIEW,
@@ -166,23 +180,35 @@ export default defineScene<HurricaneFamiliesOptions>({
       label: 'Color ramp',
       group: 'Display',
       apply: 'param',
-      default: 'viridis',
+      default: 'cividis',
       help: 'Used by the distance and season colors. Distance is read in kilometers; season runs from 1980 to 2025.',
       options: [
-        {value: 'viridis', label: 'Viridis'},
         {value: 'magma', label: 'Magma'},
         {value: 'inferno', label: 'Inferno'},
         {value: 'cividis', label: 'Cividis'}
       ]
     },
     {
+      kind: 'select',
+      id: 'representative',
+      label: 'Family representative',
+      group: 'Display',
+      apply: 'param',
+      default: 'medoid',
+      help: 'A medoid is a real route with the smallest total distance to its family. A mean averages matching resample points and may not be a storm that occurred.',
+      options: [
+        {value: 'medoid', label: 'Medoid (a real central route)'},
+        {value: 'mean', label: 'Point-by-point mean route'}
+      ]
+    },
+    {
       kind: 'toggle',
       id: 'showFamilyMeans',
-      label: 'Show family mean routes',
+      label: 'Show family representatives',
       group: 'Display',
       apply: 'param',
       default: false,
-      help: 'The average of the resampled routes in each family, point by point: a typical storm of the family.'
+      help: 'Draw the chosen central route for each family above the individual tracks.'
     },
     {
       kind: 'slider',
@@ -253,6 +279,12 @@ export default defineScene<HurricaneFamiliesOptions>({
 
   readouts: [
     {
+      id: 'embeddingChart',
+      label: 'Route embedding',
+      kind: 'chart',
+      help: 'Each dot is one storm in a two-dimensional distance embedding, not a geographic location. Colours are the live k-means families; click a dot to select its route on the map.'
+    },
+    {
       id: 'familyChart',
       label: 'Family sizes',
       kind: 'chart',
@@ -291,10 +323,31 @@ export default defineScene<HurricaneFamiliesOptions>({
       help: 'For each family: storms, mean start and end positions, mean track length and the share of storms that reached hurricane strength.'
     },
     {
+      id: 'leash',
+      label: 'Rendered route comparison',
+      help: 'The orange route is the selected storm’s closest route under the active measure. The orange connector is the widest matched pair in their discrete-Frechet coupling.'
+    },
+    {
       id: 'selected',
       label: 'Selected storm',
       help: 'Click a storm to read its peak, dates, family and its closest track.'
     }
+  ],
+
+  pipeline: [
+    {
+      id: 'resample',
+      label: 'Resample',
+      detail: 'Make unequal tracks comparable at equal fractions'
+    },
+    {
+      id: 'distance',
+      label: 'Route distance',
+      detail: 'Score every unordered pair with a shape metric'
+    },
+    {id: 'embed', label: 'Embed', detail: 'Place the distance matrix in two dimensions on CPU'},
+    {id: 'kmeans', label: 'k-means', detail: 'Assign, update centres, repeat'},
+    {id: 'draw', label: 'Draw', detail: 'Routes and the linked family summary'}
   ],
 
   snippet: state => `import {GPUCommandGraph} from '@luma.gl/gpgpu/gpu-core';
@@ -334,13 +387,29 @@ families.add(new GPUKMeans({
       'Each line is one storm. In family colors, lines of one color follow a similar route; the thick lines are the mean route of each family. In distance colors, bright is close to the selected storm and dark is far. The histogram shows how many storms lie at each distance. Families are a summary of a continuum, not natural classes: change the number of families and the groups split or merge.'
   },
 
+  basemap: ground('paperSheet'),
+  furniture: {
+    title: cartouche(
+      'Do hurricane routes form stable families?',
+      'Route similarity · Fréchet / Hausdorff · k-means'
+    ),
+    scaleBar: {units: 'metric'},
+    credit: joinCredits(CREDITS.noaaNhc, 'NOAA IBTrACS', CREDITS.naturalEarth, CREDITS.okabeIto),
+    caveat:
+      'Distances are computed in an azimuthal metric frame and drawn in Web Mercator; families are a lens, not storm species.'
+  },
+  annotations: FAMILY_LABELS,
+
   create: async ctx => (await import('./hurricane-families.compute')).createHurricaneFamilies(ctx),
 
   story: [
     {
       id: 'the-question',
       title: 'Do Atlantic hurricanes follow a few routes?',
-      body: 'Every dot of the Atlantic season is a six-hourly fix in the **NOAA IBTrACS** best tracks. This is the satellite era only, **739 storms from 1980 to 2025** (20,818 fixes). Older records exist back to 1851, but before satellites storms far from land were missed or undersampled, so their routes and counts are not comparable.\n\nThe lines are colored by **peak category**. The Saffir-Simpson class comes from the 1-minute sustained wind (35 kt tropical storm, 64 kt Category 1, 137 kt Category 5), not from damage. Some groups are easy to see: a stream from the Cape Verde islands crossing the ocean, a tangle in the Gulf, and curves that turn north and out to sea. Can we get the computer to find them?',
+      headline: 'Routes form a continuum, not boxes',
+      textAlternative: 'Fine neutral hurricane routes cover a quiet Atlantic paper map.',
+      optionsMode: 'fresh',
+      body: 'Every dot in the Atlantic archive is a six-hourly NOAA IBTrACS best-track fix. The **Storms** card reports the loaded record; this story stays in its satellite-era regional sample because older offshore observations are not directly comparable.\n\nLines are colored by peak wind category, which is a wind classification rather than a damage measure. The routes suggest several broad patterns, but this scene tests whether those patterns remain useful when distance and clustering choices change.',
       camera: {...BASIN_VIEW, transitionMs: 1200},
       options: {colorBy: 'peak', showRoutes: false, showFamilyMeans: false, trackOpacity: 0.55},
       controls: ['colorBy', 'trackOpacity'],
@@ -349,7 +418,11 @@ families.add(new GPUKMeans({
     {
       id: 'resample',
       title: 'First make every route the same length',
-      body: 'To compare two storms point by point they need the same number of points. **`GPUTrajectoryResample`** rebuilds every track as **48 samples** placed at equal distances along the path, so a slow loop and a fast run of the same shape have the same samples. The dots are drawn over the faded tracks.\n\nSwitch **Route samples spaced by** to *Equal time steps*: now a storm that stalled in the Gulf piles its samples there, and the shape comparison also weighs how long a storm took. **Samples per route** and the spacing are compile-time options (a rebuild badge shows), and the similarity pass is redone for the new routes.',
+      headline: 'Equal samples make routes comparable',
+      textAlternative:
+        'One storm route carries evenly spaced resample dots over faint context routes.',
+      optionsMode: 'fresh',
+      body: 'To compare two storms point by point they need the same number of points. **`GPUTrajectoryResample`** rebuilds every track at equal fractions along its path, so a slow loop and a fast run of the same shape have comparable samples. The dots are drawn over the faded tracks.\n\nSwitch **Route samples spaced by** to *Equal time steps*: a storm that stalled in the Gulf now puts more samples there, so the comparison also weighs duration. **Samples per route** and spacing are compile-time options (a rebuild badge shows), and the similarity pass is redone for the new routes.',
       camera: {longitude: -62, latitude: 27, zoom: 3.3, transitionMs: 1400},
       options: {showRoutes: true, colorBy: 'plain', trackOpacity: 0.55},
       controls: ['showRoutes', 'routeSpacing', 'routeSamples'],
@@ -358,7 +431,11 @@ families.add(new GPUKMeans({
     {
       id: 'frechet',
       title: 'How alike are two routes? The Frechet distance',
-      body: '**`GPUTrackSimilarity`** scores every one of the **272,691 pairs** of routes in one GPU pass. The **discrete Frechet distance** is the shortest leash that lets two walkers follow their routes in order, which makes it sensitive to shape *and* direction, unlike the Hausdorff distance (the largest gap between the curves, ignoring order).\n\nThe storm outlined in white is **Katrina (2005)**. Every other storm is colored by its distance to it: bright means a similar route. **Click any storm** to choose another. The histogram shows how many storms lie at each distance; the marker is the end of the color range, set with **Distance color range**. Change **Route distance** to *Hausdorff* and see which storms move closer.',
+      headline: 'A leash measures whole-route likeness',
+      textAlternative:
+        'Two selected hurricane routes are compared against dim Atlantic context paths.',
+      optionsMode: 'fresh',
+      body: '**`GPUTrackSimilarity`** scores every unordered pair of routes in one GPU pass. The **discrete Frechet distance** is the shortest leash that lets two walkers follow their routes in order, which makes it sensitive to shape *and* direction, unlike the Hausdorff distance (the largest gap between curves, ignoring order).\n\nThe white route is the selected storm; the orange route is its closest match. The orange connector is the widest matched pair along their discrete-Frechet coupling. **Click any storm** to choose another. The histogram shows every distance from the selection; its marker is the active **Distance color range**. Change **Route distance** to *Hausdorff* and see which routes move closer.',
       camera: {longitude: -75, latitude: 27, zoom: 3.6, transitionMs: 1400},
       options: {
         showRoutes: false,
@@ -366,31 +443,47 @@ families.add(new GPUKMeans({
         trackOpacity: 0.7,
         similarityRangeKm: 3000
       },
-      callout: {coordinate: [-88.6, 26.3], text: 'Katrina near its peak, 28 Aug 2005'},
       controls: ['colorBy', 'distanceMeasure', 'similarityRangeKm'],
-      readouts: ['selected', 'distanceChart', 'pairs']
+      readouts: ['selected', 'leash', 'distanceChart', 'pairs']
     },
     {
       id: 'families',
       title: 'Let k-means find the families',
-      body: "Clustering needs points in a plane, so the distance matrix is **embedded in two dimensions** (classical scaling) and **`GPUKMeans`** groups the storms: assign every storm to the nearest center, move the centers, repeat. The colors are the families, the thick lines their mean routes, and the bars show how many storms each holds.\n\nWith **5 families** you typically get a long Cape Verde family crossing the tropical Atlantic, a mid-Atlantic family that turns north, recurving storms that end near Europe (the longest tracks, with the highest share of hurricanes), storms that form near Florida and run up the Southeast coast, and a Gulf and western Caribbean family. The **Families** readout gives each one's start, end, length and hurricane share. Slide **Number of families**: groups split and merge, which is the honest message, because the routes form a continuum.",
+      headline: 'Clusters change when choices change',
+      textAlternative: 'Qualitative family routes pair with their linked clustering summary.',
+      optionsMode: 'fresh',
+      body: 'Clustering needs points in a plane, so the distance matrix is **embedded in two dimensions** (classical scaling) and **`GPUKMeans`** groups the storms: assign every storm to the nearest center, move the centers, repeat. The colors are families and the bars show how many storms each holds.\n\nTurn on family representatives. The default **medoid** is a real, central route: the member with the smallest total route distance to its family. The **mean** averages resample points and can be useful but need not be a storm that occurred. The live **Families** readout gives each group’s start, end, length and hurricane share. Slide **Number of families**: groups split and merge because routes form a continuum.',
       camera: {...BASIN_VIEW, transitionMs: 1200},
-      options: {colorBy: 'family', showFamilyMeans: true, showRoutes: false, familyCount: 5},
-      controls: ['familyCount', 'colorBy', 'showFamilyMeans'],
-      readouts: ['familyChart', 'families']
+      options: {
+        colorBy: 'family',
+        showFamilyMeans: true,
+        representative: 'medoid',
+        showRoutes: false,
+        familyCount: 5
+      },
+      controls: ['familyCount', 'representative', 'showFamilyMeans'],
+      readouts: ['embeddingChart', 'familyChart', 'families']
     },
     {
       id: 'stability',
-      title: 'Are the families stable?',
-      body: 'k-means finds a local optimum, so the answer depends on the **starting centers**. Switch **Starting centers** to *The first k storms* (the earliest storms of 1980, wherever they happen to lie): the split comes out different. With *k-means++* the centers start spread apart; change the **k-means++ seed** and the family sizes shift by tens of storms while the same few routes stay recognisable, which is what real structure looks like.\n\nThe **k-means** readout shows how many iterations were needed and what share of the embedding variance the families explain, and **Iterations** caps the loop. The seed, the iterations and the starting centers are compile-time options of `GPUKMeans`, so each change rebuilds only the clustering graph; the 273,000 distances are kept.',
+      title: 'Distances become a two-dimensional map',
+      headline: 'Nearby dots are similar routes, not places',
+      textAlternative:
+        'A linked embedding scatter uses the same family colours as the faint Atlantic routes.',
+      optionsMode: 'fresh',
+      body: 'The scatter is the space `GPUKMeans` actually sees: each dot is a route after the distance matrix is embedded in two dimensions. Near dots mean similar **paths**, not nearby locations. Click a dot to select its matching Atlantic route.\n\nk-means can settle into different local splits. Change **Starting centers** or the **k-means++ seed** and watch the family colours move across the same continuum. The live **k-means** readout reports the iterations and the variance explained; the default is an example, never a natural taxonomy.',
       options: {colorBy: 'family', showFamilyMeans: true, familyCount: 5},
       controls: ['initialization', 'seed', 'iterations'],
-      readouts: ['kmeans', 'embedding', 'familyChart']
+      readouts: ['embeddingChart', 'kmeans', 'embedding', 'familyChart']
     },
     {
       id: 'limits',
       title: 'What to remember, and what to try',
-      body: "Families describe **routes**, not causes: a hurricane's path depends on the steering flow of its year, and the same Cape Verde wave can recurve or hit the Caribbean. Six-hourly fixes are straight-lined, so tight loops are smoothed; tracks are cut at 105 W; and 1980-2025 is a sample of 46 seasons, not the climate. The two-dimensional embedding keeps most but not all of the distance variance (about 84% with 48 samples; see the readout), which limits how finely families can be separated.\n\n**Try it:** select **Katrina**, then Hausdorff and Frechet and compare the closest storms; set **Number of families** to 3 and 8; switch **Color storms by** to *Season* to see whether the families drift in time; click a recurving storm and read how far the nearest Gulf storm is from it.",
+      headline: 'Families are a lens, not a taxonomy',
+      textAlternative:
+        'Neutral routes and a few family summaries stress continuous route variation.',
+      optionsMode: 'fresh',
+      body: 'Families describe **routes**, not causes: a hurricane’s path depends on the steering flow of its year. Six-hourly fixes are straight-lined, tight loops can be smoothed, and this regional time span is a sample rather than climate. The embedding keeps only part of the distance variation; use its live readout before treating small cluster boundaries as meaningful.\n\n**Try it:** select any storm, then compare Hausdorff and Frechet closest routes; set **Number of families** to 3 and 8; switch **Color storms by** to *Season*; click a recurving storm and compare its nearest route and rendered leash.',
       camera: {...BASIN_VIEW, transitionMs: 1200},
       options: {colorBy: 'family', showFamilyMeans: true},
       controls: ['colorBy', 'distanceMeasure', 'familyCount'],

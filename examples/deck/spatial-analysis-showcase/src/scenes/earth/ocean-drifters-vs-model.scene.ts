@@ -2,6 +2,9 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {CREDITS, joinCredits} from '../../cartography/credits';
+import {WORLD, labelsFor} from '../../cartography/gazetteer';
+import {ground} from '../../cartography/grounds';
 import {defineScene, type LegendSpec} from '../scene';
 import {playbackOptions} from '../../engine/playback';
 import type {OceanDriftersVsModelOptions} from './ocean-drifters-vs-model.compute';
@@ -9,12 +12,18 @@ import type {OceanDriftersVsModelOptions} from './ocean-drifters-vs-model.comput
 const GLOBAL_VIEW = {longitude: -20, latitude: 15, zoom: 1.5};
 const REAL_LEGEND_COLOR = [70, 150, 255, 255] as const;
 const MODEL_LEGEND_COLOR = [255, 150, 40, 255] as const;
+const cartouche = (title: string, subtitle: string) => ({
+  title,
+  subtitle,
+  chips: ['annual mean'] as const
+});
+const TWIN_LABELS = labelsFor(WORLD, ['atlantic-ocean', 'pacific-ocean', 'gulf-stream']);
 
 export default defineScene<OceanDriftersVsModelOptions>({
   id: 'ocean-drifters-vs-model',
-  title: 'Ocean drifters against the model',
+  title: 'Can the model follow a real drifter?',
   chapter: 'earth',
-  order: 1,
+  order: 2,
   summary:
     'Release a virtual particle at every real 2017 drifter, advect it through the ECCO ocean model on the GPU, and measure on every day how far it ends up from the buoy that was really there. A skill curve, a failure map and the western boundary currents.',
   contributors: ['GPUParticleAdvection', 'GPUGeodesicPairs', 'GPULineDensity'],
@@ -184,24 +193,9 @@ export default defineScene<OceanDriftersVsModelOptions>({
       help: 'Radius of the release dots; the drifter markers are 80% of it.'
     },
     {
-      kind: 'select',
-      id: 'ramp',
-      label: 'Separation color ramp',
-      group: 'Layers',
-      apply: 'param',
-      default: 'inferno',
-      help: 'Color of links and release dots. All four are perceptually uniform; cividis is color-blind optimised.',
-      options: [
-        {value: 'inferno', label: 'Inferno'},
-        {value: 'magma', label: 'Magma'},
-        {value: 'viridis', label: 'Viridis'},
-        {value: 'cividis', label: 'Cividis'}
-      ]
-    },
-    {
       kind: 'slider',
       id: 'sepMax',
-      label: 'Separation at the top of the ramp',
+      label: 'Separation histogram range',
       group: 'Layers',
       apply: 'param',
       min: 200,
@@ -209,7 +203,7 @@ export default defineScene<OceanDriftersVsModelOptions>({
       step: 100,
       default: 1500,
       unit: 'km',
-      help: 'Separation (km) that gets the last color of the ramp. Also the right edge of the histogram.'
+      help: 'Right edge of the separation histogram. The map uses the fixed, labelled 0–100, 100–250, 250–500, 500–1,000 and 1,000+ km classes.'
     },
     {
       kind: 'select',
@@ -359,16 +353,24 @@ export default defineScene<OceanDriftersVsModelOptions>({
     {id: 'runTime', label: 'Last model run'}
   ],
 
+  pipeline: [
+    {id: 'advect', label: 'Advect', detail: 'Advance one virtual particle per release'},
+    {id: 'pair', label: 'Pair', detail: 'Measure virtual–observed great-circle separation'},
+    {id: 'compare', label: 'Compare', detail: 'Summarise surviving matched pairs'},
+    {id: 'draw', label: 'Draw', detail: 'Twins, links and difference surface'}
+  ],
+
   legends: state => {
     const legends: LegendSpec[] = [];
     if (state.showLinks || state.showReleases) {
       legends.push({
-        kind: 'ramp',
+        kind: 'classes',
         title: 'Separation from the real drifter',
-        ramp: state.ramp,
-        extent: [0, state.sepMax],
+        ramp: 'cividis',
+        breaks: [100, 250, 500, 1000],
+        extent: [0, Math.max(1000, state.sepMax)],
         unit: 'km',
-        format: value => Math.round(value).toLocaleString('en-US')
+        labels: ['0–100', '100–250', '250–500', '500–1,000', '1,000+']
       });
     }
     if (state.showReal || state.showVirtual || state.showTrails) {
@@ -385,7 +387,7 @@ export default defineScene<OceanDriftersVsModelOptions>({
       legends.push({
         kind: 'ramp',
         title: 'Mean current speed (ECCO)',
-        ramp: 'viridis',
+        ramp: 'cividis',
         extent: [0, state.speedMax],
         unit: 'm/s',
         format: value => value.toFixed(2)
@@ -469,6 +471,25 @@ for (let day = 1; day <= 30; day++) {
       'Blue is the real buoy, orange its virtual twin. A short link means the model got the drift right; a bright one means they are far apart (see the legend). In the chart the solid line is the median separation; the dashed line below it is what you would get by assuming the buoy never moved. A model that beats that benchmark has skill. Caveats: the field is an **annual mean** (no seasons, no eddies, no diffusion), ECCO resolves about 1 degree so the narrow western boundary currents are weak, real drifters also slip with the wind (windage) and some lose their drogue, which this data does not flag, and particles are advected with one-day steps from the first fix of 2017.'
   },
 
+  basemap: ground('abyss', {labels: 'none'}),
+  furniture: {
+    title: cartouche(
+      'Can the model follow a real drifter?',
+      'Separation · km · annual-mean ECCO · 30 days'
+    ),
+    clock: {
+      option: 'time',
+      time: {origin: '2017-01-01T00:00:00Z', unit: 'days'},
+      zones: ['UTC'],
+      show: 'date',
+      progress: [0, 30]
+    },
+    credit: joinCredits('NOAA Global Drifter Program', 'ECCO V4r4', CREDITS.naturalEarth),
+    caveat:
+      'Blue is observed and orange is modelled. This is an annual-mean field, not a daily forecast; pairs lost to missing observations stay out of its denominator.'
+  },
+  annotations: TWIN_LABELS,
+
   create: async ctx =>
     (await import('./ocean-drifters-vs-model.compute')).createOceanDriftersVsModel(ctx),
 
@@ -476,7 +497,11 @@ for (let day = 1; day <= 30; day++) {
     {
       id: 'the-question',
       title: 'If the model had a buoy at the same spot, where would it drift?',
-      body: "Since 1979 the NOAA **Global Drifter Program** has put satellite-tracked buoys in the ocean. This chapter uses **2,811 of them from 2017**, each followed for the first 60 days of its 2017 record. For every one we release a **virtual** twin at the same place and run it through the surface currents of NASA/JPL's **ECCO** ocean model.\n\nBlue dots are real buoys, orange dots are their virtual twins, and the trails are the paths so far. Press **Play** below, or drag **Lead time**: at day 0 each pair sits together, and every day after that they can drift apart. The **Playback speed** control sets how many days pass per second.",
+      headline: 'Every forecast starts beside an observation',
+      textAlternative:
+        'Blue observed and orange virtual drifter heads begin co-located on a dark ocean.',
+      optionsMode: 'fresh',
+      body: "The NOAA **Global Drifter Program** supplies satellite-tracked buoys. For each loaded release, this scene starts a **virtual** twin at the same position and advances it through a surface-current field derived from NASA/JPL's ECCO model.\n\nBlue dots are real buoys, orange dots are virtual twins, and trails show their paths so far. At lead day zero every pair sits together; use playback or **Lead time** to watch their separation emerge.",
       camera: {...GLOBAL_VIEW, transitionMs: 1200},
       options: {play: true, time: 0, showTrails: true},
       controls: ['play', 'time', 'speed'],
@@ -485,7 +510,10 @@ for (let day = 1; day <= 30; day++) {
     {
       id: 'the-model-field',
       title: 'The model ocean: one mean current for the whole year',
-      body: 'The virtual twins are pushed by a field we **derived from all 1.44 million ECCO particle displacements** of the archive: each 3.5-day move gives a velocity, and every velocity is averaged into half-degree cells. Switch **Map background** to *Model current speed*: the equatorial currents, the gyres and the Antarctic Circumpolar Current appear.\n\nLook at the Gulf Stream and Kuroshio: they are **weak and smooth** here, because ECCO resolves about one degree and the field is a mean. **Particles at the coast** decides what happens when a particle runs out of data: it is removed (and counted) or held in place. Tune **Speed at the top of the ramp** if the field looks too dark.',
+      headline: 'The model supplies one mean current',
+      textAlternative: 'A quiet global current-speed field sits beneath a selected matched pair.',
+      optionsMode: 'fresh',
+      body: 'The virtual twins are pushed by a field derived from archived ECCO particle displacements: each move becomes a velocity, then velocities are averaged into geographic cells. Switch **Map background** to *Model current speed* to inspect the field used for advection.\n\nThis is a smooth time-mean field, so fast boundary currents and transient eddies are muted. **Particles at the coast** decides whether a particle that runs out of data is removed or held; tune the ramp only to read the field, not to change the model.',
       options: {
         background: 'speed',
         showTrails: false,
@@ -500,7 +528,11 @@ for (let day = 1; day <= 30; day++) {
     {
       id: 'separation-grows',
       title: 'How fast do the twins come apart?',
-      body: '**`GPUGeodesicPairs`** measures the distance between every virtual particle and its real twin on every lead day. Each link below joins a pair, and the dot at the release point takes its color: dark is close, bright is far (the legend gives the kilometers, set by **Separation at the top of the ramp**).\n\nDrag **Lead time** from 0 to 30 days and watch the links stretch. The chart is the whole answer: the solid line is the median separation at each lead day and the band is the middle half of the drifters. Switch **Distance model** to *Rhumb line* or *WGS84 ellipsoid* and compare: the three measures differ by well under one percent at these distances.',
+      headline: 'The twins separate with lead time',
+      textAlternative:
+        'Blue and orange twins are joined by short separation links across the ocean.',
+      optionsMode: 'fresh',
+      body: '**`GPUGeodesicPairs`** measures the distance between every virtual particle and its real twin on every lead day. Each link below joins a pair; the fixed legend classes make a short, medium or long mismatch readable without changing the meaning of orange and blue.\n\nDrag **Lead time** from 0 to 30 days and watch the links stretch. The chart is the whole answer: the solid line is the median separation at each lead day and the band is the middle half of the drifters. Switch **Distance model** to *Rhumb line* or *WGS84 ellipsoid* and compare the measurement assumptions.',
       options: {
         showTrails: false,
         showLinks: true,
@@ -510,12 +542,16 @@ for (let day = 1; day <= 30; day++) {
         background: 'none'
       },
       camera: {...GLOBAL_VIEW, transitionMs: 1400},
-      controls: ['time', 'sepMax', 'ramp', 'distanceModel'],
+      controls: ['time', 'sepMax', 'distanceModel'],
       readouts: ['median', 'middleHalf', 'comparedCount', 'separationChart']
     },
     {
       id: 'beating-nothing',
       title: 'Is that better than assuming the buoy never moved?',
+      headline: 'Skill means beating stay-put',
+      textAlternative:
+        'Matched drifter links and a comparison chart separate surviving pairs from losses.',
+      optionsMode: 'fresh',
       body: 'A skill number needs a benchmark. The dashed line in the chart is the median distance from the release point to the real buoy: what you get by **ignoring the ocean**. The model is only useful where its solid line is clearly below that one, and the **Improvement over staying put** readout turns that into a percentage.\n\nChange the **Drifters** filter to compare drifters that were *already at sea* with *new deployments*, and pick a **Region** to see its own curve: the histogram shows how spread the separations are, and the bars compare regions at the same lead day. A large share of **lost** particles means the comparison is made on the survivors.',
       options: {
         showTrails: false,
@@ -526,11 +562,14 @@ for (let day = 1; day <= 30; day++) {
         background: 'none'
       },
       controls: ['releaseSet', 'region', 'time'],
-      readouts: ['stayPut', 'improvement', 'lost', 'separationHistogram', 'regionChart']
+      readouts: ['stayPut', 'improvement', 'lost', 'separationHistogram']
     },
     {
       id: 'where-it-fails',
       title: 'Where it fails: the western boundary currents',
+      headline: 'Errors concentrate where currents are sharp',
+      textAlternative: 'A diverging track-length difference surface frames the Gulf Stream.',
+      optionsMode: 'fresh',
       body: 'Look for the model to be worst where the real ocean is fastest and narrowest. **`GPULineDensity`** adds up the length of real tracks and of virtual tracks in every half-degree cell. The map shows **(model - real) / (model + real)**: **blue** cells have more real track than model track (the buoys went there and the model particles did not), **red** the other way round.\n\nSet **Region** to *Gulf Stream*, *Kuroshio* or *Agulhas*: real buoys are carried along these currents, while the weak mean field moves its twins less, and the **track length** readouts below compare the real and the model total in each box. Raise **Minimum track length for the difference** to hide noisy cells.',
       options: {
         showTrails: false,
@@ -552,6 +591,9 @@ for (let day = 1; day <= 30; day++) {
     {
       id: 'tune-and-limits',
       title: 'Turn the ocean up, and what to remember',
+      headline: 'A mean field is not a forecast',
+      textAlternative: 'A global map shows observed and modelled twins with a survivorship chart.',
+      optionsMode: 'fresh',
       body: 'How much faster would the model ocean have to be? Press **Find the best speed scale**: the 30 days are run at nine scales and the slider is set to the one with the smallest mean median separation for the current selection. A winner near 1x says the mean model speed is about right on average; a winner above 1x says it underestimates the real drift. Either way a single number hides the regions: real drifters also feel the **wind** (windage) and the **Ekman layer**, which an annual-mean ocean current does not contain, and the boundary currents are far faster than the mean field.\n\nRemember: the field is a **time mean** (no seasons, no eddies), there is **no diffusion**, ECCO is coarse, some drifters **lost their drogue** (this archive does not say which), steps are one day long, and lost particles are excluded from the statistics. Try it for one region at a time.',
       options: {
         showTrails: true,

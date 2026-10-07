@@ -4,6 +4,8 @@
 
 import {COORDINATE_SYSTEM, type Layer} from '@deck.gl/core';
 import type {Buffer} from '@luma.gl/core';
+import {geodesicCircle} from '../../cartography/reference-geometry';
+import {makeClassTable} from '../../cartography/class-table';
 import {
   GPU_NETWORK_REACHABILITY_NONE,
   getGPUNetworkIsochroneParameterValues,
@@ -31,27 +33,17 @@ import {
   SpatialAnalysisSegmentLayer
 } from '../../engine/layers';
 import {addKernelPass} from '../../engine/mode-kernels';
-import type {RampName} from '../../engine/ramps';
 import {getViewportMetricBounds, SpatialAnalysisResources} from '../../engine/resources';
 import {SummaryReader} from '../../engine/summary-reader';
 import type {SceneContext, SceneInstance} from '../scene';
 import {IsobandTriangleLayer, PolylineLayer} from './b9-network-layers';
 import {buildRoadNetwork, writeDriveCosts} from './b9-road-network';
-import {
-  CATEGORY_PALETTE,
-  createPackedPalette,
-  formatInteger,
-  getBandColor,
-  getRoadColors,
-  sliceSections
-} from './b9-shared';
+import {formatInteger, getRoadColors, sliceSections} from './b9-shared';
 import {buildTractDemand, rasterizeTractValues} from './b9-tracts';
 
 /** Option state of the isochrones scene. */
 export type IsochronesOptions = {
   facilityType: 'fire_station' | 'hospital' | 'library' | 'cps_school';
-  budgetMinutes: number;
-  bandCount: number;
   trafficSlowdown: number;
   intersectionDelay: number;
   walkBuffer: number;
@@ -64,10 +56,31 @@ export type IsochronesOptions = {
   showServiceAreas: boolean;
   showRings: boolean;
   showStraightLine: boolean;
+  showReferenceCircle: boolean;
+  comparisonMode: boolean;
   showDemand: boolean;
   showStreets: boolean;
-  ramp: 'viridis' | 'magma' | 'inferno' | 'cividis';
 };
+
+const FIXED_BREAK_MINUTES = [2, 4, 6, 8] as const;
+export const ISOCHRONE_TIME_TABLE = makeClassTable({
+  breaks: [2 * 60, 4 * 60, 6 * 60],
+  scheme: 'YlGnBu',
+  reverse: true,
+  labels: ['0–2', '2–4', '4–6', '6–8 min'],
+  unit: 'min',
+  extent: [0, 8 * 60],
+  noData: {color: [115, 80, 115, 175], label: 'Beyond 8 min'}
+});
+const FIXED_BAND_COUNT = FIXED_BREAK_MINUTES.length;
+const SERVICE_AREA_PALETTE = [
+  [104, 132, 117, 255],
+  [157, 121, 94, 255],
+  [108, 123, 151, 255],
+  [143, 113, 137, 255],
+  [130, 139, 91, 255]
+] as const;
+const PLUM = [110, 60, 110, 235] as const;
 
 const CATEGORY_INDEX: Record<IsochronesOptions['facilityType'], number> = {
   hospital: 0,
@@ -96,13 +109,14 @@ const TRIANGLE_CAPACITY = 800_000;
 const SEGMENT_CAPACITY = 300_000;
 const RING_CAPACITY = 2048;
 const RING_VERTEX_CAPACITY = 32768;
-const PALETTE_SIZE = 64;
+const PALETTE_SIZE = 5;
 const BAND_ALPHA = 165;
 const BAND_TABLE_CAPACITY = 8;
 const WALK_SECONDS_PER_METER = 1 / 1.34;
 const NO_BAND = 0xffffffff;
 const EXTENT_THROTTLE_MILLISECONDS = 350;
 const STRAIGHT_LINE_WIDTH = 384;
+const REFERENCE_CIRCLE_VERTEX_COUNT = 97;
 
 type BuiltGraphs = {
   catchment: CompiledGPUCommandGraph<void>;
@@ -159,6 +173,10 @@ export async function createIsochrones(
     'segment-sources',
     network.segmentSourceNodes
   );
+  const segmentTargetsBuffer = resources.createBuffer(
+    'segment-targets',
+    network.segmentTargetNodes
+  );
   const demandPositionsBuffer = resources.createBuffer('demand-positions', demand.centroids);
   const demandLngLatBuffer = resources.createBuffer('demand-lnglat', demand.centroidsLngLat);
   const demandPopulationBuffer = resources.createBuffer('demand-population', demand.population);
@@ -200,15 +218,19 @@ export async function createIsochrones(
     'float32',
     GPU_NETWORK_ISOCHRONES_PARAMETER_LENGTH
   );
-  const paletteBuffer = resources.createBuffer(
-    'palette',
-    createPackedPalette(ctx.options.ramp, PALETTE_SIZE, BAND_ALPHA)
-  );
+  const packedBandPalette = new Uint32Array(PALETTE_SIZE);
+  ISOCHRONE_TIME_TABLE.colors.forEach((color, index) => {
+    packedBandPalette[index] =
+      (color[0] | (color[1] << 8) | (color[2] << 16) | (BAND_ALPHA << 24)) >>> 0;
+  });
+  packedBandPalette[4] = packedBandPalette[3];
+  const paletteBuffer = resources.createBuffer('palette', packedBandPalette);
 
   // ---- Network outputs --------------------------------------------------------------------
   const assignmentsBuffer = resources.createBuffer('assignments', nodeCount * 4);
   const nodeFacilityBuffer = resources.createBuffer('node-facility', nodeCount * 4);
   const nodeCostsBuffer = resources.createBuffer('node-costs', nodeCount * 4);
+  const fourMinuteBoundary = resources.createBuffer('four-minute-boundary', segmentCount * 4);
   const demandTimesBuffer = resources.createBuffer('demand-times', demand.count * 4);
   const demandBandsBuffer = resources.createBuffer('demand-bands', demand.count * 4);
   const bandKeys = resources.createBuffer('band-keys', BAND_TABLE_CAPACITY * 4);
@@ -242,6 +264,37 @@ export async function createIsochrones(
   const ringTotal = resources.createBuffer('ring-total', 4);
   const ringOpen = resources.createBuffer('ring-open', 4);
   const ringTouching = resources.createBuffer('ring-touching', 4);
+  // The first current facility anchors a geodesic, true-radius reference ring. It is a visual
+  // comparison only; drive-time bands continue to come from the network raster.
+  const referenceCirclePositions = resources.createBuffer(
+    'reference-circle-positions',
+    REFERENCE_CIRCLE_VERTEX_COUNT * 8
+  );
+  const referenceCircleOffsets = resources.createBuffer(
+    'reference-circle-offsets',
+    Uint32Array.of(0, REFERENCE_CIRCLE_VERTEX_COUNT)
+  );
+  const referenceCircleCount = resources.createBuffer('reference-circle-count', Uint32Array.of(1));
+  // No declared city boundary ships with this scene: the dashed frame is derived from road-data bounds.
+  const boundaryLngLat = [
+    network.projection.unproject(straightBounds[0], straightBounds[1]),
+    network.projection.unproject(straightBounds[2], straightBounds[1]),
+    network.projection.unproject(straightBounds[2], straightBounds[3]),
+    network.projection.unproject(straightBounds[0], straightBounds[3]),
+    network.projection.unproject(straightBounds[0], straightBounds[1])
+  ];
+  const analysisBoundaryPositions = resources.createBuffer(
+    'analysis-boundary-positions',
+    Float32Array.from(boundaryLngLat.flat())
+  );
+  const analysisBoundaryOffsets = resources.createBuffer(
+    'analysis-boundary-offsets',
+    Uint32Array.of(0, boundaryLngLat.length)
+  );
+  const analysisBoundaryCount = resources.createBuffer(
+    'analysis-boundary-count',
+    Uint32Array.of(1)
+  );
   const polygonPositions = resources.createBuffer('polygon-positions', RING_VERTEX_CAPACITY * 8);
   const polygonRingOffsets = resources.createBuffer(
     'polygon-ring-offsets',
@@ -255,7 +308,10 @@ export async function createIsochrones(
     new DrawCommandBuffer(device, {
       id: 'isochrones-bands-draw',
       type: 'draw',
-      commands: [{vertexCount: 0, instanceCount: 1}]
+      commands: [
+        {vertexCount: 0, instanceCount: 1},
+        {vertexCount: 6, instanceCount: 0}
+      ]
     })
   );
 
@@ -264,11 +320,11 @@ export async function createIsochrones(
   let built: BuiltGraphs | null = null;
   let perBuild: {destroy: () => void}[] = [];
   let facilityPositionsBuffer!: Buffer;
-  let facilityIdsBuffer!: Buffer;
   let seedCountParameter!: {write: (values: Uint32Array) => void; importToGraph: never};
   let statisticsBuffers: Buffer[] = [];
   let facilityRows: number[] = [];
   let facilityPositions = new Float32Array(0);
+  let cpuDemandBands: Uint32Array | null = null;
   let movedFacilities = new Set<number>();
   let catchmentDirty = 2;
   let straightDirty = 2;
@@ -278,6 +334,7 @@ export async function createIsochrones(
   let lastCatchmentEncode = 0;
   let builtOptions = {
     facilityType: ctx.options.facilityType,
+    comparisonMode: ctx.options.comparisonMode,
     cellChoice: ctx.options.cellChoice,
     rasterMode: ctx.options.rasterMode,
     distanceMode: ctx.options.distanceMode,
@@ -301,13 +358,9 @@ export async function createIsochrones(
   };
 
   const writeBudget = () => {
-    const options = ctx.options;
-    const budgetSeconds = options.budgetMinutes * 60;
-    costLimitParameter.write(Float32Array.of(budgetSeconds + 180));
+    costLimitParameter.write(Float32Array.of(8 * 60 + 180));
     const values = new Float32Array(MAXIMUM_BREAKS);
-    for (let band = 0; band < MAXIMUM_BREAKS; band++) {
-      values[band] = (budgetSeconds * Math.min(band + 1, options.bandCount)) / options.bandCount;
-    }
+    FIXED_BREAK_MINUTES.forEach((minutes, band) => (values[band] = minutes * 60));
     breaksParameter.write(values);
     catchmentDirty = Math.max(catchmentDirty, 1);
   };
@@ -325,6 +378,21 @@ export async function createIsochrones(
 
   const writeFacilities = () => {
     facilityPositionsBuffer.write(facilityPositions);
+    const [longitude, latitude] = network.projection.unproject(
+      facilityPositions[0],
+      facilityPositions[1]
+    );
+    const ring = geodesicCircle(
+      [longitude, latitude],
+      ctx.options.straightRadius,
+      REFERENCE_CIRCLE_VERTEX_COUNT - 1
+    )[0];
+    const positions = new Float32Array(REFERENCE_CIRCLE_VERTEX_COUNT * 2);
+    ring.forEach(([ringLongitude, ringLatitude], index) => {
+      positions[index * 2] = ringLongitude;
+      positions[index * 2 + 1] = ringLatitude;
+    });
+    referenceCirclePositions.write(positions);
     catchmentDirty = Math.max(catchmentDirty, 1);
     straightDirty = Math.max(straightDirty, 1);
     ctx.setReadout('moved', movedFacilities.size ? `${movedFacilities.size} moved` : 'none');
@@ -336,6 +404,7 @@ export async function createIsochrones(
     for (let row = 0; row < facilityCategory.length; row++) {
       if (facilityCategory[row] === category) facilityRows.push(row);
     }
+    if (ctx.options.comparisonMode) facilityRows = facilityRows.slice(0, 1);
     facilityPositions = new Float32Array(facilityRows.length * 2);
     facilityRows.forEach((row, slot) => {
       facilityPositions[slot * 2] = facilityPosition[row * 2];
@@ -397,21 +466,26 @@ export async function createIsochrones(
       const counts = new Uint32Array(countBytes);
       const sums = new Float32Array(sumBytes);
       const rowCount = new Uint32Array(tableRows)[0];
-      const options = ctx.options;
       const perBand = new Float32Array(MAXIMUM_BREAKS);
       for (let row = 0; row < Math.min(rowCount, BAND_TABLE_CAPACITY); row++) {
         if (keys[row] < MAXIMUM_BREAKS) perBand[keys[row]] = sums[row];
       }
       let cumulative = 0;
       const parts: string[] = [];
-      for (let band = 0; band < options.bandCount; band++) {
+      for (let band = 0; band < FIXED_BAND_COUNT; band++) {
         cumulative += perBand[band];
-        const minutes = (options.budgetMinutes * (band + 1)) / options.bandCount;
+        const minutes = FIXED_BREAK_MINUTES[band];
         parts.push(
           `${minutes % 1 === 0 ? minutes : minutes.toFixed(1)} min ${((100 * cumulative) / Math.max(totalPopulation, 1)).toFixed(0)}%`
         );
       }
       ctx.setReadout('servedBands', parts.join(' / '));
+      ctx.setChart('bandPopulation', {
+        kind: 'bars',
+        values: Array.from(perBand.slice(0, FIXED_BAND_COUNT)),
+        labels: FIXED_BREAK_MINUTES.map(minutes => `${minutes} min`),
+        highlight: [FIXED_BAND_COUNT - 1]
+      });
       ctx.setReadout(
         'servedWithin',
         `${formatInteger(cumulative)} of ${formatInteger(totalPopulation)}`
@@ -465,6 +539,7 @@ export async function createIsochrones(
       for (let ring = 0; ring < ringTotalCount; ring++) holeCount += holes[ring] ? 1 : 0;
       const inside = new Uint32Array(insideBytes);
       const bands = new Uint32Array(bandBytes);
+      cpuDemandBands = bands;
       let residentsInside = 0;
       let residentsBands = 0;
       for (let tract = 0; tract < demand.count; tract++) {
@@ -480,6 +555,14 @@ export async function createIsochrones(
         'ringJoinGap',
         `${residentsInside >= residentsBands ? '+' : ''}${formatInteger(residentsInside - residentsBands)} residents`
       );
+      ctx.setChart('ringComparison', {
+        kind: 'bars',
+        values: [residentsBands, residentsInside],
+        labels: ['Network count', 'Polygon join'],
+        yLabel: 'residents',
+        description:
+          'Centroid residents counted directly from network bands versus the assembled cell polygon.'
+      });
       ctx.setReadout(
         'ringShapes',
         `${formatInteger(ringTotalCount - holeCount)} shells / ${formatInteger(holeCount)} holes`
@@ -509,12 +592,6 @@ export async function createIsochrones(
     };
     facilityPositionsBuffer = track(
       resources.createBuffer('facility-positions', facilityPositions)
-    );
-    facilityIdsBuffer = track(
-      resources.createBuffer(
-        'facility-ids',
-        Uint32Array.from({length: facilityCount}, (_, index) => index)
-      )
     );
     const seedCount = track(resources.createParameterBuffer('seed-count', 'uint32', 1));
     seedCount.write(Uint32Array.of(facilityCount));
@@ -598,6 +675,36 @@ export async function createIsochrones(
         }
       });
       void recipe;
+      addKernelPass(catchmentGraph, {
+        id: 'four-minute-network-boundary',
+        bindings: [
+          {name: 'costs', view: nodeCostsView, type: 'f32', access: 'read'},
+          {
+            name: 'sources',
+            view: view(segmentSourcesBuffer, 'uint32', segmentCount),
+            type: 'u32',
+            access: 'read'
+          },
+          {
+            name: 'targets',
+            view: view(segmentTargetsBuffer, 'uint32', segmentCount),
+            type: 'u32',
+            access: 'read'
+          },
+          {
+            name: 'boundary',
+            view: view(fourMinuteBoundary, 'uint32', segmentCount),
+            type: 'u32',
+            access: 'read_write'
+          }
+        ],
+        invocationCount: segmentCount,
+        body: `let sourceCost = costs[costsOffset + sources[sourcesOffset + index]];
+let targetCost = costs[costsOffset + targets[targetsOffset + index]];
+let sourceFinite = (bitcast<u32>(sourceCost) & 0x7f800000u) != 0x7f800000u;
+let targetFinite = (bitcast<u32>(targetCost) & 0x7f800000u) != 0x7f800000u;
+boundary[boundaryOffset + index] = select(0u, 1u, sourceFinite && targetFinite && ((sourceCost <= 240.0) != (targetCost <= 240.0)));`
+      });
       // Cell producer: outlines the cells that hold reached nodes into closed rings.
       const choice = CELL_CHOICES[options.cellChoice];
       const polygonPositionsView = view(polygonPositions, 'float32x2', RING_VERTEX_CAPACITY);
@@ -720,6 +827,7 @@ export async function createIsochrones(
     };
     builtOptions = {
       facilityType: options.facilityType,
+      comparisonMode: options.comparisonMode,
       cellChoice: options.cellChoice,
       rasterMode: options.rasterMode,
       distanceMode: options.distanceMode,
@@ -778,9 +886,7 @@ export async function createIsochrones(
   writeFacilities();
 
   const getBandPalette = (): [number, number, number, number][] =>
-    Array.from({length: MAXIMUM_BREAKS}, (_, band) =>
-      getBandColor(ctx.options.ramp as RampName, band, ctx.options.bandCount, 255)
-    );
+    ISOCHRONE_TIME_TABLE.colors.map(color => [color[0], color[1], color[2], 255]);
 
   return {
     getCompiledGraphs: () => (built ? [built.catchment, built.straight] : []),
@@ -788,12 +894,14 @@ export async function createIsochrones(
     setOption(id, _value, state) {
       switch (id) {
         case 'facilityType':
+        case 'comparisonMode':
         case 'cellChoice':
         case 'rasterMode':
         case 'distanceMode':
         case 'sumOrder':
           if (
             builtOptions.facilityType !== state.facilityType ||
+            builtOptions.comparisonMode !== state.comparisonMode ||
             builtOptions.cellChoice !== state.cellChoice ||
             builtOptions.rasterMode !== state.rasterMode ||
             builtOptions.distanceMode !== state.distanceMode ||
@@ -803,11 +911,6 @@ export async function createIsochrones(
             writeFacilities();
             ctx.requestLayers();
           }
-          break;
-        case 'budgetMinutes':
-        case 'bandCount':
-          writeBudget();
-          ctx.requestLayers();
           break;
         case 'trafficSlowdown':
         case 'intersectionDelay':
@@ -819,10 +922,7 @@ export async function createIsochrones(
           break;
         case 'straightRadius':
           writeStraightSettings();
-          break;
-        case 'ramp':
-          paletteBuffer.write(createPackedPalette(state.ramp, PALETTE_SIZE, BAND_ALPHA));
-          ctx.requestLayers();
+          writeFacilities();
           break;
         default:
           ctx.requestLayers();
@@ -870,9 +970,27 @@ export async function createIsochrones(
           nearest = slot;
         }
       }
+      let demandIndex = -1;
+      let demandDistance = nearestDistance;
+      for (let row = 0; row < demand.count; row++) {
+        const distance =
+          (demand.centroids[row * 2] - x) ** 2 + (demand.centroids[row * 2 + 1] - y) ** 2;
+        if (distance < demandDistance) {
+          demandDistance = distance;
+          demandIndex = row;
+        }
+      }
+      if (demandIndex >= 0) {
+        const band = cpuDemandBands?.[demandIndex];
+        const state =
+          band === NO_BAND || band === undefined
+            ? 'beyond 8 min'
+            : `${FIXED_BREAK_MINUTES[band]} min band`;
+        return `Demand: tract centroid · ${state}\nCentroid represents the whole tract.`;
+      }
       if (nearest < 0) return null;
       const name = facilityNames[facilityRows[nearest]];
-      return movedFacilities.has(nearest) ? `${name ?? 'Facility'} (moved)` : (name ?? null);
+      return `Facility seed: ${movedFacilities.has(nearest) ? `${name ?? 'Facility'} (moved)` : (name ?? 'Facility')}`;
     },
 
     onThemeChange() {
@@ -915,11 +1033,11 @@ export async function createIsochrones(
         const effectiveBuffer = Math.min(options.walkBuffer, MAXIMUM_BUFFER_PIXELS * pixelSize);
         isochroneParameters.write(
           getGPUNetworkIsochroneParameterValues({
-            breakCount: options.bandCount,
+            breakCount: FIXED_BAND_COUNT,
             extent,
             bufferRadius: effectiveBuffer,
             walkCostPerUnit: WALK_SECONDS_PER_METER,
-            cellCostLimit: options.budgetMinutes * 60
+            cellCostLimit: 8 * 60
           })
         );
         ctx.setReadout(
@@ -934,6 +1052,12 @@ export async function createIsochrones(
           sourceBuffer: bandVertexCount,
           destinationBuffer: drawCommands.buffer,
           destinationOffset: 0,
+          size: 4
+        });
+        commandEncoder.copyBufferToBuffer({
+          sourceBuffer: outlineCount,
+          destinationBuffer: drawCommands.buffer,
+          destinationOffset: 20,
           size: 4
         });
         catchmentDirty = Math.max(0, catchmentDirty - 1);
@@ -956,6 +1080,19 @@ export async function createIsochrones(
       const colors = getRoadColors(ctx.theme());
       const coordinateOrigin: [number, number, number] = [network.origin[0], network.origin[1], 0];
       const layers: Layer[] = [];
+      layers.push(
+        new PolylineLayer({
+          id: 'isochrones-road-data-boundary',
+          coordinateSystem: COORDINATE_SYSTEM.LNGLAT,
+          segments: analysisBoundaryPositions,
+          polylineOffsets: analysisBoundaryOffsets,
+          extent: analysisBoundaryCount,
+          instanceCount: boundaryLngLat.length,
+          widthPixels: 1.25,
+          dashArray: [5, 4],
+          color: ctx.theme() === 'dark' ? [205, 210, 222, 190] : [70, 76, 90, 175]
+        })
+      );
       if (options.showStraightLine) {
         layers.push(
           new SpatialAnalysisRasterLayer({
@@ -966,7 +1103,9 @@ export async function createIsochrones(
             values: allocationBuffer,
             valueFormat: 'uint32',
             colormap: 'category',
-            palette: CATEGORY_PALETTE.map(color => [color[0], color[1], color[2], 105] as const),
+            palette: SERVICE_AREA_PALETTE.map(
+              color => [color[0], color[1], color[2], 105] as const
+            ),
             noDataColor: [0, 0, 0, 0],
             opacity: 1
           })
@@ -1006,7 +1145,20 @@ export async function createIsochrones(
             colormap: 'category',
             extent: isochroneParameters.buffer,
             drawCommands,
-            drawCommandIndex: 0
+            drawCommandIndex: 0,
+            outlineClasses: {color: [25, 30, 42, 125], widthPixels: 0.75}
+          }),
+          new SpatialAnalysisSegmentLayer({
+            id: 'isochrones-four-minute-boundary',
+            coordinateOrigin,
+            segments: segmentsBuffer,
+            instanceCount: segmentCount,
+            widthPixels: 2.25,
+            values: fourMinuteBoundary,
+            valueFormat: 'uint32',
+            colormap: 'mask',
+            color: [35, 38, 48, 245],
+            noDataColor: [0, 0, 0, 0]
           })
         );
       }
@@ -1022,7 +1174,7 @@ export async function createIsochrones(
             valueFormat: 'uint32',
             valueIndices: segmentSourcesBuffer,
             colormap: 'category',
-            palette: CATEGORY_PALETTE,
+            palette: SERVICE_AREA_PALETTE,
             noDataValue: GPU_NETWORK_REACHABILITY_NONE,
             noDataColor: [0, 0, 0, 0]
           })
@@ -1030,6 +1182,15 @@ export async function createIsochrones(
       }
       if (options.showRings) {
         layers.push(
+          new SpatialAnalysisSegmentLayer({
+            id: `isochrones-cell-boundary-edges-${options.cellChoice}`,
+            coordinateSystem: COORDINATE_SYSTEM.LNGLAT,
+            segments: outlineEndpoints,
+            drawCommands,
+            drawCommandIndex: 1,
+            widthPixels: 1.1,
+            color: [240, 190, 76, 180]
+          }),
           new PolylineLayer({
             id: `isochrones-rings-halo-${options.cellChoice}`,
             coordinateSystem: COORDINATE_SYSTEM.LNGLAT,
@@ -1054,6 +1215,32 @@ export async function createIsochrones(
           })
         );
       }
+      if (options.showReferenceCircle) {
+        layers.push(
+          new PolylineLayer({
+            id: 'isochrones-reference-circle-halo',
+            coordinateSystem: COORDINATE_SYSTEM.LNGLAT,
+            segments: referenceCirclePositions,
+            polylineOffsets: referenceCircleOffsets,
+            extent: referenceCircleCount,
+            instanceCount: REFERENCE_CIRCLE_VERTEX_COUNT,
+            widthPixels: 5,
+            dashArray: [6, 4],
+            color: colors.halo
+          }),
+          new PolylineLayer({
+            id: 'isochrones-reference-circle',
+            coordinateSystem: COORDINATE_SYSTEM.LNGLAT,
+            segments: referenceCirclePositions,
+            polylineOffsets: referenceCircleOffsets,
+            extent: referenceCircleCount,
+            instanceCount: REFERENCE_CIRCLE_VERTEX_COUNT,
+            widthPixels: 2,
+            dashArray: [6, 4],
+            color: [40, 190, 255, 255]
+          })
+        );
+      }
       if (options.showDemand) {
         layers.push(
           new SpatialAnalysisPointLayer({
@@ -1075,7 +1262,21 @@ export async function createIsochrones(
             colormap: 'category',
             palette: getBandPalette().slice(0, 8),
             noDataValue: NO_BAND,
-            noDataColor: ctx.theme() === 'dark' ? [150, 155, 170, 130] : [110, 115, 130, 150]
+            noDataColor: [0, 0, 0, 0]
+          }),
+          new SpatialAnalysisPointLayer({
+            id: 'isochrones-demand-beyond-budget',
+            coordinateOrigin,
+            positions: demandPositionsBuffer,
+            instanceCount: demand.count,
+            radiusPixels: 3.6,
+            values: demandBandsBuffer,
+            valueFormat: 'uint32',
+            colormap: 'uniform',
+            color: [0, 0, 0, 0],
+            noDataValue: NO_BAND,
+            noDataColor: PLUM,
+            shape: 'ring'
           })
         );
       }
@@ -1094,10 +1295,8 @@ export async function createIsochrones(
           positions: facilityPositionsBuffer,
           instanceCount: built.facilityCount,
           radiusPixels: built.facilityCount > 200 ? 2.6 : 5,
-          values: facilityIdsBuffer,
-          valueFormat: 'uint32',
-          colormap: 'category',
-          palette: CATEGORY_PALETTE
+          color: colors.text,
+          shape: 'ring'
         })
       );
       void statisticsBuffers;

@@ -2,9 +2,20 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {ground} from '../../cartography/grounds';
+import {getClassTableLegend, makeClassTable} from '../../cartography/class-table';
 import {defineScene, type LegendSpec, type OptionSpec} from '../scene';
-import {getBandColor} from './b9-shared';
 import type {IsochronesOptions} from './isochrones.compute';
+
+const ISOCHRONE_TIME_TABLE = makeClassTable({
+  breaks: [120, 240, 360],
+  scheme: 'YlGnBu',
+  reverse: true,
+  labels: ['0–2', '2–4', '4–6', '6–8 min'],
+  unit: 'min',
+  extent: [0, 480],
+  noData: {color: [115, 80, 115, 175], label: 'Beyond 8 min'}
+});
 
 const FACILITY_LABELS: Record<IsochronesOptions['facilityType'], string> = {
   fire_station: 'fire stations',
@@ -22,10 +33,10 @@ const options: readonly OptionSpec<IsochronesOptions>[] = [
     apply: 'compile',
     default: 'fire_station',
     options: [
-      {value: 'fire_station', label: 'Fire stations (92)'},
-      {value: 'hospital', label: 'Hospitals (53, approximate)'},
-      {value: 'library', label: 'Public libraries (82)'},
-      {value: 'cps_school', label: 'CPS schools (649)'}
+      {value: 'fire_station', label: 'Fire stations'},
+      {value: 'hospital', label: 'Hospitals'},
+      {value: 'library', label: 'Public libraries'},
+      {value: 'cps_school', label: 'CPS schools'}
     ],
     help: 'Which public facilities are the seeds. The facility count is a compile-time size of the graphs, so changing it rebuilds them. Click the map to move the nearest facility and see the catchments change.'
   },
@@ -35,31 +46,6 @@ const options: readonly OptionSpec<IsochronesOptions>[] = [
     label: 'Put moved facilities back',
     group: 'Facilities',
     help: 'Restores the surveyed facility positions after you moved some by clicking.'
-  },
-  {
-    kind: 'slider',
-    id: 'budgetMinutes',
-    label: 'Time budget',
-    group: 'Drive time',
-    apply: 'param',
-    min: 2,
-    max: 30,
-    step: 1,
-    default: 6,
-    unit: 'min',
-    help: 'The last isochrone threshold and the cost limit of the multi-source search. Bands are equal slices of it.'
-  },
-  {
-    kind: 'slider',
-    id: 'bandCount',
-    label: 'Isochrone bands',
-    group: 'Drive time',
-    apply: 'param',
-    min: 1,
-    max: 6,
-    step: 1,
-    default: 3,
-    help: 'How many of the compile-time break slots are active (breakCount). Three bands of a 6-minute budget give 2, 4 and 6 minutes.'
   },
   {
     kind: 'slider',
@@ -143,6 +129,24 @@ const options: readonly OptionSpec<IsochronesOptions>[] = [
     help: 'maxDistance of the distance field: raster cells farther than this from every facility belong to no zone. 2 km is roughly four minutes at 30 km/h, the middle band of the default bands.'
   },
   {
+    kind: 'toggle',
+    id: 'showReferenceCircle',
+    label: 'True-radius comparison circle',
+    group: 'Straight-line zones',
+    apply: 'param',
+    default: false,
+    help: 'Draws one geodesic circle at the current straight-line radius around the first current facility. It is a geometric reference, not a drive-time result.'
+  },
+  {
+    kind: 'toggle',
+    id: 'comparisonMode',
+    label: 'One-facility comparison',
+    group: 'Straight-line zones',
+    apply: 'compile',
+    default: false,
+    help: 'Uses one selected facility for a like-for-like network footprint and true-radius ring.'
+  },
+  {
     kind: 'select',
     id: 'distanceMode',
     label: 'Distance algorithm',
@@ -221,27 +225,12 @@ const options: readonly OptionSpec<IsochronesOptions>[] = [
     apply: 'param',
     default: true,
     help: 'Draws the drive network under the analysis layers.'
-  },
-  {
-    kind: 'select',
-    id: 'ramp',
-    label: 'Band colour ramp',
-    group: 'Layers',
-    apply: 'param',
-    default: 'viridis',
-    options: [
-      {value: 'viridis', label: 'Viridis'},
-      {value: 'magma', label: 'Magma'},
-      {value: 'inferno', label: 'Inferno'},
-      {value: 'cividis', label: 'Cividis (colour-blind optimised)'}
-    ],
-    help: 'Near bands take the dark end of the ramp, the farthest band the bright end.'
   }
 ];
 
 export default defineScene<IsochronesOptions>({
   id: 'isochrones',
-  title: 'Who is within four minutes of a fire station?',
+  title: 'Who falls inside each drive-time band?',
   chapter: 'networks',
   order: 2,
   summary:
@@ -263,6 +252,13 @@ export default defineScene<IsochronesOptions>({
     {id: 'chicago-tracts', role: 'residents'}
   ],
   initialView: {longitude: -87.68, latitude: 41.835, zoom: 9.9},
+  basemap: ground('paperCity'),
+  furniture: {
+    title: {title: 'Nearest facility by drive time'},
+    credit: 'City of Chicago · Overture · Census · OpenStreetMap contributors (ODbL)',
+    caveat: 'Free-flow network model; tract centroids represent tract residents.',
+    scaleBar: {units: 'metric'}
+  },
   options,
 
   readouts: [
@@ -279,6 +275,7 @@ export default defineScene<IsochronesOptions>({
       label: 'Residents within each band',
       help: 'Cumulative share of residents whose nearest street edge is within the band time of a facility, from the network-space band table.'
     },
+    {id: 'bandPopulation', label: 'Residents by drive-time band', kind: 'chart'},
     {
       id: 'servedWithin',
       label: 'Residents within the budget',
@@ -309,6 +306,7 @@ export default defineScene<IsochronesOptions>({
       label: 'Rings minus exact bands',
       help: 'The cell polygon is coarser than the network-space classification; this is the difference in residents counted.'
     },
+    {id: 'ringComparison', label: 'Network count versus polygon join', kind: 'chart'},
     {id: 'ringShapes', label: 'Rings', help: 'Shells and holes of the coverage polygon.'},
     {
       id: 'ringHealth',
@@ -345,37 +343,33 @@ export default defineScene<IsochronesOptions>({
   legends: state => {
     const legends: LegendSpec[] = [];
     if (state.showBands) {
-      legends.push({
-        kind: 'ramp',
-        title: 'Drive time to the nearest facility',
-        ramp: state.ramp,
-        extent: [0, state.budgetMinutes],
-        unit: 'min',
-        labels: ['at a facility', `${state.budgetMinutes} min`],
-        format: value => value.toFixed(0)
-      });
+      legends.push(
+        getClassTableLegend(ISOCHRONE_TIME_TABLE, {title: 'Drive time to nearest facility'})
+      );
     }
     if (state.showDemand) {
-      const bands = Array.from({length: state.bandCount}, (_, band) => {
-        const minutes = (state.budgetMinutes * (band + 1)) / state.bandCount;
-        return {
-          color: getBandColor(state.ramp, band, state.bandCount),
-          label: `Within ${minutes % 1 === 0 ? minutes : minutes.toFixed(1)} min`
-        };
-      });
+      const bands = ISOCHRONE_TIME_TABLE.colors.map((color, band) => ({
+        color,
+        label: ISOCHRONE_TIME_TABLE.labels?.[band] ?? ''
+      }));
       legends.push({
         kind: 'categories',
         title: 'Census tract centroids',
-        entries: [...bands, {color: [120, 125, 140, 160], label: 'Beyond the budget'}],
-        note: 'Each tract is classified by its nearest street edge, in network space.'
+        entries: [...bands, {color: [110, 60, 110, 235], label: 'Beyond 8 min (hollow ring)'}],
+        note: 'Each tract is classified by its nearest street edge; its centroid represents the whole tract.'
       });
     }
     legends.push({
       kind: 'categories',
       title: 'Map symbols',
       entries: [
-        {color: [78, 201, 255, 255], label: `${FACILITY_LABELS[state.facilityType]} (hue = zone)`},
-        ...(state.showRings ? [{color: [255, 80, 60, 255] as const, label: 'Coverage ring'}] : [])
+        {color: [35, 38, 48, 255], label: `${FACILITY_LABELS[state.facilityType]} (ink ring-dots)`},
+        {color: [35, 38, 48, 255], label: '4 min boundary'},
+        {color: [70, 76, 90, 175], label: 'Road-data edge (dashed)'},
+        ...(state.showRings ? [{color: [255, 80, 60, 255] as const, label: 'Coverage ring'}] : []),
+        ...(state.showReferenceCircle
+          ? [{color: [40, 190, 255, 255] as const, label: 'True-radius reference circle'}]
+          : [])
       ],
       note: 'Click the map to move the nearest facility. Hover a facility for its name.'
     });
@@ -408,9 +402,9 @@ graph.add(new GPUNetworkIsochrones({
   cellOutline: {family: '${state.cellChoice.startsWith('h3') ? 'h3' : 'quadbin'}', resolution: ${state.cellChoice.split('-')[1]}, output, rings: {output: ringOutput}}
 }));
 parameters.write(getGPUNetworkIsochroneParameterValues({
-  breakCount: ${state.bandCount}, extent, bufferRadius: ${state.walkBuffer}, walkCostPerUnit: 1 / 1.34, cellCostLimit: ${state.budgetMinutes * 60}
+  breakCount: 4, extent, bufferRadius: ${state.walkBuffer}, walkCostPerUnit: 1 / 1.34, cellCostLimit: 8 * 60
 }));
-breaks.write(Float32Array.from({length: 6}, (_, k) => ${state.budgetMinutes * 60} * Math.min(k + 1, ${state.bandCount}) / ${state.bandCount}));
+breaks.write(Float32Array.of(120, 240, 360, 480, 0, 0));
 
 // As the crow flies, for comparison:
 const straight = new GPUCommandGraph(device, {id: 'straight'});
@@ -423,25 +417,27 @@ graph.compile(); straight.compile();   // once; moving a facility is one buffer 
 
   about: {
     what: '`addDriveTimeCatchmentRecipe` chains `GPUNetworkSnapping` (each facility and each demand point snaps to its nearest street edge), `GPUNetworkServiceAreas` (a multi-source search that gives every intersection its cost and its nearest facility) and `GPUNetworkIsochrones` (edge-interpolated costs splatted onto a raster and contoured into bands by `GPUIsobands`). A second `GPUNetworkIsochrones` producer outlines the reached H3 or Quadbin cells into rings. `addStraightLineCatchmentsRecipe` gives the as-the-crow-flies answer.',
-    why: 'Coverage standards are written in minutes, not metres: a fire engine should reach an address within four minutes, a clinic within fifteen. Isochrones show where the standard is met, service areas show who covers whom, and the straight-line zones show how much a simple buffer would mislead.',
+    why: 'Coverage questions are often expressed in minutes rather than metres. Isochrones show a modelled network-time surface, service areas show who covers whom, and straight-line zones show how much a simple buffer can mislead.',
     howToRead:
-      'Darker bands are closer to a facility. Points are census tract centroids coloured by band; grey ones are beyond the budget. Rings outline the area within the full budget; the straight-line zones are the faint coloured regions. Compare the people inside each in the readouts.'
+      'Stronger bands are closer to a facility. Points are census tract centroids coloured by fixed band; hollow plum rings are beyond eight minutes. Rings outline the cell approximation and the dashed frame marks the road-data edge.'
   },
 
   create: async ctx => (await import('./isochrones.compute')).createIsochrones(ctx),
 
   story: [
     {
-      id: 'the-question',
-      controls: ['facilityType', 'budgetMinutes', 'bandCount'],
-      readouts: ['servedBands', 'servedWithin'],
-      title: 'Who can a fire engine reach in four minutes?',
-      body: 'US fire-service guidance (NFPA 1710) asks for a first engine at the scene within **four minutes of travel**. Chicago has 92 fire stations. A circle drawn around each station would be easy to draw and wrong: engines drive on streets, one-way streets and expressways included.\n\nThe map shows drive-time bands of 2, 4 and 6 minutes from every station at once, in free-flow traffic with a few seconds lost at each intersection. The dots are census tract centroids; the readouts count the people in each band.',
+      id: 'nearest-time',
+      headline: 'Who falls inside each band?',
+      textAlternative:
+        'Chicago fire-station drive-time bands use fixed 2, 4, 6 and 8 minute colours, with centroid demand dots and a band-population chart.',
+      optionsMode: 'fresh',
+      controls: ['facilityType', 'trafficSlowdown'],
+      readouts: ['servedBands', 'bandPopulation', 'servedWithin'],
+      title: 'Who falls inside each band?',
+      body: 'These are analytical breaks at 2, 4, 6 and 8 minutes, not a compliance finding. Demand dots use the same fixed classes; hollow plum rings are tract centroids beyond eight minutes.',
       camera: {longitude: -87.68, latitude: 41.84, zoom: 10.0, transitionMs: 1200},
       options: {
         facilityType: 'fire_station',
-        budgetMinutes: 6,
-        bandCount: 3,
         showBands: true,
         showDemand: true
       },
@@ -449,62 +445,80 @@ graph.compile(); straight.compile();   // once; moving a facility is one buffer 
     },
     {
       id: 'service-areas',
+      headline: 'Every street is assigned to its nearest seed',
+      textAlternative:
+        'Streets are partitioned into five muted facility-allocation colours, with ink ring-dot facilities.',
+      optionsMode: 'fresh',
       controls: ['showServiceAreas', 'reset'],
       readouts: ['moved'],
       title: 'Every street belongs to one station',
-      body: '`GPUNetworkServiceAreas` runs one search from **all** stations at once. Each intersection keeps the cost to its nearest station and *which* station that is (ties go to the lowest row). Facilities are snapped to the middle of their street edge first by `GPUNetworkSnapping`, so a station on a long block starts mid-block.\n\nTurn on **Service areas (nearest facility)** below: streets take the hue of their nearest station. The borders are where two stations are equally far, and they follow streets, not straight lines. Click anywhere on the map to move a station and the whole partition updates in a frame; **Put moved facilities back** undoes it.',
+      body: '`GPUNetworkServiceAreas` runs one search from all stations at once. Each intersection keeps its nearest seed; ties use a stable row order. The muted allocation colours repeat after five hues, while facilities stay ink ring-dots.',
       camera: {longitude: -87.66, latitude: 41.87, zoom: 11.2, transitionMs: 1400},
-      options: {showServiceAreas: true, showBands: false, showDemand: false}
+      options: {
+        showServiceAreas: true,
+        showBands: false,
+        showDemand: false,
+        showReferenceCircle: false
+      }
     },
     {
-      id: 'isochrone-bands',
-      controls: ['walkBuffer', 'budgetMinutes', 'bandCount', 'trafficSlowdown'],
-      title: 'From node costs to polygons',
-      body: 'Costs live on intersections, but a polygon needs a surface. `GPUNetworkIsochrones` samples every street edge, interpolates the cost along it and writes the minimum to a raster, then `GPUIsobands` contours the raster into filled bands. The **Reach off the street** slider is the buffer: pixels near a street get its cost plus walking time.\n\nSlide the **Time budget** and **Isochrone bands** below: they are two parameter buffers, so nothing recompiles. Raise **Traffic** to 2x and the four-minute band shrinks to a patch around each station.',
+      id: 'network-not-circle',
+      headline: 'A network band is not a circle',
+      textAlternative:
+        'One selected facility has a dashed geodesic radius ring and one comparable single-seed network footprint.',
+      optionsMode: 'fresh',
+      controls: ['straightRadius', 'walkBuffer', 'trafficSlowdown'],
+      readouts: ['servedWithin'],
+      title: 'A network band is not a circle',
+      body: 'The dashed true-radius ring and the isochrone now use one selected facility, so this is a like-for-like comparison. The network footprint follows directed streets; the circle is only a geometric reference.',
       camera: {longitude: -87.64, latitude: 41.82, zoom: 11.6, transitionMs: 1400},
-      options: {showServiceAreas: false, showBands: true, showDemand: false, walkBuffer: 40}
+      options: {
+        facilityType: 'fire_station',
+        comparisonMode: true,
+        showReferenceCircle: true,
+        showBands: true,
+        showDemand: false,
+        walkBuffer: 40
+      }
     },
     {
-      id: 'residents',
-      controls: ['facilityType', 'budgetMinutes'],
-      readouts: ['servedBands', 'servedWithin'],
+      id: 'people',
+      headline: 'A tract centroid is a useful but imperfect proxy',
+      textAlternative:
+        'Census tract centroid dots are coloured by fixed drive-time class; unserved centroids are hollow plum rings.',
+      optionsMode: 'fresh',
+      controls: ['facilityType', 'showDemand'],
+      readouts: ['servedBands', 'bandPopulation', 'servedWithin'],
       title: 'Counting the people in each band',
-      body: 'The recipe also snaps every demand point to its street edge, computes its drive time as the cheaper of the edge’s two ends plus the snap offset, and classifies it into a band; `GPUGroupStatistics` then sums population per band. This is **exact in network space**: no polygon is involved.\n\nRead **Residents within each band**: that is the answer to the opening question. Switch **Facilities** to hospitals and watch the same machinery answer a different question; with only 53 sites you will want a 12-minute **Time budget**, and large areas still stay dark. Remember each tract counts as one point, so a tract split by a band edge is classified by its centroid.',
+      body: 'Each tract is represented by its centroid, snapped to its nearest street edge and classed in network space. Population totals are live, but a centroid cannot describe variation inside a tract.',
       camera: {longitude: -87.68, latitude: 41.84, zoom: 10.0, transitionMs: 1400},
       options: {showDemand: true, showBands: true},
       highlight: {readout: 'servedWithin'}
     },
     {
-      id: 'coverage-rings',
+      id: 'cells-to-ring',
+      headline: 'Cells trade geometric detail for a coverage outline',
+      textAlternative:
+        'Faint H3 or Quadbin boundary edges sit below an assembled ink coverage ring, with a chart comparing network and polygon joins.',
+      optionsMode: 'fresh',
       controls: ['showRings', 'cellChoice'],
-      readouts: ['ringJoin', 'ringJoinGap', 'ringHealth'],
+      readouts: ['ringJoin', 'ringJoinGap', 'ringHealth', 'ringComparison'],
       title: 'A coverage polygon from cells',
-      body: 'For GIS exports you want a polygon, not triangles. The second `GPUNetworkIsochrones` producer labels every H3 (or Quadbin) cell that holds a node reached within the budget, `GPUCellSetOutline` finds the boundary edges, and `GPUSegmentRingAssembly` chains them into closed shell and hole rings, all on the GPU. `GPUPointInPolygonJoin` then tests the tract centroids against those rings.\n\nCompare **Residents inside the rings** with the exact band count: the cell polygon is coarser, so the two differ. Try H3 resolution 8 against 9 and Quadbin in **Coverage rings from**, and check that **Open / touching segments** stays at zero.',
+      body: 'Faint cell boundaries sit below the assembled ink ring. The chart compares the direct network-count with the polygon join, making the cell representation and MAUP difference explicit.',
       camera: {longitude: -87.62, latitude: 41.87, zoom: 10.9, transitionMs: 1400},
       options: {showRings: true, showBands: false, showDemand: true, cellChoice: 'h3-9'},
       highlight: {readout: 'ringJoin'}
     },
     {
-      id: 'straight-line',
-      controls: ['showStraightLine', 'straightRadius', 'distanceMode'],
-      readouts: ['straightServed', 'servedBands'],
-      title: 'As the crow flies',
-      body: '`addStraightLineCatchmentsRecipe` answers the same question with distance: `GPUDistanceField` allocates every raster cell to its nearest station (Voronoi zones) and `GPURasterZonalStatistics` sums the population raster per zone. The **Straight-line radius** slider is the equivalent of the time budget; at 2 km it is roughly four minutes at 30 km/h.\n\nTurn on **Straight-line zones** over the rings: they claim areas across the river, the lakefront and the expressways that the drive-time answer does not. Compare **Within the straight-line radius** with the four-minute share in **Residents within each band**. Switch **Distance algorithm** to jump flood to see the approximate variant.',
-      camera: {longitude: -87.66, latitude: 41.86, zoom: 10.6, transitionMs: 1400},
-      options: {
-        showStraightLine: true,
-        showRings: true,
-        showBands: true,
-        showDemand: false,
-        straightRadius: 3000
-      }
-    },
-    {
-      id: 'limits',
-      controls: ['facilityType', 'trafficSlowdown', 'rasterMode', 'distanceMode', 'sumOrder'],
-      readouts: ['servedWithin'],
-      title: 'Limits, and things to try',
-      body: 'Travel times are free-flow with a fixed intersection delay: no live traffic, no emergency-vehicle preemption, no turn restrictions, and the raster treats curved streets as straight chords between intersections. Facility locations come from the City and Overture (the hospital list is approximate); tract populations are the 2018-2022 ACS via CDC SVI. A tract is one point, so people are not spread over its area (the straight-line side does spread them).\n\nTry: relocate a station by clicking and watch **Residents within the budget** change; set **Traffic** to 2x; switch **Facilities** to libraries with a 15-minute **Time budget** (the slider reaches 30); set **Surface rule** to max for a conservative surface; use jump flood in **Distance algorithm** and sorted **Zone sum order** and compare the straight-line readouts.',
+      id: 'edge-and-model',
+      headline: 'The graph boundary and free-flow model constrain the answer',
+      textAlternative:
+        'The road-data frame is shown as a dashed edge around the analysis; outside it no network cost is claimed.',
+      optionsMode: 'fresh',
+      controls: ['rasterMode', 'distanceMode', 'sumOrder'],
+      readouts: ['servedWithin', 'raster'],
+      title: 'The data ends at the edge',
+      body: 'The dashed data frame marks the road-graph extent: outside it, this model makes no service claim. Times are free-flow with fixed intersection delay; raster, cell, distance and sum variants are engineering choices, not observed travel.',
       camera: {longitude: -87.68, latitude: 41.84, zoom: 10.0, transitionMs: 1200},
       options: {showStraightLine: false, showRings: false, showBands: true, showDemand: true}
     }

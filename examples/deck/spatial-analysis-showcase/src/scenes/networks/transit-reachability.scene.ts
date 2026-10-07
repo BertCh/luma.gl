@@ -3,23 +3,43 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {defineScene} from '../scene';
-import {getBandColor} from './b9-shared';
 import {TRANSIT_HUB_NAMES} from './transit-data';
 import type {TransitReachabilityOptions} from './transit-reachability.compute';
+import {ground} from '../../cartography/grounds';
+import {RAIL_ORIENTATION, RANDSTAD_RAIL_CREDIT} from './randstad-network-cartography';
 
 const NETHERLANDS_VIEW = {longitude: 5.4, latitude: 52.15, zoom: 6.9};
-const BAND_ALPHA = 170;
+const REACH_BAND_COLORS = [
+  [8, 48, 107, 170],
+  [43, 140, 190, 170],
+  [173, 216, 191, 170]
+] as const;
 
 export default defineScene<TransitReachabilityOptions>({
   id: 'transit-reachability',
   title: 'How far can you get by train?',
   chapter: 'networks',
-  order: 22,
+  order: 9,
   summary:
     'Click a station of the Dutch rail network and see everything reachable in 30, 60 and 90 minutes on the scheduled timetable, plus the fastest-route tree and a cost matrix between fourteen hub stations.',
   contributors: ['GPUNetworkReachability', 'GPUNetworkIsochrones', 'GPUNetworkCostMatrix'],
-  datasets: [{id: 'gtfs-nl-rail-graph', role: 'rail graph with scheduled travel times'}],
+  datasets: [
+    {id: 'gtfs-nl-rail-graph', role: 'rail graph with scheduled travel times'},
+    {id: 'natural-earth', role: 'land, water and border context'}
+  ],
   initialView: NETHERLANDS_VIEW,
+  basemap: ground('paperSheet', {world: 'land', labels: 'above', labelPreset: 'orientation'}),
+  furniture: {
+    title: {
+      subtitle: 'Rail reach · scheduled median travel time',
+      chips: ['Best-case connections']
+    },
+    scaleBar: {units: 'metric', latitude: 52},
+    credit: `${RANDSTAD_RAIL_CREDIT} · Made with Natural Earth`,
+    caveat:
+      'No wait or transfer time; perfect connections and planar last-mile buffers are model assumptions. Natural Earth masks water.'
+  },
+  annotations: RAIL_ORIENTATION,
 
   options: [
     {
@@ -63,7 +83,7 @@ export default defineScene<TransitReachabilityOptions>({
       step: 15,
       default: 30,
       unit: 's',
-      help: 'Seconds added at every station a journey passes. A scheduled edge counts arrival at the next stop minus departure from this one, so the 30 to 60 seconds a train waits at each intermediate stop are missing; this restores them. Raise it to approximate the friction of transfers, which the graph does not model.'
+      help: 'Seconds added at every station a journey passes. This is a dwell sensitivity only: it is not a transfer penalty, and the graph still models perfect transfers with no waiting.'
     },
     {
       kind: 'slider',
@@ -94,32 +114,6 @@ export default defineScene<TransitReachabilityOptions>({
     },
     {
       kind: 'select',
-      id: 'bandMinutes',
-      label: 'Band width',
-      group: 'Isochrones',
-      apply: 'param',
-      default: '30',
-      help: 'Width of one isochrone band; the breaks are multiples of it (30 gives 30, 60, 90 minutes). An isochrone break is a per-frame parameter.',
-      options: [
-        {value: '15', label: '15 minutes'},
-        {value: '20', label: '20 minutes'},
-        {value: '30', label: '30 minutes'}
-      ]
-    },
-    {
-      kind: 'slider',
-      id: 'bandCount',
-      label: 'Number of bands',
-      group: 'Isochrones',
-      apply: 'param',
-      min: 2,
-      max: 4,
-      step: 1,
-      default: 3,
-      help: 'How many bands are drawn (at most four breaks). Space beyond the last break is left empty.'
-    },
-    {
-      kind: 'select',
       id: 'lastMile',
       label: 'Last mile',
       group: 'Isochrones',
@@ -147,6 +141,23 @@ export default defineScene<TransitReachabilityOptions>({
       help: 'Longest walk or ride from the station. The buffer radius is speed times this time, capped at 16 raster pixels (about 6 km at this resolution), as the Last-mile readout says.'
     },
     {
+      kind: 'select',
+      id: 'serviceHour',
+      label: 'Service hour',
+      group: 'Evidence',
+      apply: 'param',
+      default: '7',
+      help: 'Station tooltips sum each outgoing edge’s actual hourly trips-per-hour component at this local hour; no morning average is substituted.',
+      options: [
+        {value: '5', label: '05:00'},
+        {value: '7', label: '07:00'},
+        {value: '9', label: '09:00'},
+        {value: '12', label: '12:00'},
+        {value: '17', label: '17:00'},
+        {value: '21', label: '21:00'}
+      ]
+    },
+    {
       kind: 'toggle',
       id: 'showBands',
       label: 'Show isochrone bands',
@@ -162,7 +173,7 @@ export default defineScene<TransitReachabilityOptions>({
       group: 'Display',
       apply: 'param',
       default: true,
-      help: 'The shortest-path tree: one line from each station to the station you reach it from, coloured by arrival time. It comes from the predecessors GPUNetworkReachability writes.'
+      help: 'The neutral shortest-path predecessor tree: one line from each station to the station you reach it from. It comes from the predecessors GPUNetworkReachability writes; the bands, not the tree, encode arrival time.'
     },
     {
       kind: 'toggle',
@@ -183,19 +194,13 @@ export default defineScene<TransitReachabilityOptions>({
       help: 'Every station as a dot; hover one for its travel time from the start. The start station is the orange dot.'
     },
     {
-      kind: 'select',
-      id: 'ramp',
-      label: 'Band color ramp',
+      kind: 'toggle',
+      id: 'showDistanceReference',
+      label: 'Show 60 km geodesic reference',
       group: 'Display',
       apply: 'param',
-      default: 'viridis',
-      help: 'Ramp the bands are drawn with, near to far. All four are perceptually uniform.',
-      options: [
-        {value: 'viridis', label: 'Viridis'},
-        {value: 'magma', label: 'Magma'},
-        {value: 'inferno', label: 'Inferno'},
-        {value: 'cividis', label: 'Cividis (color-blind optimised)'}
-      ]
+      default: false,
+      help: 'A dashed true geodesic ring around the selected origin is a comparison reference, not a rail-time contour.'
     }
   ],
 
@@ -211,6 +216,12 @@ export default defineScene<TransitReachabilityOptions>({
       label: 'Time to the hubs (cost matrix)',
       kind: 'chart',
       help: 'Scheduled rail travel time between the start station and fourteen hub stations, read from the GPUNetworkCostMatrix row of each hub. The start station itself is highlighted (zero).'
+    },
+    {
+      id: 'hubMatrix',
+      label: 'Hub × hub cost matrix',
+      kind: 'chart',
+      help: 'Scheduled minutes for every hub pair. Blank matrix cells mean no modelled connection, never zero.'
     },
     {id: 'origin', label: 'Start station'},
     {id: 'reached', label: 'Stations reached'},
@@ -242,33 +253,35 @@ export default defineScene<TransitReachabilityOptions>({
   ],
 
   legends: state => {
-    const minutes = Number(state.bandMinutes);
     return [
       ...(state.showBands
         ? [
             {
               kind: 'categories' as const,
               title: 'Time from the start station',
-              entries: Array.from({length: state.bandCount}, (_, band) => ({
-                color: getBandColor(state.ramp, band, state.bandCount, BAND_ALPHA),
-                label: `${band * minutes} to ${(band + 1) * minutes} min`
+              entries: ['Up to 30 min', 'Up to 60 min', 'Up to 90 min'].map((label, index) => ({
+                color: REACH_BAND_COLORS[index],
+                label
               })),
               note:
                 state.lastMile === 'none'
-                  ? 'Rail time to the station only.'
-                  : `Rail time plus up to ${state.lastMileMinutes} min ${state.lastMile === 'bike' ? 'cycling' : 'walking'} from the station.`
+                  ? 'Up to the station: nearest band is strongest.'
+                  : `Up to ${state.lastMileMinutes} min ${state.lastMile === 'bike' ? 'cycling' : 'walking'} from a station; water is masked.`
             }
           ]
         : []),
       ...(state.showTree
         ? [
             {
-              kind: 'ramp' as const,
-              title: 'Fastest route: arrival time',
-              ramp: 'inferno' as const,
-              extent: [0, minutes * state.bandCount] as const,
-              unit: 'min',
-              format: (value: number) => value.toFixed(0)
+              kind: 'line' as const,
+              title: 'Fastest-route tree',
+              entries: [
+                {
+                  color: [30, 37, 52, 185] as const,
+                  widthPixels: 1.5,
+                  label: 'neutral predecessor tree'
+                }
+              ]
             }
           ]
         : [])
@@ -299,9 +312,9 @@ graph.add(new GPUNetworkIsochrones({
 
 // per change: parameter writes
 originParameter.write(Uint32Array.of(stationIndex));
-breaksParameter.write(Float32Array.of(${[1, 2, 3, 4].map(band => Math.min(band, state.bandCount) * Number(state.bandMinutes) * 60).join(', ')}));
+breaksParameter.write(Float32Array.of(1800, 3600, 5400, 5400)); // fixed up-to 30/60/90 min bands
 isochroneParameters.write(getGPUNetworkIsochroneParameterValues({
-  breakCount: ${state.bandCount}, extent, bufferRadius: ${state.lastMile === 'none' ? 0 : Math.round(({walk: 1.34, bike: 4.2} as const)[state.lastMile] * state.lastMileMinutes * 60)}, walkCostPerUnit: ${state.lastMile === 'none' ? 0 : (1 / ({walk: 1.34, bike: 4.2} as const)[state.lastMile]).toFixed(3)}
+  breakCount: 3, extent, bufferRadius: ${state.lastMile === 'none' ? 0 : Math.round(({walk: 1.34, bike: 4.2} as const)[state.lastMile] * state.lastMileMinutes * 60)}, walkCostPerUnit: ${state.lastMile === 'none' ? 0 : (1 / ({walk: 1.34, bike: 4.2} as const)[state.lastMile]).toFixed(3)}
 }));
 
 // many-to-all travel times between hubs (one lane-expanded search per hub)
@@ -314,7 +327,7 @@ matrixGraph.add(new GPUNetworkCostMatrix({
     what: '`GPUNetworkReachability` is a frontier-based single-source shortest-path search over a CSR graph: it keeps the cheapest cost and the predecessor of every station. `GPUNetworkIsochrones` turns node costs into banded polygons by splatting each station to a raster (cost plus last-mile travel) and contouring it. `GPUNetworkCostMatrix` runs one search per hub in lane-expanded batches and keeps the full matrix.',
     why: 'Accessibility by public transport is the question behind station location, housing and job-market studies: not "how far is it" but "how much of the country can I reach, and in how long". A scheduled graph answers it for any station and any train type in a fraction of a second, so you can compare stations, test a service change or read the whole matrix between cities.',
     howToRead:
-      'Orange is the start. Coloured regions are the places within 30, 60 and 90 minutes (see the legend): rail time to a station plus the last mile on foot or bicycle, so each station seeds a blob and strings of stations make corridors. The fine lines are the fastest route to each station, coloured by arrival time. **Perfect connections are assumed**: the graph holds in-vehicle times only, so a transfer costs nothing and waiting costs nothing apart from the dwell per station you choose. Real journeys are slower.'
+      'Orange is the start. Coloured regions are places within up to 30, 60 and 90 minutes: rail time to a station plus a planar last mile. Neutral ink lines are predecessor links in the fastest-route tree. **Perfect connections are assumed**: the graph holds in-vehicle times only, so it models no wait or transfer time. Real journeys are slower.'
   },
 
   create: async ctx =>
@@ -322,9 +335,12 @@ matrixGraph.add(new GPUNetworkCostMatrix({
 
   story: [
     {
-      id: 'the-question',
+      id: 'utrecht',
+      headline: 'One hour from the middle',
+      textAlternative: 'Nested rail-time bands extend from Utrecht across the Netherlands.',
+      optionsMode: 'fresh',
       title: 'From Utrecht, what is within an hour of the train?',
-      body: 'Utrecht Centraal is the middle of the Dutch rail network, which is why it is the default start. The map shows the **scheduled** rail graph of a Friday in October 2026: 485 stations and 1,411 station-to-station edges, each with the median in-vehicle time of the timetable.\n\n**`GPUNetworkReachability`** runs one shortest-path search from the orange start station and writes the cheapest travel time to every station. **`GPUNetworkIsochrones`** bands those times: from Utrecht you reach **70 stations in 30 minutes, 228 in 60 and 313 in 90** (the table below), counting rail time alone. The thin coloured lines are the fastest route to each station; the chart counts stations by travel time.',
+      body: 'Utrecht is the default because the rail graph connects it broadly to the country. `GPUNetworkReachability` writes the cheapest scheduled in-vehicle cost to every station; `GPUNetworkIsochrones` turns those node costs into nested 30-, 60- and 90-minute bands. The table and curve supply the live counts—do not read the bands as a guarantee of a real journey.',
       camera: {...NETHERLANDS_VIEW, transitionMs: 1200},
       options: {origin: 'hub:Utrecht'},
       callout: {coordinate: [5.1101, 52.0894], text: 'Utrecht Centraal'},
@@ -333,49 +349,55 @@ matrixGraph.add(new GPUNetworkCostMatrix({
     },
     {
       id: 'last-mile',
+      headline: 'From station to door',
+      textAlternative:
+        'Rail-time bands widen around stations with a chosen walking or cycling last mile.',
+      optionsMode: 'fresh',
       title: 'From station to door',
-      body: "A station is a point; you live somewhere near one. **Last mile** gives each station a catchment: a pixel within reach of a station is marked with the station's arrival time plus the walk or ride from it, so the colour is the **door-to-door** time and the bands spread out from every station. With cycling for up to 15 minutes each station grows into a blob several kilometres across and strings of stations merge into corridors; with *Stations only* it collapses to dots.\n\nTry **Last mile** *Walk*, then slide **Last-mile time** below, and change **Band width** to 15 minutes for a finer picture. The radius is capped at 16 raster pixels (the Last-mile readout says when the cap bites).",
-      options: {lastMile: 'bike', lastMileMinutes: 15, bandMinutes: '30'},
+      body: "A station is a point; you live somewhere near one. **Last mile** gives each station a catchment: a pixel within reach of a station is marked with the station's arrival time plus the walk or ride from it, so the colour is the **door-to-door** time. With cycling for up to 15 minutes each station grows into a blob several kilometres across and strings of stations merge into corridors; with *Stations only* it collapses to dots. The Natural Earth mask prevents a planar buffer from becoming a claim over water.",
+      options: {lastMile: 'bike', lastMileMinutes: 15},
       camera: {longitude: 5.1, latitude: 52.1, zoom: 8.2, transitionMs: 1400},
-      controls: ['lastMile', 'lastMileMinutes', 'bandMinutes'],
+      controls: ['lastMile', 'lastMileMinutes'],
       readouts: ['lastMile', 'raster']
     },
     {
-      id: 'click',
-      title: 'Start somewhere else',
-      body: '**Click any station** on the map (or choose one under **Start station** below) and the search re-runs from there: a single word of the origin parameter changes, the compiled graph stays the same. From **Groningen** in the north-east the same hour reaches only **55 stations** and 91 in 90 minutes, a quarter of what Utrecht reaches; the periphery pays for being at the end of the network.\n\nCompare the **Farthest station** and the chart with Utrecht: the curve rises much more slowly, because intercity hops add few stations until the line meets the Randstad.',
-      options: {origin: 'hub:Groningen', lastMile: 'bike'},
+      id: 'network-edge',
+      headline: 'Rail distance is not a circle',
+      textAlternative: 'Groningen’s fastest-route tree differs from a simple 60 kilometre circle.',
+      optionsMode: 'fresh',
+      title: 'Rail distance is not a circle',
+      body: '**Click any station** and the origin parameter changes while the compiled graph stays intact. An edge-city origin makes the distinction between straight distance and rail cost visible: the neutral tree follows tracks, and the live reach curve records when stations enter. Regional access is ordered by connections, not by radius.',
+      options: {origin: 'hub:Groningen', lastMile: 'bike', showDistanceReference: true},
       camera: {longitude: 5.9, latitude: 52.7, zoom: 7.2, transitionMs: 1600},
       callout: {coordinate: [6.5646, 53.2113], text: 'Groningen'},
-      controls: ['origin'],
+      controls: ['origin', 'showDistanceReference'],
       readouts: ['bandTable', 'farthest', 'reachCurve']
     },
     {
-      id: 'train-types',
-      title: 'What the slow trains are for',
-      body: 'Switch **Train types** to *Intercity and express only* with **Start station** Utrecht: the search can now use only the fast network. Edges of the other types get a negative weight, which `GPUNetworkReachability` treats as impassable, so nothing recompiles. Only **185 of the 485 stations** can be reached at all, and the 60-minute region shrinks to **63 stations**. With *Stopping trains only* you reach 425 stations but only 132 within an hour.\n\nThe fast trains give the far reach, the slow ones the access: a station of the network is mostly a sprinter stop. Raise **Dwell per station** to add friction at every stop and watch the bands shrink.',
+      id: 'connections',
+      headline: 'Perfect connections are a best case',
+      textAlternative:
+        'Changing train types and dwell time changes the best-case rail network bands.',
+      optionsMode: 'fresh',
+      title: 'Perfect connections are a best case',
+      body: 'Train-type filtering rewrites weights: forbidden edges become impassable without recompiling. Dwell sensitivity adds a cost at each stop, but it is not a transfer model. The graph has no waits, misses or platform changes, so the result is a deterministic best case; departure-window routing would answer a different question.',
       options: {origin: 'hub:Utrecht', trainTypes: 'fast', dwellSeconds: 30},
       camera: {...NETHERLANDS_VIEW, transitionMs: 1400},
       controls: ['trainTypes', 'dwellSeconds'],
       readouts: ['reached', 'bandTable']
     },
     {
-      id: 'cost-matrix',
+      id: 'matrix',
+      headline: 'Every hub in one matrix',
+      textAlternative:
+        'A live hub-by-hub rail cost matrix and ordered hub bars show scheduled travel time.',
+      optionsMode: 'fresh',
       title: 'Every hub to every station',
-      body: '**`GPUNetworkCostMatrix`** runs one search for each of fourteen hub stations in lane-expanded batches that share the same graph, and keeps the whole matrix: 14 rows by 485 columns. The bar chart reads one column of it: the scheduled travel time between the start station and each hub. From Amsterdam, Utrecht is 27 minutes away, Rotterdam about 40 and Groningen well under two hours.\n\nChange **Start station** below and the bars update from the matrix on the CPU, with no new search; change **Train types** and the matrix is recomputed. **Between the hubs** is the mean of all the hub-to-hub times.',
+      body: '`GPUNetworkCostMatrix` runs one lane-expanded search for each hub and retains a hub-by-station matrix. The matrix and bars read that result directly: an em dash means no modelled connection, never the origin’s zero. The model uses scheduled in-vehicle medians with perfect transfers, no waits and a planar last mile; it does not invent a transfer penalty.',
       options: {origin: 'hub:Amsterdam', trainTypes: 'all'},
       camera: {longitude: 5.4, latitude: 52.2, zoom: 7.1, transitionMs: 1400},
-      controls: ['origin'],
-      readouts: ['hubTimes', 'hubMean', 'matrix']
-    },
-    {
-      id: 'limits',
-      title: 'What to remember, and what to try',
-      body: 'The graph is **scheduled in-vehicle time**: it holds no transfer times and no waiting, so connections are perfect and every journey is a best case; real trips are slower, and a rider who misses a connection on a 30-minute interval loses half an hour. Edge times are medians over Friday 9 October 2026 (the feed has that day), while the trips of the other two scenes are from 3 July; the rail timetable is the same pattern. Stations are parent stations of the feed, and the last mile is a straight-line buffer, not a street route.\n\n**Try it:** set **Last mile** to *Walk* and compare Maastricht with Eindhoven; raise **Dwell per station** to 120 seconds to see how much of the 60-minute region is dwell; click a terminal station at the end of a branch line and watch how slowly the curve rises.',
-      options: {origin: 'hub:Maastricht', lastMile: 'walk', lastMileMinutes: 15, trainTypes: 'all'},
-      camera: {longitude: 5.7, latitude: 51.3, zoom: 7.4, transitionMs: 1600},
-      controls: ['origin', 'lastMile', 'dwellSeconds'],
-      readouts: ['bandTable', 'solver']
+      controls: ['origin', 'localIterations', 'serviceHour'],
+      readouts: ['hubMatrix', 'hubTimes', 'matrix', 'hubMean']
     }
   ]
 });

@@ -2,29 +2,51 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {CREDITS, joinCredits} from '../../cartography/credits';
+import {WORLD, labelsFor} from '../../cartography/gazetteer';
+import {ground} from '../../cartography/grounds';
+import {formatCount} from '../../cartography/live-text';
+import {getSizeLegendEntries} from '../../cartography/proportional';
+import {GLOBAL_FURNITURE, mercatorCaveat} from '../../cartography/projection-notes';
 import {defineScene} from '../scene';
 import type {LegendSpec} from '../scene';
-import {storyFromMarkdown} from '../story-markdown';
-import narrative from './airline-network.md?raw';
-import type {AirlineNetworkOptions} from './airline-network.compute';
-import {NETWORK_PALETTE} from './airline-network-palette';
+import type {AirlineNetworkOptions, NetworkLegendData} from './airline-network.compute';
+import {NEUTRAL_NODE_INK} from './airline-network-palette';
+import {FLOW_CREDITS} from './flows-style';
 
 const WORLD_VIEW = {longitude: 10, latitude: 26, zoom: 1.75};
 
-const SIZE_TITLES: Record<AirlineNetworkOptions['sizeBy'], string> = {
-  pagerank: 'Disc radius ~ sqrt(PageRank)',
-  degree: 'Disc radius ~ sqrt(connections)',
-  core: 'Disc radius ~ sqrt(core number)',
-  uniform: ''
+/** Orientation names of the map steps: the dark ground carries no basemap labels. */
+const OCEANS = labelsFor(WORLD, ['atlantic-ocean', 'pacific-ocean', 'indian-ocean'], {
+  'atlantic-ocean': {tone: 'muted'},
+  'pacific-ocean': {tone: 'muted'},
+  'indian-ocean': {tone: 'muted'}
+});
+
+/** The cartouche of one step: the claim, the variable and method, and the vintage chip. */
+const cartouche = (title: string, subtitle: string) => ({
+  title,
+  subtitle,
+  chips: ['Frozen 2014'] as const
+});
+
+const SIZE_LEGENDS: Record<
+  Exclude<AirlineNetworkOptions['sizeBy'], 'uniform'>,
+  {title: string; unit: string; scale: number}
+> = {
+  pagerank: {title: 'Disc area ~ PageRank', unit: 'PageRank x 1000', scale: 1000},
+  degree: {title: 'Disc area ~ connections', unit: 'connections', scale: 1},
+  core: {title: 'Disc area ~ core number', unit: 'core number', scale: 1},
+  bridges: {title: 'Disc area ~ bridge routes', unit: 'routes between groups', scale: 1}
 };
 
 export default defineScene<AirlineNetworkOptions>({
   id: 'airline-network',
   title: 'The airline network as a graph',
   chapter: 'flows',
-  order: 22,
+  order: 6,
   summary:
-    'PageRank, core numbers, communities and modularity on the OpenFlights route graph, then a morph from geography to a force layout, drawn as great-circle arcs or bundles coloured by community.',
+    'PageRank, core numbers, communities and modularity on the OpenFlights route graph: who holds the network together, whether its communities follow the continents, which routes bridge them, and what a force layout makes of it once geography is taken away.',
   contributors: [
     'GPUGraph',
     'GPUGraphTopology',
@@ -50,11 +72,12 @@ export default defineScene<AirlineNetworkOptions>({
       group: 'Display',
       apply: 'param',
       default: 'arcs',
+      display: 'segmented',
       help: 'Great-circle arcs on the map, edge bundles on the map, or the morph between the map and the force layout. Bundling and the layout only run while their view is open.',
       options: [
-        {value: 'arcs', label: 'Great-circle arcs (GPUGreatCircleArcs)'},
-        {value: 'bundles', label: 'Edge bundles (GPUEdgeBundling)'},
-        {value: 'morph', label: 'Geography to force layout'}
+        {value: 'arcs', label: 'Arcs'},
+        {value: 'bundles', label: 'Bundles'},
+        {value: 'morph', label: 'Morph'}
       ]
     },
     {
@@ -64,10 +87,12 @@ export default defineScene<AirlineNetworkOptions>({
       group: 'Display',
       apply: 'param',
       default: 'community',
-      help: 'Colour airports and routes by detected community, or by continent for comparison. The six largest groups get their own colour; routes between two groups are red-orange.',
+      display: 'segmented',
+      help: 'No colour (one neutral ink), the six continents, or the communities the graph algorithm found. Communities wear the hue of the continent they overlap most; groups beyond the seven largest are grey, and routes between two groups are off-white.',
       options: [
-        {value: 'community', label: 'Community'},
-        {value: 'continent', label: 'Continent'}
+        {value: 'none', label: 'None'},
+        {value: 'continent', label: 'Continent'},
+        {value: 'community', label: 'Community'}
       ]
     },
     {
@@ -77,13 +102,40 @@ export default defineScene<AirlineNetworkOptions>({
       group: 'Display',
       apply: 'param',
       default: 'pagerank',
-      help: 'The measure that sizes each airport disc, as the square root of the value. Core number is the deepest k-core the airport belongs to.',
+      display: 'chips',
+      help: 'The measure that sizes each airport disc: disc area is proportional to the value. Connections count distinct neighbours, PageRank also weighs how well connected those are, core number is the deepest k-core the airport belongs to, and bridge routes counts the routes that leave its group.',
       options: [
+        {value: 'degree', label: 'Connections'},
         {value: 'pagerank', label: 'PageRank'},
-        {value: 'degree', label: 'Connections (degree)'},
         {value: 'core', label: 'Core number'},
+        {value: 'bridges', label: 'Bridge routes'},
         {value: 'uniform', label: 'Same size'}
       ]
+    },
+    {
+      kind: 'select',
+      id: 'labels',
+      label: 'Airport labels',
+      group: 'Display',
+      apply: 'param',
+      default: 'hubs',
+      help: 'Which airports are named on the map, picked from the data: the largest by the size metric, the top airport of each large group, those groups plus the one that crosses continents most, or the airports that carry the most bridge routes.',
+      options: [
+        {value: 'hubs', label: 'Largest airports'},
+        {value: 'groups', label: 'Hub of each group'},
+        {value: 'disagreement', label: 'Groups and where they cross'},
+        {value: 'bridges', label: 'Bridge airports'},
+        {value: 'none', label: 'None'}
+      ]
+    },
+    {
+      kind: 'toggle',
+      id: 'ego',
+      label: 'Click an airport to isolate its routes',
+      group: 'Display',
+      apply: 'param',
+      default: false,
+      help: 'A click picks the nearest airport on the CPU: its routes light up at full strength, its neighbours are ringed and everything else dims. Click it again, or empty sea, to clear.'
     },
     {
       kind: 'slider',
@@ -96,19 +148,20 @@ export default defineScene<AirlineNetworkOptions>({
       step: 1,
       default: 22,
       unit: 'px',
-      help: 'Radius of the most important airport; everything else scales from it.'
+      help: 'Radius of the most important airport; everything else scales from it by the square root, so area stays proportional.'
     },
     {
       kind: 'slider',
       id: 'edgeOpacity',
-      label: 'Route opacity',
+      label: 'Route brightness',
       group: 'Display',
       apply: 'param',
-      min: 0.05,
-      max: 1,
-      step: 0.05,
-      default: 0.5,
-      help: 'Routes are 1 px lines that add up where they overlap. Lower it for dense regions.'
+      min: 0.1,
+      max: 2,
+      step: 0.1,
+      default: 1,
+      marks: [{value: 1, label: 'default'}],
+      help: 'Routes are thin lines of light that add up where they overlap. Lower it to cut the glow in dense regions; raise it to see the sparse ones.'
     },
     {
       kind: 'select',
@@ -117,11 +170,12 @@ export default defineScene<AirlineNetworkOptions>({
       group: 'Display',
       apply: 'param',
       default: 'all',
+      display: 'segmented',
       help: 'Keep every route, only routes inside a group, or only the routes that run between two groups. A display filter: the graph algorithms always see every route.',
       options: [
-        {value: 'all', label: 'All routes'},
-        {value: 'within', label: 'Within groups only'},
-        {value: 'between', label: 'Between groups only'}
+        {value: 'all', label: 'All'},
+        {value: 'within', label: 'Within groups'},
+        {value: 'between', label: 'Between groups'}
       ]
     },
     {
@@ -134,6 +188,7 @@ export default defineScene<AirlineNetworkOptions>({
       max: 12,
       step: 1,
       default: 1,
+      expert: true,
       help: 'Keep pairs with at least this many airline-route records (both directions, all carriers). OpenFlights has no frequencies, so this is the closest it has to traffic. Display filter only.'
     },
     {
@@ -147,6 +202,7 @@ export default defineScene<AirlineNetworkOptions>({
       step: 50,
       default: 250,
       unit: 'km',
+      expert: true,
       disabledWhen: state => state.view !== 'arcs',
       help: 'Longest straight piece of a great-circle arc. Shorter pieces follow the curve more closely and cost more vertices (the arc readout shows the total).'
     },
@@ -156,12 +212,19 @@ export default defineScene<AirlineNetworkOptions>({
       label: 'PageRank damping',
       group: 'Ranking',
       apply: 'compile',
-      min: 0.5,
+      min: 0.05,
       max: 0.99,
       step: 0.01,
       default: 0.85,
+      marks: [{value: 0.85, label: 'usual'}],
       format: value => value.toFixed(2),
-      help: 'Probability of following a route instead of jumping to a random airport. Near 1 favours the dense core; near 0 it approaches a uniform ranking. A shader constant, so it rebuilds the analysis graph.'
+      describe: value =>
+        value > 0.95
+          ? 'close to the connection order; needs more rounds to settle'
+          : value < 0.3
+            ? 'close to a uniform ranking'
+            : 'a mix of connections and who they connect to',
+      help: 'Probability of following a route instead of jumping to a random airport. On an undirected network, damping near 1 gives the connection order and near 0 gives every airport the same score. A shader constant: the graph rebuilds once you stop dragging.'
     },
     {
       kind: 'slider',
@@ -173,6 +236,7 @@ export default defineScene<AirlineNetworkOptions>({
       max: 200,
       step: 5,
       default: 40,
+      expert: true,
       help: 'Compiled power-iteration rounds. The PageRank residual readout is the size of the last change; if it is not tiny, add rounds. Rebuilds the analysis graph.'
     },
     {
@@ -185,6 +249,7 @@ export default defineScene<AirlineNetworkOptions>({
       max: 64,
       step: 4,
       default: 32,
+      expert: true,
       help: 'Synchronous majority-vote rounds of label propagation. The status readout says whether the last round still changed labels. Rebuilds the analysis graph.'
     },
     {
@@ -194,10 +259,11 @@ export default defineScene<AirlineNetworkOptions>({
       group: 'Communities',
       apply: 'param',
       default: 'modularity',
+      display: 'segmented',
       help: 'Label propagation (unweighted majority vote, no objective) or modularity optimization started from the propagation result. Falls back to propagation until the optimizer has reported.',
       options: [
         {value: 'propagation', label: 'Label propagation'},
-        {value: 'modularity', label: 'Modularity optimization'}
+        {value: 'modularity', label: 'Modularity'}
       ]
     },
     {
@@ -210,8 +276,16 @@ export default defineScene<AirlineNetworkOptions>({
       max: 3,
       step: 0.1,
       default: 1,
+      marks: [{value: 1, label: 'standard'}],
+      danger: [2.3, 3],
       format: value => value.toFixed(1),
-      help: 'Modularity resolution gamma: below 1 favours fewer, larger communities, above 1 many small ones. A shader constant, so each value is its own compiled graph.'
+      describe: value =>
+        value < 1
+          ? 'merges communities: fewer, larger'
+          : value > 1
+            ? 'splits communities: more, smaller'
+            : 'standard modularity',
+      help: 'Modularity resolution gamma: below 1 favours fewer, larger communities, above 1 many small ones. A shader constant, so each value is its own compiled graph; it builds once you stop dragging.'
     },
     {
       kind: 'select',
@@ -220,6 +294,7 @@ export default defineScene<AirlineNetworkOptions>({
       group: 'Communities',
       apply: 'compile',
       default: '128',
+      expert: true,
       help: 'Budget of single-vertex moves (one per round). More rounds can improve the score further; the optimizer status says whether it stopped at a local optimum. Rebuilds the optimizer and the sweep.',
       options: [
         {value: '64', label: '64'},
@@ -238,6 +313,7 @@ export default defineScene<AirlineNetworkOptions>({
       max: 0.001,
       step: 0.00005,
       default: 0,
+      expert: true,
       format: value => value.toExponential(1),
       help: 'A move is accepted only if it raises modularity by more than this. Larger values stop the optimizer earlier, at a coarser partition. Rebuilds the optimizer and the sweep.'
     },
@@ -246,6 +322,7 @@ export default defineScene<AirlineNetworkOptions>({
       id: 'rerunSweep',
       label: 'Rerun resolution sweep',
       group: 'Communities',
+      expert: true,
       help: 'Recomputes the modularity-versus-resolution chart, one compiled graph per resolution.'
     },
     {
@@ -282,6 +359,7 @@ export default defineScene<AirlineNetworkOptions>({
       step: 1,
       default: 8,
       unit: 's',
+      expert: true,
       help: 'Seconds for one leg of the animated morph.'
     },
     {
@@ -300,6 +378,7 @@ export default defineScene<AirlineNetworkOptions>({
       group: 'Layout',
       apply: 'compile',
       default: 'exact',
+      expert: true,
       help: 'Exact all-pairs repulsion, or the spatial grid that treats distant cells as one mass (faster at large sizes, approximate). If an airport leaves the grid bounds the spatial layout freezes; the layout status says so. Rebuilds the layout graph.',
       options: [
         {value: 'exact', label: 'Exact all-pairs (GPUGraphForceLayout)'},
@@ -316,6 +395,7 @@ export default defineScene<AirlineNetworkOptions>({
       max: 1.5,
       step: 0.1,
       default: 0.6,
+      expert: true,
       format: value => value.toFixed(1),
       disabledWhen: state => state.layoutMode !== 'spatial',
       help: 'How far a grid cell must be before it counts as one mass. Zero is exact; larger is faster and rougher. Rebuilds the layout graph.'
@@ -369,6 +449,7 @@ export default defineScene<AirlineNetworkOptions>({
       max: 0.98,
       step: 0.01,
       default: 0.85,
+      expert: true,
       format: value => value.toFixed(2),
       help: 'Share of velocity kept each step. Higher glides longer and can oscillate. Rebuilds the layout graph.'
     },
@@ -382,6 +463,7 @@ export default defineScene<AirlineNetworkOptions>({
       max: 0.2,
       step: 0.005,
       default: 0.045,
+      expert: true,
       format: value => value.toFixed(3),
       help: 'Largest movement per step, in layout units. Lower is calmer but settles slower. Rebuilds the layout graph.'
     },
@@ -392,6 +474,7 @@ export default defineScene<AirlineNetworkOptions>({
       group: 'Layout',
       apply: 'compile',
       default: '4',
+      expert: true,
       help: 'Force steps encoded per frame. More settles faster and costs GPU time (exact repulsion is quadratic in airports). Rebuilds the layout graph.',
       options: [
         {value: '1', label: '1'},
@@ -407,6 +490,7 @@ export default defineScene<AirlineNetworkOptions>({
       group: 'Layout',
       apply: 'param',
       default: true,
+      expert: true,
       help: 'Scales and centres the layout from its measured extent so it fills the map. Turn it off to use the manual scale.'
     },
     {
@@ -420,6 +504,7 @@ export default defineScene<AirlineNetworkOptions>({
       step: 5,
       default: 40,
       unit: 'deg/unit',
+      expert: true,
       disabledWhen: state => state.autoFit,
       help: 'Degrees of map per layout unit when the fit is off.'
     },
@@ -442,7 +527,7 @@ export default defineScene<AirlineNetworkOptions>({
       default: 15,
       format: value => (value === 0 ? '0 (straight lines)' : String(value)),
       disabledWhen: state => state.view !== 'bundles',
-      help: 'How many advect, resample and smooth rounds run. A parameter write; the compiled maximum is 32.'
+      help: 'How many advect, resample and smooth rounds run. A parameter write; the compiled maximum is 32. The bridges step fixes it at the default.'
     },
     {
       kind: 'slider',
@@ -507,6 +592,7 @@ export default defineScene<AirlineNetworkOptions>({
       group: 'Bundling',
       apply: 'compile',
       default: '16',
+      expert: true,
       disabledWhen: state => state.view !== 'bundles',
       help: 'Polyline resolution of each bundled route. More follows tighter bends and costs memory. Rebuilds the bundling graph.',
       options: [
@@ -522,6 +608,7 @@ export default defineScene<AirlineNetworkOptions>({
       group: 'Bundling',
       apply: 'compile',
       default: '256',
+      expert: true,
       disabledWhen: state => state.view !== 'bundles',
       help: 'Cells per axis of the density field the control points splat onto. Rebuilds the bundling graph.',
       options: [
@@ -533,46 +620,32 @@ export default defineScene<AirlineNetworkOptions>({
   ],
 
   readouts: [
-    {id: 'airports', label: 'Airports', format: 'integer'},
+    {id: 'airports', label: 'Airports', format: 'integer', emphasis: 'tile'},
+    {
+      id: 'routes',
+      label: 'Route pairs',
+      format: 'integer',
+      emphasis: 'tile',
+      help: 'Distinct airport pairs in the dataset; both directions of a route count once.'
+    },
     {
       id: 'edges',
       label: 'Routes shown',
-      help: 'Route pairs that pass the display filters, of all 18,930.'
+      help: 'Route pairs that pass the display filters, of every pair in the dataset.'
     },
+    {id: 'topHub', label: 'Top airport by PageRank'},
     {
-      id: 'engineStatus',
-      label: 'Graph status',
-      help: 'Whether the compressed adjacency was complete and every partition passed validation.'
+      id: 'hubShare',
+      label: 'Routes touching the 10 best-connected airports',
+      format: 'percent',
+      help: 'Share of all route pairs with at least one end at one of the ten airports with the most connections.'
     },
-    {id: 'topHubs', label: 'PageRank top 8', help: 'Highest PageRank first.'},
-    {id: 'topByDegree', label: 'Connections top 8', help: 'Most connections first.'},
     {
       id: 'rankAgreement',
-      label: 'PageRank vs connections',
+      label: 'PageRank vs connections (Spearman)',
       format: 'decimal',
       help: 'Spearman rank correlation of PageRank and degree over all airports. Near 1 means they order airports alike.'
     },
-    {id: 'medianDegree', label: 'Median connections', format: 'integer'},
-    {id: 'maxDegree', label: 'Most connections', format: 'integer'},
-    {
-      id: 'leafShare',
-      label: 'Dead-end airports',
-      format: 'percent',
-      help: 'Share of airports with exactly one connection.'
-    },
-    {
-      id: 'residual',
-      label: 'PageRank residual',
-      help: 'L1 change of the last PageRank iteration. Small means the ranking has settled.'
-    },
-    {
-      id: 'degeneracy',
-      label: 'Deepest core',
-      format: 'integer',
-      help: 'The largest k for which a k-core exists: the airports in it all have at least k partners inside it.'
-    },
-    {id: 'coreStatus', label: 'Core numbers'},
-    {id: 'propagationStatus', label: 'Label propagation'},
     {
       id: 'communities',
       label: 'Communities',
@@ -581,64 +654,182 @@ export default defineScene<AirlineNetworkOptions>({
     },
     {
       id: 'purity',
-      label: 'Continent purity',
+      label: 'Airports on their community’s main continent',
       format: 'percent',
       help: 'Share of airports that sit on the dominant continent of their community. 100% means communities never cross continents.'
     },
-    {id: 'withinShare', label: 'Routes within communities', format: 'percent'},
+    {
+      id: 'qContinents',
+      label: 'Modularity Q: continents',
+      format: 'decimal',
+      help: 'Newman modularity of the six continents at the same resolution: how many more routes stay inside the continents than a degree-matched random network would give. Newman and Girvan (2004) report that real networks typically score between about 0.3 and 0.7.'
+    },
     {
       id: 'qCommunities',
-      label: 'Modularity: communities',
+      label: 'Modularity Q: communities',
       format: 'decimal',
       help: 'Newman modularity of the chosen partition (propagation at gamma 1, optimized at the Resolution slider). Higher keeps more routes inside groups than a degree-matched random network would.'
     },
+    {id: 'resolutionNow', label: 'Resolution gamma'},
     {
-      id: 'qContinents',
-      label: 'Modularity: continents',
-      format: 'decimal',
-      help: 'The same score for the six continents at the same resolution, the baseline communities have to beat.'
+      id: 'betweenShare',
+      label: 'Routes between two groups',
+      format: 'percent',
+      help: 'Share of route pairs whose two airports are in different groups of the partition the map shows.'
     },
-    {id: 'optimizerStatus', label: 'Optimizer'},
-    {id: 'communityList', label: 'Largest communities', layout: 'block'},
-    {id: 'sweepStatus', label: 'Resolution sweep'},
+    {
+      id: 'bridgeAirports',
+      label: 'Top bridge airports',
+      help: 'The airports with the most routes that leave their group, most first.'
+    },
     {
       id: 'layoutCorrelation',
-      label: 'Edge length correlation',
+      label: 'Route length: map vs layout (Pearson)',
       format: 'decimal',
-      help: "Pearson correlation between each route's length on the map and in the force layout. Near 1: geography explains the layout. Near 0: the layout ignores distance."
+      help: "Pearson correlation between each route's length on the map and in the force layout. One means the layout reproduces geography; zero means the layout ignores distance."
     },
-    {id: 'layoutSteps', label: 'Layout steps', format: 'integer'},
-    {id: 'layoutStatus', label: 'Layout status'},
-    {id: 'arcVertices', label: 'Arc vertices'},
+    {id: 'layoutSteps', label: 'Layout steps', format: 'integer', hood: true},
+    {id: 'layoutStatus', label: 'Layout status', hood: true},
+    {id: 'engineStatus', label: 'Graph status', hood: true},
+    {id: 'topHubs', label: 'PageRank top 8', hood: true, help: 'Highest PageRank first.'},
+    {id: 'topByDegree', label: 'Connections top 8', hood: true, help: 'Most connections first.'},
+    {id: 'medianDegree', label: 'Median connections', format: 'integer', hood: true},
+    {id: 'maxDegree', label: 'Most connections', format: 'integer', hood: true},
+    {
+      id: 'leafShare',
+      label: 'Dead-end airports',
+      format: 'percent',
+      hood: true,
+      help: 'Share of airports with exactly one connection.'
+    },
+    {
+      id: 'residual',
+      label: 'PageRank residual',
+      hood: true,
+      help: 'L1 change of the last PageRank iteration. Small means the ranking has settled.'
+    },
+    {
+      id: 'degeneracy',
+      label: 'Deepest core',
+      format: 'integer',
+      hood: true,
+      help: 'The largest k for which a k-core exists: the airports in it all have at least k partners inside it.'
+    },
+    {id: 'coreStatus', label: 'Core numbers', hood: true},
+    {id: 'propagationStatus', label: 'Label propagation', hood: true},
+    {id: 'optimizerStatus', label: 'Optimizer', hood: true},
+    {id: 'withinShare', label: 'Routes within communities', format: 'percent', hood: true},
+    {id: 'communityList', label: 'Largest communities', layout: 'block', hood: true},
+    {id: 'sweepStatus', label: 'Resolution sweep', hood: true},
+    {id: 'arcVertices', label: 'Arc vertices', hood: true},
     {id: 'pageRankChart', label: 'PageRank top 20', kind: 'chart'},
     {id: 'degreeChart', label: 'Connections per airport', kind: 'chart'},
     {id: 'modularityChart', label: 'Modularity versus resolution', kind: 'chart'}
   ],
 
+  pipeline: [
+    {
+      id: 'arcs',
+      label: 'Great circles',
+      detail: 'Every pair is sampled along its great circle on the GPU and drawn from that buffer',
+      show: {option: 'view', value: 'arcs'}
+    },
+    {
+      id: 'pagerank',
+      label: 'PageRank',
+      detail:
+        'Power iteration over the CSR adjacency: pull from neighbours, ping-pong buffers, residual reduction'
+    },
+    {
+      id: 'propagation',
+      label: 'Label propagation',
+      detail: 'Every airport adopts its neighbours’ most common label; ties go to the smaller label'
+    },
+    {
+      id: 'optimise',
+      label: 'Modularity moves',
+      detail: 'One accepted vertex move per round: a polish of the propagation result, not Louvain'
+    },
+    {
+      id: 'bundle',
+      label: 'Bundling',
+      detail: 'Kernel-density edge bundling of the routes, with fixed settings',
+      show: {option: 'view', value: 'bundles'}
+    },
+    {
+      id: 'layout',
+      label: 'Force layout',
+      detail:
+        'Repulsion, route springs and gravity; the positions buffer is also the vertex buffer',
+      show: {option: 'view', value: 'morph'}
+    }
+  ],
+
   legends: (state, data) => {
-    const groups = data.groups as
-      | {entries: readonly {color: readonly [number, number, number, number]; label: string}[]}
-      | undefined;
-    const legends: LegendSpec[] = [
-      {
+    const info = data.network as NetworkLegendData | undefined;
+    const legends: LegendSpec[] = [];
+    const between = {
+      color: info?.between ?? [244, 241, 232, 255],
+      label: 'Route between two groups',
+      count: 0,
+      shape: 'line' as const
+    };
+    const asEntries = (entries: NetworkLegendData['continent']) =>
+      entries.map(entry => ({
+        color: entry.color,
+        label: entry.label,
+        count: entry.count,
+        shape: 'dot' as const
+      }));
+    if (state.colorBy === 'none' && !info?.comparing) {
+      legends.push({
         kind: 'categories',
-        title: state.colorBy === 'continent' ? 'Continent' : 'Community (named by its top airport)',
+        title: 'The airline network',
         entries: [
-          ...(groups?.entries ?? []),
-          {color: NETWORK_PALETTE[7], label: 'Route between two groups'}
+          {color: NEUTRAL_NODE_INK.dark, label: 'Airport', shape: 'dot'},
+          {color: [188, 202, 224, 200], label: 'Route pair', shape: 'line'}
         ],
-        note: 'A route takes its group colour when both airports share one.'
+        layout: 'list'
+      });
+    } else if (info) {
+      const showContinents = info.comparing || state.colorBy === 'continent';
+      const showCommunities = info.comparing || state.colorBy === 'community';
+      if (showContinents) {
+        legends.push({
+          kind: 'categories',
+          title: 'Continent',
+          entries: [...asEntries(info.continent), ...(showCommunities ? [] : [between])],
+          layout: 'list',
+          note: 'Airports counted by the continent of their country.'
+        });
       }
-    ];
-    if (state.sizeBy !== 'uniform') {
+      if (showCommunities) {
+        legends.push({
+          kind: 'categories',
+          title: 'Community (named by its top airport)',
+          entries: [...asEntries(info.community), between],
+          layout: 'list',
+          note: 'A community wears the hue of the continent it overlaps most; grey is every smaller community.'
+        });
+      }
+    }
+    if (state.sizeBy !== 'uniform' && info) {
+      const metric = SIZE_LEGENDS[state.sizeBy];
+      const maximum = info.sizeMaxima[state.sizeBy];
+      // Nice values are picked in the scaled unit (PageRank x 1000); area stays proportional.
+      const entries = getSizeLegendEntries(maximum * metric.scale, state.maxRadius, {
+        count: 3,
+        minRadiusPixels: 1.5,
+        format: value => formatCount(value)
+      });
       legends.push({
         kind: 'size',
-        title: SIZE_TITLES[state.sizeBy],
-        entries: [
-          {radiusPixels: 3, label: 'low'},
-          {radiusPixels: Math.max(5, Math.round(state.maxRadius / 2)), label: 'middle'},
-          {radiusPixels: state.maxRadius, label: 'highest'}
-        ]
+        title: metric.title,
+        entries,
+        layout: 'nested',
+        unit: metric.unit,
+        color: [0, 0, 0, 0],
+        outline: [200, 208, 220, 200]
       });
     }
     return legends;
@@ -650,7 +841,7 @@ import {
   GPUGraphModularity, GPUGraphModularityOptimization, GPUGraphForceLayout
 } from '@luma.gl/gpgpu/gpu-graph';
 
-// 3,257 airports, 18,930 pairs: an undirected graph over borrowed GPU columns.
+// OpenFlights pairs: an undirected graph over borrowed GPU columns.
 const graph = new GPUGraph({vertexCount, sourceVertices, targetVertices, directed: false});
 const topology = new GPUGraphTopology({graph, forward /* symmetric CSR, 2 x pairs */, invalidEdgeCount});
 
@@ -672,6 +863,9 @@ new GPUGraphModularityOptimization({
   resolution: ${state.resolution}, iterations: ${state.rounds}, minimumGain: ${state.minimumGain}
 }).addToGraph(optimization);
 
+// Hues follow the continent a community overlaps most (cartography/stable-hues).
+const slots = matchByOverlap(continentOfAirport, communityRank, 7);
+
 // The positions buffer is also a vertex buffer (usage STORAGE | VERTEX).
 new GPUGraphForceLayout({
   topology, positions, velocities, reset,
@@ -681,52 +875,179 @@ new GPUGraphForceLayout({
 }).addToGraph(frameGraph);   // encoded every frame, warm-started`,
 
   about: {
-    what: 'This scene uses the `@luma.gl/gpgpu/gpu-graph` classes directly. `GPUGraph` and `GPUGraphTopology` describe the airline routes as an undirected graph with GPU-built adjacency; `GPUGraphDegree`, `GPUGraphPageRank` and `GPUGraphCoreNumber` score airports; `GPUGraphLabelPropagation`, `GPUGraphModularityOptimization` and `GPUGraphModularity` find and score communities; `GPUGraphForceLayout` (or the approximate `GPUGraphSpatialForceLayout`) positions airports by connection. Routes are drawn with `GPUGreatCircleArcs` or `GPUEdgeBundling`.',
+    what: 'Previously: [taxi trails](#/story/nyc-taxi-trails). Next: [flight bundling](#/story/flight-bundling).\n\nThis scene uses the `@luma.gl/gpgpu/gpu-graph` classes directly. `GPUGraph` and `GPUGraphTopology` describe the airline routes as an undirected graph with GPU-built adjacency; `GPUGraphDegree`, `GPUGraphPageRank` and `GPUGraphCoreNumber` score airports; `GPUGraphLabelPropagation`, `GPUGraphModularityOptimization` and `GPUGraphModularity` find and score communities; `GPUGraphForceLayout` (or the approximate `GPUGraphSpatialForceLayout`) positions airports by connection. Routes are drawn with `GPUGreatCircleArcs` or `GPUEdgeBundling`.',
     why: 'A flight map shows geography; a graph shows structure. Ranking, communities and layout answer which airports hold the network together, whether regions are really separate systems, and where geography misleads.',
     howToRead:
-      'Disc size is the chosen centrality measure. Colour is the community (or continent); routes between two groups are red-orange. The charts give the PageRank top 20, the degree distribution on log axes, and modularity against resolution. OpenFlights is a 2014 snapshot with one edge per airport pair, not weighted by frequency.'
+      'Disc area is the chosen centrality measure. Colour is the continent or the community, with identity-stable hues; routes between two groups are off-white and drawn last. OpenFlights is a community-maintained snapshot from 2014 with one unweighted edge per airport pair: no seats, no schedules. Lines are great circles on a Web Mercator map, so they bow towards the poles and the north looks larger than it is.'
+  },
+
+  // Night ground: the routes are light. The morph step flattens it (no geography left to show).
+  basemap: ground('night'),
+  furniture: {
+    ...GLOBAL_FURNITURE,
+    title: cartouche(
+      'Who holds the airline network together?',
+      'Route pairs as great circles, unweighted'
+    ),
+    credit: joinCredits(FLOW_CREDITS.openFlights, CREDITS.okabeIto),
+    caveat: mercatorCaveat({latitudes: [0, 60], kind: 'area'})
   },
 
   create: async ctx => (await import('./airline-network.compute')).createAirlineNetwork(ctx),
 
-  story: storyFromMarkdown<AirlineNetworkOptions>(narrative, {
-    backbone: {
+  story: [
+    {
+      id: 'hairball',
+      title: 'Every route at once',
+      headline: 'Every route at once makes a tangle',
+      textAlternative:
+        'Dark world map covered in thin pale great-circle routes that glow where they overlap, with four large airports and the oceans named.',
+      body: 'OpenFlights lists **{{routes}}** airport pairs between **{{airports}}** airports. Drawn as great circles in thin pale light, they add up to a glow where they overlap, and nothing in the tangle says which airports matter. Raise or lower **Route brightness** below to see how much the overplotting hides.\n\nWhich airports hold this together?',
+      optionsMode: 'fresh',
+      options: {view: 'arcs', colorBy: 'none', sizeBy: 'uniform', labels: 'hubs'},
+      controls: ['edgeOpacity'],
+      readouts: ['airports', 'routes'],
+      stage: 'arcs',
+      camera: {...WORLD_VIEW, transitionMs: 1400},
+      furniture: {
+        title: cartouche('Who holds the airline network together?', 'Route pairs as great circles')
+      },
+      annotations: OCEANS
+    },
+    {
+      id: 'hubs',
+      title: 'A few hubs hold the network together',
+      headline: 'A few hubs hold the network together',
+      textAlternative:
+        'World map of airports as discs sized by PageRank and coloured by continent over thin routes, with the largest airports named.',
+      body: 'The ten best-connected airports touch **{{hubShare}}** of all routes, and **{{topHub}}** tops the PageRank. Switch **Disc size by** below: connections, PageRank and core number rank airports differently, and PageRank agrees with connections at **{{rankAgreement}}**. On an undirected network, damping near one gives the connection order; drag **PageRank damping** to see it. Click an airport to isolate its routes.\n\n*Disc area, not radius, carries the value.*',
+      optionsMode: 'fresh',
+      options: {
+        view: 'arcs',
+        colorBy: 'continent',
+        sizeBy: 'pagerank',
+        labels: 'hubs',
+        ego: true
+      },
       controls: ['sizeBy', 'pageRankDamping'],
-      readouts: ['topHubs', 'topByDegree', 'pageRankChart', 'degreeChart'],
-      camera: {...WORLD_VIEW, transitionMs: 1200},
-      options: {view: 'arcs', colorBy: 'continent', sizeBy: 'pagerank', edgeOpacity: 0.3},
-      callout: {coordinate: [-84.43, 33.64], text: 'Atlanta (ATL)'}
+      readouts: ['topHub', 'hubShare', 'rankAgreement', 'pageRankChart'],
+      stage: 'pagerank',
+      camera: {...WORLD_VIEW, transitionMs: 1400},
+      furniture: {
+        title: cartouche(
+          'A few hubs hold the network together',
+          'Disc area: PageRank, connections or core'
+        )
+      },
+      annotations: OCEANS,
+      highlight: {readout: 'hubShare'}
     },
-    communities: {
-      controls: ['colorBy', 'communityMethod', 'propagationRounds'],
-      readouts: ['communities', 'purity', 'qCommunities', 'qContinents', 'communityList'],
-      options: {colorBy: 'community', communityMethod: 'propagation', edgeOpacity: 0.4},
-      callout: {coordinate: [28.82, 41.26], text: 'Istanbul (IST)'},
-      highlight: {readout: 'purity'}
-    },
-    resolution: {
-      controls: ['resolution', 'rounds', 'minimumGain'],
-      readouts: ['qCommunities', 'qContinents', 'optimizerStatus', 'modularityChart'],
-      options: {communityMethod: 'modularity'},
+    {
+      id: 'communities',
+      title: 'Communities mostly follow the continents',
+      headline: 'Communities mostly follow the continents',
+      textAlternative:
+        'World map split by a vertical divider: continents coloured on the left, communities found by label propagation on the right, nearly the same hues.',
+      body: 'Label propagation knows nothing about maps: each airport adopts its neighbours’ commonest label. Drag the divider: continents left, communities right. Modularity scores both, **{{qContinents}}** for continents and **{{qCommunities}}** for **{{communities}}** communities; **{{purity}}** of airports sit on their community’s main continent, and the note marks where one does not. The [flight matrix](#/story/flight-matrix) tests this against chance. Switch **Community method** below.',
+      optionsMode: 'fresh',
+      options: {
+        view: 'arcs',
+        colorBy: 'community',
+        communityMethod: 'propagation',
+        sizeBy: 'degree',
+        labels: 'disagreement'
+      },
+      controls: ['communityMethod'],
+      readouts: ['qContinents', 'qCommunities', 'communities', 'purity'],
+      stage: 'propagation',
+      compare: {mode: 'swipe', labels: ['Continents', 'Communities'], position: 0.5},
+      camera: {...WORLD_VIEW, transitionMs: 1400},
+      furniture: {
+        title: cartouche('Do communities follow the continents?', 'Modularity of two partitions')
+      },
+      annotations: OCEANS,
       highlight: {readout: 'qCommunities'}
     },
-    bundles: {
-      controls: ['edgeFilter', 'bundleIterations', 'kernelRadius'],
-      readouts: ['edges', 'withinShare'],
-      camera: {...WORLD_VIEW, transitionMs: 1200},
-      options: {view: 'bundles', edgeOpacity: 0.5, edgeFilter: 'all'}
+    {
+      id: 'resolution',
+      title: 'Resolution decides how many communities exist',
+      headline: 'Resolution decides how many communities exist',
+      textAlternative:
+        'World map of airports coloured by community with a line chart of modularity against the resolution parameter, which the slider and the chart both set.',
+      body: 'Modularity has a knob. **Resolution** is gamma, now **{{resolutionNow}}**: lower merges communities, higher splits them. The optimiser finds **{{communities}}** communities scoring **{{qCommunities}}**. Push gamma up until the map fragments; hues follow the continent each group overlaps, so a split keeps its colour. The optimiser makes one move per round, a polish on label propagation rather than Louvain.\n\n*A parameter you choose is a claim you make.*',
+      optionsMode: 'fresh',
+      options: {
+        view: 'arcs',
+        colorBy: 'community',
+        communityMethod: 'modularity',
+        sizeBy: 'degree',
+        labels: 'groups',
+        resolution: 1
+      },
+      controls: ['resolution'],
+      readouts: ['resolutionNow', 'communities', 'qCommunities', 'modularityChart'],
+      stage: 'optimise',
+      camera: {...WORLD_VIEW, transitionMs: 1400},
+      furniture: {
+        title: cartouche(
+          'How many communities, at what resolution?',
+          'Modularity optimisation, one gamma'
+        )
+      },
+      annotations: OCEANS,
+      highlight: {readout: 'communities'}
     },
-    morph: {
-      controls: ['animateMorph', 'morph', 'layoutRunning', 'repulsion'],
-      readouts: ['layoutCorrelation', 'layoutSteps', 'layoutStatus'],
-      options: {view: 'morph', edgeFilter: 'all', animateMorph: true, edgeOpacity: 0.3},
+    {
+      id: 'bridges',
+      title: 'Few routes bridge the communities',
+      headline: 'Few routes bridge the communities',
+      textAlternative:
+        'World map with only the routes between communities, bundled into corridors in off-white, over airports coloured by community and sized by bridge routes.',
+      body: 'A minority, **{{betweenShare}}**, of routes join two groups. They are drawn alone, bundled with fixed settings as in [flight bundling](#/story/flight-bundling), off-white over the groups they join. Discs size by bridge routes, led by **{{bridgeAirports}}**. Bundles show corridors, not flight paths. Change **Routes shown** below, or compare continents with **Colour groups by**.',
+      optionsMode: 'fresh',
+      options: {
+        view: 'bundles',
+        colorBy: 'community',
+        communityMethod: 'modularity',
+        edgeFilter: 'between',
+        sizeBy: 'bridges',
+        labels: 'bridges'
+      },
+      controls: ['edgeFilter', 'colorBy'],
+      readouts: ['betweenShare', 'bridgeAirports', 'edges'],
+      stage: 'bundle',
+      camera: {...WORLD_VIEW, transitionMs: 1400},
+      furniture: {
+        title: cartouche('Which routes bridge the communities?', 'Routes between groups, bundled')
+      },
+      annotations: OCEANS,
+      highlight: {readout: 'betweenShare'}
+    },
+    {
+      id: 'topology',
+      title: 'Without geography, the communities pull apart',
+      headline: 'Without geography, the communities pull apart',
+      textAlternative:
+        'Airports and routes on a flat dark ground animate between their map positions and a force layout, where airports of one community clump together.',
+      body: 'The force layout ignores longitude and latitude: airports repel, routes pull. Press **Animate morph** or drag **Morph** and watch whether the communities separate. Route length on the map and in the layout correlate at **{{layoutCorrelation}}**; zero would be unrelated, one identical. The ground is flat because no geography is left to show. In All controls, change the disc size or the view.',
+      optionsMode: 'fresh',
+      options: {
+        view: 'morph',
+        colorBy: 'community',
+        communityMethod: 'modularity',
+        sizeBy: 'degree',
+        labels: 'none',
+        animateMorph: true
+      },
+      controls: ['morph', 'animateMorph', 'colorBy'],
+      readouts: ['layoutCorrelation', 'layoutSteps'],
+      stage: 'layout',
+      basemap: ground('night', {style: 'none'}),
+      camera: {...WORLD_VIEW, transitionMs: 1400},
+      furniture: {
+        title: cartouche('What if geography is taken away?', 'Force layout against real positions')
+      },
       highlight: {readout: 'layoutCorrelation'}
-    },
-    limits: {
-      controls: ['layoutMode', 'minRecords', 'pageRankIterations'],
-      readouts: ['residual', 'coreStatus', 'propagationStatus'],
-      camera: {...WORLD_VIEW, transitionMs: 1000},
-      options: {view: 'arcs', animateMorph: false, morph: 0, edgeOpacity: 0.5, colorBy: 'community'}
     }
-  })
+  ]
 });

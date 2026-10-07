@@ -2,6 +2,9 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {CREDITS, joinCredits} from '../../cartography/credits';
+import {WORLD, labelsFor} from '../../cartography/gazetteer';
+import {ground} from '../../cartography/grounds';
 import {formatPlaybackTime, playbackOptions} from '../../engine/playback';
 import {defineScene, type LegendSpec} from '../scene';
 import type {OceanDriftersPlaybackOptions} from './ocean-drifters-playback.compute';
@@ -10,12 +13,18 @@ const GLOBAL_VIEW = {longitude: -20, latitude: 15, zoom: 1.5};
 /** Unix seconds of 2017-01-01 UTC, the time origin of the dataset. */
 const ORIGIN_SECONDS = Date.UTC(2017, 0, 1) / 1000;
 const formatDate = (days: number) => formatPlaybackTime.date(days * 86400, ORIGIN_SECONDS);
+const cartouche = (title: string, subtitle: string) => ({
+  title,
+  subtitle,
+  chips: ['2017 sample'] as const
+});
+const OCEAN_LABELS = labelsFor(WORLD, ['atlantic-ocean', 'pacific-ocean', 'southern-ocean']);
 
 export default defineScene<OceanDriftersPlaybackOptions>({
   id: 'ocean-drifters-playback',
-  title: 'A year of ocean drifters',
+  title: 'What did the drifters sample?',
   chapter: 'earth',
-  order: 2,
+  order: 1,
   summary:
     'Replay 2,811 satellite-tracked drifters through 2017 with trails colored by sea-surface temperature, then pile all the tracks into a GPU line density to see the Gulf Stream, the Kuroshio and the Agulhas appear.',
   contributors: ['GPUTrajectoryPlayhead', 'GPUTimeWindowFilter', 'GPULineDensity'],
@@ -125,7 +134,6 @@ export default defineScene<OceanDriftersPlaybackOptions>({
       options: [
         {value: 'inferno', label: 'Inferno'},
         {value: 'magma', label: 'Magma'},
-        {value: 'viridis', label: 'Viridis'},
         {value: 'cividis', label: 'Cividis'}
       ]
     },
@@ -246,6 +254,12 @@ export default defineScene<OceanDriftersPlaybackOptions>({
 
   readouts: [
     {
+      id: 'releaseChart',
+      label: 'First records by week',
+      kind: 'chart',
+      help: 'First retained daily position for each drifter, grouped by week of 2017. This is release and record effort, not an ocean-current measurement.'
+    },
+    {
       id: 'activeChart',
       label: 'Drifters reporting through the year',
       kind: 'chart',
@@ -276,6 +290,13 @@ export default defineScene<OceanDriftersPlaybackOptions>({
     {id: 'sstRange', label: 'Temperature range'},
     {id: 'peakActive', label: 'Peak drifters reporting on one day', format: 'integer'},
     {id: 'density', label: 'Density grids'}
+  ],
+
+  pipeline: [
+    {id: 'playhead', label: 'Playhead', detail: 'Find the two fixes around the clock'},
+    {id: 'window', label: 'Time window', detail: 'Keep and fade only live trail segments'},
+    {id: 'density', label: 'Line density', detail: 'Sum sampled track kilometres by cell'},
+    {id: 'draw', label: 'Draw', detail: 'Heads, trails and the effort surface'}
   ],
 
   legends: state => {
@@ -372,6 +393,25 @@ play.encode(commandEncoder, {parameters: undefined});`,
       'Each dot is a drifter now, each trail the last stretch of its path; the colors are sea-surface temperature (see the legend). The faint lines behind them are every track of the year. In the density map a bright ridge is a current that carries many buoys along the same path: the Gulf Stream and North Atlantic Current, the Kuroshio, the Agulhas and the Antarctic Circumpolar Current. Caveats: only drifters seen in 2017, the first 60 days of each record, at 12-hourly fixes; deployments are not uniform (they follow ship routes), so density measures where buoys were as much as where the water goes; the temperature is from the buoy hull, not a calibrated skin temperature.'
   },
 
+  basemap: ground('abyss', {labels: 'none'}),
+  furniture: {
+    title: cartouche(
+      'What did the drifters sample?',
+      'Temperature · °C · moving instruments · 2017'
+    ),
+    clock: {
+      option: 'time',
+      time: {origin: '2017-01-01T00:00:00Z', unit: 'days'},
+      zones: ['UTC'],
+      show: 'date',
+      progress: [0, 365]
+    },
+    credit: joinCredits('NOAA Global Drifter Program', CREDITS.naturalEarth),
+    caveat:
+      'Track density is sampled effort, not current speed. Global areas and distances are shown in Web Mercator.'
+  },
+  annotations: OCEAN_LABELS,
+
   create: async ctx =>
     (await import('./ocean-drifters-playback.compute')).createOceanDriftersPlayback(ctx),
 
@@ -379,15 +419,21 @@ play.encode(commandEncoder, {parameters: undefined});`,
     {
       id: 'a-year-of-drifters',
       title: "Where did the world's drifters go in 2017?",
-      body: 'A **drifter** is a buoy with a drogue (a sock) that hangs about 15 meters down and makes it follow the current instead of the wind. It reports its position and sea-surface temperature through a satellite several times a day. The NOAA **Global Drifter Program** keeps a global array of more than a thousand of them afloat.\n\nThis is **2017**: 2,811 drifters, each shown for its first 60 days of the year. Press **Play** below, or drag **Date (2017)**: dots are the drifters now, trails are the last two weeks, and the **Playback speed** control sets how many days pass each second. The chart shows how many report on each day.',
+      headline: 'The sample starts where instruments enter',
+      textAlternative: 'A dark global ocean map with sparse release rings and faint drifter paths.',
+      optionsMode: 'fresh',
+      body: 'A **drifter** is a buoy with a drogue that helps it follow currents rather than surface wind. It reports position and sea-surface temperature by satellite.\n\nThis sample follows each loaded drifter from its release window. Press **Play**, or drag **Date**: dots are current positions, trails show recent movement, and the live release chart shows when observations enter the display.',
       camera: {...GLOBAL_VIEW, transitionMs: 1200},
       options: {play: true, time: 0, trailDays: 14},
       controls: ['play', 'time', 'speed'],
-      readouts: ['date', 'active', 'activeChart']
+      readouts: ['tracks', 'vertices', 'releaseChart', 'active']
     },
     {
       id: 'temperature',
       title: 'Read the temperature along the track',
+      headline: 'Colour reads water temperature',
+      textAlternative: 'Warm and cool drifter trails cross a dark world ocean.',
+      optionsMode: 'fresh',
       body: 'Every fix carries the **sea-surface temperature** the buoy measured. The trails are colored by it: the warm tropics glow, the Southern Ocean and the Arctic go dark. A drifter that crosses a color boundary has crossed a front. Narrow **Temperature range of the ramp** to bring out gradients inside one ocean, or switch **Color tracks by** to *Days since release* to see which tracks are fresh.\n\nThe dots take their color from the temperature **at the playhead**: `GPUTrajectoryPlayhead` reports the bracketing fix and the fraction between the two, and a small kernel interpolates between their temperatures.',
       camera: {longitude: -40, latitude: 25, zoom: 2.6, transitionMs: 1400},
       options: {play: false, time: 100, trailDays: 30, showBackdrop: true},
@@ -397,6 +443,9 @@ play.encode(commandEncoder, {parameters: undefined});`,
     {
       id: 'time-window',
       title: 'A sliding window of time, on the GPU',
+      headline: 'A trail is a window of time',
+      textAlternative: 'Short glowing trails end at small drifter heads on the Atlantic.',
+      optionsMode: 'fresh',
       body: '**`GPUTimeWindowFilter`** treats every segment between two fixes as a time interval and keeps the ones that overlap the window `[playhead - length, playhead]`. It writes a fade weight (old end transparent) and a clip fraction (the oldest segment is cut part-way), compacts the live ids and writes the count straight into the draw call. Nothing returns to the CPU.\n\nDrag **Trail length** to 60 days for long streaks, or down to 3 days for a swarm of short ones; **Tail fade** sets how much of the trail fades. **Maximum fix gap** hides any drifter whose neighbouring fixes are further apart than the limit, instead of drawing a guess.',
       camera: {longitude: -45, latitude: 35, zoom: 3.2, transitionMs: 1400},
       options: {play: true, time: 120, trailDays: 20, showBackdrop: false, speed: 6},
@@ -406,6 +455,9 @@ play.encode(commandEncoder, {parameters: undefined});`,
     {
       id: 'density',
       title: 'Where do the tracks pile up?',
+      headline: 'Track density is sampling effort',
+      textAlternative: 'A classed density surface shows sampled track effort over the ocean.',
+      optionsMode: 'fresh',
       body: '**`GPULineDensity`** clips every segment of every track to a half-degree grid, walks it through the cells it crosses and adds up the great-circle length per cell. The map is **kilometers of track per 1,000 square kilometers**: the bright ridges are currents that carry many buoys along the same path.\n\nChange **Density cell size** to 0.25° for detail or 1° for a smoother picture (the three graphs are compiled up front, so switching is cheap but shows a rebuild badge), and raise **Density at the top of the ramp** when the smaller cells saturate. The ramp is a square root so the sparse ocean stays visible.',
       camera: {...GLOBAL_VIEW, transitionMs: 1400},
       options: {
@@ -423,6 +475,10 @@ play.encode(commandEncoder, {parameters: undefined});`,
     {
       id: 'boundary-currents',
       title: 'The Gulf Stream, the Kuroshio and the Agulhas',
+      headline: 'Moving windows trace boundary currents',
+      textAlternative:
+        'A dark Atlantic map highlights a narrow drifter-track ridge off the US coast.',
+      optionsMode: 'fresh',
       body: 'Zoom in and the density becomes a map of the **western boundary currents**: narrow, fast rivers in the ocean on the west side of each basin. Pick **Fly to** *Gulf Stream* and look for a ridge that follows the US coast and swings out into the North Atlantic; *Kuroshio* is the same current system off Japan, and the *Agulhas* runs down the east coast of southern Africa before it turns back on itself.\n\nA ridge in this map means many tracks share a path, not that the water is fast: drifters were deployed near ship routes and pile up where currents converge. Switch **Density cell size** to 0.25° to see how narrow the streams are.',
       camera: {longitude: -62, latitude: 38, zoom: 4.1, transitionMs: 1500},
       options: {
@@ -443,7 +499,10 @@ play.encode(commandEncoder, {parameters: undefined});`,
     {
       id: 'limits',
       title: 'What to remember, and what to try',
-      body: 'Each drifter appears for **its first 60 days of 2017 only**, with fixes about every 12 hours (the archive is 6-hourly), so this is a sample of the year, not the whole Global Drifter Program record. Drifters are not placed uniformly, and some **lose their drogue** and then slide with the wind; this archive does not say which. The temperature is from a sensor on the buoy hull. The **Date** is UTC.\n\n**Try it:** set **Color tracks by** to *Date* and watch the year go by in the colors of one ocean; set **Trail length** to 60 days with **Playback speed** at 30 days/s; fly to the *Southern Ocean* and look for the buoys circling Antarctica.',
+      headline: 'Empty ocean does not mean still ocean',
+      textAlternative: 'Faint global drifter tracks make the uneven 2017 sample visible.',
+      optionsMode: 'fresh',
+      body: 'Each drifter is shown only through this story’s release-window sample, not as a full observing-program record. Deployments are not spatially uniform; a lost drogue can change how a buoy follows wind and current, and this archive does not identify every case. Temperatures come from the buoy sensor and dates are UTC.\n\n**Try it:** color tracks by *Date*; extend the trail and accelerate playback; then fly to the *Southern Ocean* and inspect the circumpolar routes.',
       camera: {longitude: 60, latitude: -56, zoom: 2.4, transitionMs: 1500},
       options: {
         play: true,

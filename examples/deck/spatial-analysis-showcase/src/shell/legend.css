@@ -1,0 +1,749 @@
+/*
+ * Map legends. Map chrome, not app chrome: every colour comes from the --map-* tokens (they follow
+ * the map ground), never --surface or --text. Selectors are scoped under .map-legend so they win
+ * over the older rules in styles.css regardless of load order.
+ */
+
+div.map-legend {
+  width: clamp(200px, 22vw, 280px);
+  max-width: 100%;
+  padding: 0;
+  color: var(--map-ink);
+  font-family: var(--map-font);
+  font-size: var(--fs-sm, 12px);
+  background: color-mix(in srgb, var(--map-furniture-bg) 92%, transparent);
+  -webkit-backdrop-filter: blur(6px) saturate(1.1);
+  backdrop-filter: blur(6px) saturate(1.1);
+  border: 1px solid color-mix(in srgb, var(--map-ink) 14%, transparent);
+  border-radius: var(--radius-chrome, 8px);
+  box-shadow: var(--e2, 0 2px 8px rgb(0 0 0 / 0.16));
+  --legend-no-data: rgb(217 217 217 / 0.7);
+  --legend-hairline: color-mix(in srgb, var(--map-ink) 18%, transparent);
+}
+[data-ground='dark'] div.map-legend {
+  --legend-no-data: #3a3f46;
+}
+
+.map-legend .map-legend-toggle {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  min-height: 32px;
+  padding: 6px 12px;
+  border: 0;
+  background: none;
+  color: var(--map-ink);
+  font: inherit;
+  font-size: var(--fs-sm, 12px);
+  font-weight: 600;
+  text-align: left;
+  cursor: pointer;
+}
+.map-legend .map-legend-toggle svg:last-child {
+  margin-left: auto;
+  color: var(--map-ink-muted);
+  transition: transform 0.15s var(--ease, ease);
+}
+.map-legend.is-collapsed .map-legend-toggle svg:last-child {
+  transform: rotate(180deg);
+}
+.map-legend .map-legend-toggle:focus-visible,
+.map-legend .legend button:focus-visible {
+  outline: 2px solid var(--map-accent);
+  outline-offset: 1px;
+}
+.map-legend .map-legend-body {
+  overflow-y: auto;
+  min-height: 0;
+  padding: 0 12px 10px;
+  scrollbar-width: thin;
+}
+.map-legend.is-collapsed .map-legend-body {
+  display: none;
+}
+.map-legend .legends {
+  display: grid;
+  gap: 10px;
+}
+.map-legend .legends:empty {
+  display: none;
+}
+
+/* Thumbnail in the collapsed pill. */
+.legend-thumb {
+  display: inline-flex;
+  flex: none;
+  width: 40px;
+  height: 8px;
+  overflow: hidden;
+  border-radius: 2px;
+  box-shadow: 0 0 0 1px var(--legend-hairline, rgb(128 128 128 / 0.3));
+}
+.legend-thumb i {
+  flex: 1 1 0;
+}
+
+/* Figure and caption. */
+.map-legend .legends > .legend {
+  margin: 0;
+  padding: 0;
+  background: none;
+  border: 0;
+  border-radius: 0;
+  color: var(--map-ink);
+}
+.map-legend .legends > .legend + .legend {
+  margin-top: 0;
+  padding-top: 10px;
+  border-top: 1px solid var(--legend-hairline);
+}
+.map-legend .legend figcaption {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  margin: 0 0 8px;
+  font-size: var(--fs-sm, 12px);
+  font-weight: 600;
+  line-height: 1.3;
+  color: var(--map-ink);
+}
+.map-legend .legend figcaption .muted {
+  font-weight: 400;
+  color: var(--map-ink-muted);
+}
+.map-legend .legend button {
+  font: inherit;
+  color: inherit;
+}
+.map-legend .legend .legend-show-all {
+  flex: none;
+  padding: 0;
+  border: 0;
+  background: none;
+  font-size: var(--fs-xs, 11px);
+  font-weight: 600;
+  color: var(--map-accent);
+  text-decoration: underline;
+  cursor: pointer;
+}
+.map-legend .legend .legend-show-all[hidden] {
+  display: none;
+}
+.map-legend .legend-note {
+  margin-top: 6px;
+  font-size: var(--fs-xs, 11px);
+  line-height: 1.35;
+  color: var(--map-ink-muted);
+}
+.map-legend .legend ul {
+  display: block;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  font-size: var(--fs-sm, 12px);
+}
+.map-legend .legend li {
+  display: block;
+}
+
+/* Swatches. */
+.map-legend .swatch {
+  flex: none;
+  width: 16px;
+  height: 12px;
+  border: 0;
+  border-radius: 2px;
+  box-shadow: inset 0 0 0 1px var(--legend-hairline);
+  forced-color-adjust: none;
+}
+.map-legend .legend .is-hatched {
+  background-image: repeating-linear-gradient(
+    45deg,
+    transparent 0 2px,
+    color-mix(in srgb, var(--map-ink) 60%, transparent) 2px 3px
+  );
+}
+.map-legend .legend .is-clear {
+  background: none;
+  box-shadow: inset 0 0 0 1px var(--map-ink-muted);
+  border-style: dashed;
+}
+.map-legend .legend .legend-swatch-nodata {
+  background-color: var(--map-no-data, var(--legend-no-data));
+}
+
+/* Bars: ramp gradient and classed blocks. */
+.map-legend .legend-bar-wrap {
+  position: relative;
+}
+.map-legend .legend-gradient {
+  height: 10px;
+  border-radius: 2px;
+  box-shadow: inset 0 0 0 1px var(--legend-hairline);
+  forced-color-adjust: none;
+}
+.map-legend .legend-class-bar {
+  display: flex;
+  gap: 1px;
+  height: 10px;
+  overflow: hidden;
+  border-radius: 2px;
+  background: var(--map-paper);
+}
+.map-legend .legend-class-block {
+  flex: 1 1 0;
+  min-width: 24px;
+  height: 10px;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  forced-color-adjust: none;
+  position: relative;
+}
+.map-legend .legend-classes-bar .legend-class-bar .legend-class-block {
+  min-width: 0;
+}
+.map-legend .legend-marker {
+  position: absolute;
+  top: -7px;
+  width: 0;
+  height: 0;
+  margin-left: -4px;
+  border: 4px solid transparent;
+  border-top: 6px solid var(--map-ink);
+  border-bottom: 0;
+  pointer-events: none;
+}
+
+/* Tick rows. */
+.map-legend .legend-ticks {
+  position: relative;
+  height: 20px;
+  margin-top: 0;
+  font-size: var(--fs-xs, 11px);
+  font-variant-numeric: tabular-nums;
+  color: var(--map-ink);
+}
+.map-legend .legend-tick {
+  position: absolute;
+  top: 0;
+  padding-top: 6px;
+  white-space: nowrap;
+  line-height: 1.2;
+  text-align: center;
+  transform: translateX(-50%);
+}
+.map-legend .legend-tick.is-start {
+  transform: none;
+  text-align: left;
+}
+.map-legend .legend-tick.is-end {
+  transform: translateX(-100%);
+  text-align: right;
+}
+.map-legend .legend-tick::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 50%;
+  width: 1px;
+  height: 4px;
+  background: var(--map-ink);
+}
+.map-legend .legend-tick.is-start::before {
+  left: 0;
+}
+.map-legend .legend-tick.is-end::before {
+  left: auto;
+  right: 0;
+}
+.map-legend .legend-tick.is-tall::before {
+  top: -4px;
+  height: 8px;
+}
+.map-legend .legend-ticks-loading {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  padding-top: 6px;
+}
+.map-legend .legend-ticks-loading i {
+  width: 28px;
+  height: 8px;
+  border-radius: 2px;
+  background: linear-gradient(
+    90deg,
+    color-mix(in srgb, var(--map-ink) 10%, transparent) 25%,
+    color-mix(in srgb, var(--map-ink) 24%, transparent) 50%,
+    color-mix(in srgb, var(--map-ink) 10%, transparent) 75%
+  );
+  background-size: 200% 100%;
+  animation: legend-shimmer 1.2s linear infinite;
+}
+.map-legend .legend-ticks-loading i:nth-child(2) {
+  animation-delay: 0.15s;
+}
+.map-legend .legend-ticks-loading i:nth-child(3) {
+  animation-delay: 0.3s;
+}
+@keyframes legend-shimmer {
+  from {
+    background-position: 200% 0;
+  }
+  to {
+    background-position: -200% 0;
+  }
+}
+
+/* Histogram strip with optional ticks at class breaks. */
+.map-legend .legend-histogram {
+  position: relative;
+  display: flex;
+  align-items: flex-end;
+  gap: 1px;
+  height: 20px;
+  margin-bottom: 3px;
+}
+.map-legend .legend-histogram span {
+  flex: 1 1 0;
+  min-width: 0;
+  background: var(--map-ink-muted);
+  opacity: 0.6;
+  border-radius: 1px 1px 0 0;
+}
+.map-legend .legend-histogram b {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 1px;
+  background: var(--map-ink);
+  opacity: 0.45;
+}
+
+/* Rows: class list, categories, no-data. */
+.map-legend .legend-class-list,
+.map-legend .legend-category-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.map-legend .legend-categories-grid .legend-category-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(112px, 1fr));
+  gap: 2px 12px;
+}
+.map-legend .legend-row {
+  position: relative;
+  display: grid;
+  grid-template-columns: 16px minmax(0, 1fr);
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  min-height: 20px;
+  margin: 0;
+  padding: 1px 2px;
+  border: 0;
+  border-radius: 3px;
+  background: none;
+  text-align: left;
+  font-size: var(--fs-xs, 11px);
+  font-variant-numeric: tabular-nums;
+  color: var(--map-ink);
+  transition: opacity 0.12s var(--ease, ease);
+}
+.map-legend .legend-row.has-count {
+  grid-template-columns: 16px minmax(0, 1fr) minmax(56px, 0.8fr);
+}
+.map-legend .legend-row.has-detail {
+  grid-template-columns: 16px minmax(0, auto) minmax(0, 1fr);
+}
+.map-legend .legend-row.has-detail.has-entry-count {
+  grid-template-columns: 16px minmax(0, auto) minmax(0, 1fr) auto;
+}
+.map-legend .legend-row.has-entry-count:not(.has-detail) {
+  grid-template-columns: 16px minmax(0, 1fr) auto;
+}
+.map-legend button.legend-row {
+  cursor: pointer;
+}
+.map-legend button.legend-row:hover {
+  background: color-mix(in srgb, var(--map-ink) 8%, transparent);
+}
+.map-legend .legend-row.has-marker::before {
+  content: '';
+  position: absolute;
+  left: -9px;
+  top: 50%;
+  margin-top: -4px;
+  border: 4px solid transparent;
+  border-left: 6px solid var(--map-ink);
+  border-right: 0;
+}
+.map-legend .legend-class-name,
+.map-legend .legend-entry-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--fs-xs, 11px);
+  font-variant-numeric: tabular-nums;
+}
+.map-legend .legend-entry-label {
+  font-size: var(--fs-sm, 12px);
+}
+.map-legend .legend-entry-detail {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--map-ink-muted);
+  font-size: var(--fs-xs, 11px);
+}
+.map-legend .legend-count-text {
+  justify-self: end;
+  color: var(--map-ink-muted);
+  font-size: var(--fs-xs, 11px);
+  font-variant-numeric: tabular-nums;
+}
+.map-legend .legend-class-count {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  height: 16px;
+  color: var(--map-ink-muted);
+  font-size: var(--fs-xs, 11px);
+  font-variant-numeric: tabular-nums;
+}
+.map-legend .legend-class-count i {
+  position: absolute;
+  top: 2px;
+  right: 0;
+  bottom: 2px;
+  border-radius: 2px;
+}
+.map-legend .legend-class-count span {
+  position: relative;
+  padding: 0 3px;
+  color: var(--map-ink);
+}
+.map-legend .legend-nodata {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 8px;
+  padding: 0 2px;
+}
+.map-legend .legend-nodata .legend-count-text {
+  margin-left: auto;
+}
+
+/* Interactive dimming. */
+.map-legend .legend .is-dim {
+  opacity: 0.3;
+}
+.map-legend .legend button.legend-class-block {
+  cursor: pointer;
+}
+.map-legend .legend button[aria-pressed='true'].legend-class-block {
+  box-shadow: inset 0 0 0 2px var(--map-ink);
+}
+.map-legend .legend button[aria-pressed='true'].legend-row {
+  background: color-mix(in srgb, var(--map-ink) 12%, transparent);
+}
+
+/* Category shapes. */
+.map-legend .legend-shape {
+  box-sizing: border-box;
+  justify-self: center;
+  flex: none;
+  forced-color-adjust: none;
+}
+.map-legend .legend-shape-swatch {
+  width: 16px;
+  height: 12px;
+  border-radius: 2px;
+  box-shadow: inset 0 0 0 1px var(--legend-hairline);
+}
+.map-legend .legend-shape-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+}
+.map-legend .legend-shape-ring {
+  width: 12px;
+  height: 12px;
+  border: 2px solid;
+  border-radius: 50%;
+  background: none;
+}
+.map-legend .legend-shape-line {
+  width: 16px;
+  height: 3px;
+  border-radius: 2px;
+}
+.map-legend .legend-shape-hatch {
+  width: 16px;
+  height: 12px;
+  border-radius: 2px;
+  box-shadow: inset 0 0 0 1px var(--legend-hairline);
+  background-image: repeating-linear-gradient(
+    45deg,
+    transparent 0 2px,
+    color-mix(in srgb, var(--map-ink) 70%, transparent) 2px 3px
+  );
+}
+
+/* Bivariate. */
+.map-legend .legend-bivariate {
+  display: grid;
+  grid-template-columns: auto auto;
+  justify-content: start;
+  gap: 4px 6px;
+  --cell: 22px;
+}
+.map-legend .legend-bivariate-4 {
+  --cell: 18px;
+}
+.map-legend .legend-bivariate-grid {
+  display: grid;
+  gap: 1px;
+  background: var(--map-paper);
+}
+.map-legend .legend-bivariate-grid span {
+  width: var(--cell);
+  height: var(--cell);
+  forced-color-adjust: none;
+}
+.map-legend .legend-axis {
+  display: flex;
+  justify-content: space-between;
+  gap: 6px;
+  white-space: nowrap;
+  font-size: var(--fs-xs, 11px);
+  color: var(--map-ink-muted);
+}
+.map-legend .legend-axis-y {
+  writing-mode: vertical-rl;
+  transform: rotate(180deg);
+}
+.map-legend .legend-axis-center {
+  justify-content: center;
+}
+
+/* Matrix. */
+.map-legend .legend-matrix-grid {
+  display: grid;
+  gap: 1px 1px;
+  align-items: center;
+  font-size: var(--fs-xs, 11px);
+}
+.map-legend .legend-matrix-title {
+  color: var(--map-ink-muted);
+  font-weight: 600;
+  text-align: center;
+}
+.map-legend .legend-matrix-row-title {
+  text-align: left;
+}
+.map-legend .legend-matrix-label {
+  padding: 0 4px;
+  color: var(--map-ink);
+  text-align: center;
+  line-height: 1.2;
+}
+.map-legend .legend-matrix-row-label {
+  padding-left: 0;
+  text-align: left;
+}
+.map-legend .legend-matrix-cell {
+  height: 18px;
+  forced-color-adjust: none;
+}
+
+/* Cyclic ring. */
+.map-legend .legend-cyclic-ring {
+  display: block;
+  max-width: 100%;
+  height: auto;
+}
+.map-legend .legend-cyclic-label {
+  fill: var(--map-ink);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  paint-order: stroke;
+  stroke: var(--map-halo);
+  stroke-width: 2.5px;
+}
+.map-legend .legend-cyclic-label.is-mark {
+  font-style: italic;
+  fill: var(--map-ink-muted);
+}
+.map-legend .legend-cyclic-mark {
+  stroke: var(--map-ink);
+  stroke-width: 1.5;
+}
+
+/* Alpha. */
+.map-legend .legend-alpha-rows {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.map-legend .legend-alpha-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.map-legend .legend-alpha-label {
+  flex: none;
+  width: 64px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--fs-xs, 11px);
+}
+.map-legend .legend-alpha-cells,
+.map-legend .legend-alpha-ends {
+  display: flex;
+  flex: 1 1 auto;
+  min-width: 0;
+  gap: 1px;
+}
+.map-legend .legend-alpha-cell {
+  flex: 1 1 0;
+  height: 14px;
+  background:
+    repeating-conic-gradient(
+      color-mix(in srgb, var(--map-ink) 14%, transparent) 0% 25%,
+      transparent 0% 50%
+    )
+    0 0 / 8px 8px,
+    var(--map-paper);
+}
+.map-legend .legend-alpha-cell i {
+  display: block;
+  width: 100%;
+  height: 100%;
+  forced-color-adjust: none;
+}
+.map-legend .legend-alpha-ends {
+  justify-content: space-between;
+  margin-top: 3px;
+  font-size: var(--fs-xs, 11px);
+  color: var(--map-ink-muted);
+}
+.map-legend .legend-alpha-ends.has-row-labels {
+  padding-left: 72px;
+}
+.map-legend .legend-alpha-ends.has-row-labels > span:first-child:empty {
+  display: none;
+}
+
+/* Lines and sizes. */
+.map-legend .legend-lines {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.map-legend .legend-lines li,
+.map-legend .legend-size-row li {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: var(--fs-xs, 11px);
+}
+.map-legend .legend-size-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 12px;
+}
+.map-legend .legend-size-row .dot {
+  flex: none;
+  border-radius: 50%;
+  forced-color-adjust: none;
+}
+.map-legend .legend-line-sample {
+  display: block;
+  flex: none;
+}
+.map-legend .legend-line-sample line {
+  vector-effect: non-scaling-stroke;
+}
+.map-legend .legend-nested {
+  display: block;
+  max-width: 100%;
+  height: auto;
+}
+.map-legend .legend-nested circle {
+  stroke: var(--map-ink);
+  stroke-opacity: 0.7;
+  stroke-width: 1;
+}
+.map-legend .legend-nested polyline {
+  fill: none;
+  stroke: var(--map-ink-muted);
+  stroke-width: 1;
+  stroke-dasharray: 2 2;
+}
+.map-legend .legend-nested text {
+  fill: var(--map-ink);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
+/* Touch: grow hit areas without growing the drawing. */
+@media (pointer: coarse) {
+  .map-legend .map-legend-toggle {
+    min-height: 44px;
+  }
+  .map-legend .legend-row {
+    min-height: 44px;
+  }
+  .map-legend .legend-class-block::after {
+    content: '';
+    position: absolute;
+    inset: -17px 0;
+  }
+  .map-legend .legend .legend-show-all {
+    min-height: 44px;
+    padding: 0 6px;
+  }
+}
+
+/* Phone: the collapsed legend is a 36 px pill. */
+@media (max-width: 900px) {
+  div.map-legend {
+    width: min(280px, calc(100vw - 24px));
+  }
+  div.map-legend.is-collapsed {
+    width: auto;
+    border-radius: 18px;
+  }
+  .map-legend.is-collapsed .map-legend-toggle {
+    min-height: 36px;
+    padding: 0 12px;
+    gap: 8px;
+  }
+  .map-legend.is-collapsed .legend-thumb {
+    order: 1;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .map-legend .legend-ticks-loading i {
+    animation: none;
+  }
+  .map-legend .map-legend-toggle svg:last-child,
+  .map-legend .legend-row {
+    transition: none;
+  }
+}
+
+@media (forced-colors: active) {
+  .map-legend .legend-gradient,
+  .map-legend .legend-class-block,
+  .map-legend .swatch {
+    border: 1px solid CanvasText;
+  }
+}

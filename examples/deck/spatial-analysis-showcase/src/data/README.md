@@ -40,7 +40,7 @@ Each scene that declares the dataset shows its attribution in the "Data" section
     "category":  {"file": "category.bin", "dtype": "uint8", "length": 43557, "categories": ["Plants", "Birds"]}
   },
   "geometry": {"type": "polygons", "file": "tracts.geojson"},
-  "raster": {"file": "dem.png", "encoding": "terrarium | mapbox | uint8-classes | rg-uv-8bit | float32-bin | uint8-bin | uint16-bin | int16-bin",
+  "raster": {"file": "dem.png", "encoding": "terrarium | mapbox | rgba8 | uint8-classes | rg-uv-8bit | float32-bin | uint8-bin | uint16-bin | int16-bin",
              "width": 1024, "height": 1024, "bounds": [w, s, e, n], "noData": -9999, "unit": "m"},
   "properties": {"free-form": "metadata such as field descriptions"}
 }
@@ -55,8 +55,8 @@ Each scene that declares the dataset shows its attribution in the "Data" section
   `pathOffsets` plus `vertices` (plus per-vertex `timestamp`); networks `nodes`, `edgeSource`,
   `edgeTarget`, `edgeLength`, `edgeClass`; flows `origin`, `destination`, `count`.
 - **GeoJSON** is fine for small polygon sets (`geometry.file`).
-- **Rasters** (`raster`, plus extra named ones in `rasters`) are PNGs (`uint8-classes`, `terrarium`,
-  `mapbox`, `rg-uv-8bit` wind with `uRange`/`vRange` in the spec or in the `properties` group that
+- **Rasters** (`raster`, plus extra named ones in `rasters`) are PNGs (`rgba8` interleaved colour,
+  `uint8-classes`, `terrarium`, `mapbox`, `rg-uv-8bit` wind with `uRange`/`vRange` in the spec or in the `properties` group that
   lists the file) or headerless arrays (`float32-bin`, `uint8-bin`, `uint16-bin`, `int16-bin`,
   `int32-bin`, `uint32-bin`). A `*-bin` raster may have a `depth` (time or band stack, laid out
   `[t][row][col]`, row 0 north); the loader checks `width * height * depth` against the file size.
@@ -98,11 +98,24 @@ and origin; pass an explicit origin to put two datasets in one frame:
 
 `fetchJson`, `fetchText`, `fetchBytes`, `fetchGeoJson`, `fetchWithFallback(urls, parse)` (first
 working URL wins), `parseCsv` + `csvColumnToFloat32`, `decodeColumn`, and
-`decodeRasterImage(bytes, 'terrarium' | 'mapbox' | 'uint8-classes' | 'rg-uv-8bit', ranges?)`,
+`decodeRasterImage(bytes, 'rgba8' | 'terrarium' | 'mapbox' | 'uint8-classes' | 'rg-uv-8bit', ranges?)`,
 `decodeRasterBinary(bytes, 'uint16-bin' | ..., {width, height, depth})`. `getDataFileUrl(id, file)` gives
 the URL of a shipped file and respects Vite's `base`.
 
 A per-session memo cache in the catalog means two scenes that use one dataset load it once.
+
+## Download progress
+
+`catalog.load(id, signal, onProgress)` reports `{loadedBytes, totalBytes, fraction}` while the
+dataset's files stream in (the story view shows it); the fetch helpers take
+`{signal, onProgress}` in place of a bare `AbortSignal`.
+
+## Shared reference datasets
+
+`chicago-parks` (OSM parks, nature reserves, forest preserves; ODbL), `chicago-boundary` (dissolved
+city limit, Lake Michigan, land mask), `natural-earth` (1:110m world, 1:10m Netherlands; public
+domain), `dixie-perimeter` (2021 Dixie Fire perimeter), `us-states`. They belong to no chapter: add
+columns or sibling datasets, never rename.
 
 ## Synthetic data
 

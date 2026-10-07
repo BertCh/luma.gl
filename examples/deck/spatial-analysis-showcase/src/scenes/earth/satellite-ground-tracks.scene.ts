@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {CREDITS, joinCredits} from '../../cartography/credits';
+import {ground} from '../../cartography/grounds';
 import {defineScene} from '../scene';
 import type {SatelliteGroundTracksOptions} from './satellite-ground-tracks.compute';
 import {SATELLITE_GROUPS} from './satellite-tracks';
@@ -11,9 +13,9 @@ const latitudeLabel = (value: number) => `${Math.abs(value)}°${value < 0 ? 'S' 
 
 export default defineScene<SatelliteGroundTracksOptions>({
   id: 'satellite-ground-tracks',
-  title: 'How often does a satellite pass over each latitude?',
+  title: 'Where do ground tracks accumulate?',
   chapter: 'earth',
-  order: 31,
+  order: 10,
   summary:
     'Sum the ground tracks of 911 satellites into a density map on the GPU and count every entry into 34 latitude bands, to see how orbit inclination decides who passes over where, and how often.',
   contributors: ['GPULineDensity', 'GPUZoneEvents'],
@@ -21,6 +23,42 @@ export default defineScene<SatelliteGroundTracksOptions>({
   initialView: FLAT_VIEW,
 
   options: [
+    {
+      kind: 'select',
+      id: 'cellSize',
+      label: 'Cell size (MAUP)',
+      group: 'Density map',
+      apply: 'compile',
+      default: '2',
+      help: 'Recomputes the same spherical-area and satellite-hour denominator at 1°, 2° or 5°. Changing the aggregation unit can change occupied share and peak rank.',
+      options: [
+        {value: '1', label: '1° cells'},
+        {value: '2', label: '2° cells'},
+        {value: '5', label: '5° cells'}
+      ]
+    },
+    {
+      kind: 'select',
+      id: 'densityMode',
+      label: 'Density measure',
+      group: 'Density map',
+      apply: 'param',
+      default: 'normalised',
+      help: 'Raw is track kilometres in a cell; normalised divides by spherical cell area and satellite-hours.',
+      options: [
+        {value: 'normalised', label: 'Per 10,000 km² per satellite-hour'},
+        {value: 'raw', label: 'Raw track kilometres'}
+      ]
+    },
+    {
+      kind: 'toggle',
+      id: 'focusOrbit',
+      label: 'Show one selected orbit',
+      group: 'Density map',
+      apply: 'param',
+      default: false,
+      help: 'Uses one loaded satellite from the selected family; it is a ground-track subject, not a density surface.'
+    },
     {
       kind: 'select',
       id: 'group',
@@ -32,34 +70,6 @@ export default defineScene<SatelliteGroundTracksOptions>({
       options: [
         {value: 'all', label: 'All 911 satellites'},
         ...SATELLITE_GROUPS.map((label, index) => ({value: String(index), label}))
-      ]
-    },
-    {
-      kind: 'select',
-      id: 'ramp',
-      label: 'Color ramp',
-      group: 'Density map',
-      apply: 'param',
-      default: 'inferno',
-      help: 'Color ramp of the density map.',
-      options: [
-        {value: 'inferno', label: 'Inferno'},
-        {value: 'magma', label: 'Magma'},
-        {value: 'viridis', label: 'Viridis'},
-        {value: 'cividis', label: 'Cividis'}
-      ]
-    },
-    {
-      kind: 'select',
-      id: 'scale',
-      label: 'Value scale',
-      group: 'Density map',
-      apply: 'param',
-      default: 'sqrt',
-      help: 'Square root lifts the faint cells so low-density regions stay visible; linear shows the peaks at their true contrast.',
-      options: [
-        {value: 'sqrt', label: 'Square root'},
-        {value: 'linear', label: 'Linear'}
       ]
     },
     {
@@ -109,7 +119,7 @@ export default defineScene<SatelliteGroundTracksOptions>({
     {
       kind: 'toggle',
       id: 'perSatellite',
-      label: 'Per satellite',
+      label: 'Denominator: per satellite-hour',
       group: 'Pass counts',
       apply: 'param',
       default: false,
@@ -119,36 +129,58 @@ export default defineScene<SatelliteGroundTracksOptions>({
 
   story: [
     {
-      id: 'density',
-      title: 'Where do satellites spend their time?',
-      body: 'Each satellite draws a ground track: the point on the Earth directly below it. `GPULineDensity` clips every track to a 2-degree grid on the sphere, walks the cells it crosses and sums the length per cell, then divides by the exact spherical cell area.\n\nBright cells are crossed by more kilometres of track per hour; black cells are never overflown by any of these 911 satellites. Change **Color ramp** or **Value scale** below if the faint cells are hard to see.',
+      id: 'one-orbit',
+      title: 'Inclination bounds one ground-track belt',
+      headline: 'Tilt sets the latitude limit',
+      textAlternative:
+        'One selected ground track crosses a sparse graticule and turns at its inclination limit.',
+      optionsMode: 'fresh',
+      body: 'One loaded satellite draws the bright subject track: the point on Earth directly below it. Its inclination bounds the turning latitudes; ascending and descending legs cross the equator in opposite directions. No density surface is drawn in this step.\n\nThe readout identifies its family, inclination, altitude and period from the dated TLE snapshot.',
       camera: {...FLAT_VIEW, transitionMs: 1200},
-      options: {group: 'all', showTracks: false, showBand: false, perSatellite: false},
-      controls: ['ramp', 'scale'],
-      readouts: ['trackLength', 'peak']
+      options: {
+        group: 'all',
+        focusOrbit: true,
+        showTracks: true,
+        showBand: false,
+        perSatellite: false
+      },
+      controls: ['group'],
+      readouts: ['selectedOrbit']
     },
     {
       id: 'belts',
-      title: 'Inclination draws the belts',
-      body: 'An orbit tilted by 53 degrees never takes its satellite north of 53 degrees: it turns around there, and a satellite that turns around lingers. Starlink satellites fly at 43, 53, 70 and 97 degrees, so the density piles up in bright belts at those latitudes and thins out toward the equator.\n\nSwitch **Show ground tracks** on below and lower **Track opacity** to see the sinusoids behind the glow.',
+      title: 'Families occupy different latitude belts',
+      headline: 'Ground tracks inherit orbital tilt',
+      textAlternative:
+        'Satellite-family tracks trace different latitude belts above a sparse world grid.',
+      optionsMode: 'fresh',
+      body: 'The selected family’s paths make its inclination envelope visible. The linked latitude chart is derived from those same tracks, so its peak latitude and touched cells remain live rather than typed into the story.\n\nTracks are context here; the belt summary is the subject.',
       camera: {...FLAT_VIEW, transitionMs: 1200},
       options: {group: '1', showTracks: true, trackOpacity: 0.1},
       controls: ['group', 'showTracks', 'trackOpacity'],
-      readouts: ['peak', 'touched']
+      readouts: ['peak', 'touched', 'beltChart']
+    },
+    {
+      id: 'normalise',
+      title: 'Equal degrees are not equal areas',
+      headline: 'Normalise track length by cell area',
+      textAlternative:
+        'A global density map explains why equal-degree cells change area with latitude.',
+      optionsMode: 'fresh',
+      body: 'Equal-degree cells shrink toward the poles. Toggle raw track-kilometres against the normalised measure: the same segment is divided by its exact spherical cell area and the selected satellite-hours. Reference-cell readouts make the equator/high-latitude area contrast explicit.\n\nThe default is normalised because density measures length per area, not visits.',
+      camera: {...FLAT_VIEW, transitionMs: 1200},
+      options: {group: 'all', showTracks: false, showBand: true, band: 52.5, perSatellite: false},
+      controls: ['densityMode', 'group'],
+      readouts: ['trackLength', 'rawPeak', 'peak', 'cellAreaRatio']
     },
     {
       id: 'passes',
-      title: 'How often is something overhead at a latitude?',
-      body: 'Density measures distance, not visits. `GPUZoneEvents` tests every track against 34 latitude-band polygons and records each time a satellite enters one; the chart shows entries per hour (an ascending and a descending crossing are two passes). The curve is nearly flat inside the inclination and falls away beyond it.\n\nPick a **Latitude band** below, or click the map, and read how long you wait for the next pass of any satellite in the family.',
-      camera: {...FLAT_VIEW, transitionMs: 1200},
-      options: {group: 'all', showTracks: false, showBand: true, band: 52.5, perSatellite: false},
-      controls: ['band', 'showBand', 'group'],
-      readouts: ['bandPasses', 'bandGap', 'passChart']
-    },
-    {
-      id: 'polar',
-      title: 'Equator versus the poles',
-      body: 'Earth observation satellites fly near-polar, sun-synchronous orbits at about 98 degrees. One of them enters each band up to about 70 degrees as often as one Starlink satellite (roughly 1.2 times an hour) and still reaches the 80 degree band, which the 43 and 53 degree Starlink shells never do. Totals are very different because the family has 16 members against 800, so turn on **Per satellite** below to compare individuals.\n\nClick near the poles and then the equator and compare the revisit times.',
+      title: 'Track length is not a pass count',
+      headline: 'A pass is a latitude-band entry',
+      textAlternative:
+        'A highlighted latitude strip and chart count modelled band entries rather than visibility.',
+      optionsMode: 'fresh',
+      body: '`GPUZoneEvents` records a band **entry**, not a point pass or revisit at a point. Its live chart distinguishes all selected records from the per-satellite-hour denominator.\n\nClick a latitude band to inspect its entries and mean gap; a sensor footprint is not part of this calculation.',
       camera: {...FLAT_VIEW, transitionMs: 1200},
       options: {
         group: '4',
@@ -162,30 +194,43 @@ export default defineScene<SatelliteGroundTracksOptions>({
       readouts: ['bandPasses', 'bandGap', 'passChart']
     },
     {
-      id: 'limits',
-      title: 'Density is not coverage',
-      body: 'A ground track is a line, not a footprint. The cells are 2 degrees wide (about 220 km at the equator), the window is only three hours, and nothing here knows what any satellite can see: a sensor swath, a communication beam and a navigation signal all reach hundreds to thousands of kilometres from the track. The next scenes use the swath for Earth observation satellites.\n\nThe readouts show the capacities used and whether any overflowed.',
+      id: 'resolution',
+      title: 'The pattern changes with cell size',
+      headline: 'Density is not coverage or revisit',
+      textAlternative: 'A global density surface retains its area and sample caveats.',
+      optionsMode: 'fresh',
+      body: 'This is the modifiable areal unit problem: 1°, 2° and 5° cells aggregate identical tracks with identical spherical-area and satellite-hour normalisation, yet occupied share and the peak cell can change. The 85° cap is intentional: polar cells are excluded rather than presented as equal Mercator area.\n\nA ground track is a line, not a footprint or coverage. The next scene turns a line into a nominal sensor ribbon.',
       camera: {...FLAT_VIEW, transitionMs: 1200},
       options: {group: 'all', showTracks: false, showBand: false, perSatellite: false},
-      controls: ['group', 'scale'],
-      readouts: ['events', 'tracks']
+      controls: ['cellSize', 'group', 'perSatellite'],
+      readouts: ['occupiedShare', 'peakRank', 'events', 'tracks']
     }
   ],
 
-  legends: state => [
+  legends: () => [
     {
-      kind: 'ramp' as const,
+      kind: 'categories' as const,
       id: 'density',
       title: 'Ground-track density',
-      ramp: state.ramp,
-      extent: 'gpu' as const,
-      sqrtScale: state.scale === 'sqrt',
-      unit: 'km of track per 1,000 km² per hour',
-      format: (value: number) => (value >= 10 ? value.toFixed(0) : value.toFixed(1))
+      entries: [
+        {color: [204, 232, 245, 225] as const, label: 'Class 1 · lowest sixth'},
+        {color: [155, 204, 232, 225] as const, label: 'Class 2'},
+        {color: [115, 168, 214, 225] as const, label: 'Class 3'},
+        {color: [110, 133, 194, 225] as const, label: 'Class 4'},
+        {color: [122, 94, 173, 225] as const, label: 'Class 5'},
+        {color: [87, 51, 133, 225] as const, label: 'Class 6 · highest sixth'}
+      ],
+      note: 'Equal intervals between zero and this family’s observed maximum; measured values remain in the tooltip.'
     }
   ],
 
   readouts: [
+    {id: 'beltChart', label: 'Family latitude summary', kind: 'chart'},
+    {id: 'selectedOrbit', label: 'Selected orbit', layout: 'block'},
+    {id: 'rawPeak', label: 'Raw track-km peak'},
+    {id: 'cellAreaRatio', label: '1° cell area: equator / 80°'},
+    {id: 'occupiedShare', label: 'Occupied share'},
+    {id: 'peakRank', label: 'Peak-cell rank change'},
     {
       id: 'passChart',
       label: 'Passes per hour by latitude',
@@ -246,10 +291,35 @@ graph.add(new GPUZoneEvents({
 // family: ${state.group === 'all' ? 'all tracks' : SATELLITE_GROUPS[Number(state.group)]}`,
 
   about: {
-    what: 'The ground tracks of 911 satellites over three hours (SGP4 from current CelesTrak elements, 30 second steps, cut at the antimeridian), summed into a density map by `GPULineDensity` in spherical mode and counted per latitude band by `GPUZoneEvents`.',
+    what: 'The ground tracks of loaded satellites over three hours (SGP4 from the dated public CelesTrak TLE snapshot used to generate the 7 October 2026 archive, 30 second steps, cut at the antimeridian), summed into a density map by `GPULineDensity` in spherical mode and counted per latitude band by `GPUZoneEvents`.',
     why: 'How often something passes over a latitude is the first question behind revisit time, ground-station planning and sky-watching, and it depends almost entirely on orbit inclination. The two contributors answer different halves: line density measures how much track there is per area, zone events count visits.',
     howToRead:
-      'Bright cells have more kilometres of track per area. The chart counts entries into a latitude band, so it also counts a satellite that dips in and out near its maximum latitude. Ground-track density is not sensor coverage: it ignores swath width, field of view and beam size. The window is three hours, so slow orbits (GPS, 12 hours) show only a quarter of a lap; SGP4 accuracy decays with the age of the element sets. Conjunctions are not computed: `GPUTrajectoryEncounters` is two-dimensional and would invent near misses between satellites at different heights.'
+      'Bright cells have more kilometres of track per area. The chart counts entries into a latitude band, so it also counts a satellite that dips in and out near its maximum latitude. Ground-track density is not sensor coverage, footprint coverage or visibility at a point. The three-hour SGP4 model window, deliberately unbalanced family sample and Mercator polar cap constrain every pattern.'
+  },
+
+  pipeline: [
+    {id: 'tracks', label: 'Ground tracks', detail: 'Use antimeridian-cut propagated trajectories'},
+    {id: 'density', label: 'Line density', detail: 'Sum kilometres by global cell'},
+    {id: 'area', label: 'Normalise', detail: 'Divide by spherical cell area and satellite-hours'},
+    {
+      id: 'passes',
+      label: 'Band entries',
+      detail: 'Count latitude-zone entries separately from length'
+    }
+  ],
+  basemap: ground('space', {
+    labels: 'none',
+    graticule: true,
+    referenceLines: ['equator', 'tropics']
+  }),
+  furniture: {
+    title: {
+      title: 'Where do ground tracks accumulate?',
+      subtitle: 'Track length / area · modelled three-hour window · 7 Oct 2026'
+    },
+    credit: joinCredits('CelesTrak GP elements; propagation with SGP4', CREDITS.naturalEarth),
+    caveat:
+      'Web Mercator exaggerates high latitudes; density is not sensor coverage or a point pass.'
   },
 
   create: async ctx =>

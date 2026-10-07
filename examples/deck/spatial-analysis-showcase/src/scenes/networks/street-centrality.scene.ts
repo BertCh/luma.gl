@@ -2,7 +2,9 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {ground} from '../../cartography/grounds';
 import {defineScene} from '../scene';
+import {getClassTableLegend, makeClassTable} from '../../cartography/class-table';
 import {ROAD_CLASS_NAMES} from './b10-road-graph';
 import {
   COMMUNITY_COLORS,
@@ -21,19 +23,35 @@ const METRIC_TITLES: Record<CentralityMetric, string> = {
   component: 'Connected component'
 };
 
-const RAMP_CHOICES = [
-  {value: 'viridis', label: 'Viridis'},
-  {value: 'magma', label: 'Magma'},
-  {value: 'inferno', label: 'Inferno'},
-  {value: 'cividis', label: 'Cividis'}
-] as const;
+const FALLBACK_SCALAR_CLASSES = makeClassTable({
+  breaks: [0, 1, 2, 3, 4, 5],
+  scheme: 'YlOrRd',
+  labels: ['lowest', 'very low', 'low', 'middle', 'high', 'very high', 'highest'],
+  unit: 'metric value',
+  noData: {color: [115, 120, 135, 255], label: 'no metric value'},
+  method: 'Waiting for the first topology readback.'
+});
+const CORE_CLASSES = makeClassTable({
+  breaks: [1, 2, 3, 4],
+  colors: [
+    [110, 110, 110],
+    [255, 237, 160],
+    [254, 178, 76],
+    [240, 59, 32],
+    [189, 0, 38]
+  ],
+  labels: ['core 0', 'core 1', 'core 2', 'core 3', 'core 4+'],
+  unit: 'core number',
+  noData: {color: [115, 120, 135, 255], label: 'no core value'},
+  method: 'Ordinal k-core classes.'
+});
 
 /** Street-network analytics of Chicago. GPU work is in `street-centrality.compute.ts`. */
 export default defineScene<CentralityOptions>({
   id: 'street-centrality',
   title: 'Which streets does Chicago lean on?',
   chapter: 'networks',
-  order: 6,
+  order: 4,
   summary:
     'PageRank, degree, k-core, communities and components of the Chicago street graph as node columns on the GPU, filtered by speed, length, class and importance, with live network statistics of whatever survives.',
   contributors: ['GPUNetworkAnalyticsColumns', 'GPUNetworkStatistics', 'GPUNetworkSubgraphFilter'],
@@ -41,6 +59,11 @@ export default defineScene<CentralityOptions>({
     {id: 'chicago-roads', role: '29,557 intersections, 77,140 directed edges, class and speed'}
   ],
   initialView: {longitude: -87.68, latitude: 41.84, zoom: 10.0},
+  basemap: ground('night'),
+  furniture: {
+    title: {title: 'Structural centrality of Chicago streets'},
+    credit: 'OpenStreetMap contributors (ODbL)'
+  },
 
   options: [
     {
@@ -59,17 +82,6 @@ export default defineScene<CentralityOptions>({
         {value: 'community', label: 'Community (label propagation)'},
         {value: 'component', label: 'Connected components'}
       ]
-    },
-    {
-      kind: 'select',
-      id: 'ramp',
-      label: 'Color ramp',
-      group: 'Display',
-      apply: 'param',
-      default: 'viridis',
-      disabledWhen: state => state.metric === 'community' || state.metric === 'component',
-      help: 'Ramp for the scalar columns (square-root scaled, 0 = lowest value, 1 = highest).',
-      options: RAMP_CHOICES
     },
     {
       kind: 'toggle',
@@ -272,7 +284,7 @@ export default defineScene<CentralityOptions>({
     }
   ],
 
-  legends: state => [
+  legends: (state, data) => [
     state.metric === 'community' || state.metric === 'component'
       ? {
           kind: 'categories' as const,
@@ -285,21 +297,29 @@ export default defineScene<CentralityOptions>({
                 ]
               : COMMUNITY_COLORS.slice(0, 4).map((color, index) => ({
                   color,
-                  label: `Community colors, cycled (${index + 1})`
+                  label: `Stable community slot ${index + 1}`
                 })),
           note:
             state.metric === 'community'
-              ? 'Label propagation finds many small communities; eight colors are cycled, so two neighbors can share a color.'
+              ? 'Display slots are retained by overlap across iteration presets; small overflow groups are grey.'
               : 'Islands are street fragments with no path to the main network.'
         }
-      : {
-          kind: 'ramp' as const,
-          title: `${METRIC_TITLES[state.metric]} (normalized)`,
-          ramp: state.ramp,
-          extent: [0, 1] as const,
-          sqrtScale: true,
-          labels: ['lowest', 'highest'] as const
-        }
+      : getClassTableLegend(
+          state.metric === 'core'
+            ? CORE_CLASSES
+            : ((
+                data['centralityClasses'] as {
+                  tables?: Partial<Record<CentralityMetric, typeof FALLBACK_SCALAR_CLASSES>>;
+                }
+              )?.tables?.[state.metric] ?? FALLBACK_SCALAR_CLASSES),
+          {
+            title: `${METRIC_TITLES[state.metric]} (frozen topology classes)`,
+            note:
+              state.metric === 'core'
+                ? 'Ordinal classes, not a continuous ramp.'
+                : 'Readback-derived and frozen while damping / iterations are compared; tooltip gives endpoints.'
+          }
+        )
   ],
 
   readouts: [
@@ -334,14 +354,18 @@ export default defineScene<CentralityOptions>({
     },
     {
       id: 'histogram',
-      label: 'Degree histogram',
-      help: 'One bar per bin, square-root scaled to the tallest.'
+      label: 'Selected-metric class histogram',
+      kind: 'chart',
+      help: 'Readback values counted in the same frozen classes used by the selected street metric.'
     },
     {id: 'histogramBins', label: 'Histogram bins'},
     {id: 'communities', label: 'Communities'},
     {id: 'components', label: 'Components (full network)'},
     {id: 'pageRankPeak', label: 'Peak PageRank'},
     {id: 'pageRankResidual', label: 'PageRank residual', format: 'decimal'},
+    {id: 'pageRankResiduals', label: 'PageRank residual by iteration', kind: 'chart'},
+    {id: 'degreeCorrelation', label: 'Degree / PageRank correlation', kind: 'chart'},
+    {id: 'communitySizes', label: 'Community sizes', kind: 'chart'},
     {id: 'degeneracy', label: 'Degeneracy (largest core number)'},
     {id: 'analyticsTime', label: 'Analytics graph time'},
     {id: 'filterTime', label: 'Filter and statistics time'}
@@ -400,56 +424,66 @@ statisticsParameters.write(encodeGPUNetworkStatisticsParameters({resolution: ${s
 
   story: [
     {
-      id: 'question',
+      id: 'degree',
+      headline: 'Centrality is structural importance, not traffic',
+      textAlternative:
+        'Fixed degree classes and a live histogram show a mostly regular, clipped street graph.',
+      optionsMode: 'fresh',
       controls: ['metric'],
-      readouts: ['network'],
-      title: 'Which streets does Chicago lean on?',
-      body: 'Chicago has 29,557 intersections and about 6,800 km of street. Some are links the whole network leans on: expressways and long arterials that tie the grid together. The map colors every street by **PageRank** (the **Color streets by** control below), computed on the GPU by `GPUNetworkAnalyticsColumns`: an intersection is important if many important intersections lead to it.\n\nThis step opens the whole city. Next steps explain each column, then use `GPUNetworkSubgraphFilter` and `GPUNetworkStatistics` to ask what survives when you remove roads.',
-      options: {metric: 'pageRank'},
+      readouts: ['network', 'histogram', 'histogramBins'],
+      title: 'Degree exposes a regular grid',
+      body: 'Degree counts streets meeting at an intersection. Raw degree values are classed for colour, and the live histogram makes the regular grid and clipped city boundary visible without implying traffic or a continuous ranking. The scale bar and OSM/ODbL credit describe the graph, not the city beyond its edge.',
+      options: {metric: 'degree'},
       camera: {longitude: -87.68, latitude: 41.84, zoom: 10.0, transitionMs: 1200}
     },
     {
       id: 'pagerank',
+      headline: 'A regular grid gives PageRank little hierarchy',
+      textAlternative:
+        'Fixed PageRank classes with live degree correlation and bounded-iteration residual diagnostic.',
+      optionsMode: 'fresh',
       controls: ['damping', 'pageRankIterations'],
-      readouts: ['pageRankPeak', 'pageRankResidual'],
+      readouts: ['pageRankResiduals', 'degreeCorrelation', 'pageRankResidual'],
       title: 'PageRank on a street grid',
-      body: 'PageRank spreads a unit of "attention" over the graph: at each step a walker follows a random street with probability **damping** (0.85) or jumps to a random intersection. After 40 iterations the rank of each intersection is its share of the walkers. The values are **normalized** to 0 to 1 by a GPU min/max and drawn with a square-root scale.\n\nA street grid is a hard case for PageRank, because almost every intersection has degree 3 or 4, so ranks are close to uniform and only the dense core and the edges of the network stand out. Read **Peak PageRank** for how far above average the top intersection is. Change **PageRank damping** and **PageRank iterations** below: they are compile-time, so the analytics graph is rebuilt (flagged in the panel).',
+      body: 'PageRank is a bounded structural iteration, not traffic. Fixed classes remain comparable while damping and the chosen iteration limit change; the live scatter reports its relationship with degree and the residual says how much the last bounded step moved. A residual is not a convergence claim.',
       options: {metric: 'pageRank'},
       camera: {longitude: -87.64, latitude: 41.88, zoom: 11.6, transitionMs: 1600},
       highlight: {readout: 'pageRankPeak'}
     },
     {
-      id: 'degree-core',
+      id: 'core',
+      headline: 'Core numbers are ordinal layers of connectivity',
+      textAlternative:
+        'Ordinal k-core street classes and a degree histogram expose peeling layers.',
+      optionsMode: 'fresh',
       controls: ['metric'],
       readouts: ['degeneracy', 'histogram'],
       title: 'Degree and k-core: how tangled is a place?',
-      body: 'Streets are colored by **k-core number** (change it with **Color streets by**). The k-core is what remains after repeatedly deleting intersections with fewer than k streets. Dead ends and cul-de-sacs peel away first (core 1); the grid itself sits in the 2-core and 3-core, and the **Degeneracy (largest core number)** readout shows it. **Degree** counts the streets meeting at an intersection: the **Degree histogram** readout shows how few intersections have more than four.\n\nBoth are exact integer columns, normalized only for color. Pick **Degree** to see the T-junctions that dominate the outskirts.',
+      body: 'Streets are colored by **k-core number** (change it with **Color streets by**). The k-core is what remains after repeatedly deleting intersections with fewer than k streets. Dead ends and cul-de-sacs peel away first (core 1); the grid itself sits in the 2-core and 3-core, and the **Degeneracy (largest core number)** readout shows it. **Degree** counts the streets meeting at an intersection: its raw values are classed for colour in the selected-metric histogram.\n\nBoth are exact integer columns. Pick **Degree** to see the T-junctions that dominate the outskirts.',
       options: {metric: 'core'},
       camera: {longitude: -87.64, latitude: 41.88, zoom: 11.8, transitionMs: 1200},
       highlight: {readout: 'degeneracy'}
     },
     {
       id: 'communities',
+      headline: 'Label propagation depends on a stopping rule',
+      textAlternative:
+        'Stable community colours and size bars show a bounded label-propagation heuristic.',
+      optionsMode: 'fresh',
       controls: ['communityIterations', 'resolution'],
-      readouts: ['communities', 'modularity'],
+      readouts: ['communitySizes', 'communities', 'modularity'],
       title: 'Communities and modularity',
-      body: '**Label propagation** gives every intersection the most common label of its neighbors, repeatedly, so labels spread and settle into regions. It is a fast bounded heuristic (not modularity optimization), and you control how long it runs with **Community iterations**. Eight colors cycle, so two neighboring communities may look alike; the **Communities** readout counts them.\n\n`GPUNetworkStatistics` scores the labelling with **modularity**: the share of streets inside a community minus what random wiring would give. Slide **Modularity resolution**: a larger gamma penalizes big communities and lowers Q.',
+      body: 'Label propagation is a bounded heuristic, not modularity optimization. Display hues retain identity by overlap across iteration presets; smaller overflow groups are grey rather than hue-cycled. Community size bars, modularity and the stopping-rule caveat keep the result diagnostic.',
       options: {metric: 'community'},
       camera: {longitude: -87.68, latitude: 41.84, zoom: 10.6, transitionMs: 1600},
       highlight: {readout: 'modularity'}
     },
     {
-      id: 'components',
-      controls: ['componentIterations', 'metric'],
-      readouts: ['components'],
-      title: 'Is everything connected?',
-      body: 'Streets are colored by **Connected components** (**Color streets by**). The largest component is blue; any disconnected fragment would be red: street pieces with no path to the rest. The extracted Chicago graph is one component (the data builder kept the largest strongly connected piece), so the whole map is blue, which is itself the answer to "is everything connected?".\n\n**Component iterations** controls how long the labelling relaxes. At 4 the labels have not settled, the component count is too high and the readout says *not converged*, and red islands appear; at 128 it is exact. Convergence flags like this are why every iteration count is a visible option. The filter step below shows real fragmentation.',
-      options: {metric: 'component'},
-      camera: {longitude: -87.68, latitude: 41.84, zoom: 10.0, transitionMs: 1400},
-      highlight: {readout: 'components'}
-    },
-    {
       id: 'filter',
+      headline: 'A half-open filter turns a graph into a testable skeleton',
+      textAlternative:
+        'Faint removed streets remain beneath a live filtered graph with components, largest component and isolated-node evidence.',
+      optionsMode: 'fresh',
       controls: ['classRange', 'speedRange', 'lengthRange'],
       readouts: ['statComponents', 'liveVertices', 'largestComponent'],
       title: 'Keep only the arterials: the subgraph filter',
@@ -457,23 +491,6 @@ statisticsParameters.write(encodeGPUNetworkStatisticsParameters({resolution: ${s
       options: {metric: 'pageRank', classRange: [0, 3] as const},
       camera: {longitude: -87.68, latitude: 41.84, zoom: 10.6, transitionMs: 1400},
       highlight: {readout: 'statComponents'}
-    },
-    {
-      id: 'importance',
-      controls: ['topPercent', 'dropIsolated'],
-      readouts: ['liveVertices', 'isolated'],
-      title: 'Filter on the analytics output',
-      body: 'The filter also reads vertex columns, and the column here is the PageRank written a step earlier on the same GPU: no readback in between for the filtering itself. Set **Most important intersections** to 25 percent: only streets whose two ends are in the top quarter by PageRank stay live.\n\nTurn on **Drop isolated intersections** (compile-time) to also remove intersections left without a live street, and watch **Isolated intersections** fall to zero. Try **Speed limit** and **Block length** for the same kind of what-if.',
-      options: {classRange: [0, 6] as const, topPercent: 25},
-      camera: {longitude: -87.64, latitude: 41.88, zoom: 11.2, transitionMs: 1400},
-      highlight: {readout: 'liveVertices'}
-    },
-    {
-      id: 'limits',
-      controls: ['oneWay', 'degreeBinning', 'speedRange', 'lengthRange'],
-      title: 'Limits and what to try',
-      body: 'Edge weights are ignored by the analytics columns (no travel-time PageRank), and betweenness and closeness are not provided; PageRank here measures structural importance, not traffic. Label propagation is a heuristic whose result depends on the iteration count. With **Respect one-way streets** off, every street is two-way. The statistics follow `pgr_connectedComponents` and networkx conventions; modularity uses exact integer sums and is deterministic.\n\nTry it: turn on **Respect one-way streets** (a directed graph rebuild) and compare PageRank with in-degree, switch **Degree histogram bins** to Log2, or combine **Speed limit** with **Block length** to keep fast long blocks.',
-      options: {topPercent: 100, classRange: [0, 6] as const}
     }
   ]
 });

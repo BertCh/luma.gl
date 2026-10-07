@@ -2,18 +2,18 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import type {OptionSpec, OptionState, OptionValue} from './scene';
+import type {OptionSpec, OptionState, OptionValue, PresetOption} from './scene';
 
 /** Who changed an option: the user (panel, URL, story step, reset) or the scene through `ctx.setOptions`. */
 export type OptionChangeSource = 'user' | 'scene';
 
 type Listener = (id: string, value: OptionValue, source: OptionChangeSource) => void;
 
-/** Returns the stateful options (everything except buttons). */
+/** Returns the stateful options: everything except buttons and presets, which carry no state. */
 export function getStatefulOptions(options: readonly OptionSpec<never>[]) {
-  return options.filter(option => option.kind !== 'button') as Exclude<
+  return options.filter(option => option.kind !== 'button' && option.kind !== 'preset') as Exclude<
     OptionSpec<never>,
-    {kind: 'button'}
+    {kind: 'button' | 'preset'}
   >[];
 }
 
@@ -95,6 +95,34 @@ export class OptionsStore {
     for (const [id, value] of Object.entries(values)) {
       if (value !== undefined) this.set(id, value, source);
     }
+  }
+
+  /**
+   * Applies one chip of a preset option: first the options in `resets` return to their defaults,
+   * then the chip's `values` are written. Listeners fire per changed option, in that order.
+   * Out-of-range indexes are ignored.
+   */
+  applyPreset(presetSpec: PresetOption<never>, index: number): void {
+    const preset = presetSpec.presets[index];
+    if (!preset) return;
+    for (const id of presetSpec.resets ?? []) this.set(id, this.defaults[id]);
+    this.setMany(preset.values as Partial<OptionState>);
+  }
+
+  /**
+   * Index of the preset chip whose values all equal the current state, or -1 when none does.
+   * When several match, the first wins. A chip without values never matches.
+   */
+  getActivePresetIndex(presetSpec: PresetOption<never>): number {
+    return presetSpec.presets.findIndex(preset => {
+      const entries = Object.entries(preset.values as Partial<OptionState>).filter(
+        (entry): entry is [string, OptionValue] => entry[1] !== undefined
+      );
+      return (
+        entries.length > 0 &&
+        entries.every(([id, value]) => id in this.values && areValuesEqual(this.values[id], value))
+      );
+    });
   }
 
   /** Restores every option to its default. */

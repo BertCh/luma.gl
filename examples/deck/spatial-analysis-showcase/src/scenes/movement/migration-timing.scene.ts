@@ -2,25 +2,118 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {getClassTableLegend} from '../../cartography/class-table';
+import {CREDITS, joinCredits} from '../../cartography/credits';
+import {labelsFor, WORLD} from '../../cartography/gazetteer';
+import {ground} from '../../cartography/grounds';
+import type {MapGround} from '../../cartography/hue-registry';
+import type {ClassTable} from '../../cartography/types';
+import type {PaletteColor} from '../../engine/ramps';
 import {playbackOptions} from '../../engine/playback';
-import {defineScene} from '../scene';
+import {defineScene, type LegendSpec} from '../scene';
 import type {MigrationTimingOptions} from './migration-timing.compute';
-import {formatYearDay} from './migration-shared';
+import {formatYearDay, MIGRATION_SEASONS} from './migration-shared';
+import {getOverlayInks, getTimingTable, type TimingMode} from './migration-timing-panel';
+import {SPECIES_MASKS, THIN_FIXES} from './migration-timing-stats';
+import {FLYWAY} from './movement-places';
+import {
+  FOLDED_MONTH_TICKS,
+  formatFoldedDay,
+  getSpeciesLegend,
+  MOVEMENT_CREDITS
+} from './movement-style';
 
-const TIMING_VIEW = {longitude: -16, latitude: 36, zoom: 3.5};
+/** Camera of the first and last step: the tracks on the coast and the panel in the Atlantic. */
+const MAP_AND_PANEL = {bounds: [-61, -5, 17, 63] as const};
+/** Camera of the steps about the panel itself. */
+const PANEL_ONLY = {bounds: [-61, -5, -18, 66] as const};
+
+/** The cartouche of one step: the claim, the variable and method, and the honesty chips. */
+const cartouche = (title: string, subtitle: string) => ({
+  title,
+  subtitle,
+  chips: ['Years folded', 'A fix is not a bird'] as const
+});
+
+/** What the compute module publishes for the legends (`ctx.setLegendData('timing', ...)`). */
+type TimingLegendData = {
+  ground: MapGround;
+  tables: Record<TimingMode, ClassTable>;
+  classCounts: Record<TimingMode, number[]> | null;
+  speciesCounts: number[];
+  groupLabels: string[];
+  groupColors: PaletteColor[];
+};
+
+const LEGEND_TITLES: Record<TimingMode, string> = {
+  share: 'Share of the bucket’s fixes in the band',
+  count: 'Fixes in the band and bucket',
+  speed: 'Fastest step in the band and bucket'
+};
+
+function getLegends(
+  state: MigrationTimingOptions,
+  data: Readonly<Record<string, unknown>>
+): LegendSpec[] {
+  const timing = data['timing'] as TimingLegendData | undefined;
+  const groundName: MapGround = timing?.ground ?? 'light';
+  const table = timing?.tables[state.cellValue] ?? getTimingTable(state.cellValue, groundName, []);
+  const legends: LegendSpec[] = [
+    getClassTableLegend(table, {
+      title: LEGEND_TITLES[state.cellValue],
+      basis: state.cellValue === 'share' ? 'of that bucket’s fixes' : undefined,
+      counts: timing?.classCounts?.[state.cellValue],
+      layout: 'list'
+    })
+  ];
+  const marks: {color: PaletteColor; label: string; shape?: 'swatch' | 'hatch'}[] = [
+    {
+      color: getOverlayInks(groundName).hatch,
+      label: `Fewer than ${THIN_FIXES} fixes in the cell`,
+      shape: 'hatch'
+    }
+  ];
+  if (state.showGroups && timing) {
+    for (let group = timing.groupLabels.length - 1; group >= 0; group--) {
+      marks.push({
+        color: timing.groupColors[group % timing.groupColors.length],
+        label: `${timing.groupLabels[group]}° N`
+      });
+    }
+  }
+  legends.push({
+    kind: 'categories',
+    title: 'Marks on the panel',
+    entries: marks,
+    layout: 'list',
+    note: state.showGroups
+      ? 'The coloured ruler beside the panel marks the latitude groups of the band chart.'
+      : 'Empty cells are transparent: the paper shows.'
+  });
+  if (state.showTracks) {
+    legends.push(
+      getSpeciesLegend(
+        groundName,
+        timing?.speciesCounts,
+        'Faint lines are the tag tracks; an animal-year is one bird in one tagged year.'
+      )
+    );
+  }
+  return legends;
+}
 
 export default defineScene<MigrationTimingOptions>({
   id: 'migration-timing',
   title: 'When does the population pass each latitude?',
   chapter: 'movement',
-  order: 13,
+  order: 6,
   summary:
-    'A space-time cube of 226,000 tag fixes: GPUTemporalReduction counts them per latitude band and week, and the band-by-week matrix is drawn on the map at its true latitudes, with a playback cursor sweeping the year.',
+    'A Hovmöller diagram drawn on the map: GPUTemporalReduction drops every GPS fix into a (species, latitude band, time bucket) slot, and the year becomes a slanted stripe whose slope is the speed of the migration.',
   contributors: ['GPUTemporalReduction'],
   datasets: [
     {id: 'poopdeck-animals', role: 'GPS tracks of 42 birds, years folded onto one calendar'}
   ],
-  initialView: TIMING_VIEW,
+  initialView: {longitude: -22, latitude: 33, zoom: 3.3},
 
   options: [
     {
@@ -30,12 +123,13 @@ export default defineScene<MigrationTimingOptions>({
       group: 'Space-time cube',
       apply: 'param',
       default: 'all',
-      help: 'Which species are folded into the matrix: a mask passed to the display kernel. The reduction itself keeps one cell per species and band, so switching never recompiles.',
+      display: 'chips',
+      help: 'Which species are folded into the matrix: a mask passed to the display kernel. The reduction keeps one cell per species and band, so switching never recompiles.',
       options: [
-        {value: 'all', label: 'All three species'},
-        {value: 'marsh', label: 'Western marsh harrier'},
+        {value: 'all', label: 'All three'},
+        {value: 'marsh', label: 'Marsh harrier'},
         {value: 'montagu', label: "Montagu's harrier"},
-        {value: 'spoonbill', label: 'Eurasian spoonbill'}
+        {value: 'spoonbill', label: 'Spoonbill'}
       ]
     },
     {
@@ -49,7 +143,10 @@ export default defineScene<MigrationTimingOptions>({
       step: 1,
       default: 7,
       unit: 'days',
-      help: 'Width of one time bucket: a parameter-buffer write. 226,000 fixes are reduced to at most 60 cells x 128 buckets. The cube holds at most 128 buckets, so the minimum is 3 days.'
+      marks: [{value: 7, label: 'week'}],
+      autoSweep: {from: 3, to: 14, durationMs: 9000},
+      describe: value => `${value} days = ${Math.ceil(366 / value)} buckets`,
+      help: 'Width of one time bucket: a parameter-buffer write that re-bins every fix without a recompile. The cube holds at most 128 buckets, so the narrowest width is 3 days (a year is 366 days).'
     },
     {
       kind: 'select',
@@ -58,21 +155,13 @@ export default defineScene<MigrationTimingOptions>({
       group: 'Space-time cube',
       apply: 'param',
       default: 'share',
-      help: "Share is the part of the species' fixes of that week that fall in the band (a column sums to 100%): where the population is. Count is the number of fixes: it follows how many tags were running. Speed is the fastest two-hour step in the cell, from the reduction's maximum.",
+      display: 'segmented',
+      help: "Share is the part of the bucket's fixes that fall in the band (a column adds up to 100 %): where the population is. Count is the number of fixes: it follows how many fixes the tags delivered. Fastest step is the maximum the reduction kept for the slot.",
       options: [
-        {value: 'share', label: "Share of the week's fixes"},
-        {value: 'count', label: 'Number of fixes'},
-        {value: 'speed', label: 'Fastest ground speed (km/h)'}
+        {value: 'share', label: 'Share'},
+        {value: 'count', label: 'Count'},
+        {value: 'speed', label: 'Fastest step'}
       ]
-    },
-    {
-      kind: 'toggle',
-      id: 'liftLow',
-      label: 'Square-root color scale',
-      group: 'Space-time cube',
-      apply: 'param',
-      default: true,
-      help: 'Applies a square root after normalizing so thin passages show beside the long residences. The range ends at the 99th percentile of the occupied cells.'
     },
     {
       kind: 'slider',
@@ -81,11 +170,11 @@ export default defineScene<MigrationTimingOptions>({
       group: 'Probe',
       apply: 'param',
       min: 6,
-      max: 64,
+      max: 59.5,
       step: 0.5,
       default: 36,
-      unit: 'N',
-      help: 'The 3-degree band the Probe readout summarizes: its busiest buckets in the first and second half of the year. Drawn as a line across the map when Show the probe is on.'
+      format: value => `${value}° N`,
+      help: 'The latitude you read across to: a dashed line from the coast to the matrix row that holds it. The Probe band readout and the crossing dates follow it. Click the panel to set it with the day.'
     },
     {
       kind: 'toggle',
@@ -94,7 +183,43 @@ export default defineScene<MigrationTimingOptions>({
       group: 'Probe',
       apply: 'param',
       default: true,
-      help: 'Draws the probe latitude as a line across the map and the matrix, to compare the matrix row with the geography.'
+      help: 'Draws the probe latitude as a dashed line from the coast to the panel and outlines its row.'
+    },
+    {
+      kind: 'toggle',
+      id: 'showCrossings',
+      label: 'Mark the crossing dates',
+      group: 'Probe',
+      apply: 'param',
+      default: false,
+      help: 'Pins the dates on which the median latitude of the selected species crosses the probe latitude, northbound and southbound, to the panel.'
+    },
+    {
+      kind: 'toggle',
+      id: 'showTrace',
+      label: 'Show the median latitude',
+      group: 'Display',
+      apply: 'param',
+      default: false,
+      help: 'Draws the median latitude of the selected species fixes in each bucket as a line over the matrix. Its slope is the speed of the migration.'
+    },
+    {
+      kind: 'toggle',
+      id: 'showBucketEdges',
+      label: 'Show bucket edges',
+      group: 'Display',
+      apply: 'param',
+      default: false,
+      help: 'Draws the edges between time buckets as faint vertical lines, so the width you choose is visible.'
+    },
+    {
+      kind: 'toggle',
+      id: 'showGroups',
+      label: 'Show the latitude groups',
+      group: 'Display',
+      apply: 'param',
+      default: false,
+      help: 'Draws a coloured ruler beside the panel for the five 12-degree latitude groups, the colours of the band chart.'
     },
     {
       kind: 'toggle',
@@ -106,6 +231,15 @@ export default defineScene<MigrationTimingOptions>({
       help: 'Draws every animal-year as a thin line on the map, so the rows of the matrix can be compared with the real routes.'
     },
     {
+      kind: 'toggle',
+      id: 'showFixes',
+      label: 'Show the fixes of the bucket',
+      group: 'Display',
+      apply: 'param',
+      default: false,
+      help: 'Draws the GPS fixes of the time bucket under the cursor as dots on the map, rebuilt only when the bucket changes.'
+    },
+    {
       kind: 'slider',
       id: 'trackOpacity',
       label: 'Track opacity',
@@ -114,24 +248,10 @@ export default defineScene<MigrationTimingOptions>({
       min: 0.05,
       max: 1,
       step: 0.05,
-      default: 0.2,
+      default: 0.3,
+      expert: true,
       disabledWhen: state => !state.showTracks,
       help: 'Lower it to read the matrix; raise it to follow the routes.'
-    },
-    {
-      kind: 'select',
-      id: 'ramp',
-      label: 'Color ramp',
-      group: 'Display',
-      apply: 'param',
-      default: 'viridis',
-      help: 'Ramp of the matrix.',
-      options: [
-        {value: 'viridis', label: 'Viridis'},
-        {value: 'magma', label: 'Magma'},
-        {value: 'inferno', label: 'Inferno'},
-        {value: 'cividis', label: 'Cividis (color-blind optimised)'}
-      ]
     },
     ...playbackOptions<MigrationTimingOptions>({
       ids: {play: 'play', time: 'day', speed: 'playSpeed', loop: 'loop'},
@@ -144,7 +264,7 @@ export default defineScene<MigrationTimingOptions>({
         default: 120,
         label: 'Day of the year',
         format: formatYearDay,
-        help: 'Moves the cursor across the matrix; the profile and the cursor readout follow it.'
+        help: 'Moves the cursor across the matrix; the profile, the cursor readout and the dots follow it.'
       },
       speed: {
         min: 1,
@@ -161,130 +281,327 @@ export default defineScene<MigrationTimingOptions>({
 
   readouts: [
     {
+      id: 'tracks',
+      label: 'Sample',
+      help: 'Tagged birds, animal-years (one bird in one tagged year) and GPS fixes in the data set.'
+    },
+    {
       id: 'bandChart',
-      label: 'The population moves through five latitude groups',
+      label: 'Where the fixes are, by latitude group',
       kind: 'chart',
-      help: "Share of the selected species' fixes in each 12-degree latitude group, week by week (the five lines add up to 100%). The hand-over from the northern line to the southern one in late summer is the autumn migration; the way back in spring is slower. The rule is the cursor."
+      help: 'Share of the selected fixes in each 12-degree latitude group, bucket by bucket (the five areas add up to 100 %). The colours are the ruler beside the panel. The hand-over from the north to the south in late summer is the autumn migration. The rule is the cursor.'
+    },
+    {
+      id: 'occupancyChart',
+      label: 'Occupied slots by bucket width',
+      kind: 'chart',
+      help: 'The share of the (species, band, bucket) slots that hold at least one fix, for every width from 3 to 14 days. It was measured once at load by writing each width into the same compiled graph. Click the chart to set the bucket width.'
+    },
+    {
+      id: 'buckets',
+      label: 'Time buckets',
+      help: 'How many buckets hold the folded year at this width. The last one is shorter when the width does not divide the year.'
+    },
+    {
+      id: 'reduction',
+      label: 'Occupied slots',
+      hood: true,
+      help: 'Slots (species, latitude band, bucket) that hold at least one fix, as reported by GPUTemporalReduction, out of all slots at this width.'
+    },
+    {
+      id: 'weeklyFixes',
+      label: 'Fixes per bucket',
+      help: 'The fewest and the most fixes of the selection in a bucket that holds a full width: the denominator of every share.'
+    },
+    {
+      id: 'fixesChart',
+      label: 'The denominator: fixes per bucket',
+      kind: 'chart',
+      help: 'GPS fixes of the selection in each bucket across the year, with the seasons shaded. A share divides each column of the matrix by this number; a count is this number split into bands.'
+    },
+    {
+      id: 'springWeeks',
+      label: 'Northbound, 20 to 50° N',
+      help: 'Time the median latitude of the selected species needs to rise from 20 to 50° N in spring, with the dates it crosses each (interpolated between bucket centres).'
+    },
+    {
+      id: 'autumnWeeks',
+      label: 'Southbound, 50 to 20° N',
+      help: 'Time the median latitude needs to fall from 50 to 20° N in autumn, with the dates it crosses each.'
+    },
+    {
+      id: 'crossings',
+      label: 'The median crosses the probe latitude',
+      help: 'The dates the median latitude of the selected species rises through (north) and falls through (south) the probe latitude.'
+    },
+    {
+      id: 'fastest',
+      label: 'Fastest step in the sample',
+      help: 'The maximum the reduction kept in any cell of the selection: the fastest step between two consecutive fixes that ends in the cell, and where it is. One position error between two fixes can also make a step look fast.'
+    },
+    {
+      id: 'stepLength',
+      label: 'Time between fixes',
+      help: 'The median and the shortest time between two consecutive fixes of one animal-year. The data were thinned to a fixed minimum, which sets the length of a step.'
+    },
+    {
+      id: 'thinCells',
+      label: 'Hatched cells',
+      help: 'Occupied cells that hold fewer fixes than the suppression limit. Their shares and speeds rest on very few fixes.'
     },
     {
       id: 'profileChart',
-      label: 'Where is everyone at the cursor?',
+      label: 'Latitude profile at the cursor',
       kind: 'chart',
-      help: "The share of fixes in each 3-degree latitude band in the cursor's time bucket (bars are labelled by the southern edge). Press Play and watch the mass move south and north."
+      help: "The share of the fixes of the cursor's time bucket in each 3-degree latitude band, north at the top so the bars line up with the rows of the matrix. Press Play and watch the mass move."
     },
-    {id: 'tracks', label: 'Tracks'},
     {
-      id: 'reduction',
-      label: 'Temporal reduction',
-      help: 'Fixes reduced to occupied (species, band, bucket) slots by GPUTemporalReduction.'
+      id: 'cursor',
+      label: 'Cursor',
+      help: 'The bucket under the cursor, its fixes and the median latitude.'
     },
-    {id: 'cursor', label: 'Cursor'},
     {
       id: 'probe',
       label: 'Probe band',
-      help: "The probe band's fix count, and the busiest buckets of its first and second half of the year. For a band the birds merely cross, those are the northbound and southbound passages; for a band they live in, they are just the busiest weeks."
+      help: "The probe band's fix count and its busiest buckets in the first and the second half of the year. For a band the birds merely cross, those are the northbound and southbound passages; for a band they live in, the busiest weeks."
     }
   ],
 
-  legends: state => [
+  pipeline: [
     {
-      kind: 'ramp' as const,
-      id: 'matrix',
-      title:
-        state.cellValue === 'share'
-          ? "Share of the week's fixes in the band"
-          : state.cellValue === 'count'
-            ? 'Fixes in the band and week'
-            : 'Fastest two-hour step in the band and week',
-      ramp: state.ramp,
-      extent: 'gpu' as const,
-      sqrtScale: state.liftLow,
-      unit: state.cellValue === 'share' ? '%' : state.cellValue === 'count' ? 'fixes' : 'km/h',
-      format: (value: number) => (value >= 10 ? value.toFixed(0) : value.toFixed(1))
+      id: 'reduce',
+      label: 'Reduce',
+      detail:
+        'Every fix goes into one (species, band, bucket) slot: count, minimum, maximum, first, last'
     },
     {
-      kind: 'categories' as const,
-      title: 'Where to find the chart on the map',
-      entries: [
-        {
-          color: [150, 156, 168, 255] as const,
-          label:
-            'West of Africa: x is the day of the year (1 Jan to 31 Dec), y is the true latitude'
-        }
-      ]
+      id: 'fold',
+      label: 'Fold',
+      detail: 'A kernel folds the chosen species into a band-by-bucket matrix'
+    },
+    {
+      id: 'classes',
+      label: 'Classes',
+      detail: 'Share, count or fastest step is cut into classes and drawn from the same buffer'
+    },
+    {
+      id: 'read',
+      label: 'Read back',
+      detail: 'The CPU reads the cube once for the charts, the crossing dates and the tooltips'
     }
   ],
+
+  legends: getLegends,
 
   snippet: state => `import {GPUCommandGraph} from '@luma.gl/gpgpu/gpu-core';
 import {GPUTemporalReduction, getGPUTemporalReductionParameterValues} from '@luma.gl/experimental/gpu-dataframe';
 
-// One cell per (species, 3-degree latitude band) = 3 x 20 cells, 128 time buckets
-// cellIds: uint32 per fix, timestamps: float32 seconds of the year, values: step speed in km/h
+// One cell per (species, 3-degree latitude band); 128 time buckets.
+// cellIds: uint32 per fix, timestamps: float32 seconds of the folded year,
+// values: the speed of the step that ends at each fix, in km/h.
 graph.add(new GPUTemporalReduction({
   cellIds, timestamps, values: speeds,
   parameters: bucketParameters.importToGraph(graph),
-  cellCount: 60, bucketCount: 128,
+  cellCount: 3 * rowCount, bucketCount: 128,
   output: {counts, min, max, first, last, occupiedSlots: {ids, count, overflow}}
 }));
-// Per frame, a buffer write: the bucket origin and width in seconds
-bucketParameters.write(getGPUTemporalReductionParameterValues(0, ${state.bucketDays * 86400}));
+const compiled = graph.compile();            // once
+// A bucket width is a buffer write: ${state.bucketDays} days = ${Math.ceil(366 / state.bucketDays)} buckets.
+bucketParameters.write(getGPUTemporalReductionParameterValues(0, ${state.bucketDays} * 86400));
 
-// Display kernel: sum the chosen species' counts of each band and bucket into a 20 x 128 matrix
-//   (${state.cellValue}); a raster layer draws it at its true latitudes, a cursor at day ${state.day}.`,
+// Display kernel: fold the chosen species (mask ${SPECIES_MASKS[state.species]}) into a band-by-bucket matrix.
+//   value = ${state.cellValue === 'share' ? 'count in the band / count in the column' : state.cellValue === 'count' ? 'count in the band' : 'max step speed of the slot'}
+// A raster layer draws the matrix at its true latitudes with the class table of the legend.
+new SpatialAnalysisRasterLayer({gridSize: [validBuckets, rowCount], bounds, values: matrix,
+  colormap: 'uniform', ...getClassTableLayerProps(table), tessellation: rowCount});`,
 
   about: {
-    what: '`GPUTemporalReduction` bins every fix into one slot per cell (here a species and a 3-degree latitude band) and coarse time bucket, and keeps the count, minimum, maximum, first and last value of each slot. A kernel then folds the chosen species into a latitude-by-week matrix.',
-    why: 'Timing is conservation data: when a wetland or a flyway must be quiet, and how fast the population moves through a band, decide where protection is needed and for how long. A space-time cube answers it for every latitude at once, and the GPU keeps the bucket width a live slider.',
+    what: 'Previously: *Play a year of migration* showed the whole flock as moving dots. Next: *Which way do the harriers and spoonbills fly?*\n\n`GPUTemporalReduction` drops every GPS fix into one slot per cell and time bucket, here a species and a 3-degree latitude band and a bucket of a few days. Each slot keeps its fix count and the minimum, maximum, first and last of a per-fix value, here the speed of the step that ends at the fix (so the maximum is the fastest step), with atomics, so the result does not depend on thread order. The bucket width is a parameter write, never a recompile; a display kernel then folds the species you pick into a latitude-by-bucket matrix.',
+    why: 'Timing is conservation data: when a wetland should be quiet, and how fast a population passes a latitude, depend on where the birds are on the calendar. Time along one axis and latitude along the other (a Hovmöller diagram) turns a migration into a slanted stripe whose slope is its speed, for every latitude at once. Two choices change the picture: the bucket width (time has its own modifiable-unit problem) and whether a cell shows a count or a share.',
     howToRead:
-      'The colored block west of Africa is a chart drawn on the map: columns are weeks of the folded year (1 January at the left edge, 31 December at the right), rows are the 3-degree latitude bands at their true latitudes, so you can read across to the coast the birds fly along. A diagonal stripe going down to the right is a southbound migration, going up a northbound one; horizontal blocks are stays. Lines mark the 12-degree latitude groups, the months and the playback cursor.'
+      'The paper panel west of Africa is a chart drawn on the map. Columns are time buckets of the folded year (1 January at the left, 31 December at the right); rows are 3-degree latitude bands at their true latitudes, so you can read across to the coast (Web Mercator makes the northern rows taller, so the summer block looks bigger than it is). A stripe running down to the right is a southbound migration, one running up to the right is northbound, and horizontal blocks are stays. Empty cells are paper; hatched cells hold fewer than 20 fixes. Times are float32 seconds of the year, exact to 2 s after day 194: a fix within 2 s of a bucket edge late in the year can land in the neighbouring bucket (the contributor has an exact uint32x2 mode). Speeds are computed once at load on the CPU from consecutive fixes.'
+  },
+
+  // Paper ground: a figure on a quiet map, the matrix is the subject and the labels sit above it.
+  basemap: ground('paperCity', {
+    suppressNames: ['Sahara', 'Sahel', 'Iberia', 'Strait of Gibraltar', 'Low Countries']
+  }),
+  furniture: {
+    title: cartouche(
+      'When is the population at each latitude?',
+      'Share of weekly GPS fixes by 3° band · years folded onto 2024'
+    ),
+    credit: joinCredits(MOVEMENT_CREDITS.birds, CREDITS.carto),
+    caveat: 'Rows sit at true latitude; Web Mercator makes the northern rows taller.'
+  },
+  annotations: [
+    ...labelsFor(FLYWAY, ['sahel', 'sahara', 'iberia', 'low-countries', 'banc-d-arguin'], {
+      'banc-d-arguin': {minZoom: 3}
+    }),
+    ...labelsFor(WORLD, ['strait-of-gibraltar'], {'strait-of-gibraltar': {minZoom: 3}})
+  ],
+
+  timeline: {
+    time: 'day',
+    play: 'play',
+    speed: 'playSpeed',
+    format: formatFoldedDay,
+    bands: [
+      {from: 0, to: MIGRATION_SEASONS.spring.days[0], label: 'Winter'},
+      {
+        from: MIGRATION_SEASONS.spring.days[0],
+        to: MIGRATION_SEASONS.spring.days[1],
+        label: 'Spring'
+      },
+      {
+        from: MIGRATION_SEASONS.breeding.days[0],
+        to: MIGRATION_SEASONS.breeding.days[1],
+        label: 'Breeding'
+      },
+      {
+        from: MIGRATION_SEASONS.autumn.days[0],
+        to: MIGRATION_SEASONS.autumn.days[1],
+        label: 'Autumn'
+      },
+      {from: MIGRATION_SEASONS.winter.days[0], to: 366, label: 'Winter'}
+    ],
+    ticks: FOLDED_MONTH_TICKS
   },
 
   create: async ctx => (await import('./migration-timing.compute')).createMigrationTiming(ctx),
 
   story: [
     {
-      id: 'the-question',
-      title: 'When is the population at each latitude?',
-      body: "Tracks tell you where a bird went; ecologists also need **when the population was there**. The block of color west of Africa is a chart drawn on the map: each column is a week of the year, each row a 3-degree latitude band at its true latitude, and the color is the share of that week's tag fixes that fell in the band.\n\nRead it from the left (1 January). The harriers sit in the bottom rows, the Sahel, through the winter, climb a diagonal in spring, sit in the top rows for the breeding season and fall back down in late summer.",
-      camera: {...TIMING_VIEW, transitionMs: 1200},
-      controls: [],
-      readouts: ['bandChart', 'tracks']
+      id: 'the-chart-is-a-map',
+      title: 'The chart is a map',
+      headline: 'Rows of the chart sit at true latitudes',
+      textAlternative:
+        'Map of western Europe and North Africa with a white chart panel in the Atlantic. Its columns are weeks of the year and its rows are latitude bands, shaded blue-green by the share of GPS fixes; a dashed line joins one row to the coast.',
+      body: "Tracks say where; this chart says when. The block west of Africa is a calendar drawn on the map: each column is a week, each row a latitude band at its true latitude, shaded by its share of that week's GPS fixes. Drag **Probe latitude** and read straight across to the coast. The sample is **{{tracks}}**.\n\n*Time is a coordinate here, not an animation.*",
+      optionsMode: 'fresh',
+      options: {showGroups: true},
+      controls: ['probeLatitude'],
+      readouts: ['bandChart', 'tracks'],
+      camera: {...MAP_AND_PANEL, transitionMs: 1400},
+      furniture: {
+        title: cartouche(
+          'When is the population at each latitude?',
+          'Share of weekly GPS fixes by 3° band · years folded onto 2024'
+        )
+      },
+      stage: 'reduce'
     },
     {
-      id: 'temporal-reduction',
-      title: 'A space-time cube in one pass',
-      body: '**`GPUTemporalReduction`** reads all 226,000 fixes once and drops each into a slot: a species and latitude band (the cell) times a time bucket. For every slot it keeps the number of fixes and the minimum, maximum, first and last speed. 60 cells by up to 122 buckets is only 7,000 slots, so the whole cube is read back in one small copy.\n\nChange **Bucket width** below: the bucket is a parameter, so the cube is recomputed without a recompile. Three days shows the stopovers as separate blocks, two weeks smooths them into a ramp. Look at the **Temporal reduction** readout for the slots actually occupied.',
-      options: {showTracks: true, trackOpacity: 0.15},
-      highlight: {readout: 'reduction'},
-      controls: ['bucketDays', 'liftLow'],
-      readouts: ['reduction']
+      id: 'slice-the-year',
+      title: 'A bucket width is a choice',
+      headline: 'Narrow buckets are noisy, wide ones blur timing',
+      textAlternative:
+        'The chart panel with faint vertical lines between the time buckets; with narrow buckets many cells are empty, with wide buckets the stripe blurs.',
+      body: '`GPUTemporalReduction` drops every fix into a slot: species, latitude band and a time bucket. Slide **Bucket width** (or press play on it): a parameter write, so the same compiled graph re-bins every fix. The year has **{{buckets}}** and **{{reduction}}**. Tick **Show bucket edges** to see them.\n\n*Time has its own MAUP: the bucket is a choice.*',
+      optionsMode: 'fresh',
+      options: {showBucketEdges: true, showTracks: false},
+      controls: ['bucketDays', 'showBucketEdges'],
+      readouts: ['occupancyChart', 'reduction'],
+      camera: {...PANEL_ONLY, transitionMs: 1400},
+      furniture: {
+        title: cartouche(
+          'How wide should a time bucket be?',
+          'Fixes per species, 3° band and bucket · 3 to 14 days'
+        )
+      },
+      stage: 'reduce'
     },
     {
-      id: 'the-diagonal',
-      title: 'Autumn is a sprint, spring a slog',
-      body: "Choose **Marsh harrier** in **Species**. The marsh harriers in this sample leave the 50 N band in the first week of September (the median bird crosses 50 N on about 6 September) and reach 20 N about fifteen days later: the autumn diagonal is steep. In spring the diagonal is shallower: the median bird leaves 20 N in early March and is back at 50 N by about 4 April, and the **average latitude of the harriers climbs for about ten weeks** against six weeks of falling in autumn. Most of the delay is between 20 and 33 N, the Sahara crossing and the Moroccan plains.\n\nThe chart above the matrix shows the same thing as five lines handing the population over to each other. Select **Montagu's harrier** and the whole picture moves about a month later in spring, with a short summer in the north.",
-      options: {species: 'marsh', cellValue: 'share'},
-      highlight: {readout: 'probe'},
-      controls: ['species', 'bucketDays'],
-      readouts: ['bandChart', 'probe']
-    },
-    {
-      id: 'speed',
-      title: 'How fast do they cross a band?',
-      body: 'Change **Cell value** to *Fastest ground speed*. Each cell now shows the **maximum** the reduction kept for the slot: the fastest two-hour step of any bird in that band that week. The breeding and wintering blocks are dull (the fastest step in a typical breeding-band week is about 20 km/h), while the migration diagonal lights up at around 50 km/h.\n\nThe maximum is a statistic of the most active bird of the week, and one fast step in a thin cell is enough to light it up, so read the diagonal, not a single cell. Switch to *Number of fixes* to see that the fixes per week are not flat (roughly 3,500 in winter to 5,500 in summer), which is why the default is a share.',
-      options: {cellValue: 'speed', species: 'all'},
-      highlight: {readout: 'reduction'},
+      id: 'counts-or-shares',
+      title: 'Counts follow the tags, shares follow the birds',
+      headline: 'Counts follow the tags, shares follow the birds',
+      textAlternative:
+        'The chart panel drawn with counts of fixes, with a strip of fixes per week below the legend; the share version of the same panel is one click away.',
+      body: 'Flip **Cell value** between *Count* and *Share*. A count is the number of fixes the tags delivered, **{{weeklyFixes}}** across the year (strip below), so it follows the tags. A share divides each column by that total, so it follows the birds. Compare **Species**: a smaller sample means fewer fixes and noisier shares.\n\n*State the denominator.*',
+      optionsMode: 'fresh',
+      options: {cellValue: 'count', showTracks: false},
       controls: ['cellValue', 'species'],
-      readouts: ['reduction']
+      readouts: ['fixesChart', 'weeklyFixes'],
+      camera: {...PANEL_ONLY, transitionMs: 1200},
+      furniture: {
+        title: cartouche(
+          'Do counts or shares tell the story?',
+          "Fixes, or share of the bucket's fixes, by 3° band"
+        )
+      },
+      stage: 'fold'
+    },
+    {
+      id: 'the-slope-is-speed',
+      title: "The stripe's slope is the migration's speed",
+      headline: 'A steeper stripe means a faster migration',
+      textAlternative:
+        'The chart panel for the marsh harrier with a line of median latitude climbing in spring and falling in autumn, and two pinned dates where it crosses the probe row.',
+      body: 'Choose a **Species**. The line over the matrix is the median latitude of its fixes: the steeper it runs, the faster the population moves, as on a train timetable. Between the two reference latitudes the median needs **{{springWeeks}}** going north and **{{autumnWeeks}}** coming back. Move **Probe latitude** to read when it crosses any row.\n\n*Slope is speed.*',
+      optionsMode: 'fresh',
+      options: {
+        species: 'marsh',
+        showTrace: true,
+        showCrossings: true,
+        showGroups: true,
+        showTracks: false
+      },
+      controls: ['species', 'probeLatitude'],
+      readouts: ['springWeeks', 'autumnWeeks', 'crossings', 'bandChart'],
+      camera: {...PANEL_ONLY, transitionMs: 1200},
+      furniture: {
+        title: cartouche(
+          'How fast does the population move?',
+          'Median latitude of the fixes · crossing dates at the probe'
+        )
+      },
+      stage: 'read'
+    },
+    {
+      id: 'fastest-step',
+      title: 'One fast step lights a whole cell',
+      headline: 'A single fast step can light a whole cell',
+      textAlternative:
+        'The chart panel in orange classes: the fastest step in each cell, brightest along the migration stripe, with hatched cells where fewer than twenty fixes stand behind the maximum.',
+      body: 'Set **Cell value** to *Fastest step*. Each cell shows the **maximum** the reduction kept for the slot, not a mean: the contributor keeps no sum. A step is the move between two consecutive fixes (**{{stepLength}}**), so one fast step is enough, and hatched cells hold too few fixes to trust. The fastest in the sample is **{{fastest}}**. Compare **Species**.\n\n*Read the stripe, not one cell.*',
+      optionsMode: 'fresh',
+      options: {cellValue: 'speed', species: 'all', showTracks: false},
+      controls: ['cellValue', 'species'],
+      readouts: ['fastest', 'thinCells', 'profileChart'],
+      camera: {...PANEL_ONLY, transitionMs: 1200},
+      furniture: {
+        title: cartouche(
+          'How fast is the fastest step?',
+          'Maximum km/h of a step ending in the cell · thin cells hatched'
+        )
+      },
+      stage: 'classes'
     },
     {
       id: 'play-the-year',
-      title: 'Play the year, and know the limits',
-      body: 'Press **Play** and the cursor sweeps from January to December; the bars show the share of fixes in each latitude band at the cursor, and the cursor readout gives the mean latitude. Drag **Day of the year** to jump, and **Probe latitude** to read the busiest weeks of any band: set it to 36 N, the Strait of Gibraltar, to see the two passages.\n\nThe limits are real. These are 42 birds, and some contribute several years, which the archive folds onto one calendar: "week 38" blends every year. Shares weigh the fixes, and a tag that fails stops contributing, so the late-year columns rest on fewer birds. A fix is not a bird: a bird sitting in a band for a week counts 84 times. **Try:** set **Species** to *Eurasian spoonbill* and watch a population that never leaves 33 to 54 N.',
-      options: {play: true, cellValue: 'share', species: 'all', playSpeed: 6},
-      camera: {...TIMING_VIEW, transitionMs: 1200},
+      title: 'Play the year: the column fills as birds move',
+      headline: 'The column fills as the birds move',
+      textAlternative:
+        'The map and the panel together: a cursor sweeps the chart and the bucket under it is outlined, while that bucket’s GPS fixes appear as coloured dots over Europe and Africa.',
+      body: 'Press **Play**: the cursor sweeps the year, the bucket under it is outlined, and its fixes appear on the map as dots. Drag **Day of the year** to jump and **Probe latitude** to move the row. The limits: **{{tracks}}**, tagged in the Low Countries; years are folded; a fix is not a bird, and the reduction counts fixes, not distinct birds.\n\nNext: [Which way do the harriers and spoonbills fly?](#/story/migration-flyways).',
+      optionsMode: 'fresh',
+      options: {play: true, day: 0, showFixes: true, showTrace: true, trackOpacity: 0.15},
       controls: ['play', 'day', 'probeLatitude'],
-      readouts: ['cursor', 'profileChart', 'probe']
+      readouts: ['cursor', 'profileChart', 'probe'],
+      camera: {...MAP_AND_PANEL, transitionMs: 1400},
+      furniture: {
+        title: cartouche(
+          'What does one column hold?',
+          "Share of the bucket's fixes by 3° band · dots are the bucket's fixes"
+        ),
+        clock: {
+          option: 'day',
+          time: {origin: '2024-01-01T00:00:00Z', unit: 'days'},
+          show: 'date',
+          zones: ['UTC']
+        }
+      },
+      stage: 'read'
     }
   ]
 });

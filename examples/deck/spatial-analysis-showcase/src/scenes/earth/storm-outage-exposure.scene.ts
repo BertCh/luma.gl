@@ -2,6 +2,9 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {CREDITS, joinCredits} from '../../cartography/credits';
+import {US, labelsFor} from '../../cartography/gazetteer';
+import {ground} from '../../cartography/grounds';
 import {playbackOptions} from '../../engine/playback';
 import {defineScene} from '../scene';
 import type {StormOutageExposureOptions} from './storm-outage-exposure.compute';
@@ -9,6 +12,12 @@ import {formatStormClock, METRIC_LABELS, STORM_VERIFICATION_RANGE, STORM_VIEW} f
 
 const PLAINS_VIEW = {longitude: -94.5, latitude: 40.5, zoom: 5.6};
 const EAST_VIEW = {longitude: -80.5, latitude: 41.3, zoom: 5.4};
+const OUTAGE_LABELS = labelsFor(US, ['msp', 'ord', 'dfw']);
+const cartouche = (title: string, subtitle: string) => ({
+  title,
+  subtitle,
+  chips: ['population-normalised rate', 'county aggregation'] as const
+});
 
 type LegendRange = {low: number; high: number; metric: StormOutageExposureOptions['metric']};
 
@@ -16,9 +25,9 @@ export default defineScene<StormOutageExposureOptions>({
   id: 'storm-outage-exposure',
   title: 'Did the counties the storms crossed lose power?',
   chapter: 'earth',
-  order: 22,
+  order: 7,
   summary:
-    'Compare county power outages on 21-22 May 2024 with storm exposure: kilometers of storm-cell track inside each county (GPULineLengthPerPolygon) and lightning flashes per county (GPUZonalStatistics), with outage tables reduced by GPUGroupStatistics.',
+    'Compare population-normalised outage burden with county-scale storm exposure, without treating association as a causal estimate.',
   contributors: [
     'GPULineLengthPerPolygon',
     'GPUZonalStatistics',
@@ -70,7 +79,8 @@ export default defineScene<StormOutageExposureOptions>({
         {value: 'outageCount', label: 'Customers out now (count)'},
         {value: 'trackKm', label: 'Storm-cell track inside the county (km)'},
         {value: 'flashDensity', label: 'Lightning flashes per 1,000 km2'},
-        {value: 'meanDbz', label: 'Mean peak reflectivity of the cells that crossed'}
+        {value: 'meanDbz', label: 'Mean peak reflectivity of the cells that crossed'},
+        {value: 'bivariate', label: 'Exposure × outage burden (3 × 3 classes)'}
       ]
     },
     {
@@ -136,21 +146,6 @@ export default defineScene<StormOutageExposureOptions>({
       default: 10,
       unit: 'per 1,000',
       help: 'A county counts as hit when its peak number of customers without power reached this many per 1,000 residents.'
-    },
-    {
-      kind: 'select',
-      id: 'ramp',
-      label: 'Color ramp',
-      group: 'Map',
-      apply: 'param',
-      default: 'magma',
-      help: 'Color ramp of the county fill.',
-      options: [
-        {value: 'magma', label: 'Magma'},
-        {value: 'viridis', label: 'Viridis'},
-        {value: 'inferno', label: 'Inferno'},
-        {value: 'cividis', label: 'Cividis'}
-      ]
     },
     {
       kind: 'slider',
@@ -242,13 +237,38 @@ export default defineScene<StormOutageExposureOptions>({
   ],
 
   legends: (state, data) => {
+    if (state.metric === 'bivariate') {
+      const bivariateColors = [
+        [238, 232, 229, 255],
+        [204, 207, 220, 255],
+        [151, 177, 205, 255],
+        [230, 195, 205, 255],
+        [181, 166, 197, 255],
+        [116, 139, 184, 255],
+        [206, 139, 169, 255],
+        [143, 113, 161, 255],
+        [75, 87, 145, 255]
+      ] as const;
+      return [
+        {
+          kind: 'matrix' as const,
+          title: 'County comparison: exposure × outage burden',
+          rows: ['outage burden low', 'outage burden middle', 'outage burden high'],
+          columns: ['exposure low', 'exposure middle', 'exposure high'],
+          colors: bivariateColors,
+          rowTitle: 'customers out per 1,000 residents',
+          columnTitle: 'storm exposure',
+          note: 'Nine combined classes: exposure low to high on x; outage burden low to high on y.'
+        }
+      ];
+    }
     const range = data.range as LegendRange | undefined;
     const labels = METRIC_LABELS[state.metric];
     return [
       {
         kind: 'ramp' as const,
         title: labels.title,
-        ramp: state.ramp,
+        ramp: state.metric === 'trackKm' || state.metric === 'flashDensity' ? 'mako' : 'magma',
         extent: range ? ([range.low, range.high] as const) : ([0, 1] as const),
         sqrtScale: true,
         unit: labels.unit,
@@ -302,32 +322,75 @@ flashWindow.write(getGPUTimeWindowParameterValues({start: 0, end: ${state.exposu
       'Color is the county value for the metric you pick; transparent counties have none. Outage values are customers (meter accounts) per 1,000 residents, which is not a share of households. The bars compare how often counties with more storm overhead had an outage above the threshold; they show association only. The study region is the counties whose centroid is inside the storm box, and counties that never appear in the outage table are treated as having none.'
   },
 
+  pipeline: [
+    {id: 'snapshots', label: 'Snapshots', detail: 'Window outage rows at the playhead'},
+    {
+      id: 'exposure',
+      label: 'County exposure',
+      detail: 'Cut tracks and sum sampled flashes by polygon'
+    },
+    {
+      id: 'rate',
+      label: 'Normalise',
+      detail: 'Divide customers out by residents, not customers served'
+    },
+    {
+      id: 'compare',
+      label: 'Compare',
+      detail: 'Show group size and rate distribution, not a causal effect'
+    }
+  ],
+  basemap: ground('paperCity'),
+  furniture: {
+    title: cartouche(
+      'Did exposed counties report more outages?',
+      'Outage burden · per 1,000 residents · county comparison · 21 May 2024'
+    ),
+    scaleBar: {units: 'metric'},
+    northArrow: 'always',
+    credit: joinCredits(CREDITS.usCensus, 'DOE EAGLE-I; NOAA MRMS and GOES-16 GLM (public domain)'),
+    caveat:
+      'Customers out is not a customers-served denominator; county association does not establish a storm cause.'
+  },
+  annotations: OUTAGE_LABELS,
+
   create: async ctx =>
     (await import('./storm-outage-exposure.compute')).createStormOutageExposure(ctx),
 
   story: [
     {
-      id: 'the-question',
-      title: 'Which counties lost power on the evening of 21 May?',
-      body: 'The DOE EAGLE-I archive records how many customers each utility reports without power, county by county, every 15 minutes. Here that is **40,291 county snapshots** from 2,111 counties between 17:30 UTC on 21 May and 03:00 UTC on 22 May 2024.\n\nPress **Play** below or drag **Time (UTC)**: counties are colored by the customers out per 1,000 residents, and counties with no outage stay clear. The chart under the map is the regional total; its marker is the playhead.',
+      id: 'snapshots',
+      title: 'Outage counts follow population too',
+      headline: 'Counts are an orientation, not a rate',
+      textAlternative:
+        'A paper county map shows raw customers-out counts beside the outage timeline.',
+      optionsMode: 'fresh',
+      body: 'The outage table records nonzero county snapshots at a fixed cadence. Start with raw customers out to see the reporting table and its clock; the timeline supplies the total at each snapshot.\n\nRaw counts are an orientation view only. A large county can have more customers out without a larger burden on residents.',
       camera: {...PLAINS_VIEW, transitionMs: 1400},
       options: {metric: 'outageNow', time: 43200, play: false, showTracks: false},
       controls: ['play', 'time', 'metric'],
       readouts: ['clock', 'customersNow', 'totalChart']
     },
     {
-      id: 'group-statistics',
-      title: 'Reducing the outage table with GPUGroupStatistics',
-      body: 'The outage table is long and thin (county, time, customers). **`GPUGroupStatistics`** groups its rows by county in a dense table and computes, in one pass, the **peak** of each county (run once) and the **sum of the latest snapshot** (run again whenever the playhead moves). The latest snapshot is chosen by a **`GPUTimeWindowFilter`** mask over the snapshot times.\n\nSwitch **Color counties by** to *Peak customers out, per 1,000 residents*: every county is colored by the worst moment of the whole evening, not the current one. Then try *Customers out now (count)*: the biggest counties dominate because they have the most customers, which is why the map defaults to a rate.',
+      id: 'rates',
+      title: 'A denominator changes the map',
+      headline: 'Map customers out per 1,000 residents',
+      textAlternative: 'A rate map uses warm classes to show customers out per 1,000 residents.',
+      optionsMode: 'fresh',
+      body: '**`GPUGroupStatistics`** reduces the long outage table by county. Its live result can show a current snapshot or each county’s event peak.\n\nThe authored map divides customers out by residents and labels the denominator. The data contain no served-account or household denominator.',
       camera: {...STORM_VIEW, transitionMs: 1400},
       options: {metric: 'outagePeak', time: 54000, play: false, showTracks: false},
-      controls: ['metric', 'ramp'],
-      readouts: ['peakTotal', 'customersNow']
+      controls: ['metric', 'time'],
+      readouts: ['peakTotal', 'customersNow', 'hovered']
     },
     {
-      id: 'track-length',
-      title: 'Exposure 1: kilometers of storm track in each county',
-      body: '**`GPULineLengthPerPolygon`** cuts every cell track where it crosses a county border and adds up the length inside each county, in meters, on an azimuthal frame whose distances are accurate. The tracks are clipped at the playhead, so press **Play** and watch exposure accumulate.\n\nSwitch **Storm exposure counted** to *Whole event* to see the total footprint, then back to *Up to the playhead*. Darker counties had more kilometers of intense cells (51 dBZ and above) cross them; try **Color counties by** *Mean peak reflectivity* to see which counties had the strongest cores.',
+      id: 'track-exposure',
+      title: 'Cut every track at county edges',
+      headline: 'Exposure begins as line length in polygons',
+      textAlternative:
+        'Violet county classes and cased radar-track segments show track length per county.',
+      optionsMode: 'fresh',
+      body: '**`GPULineLengthPerPolygon`** splits every radar-derived path where it meets a county boundary, then sums the in-county length in metres. The violet classes are a footprint proxy, not measured damage.\n\nSwitch between the clock-to-date and whole-event windows to see exposure accumulate. The computation uses an azimuthal metric frame; map display remains Web Mercator.',
       camera: {...PLAINS_VIEW, transitionMs: 1400},
       options: {
         metric: 'trackKm',
@@ -340,9 +403,13 @@ flashWindow.write(getGPUTimeWindowParameterValues({start: 0, end: ${state.exposu
       readouts: ['clock', 'inputs']
     },
     {
-      id: 'lightning',
-      title: 'Exposure 2: flashes per county',
-      body: '**`GPUZonalStatistics`** has two modes and this scene uses both. In polygon mode it joined every flash to its county **once**, keeping the county of every point. In feature-rows mode it sums, county by county, the flashes whose time falls in the window (their fade weight is 1 inside and 0 outside), without repeating the join.\n\nThe map shows an estimate of flashes per 1,000 square kilometers (the sample is scaled up by its sampling fraction). The **Flash sum order** option is compile-time: *Sorted* gives the same answer every run; *Atomic* is faster but can differ in the last digits.',
+      id: 'flash-exposure',
+      title: 'A second exposure changes the groups',
+      headline: 'Sampled flashes offer another exposure proxy',
+      textAlternative:
+        'Violet county classes show estimated flashes per area without radar tracks.',
+      optionsMode: 'fresh',
+      body: '**`GPUZonalStatistics`** joins sampled flashes to counties once, then re-sums only the active time window. The map reports estimated flashes per area and keeps the sampled count visible.\n\nChanging the exposure definition changes the county groups. Sorted accumulation is reproducible; atomic accumulation is an expert numerical trade-off.',
       camera: {...EAST_VIEW, transitionMs: 1400},
       options: {
         metric: 'flashDensity',
@@ -356,11 +423,15 @@ flashWindow.write(getGPUTimeWindowParameterValues({start: 0, end: ${state.exposu
     },
     {
       id: 'comparison',
-      title: 'Were exposed counties more likely to lose power?',
-      body: 'Group the storm-region counties by exposure (none, under the **Exposure threshold**, one to three times it, three times or more) and ask what share had a peak outage above the **Outage threshold**. The bars show it; **Ratio** is how many times more likely an exposed county was to be hit than the others.\n\nSwitch **Exposure measure for the comparison** between cell track and lightning, and move the thresholds: the ratio changes, but the pattern is the test of whether storm footprint and outages go together at all. This is an association: the path of a storm cell does not say where wind brought lines down.',
+      title: 'Compare rates, not just totals',
+      headline: 'Keep N beside every exposure group',
+      textAlternative:
+        'A county comparison shows exposure groups, outage-rate threshold shares, and group sizes.',
+      optionsMode: 'fresh',
+      body: 'The comparison groups counties by the selected proxy, then reports the share crossing the rate threshold with each group’s **N** in the chart label. Move either threshold: the grouping rule is part of the result.\n\nThis is association at county scale, not an estimate that tracked cells or lightning caused the outages. The bivariate reading is exposure on one axis and population-normalised outage burden on the other.',
       camera: {...STORM_VIEW, transitionMs: 1400},
       options: {
-        metric: 'outagePeak',
+        metric: 'bivariate',
         exposureWindow: 'event',
         time: 54000,
         play: false,
@@ -374,8 +445,12 @@ flashWindow.write(getGPUTimeWindowParameterValues({start: 0, end: ${state.exposu
     },
     {
       id: 'limits',
-      title: 'What this can and cannot say',
-      body: 'Outages depend on wind, falling trees, how old the lines are and how each utility reports, none of which is in this data. Radar cells at 51 dBZ and above and lightning are proxies for a storm’s intensity, not measures of wind at the ground, and the tracker’s cells are about 10 minutes apart. Counties are large and unequal, customers are meters not people, and counties missing from the outage table are treated as having none.\n\n**Try it:** set **Storm exposure counted** to *Up to the playhead* and play the evening at 20 min/s to watch the outage map respond after the storms pass; switch the comparison to lightning and see whether the ratio holds; raise **Outage threshold** to 50 per 1,000 and see how few counties are hit hard.',
+      title: 'Exposure is not proof of cause',
+      headline: 'County associations have ecological limits',
+      textAlternative:
+        'A rate map and comparison chart retain the group counts while explaining the limits of inference.',
+      optionsMode: 'fresh',
+      body: 'Radar cells and lightning are storm-intensity proxies, not measurements of damaging wind at the ground. Infrastructure, vegetation, reporting practice and timing are absent; counties are unequal aggregation units; and nonzero outage rows require careful zero/no-data interpretation.\n\nTry the time-to-date window and change exposure definition. The next story asks a different three-stage question: whether a report was inside a compatible, valid warning.',
       camera: {...PLAINS_VIEW, transitionMs: 1400},
       options: {
         metric: 'outageNow',

@@ -15,19 +15,32 @@ import {
 } from '@luma.gl/experimental/gpu-spatial-analysis';
 import {GPUCommandGraph, type CompiledGPUCommandGraph} from '@luma.gl/gpgpu/gpu-core';
 import {GPUGraphForceLayout, GPUGraphSpatialForceLayout} from '@luma.gl/gpgpu/gpu-graph';
+import {haversineMeters} from '../../cartography/anchors';
+import {formatCount, formatOrdinal, liveText} from '../../cartography/live-text';
+import {createNearestIndex} from '../../cartography/picking';
+import {getProportionalRadius} from '../../cartography/proportional';
 import {importGraphBuffer} from '../../engine/graph-buffers';
-import {SpatialAnalysisSegmentLayer} from '../../engine/layers';
+import {SpatialAnalysisPointLayer, SpatialAnalysisSegmentLayer} from '../../engine/layers';
 import {addKernelPass} from '../../engine/mode-kernels';
-import {formatCount, SpatialAnalysisResources} from '../../engine/resources';
+import {SpatialAnalysisResources} from '../../engine/resources';
 import {SummaryReader} from '../../engine/summary-reader';
-import type {SceneContext, SceneInstance, ChartData} from '../scene';
+import type {
+  ChartData,
+  LngLat,
+  MapAnnotation,
+  MapHighlight,
+  SceneContext,
+  SceneInstance,
+  ScenePointerEvent,
+  TooltipContent,
+  TooltipRow
+} from '../scene';
 import {
   copyCountToDrawRecord,
   createGraphImporter,
   createPathOutputBuffers,
   importPathOutput
 } from '../geometry/b3-common';
-import {PathOutputLayer} from '../geometry/b3-layers';
 import {
   expandAntimeridianEdges,
   readWorldNetwork,
@@ -35,7 +48,6 @@ import {
   type FlightNetwork
 } from './b11-flight-data';
 import {CONTINENT_NAMES, loadAirportTable} from './b11-geography';
-import {SizedDiscLayer} from './b11-flow-layers';
 import {
   buildAnalysisGraph,
   buildOptimizationRun,
@@ -47,23 +59,42 @@ import {
   type OptimizationResult,
   type OptimizationRun
 } from './airline-network-graph';
-import {CategoryPathLayer} from './airline-network-layers';
-import {BETWEEN_GROUPS_INDEX, NETWORK_PALETTE, OTHER_GROUP_INDEX} from './airline-network-palette';
 import {
-  analyzeGroups,
-  getEdgeIndex,
+  ADDITIVE_ROUTE_PARAMETERS,
+  CategoryArcLayer,
+  CategoryPathLayer,
+  NORMAL_ROUTE_PARAMETERS,
+  type RouteDrawPass
+} from './airline-network-layers';
+import {
+  BETWEEN_GROUPS_INDEX,
+  DISC_OUTLINE_COLOR,
+  DISC_OUTLINE_PIXELS,
+  EGO_DIM_ALPHA,
+  getNodePalette,
+  getRoutePalette,
+  NEUTRAL_NODE_INK,
+  NEUTRAL_ROUTE_INK,
+  OTHER_GROUP_INDEX
+} from './airline-network-palette';
+import {
+  colorPartition,
+  getBridgeCounts,
   getLogHistogram,
   getPearsonCorrelation,
   getSpearmanCorrelation,
+  getTouchShare,
   sortRowsDescending,
-  type GroupAnalysis
+  type Coloring
 } from './airline-network-stats';
 
 /** Option state of the airline-network scene. */
 export type AirlineNetworkOptions = {
   view: 'arcs' | 'bundles' | 'morph';
-  colorBy: 'community' | 'continent';
-  sizeBy: 'pagerank' | 'degree' | 'core' | 'uniform';
+  colorBy: 'none' | 'continent' | 'community';
+  sizeBy: 'pagerank' | 'degree' | 'core' | 'bridges' | 'uniform';
+  labels: 'hubs' | 'groups' | 'disagreement' | 'bridges' | 'none';
+  ego: boolean;
   maxRadius: number;
   edgeOpacity: number;
   edgeFilter: 'all' | 'within' | 'between';
@@ -99,6 +130,25 @@ export type AirlineNetworkOptions = {
   densityResolution: '128' | '256' | '512';
 };
 
+/** One entry of a group legend, as the scene file draws it. */
+export type NetworkLegendEntry = {
+  color: readonly [number, number, number, number];
+  label: string;
+  count: number;
+};
+
+/** Data the compute module hands to the scene's `legends` (through `ctx.setLegendData`). */
+export type NetworkLegendData = {
+  continent: NetworkLegendEntry[];
+  community: NetworkLegendEntry[];
+  /** The between-groups ink, for the "route between two groups" entry. */
+  between: readonly [number, number, number, number];
+  /** True while the swipe compare shows continents beside communities. */
+  comparing: boolean;
+  /** Largest value of every size metric (the full-radius value of the size legend). */
+  sizeMaxima: Record<'pagerank' | 'degree' | 'core' | 'bridges', number>;
+};
+
 /** Resolutions of the modularity sweep chart. */
 export const SWEEP_RESOLUTIONS = [0.25, 0.5, 0.75, 1, 1.25, 1.5, 2, 3] as const;
 
@@ -113,6 +163,22 @@ const MAP_CENTER: readonly [number, number] = [10, 15];
 const MAP_HALF_SIZE: readonly [number, number] = [165, 58];
 const LNGLAT = COORDINATE_SYSTEM.LNGLAT;
 const PAGE_RANK_BARS = 20;
+/** Radius of an airport disc when every airport has the same size. */
+const UNIFORM_RADIUS_PIXELS = 3;
+/** Smallest disc radius when discs are sized by a metric. */
+const MINIMUM_RADIUS_PIXELS = 1.5;
+/** Hub labels per step, so the labels never outnumber the six places a frame can hold. */
+const HUB_LABEL_COUNT = 4;
+const BRIDGE_LABEL_COUNT = 5;
+const GROUP_LABEL_COUNT = 5;
+/** Neighbours ringed around a selected airport. */
+const EGO_RING_LIMIT = 80;
+/** Debounce of the compile-time sliders (damping, resolution): the graph builds once the reader pauses. */
+const REBUILD_DEBOUNCE_MS = 260;
+/** Largest category float of a selected route is `EGO_FLAG + slot`. */
+const EGO_FLAG = 16;
+/** Pointer distance, in CSS pixels, that still counts as pointing at an airport. */
+const PICK_RADIUS_PIXELS = 24;
 
 type Destroyable = {destroy: () => void};
 
@@ -176,10 +242,39 @@ export async function createAirlineNetwork(
   const segments = resources.createBuffer('morph-segments', edgeCount * 16);
   const segmentWeights = resources.createBuffer('morph-weights', edgeCount * 4);
   const edgeMask = resources.createBuffer('edge-mask', new Uint32Array(edgeCount).fill(1));
+  // Draw order of the morph segments: within-group routes first, between-group routes last.
+  const edgeOrder = resources.createBuffer(
+    'edge-order',
+    Uint32Array.from({length: edgeCount}, (_, edge) => edge)
+  );
+  // Palette slot of every route (morph view) and of every airport, by partition.
   const edgeIndex = resources.createBuffer('edge-index', new Uint32Array(edgeCount));
-  const edgeCategory = resources.createBuffer('edge-category', new Float32Array(edgeCount));
-  const nodeColor = resources.createBuffer('node-color', new Uint32Array(vertexCount));
-  const ones = resources.createBuffer('ones', new Float32Array(vertexCount).fill(1));
+  const edgeCategoryContinent = resources.createBuffer(
+    'edge-category-continent',
+    new Float32Array(edgeCount)
+  );
+  const edgeCategoryCommunity = resources.createBuffer(
+    'edge-category-community',
+    new Float32Array(edgeCount)
+  );
+  const nodeSlotsContinent = resources.createBuffer(
+    'node-slots-continent',
+    new Uint32Array(vertexCount)
+  );
+  const nodeSlotsCommunity = resources.createBuffer(
+    'node-slots-community',
+    new Uint32Array(vertexCount)
+  );
+  // Disc size metric, its draw order (largest first) and the selection highlight channel.
+  const sizeValues = resources.createBuffer('size-values', new Float32Array(vertexCount));
+  const drawOrder = resources.createBuffer(
+    'draw-order',
+    Uint32Array.from({length: vertexCount}, (_, airport) => airport)
+  );
+  const highlightChannel = resources.createBuffer(
+    'highlight-channel',
+    new Float32Array(vertexCount)
+  );
   const morphParameters = resources.createParameterBuffer('morph-parameters', 'float32', 8);
 
   // Great-circle arcs: one compiled graph, rerun when the resolution changes ------------------
@@ -400,6 +495,21 @@ export async function createAirlineNetwork(
   let morphDirection = 1;
   let morphLastWriteSeconds = -Infinity;
   let morphValue = ctx.options.morph;
+  // Colourings of the two partitions (continents, communities) once the analysis has arrived.
+  let continentColoring: Coloring | null = null;
+  let communityColoring: Coloring | null = null;
+  // Disc size metric: the full-radius value, and whether the size buffer holds it.
+  let sizeMaximum = 1;
+  let sizeReady = false;
+  let sizeColumn: Float32Array | null = null;
+  const sizeMaxima: NetworkLegendData['sizeMaxima'] = {pagerank: 1, degree: 1, core: 1, bridges: 1};
+  // Selected airport (click-to-ego) and the routes that touch it.
+  let egoAirport = -1;
+  let egoEdgeFlags: Uint8Array | null = null;
+  let legendComparing = false;
+  let analysisTimer: ReturnType<typeof setTimeout> | undefined;
+  let optimizationTimer: ReturnType<typeof setTimeout> | undefined;
+  const nearestIndex = createNearestIndex(network.lonLat);
   const layoutReader = new SummaryReader(
     resources,
     'layout-positions',
@@ -456,8 +566,9 @@ export async function createAirlineNetwork(
   /** Builds the optimization run for the current resolution and publishes its labels. */
   function buildActiveOptimization(): void {
     if (!analysis) return;
+    // The previous result stays on the map until the new graph reports, so a slider drag does not
+    // flash the label-propagation colours.
     if (activeRun) retire(activeRun.resources);
-    activeResult = null;
     activeSettingsKey = getOptimizationKey();
     const settings = {
       resolution: ctx.options.resolution,
@@ -696,6 +807,11 @@ export async function createAirlineNetwork(
   // Readback processing (CPU bookkeeping on small summaries)
   // ------------------------------------------------------------------------------------------
 
+  function describeAirport(airport: number): string {
+    const record = network.airports[airport];
+    return `${record.iata} (${record.city})`;
+  }
+
   function processAnalysis(result: AnalysisSummary): void {
     pageRankOrder = sortRowsDescending(result.pageRank);
     degreeOrder = sortRowsDescending(result.degree);
@@ -704,6 +820,7 @@ export async function createAirlineNetwork(
       rankOfAirport[airport] = rank;
     });
     ctx.setReadout('airports', vertexCount);
+    ctx.setReadout('routes', edgeCount);
     ctx.setReadout(
       'engineStatus',
       result.adjacencyOverflow
@@ -722,13 +839,20 @@ export async function createAirlineNetwork(
       'propagationStatus',
       result.propagationConverged ? 'converged' : 'stopped at its round budget'
     );
-    const top = Array.from(pageRankOrder.subarray(0, 8), airport => network.airports[airport].iata);
-    ctx.setReadout('topHubs', top.join(', '));
+    ctx.setReadout('topHub', describeAirport(pageRankOrder[0]));
+    ctx.setReadout(
+      'topHubs',
+      Array.from(pageRankOrder.subarray(0, 8), airport => network.airports[airport].iata).join(', ')
+    );
     ctx.setReadout(
       'topByDegree',
       Array.from(degreeOrder.subarray(0, 8), airport => network.airports[airport].iata).join(', ')
     );
     ctx.setReadout('rankAgreement', getSpearmanCorrelation(result.pageRank, result.degree));
+    ctx.setReadout(
+      'hubShare',
+      getTouchShare(new Set(degreeOrder.subarray(0, 10)), network.source, network.target)
+    );
     const sortedDegrees = Array.from(result.degree).sort((a, b) => a - b);
     ctx.setReadout('medianDegree', sortedDegrees[Math.floor(vertexCount / 2)]);
     ctx.setReadout('maxDegree', sortedDegrees[vertexCount - 1]);
@@ -736,11 +860,13 @@ export async function createAirlineNetwork(
       'leafShare',
       result.degree.reduce((count, degree) => count + (degree === 1 ? 1 : 0), 0) / vertexCount
     );
+    ctx.setCost({
+      records: edgeCount,
+      note: `${ctx.options.pageRankIterations} PageRank rounds, ${ctx.options.propagationRounds} propagation rounds`
+    });
     renderPageRankChart(result);
     renderDegreeChart(result);
-    applyColoring();
-    updateCommunityReadouts();
-    ctx.requestLayers();
+    recomputeColorings();
     if (!activeRun || activeSettingsKey !== getOptimizationKey()) buildActiveOptimization();
   }
 
@@ -753,10 +879,8 @@ export async function createAirlineNetwork(
           ? 'local optimum reached'
           : 'stopped at its round budget'
     );
-    applyColoring();
-    updateCommunityReadouts();
+    recomputeColorings();
     renderModularityChart();
-    ctx.requestLayers();
   }
 
   function renderPageRankChart(result: AnalysisSummary): void {
@@ -770,8 +894,9 @@ export async function createAirlineNetwork(
       yLabel: 'PageRank x 1000',
       height: 150,
       formatY: value => value.toFixed(1),
+      onBarClick: index => selectAirport(rows[index], true),
       description:
-        'The 20 airports with the highest PageRank. Highlighted bars are not among the 20 airports with the most connections.'
+        'The 20 airports with the highest PageRank. Highlighted bars are not among the 20 airports with the most connections. Click a bar to mark the airport on the map.'
     });
   }
 
@@ -801,9 +926,16 @@ export async function createAirlineNetwork(
             kind: 'line',
             xLabel: 'resolution gamma',
             yLabel: 'modularity Q',
-            height: 150,
+            height: 160,
+            xDomain: [SWEEP_RESOLUTIONS[0], SWEEP_RESOLUTIONS[SWEEP_RESOLUTIONS.length - 1]],
             series: [
-              {label: 'optimized', x, y: sweepResults.map(entry => entry.optimized), color: 0},
+              {
+                label: 'optimized',
+                x,
+                y: sweepResults.map(entry => entry.optimized),
+                color: 0,
+                points: true
+              },
               {label: 'propagation', x, y: sweepResults.map(entry => entry.propagation), color: 1},
               {
                 label: 'continents',
@@ -814,9 +946,10 @@ export async function createAirlineNetwork(
               }
             ],
             markers: [{x: ctx.options.resolution, label: 'now'}],
+            link: {option: 'resolution', label: value => `gamma = ${value.toFixed(1)}`},
             formatY: value => value.toFixed(2),
             description:
-              'Modularity of three partitions scored at each resolution: the optimized communities, label propagation, and the six continents.'
+              'Modularity of three partitions scored at each resolution: the optimized communities, label propagation, and the six continents. Click or drag to set the resolution.'
           };
     ctx.setChart('modularityChart', chart);
     ctx.setReadout(
@@ -836,17 +969,21 @@ export async function createAirlineNetwork(
     return analysis.propagation;
   }
 
-  function getDisplayLabels(): Uint32Array | null {
-    return ctx.options.colorBy === 'continent' ? continentLabels : getCommunityLabels();
+  /**
+   * The partition the map and the between-group figures are about. With no colour (the unanalysed
+   * first view) the figures still need a partition, so they use the communities.
+   */
+  function getDisplayedColoring(): Coloring | null {
+    return ctx.options.colorBy === 'continent' ? continentColoring : communityColoring;
   }
 
   function updateCommunityReadouts(): void {
     const labels = getCommunityLabels();
-    if (!labels || !analysis) return;
-    const groups = analyzeGroups(labels, analysis.pageRank, network.continent);
+    const coloring = communityColoring;
+    if (!labels || !analysis || !coloring) return;
     const useOptimized = labels !== analysis.propagation;
-    ctx.setReadout('communities', groups.groups.length);
-    ctx.setReadout('purity', groups.continentPurity);
+    ctx.setReadout('communities', coloring.groups.length);
+    ctx.setReadout('purity', coloring.continentPurity);
     ctx.setReadout(
       'qCommunities',
       useOptimized && activeResult ? activeResult.modularity : analysis.propagationModularity
@@ -855,14 +992,10 @@ export async function createAirlineNetwork(
       'qContinents',
       useOptimized && activeResult ? activeResult.continentModularity : analysis.continentModularity
     );
-    let within = 0;
-    for (let edge = 0; edge < edgeCount; edge++) {
-      if (labels[network.source[edge]] === labels[network.target[edge]]) within++;
-    }
-    ctx.setReadout('withinShare', within / edgeCount);
+    ctx.setReadout('withinShare', 1 - coloring.betweenCount / edgeCount);
     ctx.setReadout(
       'communityList',
-      groups.groups
+      coloring.groups
         .slice(0, 6)
         .map((group, rank) => {
           const hub = network.airports[group.topAirport].iata;
@@ -924,38 +1057,50 @@ export async function createAirlineNetwork(
   }
 
   // ------------------------------------------------------------------------------------------
-  // Coloring and filters
+  // Colouring, sizes, filters and the selection
   // ------------------------------------------------------------------------------------------
 
-  /** Writes node colors, per-route palette indexes and the filter masks for the current options. */
-  function applyColoring(): void {
-    const labels = getDisplayLabels();
-    if (!labels || !analysis) return;
-    const groups = analyzeGroups(labels, analysis.pageRank, network.continent);
-    nodeColor.write(groups.colorIndex);
+  /** Whether a route passes the display filters (the graph algorithms always see every route). */
+  function keepsRoute(edge: number, slot: number): boolean {
     const {edgeFilter, minRecords} = ctx.options;
-    const indexes = new Uint32Array(edgeCount);
+    if (network.traffic[edge] < minRecords) return false;
+    if (edgeFilter === 'all') return true;
+    return edgeFilter === 'within' ? slot !== BETWEEN_GROUPS_INDEX : slot === BETWEEN_GROUPS_INDEX;
+  }
+
+  /** The per-route category floats of a partition: slot, `EGO_FLAG + slot` when selected, NaN when filtered out. */
+  function getEdgeCategories(coloring: Coloring): Float32Array {
     const categories = new Float32Array(edgeCount);
+    for (let edge = 0; edge < edgeCount; edge++) {
+      const slot = coloring.edgeSlots[edge];
+      categories[edge] = keepsRoute(edge, slot)
+        ? egoEdgeFlags?.[edge]
+          ? EGO_FLAG + slot
+          : slot
+        : Number.NaN;
+    }
+    return categories;
+  }
+
+  /** Writes node slots, route categories, the morph mask and order, and the bundle categories. */
+  function writeColorBuffers(): void {
+    if (!continentColoring || !communityColoring) return;
+    nodeSlotsContinent.write(continentColoring.nodeSlots);
+    nodeSlotsCommunity.write(communityColoring.nodeSlots);
+    const continentCategories = getEdgeCategories(continentColoring);
+    const communityCategories = getEdgeCategories(communityColoring);
+    edgeCategoryContinent.write(continentCategories);
+    edgeCategoryCommunity.write(communityCategories);
+
+    const displayed = getDisplayedColoring();
+    const categories = displayed === continentColoring ? continentCategories : communityCategories;
+    const slots = displayed ?? communityColoring;
     const mask = new Uint32Array(edgeCount);
     const expandedCategories = new Float32Array(bundleEdgeCount);
     const expandedMask = new Uint32Array(bundleEdgeCount);
     let live = 0;
     for (let edge = 0; edge < edgeCount; edge++) {
-      const index = getEdgeIndex(
-        labels,
-        groups.colorIndex,
-        network.source[edge],
-        network.target[edge]
-      );
-      indexes[edge] = index;
-      const keep =
-        network.traffic[edge] >= minRecords &&
-        (edgeFilter === 'all' ||
-          (edgeFilter === 'within'
-            ? index !== BETWEEN_GROUPS_INDEX
-            : index === BETWEEN_GROUPS_INDEX));
-      categories[edge] = keep ? index : Number.NaN;
-      mask[edge] = keep ? 1 : 0;
+      mask[edge] = Number.isNaN(categories[edge]) ? 0 : 1;
       live += mask[edge];
     }
     for (let edge = 0; edge < bundleEdgeCount; edge++) {
@@ -963,42 +1108,298 @@ export async function createAirlineNetwork(
       expandedCategories[edge] = categories[original];
       expandedMask[edge] = mask[original];
     }
-    edgeIndex.write(indexes);
-    edgeCategory.write(categories);
+    // Morph draw order: within-group routes first, between-group routes over them.
+    const order = new Uint32Array(edgeCount);
+    let within = 0;
+    let between = edgeCount;
+    for (let edge = 0; edge < edgeCount; edge++) {
+      if (slots.edgeSlots[edge] === BETWEEN_GROUPS_INDEX) order[--between] = edge;
+      else order[within++] = edge;
+    }
+    edgeIndex.write(slots.edgeSlots);
     edgeMask.write(mask);
+    edgeOrder.write(order);
     bundleCategory.write(expandedCategories);
     bundleMask.write(expandedMask);
     if (bundling) bundlingFrames = Math.max(bundlingFrames, 2);
     ctx.setReadout('edges', `${formatCount(live)} of ${formatCount(edgeCount)}`);
-    ctx.setLegendData('groups', {
-      entries: describeGroups(groups, labels === continentLabels),
-      showBetween: true
+  }
+
+  /** Recomputes both colourings from the current analysis and partition, then everything that reads them. */
+  function recomputeColorings(): void {
+    const labels = getCommunityLabels();
+    if (!analysis || !labels) return;
+    continentColoring = colorPartition(
+      'continent',
+      continentLabels,
+      analysis.pageRank,
+      network.continent,
+      network.source,
+      network.target
+    );
+    communityColoring = colorPartition(
+      'community',
+      labels,
+      analysis.pageRank,
+      network.continent,
+      network.source,
+      network.target
+    );
+    writeColorBuffers();
+    updateCommunityReadouts();
+    updateBridgeReadouts();
+    refreshSizes();
+    refreshLegend();
+    refreshAnnotations();
+    ctx.requestLayers();
+  }
+
+  /** Between-group share and the bridge airports of the partition the map shows. */
+  function updateBridgeReadouts(): void {
+    const coloring = getDisplayedColoring() ?? communityColoring;
+    if (!coloring) return;
+    ctx.setReadout('betweenShare', coloring.betweenCount / edgeCount);
+    const bridges = getBridgeCounts(coloring.labels, network.source, network.target);
+    const top = sortRowsDescending(bridges).subarray(0, BRIDGE_LABEL_COUNT);
+    ctx.setReadout(
+      'bridgeAirports',
+      Array.from(top, airport => network.airports[airport].iata).join(', ')
+    );
+  }
+
+  /** The size column of a metric, one float per airport. */
+  function getSizeColumn(metric: AirlineNetworkOptions['sizeBy']): Float32Array | null {
+    if (!analysis) return null;
+    switch (metric) {
+      case 'pagerank':
+        return analysis.pageRank;
+      case 'degree':
+        return Float32Array.from(analysis.degree);
+      case 'core':
+        return Float32Array.from(analysis.coreNumber);
+      case 'bridges': {
+        const coloring = getDisplayedColoring() ?? communityColoring;
+        return coloring ? getBridgeCounts(coloring.labels, network.source, network.target) : null;
+      }
+      default:
+        return null;
+    }
+  }
+
+  /** Writes the size metric and the largest-first draw order, and remembers every metric's maximum. */
+  function refreshSizes(): void {
+    if (!analysis) return;
+    for (const metric of ['pagerank', 'degree', 'core', 'bridges'] as const) {
+      const column = getSizeColumn(metric);
+      if (!column) continue;
+      let maximum = 0;
+      for (let airport = 0; airport < vertexCount; airport++) {
+        maximum = Math.max(maximum, column[airport]);
+      }
+      sizeMaxima[metric] = Math.max(maximum, 1e-9);
+    }
+    const metric = ctx.options.sizeBy;
+    const column = getSizeColumn(metric);
+    if (!column || metric === 'uniform') {
+      sizeReady = false;
+      sizeColumn = null;
+      return;
+    }
+    sizeColumn = column;
+    sizeValues.write(column);
+    drawOrder.write(sortRowsDescending(column));
+    sizeMaximum = sizeMaxima[metric];
+    sizeReady = true;
+  }
+
+  /** Pixel radius of an airport's disc under the current size metric. */
+  function getDiscRadius(airport: number): number {
+    if (ctx.options.sizeBy === 'uniform' || !sizeReady || !sizeColumn) return UNIFORM_RADIUS_PIXELS;
+    return getProportionalRadius(sizeColumn[airport], sizeMaximum, ctx.options.maxRadius, {
+      minRadiusPixels: MINIMUM_RADIUS_PIXELS
     });
   }
 
-  function describeGroups(
-    groups: GroupAnalysis,
-    byContinent: boolean
-  ): {color: readonly [number, number, number, number]; label: string}[] {
-    const entries: {color: readonly [number, number, number, number]; label: string}[] = [];
-    groups.groups.slice(0, OTHER_GROUP_INDEX).forEach((group, rank) => {
-      const label = byContinent
-        ? `${CONTINENT_NAMES[group.label]} (${formatCount(group.size)})`
-        : `${network.airports[group.topAirport].iata} community (${formatCount(group.size)})`;
-      entries.push({color: NETWORK_PALETTE[rank], label});
-    });
-    const rest = groups.groups.length - OTHER_GROUP_INDEX;
-    if (rest > 0) {
-      entries.push({
-        color: NETWORK_PALETTE[OTHER_GROUP_INDEX],
-        label: `${formatCount(rest)} smaller ${byContinent ? 'groups' : 'communities'}`
+  /** Hands the group legends and the size maxima to the scene's `legends`. */
+  function refreshLegend(): void {
+    if (!continentColoring || !communityColoring) return;
+    const ground = ctx.ground();
+    const nodePalette = getNodePalette(ground);
+    const entries = (coloring: Coloring, byContinent: boolean): NetworkLegendEntry[] => {
+      const list: NetworkLegendEntry[] = [];
+      let other = 0;
+      let otherGroups = 0;
+      for (const group of coloring.groups) {
+        if (group.slot === OTHER_GROUP_INDEX && !byContinent) {
+          other += group.size;
+          otherGroups++;
+          continue;
+        }
+        list.push({
+          color: nodePalette[group.slot],
+          label: byContinent
+            ? CONTINENT_NAMES[group.label]
+            : `${network.airports[group.topAirport].iata} community`,
+          count: group.size
+        });
+      }
+      if (otherGroups > 0) {
+        list.push({
+          color: nodePalette[OTHER_GROUP_INDEX],
+          label: `${formatCount(otherGroups)} smaller communities`,
+          count: other
+        });
+      }
+      return list;
+    };
+    const data: NetworkLegendData = {
+      continent: entries(continentColoring, true),
+      community: entries(communityColoring, false),
+      between: nodePalette[BETWEEN_GROUPS_INDEX],
+      comparing: legendComparing,
+      sizeMaxima: {...sizeMaxima}
+    };
+    ctx.setLegendData('network', data);
+  }
+
+  /** Marks the selected airport and its routes (an achromatic highlight), or clears the selection. */
+  function setEgo(airport: number): void {
+    egoAirport = airport;
+    const channel = new Float32Array(vertexCount);
+    const highlights: MapHighlight[] = [];
+    if (airport >= 0) {
+      egoEdgeFlags = new Uint8Array(edgeCount);
+      const neighbours: number[] = [];
+      for (let edge = 0; edge < edgeCount; edge++) {
+        const a = network.source[edge];
+        const b = network.target[edge];
+        if (a === airport || b === airport) {
+          egoEdgeFlags[edge] = 1;
+          neighbours.push(a === airport ? b : a);
+        }
+      }
+      channel[airport] = 1;
+      for (const neighbour of neighbours) channel[neighbour] = 1;
+      neighbours.sort(
+        (a, b) => (analysis?.pageRank[b] ?? 0) - (analysis?.pageRank[a] ?? 0) || a - b
+      );
+      for (const neighbour of neighbours.slice(0, EGO_RING_LIMIT)) {
+        highlights.push({
+          kind: 'point',
+          coordinate: getAirportLngLat(neighbour),
+          radiusPixels: getDiscRadius(neighbour) + 2.5
+        });
+      }
+      highlights.push({
+        kind: 'point',
+        coordinate: getAirportLngLat(airport),
+        radiusPixels: getDiscRadius(airport) + 4,
+        pulse: true
       });
+    } else {
+      egoEdgeFlags = null;
     }
-    return entries;
+    highlightChannel.write(channel);
+    ctx.setHighlight(highlights.length ? highlights : null);
+    writeColorBuffers();
+    refreshAnnotations();
+    ctx.requestLayers();
+  }
+
+  /** Selects an airport (chart bar or map click); a bar click also works with the selection off. */
+  function selectAirport(airport: number, fromChart = false): void {
+    if (ctx.options.ego && ctx.options.view === 'arcs') {
+      setEgo(airport === egoAirport && !fromChart ? -1 : airport);
+      return;
+    }
+    ctx.setHighlight({
+      kind: 'point',
+      coordinate: getAirportLngLat(airport),
+      radiusPixels: getDiscRadius(airport) + 4,
+      pulse: true
+    });
+  }
+
+  function getAirportLngLat(airport: number): LngLat {
+    return [network.lonLat[airport * 2], network.lonLat[airport * 2 + 1]];
   }
 
   // ------------------------------------------------------------------------------------------
-  // Tooltip
+  // Labels and notes (placed from dataset rows, never from typed coordinates)
+  // ------------------------------------------------------------------------------------------
+
+  function getAirportLabel(
+    airport: number,
+    priority: number
+  ): Extract<MapAnnotation, {kind: 'point'}> {
+    const record = network.airports[airport];
+    return {
+      kind: 'point',
+      id: `airport:${record.iata}`,
+      coordinate: getAirportLngLat(airport),
+      text: record.iata,
+      detail: record.city,
+      marker: 'dot',
+      rank: 'subject',
+      priority
+    };
+  }
+
+  /** The rows with the largest value of the metric the discs show (connections for equal discs). */
+  function getTopRows(count: number): number[] {
+    if (!analysis) return [];
+    const metric = ctx.options.sizeBy;
+    const column =
+      metric === 'uniform' || metric === 'bridges' ? analysis.degree : getSizeColumn(metric);
+    return column ? Array.from(sortRowsDescending(column).subarray(0, count)) : [];
+  }
+
+  function refreshAnnotations(): void {
+    const options = ctx.options;
+    const list: MapAnnotation[] = [];
+    const coloring = getDisplayedColoring() ?? communityColoring;
+    if (analysis && options.view !== 'morph' && options.labels !== 'none') {
+      if (options.labels === 'hubs') {
+        for (const airport of getTopRows(HUB_LABEL_COUNT)) list.push(getAirportLabel(airport, 6));
+      } else if (options.labels === 'bridges' && coloring) {
+        const bridges = getBridgeCounts(coloring.labels, network.source, network.target);
+        for (const airport of sortRowsDescending(bridges).subarray(0, BRIDGE_LABEL_COUNT)) {
+          list.push(getAirportLabel(airport, 6));
+        }
+      } else if (coloring) {
+        // The largest groups, named by their top airport.
+        for (const group of coloring.groups.slice(0, GROUP_LABEL_COUNT)) {
+          list.push(getAirportLabel(group.topAirport, 6));
+        }
+        if (options.labels === 'disagreement') {
+          // The large group whose dominant continent holds the smallest share: where the
+          // communities cut across the continents.
+          const largest = coloring.groups.slice(0, 7);
+          const widest = largest.reduce((best, group) =>
+            group.dominantShare < best.dominantShare ? group : best
+          );
+          list.push({
+            kind: 'note',
+            id: 'note:disagreement',
+            coordinate: getAirportLngLat(widest.topAirport),
+            title: liveText('{share:percent} {continent}', {
+              share: widest.dominantShare,
+              continent: CONTINENT_NAMES[widest.dominantContinent]
+            }),
+            text: `of the ${network.airports[widest.topAirport].iata} community; the rest sit on other continents`,
+            priority: 8
+          });
+        }
+      }
+    }
+    if (egoAirport >= 0 && options.view === 'arcs') {
+      list.push({...getAirportLabel(egoAirport, 9), marker: 'ring', tone: 'signal'});
+    }
+    ctx.setAnnotations('airline-network', list.length ? list : null);
+  }
+
+  // ------------------------------------------------------------------------------------------
+  // Picking and tooltip
   // ------------------------------------------------------------------------------------------
 
   /** CPU position of an airport on screen: geography, or the morph between it and the layout. */
@@ -1016,33 +1417,98 @@ export async function createAirlineNetwork(
     return [geoX + (x - geoX) * eased, geoY + (y - geoY) * eased];
   }
 
-  function findAirportNear(pixel: readonly [number, number]): string | null {
+  /**
+   * The airport under the pointer, or -1. On the map the CPU nearest index finds the candidates
+   * within a pointer's reach; among them the disc whose edge is closest to the pointer wins. In
+   * the morph view the airports are not at their dataset positions, so every airport is tried.
+   */
+  function pickAirport(event: ScenePointerEvent): number {
     const viewport = ctx.getViewport();
-    if (!viewport || !analysis) return null;
+    if (!viewport || !analysis) return -1;
+    const pixel = event.pixel;
+    let candidates: number[];
+    if (ctx.options.view === 'morph') {
+      candidates = Array.from({length: vertexCount}, (_, airport) => airport);
+    } else {
+      if (!event.coordinate) return -1;
+      const longitude = ((((event.coordinate[0] + 180) % 360) + 360) % 360) - 180;
+      const reach = viewport.unproject([pixel[0] + PICK_RADIUS_PIXELS, pixel[1]]);
+      const radius = haversineMeters(
+        [event.coordinate[0], event.coordinate[1]],
+        [reach[0], reach[1]]
+      );
+      candidates = nearestIndex.within([longitude, event.coordinate[1]], radius);
+    }
     let best = -1;
     let bestScore = Number.POSITIVE_INFINITY;
-    for (let airport = 0; airport < vertexCount; airport++) {
-      const [x, y] = viewport.project(getAirportPosition(airport));
+    for (const airport of candidates) {
+      const [longitude, latitude] = getAirportPosition(airport);
+      // The pointer may be over another copy of the world: project the nearest copy.
+      const copy = event.coordinate ? Math.round((event.coordinate[0] - longitude) / 360) * 360 : 0;
+      const [x, y] = viewport.project([longitude + copy, latitude]);
       const distance = Math.hypot(x - pixel[0], y - pixel[1]);
-      // Prefer the more important airport when several discs overlap the pointer.
-      const score = distance - Math.sqrt(analysis.pageRank[airport] * 4000);
-      if (distance < 14 && score < bestScore) {
+      const radius = getDiscRadius(airport);
+      if (distance > Math.max(radius + 3, 7)) continue;
+      const score = distance - radius;
+      if (score < bestScore) {
         bestScore = score;
         best = airport;
       }
     }
-    if (best < 0) return null;
-    const record = network.airports[best];
+    return best;
+  }
+
+  function getTooltip(event: ScenePointerEvent): TooltipContent | null {
+    const airport = pickAirport(event);
+    if (airport < 0 || !analysis) return null;
+    const record = network.airports[airport];
     const labels = getCommunityLabels();
-    const community = labels
-      ? `community of ${labels.reduce((count, label) => count + (label === labels[best] ? 1 : 0), 0)} airports`
-      : '';
-    return [
-      `${record.iata}: ${record.name}`,
-      `${record.city}, ${record.country}`,
-      `${analysis.degree[best]} connections, PageRank rank ${rankOfAirport[best] + 1}`,
-      `core number ${analysis.coreNumber[best]}${community ? `, ${community}` : ''}`
-    ].join('\n');
+    const community = communityColoring?.groups.find(group => group.label === labels?.[airport]);
+    const palette = getNodePalette(ctx.ground());
+    const slot = (ctx.options.colorBy === 'continent' ? continentColoring : communityColoring)
+      ?.nodeSlots[airport];
+    const metric = ctx.options.sizeBy;
+    const swatch = slot === undefined || ctx.options.colorBy === 'none' ? undefined : palette[slot];
+    const connections: TooltipRow = {
+      label: 'Connections',
+      value: formatCount(analysis.degree[airport]),
+      unit: 'airports'
+    };
+    const pageRank: TooltipRow = {
+      label: 'PageRank rank',
+      value: formatOrdinal(rankOfAirport[airport] + 1),
+      unit: `of ${formatCount(vertexCount)}`
+    };
+    const core: TooltipRow = {
+      label: 'Core number',
+      value: formatCount(analysis.coreNumber[airport])
+    };
+    // The mapped value comes first, carrying the swatch of the group colour.
+    const mapped = metric === 'pagerank' ? pageRank : metric === 'core' ? core : connections;
+    const rows: TooltipRow[] = [
+      {...mapped, swatch, emphasis: true},
+      ...[connections, pageRank, core].filter(row => row !== mapped),
+      {label: 'Continent', value: CONTINENT_NAMES[network.continent[airport]]}
+    ];
+    if (community) {
+      rows.push({
+        label: 'Community',
+        value: `${network.airports[community.topAirport].iata} community`,
+        unit: `${formatCount(community.size)} airports`,
+        swatch: palette[community.slot]
+      });
+    }
+    return {
+      title: record.iata,
+      subtitle: `${record.name}, ${record.city}, ${record.country}`,
+      rows,
+      anchor: getAirportLngLat(airport),
+      highlight: {
+        kind: 'point',
+        coordinate: getAirportLngLat(airport),
+        radiusPixels: getDiscRadius(airport) + 3
+      }
+    };
   }
 
   // ------------------------------------------------------------------------------------------
@@ -1055,7 +1521,41 @@ export async function createAirlineNetwork(
   buildLayout();
   if (ctx.options.view === 'bundles') ensureBundling();
   ctx.setReadout('airports', vertexCount);
+  ctx.setReadout('routes', edgeCount);
+  ctx.setReadout('resolutionNow', ctx.options.resolution.toFixed(1));
   ctx.setReadout('edges', `${formatCount(edgeCount)} of ${formatCount(edgeCount)}`);
+  ctx.setFurniture({
+    title: {
+      sample: `${formatCount(vertexCount)} airports, ${formatCount(edgeCount)} route pairs`
+    }
+  });
+
+  /** Debounced rebuild of the analysis graph: a slider drag compiles once, when the reader pauses. */
+  function scheduleAnalysisRebuild(resetOptimization: boolean): void {
+    clearTimeout(analysisTimer);
+    analysisTimer = setTimeout(() => {
+      if (destroyed) return;
+      buildAnalysis();
+      if (resetOptimization) {
+        if (activeRun) retire(activeRun.resources);
+        activeRun = null;
+        activeResult = null;
+        cancelSweep();
+      }
+      ctx.requestLayers();
+    }, REBUILD_DEBOUNCE_MS);
+  }
+
+  /** Debounced rebuild of the optimization run (resolution, rounds, minimum gain). */
+  function scheduleOptimizationRebuild(restartSweep: boolean): void {
+    clearTimeout(optimizationTimer);
+    optimizationTimer = setTimeout(() => {
+      if (destroyed) return;
+      buildActiveOptimization();
+      if (restartSweep) startSweep();
+      ctx.requestLayers();
+    }, REBUILD_DEBOUNCE_MS);
+  }
 
   return {
     getCompiledGraphs: () =>
@@ -1072,26 +1572,41 @@ export async function createAirlineNetwork(
       switch (id) {
         case 'pageRankDamping':
         case 'pageRankIterations':
+          scheduleAnalysisRebuild(false);
+          break;
         case 'propagationRounds':
-          buildAnalysis();
-          if (activeRun) retire(activeRun.resources);
-          activeRun = null;
-          activeResult = null;
-          cancelSweep();
+          scheduleAnalysisRebuild(true);
           break;
         case 'resolution':
+          // The chart marker follows the slider at once; the graph builds when the drag settles.
+          ctx.setReadout('resolutionNow', ctx.options.resolution.toFixed(1));
+          renderModularityChart();
+          scheduleOptimizationRebuild(false);
+          break;
         case 'rounds':
         case 'minimumGain':
-          buildActiveOptimization();
-          if (id !== 'resolution') startSweep();
-          else renderModularityChart();
+          scheduleOptimizationRebuild(true);
           break;
         case 'communityMethod':
+          recomputeColorings();
+          break;
         case 'colorBy':
         case 'edgeFilter':
         case 'minRecords':
-          applyColoring();
-          updateCommunityReadouts();
+          writeColorBuffers();
+          updateBridgeReadouts();
+          refreshSizes();
+          refreshAnnotations();
+          break;
+        case 'sizeBy':
+          refreshSizes();
+          refreshAnnotations();
+          break;
+        case 'labels':
+          refreshAnnotations();
+          break;
+        case 'ego':
+          if (!ctx.options.ego && egoAirport >= 0) setEgo(-1);
           break;
         case 'arcSegmentKm':
           writeArcParameters();
@@ -1099,6 +1614,8 @@ export async function createAirlineNetwork(
         case 'view':
           if (ctx.options.view === 'bundles') ensureBundling();
           if (ctx.options.view === 'arcs') pendingArcs = true;
+          if (ctx.options.view !== 'arcs' && egoAirport >= 0) setEgo(-1);
+          refreshAnnotations();
           break;
         case 'repulsion':
         case 'attraction':
@@ -1142,8 +1659,24 @@ export async function createAirlineNetwork(
       ctx.requestLayers();
     },
 
-    getTooltip(event) {
-      return findAirportNear(event.pixel);
+    // The ground colours the palettes: a ground flip rebuilds the legends and the layers.
+    onGroundChange() {
+      refreshLegend();
+      ctx.requestLayers();
+    },
+
+    getTooltip,
+
+    onClick(event) {
+      if (!ctx.options.ego || ctx.options.view !== 'arcs' || !analysis) return false;
+      const airport = pickAirport(event);
+      if (airport < 0) {
+        if (egoAirport < 0) return false;
+        setEgo(-1);
+        return true;
+      }
+      selectAirport(airport);
+      return true;
     },
 
     encode(commandEncoder, frame) {
@@ -1215,95 +1748,153 @@ export async function createAirlineNetwork(
     getLayers() {
       const options = ctx.options;
       const layers: Layer[] = [];
-      const dark = ctx.theme() === 'dark';
-      const palette = NETWORK_PALETTE;
-      if (options.view === 'arcs') {
-        for (const offset of WORLD_COPIES) {
+      const ground = ctx.ground();
+      const parameters = ground === 'dark' ? ADDITIVE_ROUTE_PARAMETERS : NORMAL_ROUTE_PARAMETERS;
+      const nodePalette = getNodePalette(ground);
+      const routePalette = getRoutePalette(ground);
+      const neutralNode = NEUTRAL_NODE_INK[ground];
+      const neutralRoute = NEUTRAL_ROUTE_INK[ground];
+      const coloringReady = Boolean(continentColoring && communityColoring);
+      // Swipe compare: continents on side a, communities on side b, whatever "colour by" says.
+      const comparing = options.view === 'arcs' && ctx.getCompare() !== null && coloringReady;
+      if (comparing !== legendComparing) {
+        legendComparing = comparing;
+        queueMicrotask(() => {
+          if (!destroyed) refreshLegend();
+        });
+      }
+      const neutral = !comparing && (options.colorBy === 'none' || !coloringReady);
+      const sides: {side: 'a' | 'b' | undefined; partition: 'continent' | 'community'}[] = comparing
+        ? [
+            {side: 'a', partition: 'continent'},
+            {side: 'b', partition: 'community'}
+          ]
+        : [
+            {
+              side: undefined,
+              partition: options.colorBy === 'continent' ? 'continent' : 'community'
+            }
+          ];
+      const egoActive = egoAirport >= 0 && options.view === 'arcs';
+      const passes: RouteDrawPass[] = ['within', 'between'];
+
+      for (const {side, partition} of sides) {
+        const key = `${side ?? 'x'}-${partition}`;
+        const categories =
+          partition === 'continent' ? edgeCategoryContinent : edgeCategoryCommunity;
+        const routeStyle = {
+          palette: routePalette,
+          neutral: neutralRoute,
+          colorMode: neutral ? ('neutral' as const) : ('category' as const),
+          opacity: options.edgeOpacity,
+          compareSide: side,
+          egoActive,
+          dimAlpha: EGO_DIM_ALPHA,
+          parameters
+        };
+        if (options.view === 'arcs') {
+          for (const drawPass of passes) {
+            for (const offset of WORLD_COPIES) {
+              layers.push(
+                new CategoryArcLayer({
+                  id: `network-arcs-${key}-${drawPass}-${offset}`,
+                  ...routeStyle,
+                  drawPass,
+                  positionOffset: [offset, 0],
+                  positions: arcs.positions,
+                  pathOffsets: arcs.offsets,
+                  pathOffsetCount: arcs.offsetCount,
+                  vertexCount: arcs.count,
+                  drawCommands: arcs.drawCommands,
+                  categories,
+                  widthPixels: 0.75
+                })
+              );
+            }
+          }
+        } else if (options.view === 'bundles' && bundling) {
+          for (const drawPass of passes) {
+            layers.push(
+              new CategoryPathLayer({
+                id: `network-bundles-${bundling.pointsPerEdge}-${bundlingSerial}-${drawPass}`,
+                ...routeStyle,
+                drawPass,
+                paths: bundling.paths,
+                pointsPerPath: bundling.pointsPerEdge,
+                pathCount: bundleEdgeCount,
+                categories: bundleCategory,
+                opacity: Math.min(1, options.edgeOpacity * 1.4)
+              })
+            );
+          }
+        } else if (options.view === 'morph') {
           layers.push(
-            new PathOutputLayer({
-              id: `network-arcs-${offset}`,
+            new SpatialAnalysisSegmentLayer({
+              id: 'network-morph-edges',
               coordinateSystem: LNGLAT,
-              positionOffset: [offset, 0],
-              positions: arcs.positions,
-              pathOffsets: arcs.offsets,
-              pathOffsetCount: arcs.offsetCount,
-              vertexCount: arcs.count,
-              drawCommands: arcs.drawCommands,
-              values: edgeCategory,
-              colorSource: 'path-value',
-              valueMapping: 'category',
-              color: [255, 255, 255, 255],
-              widthPixels: 0.9,
+              segments,
+              weights: segmentWeights,
+              ids: edgeOrder,
+              instanceCount: edgeCount,
+              widthPixels: 0.8,
+              values: edgeIndex,
+              valueFormat: 'uint32',
+              colormap: neutral ? 'uniform' : 'category',
+              color: neutralRoute,
+              palette: routePalette,
+              blending: ground === 'dark' ? 'additive' : 'normal',
               opacity: options.edgeOpacity
             })
           );
         }
-      } else if (options.view === 'bundles' && bundling) {
-        layers.push(
-          new CategoryPathLayer({
-            id: `network-bundles-${bundling.pointsPerEdge}-${bundlingSerial}`,
-            paths: bundling.paths,
-            pointsPerPath: bundling.pointsPerEdge,
-            pathCount: bundleEdgeCount,
-            categories: bundleCategory,
-            opacity: Math.min(1, options.edgeOpacity * 1.4)
-          })
-        );
-      } else if (options.view === 'morph') {
-        layers.push(
-          new SpatialAnalysisSegmentLayer({
-            id: 'network-morph-edges',
-            coordinateSystem: LNGLAT,
-            segments,
-            weights: segmentWeights,
-            instanceCount: edgeCount,
-            widthPixels: 0.8,
-            values: edgeIndex,
-            valueFormat: 'uint32',
-            colormap: 'category',
-            palette,
-            opacity: options.edgeOpacity * 0.8
-          })
-        );
       }
-      const sizeBuffer =
-        options.sizeBy === 'pagerank'
-          ? factory.getBuffer(stack.pageRank)
-          : options.sizeBy === 'degree'
-            ? factory.getBuffer(stack.degree)
-            : options.sizeBy === 'core'
-              ? factory.getBuffer(stack.coreNumber)
-              : ones;
-      const maximum = !analysis
-        ? 1
-        : options.sizeBy === 'pagerank'
-          ? analysis.pageRank[pageRankOrder[0]]
-          : options.sizeBy === 'degree'
-            ? analysis.degree[degreeOrder[0]]
-            : options.sizeBy === 'core'
-              ? Math.max(1, analysis.degeneracy)
-              : 1;
-      layers.push(
-        new SizedDiscLayer({
-          id: `network-airports-${options.sizeBy}`,
-          positions: options.view === 'morph' ? morphPositions : geoPositions,
-          rowCount: vertexCount,
-          values: sizeBuffer,
-          valueFormat:
-            options.sizeBy === 'pagerank' || options.sizeBy === 'uniform' ? 'float32' : 'uint32',
-          maximumValue: maximum,
-          colorIndices: nodeColor,
-          palette,
-          minRadiusPixels: options.sizeBy === 'uniform' ? 3 : 1.6,
-          maxRadiusPixels: options.sizeBy === 'uniform' ? 3 : options.maxRadius,
-          opacity: dark ? 0.95 : 0.9
-        })
-      );
+
+      // Airports last: outlined discs, largest first so small airports stay visible.
+      const sizeActive = options.sizeBy !== 'uniform' && sizeReady;
+      for (const {side, partition} of sides) {
+        const slots = partition === 'continent' ? nodeSlotsContinent : nodeSlotsCommunity;
+        const copies = options.view === 'morph' ? [0] : WORLD_COPIES;
+        for (const offset of copies) {
+          layers.push(
+            new SpatialAnalysisPointLayer({
+              id: `network-airports-${side ?? 'x'}-${offset}`,
+              coordinateSystem: LNGLAT,
+              positions: options.view === 'morph' ? morphPositions : geoPositions,
+              instanceCount: vertexCount,
+              ids: sizeActive ? drawOrder : null,
+              sizeValues: sizeActive ? sizeValues : null,
+              sizeMaximumValue: sizeMaximum,
+              radiusPixels: sizeActive ? options.maxRadius : UNIFORM_RADIUS_PIXELS,
+              radiusMinPixels: sizeActive ? MINIMUM_RADIUS_PIXELS : undefined,
+              shape: 'circle',
+              colormap: neutral ? 'uniform' : 'category',
+              color: neutralNode,
+              ...(neutral ? {} : {values: slots, valueFormat: 'uint32' as const}),
+              palette: nodePalette,
+              outlineColor: DISC_OUTLINE_COLOR,
+              outlineWidthPixels: DISC_OUTLINE_PIXELS,
+              ...(egoActive
+                ? {
+                    instanceChannels: highlightChannel,
+                    channelStride: 1,
+                    channels: {highlight: 0},
+                    dimOpacity: 0.2
+                  }
+                : {}),
+              positionOffset: [offset, 0],
+              compareSide: side,
+              opacity: 0.95
+            })
+          );
+        }
+      }
       return layers;
     },
 
     destroy() {
       destroyed = true;
+      clearTimeout(analysisTimer);
+      clearTimeout(optimizationTimer);
       analysisReader.stop();
       layoutReader.stop();
       arcReader.stop();

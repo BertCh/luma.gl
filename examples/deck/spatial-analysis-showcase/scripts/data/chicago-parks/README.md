@@ -1,0 +1,8 @@
+# chicago-parks
+Parks, nature reserves, forest preserves / protected areas and woodland in and around Chicago.
+
+- Source: OpenStreetMap via the Overpass API (`https://overpass-api.de/api/interpreter`), downloaded 2026-10-07 (server data timestamp 2026-10-07T04:24Z). Licence ODbL 1.0, attribution `© OpenStreetMap contributors (ODbL)`.
+- Query (bbox `41.64,-87.94,42.02,-87.52`, `out geom;`): ways and relations tagged `leisure=park`, `leisure=nature_reserve`, `boundary=protected_area`, `landuse=forest`, `natural=wood`. Golf courses are not queried. Save the result as `osm.json` (Overpass needs a `User-Agent` header) and run `python -I build.py path/to/osm.json`.
+- Processing: multipolygon relations rebuilt from outer/inner ways; clipped to the bbox; `kind` priority protected_area (forest preserve / protected area) > nature_reserve > park > woodland; same-name same-kind pieces merged; the "Forest Preserve District of Cook County" umbrella boundary dropped; woodland has the other kinds subtracted; slivers < 0.5 ha (woodland < 2 ha) and holes < 0.1 ha dropped; simplified 5 m in EPSG:26916 with topology kept, snapped to 1e-5 degrees. `green-mask.geojson` is the buffered union of everything (8 m simplification, parts < 2 ha dropped).
+- Output (973 KB, 12 files): `green-space.geojson` (1,139 features: name, kind, areaKm2, osmId), GeoArrow binary columns (`vertices`, `ringOffsets`, `polygonRingOffsets`, `partFeature`) plus `name` (index into `manifest.names`), `kind` (4 categories), `areaKm2`, `osmId`, `osmType` columns, and `green-mask.geojson`.
+- Caveats: the nature-reserve and protected-area polygons of Cook County overlap parks of the same area; both are kept and `kind` tells them apart. OSM coverage of small parks is uneven.

@@ -3,9 +3,12 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {formatPlaybackTime, playbackOptions} from '../../engine/playback';
+import {joinCredits} from '../../cartography/credits';
+import {ground} from '../../cartography/grounds';
 import {defineScene} from '../scene';
 import {getVesselLegendEntries} from './b12-tracks';
 import type {VesselEncountersOptions} from './vessel-encounters.compute';
+import {MOVEMENT_CREDITS} from './movement-style';
 
 const UPPER_BAY = {longitude: -74.035, latitude: 40.672, zoom: 11.6};
 
@@ -25,6 +28,22 @@ export default defineScene<VesselEncountersOptions>({
   ],
   datasets: [{id: 'ais-vessels', role: 'vessel tracks (AIS, 12 June 2024)'}],
   initialView: UPPER_BAY,
+  basemap: ground('night', {labels: 'none'}),
+  furniture: {
+    title: {
+      title: 'Who meets whom in New York Harbor?',
+      subtitle: 'Space-time close approaches · 12 June 2024',
+      chips: ['Close approach is not an encounter']
+    },
+    scaleBar: {units: 'nautical'},
+    credit: joinCredits(MOVEMENT_CREDITS.harborAis),
+    clock: {
+      option: 'timeOfDay',
+      time: {origin: '2024-06-12T00:00:00Z', unit: 'seconds'},
+      zones: ['America/New_York', 'UTC'],
+      progress: [0, 86400]
+    }
+  },
 
   options: [
     {
@@ -279,7 +298,7 @@ export default defineScene<VesselEncountersOptions>({
     {
       kind: 'ramp' as const,
       title: `Route ${state.similarityMetric === 'frechet' ? 'Frechet' : 'Hausdorff'} distance (connectors${state.trackColor === 'similarity' ? ' and tracks' : ''})`,
-      ramp: 'viridis' as const,
+      ramp: 'magma' as const,
       extent: [0, state.colorRangeMeters] as const,
       unit: 'm',
       format: (value: number) => value.toFixed(0)
@@ -336,6 +355,9 @@ compiled.encode(commandEncoder, {parameters: undefined});`,
   story: [
     {
       id: 'the-question',
+      headline: 'Close approaches cluster on ferry lanes',
+      textAlternative: 'Pairs of vessels are connected at a shared harbor clock.',
+      optionsMode: 'fresh',
       title: 'Which vessels meet in the harbor, and do they share a route?',
       body: 'Tugs meet barges, ferries pass each other mid-channel, a pilot boat comes alongside a tanker. On 12 June 2024 the Upper Bay carried hundreds of tracks at once, and the interesting question is not just *who came close* but *whether they were on the same route*.\n\nThe colored tracks are the whole AIS day by vessel type; the thick white line is a Staten Island ferry. Each colored connector joins two vessels that are **within 100 m of each other at 19:00 UTC (3 pm)** (**Encounter distance** and **Show connectors at**, below). We will build that list in four steps: a shared clock, a distance, a mask for moored boats, and a route similarity score.',
       camera: {...UPPER_BAY, transitionMs: 1200},
@@ -345,8 +367,11 @@ compiled.encode(commandEncoder, {parameters: undefined});`,
     },
     {
       id: 'clock',
+      headline: 'A meeting needs place and time',
+      textAlternative: 'A space-time lattice bins vessels at the same minute.',
+      optionsMode: 'fresh',
       title: 'Everyone on one clock',
-      body: 'Vessels report at different instants, so they cannot be compared directly. **`addClockEncounters`** first resamples every track onto **one shared clock** (`GPUTrajectoryResample` in clock mode): bucket *k* is the instant *start + k x step*, and a vessel is *absent* (NaN) outside its own track time. Then **`GPUTrajectoryEncounters`** looks for pairs in the same bucket.\n\nThe clock is a parameter buffer. Set the **Clock step** to 60 s and **Clock starts at** to 12:00 UTC: twice the time resolution, covering the afternoon and evening. A shorter step misses fewer passes between buckets, which matters because a vessel at 12 knots travels 370 m in a minute.',
+      body: 'Vessels report at different instants, so they cannot be compared directly. **`addClockEncounters`** first resamples every track onto **one shared clock** (`GPUTrajectoryResample` in clock mode): bucket *k* is the instant *start + k x step*, and a vessel is *absent* (NaN) outside its own track time. Then **`GPUTrajectoryEncounters`** looks for pairs in the same bucket.\n\nThe dashed lattice on the map is the actual **3 × 3 neighbourhood** searched for one returned pair: only samples in the same bucket and neighbouring 400 m cells are tested. The clock is a parameter buffer. Set the **Clock step** to 60 s and **Clock starts at** to 12:00 UTC: twice the time resolution, covering the afternoon and evening. A shorter step misses fewer passes between buckets, which matters because a vessel at 12 knots travels 370 m in a minute.',
       options: {clockStepSeconds: 60, clockStartHour: 12},
       highlight: {readout: 'clock'},
       controls: ['clockStepSeconds', 'clockStartHour'],
@@ -354,6 +379,9 @@ compiled.encode(commandEncoder, {parameters: undefined});`,
     },
     {
       id: 'distance',
+      headline: 'A metric ring is only a few pixels',
+      textAlternative: 'A true-distance ring surrounds a close vessel pair.',
+      optionsMode: 'fresh',
       title: 'How close is a meeting?',
       body: 'Slide **Encounter distance** up to 300 m: connectors multiply as vessels sailing in the same lane count. The distance is clamped to a compile-time lattice cell (400 m) because the contributor only searches the 3 x 3 cells around each sample, so the cell must be at least as wide as the largest distance you ask for.\n\nMeetings are found in a grid with **three axes: x, y and the time bucket**, so only vessels at the same instant can meet. Tracks that are close in space but at different times never pair. The histogram below shows how close the pairs actually get.',
       options: {distance: 300, clockStepSeconds: 60, clockStartHour: 12},
@@ -362,6 +390,9 @@ compiled.encode(commandEncoder, {parameters: undefined});`,
     },
     {
       id: 'moored',
+      headline: 'Moored neighbours are crowding',
+      textAlternative: 'Slow vessels at piers are separated from moving pairs.',
+      optionsMode: 'fresh',
       title: 'Moored vessels do not meet, they just sit',
       body: "Set **Ignore vessels slower than** to 0 and the pair list explodes: the tugs and barges tied up side by side at a pier are within meters of each other for hours. A GPU kernel reads the **average speed** that `GPUTrajectoryMetrics` computed for each track and turns the fixes of slower tracks into NaN, which the shared-clock resample and the encounter search both treat as absent; the default 1 knot keeps only vessels that actually travel.\n\nReturn it to 1 knot and watch the busiest hour for meetings in the readouts: it follows the harbor's working day: the chart shows meetings by hour, and **Play** below sweeps the clock so you can watch connectors appear and dissolve as vessels pass.",
       options: {minSpeedKnots: 0, distance: 100, clockStepSeconds: 60, clockStartHour: 12},
@@ -371,6 +402,9 @@ compiled.encode(commandEncoder, {parameters: undefined});`,
     },
     {
       id: 'similarity',
+      headline: 'A shared lane is not a crossing',
+      textAlternative: 'Route classes distinguish similar and different paths.',
+      optionsMode: 'fresh',
       title: 'Traveling together, or just crossing?',
       body: 'Each connector is now colored by how alike the **whole routes** of the two vessels are, measured by `GPUTrackSimilarity` on 64-point arc-length resamples. The **Hausdorff distance** is the largest distance from any point of one route to the other route: the greater of `max over a of min over b |a - b|` and the same with the roles swapped. It follows Shapely `hausdorff_distance` without densification.\n\nPurple means nearly the same route, yellow means very different routes. Set **Connectors for** to *Alike routes only* to keep the pairs that share a lane (ferries in the same slip, tugs of one tow), or to *Different routes only* to see where independent traffic crosses. The histogram splits the pairs by route distance: a hump near zero is convoys and shared lanes, the long tail is crossings.',
       options: {
@@ -385,8 +419,11 @@ compiled.encode(commandEncoder, {parameters: undefined});`,
     },
     {
       id: 'selected',
+      headline: 'A leash respects route direction',
+      textAlternative: 'A selected ferry route is compared against a reverse route.',
+      optionsMode: 'fresh',
       title: 'Click a vessel: who sails like it?',
-      body: "The same measure answers a different question: **which tracks have a route like this vessel's?** Tracks are now colored by the route distance from the selected vessel (the white line; **Color tracks by**). Click any track to change the selection; the second `GPUTrackSimilarity` instance scores that vessel against all 897 routes in one dispatch. **Reselect the Staten Island ferry** brings the selection back to where it started.\n\nSwitch **Route distance** to *Frechet*: it is the shortest leash that lets two walkers follow their routes **in order**, so a vessel that sails the same lane in the opposite direction is still far away, while Hausdorff calls the two routes identical.",
+      body: "The same measure answers a different question: **which tracks have a route like this vessel's?** Tracks are now colored by the route distance from the selected vessel (the white line; **Color tracks by**). Click any track to change the selection; the second `GPUTrackSimilarity` instance scores that vessel against all 897 routes in one dispatch. **Reselect the Staten Island ferry** brings the selection back to where it started.\n\nSwitch **Route distance** to *Frechet*: it is the shortest leash that lets two walkers follow their routes **in order**, so a vessel that sails the same lane in the opposite direction is still far away, while Hausdorff calls the two routes identical. The dashed route-sample segment is a concrete leash witness from the displayed encounter pair; it makes the route comparison visible without pretending the connector at this instant is the whole-route distance.",
       options: {
         trackColor: 'similarity',
         similarityMetric: 'frechet',
@@ -400,6 +437,9 @@ compiled.encode(commandEncoder, {parameters: undefined});`,
     },
     {
       id: 'limits',
+      headline: 'Sampling decides what can be found',
+      textAlternative: 'Encounter limits are summarized with the harbor map.',
+      optionsMode: 'fresh',
       title: 'Limits and things to try',
       body: 'Meetings are tested **at the buckets only**: two vessels that pass within the distance between two buckets are missed, so keep the clock step small compared with the distance divided by the speed. Distances are planar meters from AIS positions, which are only about 10 m accurate, so very small distances are noise. Frechet is computed on 64-point routes (the Frechet cap is 256 vertices per track), so it reflects the shape of the route, not every wiggle.\n\n**Try it:** set **Encounter distance** to 25 m and look at the closest approach; drag **Show connectors at** through the afternoon; select a tug and see which routes match; set **Connectors for** to *Different routes only* at the Narrows to see where traffic crosses.',
       options: {

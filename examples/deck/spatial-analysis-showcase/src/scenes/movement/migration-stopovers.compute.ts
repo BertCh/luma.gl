@@ -45,7 +45,7 @@ export type MigrationStopoversOptions = {
   showSites: boolean;
   showTracks: boolean;
   trackOpacity: number;
-  ramp: 'viridis' | 'magma' | 'inferno' | 'cividis';
+  ramp: 'magma' | 'inferno' | 'cividis';
 };
 
 const STOP_CAPACITY = 16384;
@@ -644,6 +644,32 @@ export async function createMigrationStopovers(
       selected[1] = sites[selectedSite].lat;
     }
     selectedSiteLngLat.write(selected);
+    const largest = sites[0];
+    ctx.setAnnotations(
+      'site-radius',
+      largest
+        ? [
+            {
+              kind: 'ring',
+              id: 'site-epsilon',
+              coordinate: [largest.lng, largest.lat],
+              radiusMeters: options.epsilonKm * 1000,
+              text: `ε ${options.epsilonKm} km`,
+              dashed: true,
+              tone: 'signal',
+              priority: 8
+            },
+            {
+              kind: 'note',
+              id: 'top-site',
+              coordinate: [largest.lng, largest.lat],
+              title: `#1 ${largest.name}`,
+              text: `${largest.birds} birds · ${largest.dwellDays.toFixed(0)} bird-days`,
+              priority: 7
+            }
+          ]
+        : null
+    );
   }
 
   function describeSelectedSite(): void {

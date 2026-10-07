@@ -8,7 +8,7 @@ export default {
   license:
     'NYC Open Data terms of use (NYC TLC trip records, no restrictions); OSRM routes on OpenStreetMap data (ODbL)',
   attribution:
-    'NYC Taxi & Limousine Commission trip records via NYC Open Data; poopdeck.gl nyc-taxi-paths archive; © OpenStreetMap contributors',
+    'NYC Taxi & Limousine Commission trip records via NYC Open Data; poopdeck.gl nyc-taxi-paths archive; routes by OSRM on © OpenStreetMap contributors (ODbL)',
   sourceUrl: 'https://tiles.poopdeck.gl/data/nyc-taxi-paths/manifest.json',
   approxBytes: 5_114_140,
   bbox: [-74.03, 40.68, -73.9, 40.82]

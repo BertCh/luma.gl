@@ -2,20 +2,22 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {CREDITS, joinCredits} from '../../cartography/credits';
+import {ground} from '../../cartography/grounds';
 import {formatPlaybackTime, playbackOptions} from '../../engine/playback';
 import {defineScene} from '../scene';
 import type {SatelliteConstellationsOptions} from './satellite-constellations.compute';
 
-const VIEW = {longitude: 10, latitude: 15, zoom: 1.5, pitch: 55, bearing: 0};
+const VIEW = {longitude: 10, latitude: 15, zoom: 1.5, pitch: 0, bearing: 0};
 const elapsed = (seconds: number) => formatPlaybackTime.duration(seconds) || '0 min';
 
 export default defineScene<SatelliteConstellationsOptions>({
   id: 'satellite-constellations',
-  title: 'Starlink shells versus GPS orbits',
+  title: 'What makes an orbital shell?',
   chapter: 'earth',
-  order: 32,
+  order: 12,
   summary:
-    'Let GPU k-means group Starlink and GPS satellites by orbital inclination and altitude, and watch each shell fly: tilted bands a few hundred kilometres up against a navigation constellation at 20,200 km.',
+    'Let GPU k-means group loaded satellites by orbital inclination and altitude, then inspect the iterative assignments and sensitivity of the resulting shells.',
   contributors: ['GPUKMeans', 'GPUTrajectoryPlayhead', 'GPUTimeWindowFilter'],
   datasets: [{id: 'celestrak-ground-tracks', role: 'SGP4 ground tracks (7 October 2026, 3 h)'}],
   initialView: VIEW,
@@ -31,9 +33,24 @@ export default defineScene<SatelliteConstellationsOptions>({
       help: 'Which satellites are grouped and shown. The set of points is fixed when the k-means graph compiles, so each family compiles its own graph on first use; the panel counts that as a rebuild.',
       options: [
         {value: 'both', label: 'Starlink sample + GPS'},
-        {value: 'starlink', label: 'Starlink sample (800)'},
-        {value: 'gps', label: 'GPS (32)'},
-        {value: 'all', label: 'All 911 satellites'}
+        {value: 'starlink', label: 'Bounded Starlink sample'},
+        {value: 'gps', label: 'GPS records'},
+        {value: 'all', label: 'All loaded records'}
+      ]
+    },
+    {
+      kind: 'select',
+      id: 'iterationFrame',
+      label: 'Iteration frame',
+      group: 'Shells (k-means)',
+      apply: 'param',
+      default: '24',
+      help: 'Runs GPUKMeans for the selected authored iteration limit, so the linked map and scatter show its actual intermediate assignments and centres before the final 24-iteration result.',
+      options: [
+        {value: '1', label: '1. Assign'},
+        {value: '2', label: '2. Move centres'},
+        {value: '4', label: '3. Repeat'},
+        {value: '24', label: 'Final GPU result'}
       ]
     },
     {
@@ -171,49 +188,69 @@ export default defineScene<SatelliteConstellationsOptions>({
 
   story: [
     {
-      id: 'shells',
-      title: 'Which satellites share an orbit?',
-      body: 'A mega-constellation is built from shells: groups of satellites flying the same altitude at the same tilt. `GPUKMeans` finds them without being told how many there are in each place: every satellite becomes a point (its inclination, and the logarithm of its altitude), and the GPU repeats assign-and-update steps until the centers stop moving.\n\nEach color is one shell found. Start the clock with **Play** below, tilt the map, and read the shells in the readout.',
+      id: 'features',
+      title: 'A shell begins with chosen features',
+      headline: 'K-means sees tilt and mean altitude',
+      textAlternative:
+        'Satellite clusters are explained as a two-feature partition rather than physical orbital planes.',
+      optionsMode: 'fresh',
+      body: 'Every satellite first becomes a point in a deliberately small feature space: inclination in degrees and mean altitude on a logarithmic scale. The linked scatter shows those measured points with units; the map is only the playback view. `GPUKMeans` then assigns every point to its nearest centre and moves that centre until it stops changing.\n\nThis is a classification, not recovered physical orbital planes: RAAN is absent. Start the clock with **Play** and read the provisional shell labels with the feature chart.',
       camera: {...VIEW, transitionMs: 1400},
       options: {family: 'both', k: 5, altitudeWeight: 30, play: true},
       controls: ['play', 'k', 'family'],
-      readouts: ['shells', 'converged']
+      readouts: ['featureChart', 'shells', 'converged']
+    },
+    {
+      id: 'iterate',
+      title: 'Assign, move centres, repeat',
+      headline: 'Clusters are an iterative choice',
+      textAlternative:
+        'Cluster colours and convergence readout explain the k-means assignment and centre-update cycle.',
+      optionsMode: 'fresh',
+      body: 'The linked feature chart colours assignments and the stage chart keeps the actual k-means sequence visible: assign points to nearest centres, move each centre to its mean, then repeat until the GPU convergence check stops.\n\nChange k to see a live partition, rather than treating a final scatter as a fixed taxonomy.',
+      camera: {...VIEW, transitionMs: 1400},
+      options: {family: 'starlink', k: 4},
+      controls: ['iterationFrame', 'k', 'seed', 'family'],
+      readouts: ['featureChart', 'iterationChart', 'shellChart', 'shells']
     },
     {
       id: 'starlink',
-      title: 'Four shells, unequal in size',
-      body: 'The Starlink sample holds satellites at 43, 53, 70 and 97 degrees. In this sample the 53 degree shell has 372 satellites and the 43 degree one 280; the 70 degree shell has 53 and the polar 97 degree shell 95. At each tilt a few satellites sit lower than the rest, still climbing from their launch orbit or about to be retired.\n\nWith 4 shells selected, the chart counts each. Try **Number of shells (k)** at 3 and at 6: with too few clusters real shells merge, with too many one shell is split by small altitude differences.',
-      camera: {...VIEW, transitionMs: 1400},
-      options: {family: 'starlink', k: 4},
-      controls: ['k', 'seed', 'family'],
-      readouts: ['shellChart', 'inclinationChart', 'shells']
+      title: 'One sample separates into orbital shells',
+      headline: 'A sample can still reveal bands',
+      textAlternative:
+        'Starlink sample clusters show stable tilt-and-altitude groups over a dark world map.',
+      optionsMode: 'fresh',
+      body: 'The Starlink input is a deliberately bounded sample, not a census. Vary **k** to see how a classification can merge or split the feature-space bands. The live shell chart supplies each cluster’s N.\n\nCluster labels are descriptive shell IDs, not physical names or orbital planes.',
+      camera: {...VIEW, zoom: 1.2, transitionMs: 1400},
+      options: {family: 'starlink', k: 4, showStems: false, altitudeDisplay: 'compressed'},
+      controls: ['k', 'altitudeDisplay', 'altitudeScale'],
+      readouts: ['featureChart', 'shells', 'shellChart']
     },
     {
       id: 'gps',
-      title: 'GPS is a different world',
-      body: 'The 32 operational GPS satellites fly at about 20,200 km, roughly 40 times higher than Starlink, in orbits tilted by 53 to 57 degrees, and take 12 hours to circle the Earth. Over three hours each moves a quarter of a lap. With **Altitude scale** compressed they stay on the same screen as Starlink; switch to linear and low orbit collapses onto the map.\n\nGPS is six orbital planes. k-means on inclination and altitude cannot see them, because the planes differ by where they cross the equator, which is not one of the features. Only its altitude and tilt are clustered.',
-      camera: {...VIEW, zoom: 1.2, pitch: 60, transitionMs: 1400},
-      options: {family: 'both', k: 5, showStems: true, altitudeDisplay: 'compressed'},
-      controls: ['altitudeDisplay', 'altitudeScale', 'showStems'],
-      readouts: ['shells']
-    },
-    {
-      id: 'weights',
-      title: 'How much does altitude matter?',
-      body: 'k-means uses plain distance, so the choice of units decides the answer. With altitude counted lightly (a weight of 5) inclination dominates and the four Starlink tilts separate cleanly at k = 4. Around 30 the lowest satellites of the 53 and 43 degree shells start to split off as extra clusters at k = 5. Counted heavily (200), inclination stops mattering: the 43 and 53 degree shells merge into one cluster of about 600 satellites and the small groups are told apart by altitude. There is no single correct weight; it encodes what you mean by "the same shell".\n\nDrag **Altitude weight** below and watch the colors and the chart change; the graph reruns without recompiling.',
+      title: 'Altitude and tilt cannot reveal orbital planes',
+      headline: 'GPS has 32 records, not 37',
+      textAlternative:
+        'GPS points remain distinct in altitude while the story explains that RAAN is absent from the clustering features.',
+      optionsMode: 'fresh',
+      body: 'The live readout reports the loaded GPS record count. GPS sits high above the bounded Starlink sample in the scatter, but inclination and mean altitude cannot recover orbital planes: RAAN is absent from these features.\n\nDrag **Altitude weight** to see the axis-scale decision change the provisional partition. Compressed height is display-only and never changes clustering features.',
       camera: {...VIEW, transitionMs: 1400},
-      options: {family: 'starlink', k: 5, altitudeWeight: 30, showStems: false},
+      options: {family: 'gps', k: 3, altitudeWeight: 30, showStems: false},
       controls: ['altitudeWeight', 'k', 'seed'],
-      readouts: ['shellChart', 'converged']
+      readouts: ['featureChart', 'shellChart', 'converged']
     },
     {
-      id: 'limits',
-      title: 'A sample, a snapshot, and no conjunctions',
-      body: 'Starlink is a random sample of 800 of about 10,600 satellites, and the altitude of each is its mean over three hours, so satellites still raising their orbit appear between shells. SGP4 positions are predictions that degrade with the age of the element sets. This scene does not look for close approaches: `GPUTrajectoryEncounters` is two-dimensional and would report satellites hundreds of kilometres apart in height as near misses.\n\nSet **Satellites to cluster** to all 911 and see how the weather, Earth observation and station satellites fall into the same tilted bands.',
+      id: 'stability',
+      title: 'Weights and seeds change the partition',
+      headline: 'Feature units decide cluster boundaries',
+      textAlternative:
+        'Changing altitude weight and seed demonstrates a different k-means partition without presenting it as orbital truth.',
+      optionsMode: 'fresh',
+      body: 'The synchronized before/after assignment comparison and reassignment matrix show what changes when seed or altitude weight changes. Shell colours remain stable for a fixed family, k, seed and weight, but are descriptive feature-space labels—not planes.\n\nThe bounded Starlink sample, dated TLE snapshot and absent RAAN remain visible limits.',
       camera: {...VIEW, zoom: 1.4, transitionMs: 1400},
       options: {family: 'all', k: 8, showTrails: true},
-      controls: ['family', 'k'],
-      readouts: ['shells', 'satellites']
+      controls: ['family', 'k', 'seed', 'altitudeWeight'],
+      readouts: ['reassignmentMatrix', 'reassignedShare', 'shells', 'satellites']
     }
   ],
 
@@ -230,6 +267,9 @@ export default defineScene<SatelliteConstellationsOptions>({
   ],
 
   readouts: [
+    {id: 'iterationChart', label: 'Assign → move → repeat', kind: 'chart'},
+    {id: 'reassignmentMatrix', label: 'Before / after assignments', kind: 'chart'},
+    {id: 'reassignedShare', label: 'Reassigned share'},
     {
       id: 'shells',
       label: 'Shells found',
@@ -241,6 +281,12 @@ export default defineScene<SatelliteConstellationsOptions>({
       label: 'Satellites per shell',
       kind: 'chart',
       help: 'Cluster sizes from GPUKMeans, labeled by inclination / altitude (km).'
+    },
+    {
+      id: 'featureChart',
+      label: 'Inclination–altitude feature space',
+      kind: 'chart',
+      help: 'One dot per selected satellite. Mean altitude uses a logarithmic kilometre axis; colours are provisional nearest-centre classes, not orbital-plane labels.'
     },
     {
       id: 'inclinationChart',
@@ -273,10 +319,34 @@ compiled.encode(commandEncoder, {parameters: undefined});
 // The playhead scene colors each satellite by labels[satellite] and lifts it by its altitude.`,
 
   about: {
-    what: 'A look at constellation geometry: satellites grouped by orbital inclination and altitude with `GPUKMeans`, then flown on the globe with the same GPU playhead as the playback scene. The dataset holds a random sample of 800 Starlink satellites, the operational GPS constellation and other families, all propagated with SGP4 from current CelesTrak elements.',
-    why: 'Mega-constellations are designed as shells, and navigation constellations as planes; the shell a satellite belongs to determines its coverage latitude, its drag and its neighbours. Clustering turns a list of elements into that structure.',
+    what: 'A look at constellation geometry: satellites grouped by orbital inclination and altitude with `GPUKMeans`, then flown on the globe with the same GPU playhead as the playback scene. The dataset holds a bounded 800-object Starlink sample, 32 GPS records and other families, all propagated with SGP4 from a dated CelesTrak TLE snapshot.',
+    why: 'Clustering is a way to inspect a chosen feature space. It does not recover orbital planes, coverage, or conjunctions.',
     howToRead:
       'Colors are k-means clusters in the plane of inclination and log altitude, lowest shell first. The chart counts satellites per shell. Clusters depend on k, the seed and the altitude weight, so treat them as a way to look, not as truth. Altitude is the mean over three hours. Close approaches are deliberately not computed: `GPUTrajectoryEncounters` is two-dimensional.'
+  },
+
+  pipeline: [
+    {
+      id: 'features',
+      label: 'Features',
+      detail: 'Build inclination and weighted log-altitude values'
+    },
+    {id: 'assign', label: 'Assign', detail: 'Give each satellite its nearest centre'},
+    {id: 'update', label: 'Update', detail: 'Move centres to fixed-order cluster means'},
+    {id: 'draw', label: 'Draw', detail: 'Link modelled tracks to provisional shell labels'}
+  ],
+  basemap: ground('space', {
+    labels: 'none',
+    graticule: true,
+    referenceLines: ['equator', 'tropics']
+  }),
+  furniture: {
+    title: {
+      title: 'What makes an orbital shell?',
+      subtitle: 'Inclination + mean altitude · GPU k-means · SGP4 model'
+    },
+    credit: joinCredits('CelesTrak GP elements; propagation with SGP4', CREDITS.naturalEarth),
+    caveat: 'RAAN is absent: these feature clusters cannot recover orbital planes or conjunctions.'
   },
 
   create: async ctx =>

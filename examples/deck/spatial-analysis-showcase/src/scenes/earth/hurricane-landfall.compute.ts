@@ -3,6 +3,7 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {COORDINATE_SYSTEM, type Layer} from '@deck.gl/core';
+import {HURRICANE_CLASS} from '../../cartography/hue-registry';
 import type {Buffer} from '@luma.gl/core';
 import {
   GPUDistanceField,
@@ -28,12 +29,10 @@ import {formatCount, SpatialAnalysisResources} from '../../engine/resources';
 import {SummaryReader} from '../../engine/summary-reader';
 import type {SceneContext, SceneInstance} from '../scene';
 import {buildZoneSet, rasterizeZones, type ZoneSet} from '../movement/b12-zones';
-import {binValues, histogramChart, lineChart} from '../movement/f-chart-helpers';
+import {binValues, histogramChart} from '../movement/f-chart-helpers';
 import {
-  formatDayOfYear,
   getCategoryOfWind,
   getStormLabel,
-  HURRICANE_CATEGORY_COLORS,
   HURRICANE_CATEGORIES,
   loadHurricaneTracks
 } from './hurricane-data';
@@ -42,7 +41,7 @@ import {
 export type HurricaneLandfallOptions = {
   view: 'density' | 'coast' | 'landfalls' | 'none';
   intensity: 'all' | 'storm' | 'hurricane' | 'major' | 'weighted';
-  ramp: 'viridis' | 'magma' | 'inferno' | 'cividis';
+  ramp: 'magma' | 'inferno' | 'cividis';
   sqrtScale: boolean;
   rasterOpacity: number;
   coastSearchKm: number;
@@ -855,35 +854,6 @@ const AREA_UNIT: f32 = ${Math.fround(unit / cellArea)};`,
     (statesDataset.properties.abbr as string[] | undefined) ?? [];
 
   // ---- Charts that depend on the intensity -----------------------------------------------------
-  function updateAliveChart(): void {
-    const threshold = INTENSITY_THRESHOLDS[Math.min(3, INTENSITY_INDEX[ctx.options.intensity])];
-    const counts = new Float64Array(366);
-    for (let track = 0; track < trackCount; track++) {
-      const days = new Set<number>();
-      for (let vertex = storms.offsets[track]; vertex < storms.offsets[track + 1]; vertex++) {
-        if (storms.wind[vertex] < threshold) continue;
-        const date = new Date((315532800 + storms.absoluteSeconds[vertex]) * 1000);
-        const start = Date.UTC(date.getUTCFullYear(), 0, 1);
-        days.add(Math.min(364, Math.floor((date.getTime() - start) / 86400000)));
-      }
-      for (const day of days) counts[day]++;
-    }
-    const average = Float64Array.from(counts, value => value / storms.seasonCount);
-    const x = Array.from(average, (_, day) => day);
-    ctx.setChart(
-      'aliveChart',
-      lineChart(x.slice(0, 365), average.subarray(0, 365), {
-        label: 'storms alive',
-        xLabel: 'day of the year',
-        yLabel: 'storms alive per day, average season',
-        formatX: value => formatDayOfYear(value),
-        formatY: value => value.toFixed(2),
-        description:
-          'Average number of storms with a fix at the chosen strength on each day of the year, over all seasons. The Atlantic season peaks around 10 September.'
-      })
-    );
-  }
-
   function updateCoastChart(): void {
     if (!coastKm) return;
     const options = ctx.options;
@@ -986,7 +956,6 @@ const AREA_UNIT: f32 = ${Math.fround(unit / cellArea)};`,
   );
   writeCoastSettings();
   replaceEvents(Number(ctx.options.eventsPerStorm));
-  updateAliveChart();
   describeSelectedState();
 
   // ---- Instance -------------------------------------------------------------------------------
@@ -1000,7 +969,6 @@ const AREA_UNIT: f32 = ${Math.fround(unit / cellArea)};`,
     setOption(id, _value, state) {
       switch (id) {
         case 'intensity':
-          updateAliveChart();
           updateCoastChart();
           updateLegendExtents();
           break;
@@ -1124,7 +1092,7 @@ const AREA_UNIT: f32 = ${Math.fround(unit / cellArea)};`,
             valueFormat: 'uint32',
             valueIndices: segmentEndsBuffer,
             colormap: 'category',
-            palette: HURRICANE_CATEGORY_COLORS,
+            palette: HURRICANE_CLASS[ctx.ground()],
             widthPixels: 1,
             opacity: options.trackOpacity
           })
@@ -1174,7 +1142,7 @@ const AREA_UNIT: f32 = ${Math.fround(unit / cellArea)};`,
             values: dotCategories,
             valueFormat: 'uint32',
             colormap: 'category',
-            palette: HURRICANE_CATEGORY_COLORS,
+            palette: HURRICANE_CLASS[ctx.ground()],
             radiusPixels: 4.5,
             opacity: 0.95
           })

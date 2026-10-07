@@ -66,10 +66,62 @@ md.renderer.rules['code_inline'] = (tokens, index, options, env, self) => {
     : `<code>${md.utils.escapeHtml(name)}</code>`;
 };
 
+/**
+ * What an action link does when pressed (story prose links with an `action:` target):
+ *
+ * - `fly`: `action:fly?lng=-87.64&lat=41.92&z=14[&pitch=..&bearing=..&ms=..]` moves the camera.
+ * - `set`: `action:set?<optionId>=<value>[&...]` writes options.
+ * - `reset`: `action:reset` returns the options to the step's.
+ * - `camera`: `action:camera` returns to the step's camera.
+ * - `step`: `action:step?id=<stepId>` jumps to a step.
+ * - `highlight`: `action:highlight?lng=..&lat=..` pings a place on the map.
+ */
+export type ActionVerb = 'fly' | 'set' | 'reset' | 'camera' | 'step' | 'highlight';
+
+const ACTION_VERBS: readonly ActionVerb[] = ['fly', 'set', 'reset', 'camera', 'step', 'highlight'];
+
+function isActionVerb(verb: string): verb is ActionVerb {
+  return (ACTION_VERBS as readonly string[]).includes(verb);
+}
+
+/**
+ * Reads the action of a rendered action link (or of an element inside one, such as the click
+ * target). Returns null when the element is not within an action link or the verb is unknown.
+ * The story view dispatches the result and must call `preventDefault()` on the click.
+ */
+export function parseActionLink(
+  element: HTMLElement
+): {verb: ActionVerb; params: Record<string, string>} | null {
+  const link = element.closest<HTMLElement>('a.action-link[data-action]');
+  const verb = link?.dataset.action ?? '';
+  if (!link || !isActionVerb(verb)) return null;
+  const params: Record<string, string> = {};
+  for (const [key, value] of new URLSearchParams(link.dataset.params ?? '')) params[key] = value;
+  return {verb, params};
+}
+
+/** Rewrites an `action:verb?query` link to an inert, keyboard-activatable anchor. */
+function applyActionLink(token: {attrSet: (name: string, value: string) => void}, href: string) {
+  const target = href.slice('action:'.length);
+  const separator = target.indexOf('?');
+  const verb = (separator < 0 ? target : target.slice(0, separator)).toLowerCase();
+  const query = separator < 0 ? '' : target.slice(separator + 1);
+  token.attrSet('href', '#');
+  token.attrSet('class', 'action-link');
+  token.attrSet('data-action', verb);
+  token.attrSet('data-params', query);
+}
+
 const defaultLinkOpen = md.renderer.rules['link_open'];
 md.renderer.rules['link_open'] = (tokens, index, options, env, self) => {
   const token = tokens[index];
   const href = token.attrGet('href') ?? '';
+  if (href.startsWith('action:')) {
+    applyActionLink(token, href);
+    return defaultLinkOpen
+      ? defaultLinkOpen(tokens, index, options, env, self)
+      : self.renderToken(tokens, index, options);
+  }
   const resolved = resolveLink(href);
   if (resolved.kind === 'route') {
     token.attrSet('href', resolved.href);

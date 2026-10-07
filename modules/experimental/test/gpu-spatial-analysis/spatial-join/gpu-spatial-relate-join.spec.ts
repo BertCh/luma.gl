@@ -536,7 +536,7 @@ it('GPUSpatialPredicateJoin reuses a prepared right-hand side until invalidated'
   }
 });
 
-it('GPUSpatialJoinCandidates emits sorted bounding-box candidates', async () => {
+it('GPUSpatialJoinCandidates reads a per-frame distance and emits sorted candidates', async () => {
   const device = await getWebGPUTestDevice();
   if (!device) {
     return;
@@ -553,23 +553,27 @@ it('GPUSpatialJoinCandidates emits sorted bounding-box candidates', async () => 
     const ys = vertices.map(vertex => vertex[1]);
     return [Math.min(...xs), Math.min(...ys), Math.max(...xs), Math.max(...ys)];
   };
-  const margin = 0.5;
-  const expected: [number, number][] = [];
-  for (const [leftRow, left] of lefts.entries()) {
-    for (const [rightRow, right] of rights.entries()) {
-      const a = bounds(left);
-      const b = bounds(right);
-      if (
-        a[0] - margin <= b[2] &&
-        b[0] <= a[2] + margin &&
-        a[1] - margin <= b[3] &&
-        b[1] <= a[3] + margin
-      ) {
-        expected.push([leftRow, rightRow]);
+  const getExpected = (distance: number): [number, number][] => {
+    const margin = Number.isFinite(distance) && distance >= 0 ? distance : 0;
+    const expected: [number, number][] = [];
+    for (const [leftRow, left] of lefts.entries()) {
+      for (const [rightRow, right] of rights.entries()) {
+        const a = bounds(left);
+        const b = bounds(right);
+        if (
+          a[0] - margin <= b[2] &&
+          b[0] <= a[2] + margin &&
+          a[1] - margin <= b[3] &&
+          b[1] <= a[3] + margin
+        ) {
+          expected.push([leftRow, rightRow]);
+        }
       }
     }
-  }
-  expect(expected.length).toBeGreaterThan(20);
+    return expected;
+  };
+  const distances = [0, 0.5, 2, -1, Number.NaN, Number.POSITIVE_INFINITY];
+  expect(getExpected(0.5).length).toBeGreaterThan(20);
   for (const usePrepared of [false, true]) {
     const graph = new GPUCommandGraph(device, {id: 'candidates'});
     const buffers: Buffer[] = [];
@@ -586,6 +590,11 @@ it('GPUSpatialJoinCandidates emits sorted bounding-box candidates', async () => 
     const count = output('c', 1);
     const overflow = output('o', 1);
     const total = output('t', 1);
+    const distance = new GPUParameterBuffer(device, {
+      id: `candidate-distance-${usePrepared}`,
+      format: 'float32',
+      length: 1
+    });
     const prepared = usePrepared ? new GPUSpatialJoinPrepared({geometry: right}) : undefined;
     if (prepared) {
       graph.add(prepared);
@@ -595,7 +604,7 @@ it('GPUSpatialJoinCandidates emits sorted bounding-box candidates', async () => 
         left,
         right,
         prepared,
-        distance: margin,
+        distance: distance.importToGraph(graph),
         pairs: {
           leftIds: leftIds.view,
           rightIds: rightIds.view,
@@ -606,18 +615,23 @@ it('GPUSpatialJoinCandidates emits sorted bounding-box candidates', async () => 
       })
     );
     const compiled = graph.compile();
-    submitGraph(device, compiled, undefined);
-    const [matched] = await readUint32(count.buffer, 1);
-    const lefted = await readUint32(leftIds.buffer, matched);
-    const righted = await readUint32(rightIds.buffer, matched);
-    expect(
-      lefted.map((row, slot) => [row, righted[slot]]),
-      `prepared ${usePrepared}`
-    ).toEqual(expected);
-    expect((await readUint32(total.buffer, 1))[0]).toBe(expected.length);
-    expect((await readUint32(overflow.buffer, 1))[0]).toBe(0);
+    for (const value of distances) {
+      distance.write(Float32Array.of(value));
+      submitGraph(device, compiled, undefined);
+      const expected = getExpected(value);
+      const [matched] = await readUint32(count.buffer, 1);
+      const lefted = await readUint32(leftIds.buffer, matched);
+      const righted = await readUint32(rightIds.buffer, matched);
+      expect(
+        lefted.map((row, slot) => [row, righted[slot]]),
+        `prepared ${usePrepared}, distance ${value}`
+      ).toEqual(expected);
+      expect((await readUint32(total.buffer, 1))[0]).toBe(expected.length);
+      expect((await readUint32(overflow.buffer, 1))[0]).toBe(0);
+    }
     compiled.destroy();
     prepared?.destroy();
+    distance.destroy();
     for (const buffer of buffers) {
       buffer.destroy();
     }

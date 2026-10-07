@@ -28,7 +28,9 @@ export type SatelliteConstellationsOptions = {
   speed: number;
   loop: boolean;
   family: 'both' | 'starlink' | 'gps' | 'all';
+  iterationFrame: string;
   k: number;
+  iterations: number;
   seed: string;
   altitudeWeight: number;
   altitudeDisplay: 'compressed' | 'linear';
@@ -51,7 +53,6 @@ export const SHELL_COLORS: readonly (readonly [number, number, number, number])[
   [170, 175, 185, 255]
 ];
 
-const ITERATIONS = 24;
 const HIDDEN = 0xffffffff;
 const FAMILY_GROUPS: Record<SatelliteConstellationsOptions['family'], readonly number[] | null> = {
   both: [1, 2],
@@ -61,8 +62,10 @@ const FAMILY_GROUPS: Record<SatelliteConstellationsOptions['family'], readonly n
 };
 
 type Shell = {
-  /** Rank by mean altitude, the palette row. */
+  /** Rank by mean altitude, for the readable S1…Sk ordering only. */
   rank: number;
+  /** Palette slot matched to a nearby earlier centre, not a physical shell identity. */
+  colorSlot: number;
   inclination: number;
   altitudeKm: number;
   size: number;
@@ -78,6 +81,7 @@ type KMeansGraph = {
   convergenceResult: readonly [number, number] | null;
   reader: SummaryReader;
   k: number;
+  iterations: number;
   satellites: Uint32Array;
   features: Buffer;
   dirty: boolean;
@@ -97,6 +101,11 @@ export async function createSatelliteConstellations(
   const tracks = loadSatelliteTracks(ctx.datasets.get(SATELLITE_DATASET_ID));
   const resources = new SpatialAnalysisResources(ctx.device, 'satellite-constellations');
   let destroyed = false;
+  const priorCenters = new Map<
+    string,
+    readonly {inclination: number; altitudeKm: number; colorSlot: number}[]
+  >();
+  const priorAssignments = new Map<string, Map<number, number>>();
 
   const colorRows = new Uint32Array(tracks.trackCount).fill(HIDDEN);
   const core = createSatellitePlaybackCore(resources, tracks, colorRows, () => {
@@ -136,7 +145,8 @@ export async function createSatelliteConstellations(
 
   function getGraph(): KMeansGraph {
     const {family, k, seed} = ctx.options;
-    const key = `${family}-${k}-${seed}`;
+    const iterations = Number(ctx.options.iterationFrame);
+    const key = `${family}-${k}-${seed}-${iterations}`;
     const existing = graphs.get(key);
     if (existing) return existing;
     const satellites = familySatellites(family);
@@ -153,7 +163,7 @@ export async function createSatelliteConstellations(
         id: 'shells',
         positions: importGraphBuffer(graph, 'features', features, 'float32x2', count),
         k: effectiveK,
-        iterations: ITERATIONS,
+        iterations,
         initialization: 'kmeans++',
         seed: Number(seed),
         labels: importGraphBuffer(graph, 'labels', labels, 'uint32', count),
@@ -184,12 +194,13 @@ export async function createSatelliteConstellations(
         for (let cluster = 0; cluster < effectiveK; cluster++) {
           shellList.push({
             rank: cluster,
+            colorSlot: cluster,
             inclination: floats[centerStart + cluster * 2],
             altitudeKm: 10 ** (floats[centerStart + cluster * 2 + 1] / weight),
             size: words[sizeStart + cluster]
           });
         }
-        // Palette order: lowest shell first, so the same shell keeps its color across settings.
+        // Lowest first makes labels readable; colors are matched to a nearest prior centre.
         const order = shellList
           .map((shell, cluster) => ({shell, cluster}))
           .filter(entry => entry.shell.size > 0)
@@ -197,10 +208,36 @@ export async function createSatelliteConstellations(
             (a, b) =>
               a.shell.altitudeKm - b.shell.altitudeKm || a.shell.inclination - b.shell.inclination
           );
+        const centerKey = `${ctx.options.family}-${effectiveK}`;
+        const available = [...(priorCenters.get(centerKey) ?? [])];
+        for (const entry of order) {
+          let closest = -1;
+          let closestDistance = Infinity;
+          for (let index = 0; index < available.length; index++) {
+            const center = available[index];
+            const distance =
+              (entry.shell.inclination - center.inclination) ** 2 +
+              (weight * Math.log10(entry.shell.altitudeKm / center.altitudeKm)) ** 2;
+            if (distance < closestDistance) {
+              closest = index;
+              closestDistance = distance;
+            }
+          }
+          if (closest >= 0) entry.shell.colorSlot = available.splice(closest, 1)[0].colorSlot;
+          else entry.shell.colorSlot = entry.shell.rank % SHELL_COLORS.length;
+        }
+        priorCenters.set(
+          centerKey,
+          order.map(entry => ({
+            inclination: entry.shell.inclination,
+            altitudeKm: entry.shell.altitudeKm,
+            colorSlot: entry.shell.colorSlot
+          }))
+        );
         const rankOfCluster = new Map<number, number>();
         order.forEach((entry, rank) => {
           entry.shell.rank = rank;
-          rankOfCluster.set(entry.cluster, rank);
+          rankOfCluster.set(entry.cluster, entry.shell.colorSlot);
         });
         const labelBySatellite = new Map<number, number>();
         satellites.forEach((satellite, row) => {
@@ -222,6 +259,7 @@ export async function createSatelliteConstellations(
       convergenceResult: null,
       reader,
       k: effectiveK,
+      iterations,
       satellites,
       features,
       dirty: true,
@@ -247,21 +285,23 @@ export async function createSatelliteConstellations(
     }
     core.colorsBuffer.write(colorRows);
     const options = ctx.options;
+    const stabilityKey = `${options.family}-${graph.k}`;
+    const before = priorAssignments.get(stabilityKey);
     const groups = FAMILY_GROUPS[options.family];
     core.setTrackFilter(track => (groups ? groups.includes(tracks.group[track]) : true));
     ctx.setLegendData(
       'shells',
       graph.shells.map(shell => ({
-        color: SHELL_COLORS[shell.rank % SHELL_COLORS.length],
-        label: `${describeShell(shell)} (${shell.size})`
+        color: SHELL_COLORS[shell.colorSlot % SHELL_COLORS.length],
+        label: `S${shell.rank + 1} · ${describeShell(shell)} (N=${shell.size})`
       }))
     );
     ctx.setReadout(
       'shells',
       graph.shells
         .map(
-          (shell, index) =>
-            `${index + 1}. ${describeShell(shell)}: ${formatCount(shell.size)} satellites`
+          shell =>
+            `S${shell.rank + 1}. ${describeShell(shell)}: ${formatCount(shell.size)} satellites`
         )
         .join('\n')
     );
@@ -270,8 +310,8 @@ export async function createSatelliteConstellations(
       ctx.setReadout(
         'converged',
         convergence[1]
-          ? `converged after ${convergence[0]} of ${ITERATIONS} iterations`
-          : `not converged in ${ITERATIONS} iterations`
+          ? `converged after ${convergence[0]} of ${graph.iterations} iterations`
+          : `not converged in ${graph.iterations} iterations`
       );
     }
     ctx.setChart('shellChart', {
@@ -291,6 +331,29 @@ export async function createSatelliteConstellations(
       graph.satellites,
       satellite => tracks.satellites[satellite].inclination
     );
+    const altitudes = Float32Array.from(
+      graph.satellites,
+      satellite => tracks.satellites[satellite].meanAltitudeKm
+    );
+    const shellColor = Uint8Array.from(
+      graph.satellites,
+      satellite => labelBySatellite.get(satellite) ?? 0
+    );
+    ctx.setChart('featureChart', {
+      kind: 'scatter',
+      x: inclinations,
+      y: altitudes,
+      colorIndex: shellColor,
+      palette: SHELL_COLORS,
+      radius: 2.5,
+      opacity: 0.74,
+      xLabel: 'inclination (degrees)',
+      yLabel: 'mean altitude (km)',
+      yScale: 'log',
+      title: `Feature space: inclination + ${options.altitudeWeight}° × log10(altitude) · ${options.iterationFrame}`,
+      description:
+        'One point per satellite. Colour is its provisional nearest-centre class; altitude is logarithmic. RAAN is absent, so these clusters are not orbital planes.'
+    });
     ctx.setChart(
       'inclinationChart',
       histogramChart(binValues(inclinations, 0, 100, 50), 0, 100, {
@@ -303,6 +366,54 @@ export async function createSatelliteConstellations(
           'Histogram of orbital inclination of the family in 2-degree bins; rules mark the k-means centers.'
       })
     );
+    const stage = graph.iterations;
+    ctx.setChart('iterationChart', {
+      kind: 'bars',
+      values: [graph.satellites.length, graph.shells.length, convergence?.[0] ?? 0],
+      labels: ['assign points', 'move centres', 'repeat / converge'],
+      highlight: stage <= 1 ? [0] : stage <= 2 ? [1] : [2],
+      height: 110,
+      xLabel: 'current k-means stage',
+      yLabel: 'records / centres / iterations',
+      formatY: value => `${Math.round(value)}`,
+      description: `Actual GPUKMeans assignment after the active ${stage}-iteration run; convergence used ${convergence?.[0] ?? 0} iterations.`
+    });
+    if (before) {
+      const size = graph.k;
+      const values = new Float64Array(size * size);
+      let reassigned = 0;
+      let comparable = 0;
+      labelBySatellite.forEach((after, satellite) => {
+        const prior = before.get(satellite);
+        if (prior === undefined || prior >= size || after >= size) return;
+        values[prior * size + after]++;
+        comparable++;
+        if (prior !== after) reassigned++;
+      });
+      ctx.setChart('reassignmentMatrix', {
+        kind: 'matrix',
+        values,
+        rows: size,
+        columns: size,
+        rowLabels: Array.from({length: size}, (_, index) => `before S${index + 1}`),
+        columnLabels: Array.from({length: size}, (_, index) => `after S${index + 1}`),
+        diagonal: true,
+        marginals: 'both',
+        ramp: 'blues',
+        description:
+          'Records assigned to each shell before and after the current seed or altitude-weight change.'
+      });
+      ctx.setReadout(
+        'reassignedShare',
+        comparable
+          ? `${((reassigned / comparable) * 100).toFixed(1)}% reassigned (${reassigned}/${comparable})`
+          : 'no comparable assignment'
+      );
+    } else {
+      ctx.setChart('reassignmentMatrix', null);
+      ctx.setReadout('reassignedShare', 'set seed or altitude weight to compare');
+    }
+    priorAssignments.set(stabilityKey, new Map(labelBySatellite));
     ctx.requestLayers();
   }
 
@@ -324,6 +435,7 @@ export async function createSatelliteConstellations(
         case 'family':
         case 'k':
         case 'seed':
+        case 'iterationFrame':
           activate();
           break;
         case 'altitudeWeight':
@@ -341,6 +453,10 @@ export async function createSatelliteConstellations(
     },
 
     onThemeChange() {
+      ctx.requestLayers();
+    },
+
+    onGroundChange() {
       ctx.requestLayers();
     },
 
@@ -366,7 +482,7 @@ export async function createSatelliteConstellations(
 
     getLayers() {
       const options = ctx.options;
-      const dark = ctx.theme() === 'dark';
+      const dark = ctx.ground() === 'dark';
       const layers: Layer[] = [];
       if (options.showTrails) {
         layers.push(

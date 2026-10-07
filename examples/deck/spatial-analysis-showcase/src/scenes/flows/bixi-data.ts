@@ -147,6 +147,24 @@ export function buildStationProfiles(flows: BixiFlows): {
   return {out, incoming};
 }
 
+/** Day counts of the dataset month: how many weekdays and weekend days its rides span. */
+export type MonthDayCounts = {weekday: number; weekend: number; total: number};
+
+/**
+ * Counts weekdays (Monday to Friday) and weekend days (Saturday and Sunday) of the month the
+ * `monthHourly` column covers (744 hours from 2024-08-01 00:00 local, so 31 days). Divide a
+ * day-type total by its day count to get "per average weekday" or "per average weekend day".
+ */
+export function getMonthDayCounts(flows: BixiFlows): MonthDayCounts {
+  const total = Math.round(flows.monthHourly.length / 24);
+  let weekend = 0;
+  for (let day = 0; day < total; day++) {
+    const weekday = new Date(Date.UTC(2024, 7, 1 + day)).getUTCDay();
+    if (weekday === 0 || weekday === 6) weekend++;
+  }
+  return {weekday: total - weekend, weekend, total};
+}
+
 /** `HH:MM` for a fractional hour of day. */
 export function formatHourOfDay(hour: number): string {
   const wrapped = ((hour % 24) + 24) % 24;

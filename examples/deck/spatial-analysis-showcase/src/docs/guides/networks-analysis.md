@@ -10,15 +10,15 @@ Street networks are not a plane. Distances run along streets, events sit on stre
 
 | Question | Tool | Story |
 | --- | --- | --- |
-| Are events clustered along the streets more than chance? | `GPUNetworkKFunction` | [Do Chicago crashes cluster along the streets?](#/story/crash-k-function) |
-| Which street did this noisy GPS trace follow? | `GPUMapMatching`, `GPULineMerge` | [Which streets did these GPS traces follow?](#/story/map-matching) |
+| Do mapped shops cluster along streets more than chance? | `GPUNetworkKFunction` | [Do Chicago shops bunch along streets?](#/story/retail-network-k-function) |
+| Which street did this noisy GPS trace follow? | `GPUMapMatching` | [Which streets did these GPS traces follow?](#/story/map-matching) |
 | Which streets matter, and what remains if you filter the network? | `GPUNetworkAnalyticsColumns`, `GPUNetworkSubgraphFilter`, `GPUNetworkStatistics` | [Which streets does Chicago lean on?](#/story/street-centrality) |
 
 All three consume the same input: a **CSR** (compressed sparse row) adjacency. `offsets` has one row per node plus one, `neighbors` holds the destination of every directed edge slot, and `weights` holds a non-negative cost such as length in meters. A two-way street appears in both directions. The scenes build this layout once on the CPU from the `chicago-roads` dataset; after that, everything is GPU buffers and parameter writes.
 
 ## Network K function
 
-The planar Ripley K function counts how many pairs of events lie within distance `d` and compares that with random points in the plane. For crashes, shops or incidents that can only occur on streets, that comparison is unfair: any street-bound data looks clustered against a uniform plane.
+The planar Ripley K function counts how many pairs of events lie within distance `d` and compares that with random points in the plane. For shops or other observations that can only occur on streets, that comparison is unfair: any street-bound data looks clustered against a uniform plane.
 
 `GPUNetworkKFunction` fixes both halves. Distance is measured along the network by bounded shortest-path searches (one per event), and the yardstick is an envelope of random patterns placed on the *same streets* with probability proportional to street length. The result is `K(d) = 2 * pairs(d) * L / n^2`, where `L` is the network length and `n` the events, evaluated at `bandCount` distances up to `maxDistance`.
 
@@ -39,8 +39,6 @@ Things to know:
 - The CSR **row is the edge id**, and it is directed, so a two-way street takes two candidate slots. The matcher sees an edge as a straight line between its nodes. The scene therefore splits every street polyline into one edge per segment (and long segments into pieces of at most 300 m, which the edge grid needs) so curved streets are matched against their true geometry.
 - `sigma`, `beta`, `searchRadius`, `routeFactor` and `routeSlack` are per-frame parameters. `candidateCount`, `routeNodeBudget` and the grid `cellSize` are compile-time: a small node budget is faster but can overestimate a route in dense streets.
 - Scoring needs ground truth. The scene uses simulated traces whose true edge is known for every fix, so it can color each matched segment right, right-street-wrong-direction or wrong.
-
-`GPULineMerge` is a geometry helper that shares the scene: it joins line segments at endpoints shared by exactly two line ends into maximal chains, with exact float32 endpoint comparison and no tolerance. Use it to turn segment soup into streets before labelling or per-street statistics.
 
 ## Analytics columns, subgraph filter and statistics
 

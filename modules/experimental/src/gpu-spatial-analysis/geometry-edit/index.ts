@@ -31,5 +31,6 @@ export {
 export type {
   GPUGeometryCleanupOutput,
   GPUGeometryCleanupParameters,
+  GPUGeometryCleanupPointOutput,
   GPUGeometryCleanupProps
 } from './gpu-geometry-cleanup';

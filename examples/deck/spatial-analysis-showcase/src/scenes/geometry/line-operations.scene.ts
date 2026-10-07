@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {CREDITS, joinCredits} from '../../cartography/credits';
+import {ground} from '../../cartography/grounds';
 import {defineScene, type LegendSpec} from '../scene';
 import type {LineOperationsOptions} from './b3-line-options';
 import {B3_PALETTE} from './b3-palette';
@@ -16,14 +18,14 @@ const logMeters = (value: number) => {
 
 const L_VIEW = {longitude: -87.7, latitude: 41.87, zoom: 9.9};
 
-/** Line operations: densify, chunk, locate, snap, simplify, smooth. GPU work in `line-operations.compute.ts` and the `b3-line-views-*` files. */
+/** Line operations: densify, chunk, locate, snap, simplify, compare methods. GPU work in `line-operations.compute.ts` and the `b3-line-views-*` files. */
 export default defineScene<LineOperationsOptions>({
   id: 'line-operations',
   title: 'Cut, mark, snap and simplify lines',
   chapter: 'geometry',
   order: 3,
   summary:
-    'Put the Chicago L routes through the line toolbox (densify, chunk, substring, locate), snap 110,000 traffic crashes to the street they happened on, and simplify or smooth 897 ship tracks in New York Harbor, all on the GPU.',
+    'Put Chicago L routes through the line toolbox, infer nearby street segments for eligible community places, and simplify or smooth AIS ship tracks on the GPU.',
   contributors: [
     'GPULineSegmentize',
     'GPULineChunk',
@@ -35,10 +37,16 @@ export default defineScene<LineOperationsOptions>({
   datasets: [
     {id: 'cta-transit', role: 'L route shapes'},
     {id: 'chicago-roads', role: 'street polylines'},
-    {id: 'chicago-crashes', role: '110,000 crash points'},
+    {id: 'chicago-places', role: 'eligible community places'},
     {id: 'ais-vessels', role: 'ship tracks with timestamps'}
   ],
   initialView: L_VIEW,
+  basemap: ground('paperCity'),
+  furniture: {
+    title: {title: 'Line operations', subtitle: 'Chicago routes, community places and AIS tracks'},
+    scaleBar: {units: 'metric'},
+    credit: joinCredits(CREDITS.cta, CREDITS.openStreetMap, 'NOAA AIS')
+  },
 
   options: [
     {
@@ -51,7 +59,7 @@ export default defineScene<LineOperationsOptions>({
       help: 'Each layer has its own compiled graphs, built the first time you open it.',
       options: [
         {value: 'reshape', label: 'L routes: densify, chunk, locate'},
-        {value: 'snap', label: 'Crashes snapped to streets'},
+        {value: 'snap', label: 'Community places near streets'},
         {value: 'tracks', label: 'Ship tracks: simplify and smooth'}
       ]
     },
@@ -215,7 +223,7 @@ export default defineScene<LineOperationsOptions>({
       kind: 'slider',
       id: 'snapRadius',
       label: 'Search radius',
-      group: 'Crashes',
+      group: 'Community places',
       apply: 'param',
       min: 5,
       max: 150,
@@ -223,13 +231,13 @@ export default defineScene<LineOperationsOptions>({
       default: 60,
       unit: 'm',
       disabledWhen: s => s.view !== 'snap',
-      help: "A crash only snaps to a street within this distance. The dataset's own snap used 60 m. A per-frame parameter."
+      help: 'A place only matches a street segment within this distance. A per-frame parameter.'
     },
     {
       kind: 'select',
       id: 'snapColor',
       label: 'Snap lines coloured by',
-      group: 'Crashes',
+      group: 'Community places',
       apply: 'param',
       default: 'side',
       disabledWhen: s => s.view !== 'snap',
@@ -242,7 +250,25 @@ export default defineScene<LineOperationsOptions>({
         {value: 'measure', label: 'Measure along the street'},
         {value: 'distance', label: 'Snap distance'}
       ],
-      help: 'Which output column colours the line from each crash to its foot point.'
+      help: 'Which output column colours the line from each place to its inferred foot point.'
+    },
+    {
+      kind: 'select',
+      id: 'placeCategory',
+      label: 'Place category',
+      group: 'Community places',
+      apply: 'param',
+      default: 'all',
+      disabledWhen: state => state.view !== 'snap',
+      help: 'Only eligible grocery, education, recreation, culture and community places are included.',
+      options: [
+        {value: 'all', label: 'All eligible places'},
+        {value: 'grocery', label: 'Grocery'},
+        {value: 'school_education', label: 'School and education'},
+        {value: 'park_recreation', label: 'Park and recreation'},
+        {value: 'arts_culture', label: 'Arts and culture'},
+        {value: 'worship_community', label: 'Worship and community'}
+      ]
     },
 
     {
@@ -370,6 +396,7 @@ export default defineScene<LineOperationsOptions>({
     {
       id: 'densify',
       title: 'A vertex every 100 metres',
+      headline: 'Spacing changes vertices, not the route',
       body: `A transit planner needs the Chicago L as points: a vertex every 100 m along each route, each carrying its **distance from the route start**. \`GPULineSegmentize\` does that on the GPU: every input vertex is kept and any long segment is split into equal pieces no longer than the **maximum segment length** you choose.
 
 The colour is the measure output, from 0 at the start to the length of the longest route at the far end (see the legend). Slide **Maximum segment length** below (log scale) and watch the vertex count in the readout change; nothing recompiles. Switch **Lengths measured** to *Spherical* to measure along the sphere instead of the local plane: over a city the two agree to a few metres.`,
@@ -382,6 +409,7 @@ The colour is the measure output, from 0 at the start to the length of the longe
     {
       id: 'chunk',
       title: 'Cut the routes into kilometre pieces',
+      headline: 'Chunks turn distance into a ruler',
       body: `Now split each route into **one-kilometre chunks** with \`GPULineChunk\` in \`chunk\` mode (turf \`lineChunk\`). The colours cycle through the output pieces, so you can count kilometres along each line; consecutive chunks share their boundary point.
 
 The number of pieces depends on the data, so the contributor reports it through the \`pathCount\` output (see the readout) and the offsets past it equal the vertex count. Slide **Chunk length** below from 100 m to 10 km. Set **Line tool** to *Substring* to extract the stretch between a start and an end measure instead, as ST_LineSubstring does: a quick way to reveal a route a bit at a time.`,
@@ -393,6 +421,7 @@ The number of pieces depends on the data, so the contributor reports it through 
     {
       id: 'locate',
       title: 'Run a train along each line',
+      headline: 'Measure and offset locate an event',
       body: `\`GPULineLocate\` turns "N km along route R" into a map position and a direction. Here 320 markers (40 per route) sit a kilometre apart and **run along the lines**: only the \`measureOffset\` parameter changes each frame, a single buffer write.
 
 Each marker also reports a tangent (the white tick) so it can point along the track, and a status that says when it was clamped at the route end. Raise **Spacing scale** above 1 and markers pile up at the end of the shorter routes (see the clamped count). Add a **Lateral offset** to put alternate markers on either side. Set **Measure is a** to *Fraction* to place markers by fraction of route length instead of distance.`,
@@ -403,19 +432,21 @@ Each marker also reports a tangent (the white tick) so it can point along the tr
     },
     {
       id: 'snap',
-      title: 'Which street was each crash on?',
-      body: `A crash is recorded as a point; a safety analyst wants the **street**, the **distance along it** and the **side**. \`GPULinearReferencing\` snaps every point to the nearest of 49,000 street polylines within a search radius and returns the foot point, the measure, the signed offset and the street's row.
+      title: 'Nearest street is an inference',
+      headline: 'A nearest segment is not an address',
+      body: `\`GPULinearReferencing\` finds the nearest eligible street segment within a search radius for wholesome Chicago places: grocery, education, recreation, culture and community sites. It returns the foot point, measure and signed offset. The source has no asserted street edge, so this demonstrates proximity rather than an address match.
 
-Lines run from each of 110,000 crashes to its foot point. The map colours them by side of the street (left or right of the street's direction). The readout compares the GPU result with the snap the dataset ships (built offline against the same streets): they agree where a crash has one clear nearest street, and differ at intersections where two streets are equally near. Shrink **Search radius** below to 15 m and unmatched crashes appear; grow it and mean snap distance rises.`,
+Lines join each place to its inferred foot point. Side is relative to the street's digitising direction. Read the matched share, median and p90 distance, then use **Place category** and **Search radius** below to see how the eligible input changes.`,
       camera: {longitude: -87.66, latitude: 41.87, zoom: 11.2, transitionMs: 1600},
       options: {view: 'snap', snapRadius: 60, snapColor: 'side'},
-      highlight: {readout: 'snapAgreement'},
-      controls: ['snapRadius', 'snapColor'],
-      readouts: ['snapAgreement', 'snapMatched', 'snapDistance']
+      highlight: {readout: 'snapMatched'},
+      controls: ['placeCategory', 'snapRadius'],
+      readouts: ['snapMatched', 'snapDistance', 'snapP90Distance', 'snapWithinTen']
     },
     {
       id: 'simplify',
       title: 'Thin the ship tracks',
+      headline: 'Tolerance belongs to map scale',
       body: `897 AIS tracks of vessels in New York Harbor hold 124,780 position fixes. \`GPULineSimplification\` computes a Douglas-Peucker **importance** for every fix once (64 gated rounds on the GPU), then the **tolerance** you set, in metres or in pixels at the current zoom, only re-selects the vertices to keep.
 
 Orange is the simplified track over the faint original. Slide **Tolerance** below: at 30 m the kept fraction drops to a few percent while the shape stays right. The readouts show whether the rounds converged (then the result equals the classic recursive algorithm) and how many rounds ran. Switch **Distance measure** to *Time-ratio* (or tick **Tolerance follows the zoom**) to keep the fixes that matter for speed, not just shape (TD-TR).`,
@@ -426,25 +457,15 @@ Orange is the simplified track over the faint original. Slide **Tolerance** belo
       readouts: ['tracksRatio', 'tracksConverged', 'tracksRounds']
     },
     {
-      id: 'smooth',
-      title: 'Round the corners',
-      body: `The opposite operation: **smooth** a track by Chaikin corner cutting. \`GPULineSmooth\` replaces every corner by two points at a **cut ratio** along its two edges (0.25 is the classic quarter points) and repeats for the chosen number of iterations, each doubling the vertex count.
-
-Set **Chaikin iterations** to two or three and the jagged fixes of the ferry crossings become flowing curves, which is a cosmetic fix only: smoothing invents positions and can cut corners across land. The iteration count is compile-time (it sets the output size); the cut ratio is a parameter write.`,
-      options: {trackTool: 'smooth', smoothIterations: 3, smoothRatio: 0.25},
+      id: 'compare-methods',
+      title: 'Compare methods on one track',
+      headline: 'Simplifying and smoothing invent different errors',
+      body: `Use the same AIS track to compare Douglas-Peucker, time-ratio simplification and then Chaikin corner cutting. The simplifiers retain observations; Chaikin creates points between them. **Chaikin iterations** are compile-time and its **cut ratio** is a parameter write, so smooth-looking geometry is not a more faithful measurement.`,
+      optionsMode: 'fresh',
+      options: {view: 'tracks', trackTool: 'smooth', smoothIterations: 3, smoothRatio: 0.25},
       highlight: {readout: 'tracksSmoothVertices'},
       controls: ['smoothIterations', 'smoothRatio'],
-      readouts: ['tracksSmoothVertices']
-    },
-    {
-      id: 'limits',
-      title: 'Limits and things to try',
-      body: `**Limits.** Densify, chunk, locate and snap are planar (Locate and Linear Referencing take projected coordinates) except where a spherical mode is offered. Output sizes are capacities fixed at compile time: a too-small capacity truncates and sets the overflow flag. Simplification does not preserve topology: two simplified tracks can cross. TD-TR needs timestamps; Chaikin smoothing can cut across land.
-
-**Try it.** Set **Spacing scale** to 4 below and see which routes are shorter than 40 km. Then switch **Layer and tools** to *Crashes snapped to streets*, set **Search radius** to 5 m and read the **Snapped** readout to see how many crashes stay unmatched.`,
-      options: {view: 'reshape', lineTool: 'locate'},
-      controls: ['locateSpacing', 'view', 'snapRadius'],
-      readouts: ['reshapePieces', 'snapMatched']
+      readouts: ['tracksSmoothVertices', 'tracksMaxDisplacement']
     }
   ],
 
@@ -463,8 +484,9 @@ Set **Chaikin iterations** to two or three and the jagged fixes of the ferry cro
           kind: 'ramp',
           id: 'measure',
           title: 'Distance from the route start (measures)',
-          ramp: 'viridis',
+          ramp: 'ylgnbu',
           extent: 'gpu',
+          unit: 'km',
           format: formatKilometers
         });
       } else if (state.lineTool === 'chunk') {
@@ -515,14 +537,14 @@ Set **Chaikin iterations** to two or three and the jagged fixes of the ferry cro
             ? {
                 kind: 'ramp',
                 title: 'Measure along the street',
-                ramp: 'viridis',
+                ramp: 'ylgnbu',
                 extent: [0, 600],
                 format: value => `${value.toFixed(0)} m`
               }
             : {
                 kind: 'ramp',
                 title: 'Snap distance',
-                ramp: 'inferno',
+                ramp: 'ylorbr',
                 extent: [0, limit],
                 format: value => `${value.toFixed(0)} m`
               }
@@ -553,15 +575,12 @@ Set **Chaikin iterations** to two or three and the jagged fixes of the ferry cro
       help: 'Chunks and substrings from the pathCount output; for Locate the status counts.'
     },
     {id: 'reshapeOverflow', label: 'Overflow'},
-    {id: 'snapInputs', label: 'Crashes and streets'},
+    {id: 'snapInputs', label: 'Eligible places and streets'},
     {id: 'snapMatched', label: 'Snapped'},
     {id: 'snapSides', label: 'Side of the street'},
-    {id: 'snapDistance', label: 'Mean snap distance'},
-    {
-      id: 'snapAgreement',
-      label: 'Agrees with the dataset snap',
-      help: "Share of crashes whose GPU-snapped street equals the street in the dataset's precomputed edgeIndex."
-    },
+    {id: 'snapDistance', label: 'Median snap distance'},
+    {id: 'snapP90Distance', label: 'P90 snap distance'},
+    {id: 'snapWithinTen', label: 'Within 10 m'},
     {
       id: 'snapCandidates',
       label: 'Candidates',
@@ -573,7 +592,8 @@ Set **Chaikin iterations** to two or three and the jagged fixes of the ferry cro
     {id: 'tracksRatio', label: 'Kept ratio'},
     {id: 'tracksConverged', label: 'Importance converged'},
     {id: 'tracksRounds', label: 'Rounds used'},
-    {id: 'tracksSmoothVertices', label: 'Smoothed vertices'}
+    {id: 'tracksSmoothVertices', label: 'Smoothed vertices'},
+    {id: 'tracksMaxDisplacement', label: 'Max Chaikin displacement'}
   ],
 
   snippet: state => {

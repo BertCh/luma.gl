@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {CREDITS, joinCredits} from '../../cartography/credits';
+import {ground} from '../../cartography/grounds';
 import {defineScene, type LegendSpec} from '../scene';
 import type {BuffersAndShapesOptions} from './buffers-and-shapes.compute';
 import {B3_PALETTE} from './b3-palette';
@@ -39,6 +41,15 @@ export default defineScene<BuffersAndShapesOptions>({
     {id: 'chicago-roads', role: 'street centrelines to clip'}
   ],
   initialView: CITY_VIEW,
+  basemap: ground('paperCity'),
+  furniture: {
+    title: {
+      title: 'Chicago construction geometry',
+      subtitle: 'Straight-line reach, grids and clipping'
+    },
+    scaleBar: {units: 'metric'},
+    credit: joinCredits(CREDITS.cta, CREDITS.cityOfChicago, CREDITS.openStreetMap)
+  },
 
   options: [
     {
@@ -240,6 +251,20 @@ export default defineScene<BuffersAndShapesOptions>({
       help: 'How flat the ellipses are. 1 is a circle.'
     },
     {
+      kind: 'select',
+      id: 'ellipseSpacing',
+      label: 'Ellipse spacing',
+      group: 'Shapes',
+      apply: 'compile',
+      default: 'arc-length',
+      disabledWhen: s => s.view !== 'shapes' || s.shapeKind !== 'ellipse',
+      help: 'Arc length evens out edge lengths around flat ellipses. Parameter angle preserves the original, cheaper sampling.',
+      options: [
+        {value: 'arc-length', label: 'Equal arc length'},
+        {value: 'parameter', label: 'Equal parameter angle'}
+      ]
+    },
+    {
       kind: 'toggle',
       id: 'showShapeFill',
       label: 'Fill the shapes',
@@ -362,6 +387,7 @@ export default defineScene<BuffersAndShapesOptions>({
     {
       id: 'walk-shed',
       title: 'Which parts of Chicago are a walk from an L station?',
+      headline: 'Straight-line bands surround every station',
       body: `A planner draws an 800 m circle around every rail station to see which neighbourhoods have rapid transit within about a ten-minute walk. \`GPUOutlineGeometry\` builds that picture on the GPU: for each of the 135 stations it writes a round-join disc as a triangle list, straight into a buffer the map draws.
 
 The translucent blue is the buffered area; the dots are the stations. Slide **Buffer distance** below: the triangles are rewritten every frame with no recompile. The big gaps on the far south and west sides are the neighbourhoods more than a walk from the L. This is a picture only: overlaps are not merged, so use a distance query (\`dwithin\`) when you need the numbers.`,
@@ -372,6 +398,7 @@ The translucent blue is the buffered area; the dots are the stations. Slide **Bu
     {
       id: 'corridors',
       title: 'Buffer a line, not a point',
+      headline: 'Transparent overlap invents false density',
       body: `The same tool buffers **lines**: every vertex of the eight L routes gets a round join and a rectangle toward the next vertex, so the result is a continuous corridor. Set the distance to 400 m and you see the strip within a five-minute walk of the track, not just of the stations, a useful contrast with the station circles for noise or right-of-way questions.
 
 Set **Buffer around** to *Rings* for buffers of the 77 community area outlines. **Distance units** switches between local metres and spherical mode (positions stay in degrees and metres are scaled per vertex). **Round-join segments** trades smoothness for work: the disc is inscribed, so with only 6 segments the corridor is visibly narrower than 400 m.`,
@@ -382,6 +409,7 @@ Set **Buffer around** to *Rings* for buffers of the 77 community area outlines. 
     {
       id: 'sectors',
       title: 'Sectors that face the Loop',
+      headline: 'A shape needs direction and units',
       body: `\`GPUShapeGenerator\` generates **circles, sectors and ellipses** around every station. Here each sector is a pie slice centred on the bearing from the station to the Loop: an inbound catchment. The colour is distance to the Loop from 0 to 20 km, so the outer terminals are bright.
 
 The compile-time choices are the shape and the coordinate system (planar or geodesic); **Segments per ring**, **Radius** and **Sector sweep** are parameter writes. Set **Shape** to *Ellipse* to point a long axis at the Loop, or **Radii are** to *Geodesic metres* to see the spherical ring: at city scale they agree to a metre or two. The readout reports vertices per ring.`,
@@ -392,6 +420,7 @@ The compile-time choices are the shape and the coordinate system (planar or geod
     {
       id: 'grid-and-curve',
       title: 'Tile the city and order it along a curve',
+      headline: 'Cell shape changes the hot cells',
       body: `\`GPUGridGenerator\` tessellates an extent: here a fixed 56 × 72 lattice of squares whose **Cell width** you resize live (below). Each cell is then keyed by \`GPUHilbertKeys\`, a space-filling curve whose consecutive keys are edge-adjacent cells, and the colour shows the position along that curve.
 
 The line is the curve itself, drawn through the cells in sorted order. Raise **Hilbert order** from 3 to 7: each step splits every block in four, so more cells get distinct keys and the curve gets finer (order is compile-time because it sets the radix-sort width). Try **Grid type** *Hexagon*, *Triangle* and *Points*: the generator offers all four layouts.`,
@@ -402,6 +431,7 @@ The line is the curve itself, drawn through the cells in sorted order. Raise **H
     {
       id: 'sort-the-stops',
       title: 'Sort 10,601 transit stops along the curve',
+      headline: 'Nearby keys usually stay nearby',
       body: `Why order data by a space-filling curve? Locality: items that are near each other in the order are near each other on the map, so tiles, indexes and compression work better. Set **Order** to *All 10,601 transit stops*: each stop gets a Hilbert key within the Chicago bounds and a stable radix sort produces the curve order.
 
 The readout compares the mean hop between consecutive stops along the curve with the hop in file order. Raise **Hilbert order** to 10: the curve now threads the bus network block by block.`,
@@ -412,6 +442,7 @@ The readout compares the mean hop between consecutive stops along the curve with
     {
       id: 'clip',
       title: 'Cut everything to a box',
+      headline: 'Clipping creates vertices at boundaries',
       body: `\`GPURectangleClip\` clips line and polygon layers to an axis-aligned rectangle on the GPU. Here 100 000 street vertices are cut to a box you can **drag** (or click to move); **Rectangle half-width** below resizes it. Streets that leave and re-enter the box become several pieces; each piece keeps its source street through the \`sourcePaths\` output, so it can be coloured by road class.
 
 The readouts show the vertices that survive, the number of pieces and whether the output overflowed. The rectangle is a per-frame parameter, so dragging costs only a parameter write and one encode.`,
@@ -423,6 +454,7 @@ The readouts show the vertices that survive, the number of pieces and whether th
     {
       id: 'limits',
       title: 'Limits and things to try',
+      headline: 'Buffers are not network walksheds',
       body: `**Limits.** Buffers are drawn, not unioned (no area, no queries) and have no negative or one-sided mode. Grids are not clipped to an extent and the lattice size is fixed at compile time. Hilbert keys inherit the f32 resolution of the cell choice. Rectangle clipping is planar and truncates output past its capacity (the overflow readout reports it); polygon clips keep zero-width bridges along the box edges, so the filled area is exact but the outline can trace the border.
 
 **Try it.** Set **Clip** to *Community area rings* and watch each ring become one output ring. Switch **Tool** to *Grids and Hilbert order*, set **Hilbert order** to 1 and 2 and count the distinct colours, or to *Circles, sectors, ellipses* and make **Sector sweep** 360 degrees: a full turn keeps its centre spokes.`,
@@ -455,7 +487,7 @@ The readouts show the vertices that survive, the number of pieces and whether th
       legends.push({
         kind: 'ramp',
         title: 'Distance to the Loop',
-        ramp: 'viridis',
+        ramp: 'ylgnbu',
         extent: [0, 20],
         unit: 'km',
         format: value => `${value.toFixed(0)} km`
@@ -464,7 +496,7 @@ The readouts show the vertices that survive, the number of pieces and whether th
       legends.push({
         kind: 'ramp',
         title: 'Position along the Hilbert curve',
-        ramp: 'viridis',
+        ramp: 'ylgnbu',
         extent: [0, 1],
         labels: ['curve start', 'curve end'],
         format: value => value.toFixed(1)
@@ -473,7 +505,7 @@ The readouts show the vertices that survive, the number of pieces and whether th
         legends.push({
           kind: 'ramp',
           title: 'The curve (consecutive cells)',
-          ramp: 'magma',
+          ramp: 'ylorbr',
           extent: [0, 1],
           labels: ['first', 'last']
         });
@@ -557,6 +589,7 @@ distance.write(getGPUOutlineGeometryParameterValues({distance: ${state.bufferDis
 graph.add(new GPUShapeGenerator({
   shape: '${state.shapeKind}',
   coordinateSystem: '${state.shapeSystem}',
+  ${state.shapeKind === 'ellipse' ? `ellipseSpacing: '${state.ellipseSpacing}',` : ''}
   maximumSegments: ${state.maxSegments},
   centers, radii,${state.shapeKind === 'sector' ? ' bearings,           // float32x2 start and end bearing per station' : ''}${state.shapeKind === 'ellipse' ? ' rotations,         // degrees clockwise per station' : ''}
   parameters: shapeParameters.importToGraph(graph),

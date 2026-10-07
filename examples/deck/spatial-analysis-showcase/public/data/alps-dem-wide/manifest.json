@@ -1,0 +1,83 @@
+{
+ "id": "alps-dem-wide",
+ "version": 1,
+ "kind": "raster",
+ "count": 5083911,
+ "bbox": [
+  7.579879760742199,
+  45.859890320433756,
+  7.980022430419909,
+  46.120012400435094
+ ],
+ "crs": "EPSG:4326",
+ "raster": {
+  "file": "dem.png",
+  "encoding": "terrarium",
+  "width": 2331,
+  "height": 2181,
+  "bounds": [
+   7.579879760742199,
+   45.859890320433756,
+   7.980022430419909,
+   46.120012400435094
+  ],
+  "boundsMercator": [
+   843788.3552400619,
+   5757924.903694043,
+   888332.0334732458,
+   5799602.193366535
+  ],
+  "projection": "EPSG:3857",
+  "cellSizeMercatorM": 19.109257071294063,
+  "cellSizeGroundM": 13.276815981137277,
+  "noData": null,
+  "unit": "m",
+  "verticalQuantisationM": 0.25,
+  "webMercatorTile": {
+   "zoom": 12,
+   "tileSize": 512,
+   "originPixel": [
+    1092732,
+    745079
+   ]
+  }
+ },
+ "properties": {
+  "source": "Mapterhorn terrain tiles (swissALTI3D, (c) swisstopo OGD, in Switzerland; other open DEMs elsewhere, see README)",
+  "observers": {
+   "Gornergrat": {
+    "lon": 7.7843,
+    "lat": 45.9832,
+    "elevationM": 3123.0
+   },
+   "Matterhorn": {
+    "lon": 7.6586,
+    "lat": 45.9766,
+    "elevationM": 4452.0
+   },
+   "Zermatt": {
+    "lon": 7.7466,
+    "lat": 46.0175,
+    "elevationM": 1617.0
+   },
+   "Dufourspitze": {
+    "lon": 7.8668,
+    "lat": 45.9369,
+    "elevationM": 4629.5
+   }
+  },
+  "minElevationM": 1215.5,
+  "maxElevationM": 4629.5,
+  "highestPoint": {
+   "lon": 7.866811752319347,
+   "lat": 45.93688537716533,
+   "elevationM": 4629.5
+  },
+  "storyNotes": [
+   "Window ~30.9 x 29.0 km at 13.3 m ground resolution (Web Mercator 19.1 m/px, zoom 12); relief 1216 to 4630 m.",
+   "Covers the whole Gornergrat view: Mattertal and Zermatt, the Matterhorn, the Gorner, Findel and Zmutt glaciers, Monte Rosa with Dufourspitze (4634 m), and the Weisshorn and Dom to the north.",
+   "Gornergrat (3089 m) looks across the Gorner Glacier at 360 degrees: the natural observer for viewshed and horizon stories; the Matterhorn and Dufourspitze are the far targets.",
+   "Data is Terrarium-quantised to 0.25 m; Web Mercator pixels, so use cellSizeMode web-mercator with northEdge/southEdge from boundsMercator."
+  ]
+ }
+}

@@ -6,18 +6,17 @@ import {COORDINATE_SYSTEM, type Layer} from '@deck.gl/core';
 import type {Buffer} from '@luma.gl/core';
 import {
   createGPUEdgeBundlingParameterValues,
+  GPU_EDGE_BUNDLING_WORK_BOX_PADDING,
   GPUEdgeBundling,
   type GPUEdgeBundlingParameterValues
 } from '@luma.gl/experimental/gpu-network';
 import {GPUCommandGraph, type CompiledGPUCommandGraph} from '@luma.gl/gpgpu/gpu-core';
+import {formatCount, liveText} from '../../cartography/live-text';
 import {importGraphBuffer} from '../../engine/graph-buffers';
 import {SpatialAnalysisPointLayer, SpatialAnalysisSegmentLayer} from '../../engine/layers';
-import {createPlaybackClock} from '../../engine/playback';
-import {formatCount, SpatialAnalysisResources} from '../../engine/resources';
+import {SpatialAnalysisResources} from '../../engine/resources';
 import {SummaryReader} from '../../engine/summary-reader';
-import type {SceneContext, SceneInstance} from '../scene';
-import {binValues, histogramChart} from '../movement/f-chart-helpers';
-import {BundledPathLayer} from './b11-flow-layers';
+import type {MapAnnotation, SceneContext, SceneInstance, TooltipContent} from '../scene';
 import {
   expandAntimeridianEdges,
   getApproximateKilometres,
@@ -26,7 +25,30 @@ import {
   type ExpandedEdges,
   type FlightNetwork
 } from './b11-flight-data';
-import {CONTINENT_NAMES, loadAirportTable} from './b11-geography';
+import {loadAirportTable} from './b11-geography';
+import {ADDITIVE_ROUTE_PARAMETERS, NORMAL_ROUTE_PARAMETERS} from './airline-network-layers';
+import {BundleRibbonLayer} from './bixi-bundles-layers';
+import {
+  countInBins,
+  getLivePairs,
+  getRadiusAtIteration,
+  getWorkBoxSideKilometres,
+  resolveRoute,
+  type ResolvedRoute
+} from './flight-bundling-routes';
+import {
+  CORRIDOR_ANCHORS,
+  DELAY_BREAKS,
+  DISTANCE_BREAKS,
+  getClassOf,
+  getProbeColor,
+  getRoutePalette,
+  HUB_FILL,
+  HUB_STROKE,
+  PROBE_ROUTES,
+  SLOT,
+  UNDER_FLOOR_COLOR
+} from './flight-bundling-style';
 
 /** Option state of the flight-bundling scene. */
 export type FlightBundlingOptions = {
@@ -41,30 +63,44 @@ export type FlightBundlingOptions = {
     | 'Oceania'
     | 'lower48';
   distanceRange: readonly [number, number];
+  /** Flight floor of the delay colours (US network): pairs under it are grey. */
   minTraffic: number;
   iterations: number;
-  play: boolean;
-  playSpeed: number;
-  loop: boolean;
   kernelRadius: number;
   decay: number;
   stiffness: number;
   stepScale: number;
   pointsPerEdge: '8' | '16' | '24' | '32';
   densityResolution: '128' | '256' | '512';
-  colorBy: 'plain' | 'distance' | 'traffic' | 'airlines' | 'delay' | 'cancel';
-  ramp: 'viridis' | 'magma' | 'inferno' | 'cividis';
-  opacity: number;
-  showStraight: boolean;
+  colorBy: 'plain' | 'distance' | 'delay';
+  brightness: number;
+  straight: 'off' | 'ghost' | 'full';
+  probes: boolean;
+  corridorLabels: boolean;
   showAirports: boolean;
+};
+
+/** What the legends read back from the scene (`ctx.setLegendData('classStats', ...)`). */
+export type FlightClassStats = {
+  /** Live pairs per class of the active measure. */
+  counts: number[];
+  /** Live pairs under the flight floor (delay colours only). */
+  underFloor: number;
 };
 
 /** Compile-time iteration capacity; the slider picks how many run. */
 export const MAXIMUM_ITERATIONS = 32;
 const HUB_COUNT = 24;
-const COVERAGE_CELL_DEGREES = 0.5;
 const RETIRE_FRAMES = 4;
 const SETTLE_MILLISECONDS = 350;
+type ProbeState = {
+  route: ResolvedRoute;
+  probe: (typeof PROBE_ROUTES)[number];
+  /** The straight chord of the route as `x0, y0, x1, y1` rows, one per expanded edge. */
+  segments: Buffer;
+};
+
+type CorridorState = {name: string; id: string; expandedEdges: readonly number[]};
 
 type NetworkBuffers = {
   network: FlightNetwork;
@@ -74,15 +110,23 @@ type NetworkBuffers = {
   positions: Buffer;
   sources: Buffer;
   targets: Buffer;
-  values: Buffer;
   mask: Buffer;
+  /** Float liveness mirror consumed by the engine segment renderer. */
   maskWeights: Buffer;
+  /** One float per expanded edge: the palette slot, `NaN` when the edge is filtered out. */
+  slots: Buffer;
+  /** The straight edges as two-point paths. */
   straight: Buffer;
   airports: Buffer;
   hubs: Buffer;
-  /** Colour range of every attribute: 5th and 95th percentile. */
-  ranges: Record<string, [number, number]>;
   hubRows: Uint32Array;
+  /** Rank of every airport by connections, 0 = best connected. */
+  degreeRank: Uint32Array;
+  /** Probe routes found in this network (world only). */
+  probes: ProbeState[];
+  /** Corridor anchor routes found in this network (world only). */
+  corridors: CorridorState[];
+  totalFlights: number;
 };
 
 type BundlingGraph = {
@@ -101,6 +145,10 @@ type BundlingGraph = {
  * control-point density, advects points along the density gradient, resamples and smooths. The
  * iteration count, kernel radius, decay, stiffness and step scale are one parameter buffer; the
  * edge mask hides edges without recompiling. Only `pointsPerEdge` and `densityResolution` rebuild.
+ *
+ * The scene colours every route by a palette slot written from the CPU (distance class, delay
+ * class, probe) into one float per edge, and mirrors the GPU work box on the CPU so the kernel
+ * radius can be quoted in kilometres.
  */
 export async function createFlightBundling(
   ctx: SceneContext<FlightBundlingOptions>
@@ -123,6 +171,13 @@ export async function createFlightBundling(
   let liveEdges = 0;
   /** Per expanded edge: 1 when the edge passes the filters (mirrors the GPU `edgeMask`). */
   let liveMask: Uint32Array | null = null;
+  /** Per original pair: 1 when the pair passes the filters. */
+  let livePairs: Uint8Array | null = null;
+  /** Work box side in km of the live edges, and of the same filters over the whole network. */
+  let boxKilometres = 0;
+  let worldBoxKilometres = 0;
+  /** Mid point of each corridor anchor's bundled path, from the last readback. */
+  let corridorPoints: {id: string; name: string; at: readonly [number, number]}[] = [];
   const retired: {resources: SpatialAnalysisResources; frames: number}[] = [];
 
   function prepare(id: FlightNetwork['id']): NetworkBuffers {
@@ -148,7 +203,33 @@ export async function createFlightBundling(
     const order = Array.from({length: network.nodeCount}, (_, airport) => airport).sort(
       (a, b) => network.degree[b] - network.degree[a]
     );
+    const degreeRank = new Uint32Array(network.nodeCount);
+    order.forEach((airport, rank) => {
+      degreeRank[airport] = rank;
+    });
     const hubRows = Uint32Array.from(order.slice(0, HUB_COUNT));
+    const probes: ProbeState[] = [];
+    const corridors: CorridorState[] = [];
+    if (id === 'world') {
+      for (const probe of PROBE_ROUTES) {
+        const route = resolveRoute(network, expanded, probe.from, probe.to);
+        if (!route) continue;
+        const chord = new Float32Array(route.expandedEdges.length * 4);
+        route.expandedEdges.forEach((row, index) => {
+          chord.set(segments.subarray(row * 4, row * 4 + 4), index * 4);
+        });
+        probes.push({
+          route,
+          probe,
+          segments: resources.createBuffer(`${id}-probe-${probe.id}`, chord)
+        });
+      }
+      for (const anchor of CORRIDOR_ANCHORS) {
+        const route = resolveRoute(network, expanded, anchor.from, anchor.to);
+        if (route)
+          corridors.push({id: anchor.id, name: anchor.name, expandedEdges: route.expandedEdges});
+      }
+    }
     const prepared: NetworkBuffers = {
       network,
       expanded,
@@ -157,23 +238,20 @@ export async function createFlightBundling(
       positions: resources.createBuffer(`${id}-positions`, expanded.positions),
       sources: resources.createBuffer(`${id}-sources`, expanded.source),
       targets: resources.createBuffer(`${id}-targets`, expanded.target),
-      values: resources.createBuffer(`${id}-values`, edgeCount * 4),
       mask: resources.createBuffer(`${id}-mask`, new Uint32Array(edgeCount).fill(1)),
       maskWeights: resources.createBuffer(
         `${id}-mask-weights`,
         new Float32Array(edgeCount).fill(1)
       ),
+      slots: resources.createBuffer(`${id}-slots`, new Float32Array(edgeCount)),
       straight: resources.createBuffer(`${id}-straight`, segments),
       airports: resources.createBuffer(`${id}-airports`, network.lonLat),
       hubs: resources.createBuffer(`${id}-hubs`, hubRows),
-      ranges: {
-        distance: [0, percentile(network.distanceKm, 0.95)],
-        traffic: [1, percentile(network.traffic, 0.95)],
-        airlines: [1, network.airlines ? percentile(network.airlines, 0.95) : 1],
-        delay: [0, 45],
-        cancel: [0, 0.08]
-      },
-      hubRows
+      hubRows,
+      degreeRank,
+      probes,
+      corridors,
+      totalFlights: id === 'us' ? network.traffic.reduce((sum, value) => sum + value, 0) : 0
     };
     networks.set(id, prepared);
     return prepared;
@@ -190,17 +268,11 @@ export async function createFlightBundling(
     };
   }
 
-  function writeParameters(): void {
+  function writeParameters(redrawChart = true): void {
     parameterBuffer.write(createGPUEdgeBundlingParameterValues(getParameters(), 'uint32'));
+    updateRadiusReadouts(redrawChart);
     markChanged();
   }
-
-  // Plays the bundling: the iteration count sweeps from straight lines to the full run.
-  const clock = createPlaybackClock(
-    ctx,
-    {time: 'iterations', play: 'play', speed: 'playSpeed', loop: 'loop'},
-    {range: [0, MAXIMUM_ITERATIONS], rate: 1, step: 1, notify: true}
-  );
 
   function markChanged(): void {
     encodeFrames = Math.max(encodeFrames, 2);
@@ -208,99 +280,219 @@ export async function createFlightBundling(
     lastChange = performance.now();
   }
 
-  /** Whether an original edge passes the region, distance and traffic filters. */
+  /** The attribute actually colouring the routes (a world network has no delay). */
+  function getColorAttribute(): FlightBundlingOptions['colorBy'] {
+    const {colorBy} = ctx.options;
+    if (colorBy === 'delay' && !graph?.buffers.network.delay) return 'distance';
+    return colorBy;
+  }
+
+  /** Writes the edge mask from the region and distance filters; then everything that follows from it. */
   function writeMask(): void {
     if (!graph) return;
     const {buffers} = graph;
     const {network, expanded} = buffers;
-    const {region, distanceRange, minTraffic} = ctx.options;
-    const passes = new Uint8Array(network.edgeCount);
-    for (let edge = 0; edge < network.edgeCount; edge++) {
-      let inside = true;
-      if (region !== 'all') {
-        for (const airport of [network.source[edge], network.target[edge]]) {
-          if (region === 'lower48') {
-            const longitude = network.lonLat[airport * 2];
-            const latitude = network.lonLat[airport * 2 + 1];
-            inside &&= longitude > -125 && longitude < -66 && latitude > 24 && latitude < 50;
-          } else {
-            inside &&= CONTINENT_NAMES[network.continent[airport]] === region;
-          }
-        }
-      }
-      const distance = network.distanceKm[edge];
-      if (distance < distanceRange[0] || distance > distanceRange[1]) inside = false;
-      if (network.traffic[edge] < minTraffic) inside = false;
-      passes[edge] = inside ? 1 : 0;
-    }
+    const {region, distanceRange} = ctx.options;
+    const passes = getLivePairs(network, region, distanceRange);
+    const worldPasses = region === 'all' ? passes : getLivePairs(network, 'all', distanceRange);
     const mask = new Uint32Array(buffers.edgeCount);
-    const weights = new Float32Array(buffers.edgeCount);
     liveEdges = 0;
     for (let edge = 0; edge < buffers.edgeCount; edge++) {
       const live = passes[expanded.original[edge]];
       mask[edge] = live;
-      weights[edge] = live;
       liveEdges += live;
     }
     buffers.mask.write(mask);
-    buffers.maskWeights.write(weights);
+    buffers.maskWeights.write(Float32Array.from(mask));
     liveMask = mask;
-    ctx.setReadout(
-      'edges',
-      `${formatCount(passes.reduce((sum, value) => sum + value, 0))} of ${formatCount(network.edgeCount)}`
+    livePairs = passes;
+    boxKilometres = getWorkBoxSideKilometres(expanded, passes, GPU_EDGE_BUNDLING_WORK_BOX_PADDING);
+    worldBoxKilometres = getWorkBoxSideKilometres(
+      expanded,
+      worldPasses,
+      GPU_EDGE_BUNDLING_WORK_BOX_PADDING
     );
-    ctx.setReadout('controlPoints', liveEdges * (graph?.pointsPerEdge ?? 16));
-    const liveDistances = new Float32Array(network.edgeCount).fill(Number.NaN);
-    for (let edge = 0; edge < network.edgeCount; edge++) {
-      if (passes[edge]) liveDistances[edge] = network.distanceKm[edge];
-    }
-    const maximumKm = ctx.options.network === 'us' ? 5000 : 15000;
-    ctx.setChart(
-      'distanceChart',
-      histogramChart(binValues(liveDistances, 0, maximumKm, 25), 0, maximumKm, {
-        xLabel: 'route length (km)',
-        yLabel: 'routes',
-        formatX: value => `${Math.round(value)}`,
-        formatY: value => (value >= 1000 ? `${(value / 1000).toFixed(1)}k` : `${value}`),
-        description:
-          'Histogram of the length of the routes that pass the filters. Many short regional routes and a long tail of intercontinental ones.'
-      })
-    );
+    const liveCount = passes.reduce((sum, value) => sum + value, 0);
+    ctx.setReadout('routes', liveCount);
+    ctx.setReadout('edges', `${formatCount(liveCount)} of ${formatCount(network.edgeCount)}`);
+    ctx.setReadout('controlPoints', liveEdges * graph.pointsPerEdge);
+    ctx.setCost({
+      records: liveEdges * graph.pointsPerEdge,
+      passes: 4 + 3 * ctx.options.iterations,
+      note: 'control points; splat, advect and resample per iteration'
+    });
+    updateRadiusReadouts();
+    refreshDisplay();
+    updateCorridorLabels();
     markChanged();
   }
 
-  /** The attribute actually colouring the edges (falls back when the network lacks it). */
-  function getColorAttribute(): Exclude<FlightBundlingOptions['colorBy'], 'plain'> | null {
-    const {colorBy} = ctx.options;
-    if (colorBy === 'plain') return null;
-    const {network} = graph!.buffers;
-    if (colorBy === 'airlines' && !network.airlines) return 'distance';
-    if ((colorBy === 'delay' || colorBy === 'cancel') && !network.delay) return 'distance';
-    return colorBy;
+  /** The radius in km at the work box of the live edges, the whole-network box, and the schedule. */
+  function updateRadiusReadouts(redrawChart = true): void {
+    const {kernelRadius, decay, iterations} = ctx.options;
+    const radiusKilometres = kernelRadius * boxKilometres;
+    const formatKilometres = (kilometres: number) =>
+      kilometres > 0 ? `${formatCount(Math.round(kilometres))} km` : null;
+    ctx.setReadout('radiusKm', formatKilometres(radiusKilometres));
+    ctx.setReadout('radiusKmWorld', formatKilometres(kernelRadius * worldBoxKilometres));
+    ctx.setReadout(
+      'radiusNowKm',
+      formatKilometres(getRadiusAtIteration(radiusKilometres, decay, iterations))
+    );
+    ctx.setReadout('boxKm', formatKilometres(boxKilometres));
+    // The iteration slider moves a marker on the chart by itself; only the schedule redraws it.
+    if (!redrawChart) return;
+    const iterationsAxis = Array.from({length: MAXIMUM_ITERATIONS + 1}, (_, index) => index);
+    ctx.setChart(
+      'decayChart',
+      radiusKilometres > 0
+        ? {
+            kind: 'line',
+            xLabel: 'iteration',
+            yLabel: 'kernel radius (km)',
+            xDomain: [0, MAXIMUM_ITERATIONS],
+            series: [
+              {
+                label: 'radius',
+                x: iterationsAxis,
+                y: iterationsAxis.map(index => getRadiusAtIteration(radiusKilometres, decay, index))
+              }
+            ],
+            formatY: value => formatCount(Math.round(value)),
+            link: {option: 'iterations', label: value => `pass ${value}`},
+            description:
+              'Kernel radius in kilometres at each bundling iteration: it starts at the chosen fraction of the work box and shrinks by the decay factor every pass, so corridors form coarse first and tighten after. The marker is the active iteration.'
+          }
+        : null
+    );
+    updateFurniture();
   }
 
-  function writeValues(): void {
+  /** The cartouche sample line, and a scale-bar tick at the kernel radius when a region is bundled. */
+  function updateFurniture(): void {
     if (!graph) return;
+    const {network} = graph.buffers;
+    const sample =
+      network.id === 'us'
+        ? `${formatCount(graph.buffers.totalFlights)} scheduled flights, ${formatCount(network.edgeCount)} airport pairs`
+        : `${formatCount(network.edgeCount)} route pairs, ${formatCount(network.nodeCount)} airports`;
+    const radiusMetres = ctx.options.kernelRadius * boxKilometres * 1000;
+    ctx.setFurniture(
+      ctx.options.region !== 'all' && network.id === 'world' && radiusMetres > 0
+        ? {title: {sample}, scaleBar: {units: 'metric', minZoom: 3, ticks: [radiusMetres]}}
+        : {title: {sample}}
+    );
+  }
+
+  /**
+   * Writes the palette slot of every edge (distance class, delay class, probe), counts the live
+   * pairs per class for the legend, and recomputes the US delay readouts.
+   */
+  function refreshDisplay(): void {
+    if (!graph || !liveMask || !livePairs) return;
     const {buffers} = graph;
-    const attribute = getColorAttribute();
     const {network, expanded} = buffers;
-    if (attribute) {
-      const source =
-        attribute === 'distance'
-          ? network.distanceKm
-          : attribute === 'traffic'
-            ? network.traffic
-            : attribute === 'airlines'
-              ? network.airlines!
-              : attribute === 'delay'
-                ? network.delay!
-                : network.cancelRate!;
-      const values = new Float32Array(buffers.edgeCount);
-      for (let edge = 0; edge < buffers.edgeCount; edge++)
-        values[edge] = source[expanded.original[edge]];
-      buffers.values.write(values);
-      ctx.setLegendExtent('edge-value', buffers.ranges[attribute]);
+    const {minTraffic, probes} = ctx.options;
+    const attribute = getColorAttribute();
+    const probeSlots = new Map<number, number>();
+    if (probes) {
+      buffers.probes.forEach((state, index) => {
+        for (const row of state.route.expandedEdges) probeSlots.set(row, SLOT.firstProbe + index);
+      });
     }
+    const getPairSlot = (pair: number): number => {
+      // When probes reuse slots 5-7, plain routes move to the otherwise-unused first class slot.
+      if (attribute === 'plain') return probes ? SLOT.firstClass : SLOT.plain;
+      if (attribute === 'delay') {
+        if (network.traffic[pair] < minTraffic) return SLOT.underFloor;
+        return getClassOf(network.delay![pair], DELAY_BREAKS);
+      }
+      return getClassOf(network.distanceKm[pair], DISTANCE_BREAKS);
+    };
+    const slots = new Float32Array(buffers.edgeCount);
+    for (let row = 0; row < buffers.edgeCount; row++) {
+      slots[row] = liveMask[row]
+        ? (probeSlots.get(row) ?? getPairSlot(expanded.original[row]))
+        : Number.NaN;
+    }
+    buffers.slots.write(slots);
+
+    const counts = [0, 0, 0, 0, 0];
+    let underFloor = 0;
+    let shown = 0;
+    let shownFlights = 0;
+    let topClassFlights = 0;
+    let worstPair = -1;
+    for (let pair = 0; pair < network.edgeCount; pair++) {
+      if (!livePairs[pair] || attribute === 'plain') continue;
+      const slot = getPairSlot(pair);
+      if (slot === SLOT.underFloor) {
+        underFloor++;
+        continue;
+      }
+      counts[slot]++;
+      if (attribute === 'delay') {
+        shown++;
+        shownFlights += network.traffic[pair];
+        if (slot === 4) topClassFlights += network.traffic[pair];
+        if (worstPair < 0 || network.delay![pair] > network.delay![worstPair]) worstPair = pair;
+      }
+    }
+    const stats: FlightClassStats = {counts, underFloor};
+    ctx.setLegendData('classStats', stats);
+
+    const annotations: MapAnnotation[] = [];
+    if (attribute === 'delay' && worstPair >= 0) {
+      const a = network.airports[network.source[worstPair]];
+      const b = network.airports[network.target[worstPair]];
+      const names = `${a.iata} to ${b.iata}`;
+      const delay = Math.round(network.delay![worstPair]);
+      ctx.setReadout('pairsShown', `${formatCount(shown)} of ${formatCount(shown + underFloor)}`);
+      ctx.setReadout(
+        'worstCorridor',
+        `${names}: ${delay} min over ${formatCount(network.traffic[worstPair])} flights`
+      );
+      ctx.setReadout('topClassShare', shownFlights > 0 ? topClassFlights / shownFlights : null);
+      annotations.push({
+        kind: 'note',
+        id: 'worst-corridor',
+        coordinate: [
+          (network.lonLat[network.source[worstPair] * 2] +
+            network.lonLat[network.target[worstPair] * 2]) /
+            2,
+          (network.lonLat[network.source[worstPair] * 2 + 1] +
+            network.lonLat[network.target[worstPair] * 2 + 1]) /
+            2
+        ],
+        title: liveText('{delay:integer} min mean delay', {delay}),
+        text: `${names}, the worst pair above the floor (${formatCount(network.traffic[worstPair])} flights)`
+      });
+    } else {
+      ctx.setReadout('pairsShown', null);
+      ctx.setReadout('worstCorridor', null);
+      ctx.setReadout('topClassShare', null);
+    }
+    ctx.setAnnotations('worst-corridor', annotations.length ? annotations : null);
+    ctx.requestLayers();
+  }
+
+  /** Names the corridors on the middle of the bundled path of a representative route. */
+  function updateCorridorLabels(): void {
+    if (!graph || !liveMask || !ctx.options.corridorLabels || !corridorPoints.length) {
+      ctx.setAnnotations('corridors', null);
+      return;
+    }
+    ctx.setAnnotations(
+      'corridors',
+      corridorPoints.map(point => ({
+        kind: 'area' as const,
+        id: `corridor-${point.id}`,
+        coordinate: point.at,
+        text: point.name,
+        size: 'small' as const,
+        priority: 2
+      }))
+    );
   }
 
   function buildGraph(): BundlingGraph {
@@ -379,98 +571,90 @@ export async function createFlightBundling(
   function rebuild(): void {
     if (graph) retired.push({resources: graph.resources, frames: 0});
     graph = buildGraph();
+    corridorPoints = [];
     parameterBuffer.write(createGPUEdgeBundlingParameterValues(getParameters(), 'uint32'));
     writeMask();
-    writeValues();
     ctx.setReadout('airports', graph.buffers.network.nodeCount);
     ctx.setReadout('pointsPerEdge', graph.pointsPerEdge);
     markChanged();
   }
 
-  /** Path stretch and map coverage of the bundled polylines against the straight edges. */
+  /** Path stretch of the bundled polylines against the straight edges, and the corridor label points. */
   function processPaths(current: BundlingGraph, paths: Float32Array): void {
     const {buffers, pointsPerEdge} = current;
     const stretches: number[] = [];
     let straightKilometres = 0;
     let bundledKilometres = 0;
-    const straightCells = new Set<number>();
-    const bundledCells = new Set<number>();
-    const mark = (cells: Set<number>, ax: number, ay: number, bx: number, by: number) => {
-      const steps = Math.max(
-        1,
-        Math.ceil(Math.max(Math.abs(bx - ax), Math.abs(by - ay)) / (COVERAGE_CELL_DEGREES * 0.5))
-      );
-      for (let step = 0; step <= steps; step++) {
-        const t = step / steps;
-        const x = Math.floor((ax + (bx - ax) * t) / COVERAGE_CELL_DEGREES);
-        const y = Math.floor((ay + (by - ay) * t) / COVERAGE_CELL_DEGREES);
-        cells.add((x + 2000) * 4000 + (y + 2000));
-      }
-    };
     for (let edge = 0; edge < buffers.edgeCount; edge++) {
       if (!getLive(edge)) continue;
       const first = edge * pointsPerEdge * 2;
       const last = first + (pointsPerEdge - 1) * 2;
-      straightKilometres += getApproximateKilometres(
-        paths[first],
-        paths[first + 1],
-        paths[last],
-        paths[last + 1]
-      );
-      mark(straightCells, paths[first], paths[first + 1], paths[last], paths[last + 1]);
-      const bundledBefore = bundledKilometres;
-      for (let point = 0; point < pointsPerEdge - 1; point++) {
-        const a = first + point * 2;
-        bundledKilometres += getApproximateKilometres(
-          paths[a],
-          paths[a + 1],
-          paths[a + 2],
-          paths[a + 3]
-        );
-        mark(bundledCells, paths[a], paths[a + 1], paths[a + 2], paths[a + 3]);
-      }
       const direct = getApproximateKilometres(
         paths[first],
         paths[first + 1],
         paths[last],
         paths[last + 1]
       );
-      if (direct > 50) stretches.push((bundledKilometres - bundledBefore) / direct);
+      straightKilometres += direct;
+      let along = 0;
+      for (let point = 0; point < pointsPerEdge - 1; point++) {
+        const a = first + point * 2;
+        along += getApproximateKilometres(paths[a], paths[a + 1], paths[a + 2], paths[a + 3]);
+      }
+      bundledKilometres += along;
+      if (direct > 50) stretches.push(along / direct);
     }
+    const meanStretch = straightKilometres > 0 ? bundledKilometres / straightKilometres : null;
     ctx.setChart(
       'stretchChart',
       stretches.length
-        ? histogramChart(binValues(stretches, 1, 1.6, 24), 1, 1.6, {
-            xLabel: 'path length / straight length (60% and over in the last bin)',
+        ? {
+            kind: 'histogram',
+            values: countInBins(stretches, 1, 1.6, 24),
+            xDomain: [1, 1.6],
+            xLabel: 'path length / straight length (the last bin holds everything longer)',
             yLabel: 'routes',
-            color: 3,
-            formatX: value => value.toFixed(2),
+            formatX: value => `${value.toFixed(2)}x`,
             formatY: value => (value >= 1000 ? `${(value / 1000).toFixed(1)}k` : `${value}`),
+            markers:
+              meanStretch !== null && meanStretch <= 1.6
+                ? [{x: meanStretch, label: 'mean'}]
+                : undefined,
             description:
-              'Histogram of how much longer each bundled route is than its straight line. Most routes stay within a few percent; the tail is routes pulled into a distant bundle.'
-          })
+              'Histogram of how much longer each bundled route is than its straight line. Most routes stay close to 1; the tail is routes pulled into a distant bundle.'
+          }
         : null
     );
-    ctx.setReadout(
-      'stretch',
-      straightKilometres > 0 ? bundledKilometres / straightKilometres : null
-    );
-    ctx.setReadout('coverageStraight', straightCells.size);
-    ctx.setReadout('coverageBundled', bundledCells.size);
-    ctx.setReadout(
-      'inkSaved',
-      straightCells.size > 0 ? 1 - bundledCells.size / straightCells.size : null
-    );
+    ctx.setReadout('stretch', meanStretch === null ? null : `${meanStretch.toFixed(2)}x`);
+
+    corridorPoints = [];
+    for (const corridor of buffers.corridors) {
+      for (const row of corridor.expandedEdges) {
+        if (!getLive(row)) continue;
+        const middle = Math.floor((pointsPerEdge - 1) / 2);
+        const a = (row * pointsPerEdge + middle) * 2;
+        const b = a + 2;
+        const longitude = (paths[a] + paths[b]) / 2;
+        if (Math.abs(longitude) > 180) continue;
+        corridorPoints.push({
+          id: corridor.id,
+          name: corridor.name,
+          at: [longitude, (paths[a + 1] + paths[b + 1]) / 2]
+        });
+        break;
+      }
+    }
+    updateCorridorLabels();
   }
 
   function getLive(edge: number): boolean {
     return liveMask ? liveMask[edge] === 1 : true;
   }
 
-  function findAirportNear(pixel: readonly [number, number]): string | null {
+  function getAirportTooltip(pixel: readonly [number, number]): TooltipContent | null {
     const viewport = ctx.getViewport();
     if (!viewport || !graph) return null;
-    const {network} = graph.buffers;
+    const {network, degreeRank} = graph.buffers;
     let best = -1;
     let bestDistance = 12;
     for (let airport = 0; airport < network.nodeCount; airport++) {
@@ -486,8 +670,21 @@ export async function createFlightBundling(
     }
     if (best < 0) return null;
     const record = network.airports[best];
-    const unit = network.id === 'world' ? 'airports served' : 'airports served in July 2023';
-    return `${record.iata}: ${record.name}\n${record.city}, ${record.country}\n${network.degree[best]} ${unit}`;
+    return {
+      title: `${record.iata}: ${record.name}`,
+      subtitle: `${record.city}, ${record.country}`,
+      rows: [
+        {
+          label: network.id === 'world' ? 'Airports served' : 'Airports served in July',
+          value: formatCount(network.degree[best]),
+          emphasis: true
+        },
+        {
+          label: 'Rank by connections',
+          value: `${formatCount(degreeRank[best] + 1)} of ${formatCount(network.nodeCount)}`
+        }
+      ]
+    };
   }
 
   rebuild();
@@ -505,14 +702,19 @@ export async function createFlightBundling(
           break;
         case 'region':
         case 'distanceRange':
-        case 'minTraffic':
           writeMask();
           break;
-        case 'play':
-        case 'playSpeed':
-        case 'loop':
-          break;
         case 'iterations':
+          writeParameters(false);
+          ctx.setCost({
+            records: liveEdges * (graph?.pointsPerEdge ?? 16),
+            passes: 4 + 3 * ctx.options.iterations,
+            note: 'control points; splat, advect and resample per iteration'
+          });
+          // Zero iterations draws immutable two-point paths; positive iterations draw the
+          // contributor output. Rebuild the layers so this change swaps those source buffers.
+          ctx.requestLayers();
+          break;
         case 'kernelRadius':
         case 'decay':
         case 'stiffness':
@@ -520,12 +722,20 @@ export async function createFlightBundling(
           writeParameters();
           break;
         case 'colorBy':
-          writeValues();
-          ctx.requestLayers();
+        case 'minTraffic':
+        case 'probes':
+          refreshDisplay();
+          break;
+        case 'corridorLabels':
+          updateCorridorLabels();
           break;
         default:
           ctx.requestLayers();
       }
+    },
+
+    onGroundChange() {
+      ctx.requestLayers();
     },
 
     onThemeChange() {
@@ -533,12 +743,11 @@ export async function createFlightBundling(
     },
 
     getTooltip(event) {
-      return findAirportNear(event.pixel);
+      return getAirportTooltip(event.pixel);
     },
 
-    encode(commandEncoder, frame) {
+    encode(commandEncoder) {
       if (!graph) return;
-      clock.advance(frame);
       for (let index = retired.length - 1; index >= 0; index--) {
         if (++retired[index].frames > RETIRE_FRAMES) {
           retired[index].resources.destroy();
@@ -568,40 +777,112 @@ export async function createFlightBundling(
       if (!graph) return [];
       const options = ctx.options;
       const {buffers, pointsPerEdge} = graph;
-      const dark = ctx.theme() === 'dark';
       const lngLat = COORDINATE_SYSTEM.LNGLAT;
       const attribute = getColorAttribute();
-      const range = attribute ? buffers.ranges[attribute] : [0, 1];
+      // Distance and the single colour are light on the night ground: additive, order free. The
+      // delay classes stack with alpha, one pass per class, so the worst pairs are on top.
+      const additive = attribute !== 'delay';
+      const probes = options.probes ? buffers.probes : [];
+      const palette = getRoutePalette(attribute, options.brightness, probes.length > 0);
       const layers: Layer[] = [];
-      if (options.showStraight) {
+      // The opening step is the only place where straight routes are implicit. Once bundling is
+      // active, draw only the contributor output unless the explicit straight-route comparison is
+      // enabled below. Even a faint copy of every source edge reconstructs the hairball and makes
+      // the bundled paths read as straight lines.
+      if (options.iterations === 0) {
         layers.push(
           new SpatialAnalysisSegmentLayer({
-            id: `flight-straight-${buffers.network.id}`,
+            id: `flight-source-routes-${buffers.network.id}`,
             coordinateSystem: lngLat,
             segments: buffers.straight,
             weights: buffers.maskWeights,
             instanceCount: buffers.edgeCount,
-            widthPixels: 0.8,
-            color: dark ? [180, 195, 230, 40] : [60, 70, 100, 45]
+            widthPixels: 1,
+            color: [104, 194, 255, 190],
+            parameters: ADDITIVE_ROUTE_PARAMETERS
           })
         );
       }
-      layers.push(
-        new BundledPathLayer({
-          id: `flight-bundles-${buffers.network.id}-${pointsPerEdge}`,
-          paths: graph.paths,
-          pointsPerPath: pointsPerEdge,
-          pathCount: buffers.edgeCount,
-          values: attribute ? buffers.values : null,
-          valueRange: range as [number, number],
-          ramp: options.ramp,
-          sqrtScale: attribute === 'traffic',
-          edgeMask: buffers.mask,
-          startColor: dark ? [96, 214, 255, 255] : [20, 110, 190, 255],
-          endColor: dark ? [96, 214, 255, 255] : [20, 110, 190, 255],
-          opacity: options.opacity
-        })
+      // GPUEdgeBundling's output buffer is populated by its iteration passes. At zero active
+      // iterations there is deliberately no bundling work, so draw the immutable two-point source
+      // paths instead of reading an unwritten output buffer. This is also the honest visual for the
+      // opening hairball step: the original route pairs before the display transformation begins.
+      const displayPaths = options.iterations === 0 ? buffers.straight : graph.paths;
+      const displayPointsPerPath = options.iterations === 0 ? 2 : pointsPerEdge;
+
+      const addRoutes = (
+        name: string,
+        paths: Buffer,
+        pointsPerPath: number,
+        compareSide?: 'a' | 'b'
+      ) => {
+        layers.push(
+          new BundleRibbonLayer({
+            id: `flight-${name}-${buffers.network.id}-${pointsPerPath}`,
+            paths,
+            pointsPerPath,
+            pathCount: buffers.edgeCount,
+            values: buffers.maskWeights,
+            classes: buffers.slots,
+            edgeMask: buffers.mask,
+            palette,
+            maximumValue: 1,
+            widthMinPixels: 1,
+            widthByValue: false,
+            heaviestLast: false,
+            compareSide,
+            parameters: additive ? ADDITIVE_ROUTE_PARAMETERS : NORMAL_ROUTE_PARAMETERS
+          })
+        );
+      };
+
+      if (options.straight === 'ghost') {
+        layers.push(
+          new BundleRibbonLayer({
+            id: `flight-ghost-${buffers.network.id}`,
+            paths: buffers.straight,
+            pointsPerPath: 2,
+            pathCount: buffers.edgeCount,
+            values: buffers.maskWeights,
+            classes: buffers.slots,
+            edgeMask: buffers.mask,
+            palette,
+            flatColor: UNDER_FLOOR_COLOR,
+            maximumValue: 1,
+            widthMinPixels: 0.6,
+            widthByValue: false,
+            heaviestLast: false,
+            opacity: 0.2,
+            parameters: NORMAL_ROUTE_PARAMETERS
+          })
+        );
+      }
+      if (options.straight === 'full') addRoutes('straight', buffers.straight, 2, 'a');
+      addRoutes(
+        'bundles',
+        displayPaths,
+        displayPointsPerPath,
+        options.straight === 'full' ? 'b' : undefined
       );
+
+      if (probes.length) {
+        for (const state of probes) {
+          const color = getProbeColor(state.probe);
+          layers.push(
+            new SpatialAnalysisSegmentLayer({
+              id: `flight-chord-${state.probe.id}`,
+              coordinateSystem: lngLat,
+              segments: state.segments,
+              instanceCount: state.route.expandedEdges.length,
+              widthPixels: 1.2,
+              dashArray: [5, 4],
+              cap: 'butt',
+              color: [color[0], color[1], color[2], 235]
+            })
+          );
+        }
+      }
+
       if (options.showAirports) {
         layers.push(
           new SpatialAnalysisPointLayer({
@@ -609,8 +890,13 @@ export async function createFlightBundling(
             coordinateSystem: lngLat,
             positions: buffers.airports,
             instanceCount: buffers.network.nodeCount,
-            radiusPixels: 1.4,
-            color: dark ? [235, 240, 255, 150] : [30, 40, 70, 150]
+            shape: 'circle',
+            radiusPixels: 1.2,
+            opacityStops: [
+              [2.8, 0],
+              [3.2, 1]
+            ],
+            color: [207, 216, 227, 140]
           }),
           new SpatialAnalysisPointLayer({
             id: `flight-hubs-${buffers.network.id}`,
@@ -618,8 +904,11 @@ export async function createFlightBundling(
             positions: buffers.airports,
             ids: buffers.hubs,
             instanceCount: buffers.hubRows.length,
-            radiusPixels: 3.6,
-            color: [255, 184, 64, 235]
+            shape: 'circle',
+            radiusPixels: 3.4,
+            color: HUB_FILL,
+            outlineColor: HUB_STROKE,
+            outlineWidthPixels: 1.4
           })
         );
       }
@@ -634,9 +923,4 @@ export async function createFlightBundling(
       resources.destroy();
     }
   };
-}
-
-function percentile(values: ArrayLike<number>, fraction: number): number {
-  const sorted = Array.from(values).sort((a, b) => a - b);
-  return sorted[Math.min(sorted.length - 1, Math.floor(fraction * sorted.length))] ?? 1;
 }

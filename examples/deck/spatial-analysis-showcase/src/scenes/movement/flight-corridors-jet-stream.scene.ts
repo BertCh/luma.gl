@@ -2,8 +2,11 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {joinCredits} from '../../cartography/credits';
+import {ground} from '../../cartography/grounds';
 import {defineScene} from '../scene';
 import type {JetStreamOptions} from './flight-corridors-jet-stream.compute';
+import {MOVEMENT_CREDITS} from './movement-style';
 
 const US_VIEW = {longitude: -96, latitude: 38.5, zoom: 3.9};
 
@@ -11,12 +14,22 @@ export default defineScene<JetStreamOptions>({
   id: 'flight-corridors-jet-stream',
   title: 'Can aircraft measure the jet stream?',
   chapter: 'movement',
-  order: 21,
+  order: 11,
   summary:
     'Measure the speed and heading of every step of 38,135 US flights on the GPU, then compare eastbound with westbound ground speed at cruise altitude: the jet stream, found from aircraft alone.',
   contributors: ['GPUTrajectoryMetrics'],
   datasets: [{id: 'poopdeck-adsb-paths', role: 'flight trajectories (OpenSky ADS-B, 6 Jan 2020)'}],
   initialView: US_VIEW,
+  basemap: ground('night', {labels: 'none'}),
+  furniture: {
+    title: {
+      title: 'Aircraft as a wind instrument',
+      subtitle: 'Along-track wind from ADS-B ground speed · 6 January 2020',
+      chips: ['OBSERVED ground speed', 'DERIVED wind']
+    },
+    scaleBar: {units: 'metric'},
+    credit: joinCredits(MOVEMENT_CREDITS.openSky)
+  },
 
   options: [
     {
@@ -52,10 +65,9 @@ export default defineScene<JetStreamOptions>({
       label: 'Speed color ramp',
       group: 'Map',
       apply: 'param',
-      default: 'viridis',
+      default: 'magma',
       help: 'All four are perceptually uniform.',
       options: [
-        {value: 'viridis', label: 'Viridis'},
         {value: 'magma', label: 'Magma'},
         {value: 'inferno', label: 'Inferno'},
         {value: 'cividis', label: 'Cividis (color-blind optimised)'}
@@ -212,6 +224,9 @@ compiled.encode(commandEncoder, {parameters: undefined});   // once: the tracks 
   story: [
     {
       id: 'the-question',
+      headline: 'Ground speeds can measure a wind',
+      textAlternative: 'Aircraft ground-speed lines form a dark US map.',
+      optionsMode: 'fresh',
       title: 'How fast is an aircraft really moving, and does it depend on direction?',
       body: 'Each line is one step between two recorded positions of a flight on Monday 6 January 2020, colored by the **speed over the ground** it covered (legend), and only at cruise altitude. Look at the colors: some tracks are much brighter than others.\n\nThe data is **38,135 US flights** from the OpenSky ADS-B network. Nothing about wind is in it, only where each aircraft was and when. Set **Show steps heading** below to *Eastbound only* and then *Westbound only*, and compare.',
       camera: {...US_VIEW, transitionMs: 1200},
@@ -221,6 +236,9 @@ compiled.encode(commandEncoder, {parameters: undefined});   // once: the tracks 
     },
     {
       id: 'metrics',
+      headline: 'One pass measures every flight step',
+      textAlternative: 'A selected flight shows measured ground speed along its route.',
+      optionsMode: 'fresh',
       title: 'One pass measures every step',
       body: '**`GPUTrajectoryMetrics`** computes, for every row of every track, the speed and the heading of the step that ends there: a distance and a time difference per row, no loops over flights on the CPU. The result is two float columns that the map reads directly. The graph runs **once**, because the tracks never change; every control here just changes what the shader and the statistics keep.\n\nSlide **Cruise altitude from** down to 6,000 m and climbs and descents join the map; they are slower and head every which way. The default of 9,000 m keeps level flight at about 30,000 feet and above.',
       options: {minAltitude: 9000, show: 'all'},
@@ -229,6 +247,9 @@ compiled.encode(commandEncoder, {parameters: undefined});   // once: the tracks 
     },
     {
       id: 'east-west',
+      headline: 'Eastbound ground speeds are faster',
+      textAlternative: 'Eastbound and westbound speed distributions are compared.',
+      optionsMode: 'fresh',
       title: 'Eastbound jets are faster, westbound are slower',
       body: 'The chart shows ground speed for the steps that head within **Direction cone** of east (blue) and of west (orange). The two humps barely overlap: the median **eastbound** step covers the ground far faster than the median **westbound** one, over the same country, by the same airliner types.\n\nThat gap is the **median difference** readout. It is the jet stream, a river of fast westerly air at cruise altitude: it carries eastbound flights and holds back westbound ones. Narrow **Direction cone** to 25 degrees to check that it is not an artifact of the boundary.',
       camera: {longitude: -96, latitude: 39, zoom: 4.2, transitionMs: 1400},
@@ -239,6 +260,9 @@ compiled.encode(commandEncoder, {parameters: undefined});   // once: the tracks 
     },
     {
       id: 'airspeed-and-wind',
+      headline: 'Subtract airspeed and reveal wind',
+      textAlternative: 'A signed wind map uses a zero-centred diverging legend.',
+      optionsMode: 'fresh',
       title: 'Cancel the aircraft, keep the wind',
       body: 'If every aircraft flew at the same speed through the air, eastbound ground speed would be airspeed plus wind and westbound airspeed minus wind. Half the difference is then the average **wind**; half the sum, the **implied airspeed**. Read both in the panel: the airspeed lands near the 450 knots an airliner cruises at, which is a sign the reasoning holds.\n\nNow switch **Ground speed from** to *Reported by the aircraft*. Each aircraft broadcast its own ground speed, independent of our position arithmetic, and the medians barely move. The **agreement** readout gives the typical difference between the two for the same step.',
       options: {show: 'all', speedSource: 'derived', minAltitude: 9000, coneDegrees: 45},
@@ -248,6 +272,9 @@ compiled.encode(commandEncoder, {parameters: undefined});   // once: the tracks 
     },
     {
       id: 'where',
+      headline: 'The strongest wind forms a band',
+      textAlternative: 'A gridded wind map and profile identify the jet band.',
+      optionsMode: 'fresh',
       title: 'Where, and how high, is it strongest?',
       body: 'The second chart bins the steps by position. Each point is the median ground speed in one bin of **Profile chart by**; the dashed line is half the difference, the wind. Start with *Longitude*: how does the wind change from the west coast to the east?\n\nThen try *Latitude*: the jet stream follows a meandering track, so the headwind and tailwind depend on which state you cross. Finally *Altitude*: the wind increases with height up to the jet core, which is why long-haul flights climb to the same flight levels. Bins with too few steps are left blank.',
       options: {show: 'all', chartBy: 'longitude'},
@@ -256,6 +283,9 @@ compiled.encode(commandEncoder, {parameters: undefined});   // once: the tracks 
     },
     {
       id: 'limits',
+      headline: 'One Monday needs careful reading',
+      textAlternative: 'The wind estimate is shown with sampling limits.',
+      optionsMode: 'fresh',
       title: 'What to remember, and what to try',
       body: 'This is one winter Monday, so the jet stream is at its strongest; a summer day would show a much smaller gap. The steps are long (up to 10 minutes, simplified from ADS-B pings), speeds are planar speeds in an azimuthal projection that stretches distances up to about 4% at the coasts, and angles are on that grid. Aircraft do not all fly the same airspeed, and pilots choose routes and altitudes to use the wind, so this is the effective wind they experienced, not a weather model. The data stops at the edge of the contiguous US, so there is no Atlantic here.\n\n**Try it:** compare *Altitude* and *Latitude* profiles; set **Cruise altitude from** to 11,000 m and see what changes; widen **Direction cone** to 75 degrees and watch the two humps mix.',
       camera: {...US_VIEW, transitionMs: 1400},

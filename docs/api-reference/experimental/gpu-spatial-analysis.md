@@ -1311,6 +1311,29 @@ boxes overlap, with the left box optionally expanded by `distance`. The output i
 It is conservative: no intersecting pair is missed, and some candidates do not intersect. It has no
 `excludeSameRow`.
 
+`distance` may be a compile-time number or a one-row `GraphDataView<'float32'>`. The view is read every
+encoding, so an interactive distance join can reuse one compiled graph. Size the pair capacity for the
+largest distance that the application permits. Negative, NaN and infinite view values act as zero; invalid
+compile-time numbers throw.
+
+```ts
+const candidateDistance = new GPUParameterBuffer(device, {
+  id: 'candidate-distance',
+  format: 'float32',
+  length: 1
+});
+
+graph.add(new GPUSpatialJoinCandidates({
+  left,
+  right,
+  distance: candidateDistance.importToGraph(graph),
+  pairs: {leftIds, rightIds, count, overflow, totalCount}
+}));
+
+const compiled = graph.compile();
+candidateDistance.write(Float32Array.of(2_000));
+compiled.encode(commandEncoder, {parameters: undefined});
+```
 
 ### `GPUPointInPolygonJoin` and `GPUNearestFeatureJoin`
 
@@ -2743,12 +2766,14 @@ from GEOS only for self-intersecting rings.
 
 `GPUGeometryCleanup` is `remove_repeated_points(tolerance)` and `set_precision(grid_size, mode='pointwise')`:
 `gridSize` snaps half-up as GEOS does, and `tolerance` removes repeats with the exact GEOS semantics (first
-and last kept, inclusive tolerance against the previous kept vertex). The output is compacted `positions`
-with republished `ringOffsets`, `count`, `overflow`, `totalCount` and `collapsedRings` (polygon rings with
-fewer than 3 surviving vertices are emptied, where GEOS raises). GEOS `set_precision(pointwise)` does not
-drop repeats, so use `removeRepeatedPoints: false` for exact parity. Both outputs matched Shapely exactly
-on 5 parameter sets by 24 features. Points are not supported, the kernels are one thread per ring, and
-`normalize` is not provided.
+and last kept, inclusive tolerance against the previous kept vertex). Line and polygon output is compacted
+`positions` with republished `ringOffsets`, `count`, `overflow`, `totalCount` and `collapsedRings` (polygon
+rings with fewer than 3 surviving vertices are emptied, where GEOS raises). GEOS `set_precision(pointwise)`
+does not drop repeats, so use `removeRepeatedPoints: false` for exact parity. With `geometryType: 'points'`,
+each position row is an independent Point: the direct O(n) kernel applies only precision snapping, preserves
+coincident rows, and publishes `positions`, `count`, `overflow` and optional `totalCount` without ring
+outputs. Line and polygon cleanup matched Shapely exactly on 5 parameter sets by 24 features; point tests
+cover dynamic snapping, ties, duplicate preservation and capacity overflow. `normalize` is not provided.
 
 ### `GPUMinimumBounds`
 
@@ -2850,8 +2875,9 @@ graph.add(new GPULineLengthPerPolygon({positions, pathOffsets, polygons, output:
 Grid geometry (turf `squareGrid`, `hexGrid`, `triangleGrid`, `pointGrid`, QGIS create grid, PostGIS
 `ST_SquareGrid`). Props: `gridType` (`'square'`, `'hex'`, `'triangle'` or `'point'`), `columns`, `rows`,
 `parameters` (`getGPUGridGeneratorParameterValues({minX, minY, cellWidth, cellHeight})`) and
-`output: {positions?, centers?}`. Size the outputs with `getGPUGridCellCount` and
-`getGPUGridVerticesPerCell`. Hexagons are pointy-top by default (`cellWidth` is flat to flat), triangles come in
+`output: {positions?, centers?, corners?, cornerIntersects?}`. Size cell outputs with
+`getGPUGridCellCount` and `getGPUGridVerticesPerCell`; size the unique square or hex vertex lattice
+with `getGPUGridCornerCount`. Hexagons are pointy-top by default (`cellWidth` is flat to flat), triangles come in
 alternating strips with half-cell row shifts (not turf's exact layout), and the point grid sits at cell
 centers. The cell counts are compile-time.
 
@@ -2864,7 +2890,11 @@ centers. The cell counts are compile-time.
   against a polygon (even-odd rings, holes, multi-polygon) with exact orientation predicates. Boundary
   contact counts, and point grids test the center. Cost is cells times extent edges. It is a flag, not a
   compaction: compact it with `GPUCompaction` for the subset. Matched Shapely `intersects` on five grid
-  types (240 cells). Not provided: `make_grid` `corners`.
+  types (240 cells).
+- `output.corners` implements GeoPandas `make_grid(feature_type='corners')` for square and hex grids.
+  It emits every shared and boundary vertex exactly once using an integer lattice, without sorting or
+  floating-point hashing. `output.cornerIntersects` independently tests those points against `extent`,
+  including polygon and hole boundaries. Triangle and point grids do not expose corner output.
 
 ### `GPUShapeGenerator`
 
@@ -2875,9 +2905,12 @@ meters; `GPUShapeCoordinateSystem`), compile-time `maximumSegments` and per-fram
 (`getGPUShapeGeneratorParameterValues`). The segment count and the radius scale are per-frame, up to
 `maximumSegments`; size outputs with `getGPUShapeVertexCount` and `getGPUShapeMinimumSegments`. The output
 is packed rings plus GeoArrow-style `offsets` (feature `f` starts at `f * V`) and an optional
-`vertexCount`. Circles and sectors match turf 7.4 exactly (pinned). The ellipse spaces its vertices
-uniformly in the parameter, not by arc length, and coincident sector bearings keep their center spokes.
-Geodesic f32 coordinates round to about 0.5 m.
+`vertexCount`. Circles and sectors match turf 7.4 exactly (pinned). Ellipses default to the original
+equal-parameter sampling; `ellipseSpacing: 'arc-length'` builds a normalized 257-sample quarter-ellipse
+table per feature and inverts it for approximately equal edge lengths. The table is built before rotation
+and, for geodesic shapes, before spherical destination; it costs 1028 transient bytes per feature and one
+additional compute pass. Coincident sector bearings keep their center spokes. Geodesic f32 coordinates
+round to about 0.5 m.
 
 ### `GPUHilbertKeys`
 

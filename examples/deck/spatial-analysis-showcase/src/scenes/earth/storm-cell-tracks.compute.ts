@@ -71,7 +71,6 @@ export type StormCellTracksOptions = {
   speed: number;
   loop: boolean;
   colorBy: 'speed' | 'heading';
-  ramp: 'viridis' | 'magma' | 'inferno' | 'cividis';
   showBackdrop: boolean;
   showTrails: boolean;
   trailMinutes: number;
@@ -93,7 +92,6 @@ export type StormCellTracksOptions = {
   statistic: 'count' | 'energy';
   resolution: 'coarse' | 'medium' | 'fine';
   sigma: number;
-  lightningRamp: 'inferno' | 'magma' | 'viridis' | 'cividis';
   lightningOpacity: number;
   showHotSpots: boolean;
   hotPercentile: number;
@@ -103,6 +101,13 @@ export type StormCellTracksOptions = {
 const KMH_PER_METER_SECOND = 3.6;
 const STOP_CAPACITY = 512;
 const STATUS_INTERVAL_FRAMES = 10;
+const SPEED_CLASS_COLORS = [
+  [255, 237, 160, 255],
+  [254, 178, 76, 255],
+  [240, 59, 32, 255],
+  [189, 0, 38, 255],
+  [103, 0, 31, 255]
+] as const;
 const GRID_SIZES = {coarse: [80, 52], medium: [128, 84], fine: [192, 126]} as const;
 const KERNEL_RADIUS = 8;
 const KERNEL_WIDTH = KERNEL_RADIUS * 2 + 1;
@@ -174,6 +179,7 @@ export async function createStormCellTracks(
   const averageSpeeds = resources.createBuffer('average-speeds', trackCount * 4);
   const maximumSpeeds = resources.createBuffer('maximum-speeds', trackCount * 4);
   const stepSpeeds = resources.createBuffer('step-speeds', vertexCount * 4);
+  const stepSpeedClasses = resources.createBuffer('step-speed-classes', vertexCount * 4);
   const stepHeadings = resources.createBuffer('step-headings', vertexCount * 4);
   const stepSectors = resources.createBuffer('step-sectors', vertexCount * 4);
   const trackStopCounts = resources.createBuffer('track-stop-counts', trackCount * 4);
@@ -217,6 +223,13 @@ export async function createStormCellTracks(
     metricsGraph,
     'step-sectors',
     stepSectors,
+    'uint32',
+    vertexCount
+  );
+  const stepSpeedClassesView = importGraphBuffer(
+    metricsGraph,
+    'step-speed-classes',
+    stepSpeedClasses,
     'uint32',
     vertexCount
   );
@@ -344,6 +357,27 @@ export async function createStormCellTracks(
   compass = compass - 360.0 * floor(compass / 360.0);
   sectors[sectorsOffset + index] = u32(floor((compass + 22.5) / 45.0)) % 8u;`
   });
+  addKernelPass(metricsGraph, {
+    id: 'step-speed-classes',
+    invocationCount: vertexCount,
+    bindings: [
+      {
+        name: 'speeds',
+        view: importGraphBuffer(
+          metricsGraph,
+          'step-speeds-class',
+          stepSpeeds,
+          'float32',
+          vertexCount
+        ),
+        type: 'f32',
+        access: 'read'
+      },
+      {name: 'classes', view: stepSpeedClassesView, type: 'u32', access: 'read_write'}
+    ],
+    body: `let kmh = speeds[speedsOffset + index] * ${KMH_PER_METER_SECOND};
+  classes[classesOffset + index] = select(4u, select(3u, select(2u, select(1u, 0u, kmh < 20.0), kmh < 40.0), kmh < 70.0), kmh < 100.0);`
+  });
   // A stalled cell is drawn at the mean longitude and latitude of the rows it stalled on.
   addKernelPass(metricsGraph, {
     id: 'stall-positions',
@@ -389,9 +423,21 @@ export async function createStormCellTracks(
   const activeCount = resources.createBuffer('active-count', 4);
   const activeOverflow = resources.createBuffer('active-overflow', 4);
   const markerSpeeds = resources.createBuffer('marker-speeds', trackCount * 4);
+  const markerSpeedClasses = resources.createBuffer('marker-speed-classes', trackCount * 4);
+  const selectedMotionId = resources.createBuffer('selected-motion-id', 4);
   const markerHeadings = resources.createBuffer('marker-headings', trackCount * 4);
   const markerSectors = resources.createBuffer('marker-sectors', trackCount * 4);
   const arrowSegments = resources.createBuffer('arrow-segments', trackCount * 16);
+  const arrivalPositions = resources.createBuffer('motion-arrival-positions', trackCount * 8);
+  const swathDimensionSegments = resources.createBuffer(
+    'swath-dimension-segments',
+    trackCount * 16
+  );
+  const swathDimensionHalfWidth = resources.createParameterBuffer(
+    'swath-dimension-half-width',
+    'float32',
+    4
+  );
   const playheadParameters = resources.createParameterBuffer(
     'playhead',
     'float32',
@@ -477,6 +523,13 @@ export async function createStormCellTracks(
     'float32',
     trackCount
   );
+  const markerSpeedClassesView = importGraphBuffer(
+    playheadGraph,
+    'marker-speed-classes',
+    markerSpeedClasses,
+    'uint32',
+    trackCount
+  );
   addKernelPass(playheadGraph, {
     id: 'cell-motion',
     invocationCount: trackCount,
@@ -507,8 +560,21 @@ export async function createStormCellTracks(
         type: 'u32',
         access: 'read'
       },
+      {
+        name: 'stepSpeedClasses',
+        view: importGraphBuffer(
+          playheadGraph,
+          'step-speed-classes',
+          stepSpeedClasses,
+          'uint32',
+          vertexCount
+        ),
+        type: 'u32',
+        access: 'read'
+      },
       {name: 'markerSpeeds', view: markerSpeedsView, type: 'f32', access: 'read_write'},
       {name: 'markerHeadings', view: markerHeadingsView, type: 'f32', access: 'read_write'},
+      {name: 'markerSpeedClasses', view: markerSpeedClassesView, type: 'u32', access: 'read_write'},
       {
         name: 'markerSectors',
         view: importGraphBuffer(
@@ -525,16 +591,64 @@ export async function createStormCellTracks(
     body: `var speed = 0.0;
   var heading = 0.0;
   var sector = 0u;
+  var speedClass = 0u;
   let row = segmentRows[segmentRowsOffset + index];
   if (status[statusOffset + index] == ${GPU_TRAJECTORY_PLAYHEAD_STATUS.active}u && row != 0xffffffffu) {
     let endRow = row + 1u;
     speed = stepSpeeds[stepSpeedsOffset + endRow];
     heading = stepHeadings[stepHeadingsOffset + endRow];
     sector = stepSectors[stepSectorsOffset + endRow];
+    speedClass = stepSpeedClasses[stepSpeedClassesOffset + endRow];
   }
   markerSpeeds[markerSpeedsOffset + index] = speed;
   markerHeadings[markerHeadingsOffset + index] = heading;
-  markerSectors[markerSectorsOffset + index] = sector;`
+  markerSectors[markerSectorsOffset + index] = sector;
+  markerSpeedClasses[markerSpeedClassesOffset + index] = speedClass;`
+  });
+  // A cross-track bracket is generated beside the selected live cell. `swathKm` remains the
+  // documented half-width, so this segment is twice that distance and stays coupled to the ribbon.
+  addKernelPass(playheadGraph, {
+    id: 'swath-width-dimension',
+    invocationCount: trackCount,
+    bindings: [
+      {name: 'status', view: playStatusView, type: 'u32', access: 'read'},
+      {name: 'current', view: playCurrentView, type: 'f32', access: 'read'},
+      {name: 'headings', view: markerHeadingsView, type: 'f32', access: 'read'},
+      {
+        name: 'halfWidth',
+        view: swathDimensionHalfWidth.importToGraph(playheadGraph),
+        type: 'f32',
+        access: 'read'
+      },
+      {
+        name: 'dimensions',
+        view: importGraphBuffer(
+          playheadGraph,
+          'swath-dimension-segments',
+          swathDimensionSegments,
+          'float32x4',
+          trackCount
+        ),
+        type: 'f32',
+        access: 'read_write'
+      }
+    ],
+    body: `let nan = bitcast<f32>(0x7fc00000u | (index & 0u));
+  var segment = vec4<f32>(nan, nan, nan, nan);
+  if (status[statusOffset + index] == ${GPU_TRAJECTORY_PLAYHEAD_STATUS.active}u) {
+    let lng = current[currentOffset + index * 2u];
+    let lat = current[currentOffset + index * 2u + 1u];
+    let half = halfWidth[halfWidthOffset];
+    let heading = headings[headingsOffset + index];
+    let cosLat = max(cos(radians(lat)), 0.05);
+    let east = -sin(heading) * half;
+    let north = cos(heading) * half;
+    segment = vec4<f32>(lng - east / (111194.9 * cosLat), lat - north / 111194.9, lng + east / (111194.9 * cosLat), lat + north / 111194.9);
+  }
+  dimensions[dimensionsOffset + index * 4u] = segment.x;
+  dimensions[dimensionsOffset + index * 4u + 1u] = segment.y;
+  dimensions[dimensionsOffset + index * 4u + 2u] = segment.z;
+  dimensions[dimensionsOffset + index * 4u + 3u] = segment.w;`
   });
   // A motion vector: from the cell along its heading, as far as it travels in the vector time.
   addKernelPass(playheadGraph, {
@@ -562,6 +676,18 @@ export async function createStormCellTracks(
         ),
         type: 'f32',
         access: 'read_write'
+      },
+      {
+        name: 'arrivals',
+        view: importGraphBuffer(
+          playheadGraph,
+          'motion-arrival-positions',
+          arrivalPositions,
+          'float32x2',
+          trackCount
+        ),
+        type: 'f32',
+        access: 'read_write'
       }
     ],
     body: `let nan = bitcast<f32>(0x7fc00000u | (index & 0u));
@@ -581,7 +707,9 @@ export async function createStormCellTracks(
   arrows[arrowsOffset + index * 4u] = vector.x;
   arrows[arrowsOffset + index * 4u + 1u] = vector.y;
   arrows[arrowsOffset + index * 4u + 2u] = vector.z;
-  arrows[arrowsOffset + index * 4u + 3u] = vector.w;`
+  arrows[arrowsOffset + index * 4u + 3u] = vector.w;
+  arrivals[arrivalsOffset + index * 2u] = vector.z;
+  arrivals[arrivalsOffset + index * 2u + 1u] = vector.w;`
   });
   const playheadCompiled = resources.track(playheadGraph.compile());
 
@@ -942,6 +1070,11 @@ export async function createStormCellTracks(
     swathDistance.write(
       getGPUOutlineGeometryParameterValues({distance: ctx.options.swathKm * 1000})
     );
+    swathDimensionHalfWidth.write(Float32Array.of(ctx.options.swathKm * 1000, 0, 0, 0));
+    ctx.setReadout(
+      'swathWidth',
+      `${(ctx.options.swathKm * 2).toLocaleString('en-US')} km full width (±${ctx.options.swathKm.toLocaleString('en-US')} km)`
+    );
   }
   writeMetricsParameters();
   writeArrowParameters();
@@ -1020,6 +1153,13 @@ export async function createStormCellTracks(
         sectors: words.slice(sectorStart, headingStart),
         headings: floats.slice(headingStart, headingStart + trackCount)
       };
+      const motionTrack =
+        selectedTrack === NO_TRACK
+          ? statusSnapshot.status.findIndex(
+              value => value === GPU_TRAJECTORY_PLAYHEAD_STATUS.active
+            )
+          : selectedTrack;
+      selectedMotionId.write(Uint32Array.of(motionTrack >= 0 ? motionTrack : 0));
       ctx.setReadout('activeCells', words[0]);
       ctx.setReadout('flashesNow', words[1]);
       ctx.setReadout('trailSegments', words[2]);
@@ -1226,6 +1366,10 @@ export async function createStormCellTracks(
       ctx.requestLayers();
     },
 
+    onGroundChange() {
+      ctx.requestLayers();
+    },
+
     encode(commandEncoder, frame) {
       const options = ctx.options;
       playhead = clock.advance(frame);
@@ -1310,7 +1454,7 @@ export async function createStormCellTracks(
 
     getLayers() {
       const options = ctx.options;
-      const dark = ctx.theme() === 'dark';
+      const dark = ctx.ground() === 'dark';
       const layers: Layer[] = [];
       const bySpeed = options.colorBy === 'speed';
 
@@ -1323,11 +1467,29 @@ export async function createStormCellTracks(
               coordinateSystem: COORDINATE_SYSTEM.LNGLAT,
               positions: swath.triangles,
               triangleCount: swath.triangleCount,
-              color: dark ? [255, 176, 72, 255] : [214, 112, 20, 255],
+              color: dark ? [205, 174, 255, 255] : [94, 66, 140, 255],
               opacity: options.swathOpacity
             })
           );
         }
+        const motionTrack =
+          selectedTrack === NO_TRACK
+            ? (statusSnapshot?.status.findIndex(
+                value => value === GPU_TRAJECTORY_PLAYHEAD_STATUS.active
+              ) ?? -1)
+            : selectedTrack;
+        layers.push(
+          new SpatialAnalysisSegmentLayer({
+            id: 'storm-swath-width-bracket',
+            ...lngLatDraw,
+            segments: swathDimensionSegments,
+            ids: selectedMotionId,
+            instanceCount: motionTrack >= 0 ? 1 : 0,
+            widthPixels: 2.2,
+            cap: 'square',
+            color: dark ? [255, 255, 255, 240] : [25, 28, 42, 240]
+          })
+        );
       }
 
       if (options.showLightning && currentDensity) {
@@ -1342,7 +1504,15 @@ export async function createStormCellTracks(
             values: currentDensity.values,
             valueFormat: 'float32',
             extent: currentDensity.extent,
-            colormap: options.lightningRamp,
+            colormap: 'inferno',
+            classBreaks: [1, 5, 15, 40],
+            classColors: [
+              [255, 237, 160, 190],
+              [254, 178, 76, 205],
+              [240, 59, 32, 220],
+              [189, 0, 38, 235],
+              [103, 0, 31, 245]
+            ],
             sqrtScale: true,
             discardAtOrBelow: smoothed ? 0.02 : 0,
             tessellation: 48,
@@ -1405,27 +1575,44 @@ export async function createStormCellTracks(
             drawCommands: trailDraw,
             weights: fadeWeights,
             clipFractions,
-            values: bySpeed ? stepSpeeds : stepSectors,
-            valueFormat: bySpeed ? 'float32' : 'uint32',
+            values: bySpeed ? stepSpeedClasses : stepSectors,
+            valueFormat: 'uint32',
             valueIndices: segmentEndsBuffer,
-            colormap: bySpeed ? options.ramp : 'category',
-            valueScale: KMH_PER_METER_SECOND,
-            valueRange: [0, STORM_SPEED_RAMP_KMH],
-            palette: COMPASS_COLORS,
+            colormap: 'category',
+            palette: bySpeed ? SPEED_CLASS_COLORS : COMPASS_COLORS,
             widthPixels: 2.6
           })
         );
       }
 
       if (options.showArrows) {
+        const motionTrack =
+          selectedTrack === NO_TRACK
+            ? (statusSnapshot?.status.findIndex(
+                value => value === GPU_TRAJECTORY_PLAYHEAD_STATUS.active
+              ) ?? -1)
+            : selectedTrack;
         layers.push(
           new SpatialAnalysisSegmentLayer({
-            id: 'storm-motion-vectors',
+            id: 'storm-selected-motion-vector',
             ...lngLatDraw,
             segments: arrowSegments,
-            instanceCount: trackCount,
+            ids: selectedMotionId,
+            instanceCount: motionTrack >= 0 ? 1 : 0,
             widthPixels: 1.8,
+            dashArray: [6, 4],
             color: dark ? [255, 255, 255, 190] : [20, 24, 32, 200]
+          }),
+          new SpatialAnalysisPointLayer({
+            id: 'storm-vector-arrival-ring',
+            ...lngLatDraw,
+            positions: arrivalPositions,
+            ids: selectedMotionId,
+            instanceCount: motionTrack >= 0 ? 1 : 0,
+            radiusPixels: options.markerSize + 5,
+            shape: 'ring',
+            color: dark ? [255, 255, 255, 235] : [20, 24, 32, 235],
+            outlineWidthPixels: 1.6
           })
         );
       }
@@ -1455,13 +1642,13 @@ export async function createStormCellTracks(
           positions: currentPositions,
           headings: markerHeadings,
           speeds: markerSpeeds,
-          categories: markerSectors,
+          categories: bySpeed ? markerSpeedClasses : markerSectors,
           drawCommands: markerDraw,
           sizePixels: options.markerSize,
-          colorMode: bySpeed ? 'speed' : 'category',
-          ramp: options.ramp,
+          colorMode: 'category',
+          ramp: 'inferno',
           speedForFullColor: STORM_SPEED_RAMP_KMH / KMH_PER_METER_SECOND,
-          palette: COMPASS_COLORS,
+          palette: bySpeed ? SPEED_CLASS_COLORS : COMPASS_COLORS,
           categoryFilter: null,
           selectedTrack: selectedTrack === NO_TRACK ? null : selectedTrack,
           outlineColor: dark ? [8, 10, 16, 235] : [20, 24, 32, 215]

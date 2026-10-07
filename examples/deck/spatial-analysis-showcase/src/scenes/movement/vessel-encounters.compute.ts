@@ -30,6 +30,10 @@ import {
   VESSEL_CATEGORY_COLORS,
   VESSEL_CATEGORY_LABELS
 } from './b12-tracks';
+import {
+  getVesselEncounterSearchAnnotations,
+  getVesselRouteLeashWitness
+} from './vessel-encounters-overlays';
 
 /** Option state of the vessel encounters scene. */
 export type VesselEncountersOptions = {
@@ -888,6 +892,42 @@ export async function createVesselEncounters(
         ? `${String(busiest).padStart(2, '0')}:00 UTC (${formatCount(hours[busiest])} first meetings)`
         : 'n/a'
     );
+    // Show the actual 3 x 3 search neighbourhood for a pair from this run. The grid, radius and
+    // route-sample leash are derived from the same trajectories as the pair readback.
+    if (snapshot.count) {
+      let strongest = 0;
+      for (let pair = 1; pair < snapshot.count; pair++) {
+        if (snapshot.bucketCounts[pair] > snapshot.bucketCounts[strongest]) strongest = pair;
+      }
+      const second =
+        ctx.options.clockStartHour * 3600 +
+        snapshot.firstBuckets[strongest] * ctx.options.clockStepSeconds;
+      const first = interpolate(snapshot.ids[strongest], second);
+      const partner = interpolate(snapshot.partners[strongest], second);
+      if (first && partner) {
+        const annotations = getVesselEncounterSearchAnnotations(
+          vessels,
+          first,
+          partner,
+          CELL_SIZE,
+          ctx.options.distance,
+          getVesselRouteLeashWitness(vessels, snapshot.ids[strongest], snapshot.partners[strongest])
+        );
+        annotations.push({
+          kind: 'note',
+          id: 'encounter-duration',
+          coordinate: vessels.unproject((first[0] + partner[0]) / 2, (first[1] + partner[1]) / 2),
+          title: `Together ${formatDuration(snapshot.bucketCounts[strongest] * ctx.options.clockStepSeconds)}`,
+          text: `Closest ${snapshot.minimumDistances[strongest].toFixed(0)} m`,
+          priority: 7
+        });
+        ctx.setAnnotations('encounter-search', annotations);
+      } else {
+        ctx.setAnnotations('encounter-search', null);
+      }
+    } else {
+      ctx.setAnnotations('encounter-search', null);
+    }
   }
 
   function updateMeetingsChart(): void {
@@ -1054,7 +1094,7 @@ export async function createVesselEncounters(
               : categoryBuffer,
             valueFormat: bySimilarity ? 'float32' : 'uint32',
             valueIndices: segmentTracksBuffer,
-            colormap: bySimilarity ? 'viridis' : 'category',
+            colormap: bySimilarity ? 'magma' : 'category',
             valueRange: [0, options.colorRangeMeters],
             palette: VESSEL_CATEGORY_COLORS,
             noDataColor: dark ? [140, 146, 160, 60] : [100, 108, 124, 60],
@@ -1097,7 +1137,7 @@ export async function createVesselEncounters(
           widthPixels: 6,
           values: options.similarityMetric === 'frechet' ? pairFrechet : pairHausdorff,
           valueFormat: 'float32',
-          colormap: 'viridis',
+          colormap: 'magma',
           valueRange: [0, options.colorRangeMeters],
           noDataColor: [255, 140, 60, 255],
           opacity: 0.95

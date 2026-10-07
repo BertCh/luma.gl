@@ -16,9 +16,16 @@ export type LineOperationsOptions = {
   locateSpacing: number;
   locateLateral: number;
   locateAnimate: boolean;
-  // Snap crashes to streets.
+  // Snap eligible community places to streets.
   snapRadius: number;
   snapColor: 'side' | 'measure' | 'distance';
+  placeCategory:
+    | 'all'
+    | 'grocery'
+    | 'school_education'
+    | 'park_recreation'
+    | 'arts_culture'
+    | 'worship_community';
   // Simplify and smooth ship tracks.
   trackTool: 'simplify' | 'smooth';
   simplifyMetric: 'segment' | 'time-ratio';
@@ -42,4 +49,6 @@ export type GreatCirclesOptions = {
   airportColor: 'distance' | 'bearing';
   showArcs: boolean;
   showRing: boolean;
+  /** The rhumb comparison is a deliberate story state, never background decoration. */
+  showRhumbComparison: boolean;
 };

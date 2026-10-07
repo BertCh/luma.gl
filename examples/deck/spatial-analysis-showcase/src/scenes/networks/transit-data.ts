@@ -174,8 +174,6 @@ export type RailGraph = {
   segments: Float32Array;
   /** Planar `[minX, minY, maxX, maxY]` of the stations. */
   bounds: [number, number, number, number];
-  /** Stations served per hour by at least one train on the busiest hour, per node. */
-  departuresPerHour: Float32Array;
 };
 
 /** Loads `gtfs-nl-rail-graph` as a {@link RailGraph}. */
@@ -203,12 +201,6 @@ export function loadRailGraph(dataset: LoadedDataset): RailGraph {
     maxY = Math.max(maxY, nodePositions[node * 2 + 1]);
   }
   const tripsPerHour = dataset.column<Uint16Array>('edgeTripsPerHour');
-  const departuresPerHour = new Float32Array(nodeCount);
-  for (let edge = 0; edge < edgeCount; edge++) {
-    // Departures in the 07:00-09:00 local window, per hour.
-    departuresPerHour[sources[edge]] +=
-      (tripsPerHour[edge * 24 + 7] + tripsPerHour[edge * 24 + 8]) / 2;
-  }
   return {
     origin,
     project: (longitude, latitude) => projection.project(longitude, latitude),
@@ -225,8 +217,7 @@ export function loadRailGraph(dataset: LoadedDataset): RailGraph {
     travelTime: dataset.column<Float32Array>('edgeTravelTime'),
     tripsPerHour,
     segments,
-    bounds: [minX, minY, maxX, maxY],
-    departuresPerHour
+    bounds: [minX, minY, maxX, maxY]
   };
 }
 

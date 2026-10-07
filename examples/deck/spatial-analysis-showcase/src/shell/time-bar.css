@@ -1,0 +1,279 @@
+/*
+ * Docked time bar. Map chrome: colours come from the --map-* tokens (they follow the map ground).
+ */
+
+.time-bar {
+  position: absolute;
+  left: 12px;
+  right: 12px;
+  bottom: 12px;
+  z-index: 20;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 56px;
+  padding: 6px 12px;
+  box-sizing: border-box;
+  color: var(--map-ink);
+  font-family: var(--map-font);
+  font-size: var(--fs-sm, 12px);
+  background: color-mix(in srgb, var(--map-furniture-bg) 92%, transparent);
+  -webkit-backdrop-filter: blur(6px) saturate(1.1);
+  backdrop-filter: blur(6px) saturate(1.1);
+  border: 1px solid color-mix(in srgb, var(--map-ink) 14%, transparent);
+  border-radius: var(--radius-chrome, 8px);
+  box-shadow: var(--e2, 0 2px 8px rgb(0 0 0 / 0.16));
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+.time-bar button:focus-visible,
+.time-bar select:focus-visible,
+.time-bar-scrubber:focus-visible,
+.time-bar-window-handle:focus-visible {
+  outline: 2px solid var(--map-accent);
+  outline-offset: 2px;
+}
+
+.time-bar-play {
+  display: grid;
+  flex: none;
+  place-items: center;
+  width: 36px;
+  height: 36px;
+  padding: 0;
+  color: var(--map-paper);
+  background: var(--map-ink);
+  border: 0;
+  border-radius: 50%;
+  cursor: pointer;
+}
+.time-bar-play:hover {
+  background: color-mix(in srgb, var(--map-ink) 85%, var(--map-accent));
+}
+
+.time-bar-speed {
+  flex: none;
+  height: 28px;
+  padding: 0 4px;
+  color: var(--map-ink);
+  font: inherit;
+  background: transparent;
+  border: 1px solid color-mix(in srgb, var(--map-ink) 24%, transparent);
+  border-radius: var(--radius-control, 6px);
+  cursor: pointer;
+}
+
+.time-bar-scrubber {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 0 8px;
+  border-radius: var(--radius-control, 6px);
+  touch-action: none;
+  cursor: pointer;
+}
+
+.time-bar-track {
+  position: relative;
+  height: 30px;
+}
+.time-bar-track::after {
+  content: '';
+  position: absolute;
+  inset: auto 0 0;
+  height: 1px;
+  background: color-mix(in srgb, var(--map-ink) 35%, transparent);
+}
+.time-bar-histogram,
+.time-bar-events,
+.time-bar-fade {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+.time-bar-histogram svg {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+.time-bar-histogram rect {
+  fill: var(--map-ink-muted);
+  fill-opacity: 0.5;
+}
+.time-bar-events {
+  pointer-events: none;
+}
+.time-bar-event {
+  position: absolute;
+  bottom: 0;
+  width: 12px;
+  height: 12px;
+  padding: 0;
+  margin-left: -6px;
+  background: none;
+  border: 0;
+  pointer-events: auto;
+  cursor: pointer;
+}
+.time-bar-event::after {
+  content: '';
+  position: absolute;
+  left: 5px;
+  bottom: 0;
+  width: 2px;
+  height: 8px;
+  background: var(--map-accent);
+  border-radius: 1px;
+}
+
+.time-bar-fade {
+  background: color-mix(in srgb, var(--map-furniture-bg) 70%, transparent);
+}
+.time-bar-fade.is-start {
+  right: auto;
+}
+.time-bar-fade.is-end {
+  left: 0;
+}
+.time-bar-window-handle {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 14px;
+  margin-left: -7px;
+  cursor: ew-resize;
+  touch-action: none;
+}
+.time-bar-window-handle::after {
+  content: '';
+  position: absolute;
+  left: 5px;
+  top: 2px;
+  bottom: 2px;
+  width: 4px;
+  background: var(--map-ink);
+  border-radius: 2px;
+}
+
+.time-bar-playhead {
+  position: absolute;
+  top: -2px;
+  bottom: 0;
+  width: 0;
+  pointer-events: none;
+}
+.time-bar-playhead::before {
+  content: '';
+  position: absolute;
+  left: -1px;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  background: var(--map-accent);
+}
+.time-bar-grip {
+  position: absolute;
+  left: -6px;
+  top: -2px;
+  width: 12px;
+  height: 12px;
+  background: var(--map-accent);
+  border: 2px solid var(--map-furniture-bg);
+  border-radius: 50%;
+  box-sizing: border-box;
+}
+
+.time-bar-bands {
+  position: relative;
+  height: 14px;
+}
+.time-bar-bands[hidden],
+.time-bar-ticks[hidden] {
+  display: none;
+}
+.time-bar-band {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  overflow: hidden;
+  background: color-mix(in srgb, var(--map-accent) 18%, transparent);
+  border-left: 1px solid color-mix(in srgb, var(--map-ink) 30%, transparent);
+}
+.time-bar-band[data-tone='1'],
+.time-bar-band[data-tone='3'] {
+  background: color-mix(in srgb, var(--map-water) 20%, transparent);
+}
+.time-bar-band span {
+  display: block;
+  padding: 0 4px;
+  font-size: var(--fs-xs, 11px);
+  line-height: 14px;
+  white-space: nowrap;
+  color: var(--map-ink);
+}
+
+.time-bar-ticks {
+  position: relative;
+  height: 14px;
+}
+.time-bar-tick {
+  position: absolute;
+  transform: translateX(-50%);
+  font-size: var(--fs-xs, 11px);
+  line-height: 14px;
+  white-space: nowrap;
+  color: var(--map-ink-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.time-bar-value {
+  flex: none;
+  min-width: 5.5em;
+  text-align: right;
+  font-size: var(--fs-base, 14px);
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+@media (max-width: 900px) {
+  .time-bar {
+    left: 8px;
+    right: 8px;
+    gap: 6px;
+    padding: 6px 8px;
+  }
+  .time-bar-value {
+    min-width: 4em;
+    font-size: var(--fs-md, 13px);
+  }
+}
+
+@media (pointer: coarse) {
+  .time-bar-play {
+    width: 44px;
+    height: 44px;
+  }
+  .time-bar-speed {
+    height: 44px;
+  }
+  .time-bar-track {
+    height: 40px;
+  }
+  .time-bar-window-handle {
+    width: 44px;
+    margin-left: -22px;
+  }
+  .time-bar-window-handle::after {
+    left: 20px;
+  }
+  .time-bar-event {
+    width: 24px;
+    margin-left: -12px;
+  }
+  .time-bar-event::after {
+    left: 11px;
+  }
+}

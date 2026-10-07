@@ -33,6 +33,7 @@ import {
   MIGRATION_SPECIES_LABELS,
   SECONDS_PER_DAY
 } from './migration-shared';
+import {getMigrationSeasonComparison} from './migration-season-comparison';
 
 /** Option state of the migration season scene. */
 export type MigrationSeasonOptions = {
@@ -238,26 +239,7 @@ export async function createMigrationSeason(
   }
 
   // ---- Static chart: share of birds south of 35 N, per species, per day ---------------------------
-  const staticChartData = (() => {
-    const days = Array.from({length: DAYS_IN_YEAR}, (_, day) => day + 0.5);
-    const shares = [0, 1, 2].map(species => {
-      const share = new Float64Array(DAYS_IN_YEAR);
-      for (let day = 0; day < DAYS_IN_YEAR; day++) {
-        let active = 0;
-        let south = 0;
-        for (let track = 0; track < trackCount; track++) {
-          if (tracks.species[track] !== species) continue;
-          const position = positionAt(track, (day + 0.5) * SECONDS_PER_DAY);
-          if (!position) continue;
-          active++;
-          if (position[1] < AFRICA_LATITUDE) south++;
-        }
-        share[day] = active ? (100 * south) / active : Number.NaN;
-      }
-      return share;
-    });
-    return {days, shares};
-  })();
+  const staticChartData = getMigrationSeasonComparison(tracks, AFRICA_LATITUDE);
 
   function setSeasonChart(day: number): void {
     ctx.setChart('africaChart', {
@@ -278,6 +260,51 @@ export async function createMigrationSeason(
       formatY: value => `${Math.round(value)}`,
       description: `Share of each species' tagged birds that are south of ${AFRICA_LATITUDE} degrees North (Africa) on each day of the folded year. Marsh harriers and Montagu's harriers spend the winter there; spoonbills never go.`
     });
+    const activePanel = staticChartData.panels.findIndex(
+      panel => day >= panel.start && day < panel.end
+    );
+    ctx.setChart('seasonMultiples', {
+      kind: 'multiples',
+      columns: 2,
+      shareDomains: false,
+      highlight: Math.max(0, activePanel),
+      titles: staticChartData.panels.map(panel => panel.label),
+      description:
+        'The same data split into the five folded-calendar seasons. The outlined panel contains the playhead, so the map, the full-year chart and this comparison always refer to the same day.',
+      charts: staticChartData.panels.map(panel => ({
+        kind: 'line' as const,
+        series: staticChartData.shares.map((values, species) => ({
+          label: MIGRATION_SPECIES_LABELS[species],
+          x: staticChartData.days,
+          y: values,
+          color: species
+        })),
+        xDomain: [panel.start, panel.end],
+        yDomain: [0, 100],
+        markers: [{x: day, label: day >= panel.start && day < panel.end ? 'now' : ''}],
+        xLabel: 'day',
+        yLabel: '% south',
+        height: 88,
+        table: false,
+        formatX: value => formatYearDay(Math.min(DAYS_IN_YEAR - 1, value)),
+        formatY: value => `${Math.round(value)}`
+      }))
+    });
+    ctx.setAnnotations('season-threshold', [
+      {
+        kind: 'line',
+        id: 'africa-threshold',
+        coordinates: [
+          [-20, AFRICA_LATITUDE],
+          [35, AFRICA_LATITUDE]
+        ],
+        text: `${AFRICA_LATITUDE} N counting rule`,
+        dashed: true,
+        tone: 'signal',
+        priority: 4,
+        minZoom: 2.6
+      }
+    ]);
   }
 
   // ---- State ------------------------------------------------------------------------------------

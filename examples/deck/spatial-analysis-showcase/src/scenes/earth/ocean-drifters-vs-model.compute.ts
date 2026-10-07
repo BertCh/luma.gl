@@ -67,7 +67,6 @@ export type OceanDriftersVsModelOptions = {
   showVirtual: boolean;
   showTrails: boolean;
   pointSize: number;
-  ramp: 'viridis' | 'magma' | 'inferno' | 'cividis';
   sepMax: number;
   background: 'none' | 'speed' | 'realDensity' | 'modelDensity' | 'densityDiff';
   speedMax: number;
@@ -84,6 +83,8 @@ const CHART_INTERVAL_SECONDS = 0.25;
 
 const REAL_COLORS = {dark: [100, 180, 255, 235], light: [10, 84, 196, 235]} as const;
 const MODEL_COLORS = {dark: [255, 168, 64, 235], light: [200, 92, 0, 235]} as const;
+/** Fixed, labelled separation classes keep the matched-pair map readable at a glance. */
+const SEPARATION_BREAKS_KILOMETERS = [100, 250, 500, 1000] as const;
 
 type Viewer = <Format extends GPUVectorFormat>(
   name: string,
@@ -1170,7 +1171,7 @@ fn isNonFinite(value: f32) -> bool { return (bitcast<u32>(value) & 0x7fffffffu) 
               id: 'drifters-speed',
               ...raster,
               values: speedBuffer,
-              colormap: 'viridis',
+              colormap: 'cividis',
               valueRange: [0, options.speedMax]
             })
           );
@@ -1261,7 +1262,8 @@ fn isNonFinite(value: f32) -> bool { return (bitcast<u32>(value) & 0x7fffffffu) 
             valueFormat: 'float32',
             valueScale: 0.001,
             valueRange: [0, options.sepMax],
-            colormap: options.ramp,
+            colormap: 'cividis',
+            classBreaks: SEPARATION_BREAKS_KILOMETERS,
             widthPixels: 1.6,
             opacity: 0.85
           })
@@ -1289,7 +1291,8 @@ fn isNonFinite(value: f32) -> bool { return (bitcast<u32>(value) & 0x7fffffffu) 
             valueFormat: 'float32',
             valueScale: 0.001,
             valueRange: [0, options.sepMax],
-            colormap: options.ramp,
+            colormap: 'cividis',
+            classBreaks: SEPARATION_BREAKS_KILOMETERS,
             radiusPixels: options.pointSize
           })
         );

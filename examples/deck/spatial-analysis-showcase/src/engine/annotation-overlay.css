@@ -1,0 +1,252 @@
+/* Map annotation overlay: SVG geometry under HTML text, highlights on top, all pointer-transparent. */
+.map-annotation-overlay {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  pointer-events: none;
+  font-family: var(--map-font);
+}
+.map-annotation-overlay * {
+  pointer-events: none;
+}
+/* Heavy halo for labels over dense or saturated data; scenes may also set --annotation-halo-width. */
+.map-annotation-overlay.is-halo-heavy {
+  --annotation-halo-width: 3px;
+}
+.map-annotation-svg,
+.map-annotation-highlights {
+  position: absolute;
+  top: 0;
+  left: 0;
+  overflow: hidden;
+}
+.map-annotation-text {
+  position: absolute;
+  inset: 0;
+}
+
+/* Fade in/out so collision changes during a fly-to do not flicker. */
+.map-annotation-item {
+  transition: opacity 120ms ease-out;
+}
+.map-annotation-item.is-hidden {
+  opacity: 0;
+}
+@media (prefers-reduced-motion: reduce) {
+  .map-annotation-item {
+    transition: none;
+  }
+}
+
+/* Tone sets `color`; geometry and text both read currentColor. */
+.map-annotation-tone-ink { color: var(--map-ink); }
+.map-annotation-tone-accent { color: var(--map-accent); }
+.map-annotation-tone-muted { color: var(--map-ink-muted); }
+.map-annotation-tone-water { color: var(--map-water); }
+.map-annotation-tone-signal { color: var(--map-signal, #d95f0e); }
+
+/* ---- Text halo -------------------------------------------------------------------------------
+   A crisp 1 px ring plus a soft bloom of --annotation-halo-width (2.5px; 3px with
+   setHaloWeight('heavy')), from the ground-colour halo. Text-shadow, not -webkit-text-stroke:
+   engines that honour paint-order only on SVG would paint a stroke over the glyphs. */
+.map-annotation-label {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: max-content;
+  white-space: nowrap;
+  line-height: 1.25;
+  font-family: var(--map-font);
+  text-shadow:
+    0 0 var(--annotation-halo-width, 2.5px) var(--map-halo),
+    0 0 calc(var(--annotation-halo-width, 2.5px) * 0.6) var(--map-halo),
+    1px 0 0 var(--map-halo), -1px 0 0 var(--map-halo), 0 1px 0 var(--map-halo), 0 -1px 0 var(--map-halo),
+    1px 1px 0 var(--map-halo), -1px 1px 0 var(--map-halo), 1px -1px 0 var(--map-halo), -1px -1px 0 var(--map-halo);
+}
+/* Thin italic strokes: a fat halo clots the counters, so water gets a 1.2 px halo. */
+.map-annotation-label.map-annotation-water {
+  text-shadow:
+    0 0 1.2px var(--map-halo), 1px 0 0 var(--map-halo), -1px 0 0 var(--map-halo),
+    0 1px 0 var(--map-halo), 0 -1px 0 var(--map-halo);
+}
+
+/* ---- Map text roles (SYNTHESIS 1.4) ---------------------------------------------------------- */
+.map-annotation-point { font-size: 12.5px; font-weight: 600; }
+.map-annotation-point.is-context { font-size: 11px; font-weight: 500; color: var(--map-ink-muted); }
+.map-annotation-detail,
+.map-annotation-elevation { font-variant-numeric: tabular-nums; }
+.map-annotation-detail { font-size: 11px; font-weight: 400; color: var(--map-ink-muted); }
+
+/* Area: small caps look, tracked. Weight carries emphasis, tracking extent, case class. */
+.map-annotation-area {
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.14em;
+  padding-left: 0.14em; /* balances the trailing letter-space so the text centres optically */
+}
+.map-annotation-area.size-small { font-size: 10.5px; }
+.map-annotation-area.size-medium { font-size: 12px; }
+.map-annotation-area.size-large { font-size: 14.5px; }
+
+/* Water: Serif italic; large water is tracked wide. Italic never combines with uppercase. */
+.map-annotation-water,
+.map-annotation-landform {
+  font-family: var(--map-font-serif);
+  font-style: italic;
+  font-weight: 400;
+  letter-spacing: 0.04em;
+}
+.map-annotation-water.size-small,
+.map-annotation-landform.size-small { font-size: 11.5px; }
+.map-annotation-water.size-medium,
+.map-annotation-landform.size-medium { font-size: 13px; }
+.map-annotation-water.size-large,
+.map-annotation-landform.size-large { font-size: 16px; }
+.map-annotation-water.size-large { letter-spacing: 0.12em; padding-left: 0.12em; }
+/* Landform: Serif italic name, with the elevation as a roman Sans line beneath. */
+.map-annotation-elevation {
+  font-family: var(--map-font);
+  font-style: normal;
+  font-size: 10px;
+  font-weight: 500;
+  letter-spacing: 0.02em;
+  color: var(--map-ink-muted);
+}
+
+/* Labels of rings, arrows, outlines, stars, brackets and lines. */
+.map-annotation-geometry-label {
+  font-size: 11.5px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+/* Frame label: small, muted, no emphasis ("Data ends here"). */
+.map-annotation-frame { font-size: 11px; font-weight: 500; }
+
+/* ---- Finding note: a paper plate, no halo inside ---------------------------------------------- */
+.map-annotation-label.map-annotation-note {
+  box-sizing: border-box;
+  max-width: 200px;
+  padding: 6px 9px;
+  white-space: normal;
+  line-height: 1.3;
+  background: var(--map-furniture-bg);
+  border: 1px solid var(--map-rule);
+  border-radius: 4px;
+  text-shadow: none;
+  -webkit-text-stroke: 0;
+}
+.map-annotation-note-title { font-size: 12.5px; font-weight: 700; }
+.map-annotation-note-body {
+  margin-top: 2px;
+  font-size: 11.5px;
+  font-weight: 400;
+  color: var(--map-ink);
+  font-variant-numeric: tabular-nums;
+}
+
+/* ---- Numbered marker -------------------------------------------------------------------------- */
+.map-annotation-label.map-annotation-marker {
+  box-sizing: border-box;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: currentColor;
+  box-shadow: 0 0 0 1.5px var(--map-halo);
+  text-shadow: none;
+  -webkit-text-stroke: 0;
+}
+.map-annotation-marker-numeral {
+  color: var(--map-paper);
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
+}
+
+/* ---- Geometry --------------------------------------------------------------------------------- */
+.map-annotation-leader { stroke: var(--map-rule); stroke-width: 1; fill: none; }
+.map-annotation-leader-halo {
+  stroke: var(--map-halo);
+  stroke-width: 3.5;
+  fill: none;
+  stroke-linejoin: round;
+  stroke-linecap: round;
+}
+.map-annotation-halo-fill { fill: var(--map-halo); stroke: var(--map-halo); }
+.map-annotation-halo-stroke {
+  fill: none;
+  stroke: var(--map-halo);
+  stroke-linejoin: round;
+  stroke-linecap: round;
+}
+.map-annotation-ink-stroke {
+  fill: none;
+  stroke: currentColor;
+  stroke-linejoin: round;
+  stroke-linecap: round;
+}
+.map-annotation-ink-fill { fill: currentColor; stroke: none; }
+.map-annotation-frame-line {
+  fill: none;
+  stroke: var(--map-rule);
+  stroke-width: 1.25;
+  stroke-dasharray: 5 4;
+}
+
+/* ---- Callout: the accent "look here" pointer (the bubble tip sits on the coordinate) ---------- */
+.map-annotation-callout {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: max-content;
+  margin: -44px 0 0 -16px;
+  padding: 6px 10px;
+  max-width: 220px;
+  border-radius: var(--radius-chrome, 8px);
+  background: var(--accent);
+  color: var(--accent-contrast);
+  font-family: var(--map-font);
+  font-size: 12.5px;
+  font-weight: 600;
+  box-shadow: var(--e2, var(--shadow));
+  will-change: transform;
+}
+.map-annotation-callout::after {
+  content: '';
+  position: absolute;
+  left: 12px;
+  top: 100%;
+  border: 6px solid transparent;
+  border-top-color: var(--accent);
+}
+
+/* ---- Highlights: achromatic ink core over a ground-colour halo, above everything -------------- */
+.map-annotation-highlight { color: var(--map-ink); }
+.map-annotation-highlight-signal { color: var(--map-signal, #d95f0e); }
+.map-annotation-highlight-halo,
+.map-annotation-highlight-core {
+  fill: none;
+  stroke-linejoin: round;
+  stroke-linecap: round;
+}
+.map-annotation-highlight-halo { stroke: var(--map-halo); stroke-width: 6; }
+.map-annotation-highlight-core { stroke: currentColor; stroke-width: 2; }
+/* One-shot expanding ring; it scales about the highlight's centre and fades out. */
+.map-annotation-highlight-pulse {
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2;
+  opacity: 0;
+  transform-origin: 0 0;
+  animation: map-annotation-pulse 900ms var(--ease, cubic-bezier(0.2, 0.8, 0.2, 1)) 1 forwards;
+}
+@keyframes map-annotation-pulse {
+  from { opacity: 0.9; transform: scale(1); }
+  to { opacity: 0; transform: scale(3); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .map-annotation-highlight-pulse { display: none; }
+}

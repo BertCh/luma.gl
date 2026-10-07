@@ -35,6 +35,8 @@ export type AlpsGrid = {
   cpuElevation: Float32Array;
   /** `[minX, minY, maxX, maxY]` meters around `origin`, the outer cell edges for the layers. */
   bounds: [number, number, number, number];
+  /** `[west, south, east, north]` degrees of the raster's outer edges, from the manifest. */
+  lngLatBounds: readonly [number, number, number, number];
   /** `[longitude, latitude]` layer coordinate origin. */
   origin: [number, number];
   projection: LocalMetricProjection;
@@ -53,6 +55,12 @@ export type AlpsGrid = {
   cellSettings: {cellSize: readonly [number, number]; northEdge: number; southEdge: number};
   /** Returns the `[column, row]` pixel containing a longitude/latitude, or `null` outside. */
   getPixel: (longitude: number, latitude: number) => [number, number] | null;
+  /**
+   * Continuous pixel coordinates `[x, y]` of a longitude/latitude (a pixel `i` spans `[i, i + 1)`,
+   * its centre is `i + 0.5`; row 0 is the north edge), not clamped to the raster. The row follows
+   * Web Mercator, not latitude, so it is the mapping to rasterise polygons with.
+   */
+  getPixelCoordinates: (longitude: number, latitude: number) => [number, number];
   /** Returns `[longitude, latitude]` of a pixel center. */
   getLongitudeLatitude: (column: number, row: number) => [number, number];
   /** Normalized Mercator pixel to ground meters per pixel for a row (cosine of latitude). */
@@ -124,6 +132,7 @@ export async function loadAlpsGrid(
     bounds: [minX, minY, maxX, maxY],
     origin,
     projection,
+    lngLatBounds: [west, south, east, north],
     mercatorCellSize,
     northEdge,
     southEdge,
@@ -131,6 +140,14 @@ export async function loadAlpsGrid(
     boundsMercator,
     observers,
     cellSettings: {cellSize: [mercatorCellSize, mercatorCellSize], northEdge, southEdge},
+    getPixelCoordinates(longitude, latitude) {
+      const x = ((longitude + 180) / 360) * WORLD_METERS - WORLD_METERS / 2;
+      const y = mercatorYFromLatitude(latitude);
+      return [
+        (x - boundsMercator[0]) / mercatorCellSize,
+        (boundsMercator[3] - y) / mercatorCellSize
+      ];
+    },
     getPixel(longitude, latitude) {
       const x = ((longitude + 180) / 360) * WORLD_METERS - WORLD_METERS / 2;
       const y = mercatorYFromLatitude(latitude);

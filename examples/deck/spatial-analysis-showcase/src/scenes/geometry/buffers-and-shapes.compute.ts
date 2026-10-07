@@ -71,6 +71,7 @@ export type BuffersAndShapesOptions = {
   shapeRadius: number;
   sectorSweep: number;
   ellipseRatio: number;
+  ellipseSpacing: 'parameter' | 'arc-length';
   showShapeFill: boolean;
   gridType: 'square' | 'hex' | 'triangle' | 'point';
   cellSize: number;
@@ -456,7 +457,7 @@ function createShapesView(env: ViewEnvironment): View {
 
   const build = (options: Options) => {
     const maximumSegments = Number(options.maxSegments);
-    const key = `${options.shapeKind}|${options.shapeSystem}|${maximumSegments}`;
+    const key = `${options.shapeKind}|${options.shapeSystem}|${options.ellipseSpacing}|${maximumSegments}`;
     let built = cache.get(key);
     if (!built) {
       const kind = options.shapeKind;
@@ -477,6 +478,7 @@ function createShapesView(env: ViewEnvironment): View {
           id: `shape-${kind}`,
           shape: kind,
           coordinateSystem: geodesic ? 'geodesic' : 'planar',
+          ellipseSpacing: kind === 'ellipse' ? options.ellipseSpacing : undefined,
           maximumSegments,
           centers: imp('centers', geodesic ? centersLngLat : centersLocal, 'float32x2', count),
           radii:
@@ -593,7 +595,14 @@ function createShapesView(env: ViewEnvironment): View {
         dirty = true;
       }
       if (id === 'segmentCount' || id === 'shapeRadius') writeParameters(options);
-      if (id === 'shapeKind' || id === 'shapeSystem' || id === 'maxSegments') build(options);
+      if (
+        id === 'shapeKind' ||
+        id === 'shapeSystem' ||
+        id === 'ellipseSpacing' ||
+        id === 'maxSegments'
+      ) {
+        build(options);
+      }
       updateReadouts(options);
     },
     encode(commandEncoder) {
@@ -620,7 +629,7 @@ function createShapesView(env: ViewEnvironment): View {
             featureRows: active.featureRows,
             instanceCount: active.slotCount,
             values: distanceValues,
-            colormap: 'viridis',
+            colormap: 'ylgnbu',
             valueRange: [0, 20],
             color: [255, 255, 255, 255],
             opacity: 0.42
@@ -637,7 +646,7 @@ function createShapesView(env: ViewEnvironment): View {
           ringCount: count,
           values: distanceValues,
           colorSource: 'slot-value',
-          colormap: 'viridis',
+          colormap: 'ylgnbu',
           valueRange: [0, 20],
           color: [255, 255, 255, 255],
           widthPixels: 1.4
@@ -1085,7 +1094,7 @@ function createGridView(env: ViewEnvironment): View {
               featureRows: grid.fanRows,
               instanceCount: grid.fanCount,
               values: grid.values,
-              colormap: 'viridis',
+              colormap: 'ylgnbu',
               valueRange: [0, 1],
               color: [255, 255, 255, 255],
               opacity: 0.7
@@ -1113,7 +1122,7 @@ function createGridView(env: ViewEnvironment): View {
               instanceCount: grid.cellCount,
               radiusPixels: 4,
               values: grid.values,
-              colormap: 'viridis',
+              colormap: 'ylgnbu',
               valueRange: [0, 1]
             })
           );
@@ -1128,7 +1137,7 @@ function createGridView(env: ViewEnvironment): View {
               ends: grid.curveEnds,
               instanceCount: grid.cellCount - 1,
               values: (grid as GridBuild & {curveValues: Buffer}).curveValues,
-              colormap: 'magma',
+              colormap: 'ylorbr',
               valueRange: [0, 1],
               color: [255, 255, 255, 255],
               widthPixels: 1.6
@@ -1147,7 +1156,7 @@ function createGridView(env: ViewEnvironment): View {
               ends: stops.curveEnds,
               instanceCount: stopCount - 1,
               values: stops.values,
-              colormap: 'viridis',
+              colormap: 'ylgnbu',
               valueRange: [0, 1],
               color: [255, 255, 255, 255],
               widthPixels: 0.8,
@@ -1164,7 +1173,7 @@ function createGridView(env: ViewEnvironment): View {
             instanceCount: stopCount,
             radiusPixels: 2,
             values: stops.values,
-            colormap: 'viridis',
+            colormap: 'ylgnbu',
             valueRange: [0, 1]
           })
         );

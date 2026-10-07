@@ -42,13 +42,19 @@ export type StormOutageExposureOptions = {
   time: number;
   speed: number;
   loop: boolean;
-  metric: 'outageNow' | 'outagePeak' | 'outageCount' | 'trackKm' | 'flashDensity' | 'meanDbz';
+  metric:
+    | 'outageNow'
+    | 'outagePeak'
+    | 'outageCount'
+    | 'trackKm'
+    | 'flashDensity'
+    | 'meanDbz'
+    | 'bivariate';
   exposureWindow: 'so-far' | 'event';
   exposureMeasure: 'trackKm' | 'flashDensity';
   exposureThreshold: number;
   outageThreshold: number;
   sumOrder: 'sorted' | 'atomic';
-  ramp: 'viridis' | 'magma' | 'inferno' | 'cividis';
   fillOpacity: number;
   showCounties: boolean;
   showTracks: boolean;
@@ -57,6 +63,17 @@ export type StormOutageExposureOptions = {
 const STATUS_STEP_SECONDS = 300;
 const OUTAGE_WINDOW_SECONDS = 899;
 const REGION = {west: -104.2, south: 24, east: -70.8, north: 48.8};
+const BIVARIATE_COLORS = [
+  [238, 232, 229, 255],
+  [204, 207, 220, 255],
+  [151, 177, 205, 255],
+  [230, 195, 205, 255],
+  [181, 166, 197, 255],
+  [116, 139, 184, 255],
+  [206, 139, 169, 255],
+  [143, 113, 161, 255],
+  [75, 87, 145, 255]
+] as const;
 
 type ExposureVariant = {
   compiled: CompiledGPUCommandGraph<void>;
@@ -229,6 +246,7 @@ export async function createStormOutageExposure(
   const nowOverflow = resources.createBuffer('now-overflow', 4);
   const outageNow = resources.createBuffer('outage-now', countyCount * 4);
   const countyValues = resources.createBuffer('county-values', countyCount * 4);
+  const bivariateClasses = resources.createBuffer('bivariate-classes', countyCount * 4);
 
   const flashWindow = resources.createParameterBuffer(
     'flash-window',
@@ -678,7 +696,14 @@ export async function createStormOutageExposure(
 
   function writeComposeParameters(): void {
     composeParameters.write(
-      Float32Array.of(METRIC_MODES.indexOf(ctx.options.metric), flashScale, 0, 0)
+      Float32Array.of(
+        METRIC_MODES.indexOf(
+          ctx.options.metric === 'bivariate' ? 'outagePeak' : ctx.options.metric
+        ),
+        flashScale,
+        0,
+        0
+      )
     );
     exposureDirty = true;
   }
@@ -802,6 +827,22 @@ export async function createStormOutageExposure(
     );
   }
 
+  function writeBivariateClasses(): void {
+    if (!latest || !peakPerThousand) return;
+    const values = new Uint32Array(countyCount).fill(0xffffffff);
+    const exposureBreaks = [ctx.options.exposureThreshold / 3, ctx.options.exposureThreshold];
+    const outageBreaks = [ctx.options.outageThreshold / 3, ctx.options.outageThreshold];
+    for (let county = 0; county < countyCount; county++) {
+      if (!inRegion[county]) continue;
+      const exposure = exposureOf(county);
+      const exposureClass = exposure < exposureBreaks[0] ? 0 : exposure < exposureBreaks[1] ? 1 : 2;
+      const outage = peakPerThousand[county];
+      const outageClass = outage < outageBreaks[0] ? 0 : outage < outageBreaks[1] ? 1 : 2;
+      values[county] = outageClass * 3 + exposureClass;
+    }
+    bivariateClasses.write(values);
+  }
+
   function refreshStatistics(): void {
     if (!latest) return;
     updateRange();
@@ -841,6 +882,7 @@ export async function createStormOutageExposure(
       description:
         'Share of storm-region counties whose peak outage reached the threshold, grouped by how much storm exposure they had so far.'
     });
+    writeBivariateClasses();
     const exposedCount = classes[2] + classes[3];
     const unexposedCount = classes[0] + classes[1];
     const exposedShare = exposedCount ? (withOutage[2] + withOutage[3]) / exposedCount : 0;
@@ -922,6 +964,10 @@ export async function createStormOutageExposure(
       ctx.requestLayers();
     },
 
+    onGroundChange() {
+      ctx.requestLayers();
+    },
+
     encode(commandEncoder, frame) {
       playhead = clock.advance(frame);
       ctx.setReadout('clock', formatStormClock(playhead));
@@ -950,16 +996,18 @@ export async function createStormOutageExposure(
 
     getLayers() {
       const options = ctx.options;
-      const dark = ctx.theme() === 'dark';
+      const dark = ctx.ground() === 'dark';
       const layers: Layer[] = [
         new ChoroplethFillLayer({
           id: 'storm-county-fill',
           positions: meshPositionsBuffer,
           featureRows: meshFeaturesBuffer,
           vertexCount: mesh.triangleCount * 3,
-          values: countyValues,
-          mode: 'ramp',
-          ramp: options.ramp,
+          values: options.metric === 'bivariate' ? bivariateClasses : countyValues,
+          mode: options.metric === 'bivariate' ? 'category' : 'ramp',
+          ...(options.metric === 'bivariate' ? {palette: BIVARIATE_COLORS} : {}),
+          ramp:
+            options.metric === 'trackKm' || options.metric === 'flashDensity' ? 'mako' : 'magma',
           valueRange,
           sqrtScale: true,
           noDataColor: [0, 0, 0, 0],

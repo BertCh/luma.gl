@@ -6,6 +6,7 @@
   "scripts": {
     "start": "vite",
     "build": "vite build",
+    "build:pages": "WEBSITE_BASE_URL=/luma.gl/ vite build",
     "serve": "vite preview"
   },
   "dependencies": {

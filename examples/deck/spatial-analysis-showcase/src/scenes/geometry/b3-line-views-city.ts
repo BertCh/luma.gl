@@ -46,10 +46,10 @@ export type CityLineEnvironment = {
   coordinateOrigin: [number, number, number];
   rail: PathSet;
   streets: PathSet;
-  crashes: {
+  places: {
     local: Float32Array;
+    categories: Uint8Array;
     count: number;
-    edgeIndex: Uint32Array;
   };
 };
 
@@ -218,7 +218,7 @@ export function createReshapeView(env: CityLineEnvironment): GeometryView<Option
             drawCommands: output.drawCommands,
             values: output.measures,
             colorSource: 'vertex-value',
-            colormap: 'viridis',
+            colormap: 'ylgnbu',
             valueRange: [0, maximumPathLength],
             color: [255, 255, 255, 255],
             widthPixels: 2.2
@@ -231,7 +231,7 @@ export function createReshapeView(env: CityLineEnvironment): GeometryView<Option
             drawCommands: output.drawCommands,
             values: output.measures,
             valueFormat: 'float32',
-            colormap: 'viridis',
+            colormap: 'ylgnbu',
             valueRange: [0, maximumPathLength],
             radiusPixels: 2.2,
             color: [255, 255, 255, 235]
@@ -543,18 +543,18 @@ export function createReshapeView(env: CityLineEnvironment): GeometryView<Option
 }
 
 // ---------------------------------------------------------------------------------------------
-// Snap: GPULinearReferencing (crashes to streets)
+// Snap: GPULinearReferencing (eligible community places to streets)
 // ---------------------------------------------------------------------------------------------
 
 /**
- * 110 000 traffic crashes snapped to the nearest of 49 000 street polylines. The dataset carries
- * its own precomputed snap, so the GPU result is checked against it.
+ * Eligible community places snapped to the nearest street polyline. The source has no asserted street
+ * edge, so this is a nearest-segment demonstration rather than an address-match benchmark.
  */
 export function createSnapView(env: CityLineEnvironment): GeometryView<Options> {
-  const {ctx, streets, crashes} = env;
+  const {ctx, streets, places} = env;
   const {device} = ctx;
   const resources = new SpatialAnalysisResources(device, 'snap');
-  const pointCount = crashes.count;
+  const pointCount = places.count;
   const pathCount = streets.pathCount;
   const vertexCount = streets.vertexCount;
   const staticStreets = createStaticPaths(
@@ -563,7 +563,7 @@ export function createSnapView(env: CityLineEnvironment): GeometryView<Options> 
     streets.local,
     streets.offsets
   );
-  const points = resources.createBuffer('crash-points', crashes.local);
+  const points = resources.createBuffer('place-points', places.local);
   const streetPositions = resources.createBuffer('street-positions', streets.local);
   const streetOffsets = resources.createBuffer('street-offsets', streets.offsets);
   const radius = resources.createParameterBuffer('radius', 'float32', 1);
@@ -600,12 +600,30 @@ export function createSnapView(env: CityLineEnvironment): GeometryView<Options> 
   );
   const compiled = resources.track(graph.compile());
 
-  // The dataset's own snap, translated from directed edge ids to street rows.
-  const expected = new Uint32Array(pointCount);
-  for (let row = 0; row < pointCount; row++) {
-    const edge = crashes.edgeIndex[row];
-    expected[row] = edge === 0xffffffff ? 0xffffffff : (streets.edgeToPath?.[edge] ?? 0xffffffff);
-  }
+  const categoryCodes: Record<Exclude<Options['placeCategory'], 'all'>, number> = {
+    grocery: 2,
+    school_education: 4,
+    park_recreation: 5,
+    arts_culture: 10,
+    worship_community: 11
+  };
+  const allowedCategoryCodes = new Set(Object.values(categoryCodes));
+  const categoryMarks = Object.entries(categoryCodes).map(([category, code], index) => {
+    const positions = new Float32Array(pointCount * 2);
+    for (let row = 0; row < pointCount; row++) {
+      const matches = places.categories[row] === code;
+      positions[row * 2] = matches ? places.local[row * 2] : -1e8;
+      positions[row * 2 + 1] = matches ? places.local[row * 2 + 1] : -1e8;
+    }
+    return {
+      category,
+      code,
+      buffer: resources.createBuffer(`place-category-${category}`, positions),
+      shape: (['square', 'triangle', 'diamond', 'star', 'cross'] as const)[index]
+    };
+  });
+  let selectedPlaceCount = 0;
+  const selectedRows = new Uint8Array(pointCount);
 
   let dirty = true;
   const reader = new SummaryReader(
@@ -626,29 +644,35 @@ export function createSnapView(env: CityLineEnvironment): GeometryView<Options> 
       let matched = 0;
       let left = 0;
       let right = 0;
-      let totalDistance = 0;
-      let comparable = 0;
-      let agree = 0;
+      const matchedDistances: number[] = [];
+      let withinTenMeters = 0;
       for (let index = 0; index < pointCount; index++) {
-        if (Number.isFinite(offsets[index]) && paths[index] !== 0xffffffff) {
+        if (selectedRows[index] && Number.isFinite(offsets[index]) && paths[index] !== 0xffffffff) {
           matched++;
-          totalDistance += distanceValues[index];
+          matchedDistances.push(distanceValues[index]);
+          if (distanceValues[index] <= 10) withinTenMeters++;
           if (offsets[index] > 0) left++;
           else if (offsets[index] < 0) right++;
-          if (expected[index] !== 0xffffffff) {
-            comparable++;
-            if (expected[index] === paths[index]) agree++;
-          }
         }
       }
-      ctx.setReadout('snapMatched', `${formatCount(matched)} of ${formatCount(pointCount)}`);
-      ctx.setReadout('snapSides', `${formatCount(left)} left / ${formatCount(right)} right`);
-      ctx.setReadout('snapDistance', matched ? formatDistance(totalDistance / matched) : 'n/a');
+      matchedDistances.sort((leftDistance, rightDistance) => leftDistance - rightDistance);
+      const percentile = (fraction: number) =>
+        matchedDistances[
+          Math.min(
+            matchedDistances.length - 1,
+            Math.floor((matchedDistances.length - 1) * fraction)
+          )
+        ];
       ctx.setReadout(
-        'snapAgreement',
-        comparable
-          ? `${((100 * agree) / comparable).toFixed(1)}% of ${formatCount(comparable)} crashes`
-          : 'n/a'
+        'snapMatched',
+        `${formatCount(matched)} of ${formatCount(selectedPlaceCount)}`
+      );
+      ctx.setReadout('snapSides', `${formatCount(left)} left / ${formatCount(right)} right`);
+      ctx.setReadout('snapDistance', matched ? formatDistance(percentile(0.5)) : 'n/a');
+      ctx.setReadout('snapP90Distance', matched ? formatDistance(percentile(0.9)) : 'n/a');
+      ctx.setReadout(
+        'snapWithinTen',
+        matched ? `${((100 * withinTenMeters) / matched).toFixed(1)}%` : 'n/a'
       );
       ctx.setReadout(
         'snapCandidates',
@@ -657,20 +681,59 @@ export function createSnapView(env: CityLineEnvironment): GeometryView<Options> 
     }
   );
 
+  const writePoints = (options: Options) => {
+    const requestedCategory =
+      options.placeCategory === 'all' ? undefined : categoryCodes[options.placeCategory];
+    const selectedPositions = new Float32Array(pointCount * 2);
+    for (let index = 0; index < pointCount; index++) {
+      const selected =
+        allowedCategoryCodes.has(places.categories[index]) &&
+        (requestedCategory === undefined || places.categories[index] === requestedCategory);
+      selectedRows[index] = Number(selected);
+      if (selected) {
+        selectedPositions[index * 2] = places.local[index * 2];
+        selectedPositions[index * 2 + 1] = places.local[index * 2 + 1];
+      } else {
+        // A remote coordinate keeps excluded rows out of the local spatial search and view.
+        selectedPositions[index * 2] = -1e8;
+        selectedPositions[index * 2 + 1] = -1e8;
+      }
+    }
+    selectedPlaceCount = selectedRows.reduce((total, selected) => total + selected, 0);
+    points.write(selectedPositions);
+    for (const mark of categoryMarks) {
+      const markPositions = new Float32Array(pointCount * 2);
+      for (let index = 0; index < pointCount; index++) {
+        const selected = selectedRows[index] && places.categories[index] === mark.code;
+        markPositions[index * 2] = selected ? places.local[index * 2] : -1e8;
+        markPositions[index * 2 + 1] = selected ? places.local[index * 2 + 1] : -1e8;
+      }
+      mark.buffer.write(markPositions);
+    }
+    ctx.setReadout(
+      'snapInputs',
+      `${formatCount(selectedPlaceCount)} eligible places, ${formatCount(pathCount)} streets`
+    );
+  };
   const writeRadius = (options: Options) => {
     radius.write(Float32Array.of(options.snapRadius));
     dirty = true;
   };
+  writePoints(ctx.options);
   writeRadius(ctx.options);
   ctx.setReadout(
     'snapInputs',
-    `${formatCount(pointCount)} crashes, ${formatCount(pathCount)} streets`
+    `${formatCount(selectedPlaceCount)} eligible places, ${formatCount(pathCount)} streets`
   );
 
   return {
     getCompiledGraphs: () => [compiled as CompiledGPUCommandGraph<never>],
     setOption(id, options) {
       if (id === 'snapRadius') writeRadius(options);
+      if (id === 'placeCategory') {
+        writePoints(options);
+        dirty = true;
+      }
     },
     encode(commandEncoder) {
       if (dirty) {
@@ -722,22 +785,28 @@ export function createSnapView(env: CityLineEnvironment): GeometryView<Options> 
             options.snapColor === 'side'
               ? 'diverging'
               : options.snapColor === 'measure'
-                ? 'viridis'
-                : 'inferno',
+                ? 'ylgnbu'
+                : 'ylorbr',
           valueRange,
           color: [255, 255, 255, 255],
           widthPixels: 1.4,
           opacity: 0.9
         }),
-        new SpatialAnalysisPointLayer({
-          id: 'snap-crashes',
-          coordinateSystem: LOCAL,
-          coordinateOrigin: env.coordinateOrigin,
-          positions: points,
-          instanceCount: pointCount,
-          radiusPixels: 1.1,
-          color: dark ? [255, 255, 255, 200] : [20, 30, 50, 200]
-        })
+        ...categoryMarks.map(
+          mark =>
+            new SpatialAnalysisPointLayer({
+              id: `snap-places-${mark.category}`,
+              coordinateSystem: LOCAL,
+              coordinateOrigin: env.coordinateOrigin,
+              positions: mark.buffer,
+              instanceCount: pointCount,
+              radiusPixels: 2.4,
+              shape: mark.shape,
+              outlineColor: dark ? [255, 255, 255, 220] : [20, 30, 50, 220],
+              outlineWidthPixels: 0.8,
+              color: dark ? [120, 200, 235, 210] : [0, 105, 150, 210]
+            })
+        )
       ];
     },
     destroy() {

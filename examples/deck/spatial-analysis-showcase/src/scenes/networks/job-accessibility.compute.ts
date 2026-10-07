@@ -4,6 +4,7 @@
 
 import type {Layer} from '@deck.gl/core';
 import type {Buffer} from '@luma.gl/core';
+import {getClassTableLayerProps, makeClassTable} from '../../cartography/class-table';
 import {
   encodeGPUNetworkAccessibilityParameters,
   GPU_NETWORK_SNAPPING_NONE,
@@ -58,12 +59,10 @@ export type JobAccessibilityOptions = {
   showStops: boolean;
   showOpportunities: boolean;
   showSnaps: boolean;
-  ramp: 'inferno' | 'magma' | 'viridis' | 'cividis';
 };
 
 const MAXIMUM_ITERATIONS = 48;
 const LOCAL_ITERATIONS = 16;
-const SCORE_PERCENTILE = 0.98;
 const MATRIX_DEBOUNCE_MILLISECONDS = 280;
 const TIMING_DEBOUNCE_MILLISECONDS = 600;
 const BVH_CANDIDATE_CAPACITY = 1 << 20;
@@ -77,10 +76,44 @@ const LINE_COLORS: Record<string, readonly [number, number, number, number]> = {
   pink: [226, 126, 166, 255],
   yellow: [249, 227, 0, 255]
 };
+const ACCESS_CLASSES = {
+  cumulative: makeClassTable({
+    breaks: [1, 5_000, 25_000, 100_000, 250_000],
+    scheme: 'YlGnBu',
+    reverse: true,
+    colors: [
+      [130, 130, 130, 255],
+      [255, 255, 217, 255],
+      [199, 233, 180, 255],
+      [65, 182, 196, 255],
+      [29, 145, 192, 255],
+      [8, 69, 148, 255]
+    ]
+  }),
+  gravity: makeClassTable({
+    breaks: [5_000, 20_000, 60_000, 150_000],
+    scheme: 'YlGnBu',
+    reverse: true
+  }),
+  twoStep: makeClassTable({
+    breaks: [2, 8, 20, 50],
+    scheme: 'YlGnBu',
+    reverse: true,
+    colors: [
+      [130, 130, 130, 255],
+      [255, 255, 217, 255],
+      [65, 182, 196, 255],
+      [8, 69, 148, 255],
+      [5, 48, 97, 255]
+    ]
+  })
+} as const;
 
 type Built = {
   matrix: CompiledGPUCommandGraph<void>;
   score: CompiledGPUCommandGraph<void>;
+  comparisonMatrix: CompiledGPUCommandGraph<void>;
+  comparisonScore: CompiledGPUCommandGraph<void>;
   rowCount: number;
 };
 
@@ -192,6 +225,8 @@ export async function createJobAccessibility(
   let built: Built | null = null;
   let opportunityPositions!: Buffer;
   let opportunityWeights!: Buffer;
+  let opportunityOutlines!: Buffer;
+  let opportunityOutlineCount = 0;
   let snapSegments!: Buffer;
   let snappedPositions!: Buffer;
   let snappedEdges!: Buffer;
@@ -200,16 +235,22 @@ export async function createJobAccessibility(
   let matrixConverged!: Buffer;
   let snapOverflow!: Buffer;
   let ratiosBuffer!: Buffer;
+  let comparisonWeightsBuffer: Buffer | null = null;
+  let comparisonMatrixBuffer!: Buffer;
+  let comparisonCumulativeBuffer!: Buffer;
+  let comparisonGravityBuffer!: Buffer;
+  let comparisonConverged!: Buffer;
   const cumulativeBuffer = resources.createBuffer('cumulative', nodeCount * 4);
   const gravityBuffer = resources.createBuffer('gravity', nodeCount * 4);
   const twoStepBuffer = resources.createBuffer('two-step', nodeCount * 4);
+  // One retained matrix row is copied GPU-to-GPU for the selected-destination teaching view.
+  const selectedRowBuffer = resources.createBuffer('selected-matrix-row', nodeCount * 4);
   let snapReader: SummaryReader | null = null;
 
   let destroyed = false;
   let matrixDirty = 2;
   let matrixPendingAt = 0;
   let scoreDirty = 2;
-  let scoreMaximum = 1;
   let matrixEncodeCount = 0;
   let scoreEncodeCount = 0;
   let timingTimer: ReturnType<typeof setTimeout> | undefined;
@@ -219,6 +260,140 @@ export async function createJobAccessibility(
   let rowCount = 0;
   let builtKey = '';
   let rowsJobs = 0;
+  let selectedOpportunityRow = 0;
+  let comparisonMatrixDirty = 2;
+  let comparisonScoreDirty = 2;
+  let comparisonGeneration = 0;
+  let activeScoreGeneration = -1;
+  let companionScoreGeneration = -1;
+  let companionMode = false;
+  let companionReader: SummaryReader | null = null;
+  let retainedOpportunityTracts: number[] = [];
+  let latestScores: {
+    cumulative: Float32Array;
+    gravity: Float32Array;
+    twoStep: Float32Array;
+  } | null = null;
+  const comparisonSnapshots = new Map<string, {cumulative: Float32Array; twoStep: Float32Array}>();
+
+  const getMeasureLabel = () =>
+    ctx.options.measure === 'two-step'
+      ? '2SFCA jobs per 1,000 competing workers'
+      : ctx.options.measure === 'cumulative'
+        ? 'Cumulative reachable jobs'
+        : 'Decay-weighted jobs';
+
+  const publishFurniture = () => {
+    const scheduled = ctx.options.transit ? 'scheduled CTA approximation' : 'walk-only';
+    ctx.setFurniture({
+      title: {
+        title: 'Jobs reachable without a car',
+        subtitle: `${getMeasureLabel()} · ${ctx.options.thresholdMinutes} min · ${scheduled}`
+      },
+      scaleBar: {units: 'metric'},
+      credit: 'OpenStreetMap contributors (ODbL) · CTA · Census · LEHD',
+      caveat: 'Schedules and half-headway are not observed reliability.'
+    });
+  };
+
+  const comparisonKey = (transit = ctx.options.transit) =>
+    [
+      transit,
+      ctx.options.thresholdMinutes,
+      ctx.options.matrixLimitMinutes,
+      ctx.options.walkSpeed,
+      ctx.options.waitFactor,
+      ctx.options.maxSnapDistance,
+      ctx.options.opportunityRows,
+      ctx.options.seedDirection
+    ].join('|');
+
+  const countClasses = (
+    scores: Float32Array,
+    table: (typeof ACCESS_CLASSES)[keyof typeof ACCESS_CLASSES],
+    scale = 1
+  ) => {
+    const counts = new Array(table.breaks.length + 1).fill(0);
+    for (const score of scores) {
+      const value = score * scale;
+      let index = 0;
+      while (index < table.breaks.length && value >= table.breaks[index]) index++;
+      counts[index]++;
+    }
+    return counts;
+  };
+
+  const cumulativeClassLabels = () => [
+    '0 jobs',
+    '1–5k jobs',
+    '5–25k jobs',
+    '25–100k jobs',
+    '100–250k jobs',
+    '>250k jobs'
+  ];
+
+  const publishComparisons = () => {
+    const walk = comparisonSnapshots.get(comparisonKey(false));
+    const scheduled = comparisonSnapshots.get(comparisonKey(true));
+    if (walk && scheduled) {
+      ctx.setChart('transitComparison', {
+        kind: 'multiples',
+        titles: ['walk-only', 'scheduled CTA approximation'],
+        charts: [
+          {
+            kind: 'bars',
+            values: countClasses(walk.cumulative, ACCESS_CLASSES.cumulative),
+            labels: cumulativeClassLabels(),
+            xLabel: 'cumulative jobs (fixed classes)',
+            yLabel: 'intersections'
+          },
+          {
+            kind: 'bars',
+            values: countClasses(scheduled.cumulative, ACCESS_CLASSES.cumulative),
+            labels: cumulativeClassLabels(),
+            xLabel: 'cumulative jobs (fixed classes)',
+            yLabel: 'intersections'
+          }
+        ],
+        description:
+          'Readback-derived cumulative class counts: walk-only versus scheduled CTA at the same threshold.'
+      });
+    } else {
+      ctx.setChart('transitComparison', {
+        kind: 'bars',
+        values: [],
+        xLabel: 'same cumulative classes',
+        yLabel: 'intersections',
+        description:
+          'Waiting for the matching walk-only and scheduled-CTA score readbacks at this threshold.'
+      });
+    }
+    const current = comparisonSnapshots.get(comparisonKey());
+    if (current) {
+      ctx.setChart('competitionComparison', {
+        kind: 'multiples',
+        titles: ['cumulative jobs', '2SFCA jobs per 1,000 workers'],
+        charts: [
+          {
+            kind: 'bars',
+            values: countClasses(current.cumulative, ACCESS_CLASSES.cumulative),
+            labels: cumulativeClassLabels(),
+            xLabel: 'cumulative jobs (fixed classes)',
+            yLabel: 'intersections'
+          },
+          {
+            kind: 'bars',
+            values: countClasses(current.twoStep, ACCESS_CLASSES.twoStep, 1000),
+            labels: ['0–2', '2–8', '8–20', '20–50', '>50'],
+            xLabel: 'jobs per 1,000 competing workers (fixed classes)',
+            yLabel: 'intersections'
+          }
+        ],
+        description:
+          'Readback-derived class counts for cumulative opportunities and 2SFCA; units are intentionally distinct.'
+      });
+    }
+  };
 
   const writeWeights = () => {
     const options = ctx.options;
@@ -229,6 +404,15 @@ export async function createJobAccessibility(
       weights
     );
     weightsBuffer.write(weights);
+    if (comparisonWeightsBuffer) {
+      const comparisonWeights = new Float32Array(edgeCount);
+      writeAccessWeights(
+        access,
+        {walkSpeed: options.walkSpeed, transit: !options.transit, waitFactor: options.waitFactor},
+        comparisonWeights
+      );
+      comparisonWeightsBuffer.write(comparisonWeights);
+    }
     const roadCosts = new Float32Array(access.roadMeters.length);
     writeRoadWalkCosts(access, options.walkSpeed, roadCosts);
     roadCostsBuffer.write(roadCosts);
@@ -241,15 +425,22 @@ export async function createJobAccessibility(
   };
 
   const markMatrixDirty = () => {
+    comparisonGeneration++;
+    comparisonSnapshots.clear();
+    companionMode = !ctx.options.transit;
     matrixPendingAt = performance.now() + MATRIX_DEBOUNCE_MILLISECONDS;
     matrixDirty = Math.max(matrixDirty, 1);
     scoreDirty = Math.max(scoreDirty, 1);
+    comparisonMatrixDirty = Math.max(comparisonMatrixDirty, 1);
+    comparisonScoreDirty = Math.max(comparisonScoreDirty, 1);
     matrixTimingStale = true;
     scheduleTiming();
   };
 
   const writeScoring = () => {
     const options = ctx.options;
+    comparisonGeneration++;
+    comparisonSnapshots.clear();
     const parameters: GPUNetworkAccessibilityParameters = {
       threshold: Math.min(options.thresholdMinutes, options.matrixLimitMinutes) * 60,
       decay: 'none'
@@ -265,7 +456,44 @@ export async function createJobAccessibility(
       });
     }
     scoring.write(encodeGPUNetworkAccessibilityParameters(parameters));
+    const threshold = Math.min(options.thresholdMinutes, options.matrixLimitMinutes);
+    const minutes = Array.from({length: 13}, (_, index) => index * Math.max(1, threshold / 12));
+    ctx.setChart('decayChart', {
+      kind: 'line',
+      xLabel: 'minutes',
+      yLabel: 'opportunity weight',
+      series: [
+        {
+          label: 'cumulative threshold',
+          x: minutes,
+          y: minutes.map(value => (value <= threshold ? 1 : 0)),
+          color: 0
+        },
+        {
+          label: 'exponential',
+          x: minutes,
+          y: minutes.map(value => Math.exp((-options.beta * value) / 10)),
+          color: 1
+        },
+        {
+          label: 'power',
+          x: minutes,
+          y: minutes.map(value =>
+            Math.pow(
+              Math.max(options.minimumCostSeconds / 60, value) /
+                Math.max(options.minimumCostSeconds / 60, 1),
+              -options.powerExponent
+            )
+          ),
+          color: 2
+        }
+      ],
+      link: {option: 'thresholdMinutes', label: value => `${value} min`},
+      description:
+        'Cumulative, exponential and power opportunity weights from the live scoring controls.'
+    });
     scoreDirty = Math.max(scoreDirty, 1);
+    comparisonScoreDirty = Math.max(comparisonScoreDirty, 1);
     scheduleTiming();
   };
 
@@ -280,12 +508,17 @@ export async function createJobAccessibility(
   function buildGraphs(): void {
     if (built) {
       snapReader?.stop();
+      companionReader?.stop();
       resources.release(built.matrix);
       resources.release(built.score);
+      resources.release(built.comparisonMatrix);
+      resources.release(built.comparisonScore);
       for (const resource of perBuild) resources.release(resource);
       perBuild = [];
     }
     const options = ctx.options;
+    const generation = ++comparisonGeneration;
+    companionMode = !options.transit;
     rowCount = Math.min(Number(options.opportunityRows), maximumRows);
     const laneCount = Math.min(
       Number(options.laneCount) || recommendLaneCount({rowCount, nodeCount, edgeCount}),
@@ -297,17 +530,51 @@ export async function createJobAccessibility(
       return resource;
     };
     const rows = order.slice(0, rowCount);
+    retainedOpportunityTracts = rows;
     const positions = new Float32Array(rowCount * 2);
     const weights = new Float32Array(rowCount);
+    const outlineSegments: number[] = [];
     rowsJobs = 0;
     rows.forEach((tract, row) => {
       positions[row * 2] = demand.centroids[tract * 2];
       positions[row * 2 + 1] = demand.centroids[tract * 2 + 1];
       weights[row] = demand.jobs[tract];
+      for (const ring of demand.rings[tract]) {
+        for (let vertex = 0; vertex + 3 < ring.length; vertex += 2) {
+          outlineSegments.push(ring[vertex], ring[vertex + 1], ring[vertex + 2], ring[vertex + 3]);
+        }
+      }
       rowsJobs += demand.jobs[tract];
+    });
+    selectedOpportunityRow = 0;
+    const topTract = rows[0];
+    ctx.setReadout(
+      'topOpportunity',
+      `largest loaded tract: ${formatInteger(demand.jobs[topTract])} jobs`
+    );
+    ctx.setReadout(
+      'selectedRow',
+      `retained row ${selectedOpportunityRow + 1}: ${formatInteger(demand.jobs[topTract])} jobs; 0–10–20–30+ minute street bands`
+    );
+    ctx.setChart('opportunityShare', {
+      kind: 'stacked',
+      format: 'percent',
+      segments: [
+        {label: 'retained opportunity rows', value: rowsJobs, color: [20, 110, 160, 255]},
+        {
+          label: 'other loaded tract jobs',
+          value: Math.max(0, totalJobs - rowsJobs),
+          color: [175, 180, 190, 255]
+        }
+      ],
+      description: `Retained rows contain ${((100 * rowsJobs) / totalJobs).toFixed(1)}% of loaded tract jobs; the top loaded opportunity has ${formatInteger(demand.jobs[topTract])} jobs.`
     });
     opportunityPositions = track(resources.createBuffer('opportunity-positions', positions));
     opportunityWeights = track(resources.createBuffer('opportunity-weights', weights));
+    opportunityOutlines = track(
+      resources.createBuffer('opportunity-outlines', Float32Array.from(outlineSegments))
+    );
+    opportunityOutlineCount = outlineSegments.length / 4;
     const segmentsInit = new Float32Array(rowCount * 4);
     for (let row = 0; row < rowCount; row++) {
       segmentsInit[row * 4] = positions[row * 2];
@@ -326,6 +593,32 @@ export async function createJobAccessibility(
     matrixBuffer = track(resources.createBuffer('matrix', matrixLength * 4));
     matrixConverged = track(resources.createBuffer('matrix-converged', 4));
     ratiosBuffer = track(resources.createBuffer('facility-ratios', rowCount * 4));
+    comparisonWeightsBuffer = track(resources.createBuffer('comparison-weights', edgeCount * 4));
+    const comparisonSnappedEdges = track(
+      resources.createBuffer('comparison-snapped-edges', rowCount * 4)
+    );
+    const comparisonSnapFractions = track(
+      resources.createBuffer('comparison-snap-fractions', rowCount * 4)
+    );
+    const comparisonSnapDistances = track(
+      resources.createBuffer('comparison-snap-distances', rowCount * 4)
+    );
+    const comparisonSnappedPositions = track(
+      resources.createBuffer('comparison-snapped-positions', rowCount * 8)
+    );
+    const comparisonSeedNodes = track(
+      resources.createBuffer('comparison-seed-nodes', rowCount * 8)
+    );
+    const comparisonSeedCosts = track(
+      resources.createBuffer('comparison-seed-costs', rowCount * 8)
+    );
+    const comparisonSnapOverflow = track(resources.createBuffer('comparison-snap-overflow', 4));
+    comparisonMatrixBuffer = track(resources.createBuffer('comparison-matrix', matrixLength * 4));
+    comparisonConverged = track(resources.createBuffer('comparison-matrix-converged', 4));
+    comparisonCumulativeBuffer = track(
+      resources.createBuffer('comparison-cumulative', nodeCount * 4)
+    );
+    comparisonGravityBuffer = track(resources.createBuffer('comparison-gravity', nodeCount * 4));
 
     const importer = (graph: GPUCommandGraph<void>) => {
       const cache = new Map<Buffer, GraphDataView>();
@@ -407,11 +700,90 @@ export async function createJobAccessibility(
         })
       );
     }
+    const comparisonMatrixGraph = new GPUCommandGraph<void>(device, {
+      id: 'access-comparison-matrix'
+    });
+    {
+      const view = importer(comparisonMatrixGraph);
+      const seedNodesView = view(comparisonSeedNodes, 'uint32', rowCount * 2);
+      const seedCostsView = view(comparisonSeedCosts, 'float32', rowCount * 2);
+      comparisonMatrixGraph.add(
+        new GPUNetworkSnapping({
+          id: 'comparison-snapping',
+          points: view(opportunityPositions, 'float32x2', rowCount),
+          nodePositions: view(roadNodePositions, 'float32x2', roadNodeCount),
+          edgeSources: view(roadSourcesBuffer, 'uint32', access.roadSources.length),
+          edgeTargets: view(roadTargetsBuffer, 'uint32', access.roadTargets.length),
+          edgeCosts: view(roadCostsBuffer, 'float32', access.roadMeters.length),
+          maxSnapDistance: maxSnapParameter.importToGraph(comparisonMatrixGraph),
+          ...(options.snapSearch === 'bvh'
+            ? {candidateCapacity: BVH_CANDIDATE_CAPACITY, spatialSort: true}
+            : {}),
+          seedDirection: options.seedDirection,
+          snappedEdges: view(comparisonSnappedEdges, 'uint32', rowCount),
+          snapFractions: view(comparisonSnapFractions, 'float32', rowCount),
+          snapDistances: view(comparisonSnapDistances, 'float32', rowCount),
+          snappedPositions: view(comparisonSnappedPositions, 'float32x2', rowCount),
+          seedNodes: seedNodesView,
+          seedCosts: seedCostsView,
+          ...(options.snapSearch === 'bvh'
+            ? {overflow: view(comparisonSnapOverflow, 'uint32', 1)}
+            : {})
+        })
+      );
+      comparisonMatrixGraph.add(
+        new GPUNetworkCostMatrix({
+          id: 'comparison-cost-matrix',
+          offsets: view(offsetsBuffer, 'uint32', nodeCount + 1),
+          neighbors: view(neighborsBuffer, 'uint32', edgeCount),
+          weights: view(comparisonWeightsBuffer, 'float32', edgeCount),
+          seedNodes: seedNodesView,
+          seedCosts: seedCostsView,
+          seedsPerRow: 2,
+          costLimit: costLimitParameter.importToGraph(comparisonMatrixGraph),
+          laneCount,
+          maxIterations: MAXIMUM_ITERATIONS,
+          localIterations: LOCAL_ITERATIONS,
+          costs: view(comparisonMatrixBuffer, 'float32', matrixLength),
+          converged: view(comparisonConverged, 'uint32', 1)
+        })
+      );
+    }
+    const comparisonScoreGraph = new GPUCommandGraph<void>(device, {id: 'access-comparison-score'});
+    {
+      const view = importer(comparisonScoreGraph);
+      comparisonScoreGraph.add(
+        new GPUNetworkAccessibility({
+          id: 'comparison-score',
+          costs: view(comparisonMatrixBuffer, 'float32', matrixLength),
+          opportunityWeights: view(opportunityWeights, 'float32', rowCount),
+          parameters: scoring.importToGraph(comparisonScoreGraph),
+          cumulative: view(comparisonCumulativeBuffer, 'float32', nodeCount),
+          gravity: view(comparisonGravityBuffer, 'float32', nodeCount)
+        })
+      );
+    }
     built = {
       matrix: resources.track(matrixGraph.compile()),
       score: resources.track(scoreGraph.compile()),
+      comparisonMatrix: resources.track(comparisonMatrixGraph.compile()),
+      comparisonScore: resources.track(comparisonScoreGraph.compile()),
       rowCount
     };
+    writeWeights();
+    companionReader = new SummaryReader(
+      resources,
+      `access-comparison-${rowCount}-${laneCount}-${generation}`,
+      [{buffer: comparisonCumulativeBuffer, size: nodeCount * 4}],
+      bytes => {
+        if (destroyed || companionScoreGeneration !== comparisonGeneration) return;
+        comparisonSnapshots.set(comparisonKey(companionMode), {
+          cumulative: new Float32Array(bytes.slice(0, nodeCount * 4)),
+          twoStep: new Float32Array(nodeCount)
+        });
+        publishComparisons();
+      }
+    );
     builtKey = getBuildKey();
 
     snapReader = new SummaryReader(
@@ -465,6 +837,8 @@ export async function createJobAccessibility(
     );
     matrixDirty = 2;
     scoreDirty = 2;
+    comparisonMatrixDirty = 2;
+    comparisonScoreDirty = 2;
     matrixTimingStale = true;
     matrixEncodeCount = 0;
     scoreEncodeCount = 0;
@@ -486,14 +860,26 @@ export async function createJobAccessibility(
   function readScores(
     commandEncoder: Parameters<SceneInstance<JobAccessibilityOptions>['encode']>[0]
   ) {
+    activeScoreGeneration = comparisonGeneration;
     scoreRing.request(commandEncoder);
   }
   function createScoreHolder() {
     let reader: SummaryReader | null = null;
-    let readerBuffer: Buffer | null = null;
     const process = (bytes: ArrayBuffer) => {
-      if (destroyed) return;
-      const scores = new Float32Array(bytes).subarray(0, roadNodeCount);
+      if (destroyed || activeScoreGeneration !== comparisonGeneration) return;
+      const bytesPerColumn = nodeCount * 4;
+      const cumulative = new Float32Array(bytes.slice(0, bytesPerColumn));
+      const gravity = new Float32Array(bytes.slice(bytesPerColumn, bytesPerColumn * 2));
+      const twoStep = new Float32Array(bytes.slice(bytesPerColumn * 2, bytesPerColumn * 3));
+      latestScores = {cumulative, gravity, twoStep};
+      comparisonSnapshots.set(comparisonKey(ctx.options.transit), {cumulative, twoStep});
+      publishComparisons();
+      const scores =
+        getScoreBuffer() === cumulativeBuffer
+          ? cumulative.subarray(0, roadNodeCount)
+          : getScoreBuffer() === twoStepBuffer
+            ? twoStep.subarray(0, roadNodeCount)
+            : gravity.subarray(0, roadNodeCount);
       let positive = 0;
       let maximum = 0;
       let sum = 0;
@@ -504,13 +890,10 @@ export async function createJobAccessibility(
       }
       const sorted = Float32Array.from(scores).sort();
       const median = sorted[Math.floor(sorted.length / 2)];
-      const percentile =
-        sorted[Math.min(sorted.length - 1, Math.floor(sorted.length * SCORE_PERCENTILE))];
-      const range = percentile > 0 ? percentile : maximum || 1;
       const measure = ctx.options.measure;
       const format = (value: number) =>
         measure === 'two-step'
-          ? value.toExponential(2)
+          ? (value * 1000).toFixed(1)
           : measure === 'cumulative'
             ? formatInteger(value)
             : formatInteger(value);
@@ -520,23 +903,19 @@ export async function createJobAccessibility(
       );
       ctx.setReadout('median', format(median));
       ctx.setReadout('mean', format(sum / roadNodeCount));
-      ctx.setReadout('top', `${format(percentile)} (98th percentile), max ${format(maximum)}`);
-      if (Math.abs(range - scoreMaximum) > 0.01 * scoreMaximum) {
-        scoreMaximum = range;
-        ctx.setLegendExtent('score', [0, range]);
-        ctx.requestLayers();
-      }
+      ctx.setReadout('top', `${format(maximum)} maximum (fixed comparison classes)`);
     };
     return {
       request(commandEncoder: Parameters<SceneInstance<JobAccessibilityOptions>['encode']>[0]) {
-        const buffer = getScoreBuffer();
-        if (!reader || readerBuffer !== buffer) {
-          reader?.stop();
-          readerBuffer = buffer;
+        if (!reader) {
           reader = new SummaryReader(
             resources,
-            `access-scores-${buffer.id}`,
-            [{buffer, size: nodeCount * 4}],
+            'access-score-columns',
+            [
+              {buffer: cumulativeBuffer, size: nodeCount * 4},
+              {buffer: gravityBuffer, size: nodeCount * 4},
+              {buffer: twoStepBuffer, size: nodeCount * 4}
+            ],
             process
           );
         }
@@ -610,11 +989,13 @@ export async function createJobAccessibility(
   writeScalars();
   writeScoring();
   buildGraphs();
+  publishFurniture();
 
   const railPalette = lineNames.map(name => LINE_COLORS[name]);
 
   return {
-    getCompiledGraphs: () => (built ? [built.matrix, built.score] : []),
+    getCompiledGraphs: () =>
+      built ? [built.matrix, built.score, built.comparisonMatrix, built.comparisonScore] : [],
 
     setOption(id, _value, state) {
       switch (id) {
@@ -632,6 +1013,8 @@ export async function createJobAccessibility(
         case 'waitFactor':
           writeWeights();
           markMatrixDirty();
+          publishFurniture();
+          publishComparisons();
           ctx.requestLayers();
           break;
         case 'matrixLimitMinutes':
@@ -639,6 +1022,8 @@ export async function createJobAccessibility(
           writeScalars();
           writeScoring();
           markMatrixDirty();
+          publishFurniture();
+          publishComparisons();
           break;
         case 'measure':
         case 'thresholdMinutes':
@@ -647,7 +1032,8 @@ export async function createJobAccessibility(
         case 'minimumCostSeconds':
           writeScoring();
           scoreRing.stop();
-          scoreMaximum = 0;
+          publishFurniture();
+          publishComparisons();
           ctx.requestLayers();
           break;
         default:
@@ -660,8 +1046,55 @@ export async function createJobAccessibility(
       ctx.requestLayers();
     },
 
-    getTooltip() {
-      return null;
+    getTooltip(event) {
+      if (!event.coordinate || !latestScores) return null;
+      const options = ctx.options;
+      const unit =
+        options.measure === 'two-step'
+          ? 'jobs per 1,000 competing workers'
+          : options.measure === 'cumulative'
+            ? 'jobs within threshold'
+            : 'decay-weighted jobs';
+      const [x, y] = network.projection.project(event.coordinate[0], event.coordinate[1]);
+      const node = network.findNearestNode(x, y);
+      const edge = network.findNearestEdge(x, y);
+      const scores =
+        options.measure === 'cumulative'
+          ? latestScores.cumulative
+          : options.measure === 'two-step'
+            ? latestScores.twoStep
+            : latestScores.gravity;
+      const score = scores[node] * (options.measure === 'two-step' ? 1000 : 1);
+      const table =
+        options.measure === 'cumulative'
+          ? ACCESS_CLASSES.cumulative
+          : options.measure === 'two-step'
+            ? ACCESS_CLASSES.twoStep
+            : ACCESS_CLASSES.gravity;
+      let classIndex = 0;
+      while (classIndex < table.breaks.length && score >= table.breaks[classIndex]) classIndex++;
+      const classLower = classIndex === 0 ? '0' : table.breaks[classIndex - 1].toLocaleString();
+      const classUpper =
+        classIndex === table.breaks.length ? '+' : table.breaks[classIndex].toLocaleString();
+      let nearestTract = retainedOpportunityTracts[0] ?? 0;
+      let nearestDistance = Infinity;
+      for (const tract of retainedOpportunityTracts) {
+        const distance = Math.hypot(
+          x - demand.centroids[tract * 2],
+          y - demand.centroids[tract * 2 + 1]
+        );
+        if (distance < nearestDistance) {
+          nearestDistance = distance;
+          nearestTract = tract;
+        }
+      }
+      return [
+        `${event.coordinate[0].toFixed(5)}, ${event.coordinate[1].toFixed(5)}`,
+        `nearest road node ${node}; edge ${edge.edge} (${edge.distance.toFixed(0)} m away)`,
+        `${score.toLocaleString(undefined, {maximumFractionDigits: 1})} ${unit}; class ${classIndex + 1} [${classLower}, ${classUpper})`,
+        `${options.thresholdMinutes} min; ${options.transit ? 'scheduled CTA half-headway approximation' : 'walk-only'}`,
+        `nearest retained Census/LEHD tract ${nearestTract}, ${nearestDistance.toFixed(0)} m from cursor`
+      ].join('\n');
     },
 
     encode(commandEncoder) {
@@ -678,9 +1111,20 @@ export async function createJobAccessibility(
           });
         }
         matrixDirty--;
+        commandEncoder.copyBufferToBuffer({
+          sourceBuffer: matrixBuffer,
+          sourceOffset: selectedOpportunityRow * nodeCount * 4,
+          destinationBuffer: selectedRowBuffer,
+          size: nodeCount * 4
+        });
         matrixEncodeCount++;
         snapReader?.markStale();
         if (matrixDirty === 0) scoreDirty = Math.max(scoreDirty, 1);
+      }
+      if (comparisonMatrixDirty > 0 && performance.now() >= matrixPendingAt) {
+        built.comparisonMatrix.encode(commandEncoder, {parameters: undefined});
+        comparisonMatrixDirty--;
+        if (comparisonMatrixDirty === 0) comparisonScoreDirty = Math.max(comparisonScoreDirty, 1);
       }
       if (scoreDirty > 0 && matrixDirty === 0 && matrixEncodeCount > 0) {
         built.score.encode(commandEncoder, {parameters: undefined});
@@ -689,14 +1133,29 @@ export async function createJobAccessibility(
         ctx.setReadout('encodes', `${matrixEncodeCount} / ${scoreEncodeCount}`);
         if (scoreDirty === 0) readScores(commandEncoder);
       }
+      if (comparisonScoreDirty > 0 && comparisonMatrixDirty === 0) {
+        built.comparisonScore.encode(commandEncoder, {parameters: undefined});
+        comparisonScoreDirty--;
+        if (comparisonScoreDirty === 0) {
+          companionScoreGeneration = comparisonGeneration;
+          companionReader?.request(commandEncoder);
+        }
+      }
       snapReader?.flush(commandEncoder);
       scoreRing.flush(commandEncoder);
+      companionReader?.flush(commandEncoder);
     },
 
     getLayers() {
       if (!built) return [];
       const options = ctx.options;
       const colors = getRoadColors(ctx.theme());
+      const classTable =
+        options.measure === 'cumulative'
+          ? ACCESS_CLASSES.cumulative
+          : options.measure === 'two-step'
+            ? ACCESS_CLASSES.twoStep
+            : ACCESS_CLASSES.gravity;
       const coordinateOrigin: [number, number, number] = [network.origin[0], network.origin[1], 0];
       const layers: Layer[] = [
         new SpatialAnalysisSegmentLayer({
@@ -704,7 +1163,7 @@ export async function createJobAccessibility(
           coordinateOrigin,
           segments: segmentsBuffer,
           instanceCount: segmentCount,
-          widthPixels: 1,
+          widthPixels: 0.5,
           color: colors.minor
         }),
         new SpatialAnalysisSegmentLayer({
@@ -715,22 +1174,52 @@ export async function createJobAccessibility(
           widthPixels: 1.5,
           color: colors.major
         }),
-        new SpatialAnalysisSegmentLayer({
-          id: 'access-roads-score',
-          coordinateOrigin,
-          segments: segmentsBuffer,
-          instanceCount: segmentCount,
-          widthPixels: 2.4,
-          values: getScoreBuffer(),
-          valueFormat: 'float32',
-          valueIndices: segmentTargetsBuffer,
-          colormap: options.ramp,
-          valueRange: [0, scoreMaximum],
-          sqrtScale: true,
-          color: [255, 255, 255, 240],
-          noDataColor: [0, 0, 0, 0]
-        })
+        ...[0.8, 1.2, 1.8, 2.6, 3.2, 3.2].map(
+          (widthPixels, classIndex) =>
+            new SpatialAnalysisSegmentLayer({
+              id: `access-roads-score-${classIndex}`,
+              coordinateOrigin,
+              segments: segmentsBuffer,
+              instanceCount: segmentCount,
+              widthPixels,
+              values: getScoreBuffer(),
+              valueFormat: 'float32',
+              valueIndices: segmentTargetsBuffer,
+              valueScale: options.measure === 'two-step' ? 1000 : 1,
+              ...getClassTableLayerProps(classTable),
+              highlightClasses: [classIndex],
+              dimOpacity: 0,
+              color: [255, 255, 255, 240],
+              noDataColor: [130, 130, 130, 255]
+            })
+        )
       ];
+      if (options.showSnaps) {
+        layers.push(
+          new SpatialAnalysisSegmentLayer({
+            id: 'access-selected-row-bands',
+            coordinateOrigin,
+            segments: segmentsBuffer,
+            instanceCount: segmentCount,
+            widthPixels: 1.4,
+            values: selectedRowBuffer,
+            valueFormat: 'float32',
+            valueIndices: segmentTargetsBuffer,
+            ...getClassTableLayerProps(
+              makeClassTable({
+                breaks: [600, 1200, 1800],
+                colors: [
+                  [80, 155, 190, 70],
+                  [55, 125, 175, 100],
+                  [30, 95, 155, 145],
+                  [15, 65, 120, 190]
+                ]
+              })
+            ),
+            noDataColor: [0, 0, 0, 0]
+          })
+        );
+      }
       if (options.showTransit) {
         layers.push(
           new SpatialAnalysisSegmentLayer({
@@ -739,7 +1228,7 @@ export async function createJobAccessibility(
             segments: busBuffer,
             instanceCount: busSegments.length / 4,
             widthPixels: 0.8,
-            color: ctx.theme() === 'dark' ? [200, 205, 220, 40] : [60, 70, 100, 40]
+            color: ctx.ground() === 'dark' ? [200, 205, 220, 40] : [60, 70, 100, 40]
           }),
           new SpatialAnalysisSegmentLayer({
             id: 'access-rail-halo',
@@ -794,12 +1283,22 @@ export async function createJobAccessibility(
       }
       if (options.showOpportunities) {
         layers.push(
+          new SpatialAnalysisSegmentLayer({
+            id: 'access-opportunity-tract-outlines',
+            coordinateOrigin,
+            segments: opportunityOutlines,
+            instanceCount: opportunityOutlineCount,
+            widthPixels: 0.7,
+            color: ctx.ground() === 'dark' ? [220, 225, 235, 110] : [45, 55, 70, 105]
+          }),
           new SpatialAnalysisPointLayer({
             id: 'access-opportunity-halo',
             coordinateOrigin,
             positions: opportunityPositions,
             instanceCount: built.rowCount,
-            radiusPixels: 6,
+            radiusPixels: 12,
+            sizeValues: opportunityWeights,
+            sizeMaximumValue: Math.max(...demand.jobs, 1),
             color: colors.halo
           }),
           new SpatialAnalysisPointLayer({
@@ -807,8 +1306,11 @@ export async function createJobAccessibility(
             coordinateOrigin,
             positions: opportunityPositions,
             instanceCount: built.rowCount,
-            radiusPixels: 4,
-            color: [90, 220, 255, 255]
+            radiusPixels: 9,
+            sizeValues: opportunityWeights,
+            sizeMaximumValue: Math.max(...demand.jobs, 1),
+            shape: 'ring',
+            color: ctx.ground() === 'dark' ? [180, 230, 245, 255] : [35, 100, 125, 255]
           }),
           new SpatialAnalysisPointLayer({
             id: 'access-snapped',
@@ -828,6 +1330,7 @@ export async function createJobAccessibility(
       clearTimeout(timingTimer);
       snapReader?.stop();
       scoreRing.stop();
+      companionReader?.stop();
       resources.destroy();
     }
   };

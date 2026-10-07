@@ -114,6 +114,7 @@ const contributorExportNames = [
   'GPUShapeDescriptors',
   'GPULineDensity',
   'GPULineLengthPerPolygon',
+  'getGPUGridCornerCount',
   'GPUGridGenerator',
   'GPURectangleClip',
   'GPUCoverageSimplification',
@@ -168,6 +169,7 @@ try {
     `import {
   ${contributorExportNames.join(',\n  ')},
   type GPUCompactOutput,
+  type GPUGeometryCleanupPointOutput,
   type GPUUint32Rows
 } from '@luma.gl/experimental/gpu-spatial-analysis';
 import type {GPUCommandNodeProducer} from '@luma.gl/gpgpu/gpu-core';
@@ -176,10 +178,12 @@ const contributorConstructors = [
   ${contributorExportNames.join(',\n  ')}
 ];
 declare const output: GPUCompactOutput;
+declare const cleanupPointOutput: GPUGeometryCleanupPointOutput;
 declare const rows: GPUUint32Rows;
 declare const contributor: GPUCommandNodeProducer;
 void contributorConstructors;
 void output;
+void cleanupPointOutput;
 void rows;
 void contributor;
 

@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {CREDITS, joinCredits} from '../../cartography/credits';
+import {ground} from '../../cartography/grounds';
 import {formatPlaybackTime, playbackOptions} from '../../engine/playback';
 import {defineScene} from '../scene';
 import type {SatelliteSwathOptions} from './satellite-swath.compute';
@@ -11,9 +13,9 @@ const elapsed = (seconds: number) => formatPlaybackTime.duration(seconds) || '0 
 
 export default defineScene<SatelliteSwathOptions>({
   id: 'satellite-swath',
-  title: 'How fast do Earth observation satellites cover the planet?',
+  title: 'How quickly does a modelled swath reach Earth?',
   chapter: 'earth',
-  order: 33,
+  order: 11,
   summary:
     'Buffer the ground tracks of 16 Earth observation satellites by their imaging swath on the GPU and find, for every degree of the planet, when a swath first reached it.',
   contributors: ['GPUOutlineGeometry'],
@@ -93,28 +95,22 @@ export default defineScene<SatelliteSwathOptions>({
     },
     {
       kind: 'toggle',
+      id: 'compareGeometry',
+      label: 'Compare nominal outline',
+      group: 'Swath',
+      apply: 'param',
+      default: false,
+      disabledWhen: state => state.swathMode !== 'custom',
+      help: 'Draws the selected instruments’ nominal blue outlines under the hypothetical violet custom-width ribbons. The elapsed-time cells always describe the active custom scenario.'
+    },
+    {
+      kind: 'toggle',
       id: 'showCoverage',
       label: 'Show first-covered time',
       group: 'Display',
       apply: 'param',
       default: true,
       help: 'Colors every 1-degree cell by the time a swath first reached it; cells not yet reached at the playhead, or never reached, stay clear.'
-    },
-    {
-      kind: 'select',
-      id: 'ramp',
-      label: 'Color ramp',
-      group: 'Display',
-      apply: 'param',
-      default: 'viridis',
-      disabledWhen: state => !state.showCoverage,
-      help: 'Color ramp for the first-covered time, from the start of the window (dark) to the end (bright).',
-      options: [
-        {value: 'viridis', label: 'Viridis'},
-        {value: 'magma', label: 'Magma'},
-        {value: 'inferno', label: 'Inferno'},
-        {value: 'cividis', label: 'Cividis'}
-      ]
     },
     {
       kind: 'toggle',
@@ -142,26 +138,33 @@ export default defineScene<SatelliteSwathOptions>({
 
   story: [
     {
-      id: 'swath',
-      title: 'A track is a line; a swath is a footprint',
-      body: 'An imaging satellite looks sideways to both sides of the ground track, so what it sees is a ribbon: the track buffered by half the swath width. `GPUOutlineGeometry` builds that ribbon on the sphere for all 16 satellites, one node per instrument because each has its own width.\n\nPress **Play** below and watch the ribbons grow. Landsat sees 185 km across, the VIIRS instruments on Suomi NPP and NOAA-20 and -21 see 3,000 km.',
+      id: 'footprint',
+      title: 'A line becomes a nominal footprint',
+      headline: 'A buffer is a modelled swath',
+      textAlternative:
+        'A selected satellite ground track has a violet nominal swath ribbon and local width label.',
+      optionsMode: 'fresh',
+      body: 'One loaded Earth-observation instrument is the subject: its centreline is buffered by half its nominal width to make a violet ribbon. The map carries a live cross-track bracket; if source width metadata is absent or zero it says unknown rather than inventing a default.\n\nPress **Play** to watch the modelled ribbon grow.',
       camera: {...FLAT_VIEW, transitionMs: 1200},
       options: {
         play: true,
         time: 600,
-        satellites: 'all',
+        satellites: 'OLI',
         swathMode: 'nominal',
         showCoverage: false,
         showSwaths: true,
         swathOpacity: 0.14
       },
       controls: ['play', 'time', 'satellites'],
-      readouts: ['clock', 'satelliteCount']
+      readouts: ['clock', 'satelliteCount', 'selectedWidth']
     },
     {
       id: 'narrow',
-      title: 'Narrow swaths need days, not hours',
-      body: 'Choose Landsat in **Satellites** below and move **Time since 00:00 UTC** to the end: after three hours two Landsat satellites have imaged about 7 percent of the planet in thin ribbons that never touch. Their orbit shifts a little west every lap and only closes the gaps over a 16-day cycle (8 days with both), which this three-hour window cannot show.\n\nThe coverage map colors each cell by the time a swath first reached it; hover to read it.',
+      title: 'Each cell records its first reach',
+      headline: 'First reach is an elapsed-time field',
+      textAlternative: 'Elapsed-time coverage cells retain unreached places as explicit no-data.',
+      optionsMode: 'fresh',
+      body: 'The coverage map colors each cell by the time a swath first reached it; unreached cells remain hatched no-data. The live curve and readouts own the area-weighted findings for this three-hour model window.\n\nHover a cell to read its first-reach UTC.',
       camera: {...FLAT_VIEW, transitionMs: 1200},
       options: {
         play: false,
@@ -177,8 +180,11 @@ export default defineScene<SatelliteSwathOptions>({
     },
     {
       id: 'wide',
-      title: 'Wide swaths cover most of the world in hours',
-      body: 'A 3,000 km swath is as wide as a continent. The wide-swath satellites (MODIS, VIIRS, AVHRR, OLCI and TROPOMI) reach about 88 percent of the planet in three hours, half of it in under 45 minutes. What is left lies in the gaps between the ribbons, which close slowly as the Earth turns under the orbits.\n\nThe curve in the chart rises quickly and then flattens: the last few percent take the longest.',
+      title: 'Narrow swaths leave broad gaps',
+      headline: 'Width controls first reach',
+      textAlternative: 'A narrow nominal swath is paired with area-weighted reach over time.',
+      optionsMode: 'fresh',
+      body: 'Wide nominal ribbons reach cells sooner than narrow ribbons, but the live area-weighted curve—not prose—reports the share and any threshold crossing. Gaps between adjacent ground tracks remain visible as hatched no-data.\n\nThe curve rises quickly and then flattens as remaining gaps become harder to reach.',
       camera: {...FLAT_VIEW, transitionMs: 1200},
       options: {
         play: false,
@@ -188,13 +194,17 @@ export default defineScene<SatelliteSwathOptions>({
         showCoverage: true,
         showSwaths: false
       },
-      controls: ['satellites', 'time', 'ramp'],
+      controls: ['satellites', 'time'],
       readouts: ['t50', 't90', 'covered3h', 'coverageChart']
     },
     {
-      id: 'custom',
-      title: 'What if the swath were wider?',
-      body: 'Give every satellite the same width to ask what a sensor would need. With all 16 satellites at 500 km, about 64 percent of the planet is covered after three hours; at 1,000 km about 84 percent; at 2,000 km about 98 percent and 90 percent of it within about two hours. Doubling the swath roughly halves the time to reach any given share, until the geometry of the orbits (not the width) is the limit.\n\nSwitch **Swath width** to custom and drag **Custom swath width** below; the coverage pass reruns on the GPU each time.',
+      id: 'compare-widths',
+      title: 'Width changes the answer',
+      headline: 'A custom width is hypothetical',
+      textAlternative:
+        'Synchronized nominal and hypothetical custom ribbons are distinct; the active first-reach surface belongs only to the custom scenario.',
+      optionsMode: 'fresh',
+      body: 'The blue outlines are synchronized nominal geometry; the violet ribbon is the explicitly hypothetical custom width. One first-reach surface is drawn: it belongs to the active violet scenario, not both geometries.\n\nSwitch width and inspect the live curve and threshold readouts; the coverage pass reruns on the GPU each time.',
       camera: {...FLAT_VIEW, transitionMs: 1200},
       options: {
         play: false,
@@ -202,17 +212,22 @@ export default defineScene<SatelliteSwathOptions>({
         satellites: 'all',
         swathMode: 'custom',
         customWidth: 500,
+        compareGeometry: true,
         showCoverage: true,
         showSwaths: true,
         swathOpacity: 0.1
       },
-      controls: ['swathMode', 'customWidth', 'satellites'],
+      controls: ['swathMode', 'customWidth', 'compareGeometry', 'satellites'],
       readouts: ['covered3h', 't50', 't90', 'coverageChart']
     },
     {
       id: 'limits',
-      title: 'What this does not know',
-      body: 'The widths are nominal values at the ground track; real swaths are narrower at the edges for some instruments and wider for others. Optical instruments that record reflected sunlight (Landsat, Sentinel-2) work only in daylight and cannot see through cloud, while radar images day and night; none of that is modeled. Ground-track density is not coverage, and coverage here is geometric only: a cell counts as covered the moment a swath touches it. Positions are SGP4 predictions from element sets of different ages.\n\nTry the satellites one instrument at a time and compare how many percent of the planet each reaches.',
+      title: 'Reach is not usable observation',
+      headline: 'A buffered line omits sensor geometry',
+      textAlternative:
+        'A reach surface remains visible with daylight, cloud, terrain and projection limits stated.',
+      optionsMode: 'fresh',
+      body: 'The widths are nominal values at the ground track; real swaths vary with viewing geometry. Daylight, cloud, terrain, pointing and edge effects are omitted. A cell is geometrically reached when this planar buffered-track model touches it—not when it yields a usable observation.\n\nTry instruments one at a time and use the live readouts to compare reach.',
       camera: {...FLAT_VIEW, transitionMs: 1200},
       options: {
         play: false,
@@ -232,12 +247,19 @@ export default defineScene<SatelliteSwathOptions>({
     ...(state.showCoverage
       ? [
           {
-            kind: 'ramp' as const,
-            title: 'Time a swath first reached the cell',
-            ramp: state.ramp,
-            extent: [0, 10800] as const,
-            unit: 'h since 00:00 UTC',
-            format: (value: number) => (value / 3600).toFixed(1)
+            kind: 'categories' as const,
+            title: 'First reach (elapsed time)',
+            entries: [
+              {color: [46, 168, 184, 210] as const, label: '0–30 min'},
+              {color: [87, 194, 143, 210] as const, label: '30–60 min'},
+              {color: [242, 179, 56, 210] as const, label: '60–120 min'},
+              {color: [184, 87, 179, 210] as const, label: '120–180 min'},
+              {
+                color: [160, 175, 200, 180] as const,
+                label: 'Not reached by this playhead / window (hatched)'
+              }
+            ],
+            note: 'Classes are elapsed time from 00:00 UTC; cells cover only 85° S to 85° N.'
           }
         ]
       : []),
@@ -261,6 +283,7 @@ export default defineScene<SatelliteSwathOptions>({
   readouts: [
     {id: 'clock', label: 'Playhead'},
     {id: 'satelliteCount', label: 'Selection'},
+    {id: 'selectedWidth', label: 'Selected nominal width'},
     {
       id: 'coveredNow',
       label: 'Covered at the playhead',
@@ -311,6 +334,31 @@ distance.write(getGPUOutlineGeometryParameterValues({
     why: 'Revisit and time to coverage decide whether a sensor can answer a question in hours (weather, smoke, floods) or only in weeks (land cover). The swath width, not the number of satellites, usually dominates.',
     howToRead:
       "Purple ribbons are the buffered tracks; where they overlap they are darker. The colored cells show when each place was first covered, dark early and bright late; empty cells were not reached by the playhead. The chart and readouts give area-weighted coverage between 85 S and 85 N. Nominal swath widths, daylight and cloud, off-nadir pointing and the terrain are ignored. The outline contributor measures meters with each vertex's local east and north scale, which is not geodesic and degrades near the poles and across the antimeridian, so very wide swaths look distorted at high latitude on the Mercator map; the coverage pass uses the same approximation. Satellite conjunctions are deliberately not computed: `GPUTrajectoryEncounters` is two-dimensional."
+  },
+
+  pipeline: [
+    {id: 'track', label: 'Ground track', detail: 'Select propagated EO trajectories'},
+    {
+      id: 'buffer',
+      label: 'Nominal swath',
+      detail: 'Buffer the line using supplied or hypothetical width'
+    },
+    {id: 'reach', label: 'First reach', detail: 'Write earliest modelled reach to every grid cell'},
+    {id: 'area', label: 'Area curve', detail: 'Weight reached cells by analysed area'}
+  ],
+  basemap: ground('space', {
+    labels: 'none',
+    graticule: true,
+    referenceLines: ['equator', 'tropics']
+  }),
+  furniture: {
+    title: {
+      title: 'How quickly does a modelled swath reach Earth?',
+      subtitle: 'Nominal swath · elapsed first reach · SGP4 model'
+    },
+    credit: joinCredits('CelesTrak GP elements; propagation with SGP4', CREDITS.naturalEarth),
+    caveat:
+      'Reach omits viewing geometry, pointing, daylight, cloud, terrain and polar Mercator distortion.'
   },
 
   create: async ctx => (await import('./satellite-swath.compute')).createSatelliteSwath(ctx)

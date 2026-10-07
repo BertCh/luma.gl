@@ -11,18 +11,11 @@ import {
 } from '@luma.gl/experimental/gpu-dataframe';
 import {
   getGPULineDensityParameterValues,
-  getGPUSpatialClusteringParameterValues,
-  getGPUTrajectoryMetricsParameterValues,
   getGPUTrajectoryPlayheadParameterValues,
   GPU_LINE_DENSITY_PARAMETER_LENGTH,
-  GPU_SPATIAL_CLUSTERING_NOISE,
-  GPU_SPATIAL_CLUSTERING_PARAMETER_LENGTH,
-  GPU_TRAJECTORY_METRICS_PARAMETER_LENGTH,
   GPU_TRAJECTORY_PLAYHEAD_PARAMETER_LENGTH,
   GPU_TRAJECTORY_PLAYHEAD_STATUS,
   GPULineDensity,
-  GPUSpatialClustering,
-  GPUTrajectoryMetrics,
   GPUTrajectoryPlayhead,
   GPUZoneEvents
 } from '@luma.gl/experimental/gpu-spatial-analysis';
@@ -31,34 +24,89 @@ import {
   GPUCommandGraph,
   type CompiledGPUCommandGraph
 } from '@luma.gl/gpgpu/gpu-core';
-import {createPlaybackClock} from '../../engine/playback';
+import {getClassCounts} from '../../cartography/breaks';
+import {
+  getClassIndexOf,
+  getClassTableLayerProps,
+  makeClassTable
+} from '../../cartography/class-table';
+import {US, nearestPlaceLabel} from '../../cartography/gazetteer';
+import {formatCount, formatPercent, liveText} from '../../cartography/live-text';
+import {evaluateZoomStops} from '../../cartography/zoom';
+import type {ClassTable, MapAnnotation} from '../../cartography/types';
 import {importGraphBuffer} from '../../engine/graph-buffers';
 import {SpatialAnalysisRasterLayer, SpatialAnalysisSegmentLayer} from '../../engine/layers';
 import {addKernelPass} from '../../engine/mode-kernels';
-import {formatCount, SpatialAnalysisResources} from '../../engine/resources';
+import {createPlaybackClock} from '../../engine/playback';
+import type {PaletteColor} from '../../engine/ramps';
+import {SpatialAnalysisResources} from '../../engine/resources';
 import {SummaryReader} from '../../engine/summary-reader';
-import type {SceneContext, SceneInstance} from '../scene';
-import {StopMarkerLayer, VesselMarkerLayer, ZoneEventMarkerLayer} from './b12-layers';
+import type {SceneContext, SceneInstance, TooltipContent} from '../scene';
+import {VesselMarkerLayer, ZoneEventMarkerLayer} from './b12-layers';
 import {KNOTS_PER_METER_SECOND, METERS_PER_KNOT_SECOND} from './b12-tracks';
 import {
-  buildSpeedHistograms,
+  CONTEXT_TRACK_INK,
+  getCategoryPaletteFromGroups,
+  getShipSpeedClasses,
+  getTrafficDensityClasses,
+  getVesselGroupPalette,
+  HEAD_HALO_INK,
+  inkFor,
+  SHIP_SPEED_BREAKS_KNOTS,
+  SUBJECT_INK,
+  toHex,
+  VESSEL_GROUP_LABELS,
+  VESSEL_GROUPS,
+  ZONE_EVENT_INK
+} from './movement-style';
+import {getClipWalkDiagram, getHourlyCrossingsDiagram} from './us-shipping-charts';
+import {
+  clipAndWalk,
+  formatDensityValue,
+  getBasisScale,
+  getBusiestCell,
+  getCellAreaSquareKilometers,
+  getCellBounds,
+  getCellCenter,
+  getCellIndexAt,
+  getCellSizeKilometers,
+  getCellValue,
+  getLogHistogram,
+  getShareAtOrBelow,
+  getSortedMedian,
+  getSortedValues,
+  getStretchBreaks,
+  pickClipWalkSegment,
+  STRETCH_METHODS,
+  summarizeDensityField,
+  type ClipWalkSegment,
+  type DensityBasis,
+  type DensityField,
+  type DensityGrid,
+  type Stretch
+} from './us-shipping-density';
+import {US_SHIPPING_PLACES} from './us-shipping-places';
+import {
+  buildSegmentTable,
   countGateCrossings,
-  formatHours,
-  getHistogramMedian,
-  rankAnchorages,
-  SPEED_BIN_COUNT,
-  type Anchorage,
-  type GateCrossings,
-  type SpeedHistograms
+  getActivityHistogram,
+  getCrossingDirection,
+  getFixIntervals,
+  getGroupKilometers,
+  getMedianChordSeconds,
+  getReceiverEdge,
+  getShareAbove,
+  summarizeTracksNear,
+  type GateCrossings
 } from './us-shipping.stats';
 import {
   AZIMUTHAL_EARTH_RADIUS_METERS,
   buildGateEdges,
-  formatShippingClock,
   loadShippingTracks,
+  SHIPPING_FRAMES,
   SHIPPING_GATES,
   SHIPPING_PROJECTION_CENTER,
-  SHIPPING_TYPE_COLORS,
+  SHIPPING_TYPE_GROUP,
   SHIPPING_TYPE_LABELS,
   SHIPPING_TYPES,
   type GateEdges
@@ -70,59 +118,57 @@ export type UsShippingOptions = {
   time: number;
   speed: number;
   loop: boolean;
-  vesselFilter: string;
-  showVessels: boolean;
-  markerColor: 'category' | 'speed';
-  markerSize: number;
-  ramp: 'viridis' | 'magma' | 'inferno' | 'cividis';
-  showBackdrop: boolean;
-  showTrails: boolean;
-  trailMinutes: number;
-  tailFade: number;
-  trailColor: 'category' | 'speed';
   maxGapMinutes: number;
+  showVessels: boolean;
+  showTrails: boolean;
+  showBackdrop: boolean;
   showDensity: boolean;
-  densityType: string;
-  densityGrid: '512' | '1024' | '2048';
-  densityExtent: 'us' | 'view';
-  densityValue: 'length' | 'density';
-  densityCeiling: number;
-  densityOpacity: number;
   showGates: boolean;
+  showReceiverEdge: boolean;
+  markerColor: 'uniform' | 'group' | 'speed';
+  trailMinutes: number;
+  stretch: Stretch;
+  densityGrid: '512' | '1024' | '2048';
+  densityValue: DensityBasis;
+  gateFocus: string;
+  vesselFilter: string;
+  markerSize: number;
+  densityOpacity: number;
   gateHalfWidth: number;
   eventsPerTrack: '8' | '16' | '32';
-  showCrossings: boolean;
   pulseMinutes: number;
-  showRestingCrossings: boolean;
-  gateFocus: string;
-  showStops: boolean;
-  stopSpeedKnots: number;
-  stopMinutes: number;
-  showAnchorages: boolean;
-  clusterRadiusKm: number;
-  clusterMinStops: number;
-  rankBy: 'dwell' | 'stops';
-  speedSource: 'derived' | 'reported';
 };
 
-const STOP_CAPACITY = 16384;
-const CLUSTER_CAPACITY = 1024;
 const EVENT_CAPACITY = 32768;
 const CANDIDATE_CAPACITY = 1 << 18;
-const CLUSTER_GRID: readonly [number, number] = [512, 512];
 const STATUS_INTERVAL_FRAMES = 12;
 const NO_TRACK = 0xffffffff;
-const SPEED_RAMP_KNOTS = 25;
-const NAUTICAL_MILE_METERS = 1852;
+/** A crossing time no clock reaches: events hidden from the ring layer carry it. */
+const HIDDEN_SECONDS = 1e9;
 /** Longitude and latitude extent of the whole-country density grid. */
 const US_DENSITY_BOUNDS: readonly [number, number, number, number] = [-127.5, 24, -65.5, 49.6];
-const GRID_ROWS: Record<UsShippingOptions['densityGrid'], [number, number]> = {
+const GRID_SIZES: Record<UsShippingOptions['densityGrid'], [number, number]> = {
   '512': [512, 256],
   '1024': [1024, 512],
   '2048': [2048, 1024]
 };
-const VIEW_SETTLE_FRAMES = 10;
-const RANK_LIST_LENGTH = 8;
+const CLASS_COUNT = 5;
+/** Alpha of the lowest density class (the lane floor); empty cells are not drawn at all. */
+const LOWEST_CLASS_ALPHA = 140;
+const STOPPED_KNOTS = SHIP_SPEED_BREAKS_KNOTS[0];
+const SPEED_CLASS_BREAKS = SHIP_SPEED_BREAKS_KNOTS.map(knots => knots * METERS_PER_KNOT_SECOND);
+/** Arrow half-length by zoom: 5 px over the whole country, 7 px at harbour scale. */
+const ARROW_SIZE_STOPS = [
+  [4, 5],
+  [8, 7]
+] as const;
+const TRAIL_WIDTH_STOPS = [
+  [4, 1.6],
+  [8, 2.2]
+] as const;
+const SHORT_GROUP_LABELS = ['Passenger', 'Cargo and tanker', 'Tug and tow', 'Other'];
+const INLAND_RADIUS_KILOMETERS = 25;
+const ACTIVITY_BINS = 48;
 
 type DensityBuffers = {
   lengths: Buffer;
@@ -134,7 +180,7 @@ type DensityBuffers = {
 };
 
 type DensityGraph = {
-  key: string;
+  grid: UsShippingOptions['densityGrid'];
   compiled: CompiledGPUCommandGraph<void>;
   buffers: DensityBuffers;
   columns: number;
@@ -146,23 +192,21 @@ type ZoneGraph = {
   compiled: CompiledGPUCommandGraph<void>;
 };
 
-type DensityStats = {
-  maximumLength: number;
-  maximumDensity: number;
-  percentiles: Float32Array;
-  nonEmpty: number;
-  cells: number;
-  pieces: number;
-  overflow: boolean;
-  totalKilometers: number;
+type EventSnapshot = {
+  count: number;
+  tracks: Uint32Array;
+  zones: Uint32Array;
+  types: Uint32Array;
+  times: Float32Array;
+  positions: Float32Array;
 };
 
 /**
- * One US day of AIS in one scene. Four independent graphs read the same track buffers: the playhead
- * and time-window graphs animate the fleet, a metrics graph finds stops and a clustering graph groups
- * them into anchorages, a zone-event graph counts gate crossings and a line-density graph paints the
- * traffic corridors. Analysis runs in azimuthal-equidistant meters, the playhead in Web Mercator
- * meters (so headings stay true on the map), and everything is drawn from longitude and latitude.
+ * One US day of AIS. Three independent graphs read the same track buffers: the playhead and
+ * time-window graphs animate the fleet, a zone-event graph counts gate crossings and a
+ * line-density graph paints the day as km of track per km2. Analysis runs in azimuthal-equidistant
+ * meters, the playhead in Web Mercator meters (so headings stay true on the map), and everything
+ * is drawn from longitude and latitude.
  */
 export async function createUsShippingDay(
   ctx: SceneContext<UsShippingOptions>
@@ -186,7 +230,6 @@ export async function createUsShippingDay(
   const trackStartBuffer = resources.createBuffer('track-starts', tracks.trackStartTimes);
   const segmentsBuffer = resources.createBuffer('segments', tracks.segments);
   const segmentTracksBuffer = resources.createBuffer('segment-tracks', tracks.segmentTracks);
-  const segmentEndsBuffer = resources.createBuffer('segment-ends', tracks.segmentEndVertices);
   const segmentStartTimesBuffer = resources.createBuffer(
     'segment-start-times',
     tracks.segmentStartTimes
@@ -412,292 +455,8 @@ const RADIANS_TO_DEGREES: f32 = 57.29577951308232;`,
   );
   const trailCompiled = resources.track(trailGraph.compile());
 
-  // ---- Metrics graph: step speeds, stops, stop positions for drawing ----------------------------
-  const trackLengths = resources.createBuffer('track-lengths', trackCount * 4);
-  const trackDurations = resources.createBuffer('track-durations', trackCount * 4);
-  const averageSpeeds = resources.createBuffer('average-speeds', trackCount * 4);
-  const maximumSpeeds = resources.createBuffer('maximum-speeds', trackCount * 4);
-  const stepSpeeds = resources.createBuffer('step-speeds', vertexCount * 4);
-  const trackStopCounts = resources.createBuffer('track-stop-counts', trackCount * 4);
-  const stopIds = resources.createBuffer('stop-ids', STOP_CAPACITY * 4);
-  const stopCount = resources.createBuffer('stop-count', 4);
-  const stopOverflow = resources.createBuffer('stop-overflow', 4);
-  const stopTotal = resources.createBuffer('stop-total', 4);
-  const stopCentroids = resources.createBuffer('stop-centroids', STOP_CAPACITY * 8);
-  const stopDurations = resources.createBuffer('stop-durations', STOP_CAPACITY * 4);
-  const stopStartRows = resources.createBuffer('stop-start-rows', STOP_CAPACITY * 4);
-  const stopEndRows = resources.createBuffer('stop-end-rows', STOP_CAPACITY * 4);
-  const stopLngLat = resources.createBuffer('stop-lng-lat', STOP_CAPACITY * 8);
-  const clusterPoints = resources.createBuffer('cluster-points', STOP_CAPACITY * 8);
-  const metricsParameters = resources.createParameterBuffer(
-    'metrics',
-    'float32',
-    GPU_TRAJECTORY_METRICS_PARAMETER_LENGTH
-  );
-  const stopDraw = resources.track(
-    new DrawCommandBuffer(device, {
-      id: 'us-stop-draw',
-      type: 'draw',
-      commands: [{vertexCount: 6, instanceCount: 0}]
-    })
-  );
-  const metricsGraph = new GPUCommandGraph<void>(device, {id: 'us-metrics'});
-  const stopCountView = importGraphBuffer(metricsGraph, 'stop-count', stopCount, 'uint32', 1);
-  const startRowsView = importGraphBuffer(
-    metricsGraph,
-    'stop-start-rows',
-    stopStartRows,
-    'uint32',
-    STOP_CAPACITY
-  );
-  const endRowsView = importGraphBuffer(
-    metricsGraph,
-    'stop-end-rows',
-    stopEndRows,
-    'uint32',
-    STOP_CAPACITY
-  );
-  const stopCentroidsView = importGraphBuffer(
-    metricsGraph,
-    'stop-centroids',
-    stopCentroids,
-    'float32x2',
-    STOP_CAPACITY
-  );
-  metricsGraph.add(
-    new GPUTrajectoryMetrics({
-      id: 'metrics',
-      positions: importGraphBuffer(
-        metricsGraph,
-        'positions',
-        positionsBuffer,
-        'float32x2',
-        vertexCount
-      ),
-      timestamps: importGraphBuffer(
-        metricsGraph,
-        'timestamps',
-        timestampsBuffer,
-        'float32',
-        vertexCount
-      ),
-      trackOffsets: importGraphBuffer(
-        metricsGraph,
-        'offsets',
-        offsetsBuffer,
-        'uint32',
-        trackCount + 1
-      ),
-      parameters: metricsParameters.importToGraph(metricsGraph),
-      trackLengths: importGraphBuffer(
-        metricsGraph,
-        'track-lengths',
-        trackLengths,
-        'float32',
-        trackCount
-      ),
-      trackDurations: importGraphBuffer(
-        metricsGraph,
-        'track-durations',
-        trackDurations,
-        'float32',
-        trackCount
-      ),
-      averageSpeeds: importGraphBuffer(
-        metricsGraph,
-        'average-speeds',
-        averageSpeeds,
-        'float32',
-        trackCount
-      ),
-      maximumSpeeds: importGraphBuffer(
-        metricsGraph,
-        'maximum-speeds',
-        maximumSpeeds,
-        'float32',
-        trackCount
-      ),
-      stepSpeeds: importGraphBuffer(
-        metricsGraph,
-        'step-speeds',
-        stepSpeeds,
-        'float32',
-        vertexCount
-      ),
-      trackStopCounts: importGraphBuffer(
-        metricsGraph,
-        'track-stop-counts',
-        trackStopCounts,
-        'uint32',
-        trackCount
-      ),
-      stops: {
-        output: {
-          ids: importGraphBuffer(metricsGraph, 'stop-ids', stopIds, 'uint32', STOP_CAPACITY),
-          count: stopCountView,
-          overflow: importGraphBuffer(metricsGraph, 'stop-overflow', stopOverflow, 'uint32', 1),
-          totalCount: importGraphBuffer(metricsGraph, 'stop-total', stopTotal, 'uint32', 1)
-        },
-        drawInstanceCount: metricsGraph.importGPUData(
-          'stop-draw-count',
-          stopDraw.getInstanceCountData(0)
-        ),
-        startRows: startRowsView,
-        endRows: endRowsView,
-        centroids: stopCentroidsView,
-        durations: importGraphBuffer(
-          metricsGraph,
-          'stop-durations',
-          stopDurations,
-          'float32',
-          STOP_CAPACITY
-        )
-      }
-    })
-  );
-  // Stop centroids are analysis meters; drawing needs degrees. Average the longitude and latitude
-  // of the rows each stop covers.
-  addKernelPass(metricsGraph, {
-    id: 'stop-lng-lat',
-    invocationCount: STOP_CAPACITY,
-    bindings: [
-      {name: 'stopCount', view: stopCountView, type: 'u32', access: 'read'},
-      {name: 'startRows', view: startRowsView, type: 'u32', access: 'read'},
-      {name: 'endRows', view: endRowsView, type: 'u32', access: 'read'},
-      {
-        name: 'lngLat',
-        view: importGraphBuffer(metricsGraph, 'lng-lat', lngLatBuffer, 'float32x2', vertexCount),
-        type: 'f32',
-        access: 'read'
-      },
-      {
-        name: 'output',
-        view: importGraphBuffer(
-          metricsGraph,
-          'stop-lng-lat',
-          stopLngLat,
-          'float32x2',
-          STOP_CAPACITY
-        ),
-        type: 'f32',
-        access: 'read_write'
-      }
-    ],
-    body: `let nan = bitcast<f32>(0x7fc00000u | (index & 0u));
-  var lng = nan;
-  var lat = nan;
-  if (index < stopCount[stopCountOffset]) {
-    let first = startRows[startRowsOffset + index];
-    let last = endRows[endRowsOffset + index];
-    var sumLng = 0.0;
-    var sumLat = 0.0;
-    for (var row = first; row <= last; row++) {
-      sumLng += lngLat[lngLatOffset + row * 2u];
-      sumLat += lngLat[lngLatOffset + row * 2u + 1u];
-    }
-    let n = f32(last - first + 1u);
-    lng = sumLng / n;
-    lat = sumLat / n;
-  }
-  output[outputOffset + index * 2u] = lng;
-  output[outputOffset + index * 2u + 1u] = lat;`
-  });
-  // Rows past the stop count are NaN so the clustering treats them as noise.
-  addKernelPass(metricsGraph, {
-    id: 'cluster-points',
-    invocationCount: STOP_CAPACITY,
-    bindings: [
-      {name: 'stopCount', view: stopCountView, type: 'u32', access: 'read'},
-      {name: 'centroids', view: stopCentroidsView, type: 'f32', access: 'read'},
-      {
-        name: 'points',
-        view: importGraphBuffer(
-          metricsGraph,
-          'cluster-points',
-          clusterPoints,
-          'float32x2',
-          STOP_CAPACITY
-        ),
-        type: 'f32',
-        access: 'read_write'
-      }
-    ],
-    body: `let nan = bitcast<f32>(0x7fc00000u | (index & 0u));
-  let valid = index < stopCount[stopCountOffset];
-  points[pointsOffset + index * 2u] = select(nan, centroids[centroidsOffset + index * 2u], valid);
-  points[pointsOffset + index * 2u + 1u] = select(nan, centroids[centroidsOffset + index * 2u + 1u], valid);`
-  });
-  const metricsCompiled = resources.track(metricsGraph.compile());
-
-  // ---- Clustering graph: stops to anchorages -----------------------------------------------------
-  ctx.setStatus('Compiling the analysis graphs');
-  const clusterLabels = resources.createBuffer('cluster-labels', STOP_CAPACITY * 4);
-  const clusterTotal = resources.createBuffer('cluster-total', 4);
-  const clusterIds = resources.createBuffer('cluster-ids', CLUSTER_CAPACITY * 4);
-  const clusterStored = resources.createBuffer('cluster-stored', 4);
-  const clusterOverflow = resources.createBuffer('cluster-overflow', 4);
-  const clusterSizes = resources.createBuffer('cluster-sizes', CLUSTER_CAPACITY * 4);
-  const clusterCentroids = resources.createBuffer('cluster-centroids', CLUSTER_CAPACITY * 8);
-  const clusterParameters = resources.createParameterBuffer(
-    'clustering',
-    'float32',
-    GPU_SPATIAL_CLUSTERING_PARAMETER_LENGTH
-  );
-  const clusterGraph = new GPUCommandGraph<void>(device, {id: 'us-anchorages'});
-  clusterGraph.add(
-    new GPUSpatialClustering({
-      id: 'anchorages',
-      positions: importGraphBuffer(
-        clusterGraph,
-        'cluster-points',
-        clusterPoints,
-        'float32x2',
-        STOP_CAPACITY
-      ),
-      parameters: clusterParameters.importToGraph(clusterGraph),
-      gridSize: CLUSTER_GRID,
-      labels: importGraphBuffer(
-        clusterGraph,
-        'cluster-labels',
-        clusterLabels,
-        'uint32',
-        STOP_CAPACITY
-      ),
-      clusterCount: importGraphBuffer(clusterGraph, 'cluster-total', clusterTotal, 'uint32', 1),
-      clusters: {
-        ids: importGraphBuffer(clusterGraph, 'cluster-ids', clusterIds, 'uint32', CLUSTER_CAPACITY),
-        count: importGraphBuffer(clusterGraph, 'cluster-stored', clusterStored, 'uint32', 1),
-        overflow: importGraphBuffer(clusterGraph, 'cluster-overflow', clusterOverflow, 'uint32', 1)
-      },
-      clusterSizes: importGraphBuffer(
-        clusterGraph,
-        'cluster-sizes',
-        clusterSizes,
-        'uint32',
-        CLUSTER_CAPACITY
-      ),
-      clusterCentroids: importGraphBuffer(
-        clusterGraph,
-        'cluster-centroids',
-        clusterCentroids,
-        'float32x2',
-        CLUSTER_CAPACITY
-      )
-    })
-  );
-  const clusterCompiled = resources.track(clusterGraph.compile());
-  // Cluster markers are drawn from CPU-ranked rows (longitude, latitude and summed dwell).
-  const anchorageLngLat = resources.createBuffer('anchorage-lng-lat', CLUSTER_CAPACITY * 8);
-  const anchorageDwell = resources.createBuffer('anchorage-dwell', CLUSTER_CAPACITY * 4);
-  const anchorageDraw = resources.track(
-    new DrawCommandBuffer(device, {
-      id: 'us-anchorage-draw',
-      type: 'draw',
-      commands: [{vertexCount: 6, instanceCount: 0}]
-    })
-  );
-
   // ---- Zone-event graph: gate crossings ---------------------------------------------------------
+  ctx.setStatus('Compiling the gate-crossing graph');
   const projection = {project: tracks.project, unproject: tracks.unproject};
   let gateEdges: GateEdges = buildGateEdges(projection.project, ctx.options.gateHalfWidth);
   const edgeCount = gateEdges.zones.length;
@@ -714,6 +473,14 @@ const RADIANS_TO_DEGREES: f32 = 57.29577951308232;`,
   const eventTimes = resources.createBuffer('event-times', EVENT_CAPACITY * 4);
   const eventPositions = resources.createBuffer('event-positions', EVENT_CAPACITY * 8);
   const eventLngLat = resources.createBuffer('event-lng-lat', EVENT_CAPACITY * 8);
+  // What the ring layer reads: one ring per crossing, coloured by direction. Enter events carry
+  // the direction (0 first, 1 second), exit events and other gates are hidden with a time no
+  // clock reaches. Written from the readback of the zone events.
+  const eventDrawTypes = resources.createBuffer('event-draw-types', EVENT_CAPACITY * 4);
+  const eventDrawTimes = resources.createBuffer(
+    'event-draw-times',
+    new Float32Array(EVENT_CAPACITY).fill(HIDDEN_SECONDS)
+  );
   const candidateCount = resources.createBuffer('candidate-count', 4);
   const candidateOverflow = resources.createBuffer('candidate-overflow', 4);
   const trackOverflow = resources.createBuffer('track-overflow', 4);
@@ -836,71 +603,27 @@ const RADIANS_TO_DEGREES: f32 = 57.29577951308232;`,
     });
     return {eventsPerTrack, compiled: resources.track(graph.compile())};
   }
-  ctx.setStatus('Compiling the gate-crossing graph');
   let zoneGraph = buildZoneGraph(Number(ctx.options.eventsPerTrack));
 
-  // ---- Line-density graphs (lazy per type and grid, buffers cached per grid) ----------------------
+  // ---- Line-density graph (one grid at a time; buffers kept per grid) ----------------------------
   const densityParameters = resources.createParameterBuffer(
     'density',
     'float32',
     GPU_LINE_DENSITY_PARAMETER_LENGTH
   );
-  const typeSets = new Map<
-    string,
-    {positions: Buffer; offsets: Buffer; vertexCount: number; trackCount: number}
-  >();
   const densityBuffers = new Map<string, DensityBuffers>();
   let density: DensityGraph | null = null;
-  let densityStats: DensityStats | null = null;
-  let densityBounds: [number, number, number, number] = [...US_DENSITY_BOUNDS];
+  let densityField: DensityField | null = null;
+  const densityBounds = [...US_DENSITY_BOUNDS] as [number, number, number, number];
 
-  function getTypeSet(type: string): {
-    positions: Buffer;
-    offsets: Buffer;
-    vertexCount: number;
-    trackCount: number;
-  } {
-    const cached = typeSets.get(type);
-    if (cached) return cached;
-    if (type === 'all') {
-      const all = {positions: lngLatBuffer, offsets: offsetsBuffer, vertexCount, trackCount};
-      typeSets.set(type, all);
-      return all;
-    }
-    const wanted = SHIPPING_TYPES.indexOf(type as (typeof SHIPPING_TYPES)[number]);
-    const selected: number[] = [];
-    let total = 0;
-    for (let track = 0; track < trackCount; track++) {
-      if (tracks.category[track] === wanted) {
-        selected.push(track);
-        total += tracks.offsets[track + 1] - tracks.offsets[track];
-      }
-    }
-    const positions = new Float32Array(Math.max(4, total * 2));
-    const offsets = new Uint32Array(selected.length + 1);
-    let row = 0;
-    selected.forEach((track, index) => {
-      offsets[index] = row;
-      const first = tracks.offsets[track];
-      const last = tracks.offsets[track + 1];
-      positions.set(tracks.lngLat.subarray(first * 2, last * 2), row * 2);
-      row += last - first;
-    });
-    offsets[selected.length] = row;
-    const set = {
-      positions: resources.createBuffer(`density-positions-${type}`, positions),
-      offsets: resources.createBuffer(`density-offsets-${type}`, offsets),
-      vertexCount: Math.max(2, total),
-      trackCount: selected.length
-    };
-    typeSets.set(type, set);
-    return set;
+  function getDensityGrid(): DensityGrid | null {
+    return density ? {columns: density.columns, rows: density.rows, bounds: densityBounds} : null;
   }
 
   function getDensityBuffers(grid: UsShippingOptions['densityGrid']): DensityBuffers {
-    const cached = densityBuffers.get(grid);
-    if (cached) return cached;
-    const [columns, rows] = GRID_ROWS[grid];
+    const existing = densityBuffers.get(grid);
+    if (existing) return existing;
+    const [columns, rows] = GRID_SIZES[grid];
     const cells = columns * rows;
     const lengths = resources.createBuffer(`density-lengths-${grid}`, cells * 4);
     const densities = resources.createBuffer(`density-densities-${grid}`, cells * 4);
@@ -916,49 +639,17 @@ const RADIANS_TO_DEGREES: f32 = 57.29577951308232;`,
         {buffer: densities, size: cells * 4}
       ],
       bytes => {
-        if (destroyed) return;
+        // A readback of a grid the reader has since switched away from is stale.
+        if (destroyed || ctx.options.densityGrid !== grid) return;
         const words = new Uint32Array(bytes, 0, 2);
-        const lengthValues = new Float32Array(bytes, 8, cells);
-        const densityValues = new Float32Array(bytes, 8 + cells * 4, cells);
-        const positive: number[] = [];
-        let maximumLength = 0;
-        let maximumDensity = 0;
-        let totalMeters = 0;
-        for (let cell = 0; cell < cells; cell++) {
-          const value = lengthValues[cell];
-          if (value > 0) {
-            totalMeters += value;
-            maximumLength = Math.max(maximumLength, value);
-            maximumDensity = Math.max(maximumDensity, densityValues[cell]);
-            positive.push(cell);
-          }
-        }
-        // Percentile table of the non-empty cells, for the ceiling slider.
-        const percentiles = new Float32Array(101 * 2);
-        if (positive.length > 0) {
-          for (let which = 0; which < 2; which++) {
-            const source = which === 0 ? lengthValues : densityValues;
-            const sorted = Float32Array.from(positive, cell => source[cell]).sort();
-            for (let percent = 0; percent <= 100; percent++) {
-              percentiles[which * 101 + percent] =
-                sorted[
-                  Math.min(sorted.length - 1, Math.floor((percent / 100) * (sorted.length - 1)))
-                ];
-            }
-          }
-        }
-        densityStats = {
-          maximumLength,
-          maximumDensity,
-          percentiles,
-          nonEmpty: positive.length,
-          cells,
-          pieces: words[1],
-          overflow: words[0] !== 0,
-          totalKilometers: totalMeters / 1000
-        };
-        updateDensityReadouts();
-        ctx.requestLayers();
+        densityField = summarizeDensityField(
+          {columns, rows, bounds: densityBounds},
+          new Float32Array(bytes.slice(8, 8 + cells * 4)),
+          new Float32Array(bytes.slice(8 + cells * 4, 8 + cells * 8)),
+          words[1],
+          words[0] !== 0
+        );
+        onDensityField();
       }
     );
     const buffers = {lengths, densities, overflow, totalRecords, reader, cells};
@@ -966,36 +657,25 @@ const RADIANS_TO_DEGREES: f32 = 57.29577951308232;`,
     return buffers;
   }
 
-  function buildDensityGraph(
-    type: string,
-    grid: UsShippingOptions['densityGrid']
-  ): DensityGraph | null {
-    const set = getTypeSet(type);
-    if (set.trackCount === 0 || set.vertexCount < 2) return null;
-    const [columns, rows] = GRID_ROWS[grid];
+  function buildDensityGraph(grid: UsShippingOptions['densityGrid']): DensityGraph {
+    const [columns, rows] = GRID_SIZES[grid];
     const buffers = getDensityBuffers(grid);
-    const graph = new GPUCommandGraph<void>(device, {id: `us-density-${type}-${grid}`});
+    const graph = new GPUCommandGraph<void>(device, {id: `us-density-${grid}`});
     graph.add(
       new GPULineDensity({
         id: 'corridors',
-        positions: importGraphBuffer(
-          graph,
-          'positions',
-          set.positions,
-          'float32x2',
-          set.vertexCount
-        ),
+        positions: importGraphBuffer(graph, 'positions', lngLatBuffer, 'float32x2', vertexCount),
         pathOffsets: importGraphBuffer(
           graph,
           'path-offsets',
-          set.offsets,
+          offsetsBuffer,
           'uint32',
-          set.trackCount + 1
+          trackCount + 1
         ),
         columns,
         rows,
         coordinateSystem: 'spherical',
-        maximumRecords: Math.max(1024, 6 * set.vertexCount),
+        maximumRecords: Math.max(1024, 6 * vertexCount),
         parameters: densityParameters.importToGraph(graph),
         output: {
           lengths: importGraphBuffer(graph, 'lengths', buffers.lengths, 'float32', buffers.cells),
@@ -1011,27 +691,35 @@ const RADIANS_TO_DEGREES: f32 = 57.29577951308232;`,
         }
       })
     );
-    return {
-      key: `${type}:${grid}`,
-      compiled: resources.track(graph.compile()),
-      buffers,
-      columns,
-      rows
-    };
+    return {grid, compiled: resources.track(graph.compile()), buffers, columns, rows};
   }
 
   function rebuildDensity(): void {
-    if (density) {
-      resources.release(density.compiled);
-      density = null;
-    }
-    densityStats = null;
-    density = buildDensityGraph(ctx.options.densityType, ctx.options.densityGrid);
+    if (density) resources.release(density.compiled);
+    densityField = null;
+    density = buildDensityGraph(ctx.options.densityGrid);
     densityDirty = true;
-    if (!density) {
-      ctx.setReadout('density', 'no vessels of this type');
-    }
+    densityTable = null;
+    ctx.setLegendData('densityTable', null);
+    updateDensityReadouts();
+    updateClipWalk();
   }
+
+  // ---- Derived summaries (CPU, once) -------------------------------------------------------------
+  const segmentTable = buildSegmentTable(tracks);
+  const fixIntervals = getFixIntervals(tracks);
+  const clipWalkSegment: ClipWalkSegment | null = pickClipWalkSegment(tracks);
+  const midAtlanticBand: readonly [number, number] = [
+    SHIPPING_FRAMES.midAtlantic.latitude - 2,
+    SHIPPING_FRAMES.midAtlantic.latitude + 2
+  ];
+  const receiverEdgeLongitude = getReceiverEdge(tracks, midAtlanticBand, -77);
+  const riverReach = US_SHIPPING_PLACES.places['mississippi-river'];
+  const riverSummary = summarizeTracksNear(tracks, riverReach.lngLat, INLAND_RADIUS_KILOMETERS);
+  ctx.setTimelineData({
+    domain: [0, 86400],
+    histogram: getActivityHistogram(tracks, ACTIVITY_BINS)
+  });
 
   // ---- State ------------------------------------------------------------------------------------
   const clock = createPlaybackClock(
@@ -1041,57 +729,43 @@ const RADIANS_TO_DEGREES: f32 = 57.29577951308232;`,
   );
   let playhead = ctx.options.time;
   let selectedTrack = NO_TRACK;
-  let metricsDirty = true;
-  let clusterDirty = true;
   let zonesDirty = true;
   let densityDirty = true;
   let statusStale = true;
-  let stepReaderRequested = false;
   let lastHour = -1;
   let statusSnapshot: {status: Uint32Array; positions: Float32Array; speeds: Float32Array} | null =
     null;
   let crossings: GateCrossings | null = null;
-  let anchorages: Anchorage[] = [];
-  let clusterSummary = {noise: 0, clustered: 0, count: 0, overflow: false, stopCount: 0};
-  let histograms: Record<'derived' | 'reported', SpeedHistograms | null> = {
-    derived: null,
-    reported: buildSpeedHistograms(tracks, tracks.reportedKnots)
+  let lastEvents: EventSnapshot | null = null;
+  let densityTable: ClassTable | null = null;
+  let legendFilter: readonly number[] | null = null;
+  let lastViewKey = '';
+  let lastSizeBucket = -1;
+  let lastTickMeters: number | null | undefined;
+  let lastGroundKey = '';
+
+  const vesselCount = tracks.vesselCount;
+  const sampleLine = `${formatCount(vesselCount)} vessels · ${formatCount(vertexCount)} positions · terrestrial receivers only`;
+  const runtimeFurniture: {
+    title: {sample: string; chips: string[]};
+    scaleBar: {ticks?: number[]};
+  } = {
+    title: {sample: sampleLine, chips: ['Receivers hear what they hear']},
+    scaleBar: {}
   };
-  let viewPending: [number, number, number, number] | null = null;
-  let viewPendingFrames = 0;
-  let trackSnapshot: {lengths: Float32Array; maxima: Float32Array; stopCounts: Uint32Array} | null =
-    null;
-  const typeCounts = new Uint32Array(SHIPPING_TYPES.length);
-  for (const type of tracks.category) typeCounts[type]++;
-
-  ctx.setReadout(
-    'tracks',
-    `${formatCount(trackCount)} tracks / ${formatCount(tracks.vesselCount)} vessels`
-  );
-  ctx.setReadout('fixes', `${formatCount(vertexCount)} AIS fixes`);
-
-  function writeMetricsParameters(): void {
-    metricsParameters.write(
-      getGPUTrajectoryMetricsParameterValues({
-        stopSpeedThreshold: ctx.options.stopSpeedKnots * METERS_PER_KNOT_SECOND,
-        stopMinimumDuration: ctx.options.stopMinutes * 60
-      })
-    );
-    metricsDirty = true;
-    clusterDirty = true;
-  }
-
-  function writeClusterParameters(): void {
-    const [minX, minY, maxX, maxY] = tracks.bounds;
-    clusterParameters.write(
-      getGPUSpatialClusteringParameterValues({
-        bounds: [minX - 1000, minY - 1000, maxX + 1000, maxY + 1000],
-        epsilon: ctx.options.clusterRadiusKm * 1000,
-        minimumPoints: Math.round(ctx.options.clusterMinStops)
-      })
-    );
-    clusterDirty = true;
-  }
+  ctx.setFurniture(runtimeFurniture);
+  ctx.setReadout('medianFixGap', roundTo(fixIntervals.medianSeconds / 60, 1));
+  ctx.setAnnotations('inland', [
+    {
+      kind: 'note',
+      id: 'inland-river',
+      coordinate: riverReach.lngLat,
+      title: `${formatCount(riverSummary.tracks)} tracks within ${INLAND_RADIUS_KILOMETERS} km`,
+      text: `${formatPercent(riverSummary.towShare)} of them tugs and tows`,
+      maxZoom: 4.5
+    }
+  ]);
+  if (ctx.reducedMotion()) ctx.setOptions({play: false});
 
   function writeGateEdges(): void {
     gateEdges = buildGateEdges(projection.project, ctx.options.gateHalfWidth);
@@ -1114,20 +788,39 @@ const RADIANS_TO_DEGREES: f32 = 57.29577951308232;`,
     segmentMaskBuffer.write(mask);
   }
 
+  function getFocusedGate(): number {
+    return SHIPPING_GATES.findIndex(gate => gate.id === ctx.options.gateFocus);
+  }
+
   function writeSelectedGate(): void {
     const rows = new Float32Array(4).fill(Number.NaN);
-    const index = SHIPPING_GATES.findIndex(gate => gate.id === ctx.options.gateFocus);
+    const index = getFocusedGate();
     if (index >= 0) rows.set(gateEdges.lines.subarray(index * 4, index * 4 + 4));
     selectedGateBuffer.write(rows);
   }
 
-  writeMetricsParameters();
-  writeClusterParameters();
-  writeSegmentMask();
-  writeSelectedGate();
-  rebuildDensity();
-  updateSpeedCharts();
-  ctx.setStatus('Computing the day');
+  /** Writes the ring layer's direction and time buffers from the last zone-event readback. */
+  function writeCrossingRings(): void {
+    const events = lastEvents;
+    if (!events) return;
+    const focus = getFocusedGate();
+    const types = new Uint32Array(EVENT_CAPACITY);
+    const times = new Float32Array(EVENT_CAPACITY).fill(HIDDEN_SECONDS);
+    for (let event = 0; event < events.count; event++) {
+      if (events.types[event] !== 0) continue;
+      const gate = events.zones[event];
+      if (gate >= gateCount || (focus >= 0 && gate !== focus)) continue;
+      types[event] = getCrossingDirection(
+        gateEdges,
+        gate,
+        events.positions[event * 2],
+        events.positions[event * 2 + 1]
+      );
+      times[event] = events.times[event];
+    }
+    eventDrawTypes.write(types);
+    eventDrawTimes.write(times);
+  }
 
   // ---- Readbacks --------------------------------------------------------------------------------
   const statusReader = new SummaryReader(
@@ -1138,8 +831,7 @@ const RADIANS_TO_DEGREES: f32 = 57.29577951308232;`,
       {buffer: activeOverflow, size: 4},
       {buffer: status, size: trackCount * 4},
       {buffer: markerLngLat, size: trackCount * 8},
-      {buffer: markerSpeeds, size: trackCount * 4},
-      {buffer: trailCount, size: 4}
+      {buffer: markerSpeeds, size: trackCount * 4}
     ],
     bytes => {
       if (destroyed) return;
@@ -1148,110 +840,26 @@ const RADIANS_TO_DEGREES: f32 = 57.29577951308232;`,
       const statusStart = 2;
       const positionStart = statusStart + trackCount;
       const speedStart = positionStart + trackCount * 2;
-      const trailStart = speedStart + trackCount;
       statusSnapshot = {
         status: words.slice(statusStart, statusStart + trackCount),
         positions: floats.slice(positionStart, positionStart + trackCount * 2),
         speeds: floats.slice(speedStart, speedStart + trackCount)
       };
       let gap = 0;
+      let moving = 0;
       for (let track = 0; track < trackCount; track++) {
-        if (statusSnapshot.status[track] === GPU_TRAJECTORY_PLAYHEAD_STATUS.gap) gap++;
+        const state = statusSnapshot.status[track];
+        if (state === GPU_TRAJECTORY_PLAYHEAD_STATUS.gap) gap++;
+        if (
+          state === GPU_TRAJECTORY_PLAYHEAD_STATUS.active &&
+          statusSnapshot.speeds[track] * KNOTS_PER_METER_SECOND >= STOPPED_KNOTS
+        ) {
+          moving++;
+        }
       }
       ctx.setReadout('active', words[0]);
+      ctx.setReadout('movingShare', words[0] > 0 ? moving / words[0] : null);
       ctx.setReadout('inGap', gap);
-      ctx.setReadout('trailSegments', words[trailStart]);
-      describeSelection();
-    }
-  );
-
-  const analysisReader = new SummaryReader(
-    resources,
-    'us-analysis',
-    [
-      {buffer: stopCount, size: 4},
-      {buffer: stopOverflow, size: 4},
-      {buffer: stopTotal, size: 4},
-      {buffer: clusterStored, size: 4},
-      {buffer: clusterOverflow, size: 4},
-      {buffer: clusterTotal, size: 4},
-      {buffer: stopIds, size: STOP_CAPACITY * 4},
-      {buffer: stopDurations, size: STOP_CAPACITY * 4},
-      {buffer: clusterLabels, size: STOP_CAPACITY * 4},
-      {buffer: clusterCentroids, size: CLUSTER_CAPACITY * 8},
-      {buffer: trackLengths, size: trackCount * 4},
-      {buffer: maximumSpeeds, size: trackCount * 4},
-      {buffer: trackStopCounts, size: trackCount * 4}
-    ],
-    bytes => {
-      if (destroyed) return;
-      const words = new Uint32Array(bytes);
-      const floats = new Float32Array(bytes);
-      const stops = Math.min(words[0], STOP_CAPACITY);
-      const clusters = Math.min(words[3], CLUSTER_CAPACITY);
-      let offset = 6;
-      const ids = words.subarray(offset, offset + STOP_CAPACITY);
-      offset += STOP_CAPACITY;
-      const durations = floats.subarray(offset, offset + STOP_CAPACITY);
-      offset += STOP_CAPACITY;
-      const labels = words.subarray(offset, offset + STOP_CAPACITY);
-      offset += STOP_CAPACITY;
-      const centroids = floats.subarray(offset, offset + CLUSTER_CAPACITY * 2);
-      offset += CLUSTER_CAPACITY * 2;
-      trackSnapshot = {
-        lengths: floats.slice(offset, offset + trackCount),
-        maxima: floats.slice(offset + trackCount, offset + trackCount * 2),
-        stopCounts: words.slice(offset + trackCount * 2, offset + trackCount * 3)
-      };
-      const result = rankAnchorages(
-        tracks,
-        {
-          stopCount: stops,
-          clusterCount: clusters,
-          labels,
-          trackOfStop: ids,
-          durations,
-          centroids,
-          noise: GPU_SPATIAL_CLUSTERING_NOISE
-        },
-        ctx.options.rankBy
-      );
-      anchorages = result.ranked;
-      clusterSummary = {
-        noise: result.noiseStops,
-        clustered: result.clusteredStops,
-        count: words[5],
-        overflow: words[1] !== 0 || words[4] !== 0,
-        stopCount: words[2]
-      };
-      const lngLat = new Float32Array(CLUSTER_CAPACITY * 2).fill(Number.NaN);
-      const dwell = new Float32Array(CLUSTER_CAPACITY);
-      anchorages.forEach((anchorage, row) => {
-        lngLat[row * 2] = anchorage.longitude;
-        lngLat[row * 2 + 1] = anchorage.latitude;
-        dwell[row] = anchorage.dwellSeconds;
-      });
-      anchorageLngLat.write(lngLat);
-      anchorageDwell.write(dwell);
-      anchorageDraw.buffer.write(Uint32Array.of(6, clusters, 0, 0));
-      updateAnalysisReadouts();
-      ctx.requestLayers();
-    }
-  );
-
-  const stepReader = new SummaryReader(
-    resources,
-    'us-steps',
-    [{buffer: stepSpeeds, size: vertexCount * 4}],
-    bytes => {
-      if (destroyed) return;
-      const metersPerSecond = new Float32Array(bytes);
-      const knots = new Float32Array(vertexCount);
-      for (let vertex = 0; vertex < vertexCount; vertex++) {
-        knots[vertex] = metersPerSecond[vertex] * KNOTS_PER_METER_SECOND;
-      }
-      histograms = {...histograms, derived: buildSpeedHistograms(tracks, knots)};
-      updateSpeedCharts();
     }
   );
 
@@ -1278,23 +886,20 @@ const RADIANS_TO_DEGREES: f32 = 57.29577951308232;`,
       const count = Math.min(words[0], EVENT_CAPACITY);
       let offset = 6;
       const read = <T extends Uint32Array | Float32Array>(source: T, length: number): T => {
-        const slice = source.subarray(offset, offset + length) as T;
+        const slice = source.slice(offset, offset + length) as T;
         offset += length;
         return slice;
       };
-      const eventTrackRows = read(words, EVENT_CAPACITY);
-      const eventZoneRows = read(words, EVENT_CAPACITY);
-      const eventTypeRows = read(words, EVENT_CAPACITY);
-      const eventTimeRows = read(floats, EVENT_CAPACITY);
-      const eventPositionRows = read(floats, EVENT_CAPACITY * 2);
-      crossings = countGateCrossings(tracks, gateEdges, {
+      lastEvents = {
         count,
-        tracks: eventTrackRows,
-        zones: eventZoneRows,
-        types: eventTypeRows,
-        times: eventTimeRows,
-        positions: eventPositionRows
-      });
+        tracks: read(words, EVENT_CAPACITY),
+        zones: read(words, EVENT_CAPACITY),
+        types: read(words, EVENT_CAPACITY),
+        times: read(floats, EVENT_CAPACITY),
+        positions: read(floats, EVENT_CAPACITY * 2)
+      };
+      crossings = countGateCrossings(tracks, gateEdges, lastEvents);
+      writeCrossingRings();
       const flags = [
         words[3] !== 0 ? 'candidate scratch full' : '',
         words[4] !== 0 ? 'events per track capped' : '',
@@ -1306,247 +911,449 @@ const RADIANS_TO_DEGREES: f32 = 57.29577951308232;`,
           ? `Overflow: ${flags.join(', ')}`
           : `${formatCount(words[0])} events; candidates ${formatCount(words[2])} of ${formatCount(CANDIDATE_CAPACITY)}`
       );
-      updateCrossingCharts();
+      updateCrossingReadouts();
       ctx.requestLayers();
     }
   );
 
-  // ---- Summaries --------------------------------------------------------------------------------
+  // ---- Colour -----------------------------------------------------------------------------------
+  function getMarkerPalette(): {palette: PaletteColor[]; mode: 'category' | 'speedClasses'} {
+    const ground = ctx.ground();
+    switch (ctx.options.markerColor) {
+      case 'group':
+        return {
+          palette: getCategoryPaletteFromGroups(SHIPPING_TYPE_GROUP, ground),
+          mode: 'category'
+        };
+      case 'speed':
+        return {palette: getShipSpeedClasses(ground), mode: 'speedClasses'};
+      default:
+        return {palette: [inkFor(SUBJECT_INK, ground)], mode: 'category'};
+    }
+  }
+
+  function getTrailPalette(): PaletteColor[] {
+    const ground = ctx.ground();
+    if (ctx.options.markerColor === 'group') {
+      return getCategoryPaletteFromGroups(SHIPPING_TYPE_GROUP, ground, 235);
+    }
+    const [red, green, blue] = inkFor(SUBJECT_INK, ground);
+    return [[red, green, blue, 235]];
+  }
+
+  function getDensityColors(): PaletteColor[] {
+    return getTrafficDensityClasses(ctx.ground(), CLASS_COUNT).map(
+      (color, index): PaletteColor => [
+        color[0],
+        color[1],
+        color[2],
+        index === 0 ? LOWEST_CLASS_ALPHA : 255
+      ]
+    );
+  }
+
+  // ---- Density classes and readouts -------------------------------------------------------------
+  /** Rebuilds the class table from the readback: breaks come from the occupied cells, once per stretch. */
+  function updateDensityTable(): void {
+    const field = densityField;
+    if (!field) {
+      densityTable = null;
+      ctx.setLegendData('densityTable', null);
+      return;
+    }
+    const basis = ctx.options.densityValue;
+    const sorted = getSortedValues(field, basis);
+    if (sorted.length === 0) {
+      densityTable = null;
+      ctx.setLegendData('densityTable', null);
+      return;
+    }
+    const breaks = getStretchBreaks(sorted, ctx.options.stretch, CLASS_COUNT);
+    densityTable = makeClassTable({
+      breaks,
+      colors: getDensityColors(),
+      unit: basis === 'length' ? 'km per cell' : 'km per km²',
+      extent: [sorted[0], sorted[sorted.length - 1]],
+      method: STRETCH_METHODS[ctx.options.stretch],
+      noData: {label: 'No track in the cell'},
+      format: formatDensityValue
+    });
+    ctx.setLegendData('densityTable', {
+      table: densityTable,
+      counts: getClassCounts(sorted, breaks),
+      basis
+    });
+  }
+
+  function updateDensityReadouts(): void {
+    const field = densityField;
+    const grid = getDensityGrid();
+    if (grid) {
+      const size = getCellSizeKilometers(grid, ctx.getViewState().latitude);
+      ctx.setReadout('cellSize', `${size.width.toFixed(1)} × ${size.height.toFixed(1)} km`);
+    }
+    if (!field) {
+      for (const id of [
+        'pieces',
+        'overflow',
+        'portVsLane',
+        'busiestCell',
+        'medianCell',
+        'occupiedCells'
+      ]) {
+        ctx.setReadout(id, null);
+      }
+      return;
+    }
+    const basis = ctx.options.densityValue;
+    const sorted = getSortedValues(field, basis);
+    const unit = basis === 'length' ? 'km per cell' : 'km per km²';
+    const median = getSortedMedian(sorted);
+    const busiest = sorted.length > 0 ? sorted[sorted.length - 1] : Number.NaN;
+    ctx.setReadout(
+      'pieces',
+      `${formatCount(field.pieces)} pieces from ${formatCount(segmentCount)} segments`
+    );
+    ctx.setReadout(
+      'overflow',
+      field.overflow
+        ? 'Piece capacity exceeded: the busiest cells are low'
+        : 'None: every piece was counted'
+    );
+    ctx.setReadout('portVsLane', `${formatCount(busiest / median)}×`);
+    ctx.setReadout('busiestCell', `${formatDensityValue(busiest)} ${unit}`);
+    ctx.setReadout('medianCell', `${formatDensityValue(median)} ${unit}`);
+    ctx.setReadout(
+      'occupiedCells',
+      `${formatCount(field.occupiedCount)} of ${formatCount(field.lengths.length)}`
+    );
+  }
+
+  function updateCellHistogram(): void {
+    const field = densityField;
+    if (!field || !densityTable) {
+      ctx.setChart('cellHistogram', null);
+      return;
+    }
+    const sorted = getSortedValues(field, ctx.options.densityValue);
+    const {counts, domain} = getLogHistogram(sorted, 36);
+    ctx.setChart('cellHistogram', {
+      kind: 'histogram',
+      values: counts,
+      xDomain: domain,
+      breaks: densityTable.breaks.map(value => Math.log10(value)),
+      classColors: densityTable.colors.map(color => [color[0], color[1], color[2], 255] as const),
+      formatX: value => formatDensityValue(10 ** value),
+      xLabel: `${ctx.options.densityValue === 'length' ? 'km per cell' : 'km per km²'} (log axis)`,
+      yLabel: 'cells',
+      height: 120,
+      description:
+        'Histogram of the occupied cells by track density on a logarithmic axis, coloured by class, with the class breaks marked.'
+    });
+  }
+
+  /** The note at the busiest cell: how many times busier it is than the median occupied cell. */
+  function updateDensityAnnotations(): void {
+    const field = densityField;
+    if (!ctx.options.showDensity || !field) {
+      ctx.setAnnotations('busiest', null);
+      return;
+    }
+    const basis = ctx.options.densityValue;
+    const cell = getBusiestCell(field, basis);
+    if (cell < 0) {
+      ctx.setAnnotations('busiest', null);
+      return;
+    }
+    const sorted = getSortedValues(field, basis);
+    const center = getCellCenter(field.grid, cell);
+    const ratio = sorted[sorted.length - 1] / getSortedMedian(sorted);
+    const note: MapAnnotation = {
+      kind: 'note',
+      id: 'busiest-cell',
+      coordinate: center,
+      title: liveText('{ratio:integer}× the median cell', {ratio}),
+      text: nearestPlaceLabel(US, center, {kinds: ['port']}) ?? undefined,
+      priority: 3,
+      // The busiest cell is in the national frame; the Gulf frame would only point off the map.
+      maxZoom: 5
+    };
+    ctx.setAnnotations('busiest', [note]);
+  }
+
+  /** The clip-and-walk of the story's one real segment, on the current grid: map overlay and diagram. */
+  function updateClipWalk(): void {
+    const grid = getDensityGrid();
+    if (!grid || !clipWalkSegment) {
+      ctx.setChart('clipWalk', null);
+      ctx.setAnnotations('clip-walk', null);
+      return;
+    }
+    const pieces = clipAndWalk(grid, clipWalkSegment.from, clipWalkSegment.to);
+    ctx.setChart('clipWalk', getClipWalkDiagram(grid, clipWalkSegment, pieces));
+    const cells = new Set(pieces.map(piece => piece.row * grid.columns + piece.column));
+    const overlay: MapAnnotation[] = [
+      {
+        kind: 'line',
+        id: 'clip-walk-segment',
+        coordinates: [clipWalkSegment.from, clipWalkSegment.to],
+        tone: 'signal',
+        text: ctx.options.showDensity ? 'The diagram segment' : undefined,
+        minZoom: 4
+      }
+    ];
+    for (const cell of cells) {
+      const column = cell % grid.columns;
+      const row = Math.floor(cell / grid.columns);
+      const [west, south, east, north] = grid.bounds;
+      const width = (east - west) / grid.columns;
+      const height = (north - south) / grid.rows;
+      overlay.push({
+        kind: 'frame',
+        id: `clip-walk-cell-${cell}`,
+        bounds: [
+          west + column * width,
+          south + row * height,
+          west + (column + 1) * width,
+          south + (row + 1) * height
+        ],
+        tone: 'signal',
+        minZoom: 8
+      });
+    }
+    ctx.setAnnotations('clip-walk', ctx.options.showDensity ? overlay : null);
+  }
+
+  function onDensityField(): void {
+    updateDensityTable();
+    updateDensityReadouts();
+    updateCellHistogram();
+    updateDensityAnnotations();
+    updateClipWalk();
+    ctx.requestLayers();
+  }
+
+  // ---- Gate readouts ----------------------------------------------------------------------------
+  function updateCrossingReadouts(): void {
+    const data = crossings;
+    if (!data) return;
+    const focus = getFocusedGate();
+    const first = new Array<number>(24).fill(0);
+    const second = new Array<number>(24).fill(0);
+    for (let gate = 0; gate < gateCount; gate++) {
+      if (focus >= 0 && gate !== focus) continue;
+      for (let hour = 0; hour < 24; hour++) {
+        first[hour] += data.hourly[gate][0][hour];
+        second[hour] += data.hourly[gate][1][hour];
+      }
+    }
+    const theme = ctx.theme();
+    const gate = focus >= 0 ? SHIPPING_GATES[focus] : null;
+    ctx.setChart(
+      'hourly',
+      getHourlyCrossingsDiagram({
+        first,
+        second,
+        firstLabel: gate ? gate.directions[0] : 'First direction',
+        secondLabel: gate ? gate.directions[1] : 'Second direction',
+        firstColor: toHex(inkFor(ZONE_EVENT_INK.enter, theme)),
+        secondColor: toHex(inkFor(ZONE_EVENT_INK.exit, theme)),
+        playheadHours: playhead / 3600,
+        timeZone: gate ? gate.timeZone : null
+      })
+    );
+    const total =
+      focus >= 0 ? data.totals[focus] : data.totals.reduce((sum, value) => sum + value, 0);
+    ctx.setReadout('crossings', total);
+    ctx.setReadout('chord', roundTo(getMedianChordSeconds(data, focus) / 60, 1));
+  }
+
+  // ---- Vessel groups in view ---------------------------------------------------------------------
+  function updateGroupShares(viewport: Viewport): void {
+    const [west, south, east, north] = viewport.getBounds();
+    const totals = getGroupKilometers(segmentTable, [west, south, east, north]);
+    const sum = totals.reduce((a, b) => a + b, 0);
+    ctx.setLegendData('groupKilometers', totals);
+    ctx.setReadout('towShare', sum > 0 ? totals[2] / sum : null);
+    ctx.setChart('groupShares', {
+      kind: 'bars',
+      values: totals.map(value => Math.round(value)),
+      labels: SHORT_GROUP_LABELS,
+      colors: getVesselGroupPalette(ctx.theme()),
+      horizontal: true,
+      xLabel: 'km of track in view over the day',
+      height: 110,
+      description: `Kilometres of track in the map view by vessel group: ${VESSEL_GROUPS.map(
+        (group, index) => `${VESSEL_GROUP_LABELS[group]} ${Math.round(totals[index])}`
+      ).join(', ')}.`
+    });
+  }
+
+  function updateGapReadouts(): void {
+    const minutes = ctx.options.maxGapMinutes;
+    ctx.setReadout('gapShare', minutes > 0 ? getShareAbove(fixIntervals, minutes * 60) : 0);
+  }
+
+  function updateCoverageAnnotations(): void {
+    if (!ctx.options.showReceiverEdge || !Number.isFinite(receiverEdgeLongitude)) {
+      ctx.setAnnotations('coverage', null);
+      return;
+    }
+    const middle = (midAtlanticBand[0] + midAtlanticBand[1]) / 2;
+    ctx.setAnnotations('coverage', [
+      {
+        kind: 'line',
+        id: 'receiver-edge-line',
+        coordinates: [
+          [receiverEdgeLongitude, midAtlanticBand[0]],
+          [receiverEdgeLongitude, midAtlanticBand[1]]
+        ],
+        dashed: true,
+        tone: 'signal'
+      },
+      {
+        kind: 'note',
+        id: 'receiver-edge',
+        coordinate: [receiverEdgeLongitude, middle],
+        title: 'Receiver edge',
+        text: liveText('{share:percent} of fixes in this latitude band lie west of it', {
+          share: 0.99
+        }),
+        priority: 3
+      },
+      {
+        kind: 'area',
+        id: 'open-ocean',
+        coordinate: [receiverEdgeLongitude + 3.4, middle],
+        text: 'Open ocean: no reports',
+        tone: 'muted',
+        size: 'medium'
+      }
+    ]);
+  }
+
+  /** Scale-bar tick at the cell size while the density is the subject. */
+  function updateScaleBarTick(): void {
+    const grid = getDensityGrid();
+    const teaching = ctx.options.showDensity && grid !== null;
+    const meters =
+      teaching && grid
+        ? Math.round(
+            (getCellSizeKilometers(grid, ctx.getViewState().latitude).width * 1000) / 100
+          ) * 100
+        : null;
+    if (meters === lastTickMeters) return;
+    lastTickMeters = meters;
+    runtimeFurniture.scaleBar = {ticks: meters ? [meters] : undefined};
+    ctx.setFurniture(runtimeFurniture);
+  }
+
+  function updateCost(): void {
+    const options = ctx.options;
+    const passes =
+      playheadCompiled.stats.nodeOrder.length +
+      (options.showTrails ? trailCompiled.stats.nodeOrder.length : 0) +
+      (options.showDensity && density ? density.compiled.stats.nodeOrder.length : 0) +
+      (options.showGates ? zoneGraph.compiled.stats.nodeOrder.length : 0);
+    ctx.setCost({records: vertexCount, passes});
+  }
+
+  rebuildDensity();
+  writeSegmentMask();
+  writeSelectedGate();
+  updateGapReadouts();
+  updateCoverageAnnotations();
+  updateCost();
+  ctx.setStatus('Computing the day');
+
+  // ---- Tooltips ---------------------------------------------------------------------------------
   function describeVessel(track: number): string {
     const type = SHIPPING_TYPES[tracks.category[track]];
     const length = tracks.length[track];
-    return `${SHIPPING_TYPE_LABELS[type]} (MMSI ${tracks.mmsi[track]}${length > 0 ? `, ${length.toFixed(0)} m` : ''})`;
+    return `${SHIPPING_TYPE_LABELS[type]}${length > 0 ? `, ${length.toFixed(0)} m` : ''}`;
   }
 
-  function describeSelection(): void {
-    if (selectedTrack === NO_TRACK) {
-      ctx.setReadout('selected', 'click a vessel');
-      return;
-    }
-    let text = describeVessel(selectedTrack);
-    if (trackSnapshot) {
-      const distance = trackSnapshot.lengths[selectedTrack] / NAUTICAL_MILE_METERS;
-      const maximum = trackSnapshot.maxima[selectedTrack] * KNOTS_PER_METER_SECOND;
-      text += `: ${distance.toFixed(0)} nm in this track, top step ${maximum.toFixed(1)} kn, ${trackSnapshot.stopCounts[selectedTrack]} stops`;
-    }
-    ctx.setReadout('selected', text);
-  }
-  describeSelection();
-
-  function updateDensityReadouts(): void {
-    const stats = densityStats;
-    if (!stats || !density) return;
-    const unit = ctx.options.densityValue === 'length' ? 'km per cell' : 'km per km2';
-    const ceiling = getDensityCeiling();
-    ctx.setLegendExtent('density', [0, ceiling.value]);
-    ctx.setReadout(
-      'density',
-      `${formatCount(stats.nonEmpty)} of ${formatCount(stats.cells)} cells have traffic (${density.columns} x ${density.rows} grid)`
-    );
-    ctx.setReadout(
-      'densityPieces',
-      `${formatCount(stats.pieces)} segment-cell pieces${stats.overflow ? ' (capacity exceeded, low cells)' : ''}`
-    );
-    ctx.setReadout(
-      'densityTotal',
-      `${formatCount(stats.totalKilometers)} km of track; busiest cell ${formatCount(ceiling.maximum)} ${unit}`
-    );
-  }
-
-  function getDensityCeiling(): {value: number; maximum: number} {
-    const stats = densityStats;
-    if (!stats) return {value: 1, maximum: 0};
-    const byLength = ctx.options.densityValue === 'length';
-    const scale = byLength ? 0.001 : 1000;
-    const row = byLength ? 0 : 101;
-    const percent = Math.round(Math.min(100, Math.max(50, ctx.options.densityCeiling)));
-    const value = Math.max(1e-9, stats.percentiles[row + percent] * scale);
+  function getVesselTooltip(track: number): TooltipContent | null {
+    if (!statusSnapshot) return null;
+    const knots = statusSnapshot.speeds[track] * KNOTS_PER_METER_SECOND;
+    const group = SHIPPING_TYPE_GROUP[tracks.category[track]];
+    const moving = knots >= STOPPED_KNOTS;
+    const speedClass = SHIP_SPEED_BREAKS_KNOTS.filter(value => knots >= value).length;
+    const options = ctx.options;
     return {
-      value,
-      maximum: (byLength ? stats.maximumLength : stats.maximumDensity) * scale
+      title: VESSEL_GROUP_LABELS[VESSEL_GROUPS[group]],
+      subtitle: describeVessel(track),
+      rows: [
+        {
+          label: 'Speed',
+          value: knots.toFixed(1),
+          unit: 'kn',
+          emphasis: true,
+          swatch:
+            options.markerColor === 'speed'
+              ? getShipSpeedClasses(ctx.ground())[speedClass]
+              : options.markerColor === 'group'
+                ? getVesselGroupPalette(ctx.ground())[group]
+                : undefined
+        },
+        {label: 'State', value: moving ? 'Moving (arrow)' : 'Stopped (square)'}
+      ]
     };
   }
 
-  function updateAnalysisReadouts(): void {
-    const top = anchorages.slice(0, RANK_LIST_LENGTH);
-    ctx.setReadout(
-      'stops',
-      `${formatCount(clusterSummary.stopCount)} stops (${formatCount(clusterSummary.clustered)} in clusters, ${formatCount(clusterSummary.noise)} isolated)`
-    );
-    ctx.setReadout(
-      'anchorages',
-      `${formatCount(Math.min(clusterSummary.count, CLUSTER_CAPACITY))} stopping places${clusterSummary.overflow ? ' (capacity reached)' : ''}`
-    );
-    ctx.setReadout(
-      'anchorageList',
-      top.length === 0
-        ? 'no clusters at these settings'
-        : top
-            .map(
-              (anchorage, index) =>
-                `${index + 1}. ${anchorage.place}: ${formatHours(anchorage.dwellSeconds)}, ${anchorage.vessels} vessels`
-            )
-            .join('\n')
-    );
-    ctx.setChart('anchorRank', {
-      kind: 'bars',
-      values: top.map(anchorage =>
-        ctx.options.rankBy === 'dwell' ? anchorage.dwellSeconds / 3600 : anchorage.stops
-      ),
-      labels: top.map((_, index) => `${index + 1}`),
-      highlight: top.length > 0 ? [0] : [],
-      yLabel: ctx.options.rankBy === 'dwell' ? 'vessel-hours stopped' : 'stops',
-      xLabel: 'rank (see the list above)',
-      height: 120,
-      description: 'Stopping places ranked by total dwell'
-    });
-    if (trackSnapshot) {
-      let longest = 0;
-      for (let track = 0; track < trackCount; track++) {
-        longest = Math.max(longest, trackSnapshot.maxima[track]);
-      }
-      ctx.setReadout('fastest', `${(longest * KNOTS_PER_METER_SECOND).toFixed(1)} kn`);
-    }
-    describeSelection();
+  function getDensityTooltip(coordinate: readonly [number, number]): TooltipContent | null {
+    const field = densityField;
+    if (!field || !densityTable || !ctx.options.showDensity) return null;
+    const cell = getCellIndexAt(field.grid, coordinate[0], coordinate[1]);
+    if (cell < 0) return null;
+    const basis = ctx.options.densityValue;
+    const value = getCellValue(field, cell, basis);
+    if (!(value > 0)) return null;
+    const sorted = getSortedValues(field, basis);
+    const row = Math.floor(cell / field.grid.columns);
+    const unit = basis === 'length' ? 'km per cell' : 'km per km²';
+    const classIndex = getClassIndexOf(densityTable, value);
+    const area = getCellAreaSquareKilometers(field.grid, row);
+    const [west, south, east, north] = getCellBounds(field.grid, cell);
+    return {
+      title:
+        nearestPlaceLabel(US, getCellCenter(field.grid, cell), {kinds: ['port']}) ?? 'Open water',
+      subtitle: `Cell of ${formatDensityValue(area)} km²`,
+      rows: [
+        {
+          label: 'Track',
+          value: formatDensityValue(value),
+          unit,
+          swatch: densityTable.colors[classIndex],
+          emphasis: true
+        },
+        {
+          label: 'Rank',
+          value: `Denser than ${formatPercent(getShareAtOrBelow(sorted, value))} of occupied cells`
+        }
+      ],
+      highlight: {kind: 'box', bounds: [west, south, east, north]}
+    };
   }
 
-  function updateSpeedCharts(): void {
-    const source = histograms[ctx.options.speedSource] ?? histograms.reported;
-    if (!source) return;
-    const typeCount = SHIPPING_TYPES.length;
-    const filter = ctx.options.vesselFilter;
-    const row = filter === 'all' ? typeCount : Math.max(0, SHIPPING_TYPES.indexOf(filter as never));
-    const values = Array.from(source.hours[row]);
-    ctx.setChart('speedHist', {
-      kind: 'histogram',
-      values,
-      xDomain: [0, SPEED_BIN_COUNT],
-      xLabel: 'speed (kn)',
-      yLabel: 'vessel-hours',
-      color: row === typeCount ? 0 : row % 6,
-      height: 120,
-      markers: Number.isFinite(getHistogramMedian(source.hours[row]))
-        ? [{x: getHistogramMedian(source.hours[row]), label: 'median'}]
-        : [],
-      description: `Time-weighted speed distribution of ${row === typeCount ? 'all vessels' : SHIPPING_TYPE_LABELS[SHIPPING_TYPES[row]]}`
-    });
-    const medians = SHIPPING_TYPES.map((_, type) => getHistogramMedian(source.hours[type]));
-    ctx.setChart('typeSpeeds', {
-      kind: 'bars',
-      values: medians.map(value => (Number.isFinite(value) ? value : 0)),
-      labels: SHIPPING_TYPES.map(type => type),
-      highlight: filter === 'all' ? [] : [row],
-      yLabel: 'median moving speed (kn)',
-      height: 120,
-      description: 'Median speed of moving vessels by type'
-    });
-    const parts = SHIPPING_TYPES.map((type, index) => {
-      const moving = source.hours[index].reduce((total, value) => total + value, 0);
-      const parked = source.stationaryHours[index];
-      const share = moving + parked > 0 ? (parked / (moving + parked)) * 100 : 0;
-      return `${SHIPPING_TYPE_LABELS[type].split(' (')[0].padEnd(11)} ${medians[index].toFixed(1).padStart(5)} kn   ${share.toFixed(0).padStart(3)}% stationary   ${formatCount(typeCounts[index])} tracks`;
-    });
-    ctx.setReadout('typeTable', parts.join('\n'));
-  }
-
-  function updateCrossingCharts(): void {
-    const data = crossings;
-    if (!data) return;
-    const focus = ctx.options.gateFocus;
-    const index = SHIPPING_GATES.findIndex(gate => gate.id === focus);
-    const hours = Array.from({length: 24}, (_, hour) => hour + 0.5);
-    const total = new Array<number>(24).fill(0);
-    for (let gate = 0; gate < gateCount; gate++) {
-      for (let hour = 0; hour < 24; hour++) {
-        total[hour] += data.hourly[gate][0][hour] + data.hourly[gate][1][hour];
-      }
-    }
-    const marker = [{x: Math.min(23.99, playhead / 3600), label: 'now'}];
-    if (index < 0) {
-      ctx.setChart('hourly', {
-        kind: 'line',
-        series: [{label: 'all gates', x: hours, y: total, area: true, color: 0}],
-        xDomain: [0, 24],
-        xLabel: 'hour of day (UTC)',
-        yLabel: 'crossings per hour',
-        markers: marker,
-        height: 130,
-        description: 'Gate crossings per hour, all gates'
-      });
-    } else {
-      const gate = SHIPPING_GATES[index];
-      ctx.setChart('hourly', {
-        kind: 'line',
-        series: [
-          {label: gate.directions[0], x: hours, y: Array.from(data.hourly[index][0]), color: 0},
-          {label: gate.directions[1], x: hours, y: Array.from(data.hourly[index][1]), color: 1},
-          {label: 'all gates', x: hours, y: total, color: 5, dashed: true}
-        ],
-        xDomain: [0, 24],
-        xLabel: 'hour of day (UTC)',
-        yLabel: `crossings per hour at ${gate.short}`,
-        markers: marker,
-        height: 130,
-        description: `Gate crossings per hour at ${gate.name}`
-      });
-    }
-    const order = SHIPPING_GATES.map((_, gate) => gate).sort(
-      (a, b) => data.totals[b] - data.totals[a]
-    );
-    ctx.setChart('gateTotals', {
-      kind: 'bars',
-      values: order.map(gate => data.totals[gate]),
-      labels: order.map(gate => SHIPPING_GATES[gate].short),
-      highlight: index < 0 ? [] : [order.indexOf(index)],
-      yLabel: 'crossings today',
-      height: 140,
-      description: 'Total crossings per gate'
-    });
-    let busiest = 0;
-    for (let hour = 1; hour < 24; hour++) if (total[hour] > total[busiest]) busiest = hour;
-    const sum = total.reduce((a, b) => a + b, 0);
-    ctx.setReadout(
-      'crossings',
-      `${formatCount(sum)} crossings today; busiest hour ${String(busiest).padStart(2, '0')}:00 UTC (${total[busiest]})`
-    );
-    if (index >= 0) {
-      const gate = SHIPPING_GATES[index];
-      ctx.setReadout(
-        'gate',
-        `${gate.short}: ${data.totals[index]} crossings, ${data.hourly[index][0].reduce((a, b) => a + b, 0)} ${gate.directions[0]}, ${data.hourly[index][1].reduce((a, b) => a + b, 0)} ${gate.directions[1]}`
-      );
-    } else {
-      const top = order[0];
-      ctx.setReadout('gate', `busiest: ${SHIPPING_GATES[top].short} (${data.totals[top]})`);
-    }
-  }
-
-  function viewBounds(viewport: Viewport): [number, number, number, number] {
-    const corners = [
-      viewport.unproject([0, 0]),
-      viewport.unproject([viewport.width, 0]),
-      viewport.unproject([0, viewport.height]),
-      viewport.unproject([viewport.width, viewport.height])
-    ];
-    return [
-      Math.max(-180, Math.min(...corners.map(c => c[0]))),
-      Math.max(-85, Math.min(...corners.map(c => c[1]))),
-      Math.min(180, Math.max(...corners.map(c => c[0]))),
-      Math.min(85, Math.max(...corners.map(c => c[1])))
-    ];
-  }
-
-  function writeDensityParameters(): void {
-    if (!density) return;
-    const [west, south, east, north] = densityBounds;
-    densityParameters.write(
-      getGPULineDensityParameterValues({
-        minX: west,
-        minY: south,
-        cellWidth: (east - west) / density.columns,
-        cellHeight: (north - south) / density.rows
-      })
-    );
+  function getGateTooltip(gate: number): TooltipContent | null {
+    if (!crossings) return null;
+    const info = SHIPPING_GATES[gate];
+    return {
+      title: info.name,
+      subtitle: 'Gate (approximate line)',
+      rows: [
+        {label: 'Crossings today', value: crossings.totals[gate], emphasis: true},
+        {
+          label: info.directions[0],
+          value: crossings.hourly[gate][0].reduce((a, b) => a + b, 0)
+        },
+        {
+          label: info.directions[1],
+          value: crossings.hourly[gate][1].reduce((a, b) => a + b, 0)
+        }
+      ]
+    };
   }
 
   // ---- Instance ---------------------------------------------------------------------------------
@@ -1554,8 +1361,6 @@ const RADIANS_TO_DEGREES: f32 = 57.29577951308232;`,
     getCompiledGraphs: () => [
       playheadCompiled,
       trailCompiled,
-      metricsCompiled,
-      clusterCompiled,
       zoneGraph.compiled,
       ...(density ? [density.compiled] : [])
     ],
@@ -1564,20 +1369,7 @@ const RADIANS_TO_DEGREES: f32 = 57.29577951308232;`,
       switch (id) {
         case 'vesselFilter':
           writeSegmentMask();
-          updateSpeedCharts();
           ctx.requestLayers();
-          break;
-        case 'stopSpeedKnots':
-        case 'stopMinutes':
-          writeMetricsParameters();
-          break;
-        case 'clusterRadiusKm':
-        case 'clusterMinStops':
-          writeClusterParameters();
-          break;
-        case 'rankBy':
-          // Re-rank from a fresh readback of the same GPU results.
-          analysisReader.markStale();
           break;
         case 'gateHalfWidth':
           writeGateEdges();
@@ -1586,41 +1378,55 @@ const RADIANS_TO_DEGREES: f32 = 57.29577951308232;`,
           resources.release(zoneGraph.compiled);
           zoneGraph = buildZoneGraph(Number(state.eventsPerTrack));
           zonesDirty = true;
+          updateCost();
           ctx.requestLayers();
           break;
         case 'gateFocus':
           writeSelectedGate();
-          updateCrossingCharts();
+          writeCrossingRings();
+          updateCrossingReadouts();
           ctx.requestLayers();
           break;
-        case 'speedSource':
-          updateSpeedCharts();
-          break;
-        case 'densityType':
         case 'densityGrid':
           rebuildDensity();
-          ctx.requestLayers();
-          break;
-        case 'densityExtent':
-          densityBounds = [...US_DENSITY_BOUNDS];
-          viewPending = null;
-          densityDirty = true;
+          updateCost();
           ctx.requestLayers();
           break;
         case 'densityValue':
-        case 'densityCeiling':
+        case 'stretch':
+          updateDensityTable();
           updateDensityReadouts();
+          updateCellHistogram();
+          updateDensityAnnotations();
           ctx.requestLayers();
           break;
         case 'showDensity':
-          if (state.showDensity) densityDirty = true;
+          if (state.showDensity && !densityField) densityDirty = true;
+          updateDensityAnnotations();
+          updateClipWalk();
+          updateScaleBarTick();
+          updateCost();
+          ctx.requestLayers();
+          break;
+        case 'showGates':
+        case 'showTrails':
+          updateCost();
+          ctx.requestLayers();
+          break;
+        case 'showReceiverEdge':
+          updateCoverageAnnotations();
+          break;
+        case 'maxGapMinutes':
+          updateGapReadouts();
+          break;
+        case 'markerColor':
+          lastViewKey = '';
           ctx.requestLayers();
           break;
         case 'play':
         case 'time':
         case 'speed':
         case 'loop':
-        case 'maxGapMinutes':
         case 'pulseMinutes':
           break;
         default:
@@ -1629,32 +1435,29 @@ const RADIANS_TO_DEGREES: f32 = 57.29577951308232;`,
     },
 
     onThemeChange() {
+      updateCrossingReadouts();
+      lastViewKey = '';
+      ctx.requestLayers();
+    },
+
+    onGroundChange() {
+      updateDensityTable();
+      updateCellHistogram();
+      ctx.requestLayers();
+    },
+
+    onLegendFilter(_legendId, classes) {
+      legendFilter = classes;
       ctx.requestLayers();
     },
 
     encode(commandEncoder, frame) {
       const options = ctx.options;
       playhead = clock.advance(frame);
-      ctx.setReadout('clock', formatShippingClock(playhead));
       const hour = Math.floor(playhead / 3600);
       if (hour !== lastHour) {
         lastHour = hour;
-        updateCrossingCharts();
-      }
-
-      if (metricsDirty || clusterDirty) {
-        if (metricsDirty) metricsCompiled.encode(commandEncoder, {parameters: undefined});
-        clusterCompiled.encode(commandEncoder, {parameters: undefined});
-        metricsDirty = false;
-        clusterDirty = false;
-        analysisReader.request(commandEncoder);
-        if (!stepReaderRequested) {
-          stepReaderRequested = true;
-          stepReader.request(commandEncoder);
-        }
-      } else {
-        analysisReader.flush(commandEncoder);
-        stepReader.flush(commandEncoder);
+        updateCrossingReadouts();
       }
 
       if (zonesDirty) {
@@ -1670,35 +1473,18 @@ const RADIANS_TO_DEGREES: f32 = 57.29577951308232;`,
       } else {
         zoneReader.flush(commandEncoder);
       }
-      eventClock.write(
-        Float32Array.of(
-          playhead,
-          options.pulseMinutes * 60,
-          options.showRestingCrossings ? 1 : 0,
-          0
-        )
-      );
+      eventClock.write(Float32Array.of(playhead, options.pulseMinutes * 60, 0, 0));
 
-      if (options.showDensity && density) {
-        if (options.densityExtent === 'view') {
-          const bounds = viewBounds(frame.viewport);
-          const same =
-            viewPending && bounds.every((value, index) => value === viewPending?.[index]);
-          if (same) viewPendingFrames++;
-          else {
-            viewPending = bounds;
-            viewPendingFrames = 0;
-          }
-          if (
-            viewPendingFrames === VIEW_SETTLE_FRAMES &&
-            !bounds.every((value, index) => value === densityBounds[index])
-          ) {
-            densityBounds = bounds;
-            densityDirty = true;
-          }
-        }
-        if (densityDirty) {
-          writeDensityParameters();
+      if (density) {
+        if (densityDirty && options.showDensity) {
+          densityParameters.write(
+            getGPULineDensityParameterValues({
+              minX: densityBounds[0],
+              minY: densityBounds[1],
+              cellWidth: (densityBounds[2] - densityBounds[0]) / density.columns,
+              cellHeight: (densityBounds[3] - densityBounds[1]) / density.rows
+            })
+          );
           density.compiled.encode(commandEncoder, {parameters: undefined});
           densityDirty = false;
           density.buffers.reader.request(commandEncoder);
@@ -1721,7 +1507,7 @@ const RADIANS_TO_DEGREES: f32 = 57.29577951308232;`,
           getGPUTimeWindowParameterValues({
             start: playhead - trailSeconds,
             end: playhead,
-            startFadeDuration: trailSeconds * options.tailFade
+            startFadeDuration: trailSeconds
           })
         );
         trailCompiled.encode(commandEncoder, {parameters: undefined});
@@ -1732,17 +1518,43 @@ const RADIANS_TO_DEGREES: f32 = 57.29577951308232;`,
         statusStale = false;
       }
       statusReader.flush(commandEncoder);
+
+      // Camera-driven work, once the view has settled on a new place or zoom band.
+      const viewport = frame.viewport;
+      const bucket = Math.round(viewport.zoom * 4);
+      if (bucket !== lastSizeBucket) {
+        lastSizeBucket = bucket;
+        ctx.requestLayers();
+      }
+      if (frame.frameIndex % STATUS_INTERVAL_FRAMES === 0) {
+        const view = ctx.getViewState();
+        const key = `${view.longitude.toFixed(2)}:${view.latitude.toFixed(2)}:${view.zoom.toFixed(2)}`;
+        if (key !== lastViewKey) {
+          lastViewKey = key;
+          if (options.markerColor === 'group') updateGroupShares(viewport);
+          updateDensityReadouts();
+          updateScaleBarTick();
+        }
+        const groundKey = ctx.ground();
+        if (groundKey !== lastGroundKey) {
+          lastGroundKey = groundKey;
+          ctx.requestLayers();
+        }
+      }
     },
 
     getLayers() {
       const options = ctx.options;
-      const dark = ctx.theme() === 'dark';
+      const ground = ctx.ground();
+      const zoom = ctx.getViewport()?.zoom ?? ctx.getViewState().zoom;
+      const halo = inkFor(HEAD_HALO_INK, ground);
       const layers: Layer[] = [];
-      if (options.showDensity && density && densityStats) {
+      const field = densityField;
+      if (options.showDensity && density && field && densityTable) {
         const byLength = options.densityValue === 'length';
         layers.push(
           new SpatialAnalysisRasterLayer({
-            id: `us-density-${density.key}`,
+            id: `us-density-${density.grid}`,
             ...drawProps,
             gridSize: [density.columns, density.rows],
             bounds: densityBounds,
@@ -1750,13 +1562,12 @@ const RADIANS_TO_DEGREES: f32 = 57.29577951308232;`,
             tessellation: 64,
             values: byLength ? density.buffers.lengths : density.buffers.densities,
             valueFormat: 'float32',
-            colormap: options.ramp,
-            valueRange: [0, getDensityCeiling().value],
-            valueScale: byLength ? 0.001 : 1000,
-            sqrtScale: true,
+            colormap: 'uniform',
+            valueScale: getBasisScale(options.densityValue),
             discardAtOrBelow: 0,
-            opacity: options.densityOpacity,
-            color: [255, 255, 255, 255]
+            ...getClassTableLayerProps(densityTable),
+            highlightClasses: legendFilter,
+            opacity: options.densityOpacity
           })
         );
       }
@@ -1767,13 +1578,14 @@ const RADIANS_TO_DEGREES: f32 = 57.29577951308232;`,
             ...drawProps,
             segments: segmentsBuffer,
             instanceCount: segmentCount,
-            widthPixels: 0.8,
-            color: dark ? [190, 200, 220, 34] : [50, 60, 80, 40]
+            widthPixels: 0.5,
+            blending: 'additive',
+            opacity: options.showDensity ? 0.25 : 1,
+            color: inkFor(CONTEXT_TRACK_INK, ground)
           })
         );
       }
       if (options.showTrails) {
-        const bySpeed = options.trailColor === 'speed';
         layers.push(
           new SpatialAnalysisSegmentLayer({
             id: 'us-trails',
@@ -1783,86 +1595,62 @@ const RADIANS_TO_DEGREES: f32 = 57.29577951308232;`,
             drawCommands: trailDraw,
             weights: fadeWeights,
             clipFractions,
-            values: bySpeed ? stepSpeeds : categoryBuffer,
-            valueFormat: bySpeed ? 'float32' : 'uint32',
-            valueIndices: bySpeed ? segmentEndsBuffer : segmentTracksBuffer,
-            colormap: bySpeed ? options.ramp : 'category',
-            valueScale: KNOTS_PER_METER_SECOND,
-            valueRange: [0, SPEED_RAMP_KNOTS],
-            palette: SHIPPING_TYPE_COLORS,
-            widthPixels: 2.2
+            values: categoryBuffer,
+            valueFormat: 'uint32',
+            valueIndices: segmentTracksBuffer,
+            colormap: 'category',
+            palette: getTrailPalette(),
+            widthPixels: TRAIL_WIDTH_STOPS
           })
         );
       }
       if (options.showGates) {
+        const focused = getFocusedGate() >= 0;
         layers.push(
           new SpatialAnalysisSegmentLayer({
             id: 'us-gates',
             ...drawProps,
             segments: gateLinesBuffer,
             instanceCount: gateCount,
-            widthPixels: 3,
-            color: dark ? [255, 255, 255, 230] : [20, 24, 32, 230]
-          }),
-          new SpatialAnalysisSegmentLayer({
-            id: 'us-gate-selected',
-            ...drawProps,
-            segments: selectedGateBuffer,
-            instanceCount: 1,
-            widthPixels: 7,
-            color: [255, 200, 40, 255]
+            widthPixels: focused ? 1.2 : 2.5,
+            outlineColor: halo,
+            outlineWidthPixels: focused ? 0.8 : 1.25,
+            color: focused ? [232, 237, 242, 120] : [232, 237, 242, 255]
           })
         );
-      }
-      if (options.showStops) {
-        layers.push(
-          new StopMarkerLayer({
-            id: 'us-stops',
-            ...drawProps,
-            centroids: stopLngLat,
-            durations: stopDurations,
-            drawCommands: stopDraw,
-            baseRadiusPixels: 2,
-            radiusPerSqrtSecond: 0.012,
-            maximumRadiusPixels: 9,
-            durationForFullColor: 12 * 3600,
-            opacity: 0.8
-          })
-        );
-      }
-      if (options.showAnchorages) {
-        layers.push(
-          new StopMarkerLayer({
-            id: 'us-anchorages',
-            ...drawProps,
-            centroids: anchorageLngLat,
-            durations: anchorageDwell,
-            drawCommands: anchorageDraw,
-            baseRadiusPixels: 7,
-            radiusPerSqrtSecond: 0.012,
-            maximumRadiusPixels: 30,
-            durationForFullColor: 400 * 3600,
-            opacity: 0.9
-          })
-        );
-      }
-      if (options.showCrossings) {
+        if (focused) {
+          layers.push(
+            new SpatialAnalysisSegmentLayer({
+              id: 'us-gate-selected',
+              ...drawProps,
+              segments: selectedGateBuffer,
+              instanceCount: 1,
+              widthPixels: 2.5,
+              outlineColor: halo,
+              outlineWidthPixels: 1.25,
+              color: [255, 255, 255, 255]
+            })
+          );
+        }
         layers.push(
           new ZoneEventMarkerLayer({
             id: 'us-crossings',
             ...drawProps,
             positions: eventLngLat,
             eventTracks,
-            eventTimes,
-            eventTypes,
+            eventTimes: eventDrawTimes,
+            eventTypes: eventDrawTypes,
             trackStartTimes: trackStartBuffer,
             clock: eventClock.buffer,
             drawCommands: eventDraw,
-            sizePixels: 7
+            enterColor: inkFor(ZONE_EVENT_INK.enter, ground),
+            exitColor: inkFor(ZONE_EVENT_INK.exit, ground),
+            sizePixels: 4.4
           })
         );
       }
       if (options.showVessels) {
+        const {palette, mode} = getMarkerPalette();
         layers.push(
           new VesselMarkerLayer({
             id: 'us-vessels',
@@ -1873,17 +1661,20 @@ const RADIANS_TO_DEGREES: f32 = 57.29577951308232;`,
             speeds: markerSpeeds,
             categories: categoryBuffer,
             drawCommands: markerDraw,
-            sizePixels: options.markerSize,
-            colorMode: options.markerColor,
-            ramp: options.ramp,
-            speedForFullColor: SPEED_RAMP_KNOTS * METERS_PER_KNOT_SECOND,
-            palette: SHIPPING_TYPE_COLORS,
+            sizePixels:
+              options.markerSize > 0
+                ? options.markerSize
+                : evaluateZoomStops(ARROW_SIZE_STOPS, zoom),
+            colorMode: mode,
+            speedClassBreaks: SPEED_CLASS_BREAKS,
+            stoppedSpeed: STOPPED_KNOTS * METERS_PER_KNOT_SECOND,
+            palette,
             categoryFilter:
               options.vesselFilter === 'all'
                 ? null
                 : SHIPPING_TYPES.indexOf(options.vesselFilter as (typeof SHIPPING_TYPES)[number]),
             selectedTrack: selectedTrack === NO_TRACK ? null : selectedTrack,
-            outlineColor: dark ? [8, 10, 16, 235] : [20, 24, 32, 215]
+            outlineColor: halo
           })
         );
       }
@@ -1904,33 +1695,17 @@ const RADIANS_TO_DEGREES: f32 = 57.29577951308232;`,
             gateEdges.lines[gate * 4 + 2],
             gateEdges.lines[gate * 4 + 3]
           ]);
-          if (distanceToSegment(event.pixel, [x0, y0], [x1, y1]) < 10) {
-            const info = SHIPPING_GATES[gate];
-            return `${info.name}: ${crossings.totals[gate]} crossings today (${crossings.hourly[gate][0].reduce((a, b) => a + b, 0)} ${info.directions[0]}, ${crossings.hourly[gate][1].reduce((a, b) => a + b, 0)} ${info.directions[1]})`;
-          }
-        }
-      }
-      if (options.showAnchorages) {
-        const count = Math.min(anchorages.length, CLUSTER_CAPACITY);
-        for (let rank = 0; rank < count; rank++) {
-          const anchorage = anchorages[rank];
-          const [x, y] = viewport.project([anchorage.longitude, anchorage.latitude]);
-          if (Math.hypot(x - event.pixel[0], y - event.pixel[1]) < 14) {
-            return `#${rank + 1} ${anchorage.place}: ${formatHours(anchorage.dwellSeconds)} stopped, ${anchorage.stops} stops, ${anchorage.vessels} vessels`;
-          }
+          if (distanceToSegment(event.pixel, [x0, y0], [x1, y1]) < 10) return getGateTooltip(gate);
         }
       }
       const track = pickVessel(event.pixel);
-      if (track < 0 || !statusSnapshot) return null;
-      const speed = statusSnapshot.speeds[track] * KNOTS_PER_METER_SECOND;
-      const stops = trackSnapshot?.stopCounts[track];
-      return `${describeVessel(track)} - ${speed.toFixed(1)} kn${stops === undefined ? '' : `, ${stops} stops today`}`;
+      if (track >= 0) return getVesselTooltip(track);
+      return event.coordinate ? getDensityTooltip(event.coordinate) : null;
     },
 
     onClick(event) {
       const track = pickVessel(event.pixel);
       selectedTrack = track < 0 || track === selectedTrack ? NO_TRACK : track;
-      describeSelection();
       ctx.requestLayers();
       return track >= 0;
     },
@@ -1938,8 +1713,6 @@ const RADIANS_TO_DEGREES: f32 = 57.29577951308232;`,
     destroy() {
       destroyed = true;
       statusReader.stop();
-      analysisReader.stop();
-      stepReader.stop();
       zoneReader.stop();
       for (const buffers of densityBuffers.values()) buffers.reader.stop();
       resources.destroy();
@@ -1969,6 +1742,12 @@ const RADIANS_TO_DEGREES: f32 = 57.29577951308232;`,
     }
     return best;
   }
+}
+
+/** Rounds to `digits` decimals. */
+function roundTo(value: number, digits: number): number {
+  const factor = 10 ** digits;
+  return Math.round(value * factor) / factor;
 }
 
 /** Distance in pixels from a point to a segment. */

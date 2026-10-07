@@ -45,6 +45,7 @@ import {
   type Rgb
 } from './b14a-colorize';
 import {ColorRasterLayer} from './b14a-layers';
+import type {TerrainGround} from './terrain-ground';
 
 const HISTOGRAM_BINS = 1024;
 const MAXIMUM_CLASSES = 32;
@@ -326,8 +327,12 @@ class RangeReader {
 
 /** Layer-side options of {@link TerrainSession.getLayers}. */
 export type SessionLayerOptions = {
-  /** Draw the relief underlay beneath the product. */
+  /**
+   * Draw the relief underlay beneath the product: the chapter relief ground when one is set with
+   * {@link TerrainSession.setGround}, else the grey GPU underlay built by `enableUnderlay`.
+   */
   underlay: boolean;
+  /** Alpha of the underlay (the relief ground is drawn at this opacity too; use 1 for the ground). */
   underlayAlpha: number;
   alpha: number;
   /** Optional illumination multiplied into the product color. */
@@ -383,6 +388,7 @@ export class TerrainSession {
     colors: Buffer;
     version: number;
   } | null = null;
+  private ground: TerrainGround | null = null;
   private destroyed = false;
 
   constructor(
@@ -575,6 +581,16 @@ export class TerrainSession {
     for (const stage of this.stages) stage.markDirty();
     this.statsDirty = true;
     this.lastComputeTime = performance.now();
+  }
+
+  /**
+   * Uses the chapter relief ground (see `terrain-ground.ts`) as the underlay: with it set,
+   * `getLayers({underlay: true})` draws `ground.getLayer()` first instead of the grey GPU underlay.
+   * Pass `null` to go back to the GPU underlay. The session does not own the ground: the scene
+   * creates it, rebuilds it on ground changes and destroys it.
+   */
+  setGround(ground: TerrainGround | null): void {
+    this.ground = ground;
   }
 
   /** Builds the hillshade underlay: relief shading is computed once per elevation version. */
@@ -773,7 +789,9 @@ export class TerrainSession {
       gridSize: [grid.width, grid.height] as [number, number],
       bounds: grid.bounds
     };
-    if (options.underlay && this.underlay) {
+    if (options.underlay && this.ground) {
+      layers.push(this.ground.getLayer({opacity: options.underlayAlpha}));
+    } else if (options.underlay && this.underlay) {
       layers.push(
         new ColorRasterLayer({
           ...common,

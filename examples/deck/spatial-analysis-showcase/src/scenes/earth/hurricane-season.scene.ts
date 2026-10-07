@@ -2,24 +2,30 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {CREDITS, joinCredits} from '../../cartography/credits';
+import {WORLD, labelsFor} from '../../cartography/gazetteer';
+import {ground} from '../../cartography/grounds';
 import {playbackOptions} from '../../engine/playback';
 import {defineScene} from '../scene';
-import {
-  formatDayOfYear,
-  HURRICANE_CATEGORY_COLORS,
-  HURRICANE_CATEGORY_LABELS
-} from './hurricane-data';
+import {formatDayOfYear, HURRICANE_CATEGORY_LABELS} from './hurricane-data';
+import {HURRICANE_CLASS} from '../../cartography/hue-registry';
 import type {HurricaneSeasonOptions} from './hurricane-season.compute';
 
 const BASIN_VIEW = {longitude: -60, latitude: 26, zoom: 3.2};
 
 const dayLabel = (day: number) => `${formatDayOfYear(day)} (day ${Math.floor(day) + 1})`;
+const cartouche = (title: string, subtitle: string) => ({
+  title,
+  subtitle,
+  chips: ['folded seasons'] as const
+});
+const SEASON_LABELS = labelsFor(WORLD, ['atlantic-ocean', 'caribbean-sea', 'gulf-of-mexico']);
 
 export default defineScene<HurricaneSeasonOptions>({
   id: 'hurricane-season',
-  title: 'What does a hurricane season look like when you stack 46 of them?',
+  title: 'When does the Atlantic season peak?',
   chapter: 'earth',
-  order: 12,
+  order: 3,
   summary:
     'Every Atlantic storm since 1980 replayed on one calendar: all 46 seasons overlaid by day of the year, with a fading trail, the storm heads colored by their wind and a live count of storms alive.',
   contributors: ['GPUTrajectoryPlayhead', 'GPUTimeWindowFilter'],
@@ -60,6 +66,19 @@ export default defineScene<HurricaneSeasonOptions>({
       default: [140, 345],
       format: dayLabel,
       help: 'The part of the year the clock loops over. The default is 20 May to 11 December: 97% of all fixes fall between June and November.'
+    },
+    {
+      kind: 'select',
+      id: 'denominator',
+      label: 'Campfire denominator',
+      group: 'Seasonal chart',
+      apply: 'param',
+      default: 'active',
+      help: 'Show the selected record as active storms, or divide the same stacked totals by the number of selected seasons. Both modes retain the same storms and calendar.',
+      options: [
+        {value: 'active', label: 'Storms active'},
+        {value: 'share', label: 'Share of selected seasons active'}
+      ]
     },
     {
       kind: 'range',
@@ -130,24 +149,7 @@ export default defineScene<HurricaneSeasonOptions>({
       help: 'The wind at the head is interpolated between the two six-hourly fixes around the playhead.',
       options: [
         {value: 'wind', label: 'Wind now (Saffir-Simpson class)'},
-        {value: 'peak', label: 'Peak wind of the storm'},
-        {value: 'season', label: 'Season (year)'}
-      ]
-    },
-    {
-      kind: 'select',
-      id: 'ramp',
-      label: 'Season ramp',
-      group: 'Display',
-      apply: 'param',
-      default: 'viridis',
-      disabledWhen: state => state.headColor !== 'season',
-      help: 'Ramp of the season color, from 1980 to 2025.',
-      options: [
-        {value: 'viridis', label: 'Viridis'},
-        {value: 'magma', label: 'Magma'},
-        {value: 'inferno', label: 'Inferno'},
-        {value: 'cividis', label: 'Cividis'}
+        {value: 'peak', label: 'Peak wind of the storm'}
       ]
     },
     {
@@ -188,31 +190,23 @@ export default defineScene<HurricaneSeasonOptions>({
   ],
 
   legends: state => [
-    state.headColor === 'season'
-      ? {
-          kind: 'ramp' as const,
-          title: 'Season of the storm',
-          ramp: state.ramp,
-          extent: [1980, 2025] as const,
-          format: (value: number) => value.toFixed(0)
-        }
-      : {
-          kind: 'categories' as const,
-          title: state.headColor === 'wind' ? 'Wind now' : 'Peak wind of the storm',
-          entries: HURRICANE_CATEGORY_LABELS.map((label, index) => ({
-            color: HURRICANE_CATEGORY_COLORS[index],
-            label
-          })),
-          note: 'Saffir-Simpson classes come from the sustained wind. Trails are colored by the wind at each fix.'
-        }
+    {
+      kind: 'categories' as const,
+      title: state.headColor === 'wind' ? 'Wind now' : 'Peak wind of the storm',
+      entries: HURRICANE_CATEGORY_LABELS.map((label, index) => ({
+        color: HURRICANE_CLASS.dark[index],
+        label
+      })),
+      note: 'Saffir-Simpson classes come from sustained wind. Trails are colored by wind at each fix.'
+    }
   ],
 
   readouts: [
     {
-      id: 'aliveSpark',
-      label: 'Storms alive through the year',
+      id: 'seasonCampfire',
+      label: 'Active storm campfire',
       kind: 'chart',
-      help: 'Average number of storms alive on each day of the year in the chosen seasons. The dot is the playhead.'
+      help: 'Five-day-smoothed active storm bands from 1 May through 31 December. The rule marks the external NHC climatological reference on 10 September; it is not a result from this subset.'
     },
     {
       id: 'classChart',
@@ -239,7 +233,21 @@ export default defineScene<HurricaneSeasonOptions>({
       help: 'Track segments inside the time window, counted by GPUTimeWindowFilter.'
     },
     {id: 'storms', label: 'Storms'},
-    {id: 'seasonsShown', label: 'Seasons shown'}
+    {id: 'seasonsShown', label: 'Selected seasons'},
+    {id: 'peakActive', label: 'Peak active total'},
+    {id: 'peakShare', label: 'Peak season share'},
+    {id: 'categoryComposition', label: 'Peak category composition'}
+  ],
+
+  pipeline: [
+    {
+      id: 'fold',
+      label: 'Fold calendar',
+      detail: 'Place each season on its own January-to-December clock'
+    },
+    {id: 'playhead', label: 'Playhead', detail: 'Interpolate every storm at one folded day'},
+    {id: 'window', label: 'Time window', detail: 'Keep the trailing six-hour segments'},
+    {id: 'draw', label: 'Draw', detail: 'Classed heads, trails and seasonal summaries'}
   ],
 
   snippet: state => `import {GPUCommandGraph} from '@luma.gl/gpgpu/gpu-core';
@@ -275,61 +283,92 @@ windowParameters.write(getGPUTimeWindowParameterValues({
     what: 'Each storm is re-based to the 1 January of its own year, so the 46 seasons of 1980 to 2025 share one calendar. `GPUTrajectoryPlayhead` finds, for every storm at once, the two fixes either side of the playhead day and interpolates its position. `GPUTimeWindowFilter` keeps the track segments inside a window behind the playhead and fades them toward the tail.',
     why: 'A single season is anecdote; the stack shows the seasonal clock. Forecasters and planners ask when the first storm usually appears, when the peak is, and where storms are on a given date, and the overlay answers them from 46 years instead of one.',
     howToRead:
-      'Every dot is a different storm from a different year, alive on the same calendar day. A dot is colored by its wind now; its trail shows where it has been. The sparkline is the average number of storms alive on each day of the year, with the playhead as a dot. Counts are summed over all chosen seasons, so "12 alive" on 10 September is 12 storms from 46 different years.'
+      'Every dot is a different storm from a different year, alive on the same calendar day. A dot is colored by its wind now; its trail shows where it has been. The campfire stacks active strength bands with the playhead rule. Counts are summed over all chosen seasons, while share divides that same total by the selected season count.'
   },
+
+  basemap: ground('abyss', {labels: 'none'}),
+  furniture: {
+    title: cartouche(
+      'When does the Atlantic season peak?',
+      'Active storms · folded calendar · NOAA IBTrACS · 1980–2025'
+    ),
+    credit: joinCredits(CREDITS.noaaNhc, 'NOAA IBTrACS', CREDITS.naturalEarth),
+    caveat: 'Years are stacked: the map is a seasonal calendar, not storms simultaneously at sea.'
+  },
+  annotations: SEASON_LABELS,
 
   create: async ctx => (await import('./hurricane-season.compute')).createHurricaneSeason(ctx),
 
   story: [
     {
-      id: 'the-question',
+      id: 'fold',
       title: 'When is the Atlantic hurricane season?',
-      body: 'Press **Play** and watch June, July and August of **46 seasons at once**. Each dot is a storm from the **NOAA IBTrACS** best tracks (1980-2025), placed at the same calendar day in its own year and colored by the wind there (see the legend). The trails are the last six days of each track.\n\nThe quiet start is real: of all fixes in the record, **97% fall between June and November**. The clock is a number on the calendar slider that the GPU compares against every storm at once, and the **Day of the year** slider follows it. Drag the slider to jump anywhere and keep playing.',
+      headline: 'Fold every season onto one calendar',
+      textAlternative: 'Classed hurricane heads from many years share one Atlantic calendar day.',
+      optionsMode: 'fresh',
+      body: 'Press **Play** to fold every available season onto one calendar. Each dot is a NOAA IBTrACS best-track storm placed at the same day of its own year and colored by wind; trails show its recent route. The **Storms alive now** card and seasonal chart report the selected record directly.\n\nThe clock is a calendar-day value that the GPU compares against every storm at once. Drag **Day of the year** to jump anywhere, or let playback reveal the quiet start, broad peak, and late-season decline.',
       camera: {...BASIN_VIEW, transitionMs: 1200},
       options: {playing: true, speed: 6, time: 150, trailDays: 6, showBackdrop: true},
       highlight: {readout: 'alive'},
       controls: ['playing', 'time', 'speed'],
-      readouts: ['clock', 'alive', 'aliveSpark']
+      readouts: ['clock', 'alive', 'seasonsShown']
     },
     {
-      id: 'calendar',
+      id: 'move',
       title: 'One calendar, 46 seasons',
-      body: 'The trick is the time column: every fix is re-based to **days since 1 January of its own year** (a float32 day count is exact to a few seconds over a year). **`GPUTrajectoryPlayhead`** then binary-searches each track for the two fixes around the playhead day and interpolates the head, one thread per storm.\n\nThe clock is paused at **8 September (day 251)**, the climatological peak. On that day, summed over 46 years, the **Storms alive now** readout counts the storms from every season that were alive; the bars below split them by the class of their wind. The sparkline shows the average number alive on every day of the year, and its dot is the playhead.',
+      headline: 'Storms gather, travel, and fade',
+      textAlternative: 'Atlantic hurricane trails fade behind category-coloured heads.',
+      optionsMode: 'fresh',
+      body: 'The time column is re-based to **days since 1 January of each storm’s year**. **`GPUTrajectoryPlayhead`** binary-searches every track for the fixes around the playhead and interpolates one head per storm.\n\nAt the selected calendar day, **Storms alive now** counts storms from all selected seasons. Trails make elapsed time visible; the campfire belongs to the next step, where the stacked calendar is read as a summary.',
       camera: {...BASIN_VIEW, transitionMs: 1200},
       options: {playing: false, time: 250, trailDays: 6},
       highlight: {readout: 'strongest'},
       controls: ['time', 'headColor'],
-      readouts: ['clock', 'alive', 'strongest', 'classChart', 'aliveSpark']
-    },
-    {
-      id: 'trails',
-      title: 'Where have they been? A window in time',
-      body: '**`GPUTimeWindowFilter`** treats each segment between two fixes as a time interval and keeps those that overlap `[playhead - length, playhead]`. It writes a fade weight and a clip fraction (so the oldest segment is cut part-way), compacts the live segment ids and writes the count straight into the draw call. The seasons you choose are a selection mask in the same pass.\n\nSet **Trail length** to 20 days and the whole life of a long-track storm is drawn; shorten it to 2 days and they read as comets. **Tail fade** at 0 gives solid trails. Turn off **Show all tracks faintly** to see only what is alive within the window.',
-      options: {playing: false, time: 250, trailDays: 20, tailFade: 0.8},
-      controls: ['trailDays', 'tailFade', 'showBackdrop'],
-      readouts: ['trailSegments']
+      readouts: ['alive', 'strongest', 'classChart']
     },
     {
       id: 'peak',
-      title: 'The peak, in the numbers',
-      body: 'Scrub **Day of the year** along the sparkline: the average number of storms alive is zero in April, only about 0.4 on 1 August, then **peaks around 8 September at about 1.9 storms alive at once**, and falls to about 1.1 on 1 October and 0.4 on 1 November. Storms are not spread evenly in space either: early-season storms typically form in the Gulf and off the Southeast coast, and the long tracks from the Cape Verde islands belong to the peak.\n\nDrag the time slider to **250** and back to **180** and watch the **Storms alive now** readout; set **Color storm heads by** to *Peak wind* to see which of the living storms went on to be major hurricanes.',
+      title: 'The seasonal campfire',
+      headline: 'The season has a broad peak',
+      textAlternative:
+        'Stacked hurricane classes form a seasonal campfire with a labelled NHC reference rule.',
+      optionsMode: 'fresh',
+      body: 'The campfire is a five-day-smoothed stack of TD, TS, hurricane, and major-hurricane activity from 1 May to 31 December. The vertical rule is **NHC climatological reference: 10 September**—an external reference, not a peak calculated from this subset.\n\nScrub **Day of the year** to move the rule through the same selected storms and compare live class composition without claiming one literal peak date.',
       options: {playing: false, time: 250, headColor: 'wind'},
       highlight: {readout: 'alive'},
       controls: ['time', 'headColor'],
-      readouts: ['alive', 'aliveSpark', 'classChart']
+      readouts: ['alive', 'seasonCampfire', 'classChart']
+    },
+    {
+      id: 'denominator',
+      title: 'Counts and season shares differ',
+      headline: 'The denominator changes the unit',
+      textAlternative:
+        'The same stacked campfire switches between storms active and the share of selected seasons active.',
+      optionsMode: 'fresh',
+      body: 'Choose **Campfire denominator**. *Storms active* stacks every selected season; *share of selected seasons active* divides the identical bands by selected season N. Neither mode changes the map or the selected record.\n\nThis makes the denominator explicit: a stacked calendar can contain many storms from different years, while a season share is bounded by the selected years.',
+      options: {playing: false, time: 250, denominator: 'share'},
+      controls: ['denominator', 'seasons'],
+      readouts: ['seasonsShown', 'peakActive', 'peakShare', 'categoryComposition']
     },
     {
       id: 'eras',
       title: 'Is the early record the same as the recent one?',
-      body: 'Use **Seasons shown** to compare eras. In 1980-1999 the record has **13.8 storms per season** and its peak (average storms alive) falls around 8 September; in 2006-2025 it has **17.3 per season** and the peak is a week later, with about **2.1** alive at once. The readout shows the count for the seasons you pick.\n\nBe careful what that means: more storms per season is partly **better detection**. Short-lived and weak systems are far more likely to be found and named now than in the early satellite years, so the hurricane and major-hurricane counts (5.8 and 2.1 per season in 1980-1999, 7.5 and 3.3 in 2006-2025) are the steadier comparison, and even they are noisy over 20 seasons.',
+      headline: 'The observing record changes',
+      textAlternative: 'An early-era folded storm map makes its smaller seasonal sample explicit.',
+      optionsMode: 'fresh',
+      body: 'Use **Seasons shown** to compare periods. The live season card and sparkline recalculate for the years you choose rather than preserving a historical summary.\n\nInterpret differences cautiously: changing observation and naming practices affect short-lived and weak systems, while any short period is noisy. This folded map compares the record, not a climate attribution.',
       options: {playing: true, speed: 6, time: 200, seasons: [1980, 1999], headColor: 'peak'},
       controls: ['seasons', 'playing', 'headColor'],
-      readouts: ['seasonsShown', 'aliveSpark']
+      readouts: ['seasonsShown', 'seasonCampfire', 'peakShare']
     },
     {
       id: 'limits',
       title: 'What to remember, and what to try',
-      body: 'This is **46 seasons overlaid, not one season**: a cluster of storms on one date was never at sea together. The six-hourly fixes are straight-lined, so a head between fixes is on the chord; tracks west of 105 W are cut; the **Maximum fix gap** option can hide a storm over a gap in the record. Each storm is placed on the calendar of the year it started, so a storm that lives past 1 January has days beyond 365 that the slider never reaches.\n\n**Try it:** set **Seasons shown** to a single year (for example 2005 to 2005) and replay it; set the **Playback window** to 1 June to 1 December (or 1 August to 1 October for the peak); compare *Wind now* with *Peak wind of the storm* on 15 September; slow **Playback speed** to 2 days per second and follow one storm from birth to death.',
+      headline: 'A folded calendar is not one season',
+      textAlternative: 'Faint Atlantic context tracks make clear that years have been stacked.',
+      optionsMode: 'fresh',
+      body: 'This is an overlay of seasons, not storms that were simultaneously at sea. Six-hourly fixes are joined by straight chords; a head between fixes is interpolated, and **Maximum fix gap** can hide uncertain intervals. A storm that crosses a year boundary may also extend beyond this folded calendar.\n\n**Try it:** show a single season and replay it; narrow the **Playback window** around the peak; compare *Wind now* with *Peak wind of the storm*; then slow playback and follow one route from birth to death.',
       options: {
         playing: true,
         speed: 4,

@@ -1,0 +1,114 @@
+{
+ "id": "us-county-births",
+ "version": 1,
+ "kind": "table",
+ "count": 3109,
+ "crs": "EPSG:4326",
+ "bbox": [
+  -124.7258,
+  24.4981,
+  -66.9499,
+  49.3844
+ ],
+ "columns": {
+  "births": {
+   "file": "births.bin",
+   "dtype": "float32",
+   "components": 1,
+   "length": 3109,
+   "description": "Live births 2021-2023 to mothers resident in the county (PEP components of change)",
+   "unit": "births"
+  },
+  "womenYears": {
+   "file": "womenYears.bin",
+   "dtype": "float32",
+   "components": 1,
+   "length": 3109,
+   "description": "Women aged 15-44, summed over the July 1 estimates of 2021, 2022 and 2023 (person-years at risk)",
+   "unit": "woman-years"
+  },
+  "population": {
+   "file": "population.bin",
+   "dtype": "float32",
+   "components": 1,
+   "length": 3109,
+   "description": "Resident population, mean of the July 1 estimates 2021-2023",
+   "unit": "persons"
+  },
+  "rawRate": {
+   "file": "rawRate.bin",
+   "dtype": "float32",
+   "components": 1,
+   "length": 3109,
+   "description": "General fertility rate: births per 1,000 women aged 15-44 per year, 2021-2023 (unsmoothed)",
+   "unit": "per 1,000 women per year"
+  },
+  "births2021": {
+   "file": "births2021.bin",
+   "dtype": "float32",
+   "components": 1,
+   "length": 3109,
+   "description": "Live births in 2021 (July 1 2020 to June 30 2021 estimate year)",
+   "unit": "births"
+  },
+  "women2021": {
+   "file": "women2021.bin",
+   "dtype": "float32",
+   "components": 1,
+   "length": 3109,
+   "description": "Women aged 15-44 on July 1 2021",
+   "unit": "women"
+  },
+  "births2022": {
+   "file": "births2022.bin",
+   "dtype": "float32",
+   "components": 1,
+   "length": 3109,
+   "description": "Live births in 2022 (July 1 2021 to June 30 2022 estimate year)",
+   "unit": "births"
+  },
+  "women2022": {
+   "file": "women2022.bin",
+   "dtype": "float32",
+   "components": 1,
+   "length": 3109,
+   "description": "Women aged 15-44 on July 1 2022",
+   "unit": "women"
+  },
+  "births2023": {
+   "file": "births2023.bin",
+   "dtype": "float32",
+   "components": 1,
+   "length": 3109,
+   "description": "Live births in 2023 (July 1 2022 to June 30 2023 estimate year)",
+   "unit": "births"
+  },
+  "women2023": {
+   "file": "women2023.bin",
+   "dtype": "float32",
+   "components": 1,
+   "length": 3109,
+   "description": "Women aged 15-44 on July 1 2023",
+   "unit": "women"
+  }
+ },
+ "properties": {
+  "alignedTo": "us-counties (same row order, sorted by FIPS)",
+  "event": "Live births by county of the mother's residence (Census PEP Vintage 2023 components of change)",
+  "usage": "Empirical Bayes: events = births, population at risk = womenYears. Rate = births / womenYears x 1,000 = general fertility rate per year.",
+  "caveats": [
+   "PEP births come from NCHS birth records; the most recent year is partly estimated.",
+   "Women 15-44 is a model-based estimate; in college towns students inflate it and lower the rate.",
+   "Contiguous US + DC; Connecticut as its 9 planning regions (Vintage 2023)."
+  ],
+  "sources": "US Census Bureau, Population Estimates Program Vintage 2023 (co-est2023-alldata, cc-est2023-agesex-all), public domain",
+  "storyNotes": [
+   "10,842,553 births in 2021-2023; pooled general fertility rate 55.5 per 1,000 women aged 15-44 per year.",
+   "Median county population 26,132; median population of the top 5 % raw rates 6,374, of the bottom 5 % 50,052 (the low end is pulled by college towns, whose students inflate the denominator).",
+   "Counties under 5,000 residents (n=309): raw rates 43-103 (5th-95th pct) vs 42-68 over 100,000.",
+   "Highest raw rates: Petroleum, MT 163 (29 births); Dallam, TX 141 (543 births); Jackson, SD 138 (212 births); Hamlin, SD 126 (411 births); Geary, KS 122 (2922 births).",
+   "Lowest raw rates: Harding, NM 0 (0 births); Loving, TX 0 (0 births); Williamsburg, VA 12 (168 births); Manassas Park, VA 18 (193 births); Watauga, NC 22 (931 births).",
+   "2 counties recorded no births in three years; 36 fewer than 30."
+  ]
+ }
+}

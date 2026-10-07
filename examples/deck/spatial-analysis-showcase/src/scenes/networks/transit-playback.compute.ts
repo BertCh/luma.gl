@@ -16,12 +16,11 @@ import {
 } from '@luma.gl/experimental/gpu-spatial-analysis';
 import {DrawCommandBuffer, GPUCommandGraph} from '@luma.gl/gpgpu/gpu-core';
 import {importGraphBuffer} from '../../engine/graph-buffers';
-import {SpatialAnalysisSegmentLayer} from '../../engine/layers';
+import {SpatialAnalysisPointLayer, SpatialAnalysisSegmentLayer} from '../../engine/layers';
 import {createPlaybackClock} from '../../engine/playback';
 import {formatCount, SpatialAnalysisResources} from '../../engine/resources';
 import {SummaryReader} from '../../engine/summary-reader';
 import {VesselMarkerLayer} from '../movement/b12-layers';
-import {binValues, histogramChart} from '../movement/f-chart-helpers';
 import type {SceneContext, SceneInstance} from '../scene';
 import {
   countVehiclesInService,
@@ -32,6 +31,10 @@ import {
   TRANSIT_MODES,
   TRANSIT_WINDOW_SECONDS
 } from './transit-data';
+import {
+  getTransitSpeedClassColors,
+  TRANSIT_SPEED_BREAKS_KILOMETERS_PER_HOUR
+} from './randstad-network-cartography';
 
 /** Option state of the transit playback scene. */
 export type TransitPlaybackOptions = {
@@ -41,8 +44,7 @@ export type TransitPlaybackOptions = {
   loop: boolean;
   modeFilter: string;
   markerColor: 'mode' | 'speed';
-  markerSize: number;
-  ramp: 'viridis' | 'magma' | 'inferno' | 'cividis';
+  hierarchy: 'flat' | 'weighted';
   showTrails: boolean;
   trailMinutes: number;
   tailFade: number;
@@ -52,11 +54,14 @@ export type TransitPlaybackOptions = {
 const NO_TRACK = 0xffffffff;
 /** Frames between status readbacks. */
 const STATUS_INTERVAL_FRAMES = 10;
-/** Speed in m/s at which the speed ramp ends (108 km/h). */
-const SPEED_RAMP_METERS_PER_SECOND = 30;
 const KILOMETERS_PER_HOUR = 3.6;
 /** Seconds between redraws of the live charts. */
 const CHART_INTERVAL_SECONDS = 0.25;
+const SPEED_CLASS_BREAKS_METERS_PER_SECOND = TRANSIT_SPEED_BREAKS_KILOMETERS_PER_HOUR.map(
+  speed => speed / KILOMETERS_PER_HOUR
+);
+const MODE_PAINTER_ORDER = [1, 0, 4, 2, 3] as const;
+const WEIGHTED_MARKER_SIZES = [6, 4, 8, 9, 8] as const;
 
 /**
  * Transit playback: one `GPUTrajectoryPlayhead` graph interpolates every scheduled trip at the
@@ -90,6 +95,16 @@ export async function createTransitPlayback(
     'segment-mask',
     new Uint32Array(segmentCount).fill(1)
   );
+  const dataFrameBuffer = resources.createBuffer('data-frame', 4 * 4 * 4);
+  const selectedRouteBuffer = resources.createBuffer(
+    'selected-route',
+    Math.max(1, trips.longestTrack - 1) * 4 * 4
+  );
+  const selectedVerticesBuffer = resources.createBuffer(
+    'selected-vertices',
+    Math.max(1, trips.longestTrack) * 2 * 4
+  );
+  const selectedBracketBuffer = resources.createBuffer('selected-bracket', 4 * 4);
 
   // ---- Playhead graph ---------------------------------------------------------------------------
   const currentPositions = resources.createBuffer('current-positions', trackCount * 8);
@@ -263,9 +278,70 @@ export async function createTransitPlayback(
   let statusStale = true;
   let lastChartSeconds = -Infinity;
   let lastChartKey = '';
+  let furnitureKey = '';
+  let latestActiveCount: number | null = null;
+  let legendGround: 'light' | 'dark' | null = null;
   let statusSnapshot: {status: Uint32Array; positions: Float32Array; speeds: Float32Array} | null =
     null;
   const modeCounts = new Float64Array(TRANSIT_MODES.length);
+
+  function publishFurniture(): void {
+    const clockMinute = Math.floor(playhead / 60);
+    const active =
+      latestActiveCount === null
+        ? 'active count pending'
+        : `${formatCount(latestActiveCount)} in service`;
+    const key = `${clockMinute}|${active}`;
+    if (key === furnitureKey) return;
+    furnitureKey = key;
+    ctx.setFurniture({
+      title: {
+        subtitle: `Randstad timetable · ${formatTransitClock(playhead)} CEST · ${active}`,
+        chips: ['Scheduled, not observed']
+      },
+      scaleBar: {units: 'metric'}
+    });
+  }
+
+  function publishLegendGround(): void {
+    const ground = ctx.ground();
+    if (ground === legendGround) return;
+    legendGround = ground;
+    ctx.setLegendData('ground', ground);
+  }
+
+  function writeDataFrame(): void {
+    let minX = Infinity;
+    let minY = Infinity;
+    let maxX = -Infinity;
+    let maxY = -Infinity;
+    for (let vertex = 0; vertex < vertexCount; vertex++) {
+      minX = Math.min(minX, trips.positions[vertex * 2]);
+      minY = Math.min(minY, trips.positions[vertex * 2 + 1]);
+      maxX = Math.max(maxX, trips.positions[vertex * 2]);
+      maxY = Math.max(maxY, trips.positions[vertex * 2 + 1]);
+    }
+    dataFrameBuffer.write(
+      new Float32Array([
+        minX,
+        minY,
+        maxX,
+        minY,
+        maxX,
+        minY,
+        maxX,
+        maxY,
+        maxX,
+        maxY,
+        minX,
+        maxY,
+        minX,
+        maxY,
+        minX,
+        minY
+      ])
+    );
+  }
 
   // In-service curve, counted once on the CPU.
   const inService = countVehiclesInService(trips, 60);
@@ -326,22 +402,25 @@ export async function createTransitPlayback(
 
   function updateSpeedChart(): void {
     if (!statusSnapshot) return;
-    const values: number[] = [];
+    const values = new Float64Array(5);
     for (let trip = 0; trip < trackCount; trip++) {
       if (statusSnapshot.status[trip] === GPU_TRAJECTORY_PLAYHEAD_STATUS.active) {
-        values.push(statusSnapshot.speeds[trip] * KILOMETERS_PER_HOUR);
+        const speed = statusSnapshot.speeds[trip] * KILOMETERS_PER_HOUR;
+        const index = TRANSIT_SPEED_BREAKS_KILOMETERS_PER_HOUR.findIndex(
+          threshold => speed < threshold
+        );
+        values[index < 0 ? values.length - 1 : index]++;
       }
     }
-    ctx.setChart(
-      'speedChart',
-      histogramChart(binValues(values, 0, 150, 15), 0, 150, {
-        xLabel: 'speed of the vehicle now (km/h)',
-        yLabel: 'vehicles',
-        formatX: value => `${Math.round(value)}`,
-        description:
-          'Histogram of the scheduled speed of every vehicle in service at the playhead. Trams and buses sit below 40 km/h, trains reach 100 to 160.'
-      })
-    );
+    ctx.setChart('speedChart', {
+      kind: 'bars',
+      height: 110,
+      values,
+      labels: ['0–15', '15–30', '30–60', '60–100', '100+'],
+      yLabel: 'vehicles',
+      description:
+        'Fixed scheduled-speed classes of every vehicle in service at the playhead. These are the same classes drawn on the map.'
+    });
   }
 
   function writeSegmentMask(): void {
@@ -374,7 +453,58 @@ export async function createTransitPlayback(
     );
   }
 
+  function updateSelectionEvidence(): void {
+    if (selectedTrip === NO_TRACK) {
+      ctx.setReadout('binarySearch', 'Waiting for an active scheduled trip');
+      ctx.setChart('binarySearch', null);
+      return;
+    }
+    const first = trips.offsets[selectedTrip];
+    const last = trips.offsets[selectedTrip + 1] - 1;
+    let lower = first;
+    let upper = last;
+    while (upper - lower > 1) {
+      const middle = (lower + upper) >>> 1;
+      if (trips.timestamps[middle] <= playhead) lower = middle;
+      else upper = middle;
+    }
+    const start = trips.timestamps[lower];
+    const end = trips.timestamps[upper];
+    const fraction = end > start ? Math.max(0, Math.min(1, (playhead - start) / (end - start))) : 0;
+    const route = new Float32Array(Math.max(1, trips.longestTrack - 1) * 4).fill(Number.NaN);
+    for (let vertex = first; vertex < last; vertex++) {
+      const target = (vertex - first) * 4;
+      route.set(trips.positions.subarray(vertex * 2, vertex * 2 + 4), target);
+    }
+    selectedRouteBuffer.write(route);
+    const vertices = new Float32Array(Math.max(1, trips.longestTrack) * 2).fill(Number.NaN);
+    vertices.set(trips.positions.subarray(first * 2, (last + 1) * 2));
+    selectedVerticesBuffer.write(vertices);
+    selectedBracketBuffer.write(
+      new Float32Array([
+        trips.positions[lower * 2],
+        trips.positions[lower * 2 + 1],
+        trips.positions[upper * 2],
+        trips.positions[upper * 2 + 1]
+      ])
+    );
+    ctx.setReadout(
+      'binarySearch',
+      `${formatTransitClock(start)} → ${formatTransitClock(end)} · ${(fraction * 100).toFixed(0)}%`
+    );
+    ctx.setChart('binarySearch', {
+      kind: 'diagram',
+      width: 360,
+      height: 86,
+      description: `Selected ${describeTrip(selectedTrip)}: the binary-search bracket around the current playhead and its interpolation fraction.`,
+      svg: `<line x1="24" y1="42" x2="336" y2="42" class="diagram-muted" stroke-width="3"/><circle cx="58" cy="42" r="6" class="diagram-ink"/><circle cx="302" cy="42" r="6" class="diagram-ink"/><line x1="${58 + 244 * fraction}" y1="18" x2="${58 + 244 * fraction}" y2="66" class="diagram-signal" stroke-width="3"/><text x="58" y="80" text-anchor="middle">${formatTransitClock(start)}</text><text x="302" y="80" text-anchor="middle">${formatTransitClock(end)}</text><text x="${58 + 244 * fraction}" y="14" text-anchor="middle">${(fraction * 100).toFixed(0)}%</text>`
+    });
+  }
+
   writeSegmentMask();
+  writeDataFrame();
+  publishLegendGround();
+  publishFurniture();
   updateInServiceChart();
   updateModeChart();
   describeSelection();
@@ -412,6 +542,8 @@ export async function createTransitPlayback(
         else if (value === GPU_TRAJECTORY_PLAYHEAD_STATUS.afterEnd) after++;
       }
       ctx.setReadout('active', words[0]);
+      latestActiveCount = words[0];
+      publishFurniture();
       ctx.setReadout('waiting', before);
       ctx.setReadout('finished', after);
       ctx.setReadout('trailSegments', words[trailStart]);
@@ -427,7 +559,20 @@ export async function createTransitPlayback(
         updateSpeedChart();
         updateInServiceChart();
       }
+      if (
+        selectedTrip === NO_TRACK ||
+        statusSnapshot.status[selectedTrip] !== GPU_TRAJECTORY_PLAYHEAD_STATUS.active
+      ) {
+        const filter = modeIndexOfFilter();
+        selectedTrip = statusSnapshot.status.findIndex(
+          (value, trip) =>
+            value === GPU_TRAJECTORY_PLAYHEAD_STATUS.active &&
+            (filter < 0 || trips.mode[trip] === filter)
+        );
+        if (selectedTrip < 0) selectedTrip = NO_TRACK;
+      }
       describeSelection();
+      updateSelectionEvidence();
     }
   );
 
@@ -479,6 +624,7 @@ export async function createTransitPlayback(
     },
 
     onThemeChange() {
+      publishLegendGround();
       ctx.requestLayers();
     },
 
@@ -487,6 +633,7 @@ export async function createTransitPlayback(
       // Paused, the clock sits on the slider, so story steps and deep links are deterministic.
       playhead = clock.advance(frame);
       ctx.setReadout('clock', `${formatTransitClock(playhead)} CEST`);
+      publishFurniture();
 
       playheadParameters.write(getGPUTrajectoryPlayheadParameterValues({playhead, maxGap: 0}));
       playheadCompiled.encode(commandEncoder, {parameters: undefined});
@@ -512,7 +659,8 @@ export async function createTransitPlayback(
 
     getLayers() {
       const options = ctx.options;
-      const dark = ctx.theme() === 'dark';
+      const dark = ctx.ground() === 'dark';
+      publishLegendGround();
       const layers: Layer[] = [];
       if (options.showBackdrop) {
         layers.push(
@@ -521,11 +669,22 @@ export async function createTransitPlayback(
             coordinateOrigin,
             segments: segmentsBuffer,
             instanceCount: segmentCount,
-            widthPixels: 1,
+            widthPixels: 0.7,
             color: dark ? [190, 200, 220, 22] : [60, 70, 90, 34]
           })
         );
       }
+      layers.push(
+        new SpatialAnalysisSegmentLayer({
+          id: 'transit-data-frame',
+          coordinateOrigin,
+          segments: dataFrameBuffer,
+          instanceCount: 4,
+          widthPixels: 0.9,
+          dashArray: [5, 4],
+          color: dark ? [225, 232, 250, 135] : [36, 46, 70, 135]
+        })
+      );
       if (options.showTrails) {
         layers.push(
           new SpatialAnalysisSegmentLayer({
@@ -541,31 +700,64 @@ export async function createTransitPlayback(
             valueIndices: segmentTripsBuffer,
             colormap: 'category',
             palette: TRANSIT_MODE_COLORS,
-            widthPixels: 2.2
+            widthPixels: 2.4
           })
         );
       }
-      const filter = modeIndexOfFilter();
-      layers.push(
-        new VesselMarkerLayer({
-          id: 'transit-vehicles',
-          coordinateOrigin,
-          ids: activeIds,
-          positions: currentPositions,
-          headings,
-          speeds,
-          categories: modeBuffer,
-          drawCommands: markerDraw,
-          sizePixels: options.markerSize,
-          colorMode: options.markerColor === 'speed' ? 'speed' : 'category',
-          ramp: options.ramp,
-          speedForFullColor: SPEED_RAMP_METERS_PER_SECOND,
-          palette: TRANSIT_MODE_COLORS,
-          categoryFilter: filter >= 0 ? filter : null,
-          selectedTrack: selectedTrip === NO_TRACK ? null : selectedTrip,
-          outlineColor: dark ? [8, 10, 16, 235] : [20, 24, 32, 215]
-        })
-      );
+      const requestedMode = modeIndexOfFilter();
+      const markerPalette =
+        options.markerColor === 'speed' ? getTransitSpeedClassColors(dark) : TRANSIT_MODE_COLORS;
+      for (const mode of MODE_PAINTER_ORDER) {
+        if (requestedMode >= 0 && requestedMode !== mode) continue;
+        layers.push(
+          new VesselMarkerLayer({
+            id: `transit-vehicles-${TRANSIT_MODES[mode]}`,
+            coordinateOrigin,
+            ids: activeIds,
+            positions: currentPositions,
+            headings,
+            speeds,
+            categories: modeBuffer,
+            drawCommands: markerDraw,
+            sizePixels: options.hierarchy === 'weighted' ? WEIGHTED_MARKER_SIZES[mode] : 6,
+            colorMode: options.markerColor === 'speed' ? 'speedClasses' : 'category',
+            speedClassBreaks: SPEED_CLASS_BREAKS_METERS_PER_SECOND,
+            palette: markerPalette,
+            categoryFilter: mode,
+            selectedTrack: selectedTrip === NO_TRACK ? null : selectedTrip,
+            outlineColor: dark ? [8, 10, 16, 235] : [20, 24, 32, 215]
+          })
+        );
+      }
+      if (selectedTrip !== NO_TRACK) {
+        layers.push(
+          new SpatialAnalysisSegmentLayer({
+            id: 'transit-selected-timetable',
+            coordinateOrigin,
+            segments: selectedRouteBuffer,
+            instanceCount: Math.max(1, trips.longestTrack - 1),
+            widthPixels: 1.5,
+            color: dark ? [255, 255, 255, 190] : [20, 25, 36, 190]
+          }),
+          new SpatialAnalysisPointLayer({
+            id: 'transit-selected-timetable-vertices',
+            coordinateOrigin,
+            positions: selectedVerticesBuffer,
+            instanceCount: Math.max(1, trips.longestTrack),
+            radiusPixels: 2.5,
+            color: [255, 218, 74, 235]
+          }),
+          new SpatialAnalysisSegmentLayer({
+            id: 'transit-selected-bracket',
+            coordinateOrigin,
+            segments: selectedBracketBuffer,
+            instanceCount: 1,
+            widthPixels: 3,
+            dashArray: [4, 3],
+            color: [255, 218, 74, 255]
+          })
+        );
+      }
       return layers;
     },
 
@@ -573,7 +765,7 @@ export async function createTransitPlayback(
       const trip = pickVehicle(event.pixel);
       if (trip < 0 || !statusSnapshot) return null;
       const speed = statusSnapshot.speeds[trip] * KILOMETERS_PER_HOUR;
-      return `${describeTrip(trip)}, ${speed.toFixed(0)} km/h (scheduled)`;
+      return `${describeTrip(trip)} · ${TRANSIT_MODE_LABELS[TRANSIT_MODES[trips.mode[trip]]]} · ${formatTransitClock(playhead)} CEST · ${speed.toFixed(0)} km/h scheduled · ${formatTransitClock(trips.startTime[trip])}–${formatTransitClock(trips.endTime[trip])}`;
     },
 
     onClick(event) {

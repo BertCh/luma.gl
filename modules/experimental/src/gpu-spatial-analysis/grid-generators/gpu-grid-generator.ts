@@ -105,15 +105,34 @@ export function getGPUGridCellCount(gridType: GPUGridType, columns: number, rows
   return columns * rows * (gridType === 'triangle' ? 2 : 1);
 }
 
+/** Number of unique vertices in a square or hexagonal grid, including its boundary. */
+export function getGPUGridCornerCount(
+  gridType: 'square' | 'hex',
+  columns: number,
+  rows: number
+): number {
+  return gridType === 'square' ? (columns + 1) * (rows + 1) : 2 * (columns * rows + columns + rows);
+}
+
 /** Caller-owned outputs of {@link GPUGridGenerator}. */
 export type GPUGridGeneratorOutput = {
   /**
    * Polygon vertices, `cellCount * verticesPerCell` rows, counter-clockwise, cell `c` owning rows
-   * `[c * verticesPerCell, (c + 1) * verticesPerCell)`. Required except for `'point'` grids.
+   * `[c * verticesPerCell, (c + 1) * verticesPerCell)`. Required for polygon grids unless
+   * `corners` is supplied.
    */
   positions?: GraphDataView<'float32x2'>;
   /** Cell centers (vertex mean for triangles), `cellCount` rows. Required for `'point'` grids. */
   centers?: GraphDataView<'float32x2'>;
+  /**
+   * Unique square or hexagonal grid vertices, `getGPUGridCornerCount(...)` rows. Square corners
+   * are row-major. Hex corners follow first encounter in pointy cell/ring order; flat hexagons
+   * transpose that traversal (columns first). Shared vertices occur once, including the boundary.
+   * This implements GeoPandas `make_grid(feature_type='corners')` for the fixed grid block.
+   */
+  corners?: GraphDataView<'float32x2'>;
+  /** Optional boundary-inclusive extent mask per corner. Requires `corners` and `extent`. */
+  cornerIntersects?: GraphDataView<'uint32'>;
   /**
    * Optional `uint32` per cell, `cellCount` rows: 1 when the cell intersects
    * {@link GPUGridGeneratorProps.extent} (boundary contact counts), else 0. Point grids test the
@@ -123,7 +142,7 @@ export type GPUGridGeneratorOutput = {
 };
 
 /**
- * Polygon geometry that {@link GPUGridGeneratorOutput.intersects} tests cells against, the
+ * Polygon geometry that the cell and corner intersection outputs test against, the
  * `intersect=True` filter of GeoPandas `make_grid`.
  *
  * All rings are combined with the even-odd rule, so holes and multi-polygons work as long as the
@@ -158,7 +177,7 @@ export type GPUGridGeneratorProps = {
    * shifts odd columns up by half a cell. Compile time.
    */
   hexOrientation?: 'pointy' | 'flat';
-  /** Polygon the optional `output.intersects` mask is computed against. Compile time. */
+  /** Polygon the optional cell and corner intersection masks are computed against. Compile time. */
   extent?: GPUGridGeneratorExtent;
   /** Per-frame packed float32 view written with {@link getGPUGridGeneratorParameterValues}. */
   parameters: GraphDataView<'float32'>;
@@ -195,6 +214,11 @@ export type GPUGridGeneratorProps = {
  * corners are f32 (hexagon corners use `sin` and `cos`), so cells that only touch the extent within
  * f32 rounding can differ from an f64 reference.
  *
+ * Unique corners: square and hex grids optionally emit `output.corners`, using integer lattice
+ * ownership to avoid repeated shared vertices. Polygon positions can be omitted for corners-only
+ * generation. `output.cornerIntersects` tests these points directly against `extent`, including
+ * its boundary, independently of the per-cell mask. Masks do not compact either output.
+ *
  * Precision: f32 from the f32 origin and size; coordinates far from the origin lose absolute
  * precision like any f32 positions (use tile-local coordinates for fine grids).
  */
@@ -207,6 +231,8 @@ export class GPUGridGenerator implements GPUCommandNodeProducer {
   readonly cellCount: number;
   /** Vertices per polygon cell (0 for points). */
   readonly verticesPerCell: number;
+  /** Unique square/hexagonal corner count; zero for triangle and point grids. */
+  readonly cornerCount: number;
 
   constructor(props: GPUGridGeneratorProps) {
     this.id = props.id ?? 'grid-generator';
@@ -230,6 +256,10 @@ export class GPUGridGenerator implements GPUCommandNodeProducer {
       }
     }
     this.cellCount = getGPUGridCellCount(props.gridType, props.columns, props.rows);
+    this.cornerCount =
+      props.gridType === 'square' || props.gridType === 'hex'
+        ? getGPUGridCornerCount(props.gridType, props.columns, props.rows)
+        : 0;
     if (this.cellCount * Math.max(this.verticesPerCell, 1) > 0x7fffffff) {
       throw new Error(`${id} grid is too large`);
     }
@@ -239,7 +269,23 @@ export class GPUGridGenerator implements GPUCommandNodeProducer {
         `${id} parameters must hold ${GPU_GRID_GENERATOR_PARAMETER_LENGTH} float32 values`
       );
     }
-    const {positions, centers} = props.output;
+    const {positions, centers, corners, cornerIntersects} = props.output;
+    if (corners) {
+      validatePackedView(corners, ['float32x2'], `${id} output.corners`);
+      if (
+        !this.cornerCount ||
+        this.cornerCount > 0x7fffffff ||
+        corners.length !== this.cornerCount
+      ) {
+        throw new Error(`${id} output.corners needs a correctly sized square or hex grid`);
+      }
+    }
+    if (cornerIntersects) {
+      validatePackedView(cornerIntersects, ['uint32'], `${id} output.cornerIntersects`);
+      if (!corners || cornerIntersects.length !== this.cornerCount) {
+        throw new Error(`${id} output.cornerIntersects needs one row per output corner`);
+      }
+    }
     if (props.gridType === 'point') {
       if (!centers) {
         throw new Error(`${id} point grids need output.centers`);
@@ -247,7 +293,7 @@ export class GPUGridGenerator implements GPUCommandNodeProducer {
       if (positions) {
         throw new Error(`${id} point grids have no output.positions`);
       }
-    } else if (!positions) {
+    } else if (!positions && !corners) {
       throw new Error(`${id} ${props.gridType} grids need output.positions`);
     }
     if (positions) {
@@ -276,42 +322,46 @@ export class GPUGridGenerator implements GPUCommandNodeProducer {
       throw new Error(`${id} hexOrientation 'flat' needs gridType 'hex'`);
     }
     const {extent} = props;
-    if (Boolean(intersects) !== Boolean(extent)) {
-      throw new Error(`${id} output.intersects and extent must be given together`);
+    if (Boolean(intersects || cornerIntersects) !== Boolean(extent)) {
+      throw new Error(`${id} extent needs an intersection output and vice versa`);
     }
-    if (intersects && extent) {
-      validatePackedView(intersects, ['uint32'], `${id} output.intersects`);
+    if (extent) {
+      if (intersects) {
+        validatePackedView(intersects, ['uint32'], `${id} output.intersects`);
+      }
       validatePackedView(extent.positions, ['float32x2'], `${id} extent.positions`);
       validatePackedView(extent.ringOffsets, ['uint32'], `${id} extent.ringOffsets`);
-      if (intersects.length !== this.cellCount) {
+      if (intersects && intersects.length !== this.cellCount) {
         throw new Error(`${id} output.intersects must hold ${this.cellCount} rows`);
       }
       if (extent.ringOffsets.length < 2) {
         throw new Error(`${id} extent.ringOffsets needs at least one ring`);
       }
-      if (props.gridType === 'point' ? !centers : !positions) {
+      if (intersects && (props.gridType === 'point' ? !centers : !positions)) {
         throw new Error(`${id} output.intersects needs the cell geometry output`);
       }
     }
     validateGraphOutputsDisjointFromInputs(
       id,
-      [positions, centers, intersects],
+      [positions, centers, corners, intersects, cornerIntersects],
       [props.parameters, extent?.positions, extent?.ringOffsets]
     );
   }
 
-  /** Returns the single generation node. */
+  /** Returns generation nodes and any requested extent-mask nodes. */
   getCommandNodes<Parameters>(
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
     const {props, id} = this;
-    const {positions, centers} = props.output;
+    const {positions, centers, corners, cornerIntersects} = props.output;
     const {intersects} = props.output;
     const {extent} = props;
     validateGraphViewsBelongToGraph(id, graph, [
       props.parameters,
       positions,
       centers,
+      corners,
+      cornerIntersects,
       intersects,
       extent?.positions,
       extent?.ringOffsets
@@ -326,19 +376,21 @@ export class GPUGridGenerator implements GPUCommandNodeProducer {
     if (centers) {
       bindings.push({name: 'centersOut', view: centers, type: 'f32', access: 'read_write'});
     }
-    const nodes = [
-      createWGSLKernelNode<Parameters>(graph, {
-        id: `${id}-generate`,
-        operation: OPERATION,
-        variant: isFlatHex ? 'hex-flat' : props.gridType,
-        bindings,
-        invocationCount: this.cellCount,
-        declarations: `const COLUMNS: u32 = ${props.columns}u;
+    const nodes: GPUCommandNode<Parameters>[] = [];
+    if (positions || centers) {
+      nodes.push(
+        createWGSLKernelNode<Parameters>(graph, {
+          id: `${id}-generate`,
+          operation: OPERATION,
+          variant: isFlatHex ? 'hex-flat' : props.gridType,
+          bindings,
+          invocationCount: this.cellCount,
+          declarations: `const COLUMNS: u32 = ${props.columns}u;
 const SQRT3: f32 = 1.7320508;
 const CELLS_PER_ROW: u32 = ${props.gridType === 'triangle' ? 2 * props.columns : props.columns}u;
 
 ${positions ? 'fn writeVertex(cell: u32, slot: u32, p: vec2<f32>) {\n  let base = positionsOutOffset + 2u * (cell * ' + this.verticesPerCell + 'u + slot);\n  positionsOut[base] = p.x;\n  positionsOut[base + 1u] = p.y;\n}' : ''}`,
-        body: `let origin = vec2<f32>(parameters[parametersOffset], parameters[parametersOffset + 1u]);
+          body: `let origin = vec2<f32>(parameters[parametersOffset], parameters[parametersOffset + 1u]);
   let w = parameters[parametersOffset + 2u];
   let h = parameters[parametersOffset + 3u];
   let row = index / CELLS_PER_ROW;
@@ -347,28 +399,61 @@ ${positions ? 'fn writeVertex(cell: u32, slot: u32, p: vec2<f32>) {\n  let base 
   var center = vec2<f32>(0.0);
 ${getGridBody(props.gridType, Boolean(positions), isFlatHex)}
   ${centers ? 'centersOut[centersOutOffset + 2u * index] = center.x;\n  centersOut[centersOutOffset + 2u * index + 1u] = center.y;' : ''}`
-      })
-    ];
-    if (intersects && extent) {
-      const isPoint = props.gridType === 'point';
+        })
+      );
+    }
+    if (corners) {
       nodes.push(
         createWGSLKernelNode<Parameters>(graph, {
-          id: `${id}-intersects`,
+          id: `${id}-corners`,
+          operation: OPERATION,
+          variant: isFlatHex ? 'corners-hex-flat' : `corners-${props.gridType}`,
+          bindings: [
+            {name: 'parameters', view: props.parameters, type: 'f32', access: 'read'},
+            {name: 'cornersOut', view: corners, type: 'f32', access: 'read_write'}
+          ],
+          invocationCount: this.cornerCount,
+          declarations: `const COLUMNS: u32 = ${isFlatHex ? props.rows : props.columns}u;`,
+          body: `let origin = vec2f(parameters[parametersOffset], parameters[parametersOffset + 1u]);
+  let width = parameters[parametersOffset + 2u];
+  let height = parameters[parametersOffset + 3u];
+  ${getCornerBody(props.gridType === 'square', isFlatHex)}
+  cornersOut[cornersOutOffset + 2u * index] = corner.x;
+  cornersOut[cornersOutOffset + 2u * index + 1u] = corner.y;`
+        })
+      );
+    }
+    for (const [mask, geometry, count, isPoint, suffix] of [
+      [
+        intersects,
+        props.gridType === 'point' ? centers : positions,
+        this.cellCount,
+        props.gridType === 'point',
+        'intersects'
+      ],
+      [cornerIntersects, corners, this.cornerCount, true, 'corner-intersects']
+    ] as const) {
+      if (!mask || !extent) {
+        continue;
+      }
+      nodes.push(
+        createWGSLKernelNode<Parameters>(graph, {
+          id: `${id}-${suffix}`,
           operation: OPERATION,
           variant: 'intersects',
           bindings: [
             {
               name: 'cellVertices',
-              view: (isPoint ? centers : positions) as GraphDataView,
+              view: geometry as GraphDataView,
               type: 'f32',
               access: 'read'
             },
             {name: 'extentPositions', view: extent.positions, type: 'f32', access: 'read'},
             {name: 'extentRingOffsets', view: extent.ringOffsets, type: 'u32', access: 'read'},
-            {name: 'intersectsOut', view: intersects, type: 'u32', access: 'read_write'}
+            {name: 'intersectsOut', view: mask, type: 'u32', access: 'read_write'}
           ],
-          invocationCount: this.cellCount,
-          declarations: `const VERTICES_PER_CELL: u32 = ${Math.max(this.verticesPerCell, 1)}u;
+          invocationCount: count,
+          declarations: `const VERTICES_PER_CELL: u32 = ${isPoint ? 1 : this.verticesPerCell}u;
 const IS_POINT: bool = ${isPoint};
 const RING_COUNT: u32 = ${extent.ringOffsets.length - 1}u;
 const EXTENT_VERTEX_COUNT: u32 = ${extent.positions.length}u;
@@ -380,6 +465,46 @@ ${INTERSECT_WGSL}`,
     }
     return nodes;
   }
+}
+
+/** Enumerates shared vertices by integer lattice ownership, without float hashing. @internal */
+function getCornerBody(isSquare: boolean, isFlatHex: boolean): string {
+  if (isSquare) {
+    return `let corner = origin + vec2f(f32(index % (COLUMNS + 1u)) * width,
+    f32(index / (COLUMNS + 1u)) * height);`;
+  }
+  return `var row = 0u;
+  var column = 0u;
+  var slot = index;
+  let firstRowCount = 4u * COLUMNS + 2u;
+  if (index < firstRowCount) {
+    if (index >= 6u) {
+      column = 1u + (index - 6u) / 4u;
+      slot = (index - 6u) % 4u;
+      slot = select(slot, slot + 2u, slot >= 2u);
+    }
+  } else {
+    let rowCount = 2u * COLUMNS + 2u;
+    row = 1u + (index - firstRowCount) / rowCount;
+    let local = (index - firstRowCount) % rowCount;
+    let firstCellCount = select(4u, 3u, (row & 1u) == 1u);
+    slot = local;
+    if (local >= firstCellCount) {
+      column = 1u + (local - firstCellCount) / 2u;
+      slot = (local - firstCellCount) % 2u;
+    }
+    // The right boundary of an odd row adds the bottom-right vertex of its final cell.
+    if ((row & 1u) == 1u && local == rowCount - 1u) {
+      column = COLUMNS - 1u;
+      slot = 5u;
+    }
+  }
+  let horizontal = array<i32, 6>(1, 0, -1, -1, 0, 1);
+  let vertical = array<i32, 6>(1, 2, 1, -1, -2, -1);
+  let lattice = vec2f(f32(2u * column + (row & 1u)) + f32(horizontal[slot]) + 1.0,
+    f32(3u * row) + f32(vertical[slot]) + 2.0);
+  let displacement = lattice * vec2f(0.5 * width, 0.5 * width / 1.7320508);
+  let corner = origin + displacement${isFlatHex ? '.yx' : ''};`;
 }
 
 /** WGSL that tests one convex counter-clockwise cell against even-odd extent rings. @internal */

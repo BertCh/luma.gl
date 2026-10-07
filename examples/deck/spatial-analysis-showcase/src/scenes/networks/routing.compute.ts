@@ -21,6 +21,7 @@ import {
 import {importGraphBuffer} from '../../engine/graph-buffers';
 import {SpatialAnalysisPointLayer, SpatialAnalysisSegmentLayer} from '../../engine/layers';
 import {addKernelPass} from '../../engine/mode-kernels';
+import {makeClassTable} from '../../cartography/class-table';
 import {SpatialAnalysisResources} from '../../engine/resources';
 import {SummaryReader} from '../../engine/summary-reader';
 import type {SceneContext, SceneInstance} from '../scene';
@@ -42,8 +43,7 @@ export type RoutingOptions = {
   closeExpressways: boolean;
   expresswaySlowdown: number;
   intersectionDelay: number;
-  base: 'time' | 'hops' | 'none';
-  ramp: 'viridis' | 'magma' | 'inferno' | 'cividis';
+  base: 'time' | 'delta' | 'hops' | 'none';
   showRoute: boolean;
   showTurnRoute: boolean;
   angleCost: number;
@@ -83,16 +83,30 @@ const HOOD_NODE_CAPACITY = 8192;
 const HOOD_EDGE_CAPACITY = 16384;
 const BAN_CAPACITY = 8192;
 const MAXIMUM_SOURCES = 16;
-const ROUTE_COLOR = [255, 96, 64, 255] as const;
-const TURN_ROUTE_COLOR = [40, 190, 255, 255] as const;
-const DESTINATION_PALETTE: readonly (readonly [number, number, number, number])[] = [
-  [255, 70, 200, 255],
-  [255, 148, 72, 255],
-  [245, 220, 87, 255],
-  [87, 235, 168, 255],
-  [189, 122, 255, 255],
-  [107, 158, 255, 255]
-];
+const ROUTE_COLOR = [230, 120, 48, 255] as const;
+const TURN_ROUTE_COLOR = [113, 72, 150, 255] as const;
+const UNREACHED_NEUTRAL = [117, 122, 132, 105] as const;
+const DESTINATION_COLOR = [35, 38, 48, 255] as const;
+
+/** Fixed tables are shared by the layers and legends; scenario changes never rescale either. */
+export const ROUTING_TIME_TABLE = makeClassTable({
+  breaks: [10 * 60, 20 * 60, 30 * 60, 45 * 60, 60 * 60],
+  scheme: 'YlGnBu',
+  reverse: true,
+  labels: ['0–10', '10–20', '20–30', '30–45', '45–60', '60–90 min'],
+  unit: 'min',
+  extent: [0, 90 * 60],
+  noData: {color: UNREACHED_NEUTRAL, label: 'Unreached'}
+});
+export const SCENARIO_DELTA_TABLE = makeClassTable({
+  breaks: [0, 5 * 60, 10 * 60, 20 * 60],
+  scheme: 'PuRd',
+  labels: ['No added time', '0–5', '5–10', '10–20', '>20 min'],
+  unit: 'min',
+  extent: [0, 20 * 60],
+  transparent: [0],
+  noData: {color: UNREACHED_NEUTRAL, label: 'Unreachable in scenario'}
+});
 
 type TreeGraph = {
   compiled: CompiledGPUCommandGraph<void>;
@@ -126,6 +140,9 @@ export async function createRouting(
   const offsetsBuffer = resources.createBuffer('offsets', network.offsets);
   const neighborsBuffer = resources.createBuffer('neighbors', network.targets);
   const weightsBuffer = resources.createBuffer('weights', edgeCount * 4);
+  // This buffer is never rewritten by the congestion or closure controls. It is the actual
+  // free-flow edge-cost state used by the retained comparison tree below.
+  const freeFlowWeightsBuffer = resources.createBuffer('free-flow-weights', edgeCount * 4);
   const nodePositionsBuffer = resources.createBuffer('node-positions', network.nodePositions);
   const segmentsBuffer = resources.createBuffer('segments', network.segments);
   const majorSegmentsBuffer = resources.createBuffer('major-segments', network.majorSegments);
@@ -233,6 +250,13 @@ export async function createRouting(
   const pathCosts = resources.createBuffer('path-costs', MAXIMUM_DESTINATIONS * 4);
   const pathFound = resources.createBuffer('path-found', MAXIMUM_DESTINATIONS * 4);
   const routeFlags = resources.createBuffer('route-flags', edgeCount * 4);
+  const freeFlowTreeCosts = resources.createBuffer('free-flow-tree-costs', nodeCount * 4);
+  const freeFlowPredecessors = resources.createBuffer('free-flow-predecessors', nodeCount * 4);
+  const freeFlowConverged = resources.createBuffer('free-flow-converged', 4);
+  const freeFlowIterations = resources.createBuffer('free-flow-iterations', 4);
+  const scenarioDeltaCosts = resources.createBuffer('scenario-delta-costs', nodeCount * 4);
+  const scenarioUnreached = resources.createBuffer('scenario-unreached', nodeCount * 4);
+  const selectedRouteFlags = resources.createBuffer('selected-route-flags', edgeCount * 4);
 
   const hopDistances = resources.createBuffer('hop-distances', nodeCount * 4);
   const hoodEdgeMask = resources.createBuffer('hood-edge-mask', edgeCount * 4);
@@ -282,16 +306,20 @@ export async function createRouting(
   writeDestinationPlaces();
 
   const costs = new Float32Array(edgeCount);
+  const freeFlowCosts = new Float32Array(edgeCount);
   let destroyed = false;
   let graphs: {
+    freeFlow: CompiledGPUCommandGraph<void>;
     tree: TreeGraph;
     hood: CompiledGPUCommandGraph<void>;
     turns: CompiledGPUCommandGraph<void>;
   } | null = null;
+  let freeFlowDirty = 2;
   let treeDirty = 2;
   let hoodDirty = 2;
   let turnDirty = 2;
   let cpuCosts: Float32Array | null = null;
+  let cpuFreeFlowCosts: Float32Array | null = null;
   let cpuHops: Uint32Array | null = null;
   const summary = {
     treeFound: new Uint32Array(MAXIMUM_DESTINATIONS),
@@ -317,6 +345,15 @@ export async function createRouting(
     );
     weightsBuffer.write(costs);
     ctx.setReadout('expressways', options.closeExpressways ? 'closed' : 'open');
+  };
+
+  const writeFreeFlowCosts = () => {
+    writeDriveCosts(
+      network,
+      {closeExpressways: false, expresswaySlowdown: 1, intersectionDelay: 0},
+      freeFlowCosts
+    );
+    freeFlowWeightsBuffer.write(freeFlowCosts);
   };
 
   const writeOriginAndMarkers = () => {
@@ -372,6 +409,7 @@ export async function createRouting(
   // ---- Graphs ------------------------------------------------------------------------------
   function buildGraphs(localIterations: number): void {
     if (graphs) {
+      resources.release(graphs.freeFlow);
       resources.release(graphs.tree.compiled);
       resources.release(graphs.hood);
       resources.release(graphs.turns);
@@ -392,6 +430,29 @@ export async function createRouting(
         return view as unknown as GraphDataView<Format>;
       };
     };
+
+    // Keep the free-flow shortest-path tree in a separate buffer. Scenario weight rewrites must
+    // never replace this reference, even when expressways are closed.
+    const freeFlowGraph = new GPUCommandGraph<void>(device, {id: 'routing-free-flow'});
+    {
+      const view = importer(freeFlowGraph);
+      freeFlowGraph.add(
+        new GPUNetworkReachability({
+          id: 'free-flow-tree',
+          offsets: view(offsetsBuffer, 'uint32', nodeCount + 1),
+          neighbors: view(neighborsBuffer, 'uint32', edgeCount),
+          weights: view(freeFlowWeightsBuffer, 'float32', edgeCount),
+          sources: originParameter.importToGraph(freeFlowGraph),
+          costLimit: costLimitParameter.importToGraph(freeFlowGraph),
+          maxIterations: MAXIMUM_ROUNDS,
+          localIterations,
+          costs: view(freeFlowTreeCosts, 'float32', nodeCount),
+          predecessors: view(freeFlowPredecessors, 'uint32', nodeCount),
+          converged: view(freeFlowConverged, 'uint32', 1),
+          iterationCount: view(freeFlowIterations, 'uint32', 1)
+        })
+      );
+    }
 
     // -- tree graph
     const treeGraph = new GPUCommandGraph<void>(device, {id: 'routing-tree'});
@@ -456,6 +517,80 @@ export async function createRouting(
         edgeIds,
         edgeCountView
       );
+      // Both cost fields are produced from the same origin and search budget. A missing value is
+      // deliberately left non-finite: the layer treats it as no data instead of inventing a delta.
+      addKernelPass(treeGraph, {
+        id: 'scenario-delta',
+        bindings: [
+          {name: 'scenarioCosts', view: costsView, type: 'f32', access: 'read'},
+          {
+            name: 'freeFlowCosts',
+            view: view(freeFlowTreeCosts, 'float32', nodeCount),
+            type: 'f32',
+            access: 'read'
+          },
+          {
+            name: 'deltaCosts',
+            view: view(scenarioDeltaCosts, 'float32', nodeCount),
+            type: 'f32',
+            access: 'read_write'
+          },
+          {
+            name: 'unreached',
+            view: view(scenarioUnreached, 'uint32', nodeCount),
+            type: 'u32',
+            access: 'read_write'
+          }
+        ],
+        invocationCount: nodeCount,
+        body: `let scenario = scenarioCosts[scenarioCostsOffset + index];
+  let freeFlow = freeFlowCosts[freeFlowCostsOffset + index];
+  let scenarioBits = bitcast<u32>(scenario);
+  let freeFlowBits = bitcast<u32>(freeFlow);
+  let finite = (scenarioBits & 0x7f800000u) != 0x7f800000u && (freeFlowBits & 0x7f800000u) != 0x7f800000u;
+  let delta = scenario - freeFlow;
+  let noData = bitcast<f32>(0x7fc00000u | (index & 0u));
+  // The class table reserves values at or below zero for the transparent no-added-time class.
+  deltaCosts[deltaCostsOffset + index] = select(noData, select(delta, -1.0, delta <= 0.0), finite);
+  unreached[unreachedOffset + index] = select(0u, 1u, (freeFlowBits & 0x7f800000u) != 0x7f800000u && (scenarioBits & 0x7f800000u) == 0x7f800000u);`
+      });
+      addKernelPass(treeGraph, {
+        id: 'selected-route-flags-clear',
+        bindings: [
+          {
+            name: 'flags',
+            view: view(selectedRouteFlags, 'uint32', edgeCount),
+            type: 'u32',
+            access: 'read_write'
+          }
+        ],
+        invocationCount: edgeCount,
+        body: 'flags[flagsOffset + index] = 0u;'
+      });
+      addKernelPass(treeGraph, {
+        id: 'selected-route-flags-set',
+        bindings: [
+          {name: 'ids', view: edgeIds, type: 'u32', access: 'read'},
+          {
+            name: 'offsets',
+            view: view(pathOffsets, 'uint32', MAXIMUM_DESTINATIONS + 1),
+            type: 'u32',
+            access: 'read'
+          },
+          {
+            name: 'flags',
+            view: view(selectedRouteFlags, 'uint32', edgeCount),
+            type: 'u32',
+            access: 'read_write'
+          }
+        ],
+        invocationCount: MAXIMUM_PATH_LENGTH,
+        declarations: `const EDGE_COUNT: u32 = ${edgeCount}u;`,
+        body: `if (index < offsets[offsetsOffset + 1u]) {
+  let edge = ids[idsOffset + index];
+  if (edge < EDGE_COUNT) { flags[flagsOffset + edge] = 1u; }
+}`
+      });
     }
 
     // -- neighborhood graph
@@ -599,10 +734,12 @@ export async function createRouting(
     }
 
     graphs = {
+      freeFlow: resources.track(freeFlowGraph.compile()),
       tree: {compiled: resources.track(treeGraph.compile()), localIterations},
       hood: resources.track(hoodGraph.compile()),
       turns: resources.track(turnGraph.compile())
     };
+    freeFlowDirty = 2;
     treeDirty = 2;
     hoodDirty = 2;
     turnDirty = 2;
@@ -714,6 +851,17 @@ export async function createRouting(
     }
   );
 
+  const freeFlowReader = new SummaryReader(
+    resources,
+    'routing-free-flow',
+    [{buffer: freeFlowTreeCosts, size: nodeCount * 4}],
+    bytes => {
+      if (destroyed) return;
+      cpuFreeFlowCosts = new Float32Array(bytes);
+      updateRouteReadouts();
+    }
+  );
+
   const turnSizes = [
     MAXIMUM_DESTINATIONS * 4,
     MAXIMUM_DESTINATIONS * 4,
@@ -807,6 +955,62 @@ export async function createRouting(
       lines.push(summary.treeFound[index] ? formatMinutes(summary.treeCost[index]) : 'not found');
     }
     ctx.setReadout('routeTimes', lines.join(' / '));
+    ctx.setChart('routeComparison', {
+      kind: 'bars',
+      values: Array.from(summary.treeCost.slice(0, destinations), value => value / 60),
+      labels: Array.from({length: destinations}, (_, index) => {
+        const place = index === 0 ? ctx.options.destinationPlace : EXTRA_DESTINATIONS[index - 1];
+        return `${index + 1}. ${ROUTING_PLACES[place]?.label ?? 'Destination'}`;
+      }),
+      yLabel: 'free-flow minutes',
+      highlight: [0]
+    });
+    if (cpuCosts) {
+      const thresholds = [10, 20, 30, 45, 60, 90];
+      ctx.setChart('reachCurve', {
+        kind: 'line',
+        series: [
+          {
+            label: 'intersections reached',
+            x: thresholds,
+            y: thresholds.map(minutes =>
+              cpuCosts!.reduce((total, cost) => total + Number(cost <= minutes * 60), 0)
+            ),
+            color: 0,
+            points: true
+          }
+        ],
+        xLabel: 'free-flow minutes',
+        yLabel: 'cumulative intersections'
+      });
+    }
+    const freeFlowDestinationCost = cpuFreeFlowCosts?.[destinationNodes[0]] ?? Number.NaN;
+    const scenarioDestinationCost = cpuCosts?.[destinationNodes[0]] ?? Number.NaN;
+    if (Number.isFinite(freeFlowDestinationCost)) {
+      ctx.setReadout('freeFlowRoute', formatMinutes(freeFlowDestinationCost));
+      if (Number.isFinite(scenarioDestinationCost)) {
+        const minutesAdded = (scenarioDestinationCost - freeFlowDestinationCost) / 60;
+        ctx.setReadout(
+          'scenarioDelta',
+          `${minutesAdded >= 0 ? '+' : ''}${minutesAdded.toFixed(1)} min versus free flow`
+        );
+        ctx.setChart('scenarioComparison', {
+          kind: 'bars',
+          values: [freeFlowDestinationCost / 60, scenarioDestinationCost / 60],
+          labels: ['Free flow', 'Scenario'],
+          colors: [SCENARIO_DELTA_TABLE.colors[1], SCENARIO_DELTA_TABLE.colors[4]],
+          yLabel: 'minutes',
+          description: 'Route 1 travel time under retained free-flow and current scenario costs.'
+        });
+      } else {
+        ctx.setReadout('scenarioDelta', 'scenario route not reached');
+        ctx.setChart('scenarioComparison', null);
+      }
+    } else {
+      ctx.setReadout('freeFlowRoute', 'not reached within the search budget');
+      ctx.setReadout('scenarioDelta', '-');
+      ctx.setChart('scenarioComparison', null);
+    }
     const found = summary.treeFound[0] === 1;
     ctx.setReadout(
       'routeTime',
@@ -814,8 +1018,9 @@ export async function createRouting(
     );
     const treeFirst = summary.treeOffsets[0];
     const treeLast = Math.min(summary.treeOffsets[1], treeFirst + MAXIMUM_PATH_LENGTH);
+    let plain = {left: 0, right: 0, uTurns: 0};
     if (found) {
-      const plain = countTurns(summary.treeEdges, treeFirst, treeLast);
+      plain = countTurns(summary.treeEdges, treeFirst, treeLast);
       let meters = 0;
       for (let slot = treeFirst; slot < treeLast; slot++) {
         const edge = summary.treeEdges[slot];
@@ -835,6 +1040,13 @@ export async function createRouting(
         const turnLast = Math.min(summary.turnOffsets[1], turnFirst + MAXIMUM_PATH_LENGTH);
         const turns = countTurns(summary.turnEdges, turnFirst, turnLast);
         ctx.setReadout('turnTurns', `${turns.left} left, ${turns.right} right, ${turns.uTurns} U`);
+        ctx.setChart('turnComparison', {
+          kind: 'bars',
+          values: [plain.left, plain.right, turns.left, turns.right],
+          labels: ['Plain left', 'Plain right', 'Turn-aware left', 'Turn-aware right'],
+          colors: [ROUTE_COLOR, ROUTE_COLOR, TURN_ROUTE_COLOR, TURN_ROUTE_COLOR],
+          yLabel: 'turns'
+        });
         // Travel time and length of the turn-aware route without its turn penalties.
         let seconds = 0;
         let meters = 0;
@@ -858,6 +1070,7 @@ export async function createRouting(
       }
     } else {
       for (const id of ['turnTime', 'turnTurns', 'turnCost']) ctx.setReadout(id, 'off');
+      ctx.setChart('turnComparison', null);
     }
   }
 
@@ -869,18 +1082,18 @@ export async function createRouting(
     `${formatInteger(bannedTurnTotal)} left turns between primary or secondary roads`
   );
   buildGraphs(Number(ctx.options.localIterations));
+  writeFreeFlowCosts();
   writeCosts();
   writeScalarParameters();
   writeOriginAndMarkers();
   writeTurnParameters();
 
   const markAllDirty = () => {
+    freeFlowDirty = Math.max(freeFlowDirty, 1);
     treeDirty = Math.max(treeDirty, 1);
     hoodDirty = Math.max(hoodDirty, 1);
     turnDirty = Math.max(turnDirty, 1);
   };
-
-  const getRamp = () => ctx.options.ramp;
 
   return {
     getCompiledGraphs: () => (graphs ? [graphs.tree.compiled, graphs.hood, graphs.turns] : []),
@@ -985,9 +1198,19 @@ export async function createRouting(
       if (!graphs) return;
       const options = ctx.options;
       if (treeDirty > 0) {
+        if (freeFlowDirty > 0) {
+          graphs.freeFlow.encode(commandEncoder, {parameters: undefined});
+          freeFlowDirty--;
+          freeFlowReader.markStale();
+        }
         graphs.tree.compiled.encode(commandEncoder, {parameters: undefined});
         treeDirty--;
         treeReader.markStale();
+      }
+      if (freeFlowDirty > 0) {
+        graphs.freeFlow.encode(commandEncoder, {parameters: undefined});
+        freeFlowDirty--;
+        freeFlowReader.markStale();
       }
       if (hoodDirty > 0) {
         graphs.hood.encode(commandEncoder, {parameters: undefined});
@@ -1000,6 +1223,7 @@ export async function createRouting(
         turnReader.markStale();
       }
       treeReader.flush(commandEncoder);
+      freeFlowReader.flush(commandEncoder);
       hoodReader.flush(commandEncoder);
       if (options.showTurnRoute) turnReader.flush(commandEncoder);
     },
@@ -1037,10 +1261,9 @@ export async function createRouting(
             values: treeCosts,
             valueFormat: 'float32',
             valueIndices: segmentTargetsBuffer,
-            colormap: getRamp(),
-            valueRange: [0, options.costLimitMinutes * 60],
-            color: [255, 255, 255, 235],
-            noDataColor: [0, 0, 0, 0]
+            colormap: 'uniform',
+            classTable: ROUTING_TIME_TABLE,
+            noDataColor: UNREACHED_NEUTRAL
           })
         );
       } else if (options.base === 'hops') {
@@ -1054,14 +1277,52 @@ export async function createRouting(
             values: hopDistances,
             valueFormat: 'uint32',
             valueIndices: segmentTargetsBuffer,
-            colormap: getRamp(),
+            colormap: 'ylgnbu',
             valueRange: [0, Math.max(1, options.hops)],
             color: [255, 255, 255, 240],
             noDataColor: [0, 0, 0, 0]
           })
         );
+      } else if (options.base === 'delta') {
+        layers.push(
+          new SpatialAnalysisSegmentLayer({
+            id: 'routing-scenario-delta',
+            coordinateOrigin,
+            segments: segmentsBuffer,
+            instanceCount: segmentCount,
+            widthPixels: 2.8,
+            values: scenarioDeltaCosts,
+            valueFormat: 'float32',
+            valueIndices: segmentTargetsBuffer,
+            colormap: 'uniform',
+            classTable: SCENARIO_DELTA_TABLE,
+            noDataColor: [0, 0, 0, 0]
+          })
+        );
+        layers.push(
+          new SpatialAnalysisSegmentLayer({
+            id: 'routing-scenario-unreachable',
+            coordinateOrigin,
+            segments: segmentsBuffer,
+            instanceCount: segmentCount,
+            widthPixels: 2.1,
+            values: scenarioUnreached,
+            valueFormat: 'uint32',
+            valueIndices: segmentTargetsBuffer,
+            colormap: 'mask',
+            color: [112, 55, 104, 230],
+            dashArray: [4, 3],
+            noDataColor: [0, 0, 0, 0]
+          })
+        );
       }
-      const routeLayer = (id: string, flags: Buffer, color: readonly number[], width: number) =>
+      const routeLayer = (
+        id: string,
+        flags: Buffer,
+        color: readonly number[],
+        width: number,
+        dashArray?: readonly [number, number]
+      ) =>
         new SpatialAnalysisSegmentLayer({
           id,
           coordinateOrigin,
@@ -1073,16 +1334,18 @@ export async function createRouting(
           valueIndices: segmentEdgesBuffer,
           colormap: 'mask',
           color: color as [number, number, number, number],
+          dashArray,
           noDataColor: [0, 0, 0, 0]
         });
       if (options.showRoute) {
         layers.push(
-          routeLayer('routing-route-halo', routeFlags, colors.halo, 8),
-          routeLayer('routing-route', routeFlags, ROUTE_COLOR, 4.5)
+          routeLayer('routing-comparison-routes', routeFlags, [196, 151, 109, 210], 2.2),
+          routeLayer('routing-route-halo', selectedRouteFlags, colors.halo, 8),
+          routeLayer('routing-route', selectedRouteFlags, ROUTE_COLOR, 5)
         );
       }
       if (options.showTurnRoute) {
-        layers.push(routeLayer('routing-turn-route', turnFlags, TURN_ROUTE_COLOR, 2.4));
+        layers.push(routeLayer('routing-turn-route', turnFlags, TURN_ROUTE_COLOR, 3.5, [6, 4]));
       }
       layers.push(
         new SpatialAnalysisPointLayer({
@@ -1102,7 +1365,11 @@ export async function createRouting(
           values: markerIds,
           valueFormat: 'uint32',
           colormap: 'category',
-          palette: [[255, 255, 255, 255], ...DESTINATION_PALETTE]
+          palette: [
+            [255, 255, 255, 255],
+            ...Array.from({length: MAXIMUM_DESTINATIONS}, () => DESTINATION_COLOR)
+          ],
+          shape: 'ring'
         })
       );
       return layers;
@@ -1111,6 +1378,7 @@ export async function createRouting(
     destroy() {
       destroyed = true;
       treeReader.stop();
+      freeFlowReader.stop();
       hoodReader.stop();
       turnReader.stop();
       resources.destroy();

@@ -26,6 +26,7 @@ import {
 } from '@luma.gl/gpgpu/gpu-core';
 import {importGraphBuffer} from '../../engine/graph-buffers';
 import {SpatialAnalysisRasterLayer} from '../../engine/layers';
+import {addKernelPass} from '../../engine/mode-kernels';
 import {createPlaybackClock} from '../../engine/playback';
 import type {RampName} from '../../engine/ramps';
 import {formatCount, SpatialAnalysisResources} from '../../engine/resources';
@@ -38,7 +39,7 @@ import {
   loadFlights
 } from './flight-corridors-data';
 import {FlightPointLayer, FlightSegmentLayer} from './flight-corridors-layers';
-import {lineChart} from './f-chart-helpers';
+import {binValues, lineChart} from './f-chart-helpers';
 
 /** Option state of the flight corridors scene. */
 export type FlightCorridorsOptions = {
@@ -56,6 +57,7 @@ export type FlightCorridorsOptions = {
   tailFade: number;
   trailColor: 'altitude' | 'direction';
   showDensity: boolean;
+  densityView: 'density' | 'direction-balance';
   cellDegrees: '0.2' | '0.1';
   densityRamp: RampName;
   densityOpacity: number;
@@ -75,6 +77,9 @@ const GRID_BOUNDS = [-125, 25, -65, 50] as const;
 const DIRECTION_CODES = {all: -1, east: 0, west: 1, north: 2, south: 3} as const;
 const EARTH_RADIUS = 6371008.8;
 const HOURLY_BINS = 144;
+const ALTITUDE_HISTOGRAM_BINS = 26;
+/** Minimum combined east/west support: 0.05 km of track per km². */
+const DIRECTION_BALANCE_MINIMUM_DENSITY = 0.05 / 1000;
 
 type TrackSubset = {
   lngLat: Buffer;
@@ -101,6 +106,23 @@ type DensityGrid = {
 type DensityVariant = {
   compiled: CompiledGPUCommandGraph<void>;
   grid: DensityGrid;
+  encoded: boolean;
+};
+
+/** One side of the paired east/west computation. Buffers deliberately never alias. */
+type DirectionDensityGrid = Omit<DensityGrid, 'reader'>;
+
+type DirectionBalanceVariant = {
+  cell: number;
+  columns: number;
+  rows: number;
+  east: DirectionDensityGrid;
+  west: DirectionDensityGrid;
+  balance: Buffer;
+  eastCapacity: number;
+  westCapacity: number;
+  compiled: CompiledGPUCommandGraph<void>;
+  reader: SummaryReader;
   encoded: boolean;
 };
 
@@ -451,6 +473,156 @@ export async function createFlightCorridors(
     return variant;
   }
 
+  // The signed map needs both inputs at once. Do not reuse the regular density grid here: each
+  // GPULineDensity writes its own lengths and densities before a third pass derives the ratio.
+  const directionBalances = new Map<number, DirectionBalanceVariant>();
+  function createDirectionDensityGrid(
+    cell: number,
+    direction: 'east' | 'west'
+  ): DirectionDensityGrid {
+    const columns = Math.round((GRID_BOUNDS[2] - GRID_BOUNDS[0]) / cell);
+    const rows = Math.round((GRID_BOUNDS[3] - GRID_BOUNDS[1]) / cell);
+    const cells = columns * rows;
+    return {
+      cell,
+      columns,
+      rows,
+      parameters: resources.createParameterBuffer(
+        `direction-${direction}-parameters-${cell}`,
+        'float32',
+        GPU_LINE_DENSITY_PARAMETER_LENGTH,
+        getGPULineDensityParameterValues({
+          minX: GRID_BOUNDS[0],
+          minY: GRID_BOUNDS[1],
+          cellWidth: cell,
+          cellHeight: cell
+        })
+      ),
+      lengths: resources.createBuffer(`direction-${direction}-lengths-${cell}`, cells * 4),
+      densities: resources.createBuffer(`direction-${direction}-densities-${cell}`, cells * 4),
+      overflow: resources.createBuffer(`direction-${direction}-overflow-${cell}`, 4),
+      totalRecords: resources.createBuffer(`direction-${direction}-records-${cell}`, 4),
+      capacity: new Map()
+    };
+  }
+
+  function getDirectionBalance(cell: number): DirectionBalanceVariant {
+    let variant = directionBalances.get(cell);
+    if (variant) return variant;
+    const east = createDirectionDensityGrid(cell, 'east');
+    const west = createDirectionDensityGrid(cell, 'west');
+    const cells = east.columns * east.rows;
+    const eastSubset = getSubset(DIRECTION_CODES.east);
+    const westSubset = getSubset(DIRECTION_CODES.west);
+    const eastCapacity = estimatePieces(eastSubset, cell);
+    const westCapacity = estimatePieces(westSubset, cell);
+    const balance = resources.createBuffer(`direction-balance-${cell}`, cells * 4);
+    const graph = new GPUCommandGraph<void>(device, {id: `flight-direction-balance-${cell}`});
+    const addDensity = (
+      id: string,
+      subset: TrackSubset,
+      grid: DirectionDensityGrid,
+      capacity: number
+    ) => {
+      graph.add(
+        new GPULineDensity({
+          id,
+          positions: importGraphBuffer(
+            graph,
+            `${id}-positions`,
+            subset.lngLat,
+            'float32x2',
+            subset.vertexCount
+          ),
+          pathOffsets: importGraphBuffer(
+            graph,
+            `${id}-offsets`,
+            subset.offsets,
+            'uint32',
+            subset.trackCount + 1
+          ),
+          columns: grid.columns,
+          rows: grid.rows,
+          coordinateSystem: 'spherical',
+          maximumRecords: capacity,
+          parameters: grid.parameters.importToGraph(graph),
+          output: {
+            lengths: importGraphBuffer(graph, `${id}-lengths`, grid.lengths, 'float32', cells),
+            densities: importGraphBuffer(
+              graph,
+              `${id}-densities`,
+              grid.densities,
+              'float32',
+              cells
+            ),
+            overflow: importGraphBuffer(graph, `${id}-overflow`, grid.overflow, 'uint32', 1),
+            totalRecords: importGraphBuffer(graph, `${id}-records`, grid.totalRecords, 'uint32', 1)
+          }
+        })
+      );
+    };
+    addDensity('east-density', eastSubset, east, eastCapacity);
+    addDensity('west-density', westSubset, west, westCapacity);
+    addKernelPass(graph, {
+      id: 'direction-balance',
+      invocationCount: cells,
+      bindings: [
+        {
+          name: 'east',
+          view: importGraphBuffer(graph, 'east-balance-input', east.densities, 'float32', cells),
+          type: 'f32',
+          access: 'read'
+        },
+        {
+          name: 'west',
+          view: importGraphBuffer(graph, 'west-balance-input', west.densities, 'float32', cells),
+          type: 'f32',
+          access: 'read'
+        },
+        {
+          name: 'balance',
+          view: importGraphBuffer(graph, 'direction-balance-output', balance, 'float32', cells),
+          type: 'f32',
+          access: 'read_write'
+        }
+      ],
+      // A balance has no meaning below the design-sheet support threshold. NaN uses the raster
+      // layer's transparent no-data path, rather than turning quiet cells into a neutral field.
+      body: `let total = east[eastOffset + index] + west[westOffset + index];
+  let noData = bitcast<f32>(0x7fc00000u);
+  balance[balanceOffset + index] = select(noData, (east[eastOffset + index] - west[westOffset + index]) / total, total >= ${DIRECTION_BALANCE_MINIMUM_DENSITY});`
+    });
+    const reader = new SummaryReader(
+      resources,
+      `direction-balance-${cell}`,
+      [
+        {buffer: east.densities, size: cells * 4},
+        {buffer: west.densities, size: cells * 4},
+        {buffer: balance, size: cells * 4},
+        {buffer: east.overflow, size: 4},
+        {buffer: east.totalRecords, size: 4},
+        {buffer: west.overflow, size: 4},
+        {buffer: west.totalRecords, size: 4}
+      ],
+      bytes => onDirectionBalance(cell, bytes)
+    );
+    variant = {
+      cell,
+      columns: east.columns,
+      rows: east.rows,
+      east,
+      west,
+      balance,
+      eastCapacity,
+      westCapacity,
+      compiled: resources.track(graph.compile()),
+      reader,
+      encoded: false
+    };
+    directionBalances.set(cell, variant);
+    return variant;
+  }
+
   /** Area in km^2 of a grid row of `cell`-degree cells. */
   function getCellArea(cell: number, row: number): number {
     const south = ((GRID_BOUNDS[1] + row * cell) * Math.PI) / 180;
@@ -535,6 +707,43 @@ export async function createFlightCorridors(
     }
   }
 
+  function onDirectionBalance(cell: number, bytes: ArrayBuffer): void {
+    if (destroyed || cell !== Number(ctx.options.cellDegrees)) return;
+    const variant = directionBalances.get(cell);
+    if (!variant) return;
+    const cells = variant.columns * variant.rows;
+    const east = new Float32Array(bytes, 0, cells);
+    const west = new Float32Array(bytes, cells * 4, cells);
+    const balance = new Float32Array(bytes, cells * 8, cells);
+    const words = new Uint32Array(bytes, cells * 12, 4);
+    let occupied = 0;
+    let eastDistance = 0;
+    let westDistance = 0;
+    let weightedBalance = 0;
+    for (let index = 0; index < cells; index++) {
+      const total = east[index] + west[index];
+      if (total < DIRECTION_BALANCE_MINIMUM_DENSITY) continue;
+      occupied++;
+      eastDistance += east[index];
+      westDistance += west[index];
+      weightedBalance += balance[index] * total;
+    }
+    const totalDistance = eastDistance + westDistance;
+    const share = totalDistance > 0 ? (100 * eastDistance) / totalDistance : 0;
+    ctx.setReadout(
+      'directionCells',
+      `${formatCount(occupied)} cells have at least 0.05 km/km² of directional track`
+    );
+    ctx.setReadout(
+      'directionBalance',
+      `${share.toFixed(1)}% eastbound overall; mean occupied-cell balance ${(weightedBalance / Math.max(totalDistance, 1e-20)).toFixed(2)}`
+    );
+    ctx.setReadout(
+      'directionPieces',
+      `east ${formatCount(words[1])}/${formatCount(variant.eastCapacity)}${words[0] ? ' overflow' : ''}; west ${formatCount(words[3])}/${formatCount(variant.westCapacity)}${words[2] ? ' overflow' : ''}`
+    );
+  }
+
   // ---- State ------------------------------------------------------------------------------------
   const clock = createPlaybackClock(
     ctx,
@@ -582,6 +791,78 @@ export async function createFlightCorridors(
 
   ctx.setReadout('flights', `${formatCount(trackCount)} flights`);
   ctx.setReadout('vertices', `${formatCount(vertexCount)} vertices`);
+  const eastAltitudes: number[] = [];
+  const westAltitudes: number[] = [];
+  for (let track = 0; track < trackCount; track++) {
+    const altitudes =
+      flights.trackDirection[track] === DIRECTION_CODES.east
+        ? eastAltitudes
+        : flights.trackDirection[track] === DIRECTION_CODES.west
+          ? westAltitudes
+          : null;
+    if (!altitudes) continue;
+    for (let vertex = flights.offsets[track]; vertex < flights.offsets[track + 1]; vertex++) {
+      altitudes.push(flights.altitude[vertex]);
+    }
+  }
+  const eastAltitudeHistogram = binValues(
+    eastAltitudes,
+    0,
+    ALTITUDE_RAMP_METERS,
+    ALTITUDE_HISTOGRAM_BINS
+  );
+  const westAltitudeHistogram = binValues(
+    westAltitudes,
+    0,
+    ALTITUDE_RAMP_METERS,
+    ALTITUDE_HISTOGRAM_BINS
+  );
+  const altitudeCenters = Array.from(
+    {length: ALTITUDE_HISTOGRAM_BINS},
+    (_, bin) => ((bin + 0.5) * ALTITUDE_RAMP_METERS) / ALTITUDE_HISTOGRAM_BINS
+  );
+  const toPercent = (counts: Float64Array, total: number) =>
+    Float64Array.from(counts, count => (total > 0 ? (100 * count) / total : 0));
+  const getPeak = (counts: Float64Array) => {
+    let peak = 0;
+    for (let bin = 1; bin < counts.length; bin++) if (counts[bin] > counts[peak]) peak = bin;
+    return altitudeCenters[peak];
+  };
+  const eastPeak = getPeak(eastAltitudeHistogram);
+  const westPeak = getPeak(westAltitudeHistogram);
+  ctx.setReadout('eastLevelPeak', `${(eastPeak / 1000).toFixed(1)} km`);
+  ctx.setReadout('westLevelPeak', `${(westPeak / 1000).toFixed(1)} km`);
+  ctx.setChart('altitudeChart', {
+    kind: 'line',
+    height: 150,
+    series: [
+      {
+        label: 'eastbound',
+        x: altitudeCenters,
+        y: toPercent(eastAltitudeHistogram, eastAltitudes.length),
+        color: 0,
+        area: true
+      },
+      {
+        label: 'westbound',
+        x: altitudeCenters,
+        y: toPercent(westAltitudeHistogram, westAltitudes.length),
+        color: 1,
+        area: true
+      }
+    ],
+    xLabel: 'stored ADS-B altitude (km)',
+    yLabel: 'share of positions (%)',
+    xDomain: [0, ALTITUDE_RAMP_METERS],
+    markers: [
+      {x: eastPeak, label: `E ${(eastPeak / 1000).toFixed(1)} km`},
+      {x: westPeak, label: `W ${(westPeak / 1000).toFixed(1)} km`}
+    ],
+    formatX: value => `${Math.round(value / 1000)}`,
+    formatY: value => value.toFixed(0),
+    description:
+      'Flight-level distributions of stored ADS-B positions. Eastbound and westbound samples are normalized separately, with their data-derived modal altitude bands marked.'
+  });
 
   function writeSegmentMask(): void {
     const code = DIRECTION_CODES[ctx.options.direction];
@@ -596,6 +877,7 @@ export async function createFlightCorridors(
   }
   writeSegmentMask();
   getVariant(currentCell, currentDirection);
+  getDirectionBalance(currentCell);
 
   // ---- Status readback --------------------------------------------------------------------------
   const statusReader = new SummaryReader(
@@ -642,7 +924,9 @@ export async function createFlightCorridors(
     getCompiledGraphs: () => [
       playheadCompiled,
       trailCompiled,
-      getVariant(currentCell, currentDirection).compiled
+      ctx.options.densityView === 'direction-balance'
+        ? getDirectionBalance(currentCell).compiled
+        : getVariant(currentCell, currentDirection).compiled
     ],
 
     setOption(id) {
@@ -657,6 +941,12 @@ export async function createFlightCorridors(
         case 'cellDegrees':
           currentCell = Number(ctx.options.cellDegrees);
           getVariant(currentCell, currentDirection);
+          getDirectionBalance(currentCell);
+          densityDirty = true;
+          ctx.requestLayers();
+          break;
+        case 'densityView':
+          if (ctx.options.densityView === 'direction-balance') getDirectionBalance(currentCell);
           densityDirty = true;
           ctx.requestLayers();
           break;
@@ -680,14 +970,26 @@ export async function createFlightCorridors(
       playhead = clock.advance(frame);
       ctx.setReadout('clock', formatClockUtc(playhead));
 
-      const variant = getVariant(currentCell, currentDirection);
-      if (densityDirty || !variant.encoded) {
-        variant.compiled.encode(commandEncoder, {parameters: undefined});
-        variant.encoded = true;
-        densityDirty = false;
-        variant.grid.reader.request(commandEncoder);
+      if (options.densityView === 'direction-balance') {
+        const variant = getDirectionBalance(currentCell);
+        if (densityDirty || !variant.encoded) {
+          variant.compiled.encode(commandEncoder, {parameters: undefined});
+          variant.encoded = true;
+          densityDirty = false;
+          variant.reader.request(commandEncoder);
+        } else {
+          variant.reader.flush(commandEncoder);
+        }
       } else {
-        variant.grid.reader.flush(commandEncoder);
+        const variant = getVariant(currentCell, currentDirection);
+        if (densityDirty || !variant.encoded) {
+          variant.compiled.encode(commandEncoder, {parameters: undefined});
+          variant.encoded = true;
+          densityDirty = false;
+          variant.grid.reader.request(commandEncoder);
+        } else {
+          variant.grid.reader.flush(commandEncoder);
+        }
       }
 
       playheadParameters.write(
@@ -720,7 +1022,7 @@ export async function createFlightCorridors(
       const elevationScale = options.extrude ? options.exaggeration : 0;
       const layers: Layer[] = [];
       const grid = getGrid(currentCell);
-      if (options.showDensity) {
+      if (options.showDensity && options.densityView === 'density') {
         layers.push(
           new SpatialAnalysisRasterLayer({
             id: `flight-density-${grid.cell}`,
@@ -735,6 +1037,25 @@ export async function createFlightCorridors(
             sqrtScale: true,
             discardAtOrBelow: 0,
             opacity: options.densityOpacity,
+            tessellation: 48
+          })
+        );
+      }
+      if (options.showDensity && options.densityView === 'direction-balance') {
+        const balance = getDirectionBalance(currentCell);
+        layers.push(
+          new SpatialAnalysisRasterLayer({
+            id: `flight-direction-balance-${balance.cell}`,
+            coordinateSystem: COORDINATE_SYSTEM.LNGLAT,
+            gridSize: [balance.columns, balance.rows],
+            bounds: GRID_BOUNDS,
+            values: balance.balance,
+            valueFormat: 'float32',
+            valueRange: [-1, 1],
+            colormap: 'diverging',
+            opacity: options.densityOpacity,
+            // Low-support cells are NaN from the derive pass and take this transparent path.
+            noDataColor: [0, 0, 0, 0],
             tessellation: 48
           })
         );
@@ -809,6 +1130,7 @@ export async function createFlightCorridors(
       destroyed = true;
       statusReader.stop();
       for (const grid of grids.values()) grid.reader.stop();
+      for (const balance of directionBalances.values()) balance.reader.stop();
       resources.destroy();
     }
   };

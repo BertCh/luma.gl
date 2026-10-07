@@ -146,7 +146,7 @@ function writeColor(target: Float32Array, offset: number, color: MovementColor):
 // Vessel markers
 // ---------------------------------------------------------------------------------------------
 
-const VESSEL_STYLE_BYTE_LENGTH = 128 + 48 + 16;
+const VESSEL_STYLE_BYTE_LENGTH = 128 + 48 + 16 + 16;
 
 const VESSEL_SHADER = /* wgsl */ `
 struct VesselStyle {
@@ -160,10 +160,11 @@ struct VesselStyle {
   colormap: u32,
   selectedTrack: u32,
   paletteSize: u32,
-  _padding0: u32,
-  _padding1: u32,
+  stoppedSpeed: f32,
+  speedClassCount: u32,
   _padding2: u32,
   _padding3: u32,
+  speedClassBreaks: vec4<f32>,
 };
 
 @group(0) @binding(auto) var<uniform> vesselStyle: VesselStyle;
@@ -178,6 +179,7 @@ struct VesselVertexOutput {
   @location(0) local: vec2<f32>,
   @location(1) color: vec4<f32>,
   @location(2) highlight: f32,
+  @location(3) stopped: f32,
 };
 ${SHARED_WGSL}
 ${CORNERS_WGSL}
@@ -216,6 +218,24 @@ fn arrowDistance(p: vec2<f32>) -> f32 {
   return select(d, -d, inside);
 }
 
+// Signed distance to the axis-aligned square drawn for a stopped vessel. Negative inside.
+fn stoppedSquareDistance(p: vec2<f32>) -> f32 {
+  let q = abs(p) - vec2<f32>(0.42);
+  return length(max(q, vec2<f32>(0.0))) + min(max(q.x, q.y), 0.0);
+}
+
+// Class of a speed against up to four ascending breaks (m/s): 0 below the first break.
+fn getSpeedClass(speed: f32) -> u32 {
+  var speedClass = 0u;
+  let breakCount = min(vesselStyle.speedClassCount, 5u) - 1u;
+  for (var index = 0u; index < 4u; index = index + 1u) {
+    if (index < breakCount && speed >= vesselStyle.speedClassBreaks[index]) {
+      speedClass = index + 1u;
+    }
+  }
+  return speedClass;
+}
+
 @vertex fn vertexMain(
   @builtin(vertex_index) vertexIndex: u32,
   @builtin(instance_index) instanceIndex: u32
@@ -225,6 +245,7 @@ fn arrowDistance(p: vec2<f32>) -> f32 {
   output.local = vec2<f32>(0.0);
   output.color = vec4<f32>(0.0);
   output.highlight = 0.0;
+  output.stopped = 0.0;
   let track = vesselIds[instanceIndex];
   let category = vesselCategories[track];
   if (vesselStyle.categoryFilter != 0xffffffffu && vesselStyle.categoryFilter != category) {
@@ -232,7 +253,10 @@ fn arrowDistance(p: vec2<f32>) -> f32 {
   }
   let heading = vesselHeadings[track];
   let speed = vesselSpeeds[track];
-  let rotation = vec2<f32>(cos(heading), sin(heading));
+  let isStopped = vesselStyle.stoppedSpeed > 0.0 && speed < vesselStyle.stoppedSpeed;
+  // A stopped vessel is an unrotated square: its heading carries no meaning.
+  let rotation = select(vec2<f32>(cos(heading), sin(heading)), vec2<f32>(1.0, 0.0), isStopped);
+  output.stopped = select(0.0, 1.0, isStopped);
   let corner = QUAD_CORNERS[vertexIndex] * 1.2;
   let rotated = vec2<f32>(
     corner.x * rotation.x - corner.y * rotation.y,
@@ -253,6 +277,8 @@ fn arrowDistance(p: vec2<f32>) -> f32 {
   output.local = corner;
   if (vesselStyle.colorMode == 0u) {
     output.color = vesselStyle.palette[category % max(vesselStyle.paletteSize, 1u)];
+  } else if (vesselStyle.colorMode == 2u) {
+    output.color = vesselStyle.palette[min(getSpeedClass(speed), max(vesselStyle.paletteSize, 1u) - 1u)];
   } else {
     let t = clamp(speed / max(vesselStyle.speedForFullColor, 1e-6), 0.0, 1.0);
     output.color = vec4<f32>(spatialAnalysisSampleRamp(vesselStyle.colormap, t), 1.0);
@@ -261,7 +287,7 @@ fn arrowDistance(p: vec2<f32>) -> f32 {
 }
 
 @fragment fn fragmentMain(input: VesselVertexOutput) -> @location(0) vec4<f32> {
-  let d = arrowDistance(input.local);
+  let d = select(arrowDistance(input.local), stoppedSquareDistance(input.local), input.stopped > 0.5);
   let size = max(vesselStyle.sizePixels * select(1.0, 1.6, input.highlight > 0.5), 1.0);
   let aa = 1.0 / size;
   let cover = 1.0 - smoothstep(-aa * 0.5, aa * 0.5, d);
@@ -292,8 +318,22 @@ export type VesselMarkerLayerProps = LayerProps & {
   drawCommands: DrawCommandBuffer;
   /** Arrow half-length in CSS pixels. Defaults to 8. */
   sizePixels?: number;
-  /** `'category'` colors by the palette, `'speed'` by a ramp over speed. Defaults to `'category'`. */
-  colorMode?: 'category' | 'speed';
+  /**
+   * `'category'` colors by the palette, `'speed'` by a ramp over speed, `'speedClasses'` by the
+   * palette row of the speed class (see `speedClassBreaks`). Defaults to `'category'`.
+   */
+  colorMode?: 'category' | 'speed' | 'speedClasses';
+  /**
+   * Up to four ascending speed breaks in m/s for `colorMode: 'speedClasses'`: class 0 is below
+   * the first break and takes palette row 0, and so on (at most five classes).
+   */
+  speedClassBreaks?: readonly number[];
+  /**
+   * Speed in m/s below which a vessel is drawn as a small unrotated square instead of a
+   * heading arrow (the chart-plotter convention: squares are stopped, arrows are moving).
+   * 0 (the default) draws every vessel as an arrow.
+   */
+  stoppedSpeed?: number;
   /** Ramp used in speed mode. Defaults to `'viridis'`. */
   ramp?: RampName;
   /** Speed in m/s at which the ramp ends. Defaults to 12. */
@@ -346,7 +386,7 @@ export class VesselMarkerLayer extends MovementLayer<VesselMarkerLayerProps> {
     floats[36] = props.sizePixels ?? 8;
     floats[37] = props.speedForFullColor ?? 12;
     floats[38] = props.opacity ?? 1;
-    words[39] = props.colorMode === 'speed' ? 1 : 0;
+    words[39] = props.colorMode === 'speed' ? 1 : props.colorMode === 'speedClasses' ? 2 : 0;
     words[40] =
       props.categoryFilter === null || props.categoryFilter === undefined
         ? 0xffffffff
@@ -357,6 +397,12 @@ export class VesselMarkerLayer extends MovementLayer<VesselMarkerLayerProps> {
         ? 0xffffffff
         : props.selectedTrack;
     words[43] = Math.min(8, props.palette.length);
+    floats[44] = props.stoppedSpeed ?? 0;
+    const speedClassBreaks = (props.speedClassBreaks ?? []).slice(0, 4);
+    words[45] = speedClassBreaks.length + 1;
+    for (let index = 0; index < 4; index++) {
+      floats[48 + index] = speedClassBreaks[index] ?? 3e38;
+    }
     styleBuffer.write(new Uint8Array(data));
   }
 }
@@ -364,6 +410,8 @@ export class VesselMarkerLayer extends MovementLayer<VesselMarkerLayerProps> {
 // ---------------------------------------------------------------------------------------------
 // Stops
 // ---------------------------------------------------------------------------------------------
+
+const STOP_STYLE_BYTE_LENGTH = 32 + 16 + 80 + 16;
 
 const STOP_SHADER = /* wgsl */ `
 struct StopStyle {
@@ -373,8 +421,11 @@ struct StopStyle {
   durationForFullColor: f32,
   opacity: f32,
   ringWidthPixels: f32,
-  _padding0: f32,
-  _padding1: f32,
+  classCount: f32,
+  useRingColor: f32,
+  classBreaks: vec4<f32>,
+  classColors: array<vec4<f32>, 5>,
+  ringColor: vec4<f32>,
 };
 
 @group(0) @binding(auto) var<uniform> stopStyle: StopStyle;
@@ -384,7 +435,7 @@ struct StopStyle {
 struct StopVertexOutput {
   @builtin(position) position: vec4<f32>,
   @location(0) corner: vec2<f32>,
-  @location(1) color: vec3<f32>,
+  @location(1) color: vec4<f32>,
   @location(2) ringStart: f32,
 };
 ${SHARED_WGSL}
@@ -399,6 +450,18 @@ fn getStopColor(t: f32) -> vec3<f32> {
     return mix(low, middle, t * 2.0);
   }
   return mix(middle, high, (t - 0.5) * 2.0);
+}
+
+// Exact class colour of a duration (seconds) against up to four ascending breaks.
+fn getStopClassColor(duration: f32) -> vec4<f32> {
+  let classCount = u32(stopStyle.classCount);
+  var stopClass = 0u;
+  for (var index = 0u; index < 4u; index = index + 1u) {
+    if (index + 1u < classCount && duration >= stopStyle.classBreaks[index]) {
+      stopClass = index + 1u;
+    }
+  }
+  return stopStyle.classColors[min(stopClass, 4u)];
 }
 
 @vertex fn vertexMain(
@@ -421,7 +484,14 @@ fn getStopColor(t: f32) -> vec3<f32> {
   );
   output.position = clipPosition;
   output.corner = corner;
-  output.color = getStopColor(clamp(sqrt(duration / stopStyle.durationForFullColor), 0.0, 1.0));
+  if (stopStyle.classCount > 0.5) {
+    output.color = getStopClassColor(duration);
+  } else {
+    output.color = vec4<f32>(
+      getStopColor(clamp(sqrt(duration / stopStyle.durationForFullColor), 0.0, 1.0)),
+      0.72
+    );
+  }
   output.ringStart = 1.0 - stopStyle.ringWidthPixels / radiusPixels;
   return output;
 }
@@ -431,8 +501,10 @@ fn getStopColor(t: f32) -> vec3<f32> {
   if (radius > 1.0) { discard; }
   let edge = 1.0 - smoothstep(0.92, 1.0, radius);
   let ring = smoothstep(input.ringStart - 0.04, input.ringStart, radius);
-  let rgb = mix(input.color, vec3<f32>(1.0), ring);
-  let alpha = mix(0.72, 1.0, ring) * stopStyle.opacity * edge;
+  let ringRgb = select(vec3<f32>(1.0), stopStyle.ringColor.rgb, stopStyle.useRingColor > 0.5);
+  let ringAlpha = select(1.0, stopStyle.ringColor.a, stopStyle.useRingColor > 0.5);
+  let rgb = mix(input.color.rgb, ringRgb, ring);
+  let alpha = mix(input.color.a, ringAlpha, ring) * stopStyle.opacity * edge;
   return vec4<f32>(rgb, alpha);
 }
 `;
@@ -453,6 +525,17 @@ export type StopMarkerLayerProps = LayerProps & {
   maximumRadiusPixels?: number;
   /** Duration in seconds at which the color reaches its darkest value. Defaults to 600. */
   durationForFullColor?: number;
+  /**
+   * Up to four ascending duration breaks in seconds. With `classColors` the disc takes the exact
+   * colour of its duration class (class 0 below the first break) instead of the pink ramp.
+   */
+  classBreaks?: readonly number[];
+  /** Exact class colours (alpha included), one more than `classBreaks`, at most five. */
+  classColors?: readonly MovementColor[];
+  /** Colour of the outer ring (a ground-coloured halo, for example). Defaults to white. */
+  ringColor?: MovementColor;
+  /** Ring width in CSS pixels. Defaults to 1.5. */
+  ringWidthPixels?: number;
 };
 
 /** One outlined disc per stop; radius and color grow with the square root of the dwell. */
@@ -463,7 +546,7 @@ export class StopMarkerLayer extends MovementLayer<StopMarkerLayerProps> {
     return STOP_SHADER;
   }
   protected getStyleByteLength(): number {
-    return 32;
+    return STOP_STYLE_BYTE_LENGTH;
   }
   protected getDrawCommands(): DrawCommandBuffer {
     return this.props.drawCommands;
@@ -477,18 +560,28 @@ export class StopMarkerLayer extends MovementLayer<StopMarkerLayerProps> {
   }
   protected writeStyle(styleBuffer: Buffer): void {
     const props = this.props;
-    styleBuffer.write(
-      Float32Array.of(
-        props.baseRadiusPixels ?? 3,
-        props.radiusPerSqrtSecond ?? 0.45,
-        props.maximumRadiusPixels ?? 14,
-        props.durationForFullColor ?? 600,
-        props.opacity ?? 1,
-        1.5,
-        0,
-        0
-      )
-    );
+    const floats = new Float32Array(STOP_STYLE_BYTE_LENGTH / 4);
+    const classColors = (props.classColors ?? []).slice(0, 5);
+    const classBreaks = (props.classBreaks ?? []).slice(0, 4);
+    floats.set([
+      props.baseRadiusPixels ?? 3,
+      props.radiusPerSqrtSecond ?? 0.45,
+      props.maximumRadiusPixels ?? 14,
+      props.durationForFullColor ?? 600,
+      props.opacity ?? 1,
+      props.ringWidthPixels ?? 1.5,
+      classColors.length > 0 ? Math.min(classColors.length, classBreaks.length + 1) : 0,
+      props.ringColor ? 1 : 0
+    ]);
+    for (let index = 0; index < 4; index++) {
+      floats[8 + index] = classBreaks[index] ?? 3e38;
+    }
+    for (let index = 0; index < 5; index++) {
+      const color = classColors[Math.min(index, classColors.length - 1)];
+      writeColor(floats, 12 + index * 4, color ?? [0, 0, 0, 0]);
+    }
+    writeColor(floats, 32, props.ringColor ?? [255, 255, 255, 255]);
+    styleBuffer.write(floats);
   }
 }
 

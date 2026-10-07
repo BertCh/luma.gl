@@ -3,6 +3,7 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {
+  createTransientView,
   GraphVectorView,
   validatePackedUint32View,
   validatePackedView,
@@ -117,8 +118,8 @@ export type GPUShapeGeneratorOutput = {
  * Properties for {@link GPUShapeGenerator}.
  *
  * Per-frame (no recompile): `parameters` (segment count, radius scale) and the contents of the
- * input columns. Compile-time: `shape`, `coordinateSystem`, `maximumSegments`, the feature count
- * and which optional inputs and outputs are present.
+ * input columns. Compile-time: `shape`, `coordinateSystem`, `ellipseSpacing`, `maximumSegments`,
+ * the feature count and which optional inputs and outputs are present.
  */
 export type GPUShapeGeneratorProps = {
   /** Prefix for generated node IDs. Defaults to `'shape-generator'`. */
@@ -127,13 +128,21 @@ export type GPUShapeGeneratorProps = {
   shape: GPUShapeType;
   /** How radii and bearings are interpreted. Defaults to `'planar'`. */
   coordinateSystem?: GPUShapeCoordinateSystem;
+  /**
+   * Ellipse vertex spacing. Defaults to `'parameter'` (equal angles). `'arc-length'` uses
+   * approximately equal distances along the unprojected ellipse, before rotation and spherical
+   * destination. Uses a 256-interval quarter-ellipse lookup table (1028 scratch bytes per feature).
+   * Only valid for `'ellipse'`; this choice is compile time.
+   */
+  ellipseSpacing?: 'parameter' | 'arc-length';
   /** Largest segment count the parameter buffer may request (compile time). Defaults to 64. */
   maximumSegments?: number;
   /** One center per feature: planar `[x, y]` or geodesic `[longitude, latitude]` degrees. */
   centers: GraphDataView<'float32x2'>;
   /**
    * Radii: one `float32` per feature for `'circle'` and `'sector'`; `float32x2` semi-axes
-   * `[x, y]` for `'ellipse'`. Non-finite or non-positive radii collapse the shape to its center.
+   * `[x, y]` for `'ellipse'`. Non-finite or negative radii become zero. One zero ellipse axis
+   * produces a line; two zero axes (or a zero circle/sector radius) collapse to the center.
    */
   radii: GraphDataView<'float32'> | GraphDataView<'float32x2'>;
   /** `'sector'` only: `[startBearing, endBearing]` degrees per feature. */
@@ -156,8 +165,9 @@ export type GPUShapeGeneratorProps = {
  * `radius * [sin bearing, cos bearing]`; geodesic rings apply the spherical `destination`
  * formula turf uses. No atomics; deterministic.
  *
- * Differences from turf: vertices are evenly spaced in bearing (circle, sector arc) or in the
- * ellipse parameter (turf spaces ellipse vertices by arc length); circles run counter-clockwise
+ * Differences from turf: vertices are evenly spaced in bearing (circle, sector arc) or, by default,
+ * in the ellipse parameter. Use `ellipseSpacing: 'arc-length'` for approximately equal ellipse arc
+ * intervals (turf uses arc length); circles run counter-clockwise
  * from north like turf; a sector whose bearings coincide sweeps a full turn but keeps its center
  * spokes (turf returns a circle) so that every feature has the same vertex count; ellipse
  * `rotations` are applied about the center.
@@ -188,6 +198,13 @@ export class GPUShapeGenerator implements GPUCommandNodeProducer {
       props.coordinateSystem !== 'geodesic'
     ) {
       throw new Error(`${id} coordinateSystem must be 'planar' or 'geodesic'`);
+    }
+    if (
+      props.ellipseSpacing !== undefined &&
+      (props.shape !== 'ellipse' ||
+        (props.ellipseSpacing !== 'parameter' && props.ellipseSpacing !== 'arc-length'))
+    ) {
+      throw new Error(`${id} ellipseSpacing must be 'parameter' or 'arc-length' for ellipses`);
     }
     this.maximumSegments = props.maximumSegments ?? 64;
     const minimum = getGPUShapeMinimumSegments(props.shape);
@@ -272,7 +289,7 @@ export class GPUShapeGenerator implements GPUCommandNodeProducer {
     );
   }
 
-  /** Returns the vertex generation node and the offsets node. */
+  /** Returns vertex and offsets nodes, preceded by an arc-length table node when requested. */
   getCommandNodes<Parameters>(
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
@@ -290,6 +307,60 @@ export class GPUShapeGenerator implements GPUCommandNodeProducer {
     ]);
     const {shape} = props;
     const geodesic = props.coordinateSystem === 'geodesic';
+    const arcLengths =
+      props.ellipseSpacing === 'arc-length'
+        ? createTransientView(graph, `${id}-arc-lengths`, 'float32', featureCount * 257)
+        : undefined;
+    const nodes: GPUCommandNode<Parameters>[] = [];
+    const ellipseDeclarations = `
+const QUARTER_TURN: f32 = 1.5707963267948966;
+const ARC_INTERVALS: u32 = 256u;
+
+fn getEllipseRadii(feature: u32) -> vec2<f32> {
+  var axes = vec2<f32>(
+    radii[radiiOffset + 2u * feature], radii[radiiOffset + 2u * feature + 1u]) *
+    parameters[parametersOffset + 1u];
+  if ((bitcast<u32>(axes.x) & 0x7f800000u) == 0x7f800000u || axes.x < 0.0) {
+    axes.x = 0.0;
+  }
+  if ((bitcast<u32>(axes.y) & 0x7f800000u) == 0x7f800000u || axes.y < 0.0) {
+    axes.y = 0.0;
+  }
+  return axes;
+}`;
+    if (arcLengths) {
+      nodes.push(
+        createWGSLKernelNode<Parameters>(graph, {
+          id: `${id}-arc-lengths`,
+          operation: OPERATION,
+          variant: 'ellipse-arc-lengths',
+          bindings: [
+            {name: 'radii', view: props.radii, type: 'f32', access: 'read'},
+            {name: 'parameters', view: props.parameters, type: 'f32', access: 'read'},
+            {name: 'arcLengths', view: arcLengths, type: 'f32', access: 'read_write'}
+          ],
+          invocationCount: featureCount,
+          declarations: ellipseDeclarations,
+          body: `let axes = getEllipseRadii(index);
+  // Normalize before squaring to keep the table independent of world-coordinate scale.
+  let maximumRadius = max(axes.x, axes.y);
+  var normalizedAxes = vec2<f32>(0.0);
+  if (maximumRadius > 0.0) { normalizedAxes = axes / maximumRadius; }
+  let base = arcLengthsOffset + index * (ARC_INTERVALS + 1u);
+  arcLengths[base] = 0.0;
+  var total = 0.0;
+  for (var interval = 1u; interval <= ARC_INTERVALS; interval++) {
+    // The exact chord uses the midpoint derivative times 2 sin(delta / 2), avoiding
+    // cancellation from subtracting nearby ellipse coordinates. Quarter symmetry lets
+    // every vertex reuse one table. The polygonal length converges quadratically.
+    let halfStep = QUARTER_TURN / (2.0 * f32(ARC_INTERVALS));
+    let midpoint = (2.0 * f32(interval) - 1.0) * halfStep;
+    total += 2.0 * sin(halfStep) * length(normalizedAxes * vec2<f32>(sin(midpoint), cos(midpoint)));
+    arcLengths[base + interval] = total;
+  }`
+        })
+      );
+    }
     const maximumVertices = getGPUShapeVertexCount(shape, maximumSegments);
     const constants = `const FEATURE_COUNT: u32 = ${featureCount}u;
 const MAXIMUM_SEGMENTS: u32 = ${maximumSegments}u;
@@ -322,14 +393,17 @@ fn getVertexCount(segments: u32) -> u32 {
           ]
         : []),
       {name: 'parameters', view: props.parameters, type: 'f32', access: 'read'},
+      ...(arcLengths
+        ? [{name: 'arcLengths', view: arcLengths, type: 'f32' as const, access: 'read' as const}]
+        : []),
       {name: 'positionsOut', view: positions, type: 'f32', access: 'read_write'}
     ];
 
-    return [
+    nodes.push(
       createWGSLKernelNode<Parameters>(graph, {
         id: `${id}-vertices`,
         operation: OPERATION,
-        variant: `${shape}-${geodesic ? 'geodesic' : 'planar'}${props.rotations ? '-rotated' : ''}`,
+        variant: `${shape}-${geodesic ? 'geodesic' : 'planar'}${props.rotations ? '-rotated' : ''}${arcLengths ? '-arc-length' : ''}`,
         bindings: vertexBindings,
         invocationCount: featureCount * maximumVertices,
         declarations: `${constants}
@@ -337,6 +411,36 @@ const EARTH_RADIUS: f32 = ${GPU_SHAPE_GENERATOR_EARTH_RADIUS};
 const DEGREES: f32 = 0.017453292519943295;
 const TWO_PI: f32 = 6.283185307179586;
 const NOT_A_NUMBER: u32 = 0x7fc00000u;
+${shape === 'ellipse' ? ellipseDeclarations : ''}
+${
+  arcLengths
+    ? `
+fn getEllipsePhase(feature: u32, step: u32, segments: u32, axes: vec2<f32>) -> f32 {
+  let fraction = f32(step) / f32(segments);
+  // Equal axes already have equal arc intervals. This also handles collapsed points.
+  if (axes.x == axes.y) { return TWO_PI * fraction; }
+  // Integer quadrant arithmetic keeps cardinal vertices and the closure exact.
+  let quadrant = (4u * step) / segments;
+  let quarterFraction = f32((4u * step) % segments) / f32(segments);
+  let reverse = (quadrant & 1u) != 0u;
+  let targetFraction = select(quarterFraction, 1.0 - quarterFraction, reverse);
+  let base = arcLengthsOffset + feature * (ARC_INTERVALS + 1u);
+  let targetLength = targetFraction * arcLengths[base + ARC_INTERVALS];
+  var lower = 0u;
+  var upper = ARC_INTERVALS;
+  for (var iteration = 0u; iteration < 8u; iteration++) {
+    let middle = (lower + upper) / 2u;
+    if (arcLengths[base + middle] < targetLength) { lower = middle; } else { upper = middle; }
+  }
+  let start = arcLengths[base + lower];
+  let span = arcLengths[base + upper] - start;
+  var weight = 0.0;
+  if (span > 0.0) { weight = clamp((targetLength - start) / span, 0.0, 1.0); }
+  let phase = QUARTER_TURN * (f32(lower) + weight) / f32(ARC_INTERVALS);
+  return f32(quadrant) * QUARTER_TURN + select(phase, QUARTER_TURN - phase, reverse);
+}`
+    : ''
+}
 
 fn isFinite32(value: f32) -> bool {
   return (bitcast<u32>(value) & 0x7f800000u) != 0x7f800000u;
@@ -376,21 +480,30 @@ ${
   var position = center;
 ${
   shape === 'ellipse'
-    ? `  var radii2 = vec2<f32>(
-    radii[radiiOffset + 2u * feature], radii[radiiOffset + 2u * feature + 1u]) * radiusScale;
-  if (!isFinite32(radii2.x) || radii2.x < 0.0) { radii2.x = 0.0; }
-  if (!isFinite32(radii2.y) || radii2.y < 0.0) { radii2.y = 0.0; }
+    ? `  let radii2 = getEllipseRadii(feature);
   // Counter-clockwise from the x semi-axis, which points along bearing 90 degrees + rotation.
-  let phase = TWO_PI * f32(local % segments) / f32(segments);
+  let phase = ${arcLengths ? 'getEllipsePhase(feature, local % segments, segments, radii2)' : 'TWO_PI * f32(local % segments) / f32(segments)'};
   let east = radii2.x * cos(phase);
   let north = radii2.y * sin(phase);
   ${props.rotations ? 'let tilt = rotations[rotationsOffset + feature] * DEGREES;' : 'let tilt: f32 = 0.0;'}
   // Rotate the (east, north) offset clockwise by tilt.
   let rotatedEast = east * cos(tilt) + north * sin(tilt);
   let rotatedNorth = north * cos(tilt) - east * sin(tilt);
-  let distance = length(vec2<f32>(rotatedEast, rotatedNorth));
-  let bearing = atan2(rotatedEast, rotatedNorth);
+  ${
+    arcLengths && !geodesic
+      ? 'position = center + vec2<f32>(rotatedEast, rotatedNorth);'
+      : `let distance = length(vec2<f32>(rotatedEast, rotatedNorth));
+  var bearing = atan2(rotatedEast, rotatedNorth);
+  ${
+    arcLengths
+      ? `// Avoid backend atan2 signed-zero ambiguity for an east/west degenerate axis.
+  if (rotatedNorth == 0.0) {
+    bearing = select(-QUARTER_TURN, QUARTER_TURN, rotatedEast >= 0.0);
+  }`
+      : ''
+  }
   position = getDestination(center, distance, bearing);`
+  }`
     : `  var radius = radii[radiiOffset + feature] * radiusScale;
   if (!isFinite32(radius) || radius < 0.0) { radius = 0.0; }
 ${
@@ -441,6 +554,7 @@ ${
   offsetsOut[offsetsOutOffset + index] = index * vertices;
   ${vertexCount ? 'if (index == FEATURE_COUNT) { vertexCountOut[vertexCountOutOffset] = index * vertices; }' : ''}`
       })
-    ];
+    );
+    return nodes;
   }
 }

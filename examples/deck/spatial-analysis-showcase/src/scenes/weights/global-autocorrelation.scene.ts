@@ -2,13 +2,29 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {getClassTableLegend} from '../../cartography/class-table';
+import {CREDITS, joinCredits} from '../../cartography/credits';
+import {labelsFor, US} from '../../cartography/gazetteer';
+import {ground} from '../../cartography/grounds';
+import {NATIONAL_FURNITURE} from '../../cartography/projection-notes';
+import type {ClassTable} from '../../cartography/types';
 import {defineScene, type LegendSpec} from '../scene';
-import {RAMP_NAMES} from '../../engine/ramps';
-import {BLACK_JOIN_COLOR, MORAN_COLORS, WHITE_JOIN_COLOR} from './b4-colors';
 import {getVariableInfo, VARIABLES} from './b4-geography';
 import type {GlobalAutocorrelationOptions} from './global-autocorrelation.compute';
+import {
+  BLACK_JOIN,
+  getBivariateColors,
+  getQuadrantColors,
+  WHITE_JOIN
+} from './global-autocorrelation.style';
 
 const MAXIMUM_BANDS_OPTION = 32;
+
+/** The conterminous US as one frame (the national county frame of the chapter). */
+const CONUS_BOUNDS = [-124.8, 24.4, -66.9, 49.4] as const;
+
+/** The South-East, for the bivariate step. */
+const SOUTH_EAST_BOUNDS = [-98.5, 25, -74.5, 40.5] as const;
 
 const ALTERNATIVES = [
   {
@@ -36,62 +52,123 @@ const VARIABLE_OPTIONS = VARIABLES.map(variable => ({
   help: variable.help
 }));
 
-function getDisplayLegend(state: GlobalAutocorrelationOptions): LegendSpec {
+/** Credit of every step: the data, the boundaries and the colour tables. */
+const CREDIT = joinCredits(
+  'CDC PLACES, 2024 release (public domain)',
+  CREDITS.usCensus,
+  'Census SAIPE 2022 (income)',
+  CREDITS.colorBrewer
+);
+
+/** Cartouche of one step: a claim or question, the variable and method, and the honesty chip. */
+const cartouche = (title: string, subtitle: string) => ({
+  title,
+  subtitle,
+  sample: 'CDC PLACES 2024 model-based estimates; 3,109 counties of the contiguous US',
+  chips: ['Modelled'] as const
+});
+
+/** Annotations of the national county steps: regions of the gazetteer, shown from the national zoom. */
+const regionLabels = (ids: readonly string[]) =>
+  labelsFor(US, ids, Object.fromEntries(ids.map(id => [id, {minZoom: 3, tone: 'ink' as const}])));
+
+function getLegends(
+  state: GlobalAutocorrelationOptions,
+  data: Readonly<Record<string, unknown>>
+): LegendSpec[] {
   const first = getVariableInfo(state.variable);
   const second = getVariableInfo(state.secondVariable);
   switch (state.display) {
-    case 'quadrant':
-      return {
-        kind: 'categories',
-        title: 'Moran scatterplot quadrant (not tested)',
-        entries: [
-          {color: MORAN_COLORS[1], label: 'High, high neighbours'},
-          {color: MORAN_COLORS[3], label: 'Low, low neighbours'},
-          {color: MORAN_COLORS[4], label: 'High among low'},
-          {color: MORAN_COLORS[2], label: 'Low among high'}
-        ],
-        note: 'Compares the place and its weighted neighbours with the mean. The global I is the slope through this cloud. No significance test is applied here: see Local Moran in Hot spots.'
-      };
-    case 'binary':
-      return {
-        kind: 'categories',
-        title: 'Join-count colouring',
-        entries: [
-          {color: BLACK_JOIN_COLOR, label: `Black: above the ${state.joinPercentile}th percentile`},
-          {color: WHITE_JOIN_COLOR, label: 'White: the rest'}
-        ],
-        note: 'A join is a pair of neighbours; BB, BW and WW count the pairs by colour.'
-      };
-    case 'second':
-      return {
-        kind: 'ramp',
-        id: 'display',
-        title: second.label,
-        ramp: state.ramp,
-        extent: 'gpu',
-        unit: second.unit,
-        format: value => value.toFixed(second.digits)
-      };
-    case 'lag':
-      return {
-        kind: 'ramp',
-        id: 'display',
-        title: `Spatial lag of ${first.label.toLowerCase()}`,
-        ramp: state.ramp,
-        extent: 'gpu',
-        unit: first.unit,
-        format: value => value.toFixed(first.digits)
-      };
+    case 'value':
+    case 'lag': {
+      const table = data['valueTable'] as ClassTable | undefined;
+      if (!table) return [];
+      const lagged = state.display === 'lag';
+      return [
+        getClassTableLegend(table, {
+          title: lagged ? `${first.label}, neighbour average` : first.label,
+          id: 'value-classes',
+          counts: data[lagged ? 'lagCounts' : 'valueCounts'] as number[] | undefined,
+          interactive: true,
+          layout: 'list',
+          note: lagged
+            ? 'The same classes as the values map: each county shows the average of its neighbours, so the map is smoother.'
+            : `${table.method}. The lag and shuffled maps keep these breaks.`
+        })
+      ];
+    }
+    case 'second': {
+      const table = data['secondTable'] as ClassTable | undefined;
+      if (!table) return [];
+      return [
+        getClassTableLegend(table, {
+          title: second.label,
+          id: 'second-classes',
+          counts: data['secondCounts'] as number[] | undefined,
+          interactive: true,
+          layout: 'list'
+        })
+      ];
+    }
+    case 'bivariate': {
+      const invert = state.secondVariable === 'income';
+      return [
+        {
+          kind: 'bivariate',
+          title: `${first.label} with ${second.label.toLowerCase()}`,
+          size: 3,
+          colors:
+            (data['bivariateColors'] as ReturnType<typeof getBivariateColors> | undefined) ??
+            getBivariateColors('light'),
+          xLabel: first.label,
+          yLabel: invert ? `${second.label}, inverted` : second.label,
+          xEnds: ['lower', 'higher'],
+          yEnds: invert ? ['higher', 'lower'] : ['lower', 'higher'],
+          note: `Tertiles of each variable. The darkest cell is high ${first.label.toLowerCase()} with ${invert ? 'low' : 'high'} ${second.label.toLowerCase()}.`
+        }
+      ];
+    }
+    case 'quadrant': {
+      const colors = getQuadrantColors('light');
+      const counts = data['quadrantCounts'] as number[] | undefined;
+      const quadrantColors =
+        (data['quadrantColors'] as ReturnType<typeof getQuadrantColors> | undefined) ?? colors;
+      return [
+        {
+          kind: 'categories',
+          id: 'quadrant-classes',
+          title: 'Moran scatterplot quadrant (signs only, not tested)',
+          layout: 'list',
+          interactive: true,
+          entries: [
+            {color: quadrantColors.highHigh, label: 'High-High', count: counts?.[0]},
+            {color: quadrantColors.lowLow, label: 'Low-Low', count: counts?.[2]},
+            {color: quadrantColors.highLow, label: 'High-Low', count: counts?.[3]},
+            {color: quadrantColors.lowHigh, label: 'Low-High', count: counts?.[1]},
+            {
+              color: (data['noDataColor'] as [number, number, number, number] | undefined) ?? [
+                217, 217, 217, 178
+              ],
+              label: 'No neighbours (island)',
+              count: counts?.[4]
+            }
+          ],
+          note: 'High or low against the mean, for the county and for the average of its neighbours. No significance test: see Hot spots beyond chance.'
+        }
+      ];
+    }
     default:
-      return {
-        kind: 'ramp',
-        id: 'display',
-        title: first.label,
-        ramp: state.ramp,
-        extent: 'gpu',
-        unit: first.unit,
-        format: value => value.toFixed(first.digits)
-      };
+      return [
+        {
+          kind: 'categories',
+          title: 'Join-count colouring',
+          entries: [
+            {color: BLACK_JOIN, label: `Black: above the ${state.joinPercentile}th percentile`},
+            {color: WHITE_JOIN, label: 'White: the rest'}
+          ],
+          note: 'A join is a pair of neighbours; BB, BW and WW count the pairs by colour.'
+        }
+      ];
   }
 }
 
@@ -108,9 +185,12 @@ function getSnippet(state: GlobalAutocorrelationOptions): string {
 }));
 parameters.write(getGPUPermutationParameterValues({seed: ${state.seed}, permutations: ${state.permutations}}));`;
   return `import {
-  GPUGlobalSpatialStatistics, GPUGlobalPermutationTest, getGPUPermutationParameterValues
+  GPUSpatialLag, GPUGlobalSpatialStatistics, GPUGlobalPermutationTest, getGPUPermutationParameterValues
 } from '@luma.gl/experimental/gpu-spatial-analysis';
 import {GPUSpatialCorrelogram, getGPUSpatialCorrelogramParameterValues} from '@luma.gl/experimental/gpu-dataframe';
+
+// The neighbour average of every county: the y axis of the Moran scatterplot.
+graph.add(new GPUSpatialLag({weights, values, mask, normalize: true, output: lag}));
 
 // Analytic expectation, variance, z and p of every global statistic, one pass.
 graph.add(new GPUGlobalSpatialStatistics({
@@ -135,7 +215,8 @@ correlogramParameters.write(getGPUSpatialCorrelogramParameterValues({
 }
 
 /**
- * Global autocorrelation of health and income. GPU work is in
+ * Global autocorrelation of health and income: one number, the Moran scatterplot behind it, the
+ * permutation null, the neighbour rule and the distance. GPU work is in
  * `global-autocorrelation.compute.ts`.
  */
 export default defineScene<GlobalAutocorrelationOptions>({
@@ -144,7 +225,7 @@ export default defineScene<GlobalAutocorrelationOptions>({
   chapter: 'weights',
   order: 2,
   summary:
-    "Moran's I, Geary's C, General G, bivariate Moran and join counts for county health and income, with permutation reference distributions and a spatial correlogram of the distance at which clustering peaks.",
+    "Moran's I of county diabetes and income as the slope of the Moran scatterplot, with a permutation null, the neighbour rule, a bivariate version and a correlogram of the distance at which clustering fades.",
   contributors: [
     'GPUGlobalSpatialStatistics',
     'GPUGlobalPermutationTest',
@@ -156,10 +237,11 @@ export default defineScene<GlobalAutocorrelationOptions>({
   ],
   datasets: [
     {id: 'us-counties', role: 'counties with CDC PLACES health measures and income'},
+    {id: 'us-states', role: 'state lines over the counties'},
     {id: 'chicago-tracts', role: 'tracts with PLACES health measures (alternate geography)'},
     {id: 'chicago-community-areas', role: 'names of the community areas'}
   ],
-  initialView: {longitude: -95.5, latitude: 38.2, zoom: 3.9},
+  initialView: {longitude: -96, latitude: 38.3, zoom: 3.9},
 
   options: [
     {
@@ -244,13 +326,22 @@ export default defineScene<GlobalAutocorrelationOptions>({
       group: 'Weights',
       apply: 'compile',
       default: 'row',
-      help: "The statistics use the weights as given, so the transform matters. Row standardisation is the convention for Moran's I; the join counts always use the binary pattern.",
+      help: "The statistics use the weights as given, so the transform matters. Row standardisation is the convention for Moran's I and makes the scatterplot slope equal I; the join counts always use the binary pattern.",
       options: [
         {value: 'row', label: 'Row standardised (R)'},
         {value: 'none', label: 'Binary (as produced)'},
         {value: 'double', label: 'Double standardised (D)'},
         {value: 'variance', label: 'Variance stabilising (V)'}
       ]
+    },
+    {
+      kind: 'toggle',
+      id: 'showRuleSweep',
+      label: 'Compare the four neighbour rules',
+      group: 'Weights',
+      apply: 'compile',
+      default: false,
+      help: "Computes Moran's I (row standardised) under queen, rook, k nearest and distance band one after the other, on a second weights set that never touches the map. Each rule's weights graph is compiled once and kept."
     },
     {
       kind: 'select',
@@ -295,15 +386,32 @@ export default defineScene<GlobalAutocorrelationOptions>({
     {
       kind: 'slider',
       id: 'seed',
-      label: 'Random seed',
+      label: 'Shuffle seed',
       group: 'Permutation test',
       apply: 'param',
       min: 1,
       max: 50,
       step: 1,
       default: 1,
-      disabledWhen: state => state.statistic === 'joinCount',
-      help: 'The same seed always gives the same null distribution (a counter-based Philox generator).'
+      display: 'stepper',
+      format: value => `seed ${value}`,
+      help: 'The same seed always gives the same null distribution (a counter-based Philox generator) and the same shuffled map.'
+    },
+    {
+      kind: 'button',
+      id: 'shuffle',
+      label: 'Shuffle again (next seed)',
+      group: 'Permutation test',
+      help: 'Moves to the next seed: a new shuffled map and a new null distribution.'
+    },
+    {
+      kind: 'toggle',
+      id: 'showShuffled',
+      label: 'Show a shuffled map beside the real one',
+      group: 'Permutation test',
+      apply: 'param',
+      default: false,
+      help: 'Deals the same county values out at random (seeded, on the CPU) and draws that map left of the swipe divider. The classes are the real map classes.'
     },
     {
       kind: 'slider',
@@ -328,25 +436,27 @@ export default defineScene<GlobalAutocorrelationOptions>({
       max: MAXIMUM_BANDS_OPTION,
       step: 2,
       default: 16,
+      expert: true,
       help: 'Number of distance bands of GPUSpatialCorrelogram (up to 64 in the contributor; 32 here). Compile-time.'
     },
     {
       kind: 'select',
       id: 'bandMode',
-      label: 'Correlogram: band type',
+      label: 'Band type',
       group: 'Correlogram',
       apply: 'compile',
       default: 'cumulative',
+      display: 'segmented',
       help: 'Cumulative bands hold every pair up to their distance (PySAL DistanceBand thresholds, the ArcGIS incremental autocorrelation). Annulus bands hold only the pairs between the previous distance and theirs.',
       options: [
-        {value: 'cumulative', label: 'Cumulative (within d)'},
-        {value: 'annulus', label: 'Annulus (between d and the previous band)'}
+        {value: 'cumulative', label: 'Cumulative'},
+        {value: 'annulus', label: 'Annulus'}
       ]
     },
     {
       kind: 'slider',
       id: 'maxDistanceFactor',
-      label: 'Correlogram: maximum distance',
+      label: 'Maximum distance',
       group: 'Correlogram',
       apply: 'param',
       min: 4,
@@ -354,7 +464,7 @@ export default defineScene<GlobalAutocorrelationOptions>({
       step: 2,
       default: 30,
       format: value => `${value} x spacing`,
-      help: 'Upper distance of the last band, in median centroid spacings. A parameter write.'
+      help: 'Upper distance of the last band, in median centroid spacings. The readout shows it in kilometres. A parameter write.'
     },
     {
       kind: 'select',
@@ -376,27 +486,15 @@ export default defineScene<GlobalAutocorrelationOptions>({
       group: 'Display',
       apply: 'param',
       default: 'value',
-      help: 'Which buffer the fill reads.',
+      help: 'Which buffer the fill reads. All value maps use the same frozen quantile classes.',
       options: [
         {value: 'value', label: 'Variable x'},
-        {value: 'second', label: 'Variable y'},
-        {value: 'lag', label: 'Spatial lag of x'},
+        {value: 'lag', label: 'Neighbour average (spatial lag of x)'},
         {value: 'quadrant', label: 'Moran scatterplot quadrants'},
+        {value: 'bivariate', label: 'x with y (bivariate)'},
+        {value: 'second', label: 'Variable y'},
         {value: 'binary', label: 'Join-count colours (black / white)'}
       ]
-    },
-    {
-      kind: 'select',
-      id: 'ramp',
-      label: 'Color ramp',
-      group: 'Display',
-      apply: 'param',
-      default: 'viridis',
-      disabledWhen: state => state.display === 'quadrant' || state.display === 'binary',
-      options: RAMP_NAMES.filter(name => name !== 'diverging').map(name => ({
-        value: name,
-        label: name.charAt(0).toUpperCase() + name.slice(1)
-      }))
     },
     {
       kind: 'toggle',
@@ -405,7 +503,7 @@ export default defineScene<GlobalAutocorrelationOptions>({
       group: 'Display',
       apply: 'param',
       default: false,
-      help: 'Rings around the focus place at every band edge; the orange ring marks the first peak of the correlogram. Click the map to move the centre.'
+      help: 'Two rings around the focus county: dashed at the longest distance, solid where the correlogram z first peaks (or is highest). Click the map to move the focus.'
     },
     {
       kind: 'toggle',
@@ -418,52 +516,169 @@ export default defineScene<GlobalAutocorrelationOptions>({
   ],
 
   readouts: [
-    {id: 'places', label: 'Places analysed'},
-    {id: 'summary', label: 'Mean of x, S0'},
+    {id: 'places', label: 'Places analysed', help: 'Places with a finite value of x.'},
     {
       id: 'moran',
       label: "Moran's I",
-      help: 'I = n / S0 * sum w z_i z_j / sum z^2. Expected value -1 / (n - 1) under no pattern.'
-    },
-    {id: 'moranTest', label: 'Moran z (randomisation / normality), p'},
-    {
-      id: 'geary',
-      label: "Geary's C",
-      help: 'Squared differences between neighbours; below 1 means similar neighbours.'
+      emphasis: 'tile',
+      help: 'I = n / S0 * sum w z_i z_j / sum z^2. The slope of the Moran scatterplot when the weights are row standardised.'
     },
     {
-      id: 'getis',
-      label: 'General G',
-      help: 'Cross-product of values within neighbourhoods; above its expectation means high values cluster.'
+      id: 'moranZ',
+      label: 'z-score (randomisation)',
+      help: "Moran's I less its expectation, in standard deviations under randomisation."
     },
-    {id: 'bivariate', label: 'Bivariate Moran I (x, y)'},
-    {id: 'joins', label: 'Joins BB / BW / WW'},
-    {id: 'joinTest', label: 'Join-count tests'},
     {
-      id: 'permutation',
-      label: 'Permutation test',
-      help: 'The selected statistic: observed value, p_sim = (larger + 1) / (P + 1) and z_sim.'
+      id: 'expected',
+      label: 'Expected I with no pattern',
+      hood: true,
+      help: 'E[I] = -1 / (n - 1).'
+    },
+    {
+      id: 'quadrantShare',
+      label: 'In High-High or Low-Low',
+      emphasis: 'tile',
+      help: 'Share of counties with neighbours that sit with the same sign as their neighbours (the two cornered quadrants).'
+    },
+    {
+      id: 'moranScatter',
+      label: 'Moran scatterplot',
+      kind: 'chart',
+      help: 'Value against neighbour average, both as standard scores. Drag to select counties.'
+    },
+    {
+      id: 'pSim',
+      label: 'Pseudo p-value',
+      help: 'p_sim = (larger + 1) / (P + 1) for the selected statistic and tail.'
+    },
+    {
+      id: 'pFloor',
+      label: 'Smallest possible p',
+      help: '1 / (P + 1): even a perfect result cannot go below it.'
+    },
+    {
+      id: 'permutations',
+      label: 'Shuffles',
+      help: 'Permutations P of the selected statistic.'
+    },
+    {id: 'exceedances', label: 'Shuffles beyond observed', help: 'The count behind p_sim.'},
+    {
+      id: 'shuffledI',
+      label: 'I of the shuffled map shown',
+      help: "Moran's I of the seeded shuffled map, computed by a second GPUGlobalSpatialStatistics pass."
     },
     {
       id: 'nullDistribution',
       label: 'Null distribution',
-      help: 'Histogram of the simulated statistic; compare the range with the observed value above.'
+      kind: 'chart',
+      help: 'Histogram of the statistic over the shuffles, with the observed value marked.'
     },
-    {id: 'correlogram', label: "Moran's I by distance"},
-    {id: 'correlogramZ', label: 'z-score by distance'},
-    {id: 'peak', label: 'First peak of the correlogram'},
-    {id: 'bandSpan', label: 'Correlogram span'}
+    {
+      id: 'zSim',
+      label: 'z of the observed value among shuffles',
+      hood: true,
+      help: 'esda z_sim: (observed - simulated mean) / simulated standard deviation.'
+    },
+    {
+      id: 'iByW',
+      label: "Moran's I by neighbour rule",
+      kind: 'chart',
+      help: "Row-standardised Moran's I under each rule; the current rule is highlighted."
+    },
+    {
+      id: 'iRange',
+      label: 'Range of I over the rules',
+      help: 'Lowest and highest I of the four rules.'
+    },
+    {
+      id: 'bivariate',
+      label: "Bivariate Moran's I (x, y)",
+      emphasis: 'tile',
+      help: 'x here against the neighbour average of y.'
+    },
+    {
+      id: 'darkCorner',
+      label: 'Counties in the darkest class',
+      help: 'High x with the unfavourable end of y (low income).'
+    },
+    {id: 'geary', label: "Geary's C", hood: true, help: 'Below 1 means similar neighbours.'},
+    {
+      id: 'getis',
+      label: 'General G',
+      hood: true,
+      help: 'Above its expectation means high values cluster.'
+    },
+    {id: 'joins', label: 'Joins BB / BW / WW', hood: true},
+    {id: 'joinTest', label: 'Join-count tests', hood: true},
+    {
+      id: 'correlogram',
+      label: "Moran's I by distance",
+      kind: 'chart',
+      help: "Global Moran's I of neighbours within each distance, with the z-score on the right axis."
+    },
+    {id: 'peak', label: 'z peak (distance at the focus county)'},
+    {id: 'maxDistance', label: 'Longest distance (at the focus county)'},
+    {id: 'bandSpan', label: 'Correlogram span', hood: true},
+    {
+      id: 'distanceNote',
+      label: 'Distance units',
+      hood: true,
+      help: 'The correlogram measures distance in the planar metres of the map frame.'
+    }
   ],
 
-  legends: state => [getDisplayLegend(state)],
+  pipeline: [
+    {
+      id: 'weights',
+      label: 'Weights',
+      detail: 'Who is whose neighbour, row standardised',
+      show: {option: 'showRuleSweep', value: true}
+    },
+    {
+      id: 'lag',
+      label: 'Lag',
+      detail: 'The average of the neighbours of every county',
+      show: {option: 'display', value: 'lag'}
+    },
+    {
+      id: 'sums',
+      label: 'Global sums',
+      detail: 'One pass: mean, S0, S1, S2, then I, z and p',
+      show: {option: 'display', value: 'value'}
+    },
+    {
+      id: 'permutation',
+      label: 'Permutations',
+      detail: 'Shuffles by a keyed bijection, no n x P table',
+      show: {option: 'showShuffled', value: true}
+    },
+    {
+      id: 'correlogram',
+      label: 'Correlogram',
+      detail: 'Every distance band in one pass over the pairs',
+      show: {option: 'showBands', value: true}
+    }
+  ],
 
+  legends: getLegends,
   snippet: getSnippet,
+
+  basemap: ground('paperSheet'),
+  furniture: {
+    ...NATIONAL_FURNITURE,
+    title: cartouche(
+      'Is diabetes clustered?',
+      'Age-adjusted prevalence, CDC PLACES 2024, quantile classes'
+    ),
+    credit: CREDIT
+  },
+  annotations: [],
 
   about: {
     what: "`GPUGlobalSpatialStatistics` computes one number for the whole map: Moran's I, Geary's C, Getis-Ord General G, bivariate Moran's I and join counts, each with its expectation, variance, z-score and p-value. `GPUGlobalPermutationTest` re-computes the statistic for hundreds of random rearrangements to build the reference distribution, and `GPUSpatialCorrelogram` repeats Moran's I at growing distances.",
     why: 'Before mapping local hot spots or fitting a regression, an analyst needs to know that there is a spatial pattern at all, how strong it is, and at what distance it fades.',
     howToRead:
-      "A Moran's I well above its expectation (about 0) means similar values sit next to each other; a Geary's C below 1 says the same. The permutation test shows whether the observed value could come from a random arrangement: compare it with the range of the null distribution. The correlogram shows I by distance: the orange ring marks where clustering first peaks."
+      "Moran's I is the slope of the Moran scatterplot: well above its expectation (about 0) means similar values sit next to each other. The permutation histogram shows what shuffled maps give; the observed value is marked on it. The correlogram shows I by distance: the solid ring marks where the z-score peaks."
   },
 
   create: async ctx =>
@@ -473,73 +688,199 @@ export default defineScene<GlobalAutocorrelationOptions>({
     {
       id: 'clustered',
       title: 'Is diabetes clustered across US counties?',
-      body: "The map shows age-adjusted diabetes prevalence (CDC PLACES) for the 3,109 counties of the contiguous United States. The eye sees a belt across the South. **`GPUGlobalSpatialStatistics`** puts a number on it: **Moran's I**, `I = (n / S0) * sum w_ij z_i z_j / sum z_i^2`, where `z` is the value minus the mean and `W` is the queen contiguity weights, row standardised (**Neighbours are...** and **Weight transform** below set that). With no pattern the expected value is `-1 / (n - 1)`, close to 0.\n\nRead **Moran's I** and its **z** below: for these counties I is about 0.70 and z is above 60, so clustering is overwhelming. The z and p come from analytic variances under *randomisation* and *normality*, as in esda `Moran`, and the whole statistic is one deterministic GPU pass.",
-      options: {statistic: 'moran', display: 'value', source: 'queen', transform: 'row'},
-      camera: {longitude: -95.5, latitude: 38.2, zoom: 3.9, transitionMs: 1400},
-      highlight: {readout: 'moran'},
-      controls: ['variable', 'source', 'transform'],
-      readouts: ['moran', 'moranTest']
+      headline: 'A belt of high diabetes crosses the South',
+      textAlternative:
+        'Map of the contiguous US in five classes of county diabetes prevalence, pale yellow to dark brown: the darkest counties form a belt across the South and Appalachia, the palest lie in the Rockies and the Upper Midwest.',
+      body: "Five equal-count classes show a belt of high prevalence across the South and Appalachia, and low values from the Rockies to the Upper Midwest.\n\n**Moran's I** puts one number on the pattern: **{{moran}}** over {{places}} counties, z = {{moranZ}}. With no pattern it would be close to zero. Compare another **Variable**.\n\n*Near things are more alike: Moran's I measures how much.*",
+      optionsMode: 'fresh',
+      options: {
+        geography: 'us-counties',
+        variable: 'diabetes',
+        source: 'queen',
+        transform: 'row',
+        statistic: 'moran',
+        display: 'value'
+      },
+      controls: ['variable'],
+      readouts: ['moran', 'moranZ', 'places'],
+      stage: 'sums',
+      camera: {bounds: CONUS_BOUNDS, transitionMs: 1600},
+      basemap: ground('paperSheet'),
+      furniture: {
+        ...NATIONAL_FURNITURE,
+        title: cartouche(
+          'Is diabetes clustered?',
+          'Age-adjusted prevalence, CDC PLACES 2024, quantile classes'
+        ),
+        credit: CREDIT
+      },
+      annotations: regionLabels([
+        'black-belt',
+        'mississippi-delta',
+        'appalachia',
+        'rio-grande-valley',
+        'front-range',
+        'great-plains'
+      ])
     },
     {
       id: 'scatterplot',
-      title: 'The Moran scatterplot, drawn as a map',
-      body: "Moran's I is the slope of the **Moran scatterplot**: each county's value `z` against the weighted mean of its neighbours (`GPUSpatialLag`). Colouring each county by its quadrant gives a map: red is **high with high neighbours**, blue **low with low neighbours**, and the two lighter colours are places unlike their surroundings.\n\nA strongly positive I means most counties sit in the red and blue quadrants. This map is *not* tested for significance: it only shows the signs. The next contributors in this chapter (Local Moran, in the hot-spots story) test each county. **Map shows** below switches back to the plain values.",
-      options: {display: 'quadrant'},
-      camera: {longitude: -95.5, latitude: 38.2, zoom: 3.9},
-      highlight: {readout: 'moran'},
+      title: "Moran's I is a slope",
+      headline: "Moran's I is the slope of a scatterplot",
+      textAlternative:
+        'Map of US counties coloured by Moran quadrant, beside a scatterplot of each county against the average of its neighbours: the cloud rises from lower left to upper right along a fitted line.',
+      body: "Each dot is a county: its value (across) against the average of its neighbours (up), both as standard scores. The line through the cloud has slope **{{moran}}**, Moran's I; **{{quadrantShare}}** of counties sit in the High-High or Low-Low corners.\n\nDrag on the chart to outline counties on the map; **Map shows** switches between values, neighbour average and quadrants (signs only, not tested).\n\n*Autocorrelation is a county against its surroundings.*",
+      optionsMode: 'fresh',
+      options: {
+        geography: 'us-counties',
+        variable: 'diabetes',
+        source: 'queen',
+        transform: 'row',
+        statistic: 'moran',
+        display: 'quadrant'
+      },
       controls: ['display'],
-      readouts: ['moran']
+      readouts: ['moranScatter', 'moran', 'quadrantShare'],
+      stage: 'lag',
+      camera: {bounds: CONUS_BOUNDS, transitionMs: 1400},
+      basemap: ground('paperSheet'),
+      furniture: {
+        ...NATIONAL_FURNITURE,
+        title: cartouche(
+          "Moran's I is a slope",
+          'Quadrants of value and neighbour average, signs only'
+        ),
+        credit: CREDIT
+      },
+      annotations: regionLabels(['black-belt', 'front-range'])
     },
     {
       id: 'permutation',
-      title: 'Check the formula with a permutation test',
-      body: 'The analytic p-value assumes a distribution. A **permutation test** assumes nothing: shuffle the values over the counties 999 times, recompute I each time, and count how often chance beats the observed value. **`GPUGlobalPermutationTest`** does this without a 999 x 3,109 table: a keyed bijection (Philox counter generator and a Feistel network) relabels the values inside the kernel, so the result depends only on the seed.\n\nThe pseudo p-value is `(larger + 1) / (P + 1)`, so with 999 permutations the smallest possible is 0.001. Read **Permutation test** and the **Null distribution** sparkline below: simulated values sit around 0 and the observed 0.70 is far outside. Try another **Random seed** and a different **Tail of the p-value**: the result is reproducible and the tail changes how extremes count (esda `Moran` `p_sim`).',
-      options: {statistic: 'moran', permutations: 999, seed: 1},
-      highlight: {readout: 'permutation'},
-      controls: ['permutations', 'seed', 'alternative'],
-      readouts: ['permutation', 'nullDistribution']
-    },
-    {
-      id: 'geary-g',
-      title: "Geary's C and the General G look at different things",
-      body: "**Geary's C** uses squared differences between neighbours, so it reacts to *local* contrasts: below 1 means neighbours are similar. The **General G** adds the products `x_i x_j` over neighbours: it exceeds its expectation when **high** values cluster and falls below it when **low** values do, something Moran's I cannot separate.\n\nHere G is above its expectation: diabetes clusters at the high end, as the red belt suggests. The permutation test is now running for G (**Tail of the p-value** set to *Greater* tests exactly that). Both match esda `Geary` and `G`.",
-      options: {statistic: 'getisOrdG', alternative: 'greater', display: 'value'},
-      highlight: {readout: 'getis'},
-      controls: ['statistic', 'alternative'],
-      readouts: ['geary', 'getis', 'permutation']
-    },
-    {
-      id: 'bivariate',
-      title: 'Do high diabetes counties border poor counties?',
-      body: "**Bivariate Moran's I** relates one variable to the neighbours of another: `I_xy = (n / S0) * sum w_ij zx_i zy_j / sqrt(sum zx^2 sum zy^2)`. Here x is diabetes prevalence and y is median household income. A negative value means counties with a lot of diabetes are surrounded by counties with low income, even before asking whether the two are correlated within a county.\n\nThe map shows income. The permutation test now permutes y, as esda `Moran_BV` does, and the analytic bivariate variance is exact (esda only has the permutation version). Try swapping **Variable x** and **Variable y**, or setting **Geography** to *Chicago census tracts*.",
+      title: 'Shuffled maps never look like this',
+      headline: 'No shuffled map comes close to the real one',
+      textAlternative:
+        'A swipe between a shuffled county map, which looks like salt and pepper, on the left and the real map with its southern belt on the right, above a histogram of Moran I over the shuffles with the observed value far to the right.',
+      body: 'Deal the county values out at random and the belt vanishes: left is one shuffle (I = **{{shuffledI}}**), right the real map (I = **{{moran}}**). **{{permutations}}** shuffles built the histogram; **{{exceedances}}** reached the real I, so p_sim is **{{pSim}}** and cannot go below **{{pFloor}}**, 1 / (shuffles + 1).\n\nStep the **Shuffle seed**; change **Permutations**.\n\n*Beyond chance means beyond shuffling.*',
+      optionsMode: 'fresh',
       options: {
-        statistic: 'bivariateMoran',
-        secondVariable: 'income',
-        display: 'second',
-        alternative: 'directed'
+        geography: 'us-counties',
+        variable: 'diabetes',
+        source: 'queen',
+        transform: 'row',
+        statistic: 'moran',
+        display: 'value',
+        showShuffled: true,
+        permutations: 999,
+        seed: 1
       },
-      highlight: {readout: 'bivariate'},
-      controls: ['variable', 'secondVariable', 'geography'],
-      readouts: ['bivariate']
+      controls: ['seed', 'permutations'],
+      readouts: ['nullDistribution', 'pSim', 'pFloor', 'shuffledI'],
+      stage: 'permutation',
+      compare: {mode: 'swipe', labels: ['Shuffled', 'Real'], position: 0.5},
+      camera: {bounds: CONUS_BOUNDS, transitionMs: 1400},
+      basemap: ground('paperSheet'),
+      furniture: {
+        ...NATIONAL_FURNITURE,
+        title: cartouche(
+          'Shuffled maps never look like this',
+          'Same values, dealt at random to counties'
+        ),
+        credit: CREDIT
+      },
+      annotations: []
     },
     {
-      id: 'join-counts',
-      title: 'Join counts: a binary question',
-      body: 'Sometimes the question is yes or no: is this county in the top fifth for diabetes? A **join count** looks at pairs of neighbours: **BB** (both black), **BW**, **WW**. If black counties were scattered at random, BB would equal its expectation; far more BB joins mean clustering. The map colours counties black or white at the percentile you set with **Join counts: black above the percentile**.\n\nRead **Joins BB / BW / WW** and **Join-count tests** below: BB is many times its expectation and BW far below it, so the top fifth form blocks rather than being sprinkled across the map. The counts are exact integers from the same pass (esda `Join_Counts`).',
-      options: {statistic: 'joinCount', display: 'binary', joinPercentile: 80},
-      highlight: {readout: 'joins'},
-      controls: ['joinPercentile'],
-      readouts: ['joins', 'joinTest']
+      id: 'which-w',
+      title: 'Does the neighbour rule matter?',
+      headline: 'Every rule finds the belt; the number moves',
+      textAlternative:
+        'A horizontal bar chart of Moran I under queen, rook, nearest-neighbour and distance-band rules, all strongly positive, beside the quadrant map under the chosen rule.',
+      body: "Moran's I depends on who counts as a neighbour. Under four rules it runs over **{{iRange}}**; the highlighted bar is the rule chosen in **Neighbours are...**.\n\nEach rule is its own weights graph, compiled once and reused (see the cost line); the data never change.\n\n*A statistic belongs to its weights matrix.*",
+      optionsMode: 'fresh',
+      options: {
+        geography: 'us-counties',
+        variable: 'diabetes',
+        source: 'queen',
+        transform: 'row',
+        statistic: 'moran',
+        display: 'quadrant',
+        showRuleSweep: true
+      },
+      controls: ['source'],
+      readouts: ['iByW', 'moran', 'iRange'],
+      stage: 'weights',
+      camera: {bounds: CONUS_BOUNDS, transitionMs: 1400},
+      basemap: ground('paperSheet'),
+      furniture: {
+        ...NATIONAL_FURNITURE,
+        title: cartouche(
+          'Does the neighbour rule matter?',
+          "Moran's I under four weights rules, row standardised"
+        ),
+        credit: CREDIT
+      },
+      annotations: regionLabels(['black-belt'])
+    },
+    {
+      id: 'two-variables',
+      title: 'High diabetes sits beside low income',
+      headline: 'High diabetes sits beside low income',
+      textAlternative:
+        'Bivariate map of the South-East: counties coloured by tertiles of diabetes and of income, with the darkest blue-violet for high diabetes and low income covering the Black Belt, Appalachia and the Rio Grande Valley.',
+      body: "Counties are cut into tertiles of diabetes (across) and income (up, inverted), so the darkest colour is high diabetes with low income: **{{darkCorner}}** counties, dominating the Black Belt, Appalachia and the Rio Grande Valley. Bivariate Moran's I is **{{bivariate}}**, p_sim **{{pSim}}**: x here against y around here, not within a county.\n\nTry **Variable y** or **Map shows**.\n\n*A pattern across places is not a correlation within them.*",
+      optionsMode: 'fresh',
+      options: {
+        geography: 'us-counties',
+        variable: 'diabetes',
+        secondVariable: 'income',
+        source: 'queen',
+        transform: 'row',
+        statistic: 'bivariateMoran',
+        display: 'bivariate'
+      },
+      controls: ['secondVariable', 'display'],
+      readouts: ['bivariate', 'pSim', 'darkCorner'],
+      stage: 'sums',
+      camera: {bounds: SOUTH_EAST_BOUNDS, transitionMs: 1600},
+      basemap: ground('paperSheet'),
+      furniture: {
+        ...NATIONAL_FURNITURE,
+        title: cartouche('Diabetes and income together', 'Tertiles of each, income inverted'),
+        credit: CREDIT
+      },
+      annotations: regionLabels(['black-belt', 'appalachia', 'rio-grande-valley'])
     },
     {
       id: 'distance',
-      title: 'At what distance does clustering fade?',
-      body: "**`GPUSpatialCorrelogram`** repeats Moran's I with a distance band: every pair of centroids within d are neighbours. It runs all bands in one pass over the pairs. The **Moran's I by distance** sparkline below shows I falling as the band widens; the **orange ring** marks the first peak of the z-score (the ArcGIS *incremental spatial autocorrelation* rule) and thin rings mark the band edges. Click anywhere to move the rings.\n\n**Limits.** Moran's I depends on the weights (change **Neighbours are...** and compare), on how areas are drawn (the modifiable areal unit problem), and county values are modelled estimates, not measurements. Distances are Web Mercator metres. **Try it:** raise **Correlogram: maximum distance**, set **Correlogram: band type** to *Annulus*, or set **Geography** to *Chicago census tracts*.",
-      options: {display: 'value', showBands: true, statistic: 'moran'},
-      camera: {longitude: -95.5, latitude: 38.2, zoom: 3.9},
-      highlight: {readout: 'peak'},
-      controls: ['showBands', 'source', 'maxDistanceFactor', 'bandMode', 'geography'],
-      readouts: ['correlogram', 'correlogramZ', 'peak']
+      title: 'How far does the clustering reach?',
+      headline: 'Clustering fades with distance',
+      textAlternative:
+        'Map of US counties with two rings around Cook County: a dashed ring at the longest distance and a solid ring where the correlogram peaks, above a line chart of Moran I falling as the distance grows.',
+      body: "Moran's I for neighbours within growing distances: z peaks near **{{peak}}**, the solid ring around the focus county (click the map to move it); the dashed ring is the longest distance, **{{maxDistance}}**.\n\nWiden **Maximum distance**, switch **Band type**, or set **Geography** to tracts: the zoning changes the answer. Every setting is open in All controls.\n\n*County values are model estimates, so part of the clustering may come from the model.*",
+      optionsMode: 'fresh',
+      options: {
+        geography: 'us-counties',
+        variable: 'diabetes',
+        source: 'queen',
+        transform: 'row',
+        statistic: 'moran',
+        display: 'value',
+        showBands: true
+      },
+      controls: ['maxDistanceFactor', 'bandMode', 'geography'],
+      readouts: ['correlogram', 'peak', 'maxDistance'],
+      stage: 'correlogram',
+      camera: {bounds: CONUS_BOUNDS, transitionMs: 1600},
+      basemap: ground('paperSheet'),
+      furniture: {
+        ...NATIONAL_FURNITURE,
+        title: cartouche(
+          'How far does the clustering reach?',
+          "Moran's I by distance band, planar metres of the map frame"
+        ),
+        credit: CREDIT
+      },
+      annotations: []
     }
   ]
 });

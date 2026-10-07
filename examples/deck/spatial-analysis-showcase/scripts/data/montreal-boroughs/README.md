@@ -1,0 +1,11 @@
+# montreal-boroughs
+Source: Ville de Montréal open data, "Limites administratives de l'agglomération de Montréal (arrondissements et villes liées)", WGS 84 GeoJSON resource (`limites-administratives-agglomeration.geojson`).
+Dataset page: https://donnees.montreal.ca/dataset/limites-administratives-agglomeration
+Licence: Creative Commons Attribution 4.0 International (CC BY 4.0), `license_id: cc-by` on the portal's own metadata (CKAN `package_search`), checked 2026-10-07. Attribute "Ville de Montréal, données ouvertes (CC BY 4.0)".
+Downloaded: 2026-10-07 (portal metadata modified 2026-10-01; the features carry `DATEMODIF` 2023-11-29), 34 features: 19 `Arrondissement` and 15 `Ville liée`, 1.26 MB.
+Download (own empty directory, generic UA `luma-showcase-data-build/1.0 (https://github.com/visgl/luma.gl)`, no personal identifier):
+`curl -A "luma-showcase-data-build/1.0 (https://github.com/visgl/luma.gl)" -o raw.geojson "https://donnees.montreal.ca/dataset/9797a946-9da8-41ec-8815-f6b276dec7e9/resource/e18bfd07-edc8-4ce8-8a5a-3b617662a794/download/limites-administratives-agglomeration.geojson"`
+Build: `python3 -I build.py <raw.geojson>` (needs shapely >= 2.1 for `coverage_simplify`, numpy, pyproj; the FID venv has them). Output is 85 KB.
+Steps: project to NAD83 / MTM zone 8 (EPSG:32188), drop parts and holes under 2,000 m², simplify the whole set as a coverage at 25 m (shared borders move once, so no gaps or overlaps appear), round to 1e-5 degrees.
+Properties: `name` is the source `NOM`, unchanged; `kind` is `borough` or `linked city`; `stationBoroughName` is the string `bixi-flows` uses for the same borough (the source writes `Villeray-Saint-Michel-Parc-Extension`, BIXI writes `Villeray—Saint-Michel—Parc-Extension` with em dashes, and `Côte-des-Neiges - Notre-Dame-de-Grâce` with spaces); where no BIXI station has that borough it equals `name`; `areaKm2`.
+Coverage: 20 of the 34 features hold BIXI stations. The BIXI boroughs Boucherville, Laval, Longueuil, Sainte-Julie and Terrebonne lie outside the agglomeration and have no polygon. The polygons follow the shoreline of the island, so the rivers are not part of any feature. The source notes that the border on the Falaise Saint-Jacques (Sud-Ouest, Côte-des-Neiges-Notre-Dame-de-Grâce) is not official. Two stations sit just outside their own borough polygon after simplification.

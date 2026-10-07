@@ -48,7 +48,7 @@ export type OceanDriftersPlaybackOptions = {
   maxGapDays: number;
   colorBy: 'sst' | 'age' | 'date';
   sstRange: readonly [number, number];
-  ramp: 'viridis' | 'magma' | 'inferno' | 'cividis';
+  ramp: 'magma' | 'inferno' | 'cividis';
   showBackdrop: boolean;
   showTrails: boolean;
   showDots: boolean;
@@ -131,6 +131,7 @@ export async function createOceanDriftersPlayback(
 
   // ---- Static inputs ------------------------------------------------------------------------------
   const positionsBuffer = resources.createBuffer('positions', drifters.lngLat);
+  const releaseBuffer = resources.createBuffer('release-positions', drifters.release);
   const timestampsBuffer = resources.createBuffer('timestamps', drifters.timestamps);
   const offsetsBuffer = resources.createBuffer('offsets', drifters.offsets);
   const sstBuffer = resources.createBuffer('sst', drifters.sst);
@@ -377,6 +378,11 @@ export async function createOceanDriftersPlayback(
     sstCount++;
   }
   const sstBins = binValues(drifters.sst, -2, 34, 36);
+  const releasesByWeek = new Float64Array(53);
+  for (const releaseDay of drifters.releaseDays) {
+    if (releaseDay >= 0 && releaseDay <= 365)
+      releasesByWeek[Math.min(52, Math.floor(releaseDay / 7))]++;
+  }
   let lastChartSeconds = -Infinity;
   let lastChartDay = -1;
   let statusStale = true;
@@ -400,6 +406,15 @@ export async function createOceanDriftersPlayback(
       height: 110
     })
   );
+  ctx.setChart('releaseChart', {
+    kind: 'bars',
+    values: releasesByWeek,
+    xLabel: 'week of 2017',
+    yLabel: 'first records',
+    height: 92,
+    description:
+      'First retained daily position of each drifter by week. Uneven bars show the archive’s release and record effort.'
+  });
   ctx.setReadout(
     'tracks',
     `${drifters.releaseCount.toLocaleString('en-US')} drifters in ${pieceCount.toLocaleString('en-US')} pieces`
@@ -530,6 +545,27 @@ export async function createOceanDriftersPlayback(
             sqrtScale: true,
             discardAtOrBelow: 0,
             opacity: options.backgroundOpacity
+          })
+        );
+      }
+      // Release rings make the sampling design visible in the static opening and effort views.
+      if (!options.play && (options.time <= 60 || options.background === 'density')) {
+        layers.push(
+          new SpatialAnalysisPointLayer({
+            id: 'drifter-release-rings',
+            ...drawProps,
+            positions: releaseBuffer,
+            instanceCount: drifters.releaseCount,
+            radiusPixels: 4.5,
+            color: dark ? [220, 232, 255, 110] : [20, 42, 78, 110]
+          }),
+          new SpatialAnalysisPointLayer({
+            id: 'drifter-release-centres',
+            ...drawProps,
+            positions: releaseBuffer,
+            instanceCount: drifters.releaseCount,
+            radiusPixels: 1.4,
+            color: dark ? [220, 232, 255, 210] : [20, 42, 78, 210]
           })
         );
       }

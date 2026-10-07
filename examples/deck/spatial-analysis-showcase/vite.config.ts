@@ -1,5 +1,7 @@
 import {defineConfig} from 'vite';
 
+const websiteBaseUrl = process.env['WEBSITE_BASE_URL'] || '/';
+
 const alias = {
   '@luma.gl/core': `${__dirname}/../../../modules/core/src`,
   '@luma.gl/engine': `${__dirname}/../../../modules/engine/src`,
@@ -11,6 +13,7 @@ const alias = {
 };
 
 export default defineConfig({
+  base: websiteBaseUrl,
   resolve: {
     alias,
     dedupe: Object.keys(alias)

@@ -1,0 +1,97 @@
+/* Keyboard shortcut dialog. Page chrome: page tokens. */
+
+dialog.shortcut-sheet {
+  width: min(440px, calc(100vw - 32px));
+  max-height: calc(100vh - 64px);
+  padding: 0;
+  overflow: hidden;
+  color: var(--text, #1f2933);
+  font-family: var(--font, system-ui, sans-serif);
+  background: var(--elevated, #fff);
+  border: 1px solid var(--border, rgb(128 128 128 / 0.3));
+  border-radius: var(--radius-sheet, 16px);
+  box-shadow: var(--e3, 0 12px 40px rgb(0 0 0 / 0.3));
+}
+dialog.shortcut-sheet::backdrop {
+  background: rgb(8 11 15 / 0.5);
+}
+.shortcut-sheet-panel {
+  display: flex;
+  flex-direction: column;
+  max-height: calc(100vh - 64px);
+}
+.shortcut-sheet-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 8px 8px 20px;
+}
+.shortcut-sheet-header h2 {
+  margin: 0;
+  font-size: var(--fs-lg, 16px);
+  font-weight: 600;
+}
+.shortcut-sheet-close {
+  display: grid;
+  place-items: center;
+  width: 36px;
+  height: 36px;
+  padding: 0;
+  color: var(--muted, #5e6a78);
+  background: none;
+  border: 0;
+  border-radius: var(--radius-control, 6px);
+  cursor: pointer;
+}
+.shortcut-sheet-close:hover {
+  color: var(--text, #1f2933);
+  background: var(--sunken, rgb(128 128 128 / 0.14));
+}
+.shortcut-sheet-close:focus-visible {
+  outline: 2px solid var(--accent, #2a6fdb);
+  outline-offset: 1px;
+}
+.shortcut-sheet-list {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 8px 16px;
+  align-items: center;
+  margin: 0;
+  padding: 4px 20px 20px;
+  overflow-y: auto;
+  font-size: var(--fs-md, 13px);
+}
+.shortcut-sheet-list dt {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+}
+.shortcut-sheet-list dd {
+  margin: 0;
+  color: var(--muted, #5e6a78);
+}
+.shortcut-sheet-list kbd {
+  min-width: 22px;
+  padding: 1px 6px;
+  box-sizing: border-box;
+  text-align: center;
+  color: var(--text, #1f2933);
+  font: inherit;
+  font-size: var(--fs-sm, 12px);
+  font-weight: 600;
+  background: var(--sunken, rgb(128 128 128 / 0.12));
+  border: 1px solid var(--border-strong, #8b95a5);
+  border-bottom-width: 2px;
+  border-radius: var(--radius-control, 6px);
+}
+.shortcut-sheet-join {
+  color: var(--muted, #5e6a78);
+}
+
+@media (pointer: coarse) {
+  .shortcut-sheet-close {
+    width: 44px;
+    height: 44px;
+  }
+}

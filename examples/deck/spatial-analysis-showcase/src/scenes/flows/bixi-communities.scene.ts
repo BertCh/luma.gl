@@ -2,35 +2,80 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {CREDITS, joinCredits} from '../../cartography/credits';
+import {CITY_FRAMES, labelsFor, MONTREAL} from '../../cartography/gazetteer';
+import {ground} from '../../cartography/grounds';
 import {defineScene} from '../scene';
 import {storyFromMarkdown} from '../story-markdown';
 import narrative from './bixi-communities.md?raw';
 import type {BixiCommunitiesOptions} from './bixi-communities.compute';
+import {getCommunityLegends} from './bixi-communities-style';
+import {FLOW_CREDITS} from './flows-style';
 
-const COMMUNITY_COLORS = [
-  [86, 180, 233, 255],
-  [240, 160, 20, 255],
-  [214, 110, 170, 255],
-  [30, 175, 125, 255],
-  [225, 205, 50, 255],
-  [225, 95, 40, 255],
-  [150, 150, 190, 255]
-] as const;
+/** Mirrors the compute module without importing it (scene files stay light). */
+const REPLAY_LAST_ROUND = 32;
+
+const CREDIT = joinCredits(
+  FLOW_CREDITS.bixi,
+  FLOW_CREDITS.montrealBoroughs,
+  CREDITS.openStreetMap,
+  CREDITS.okabeIto
+);
+
+/** The cartouche of a step: line 1 here, the subtitle and sample line come from the compute module. */
+const cartouche = (title: string) => ({title: {title}});
+
+function getSnippet(state: BixiCommunitiesOptions): string {
+  return `import {GPUCommandGraph} from '@luma.gl/gpgpu/gpu-core';
+import {
+  GPUGraph, GPUGraphTopology, GPUGraphLabelPropagation,
+  GPUGraphModularityOptimization, GPUGraphModularity
+} from '@luma.gl/gpgpu/gpu-graph';
+
+// Caller-owned vectors: edge columns (rides as weights), CSR, and every output.
+// Edges that fail the filters get an out-of-domain source endpoint, so a filter is a buffer write.
+const graph = new GPUGraph({vertexCount: 905, sourceVertices, targetVertices,
+  edgeWeights: ${state.weighting === 'rides' ? 'rides' : state.weighting === 'sqrt' ? 'sqrtRides' : 'ones'}, directed: false});
+const topology = new GPUGraphTopology({graph, forward, invalidEdgeCount});
+
+const commandGraph = new GPUCommandGraph(device, {id: 'communities'});
+topology.addToGraph(commandGraph);
+new GPUGraphLabelPropagation({
+  topology, output: proposal, iterations: ${state.propagationRounds}, converged   // unweighted majority vote
+}).addToGraph(commandGraph);
+new GPUGraphModularityOptimization({
+  topology, output: refined, modularity: refinedScore,
+  initialCommunities: proposal,                    // warm start
+  resolution: ${state.resolution}, iterations: ${state.optimizeRounds}, minimumGain: ${state.minimumGain},
+  converged, valid
+}).addToGraph(commandGraph);
+new GPUGraphModularity({graph, communities: boroughs, output: boroughScore,
+  resolution: ${state.resolution}}).addToGraph(commandGraph);   // same gamma for the borough partition
+
+const compiled = commandGraph.compile();            // once
+compiled.encode(commandEncoder, {parameters: undefined});
+
+// on the CPU, from the readback (a few KB): hues, hulls, seams
+const groups = assignGroupHues(refinedLabels, stationLngLat, previousHues);   // matchByOverlap`;
+}
 
 export default defineScene<BixiCommunitiesOptions>({
   id: 'bixi-communities',
-  title: 'Communities of riding in Montreal',
+  title: 'Do riders follow the borough map?',
   chapter: 'flows',
   order: 10,
   summary:
-    'Label propagation and modularity optimization on the BIXI station graph (1.93 million rides, August 2024), compared with the boroughs the stations sit in.',
+    'Label propagation and modularity optimization on the BIXI station graph (August 2024), with identity-stable hues, a CPU replay of the vote, the boroughs of the agglomeration swiped against the riding groups, and modularity against resolution.',
   contributors: [
     'GPUGraphLabelPropagation',
     'GPUGraphModularityOptimization',
     'GPUGraphModularity'
   ],
-  datasets: [{id: 'bixi-flows', role: 'station pairs, August 2024'}],
-  initialView: {longitude: -73.61, latitude: 45.53, zoom: 10.7},
+  datasets: [
+    {id: 'bixi-flows', role: 'station pairs, August 2024'},
+    {id: 'montreal-boroughs', role: 'borough outlines and the borough partition key'}
+  ],
+  initialView: {...CITY_FRAMES.montreal},
 
   options: [
     {
@@ -39,18 +84,76 @@ export default defineScene<BixiCommunitiesOptions>({
       label: 'Partition shown',
       group: 'Display',
       apply: 'param',
+      display: 'segmented',
       default: 'optimized',
-      help: 'Which grouping of stations colours the map: the refined communities, the label-propagation proposal, or the boroughs published with the data. All three are always computed and scored.',
+      help: 'Which grouping of stations colours the map: the refined riding groups, the label-propagation proposal, or the boroughs published with the data. All three are always scored.',
       options: [
-        {value: 'optimized', label: 'Refined communities (modularity optimization)'},
-        {value: 'propagation', label: 'Label propagation'},
-        {value: 'boroughs', label: 'Boroughs (as published)'}
+        {value: 'optimized', label: 'Riding groups'},
+        {value: 'propagation', label: 'Propagation'},
+        {value: 'boroughs', label: 'Boroughs'}
       ]
     },
     {
       kind: 'slider',
+      id: 'replayRound',
+      label: 'Voting round',
+      group: 'Display',
+      apply: 'param',
+      min: 0,
+      max: REPLAY_LAST_ROUND,
+      step: 1,
+      default: REPLAY_LAST_ROUND,
+      display: 'stepper',
+      autoSweep: {durationMs: 9000, from: 0, to: REPLAY_LAST_ROUND},
+      disabledWhen: state => state.partition !== 'propagation',
+      describe: (value, state) =>
+        value >= state.propagationRounds
+          ? 'The GPU result: the last round'
+          : value === 0
+            ? 'Every station is its own group'
+            : `Round ${value} of ${state.propagationRounds}, replayed on the CPU`,
+      help: 'Shows the label-propagation partition after this many synchronous voting rounds. It is a CPU replay of the same vote; at the last round it is checked against the labels the GPU wrote.'
+    },
+    {
+      kind: 'toggle',
+      id: 'showHulls',
+      label: 'Group wash',
+      group: 'Display',
+      apply: 'param',
+      default: true,
+      help: 'A pale convex hull and outline around each group that has a hue, after dropping stations far from the group.'
+    },
+    {
+      kind: 'toggle',
+      id: 'showBoroughs',
+      label: 'Borough outlines',
+      group: 'Display',
+      apply: 'param',
+      default: false,
+      help: 'The boroughs and linked cities of the agglomeration, from the Ville de Montréal open data. Stations in Laval, Longueuil and the south shore have no outline.'
+    },
+    {
+      kind: 'toggle',
+      id: 'showSeams',
+      label: 'Seam stations',
+      group: 'Display',
+      apply: 'param',
+      default: false,
+      help: 'Rings the stations whose riding group is mostly in another borough than their own.'
+    },
+    {
+      kind: 'toggle',
+      id: 'showBetween',
+      label: 'Links between groups',
+      group: 'Display',
+      apply: 'param',
+      default: true,
+      help: 'Draw the faint grey links that cross a group boundary, under the links inside groups.'
+    },
+    {
+      kind: 'slider',
       id: 'edges',
-      label: 'Strongest links drawn',
+      label: 'Links drawn',
       group: 'Display',
       apply: 'param',
       min: 200,
@@ -58,53 +161,6 @@ export default defineScene<BixiCommunitiesOptions>({
       step: 100,
       default: 3000,
       help: 'How many of the busiest station pairs are drawn, busiest first. The graph itself always uses every pair that passes the filters.'
-    },
-    {
-      kind: 'toggle',
-      id: 'showBetween',
-      label: 'Between communities',
-      group: 'Display',
-      apply: 'param',
-      default: true,
-      help: 'Draw the faint grey links that cross a community boundary. Turn off to see only the inside of each group.'
-    },
-    {
-      kind: 'slider',
-      id: 'edgeWidth',
-      label: 'Link width',
-      group: 'Display',
-      apply: 'param',
-      min: 0.5,
-      max: 4,
-      step: 0.1,
-      default: 1.4,
-      unit: 'px',
-      help: 'Line width in pixels. Busier pairs are more opaque, not wider.'
-    },
-    {
-      kind: 'slider',
-      id: 'edgeOpacity',
-      label: 'Link opacity',
-      group: 'Display',
-      apply: 'param',
-      min: 0.1,
-      max: 1,
-      step: 0.05,
-      default: 0.75,
-      help: 'Lower it when thousands of links overlap downtown.'
-    },
-    {
-      kind: 'slider',
-      id: 'stationSize',
-      label: 'Station size',
-      group: 'Display',
-      apply: 'param',
-      min: 2,
-      max: 9,
-      step: 0.5,
-      default: 4,
-      unit: 'px',
-      help: 'Radius of the station dots.'
     },
     {
       kind: 'slider',
@@ -116,7 +172,7 @@ export default defineScene<BixiCommunitiesOptions>({
       max: 60,
       step: 1,
       default: 8,
-      help: 'An edge stays in the graph when it is among this many strongest links of either of its stations. Dense graphs make label propagation collapse into one blob; a sparse backbone keeps the groups apart. A buffer write: no rebuild.'
+      help: 'A pair stays in the graph when it is among this many strongest links of either of its stations. A dense graph makes label propagation collapse into one blob; a sparse backbone keeps the groups apart. A buffer write: no rebuild.'
     },
     {
       kind: 'slider',
@@ -137,18 +193,34 @@ export default defineScene<BixiCommunitiesOptions>({
       label: 'Edge weighting',
       group: 'Graph',
       apply: 'param',
+      display: 'segmented',
       default: 'rides',
       help: 'How a pair counts in the modularity objective and its score: by rides, by the square root of rides (evens out the downtown giants) or equally. Label propagation ignores weights.',
       options: [
         {value: 'rides', label: 'Rides'},
-        {value: 'sqrt', label: 'Square root of rides'},
+        {value: 'sqrt', label: 'Square root'},
         {value: 'equal', label: 'Equal'}
+      ]
+    },
+    {
+      kind: 'select',
+      id: 'dayType',
+      label: 'Day type',
+      group: 'Graph',
+      apply: 'param',
+      display: 'segmented',
+      default: 'all',
+      help: 'Build the graph from all rides, from weekday rides or from weekend rides (pairs with at least ten rides in August only, from the hourly rows). A buffer write.',
+      options: [
+        {value: 'all', label: 'All days'},
+        {value: 'weekday', label: 'Weekdays'},
+        {value: 'weekend', label: 'Weekends'}
       ]
     },
     {
       kind: 'slider',
       id: 'propagationRounds',
-      label: 'Label propagation rounds',
+      label: 'Voting rounds',
       group: 'Algorithm',
       apply: 'compile',
       min: 1,
@@ -179,7 +251,15 @@ export default defineScene<BixiCommunitiesOptions>({
       max: 3,
       step: 0.25,
       default: 1,
-      help: 'Modularity resolution gamma. Below 1 favours few large communities, above 1 many small ones. It scales the null-model term, so it is a shader constant and rebuilds the graph.'
+      marks: [{value: 1, label: 'default'}],
+      danger: [2.5, 3],
+      describe: value =>
+        value >= 2.5
+          ? 'Fine: many small groups, most of them grey'
+          : value <= 0.5
+            ? 'Coarse: a few large groups'
+            : 'Groups the size of a few neighbourhoods',
+      help: 'Modularity resolution gamma. Below 1 favours few large groups, above 1 many small ones. It scales the null-model term, so it is a shader constant: the graph rebuilds once the slider rests.'
     },
     {
       kind: 'select',
@@ -187,44 +267,63 @@ export default defineScene<BixiCommunitiesOptions>({
       label: 'Minimum gain',
       group: 'Algorithm',
       apply: 'compile',
+      display: 'segmented',
       default: '0',
+      expert: true,
       help: 'A move must raise modularity by more than this to be accepted. Larger values stop earlier and keep the partition closer to the propagation.',
       options: [
-        {value: '0', label: '0 (any improvement)'},
+        {value: '0', label: '0 (any)'},
         {value: '0.0001', label: '0.0001'},
         {value: '0.001', label: '0.001'}
       ]
+    },
+    {
+      kind: 'toggle',
+      id: 'showSweep',
+      label: 'Chart Q against resolution',
+      group: 'Algorithm',
+      apply: 'param',
+      default: false,
+      help: 'Runs eight more analyses, one per resolution from 0.25 to 3, one after the other (a compiled graph each, run once), and charts the modularity of the refined partition and of the boroughs.'
     }
   ],
 
   readouts: [
     {
-      id: 'sizesChart',
-      label: 'Community sizes',
-      kind: 'chart',
-      help: 'Stations in each of the twelve largest communities of the partition shown.'
-    },
-    {
-      id: 'qualityChart',
-      label: 'Modularity of three partitions',
-      kind: 'chart',
-      help: 'Weighted modularity on the current graph: the borough partition, label propagation, and the refined partition.'
-    },
-    {
       id: 'communityCount',
-      label: 'Communities',
+      label: 'Groups',
       format: 'integer',
-      help: 'Distinct groups in the partition shown.'
+      help: 'Distinct groups in the partition shown, of any size. Only the seven largest groups of eight or more stations take a hue.'
     },
-    {id: 'largest', label: 'Largest community'},
-    {id: 'modularityBoroughs', label: 'Modularity, boroughs', format: 'decimal'},
-    {id: 'modularityPropagation', label: 'Modularity, propagation', format: 'decimal'},
-    {id: 'modularityOptimized', label: 'Modularity, refined', format: 'decimal'},
+    {id: 'largestCommunity', label: 'Largest group', help: 'Named after its main boroughs.'},
+    {
+      id: 'modularityRefined',
+      label: 'Modularity of the riding groups',
+      format: 'decimal',
+      help: 'Weighted modularity Q of the refined partition: rides inside groups minus what a random network with the same degrees would keep inside. Zero is chance; 0.3 to 0.7 is typical of real structure.'
+    },
+    {
+      id: 'modularityPropagation',
+      label: 'Modularity of propagation',
+      format: 'decimal',
+      help: 'Q of the label-propagation proposal at the same resolution.'
+    },
+    {
+      id: 'modularityBoroughs',
+      label: 'Modularity of the boroughs',
+      format: 'decimal',
+      help: 'Q of the borough partition at the same resolution.'
+    },
+    {
+      id: 'qualityPair',
+      label: 'Modularity, boroughs and riding groups',
+      help: 'Both scored with the same resolution and weights.'
+    },
     {
       id: 'withinShare',
-      label: 'Rides inside a community',
+      label: 'Rides inside a group',
       format: 'percent',
-      help: 'Share of the rides on the kept edges whose two stations share a community in the partition shown.'
+      help: 'Share of the rides on the kept links whose two stations share a group in the partition shown. It rises with bigger groups for no reason of behaviour: modularity subtracts that.'
     },
     {
       id: 'withinBoroughShare',
@@ -233,112 +332,196 @@ export default defineScene<BixiCommunitiesOptions>({
       help: 'The same share for the borough partition.'
     },
     {
+      id: 'seamStations',
+      label: 'Seam stations',
+      format: 'integer',
+      help: 'Stations whose riding group is mostly in another borough than their own.'
+    },
+    {
       id: 'agreement',
       label: 'Agreement with boroughs',
       format: 'decimal',
-      help: 'Normalised mutual information between the partition shown and the boroughs: 1 identical, 0 unrelated.'
+      help: 'Normalised mutual information between the partition shown and the boroughs: 1 identical, 0 unrelated. It also depends on how many groups there are.'
     },
-    {id: 'stations', label: 'Stations', format: 'integer'},
-    {id: 'edgesKept', label: 'Edges in the graph'},
+    {
+      id: 'medianLink',
+      label: 'Median ride distance',
+      help: 'Ride-weighted median straight-line distance between the two stations of the kept links.'
+    },
+    {
+      id: 'replayMatch',
+      label: 'CPU replay matches GPU',
+      help: 'The CPU replay of the synchronous vote, at its last round, compared with the labels the GPU wrote.'
+    },
+    {
+      id: 'propagationStatus',
+      label: 'Propagation',
+      help: 'Whether the vote reached a fixed point.'
+    },
+    {
+      id: 'refinementStatus',
+      label: 'Refinement',
+      help: 'Whether the single-move refinement converged.'
+    },
+    {
+      id: 'changesChart',
+      label: 'Stations that changed label, by round',
+      kind: 'chart',
+      help: 'Stations whose label changed in each voting round. Click a bar to show that round.'
+    },
+    {
+      id: 'qualityChart',
+      label: 'Modularity of three partitions',
+      kind: 'chart',
+      help: 'Weighted modularity of the boroughs, of label propagation and of the refined partition. Zero is chance; 0.3 to 0.7 is typical.'
+    },
+    {
+      id: 'sweepChart',
+      label: 'Modularity against resolution',
+      kind: 'chart',
+      help: 'Q of the refined partition and of the boroughs at eight resolutions. Click to set the resolution.'
+    },
+    {id: 'sweepStatus', label: 'Resolution scan', hood: true},
+    {id: 'selected', label: 'Selected station', layout: 'block'},
+    {id: 'stations', label: 'Stations', format: 'integer', hood: true},
+    {id: 'edgesKept', label: 'Edges in the graph', hood: true},
     {
       id: 'ridesKept',
       label: 'Rides kept',
       format: 'percent',
+      hood: true,
       help: 'Share of all inter-station pair rides on the kept edges.'
     },
-    {id: 'drawn', label: 'Links drawn', format: 'integer'},
-    {id: 'convergence', label: 'Convergence', layout: 'block'},
-    {id: 'validity', label: 'Graph status'},
-    {id: 'selected', label: 'Selected station', layout: 'block'}
+    {id: 'validity', label: 'Graph status', hood: true}
   ],
 
-  legends: (_state, data) => {
-    const entries = (data?.communities as
-      | {color: readonly number[]; label: string}[]
-      | undefined) ?? [{color: COMMUNITY_COLORS[0], label: 'computing'}];
-    return [
-      {
-        kind: 'categories',
-        title: 'Community (largest first)',
-        entries: entries.map(entry => ({
-          color: entry.color as [number, number, number],
-          label: entry.label
-        })),
-        note: 'Lines inside a community share its colour; grey lines cross a boundary.'
-      }
-    ];
+  pipeline: [
+    {
+      id: 'csr',
+      label: 'Graph',
+      detail: 'Station pairs become a weighted graph; filters are a buffer write'
+    },
+    {
+      id: 'vote',
+      label: 'Vote',
+      detail: 'Label propagation: synchronous majority votes among neighbours'
+    },
+    {
+      id: 'move',
+      label: 'Move',
+      detail: 'Modularity optimisation: the best single station move per round'
+    },
+    {id: 'score', label: 'Score', detail: 'Modularity of propagation, refinement and the boroughs'},
+    {id: 'draw', label: 'Draw', detail: 'Hues, hulls and seams on the CPU from a few KB of labels'}
+  ],
+
+  legends: getCommunityLegends,
+
+  basemap: ground('paperCity'),
+  furniture: {
+    title: {title: 'Do riders follow the borough map?'},
+    scaleBar: {units: 'metric'},
+    credit: CREDIT,
+    caveat: 'A spatial network also clusters by distance: read the groups with care.'
   },
 
-  snippet: state => `import {GPUCommandGraph} from '@luma.gl/gpgpu/gpu-core';
-import {
-  GPUGraph, GPUGraphTopology, GPUGraphLabelPropagation,
-  GPUGraphModularityOptimization, GPUGraphModularity
-} from '@luma.gl/gpgpu/gpu-graph';
-
-// Caller-owned vectors: edge columns (rides as weights), CSR, and every output.
-const graph = new GPUGraph({vertexCount: 905, sourceVertices, targetVertices,
-  edgeWeights: rides, directed: false});
-const topology = new GPUGraphTopology({graph, forward, invalidEdgeCount});
-
-const commandGraph = new GPUCommandGraph(device, {id: 'communities'});
-topology.addToGraph(commandGraph);
-new GPUGraphLabelPropagation({
-  topology, output: proposal, iterations: ${state.propagationRounds}, converged
-}).addToGraph(commandGraph);
-new GPUGraphModularityOptimization({
-  topology, output: refined, modularity: refinedScore,
-  initialCommunities: proposal,                    // warm start
-  resolution: ${state.resolution}, iterations: ${state.optimizeRounds}, minimumGain: ${state.minimumGain},
-  converged, valid
-}).addToGraph(commandGraph);
-new GPUGraphModularity({graph, communities: boroughs, output: boroughScore,
-  resolution: ${state.resolution}}).addToGraph(commandGraph);
-
-const compiled = commandGraph.compile();            // once
-compiled.encode(commandEncoder, {parameters: undefined});`,
+  snippet: getSnippet,
 
   about: {
-    what: '`GPUGraphLabelPropagation` groups stations by the label most common among their neighbours, `GPUGraphModularityOptimization` improves that partition by moving one station at a time to the community that raises weighted modularity most, and `GPUGraphModularity` scores any partition, here also the published boroughs.',
-    why: 'Service areas, rebalancing routes and station placement should follow how people ride, not how a map is drawn. A community partition measured against the borough partition tells you where the two disagree, with a number instead of an impression.',
+    what: 'Previously: communities of airports (airline-network). Next: bundles of rides (bixi-bundles).\n\n`GPUGraphLabelPropagation` groups stations by the label most common among themselves and their neighbours, in synchronous rounds with ties to the lowest label and no use of weights. `GPUGraphModularityOptimization` improves that partition by moving one station at a time to the neighbouring group that raises weighted modularity most, and `GPUGraphModularity` scores any partition, here also the published boroughs at the same resolution. The hues, hulls, seams and the round-by-round replay of the vote are CPU work on the few KB read back.',
+    why: 'Service areas, rebalancing routes and station placement should follow how people ride, not how a map is drawn. A riding-group partition scored against the borough partition tells you where the two disagree, with a number instead of an impression. How many groups you get is a resolution choice, not a fact (the resolution limit of modularity: Fortunato and Barthélemy, PNAS 2007), and a spatial network clusters by distance alone, so a group is not by itself a behaviour (Austwick, O’Brien, Strano and Viana, PLoS ONE 2013).',
     howToRead:
-      'Dots and lines take the colour of their community, largest first; the legend names each after its main boroughs. Grey lines cross boundaries. Higher modularity means more rides inside groups than a random network with the same degrees would keep there.'
+      'Dots and lines take the hue of their riding group, west to east on first load and inherited afterwards, so a hue is an identity, not a rank. Only the seven largest groups of eight or more stations have a hue; the rest are grey. Pale washes are the hulls of groups; grey lines cross a boundary. Rings are seam stations. Higher modularity means more rides inside groups than a random network with the same degrees would keep there. Stations outside the agglomeration (Laval, the south shore) have no borough outline.'
   },
 
   create: async ctx => (await import('./bixi-communities.compute')).createBixiCommunities(ctx),
 
   story: storyFromMarkdown<BixiCommunitiesOptions>(narrative, {
     'the-question': {
-      controls: ['partition', 'edges'],
-      readouts: ['communityCount', 'sizesChart'],
-      camera: {longitude: -73.61, latitude: 45.53, zoom: 10.7, transitionMs: 1400},
-      options: {partition: 'optimized', neighbors: 8, edges: 3000},
-      highlight: {readout: 'communityCount'}
+      headline: 'Riders form regional groups',
+      textAlternative:
+        'Map of Montreal with BIXI stations coloured by riding group in seven hues, each group washed with a pale hull and linked by lines of its own hue.',
+      optionsMode: 'fresh',
+      options: {partition: 'optimized'},
+      controls: ['edges', 'showBetween'],
+      readouts: ['communityCount', 'largestCommunity', 'modularityRefined'],
+      camera: {...CITY_FRAMES.montreal, transitionMs: 1400},
+      furniture: cartouche('Do riders follow the borough map?'),
+      annotations: labelsFor(MONTREAL, [
+        'plateau',
+        'downtown',
+        'verdun',
+        'villeray',
+        'hochelaga',
+        'mount-royal'
+      ]),
+      stage: 'move'
     },
-    propagation: {
-      controls: ['partition', 'neighbors', 'propagationRounds', 'minRides'],
-      readouts: ['communityCount', 'modularityPropagation', 'convergence'],
-      camera: {longitude: -73.58, latitude: 45.52, zoom: 11.4, transitionMs: 1400},
-      options: {partition: 'propagation', neighbors: 8},
-      highlight: {readout: 'modularityPropagation'}
+    'neighbours-vote': {
+      headline: 'Each station copies its neighbours',
+      textAlternative:
+        'The same map after a few voting rounds: stations start grey and merge into coloured groups as the round slider moves.',
+      optionsMode: 'fresh',
+      options: {partition: 'propagation', replayRound: 0, showBetween: false},
+      controls: ['replayRound', 'neighbors'],
+      readouts: ['changesChart', 'replayMatch', 'communityCount'],
+      camera: {...CITY_FRAMES.montreal, transitionMs: 1200},
+      furniture: cartouche('Each station copies its neighbours'),
+      annotations: labelsFor(MONTREAL, ['downtown', 'plateau', 'villeray', 'verdun']),
+      stage: 'vote'
     },
-    refine: {
-      controls: ['partition', 'optimizeRounds', 'resolution', 'weighting'],
-      readouts: ['modularityOptimized', 'qualityChart', 'convergence'],
-      options: {partition: 'optimized', optimizeRounds: 512, resolution: 1},
-      highlight: {readout: 'modularityOptimized'}
+    climb: {
+      headline: 'Moving single stations raises modularity',
+      textAlternative:
+        'The refined riding groups on the map and a bar chart of modularity for the boroughs, label propagation and the refined partition, with guides at chance and at the typical range.',
+      optionsMode: 'fresh',
+      options: {partition: 'optimized', showBetween: false},
+      controls: ['optimizeRounds'],
+      readouts: ['qualityChart', 'modularityPropagation', 'modularityRefined', 'refinementStatus'],
+      camera: {...CITY_FRAMES.montreal, transitionMs: 1200},
+      furniture: cartouche('Moving stations raises modularity'),
+      annotations: labelsFor(MONTREAL, ['downtown', 'plateau', 'verdun', 'hochelaga']),
+      stage: 'score'
     },
-    'vs-boroughs': {
-      controls: ['partition', 'showBetween'],
-      readouts: ['withinShare', 'withinBoroughShare', 'agreement', 'qualityChart'],
-      camera: {longitude: -73.6, latitude: 45.52, zoom: 11.1, transitionMs: 1400},
-      options: {partition: 'boroughs'},
-      highlight: {readout: 'withinBoroughShare'}
+    seams: {
+      headline: 'Boroughs and riding groups disagree at the seams',
+      textAlternative:
+        'A swipe map: on the left the stations coloured by borough, on the right by riding group, with borough outlines and rings on the stations whose group is mostly in another borough.',
+      optionsMode: 'fresh',
+      options: {partition: 'optimized', showBoroughs: true, showSeams: true, showBetween: false},
+      controls: ['showBoroughs', 'showSeams'],
+      readouts: ['seamStations', 'withinShare', 'withinBoroughShare', 'qualityPair'],
+      compare: {mode: 'swipe', labels: ['Boroughs', 'Communities']},
+      camera: {...CITY_FRAMES.montreal, zoom: 11.3, transitionMs: 1400},
+      furniture: cartouche('Boroughs and riding groups disagree'),
+      annotations: labelsFor(MONTREAL, ['downtown', 'plateau', 'mile-end', 'verdun', 'hochelaga']),
+      stage: 'score'
     },
-    limits: {
-      controls: ['resolution', 'weighting', 'optimizeRounds', 'showBetween'],
-      readouts: ['selected', 'sizesChart'],
-      options: {partition: 'optimized', resolution: 1, optimizeRounds: 512},
-      camera: {longitude: -73.61, latitude: 45.53, zoom: 10.7, transitionMs: 1200}
+    resolution: {
+      headline: 'Resolution decides how many groups exist',
+      textAlternative:
+        'The riding groups at a chosen resolution next to a line chart of modularity against resolution for the riding groups and the boroughs.',
+      optionsMode: 'fresh',
+      options: {partition: 'optimized', showBetween: false, showSweep: true},
+      controls: ['resolution'],
+      readouts: ['communityCount', 'sweepChart', 'largestCommunity'],
+      camera: {...CITY_FRAMES.montreal, transitionMs: 1200},
+      furniture: cartouche('How many groups is the right number?'),
+      annotations: labelsFor(MONTREAL, ['downtown', 'plateau', 'verdun', 'hochelaga']),
+      stage: 'move'
+    },
+    'read-with-care': {
+      headline: 'Distance alone would make clusters too',
+      textAlternative:
+        'The riding groups again, with controls to change the edge weighting, the day type and the number of strongest links per station.',
+      optionsMode: 'fresh',
+      options: {partition: 'optimized'},
+      controls: ['weighting', 'dayType', 'neighbors'],
+      readouts: ['medianLink', 'agreement', 'modularityRefined', 'communityCount'],
+      camera: {...CITY_FRAMES.montreal, transitionMs: 1200},
+      furniture: cartouche('Read communities with care'),
+      annotations: labelsFor(MONTREAL, ['downtown', 'plateau', 'villeray', 'verdun', 'hochelaga']),
+      stage: 'csr'
     }
   })
 });

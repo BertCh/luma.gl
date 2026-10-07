@@ -5,8 +5,15 @@ snippet and links into the reference docs, all driving one or more luma.gl analy
 You never edit a shared file. Scenes are found by file name, chapters are fixed in `chapters.ts`,
 datasets are found by file name.
 
-Reference implementations: `points/density.scene.ts` + `density.compute.ts` and
-`points/hot-spots.scene.ts` + `hot-spots.compute.ts`. Read them first.
+Reference implementations: `points/nature-density.scene.ts` + `nature-density.compute.ts` and
+`weights/hot-spots.scene.ts` + `hot-spots.compute.ts`. Read them first.
+
+**Cartography and the story card** are documented in [`CARTOGRAPHY-GUIDE.md`](./CARTOGRAPHY-GUIDE.md):
+the twelve rules every story follows, ground presets, exact class tables and the hue registry,
+gazetteers, annotations, legends, furniture, structured tooltips, charts, control kinds, step
+headlines and live `{{readout}}` numbers, compare swipes, the time bar, flow/trail/relief layers
+and the geometry helpers. Lint a chapter with `node scripts/check-cartography.mjs --strict
+<chapter>` and colours with `node scripts/check-colours.mjs`.
 
 ## 1. Files
 
@@ -79,7 +86,11 @@ Rules that keep the "compile once" proof honest:
   buffer, rebuild, `ctx.requestLayers()`).
 
 Engine pieces you can import (relative paths from your scene folder):
-`../../engine/layers` (`SpatialAnalysisPointLayer`, `SegmentLayer`, `RasterLayer`),
+`../../engine/layers` (`SpatialAnalysisPointLayer`, `SegmentLayer`, `RasterLayer`, `PolygonLayer`),
+`../../engine/polygon-buffers`, `../../engine/flow-layer`, `../../engine/trail-layer`,
+`../../engine/relief`, `../../engine/stage-fader`, `../../engine/draw-order`, `../../cartography/*`
+(grounds, class-table, hue-registry, gazetteer, anchors, breaks, live-text, ... see
+CARTOGRAPHY-GUIDE section 16),
 `../../engine/resources`, `../../engine/graph-buffers` (`importGraphBuffer`),
 `../../engine/summary-reader`, `../../engine/vector-timing`, `../../engine/mode-kernels`,
 `../../engine/projection` (`LocalMetricProjection`, `createSeededRandom`),

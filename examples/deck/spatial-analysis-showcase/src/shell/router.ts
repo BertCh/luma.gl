@@ -58,7 +58,11 @@ export function navigate(hash: string): void {
 
 /** Rewrites the hash without a navigation (no `hashchange`), for option and step state. */
 export function replaceHash(hash: string): void {
-  history.replaceState(null, '', hash);
+  try {
+    history.replaceState(null, '', hash);
+  } catch {
+    // Safari throws after about 100 calls in 30 s; the URL simply lags until the next write.
+  }
 }
 
 /** Calls `listener` for the current hash and every change. Returns an unsubscribe function. */

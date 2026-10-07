@@ -7,7 +7,9 @@ import {expect, it} from 'vitest';
 import {
   getGPUShapeGeneratorParameterValues,
   getGPUShapeVertexCount,
+  GPU_SHAPE_GENERATOR_EARTH_RADIUS,
   GPUShapeGenerator,
+  type GPUShapeGeneratorProps,
   type GPUShapeType
 } from '../../../src/gpu-spatial-analysis/grid-generators/index';
 import {createGeometryFixture} from '../outline-geometry/geometry-fixture';
@@ -27,7 +29,8 @@ function createShapeFixture(
   coordinateSystem: 'planar' | 'geodesic',
   centers: number[][],
   radii: number[][],
-  maximumSegments: number
+  maximumSegments: number,
+  options: Pick<GPUShapeGeneratorProps, 'ellipseSpacing'> & {rotations?: number[]} = {}
 ) {
   const featureCount = centers.length;
   const vertexCapacity = featureCount * getGPUShapeVertexCount(shape, maximumSegments);
@@ -43,7 +46,11 @@ function createShapeFixture(
         format: 'float32x2'
       },
       rotations: {
-        values: Float32Array.from(TURF_ELLIPSE_AXES.slice(0, featureCount).map(axes => axes[2])),
+        values: Float32Array.from(
+          centers.map(
+            (_, index) => options.rotations?.[index] ?? TURF_ELLIPSE_AXES[index]?.[2] ?? 0
+          )
+        ),
         format: 'float32'
       }
     },
@@ -57,6 +64,7 @@ function createShapeFixture(
       new GPUShapeGenerator({
         shape,
         coordinateSystem,
+        ellipseSpacing: options.ellipseSpacing,
         maximumSegments,
         centers: inputs['centers'] as never,
         radii: inputs['radii'] as never,
@@ -166,4 +174,220 @@ it('GPUShapeGenerator validates its inputs', () => {
   expect(() => getGPUShapeGeneratorParameterValues({segmentCount: 0})).toThrow();
   expect(() => getGPUShapeGeneratorParameterValues({segmentCount: 8, radiusScale: -1})).toThrow();
   expect(getGPUShapeVertexCount('sector', 8)).toBe(11);
+  expect(
+    () => new GPUShapeGenerator({shape: 'circle', ellipseSpacing: 'arc-length'} as never)
+  ).toThrow('ellipseSpacing');
+  expect(
+    () => new GPUShapeGenerator({shape: 'ellipse', ellipseSpacing: 'unknown'} as never)
+  ).toThrow('ellipseSpacing');
+});
+
+/** Double-precision Simpson integration of speed, independent of the GPU's chord table. */
+function getEllipseArcOracle(axes: number[], segments: number): number[][] {
+  const intervals = 16384;
+  const step = (2 * Math.PI) / intervals;
+  const speed = (phase: number) => Math.hypot(axes[0] * Math.sin(phase), axes[1] * Math.cos(phase));
+  const lengths = [0];
+  for (let index = 1; index <= intervals; index++) {
+    lengths.push(
+      lengths[index - 1] +
+        (step / 6) *
+          (speed((index - 1) * step) + 4 * speed((index - 0.5) * step) + speed(index * step))
+    );
+  }
+  return Array.from({length: segments + 1}, (_, vertex) => {
+    const target = (lengths[intervals] * (vertex % segments)) / segments;
+    let lower = 0;
+    let upper = intervals;
+    while (upper - lower > 1) {
+      const middle = Math.floor((lower + upper) / 2);
+      if (lengths[middle] < target) lower = middle;
+      else upper = middle;
+    }
+    const phase = step * (lower + (target - lengths[lower]) / (lengths[upper] - lengths[lower]));
+    return [axes[0] * Math.cos(phase), axes[1] * Math.sin(phase)];
+  });
+}
+
+function rotateEllipsePoint(point: number[], rotation: number): number[] {
+  const tilt = (rotation * Math.PI) / 180;
+  return [
+    point[0] * Math.cos(tilt) + point[1] * Math.sin(tilt),
+    point[1] * Math.cos(tilt) - point[0] * Math.sin(tilt)
+  ];
+}
+
+it('GPUShapeGenerator arc-length ellipses match integrated arc positions across aspect ratios', async () => {
+  const device = await getWebGPUTestDevice();
+  if (!device) return;
+  const axes = [
+    [1, 1],
+    [10, 2],
+    [10000, 1],
+    [1, 10000]
+  ];
+  const rotations = [0, 37, 0, -21];
+  const fixture = createShapeFixture(
+    device,
+    'ellipse',
+    'planar',
+    axes.map(() => [0, 0]),
+    axes,
+    1024,
+    {
+      ellipseSpacing: 'arc-length',
+      rotations
+    }
+  );
+  try {
+    // Odd counts cross quadrant boundaries; large counts exercise intervals near the tips.
+    for (const segments of [7, 32, 127, 1024]) {
+      const result = await fixture.run(
+        getGPUShapeGeneratorParameterValues({segmentCount: segments})
+      );
+      const vertices = segments + 1;
+      expect(result['offsets']).toEqual(
+        axes.map((_, index) => index * vertices).concat(axes.length * vertices)
+      );
+      expect(result['vertexCount'][0]).toBe(axes.length * vertices);
+      for (let feature = 0; feature < axes.length; feature++) {
+        const oracle = getEllipseArcOracle(axes[feature], segments);
+        for (let vertex = 0; vertex <= segments; vertex++) {
+          const expected = rotateEllipsePoint(oracle[vertex], rotations[feature]);
+          const offset = 2 * (feature * vertices + vertex);
+          const error = Math.hypot(
+            result['positions'][offset] - expected[0],
+            result['positions'][offset + 1] - expected[1]
+          );
+          expect(
+            error,
+            `axes=${axes[feature]}, segments=${segments}, vertex=${vertex}`
+          ).toBeLessThan(1e-5 * Math.max(...axes[feature]));
+        }
+        const start = 2 * feature * vertices;
+        expect(result['positions'].slice(start + 2 * segments, start + 2 * vertices)).toEqual(
+          result['positions'].slice(start, start + 2)
+        );
+      }
+    }
+    // An encoded graph recomputes the table from GPU input and parameter contents each frame.
+    const updated = axes.map(() => [3, 9]);
+    fixture.writeInput('radii', Float32Array.from(updated.flat()));
+    const result = await fixture.run(
+      getGPUShapeGeneratorParameterValues({segmentCount: 13, radiusScale: 2})
+    );
+    const oracle = getEllipseArcOracle([6, 18], 13);
+    for (let vertex = 0; vertex <= 13; vertex++) {
+      expect(
+        Math.hypot(
+          result['positions'][2 * vertex] - oracle[vertex][0],
+          result['positions'][2 * vertex + 1] - oracle[vertex][1]
+        )
+      ).toBeLessThan(0.00018);
+    }
+    expect(fixture.getCompileCount()).toBe(0);
+  } finally {
+    fixture.destroy();
+  }
+});
+
+it('GPUShapeGenerator arc-length ellipses preserve collapsed axes and zero radius scale', async () => {
+  const device = await getWebGPUTestDevice();
+  if (!device) return;
+  const axes = [
+    [5, 0],
+    [0, 5],
+    [0, 0],
+    [-1, 5],
+    [Number.NaN, 5],
+    [5, Number.POSITIVE_INFINITY]
+  ];
+  const fixture = createShapeFixture(
+    device,
+    'ellipse',
+    'planar',
+    axes.map(() => [2, -3]),
+    axes,
+    32,
+    {
+      ellipseSpacing: 'arc-length',
+      rotations: axes.map(() => 0)
+    }
+  );
+  try {
+    const result = await fixture.run(getGPUShapeGeneratorParameterValues({segmentCount: 19}));
+    for (let feature = 0; feature < axes.length; feature++) {
+      for (let vertex = 0; vertex <= 19; vertex++) {
+        const fraction = (vertex % 19) / 19;
+        // A degenerate ellipse traverses a line at constant speed, with a triangle waveform.
+        const east = Math.abs(4 * fraction - 2) - 1;
+        const north = 1 - Math.abs(((4 * fraction + 1) % 4) - 2);
+        const expected =
+          feature === 2
+            ? [2, -3]
+            : feature === 0 || feature === 5
+              ? [2 + 5 * east, -3]
+              : [2, -3 + 5 * north];
+        const offset = 2 * (feature * 20 + vertex);
+        expect(
+          result['positions'][offset],
+          `feature=${feature}, vertex=${vertex}, east`
+        ).toBeCloseTo(expected[0], 4);
+        expect(
+          result['positions'][offset + 1],
+          `feature=${feature}, vertex=${vertex}, north`
+        ).toBeCloseTo(expected[1], 4);
+      }
+    }
+    const collapsed = await fixture.run(
+      getGPUShapeGeneratorParameterValues({segmentCount: 8, radiusScale: 0})
+    );
+    for (let vertex = 0; vertex < axes.length * 9; vertex++) {
+      expect(collapsed['positions'].slice(2 * vertex, 2 * vertex + 2)).toEqual([2, -3]);
+    }
+  } finally {
+    fixture.destroy();
+  }
+});
+
+it('GPUShapeGenerator geodesic arc-length ellipses apply spherical destination after spacing', async () => {
+  const device = await getWebGPUTestDevice();
+  if (!device) return;
+  const center = [-73, 41];
+  for (const [axes, rotation] of [
+    [[500000, 10000], 31],
+    [[500000, 0], 0],
+    [[0, 500000], 0]
+  ] as const) {
+    const fixture = createShapeFixture(device, 'ellipse', 'geodesic', [center], [[...axes]], 64, {
+      ellipseSpacing: 'arc-length',
+      rotations: [rotation]
+    });
+    try {
+      const result = await fixture.run(getGPUShapeGeneratorParameterValues({segmentCount: 31}));
+      const oracle = getEllipseArcOracle([...axes], 31);
+      for (let vertex = 0; vertex <= 31; vertex++) {
+        const [east, north] = rotateEllipsePoint(oracle[vertex], rotation);
+        const distance = Math.hypot(east, north) / GPU_SHAPE_GENERATOR_EARTH_RADIUS;
+        const bearing = Math.atan2(east, north);
+        const latitude = (center[1] * Math.PI) / 180;
+        const latitude2 = Math.asin(
+          Math.sin(latitude) * Math.cos(distance) +
+            Math.cos(latitude) * Math.sin(distance) * Math.cos(bearing)
+        );
+        const longitudeDelta = Math.atan2(
+          Math.sin(bearing) * Math.sin(distance) * Math.cos(latitude),
+          Math.cos(distance) - Math.sin(latitude) * Math.sin(latitude2)
+        );
+        expect(
+          Math.abs(result['positions'][2 * vertex] - (center[0] + (longitudeDelta * 180) / Math.PI))
+        ).toBeLessThan(0.00006);
+        expect(
+          Math.abs(result['positions'][2 * vertex + 1] - (latitude2 * 180) / Math.PI)
+        ).toBeLessThan(0.00006);
+      }
+    } finally {
+      fixture.destroy();
+    }
+  }
 });

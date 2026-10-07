@@ -2,8 +2,64 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {ground} from '../../cartography/grounds';
+import {getClassTableLegend, makeClassTable} from '../../cartography/class-table';
 import {defineScene, type LegendSpec, type OptionSpec} from '../scene';
 import type {RoutingOptions} from './routing.compute';
+
+const ROUTING_TIME_TABLE = makeClassTable({
+  breaks: [600, 1200, 1800, 2700, 3600],
+  scheme: 'YlGnBu',
+  reverse: true,
+  labels: ['0–10', '10–20', '20–30', '30–45', '45–60', '60–90 min'],
+  unit: 'min',
+  extent: [0, 5400],
+  noData: {color: [117, 122, 132, 105], label: 'Unreached'}
+});
+const SCENARIO_DELTA_TABLE = makeClassTable({
+  breaks: [0, 300, 600, 1200],
+  scheme: 'PuRd',
+  labels: ['No added time', '0–5', '5–10', '10–20', '>20 min'],
+  unit: 'min',
+  extent: [0, 1200],
+  transparent: [0],
+  noData: {color: [117, 122, 132, 105], label: 'Unreachable in scenario'}
+});
+const DESTINATION_NUMBER_ANNOTATIONS = [
+  {coordinate: [-87.9048, 41.9786] as const, text: '1', detail: 'O’Hare', offset: [8, -8] as const},
+  {coordinate: [-87.7524, 41.7868] as const, text: '2', detail: 'Midway', offset: [8, 10] as const},
+  {
+    coordinate: [-87.6553, 41.9484] as const,
+    text: '3',
+    detail: 'Wrigley',
+    offset: [8, -8] as const
+  },
+  {
+    coordinate: [-87.6167, 41.8623] as const,
+    text: '4',
+    detail: 'Soldier Field',
+    offset: [8, 10] as const
+  },
+  {
+    coordinate: [-87.5831, 41.7906] as const,
+    text: '5',
+    detail: 'Museum of Science and Industry',
+    offset: [8, 10] as const
+  },
+  {
+    coordinate: [-87.6742, 41.8807] as const,
+    text: '6',
+    detail: 'United Center',
+    offset: [8, -8] as const
+  }
+].map((annotation, index) => ({
+  ...annotation,
+  id: `routing-destination-${index + 1}`,
+  kind: 'point' as const,
+  marker: 'ring' as const,
+  tone: 'signal' as const,
+  priority: 4
+}));
 
 const PLACE_OPTIONS = [
   {value: 'willis', label: 'Willis Tower (Loop)'},
@@ -57,11 +113,11 @@ const options: readonly OptionSpec<RoutingOptions>[] = [
     group: 'Trip',
     apply: 'param',
     min: 10,
-    max: 180,
+    max: 90,
     step: 5,
     default: 90,
     unit: 'min',
-    help: 'Cost limit of the search: intersections more than this far away are never reached (and stay uncoloured). Also the end of the colour ramp.'
+    help: 'Cost limit of the search: intersections more than this far away are unreached. The fixed 0–90 minute classes do not rescale.'
   },
   {
     kind: 'toggle',
@@ -84,7 +140,7 @@ const options: readonly OptionSpec<RoutingOptions>[] = [
     default: 1,
     unit: 'x',
     format: value => `${value.toFixed(2)}x travel time`,
-    help: 'Multiplies the free-flow travel time of motorway and trunk edges. 1 is free flow; 3 is a bad rush hour.'
+    help: 'Multiplies motorway and trunk free-flow travel time for an illustrative slowdown counterfactual; it is not a traffic prediction.'
   },
   {
     kind: 'slider',
@@ -106,7 +162,7 @@ const options: readonly OptionSpec<RoutingOptions>[] = [
     group: 'Turns',
     apply: 'param',
     default: false,
-    help: 'Builds the edge-based line graph with GPUNetworkLineGraph and routes over it. The blue route pays the costs below; the orange route ignores turns. Switching it on only starts encoding the third graph.'
+    help: 'Builds the edge-based line graph with GPUNetworkLineGraph. The purple dashed route pays the costs below; the orange route ignores turns.'
   },
   {
     kind: 'slider',
@@ -238,25 +294,11 @@ const options: readonly OptionSpec<RoutingOptions>[] = [
     default: 'time',
     options: [
       {value: 'time', label: 'Drive time from the origin'},
+      {value: 'delta', label: 'Minutes added versus free flow'},
       {value: 'hops', label: 'Intersections from the origin (ego network)'},
       {value: 'none', label: 'Nothing (plain street grid)'}
     ],
-    help: 'Drive time is the reachability cost tree. Intersections is the k-hop ego network of GPUNetworkNeighborhood; only streets inside the hop radius are coloured.'
-  },
-  {
-    kind: 'select',
-    id: 'ramp',
-    label: 'Colour ramp',
-    group: 'Display',
-    apply: 'param',
-    default: 'viridis',
-    options: [
-      {value: 'viridis', label: 'Viridis'},
-      {value: 'magma', label: 'Magma'},
-      {value: 'inferno', label: 'Inferno'},
-      {value: 'cividis', label: 'Cividis (colour-blind optimised)'}
-    ],
-    help: 'Perceptually uniform ramps. The route colours stay fixed so they remain visible on every ramp.'
+    help: 'Drive time is the current reachability cost tree. Minutes added compares it with a separately retained free-flow tree using fixed 30 s, 2 min and 5 min classes. Intersections is the k-hop ego network of GPUNetworkNeighborhood.'
   }
 ];
 
@@ -275,6 +317,13 @@ export default defineScene<RoutingOptions>({
   ],
   datasets: [{id: 'chicago-roads', role: 'directed street graph'}],
   initialView: {longitude: -87.74, latitude: 41.86, zoom: 10.1},
+  basemap: ground('paperCity'),
+  furniture: {
+    title: {title: 'Free-flow route through Chicago'},
+    credit: 'OpenStreetMap contributors (ODbL)',
+    caveat: 'Class-default speeds + constant intersection delay; not observed traffic.',
+    scaleBar: {units: 'metric'}
+  },
   options,
 
   readouts: [
@@ -290,22 +339,35 @@ export default defineScene<RoutingOptions>({
     },
     {
       id: 'routeTime',
-      label: 'Route 1 drive time',
+      label: 'Selected destination time',
       help: 'pathCosts[0] of GPUNetworkPathExtraction: the cost of the shortest path to the first destination.'
     },
+    {
+      id: 'freeFlowRoute',
+      label: 'Selected free-flow time',
+      help: 'The same origin, destination and search budget solved against retained OSM free-flow edge costs, before congestion, closures or intersection delay.'
+    },
+    {
+      id: 'scenarioDelta',
+      label: 'Scenario delay',
+      help: 'Current selected-route cost minus its retained free-flow cost. A closure can leave the scenario route unreached.'
+    },
+    {id: 'scenarioComparison', label: 'Free flow versus scenario', kind: 'chart'},
     {
       id: 'routeTimes',
       label: 'All extracted routes',
       help: 'Drive time to each extracted destination, in order.'
     },
+    {id: 'routeComparison', label: 'Extracted destination times', kind: 'chart'},
+    {id: 'reachCurve', label: 'Cumulative intersections reached', kind: 'chart'},
     {
       id: 'routeLength',
-      label: 'Route 1 length',
+      label: 'Selected route length',
       help: 'Sum of the lengths of the extracted edges of route 1.'
     },
     {
       id: 'plainTurns',
-      label: 'Route 1 turns (plain)',
+      label: 'Plain-route turns',
       help: 'Left, right and U-turns along the plain route, measured on the CPU from the extracted edges.'
     },
     {
@@ -315,7 +377,7 @@ export default defineScene<RoutingOptions>({
     },
     {
       id: 'turnTurns',
-      label: 'Route 1 turns (turn-aware)',
+      label: 'Turn-aware-route turns',
       help: 'Left, right and U-turns along the turn-aware route.'
     },
     {
@@ -323,6 +385,7 @@ export default defineScene<RoutingOptions>({
       label: 'Detour for fewer turns',
       help: 'Travel time (without turn penalties) and length of the turn-aware route compared with the plain route.'
     },
+    {id: 'turnComparison', label: 'Plain versus turn-aware turns', kind: 'chart'},
     {
       id: 'reached',
       label: 'Intersections reached',
@@ -359,42 +422,40 @@ export default defineScene<RoutingOptions>({
   legends: state => {
     const legends: LegendSpec[] = [
       ...(state.base === 'time'
-        ? [
-            {
-              kind: 'ramp' as const,
-              title: 'Drive time from the origin',
-              ramp: state.ramp,
-              extent: [0, state.costLimitMinutes] as const,
-              unit: 'min',
-              format: (value: number) => value.toFixed(0)
-            }
-          ]
+        ? [getClassTableLegend(ROUTING_TIME_TABLE, {title: 'Free-flow travel time'})]
         : state.base === 'hops'
           ? [
               {
                 kind: 'ramp' as const,
                 title: 'Intersections from the origin',
-                ramp: state.ramp,
+                ramp: 'ylgnbu' as const,
                 extent: [0, state.hops] as const,
                 unit: 'hops',
                 format: (value: number) => value.toFixed(0)
               }
             ]
-          : []),
+          : state.base === 'delta'
+            ? [
+                getClassTableLegend(SCENARIO_DELTA_TABLE, {
+                  title: 'Minutes added versus free flow',
+                  note: 'Zero is transparent; dashed plum marks are free-flow-reachable but scenario-unreachable.'
+                })
+              ]
+            : []),
       {
         kind: 'categories' as const,
         title: 'Routes and places',
         entries: [
           ...(state.showRoute
-            ? [{color: [255, 96, 64, 255] as const, label: 'Fastest route (no turn costs)'}]
+            ? [{color: [230, 120, 48, 255] as const, label: 'Fastest route (no turn costs)'}]
             : []),
           ...(state.showTurnRoute
-            ? [{color: [40, 190, 255, 255] as const, label: 'Turn-aware route'}]
+            ? [{color: [113, 72, 150, 255] as const, label: 'Turn-aware route (dashed)'}]
             : []),
           {color: [255, 255, 255, 255] as const, label: 'Origin'},
           {
             color: [255, 70, 200, 255] as const,
-            label: 'Destination 1 (other destinations: other hues)'
+            label: 'Numbered destination ring-dots match the destination-time chart'
           }
         ],
         note: 'Hover the map for the drive time to the nearest intersection. Click to move the destination; click near the origin to move the origin.'
@@ -460,57 +521,78 @@ compiled.encode(commandEncoder, {parameters: undefined});`,
     what: '`GPUNetworkReachability` runs a frontier-based Bellman-Ford from the origin and writes the cheapest cost and the predecessor of every intersection. `GPUNetworkPathExtraction` walks predecessors back from up to six destinations in parallel, `GPUNetworkNeighborhood` computes hop counts for the k-hop ego network, and `GPUNetworkLineGraph` rebuilds the graph so that a node is a directed street segment and an arc is a turn with its own cost.',
     why: 'This is the engine behind "how long to get there", "what is within reach", "where would a closure push traffic" and "can this fleet avoid left turns". Because the CSR weights are an ordinary buffer, a closure or a congestion level is a write, not a rebuild.',
     howToRead:
-      'Street colour is drive time from the origin (or hops from it in ego-network mode); uncoloured streets are beyond the budget. The orange line is the cheapest path to the first destination, the blue one the cheapest path when turns cost time. Compare their lengths and the left/right counts in the readouts.'
+      'Street colour is fixed free-flow travel-time classes (or hops in ego-network mode); neutral streets are unreached. The orange line is the selected path and purple dashes are the turn-aware path. Compare their lengths and turn counts in the readouts.'
   },
 
   create: async ctx => (await import('./routing.compute')).createRouting(ctx),
 
   story: [
     {
-      id: 'the-question',
+      id: 'one-route',
+      headline: 'One path starts at the Loop',
+      textAlternative:
+        'A cased orange route runs from Willis Tower in the Loop to O’Hare, over classed free-flow street times.',
+      optionsMode: 'fresh',
       controls: ['originPlace', 'destinationPlace'],
-      readouts: ['routeTime'],
-      title: 'How long from the Loop to O’Hare?',
-      body: 'Chicago’s drive network has about 30,000 intersections and 77,000 directed street segments. The first question any routing engine answers is *how long does it take to get from here to there?* Here the origin is Willis Tower and the destination is O’Hare Airport, 25 km northwest.\n\nEverything you see is computed on the GPU in one compiled graph. Hover the map for the drive time to any intersection, or click to pick another destination; **Origin** and **First destination** below pick from presets.',
-      camera: {longitude: -87.77, latitude: 41.89, zoom: 10.0, transitionMs: 1200},
+      readouts: ['routeTime', 'routeLength'],
+      title: 'One path from the Loop',
+      body: 'The orange line walks predecessors backward from O’Hare to Willis Tower. It is a best-case free-flow model, not observed traffic. Change the two places to recompute the selected path from the same street graph.',
+      camera: {longitude: -87.78, latitude: 41.93, zoom: 10.2, transitionMs: 1200},
       options: {destinationCount: 1, base: 'time'},
       highlight: {readout: 'routeTime'}
     },
     {
-      id: 'the-tree',
+      id: 'whole-tree',
+      headline: 'One search reaches every street',
+      textAlternative:
+        'Chicago streets are grouped in six fixed travel-time classes, with a cumulative chart of intersections reached by minute.',
+      optionsMode: 'fresh',
       controls: ['costLimitMinutes', 'base'],
-      readouts: ['solver', 'reached'],
-      title: 'One search, every destination: the shortest-path tree',
-      body: '`GPUNetworkReachability` is a single-source shortest-path search. It keeps a *frontier* of intersections whose cost just improved and relaxes their outgoing edges in rounds, so the whole city converges in a handful of dispatches. Each intersection ends up with a **cost** (seconds from the origin) and a **predecessor** (the intersection you came from).\n\nThe street colours are that cost: dark is near, bright is far, so the expressways glow far out because they are fast. Uncoloured streets lie beyond the **search budget**: drag **Search budget** below down to 25 minutes and watch the tree shrink. The **Solver** readout says how many rounds the search needed before its queue emptied.',
+      readouts: ['reached', 'reachCurve', 'solver'],
+      title: 'One search, every street',
+      body: 'The shortest-path tree retains one cost and predecessor for every reached intersection. Fixed 0–10 through 60–90 minute classes keep later comparisons honest; the cumulative chart is counted directly from those node costs.',
       camera: {longitude: -87.7, latitude: 41.84, zoom: 9.7, transitionMs: 1200},
       options: {costLimitMinutes: 60, base: 'time'},
-      highlight: {readout: 'solver'}
+      highlight: {readout: 'reachCurve'}
     },
     {
       id: 'many-routes',
+      headline: 'Six routes share one tree',
+      textAlternative:
+        'Six numbered destination ring-dots radiate from the Loop; the orange selected route is cased and the comparison routes remain thin, with a named time chart.',
+      optionsMode: 'fresh',
       controls: ['destinationCount', 'showRoute'],
-      readouts: ['routeTimes'],
-      title: 'Walking the tree back: routes to many places',
-      body: '`GPUNetworkPathExtraction` takes the predecessor array and a list of targets and walks every target back to the origin in parallel, then packs the node and edge lists with a prefix sum. Raise **Destinations extracted** below to six: O’Hare, Midway, Wrigley Field, Soldier Field, the Museum of Science and Industry and the United Center all come out of **one** tree.\n\nThe routes are drawn by scattering the extracted edge ids into a flag buffer that the road layer reads, so nothing is copied to the CPU to draw them. The readouts do read the small result lists, throttled, after a change.',
+      readouts: ['routeTimes', 'routeComparison'],
+      title: 'Walk the tree back',
+      body: 'One predecessor field yields routes to O’Hare, Midway, Wrigley Field, Soldier Field, the Museum of Science and Industry and United Center. Ring-dot numbers and chart labels use the same places; the selected route stays above the thinner comparisons.',
       camera: {longitude: -87.72, latitude: 41.87, zoom: 10.1, transitionMs: 1200},
+      annotations: DESTINATION_NUMBER_ANNOTATIONS,
       options: {destinationCount: 6},
-      highlight: {readout: 'routeTimes'}
+      highlight: {readout: 'routeComparison'}
     },
     {
-      id: 'rush-hour',
+      id: 'scenario-delta',
+      headline: 'A slowdown changes the model',
+      textAlternative:
+        'A fixed PuRd map shows minutes added to free flow; zero is absent and free-flow-reachable streets made unreachable are dashed plum.',
+      optionsMode: 'fresh',
       controls: ['expresswaySlowdown', 'closeExpressways', 'intersectionDelay'],
-      readouts: ['routeTime', 'expressways'],
-      title: 'Rush hour on the expressways',
-      body: 'The graph weights are just a buffer, so traffic is a rewrite. Here **Expressway congestion** is set to 4x, so every motorway and trunk edge takes four times its free-flow time and the whole search runs again from scratch. Compare the tree with the previous step: the bright corridors have faded, and the route to O’Hare may leave the Kennedy for arterial streets.\n\nTry the two other controls below: **Close the expressways** sets their weights to -1 and the airport simply becomes unreachable (the route reads "not found"), and **Delay per intersection** shows how much of a trip is the street grid itself.',
-      options: {destinationCount: 1, expresswaySlowdown: 4},
-      highlight: {readout: 'routeTime'}
+      readouts: ['freeFlowRoute', 'scenarioDelta', 'scenarioComparison', 'expressways'],
+      title: 'Scenario delta',
+      body: 'This illustrative slowdown counterfactual rewrites motorway and trunk weights; it is not observed traffic. The retained free-flow tree and fixed PuRd 0, 0–5, 5–10, 10–20 and >20 minute table make actual minutes-added visible.',
+      options: {destinationCount: 1, expresswaySlowdown: 4, base: 'delta'},
+      highlight: {readout: 'scenarioDelta'}
     },
     {
-      id: 'turn-costs',
-      controls: ['showTurnRoute', 'leftTurnCost', 'angleCost', 'uTurns'],
-      readouts: ['turnTurns', 'plainTurns', 'turnCost'],
+      id: 'turns',
+      headline: 'Turns change the route',
+      textAlternative:
+        'An orange plain route and a purple dashed turn-aware route compare between United Center and Wrigley Field, with paired turn-count bars.',
+      optionsMode: 'fresh',
+      controls: ['leftTurnCost', 'angleCost', 'uTurns'],
+      readouts: ['plainTurns', 'turnTurns', 'turnCost', 'turnComparison'],
       title: 'Turns cost time too',
-      body: 'A node-based graph cannot say "no left turn here": the cost of leaving an intersection cannot depend on how you arrived. `GPUNetworkLineGraph` fixes that by making every **directed street segment** a node and every allowed **turn** an arc whose cost is the next segment plus a penalty for the heading change.\n\nThe blue route (**Turn-aware route (line graph)**) pays 120 s per left turn (**Extra cost of a left turn**) plus 25 s per radian of any turn (**Cost per radian turned**) and may never U-turn (**U-turns**); the orange one ignores turns. From the United Center to Wrigley Field it abandons the Kennedy detour for a straight run up Western Avenue. The turn counts in the readouts show why. Change the costs below: the line graph is rebuilt every encoding, so the sliders need no recompile.',
+      body: 'A line graph makes each directed edge a node, so the next edge can charge an angle or left-turn cost. Orange is the plain route; purple dashes pay turn costs. The paired readouts count turns from the two extracted paths.',
       camera: {longitude: -87.665, latitude: 41.915, zoom: 11.5, transitionMs: 1400},
       options: {
         expresswaySlowdown: 1,
@@ -523,11 +605,14 @@ compiled.encode(commandEncoder, {parameters: undefined});`,
       highlight: {readout: 'turnTurns'}
     },
     {
-      id: 'ego-network',
-      controls: ['base', 'hops'],
-      readouts: ['hood'],
-      title: 'Counting intersections instead of minutes',
-      body: '`GPUNetworkNeighborhood` is the *topological* neighbourhood: every intersection within **k hops**, whatever the length or speed of the street. The colouring is set to *Intersections from the origin* (**Colour the streets by**); slide **Ego network radius**: on Chicago’s grid the ego network is a diamond, because each block is one hop in one of four directions.\n\nHop distance and drive time disagree wherever blocks are unequal or streets are one-way, which is exactly why routing uses weighted costs. The ego network also returns the induced street segments, so it doubles as a subgraph extractor.',
+      id: 'hops',
+      headline: 'Blocks are not minutes',
+      textAlternative:
+        'A hop-distance street diamond is compared with a ten-minute free-flow outline around the Loop.',
+      optionsMode: 'fresh',
+      readouts: ['hood', 'solver'],
+      title: 'Blocks are not minutes',
+      body: 'A k-hop neighbourhood counts street segments, not their length or speed. It therefore forms a different shape from the travel-time tree. Solver rounds and capacities are implementation details; free-flow weights, nearest-node snapping, graph clipping and simplified turn restrictions limit this model.',
       camera: {longitude: -87.63, latitude: 41.88, zoom: 12.4, transitionMs: 1200},
       options: {
         base: 'hops',
@@ -538,16 +623,8 @@ compiled.encode(commandEncoder, {parameters: undefined});`,
         destinationPlace: 'ohare',
         destinationCount: 1
       },
-      highlight: {readout: 'hood'}
-    },
-    {
-      id: 'limits',
-      controls: ['banLeftTurns', 'localIterations', 'originPlace', 'ramp'],
-      readouts: ['solver'],
-      title: 'Limits, and things to try',
-      body: 'Costs are free-flow times from OpenStreetMap speed limits plus a fixed intersection delay: no live traffic, signal timing or time-of-day variation. OSM turn restrictions are not applied (the **Banned turns** list is illustrative); a real application would convert each restriction relation to `(from edge, to edge)` pairs once on the CPU. Weights must be non-negative, and are floored at 0.1 s so equal-cost plateaus stay rare. Walking and transit are in the *job accessibility* scene.\n\nTry, with the controls below (the turn-aware route is on in this step): set **Banned turns** to no left turns between arterials and drag the destination around the Loop; set **Hops chained per round** to 8 and read the **Solver** rounds; set **Origin** to Austin or South Shore and compare drive times to the Loop; switch **Colour ramp** to cividis.',
-      camera: {longitude: -87.7, latitude: 41.84, zoom: 10.0, transitionMs: 1200},
-      options: {base: 'time', showRoute: true, showTurnRoute: true, hops: 8}
+      highlight: {readout: 'hood'},
+      controls: ['base', 'hops', 'localIterations']
     }
   ]
 });

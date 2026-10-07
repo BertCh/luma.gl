@@ -468,7 +468,7 @@ graph.add(
   new GPUSpatialJoinCandidates({
     left: {kind: 'points', positions: facilities},
     right: {kind: 'polygons', positions, featureOffsets, polygonOffsets, ringOffsets},
-    distance: ${state.candidateDistance},                      // grows each left box (compile-time)
+    distance: candidateDistance.importToGraph(graph),        // one-row float32, read per frame
     pairs: {leftIds, rightIds, count, overflow, totalCount}  // sorted by (left, right)
   })
 );`;

@@ -19,9 +19,10 @@ import {
 import {GPUCommandGraph, type CompiledGPUCommandGraph} from '@luma.gl/gpgpu/gpu-core';
 import {SpatialAnalysisPointLayer} from '../../engine/layers';
 import {addKernelPass} from '../../engine/mode-kernels';
-import type {RampName} from '../../engine/ramps';
 import {formatCount, SpatialAnalysisResources} from '../../engine/resources';
 import {SummaryReader} from '../../engine/summary-reader';
+import {makeClassTable} from '../../cartography/class-table';
+import type {ClassTable} from '../../cartography/types';
 import type {SceneContext, SceneInstance} from '../scene';
 import {B3_PALETTE, FeatureTriangleLayer, PairSegmentLayer, type B3ValueMapping} from './b3-layers';
 import {
@@ -61,7 +62,6 @@ export type PolygonMeasuresOptions = {
   metric: PolygonMetric;
   areaSystem: 'planar' | 'spherical' | 'wgs84';
   holeRule: 'winding' | 'first-ring-exterior';
-  ramp: Extract<RampName, 'viridis' | 'magma' | 'inferno' | 'cividis'>;
   opacity: number;
   showOutlines: boolean;
   showLabels: boolean;
@@ -78,6 +78,10 @@ export type PolygonMeasuresOptions = {
   contiguity: 'rook' | 'queen';
   colorSeed: number;
   maxRounds: number;
+  areaClassification: 'fixed-log' | 'quantile' | 'equal-interval';
+  showDeflate: boolean;
+  showLabelSearch: boolean;
+  coloringMethod: 'algorithm' | 'naive-fips-mod';
 };
 
 /** Number of segments of an inscribed circle. */
@@ -87,6 +91,50 @@ const MERCATOR_RADIUS = 6378137;
 /** Validity category colors: valid, orientation only, structural defect. */
 export const VALIDITY_PALETTE_INDEXES = [3, 5, 7] as const;
 export const VALIDITY_COLORS = VALIDITY_PALETTE_INDEXES.map(index => B3_PALETTE[index]);
+
+/** Published reference classes; map, legend, histogram and tooltip all share these tables. */
+export const POLYGON_AREA_CLASSES = makeClassTable({
+  breaks: [500e6, 1e9, 2e9, 5e9, 10e9],
+  scheme: 'YlOrBr',
+  unit: 'km²',
+  extent: [0, 10e9],
+  labels: ['0–500', '500–1k', '1k–2k', '2k–5k', '5k–10k', '10k+'],
+  method: 'Fixed log-spaced reference classes'
+});
+export const POLYGON_DISTORTION_CLASSES = makeClassTable({
+  breaks: [1.05, 1.2, 1.5, 2],
+  scheme: 'PuRd',
+  unit: '×',
+  extent: [1, 2.5],
+  labels: ['1.00–1.05×', '1.05–1.20×', '1.20–1.50×', '1.50–2.00×', '2.00×+'],
+  method: 'Planar / WGS84; ratios begin at 1.0'
+});
+export const POLYGON_COMPACTNESS_CLASSES = makeClassTable({
+  breaks: [0.1, 0.25, 0.4, 0.6],
+  scheme: 'BuGn',
+  unit: 'Polsby-Popper',
+  extent: [0, 1],
+  labels: ['< 0.10', '0.10–0.25', '0.25–0.40', '0.40–0.60', '0.60–1.00'],
+  method: 'Fixed compactness reference classes'
+});
+export const POLYGON_VALIDITY_CLASSES = makeClassTable({
+  breaks: [0.5, 1.5],
+  colors: [
+    [140, 149, 160, 255],
+    [230, 159, 0, 255],
+    [213, 94, 0, 255]
+  ],
+  labels: ['No bits set', 'Orientation convention only', 'Structural defect'],
+  method: 'Amber convention, vermilion structure'
+});
+
+function getPolygonClassTable(metric: PolygonMetric): ClassTable | null {
+  if (metric === 'area') return POLYGON_AREA_CLASSES;
+  if (metric === 'areaDistortion') return POLYGON_DISTORTION_CLASSES;
+  if (metric === 'compactness') return POLYGON_COMPACTNESS_CLASSES;
+  if (metric === 'validity') return POLYGON_VALIDITY_CLASSES;
+  return null;
+}
 
 type DatasetSpec = {
   space: 'local' | 'mercator';
@@ -156,7 +204,15 @@ type DatasetState = {
   groupIds: Uint32Array;
   groupCount: number;
   resources: SpatialAnalysisResources;
-  fill: {corners: Buffer; featureRows: Buffer; partRows: Buffer; triangleCount: number};
+  fill: {
+    corners: Buffer;
+    deflatedCorners: Buffer;
+    sourceCorners: Float32Array;
+    sourceFeatureRows: Uint32Array;
+    featureRows: Buffer;
+    partRows: Buffer;
+    triangleCount: number;
+  };
   edges: {starts: Buffer; ends: Buffer; edgeCount: number};
   /** Float32 per-feature display columns. */
   columns: Record<
@@ -175,7 +231,8 @@ type DatasetState = {
     | 'convexity'
     | 'sliverF'
     | 'validityF'
-    | 'colorF',
+    | 'colorF'
+    | 'naiveColorF',
     Buffer
   >;
   overlays: {
@@ -189,7 +246,12 @@ type DatasetState = {
     boundsEnds: Buffer;
     selectedStarts: Buffer;
     selectedEnds: Buffer;
+    labelGridStarts: Buffer;
+    labelGridEnds: Buffer;
   };
+  labelFeature: number;
+  labelGridCount: number;
+  validityOverflow: number;
   selectedEdgeCapacity: number;
   builders: {
     measures: (options: PolygonMeasuresOptions) => CompiledGPUCommandGraph<void>;
@@ -275,6 +337,8 @@ export async function createPolygonMeasures(
         spec.describe((features[feature]?.properties ?? {}) as Record<string, unknown>, feature)
       );
     }
+    // The label specimen is resolved from the loaded name column, never from a typed coordinate.
+    const labelFeature = names.findIndex(name => /o['’]?hare/i.test(name));
 
     // Static inputs.
     const lngLatBuffer = resources.createBuffer('lnglat', layout.lngLat);
@@ -291,6 +355,12 @@ export async function createPolygonMeasures(
     const edgeColumns = buildRingEdges(layout);
     const fill = {
       corners: resources.createBuffer('fill-corners', triangulated.corners),
+      deflatedCorners: resources.createBuffer(
+        'deflated-fill-corners',
+        triangulated.corners.byteLength
+      ),
+      sourceCorners: triangulated.corners,
+      sourceFeatureRows: triangulated.featureRows,
       featureRows: resources.createBuffer('fill-feature-rows', triangulated.featureRows),
       partRows: resources.createBuffer('fill-part-rows', triangulated.partRows),
       triangleCount: triangulated.triangleCount
@@ -326,7 +396,8 @@ export async function createPolygonMeasures(
       convexity: makeColumn('convexity'),
       sliverF: makeColumn('sliver-f'),
       validityF: makeColumn('validity-f'),
-      colorF: makeColumn('color-f', partCount)
+      colorF: makeColumn('color-f', partCount),
+      naiveColorF: makeColumn('naive-color-f', partCount)
     };
     const centroidsPlanar = makeColumn('centroids-planar', featureCount * 2);
     const centroidsWgs84 = makeColumn('centroids-wgs84', featureCount * 2);
@@ -351,7 +422,23 @@ export async function createPolygonMeasures(
     const boundsEnds = makeColumn('bounds-ends', featureCount * 4 * 2);
     const selectedStarts = makeColumn('selected-starts', selectedEdgeCapacity * 2);
     const selectedEnds = makeColumn('selected-ends', selectedEdgeCapacity * 2);
+    const labelGridStarts = makeColumn('label-grid-starts', 132 * 2);
+    const labelGridEnds = makeColumn('label-grid-ends', 132 * 2);
+    const fips = id === 'us-counties' ? dataset.column<Uint32Array>('fips') : null;
+    const naivePartColors = new Float32Array(partCount);
+    for (let feature = 0; feature < featureCount; feature++) {
+      const color = (fips?.[feature] ?? feature) % B3_PALETTE.length;
+      for (
+        let part = layout.featureOffsets[feature];
+        part < layout.featureOffsets[feature + 1];
+        part++
+      ) {
+        naivePartColors[part] = color;
+      }
+    }
+    (columns.naiveColorF as Buffer).write(naivePartColors);
     const mask = makeColumn('validity-mask');
+    const validityOverflow = resources.createBuffer('validity-overflow', 4);
 
     const shapeParameters = resources.createParameterBuffer(
       'shape-parameters',
@@ -710,7 +797,6 @@ fn toLngLat(p: vec2<f32>) -> vec2<f32> {
       const graph = new GPUCommandGraph<void>(device, {id: `validity-${id}`});
       const imp = createGraphImporter(graph);
       const maskView = imp('mask', mask, 'uint32', featureCount);
-      const overflow = resources.createBuffer('validity-overflow', 4);
       graph.add(
         new GPUGeometryValidity({
           id: 'validity',
@@ -727,7 +813,7 @@ fn toLngLat(p: vec2<f32>) -> vec2<f32> {
             ringOffsets: imp('ring-offsets', ringOffsetsBuffer, 'uint32', ringCount + 1)
           },
           mask: maskView,
-          overflow: imp('validity-overflow', overflow, 'uint32', 1),
+          overflow: imp('validity-overflow', validityOverflow, 'uint32', 1),
           intersectionCapacity: Math.max(4096, featureCount * 4),
           ringClosure: options.ringClosure,
           orientation: options.orientation
@@ -843,8 +929,13 @@ fn toLngLat(p: vec2<f32>) -> vec2<f32> {
         boundsStarts,
         boundsEnds,
         selectedStarts,
-        selectedEnds
+        selectedEnds,
+        labelGridStarts,
+        labelGridEnds
       },
+      labelFeature,
+      labelGridCount: 0,
+      validityOverflow: 0,
       selectedEdgeCapacity,
       builders: {
         measures: buildMeasures,
@@ -887,7 +978,8 @@ fn toLngLat(p: vec2<f32>) -> vec2<f32> {
       float(labelRadii, featureCount),
       float(centroidsWgs84, featureCount * 2),
       float(mask, featureCount),
-      float(groupAreas, groupCount)
+      float(groupAreas, groupCount),
+      {buffer: validityOverflow, size: 4}
     ];
     next.tableReader = new SummaryReader(resources, `table-${id}`, tableSources, bytes => {
       if (destroyed || state !== next) return;
@@ -922,6 +1014,7 @@ fn toLngLat(p: vec2<f32>) -> vec2<f32> {
         mask: u32(featureCount),
         groupAreas: f32(groupCount)
       };
+      next.validityOverflow = u32(1)[0];
       publishTable(next);
     });
     next.coloringReader = new SummaryReader(
@@ -1019,6 +1112,86 @@ fn toLngLat(p: vec2<f32>) -> vec2<f32> {
 
   let currentRange: [number, number] = [0, 1];
 
+  /** Deflate each rendered triangle about its GPU-measured centroid; the source map remains intact. */
+  function writeDeflatedGeometry(active: DatasetState, table: FeatureTable): void {
+    const corners = new Float32Array(active.fill.sourceCorners.length);
+    for (let corner = 0; corner < corners.length / 2; corner++) {
+      const feature = active.fill.sourceFeatureRows[Math.floor(corner / 3)];
+      const ratio = table.areaPlanar[feature] / Math.max(table.areaWgs84[feature], 1e-9);
+      const factor = 1 / Math.sqrt(Math.max(ratio, 1));
+      const longitude = active.fill.sourceCorners[corner * 2];
+      const latitude = active.fill.sourceCorners[corner * 2 + 1];
+      const centerLongitude = table.centroid[feature * 2];
+      const centerLatitude = table.centroid[feature * 2 + 1];
+      corners[corner * 2] = centerLongitude + (longitude - centerLongitude) * factor;
+      corners[corner * 2 + 1] = centerLatitude + (latitude - centerLatitude) * factor;
+    }
+    (active.fill.deflatedCorners as Buffer).write(corners);
+  }
+
+  /** Draws the selected feature's sampled search lattice and a smaller refinement lattice. */
+  function writeLabelSearchGrid(active: DatasetState, options: PolygonMeasuresOptions): void {
+    const feature = active.labelFeature;
+    if (feature < 0) {
+      active.labelGridCount = 0;
+      return;
+    }
+    const layout = active.layout;
+    let west = Infinity;
+    let south = Infinity;
+    let east = -Infinity;
+    let north = -Infinity;
+    for (
+      let ring = layout.featureRingOffsets[feature];
+      ring < layout.featureRingOffsets[feature + 1];
+      ring++
+    ) {
+      for (let vertex = layout.ringOffsets[ring]; vertex < layout.ringOffsets[ring + 1]; vertex++) {
+        const longitude = layout.lngLat[vertex * 2];
+        const latitude = layout.lngLat[vertex * 2 + 1];
+        west = Math.min(west, longitude);
+        east = Math.max(east, longitude);
+        south = Math.min(south, latitude);
+        north = Math.max(north, latitude);
+      }
+    }
+    const starts: number[] = [];
+    const ends: number[] = [];
+    const add = (x0: number, y0: number, x1: number, y1: number) => {
+      starts.push(x0, y0);
+      ends.push(x1, y1);
+    };
+    const gridSize = options.initialGridSize;
+    for (let grid = 0; grid <= gridSize; grid++) {
+      const t = grid / gridSize;
+      add(west + (east - west) * t, south, west + (east - west) * t, north);
+      add(west, south + (north - south) * t, east, south + (north - south) * t);
+    }
+    // The refinement cells surround the data-resolved label point, rather than a typed landmark.
+    const center = active.table?.labelPoint;
+    if (center && Number.isFinite(center[feature * 2])) {
+      const radius = Math.max((east - west) / gridSize, (north - south) / gridSize) * 1.5;
+      for (let grid = 0; grid <= 4; grid++) {
+        const t = grid / 4 - 0.5;
+        add(
+          center[feature * 2] + t * radius,
+          center[feature * 2 + 1] - radius / 2,
+          center[feature * 2] + t * radius,
+          center[feature * 2 + 1] + radius / 2
+        );
+        add(
+          center[feature * 2] - radius / 2,
+          center[feature * 2 + 1] + t * radius,
+          center[feature * 2] + radius / 2,
+          center[feature * 2 + 1] + t * radius
+        );
+      }
+    }
+    active.labelGridCount = starts.length / 2;
+    (active.overlays.labelGridStarts as Buffer).write(Float32Array.from(starts));
+    (active.overlays.labelGridEnds as Buffer).write(Float32Array.from(ends));
+  }
+
   function publishTable(active: DatasetState): void {
     const table = active.table;
     if (!table) return;
@@ -1030,6 +1203,8 @@ fn toLngLat(p: vec2<f32>) -> vec2<f32> {
       ctx.setLegendExtent('value', currentRange);
       ctx.requestLayers();
     }
+    writeDeflatedGeometry(active, table);
+    writeLabelSearchGrid(active, options);
     ctx.setReadout('features', featureCount);
     ctx.setReadout('vertices', active.layout.vertexCount);
     let planarTotal = 0;
@@ -1054,10 +1229,37 @@ fn toLngLat(p: vec2<f32>) -> vec2<f32> {
     ctx.setReadout('areaPlanar', `${formatNumber(planarTotal / 1e6)} km²`);
     ctx.setReadout('areaSphere', `${formatNumber(sphereTotal / 1e6)} km²`);
     ctx.setReadout('areaWgs84', `${formatNumber(wgsTotal / 1e6)} km²`);
+    const areaClassCounts = new Array<number>(POLYGON_AREA_CLASSES.breaks.length + 1).fill(0);
+    for (const area of table.areaWgs84) {
+      let classIndex = 0;
+      while (
+        classIndex < POLYGON_AREA_CLASSES.breaks.length &&
+        area >= POLYGON_AREA_CLASSES.breaks[classIndex]
+      )
+        classIndex++;
+      areaClassCounts[classIndex]++;
+    }
+    ctx.setReadout('areaClasses', areaClassCounts.map(formatCount).join(' · '));
     ctx.setReadout(
       'distortion',
       `${maximumDistortion.toFixed(2)}× (${active.names[maximumDistortionRow]})`
     );
+    const latitude = new Float32Array(featureCount);
+    const ratio = new Float32Array(featureCount);
+    for (let feature = 0; feature < featureCount; feature++) {
+      latitude[feature] = table.centroid[feature * 2 + 1];
+      ratio[feature] = table.areaPlanar[feature] / Math.max(table.areaWgs84[feature], 1e-9);
+    }
+    ctx.setChart('distortionScatter', {
+      kind: 'scatter',
+      x: latitude,
+      y: ratio,
+      xLabel: 'Latitude',
+      yLabel: 'Planar / WGS84',
+      fit: {slope: 0, intercept: 1, label: 'Mercator theory reference'},
+      description:
+        'Planar-to-WGS84 area ratio by GPU centroid latitude with a Mercator theory reference.'
+    });
     ctx.setReadout('meanCompactness', (compactnessSum / featureCount).toFixed(3));
     ctx.setReadout(
       'slivers',
@@ -1071,6 +1273,14 @@ fn toLngLat(p: vec2<f32>) -> vec2<f32> {
       if (Number.isFinite(x) && !isPointInFeature(active.layout, feature, x, y)) outside++;
     }
     ctx.setReadout('centroidOutside', `${formatCount(outside)} of ${formatCount(featureCount)}`);
+    if (active.labelFeature >= 0) {
+      const feature = active.labelFeature;
+      ctx.setReadout('labelClearance', `${formatNumber(table.radius[feature], 1)} m`);
+      ctx.setReadout(
+        'labelSearch',
+        `${options.initialGridSize} × ${options.initialGridSize}; ${options.refinementCandidates} candidates`
+      );
+    }
     // Validity bits.
     const counts: Record<string, number> = {};
     for (const [bitName, bit] of Object.entries(GPU_GEOMETRY_VALIDITY_BIT)) {
@@ -1086,6 +1296,26 @@ fn toLngLat(p: vec2<f32>) -> vec2<f32> {
         ? entries.map(([name, count]) => `${name} ${formatCount(count)}`).join(', ')
         : 'all valid'
     );
+    let conventionOnly = 0;
+    let structural = 0;
+    for (const bits of table.mask) {
+      if ((bits & GPU_GEOMETRY_VALIDITY_STRUCTURAL_MASK) !== 0) structural++;
+      else if (bits !== 0) conventionOnly++;
+    }
+    ctx.setReadout('validityConvention', formatCount(conventionOnly));
+    ctx.setReadout('validityStructural', formatCount(structural));
+    ctx.setReadout(
+      'validityOverflow',
+      active.validityOverflow ? formatCount(active.validityOverflow) : 'none'
+    );
+    ctx.setChart('validityBits', {
+      kind: 'bars',
+      labels: entries.map(([name]) => name),
+      values: entries.map(([, count]) => count),
+      xLabel: 'Validity bit',
+      yLabel: 'Polygons',
+      description: 'Per-bit validity counts from the active GPU mask.'
+    });
     if (active.selected >= 0) updateSelectedReadout(active);
   }
 
@@ -1097,6 +1327,13 @@ fn toLngLat(p: vec2<f32>) -> vec2<f32> {
       `${summary.colorCount} colors, ${summary.conflictCount} conflicts, ${summary.roundCount} rounds${summary.converged ? '' : ' (not converged)'}`
     );
     ctx.setReadout('adjacencies', summary.adjacencies);
+    ctx.setChart('coloringRounds', {
+      kind: 'bars',
+      labels: ['Rounds', 'Conflicts'],
+      values: [summary.roundCount, summary.conflictCount],
+      yLabel: 'Count',
+      description: 'Parallel greedy colouring rounds and remaining conflicts.'
+    });
     if (summary.overflow) ctx.setStatus('Contiguity capacity overflowed.');
   }
 
@@ -1280,6 +1517,7 @@ fn toLngLat(p: vec2<f32>) -> vec2<f32> {
         if (active.shape) active.resources.release(active.shape);
         active.shape = active.builders.shape(options);
         active.dirty.shape = active.dirty.table = true;
+        writeLabelSearchGrid(active, options);
       } else if (id === 'orientation' || id === 'ringClosure') {
         if (active.validity) active.resources.release(active.validity);
         active.validity = active.builders.validity(options);
@@ -1291,7 +1529,7 @@ fn toLngLat(p: vec2<f32>) -> vec2<f32> {
         if (active.coloring) active.resources.release(active.coloring);
         active.coloring = active.builders.coloring(options);
         active.dirty.coloring = true;
-      } else if (id === 'areaSystem' || id === 'metric') {
+      } else if (id === 'areaSystem' || id === 'metric' || id === 'areaClassification') {
         active.dirty.table = true;
         ctx.setLegendExtent('value', currentRange);
       }
@@ -1412,14 +1650,16 @@ fn toLngLat(p: vec2<f32>) -> vec2<f32> {
           break;
         case 'validity':
           values = columns.validityF;
-          mapping = 'category';
+          mapping = 'class';
           break;
         case 'mapColor':
-          values = columns.colorF;
+          values = options.coloringMethod === 'algorithm' ? columns.colorF : columns.naiveColorF;
           rows = active.fill.partRows;
           mapping = 'category';
           break;
       }
+      const classTable = getPolygonClassTable(metric);
+      if (classTable) mapping = 'class';
       layers.push(
         new FeatureTriangleLayer({
           id: 'polygon-fill',
@@ -1429,7 +1669,7 @@ fn toLngLat(p: vec2<f32>) -> vec2<f32> {
           instanceCount: active.fill.triangleCount,
           values,
           valueMapping: mapping,
-          colormap: options.ramp,
+          classTable: classTable ?? undefined,
           valueRange: range,
           sqrtScale,
           color:
@@ -1440,9 +1680,24 @@ fn toLngLat(p: vec2<f32>) -> vec2<f32> {
           updateTriggers: {values: [metric, system]}
         })
       );
-      const lineColor: [number, number, number, number] = dark
-        ? [235, 240, 248, 150]
-        : [40, 52, 70, 150];
+      if (options.showDeflate && metric === 'areaDistortion') {
+        layers.push(
+          new FeatureTriangleLayer({
+            id: 'deflated-equal-true-size-reference',
+            coordinateSystem: COORDINATE_SYSTEM.LNGLAT,
+            corners: active.fill.deflatedCorners,
+            featureRows: active.fill.featureRows,
+            instanceCount: active.fill.triangleCount,
+            color: dark ? [77, 182, 172, 145] : [0, 137, 123, 145]
+          })
+        );
+      }
+      const lineColor: [number, number, number, number] =
+        metric === 'mapColor'
+          ? [255, 255, 255, 210]
+          : dark
+            ? [235, 240, 248, 150]
+            : [40, 52, 70, 150];
       if (options.showOutlines) {
         layers.push(
           new PairSegmentLayer({
@@ -1492,6 +1747,19 @@ fn toLngLat(p: vec2<f32>) -> vec2<f32> {
             instanceCount: active.layout.featureCount,
             color: dark ? [150, 230, 255, 235] : [0, 90, 140, 235],
             widthPixels: 2
+          })
+        );
+      }
+      if (options.showLabelSearch && active.labelGridCount) {
+        layers.push(
+          new PairSegmentLayer({
+            id: 'label-search-grid-and-refinement',
+            coordinateSystem: COORDINATE_SYSTEM.LNGLAT,
+            starts: active.overlays.labelGridStarts,
+            ends: active.overlays.labelGridEnds,
+            instanceCount: active.labelGridCount,
+            color: dark ? [124, 200, 242, 210] : [0, 118, 173, 210],
+            widthPixels: 1
           })
         );
       }

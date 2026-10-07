@@ -2,13 +2,11 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {ground} from '../../cartography/grounds';
 import {defineScene} from '../scene';
-import {ACCURACY_COLORS} from './b10-scene-constants';
 import type {MapMatchingOptions} from './map-matching.compute';
 
-const RAW_COLOR = [255, 140, 60, 255] as const;
-const TRUTH_COLOR = [90, 96, 115, 255] as const;
-const PLAIN_MATCH_COLOR = [40, 205, 255, 255] as const;
+const RAW_COLOR = [135, 83, 180, 255] as const;
 
 /** HMM map matching of simulated GPS traces on Chicago. GPU work is in `map-matching.compute.ts`. */
 export default defineScene<MapMatchingOptions>({
@@ -17,13 +15,19 @@ export default defineScene<MapMatchingOptions>({
   chapter: 'networks',
   order: 5,
   summary:
-    'A hidden Markov model snaps 200 noisy simulated GPS traces onto the Chicago street graph, one Viterbi thread per trace, and scores every fix against the ground-truth street. GPULineMerge joins street segments into chains.',
-  contributors: ['GPUMapMatching', 'GPULineMerge'],
+    'An honest nearest-edge baseline and a route-aware HMM explain the same noisy synthetic Chicago fixes.',
+  contributors: ['GPUMapMatching'],
   datasets: [
     {id: 'chicago-roads', role: 'street graph with polyline geometry'},
     {id: 'chicago-gps-traces', role: 'simulated noisy GPS traces with ground truth'}
   ],
-  initialView: {longitude: -87.68, latitude: 41.84, zoom: 10.0},
+  initialView: {longitude: -87.634, latitude: 41.882, zoom: 16.25},
+  basemap: ground('paperCity'),
+  furniture: {
+    title: {title: 'Simulated GPS · live noise and sample interval'},
+    credit: 'Synthetic traces derived from OSM, ODbL; not observed vehicles.',
+    scaleBar: {units: 'metric'}
+  },
 
   options: [
     {
@@ -118,14 +122,42 @@ export default defineScene<MapMatchingOptions>({
     {
       kind: 'slider',
       id: 'trackFocus',
-      label: 'Show one trace (0 = all)',
+      label: 'Selected trace',
       group: 'Traces',
       apply: 'param',
-      min: 0,
+      min: 1,
       max: 200,
       step: 1,
-      default: 0,
-      help: 'Hides every trace except this one. Matching still runs on all 200 tracks; only the drawing is filtered.'
+      default: 12,
+      help: 'Trace used for street-scale raw-fix, candidate, and snap evidence.'
+    },
+    {
+      kind: 'slider',
+      id: 'fixFocus',
+      label: 'Selected fix',
+      group: 'Traces',
+      apply: 'param',
+      min: 1,
+      max: 240,
+      step: 1,
+      default: 3,
+      help: 'Focused fix for the candidate ring, snap leaders, and transition context.'
+    },
+    {
+      kind: 'select',
+      id: 'evidenceMode',
+      label: 'Evidence',
+      group: 'Display',
+      apply: 'param',
+      default: 'raw',
+      help: 'Story state controlling whether raw, nearest, candidate, or limit evidence is foregrounded.',
+      options: [
+        {value: 'raw', label: 'Raw fixes'},
+        {value: 'nearest', label: 'Nearest baseline'},
+        {value: 'candidates', label: 'Candidates'},
+        {value: 'tradeoff', label: 'Trade-off'},
+        {value: 'stress', label: 'Stress'}
+      ]
     },
     {
       kind: 'select',
@@ -173,60 +205,6 @@ export default defineScene<MapMatchingOptions>({
       ]
     },
     {
-      kind: 'toggle',
-      id: 'showRaw',
-      label: 'Raw GPS fixes',
-      group: 'Display',
-      apply: 'param',
-      default: true,
-      help: 'The noisy fixes (including any extra noise), joined in time order.'
-    },
-    {
-      kind: 'toggle',
-      id: 'showMatched',
-      label: 'Matched route',
-      group: 'Display',
-      apply: 'param',
-      default: true,
-      help: 'Snapped positions of consecutive matched fixes, hidden across breaks.'
-    },
-    {
-      kind: 'select',
-      id: 'matchedColor',
-      label: 'Matched route color',
-      group: 'Display',
-      apply: 'param',
-      default: 'accuracy',
-      help: 'Color by whether the matched edge is the true one, or a single color.',
-      options: [
-        {value: 'accuracy', label: 'Against ground truth'},
-        {value: 'plain', label: 'One color'}
-      ]
-    },
-    {
-      kind: 'toggle',
-      id: 'showTruth',
-      label: 'Ground-truth route',
-      group: 'Display',
-      apply: 'param',
-      default: false,
-      help: 'The noise-free positions on the true route, as a thick gray line under the others.'
-    },
-    {
-      kind: 'select',
-      id: 'roadStyle',
-      label: 'Street layer',
-      group: 'Display',
-      apply: 'param',
-      default: 'plain',
-      help: 'Plain street segments, or maximal chains between junctions joined by GPULineMerge (one color per chain). Both are prepared up front; this only switches the drawn layer.',
-      options: [
-        {value: 'plain', label: 'Street segments'},
-        {value: 'chains', label: 'Merged chains (GPULineMerge)'},
-        {value: 'off', label: 'Hidden'}
-      ]
-    },
-    {
       kind: 'button',
       id: 'measure',
       label: 'Time the matcher',
@@ -235,87 +213,49 @@ export default defineScene<MapMatchingOptions>({
     }
   ],
 
-  legends: state => [
-    ...(state.showMatched
-      ? [
-          state.matchedColor === 'accuracy'
-            ? {
-                kind: 'categories' as const,
-                title: 'Matched route against ground truth',
-                entries: [
-                  {color: ACCURACY_COLORS[1], label: 'Right street segment'},
-                  {color: ACCURACY_COLORS[2], label: 'Right street, other direction'},
-                  {color: ACCURACY_COLORS[0], label: 'Wrong street'}
-                ],
-                note: 'A fix on a two-way street can only be told from its mirror edge by the route the model chooses.'
-              }
-            : {
-                kind: 'categories' as const,
-                title: 'Matched route',
-                entries: [{color: PLAIN_MATCH_COLOR, label: 'Snapped positions of matched fixes'}]
-              }
-        ]
-      : []),
+  legends: () => [
     {
-      kind: 'categories' as const,
-      title: 'Traces and streets',
+      kind: 'line',
+      title: 'Inference outcome',
       entries: [
-        ...(state.showRaw ? [{color: RAW_COLOR, label: 'Raw GPS fixes'}] : []),
-        ...(state.showTruth ? [{color: TRUTH_COLOR, label: 'Ground-truth route'}] : []),
-        ...(state.roadStyle === 'chains'
-          ? [
-              {
-                color: [31, 119, 180, 255] as const,
-                label: 'Street chain (one color each, eight cycled)'
-              }
-            ]
-          : state.roadStyle === 'plain'
-            ? [{color: [96, 108, 135, 255] as const, label: 'Street segment'}]
-            : [])
+        {color: [40, 125, 210, 255], widthPixels: 3.5, label: 'HMM truth edge'},
+        {
+          color: [122, 185, 232, 255],
+          widthPixels: 3.5,
+          dashed: true,
+          label: 'HMM reverse direction'
+        },
+        {color: [205, 76, 47, 255], widthPixels: 4.5, label: 'HMM wrong street'},
+        {color: [105, 92, 75, 255], widthPixels: 2, dashed: true, label: 'Nearest-edge baseline'}
+      ]
+    },
+    {
+      kind: 'categories',
+      title: 'Raw and candidate evidence',
+      entries: [
+        {color: RAW_COLOR, label: 'Raw fix and halo'},
+        {color: [212, 163, 45, 255], label: 'Candidate segments and search ring'}
       ]
     }
   ],
 
   readouts: [
-    {id: 'fixes', label: 'Traces'},
-    {
-      id: 'network',
-      label: 'Matching graph',
-      help: 'Every polyline vertex of the street graph is a node, so the matcher sees real street geometry.'
-    },
-    {
-      id: 'noise',
-      label: 'GPS error in the data',
-      help: 'Root-mean-square distance between each fix and its true position.'
-    },
-    {id: 'matched', label: 'Fixes matched'},
-    {
-      id: 'breaks',
-      label: 'Breaks (model restarts)',
-      format: 'integer',
-      help: 'Points where no transition between candidates was feasible.'
-    },
-    {
-      id: 'exact',
-      label: 'Right street segment',
-      help: 'Share of all fixes whose matched edge equals the ground-truth edge of that fix.'
-    },
-    {
-      id: 'sameStreet',
-      label: 'Right street, either direction',
-      help: 'Also counts the opposite-direction edge of the true street.'
-    },
-    {id: 'snap', label: 'Mean distance to matched street'},
-    {id: 'overflow', label: 'Edge grid overflow'},
-    {id: 'chains', label: 'Merged chains'},
-    {id: 'time', label: 'Graph time'}
+    {id: 'noise', label: 'Simulated GPS RMS'},
+    {id: 'interval', label: 'Sample interval'},
+    {id: 'baseline', label: 'Nearest baseline accuracy'},
+    {id: 'hmm', label: 'HMM accuracy'},
+    {id: 'mismatch', label: 'Nearest/HMM disagreements'},
+    {id: 'breaks', label: 'HMM breaks'},
+    {id: 'snapHistogram', label: 'Snap distances', kind: 'chart'},
+    {id: 'noiseComparison', label: 'Accuracy under added noise', kind: 'chart'},
+    {id: 'overflow', label: 'Grid overflow', hood: true},
+    {id: 'time', label: 'Graph time', hood: true}
   ],
 
   snippet: state => `import {
   GPUMapMatching,
   encodeGPUMapMatchingParameters
 } from '@luma.gl/experimental/gpu-network';
-import {GPULineMerge} from '@luma.gl/experimental/gpu-spatial-analysis';
 
 // The CSR row is the edge id: list both directions of every two-way street.
 graph.add(new GPUMapMatching({
@@ -327,7 +267,7 @@ graph.add(new GPUMapMatching({
   routeNodeBudget: ${state.routeNodeBudget},      // compile-time
   cellSize: ${state.cellSize},                // compile-time edge grid
   bounds: {minimum: [minX, minY], maximum: [maxX, maxY]},
-  output: {matchedEdges, snappedPositions, breaks, matchedCount, breakCount, overflow}
+  output: {matchedEdges, snappedPositions, snapDistances, breaks}
 }));
 
 // Per frame: parameter writes only.
@@ -336,83 +276,115 @@ parameters.write(encodeGPUMapMatchingParameters({
   routeFactor: ${state.routeFactor}, routeSlack: ${state.routeSlack}
 }));
 
-// Join street segments into chains between junctions.
-mergeGraph.add(new GPULineMerge({
-  positions, lineOffsets,
-  output: {chainOffsets, positions: chainPositions, count: chainCount}
-}));`,
+`,
 
   about: {
-    what: '`GPUMapMatching` is a hidden Markov model map matcher (Newson and Krumm 2009). Each GPS fix has candidate edges within the search radius; the emission probability is Gaussian in the perpendicular distance, the transition probability exponential in the difference between the straight distance of two fixes and the route distance between their candidates. A Viterbi pass, one GPU thread per trace, picks the most likely edge sequence and restarts after a break. `GPULineMerge` joins line segments that meet at a shared endpoint into maximal chains.',
-    why: 'GPS fixes are 10 to 25 m wrong, and downtown blocks are about 100 m. Snapping each fix to the nearest street gets many of them wrong; using the route between fixes fixes most of that. Matched edges give you speeds per street, trip routes and map-based analytics from raw traces.',
+    what: '`GPUMapMatching` is a hidden Markov model map matcher (Newson and Krumm 2009). Each GPS fix has candidate edges within the search radius; Gaussian distance emissions and bounded route-continuity transitions select a Viterbi sequence. The nearest-edge baseline is a separate scene-local geometric calculation.',
+    why: 'Synthetic OSM-derived GPS fixes have known truth edges, so the display can measure whether continuity changes a nearest snap. These traces are not observed vehicles.',
     howToRead:
-      'Orange lines are the raw fixes. The matched route is green where the matched edge is the true one, amber where the model picked the opposite direction of the true street, and red where it chose another street. The readouts count the same classes over all 27,605 fixes.'
+      'Purple dots are raw fixes and the achromatic casing is truth. Blue is a correct HMM edge, pale dashed blue is reverse direction, and vermillion is a different street. Gold candidates and rings are scene-local display evidence, not GPU output.'
   },
 
   create: async ctx => (await import('./map-matching.compute')).createMapMatching(ctx),
 
   story: [
     {
-      id: 'question',
-      controls: ['showRaw', 'showMatched', 'matchedColor'],
-      readouts: ['exact'],
-      title: 'Which roads did these vehicles drive?',
-      body: 'A fleet reports a position every 5 to 15 seconds, and each position is off by 10 to 25 meters. Plot them on a map and the cars appear to drive through buildings and along the wrong block. Operators need the **street** each vehicle was on, to compute speeds, travel times and routes.\n\nThese are 200 **simulated** traces (27,605 fixes) made by routing random trips on the Chicago street graph and adding noise, so every fix has a known true street and the matcher can be scored. Orange is the raw GPS; the colored line is the matched route. Use **Raw GPS fixes**, **Matched route** and **Matched route color** below to compare them.',
-      options: {showRaw: true, showMatched: true, matchedColor: 'accuracy'},
-      camera: {longitude: -87.68, latitude: 41.84, zoom: 10.0, transitionMs: 1200}
+      id: 'raw-fixes',
+      headline: 'The fixes miss the street.',
+      textAlternative:
+        'Purple raw-fix halos, a dashed connector, live sigma ring, warm-grey roads and thick truth casing appear at street scale.',
+      controls: ['trackFocus', 'sigma'],
+      readouts: ['noise', 'interval'],
+      optionsMode: 'fresh',
+      title: 'Raw evidence',
+      body: 'Purple raw fixes are linked in time. Their live sigma ring and the thick achromatic truth casing make the uncertainty visible at street scale. These are synthetic OSM-derived traces, not observed vehicles.',
+      options: {trackFocus: 12, fixFocus: 3, sigma: 20, extraNoise: 0, evidenceMode: 'raw'},
+      camera: {longitude: -87.634, latitude: 41.882, zoom: 16.25, transitionMs: 900}
     },
     {
-      id: 'one-trace',
-      controls: ['trackFocus', 'showTruth'],
-      title: 'Follow one trace',
-      body: 'Set **Show one trace (0 = all)** below to a single trace (it is on 12) and zoom in. The orange line wanders; the green line sits on streets. Turn on **Ground-truth route** to see the thick gray path the vehicle really took.\n\nThe matcher found the streets with **`GPUMapMatching`**: for every fix it collects candidate edges from a GPU edge grid, then Viterbi chooses the sequence of edges that is both close to the fixes and *drivable* in between.',
-      options: {trackFocus: 12, showTruth: true},
-      camera: {longitude: -87.66, latitude: 41.89, zoom: 12.4, transitionMs: 1600}
+      id: 'scale',
+      headline: 'Twenty metres vanish when zoomed out.',
+      textAlternative:
+        'The same selected trace and live sigma evidence are shown at city scale without changing the evidence.',
+      controls: ['trackFocus'],
+      readouts: ['noise'],
+      optionsMode: 'fresh',
+      title: 'Scale changes meaning',
+      body: 'This is the same trace and sigma ring, now near zoom 12. The uncertainty remains in metres but becomes small relative to the city street graph.',
+      options: {trackFocus: 12, fixFocus: 3, sigma: 20, extraNoise: 0, evidenceMode: 'raw'},
+      camera: {longitude: -87.634, latitude: 41.882, zoom: 12, transitionMs: 900}
     },
     {
-      id: 'sigma',
-      controls: ['sigma'],
-      readouts: ['exact', 'sameStreet'],
-      title: 'How much to trust each fix: emission sigma',
-      body: "The **emission** term says how likely a fix is given a candidate street: Gaussian in the perpendicular distance with standard deviation sigma. Slide **GPS error (emission sigma)** to 5 m and the model believes every fix, so it hops to whichever street is closest; at 20 m (the data's noise) it tolerates the error; at 80 m it barely cares which street is nearest and lets the route decide.\n\nThe accuracy readouts update as you move the slider. Matching is a per-frame parameter write, so nothing is recompiled.",
-      options: {trackFocus: 0, showTruth: false, sigma: 5},
-      camera: {longitude: -87.64, latitude: 41.88, zoom: 12.6, transitionMs: 1400},
-      highlight: {readout: 'exact'}
+      id: 'nearest',
+      headline: 'Nearest is not a route.',
+      textAlternative:
+        'Dashed nearest-edge snaps, HMM outcomes and truth casing compare an honest baseline with the inferred route.',
+      controls: ['trackFocus', 'extraNoise'],
+      readouts: ['baseline', 'hmm', 'mismatch'],
+      optionsMode: 'fresh',
+      title: 'Nearest baseline',
+      body: 'Dashed warm-grey leaders are direct nearest-edge snaps, measured independently from the HMM. The live disagreement and accuracy readouts identify actual differences without naming an unsupported failure location.',
+      options: {trackFocus: 12, fixFocus: 3, sigma: 20, extraNoise: 0, evidenceMode: 'nearest'},
+      camera: {longitude: -87.634, latitude: 41.882, zoom: 16.1, transitionMs: 900}
     },
     {
-      id: 'beta',
-      controls: ['beta', 'routeFactor', 'routeSlack'],
-      readouts: ['breaks'],
-      title: 'How much to trust the route: transition beta',
-      body: 'The **transition** term compares how far apart two fixes are with how far you would drive between the candidate streets: `exp(-|straight - route| / beta)`. A small **Route tolerance** forbids detours, so a trace that jogs around a block becomes a break; a large one accepts any plausible route.\n\n**Breaks (model restarts)** are counted in the readout below. The model restarts after a break instead of failing the whole trace, and the matched line is hidden across it. Raise **Route length factor** and **Route slack** to allow longer routes between fixes after a dropout.',
-      options: {sigma: 20, beta: 15},
-      highlight: {readout: 'breaks'}
+      id: 'hmm',
+      headline: 'Distance and continuity vote together.',
+      textAlternative:
+        'A focused raw fix has a gold search ring, candidate street segments, snap leaders and adjacent route context.',
+      controls: ['fixFocus', 'searchRadius', 'sigma'],
+      readouts: ['snapHistogram'],
+      optionsMode: 'fresh',
+      title: 'Candidate evidence',
+      body: 'Gold geometry is a bounded scene-local display query over the road index, not GPU output. Candidate segments, search radius, snap leaders and neighboring fixes show why continuity can beat a nearest edge.',
+      options: {
+        trackFocus: 12,
+        fixFocus: 3,
+        searchRadius: 60,
+        sigma: 20,
+        evidenceMode: 'candidates'
+      },
+      camera: {longitude: -87.634, latitude: 41.882, zoom: 16.35, transitionMs: 900}
     },
     {
-      id: 'noise',
-      controls: ['extraNoise', 'noiseSeed', 'candidateCount', 'routeNodeBudget', 'measure'],
-      readouts: ['exact'],
-      title: 'Push it until it breaks',
-      body: 'Add **Extra GPS noise** below. The simulated traces already have 10 to 25 m of error; at 50 m of extra noise a fix in the Loop can be nearer to a parallel street than to the true one, and more matches turn red (wrong street): the **Right street segment** readout, the share of fixes matched to their true street, falls. Use **Noise seed** to re-roll the noise: the accuracy is stable, which is what you want from a benchmark.\n\nLowering **Candidates per fix** or the **Route search node budget** (compile-time, flagged with a rebuild badge) makes the matcher cheaper and loses accuracy and continuity in dense blocks. Press **Time the matcher** to measure it.',
-      options: {beta: 60, extraNoise: 40},
-      camera: {longitude: -87.63, latitude: 41.88, zoom: 13.4, transitionMs: 1600}
+      id: 'tradeoff',
+      headline: 'Trust the fix or the path.',
+      textAlternative:
+        'HMM outcomes and visible break crosses respond to sigma, continuity tolerance and the bounded route search.',
+      controls: ['sigma', 'beta', 'routeNodeBudget'],
+      readouts: ['hmm', 'breaks'],
+      optionsMode: 'fresh',
+      title: 'Model trade-off',
+      body: 'Sigma controls how much distance matters; beta controls route continuity. Blue is the truth edge, pale dashed blue the reverse direction, vermillion the wrong street, and crosses show bounded-search restarts.',
+      options: {
+        trackFocus: 12,
+        fixFocus: 3,
+        sigma: 20,
+        beta: 60,
+        routeNodeBudget: '64',
+        evidenceMode: 'tradeoff'
+      },
+      camera: {longitude: -87.634, latitude: 41.882, zoom: 16.1, transitionMs: 900}
     },
     {
-      id: 'chains',
-      controls: ['roadStyle'],
-      readouts: ['chains'],
-      title: 'GPULineMerge: streets as chains',
-      body: 'The street graph is stored as 100,000 short segments. **`GPULineMerge`** joins segments that share an endpoint with exactly one other segment into maximal chains (the Shapely `linemerge` rule) and stops at junctions of three or more. Switch **Street layer** to *Merged chains*: each color is one chain, and the readout counts how many chains replace the segments.\n\nChains are what you want for labels, per-street statistics and anything that should treat a block as one object.',
-      options: {extraNoise: 0, roadStyle: 'chains', showRaw: false, showMatched: false},
-      camera: {longitude: -87.64, latitude: 41.88, zoom: 13.2, transitionMs: 1400},
-      highlight: {readout: 'chains'}
-    },
-    {
-      id: 'limits',
-      controls: ['sigma', 'beta', 'matchedColor', 'trackFocus'],
-      title: 'Limits and what to try',
-      body: 'The data is **simulated**, with Gaussian noise and no urban-canyon multipath, so real accuracy will be lower. Distances are planar (a local meter projection); the route search is bounded by the node budget and can overestimate or miss a route in very dense streets; both directions of a two-way street each take a candidate slot; and the model does not use time or speed. The outputs follow Valhalla/OSRM-style HMM matching, and `fmm` and `leuvenmapmatching` are the reference implementations to compare with.\n\nTry it: raise **GPS error (emission sigma)** and **Route tolerance (transition beta)** together, switch **Matched route color** to one color to see only the route, or set **Show one trace (0 = all)** to 40, 77 or 150 and read how its fixes line up with the truth.',
-      options: {roadStyle: 'plain', showRaw: true, showMatched: true, sigma: 20, beta: 60}
+      id: 'stress',
+      headline: 'Noise finds the model’s limits.',
+      textAlternative:
+        'A deterministic chart compares nearest-edge and HMM accuracy across added synthetic noise levels.',
+      controls: ['extraNoise', 'noiseSeed', 'candidateCount'],
+      readouts: ['noiseComparison', 'baseline', 'hmm', 'breaks'],
+      optionsMode: 'fresh',
+      title: 'Limits',
+      body: 'The deterministic sweep uses loaded synthetic traces. Limits: planar distances; no speed, heading or turn penalty; isotropic synthetic noise; and bounded candidate and route search.',
+      options: {
+        trackFocus: 12,
+        fixFocus: 3,
+        extraNoise: 40,
+        noiseSeed: 1,
+        candidateCount: '8',
+        evidenceMode: 'stress'
+      },
+      camera: {longitude: -87.634, latitude: 41.882, zoom: 13, transitionMs: 900}
     }
   ]
 });

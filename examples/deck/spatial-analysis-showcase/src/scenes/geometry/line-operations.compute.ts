@@ -14,8 +14,8 @@ export type {LineOperationsOptions};
 type Options = LineOperationsOptions;
 
 /**
- * Line operations on three real layers: the L routes (densify, chunk, substring, locate), crash
- * points snapped to streets (linear referencing) and AIS ship tracks (Douglas-Peucker and
+ * Line operations on three real layers: the L routes (densify, chunk, substring, locate), eligible
+ * community places snapped to streets (linear referencing) and AIS ship tracks (Douglas-Peucker and
  * Chaikin). Each tool is created the first time it is shown.
  */
 export async function createLineOperations(
@@ -23,7 +23,7 @@ export async function createLineOperations(
 ): Promise<SceneInstance<Options>> {
   const roads = ctx.datasets.get('chicago-roads');
   const transit = ctx.datasets.get('cta-transit');
-  const crashesDataset = ctx.datasets.get('chicago-crashes');
+  const placesDataset = ctx.datasets.get('chicago-places');
   const vessels = ctx.datasets.get('ais-vessels');
 
   const origin = roads.defaultOrigin;
@@ -38,10 +38,10 @@ export async function createLineOperations(
       streets ??= loadStreetPaths(roads, projection);
       return streets;
     },
-    crashes: {
-      local: crashesDataset.projectColumn('position', origin),
-      count: crashesDataset.count,
-      edgeIndex: crashesDataset.column<Uint32Array>('edgeIndex')
+    places: {
+      local: placesDataset.projectColumn('position', origin),
+      categories: placesDataset.column<Uint8Array>('category'),
+      count: placesDataset.count
     }
   };
 

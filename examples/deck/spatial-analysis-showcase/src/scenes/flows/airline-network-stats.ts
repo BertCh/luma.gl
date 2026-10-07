@@ -3,7 +3,8 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {CONTINENT_NAMES} from './b11-geography';
-import {BETWEEN_GROUPS_INDEX, OTHER_GROUP_INDEX} from './airline-network-palette';
+import {matchByOverlap} from '../../cartography/stable-hues';
+import {BETWEEN_GROUPS_INDEX, GROUP_HUE_COUNT, OTHER_GROUP_INDEX} from './airline-network-palette';
 
 /**
  * CPU bookkeeping for the airline-network scene. The graph algorithms run on the GPU; these
@@ -92,24 +93,41 @@ export type GroupSummary = {
   dominantContinent: number;
   /** Share of the group's airports on that continent. */
   dominantShare: number;
+  /** Palette slot of the group: a hue (`0` to `6`) or {@link OTHER_GROUP_INDEX}. */
+  slot: number;
 };
 
-/** Groups, their sizes and how well they line up with continents. */
-export type GroupAnalysis = {
+/** A partition of the airports with its palette slots and its edge categories. */
+export type Coloring = {
   /** Groups largest first. */
   groups: GroupSummary[];
-  /** Palette index of every airport: the six largest groups are 0 to 5, the rest 6. */
-  colorIndex: Uint32Array;
+  /** Palette slot of every airport. */
+  nodeSlots: Uint32Array;
   /** Share of airports that sit on their group's dominant continent. */
   continentPurity: number;
+  /** Group label of every airport (the partition itself). */
+  labels: Uint32Array;
+  /** Palette slot of every route: its group when both ends share one, else the between slot. */
+  edgeSlots: Uint32Array;
+  /** Routes whose two airports are in different groups. */
+  betweenCount: number;
 };
 
-/** Summarises a partition: sizes, hubs, continent purity and the palette index of every airport. */
-export function analyzeGroups(
-  labels: ArrayLike<number>,
+/**
+ * Summarises a partition and gives it palette slots. Identity-stable hues (no colouring by rank):
+ * `kind: 'continent'` gives continent `i` hue `i`; `kind: 'community'` gives each of the seven
+ * largest communities the hue of the continent it overlaps most (`matchByOverlap`, one hue per
+ * continent), so the community that is mostly Europe wears Europe's hue. A community that matches
+ * no continent takes the lowest unused hue; communities beyond the seven largest are grey.
+ */
+export function colorPartition(
+  kind: 'continent' | 'community',
+  labels: Uint32Array,
   pageRank: ArrayLike<number>,
-  continent: ArrayLike<number>
-): GroupAnalysis {
+  continent: ArrayLike<number>,
+  source: ArrayLike<number>,
+  target: ArrayLike<number>
+): Coloring {
   const continentCount = CONTINENT_NAMES.length;
   const byLabel = new Map<number, {size: number; top: number; byContinent: Uint32Array}>();
   for (let row = 0; row < labels.length; row++) {
@@ -135,27 +153,82 @@ export function analyzeGroups(
       size: entry.size,
       topAirport: entry.top,
       dominantContinent: best,
-      dominantShare: entry.byContinent[best] / entry.size
+      dominantShare: entry.byContinent[best] / entry.size,
+      slot: OTHER_GROUP_INDEX
     });
   }
   groups.sort((a, b) => b.size - a.size || a.label - b.label);
-  const paletteOfLabel = new Map<number, number>();
-  groups.forEach((group, rank) => {
-    paletteOfLabel.set(group.label, Math.min(rank, OTHER_GROUP_INDEX));
-  });
-  const colorIndex = new Uint32Array(labels.length);
-  for (let row = 0; row < labels.length; row++) {
-    colorIndex[row] = paletteOfLabel.get(labels[row]) ?? OTHER_GROUP_INDEX;
+
+  if (kind === 'continent') {
+    for (const group of groups) group.slot = Math.min(group.label, OTHER_GROUP_INDEX);
+  } else {
+    // Only the largest communities own a hue; the others are compacted out (label -1).
+    const hued = groups.slice(0, GROUP_HUE_COUNT);
+    const compactOfLabel = new Map<number, number>();
+    hued.forEach((group, index) => compactOfLabel.set(group.label, index));
+    const compactLabels = Int32Array.from(labels, label => compactOfLabel.get(label) ?? -1);
+    const slots = matchByOverlap(continent, compactLabels, GROUP_HUE_COUNT);
+    hued.forEach((group, index) => {
+      group.slot = slots[index] ?? OTHER_GROUP_INDEX;
+    });
   }
-  return {groups, colorIndex, continentPurity: labels.length > 0 ? pure / labels.length : 0};
+
+  const slotOfLabel = new Map<number, number>();
+  for (const group of groups) slotOfLabel.set(group.label, group.slot);
+  const nodeSlots = new Uint32Array(labels.length);
+  for (let row = 0; row < labels.length; row++) {
+    nodeSlots[row] = slotOfLabel.get(labels[row]) ?? OTHER_GROUP_INDEX;
+  }
+  const edgeSlots = new Uint32Array(source.length);
+  let betweenCount = 0;
+  for (let edge = 0; edge < source.length; edge++) {
+    const a = source[edge];
+    const b = target[edge];
+    if (labels[a] === labels[b]) {
+      edgeSlots[edge] = nodeSlots[a];
+    } else {
+      edgeSlots[edge] = BETWEEN_GROUPS_INDEX;
+      betweenCount++;
+    }
+  }
+  return {
+    groups,
+    nodeSlots,
+    labels,
+    edgeSlots,
+    betweenCount,
+    continentPurity: labels.length > 0 ? pure / labels.length : 0
+  };
 }
 
-/** Palette index of a route: its group when both ends share one, else the "between" index. */
-export function getEdgeIndex(
+/**
+ * Between-group routes per airport (how many of its routes leave its group), the size metric of
+ * the bridges step and the ranking of the bridge labels.
+ */
+export function getBridgeCounts(
   labels: ArrayLike<number>,
-  colorIndex: ArrayLike<number>,
-  source: number,
-  target: number
+  source: ArrayLike<number>,
+  target: ArrayLike<number>
+): Float32Array {
+  const counts = new Float32Array(labels.length);
+  for (let edge = 0; edge < source.length; edge++) {
+    if (labels[source[edge]] !== labels[target[edge]]) {
+      counts[source[edge]]++;
+      counts[target[edge]]++;
+    }
+  }
+  return counts;
+}
+
+/** Share of routes that touch at least one of the `top` airports (given as a set of rows). */
+export function getTouchShare(
+  top: ReadonlySet<number>,
+  source: ArrayLike<number>,
+  target: ArrayLike<number>
 ): number {
-  return labels[source] === labels[target] ? colorIndex[source] : BETWEEN_GROUPS_INDEX;
+  let touching = 0;
+  for (let edge = 0; edge < source.length; edge++) {
+    if (top.has(source[edge]) || top.has(target[edge])) touching++;
+  }
+  return source.length > 0 ? touching / source.length : 0;
 }

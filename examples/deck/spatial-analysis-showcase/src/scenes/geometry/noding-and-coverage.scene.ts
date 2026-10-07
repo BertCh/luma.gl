@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {CREDITS, joinCredits} from '../../cartography/credits';
+import {ground} from '../../cartography/grounds';
 import {defineScene, type LegendSpec} from '../scene';
 import type {NodingAndCoverageOptions} from './b3-noding-options';
 import {B3_PALETTE} from './b3-palette';
@@ -46,6 +48,12 @@ export default defineScene<NodingAndCoverageOptions>({
     {id: 'us-counties', role: 'polygon coverage'}
   ],
   initialView: CITY,
+  basemap: ground('paperCity'),
+  furniture: {
+    title: {title: 'Noding and coverage', subtitle: 'Crossings, graph nodes and shared borders'},
+    scaleBar: {units: 'metric'},
+    credit: joinCredits(CREDITS.cta, CREDITS.openStreetMap, CREDITS.usCensus)
+  },
 
   options: [
     {
@@ -380,7 +388,8 @@ export default defineScene<NodingAndCoverageOptions>({
     {
       id: 'crossings',
       title: 'Where do streets cross the L?',
-      body: `The L runs on viaducts, in tunnels and on embankments, so every place a street meets it is a grade separation: a bridge, an underpass or a viaduct. \`GPUSegmentIntersection\` finds **every pair of crossing segments** between two geometries with exact predicates (no tolerance, no missed hits) and classifies each one.
+      headline: 'A crossing has several geometric kinds',
+      body: `This card reports geometric intersections between the loaded street and rail linework. \`GPUSegmentIntersection\` emits candidate pairs within its fixed capacity and classifies the segment relationship; uncertainty and overflow remain visible outputs.
 
 Red marks are **proper crossings**: a street segment cuts an L segment without sharing a vertex. Each has a point and a kind; the readout counts the pairs. Set **Intersect** below to *Streets × streets (self)* to see where streets cross each other without a shared node.`,
       camera: {...CITY, transitionMs: 1000},
@@ -390,11 +399,12 @@ Red marks are **proper crossings**: a street segment cuts an L segment without s
       readouts: ['crossPairs']
     },
     {
-      id: 'overpasses',
-      title: 'Streets that cross without connecting',
-      body: `In **self** mode the same tool intersects 49,000 street polylines with themselves. The street graph is already noded: streets that meet share a vertex, which shows as a **touch** (yellow). Anything that crosses *without* sharing a vertex is a **proper crossing**: a street over or under another, almost always an expressway ramp, an overpass or a viaduct.
+      id: 'network-node',
+      title: 'Crossing does not guarantee connection',
+      headline: 'Crossing does not guarantee connection',
+      body: `A geometric crossing is not yet a source-network node. Compare each reported crossing with source endpoints: an endpoint match is a candidate shared node; other crossings are simply crossings without a shared source node. The archive has no structural-level attributes, so this card makes no construction claim.
 
-Switch **Show** below between *Proper crossings* and *Touches*: tens of thousands of junctions against a few hundred true separations. This is the missing-junction check that map editors run, and **Same street only** narrows it to a street crossing itself.`,
+Switch **Show** below between proper crossings and touches. The uncertainty and capacity readouts remain part of the interpretation.`,
       camera: {longitude: -87.65, latitude: 41.87, zoom: 11, transitionMs: 1500},
       options: {crossMode: 'streets-self', crossKinds: 'proper'},
       highlight: {readout: 'crossKinds'},
@@ -404,6 +414,7 @@ Switch **Show** below between *Proper crossings* and *Touches*: tens of thousand
     {
       id: 'noding',
       title: 'Turn routes into a network',
+      headline: 'Split first, then merge chains',
       body: `A routing engine needs **edges between nodes**, not overlapping polylines. \`GPULineSplit\` cuts every route at each place it crosses, touches or shares a stretch with another; each piece is coloured. Six L lines share the Loop and trunk tracks, so shared sections split at both ends.
 
 Set **Show** to *Merged chains*: \`GPULineMerge\` joins pieces where exactly two ends meet. Then *Network*: \`GPUNetworkNoding\` numbers the end points into nodes (red is a dead end: a terminal) and builds an edge list and a routing-ready adjacency. Raise **Snap tolerance** below to merge end points that nearly coincide.`,
@@ -414,8 +425,9 @@ Set **Show** to *Merged chains*: \`GPULineMerge\` joins pieces where exactly two
       readouts: ['nodingPieces', 'nodingMerged', 'nodingEdges']
     },
     {
-      id: 'bus-network',
+      id: 'capacity',
       title: 'The messy case: every CTA route downtown',
+      headline: 'A fixed list can overflow',
       body: `Now the bus routes too: every CTA route inside a 7 km window of the Loop, hundreds of polylines that overlap along the same streets. Splitting finds each overlap's two ends. Look at the readouts: how many pieces, how many nodes, and what the degrees say about the downtown grid.
 
 Set **Lines to node** to *All CTA routes downtown* (already on). **Intersection capacity** is the size of the internal pair list. With 1,024 it overflows: the output is a prefix and the overflow flag is raised, never a silent loss. Pick 65,536 or more in **Intersection capacity** and the network is complete.`,
@@ -428,6 +440,7 @@ Set **Lines to node** to *All CTA routes downtown* (already on). **Intersection 
     {
       id: 'dissolve',
       title: 'Dissolve counties into states',
+      headline: 'Opposing shared edges cancel',
       body: `Dissolving is the overlay step behind every "county to state" map. \`GPUSegmentRingAssembly\` takes **directed boundary segments** and chains them into closed rings with holes. Here the input is every edge of 3,109 counties, labelled with the state; **Cancel opposing segments** removes the edges two counties share, leaving only each state's outer boundary.
 
 Change **Dissolve counties by** below to the USDA rural-urban continuum code: the regions are now metro and rural belts, not states, and the ring and hole counts change. The readouts count rings, holes, cancelled segments and segments on no ring.`,
@@ -438,8 +451,9 @@ Change **Dissolve counties by** below to the USDA rural-urban continuum code: th
       readouts: ['dissolveRings', 'dissolveSegments', 'dissolveFlags']
     },
     {
-      id: 'generalise',
+      id: 'coverage',
       title: 'Simplify without opening gaps',
+      headline: 'A shared border is one fact',
       body: `Simplifying every county on its own is the classic trap: two neighbours decide differently about their shared boundary and a **gap or overlap** opens. \`GPUCoverageSimplification\` simplifies every shared arc once, so neighbours keep identical vertices. Blue is the coverage result; red is each ring simplified independently with \`GPULineSimplification\`.
 
 Use **Outlines** to show one result at a time, and zoom into a state border and raise **Tolerance** below: the blue line is single, the red one splits into two lines that disagree. **Topology repair rounds** (below) also find crossings and restore vertices (see the readout). Compare the kept percentage of the two.`,
@@ -452,6 +466,7 @@ Use **Outlines** to show one result at a time, and zoom into a state border and 
     {
       id: 'limits',
       title: 'Limits and things to try',
+      headline: 'Topology depends on tolerance and capacity',
       body: `**Limits.** Capacities are fixed at compile time: a too-small intersection or ring capacity truncates and sets a flag. Noding snaps end points only: a line that stops near the middle of another is not connected, and a bridge cannot be excluded. Ring assembly leaves open chains unwritten. Coverage simplification uses a distance, not an area, criterion, and a huge arc is processed serially.
 
 **Try it.** Set **Topology repair rounds** to 0 and watch the crossings reported. Then switch **Tool** to *Dissolve counties (ring assembly)* and turn **Cancel opposing segments** off, or make **Vertex matching distance** 0.005° (about 500 m) and see rings merge. Under *Crossings*, set **Intersect** to *Streets × streets (self)* and **Show** to *Overlaps* to find duplicated street geometry.`,

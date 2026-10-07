@@ -1,0 +1,151 @@
+/*
+ * Map hover card. App-like chrome (page theme tokens), not map furniture: it follows the page
+ * theme, not the map ground.
+ */
+
+.map-tooltip {
+  position: absolute;
+  top: 0;
+  left: 0;
+  z-index: 30;
+  max-width: min(280px, calc(100% - 12px));
+  padding: 8px 10px;
+  color: var(--text, #1f2933);
+  font-family: var(--font, system-ui, sans-serif);
+  font-size: var(--fs-sm, 12px);
+  line-height: 1.35;
+  background: var(--elevated, #fff);
+  border: 1px solid var(--border, rgb(128 128 128 / 0.3));
+  border-radius: var(--radius-chrome, 8px);
+  box-shadow: var(--e3, 0 6px 18px rgb(0 0 0 / 0.22));
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+  transition: opacity 90ms linear, visibility 0s linear 90ms;
+}
+.map-tooltip.is-visible {
+  opacity: 1;
+  visibility: visible;
+  transition-delay: 0s;
+}
+.map-tooltip.is-pinned {
+  pointer-events: auto;
+  padding-right: 30px;
+}
+
+.map-tooltip-title {
+  font-size: var(--fs-md, 13px);
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+.map-tooltip-subtitle {
+  color: var(--muted, #5e6a78);
+}
+.map-tooltip-rows {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  gap: 2px 8px;
+  align-items: center;
+  margin-top: 6px;
+}
+.map-tooltip-row {
+  display: contents;
+}
+.map-tooltip-swatch {
+  width: 10px;
+  height: 10px;
+  border-radius: 2px;
+}
+.map-tooltip-label {
+  color: var(--muted, #5e6a78);
+}
+.map-tooltip-value {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+.map-tooltip-unit {
+  color: var(--muted, #5e6a78);
+}
+.map-tooltip-row.is-emphasis .map-tooltip-label,
+.map-tooltip-row.is-emphasis .map-tooltip-value {
+  color: var(--text, #1f2933);
+  font-size: var(--fs-md, 13px);
+  font-weight: 600;
+}
+.map-tooltip-spark {
+  display: block;
+  margin-top: 6px;
+  overflow: visible;
+}
+.map-tooltip-spark polyline {
+  fill: none;
+  stroke: var(--chart-1, #2a6fdb);
+  stroke-width: 1.5;
+  stroke-linejoin: round;
+  stroke-linecap: round;
+}
+.map-tooltip-spark circle {
+  fill: var(--chart-1, #2a6fdb);
+  stroke: var(--elevated, #fff);
+  stroke-width: 1;
+}
+.map-tooltip-note {
+  margin-top: 6px;
+  color: var(--muted, #5e6a78);
+  font-size: var(--fs-xs, 11px);
+}
+
+.map-tooltip-close {
+  display: none;
+  position: absolute;
+  top: 2px;
+  right: 2px;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  place-items: center;
+  color: var(--muted, #5e6a78);
+  background: none;
+  border: 0;
+  border-radius: var(--radius-control, 6px);
+  cursor: pointer;
+}
+.map-tooltip.is-pinned .map-tooltip-close {
+  display: grid;
+}
+.map-tooltip-close:hover {
+  color: var(--text, #1f2933);
+  background: var(--sunken, rgb(128 128 128 / 0.14));
+}
+.map-tooltip-close:focus-visible {
+  outline: 2px solid var(--accent, #2a6fdb);
+  outline-offset: 1px;
+}
+
+/* Visually hidden live region. */
+.map-tooltip-mirror {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+@media (pointer: coarse) {
+  .map-tooltip-close {
+    top: 0;
+    right: 0;
+    width: 44px;
+    height: 44px;
+  }
+  .map-tooltip.is-pinned {
+    padding-right: 44px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .map-tooltip {
+    transition: none;
+  }
+}

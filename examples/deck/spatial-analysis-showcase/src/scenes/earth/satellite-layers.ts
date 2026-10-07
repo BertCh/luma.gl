@@ -575,11 +575,11 @@ struct CellStyle {
   valueScale: f32,
   useDiscard: u32,
   uniformColor: u32,
-  _padding: u32,
+  hatchNoData: u32,
   discardAbove: f32,
   useDiscardAbove: u32,
-  _padding1: u32,
-  _padding2: u32,
+  elapsedClasses: u32,
+  densityClasses: u32,
 };
 
 @group(0) @binding(auto) var<uniform> cellStyle: CellStyle;
@@ -588,6 +588,8 @@ struct CellStyle {
 struct CellOutput {
   @builtin(position) position: vec4<f32>,
   @location(0) color: vec4<f32>,
+  @location(1) local: vec2<f32>,
+  @location(2) noData: f32,
 };
 ${SHARED_WGSL}
 ${getRampWgsl()}
@@ -599,6 +601,8 @@ ${getRampWgsl()}
   var output: CellOutput;
   output.position = vec4<f32>(2.0, 2.0, 2.0, 1.0);
   output.color = vec4<f32>(0.0);
+  output.local = vec2<f32>(0.0);
+  output.noData = 0.0;
   let column = instanceIndex % cellStyle.size.x;
   let row = instanceIndex / cellStyle.size.x;
   let raw = cellValues[instanceIndex];
@@ -609,8 +613,10 @@ ${getRampWgsl()}
     color = cellStyle.noDataColor;
   } else if (cellStyle.useDiscard != 0u && value <= cellStyle.discardAtOrBelow) {
     color = cellStyle.noDataColor;
+    output.noData = 1.0;
   } else if (cellStyle.useDiscardAbove != 0u && value > cellStyle.discardAbove) {
     color = cellStyle.noDataColor;
+    output.noData = 1.0;
   } else if (cellStyle.uniformColor != 0u) {
     color = cellStyle.baseColor;
   } else {
@@ -618,7 +624,30 @@ ${getRampWgsl()}
     if (cellStyle.sqrtScale != 0u) {
       t = sqrt(t);
     }
-    color = vec4<f32>(spatialAnalysisSampleRamp(cellStyle.colormap, t), cellStyle.baseColor.a);
+    if (cellStyle.elapsedClasses != 0u) {
+      // Ordered first-reach classes: 0-30, 30-60, 60-120 and 120-180 minutes.
+      if (value <= 1800.0) {
+        color = vec4<f32>(0.18, 0.66, 0.72, cellStyle.baseColor.a);
+      } else if (value <= 3600.0) {
+        color = vec4<f32>(0.34, 0.76, 0.56, cellStyle.baseColor.a);
+      } else if (value <= 7200.0) {
+        color = vec4<f32>(0.95, 0.70, 0.22, cellStyle.baseColor.a);
+      } else {
+        color = vec4<f32>(0.72, 0.34, 0.70, cellStyle.baseColor.a);
+      }
+    } else if (cellStyle.densityClasses != 0u) {
+      // Six equal-interval, ordered ice-to-violet density classes; breaks are supplied by the
+      // scene's observed maximum and shared with its class-table legend.
+      let level = min(5u, u32(floor(t * 6.0)));
+      let colors = array<vec3<f32>, 6>(
+        vec3<f32>(0.80, 0.91, 0.96), vec3<f32>(0.61, 0.80, 0.91),
+        vec3<f32>(0.45, 0.66, 0.84), vec3<f32>(0.43, 0.52, 0.76),
+        vec3<f32>(0.48, 0.37, 0.68), vec3<f32>(0.34, 0.20, 0.52)
+      );
+      color = vec4<f32>(colors[level], cellStyle.baseColor.a);
+    } else {
+      color = vec4<f32>(spatialAnalysisSampleRamp(cellStyle.colormap, t), cellStyle.baseColor.a);
+    }
   }
   if (color.a <= 0.0) {
     return output;
@@ -630,10 +659,15 @@ ${getRampWgsl()}
   );
   output.position = getSatelliteClipPosition(lngLat, 0.0);
   output.color = color;
+  output.local = corner;
   return output;
 }
 
 @fragment fn fragmentMain(input: CellOutput) -> @location(0) vec4<f32> {
+  if (cellStyle.hatchNoData != 0u && input.noData > 0.5) {
+    let stripe = fract((input.local.x + input.local.y) * 12.0);
+    if (stripe > 0.22) { discard; }
+  }
   return vec4<f32>(input.color.rgb, input.color.a * cellStyle.opacity);
 }
 `;
@@ -658,6 +692,12 @@ export type SatelliteCellLayerProps = LayerProps & {
   noDataColor?: SatelliteColor;
   /** Draw every non-discarded cell in this color instead of the ramp. */
   color?: SatelliteColor;
+  /** Render discarded cells as a sparse diagonal hatch rather than a filled value. */
+  hatchNoData?: boolean;
+  /** Use the satellite first-reach classes (0-30/30-60/60-120/120-180 minutes). */
+  elapsedClasses?: boolean;
+  /** Use six equal-interval ice-to-violet density classes instead of a continuous ramp. */
+  densityClasses?: boolean;
 };
 
 /** Axis-aligned longitude/latitude cells (rectangles in Web Mercator) colored by a value buffer. */
@@ -694,8 +734,11 @@ export class SatelliteCellLayer extends SatelliteBaseLayer<SatelliteCellLayerPro
     floats[20] = props.valueScale ?? 1;
     words[21] = props.discardAtOrBelow === undefined ? 0 : 1;
     words[22] = props.color ? 1 : 0;
+    words[23] = props.hatchNoData ? 1 : 0;
     floats[24] = props.discardAbove ?? 0;
     words[25] = props.discardAbove === undefined ? 0 : 1;
+    words[26] = props.elapsedClasses ? 1 : 0;
+    words[27] = props.densityClasses ? 1 : 0;
     styleBuffer.write(new Uint8Array(data));
   }
 }

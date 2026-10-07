@@ -61,8 +61,8 @@
     "source": {
       "manifestUrl": "https://tiles.poopdeck.gl/data/nyc-taxi-paths/manifest.json",
       "name": "nyc-taxi-paths",
-      "description": "",
-      "attribution": "",
+      "description": "Yellow-taxi trips routed by OSRM between the recorded pickup and drop-off, with a timestamp on every vertex (routes, not GPS traces).",
+      "attribution": "NYC Taxi & Limousine Commission trip records via NYC Open Data; poopdeck.gl nyc-taxi-paths archive; routes by OSRM on © OpenStreetMap contributors (ODbL)",
       "layer": "default",
       "exportedFrom": "stt-export.mjs",
       "zoom": 10,

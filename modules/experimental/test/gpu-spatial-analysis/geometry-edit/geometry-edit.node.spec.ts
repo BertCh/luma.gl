@@ -127,6 +127,40 @@ it('geometry edit contributors validate props and declare nodes', () => {
     () => new GPUGeometryCleanup({...cleanup, ringOffsets: cleanup.output.ringOffsets})
   ).toThrow(/disjoint|alias|share/i);
 
+  const pointCleanup = {
+    positions: view('float32x2', 12),
+    geometryType: 'points' as const,
+    parameters: view('float32', 4),
+    output: {
+      positions: view('float32x2', 8),
+      count: view('uint32', 1),
+      overflow: view('uint32', 1),
+      totalCount: view('uint32', 1)
+    }
+  };
+  expect(new GPUGeometryCleanup(pointCleanup).getCommandNodes(graph)).toHaveLength(1);
+  expect(
+    () =>
+      new GPUGeometryCleanup({
+        ...pointCleanup,
+        ringOffsets: view('uint32', 2)
+      } as never)
+  ).toThrow(/point geometry.*offsets/);
+  expect(
+    () =>
+      new GPUGeometryCleanup({
+        ...pointCleanup,
+        output: {...pointCleanup.output, ringOffsets: view('uint32', 2)}
+      } as never)
+  ).toThrow(/point geometry.*offsets/);
+  expect(
+    () =>
+      new GPUGeometryCleanup({
+        ...pointCleanup,
+        output: {...pointCleanup.output, collapsedRings: view('uint32', 1)}
+      } as never)
+  ).toThrow(/point geometry.*offsets/);
+
   const affine = {
     positions: view('float32x2', 12),
     parameters: view('float32', 12),

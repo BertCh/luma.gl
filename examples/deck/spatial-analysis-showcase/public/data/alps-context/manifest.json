@@ -1,0 +1,185 @@
+{
+ "id": "alps-context",
+ "version": 1,
+ "kind": "polygons",
+ "count": 133,
+ "bbox": [
+  7.58,
+  45.86,
+  7.98,
+  46.12
+ ],
+ "crs": "EPSG:4326",
+ "columns": {
+  "vertices": {
+   "file": "vertices.bin",
+   "dtype": "float32",
+   "components": 2,
+   "length": 9745
+  },
+  "ringOffsets": {
+   "file": "ringOffsets.bin",
+   "dtype": "uint32",
+   "components": 1,
+   "length": 215
+  },
+  "polygonRingOffsets": {
+   "file": "polygonRingOffsets.bin",
+   "dtype": "uint32",
+   "components": 1,
+   "length": 162
+  },
+  "partFeature": {
+   "file": "partFeature.bin",
+   "dtype": "uint32",
+   "components": 1,
+   "length": 161
+  },
+  "name": {
+   "file": "name.bin",
+   "dtype": "uint16",
+   "components": 1,
+   "length": 133
+  },
+  "areaKm2": {
+   "file": "areaKm2.bin",
+   "dtype": "float32",
+   "components": 1,
+   "length": 133
+  },
+  "osmId": {
+   "file": "osmId.bin",
+   "dtype": "uint32",
+   "components": 1,
+   "length": 133
+  },
+  "osmType": {
+   "file": "osmType.bin",
+   "dtype": "uint8",
+   "components": 1,
+   "length": 133,
+   "categories": [
+    "way",
+    "relation"
+   ]
+  }
+ },
+ "geometry": {
+  "type": "polygons",
+  "file": "glaciers.geojson"
+ },
+ "names": [
+  "",
+  "Triftjigletscher",
+  "Theodulgletscher",
+  "Adlergletscher",
+  "Stockjigletscher",
+  "Tiefmattengletscher",
+  "Zmuttgletscher",
+  "Glacier du Grand Cornier",
+  "Glacier Durand",
+  "Glacier de Zinal",
+  "Bisgletscher",
+  "Triftgletscher",
+  "Gabelhorngletscher",
+  "Ghiacciaio della Sesia",
+  "Ghiacciaio di Indren",
+  "Ghiacciaio di Bors",
+  "Ghiacciaio delle Piode",
+  "Schwarzberggletscher",
+  "Seewjinengletscher",
+  "Ghiacciaio d'Aventina o di Ventina",
+  "Ghiacciaio del Felik",
+  "Ghiacciaio di Mont Tabel",
+  "Ghiacciaio di Cherillon",
+  "Arbengletscher",
+  "Hohlw\u00e4nggletscher",
+  "Habelgletscher",
+  "Mellichgletscher",
+  "Hohlaubgletscher",
+  "Festigletscher",
+  "Kingletscher",
+  "Glacier des Manzettes",
+  "Glacier du Besso",
+  "Ghiacciaio di Valtournenche",
+  "Kinflanke",
+  "Ghiacciaio del Piccolo Fillar",
+  "Ghiacciaio Nord delle Locce",
+  "Ghiacciaio del Pizzo Bianco",
+  "Ghiacciaio di Roffel",
+  "Hangende Gletscher",
+  "Rothorngletscher",
+  "Ghiacciaio di Nordend",
+  "Schaligletscher",
+  "Weisshorngletscher",
+  "Ghiacciaio del Lys occidentale",
+  "Ghiacciaio del Garstelet",
+  "Ghiacciaio di Castelfranco",
+  "Ghiacciaio di Jazzi",
+  "Ghiacciaio del Belvedere",
+  "Ghiacciaio Tzere",
+  "Ghiacciaio di Signal",
+  "Ghiacciaio delle Vigne",
+  "Ghiacciaio Parrot",
+  "Allalingletscher",
+  "Riedgletscher",
+  "Feegletscher",
+  "Chessjengletscher",
+  "Hohbalmgletscher",
+  "Weingartengletscher",
+  "Monte Rosa-Gletscher",
+  "Grenzgletscher",
+  "Grande Ghiacciaio di Verra",
+  "Glacier de Moiry",
+  "Ghiacciaio del Lys",
+  "Ghiacciaio des Grandes Murailles",
+  "Ghiacciaio del Castor",
+  "Glacier de Moming",
+  "Sch\u00f6nbielgletscher",
+  "L\u00e4ngfluhgletscher",
+  "Breithorngletscher",
+  "Schw\u00e4rzegletscher",
+  "Gornergletscher",
+  "Matterhorngletscher",
+  "Turtmanngletscher",
+  "Glacier du Mountet",
+  "Glacier de Ferp\u00e8cle",
+  "Ghiacciaio di Tsa de Tsan",
+  "Hohlichtgletscher",
+  "Zwillingsgletscher",
+  "Furgggletscher / Oberer Theodulgletscher",
+  "Findelgletscher",
+  "Ghiacciaio del Monte Rosa",
+  "Wandgletscher",
+  "Ghiacciaio Sud delle Locce",
+  "Hohberggletscher"
+ ],
+ "properties": {
+  "description": "OpenStreetMap context for the Zermatt / Gornergrat window: glacier polygons as GeoArrow-style binary columns (feature i is also glaciers.geojson feature i) plus plain GeoJSON side files read with dataset.fileUrl(). Polygon p (a part) owns rings polygonRingOffsets[p]..[p+1], ring r owns vertices ringOffsets[r]..[r+1]; partFeature maps part -> feature index.",
+  "files": {
+   "glaciers.geojson": "natural=glacier polygons: name, nameDe, areaKm2, osmId",
+   "peaks.geojson": "natural=peak points: name, nameDe, elevationM, prominenceM, osmId",
+   "saddles.geojson": "natural=saddle points: name, elevationM, osmId",
+   "places.geojson": "named settlements, rail stations, lift stations and huts: name, kind, elevationM, osmId (+ place for settlements)",
+   "lakes.geojson": "natural=water polygons >= 0.5 ha: name, areaHa, osmId",
+   "railway.geojson": "Gornergratbahn line(s): name, osmId"
+  },
+  "columns": {
+   "name": "index into manifest.names (0 = unnamed)",
+   "areaKm2": "planar area in EPSG:32632, km2",
+   "osmId": "OpenStreetMap element id",
+   "osmType": "0 = way, 1 = relation (ids repeat across types)"
+  },
+  "counts": {
+   "glaciers.geojson": 133,
+   "peaks.geojson": 295,
+   "saddles.geojson": 169,
+   "places.geojson": 365,
+   "lakes.geojson": 73,
+   "railway.geojson": 12
+  },
+  "source": "OpenStreetMap contributors via the Overpass API (data timestamp 2026-10-07T11:42:41Z)",
+  "license": "ODbL 1.0",
+  "attribution": "\u00a9 OpenStreetMap contributors (ODbL)"
+ }
+}

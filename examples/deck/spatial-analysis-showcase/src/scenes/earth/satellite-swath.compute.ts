@@ -51,8 +51,8 @@ export type SatelliteSwathOptions = {
   satellites: string;
   swathMode: 'nominal' | 'custom';
   customWidth: number;
+  compareGeometry: boolean;
   showCoverage: boolean;
-  ramp: 'viridis' | 'magma' | 'inferno' | 'cividis';
   showSwaths: boolean;
   swathOpacity: number;
 };
@@ -376,6 +376,41 @@ const DEGREES_TO_RADIANS: f32 = 0.017453292;`,
     }
     halfWidthBuffer.write(halfWidths);
     coverageDirty = true;
+    const satellite = tracks.satellites.findIndex((_info, index) => visible[index] === 1);
+    if (satellite < 0) {
+      ctx.setReadout('selectedWidth', 'unknown');
+      ctx.setAnnotations('swath-width', null);
+      return;
+    }
+    const info = infoOf(satellite);
+    const width = widthOf(satellite);
+    const track = tracks.satelliteIndex.findIndex(index => index === satellite);
+    const vertex = track < 0 ? -1 : tracks.offsets[track];
+    if (!(width > 0) || vertex < 0) {
+      ctx.setReadout('selectedWidth', `${info.name}: unknown width`);
+      ctx.setAnnotations('swath-width', null);
+      return;
+    }
+    const longitude = tracks.positions[vertex * 2];
+    const latitude = tracks.positions[vertex * 2 + 1];
+    const longitudeHalfWidth =
+      width / (2 * KILOMETERS_PER_DEGREE * Math.max(Math.cos((latitude * Math.PI) / 180), 0.1));
+    ctx.setReadout(
+      'selectedWidth',
+      `${info.name} · ${width.toLocaleString()} km${ctx.options.swathMode === 'custom' ? ' hypothetical' : ' nominal'}`
+    );
+    ctx.setAnnotations('swath-width', [
+      {
+        kind: 'bracket',
+        id: 'swath-width-bracket',
+        from: [longitude - longitudeHalfWidth, latitude],
+        to: [longitude + longitudeHalfWidth, latitude],
+        text: `${width.toLocaleString()} km${ctx.options.swathMode === 'custom' ? ' hypothetical' : ' nominal swath'}`,
+        side: 'right',
+        tone: 'accent',
+        priority: 900
+      }
+    ]);
   }
 
   let coverageDirty = true;
@@ -424,7 +459,7 @@ const DEGREES_TO_RADIANS: f32 = 0.017453292;`,
     }
   );
 
-  function timeToFraction(target: number): string {
+  function timeToFraction(target: number): string | null {
     if (!result) return '...';
     for (let bin = 0; bin <= binCount; bin++) {
       if (result.cumulative[bin] >= target) {
@@ -432,7 +467,7 @@ const DEGREES_TO_RADIANS: f32 = 0.017453292;`,
         return `${Math.floor(seconds / 3600)} h ${String(Math.round((seconds % 3600) / 60)).padStart(2, '0')} min`;
       }
     }
-    return 'not within 3 h';
+    return null;
   }
 
   function describeResult(): void {
@@ -442,7 +477,7 @@ const DEGREES_TO_RADIANS: f32 = 0.017453292;`,
     ctx.setChart('coverageChart', {
       kind: 'line',
       xLabel: 'hours since 00:00 UTC',
-      yLabel: '% of Earth area covered',
+      yLabel: '% of analysed area reached',
       xDomain: [0, tracks.durationSeconds / 3600],
       yDomain: [0, 100],
       height: 130,
@@ -459,7 +494,7 @@ const DEGREES_TO_RADIANS: f32 = 0.017453292;`,
     });
     ctx.setReadout(
       'covered3h',
-      `${(result.covered * 100).toFixed(1)}% of the Earth (85 S to 85 N)`
+      `${(result.covered * 100).toFixed(1)}% of analysed area (85° S–85° N)`
     );
     ctx.setReadout('t50', timeToFraction(0.5));
     ctx.setReadout('t90', timeToFraction(0.9));
@@ -522,6 +557,10 @@ const DEGREES_TO_RADIANS: f32 = 0.017453292;`,
       ctx.requestLayers();
     },
 
+    onGroundChange() {
+      ctx.requestLayers();
+    },
+
     encode(commandEncoder, frame) {
       const playhead = clock.advance(frame);
       ctx.setReadout('clock', formatSatelliteClock(tracks, playhead));
@@ -549,7 +588,7 @@ const DEGREES_TO_RADIANS: f32 = 0.017453292;`,
 
     getLayers() {
       const options = ctx.options;
-      const dark = ctx.theme() === 'dark';
+      const dark = ctx.ground() === 'dark';
       const layers: Layer[] = [];
       if (options.showCoverage) {
         layers.push(
@@ -563,10 +602,12 @@ const DEGREES_TO_RADIANS: f32 = 0.017453292;`,
               COVERAGE_GRID.cell,
               COVERAGE_GRID.cell
             ],
-            colormap: options.ramp,
             valueRange: [0, tracks.durationSeconds],
             discardAtOrBelow: -0.5,
             discardAbove: clock.time,
+            noDataColor: dark ? [190, 205, 225, 160] : [55, 70, 100, 145],
+            hatchNoData: true,
+            elapsedClasses: true,
             opacity: 0.8
           })
         );
@@ -594,6 +635,26 @@ const DEGREES_TO_RADIANS: f32 = 0.017453292;`,
                 times: item.times,
                 satellites: item.satellites
               }));
+        if (options.compareGeometry && options.swathMode === 'custom') {
+          // The nominal outlines share the same playhead and selected-satellite mask. This is a
+          // geometric compare only; the first-reach surface remains the selected custom scenario.
+          for (const item of classes) {
+            layers.push(
+              new SatelliteSwathLayer({
+                id: `satellite-swath-nominal-compare-${item.sensor}`,
+                positions: item.outline,
+                times: item.times,
+                satellites: item.satellites,
+                visibleSatellites: satelliteVisible,
+                rowsPerInput,
+                vertexCount: item.subset.vertexCount * rowsPerInput,
+                timeLimit: clock.time,
+                color: dark ? [135, 190, 240, 255] : [36, 105, 168, 255],
+                opacity: Math.min(0.42, options.swathOpacity + 0.08)
+              })
+            );
+          }
+        }
         for (const item of drawn) {
           layers.push(
             new SatelliteSwathLayer({

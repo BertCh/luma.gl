@@ -2,6 +2,9 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {CREDITS, joinCredits} from '../../cartography/credits';
+import {US, labelsFor} from '../../cartography/gazetteer';
+import {ground} from '../../cartography/grounds';
 import {playbackOptions} from '../../engine/playback';
 import {defineScene} from '../scene';
 import {
@@ -9,21 +12,33 @@ import {
   COMPASS_SECTORS,
   formatStormClock,
   STORM_EVENT_SECONDS,
-  STORM_SPEED_RAMP_KMH,
   STORM_VIEW
 } from './storm-data';
 import type {StormCellTracksOptions} from './storm-cell-tracks.compute';
 
 const IOWA_VIEW = {longitude: -94.2, latitude: 42.4, zoom: 6.3};
 const PLAINS_VIEW = {longitude: -97.3, latitude: 34.2, zoom: 6.1};
+const TRACK_LABELS = labelsFor(US, ['msp', 'ord', 'dfw']);
+const SPEED_CLASS_ENTRIES = [
+  {color: [255, 237, 160, 255] as const, label: '0–20 km/h'},
+  {color: [254, 178, 76, 255] as const, label: '20–40 km/h'},
+  {color: [240, 59, 32, 255] as const, label: '40–70 km/h'},
+  {color: [189, 0, 38, 255] as const, label: '70–100 km/h'},
+  {color: [103, 0, 31, 255] as const, label: '100+ km/h'}
+];
+const cartouche = (title: string, subtitle: string) => ({
+  title,
+  subtitle,
+  chips: ['radar-derived tracks', 'sampled lightning'] as const
+});
 
 export default defineScene<StormCellTracksOptions>({
   id: 'storm-cell-tracks',
   title: 'How fast do storm cells move, and where does it flash?',
   chapter: 'earth',
-  order: 20,
+  order: 6,
   summary:
-    'Replay 289 radar storm-cell tracks from 21-22 May 2024: speed and heading of every step from GPUTrajectoryMetrics, swaths from buffering the tracks, and a lightning density map with hot spots underneath.',
+    'Replay radar-derived storm-cell tracks: separate speed from cyclic heading, inspect a buffered corridor, then compare lightning density at different grid sizes.',
   contributors: [
     'GPUTrajectoryPlayhead',
     'GPUTimeWindowFilter',
@@ -71,22 +86,6 @@ export default defineScene<StormCellTracksOptions>({
       options: [
         {value: 'speed', label: 'Speed (km/h)'},
         {value: 'heading', label: 'Heading (compass sector)'}
-      ]
-    },
-    {
-      kind: 'select',
-      id: 'ramp',
-      label: 'Speed ramp',
-      group: 'Cells',
-      apply: 'param',
-      default: 'viridis',
-      disabledWhen: state => state.colorBy !== 'speed',
-      help: 'Color ramp of the speed encoding. Viridis, magma, inferno and cividis are perceptually uniform and color-blind safe.',
-      options: [
-        {value: 'viridis', label: 'Viridis'},
-        {value: 'magma', label: 'Magma'},
-        {value: 'inferno', label: 'Inferno'},
-        {value: 'cividis', label: 'Cividis'}
       ]
     },
     {
@@ -351,21 +350,6 @@ export default defineScene<StormCellTracksOptions>({
       help: 'Standard deviation of a Gaussian blur of the cell field, in cells. 0 shows raw counts. The kernel weights are a parameter buffer, so this never recompiles.'
     },
     {
-      kind: 'select',
-      id: 'lightningRamp',
-      label: 'Lightning ramp',
-      group: 'Lightning',
-      apply: 'param',
-      default: 'inferno',
-      help: 'Color ramp of the density.',
-      options: [
-        {value: 'inferno', label: 'Inferno'},
-        {value: 'magma', label: 'Magma'},
-        {value: 'viridis', label: 'Viridis'},
-        {value: 'cividis', label: 'Cividis'}
-      ]
-    },
-    {
       kind: 'slider',
       id: 'lightningOpacity',
       label: 'Lightning opacity',
@@ -477,6 +461,11 @@ export default defineScene<StormCellTracksOptions>({
     {id: 'stalledCells', label: 'Cells that stalled'},
     {id: 'longestStall', label: 'Longest stall'},
     {id: 'tracks', label: 'Tracks'},
+    {
+      id: 'swathWidth',
+      label: 'Corridor width',
+      help: 'The visible cross-track bracket is twice the selected half-width.'
+    },
     {id: 'flashes', label: 'Flashes'},
     {
       id: 'selected',
@@ -488,12 +477,10 @@ export default defineScene<StormCellTracksOptions>({
   legends: state => [
     state.colorBy === 'speed'
       ? {
-          kind: 'ramp' as const,
-          title: 'Cell speed',
-          ramp: state.ramp,
-          extent: [0, STORM_SPEED_RAMP_KMH] as const,
-          unit: 'km/h',
-          format: (value: number) => value.toFixed(0)
+          kind: 'categories' as const,
+          title: 'Cell speed (km/h)',
+          entries: SPEED_CLASS_ENTRIES,
+          note: 'Fixed five speed classes; this is not a continuous ramp.'
         }
       : {
           kind: 'categories' as const,
@@ -507,16 +494,16 @@ export default defineScene<StormCellTracksOptions>({
     ...(state.showLightning
       ? [
           {
-            kind: 'ramp' as const,
+            kind: 'categories' as const,
             id: 'flashes',
-            title:
-              state.statistic === 'count' ? 'Lightning flashes per cell' : 'Flash energy per cell',
-            ramp: state.lightningRamp,
-            extent: 'gpu' as const,
-            sqrtScale: true,
-            unit: state.statistic === 'count' ? 'flashes' : 'fJ',
-            format: (value: number) =>
-              value >= 100 ? value.toFixed(0) : value >= 10 ? value.toFixed(1) : value.toFixed(2)
+            title: 'Sampled lightning per cell (fixed amber classes)',
+            entries: [
+              {color: [255, 237, 160, 190] as const, label: '1–5'},
+              {color: [254, 178, 76, 205] as const, label: '5–15'},
+              {color: [240, 59, 32, 220] as const, label: '15–40'},
+              {color: [189, 0, 38, 235] as const, label: '40+'}
+            ],
+            note: 'The identical sampled flash total is rebinned at coarse and fine resolutions; changing cell size demonstrates MAUP.'
           }
         ]
       : []),
@@ -615,99 +602,148 @@ play.encode(commandEncoder, {parameters: undefined});`,
       'Arrows are cells at the playhead, pointing along the heading of the step they are on and colored by speed or by compass sector. Trails show where they have been. The orange swath is every track buffered by the swath half-width: darker means more cells passed. The inferno raster is lightning density; cyan outlines are the hottest cells. Radar cells are 51 dBZ and above, followed by the MRMS cell tracker; a sudden jump in speed is usually the tracker re-linking a merged or split cell, not real motion.'
   },
 
+  pipeline: [
+    {
+      id: 'metrics',
+      label: 'Track metrics',
+      detail: 'Measure each tangent-plane step: speed and heading'
+    },
+    {id: 'playhead', label: 'Playhead', detail: 'Interpolate one cell position per track'},
+    {
+      id: 'buffer',
+      label: 'Corridor',
+      detail: 'Buffer lines in spherical metres; overlaps are not unioned'
+    },
+    {id: 'density', label: 'Grid density', detail: 'Bin sampled flashes into a view-dependent grid'}
+  ],
+  basemap: ground('night', {labels: 'above', labelPreset: 'places-only'}),
+  furniture: {
+    title: cartouche(
+      'How did the storm cells move?',
+      'Motion · km/h / heading · MRMS + GLM · 21–22 May 2024'
+    ),
+    scaleBar: {units: 'metric'},
+    credit: joinCredits('NOAA MRMS and GOES-16 GLM (public domain)', CREDITS.naturalEarth),
+    caveat:
+      'Tracks are radar-derived objects, not named storms; lightning is a seeded sample and grid results vary with cell size.'
+  },
+  annotations: TRACK_LABELS,
+
   create: async ctx => (await import('./storm-cell-tracks.compute')).createStormCellTracks(ctx),
 
   story: [
     {
-      id: 'the-question',
-      title: 'Which way, and how fast, did the storms move?',
-      body: 'On 21 May 2024 an active severe-weather day ran from the Plains to the Northeast. The NOAA MRMS radar composite followed **289 intense storm cells** (51 dBZ and above) between 12:00 UTC and 06:00 UTC, one fix about every ten minutes; the faint gray lines are all their tracks.\n\nPress **Play** below, or drag **Time (UTC)**: each arrow is a cell now, pointing along its heading and colored by speed, with a one-hour trail behind it. The **Playback speed** slider sets how many simulated minutes pass per real second. The chart below the map counts GOES-16 lightning flashes per minute; its line is the playhead.',
+      id: 'playback',
+      title: 'Radar cells cross the Plains overnight',
+      headline: 'Follow radar-derived cells through time',
+      textAlternative:
+        'Neutral arrowheads and short trails show live radar-derived cells over a dark central-US map.',
+      optionsMode: 'fresh',
+      body: 'Press **Play** or drag **Time (UTC)**. Each neutral arrow is one radar-derived cell at the clock; its short trail is the preceding time window. The live sample line and flash-rate chart keep the temporal frame visible.\n\nThis is an object tracker over intense radar echoes, not a catalogue of named storms. Reduced motion starts paused; the clock can always be scrubbed directly.',
       camera: {...IOWA_VIEW, transitionMs: 1400},
       options: {time: 34200, play: false, showTrails: true},
       controls: ['play', 'time', 'speed'],
       readouts: ['clock', 'activeCells', 'rateChart']
     },
     {
-      id: 'speed-and-heading',
-      title: 'Speed and heading, step by step',
-      body: '**`GPUTrajectoryMetrics`** measures the speed and heading of every step in one pass. Each track is projected on its own tangent plane (x east, y north, in meters), so a track that runs for 300 km still gets true compass headings and speeds within about 3%, which one continental projection cannot give.\n\nSwitch **Color cells and trails by** to *Heading* to color by compass sector, then back to *Speed*. The histogram below is the speed of every step, and the rose chart counts steps per direction: most cells head toward the east and northeast, as storms steered by the jet stream do.',
+      id: 'speed',
+      title: 'Speed is distance divided by time',
+      headline: 'Measure speed one step at a time',
+      textAlternative:
+        'Classed warm-to-cool speed trails and arrowheads sit over dim context tracks.',
+      optionsMode: 'fresh',
+      body: '**`GPUTrajectoryMetrics`** measures each segment on its own tangent plane: distance divided by elapsed time gives speed. The histogram is the full step distribution; the live readouts report the median and fastest step.\n\nSteps above the displayed range are tracker-jump candidates, not evidence of a faster storm. Fixes are about ten minutes apart, so a cell head is an interpolation between observations.',
       camera: {...STORM_VIEW, transitionMs: 1400},
       options: {time: 36000, play: false, showTrails: true, trailMinutes: 120, colorBy: 'speed'},
-      controls: ['colorBy', 'ramp', 'trailMinutes'],
+      controls: ['colorBy', 'trailMinutes'],
       readouts: ['medianSpeed', 'fastest', 'speedChart', 'roseChart']
     },
     {
-      id: 'motion-vectors',
-      title: 'Where is it heading? A motion vector',
-      body: 'The playhead tells every cell which segment it is on. A small kernel then looks up that segment’s speed and heading in the metrics columns and draws a line from the cell along its heading, as long as the distance it covers in the **Vector time**: a straight-line extrapolation, the way a forecaster reads a storm-motion arrow. It is not a forecast; real cells turn, split and decay.\n\nDrag **Vector time** to 60 minutes and watch the vectors fan over the Iowa and Minnesota cells. The **Playback speed** control runs time forward so you can check whether the vector pointed where the cell actually went.',
+      id: 'heading',
+      title: 'Heading needs a cyclic key',
+      headline: 'North wraps around to northwest',
+      textAlternative:
+        'A cyclic compass palette and rose chart show direction of travel for the active tracks.',
+      optionsMode: 'fresh',
+      body: 'Direction is circular: north-west and north-east are neighbours, so a linear colour scale would make adjacent headings look unrelated. The compass palette closes at north and the rose chart uses the same order.\n\nThe heading is where the radar object travels, not where wind comes from. Compare it with speed without encoding both variables on one mark.',
       camera: {...IOWA_VIEW, transitionMs: 1400},
       options: {
         time: 34200,
         play: false,
-        showArrows: true,
-        arrowMinutes: 30,
+        colorBy: 'heading',
+        showArrows: false,
         showTrails: true,
         trailMinutes: 60
       },
-      controls: ['showArrows', 'arrowMinutes', 'speed'],
-      readouts: ['activeSpeed', 'activeCells']
+      controls: ['colorBy', 'time'],
+      readouts: ['activeSpeed', 'roseChart', 'activeCells']
     },
     {
-      id: 'swaths',
-      title: 'Swaths: where the cells passed',
-      body: '**`GPUOutlineGeometry`** buffers every track by a distance in meters on the sphere and writes the triangles for drawing. Turn on **Show swaths** and set **Swath extent** to *Whole event*: the orange band is everywhere within the half-width of a cell track.\n\nOverlaps are not merged, so ground that several cells crossed draws darker. Slide **Swath half-width** between 5 and 25 km (a parameter-buffer write, no recompile) and watch the swaths merge into corridors. Set the extent back to *Up to the playhead* and press Play to watch them grow.',
+      id: 'vector',
+      title: 'A motion vector projects the next position',
+      headline: 'Extrapolate, do not forecast',
+      textAlternative:
+        'A selected cell has a dashed forward vector and arrival ring over a dark map.',
+      optionsMode: 'fresh',
+      body: 'A lookup reads the current step’s speed and heading and draws a dashed line for the selected number of minutes. It is a straight-line extrapolation, not a forecast: cells turn, merge, split and decay.\n\nChange **Vector time** to see distance scale directly with time. The active-cell count makes clear how many independent motion vectors are present at this moment.',
       camera: {...STORM_VIEW, transitionMs: 1400},
       options: {
-        showSwath: true,
-        swathMode: 'event',
-        swathKm: 10,
-        showTrails: false,
-        showBackdrop: false,
+        showArrows: true,
+        arrowMinutes: 30,
+        showSwath: false,
+        showTrails: true,
+        showBackdrop: true,
         play: false,
         time: 54000
       },
-      controls: ['showSwath', 'swathKm', 'swathMode', 'swathOpacity'],
-      readouts: ['clock']
+      controls: ['arrowMinutes', 'time'],
+      readouts: ['activeSpeed', 'activeCells', 'clock']
     },
     {
-      id: 'lightning',
-      title: 'Lightning under the storms',
-      body: 'GOES-16’s Geostationary Lightning Mapper saw **346,450 flashes** over the US in this window; the scene holds a seeded 43% sample. **`GPUTimeWindowFilter`** selects the flashes in a sliding window and writes a mask; **`GPUPointDensity`** bins them into a grid that follows the camera and smooths them with a Gaussian.\n\nChoose a **Flash window** of *Accumulating from the start* to see the day’s total build, or keep the *Sliding window* and press Play: the hot cores follow the cells. **Smoothing radius** blurs the cells (0 shows raw counts), and **Statistic per cell** switches from flash count to summed optical energy.',
+      id: 'swath',
+      title: 'A buffered track is only a corridor',
+      headline: 'A buffer is not a storm footprint',
+      textAlternative: 'A translucent violet buffered corridor retains its radar-track centreline.',
+      optionsMode: 'fresh',
+      body: '**`GPUOutlineGeometry`** buffers each path by a chosen spherical-metre distance. The translucent ribbon is a *buffered track corridor*; it is neither a radar footprint nor a merged coverage area.\n\nOverlaps darken because triangles overlap. Adjust the width as a sensitivity test, and keep the centreline visible so the construction is legible.',
       camera: {...STORM_VIEW, transitionMs: 1400},
       options: {
-        showLightning: true,
-        lightningMode: 'window',
-        lightningMinutes: 30,
-        showBackdrop: true,
-        showSwath: false,
+        showLightning: false,
+        showSwath: true,
+        swathMode: 'event',
+        swathKm: 10,
+        showBackdrop: false,
         showTrails: true,
-        trailMinutes: 60,
         play: false,
         time: 41400
       },
-      controls: ['lightningMode', 'lightningMinutes', 'sigma', 'statistic'],
-      readouts: ['flashesNow', 'peakDensity', 'cellSize']
+      controls: ['swathKm', 'swathMode'],
+      readouts: ['clock', 'tracks', 'swathWidth']
     },
     {
-      id: 'hot-spots',
-      title: 'Hot spots, and cells that stalled',
-      body: 'Turn on **Highlight hot spots** to outline the cells above the **Hot-spot percentile** of the non-empty cells in view: the electrical cores. This is a percentile cut, not a significance test (the Getis-Ord scene in the weights chapter is the statistical version).\n\nThen switch on **Show stalled cells**: **`GPUTrajectoryMetrics`** finds runs of slow steps (below **Stall speed threshold** for at least **Minimum stall duration**) and marks them, larger for longer stalls. A cell that crawls puts its rain, hail or wind over one place for longer. Try a threshold of 15 km/h and 20 minutes, and compare how many tracks stall.',
+      id: 'lightning',
+      title: 'Hot spots depend on the grid',
+      headline: 'Grid size changes the hot cells',
+      textAlternative:
+        'Amber sampled lightning points sit over a classed dark density grid with highlighted cells.',
+      optionsMode: 'fresh',
+      body: '**`GPUPointDensity`** bins the sampled flashes into the current map grid, then smooths the cells. Change **Resolution**: the same flashes can fall into different cells, so the rank and shape of a hot cell change with the aggregation unit. That is the modifiable areal unit problem, not a significance test.\n\nThe count is a sample of GLM detections. Keep the point layer on while comparing grids, and read the density value as sampled flashes rather than an absolute total. Next: do counties crossed by these cells show more outages?',
       camera: {...PLAINS_VIEW, transitionMs: 1600},
       options: {
         showLightning: true,
         showHotSpots: true,
         hotPercentile: 95,
-        lightningMode: 'cumulative',
-        showStalls: true,
-        stallSpeedKmh: 30,
-        stallMinutes: 30,
+        lightningMode: 'window',
+        lightningMinutes: 10,
+        showFlashes: true,
+        showStalls: false,
         showTrails: false,
         showBackdrop: true,
         play: false,
         time: 64800
       },
-      controls: ['hotPercentile', 'showStalls', 'stallSpeedKmh', 'stallMinutes'],
-      readouts: ['hotCells', 'stalls', 'stalledCells', 'longestStall']
+      controls: ['resolution', 'hotPercentile', 'lightningMinutes'],
+      readouts: ['flashesNow', 'peakDensity', 'cellSize', 'hotCells']
     }
   ]
 });

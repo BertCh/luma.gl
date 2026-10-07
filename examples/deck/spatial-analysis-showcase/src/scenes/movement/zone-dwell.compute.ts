@@ -15,16 +15,18 @@ import {
   GPUCommandGraph,
   type CompiledGPUCommandGraph
 } from '@luma.gl/gpgpu/gpu-core';
+import {getClassCounts, getExtent} from '../../cartography/breaks';
+import {getClassTableLayerProps, getClassIndexOf} from '../../cartography/class-table';
+import {formatArea, formatCount, formatPercent} from '../../cartography/live-text';
+import type {ClassTable, LngLat, MapAnnotation, MapHighlight} from '../../cartography/types';
 import {importGraphBuffer} from '../../engine/graph-buffers';
-import {SpatialAnalysisRasterLayer, SpatialAnalysisSegmentLayer} from '../../engine/layers';
-import {addKernelPass} from '../../engine/mode-kernels';
-import {formatCount, SpatialAnalysisResources} from '../../engine/resources';
+import {SpatialAnalysisPolygonLayer, SpatialAnalysisSegmentLayer} from '../../engine/layers';
 import {createPlaybackClock} from '../../engine/playback';
+import {SpatialAnalysisResources} from '../../engine/resources';
 import {SummaryReader} from '../../engine/summary-reader';
-import type {SceneContext, SceneInstance} from '../scene';
+import type {SceneContext, SceneInstance, TooltipContent, TooltipRow} from '../scene';
 import {StopMarkerLayer, ZoneEventMarkerLayer} from './b12-layers';
 import {
-  formatDuration,
   formatEasternClock,
   formatUtcClock,
   loadVesselTracks,
@@ -32,60 +34,79 @@ import {
   VESSEL_CATEGORIES,
   VESSEL_CATEGORY_LABELS
 } from './b12-tracks';
+import {findZone, ZONE_KIND_LABELS} from './b12-zones';
+import {formatDwell, getWaitingClasses} from './movement-style';
+import {buildZoneDwellGeometry, OUTLINE_STYLE_NAMES} from './zone-dwell-geometry';
 import {
-  buildZoneSet,
-  findZone,
-  rasterizeZones,
-  ZONE_KIND_COLORS,
-  ZONE_KIND_LABELS,
-  ZONE_KINDS,
-  type ZoneKind
-} from './b12-zones';
+  isApproximateZoneKind,
+  matchesZoneKindFilter,
+  type ZoneKindFilter
+} from './zone-dwell-names';
+import {
+  getEventInks,
+  getOutlineStyles,
+  getStopRing,
+  getTrackInk,
+  makeZoneClassTable,
+  STOP_BREAKS_SECONDS
+} from './zone-dwell-style';
+import {
+  computeClassBreaks,
+  formatQuantity,
+  formatZoneValue,
+  getBreaksKey,
+  getGroupValues,
+  getUnitBreakFactor,
+  getZoneValueLabels,
+  reduceToGroups,
+  SECONDS_PER_DAY,
+  type GroupStatistics,
+  type ZoneMetric,
+  type ZoneStatistics,
+  type ZoneUnit
+} from './zone-dwell-values';
 
 /** Option state of the zone dwell scene. */
 export type ZoneDwellOptions = {
   variant: 'inside' | 'stopped';
-  metric: 'total' | 'mean' | 'longest' | 'visits';
-  zoneKind: 'all' | ZoneKind;
-  ramp: 'viridis' | 'magma' | 'inferno' | 'cividis';
-  fillOpacity: number;
-  showOutlines: boolean;
+  compareVariants: boolean;
+  metric: ZoneMetric;
+  unit: ZoneUnit;
+  zoneKind: ZoneKindFilter;
   showTracks: boolean;
+  showEvents: boolean;
+  showStops: boolean;
+  showVessel: boolean;
+  notes: 'none' | 'size' | 'approximate';
+  fillOpacity: number;
   stopSpeedKnots: number;
   stopMinutes: number;
-  eventsPerVessel: '8' | '16' | '32' | '64';
-  showEvents: boolean;
-  showRestingEvents: boolean;
+  eventsPerVessel: '16' | '32' | '64';
   playing: boolean;
   time: number;
-  playbackSpeed: number;
+  playbackSpeed: string;
   loop: boolean;
-  pulseMinutes: number;
 };
+
+/** Playhead the story starts from, so a deep link and the first frame agree. */
+export const DEFAULT_PLAYHEAD = 43200;
 
 const STOP_CAPACITY = 4096;
 const VISIT_CAPACITY = 8192;
 const MAX_EVENTS_PER_TRACK = 64;
 const EVENT_CANDIDATE_CAPACITY = 1 << 20;
 const STOP_CANDIDATE_CAPACITY = 1 << 18;
-const RASTER_CELL_METERS = 45;
-const SECONDS_PER_DAY = 86400;
+const PULSE_SECONDS = 20 * 60;
 const SETTLE_MILLISECONDS = 200;
-const NO_ZONE = -1;
-const METRIC_CODES = {total: 0, mean: 1, longest: 2, visits: 3} as const;
+const RANKED_ZONES = 10;
+const NO_GROUP = -1;
+const ENTER = 0;
 
 type ZoneTable = {
   counts: Buffer;
   sums: Buffer;
   means: Buffer;
   maximums: Buffer;
-};
-
-type ZoneStats = {
-  counts: Uint32Array;
-  sums: Float32Array;
-  means: Float32Array;
-  maximums: Float32Array;
 };
 
 type SummaryFlags = {
@@ -100,26 +121,87 @@ type SummaryFlags = {
   joinOverflow: number;
 };
 
-type VariantGraph = {
+const EMPTY_FLAGS: SummaryFlags = {
+  events: 0,
+  eventOverflow: 0,
+  candidates: 0,
+  candidateOverflow: 0,
+  trackOverflow: 0,
+  listOverflow: 0,
+  stops: 0,
+  stopOverflow: 0,
+  joinOverflow: 0
+};
+
+/** Zone events read back from the GPU: one row per enter or exit. */
+type EventTable = {
+  /** Increases with every readback, so work keyed on it reruns for new data only. */
+  version: number;
+  count: number;
+  tracks: Uint32Array;
+  zones: Uint32Array;
+  types: Uint32Array;
+  /** Seconds after the first fix of the track. */
+  times: Float32Array;
+  /** Planar metres. */
+  positions: Float32Array;
+};
+
+/** The visits (inside) or stops (stopped) of the zones, one row each. */
+type StayTable = {
+  /** Increases with every readback. */
+  version: number;
+  count: number;
+  tracks: Uint32Array;
+  zones: Uint32Array;
+  seconds: Float32Array;
+  /** Planar metres, stops only. */
+  centroids?: Float32Array;
+};
+
+type VariantState = {
   variant: 'inside' | 'stopped';
   compiled: CompiledGPUCommandGraph<void>;
-  display: CompiledGPUCommandGraph<void>;
-  displayValues: Buffer;
   table: ZoneTable;
+  displayValues: Buffer;
   tableReader: SummaryReader;
   listReader: SummaryReader;
+  eventReader: SummaryReader | null;
   needsEncode: boolean;
-  needsDisplay: boolean;
+  stats: ZoneStatistics | null;
+  flags: SummaryFlags;
+  stays: StayTable | null;
   eventsPerVessel?: number;
 };
 
+/** The vessel the third step follows and what it did at the gate. */
+type FollowedVessel = {
+  track: number;
+  category: string;
+  /** Crossings of the gate zone, in time order: absolute seconds, type, position in metres. */
+  crossings: {time: number; type: number; x: number; y: number}[];
+  /** Visits to named zones for the Gantt chart. */
+  visits: {group: number; start: number; end: number}[];
+};
+
+type FrozenBreaks = {
+  breaks: number[];
+  /** Zones with time that the breaks were computed from. */
+  zonesWithTime: number;
+  /** `[min, max]` of the reference values, in the unit the breaks were computed in. */
+  extent: [number, number];
+  method: string;
+};
+
 /**
- * Zone dwell: how long vessels spend in each harbor zone, two ways. The `inside` variant runs
- * `addFleetDwellZoneEventsRecipe` (`GPUZoneEvents` enter and exit events, then a dense per-zone
- * `GPUGroupStatistics`): any time inside a zone counts. The `stopped` variant runs
+ * Zone dwell: how long vessels spend in each harbor zone, two ways at once. The `inside` graph
+ * runs `addFleetDwellZoneEventsRecipe` (`GPUZoneEvents` enter and exit events, then a dense
+ * per-zone `GPUGroupStatistics`): any time inside a zone counts. The `stopped` graph runs
  * `addFleetDwellRecipe` (`GPUTrajectoryMetrics` stops, `GPUPointInPolygonJoin` to the zones, the
- * same statistics): only time spent stopped counts. Both write one dense row per zone, which a
- * small kernel turns into the fill value of a rasterized zone map.
+ * same statistics): only time spent stopped counts. Both graphs are compiled once and stay live,
+ * so a swipe can draw them side by side on one frozen class table. Both write one dense row per
+ * zone; the scene reads the small table back, adds the pieces of one named zone up, turns it into
+ * the unit of the map and classes it once per unit.
  */
 export async function createZoneDwell(
   ctx: SceneContext<ZoneDwellOptions>
@@ -127,59 +209,52 @@ export async function createZoneDwell(
   const vessels = loadVesselTracks(ctx.datasets.get('ais-vessels'));
   const zonesDataset = ctx.datasets.get('ais-zones');
   if (!zonesDataset.geojson) throw new Error('ais-zones has no geometry');
-  const zones = buildZoneSet(zonesDataset.geojson, vessels.project);
+  const geometry = buildZoneDwellGeometry(zonesDataset.geojson, vessels.project);
+  const {zones, groups} = geometry;
   const {device} = ctx;
   const {trackCount, vertexCount, segmentCount} = vessels;
   const zoneCount = zones.zoneCount;
   const edgeCount = zones.edgeZones.length;
   const resources = new SpatialAnalysisResources(device, 'zone-dwell');
   const coordinateOrigin: [number, number, number] = [vessels.origin[0], vessels.origin[1], 0];
+  const gateGroup = groups.kinds.indexOf('gate');
 
   // ---- Static inputs --------------------------------------------------------------------------
   const positionsBuffer = resources.createBuffer('positions', vessels.positions);
   const timestampsBuffer = resources.createBuffer('timestamps', vessels.timestamps);
   const offsetsBuffer = resources.createBuffer('offsets', vessels.offsets);
   const segmentsBuffer = resources.createBuffer('segments', vessels.segments);
-  const segmentTracksBuffer = resources.createBuffer('segment-tracks', vessels.segmentTracks);
-  const categoryBuffer = resources.createBuffer('category', vessels.category);
   const trackStartTimes = new Float32Array(trackCount);
   for (let track = 0; track < trackCount; track++) {
     trackStartTimes[track] = vessels.timestamps[vessels.offsets[track]];
   }
   const trackStartBuffer = resources.createBuffer('track-start-times', trackStartTimes);
-  const zoneKindsBuffer = resources.createBuffer('zone-kinds', zones.kinds);
-  const outlineBuffer = resources.createBuffer('outline', zones.outlineSegments);
   const edgeZonesBuffer = resources.createBuffer('edge-zones', zones.edgeZones);
-  let maxZoneEdges = 0;
-  const edgesPerZone = new Uint32Array(zoneCount);
-  for (const zone of zones.edgeZones) edgesPerZone[zone]++;
-  for (const count of edgesPerZone) maxZoneEdges = Math.max(maxZoneEdges, count);
-  const selectedOutline = resources.createBuffer('selected-outline', maxZoneEdges * 16);
+  const edgeStartsBuffer = resources.createBuffer('edge-starts', zones.edgeStarts);
+  const edgeEndsBuffer = resources.createBuffer('edge-ends', zones.edgeEnds);
+  const polygonBuffers = {
+    positions: resources.createBuffer('polygon-positions', zones.polygonPositions),
+    featureOffsets: resources.createBuffer('feature-offsets', zones.featureOffsets),
+    polygonOffsets: resources.createBuffer('polygon-offsets', zones.polygonOffsets),
+    ringOffsets: resources.createBuffer('ring-offsets', zones.ringOffsets)
+  };
 
-  // Fill raster: cell -> zone row.
-  const pad = RASTER_CELL_METERS * 4;
-  const rasterBounds: [number, number, number, number] = [
-    zones.bounds[0] - pad,
-    zones.bounds[1] - pad,
-    zones.bounds[2] + pad,
-    zones.bounds[3] + pad
-  ];
-  const rasterWidth = Math.ceil((rasterBounds[2] - rasterBounds[0]) / RASTER_CELL_METERS);
-  const rasterHeight = Math.ceil((rasterBounds[3] - rasterBounds[1]) / RASTER_CELL_METERS);
-  const cellRowsBuffer = resources.createBuffer(
-    'cell-rows',
-    rasterizeZones(zones, rasterBounds, rasterWidth, rasterHeight)
-  );
+  // Fill triangles (largest zone first) and the outlines of the three line styles.
+  const fillTriangles = resources.createBuffer('fill-triangles', geometry.triangles);
+  const fillFeatures = resources.createBuffer('fill-features', geometry.triangleFeatures);
+  const fillVertexCount = geometry.triangleFeatures.length;
+  const outlineBuffers = Object.fromEntries(
+    OUTLINE_STYLE_NAMES.map(style => [
+      style,
+      {
+        buffer: resources.createBuffer(`outline-${style}`, geometry.outlines[style]),
+        count: geometry.outlines[style].length / 4
+      }
+    ])
+  ) as Record<(typeof OUTLINE_STYLE_NAMES)[number], {buffer: Buffer; count: number}>;
 
-  // ---- Shared draw records and parameters ------------------------------------------------------
-  const eventDraw = resources.track(
-    new DrawCommandBuffer(device, {
-      id: 'zone-event-draw',
-      type: 'draw',
-      commands: [{vertexCount: 6, instanceCount: 0}]
-    })
-  );
-  const eventCapacity = vessels.trackCount * MAX_EVENTS_PER_TRACK;
+  // ---- Shared draw records and parameters -----------------------------------------------------
+  const eventCapacity = trackCount * MAX_EVENTS_PER_TRACK;
   const eventTracks = resources.createBuffer('event-tracks', eventCapacity * 4);
   const eventCount = resources.createBuffer('event-count', 4);
   const eventOverflow = resources.createBuffer('event-overflow', 4);
@@ -198,13 +273,19 @@ export async function createZoneDwell(
   const visitOverflow = resources.createBuffer('visit-overflow', 4);
   const eventClock = resources.createParameterBuffer('event-clock', 'float32', 4);
 
-  const stopDraw = resources.track(
+  // The pulses of the zones in view: the events read back, filtered on the CPU, uploaded compact.
+  const pulseTracks = resources.createBuffer('pulse-tracks', eventCapacity * 4);
+  const pulseTimes = resources.createBuffer('pulse-times', eventCapacity * 4);
+  const pulseTypes = resources.createBuffer('pulse-types', eventCapacity * 4);
+  const pulsePositions = resources.createBuffer('pulse-positions', eventCapacity * 8);
+  const pulseDraw = resources.track(
     new DrawCommandBuffer(device, {
-      id: 'zone-stop-draw',
+      id: 'zone-pulse-draw',
       type: 'draw',
       commands: [{vertexCount: 6, instanceCount: 0}]
     })
   );
+
   const stopIds = resources.createBuffer('stop-ids', STOP_CAPACITY * 4);
   const stopCount = resources.createBuffer('stop-count', 4);
   const stopOverflow = resources.createBuffer('stop-overflow', 4);
@@ -217,7 +298,16 @@ export async function createZoneDwell(
     'float32',
     GPU_TRAJECTORY_METRICS_PARAMETER_LENGTH
   );
-  const displayParameters = resources.createParameterBuffer('display', 'uint32', 4);
+  // The stops inside the zones in view, compact, for the discs.
+  const shownStopCentroids = resources.createBuffer('shown-stop-centroids', STOP_CAPACITY * 8);
+  const shownStopDurations = resources.createBuffer('shown-stop-durations', STOP_CAPACITY * 4);
+  const stopDraw = resources.track(
+    new DrawCommandBuffer(device, {
+      id: 'zone-stop-draw',
+      type: 'draw',
+      commands: [{vertexCount: 6, instanceCount: 0}]
+    })
+  );
 
   // ---- State -----------------------------------------------------------------------------------
   let destroyed = false;
@@ -227,42 +317,53 @@ export async function createZoneDwell(
     {range: [0, SECONDS_PER_DAY], rate: 1, step: 60}
   );
   let playhead = ctx.options.time;
-  let selectedZone = NO_ZONE;
   let settleStale = true;
   let lastChange = performance.now();
-  let displayMaximum = 1;
-  let stats: ZoneStats | null = null;
-  let longestStays: {track: number; zone: number; seconds: number}[] = [];
-  let lastFlags: SummaryFlags = {
-    events: 0,
-    eventOverflow: 0,
-    candidates: 0,
-    candidateOverflow: 0,
-    trackOverflow: 0,
-    listOverflow: 0,
-    stops: 0,
-    stopOverflow: 0,
-    joinOverflow: 0
-  };
-  let active: VariantGraph | null = null;
-  const variants = new Map<string, VariantGraph>();
+  let selectedGroup = NO_GROUP;
+  /** Reduced motion starts paused: the first request to play (a step opening) is declined. */
+  let declineFirstPlay = ctx.reducedMotion();
+  let followed: FollowedVessel | null = null;
+  let eventTable: EventTable | null = null;
+  let lastAnnotationTime = Number.NaN;
+  let vesselAnnotated = false;
+  let readVersion = 0;
+  let highlightKey = '';
+  let notesKey = '';
+  let markersKey = '';
+  let pulseKey = '';
+  let stopKey = '';
+  let legendHighlight: readonly number[] | null = null;
+  let table: ClassTable | null = null;
+  let insideGroups: GroupStatistics | null = null;
+  let stoppedGroups: GroupStatistics | null = null;
+  let insideValues: Float64Array | null = null;
+  let stoppedValues: Float64Array | null = null;
+  const frozenBreaks = new Map<string, FrozenBreaks>();
+  let inside: VariantState;
+  let stopped: VariantState;
 
   ctx.setReadout(
     'tracks',
     `${formatCount(trackCount)} tracks / ${formatCount(vessels.vesselCount)} vessels`
   );
-  ctx.setReadout('zones', `${zoneCount} zones, ${formatCount(edgeCount)} boundary edges`);
+  ctx.setReadout(
+    'zones',
+    `${zoneCount} polygons in ${groups.groupCount} named zones, ${formatCount(edgeCount)} edges`
+  );
+  ctx.setReadout(
+    'approxZones',
+    `${groups.kinds.filter(kind => isApproximateZoneKind(kind)).length} hand-drawn zones`
+  );
+  ctx.setCost({records: vertexCount});
+  ctx.setFurniture({
+    title: {
+      sample: `${formatCount(trackCount)} AIS tracks, ${formatCount(groups.groupCount)} zones`
+    }
+  });
 
-  const metricCode = () => METRIC_CODES[ctx.options.metric];
-  const kindCode = () =>
-    ctx.options.zoneKind === 'all'
-      ? 0xffffffff
-      : ZONE_KINDS.indexOf(ctx.options.zoneKind as ZoneKind);
-  const getValueScale = () => (ctx.options.metric === 'visits' ? 1 : 1 / 3600);
-
-  function writeDisplayParameters(): void {
-    displayParameters.write(Uint32Array.of(metricCode(), kindCode(), 0, 0));
-  }
+  const isShown = (group: number) =>
+    matchesZoneKindFilter(ctx.options.zoneKind, groups.kinds[group]);
+  const getGround = () => ctx.ground();
 
   function writeStopParameters(): void {
     stopParameters.write(
@@ -271,86 +372,6 @@ export async function createZoneDwell(
         stopMinimumDuration: ctx.options.stopMinutes * 60
       })
     );
-  }
-
-  /** Builds the display kernel graph for a variant's dense zone table. */
-  function buildDisplay(
-    id: string,
-    table: ZoneTable,
-    displayValues: Buffer
-  ): CompiledGPUCommandGraph<void> {
-    const graph = new GPUCommandGraph<void>(device, {id: `zone-display-${id}`});
-    const view = <Format extends 'float32' | 'uint32'>(
-      name: string,
-      buffer: Buffer,
-      format: Format,
-      length: number
-    ) => importGraphBuffer(graph, name, buffer, format, length);
-    addKernelPass(graph, {
-      id: `zone-display-${id}`,
-      invocationCount: zoneCount + 1,
-      declarations: `const ZONES: u32 = ${zoneCount}u;
-fn isNonFinite(value: f32) -> bool { return (bitcast<u32>(value) & 0x7fffffffu) >= 0x7f800000u; }`,
-      bindings: [
-        {
-          name: 'counts',
-          view: view('counts', table.counts, 'uint32', zoneCount),
-          type: 'u32',
-          access: 'read'
-        },
-        {
-          name: 'sums',
-          view: view('sums', table.sums, 'float32', zoneCount),
-          type: 'f32',
-          access: 'read'
-        },
-        {
-          name: 'means',
-          view: view('means', table.means, 'float32', zoneCount),
-          type: 'f32',
-          access: 'read'
-        },
-        {
-          name: 'maxima',
-          view: view('maxima', table.maximums, 'float32', zoneCount),
-          type: 'f32',
-          access: 'read'
-        },
-        {
-          name: 'kinds',
-          view: view('kinds', zoneKindsBuffer, 'uint32', zoneCount),
-          type: 'u32',
-          access: 'read'
-        },
-        {
-          name: 'parameters',
-          view: displayParameters.importToGraph(graph),
-          type: 'u32',
-          access: 'read'
-        },
-        {
-          name: 'display',
-          view: view('display', displayValues, 'float32', zoneCount + 1),
-          type: 'f32',
-          access: 'read_write'
-        }
-      ],
-      body: `let nan = bitcast<f32>(0x7fc00000u | (index & 0u));
-  var value = nan;
-  if (index < ZONES) {
-    let metric = u32(bitcast<f32>(parameters[parametersOffset]));
-    let kind = parameters[parametersOffset + 1u];
-    if (kind == 0xffffffffu || kinds[kindsOffset + index] == kind) {
-      if (metric == 0u) { value = sums[sumsOffset + index]; }
-      else if (metric == 1u) { value = means[meansOffset + index]; }
-      else if (metric == 2u) { value = maxima[maximaOffset + index]; }
-      else { value = f32(counts[countsOffset + index]); }
-    }
-    if (isNonFinite(value) || value <= 0.0) { value = nan; }
-  }
-  display[displayOffset + index] = value;`
-    });
-    return resources.track(graph.compile());
   }
 
   function createTable(id: string): ZoneTable {
@@ -362,7 +383,22 @@ fn isNonFinite(value: f32) -> bool { return (bitcast<u32>(value) & 0x7fffffffu) 
     };
   }
 
-  function createTableReader(id: string, table: ZoneTable, variant: VariantGraph['variant']) {
+  function parseFlags(words: Uint32Array, offset: number): SummaryFlags {
+    return {
+      events: words[offset],
+      eventOverflow: words[offset + 1],
+      candidates: words[offset + 2],
+      candidateOverflow: words[offset + 3],
+      trackOverflow: words[offset + 4],
+      listOverflow: words[offset + 5],
+      stops: words[offset + 6],
+      stopOverflow: words[offset + 7],
+      joinOverflow: words[offset + 8]
+    };
+  }
+
+  /** The dense per-zone table and the contributor flags, read back together. */
+  function createTableReader(id: string, table: ZoneTable, state: () => VariantState) {
     const bytes = zoneCount * 4;
     return new SummaryReader(
       resources,
@@ -370,7 +406,6 @@ fn isNonFinite(value: f32) -> bool { return (bitcast<u32>(value) & 0x7fffffffu) 
       [
         {buffer: table.counts, size: bytes},
         {buffer: table.sums, size: bytes},
-        {buffer: table.means, size: bytes},
         {buffer: table.maximums, size: bytes},
         {buffer: eventCount, size: 4},
         {buffer: eventOverflow, size: 4},
@@ -383,62 +418,49 @@ fn isNonFinite(value: f32) -> bool { return (bitcast<u32>(value) & 0x7fffffffu) 
         {buffer: joinOverflow, size: 4}
       ],
       raw => {
-        if (destroyed || active?.variant !== variant) return;
+        if (destroyed) return;
         const words = new Uint32Array(raw);
         const floats = new Float32Array(raw);
-        stats = {
+        const target = state();
+        target.stats = {
           counts: words.slice(0, zoneCount),
           sums: floats.slice(zoneCount, zoneCount * 2),
-          means: floats.slice(zoneCount * 2, zoneCount * 3),
-          maximums: floats.slice(zoneCount * 3, zoneCount * 4)
+          maximums: floats.slice(zoneCount * 2, zoneCount * 3)
         };
-        const flags = zoneCount * 4;
-        summarize(
-          {
-            events: words[flags],
-            eventOverflow: words[flags + 1],
-            candidates: words[flags + 2],
-            candidateOverflow: words[flags + 3],
-            trackOverflow: words[flags + 4],
-            listOverflow: words[flags + 5],
-            stops: words[flags + 6],
-            stopOverflow: words[flags + 7],
-            joinOverflow: words[flags + 8]
-          },
-          variant
-        );
+        target.flags = parseFlags(words, zoneCount * 3);
+        refresh();
       }
     );
   }
 
-  function createListReader(id: string, variant: VariantGraph['variant']) {
-    if (variant === 'inside') {
-      return new SummaryReader(
-        resources,
-        `${id}-visits`,
-        [
-          {buffer: visitCount, size: 4},
-          {buffer: visitTracks, size: VISIT_CAPACITY * 4},
-          {buffer: visitZones, size: VISIT_CAPACITY * 4},
-          {buffer: visitDwell, size: VISIT_CAPACITY * 4}
-        ],
-        raw => {
-          if (destroyed || active?.variant !== variant) return;
-          const words = new Uint32Array(raw);
-          const floats = new Float32Array(raw);
-          const count = Math.min(words[0], VISIT_CAPACITY);
-          const rows: typeof longestStays = [];
-          for (let row = 0; row < count; row++) {
-            rows.push({
-              track: words[1 + row],
-              zone: words[1 + VISIT_CAPACITY + row],
-              seconds: floats[1 + VISIT_CAPACITY * 2 + row]
-            });
-          }
-          setLongestStays(rows);
-        }
-      );
-    }
+  function createVisitReader(id: string, state: () => VariantState) {
+    return new SummaryReader(
+      resources,
+      `${id}-visits`,
+      [
+        {buffer: visitCount, size: 4},
+        {buffer: visitTracks, size: VISIT_CAPACITY * 4},
+        {buffer: visitZones, size: VISIT_CAPACITY * 4},
+        {buffer: visitDwell, size: VISIT_CAPACITY * 4}
+      ],
+      raw => {
+        if (destroyed) return;
+        const words = new Uint32Array(raw);
+        const floats = new Float32Array(raw);
+        const count = Math.min(words[0], VISIT_CAPACITY);
+        state().stays = {
+          version: ++readVersion,
+          count,
+          tracks: words.slice(1, 1 + count),
+          zones: words.slice(1 + VISIT_CAPACITY, 1 + VISIT_CAPACITY + count),
+          seconds: floats.slice(1 + VISIT_CAPACITY * 2, 1 + VISIT_CAPACITY * 2 + count)
+        };
+        refresh();
+      }
+    );
+  }
+
+  function createStopReader(id: string, state: () => VariantState) {
     return new SummaryReader(
       resources,
       `${id}-stops`,
@@ -446,214 +468,69 @@ fn isNonFinite(value: f32) -> bool { return (bitcast<u32>(value) & 0x7fffffffu) 
         {buffer: stopCount, size: 4},
         {buffer: stopIds, size: STOP_CAPACITY * 4},
         {buffer: stopZones, size: STOP_CAPACITY * 4},
-        {buffer: stopDurations, size: STOP_CAPACITY * 4}
+        {buffer: stopDurations, size: STOP_CAPACITY * 4},
+        {buffer: stopCentroids, size: STOP_CAPACITY * 8}
       ],
       raw => {
-        if (destroyed || active?.variant !== variant) return;
+        if (destroyed) return;
         const words = new Uint32Array(raw);
         const floats = new Float32Array(raw);
         const count = Math.min(words[0], STOP_CAPACITY);
-        const rows: typeof longestStays = [];
-        for (let row = 0; row < count; row++) {
-          const zone = words[1 + STOP_CAPACITY + row];
-          if (zone >= zoneCount) continue;
-          rows.push({
-            track: words[1 + row],
-            zone,
-            seconds: floats[1 + STOP_CAPACITY * 2 + row]
-          });
-        }
-        setLongestStays(rows);
+        state().stays = {
+          version: ++readVersion,
+          count,
+          tracks: words.slice(1, 1 + count),
+          zones: words.slice(1 + STOP_CAPACITY, 1 + STOP_CAPACITY + count),
+          seconds: floats.slice(1 + STOP_CAPACITY * 2, 1 + STOP_CAPACITY * 2 + count),
+          centroids: floats.slice(1 + STOP_CAPACITY * 3, 1 + STOP_CAPACITY * 3 + count * 2)
+        };
+        refresh();
       }
     );
   }
 
-  function setLongestStays(rows: typeof longestStays): void {
-    longestStays = rows.sort((a, b) => b.seconds - a.seconds).slice(0, 3);
-    for (let rank = 0; rank < 3; rank++) {
-      const stay = longestStays[rank];
-      ctx.setReadout(
-        `stay${rank + 1}`,
-        stay
-          ? `${formatDuration(stay.seconds)}: ${describeVessel(stay.track)} in ${zones.names[stay.zone]}`
-          : '-'
-      );
-    }
-  }
-
-  function describeVessel(track: number): string {
-    const category = VESSEL_CATEGORIES[vessels.category[track]];
-    return `${VESSEL_CATEGORY_LABELS[category].split(' (')[0]} ${vessels.mmsi[track]}`;
-  }
-
-  function summarize(flags: SummaryFlags, variant: VariantGraph['variant']): void {
-    if (!stats) return;
-    lastFlags = flags;
-    let visited = 0;
-    let totalSeconds = 0;
-    let topZone = -1;
-    let topValue = 0;
-    let maximum = 0;
-    const metric = ctx.options.metric;
-    const kind = ctx.options.zoneKind;
-    for (let zone = 0; zone < zoneCount; zone++) {
-      if (stats.counts[zone] > 0) {
-        visited++;
-        totalSeconds += stats.sums[zone];
+  function createEventReader(id: string, capacity: number) {
+    return new SummaryReader(
+      resources,
+      `${id}-events`,
+      [
+        {buffer: eventCount, size: 4},
+        {buffer: eventTracks, size: capacity * 4},
+        {buffer: eventZones, size: capacity * 4},
+        {buffer: eventTypes, size: capacity * 4},
+        {buffer: eventTimes, size: capacity * 4},
+        {buffer: eventPositions, size: capacity * 8}
+      ],
+      raw => {
+        if (destroyed) return;
+        const words = new Uint32Array(raw);
+        const floats = new Float32Array(raw);
+        const count = Math.min(words[0], capacity);
+        const base = 1;
+        eventTable = {
+          version: ++readVersion,
+          count,
+          tracks: words.slice(base, base + count),
+          zones: words.slice(base + capacity, base + capacity + count),
+          types: words.slice(base + capacity * 2, base + capacity * 2 + count),
+          times: floats.slice(base + capacity * 3, base + capacity * 3 + count),
+          positions: floats.slice(base + capacity * 4, base + capacity * 4 + count * 2)
+        };
+        followed = pickFollowedVessel();
+        startAtFollowedVessel();
+        refresh();
       }
-      if (kind !== 'all' && ZONE_KINDS[zones.kinds[zone]] !== kind) continue;
-      const value = getMetricValue(zone, metric);
-      if (Number.isFinite(value) && value > maximum) maximum = value;
-      if (Number.isFinite(value) && value > topValue) {
-        topValue = value;
-        topZone = zone;
-      }
-    }
-    ctx.setReadout('zonesUsed', `${visited} of ${zoneCount}`);
-    ctx.setReadout('totalDwell', `${formatCount(totalSeconds / 3600)} vessel-hours`);
-    ctx.setReadout(
-      'topZone',
-      topZone >= 0 ? `${zones.names[topZone]}: ${formatMetric(topValue, metric)}` : 'none'
     );
-    if (variant === 'inside') {
-      ctx.setReadout(
-        'events',
-        `${formatCount(flags.events)} kept${flags.eventOverflow ? ' (OVERFLOW)' : ''}`
-      );
-      ctx.setReadout(
-        'candidates',
-        `${formatCount(flags.candidates)} of ${formatCount(EVENT_CANDIDATE_CAPACITY)}${flags.candidateOverflow ? ' (OVERFLOW)' : ''}`
-      );
-      ctx.setReadout(
-        'overflow',
-        flags.trackOverflow || flags.listOverflow || flags.candidateOverflow
-          ? [
-              flags.candidateOverflow ? 'candidate scratch' : '',
-              flags.trackOverflow
-                ? 'a vessel exceeded the per-vessel event cap (statistics are still exact)'
-                : '',
-              flags.listOverflow ? 'event list' : ''
-            ]
-              .filter(Boolean)
-              .join(', ')
-          : 'none'
-      );
-    } else {
-      ctx.setReadout(
-        'events',
-        `${formatCount(flags.stops)} stops${flags.stopOverflow ? ' (list truncated)' : ''}`
-      );
-      ctx.setReadout('candidates', 'n/a (stops variant)');
-      ctx.setReadout(
-        'overflow',
-        flags.joinOverflow || flags.stopOverflow ? 'point-in-polygon or stop list' : 'none'
-      );
-    }
-    const scaled = maximum * getValueScale();
-    if (maximum > 0 && Math.abs(scaled - displayMaximum) > displayMaximum * 0.03) {
-      displayMaximum = scaled;
-      ctx.requestLayers();
-    } else if (maximum > 0) {
-      displayMaximum = scaled;
-    }
-    ctx.setLegendExtent('zones', [0, displayMaximum]);
-    updateCharts(metric, kind);
-    describeSelected();
-  }
-
-  /** Ranked zones and total dwell by zone kind. */
-  function updateCharts(metric: ZoneDwellOptions['metric'], kind: ZoneDwellOptions['zoneKind']) {
-    if (!stats) return;
-    const scale = getValueScale();
-    const ranked: {zone: number; value: number}[] = [];
-    const kindTotals = new Float64Array(ZONE_KINDS.length);
-    for (let zone = 0; zone < zoneCount; zone++) {
-      if (stats.counts[zone] > 0) kindTotals[zones.kinds[zone]] += stats.sums[zone] / 3600;
-      if (kind !== 'all' && ZONE_KINDS[zones.kinds[zone]] !== kind) continue;
-      const value = getMetricValue(zone, metric);
-      if (Number.isFinite(value) && value > 0) ranked.push({zone, value});
-    }
-    ranked.sort((a, b) => b.value - a.value);
-    const top = ranked.slice(0, 8);
-    const unit =
-      metric === 'visits' ? (ctx.options.variant === 'inside' ? 'visits' : 'stops') : 'hours';
-    ctx.setChart(
-      'rankChart',
-      top.length
-        ? {
-            kind: 'bars',
-            values: top.map(entry => entry.value * scale),
-            labels: top.map(entry =>
-              zones.names[entry.zone].replace(/ approx\.$/, '').slice(0, 14)
-            ),
-            highlight: [0],
-            height: 150,
-            yLabel: unit,
-            formatY: value => (value >= 10 ? value.toFixed(0) : value.toFixed(1)),
-            description: 'The eight zones with the highest value of the selected statistic.'
-          }
-        : null
-    );
-    ctx.setChart('kindChart', {
-      kind: 'bars',
-      values: kindTotals,
-      labels: ZONE_KINDS.map(zoneKind => ZONE_KIND_LABELS[zoneKind].split(' (')[0].slice(0, 11)),
-      color: 2,
-      height: 120,
-      yLabel: 'vessel-hours',
-      formatY: value => value.toFixed(0),
-      description: 'Total vessel-hours inside each kind of zone, whatever statistic the map shows.'
-    });
-  }
-
-  function getMetricValue(zone: number, metric: ZoneDwellOptions['metric']): number {
-    if (!stats) return NaN;
-    if (metric === 'visits') return stats.counts[zone];
-    if (metric === 'total') return stats.sums[zone];
-    if (metric === 'mean') return stats.means[zone];
-    return stats.maximums[zone];
-  }
-
-  function formatMetric(value: number, metric: ZoneDwellOptions['metric']): string {
-    if (metric === 'visits')
-      return `${formatCount(value)} ${ctx.options.variant === 'inside' ? 'visits' : 'stops'}`;
-    if (metric === 'total') return `${formatCount(value / 3600)} vessel-hours`;
-    return formatDuration(value);
-  }
-
-  function describeSelected(): void {
-    if (selectedZone === NO_ZONE) {
-      ctx.setReadout('selectedZone', 'click a zone');
-      return;
-    }
-    ctx.setReadout('selectedZone', describeZone(selectedZone));
-  }
-
-  function describeZone(zone: number): string {
-    const kind = ZONE_KINDS[zones.kinds[zone]];
-    const header = `${zones.names[zone]} [${kind}]`;
-    if (!stats || stats.counts[zone] === 0)
-      return `${header}: no ${ctx.options.variant === 'inside' ? 'visits' : 'stops'}`;
-    return `${header}: ${formatCount(stats.counts[zone])} ${ctx.options.variant === 'inside' ? 'visits' : 'stops'}, ${formatCount(stats.sums[zone] / 3600)} h total, ${formatDuration(stats.means[zone])} mean, ${formatDuration(stats.maximums[zone])} longest`;
-  }
-
-  function writeSelectedOutline(): void {
-    const segments = new Float32Array(maxZoneEdges * 4).fill(Number.NaN);
-    if (selectedZone !== NO_ZONE) {
-      let row = 0;
-      for (let edge = 0; edge < edgeCount; edge++) {
-        if (zones.edgeZones[edge] !== selectedZone) continue;
-        segments.set(zones.outlineSegments.subarray(edge * 4, edge * 4 + 4), row * 4);
-        row++;
-      }
-    }
-    selectedOutline.write(segments);
   }
 
   // ---- Variant graphs ------------------------------------------------------------------------
-  function buildInside(eventsPerVessel: number): VariantGraph {
-    const table = createTable('inside');
-    const displayValues = resources.createBuffer('inside-display', (zoneCount + 1) * 4);
+  function buildInside(eventsPerVessel: number): VariantState {
+    const id = `inside-${eventsPerVessel}`;
+    const zoneTable = createTable(id);
+    const displayValues = resources.createBuffer(
+      `${id}-display`,
+      new Float32Array(zoneCount).fill(Number.NaN)
+    );
     const graph = new GPUCommandGraph<void>(device, {id: `zone-events-${eventsPerVessel}`});
     const capacity = trackCount * eventsPerVessel;
     const view = <Format extends 'float32' | 'uint32'>(
@@ -667,20 +544,8 @@ fn isNonFinite(value: f32) -> bool { return (bitcast<u32>(value) & 0x7fffffffu) 
       positions: importGraphBuffer(graph, 'positions', positionsBuffer, 'float32x2', vertexCount),
       timestamps: view('timestamps', timestampsBuffer, 'float32', vertexCount),
       trackOffsets: view('offsets', offsetsBuffer, 'uint32', trackCount + 1),
-      edgeStarts: importGraphBuffer(
-        graph,
-        'edge-starts',
-        resources.createBuffer('edge-starts', zones.edgeStarts),
-        'float32x2',
-        edgeCount
-      ),
-      edgeEnds: importGraphBuffer(
-        graph,
-        'edge-ends',
-        resources.createBuffer('edge-ends', zones.edgeEnds),
-        'float32x2',
-        edgeCount
-      ),
+      edgeStarts: importGraphBuffer(graph, 'edge-starts', edgeStartsBuffer, 'float32x2', edgeCount),
+      edgeEnds: importGraphBuffer(graph, 'edge-ends', edgeEndsBuffer, 'float32x2', edgeCount),
       edgeZones: view('edge-zones', edgeZonesBuffer, 'uint32', edgeCount),
       zoneCount,
       candidateCapacity: EVENT_CANDIDATE_CAPACITY,
@@ -718,30 +583,36 @@ fn isNonFinite(value: f32) -> bool { return (bitcast<u32>(value) & 0x7fffffffu) 
         dwellTimes: view('visit-dwell', visitDwell, 'float32', VISIT_CAPACITY)
       },
       table: {
-        counts: view('zone-counts', table.counts, 'uint32', zoneCount),
-        sumValues: view('zone-sums', table.sums, 'float32', zoneCount),
-        means: view('zone-means', table.means, 'float32', zoneCount),
-        maximums: view('zone-maximums', table.maximums, 'float32', zoneCount)
+        counts: view('zone-counts', zoneTable.counts, 'uint32', zoneCount),
+        sumValues: view('zone-sums', zoneTable.sums, 'float32', zoneCount),
+        means: view('zone-means', zoneTable.means, 'float32', zoneCount),
+        maximums: view('zone-maximums', zoneTable.maximums, 'float32', zoneCount)
       }
     });
     const compiled = resources.track(graph.compile());
-    return {
+    const state: VariantState = {
       variant: 'inside',
       compiled,
-      display: buildDisplay('inside', table, displayValues),
+      table: zoneTable,
       displayValues,
-      table,
-      tableReader: createTableReader('inside', table, 'inside'),
-      listReader: createListReader('inside', 'inside'),
+      tableReader: createTableReader(id, zoneTable, () => state),
+      listReader: createVisitReader(id, () => state),
+      eventReader: createEventReader(id, capacity),
       needsEncode: true,
-      needsDisplay: true,
+      stats: null,
+      flags: EMPTY_FLAGS,
+      stays: null,
       eventsPerVessel
     };
+    return state;
   }
 
-  function buildStopped(): VariantGraph {
-    const table = createTable('stopped');
-    const displayValues = resources.createBuffer('stopped-display', (zoneCount + 1) * 4);
+  function buildStopped(): VariantState {
+    const zoneTable = createTable('stopped');
+    const displayValues = resources.createBuffer(
+      'stopped-display',
+      new Float32Array(zoneCount).fill(Number.NaN)
+    );
     const graph = new GPUCommandGraph<void>(device, {id: 'zone-stops'});
     const view = <Format extends 'float32' | 'uint32'>(
       name: string,
@@ -760,28 +631,25 @@ fn isNonFinite(value: f32) -> bool { return (bitcast<u32>(value) & 0x7fffffffu) 
         polygonPositions: importGraphBuffer(
           graph,
           'polygon-positions',
-          resources.createBuffer('polygon-positions', zones.polygonPositions),
+          polygonBuffers.positions,
           'float32x2',
           zones.polygonPositions.length / 2
         ),
-        featureOffsets: importGraphBuffer(
-          graph,
+        featureOffsets: view(
           'feature-offsets',
-          resources.createBuffer('feature-offsets', zones.featureOffsets),
+          polygonBuffers.featureOffsets,
           'uint32',
           zones.featureOffsets.length
         ),
-        polygonOffsets: importGraphBuffer(
-          graph,
+        polygonOffsets: view(
           'polygon-offsets',
-          resources.createBuffer('polygon-offsets', zones.polygonOffsets),
+          polygonBuffers.polygonOffsets,
           'uint32',
           zones.polygonOffsets.length
         ),
-        ringOffsets: importGraphBuffer(
-          graph,
+        ringOffsets: view(
           'ring-offsets',
-          resources.createBuffer('ring-offsets', zones.ringOffsets),
+          polygonBuffers.ringOffsets,
           'uint32',
           zones.ringOffsets.length
         ),
@@ -803,40 +671,27 @@ fn isNonFinite(value: f32) -> bool { return (bitcast<u32>(value) & 0x7fffffffu) 
       stopZones: view('stop-zones', stopZones, 'uint32', STOP_CAPACITY),
       joinOverflow: view('join-overflow', joinOverflow, 'uint32', 1),
       table: {
-        counts: view('zone-counts', table.counts, 'uint32', zoneCount),
-        sumValues: view('zone-sums', table.sums, 'float32', zoneCount),
-        means: view('zone-means', table.means, 'float32', zoneCount),
-        maximums: view('zone-maximums', table.maximums, 'float32', zoneCount)
+        counts: view('zone-counts', zoneTable.counts, 'uint32', zoneCount),
+        sumValues: view('zone-sums', zoneTable.sums, 'float32', zoneCount),
+        means: view('zone-means', zoneTable.means, 'float32', zoneCount),
+        maximums: view('zone-maximums', zoneTable.maximums, 'float32', zoneCount)
       }
     });
     const compiled = resources.track(graph.compile());
-    return {
+    const state: VariantState = {
       variant: 'stopped',
       compiled,
-      display: buildDisplay('stopped', table, displayValues),
+      table: zoneTable,
       displayValues,
-      table,
-      tableReader: createTableReader('stopped', table, 'stopped'),
-      listReader: createListReader('stopped', 'stopped'),
+      tableReader: createTableReader('stopped', zoneTable, () => state),
+      listReader: createStopReader('stopped', () => state),
+      eventReader: null,
       needsEncode: true,
-      needsDisplay: true
+      stats: null,
+      flags: EMPTY_FLAGS,
+      stays: null
     };
-  }
-
-  function activate(variant: ZoneDwellOptions['variant']): void {
-    const key = variant === 'inside' ? `inside-${ctx.options.eventsPerVessel}` : 'stopped';
-    let next = variants.get(key);
-    if (!next) {
-      next =
-        variant === 'inside' ? buildInside(Number(ctx.options.eventsPerVessel)) : buildStopped();
-      variants.set(key, next);
-    }
-    active = next;
-    next.needsEncode = true;
-    next.needsDisplay = true;
-    stats = null;
-    longestStays = [];
-    markChanged();
+    return state;
   }
 
   const markChanged = () => {
@@ -844,114 +699,844 @@ fn isNonFinite(value: f32) -> bool { return (bitcast<u32>(value) & 0x7fffffffu) 
     settleStale = true;
   };
 
-  writeDisplayParameters();
+  // ---- Class table, frozen once per unit --------------------------------------------------------
+  /**
+   * The breaks of a metric and unit, computed once from the inside statistics and kept: toggling
+   * the filter, the variant or the thresholds recolours nothing but the zones, so a colour change
+   * is a data change.
+   */
+  function getFrozenBreaks(metric: ZoneMetric, unit: ZoneUnit): FrozenBreaks | null {
+    const key = getBreaksKey(metric, unit);
+    const known = frozenBreaks.get(key);
+    if (known) return known;
+    if (!insideGroups) return null;
+    const referenceUnit: ZoneUnit = unit === 'density' ? 'density' : 'total';
+    const values = getGroupValues(insideGroups, metric, referenceUnit, geometry.groupAreasKm2);
+    const finite = Array.from(values).filter(Number.isFinite);
+    if (finite.length === 0) return null;
+    const manual = metric === 'mean' || metric === 'longest';
+    const frozen: FrozenBreaks = {
+      breaks: computeClassBreaks(finite, metric),
+      zonesWithTime: finite.length,
+      extent: getExtent(finite),
+      method: manual
+        ? 'Manual breaks chosen for waiting times'
+        : `Quantiles of the ${finite.length} zones with time`
+    };
+    frozenBreaks.set(key, frozen);
+    return frozen;
+  }
+
+  function getGroupValuesFor(stats: GroupStatistics | null): Float64Array | null {
+    if (!stats) return null;
+    return getGroupValues(stats, ctx.options.metric, ctx.options.unit, geometry.groupAreasKm2);
+  }
+
+  function writeDisplay(state: VariantState, values: Float64Array | null): void {
+    const out = new Float32Array(zoneCount).fill(Number.NaN);
+    if (values) {
+      for (let zone = 0; zone < zoneCount; zone++) {
+        const group = groups.groupOfZone[zone];
+        const value = values[group];
+        if (Number.isFinite(value) && isShown(group)) out[zone] = value;
+      }
+    }
+    state.displayValues.write(out);
+  }
+
+  /** The variant the map shows when it is not a swipe. */
+  const getPrimary = () => (ctx.options.variant === 'stopped' ? stopped : inside);
+  const getPrimaryValues = () => (ctx.options.variant === 'stopped' ? stoppedValues : insideValues);
+  const getDefinition = () =>
+    ctx.options.compareVariants ? 'both' : ctx.options.variant === 'stopped' ? 'stopped' : 'inside';
+
+  // ---- Readouts, charts, notes ------------------------------------------------------------------
+  function getRanked(values: Float64Array | null): number[] {
+    if (!values) return [];
+    const ranked: number[] = [];
+    for (let group = 0; group < groups.groupCount; group++) {
+      if (Number.isFinite(values[group]) && isShown(group)) ranked.push(group);
+    }
+    return ranked.sort((a, b) => values[b] - values[a]);
+  }
+
+  function getMedian(values: number[]): number {
+    if (values.length === 0) return Number.NaN;
+    const sorted = [...values].sort((a, b) => a - b);
+    const middle = sorted.length >> 1;
+    return sorted.length % 2 ? sorted[middle] : (sorted[middle - 1] + sorted[middle]) / 2;
+  }
+
+  function getTableColor(value: number) {
+    if (!table) return undefined;
+    const index = getClassIndexOf(table, value);
+    return index >= 0 ? table.colors[index] : undefined;
+  }
+
+  function updateRanking(values: Float64Array | null): void {
+    const {metric, unit} = ctx.options;
+    const ranked = getRanked(values);
+    const top = ranked.slice(0, RANKED_ZONES);
+    const labels = getZoneValueLabels(metric, unit, getDefinition());
+    if (!values || top.length === 0) {
+      ctx.setChart('rankChart', null);
+      ctx.setReadout('topZone', 'no zone has time');
+      ctx.setReadout('busiestArea', '–');
+      ctx.setReadout('typicalArea', '–');
+      return;
+    }
+    ctx.setChart('rankChart', {
+      kind: 'bars',
+      horizontal: true,
+      values: top.map(group => values[group]),
+      labels: top.map(group => groups.names[group]),
+      colors: top.map(group => getTableColor(values[group]) ?? ([128, 128, 128, 255] as const)),
+      xLabel: `${labels.unit}${labels.basis ? ` ${labels.basis}` : ''}`,
+      formatX: value => formatQuantity(value),
+      onBarClick: index => selectGroup(top[index] === selectedGroup ? NO_GROUP : top[index]),
+      description: `The ${top.length} zones with the highest ${labels.title.toLowerCase()}, coloured by class.`
+    });
+    ctx.setReadout(
+      'topZone',
+      `${groups.names[top[0]]}: ${formatZoneValue(values[top[0]], metric, unit)}`
+    );
+    const withTime = Array.from({length: groups.groupCount}, (_, group) => group).filter(group =>
+      Number.isFinite(values[group])
+    );
+    ctx.setReadout(
+      'busiestArea',
+      formatArea(getMedian(top.map(group => geometry.groupAreasKm2[group])) * 1e6)
+    );
+    ctx.setReadout(
+      'typicalArea',
+      formatArea(getMedian(withTime.map(group => geometry.groupAreasKm2[group])) * 1e6)
+    );
+  }
+
+  function getKindHours(stats: GroupStatistics | null) {
+    const hours: Record<'anchorage' | 'channel' | 'approximate' | 'all', number> = {
+      anchorage: 0,
+      channel: 0,
+      approximate: 0,
+      all: 0
+    };
+    if (!stats) return hours;
+    for (let group = 0; group < groups.groupCount; group++) {
+      const value = stats.sums[group] / 3600;
+      hours.all += value;
+      if (groups.kinds[group] === 'anchorage') hours.anchorage += value;
+      else if (groups.kinds[group] === 'channel') hours.channel += value;
+      else hours.approximate += value;
+    }
+    return hours;
+  }
+
+  function updateDefinitionReadouts(): void {
+    const stops = stopped.stays;
+    if (stops) {
+      let inZones = 0;
+      for (let row = 0; row < stops.count; row++) if (stops.zones[row] < zoneCount) inZones++;
+      ctx.setReadout(
+        'stopCount',
+        `${formatCount(inZones)} stops in the zones, ${formatCount(stops.count - inZones)} elsewhere`
+      );
+    } else {
+      ctx.setReadout('stopCount', null);
+    }
+    const insideHours = getKindHours(insideGroups);
+    const stoppedHours = getKindHours(stoppedGroups);
+    ctx.setReadout(
+      'insideHours',
+      insideGroups ? `${formatCount(insideHours.all)} vessel-hours` : null
+    );
+    ctx.setReadout(
+      'stoppedHours',
+      stoppedGroups ? `${formatCount(stoppedHours.all)} vessel-hours` : null
+    );
+    const keep = (kind: 'anchorage' | 'channel') =>
+      insideGroups && stoppedGroups && insideHours[kind] > 0
+        ? formatPercent(stoppedHours[kind] / insideHours[kind])
+        : null;
+    ctx.setReadout('anchorageKeep', keep('anchorage'));
+    ctx.setReadout('channelKeep', keep('channel'));
+    ctx.setReadout(
+      'approxShare',
+      insideGroups && insideHours.all > 0
+        ? formatPercent(insideHours.approximate / insideHours.all)
+        : null
+    );
+    if (insideGroups && stoppedGroups) {
+      const kindRows = [
+        {label: 'Anchorages', kind: 'anchorage' as const},
+        {label: 'Channels', kind: 'channel' as const},
+        {label: 'Terminals', kind: 'terminal' as const},
+        {label: 'Narrows gate', kind: 'gate' as const},
+        {label: 'Tour area', kind: 'tourist' as const},
+        {label: 'Ferry lane', kind: 'ferry' as const}
+      ];
+      const perKind = (stats: GroupStatistics, kind: string) => {
+        let total = 0;
+        for (let group = 0; group < groups.groupCount; group++) {
+          if (groups.kinds[group] === kind) total += stats.sums[group] / 3600;
+        }
+        return total;
+      };
+      ctx.setChart('kindChart', {
+        kind: 'dumbbell',
+        aLabel: 'Inside',
+        bLabel: 'Stopped',
+        xLabel: 'vessel-hours in the zones of each kind',
+        formatX: value => formatQuantity(value),
+        rows: kindRows.map(row => ({
+          label: row.label,
+          a: perKind(insideGroups as GroupStatistics, row.kind),
+          b: perKind(stoppedGroups as GroupStatistics, row.kind),
+          highlight: row.kind === 'channel' || row.kind === 'anchorage'
+        })),
+        description:
+          'Vessel-hours per kind of zone, counted as any time inside and as time spent stopped.'
+      });
+    } else {
+      ctx.setChart('kindChart', null);
+    }
+  }
+
+  function describeStay(row: {track: number; group: number; seconds: number}): string {
+    const category = VESSEL_CATEGORIES[vessels.category[row.track]];
+    const noun = VESSEL_CATEGORY_LABELS[category].split(' (')[0].toLowerCase();
+    return `${formatDwell(row.seconds)}: a ${noun} in ${groups.names[row.group]}`;
+  }
+
+  function updateStayReadouts(): void {
+    const primary = getPrimary();
+    const stays = primary.stays;
+    const minimumStop = ctx.options.stopMinutes * 60;
+    if (!stays) {
+      ctx.setReadout('longestVisit', null);
+      ctx.setReadout('passageShare', null);
+      ctx.setReadout('meanVisit', null);
+      return;
+    }
+    let longest: {track: number; group: number; seconds: number} | null = null;
+    let total = 0;
+    let shown = 0;
+    let passages = 0;
+    for (let row = 0; row < stays.count; row++) {
+      const zone = stays.zones[row];
+      if (zone >= zoneCount) continue;
+      const group = groups.groupOfZone[zone];
+      if (!isShown(group)) continue;
+      const seconds = stays.seconds[row];
+      shown++;
+      total += seconds;
+      if (seconds < minimumStop) passages++;
+      if (!longest || seconds > longest.seconds)
+        longest = {track: stays.tracks[row], group, seconds};
+    }
+    ctx.setReadout('longestVisit', longest ? describeStay(longest) : 'none');
+    ctx.setReadout('passageShare', shown > 0 ? formatPercent(passages / shown) : null);
+    ctx.setReadout('meanVisit', shown > 0 ? formatDwell(total / shown) : null);
+  }
+
+  function updateEventReadouts(): void {
+    const flags = inside.flags;
+    const events = eventTable;
+    let shown = 0;
+    if (events) {
+      for (let row = 0; row < events.count; row++) {
+        if (isShown(groups.groupOfZone[events.zones[row]])) shown++;
+      }
+    }
+    ctx.setReadout(
+      'events',
+      events ? `${formatCount(shown)} crossings in the zones in view` : null
+    );
+    ctx.setReadout(
+      'eventsKept',
+      `${formatCount(flags.events)} kept${flags.eventOverflow ? ' (OVERFLOW)' : ''}`
+    );
+    ctx.setReadout(
+      'candidates',
+      `${formatCount(flags.candidates)} of ${formatCount(EVENT_CANDIDATE_CAPACITY)}${flags.candidateOverflow ? ' (OVERFLOW)' : ''}`
+    );
+    const stoppedFlags = stopped.flags;
+    ctx.setReadout(
+      'overflow',
+      [
+        flags.candidateOverflow ? 'candidate scratch' : '',
+        flags.trackOverflow
+          ? 'a vessel exceeded the per-vessel event cap (statistics stay exact)'
+          : '',
+        flags.listOverflow ? 'event list' : '',
+        stoppedFlags.joinOverflow || stoppedFlags.stopOverflow ? 'stop list or join' : ''
+      ]
+        .filter(Boolean)
+        .join(', ') || 'none'
+    );
+  }
+
+  /** The note annotations of the step: sizes and live values, or the hand-drawn zones. */
+  function updateNotes(values: Float64Array | null): void {
+    const {notes, metric, unit} = ctx.options;
+    if (notes === 'none' || !values) {
+      if (notesKey) ctx.setAnnotations('zone-notes', null);
+      notesKey = '';
+      return;
+    }
+    const annotations: MapAnnotation[] = [];
+    if (notes === 'size') {
+      let largest = -1;
+      for (let group = 0; group < groups.groupCount; group++) {
+        if (!isShown(group)) continue;
+        if (largest < 0 || geometry.groupAreasKm2[group] > geometry.groupAreasKm2[largest]) {
+          largest = group;
+        }
+      }
+      const top = getRanked(values)[0];
+      const describe = (group: number, lead: string): MapAnnotation => ({
+        kind: 'note',
+        id: `note:${lead.toLowerCase()}`,
+        coordinate: geometry.groupLabelPoints[group],
+        title: `${lead}: ${groups.names[group]}`,
+        text: `${formatArea(geometry.groupAreasKm2[group] * 1e6)}, ${formatZoneValue(values[group], metric, unit)}`,
+        priority: 5
+      });
+      if (largest >= 0) annotations.push(describe(largest, 'Largest'));
+      if (top !== undefined && top !== largest) annotations.push(describe(top, 'Highest'));
+    } else {
+      let biggest = -1;
+      for (let group = 0; group < groups.groupCount; group++) {
+        if (!isApproximateZoneKind(groups.kinds[group])) continue;
+        annotations.push({
+          kind: 'outline',
+          rings: geometry.groupOuterRings[group],
+          dashed: true,
+          tone: 'accent',
+          id: `approx:${group}`
+        });
+        if (biggest < 0 || geometry.groupAreasKm2[group] > geometry.groupAreasKm2[biggest]) {
+          biggest = group;
+        }
+      }
+      if (insideGroups && biggest >= 0) {
+        const hours = getKindHours(insideGroups);
+        annotations.push({
+          kind: 'note',
+          id: 'note:hand-drawn',
+          coordinate: geometry.groupLabelPoints[biggest],
+          title: `${formatPercent(hours.approximate / Math.max(hours.all, 1e-9))} of the hours`,
+          text: 'fall in zones drawn by hand',
+          priority: 5
+        });
+      }
+    }
+    const key = JSON.stringify(annotations);
+    if (key === notesKey) return;
+    notesKey = key;
+    ctx.setAnnotations('zone-notes', annotations);
+  }
+
+  // ---- The followed vessel (step 3) ----------------------------------------------------------------
+  function pickFollowedVessel(): FollowedVessel | null {
+    const events = eventTable;
+    if (!events || gateGroup < 0 || events.count === 0) return null;
+    const gateZones = new Set(groups.members[gateGroup]);
+    const perTrack = new Map<number, number[]>();
+    for (let row = 0; row < events.count; row++) {
+      const list = perTrack.get(events.tracks[row]);
+      if (list) list.push(row);
+      else perTrack.set(events.tracks[row], [row]);
+    }
+    const preference = [3, 0, 1, 2, 6, 5, 4];
+    let best: {track: number; rows: number[]; rank: number} | null = null;
+    for (const [track, rows] of perTrack) {
+      rows.sort((a, b) => events.times[a] - events.times[b]);
+      const gateRows = rows.filter(row => gateZones.has(events.zones[row]));
+      // A round trip through the Narrows: two transits, four crossings, entering first, and no
+      // event lost to the per-vessel cap.
+      if (gateRows.length !== 4 || events.types[gateRows[0]] !== ENTER) continue;
+      if (rows.length >= (inside.eventsPerVessel ?? MAX_EVENTS_PER_TRACK)) continue;
+      const rank = preference.indexOf(vessels.category[track]) * 1000 + rows.length;
+      if (!best || rank < best.rank) best = {track, rows, rank};
+    }
+    if (!best) return null;
+    const start = trackStartTimes[best.track];
+    const end = vessels.timestamps[vessels.offsets[best.track + 1] - 1];
+    const crossings = best.rows
+      .filter(row => gateZones.has(events.zones[row]))
+      .map(row => ({
+        time: start + events.times[row],
+        type: events.types[row],
+        x: events.positions[row * 2],
+        y: events.positions[row * 2 + 1]
+      }));
+    // Visits: pair enters and exits per zone group, in time order.
+    const open = new Map<number, number>();
+    const visits: FollowedVessel['visits'] = [];
+    for (const row of best.rows) {
+      const group = groups.groupOfZone[events.zones[row]];
+      const time = start + events.times[row];
+      if (events.types[row] === ENTER) {
+        open.set(group, time);
+      } else {
+        visits.push({group, start: open.get(group) ?? start, end: time});
+        open.delete(group);
+      }
+    }
+    for (const [group, time] of open) visits.push({group, start: time, end});
+    visits.sort((a, b) => a.start - b.start);
+    return {
+      track: best.track,
+      category:
+        VESSEL_CATEGORY_LABELS[VESSEL_CATEGORIES[vessels.category[best.track]]].split(' (')[0],
+      crossings,
+      visits
+    };
+  }
+
+  /** Puts the clock shortly before the followed vessel first enters the gate. */
+  function startAtFollowedVessel(): void {
+    const vessel = followed;
+    if (!vessel || !ctx.options.showVessel) return;
+    ctx.setOptions({time: Math.max(0, Math.floor((vessel.crossings[0].time - 25 * 60) / 60) * 60)});
+  }
+
+  function buildGantt(vessel: FollowedVessel) {
+    const rowOrder: number[] = [];
+    for (const visit of vessel.visits)
+      if (!rowOrder.includes(visit.group)) rowOrder.push(visit.group);
+    const from = Math.min(...vessel.visits.map(visit => visit.start));
+    const to = Math.max(...vessel.visits.map(visit => visit.end));
+    const first = Math.floor(from / 3600) * 3600;
+    const last = Math.ceil(to / 3600) * 3600;
+    const left = 112;
+    const right = 312;
+    const rowHeight = 14;
+    const top = 6;
+    const toX = (time: number) =>
+      left + ((time - first) / Math.max(last - first, 1)) * (right - left);
+    const height = top + rowOrder.length * rowHeight + 22;
+    const escapeMarkup = (text: string) =>
+      text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    const shorten = (text: string) => (text.length > 19 ? `${text.slice(0, 18)}…` : text);
+    const parts: string[] = [];
+    rowOrder.forEach((group, row) => {
+      const y = top + row * rowHeight;
+      const isGate = group === gateGroup;
+      parts.push(
+        `<text class="${isGate ? 'diagram-accent' : 'diagram-muted'}" x="${left - 6}" y="${y + 10}" text-anchor="end">${escapeMarkup(shorten(groups.names[group]))}</text>`,
+        `<line class="diagram-muted" x1="${left}" y1="${y + rowHeight - 1}" x2="${right}" y2="${y + rowHeight - 1}" opacity="0.25"/>`
+      );
+      for (const visit of vessel.visits) {
+        if (visit.group !== group) continue;
+        const x = toX(visit.start);
+        const width = Math.max(1.6, toX(visit.end) - x);
+        parts.push(
+          `<rect class="${isGate ? 'diagram-accent' : 'diagram-fill'}" x="${x.toFixed(1)}" y="${y + 2}" width="${width.toFixed(1)}" height="${rowHeight - 5}"/>`
+        );
+      }
+    });
+    const axisY = top + rowOrder.length * rowHeight + 4;
+    const tickStep = last - first > 8 * 3600 ? 2 : 1;
+    for (let time = first; time <= last; time += tickStep * 3600) {
+      const x = toX(time);
+      parts.push(
+        `<line class="diagram-muted" x1="${x.toFixed(1)}" y1="${axisY - 3}" x2="${x.toFixed(1)}" y2="${axisY}"/>`,
+        `<text class="diagram-muted" x="${x.toFixed(1)}" y="${axisY + 11}" text-anchor="middle">${formatUtcClock(time)}</text>`
+      );
+    }
+    return {
+      kind: 'diagram' as const,
+      width: 320,
+      height,
+      svg: parts.join('\n'),
+      description: `Gantt chart of one ${vessel.category.toLowerCase()}: each bar is a visit from the enter event to the exit event of a zone; times are UTC.`
+    };
+  }
+
+  function updateFollowed(): void {
+    const vessel = followed;
+    ctx.setReadout('followed', vessel ? `a ${vessel.category.toLowerCase()}` : null);
+    ctx.setChart('visitChart', vessel ? buildGantt(vessel) : null);
+    if (!ctx.options.showVessel || !vessel) {
+      if (vesselAnnotated) {
+        markersKey = '';
+        ctx.setAnnotations('vessel', null);
+        ctx.setAnnotationTime(null);
+        lastAnnotationTime = Number.NaN;
+        vesselAnnotated = false;
+      }
+      selectionHighlights();
+      return;
+    }
+    const markers: MapAnnotation[] = vessel.crossings.map((crossing, index) => ({
+      kind: 'marker',
+      coordinate: vessels.unproject(crossing.x, crossing.y),
+      number: index + 1,
+      text: `Crossing ${index + 1}: ${crossing.type === ENTER ? 'enters' : 'exits'} the gate zone`,
+      timeRange: [crossing.time, SECONDS_PER_DAY + 1],
+      id: `vessel-crossing:${index}`
+    }));
+    const key = JSON.stringify(markers);
+    if (key !== markersKey) {
+      markersKey = key;
+      ctx.setAnnotations('vessel', markers);
+    }
+    vesselAnnotated = true;
+    selectionHighlights();
+  }
+
+  /** The followed track and the selected zone, as achromatic highlights. */
+  function selectionHighlights(): void {
+    const vessel = followed;
+    const key = `${vessel && ctx.options.showVessel ? vessel.track : -1}|${selectedGroup}`;
+    if (key === highlightKey) return;
+    highlightKey = key;
+    const list: MapHighlight[] = [];
+    if (vessel && ctx.options.showVessel) {
+      const coordinates: LngLat[] = [];
+      for (
+        let vertex = vessels.offsets[vessel.track];
+        vertex < vessels.offsets[vessel.track + 1];
+        vertex++
+      ) {
+        coordinates.push([vessels.lngLat[vertex * 2], vessels.lngLat[vertex * 2 + 1]]);
+      }
+      list.push({kind: 'line', coordinates});
+    }
+    if (selectedGroup !== NO_GROUP) {
+      list.push({kind: 'polygon', rings: geometry.groupRings[selectedGroup]});
+    }
+    ctx.setHighlight(list.length ? list : null);
+  }
+
+  function selectGroup(group: number): void {
+    selectedGroup = group;
+    selectionHighlights();
+  }
+
+  // ---- Compact pulses and stops --------------------------------------------------------------------
+  function rebuildPulses(): void {
+    const events = eventTable;
+    if (!events) return;
+    const key = `${events.version}|${ctx.options.zoneKind}`;
+    if (key === pulseKey) return;
+    pulseKey = key;
+    const tracks = new Uint32Array(events.count);
+    const times = new Float32Array(events.count);
+    const types = new Uint32Array(events.count);
+    const positions = new Float32Array(events.count * 2);
+    const hourly = new Array<number>(24).fill(0);
+    let count = 0;
+    for (let row = 0; row < events.count; row++) {
+      if (!isShown(groups.groupOfZone[events.zones[row]])) continue;
+      tracks[count] = events.tracks[row];
+      times[count] = events.times[row];
+      types[count] = events.types[row];
+      positions[count * 2] = events.positions[row * 2];
+      positions[count * 2 + 1] = events.positions[row * 2 + 1];
+      const hour = Math.floor((trackStartTimes[events.tracks[row]] + events.times[row]) / 3600);
+      if (hour >= 0 && hour < 24) hourly[hour]++;
+      count++;
+    }
+    if (count > 0) {
+      pulseTracks.write(tracks.subarray(0, count));
+      pulseTimes.write(times.subarray(0, count));
+      pulseTypes.write(types.subarray(0, count));
+      pulsePositions.write(positions.subarray(0, count * 2));
+    }
+    pulseDraw.buffer.write(Uint32Array.of(6, count, 0, 0));
+    ctx.setTimelineData({domain: [0, SECONDS_PER_DAY], histogram: hourly});
+  }
+
+  function rebuildStops(): void {
+    const stays = stopped.stays;
+    if (!stays?.centroids) return;
+    const key = `${stays.version}|${ctx.options.zoneKind}`;
+    if (key === stopKey) return;
+    stopKey = key;
+    const centroids = new Float32Array(stays.count * 2);
+    const durations = new Float32Array(stays.count);
+    let count = 0;
+    for (let row = 0; row < stays.count; row++) {
+      const zone = stays.zones[row];
+      if (zone >= zoneCount || !isShown(groups.groupOfZone[zone])) continue;
+      centroids[count * 2] = stays.centroids[row * 2];
+      centroids[count * 2 + 1] = stays.centroids[row * 2 + 1];
+      durations[count] = stays.seconds[row];
+      count++;
+    }
+    if (count > 0) {
+      shownStopCentroids.write(centroids.subarray(0, count * 2));
+      shownStopDurations.write(durations.subarray(0, count));
+    }
+    stopDraw.buffer.write(Uint32Array.of(6, count, 0, 0));
+  }
+
+  // ---- The one place everything is recomputed ------------------------------------------------------
+  function refresh(): void {
+    if (destroyed) return;
+    const options = ctx.options;
+    insideGroups = inside.stats ? reduceToGroups(inside.stats, groups) : null;
+    stoppedGroups = stopped.stats ? reduceToGroups(stopped.stats, groups) : null;
+    insideValues = getGroupValuesFor(insideGroups);
+    stoppedValues = getGroupValuesFor(stoppedGroups);
+    writeDisplay(inside, insideValues);
+    writeDisplay(stopped, stoppedValues);
+
+    const frozen = getFrozenBreaks(options.metric, options.unit);
+    const ground = getGround();
+    const definition = getDefinition();
+    const labels = getZoneValueLabels(options.metric, options.unit, definition);
+    if (frozen) {
+      const factor = getUnitBreakFactor(options.metric, options.unit);
+      table = makeZoneClassTable({
+        breaks: frozen.breaks,
+        ground,
+        metric: options.metric,
+        unit: options.unit,
+        definition,
+        extent: [frozen.extent[0] * factor, frozen.extent[1] * factor],
+        method:
+          options.metric === 'total' && options.unit === 'present'
+            ? `${frozen.method}; vessels present = vessel-hours / 24, so it shares the breaks of the total`
+            : frozen.method
+      });
+      const primary = options.compareVariants ? insideValues : getPrimaryValues();
+      const shownValues = primary
+        ? Array.from(primary).filter((value, group) => Number.isFinite(value) && isShown(group))
+        : [];
+      ctx.setLegendData('zoneLegend', {
+        table,
+        counts: getClassCounts(shownValues, table.breaks),
+        title: labels.title,
+        basis: labels.basis,
+        ground,
+        compare: options.compareVariants
+      });
+    } else {
+      table = null;
+      ctx.setLegendData('zoneLegend', null);
+    }
+
+    const rankValues = options.compareVariants ? insideValues : getPrimaryValues();
+    updateRanking(rankValues);
+    ctx.setReadout(
+      'zonesUsed',
+      rankValues
+        ? `${Array.from(rankValues).filter(Number.isFinite).length} of ${groups.groupCount} zones`
+        : null
+    );
+    updateDefinitionReadouts();
+    updateStayReadouts();
+    updateEventReadouts();
+    updateNotes(rankValues);
+    rebuildPulses();
+    rebuildStops();
+    updateFollowed();
+    ctx.setCost({
+      records: vertexCount,
+      passes: inside.compiled.stats.nodeOrder.length + stopped.compiled.stats.nodeOrder.length
+    });
+    ctx.requestLayers();
+  }
+
+  // ---- Tooltip -------------------------------------------------------------------------------------
+  function describeGroup(group: number): TooltipContent {
+    const {metric, unit} = ctx.options;
+    const rows: TooltipRow[] = [];
+    const area = geometry.groupAreasKm2[group];
+    const labels = getZoneValueLabels(metric, unit, getDefinition());
+    const swatchOf = (value: number) => getTableColor(value);
+    const insideValue = insideValues?.[group] ?? Number.NaN;
+    const stoppedValue = stoppedValues?.[group] ?? Number.NaN;
+    if (ctx.options.compareVariants) {
+      rows.push(
+        {
+          label: 'Inside',
+          value: formatZoneValue(insideValue, metric, unit),
+          swatch: swatchOf(insideValue),
+          emphasis: true
+        },
+        {
+          label: 'Stopped',
+          value: formatZoneValue(stoppedValue, metric, unit),
+          swatch: swatchOf(stoppedValue)
+        }
+      );
+    } else {
+      const value = getPrimaryValues()?.[group] ?? Number.NaN;
+      rows.push({
+        label: labels.title,
+        value: formatZoneValue(value, metric, unit),
+        swatch: swatchOf(value),
+        emphasis: true
+      });
+    }
+    if (insideGroups) {
+      const hours = insideGroups.sums[group] / 3600;
+      const visits = insideGroups.counts[group];
+      rows.push(
+        {
+          label: 'Present on average',
+          value: formatQuantity(hours / (SECONDS_PER_DAY / 3600)),
+          unit: 'vessels'
+        },
+        {
+          label: 'Visits',
+          value: formatCount(visits),
+          unit:
+            visits > 0
+              ? `mean ${formatDwell(insideGroups.sums[group] / visits)}, longest ${formatDwell(insideGroups.maximums[group])}`
+              : undefined
+        },
+        {
+          label: 'Area',
+          value: formatQuantity(area),
+          unit: `km² · ${formatQuantity(hours / Math.max(area, 1e-9))} vessel-hours per km²`
+        }
+      );
+    }
+    if (stoppedGroups && stoppedGroups.counts[group] > 0) {
+      rows.push({
+        label: 'Stopped',
+        value: formatQuantity(stoppedGroups.sums[group] / 3600),
+        unit: `vessel-hours in ${formatCount(stoppedGroups.counts[group])} stops`
+      });
+    }
+    const pieces = groups.members[group].length;
+    return {
+      title: groups.names[group],
+      subtitle: `${ZONE_KIND_LABELS[groups.kinds[group]]}${pieces > 1 ? ` · ${pieces} pieces added up` : ''}`,
+      rows,
+      anchor: geometry.groupLabelPoints[group],
+      highlight: {kind: 'polygon', rings: geometry.groupRings[group]}
+    };
+  }
+
+  // ---- Boot --------------------------------------------------------------------------------------
   writeStopParameters();
-  writeSelectedOutline();
-  activate(ctx.options.variant);
-  describeSelected();
+  inside = buildInside(Number(ctx.options.eventsPerVessel));
+  stopped = buildStopped();
 
   // ---- Instance ---------------------------------------------------------------------------------
   return {
-    getCompiledGraphs: () => (active ? [active.compiled, active.display] : []),
+    getCompiledGraphs: () => [inside.compiled, stopped.compiled],
 
     setOption(id, _value, state) {
       switch (id) {
-        case 'variant':
         case 'eventsPerVessel':
-          activate(state.variant);
-          ctx.requestLayers();
+          inside = buildInside(Number(state.eventsPerVessel));
+          eventTable = null;
+          followed = null;
+          markChanged();
+          refresh();
           break;
         case 'metric':
+        case 'unit':
         case 'zoneKind':
-          writeDisplayParameters();
-          for (const variant of variants.values()) variant.needsDisplay = true;
-          if (stats) summarize(lastFlags, state.variant);
-          markChanged();
-          ctx.requestLayers();
+        case 'variant':
+        case 'compareVariants':
+        case 'notes':
+          refresh();
+          break;
+        case 'showVessel':
+          startAtFollowedVessel();
+          refresh();
           break;
         case 'stopSpeedKnots':
         case 'stopMinutes':
           writeStopParameters();
-          for (const [key, variant] of variants) if (key === 'stopped') variant.needsEncode = true;
+          stopped.needsEncode = true;
           markChanged();
+          refresh();
           break;
-        case 'time':
-        case 'loop':
         case 'playing':
-        case 'playbackSpeed':
-        case 'pulseMinutes':
+          if (state.playing && declineFirstPlay) {
+            declineFirstPlay = false;
+            ctx.setOptions({playing: false});
+          }
+          break;
+        case 'showEvents':
+        case 'showStops':
+        case 'showTracks':
+        case 'fillOpacity':
+          ctx.requestLayers();
           break;
         default:
-          ctx.requestLayers();
+          break;
       }
     },
 
     onThemeChange() {
+      refresh();
+    },
+
+    onGroundChange() {
+      refresh();
+    },
+
+    onLegendFilter(_id, classes) {
+      legendHighlight = classes;
       ctx.requestLayers();
     },
 
     encode(commandEncoder, frame) {
-      const options = ctx.options;
       // Paused, the clock sits on the slider, so every story step and deep link is deterministic.
       playhead = clock.advance(frame);
       ctx.setReadout('clock', `${formatUtcClock(playhead)} UTC (${formatEasternClock(playhead)})`);
-      eventClock.write(
-        Float32Array.of(playhead, options.pulseMinutes * 60, options.showRestingEvents ? 1 : 0, 0)
-      );
-      const current = active;
-      if (!current) return;
-      if (current.needsEncode) {
-        current.compiled.encode(commandEncoder, {parameters: undefined});
-        const countSource = current.variant === 'inside' ? eventCount : stopCount;
-        const draw = current.variant === 'inside' ? eventDraw : stopDraw;
-        commandEncoder.copyBufferToBuffer({
-          sourceBuffer: countSource,
-          destinationBuffer: draw.buffer,
-          destinationOffset: 4,
-          size: 4
-        });
-        current.needsEncode = false;
-        current.needsDisplay = true;
+      eventClock.write(Float32Array.of(playhead, PULSE_SECONDS, 0, 0));
+      if (ctx.options.showVessel && followed && Math.abs(playhead - lastAnnotationTime) > 20) {
+        lastAnnotationTime = playhead;
+        ctx.setAnnotationTime(playhead);
+      }
+      for (const state of [inside, stopped]) {
+        if (!state.needsEncode) continue;
+        state.compiled.encode(commandEncoder, {parameters: undefined});
+        state.needsEncode = false;
         settleStale = true;
         lastChange = performance.now();
       }
-      if (current.needsDisplay) {
-        current.display.encode(commandEncoder, {parameters: undefined});
-        current.needsDisplay = false;
-      }
       if (settleStale && performance.now() - lastChange > SETTLE_MILLISECONDS) {
-        current.tableReader.markStale();
-        current.listReader.markStale();
+        for (const state of [inside, stopped]) {
+          state.tableReader.markStale();
+          state.listReader.markStale();
+          state.eventReader?.markStale();
+        }
         settleStale = false;
       }
-      current.tableReader.flush(commandEncoder);
-      current.listReader.flush(commandEncoder);
+      for (const state of [inside, stopped]) {
+        state.tableReader.flush(commandEncoder);
+        state.listReader.flush(commandEncoder);
+        state.eventReader?.flush(commandEncoder);
+      }
     },
 
     getLayers() {
       const options = ctx.options;
-      const current = active;
-      const dark = ctx.theme() === 'dark';
+      const ground = getGround();
       const layers: Layer[] = [];
-      if (!current) return layers;
-      layers.push(
-        new SpatialAnalysisRasterLayer({
-          id: `zone-fill-${current.variant}-${options.metric}`,
-          coordinateOrigin,
-          gridSize: [rasterWidth, rasterHeight],
-          bounds: rasterBounds,
-          rowOrigin: 'south',
-          values: current.displayValues,
-          valueFormat: 'float32',
-          valueIndices: cellRowsBuffer,
-          valueScale: getValueScale(),
-          valueRange: [0, Math.max(displayMaximum, 1e-6)],
-          colormap: options.ramp,
-          sqrtScale: true,
-          noDataColor: [0, 0, 0, 0],
-          opacity: options.fillOpacity
-        })
-      );
+      if (table) {
+        const classProps = getClassTableLayerProps(table);
+        const fill = (state: VariantState, side?: 'a' | 'b') =>
+          new SpatialAnalysisPolygonLayer({
+            id: `zone-fill-${side ?? state.variant}`,
+            coordinateOrigin,
+            triangles: fillTriangles,
+            features: fillFeatures,
+            vertexCount: fillVertexCount,
+            values: state.displayValues,
+            valueFormat: 'float32',
+            colormap: 'uniform',
+            noDataColor: [0, 0, 0, 0],
+            ...classProps,
+            highlightClasses: legendHighlight,
+            compareSide: side,
+            opacity: options.fillOpacity
+          });
+        if (options.compareVariants) layers.push(fill(inside, 'a'), fill(stopped, 'b'));
+        else layers.push(fill(getPrimary()));
+      }
       if (options.showTracks) {
         layers.push(
           new SpatialAnalysisSegmentLayer({
@@ -959,70 +1544,66 @@ fn isNonFinite(value: f32) -> bool { return (bitcast<u32>(value) & 0x7fffffffu) 
             coordinateOrigin,
             segments: segmentsBuffer,
             instanceCount: segmentCount,
-            widthPixels: 1,
-            color: dark ? [190, 200, 220, 30] : [60, 70, 90, 34],
-            values: categoryBuffer,
-            valueFormat: 'uint32',
-            valueIndices: segmentTracksBuffer
+            widthPixels: 0.7,
+            color: getTrackInk(ground)
           })
         );
       }
-      if (options.showOutlines) {
+      const styles = getOutlineStyles(ground);
+      for (const style of OUTLINE_STYLE_NAMES) {
+        const lines = outlineBuffers[style];
+        if (lines.count === 0) continue;
+        const look = styles[style];
         layers.push(
           new SpatialAnalysisSegmentLayer({
-            id: 'zone-outlines',
+            id: `zone-outline-${style}`,
             coordinateOrigin,
-            segments: outlineBuffer,
-            instanceCount: edgeCount,
-            widthPixels: 1.5,
-            values: zoneKindsBuffer,
-            valueFormat: 'uint32',
-            valueIndices: edgeZonesBuffer,
-            colormap: 'category',
-            palette: ZONE_KIND_COLORS,
-            opacity: 0.9
+            segments: lines.buffer,
+            instanceCount: lines.count,
+            widthPixels: look.widthPixels,
+            color: look.color,
+            ...(look.casing
+              ? {outlineColor: look.casing, outlineWidthPixels: look.casingPixels}
+              : {}),
+            ...(look.dashArray ? {dashArray: look.dashArray, cap: 'butt' as const} : {})
           })
         );
       }
-      layers.push(
-        new SpatialAnalysisSegmentLayer({
-          id: 'zone-selected',
-          coordinateOrigin,
-          segments: selectedOutline,
-          instanceCount: maxZoneEdges,
-          widthPixels: 4,
-          color: dark ? [255, 255, 255, 255] : [20, 24, 32, 255]
-        })
-      );
-      if (options.showEvents && current.variant === 'inside') {
+      if (options.showEvents) {
+        const inks = getEventInks(ground);
         layers.push(
           new ZoneEventMarkerLayer({
             id: 'zone-events',
             coordinateOrigin,
-            positions: eventPositions,
-            eventTracks,
-            eventTimes,
-            eventTypes,
+            positions: pulsePositions,
+            eventTracks: pulseTracks,
+            eventTimes: pulseTimes,
+            eventTypes: pulseTypes,
             trackStartTimes: trackStartBuffer,
             clock: eventClock.buffer,
-            drawCommands: eventDraw,
-            sizePixels: 5
+            drawCommands: pulseDraw,
+            enterColor: inks.enter,
+            exitColor: inks.exit,
+            sizePixels: 7
           })
         );
       }
-      if (options.showEvents && current.variant === 'stopped') {
+      if (options.showStops) {
         layers.push(
           new StopMarkerLayer({
             id: 'zone-stops',
             coordinateOrigin,
-            centroids: stopCentroids,
-            durations: stopDurations,
+            centroids: shownStopCentroids,
+            durations: shownStopDurations,
             drawCommands: stopDraw,
-            baseRadiusPixels: 3,
-            radiusPerSqrtSecond: 0.12,
-            maximumRadiusPixels: 16,
-            durationForFullColor: 6 * 3600,
-            opacity: 0.9
+            baseRadiusPixels: 3.5,
+            radiusPerSqrtSecond: 0.07,
+            maximumRadiusPixels: 12,
+            classBreaks: STOP_BREAKS_SECONDS,
+            classColors: getWaitingClasses(ground, 5),
+            ringColor: getStopRing(ground),
+            ringWidthPixels: 1.2,
+            opacity: 0.95
           })
         );
       }
@@ -1033,25 +1614,24 @@ fn isNonFinite(value: f32) -> bool { return (bitcast<u32>(value) & 0x7fffffffu) 
       if (!event.coordinate) return null;
       const [x, y] = vessels.project(event.coordinate[0], event.coordinate[1]);
       const zone = findZone(zones, x, y);
-      return zone < 0 ? null : describeZone(zone);
+      return zone < 0 ? null : describeGroup(groups.groupOfZone[zone]);
     },
 
     onClick(event) {
       if (!event.coordinate) return false;
       const [x, y] = vessels.project(event.coordinate[0], event.coordinate[1]);
       const zone = findZone(zones, x, y);
-      selectedZone = zone === selectedZone ? NO_ZONE : zone;
-      writeSelectedOutline();
-      describeSelected();
-      ctx.requestLayers();
-      return zone >= 0;
+      const group = zone < 0 ? NO_GROUP : groups.groupOfZone[zone];
+      selectGroup(group === selectedGroup ? NO_GROUP : group);
+      return group !== NO_GROUP;
     },
 
     destroy() {
       destroyed = true;
-      for (const variant of variants.values()) {
-        variant.tableReader.stop();
-        variant.listReader.stop();
+      for (const state of [inside, stopped]) {
+        state.tableReader.stop();
+        state.listReader.stop();
+        state.eventReader?.stop();
       }
       resources.destroy();
     }

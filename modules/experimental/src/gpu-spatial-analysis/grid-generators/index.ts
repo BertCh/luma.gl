@@ -4,6 +4,7 @@
 
 export {
   getGPUGridCellCount,
+  getGPUGridCornerCount,
   getGPUGridGeneratorParameterValues,
   getGPUGridVerticesPerCell,
   GPU_GRID_GENERATOR_PARAMETER_LENGTH,

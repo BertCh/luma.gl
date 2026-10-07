@@ -2,11 +2,26 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {getClassTableLegend} from '../../cartography/class-table';
+import {CREDITS, joinCredits} from '../../cartography/credits';
+import {CHICAGO, CITY_FRAMES, labelsFor, US} from '../../cartography/gazetteer';
+import {ground} from '../../cartography/grounds';
+import {NATIONAL_FURNITURE} from '../../cartography/projection-notes';
 import {defineScene, type LegendSpec} from '../scene';
-import {RAMP_NAMES} from '../../engine/ramps';
-import {FOCUS_COLORS, ISLAND_COLOR} from './b4-colors';
 import {getVariableInfo, VARIABLES} from './b4-geography';
-import type {SpatialWeightsOptions} from './spatial-weights.compute';
+import {getVertexDiagram} from './spatial-weights.charts';
+import type {SpatialWeightsOptions, WeightsLegendData} from './spatial-weights.compute';
+import {
+  CONUS_BOUNDS,
+  getCardinalityTable,
+  getContextSwatch,
+  getEffectiveDisplay,
+  getFocusPalette,
+  getOneWayTable,
+  getWeightTable,
+  MOUNTAIN_WEST_BOUNDS,
+  type Ground
+} from './spatial-weights.style';
 
 const KERNEL_OPTIONS = [
   {value: 'gaussian', label: 'Gaussian', help: 'exp(-z^2 / 2) / sqrt(2 pi); never reaches zero.'},
@@ -44,80 +59,157 @@ const SUMMARY_OPTIONS = [
   }
 ] as const;
 
-function getDisplayLegend(state: SpatialWeightsOptions): LegendSpec {
+/** The cartouche of one step (steps replace the whole `title` object; the sample line is runtime). */
+const cartouche = (title: string, subtitle: string, modelled = false) => ({
+  title,
+  subtitle,
+  ...(modelled ? {chips: ['Modelled'] as const} : {})
+});
+
+const COUNTY_CREDIT = joinCredits(
+  CREDITS.usCensus,
+  'CDC PLACES (public domain)',
+  CREDITS.colorBrewer
+);
+const TRACT_CREDIT = joinCredits(
+  CREDITS.usCensus,
+  CREDITS.cityOfChicago,
+  'CDC PLACES (public domain)',
+  CREDITS.colorBrewer
+);
+
+/** A `[west, south, east, north]` frame around a gazetteer place. */
+const around = (
+  place: readonly [number, number],
+  halfWidth: number,
+  halfHeight: number
+): [number, number, number, number] => [
+  place[0] - halfWidth,
+  place[1] - halfHeight,
+  place[0] + halfWidth,
+  place[1] + halfHeight
+];
+
+const isContiguity = (state: SpatialWeightsOptions) =>
+  !state.lattice && (state.source === 'queen' || state.source === 'rook');
+const isDistance = (state: SpatialWeightsOptions) =>
+  !state.lattice && (state.source === 'knn' || state.source === 'band');
+
+function getLegends(
+  state: SpatialWeightsOptions,
+  data: Readonly<Record<string, unknown>>
+): LegendSpec[] {
+  const legendData = data['weights'] as WeightsLegendData | undefined;
+  const ground: Ground = legendData?.ground ?? 'light';
+  const tables = legendData?.tables;
+  const counts = legendData?.counts;
   const variable = getVariableInfo(state.variable);
-  switch (state.display) {
-    case 'focus':
-      return {
-        kind: 'categories',
-        title: 'Neighbours of the focus place',
-        entries: [
-          {color: FOCUS_COLORS[2], label: 'Focus place (click to move it)'},
-          {color: FOCUS_COLORS[1], label: 'Neighbour in W'},
-          {color: FOCUS_COLORS[0], label: 'Not a neighbour'}
-        ],
-        note: 'Lines join centroids along every link of the chosen matrix.'
-      };
+  const display = getEffectiveDisplay(state);
+  switch (display) {
+    case 'focus': {
+      const palette = getFocusPalette(ground);
+      return [
+        {
+          kind: 'categories',
+          title: 'Membership in W',
+          layout: 'list',
+          entries: [
+            {color: palette[2], label: 'Focus place (click to move it)'},
+            {color: palette[1], label: 'Neighbour of the focus'},
+            {color: getContextSwatch(ground), label: 'Not a neighbour'}
+          ],
+          note: 'The line bundle joins the centroid of the focus to each neighbour.'
+        }
+      ];
+    }
+    case 'weights':
+      return [
+        getClassTableLegend(tables?.weights ?? getWeightTable(ground), {
+          title: 'Weight in the focus row',
+          id: 'weight-classes',
+          layout: 'list',
+          interactive: true,
+          note: 'Classes of the weight divided by the largest weight of the row; line width follows the weight.'
+        })
+      ];
     case 'neighbors':
-      return {
-        kind: 'ramp',
-        id: 'display',
-        title: 'Neighbours per place',
-        ramp: state.ramp,
-        extent: 'gpu',
-        unit: 'places',
-        format: value => Math.round(value).toString()
-      };
+      return [
+        getClassTableLegend(tables?.cardinality ?? getCardinalityTable(ground), {
+          title: 'Neighbours per place',
+          id: 'cardinality-classes',
+          counts: counts?.cardinality,
+          layout: 'list',
+          interactive: true,
+          note: 'Islands (no neighbours) are unfilled and ringed.'
+        })
+      ];
     case 'oneWay':
-      return {
-        kind: 'ramp',
-        id: 'display',
-        title: 'One-way links per place',
-        ramp: state.ramp,
-        extent: 'gpu',
-        unit: 'links that are not returned',
-        format: value => Math.round(value).toString()
-      };
+      return [
+        getClassTableLegend(tables?.oneWay ?? getOneWayTable(ground), {
+          title: 'One-way links per place',
+          id: 'one-way-classes',
+          counts: counts?.oneWay,
+          layout: 'list',
+          interactive: true,
+          note: 'A link is one-way when the other place does not list this one back.'
+        })
+      ];
+    case 'value':
     case 'lag':
-      return {
-        kind: 'ramp',
-        id: 'display',
-        title: `Spatial lag of ${variable.label.toLowerCase()}`,
-        ramp: state.ramp,
-        extent: 'gpu',
-        unit: state.lagNormalize ? variable.unit : `${variable.unit} x weight`,
-        format: value => value.toFixed(variable.digits)
-      };
+    case 'difference':
     case 'summary': {
+      const table =
+        display === 'difference'
+          ? tables?.difference
+          : display === 'summary'
+            ? (tables?.summary ?? tables?.value)
+            : tables?.value;
+      if (!table) {
+        return [
+          {kind: 'ramp', title: variable.label, ramp: 'ylorbr', extent: [0, 1], unit: variable.unit}
+        ];
+      }
       const entry = SUMMARY_OPTIONS.find(option => option.value === state.summary);
-      return {
-        kind: 'ramp',
-        id: 'display',
-        title: `Neighbourhood: ${entry?.label.toLowerCase() ?? state.summary}`,
-        ramp: state.ramp,
-        extent: 'gpu',
-        unit: state.summary === 'entropy' ? 'nats' : variable.unit,
-        format: value => value.toFixed(state.summary === 'count' ? 0 : 2)
-      };
+      const title =
+        display === 'lag'
+          ? `${variable.label}: value and neighbourhood`
+          : display === 'difference'
+            ? `Neighbourhood minus place: ${variable.label.toLowerCase()}`
+            : display === 'summary'
+              ? `Neighbourhood: ${entry?.label.toLowerCase() ?? state.summary}`
+              : variable.label;
+      return [
+        getClassTableLegend(table, {
+          title,
+          id: `${display}-classes`,
+          counts:
+            display === 'summary'
+              ? counts?.summary
+              : display === 'difference'
+                ? counts?.difference
+                : counts?.value,
+          layout: 'list',
+          interactive: true,
+          note:
+            display === 'difference'
+              ? '0 = the neighbourhood equals the place; orange = the neighbourhood is higher, purple = lower.'
+              : display === 'lag'
+                ? 'The lag uses the classes of the variable, so a change of colour is smoothing.'
+                : table.method
+        })
+      ];
     }
     default:
-      return {
-        kind: 'ramp',
-        id: 'display',
-        title: variable.label,
-        ramp: state.ramp,
-        extent: 'gpu',
-        unit: variable.unit,
-        format: value => value.toFixed(variable.digits)
-      };
+      return [];
   }
 }
 
 function getSnippet(state: SpatialWeightsOptions): string {
+  const kind = state.lattice ? 'lattice' : state.source;
   const imports = [
-    state.source === 'queen' || state.source === 'rook'
+    kind === 'queen' || kind === 'rook'
       ? 'GPUContiguityWeights'
-      : state.source === 'lattice'
+      : kind === 'lattice'
         ? 'GPULatticeWeights'
         : 'GPUNeighborSearch, getGPUNeighborSearchParameterValues',
     state.transform !== 'none' ? 'GPUSpatialWeightsTransform' : '',
@@ -128,29 +220,29 @@ function getSnippet(state: SpatialWeightsOptions): string {
     'GPUNeighborhoodSummary'
   ].filter(Boolean);
   const producer =
-    state.source === 'queen' || state.source === 'rook'
+    kind === 'queen' || kind === 'rook'
       ? `// 1. Which polygons touch? One output row per polygon, binary weights.
 graph.add(new GPUContiguityWeights({
-  criterion: '${state.source}',${Number(state.snapTolerance) > 0 ? `\n  snapTolerance: ${state.snapTolerance},          // metres, grid snap` : ''}
+  criterion: '${kind}',${Number(state.snapTolerance) > 0 ? `\n  snapTolerance: ${state.snapTolerance},          // metres, grid snap` : ''}
   positions: vertices, ringOffsets, polygonOffsets,
   weights: {offsets, neighbors, weights}, overflow
 }));`
-      : state.source === 'lattice'
+      : kind === 'lattice'
         ? `// 1. Neighbours on a raster grid; a mask removes cells outside the map.
 graph.add(new GPULatticeWeights({
   width, height, criterion: '${state.latticeCriterion}', radius: ${state.latticeRadius},
   mask, cellSize: [cellMetres, cellMetres],
   weights: {offsets, neighbors, weights}, overflow
 }));`
-        : `// 1. ${state.source === 'knn' ? `The ${state.k} nearest centroids of every place` : 'Every centroid within the distance band'}.
+        : `// 1. ${kind === 'knn' ? `The ${state.k} nearest centroids of every place` : 'Every centroid within the distance band'}.
 graph.add(new GPUNeighborSearch({
-  mode: '${state.source === 'knn' ? 'knn' : 'radius'}',${state.source === 'knn' ? `\n  k: ${state.k},` : ''}
+  mode: '${kind === 'knn' ? 'knn' : 'radius'}',${kind === 'knn' ? `\n  k: ${state.k},` : ''}
   gridSize: [256, 256], positions: centroids,
   parameters,                          // radius, weightKind, kernel, rowStandardize: buffer writes
   weights: {offsets, neighbors, weights, distances}, overflow
 }));
 parameters.write(getGPUNeighborSearchParameterValues({
-  bounds, ${state.source === 'band' ? `radius: ${state.bandFactor} * medianSpacing, ` : ''}weightKind: '${state.weightKind}'${state.weightKind === 'kernel' ? `, kernel: '${state.kernel}'` : ''}${state.rowStandardize ? ', rowStandardize: true' : ''}
+  bounds, ${kind === 'band' ? `radius: ${state.bandFactor} * medianSpacing, ` : ''}weightKind: '${state.weightKind}'${state.weightKind === 'kernel' ? `, kernel: '${state.kernel}'` : ''}${state.rowStandardize ? ', rowStandardize: true' : ''}
 }));`;
   const transform =
     state.transform === 'none'
@@ -193,6 +285,9 @@ graph.add(new GPUNeighborhoodSummary({
 }));`;
 }
 
+const COOK = US.places['cook-county'].lngLat;
+const FOUR_CORNERS = US.places['four-corners'].lngLat;
+
 /**
  * Spatial weights on US counties and Chicago tracts: contiguity, nearest neighbours, distance
  * bands, kernels, algebra, lags and lattices. GPU work is in `spatial-weights.compute.ts`.
@@ -203,7 +298,7 @@ export default defineScene<SpatialWeightsOptions>({
   chapter: 'weights',
   order: 1,
   summary:
-    'Build the neighbourhood every spatial statistic starts from: queen and rook contiguity of 3,109 US counties, nearest neighbours, distance bands, kernels, weight algebra, spatial lags and grid lattices, all on the GPU.',
+    'Build the neighbourhood every spatial statistic starts from: queen and rook contiguity of US counties, nearest neighbours, distance bands, kernels, weight algebra and the spatial lag of Chicago tracts, all on the GPU.',
   contributors: [
     'GPUContiguityWeights',
     'GPULatticeWeights',
@@ -217,10 +312,11 @@ export default defineScene<SpatialWeightsOptions>({
   ],
   datasets: [
     {id: 'us-counties', role: 'polygons and health variables (default geography)'},
+    {id: 'us-states', role: 'state lines over the counties'},
     {id: 'chicago-tracts', role: 'polygons and health variables (alternate geography)'},
-    {id: 'chicago-community-areas', role: 'names of the community areas that group tracts'}
+    {id: 'chicago-community-areas', role: 'community-area lines over the tracts, and their names'}
   ],
-  initialView: {longitude: -95.5, latitude: 38.2, zoom: 3.9},
+  initialView: {longitude: -96, latitude: 38.3, zoom: 3.9},
 
   options: [
     {
@@ -234,12 +330,12 @@ export default defineScene<SpatialWeightsOptions>({
       options: [
         {
           value: 'us-counties',
-          label: 'US counties (3,109)',
-          help: 'Contiguous United States; Connecticut as 9 planning regions.'
+          label: 'US counties (contiguous states)',
+          help: 'Contiguous United States and DC; Connecticut as 9 planning regions.'
         },
         {
           value: 'chicago-tracts',
-          label: 'Chicago census tracts (791)',
+          label: 'Chicago census tracts',
           help: "Whole 2020 tracts inside the city, including the O'Hare island."
         }
       ]
@@ -287,34 +383,50 @@ export default defineScene<SpatialWeightsOptions>({
       group: 'Neighbours',
       apply: 'compile',
       default: 'queen',
+      display: 'segmented',
+      disabledWhen: state => state.lattice,
       help: 'The rule that decides who is a neighbour. Each rule is its own contributor; the first use of a rule compiles it once.',
       options: [
         {
           value: 'queen',
-          label: 'Queen contiguity',
+          label: 'Queen',
           help: 'Polygons that share at least one boundary vertex (GPUContiguityWeights).'
         },
         {
           value: 'rook',
-          label: 'Rook contiguity',
+          label: 'Rook',
           help: 'Polygons that share a boundary edge, not just a corner (GPUContiguityWeights).'
         },
         {
           value: 'knn',
-          label: 'k nearest centroids',
+          label: 'Nearest k',
           help: 'The k closest centroids, whatever the borders (GPUNeighborSearch, kNN).'
         },
         {
           value: 'band',
-          label: 'Distance band',
+          label: 'Band',
           help: 'Every centroid within a radius (GPUNeighborSearch, radius).'
-        },
-        {
-          value: 'lattice',
-          label: 'Regular grid (lattice)',
-          help: 'The map rasterised to square cells; neighbours are adjacent cells (GPULatticeWeights).'
         }
       ]
+    },
+    {
+      kind: 'toggle',
+      id: 'showQueenOnly',
+      label: 'Outline corner-only neighbours',
+      group: 'Neighbours',
+      apply: 'compile',
+      default: false,
+      disabledWhen: state => state.lattice,
+      help: "Builds queen and rook side by side (two producers, compiled once) and draws the focus place's queen-only neighbours as a dashed outline, whichever rule is on."
+    },
+    {
+      kind: 'toggle',
+      id: 'lattice',
+      label: 'Use a regular grid (lattice) instead',
+      group: 'Neighbours',
+      apply: 'compile',
+      default: false,
+      help: 'The map rasterised to square cells; neighbours are adjacent cells (GPULatticeWeights, libpysal lat2W). Cells outside the map are masked.'
     },
     {
       kind: 'select',
@@ -323,7 +435,8 @@ export default defineScene<SpatialWeightsOptions>({
       group: 'Neighbours',
       apply: 'compile',
       default: '0',
-      disabledWhen: state => state.source !== 'queen' && state.source !== 'rook',
+      expert: true,
+      disabledWhen: state => !isContiguity(state),
       help: 'Contiguity compares vertices exactly. A tolerance snaps vertices to a grid first, which repairs digitised boundaries that nearly touch. Compile-time.',
       options: [
         {value: '0', label: 'Exact (shared vertices only)'},
@@ -345,7 +458,8 @@ export default defineScene<SpatialWeightsOptions>({
       max: 16,
       step: 1,
       default: 6,
-      disabledWhen: state => state.source !== 'knn',
+      display: 'stepper',
+      disabledWhen: state => state.lattice || state.source !== 'knn',
       help: 'How many nearest centroids each place lists. Compile-time: the search keeps a private sorted list of k.'
     },
     {
@@ -358,7 +472,7 @@ export default defineScene<SpatialWeightsOptions>({
       max: 6,
       step: 0.25,
       default: 0,
-      disabledWhen: state => state.source !== 'knn',
+      disabledWhen: state => state.lattice || state.source !== 'knn',
       format: value => (value === 0 ? 'no limit' : `${value} x spacing`),
       help: 'Optional cap: a neighbour farther than this many typical centroid spacings is dropped, so remote places keep fewer than k.'
     },
@@ -372,7 +486,7 @@ export default defineScene<SpatialWeightsOptions>({
       max: 4,
       step: 0.25,
       default: 1.5,
-      disabledWhen: state => state.source !== 'band',
+      disabledWhen: state => state.lattice || state.source !== 'band',
       format: value => `${value} x spacing`,
       help: 'Radius as a multiple of the median distance from a centroid to its nearest other centroid (see the readout). Only a parameter write.'
     },
@@ -383,7 +497,7 @@ export default defineScene<SpatialWeightsOptions>({
       group: 'Lattice',
       apply: 'compile',
       default: 'queen',
-      disabledWhen: state => state.source !== 'lattice',
+      disabledWhen: state => !state.lattice,
       help: 'Rook: Manhattan distance up to the radius (4 neighbours at radius 1). Queen: Chebyshev distance (8 neighbours).',
       options: [
         {value: 'rook', label: 'Rook (edge-adjacent cells)'},
@@ -401,7 +515,7 @@ export default defineScene<SpatialWeightsOptions>({
       step: 1,
       default: 1,
       unit: 'cells',
-      disabledWhen: state => state.source !== 'lattice',
+      disabledWhen: state => !state.lattice,
       help: 'Cells within this many steps are neighbours (the contributor supports up to 32; the map caps it at 4 so the focus links stay drawable).'
     },
     {
@@ -411,7 +525,7 @@ export default defineScene<SpatialWeightsOptions>({
       group: 'Lattice',
       apply: 'param',
       default: true,
-      disabledWhen: state => state.source !== 'lattice',
+      disabledWhen: state => !state.lattice,
       help: 'On: sea and Canada (or the suburbs) are removed as rows and as neighbours. Off: they stay in the grid.'
     },
     {
@@ -421,7 +535,7 @@ export default defineScene<SpatialWeightsOptions>({
       group: 'Distance weights',
       apply: 'param',
       default: 'binary',
-      disabledWhen: state => state.source !== 'knn' && state.source !== 'band',
+      disabledWhen: state => !isDistance(state),
       help: 'What number a neighbour link carries.',
       options: [
         {value: 'binary', label: 'Binary (1)', help: 'Every neighbour counts the same.'},
@@ -436,12 +550,11 @@ export default defineScene<SpatialWeightsOptions>({
     {
       kind: 'select',
       id: 'kernel',
-      label: 'Search kernel',
+      label: 'Kernel',
       group: 'Distance weights',
       apply: 'param',
       default: 'triangular',
-      disabledWhen: state =>
-        (state.source !== 'knn' && state.source !== 'band') || state.weightKind !== 'kernel',
+      disabledWhen: state => !isDistance(state) || state.weightKind !== 'kernel',
       help: 'With a distance band h is the radius; with kNN it is the distance of the k-th neighbour (an adaptive bandwidth, as in PySAL).',
       options: KERNEL_OPTIONS
     },
@@ -455,9 +568,7 @@ export default defineScene<SpatialWeightsOptions>({
       max: 4,
       step: 0.5,
       default: 1,
-      disabledWhen: state =>
-        (state.source !== 'knn' && state.source !== 'band') ||
-        state.weightKind !== 'inverseDistance',
+      disabledWhen: state => !isDistance(state) || state.weightKind !== 'inverseDistance',
       help: 'Exponent p of d^-p. Larger values concentrate weight on the nearest neighbour.'
     },
     {
@@ -470,9 +581,7 @@ export default defineScene<SpatialWeightsOptions>({
       max: 0.5,
       step: 0.05,
       default: 0,
-      disabledWhen: state =>
-        (state.source !== 'knn' && state.source !== 'band') ||
-        state.weightKind !== 'inverseDistance',
+      disabledWhen: state => !isDistance(state) || state.weightKind !== 'inverseDistance',
       format: value => `${value.toFixed(2)} x spacing`,
       help: 'Distances below the floor count as the floor, which keeps coincident points finite.'
     },
@@ -483,7 +592,7 @@ export default defineScene<SpatialWeightsOptions>({
       group: 'Distance weights',
       apply: 'param',
       default: false,
-      disabledWhen: state => state.source !== 'knn' && state.source !== 'band',
+      disabledWhen: state => !isDistance(state),
       help: 'Divides each row of weights by its sum. The Transform below does the same for any source.'
     },
     {
@@ -493,6 +602,7 @@ export default defineScene<SpatialWeightsOptions>({
       group: 'Transform',
       apply: 'compile',
       default: 'none',
+      disabledWhen: state => state.lattice,
       help: 'Rewrites the weights in place after they are produced (GPUSpatialWeightsTransform), like PySAL w.transform.',
       options: [
         {value: 'none', label: 'None (as produced)'},
@@ -572,7 +682,7 @@ export default defineScene<SpatialWeightsOptions>({
       group: 'Weights algebra',
       apply: 'compile',
       default: 'none',
-      disabledWhen: state => state.source === 'lattice',
+      disabledWhen: state => state.lattice,
       help: 'Builds a new neighbourhood from the chosen one (A) with GPUSpatialWeightsAlgebra. Binary operations use the k nearest centroids as the partner (B).',
       options: [
         {value: 'none', label: 'None'},
@@ -733,6 +843,11 @@ export default defineScene<SpatialWeightsOptions>({
       help: 'Which GPU buffer the fill reads. All of them are computed every time the weights change.',
       options: [
         {value: 'focus', label: 'Neighbours of the focus place'},
+        {
+          value: 'weights',
+          label: 'Weights of the focus row',
+          help: 'Each neighbour classed by its weight as a share of the row maximum.'
+        },
         {value: 'neighbors', label: 'Neighbour count per place'},
         {
           value: 'oneWay',
@@ -740,7 +855,16 @@ export default defineScene<SpatialWeightsOptions>({
           help: 'Links a place lists that the other place does not return.'
         },
         {value: 'value', label: 'The variable'},
-        {value: 'lag', label: 'Spatial lag of the variable'},
+        {
+          value: 'lag',
+          label: 'Variable and lag (swipe)',
+          help: 'The variable and its spatial lag on one set of classes; a swipe in the story, the lag alone otherwise.'
+        },
+        {
+          value: 'difference',
+          label: 'Lag minus value',
+          help: 'Where the neighbourhood differs from the place: orange when the neighbours are higher.'
+        },
         {value: 'summary', label: 'Neighbourhood statistic'}
       ]
     },
@@ -757,26 +881,12 @@ export default defineScene<SpatialWeightsOptions>({
     },
     {
       kind: 'select',
-      id: 'ramp',
-      label: 'Color ramp',
-      group: 'Display',
-      apply: 'param',
-      default: 'viridis',
-      disabledWhen: state => state.display === 'focus',
-      help: 'The legend uses the same ramp table.',
-      options: RAMP_NAMES.filter(name => name !== 'diverging').map(name => ({
-        value: name,
-        label: name.charAt(0).toUpperCase() + name.slice(1)
-      }))
-    },
-    {
-      kind: 'select',
       id: 'matrix',
       label: 'Links drawn',
       group: 'Display',
       apply: 'param',
       default: 'weights',
-      disabledWhen: state => state.source === 'lattice' && state.display !== 'focus',
+      disabledWhen: state => state.lattice && state.display !== 'focus',
       help: 'W as built, its transpose W^T (who lists me), or the union W or W^T that makes any list symmetric.',
       options: [
         {value: 'weights', label: 'W (who I list)'},
@@ -790,9 +900,9 @@ export default defineScene<SpatialWeightsOptions>({
       label: 'Draw every link',
       group: 'Display',
       apply: 'param',
-      default: true,
-      disabledWhen: state => state.source === 'lattice',
-      help: "Lines between centroids for the whole matrix. The focus place's links are always drawn."
+      default: false,
+      disabledWhen: state => state.lattice,
+      help: "Faint lines between centroids for the whole matrix, visible once you zoom in. The focus place's links are always drawn."
     },
     {
       kind: 'toggle',
@@ -801,7 +911,7 @@ export default defineScene<SpatialWeightsOptions>({
       group: 'Display',
       apply: 'param',
       default: true,
-      help: 'Outlines of the polygons.'
+      help: 'Outlines of the polygons and the state or community-area lines.'
     }
   ],
 
@@ -813,14 +923,41 @@ export default defineScene<SpatialWeightsOptions>({
       help: 'Directed neighbour slots; a symmetric rule counts each pair twice.'
     },
     {
-      id: 'neighbors',
-      label: 'Neighbours per place',
-      help: 'Mean (over places that have any), minimum and maximum.'
+      id: 'meanNeighbors',
+      label: 'Mean neighbours',
+      unit: 'per place',
+      help: 'Links divided by the places that have at least one neighbour.'
     },
+    {
+      id: 'focusDegree',
+      label: 'Neighbours of the focus',
+      emphasis: 'tile',
+      help: 'Neighbours of the focus place in the matrix drawn.'
+    },
+    {id: 'focusName', label: 'Focus place'},
     {
       id: 'islands',
       label: 'Islands (no neighbours)',
       help: 'Places the statistics cannot use unless the rule changes.'
+    },
+    {id: 'islandNames', label: 'Island names'},
+    {
+      id: 'edgeMean',
+      label: 'Outer-edge places: mean neighbours',
+      unit: 'neighbours',
+      help: 'Places with a boundary edge that no other place shares (coast, lake shore, border, city limit), mean neighbours among those with any.'
+    },
+    {
+      id: 'interiorMean',
+      label: 'Interior places: mean neighbours',
+      unit: 'neighbours',
+      help: 'Every other place, mean neighbours among those with any.'
+    },
+    {
+      id: 'cardinality',
+      label: 'Neighbours per place',
+      kind: 'chart',
+      help: 'Places by neighbour count, coloured like the map; the marker is the common rule of thumb of eight.'
     },
     {
       id: 'asymmetric',
@@ -828,36 +965,125 @@ export default defineScene<SpatialWeightsOptions>({
       help: 'Positions of W that differ from W transpose, counted per slot (an unreturned pair counts as 2).'
     },
     {
-      id: 'sums',
-      label: 'S0 / S1 / S2',
-      help: 'Sums libpysal and every autocorrelation test use: S0 = sum w, S1 = 1/2 sum (w + w^T)^2, S2 = sum (row + column sums)^2.'
+      id: 'oneWayPlaces',
+      label: 'Places with a one-way link',
+      help: 'Places that list at least one neighbour that does not list them back.'
     },
-    {id: 'union', label: 'W union W transpose', help: 'Slots of the symmetrised neighbourhood.'},
-    {id: 'lagRange', label: 'Lag range', help: 'Smallest and largest spatial lag of the variable.'},
+    {
+      id: 'cornerLinks',
+      label: 'Corner-only links',
+      help: 'Pairs that queen lists and rook does not (queen links minus rook links, halved).'
+    },
+    {
+      id: 'cornerFocus',
+      label: 'Corner-only neighbours of the focus',
+      help: 'Places the focus touches at a corner but not along an edge.'
+    },
+    {id: 'cornerCount', label: 'Corner-only neighbours of the focus (count)'},
+    {
+      id: 'band',
+      label: 'Distance band radius',
+      help: 'The radius of the band as ground distance at the focus (the search itself runs in planar metres).'
+    },
+    {
+      id: 'weightSum',
+      label: 'Weight sum of the focus row',
+      help: 'The weights of the focus row added up; 1 after row standardisation.'
+    },
+    {
+      id: 'kernelCurve',
+      label: 'Kernel and focus weights',
+      kind: 'chart',
+      help: 'The kernel curve K(d / h) scaled to the focus row, with the weight of each neighbour of the focus on it.'
+    },
     {
       id: 'spacing',
       label: 'Median centroid spacing',
       help: 'Distance from a centroid to its nearest other centroid: the unit of the band and kNN cap sliders.'
     },
-    {id: 'band', label: 'Distance band radius'},
-    {id: 'focus', label: 'Focus place', help: 'Neighbours of the focus place in the matrix drawn.'},
+    {
+      id: 'lagSlope',
+      label: 'Slope of lag on value',
+      help: 'Least-squares slope of the neighbourhood value on the place value, over places with a lag.'
+    },
+    {
+      id: 'lagScatter',
+      label: 'Lag against value',
+      kind: 'chart',
+      help: 'Each place: its value against the weighted mean of its neighbours, with the 1:1 line and the fitted slope.'
+    },
+    {
+      id: 'lagRange',
+      label: 'Lag range',
+      hood: true,
+      help: 'Smallest and largest spatial lag of the variable.'
+    },
+    {
+      id: 'sums',
+      label: 'S0 / S1 / S2',
+      hood: true,
+      help: 'Sums libpysal and every autocorrelation test use: S0 = sum w, S1 = 1/2 sum (w + w^T)^2, S2 = sum (row + column sums)^2.'
+    },
+    {
+      id: 'union',
+      label: 'W union W transpose',
+      hood: true,
+      help: 'Slots of the symmetrised neighbourhood.'
+    },
     {
       id: 'capacity',
       label: 'Capacity',
+      hood: true,
       help: 'Overflow flag of the producer; slots beyond the capacity are dropped.'
+    },
+    {
+      id: 'numerics',
+      label: 'Numerical notes',
+      hood: true,
+      layout: 'block',
+      help: 'What the distances are measured in, and what that means at the focus.'
     }
   ],
 
-  legends: state => {
-    const legends: LegendSpec[] = [getDisplayLegend(state)];
-    if (state.source !== 'lattice') {
-      legends.push({
-        kind: 'categories',
-        title: 'Special places',
-        entries: [{color: ISLAND_COLOR, label: 'Island: no neighbours'}]
-      });
+  pipeline: [
+    {
+      id: 'sort',
+      label: 'Keys and sort',
+      detail:
+        'Contiguity: one 64-bit key per ring vertex, radix-sorted. Nearest and band rules bucket the centroids into a grid instead.'
+    },
+    {
+      id: 'pairs',
+      label: 'Pairs',
+      detail:
+        'Runs of equal keys emit ordered pairs (queen: a shared vertex, rook: a shared edge); a kNN row keeps a private sorted list of k.'
+    },
+    {
+      id: 'csr',
+      label: 'CSR',
+      detail: 'Dedupe, count and scan to offsets: row i lists its neighbours and their weights.',
+      show: {option: 'display', value: 'neighbors'}
+    },
+    {
+      id: 'transform',
+      label: 'Transform',
+      detail: 'Row standardisation and kernels rewrite the weight of every slot, one thread each.',
+      show: {option: 'display', value: 'weights'}
+    },
+    {
+      id: 'lag',
+      label: 'Lag',
+      detail: 'One thread per row sums w times the neighbour value in slot order.',
+      show: {option: 'display', value: 'lag'}
     }
-    return legends;
+  ],
+
+  legends: getLegends,
+
+  basemap: ground('paperSheet'),
+  furniture: {
+    title: cartouche('Who counts as a neighbour?', 'Queen contiguity of counties'),
+    credit: COUNTY_CREDIT
   },
 
   snippet: getSnippet,
@@ -866,7 +1092,7 @@ export default defineScene<SpatialWeightsOptions>({
     what: 'A spatial-weights matrix W lists, for every place, its neighbours and how much each counts. `GPUContiguityWeights` builds it from shared polygon boundaries, `GPUNeighborSearch` from distances between centroids, `GPULatticeWeights` from a regular grid. `GPUSpatialWeightsTransform` rescales it, `GPUSpatialWeightsAlgebra` combines neighbourhoods, `GPUSpatialWeightsSummary` and `GPUSpatialWeightsTranspose` check it, and `GPUSpatialLag` and `GPUNeighborhoodSummary` use it to describe what surrounds each place.',
     why: "Moran's I, Gi*, regression with spatial lags, GWR and smoothing all take W as an input, and each answer changes with it. Looking at W first (who is connected, who is isolated, whether it is symmetric) is the cheapest way to avoid a wrong conclusion.",
     howToRead:
-      'Orange places are neighbours of the red focus place; lines join centroids along every link. Switch **Map shows** to count neighbours, find one-way links, or read the spatial lag. Red dots are islands. The numbers on the right are the diagnostics of the matrix actually analysed.'
+      'Green is membership in W: the neighbours of the focus place, or places classed by how many neighbours they list. The ink outline is the focus; the ink bundle joins it to its neighbours. Rings mark islands. Orange and brown classes show the variable and its lag; purple to orange shows where the neighbourhood differs from the place. The numbers on the right are the diagnostics of the matrix actually analysed.'
   },
 
   create: async ctx => (await import('./spatial-weights.compute')).createSpatialWeights(ctx),
@@ -875,102 +1101,191 @@ export default defineScene<SpatialWeightsOptions>({
     {
       id: 'neighbours',
       title: 'Which counties touch Cook County?',
-      body: 'Every spatial statistic begins with one decision: **who counts as a neighbour**? The map shows the 3,109 counties of the contiguous United States. The red county is Cook County, Illinois; orange counties are its neighbours, and lines join the centroids of every pair the rule links.\n\n**`GPUContiguityWeights`** builds the *queen* rule on the GPU: two polygons are neighbours when they share at least one boundary vertex. It sorts 64-bit vertex keys and groups equal ones, so it is exact and deterministic, and it matches libpysal `Queen`. The readouts give the size of the matrix (9,102 pairs, about 5.9 neighbours per county). Click any county or pick a **Focus place** below to move the focus.',
-      options: {source: 'queen', display: 'focus', focus: 'typical'},
-      camera: {longitude: -88.2, latitude: 40.6, zoom: 5.4, transitionMs: 1400},
-      callout: {coordinate: [-87.65, 41.84], text: 'Focus: Cook County, IL'},
-      highlight: {readout: 'neighbors'},
-      controls: ['source', 'focus'],
-      readouts: ['links', 'neighbors']
+      headline: 'A neighbour is a shared boundary point',
+      textAlternative:
+        'Map of the Midwest: Cook County, Illinois is outlined in ink and its queen neighbours are filled green; every other county is left blank.',
+      body: 'Every spatial statistic starts with one decision: who counts as a neighbour. Under the **queen** rule, counties that share any boundary point are neighbours. **{{focusName}}** has **{{focusDegree}}** of them, among **{{links}}** links in all, **{{meanNeighbors}}** per county on average. Choose a **Focus place** or click the map.\n\n*A weights matrix is a model of nearness, not a fact.*',
+      optionsMode: 'fresh',
+      options: {
+        geography: 'us-counties',
+        source: 'queen',
+        display: 'focus',
+        focus: 'typical',
+        showLinks: false
+      },
+      controls: ['focus'],
+      readouts: ['focusDegree', 'links', 'meanNeighbors'],
+      stage: 'sort',
+      basemap: ground('paperSheet'),
+      camera: {bounds: around(COOK, 2.5, 2.5), transitionMs: 1400},
+      furniture: {
+        ...NATIONAL_FURNITURE,
+        title: cartouche('Who touches Cook County?', 'Queen contiguity: a shared boundary point'),
+        credit: COUNTY_CREDIT
+      },
+      annotations: labelsFor(US, ['state-il', 'state-in', 'state-wi', 'state-mi']),
+      diagram: getVertexDiagram()
     },
     {
       id: 'rook',
       title: 'Corners count for queen, not for rook',
-      body: 'Set **Neighbours are...** to **rook** contiguity: polygons are neighbours only if they share a boundary *edge*. At the Four Corners, Utah, Colorado, Arizona and New Mexico meet at a single point. Under queen, San Juan County, New Mexico lists San Juan County, Utah as a neighbour; under rook it does not.\n\nThe choice changes the answer a statistic gives: rook always lists a subset of queen, so every degree falls or stays. Both rules are exact on this boundary data (**Vertex snap tolerance** only matters for digitised boundaries that nearly touch).',
-      options: {source: 'rook', focus: 'corner'},
-      camera: {longitude: -108.6, latitude: 37.0, zoom: 6.4, transitionMs: 1600},
-      callout: {coordinate: [-109.045, 37.0], text: 'Four Corners'},
-      highlight: {readout: 'links'},
-      controls: ['source', 'focus', 'snapTolerance'],
-      readouts: ['links', 'neighbors']
+      headline: 'Corners count for queen, not rook',
+      textAlternative:
+        'Map of the Four Corners: San Juan County, New Mexico is outlined in ink; its rook neighbours are green and San Juan County, Utah, which it touches only at a corner, has a dashed outline.',
+      body: 'A **rook** neighbour shares an edge; a **queen** neighbour may share only a corner. Next to the focus, **{{cornerFocus}}** touches it at a single point, so only queen lists it (dashed outline). Across the map, queen adds **{{cornerLinks}}** corner-only links to rook. Switch **Neighbours are...** and watch **{{focusDegree}}** change.\n\n*Rook is always a subset of queen.*',
+      optionsMode: 'fresh',
+      options: {
+        geography: 'us-counties',
+        source: 'rook',
+        display: 'focus',
+        focus: 'corner',
+        showQueenOnly: true
+      },
+      controls: ['source'],
+      readouts: ['focusDegree', 'links', 'cornerLinks'],
+      stage: 'pairs',
+      basemap: ground('paperSheet'),
+      camera: {bounds: around(FOUR_CORNERS, 1.7, 1.4), transitionMs: 1600},
+      furniture: {
+        ...NATIONAL_FURNITURE,
+        title: cartouche(
+          'Corners count for queen, not rook',
+          'Edge or corner: the focus at the Four Corners'
+        ),
+        credit: COUNTY_CREDIT
+      },
+      annotations: labelsFor(US, ['four-corners'])
+    },
+    {
+      id: 'cardinality',
+      title: 'How many neighbours is normal?',
+      headline: 'Border and coast counties list fewer neighbours',
+      textAlternative:
+        'Map of the contiguous United States with counties in five green classes by neighbour count; counties along the coasts and borders are paler, and two island counties are ringed.',
+      body: 'Counties list **{{meanNeighbors}}** neighbours on average, and a common rule of thumb asks for eight. Counties on a coast, lake shore or border list only **{{edgeMean}}**, against **{{interiorMean}}** inside the map, and **{{islands}}** list none. Try the other rules under **Neighbours are...**.\n\n*Edge effect: places at the boundary of the data have fewer neighbours.*',
+      optionsMode: 'fresh',
+      options: {
+        geography: 'us-counties',
+        source: 'queen',
+        display: 'neighbors',
+        showLinks: false
+      },
+      controls: ['source'],
+      readouts: ['meanNeighbors', 'edgeMean', 'islands', 'cardinality'],
+      stage: 'csr',
+      basemap: ground('paperSheet'),
+      camera: {bounds: [...CONUS_BOUNDS], transitionMs: 1600},
+      furniture: {
+        ...NATIONAL_FURNITURE,
+        title: cartouche(
+          'How many neighbours is normal?',
+          'Neighbour count of each county, fixed classes'
+        ),
+        credit: COUNTY_CREDIT
+      }
     },
     {
       id: 'nearest',
-      title: 'Nearest neighbours ignore borders, but are one-way',
-      body: "Contiguity leaves **islands**: Nantucket and San Juan County, Washington (red dots) touch nothing. **`GPUNeighborSearch`** uses distances between centroids instead. In kNN mode each county lists its **k** nearest centroids (6 here), so nobody is isolated; it writes exact neighbours with a bucket grid and deterministic tie-breaking (libpysal `KNN`).\n\nThe fill now counts **one-way links**: a county that lists B while B does not list it back. kNN is not symmetric, because a small county in a dense area is among many neighbours' nearest six. **`GPUSpatialWeightsTranspose`** reverses the direction (W^T); set **Links drawn** to the union of W and W^T to see the symmetrised matrix, and watch **Asymmetric slots** below.",
-      options: {source: 'knn', k: 6, display: 'oneWay'},
-      camera: {longitude: -96, latitude: 38.5, zoom: 3.9, transitionMs: 1600},
-      highlight: {readout: 'asymmetric'},
-      controls: ['k', 'display', 'matrix'],
-      readouts: ['asymmetric', 'islands']
+      title: 'Nearest neighbours: no islands, but one-way',
+      headline: 'Nearest neighbours: nobody isolated, but links go one way',
+      textAlternative:
+        'Map of the Mountain West with counties in classes by the number of one-way links they list; the large, sparse western counties carry the most.',
+      body: 'Listing the **k** nearest centroids leaves **{{islands}}** counties isolated. But nearness is not mutual: **{{oneWayPlaces}}** counties list a neighbour that does not list them back (**{{asymmetric}}** unreturned slots). Change **Nearest neighbours (k)**, or draw W, its transpose or their union with **Links drawn**. A union with queen reconnects islands too.\n\n*Nearness by distance is not symmetric.*',
+      optionsMode: 'fresh',
+      options: {
+        geography: 'us-counties',
+        source: 'knn',
+        k: 6,
+        display: 'oneWay',
+        matrix: 'weights'
+      },
+      controls: ['k', 'matrix'],
+      readouts: ['islands', 'oneWayPlaces', 'asymmetric'],
+      stage: 'pairs',
+      basemap: ground('paperSheet'),
+      camera: {bounds: [...MOUNTAIN_WEST_BOUNDS], transitionMs: 1600},
+      furniture: {
+        ...NATIONAL_FURNITURE,
+        title: cartouche(
+          'Nearest neighbours go one way',
+          'One-way links of the k nearest centroids'
+        ),
+        credit: COUNTY_CREDIT
+      },
+      annotations: labelsFor(US, [
+        'state-mt',
+        'state-wy',
+        'state-co',
+        'state-nm',
+        'state-ut',
+        'state-id'
+      ])
     },
     {
       id: 'kernels',
-      title: 'Distance bands and kernel weights',
-      body: 'A **distance band** lists every centroid within a radius; **Distance band** is measured in typical centroid spacings, so it works for counties and tracts alike. Here each link also carries a **kernel weight**, `K(d / h)` with the bisquare profile `15/16 (1 - z^2)^2`: close neighbours count most and the weight fades to zero at the band edge (libpysal `DistanceBand` and `Kernel`).\n\n**`GPUSpatialWeightsTransform`** then **row-standardises** the weights, `w_ij / sum_j w_ij`, so every row sums to 1 and a lag becomes a weighted mean. Try the other **Transform weights** choices, double standardisation, variance stabilising or symmetrise: the **Focus place** readout below shows the weight sum of the row.',
+      title: 'Distance fades: kernels and row standardisation',
+      headline: 'Weights fade with distance and sum to one',
+      textAlternative:
+        'Map around Cook County with a dashed ring for the distance band; neighbours inside it are classed green by weight and the line widths follow the weights.',
+      body: 'A distance band lists every centroid within **{{band}}** of the focus: **Distance band** times the **{{spacing}}** median spacing. A bisquare kernel weights each neighbour by distance, and row standardisation makes the row sum to **{{weightSum}}**. Line width is the weight. Drag **Distance band** or change **Kernel**.\n\n*A kernel makes W graded, not 0 or 1.*\n\n*Numerical note: the search runs in planar metres; the ring is the same disc at ground distance.*',
+      optionsMode: 'fresh',
       options: {
+        geography: 'us-counties',
         source: 'band',
-        bandFactor: 1.5,
+        bandFactor: 2.5,
         weightKind: 'kernel',
         kernel: 'bisquare',
         transform: 'row',
-        display: 'neighbors'
+        display: 'weights',
+        focus: 'typical'
       },
-      camera: {longitude: -92, latitude: 38.5, zoom: 4.6, transitionMs: 1600},
-      highlight: {readout: 'focus'},
-      controls: ['bandFactor', 'weightKind', 'kernel', 'transform'],
-      readouts: ['focus', 'band', 'spacing']
-    },
-    {
-      id: 'algebra',
-      title: 'Combine neighbourhoods with set algebra',
-      body: 'Neighbourhoods can be built from other neighbourhoods. **`GPUSpatialWeightsAlgebra`** takes the queen contiguity (A) and the 6 nearest centroids (B) and keeps a neighbour listed by **either** (union). Nantucket and the San Juan Islands are connected again, while every county that touches stays linked.\n\nThe same contributor does intersection, difference, **higher order** (neighbours of neighbours, libpysal `higher_order`), self weights (the Getis-Ord G* neighbourhood), a **subgraph** of well-populated places, and **block** weights (everyone in one state). **Combine neighbourhoods** (below) sets the operation, **Partner neighbours** sets B, and **Weight where both agree** set to *Binary (1)* reproduces libpysal 4.15, which gives every set-operation link weight 1.',
-      options: {
-        source: 'queen',
-        weightKind: 'binary',
-        transform: 'none',
-        combine: 'union',
-        partnerK: 6,
-        display: 'neighbors',
-        focus: 'island'
+      controls: ['bandFactor', 'kernel'],
+      readouts: ['band', 'weightSum', 'spacing', 'kernelCurve'],
+      stage: 'transform',
+      basemap: ground('paperSheet'),
+      camera: {bounds: around(COOK, 1.9, 1.5), transitionMs: 1600},
+      furniture: {
+        ...NATIONAL_FURNITURE,
+        title: cartouche(
+          'Weights fade with distance',
+          'Bisquare kernel, row-standardised distance band'
+        ),
+        credit: COUNTY_CREDIT
       },
-      camera: {longitude: -72.5, latitude: 41.8, zoom: 5.6, transitionMs: 1600},
-      callout: {coordinate: [-70.05, 41.28], text: 'Nantucket'},
-      highlight: {readout: 'islands'},
-      controls: ['combine', 'partnerK', 'weightRule'],
-      readouts: ['islands', 'links']
+      annotations: labelsFor(US, ['state-il', 'state-in', 'state-wi'])
     },
     {
       id: 'lag',
-      title: 'What surrounds each tract?',
-      body: "Now Chicago: 791 census tracts, queen contiguity (6.6 neighbours on average; O'Hare is the one island). **`GPUSpatialLag`** computes `sum_j w_ij x_j`, the value of the neighbourhood, and with normalisation the weighted mean of the neighbours. The map shows the lag of diabetes prevalence (**Variable** and **Normalise the lag by the weight sum** are below): it smooths the tract-to-tract noise, and plotted against the tract's own value it is the Moran scatterplot.\n\n**`GPUNeighborhoodSummary`** goes further: set **Map shows** to *Neighbourhood statistic*, then use **Neighbourhood statistic** for the median, the standard deviation, or the **entropy of community areas** among the neighbours, which is zero inside a community area and high on the borders (momepy `describe`).",
+      title: 'Does the neighbourhood agree with the place?',
+      headline: 'The neighbourhood mostly agrees with the place',
+      textAlternative:
+        'Map of Chicago census tracts in five orange classes with a swipe divider: on the left each tract value, on the right the average of its neighbours, which is smoother.',
+      body: "Now Chicago: **{{rows}}** tracts. The spatial lag averages each tract's neighbours; swipe from the tract itself to its neighbourhood on the same classes. The lag rises with the value at a slope of **{{lagSlope}}**; *Is it clustered at all?* tests that against chance. Change **Neighbours are...** and the lag moves. A lattice grid is the alternative.\n\n*Every later statistic inherits W.*",
+      optionsMode: 'fresh',
       options: {
         geography: 'chicago-tracts',
-        combine: 'none',
         source: 'queen',
         display: 'lag',
-        focus: 'typical'
+        variable: 'diabetes',
+        lagNormalize: true
       },
-      camera: {longitude: -87.68, latitude: 41.83, zoom: 9.8, transitionMs: 1800},
-      callout: {coordinate: [-87.63, 41.88], text: 'The Loop'},
-      highlight: {readout: 'lagRange'},
-      controls: ['variable', 'lagNormalize', 'display'],
-      readouts: ['lagRange']
-    },
-    {
-      id: 'lattice',
-      title: 'A grid instead of polygons, and where to be careful',
-      body: "Set **Neighbours are...** to the **lattice**. The tracts are rasterised to square cells and **`GPULatticeWeights`** links adjacent cells (libpysal `lat2W`): rook means 4 neighbours, queen 8 (**Lattice neighbourhood**), and **Lattice radius** extends the reach. Cells outside the city are masked out as rows *and* as neighbours; turn **Mask cells outside the map** off to see the lake and the suburbs join the grid.\n\n**Limits.** Distances here are in flattened Web Mercator metres, fine for choosing neighbours, not for survey-grade work. Centroid rules ignore the shape of a place, and contiguity depends on how boundaries were digitised. Weights are a modelling choice: try a different rule and check that a conclusion survives. Next, run Moran's I and Gi* on these weights.",
-      options: {
-        source: 'lattice',
-        display: 'neighbors',
-        latticeCriterion: 'queen',
-        latticeRadius: 1
+      controls: ['source', 'variable', 'display'],
+      readouts: ['rows', 'meanNeighbors', 'lagSlope', 'lagScatter'],
+      stage: 'lag',
+      basemap: ground('paperCity'),
+      camera: {...CITY_FRAMES.chicago, transitionMs: 1800},
+      compare: {mode: 'swipe', labels: ['Tract value', 'Neighbourhood (lag)'], position: 0.5},
+      furniture: {
+        title: cartouche(
+          'Does the neighbourhood agree?',
+          'Diabetes prevalence, tract and neighbourhood',
+          true
+        ),
+        credit: TRACT_CREDIT,
+        scaleBar: false,
+        caveat: ''
       },
-      camera: {longitude: -87.68, latitude: 41.83, zoom: 9.8, transitionMs: 1400},
-      highlight: {readout: 'neighbors'},
-      controls: ['source', 'latticeCriterion', 'latticeRadius', 'latticeMask'],
-      readouts: ['neighbors', 'rows']
+      annotations: labelsFor(CHICAGO, ['lake-michigan', 'loop', 'ohare'])
     }
   ]
 });

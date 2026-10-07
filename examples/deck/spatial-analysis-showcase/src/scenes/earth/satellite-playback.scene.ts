@@ -2,22 +2,25 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {CREDITS, joinCredits} from '../../cartography/credits';
+import {ground} from '../../cartography/grounds';
 import {formatPlaybackTime, playbackOptions} from '../../engine/playback';
 import {defineScene} from '../scene';
 import type {SatellitePlaybackOptions} from './satellite-playback.compute';
 import {getGroupLegendEntries, SATELLITE_GROUPS} from './satellite-tracks';
 
-const WORLD_VIEW = {longitude: 10, latitude: 15, zoom: 1.5, pitch: 45, bearing: 0};
+const WORLD_VIEW = {longitude: 10, latitude: 15, zoom: 1.5, pitch: 0, bearing: 0};
+// cartography-allow: pitch (the height step renders propagated satellite altitude as real z with stems)
 
 const elapsed = (seconds: number) => formatPlaybackTime.duration(seconds) || '0 min';
 
 export default defineScene<SatellitePlaybackOptions>({
   id: 'satellite-playback',
-  title: 'Who is overhead right now?',
+  title: 'How do propagated satellites move?',
   chapter: 'earth',
-  order: 30,
+  order: 9,
   summary:
-    'Replay three hours of 911 satellites, from the International Space Station to GPS, propagated from current CelesTrak elements and lifted off the map by their altitude with a GPU playhead.',
+    'Replay a three-hour SGP4 model snapshot: family composition, altitude and motion are visible without claiming an observer or footprint.',
   contributors: ['GPUTrajectoryPlayhead', 'GPUTimeWindowFilter'],
   datasets: [{id: 'celestrak-ground-tracks', role: 'SGP4 ground tracks (7 October 2026, 3 h)'}],
   initialView: WORLD_VIEW,
@@ -52,7 +55,7 @@ export default defineScene<SatellitePlaybackOptions>({
       default: 'all',
       help: 'Limits the markers and the trails to one family. Markers are culled in the vertex shader; trails use an extra predicate mask written once into the time-window graph (no recompile).',
       options: [
-        {value: 'all', label: 'All 911 satellites'},
+        {value: 'all', label: 'All loaded satellites'},
         ...SATELLITE_GROUPS.map((label, index) => ({value: String(index), label}))
       ]
     },
@@ -63,26 +66,10 @@ export default defineScene<SatellitePlaybackOptions>({
       group: 'Satellites',
       apply: 'param',
       default: 'group',
-      help: 'Family, or the altitude of each satellite through a ramp that is logarithmic from 200 km to 25,600 km.',
+      help: 'Family, or a fixed ordered altitude scale from 200 km to 25,600 km. There is no user-selectable colour ramp.',
       options: [
         {value: 'group', label: 'Family'},
         {value: 'altitude', label: 'Altitude'}
-      ]
-    },
-    {
-      kind: 'select',
-      id: 'ramp',
-      label: 'Altitude ramp',
-      group: 'Satellites',
-      apply: 'param',
-      default: 'viridis',
-      disabledWhen: state => state.colorBy !== 'altitude',
-      help: 'Color ramp for altitude. Used only when Color by is Altitude.',
-      options: [
-        {value: 'viridis', label: 'Viridis'},
-        {value: 'magma', label: 'Magma'},
-        {value: 'inferno', label: 'Inferno'},
-        {value: 'cividis', label: 'Cividis'}
       ]
     },
     {
@@ -174,18 +161,26 @@ export default defineScene<SatellitePlaybackOptions>({
 
   story: [
     {
-      id: 'overhead',
-      title: 'Who is overhead right now?',
-      body: 'Every disc is a satellite at the playhead: a space station, a GPS vehicle, a weather or Earth observation satellite, or one of 800 Starlink satellites sampled from the roughly 10,600 in orbit. Each position is computed from its public orbital elements with the SGP4 model every 30 seconds; `GPUTrajectoryPlayhead` interpolates all of them at the clock, once per frame.\n\nPress **Play** below, or drag **Time since 00:00 UTC** to any moment in the three hours. The slider follows the clock; **Playback speed** sets how fast simulated time runs.',
+      id: 'snapshot',
+      title: 'This is a propagated orbital snapshot',
+      headline: 'A model replay, not surveillance',
+      textAlternative:
+        'Propagated satellite positions appear over a sparse dark world map at a UTC playhead.',
+      optionsMode: 'fresh',
+      body: 'Every mark is an SGP4-propagated position at the clock, sampled every 30 seconds and interpolated by **`GPUTrajectoryPlayhead`**. The cartouche and readouts name the model, sample and exact interval.\n\nPress **Play** or scrub the clock. This is neither a visibility calculation nor a record of an observation at a location.',
       camera: {...WORLD_VIEW, transitionMs: 1400},
-      options: {play: true, time: 1800, group: 'all', colorBy: 'group', showStems: false},
+      options: {play: false, time: 1800, group: 'all', colorBy: 'group', showStems: false},
       controls: ['play', 'time', 'speed'],
-      readouts: ['clock', 'active']
+      readouts: ['clock', 'active', 'satellites', 'oldestElements']
     },
     {
       id: 'height',
-      title: 'Height is half the story',
-      body: 'The playhead also interpolates an elevation for every satellite, and the layer lifts each disc by it. Low Earth orbit (stations, Starlink, weather and Earth observation satellites) sits between 300 and 900 km; GPS is at about 20,200 km. The map would be useless at true proportions, so **Altitude scale** defaults to a logarithm: heights are ordered, not proportional.\n\nSwitch it to Linear to see how thin low orbit really is, and turn on **Drop lines to the ground** to read each satellite against the point below it.',
+      title: 'Altitude separates orbital regimes',
+      headline: 'Tilt only when height is the subject',
+      textAlternative:
+        'Satellite altitude stems rise from a global map in a deliberately tilted height diagram.',
+      optionsMode: 'fresh',
+      body: 'Here pitch is intentional: elevation is the subject. Stems connect the displayed altitude to each sub-satellite point; the altitude chart provides the numerical companion.\n\nCompressed display is labelled non-linear: it preserves order but not proportional distance. Switch to linear to see why low orbit otherwise collapses onto the map.',
       camera: {...WORLD_VIEW, pitch: 58, zoom: 1.8, transitionMs: 1400},
       options: {showStems: true, colorBy: 'altitude', showTrails: false},
       controls: ['altitudeDisplay', 'altitudeScale', 'showStems', 'colorBy'],
@@ -193,26 +188,38 @@ export default defineScene<SatellitePlaybackOptions>({
     },
     {
       id: 'trails',
-      title: 'Orbits leave streaks',
-      body: 'Each satellite leaves a trail: the segments of its track inside the time window `GPUTimeWindowFilter` keeps. A low orbit is about 93 minutes, so a 45-minute trail is half a lap; the fade makes the newest part brightest. Lines that bend toward the poles come from inclined orbits and are the subject of the next scenes.\n\nLengthen **Trail length** until the streaks of the polar-orbiting Earth observation satellites cross over themselves, then vary **Tail fade**.',
-      camera: {...WORLD_VIEW, pitch: 30, zoom: 1.4, transitionMs: 1400},
+      title: 'Three hours reveal different orbital tempos',
+      headline: 'A trail is a time window',
+      textAlternative:
+        'Family-coloured satellite trails fade behind current positions on a flat world map.',
+      optionsMode: 'fresh',
+      body: '**`GPUTimeWindowFilter`** keeps segments inside the trailing interval and writes their fade weights. A short display window makes fast low-orbit motion and slower navigation motion comparable without claiming a location-specific pass.\n\nVary trail length, then continue to the ground-track story for the latitude pattern those paths create.',
+      camera: {...WORLD_VIEW, zoom: 1.4, transitionMs: 1400},
       options: {showTrails: true, trailMinutes: 45, colorBy: 'group', showStems: false},
       controls: ['showTrails', 'trailMinutes', 'tailFade'],
       readouts: ['trailSegments']
     },
     {
       id: 'families',
-      title: 'Pick one family',
-      body: 'Choose **Show family** below to isolate Starlink, GPS, the stations, weather or Earth observation satellites. The sampled Starlink satellites form a dense lattice of near-identical orbits; the 32 GPS satellites loiter high above and move slowly, only a quarter of a lap in three hours.\n\nTry **Marker size** with the Starlink family, then click any satellite to read its orbit.',
+      title: 'The sample is deliberately unbalanced',
+      headline: 'A sample is not the constellation',
+      textAlternative:
+        'A selected satellite family is bright while the deliberately sampled Starlink family remains contextual.',
+      optionsMode: 'fresh',
+      body: 'Family filtering makes the sample composition explicit. Starlink is an 800-object sample, while GPS has 32 records in this manifest; neither count is a claim about every object in orbit.\n\nChoose a family and select a mark for its propagated metadata, including inclination and element age.',
       camera: {...WORLD_VIEW, zoom: 1.6, transitionMs: 1400},
       options: {group: '1', colorBy: 'group', trailMinutes: 20, showTrails: true},
       controls: ['group', 'markerSize', 'colorBy'],
-      readouts: ['active', 'selected']
+      readouts: ['familyChart', 'active', 'selected']
     },
     {
       id: 'limits',
-      title: 'A model, not an observation',
-      body: 'These are predictions. SGP4 is only accurate near the epoch of the orbital elements: roughly a kilometre at epoch and growing by a few kilometres per day for low orbits, because drag is unpredictable. The elements here are up to a few weeks old (the oldest is in the readouts), but most are under a day. Debris, military and most commercial satellites are not in the data, and Starlink is a sample.\n\nSet **Show family** back to all and read the altitude chart: most of what is overhead is within 1,000 km of the ground.',
+      title: 'A TLE replay is not surveillance',
+      headline: 'Model inputs constrain every claim',
+      textAlternative:
+        'A static propagated satellite view is paired with element-age and sample readouts.',
+      optionsMode: 'fresh',
+      body: 'SGP4 positions depend on public element sets and their age. The model window is short, tracks are cut at the antimeridian, and the sample omits most of the catalogue. No footprints, visibility cones or conjunction claims are calculated.\n\nNext: where do these ground tracks accumulate after their length is normalised by area?',
       camera: {...WORLD_VIEW, zoom: 1.5, transitionMs: 1400},
       options: {group: 'all', showStems: false, colorBy: 'group'},
       controls: ['group'],
@@ -225,7 +232,7 @@ export default defineScene<SatellitePlaybackOptions>({
       ? {
           kind: 'ramp' as const,
           title: 'Altitude above the ellipsoid',
-          ramp: state.ramp,
+          ramp: 'mako' as const,
           extent: [200, 25600] as const,
           scale: 'log' as const,
           unit: 'km',
@@ -235,7 +242,7 @@ export default defineScene<SatellitePlaybackOptions>({
           kind: 'categories' as const,
           title: 'Family',
           entries: getGroupLegendEntries(),
-          note: 'Starlink is a random sample of 800; GPS is the operational constellation.'
+          note: 'Starlink is a bounded 800-object sample; GPS contributes 32 records in this dated snapshot.'
         }
   ],
 
@@ -262,6 +269,12 @@ export default defineScene<SatellitePlaybackOptions>({
       label: 'Satellites by altitude',
       kind: 'chart',
       help: 'Count of satellites shown in each altitude band right now.'
+    },
+    {
+      id: 'familyChart',
+      label: 'Loaded records by family',
+      kind: 'chart',
+      help: 'A count of the loaded metadata records. The Starlink bar is explicitly a bounded sample.'
     },
     {
       id: 'trailSegments',
@@ -317,11 +330,31 @@ windowParameters.write(getGPUTimeWindowParameterValues({
 compiled.encode(commandEncoder, {parameters: undefined});`,
 
   about: {
-    what: 'A replay of 911 satellites over three hours on 7 October 2026. Positions are computed with the SGP4 model from the latest public CelesTrak element sets at 30 second steps and cut at the antimeridian. `GPUTrajectoryPlayhead` interpolates every track at the playhead with the altitude as its elevation, and `GPUTimeWindowFilter` picks the trail segments behind it.',
-    why: 'It answers "what is overhead and how high" for the families that matter to an analyst: stations, navigation, weather, Earth observation and a mega-constellation. It also shows planar trajectory contributors working on a global dataset once the antimeridian is handled in the data.',
+    what: 'A replay of 911 satellites over three hours on 7 October 2026. Positions are computed with SGP4 from the dated public CelesTrak TLE snapshot used to generate this archive, at 30-second steps and cut at the antimeridian. `GPUTrajectoryPlayhead` interpolates every track at the playhead with altitude as elevation, and `GPUTimeWindowFilter` picks trail segments behind it.',
+    why: 'It explains what an orbital propagation snapshot can show: modelled motion, family composition and altitude. It does not calculate what an observer can see.',
     howToRead:
       'A disc is a satellite; its height above the map is its altitude (compressed unless you pick linear). Trails are where it has just been. Colors are the family or the altitude. These are modeled, not observed, positions: accuracy decays with the age of the orbital elements. Satellite conjunctions are deliberately not shown: `GPUTrajectoryEncounters` is two-dimensional and would invent near misses between satellites that are hundreds of kilometres apart in height.'
   },
 
+  pipeline: [
+    {id: 'propagate', label: 'Propagate', detail: 'Read SGP4 positions sampled every 30 seconds'},
+    {id: 'playhead', label: 'Playhead', detail: 'Interpolate each antimeridian-cut track'},
+    {id: 'window', label: 'Trail window', detail: 'Keep and fade recent path segments'},
+    {id: 'draw', label: 'Draw', detail: 'Separate family marks from altitude diagram'}
+  ],
+  basemap: ground('space', {
+    labels: 'none',
+    graticule: true,
+    referenceLines: ['equator', 'tropics']
+  }),
+  furniture: {
+    title: {
+      title: 'How do propagated satellites move?',
+      subtitle: 'SGP4 model · 30-second samples · 7 Oct 2026',
+      chips: ['propagated, not observed']
+    },
+    credit: joinCredits('CelesTrak GP elements; propagation with SGP4', CREDITS.naturalEarth),
+    caveat: 'No observer, footprint, visibility or conjunction calculation is present.'
+  },
   create: async ctx => (await import('./satellite-playback.compute')).createSatellitePlayback(ctx)
 });

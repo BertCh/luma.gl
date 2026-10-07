@@ -6,6 +6,7 @@ import {
   createTransientView,
   GPUScan,
   validatePackedUint32View,
+  validatePackedView,
   type GPUCommandGraph,
   type GPUCommandNode,
   type GPUCommandNodeProducer,
@@ -213,8 +214,9 @@ fn nodeOverlaps(node: u32, queryMinimum: vec2f, queryMaximum: vec2f) -> bool {
 /**
  * Properties for {@link GPUSpatialJoinCandidates}.
  *
- * Per-frame: the contents of every input buffer. Topology: view lengths, `distance`,
- * `leafCapacity`, the pair capacity and the presence of `prepared`.
+ * Per-frame: the contents of every input buffer, including a view-backed `distance`. Topology:
+ * view lengths, whether `distance` is a number or view, `leafCapacity`, the pair capacity and the
+ * presence of `prepared`.
  */
 export type GPUSpatialJoinCandidatesProps = {
   /** Prefix for generated node and transient IDs. Defaults to `'spatial-join-candidates'`. */
@@ -230,9 +232,10 @@ export type GPUSpatialJoinCandidatesProps = {
   prepared?: GPUSpatialJoinPrepared;
   /**
    * Expand each left box by this planar distance before probing, which makes the candidates
-   * of a `dwithin` join. Defaults to `0` (boxes that overlap or touch).
+   * of a `dwithin` join. A one-row float32 view is read every encoding; negative, NaN and infinite
+   * values act as `0`. Defaults to `0` (boxes that overlap or touch).
    */
-  distance?: number;
+  distance?: number | GraphDataView<'float32'>;
   /** Power-of-two BVH leaf slots when no `prepared` handle is given. Defaults to the next power of two. */
   leafCapacity?: number;
   /**
@@ -276,8 +279,17 @@ export class GPUSpatialJoinCandidates implements GPUCommandNodeProducer {
     validateSpatialJoinGeometry(id, 'right', props.right);
     this.leftCount = getSpatialJoinFeatureCount(props.left);
     this.rightCount = getSpatialJoinFeatureCount(props.right);
-    if (props.distance !== undefined && (!Number.isFinite(props.distance) || props.distance < 0)) {
+    if (
+      typeof props.distance === 'number' &&
+      (!Number.isFinite(props.distance) || props.distance < 0)
+    ) {
       throw new Error(`${id} distance must be finite and non-negative`);
+    }
+    if (props.distance !== undefined && typeof props.distance !== 'number') {
+      validatePackedView(props.distance, ['float32'], `${id} distance`);
+      if (props.distance.length < 1) {
+        throw new Error(`${id} distance must contain one float32 row`);
+      }
     }
     const {pairs, prepared} = props;
     validatePackedUint32View(pairs.leftIds, `${id} pairs.leftIds`);
@@ -317,7 +329,11 @@ export class GPUSpatialJoinCandidates implements GPUCommandNodeProducer {
     }
     validateDisjointOutputs(
       id,
-      [...getSpatialJoinGeometryViews(props.left), ...getSpatialJoinGeometryViews(props.right)],
+      [
+        ...getSpatialJoinGeometryViews(props.left),
+        ...getSpatialJoinGeometryViews(props.right),
+        typeof props.distance === 'number' ? undefined : props.distance
+      ],
       [pairs.leftIds, pairs.rightIds, pairs.count, pairs.overflow, pairs.totalCount]
     );
   }
@@ -331,6 +347,7 @@ export class GPUSpatialJoinCandidates implements GPUCommandNodeProducer {
     validateGraphViewsBelongToGraph(id, graph, [
       ...getSpatialJoinGeometryViews(left),
       ...getSpatialJoinGeometryViews(right),
+      typeof props.distance === 'number' ? undefined : props.distance,
       pairs.leftIds,
       pairs.rightIds,
       pairs.count,

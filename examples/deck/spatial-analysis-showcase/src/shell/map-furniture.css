@@ -1,0 +1,414 @@
+/* Declarative map furniture: cartouche, north arrow, scale bar, source credit, clock.
+   Map chrome: colours come from the --map-* tokens, which follow the map ground. */
+.map-furniture-cartouche,
+.map-furniture-north,
+.map-furniture-scale,
+.map-furniture-credit,
+.map-furniture-clock {
+  position: relative;
+  pointer-events: none;
+  font-family: var(--map-font);
+  color: var(--map-ink);
+}
+
+.map-furniture-cartouche[hidden],
+.map-furniture-north[hidden],
+.map-furniture-scale[hidden],
+.map-furniture-credit[hidden],
+.map-furniture-clock[hidden] {
+  display: none;
+}
+
+/* Shared halo for text that sits directly on the map. */
+.map-furniture-scale,
+.map-furniture-credit {
+  /* Text-shadow halo (paint-order on HTML text is not universal, a stroke could cover glyphs). */
+  text-shadow:
+    0 0 3px var(--map-halo),
+    0 0 3px var(--map-halo),
+    0 0 2px var(--map-halo),
+    1px 0 0 var(--map-halo),
+    -1px 0 0 var(--map-halo),
+    0 1px 0 var(--map-halo),
+    0 -1px 0 var(--map-halo);
+}
+
+/* Map chrome ground: translucent, blurred, hairline in the ink colour. */
+.map-furniture-cartouche,
+.map-furniture-clock {
+  box-sizing: border-box;
+  background: var(--map-furniture-bg);
+  -webkit-backdrop-filter: blur(6px) saturate(1.1);
+  backdrop-filter: blur(6px) saturate(1.1);
+  border: 1px solid color-mix(in srgb, var(--map-ink) 14%, transparent);
+  border-radius: var(--radius-chrome, 8px);
+  box-shadow: var(--e2, 0 2px 8px rgb(0 0 0 / 0.16));
+}
+
+/* Cartouche */
+.map-furniture-cartouche {
+  max-width: 320px;
+  padding: 9px 12px 9px 15px;
+  overflow: hidden;
+}
+
+/* The 3 px accent tab on the left edge. */
+.map-furniture-cartouche::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 3px;
+  background: var(--map-accent);
+}
+
+.map-furniture-title {
+  font-family: var(--map-font-serif);
+  font-size: 18px;
+  font-weight: 600;
+  line-height: 1.2;
+  letter-spacing: -0.005em;
+  color: var(--map-ink);
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  overflow: hidden;
+  overflow-wrap: anywhere;
+}
+
+.map-furniture-subtitle {
+  margin-top: 3px;
+  font-size: 12px;
+  line-height: 1.3;
+  color: var(--map-ink-muted);
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  overflow: hidden;
+}
+
+/* The standing sample line is quieter than the subtitle. */
+.map-furniture-sample {
+  margin-top: 4px;
+  padding-top: 4px;
+  border-top: 1px solid color-mix(in srgb, var(--map-ink) 10%, transparent);
+  font-size: 11px;
+  line-height: 1.3;
+  font-variant-numeric: tabular-nums;
+  color: var(--map-ink-muted);
+  opacity: 0.85;
+}
+
+.map-furniture-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-top: 6px;
+}
+
+.map-furniture-chip {
+  padding: 1px 7px;
+  border: 1px solid color-mix(in srgb, var(--map-ink) 28%, transparent);
+  border-radius: var(--radius-pill, 999px);
+  background: color-mix(in srgb, var(--map-ink) 6%, transparent);
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1.5;
+  color: var(--map-ink);
+  white-space: nowrap;
+}
+
+.map-furniture-subtitle[hidden],
+.map-furniture-sample[hidden],
+.map-furniture-chips[hidden],
+.map-furniture-title[hidden],
+.map-furniture-credit-line[hidden],
+.map-furniture-caveat[hidden] {
+  display: none;
+}
+
+/* North arrow */
+.map-furniture-north {
+  width: 30px;
+  height: 38px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.map-furniture-north svg {
+  width: 30px;
+  height: 38px;
+  overflow: visible;
+  transform-origin: 50% 55%;
+  transition: transform var(--dur-fast, 90ms) var(--ease, ease-out);
+  filter: drop-shadow(0 0 1.5px var(--map-halo)) drop-shadow(0 0 1.5px var(--map-halo));
+}
+
+/* A button only when the shell wants a click to reset north: 44 px target. */
+.map-furniture-north.is-interactive {
+  width: 44px;
+  height: 44px;
+}
+
+.map-furniture-north-button {
+  display: grid;
+  place-items: center;
+  width: 44px;
+  height: 44px;
+  padding: 0;
+  border: 0;
+  border-radius: var(--radius-pill, 999px);
+  background: transparent;
+  cursor: pointer;
+  pointer-events: auto;
+}
+
+.map-furniture-north-button:hover {
+  background: color-mix(in srgb, var(--map-furniture-bg) 80%, transparent);
+}
+
+.map-furniture-north-needle-dark {
+  fill: var(--map-ink);
+}
+
+.map-furniture-north-needle-light {
+  fill: var(--map-furniture-bg);
+  stroke: var(--map-ink);
+  stroke-width: 1;
+  stroke-linejoin: round;
+}
+
+.map-furniture-north-letter {
+  fill: var(--map-ink);
+  font-family: var(--map-font);
+  font-size: 11px;
+  font-weight: 700;
+  text-anchor: middle;
+}
+
+/* Scale bar */
+.map-furniture-scale {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 6px;
+  font-size: 10.5px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
+}
+
+.map-furniture-scale-row {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+/* Parameter tick labels above the bar, positioned at their distance. */
+.map-furniture-scale-ticks {
+  position: relative;
+  height: 11px;
+  color: var(--map-signal);
+}
+
+.map-furniture-scale-tick-label {
+  position: absolute;
+  bottom: 0;
+  transform: translateX(-50%);
+  white-space: nowrap;
+}
+
+.map-furniture-scale-bar {
+  position: relative;
+  box-sizing: border-box;
+  height: 6px;
+  border: 1px solid var(--map-ink);
+  background: linear-gradient(
+    to right,
+    var(--map-ink) 0,
+    var(--map-ink) 50%,
+    var(--map-furniture-bg) 50%,
+    var(--map-furniture-bg) 100%
+  );
+  box-shadow: 0 0 0 1px var(--map-halo);
+}
+
+/* A labelled accent tick at a parameter distance, taller than the bar. */
+.map-furniture-scale-tick {
+  position: absolute;
+  top: -4px;
+  bottom: -2px;
+  width: 2px;
+  margin-left: -1px;
+  background: var(--map-signal);
+  box-shadow: 0 0 0 1px var(--map-halo);
+}
+
+.map-furniture-scale-numerals {
+  position: relative;
+  height: 11px;
+  color: var(--map-ink);
+  white-space: nowrap;
+}
+
+.map-furniture-scale-numerals > span {
+  position: absolute;
+  top: 0;
+}
+
+.map-furniture-scale-numerals > .is-start {
+  left: 0;
+}
+
+.map-furniture-scale-numerals > .is-middle {
+  left: 50%;
+  transform: translateX(-50%);
+}
+
+.map-furniture-scale-numerals > .is-end {
+  right: 0;
+}
+
+.map-furniture-scale-note {
+  font-weight: 400;
+  color: var(--map-ink-muted);
+  white-space: nowrap;
+}
+
+/* Credit and caveat */
+.map-furniture-credit {
+  box-sizing: border-box;
+  max-width: min(60vw, 520px);
+  line-height: 1.3;
+  color: var(--map-ink-muted);
+}
+
+.map-furniture-credit-line {
+  font-size: 10px;
+  font-weight: 400;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* The honesty line under the credit wraps to two lines at most. */
+.map-furniture-caveat {
+  margin-top: 2px;
+  font-size: 11px;
+  line-height: 1.3;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  overflow: hidden;
+}
+
+/* Clock */
+.map-furniture-clock {
+  min-width: 140px;
+  padding: 8px 12px 9px;
+  font-variant-numeric: tabular-nums;
+}
+
+.map-furniture-clock-main {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+
+.map-furniture-clock-digits {
+  font-size: 40px;
+  font-weight: 600;
+  line-height: 1;
+  letter-spacing: -0.01em;
+  color: var(--map-ink);
+}
+
+.map-furniture-clock-zone {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--map-ink-muted);
+}
+
+.map-furniture-clock-date {
+  margin-top: 3px;
+  font-size: 12px;
+  color: var(--map-ink-muted);
+}
+
+.map-furniture-clock-line {
+  margin-top: 3px;
+  font-size: 11px;
+  color: var(--map-ink-muted);
+  white-space: nowrap;
+}
+
+.map-furniture-clock-line-zone {
+  margin-right: 6px;
+  font-weight: 600;
+  color: var(--map-ink);
+}
+
+.map-furniture-clock-progress {
+  margin-top: 7px;
+  height: 3px;
+  border-radius: 2px;
+  background: color-mix(in srgb, var(--map-ink) 16%, transparent);
+  overflow: hidden;
+}
+
+.map-furniture-clock-progress > span {
+  display: block;
+  height: 100%;
+  background: var(--map-signal);
+}
+
+@media (max-width: 900px) {
+  .map-furniture-cartouche {
+    max-width: calc(100vw - 80px);
+  }
+
+  .map-furniture-title {
+    font-size: 15px;
+    -webkit-line-clamp: 1;
+    line-clamp: 1;
+  }
+
+  .map-furniture-subtitle,
+  .map-furniture-sample {
+    display: none;
+  }
+
+  .map-furniture-clock {
+    min-width: 0;
+  }
+
+  .map-furniture-clock-digits {
+    font-size: 28px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .map-furniture-north svg {
+    transition: none;
+  }
+}
+
+@media (forced-colors: active) {
+  .map-furniture-cartouche,
+  .map-furniture-clock {
+    border-color: CanvasText;
+    background: Canvas;
+  }
+
+  .map-furniture-scale-bar,
+  .map-furniture-scale-tick,
+  .map-furniture-clock-progress > span {
+    forced-color-adjust: none;
+  }
+}

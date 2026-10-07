@@ -2,8 +2,11 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {CREDITS, joinCredits} from '../../cartography/credits';
+import {ground} from '../../cartography/grounds';
 import {defineScene, type LegendSpec} from '../scene';
 import type {GreatCirclesOptions} from './b3-line-options';
+import {B3_PALETTE} from './b3-palette';
 
 const HUB_OPTIONS = [
   {value: 'ORD', label: "Chicago O'Hare (ORD)"},
@@ -19,7 +22,7 @@ const HUB_OPTIONS = [
 /** Great-circle arcs and geodesics on the OpenFlights network. GPU work in `great-circles.compute.ts`. */
 export default defineScene<GreatCirclesOptions>({
   id: 'great-circles',
-  title: 'Great circles from every hub',
+  title: 'What is straight on a sphere?',
   chapter: 'geometry',
   order: 5,
   summary:
@@ -27,6 +30,14 @@ export default defineScene<GreatCirclesOptions>({
   contributors: ['GPUGreatCircleArcs', 'GPUGeodesicPairs', 'GPUGeodesicDestination'],
   datasets: [{id: 'openflights', role: 'airports and routes'}],
   initialView: {longitude: 10, latitude: 28, zoom: 1.35},
+  basemap: ground('space', {labels: 'none', graticule: true}),
+  furniture: {
+    title: {
+      title: 'Great-circle routes',
+      subtitle: 'OpenFlights network · frozen community snapshot'
+    },
+    credit: joinCredits(CREDITS.naturalEarth, 'OpenFlights community data')
+  },
 
   options: [
     {
@@ -107,7 +118,7 @@ export default defineScene<GreatCirclesOptions>({
       group: 'Hub',
       apply: 'param',
       min: 500,
-      max: 15000,
+      max: 20038,
       step: 250,
       default: 5000,
       unit: 'km',
@@ -121,6 +132,16 @@ export default defineScene<GreatCirclesOptions>({
       apply: 'param',
       default: true,
       help: 'The set of points exactly this far from the hub, on the chosen Earth model.'
+    },
+    {
+      kind: 'toggle',
+      id: 'showRhumbComparison',
+      label: 'Rhumb comparison',
+      group: 'Reference geometry',
+      apply: 'param',
+      default: false,
+      expert: true,
+      help: 'Shows the selected loaded long pair as a great circle and a constant-heading rhumb.'
     },
     {
       kind: 'select',
@@ -145,32 +166,48 @@ export default defineScene<GreatCirclesOptions>({
     {
       id: 'network',
       title: "Where do the world's airline routes go?",
-      body: `The OpenFlights network records 18,930 airline route pairs between 3,257 airports. To draw each as the shortest path on the globe, \`GPUGreatCircleArcs\` generates **one great-circle polyline per pair** on the GPU: 64 segments at most, longitudes unwrapped past 180 degrees so arcs across the Pacific stay in one piece (the map draws three copies of the world).
-
-Colour is route length: short regional hops are purple, ultra-long-haul arcs yellow. The routes are a classic hub-and-spoke network: a few airports (Amsterdam, Frankfurt, Paris, Istanbul, Atlanta, Chicago) carry most connections. The data is frozen around 2014, so treat it as structure, not current traffic.`,
+      headline: 'A few hubs organise many routes',
+      body: `\`GPUGreatCircleArcs\` generates one shortest-path polyline per loaded OpenFlights pair. The five haul classes and low-alpha accumulation reveal the network without treating the frozen community snapshot as a live schedule. Airport symbols use the square root of their loaded degree so hubs remain legible.`,
       camera: {longitude: 10, latitude: 28, zoom: 1.35, transitionMs: 1000},
-      options: {arcColor: 'distance'},
+      options: {arcColor: 'distance', showRhumbComparison: false},
       controls: ['arcColor'],
       readouts: ['worldInputs']
     },
     {
-      id: 'curvature',
-      title: 'How many segments does an arc need?',
+      id: 'rhumb',
+      title: 'Straight on Mercator is not shortest',
+      headline: 'Mercator straightness is not shortest',
+      body: `The selected long archive pair is drawn twice: teal follows the great circle and dashed orange holds a constant rhumb heading. Their lengths, excess and headings are read from the same endpoints. The comparison is projected in Mercator; the graticule explains its bend, not a change of route.`,
+      camera: {longitude: 10, latitude: 28, zoom: 1.35, transitionMs: 1000},
+      options: {showArcs: false, showRing: false, showRhumbComparison: true},
+      controls: [],
+      readouts: ['rhumbPair', 'rhumbLengths', 'rhumbExcess', 'rhumbHeading']
+    },
+    {
+      id: 'segments',
+      title: 'Slerp vertices reveal curved paths',
+      headline: 'More vertices reveal the projected curve',
       body: `A great circle is only a straight line in 3D. Projected to longitude and latitude it bends, and the bend needs vertices. **Minimum segments per arc** sets how many each arc gets; with 1 every arc is a straight chord on this map, which is plainly wrong for flights from Chicago to Asia over the pole.
 
 Set it to 1, then 6, then 24 and watch the arcs curve. **Maximum segment length** adds more segments to long arcs only, so short routes stay cheap. Both are parameter writes: the vertex count in the readout changes without a recompile.`,
-      options: {arcMinimumSegments: 4},
+      options: {arcMinimumSegments: 4, showRhumbComparison: false},
       controls: ['arcMinimumSegments', 'arcMaximumLength'],
       readouts: ['worldArcVertices'],
       highlight: {readout: 'worldArcVertices'}
     },
     {
-      id: 'distances',
-      title: 'How far is everywhere from Chicago?',
+      id: 'distance-bearing',
+      title: 'Distance and bearing share one hub',
+      headline: 'Distance and direction share an Earth model',
       body: `\`GPUGeodesicPairs\` computes the **geodesic distance and initial bearing** from one origin to many targets: here from a hub to every airport. The airports are coloured by distance, from the hub outward: nearby airports are dark and the antipodal side of the globe glows.
 
 Choose a different **Hub** below: the origin column is rewritten and the distances recomputed in one pass. The readouts report the farthest airport and the mean distance. Set **Airports coloured by** to *Initial bearing* to see which compass direction each airport lies in from the hub: the great-circle bearing, not the straight line on the map.`,
-      options: {showArcs: false, airportColor: 'distance', worldHub: 'ORD'},
+      options: {
+        showArcs: false,
+        airportColor: 'distance',
+        worldHub: 'ORD',
+        showRhumbComparison: false
+      },
       highlight: {readout: 'worldFarthest'},
       controls: ['worldHub', 'airportColor'],
       readouts: ['worldFarthest', 'worldMean']
@@ -178,10 +215,11 @@ Choose a different **Hub** below: the origin column is rewritten and the distanc
     {
       id: 'earth-model',
       title: 'Sphere or ellipsoid?',
+      headline: 'Sphere and ellipsoid differ by direction',
       body: `The Earth is flattened: its radius is 21 km smaller at the poles than at the equator. \`GPUGeodesicPairs\` can measure on a **sphere** (haversine) or on the **WGS84 ellipsoid** (Vincenty's iteration, matched to PostGIS \`ST_Distance\` on a geography). Between airports the two differ by up to about half a percent, tens of kilometres on a long route.
 
 Switch **Earth model** below: the farthest distance changes (compile-time, one graph per model). The ellipsoid is the reference; the sphere is faster and good enough for many maps. Near-antipodal pairs, where Vincenty may not converge, fall back to the sphere: the \`converged\` output flags those.`,
-      options: {geodesicModel: 'sphere'},
+      options: {geodesicModel: 'sphere', showRhumbComparison: false},
       highlight: {readout: 'worldFarthest'},
       controls: ['geodesicModel'],
       readouts: ['worldFarthest']
@@ -189,6 +227,7 @@ Switch **Earth model** below: the farthest distance changes (compile-time, one g
     {
       id: 'range-ring',
       title: 'Everything within 5,000 km',
+      headline: 'A geodesic ring can enclose a pole',
       body: `\`GPUGeodesicDestination\` answers the reverse question: starting from a point, a bearing and a distance, where do you end up? One destination per degree of bearing traces a **geodesic range ring**: the set of points exactly 5,000 km from the hub. On this map it is far from a circle, because distance on the globe is not distance on the page.
 
 Slide **Range ring distance** below: the ring grows with no recompile, because the distances column is just rewritten. The readout counts the airports inside the ring: compare how many airports fall inside it from Amsterdam and from Sydney with **Hub**.`,
@@ -198,22 +237,12 @@ Slide **Range ring distance** below: the ring grows with no recompile, because t
         geodesicModel: 'wgs84',
         showArcs: true,
         arcMinimumSegments: 24,
-        ringDistance: 5000
+        ringDistance: 5000,
+        showRhumbComparison: false
       },
       highlight: {readout: 'worldInside'},
       controls: ['ringDistance', 'worldHub'],
       readouts: ['worldInside']
-    },
-    {
-      id: 'limits',
-      title: 'Limits and things to try',
-      body: `**Limits.** The arcs are great circles on a sphere (the ellipsoid is only used for distances and destinations); longitudes are unwrapped, so draw three world copies or use a globe. Near-antipodal Vincenty pairs fall back to the sphere. The OpenFlights data is community-maintained and frozen around 2014.
-
-**Try it.** From Sydney, set **Range ring distance** to 12,000 km and find which airports lie outside it. Set **Arcs coloured by** to *Number of airlines* to find the routes shared by many carriers. Switch **Earth model** back and forth and watch the farthest-airport readout.`,
-      options: {worldHub: 'SYD', ringDistance: 12000, arcColor: 'airlines'},
-      highlight: {readout: 'worldInside'},
-      controls: ['worldHub', 'ringDistance', 'arcColor', 'geodesicModel'],
-      readouts: ['worldInside', 'worldFarthest']
     }
   ],
 
@@ -227,45 +256,29 @@ Slide **Range ring distance** below: the ring grows with no recompile, because t
   legends: state => {
     const legends: LegendSpec[] = [];
     if (state.showArcs) {
-      legends.push(
-        state.arcColor === 'distance'
-          ? {
-              kind: 'ramp',
-              title: 'Route length',
-              ramp: 'viridis',
-              extent: [0, 12000],
-              format: value => `${value.toLocaleString('en-US')} km`
-            }
-          : state.arcColor === 'airlines'
-            ? {
-                kind: 'ramp',
-                title: 'Airlines serving the route',
-                ramp: 'magma',
-                extent: [1, 8],
-                format: value => value.toFixed(0)
-              }
-            : {
-                kind: 'ramp',
-                title: 'Route records',
-                ramp: 'magma',
-                extent: [1, 12],
-                format: value => value.toFixed(0)
-              }
-      );
+      legends.push({
+        kind: 'categories',
+        title: 'Aviation haul class',
+        entries: ['regional', 'short', 'medium', 'long', 'ultra-long'].map((label, index) => ({
+          color: [...(B3_PALETTE[index] ?? B3_PALETTE[0]), 180] as [number, number, number, number],
+          label
+        }))
+      });
     }
     legends.push(
       state.airportColor === 'distance'
         ? {
             kind: 'ramp',
             title: 'Airport distance from the hub',
-            ramp: 'inferno',
+            ramp: 'ylorbr',
             extent: [0, 15000],
+            unit: 'km',
             format: value => `${value.toLocaleString('en-US')} km`
           }
         : {
             kind: 'ramp',
             title: 'Initial bearing from the hub',
-            ramp: 'viridis',
+            ramp: 'twilight',
             extent: [0, 360],
             format: value => `${value.toFixed(0)}°`
           }
@@ -282,6 +295,16 @@ Slide **Range ring distance** below: the ring grows with no recompile, because t
         ]
       });
     }
+    if (state.showRhumbComparison) {
+      legends.push({
+        kind: 'categories',
+        title: 'One loaded route',
+        entries: [
+          {color: [0, 137, 123, 255], label: 'Great circle (shortest)'},
+          {color: [230, 159, 0, 255], label: 'Rhumb (constant heading)'}
+        ]
+      });
+    }
     return legends;
   },
 
@@ -290,7 +313,12 @@ Slide **Range ring distance** below: the ring grows with no recompile, because t
     {id: 'worldArcVertices', label: 'Arc vertices'},
     {id: 'worldFarthest', label: 'Farthest airport from the hub'},
     {id: 'worldMean', label: 'Mean distance to an airport'},
-    {id: 'worldInside', label: 'Inside the range ring'}
+    {id: 'worldInside', label: 'Inside the range ring'},
+    {id: 'worldPoleThreshold', label: 'Pole enclosure threshold'},
+    {id: 'rhumbPair', label: 'Selected archive pair'},
+    {id: 'rhumbLengths', label: 'Great-circle / rhumb length'},
+    {id: 'rhumbExcess', label: 'Rhumb excess'},
+    {id: 'rhumbHeading', label: 'Heading'}
   ],
 
   snippet: state => `import {

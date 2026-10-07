@@ -1,0 +1,63 @@
+{
+ "id": "dixie-perimeter",
+ "version": 1,
+ "kind": "polygons",
+ "count": 1,
+ "bbox": [
+  -121.5423,
+  39.86022,
+  -120.18666,
+  40.78444
+ ],
+ "crs": "EPSG:4326",
+ "columns": {
+  "vertices": {
+   "file": "vertices.bin",
+   "dtype": "float32",
+   "components": 2,
+   "length": 11134
+  },
+  "ringOffsets": {
+   "file": "ringOffsets.bin",
+   "dtype": "uint32",
+   "components": 1,
+   "length": 55
+  },
+  "polygonRingOffsets": {
+   "file": "polygonRingOffsets.bin",
+   "dtype": "uint32",
+   "components": 1,
+   "length": 33
+  },
+  "partFeature": {
+   "file": "partFeature.bin",
+   "dtype": "uint32",
+   "components": 1,
+   "length": 32
+  },
+  "acres": {
+   "file": "acres.bin",
+   "dtype": "float32",
+   "components": 1,
+   "length": 1
+  }
+ },
+ "geometry": {
+  "type": "polygons",
+  "file": "dixie-perimeter.geojson"
+ },
+ "names": [
+  "Dixie Fire"
+ ],
+ "properties": {
+  "description": "Final 2021 Dixie Fire perimeter (California, 963,405 acres) as one multi-part feature, extracted from the NIFC perimeters in the poopdeck-wildfires dataset and simplified 20 m. Binary polygons are GeoArrow-style: polygon p owns rings polygonRingOffsets[p]..[p+1], ring r owns vertices ringOffsets[r]..[r+1].",
+  "acres": "NIFC GIS acres of the full perimeter",
+  "perimeterTime": 57283200,
+  "source": "public/data/poopdeck-wildfires (NIFC Open Data, packaged by poopdeck.gl)",
+  "license": "Public domain (US Government work, NIFC)",
+  "attribution": "Fire perimeters: National Interagency Fire Center (NIFC) Open Data, public domain; packaged by poopdeck.gl",
+  "notes": [
+   "perimeterTime is the NIFC record date (seconds since 2020-01-01Z), usually the last mapping, not the ignition date."
+  ]
+ }
+}

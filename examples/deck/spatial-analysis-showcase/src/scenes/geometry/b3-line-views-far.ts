@@ -23,6 +23,13 @@ import {
   type CompiledGPUCommandGraph
 } from '@luma.gl/gpgpu/gpu-core';
 import {SpatialAnalysisPointLayer} from '../../engine/layers';
+import {
+  geodesicCircle,
+  greatCircleArc,
+  haversineDistance,
+  initialBearing,
+  rhumbLine
+} from '../../cartography/reference-geometry';
 import {addKernelPass} from '../../engine/mode-kernels';
 import {formatCount, SpatialAnalysisResources} from '../../engine/resources';
 import {SummaryReader} from '../../engine/summary-reader';
@@ -74,6 +81,62 @@ export function createTracksView(env: TrackEnvironment): GeometryView<Options> {
   const timestamps = vessels.column<Uint32Array>('timestamp');
   const vertexCount = local.length / 2;
   const trackCount = offsets.length - 1;
+  let selectedTrack = 0;
+  for (let track = 1; track < trackCount; track++) {
+    if (offsets[track + 1] - offsets[track] > offsets[selectedTrack + 1] - offsets[selectedTrack]) {
+      selectedTrack = track;
+    }
+  }
+  const selectedTrackStart = offsets[selectedTrack];
+  const selectedTrackEnd = offsets[selectedTrack + 1];
+  const selectedTrackPositions = local.slice(selectedTrackStart * 2, selectedTrackEnd * 2);
+  const getChaikinDisplacement = (iterations: number, ratio: number) => {
+    let points = Array.from({length: selectedTrackPositions.length / 2}, (_, index) => [
+      selectedTrackPositions[index * 2],
+      selectedTrackPositions[index * 2 + 1]
+    ]);
+    for (let round = 0; round < iterations; round++) {
+      const next = [points[0]];
+      for (let index = 1; index < points.length; index++) {
+        const left = points[index - 1];
+        const right = points[index];
+        next.push(
+          [left[0] + (right[0] - left[0]) * ratio, left[1] + (right[1] - left[1]) * ratio],
+          [
+            left[0] + (right[0] - left[0]) * (1 - ratio),
+            left[1] + (right[1] - left[1]) * (1 - ratio)
+          ]
+        );
+      }
+      next.push(points.at(-1)!);
+      points = next;
+    }
+    let maximum = 0;
+    for (const point of points) {
+      let nearest = Infinity;
+      for (let index = 1; index < selectedTrackPositions.length / 2; index++) {
+        const ax = selectedTrackPositions[(index - 1) * 2],
+          ay = selectedTrackPositions[(index - 1) * 2 + 1];
+        const bx = selectedTrackPositions[index * 2],
+          by = selectedTrackPositions[index * 2 + 1];
+        const dx = bx - ax,
+          dy = by - ay;
+        const fraction = Math.max(
+          0,
+          Math.min(
+            1,
+            ((point[0] - ax) * dx + (point[1] - ay) * dy) / Math.max(dx * dx + dy * dy, 1e-9)
+          )
+        );
+        nearest = Math.min(
+          nearest,
+          Math.hypot(point[0] - (ax + fraction * dx), point[1] - (ay + fraction * dy))
+        );
+      }
+      maximum = Math.max(maximum, nearest);
+    }
+    return maximum;
+  };
 
   const positions = resources.createBuffer('positions', local);
   const trackOffsets = resources.createBuffer('track-offsets', offsets);
@@ -296,6 +359,15 @@ export function createTracksView(env: TrackEnvironment): GeometryView<Options> {
       buildSmooth(Math.min(options.smoothIterations, SMOOTH_LEVEL_LIMIT));
       smoothParameters.write(getGPULineSmoothParameterValues({ratio: options.smoothRatio}));
       smoothDirty = true;
+      ctx.setReadout(
+        'tracksMaxDisplacement',
+        formatDistance(
+          getChaikinDisplacement(
+            Math.min(options.smoothIterations, SMOOTH_LEVEL_LIMIT),
+            options.smoothRatio
+          )
+        )
+      );
     }
     ctx.setReadout(
       'tracksInputs',
@@ -336,6 +408,15 @@ export function createTracksView(env: TrackEnvironment): GeometryView<Options> {
       if (id === 'smoothRatio') {
         smoothParameters.write(getGPULineSmoothParameterValues({ratio: options.smoothRatio}));
         smoothDirty = true;
+        ctx.setReadout(
+          'tracksMaxDisplacement',
+          formatDistance(
+            getChaikinDisplacement(
+              Math.min(options.smoothIterations, SMOOTH_LEVEL_LIMIT),
+              options.smoothRatio
+            )
+          )
+        );
       }
     },
     encode(commandEncoder, frame) {
@@ -473,6 +554,68 @@ const ARC_MAXIMUM_SEGMENTS = 64;
 const RING_VERTEX_COUNT = 361;
 const WORLD_COPIES = [-360, 0, 360] as const;
 
+function unwrapLongitude(longitude: number, reference: number): number {
+  let unwrapped = longitude;
+  while (unwrapped - reference > 180) unwrapped -= 360;
+  while (unwrapped - reference < -180) unwrapped += 360;
+  return unwrapped;
+}
+
+function _makeRhumbPath(
+  source: ArrayLike<number>,
+  target: ArrayLike<number>,
+  segments = 64
+): Float32Array {
+  const longitude0 = source[0];
+  const latitude0 = source[1];
+  const longitude1 = unwrapLongitude(target[0], longitude0);
+  const latitude1 = target[1];
+  const latitude0Radians = (latitude0 * Math.PI) / 180;
+  const latitude1Radians = (latitude1 * Math.PI) / 180;
+  const mercator0 = Math.log(Math.tan(Math.PI / 4 + latitude0Radians / 2));
+  const mercator1 = Math.log(Math.tan(Math.PI / 4 + latitude1Radians / 2));
+  const positions = new Float32Array((segments + 1) * 2);
+  for (let index = 0; index <= segments; index++) {
+    const fraction = index / segments;
+    const latitudeRadians =
+      2 * Math.atan(Math.exp(mercator0 + (mercator1 - mercator0) * fraction)) - Math.PI / 2;
+    const latitude = (latitudeRadians * 180) / Math.PI;
+    const longitude = longitude0 + (longitude1 - longitude0) * fraction;
+    positions.set([longitude, latitude], index * 2);
+  }
+  return positions;
+}
+
+function _makeGreatCirclePath(
+  source: ArrayLike<number>,
+  target: ArrayLike<number>,
+  segments = 64
+): Float32Array {
+  const toVector = (longitude: number, latitude: number) => {
+    const lng = (longitude * Math.PI) / 180;
+    const lat = (latitude * Math.PI) / 180;
+    return [Math.cos(lat) * Math.cos(lng), Math.cos(lat) * Math.sin(lng), Math.sin(lat)] as const;
+  };
+  const [ax, ay, az] = toVector(source[0], source[1]);
+  const [bx, by, bz] = toVector(target[0], target[1]);
+  const angle = Math.acos(Math.min(1, Math.max(-1, ax * bx + ay * by + az * bz)));
+  const sinAngle = Math.sin(angle);
+  const positions = new Float32Array((segments + 1) * 2);
+  let previousLongitude = source[0];
+  for (let index = 0; index <= segments; index++) {
+    const fraction = index / segments;
+    const left = sinAngle < 1e-8 ? 1 - fraction : Math.sin((1 - fraction) * angle) / sinAngle;
+    const right = sinAngle < 1e-8 ? fraction : Math.sin(fraction * angle) / sinAngle;
+    const x = left * ax + right * bx;
+    const y = left * ay + right * by;
+    const z = left * az + right * bz;
+    const longitude = unwrapLongitude((Math.atan2(y, x) * 180) / Math.PI, previousLongitude);
+    previousLongitude = longitude;
+    positions.set([longitude, (Math.atan2(z, Math.hypot(x, y)) * 180) / Math.PI], index * 2);
+  }
+  return positions;
+}
+
 /**
  * All 18,930 airport pairs of the OpenFlights route network as great-circle arcs, the distance and
  * bearing from a chosen hub to every airport (`GPUGeodesicPairs`, sphere or WGS84), and a geodesic
@@ -497,13 +640,78 @@ export function createWorldView(env: WorldEnvironment): GeometryView<WorldOption
     );
   }
   const distanceKm = flows.column<Float32Array>('distanceKm');
+  const haulClass = Float32Array.from(distanceKm, distance =>
+    distance < 750 ? 0 : distance < 2500 ? 1 : distance < 5000 ? 2 : distance < 9000 ? 3 : 4
+  );
+  const airportDegree = new Float32Array(airportCount);
+  for (let pair = 0; pair < pairCount; pair++) {
+    airportDegree[origins[pair]]++;
+    airportDegree[destinations[pair]]++;
+  }
   const airlineCount = Float32Array.from(flows.column<Uint16Array>('airlineCount'));
   const routeCount = Float32Array.from(flows.column<Uint16Array>('count'));
+  let comparisonPair = 0;
+  for (let pair = 1; pair < pairCount; pair++) {
+    if (distanceKm[pair] > distanceKm[comparisonPair]) comparisonPair = pair;
+  }
+  const comparisonSource: [number, number] = [
+    sourcePositions[comparisonPair * 2],
+    sourcePositions[comparisonPair * 2 + 1]
+  ];
+  const comparisonTarget: [number, number] = [
+    targetPositions[comparisonPair * 2],
+    targetPositions[comparisonPair * 2 + 1]
+  ];
+  const flattenReferencePaths = (pieces: readonly (readonly (readonly [number, number])[])[]) => {
+    const positions: number[] = [];
+    const offsets = [0];
+    for (const piece of pieces) {
+      for (const position of piece) positions.push(position[0], position[1]);
+      offsets.push(positions.length / 2);
+    }
+    return {positions: Float32Array.from(positions), offsets: Uint32Array.from(offsets)};
+  };
+  const greatCircleComparison = createStaticPaths(
+    resources,
+    'comparison-great-circle',
+    ...(() => {
+      const paths = flattenReferencePaths(greatCircleArc(comparisonSource, comparisonTarget));
+      return [paths.positions, paths.offsets] as const;
+    })()
+  );
+  const rhumbComparison = createStaticPaths(
+    resources,
+    'comparison-rhumb',
+    ...(() => {
+      const paths = flattenReferencePaths(rhumbLine(comparisonSource, comparisonTarget));
+      return [paths.positions, paths.offsets] as const;
+    })()
+  );
+  const rhumbDistance = (() => {
+    const parts = rhumbLine(comparisonSource, comparisonTarget, 128);
+    let total = 0;
+    for (const part of parts)
+      for (let index = 1; index < part.length; index++)
+        total += haversineDistance(part[index - 1], part[index]);
+    return total;
+  })();
+  const greatCircleDistance = haversineDistance(comparisonSource, comparisonTarget);
+  ctx.setReadout('rhumbPair', `loaded pair ${comparisonPair + 1}`);
+  ctx.setReadout(
+    'rhumbLengths',
+    `${formatCount(greatCircleDistance / 1000)} km / ${formatCount(rhumbDistance / 1000)} km`
+  );
+  ctx.setReadout('rhumbExcess', `${((rhumbDistance / greatCircleDistance - 1) * 100).toFixed(1)}%`);
+  ctx.setReadout(
+    'rhumbHeading',
+    `great circle ${initialBearing(comparisonSource, comparisonTarget).toFixed(0)}°; rhumb constant`
+  );
 
   const sources = resources.createBuffer('arc-sources', sourcePositions);
   const targets = resources.createBuffer('arc-targets', targetPositions);
   const arcValues = {
     distance: resources.createBuffer('arc-distance', distanceKm),
+    haul: resources.createBuffer('arc-haul-class', haulClass),
     airlines: resources.createBuffer('arc-airlines', airlineCount),
     routes: resources.createBuffer('arc-routes', routeCount)
   };
@@ -533,6 +741,7 @@ export function createWorldView(env: WorldEnvironment): GeometryView<WorldOption
   // Hub to every airport: distance, bearing and the great-circle midpoint.
   const hubOrigins = resources.createBuffer('hub-origins', new Float32Array(airportCount * 2));
   const airportBuffer = resources.createBuffer('airports', airports);
+  const airportDegreeBuffer = resources.createBuffer('airport-degree', airportDegree);
   const airportDistances = resources.createBuffer('airport-distances', airportCount * 4);
   const airportBearings = resources.createBuffer('airport-bearings', airportCount * 4);
   const airportConverged = resources.createBuffer('airport-converged', airportCount * 4);
@@ -572,7 +781,7 @@ export function createWorldView(env: WorldEnvironment): GeometryView<WorldOption
   );
   const ringDistances = resources.createBuffer('ring-distances', RING_VERTEX_COUNT * 4);
   const ringDestinations = resources.createBuffer('ring-destinations', RING_VERTEX_COUNT * 8);
-  const ringPaths = createStaticPaths(
+  const _ringPaths = createStaticPaths(
     resources,
     'ring-paths',
     new Float32Array(RING_VERTEX_COUNT * 2),
@@ -669,6 +878,10 @@ export function createWorldView(env: WorldEnvironment): GeometryView<WorldOption
   );
 
   let hubRow = 0;
+  let safeRing = (() => {
+    const paths = flattenReferencePaths(geodesicCircle([0, 0], 1));
+    return createStaticPaths(resources, 'safe-ring-0', paths.positions, paths.offsets);
+  })();
   let dirtyArcs = true;
   let dirtyHub = true;
   let dirtyRing = true;
@@ -676,6 +889,11 @@ export function createWorldView(env: WorldEnvironment): GeometryView<WorldOption
     hubRow = airportRows.get(options.worldHub) ?? 0;
     const longitude = airports[hubRow * 2];
     const latitude = airports[hubRow * 2 + 1];
+    const poleThresholdKm = ((90 - Math.abs(latitude)) * Math.PI * 6371.0088) / 180;
+    ctx.setReadout(
+      'worldPoleThreshold',
+      `${formatCount(poleThresholdKm)} km from the selected hub`
+    );
     hubOrigins.write(
       Float32Array.from({length: airportCount * 2}, (_, index) =>
         index % 2 === 0 ? longitude : latitude
@@ -692,6 +910,14 @@ export function createWorldView(env: WorldEnvironment): GeometryView<WorldOption
   const writeRing = (options: WorldOptions) => {
     ringDistances.write(new Float32Array(RING_VERTEX_COUNT).fill(options.ringDistance * 1000));
     dirtyRing = true;
+    const hub: [number, number] = [airports[hubRow * 2], airports[hubRow * 2 + 1]];
+    const paths = flattenReferencePaths(geodesicCircle(hub, options.ringDistance * 1000));
+    safeRing = createStaticPaths(
+      resources,
+      `safe-ring-${options.worldHub}-${options.ringDistance}`,
+      paths.positions,
+      paths.offsets
+    );
     dirtyHub = true;
   };
   const writeArcs = (options: WorldOptions) => {
@@ -739,7 +965,10 @@ export function createWorldView(env: WorldEnvironment): GeometryView<WorldOption
       ] as CompiledGPUCommandGraph<never>[];
     },
     setOption(id, options) {
-      if (id === 'worldHub') writeHub(options);
+      if (id === 'worldHub') {
+        writeHub(options);
+        writeRing(options);
+      }
       if (id === 'ringDistance') writeRing(options);
       if (id === 'arcMinimumSegments' || id === 'arcMaximumLength') writeArcs(options);
       if (id === 'geodesicModel') {
@@ -777,12 +1006,6 @@ export function createWorldView(env: WorldEnvironment): GeometryView<WorldOption
       const dark = ctx.theme() === 'dark';
       const layers: Layer[] = [];
       if (options.showArcs) {
-        const range: [number, number] =
-          options.arcColor === 'distance'
-            ? [0, 12000]
-            : options.arcColor === 'airlines'
-              ? [1, 8]
-              : [1, 12];
         for (const offset of WORLD_COPIES) {
           layers.push(
             new PathOutputLayer({
@@ -794,10 +1017,10 @@ export function createWorldView(env: WorldEnvironment): GeometryView<WorldOption
               pathOffsetCount: arcs.offsetCount,
               vertexCount: arcs.count,
               drawCommands: arcs.drawCommands,
-              values: arcValues[options.arcColor],
+              values: arcValues.haul,
               colorSource: 'path-value',
-              colormap: options.arcColor === 'distance' ? 'viridis' : 'magma',
-              valueRange: range,
+              valueMapping: 'category',
+              valueRange: [0, 4],
               color: [255, 255, 255, 255],
               widthPixels: 0.7,
               opacity: dark ? 0.35 : 0.5
@@ -812,15 +1035,45 @@ export function createWorldView(env: WorldEnvironment): GeometryView<WorldOption
             coordinateSystem: LNGLAT,
             positions: airportBuffer,
             instanceCount: airportCount,
-            radiusPixels: 2.6,
+            radiusPixels: 3.2,
+            radiusMinPixels: 2,
+            radiusMaxPixels: 9,
+            sizeValues: airportDegreeBuffer,
+            sizeMaximumValue: Math.max(...airportDegree),
+            sizeScale: 'sqrt',
             values: options.airportColor === 'distance' ? airportValues : airportBearingValues,
             valueFormat: 'float32',
-            colormap: options.airportColor === 'distance' ? 'inferno' : 'viridis',
+            colormap: options.airportColor === 'distance' ? 'ylorbr' : 'twilight',
             valueRange: options.airportColor === 'distance' ? [0, 15000] : [0, 360],
             positionOffset: [offset, 0]
           })
         );
       }
+      if (options.showRhumbComparison)
+        layers.push(
+          new PathOutputLayer({
+            id: 'comparison-great-circle',
+            coordinateSystem: LNGLAT,
+            positions: greatCircleComparison.positions,
+            pathOffsets: greatCircleComparison.offsets,
+            pathOffsetCount: greatCircleComparison.offsetCount,
+            vertexCount: greatCircleComparison.vertexCount,
+            drawCommands: greatCircleComparison.drawCommands,
+            color: [0, 137, 123, 255],
+            widthPixels: 2.5
+          }),
+          new PathOutputLayer({
+            id: 'comparison-rhumb',
+            coordinateSystem: LNGLAT,
+            positions: rhumbComparison.positions,
+            pathOffsets: rhumbComparison.offsets,
+            pathOffsetCount: rhumbComparison.offsetCount,
+            vertexCount: rhumbComparison.vertexCount,
+            drawCommands: rhumbComparison.drawCommands,
+            color: [230, 159, 0, 255],
+            widthPixels: 1.5
+          })
+        );
       if (options.showRing) {
         for (const offset of WORLD_COPIES) {
           layers.push(
@@ -828,11 +1081,11 @@ export function createWorldView(env: WorldEnvironment): GeometryView<WorldOption
               id: `world-ring-${offset}`,
               coordinateSystem: LNGLAT,
               positionOffset: [offset, 0],
-              positions: ringDestinations,
-              pathOffsets: ringPaths.offsets,
-              pathOffsetCount: ringPaths.offsetCount,
-              vertexCount: ringPaths.vertexCount,
-              drawCommands: ringPaths.drawCommands,
+              positions: safeRing.positions,
+              pathOffsets: safeRing.offsets,
+              pathOffsetCount: safeRing.offsetCount,
+              vertexCount: safeRing.vertexCount,
+              drawCommands: safeRing.drawCommands,
               color: dark ? [255, 214, 120, 255] : [200, 90, 10, 255],
               widthPixels: 2.5
             })

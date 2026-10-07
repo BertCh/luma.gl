@@ -18,6 +18,7 @@ import {formatCount, SpatialAnalysisResources} from '../../engine/resources';
 import {SummaryReader} from '../../engine/summary-reader';
 import type {SceneContext, SceneInstance} from '../scene';
 import {findNearestTrack} from './b12-tracks';
+import {getMigrationFlywayEvidence} from './migration-flyways-evidence';
 import {
   buildTrackSubset,
   describeMigrationTrack,
@@ -25,6 +26,7 @@ import {
   MIGRATION_DATASET_ID,
   MIGRATION_SEASONS,
   MIGRATION_SPECIES_COLORS,
+  MIGRATION_SPECIES_LABELS,
   SECONDS_PER_DAY,
   type MigrationSeason,
   type TrackSubset
@@ -326,6 +328,32 @@ export async function createMigrationFlyways(
     );
   }
 
+  /** Publish the recorded sample behind the density, including where its tracks begin. */
+  function publishSamplingEvidence(): void {
+    const evidence = getMigrationFlywayEvidence(tracks, ctx.options.season);
+    const selectedSpecies = SPECIES_VALUES[ctx.options.species];
+    const indices = selectedSpecies === null ? [0, 1, 2] : [selectedSpecies];
+    const animalYears = indices.reduce((sum, index) => sum + evidence.animalYears[index], 0);
+    const birds = indices.reduce((sum, index) => sum + evidence.birds[index], 0);
+    const fixes = indices.reduce((sum, index) => sum + evidence.fixes[index], 0);
+    ctx.setReadout(
+      'evidence',
+      `${formatCount(animalYears)} tagged animal-years from ${formatCount(birds)} birds; ${formatCount(fixes)} fixes in the selected season`
+    );
+    ctx.setChart('evidenceChart', {
+      kind: 'bars',
+      values: evidence.animalYears,
+      labels: MIGRATION_SPECIES_LABELS,
+      colors: MIGRATION_SPECIES_COLORS,
+      highlight: selectedSpecies === null ? [0, 1, 2] : [selectedSpecies],
+      yLabel: 'tagged animal-years',
+      height: 118,
+      description:
+        'The convenience sample that contributes at least two fixes to the selected season, by species. It counts tagged years, not birds in the population; a bird tracked across years contributes more than once.'
+    });
+    ctx.setAnnotations('flyway-evidence', evidence.annotations);
+  }
+
   // ---- Density summary ---------------------------------------------------------------------------
   function summarizeDensity(): void {
     const snapshot = densitySnapshot;
@@ -579,6 +607,7 @@ export async function createMigrationFlyways(
   writeSelection();
   writeDensityParameters();
   describeSelected();
+  publishSamplingEvidence();
   ctx.setReadout(
     'birds',
     `${trackCount} animal-years of ${individualTracks.size} birds, ${formatCount(vertexCount)} fixes`
@@ -599,6 +628,7 @@ export async function createMigrationFlyways(
           active = getVariant(state.species, state.season);
           densityDirty = true;
           markChanged();
+          publishSamplingEvidence();
           ctx.requestLayers();
           break;
         case 'cellSize':

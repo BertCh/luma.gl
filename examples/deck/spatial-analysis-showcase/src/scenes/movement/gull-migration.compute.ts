@@ -33,11 +33,12 @@ import type {SceneContext, SceneInstance} from '../scene';
 import {binValues, histogramChart} from './f-chart-helpers';
 import {KeptSegmentLayer, StopMarkerLayer} from './b12-layers';
 import {findNearestTrack, formatDuration, loadGullTracks} from './b12-tracks';
+import {GullKeptVertexLayer} from './gull-migration-layers';
 
 /** Option state of the gull migration scene. */
 export type GullMigrationOptions = {
   colorBy: 'date' | 'speed' | 'family' | 'similarity' | 'sex' | 'plain';
-  ramp: 'viridis' | 'magma' | 'inferno' | 'cividis';
+  ramp: 'magma' | 'inferno' | 'cividis';
   trackOpacity: number;
   showStops: boolean;
   stopSpeed: number;
@@ -1415,6 +1416,15 @@ export async function createGullMigration(
             keptCount: variant.keptCount,
             drawCommands: variant.draw,
             widthPixels: 2.4,
+            color: options.simplifyMetric === 'segment' ? [255, 150, 40, 255] : [255, 70, 150, 255]
+          }),
+          new GullKeptVertexLayer({
+            id: `gull-kept-vertices-${options.simplifyMetric}`,
+            ...drawProps,
+            positions: lngLatBuffer,
+            keptIds: variant.keptIds,
+            drawCommands: variant.draw,
+            radiusPixels: 3.9,
             color: options.simplifyMetric === 'segment' ? [255, 150, 40, 255] : [255, 70, 150, 255]
           })
         );

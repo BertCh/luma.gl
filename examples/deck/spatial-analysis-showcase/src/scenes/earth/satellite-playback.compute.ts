@@ -30,7 +30,6 @@ export type SatellitePlaybackOptions = {
   loop: boolean;
   group: string;
   colorBy: 'group' | 'altitude';
-  ramp: 'viridis' | 'magma' | 'inferno' | 'cividis';
   altitudeDisplay: 'compressed' | 'linear';
   altitudeScale: number;
   showStems: boolean;
@@ -86,6 +85,20 @@ export async function createSatellitePlayback(
     `${formatCount(tracks.satelliteCount)} satellites, ${formatCount(tracks.trackCount)} tracks`
   );
   ctx.setReadout('samples', `${formatCount(tracks.vertexCount)} SGP4 positions`);
+  const familyCounts = new Float64Array(SATELLITE_GROUPS.length);
+  for (const satellite of tracks.satellites) familyCounts[satellite.group]++;
+  ctx.setChart('familyChart', {
+    kind: 'bars',
+    values: familyCounts,
+    labels: SATELLITE_GROUPS,
+    highlight: ctx.options.group === 'all' ? [] : [Number(ctx.options.group)],
+    height: 120,
+    xLabel: 'loaded family',
+    yLabel: 'records',
+    formatY: value => `${Math.round(value)}`,
+    description:
+      'Counts from the loaded manifest metadata. Starlink is a bounded 800-object sample, not a constellation total.'
+  });
   let oldest = 0;
   for (const satellite of tracks.satellites) oldest = Math.max(oldest, satellite.tleAgeDays);
   ctx.setReadout('oldestElements', `${oldest.toFixed(1)} days`);
@@ -200,6 +213,18 @@ export async function createSatellitePlayback(
       switch (id) {
         case 'group':
           core.setGroupFilter(groupFilter(state.group));
+          ctx.setChart('familyChart', {
+            kind: 'bars',
+            values: familyCounts,
+            labels: SATELLITE_GROUPS,
+            highlight: state.group === 'all' ? [] : [Number(state.group)],
+            height: 120,
+            xLabel: 'loaded family',
+            yLabel: 'records',
+            formatY: value => `${Math.round(value)}`,
+            description:
+              'Counts from the loaded manifest metadata. Starlink is a bounded 800-object sample, not a constellation total.'
+          });
           core.reader.markStale();
           ctx.requestLayers();
           break;
@@ -214,6 +239,10 @@ export async function createSatellitePlayback(
     },
 
     onThemeChange() {
+      ctx.requestLayers();
+    },
+
+    onGroundChange() {
       ctx.requestLayers();
     },
 
@@ -235,7 +264,7 @@ export async function createSatellitePlayback(
 
     getLayers() {
       const options = ctx.options;
-      const dark = ctx.theme() === 'dark';
+      const dark = ctx.ground() === 'dark';
       const filter = groupFilter(options.group);
       const colorMode = options.colorBy === 'altitude' ? 'altitude' : 'palette';
       const layers: Layer[] = [];
@@ -255,7 +284,7 @@ export async function createSatellitePlayback(
             groups: core.groupsBuffer,
             palette: SATELLITE_GROUP_COLORS,
             colorMode,
-            ramp: options.ramp as RampName,
+            ramp: 'mako' as RampName,
             widthPixels: 1.6,
             opacity: 0.6,
             altitudeScale: options.altitudeScale,
@@ -273,11 +302,23 @@ export async function createSatellitePlayback(
         drawCommands: core.markerDraw,
         palette: SATELLITE_GROUP_COLORS,
         colorMode: colorMode as 'palette' | 'altitude',
-        ramp: options.ramp as RampName,
+        ramp: 'mako' as RampName,
         altitudeScale: options.altitudeScale,
         altitudeDisplay: options.altitudeDisplay,
         groupFilter: filter
       };
+      if (filter !== null) {
+        layers.push(
+          new SatelliteMarkerLayer({
+            ...markerProps,
+            id: 'satellite-family-context',
+            groupFilter: null,
+            sizePixels: Math.max(2, options.markerSize * 0.72),
+            opacity: 0.16,
+            outlineColor: dark ? [8, 10, 16, 180] : [20, 24, 32, 160]
+          })
+        );
+      }
       if (options.showStems) {
         layers.push(
           new SatelliteMarkerLayer({

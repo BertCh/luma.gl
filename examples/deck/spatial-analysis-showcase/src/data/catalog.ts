@@ -11,6 +11,7 @@ import {
   decodeRasterImage,
   isBinaryRasterEncoding,
   fetchBytes,
+  type FetchOptions,
   fetchGeoJson,
   fetchJson,
   fetchText,
@@ -303,8 +304,17 @@ export type DataCatalogOptions = {
 /** Lazily loads, decodes and memoizes datasets for one session. */
 export type DataCatalog = {
   readonly forceSynthetic: boolean;
-  /** Loads one dataset by id (memoized). Rejects for an unknown id or a missing file. */
-  load: (id: string, signal?: AbortSignal) => Promise<LoadedDataset>;
+  /**
+   * Loads one dataset by id (memoized). Rejects for an unknown id or a missing file.
+   * `onProgress` reports aggregate download progress of the files; a second caller that joins an
+   * in-flight load gets the same promise and no progress, and builtin remote/synthetic datasets
+   * report only a final update.
+   */
+  load: (
+    id: string,
+    signal?: AbortSignal,
+    onProgress?: LoadProgressCallback
+  ) => Promise<LoadedDataset>;
 };
 
 const dataModules = import.meta.glob<{default: DatasetInfo}>('./datasets/*.dataset.ts');
@@ -365,9 +375,9 @@ export async function decodeRasterSpec(
   datasetId: string,
   spec: RasterSpec,
   properties?: Record<string, unknown>,
-  signal?: AbortSignal
+  signalOrOptions?: AbortSignal | FetchOptions
 ): Promise<LoadedRaster> {
-  const bytes = await fetchBytes(getDataFileUrl(datasetId, spec.file), signal);
+  const bytes = await fetchBytes(getDataFileUrl(datasetId, spec.file), signalOrOptions);
   const decoded = isBinaryRasterEncoding(spec.encoding)
     ? decodeRasterBinary(bytes, spec.encoding, spec)
     : await decodeRasterImage(
@@ -398,16 +408,84 @@ function findUvRanges(spec: RasterSpec, properties: Record<string, unknown> = {}
   return {uRange: group.uRange, vRange: group.vRange};
 }
 
-/** Fetches and decodes a shipped dataset described by `public/data/<id>/manifest.json`. */
+/** Download progress of a dataset load, aggregated over all of its files. */
+export type LoadProgress = {
+  /** Bytes received so far. */
+  loadedBytes: number;
+  /** Expected total: `DatasetInfo.approxBytes`, else the sum of reported `Content-Length`s. */
+  totalBytes: number | null;
+  /** `loadedBytes / totalBytes` clamped to `[0, 1]`, or `null` when the total is unknown. */
+  fraction: number | null;
+};
+
+/** Receives {@link LoadProgress} updates while a dataset downloads. */
+export type LoadProgressCallback = (progress: LoadProgress) => void;
+
+/**
+ * Sums per-file progress into one {@link LoadProgress}. `expectedBytes` (the catalog's
+ * `approxBytes`) is a stable denominator; without it the reported content lengths are summed.
+ */
+function createProgressAggregator(
+  expectedBytes: number | undefined,
+  onProgress: LoadProgressCallback
+) {
+  const files = new Map<string, {loaded: number; total: number | null}>();
+  const report = () => {
+    let loadedBytes = 0;
+    let reportedTotal: number | null = 0;
+    for (const file of files.values()) {
+      loadedBytes += file.loaded;
+      reportedTotal =
+        reportedTotal === null || file.total === null ? null : reportedTotal + file.total;
+    }
+    const total = expectedBytes && expectedBytes > 0 ? expectedBytes : reportedTotal || null;
+    const totalBytes = total === null ? null : Math.max(total, loadedBytes);
+    onProgress({
+      loadedBytes,
+      totalBytes,
+      fraction: totalBytes ? Math.min(1, loadedBytes / totalBytes) : null
+    });
+  };
+  return {
+    /** Options for one file's fetch; the key identifies the file. */
+    track(key: string): Pick<FetchOptions, 'onProgress'> {
+      return {
+        onProgress(loaded, total) {
+          files.set(key, {loaded, total});
+          report();
+        }
+      };
+    },
+    /** Reports the final state: everything received. */
+    finish() {
+      let loadedBytes = 0;
+      for (const file of files.values()) loadedBytes += file.loaded;
+      onProgress({loadedBytes, totalBytes: loadedBytes, fraction: 1});
+    }
+  };
+}
+
+/**
+ * Fetches and decodes a shipped dataset described by `public/data/<id>/manifest.json`. With
+ * `onProgress`, reports aggregate download progress over the manifest, columns, GeoJSON and
+ * primary raster; `expectedBytes` is the denominator when the server sends no `Content-Length`.
+ */
 export async function loadBundledPayload(
   id: string,
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  onProgress?: LoadProgressCallback,
+  expectedBytes?: number
 ): Promise<DatasetPayload> {
-  const manifest = await fetchJson<DatasetManifest>(getDataFileUrl(id, 'manifest.json'), signal);
+  const aggregator = onProgress && createProgressAggregator(expectedBytes, onProgress);
+  const options = (file: string): FetchOptions => ({signal, ...aggregator?.track(file)});
+  const manifest = await fetchJson<DatasetManifest>(
+    getDataFileUrl(id, 'manifest.json'),
+    options('manifest.json')
+  );
   const columns: Record<string, LoadedColumn> = {};
   await Promise.all(
     Object.entries(manifest.columns ?? {}).map(async ([name, spec]) => {
-      const bytes = await fetchBytes(getDataFileUrl(id, spec.file), signal);
+      const bytes = await fetchBytes(getDataFileUrl(id, spec.file), options(spec.file));
       columns[name] = {
         data: decodeColumn(bytes, resolveColumnDtype(id, name, spec, bytes.byteLength)),
         components: spec.components ?? 1,
@@ -417,11 +495,20 @@ export async function loadBundledPayload(
     })
   );
   const geojson = manifest.geometry
-    ? await fetchGeoJson(getDataFileUrl(id, manifest.geometry.file), signal)
+    ? await fetchGeoJson(
+        getDataFileUrl(id, manifest.geometry.file),
+        options(manifest.geometry.file)
+      )
     : null;
   const raster = manifest.raster
-    ? await decodeRasterSpec(id, manifest.raster, manifest.properties, signal)
+    ? await decodeRasterSpec(
+        id,
+        manifest.raster,
+        manifest.properties,
+        options(manifest.raster.file)
+      )
     : null;
+  aggregator?.finish();
   return {manifest, columns, geojson, raster};
 }
 
@@ -431,10 +518,10 @@ export function createDataCatalog(options: DataCatalogOptions = {}): DataCatalog
   const memo = new Map<string, Promise<LoadedDataset>>();
   return {
     forceSynthetic,
-    load(id, signal) {
+    load(id, signal, onProgress) {
       let promise = memo.get(id);
       if (!promise) {
-        promise = loadDataset(id, forceSynthetic, signal);
+        promise = loadDataset(id, forceSynthetic, signal, onProgress);
         // Do not memoize failures: a later scene may retry after the network recovers.
         promise.catch(() => memo.delete(id));
         memo.set(id, promise);
@@ -447,19 +534,28 @@ export function createDataCatalog(options: DataCatalogOptions = {}): DataCatalog
 async function loadDataset(
   id: string,
   forceSynthetic: boolean,
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  onProgress?: LoadProgressCallback
 ): Promise<LoadedDataset> {
   const info = await loadDatasetInfo(id);
   if (!info) throw new Error(`Unknown dataset "${id}"`);
   const builtin = BUILTIN_DATASETS[id];
   if (builtin) {
-    if (forceSynthetic) return new LoadedDataset(info, builtin.synthetic(), 'synthetic');
+    const done = (dataset: LoadedDataset) => {
+      onProgress?.({loadedBytes: info.approxBytes, totalBytes: info.approxBytes, fraction: 1});
+      return dataset;
+    };
+    if (forceSynthetic) return done(new LoadedDataset(info, builtin.synthetic(), 'synthetic'));
     try {
-      return new LoadedDataset(info, await builtin.load(signal), 'remote');
+      return done(new LoadedDataset(info, await builtin.load(signal), 'remote'));
     } catch (error) {
       if (signal?.aborted) throw error;
-      return new LoadedDataset(info, builtin.synthetic(), 'synthetic');
+      return done(new LoadedDataset(info, builtin.synthetic(), 'synthetic'));
     }
   }
-  return new LoadedDataset(info, await loadBundledPayload(id, signal), 'bundled');
+  return new LoadedDataset(
+    info,
+    await loadBundledPayload(id, signal, onProgress, info.approxBytes),
+    'bundled'
+  );
 }

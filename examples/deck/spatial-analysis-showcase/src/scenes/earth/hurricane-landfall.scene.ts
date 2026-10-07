@@ -2,18 +2,29 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {CREDITS, joinCredits} from '../../cartography/credits';
+import {US, WORLD, labelsFor} from '../../cartography/gazetteer';
+import {ground} from '../../cartography/grounds';
+import {HURRICANE_CLASS} from '../../cartography/hue-registry';
 import {defineScene} from '../scene';
-import {HURRICANE_CATEGORY_COLORS, HURRICANE_CATEGORY_LABELS} from './hurricane-data';
+import {HURRICANE_CATEGORY_LABELS} from './hurricane-data';
 import type {HurricaneLandfallOptions} from './hurricane-landfall.compute';
 
 const BASIN_VIEW = {longitude: -66, latitude: 28, zoom: 3.35};
 const COAST_VIEW = {longitude: -83, latitude: 30.5, zoom: 4.6};
+const cartouche = (title: string, subtitle: string) => ({
+  title,
+  subtitle,
+  chips: ['best-track crossings'] as const
+});
+const LANDFALL_LABELS = labelsFor(WORLD, ['atlantic-ocean', 'gulf-of-mexico', 'caribbean-sea']);
+const COAST_LABELS = labelsFor(US, ['state-fl', 'state-tx', 'state-nc']);
 
 export default defineScene<HurricaneLandfallOptions>({
   id: 'hurricane-landfall',
-  title: 'Where do hurricanes pass, and where do they come ashore?',
+  title: 'Where do Atlantic storms cross the coast?',
   chapter: 'earth',
-  order: 11,
+  order: 4,
   summary:
     'Line density of 46 seasons of Atlantic storm tracks by intensity, the distance of every cell to the nearest coast from a GPU distance field, and landfalls per US state found as zone entries with interpolated crossing wind.',
   contributors: ['GPULineDensity', 'GPUDistanceField', 'GPUZoneEvents'],
@@ -50,7 +61,6 @@ export default defineScene<HurricaneLandfallOptions>({
       help: 'Ramp of the raster layer.',
       options: [
         {value: 'magma', label: 'Magma'},
-        {value: 'viridis', label: 'Viridis'},
         {value: 'inferno', label: 'Inferno'},
         {value: 'cividis', label: 'Cividis'}
       ]
@@ -281,7 +291,7 @@ export default defineScene<HurricaneLandfallOptions>({
               ? 'Wind at each fix'
               : 'Wind at landfall',
         entries: HURRICANE_CATEGORY_LABELS.map((label, index) => ({
-          color: HURRICANE_CATEGORY_COLORS[index],
+          color: HURRICANE_CLASS.light[index],
           label
         })),
         note: 'Saffir-Simpson classes come from the sustained wind.'
@@ -296,12 +306,6 @@ export default defineScene<HurricaneLandfallOptions>({
       label: 'Landfalls per state',
       kind: 'chart',
       help: 'The twelve states with the most landfalls from open water at the chosen minimum wind. The selected state is highlighted.'
-    },
-    {
-      id: 'aliveChart',
-      label: 'Storms alive through the season',
-      kind: 'chart',
-      help: 'Average number of storms with a fix at the chosen strength on each day of the year. It rises through July, peaks around 8 September and fades by December.'
     },
     {
       id: 'coastChart',
@@ -351,6 +355,17 @@ export default defineScene<HurricaneLandfallOptions>({
     }
   ],
 
+  pipeline: [
+    {
+      id: 'density',
+      label: 'Line density',
+      detail: 'Clip six-hour track segments into the analysis grid'
+    },
+    {id: 'distance', label: 'Distance field', detail: 'Find each cell’s nearest coastline seed'},
+    {id: 'events', label: 'Zone events', detail: 'Interpolate crossings of a state edge'},
+    {id: 'draw', label: 'Draw', detail: 'One measure at a time: length, distance or crossings'}
+  ],
+
   snippet: state => `import {GPUCommandGraph} from '@luma.gl/gpgpu/gpu-core';
 import {
   GPULineDensity, GPUZoneEvents, getGPULineDensityParameterValues, GPU_ZONE_EVENT_TYPE
@@ -392,13 +407,29 @@ eventGraph.add(new GPUZoneEvents({
       'Density is in kilometers of track per 10,000 square kilometers in an average season: a bright cell was crossed by many tracks. Distance rings show how far open water is from any coast. State fills count landfalls from open water; dots mark each crossing, colored by the wind there. These are best-track positions every six hours joined by straight lines, so landfall points are good to about a cell, not a street.'
   },
 
+  basemap: ground('paperSheet'),
+  furniture: {
+    title: cartouche(
+      'Where do Atlantic storms cross the coast?',
+      'Track length · km / area · crossings · 1980–2025'
+    ),
+    scaleBar: {units: 'metric'},
+    northArrow: 'always',
+    credit: joinCredits(CREDITS.noaaNhc, 'NOAA IBTrACS', CREDITS.usCensus, CREDITS.naturalEarth),
+    caveat: 'Six-hour best-track chords and generalised coastlines locate crossings approximately.'
+  },
+  annotations: [...LANDFALL_LABELS, ...COAST_LABELS],
+
   create: async ctx => (await import('./hurricane-landfall.compute')).createHurricaneLandfall(ctx),
 
   story: [
     {
-      id: 'the-question',
+      id: 'paths',
       title: 'Where do hurricanes actually pass?',
-      body: 'A map of tracks is a tangle. **`GPULineDensity`** turns it into a number per place: it clips every segment of every storm to a grid and adds up the **kilometers of track in each cell**, divided by the cell area and the number of seasons. Bright means "an average season sends a lot of track over here".\n\nThe data are the **739 Atlantic storms of 1980-2025** (NOAA IBTrACS, six-hourly). Start with **All fixes**: the densest cells sit near 12 N between 40 W and 52 W, where waves leave Africa and spin up, and along the Southeast coast around 28 to 32 N; the track then curves out to sea. Turn off **Square-root scale** to see only the busiest cells. The grid is 25 km, so features finer than that are not resolved.',
+      headline: 'Track length shows where storms travel',
+      textAlternative: 'A paper Atlantic atlas shows classed storm-track density.',
+      optionsMode: 'fresh',
+      body: 'A map of tracks is a tangle. **`GPULineDensity`** clips every segment to a grid and sums **kilometers of track in each cell**, normalized by cell area and chosen seasons. Bright means an average season sends more track through that place.\n\nStart with **All fixes** and use the live grid and density readouts to inspect the corridor. Turn off **Square-root scale** to concentrate contrast on the busiest cells. The selected grid size sets the smallest pattern this view can resolve.',
       camera: {...BASIN_VIEW, transitionMs: 1200},
       options: {
         view: 'density',
@@ -411,9 +442,12 @@ eventGraph.add(new GPUZoneEvents({
       readouts: ['grid', 'density']
     },
     {
-      id: 'intensity',
+      id: 'strength',
       title: 'Weighted by wind: where do the strong ones go?',
-      body: 'Line density sums **length**, not wind. To ask where the *dangerous* storms pass, the scene runs it four times on the pieces of track at or above a wind threshold (every fix, 34 kt tropical storm, 64 kt hurricane, 96 kt major hurricane), all compiled together and computed once. **Intensity** just picks which result is drawn.\n\nSlide through the thresholds: the dense patch near 12 N drops out because most of those storms are still weak, and the **major hurricanes** concentrate farther west, with the densest cells near the Lesser Antilles (about 16 N, 56 W) and across the Bahamas, Greater Antilles and Caribbean, where warm water lets storms peak. **Wind-weighted** adds the four layers, so a stretch of track counts up to four times.',
+      headline: 'Intensity changes the corridor',
+      textAlternative: 'Major-hurricane track length appears over a quiet Atlantic paper map.',
+      optionsMode: 'fresh',
+      body: 'Line density sums **length**, not wind. To inspect stronger segments, the scene precomputes thresholds from all fixes through major-hurricane strength; **Intensity** selects the result rather than recomputing the track archive.\n\nSlide through thresholds and compare corridors. **Wind-weighted** adds the threshold layers, so a strong stretch contributes more than a weak one; it is an emphasis measure, not a count of storms.',
       camera: {...BASIN_VIEW, transitionMs: 1200},
       options: {view: 'density', intensity: 'major', showStateOutlines: true},
       controls: ['intensity', 'sqrtScale'],
@@ -422,16 +456,22 @@ eventGraph.add(new GPUZoneEvents({
     {
       id: 'coast',
       title: 'How far is the nearest coast?',
-      body: 'Wind is not the only thing that matters: a hurricane over open ocean harms ships, one near land harms people. **`GPUDistanceField`** gives every cell the distance to the **nearest coastline point** (the Natural Earth 1:50m coast, densified to a seed every 11 km), exactly, with one thread per column and then per row. The color is that distance, so the coast itself is the darkest band.\n\nThe histogram reads that field at every fix of the chosen **Intensity**: only about one hurricane-strength fix in six was within 100 km of a coast. Move **Search limit** down to 400 km and cells farther than that go transparent (a parameter write that re-runs the field). Switch **Distance algorithm** to *Jump flooding* to see the approximate version, which is cheaper but can pick a slightly wrong seed.',
+      headline: 'Distance turns coastline into a field',
+      textAlternative: 'Blue coast-distance bands surround Florida and the Gulf coast.',
+      optionsMode: 'fresh',
+      body: 'Wind is not the only exposure: a storm over open ocean and one near land have different consequences. **`GPUDistanceField`** computes each cell’s distance to the nearest coastline seed; the coast is therefore the darkest band.\n\nThe histogram samples that field at fixes for the chosen **Intensity**. Use **Search limit** to hide distant cells, then compare the exact method with *Jump flooding*, which is cheaper but can choose a nearby rather than nearest seed.',
       camera: {...BASIN_VIEW, transitionMs: 1200},
       options: {view: 'coast', intensity: 'hurricane', showCoastline: true, showTracks: false},
       controls: ['coastSearchKm', 'distanceMode', 'intensity'],
       readouts: ['nearCoast', 'coastChart']
     },
     {
-      id: 'landfalls',
-      title: 'Who gets the landfalls?',
-      body: '**`GPUZoneEvents`** treats every state boundary edge as part of a zone and finds each time a storm segment crosses one, with the interpolated time and position of the crossing. This scene keeps only the entries that come **from open water** (it steps a few kilometers back along the track and drops the crossings that start inside another state), and reads the wind at the crossing from the two fixes around it.\n\nRoughly 350 landfalls by about 190 storms of the 739: **Florida** leads by a wide margin, then **Texas** and **Louisiana**, with North Carolina and South Carolina behind. Slide **Minimum wind at landfall** up to 64 kt: the Gulf and Florida still dominate, but the Carolinas and the Northeast thin out. Change **State value** to the strongest wind to see where the most intense landfalls were. Click a state for its count and strongest storm.',
+      id: 'crossing',
+      title: 'How does a crossing become a landfall?',
+      headline: 'A landfall is an interpolated crossing',
+      textAlternative: 'Classed landfall rings sit over Atlantic-facing US states.',
+      optionsMode: 'fresh',
+      body: '**`GPUZoneEvents`** treats state boundary edges as zones and finds every storm-segment crossing, interpolating its time, position, and wind. The view keeps approaches **from open water** and rejects crossings that begin inside another state.\n\nThe live landfall card, bars, and state click report the current filter. Raise **Minimum wind at landfall** to see which corridors remain; switch **State value** to strongest wind to prioritize intensity over crossing count.',
       camera: {...COAST_VIEW, transitionMs: 1500},
       options: {
         view: 'landfalls',
@@ -439,23 +479,31 @@ eventGraph.add(new GPUZoneEvents({
         showStateOutlines: true,
         showCoastline: false,
         showTracks: false,
-        ramp: 'viridis'
+        ramp: 'cividis'
       },
       controls: ['minimumLandfallWind', 'stateMetric', 'landfallCounting'],
       readouts: ['landfalls', 'strongest', 'stateChart', 'selectedState']
     },
     {
-      id: 'season',
-      title: 'When is the season?',
-      body: 'The same tracks, read through time: for every day of the year, how many storms were alive on average? The curve is built from the fix times of all 46 seasons. It starts rising in June, **peaks around 8 September** with almost two storms alive at once on average, and is nearly gone by December. At **Hurricane or stronger** the curve is lower, under one storm alive on average, with its peak around 11 September: strong storms need the warmest water of late summer.',
-      options: {view: 'landfalls', intensity: 'hurricane', showLandfalls: true},
-      controls: ['intensity'],
-      readouts: ['aliveChart']
+      id: 'states',
+      title: 'Which state edges receive crossings?',
+      headline: 'Counts need a coastline denominator',
+      textAlternative:
+        'State landfall counts are shown with category-coloured crossing rings and a ranked state chart.',
+      optionsMode: 'fresh',
+      body: 'This state choropleth counts data-derived entries from open water and keeps the landfall rings above it. Choose **State value** to compare event count with strongest interpolated crossing wind.\n\nA coastline-length rate is deliberately omitted: this implementation has not derived a reliable state coastline denominator at the loaded generalisation. Dividing by land area would answer a different question.',
+      camera: {...COAST_VIEW, transitionMs: 1200},
+      options: {view: 'landfalls', showLandfalls: true, showStateOutlines: true, showTracks: false},
+      controls: ['stateMetric', 'minimumLandfallWind', 'landfallCounting'],
+      readouts: ['landfalls', 'strongest', 'stateChart', 'selectedState']
     },
     {
       id: 'limits',
       title: 'What to remember, and what to try',
-      body: 'Tracks are six-hourly best-track fixes joined by straight lines, so a storm that skims the coast between two fixes can be missed, and a crossing is placed to within a few tens of kilometers. State outlines are generalised (1:20 million), landfalls in Mexico, Cuba, the Bahamas and Canada are not counted, and an entry from inland Mexico into Texas counts as a landfall. Meters in the grid are deck.gl meters about 28 N: a small kernel rescales each row by cos(latitude) so lengths and distances are true, and the density grid cannot resolve features under 25 km. 46 seasons is a small sample for rare events.\n\n**Try it:** compare *Major hurricane* density with *All fixes*; set **Count** to *First landfall of each storm* and **Minimum wind at landfall** to 96 kt; lower **Events kept per storm** to 4 and watch the truncation readout; click Maine and then Texas and compare their strongest storms.',
+      headline: 'Best-track crossings are approximate',
+      textAlternative: 'A paper Atlantic map keeps event rings and state boundaries in view.',
+      optionsMode: 'fresh',
+      body: 'Best-track fixes are joined by straight lines, so a coast skim between fixes can be missed and every crossing is approximate. State boundaries are generalized and this regional state view does not count every coastline in the basin. Grid resolution also limits what density can show.\n\n**Try it:** compare *Major hurricane* density with *All fixes*; count only each storm’s first landfall; tighten the wind threshold; lower **Events kept per storm** and inspect truncation; then click contrasting states and compare their current summaries.',
       camera: {...BASIN_VIEW, transitionMs: 1200},
       options: {view: 'density', intensity: 'weighted', showLandfalls: true, showTracks: false},
       controls: ['eventsPerStorm', 'landfallCounting', 'minimumLandfallWind'],

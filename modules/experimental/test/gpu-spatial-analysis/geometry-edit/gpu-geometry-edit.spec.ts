@@ -352,6 +352,96 @@ it('GPUGeometryCleanup snaps and removes repeated points like shapely, per-frame
   }
 });
 
+it('GPUGeometryCleanup snaps Point features without deduplicating rows', async () => {
+  const device = await getWebGPUTestDevice('core');
+  if (!device) {
+    return;
+  }
+  const positions = new Float32Array([
+    0.25, 0.25, 0.25, 0.25, -0.25, -0.75, 1.24, 1.26, -1.24, -1.26
+  ]);
+  const pointCount = positions.length / 2;
+  const run = createRun(device, {positions}, 4);
+  const positionsOutput = run.output('point-positions', 'float32x2', pointCount);
+  const count = run.output('point-count', 'uint32', 1);
+  const overflow = run.output('point-overflow', 'uint32', 1);
+  run.graph.add(
+    new GPUGeometryCleanup({
+      positions: run.views['positions'] as GraphDataView<'float32x2'>,
+      geometryType: 'points',
+      parameters: run.parameters,
+      output: {
+        positions: positionsOutput.view as GraphDataView<'float32x2'>,
+        count: count.view as GraphDataView<'uint32'>,
+        overflow: overflow.view as GraphDataView<'uint32'>
+      }
+    })
+  );
+  const compiled = run.graph.compile();
+
+  run.parameterBuffer.write(
+    getGPUGeometryCleanupParameterValues({
+      gridSize: 0.5,
+      tolerance: 100,
+      removeRepeatedPoints: true
+    })
+  );
+  submitGraph(device, compiled, undefined);
+  expect(await readFloat32(positionsOutput.buffer, positions.length)).toEqual([
+    0.5, 0.5, 0.5, 0.5, 0, -0.5, 1, 1.5, -1, -1.5
+  ]);
+  expect(await readUint32(count.buffer, 1)).toEqual([pointCount]);
+  expect(await readUint32(overflow.buffer, 1)).toEqual([0]);
+
+  run.parameterBuffer.write(
+    getGPUGeometryCleanupParameterValues({tolerance: 100, removeRepeatedPoints: true})
+  );
+  submitGraph(device, compiled, undefined);
+  expect(await readFloat32(positionsOutput.buffer, positions.length)).toEqual(
+    Array.from(positions)
+  );
+  expect(await readUint32(count.buffer, 1)).toEqual([pointCount]);
+  expect(await readUint32(overflow.buffer, 1)).toEqual([0]);
+  run.destroy(compiled);
+});
+
+it('GPUGeometryCleanup reports Point capacity overflow', async () => {
+  const device = await getWebGPUTestDevice('core');
+  if (!device) {
+    return;
+  }
+  const positions = new Float32Array([0.1, 0.2, 1.1, 1.2, 2.1, 2.2, 3.1, 3.2]);
+  const run = createRun(device, {positions}, 4);
+  const capacity = 3;
+  const positionsOutput = run.output('point-overflow-positions', 'float32x2', capacity);
+  const count = run.output('point-overflow-count', 'uint32', 1);
+  const overflow = run.output('point-overflow-flag', 'uint32', 1);
+  const total = run.output('point-overflow-total', 'uint32', 1);
+  run.graph.add(
+    new GPUGeometryCleanup({
+      positions: run.views['positions'] as GraphDataView<'float32x2'>,
+      geometryType: 'points',
+      parameters: run.parameters,
+      output: {
+        positions: positionsOutput.view as GraphDataView<'float32x2'>,
+        count: count.view as GraphDataView<'uint32'>,
+        overflow: overflow.view as GraphDataView<'uint32'>,
+        totalCount: total.view as GraphDataView<'uint32'>
+      }
+    })
+  );
+  const compiled = run.graph.compile();
+  run.parameterBuffer.write(getGPUGeometryCleanupParameterValues({}));
+  submitGraph(device, compiled, undefined);
+  expect(await readFloat32(positionsOutput.buffer, 2 * capacity)).toEqual(
+    Array.from(positions.slice(0, 2 * capacity))
+  );
+  expect(await readUint32(count.buffer, 1)).toEqual([capacity]);
+  expect(await readUint32(total.buffer, 1)).toEqual([positions.length / 2]);
+  expect(await readUint32(overflow.buffer, 1)).toEqual([1]);
+  run.destroy(compiled);
+});
+
 it('GPUGeometryCleanup reports overflow with clamped offsets', async () => {
   const device = await getWebGPUTestDevice('core');
   if (!device) {

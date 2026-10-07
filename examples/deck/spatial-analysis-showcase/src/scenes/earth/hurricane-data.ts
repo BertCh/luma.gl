@@ -3,6 +3,7 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import type {LoadedDataset} from '../../data/catalog';
+import {HURRICANE_CLASS} from '../../cartography/hue-registry';
 import {LocalMetricProjection} from '../../engine/projection';
 import {createAzimuthalEquidistant, createTrackSet, type TrackSet} from '../movement/b12-tracks';
 
@@ -29,15 +30,9 @@ export const HURRICANE_CATEGORY_LABELS = [
 ];
 
 /** One color per class, ordered by intensity; readable on light and dark basemaps. */
-export const HURRICANE_CATEGORY_COLORS: readonly (readonly [number, number, number, number])[] = [
-  [96, 150, 235, 255],
-  [52, 190, 200, 255],
-  [246, 214, 70, 255],
-  [248, 168, 50, 255],
-  [240, 110, 40, 255],
-  [220, 50, 60, 255],
-  [175, 40, 160, 255]
-];
+// The light member is suitable for the paper stories. Abyss scenes use their halo to keep these
+// ordered class colours legible; the canonical table lives in the cartography registry.
+export const HURRICANE_CATEGORY_COLORS = HURRICANE_CLASS.light;
 
 /** Up to eight family colors (Okabe-Ito order without black). */
 export const HURRICANE_FAMILY_COLORS: readonly (readonly [number, number, number, number])[] = [

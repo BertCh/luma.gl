@@ -197,7 +197,7 @@ function createCrossingsView(env: Environment): View {
     streets.offsets
   );
   const staticRail = createStaticPaths(resources, 'crossing-rail', rail.local, rail.offsets);
-  const filter = resources.createParameterBuffer('kind-filter', 'float32', 1);
+  const kindFilter = resources.createParameterBuffer('kind-filter', 'float32', 1);
 
   type Build = {
     key: string;
@@ -272,7 +272,12 @@ function createCrossingsView(env: Environment): View {
       invocationCount: PAIR_CAPACITY,
       bindings: [
         {name: 'kinds', view: kindsView, type: 'u32', access: 'read'},
-        {name: 'filter', view: filter.importToGraph(graph), type: 'f32', access: 'read'},
+        {
+          name: 'kindFilter',
+          view: kindFilter.importToGraph(graph),
+          type: 'f32',
+          access: 'read'
+        },
         {
           name: 'shown',
           view: imp('shown', shown, 'uint32', PAIR_CAPACITY),
@@ -283,7 +288,7 @@ function createCrossingsView(env: Environment): View {
       body: /* wgsl */ `
   let kind = kinds[kindsOffset + index];
   var value = 0xffffffffu;
-  if (kind >= 1u && kind <= 5u && ((u32(filter[filterOffset]) >> (kind - 1u)) & 1u) != 0u) {
+  if (kind >= 1u && kind <= 5u && ((u32(kindFilter[kindFilterOffset]) >> (kind - 1u)) & 1u) != 0u) {
     value = kind - 1u;
   }
   shown[shownOffset + index] = value;`
@@ -348,7 +353,7 @@ function createCrossingsView(env: Environment): View {
 
   const writeFilter = (options: Options) => {
     const mask = {proper: 1, touches: 2 | 4, overlaps: 8, all: 31}[options.crossKinds];
-    filter.write(Float32Array.of(mask));
+    kindFilter.write(Float32Array.of(mask));
     dirty = true;
   };
   const select = (options: Options) => {

@@ -13,18 +13,18 @@ import {
 import {GPUCommandGraph, type CompiledGPUCommandGraph} from '@luma.gl/gpgpu/gpu-core';
 import {SpatialAnalysisPointLayer, SpatialAnalysisSegmentLayer} from '../../engine/layers';
 import {addKernelPass} from '../../engine/mode-kernels';
-import type {RampName} from '../../engine/ramps';
 import {formatCount, SpatialAnalysisResources} from '../../engine/resources';
 import {SummaryReader} from '../../engine/summary-reader';
 import type {SceneContext, SceneInstance} from '../scene';
 import {
   buildRingEdges,
   createGraphImporter,
+  createStaticPaths,
   findFeatureAt,
   formatNumber,
   triangulatePolygons
 } from './b3-common';
-import {FeatureTriangleLayer} from './b3-layers';
+import {FeatureTriangleLayer, PathOutputLayer} from './b3-layers';
 import {
   ACRES_PER_SQUARE_METER,
   describeFire,
@@ -62,11 +62,11 @@ export type WildfireShapesOptions = {
   sliverThreshold: number;
   year: 'all' | '2020' | '2021' | '2022' | '2023';
   minAcres: number;
-  ramp: Extract<RampName, 'viridis' | 'magma' | 'inferno' | 'cividis'>;
   opacity: number;
   showOutlines: boolean;
   showMarkers: boolean;
   showAxes: boolean;
+  shapeView: 'map' | 'gallery' | 'detail';
 };
 
 type MetricSpec = {
@@ -128,6 +128,80 @@ export async function createWildfireShapes(
   const resources = new SpatialAnalysisResources(device, 'wildfire-shapes');
   let destroyed = false;
 
+  let galleryRows: number[] = [];
+  const galleryCentres: [number, number][] = [];
+  let galleryPaths: ReturnType<typeof createStaticPaths> | null = null;
+  const makeGalleryPaths = (rows: readonly number[]) => {
+    const positions: number[] = [];
+    const offsets = [0];
+    galleryCentres.length = 0;
+    for (let galleryIndex = 0; galleryIndex < rows.length; galleryIndex++) {
+      const fire = rows[galleryIndex];
+      const [west, south, east, north] = layout.featureBounds.subarray(fire * 4, fire * 4 + 4);
+      const allBounds = layout.featureBounds;
+      let allWest = Infinity,
+        allSouth = Infinity,
+        allEast = -Infinity,
+        allNorth = -Infinity;
+      for (let row = 0; row < count; row++) {
+        allWest = Math.min(allWest, allBounds[row * 4]);
+        allSouth = Math.min(allSouth, allBounds[row * 4 + 1]);
+        allEast = Math.max(allEast, allBounds[row * 4 + 2]);
+        allNorth = Math.max(allNorth, allBounds[row * 4 + 3]);
+      }
+      const centreLongitude = allWest + ((galleryIndex % 4) + 0.5) * ((allEast - allWest) / 4);
+      const centreLatitude =
+        allNorth - (Math.floor(galleryIndex / 4) + 0.5) * ((allNorth - allSouth) / 3);
+      galleryCentres.push([centreLongitude, centreLatitude]);
+      const scale = 0.7 / Math.max(east - west, north - south, 1e-6);
+      const sourceLongitude = (west + east) / 2;
+      const sourceLatitude = (south + north) / 2;
+      for (
+        let ring = layout.featureRingOffsets[fire];
+        ring < layout.featureRingOffsets[fire + 1];
+        ring++
+      ) {
+        for (
+          let vertex = layout.ringOffsets[ring];
+          vertex < layout.ringOffsets[ring + 1];
+          vertex++
+        ) {
+          positions.push(
+            centreLongitude + (layout.lngLat[vertex * 2] - sourceLongitude) * scale,
+            centreLatitude + (layout.lngLat[vertex * 2 + 1] - sourceLatitude) * scale
+          );
+        }
+        offsets.push(positions.length / 2);
+      }
+    }
+    return createStaticPaths(
+      resources,
+      'equal-size-gallery',
+      Float32Array.from(positions),
+      Uint32Array.from(offsets)
+    );
+  };
+  let detailRing = 0;
+  for (let ring = 1; ring < ringCount; ring++) {
+    if (
+      layout.ringOffsets[ring + 1] - layout.ringOffsets[ring] >
+      layout.ringOffsets[detailRing + 1] - layout.ringOffsets[detailRing]
+    ) {
+      detailRing = ring;
+    }
+  }
+  const detailStart = layout.ringOffsets[detailRing];
+  const detailEnd = layout.ringOffsets[detailRing + 1];
+  const detailOriginal = createStaticPaths(
+    resources,
+    'detail-original',
+    layout.lngLat.slice(detailStart * 2, detailEnd * 2),
+    Uint32Array.of(0, detailEnd - detailStart)
+  );
+  // This archive has multipart rings and no prepared topology-safe simplification hierarchy.
+  // Detail is therefore the honest vertices-per-kilometre fallback, not display decimation.
+  ctx.setReadout('detailOriginalVertices', formatCount(detailEnd - detailStart));
+
   // ---- Static inputs and drawing data ------------------------------------------------------------
   const lngLatBuffer = resources.createBuffer('lnglat', layout.lngLat);
   const planarBuffer = resources.createBuffer('planar', data.mercator);
@@ -185,6 +259,9 @@ export async function createWildfireShapes(
   const sliver = makeColumn('sliver');
   const display = makeColumn('display');
   const displayCategory = makeColumn('display-category');
+  // One value per authored PP class. These representatives make the YlOrRd ramp discrete while
+  // retaining its fixed low-PP-is-strongest ordering in the fill and legend.
+  const compactnessClass = makeColumn('compactness-class');
   const shapeParameters = resources.createParameterBuffer(
     'shape-parameters',
     'float32',
@@ -313,6 +390,18 @@ export async function createWildfireShapes(
           access: 'read_write'
         },
         {
+          name: 'polsbyPopper',
+          view: imp('polsby-popper', columns.polsbyPopper, 'float32', count),
+          type: 'f32',
+          access: 'read'
+        },
+        {
+          name: 'compactnessClass',
+          view: imp('compactness-class', compactnessClass, 'float32', count),
+          type: 'f32',
+          access: 'read_write'
+        },
+        {
           name: 'visible',
           view: imp('visible', visibleBuffer, 'float32', count),
           type: 'f32',
@@ -325,8 +414,14 @@ export async function createWildfireShapes(
   if (visible[visibleOffset + index] < 0.5) {
     display[displayOffset + index] = bitcast<f32>(nanBits);
     categories[categoriesOffset + index] = 0xffffffffu;
+    compactnessClass[compactnessClassOffset + index] = bitcast<f32>(nanBits);
   } else {
     categories[categoriesOffset + index] = u32(max(value, 0.0));
+    let pp = polsbyPopper[polsbyPopperOffset + index];
+    compactnessClass[compactnessClassOffset + index] = select(
+      select(select(select(0.025, 0.10, pp >= 0.05), 0.225, pp >= 0.15), 0.40, pp >= 0.30),
+      0.60, pp >= 0.50
+    );
   }`
     });
   }
@@ -633,6 +728,15 @@ export async function createWildfireShapes(
         )
       )
     );
+    const detailDensities = shown
+      .map(fire => table!.vertices[fire] / Math.max(table!.length.wgs84[fire] / 1000, 1e-6))
+      .filter(Number.isFinite);
+    ctx.setReadout(
+      'detailDensity',
+      detailDensities.length
+        ? `${getFiniteQuantile(detailDensities, 0.5).toFixed(1)} median vertices/km`
+        : 'n/a'
+    );
     ctx.setReadout(
       'areaElongation',
       formatCorrelation(
@@ -704,6 +808,16 @@ export async function createWildfireShapes(
   const tableReader = new SummaryReader(resources, 'wildfire-table', tableSources, bytes => {
     if (destroyed) return;
     table = readTable(bytes);
+    const shown = Array.from({length: count}, (_, fire) => fire).filter(
+      fire => visible[fire] > 0.5
+    );
+    if (shown.length) {
+      const ordered = shown.sort(
+        (left, right) => table!.polsbyPopper[left] - table!.polsbyPopper[right]
+      );
+      galleryRows = [...ordered.slice(0, 6), ...ordered.slice(-6).reverse()];
+      galleryPaths = makeGalleryPaths(galleryRows);
+    }
     writeAxes();
     buildCharts();
     if (selected >= 0) selectFire(selected);
@@ -737,6 +851,7 @@ export async function createWildfireShapes(
         dirty.shape = true;
       } else if (id === 'year' || id === 'minAcres') {
         updateVisibility();
+        galleryPaths = null;
       }
       dirty.display = true;
       dirty.table = true;
@@ -748,6 +863,25 @@ export async function createWildfireShapes(
     },
 
     getTooltip(event) {
+      if (ctx.options.shapeView === 'gallery' && event.coordinate && table && galleryPaths) {
+        let galleryIndex = -1;
+        let closest = Infinity;
+        for (let index = 0; index < galleryCentres.length; index++) {
+          const distance = Math.hypot(
+            event.coordinate[0] - galleryCentres[index][0],
+            event.coordinate[1] - galleryCentres[index][1]
+          );
+          if (distance < closest) {
+            closest = distance;
+            galleryIndex = index;
+          }
+        }
+        if (galleryIndex >= 0 && closest < 0.9) {
+          const fire = galleryRows[galleryIndex];
+          return `${data.names[fire]} · ${formatNumber(data.acres[fire])} acres · ${data.partCount[fire]} parts · PP ${table.polsbyPopper[fire].toFixed(3)}`;
+        }
+        return null;
+      }
       if (!event.coordinate) return null;
       const fire = findFeatureAt(layout, event.coordinate[0], event.coordinate[1]);
       if (fire < 0 || visible[fire] < 0.5) return null;
@@ -757,6 +891,26 @@ export async function createWildfireShapes(
 
     onClick(event) {
       if (!event.coordinate) return false;
+      if (ctx.options.shapeView === 'gallery' && galleryPaths) {
+        let galleryIndex = -1;
+        let closest = Infinity;
+        for (let index = 0; index < galleryCentres.length; index++) {
+          const distance = Math.hypot(
+            event.coordinate[0] - galleryCentres[index][0],
+            event.coordinate[1] - galleryCentres[index][1]
+          );
+          if (distance < closest) {
+            closest = distance;
+            galleryIndex = index;
+          }
+        }
+        if (galleryIndex >= 0 && closest < 0.9) {
+          const fire = galleryRows[galleryIndex];
+          selectFire(fire === selected ? -1 : fire);
+          return true;
+        }
+        return false;
+      }
       const fire = findFeatureAt(layout, event.coordinate[0], event.coordinate[1]);
       selectFire(fire === selected || fire < 0 || visible[fire] < 0.5 ? -1 : fire);
       return true;
@@ -794,6 +948,37 @@ export async function createWildfireShapes(
       const dark = ctx.theme() === 'dark';
       const layers: Layer[] = [];
       const opacity = Math.round(options.opacity * 255);
+      if (options.shapeView === 'gallery') {
+        if (!galleryPaths) return [];
+        return [
+          new PathOutputLayer({
+            id: 'equal-size-silhouettes',
+            coordinateSystem: COORDINATE_SYSTEM.LNGLAT,
+            positions: galleryPaths.positions,
+            pathOffsets: galleryPaths.offsets,
+            pathOffsetCount: galleryPaths.offsetCount,
+            vertexCount: galleryPaths.vertexCount,
+            drawCommands: galleryPaths.drawCommands,
+            color: dark ? [229, 94, 0, 255] : [154, 52, 18, 255],
+            widthPixels: 1.6
+          })
+        ];
+      }
+      if (options.shapeView === 'detail') {
+        return [
+          new PathOutputLayer({
+            id: 'detail-original',
+            coordinateSystem: COORDINATE_SYSTEM.LNGLAT,
+            positions: detailOriginal.positions,
+            pathOffsets: detailOriginal.offsets,
+            pathOffsetCount: detailOriginal.offsetCount,
+            vertexCount: detailOriginal.vertexCount,
+            drawCommands: detailOriginal.drawCommands,
+            color: dark ? [154, 165, 177, 180] : [90, 100, 120, 180],
+            widthPixels: 1.2
+          })
+        ];
+      }
       layers.push(
         new FeatureTriangleLayer({
           id: 'fire-fill',
@@ -801,10 +986,10 @@ export async function createWildfireShapes(
           corners: fill.corners,
           featureRows: fill.featureRows,
           instanceCount: fill.triangleCount,
-          values: display,
+          values: options.metric === 'polsbyPopper' ? compactnessClass : display,
           valueMapping: spec.mapping,
-          colormap: options.ramp,
-          valueRange: currentRange,
+          colormap: 'ylorrd',
+          valueRange: options.metric === 'polsbyPopper' ? [0.6, 0] : currentRange,
           sqrtScale: Boolean(spec.sqrt),
           color:
             spec.mapping === 'flag'
@@ -858,7 +1043,7 @@ export async function createWildfireShapes(
             radiusPixels: 4.5,
             values: categorical ? displayCategory : display,
             valueFormat: categorical ? 'uint32' : 'float32',
-            colormap: categorical ? 'category' : options.ramp,
+            colormap: categorical ? 'category' : 'ylorrd',
             palette: options.metric === 'sliver' ? [NOT_SLIVER_COLOR, SLIVER_COLOR] : YEAR_PALETTE,
             valueRange: currentRange,
             sqrtScale: Boolean(spec.sqrt),

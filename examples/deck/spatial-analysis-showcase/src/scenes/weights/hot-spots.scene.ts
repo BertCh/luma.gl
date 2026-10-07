@@ -2,11 +2,25 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {CLASSIFICATION_METHOD_INFO} from '../../cartography/breaks';
+import {getClassTableLegend} from '../../cartography/class-table';
+import {CREDITS, joinCredits} from '../../cartography/credits';
+import {CHICAGO, CITY_FRAMES, labelsFor, US} from '../../cartography/gazetteer';
+import {ground} from '../../cartography/grounds';
+import {EFFORT_CAVEAT} from '../../cartography/hue-registry';
+import {formatCount} from '../../cartography/live-text';
+import {NATIONAL_FURNITURE} from '../../cartography/projection-notes';
+import type {ClassTable} from '../../cartography/types';
+import {getRampOptions} from '../../engine/ramps';
 import {defineScene, type LegendSpec} from '../scene';
-import {RAMP_NAMES} from '../../engine/ramps';
-import {GI_COLORS, MORAN_COLORS, NEUTRAL} from './b4-colors';
 import {getVariableInfo, VARIABLES} from './b4-geography';
-import type {HotSpotsOptions} from './hot-spots.compute';
+import type {HotSpotsOptions, HotSpotValueClasses} from './hot-spots.compute';
+import {
+  getGiTable,
+  getMoranQuadrantColors,
+  GI_CRITICAL_Z,
+  Z_DISPLAY_RANGE
+} from './hot-spots.style';
 
 const CATEGORY_NAMES = [
   'Plants',
@@ -20,6 +34,22 @@ const CATEGORY_NAMES = [
   'Fish',
   'Other life'
 ];
+
+/** The cartouche of one step (steps replace the whole `title` object, so the sample repeats). */
+const cartouche = (title: string, subtitle: string, national = false) => ({
+  title,
+  subtitle,
+  chips: national ? (['Modelled'] as const) : (['Observer effort'] as const)
+});
+
+/** Credits of the Chicago steps and of the national step. */
+const CHICAGO_CREDIT = joinCredits(
+  CREDITS.iNaturalist,
+  CREDITS.cityOfChicago,
+  CREDITS.usCensus,
+  CREDITS.openStreetMap
+);
+const COUNTY_CREDIT = joinCredits('CDC PLACES (public domain)', CREDITS.usCensus);
 
 const ALTERNATIVES = [
   {
@@ -39,20 +69,41 @@ const ALTERNATIVES = [
 
 const isCells = (state: HotSpotsOptions) => state.source === 'nature-cells';
 
-function getLegends(state: HotSpotsOptions): LegendSpec[] {
+function getLegends(state: HotSpotsOptions, data: Readonly<Record<string, unknown>>): LegendSpec[] {
   const variable = getVariableInfo(state.variable);
+  const counts = data['classCounts'] as number[] | undefined;
+  const noDataLabel = isCells(state) ? 'No observations' : 'No data';
   if (state.display === 'values') {
+    const title = isCells(state) ? 'Records per cell' : variable.label;
+    const unit = isCells(state) ? 'iNaturalist records' : variable.unit;
+    const classes = data['valueClasses'] as HotSpotValueClasses | null | undefined;
+    if (state.classification !== 'continuous' && classes) {
+      const alternate = classes.alternate
+        ? ` Left of the divider: ${classes.alternate.table.method}.`
+        : '';
+      return [
+        getClassTableLegend(classes.table, {
+          title,
+          id: 'value-classes',
+          basis: isCells(state) ? (data['basis'] as string | undefined) : undefined,
+          counts: classes.counts,
+          interactive: true,
+          layout: 'list',
+          // Rule 9: the legend stays on one table so a colour change is a data change.
+          note: `${classes.table.method}.${alternate}`
+        })
+      ];
+    }
     return [
       {
         kind: 'ramp',
         id: 'display',
-        title: isCells(state) ? 'Observations per cell' : variable.label,
+        title,
         ramp: state.ramp,
         extent: 'gpu',
-        unit: isCells(state) ? 'observations' : variable.unit,
+        unit,
         sqrtScale: isCells(state),
-        format: value =>
-          isCells(state) ? Math.round(value).toString() : value.toFixed(variable.digits)
+        format: isCells(state) ? formatCount : (value: number) => value.toFixed(variable.digits)
       }
     ];
   }
@@ -61,48 +112,51 @@ function getLegends(state: HotSpotsOptions): LegendSpec[] {
       {
         kind: 'ramp',
         title: state.statistic === 'gi-star' ? 'Gi* z-score' : 'Local Moran z-score',
-        ramp: 'diverging',
-        extent: [-5, 5],
-        labels: ['cold / dissimilar', 'hot / similar'],
-        unit: 'standard deviations'
+        ramp: 'rdbu',
+        extent: Z_DISPLAY_RANGE,
+        midpoint: 0,
+        midpointLabel: '0 = random',
+        ticks: [-GI_CRITICAL_Z[1], GI_CRITICAL_Z[1]],
+        unit: 'standard deviations',
+        format: value => value.toFixed(2)
       }
     ];
   }
-  const neutralEntry = {color: NEUTRAL, label: 'Not significant'};
   if (state.statistic === 'gi-star') {
+    const table = (data['giTable'] as ClassTable | undefined) ?? getGiTable('light', noDataLabel);
     return [
-      {
-        kind: 'categories',
-        title: 'Gi* confidence (hot to cold)',
-        entries: [
-          {color: GI_COLORS[3], label: 'Hot spot, 99%'},
-          {color: GI_COLORS[2], label: 'Hot spot, 95%'},
-          {color: GI_COLORS[1], label: 'Hot spot, 90%'},
-          neutralEntry,
-          {color: GI_COLORS[7], label: 'Cold spot, 90%'},
-          {color: GI_COLORS[6], label: 'Cold spot, 95%'},
-          {color: GI_COLORS[5], label: 'Cold spot, 99%'}
-        ],
+      getClassTableLegend(table, {
+        title: 'Gi* hot and cold spots',
+        id: 'gi-classes',
+        counts,
+        interactive: true,
+        layout: 'list',
         note:
           (state.inference === 'permutation'
-            ? 'Bins are kept only where the conditional permutation test confirms the cell. '
+            ? 'Kept only where the conditional permutation test confirms the cell. '
             : '') +
           (state.falseDiscoveryRate
-            ? 'Bins use Benjamini-Hochberg corrected p-values.'
-            : 'Two-sided confidence of the Gi* z-score.')
-      }
+            ? 'Benjamini-Hochberg corrected p-values.'
+            : 'Two-sided normal test of the z-score: |z| above 1.65, 1.96, 2.58.')
+      })
     ];
   }
+  const table = (data['giTable'] as ClassTable | undefined) ?? getGiTable('light', noDataLabel);
+  const colors = getMoranQuadrantColors(table);
+  const moranCount = (code: number) => counts?.[code];
   return [
     {
       kind: 'categories',
+      id: 'moran-classes',
       title: 'Local Moran quadrant',
+      layout: 'list',
+      interactive: true,
       entries: [
-        {color: MORAN_COLORS[1], label: 'High-High cluster'},
-        {color: MORAN_COLORS[3], label: 'Low-Low cluster'},
-        {color: MORAN_COLORS[4], label: 'High-Low outlier'},
-        {color: MORAN_COLORS[2], label: 'Low-High outlier'},
-        neutralEntry
+        {color: colors.highHigh, label: 'High-High cluster', count: moranCount(1)},
+        {color: colors.lowLow, label: 'Low-Low cluster', count: moranCount(3)},
+        {color: colors.highLow, label: 'High-Low outlier', count: moranCount(4)},
+        {color: colors.lowHigh, label: 'Low-High outlier', count: moranCount(2)},
+        {color: colors.notSignificant, label: 'Not significant', count: moranCount(0)}
       ],
       note:
         state.inference === 'analytic'
@@ -210,9 +264,10 @@ export default defineScene<HotSpotsOptions>({
       id: 'chicago-tracts',
       role: 'tracts (outlines of the cell map, and an alternate polygon source)'
     },
-    {id: 'chicago-community-areas', role: 'names of the community areas'}
+    {id: 'chicago-community-areas', role: 'names of the community areas'},
+    {id: 'us-states', role: 'state lines over the counties'}
   ],
-  initialView: {longitude: -87.68, latitude: 41.84, zoom: 9.7},
+  initialView: {...CITY_FRAMES.chicago},
 
   options: [
     {
@@ -533,16 +588,75 @@ export default defineScene<HotSpotsOptions>({
     },
     {
       kind: 'select',
+      id: 'classification',
+      label: 'Classification',
+      group: 'Display',
+      apply: 'param',
+      default: 'natural-breaks',
+      disabledWhen: state => state.display !== 'values',
+      help: 'How the analysed values become colour classes (computed on the CPU from the values read back). The same data looks very different under each method; the legend reports the goodness of variance fit.',
+      options: [
+        ...(['natural-breaks', 'quantile', 'equal-interval', 'head-tail'] as const).map(method => ({
+          value: method,
+          label: CLASSIFICATION_METHOD_INFO[method].label,
+          help: CLASSIFICATION_METHOD_INFO[method].help
+        })),
+        {value: 'continuous', label: 'Unclassed (continuous ramp)'}
+      ]
+    },
+    {
+      kind: 'slider',
+      id: 'classCount',
+      label: 'Classes',
+      group: 'Display',
+      apply: 'param',
+      min: 3,
+      max: 7,
+      step: 1,
+      default: 5,
+      disabledWhen: state => state.display !== 'values' || state.classification === 'continuous',
+      help: 'Number of colour classes. Five to seven is what readers can tell apart on a map.'
+    },
+    {
+      kind: 'select',
       id: 'ramp',
       label: 'Color ramp (values)',
       group: 'Display',
       apply: 'param',
-      default: 'inferno',
-      disabledWhen: state => state.display !== 'values',
-      options: RAMP_NAMES.filter(name => name !== 'diverging').map(name => ({
-        value: name,
-        label: name.charAt(0).toUpperCase() + name.slice(1)
-      }))
+      default: 'bupu',
+      disabledWhen: state => state.display !== 'values' || state.classification !== 'continuous',
+      help: 'For the unclassed map only: classed maps use the exact ColorBrewer tables of the hue registry. Light is little, dark is much; kept away from red and blue, which this map reserves for hot and cold spots, and from green, the park fill.',
+      options: getRampOptions(['bupu', 'ylgnbu', 'purples', 'batlow'])
+    },
+    {
+      kind: 'toggle',
+      id: 'compareBreaks',
+      label: 'Compare equal interval and natural breaks',
+      group: 'Display',
+      apply: 'param',
+      default: false,
+      disabledWhen: state => state.display !== 'values' || state.classification === 'continuous',
+      help: 'Draws the same counts twice with a swipe divider: equal-interval classes on the left, natural breaks on the right. The legend stays on natural breaks.'
+    },
+    {
+      kind: 'toggle',
+      id: 'labelHotSpots',
+      label: 'Label the strongest hot spots',
+      group: 'Display',
+      apply: 'param',
+      default: true,
+      disabledWhen: state => state.display === 'values',
+      help: 'Names the three strongest hot spots (highest z among the significant places), one per cluster, read back from the GPU.'
+    },
+    {
+      kind: 'toggle',
+      id: 'showBand',
+      label: 'Show the neighbourhood',
+      group: 'Display',
+      apply: 'param',
+      default: false,
+      disabledWhen: state => !isCells(state) || state.display === 'values',
+      help: 'Draws the neighbourhood radius as a ring around the strongest hot spot: every cell centre inside it is a neighbour.'
     },
     {
       kind: 'toggle',
@@ -565,22 +679,84 @@ export default defineScene<HotSpotsOptions>({
   ],
 
   readouts: [
-    {id: 'places', label: 'Places analysed'},
+    {
+      id: 'places',
+      label: 'Places analysed',
+      help: 'Cells with at least one record, or areas with data.'
+    },
+    {id: 'cellSize', label: 'Cell size', help: 'Edge of one cell.'},
+    {
+      id: 'hotTotal',
+      label: 'Hot spots',
+      help: 'Gi*: places in the 90, 95 and 99 percent hot classes. Local Moran: High-High places.'
+    },
+    {id: 'coldTotal', label: 'Cold spots', help: 'Gi*: cold classes. Local Moran: Low-Low places.'},
+    {
+      id: 'notSignificantShare',
+      label: 'Not significant',
+      help: 'Share of places chance could explain.'
+    },
+    {
+      id: 'confirmed',
+      label: 'Confirmed by permutation',
+      help: 'Places the conditional permutation test keeps.'
+    },
+    {id: 'gvfEqual', label: 'Fit of equal intervals', help: 'Goodness of variance fit, 0 to 1.'},
+    {id: 'gvfNatural', label: 'Fit of natural breaks', help: 'Goodness of variance fit, 0 to 1.'},
+    {id: 'outliers', label: 'Outliers LH / HL'},
+    {
+      id: 'zHistogram',
+      label: 'Distribution of z-scores',
+      kind: 'chart',
+      help: 'Places by z-score; the guides are the 90, 95 and 99 percent critical values.'
+    },
     {
       id: 'hot',
       label: 'Hot 99 / 95 / 90% (or HH)',
+      hood: true,
       help: 'Gi*: places per confidence bin. Local Moran: the High-High quadrant.'
     },
-    {id: 'cold', label: 'Cold 99 / 95 / 90% (or LL)'},
-    {id: 'outliers', label: 'Outliers LH / HL'},
-    {id: 'notSignificant', label: 'Not significant'},
-    {id: 'permutation', label: 'Permutation test'},
-    {id: 'moments', label: 'Mean / std. deviation', help: 'Of the analysed values.'},
-    {id: 'scale', label: 'Scale'},
-    {id: 'capacity', label: 'Capacity'}
+    {id: 'cold', label: 'Cold 99 / 95 / 90% (or LL)', hood: true},
+    {id: 'notSignificant', label: 'Not significant (count)', hood: true},
+    {id: 'permutation', label: 'Permutation test', hood: true},
+    {id: 'moments', label: 'Mean / std. deviation', hood: true, help: 'Of the analysed values.'},
+    {id: 'scale', label: 'Scale', hood: true},
+    {id: 'capacity', label: 'Capacity', hood: true}
+  ],
+
+  pipeline: [
+    {id: 'weights', label: 'Weights', detail: 'Who is whose neighbour: a radius or contiguity'},
+    {id: 'sums', label: 'Local sums', detail: 'The sum of the values in each neighbourhood'},
+    {
+      id: 'z',
+      label: 'z-scores',
+      detail: 'How far each sum is from what random placement gives',
+      show: {option: 'display', value: 'zscore'}
+    },
+    {
+      id: 'test',
+      label: 'Test and bins',
+      detail: 'Normal or permutation p-values, 90, 95, 99 percent'
+    },
+    {
+      id: 'classes',
+      label: 'Classes',
+      detail: 'Hot, cold and not significant',
+      show: {option: 'display', value: 'classes'}
+    }
   ],
 
   legends: getLegends,
+
+  basemap: ground('paperCity'),
+  furniture: {
+    title: cartouche('Where do observers cluster?', 'Hot and cold spots of records'),
+    scaleBar: {units: 'metric'},
+    credit: CHICAGO_CREDIT,
+    // Rule 15: hot spots of counts measure observer effort.
+    caveat: EFFORT_CAVEAT
+  },
+  annotations: labelsFor(CHICAGO, ['lake-michigan', 'loop'], {loop: {minZoom: 10.4}}),
 
   snippet: getSnippet,
 
@@ -596,79 +772,140 @@ export default defineScene<HotSpotsOptions>({
   story: [
     {
       id: 'counts',
-      title: 'Where in Chicago do people watch nature?',
-      body: 'People logged **43,557 wild plants, animals and fungi** in Chicago on iNaturalist in 2023. This map bins them into about 0.9 km Quadbin cells and colours each cell by its count. It shows where people go to look: the lakefront at Montrose Point, Lincoln Park and the North Side parks and river corridors.\n\nThat is not yet an answer to *where sightings concentrate beyond what the surroundings explain*. **`addHotSpotAnalysisRecipe`** adds the whole chain in one call: points to cells, cell counts, a neighbour search on the cell centres, Gi*, an optional permutation test. The next step turns on its significance classes. **Group** and **Hours of the day** below change what is counted.',
-      options: {source: 'nature-cells', category: 'all', display: 'values', ramp: 'inferno'},
-      camera: {longitude: -87.68, latitude: 41.84, zoom: 9.7, transitionMs: 1400},
-      callout: {coordinate: [-87.6325, 41.9625], text: 'Montrose Point'},
-      highlight: {readout: 'scale'},
+      title: 'Where Chicago looks at nature',
+      headline: 'Counts show where people look, not wildlife',
+      textAlternative:
+        'Map of Chicago with square cells shaded in five purple classes by record count: the lakefront and the large parks are darkest.',
+      body: '**{{places}}** cells hold at least one iNaturalist record, each **{{cellSize}}** across, coloured in five classes. The darkest cells are the lakefront and the large parks.\n\nA count measures observer effort, not nature: more people looking means more records. **Category** and **Hours of the day** change what is counted.\n\n*Counts follow people.*',
+      optionsMode: 'fresh',
+      options: {
+        source: 'nature-cells',
+        display: 'values',
+        classification: 'natural-breaks',
+        classCount: 5
+      },
       controls: ['category', 'hours'],
-      readouts: ['places', 'scale']
+      readouts: ['places', 'cellSize'],
+      camera: {...CITY_FRAMES.chicago, transitionMs: 1400},
+      furniture: {title: cartouche('Where do observers go?', 'Records per cell, five classes')},
+      annotations: labelsFor(CHICAGO, ['montrose-point', 'lincoln-park', 'jackson-park']),
+      stage: 'sums'
+    },
+    {
+      id: 'classes-are-a-choice',
+      title: 'Classification is a choice',
+      headline: 'The same counts make two different maps',
+      textAlternative:
+        'The same cell map split by a divider: equal-interval classes on the left leave most cells in the palest class; natural breaks on the right separate them.',
+      body: 'Drag the divider. On the left, **equal intervals** leave most cells in the lowest class (fit **{{gvfEqual}}**). On the right, **natural breaks** put the breaks at the gaps in the data (fit **{{gvfNatural}}**).\n\nThe legend stays on natural breaks, so only the breaks change between the two sides. **Classes** sets how many.\n\n*Classification is an editorial choice.*',
+      optionsMode: 'fresh',
+      options: {
+        source: 'nature-cells',
+        display: 'values',
+        classification: 'natural-breaks',
+        classCount: 5,
+        compareBreaks: true
+      },
+      controls: ['classCount'],
+      readouts: ['gvfEqual', 'gvfNatural'],
+      compare: {labels: ['Equal interval', 'Natural breaks'], position: 0.5},
+      camera: {...CITY_FRAMES.chicago, transitionMs: 1000},
+      furniture: {title: cartouche('Same counts, two maps', 'Records per cell')},
+      annotations: labelsFor(CHICAGO, ['montrose-point'])
     },
     {
       id: 'gi-star',
       title: 'Getis-Ord Gi*: hot and cold spots',
-      body: '**`GPUHotSpotAnalysis`** compares, for every cell, the sum of the counts in its neighbourhood (itself included, the star) with the sum random placement would give: `Gi* = (sum_j w_ij x_j - mean * sum_j w_ij) / (s * sqrt((n * sum_j w_ij^2 - (sum_j w_ij)^2) / (n - 1)))`. A large positive z is a **hot spot**, a large negative one a **cold spot**; the bins are the 90, 95 and 99 percent confidence of the two-sided normal test (esda `G_Local` with `star=True`, ArcGIS Hot Spot Analysis).\n\nRed cells are neighbourhoods with more sightings than their surroundings explain; most of the city is gray. The readouts count the cells per bin from a GPU histogram. **Map shows** flips between these classes, the raw *z-score* behind them and the analysed counts.',
-      options: {display: 'classes'},
-      highlight: {readout: 'hot'},
-      controls: ['display', 'selfWeight', 'weightTransform'],
-      readouts: ['hot', 'cold', 'notSignificant']
+      headline: 'Hot spots beat what their neighbours predict',
+      textAlternative:
+        'Map of Chicago cells in seven classes from blue cold spots to red hot spots; most cells are faint and not significant, and red cells cluster on the lakefront.',
+      body: "**Gi\\*** compares the sum of counts in each cell's neighbourhood with what random placement would give. **{{hotTotal}}** cells are hot spots and **{{coldTotal}}** cold; **{{notSignificantShare}}** are not significant, drawn as a ghost so the parks show through.\n\nHover a cell for its z-score and p-value, or click a legend class to isolate it. These hot spots still measure observer effort.",
+      optionsMode: 'fresh',
+      options: {source: 'nature-cells', display: 'classes', statistic: 'gi-star'},
+      controls: ['display', 'selfWeight', 'labelHotSpots'],
+      readouts: ['hotTotal', 'coldTotal', 'notSignificantShare', 'zHistogram'],
+      stage: 'z',
+      camera: {...CITY_FRAMES.chicago, transitionMs: 1400},
+      furniture: {
+        title: cartouche('Which cells are hot?', 'Gi* z-score, 90 / 95 / 99 % confidence')
+      }
     },
     {
       id: 'scale',
       title: 'The answer depends on the scale',
-      body: 'A hot spot is relative to the cells and the neighbourhood you choose. Set **Quadbin level** to 16 (about 0.45 km cells, already on) or slide **Neighbourhood radius** below: small cells and a small radius find block-scale pockets, large ones merge them into districts.\n\nThe resolution is a compile-time option (the cell aggregation is specialised per resolution), so the first use rebuilds one graph; the radius is a parameter-buffer write that only re-runs the neighbour search. Note that positions are precise, so finer cells work, but counts per cell follow where observers walk: a single trail can light up a cell.',
-      options: {resolution: 16, radiusCells: 1.5},
-      camera: {longitude: -87.66, latitude: 41.86, zoom: 10.6, transitionMs: 1600},
-      highlight: {readout: 'hot'},
-      controls: ['resolution', 'radiusCells'],
-      readouts: ['hot', 'scale']
+      headline: 'Change the neighbourhood, change the answer',
+      textAlternative:
+        'Closer map of the lakefront with a dashed ring around the strongest hot spot showing the neighbourhood that was tested.',
+      body: 'A hot spot is relative to the cells and the neighbourhood you choose. The dashed ring is the neighbourhood of the strongest hot spot; cells are **{{cellSize}}** across and **{{hotTotal}}** are hot. Slide **Neighbourhood radius**: small ones find block-scale pockets, large ones merge them into districts.\n\nCells beside the lake have no neighbours in the water, an edge effect.\n\n*Near things are compared with near things; "near" is your choice.*',
+      optionsMode: 'fresh',
+      options: {
+        source: 'nature-cells',
+        display: 'classes',
+        statistic: 'gi-star',
+        resolution: 16,
+        radiusCells: 1.5,
+        showBand: true
+      },
+      controls: ['resolution', 'radiusCells', 'showBand'],
+      readouts: ['cellSize', 'hotTotal'],
+      stage: 'sums',
+      camera: {longitude: -87.64, latitude: 41.92, zoom: 11.2, transitionMs: 1600},
+      furniture: {title: cartouche('How near is near?', 'Gi* with a chosen neighbourhood')}
     },
     {
-      id: 'fdr',
+      id: 'tests',
       title: 'Thousands of tests at once',
-      body: 'This map tests thousands of cells at the 95 percent level, so some will be flagged by chance. The **Benjamini-Hochberg false discovery rate** correction (`falseDiscoveryRate`, esda `fdr`) raises the bar so that the expected share of false discoveries stays at the stated level: fewer, more trustworthy spots survive, mostly the strongest cores.\n\nIt is a compile-time option of the contributor (it adds a 31-bit sort), so the graph with it was compiled once and the toggle switches to it. Toggle **Benjamini-Hochberg FDR correction** below and compare **Hot 99 / 95 / 90% (or HH)** with and without.',
-      options: {falseDiscoveryRate: true},
-      highlight: {readout: 'hot'},
-      controls: ['falseDiscoveryRate'],
-      readouts: ['hot']
-    },
-    {
-      id: 'permutation',
-      title: 'Check the normal approximation with a permutation test',
-      body: 'The z-score assumes a normal distribution, which is shaky for counts with few neighbours. **`GPULocalPermutationTest`** needs no assumption: around each cell it shuffles the other values 199 times (conditional randomisation, esda `p_sim`) and counts how often chance beats the observed Gi*. Only cells it confirms keep their colour (**Significance from** is now *Conditional permutation test*); **Permutation test** below reports how many.\n\nChange **Permutations**, the **Permutation seed** (results are reproducible: a counter-based Philox generator), **Permutation tail** or **Neighbour limit of the permutation test** (rows with more neighbours are skipped). All of them keep the GPU busy for milliseconds, where the CPU takes minutes for thousands of rows.',
-      options: {inference: 'permutation', permutations: 199, seed: 1, resolution: 15},
-      camera: {longitude: -87.68, latitude: 41.84, zoom: 9.7, transitionMs: 1400},
-      highlight: {readout: 'permutation'},
-      controls: ['inference', 'permutations', 'seed', 'alternative', 'maximumNeighbors'],
-      readouts: ['permutation', 'hot']
-    },
-    {
-      id: 'local-moran',
-      title: 'Local Moran: clusters and outliers',
-      body: 'Gi* finds concentrations of high or low values. **`GPULocalMoran`** asks a different question: does this cell resemble its neighbours? **High-High** and **Low-Low** are clusters of similar counts; **High-Low** and **Low-High** are **outliers**, a busy cell in a quiet area (esda `Moran_Local`).\n\nThe quadrants here are gated by the same conditional permutation test. Set **Significance from** to *Analytic p-value*: that gives the normal approximation, and *None* shows every quadrant, which is how a Moran scatterplot looks before testing.',
-      options: {statistic: 'local-moran', inference: 'permutation', falseDiscoveryRate: false},
-      highlight: {readout: 'outliers'},
-      controls: ['statistic', 'inference'],
-      readouts: ['hot', 'cold', 'outliers']
+      headline: 'Correct for testing thousands of cells at once',
+      textAlternative:
+        'The same hot-spot map with fewer coloured cells: only cells that survive the false discovery correction and the permutation test keep their colour.',
+      body: 'Every cell is a test, so some pass by chance. The **Benjamini-Hochberg** correction and a **permutation test** (shuffle the other counts and see how often chance beats the cell) raise the bar: **{{hotTotal}}** hot cells survive and **{{confirmed}}** are confirmed.\n\nToggle **Benjamini-Hochberg FDR correction** or change **Permutations** and watch the counts fall.\n\n*The more tests, the stricter the bar.*',
+      optionsMode: 'fresh',
+      options: {
+        source: 'nature-cells',
+        display: 'classes',
+        statistic: 'gi-star',
+        inference: 'permutation',
+        permutations: 199,
+        seed: 1,
+        falseDiscoveryRate: true
+      },
+      controls: ['falseDiscoveryRate', 'inference', 'permutations'],
+      readouts: ['hotTotal', 'confirmed', 'zHistogram'],
+      stage: 'test',
+      camera: {...CITY_FRAMES.chicago, transitionMs: 1400},
+      furniture: {title: cartouche('Which hot spots are real?', 'Gi* with false discovery control')}
     },
     {
       id: 'counties',
       title: 'The diabetes belt across US counties',
-      body: 'The same contributors work on areas. Set **Analyse** to *US counties (3,109)* with queen contiguity (**Neighbours are...**) and *Row standardised* **Weights**: local Moran of age-adjusted diabetes prevalence finds large **High-High** blocks across Texas, the Deep South and Appalachia, and **Low-Low** blocks in the Mountain West and the Upper Midwest, with scattered outliers between them.\n\n**Limits.** A significant cell is a statement about a *pattern*, not a cause; county values are model-based estimates; results move with the weights, the cell size or the aggregation (the modifiable areal unit problem); counts per cell mix wildlife and observer effort (where people walk and upload). **Try it:** set **Statistic** to Gi*, compare row and binary **Weights**, pick a *Distance band* in **Neighbours are...**, or set **Analyse** to *Chicago tracts*.',
+      headline: 'High diabetes clusters in the South and Appalachia',
+      textAlternative:
+        'Map of US counties coloured by local Moran quadrant: High-High clusters across the South and Appalachia, Low-Low clusters in the Mountain West and Upper Midwest.',
+      body: 'The same machinery works on areas. Local Moran of diabetes prevalence finds **{{hotTotal}}** High-High counties, mostly across the South and Appalachia, and **{{coldTotal}}** Low-Low counties in the Mountain West and Upper Midwest: the belt that *Is it clustered at all?* measured with one number, now located county by county.\n\nTry **Statistic**, **Variable** or **Neighbours are...** below.\n\n*A cluster describes a pattern, not a cause; county values are model-based.*',
+      optionsMode: 'fresh',
       options: {
         source: 'us-counties',
         variable: 'diabetes',
+        weights: 'queen',
         weightTransform: 'row',
         statistic: 'local-moran',
         inference: 'analytic',
         selfWeight: 'exclude',
         display: 'classes'
       },
-      camera: {longitude: -95.5, latitude: 38.2, zoom: 3.9, transitionMs: 1800},
-      highlight: {readout: 'hot'},
-      controls: ['source', 'variable', 'weights', 'weightTransform', 'statistic'],
-      readouts: ['hot', 'cold', 'outliers']
+      controls: ['source', 'variable', 'statistic', 'weights'],
+      readouts: ['hotTotal', 'coldTotal', 'outliers'],
+      stage: 'classes',
+      // An atlas page: no tiles, a flat sheet, state lines over the counties.
+      basemap: ground('paperSheet'),
+      furniture: {
+        ...NATIONAL_FURNITURE,
+        title: cartouche('Where does diabetes cluster?', 'Local Moran of prevalence', true),
+        credit: COUNTY_CREDIT
+      },
+      // The chapter's CONUS frame (same bounds as the other county stories).
+      camera: {bounds: [-124.8, 24.4, -66.9, 49.4], transitionMs: 1800},
+      annotations: labelsFor(US, ['appalachia', 'mississippi-delta', 'great-plains', 'corn-belt'])
     }
   ]
 });

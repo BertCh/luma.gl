@@ -1,0 +1,565 @@
+/* Chart kit styles (see chart.ts). Every rule is scoped under .chart-box so it wins over legacy
+   .chart* rules. Colors come from tokens only; SVG font sizes are viewBox units (the chart is 320
+   units wide and scales to its panel, about 1.06x in a 340 px panel). */
+
+.chart-box {
+  /* Muted chart ink that stays >= 3:1 against the surface. */
+  --chart-muted: color-mix(in srgb, var(--muted) 55%, transparent);
+  --chart-grid: color-mix(in srgb, var(--text) 12%, transparent);
+  --chart-rule: color-mix(in srgb, var(--text) 55%, transparent);
+  --chart-signal: var(--map-signal, #d95f0e);
+  width: 100%;
+}
+
+.chart-box .chart {
+  display: block;
+  width: 100%;
+  height: auto;
+  overflow: visible;
+  font-family: var(--font);
+  font-variant-numeric: tabular-nums;
+}
+.chart-box .chart:focus-visible {
+  outline: 2px solid var(--focus, #1f6feb);
+  outline-offset: 3px;
+}
+.chart-box .chart-failed {
+  color: var(--muted);
+  font-size: var(--fs-sm, 12px);
+}
+
+/* Text */
+.chart-box .chart-title {
+  fill: var(--text);
+  font-size: 12px;
+  font-weight: 600;
+}
+.chart-box .chart-tick {
+  fill: var(--muted);
+  font-size: 10px;
+}
+.chart-box .chart-tick.is-strong,
+.chart-box .chart-label.is-strong {
+  fill: var(--text);
+  font-weight: 700;
+}
+.chart-box .chart-label {
+  fill: var(--muted);
+  font-size: 11px;
+}
+.chart-box .chart-note,
+.chart-box .chart-bar-value,
+.chart-box .chart-direct-label,
+.chart-box .chart-quadrant,
+.chart-box .chart-slope-label {
+  paint-order: stroke;
+  stroke: var(--surface);
+  stroke-width: 3px;
+  stroke-linejoin: round;
+}
+.chart-box .chart-note {
+  fill: var(--text);
+  font-size: 10px;
+}
+.chart-box .chart-note-signal {
+  fill: var(--chart-signal);
+  font-weight: 600;
+}
+.chart-box .chart-note-strong {
+  font-size: 11px;
+  font-weight: 600;
+}
+.chart-box .chart-band-label {
+  fill: var(--muted);
+  font-size: 10px;
+}
+.chart-box .chart-quadrant {
+  fill: var(--muted);
+  font-size: 10px;
+  font-weight: 600;
+  pointer-events: none;
+}
+.chart-box .chart-direct-label {
+  fill: var(--text);
+  font-size: 11px;
+  font-weight: 600;
+}
+.chart-box .chart-direct-label.is-ghost {
+  fill: var(--muted);
+  font-weight: 400;
+}
+.chart-box .chart-bar-value {
+  fill: var(--text);
+  font-size: 10px;
+}
+.chart-box .chart-tooltip {
+  pointer-events: none;
+}
+.chart-box .chart-tooltip-head,
+.chart-box .chart-tooltip-key {
+  font-weight: 600;
+}
+
+/* Axes, grid, rules */
+.chart-box .chart-grid {
+  stroke: var(--chart-grid);
+  stroke-width: 0.5;
+  fill: none;
+}
+.chart-box .chart-axis,
+.chart-box .chart-tick-mark {
+  stroke: var(--muted);
+  stroke-width: 1;
+}
+.chart-box .chart-rule {
+  stroke: var(--chart-rule);
+  stroke-width: 1;
+  stroke-dasharray: 3 3;
+}
+.chart-box .chart-marker {
+  stroke: var(--chart-signal);
+  stroke-width: 1.5;
+  stroke-dasharray: none;
+}
+.chart-box .chart-link-handle,
+.chart-box .chart-playhead-handle {
+  fill: var(--chart-signal);
+  stroke: var(--surface);
+  stroke-width: 1.5;
+}
+.chart-box .chart-cursor {
+  stroke: var(--muted);
+  stroke-width: 1;
+  pointer-events: none;
+}
+.chart-box .chart-cursor-dot {
+  stroke: var(--surface);
+  stroke-width: 1.5;
+  pointer-events: none;
+}
+.chart-box .chart-band,
+.chart-box .chart-envelope {
+  fill: var(--band, var(--muted));
+  fill-opacity: var(--band-opacity, 0.12);
+  stroke: none;
+}
+
+/* Pointer areas */
+.chart-box .chart-hit {
+  fill: transparent;
+  pointer-events: all;
+  touch-action: pan-y;
+}
+.chart-box .chart-hit.is-input {
+  cursor: crosshair;
+  touch-action: none;
+}
+.chart-box .chart-bar-hit {
+  cursor: pointer;
+}
+.chart-box .chart-bar-hit:hover {
+  fill: color-mix(in srgb, var(--text) 8%, transparent);
+}
+.chart-box .chart-bar-hit:focus-visible {
+  outline: none;
+  stroke: var(--focus, #1f6feb);
+  stroke-width: 2;
+}
+
+/* Marks */
+.chart-box .chart-line {
+  fill: none;
+  stroke-linejoin: round;
+  stroke-linecap: round;
+}
+.chart-box .chart-area {
+  fill-opacity: 0.14;
+  stroke: none;
+}
+.chart-box .chart-point {
+  stroke: var(--surface);
+  stroke-width: 1;
+}
+.chart-box .chart-bar:hover {
+  stroke: var(--text);
+  stroke-opacity: 0.55;
+  stroke-width: 1;
+}
+.chart-box .chart-dot {
+  fill-opacity: var(--dot-opacity, 0.7);
+}
+.chart-box .chart-dots {
+  fill: none;
+  stroke-linecap: round;
+  stroke-opacity: var(--dot-opacity, 0.7);
+}
+.chart-box .chart-points.is-dimmed {
+  opacity: 0.22;
+}
+.chart-box .chart-ring {
+  fill: none;
+  stroke: var(--text);
+  stroke-width: 1.5;
+  pointer-events: none;
+}
+.chart-box .chart-fit {
+  stroke: var(--text);
+  stroke-width: 1.5;
+  pointer-events: none;
+}
+.chart-box .chart-refrect {
+  fill: var(--muted);
+  fill-opacity: 0.1;
+  stroke: var(--muted);
+  stroke-opacity: 0.55;
+  stroke-width: 0.75;
+  stroke-dasharray: 3 2;
+}
+.chart-box .chart-brush {
+  fill: var(--accent, #2a6fdb);
+  fill-opacity: 0.12;
+  stroke: var(--accent, #2a6fdb);
+  stroke-width: 1;
+  pointer-events: none;
+}
+
+/* Timeline */
+.chart-box .chart-fade {
+  fill: var(--surface);
+  fill-opacity: 0.68;
+  pointer-events: none;
+}
+.chart-box .chart-window {
+  fill: none;
+  stroke: var(--text);
+  stroke-width: 1.5;
+  pointer-events: none;
+}
+.chart-box .chart-event {
+  stroke: var(--muted);
+  stroke-width: 0.75;
+  stroke-dasharray: 2 2;
+  pointer-events: none;
+}
+.chart-box .chart-playhead {
+  pointer-events: none;
+}
+
+/* Matrix */
+.chart-box .chart-cell {
+  stroke: var(--surface);
+  stroke-width: 0.8;
+}
+.chart-box .chart-cell.is-empty {
+  fill: var(--sunken, transparent);
+  stroke: var(--chart-grid);
+}
+.chart-box .chart-cell.is-input {
+  cursor: pointer;
+}
+.chart-box .chart-cell:hover {
+  stroke: var(--text);
+  stroke-width: 1.5;
+}
+.chart-box .chart-cell:focus-visible {
+  outline: none;
+  stroke: var(--focus, #1f6feb);
+  stroke-width: 2.5;
+}
+.chart-box .chart-cell-text {
+  font-size: 10px;
+  font-weight: 600;
+  pointer-events: none;
+}
+/* Text on a data-colored fill: chosen by the fill's luminance, not by the page theme. */
+.chart-box .chart-cell-text.on-light {
+  fill: rgb(17 24 39);
+}
+.chart-box .chart-cell-text.on-dark {
+  fill: rgb(255 255 255);
+}
+.chart-box .chart-cell-outline,
+.chart-box .chart-cell-highlight {
+  fill: none;
+  stroke: var(--text);
+  pointer-events: none;
+}
+.chart-box .chart-cell-outline {
+  stroke-width: 1.2;
+}
+.chart-box .chart-cell-highlight {
+  stroke-width: 2;
+}
+.chart-box .chart-marginal {
+  fill: var(--chart-muted);
+}
+.chart-box .chart-key-swatch {
+  stroke: none;
+}
+
+/* Rows: forest, dumbbell, slope */
+.chart-box .chart-row-highlight {
+  fill: var(--chart-signal);
+  fill-opacity: 0.1;
+}
+.chart-box .chart-interval-line {
+  stroke: var(--text);
+  stroke-opacity: 0.85;
+  stroke-width: 1.5;
+  stroke-linecap: round;
+}
+.chart-box .chart-interval-point {
+  fill: var(--text);
+}
+.chart-box .chart-interval.is-highlight .chart-interval-line {
+  stroke: var(--chart-signal);
+  stroke-opacity: 1;
+}
+.chart-box .chart-interval.is-highlight .chart-interval-point {
+  fill: var(--chart-signal);
+}
+.chart-box .chart-dumbbell-bar {
+  stroke: var(--chart-muted);
+  stroke-width: 3;
+  stroke-linecap: round;
+}
+.chart-box .chart-dumbbell.is-highlight .chart-dumbbell-bar {
+  stroke: var(--chart-signal);
+}
+.chart-box .chart-dumbbell-dot {
+  stroke: var(--surface);
+  stroke-width: 1;
+}
+.chart-box .chart-slope-line {
+  stroke: var(--chart-1);
+  stroke-width: 1.5;
+}
+.chart-box .chart-slope-dot {
+  fill: var(--chart-1);
+}
+.chart-box .chart-slope.is-quiet .chart-slope-line {
+  stroke: var(--chart-muted);
+}
+.chart-box .chart-slope.is-quiet .chart-slope-dot {
+  fill: var(--chart-muted);
+}
+.chart-box .chart-slope.is-highlight .chart-slope-line {
+  stroke: var(--chart-signal);
+  stroke-width: 2.4;
+}
+.chart-box .chart-slope.is-highlight .chart-slope-dot {
+  fill: var(--chart-signal);
+}
+.chart-box .chart-slope-label {
+  fill: var(--text);
+  font-size: 10.5px;
+}
+.chart-box .chart-slope-label.is-quiet {
+  fill: var(--muted);
+}
+.chart-box .chart-slope-label.is-highlight {
+  fill: var(--chart-signal);
+  font-weight: 700;
+}
+
+/* Rose and stacked */
+.chart-box .chart-sector {
+  fill-opacity: 0.85;
+  stroke: var(--surface);
+  stroke-width: 0.5;
+}
+.chart-box .chart-sector.is-dim {
+  fill-opacity: 0.4;
+}
+.chart-box .chart-sector.is-highlight {
+  fill-opacity: 1;
+  stroke: var(--text);
+  stroke-width: 1.2;
+}
+.chart-box .chart-baseline {
+  fill: none;
+  stroke: var(--text);
+  stroke-width: 1.2;
+  stroke-dasharray: 3 2;
+  stroke-linecap: round;
+  pointer-events: none;
+}
+.chart-box .chart-stack-segment {
+  stroke: var(--surface);
+  stroke-width: 1;
+}
+.chart-box .chart-stack-label {
+  fill: var(--text);
+  font-size: 11px;
+  font-weight: 600;
+}
+.chart-box .chart-stack-leader {
+  stroke-width: 1;
+}
+
+/* Small multiples */
+.chart-box .chart-panel-highlight {
+  fill: none;
+  stroke: var(--chart-signal);
+  stroke-width: 1.5;
+  pointer-events: none;
+}
+.chart-box .chart-multiples .chart-title {
+  font-size: 11px;
+}
+
+/* Diagrams: theme classes for scene-authored SVG. Shapes take strokes, text takes fills. */
+.chart-box .chart-diagram {
+  color: var(--text);
+  font-size: 11px;
+}
+.chart-box .chart-diagram .diagram-ink {
+  stroke: var(--text);
+  fill: none;
+  stroke-width: 1.5;
+}
+.chart-box .chart-diagram .diagram-muted {
+  stroke: var(--chart-muted);
+  fill: none;
+}
+.chart-box .chart-diagram .diagram-signal {
+  stroke: var(--chart-signal);
+  fill: none;
+  stroke-width: 2;
+}
+.chart-box .chart-diagram .diagram-accent {
+  stroke: var(--chart-1);
+  fill: none;
+  stroke-width: 2;
+}
+.chart-box .chart-diagram .diagram-fill {
+  fill: color-mix(in srgb, var(--text) 9%, transparent);
+  stroke: none;
+}
+.chart-box .chart-diagram text.diagram-ink,
+.chart-box .chart-diagram tspan.diagram-ink {
+  fill: var(--text);
+  stroke: none;
+}
+.chart-box .chart-diagram text.diagram-muted,
+.chart-box .chart-diagram tspan.diagram-muted {
+  fill: var(--muted);
+  stroke: none;
+}
+.chart-box .chart-diagram text.diagram-signal,
+.chart-box .chart-diagram tspan.diagram-signal {
+  fill: var(--chart-signal);
+  stroke: none;
+  font-weight: 600;
+}
+.chart-box .chart-diagram text.diagram-accent,
+.chart-box .chart-diagram tspan.diagram-accent {
+  fill: var(--chart-1);
+  stroke: none;
+  font-weight: 600;
+}
+
+/* Legend */
+.chart-box .chart-legend {
+  list-style: none;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 14px;
+  margin: 6px 0 0;
+  padding: 0;
+  font-size: var(--fs-sm, 12px);
+  color: var(--muted);
+}
+.chart-box .chart-legend li {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.chart-box .chart-key {
+  flex: none;
+  width: 14px;
+  height: 0;
+  border-top: 2px solid var(--key);
+}
+.chart-box .chart-key.is-dashed {
+  border-top-style: dashed;
+}
+.chart-box .chart-key.is-band {
+  height: 8px;
+  border: 0;
+  background: color-mix(in srgb, var(--key) 30%, transparent);
+  border-radius: 2px;
+}
+.chart-box .chart-key.is-dot,
+.chart-box .chart-key.is-bar {
+  width: 9px;
+  height: 9px;
+  border: 0;
+  background: var(--key);
+}
+.chart-box .chart-key.is-dot {
+  border-radius: 50%;
+}
+.chart-box .chart-key.is-bar {
+  border-radius: 2px;
+}
+
+/* Show values */
+.chart-box .chart-table {
+  margin-top: 6px;
+  font-size: var(--fs-sm, 12px);
+}
+.chart-box .chart-table summary {
+  display: inline-flex;
+  align-items: center;
+  min-height: 24px;
+  color: var(--muted);
+  cursor: pointer;
+}
+.chart-box .chart-table summary:hover {
+  color: var(--text);
+}
+.chart-box .chart-table-scroll {
+  max-height: 220px;
+  overflow: auto;
+  margin-top: 4px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-control, 6px);
+}
+.chart-box .chart-table table {
+  width: 100%;
+  border-collapse: collapse;
+  font-variant-numeric: tabular-nums;
+}
+.chart-box .chart-table th,
+.chart-box .chart-table td {
+  padding: 3px 8px;
+  text-align: right;
+  border-bottom: 1px solid var(--border);
+  white-space: nowrap;
+}
+.chart-box .chart-table th:first-child,
+.chart-box .chart-table td:first-child {
+  text-align: left;
+}
+.chart-box .chart-table th {
+  position: sticky;
+  top: 0;
+  background: var(--surface);
+  color: var(--muted);
+  font-weight: 600;
+}
+.chart-box .chart-table tr:last-child td {
+  border-bottom: 0;
+}
+.chart-box .chart-table-note {
+  margin: 0;
+  padding: 4px 8px;
+  color: var(--muted);
+}
+
+@media (pointer: coarse) {
+  .chart-box .chart-table summary {
+    min-height: 44px;
+  }
+}

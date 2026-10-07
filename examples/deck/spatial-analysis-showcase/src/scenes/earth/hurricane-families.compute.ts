@@ -3,6 +3,7 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {COORDINATE_SYSTEM, type Layer} from '@deck.gl/core';
+import {HURRICANE_CLASS} from '../../cartography/hue-registry';
 import type {Buffer} from '@luma.gl/core';
 import {
   GPUKMeans,
@@ -24,7 +25,6 @@ import {
   findLongestStorm,
   findStorm,
   getStormLabel,
-  HURRICANE_CATEGORY_COLORS,
   HURRICANE_FAMILY_COLORS,
   loadHurricaneTracks
 } from './hurricane-data';
@@ -39,11 +39,12 @@ export type HurricaneFamiliesOptions = {
   seed: number;
   iterations: number;
   colorBy: 'family' | 'similarity' | 'peak' | 'season' | 'plain';
-  ramp: 'viridis' | 'magma' | 'inferno' | 'cividis';
+  ramp: 'magma' | 'inferno' | 'cividis';
   similarityRangeKm: number;
   trackOpacity: number;
   showRoutes: boolean;
   showFamilyMeans: boolean;
+  representative: 'medoid' | 'mean';
 };
 
 const MAXIMUM_FAMILIES = 8;
@@ -51,6 +52,64 @@ const NO_STORM = 0xffffffff;
 const EARTH_RADIUS_METERS = 6371008.8;
 const PICK_RADIUS_METERS = 450000;
 const MDS_ITERATIONS = 90;
+
+/**
+ * Finds one optimal discrete-Frechet coupling and returns its widest leash.
+ * Routes are already resampled in an azimuthal-equidistant metre frame, so the
+ * Euclidean length used here agrees with the GPU comparison's metric frame.
+ */
+function frechetBottleneck(
+  routes: Float32Array,
+  sampleCount: number,
+  first: number,
+  second: number
+): {firstSample: number; secondSample: number; meters: number} | null {
+  if (!sampleCount || first === NO_STORM || second === NO_STORM) return null;
+  const values = new Float64Array(sampleCount * sampleCount);
+  const distanceAt = (a: number, b: number) => {
+    const ax = routes[(first * sampleCount + a) * 2];
+    const ay = routes[(first * sampleCount + a) * 2 + 1];
+    const bx = routes[(second * sampleCount + b) * 2];
+    const by = routes[(second * sampleCount + b) * 2 + 1];
+    return Math.hypot(ax - bx, ay - by);
+  };
+  for (let a = 0; a < sampleCount; a++) {
+    for (let b = 0; b < sampleCount; b++) {
+      const distance = distanceAt(a, b);
+      const index = a * sampleCount + b;
+      if (!a && !b) values[index] = distance;
+      else if (!a) values[index] = Math.max(distance, values[index - 1]);
+      else if (!b) values[index] = Math.max(distance, values[index - sampleCount]);
+      else {
+        values[index] = Math.max(
+          distance,
+          Math.min(values[index - 1], values[index - sampleCount], values[index - sampleCount - 1])
+        );
+      }
+    }
+  }
+  let a = sampleCount - 1;
+  let b = sampleCount - 1;
+  let widest = -Infinity;
+  let widestA = a;
+  let widestB = b;
+  while (true) {
+    const distance = distanceAt(a, b);
+    if (distance > widest) {
+      widest = distance;
+      widestA = a;
+      widestB = b;
+    }
+    if (!a && !b) break;
+    const candidates: Array<readonly [number, number, number]> = [];
+    if (a) candidates.push([a - 1, b, values[(a - 1) * sampleCount + b]]);
+    if (b) candidates.push([a, b - 1, values[a * sampleCount + b - 1]]);
+    if (a && b) candidates.push([a - 1, b - 1, values[(a - 1) * sampleCount + b - 1]]);
+    candidates.sort((left, right) => left[2] - right[2]);
+    [a, b] = candidates[0];
+  }
+  return {firstSample: widestA, secondSample: widestB, meters: widest};
+}
 
 type RouteVariant = {
   key: string;
@@ -108,12 +167,24 @@ export async function createHurricaneFamilies(
     'selected-segments',
     new Float32Array(storms.longestTrack * 4).fill(Number.NaN)
   );
+  const comparisonSegments = resources.createBuffer(
+    'comparison-segments',
+    new Float32Array(storms.longestTrack * 4).fill(Number.NaN)
+  );
+  const leashSegments = resources.createBuffer(
+    'frechet-leash',
+    new Float32Array(4).fill(Number.NaN)
+  );
   const familyIndexBuffer = resources.createBuffer(
     'family-index',
     Uint32Array.from({length: MAXIMUM_FAMILIES}, (_, family) => family)
   );
   const meanSegments = resources.createBuffer(
     'family-means',
+    new Float32Array(MAXIMUM_FAMILIES * 63 * 4).fill(Number.NaN)
+  );
+  const medoidSegments = resources.createBuffer(
+    'family-medoids',
     new Float32Array(MAXIMUM_FAMILIES * 63 * 4).fill(Number.NaN)
   );
 
@@ -417,6 +488,8 @@ const COS_CENTER: f32 = ${literal(Math.cos(phi0))};`,
         if (destroyed || routeVariant !== variant) return;
         routesSnapshot = new Float32Array(bytes).slice();
         updateFamilyMeans();
+        updateFamilyMedoids();
+        updateComparisonGeometry();
       }
     );
   }
@@ -503,8 +576,10 @@ const COS_CENTER: f32 = ${literal(Math.cos(phi0))};`,
     }
     familyBuffer.write(families);
     updateFamilyMeans();
+    updateFamilyMedoids();
     updateFamilyText();
     updateFamilyChart();
+    updateEmbeddingChart();
     updateSelection();
     ctx.requestLayers();
   }
@@ -561,6 +636,41 @@ const COS_CENTER: f32 = ${literal(Math.cos(phi0))};`,
       formatY: value => value.toFixed(0),
       description:
         'Number of storms in each track family. The family of the selected storm is highlighted.'
+    });
+  }
+
+  /** Publishes the CPU MDS plane that the GPU clustering consumes, linked back to map selection. */
+  function updateEmbeddingChart(): void {
+    if (!embedding || !familySizes.length) return;
+    const x = new Float32Array(trackCount);
+    const y = new Float32Array(trackCount);
+    for (let track = 0; track < trackCount; track++) {
+      x[track] = embedding[track * 2];
+      y[track] = embedding[track * 2 + 1];
+    }
+    ctx.setChart('embeddingChart', {
+      kind: 'scatter',
+      x,
+      y,
+      colorIndex: families,
+      palette: HURRICANE_FAMILY_COLORS,
+      ringed: selectedStorm === NO_STORM ? [] : [selectedStorm],
+      radius: 2.4,
+      opacity: 0.72,
+      xLabel: 'embedding dimension 1',
+      yLabel: 'embedding dimension 2',
+      description:
+        'Each dot is one hurricane route in the two-dimensional embedding of the selected route-distance matrix. Nearby dots have similar routes, not nearby geographic positions.',
+      onPointClick: track => {
+        selectedStorm = track;
+        writeSelectedOutline();
+        writeSelectedDistances();
+        updateSelection();
+        updateFamilyChart();
+        updateEmbeddingChart();
+        updateDistanceChart();
+        ctx.requestLayers();
+      }
     });
   }
 
@@ -652,6 +762,102 @@ const COS_CENTER: f32 = ${literal(Math.cos(phi0))};`,
     ctx.requestLayers();
   }
 
+  /** Writes a real, central route for each family: the minimum total-distance medoid. */
+  function updateFamilyMedoids(): void {
+    const variant = routeVariant;
+    const sampleCount = variant?.sampleCount ?? 0;
+    const segments = new Float32Array(MAXIMUM_FAMILIES * 63 * 4).fill(Number.NaN);
+    if (variant && routesSnapshot && matrix && familySizes.length) {
+      for (let family = 0; family < familySizes.length; family++) {
+        let medoid = -1;
+        let smallestTotal = Infinity;
+        for (let candidate = 0; candidate < trackCount; candidate++) {
+          if (families[candidate] !== family) continue;
+          let total = 0;
+          for (let member = 0; member < trackCount; member++) {
+            if (families[member] === family) total += matrix[candidate * trackCount + member];
+          }
+          if (total < smallestTotal) {
+            smallestTotal = total;
+            medoid = candidate;
+          }
+        }
+        if (medoid < 0) continue;
+        for (let sample = 0; sample + 1 < sampleCount; sample++) {
+          const first = storms.unproject(
+            routesSnapshot[(medoid * sampleCount + sample) * 2],
+            routesSnapshot[(medoid * sampleCount + sample) * 2 + 1]
+          );
+          const second = storms.unproject(
+            routesSnapshot[(medoid * sampleCount + sample + 1) * 2],
+            routesSnapshot[(medoid * sampleCount + sample + 1) * 2 + 1]
+          );
+          segments.set([first[0], first[1], second[0], second[1]], (family * 63 + sample) * 4);
+        }
+      }
+    }
+    medoidSegments.write(segments);
+    ctx.requestLayers();
+  }
+
+  /** Draws the nearest route and the widest segment of its discrete-Frechet coupling. */
+  function updateComparisonGeometry(): void {
+    const comparison = new Float32Array(storms.longestTrack * 4).fill(Number.NaN);
+    const leash = new Float32Array(4).fill(Number.NaN);
+    let nearest = -1;
+    let nearestDistance = Infinity;
+    if (matrix && selectedStorm !== NO_STORM) {
+      for (let track = 0; track < trackCount; track++) {
+        if (track === selectedStorm) continue;
+        const distance = matrix[selectedStorm * trackCount + track];
+        if (distance < nearestDistance) {
+          nearestDistance = distance;
+          nearest = track;
+        }
+      }
+    }
+    if (nearest >= 0) {
+      let row = 0;
+      for (
+        let vertex = storms.offsets[nearest];
+        vertex < storms.offsets[nearest + 1] - 1;
+        vertex++, row++
+      ) {
+        comparison.set(storms.lngLat.subarray(vertex * 2, vertex * 2 + 4), row * 4);
+      }
+      const bottleneck =
+        routesSnapshot && routeVariant
+          ? frechetBottleneck(routesSnapshot, routeVariant.sampleCount, selectedStorm, nearest)
+          : null;
+      if (bottleneck && routesSnapshot) {
+        const first = storms.unproject(
+          routesSnapshot[(selectedStorm * routeVariant!.sampleCount + bottleneck.firstSample) * 2],
+          routesSnapshot[
+            (selectedStorm * routeVariant!.sampleCount + bottleneck.firstSample) * 2 + 1
+          ]
+        );
+        const second = storms.unproject(
+          routesSnapshot[(nearest * routeVariant!.sampleCount + bottleneck.secondSample) * 2],
+          routesSnapshot[(nearest * routeVariant!.sampleCount + bottleneck.secondSample) * 2 + 1]
+        );
+        leash.set([first[0], first[1], second[0], second[1]]);
+        ctx.setReadout(
+          'leash',
+          `Discrete-Frechet bottleneck to ${getStormLabel(storms, nearest)}: ${formatCount(bottleneck.meters / 1000)} km`
+        );
+      } else {
+        ctx.setReadout(
+          'leash',
+          `Closest route: ${getStormLabel(storms, nearest)}; coupling is loading`
+        );
+      }
+    } else {
+      ctx.setReadout('leash', 'Select a storm after route distances load');
+    }
+    comparisonSegments.write(comparison);
+    leashSegments.write(leash);
+  }
+
   function updateSelection(): void {
     if (selectedStorm === NO_STORM) {
       ctx.setReadout('selected', 'click a storm');
@@ -676,6 +882,7 @@ const COS_CENTER: f32 = ${literal(Math.cos(phi0))};`,
         text += `; closest track: ${getStormLabel(storms, nearest)} at ${formatCount(nearestDistance / 1000)} km`;
       }
     }
+    updateComparisonGeometry();
     ctx.setReadout('selected', text);
   }
 
@@ -789,7 +996,7 @@ const COS_CENTER: f32 = ${literal(Math.cos(phi0))};`,
             valueFormat: 'uint32',
             valueIndices: segmentTracksBuffer,
             colormap: 'category',
-            palette: HURRICANE_CATEGORY_COLORS
+            palette: HURRICANE_CLASS[ctx.ground()]
           };
           break;
         case 'season':
@@ -847,20 +1054,23 @@ const COS_CENTER: f32 = ${literal(Math.cos(phi0))};`,
         );
       }
       if (options.showFamilyMeans) {
+        const representativeSegments =
+          options.representative === 'medoid' ? medoidSegments : meanSegments;
+        const representativeName = options.representative === 'medoid' ? 'medoids' : 'means';
         layers.push(
           new SpatialAnalysisSegmentLayer({
-            id: 'hurricane-family-means',
+            id: `hurricane-family-${representativeName}`,
             ...drawProps,
-            segments: meanSegments,
+            segments: representativeSegments,
             instanceCount: MAXIMUM_FAMILIES * 63,
             color: dark ? [255, 255, 255, 255] : [15, 20, 30, 255],
             widthPixels: 7,
             opacity: 0.95
           }),
           new SpatialAnalysisSegmentLayer({
-            id: 'hurricane-family-means-color',
+            id: `hurricane-family-${representativeName}-color`,
             ...drawProps,
-            segments: meanSegments,
+            segments: representativeSegments,
             instanceCount: MAXIMUM_FAMILIES * 63,
             values: familyIndexBuffer,
             valueFormat: 'uint32',
@@ -882,6 +1092,34 @@ const COS_CENTER: f32 = ${literal(Math.cos(phi0))};`,
           color: dark ? [255, 255, 255, 240] : [15, 20, 30, 240]
         })
       );
+      if (options.colorBy === 'similarity') {
+        layers.push(
+          new SpatialAnalysisSegmentLayer({
+            id: 'hurricane-closest-route',
+            ...drawProps,
+            segments: comparisonSegments,
+            instanceCount: storms.longestTrack,
+            widthPixels: 4.8,
+            color: dark ? [24, 28, 36, 235] : [255, 255, 255, 235]
+          }),
+          new SpatialAnalysisSegmentLayer({
+            id: 'hurricane-closest-route-color',
+            ...drawProps,
+            segments: comparisonSegments,
+            instanceCount: storms.longestTrack,
+            widthPixels: 2.6,
+            color: [217, 95, 2, 245]
+          }),
+          new SpatialAnalysisSegmentLayer({
+            id: 'hurricane-frechet-leash',
+            ...drawProps,
+            segments: leashSegments,
+            instanceCount: 1,
+            widthPixels: 3.2,
+            color: [217, 95, 2, 255]
+          })
+        );
+      }
       return layers;
     },
 
@@ -900,6 +1138,7 @@ const COS_CENTER: f32 = ${literal(Math.cos(phi0))};`,
       writeSelectedDistances();
       updateSelection();
       updateFamilyChart();
+      updateEmbeddingChart();
       updateDistanceChart();
       ctx.requestLayers();
       return true;

@@ -16,7 +16,7 @@ Story: [#/story/polygon-measures](#/story/polygon-measures).
 
 ## Generate and clip: `GPUOutlineGeometry`, `GPUShapeGenerator`, `GPUGridGenerator`, `GPUHilbertKeys`, `GPURectangleClip`
 
-Buffers (`GPUOutlineGeometry`) are a **picture**: round-join triangles that overlap and are not unioned, so use a distance query for numbers. `GPUShapeGenerator` makes circles, sectors and ellipses per feature; segments and radius are parameters, shape and coordinate system are compile-time. `GPUGridGenerator` makes square, hexagon, triangle or point grids of fixed size whose origin and cell width change every frame. `GPUHilbertKeys` orders items along a space-filling curve: low orders give coarse blocks, order 16 the finest. `GPURectangleClip` cuts lines (Liang-Barsky) or polygons (Sutherland-Hodgman) to a rectangle read per frame.
+Buffers (`GPUOutlineGeometry`) are a **picture**: round-join triangles that overlap and are not unioned, so use a distance query for numbers. `GPUShapeGenerator` makes circles, sectors and ellipses per feature; segments and radius are parameters, while shape, coordinate system and ellipse spacing are compile-time. Equal-arc ellipse spacing keeps edges visually even on flat ellipses. `GPUGridGenerator` makes square, hexagon, triangle or point grids of fixed size whose origin and cell width change every frame; square and hex grids can also emit their unique shared corners and an extent mask for those points. `GPUHilbertKeys` orders items along a space-filling curve: low orders give coarse blocks, order 16 the finest. `GPURectangleClip` cuts lines (Liang-Barsky) or polygons (Sutherland-Hodgman) to a rectangle read per frame.
 
 Story: [#/story/buffers-and-shapes](#/story/buffers-and-shapes).
 

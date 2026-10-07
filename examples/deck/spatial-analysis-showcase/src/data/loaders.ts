@@ -25,7 +25,7 @@ export type ColumnArray =
   | Int8Array;
 
 /** Raster encodings stored as PNG pixels; decoded by {@link decodeRasterImage}. */
-export type RasterImageEncoding = 'terrarium' | 'mapbox' | 'uint8-classes' | 'rg-uv-8bit';
+export type RasterImageEncoding = 'terrarium' | 'mapbox' | 'uint8-classes' | 'rg-uv-8bit' | 'rgba8';
 
 /** Raster encodings stored as headerless little-endian arrays; decoded by {@link decodeRasterBinary}. */
 export type RasterBinaryEncoding =
@@ -49,26 +49,87 @@ export function getDataFileUrl(datasetId: string, file: string): string {
   return `${import.meta.env.BASE_URL}data/${datasetId}/${file}`;
 }
 
+/** Options of the fetch helpers. */
+export type FetchOptions = {
+  /** Aborts the request. */
+  signal?: AbortSignal;
+  /**
+   * Called as the body streams in. `total` is the `Content-Length` when the server sent one
+   * (`null` otherwise; with transfer compression `loaded` can exceed it). Setting it makes the
+   * helper read the body as a stream.
+   */
+  onProgress?: (loaded: number, total: number | null) => void;
+};
+
+/** Normalizes the legacy `signal` argument of the fetch helpers to options. */
+function toFetchOptions(signalOrOptions?: AbortSignal | FetchOptions): FetchOptions {
+  if (!signalOrOptions) return {};
+  return 'aborted' in signalOrOptions ? {signal: signalOrOptions} : signalOrOptions;
+}
+
 /** Fetches a URL and throws on a non-OK status. */
-export async function fetchChecked(url: string, signal?: AbortSignal): Promise<Response> {
-  const response = await fetch(url, {signal});
+export async function fetchChecked(
+  url: string,
+  signalOrOptions?: AbortSignal | FetchOptions
+): Promise<Response> {
+  const response = await fetch(url, {signal: toFetchOptions(signalOrOptions).signal});
   if (!response.ok) throw new Error(`${url}: HTTP ${response.status}`);
   return response;
 }
 
 /** Fetches JSON. */
-export async function fetchJson<T>(url: string, signal?: AbortSignal): Promise<T> {
-  return (await (await fetchChecked(url, signal)).json()) as T;
+export async function fetchJson<T>(
+  url: string,
+  signalOrOptions?: AbortSignal | FetchOptions
+): Promise<T> {
+  const options = toFetchOptions(signalOrOptions);
+  if (options.onProgress) return JSON.parse(await fetchText(url, options)) as T;
+  return (await (await fetchChecked(url, options)).json()) as T;
 }
 
 /** Fetches text. */
-export async function fetchText(url: string, signal?: AbortSignal): Promise<string> {
-  return (await fetchChecked(url, signal)).text();
+export async function fetchText(
+  url: string,
+  signalOrOptions?: AbortSignal | FetchOptions
+): Promise<string> {
+  const options = toFetchOptions(signalOrOptions);
+  if (options.onProgress) return new TextDecoder().decode(await fetchBytes(url, options));
+  return (await fetchChecked(url, options)).text();
 }
 
-/** Fetches raw bytes. */
-export async function fetchBytes(url: string, signal?: AbortSignal): Promise<ArrayBuffer> {
-  return (await fetchChecked(url, signal)).arrayBuffer();
+/**
+ * Fetches raw bytes. With `onProgress` the body is read as a stream so progress can be reported
+ * (falls back to `arrayBuffer()` when the response has no readable body). The callback always
+ * fires once more with the final size.
+ */
+export async function fetchBytes(
+  url: string,
+  signalOrOptions?: AbortSignal | FetchOptions
+): Promise<ArrayBuffer> {
+  const options = toFetchOptions(signalOrOptions);
+  const response = await fetchChecked(url, options);
+  const {onProgress} = options;
+  const reader = onProgress ? response.body?.getReader() : undefined;
+  if (!onProgress || !reader) return response.arrayBuffer();
+  const header = response.headers.get('content-length');
+  const total = header !== null && Number.isFinite(Number(header)) ? Number(header) : null;
+  const chunks: Uint8Array[] = [];
+  let loaded = 0;
+  for (;;) {
+    const {done, value} = await reader.read();
+    if (done) break;
+    chunks.push(value);
+    loaded += value.byteLength;
+    onProgress(loaded, total);
+  }
+  const bytes = new Uint8Array(loaded);
+  let offset = 0;
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  onProgress(loaded, total ?? loaded);
+  return bytes.buffer;
 }
 
 /**
@@ -93,8 +154,11 @@ export async function fetchWithFallback<T>(
 }
 
 /** Fetches a GeoJSON FeatureCollection (or a single Feature, wrapped). */
-export async function fetchGeoJson(url: string, signal?: AbortSignal): Promise<GeoJsonCollection> {
-  const json = await fetchJson<GeoJsonCollection | GeoJsonFeature>(url, signal);
+export async function fetchGeoJson(
+  url: string,
+  signalOrOptions?: AbortSignal | FetchOptions
+): Promise<GeoJsonCollection> {
+  const json = await fetchJson<GeoJsonCollection | GeoJsonFeature>(url, signalOrOptions);
   return json.type === 'FeatureCollection' ? json : {type: 'FeatureCollection', features: [json]};
 }
 
@@ -210,6 +274,7 @@ export type DecodedRaster = {
    *
    * - `terrarium`, `mapbox`: elevations in meters (`Float32Array`).
    * - `uint8-classes`: class ids (`Uint8Array`).
+   * - `rgba8`: interleaved red, green, blue and alpha bytes (`Uint8Array`).
    * - `rg-uv-8bit`: decoded `[u, v]` pairs in the manifest unit (`Float32Array`, `bands` is 2).
    * - `*-bin`: the raw array in its stored dtype. Apply `scale` and `offset` yourself
    *   (`value * scale + offset`), and treat `noData` as missing. Time stacks are `[t][row][col]`.
@@ -218,7 +283,7 @@ export type DecodedRaster = {
   encoding: RasterEncoding;
   /** Slices of a time or band stack (`1` for a single layer). */
   depth: number;
-  /** Interleaved values per pixel (`2` for `rg-uv-8bit`, otherwise `1`). */
+  /** Interleaved values per pixel (`4` for `rgba8`, `2` for `rg-uv-8bit`, otherwise `1`). */
   bands: number;
 };
 
@@ -226,9 +291,9 @@ export type DecodedRaster = {
 export type UvRanges = {uRange: readonly [number, number]; vRange: readonly [number, number]};
 
 /**
- * Decodes the pixels of a PNG into elevations (Terrarium, Mapbox RGB), 8-bit classes, or wind
- * vectors (`rg-uv-8bit`, which needs `ranges`: `u = uMin + R/255 * (uMax - uMin)`, likewise `v`
- * from G).
+ * Decodes the pixels of a PNG into RGBA bytes, elevations (Terrarium, Mapbox RGB), 8-bit classes,
+ * or wind vectors (`rg-uv-8bit`, which needs `ranges`: `u = uMin + R/255 * (uMax - uMin)`, likewise
+ * `v` from G).
  */
 export async function decodeRasterImage(
   bytes: ArrayBuffer,
@@ -247,6 +312,16 @@ export async function decodeRasterImage(
   bitmap.close();
   const pixels = context.getImageData(0, 0, width, height).data;
   const count = width * height;
+  if (encoding === 'rgba8') {
+    return {
+      width,
+      height,
+      values: new Uint8Array(pixels),
+      encoding,
+      depth: 1,
+      bands: 4
+    };
+  }
   if (encoding === 'uint8-classes') {
     const classes = new Uint8Array(count);
     for (let index = 0; index < count; index++) classes[index] = pixels[index * 4];

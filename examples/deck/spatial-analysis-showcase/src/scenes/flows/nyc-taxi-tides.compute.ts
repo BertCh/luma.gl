@@ -9,23 +9,42 @@ import {
   GPU_TIME_WINDOW_PARAMETER_LENGTH
 } from '@luma.gl/experimental/gpu-dataframe';
 import {GPUFlowAggregation} from '@luma.gl/experimental/gpu-network';
-import {
-  getGPUPointDensityHexagonCell,
-  getGPUPointDensityHexagonCenter,
-  getGPUPointDensityHexagonGridSize
-} from '@luma.gl/experimental/gpu-spatial-analysis';
-import {
-  DrawCommandBuffer,
-  GPUCommandGraph,
-  type CompiledGPUCommandGraph
-} from '@luma.gl/gpgpu/gpu-core';
+import {GPUCommandGraph, type CompiledGPUCommandGraph} from '@luma.gl/gpgpu/gpu-core';
+import {getClassIndex} from '../../cartography/breaks';
+import {getClassTableLayerProps} from '../../cartography/class-table';
+import {type Gazetteer, NYC, nearestPlaceLabel} from '../../cartography/gazetteer';
+import {formatCount, formatDistance, formatSigned} from '../../cartography/live-text';
+import type {LngLat, MapAnnotation} from '../../cartography/types';
+import {SpatialAnalysisFlowLayer} from '../../engine/flow-layer';
 import {importGraphBuffer} from '../../engine/graph-buffers';
+import {SpatialAnalysisRasterLayer, SpatialAnalysisSegmentLayer} from '../../engine/layers';
 import {createPlaybackClock} from '../../engine/playback';
-import {SpatialAnalysisRasterLayer} from '../../engine/layers';
-import {formatCount, SpatialAnalysisResources} from '../../engine/resources';
+import {SpatialAnalysisResources} from '../../engine/resources';
 import {SummaryReader} from '../../engine/summary-reader';
 import type {SceneContext, SceneInstance} from '../scene';
-import {ARC_SEGMENTS, FlowArcLayer} from './b11-flow-layers';
+import {buildFlowArrows, FLOW_HALO, FLOW_INK} from './flows-style';
+import {
+  buildZoneOutlines,
+  getLattice,
+  getZoneAt,
+  getZoneCenter,
+  getZoneCorners,
+  type Lattice,
+  type ZoneKind
+} from './nyc-taxi-tides-lattice';
+import {
+  BALANCED_TRIPS,
+  formatLongWindow,
+  formatShare,
+  formatShortWindow,
+  getHatchColor,
+  getMagnitudeTable,
+  getNetTable,
+  getShareTable,
+  getZoneOutlineColor,
+  getZoneTooltip,
+  MASKED_SHARE
+} from './nyc-taxi-tides-style';
 import {
   AREA_PRESETS,
   formatTaxiTime,
@@ -42,19 +61,16 @@ export type NycTaxiTidesOptions = {
   playSpeed: number;
   loop: boolean;
   windowHours: number;
-  zones: 'hexagon' | 'grid';
+  normalise: 'net' | 'share';
+  minVolume: number;
+  compareMidpoint: boolean;
   zoneSize: number;
+  zones: ZoneKind;
   excludeSelf: boolean;
   sumOrder: 'sorted' | 'atomic';
-  weight: 'trips' | 'fare' | 'passengers';
-  totals: 'net' | 'arrivals' | 'departures';
-  scaleMode: 'fixed' | 'auto';
-  colorRange: number;
-  ramp: 'magma' | 'viridis' | 'inferno' | 'cividis';
-  zoneOpacity: number;
-  arcs: number;
-  arcWidth: number;
-  arcOpacity: number;
+  flowCount: number;
+  showRadius: boolean;
+  showOutlines: boolean;
 };
 
 /**
@@ -67,16 +83,30 @@ export const TIDES_LAST_HOUR = 37.5;
 const TOP_FLOW_COUNT = 256;
 /** Smallest lattice size on the slider: it sets the compile-time lattice capacity. */
 const MINIMUM_ZONE_SIZE = 400;
+/** Words before the zone totals in the readback: flow rows, pairs and two overflow flags. */
 const HEADER_WORDS = 4;
 /** Distinct origin and destination pairs the hash table keeps. */
 const PAIR_CAPACITY = 524288;
 const RETIRE_FRAMES = 4;
-const ORIGIN_COLOR = [255, 176, 64, 255] as const;
-const DESTINATION_COLOR = [64, 224, 255, 255] as const;
+/** Playback readback interval in frames. */
+const PLAYBACK_READ_FRAMES = 6;
+/** Fill opacity of the zones: the ground shows through a little. */
+const FILL_OPACITY = {light: 0.88, dark: 0.9} as const;
+/** Flow widths: 1.2 px for the smallest, 3.5 px for the heaviest. */
+const FLOW_WIDTH_PIXELS = [1.2, 3.5] as const;
+/** Trips in the time window are counted per hour for the time bar. */
+const TIME_BAR_BINS = 36;
 
-type Bounds = [number, number, number, number];
+/** The gazetteer without the borough poles, so a finding is named by a place, not a borough. */
+const NYC_PLACES: Gazetteer = {
+  ...NYC,
+  places: Object.fromEntries(
+    Object.entries(NYC.places).filter(
+      ([id]) => !['manhattan', 'brooklyn', 'queens', 'bronx', 'staten-island'].includes(id)
+    )
+  )
+};
 
-/** One aggregation graph: departures gate on the pickup time, arrivals on the dropoff time. */
 type SideGraph = {
   compiled: CompiledGPUCommandGraph<void>;
   count: Buffer;
@@ -93,23 +123,54 @@ type SideGraph = {
 
 type TideGraphs = {
   resources: SpatialAnalysisResources;
-  kind: NycTaxiTidesOptions['zones'];
+  kind: ZoneKind;
   zoneCount: number;
   departures: SideGraph;
   arrivals: SideGraph;
-  /** Arrivals minus departures per zone plus one NaN sentinel row, written from the readback. */
-  net: Buffer;
-  drawCommands: DrawCommandBuffer;
+  /** Net or share per zone (NaN where there are no trips) plus one NaN sentinel row. */
+  values: Buffer;
+  /** |net| per zone, for the "wrong map" of the compare step. */
+  magnitudes: Buffer;
+  /** Outline segments of the zones with data, six per zone at most. */
+  outlines: Buffer;
   reader: SummaryReader;
 };
 
+/** A named box in the planar frame, for the hourly net charts and the airport readouts. */
+type TideBox = {
+  label: string;
+  centerX: number;
+  centerY: number;
+  halfWidth: number;
+  halfHeight: number;
+};
+
+/** Statistics of one set of zone totals. */
+type TideStats = {
+  lattice: Lattice;
+  gainZone: number;
+  lossZone: number;
+  gain: number;
+  loss: number;
+  citySum: number;
+  maxNet: number;
+  activeZones: number;
+  balancedZones: number;
+  hiddenZones: number;
+  sharpestZone: number;
+  netClassCounts: number[];
+  shareClassCounts: number[];
+  lgaNet: number;
+  jfkNet: number;
+};
+
 /**
- * Net arrivals minus departures on a hexagon lattice, by time window. Two `GPUFlowAggregation`
+ * Net taxi arrivals minus departures on a hexagon lattice, by time window. Two `GPUFlowAggregation`
  * graphs read the same 440,000 origin and destination pairs: one gates trips on their pickup time
  * (departures), the other on their dropoff time (arrivals). Both windows are one parameter buffer
- * that the playback clock rewrites every frame; the lattice size is a per-frame parameter under a
- * compile-time capacity. The zone totals come back once per update, the net per zone is written to
- * a buffer that colors the lattice, and the top flows are drawn as arcs straight from GPU storage.
+ * that the playback clock rewrites every frame; the zone size is a per-frame parameter under a
+ * compile-time capacity. The zone totals come back once per update; the CPU assembles the net, the
+ * imbalance share and the top-K arrows, and the layers draw from the buffers it writes.
  */
 export async function createNycTaxiTides(
   ctx: SceneContext<NycTaxiTidesOptions>
@@ -133,11 +194,10 @@ export async function createNycTaxiTides(
     'float32',
     GPU_TIME_WINDOW_PARAMETER_LENGTH
   );
-
-  const meanFare = trips.fare.reduce((sum, value) => sum + value, 0) / count;
-  const meanPassengers = trips.passengers.reduce((sum, value) => sum + value, 0) / count;
-  const MEAN_WEIGHT = {trips: 1, fare: meanFare, passengers: meanPassengers} as const;
-  const WEIGHT_UNITS = {trips: 'trips', fare: 'USD of fares', passengers: 'passengers'} as const;
+  // The heaviest flows as arrows: endpoints, weights and draw order, rewritten after each readback.
+  const flowEndpointsBuffer = resources.createBuffer('flow-endpoints', TOP_FLOW_COUNT * 16);
+  const flowWeightsBuffer = resources.createBuffer('flow-values', TOP_FLOW_COUNT * 4);
+  const flowOrderBuffer = resources.createBuffer('flow-order', TOP_FLOW_COUNT * 4);
 
   const clock = createPlaybackClock(
     ctx,
@@ -145,99 +205,82 @@ export async function createNycTaxiTides(
     {range: [TIDES_FIRST_HOUR, TIDES_LAST_HOUR], rate: 1, step: 0.25}
   );
 
+  // ---- Context computed once from the trips on the CPU -----------------------------------------
+  const boxes = createBoxes(trips);
+  const hourlyNet = getHourlyBoxNet(trips, boxes);
+  const medianTripMinutes = getMedianTripMinutes(trips);
+  publishTimeBar();
+
   let graphs: TideGraphs | null = null;
   let serial = 0;
   let destroyed = false;
   let encodeFrames = 3;
   let statsStale = true;
-  let colorMaximum = 1;
   let lastWindowStart = Number.NaN;
   let lastWindowEnd = Number.NaN;
-  let lastChartStep = -1;
-  let lastDepartures = new Float32Array(0);
-  let lastArrivals = new Float32Array(0);
+  let windowStart = ctx.options.time;
+  let windowEnd = ctx.options.time + ctx.options.windowHours;
+  let lastOutCounts = new Uint32Array(0);
+  let lastInCounts = new Uint32Array(0);
+  let lastFlowOrigins = new Uint32Array(0);
+  let lastFlowDestinations = new Uint32Array(0);
+  let lastFlowWeights = new Float32Array(0);
+  let lastFlowRows = 0;
+  let stats: TideStats | null = null;
+  let drawnFlows = 0;
+  let flowMaximum = 0;
+  let outlineCount = 0;
+  let legendHighlight: number[] | null = null;
+  let lastFurnitureKey = '';
   const retired: {resources: SpatialAnalysisResources; frames: number}[] = [];
-
-  // CPU context chart: hourly net trips of the Midtown box, independent of the lattice and weight.
-  const midtown = (() => {
-    const preset = AREA_PRESETS.midtown;
-    const [centerX, centerY] = trips.project(preset.center[0], preset.center[1]);
-    const inside = (row: number, array: Float32Array) =>
-      Math.abs(array[row * 2] - centerX) < preset.halfWidth &&
-      Math.abs(array[row * 2 + 1] - centerY) < preset.halfHeight;
-    const hours = Math.ceil(NYC_TAXI_HOURS) + 1;
-    const net = new Float64Array(hours);
-    for (let row = 0; row < count; row++) {
-      const fromInside = inside(row, trips.pickup);
-      const toInside = inside(row, trips.dropoff);
-      if (fromInside === toInside) continue;
-      if (fromInside) net[Math.min(hours - 1, Math.floor(trips.pickupHour[row]))]--;
-      else net[Math.min(hours - 1, Math.floor(trips.dropoffHour[row]))]++;
-    }
-    // The first and last hours miss trips that began outside the data, so they are not drawn.
-    net[0] = Number.NaN;
-    for (let hour = Math.floor(NYC_TAXI_HOURS); hour < hours; hour++) net[hour] = Number.NaN;
-    return net;
-  })();
 
   function markChanged(): void {
     encodeFrames = Math.max(encodeFrames, 3);
     statsStale = true;
   }
 
-  function getLatticeBounds(kind: NycTaxiTidesOptions['zones'], size: number): Bounds {
-    const [minX, minY, maxX, maxY] = trips.bounds;
-    const pad = kind === 'hexagon' ? 1.2 * size : 100;
-    return [minX - pad, minY - pad, maxX + pad, maxY + pad];
+  function getCurrentLattice(kind: ZoneKind = graphs?.kind ?? ctx.options.zones): Lattice {
+    return getLattice(kind, ctx.options.zoneSize, trips.bounds);
   }
 
-  function getGridSize(
-    bounds: Bounds,
-    kind: NycTaxiTidesOptions['zones'],
-    size: number
-  ): [number, number] {
-    return kind === 'hexagon'
-      ? getGPUPointDensityHexagonGridSize(bounds, size)
-      : [Math.ceil((bounds[2] - bounds[0]) / size), Math.ceil((bounds[3] - bounds[1]) / size)];
-  }
-
-  function getActiveLattice(kind: NycTaxiTidesOptions['zones'], size: number) {
-    const bounds = getLatticeBounds(kind, size);
-    return {bounds, grid: getGridSize(bounds, kind, size)};
+  /**
+   * Blanks the zone buffers until the next readback: the totals on hand belong to the previous
+   * lattice and would be drawn on the new one.
+   */
+  function clearZoneValues(): void {
+    if (!graphs) return;
+    const blank = new Float32Array(graphs.zoneCount + 1).fill(Number.NaN);
+    graphs.values.write(blank);
+    graphs.magnitudes.write(blank);
+    lastOutCounts = new Uint32Array(0);
+    lastInCounts = new Uint32Array(0);
+    stats = null;
+    outlineCount = 0;
+    drawnFlows = 0;
+    ctx.setAnnotations('tide-notes', null);
+    ctx.setAnnotations('hex-radius', null);
   }
 
   function writeLattice(): void {
     if (!graphs) return;
-    const {zoneSize} = ctx.options;
-    const {bounds, grid} = getActiveLattice(graphs.kind, zoneSize);
-    radiusBuffer.write(Float32Array.of(zoneSize));
-    activeGridBuffer.write(Uint32Array.of(grid[0], grid[1]));
-    boundsBuffer.write(Float32Array.from(bounds));
+    const lattice = getCurrentLattice(graphs.kind);
+    radiusBuffer.write(Float32Array.of(lattice.size));
+    activeGridBuffer.write(Uint32Array.of(lattice.grid[0], lattice.grid[1]));
+    boundsBuffer.write(Float32Array.from(lattice.bounds));
     ctx.setReadout(
       'zones',
-      `${grid[0]} × ${grid[1]} ${graphs.kind === 'hexagon' ? 'hexagons' : 'cells'} (capacity ${formatCount(graphs.zoneCount)})`
+      `${lattice.grid[0]} × ${lattice.grid[1]} ${graphs.kind === 'hexagon' ? 'hexagons' : 'cells'} (capacity ${formatCount(graphs.zoneCount)})`
     );
-  }
-
-  function writeWeights(): void {
-    const weights =
-      ctx.options.weight === 'fare'
-        ? trips.fare
-        : ctx.options.weight === 'passengers'
-          ? Float32Array.from(trips.passengers)
-          : new Float32Array(count).fill(1);
-    weightsBuffer.write(weights);
-    markChanged();
+    ctx.setReadout('cellSize', formatDistance(lattice.size));
   }
 
   function buildSide(
     graphResources: SpatialAnalysisResources,
     name: string,
-    kind: NycTaxiTidesOptions['zones'],
+    kind: ZoneKind,
     capacityGrid: [number, number],
     zoneCount: number,
-    gateBuffer: Buffer,
-    drawCommands: DrawCommandBuffer | null
+    gateBuffer: Buffer
   ): SideGraph {
     const sentinel = (rows: number) => {
       const values = new Float32Array(rows + 1);
@@ -309,15 +352,7 @@ export async function createNycTaxiTides(
         zoneOutWeights: view('out-w', zoneOutWeights, 'float32', zoneCount),
         zoneInWeights: view('in-w', zoneInWeights, 'float32', zoneCount),
         zoneOutCounts: view('out-c', zoneOutCounts, 'uint32', zoneCount),
-        zoneInCounts: view('in-c', zoneInCounts, 'uint32', zoneCount),
-        ...(drawCommands
-          ? {
-              drawInstanceCount: commandGraph.importGPUData(
-                `${name}-arcs`,
-                drawCommands.getInstanceCountData(0)
-              )
-            }
-          : {})
+        zoneInCounts: view('in-c', zoneInCounts, 'uint32', zoneCount)
       })
     );
     return {
@@ -339,34 +374,27 @@ export async function createNycTaxiTides(
     const id = ++serial;
     const kind = ctx.options.zones;
     const graphResources = new SpatialAnalysisResources(device, `taxi-tides-${id}`);
-    const capacityBounds = getLatticeBounds(kind, MINIMUM_ZONE_SIZE);
-    const capacityGrid = getGridSize(capacityBounds, kind, MINIMUM_ZONE_SIZE);
-    const zoneCount = capacityGrid[0] * capacityGrid[1];
-    const net = graphResources.createBuffer('net', zoneCount * 4 + 4);
-    const drawCommands = graphResources.track(
-      new DrawCommandBuffer(device, {
-        id: `taxi-tides-draw-${id}`,
-        type: 'draw',
-        commands: [{vertexCount: ARC_SEGMENTS * 6, instanceCount: 0}]
-      })
-    );
+    const capacity = getLattice(kind, MINIMUM_ZONE_SIZE, trips.bounds);
+    const zoneCount = capacity.grid[0] * capacity.grid[1];
+    const nanRows = () => new Float32Array(zoneCount + 1).fill(Number.NaN);
+    const values = graphResources.createBuffer('values', nanRows());
+    const magnitudes = graphResources.createBuffer('magnitudes', nanRows());
+    const outlines = graphResources.createBuffer('outlines', zoneCount * 6 * 16);
     const departures = buildSide(
       graphResources,
       'dep',
       kind,
-      capacityGrid,
+      capacity.grid,
       zoneCount,
-      pickupHourBuffer,
-      drawCommands
+      pickupHourBuffer
     );
     const arrivals = buildSide(
       graphResources,
       'arr',
       kind,
-      capacityGrid,
+      capacity.grid,
       zoneCount,
-      dropoffHourBuffer,
-      null
+      dropoffHourBuffer
     );
     const built: TideGraphs = {
       resources: graphResources,
@@ -374,10 +402,12 @@ export async function createNycTaxiTides(
       zoneCount,
       departures,
       arrivals,
-      net,
-      drawCommands,
+      values,
+      magnitudes,
+      outlines,
       reader: undefined as unknown as SummaryReader
     };
+    const k = TOP_FLOW_COUNT;
     built.reader = new SummaryReader(
       graphResources,
       `taxi-tides-${id}`,
@@ -386,13 +416,14 @@ export async function createNycTaxiTides(
         {buffer: departures.totalCount, size: 4},
         {buffer: departures.pairOverflow, size: 4},
         {buffer: arrivals.pairOverflow, size: 4},
-        {buffer: departures.zoneOutWeights, size: zoneCount * 4},
-        {buffer: arrivals.zoneInWeights, size: zoneCount * 4},
         {buffer: departures.zoneOutCounts, size: zoneCount * 4},
-        {buffer: arrivals.zoneInCounts, size: zoneCount * 4}
+        {buffer: arrivals.zoneInCounts, size: zoneCount * 4},
+        {buffer: departures.originZones, size: k * 4},
+        {buffer: departures.destinationZones, size: k * 4},
+        {buffer: departures.flowWeights, size: k * 4}
       ],
       bytes => {
-        if (!destroyed && graphs === built) processStatistics(built, bytes);
+        if (!destroyed && graphs === built) processReadback(built, bytes);
       }
     );
     return built;
@@ -401,161 +432,434 @@ export async function createNycTaxiTides(
   function rebuild(): void {
     if (graphs) retired.push({resources: graphs.resources, frames: 0});
     graphs = buildGraphs();
+    stats = null;
+    outlineCount = 0;
+    drawnFlows = 0;
     writeLattice();
-    colorMaximum = 1;
     markChanged();
   }
 
-  function getZoneLabel(zone: number): string {
-    if (!graphs) return `Zone ${zone}`;
-    const {bounds, grid} = getActiveLattice(graphs.kind, ctx.options.zoneSize);
-    const column = zone % grid[0];
-    const row = Math.floor(zone / grid[0]);
-    let x: number;
-    let y: number;
-    if (graphs.kind === 'hexagon') {
-      [x, y] = getGPUPointDensityHexagonCenter(
-        column,
-        row,
-        bounds[0],
-        bounds[1],
-        ctx.options.zoneSize
-      );
-    } else {
-      const size = ctx.options.zoneSize;
-      x = bounds[0] + (column + 0.5) * size;
-      y = bounds[1] + (row + 0.5) * size;
+  // ---- Tables ------------------------------------------------------------------------------------
+  const getTables = () => {
+    const ground = ctx.ground();
+    return {
+      ground,
+      net: getNetTable(ground),
+      share: getShareTable(ground, ctx.options.minVolume),
+      magnitude: getMagnitudeTable(ground)
+    };
+  };
+
+  /** Legend data is re-published only when it changed (each call re-renders the legends). */
+  const publishedLegendData = new Map<string, string>();
+  function publishLegend(key: string, value: unknown): void {
+    const serialized = JSON.stringify(value);
+    if (publishedLegendData.get(key) === serialized) return;
+    publishedLegendData.set(key, serialized);
+    ctx.setLegendData(key, value);
+  }
+
+  function publishLegendData(): void {
+    publishLegend('ground', ctx.ground());
+    if (stats && !ctx.options.play) {
+      publishLegend('counts', {net: stats.netClassCounts, share: stats.shareClassCounts});
     }
-    const [longitude, latitude] = trips.unproject(x, y);
-    return `${latitude.toFixed(3)}°N ${Math.abs(longitude).toFixed(3)}°W`;
+    publishLegend('flowMaximum', flowMaximum);
   }
 
-  function formatWeight(value: number): string {
-    const unit = WEIGHT_UNITS[ctx.options.weight];
-    return `${value < 0 ? '-' : ''}${formatCount(Math.abs(value))} ${unit}`;
-  }
-
-  function getColorMaximum(measured: number): number {
-    return ctx.options.scaleMode === 'fixed'
-      ? Math.max(1, ctx.options.colorRange * MEAN_WEIGHT[ctx.options.weight])
-      : Math.max(1, measured);
-  }
-
-  function processStatistics(current: TideGraphs, bytes: ArrayBuffer): void {
+  // ---- Readback -> net, share, outlines, arrows --------------------------------------------------
+  function processReadback(current: TideGraphs, bytes: ArrayBuffer): void {
     const zoneCount = current.zoneCount;
+    const k = TOP_FLOW_COUNT;
     const words = new Uint32Array(bytes);
     const floats = new Float32Array(bytes);
     const [flowRows, pairCount, departurePairOverflow, arrivalPairOverflow] = words;
-    const outStart = HEADER_WORDS;
-    const out = floats.slice(outStart, outStart + zoneCount);
-    const incoming = floats.slice(outStart + zoneCount, outStart + 2 * zoneCount);
-    const outCounts = words.subarray(outStart + 2 * zoneCount, outStart + 3 * zoneCount);
-    const inCounts = words.subarray(outStart + 3 * zoneCount, outStart + 4 * zoneCount);
-    lastDepartures = out;
-    lastArrivals = incoming;
-    const net = new Float32Array(zoneCount + 1);
-    net[zoneCount] = Number.NaN;
-    let maximumNet = 0;
-    let maximumOut = 0;
-    let maximumIn = 0;
-    let gainZone = -1;
-    let lossZone = -1;
-    let gain = 0;
-    let loss = 0;
-    let departureTrips = 0;
-    let arrivalTrips = 0;
-    let activeZones = 0;
-    for (let zone = 0; zone < zoneCount; zone++) {
-      net[zone] = incoming[zone] - out[zone];
-      maximumNet = Math.max(maximumNet, Math.abs(net[zone]));
-      maximumOut = Math.max(maximumOut, out[zone]);
-      maximumIn = Math.max(maximumIn, incoming[zone]);
-      if (net[zone] > gain) {
-        gain = net[zone];
-        gainZone = zone;
-      }
-      if (net[zone] < loss) {
-        loss = net[zone];
-        lossZone = zone;
-      }
-      departureTrips += outCounts[zone];
-      arrivalTrips += inCounts[zone];
-      if (outCounts[zone] > 0 || inCounts[zone] > 0) activeZones++;
-    }
-    current.net.write(net);
-    const {totals} = ctx.options;
-    const measured = totals === 'net' ? maximumNet : totals === 'arrivals' ? maximumIn : maximumOut;
-    const nextMaximum = getColorMaximum(measured);
-    if (Math.abs(nextMaximum - colorMaximum) > 0.005 * Math.max(colorMaximum, 1)) {
-      colorMaximum = nextMaximum;
-      ctx.requestLayers();
-      ctx.setLegendExtent(
-        'zones',
-        totals === 'net' ? [-colorMaximum, colorMaximum] : [0, colorMaximum]
-      );
-    }
-    ctx.setReadout('departures', departureTrips);
-    ctx.setReadout('arrivals', arrivalTrips);
-    ctx.setReadout(
-      'gain',
-      gainZone >= 0 ? `${formatWeight(gain)} near ${getZoneLabel(gainZone)}` : null
-    );
-    ctx.setReadout(
-      'loss',
-      lossZone >= 0 ? `${formatWeight(loss)} near ${getZoneLabel(lossZone)}` : null
-    );
+    let offset = HEADER_WORDS;
+    lastOutCounts = words.slice(offset, offset + zoneCount);
+    offset += zoneCount;
+    lastInCounts = words.slice(offset, offset + zoneCount);
+    offset += zoneCount;
+    lastFlowOrigins = words.slice(offset, offset + k);
+    offset += k;
+    lastFlowDestinations = words.slice(offset, offset + k);
+    offset += k;
+    lastFlowWeights = floats.slice(offset, offset + k);
+    lastFlowRows = Math.min(flowRows, k);
     ctx.setReadout('flowRows', flowRows);
     ctx.setReadout('pairs', pairCount);
     ctx.setReadout(
       'pairOverflow',
       departurePairOverflow || arrivalPairOverflow ? 'yes: zone totals incomplete' : 'no'
     );
-    ctx.setReadout('activeZones', `${formatCount(activeZones)} of ${formatCount(zoneCount)}`);
+    applyCounts(current);
+    updateFlows();
   }
 
-  function updateChart(playhead: number): void {
-    const step = Math.floor(playhead * 4);
-    if (step === lastChartStep) return;
-    lastChartStep = step;
-    const hours = Array.from(midtown, (_, index) => index + 0.5);
-    ctx.setChart('midtownChart', {
-      kind: 'line',
-      series: [{label: 'net trips per hour', x: hours, y: Array.from(midtown), area: true}],
-      xLabel: 'Hours since midnight on Thu 1 Jan',
-      yLabel: 'arrivals - departures',
-      height: 120,
-      formatX: value =>
-        `${value < 24 ? 'Thu' : 'Fri'} ${String(Math.floor(value) % 24).padStart(2, '0')}h`,
-      guides: [{y: 0}],
-      markers: [{x: playhead, label: formatTaxiTime(playhead).split(' ').pop()}],
-      description: 'Net taxi arrivals in the Midtown box by hour, with the playhead marked.'
+  /** Assembles net, share and magnitude from the last zone totals and publishes everything. */
+  function applyCounts(current: TideGraphs = graphs as TideGraphs): void {
+    if (!current || lastOutCounts.length === 0) return;
+    const {minVolume, normalise} = ctx.options;
+    const zoneCount = current.zoneCount;
+    const lattice = getCurrentLattice(current.kind);
+    const tables = getTables();
+    const values = new Float32Array(zoneCount + 1).fill(Number.NaN);
+    const magnitudes = new Float32Array(zoneCount + 1).fill(Number.NaN);
+    const netClassCounts = new Array<number>(tables.net.breaks.length + 1).fill(0);
+    const shareClassCounts = new Array<number>(tables.share.breaks.length + 1).fill(0);
+    const next: TideStats = {
+      lattice,
+      gainZone: -1,
+      lossZone: -1,
+      gain: 0,
+      loss: 0,
+      citySum: 0,
+      maxNet: 0,
+      activeZones: 0,
+      balancedZones: 0,
+      hiddenZones: 0,
+      sharpestZone: -1,
+      netClassCounts,
+      shareClassCounts,
+      lgaNet: 0,
+      jfkNet: 0
+    };
+    let departureTrips = 0;
+    let arrivalTrips = 0;
+    let sharpestShare = 0;
+    const lga = boxes.laguardia;
+    const jfk = boxes.jfk;
+    for (let zone = 0; zone < zoneCount; zone++) {
+      const departures = lastOutCounts[zone];
+      const arrivals = lastInCounts[zone];
+      const volume = departures + arrivals;
+      departureTrips += departures;
+      arrivalTrips += arrivals;
+      if (volume === 0) continue;
+      const net = arrivals - departures;
+      const share = net / volume;
+      const masked = volume < minVolume;
+      next.activeZones++;
+      next.citySum += net;
+      next.maxNet = Math.max(next.maxNet, Math.abs(net));
+      if (Math.abs(net) <= BALANCED_TRIPS) next.balancedZones++;
+      if (masked) next.hiddenZones++;
+      if (net > next.gain) {
+        next.gain = net;
+        next.gainZone = zone;
+      }
+      if (net < next.loss) {
+        next.loss = net;
+        next.lossZone = zone;
+      }
+      if (!masked && Math.abs(share) > sharpestShare) {
+        sharpestShare = Math.abs(share);
+        next.sharpestZone = zone;
+      }
+      values[zone] = normalise === 'net' ? net : masked ? MASKED_SHARE : share;
+      magnitudes[zone] = Math.abs(net);
+      netClassCounts[getClassIndex(net, tables.net.breaks)]++;
+      shareClassCounts[masked ? 0 : getClassIndex(share, tables.share.breaks)]++;
+      const [x, y] = getZoneCenter(lattice, zone);
+      if (isInside(lga, x, y)) next.lgaNet += net;
+      if (isInside(jfk, x, y)) next.jfkNet += net;
+    }
+    stats = next;
+    current.values.write(values);
+    current.magnitudes.write(magnitudes);
+    updateOutlines(current, lattice, values);
+
+    ctx.setReadout('departures', departureTrips);
+    ctx.setReadout('arrivals', arrivalTrips);
+    ctx.setReadout('activeZones', `${formatCount(next.activeZones)} of ${formatCount(zoneCount)}`);
+    ctx.setReadout(
+      'gain',
+      next.gainZone >= 0 ? describeZone(lattice, next.gainZone, next.gain) : null
+    );
+    ctx.setReadout(
+      'loss',
+      next.lossZone >= 0 ? describeZone(lattice, next.lossZone, next.loss) : null
+    );
+    ctx.setReadout('citySum', `${formatSigned(next.citySum)} trips`);
+    ctx.setReadout('maxNet', `${formatCount(next.maxNet)} trips`);
+    ctx.setReadout('nonBalanced', next.activeZones - next.balancedZones);
+    ctx.setReadout(
+      'balanced',
+      `${formatCount(next.balancedZones)} of ${formatCount(next.activeZones)}`
+    );
+    ctx.setReadout('hidden', next.hiddenZones);
+    ctx.setReadout(
+      'sharpest',
+      next.sharpestZone >= 0 ? describeSharpest(lattice, next.sharpestZone) : null
+    );
+    ctx.setReadout('lgaNet', `${formatSigned(next.lgaNet)} trips`);
+    ctx.setReadout('jfkNet', `${formatSigned(next.jfkNet)} trips`);
+    publishLegendData();
+    updateNotes();
+    updateRadiusRing();
+    ctx.requestLayers();
+  }
+
+  function isInside(box: TideBox, x: number, y: number): boolean {
+    return Math.abs(x - box.centerX) < box.halfWidth && Math.abs(y - box.centerY) < box.halfHeight;
+  }
+
+  function getZoneLngLat(lattice: Lattice, zone: number): LngLat {
+    const [x, y] = getZoneCenter(lattice, zone);
+    return trips.unproject(x, y);
+  }
+
+  function getZonePlace(lattice: Lattice, zone: number): string | null {
+    return nearestPlaceLabel(NYC_PLACES, getZoneLngLat(lattice, zone), {maxDistanceMeters: 9000});
+  }
+
+  function describeZone(lattice: Lattice, zone: number, net: number): string {
+    const place = getZonePlace(lattice, zone);
+    return `${formatSigned(net)} trips${place ? `, ${place}` : ''}`;
+  }
+
+  function describeSharpest(lattice: Lattice, zone: number): string {
+    const arrivals = lastInCounts[zone];
+    const departures = lastOutCounts[zone];
+    const volume = arrivals + departures;
+    const place = getZonePlace(lattice, zone);
+    return `${formatShare((arrivals - departures) / volume)} of ${formatCount(volume)} trips${place ? `, ${place}` : ''}`;
+  }
+
+  function updateOutlines(current: TideGraphs, lattice: Lattice, values: Float32Array): void {
+    if (!ctx.options.showOutlines) {
+      outlineCount = 0;
+      return;
+    }
+    const segments = new Float32Array(current.zoneCount * 6 * 4);
+    outlineCount = buildZoneOutlines(lattice, zone => !Number.isNaN(values[zone]), segments);
+    current.outlines.write(segments.subarray(0, Math.max(4, outlineCount * 4)));
+  }
+
+  /** Top-K arrows from the last readback; the width scale only ever grows (ONE maximum). */
+  function updateFlows(): void {
+    const {flowCount} = ctx.options;
+    if (!graphs || lastFlowRows === 0) {
+      drawnFlows = 0;
+      return;
+    }
+    for (let row = 0; row < lastFlowRows; row++) {
+      flowMaximum = Math.max(flowMaximum, lastFlowWeights[row]);
+    }
+    if (flowCount === 0) {
+      drawnFlows = 0;
+      publishLegendData();
+      return;
+    }
+    const lattice = getCurrentLattice(graphs.kind);
+    const arrows = buildFlowArrows({
+      originZones: lastFlowOrigins,
+      destinationZones: lastFlowDestinations,
+      weights: lastFlowWeights,
+      count: lastFlowRows,
+      limit: flowCount,
+      skipSelf: true,
+      getZoneCenter: zone => getZoneCenter(lattice, zone)
+    });
+    if (arrows.count > 0) {
+      flowEndpointsBuffer.write(arrows.flows);
+      flowWeightsBuffer.write(arrows.weights);
+      flowOrderBuffer.write(arrows.order);
+    }
+    drawnFlows = arrows.count;
+    publishLegendData();
+    ctx.requestLayers();
+  }
+
+  // ---- Notes, ring, furniture -------------------------------------------------------------------
+  function updateNotes(): void {
+    const options = ctx.options;
+    if (!stats || options.play || options.compareMidpoint) {
+      ctx.setAnnotations('tide-notes', null);
+      return;
+    }
+    const {lattice} = stats;
+    const notes: MapAnnotation[] = [];
+    if (options.normalise === 'net') {
+      if (stats.gainZone >= 0) {
+        notes.push({
+          kind: 'note',
+          id: 'tide-gain',
+          coordinate: getZoneLngLat(lattice, stats.gainZone),
+          title: `${formatSigned(stats.gain)} trips`,
+          text: getZonePlace(lattice, stats.gainZone) ?? undefined,
+          tone: 'accent',
+          priority: 6
+        });
+      }
+      if (stats.lossZone >= 0) {
+        notes.push({
+          kind: 'note',
+          id: 'tide-loss',
+          coordinate: getZoneLngLat(lattice, stats.lossZone),
+          title: `${formatSigned(stats.loss)} trips`,
+          text: getZonePlace(lattice, stats.lossZone) ?? undefined,
+          tone: 'ink',
+          priority: 5
+        });
+      }
+    } else if (stats.sharpestZone >= 0) {
+      const arrivals = lastInCounts[stats.sharpestZone];
+      const departures = lastOutCounts[stats.sharpestZone];
+      notes.push({
+        kind: 'note',
+        id: 'tide-sharpest',
+        coordinate: getZoneLngLat(lattice, stats.sharpestZone),
+        title: `${formatShare((arrivals - departures) / (arrivals + departures))} of traffic`,
+        text: getZonePlace(lattice, stats.sharpestZone) ?? undefined,
+        tone: 'accent',
+        priority: 6
+      });
+    }
+    ctx.setAnnotations('tide-notes', notes.length ? notes : null);
+  }
+
+  /** A dashed ring of one zone radius around the biggest gain, with the radius on it. */
+  function updateRadiusRing(): void {
+    if (!ctx.options.showRadius || !stats || stats.gainZone < 0) {
+      ctx.setAnnotations('hex-radius', null);
+      return;
+    }
+    const {zoneSize, zones} = ctx.options;
+    const radius = zones === 'hexagon' ? zoneSize : zoneSize / 2;
+    ctx.setAnnotations('hex-radius', [
+      {
+        kind: 'ring',
+        id: 'hex-radius',
+        coordinate: getZoneLngLat(stats.lattice, stats.gainZone),
+        radiusMeters: radius,
+        text: `radius ${formatDistance(radius)}`,
+        dashed: true
+      }
+    ]);
+  }
+
+  function updateFurniture(): void {
+    const {normalise, zoneSize, zones, compareMidpoint} = ctx.options;
+    const size = formatDistance(zoneSize);
+    const unit = zones === 'hexagon' ? 'hexagon' : 'cell';
+    const when = formatLongWindow(
+      roundToQuarter(windowStart),
+      Math.min(roundToQuarter(windowEnd), NYC_TAXI_HOURS)
+    );
+    const subtitle = compareMidpoint
+      ? `Size of the net, and net arrivals, per ${size} ${unit}, ${when}`
+      : normalise === 'net'
+        ? `Net taxi arrivals per ${size} ${unit}, ${when}`
+        : `Imbalance share per ${size} ${unit}, ${when}`;
+    const key = `${subtitle}|${zoneSize}`;
+    if (key === lastFurnitureKey) return;
+    lastFurnitureKey = key;
+    ctx.setFurniture({
+      title: {
+        subtitle,
+        sample: `${formatCount(count)} yellow-cab trips, a sample`,
+        chips: ['Sample']
+      },
+      scaleBar: {units: 'metric', ticks: [zoneSize]}
     });
   }
 
-  function getTooltip(coordinate: readonly [number, number]): string | null {
-    if (!graphs || lastDepartures.length === 0) return null;
-    const [x, y] = trips.project(coordinate[0], coordinate[1]);
-    const {zoneSize} = ctx.options;
-    const {bounds, grid} = getActiveLattice(graphs.kind, zoneSize);
-    let column: number;
-    let row: number;
-    if (graphs.kind === 'hexagon') {
-      [column, row] = getGPUPointDensityHexagonCell(x, y, bounds[0], bounds[1], zoneSize);
-    } else {
-      column = Math.floor(((x - bounds[0]) / (bounds[2] - bounds[0])) * grid[0]);
-      row = Math.floor(((y - bounds[1]) / (bounds[3] - bounds[1])) * grid[1]);
+  // ---- Charts -------------------------------------------------------------------------------------
+  function publishCharts(): void {
+    const tables = getTables();
+    const hours = Array.from(hourlyNet.midtown, (_, index) => index + 0.5);
+    ctx.setChart('dayChart', {
+      kind: 'line',
+      series: [
+        {label: 'Midtown', x: hours, y: Array.from(hourlyNet.midtown), color: 0},
+        {label: 'Upper East Side', x: hours, y: Array.from(hourlyNet.ues), color: 1}
+      ],
+      xLabel: 'Hours since midnight on Thu 1 Jan',
+      yLabel: 'arrivals - departures (trips per hour)',
+      height: 130,
+      xDomain: [TIDES_FIRST_HOUR, Math.floor(NYC_TAXI_HOURS)],
+      formatX: value =>
+        `${value < 24 ? 'Thu' : 'Fri'} ${String(Math.floor(value) % 24).padStart(2, '0')}h`,
+      guides: [{y: 0}],
+      bands: [
+        {from: 0, to: 6, label: 'night'},
+        {from: 18, to: 30}
+      ],
+      link: {option: 'time', label: value => formatTaxiTime(value).split(' ').pop() ?? ''},
+      description:
+        'Net taxi arrivals per hour in a Midtown box and an Upper East Side box, with night shaded and the window start marked.'
+    });
+    const panelHours = [30, 32, 34, 37];
+    const boxList = [boxes.midtown, boxes.ues, boxes.laguardia, boxes.jfk];
+    const keys = ['midtown', 'ues', 'laguardia', 'jfk'] as const;
+    ctx.setChart('panelChart', {
+      kind: 'multiples',
+      columns: 2,
+      titles: panelHours.map(hour => formatShortWindow(hour, hour + 1)),
+      description:
+        'Net taxi arrivals in four boxes (Midtown, Upper East Side, LaGuardia, JFK) in four Friday hours: the sign flips through the morning.',
+      charts: panelHours.map(hour => {
+        const values = keys.map(key => hourlyNet[key][hour]);
+        return {
+          kind: 'bars' as const,
+          values,
+          labels: boxList.map(box => box.label),
+          colors: values.map(value => tables.net.colors[getClassIndex(value, tables.net.breaks)]),
+          height: 96,
+          table: false
+        };
+      })
+    });
+  }
+
+  function publishTimeBar(): void {
+    const histogram = new Array<number>(TIME_BAR_BINS).fill(0);
+    const span = TIDES_LAST_HOUR - TIDES_FIRST_HOUR;
+    for (let row = 0; row < count; row++) {
+      const bin = Math.floor(((trips.pickupHour[row] - TIDES_FIRST_HOUR) / span) * TIME_BAR_BINS);
+      if (bin >= 0 && bin < TIME_BAR_BINS) histogram[bin]++;
     }
-    if (column < 0 || row < 0 || column >= grid[0] || row >= grid[1]) return null;
-    const zone = row * grid[0] + column;
-    if (zone >= lastDepartures.length) return null;
-    const net = lastArrivals[zone] - lastDepartures[zone];
-    return `${getZoneLabel(zone)}\nDepartures: ${formatWeight(lastDepartures[zone])}\nArrivals: ${formatWeight(lastArrivals[zone])}\nNet: ${net >= 0 ? '+' : ''}${formatWeight(net)}`;
+    ctx.setTimelineData({domain: [TIDES_FIRST_HOUR, TIDES_LAST_HOUR], histogram});
+  }
+
+  // ---- Tooltip -----------------------------------------------------------------------------------
+  function getTooltip(coordinate: readonly [number, number]) {
+    if (!graphs || !stats || lastOutCounts.length === 0) return null;
+    const lattice = stats.lattice;
+    const [x, y] = trips.project(coordinate[0], coordinate[1]);
+    const zone = getZoneAt(lattice, x, y);
+    if (zone < 0 || zone >= lastOutCounts.length) return null;
+    const arrivals = lastInCounts[zone];
+    const departures = lastOutCounts[zone];
+    if (arrivals + departures === 0) return null;
+    const tables = getTables();
+    const content = getZoneTooltip({
+      place: getZonePlace(lattice, zone),
+      zoneNoun: lattice.kind === 'hexagon' ? 'Hexagon' : 'Cell',
+      arrivals,
+      departures,
+      mode: ctx.options.normalise,
+      netTable: tables.net,
+      shareTable: tables.share,
+      minVolume: ctx.options.minVolume,
+      windowLabel: formatLongWindow(
+        roundToQuarter(windowStart),
+        Math.min(roundToQuarter(windowEnd), NYC_TAXI_HOURS)
+      )
+    });
+    const ring = getZoneCorners(lattice, zone).map(([cornerX, cornerY]) =>
+      trips.unproject(cornerX, cornerY)
+    );
+    return {...content, highlight: {kind: 'polygon' as const, rings: [[...ring, ring[0]]]}};
   }
 
   ctx.setReadout('rows', count);
+  ctx.setReadout('medianTrip', `${medianTripMinutes.toFixed(0)} min`);
+  ctx.setCost({records: count, passes: 2});
   rebuild();
-  writeWeights();
-  updateChart(ctx.options.time);
+  publishLegendData();
+  publishCharts();
+  updateFurniture();
 
   return {
     getCompiledGraphs: () =>
@@ -571,33 +875,49 @@ export async function createNycTaxiTides(
         case 'zones':
         case 'excludeSelf':
         case 'sumOrder':
+          flowMaximum = 0;
           rebuild();
-          ctx.requestLayers();
-          break;
-        case 'weight':
-          writeWeights();
-          colorMaximum = 1;
+          updateFurniture();
           ctx.requestLayers();
           break;
         case 'zoneSize':
+          flowMaximum = 0;
+          clearZoneValues();
           writeLattice();
           markChanged();
+          updateFurniture();
+          ctx.requestLayers();
+          break;
+        case 'normalise':
+        case 'minVolume':
+          applyCounts();
+          updateFurniture();
           ctx.requestLayers();
           break;
         case 'windowHours':
-        case 'scaleMode':
-        case 'colorRange':
-          colorMaximum = 1;
           lastWindowStart = Number.NaN;
           markChanged();
           break;
-        case 'totals':
-          colorMaximum = 1;
-          markChanged();
+        case 'flowCount':
+          updateFlows();
           ctx.requestLayers();
           break;
-        case 'time':
+        case 'compareMidpoint':
+          updateNotes();
+          updateFurniture();
+          ctx.requestLayers();
+          break;
+        case 'showRadius':
+          updateRadiusRing();
+          break;
         case 'play':
+          updateNotes();
+          if (!ctx.options.play) markChanged();
+          break;
+        case 'showOutlines':
+          applyCounts();
+          break;
+        case 'time':
         case 'playSpeed':
         case 'loop':
           break;
@@ -607,6 +927,20 @@ export async function createNycTaxiTides(
     },
 
     onThemeChange() {
+      publishCharts();
+      ctx.requestLayers();
+    },
+
+    // The class tables are authored per ground, so a ground flip rebuilds them.
+    onGroundChange() {
+      publishLegendData();
+      publishCharts();
+      applyCounts();
+      ctx.requestLayers();
+    },
+
+    onLegendFilter(_id, classes) {
+      legendHighlight = classes === null ? null : [...classes];
       ctx.requestLayers();
     },
 
@@ -628,14 +962,16 @@ export async function createNycTaxiTides(
       if (start !== lastWindowStart || end !== lastWindowEnd) {
         lastWindowStart = start;
         lastWindowEnd = end;
+        windowStart = start;
+        windowEnd = end;
         windowBuffer.write(getGPUTimeWindowParameterValues({start, end}));
         markChanged();
         ctx.setReadout('clock', formatTaxiTime(playhead));
         ctx.setReadout(
           'window',
-          `${formatTaxiTime(start).split(' ').pop()} to ${formatTaxiTime(Math.min(end, NYC_TAXI_HOURS)).split(' ').pop()}`
+          formatShortWindow(roundToQuarter(start), Math.min(roundToQuarter(end), NYC_TAXI_HOURS))
         );
-        updateChart(playhead);
+        updateFurniture();
       }
       if (encodeFrames > 0) {
         graphs.departures.compiled.encode(commandEncoder, {parameters: undefined});
@@ -646,7 +982,11 @@ export async function createNycTaxiTides(
       if (statsStale && encodeFrames === 0 && !graphs.reader.isPending && !playing) {
         statsStale = false;
         graphs.reader.request(commandEncoder);
-      } else if (playing && frame.frameIndex % 6 === 0 && !graphs.reader.isPending) {
+      } else if (
+        playing &&
+        frame.frameIndex % PLAYBACK_READ_FRAMES === 0 &&
+        !graphs.reader.isPending
+      ) {
         graphs.reader.request(commandEncoder);
       } else {
         graphs.reader.flush(commandEncoder);
@@ -656,51 +996,78 @@ export async function createNycTaxiTides(
     getLayers() {
       if (!graphs) return [];
       const options = ctx.options;
-      const lattice = getActiveLattice(graphs.kind, options.zoneSize);
-      const isNet = options.totals === 'net';
-      const values = isNet
-        ? graphs.net
-        : options.totals === 'arrivals'
-          ? graphs.arrivals.zoneInWeights
-          : graphs.departures.zoneOutWeights;
-      const layers: Layer[] = [
-        new SpatialAnalysisRasterLayer({
-          id: `taxi-tides-zones-${graphs.kind}`,
-          coordinateOrigin,
-          gridSize: lattice.grid,
-          bounds: lattice.bounds,
-          binning: graphs.kind === 'hexagon' ? 'hexagon' : 'grid',
-          hexagonRadius: options.zoneSize,
-          values,
-          valueFormat: 'float32',
-          colormap: isNet ? 'diverging' : options.ramp,
-          valueRange: isNet ? [-colorMaximum, colorMaximum] : [0, colorMaximum],
-          sqrtScale: !isNet,
-          ...(isNet ? {} : {discardAtOrBelow: 0}),
-          color: [255, 255, 255, 255],
-          opacity: options.zoneOpacity
-        })
-      ];
-      if (options.arcs > 0) {
+      const tables = getTables();
+      const {ground} = tables;
+      const lattice = getCurrentLattice(graphs.kind);
+      const share = options.normalise === 'share';
+      const table = share ? tables.share : tables.net;
+      const compare = options.compareMidpoint && !share;
+      const zoneProps = {
+        coordinateOrigin,
+        gridSize: lattice.grid,
+        bounds: lattice.bounds,
+        binning: graphs.kind,
+        hexagonRadius: lattice.size,
+        valueFormat: 'float32' as const,
+        colormap: 'grayscale' as const,
+        noDataColor: [0, 0, 0, 0] as [number, number, number, number],
+        opacity: FILL_OPACITY[ground],
+        hatchColor: getHatchColor(ground),
+        hatchSpacingPixels: 5
+      };
+      const layers: Layer[] = [];
+      if (compare) {
         layers.push(
-          new FlowArcLayer({
-            id: `taxi-tides-arcs-${graphs.kind}`,
+          new SpatialAnalysisRasterLayer({
+            ...zoneProps,
+            id: `taxi-tides-magnitude-${graphs.kind}`,
+            values: graphs.magnitudes,
+            ...getClassTableLayerProps(tables.magnitude),
+            compareSide: 'a'
+          })
+        );
+      }
+      layers.push(
+        new SpatialAnalysisRasterLayer({
+          ...zoneProps,
+          id: `taxi-tides-zones-${graphs.kind}`,
+          values: graphs.values,
+          ...getClassTableLayerProps(table),
+          highlightClasses: legendHighlight,
+          ...(compare ? {compareSide: 'b' as const} : {})
+        })
+      );
+      if (options.showOutlines && outlineCount > 0) {
+        layers.push(
+          new SpatialAnalysisSegmentLayer({
+            id: 'taxi-tides-outlines',
             coordinateOrigin,
-            flowOriginZoneIds: graphs.departures.originZones,
-            flowDestinationZoneIds: graphs.departures.destinationZones,
-            flowWeights: graphs.departures.flowWeights,
-            flowCount: graphs.departures.count,
-            drawCommands: graphs.drawCommands,
-            zoneKind: graphs.kind,
-            gridSize: lattice.grid,
-            bounds: lattice.bounds,
-            hexagonRadius: options.zoneSize,
-            limit: options.arcs,
-            widthMinPixels: 1,
-            widthMaxPixels: options.arcWidth,
-            opacity: options.arcOpacity,
-            originColor: [...ORIGIN_COLOR],
-            destinationColor: [...DESTINATION_COLOR]
+            segments: graphs.outlines,
+            instanceCount: outlineCount,
+            widthPixels: 0.5,
+            cap: 'butt',
+            color: getZoneOutlineColor(ground)
+          })
+        );
+      }
+      if (options.flowCount > 0 && drawnFlows > 0) {
+        layers.push(
+          new SpatialAnalysisFlowLayer({
+            id: 'taxi-tides-flows',
+            coordinateOrigin,
+            flows: flowEndpointsBuffer,
+            values: flowWeightsBuffer,
+            valueFormat: 'float32',
+            ids: flowOrderBuffer,
+            instanceCount: drawnFlows,
+            maxValue: Math.max(flowMaximum, 1),
+            minWidthPixels: FLOW_WIDTH_PIXELS[0],
+            maxWidthPixels: FLOW_WIDTH_PIXELS[1],
+            curvature: 0.15,
+            arrowheads: true,
+            color: FLOW_INK[ground],
+            outlineColor: FLOW_HALO[ground],
+            outlineWidthPixels: 0.8
           })
         );
       }
@@ -715,4 +1082,93 @@ export async function createNycTaxiTides(
       resources.destroy();
     }
   };
+}
+
+/** Window labels move in quarter hours, the step of the time slider. */
+function roundToQuarter(hours: number): number {
+  return Math.round(hours * 4) / 4;
+}
+
+// ---------------------------------------------------------------------------------------------
+// CPU context: named boxes, their hourly net, the median trip
+// ---------------------------------------------------------------------------------------------
+
+type BoxId = 'midtown' | 'ues' | 'laguardia' | 'jfk';
+
+/**
+ * The four boxes the story talks about. Midtown and the airports come from the dataset's own
+ * presets; the Upper East Side box sits just east of Central Park, offset from the park's
+ * gazetteer point (the gazetteer has no neighbourhood centroid for it).
+ */
+function createBoxes(trips: TaxiTrips): Record<BoxId, TideBox> {
+  const fromPreset = (label: string, preset: (typeof AREA_PRESETS)[keyof typeof AREA_PRESETS]) => {
+    const [centerX, centerY] = trips.project(preset.center[0], preset.center[1]);
+    return {
+      label,
+      centerX,
+      centerY,
+      halfWidth: preset.halfWidth,
+      halfHeight: preset.halfHeight
+    };
+  };
+  const [parkX, parkY] = trips.project(...NYC.places['central-park'].lngLat);
+  return {
+    midtown: fromPreset('Midtown', AREA_PRESETS.midtown),
+    ues: {
+      label: 'Upper East Side',
+      centerX: parkX + 900,
+      centerY: parkY - 950,
+      halfWidth: 1000,
+      halfHeight: 1800
+    },
+    laguardia: fromPreset('LaGuardia', AREA_PRESETS.laguardia),
+    jfk: fromPreset('JFK', AREA_PRESETS.jfk)
+  };
+}
+
+/**
+ * Hourly arrivals minus departures of each box over the trips that cross its edge. The first and
+ * last hours miss trips that began outside the data, so they are NaN and not drawn.
+ */
+function getHourlyBoxNet(
+  trips: TaxiTrips,
+  boxes: Record<BoxId, TideBox>
+): Record<BoxId, Float64Array> {
+  const hours = Math.ceil(NYC_TAXI_HOURS) + 1;
+  const result = {} as Record<BoxId, Float64Array>;
+  const ids = Object.keys(boxes) as BoxId[];
+  for (const id of ids) result[id] = new Float64Array(hours);
+  const inside = (box: TideBox, array: Float32Array, row: number) =>
+    Math.abs(array[row * 2] - box.centerX) < box.halfWidth &&
+    Math.abs(array[row * 2 + 1] - box.centerY) < box.halfHeight;
+  for (let row = 0; row < trips.count; row++) {
+    for (const id of ids) {
+      const box = boxes[id];
+      const fromInside = inside(box, trips.pickup, row);
+      const toInside = inside(box, trips.dropoff, row);
+      if (fromInside === toInside) continue;
+      if (fromInside) result[id][Math.min(hours - 1, Math.floor(trips.pickupHour[row]))]--;
+      else result[id][Math.min(hours - 1, Math.floor(trips.dropoffHour[row]))]++;
+    }
+  }
+  for (const id of ids) {
+    result[id][0] = Number.NaN;
+    for (let hour = Math.floor(NYC_TAXI_HOURS); hour < hours; hour++) result[id][hour] = Number.NaN;
+  }
+  return result;
+}
+
+/** Median routed trip time in minutes (durations are 15 s steps, so a count per step is exact). */
+function getMedianTripMinutes(trips: TaxiTrips): number {
+  const steps = new Uint32Array(256);
+  for (let row = 0; row < trips.count; row++) {
+    const step = Math.round(((trips.dropoffHour[row] - trips.pickupHour[row]) * 3600) / 15);
+    steps[Math.min(255, Math.max(0, step))]++;
+  }
+  let seen = 0;
+  for (let step = 0; step < steps.length; step++) {
+    seen += steps[step];
+    if (seen >= trips.count / 2) return (step * 15) / 60;
+  }
+  return 0;
 }

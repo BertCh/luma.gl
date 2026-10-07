@@ -2,13 +2,68 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {getClassTableLegend} from '../../cartography/class-table';
+import {ground} from '../../cartography/grounds';
 import {defineScene, type LegendSpec} from '../scene';
+import {earthDrop} from './cpu-dem';
+import {
+  BARE_EARTH_CHIP,
+  TERRAIN_CREDIT,
+  TERRAIN_FRAMES,
+  terrainCartouche
+} from './terrain-furniture';
+import {makeMarkVisibleTable, makeVisibilityTable} from './terrain-palettes';
+import {
+  getCumulativeLegend,
+  getFlipLegend,
+  getLookoutLegend,
+  getSightLineLegend,
+  makePyramidTable
+} from './viewshed-style';
 import type {ViewshedOptions} from './viewshed.compute';
 
+const REFRACTION = {'mt-image': 0.13, gdal: 1 / 7} as const;
+
+/** The legends of the current state; the ground tone and the lookout names come from the compute module. */
+function getLegends(state: ViewshedOptions, data: Readonly<Record<string, unknown>>): LegendSpec[] {
+  const tone = (data.ground as 'light' | 'dark' | undefined) ?? 'light';
+  const names = (data.lookouts as string[] | undefined) ?? [];
+  const legends: LegendSpec[] = [];
+  if (state.display === 'viewshed') {
+    const table = state.markVisible ? makeMarkVisibleTable(tone) : makeVisibilityTable(tone);
+    legends.push(
+      getClassTableLegend(table, {
+        title: 'Ground seen from the gold observer',
+        id: 'visibility',
+        layout: 'list',
+        note: state.markVisible
+          ? 'The wrong way round: painting what is seen buries the ground you are judging.'
+          : state.toleranceMeters > 0 || state.tolerancePerKilometer > 0
+            ? "Marginal (hatched): within the height uncertainty, after Fisher's probable viewshed."
+            : 'Cells beyond the maximum distance are left clear.'
+      })
+    );
+    if (state.showSightLine) legends.push(getSightLineLegend(tone));
+    if (state.earthModel === 'changes') legends.push(getFlipLegend(tone));
+  } else if (state.display === 'cumulative') {
+    legends.push(getCumulativeLegend(tone, state.cumulativeObservers));
+    legends.push(getLookoutLegend(tone, names.slice(0, Math.max(1, state.cumulativeObservers))));
+  } else {
+    legends.push(
+      getClassTableLegend(makePyramidTable(tone), {
+        title: 'Highest ground in the pyramid block',
+        id: 'pyramid',
+        layout: 'bar'
+      })
+    );
+  }
+  return legends;
+}
+
 /**
- * What can you see from Gornergrat? Viewshed, line of sight, cumulative viewshed and an elevation
- * profile of the Matterhorn DEM. The metadata, options and narrative live here (light, loaded by
- * the gallery); the GPU work lives in `viewshed.compute.ts`.
+ * What can you see from Gornergrat? A viewshed, one line of sight, the cumulative viewshed of six
+ * lookouts and the extrema pyramid, over a wide DEM of the whole cirque. The metadata, options and
+ * narrative live here (light, loaded by the gallery); the GPU work lives in `viewshed.compute.ts`.
  */
 export default defineScene<ViewshedOptions>({
   id: 'viewshed',
@@ -16,23 +71,35 @@ export default defineScene<ViewshedOptions>({
   chapter: 'terrain',
   order: 5,
   summary:
-    'Drag an observer across the Matterhorn region and see every cell it can and cannot see, how many metres of ridge hide the Matterhorn, and which slopes are visible from six lookouts at once.',
+    'Drag an observer across the Gornergrat cirque and see every cell it can and cannot see, how far a summit could sink and still be in sight, and which slopes six lookouts overlook together.',
   contributors: [
     'GPUTerrainViewshed',
-    'GPUTerrainCumulativeViewshed',
     'GPUTerrainLineOfSight',
-    'GPURasterExtremaPyramid',
-    'GPURasterProfile',
-    'GPUTerrainDerivatives'
+    'GPUTerrainCumulativeViewshed',
+    'GPURasterExtremaPyramid'
   ],
-  datasets: [{id: 'alps-dem', role: 'terrain (Terrarium, Web Mercator)'}],
-  initialView: {longitude: 7.738, latitude: 45.984, zoom: 11.7},
+  datasets: [
+    {id: 'alps-dem-wide', role: 'terrain (Terrarium, Web Mercator), the whole cirque'},
+    {id: 'alps-context', role: 'glaciers, peaks and stations (OpenStreetMap)'}
+  ],
+  initialView: {...TERRAIN_FRAMES.gornergratWide},
+  basemap: ground('relief'),
+  furniture: {
+    title: terrainCartouche(
+      'What can you see from Gornergrat?',
+      'Seen from the gold observer',
+      undefined,
+      [BARE_EARTH_CHIP]
+    ),
+    scaleBar: {units: 'metric'},
+    credit: TERRAIN_CREDIT
+  },
 
   options: [
     {
       kind: 'slider',
       id: 'observerHeight',
-      label: 'Eye height above ground',
+      label: 'Eye height',
       group: 'Observer',
       apply: 'param',
       min: 0,
@@ -45,7 +112,7 @@ export default defineScene<ViewshedOptions>({
     {
       kind: 'slider',
       id: 'targetHeight',
-      label: 'Height of what you want to see',
+      label: 'Target height',
       group: 'Observer',
       apply: 'param',
       min: 0,
@@ -61,21 +128,44 @@ export default defineScene<ViewshedOptions>({
       label: 'Maximum distance',
       group: 'Observer',
       apply: 'param',
-      min: 1,
-      max: 14,
+      min: 2,
+      max: 13,
       step: 0.5,
-      default: 14,
+      default: 10,
       unit: 'km',
-      help: 'Cells farther than this are "out of range" and excluded from the percentages. The window is 13.6 km wide.'
+      marks: [{value: 10, label: 'default'}],
+      describe: (value, state) =>
+        `The earth drops ${earthDrop(value * 1000, REFRACTION[state.refraction]).toFixed(1)} m by then. The data ends 13 km from the station.`,
+      help: 'Cells farther than this are "out of range" and excluded from the shares. The wide DEM keeps 13 km of ground on every side of Gornergrat station.'
+    },
+    {
+      kind: 'select',
+      id: 'earthModel',
+      label: 'Earth model',
+      group: 'Earth model',
+      apply: 'param',
+      display: 'segmented',
+      default: 'curved',
+      help: 'Curved lowers terrain at distance d by c d squared, flat sets c to zero, and Cells that change draws the curved map and marks the cells that would flip against the flat one.',
+      options: [
+        {value: 'curved', label: 'Curved', help: 'The default: curvature with refraction.'},
+        {value: 'flat', label: 'Flat', help: 'No curvature drop: c = 0.'},
+        {
+          value: 'changes',
+          label: 'Cells that change',
+          help: 'The curved map, with the cells that flip between curved and flat marked.'
+        }
+      ]
     },
     {
       kind: 'select',
       id: 'refraction',
-      label: 'Earth curvature and refraction',
+      label: 'Refraction coefficient',
       group: 'Earth model',
       apply: 'param',
       default: 'mt-image',
-      help: 'Terrain at distance d is lowered by c d², with c = (1 - k) / 2R, R = 6371008.8 m and refraction coefficient k.',
+      expert: true,
+      help: 'Terrain at distance d is lowered by c d squared, with c = (1 - k) / 2R, R = 6371008.8 m and refraction coefficient k.',
       options: [
         {
           value: 'mt-image',
@@ -86,99 +176,152 @@ export default defineScene<ViewshedOptions>({
           value: 'gdal',
           label: 'k = 1/7 (GDAL -cc 0.85714)',
           help: 'GDAL gdal_viewshed uses cc = 1 - k with k = 1/7.'
+        }
+      ]
+    },
+    {
+      kind: 'preset',
+      id: 'uncertainty',
+      label: 'Height uncertainty',
+      group: 'Uncertainty',
+      help: 'How wrong the DEM heights may be. A band around the sight line turns the hard cut into a third class, marginal.',
+      presets: [
+        {
+          label: 'None',
+          values: {
+            toleranceMeters: 0,
+            tolerancePerKilometer: 0,
+            targetIgnoreDistance: 0,
+            targetIgnoreFraction: 0
+          },
+          help: 'The classic two-class viewshed.'
         },
-        {value: 'none', label: 'Flat earth', help: 'No curvature drop: c = 0.'}
+        {
+          label: 'mt-image',
+          values: {
+            toleranceMeters: 2,
+            tolerancePerKilometer: 1,
+            targetIgnoreDistance: 150,
+            targetIgnoreFraction: 0.02
+          },
+          help: '2 m plus 1 m per km, ignoring the last 150 m or 2 percent.'
+        },
+        {
+          label: 'Wide',
+          values: {
+            toleranceMeters: 5,
+            tolerancePerKilometer: 3,
+            targetIgnoreDistance: 150,
+            targetIgnoreFraction: 0.02
+          },
+          help: '5 m plus 3 m per km: a pessimistic height error.'
+        }
       ]
     },
     {
       kind: 'slider',
       id: 'toleranceMeters',
       label: 'Tolerance band (constant)',
-      group: 'Tolerance',
+      group: 'Uncertainty',
       apply: 'param',
       min: 0,
       max: 10,
       step: 0.5,
       default: 0,
       unit: 'm',
+      expert: true,
       help: 'Half-width of a band around the sight line at the target. Cells inside it are "marginal" instead of visible or hidden. 0 gives the classic two-class viewshed.'
     },
     {
       kind: 'slider',
       id: 'tolerancePerKilometer',
       label: 'Tolerance band (per km)',
-      group: 'Tolerance',
+      group: 'Uncertainty',
       apply: 'param',
       min: 0,
       max: 5,
       step: 0.5,
       default: 0,
       unit: 'm/km',
-      help: 'Extra half-width per kilometre of distance, because DEM height errors matter more at long range. mt-image uses 2 m + 1 m/km.'
+      expert: true,
+      help: 'Extra half-width per kilometre of distance, because DEM height errors matter more at long range.'
     },
     {
       kind: 'slider',
       id: 'targetIgnoreDistance',
       label: 'Ignore the last stretch before the target',
-      group: 'Tolerance',
+      group: 'Uncertainty',
       apply: 'param',
       min: 0,
       max: 500,
       step: 10,
       default: 0,
       unit: 'm',
-      help: 'Samples closer than this to the target are not tested, so a summit is not hidden by its own flank. mt-image ignores the last max(150 m, 2 %).'
+      expert: true,
+      help: 'Samples closer than this to the target are not tested, so a summit is not hidden by its own flank.'
     },
     {
       kind: 'slider',
       id: 'targetIgnoreFraction',
       label: 'Ignore the last fraction of the distance',
-      group: 'Tolerance',
+      group: 'Uncertainty',
       apply: 'param',
       min: 0,
       max: 0.1,
       step: 0.005,
       default: 0,
+      expert: true,
       format: value => `${(value * 100).toFixed(1)} %`,
       help: 'The same idea as a fraction of the target distance, added to the fixed stretch above.'
     },
     {
       kind: 'toggle',
-      id: 'showProfile',
-      label: 'Profile along the sight line',
-      group: 'Profile',
+      id: 'markVisible',
+      label: 'Mark visible instead',
+      group: 'Display',
       apply: 'param',
       default: false,
-      help: 'Dots along the sight line from the red observer to the cyan target, sampled by GPURasterProfile and coloured by how far the ground rises above (red) or sits below (blue) the straight line.'
+      disabledWhen: state => state.display !== 'viewshed',
+      help: 'Paints the cells you can see in gold and leaves the hidden ones bare: the wrong way round, shown only to compare.'
     },
     {
-      kind: 'slider',
-      id: 'profileSpacing',
-      label: 'Profile sample spacing',
-      group: 'Profile',
+      kind: 'toggle',
+      id: 'showSightLine',
+      label: 'Sight line to a target',
+      group: 'Sight line',
       apply: 'param',
-      min: 5,
-      max: 100,
-      step: 5,
-      default: 20,
-      unit: 'm',
-      disabledWhen: state => !state.showProfile,
-      help: 'Distance between profile samples. The profile is a per-frame parameter: the graph is not rebuilt.'
+      default: false,
+      disabledWhen: state => state.display !== 'viewshed',
+      help: 'Draws the straight line from the observer to the teal target, its profile and the steepest ground it passes. Drag the teal dot, or click the map to move it.'
     },
     {
       kind: 'select',
-      id: 'profileMethod',
-      label: 'Profile interpolation',
-      group: 'Profile',
+      id: 'rayTarget',
+      label: 'Target',
+      group: 'Sight line',
       apply: 'param',
-      default: 'bilinear',
-      disabledWhen: state => !state.showProfile,
-      help: 'How the profile reads the DEM between pixel centres.',
+      display: 'segmented',
+      default: 'matterhorn',
+      help: 'A summit to look at: the Matterhorn, or Zumsteinspitze, which lies behind the Monte Rosa ridge. Drag the teal dot to choose your own.',
       options: [
-        {value: 'nearest', label: 'Nearest'},
-        {value: 'bilinear', label: 'Bilinear'},
-        {value: 'bicubic', label: 'Bicubic'}
+        {value: 'matterhorn', label: 'Matterhorn'},
+        {value: 'zumsteinspitze', label: 'Zumsteinspitze'},
+        {value: 'custom', label: 'Your pick'}
       ]
+    },
+    {
+      kind: 'slider',
+      id: 'rayPosition',
+      label: 'Ray position',
+      group: 'Sight line',
+      apply: 'param',
+      min: 0,
+      max: 100,
+      step: 1,
+      default: 100,
+      format: value =>
+        value >= 100 ? 'at the target' : value <= 0 ? 'at the eye' : `${value} % of the way`,
+      help: 'Moves the scan dot from the eye to the target: the running horizon is the steepest ground passed so far.'
     },
     {
       kind: 'select',
@@ -187,17 +330,17 @@ export default defineScene<ViewshedOptions>({
       group: 'Display',
       apply: 'param',
       default: 'viewshed',
-      help: 'The single-observer viewshed, the cumulative count of several observers, or one level of the extrema pyramid.',
+      help: 'The single-observer viewshed, the cumulative count of several lookouts, or one level of the extrema pyramid.',
       options: [
-        {value: 'viewshed', label: 'Viewshed from the red observer'},
-        {value: 'cumulative', label: 'Cumulative viewshed (several observers)'},
-        {value: 'pyramid', label: 'Extrema pyramid, maximum per cell'}
+        {value: 'viewshed', label: 'Viewshed from the gold observer'},
+        {value: 'cumulative', label: 'Cumulative viewshed (six lookouts)'},
+        {value: 'pyramid', label: 'Extrema pyramid, highest ground per block'}
       ]
     },
     {
       kind: 'slider',
       id: 'cumulativeObservers',
-      label: 'Observers in the cumulative viewshed',
+      label: 'Stations',
       group: 'Display',
       apply: 'param',
       min: 1,
@@ -205,21 +348,7 @@ export default defineScene<ViewshedOptions>({
       step: 1,
       default: 6,
       disabledWhen: state => state.display !== 'cumulative',
-      help: 'The red observer plus up to five fixed lookouts (orange). Unused slots are parked off the grid, so changing the count never recompiles.'
-    },
-    {
-      kind: 'select',
-      id: 'cumulativeMetric',
-      label: 'Count',
-      group: 'Display',
-      apply: 'param',
-      default: 'visible',
-      disabledWhen: state => state.display !== 'cumulative',
-      help: 'How many observers see each cell clearly, or how many see it only marginally (inside the tolerance band).',
-      options: [
-        {value: 'visible', label: 'Visible from'},
-        {value: 'marginal', label: 'Marginal from'}
-      ]
+      help: 'Gornergrat station plus up to five more stations of the railway and lifts. Unused slots are parked off the grid, so changing the count never recompiles.'
     },
     {
       kind: 'slider',
@@ -231,20 +360,27 @@ export default defineScene<ViewshedOptions>({
       max: 9,
       step: 1,
       default: 4,
+      expert: true,
       disabledWhen: state => state.display !== 'pyramid',
       help: 'Level 0 is the finest. Each level doubles the block size; the last level is one cell holding the extremes of the whole DEM.'
     },
     {
       kind: 'select',
-      id: 'base',
-      label: 'Terrain base',
-      group: 'Display',
-      apply: 'param',
-      default: 'hillshade',
-      help: 'Hillshade from GPUTerrainDerivatives (Web Mercator cell model), or the elevation itself.',
+      id: 'cellSize',
+      label: 'Cell size',
+      group: 'Compile-time choices',
+      apply: 'compile',
+      display: 'segmented',
+      default: '2',
+      help: 'The analysis grid is the DEM averaged 1 x 1, 2 x 2 or 4 x 4: a finer grid costs more per frame and keeps narrower ridges. Changing it rebuilds the grid and its graphs.',
       options: [
-        {value: 'hillshade', label: 'Hillshade'},
-        {value: 'elevation', label: 'Elevation'}
+        {value: '1', label: '13.3 m', help: 'The native cell of the wide DEM.'},
+        {
+          value: '2',
+          label: '26.6 m',
+          help: 'Averaged 2 x 2: the default, light enough to drag the observer.'
+        },
+        {value: '4', label: '53.1 m', help: 'Averaged 4 x 4: a coarse preview.'}
       ]
     },
     {
@@ -253,11 +389,12 @@ export default defineScene<ViewshedOptions>({
       label: 'Traversal',
       group: 'Compile-time choices',
       apply: 'compile',
+      display: 'segmented',
       default: 'march',
-      help: 'march tests every sample; pyramid skips samples a min-max pyramid proves cannot matter. The answers are bit-identical. The graph for each is compiled the first time you choose it.',
+      help: 'March tests every sample; pyramid skips samples a min-max pyramid proves cannot matter. The answers are bit-identical. The graph for each is compiled the first time you choose it.',
       options: [
-        {value: 'march', label: 'March (every sample)'},
-        {value: 'pyramid', label: 'Pyramid (min-max skip)'}
+        {value: 'march', label: 'March'},
+        {value: 'pyramid', label: 'Pyramid'}
       ]
     },
     {
@@ -267,6 +404,7 @@ export default defineScene<ViewshedOptions>({
       group: 'Compile-time choices',
       apply: 'compile',
       default: '4',
+      expert: true,
       help: 'Pixel size of a level-0 pyramid cell. Smaller cells skip more tightly but cost more levels; changing it rebuilds the pyramid and the pyramid graphs.',
       options: [
         {value: '4', label: '4 pixels'},
@@ -276,135 +414,158 @@ export default defineScene<ViewshedOptions>({
     },
     {
       kind: 'button',
-      id: 'verify',
-      label: 'Verify pyramid = march',
+      id: 'measure',
+      label: 'Time and compare',
       group: 'Compare',
-      help: 'Runs both traversals and compares every output word on the GPU buffers.'
+      help: 'Runs both traversals outside the frame, reports the GPU time of each, then compares every output word.'
     },
     {
       kind: 'button',
-      id: 'measure',
-      label: 'Time march vs pyramid',
+      id: 'verify',
+      label: 'Verify pyramid = march',
       group: 'Compare',
-      help: 'Runs each graph outside the frame and reports GPU time.'
+      expert: true,
+      help: 'Runs both traversals and compares every output word on the GPU buffers, without timing them.'
     }
   ],
 
   readouts: [
     {
-      id: 'grid',
-      label: 'Analysis grid',
-      help: 'The DEM is averaged 2 × 2 so an observer drag stays interactive.'
-    },
-    {
-      id: 'visible',
+      id: 'visibleShare',
       label: 'Visible',
-      help: 'Share and area of in-range cells that are clearly visible.'
+      emphasis: 'tile',
+      help: 'Share of the in-range ground cells that are clearly visible.'
     },
     {
-      id: 'marginal',
+      id: 'visibleArea',
+      label: 'Visible area',
+      emphasis: 'tile',
+      help: 'Ground area of the visible cells.'
+    },
+    {
+      id: 'hiddenPeaks',
+      label: 'Out of sight',
+      help: 'Named summits within reach whose summit cell is hidden, read on the GPU at their cells.'
+    },
+    {
+      id: 'marginalShare',
       label: 'Marginal',
+      emphasis: 'tile',
       help: 'Cells inside the tolerance band: neither clearly visible nor clearly hidden.'
     },
-    {id: 'hidden', label: 'Hidden'},
     {
-      id: 'range',
-      label: 'In range',
-      help: 'Counted on the GPU with GPUHistogram; no per-cell readback.'
+      id: 'clearance',
+      label: 'Clearance at the target',
+      emphasis: 'tile',
+      help: 'GPUTerrainLineOfSight: how far the target could sink and stay visible. Negative: how much taller it would have to be.'
     },
     {
-      id: 'lineOfSight',
-      label: 'Sight line to target',
-      help: 'GPUTerrainLineOfSight: the code, the distance and the clearance in metres. Positive clearance is how far the target could sink and stay visible; negative is how much taller it would have to be.'
+      id: 'rayLength',
+      label: 'The ray',
+      help: 'Length of the sight line, and where the steepest ground along it lies.'
     },
     {
       id: 'profile',
-      label: 'Profile',
-      help: 'Gain, loss and lowest point along the sight line, from GPURasterProfile.'
+      label: 'Profile along the sight line',
+      kind: 'chart',
+      help: 'Ground, the ground lowered by the earth curve, the sight line and the horizon so far, from the same model the GPU runs per cell.'
     },
     {
-      id: 'drop',
-      label: 'Curvature drop',
-      help: 'How far the earth falls away from the sight line at the maximum distance.'
+      id: 'flippedCells',
+      label: 'Cells that flip',
+      emphasis: 'tile',
+      help: 'Cells whose class differs between the curved and the flat earth model.'
     },
-    {id: 'pyramid', label: 'Extrema pyramid'},
-    {id: 'identical', label: 'Pyramid = march'},
-    {id: 'marchTime', label: 'Graph, march'},
-    {id: 'pyramidTime', label: 'Graph, pyramid'}
+    {
+      id: 'dropAtReach',
+      label: 'Earth drop at the reach',
+      emphasis: 'tile',
+      help: 'How far the earth falls away from the horizontal at the maximum distance, c d squared.'
+    },
+    {
+      id: 'seenByNone',
+      label: 'Seen from none',
+      emphasis: 'tile',
+      help: 'Share of the ground within reach of at least one station that no station sees.'
+    },
+    {
+      id: 'seenByAll',
+      label: 'Seen from all',
+      emphasis: 'tile',
+      help: 'Share of that ground that every active station sees.'
+    },
+    {
+      id: 'unseenGap',
+      label: 'Largest unseen gap',
+      help: 'The largest circle holding only unseen cells, found on a coarse mask read back from the GPU.'
+    },
+    {
+      id: 'visibleByCell',
+      label: 'Visible share by cell size',
+      kind: 'chart',
+      help: 'Filled in as you try each cell size with the same observer and settings.'
+    },
+    {
+      id: 'marchTime',
+      label: 'Graph, march',
+      hood: true,
+      help: 'Measured GPU time of the march graph, not assumed.'
+    },
+    {
+      id: 'pyramidTime',
+      label: 'Graph, pyramid',
+      hood: true,
+      help: 'Measured GPU time of the pyramid graph, not assumed.'
+    },
+    {id: 'identical', label: 'Pyramid = march', hood: true},
+    {
+      id: 'grid',
+      label: 'Analysis grid',
+      hood: true,
+      help: 'The analysis grid: the wide DEM averaged by the chosen stride.'
+    },
+    {
+      id: 'range',
+      label: 'In range',
+      hood: true,
+      help: 'Counted on the GPU with GPUHistogram; no per-cell readback.'
+    },
+    {id: 'pyramid', label: 'Extrema pyramid', hood: true}
   ],
 
-  legends: state => {
-    const legends: LegendSpec[] = [];
-    if (state.display === 'viewshed') {
-      const hasTolerance = state.toleranceMeters > 0 || state.tolerancePerKilometer > 0;
-      legends.push({
-        kind: 'categories',
-        title: 'Cell seen from the red observer',
-        entries: [
-          {color: [60, 230, 110, 200], label: 'Visible'},
-          ...(hasTolerance
-            ? [{color: [255, 170, 40, 220] as const, label: 'Marginal (inside the tolerance band)'}]
-            : []),
-          {color: [12, 14, 40, 200], label: 'Hidden behind terrain'}
-        ],
-        note: 'Cells farther than the maximum distance are left clear.'
-      });
-    } else if (state.display === 'cumulative') {
-      legends.push({
-        kind: 'ramp',
-        title:
-          state.cumulativeMetric === 'visible'
-            ? 'Observers that see the cell'
-            : 'Observers for which the cell is marginal',
-        ramp: 'viridis',
-        extent: [1, Math.max(state.cumulativeObservers, 2)],
-        unit: 'observers',
-        format: value => value.toFixed(0)
-      });
-    } else {
-      legends.push({
-        kind: 'ramp',
-        title: 'Highest ground in the pyramid cell',
-        ramp: 'viridis',
-        extent: [1503, 4476],
-        unit: 'm',
-        format: value => value.toFixed(0)
-      });
+  pipeline: [
+    {
+      id: 'observer',
+      label: 'Observer',
+      detail: 'Eye height, target height and reach are per-frame parameters: no rebuild'
+    },
+    {
+      id: 'march',
+      label: 'March rays',
+      detail: 'One ray per cell toward the observer, keeping the steepest slope seen'
+    },
+    {
+      id: 'tolerance',
+      label: 'Tolerance',
+      detail: 'A band around the sight line makes the marginal middle class'
+    },
+    {
+      id: 'classes',
+      label: 'Classes',
+      detail: 'Visible, marginal, hidden and out of range, drawn as a veil'
+    },
+    {
+      id: 'cumulative',
+      label: 'Cumulative',
+      detail: 'Counts how many lookouts see each cell',
+      show: {option: 'display', value: 'cumulative'}
     }
-    legends.push({
-      kind: 'categories',
-      title: 'Sight line to the cyan target',
-      entries: [
-        {color: [40, 200, 100, 255], label: 'Visible'},
-        {color: [255, 170, 40, 255], label: 'Marginal'},
-        {color: [235, 60, 70, 255], label: 'Hidden'}
-      ]
-    });
-    if (state.showProfile) {
-      legends.push({
-        kind: 'ramp',
-        title: 'Ground above (+) or below (-) the sight line',
-        ramp: 'diverging',
-        extent: [-80, 80],
-        unit: 'm',
-        labels: ['-80 m', '+80 m']
-      });
-    }
-    if (state.base === 'elevation') {
-      legends.push({
-        kind: 'ramp',
-        title: 'Terrain elevation',
-        ramp: 'cividis',
-        extent: [1503, 4476],
-        unit: 'm',
-        format: value => value.toFixed(0)
-      });
-    }
-    return legends;
-  },
+  ],
+
+  legends: getLegends,
 
   snippet: state => `import {GPUCommandGraph, GPUHistogram} from '@luma.gl/gpgpu/gpu-core';
-import {GPURasterExtremaPyramid, GPURasterProfile} from '@luma.gl/experimental/gpu-raster';
+import {GPURasterExtremaPyramid} from '@luma.gl/experimental/gpu-raster';
 import {
   GPUTerrainViewshed,
   GPUTerrainLineOfSight,
@@ -414,6 +575,7 @@ import {
   getGPUTerrainCurvatureCoefficient
 } from '@luma.gl/experimental/gpu-terrain';
 
+// The wide DEM averaged ${state.cellSize} x ${state.cellSize}; elevation is a float32 band with a validity mask.
 const graph = new GPUCommandGraph(device, {id: 'viewshed'});
 const elevation = {id: 'dem', format: 'float32', storage: {kind: 'buffer', values}, validity};
 ${
@@ -430,7 +592,7 @@ graph.add(extrema);
 graph.add(new GPUTerrainViewshed({
   width, height, elevation,
   traversal: '${state.traversal}',${state.traversal === 'pyramid' ? '\n  pyramid: extrema.output,' : ''}
-  settings: viewshedSettings.importToGraph(graph),   // observer, heights, radius, curvature
+  settings: viewshedSettings.importToGraph(graph),   // observer, heights, reach, curvature
   tolerance: toleranceSettings.importToGraph(graph), // band: marginal cells
   visibility                                          // 0 hidden 1 visible 2 out of range 3 no data 4 marginal
 }));
@@ -438,27 +600,37 @@ graph.add(new GPUTerrainLineOfSight({
   width, height, elevation, traversal: '${state.traversal}', pairs, settings: sightSettings.importToGraph(graph),
   visibility: losCode, clearance                      // metres the target could sink and stay visible
 }));
-graph.add(new GPUHistogram({input: visibility, output: counts, edges: [0, 1, 2, 3, 4, 5]}));
+${
+  state.display === 'cumulative'
+    ? `graph.add(new GPUTerrainCumulativeViewshed({
+  width, height, elevation, traversal: '${state.traversal}',
+  observers,                                          // [column, row] x ${state.cumulativeObservers}, the rest parked off the grid
+  settings: sightSettings.importToGraph(graph), visibleCount
+}));
+`
+    : ''
+}graph.add(new GPUHistogram({input: visibility, output: counts, edges: [0, 1, 2, 3, 4, 5]}));
 const compiled = graph.compile();                    // once
 
-// Gornergrat, 2 m eye height, ${state.maxDistance} km, k = ${state.refraction === 'gdal' ? '1/7' : state.refraction === 'none' ? 'none' : '0.13'}:
+// Gornergrat station, eye ${state.observerHeight} m, ${state.maxDistance} km, ${state.earthModel === 'flat' ? 'flat earth' : state.refraction === 'gdal' ? 'k = 1/7' : 'k = 0.13'}:
 viewshedSettings.write(getGPUTerrainViewshedParameterValues({
   observer: [column, row],                            // pixel-centre index space
   observerHeight: ${state.observerHeight}, targetHeight: ${state.targetHeight},
   maxDistance: ${state.maxDistance * 1000},
   cellSize: [groundCellSize, groundCellSize],         // Web Mercator: scale by cos(latitude)
-  curvatureCoefficient: ${state.refraction === 'none' ? '0' : `getGPUTerrainCurvatureCoefficient(${state.refraction === 'gdal' ? '1 / 7' : '0.13'})`}
+  curvatureCoefficient: ${state.earthModel === 'flat' ? '0' : `getGPUTerrainCurvatureCoefficient(${state.refraction === 'gdal' ? '1 / 7' : '0.13'})`}
 }));
 toleranceSettings.write(getGPUTerrainVisibilityToleranceParameterValues({
-  toleranceMeters: ${state.toleranceMeters}, tolerancePerKilometer: ${state.tolerancePerKilometer}
+  toleranceMeters: ${state.toleranceMeters}, tolerancePerKilometer: ${state.tolerancePerKilometer},
+  targetIgnoreDistance: ${state.targetIgnoreDistance}, targetIgnoreFraction: ${state.targetIgnoreFraction}
 }));
 compiled.encode(commandEncoder, {parameters: undefined}); // every change, no recompile`,
 
   about: {
     what: '`GPUTerrainViewshed` tests, for every cell, whether the straight line to the observer is blocked by terrain. `GPUTerrainLineOfSight` does the same for chosen pairs and reports the clearance in metres, `GPUTerrainCumulativeViewshed` counts how many observers see each cell, and `GPURasterExtremaPyramid` is the min-max mip chain that lets a traversal skip samples that provably cannot matter.',
-    why: 'Viewsheds answer siting questions: where a tower, a hut or a wind turbine is visible from, which slopes a lookout overlooks, and how much of a landscape a road exposes. The clearance number turns a yes/no into a margin you can reason about.',
+    why: 'Viewsheds answer siting questions: where a tower, a hut or a wind turbine is visible from, which slopes a lookout overlooks, and how much of a landscape a road exposes. The clearance number turns a yes or no into a margin you can reason about.',
     howToRead:
-      'Green cells are visible from the red observer, dark cells are hidden, and orange cells are inside the tolerance band. The cyan target and the line to it show the single sight line; its colour matches the readout. The width of the window is 13.6 km, so everything beyond is simply not in the data.'
+      'The relief is the ground; a dark veil lies over what the gold observer cannot see and the visible ground stays clear. Hatched orange is marginal, within the height uncertainty. The data are bare earth: trees and buildings are not in them, so a viewshed from a village is optimistic.'
   },
 
   create: async ctx => (await import('./viewshed.compute')).createViewshed(ctx),
@@ -466,83 +638,101 @@ compiled.encode(commandEncoder, {parameters: undefined}); // every change, no re
   story: [
     {
       id: 'the-question',
-      controls: ['observerHeight'],
-      readouts: ['visible', 'hidden'],
       title: 'What can you see from Gornergrat?',
-      body: 'Gornergrat (about 3,100 m) is the end of the cog railway above Zermatt, and its terrace is famous for one view. **Where, exactly, is that view?** The red dot is the observer; every green cell is a place whose ground you could see from a standing person there.\n\n**`GPUTerrainViewshed`** tests all one million cells on the GPU. For every cell it marches the straight line towards the observer, one sample per pixel with bilinear heights, and keeps the largest slope seen. The cell is **visible** when no sample rises above the line from the eye to the cell, **hidden** when one does. Drag the red dot (or click to move the cyan target) and watch the map recompute. **Eye height above ground** below lifts the observer off the terrace.',
-      camera: {longitude: 7.738, latitude: 45.984, zoom: 11.7, transitionMs: 900}
+      headline: 'From Gornergrat, much of the cirque is hidden',
+      textAlternative:
+        'Relief map of the Gornergrat cirque around a gold observer: a dark indigo veil covers the ground the station cannot see, and the visible ground is left clear, with dashed rings at fixed distances.',
+      body: 'Gornergrat station is the end of the cog railway above Zermatt. **{{visibleShare}}** of the ground in reach is visible (**{{visibleArea}}**); the dark veil is ground the station cannot see. `GPUTerrainViewshed` marches one ray per cell. Raise **Eye height**, or switch on **Mark visible instead** to see why this map veils the hidden. Out of sight: {{hiddenPeaks}}.\n\n*Veil what is hidden; leave what you can see clear.*',
+      optionsMode: 'fresh',
+      controls: ['observerHeight', 'markVisible'],
+      readouts: ['visibleShare', 'visibleArea', 'hiddenPeaks'],
+      camera: {...TERRAIN_FRAMES.gornergratWide, transitionMs: 1400},
+      furniture: {title: {title: 'What can you see from Gornergrat?'}},
+      stage: 'observer'
+    },
+    {
+      id: 'line-of-sight',
+      title: 'One ray decides each cell',
+      headline: 'The Matterhorn is in sight; Zumsteinspitze is not',
+      textAlternative:
+        'Closer map with a sight line from the gold observer to a teal target and a profile chart beneath: the straight line clears the ground for the Matterhorn and is cut by a ridge for Zumsteinspitze.',
+      body: "One cell's answer is one ray. `GPUTerrainLineOfSight` walks from the eye to the target, keeps the steepest ground it passes and compares it with the sight line: the target could sink **{{clearance}}** and stay in sight (negative: how much taller it must be). Slide **Ray position** to scan, or change **Target**.\n\n*Visibility is a comparison of angles.*",
+      options: {
+        showSightLine: true,
+        rayTarget: 'matterhorn',
+        targetIgnoreDistance: 150,
+        targetIgnoreFraction: 0.02
+      },
+      optionsMode: 'fresh',
+      controls: ['rayTarget', 'rayPosition'],
+      readouts: ['clearance', 'rayLength', 'profile'],
+      camera: {longitude: 7.72, latitude: 45.981, zoom: 12.3, transitionMs: 1400},
+      furniture: {title: {title: 'How does one ray decide?'}},
+      stage: 'march'
     },
     {
       id: 'curvature',
-      controls: ['refraction', 'maxDistance'],
-      readouts: ['visible', 'drop', 'range'],
       title: 'The earth falls away, and light bends',
-      body: 'Terrain at distance `d` is lowered by `c d²` with `c = (1 - k) / 2R`: the earth curves away, but the atmosphere bends light back, so only a fraction `1 - k` of the geometric drop counts. With `k = 0.13` (the geodetic default) the drop at 10 km is 6.8 m; GDAL `gdal_viewshed -cc 0.85714` is the same model with `k = 1/7`.\n\nSet **Earth curvature and refraction** below to *Flat earth* and compare the **Visible** readout with the earlier value. Over 14 km the effect is a few metres: enough to flip cells that graze a ridge, invisible on the map. Over 100 km it decides whether a peak shows at all. The **Maximum distance** slider below limits how far a cell counts; cells beyond it are "out of range".',
-      options: {refraction: 'none'},
-      highlight: {readout: 'visible'}
+      headline: 'The earth falls away under long sight lines',
+      textAlternative:
+        'The same map with the cells whose class changes between a curved and a flat earth marked in purple; they are few and lie at the far edge of the reach.',
+      body: 'Terrain at distance `d` sits lower by `c d²`, where `c` is the curve of the earth less what refraction bends back. It falls **{{dropAtReach}}** and flips **{{flippedCells}}** (purple). Compare **Earth model**, or stretch **Maximum distance**. On this terrain the effect is small; it grows with the square of distance.\n\n*A small term, made visible.*',
+      options: {earthModel: 'changes'},
+      optionsMode: 'fresh',
+      controls: ['earthModel', 'maxDistance'],
+      readouts: ['dropAtReach', 'flippedCells', 'visibleShare'],
+      camera: {...TERRAIN_FRAMES.gornergratWide, transitionMs: 1400},
+      furniture: {title: {title: "Does the earth's curve matter here?"}},
+      stage: 'march'
     },
     {
       id: 'marginal',
-      controls: ['toleranceMeters', 'tolerancePerKilometer', 'targetIgnoreDistance'],
-      readouts: ['marginal'],
       title: 'Marginal cells: the honest middle',
-      body: 'Back on the geodetic curvature (`k = 0.13`): a DEM has height errors, so a cell that is hidden by 20 cm is not really hidden. The tolerance band (**Tolerance band (constant)** and **Tolerance band (per km)**) adds a third class: with the constant 2 m and 1 m per kilometre of mt-image, a cell is **hidden** if the highest sample rises more than the band above the line, **visible** if it stays more than the band below, and **marginal** (orange) in between.\n\nThe last stretch before the target is skipped too (**Ignore the last stretch before the target**), so a summit is not hidden by its own flank. Widen the band below to see the orange fringe grow around every ridge shadow.',
+      headline: 'The shadow edge is a band, not a line',
+      textAlternative:
+        'Close map of the ridges beside the station: a hatched orange band of marginal cells runs between the clear visible ground and the dark hidden ground.',
+      body: 'A DEM has height errors, so a ray that misses a ridge by less than the error is not really hidden. The hatched orange band is **marginal**: **{{marginalShare}}** of the ground in reach. Pick a **Height uncertainty**: none gives the classic two-class map, Wide thickens the band around every shadow.\n\n*Fisher: a probable viewshed, not a hard line.*',
       options: {
-        refraction: 'mt-image',
         toleranceMeters: 2,
         tolerancePerKilometer: 1,
         targetIgnoreDistance: 150,
         targetIgnoreFraction: 0.02
       },
-      highlight: {readout: 'marginal'}
-    },
-    {
-      id: 'line-of-sight',
-      controls: ['showProfile', 'profileSpacing'],
-      readouts: ['lineOfSight', 'profile'],
-      title: 'Is the Matterhorn really visible? Clearance in metres',
-      body: '**`GPUTerrainLineOfSight`** runs the same sight-line model for a chosen pair. The cyan target sits on the Matterhorn summit about 9.7 km west of the terrace, and the **Sight line to target** readout reports its code and the **clearance**: how many metres the summit could sink and stay visible. A negative number would be the height you would need to add.\n\nThe **Profile along the sight line** is on: **`GPURasterProfile`** samples the DEM along the line (at the **Profile sample spacing** you choose) and the dots show how far the ground rises above the straight line. Drag the cyan target onto a ridge and watch the clearance turn negative.',
-      camera: {longitude: 7.72, latitude: 45.98, zoom: 12.4, transitionMs: 1200},
-      options: {
-        showProfile: true,
-        tolerancePerKilometer: 0,
-        toleranceMeters: 0,
-        targetIgnoreDistance: 0,
-        targetIgnoreFraction: 0
-      },
-      callout: {coordinate: [7.6586, 45.9766], text: 'Matterhorn, 4,478 m'},
-      highlight: {readout: 'lineOfSight'}
+      optionsMode: 'fresh',
+      controls: ['uncertainty'],
+      readouts: ['marginalShare', 'visibleShare'],
+      camera: {longitude: 7.77, latitude: 45.98, zoom: 13, transitionMs: 1400},
+      furniture: {title: {title: 'How sure is the shadow edge?'}},
+      stage: 'tolerance'
     },
     {
       id: 'cumulative',
-      controls: ['cumulativeObservers', 'cumulativeMetric'],
-      readouts: [],
-      title: 'Scenic exposure: how many lookouts see each slope?',
-      body: '**`GPUTerrainCumulativeViewshed`** runs many observers and counts, per cell, how many see it: the same idea as GDAL cumulative mode. Here the observers are Gornergrat plus Klein Matterhorn, Riffelhorn, Theodulhorn, Zermatt and the Matterhorn summit.\n\nBright cells are overlooked from many places (a scenic or an exposed slope); dark cells are seen from only one. Drag **Observers in the cumulative viewshed** down to remove lookouts: unused slots are parked off the grid, a buffer write rather than a recompile. Switch **Count** to *Marginal from* to count the cells seen only inside the tolerance band.',
-      camera: {longitude: 7.738, latitude: 45.984, zoom: 11.7, transitionMs: 1200},
-      options: {display: 'cumulative', showProfile: false, cumulativeObservers: 6}
+      title: 'Which slopes does no station overlook?',
+      headline: 'Most of the ground is seen from no station',
+      textAlternative:
+        'Map of six numbered stations coloured by how many see each cell, from pale yellow for one to dark red for all six; a dark veil covers the large area that none sees, with a note on the largest gap.',
+      body: 'Six stations of the Gornergrat railway and the lifts stand at different heights. `GPUTerrainCumulativeViewshed` counts, for each cell, how many see it: **{{seenByNone}}** of the ground within reach is seen from none (dark), **{{seenByAll}}** from all. Remove some with **Stations**; the legend lists them.\n\n*A count needs its zero.*',
+      options: {display: 'cumulative', cumulativeObservers: 6},
+      optionsMode: 'fresh',
+      controls: ['cumulativeObservers'],
+      readouts: ['seenByNone', 'seenByAll', 'unseenGap'],
+      camera: {longitude: 7.745, latitude: 45.975, zoom: 11.5, transitionMs: 1400},
+      furniture: {title: {title: 'Which slopes do the stations overlook?'}},
+      stage: 'cumulative'
     },
     {
-      id: 'pyramid',
-      controls: ['traversal', 'verify', 'measure', 'pyramidLevel'],
-      readouts: ['identical', 'marchTime', 'pyramidTime'],
-      title: 'Same answer, fewer samples: the extrema pyramid',
-      body: "**`GPURasterExtremaPyramid`** builds an exact min-max mip chain of the DEM (Tevs, Ihrke and Seidel 2008). A ray can skip a whole block when the block's highest point is below the line, and the answer stays **bit-identical** to the marching traversal. Set **Traversal** to *Pyramid*, press **Verify pyramid = march**, then **Time march vs pyramid**; **Pyramid level** below steps through the mip chain.\n\nOn this DEM at 1024 × 1024 the pyramid graph took about half the GPU time of the march in our test (8 ms against 16 ms on an Apple-silicon laptop); your GPU and the observer position will differ, so read your own numbers. The pyramid is built once and shared by the viewshed, the sight line and the cumulative graph.",
-      options: {display: 'pyramid', traversal: 'pyramid', pyramidLevel: 4}
-    },
-    {
-      id: 'limits-and-ideas',
-      controls: [
-        'observerHeight',
-        'targetHeight',
-        'display',
-        'cumulativeMetric',
-        'toleranceMeters'
-      ],
-      readouts: [],
-      title: 'Limits, and things to try',
-      body: 'This DEM is 13.6 km wide, so the viewshed ends at the window edge: Monte Rosa and the Liskamm lie just outside. The Web Mercator pixels are 9.6 m but the ground size is 6.6 m at this latitude; the planar contributors here use one uniform ground size (the cosine of latitude changes 0.1 % across the window) after a 2 × 2 average. No trees, buildings or glacier change are in the surface, so a viewshed from a village is optimistic.\n\n**Try:** raise **Eye height above ground** to 40 m for a mast; **Height of what you want to see** is already 30 m here, to ask about a tower; switch **Show** to the cumulative viewshed and **Count** to *Marginal from* with a nonzero **Tolerance band (constant)**.',
-      options: {display: 'viewshed', traversal: 'march', targetHeight: 30, observerHeight: 2}
+      id: 'resolution-and-pyramid',
+      title: 'Coarser cells change the answer; the pyramid does not',
+      headline: 'Coarser cells change the answer; the pyramid does not',
+      textAlternative:
+        'The wide map again with three bars comparing the visible share at three cell sizes, and two measured timings for the march and the pyramid traversal.',
+      body: 'The same observer, three cell sizes: **Cell size** changes which narrow ridges survive the averaging, so the visible share moves with it (bars). **Traversal** swaps the ray walk for the extrema pyramid, which skips samples that cannot matter: press **Time and compare** and read the measured times and the check. Try a mast with **Eye height**, a tower with **Target height**.\n\n*Resolution is part of the answer.*',
+      optionsMode: 'fresh',
+      controls: ['cellSize', 'traversal', 'measure', 'observerHeight', 'targetHeight'],
+      readouts: ['visibleByCell', 'marchTime', 'pyramidTime', 'identical'],
+      camera: {...TERRAIN_FRAMES.gornergratWide, transitionMs: 1400},
+      furniture: {title: {title: 'Does the cell size change the answer?'}},
+      stage: 'march'
     }
   ]
 });

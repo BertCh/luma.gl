@@ -684,6 +684,7 @@ export type {
 
 export {
   getGPUGridCellCount,
+  getGPUGridCornerCount,
   getGPUGridGeneratorParameterValues,
   getGPUGridVerticesPerCell,
   getGPUShapeGeneratorParameterValues,
@@ -1086,6 +1087,7 @@ export type {
   GPUGeometryOrientationProps,
   GPUGeometryCleanupOutput,
   GPUGeometryCleanupParameters,
+  GPUGeometryCleanupPointOutput,
   GPUGeometryCleanupProps
 } from './geometry-edit/index';
 

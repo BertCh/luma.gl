@@ -24,18 +24,60 @@ import {
   GPUCommandGraph,
   type CompiledGPUCommandGraph
 } from '@luma.gl/gpgpu/gpu-core';
+import {dissolveBoundaries, toSegmentPairs} from '../../cartography/boundaries';
+import {MONTREAL} from '../../cartography/gazetteer';
+import {getLocalProjector} from '../../cartography/segments';
+import {formatCount, formatDistance, formatPercent, liveText} from '../../cartography/live-text';
 import {importGraphBuffer} from '../../engine/graph-buffers';
 import {SpatialAnalysisPointLayer, SpatialAnalysisSegmentLayer} from '../../engine/layers';
 import {createPlaybackClock} from '../../engine/playback';
-import {formatCount, SpatialAnalysisResources} from '../../engine/resources';
+import {directionFor} from '../../engine/ramps';
+import {SpatialAnalysisResources} from '../../engine/resources';
 import {SummaryReader} from '../../engine/summary-reader';
-import type {SceneContext, SceneInstance} from '../scene';
-import {binValues, histogramChart} from '../movement/f-chart-helpers';
+import type {MapAnnotation, SceneContext, SceneInstance} from '../scene';
 import {createTrackSet} from '../movement/b12-tracks';
-import {BundledPathLayer} from './b11-flow-layers';
-import {getApproximateKilometres} from './b11-flight-data';
+import {BundleRibbonLayer, RideTrailLayer} from './bixi-bundles-layers';
+import {
+  BIKE_HALO,
+  BIKE_INK,
+  BIKE_RADIUS_PIXELS,
+  BIKE_SPEED_EXTENT,
+  BIKE_SPEED_RANGE,
+  DEMOTED_BUNDLE_WIDTH_PIXELS,
+  formatRideClock,
+  getCrossingPalette,
+  getDemotedBundleInk,
+  getRideClassTable,
+  GHOST_INK,
+  GHOST_WIDTH_PIXELS,
+  HUB_NAME_COUNT,
+  HUB_RING_COUNT,
+  HUB_RING_INK,
+  HUB_RING_RADIUS_PIXELS,
+  RIDE_CLASS_BREAKS,
+  RIDE_TRAIL_INK,
+  RIDE_TRAIL_WIDTH_PIXELS,
+  RIDE_WINDOW_SECONDS,
+  STATION_INK,
+  STATION_RADIUS_PIXELS,
+  STREET_DISTANCE_METERS,
+  TRUNK_WIDTH_MAX_PIXELS,
+  TRUNK_WIDTH_MIN_PIXELS
+} from './bixi-bundles-style';
+import {
+  binValues,
+  createStreetIndex,
+  getKilometres,
+  getMedian,
+  getParetoSeries,
+  getStationLabel,
+  getWorkBoxSideMeters,
+  measureBundles,
+  type StreetIndex
+} from './bixi-bundles-stats';
 import {findStationNearPixel, formatCompact, readBixiFlows} from './bixi-data';
 import {buildUndirectedEdges} from './bixi-graph';
+import {CONTEXT_INK, inkFor} from './flows-style';
 
 /** Option state of the bixi-bundles scene. */
 export type BixiBundlesOptions = {
@@ -46,7 +88,7 @@ export type BixiBundlesOptions = {
   showRides: boolean;
   trailMinutes: number;
   tailFade: number;
-  bikeSize: number;
+  bikeSpeed: boolean;
   edges: number;
   minRides: number;
   iterations: number;
@@ -56,10 +98,11 @@ export type BixiBundlesOptions = {
   stepScale: number;
   pointsPerEdge: '8' | '16' | '24' | '32';
   densityResolution: '128' | '256' | '512';
-  colorBy: 'rides' | 'length' | 'crossing' | 'plain';
-  ramp: 'viridis' | 'magma' | 'inferno' | 'cividis';
-  opacity: number;
+  colorBy: 'rides' | 'crossing';
+  radiusRing: 'round' | 'start';
+  compareStraight: boolean;
   showStraight: boolean;
+  showBoroughs: boolean;
   showStations: boolean;
 };
 
@@ -67,13 +110,12 @@ export type BixiBundlesOptions = {
 export const BUNDLE_MAXIMUM_ITERATIONS = 32;
 /** Compile-time edge capacity: the busiest station pairs. */
 export const BUNDLE_EDGE_CAPACITY = 30000;
-/** Length of the ride window in seconds (07:30 to 10:00). */
-export const RIDE_WINDOW_SECONDS = 9000;
-const HUB_COUNT = 24;
-const COVERAGE_CELL_DEGREES = 0.002;
 const RETIRE_FRAMES = 4;
 const SETTLE_MILLISECONDS = 350;
 const STATUS_INTERVAL_FRAMES = 12;
+const STRETCH_BINS = 24;
+const STRETCH_MAXIMUM = 1.6;
+const DOWNTOWN = MONTREAL.places.downtown.lngLat;
 
 type BundlingGraph = {
   resources: SpatialAnalysisResources;
@@ -87,9 +129,11 @@ type BundlingGraph = {
  * Edge-bundled station flows with the morning's rides running over them. One compiled
  * `GPUEdgeBundling` graph turns the busiest 30,000 BIXI station pairs into bundled polylines (the
  * iteration count, kernel radius, decay, stiffness and step scale are one parameter buffer; the
- * edge mask applies the ride filters). A `GPUTrajectoryPlayhead` graph interpolates 8,365 routed
+ * edge mask applies the ride filters) and a scene-local ribbon layer draws them with the width
+ * following the rides on the pair. A `GPUTrajectoryPlayhead` graph interpolates 8,365 routed
  * rides at the clock and a `GPUTimeWindowFilter` graph selects the trail segments, both driven by
- * parameter buffers.
+ * parameter buffers. The CPU adds what the story needs to say: the kernel radius in metres, the
+ * Pareto curve of the pairs, and how far the bundles lie from the streets the rides used.
  */
 export async function createBixiBundles(
   ctx: SceneContext<BixiBundlesOptions>
@@ -101,48 +145,94 @@ export async function createBixiBundles(
   const edgeCount = Math.min(BUNDLE_EDGE_CAPACITY, allEdges.count);
   const resources = new SpatialAnalysisResources(device, 'bixi-bundles');
   const stationCount = flows.stationCount;
+  // Rides between two different stations: the base of every share the story quotes.
+  const stationToStationRides = flows.totalRides - flows.sameStationRides;
+  const maximumRides = allEdges.rides[0];
+  ctx.setAnnotationHalo('heavy');
 
   // ---- Edge inputs ------------------------------------------------------------------------------
-  const lengthKm = new Float32Array(edgeCount);
+  const lengthKm = new Float32Array(allEdges.count);
   const crossing = new Float32Array(edgeCount);
-  for (let edge = 0; edge < edgeCount; edge++) {
+  const rideClass = new Float32Array(edgeCount);
+  const cumulativeRides = new Float64Array(allEdges.count + 1);
+  for (let edge = 0; edge < allEdges.count; edge++) {
     const a = allEdges.a[edge];
     const b = allEdges.b[edge];
-    lengthKm[edge] = getApproximateKilometres(
+    lengthKm[edge] = getKilometres(
       flows.lngLat[a * 2],
       flows.lngLat[a * 2 + 1],
       flows.lngLat[b * 2],
       flows.lngLat[b * 2 + 1]
     );
-    crossing[edge] = flows.borough[a] === flows.borough[b] ? 0 : 1;
+    cumulativeRides[edge + 1] = cumulativeRides[edge] + allEdges.rides[edge];
+    if (edge < edgeCount) {
+      crossing[edge] = flows.borough[a] === flows.borough[b] ? 0 : 1;
+      rideClass[edge] = RIDE_CLASS_BREAKS.filter(limit => allEdges.rides[edge] >= limit).length;
+    }
   }
-  const rideShare = (() => {
-    let covered = 0;
-    for (let edge = 0; edge < edgeCount; edge++) covered += allEdges.rides[edge];
-    return covered / allEdges.totalRides;
-  })();
-  const ranges: Record<'rides' | 'length' | 'crossing', [number, number]> = {
-    rides: [
-      Math.max(1, allEdges.rides[Math.floor(edgeCount * 0.9)]),
-      allEdges.rides[Math.floor(edgeCount * 0.01)]
-    ],
-    length: [0, percentile(lengthKm, 0.95)],
-    crossing: [0, 1]
-  };
+  const pareto = getParetoSeries(cumulativeRides, stationToStationRides);
+
+  // The busiest partner of every station: edges are ranked by rides, so the first one seen wins.
+  const partner = new Int32Array(stationCount).fill(-1);
+  const partnerRides = new Float32Array(stationCount);
+  for (let edge = 0; edge < edgeCount; edge++) {
+    for (const [from, to] of [
+      [allEdges.a[edge], allEdges.b[edge]],
+      [allEdges.b[edge], allEdges.a[edge]]
+    ]) {
+      if (partner[from] < 0) {
+        partner[from] = to;
+        partnerRides[from] = allEdges.rides[edge];
+      }
+    }
+  }
+
   const hubRows = (() => {
     const order = Array.from({length: stationCount}, (_, station) => station).sort(
       (x, y) => flows.departures[y] + flows.arrivals[y] - flows.departures[x] - flows.arrivals[x]
     );
-    return Uint32Array.from(order.slice(0, HUB_COUNT));
+    return Uint32Array.from(order.slice(0, HUB_RING_COUNT));
   })();
+  const hubAnnotations: MapAnnotation[] = Array.from(hubRows.slice(0, HUB_NAME_COUNT)).map(
+    (station, rank) => ({
+      kind: 'point',
+      id: `hub-${rank}`,
+      coordinate: [flows.lngLat[station * 2], flows.lngLat[station * 2 + 1]],
+      text: getStationLabel(flows.names[station]),
+      rank: 'context',
+      marker: 'none',
+      minZoom: 11.6,
+      priority: 3
+    })
+  );
+  ctx.setAnnotations('hubs', hubAnnotations);
+
   const positions = resources.createBuffer('positions', flows.lngLat);
   const sources = resources.createBuffer('sources', allEdges.a.slice(0, edgeCount));
   const targets = resources.createBuffer('targets', allEdges.b.slice(0, edgeCount));
-  const values = resources.createBuffer('values', lengthKm);
+  const rideValues = resources.createBuffer('rides', allEdges.rides.slice(0, edgeCount));
+  const rideClasses = resources.createBuffer('ride-classes', rideClass);
+  const crossingClasses = resources.createBuffer('crossing-classes', crossing);
   const mask = resources.createBuffer('mask', new Uint32Array(edgeCount).fill(1));
-  const maskWeights = resources.createBuffer('mask-weights', new Float32Array(edgeCount).fill(1));
-  const straight = resources.createBuffer('straight', allEdges.segments.slice(0, edgeCount * 4));
   const hubs = resources.createBuffer('hubs', hubRows);
+
+  // Faint borough outlines (context): shared edges once, the outer edge of the union once.
+  const boroughs = ctx.datasets.get('montreal-boroughs');
+  const outlineRows = (() => {
+    if (!boroughs.geojson) return new Float32Array(0);
+    const {interior, exterior} = dissolveBoundaries(boroughs.geojson, (_feature, index) => index);
+    const joined = new Float64Array(interior.length + exterior.length);
+    joined.set(interior);
+    joined.set(exterior, interior.length);
+    return toSegmentPairs(joined, getLocalProjector(boroughs.defaultOrigin));
+  })();
+  const outlineCount = outlineRows.length / 4;
+  const outlineBuffer = resources.createBuffer('borough-outline', outlineRows);
+  const outlineOrigin: [number, number, number] = [
+    boroughs.defaultOrigin[0],
+    boroughs.defaultOrigin[1],
+    0
+  ];
   const parameterBuffer = resources.createParameterBuffer('bundling-parameters', 'uint32', 5);
 
   let bundling: BundlingGraph | null = null;
@@ -153,10 +243,23 @@ export async function createBixiBundles(
   let statsStale = true;
   let liveEdges = 0;
   let liveMask = new Uint32Array(edgeCount);
+  let boxSideMeters = 0;
+  let legendClasses: readonly number[] | null = null;
+  let ringKey = '';
+  let trunkShown = false;
+  let streets: StreetIndex | null = null;
   const retired: {resources: SpatialAnalysisResources; frames: number}[] = [];
 
   function markChanged(): void {
     encodeFrames = Math.max(encodeFrames, 2);
+    markStatsStale();
+    if (trunkShown) {
+      ctx.setAnnotations('trunk', null);
+      trunkShown = false;
+    }
+  }
+
+  function markStatsStale(): void {
     statsStale = true;
     lastChange = performance.now();
   }
@@ -172,44 +275,116 @@ export async function createBixiBundles(
     };
   }
 
+  /** The kernel in metres: the readouts, the dashed ring at downtown and the scale-bar tick. */
+  function updateKernelGeometry(): void {
+    const {iterations, kernelRadius, decay, radiusRing, showRides} = ctx.options;
+    const startMeters = kernelRadius * boxSideMeters;
+    // The radius is multiplied by the decay after every round, so round n used r0 * decay^(n-1).
+    const roundMeters = startMeters * decay ** Math.max(iterations - 1, 0);
+    ctx.setReadout('radiusStart', startMeters > 0 ? startMeters : null);
+    ctx.setReadout('radiusNow', iterations > 0 && roundMeters > 0 ? roundMeters : null);
+    ctx.setReadout('boxSide', boxSideMeters > 0 ? boxSideMeters : null);
+    const ringMeters = radiusRing === 'start' ? startMeters : roundMeters;
+    const visible = iterations > 0 && !showRides && ringMeters > 0;
+    const key = visible ? `${Math.round(ringMeters)}:${radiusRing}` : 'hidden';
+    if (key === ringKey) return;
+    ringKey = key;
+    ctx.setAnnotations(
+      'kernel',
+      visible
+        ? [
+            {
+              kind: 'ring',
+              id: 'kernel-radius',
+              coordinate: DOWNTOWN,
+              radiusMeters: ringMeters,
+              text: `kernel radius ${formatDistance(ringMeters)}`,
+              dashed: true,
+              tone: 'signal'
+            }
+          ]
+        : null
+    );
+    ctx.setFurniture({scaleBar: {units: 'metric', ticks: visible ? [ringMeters] : []}});
+  }
+
   function writeParameters(): void {
     parameterBuffer.write(createGPUEdgeBundlingParameterValues(getParameters(), 'uint32'));
+    ctx.setReadout('iteration', ctx.options.iterations);
+    updateKernelGeometry();
+    publishCost();
     markChanged();
   }
 
+  function publishCost(): void {
+    const controlPoints =
+      liveEdges * (bundling?.pointsPerEdge ?? Number(ctx.options.pointsPerEdge));
+    ctx.setCost({
+      records: controlPoints,
+      // Nodes of the bundling graph: four, then three per active round.
+      passes: 4 + 3 * ctx.options.iterations,
+      note: 'encoded again only when a parameter changes'
+    });
+    ctx.setReadout('controlPoints', controlPoints);
+  }
+
+  /** The ride filters, the readouts that depend on them and the Pareto curve with its cutoff. */
   function writeMask(): void {
     const {edges: limit, minRides} = ctx.options;
     const live = new Uint32Array(edgeCount);
-    const weights = new Float32Array(edgeCount);
+    const classCounts = new Array<number>(RIDE_CLASS_BREAKS.length + 1).fill(0);
+    const drawnLengths: number[] = [];
+    const leftOutLengths: number[] = [];
     liveEdges = 0;
     let rides = 0;
-    for (let edge = 0; edge < edgeCount; edge++) {
-      const on = edge < limit && allEdges.rides[edge] >= minRides ? 1 : 0;
-      live[edge] = on;
-      weights[edge] = on;
-      liveEdges += on;
-      if (on) rides += allEdges.rides[edge];
+    let crossingRides = 0;
+    for (let edge = 0; edge < allEdges.count; edge++) {
+      const on = edge < edgeCount && edge < limit && allEdges.rides[edge] >= minRides;
+      if (!on) {
+        leftOutLengths.push(lengthKm[edge]);
+        continue;
+      }
+      live[edge] = 1;
+      liveEdges++;
+      rides += allEdges.rides[edge];
+      if (crossing[edge] === 1) crossingRides += allEdges.rides[edge];
+      classCounts[rideClass[edge]]++;
+      drawnLengths.push(lengthKm[edge]);
     }
     mask.write(live);
-    maskWeights.write(weights);
     liveMask = live;
-    ctx.setReadout('edges', `${formatCount(liveEdges)} of ${formatCount(edgeCount)}`);
-    ctx.setReadout('controlPoints', liveEdges * (bundling?.pointsPerEdge ?? 16));
-    ctx.setReadout('ridesCovered', rides / allEdges.totalRides);
-    markChanged();
-  }
-
-  function writeValues(): void {
-    const {colorBy} = ctx.options;
-    if (colorBy === 'plain') return;
-    values.write(
-      colorBy === 'rides'
-        ? allEdges.rides.slice(0, edgeCount)
-        : colorBy === 'length'
-          ? lengthKm
-          : crossing
+    boxSideMeters = getWorkBoxSideMeters(flows.lngLat, allEdges.a, allEdges.b, live, edgeCount);
+    ctx.setReadout('drawn', `${formatCount(liveEdges)} of ${formatCount(allEdges.count)}`);
+    ctx.setReadout('ridesShare', rides / stationToStationRides);
+    ctx.setReadout('crossingShare', rides > 0 ? crossingRides / rides : null);
+    ctx.setReadout(
+      'lengthBias',
+      liveEdges > 0 && leftOutLengths.length > 0
+        ? `${getMedian(drawnLengths).toFixed(1)} km vs ${getMedian(leftOutLengths).toFixed(1)} km`
+        : null
     );
-    ctx.setLegendExtent('edge-value', ranges[colorBy]);
+    ctx.setChart('paretoChart', {
+      kind: 'line',
+      series: [
+        {label: 'cumulative share of rides', x: pareto.x, y: pareto.y, color: 0, area: true}
+      ],
+      xScale: 'log',
+      xDomain: [1, allEdges.count],
+      yDomain: [0, 1],
+      xLabel: 'pairs ranked by rides (log scale)',
+      yLabel: 'share of rides between stations',
+      formatX: formatCompact,
+      formatY: value => formatPercent(value),
+      link: {option: 'edges', label: value => `${formatCompact(value)} pairs`},
+      height: 130,
+      description:
+        'Pareto curve of the station pairs ranked by rides in August 2024: the busiest few thousand pairs carry a large share of all rides between stations and the rest add little each. The marker is the number of pairs drawn.'
+    });
+    ctx.setLegendData('rideClassCounts', classCounts);
+    ctx.setLegendData('maximumRides', maximumRides);
+    updateKernelGeometry();
+    publishCost();
+    markChanged();
   }
 
   function buildBundling(): BundlingGraph {
@@ -269,76 +444,75 @@ export async function createBixiBundles(
     if (bundling) retired.push({resources: bundling.resources, frames: 0});
     bundling = buildBundling();
     parameterBuffer.write(createGPUEdgeBundlingParameterValues(getParameters(), 'uint32'));
+    ctx.setReadout('iteration', ctx.options.iterations);
     writeMask();
-    writeValues();
-    markChanged();
   }
 
-  /** Path stretch and map coverage of the bundled polylines against the straight edges. */
+  function getStreets(): StreetIndex {
+    streets ??= createStreetIndex(
+      rideData.column<Float32Array>('vertices'),
+      rideData.column<Uint32Array>('pathOffsets'),
+      [rideData.defaultOrigin[0], rideData.defaultOrigin[1]]
+    );
+    return streets;
+  }
+
+  /** What the bundles did to the map, read back once the parameters have settled. */
   function processPaths(current: BundlingGraph, paths: Float32Array): void {
-    const {pointsPerEdge} = current;
-    const stretches: number[] = [];
-    let straightKilometres = 0;
-    let bundledKilometres = 0;
-    const straightCells = new Set<number>();
-    const bundledCells = new Set<number>();
-    const mark = (cells: Set<number>, ax: number, ay: number, bx: number, by: number) => {
-      const steps = Math.max(
-        1,
-        Math.ceil(Math.max(Math.abs(bx - ax), Math.abs(by - ay)) / (COVERAGE_CELL_DEGREES * 0.5))
-      );
-      for (let step = 0; step <= steps; step++) {
-        const t = step / steps;
-        const x = Math.floor((ax + (bx - ax) * t) / COVERAGE_CELL_DEGREES);
-        const y = Math.floor((ay + (by - ay) * t) / COVERAGE_CELL_DEGREES);
-        cells.add((x + 100000) * 200000 + (y + 100000));
-      }
-    };
-    for (let edge = 0; edge < edgeCount; edge++) {
-      if (liveMask[edge] !== 1) continue;
-      const first = edge * pointsPerEdge * 2;
-      const last = first + (pointsPerEdge - 1) * 2;
-      const direct = getApproximateKilometres(
-        paths[first],
-        paths[first + 1],
-        paths[last],
-        paths[last + 1]
-      );
-      straightKilometres += direct;
-      mark(straightCells, paths[first], paths[first + 1], paths[last], paths[last + 1]);
-      let along = 0;
-      for (let point = 0; point < pointsPerEdge - 1; point++) {
-        const a = first + point * 2;
-        along += getApproximateKilometres(paths[a], paths[a + 1], paths[a + 2], paths[a + 3]);
-        mark(bundledCells, paths[a], paths[a + 1], paths[a + 2], paths[a + 3]);
-      }
-      bundledKilometres += along;
-      if (direct > 0.3) stretches.push(along / direct);
-    }
+    const options = ctx.options;
+    const measures = measureBundles({
+      paths,
+      pointsPerEdge: current.pointsPerEdge,
+      edgeCount,
+      mask: liveMask,
+      // Distance from the streets needs the rides' index; only the rides step asks for it.
+      streets: options.showRides ? getStreets() : null,
+      streetMeters: STREET_DISTANCE_METERS
+    });
     ctx.setChart(
       'stretchChart',
-      stretches.length
-        ? histogramChart(binValues(stretches, 1, 1.6, 24), 1, 1.6, {
-            xLabel: 'path length / straight length (60% and over in the last bin)',
+      measures.stretches.length
+        ? {
+            kind: 'histogram',
+            values: binValues(measures.stretches, 1, STRETCH_MAXIMUM, STRETCH_BINS),
+            xDomain: [1, STRETCH_MAXIMUM],
+            xLabel: 'bundled length / straight length (longer ones in the last bin)',
             yLabel: 'pairs',
-            color: 3,
+            color: 1,
             formatX: value => value.toFixed(2),
             formatY: formatCompact,
+            height: 110,
             description:
-              'Histogram of how much longer each bundled pair is than its straight line. Most pairs stay within a few percent; the tail is pairs pulled into a nearby corridor.'
-          })
+              'Histogram of how much longer each bundled pair is than its straight line. Most pairs stay close to 1; the tail is pairs pulled into a nearby corridor.'
+          }
         : null
     );
-    ctx.setReadout(
-      'stretch',
-      straightKilometres > 0 ? bundledKilometres / straightKilometres : null
-    );
-    ctx.setReadout('coverageStraight', straightCells.size);
-    ctx.setReadout('coverageBundled', bundledCells.size);
-    ctx.setReadout(
-      'inkSaved',
-      straightCells.size > 0 ? 1 - bundledCells.size / straightCells.size : null
-    );
+    ctx.setReadout('stretch', measures.meanStretch);
+    ctx.setReadout('areaStraight', measures.straightAreaKm2 > 0 ? measures.straightAreaKm2 : null);
+    ctx.setReadout('areaBundled', measures.bundledAreaKm2 > 0 ? measures.bundledAreaKm2 : null);
+    ctx.setReadout('offStreetBundled', measures.offStreetBundled);
+    ctx.setReadout('offStreetStraight', measures.offStreetStraight);
+    const showTrunk =
+      measures.busiestEdge !== null &&
+      measures.busiestMidpoint !== null &&
+      options.iterations > 0 &&
+      !options.showRides &&
+      !options.compareStraight;
+    if (showTrunk) {
+      const edge = measures.busiestEdge as number;
+      ctx.setAnnotations('trunk', [
+        {
+          kind: 'note',
+          id: 'busiest-trunk',
+          coordinate: measures.busiestMidpoint as [number, number],
+          title: liveText('{rides:integer} rides', {rides: allEdges.rides[edge]}),
+          text: `${getStationLabel(flows.names[allEdges.a[edge]])} and ${getStationLabel(flows.names[allEdges.b[edge]])}`,
+          tone: 'accent',
+          priority: 8
+        }
+      ]);
+    }
+    trunkShown = showTrunk;
   }
 
   // ---- Rides: playhead and trail graphs ---------------------------------------------------------
@@ -524,39 +698,39 @@ export async function createBixiBundles(
     }
     return counts;
   })();
+  const concurrentSeconds = Array.from(concurrent, (_, minute) => minute * 60);
   let lastChartMinute = -1;
   let statusStale = true;
-
-  function formatRideClock(seconds: number): string {
-    const total = 7.5 * 3600 + seconds;
-    const hour = Math.floor(total / 3600);
-    const minute = Math.floor((total % 3600) / 60);
-    return `${String(hour).padStart(2, '0')}:${String(minute).padStart(2, '0')}`;
-  }
 
   function updateRideChart(playhead: number): void {
     const minute = Math.round(playhead / 60);
     if (minute === lastChartMinute) return;
     lastChartMinute = minute;
-    const x = Array.from(concurrent, (_, index) => 7.5 + index / 60);
     ctx.setChart('ridesChart', {
-      kind: 'line',
-      series: [{label: 'rides in progress', x, y: concurrent, area: true, color: 0}],
-      xDomain: [7.5, 10],
-      markers: [{x: 7.5 + playhead / 3600, label: formatRideClock(playhead)}],
-      xLabel: 'time of day (local)',
+      kind: 'timeline',
+      x: concurrentSeconds,
+      y: concurrent,
+      mode: 'area',
+      playhead,
+      xDomain: [0, RIDE_WINDOW_SECONDS],
+      xLabel: 'Montreal local time',
       yLabel: 'rides in progress',
-      height: 120,
-      formatX: value =>
-        `${Math.floor(value)}:${String(Math.round((value % 1) * 60)).padStart(2, '0')}`,
+      formatX: formatRideClock,
       formatY: formatCompact,
+      link: {option: 'time', label: formatRideClock},
+      height: 110,
       description:
-        'Routed BIXI rides in progress each minute between 07:30 and 10:00 on 15 August 2024; the rule is the playhead. Rides already underway at 07:30 are counted from the start.'
+        'Routed BIXI rides in progress each minute between 07:30 and 10:00 on 15 August 2024; the marker is the playhead. Rides already under way at 07:30 are counted from the start.'
     });
   }
 
   ctx.setReadout('rides', trackCount);
-  ctx.setReadout('ridesShare', rideShare);
+  ctx.setReadout('streetDistance', STREET_DISTANCE_METERS);
+  ctx.setFurniture({
+    title: {
+      sample: `${formatCount(edgeCount)} busiest station pairs of ${formatCount(allEdges.count)}, August 2024`
+    }
+  });
   rebuildBundling();
 
   return {
@@ -584,8 +758,19 @@ export async function createBixiBundles(
         case 'stepScale':
           writeParameters();
           break;
-        case 'colorBy':
-          writeValues();
+        case 'radiusRing':
+          updateKernelGeometry();
+          break;
+        case 'compareStraight':
+          // The busiest-trunk note is only drawn on the bundled map, not across a divider.
+          markStatsStale();
+          ctx.requestLayers();
+          break;
+        case 'showRides':
+          // The off-street shares are only measured while the rides are shown.
+          updateKernelGeometry();
+          markStatsStale();
+          statusStale = true;
           ctx.requestLayers();
           break;
         case 'time':
@@ -603,6 +788,15 @@ export async function createBixiBundles(
       ctx.requestLayers();
     },
 
+    onGroundChange() {
+      ctx.requestLayers();
+    },
+
+    onLegendFilter(_id, classes) {
+      legendClasses = classes;
+      ctx.requestLayers();
+    },
+
     getTooltip(event) {
       const station = findStationNearPixel(
         ctx.getViewport(),
@@ -611,7 +805,29 @@ export async function createBixiBundles(
         event.pixel
       );
       if (station < 0) return null;
-      return `${flows.names[station]}\n${flows.boroughNames[flows.borough[station]]}\n${formatCompact(flows.departures[station])} departures, ${formatCompact(flows.arrivals[station])} arrivals in August`;
+      const best = partner[station];
+      return {
+        title: getStationLabel(flows.names[station]),
+        subtitle: flows.boroughNames[flows.borough[station]],
+        rows: [
+          {
+            label: 'Departures, August 2024',
+            value: formatCount(flows.departures[station]),
+            unit: 'rides',
+            emphasis: true
+          },
+          {label: 'Arrivals', value: formatCount(flows.arrivals[station]), unit: 'rides'},
+          ...(best >= 0
+            ? [
+                {
+                  label: 'Busiest pair',
+                  value: getStationLabel(flows.names[best]),
+                  unit: `${formatCount(partnerRides[station])} rides`
+                }
+              ]
+            : [])
+        ]
+      };
     },
 
     encode(commandEncoder, frame) {
@@ -666,39 +882,86 @@ export async function createBixiBundles(
     getLayers() {
       if (!bundling) return [];
       const options = ctx.options;
-      const dark = ctx.theme() === 'dark';
+      const ground = ctx.ground();
       const lngLat = COORDINATE_SYSTEM.LNGLAT;
-      const colored = options.colorBy !== 'plain';
+      const crossingMode = options.colorBy === 'crossing';
+      const palette = crossingMode
+        ? getCrossingPalette(ground)
+        : getRideClassTable(ground).colors.map(
+            color => [color[0], color[1], color[2], color[3] ?? 255] as const
+          );
+      const ribbon = {
+        paths: bundling.paths,
+        pointsPerPath: bundling.pointsPerEdge,
+        pathCount: edgeCount,
+        values: rideValues,
+        classes: crossingMode ? crossingClasses : rideClasses,
+        edgeMask: mask,
+        palette,
+        maximumValue: maximumRides,
+        widthMinPixels: TRUNK_WIDTH_MIN_PIXELS,
+        widthMaxPixels: TRUNK_WIDTH_MAX_PIXELS,
+        widthByValue: true,
+        highlightClasses: crossingMode ? null : legendClasses
+      };
       const layers: Layer[] = [];
-      if (options.showStraight) {
+      if (options.showBoroughs && outlineCount > 0) {
         layers.push(
           new SpatialAnalysisSegmentLayer({
-            id: 'bixi-straight',
-            coordinateSystem: lngLat,
-            segments: straight,
-            weights: maskWeights,
-            instanceCount: edgeCount,
-            widthPixels: 0.8,
-            color: dark ? [180, 195, 230, 40] : [60, 70, 100, 45]
+            id: 'bixi-borough-outline',
+            coordinateOrigin: outlineOrigin,
+            segments: outlineBuffer,
+            instanceCount: outlineCount,
+            widthPixels: 0.5,
+            color: inkFor(CONTEXT_INK, ground)
           })
         );
       }
-      layers.push(
-        new BundledPathLayer({
-          id: `bixi-bundles-${bundling.pointsPerEdge}`,
-          paths: bundling.paths,
-          pointsPerPath: bundling.pointsPerEdge,
-          pathCount: edgeCount,
-          values: colored ? values : null,
-          valueRange: ranges[options.colorBy === 'plain' ? 'rides' : options.colorBy],
-          ramp: options.ramp,
-          sqrtScale: options.colorBy === 'rides',
-          edgeMask: mask,
-          startColor: dark ? [96, 214, 255, 255] : [20, 110, 190, 255],
-          endColor: dark ? [96, 214, 255, 255] : [20, 110, 190, 255],
-          opacity: options.opacity
-        })
-      );
+      if (options.showStraight && !options.compareStraight) {
+        layers.push(
+          new BundleRibbonLayer({
+            ...ribbon,
+            id: `bixi-straight-${bundling.pointsPerEdge}`,
+            straight: true,
+            flatColor: inkFor(GHOST_INK, ground),
+            widthByValue: false,
+            widthMinPixels: GHOST_WIDTH_PIXELS,
+            heaviestLast: false,
+            highlightClasses: null
+          })
+        );
+      }
+      if (options.compareStraight) {
+        // Same widths, same classes, same legend: only the geometry differs across the divider.
+        layers.push(
+          new BundleRibbonLayer({
+            ...ribbon,
+            id: `bixi-compare-straight-${bundling.pointsPerEdge}`,
+            straight: true,
+            compareSide: 'a'
+          }),
+          new BundleRibbonLayer({
+            ...ribbon,
+            id: `bixi-compare-bundled-${bundling.pointsPerEdge}`,
+            compareSide: 'b'
+          })
+        );
+      } else if (options.showRides) {
+        layers.push(
+          new BundleRibbonLayer({
+            ...ribbon,
+            id: `bixi-bundles-demoted-${bundling.pointsPerEdge}`,
+            flatColor: getDemotedBundleInk(ground),
+            widthByValue: false,
+            widthMinPixels: DEMOTED_BUNDLE_WIDTH_PIXELS,
+            highlightClasses: null
+          })
+        );
+      } else {
+        layers.push(
+          new BundleRibbonLayer({...ribbon, id: `bixi-bundles-${bundling.pointsPerEdge}`})
+        );
+      }
       if (options.showStations) {
         layers.push(
           new SpatialAnalysisPointLayer({
@@ -706,8 +969,8 @@ export async function createBixiBundles(
             coordinateSystem: lngLat,
             positions,
             instanceCount: stationCount,
-            radiusPixels: 1.6,
-            color: dark ? [235, 240, 255, 150] : [30, 40, 70, 150]
+            radiusPixels: STATION_RADIUS_PIXELS,
+            color: inkFor(STATION_INK, ground)
           }),
           new SpatialAnalysisPointLayer({
             id: 'bixi-bundle-hubs',
@@ -715,14 +978,16 @@ export async function createBixiBundles(
             positions,
             ids: hubs,
             instanceCount: hubRows.length,
-            radiusPixels: 4,
-            color: [255, 184, 64, 235]
+            shape: 'ring',
+            radiusPixels: HUB_RING_RADIUS_PIXELS,
+            outlineWidthPixels: 1.5,
+            color: inkFor(HUB_RING_INK, ground)
           })
         );
       }
       if (options.showRides) {
         layers.push(
-          new SpatialAnalysisSegmentLayer({
+          new RideTrailLayer({
             id: 'bixi-ride-trails',
             coordinateOrigin,
             segments: rideSegments,
@@ -730,8 +995,8 @@ export async function createBixiBundles(
             drawCommands: trailDraw,
             weights: fadeWeights,
             clipFractions,
-            color: dark ? [255, 120, 150, 255] : [210, 40, 90, 255],
-            widthPixels: 2.2
+            color: inkFor(RIDE_TRAIL_INK, ground),
+            widthPixels: RIDE_TRAIL_WIDTH_PIXELS
           }),
           new SpatialAnalysisPointLayer({
             id: 'bixi-bike-halo',
@@ -739,8 +1004,8 @@ export async function createBixiBundles(
             ids: activeIds,
             positions: currentPositions,
             drawCommands: bikeDraw,
-            radiusPixels: options.bikeSize + 1.4,
-            color: dark ? [8, 10, 18, 235] : [250, 250, 253, 235]
+            radiusPixels: BIKE_RADIUS_PIXELS + 1.4,
+            color: BIKE_HALO
           }),
           new SpatialAnalysisPointLayer({
             id: 'bixi-bikes',
@@ -748,11 +1013,17 @@ export async function createBixiBundles(
             ids: activeIds,
             positions: currentPositions,
             drawCommands: bikeDraw,
-            values: speeds,
-            valueFormat: 'float32',
-            colormap: 'inferno',
-            valueRange: [0, 7],
-            radiusPixels: options.bikeSize
+            radiusPixels: BIKE_RADIUS_PIXELS,
+            ...(options.bikeSpeed
+              ? {
+                  values: speeds,
+                  valueFormat: 'float32' as const,
+                  colormap: 'magma' as const,
+                  valueRange: BIKE_SPEED_EXTENT,
+                  rampRange: BIKE_SPEED_RANGE,
+                  reverseRamp: directionFor(ground, 'magma').reverse
+                }
+              : {color: BIKE_INK})
           })
         );
       }
@@ -768,9 +1039,4 @@ export async function createBixiBundles(
       resources.destroy();
     }
   };
-}
-
-function percentile(values: ArrayLike<number>, fraction: number): number {
-  const sorted = Array.from(values).sort((a, b) => a - b);
-  return sorted[Math.min(sorted.length - 1, Math.floor(fraction * sorted.length))] ?? 1;
 }

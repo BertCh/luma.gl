@@ -3,28 +3,45 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {formatPlaybackTime, playbackOptions} from '../../engine/playback';
+import {joinCredits} from '../../cartography/credits';
+import {ground} from '../../cartography/grounds';
 import {defineScene} from '../scene';
 import type {FlightCorridorsOptions} from './flight-corridors.compute';
+import {MOVEMENT_CREDITS} from './movement-style';
 
 const US_VIEW = {longitude: -96, latitude: 38.5, zoom: 3.9};
 
 const ALTITUDE_RAMP_OPTIONS = [
-  {value: 'viridis', label: 'Viridis'},
   {value: 'magma', label: 'Magma'},
-  {value: 'inferno', label: 'Inferno'},
-  {value: 'cividis', label: 'Cividis (color-blind optimised)'}
+  {value: 'inferno', label: 'Inferno'}
 ] as const;
 
 export default defineScene<FlightCorridorsOptions>({
   id: 'flight-corridors',
   title: 'Where do jets fly over America?',
   chapter: 'movement',
-  order: 20,
+  order: 10,
   summary:
     'Replay a full day of US jet traffic on the GPU, then sum every flight into a line-density grid: the airways emerge as bright corridors, and an extruded view lifts every flight to its altitude.',
   contributors: ['GPUTrajectoryPlayhead', 'GPUTimeWindowFilter', 'GPULineDensity'],
   datasets: [{id: 'poopdeck-adsb-paths', role: 'flight trajectories (OpenSky ADS-B, 6 Jan 2020)'}],
   initialView: US_VIEW,
+  basemap: ground('night', {labels: 'none'}),
+  furniture: {
+    title: {
+      title: 'A day of US jet traffic',
+      subtitle: 'OpenSky ADS-B · 6 January 2020 (UTC)',
+      chips: ['Receivers hear what they hear', 'Simplified tracks']
+    },
+    scaleBar: {units: 'metric'},
+    credit: joinCredits(MOVEMENT_CREDITS.openSky),
+    clock: {
+      option: 'time',
+      time: {origin: '2020-01-06T00:00:00Z', unit: 'seconds'},
+      zones: ['UTC', 'America/New_York', 'America/Los_Angeles'],
+      progress: [0, 86400]
+    }
+  },
 
   options: [
     ...playbackOptions<FlightCorridorsOptions>({
@@ -177,6 +194,20 @@ export default defineScene<FlightCorridorsOptions>({
     },
     {
       kind: 'select',
+      id: 'densityView',
+      label: 'Corridor measure',
+      group: 'Corridors (line density)',
+      apply: 'compile',
+      default: 'density',
+      disabledWhen: state => !state.showDensity,
+      help: 'Density shows total track per area. Direction balance runs independent eastbound and westbound density graphs, then derives (east - west) / (east + west) on the GPU; blue is westbound-heavy and red is eastbound-heavy.',
+      options: [
+        {value: 'density', label: 'Track density'},
+        {value: 'direction-balance', label: 'East / west balance'}
+      ]
+    },
+    {
+      kind: 'select',
       id: 'cellDegrees',
       label: 'Cell size',
       group: 'Corridors (line density)',
@@ -198,9 +229,7 @@ export default defineScene<FlightCorridorsOptions>({
       help: 'Density is mapped through a square root so faint airways stay visible next to the busiest ones.',
       options: [
         {value: 'magma', label: 'Magma'},
-        {value: 'inferno', label: 'Inferno'},
-        {value: 'viridis', label: 'Viridis'},
-        {value: 'cividis', label: 'Cividis (color-blind optimised)'}
+        {value: 'inferno', label: 'Inferno'}
       ]
     },
     {
@@ -268,7 +297,7 @@ export default defineScene<FlightCorridorsOptions>({
       label: 'Altitude color ramp',
       group: 'Altitude view',
       apply: 'param',
-      default: 'viridis',
+      default: 'magma',
       help: 'Ramp over 0 to 13,000 m for every altitude-colored layer.',
       options: ALTITUDE_RAMP_OPTIONS
     }
@@ -286,6 +315,12 @@ export default defineScene<FlightCorridorsOptions>({
       label: 'How concentrated is the traffic?',
       kind: 'chart',
       help: 'Cumulative share of the distance flown against the busiest share of the grid cells that flights cross. A steep start means a few corridors carry most of the traffic.'
+    },
+    {
+      id: 'altitudeChart',
+      label: 'Flight levels by direction',
+      kind: 'chart',
+      help: 'Eastbound and westbound ADS-B positions are normalized separately. The labels mark each direction’s observed modal altitude band.'
     },
     {id: 'clock', label: 'Playhead', help: 'Simulated time on 6 January 2020.'},
     {
@@ -345,11 +380,36 @@ export default defineScene<FlightCorridorsOptions>({
       id: 'pieces',
       label: 'Segment-cell pieces',
       help: 'GPULineDensity clips every segment to the cells it crosses; this is the number of pieces against the capacity compiled for this grid. An overflow would make the counts low.'
+    },
+    {
+      id: 'directionCells',
+      label: 'Direction cells',
+      help: 'Only cells with at least 0.05 km of combined eastbound and westbound track per km². Lower-support cells are transparent rather than neutral.'
+    },
+    {
+      id: 'directionBalance',
+      label: 'Direction balance',
+      help: 'Distance-weighted eastbound share and the mean of the signed cell balances.'
+    },
+    {
+      id: 'directionPieces',
+      label: 'Direction pieces',
+      help: 'Per-direction GPULineDensity segment-cell pieces and capacities. Either overflow would make its side of the balance low.'
+    },
+    {
+      id: 'eastLevelPeak',
+      label: 'Eastbound modal level',
+      help: 'Highest bin of the normalized eastbound stored-altitude distribution.'
+    },
+    {
+      id: 'westLevelPeak',
+      label: 'Westbound modal level',
+      help: 'Highest bin of the normalized westbound stored-altitude distribution.'
     }
   ],
 
   legends: state => [
-    ...(state.showDensity
+    ...(state.showDensity && state.densityView === 'density'
       ? [
           {
             kind: 'ramp' as const,
@@ -360,6 +420,19 @@ export default defineScene<FlightCorridorsOptions>({
             sqrtScale: true,
             unit: 'km per km²',
             format: (value: number) => value.toFixed(value < 10 ? 1 : 0)
+          }
+        ]
+      : []),
+    ...(state.showDensity && state.densityView === 'direction-balance'
+      ? [
+          {
+            kind: 'ramp' as const,
+            id: 'directionBalance',
+            title: 'East / west balance',
+            ramp: 'diverging' as const,
+            extent: [-1, 1] as const,
+            unit: '(east − west) / total',
+            format: (value: number) => value.toFixed(1)
           }
         ]
       : []),
@@ -450,6 +523,9 @@ playCompiled.encode(commandEncoder, {parameters: undefined});`,
   story: [
     {
       id: 'the-day',
+      headline: 'One day of traffic fills the sky',
+      textAlternative: 'Amber aircraft marks animate over a dark map of the United States.',
+      optionsMode: 'fresh',
       title: 'What does a day of jet traffic over America look like?',
       body: 'Monday 6 January 2020: **38,135 jet flights** that reached at least 7,500 m crossed the contiguous United States, as heard by the volunteer OpenSky receiver network. Each disc is one aircraft at the playhead, colored by altitude (see the legend): dark discs are climbing or descending near an airport, bright ones are at cruise.\n\nPress **Play** below, or drag **Time of day (UTC)**; the slider follows the clock. **`GPUTrajectoryPlayhead`** runs one thread per flight, finds the two stored positions around the clock with a binary search and interpolates longitude, latitude and altitude, so the whole day stays live as you scrub. The chart counts flights per ten minutes, so you can see the daily rhythm and where the playhead sits in it.',
       camera: {...US_VIEW, transitionMs: 1200},
@@ -469,6 +545,9 @@ playCompiled.encode(commandEncoder, {parameters: undefined});`,
     },
     {
       id: 'trails',
+      headline: 'Comet tails retain one hour of flight',
+      textAlternative: 'Direction-coloured aircraft trails cross the northeast.',
+      optionsMode: 'fresh',
       title: 'Where have they just been? A window in time',
       body: '**`GPUTimeWindowFilter`** treats every segment between two stored positions as a time interval and keeps those that overlap `[playhead - length, playhead]`. It also writes a fade weight and a clip fraction, so the oldest segment is cut part-way, and writes the live count straight into the draw call. Nothing comes back to the CPU.\n\nSlide **Trail length** up to 90 minutes and the northeast corridor fills with long streaks. Lower **Tail fade** to 0 for solid trails, or switch **Color trails by** to *Step direction*: blue streaks head east, orange west.',
       camera: {longitude: -80, latitude: 39.5, zoom: 5.2, transitionMs: 1400},
@@ -485,6 +564,9 @@ playCompiled.encode(commandEncoder, {parameters: undefined});`,
     },
     {
       id: 'corridors',
+      headline: 'Adding tracks reveals airways',
+      textAlternative: 'A luminous density grid shows the busiest air corridors.',
+      optionsMode: 'fresh',
       title: 'Add up the whole day: the airways emerge',
       body: '**`GPULineDensity`** clips every segment of all 38,135 flights to a 0.2 degree grid and sums the length inside each cell. Line density is what QGIS calls "Line density"; here it runs in a few milliseconds on the GPU, in longitude/latitude with great-circle lengths (`coordinateSystem: \'spherical\'`).\n\nRead the map: bright straight lines are airways, bright knots are airports where arrivals and departures funnel together, dark areas are the empty sky between them. Try **Cell size** at 0.1 degrees (a compile-time option, so the control shows a rebuild badge): parallel airways separate. The curve below says how lopsided the sky is: a small share of cells carries most of the distance.',
       camera: {...US_VIEW, transitionMs: 1400},
@@ -502,17 +584,31 @@ playCompiled.encode(commandEncoder, {parameters: undefined});`,
     },
     {
       id: 'direction',
+      headline: 'The same roads carry both directions',
+      textAlternative:
+        'A diverging direction balance map distinguishes eastbound and westbound traffic.',
+      optionsMode: 'fresh',
       title: 'The sky is one-way streets',
-      body: 'Pilots fly airways in a set direction and a tailwind makes eastbound flights faster, so eastbound and westbound traffic uses different tracks. Set **Flight direction** to *Eastbound* and then *Westbound*: each choice feeds a different subset of tracks to a separate density graph (built the first time you pick it), and the trails take the same filter as a predicate mask on the time-window graph.\n\nCompare the two maps and look for airways that exist in one direction only. Westbound flights also fly slower over the ground in winter, because of the jet stream: the next scene measures that from the aircraft alone.',
+      body: 'Pilots fly airways in a set direction and a tailwind makes eastbound flights faster, so eastbound and westbound traffic uses different tracks. This map runs **two independently buffered `GPULineDensity` graphs**, one eastbound and one westbound, then a GPU pass derives `(east - west) / (east + west)` for every cell. Blue is westbound-heavy, red eastbound-heavy, and the pale middle is genuinely balanced rather than low traffic.\n\nSwitch back to *Track density* or set **Flight direction** to *Eastbound* and then *Westbound* to inspect each input. The trails still take the same filter as a predicate mask on the time-window graph. Westbound flights also fly slower over the ground in winter, because of the jet stream: the next scene measures that from the aircraft alone.',
       camera: {longitude: -98, latitude: 39, zoom: 4.3, transitionMs: 1400},
-      options: {direction: 'east', showDensity: true, showTrails: false, showMarkers: false},
-      controls: ['direction', 'cellDegrees', 'densityRamp'],
-      readouts: ['flown', 'concentration']
+      options: {
+        direction: 'all',
+        showDensity: true,
+        densityView: 'direction-balance',
+        showTrails: false,
+        showMarkers: false
+      },
+      controls: ['densityView', 'direction', 'cellDegrees'],
+      readouts: ['directionCells', 'directionBalance', 'directionPieces']
     },
     {
       id: 'extruded',
+      headline: 'Flight levels separate opposing lanes',
+      textAlternative: 'A pitched view lifts aircraft tracks by their true altitude.',
+      optionsMode: 'fresh',
       title: 'Lift every flight to its altitude',
-      body: 'Flights stack in layers: short hops below 6,000 m, long-haul jets around 10,000 to 12,000 m. Switch on **Extrude by altitude** and tilt the map: every vertex of the backdrop and the aircraft rises to its altitude, exaggerated by **Altitude exaggeration** because 11 km is tiny against a continent. The corridor grid stays on the ground like a shadow.\n\nSet **Hide below altitude** to 9,000 m and the climbs and descents vanish, leaving only cruise. Press Play on the clock to watch jets climb out of an airport and level off.',
+      body: 'Flights stack in layers: short hops below 6,000 m, long-haul jets around 10,000 to 12,000 m. Switch on **Extrude by altitude** and tilt the map: every vertex of the backdrop and the aircraft rises to its altitude, exaggerated by **Altitude exaggeration** because 11 km is tiny against a continent. The corridor grid stays on the ground like a shadow.\n\nThe chart compares the normalized eastbound and westbound flight-level distributions; its labels are the observed modal bins, not a claimed assigned flight level. Set **Hide below altitude** to 9,000 m and the climbs and descents vanish, leaving only cruise. Press Play on the clock to watch jets climb out of an airport and level off.',
+      // cartography-allow: pitch (flight altitude is real z)
       camera: {
         longitude: -92,
         latitude: 35,
@@ -533,10 +629,13 @@ playCompiled.encode(commandEncoder, {parameters: undefined});`,
         playing: false
       },
       controls: ['extrude', 'exaggeration', 'altitudeFloor', 'altitudeRamp'],
-      readouts: ['cruising', 'airborne']
+      readouts: ['cruising', 'eastLevelPeak', 'westLevelPeak', 'altitudeChart']
     },
     {
       id: 'limits',
+      headline: 'Receiver coverage limits the map',
+      textAlternative: 'Data coverage edges are shown around the US traffic sample.',
+      optionsMode: 'fresh',
       title: 'What to remember, and what to try',
       body: 'This is what receivers heard, not every flight: coverage thins over the mountain west and the Gulf, and the data stops at the edge of the contiguous US (so no Atlantic tracks). Positions were simplified to long straight steps (10 km tolerance, 10 minute maximum), light aircraft are removed, and the OpenSky terms allow research and non-commercial use only.\n\n**Try it:** run **Playback speed** at 3,600x to see the day in 24 seconds; set **Flight direction** to *Southbound* to see the Florida and Texas flows; pick **Cell size** 0.1 degrees and look for parallel airways in the busy northeast.',
       camera: {...US_VIEW, transitionMs: 1400},

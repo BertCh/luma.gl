@@ -2,6 +2,9 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {CREDITS, joinCredits} from '../../cartography/credits';
+import {US, labelsFor} from '../../cartography/gazetteer';
+import {ground} from '../../cartography/grounds';
 import {playbackOptions} from '../../engine/playback';
 import {defineScene} from '../scene';
 import type {StormWarningVerificationOptions} from './storm-warning-verification.compute';
@@ -9,12 +12,18 @@ import {formatStormClock, STORM_VERIFICATION_RANGE, STORM_VIEW} from './storm-da
 
 const UPPER_MIDWEST_VIEW = {longitude: -93.2, latitude: 43.4, zoom: 6.6};
 const SOUTHERN_PLAINS_VIEW = {longitude: -97.4, latitude: 33.4, zoom: 6.2};
+const WARNING_LABELS = labelsFor(US, ['msp', 'ord', 'dfw']);
+const cartouche = (title: string, subtitle: string) => ({
+  title,
+  subtitle,
+  chips: ['space → time → hazard join'] as const
+});
 
 /** Verdict legend entries (kept here so the scene file does not import GPU code). */
 const VERDICT_ENTRIES = [
-  {color: [30, 150, 235, 255] as const, label: 'Inside a matching active warning'},
-  {color: [176, 176, 190, 255] as const, label: 'Inside an active warning of another type'},
-  {color: [235, 60, 160, 255] as const, label: 'No active warning at the report time'}
+  {color: [0, 128, 128, 255] as const, label: 'Verified: teal disc, matching active warning'},
+  {color: [215, 140, 35, 255] as const, label: 'Hazard mismatch: amber diamond'},
+  {color: [190, 45, 135, 255] as const, label: 'No warning: magenta ring'}
 ];
 const KIND_ENTRIES = [
   {color: [213, 94, 0, 255] as const, label: 'Tornado'},
@@ -26,17 +35,17 @@ const KIND_ENTRIES = [
 ];
 const WARNING_ENTRIES = [
   {color: [220, 50, 47, 255] as const, label: 'Tornado warning'},
-  {color: [240, 190, 40, 255] as const, label: 'Severe thunderstorm warning'},
-  {color: [60, 170, 90, 255] as const, label: 'Flash flood warning'}
+  {color: [230, 135, 30, 255] as const, label: 'Severe thunderstorm warning'},
+  {color: [38, 150, 145, 255] as const, label: 'Flash flood warning'}
 ];
 
 export default defineScene<StormWarningVerificationOptions>({
   id: 'storm-warning-verification',
   title: 'Was there already a warning when the report came in?',
   chapter: 'earth',
-  order: 21,
+  order: 8,
   summary:
-    'Check 860 storm reports from 21-22 May 2024 against 750 National Weather Service warning polygons: a spatial join on the GPU plus a time test, with lead time as a histogram.',
+    'Verify reports by a three-stage spatial, temporal and hazard join; retain misses and the visible denominator at every stage.',
   contributors: ['GPUSpatialPredicateJoin', 'GPUTimeWindowFilter'],
   datasets: [
     {id: 'poopdeck-mrms-storm3d-reports', role: 'storm reports (SPC)'},
@@ -233,6 +242,12 @@ export default defineScene<StormWarningVerificationOptions>({
       kind: 'chart',
       help: 'Reports per half hour (area) and how many were verified (line). The marker is the playhead.'
     },
+    {
+      id: 'funnelChart',
+      label: 'Verification funnel',
+      kind: 'chart',
+      help: 'Monotone unique-report counts: all reports, reports touching at least one polygon, time-valid reports, and hazard-compatible reports.'
+    },
     {id: 'clock', label: 'Playhead', help: 'Simulated UTC time.'},
     {
       id: 'verifiedShare',
@@ -349,23 +364,53 @@ window.write(getGPUTimeWindowParameterValues({start: playhead, end: playhead}));
       'Colored translucent polygons are warnings valid right now (red tornado, yellow severe thunderstorm, green flash flood). Dots are reports: blue is inside a matching active warning, gray inside an active warning of another type, magenta had no active warning when it arrived. The histogram is how many minutes before the report the matching warning was first issued. Reports are not ground truth: they depend on people seeing and reporting events, they are preliminary, and they are thin where few people live.'
   },
 
+  pipeline: [
+    {id: 'space', label: 'Space', detail: 'Pair reports with candidate warning polygons'},
+    {id: 'time', label: 'Time', detail: 'Keep polygons valid at the report time'},
+    {id: 'hazard', label: 'Hazard', detail: 'Apply the selected report-to-warning matching table'},
+    {id: 'lead', label: 'Lead', detail: 'Retain the earliest valid matching issue time'}
+  ],
+  basemap: ground('paperCity'),
+  furniture: {
+    title: cartouche(
+      'Was each report inside a matching warning?',
+      'Verification · reports and warning polygons · 21 May 2024'
+    ),
+    scaleBar: {units: 'metric'},
+    credit: joinCredits(
+      'NWS storm-based warnings; SPC storm reports (public domain)',
+      CREDITS.naturalEarth
+    ),
+    caveat:
+      'Reports are not a census of hazards; this dataset cannot measure quiet-place false alarms.'
+  },
+  annotations: WARNING_LABELS,
+
   create: async ctx =>
     (await import('./storm-warning-verification.compute')).createStormWarningVerification(ctx),
 
   story: [
     {
-      id: 'the-question',
-      title: 'Was there a warning when the storm reached them?',
-      body: 'On the evening of 21 May 2024 the National Weather Service issued **750 warning polygon versions** (284 separate tornado, severe thunderstorm and flash flood warnings) while the Storm Prediction Center logged **860 reports** of tornadoes, hail, damaging wind and flooding. Warning skill asks: how many of those reports fell inside a warning that was already active?\n\nPress **Play** below, or drag **Time (UTC)**. Translucent polygons are the warnings valid right now (red tornado, yellow severe thunderstorm, green flash flood); dots are reports as they arrive. The slider follows the clock.',
+      id: 'event',
+      title: 'Warnings and reports overlap in space and time',
+      headline: 'Start with the evening, not a verdict',
+      textAlternative:
+        'Warning polygons and reports appear through time over a quiet Plains paper map.',
+      optionsMode: 'fresh',
+      body: 'Press **Play** or scrub the UTC clock. Warning polygons are shown only while valid, and reports appear in a short trailing window. The live input readout keeps the report and polygon-version counts visible.\n\nThis opening view is not verification yet: it establishes the event layers that the next three tests will join.',
       camera: {...UPPER_MIDWEST_VIEW, transitionMs: 1400},
       options: {time: 38700, play: false, colorReportsBy: 'kind', reportMinutes: 90},
       controls: ['play', 'time', 'speed'],
-      readouts: ['clock', 'activeWarnings', 'reportsSeen']
+      readouts: ['clock', 'activeWarnings', 'reportsSeen', 'inputs']
     },
     {
-      id: 'spatial-join',
-      title: 'Step 1: which polygons touch each report?',
-      body: '**`GPUSpatialPredicateJoin`** builds an index of the warning polygons once, then for every report finds the polygons that contain it, using exact point-in-polygon tests. The result is a list of (report, polygon) pairs; the **Join output** readout shows how many and whether any capacity overflowed.\n\nThis step is purely spatial: a polygon from 19:00 UTC pairs with a report at 01:00 UTC if they overlap. Choose a **Spatial test** of *Within a distance of the polygon* and slide **Location tolerance** up: the join widens the polygons by a distance, which is a parameter buffer write and never recompiles.',
+      id: 'space',
+      title: 'First ask which polygons contain the report',
+      headline: 'A spatial pair is only a candidate',
+      textAlternative:
+        'Reports and warning outlines show the spatial-candidate stage of verification.',
+      optionsMode: 'fresh',
+      body: '**`GPUSpatialPredicateJoin`** indexes warning polygons, then emits report–polygon pairs that pass the selected spatial test. The join output exposes its candidate count and capacity state.\n\nTolerance is a rule choice: it changes which reports are close enough to an edge, and writes only a parameter buffer. Space alone cannot tell whether a polygon was valid then.',
       camera: {...STORM_VIEW, transitionMs: 1400},
       options: {
         time: 54000,
@@ -379,9 +424,13 @@ window.write(getGPUTimeWindowParameterValues({start: playhead, end: playhead}));
       readouts: ['pairs', 'inputs']
     },
     {
-      id: 'time-test',
-      title: 'Step 2: was the polygon valid at that moment?',
-      body: 'A warning polygon is valid only from the moment it is issued until it is replaced or expires, so a kernel keeps only the pairs where the **report time falls inside the valid interval**. Blue reports are inside a matching active warning, gray ones inside a warning of another type, and magenta ones had no active warning at all.\n\nReports are often filed a few minutes late, so slide **Grace after expiry** to 10 minutes and watch magenta turn blue. The **Reports verified** readout is the number the rest of the story is about.',
+      id: 'time',
+      title: 'Then test the warning validity window',
+      headline: 'A spatial pair must also be timely',
+      textAlternative:
+        'Report verdict symbols retain no-warning rings while valid warning outlines remain visible.',
+      optionsMode: 'fresh',
+      body: 'The second kernel keeps candidates whose warning was valid at the report time; the grace control makes its policy visible. A no-warning report stays on the map rather than disappearing.\n\nThe three verdict symbols have redundant form as well as colour: verified, another warning type, and no active warning.',
       camera: {...STORM_VIEW, transitionMs: 1400},
       options: {
         time: 54000,
@@ -390,37 +439,49 @@ window.write(getGPUTimeWindowParameterValues({start: playhead, end: playhead}));
         toleranceKm: 0,
         graceMinutes: 0
       },
-      controls: ['graceMinutes', 'colorReportsBy'],
+      controls: ['graceMinutes', 'toleranceKm'],
       readouts: ['verifiedShare', 'anyWarningShare', 'unwarned']
     },
     {
-      id: 'hazard-match',
-      title: 'Step 3: does the warning fit the hazard?',
-      body: 'A tornado warning does not verify a flood report. Choose how strict to be with **Warning type must fit the hazard**: *Any active warning counts*, *Warned at least as severe* (a tornado warning also warns of wind and hail) or *Same hazard only*. It is a small table of allowed (report kind, warning type) pairs in a parameter buffer.\n\nThe bars below the map show the verified share for each kind of report. Hail and wind damage are far more often covered than flooding, partly because there are only a handful of flash flood warnings in this evening’s data.',
+      id: 'hazard',
+      title: 'Finally require the hazard to match',
+      headline: 'Matching rules change the verdict',
+      textAlternative:
+        'Verdict symbols and a kind chart show the hazard-matching stage of verification.',
+      optionsMode: 'fresh',
+      body: 'The final report-side test uses an allowed report-kind / warning-kind table. Change the matching rule to see the same spatial and temporal pairs receive different verdicts.\n\nThe kind chart prints **N** beside each category: a small kind should not be read like a stable rate. Every result retains the original report denominator.',
       camera: {...SOUTHERN_PLAINS_VIEW, transitionMs: 1400},
       options: {time: 54000, play: false, colorReportsBy: 'verdict', matching: 'hazard'},
       controls: ['matching', 'colorReportsBy'],
-      readouts: ['verifiedShare', 'kindChart']
+      readouts: ['verifiedShare', 'kindChart', 'funnelChart']
     },
     {
-      id: 'lead-time',
-      title: 'Lead time: how early was the warning?',
-      body: 'For every verified report the **lead time** is the minutes between the **first issue** of the matching warning and the report. NWS re-issues a storm-based polygon every few minutes as the storm moves; chaining those versions into one warning gives its true issue time.\n\nThe histogram groups lead times in 5-minute bars, and the line is the median. A report at zero minutes arrived as the warning went out; the long tail is warnings issued half an hour or more ahead of the hazard. Change the **Location tolerance** or **Grace after expiry** and the histogram redraws from the GPU result.',
+      id: 'lead',
+      title: 'Lead time excludes no one silently',
+      headline: 'Keep misses beside lead-time classes',
+      textAlternative:
+        'A lead-time histogram and verdict map distinguish valid matches from retained misses.',
+      optionsMode: 'fresh',
+      body: 'For verified reports, lead time is minutes from the earliest matching issue to the report. The histogram reads from the live join result and marks its median.\n\nNo-warning reports remain a separate verdict rather than being averaged away. Move tolerance or grace and the entire funnel and lead distribution update from the same result.',
       camera: {...STORM_VIEW, transitionMs: 1400},
       options: {
         time: 54000,
         play: false,
         matching: 'hazard',
-        showWarnings: false,
-        showOutlines: false
+        showWarnings: true,
+        showOutlines: true
       },
       controls: ['toleranceKm', 'graceMinutes', 'matching'],
-      readouts: ['medianLead', 'leadChart', 'warningsVerified']
+      readouts: ['medianLead', 'leadChart', 'funnelChart', 'warningsVerified']
     },
     {
       id: 'limits',
-      title: 'What the numbers can and cannot say',
-      body: 'Storm reports are **not ground truth**: they exist where people were looking, are logged to the nearest place and minute, and are preliminary. A report with no warning may sit just outside a polygon, or arrive after a warning expired; a warning with no report may have been right in an empty field. Warning polygons here are chained by event number, phenomenon and position, which is a heuristic, and the verified share is not the official verification statistic.\n\n**Try it:** set **Location tolerance** to 10 km and **Grace after expiry** to 10 minutes and see how much of the gap closes; then switch to *Same hazard only* and see how much it opens; replay the evening at 20 min/s and watch warnings lead the reports across Iowa and Minnesota.',
+      title: 'Reports are not all hazardous events',
+      headline: 'The funnel has no quiet-place denominator',
+      textAlternative:
+        'A verdict map and verification funnel explain reporting, boundary, and false-alarm limitations.',
+      optionsMode: 'fresh',
+      body: 'Reports depend on observers and reporting practice; polygons have boundary uncertainty; event taxonomy and a single time window shape the join. The report table cannot enumerate quiet places, so it cannot supply a false-alarm denominator.\n\nTry a different tolerance, grace period, or matching rule. Keep the counts and rule alongside the verified share rather than treating it as an official performance statistic.',
       camera: {...UPPER_MIDWEST_VIEW, transitionMs: 1400},
       options: {
         time: 45000,
@@ -434,7 +495,7 @@ window.write(getGPUTimeWindowParameterValues({start: playhead, end: playhead}));
         colorReportsBy: 'verdict'
       },
       controls: ['toleranceKm', 'graceMinutes', 'matching', 'speed'],
-      readouts: ['verifiedShare', 'warningsVerified']
+      readouts: ['verifiedShare', 'unwarned', 'warningsVerified', 'inputs']
     }
   ]
 });

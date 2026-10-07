@@ -141,3 +141,24 @@ export function countBins(
   }
   return counts;
 }
+
+/** Hour of day (0 to 24, fractional) of every pickup, for cyclic colour: Thursday and Friday overlay. */
+export function getTaxiHourOfDay(pickupHour: Float32Array): Float32Array {
+  const hourOfDay = new Float32Array(pickupHour.length);
+  for (let row = 0; row < pickupHour.length; row++) {
+    hourOfDay[row] = pickupHour[row] % 24;
+  }
+  return hourOfDay;
+}
+
+/** Straight pickup-to-dropoff segments `x0, y0, x1, y1` in meters, one per trip (trip links). */
+export function getTaxiTripSegments(trips: TaxiTrips): Float32Array {
+  const segments = new Float32Array(trips.count * 4);
+  for (let row = 0; row < trips.count; row++) {
+    segments[row * 4] = trips.pickup[row * 2];
+    segments[row * 4 + 1] = trips.pickup[row * 2 + 1];
+    segments[row * 4 + 2] = trips.dropoff[row * 2];
+    segments[row * 4 + 3] = trips.dropoff[row * 2 + 1];
+  }
+  return segments;
+}

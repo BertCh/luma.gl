@@ -4,146 +4,142 @@
 
 import type {Layer} from '@deck.gl/core';
 import type {Buffer} from '@luma.gl/core';
+import type {CompiledGPUCommandGraph} from '@luma.gl/gpgpu/gpu-core';
 import {
-  DrawCommandBuffer,
-  GPUCommandGraph,
-  type CompiledGPUCommandGraph,
-  type GPUCommandNode,
-  type GPUCommandNodeProducer
-} from '@luma.gl/gpgpu/gpu-core';
-import {
-  GPUTerrainContours,
-  GPUTerrainCriticalPoints,
-  GPUTerrainDerivatives,
-  GPUTerrainPeakSnap,
-  GPUTerrainSummits,
   GPU_TERRAIN_CRITICAL_POINT,
   GPU_TERRAIN_CRITICAL_POINT_CLASS_COUNT,
-  GPU_TERRAIN_DERIVATIVES_PARAMETER_LENGTH,
   GPU_TERRAIN_PEAK_SNAP_PARAMETER_LENGTH,
-  GPU_TERRAIN_PEAK_SNAP_STATUS,
   GPU_TERRAIN_SUMMITS_PARAMETER_LENGTH,
-  getGPUTerrainDerivativesParameterValues,
   getGPUTerrainPeakSnapParameterValues,
   getGPUTerrainSummitsParameterValues
 } from '@luma.gl/experimental/gpu-terrain';
-import {createWGSLKernelNode} from '../../../../../../modules/experimental/src/utils/wgsl-kernel-nodes';
-import {
-  addTerrainSummedAreaTableNodes,
-  TERRAIN_SUMMED_AREA_BOX_WGSL,
-  TERRAIN_SUMMED_AREA_WGSL_HELPERS
-} from '../../../../../../modules/experimental/src/gpu-terrain/topographic-position/terrain-summed-area-table';
-import {importGraphBuffer} from '../../engine/graph-buffers';
+import {formatCount, liveText} from '../../cartography/live-text';
+import type {LngLat, MapAnnotation} from '../../cartography/types';
 import {
   SpatialAnalysisPointLayer,
-  SpatialAnalysisRasterLayer,
+  SpatialAnalysisPolygonLayer,
   SpatialAnalysisSegmentLayer
 } from '../../engine/layers';
 import {createSeededRandom} from '../../engine/projection';
-import {formatCount, SpatialAnalysisResources} from '../../engine/resources';
+import {SpatialAnalysisResources} from '../../engine/resources';
 import {SummaryReader} from '../../engine/summary-reader';
 import {formatCompiledGraphTiming, measureCompiledGraph} from '../../engine/vector-timing';
 import type {SceneContext, SceneInstance} from '../scene';
+import {prepareAlpsTerrain, toFloat32, toUint32} from './b14b-terrain';
+import {createDemProbe, createTerrainDemFromTerrain} from './cpu-dem';
 import {
-  ALPS_PEAK_CATALOGUE,
-  createElevationBand,
-  getAzimuthDegrees,
-  getCompassName,
-  formatDistance,
-  prepareAlpsTerrain,
-  toFloat32,
-  toUint32
-} from './b14b-terrain';
+  applyDropThreshold,
+  buildCatalogue,
+  getDropClass,
+  getDropHistogram,
+  matchNamedSurvivors,
+  parseSummitList,
+  summarizeSnap,
+  type CataloguePeak,
+  type SummitCandidate,
+  type SummitList
+} from './summits-analysis';
+import {
+  CANDIDATE_CAPACITY,
+  CONTOUR_LEVEL_COUNT,
+  CONTOUR_SEGMENT_CAPACITY,
+  compileContourGraph,
+  compileCriticalGraph,
+  compileSnapGraph,
+  compileSummitGraph,
+  createContourBuffers,
+  createSnapBuffers,
+  createSummitBuffers,
+  type SummitBuffers
+} from './summits-graphs';
+import {
+  CRITICAL_FADE_ZOOM,
+  CRITICAL_MINIMUM_ZOOM,
+  RADIUS_LADDER_METERS,
+  SUMMIT_LIST_CAPACITY,
+  formatMeters,
+  getContourClass,
+  getSnapPalette,
+  getSnapStatusId,
+  getSummitColors,
+  type SummitsOptions
+} from './summits-style';
+import {
+  getElevationTooltip,
+  getProbeTooltip,
+  getRejectedTooltip,
+  getSnapTooltip,
+  getSummitTooltip
+} from './summits-tooltips';
+import {demSampleLine} from './terrain-furniture';
+import {createTerrainGround, rasterizeGlacierMask} from './terrain-ground';
+import {getSnapStatusColor, SUMMIT_DROP_CLASSES} from './terrain-palettes';
+import {loadAlpsContext, snapLngLatToHighestCell} from './terrain-places';
 
-/** Option state of the summits scene. */
-export type SummitsOptions = {
-  summitRadius: number;
-  summitMinimumDrop: number;
-  summitMaximumRadius: '16' | '24' | '32';
-  incompleteNeighborhood: 'reject' | 'ignore';
-  catalogueError: number;
-  snapRadius: number;
-  snapMaximumMove: number;
-  snapMaximumHeightChange: number;
-  snapInterior: boolean;
-  snapCatalogueHeights: boolean;
-  snapDistanceRule: boolean;
-  connectivity: '8' | '6';
-  devRadius: number;
-  contourInterval: number;
-  contourIndexEvery: number;
-  base: 'hillshade' | 'relative-height' | 'elevation';
-  showSummits: boolean;
-  showSnap: boolean;
-  showCritical: boolean;
-  showContours: boolean;
+export type {SummitsOptions} from './summits-style';
+
+/** The analysis grid of summits, snapping and critical points: the DEM averaged 4 x 4. */
+const COARSE_STRIDE = 4;
+/** Critical points drawn per class (the tile has far fewer). */
+const CRITICAL_CAPACITY = 65536;
+/** Bin width and count of the drop histogram, metres. */
+const HISTOGRAM_BIN_METERS = 25;
+const HISTOGRAM_BIN_COUNT = 20;
+/** Names on the map per step: the largest drops that match a catalogue peak. */
+const MAXIMUM_NAMED_SUMMITS = 5;
+/** Labels of the snap step: the problem cases first, then the highest peaks. */
+const MAXIMUM_SNAP_LABELS = 6;
+/** Pointer reach for summits and catalogue points, CSS pixels. */
+const HOVER_REACH_PIXELS = 12;
+/** Radius of the rejected-candidate and critical-point glyphs, CSS pixels. */
+const GHOST_RADIUS_PIXELS = 3.5;
+
+/** One compiled summit run: a bound and a window-edge mode, with its own outputs. */
+type SummitVariant = {
+  key: string;
+  mode: 'reject' | 'ignore';
+  compiled: CompiledGPUCommandGraph<void>;
+  buffers: SummitBuffers;
+  reader: SummaryReader;
+  dirty: boolean;
+  list: SummitList | null;
 };
 
-/** The analysis grid of summits, snapping and critical points: 512 x 512, 26.6 m ground cells. */
-const COARSE_STRIDE = 4;
-const SUMMIT_CAPACITY = 1024;
-const CANDIDATE_CAPACITY = 24;
-const CONTOUR_LEVEL_COUNT = 40;
-const CONTOUR_SEGMENT_CAPACITY = 30000;
-const SUMMIT_BUCKET_COUNT = 4;
-const SUMMIT_BUCKET_DROPS = [0, 200, 400, 700];
-const SUMMIT_BUCKET_RADIUS = [3.5, 5.5, 8, 11];
-const SUMMIT_BUCKET_COLOR: readonly (readonly [number, number, number, number])[] = [
-  [255, 226, 110, 235],
-  [255, 176, 70, 240],
-  [255, 118, 60, 245],
-  [235, 50, 70, 250]
-];
-const CRITICAL_PALETTE = [
-  [0, 0, 0, 0],
-  [235, 60, 70, 235],
-  [70, 140, 255, 235],
-  [255, 214, 70, 235],
-  [0, 0, 0, 0],
-  [0, 0, 0, 0],
-  [0, 0, 0, 0],
-  [0, 0, 0, 0]
-] as const;
-const SNAP_STATUS_PALETTE = [
-  [190, 200, 215, 255],
-  [70, 235, 130, 255],
-  [255, 160, 60, 255],
-  [235, 60, 70, 255],
-  [220, 90, 230, 255],
-  [0, 0, 0, 0],
-  [0, 0, 0, 0],
-  [0, 0, 0, 0]
-] as const;
-const SNAP_STATUS_NAMES = [
-  'unchanged',
-  'snapped',
-  'on the ring (flank)',
-  'move too far',
-  'height change too large',
-  'no data',
-  'outside'
-];
-const DEV_QUANTUM = 1 / 256;
-
-type Candidate = {name: string; catalogueElevation: number | null; column: number; row: number};
-
-type SummitGraph = {key: string; compiled: CompiledGPUCommandGraph<void>};
-
 /**
- * Summits, peak snapping, critical points, a summed-area-table relative-height map and contours
- * of the Matterhorn DEM. Summit-scale analyses run on the DEM averaged 4 x 4 (26.6 m ground); the
- * contours and the hillshade use the full 2048 x 2048 grid.
+ * Summits, peak snapping, critical points and contours of the Matterhorn DEM.
+ *
+ * Summit-scale analyses run on the DEM averaged 4 x 4 (26.6 m ground cells); the contours and the
+ * relief ground use the full 2048 x 2048 grid. The summit kernel always runs with a minimum drop
+ * of 0: the GPU computes every disc maximum and its drop, and the scene applies the drop
+ * threshold on the read-back list, so a moving drop slider is a CPU filter and the rejected
+ * candidates are known.
  */
 export async function createSummits(
   ctx: SceneContext<SummitsOptions>
 ): Promise<SceneInstance<SummitsOptions>> {
+  const {device} = ctx;
+  ctx.setStatus('Loading the DEM and its OpenStreetMap context');
   const dataset = ctx.datasets.get('alps-dem');
+  const context = await loadAlpsContext(ctx.datasets.get('alps-context'), ctx.signal);
+  ctx.signal.throwIfAborted();
   const full = prepareAlpsTerrain(dataset, 1);
   const coarse = prepareAlpsTerrain(dataset, COARSE_STRIDE);
-  const {device} = ctx;
-  const origin: [number, number, number] = [full.origin[0], full.origin[1], 0];
-  const resources = new SpatialAnalysisResources(device, 'summits');
+  const fullDem = createTerrainDemFromTerrain(full);
+  const probe = createDemProbe(createTerrainDemFromTerrain(coarse));
+  const catalogue = buildCatalogue(context, coarse);
+  const glacierMask = rasterizeGlacierMask(context.glacierGeoJson, fullDem);
+  const ground = createTerrainGround({dem: fullDem, device, ground: ctx.ground(), glacierMask});
+  ctx.setStatus('Building the shaded relief');
+  await ground.prepare();
+  if (ctx.signal.aborted) {
+    ground.destroy();
+    ctx.signal.throwIfAborted();
+  }
+
   const {width, height, pixelCount} = coarse;
+  const origin: [number, number, number] = [full.origin[0], full.origin[1], 0];
+  const cellMeters = coarse.groundCellSize;
+  const resources = new SpatialAnalysisResources(device, 'summits');
   let destroyed = false;
 
   // --- Buffers ----------------------------------------------------------------------------------
@@ -151,14 +147,13 @@ export async function createSummits(
   const fullValidity = resources.createBuffer('full-validity', full.validity);
   const coarseElevation = resources.createBuffer('coarse-elevation', coarse.elevation);
   const coarseValidity = resources.createBuffer('coarse-validity', coarse.validity);
-  const hillshadeBuffer = resources.createBuffer('hillshade', full.pixelCount * 4);
-  const derivativesSettings = resources.createParameterBuffer(
-    'derivatives-settings',
-    'float32',
-    GPU_TERRAIN_DERIVATIVES_PARAMETER_LENGTH
-  );
   const summitSettings = resources.createParameterBuffer(
     'summit-settings',
+    'float32',
+    GPU_TERRAIN_SUMMITS_PARAMETER_LENGTH
+  );
+  const sweepSettings = resources.createParameterBuffer(
+    'sweep-settings',
     'float32',
     GPU_TERRAIN_SUMMITS_PARAMETER_LENGTH
   );
@@ -167,435 +162,224 @@ export async function createSummits(
     'float32',
     GPU_TERRAIN_PEAK_SNAP_PARAMETER_LENGTH
   );
-  const devSettings = resources.createParameterBuffer('dev-settings', 'float32', 4);
-  const levelValues = resources.createParameterBuffer('levels', 'float32', CONTOUR_LEVEL_COUNT);
+  const sweepBuffers = createSummitBuffers(resources, 'sweep', 16);
+  const snapBuffers = createSnapBuffers(resources);
+  const contourBuffers = createContourBuffers(resources);
 
-  const summitIds = resources.createBuffer('summit-ids', SUMMIT_CAPACITY * 4);
-  const summitDrops = resources.createBuffer('summit-drops', SUMMIT_CAPACITY * 4);
-  const summitCount = resources.createBuffer('summit-count', 4);
-  const summitTotal = resources.createBuffer('summit-total', 4);
-  const summitOverflow = resources.createBuffer('summit-overflow', 4);
-  const summitClamped = resources.createBuffer('summit-clamped', 4);
-  const summitBuckets = Array.from({length: SUMMIT_BUCKET_COUNT}, (_, bucket) =>
-    resources.createBuffer(`summit-bucket-${bucket}`, SUMMIT_CAPACITY * 8)
+  // Glyph positions, planar metres, written from the read-back lists.
+  const summitClassBuffers = Array.from(
+    {length: SUMMIT_DROP_CLASSES.sizesPixels.length},
+    (_, level) => resources.createBuffer(`summit-class-${level}`, SUMMIT_LIST_CAPACITY * 8)
   );
+  const ghostBuffer = resources.createBuffer('rejected', SUMMIT_LIST_CAPACITY * 8);
+  const originalMarkers = resources.createBuffer('original-markers', CANDIDATE_CAPACITY * 8);
+  const snappedMarkers = resources.createBuffer('snapped-markers', CANDIDATE_CAPACITY * 8);
+  const snapSegments = resources.createBuffer('snap-segments', CANDIDATE_CAPACITY * 16);
   const criticalClasses = resources.createBuffer('critical-classes', pixelCount * 4);
   const criticalSigns = resources.createBuffer('critical-signs', pixelCount * 4);
   const criticalCounts = resources.createBuffer(
     'critical-counts',
     GPU_TERRAIN_CRITICAL_POINT_CLASS_COUNT * 4
   );
-  const devBuffer = resources.createBuffer('relative-height', pixelCount * 4);
+  const criticalPeakBuffer = resources.createBuffer('critical-peaks', CRITICAL_CAPACITY * 8);
+  const criticalSaddleBuffer = resources.createBuffer('critical-saddles', CRITICAL_CAPACITY * 8);
+  const criticalPitBuffer = resources.createBuffer('critical-pits', CRITICAL_CAPACITY * 8);
+  // The incomplete-disc band: four rectangles (24 vertices), one hatched class.
+  const bandTriangles = resources.createBuffer('edge-band-triangles', 24 * 8);
+  const bandFeatures = resources.createBuffer('edge-band-features', new Uint32Array(24));
+  const bandValues = resources.createBuffer('edge-band-values', new Uint32Array(1));
 
-  const candidateBuffer = resources.createBuffer('candidates', CANDIDATE_CAPACITY * 8);
-  const candidateHeights = resources.createBuffer('candidate-heights', CANDIDATE_CAPACITY * 4);
-  const candidateRadii = resources.createBuffer('candidate-radii', CANDIDATE_CAPACITY * 4);
-  const snapPositions = resources.createBuffer('snap-positions', CANDIDATE_CAPACITY * 8);
-  const snapHeights = resources.createBuffer('snap-heights', CANDIDATE_CAPACITY * 4);
-  const snapStatus = resources.createBuffer('snap-status', CANDIDATE_CAPACITY * 4);
-  const snapDistance = resources.createBuffer('snap-distance', CANDIDATE_CAPACITY * 4);
-  const snapOverflow = resources.createBuffer('snap-overflow', 4);
-  const originalMarkers = resources.createBuffer('original-markers', CANDIDATE_CAPACITY * 8);
-  const snappedMarkers = resources.createBuffer('snapped-markers', CANDIDATE_CAPACITY * 8);
-  const snapSegments = resources.createBuffer('snap-segments', CANDIDATE_CAPACITY * 16);
+  // --- Compiled graphs --------------------------------------------------------------------------
+  const getBound = (): number => Number(ctx.options.summitMaximumRadius);
+  const variants = new Map<string, SummitVariant>();
+  const sweepGraphs = new Map<string, CompiledGPUCommandGraph<void>>();
+  let lastList: SummitList | null = null;
 
-  const contourOverflow = resources.createBuffer('contour-overflow', 4);
-  const contourVertices: Buffer[] = [];
-  const contourCounts: Buffer[] = [];
-  for (let level = 0; level < CONTOUR_LEVEL_COUNT; level++) {
-    contourVertices.push(
-      resources.createBuffer(`contour-vertices-${level}`, CONTOUR_SEGMENT_CAPACITY * 16)
-    );
-    contourCounts.push(resources.createBuffer(`contour-count-${level}`, 4));
-  }
-  const drawCommands = resources.track(
-    new DrawCommandBuffer(device, {
-      id: 'summits-contour-draw',
-      type: 'draw',
-      commands: Array.from({length: CONTOUR_LEVEL_COUNT}, () => ({
-        vertexCount: 6,
-        instanceCount: 0
-      }))
-    })
-  );
-
-  // --- Hillshade (full resolution, once) --------------------------------------------------------
-  const hillshadeGraph = new GPUCommandGraph<void>(device, {id: 'summits-hillshade'});
-  hillshadeGraph.add(
-    new GPUTerrainDerivatives({
-      id: 'derivatives',
-      width: full.width,
-      height: full.height,
-      elevation: createElevationBand(
-        hillshadeGraph,
-        'hillshade',
-        fullElevation,
-        fullValidity,
-        full.pixelCount
-      ),
-      settings: derivativesSettings.importToGraph(hillshadeGraph),
-      hillshade: importGraphBuffer(
-        hillshadeGraph,
-        'hillshade',
-        hillshadeBuffer,
-        'float32',
-        full.pixelCount
-      ),
-      cellSizeMode: 'web-mercator',
-      rowDirection: 'south'
-    })
-  );
-  const hillshadeCompiled = resources.track(hillshadeGraph.compile());
-  derivativesSettings.write(
-    getGPUTerrainDerivativesParameterValues({
-      ...full.mercatorCellSettings,
-      azimuthDegrees: 315,
-      altitudeDegrees: 40
-    })
-  );
-
-  // --- Summits ----------------------------------------------------------------------------------
-  let summitGraph: SummitGraph | null = null;
-  const getSummitKey = (): string =>
-    `${ctx.options.summitMaximumRadius}|${ctx.options.incompleteNeighborhood}`;
-  function buildSummitGraph(): SummitGraph {
-    const options = ctx.options;
-    const graph = new GPUCommandGraph<void>(device, {id: 'summits-summits'});
-    graph.add(
-      new GPUTerrainSummits({
-        id: 'summits',
-        width,
-        height,
-        elevation: createElevationBand(
-          graph,
-          'summits',
-          coarseElevation,
-          coarseValidity,
-          pixelCount
-        ),
-        cellSizeMode: 'web-mercator',
-        maximumRadiusPixels: Number(options.summitMaximumRadius),
-        incompleteNeighborhood: options.incompleteNeighborhood,
-        settings: summitSettings.importToGraph(graph),
-        output: {
-          ids: importGraphBuffer(graph, 'ids', summitIds, 'uint32', SUMMIT_CAPACITY),
-          count: importGraphBuffer(graph, 'count', summitCount, 'uint32', 1),
-          overflow: importGraphBuffer(graph, 'overflow', summitOverflow, 'uint32', 1),
-          totalCount: importGraphBuffer(graph, 'total', summitTotal, 'uint32', 1)
-        },
-        outputDrop: importGraphBuffer(graph, 'drops', summitDrops, 'float32', SUMMIT_CAPACITY),
-        overflow: importGraphBuffer(graph, 'clamped', summitClamped, 'uint32', 1)
-      })
-    );
-    return {key: getSummitKey(), compiled: resources.track(graph.compile())};
-  }
-
-  // --- Critical points --------------------------------------------------------------------------
-  let criticalGraph: {key: string; compiled: CompiledGPUCommandGraph<void>} | null = null;
-  function buildCriticalGraph() {
-    const connectivity = ctx.options.connectivity;
-    const graph = new GPUCommandGraph<void>(device, {id: `summits-critical-${connectivity}`});
-    graph.add(
-      new GPUTerrainCriticalPoints({
-        id: 'critical',
-        width,
-        height,
-        elevation: createElevationBand(
-          graph,
-          'critical',
-          coarseElevation,
-          coarseValidity,
-          pixelCount
-        ),
-        connectivity: connectivity === '8' ? 8 : 6,
-        classes: importGraphBuffer(graph, 'classes', criticalClasses, 'uint32', pixelCount),
-        signChanges: importGraphBuffer(graph, 'signs', criticalSigns, 'uint32', pixelCount),
-        counts: importGraphBuffer(
-          graph,
-          'counts',
-          criticalCounts,
-          'uint32',
-          GPU_TERRAIN_CRITICAL_POINT_CLASS_COUNT
-        )
-      })
-    );
-    return {key: connectivity, compiled: resources.track(graph.compile())};
-  }
-
-  // --- Peak snap --------------------------------------------------------------------------------
-  const snapGraph = new GPUCommandGraph<void>(device, {id: 'summits-snap'});
-  snapGraph.add(
-    new GPUTerrainPeakSnap({
-      id: 'snap',
+  function getVariant(mode: 'reject' | 'ignore'): SummitVariant {
+    const bound = getBound();
+    const key = `${bound}|${mode}`;
+    const existing = variants.get(key);
+    if (existing) return existing;
+    const buffers = createSummitBuffers(resources, `variant-${key}`, SUMMIT_LIST_CAPACITY);
+    const compiled = compileSummitGraph(resources, {
+      name: `summits-${mode}-${bound}`,
       width,
       height,
-      elevation: createElevationBand(
-        snapGraph,
-        'snap',
-        coarseElevation,
-        coarseValidity,
-        pixelCount
-      ),
-      cellSizeMode: 'web-mercator',
-      maximumRadiusPixels: 16,
-      candidates: importGraphBuffer(
-        snapGraph,
-        'candidates',
-        candidateBuffer,
-        'float32x2',
-        CANDIDATE_CAPACITY
-      ),
-      candidateHeights: importGraphBuffer(
-        snapGraph,
-        'candidate-heights',
-        candidateHeights,
-        'float32',
-        CANDIDATE_CAPACITY
-      ),
-      candidateRadii: importGraphBuffer(
-        snapGraph,
-        'candidate-radii',
-        candidateRadii,
-        'float32',
-        CANDIDATE_CAPACITY
-      ),
-      settings: snapSettings.importToGraph(snapGraph),
-      positions: importGraphBuffer(
-        snapGraph,
-        'positions',
-        snapPositions,
-        'float32x2',
-        CANDIDATE_CAPACITY
-      ),
-      heights: importGraphBuffer(snapGraph, 'heights', snapHeights, 'float32', CANDIDATE_CAPACITY),
-      status: importGraphBuffer(snapGraph, 'status', snapStatus, 'uint32', CANDIDATE_CAPACITY),
-      snapDistance: importGraphBuffer(
-        snapGraph,
-        'distance',
-        snapDistance,
-        'float32',
-        CANDIDATE_CAPACITY
-      ),
-      overflow: importGraphBuffer(snapGraph, 'overflow', snapOverflow, 'uint32', 1)
-    })
-  );
-  const snapCompiled = resources.track(snapGraph.compile());
+      pixelCount,
+      elevation: coarseElevation,
+      validity: coarseValidity,
+      maximumRadiusPixels: bound,
+      incompleteNeighborhood: mode,
+      settings: summitSettings,
+      buffers,
+      capacity: SUMMIT_LIST_CAPACITY
+    });
+    const variant: SummitVariant = {
+      key,
+      mode,
+      compiled,
+      buffers,
+      dirty: true,
+      list: null,
+      reader: new SummaryReader(
+        resources,
+        `summits-${key}`,
+        [
+          {buffer: buffers.count, size: 4},
+          {buffer: buffers.total, size: 4},
+          {buffer: buffers.overflow, size: 4},
+          {buffer: buffers.clamped, size: 4},
+          {buffer: buffers.ids, size: SUMMIT_LIST_CAPACITY * 4},
+          {buffer: buffers.drops, size: SUMMIT_LIST_CAPACITY * 4}
+        ],
+        bytes => applySummits(variant, bytes)
+      )
+    };
+    variants.set(key, variant);
+    return variant;
+  }
 
-  // --- Relative height from a summed-area table -------------------------------------------------
-  // `addTerrainSummedAreaTableNodes` quantizes the elevation, builds an exact modular summed-area
-  // table of heights, squares and counts (two scans and a transpose), and the kernel below reads
-  // any box mean and variance from it in O(1). The radius is a per-frame parameter.
-  const devGraph = new GPUCommandGraph<void>(device, {id: 'summits-relative-height'});
-  const devElevation = createElevationBand(
-    devGraph,
-    'dev',
-    coarseElevation,
-    coarseValidity,
-    pixelCount
-  );
-  const devSettingsView = devSettings.importToGraph(devGraph);
-  const devOutput = importGraphBuffer(devGraph, 'dev', devBuffer, 'float32', pixelCount);
-  const devProducer: GPUCommandNodeProducer = {
-    getCommandNodes<Parameters>(
-      graph: GPUCommandGraph<Parameters>
-    ): readonly GPUCommandNode<Parameters>[] {
-      const sat = addTerrainSummedAreaTableNodes(graph, {
-        id: 'relative-height',
+  /** The variants a frame runs: the chosen one, plus `ignore` when `reject` needs a comparison. */
+  function getRunningVariants(): SummitVariant[] {
+    const chosen = getVariant(ctx.options.incompleteNeighborhood);
+    return chosen.mode === 'reject' ? [chosen, getVariant('ignore')] : [chosen];
+  }
+
+  function getSweepGraph(): CompiledGPUCommandGraph<void> {
+    const mode = ctx.options.incompleteNeighborhood;
+    const key = `${getBound()}|${mode}`;
+    let graph = sweepGraphs.get(key);
+    if (!graph) {
+      graph = compileSummitGraph(resources, {
+        name: `summits-sweep-${key}`,
         width,
         height,
-        elevation: devElevation,
-        quantum: DEV_QUANTUM
+        pixelCount,
+        elevation: coarseElevation,
+        validity: coarseValidity,
+        maximumRadiusPixels: getBound(),
+        incompleteNeighborhood: mode,
+        settings: sweepSettings,
+        buffers: sweepBuffers,
+        capacity: 16
       });
-      const evaluate = createWGSLKernelNode<Parameters>(graph, {
-        id: 'relative-height-evaluate',
-        operation: 'GPUTerrainTopographicPosition',
-        variant: 'relative-height',
-        bindings: [
-          {name: 'lowTable', view: sat.lowTable, type: 'u32', access: 'read'},
-          {name: 'highTable', view: sat.highTable, type: 'u32', access: 'read'},
-          {name: 'settings', view: devSettingsView, type: 'f32', access: 'read'},
-          {name: 'devValues', view: devOutput, type: 'f32', access: 'read_write'}
-        ],
-        invocationCount: pixelCount,
-        declarations: `const WIDTH: u32 = ${width}u;
-const HEIGHT: u32 = ${height}u;
-const PIXEL_COUNT: u32 = ${pixelCount}u;
-const INVERSE_QUANTUM: f32 = ${(1 / DEV_QUANTUM).toFixed(1)};
-${TERRAIN_SUMMED_AREA_WGSL_HELPERS}
-${TERRAIN_SUMMED_AREA_BOX_WGSL}
-fn readClippedBox(column: i32, row: i32, radius: i32) -> TerrainBoxSums {
-  return readBoxSums(
-    max(column - radius, 0i),
-    min(column + radius, i32(WIDTH) - 1i),
-    max(row - radius, 0i),
-    min(row + radius, i32(HEIGHT) - 1i)
-  );
-}`,
-        body: `let column = i32(index % WIDTH);
-  let row = i32(index / WIDTH);
-  let centre = readBoxSums(column, column, row, row);
-  let isValid = centre.count == 1u;
-  let invalidValue = bitcast<f32>(0x7fc00000u | (index & 0u));
-  let quantized = bitcast<i32>(centre.sum.x);
-  let magnitude = u32(abs(quantized));
-  let isNegative = quantized < 0i;
-  let centreSquare = multiplyWide32(magnitude, magnitude);
-  let radius = max(i32(round(settings[settingsOffset])), 1i);
-  let outer = readClippedBox(column, row, radius);
-  // Population statistics of the window relative to the centre cell:
-  // d1 = sum(q - qc), d2 = sum((q - qc)^2); deviation = (qc - mean) / sd = -d1 / n / sd.
-  var centreTotal = multiply64By32(vec2<u32>(outer.count, 0u), magnitude);
-  if (isNegative) {
-    centreTotal = negate64(centreTotal);
-  }
-  let centredSum = subtract64(outer.sum, centreTotal);
-  var twiceCentreSum = multiply64By32(outer.sum, magnitude);
-  twiceCentreSum = add64(twiceCentreSum, twiceCentreSum);
-  if (isNegative) {
-    twiceCentreSum = negate64(twiceCentreSum);
-  }
-  let centredSquare = add64(
-    subtract64(outer.square, twiceCentreSum),
-    multiply64By32(centreSquare, outer.count)
-  );
-  let count = f32(outer.count);
-  let meanOffset = signed64ToFloat(centredSum) / count;
-  let variance = unsigned64ToFloat(centredSquare) / count - meanOffset * meanOffset;
-  var deviation = 0.0;
-  if (variance > 0.0) {
-    deviation = -meanOffset / sqrt(variance);
-  }
-  if (!isValid) {
-    deviation = invalidValue;
-  }
-  devValues[devValuesOffset + index] = deviation;`
-      });
-      return [...sat.nodes, evaluate];
+      sweepGraphs.set(key, graph);
     }
-  };
-  devGraph.add(devProducer);
-  const devCompiled = resources.track(devGraph.compile());
+    return graph;
+  }
 
-  // --- Contours (full resolution; 40 level slots with GPU-written draw records) ----------------
-  const contourGraph = new GPUCommandGraph<void>(device, {id: 'summits-contours'});
-  const contourElevation = createElevationBand(
-    contourGraph,
-    'contours',
-    fullElevation,
-    fullValidity,
-    full.pixelCount
-  );
-  const levelsView = levelValues.importToGraph(contourGraph);
-  const drawView = drawCommands.importToGraph(contourGraph);
-  contourGraph.add(
-    new GPUTerrainContours({
-      id: 'contours',
-      width: full.width,
-      height: full.height,
-      elevation: contourElevation,
-      overflow: importGraphBuffer(contourGraph, 'overflow', contourOverflow, 'uint32', 1),
-      levels: Array.from({length: CONTOUR_LEVEL_COUNT}, (_, level) => ({
-        level: contourGraph.createDataView(levelsView.buffer, {
-          format: 'float32',
-          length: 1,
-          byteOffset: level * 4
-        }),
-        vertices: importGraphBuffer(
-          contourGraph,
-          `vertices-${level}`,
-          contourVertices[level],
-          'float32x2',
-          CONTOUR_SEGMENT_CAPACITY * 2
-        ),
-        segmentCount: importGraphBuffer(
-          contourGraph,
-          `count-${level}`,
-          contourCounts[level],
-          'uint32',
-          1
-        ),
-        // The contributor rewrites [verticesPerInstance, segmentCount, 0, 0] on the GPU, so the
-        // segment layer draws exactly the segments found, with no readback.
-        draw: drawView,
-        drawCommandIndex: level,
-        drawLayout: 'instanced' as const,
-        verticesPerInstance: 6,
-        capacity: CONTOUR_SEGMENT_CAPACITY
-      }))
-    })
-  );
-  const contourCompiled = resources.track(contourGraph.compile());
+  const snapCompiled = compileSnapGraph(resources, {
+    width,
+    height,
+    pixelCount,
+    elevation: coarseElevation,
+    validity: coarseValidity,
+    settings: snapSettings,
+    buffers: snapBuffers
+  });
+  let criticalGraph: {key: string; compiled: CompiledGPUCommandGraph<void>} | null = null;
+  const contourCompiled = compileContourGraph(resources, {
+    width: full.width,
+    height: full.height,
+    pixelCount: full.pixelCount,
+    elevation: fullElevation,
+    validity: fullValidity,
+    buffers: contourBuffers
+  });
 
   // --- State ------------------------------------------------------------------------------------
+  let snapDirty = true;
+  let criticalDirty = true;
+  let contourDirty = true;
+  let contourReady = false;
+  let contourCountsRead = new Uint32Array(CONTOUR_LEVEL_COUNT);
+  let survivors: SummitCandidate[] = [];
+  let rejected: SummitCandidate[] = [];
+  let survivorNames = new Map<number, CataloguePeak>();
+  let rejectedNames = new Map<number, CataloguePeak>();
+  let classCounts: number[] = new Array(SUMMIT_DROP_CLASSES.sizesPixels.length).fill(0);
+  let snapRows: {status: number; distance: number; height: number}[] = [];
+  let snapCountsLast: ReturnType<typeof summarizeSnap> | null = null;
+  const criticalCountsRead = {peaks: 0, saddles: 0, pits: 0};
+  let sweepVersion = 0;
+  let sweepTimer: ReturnType<typeof setTimeout> | null = null;
+
+  // Catalogue points: the real OSM nodes plus a seeded direction of simulated error each.
   const random = createSeededRandom(7);
-  const errorAngles = ALPS_PEAK_CATALOGUE.map(() => random() * Math.PI * 2);
-  const candidates: Candidate[] = ALPS_PEAK_CATALOGUE.map(peak => {
-    const [column, row] = coarse.getPixel(peak.longitude, peak.latitude);
-    return {name: peak.name, catalogueElevation: peak.elevationMeters, column, row};
-  });
+  const errorAngles = catalogue.map(() => random() * Math.PI * 2);
   const observer = coarse.observers.find(place => place.name === 'Gornergrat');
   const observerPixel: [number, number] = observer
     ? coarse.getPixel(observer.longitude, observer.latitude)
     : [width / 2, height / 2];
 
-  let summitDirty = true;
-  let criticalDirty = true;
-  let snapDirty = true;
-  let devDirty = true;
-  let contourDirty = true;
-  let hillshadeDirty = true;
-  let summitPositions: {column: number; row: number; drop: number; elevation: number}[] = [];
-  let summitBucketCounts = new Array<number>(SUMMIT_BUCKET_COUNT).fill(0);
-  let snapRows: {status: number; distance: number; height: number}[] = [];
-  let snappedPixels: [number, number][] = [];
-  let contourCountsRead = new Uint32Array(CONTOUR_LEVEL_COUNT);
-  let contourReady = false;
-  let clickCount = 0;
+  const getCandidatePixel = (index: number): [number, number] => {
+    const errorPixels = ctx.options.catalogueError / cellMeters;
+    const peak = catalogue[index];
+    return [
+      peak.column + Math.cos(errorAngles[index]) * errorPixels,
+      peak.row + Math.sin(errorAngles[index]) * errorPixels
+    ];
+  };
 
-  const getCoarseMeters = (column: number, row: number): [number, number] =>
-    coarse.getMeters(column, row);
-
+  // --- Parameter writes -------------------------------------------------------------------------
   function writeSummitSettings(): void {
+    // Minimum drop 0: the drop test is applied on the read-back list (see the module comment).
     summitSettings.write(
       getGPUTerrainSummitsParameterValues({
         radius: ctx.options.summitRadius,
-        minimumDrop: ctx.options.summitMinimumDrop,
+        minimumDrop: 0,
         ...coarse.mercatorCellSettings
       })
     );
-    summitDirty = true;
+    for (const variant of variants.values()) variant.dirty = true;
+    writeEdgeBand();
+  }
+
+  function writeEdgeBand(): void {
+    const [minimumX, minimumY, maximumX, maximumY] = full.bounds;
+    const inset = Math.min(
+      ctx.options.summitRadius,
+      (maximumX - minimumX) / 2,
+      (maximumY - minimumY) / 2
+    );
+    const rectangles: [number, number, number, number][] = [
+      [minimumX, minimumY, minimumX + inset, maximumY],
+      [maximumX - inset, minimumY, maximumX, maximumY],
+      [minimumX + inset, minimumY, maximumX - inset, minimumY + inset],
+      [minimumX + inset, maximumY - inset, maximumX - inset, maximumY]
+    ];
+    const triangles = new Float32Array(rectangles.length * 12);
+    rectangles.forEach(([x0, y0, x1, y1], index) => {
+      triangles.set([x0, y0, x1, y0, x1, y1, x0, y0, x1, y1, x0, y1], index * 12);
+    });
+    bandTriangles.write(triangles);
   }
 
   function writeCandidates(): void {
     const options = ctx.options;
-    const rows = new Float32Array(CANDIDATE_CAPACITY * 2).fill(-5);
-    const heights = new Float32Array(CANDIDATE_CAPACITY).fill(NaN);
-    const radii = new Float32Array(CANDIDATE_CAPACITY).fill(NaN);
+    const positions = new Float32Array(CANDIDATE_CAPACITY * 2).fill(-5);
+    const heights = new Float32Array(CANDIDATE_CAPACITY).fill(Number.NaN);
+    const radii = new Float32Array(CANDIDATE_CAPACITY).fill(Number.NaN);
     const original = new Float32Array(CANDIDATE_CAPACITY * 2).fill(1e7);
-    const errorPixels = options.catalogueError / coarse.groundCellSize;
-    candidates.forEach((candidate, index) => {
-      const isCatalogue = index < ALPS_PEAK_CATALOGUE.length;
-      const angle = isCatalogue ? errorAngles[index] : 0;
-      const column = candidate.column + (isCatalogue ? Math.cos(angle) * errorPixels : 0);
-      const row = candidate.row + (isCatalogue ? Math.sin(angle) * errorPixels : 0);
-      rows[index * 2] = column;
-      rows[index * 2 + 1] = row;
-      if (options.snapCatalogueHeights && candidate.catalogueElevation !== null) {
-        heights[index] = candidate.catalogueElevation;
+    catalogue.forEach((peak, index) => {
+      const [column, row] = getCandidatePixel(index);
+      positions[index * 2] = column;
+      positions[index * 2 + 1] = row;
+      if (options.snapCatalogueHeights && peak.elevationMeters !== null) {
+        heights[index] = peak.elevationMeters;
       }
       if (options.snapDistanceRule) {
         // mt-image: min(250 m, 60 m + 0.4 % of the distance to the viewer).
-        const distance =
-          Math.hypot(column - observerPixel[0], row - observerPixel[1]) * coarse.groundCellSize;
+        const distance = Math.hypot(column - observerPixel[0], row - observerPixel[1]) * cellMeters;
         radii[index] = Math.min(250, 60 + 0.004 * distance);
       }
-      const [x, y] = getCoarseMeters(column, row);
+      const [x, y] = coarse.getMeters(column, row);
       original[index * 2] = x;
       original[index * 2 + 1] = y;
     });
-    candidateBuffer.write(rows);
-    candidateHeights.write(heights);
-    candidateRadii.write(radii);
+    snapBuffers.candidates.write(positions);
+    snapBuffers.candidateHeights.write(heights);
+    snapBuffers.candidateRadii.write(radii);
     originalMarkers.write(original);
     snapDirty = true;
   }
@@ -614,156 +398,343 @@ fn readClippedBox(column: i32, row: i32, radius: i32) -> TerrainBoxSums {
     snapDirty = true;
   }
 
-  function writeDevSettings(): void {
-    devSettings.write(Float32Array.of(ctx.options.devRadius, 0, 0, 0));
-    devDirty = true;
-  }
-
   function getContourLevels(): number[] {
     const interval = ctx.options.contourInterval;
-    const first = Math.ceil(full.elevationRange[0] / interval) * interval;
+    // Start at the DEM minimum rounded down to the interval: every slot from there up is a level.
+    const first = Math.floor(full.elevationRange[0] / interval) * interval;
     return Array.from({length: CONTOUR_LEVEL_COUNT}, (_, level) => first + level * interval);
   }
 
   function writeContourLevels(): void {
-    levelValues.write(Float32Array.from(getContourLevels()));
+    contourBuffers.levels.write(Float32Array.from(getContourLevels()));
     contourDirty = true;
   }
 
-  // --- Readers ----------------------------------------------------------------------------------
-  const summitReader = new SummaryReader(
-    resources,
-    'summits',
-    [
-      {buffer: summitCount, size: 4},
-      {buffer: summitTotal, size: 4},
-      {buffer: summitOverflow, size: 4},
-      {buffer: summitClamped, size: 4},
-      {buffer: summitIds, size: SUMMIT_CAPACITY * 4},
-      {buffer: summitDrops, size: SUMMIT_CAPACITY * 4}
-    ],
-    bytes => applySummits(bytes)
-  );
+  // --- Furniture --------------------------------------------------------------------------------
+  function publishFurniture(): void {
+    const options = ctx.options;
+    let subtitle = `Highest within ${options.summitRadius} m, at least ${options.summitMinimumDrop} m above its ring · ${cellMeters.toFixed(1)} m analysis grid`;
+    let ticks = [options.summitRadius];
+    if (options.showSnap) {
+      subtitle = `Catalogue peaks snapped within ${options.snapRadius} m · ${cellMeters.toFixed(1)} m analysis grid`;
+      ticks = [options.snapRadius];
+    } else if (options.showContours || options.showCritical) {
+      subtitle = `Contours every ${options.contourInterval} m · critical points on the ${cellMeters.toFixed(1)} m grid`;
+      ticks = [];
+    }
+    ctx.setFurniture({
+      title: {subtitle, sample: demSampleLine(full)},
+      scaleBar: {units: 'metric', ticks}
+    });
+    ctx.setReadout('radiusNow', options.summitRadius);
+    ctx.setReadout('dropNow', options.summitMinimumDrop);
+  }
+
+  // --- Summit lists -----------------------------------------------------------------------------
+  function applySummits(variant: SummitVariant, bytes: ArrayBuffer): void {
+    variant.list = parseSummitList(bytes, SUMMIT_LIST_CAPACITY, width, coarse.elevation);
+    const running = getRunningVariants();
+    if (running.includes(variant)) refreshSummits();
+  }
+
+  /** Applies the drop threshold to the chosen run's list and rewrites everything drawn from it. */
+  function refreshSummits(): void {
+    const options = ctx.options;
+    const chosen = getVariant(options.incompleteNeighborhood);
+    const list = chosen.list ?? lastList;
+    if (!list) return;
+    lastList = list;
+    const split = applyDropThreshold(list.candidates, options.summitMinimumDrop);
+    survivors = split.survivors;
+    rejected = split.rejected;
+    survivorNames = matchNamedSurvivors(survivors, catalogue, cellMeters);
+    rejectedNames = matchNamedSurvivors(rejected, catalogue, cellMeters);
+
+    // Triangles by drop class, one point layer each (one size per layer).
+    const byClass: number[][] = summitClassBuffers.map(() => []);
+    classCounts = classCounts.map(() => 0);
+    for (const candidate of survivors) {
+      const level = getDropClass(candidate.drop);
+      const [x, y] = coarse.getMeters(candidate.column, candidate.row);
+      byClass[level].push(x, y);
+      classCounts[level]++;
+    }
+    byClass.forEach((positions, level) => {
+      if (positions.length) summitClassBuffers[level].write(Float32Array.from(positions));
+    });
+    const ghostPositions: number[] = [];
+    for (const candidate of rejected) {
+      const [x, y] = coarse.getMeters(candidate.column, candidate.row);
+      ghostPositions.push(x, y);
+    }
+    if (ghostPositions.length) ghostBuffer.write(Float32Array.from(ghostPositions));
+
+    ctx.setReadout('summitCount', survivors.length);
+    ctx.setReadout('rejectedCount', rejected.length);
+    ctx.setReadout(
+      'listUse',
+      list.listOverflow
+        ? `capped: ${formatCount(SUMMIT_LIST_CAPACITY)} of ${formatCount(list.total)} candidates listed`
+        : `${formatCount(list.total)} of ${formatCount(SUMMIT_LIST_CAPACITY)} places`
+    );
+    ctx.setReadout(
+      'radiusClamp',
+      list.radiusClamped
+        ? `clamped to ${formatMeters(getBound() * cellMeters)} m by the search bound`
+        : 'as requested'
+    );
+    ctx.setReadout('edgeLost', getEdgeLoss());
+    ctx.setChart('dropHistogram', {
+      kind: 'histogram',
+      values: getDropHistogram(list.candidates, HISTOGRAM_BIN_METERS, HISTOGRAM_BIN_COUNT),
+      xDomain: [0, HISTOGRAM_BIN_METERS * HISTOGRAM_BIN_COUNT],
+      xLabel: 'Drop to the ring (m); the last bin holds all larger drops',
+      yLabel: 'Disc maxima',
+      height: 130,
+      link: {option: 'summitMinimumDrop', label: value => `at least ${value} m`},
+      description:
+        'Histogram of the drop of every disc maximum the GPU found, with the minimum drop marked: candidates left of the mark fail the test.'
+    });
+    publishAnnotations();
+    ctx.requestLayers();
+  }
+
+  /** Survivors that a window-edge Reject would remove, read off the data. */
+  function getEdgeLoss(): number | null {
+    const options = ctx.options;
+    const ignoreList = getVariant('ignore').list;
+    const minimumDrop = options.summitMinimumDrop;
+    if (options.incompleteNeighborhood === 'reject') {
+      const rejectList = getVariant('reject').list;
+      if (!ignoreList || !rejectList) return null;
+      return (
+        applyDropThreshold(ignoreList.candidates, minimumDrop).survivors.length -
+        applyDropThreshold(rejectList.candidates, minimumDrop).survivors.length
+      );
+    }
+    if (!ignoreList) return null;
+    const reach = Math.ceil(options.summitRadius / (cellMeters * 0.98)) + 1;
+    let lost = 0;
+    for (const candidate of applyDropThreshold(ignoreList.candidates, minimumDrop).survivors) {
+      const nearEdge =
+        candidate.column <= reach ||
+        candidate.row <= reach ||
+        candidate.column >= width - 1 - reach ||
+        candidate.row >= height - 1 - reach;
+      if (
+        nearEdge &&
+        probe.discAndRing(candidate.column, candidate.row, options.summitRadius, 'ignore')
+          .incomplete
+      ) {
+        lost++;
+      }
+    }
+    return lost;
+  }
+
+  // --- The count-by-radius curve ----------------------------------------------------------------
+  function scheduleSweep(): void {
+    if (sweepTimer) clearTimeout(sweepTimer);
+    sweepTimer = setTimeout(() => void runSweep(), 200);
+  }
+
+  /**
+   * Runs the summit kernel at each radius of the ladder as a parameter write, outside the frame,
+   * with its own settings and outputs so the frame's results are never overwritten.
+   */
+  async function runSweep(): Promise<void> {
+    const version = ++sweepVersion;
+    const options = ctx.options;
+    const graph = getSweepGraph();
+    const counts: number[] = [];
+    try {
+      for (const radius of RADIUS_LADDER_METERS) {
+        sweepSettings.write(
+          getGPUTerrainSummitsParameterValues({
+            radius,
+            minimumDrop: options.summitMinimumDrop,
+            ...coarse.mercatorCellSettings
+          })
+        );
+        const commandEncoder = device.createCommandEncoder({id: 'summits-sweep-encoder'});
+        graph.encode(commandEncoder, {parameters: undefined});
+        device.submit(commandEncoder.finish());
+        const [totalBytes, clampedBytes] = await Promise.all([
+          sweepBuffers.total.readAsync(0, 4),
+          sweepBuffers.clamped.readAsync(0, 4)
+        ]);
+        if (destroyed || version !== sweepVersion) return;
+        counts.push(toUint32(clampedBytes, 1)[0] ? Number.NaN : toUint32(totalBytes, 1)[0]);
+      }
+    } catch {
+      return;
+    }
+    ctx.setChart('countByRadius', {
+      kind: 'line',
+      series: [{label: 'Summits', x: RADIUS_LADDER_METERS, y: counts, points: true}],
+      xLabel: 'Radius (m)',
+      yLabel: 'Summits',
+      xDomain: [RADIUS_LADDER_METERS[0], RADIUS_LADDER_METERS[RADIUS_LADDER_METERS.length - 1]],
+      height: 130,
+      link: {option: 'summitRadius', label: value => `r = ${value} m`},
+      description:
+        'Number of summits found at six radii with the current minimum drop: the count falls steeply as the radius grows. A radius beyond the search bound is left out.'
+    });
+  }
+
+  // --- Peak snap --------------------------------------------------------------------------------
   const snapReader = new SummaryReader(
     resources,
     'snap',
     [
-      {buffer: snapPositions, size: CANDIDATE_CAPACITY * 8},
-      {buffer: snapHeights, size: CANDIDATE_CAPACITY * 4},
-      {buffer: snapStatus, size: CANDIDATE_CAPACITY * 4},
-      {buffer: snapDistance, size: CANDIDATE_CAPACITY * 4},
-      {buffer: snapOverflow, size: 4}
+      {buffer: snapBuffers.positions, size: CANDIDATE_CAPACITY * 8},
+      {buffer: snapBuffers.heights, size: CANDIDATE_CAPACITY * 4},
+      {buffer: snapBuffers.status, size: CANDIDATE_CAPACITY * 4},
+      {buffer: snapBuffers.distance, size: CANDIDATE_CAPACITY * 4},
+      {buffer: snapBuffers.overflow, size: 4}
     ],
     bytes => applySnap(bytes)
   );
-  const contourReader = new SummaryReader(
-    resources,
-    'contours',
-    [{buffer: contourOverflow, size: 4}, ...contourCounts.map(buffer => ({buffer, size: 4}))],
-    bytes => applyContours(bytes)
-  );
-
-  function applySummits(bytes: ArrayBuffer): void {
-    const words = toUint32(bytes, 4);
-    const count = Math.min(words[0], SUMMIT_CAPACITY);
-    const ids = toUint32(bytes.slice(16), SUMMIT_CAPACITY);
-    const drops = toFloat32(bytes.slice(16 + SUMMIT_CAPACITY * 4), SUMMIT_CAPACITY);
-    summitPositions = [];
-    const buckets: number[][] = Array.from({length: SUMMIT_BUCKET_COUNT}, () => []);
-    for (let index = 0; index < count; index++) {
-      const id = ids[index];
-      const column = id % width;
-      const row = Math.floor(id / width);
-      const drop = drops[index];
-      const bucket = SUMMIT_BUCKET_DROPS.reduce(
-        (found, limit, level) => (drop >= limit ? level : found),
-        0
-      );
-      const [x, y] = getCoarseMeters(column, row);
-      buckets[bucket].push(x, y);
-      summitPositions.push({column, row, drop, elevation: coarse.elevation[id]});
-    }
-    summitBucketCounts = buckets.map(bucket => bucket.length / 2);
-    buckets.forEach((bucket, index) => summitBuckets[index].write(Float32Array.from(bucket)));
-    const highest = summitPositions.reduce(
-      (best, summit) => (summit.elevation > best.elevation ? summit : best),
-      {column: 0, row: 0, drop: 0, elevation: -Infinity}
-    );
-    ctx.setReadout(
-      'summits',
-      `${formatCount(words[1])} summits` +
-        (words[2] ? ` (list capped at ${formatCount(SUMMIT_CAPACITY)})` : '') +
-        (count
-          ? `, highest ${highest.elevation.toFixed(0)} m, largest drop ${Math.max(...summitPositions.map(summit => summit.drop)).toFixed(0)} m`
-          : '')
-    );
-    ctx.setReadout(
-      'summitRadius',
-      words[3]
-        ? `clamped: the radius exceeds ${ctx.options.summitMaximumRadius} pixels (${(Number(ctx.options.summitMaximumRadius) * coarse.groundCellSize).toFixed(0)} m)`
-        : 'as requested'
-    );
-    ctx.requestLayers();
-  }
+  let snappedPixels: [number, number][] = [];
 
   function applySnap(bytes: ArrayBuffer): void {
     const positions = toFloat32(bytes, CANDIDATE_CAPACITY * 2);
     const heights = toFloat32(bytes.slice(CANDIDATE_CAPACITY * 8), CANDIDATE_CAPACITY);
     const status = toUint32(bytes.slice(CANDIDATE_CAPACITY * 12), CANDIDATE_CAPACITY);
     const distance = toFloat32(bytes.slice(CANDIDATE_CAPACITY * 16), CANDIDATE_CAPACITY);
-    const overflow = toUint32(bytes.slice(CANDIDATE_CAPACITY * 20), 1)[0];
     snapRows = [];
     snappedPixels = [];
     const snapped = new Float32Array(CANDIDATE_CAPACITY * 2).fill(1e7);
     const segments = new Float32Array(CANDIDATE_CAPACITY * 4).fill(1e7);
-    const tally = new Array<number>(7).fill(0);
-    candidates.forEach((candidate, index) => {
+    catalogue.forEach((_, index) => {
       snapRows.push({status: status[index], distance: distance[index], height: heights[index]});
       const column = positions[index * 2];
       const row = positions[index * 2 + 1];
       snappedPixels.push([column, row]);
-      tally[status[index]] = (tally[status[index]] ?? 0) + 1;
-      const [x, y] = getCoarseMeters(column, row);
+      const [x, y] = coarse.getMeters(column, row);
       snapped[index * 2] = x;
       snapped[index * 2 + 1] = y;
-      const original = candidateOriginalMeters(index);
-      segments.set([original[0], original[1], x, y], index * 4);
+      const [originalColumn, originalRow] = getCandidatePixel(index);
+      const [originalX, originalY] = coarse.getMeters(originalColumn, originalRow);
+      segments.set([originalX, originalY, x, y], index * 4);
     });
     snappedMarkers.write(snapped);
     snapSegments.write(segments);
+    snapCountsLast = summarizeSnap(status, distance, catalogue.length);
+    ctx.setLegendData('snapCounts', snapCountsLast.counts);
+    ctx.setReadout('medianMove', snapCountsLast.medianMoveMeters);
+    ctx.setReadout('catalogueSize', catalogue.length);
+    publishSnapChart();
+    publishAnnotations();
+    ctx.requestLayers();
+  }
+
+  function publishSnapChart(): void {
+    if (!snapCountsLast) return;
+    const tone = ctx.ground();
+    const segmentsList = (
+      [
+        ['snapped', 'Snapped'],
+        ['unchanged', 'Already on the summit'],
+        ['flank', 'On a flank'],
+        ['too-far', 'Too far'],
+        ['height-mismatch', 'Height mismatch']
+      ] as const
+    )
+      .filter(([id]) => snapCountsLast!.counts[id] > 0)
+      .map(([id, label]) => ({
+        label,
+        value: snapCountsLast!.counts[id],
+        color: getSnapStatusColor(id, tone)
+      }));
+    ctx.setChart('snapOutcomes', {
+      kind: 'stacked',
+      format: 'value',
+      segments: segmentsList,
+      description: 'How many catalogue peaks ended in each snap outcome, in the map colours.'
+    });
+  }
+
+  // --- Critical points --------------------------------------------------------------------------
+  const criticalReader = new SummaryReader(
+    resources,
+    'critical',
+    [
+      {buffer: criticalClasses, size: pixelCount * 4},
+      {buffer: criticalSigns, size: pixelCount * 4}
+    ],
+    bytes => applyCritical(bytes)
+  );
+
+  function applyCritical(bytes: ArrayBuffer): void {
+    const classes = toUint32(bytes, pixelCount);
+    const signs = toUint32(bytes.slice(pixelCount * 4), pixelCount);
+    const peakPositions: number[] = [];
+    const saddlePositions: number[] = [];
+    const pitPositions: number[] = [];
+    let multiplicity = 0;
+    let boundary = 0;
+    for (let index = 0; index < pixelCount; index++) {
+      const code = classes[index];
+      if (code === 0 || code === GPU_TERRAIN_CRITICAL_POINT.regular) continue;
+      const [x, y] = coarse.getMeters(index % width, Math.floor(index / width));
+      if (code === GPU_TERRAIN_CRITICAL_POINT.peak) peakPositions.push(x, y);
+      else if (code === GPU_TERRAIN_CRITICAL_POINT.pit) pitPositions.push(x, y);
+      else if (code === GPU_TERRAIN_CRITICAL_POINT.saddle) {
+        saddlePositions.push(x, y);
+        multiplicity += signs[index] / 2 - 1;
+      } else if (code === GPU_TERRAIN_CRITICAL_POINT.boundary) boundary++;
+    }
+    const clip = (positions: number[]) =>
+      Float32Array.from(positions.slice(0, CRITICAL_CAPACITY * 2));
+    if (peakPositions.length) criticalPeakBuffer.write(clip(peakPositions));
+    if (saddlePositions.length) criticalSaddleBuffer.write(clip(saddlePositions));
+    if (pitPositions.length) criticalPitBuffer.write(clip(pitPositions));
+    criticalCountsRead.peaks = peakPositions.length / 2;
+    criticalCountsRead.saddles = saddlePositions.length / 2;
+    criticalCountsRead.pits = pitPositions.length / 2;
     ctx.setReadout(
-      'snap',
-      `${tally[GPU_TERRAIN_PEAK_SNAP_STATUS.snapped]} snapped, ${tally[GPU_TERRAIN_PEAK_SNAP_STATUS.unchanged]} unchanged, ` +
-        `${tally[GPU_TERRAIN_PEAK_SNAP_STATUS.onRing]} on ring, ${tally[GPU_TERRAIN_PEAK_SNAP_STATUS.rejectedMove]} move too far, ` +
-        `${tally[GPU_TERRAIN_PEAK_SNAP_STATUS.rejectedHeight]} height change` +
-        (overflow ? ' (radius clamped)' : '')
+      'criticalCounts',
+      `${formatCount(criticalCountsRead.peaks)} peaks, ${formatCount(criticalCountsRead.saddles)} saddles, ${formatCount(criticalCountsRead.pits)} pits`
     );
-    const named = candidates
-      .map((candidate, index) => ({candidate, index}))
-      .filter(({candidate}) => candidate.catalogueElevation !== null);
-    const moves = named
-      .filter(({index}) => status[index] === GPU_TERRAIN_PEAK_SNAP_STATUS.snapped)
-      .map(({index}) => distance[index]);
     ctx.setReadout(
-      'snapMove',
-      moves.length
-        ? `mean ${(moves.reduce((sum, value) => sum + value, 0) / moves.length).toFixed(0)} m, largest ${Math.max(...moves).toFixed(0)} m`
-        : 'no catalogue peak moved'
+      'euler',
+      `peaks - saddles + pits = ${formatCount(criticalCountsRead.peaks - multiplicity + criticalCountsRead.pits)} (saddles counted with multiplicity; ${formatCount(boundary)} boundary cells unclassified)`
     );
     ctx.requestLayers();
   }
 
-  function candidateOriginalMeters(index: number): [number, number] {
-    const options = ctx.options;
-    const candidate = candidates[index];
-    const isCatalogue = index < ALPS_PEAK_CATALOGUE.length;
-    const errorPixels = options.catalogueError / coarse.groundCellSize;
-    const angle = isCatalogue ? errorAngles[index] : 0;
-    return getCoarseMeters(
-      candidate.column + (isCatalogue ? Math.cos(angle) * errorPixels : 0),
-      candidate.row + (isCatalogue ? Math.sin(angle) * errorPixels : 0)
-    );
+  function ensureCriticalGraph(): void {
+    const connectivity = ctx.options.connectivity;
+    if (criticalGraph?.key === connectivity) return;
+    if (criticalGraph) resources.release(criticalGraph.compiled);
+    criticalGraph = {
+      key: connectivity,
+      compiled: compileCriticalGraph(resources, {
+        width,
+        height,
+        pixelCount,
+        elevation: coarseElevation,
+        validity: coarseValidity,
+        connectivity: connectivity === '8' ? 8 : 6,
+        classes: criticalClasses,
+        signChanges: criticalSigns,
+        counts: criticalCounts
+      })
+    };
+    criticalDirty = true;
   }
+
+  // --- Contours ---------------------------------------------------------------------------------
+  const contourReader = new SummaryReader(
+    resources,
+    'contours',
+    [
+      {buffer: contourBuffers.overflow, size: 4},
+      ...contourBuffers.counts.map(buffer => ({buffer, size: 4}))
+    ],
+    bytes => applyContours(bytes)
+  );
 
   function applyContours(bytes: ArrayBuffer): void {
     const overflow = toUint32(bytes, 1)[0];
@@ -776,76 +747,105 @@ fn readClippedBox(column: i32, row: i32, radius: i32) -> TerrainBoxSums {
     }
     contourReady = true;
     ctx.setReadout(
-      'contours',
+      'contourSummary',
       `${levels} levels with data, ${formatCount(segments)} segments` +
-        (overflow
-          ? ` · overflow: a level exceeded ${formatCount(CONTOUR_SEGMENT_CAPACITY)} segments`
-          : '')
+        (overflow ? `; a level exceeded ${formatCount(CONTOUR_SEGMENT_CAPACITY)} segments` : '')
     );
     ctx.requestLayers();
   }
 
-  async function readCritical(): Promise<void> {
-    try {
-      const [classBytes, signBytes] = await Promise.all([
-        criticalClasses.readAsync(0, pixelCount * 4),
-        criticalSigns.readAsync(0, pixelCount * 4)
-      ]);
-      if (destroyed) return;
-      const classes = toUint32(classBytes, pixelCount);
-      const signs = toUint32(signBytes, pixelCount);
-      let peaks = 0;
-      let pits = 0;
-      let saddles = 0;
-      let multiplicity = 0;
-      let boundary = 0;
-      for (let index = 0; index < pixelCount; index++) {
-        const code = classes[index];
-        if (code === GPU_TERRAIN_CRITICAL_POINT.peak) peaks++;
-        else if (code === GPU_TERRAIN_CRITICAL_POINT.pit) pits++;
-        else if (code === GPU_TERRAIN_CRITICAL_POINT.saddle) {
-          saddles++;
-          multiplicity += signs[index] / 2 - 1;
-        } else if (code === GPU_TERRAIN_CRITICAL_POINT.boundary) boundary++;
+  // --- Annotations ------------------------------------------------------------------------------
+  function getSummitLngLat(candidate: SummitCandidate): LngLat {
+    return coarse.getLongitudeLatitude(candidate.column, candidate.row);
+  }
+
+  function publishAnnotations(): void {
+    const options = ctx.options;
+    const list: MapAnnotation[] = [];
+    if (options.showSummits) {
+      // The largest drops that carry a catalogue name, with the published elevation.
+      const named = [...survivorNames]
+        .map(([index, peak]) => ({candidate: survivors[index], peak}))
+        .sort((a, b) => b.candidate.drop - a.candidate.drop)
+        .slice(0, MAXIMUM_NAMED_SUMMITS);
+      named.forEach(({candidate, peak}, rank) => {
+        list.push({
+          kind: 'landform',
+          id: `summits:name:${peak.osmId}`,
+          coordinate: getSummitLngLat(candidate),
+          text: peak.name,
+          marker: 'none',
+          ...(peak.elevationMeters !== null ? {elevationMeters: peak.elevationMeters} : {}),
+          priority: MAXIMUM_NAMED_SUMMITS - rank
+        });
+      });
+    }
+    if (options.showRejected && options.summitMinimumDrop > SUMMIT_DROP_CLASSES.minimumDropMeters) {
+      // A named peak that passes the default 100 m test and fails this one: the closest miss.
+      const misses = [...rejectedNames]
+        .map(([index, peak]) => ({candidate: rejected[index], peak}))
+        .filter(({candidate}) => candidate.drop >= SUMMIT_DROP_CLASSES.minimumDropMeters)
+        .sort((a, b) => b.candidate.drop - a.candidate.drop);
+      const miss = misses[0];
+      if (miss) {
+        list.push({
+          kind: 'note',
+          id: 'summits:miss',
+          coordinate: getSummitLngLat(miss.candidate),
+          title: liveText('{name}: {drop:integer} m drop', {
+            name: miss.peak.name,
+            drop: miss.candidate.drop
+          }),
+          text: liveText('Highest in its disc, but {needed:integer} m are needed', {
+            needed: options.summitMinimumDrop
+          }),
+          anchor: 'se',
+          distance: 50,
+          priority: 4
+        });
       }
-      ctx.setReadout(
-        'critical',
-        `${formatCount(peaks)} peaks, ${formatCount(saddles)} saddles (${formatCount(multiplicity)} with multiplicity), ${formatCount(pits)} pits`
-      );
-      ctx.setReadout(
-        'euler',
-        `peaks - saddles + pits = ${formatCount(peaks - multiplicity + pits)} (${formatCount(boundary)} boundary cells unclassified)`
-      );
-    } catch {
-      // Destroyed while reading.
     }
+    if (options.showEdge) {
+      list.push({
+        kind: 'frame',
+        id: 'summits:edge',
+        bounds: full.lngLatBounds,
+        text: 'Data ends here'
+      });
+    }
+    if (options.showSnap && snapRows.length) {
+      list.push(...getSnapLabels());
+    }
+    ctx.setAnnotations('summits', list);
   }
 
-  // --- Setup and per-frame work -----------------------------------------------------------------
-  function ensureGraphs(): void {
-    if (!summitGraph || summitGraph.key !== getSummitKey()) {
-      if (summitGraph) resources.release(summitGraph.compiled);
-      summitGraph = buildSummitGraph();
-      summitDirty = true;
-    }
-    if (!criticalGraph || criticalGraph.key !== ctx.options.connectivity) {
-      if (criticalGraph) resources.release(criticalGraph.compiled);
-      criticalGraph = buildCriticalGraph();
-      criticalDirty = true;
-    }
+  /** Two problem cases first (a flank, a rejection), then the highest peaks, six labels in all. */
+  function getSnapLabels(): MapAnnotation[] {
+    const indices = catalogue.map((_, index) => index);
+    const isProblem = (index: number) => {
+      const id = getSnapStatusId(snapRows[index].status);
+      return id === 'flank' || id === 'too-far' || id === 'height-mismatch';
+    };
+    const chosen = [
+      ...indices.filter(isProblem).slice(0, 2),
+      ...indices.filter(index => !isProblem(index))
+    ].slice(0, MAXIMUM_SNAP_LABELS);
+    return chosen.map((index, rank) => {
+      const peak = catalogue[index];
+      const [column, row] = snappedPixels[index] ?? getCandidatePixel(index);
+      return {
+        kind: 'landform' as const,
+        id: `summits:snap:${peak.osmId}`,
+        coordinate: coarse.getLongitudeLatitude(column, row),
+        text: peak.name,
+        marker: 'none' as const,
+        ...(peak.elevationMeters !== null ? {elevationMeters: peak.elevationMeters} : {}),
+        priority: MAXIMUM_SNAP_LABELS - rank
+      };
+    });
   }
 
-  ctx.setReadout(
-    'grid',
-    `${width} × ${height} cells at ${coarse.groundCellSize.toFixed(1)} m for summits; ${full.width} × ${full.height} at ${full.groundCellSize.toFixed(1)} m for contours`
-  );
-  writeSummitSettings();
-  writeCandidates();
-  writeSnapSettings();
-  writeDevSettings();
-  writeContourLevels();
-  ensureGraphs();
-
+  // --- Timing -----------------------------------------------------------------------------------
   async function measure(): Promise<void> {
     try {
       ctx.setReadout('timing', 'measuring...');
@@ -864,12 +864,13 @@ fn readClippedBox(column: i32, row: i32, radius: i32) -> TerrainBoxSums {
         });
         return `${label} ${formatCompiledGraphTiming(timing).replace(/ · .*/, '')}`;
       };
+      ensureCriticalGraph();
+      const chosen = getVariant(ctx.options.incompleteNeighborhood);
       const parts = [
-        await run(summitGraph!.compiled, summitCount, 'summits'),
-        await run(criticalGraph!.compiled, criticalCounts, 'critical'),
-        await run(snapCompiled, snapStatus, 'snap'),
-        await run(devCompiled, devBuffer, 'SAT + relative height'),
-        await run(contourCompiled, contourOverflow, `${CONTOUR_LEVEL_COUNT} contour levels`)
+        await run(chosen.compiled, chosen.buffers.count, 'summits'),
+        await run(criticalGraph!.compiled, criticalCounts, 'critical points'),
+        await run(snapCompiled, snapBuffers.status, 'snap'),
+        await run(contourCompiled, contourBuffers.overflow, `${CONTOUR_LEVEL_COUNT} contour levels`)
       ];
       ctx.setReadout('timing', parts.join(' · '));
     } catch (error) {
@@ -877,31 +878,52 @@ fn readClippedBox(column: i32, row: i32, radius: i32) -> TerrainBoxSums {
     }
   }
 
-  // --- Pointer interaction ----------------------------------------------------------------------
-  function getPixelFromEvent(event: {
+  // --- Pointer ----------------------------------------------------------------------------------
+  /** The analysis-grid position under the pointer, or null off the DEM. */
+  function getPointerPixel(event: {
     coordinate: readonly [number, number] | null;
   }): [number, number] | null {
     if (!event.coordinate) return null;
     const [x, y] = full.projection.project(event.coordinate[0], event.coordinate[1]);
-    const [column, row] = coarse.getPixelFromMeters(x, y);
-    return [column, row];
+    const [minimumX, minimumY, maximumX, maximumY] = full.bounds;
+    if (x < minimumX || x > maximumX || y < minimumY || y > maximumY) return null;
+    return coarse.getPixelFromMeters(x, y);
   }
 
-  function getScreenDistance(
-    meters: readonly [number, number],
-    event: {pixel: readonly [number, number]}
+  function findNearest(
+    candidates: readonly SummitCandidate[],
+    pixel: readonly [number, number]
   ): number {
-    const viewport = ctx.getViewport();
-    if (!viewport) return Infinity;
-    const [longitude, latitude] = full.projection.unproject(meters[0], meters[1]);
-    const [x, y] = viewport.project([longitude, latitude]);
-    return Math.hypot(x - event.pixel[0], y - event.pixel[1]);
+    const reach = (HOVER_REACH_PIXELS * ctx.getMetersPerPixel()) / cellMeters;
+    let best = -1;
+    let bestDistance = reach;
+    candidates.forEach((candidate, index) => {
+      const distance = Math.hypot(candidate.column - pixel[0], candidate.row - pixel[1]);
+      if (distance < bestDistance) {
+        best = index;
+        bestDistance = distance;
+      }
+    });
+    return best;
   }
+
+  // --- Setup ------------------------------------------------------------------------------------
+  ctx.setLegendData('ground', ctx.ground());
+  ctx.setReadout(
+    'grid',
+    `${width} × ${height} cells at ${cellMeters.toFixed(1)} m for summits; ${full.width} × ${full.height} at ${full.groundCellSize.toFixed(1)} m for contours and the relief`
+  );
+  writeSummitSettings();
+  writeCandidates();
+  writeSnapSettings();
+  writeContourLevels();
+  getRunningVariants();
+  publishFurniture();
+  scheduleSweep();
 
   return {
     getCompiledGraphs: () => {
-      const graphs = [hillshadeCompiled, snapCompiled, devCompiled, contourCompiled];
-      if (summitGraph) graphs.push(summitGraph.compiled);
+      const graphs = [snapCompiled, contourCompiled, ...getRunningVariants().map(v => v.compiled)];
       if (criticalGraph) graphs.push(criticalGraph.compiled);
       return graphs;
     },
@@ -909,13 +931,17 @@ fn readClippedBox(column: i32, row: i32, radius: i32) -> TerrainBoxSums {
     setOption(id) {
       switch (id) {
         case 'summitRadius':
-        case 'summitMinimumDrop':
           writeSummitSettings();
+          break;
+        case 'summitMinimumDrop':
+          refreshSummits();
+          scheduleSweep();
           break;
         case 'summitMaximumRadius':
         case 'incompleteNeighborhood':
-        case 'connectivity':
-          ensureGraphs();
+          getRunningVariants();
+          writeSummitSettings();
+          scheduleSweep();
           break;
         case 'catalogueError':
         case 'snapCatalogueHeights':
@@ -928,8 +954,8 @@ fn readClippedBox(column: i32, row: i32, radius: i32) -> TerrainBoxSums {
         case 'snapInterior':
           writeSnapSettings();
           break;
-        case 'devRadius':
-          writeDevSettings();
+        case 'connectivity':
+          criticalDirty = true;
           break;
         case 'contourInterval':
           writeContourLevels();
@@ -937,196 +963,228 @@ fn readClippedBox(column: i32, row: i32, radius: i32) -> TerrainBoxSums {
         default:
           break;
       }
+      publishFurniture();
+      publishAnnotations();
       ctx.requestLayers();
     },
 
     onAction(id) {
-      if (id === 'clear') {
-        candidates.length = ALPS_PEAK_CATALOGUE.length;
-        clickCount = 0;
-        writeCandidates();
-      }
       if (id === 'measure') void measure();
     },
 
     encode(commandEncoder) {
-      if (!summitGraph || !criticalGraph) return;
-      if (hillshadeDirty) {
-        hillshadeCompiled.encode(commandEncoder, {parameters: undefined});
-        hillshadeDirty = false;
+      const options = ctx.options;
+      for (const variant of getRunningVariants()) {
+        if (variant.dirty) {
+          variant.compiled.encode(commandEncoder, {parameters: undefined});
+          variant.reader.request(commandEncoder);
+          variant.dirty = false;
+        }
+        variant.reader.flush(commandEncoder);
       }
-      if (summitDirty) {
-        summitGraph.compiled.encode(commandEncoder, {parameters: undefined});
-        summitReader.request(commandEncoder);
-        summitDirty = false;
-      }
-      if (criticalDirty) {
-        criticalGraph.compiled.encode(commandEncoder, {parameters: undefined});
-        criticalDirty = false;
-        // Two 1 MB reads, once per ring change, outside the frame's critical path.
-        setTimeout(() => void readCritical(), 100);
-      }
-      if (snapDirty) {
+      if (snapDirty && options.showSnap) {
         snapCompiled.encode(commandEncoder, {parameters: undefined});
         snapReader.request(commandEncoder);
         snapDirty = false;
       }
-      if (devDirty && ctx.options.base === 'relative-height') {
-        devCompiled.encode(commandEncoder, {parameters: undefined});
-        devDirty = false;
+      snapReader.flush(commandEncoder);
+      if (options.showCritical) {
+        ensureCriticalGraph();
+        if (criticalDirty && criticalGraph) {
+          criticalGraph.compiled.encode(commandEncoder, {parameters: undefined});
+          criticalReader.request(commandEncoder);
+          criticalDirty = false;
+        }
       }
-      if (contourDirty && ctx.options.showContours) {
+      criticalReader.flush(commandEncoder);
+      if (contourDirty && options.showContours) {
         contourCompiled.encode(commandEncoder, {parameters: undefined});
         contourReader.request(commandEncoder);
         contourDirty = false;
       }
-      summitReader.flush(commandEncoder);
-      snapReader.flush(commandEncoder);
       contourReader.flush(commandEncoder);
     },
 
     getLayers() {
       const options = ctx.options;
-      const layers: Layer[] = [];
-      const fine = {
-        coordinateOrigin: origin,
-        gridSize: [full.width, full.height] as const,
-        bounds: full.bounds,
-        rowOrigin: 'north' as const,
-        valueFormat: 'float32' as const
-      };
-      const coarseProps = {
-        coordinateOrigin: origin,
-        gridSize: [width, height] as const,
-        bounds: coarse.bounds,
-        rowOrigin: 'north' as const
-      };
-      layers.push(
-        new SpatialAnalysisRasterLayer({
-          ...fine,
-          id: 'summits-hillshade',
-          values: hillshadeBuffer,
-          colormap: 'grayscale',
-          valueRange: [0, 1],
-          color: [255, 255, 255, options.base === 'hillshade' ? 225 : 150]
-        })
-      );
-      if (options.base === 'elevation') {
-        layers.push(
-          new SpatialAnalysisRasterLayer({
-            ...fine,
-            id: 'summits-elevation',
-            values: fullElevation,
-            colormap: 'cividis',
-            valueRange: [full.elevationRange[0], full.elevationRange[1]],
-            color: [255, 255, 255, 160]
-          })
-        );
-      } else if (options.base === 'relative-height') {
-        layers.push(
-          new SpatialAnalysisRasterLayer({
-            ...coarseProps,
-            id: 'summits-relative-height',
-            values: devBuffer,
-            valueFormat: 'float32',
-            colormap: 'diverging',
-            valueRange: [-3, 3],
-            color: [255, 255, 255, 190]
-          })
-        );
-      }
+      const tone = ctx.ground();
+      const colors = getSummitColors(tone);
+      const layers: Layer[] = [ground.getLayer()];
+
       if (options.showContours && contourReady) {
         const levels = getContourLevels();
         for (let level = 0; level < CONTOUR_LEVEL_COUNT; level++) {
+          if (contourCountsRead[level] === 0) continue;
           const isIndex =
             Math.round(levels[level] / options.contourInterval) % options.contourIndexEvery === 0;
+          const style = getContourClass(tone, isIndex);
           layers.push(
             new SpatialAnalysisSegmentLayer({
               id: `summits-contour-${level}`,
               coordinateOrigin: origin,
-              segments: contourVertices[level],
-              drawCommands,
+              segments: contourBuffers.vertices[level],
+              drawCommands: contourBuffers.drawCommands,
               drawCommandIndex: level,
               // Vertices are in pixel-edge grid units with row 0 at the north edge.
               positionScale: [full.layerCellSize[0], -full.layerCellSize[1]],
               positionOffset: [full.bounds[0], full.bounds[3]],
-              widthPixels: isIndex ? 1.7 : 0.8,
-              color: isIndex ? [150, 80, 20, 255] : [190, 120, 50, 190]
+              widthPixels: style.widthPixels,
+              color: style.color
             })
           );
         }
       }
-      if (options.showCritical) {
+
+      if (options.showEdge) {
         layers.push(
-          new SpatialAnalysisRasterLayer({
-            ...coarseProps,
-            id: `summits-critical-${options.connectivity}`,
-            values: criticalClasses,
+          new SpatialAnalysisPolygonLayer({
+            id: 'summits-edge-band',
+            coordinateOrigin: origin,
+            triangles: bandTriangles,
+            features: bandFeatures,
+            vertexCount: 24,
+            values: bandValues,
             valueFormat: 'uint32',
             colormap: 'category',
-            palette: CRITICAL_PALETTE
+            palette: [[0, 0, 0, 0]],
+            hatchClasses: [0],
+            hatchColor: colors.hatch,
+            hatchSpacingPixels: 6,
+            hatchWidthPixels: 1.2
           })
         );
       }
-      if (options.showSummits) {
-        summitBuckets.forEach((buffer, bucket) => {
-          if (summitBucketCounts[bucket] === 0) return;
+
+      if (options.showCritical) {
+        const fade = [
+          [CRITICAL_MINIMUM_ZOOM - CRITICAL_FADE_ZOOM, 0],
+          [CRITICAL_MINIMUM_ZOOM + CRITICAL_FADE_ZOOM, 1]
+        ] as const;
+        const common = {coordinateOrigin: origin, opacityStops: fade};
+        if (criticalCountsRead.pits > 0) {
           layers.push(
             new SpatialAnalysisPointLayer({
-              id: `summits-bucket-halo-${bucket}`,
-              coordinateOrigin: origin,
-              positions: buffer,
-              instanceCount: summitBucketCounts[bucket],
-              radiusPixels: SUMMIT_BUCKET_RADIUS[bucket] + 1.6,
-              color: [20, 24, 36, 220]
-            }),
+              ...common,
+              id: 'summits-critical-pits',
+              positions: criticalPitBuffer,
+              instanceCount: Math.min(criticalCountsRead.pits, CRITICAL_CAPACITY),
+              shape: 'ring',
+              radiusPixels: 4,
+              outlineWidthPixels: 1.5,
+              color: colors.pit
+            })
+          );
+        }
+        if (criticalCountsRead.saddles > 0) {
+          layers.push(
             new SpatialAnalysisPointLayer({
-              id: `summits-bucket-${bucket}`,
+              ...common,
+              id: 'summits-critical-saddles',
+              positions: criticalSaddleBuffer,
+              instanceCount: Math.min(criticalCountsRead.saddles, CRITICAL_CAPACITY),
+              shape: 'diamond',
+              radiusPixels: 4,
+              outlineColor: colors.summit,
+              outlineWidthPixels: 1,
+              color: colors.saddle
+            })
+          );
+        }
+        if (criticalCountsRead.peaks > 0) {
+          layers.push(
+            new SpatialAnalysisPointLayer({
+              ...common,
+              id: 'summits-critical-peaks',
+              positions: criticalPeakBuffer,
+              instanceCount: Math.min(criticalCountsRead.peaks, CRITICAL_CAPACITY),
+              shape: 'triangle',
+              radiusPixels: 4,
+              outlineColor: colors.paper,
+              outlineWidthPixels: 1,
+              color: colors.criticalPeak
+            })
+          );
+        }
+      }
+
+      if (options.showRejected && rejected.length > 0) {
+        layers.push(
+          new SpatialAnalysisPointLayer({
+            id: 'summits-rejected',
+            coordinateOrigin: origin,
+            positions: ghostBuffer,
+            instanceCount: rejected.length,
+            shape: 'triangle',
+            radiusPixels: GHOST_RADIUS_PIXELS,
+            fillOpacity: 0,
+            outlineColor: colors.rejected,
+            outlineWidthPixels: 1,
+            color: colors.rejected
+          })
+        );
+      }
+
+      if (options.showSummits) {
+        SUMMIT_DROP_CLASSES.sizesPixels.forEach((size, level) => {
+          if (classCounts[level] === 0) return;
+          layers.push(
+            new SpatialAnalysisPointLayer({
+              id: `summits-class-${level}`,
               coordinateOrigin: origin,
-              positions: buffer,
-              instanceCount: summitBucketCounts[bucket],
-              radiusPixels: SUMMIT_BUCKET_RADIUS[bucket],
-              color: SUMMIT_BUCKET_COLOR[bucket]
+              positions: summitClassBuffers[level],
+              instanceCount: classCounts[level],
+              shape: 'triangle',
+              // One visual variable: size by drop class; the ink never changes.
+              radiusPixels: size / 2,
+              outlineColor: colors.paper,
+              outlineWidthPixels: 1.5,
+              color: colors.summit
             })
           );
         });
       }
+
       if (options.showSnap && snapRows.length > 0) {
         layers.push(
           new SpatialAnalysisSegmentLayer({
             id: 'summits-snap-segments',
             coordinateOrigin: origin,
             segments: snapSegments,
-            instanceCount: candidates.length,
-            widthPixels: 1.8,
-            color: [20, 24, 36, 230]
+            instanceCount: catalogue.length,
+            widthPixels: 1.5,
+            color: colors.connector
+          }),
+          new SpatialAnalysisPointLayer({
+            id: 'summits-snap-original-edge',
+            coordinateOrigin: origin,
+            positions: originalMarkers,
+            instanceCount: catalogue.length,
+            shape: 'ring',
+            radiusPixels: 5.25,
+            outlineWidthPixels: 3,
+            color: colors.summit
           }),
           new SpatialAnalysisPointLayer({
             id: 'summits-snap-original',
             coordinateOrigin: origin,
             positions: originalMarkers,
-            instanceCount: candidates.length,
-            radiusPixels: 6.5,
-            color: [255, 255, 255, 255]
-          }),
-          new SpatialAnalysisPointLayer({
-            id: 'summits-snap-original-hole',
-            coordinateOrigin: origin,
-            positions: originalMarkers,
-            instanceCount: candidates.length,
-            radiusPixels: 3.6,
-            color: [20, 24, 36, 255]
+            instanceCount: catalogue.length,
+            shape: 'ring',
+            radiusPixels: 4.5,
+            outlineWidthPixels: 1.5,
+            color: colors.paper
           }),
           new SpatialAnalysisPointLayer({
             id: 'summits-snap-result',
             coordinateOrigin: origin,
             positions: snappedMarkers,
-            instanceCount: candidates.length,
-            values: snapStatus,
+            instanceCount: catalogue.length,
+            values: snapBuffers.status,
             valueFormat: 'uint32',
             colormap: 'category',
-            palette: SNAP_STATUS_PALETTE,
-            radiusPixels: 5
+            palette: getSnapPalette(tone),
+            shape: 'circle',
+            radiusPixels: 4
           })
         );
       }
@@ -1134,77 +1192,116 @@ fn readClippedBox(column: i32, row: i32, radius: i32) -> TerrainBoxSums {
     },
 
     getTooltip(event) {
-      if (!event.coordinate) return null;
+      const pixel = getPointerPixel(event);
+      if (!pixel) return null;
       const options = ctx.options;
-      if (options.showSnap) {
+      const tone = ctx.ground();
+      const colors = getSummitColors(tone);
+
+      if (options.showSnap && snapRows.length) {
+        const reach = (HOVER_REACH_PIXELS * ctx.getMetersPerPixel()) / cellMeters;
         let best = -1;
-        let bestDistance = 14;
-        candidates.forEach((_, index) => {
-          const distance = getScreenDistance(candidateOriginalMeters(index), event);
+        let bestDistance = reach;
+        catalogue.forEach((_, index) => {
+          const [column, row] = getCandidatePixel(index);
+          const snapped = snappedPixels[index] ?? [column, row];
+          const distance = Math.min(
+            Math.hypot(column - pixel[0], row - pixel[1]),
+            Math.hypot(snapped[0] - pixel[0], snapped[1] - pixel[1])
+          );
           if (distance < bestDistance) {
             best = index;
             bestDistance = distance;
           }
         });
-        if (best >= 0 && snapRows[best]) {
-          const row = snapRows[best];
-          const candidate = candidates[best];
-          return (
-            `${candidate.name}: ${SNAP_STATUS_NAMES[row.status] ?? row.status}` +
-            (row.status === GPU_TERRAIN_PEAK_SNAP_STATUS.snapped
-              ? ` by ${row.distance.toFixed(0)} m`
-              : '') +
-            ` · DEM ${Number.isFinite(row.height) ? row.height.toFixed(0) : '?'} m` +
-            (candidate.catalogueElevation !== null
-              ? ` · catalogue ${candidate.catalogueElevation} m`
-              : '')
-          );
-        }
-      }
-      if (options.showSummits) {
-        let best: (typeof summitPositions)[number] | null = null;
-        let bestDistance = 12;
-        for (const summit of summitPositions) {
-          const distance = getScreenDistance(getCoarseMeters(summit.column, summit.row), event);
-          if (distance < bestDistance) {
-            best = summit;
-            bestDistance = distance;
-          }
-        }
-        if (best) {
-          const named = candidates.slice(0, ALPS_PEAK_CATALOGUE.length).find((candidate, index) => {
-            const snapped = snappedPixels[index];
-            return snapped && Math.hypot(snapped[0] - best!.column, snapped[1] - best!.row) < 1.5;
+        const status = best >= 0 ? getSnapStatusId(snapRows[best].status) : null;
+        if (best >= 0 && status) {
+          const snapped = snappedPixels[best];
+          const lngLat = coarse.getLongitudeLatitude(snapped[0], snapped[1]);
+          const topCell = snapLngLatToHighestCell(fullDem, lngLat, cellMeters * 1.5);
+          return getSnapTooltip({
+            peak: catalogue[best],
+            status,
+            moveMeters: snapRows[best].distance,
+            errorMeters: options.catalogueError,
+            analysisCellHeight: snapRows[best].height,
+            fullCellHeight: topCell ? topCell.elevation : null,
+            analysisCellMeters: cellMeters,
+            fullCellMeters: full.groundCellSize,
+            ground: tone
           });
-          return `${named ? `${named.name}, ` : 'Summit, '}${best.elevation.toFixed(0)} m · drop at least ${best.drop.toFixed(0)} m within the ring`;
         }
       }
-      const [column, row] = getPixelFromEvent(event) ?? [0, 0];
-      const dx = (column - observerPixel[0]) * coarse.groundCellSize;
-      const dy = (observerPixel[1] - row) * coarse.groundCellSize;
-      return `${coarse.sampleElevation(column, row).toFixed(0)} m · ${formatDistance(Math.hypot(dx, dy))} ${getCompassName(getAzimuthDegrees(dx, dy))} of Gornergrat`;
+
+      if (options.showSummits) {
+        const index = findNearest(survivors, pixel);
+        if (index >= 0) {
+          return getSummitTooltip({
+            candidate: survivors[index],
+            peak: survivorNames.get(index) ?? null,
+            radiusMeters: options.summitRadius,
+            colors
+          });
+        }
+      }
+      if (options.showRejected) {
+        const index = findNearest(rejected, pixel);
+        if (index >= 0) {
+          return getRejectedTooltip({
+            candidate: rejected[index],
+            minimumDrop: options.summitMinimumDrop,
+            peak: rejectedNames.get(index) ?? null,
+            colors
+          });
+        }
+      }
+
+      const column = Math.round(pixel[0]);
+      const row = Math.round(pixel[1]);
+      const elevation = coarse.elevation[row * width + column];
+      if (options.showProbe) {
+        const test = probe.discAndRing(
+          column,
+          row,
+          options.summitRadius,
+          options.incompleteNeighborhood
+        );
+        const distanceToHigher = test.beatenBy
+          ? Math.hypot(test.beatenBy[0] - column, test.beatenBy[1] - row) *
+            probe.getGroundCellSize(row)
+          : null;
+        return getProbeTooltip({
+          test,
+          elevation,
+          radiusMeters: options.summitRadius,
+          minimumDrop: options.summitMinimumDrop,
+          center: coarse.getLongitudeLatitude(column, row),
+          distanceToHigherMeters: distanceToHigher,
+          colors
+        });
+      }
+      return getElevationTooltip({elevation, cellMeters, colors});
     },
 
-    onClick(event) {
-      const pixel = getPixelFromEvent(event);
-      if (!pixel || !ctx.options.showSnap) return false;
-      if (candidates.length >= CANDIDATE_CAPACITY) return false;
-      clickCount++;
-      candidates.push({
-        name: `Clicked point ${clickCount}`,
-        catalogueElevation: null,
-        column: pixel[0],
-        row: pixel[1]
-      });
-      writeCandidates();
-      return true;
+    onGroundChange(next) {
+      ground.setGround(next);
+      ctx.setLegendData('ground', next);
+      publishSnapChart();
+      ctx.requestLayers();
+    },
+
+    onThemeChange() {
+      ctx.requestLayers();
     },
 
     destroy() {
       destroyed = true;
-      summitReader.stop();
+      if (sweepTimer) clearTimeout(sweepTimer);
+      for (const variant of variants.values()) variant.reader.stop();
       snapReader.stop();
+      criticalReader.stop();
       contourReader.stop();
+      ground.destroy();
       resources.destroy();
     }
   };

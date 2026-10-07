@@ -7,6 +7,10 @@ import fs from 'node:fs';
 import path from 'node:path';
 
 const [rawDir, outDir, tolArg] = process.argv.slice(2);
+// The archive manifest leaves its attribution empty; the showcase manifest and the dataset
+// descriptor (src/data/datasets/poopdeck-bixi-rides.dataset.ts) carry this one.
+const ATTRIBUTION =
+  'BIXI Montréal open data (CC BY); routes via OSRM on © OpenStreetMap contributors (ODbL); poopdeck.gl';
 const tolerance = Number(tolArg || 4);
 const manifest = JSON.parse(fs.readFileSync(path.join(rawDir, 'manifest.json'), 'utf8'));
 const read = (file, Type) => {
@@ -98,6 +102,7 @@ const out = {
   columns,
   properties: {
     ...manifest.properties,
+    source: {...manifest.properties.source, attribution: ATTRIBUTION},
     vertexCount: outTimes.length,
     rawVertexCount: vertices.length / 2,
     simplifyToleranceMeters: tolerance,

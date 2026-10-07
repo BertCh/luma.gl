@@ -3,6 +3,7 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {playbackOptions} from '../../engine/playback';
+import {ground} from '../../cartography/grounds';
 import {defineScene} from '../scene';
 import type {TransitPlaybackOptions} from './transit-playback.compute';
 import {
@@ -11,6 +12,13 @@ import {
   TRANSIT_MODE_LABELS,
   TRANSIT_MODES
 } from './transit-data';
+import {
+  getTransitSpeedClassColors,
+  RANDSTAD_DATA_FRAME,
+  RANDSTAD_ORIENTATION,
+  RANDSTAD_SCHEDULE_CREDIT,
+  TRANSIT_SPEED_LABELS
+} from './randstad-network-cartography';
 
 const RANDSTAD_VIEW = {longitude: 4.75, latitude: 52.12, zoom: 8.6};
 
@@ -18,12 +26,41 @@ export default defineScene<TransitPlaybackOptions>({
   id: 'transit-playback',
   title: 'A timetable in motion',
   chapter: 'networks',
-  order: 20,
+  order: 8,
   summary:
     'Every scheduled tram, bus, metro, train and ferry of the Randstad between 07:00 and 09:00, interpolated on the GPU at the playhead with fading trails, coloured by mode, with a vehicles-in-service curve.',
   contributors: ['GPUTrajectoryPlayhead', 'GPUTimeWindowFilter'],
   datasets: [{id: 'poopdeck-gtfs-nl', role: 'scheduled trips (OVapi GTFS, 3 July 2026)'}],
   initialView: RANDSTAD_VIEW,
+  basemap: ground('night', {labels: 'above', labelPreset: 'places-only'}),
+  furniture: {
+    title: {
+      subtitle: 'Randstad timetable · scheduled positions',
+      chips: ['Scheduled, not observed']
+    },
+    scaleBar: {units: 'metric'},
+    credit: RANDSTAD_SCHEDULE_CREDIT,
+    caveat: 'Interpolated timetable positions, not real-time vehicles.',
+    clock: {
+      option: 'time',
+      time: {origin: '2026-07-03T07:00:00+02:00', unit: 'seconds'},
+      zones: ['Europe/Amsterdam'],
+      show: 'time',
+      progress: [0, 7200]
+    }
+  },
+  annotations: RANDSTAD_ORIENTATION,
+  timeline: {
+    time: 'time',
+    play: 'play',
+    speed: 'speed',
+    format: value => `${formatTransitClock(value)} CEST`,
+    ticks: [
+      {at: 0, label: '07:00'},
+      {at: 3600, label: '08:00'},
+      {at: 7200, label: '09:00'}
+    ]
+  },
 
   options: [
     ...playbackOptions<TransitPlaybackOptions>({
@@ -78,32 +115,17 @@ export default defineScene<TransitPlaybackOptions>({
       ]
     },
     {
-      kind: 'slider',
-      id: 'markerSize',
-      label: 'Arrow size',
-      group: 'Vehicles',
-      apply: 'param',
-      min: 4,
-      max: 14,
-      step: 1,
-      default: 6,
-      unit: 'px',
-      help: 'Half-length of each arrow in screen pixels. Arrows point along the heading of the segment the vehicle is on.'
-    },
-    {
       kind: 'select',
-      id: 'ramp',
-      label: 'Speed color ramp',
+      id: 'hierarchy',
+      label: 'Symbol hierarchy',
       group: 'Vehicles',
       apply: 'param',
-      default: 'viridis',
-      disabledWhen: state => state.markerColor !== 'speed',
-      help: 'Ramp for the speed colouring. All four are perceptually uniform.',
+      default: 'weighted',
+      display: 'segmented',
+      help: 'Weighted stacks fixed symbols: bus 4 px at the bottom, tram 6, ferry and metro 8, rail 9 at the top. Flat makes every mode 6 px.',
       options: [
-        {value: 'viridis', label: 'Viridis'},
-        {value: 'magma', label: 'Magma'},
-        {value: 'inferno', label: 'Inferno'},
-        {value: 'cividis', label: 'Cividis (color-blind optimised)'}
+        {value: 'flat', label: 'Flat'},
+        {value: 'weighted', label: 'Weighted'}
       ]
     },
     {
@@ -124,7 +146,7 @@ export default defineScene<TransitPlaybackOptions>({
       min: 1,
       max: 30,
       step: 1,
-      default: 5,
+      default: 4,
       unit: 'min',
       disabledWhen: state => !state.showTrails,
       help: 'Window width, written into the window parameter buffer as [playhead - length, playhead]. Keep it longer than the gap between two vertices of a trip or the trail blanks.'
@@ -173,6 +195,12 @@ export default defineScene<TransitPlaybackOptions>({
       kind: 'chart',
       help: 'Scheduled speed of every vehicle in service at the playhead, 10 km/h bins. The bulk is trams and buses below 40 km/h; trains form the long tail.'
     },
+    {
+      id: 'binarySearch',
+      label: 'Selected interpolation bracket',
+      kind: 'chart',
+      help: 'A deterministic active trip supplies its actual timetable vertices, bracketing pair and interpolation fraction at the playhead.'
+    },
     {id: 'clock', label: 'Playhead', help: 'Local time on 3 July 2026.'},
     {
       id: 'active',
@@ -217,7 +245,7 @@ export default defineScene<TransitPlaybackOptions>({
     }
   ],
 
-  legends: state => [
+  legends: (state, data) => [
     ...(state.markerColor === 'mode' || state.showTrails
       ? [
           {
@@ -231,12 +259,13 @@ export default defineScene<TransitPlaybackOptions>({
     ...(state.markerColor === 'speed'
       ? [
           {
-            kind: 'ramp' as const,
+            kind: 'categories' as const,
             title: 'Scheduled speed',
-            ramp: state.ramp,
-            extent: [0, 108] as const,
-            unit: 'km/h',
-            format: (value: number) => value.toFixed(0)
+            entries: TRANSIT_SPEED_LABELS.map((label, index) => ({
+              color: getTransitSpeedClassColors(data.ground !== 'light')[index],
+              label: `${label} km/h`
+            })),
+            note: 'Fixed classes; speed is timetable interpolation, not a GPS measurement.'
           }
         ]
       : [])
@@ -284,36 +313,49 @@ play.encode(commandEncoder, {parameters: undefined});`,
 
   story: [
     {
-      id: 'the-question',
+      id: 'morning',
+      headline: 'A morning in motion',
+      textAlternative:
+        'Scheduled vehicles move through the Randstad at the current local timetable time.',
+      optionsMode: 'fresh',
       title: 'What does the Randstad run at 08:00?',
-      body: 'On a Friday morning in July 2026 the timetable of the western Netherlands holds **8,448 scheduled trips** between 07:00 and 09:00: trams in Amsterdam, The Hague and Rotterdam, hundreds of bus lines, the metro, the ferries on the Nieuwe Waterweg and the intercity trains that tie the cities together. Each arrow is one of them at the playhead.\n\nPress **Play** below, or drag **Time of day**: the clock is a number the GPU compares with every trip at once, and the slider follows it. The chart under the map counts vehicles in service in every minute of the window; the line is the playhead. Change **Playback speed** to slow the morning down or run it faster.',
+      body: 'Each arrow is a scheduled vehicle at the local playhead; its tail makes the preceding four minutes legible without overwhelming the map. Press **Play** or drag time: the GPU compares that one clock with every trip, and the timeline marks the active instant. This is a timetable animation, not a claim about where vehicles actually were.',
       camera: {...RANDSTAD_VIEW, transitionMs: 1200},
-      options: {time: 3600, play: true},
+      options: {time: 3600, play: false, hierarchy: 'weighted', trailMinutes: 4},
       highlight: {readout: 'active'},
-      controls: ['play', 'time', 'speed'],
+      controls: ['play', 'time'],
       readouts: ['clock', 'active', 'inService']
     },
     {
-      id: 'modes',
+      id: 'hierarchy',
+      headline: 'A swarm still needs hierarchy',
+      textAlternative: 'Larger rail and metro markers remain legible above bus and tram service.',
+      optionsMode: 'fresh',
       title: 'Trains, trams, buses and ferries',
       body: 'Colour says what kind of vehicle it is, from the GTFS route type: **trams** green, **buses** blue, **metros** pink, **trains** orange and **ferries** purple. Buses are by far the most numerous, but the orange arrows are the ones that cross the whole map.\n\nUse **Show mode** below to isolate one mode: the markers are culled in the vertex shader and the trail mask is rewritten once, with no graph rebuilt. Pick *Train* to see only the rail network the Randstad is built around, or *Ferry* for the handful of boats. The bars show how many of each mode are in service now.',
       options: {time: 3600, play: false, modeFilter: 'all'},
       camera: {longitude: 4.7, latitude: 52.12, zoom: 9.2, transitionMs: 1400},
-      controls: ['modeFilter', 'markerSize'],
+      controls: ['modeFilter', 'hierarchy'],
       readouts: ['active', 'modeChart']
     },
     {
       id: 'speed',
+      headline: 'Scheduled speed comes in classes',
+      textAlternative: 'Active trips are coloured by their scheduled segment speed class.',
+      optionsMode: 'fresh',
       title: 'How fast is a timetable?',
-      body: "Switch **Color arrows by** to *Speed*. The playhead reports the speed of the segment each vehicle is on, so the colour is the schedule's own speed: trams and buses crawl through the cities at 15 to 30 km/h, while the intercity trains between Amsterdam, Utrecht and Rotterdam glow at 120 km/h and more.\n\nThe histogram is the speed of every vehicle in service at the playhead. The tall block on the left is the urban fleet; the thin tail is the trains. Try **Speed color ramp** *Magma* below if viridis blends with the basemap.",
+      body: 'Switch **Colour arrows by** to speed. The playhead reports the scheduled speed of its current segment, not a GPS observation, and the histogram uses the same active vehicles. Fast rail chords are a simplification of a timetable shape, so use them to compare scheduled movement—not to infer track speed.',
       options: {markerColor: 'speed', time: 3900, play: false, showTrails: false},
       camera: {longitude: 4.95, latitude: 52.2, zoom: 9.6, transitionMs: 1400},
       callout: {coordinate: [5.1101, 52.0894], text: 'Utrecht Centraal'},
-      controls: ['markerColor', 'ramp'],
+      controls: ['markerColor'],
       readouts: ['speedChart', 'active']
     },
     {
-      id: 'trails',
+      id: 'pulse',
+      headline: 'The timetable has a pulse',
+      textAlternative: 'A long rail trail and the time bar show service through the morning.',
+      optionsMode: 'fresh',
       title: 'Where have they just been? A window in time',
       body: '**`GPUTimeWindowFilter`** treats every segment between two timetable vertices as a time interval and keeps those that overlap `[playhead - length, playhead]`. It writes a fade weight (the old end is transparent) and a clip fraction (the oldest segment is cut part-way), compacts the live ids and writes the count straight into the draw call.\n\nSlide **Trail length** below to 15 minutes: trams draw short stubs around their lines, trains long streaks along the corridors. Set **Tail fade** to 0 for solid trails, or turn **Show every route faintly** off to see only what moved in the last minutes.',
       options: {
@@ -322,16 +364,18 @@ play.encode(commandEncoder, {parameters: undefined});`,
         trailMinutes: 15,
         play: false,
         time: 3300,
-        modeFilter: 'all'
+        modeFilter: 'rail'
       },
       camera: {longitude: 4.75, latitude: 52.1, zoom: 8.9, transitionMs: 1400},
-      controls: ['trailMinutes', 'tailFade', 'showBackdrop'],
+      controls: ['trailMinutes', 'showBackdrop'],
       readouts: ['trailSegments']
     },
     {
-      id: 'peak',
-      title: 'The morning peak, minute by minute',
-      body: 'The line chart counts the trips running in every minute of the window. All modes together climb from about **1,550 vehicles at 07:00** to a plateau of about **2,100 from 08:00**, with the busiest minute around 08:34 (see the readout). The second line is the trains: it stays almost flat near 135 because intercity and sprinter trains run all day at fixed intervals, while buses and trams add the 500 extra vehicles of the rush hour.\n\nPress **Play** at the fastest **Playback speed** and watch the line follow the clock. Select a mode with **Show mode** and the second line follows it.',
+      id: 'binary-search',
+      headline: 'Find every vehicle without a readback',
+      textAlternative: 'The selected trip is bracketed by timetable vertices around the playhead.',
+      title: 'Find every vehicle without a readback',
+      body: 'For each trip, `GPUTrajectoryPlayhead` binary-searches the timetable vertices around the clock, interpolates position and heading, then writes compact active IDs directly to an indirect draw command. `GPUTimeWindowFilter` performs the matching overlap test for trails. The CPU reads only occasional summaries for the charts, never a frame of positions.',
       options: {
         play: true,
         speed: '300',
@@ -341,23 +385,9 @@ play.encode(commandEncoder, {parameters: undefined});`,
         modeFilter: 'rail'
       },
       camera: {longitude: 4.9, latitude: 52.1, zoom: 8.4, transitionMs: 1400},
-      controls: ['play', 'speed', 'modeFilter'],
-      readouts: ['inService', 'peak', 'active']
-    },
-    {
-      id: 'limits',
-      title: 'What to remember, and what to try',
-      body: 'These positions are **schedule, not reality**: the GTFS feed has no vehicle positions, so a delayed train is still drawn on time. 97.5 percent of trips have exact shape-distance timing; the rest are straight lines between stops. Each trip is simplified to within 20 metres in space and time, and trips are clipped to the Randstad box, so vehicles leave the map at the edges.\n\nA lot of "buses" are on-demand services (named *Flex* in the feed) that the timetable lists as scheduled trips. **Try it:** select *Metro* and follow a line under Amsterdam, click a vehicle to read its line and window, or run **Playback speed** 600x with trails of 20 minutes to see the whole morning draw itself.',
-      options: {
-        modeFilter: 'all',
-        play: true,
-        speed: '120',
-        showTrails: true,
-        trailMinutes: 10
-      },
-      camera: {...RANDSTAD_VIEW, transitionMs: 1400},
-      controls: ['modeFilter', 'speed', 'trailMinutes'],
-      readouts: ['selected', 'active']
+      annotations: RANDSTAD_DATA_FRAME,
+      controls: ['play', 'time'],
+      readouts: ['binarySearch', 'selected', 'active']
     }
   ]
 });

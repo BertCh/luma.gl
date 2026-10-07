@@ -3,9 +3,12 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {playbackOptions} from '../../engine/playback';
+import {joinCredits} from '../../cartography/credits';
+import {ground} from '../../cartography/grounds';
 import {defineScene} from '../scene';
 import type {MigrationSeasonOptions} from './migration-season.compute';
 import {formatYearDay} from './migration-shared';
+import {MOVEMENT_CREDITS} from './movement-style';
 
 const EUROPE_AFRICA_VIEW = {longitude: 2, latitude: 33, zoom: 3.2};
 
@@ -13,7 +16,7 @@ export default defineScene<MigrationSeasonOptions>({
   id: 'migration-season',
   title: 'Play a year of migration',
   chapter: 'movement',
-  order: 14,
+  order: 5,
   summary:
     "Every marsh harrier, Montagu's harrier and spoonbill of the data set as a moving dot, interpolated on the GPU at a clock that runs through one folded year, with fading trails, a follow camera and the share of birds in Africa day by day.",
   contributors: ['GPUTrajectoryPlayhead', 'GPUTimeWindowFilter'],
@@ -21,6 +24,22 @@ export default defineScene<MigrationSeasonOptions>({
     {id: 'poopdeck-animals', role: 'GPS tracks of 42 birds, years folded onto one calendar'}
   ],
   initialView: EUROPE_AFRICA_VIEW,
+  basemap: ground('night', {labels: 'none'}),
+  furniture: {
+    title: {
+      title: 'A folded year of migration',
+      subtitle: 'GPS fixes · years folded onto one calendar',
+      chips: ['Years folded']
+    },
+    scaleBar: {units: 'metric'},
+    credit: joinCredits(MOVEMENT_CREDITS.birds),
+    clock: {
+      option: 'day',
+      time: {origin: '2024-01-01T00:00:00Z', unit: 'days'},
+      zones: ['UTC'],
+      progress: [0, 365]
+    }
+  },
 
   options: [
     ...playbackOptions<MigrationSeasonOptions>({
@@ -149,6 +168,12 @@ export default defineScene<MigrationSeasonOptions>({
       kind: 'chart',
       help: "Share of each species' tagged birds that are south of 35 N on each day of the folded year, interpolated from the fixes. The rule is the playhead."
     },
+    {
+      id: 'seasonMultiples',
+      label: 'Which season is changing?',
+      kind: 'chart',
+      help: 'The same south-of-35-N evidence split into five folded-calendar panels. The highlighted panel contains the map playhead, linking the seasonal comparison to the dots currently shown.'
+    },
     {id: 'clock', label: 'Date'},
     {
       id: 'birds',
@@ -215,6 +240,10 @@ windowParameters.write(getGPUTimeWindowParameterValues({
     {
       id: 'a-year',
       title: 'How long do the birds spend in Africa?',
+      headline: 'A calendar makes migration legible',
+      textAlternative:
+        'A dark Europe-to-Africa map with glowing species dots and a calendar clock.',
+      optionsMode: 'fresh',
       body: "Every dot is a GPS-tagged bird, placed where it was on this day of the year: **55 marsh harrier**, **23 Montagu's harrier** and **23 spoonbill** animal-years, folded onto one calendar. The clock starts on 1 March and runs through the year. Watch the harriers (blue and orange) leave the Low Countries in late summer, pour south and wait out the winter in the Sahel; the spoonbills (pink) hardly move.\n\nThe controls are the clock: **Play**, **Day of the year** and **Play speed**.",
       camera: {...EUROPE_AFRICA_VIEW, transitionMs: 1200},
       options: {play: true, day: 60},
@@ -224,6 +253,9 @@ windowParameters.write(getGPUTimeWindowParameterValues({
     {
       id: 'playhead',
       title: 'Every bird, interpolated on the GPU',
+      headline: 'The playhead estimates between fixes',
+      textAlternative: 'A selected bird advances along an interpolated GPS route.',
+      optionsMode: 'fresh',
       body: 'The tags log a fix about every two hours, but the clock has no reason to land on one. **`GPUTrajectoryPlayhead`** searches each track for the two fixes around the playhead and interpolates, for all 101 tracks at once, then compacts the list of tracks that have data now and sets the marker count with an indirect draw: no CPU loop touches a bird.\n\nA tag that goes quiet leaves a gap. **Hold a bird after a gap of** below decides when a bird sitting inside a long gap is held at its last fix instead of sliding across it; drag it to 3 hours and many birds freeze between fixes. **Birds with data** counts the tracks the playhead covers.',
       options: {play: false, day: 260, maxGapHours: 48},
       camera: {longitude: 0, latitude: 40, zoom: 4.2, transitionMs: 1400},
@@ -234,6 +266,9 @@ windowParameters.write(getGPUTimeWindowParameterValues({
     {
       id: 'trails',
       title: 'Trails from a time window',
+      headline: 'A trail is time, not distance',
+      textAlternative: 'Fading trails show equal spans of recent time.',
+      optionsMode: 'fresh',
       body: "The comet tails come from **`GPUTimeWindowFilter`**: every frame it picks the segments of every track whose time span overlaps the window behind the playhead, writes them as a compact list and gives each a fade weight and a clip fraction, so a tail dissolves smoothly instead of popping.\n\nSlide **Trail length** from 1 to 60 days: at 3 days you see this week's movement, at 60 days the whole autumn passage. **Tail fade** sets how much of the trail is faded. The window is two numbers, so nothing recompiles.",
       options: {play: true, day: 235, showTrails: true, trailDays: 14, tailFade: 0.8, playSpeed: 3},
       camera: {longitude: -2, latitude: 36, zoom: 3.6, transitionMs: 1400},
@@ -244,16 +279,22 @@ windowParameters.write(getGPUTimeWindowParameterValues({
     {
       id: 'africa',
       title: "Six months for the marsh harrier, seven for Montagu's",
+      headline: 'Species share a season, not a schedule',
+      textAlternative: 'A calendar chart compares the species south of the Mediterranean.',
+      optionsMode: 'fresh',
       body: "The chart is computed from the tracks once: for each day, the share of each species' tagged birds south of 35 N, roughly the line of the Mediterranean. The marsh harriers are mostly south of it from about **15 September to 26 March**, six months; Montagu's harriers from about **9 September to 20 April**, nearly seven. The spoonbills never cross.\n\nThe playhead is the rule on the chart. Scrub **Day of the year** to a date in October and read the **In Africa** readout: nearly every harrier is south, and the median latitude is about 14 N.",
       options: {play: false, day: 300},
       camera: {longitude: -8, latitude: 24, zoom: 3.3, transitionMs: 1400},
       highlight: {readout: 'africa'},
       controls: ['day', 'play'],
-      readouts: ['africa', 'latitude', 'africaChart']
+      readouts: ['africa', 'latitude', 'africaChart', 'seasonMultiples']
     },
     {
       id: 'follow-one',
       title: 'Follow one bird, and know the limits',
+      headline: 'One route explains the moving population',
+      textAlternative: 'One selected bird is followed across the migration map.',
+      optionsMode: 'fresh',
       body: "Click a dot (or a track) to select a bird, then turn on **Follow the selected bird**: the camera now rides with it while the clock runs. The white line is its whole track, and the readout names it. The first selection is the longest track that covers most of the year.\n\nThe limits: 42 birds, which is not the population; some contribute several years, which are folded onto one calendar, so a dot in March may be the same bird as another dot in March of a different year; and the interpolation between two-hourly fixes is a straight line, not the bird's true path. **Try:** play at 20 days per second with **Trail length** at 60 and watch the whole population draw the flyway.",
       options: {play: true, day: 190, followSelected: true, playSpeed: 3, trailDays: 14},
       camera: {zoom: 5, transitionMs: 1000},

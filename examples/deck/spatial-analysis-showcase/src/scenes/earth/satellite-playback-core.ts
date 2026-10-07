@@ -59,7 +59,7 @@ export type SatellitePlaybackCore = {
   playheadCompiled: CompiledGPUCommandGraph<void>;
   trailCompiled: CompiledGPUCommandGraph<void>;
   reader: SummaryReader;
-  /** Latest snapshot, or null before the first readback. */
+  /** Most recently read snapshot, or null before the first readback. */
   getSnapshot: () => SatellitePlaybackSnapshot | null;
   /** Writes the playhead parameters and encodes the playhead graph. */
   encodePlayhead: (

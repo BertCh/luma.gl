@@ -4,6 +4,36 @@
 
 export type GridOracleResult = {positions: number[][]; centers: number[][]};
 
+/** Independent f64 polygon-vertex union; quantization removes only trigonometric roundoff. */
+export function generateGridCorners(
+  gridType: 'square' | 'hex',
+  columns: number,
+  rows: number,
+  minX: number,
+  minY: number,
+  width: number,
+  height: number,
+  flatHex = false
+): number[][] {
+  const grid = generateGrid(
+    gridType,
+    flatHex ? rows : columns,
+    flatHex ? columns : rows,
+    0,
+    0,
+    width,
+    height
+  );
+  const corners = new Map<string, number[]>();
+  for (const position of grid.positions) {
+    const point = flatHex
+      ? [position[1] + minX, position[0] + minY]
+      : [position[0] + minX, position[1] + minY];
+    corners.set(point.map(value => value.toFixed(7)).join(','), point);
+  }
+  return [...corners.values()];
+}
+
 /** f64 reference of `GPUGridGenerator`, one cell at a time. */
 export function generateGrid(
   gridType: 'square' | 'hex' | 'triangle' | 'point',

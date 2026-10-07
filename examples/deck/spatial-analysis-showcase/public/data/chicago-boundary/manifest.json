@@ -1,0 +1,121 @@
+{
+ "id": "chicago-boundary",
+ "version": 1,
+ "kind": "polygons",
+ "count": 1,
+ "bbox": [
+  -88.0,
+  41.55,
+  -87.2,
+  42.15
+ ],
+ "crs": "EPSG:4326",
+ "columns": {
+  "vertices": {
+   "file": "vertices.bin",
+   "dtype": "float32",
+   "components": 2,
+   "length": 2065
+  },
+  "ringOffsets": {
+   "file": "ringOffsets.bin",
+   "dtype": "uint32",
+   "components": 1,
+   "length": 7
+  },
+  "polygonRingOffsets": {
+   "file": "polygonRingOffsets.bin",
+   "dtype": "uint32",
+   "components": 1,
+   "length": 4
+  },
+  "partFeature": {
+   "file": "partFeature.bin",
+   "dtype": "uint32",
+   "components": 1,
+   "length": 3
+  },
+  "lakeVertices": {
+   "file": "lakeVertices.bin",
+   "dtype": "float32",
+   "components": 2,
+   "length": 29
+  },
+  "lakeRingOffsets": {
+   "file": "lakeRingOffsets.bin",
+   "dtype": "uint32",
+   "components": 1,
+   "length": 2
+  },
+  "lakePolygonRingOffsets": {
+   "file": "lakePolygonRingOffsets.bin",
+   "dtype": "uint32",
+   "components": 1,
+   "length": 2
+  },
+  "lakePartFeature": {
+   "file": "lakePartFeature.bin",
+   "dtype": "uint32",
+   "components": 1,
+   "length": 1
+  },
+  "landMaskVertices": {
+   "file": "landMaskVertices.bin",
+   "dtype": "float32",
+   "components": 2,
+   "length": 31
+  },
+  "landMaskRingOffsets": {
+   "file": "landMaskRingOffsets.bin",
+   "dtype": "uint32",
+   "components": 1,
+   "length": 2
+  },
+  "landMaskPolygonRingOffsets": {
+   "file": "landMaskPolygonRingOffsets.bin",
+   "dtype": "uint32",
+   "components": 1,
+   "length": 2
+  },
+  "landMaskPartFeature": {
+   "file": "landMaskPartFeature.bin",
+   "dtype": "uint32",
+   "components": 1,
+   "length": 1
+  },
+  "areaKm2": {
+   "file": "areaKm2.bin",
+   "dtype": "float32",
+   "components": 1,
+   "length": 1
+  }
+ },
+ "geometry": {
+  "type": "polygons",
+  "file": "city.geojson"
+ },
+ "names": [
+  "City of Chicago"
+ ],
+ "properties": {
+  "description": "Derived Chicago geography: the city limit (dissolved community areas), Lake Michigan clipped to the Chicago region and the land mask (region box minus the lake). Each geometry is one multi-part feature with GeoArrow-style binary columns: unprefixed = city limit, lake* = lake, landMask* = land mask. Polygon p owns rings polygonRingOffsets[p]..[p+1], ring r owns vertices ringOffsets[r]..[r+1]; partFeature maps part -> feature (always 0).",
+  "files": {
+   "city.geojson": "city limit (single feature)",
+   "lake.geojson": "Lake Michigan within the region (single feature)",
+   "land-mask.geojson": "region box minus the lake: the land side for fade-the-lake masks"
+  },
+  "region": [
+   -88.0,
+   41.55,
+   -87.2,
+   42.15
+  ],
+  "notes": [
+   "The Natural Earth lake shoreline is generalised (~100 m): it does not follow the real Chicago shoreline, harbours or piers, and may overlap or leave gaps against the city limit.",
+   "The city limit along the lake is the community-area edge, which is the shoreline in the City of Chicago source."
+  ],
+  "source": "City of Chicago community areas (dissolved) and Natural Earth 1:10m lakes, built 2026-10-07",
+  "license": "City of Chicago Data Portal Terms of Use (community areas); public domain (Natural Earth)",
+  "attribution": "City of Chicago; Made with Natural Earth"
+ }
+}
