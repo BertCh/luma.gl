@@ -197,7 +197,7 @@ export class GPUSegmentIntersection implements GPUCommandNodeProducer {
     for (const [name, view] of [
       ['count', pairs.count],
       ['overflow', pairs.overflow],
-      ['totalCount', pairs.totalCount],
+      ['requiredCount', pairs.requiredCount],
       ['uncertainCount', props.uncertainCount]
     ] as const) {
       if (view) {
@@ -257,7 +257,7 @@ export class GPUSegmentIntersection implements GPUCommandNodeProducer {
       pairs.rightIds,
       pairs.count,
       pairs.overflow,
-      pairs.totalCount,
+      pairs.requiredCount,
       uncertainCount,
       this.props.kinds,
       this.props.points,
@@ -607,7 +607,7 @@ ${getSegmentTableAccessorsWGSL(side)}`,
     const scalars: [string, GraphDataView<'uint32'> | undefined][] = [
       ['count', pairs.count],
       ['overflow', pairs.overflow],
-      ['totalCount', pairs.totalCount],
+      ['requiredCount', pairs.requiredCount],
       ['uncertainCount', uncertainCount]
     ];
     for (const [name, view] of scalars) {
@@ -628,7 +628,7 @@ ${getSegmentTableAccessorsWGSL(side)}`,
   let overflowed = bvhOverflow[bvhOverflowOffset] != 0u || total > PAIR_CAPACITY;
   ${has('count') ? 'count[countOffset] = min(total, PAIR_CAPACITY);' : ''}
   ${has('overflow') ? 'overflow[overflowOffset] = select(0u, 1u, overflowed);' : ''}
-  ${has('totalCount') ? 'totalCount[totalCountOffset] = total;' : ''}
+  ${has('requiredCount') ? 'requiredCount[requiredCountOffset] = total;' : ''}
   ${has('uncertainCount') ? 'uncertainCount[uncertainCountOffset] = state[stateOffset + 1u];' : ''}`
       })
     );

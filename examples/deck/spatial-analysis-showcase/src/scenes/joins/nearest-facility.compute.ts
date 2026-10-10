@@ -365,7 +365,8 @@ export async function createNearestFacility(
       );
       const nearestIds = own.createBuffer('nearest-ids', placeCount * 4);
       const distances = own.createBuffer('distances', placeCount * 4);
-      const featureCounts = own.createBuffer('feature-counts', Math.max(set.count, 1) * 4);
+      const featureTotal = set.kind === 'lines' ? set.lines!.segments.length / 4 : set.count;
+      const featureCounts = own.createBuffer('feature-counts', Math.max(featureTotal, 1) * 4);
       const features: GPUNearestFeatureGeometry =
         set.kind === 'lines'
           ? {
@@ -395,7 +396,6 @@ export async function createNearestFacility(
                 set.count
               )
             };
-      const featureTotal = set.kind === 'lines' ? set.lines!.segments.length / 4 : set.count;
       const distancesView = importGraphBuffer(graph, 'distances', distances, 'float32', placeCount);
       graph.add(
         new GPUNearestFeatureJoin({
@@ -697,7 +697,7 @@ export async function createNearestFacility(
             rightIds: importGraphBuffer(graph, 'pairs-right', rightIds, 'uint32', capacity),
             count: importGraphBuffer(graph, 'pairs-count', count, 'uint32', 1),
             overflow: importGraphBuffer(graph, 'overflow', overflow, 'uint32', 1),
-            totalCount: importGraphBuffer(graph, 'pairs-total', total, 'uint32', 1)
+            requiredCount: importGraphBuffer(graph, 'pairs-total', total, 'uint32', 1)
           }
         })
       );
@@ -1200,7 +1200,7 @@ export async function createNearestFacility(
               ? {
                   values: variant.featureCounts,
                   valueFormat: 'uint32' as const,
-                  colormap: 'magma' as const,
+                  colormap: 'cividis' as const,
                   valueRange: [0, maximumCatchment] as const,
                   sqrtScale: true
                 }

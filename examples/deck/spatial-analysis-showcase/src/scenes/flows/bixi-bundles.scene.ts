@@ -359,6 +359,19 @@ export default defineScene<BixiBundlesOptions>({
       help: 'Share of all rides between two different stations that run on the pairs drawn.'
     },
     {
+      id: 'eligibleCoverage',
+      label: 'Source rides represented by eligible pairs',
+      format: 'percent',
+      help: 'Share of every retained inter-station ride represented by the pair table before the top-N and minimum-ride filters. The remainder belongs to directed pairs with fewer than three rides.'
+    },
+    {
+      id: 'sourceAudit',
+      label: 'Source and denominator audit',
+      layout: 'block',
+      hood: true,
+      help: 'Preprocessing exclusions, the pair-table threshold and the denominator used by the ride-share readout.'
+    },
+    {
       id: 'lengthBias',
       label: 'Median pair length, drawn vs left out',
       help: 'Straight-line length of the pairs: busy pairs are short and central, so a top-N cut biases the map toward them.'
@@ -420,22 +433,28 @@ export default defineScene<BixiBundlesOptions>({
     },
     {
       id: 'offStreetBundled',
-      label: 'Bundle length off the streets',
+      label: 'Bundle length outside the morning-route envelope',
       format: 'percent',
-      help: 'Share of the bundled lines that lies farther from every routed ride than the distance below. The rides are one morning, so quiet streets count as off.'
+      help: 'Share of the bundled lines farther from every modelled route in the one-morning sample than the distance below. This does not test against a complete street network: quiet and unsampled streets count as outside.'
     },
     {
       id: 'offStreetStraight',
-      label: 'Straight length off the streets',
+      label: 'Straight length outside the route envelope',
       format: 'percent',
-      help: 'The same share for the straight lines between the stations.'
+      help: 'The same one-morning route-envelope measure for the straight lines between stations.'
     },
     {
       id: 'streetDistance',
-      label: 'Street distance',
+      label: 'Route-envelope distance',
       format: 'meters',
       hood: true,
-      help: 'A line counts as on a street when a routed ride passes within this distance of it.'
+      help: 'A line counts as covered by the evidence when a modelled route in the one-morning sample passes within this distance.'
+    },
+    {
+      id: 'routeEvidence',
+      label: 'Route-evidence basis',
+      layout: 'block',
+      help: 'The routes used to challenge the bundled geometry. They are modelled trips from one morning, not observed GPS paths or a complete street layer.'
     },
     {
       id: 'areaStraight',
@@ -586,7 +605,7 @@ playheadParams.write(getGPUTrajectoryPlayheadParameterValues({playhead: seconds,
     what: 'Previously: communities against boroughs in the BIXI network. This closes the flows chapter.\n\n`GPUEdgeBundling` turns straight edges into bundled polylines with kernel-density edge bundling on the GPU, as in the airline story, here with `geographic: true` so the kernel is round on the ground at Montreal. A `GPUTrajectoryPlayhead` graph interpolates every routed ride at the clock and a `GPUTimeWindowFilter` graph selects the trail segments that are still visible.',
     why: 'A flow map of every station pair is a hairball. Bundling shows where traffic concentrates, and width by rides keeps the volume readable. Running a morning of routed rides over it shows what bundling is: a summary of pairs. The corridors are an optimisation outcome, not streets.',
     howToRead:
-      'Each trunk is many station pairs merged: its width follows the rides on the pair (square-root scale, one scale for every step) and its colour is the ride class. The pairs drawn are a top-N cut, so the map over-represents short, central, repeated trips; the Pareto chart shows what is left out. The rides are OSRM bicycle-profile routes between the start and end station with times spread along the route, so they are modelled, not GPS traces, and speeds are modelled too. Rides under way at 07:30 begin at the first frame; the bundles use the whole month, the rides one morning. The bundling schedule is chaotic in 32-bit floats: two runs agree only statistically.'
+      'Each trunk is many station pairs merged: its width follows the rides on the pair (square-root scale, one scale for every step) and its colour is the ride class. The pairs drawn are a top-N cut, so the map over-represents short, central, repeated trips; the ride-share denominator remains every retained inter-station ride, while a separate readout says how much the pair table could represent before display filters. The rides are OSRM bicycle-profile routes between the start and end station with times spread along the route, so they are modelled, not GPS traces, and speeds are modelled too. Their proximity test is a one-morning route envelope, not a street-network truth test. Rides under way at 07:30 begin at the first frame; the bundles use the whole month, the rides one morning. The bundling schedule is chaotic in 32-bit floats: two runs agree only statistically.'
   },
 
   create: async ctx => (await import('./bixi-bundles.compute')).createBixiBundles(ctx),
@@ -657,7 +676,7 @@ playheadParams.write(getGPUTrajectoryPlayheadParameterValues({playhead: seconds,
       optionsMode: 'fresh',
       options: {showRides: true, play: true, time: 1800, speed: 4, trailMinutes: 4},
       controls: ['play', 'speed'],
-      readouts: ['bikes', 'clock', 'offStreetBundled', 'ridesChart'],
+      readouts: ['bikes', 'clock', 'offStreetBundled', 'offStreetStraight'],
       camera: {...RIDES_VIEW, transitionMs: 1400},
       furniture: {
         ...cartouche('Bundles are not streets', 'Routed rides, 15 August 2024, 07:30 to 10:00', [

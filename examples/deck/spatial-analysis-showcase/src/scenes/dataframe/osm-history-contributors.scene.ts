@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {ground} from '../../cartography/grounds';
 import {defineScene, type LegendSpec} from '../scene';
 import type {OsmContributorsOptions} from './osm-history-contributors.compute';
 
@@ -10,11 +11,11 @@ const LAST_YEAR = 2026.4;
 
 export default defineScene<OsmContributorsOptions>({
   id: 'osm-history-contributors',
-  title: 'Who drew New York? How concentrated is the work?',
+  title: 'New York OSM nodes by contributor concentration',
   chapter: 'dataframe',
   order: 3,
   summary:
-    'Group 400,000 OpenStreetMap node creations by anonymous contributor rank on the GPU, then read the concentration: a Lorenz curve, the share of the top N contributors, and the first, median and last month of each leading contributor.',
+    'GPU group statistics rank contributors in a sample of New York OpenStreetMap node history. The outputs are mapped top contributors, a Lorenz curve and Gini coefficient; sampling thins occasional contributors.',
   contributors: ['GPUGroupStatistics'],
   datasets: [
     {
@@ -23,6 +24,16 @@ export default defineScene<OsmContributorsOptions>({
     }
   ],
   initialView: {longitude: -73.97, latitude: 40.71, zoom: 10.4},
+  basemap: ground('paperCity'),
+  furniture: {
+    title: {
+      title: 'New York OSM contributor concentration',
+      subtitle: 'Node shares, ranked contributors and Lorenz curve'
+    },
+    scaleBar: {units: 'metric'},
+    credit: '© OpenStreetMap contributors (ODbL)',
+    caveat: 'The displayed map is a uniform sample of node history.'
+  },
 
   options: [
     {
@@ -142,6 +153,9 @@ export default defineScene<OsmContributorsOptions>({
     {
       id: 'question',
       title: 'Did a crowd draw New York, or a handful?',
+      headline: 'Top contributors account for a large node share',
+      textAlternative:
+        'Orange points mark nodes created by the highest-ranked contributors across New York, while gray points show the remaining sampled history.',
       body: 'The orange nodes are everything created by the **top 10 contributors** out of 11,361 (anonymous ranks over the full history). The map is a **400,000-node sample** of all 901,827 nodes. Raise **Top N contributors** below and watch the orange spread.',
       camera: {
         longitude: -73.97,
@@ -157,6 +171,9 @@ export default defineScene<OsmContributorsOptions>({
     {
       id: 'lorenz',
       title: 'Read the concentration curve',
+      headline: 'The contributor distribution is strongly concentrated',
+      textAlternative:
+        'The Lorenz curve stays below the equality diagonal before rising sharply among the most active contributors; the Gini readout quantifies the gap.',
       body: '`GPUGroupStatistics` groups the nodes by contributor on the GPU, one dense row per contributor. The Lorenz curve sorts contributors from least to most active: if everyone made equal shares it would follow the dashed diagonal. It hugs the floor and shoots up at the right: the vertical rule marks where your **Top N contributors** start, and the Gini coefficient measures the bend (0 equal, 1 one person).',
       controls: ['topN'],
       readouts: ['lorenz', 'gini', 'active']
@@ -164,6 +181,9 @@ export default defineScene<OsmContributorsOptions>({
     {
       id: 'leaders',
       title: 'Meet the leaders by rank',
+      headline: 'Leading contributors differ in duration and volume',
+      textAlternative:
+        'A ranked bar chart and contributor readout compare node totals and the first, median and last creation dates for the selected contributor.',
       body: 'Use **Inspect contributor** to step down the ranking. Each readout comes from the same group table: how many nodes that contributor made, and the minimum, median and maximum creation day of those nodes. Some leaders worked for years, others in one short burst.',
       options: {inspect: 1},
       controls: ['inspect'],
@@ -172,6 +192,9 @@ export default defineScene<OsmContributorsOptions>({
     {
       id: 'surge',
       title: 'Zoom into the 2013 to 2014 surge',
+      headline: 'Five accounts dominate the selected creation window',
+      textAlternative:
+        'Orange nodes from the five leading contributors dominate the 2013 to 2014 selection, accompanied by concentration and Lorenz readouts.',
       body: 'Set **Creation years** to 2013.5 to 2014.5 and **Kind of node** to Other tagged nodes. In this window five accounts make over half of the sampled nodes (about 54%, against 27% for the whole history): the top share jumps. Those are the bulk imports of the next scene, seen as people.',
       options: {years: [2013.5, 2014.5], kind: '1', topN: 5},
       controls: ['years', 'kind'],
@@ -180,6 +203,9 @@ export default defineScene<OsmContributorsOptions>({
     {
       id: 'honest',
       title: 'How far to trust a sample',
+      headline: 'Sampling preserves shares but thins occasional contributors',
+      textAlternative:
+        'A rank-colored node map is paired with sampled and exact top-share readouts, exposing agreement for prolific contributors and missing low-volume accounts.',
       body: 'This is a uniform sample, so each contributor appears in proportion to their work, but the **long tail of occasional contributors is thinned**: with 44% of the nodes, someone who made 3 nodes is missing about one time in six. Set **Creation years** back to the whole range and compare the sampled top share with the exact full-history share in the readouts. Try **Rank ramp**: color by rank.',
       options: {topN: 100, colorBy: 'rank'},
       controls: ['colorBy', 'topN'],

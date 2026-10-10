@@ -233,9 +233,9 @@ export type GPUFlowAggregationProps = {
  * given, and not a self flow when `excludeSelfFlows`.
  *
  * Output: flows are sorted by weight descending, ties by pair key ascending (origin zone, then
- * destination zone); without `weights` the weight is the count. `output.totalCount` is the number
- * of distinct pairs retained in the table, `output.count = min(totalCount, K)`, and
- * `output.overflow` is 1 when `totalCount > K` or `pairOverflow` is set. `totalCount > K` alone means
+ * destination zone); without `weights` the weight is the count. `output.requiredCount` is the number
+ * of distinct pairs retained in the table, `output.count = min(requiredCount, K)`, and
+ * `output.overflow` is 1 when `requiredCount > K` or `pairOverflow` is set. `requiredCount > K` alone means
  * the list is a top-K truncation but every aggregate is exact. `pairOverflow` means distinct pairs
  * exceeded `pairCapacity` (or the probe limit): aggregates are incomplete and which pairs were
  * retained is unspecified (the `GPUHashIndex` contract). Rows `k >= count` of every K-row output are
@@ -855,7 +855,7 @@ export class GPUFlowAggregation implements GPUCommandNodeProducer {
       createPublishNode(graph, {
         id: `${id}-publish`,
         operation: 'GPUFlowAggregation',
-        totalCount: graph.createDataView(buildStatistics.buffer, {
+        requiredCount: graph.createDataView(buildStatistics.buffer, {
           format: 'uint32',
           length: 1,
           byteOffset: buildStatistics.byteOffset
@@ -968,7 +968,7 @@ export class GPUFlowAggregation implements GPUCommandNodeProducer {
       output.ids,
       output.count,
       output.overflow,
-      output.totalCount,
+      output.requiredCount,
       props.flowOriginZoneIds,
       props.flowDestinationZoneIds,
       props.flowCounts,

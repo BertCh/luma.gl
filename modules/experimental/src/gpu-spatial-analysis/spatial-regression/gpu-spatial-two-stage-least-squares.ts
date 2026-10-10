@@ -25,6 +25,7 @@ import {
   GPU_SPATIAL_TWO_STAGE_LEAST_SQUARES_TABLE_STRIDE
 } from './spatial-two-stage-least-squares-parameters';
 import {getCholeskyWGSL} from './spatial-regression-solve';
+import type {GPUSolverStatusPort} from '../contracts/index';
 
 const OPERATION = 'GPUSpatialTwoStageLeastSquares';
 const TILE_WORKGROUP_SIZE = 64;
@@ -36,7 +37,7 @@ const RESIDUAL_SUM_COUNT = 4;
 const ANSELIN_KELEJIAN_FIXED_SUM_COUNT = 5;
 
 /** Caller-owned outputs of {@link GPUSpatialTwoStageLeastSquares}. */
-export type GPUSpatialTwoStageLeastSquaresOutput = {
+export type GPUSpatialTwoStageLeastSquaresOutput = GPUSolverStatusPort & {
   /**
    * `(predictorCount + 2) * 4` float32 values: one row per coefficient in spreg order (intercept,
    * one per predictor, then the spatial lag `rho` of the response last), each row holding the
@@ -45,8 +46,6 @@ export type GPUSpatialTwoStageLeastSquaresOutput = {
   table: GraphDataView<'float32'>;
   /** At least 7 float32 values; see the `GPU_SPATIAL_TWO_STAGE_LEAST_SQUARES_SUMMARY_*` slots. */
   summary: GraphDataView<'float32'>;
-  /** One uint32; see the `GPU_SPATIAL_TWO_STAGE_LEAST_SQUARES_STATUS_*` constants. */
-  status: GraphDataView<'uint32'>;
   /** Optional per-row structural residuals `u = y - rho W y - X b`; NaN for a failed fit. */
   residuals?: GraphDataView<'float32'>;
 };

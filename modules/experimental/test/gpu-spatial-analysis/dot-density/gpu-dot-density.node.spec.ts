@@ -38,7 +38,7 @@ function createProps(
         ids: view('uint32', 100),
         count: view('uint32', 1),
         overflow: view('uint32', 1),
-        totalCount: view('uint32', 1)
+        requiredCount: view('uint32', 1)
       },
       categories: view('uint32', 100),
       failedCount: view('uint32', 1),
@@ -168,7 +168,7 @@ it('generateDotsOnCPU counts are monotone in dotsPerUnit and positions form a st
       parameters: getGPUDotDensityParameterValues({seed}),
       capacity: 10,
       maximumAttempts: 1
-    }).totalCount;
+    }).requiredCount;
   }
   expect(total / 400).toBeGreaterThan(0.24);
   expect(total / 400).toBeLessThan(0.36);

@@ -8,6 +8,7 @@ export {
   getGPUNeighborSearchParameterValues,
   GPU_NEIGHBOR_SEARCH_KERNEL,
   GPU_NEIGHBOR_SEARCH_PARAMETER_LENGTH,
+  GPU_NEIGHBOR_SEARCH_PARAMETER_SCHEMA,
   GPU_NEIGHBOR_SEARCH_WEIGHT_KIND
 } from './neighbor-search-parameters';
 export type {

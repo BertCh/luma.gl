@@ -147,7 +147,7 @@ function formatDistribution(values: ArrayLike<number>, count: number, observed: 
     heights[Math.min(bins - 1, Math.floor(((values[index] - minimum) / span) * bins))]++;
     if (values[index] < observed) below++;
   }
-  const bars = '▁▂▃▄▅▆▇█';
+  const bars = '.:-=+*#@';
   const peak = Math.max(...heights, 1);
   const spark = heights
     .map(height => (height === 0 ? '·' : bars[Math.min(7, Math.round((height / peak) * 7))]))
@@ -915,7 +915,7 @@ export async function createSpaceTimeClusters(
             radiusPixels: 2.6,
             values: current.knox.times,
             valueFormat: 'float32',
-            colormap: 'viridis',
+            colormap: 'lajolla',
             valueRange: [0, 365],
             color: [255, 255, 255, 235]
           })
@@ -961,7 +961,7 @@ export async function createSpaceTimeClusters(
             id: 'clusters-rate',
             values: current.scan.rate,
             valueFormat: 'float32',
-            colormap: 'viridis',
+            colormap: 'ylorrd',
             valueRange: [0, rateMaximum],
             sqrtScale: true
           })

@@ -128,7 +128,7 @@ function createFixture(device: Device, props: FixtureProps): Fixture {
       ids: importGraphBuffer(graph, 'o-ids', outputs.ids, 'uint32', capacity),
       count: importGraphBuffer(graph, 'o-count', outputs.count, 'uint32', 1),
       overflow: importGraphBuffer(graph, 'o-overflow', outputs.overflow, 'uint32', 1),
-      totalCount: importGraphBuffer(graph, 'o-total', outputs.total, 'uint32', 1)
+      requiredCount: importGraphBuffer(graph, 'o-total', outputs.total, 'uint32', 1)
     },
     failedCount: importGraphBuffer(graph, 'o-failed', outputs.failed, 'uint32', 1),
     slotCounts: importGraphBuffer(graph, 'o-slot-counts', outputs.slotCounts, 'uint32', slotCount),
@@ -185,7 +185,7 @@ function createFixture(device: Device, props: FixtureProps): Fixture {
       return {
         count,
         overflow: (await readUint32(outputs.overflow, 1))[0],
-        totalCount: (await readUint32(outputs.total, 1))[0],
+        requiredCount: (await readUint32(outputs.total, 1))[0],
         failedCount: (await readUint32(outputs.failed, 1))[0],
         slotCounts: Uint32Array.from(await readUint32(outputs.slotCounts, slotCount)),
         slotOffsets: Uint32Array.from(await readUint32(outputs.slotOffsets, slotCount)),
@@ -211,7 +211,7 @@ function expectMatchesOracle(
 ): void {
   expect(Array.from(actual.slotCounts)).toEqual(Array.from(expected.slotCounts));
   expect(Array.from(actual.slotOffsets)).toEqual(Array.from(expected.slotOffsets));
-  expect(actual.totalCount).toBe(expected.totalCount);
+  expect(actual.requiredCount).toBe(expected.requiredCount);
   expect(actual.count).toBe(expected.count);
   expect(actual.overflow).toBe(expected.overflow);
   expect(actual.failedCount).toBe(expected.failedCount);
@@ -337,7 +337,7 @@ it('GPUDotDensity clamps to capacity, applies a mask and counts failures', async
     });
     expect(actual.count).toBe(100);
     expect(actual.overflow).toBe(1);
-    expect(actual.totalCount).toBeGreaterThan(100);
+    expect(actual.requiredCount).toBeGreaterThan(100);
     expectMatchesOracle(actual, expected, true);
   } finally {
     small.destroy();

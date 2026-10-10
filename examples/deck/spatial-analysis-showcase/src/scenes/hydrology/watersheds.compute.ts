@@ -744,7 +744,7 @@ export async function createWatersheds(
       const scalar = (
         id: string,
         values: Buffer,
-        colormap: 'viridis' | 'inferno' | 'cividis',
+        colormap: 'bamako' | 'inferno' | 'cividis',
         valueRange: readonly [number, number],
         discardAtOrBelow: number
       ) =>
@@ -779,7 +779,7 @@ export async function createWatersheds(
             scalar(
               'watersheds-accumulation',
               accumulationDisplayBuffer,
-              'viridis',
+              'bamako',
               ACCUMULATION_LOG_RANGE,
               // Hillslope cells below 0.01 km² stay transparent so the stream network reads.
               ACCUMULATION_LOG_RANGE[0]
@@ -825,7 +825,7 @@ export async function createWatersheds(
             scalar(
               'watersheds-index',
               indexDisplayBuffer,
-              options.indexKind === 'power' ? 'inferno' : 'viridis',
+              options.indexKind === 'power' ? 'inferno' : 'bamako',
               range,
               HIDDEN_VALUE / 2
             )

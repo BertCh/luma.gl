@@ -56,6 +56,7 @@ it('GPUTrajectoryMetrics writes per-step speed, heading, acceleration and the dr
   const graph = new GPUCommandGraph<void>(device, {id: 'trajectory-steps'});
   graph.add(
     new GPUTrajectoryMetrics({
+      spatialContext: {coordinateSpace: 'planar', metric: 'native', units: 'native'},
       positions: importGraphBuffer(graph, 'positions', positionsBuffer, 'float32x2', rowCount),
       timestamps: importGraphBuffer(graph, 'timestamps', timestampsBuffer, 'float32', rowCount),
       trackOffsets: importGraphBuffer(graph, 'offsets', offsetsBuffer, 'uint32', trackCount + 1),

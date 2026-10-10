@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {ground} from '../../cartography/grounds';
 import {defineScene} from '../scene';
 import {getRainfallSurfaceStyle, RAINFALL_VARIABLES} from './b7-rainfall-style';
 import type {RainfallOptions} from './rainfall-interpolation.compute';
@@ -16,14 +17,24 @@ const RAMP_OPTIONS = [
 /** Chapter `interpolation`, scene 1: Hurricane Helene rain gauges turned into a surface. */
 export default defineScene<RainfallOptions>({
   id: 'rainfall-interpolation',
-  title: 'Where did Helene’s rain fall between the gauges?',
+  title: 'Hurricane Helene rainfall: interpolated depth between gauges',
   chapter: 'interpolation',
   order: 1,
   summary:
-    'Six thousand rain gauges from Hurricane Helene become a continuous surface on the GPU, by inverse distance weighting and by ordinary kriging with a variogram fitted on the fly. Map the uncertainty, validate against held-out gauges and summarise the surface with focal statistics.',
+    'GPU inverse-distance weighting and ordinary kriging interpolate 6,135 NOAA gauges into rainfall and uncertainty rasters. Held-out errors assess prediction, but sparse coverage and omitted elevation limit the surface.',
   contributors: ['GPUInverseDistanceWeighting', 'GPUKriging', 'GPUVariogram', 'GPUFocalStatistics'],
   datasets: [{id: 'ghcn-stations', role: 'daily gauge readings'}],
   initialView: {longitude: -83, latitude: 32.3, zoom: 5.2},
+  basemap: ground('paperCity'),
+  furniture: {
+    title: {
+      title: 'Helene rainfall interpolation',
+      subtitle: 'Gauge-derived depth and uncertainty'
+    },
+    scaleBar: {units: 'metric'},
+    credit: 'NOAA Global Historical Climatology Network Daily',
+    caveat: 'Interpolation omits elevation and does not measure rainfall between gauges.'
+  },
 
   options: [
     {
@@ -346,7 +357,7 @@ export default defineScene<RainfallOptions>({
       label: 'Color ramp',
       group: 'Display',
       apply: 'param',
-      default: 'viridis',
+      default: 'cividis',
       help: 'Used for the interpolated value and for the gauge dots, so they can be compared. Spread and error maps use fixed ramps.',
       options: RAMP_OPTIONS
     },
@@ -399,6 +410,12 @@ export default defineScene<RainfallOptions>({
     },
     {id: 'lagAxis', label: 'Lags'},
     {
+      id: 'variogramChart',
+      label: 'Spatial correlation evidence',
+      kind: 'chart',
+      help: 'Empirical semivariance by gauge separation, compared with the fitted model and sample variance.'
+    },
+    {
       id: 'sampleVariance',
       label: 'Sample variance',
       help: 'Variance of the gauge values: the sill a stationary field should approach.'
@@ -411,6 +428,12 @@ export default defineScene<RainfallOptions>({
     },
     {id: 'validationKriging', label: 'Kriging at held-out gauges'},
     {id: 'validationVerdict', label: 'Verdict'},
+    {
+      id: 'validationChart',
+      label: 'Validation comparison',
+      kind: 'chart',
+      help: 'Paired error metrics from the same held-out gauges in the current map extent.'
+    },
     {id: 'graphTime', label: 'Interpolation graph'},
     {id: 'variogramTime', label: 'Variogram graph'}
   ],
@@ -519,16 +542,26 @@ compiled.encode(commandEncoder, {parameters: undefined});`,
   story: [
     {
       id: 'the-question',
+      headline: 'Gauges leave rainfall unmeasured between stations',
+      textAlternative:
+        'Rain gauges appear over a continuous GPU-interpolated precipitation surface across the Southeast.',
       title: 'Where did Helene’s rain fall between the gauges?',
       body: 'On 26–27 September 2024 Hurricane Helene crossed Florida’s Big Bend and drove record rain into the southern Appalachians. NOAA’s GHCN-Daily network recorded **6,135 gauges** across the Southeast that day, but a gauge only knows its own backyard. A flood manager needs the rain *between* the gauges.\n\nThe colored surface is built on the GPU from those points by **`GPUInverseDistanceWeighting`**, over a raster that follows the camera. Dots are the gauges on the same scale: hover one for its name and reading, hover anywhere else for the interpolated value. Transparent cells are where no gauge is close enough to say anything. **Variable** and **Surface**, below, choose the reading and the method.',
       camera: {longitude: -83, latitude: 32.3, zoom: 5.2},
       options: {surface: 'idw'},
       callout: {coordinate: [-83.58, 30.12], text: 'Landfall near Perry, FL'},
       controls: ['variable', 'surface'],
-      readouts: ['stations']
+      readouts: ['stations'],
+      evidence:
+        'The map starts from gauge observations; transparent cells explicitly mark places where the selected neighbourhood rule has insufficient support.',
+      caveat:
+        'A continuous surface is an estimate between instruments, not a direct measurement of rainfall at every pixel.'
     },
     {
       id: 'idw',
+      headline: 'Distance power controls smoothing around gauges',
+      textAlternative:
+        'Inverse-distance rainfall forms broader or narrower surfaces around gauge readings as power changes.',
       title: 'Nearby gauges vote, nearer ones louder',
       body: 'Inverse distance weighting estimates a cell as a weighted average of the gauges around it, `z = Σ wᵢ zᵢ / Σ wᵢ` with `wᵢ = 1 / dᵢᵖ`. Doubling the distance quarters a gauge’s say when **p = 2**.\n\nThe Blue Ridge near Asheville is the story: Connestee Falls, NC recorded 343 mm. Slide **Distance power p** to 0 (a plain average, flat plateaus) and to 6 (each cell snaps to its nearest gauge, bullseyes around every dot), and watch **Search radius** and **Nearest gauges k** carve no-data holes and limit the vote. IDW never predicts above the highest or below the lowest gauge, so it can only spread a peak, never place one between gauges.',
       camera: {longitude: -82.8, latitude: 35.4, zoom: 7.6, transitionMs: 2200},
@@ -538,16 +571,26 @@ compiled.encode(commandEncoder, {parameters: undefined});`,
     },
     {
       id: 'variogram',
+      headline: 'Rainfall similarity declines with gauge separation',
+      textAlternative:
+        'Empirical and fitted semivariogram bars compare rainfall difference against station-pair distance.',
       title: 'How fast does rain stop resembling its neighbour?',
-      body: 'IDW assumes one fixed distance decay everywhere. The **semivariogram** measures the real one: for every pair of gauges, half the squared difference of their readings, averaged by separation, `γ(h) = ½ · mean (zᵢ − zⱼ)²`. **`GPUVariogram`** computes that over all pairs inside the maximum lag in one deterministic GPU pass (6,000 gauges is 18 million pairs).\n\nThe bar charts below (**Empirical γ(h)** and **Fitted model γ(h)**) are the result, read from short to long lag. Pairs of close gauges differ little, far pairs differ as much as random gauges (the sample variance). A model is fitted on the CPU to the bins: the **nugget** is noise at zero distance, the **sill** the structured variance, and the **range** how far gauges stay similar. Switch **Variogram model** and **Fit weighting** and watch the fitted bars follow the empirical ones. Stretch **Maximum lag** past about 400 km and the bars overshoot the sample variance: Helene’s rain has a regional trend that a stationary variogram cannot explain.',
+      body: 'IDW assumes one fixed distance decay everywhere. The **semivariogram** measures the real one: for every pair of gauges, half the squared difference of their readings, averaged by separation, `γ(h) = ½ · mean (zᵢ − zⱼ)²`. **`GPUVariogram`** computes that over all pairs inside the maximum lag in one deterministic GPU pass (6,000 gauges is 18 million pairs).\n\nThe chart below plots the empirical bins from short to long lag, the fitted model and the sample-variance reference. Pairs of close gauges differ little, far pairs differ as much as random gauges (the sample variance). A model is fitted on the CPU to the bins: the **nugget** is noise at zero distance, the **sill** the structured variance, and the **range** how far gauges stay similar. Switch **Variogram model** and **Fit weighting** and watch the fitted line follow the empirical points. Stretch **Maximum lag** past about 400 km and the points overshoot the sample variance: Helene’s rain has a regional trend that a stationary variogram cannot explain.',
       camera: {longitude: -83, latitude: 32.3, zoom: 5.2, transitionMs: 2000},
       options: {surface: 'idw', variogramModel: 'spherical', maximumLagKm: 300},
       highlight: {readout: 'variogramModel'},
       controls: ['variogramModel', 'weighting', 'maximumLagKm'],
-      readouts: ['variogramModel', 'empirical', 'fitted']
+      readouts: ['variogramModel', 'variogramChart'],
+      evidence:
+        'The chart is computed from GPU-binned gauge pairs and overlays the fitted model and the observed sample variance.',
+      caveat:
+        'The omnidirectional fit assumes stationarity and isotropy; Helene’s regional gradient and banding violate both assumptions.'
     },
     {
       id: 'kriging',
+      headline: 'Kriging redistributes weights among clustered gauges',
+      textAlternative:
+        'Ordinary kriging maps rainfall using fitted spatial covariance and nearby gauge geometry.',
       title: 'Kriging lets the variogram choose the weights',
       body: '**`GPUKriging`** is ordinary kriging, as in `gstat` and PyKrige: for each cell it takes the k nearest gauges (**Neighbourhood size k**) and solves for weights λ that sum to 1 and minimise the prediction variance under the fitted `γ(h)`. Unlike IDW the weights account for how the *gauges relate to each other*, so a cluster of gauges counts less than the sum of its parts, and the surface can pass through gauges exactly (when the nugget allows).\n\nNothing was recompiled to switch: the surface is a parameter word and the variogram is a 12-float buffer. Flip **Surface** between *Inverse distance weighting* and *Ordinary kriging*, then pick *Kriging minus IDW* to see where they disagree (mostly the data-poor edges and the peaks).',
       camera: {longitude: -82.8, latitude: 35.4, zoom: 7.3, transitionMs: 2000},
@@ -556,6 +599,9 @@ compiled.encode(commandEncoder, {parameters: undefined});`,
     },
     {
       id: 'uncertainty',
+      headline: 'Prediction error rises away from gauges',
+      textAlternative:
+        'A kriging standard-error raster brightens in areas farther from available rainfall gauges.',
       title: 'Where the map is guesswork',
       body: 'Kriging also returns the **kriging variance**, shown here as a standard error in the units of the variable. It is zero at a gauge and rises with distance from the nearest ones, following the variogram: it depends on where the gauges *are*, not on what they read. Brighter means less certain.\n\nWiden the **Search radius** to see predictions pushed out over the Gulf and the Atlantic where the error is largest, and the gaps in the Appalachian valleys. Set **Surface** to *Gauges used per cell (IDW)* for the raw data density behind it. This map is how you decide where a new gauge would add the most information.',
       camera: {longitude: -83, latitude: 32.3, zoom: 5.2, transitionMs: 2000},
@@ -564,16 +610,26 @@ compiled.encode(commandEncoder, {parameters: undefined});`,
     },
     {
       id: 'validation',
+      headline: 'Held-out gauges separate interpolation error from appearance',
+      textAlternative:
+        'Ringed validation gauges compare IDW and kriging predictions with withheld observed rainfall.',
       title: 'Does kriging actually beat IDW? Hold gauges out and score',
       body: 'A prettier map is not a better one. **Hold out 10% of gauges** removes a random tenth from the variogram and from both interpolators (a mask buffer, no recompile), draws them ringed, and scores both rasters at those gauges: root-mean-square error, mean absolute error and bias.\n\nRead the **Verdict** row below. With a network this dense (median gauge spacing about 5 km) the two methods are usually within a few percent of each other: kriging’s edge here is a smaller bias and the error map, not a dramatically better surface. Press **Draw a new hold-out split** a few times: a ranking that survives different splits is believable. Caveat: neighbouring gauges are so close that a random split flatters both methods; a spatially blocked split would be a harsher test, and elevation (the orographic effect that put 343 mm on the Blue Ridge) is not used by either.',
       camera: {longitude: -83, latitude: 32.3, zoom: 5.2, transitionMs: 1800},
       options: {surface: 'kriging', holdOut: true, searchRadiusKm: 120},
       highlight: {readout: 'validationVerdict'},
       controls: ['holdOut', 'reseed'],
-      readouts: ['validationIdw', 'validationKriging', 'validationVerdict']
+      readouts: ['validationIdw', 'validationKriging', 'validationVerdict', 'validationChart'],
+      evidence:
+        'RMSE, MAE and bias are calculated from the same held-out gauges and shown side by side rather than judged from map appearance.',
+      caveat:
+        'Randomly holding out nearby gauges is optimistic under spatial autocorrelation; a blocked spatial split would be a stronger test.'
     },
     {
       id: 'focal',
+      headline: 'Focal windows summarize local rainfall variation',
+      textAlternative:
+        'A moving-window raster reports local rainfall maxima, ranges or standard deviations.',
       title: 'Summarise the surface with focal statistics, then try your own',
       body: '**`GPUFocalStatistics`** slides a window over the raster and reports its mean, minimum, maximum, range or standard deviation (like ArcGIS `FocalStatistics` and GRASS `r.neighbors`). Here a 3-cell circle (**Window radius**) with the *Maximum* **Window statistic** turns the surface into a peak-rain footprint; *Range* or *Standard deviation* highlight where rain changes abruptly. Switching **Keep no-data holes** off lets the window grow the surface outward.\n\nLimits: the raster is 384 × 240 cells whatever the zoom, so zooming in refines it; interpolation is isotropic here although Helene’s rain was banded along its track (a **Direction sector** in the variogram would show it, but it does not change the map). Try **Variable** *Daily high temperature* (only 1,100 stations), or set **Surface** to the difference map.',
       camera: {longitude: -82.8, latitude: 35.4, zoom: 7.0, transitionMs: 1800},

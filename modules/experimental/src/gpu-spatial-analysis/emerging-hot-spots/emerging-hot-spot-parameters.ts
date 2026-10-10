@@ -8,7 +8,7 @@ export const GPU_EMERGING_HOT_SPOT_PARAMETER_LENGTH = 8;
 /** Number of float32 rows written to an optional `globalStatistics` output. */
 export const GPU_EMERGING_HOT_SPOT_STATISTICS_LENGTH = 4;
 
-/** Largest supported compile-time `sliceCount`. The Mann-Kendall pass is O(slices^2) per cell. */
+/** Largest supported compile-time `sliceCount`; long Mann-Kendall series use 64 GPU lanes. */
 export const GPU_EMERGING_HOT_SPOT_MAXIMUM_SLICE_COUNT = 256;
 
 /** Largest supported compile-time `maximumRadius`, in cells. */

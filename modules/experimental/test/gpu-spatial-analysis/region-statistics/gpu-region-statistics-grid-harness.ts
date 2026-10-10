@@ -201,7 +201,7 @@ export class GridStatisticsHarness {
           ids: importGraphBuffer(graph, 'ids', buffers.ids, 'uint32', this.rowCount),
           count: importGraphBuffer(graph, 'count', buffers.count, 'uint32', 1),
           overflow: importGraphBuffer(graph, 'overflow', buffers.overflow, 'uint32', 1),
-          totalCount: importGraphBuffer(graph, 'total', buffers.total, 'uint32', 1)
+          requiredCount: importGraphBuffer(graph, 'total', buffers.total, 'uint32', 1)
         };
       }
       if (options.withOutputMask) {

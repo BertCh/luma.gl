@@ -11,12 +11,9 @@ import {
   type GPUCommandNode,
   type GraphDataView
 } from '@luma.gl/gpgpu/gpu-core';
-import {
-  GPU_POINT_IN_POLYGON_CLASSIFICATION,
-  GPUPairwisePointInPolygon
-} from '../../geospatial/gpu-pairwise-point-in-polygon';
+import {GPU_POINT_IN_POLYGON_CLASSIFICATION} from '../../geospatial/gpu-pairwise-point-in-polygon';
 import {EXACT_ORIENTATION_WGSL} from '../segment-intersection/exact-orientation-wgsl';
-import {createWGSLKernelNode} from '../../utils/wgsl-kernel-nodes';
+import {createWGSLActiveCountDispatch, createWGSLKernelNode} from '../../utils/wgsl-kernel-nodes';
 import type {
   GPUCompactOutput,
   GPUFloat32Positions,
@@ -24,7 +21,6 @@ import type {
 } from '../../utils/gpu-contributor-types';
 import type {GPUCommandNodeProducer} from '@luma.gl/gpgpu/gpu-core';
 import {
-  captureGraphCommandNodes,
   getGraphViewChunks,
   validateGraphViewsBelongToGraph,
   validateCompactOutput
@@ -257,7 +253,7 @@ export class GPUPointInPolygonJoin implements GPUCommandNodeProducer {
         props.matches?.ids,
         props.matches?.count,
         props.matches?.overflow,
-        props.matches?.totalCount
+        props.matches?.requiredCount
       ]
     );
   }
@@ -284,10 +280,9 @@ export class GPUPointInPolygonJoin implements GPUCommandNodeProducer {
       matches?.ids,
       matches?.count,
       matches?.overflow,
-      matches?.totalCount
+      matches?.requiredCount
     ]);
     const pointCount = points.length;
-    const pairRowCount = 2 * candidateCapacity + 1;
     const nodes: GPUCommandNode<Parameters>[] = [];
 
     if (props.prepared && !props.prepared.isDeclaredIn(graph)) {
@@ -344,18 +339,17 @@ export class GPUPointInPolygonJoin implements GPUCommandNodeProducer {
       'uint32x2',
       candidateCapacity
     );
-    const pairPoints = createTransientView(graph, `${id}-pair-points`, 'float32x2', pairRowCount);
-    const pairGeometryOffsets = createTransientView(
+    const candidatePoints = createTransientView(
       graph,
-      `${id}-pair-geometry-offsets`,
-      'uint32',
-      pairRowCount + 1
+      `${id}-candidate-points`,
+      'float32x2',
+      candidateCapacity
     );
     const pairClassifications = createTransientView(
       graph,
       `${id}-pair-classifications`,
       'uint32',
-      pairRowCount
+      candidateCapacity
     );
     nodes.push(
       createSpatialJoinClearNode<Parameters>(graph, {
@@ -364,16 +358,9 @@ export class GPUPointInPolygonJoin implements GPUCommandNodeProducer {
         state,
         assignment,
         pointCount,
-        featureCounts: props.featureCounts,
-        pairs: {
-          points: pairPoints,
-          geometryOffsets: pairGeometryOffsets,
-          polygonCount: props.polygonOffsets.length - 1
-        }
+        featureCounts: props.featureCounts
       })
     );
-    // Candidate slot `s` uses pair row `2s + 1`; the NaN rows between slots let each candidate own
-    // its own geometry offsets pair in GPUPairwisePointInPolygon.
     nodes.push(
       ...getSpatialJoinProbeNodes<Parameters>(graph, {
         id: `${id}-probe`,
@@ -384,64 +371,31 @@ export class GPUPointInPolygonJoin implements GPUCommandNodeProducer {
         candidateCapacity,
         state,
         candidatePairs,
-        candidatePoints: pairPoints,
-        pointRowScale: 2,
-        pointRowOffset: 1
+        candidatePoints,
+        pointRowScale: 1,
+        pointRowOffset: 0
       })
     );
+    const candidateDispatch = createWGSLActiveCountDispatch(graph, {
+      id: `${id}-candidate-dispatch`,
+      operation: OPERATION,
+      count: state,
+      maximumItemCount: candidateCapacity
+    });
+    nodes.push(candidateDispatch.updateNode);
     nodes.push(
       createWGSLKernelNode<Parameters>(graph, {
-        id: `${id}-expand`,
+        id: `${id}-classify`,
         operation: OPERATION,
-        variant: 'expand',
+        variant: 'classify-exact',
         bindings: [
           {name: 'state', view: state, type: 'u32', access: 'read'},
           {name: 'candidatePairs', view: candidatePairs, type: 'u32', access: 'read'},
+          {name: 'candidatePoints', view: candidatePoints, type: 'f32', access: 'read'},
           {name: 'featureOffsets', view: props.featureOffsets, type: 'u32', access: 'read'},
-          {
-            name: 'pairGeometryOffsets',
-            view: pairGeometryOffsets,
-            type: 'u32',
-            access: 'read_write'
-          }
-        ],
-        invocationCount: candidateCapacity,
-        declarations: `const CANDIDATE_CAPACITY: u32 = ${candidateCapacity}u;`,
-        body: `let activeCount = min(state[stateOffset], CANDIDATE_CAPACITY);
-  if (index >= activeCount) { return; }
-  let featureRow = candidatePairs[candidatePairsOffset + index * 2u + 1u];
-  pairGeometryOffsets[pairGeometryOffsetsOffset + index * 2u + 1u] = featureOffsets[featureOffsetsOffset + featureRow];
-  pairGeometryOffsets[pairGeometryOffsetsOffset + index * 2u + 2u] = featureOffsets[featureOffsetsOffset + featureRow + 1u];`
-      })
-    );
-    nodes.push(
-      ...captureGraphCommandNodes(graph, () =>
-        new GPUPairwisePointInPolygon({
-          id: `${id}-classify`,
-          points: pairPoints,
-          polygonPositions: props.polygonPositions,
-          geometryOffsets: pairGeometryOffsets,
-          polygonOffsets: props.polygonOffsets,
-          ringOffsets: props.ringOffsets,
-          output: pairClassifications
-        }).addToGraph(graph)
-      )
-    );
-    // The double-single classifier answers `uncertain` whenever a determinant is within 2^-20 of
-    // its product magnitudes. Re-decide those candidates with the exact orientation predicate, so
-    // `uncertain` is left only for non-finite input, malformed offsets and degenerate rings.
-    nodes.push(
-      createWGSLKernelNode<Parameters>(graph, {
-        id: `${id}-exact`,
-        operation: OPERATION,
-        variant: 'exact',
-        bindings: [
-          {name: 'pairPoints', view: pairPoints, type: 'f32', access: 'read'},
-          {name: 'pairGeometryOffsets', view: pairGeometryOffsets, type: 'u32', access: 'read'},
           {name: 'polygonPositions', view: props.polygonPositions, type: 'f32', access: 'read'},
           {name: 'polygonOffsets', view: props.polygonOffsets, type: 'u32', access: 'read'},
           {name: 'ringOffsets', view: props.ringOffsets, type: 'u32', access: 'read'},
-          {name: 'state', view: state, type: 'u32', access: 'read'},
           {
             name: 'pairClassifications',
             view: pairClassifications,
@@ -450,9 +404,11 @@ export class GPUPointInPolygonJoin implements GPUCommandNodeProducer {
           }
         ],
         invocationCount: candidateCapacity,
+        condition: candidateDispatch.condition,
         declarations: `const CANDIDATE_CAPACITY: u32 = ${candidateCapacity}u;
 const POLYGON_COUNT: u32 = ${props.polygonOffsets.length - 1}u;
 const RING_COUNT: u32 = ${props.ringOffsets.length - 1}u;
+const VERTEX_COUNT: u32 = ${props.polygonPositions.length}u;
 const OUTSIDE: u32 = ${GPU_POINT_IN_POLYGON_CLASSIFICATION.outside}u;
 const INSIDE: u32 = ${GPU_POINT_IN_POLYGON_CLASSIFICATION.inside}u;
 const BOUNDARY: u32 = ${GPU_POINT_IN_POLYGON_CLASSIFICATION.boundary}u;
@@ -475,7 +431,7 @@ fn classifyExactly(point: vec2f, geometryStart: u32, geometryEnd: u32) -> u32 {
     for (var ringIndex = polygonStart; ringIndex < polygonEnd; ringIndex++) {
       let ringStart = ringOffsets[ringOffsetsOffset + ringIndex];
       let ringEnd = ringOffsets[ringOffsetsOffset + ringIndex + 1u];
-      if (ringEnd < ringStart + 3u) { return UNCERTAIN; }
+      if (ringEnd < ringStart + 3u || ringEnd > VERTEX_COUNT) { return UNCERTAIN; }
       var previous = readVertex(ringEnd - 1u);
       for (var vertexIndex = ringStart; vertexIndex < ringEnd; vertexIndex++) {
         let current = readVertex(vertexIndex);
@@ -500,13 +456,15 @@ fn classifyExactly(point: vec2f, geometryStart: u32, geometryEnd: u32) -> u32 {
 }`,
         body: `let activeCount = min(state[stateOffset], CANDIDATE_CAPACITY);
   if (index >= activeCount) { return; }
-  let row = index * 2u + 1u;
-  if (pairClassifications[pairClassificationsOffset + row] != UNCERTAIN) { return; }
-  let geometryStart = pairGeometryOffsets[pairGeometryOffsetsOffset + row];
-  let geometryEnd = pairGeometryOffsets[pairGeometryOffsetsOffset + row + 1u];
-  if (geometryStart > geometryEnd || geometryEnd > POLYGON_COUNT) { return; }
-  let point = vec2f(pairPoints[pairPointsOffset + row * 2u], pairPoints[pairPointsOffset + row * 2u + 1u]);
-  pairClassifications[pairClassificationsOffset + row] = classifyExactly(point, geometryStart, geometryEnd);`
+  let featureRow = candidatePairs[candidatePairsOffset + index * 2u + 1u];
+  let geometryStart = featureOffsets[featureOffsetsOffset + featureRow];
+  let geometryEnd = featureOffsets[featureOffsetsOffset + featureRow + 1u];
+  var classification = UNCERTAIN;
+  if (geometryStart <= geometryEnd && geometryEnd <= POLYGON_COUNT) {
+    let point = vec2f(candidatePoints[candidatePointsOffset + index * 2u], candidatePoints[candidatePointsOffset + index * 2u + 1u]);
+    classification = classifyExactly(point, geometryStart, geometryEnd);
+  }
+  pairClassifications[pairClassificationsOffset + index] = classification;`
       })
     );
     nodes.push(
@@ -521,6 +479,7 @@ fn classifyExactly(point: vec2f, geometryStart: u32, geometryEnd: u32) -> u32 {
           {name: 'assignment', view: assignment, type: 'atomic<u32>', access: 'read_write'}
         ],
         invocationCount: candidateCapacity,
+        condition: candidateDispatch.condition,
         declarations: `const CANDIDATE_CAPACITY: u32 = ${candidateCapacity}u;
 const INSIDE: u32 = ${GPU_POINT_IN_POLYGON_CLASSIFICATION.inside}u;
 const BOUNDARY: u32 = ${GPU_POINT_IN_POLYGON_CLASSIFICATION.boundary}u;
@@ -530,7 +489,7 @@ const INCLUDE_BOUNDARY: bool = ${this.includeBoundary};`,
   if (index >= activeCount) { return; }
   let pointRow = candidatePairs[candidatePairsOffset + index * 2u];
   let featureRow = candidatePairs[candidatePairsOffset + index * 2u + 1u];
-  let classification = pairClassifications[pairClassificationsOffset + index * 2u + 1u];
+  let classification = pairClassifications[pairClassificationsOffset + index];
   if (classification == INSIDE || (INCLUDE_BOUNDARY && classification == BOUNDARY)) {
     atomicMin(&assignment[assignmentOffset + pointRow], featureRow);
   } else if (classification == UNCERTAIN) {

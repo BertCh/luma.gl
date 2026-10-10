@@ -413,7 +413,7 @@ export class GPULineSimplification implements GPUCommandNodeProducer {
         selection?.output.ids,
         selection?.output.count,
         selection?.output.overflow,
-        selection?.output.totalCount,
+        selection?.output.requiredCount,
         selection?.keepMask,
         selection?.lineCounts,
         selection?.lineStarts
@@ -443,7 +443,7 @@ export class GPULineSimplification implements GPUCommandNodeProducer {
       selection?.output.ids,
       selection?.output.count,
       selection?.output.overflow,
-      selection?.output.totalCount,
+      selection?.output.requiredCount,
       selection?.keepMask,
       selection?.lineCounts,
       selection?.lineStarts
@@ -608,7 +608,7 @@ export class GPULineSimplification implements GPUCommandNodeProducer {
       selection.keepMask ?? createTransientView(graph, `${id}-keep-mask`, 'uint32', rowCount);
     const rowIds = createTransientView(graph, `${id}-row-ids`, 'uint32', rowCount);
     const compactRows = createTransientView(graph, `${id}-compact-rows`, 'uint32', rowCount);
-    const totalCount = createTransientView(graph, `${id}-kept-total`, 'uint32', 1);
+    const requiredCount = createTransientView(graph, `${id}-kept-total`, 'uint32', 1);
     const nodes: GPUCommandNode<Parameters>[] = [
       createLineKeepMaskNode<Parameters>(graph, {
         id: `${id}-keep-mask`,
@@ -623,12 +623,12 @@ export class GPULineSimplification implements GPUCommandNodeProducer {
         input: rowIds,
         flags: keepMask,
         output: compactRows,
-        count: totalCount
+        count: requiredCount
       }).getCommandNodes(graph),
       createPublishNode<Parameters>(graph, {
         id: `${id}-publish`,
         operation: OPERATION,
-        totalCount,
+        requiredCount,
         compactIds: compactRows,
         output: selection.output
       })
@@ -639,7 +639,7 @@ export class GPULineSimplification implements GPUCommandNodeProducer {
           id: `${id}-line-ranges`,
           trackOffsets: props.trackOffsets,
           compactRows,
-          totalCount,
+          requiredCount,
           lineCounts: selection.lineCounts,
           lineStarts: selection.lineStarts
         })

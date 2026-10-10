@@ -17,7 +17,7 @@ export function getLinePathOutputViews(output: GPULinePathOutput): (GraphDataVie
     output.pathOffsets,
     output.count,
     output.overflow,
-    output.totalCount,
+    output.requiredCount,
     output.pathCount,
     output.sourcePaths,
     output.sourceRows,
@@ -55,7 +55,7 @@ export function validateLinePathOutput(
   for (const [name, scalar] of [
     ['count', output.count],
     ['overflow', output.overflow],
-    ['totalCount', output.totalCount],
+    ['requiredCount', output.requiredCount],
     ['pathCount', output.pathCount]
   ] as const) {
     if (scalar) {

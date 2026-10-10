@@ -287,6 +287,7 @@ export class GPUShapeDescriptors implements GPUCommandNodeProducer {
     if (areas || perimeters || centroids) {
       nodes.push(
         ...new GPUGeometryMeasures({
+          spatialContext: {coordinateSpace: 'planar', metric: 'native', units: 'native'},
           id: `${id}-measures`,
           positions: props.positions,
           geometryType: 'polygons',

@@ -387,7 +387,7 @@ export async function createNearTransit(
           ids: importGraphBuffer(graph, 'ids', ids, 'uint32', count),
           count: importGraphBuffer(graph, 'count', outCount, 'uint32', 1),
           overflow: importGraphBuffer(graph, 'output-overflow', outOverflow, 'uint32', 1),
-          totalCount: importGraphBuffer(graph, 'total', outTotal, 'uint32', 1)
+          requiredCount: importGraphBuffer(graph, 'total', outTotal, 'uint32', 1)
         },
         // The clamped selected count lands directly in the indirect draw record.
         drawInstanceCount: graph.importGPUData(
@@ -405,20 +405,24 @@ export async function createNearTransit(
       invocationCount: count,
       bindings: [
         {name: 'nearest', view: nearestView, type: 'u32', access: 'read'},
-        {
-          name: 'rowLine',
-          view: importGraphBuffer(
-            graph,
-            'row-line',
-            state.features === 'lines' ? lineSegmentLineBuffer : stationLineBuffer,
-            'uint32',
-            state.features === 'lines'
-              ? Math.max(lineSegmentCount, 1)
-              : Math.max(stationRows.length, 1)
-          ),
-          type: 'u32',
-          access: 'read'
-        },
+        ...(state.features === 'bus'
+          ? []
+          : [
+              {
+                name: 'rowLine',
+                view: importGraphBuffer(
+                  graph,
+                  'row-line',
+                  state.features === 'lines' ? lineSegmentLineBuffer : stationLineBuffer,
+                  'uint32',
+                  state.features === 'lines'
+                    ? Math.max(lineSegmentCount, 1)
+                    : Math.max(stationRows.length, 1)
+                ),
+                type: 'u32' as const,
+                access: 'read' as const
+              }
+            ]),
         {
           name: 'pointLine',
           view: importGraphBuffer(graph, 'point-line', pointLine, 'uint32', count),

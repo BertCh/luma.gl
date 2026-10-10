@@ -252,7 +252,7 @@ export async function createCellPyramid(
         overflow: importSlice(levelOverflowBuffers[parity], 'uint32', 4, levelIndex, 1),
         ...(levelIndex === 0
           ? {
-              totalCount: importSlice(levelTotalsBuffer, 'uint32', 4, 0, 1),
+              requiredCount: importSlice(levelTotalsBuffer, 'uint32', 4, 0, 1),
               sums: importSlice(finestSumsBuffer, 'uint32x2', 8, 0, capacity)
             }
           : {})
@@ -629,27 +629,32 @@ export async function createCellPyramid(
       before: {
         positions,
         values: valueView,
-        mask: rows(beforeMaskBuffer, 'before-mask'),
-        table: {count: beforeCellCount.view}
+        mask: rows(beforeMaskBuffer, 'before-mask')
       },
       after: {
         positions,
         values: valueView,
-        mask: rows(afterMaskBuffer, 'after-mask'),
-        table: {count: afterCellCount.view}
+        mask: rows(afterMaskBuffer, 'after-mask')
+      },
+      scratch: {
+        before: {count: beforeCellCount.view},
+        after: {count: afterCellCount.view}
       },
       measure: options.compareMeasure,
       zScore: options.zScoreKind,
-      output: {
-        cells: cells.view,
-        before: beforeValue.view,
-        after: afterValue.view,
-        delta: delta.view,
-        ratio: ratio.view,
-        percentChange: percentChange.view,
-        zScore: zScore.view,
-        count: count.view,
-        overflow: overflow.view
+      outputs: {
+        comparison: {
+          cells: cells.view,
+          before: beforeValue.view,
+          after: afterValue.view,
+          delta: delta.view,
+          ratio: ratio.view,
+          percentChange: percentChange.view,
+          zScore: zScore.view,
+          count: count.view,
+          overflow: overflow.view
+        },
+        colors: colors.view
       },
       classify: 'delta',
       classBreaksParameters: classBreaks.importToGraph(graph),
@@ -657,8 +662,7 @@ export async function createCellPyramid(
       methods: ['custom', 'standard-deviation'],
       palette: importGraphBuffer(graph, 'palette', paletteBuffer, 'uint32', 5),
       colorScaleParameters: colorScale.importToGraph(graph),
-      maximumPaletteCount: 5,
-      colors: colors.view
+      maximumPaletteCount: 5
     });
     const compiled = owned.track(graph.compile());
     const reader = new SummaryReader(

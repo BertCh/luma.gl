@@ -478,6 +478,10 @@ new SpatialAnalysisRasterLayer({gridSize: [validBuckets, rowCount], bounds, valu
       textAlternative:
         'Map of western Europe and North Africa with a white chart panel in the Atlantic. Its columns are weeks of the year and its rows are latitude bands, shaded blue-green by the share of GPS fixes; a dashed line joins one row to the coast.',
       body: "Tracks say where; this chart says when. The block west of Africa is a calendar drawn on the map: each column is a week, each row a latitude band at its true latitude, shaded by its share of that week's GPS fixes. Drag **Probe latitude** and read straight across to the coast. The sample is **{{tracks}}**.\n\n*Time is a coordinate here, not an animation.*",
+      evidence:
+        'The matrix and its latitude-group chart aggregate the same **{{tracks}}**, with every column normalised over the selected fixes.',
+      caveat:
+        '**{{tracks}}** reports animal-years and fixes, not a representative census of either species.',
       optionsMode: 'fresh',
       options: {showGroups: true},
       controls: ['probeLatitude'],
@@ -498,6 +502,10 @@ new SpatialAnalysisRasterLayer({gridSize: [validBuckets, rowCount], bounds, valu
       textAlternative:
         'The chart panel with faint vertical lines between the time buckets; with narrow buckets many cells are empty, with wide buckets the stripe blurs.',
       body: '`GPUTemporalReduction` drops every fix into a slot: species, latitude band and a time bucket. Slide **Bucket width** (or press play on it): a parameter write, so the same compiled graph re-bins every fix. The year has **{{buckets}}** and **{{reduction}}**. Tick **Show bucket edges** to see them.\n\n*Time has its own MAUP: the bucket is a choice.*',
+      evidence:
+        'The current binning produces **{{buckets}}** and **{{reduction}}**; the occupancy chart compares that result with every available width.',
+      caveat:
+        '**{{reduction}}** is conditional on bucket width: narrower bins reveal timing but create more sparse slots.',
       optionsMode: 'fresh',
       options: {showBucketEdges: true, showTracks: false},
       controls: ['bucketDays', 'showBucketEdges'],
@@ -518,6 +526,10 @@ new SpatialAnalysisRasterLayer({gridSize: [validBuckets, rowCount], bounds, valu
       textAlternative:
         'The chart panel drawn with counts of fixes, with a strip of fixes per week below the legend; the share version of the same panel is one click away.',
       body: 'Flip **Cell value** between *Count* and *Share*. A count is the number of fixes the tags delivered, **{{weeklyFixes}}** across the year (strip below), so it follows the tags. A share divides each column by that total, so it follows the birds. Compare **Species**: a smaller sample means fewer fixes and noisier shares.\n\n*State the denominator.*',
+      evidence:
+        'The denominator chart exposes **{{weeklyFixes}}** for the selected species before those counts become column shares.',
+      caveat:
+        '**{{weeklyFixes}}** counts fixes, not distinct birds; unequal reporting cadence can therefore shape both counts and shares.',
       optionsMode: 'fresh',
       options: {cellValue: 'count', showTracks: false},
       controls: ['cellValue', 'species'],
@@ -538,6 +550,10 @@ new SpatialAnalysisRasterLayer({gridSize: [validBuckets, rowCount], bounds, valu
       textAlternative:
         'The chart panel for the marsh harrier with a line of median latitude climbing in spring and falling in autumn, and two pinned dates where it crosses the probe row.',
       body: 'Choose a **Species**. The line over the matrix is the median latitude of its fixes: the steeper it runs, the faster the population moves, as on a train timetable. Between the two reference latitudes the median needs **{{springWeeks}}** going north and **{{autumnWeeks}}** coming back. Move **Probe latitude** to read when it crosses any row.\n\n*Slope is speed.*',
+      evidence:
+        'The median trace takes **{{springWeeks}}** northbound and **{{autumnWeeks}}** southbound; at the probe its crossings are **{{crossings}}**.',
+      caveat:
+        'The crossing estimate **{{crossings}}** is interpolated between bucket centres, so bucket width limits its temporal precision.',
       optionsMode: 'fresh',
       options: {
         species: 'marsh',
@@ -564,6 +580,10 @@ new SpatialAnalysisRasterLayer({gridSize: [validBuckets, rowCount], bounds, valu
       textAlternative:
         'The chart panel in orange classes: the fastest step in each cell, brightest along the migration stripe, with hatched cells where fewer than twenty fixes stand behind the maximum.',
       body: 'Set **Cell value** to *Fastest step*. Each cell shows the **maximum** the reduction kept for the slot, not a mean: the contributor keeps no sum. A step is the move between two consecutive fixes (**{{stepLength}}**), so one fast step is enough, and hatched cells hold too few fixes to trust. The fastest in the sample is **{{fastest}}**. Compare **Species**.\n\n*Read the stripe, not one cell.*',
+      evidence:
+        'The maximum retained step is **{{fastest}}**; **{{thinCells}}** identifies the cells whose maxima rest on sparse support.',
+      caveat:
+        'One displacement can set a maximum, and **{{stepLength}}** is the sampling interval—not a continuous speed measurement.',
       optionsMode: 'fresh',
       options: {cellValue: 'speed', species: 'all', showTracks: false},
       controls: ['cellValue', 'species'],
@@ -584,6 +604,10 @@ new SpatialAnalysisRasterLayer({gridSize: [validBuckets, rowCount], bounds, valu
       textAlternative:
         'The map and the panel together: a cursor sweeps the chart and the bucket under it is outlined, while that bucket’s GPS fixes appear as coloured dots over Europe and Africa.',
       body: 'Press **Play**: the cursor sweeps the year, the bucket under it is outlined, and its fixes appear on the map as dots. Drag **Day of the year** to jump and **Probe latitude** to move the row. The limits: **{{tracks}}**, tagged in the Low Countries; years are folded; a fix is not a bird, and the reduction counts fixes, not distinct birds.\n\nNext: [Which way do the harriers and spoonbills fly?](#/story/migration-flyways).',
+      evidence:
+        'The selected column is **{{cursor}}**; the horizontal probe reports **{{probe}}** from the same reduced cube.',
+      caveat:
+        'The animated dots inherit the limits of **{{tracks}}**: folded years, uneven fixes and no claim of population representativeness.',
       optionsMode: 'fresh',
       options: {play: true, day: 0, showFixes: true, showTrace: true, trackOpacity: 0.15},
       controls: ['play', 'day', 'probeLatitude'],

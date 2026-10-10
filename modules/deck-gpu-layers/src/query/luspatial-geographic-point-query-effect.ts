@@ -748,7 +748,7 @@ export class LuSpatialGeographicPointQueryEffect implements Effect {
           byteOffset: this.drawCommands.getInstanceCountByteOffset(0)
         }),
         overflow: graph.createDataView(viewportOverflowBuffer, {format: 'uint32', length: 1}),
-        totalCount: graph.createDataView(viewportTotalCountBuffer, {
+        requiredCount: graph.createDataView(viewportTotalCountBuffer, {
           format: 'uint32',
           length: 1
         })
@@ -774,7 +774,7 @@ export class LuSpatialGeographicPointQueryEffect implements Effect {
           byteOffset: this.drawCommands.getInstanceCountByteOffset(1)
         }),
         overflow: graph.createDataView(selectionOverflowBuffer, {format: 'uint32', length: 1}),
-        totalCount: graph.createDataView(selectionTotalCountBuffer, {
+        requiredCount: graph.createDataView(selectionTotalCountBuffer, {
           format: 'uint32',
           length: 1
         })

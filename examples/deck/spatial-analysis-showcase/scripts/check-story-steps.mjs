@@ -4,9 +4,9 @@
 
 /**
  * Checks every scene's story steps against its options and readouts: each step lists explicit
- * `controls`, every listed control and readout exists, a step lists at most five controls, and the
- * first listed control is not disabled when the step opens (a later one may be, when an earlier
- * listed control enables it). It also validates the cartography fields of the scene and its steps
+ * `controls`, every listed control and readout exists, every step has a substantive text
+ * alternative, a step lists at most five controls, and the first listed control is not disabled
+ * when the step opens (a later one may be, when an earlier listed control enables it). It also validates the cartography fields of the scene and its steps
  * (`basemap`, `furniture`, `annotations`, `callout`): known enum values, ranges, coordinates. Scenes are bundled with esbuild; package imports are stubbed, so a
  * scene that statically imports runtime code may fail to load and is reported as `??`.
  *
@@ -154,6 +154,9 @@ function checkScene(scene) {
   scene.story.forEach((step, index) => {
     Object.assign(state, step.options ?? {});
     if (!step.controls) problems.push(`step ${index + 1} "${step.id}" has no explicit controls`);
+    if (typeof step.textAlternative !== 'string' || step.textAlternative.trim().length < 24) {
+      problems.push(`step "${step.id}" needs a substantive textAlternative`);
+    }
     const controls = step.controls ?? [];
     if (controls.length > MAXIMUM_STEP_CONTROLS) {
       problems.push(`step "${step.id}" lists ${controls.length} controls (max ${MAXIMUM_STEP_CONTROLS})`);

@@ -3,10 +3,11 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 // SPDX-FileComment: Independently implemented for WebGPU; inspired by NVIDIA RAPIDS cuGraph.
 
-import {type Binding} from '@luma.gl/core';
+import {Buffer, type Binding} from '@luma.gl/core';
 import {Computation} from '@luma.gl/engine';
 import type {
   GPUCommandGraph,
+  GPUCommandGraphGPUIndirectCondition,
   GraphBufferUse,
   GraphDataView,
   GraphVectorView
@@ -22,6 +23,10 @@ import type {GPUGraphAdjacency} from './gpu-graph-topology';
 
 const BREADTH_FIRST_SEARCH_WORKGROUP_SIZE = 256;
 const UNREACHABLE_VERTEX = 0xffffffff;
+const FRONTIER_A_COUNT_INDEX = 0;
+const FRONTIER_B_COUNT_INDEX = 1;
+const SEARCH_VALID_INDEX = 2;
+const ACTIVE_DEPTH_INDEX = 3;
 
 type ImportedSearchAdjacency = {
   offsets: GraphDataView<'uint32'>;
@@ -40,6 +45,9 @@ type ImportedBreadthFirstSearch = {
   activeDepth?: GraphDataView<'uint32'>;
   primaryAdjacency: ImportedSearchAdjacency;
   secondaryAdjacency?: ImportedSearchAdjacency;
+  frontiers: readonly [GraphDataView<'uint32'>, GraphDataView<'uint32'>];
+  frontierState: GraphDataView<'uint32'>;
+  frontierDispatches: readonly [GraphDataView<'uint32'>, GraphDataView<'uint32'>];
   maxComputeWorkgroupsPerDimension: number;
 };
 
@@ -54,6 +62,7 @@ type BreadthFirstSearchPassProps = {
   source: string;
   bindings: Record<string, BreadthFirstSearchBinding>;
   dispatchLayout: GPUBoundedDispatchLayout;
+  condition?: GPUCommandGraphGPUIndirectCondition;
 };
 
 /** Adds deterministic GPU shortest-hop traversal with an explicit dispatch limit. @internal */
@@ -71,6 +80,25 @@ export function addGPUGraphBreadthFirstSearchToGraphWithDispatchLimit<Parameters
     commandGraph,
     `${search.id}-${useIncoming ? 'incoming' : 'outgoing'}`,
     useIncoming ? search.topology.reverse! : search.topology.forward
+  );
+  const frontierBuffers = [0, 1].map(index =>
+    commandGraph.createTransientBuffer({
+      id: `${search.id}-frontier-${index}`,
+      byteLength: search.topology.graph.vertexCount * Uint32Array.BYTES_PER_ELEMENT,
+      usage: Buffer.STORAGE
+    })
+  );
+  const frontierStateBuffer = commandGraph.createTransientBuffer({
+    id: `${search.id}-frontier-state`,
+    byteLength: 4 * Uint32Array.BYTES_PER_ELEMENT,
+    usage: Buffer.STORAGE
+  });
+  const frontierDispatchBuffers = [0, 1].map(index =>
+    commandGraph.createTransientBuffer({
+      id: `${search.id}-frontier-${index}-dispatch`,
+      byteLength: 3 * Uint32Array.BYTES_PER_ELEMENT,
+      usage: Buffer.STORAGE | Buffer.INDIRECT
+    })
   );
   const state: ImportedBreadthFirstSearch = {
     id: search.id,
@@ -104,10 +132,24 @@ export function addGPUGraphBreadthFirstSearchToGraphWithDispatchLimit<Parameters
           )
         }
       : {}),
+    frontiers: frontierBuffers.map(buffer =>
+      commandGraph.createDataView(buffer, {
+        format: 'uint32',
+        length: search.topology.graph.vertexCount
+      })
+    ) as [GraphDataView<'uint32'>, GraphDataView<'uint32'>],
+    frontierState: commandGraph.createDataView(frontierStateBuffer, {
+      format: 'uint32',
+      length: 4
+    }),
+    frontierDispatches: frontierDispatchBuffers.map(buffer =>
+      commandGraph.createDataView(buffer, {format: 'uint32', length: 3})
+    ) as [GraphDataView<'uint32'>, GraphDataView<'uint32'>],
     maxComputeWorkgroupsPerDimension
   };
 
   addInitializationPass(commandGraph, state);
+  addFrontierInitializationPass(commandGraph, state, search.maxDepth);
 
   let seedBase = 0;
   for (const [chunkIndex, seeds] of state.seeds.data.entries()) {
@@ -117,21 +159,40 @@ export function addGPUGraphBreadthFirstSearchToGraphWithDispatchLimit<Parameters
     seedBase += seeds.length;
   }
 
+  addFrontierDispatchPass(commandGraph, {
+    state,
+    currentFrontierIndex: 1,
+    nextFrontierIndex: 0,
+    id: `${state.id}-seed-frontier`
+  });
+
   for (let depth = 0; depth < search.maxDepth; depth++) {
+    const currentFrontierIndex = depth % 2;
+    const nextFrontierIndex = (depth + 1) % 2;
     addExpansionPass(commandGraph, {
       state,
       adjacency: state.primaryAdjacency,
       depth,
-      direction: useIncoming ? 'incoming' : 'outgoing'
+      direction: useIncoming ? 'incoming' : 'outgoing',
+      currentFrontierIndex,
+      nextFrontierIndex
     });
     if (state.secondaryAdjacency) {
       addExpansionPass(commandGraph, {
         state,
         adjacency: state.secondaryAdjacency,
         depth,
-        direction: 'incoming'
+        direction: 'incoming',
+        currentFrontierIndex,
+        nextFrontierIndex
       });
     }
+    addFrontierDispatchPass(commandGraph, {
+      state,
+      currentFrontierIndex,
+      nextFrontierIndex,
+      id: `${state.id}-depth-${depth}-frontier`
+    });
   }
 }
 
@@ -148,7 +209,7 @@ function importSearchAdjacency<Parameters>(
   };
 }
 
-/** Resets published outputs before every encoding without allocating frontier scratch. */
+/** Resets published outputs before every encoding. */
 function addInitializationPass<Parameters>(
   commandGraph: GPUCommandGraph<Parameters>,
   state: ImportedBreadthFirstSearch
@@ -193,7 +254,71 @@ fn main(
   });
 }
 
-/** Publishes valid roots from one original seed chunk unless selected adjacency overflowed. */
+/** Resets compact-frontier counts, controls, and indirect commands without a CPU round trip. */
+function addFrontierInitializationPass<Parameters>(
+  commandGraph: GPUCommandGraph<Parameters>,
+  state: ImportedBreadthFirstSearch,
+  maxDepth: number
+): void {
+  const bindings: Record<string, BreadthFirstSearchBinding> = {
+    overflow: {view: state.primaryAdjacency.overflow, usage: 'storage-read'},
+    ...(state.secondaryAdjacency
+      ? {secondaryOverflow: {view: state.secondaryAdjacency.overflow, usage: 'storage-read'}}
+      : {}),
+    ...(state.activeDepth ? {activeDepth: {view: state.activeDepth, usage: 'storage-read'}} : {}),
+    frontierState: {view: state.frontierState, usage: 'storage-write', atomic: true},
+    dispatchA: {view: state.frontierDispatches[0], usage: 'storage-write'},
+    dispatchB: {view: state.frontierDispatches[1], usage: 'storage-write'}
+  };
+  const secondaryOverflowOffset = state.secondaryAdjacency
+    ? `const SECONDARY_OVERFLOW_OFFSET: u32 = ${getViewElementOffset(state.secondaryAdjacency.overflow)}u;`
+    : '';
+  const secondaryOverflowGuard = state.secondaryAdjacency
+    ? ' || secondaryOverflow[SECONDARY_OVERFLOW_OFFSET] != 0u'
+    : '';
+  const activeDepthOffset = state.activeDepth
+    ? `const ACTIVE_DEPTH_OFFSET: u32 = ${getViewElementOffset(state.activeDepth)}u;`
+    : '';
+  const activeDepth = state.activeDepth ? 'activeDepth[ACTIVE_DEPTH_OFFSET]' : `${maxDepth}u`;
+  const source = /* wgsl */ `
+const OVERFLOW_OFFSET: u32 = ${getViewElementOffset(state.primaryAdjacency.overflow)}u;
+const FRONTIER_STATE_OFFSET: u32 = ${getViewElementOffset(state.frontierState)}u;
+const DISPATCH_A_OFFSET: u32 = ${getViewElementOffset(state.frontierDispatches[0])}u;
+const DISPATCH_B_OFFSET: u32 = ${getViewElementOffset(state.frontierDispatches[1])}u;
+${secondaryOverflowOffset}
+${activeDepthOffset}
+${getBindingDeclarations(bindings)}
+
+@compute @workgroup_size(1)
+fn main() {
+  atomicStore(&frontierState[FRONTIER_STATE_OFFSET + ${FRONTIER_A_COUNT_INDEX}u], 0u);
+  atomicStore(&frontierState[FRONTIER_STATE_OFFSET + ${FRONTIER_B_COUNT_INDEX}u], 0u);
+  let overflowed = overflow[OVERFLOW_OFFSET] != 0u${secondaryOverflowGuard};
+  atomicStore(
+    &frontierState[FRONTIER_STATE_OFFSET + ${SEARCH_VALID_INDEX}u],
+    select(1u, 0u, overflowed)
+  );
+  atomicStore(
+    &frontierState[FRONTIER_STATE_OFFSET + ${ACTIVE_DEPTH_INDEX}u],
+    min(${activeDepth}, ${maxDepth}u)
+  );
+  dispatchA[DISPATCH_A_OFFSET + 0u] = 0u;
+  dispatchA[DISPATCH_A_OFFSET + 1u] = 1u;
+  dispatchA[DISPATCH_A_OFFSET + 2u] = 1u;
+  dispatchB[DISPATCH_B_OFFSET + 0u] = 0u;
+  dispatchB[DISPATCH_B_OFFSET + 1u] = 1u;
+  dispatchB[DISPATCH_B_OFFSET + 2u] = 1u;
+}`;
+
+  addBreadthFirstSearchPass(commandGraph, {
+    id: `${state.id}-frontier-initialize`,
+    source,
+    bindings,
+    dispatchLayout: {x: 1, y: 1, z: 1}
+  });
+}
+
+/** Publishes valid roots and appends each unique root to the first compact frontier. */
 function addSeedPass<Parameters>(
   commandGraph: GPUCommandGraph<Parameters>,
   props: {
@@ -207,25 +332,17 @@ function addSeedPass<Parameters>(
   const bindings: Record<string, BreadthFirstSearchBinding> = {
     seeds: {view: props.seeds, usage: 'storage-read'},
     distances: {view: state.distances, usage: 'storage-read-write', atomic: true},
-    overflow: {view: state.primaryAdjacency.overflow, usage: 'storage-read'},
-    ...(state.secondaryAdjacency
-      ? {secondaryOverflow: {view: state.secondaryAdjacency.overflow, usage: 'storage-read'}}
-      : {}),
+    frontier: {view: state.frontiers[0], usage: 'storage-write'},
+    frontierState: {view: state.frontierState, usage: 'storage-read-write', atomic: true},
     ...(state.mask ? {mask: {view: state.mask, usage: 'storage-read-write', atomic: true}} : {}),
     ...(state.seedCount ? {activeSeedCount: {view: state.seedCount, usage: 'storage-read'}} : {})
   };
   const dynamicOffsets = [
-    state.secondaryAdjacency
-      ? `const SECONDARY_OVERFLOW_OFFSET: u32 = ${getViewElementOffset(state.secondaryAdjacency.overflow)}u;`
-      : '',
     state.mask ? `const MASK_OFFSET: u32 = ${getViewElementOffset(state.mask)}u;` : '',
     state.seedCount
       ? `const ACTIVE_SEED_COUNT_OFFSET: u32 = ${getViewElementOffset(state.seedCount)}u;`
       : ''
   ].join('\n');
-  const secondaryOverflowGuard = state.secondaryAdjacency
-    ? ' || secondaryOverflow[SECONDARY_OVERFLOW_OFFSET] != 0u'
-    : '';
   const seedCountGuard = state.seedCount
     ? `if (${props.seedBase}u + index >= activeSeedCount[ACTIVE_SEED_COUNT_OFFSET]) { return; }`
     : '';
@@ -239,7 +356,8 @@ const SEED_COUNT: u32 = ${props.seeds.length}u;
 const VERTEX_COUNT: u32 = ${state.vertexCount}u;
 const SEEDS_OFFSET: u32 = ${getViewElementOffset(props.seeds)}u;
 const DISTANCES_OFFSET: u32 = ${getViewElementOffset(state.distances)}u;
-const OVERFLOW_OFFSET: u32 = ${getViewElementOffset(state.primaryAdjacency.overflow)}u;
+const FRONTIER_OFFSET: u32 = ${getViewElementOffset(state.frontiers[0])}u;
+const FRONTIER_STATE_OFFSET: u32 = ${getViewElementOffset(state.frontierState)}u;
 ${dynamicOffsets}
 ${getBindingDeclarations(bindings)}
 
@@ -250,11 +368,18 @@ fn main(
 ) {
   ${getBoundedInvocationIndexSource(dispatchLayout, BREADTH_FIRST_SEARCH_WORKGROUP_SIZE)}
   if (index >= SEED_COUNT) { return; }
-  if (overflow[OVERFLOW_OFFSET] != 0u${secondaryOverflowGuard}) { return; }
+  if (atomicLoad(&frontierState[FRONTIER_STATE_OFFSET + ${SEARCH_VALID_INDEX}u]) == 0u) { return; }
   ${seedCountGuard}
   let vertex = seeds[SEEDS_OFFSET + index];
   if (vertex >= VERTEX_COUNT) { return; }
-  atomicStore(&distances[DISTANCES_OFFSET + vertex], 0u);
+  let previousDistance = atomicMin(&distances[DISTANCES_OFFSET + vertex], 0u);
+  if (previousDistance == ${UNREACHABLE_VERTEX}u) {
+    let frontierIndex = atomicAdd(
+      &frontierState[FRONTIER_STATE_OFFSET + ${FRONTIER_A_COUNT_INDEX}u],
+      1u
+    );
+    frontier[FRONTIER_OFFSET + frontierIndex] = vertex;
+  }
   ${publishMask}
 }`;
 
@@ -274,41 +399,31 @@ function addExpansionPass<Parameters>(
     adjacency: ImportedSearchAdjacency;
     depth: number;
     direction: 'outgoing' | 'incoming';
+    currentFrontierIndex: number;
+    nextFrontierIndex: number;
   }
 ): void {
   const {state, adjacency} = props;
+  const currentFrontier = state.frontiers[props.currentFrontierIndex];
+  const nextFrontier = state.frontiers[props.nextFrontierIndex];
   const bindings: Record<string, BreadthFirstSearchBinding> = {
     offsets: {view: adjacency.offsets, usage: 'storage-read'},
     neighbors: {view: adjacency.neighbors, usage: 'storage-read'},
     distances: {view: state.distances, usage: 'storage-read-write', atomic: true},
     predecessors: {view: state.predecessors, usage: 'storage-read-write', atomic: true},
-    overflow: {view: state.primaryAdjacency.overflow, usage: 'storage-read'},
-    ...(state.secondaryAdjacency
-      ? {secondaryOverflow: {view: state.secondaryAdjacency.overflow, usage: 'storage-read'}}
-      : {}),
-    ...(state.mask ? {mask: {view: state.mask, usage: 'storage-read-write', atomic: true}} : {}),
-    ...(state.activeDepth ? {activeDepth: {view: state.activeDepth, usage: 'storage-read'}} : {})
+    currentFrontier: {view: currentFrontier, usage: 'storage-read'},
+    nextFrontier: {view: nextFrontier, usage: 'storage-write'},
+    frontierState: {view: state.frontierState, usage: 'storage-read-write', atomic: true},
+    ...(state.mask ? {mask: {view: state.mask, usage: 'storage-read-write', atomic: true}} : {})
   };
   const dynamicOffsets = [
-    state.secondaryAdjacency
-      ? `const SECONDARY_OVERFLOW_OFFSET: u32 = ${getViewElementOffset(state.secondaryAdjacency.overflow)}u;`
-      : '',
-    state.mask ? `const MASK_OFFSET: u32 = ${getViewElementOffset(state.mask)}u;` : '',
-    state.activeDepth
-      ? `const ACTIVE_DEPTH_OFFSET: u32 = ${getViewElementOffset(state.activeDepth)}u;`
-      : ''
+    state.mask ? `const MASK_OFFSET: u32 = ${getViewElementOffset(state.mask)}u;` : ''
   ].join('\n');
-  const secondaryOverflowGuard = state.secondaryAdjacency
-    ? ' || secondaryOverflow[SECONDARY_OVERFLOW_OFFSET] != 0u'
-    : '';
-  const activeDepthGuard = state.activeDepth
-    ? `if (${props.depth}u >= activeDepth[ACTIVE_DEPTH_OFFSET]) { return; }`
-    : '';
+  const activeDepthGuard = `if (${props.depth}u >= atomicLoad(&frontierState[FRONTIER_STATE_OFFSET + ${ACTIVE_DEPTH_INDEX}u])) { return; }`;
   const publishMask = state.mask ? 'atomicStore(&mask[MASK_OFFSET + neighbor], 1u);' : '';
-  const dispatchLayout = getGPUGraphBreadthFirstSearchDispatchLayout(
-    state.vertexCount,
-    state.maxComputeWorkgroupsPerDimension
-  );
+  const dispatchLayout = {x: 1, y: 1, z: 1};
+  const currentCountIndex = getFrontierCountIndex(props.currentFrontierIndex);
+  const nextCountIndex = getFrontierCountIndex(props.nextFrontierIndex);
   const source = /* wgsl */ `
 const VERTEX_COUNT: u32 = ${state.vertexCount}u;
 const CAPACITY: u32 = ${adjacency.neighbors.length}u;
@@ -316,29 +431,43 @@ const OFFSETS_OFFSET: u32 = ${getViewElementOffset(adjacency.offsets)}u;
 const NEIGHBORS_OFFSET: u32 = ${getViewElementOffset(adjacency.neighbors)}u;
 const DISTANCES_OFFSET: u32 = ${getViewElementOffset(state.distances)}u;
 const PREDECESSORS_OFFSET: u32 = ${getViewElementOffset(state.predecessors)}u;
-const OVERFLOW_OFFSET: u32 = ${getViewElementOffset(state.primaryAdjacency.overflow)}u;
+const CURRENT_FRONTIER_OFFSET: u32 = ${getViewElementOffset(currentFrontier)}u;
+const NEXT_FRONTIER_OFFSET: u32 = ${getViewElementOffset(nextFrontier)}u;
+const FRONTIER_STATE_OFFSET: u32 = ${getViewElementOffset(state.frontierState)}u;
 ${dynamicOffsets}
 ${getBindingDeclarations(bindings)}
 
 @compute @workgroup_size(${BREADTH_FIRST_SEARCH_WORKGROUP_SIZE})
 fn main(
   @builtin(workgroup_id) workgroupId: vec3<u32>,
+  @builtin(num_workgroups) workgroupCount: vec3<u32>,
   @builtin(local_invocation_index) localInvocationIndex: u32
 ) {
-  ${getBoundedInvocationIndexSource(dispatchLayout, BREADTH_FIRST_SEARCH_WORKGROUP_SIZE)}
-  if (index >= VERTEX_COUNT) { return; }
-  if (overflow[OVERFLOW_OFFSET] != 0u${secondaryOverflowGuard}) { return; }
+  let workgroupIndex = (workgroupId.z * workgroupCount.y + workgroupId.y) * workgroupCount.x + workgroupId.x;
+  let index = workgroupIndex * ${BREADTH_FIRST_SEARCH_WORKGROUP_SIZE}u + localInvocationIndex;
+  let frontierCount = atomicLoad(
+    &frontierState[FRONTIER_STATE_OFFSET + ${currentCountIndex}u]
+  );
+  if (index >= frontierCount) { return; }
   ${activeDepthGuard}
-  if (atomicLoad(&distances[DISTANCES_OFFSET + index]) != ${props.depth}u) { return; }
-  let first = min(offsets[OFFSETS_OFFSET + index], CAPACITY);
-  let last = min(offsets[OFFSETS_OFFSET + index + 1u], CAPACITY);
+  let vertex = currentFrontier[CURRENT_FRONTIER_OFFSET + index];
+  if (atomicLoad(&distances[DISTANCES_OFFSET + vertex]) != ${props.depth}u) { return; }
+  let first = min(offsets[OFFSETS_OFFSET + vertex], CAPACITY);
+  let last = min(offsets[OFFSETS_OFFSET + vertex + 1u], CAPACITY);
   for (var slot = first; slot < last; slot++) {
     let neighbor = neighbors[NEIGHBORS_OFFSET + slot];
     if (neighbor >= VERTEX_COUNT) { continue; }
     let previousDistance = atomicMin(&distances[DISTANCES_OFFSET + neighbor], ${props.depth + 1}u);
     if (previousDistance >= ${props.depth + 1}u) {
-      atomicMin(&predecessors[PREDECESSORS_OFFSET + neighbor], index);
+      atomicMin(&predecessors[PREDECESSORS_OFFSET + neighbor], vertex);
       ${publishMask}
+    }
+    if (previousDistance == ${UNREACHABLE_VERTEX}u) {
+      let nextIndex = atomicAdd(
+        &frontierState[FRONTIER_STATE_OFFSET + ${nextCountIndex}u],
+        1u
+      );
+      nextFrontier[NEXT_FRONTIER_OFFSET + nextIndex] = neighbor;
     }
   }
 }`;
@@ -347,8 +476,73 @@ fn main(
     id: `${state.id}-depth-${props.depth}-${props.direction}`,
     source,
     bindings,
+    dispatchLayout,
+    condition: {
+      id: `${state.id}-depth-${props.depth}-${props.direction}-frontier-not-empty`,
+      source: 'gpu',
+      mode: 'indirect',
+      buffer: state.frontierDispatches[props.currentFrontierIndex].buffer,
+      byteOffset: state.frontierDispatches[props.currentFrontierIndex].byteOffset
+    }
+  });
+}
+
+/** Publishes one compact frontier's bounded indirect dispatch and releases the consumed count. */
+function addFrontierDispatchPass<Parameters>(
+  commandGraph: GPUCommandGraph<Parameters>,
+  props: {
+    state: ImportedBreadthFirstSearch;
+    currentFrontierIndex: number;
+    nextFrontierIndex: number;
+    id: string;
+  }
+): void {
+  const {state} = props;
+  const currentCountIndex = getFrontierCountIndex(props.currentFrontierIndex);
+  const nextCountIndex = getFrontierCountIndex(props.nextFrontierIndex);
+  const nextDispatch = state.frontierDispatches[props.nextFrontierIndex];
+  const bindings: Record<string, BreadthFirstSearchBinding> = {
+    frontierState: {view: state.frontierState, usage: 'storage-read-write', atomic: true},
+    nextDispatch: {view: nextDispatch, usage: 'storage-write'}
+  };
+  const dispatchLayout = {x: 1, y: 1, z: 1};
+  const source = /* wgsl */ `
+const FRONTIER_STATE_OFFSET: u32 = ${getViewElementOffset(state.frontierState)}u;
+const NEXT_DISPATCH_OFFSET: u32 = ${getViewElementOffset(nextDispatch)}u;
+const MAXIMUM_WORKGROUP_DIMENSION: u32 = ${state.maxComputeWorkgroupsPerDimension}u;
+${getBindingDeclarations(bindings)}
+
+fn divideRoundUp(numerator: u32, denominator: u32) -> u32 {
+  return numerator / denominator + select(0u, 1u, numerator % denominator != 0u);
+}
+
+@compute @workgroup_size(1)
+fn main() {
+  let frontierCount = atomicLoad(
+    &frontierState[FRONTIER_STATE_OFFSET + ${nextCountIndex}u]
+  );
+  let workgroupTotal = divideRoundUp(frontierCount, ${BREADTH_FIRST_SEARCH_WORKGROUP_SIZE}u);
+  let x = min(workgroupTotal, MAXIMUM_WORKGROUP_DIMENSION);
+  let afterX = select(0u, divideRoundUp(workgroupTotal, max(x, 1u)), x != 0u);
+  let y = min(max(afterX, 1u), MAXIMUM_WORKGROUP_DIMENSION);
+  let z = select(1u, divideRoundUp(afterX, y), x != 0u);
+  nextDispatch[NEXT_DISPATCH_OFFSET + 0u] = x;
+  nextDispatch[NEXT_DISPATCH_OFFSET + 1u] = y;
+  nextDispatch[NEXT_DISPATCH_OFFSET + 2u] = z;
+  atomicStore(&frontierState[FRONTIER_STATE_OFFSET + ${currentCountIndex}u], 0u);
+}`;
+
+  addBreadthFirstSearchPass(commandGraph, {
+    id: props.id,
+    source,
+    bindings,
     dispatchLayout
   });
+}
+
+/** Maps one ping-pong frontier index to its atomic count slot. */
+function getFrontierCountIndex(frontierIndex: number): number {
+  return frontierIndex === 0 ? FRONTIER_A_COUNT_INDEX : FRONTIER_B_COUNT_INDEX;
 }
 
 /** Declares storage buffers in the same order as the generated shader binding layout. */
@@ -369,6 +563,7 @@ function addBreadthFirstSearchPass<Parameters>(
 ): void {
   commandGraph.addComputePass({
     id: props.id,
+    ...(props.condition ? {condition: props.condition} : {}),
     resources: Object.values(props.bindings).map(({view, usage}) => ({buffer: view, usage})),
     compile: ({device}) => {
       const computation = new Computation(device, {

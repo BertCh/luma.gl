@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {ground} from '../../cartography/grounds';
 import {defineScene, type LegendSpec} from '../scene';
 import type {HealthRegressionOptions} from './health-regression.compute';
 
@@ -25,11 +26,11 @@ const OUTCOME_UNITS: Record<HealthRegressionOptions['outcome'], string> = {
 /** Health regression on Chicago tracts: OLS, diagnostics, spatial lag and spatial error models. */
 export default defineScene<HealthRegressionOptions>({
   id: 'health-regression',
-  title: 'Does the model leave a spatial pattern?',
+  title: 'Chicago diabetes residuals across tract regression models',
   chapter: 'regression',
   order: 1,
   summary:
-    'Regress diabetes prevalence on income, poverty and insurance for 780-odd Chicago tracts, then test whether the residuals are spatially clustered and fit the spatial lag and spatial error models the diagnostics point to.',
+    'OLS, spatial diagnostics, lag and error models use CDC PLACES and ACS data for Chicago tracts to map prevalence residuals and local clusters; the ecological, model-based inputs do not support causal or individual inference.',
   contributors: [
     'GPUOrdinaryLeastSquares',
     'GPUSpatialRegressionDiagnostics',
@@ -41,6 +42,16 @@ export default defineScene<HealthRegressionOptions>({
     {id: 'chicago-tracts', role: 'tract polygons with CDC PLACES outcomes, ACS and SVI covariates'}
   ],
   initialView: {longitude: -87.68, latitude: 41.84, zoom: 9.9},
+  basemap: ground('paperCity'),
+  furniture: {
+    title: {
+      title: 'Chicago diabetes residuals',
+      subtitle: 'Tract models using CDC PLACES and ACS covariates'
+    },
+    scaleBar: {units: 'metric'},
+    credit: 'CDC PLACES; US Census Bureau ACS',
+    caveat: 'Ecological associations from model-based tract estimates; not causal effects.'
+  },
 
   options: [
     {
@@ -258,7 +269,7 @@ export default defineScene<HealthRegressionOptions>({
         kind: 'ramp',
         id: 'value',
         title: state.map === 'fitted' ? 'Fitted by OLS' : 'Observed',
-        ramp: 'viridis',
+        ramp: 'ylorrd',
         extent: 'gpu',
         unit,
         format: value => value.toFixed(1)
@@ -287,6 +298,7 @@ export default defineScene<HealthRegressionOptions>({
         id: 'residual',
         title: `${names[state.map]} (observed minus fitted)`,
         ramp: 'diverging',
+        midpoint: 0,
         extent: 'gpu',
         unit: 'percentage points',
         labels: ['over-predicted', 'under-predicted'],
@@ -350,6 +362,9 @@ errorGraph.add(new GPUSpatialErrorGM({weights, predictors, response, predictorCo
     {
       id: 'question',
       title: 'What do incomes explain about diabetes in Chicago?',
+      headline: 'Observed diabetes prevalence varies across Chicago tracts',
+      textAlternative:
+        'Chicago tracts are shaded by estimated diabetes prevalence, with higher values concentrated on the South and West sides.',
       body: 'Diabetes is not spread evenly across Chicago: **CDC PLACES** estimates its prevalence for every census tract, and the highest rates sit on the South and West sides. Part of that is income. The question for a planner is sharper: **how much does a tract’s income and poverty explain, and where does the model get it wrong?**\n\nThe map shows the observed prevalence (**Map** below) for the tracts in the model; pick another **Health outcome (response)** to see its geography. Tracts left out (missing data, or O’Hare, which touches no other tract) are gray.',
       options: {model: 'income', map: 'observed'},
       controls: ['outcome', 'map'],
@@ -358,6 +373,9 @@ errorGraph.add(new GPUSpatialErrorGM({weights, predictors, response, predictorCo
     {
       id: 'ols',
       title: 'One predictor, one line: ordinary least squares',
+      headline: 'Income-only residuals remain spatially patterned',
+      textAlternative:
+        'A diverging tract map shows adjacent areas with similarly positive or negative income-only OLS residuals.',
       body: '**`GPUOrdinaryLeastSquares`** fits `prevalence = β₀ + β₁·ln(income per capita) + ε` by least squares on the GPU, and reports the fit in the readouts: R², AIC and BIC, and the **Jarque-Bera** and **Breusch-Pagan** tests of the residuals. Predictors are standardized, so β₁ is points of prevalence per standard deviation of ln income.\n\nThe map now shows the **residual**: observed minus fitted. Blue tracts have less diabetes than their income predicts, red tracts more. Hover a tract for its numbers.',
       options: {map: 'residuals'},
       controls: ['map'],
@@ -366,6 +384,9 @@ errorGraph.add(new GPUSpatialErrorGM({weights, predictors, response, predictorCo
     {
       id: 'predictors',
       title: 'Adding poverty, insurance and employment',
+      headline: 'Economic predictors improve tract-level fit',
+      textAlternative:
+        'Chicago tracts remain shaded by model residual while fit statistics compare the expanded economic model with the income-only model.',
       body: '**Predictors** is now *Economic (4)*. Poverty, uninsured and unemployment rates add explanatory power and the coefficients are now *partial* effects: the change in prevalence per standard deviation with the others held fixed. Read the t statistics in the **β** readouts, and compare adjusted R² and AIC with the single-predictor fit.\n\nThe predictor count is compile-time in every contributor, so this switch compiles its graphs once (the rebuild badge in **Under the hood**).',
       options: {model: 'economic'},
       controls: ['model'],
@@ -374,6 +395,9 @@ errorGraph.add(new GPUSpatialErrorGM({weights, predictors, response, predictorCo
     {
       id: 'ridge',
       title: 'When predictors overlap: ridge',
+      headline: 'Ridge shrinkage reduces coefficient instability',
+      textAlternative:
+        'The residual map accompanies coefficient readouts that contract as the ridge penalty increases for correlated tract predictors.',
       body: '**Predictors** is now *Full (8)*, which adds age, disability, vehicle access and race/ethnicity shares. Tract covariates are highly correlated, so individual coefficients become unstable and their standard errors inflate. Slide the **Ridge penalty λ (log₁₀)**: `GPUOrdinaryLeastSquares` adds λ to the diagonal of XᵀX, which shrinks the coefficients and tightens the standard errors at the price of a little bias. The penalty is a one-float parameter buffer, so the slider is a buffer write and no graph is rebuilt.',
       options: {model: 'full', ridge: 0.5},
       controls: ['model', 'ridge'],
@@ -382,6 +406,9 @@ errorGraph.add(new GPUSpatialErrorGM({weights, predictors, response, predictorCo
     {
       id: 'diagnostics',
       title: 'Is the leftover spatial?',
+      headline: 'OLS residual clusters remain statistically significant',
+      textAlternative:
+        'Red and blue tract groups mark significant high-high and low-low clusters of economic-model residuals.',
       body: 'Ordinary least squares assumes independent errors. **`GPUSpatialRegressionDiagnostics`** tests that against the spatial weights: **LM-lag** (does a neighbour’s outcome matter?), **LM-error** (are the errors correlated?), their **robust** versions and **Moran’s I** of the residuals. The matching spreg tests are `LMtests` and `MoranRes`.\n\n**Map** now shows *OLS residual clusters (local Moran)*: significant **clusters** of OLS residuals from a local Moran run inside the same graph by **`addSpatialRegressionRecipe`**: red clusters are places the model under-predicts, blue clusters where it over-predicts. If the model had absorbed the geography there would be few of them.',
       options: {model: 'economic', ridge: -2, map: 'clusters'},
       controls: ['weights', 'significance', 'map'],
@@ -390,6 +417,9 @@ errorGraph.add(new GPUSpatialErrorGM({weights, predictors, response, predictorCo
     {
       id: 'lag',
       title: 'Spillover: the spatial lag model',
+      headline: 'Spatial lag absorbs part of neighboring dependence',
+      textAlternative:
+        'A diverging map shows spatial-lag residuals while readouts report the neighbor coefficient and model fit.',
       body: 'If neighbours’ outcomes influence a tract’s own (shared food environments, clinics, behaviour), the right model is `y = ρ·Wy + Xβ + ε`. **`GPUSpatialTwoStageLeastSquares`** estimates ρ with `WX` (and optionally `W²X`) as instruments, the same estimator as spreg `GM_Lag`. The **Anselin-Kelejian** test on its residuals checks that dependence is gone.\n\nThe map shows the lag model’s residuals. Compare each **β** line: `OLS to lag, error`. Try **Lag-model instruments** with W²X; it recompiles the lag graph only.',
       options: {map: 'lag'},
       controls: ['instruments', 'map'],
@@ -398,6 +428,9 @@ errorGraph.add(new GPUSpatialErrorGM({weights, predictors, response, predictorCo
     {
       id: 'error',
       title: 'Or unmeasured shared causes: the spatial error model',
+      headline: 'Spatial error captures correlated omitted structure',
+      textAlternative:
+        'Spatial-error residuals are mapped by tract beside lag and error coefficients used to compare model specifications.',
       body: 'If neighbours are alike because of *omitted* factors (shared history, services, housing quality) rather than direct spillover, the error model `u = λ·Wu + ε` fits better. **`GPUSpatialErrorGM`** finds λ by a global scan of the generalized-moments objective (spreg `GM_Error`), then re-estimates β on spatially filtered data.\n\nThe LM tests and robust variants decide between the two: the **Which spatial model?** readout applies the classical rule. Try other **Spatial weights** (rook, k nearest) and another **Health outcome (response)**: diagnostics, ρ and λ all depend on how neighbours are defined, and on whether the model is mis-specified rather than truly spatial.\n\n**Limits:** PLACES values are model-based estimates, not tract surveys; these are ecological associations, not individual risk; and predictors are standardized to compare effects, not to be causal.',
       options: {map: 'error'},
       controls: ['weights', 'outcome', 'map'],

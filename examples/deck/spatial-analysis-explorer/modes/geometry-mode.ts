@@ -282,7 +282,7 @@ type PathOutputBuffers = {
   offsets: Buffer;
   count: Buffer;
   overflow: Buffer;
-  totalCount: Buffer;
+  requiredCount: Buffer;
   pathCount: Buffer;
   measures: Buffer;
   sourcePaths: Buffer;
@@ -301,7 +301,7 @@ function createPathOutputBuffers(
     offsets: resources.createBuffer(`${name}-offsets`, (pathCapacity + 1) * 4),
     count: resources.createBuffer(`${name}-count`, 4),
     overflow: resources.createBuffer(`${name}-overflow`, 4),
-    totalCount: resources.createBuffer(`${name}-total`, 4),
+    requiredCount: resources.createBuffer(`${name}-total`, 4),
     pathCount: resources.createBuffer(`${name}-path-count`, 4),
     measures: resources.createBuffer(`${name}-measures`, vertexCapacity * 4),
     sourcePaths: resources.createBuffer(`${name}-source-paths`, pathCapacity * 4),
@@ -356,7 +356,7 @@ function importPathOutput(
     ),
     count: importGraphBuffer(graph, 'out-count', output.count, 'uint32', 1),
     overflow: importGraphBuffer(graph, 'out-overflow', output.overflow, 'uint32', 1),
-    totalCount: importGraphBuffer(graph, 'out-total', output.totalCount, 'uint32', 1),
+    requiredCount: importGraphBuffer(graph, 'out-total', output.requiredCount, 'uint32', 1),
     ...(options.pathCount
       ? {pathCount: importGraphBuffer(graph, 'out-path-count', output.pathCount, 'uint32', 1)}
       : {}),
@@ -515,10 +515,15 @@ function createArcsView(
   const arcTargets = importGraphBuffer(arcGraph, 'targets', targets, 'float32x2', ARC_PAIR_COUNT);
   arcGraph.add(
     new GPUGeodesicPairs({
+      spatialContext: {
+        coordinateSpace: 'longitude-latitude',
+        metric: 'ellipsoidal',
+        units: 'meters'
+      },
       id: 'arc-distances',
       origins: arcSources,
       targets: arcTargets,
-      model: 'wgs84',
+
       output: {
         distances: importGraphBuffer(arcGraph, 'distances', distances, 'float32', ARC_PAIR_COUNT),
         converged: importGraphBuffer(arcGraph, 'converged', converged, 'uint32', ARC_PAIR_COUNT)
@@ -540,6 +545,11 @@ function createArcsView(
   const ringGraph = new GPUCommandGraph<void>(device, {id: 'geometry-ring'});
   ringGraph.add(
     new GPUGeodesicDestination({
+      spatialContext: {
+        coordinateSpace: 'longitude-latitude',
+        metric: 'ellipsoidal',
+        units: 'meters'
+      },
       id: 'range-ring',
       origins: importGraphBuffer(ringGraph, 'origins', ringOrigins, 'float32x2', RING_VERTEX_COUNT),
       bearings: importGraphBuffer(
@@ -556,7 +566,7 @@ function createArcsView(
         'float32',
         RING_VERTEX_COUNT
       ),
-      model: 'wgs84',
+
       output: {
         destinations: importGraphBuffer(
           ringGraph,
@@ -1873,6 +1883,17 @@ async function createMeasuresView(
     const planar = entry.id === 'planar';
     graph.add(
       new GPUGeometryMeasures({
+        spatialContext: {
+          coordinateSpace: entry.id === 'planar' ? 'planar' : 'longitude-latitude',
+          metric:
+            entry.id === 'planar'
+              ? 'native'
+              : entry.id === 'spherical'
+                ? 'great-circle'
+                : 'ellipsoidal',
+          units: entry.id === 'planar' ? 'native' : 'meters'
+        },
+        ellipsoidalEdgeModel: entry.id === 'wgs84' ? 'coordinate-linear' : undefined,
         id: `measures-${entry.id}`,
         positions: importGraphBuffer(
           graph,
@@ -1884,7 +1905,7 @@ async function createMeasuresView(
         geometryType: 'polygons',
         ringOffsets: ringView,
         featureRingOffsets: featureRingView,
-        coordinateSystem: entry.id,
+
         holeRule: 'first-ring-exterior',
         output: {
           areas: importGraphBuffer(

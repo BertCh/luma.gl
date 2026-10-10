@@ -205,6 +205,9 @@ export async function createRateSmoothing(
     low: getMedianResidents(lowRows)
   };
   const fewBirthsCount = events.reduce((total, count) => total + (count < FEW_BIRTHS ? 1 : 0), 0);
+  const totalBirths = events.reduce((total, count) => total + count, 0);
+  const totalWomenYears = womenYears.reduce((total, exposure) => total + exposure, 0);
+  const sortedWomenYears = sortFinite(womenYears);
   const findCountyRow = (name: string, state: string): number =>
     features.findIndex(
       feature => feature.properties?.name === name && feature.properties?.state === state
@@ -386,25 +389,34 @@ export async function createRateSmoothing(
               maximumPermutations: MAXIMUM_PERMUTATIONS,
               alternative: options.alternative,
               maximumNeighbors: MAXIMUM_LOCAL_NEIGHBORS,
-              falseDiscoveryRate: options.falseDiscoveryRate,
-              pseudoPValues: float('pseudo-p', pseudoPBuffer),
-              significant: word('significant', significantBuffer)
+              falseDiscoveryRate: options.falseDiscoveryRate
             }
           : undefined,
       palette: word('palette', paletteBuffer, GPU_RATE_CLUSTER_MAP_PALETTE_LENGTH),
-      standardizedRates: standardized,
-      smoothedRates: smoothed,
-      rawRates: raw,
-      summary: float('summary', summaryBuffer, GPU_EMPIRICAL_BAYES_SUMMARY.length),
-      weights: {
-        offsets: word('weights-offsets', offsetsBuffer, n + 1),
-        neighbors: word('weights-neighbors', neighborsBuffer, neighborCapacity),
-        weights: float('weights-values', weightsBuffer, neighborCapacity)
+      outputs: {
+        standardizedRates: standardized,
+        smoothedRates: smoothed,
+        weightsOverflow: word('weights-overflow', weightsOverflowBuffer, 1),
+        zScores: float('z-scores', zScoresBuffer),
+        quadrants: word('quadrants', quadrantsBuffer),
+        colors: word('cluster-colors', colorsBuffer),
+        permutation:
+          options.gating === 'permutation'
+            ? {
+                pseudoPValues: float('pseudo-p', pseudoPBuffer),
+                significant: word('significant', significantBuffer)
+              }
+            : undefined
       },
-      weightsOverflow: word('weights-overflow', weightsOverflowBuffer, 1),
-      zScores: float('z-scores', zScoresBuffer),
-      quadrants: word('quadrants', quadrantsBuffer),
-      colors: word('cluster-colors', colorsBuffer)
+      scratch: {
+        rawRates: raw,
+        summary: float('summary', summaryBuffer, GPU_EMPIRICAL_BAYES_SUMMARY.length),
+        weights: {
+          offsets: word('weights-offsets', offsetsBuffer, n + 1),
+          neighbors: word('weights-neighbors', neighborsBuffer, neighborCapacity),
+          weights: float('weights-values', weightsBuffer, neighborCapacity)
+        }
+      }
     });
     const spatial = float('spatial', spatialBuffer);
     graph.add(
@@ -539,9 +551,11 @@ export async function createRateSmoothing(
     const neighborCount = latest.offsets[selectedRow + 1] - latest.offsets[selectedRow];
     ctx.setReadout(
       'selected',
-      `${countyName(selectedRow)}: ${formatCount(events[selectedRow])} births, ${(
-        rawPerThousand[selectedRow]
-      ).toFixed(1)} per 1,000`
+      `${countyName(selectedRow)}: ${formatCount(events[selectedRow])} births / ${formatCount(
+        womenYears[selectedRow]
+      )} woman-years = ${rawPerThousand[selectedRow].toFixed(1)} per 1,000; own-data weight ${formatPercent(
+        latest.weight[selectedRow]
+      )}`
     );
     ctx.setReadout(
       'localPool',
@@ -558,6 +572,16 @@ export async function createRateSmoothing(
   const publishStatic = () => {
     ctx.setReadout('counties', n);
     ctx.setReadout('rawRange', `${rawExtent[0]} to ${rawExtent[1]} per 1,000`);
+    ctx.setReadout(
+      'nationalRatio',
+      `${formatCount(totalBirths)} births / ${formatCount(totalWomenYears)} woman-years`
+    );
+    ctx.setReadout(
+      'exposureRange',
+      `${formatCount(sortedWomenYears[0])} to ${formatCount(
+        sortedWomenYears[sortedWomenYears.length - 1]
+      )} woman-years`
+    );
     ctx.setReadout('extremePopulation', `${formatCount(medianResidents.high)} residents`);
     ctx.setReadout('allPopulation', `${formatCount(medianResidents.all)} residents`);
     ctx.setReadout('lowPopulation', `${formatCount(medianResidents.low)} residents`);
@@ -607,6 +631,21 @@ export async function createRateSmoothing(
     ctx.setReadout('moranEb', latest.moran.smoothed.toFixed(3));
     ctx.setReadout('moranSpatial', latest.moran.spatial.toFixed(3));
     ctx.setReadout('moranZ', latest.moran.standardized.toFixed(3));
+    ctx.setChart('moranComparison', {
+      kind: 'bars',
+      title: "Moran's I after each rate transformation",
+      values: [
+        latest.moran.raw,
+        latest.moran.smoothed,
+        latest.moran.spatial,
+        latest.moran.standardized
+      ],
+      labels: ['Raw rate', 'Empirical Bayes', 'Spatial EB', 'Standardised z'],
+      horizontal: true,
+      table: false,
+      description:
+        "Global Moran's I of the raw, empirical-Bayes, spatial empirical-Bayes and standardised county rates under the same weights matrix."
+    });
     let islands = 0;
     for (let row = 0; row < n; row++)
       if (latest.offsets[row + 1] === latest.offsets[row]) islands++;
@@ -781,10 +820,38 @@ export async function createRateSmoothing(
   // ---------------------------------------------------------------------------------------------
 
   const publishTest = () => {
-    const {gating, permutations} = ctx.options;
+    const {falseDiscoveryRate, gating, permutations, significance} = ctx.options;
+    const minimumPseudoP = 1 / (permutations + 1);
     ctx.setReadout(
       'testName',
       gating === 'permutation' ? `a ${permutations}-permutation test` : 'the analytic p-value'
+    );
+    ctx.setReadout(
+      'testResolution',
+      gating === 'permutation'
+        ? `1 / ${permutations + 1} = ${minimumPseudoP.toFixed(4)}`
+        : 'continuous normal approximation'
+    );
+    ctx.setReadout(
+      'multiplicity',
+      gating === 'permutation'
+        ? falseDiscoveryRate
+          ? `Benjamini-Hochberg FDR across ${formatCount(n)} local tests`
+          : `${formatCount(n)} uncorrected local tests`
+        : `${formatCount(n)} uncorrected analytic local tests`
+    );
+    const minimumRank = Math.ceil((n * minimumPseudoP) / significance);
+    ctx.setReadout(
+      'fdrResolutionBarrier',
+      gating !== 'permutation'
+        ? 'not applicable to the analytic test'
+        : !falseDiscoveryRate
+          ? 'not applied; county p-values are uncorrected'
+          : minimumRank > n
+            ? `no rejection is numerically attainable at q = ${significance.toFixed(3)}`
+            : `at least ${formatCount(minimumRank)} counties must attain p = ${minimumPseudoP.toFixed(
+                4
+              )} before any rejection is numerically attainable at q = ${significance.toFixed(3)}`
     );
   };
 
@@ -1087,6 +1154,11 @@ export async function createRateSmoothing(
     const smoothedValue = latest.smoothed[row] * RATE_SCALE;
     const spatialValue = latest.spatial[row] * RATE_SCALE;
     const z = latest.standardized[row];
+    const rawModelVariance = latest.priorVariance + latest.pooledRate / womenYears[row];
+    // GPUEmpiricalBayesRates follows esda: fall back to sampling noise only if a + m / b < 0.
+    const modelStandardError =
+      Math.sqrt(rawModelVariance < 0 ? latest.pooledRate / womenYears[row] : rawModelVariance) *
+      RATE_SCALE;
     const rows: TooltipRow[] = [];
     const rateRow = (label: string, value: number, emphasis = false): TooltipRow => ({
       ...rate(value),
@@ -1143,13 +1215,18 @@ export async function createRateSmoothing(
       unit: `of ${formatCount(n)} counties`
     });
     rows.push(
-      {label: 'Births', value: formatCount(events[row]), unit: 'in 2021-2023'},
+      {label: 'N (births)', value: formatCount(events[row]), unit: 'in 2021-2023'},
       {
-        label: 'Women aged 15-44',
-        value: formatCount(womenYears[row] / 3),
-        unit: 'a year, on average'
+        label: 'Exposure denominator',
+        value: formatCount(womenYears[row]),
+        unit: 'woman-years, 2021-2023'
       }
     );
+    rows.push({
+      label: 'Model standard error',
+      value: modelStandardError.toFixed(1),
+      unit: 'per 1,000'
+    });
     if (map !== 'raw') rows.push(rateRow('Raw rate', rawValue));
     if (map !== 'smoothed' && map !== 'cluster')
       rows.push(rateRow('Empirical Bayes', smoothedValue));

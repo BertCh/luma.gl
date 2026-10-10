@@ -42,6 +42,9 @@ const cartouche = (title: string, subtitle: string) => ({
 /** Caveat line of the matrix steps (the map steps keep the Mercator caveat). */
 const MATRIX_CAVEAT = 'A cell counts airport pairs, not passengers; routes as of June 2014.';
 
+/** A matrix is not geography: keep the paper ground, but remove its orientation labels. */
+const MATRIX_BASEMAP = ground('paperSheet', {labels: 'none', labelPreset: 'none'});
+
 export default defineScene<FlightMatrixOptions>({
   id: 'flight-matrix',
   title: 'The airline network as a matrix',
@@ -579,7 +582,7 @@ compiled.encode(commandEncoder, {parameters: undefined});`,
       readouts: ['occupied', 'fillBound', 'cellChart'],
       stage: 'bin',
       camera: {bounds: MATRIX_CAMERA_BOUNDS, transitionMs: 1600},
-      basemap: ground('paperSheet'),
+      basemap: MATRIX_BASEMAP,
       furniture: {
         scaleBar: false,
         caveat: MATRIX_CAVEAT,
@@ -596,7 +599,7 @@ compiled.encode(commandEncoder, {parameters: undefined});`,
       readouts: ['blockShare', 'orderCheck'],
       stage: 'order',
       camera: {bounds: MATRIX_CAMERA_BOUNDS, transitionMs: 1000},
-      basemap: ground('paperSheet'),
+      basemap: MATRIX_BASEMAP,
       furniture: {
         scaleBar: false,
         caveat: MATRIX_CAVEAT,
@@ -619,7 +622,7 @@ compiled.encode(commandEncoder, {parameters: undefined});`,
       readouts: ['chanceMatrix', 'blockShare', 'expectedShare', 'modularity'],
       stage: 'draw',
       camera: {bounds: MATRIX_CAMERA_BOUNDS, transitionMs: 1000},
-      basemap: ground('paperSheet'),
+      basemap: MATRIX_BASEMAP,
       furniture: {
         scaleBar: false,
         caveat: MATRIX_CAVEAT,
@@ -642,7 +645,7 @@ compiled.encode(commandEncoder, {parameters: undefined});`,
       readouts: ['cellScale', 'blockAirports', 'occupied'],
       stage: 'bin',
       camera: {bounds: MATRIX_CAMERA_BOUNDS, transitionMs: 1000},
-      basemap: ground('paperSheet'),
+      basemap: MATRIX_BASEMAP,
       furniture: {
         scaleBar: false,
         caveat: MATRIX_CAVEAT,

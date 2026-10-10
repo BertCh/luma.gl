@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {ground} from '../../cartography/grounds';
 import {defineScene, type LegendSpec} from '../scene';
 import {
   BAND_COUNT,
@@ -10,9 +11,9 @@ import {
   LAND_COVER_PALETTE,
   NO_COST_LIMIT_MINUTES,
   NO_DISTANCE_CAP_KILOMETERS,
-  START_PALETTE,
-  type LeastCostOptions
-} from './least-cost-paths.compute';
+  START_PALETTE
+} from './least-cost-paths-style';
+import type {LeastCostOptions} from './least-cost-paths.compute';
 
 const formatMinutes = (minutes: number): string =>
   minutes >= 60
@@ -28,11 +29,11 @@ const DIXIE_VIEW = {longitude: -121.0, latitude: 40.17, zoom: 11.1} as const;
  */
 export default defineScene<LeastCostOptions>({
   id: 'least-cost-paths',
-  title: 'The easiest way down, and the way around a fire',
+  title: 'Terrain travel time and least-cost routes',
   chapter: 'hydrology',
   order: 3,
   summary:
-    'Price every cell by slope, cliffs and land cover, spread travel time from a start on the GPU, snap the cheapest route to a draggable destination and compare it with the straight line.',
+    'GPU cost distance combines Grand Canyon terrain and Dixie-area land cover with walking friction. The outputs are travel-time bands, routes and straight-line distance; trails, directional costs and weather are omitted.',
   contributors: [
     'GPUCostDistance',
     'GPUCostDistancePath',
@@ -44,6 +45,16 @@ export default defineScene<LeastCostOptions>({
     {id: 'dixie-fire', role: 'slope and ESA WorldCover friction: Greenville to Lake Almanor'}
   ],
   initialView: CANYON_VIEW,
+  basemap: ground('relief'),
+  furniture: {
+    title: {
+      title: 'Terrain travel time and routes',
+      subtitle: 'Accumulated walking cost from slope and land-cover friction'
+    },
+    scaleBar: {units: 'metric'},
+    credit: 'US Geological Survey (public domain) · © ESA WorldCover project (CC BY 4.0)',
+    caveat: 'The friction model omits trails, weather and direction-dependent travel.'
+  },
 
   options: [
     {
@@ -354,6 +365,9 @@ export default defineScene<LeastCostOptions>({
     {
       id: 'question',
       title: 'How long is the walk to Phantom Ranch?',
+      headline: 'Terrain cost redirects travel through canyon breaks',
+      textAlternative:
+        'Travel-time bands spread from the South Rim and a red least-cost route descends to Phantom Ranch through passable terrain.',
       body: 'Grand Canyon Village is on the South Rim at 2,100 m; Phantom Ranch sits beside Bright Angel Creek at 830 m, 8 km away as the crow flies. A hiker cannot cross the Redwall and Supai cliffs, so the real walk follows the breaks in them. **Which way is cheapest, and how long does it take?**\n\nThe colored bands are **travel time from the start** (white dot): each band is an hour of walking, yellow nearest. The red line is the cheapest route to the red dot. Both are computed on the GPU on a 31 m grid from the 15 m DEM. Change **Map shows** or the walking pace below to see what else the model can draw.',
       camera: {...CANYON_VIEW, transitionMs: 1400},
       options: {display: 'bands', placement: 'destination'},
@@ -365,6 +379,9 @@ export default defineScene<LeastCostOptions>({
     {
       id: 'friction',
       title: 'Price the ground: friction',
+      headline: 'Steep slopes increase travel cost and form barriers',
+      textAlternative:
+        'A continuous friction surface colors the canyon by walking minutes per kilometer, with the steepest cells marked as impassable.',
       body: 'A cost surface starts from **friction**: the cost of crossing one metre of each cell. Here it is walking minutes per metre from **Tobler’s hiking function**, `time = 0.01 min/m × exp(3.5 · tan(slope))`, from the slope that `GPUTerrainDerivatives` computes once. Flat ground at 6 km/h costs 10 minutes per kilometre; a 20 degree slope costs about 3.5 times that.\n\nSlopes above the **Cliff limit** below (38 degrees) are barriers: they get NaN friction, which `GPUCostDistance` treats as impassable, and are shaded red. The legend is minutes per kilometre at the chosen **Walking pace on flat ground**. Move **Slope penalty** to 0 to see the cliffs matter even when slope costs nothing.',
       options: {display: 'friction'},
       controls: ['slopePenalty', 'maxSlope', 'speed'],
@@ -373,6 +390,9 @@ export default defineScene<LeastCostOptions>({
     {
       id: 'isochrones',
       title: 'Spread travel time: GPUCostDistance',
+      headline: 'Travel-time bands expand unevenly across terrain',
+      textAlternative:
+        'Isochrone bands extend from the start across accessible terrain and stop at cliffs or the selected time budget.',
       body: '`GPUCostDistance` computes the **least accumulated cost to every cell** from the start. Moves are 8-connected; the cost of a move is its ground length times the mean friction of the two cells. It is a tiled min-relaxation, so a front advances 16 cells per iteration and switches to directional sweeps for long corridors. The *Converged* readout reports iterations used out of the compile-time limit; nothing is read back to decide when to stop.\n\n**Time budget** below (a parameter, no recompile) cuts the spread off: drag it to 4 hours and the unreached canyon floor disappears. **Walking pace on flat ground** re-prices the map through `frictionParameters`. Bands are cost thresholds in a buffer (`bandThresholds`), so **Band width** is also a write.',
       options: {display: 'bands', costLimit: 480},
       camera: {...CANYON_VIEW, transitionMs: 1400},
@@ -383,6 +403,9 @@ export default defineScene<LeastCostOptions>({
     {
       id: 'route',
       title: 'Drag the destination: GPUCostDistancePath',
+      headline: 'Back-links recover the current least-cost route',
+      textAlternative:
+        'A red route follows GPU back-links between draggable endpoints, with travel time, length and detour reported for the selected destination.',
       body: '`GPUCostDistance` also writes **back-links**: for each cell, the direction of the next step on the cheapest way home. `GPUCostDistancePath` follows them from the destination to the start in one GPU thread and returns the cell list, which a small kernel turns into line segments drawn straight from the buffer.\n\n**Drag the red dot** and the route re-snaps in the same frame: no relaxation is repeated, only the path graph runs. The readouts give the time, length, climb and descent along the route, and the **detour**: travel time compared to walking the straight line (switched on with **Show straight line**) over flat ground. Real trails use these breaks: Bright Angel and the Kaibabs ride fault lines.',
       options: {display: 'cost', showStraightLine: true},
       camera: {longitude: -112.1, latitude: 36.085, zoom: 11.9, transitionMs: 1400},
@@ -393,6 +416,9 @@ export default defineScene<LeastCostOptions>({
     {
       id: 'distance-field',
       title: 'Straight-line distance: GPUDistanceField',
+      headline: 'Euclidean proximity differs from terrain travel time',
+      textAlternative:
+        'Distance bands from South and North Rim starts cross the canyon directly, contrasting with travel-time bands constrained by steep terrain.',
       body: '`GPUDistanceField` is the cost-free counterpart: the **exact Euclidean distance** from every cell to the nearest seed, plus which seed it is (allocation, Voronoi zones). The map now shows the straight-line distance in kilometres from the South Rim *and* the North Rim (Bright Angel Point), the two starts. Compare it with the travel-time bands: the Colorado gorge, two kilometres across but a day to cross, is where the two pictures disagree most.\n\nThe exact mode is the separable Felzenszwalb-Huttenlocher transform. **Distance algorithm** below switches to the jump-flood preview (compiled on first use); press the "Time exact vs jump-flood on the canyon grid" button for GPU timings. **Distance cap** sets `maxDistance`. Pick *Nearest start by straight line* in **Map shows** for the allocation.',
       options: {display: 'distance', secondStart: true, placement: 'add-start'},
       camera: {...CANYON_VIEW, transitionMs: 1400},
@@ -403,6 +429,9 @@ export default defineScene<LeastCostOptions>({
     {
       id: 'land-cover',
       title: 'Another landscape: land cover as friction (Dixie fire area)',
+      headline: 'Land cover changes the Dixie-area route',
+      textAlternative:
+        'Near Greenville, categorical land cover modifies slope friction; the least-cost route avoids slower forest and impassable water where alternatives exist.',
       body: 'North-east of here the same graphs run on 20 m cells around **Greenville, California**, burned by the 2021 Dixie Fire. Slope is only half the story there: 91 % of the window is conifer forest, which slows a crew; towns are faster; **Lake Almanor** (west edge) is a barrier. The friction kernel multiplies the Tobler slope cost by a **per-class factor** from ESA WorldCover, a table of eleven floats in a parameter buffer.\n\nThe map shows the land cover. The route from Greenville to the Almanor east shore threads valleys and meadows rather than ridges. Try **Tree cover pace factor** at 3 below and watch the route and the bands bend toward open ground.',
       options: {display: 'landcover'},
       camera: {...DIXIE_VIEW, transitionMs: 3000},
@@ -413,6 +442,9 @@ export default defineScene<LeastCostOptions>({
     {
       id: 'limits',
       title: 'Limits, and things to try',
+      headline: 'Model omissions constrain route interpretation',
+      textAlternative:
+        'The travel-time map and route remain visible while controls expose seed, barrier and friction assumptions omitted from the screening model.',
       body: 'Read the model as a **screening tool**. Friction is a symmetric Tobler curve (real uphill and downhill differ), cliffs are a slope threshold at 31 m or 20 m resolution, WorldCover has no roads or trails, the Colorado is a flat, crossable surface in the canyon, and the Dixie raster is drawn square although the UTM grid is rotated 1.3 degrees from north (up to 170 m at the corners). `GPUCostDistance` has no direction-dependent costs and no per-source allocation yet; `GPUDistanceField` allocates by straight line only.\n\nTry, with the controls below: set **Seeds (Dixie)** to *Nearest water* and **Map shows** to *Straight-line distance* (helicopter dip distances); raise **Time budget** to no limit and show the *Detour* map to see where terrain costs most; add a second start with **A click places**; turn off **Water is impassable** to let the route cross the lake.',
       options: {display: 'bands', bandMinutes: 60, showStraightLine: true},
       camera: {...DIXIE_VIEW, transitionMs: 1200},
@@ -426,7 +458,7 @@ export default defineScene<LeastCostOptions>({
     what: 'A friction kernel (Tobler hiking time x land cover) feeds `GPUCostDistance`, which accumulates travel time from the starts with back-links and isochrone bands; `GPUCostDistancePath` extracts the cheapest route to a destination; `GPUDistanceField` gives the straight-line distance and nearest seed.',
     why: 'Where can a crew be in an hour? Which way around a cliff band is cheapest? How far is water? Least-cost surfaces answer access, evacuation, corridor and logistics questions, and making them parameter-driven makes them explorable.',
     howToRead:
-      'Bands and the viridis ramp show travel time from the nearest start (yellow near, purple far). The red line is the cheapest route; the thin line is the straight line. Red-shaded cells are impassable. In the detour display, 1x means the terrain costs nothing extra over flat ground, 4x means four times slower than the straight line.'
+      'Bands and the lajolla ramp show travel time from the nearest start. The red line is the cheapest route; the thin line is the straight line. Red-shaded cells are impassable. In the detour display, 1x means the terrain costs nothing extra over flat ground, 4x means four times slower than the straight line.'
   },
 
   legends: state => {
@@ -436,7 +468,7 @@ export default defineScene<LeastCostOptions>({
         legends.push({
           kind: 'ramp',
           title: 'Accumulated travel time',
-          ramp: 'viridis',
+          ramp: 'lajolla',
           extent: [0, state.rangeHours * 60],
           unit: 'h',
           format: value => `${(value / 60).toFixed(0)}`
@@ -593,7 +625,7 @@ costGraph.add(new GPUCostDistance({
 }));
 pathGraph.add(new GPUCostDistancePath({
   width, height, backLinks, target,        // target cell: a parameter write while you drag
-  output: {ids, count, overflow, totalCount}
+  output: {ids, count, overflow, requiredCount}
 }));
 distanceGraph.add(new GPUDistanceField({
   width, height, mode: '${state.distanceAlgorithm.startsWith('jump') ? 'jump-flood' : 'exact'}',${state.distanceAlgorithm.startsWith('jump') ? `\n  jumpFloodRefinementPasses: ${state.distanceAlgorithm.slice(-1)},` : ''}

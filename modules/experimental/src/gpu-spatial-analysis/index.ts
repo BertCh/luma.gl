@@ -6,6 +6,48 @@ export type {GPUCompactOutput, GPUUint32Rows} from '../utils/gpu-contributor-typ
 export {GPUParameterBuffer} from '../utils/gpu-contributor-utils';
 export type {GPUParameterBufferProps, GPUParameterFormat} from '../utils/gpu-contributor-utils';
 
+export * from './contracts/index';
+
+export {
+  GPU_SPATIAL_ANALYSIS_CAPABILITIES,
+  GPU_SPATIAL_ANALYSIS_AUDIT,
+  GPU_SPATIAL_ANALYSIS_COORDINATE_MODELS,
+  GPU_SPATIAL_ANALYSIS_DATA_KINDS,
+  GPU_SPATIAL_ANALYSIS_DATA_ONTOLOGY,
+  GPU_SPATIAL_ANALYSIS_DOMAINS,
+  GPU_SPATIAL_ANALYSIS_STAGES,
+  GPU_SPATIAL_ANALYSIS_OPERATORS,
+  formatGPUSpatialAnalysisAuditMarkdown,
+  getGPUSpatialAnalysisCapability,
+  getGPUSpatialAnalysisCapabilityConnections,
+  getGPUSpatialAnalysisCapabilityForOperator,
+  getGPUSpatialAnalysisOperator,
+  isGPUSpatialAnalysisDataKind,
+  queryGPUSpatialAnalysisCapabilities,
+  queryGPUSpatialAnalysisOperators
+} from './ontology/index';
+export type {
+  GPUSpatialAnalysisCapability,
+  GPUSpatialAnalysisCapabilityConnections,
+  GPUSpatialAnalysisCapabilityEvidence,
+  GPUSpatialAnalysisCapabilityQuery,
+  GPUSpatialAnalysisCapabilityStatus,
+  GPUSpatialAnalysisAudit,
+  GPUSpatialAnalysisCoordinateModel,
+  GPUSpatialAnalysisDataConcept,
+  GPUSpatialAnalysisDataKind,
+  GPUSpatialAnalysisDomain,
+  GPUSpatialAnalysisEvidenceStatus,
+  GPUSpatialAnalysisOperator,
+  GPUSpatialAnalysisOperatorQuery,
+  GPUSpatialAnalysisOutputBound,
+  GPUSpatialAnalysisReadback,
+  GPUSpatialAnalysisSemantics,
+  GPUSpatialAnalysisStage,
+  GPUSpatialAnalysisStatusKind,
+  GPUSpatialAnalysisTopology
+} from './ontology/index';
+
 export {
   getCellTableFirstRow,
   GPU_CELL_DEFAULT_SUM_SCALE,
@@ -120,13 +162,17 @@ export {
   getGPUGeographicDistributionParameterValues,
   GPU_GEOGRAPHIC_DISTRIBUTION_DEFAULT_MEDIAN_TOLERANCE,
   GPU_GEOGRAPHIC_DISTRIBUTION_PARAMETER_LENGTH,
-  GPUGeographicDistribution
+  GPU_ROSE_STATISTIC_SUMMARY,
+  GPU_ROSE_STATISTIC_SUMMARY_STRIDE,
+  GPUGeographicDistribution,
+  GPURoseStatistic
 } from './geographic-distribution/index';
 export type {
   GPUGeographicDistributionEllipseConvention,
   GPUGeographicDistributionOutput,
   GPUGeographicDistributionParameters,
-  GPUGeographicDistributionProps
+  GPUGeographicDistributionProps,
+  GPURoseStatisticProps
 } from './geographic-distribution/index';
 
 export {
@@ -169,10 +215,12 @@ export {
   getGPULineSegmentizeParameterValues,
   getGPULineSmoothParameterValues,
   GPU_GREAT_CIRCLE_ARCS_DEFAULT_MAXIMUM_SEGMENTS,
+  GPU_GREAT_CIRCLE_ARCS_PARAMETER_SCHEMA,
   GPU_LINE_CHUNK_PARAMETER_LENGTH,
   GPU_LINE_NO_SOURCE,
   GPU_LINE_SEGMENTIZE_DEFAULT_MAXIMUM_PIECES,
   GPU_LINE_SEGMENTIZE_PARAMETER_LENGTH,
+  GPU_LINE_SEGMENTIZE_PARAMETER_SCHEMA,
   GPU_LINE_SMOOTH_MAXIMUM_ITERATIONS,
   GPU_LINE_SMOOTH_PARAMETER_LENGTH,
   GPUGreatCircleArcs,
@@ -228,6 +276,7 @@ export {
   GPU_NEIGHBOR_SEARCH_KERNEL,
   GPU_NEIGHBOR_SEARCH_MAXIMUM_K,
   GPU_NEIGHBOR_SEARCH_PARAMETER_LENGTH,
+  GPU_NEIGHBOR_SEARCH_PARAMETER_SCHEMA,
   GPU_NEIGHBOR_SEARCH_WEIGHT_KIND,
   GPUNeighborSearch
 } from './neighbor-search/index';
@@ -274,6 +323,7 @@ export type {
 } from './spatial-weights/index';
 
 export {
+  getGPUPermutationMetadata,
   getGPUPermutationParameterValues,
   GPU_GLOBAL_PERMUTATION_RESULT,
   GPU_LOCAL_PERMUTATION_MAXIMUM_NEIGHBORS,
@@ -340,21 +390,32 @@ export type {
 } from './region-statistics/index';
 
 export {
+  getGPUGammaPermutationAdapter,
   getGPUSpatialAutocorrelationParameterValues,
   GPU_HOT_SPOT_CRITICAL_Z_SCORES,
   GPU_HOT_SPOT_SIGNIFICANCE_LEVELS,
   GPU_LOCAL_MORAN_QUADRANT,
   GPU_SPATIAL_AUTOCORRELATION_PARAMETER_LENGTH,
+  GPU_SPATIAL_AUTOCORRELATION_PARAMETER_SCHEMA,
   GPU_SPATIAL_AUTOCORRELATION_STATISTICS_LENGTH,
+  GPU_LOCAL_GEARY_PERMUTATION_ADAPTER,
+  GPU_SPATIAL_PEARSON_PERMUTATION_ADAPTER,
+  GPUGammaStatistic,
   GPUHotSpotAnalysis,
-  GPULocalMoran
+  GPULocalGeary,
+  GPULocalMoran,
+  GPUSpatialPearson
 } from './spatial-autocorrelation/index';
 export type {
+  GPUGammaOperation,
+  GPUGammaStatisticProps,
   GPUHotSpotAnalysisProps,
+  GPULocalGearyProps,
   GPULocalMoranProps,
   GPULocalMoranQuadrantGating,
   GPUSpatialAutocorrelationFixedMoments,
-  GPUSpatialAutocorrelationParameters
+  GPUSpatialAutocorrelationParameters,
+  GPUSpatialPearsonProps
 } from './spatial-autocorrelation/index';
 
 export {
@@ -566,6 +627,7 @@ export type {
 export {
   getGPUTrajectoryMetricsParameterValues,
   GPU_TRAJECTORY_METRICS_PARAMETER_LENGTH,
+  GPU_TRAJECTORY_METRICS_PARAMETER_SCHEMA,
   GPUTrajectoryMetrics
 } from './trajectory-analysis/index';
 export type {
@@ -737,6 +799,7 @@ export type {GPULabelPointOutput, GPULabelPointProps} from './label-point/index'
 export {
   getGPULineDensityParameterValues,
   GPU_LINE_DENSITY_PARAMETER_LENGTH,
+  GPU_LINE_DENSITY_PARAMETER_SCHEMA,
   GPULineDensity,
   GPULineLengthPerPolygon
 } from './line-density/index';
@@ -965,15 +1028,41 @@ export {
   GPU_SEGMENT_RING_ASSEMBLY_FLAG_DANGLING,
   GPU_SEGMENT_RING_ASSEMBLY_FLAG_TOUCHING,
   GPU_SEGMENT_RING_ASSEMBLY_NONE,
-  GPUSegmentRingAssembly
+  GPUSegmentRingAssembly,
+  getSegmentPolygonizationDiagnostics
 } from './ring-assembly/index';
 
 export type {
   GPUSegmentRingAssemblyInteriorSide,
   GPUSegmentRingAssemblyOutput,
   GPUSegmentRingAssemblyProps,
-  GPUSegmentRingPolygonOutput
+  GPUSegmentRingPolygonOutput,
+  PolygonizationSegment,
+  SegmentPolygonizationClassification,
+  SegmentPolygonizationDiagnostics,
+  SegmentPolygonizationDiagnosticsInput,
+  SegmentPolygonizationRing
 } from './ring-assembly/index';
+
+export {
+  GPULineNoding,
+  GPUMakeValid,
+  GPUPolygonize,
+  GPU_POLYGONIZE_EDGE_CLASS,
+  GPU_TOPOLOGY_NONE
+} from './geometry-topology/index';
+
+export type {
+  GPUDirectedEdgePort,
+  GPULineNodingProps,
+  GPUMakeValidProps,
+  GPUNodedSegmentPort,
+  GPUPolygonizeDiagnosticsPort,
+  GPUPolygonizeOutput,
+  GPUPolygonizeProps,
+  GPUTopologyPrecisionPolicy,
+  GPUTopologyStatusPort
+} from './geometry-topology/index';
 
 export {
   GPULineSplit,
@@ -1024,6 +1113,13 @@ export type {
 } from './similar-locations/index';
 
 export {
+  GPUAZPRegions,
+  GPU_AZP_MAXIMUM_COLUMNS,
+  GPU_AZP_MAXIMUM_ITERATIONS,
+  GPU_AZP_STATUS,
+  GPUMaxPRegions,
+  GPU_MAX_P_MAXIMUM_COLUMNS,
+  GPU_MAX_P_STATUS,
   GPUSpatialWeightsMinimumSpanningTree,
   GPU_MINIMUM_SPANNING_TREE_MAXIMUM_COLUMNS,
   GPUSkaterRegions,
@@ -1034,14 +1130,31 @@ export {
   GPU_SKATER_PARAMETER_REGION_COUNT,
   GPURegionPartitionEvaluation,
   GPU_REGION_PARTITION_EVALUATION_LAYOUT,
-  GPU_REGION_PARTITION_EVALUATION_MAXIMUM_COLUMNS
+  GPU_REGION_PARTITION_EVALUATION_MAXIMUM_COLUMNS,
+  GPUWardRegions,
+  GPU_WARD_MAXIMUM_COLUMNS,
+  GPU_WARD_STATUS
 } from './spatial-regionalization/index';
 
 export type {
+  GPUAZPRegionsProps,
+  GPUMaxPRegionsOutput,
+  GPUMaxPRegionsProps,
   GPUSpatialWeightsMinimumSpanningTreeProps,
   GPUSkaterRegionsProps,
-  GPURegionPartitionEvaluationProps
+  GPURegionPartitionEvaluationProps,
+  GPUWardRegionsProps
 } from './spatial-regionalization/index';
+
+export {
+  GPULocationAllocation,
+  GPU_LOCATION_ALLOCATION_STATUS
+} from './location-allocation/index';
+export type {
+  GPULocationAllocationOperation,
+  GPULocationAllocationOutput,
+  GPULocationAllocationProps
+} from './location-allocation/index';
 
 export {
   GPULineMerge,
@@ -1130,6 +1243,7 @@ export type {
 export {
   GPUGeometryPredicates,
   GPU_GEOMETRY_PREDICATES_PARAMETER_LENGTH,
+  GPU_GEOMETRY_PREDICATES_PARAMETER_SCHEMA,
   getGPUGeometryPredicatesParameterValues
 } from './geometry-predicates/index';
 
@@ -1211,6 +1325,31 @@ export type {
   GPUPolygonTriangulationPolygons,
   GPUPolygonTriangulationProps
 } from './polygon-triangulation/index';
+
+export {
+  GPUDelaunayTessellation,
+  GPUVoronoiDiagram,
+  getDelaunayMaximumTriangleCount,
+  getVoronoiMaximumSegmentCount
+} from './delaunay-tessellation/index';
+export type {
+  GPUDelaunayTessellationOutput,
+  GPUDelaunayTessellationProps,
+  GPUVoronoiDiagramOutput,
+  GPUVoronoiDiagramProps
+} from './delaunay-tessellation/index';
+
+export {GPUPolygonOverlay} from './polygon-overlay/index';
+export type {
+  GPUPolygonOverlayBoundaryPort,
+  GPUPolygonOverlayCapacity,
+  GPUPolygonOverlayOperation,
+  GPUPolygonOverlayOutput,
+  GPUPolygonOverlayProps
+} from './polygon-overlay/index';
+
+export {GPUBufferSurface} from './polygon-buffer/index';
+export type {GPUBufferCapStyle, GPUBufferSurfaceProps} from './polygon-buffer/index';
 
 export {GPURandomPointsOnLine, RANDOM_POINTS_ON_LINE_PURPOSE} from './dot-density/index';
 

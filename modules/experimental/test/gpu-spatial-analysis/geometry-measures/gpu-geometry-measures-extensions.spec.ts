@@ -6,10 +6,7 @@ import type {Buffer, Device} from '@luma.gl/core';
 import {GPUCommandGraph} from '@luma.gl/gpgpu/gpu-core';
 import {getWebGPUTestDevice} from '@luma.gl/test-utils';
 import {expect, it} from 'vitest';
-import {
-  GPUGeometryMeasures,
-  type GPUGeometryMeasuresProps
-} from '../../../src/gpu-spatial-analysis/geometry-measures';
+import {GPUGeometryMeasures} from '../../../src/gpu-spatial-analysis/geometry-measures';
 import {importGraphBuffer} from '../../../src/utils/gpu-contributor-utils';
 import {
   createInputBuffer,
@@ -34,7 +31,10 @@ type Readback = {
 async function measure(
   device: Device,
   features: NestedFeatures,
-  options: Pick<GPUGeometryMeasuresProps, 'geometryType' | 'coordinateSystem'>,
+  options: {
+    geometryType: 'lines' | 'polygons' | 'points';
+    coordinateSystem: 'planar' | 'spherical' | 'wgs84' | 'geodesic';
+  },
   group?: {groupIds: number[]; groupCount: number}
 ): Promise<{features: Readback; groupCentroids?: number[]; groupVertexCounts?: number[]}> {
   const flat = createFlatGeometry(features);
@@ -59,6 +59,17 @@ async function measure(
     importGraphBuffer(graph, name, buffer, format, length);
   graph.add(
     new GPUGeometryMeasures({
+      spatialContext: {
+        coordinateSpace: options.coordinateSystem === 'planar' ? 'planar' : 'longitude-latitude',
+        metric:
+          options.coordinateSystem === 'planar'
+            ? 'native'
+            : options.coordinateSystem === 'spherical'
+              ? 'great-circle'
+              : 'ellipsoidal',
+        units: options.coordinateSystem === 'planar' ? 'native' : 'meters'
+      },
+      ellipsoidalEdgeModel: options.coordinateSystem === 'wgs84' ? 'coordinate-linear' : undefined,
       positions: importGraphBuffer(
         graph,
         'positions',
@@ -80,7 +91,7 @@ async function measure(
         'uint32',
         flat.featureRingOffsets.length
       ),
-      ...options,
+      geometryType: options.geometryType,
       output: {
         lengths: view('lengths', lengths, 'float32', count),
         ...(isPolygon

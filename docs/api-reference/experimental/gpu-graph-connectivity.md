@@ -190,10 +190,14 @@ has no label rows, score zero, validity zero, and convergence one if adjacency d
 
 The contributor encodes all bounded candidate evaluation, stable tie-broken winner selection, label
 updates, and final `GPUGraphModularity` scoring into the caller-owned GPU command graph. It does
-not submit work, read results back, or synchronize with the CPU. Worst-case work for `K` rounds is
-`O(K × (V + E + sum(degree²)))`, with separate `O(V + E)` initialization and final scoring and
-`O(V + E)` graph-owned packed scratch; linear per-round community occupancy and vacancy checks are
-included in that bound. High-degree hubs and large round budgets require explicit measurement.
+not submit work, read results back, or synchronize with the CPU. Each round normally aggregates a
+vertex's outgoing and incoming weights once per neighboring community in a private, half-full hash
+segment, then scores every unique candidate once. Expected work for `K` rounds is therefore
+`O(K × (V + E))`, with separate `O(V + E)` initialization and final scoring and `O(V + E)`
+graph-owned packed and aggregation scratch. Hash collisions are resolved by bounded linear probing;
+the theoretical collision worst case remains `O(K × (V + E + sum(degree²)))`. Devices that cannot
+bind the combined aggregation scratch automatically retain the same bounded rescan path and its
+worst-case complexity. High-degree hubs and large round budgets still require measurement.
 This is **single-level Louvain-style local moving**, not the complete multilevel
 Louvain algorithm, Leiden refinement, community coarsening, hierarchical aggregation, a global
 optimality guarantee, or a seventh Graphalytics workload.

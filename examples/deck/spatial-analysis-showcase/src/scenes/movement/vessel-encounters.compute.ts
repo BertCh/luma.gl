@@ -68,6 +68,7 @@ const SETTLE_MILLISECONDS = 250;
 type PairSnapshot = {
   count: number;
   overflow: boolean;
+  candidateOverflow: boolean;
   ids: Uint32Array;
   partners: Uint32Array;
   firstBuckets: Uint32Array;
@@ -137,6 +138,7 @@ export async function createVesselEncounters(
   );
   prepareGraph.add(
     new GPUTrajectoryMetrics({
+      spatialContext: {coordinateSpace: 'planar', metric: 'native', units: 'native'},
       id: 'metrics',
       positions: preparePositions,
       timestamps: prepareTimestamps,
@@ -191,6 +193,7 @@ export async function createVesselEncounters(
   const pairBucketCounts = resources.createBuffer('pair-bucket-counts', PAIR_CAPACITY * 4);
   const pairCount = resources.createBuffer('pair-count', 4);
   const pairOverflow = resources.createBuffer('pair-overflow', 4);
+  const pairCandidateOverflow = resources.createBuffer('pair-candidate-overflow', 4);
   const pairHausdorff = resources.createBuffer('pair-hausdorff', PAIR_CAPACITY * 4);
   const pairFrechet = resources.createBuffer('pair-frechet', PAIR_CAPACITY * 4);
   const pairStatus = resources.createBuffer('pair-status', PAIR_CAPACITY * 4);
@@ -317,6 +320,13 @@ export async function createVesselEncounters(
     bounds,
     hitCapacity: HIT_CAPACITY,
     pairs: {
+      candidateOverflow: importGraphBuffer(
+        encounterGraph,
+        'pair-candidate-overflow',
+        pairCandidateOverflow,
+        'uint32',
+        1
+      ),
       output: {
         ids: pairIdsView,
         count: pairCountView,
@@ -746,6 +756,7 @@ export async function createVesselEncounters(
     [
       {buffer: pairCount, size: 4},
       {buffer: pairOverflow, size: 4},
+      {buffer: pairCandidateOverflow, size: 4},
       {buffer: pairIds, size: PAIR_CAPACITY * 4},
       {buffer: pairPartners, size: PAIR_CAPACITY * 4},
       {buffer: pairFirstBuckets, size: PAIR_CAPACITY * 4},
@@ -758,11 +769,12 @@ export async function createVesselEncounters(
       if (destroyed) return;
       const words = new Uint32Array(bytes);
       const floats = new Float32Array(bytes);
-      const column = (index: number) => 2 + index * PAIR_CAPACITY;
+      const column = (index: number) => 3 + index * PAIR_CAPACITY;
       const count = Math.min(words[0], PAIR_CAPACITY);
       pairSnapshot = {
         count,
         overflow: words[1] !== 0,
+        candidateOverflow: words[2] !== 0,
         ids: words.slice(column(0), column(1)),
         partners: words.slice(column(1), column(2)),
         firstBuckets: words.slice(column(2), column(3)),
@@ -808,7 +820,9 @@ export async function createVesselEncounters(
     const {clockStepSeconds, alikeMeters} = ctx.options;
     ctx.setReadout(
       'pairs',
-      `${formatCount(snapshot.count)}${snapshot.overflow ? ' (capacity or scratch overflow)' : ''}`
+      `${formatCount(snapshot.count)}` +
+        `${snapshot.overflow ? ' (output capacity overflow)' : ''}` +
+        `${snapshot.candidateOverflow ? ' (candidate scratch overflow)' : ''}`
     );
     let alike = 0;
     let scored = 0;

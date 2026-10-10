@@ -306,7 +306,7 @@ it('GPUGreatCircleArcs reports overflow and clamps offsets', async () => {
       minimumSegments: 8
     })
   );
-  expect(actual.totalCount).toBe(27);
+  expect(actual.requiredCount).toBe(27);
   expect(actual.count).toBe(20);
   expect(actual.overflow).toBe(1);
   expect(actual.pathOffsets).toEqual([0, 9, 18, 20]);

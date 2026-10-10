@@ -600,6 +600,33 @@ export async function createRainfallInterpolation(
         : 'not fitted'
     );
     ctx.setReadout('sampleVariance', `${formatSignificant(bins.statistics[2])} ${unit}`);
+    ctx.setChart('variogramChart', {
+      kind: 'line',
+      title: 'Empirical and fitted semivariogram',
+      xLabel: 'Gauge separation (km)',
+      yLabel: `Semivariance (${unit})`,
+      series: [
+        {
+          label: o.robust ? 'Robust empirical' : 'Empirical',
+          x: bins.omni.distances.map(distance => distance / 1000),
+          y: lags,
+          points: true
+        },
+        {
+          label: `${o.variogramModel} fit`,
+          x: bins.omni.distances.map(distance => distance / 1000),
+          y: modelValues,
+          dashed: true
+        }
+      ],
+      guides: [{y: bins.statistics[2], label: 'sample variance'}],
+      markers:
+        fit && Number.isFinite(fit.range)
+          ? [{x: fit.range / 1000, label: `range ${formatSignificant(fit.range / 1000)} km`}]
+          : undefined,
+      description:
+        'GPU-binned semivariance by gauge separation, the fitted variogram model, and the sample-variance reference.'
+    });
     updateDirectionReadout();
     dirtyRaster = true;
     markChanged();
@@ -684,6 +711,7 @@ export async function createRainfallInterpolation(
     if (!surfaceRead || !ctx.options.holdOut) {
       for (const id of ['validationIdw', 'validationKriging', 'validationVerdict'])
         ctx.setReadout(id, ctx.options.holdOut ? '...' : 'turn on "Hold out 10% of gauges"');
+      ctx.setChart('validationChart', null);
       return;
     }
     const values = getValues();
@@ -711,6 +739,34 @@ export async function createRainfallInterpolation(
         : 'no held-out gauge on screen';
     ctx.setReadout('validationIdw', describe(scores.idw));
     ctx.setReadout('validationKriging', describe(scores.kriging));
+    if (scores.idw.n > 0 && scores.kriging.n > 0) {
+      const idwMetrics = {
+        rmse: Math.sqrt(scores.idw.sum / scores.idw.n),
+        mae: scores.idw.abs / scores.idw.n,
+        bias: scores.idw.bias / scores.idw.n
+      };
+      const krigingMetrics = {
+        rmse: Math.sqrt(scores.kriging.sum / scores.kriging.n),
+        mae: scores.kriging.abs / scores.kriging.n,
+        bias: scores.kriging.bias / scores.kriging.n
+      };
+      ctx.setChart('validationChart', {
+        kind: 'dumbbell',
+        title: 'Held-out prediction errors',
+        xLabel: unit,
+        aLabel: `IDW (n=${scores.idw.n})`,
+        bLabel: `Kriging (n=${scores.kriging.n})`,
+        rows: [
+          {label: 'RMSE', a: idwMetrics.rmse, b: krigingMetrics.rmse, highlight: true},
+          {label: 'MAE', a: idwMetrics.mae, b: krigingMetrics.mae},
+          {label: 'Bias', a: idwMetrics.bias, b: krigingMetrics.bias}
+        ],
+        description:
+          'IDW and kriging error metrics at held-out gauges inside the current raster extent; lower RMSE and MAE are better, while bias is best near zero.'
+      });
+    } else {
+      ctx.setChart('validationChart', null);
+    }
     if (scores.idw.n > 5 && scores.kriging.n > 5) {
       const idwRmse = Math.sqrt(scores.idw.sum / scores.idw.n);
       const krigingRmse = Math.sqrt(scores.kriging.sum / scores.kriging.n);

@@ -2,7 +2,6 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import {createTransientView} from '@luma.gl/gpgpu/gpu-core';
 import type {GPUCommandGraph, GraphDataView} from '@luma.gl/gpgpu/gpu-core';
 import {GPUCalendarBuckets} from '../../gpu-dataframe/calendar-buckets/index';
 import {GPUColorScale} from '../../gpu-dataframe/column-classification/index';
@@ -14,7 +13,13 @@ import {
   getWGSLFloatLiteral
 } from '../../utils/wgsl-kernel-nodes';
 import type {GPUSpatialWeights} from '../spatial-weights/index';
-import {assertRecipe, getOrCreateView, RecipeBuilder, type GPURecipeResult} from './recipe-utils';
+import {
+  assertRecipe,
+  getOrCreateView,
+  RecipeBuilder,
+  type GPURecipeOverrides,
+  type GPURecipeResult
+} from './recipe-utils';
 
 const ID = 'addSpaceTimeHotSpotsRecipe';
 
@@ -69,7 +74,30 @@ export type GPUSpaceTimeLattice = {
 };
 
 /** Properties for {@link addSpaceTimeHotSpotsRecipe}. */
-export type GPUSpaceTimeHotSpotsRecipeProps = {
+export type GPUSpaceTimeHotSpotsRecipeProps = GPURecipeOverrides<
+  Record<never, never>,
+  {
+    cube?: GraphDataView<'uint32'>;
+    giZScores?: GraphDataView<'float32'>;
+    trendZ?: GraphDataView<'float32'>;
+    trendP?: GraphDataView<'float32'>;
+    trendS?: GraphDataView<'sint32'>;
+    category?: GraphDataView<'uint32'>;
+    hotSliceCount?: GraphDataView<'uint32'>;
+    coldSliceCount?: GraphDataView<'uint32'>;
+    colors?: GraphDataView<'uint32'>;
+    groupOverflow?: GraphDataView<'uint32'>;
+  },
+  {
+    calendarField?: GraphDataView<'sint32'> | GraphDataView<'uint32'>;
+    keys?: GraphDataView<'uint32'>;
+    keyMask?: GraphDataView<'uint32'>;
+    groupKeys?: GraphDataView<'uint32'>;
+    groupCounts?: GraphDataView<'uint32'>;
+    groupCount?: GraphDataView<'uint32'>;
+    colorDomain?: GraphDataView<'float32'>;
+  }
+> & {
   /** Prefix for every node and transient ID. Defaults to `'space-time-hot-spots'`. */
   id?: string;
   /** Epoch-millisecond event times as little-endian Int64 words. */
@@ -88,22 +116,6 @@ export type GPUSpaceTimeHotSpotsRecipeProps = {
   cellMask?: GraphDataView<'uint32'>;
   /** `getGPUEmergingHotSpotParameterValues` view. */
   parameters: GraphDataView<'float32'>;
-  /** Caller-owned dense cube of event counts, `cellCount * sliceCount` rows (`cell * sliceCount + slice`). */
-  cube?: GraphDataView<'uint32'>;
-  /** Caller-owned per-bin Gi* z-scores in cube layout. */
-  giZScores?: GraphDataView<'float32'>;
-  /** Caller-owned per-cell Mann-Kendall z. */
-  trendZ?: GraphDataView<'float32'>;
-  /** Caller-owned per-cell Mann-Kendall p-value. */
-  trendP?: GraphDataView<'float32'>;
-  /** Caller-owned per-cell Mann-Kendall S. */
-  trendS?: GraphDataView<'sint32'>;
-  /** Caller-owned per-cell category (`GPU_EMERGING_HOT_SPOT_CATEGORIES`). */
-  category?: GraphDataView<'uint32'>;
-  /** Caller-owned per-cell significant hot slice count. */
-  hotSliceCount?: GraphDataView<'uint32'>;
-  /** Caller-owned per-cell significant cold slice count. */
-  coldSliceCount?: GraphDataView<'uint32'>;
   /** Category colors; skipped when absent. */
   color?: {
     /** Packed rgba8 palette indexed by category code, at least 17 entries. */
@@ -112,8 +124,6 @@ export type GPUSpaceTimeHotSpotsRecipeProps = {
     parameters: GraphDataView<'float32'>;
     /** Compile-time palette bound. Defaults to the 17 categories. */
     maximumPaletteCount?: number;
-    /** Caller-owned rgba8 color per cell. */
-    colors?: GraphDataView<'uint32'>;
   };
 };
 
@@ -153,6 +163,8 @@ export function addSpaceTimeHotSpotsRecipe<Parameters>(
 ): GPUSpaceTimeHotSpotsRecipeResult {
   const id = props.id ?? 'space-time-hot-spots';
   const builder = new RecipeBuilder(graph);
+  const outputOverrides = props.outputs ?? {};
+  const scratch = props.scratch ?? {};
   const {slices, cells} = props;
   const eventCount = props.timestamps.length;
   const sliceCount = slices.count;
@@ -169,8 +181,20 @@ export function addSpaceTimeHotSpotsRecipe<Parameters>(
   const calendarOutput: Record<string, GraphDataView<'sint32'> | GraphDataView<'uint32'>> = {};
   const fieldIsSigned = slices.field === 'year';
   const calendarView = fieldIsSigned
-    ? createTransientView(graph, `${id}-calendar-field`, 'sint32', eventCount)
-    : createTransientView(graph, `${id}-calendar-field`, 'uint32', eventCount);
+    ? getOrCreateView(
+        graph,
+        `${id}-calendar-field`,
+        'sint32',
+        eventCount,
+        scratch.calendarField?.format === 'sint32' ? scratch.calendarField : undefined
+      )
+    : getOrCreateView(
+        graph,
+        `${id}-calendar-field`,
+        'uint32',
+        eventCount,
+        scratch.calendarField?.format === 'uint32' ? scratch.calendarField : undefined
+      );
   calendarOutput[slices.field] = calendarView;
   builder.add(
     new GPUCalendarBuckets({
@@ -184,8 +208,8 @@ export function addSpaceTimeHotSpotsRecipe<Parameters>(
   );
 
   // 2. Adapter: (calendar field, cell) -> key and validity.
-  const keys = createTransientView(graph, `${id}-keys`, 'uint32', eventCount);
-  const keyMask = createTransientView(graph, `${id}-key-mask`, 'uint32', eventCount);
+  const keys = getOrCreateView(graph, `${id}-keys`, 'uint32', eventCount, scratch.keys);
+  const keyMask = getOrCreateView(graph, `${id}-key-mask`, 'uint32', eventCount, scratch.keyMask);
   const cellBindings =
     cells.kind === 'ids'
       ? [{name: 'cellIds', view: cells.cellIds, type: 'u32', access: 'read'} as const]
@@ -227,10 +251,28 @@ export function addSpaceTimeHotSpotsRecipe<Parameters>(
   );
 
   // 3. Sparse counts per (cell, slice).
-  const groupKeys = createTransientView(graph, `${id}-group-keys`, 'uint32', cubeLength);
-  const groupCounts = createTransientView(graph, `${id}-group-counts`, 'uint32', cubeLength);
-  const groupCount = createTransientView(graph, `${id}-group-count`, 'uint32', 1);
-  const groupOverflow = createTransientView(graph, `${id}-group-overflow`, 'uint32', 1);
+  const groupKeys = getOrCreateView(
+    graph,
+    `${id}-group-keys`,
+    'uint32',
+    cubeLength,
+    scratch.groupKeys
+  );
+  const groupCounts = getOrCreateView(
+    graph,
+    `${id}-group-counts`,
+    'uint32',
+    cubeLength,
+    scratch.groupCounts
+  );
+  const groupCount = getOrCreateView(graph, `${id}-group-count`, 'uint32', 1, scratch.groupCount);
+  const groupOverflow = getOrCreateView(
+    graph,
+    `${id}-group-overflow`,
+    'uint32',
+    1,
+    outputOverrides.groupOverflow
+  );
   builder.add(
     new GPUGroupStatistics({
       id: `${id}-counts`,
@@ -242,7 +284,7 @@ export function addSpaceTimeHotSpotsRecipe<Parameters>(
   );
 
   // 4. Dense cube.
-  const cube = getOrCreateView(graph, `${id}-cube`, 'uint32', cubeLength, props.cube);
+  const cube = getOrCreateView(graph, `${id}-cube`, 'uint32', cubeLength, outputOverrides.cube);
   graph.add(
     createFillNode<Parameters>(graph, {
       id: `${id}-cube-clear`,
@@ -275,24 +317,36 @@ export function addSpaceTimeHotSpotsRecipe<Parameters>(
 
   // 5. Emerging hot spots.
   const outputs = {
-    giZScores: getOrCreateView(graph, `${id}-gi-z`, 'float32', cubeLength, props.giZScores),
-    trendZ: getOrCreateView(graph, `${id}-trend-z`, 'float32', cellCount, props.trendZ),
-    trendP: getOrCreateView(graph, `${id}-trend-p`, 'float32', cellCount, props.trendP),
-    trendS: getOrCreateView(graph, `${id}-trend-s`, 'sint32', cellCount, props.trendS),
-    category: getOrCreateView(graph, `${id}-category`, 'uint32', cellCount, props.category),
+    giZScores: getOrCreateView(
+      graph,
+      `${id}-gi-z`,
+      'float32',
+      cubeLength,
+      outputOverrides.giZScores
+    ),
+    trendZ: getOrCreateView(graph, `${id}-trend-z`, 'float32', cellCount, outputOverrides.trendZ),
+    trendP: getOrCreateView(graph, `${id}-trend-p`, 'float32', cellCount, outputOverrides.trendP),
+    trendS: getOrCreateView(graph, `${id}-trend-s`, 'sint32', cellCount, outputOverrides.trendS),
+    category: getOrCreateView(
+      graph,
+      `${id}-category`,
+      'uint32',
+      cellCount,
+      outputOverrides.category
+    ),
     hotSliceCount: getOrCreateView(
       graph,
       `${id}-hot-slices`,
       'uint32',
       cellCount,
-      props.hotSliceCount
+      outputOverrides.hotSliceCount
     ),
     coldSliceCount: getOrCreateView(
       graph,
       `${id}-cold-slices`,
       'uint32',
       cellCount,
-      props.coldSliceCount
+      outputOverrides.coldSliceCount
     )
   };
   builder.add(
@@ -318,7 +372,10 @@ export function addSpaceTimeHotSpotsRecipe<Parameters>(
     cellCount,
     sliceCount,
     cube,
-    ...outputs
+    ...outputs,
+    outputs: {cube, ...outputs},
+    intermediates: {calendarField: calendarView, keys, keyMask, groupKeys, groupCounts, groupCount},
+    status: {stages: [{stage: 'cube-counts', status: {count: groupCount, overflow: groupOverflow}}]}
   };
 
   // 6. Category colors (ordinal scale).
@@ -326,12 +383,18 @@ export function addSpaceTimeHotSpotsRecipe<Parameters>(
     const {color} = props;
     const maximumPaletteCount =
       color.maximumPaletteCount ?? Object.keys(GPU_EMERGING_HOT_SPOT_CATEGORIES).length;
-    const colors = getOrCreateView(graph, `${id}-colors`, 'uint32', cellCount, color.colors);
+    const colors = getOrCreateView(
+      graph,
+      `${id}-colors`,
+      'uint32',
+      cellCount,
+      outputOverrides.colors
+    );
     builder.add(
       new GPUColorScale({
         id: `${id}-color-scale`,
         values: outputs.category,
-        domain: createTransientView(graph, `${id}-color-domain`, 'float32', 2),
+        domain: getOrCreateView(graph, `${id}-color-domain`, 'float32', 2, scratch.colorDomain),
         palette: color.palette,
         parameters: color.parameters,
         maximumDomainCount: 2,
@@ -340,6 +403,7 @@ export function addSpaceTimeHotSpotsRecipe<Parameters>(
       })
     );
     result.colors = colors;
+    result.outputs['colors'] = colors;
   }
   return result;
 }

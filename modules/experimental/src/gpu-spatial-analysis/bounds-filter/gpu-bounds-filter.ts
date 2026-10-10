@@ -152,7 +152,7 @@ export class GPUBoundsFilter implements GPUCommandNodeProducer {
         props.output.ids,
         props.output.count,
         props.output.overflow,
-        props.output.totalCount,
+        props.output.requiredCount,
         props.mask
       ],
       [props.bounds, props.box]
@@ -172,7 +172,7 @@ export class GPUBoundsFilter implements GPUCommandNodeProducer {
       output.ids,
       output.count,
       output.overflow,
-      output.totalCount
+      output.requiredCount
     ]);
     const rows = props.bounds.length;
     const mask = props.mask ?? createTransientView(graph, `${id}-mask`, 'uint32', rows);
@@ -222,7 +222,7 @@ fn isFiniteBits(value: f32) -> bool {
       createPublishNode<Parameters>(graph, {
         id: `${id}-publish`,
         operation: OPERATION,
-        totalCount: total,
+        requiredCount: total,
         compactIds: direct ? undefined : compactIds,
         output
       })

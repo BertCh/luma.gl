@@ -116,7 +116,7 @@ function importTable(graph: GPUCommandGraph, prefix: string, table: TableBuffers
     maximums: importGraphBuffer(graph, `${prefix}-maximums`, table.maximums, 'float32', capacity),
     count: importGraphBuffer(graph, `${prefix}-count`, table.count, 'uint32', 1),
     overflow: importGraphBuffer(graph, `${prefix}-overflow`, table.overflow, 'uint32', 1),
-    totalCount: importGraphBuffer(graph, `${prefix}-total`, table.total, 'uint32', 1)
+    requiredCount: importGraphBuffer(graph, `${prefix}-total`, table.total, 'uint32', 1)
   };
 }
 

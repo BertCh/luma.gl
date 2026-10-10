@@ -2,8 +2,46 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {defineGPUSpatialParameterSchema, packGPUSpatialParameterValues} from '../contracts/index';
+
 /** Number of float32 elements in a `GPULineSegmentize` or `GPUGreatCircleArcs` parameter buffer. */
 export const GPU_LINE_SEGMENTIZE_PARAMETER_LENGTH = 4;
+
+/** Declarative layout of `GPULineSegmentize` parameters. */
+export const GPU_LINE_SEGMENTIZE_PARAMETER_SCHEMA = defineGPUSpatialParameterSchema({
+  id: 'line-segmentize',
+  format: 'float32',
+  wordLength: GPU_LINE_SEGMENTIZE_PARAMETER_LENGTH,
+  fields: [
+    {
+      name: 'maximumSegmentLength',
+      format: 'float32',
+      wordOffset: 0,
+      defaultValue: 0,
+      minimum: 0,
+      units: 'spatial-context-units',
+      dynamic: true
+    }
+  ]
+});
+
+/** Declarative layout of `GPUGreatCircleArcs` parameters. */
+export const GPU_GREAT_CIRCLE_ARCS_PARAMETER_SCHEMA = defineGPUSpatialParameterSchema({
+  id: 'great-circle-arcs',
+  format: 'float32',
+  wordLength: GPU_LINE_SEGMENTIZE_PARAMETER_LENGTH,
+  fields: [
+    ...GPU_LINE_SEGMENTIZE_PARAMETER_SCHEMA.fields,
+    {
+      name: 'minimumSegments',
+      format: 'float32' as const,
+      wordOffset: 1,
+      defaultValue: 1,
+      minimum: 1,
+      dynamic: true
+    }
+  ]
+});
 
 /** CPU description of the per-frame parameters of `GPULineSegmentize`. */
 export type GPULineSegmentizeParameters = {
@@ -58,7 +96,11 @@ export function getGPULineSegmentizeParameterValues(
 ): Float32Array {
   const name = 'Line segmentize';
   getTarget(target, name);
-  target.set([getMaximumSegmentLength(parameters.maximumSegmentLength, name), 0, 0, 0]);
+  target.set(
+    packGPUSpatialParameterValues(GPU_LINE_SEGMENTIZE_PARAMETER_SCHEMA, {
+      maximumSegmentLength: getMaximumSegmentLength(parameters.maximumSegmentLength, name)
+    })
+  );
   return target;
 }
 
@@ -81,11 +123,11 @@ export function getGPUGreatCircleArcsParameterValues(
   if (!Number.isInteger(minimumSegments) || minimumSegments < 1) {
     throw new Error(`${name} minimumSegments must be a positive integer`);
   }
-  target.set([
-    getMaximumSegmentLength(parameters.maximumSegmentLength, name),
-    minimumSegments,
-    0,
-    0
-  ]);
+  target.set(
+    packGPUSpatialParameterValues(GPU_GREAT_CIRCLE_ARCS_PARAMETER_SCHEMA, {
+      maximumSegmentLength: getMaximumSegmentLength(parameters.maximumSegmentLength, name),
+      minimumSegments
+    })
+  );
   return target;
 }

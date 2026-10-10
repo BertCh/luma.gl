@@ -26,7 +26,7 @@ Key options:
 - **Weights and mask.** A weight buffer (trips, fares, jobs by income) and a per-row mask (weekday or weekend) are rewritten without a rebuild.
 - **`excludeSelfFlows`.** Drops rows whose two ends fall in one zone. Compile-time.
 - **`sumOrder`.** `sorted` (default) accumulates in a fixed tree: bitwise identical on every run and device. `atomic` skips the sorts and only wins when nearly every row has its own pair; its rounding depends on scheduling.
-- **Top-K and overflow.** `totalCount` larger than K means the list is a truncation but every aggregate is exact. `pairOverflow` means the hash table filled and aggregates are incomplete.
+- **Top-K and overflow.** `requiredCount` larger than K means the list is a truncation but every aggregate is exact. `pairOverflow` means the hash table filled and aggregates are incomplete.
 
 Pitfall: zone totals count every accepted record, not every weight unit, so colour zones by the weight totals (`zoneOutWeights`, `zoneInWeights`) when rows are not single trips.
 

@@ -19,6 +19,7 @@ import {
   validateGraphViewsBelongToGraph
 } from '../../utils/gpu-contributor-utils';
 import {createWGSLKernelNode, type WGSLKernelBinding} from '../../utils/wgsl-kernel-nodes';
+import {validateGPUCompactPairPort} from '../contracts/index';
 import type {GPUSpatialJoinPairs} from '../spatial-join/spatial-join-types';
 
 const OPERATION = 'GPUPairGather';
@@ -163,6 +164,7 @@ export class GPUPairGather implements GPUCommandNodeProducer {
     let slotCount: number;
     if (props.pairs) {
       const {pairs} = props;
+      validateGPUCompactPairPort(id, pairs);
       validatePackedUint32View(pairs.leftIds, `${id} pairs.leftIds`);
       validatePackedUint32View(pairs.rightIds, `${id} pairs.rightIds`);
       validatePackedUint32View(pairs.count, `${id} pairs.count`);

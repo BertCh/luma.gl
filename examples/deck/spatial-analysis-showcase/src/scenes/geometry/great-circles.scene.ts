@@ -166,7 +166,9 @@ export default defineScene<GreatCirclesOptions>({
     {
       id: 'network',
       title: "Where do the world's airline routes go?",
-      headline: 'A few hubs organise many routes',
+      headline: 'Routes concentrate at high-degree hubs',
+      textAlternative:
+        'Loaded airport pairs are drawn as great-circle arcs in five haul-length classes, while airport symbol area encodes loaded degree; the frozen OpenFlights community snapshot is a network sample, not a current flight schedule.',
       body: `\`GPUGreatCircleArcs\` generates one shortest-path polyline per loaded OpenFlights pair. The five haul classes and low-alpha accumulation reveal the network without treating the frozen community snapshot as a live schedule. Airport symbols use the square root of their loaded degree so hubs remain legible.`,
       camera: {longitude: 10, latitude: 28, zoom: 1.35, transitionMs: 1000},
       options: {arcColor: 'distance', showRhumbComparison: false},
@@ -177,6 +179,8 @@ export default defineScene<GreatCirclesOptions>({
       id: 'rhumb',
       title: 'Straight on Mercator is not shortest',
       headline: 'Mercator straightness is not shortest',
+      textAlternative:
+        'One long airport pair compares a teal great-circle path with a dashed orange constant-heading rhumb line, with both lengths and headings reported; their projected shapes reflect Mercator geometry rather than route changes.',
       body: `The selected long archive pair is drawn twice: teal follows the great circle and dashed orange holds a constant rhumb heading. Their lengths, excess and headings are read from the same endpoints. The comparison is projected in Mercator; the graticule explains its bend, not a change of route.`,
       camera: {longitude: 10, latitude: 28, zoom: 1.35, transitionMs: 1000},
       options: {showArcs: false, showRing: false, showRhumbComparison: true},
@@ -186,11 +190,13 @@ export default defineScene<GreatCirclesOptions>({
     {
       id: 'segments',
       title: 'Slerp vertices reveal curved paths',
-      headline: 'More vertices reveal the projected curve',
+      headline: 'Projected curves require sufficient vertices',
+      textAlternative:
+        'Great-circle routes are coloured by haul class and tessellated with at least four segments, with total arc vertices reported; too few segments render projected routes as straight chords, while shorter maximum segment lengths increase output size.',
       body: `A great circle is only a straight line in 3D. Projected to longitude and latitude it bends, and the bend needs vertices. **Minimum segments per arc** sets how many each arc gets; with 1 every arc is a straight chord on this map, which is plainly wrong for flights from Chicago to Asia over the pole.
 
 Set it to 1, then 6, then 24 and watch the arcs curve. **Maximum segment length** adds more segments to long arcs only, so short routes stay cheap. Both are parameter writes: the vertex count in the readout changes without a recompile.`,
-      options: {arcMinimumSegments: 4, showRhumbComparison: false},
+      options: {showArcs: true, arcMinimumSegments: 4, showRhumbComparison: false},
       controls: ['arcMinimumSegments', 'arcMaximumLength'],
       readouts: ['worldArcVertices'],
       highlight: {readout: 'worldArcVertices'}
@@ -199,6 +205,8 @@ Set it to 1, then 6, then 24 and watch the arcs curve. **Maximum segment length*
       id: 'distance-bearing',
       title: 'Distance and bearing share one hub',
       headline: 'Distance and direction share an Earth model',
+      textAlternative:
+        'Airports are coloured by geodesic distance from Chicago O’Hare, with the farthest and mean distances reported; switching to initial-bearing colour changes the metric, and neither encoding represents straight-line distance on the projected map.',
       body: `\`GPUGeodesicPairs\` computes the **geodesic distance and initial bearing** from one origin to many targets: here from a hub to every airport. The airports are coloured by distance, from the hub outward: nearby airports are dark and the antipodal side of the globe glows.
 
 Choose a different **Hub** below: the origin column is rewritten and the distances recomputed in one pass. The readouts report the farthest airport and the mean distance. Set **Airports coloured by** to *Initial bearing* to see which compass direction each airport lies in from the hub: the great-circle bearing, not the straight line on the map.`,
@@ -216,6 +224,8 @@ Choose a different **Hub** below: the origin column is rewritten and the distanc
       id: 'earth-model',
       title: 'Sphere or ellipsoid?',
       headline: 'Sphere and ellipsoid differ by direction',
+      textAlternative:
+        'Airport distances from the selected hub are coloured and summarized using the spherical Earth model for comparison with WGS84 ellipsoidal results; near-antipodal Vincenty failures fall back to the sphere and are flagged as unconverged.',
       body: `The Earth is flattened: its radius is 21 km smaller at the poles than at the equator. \`GPUGeodesicPairs\` can measure on a **sphere** (haversine) or on the **WGS84 ellipsoid** (Vincenty's iteration, matched to PostGIS \`ST_Distance\` on a geography). Between airports the two differ by up to about half a percent, tens of kilometres on a long route.
 
 Switch **Earth model** below: the farthest distance changes (compile-time, one graph per model). The ellipsoid is the reference; the sphere is faster and good enough for many maps. Near-antipodal pairs, where Vincenty may not converge, fall back to the sphere: the \`converged\` output flags those.`,
@@ -228,6 +238,8 @@ Switch **Earth model** below: the farthest distance changes (compile-time, one g
       id: 'range-ring',
       title: 'Everything within 5,000 km',
       headline: 'A geodesic ring can enclose a pole',
+      textAlternative:
+        'An orange WGS84 geodesic ring joins destinations exactly 5,000 kilometres from Amsterdam over haul-coloured airport arcs, with airports inside counted; its noncircular projected shape and possible pole enclosure are consequences of map projection.',
       body: `\`GPUGeodesicDestination\` answers the reverse question: starting from a point, a bearing and a distance, where do you end up? One destination per degree of bearing traces a **geodesic range ring**: the set of points exactly 5,000 km from the hub. On this map it is far from a circle, because distance on the globe is not distance on the page.
 
 Slide **Range ring distance** below: the ring grows with no recompile, because the distances column is just rewritten. The readout counts the airports inside the ring: compare how many airports fall inside it from Amsterdam and from Sydney with **Hub**.`,
@@ -337,15 +349,15 @@ arcParameters.write(getGPUGreatCircleArcsParameterValues({
 }));
 
 // Distance and bearing from the hub to every airport
-graph.add(new GPUGeodesicPairs({
-  origins: hubColumn, targets: airports, model: '${state.geodesicModel}',
-  output: {distances, initialBearings, converged}
+graph.add(new GPUGeodesicPairs({spatialContext: {coordinateSpace: 'longitude-latitude', metric: '${state.geodesicModel}' === 'wgs84' ? 'ellipsoidal' : '${state.geodesicModel}' === 'rhumb' ? 'rhumb' : 'great-circle', units: 'meters'},
+  origins: hubColumn, targets: airports,
+  output: {distances, initialBearings${state.geodesicModel === 'wgs84' ? ', converged' : ''}}
 }));
 
 // The range ring: 361 bearings at one distance
-graph.add(new GPUGeodesicDestination({
+graph.add(new GPUGeodesicDestination({spatialContext: {coordinateSpace: 'longitude-latitude', metric: '${state.geodesicModel}' === 'wgs84' ? 'ellipsoidal' : '${state.geodesicModel}' === 'rhumb' ? 'rhumb' : 'great-circle', units: 'meters'},
   origins: hubColumn361, bearings: degrees, distances: ringMetres,   // ${state.ringDistance * 1000} m
-  model: '${state.geodesicModel}', output: {destinations}
+   output: {destinations}
 }));`,
 
   create: async ctx => (await import('./great-circles.compute')).createGreatCircles(ctx)

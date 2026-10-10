@@ -81,6 +81,7 @@ async function runEncounters(
     times: output(pairCapacity),
     count: output(1),
     overflow: output(1),
+    candidateOverflow: output(1),
     total: output(1)
   };
   graph.add(
@@ -110,11 +111,18 @@ async function runEncounters(
         bucketCount
       ),
       pairs: {
+        candidateOverflow: importGraphBuffer(
+          graph,
+          'o-candidate-overflow',
+          out.candidateOverflow,
+          'uint32',
+          1
+        ),
         output: {
           ids: importGraphBuffer(graph, 'o-ids', out.ids, 'uint32', pairCapacity),
           count: importGraphBuffer(graph, 'o-count', out.count, 'uint32', 1),
           overflow: importGraphBuffer(graph, 'o-overflow', out.overflow, 'uint32', 1),
-          totalCount: importGraphBuffer(graph, 'o-total', out.total, 'uint32', 1)
+          requiredCount: importGraphBuffer(graph, 'o-total', out.total, 'uint32', 1)
         },
         partners: importGraphBuffer(graph, 'o-partners', out.partners, 'uint32', pairCapacity),
         firstBuckets: importGraphBuffer(graph, 'o-first', out.first, 'uint32', pairCapacity),
@@ -134,11 +142,13 @@ async function runEncounters(
   submitGraph(device, compiled, undefined);
   const [count] = await readUint32(out.count, 1);
   const [overflow] = await readUint32(out.overflow, 1);
-  const [totalCount] = await readUint32(out.total, 1);
+  const [candidateOverflow] = await readUint32(out.candidateOverflow, 1);
+  const [requiredCount] = await readUint32(out.total, 1);
   const result = {
     count,
     overflow,
-    totalCount,
+    candidateOverflow,
+    requiredCount,
     ids: await readUint32(out.ids, pairCapacity),
     partners: await readUint32(out.partners, pairCapacity),
     first: await readUint32(out.first, pairCapacity),
@@ -190,7 +200,7 @@ it('GPUTrajectoryEncounters matches the all-pairs oracle', async () => {
     });
     expect(actual.overflow).toBe(0);
     expect(actual.count).toBe(expected.length);
-    expect(actual.totalCount).toBe(expected.length);
+    expect(actual.requiredCount).toBe(expected.length);
     for (const [index, pair] of expected.entries()) {
       const label = `d=${distance} pair ${index} (${pair.track}, ${pair.partner})`;
       expect([actual.ids[index], actual.partners[index]], label).toEqual([
@@ -234,8 +244,9 @@ it('GPUTrajectoryEncounters clamps the distance to the cell size and flags overf
     pairCapacity: 8
   });
   expect(small.count).toBe(8);
-  expect(small.totalCount).toBe(expected.length);
+  expect(small.requiredCount).toBe(expected.length);
   expect(small.overflow).toBe(1);
+  expect(small.candidateOverflow).toBe(0);
   // Too-small hit scratch.
   const starved = await runEncounters(device, samples, trackCount, bucketCount, {
     distance: 20,
@@ -243,7 +254,8 @@ it('GPUTrajectoryEncounters clamps the distance to the cell size and flags overf
     hitCapacity: 8,
     pairCapacity: 1024
   });
-  expect(starved.overflow).toBe(1);
+  expect(starved.overflow).toBe(0);
+  expect(starved.candidateOverflow).toBe(1);
   device.destroy?.();
 });
 

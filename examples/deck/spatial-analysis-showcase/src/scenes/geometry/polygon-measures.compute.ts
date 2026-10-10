@@ -483,11 +483,12 @@ fn toLngLat(p: vec2<f32>) -> vec2<f32> {
       };
       graph.add(
         new GPUGeometryMeasures({
+          spatialContext: {coordinateSpace: 'planar', metric: 'native', units: 'native'},
           id: 'measures-planar',
           positions: planarView,
           ringOffsets,
           ...common,
-          coordinateSystem: 'planar',
+
           output: {
             areas: areaPlanar,
             lengths: view('length-planar', columns.lengthPlanar),
@@ -497,11 +498,16 @@ fn toLngLat(p: vec2<f32>) -> vec2<f32> {
       );
       graph.add(
         new GPUGeometryMeasures({
+          spatialContext: {
+            coordinateSpace: 'longitude-latitude',
+            metric: 'great-circle',
+            units: 'meters'
+          },
           id: 'measures-sphere',
           positions: lngLat,
           ringOffsets,
           ...common,
-          coordinateSystem: 'spherical',
+
           output: {
             areas: view('area-sphere', columns.areaSphere),
             lengths: view('length-sphere', columns.lengthSphere)
@@ -521,11 +527,17 @@ fn toLngLat(p: vec2<f32>) -> vec2<f32> {
         : {};
       graph.add(
         new GPUGeometryMeasures({
+          spatialContext: {
+            coordinateSpace: 'longitude-latitude',
+            metric: 'ellipsoidal',
+            units: 'meters'
+          },
+          ellipsoidalEdgeModel: 'coordinate-linear',
           id: 'measures-wgs84',
           positions: lngLat,
           ringOffsets,
           ...common,
-          coordinateSystem: 'wgs84',
+
           output: {
             areas: areaWgs84,
             lengths: view('length-wgs84', columns.lengthWgs84),

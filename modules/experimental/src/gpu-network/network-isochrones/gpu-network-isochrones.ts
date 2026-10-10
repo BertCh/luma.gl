@@ -589,7 +589,7 @@ export class GPUNetworkIsochrones implements GPUCommandNodeProducer {
             triangleBands: raster.output.triangleBands,
             count: raster.output.count,
             overflow: raster.output.overflow,
-            totalCount: raster.output.totalCount,
+            requiredCount: raster.output.requiredCount,
             vertexCount: raster.output.vertexCount,
             edges: raster.output.edges,
             edgeBands: raster.output.edgeBands,
@@ -725,5 +725,6 @@ function getRingOutputViews(output: GPUSegmentRingAssemblyOutput | undefined): G
     return [];
   }
   const {polygons, ...views} = output;
-  return [...Object.values(views), ...(polygons ? Object.values(polygons) : [])];
+  const {kind: _kind, ...polygonViews} = polygons ?? {};
+  return [...Object.values(views), ...Object.values(polygonViews)];
 }

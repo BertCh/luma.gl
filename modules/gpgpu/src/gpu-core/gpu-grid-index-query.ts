@@ -2,12 +2,20 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import {type GPUCommandNode} from './gpu-command-node';
-import {GPUCommandGraph, type GraphDataView, type GraphVectorView} from './gpu-command-graph';
+import {type Binding, Buffer, type Device} from '@luma.gl/core';
+import {Kernel} from '@luma.gl/engine';
+import {createGPUComputeCommandNode, type GPUCommandNode} from './gpu-command-node';
+import {
+  GPUCommandGraph,
+  type GraphBufferHandle,
+  type GraphDataView,
+  type GraphVectorView
+} from './gpu-command-graph';
 import type {GPUGridIndexBounds, GPUGridIndexSize} from './gpu-grid-index';
 import {
   doGraphDataViewsOverlap,
   createTransientView,
+  getViewBinding,
   getViewElementOffset,
   validatePackedUint32View,
   validatePackedView
@@ -22,6 +30,9 @@ import {
   isOrderedFiniteBounds
 } from './gpu-grid-index-internals';
 import {GPUScatter} from './gpu-scatter';
+
+const GRID_QUERY_WORKGROUP_SIZE = 256;
+const GRID_QUERY_STATE_LENGTH = 12;
 
 /** Storage and domain contract consumed by {@link GPUGridIndexQuery}. */
 export type GPUGridIndexView = {
@@ -174,13 +185,15 @@ fn main(@builtin(workgroup_id) workgroupId: vec3u, @builtin(local_invocation_ind
         })
       );
     }
-    const boundsSource = getGPUGridIndexBoundsSource(
-      this.index.bounds,
-      this.index.boundsBuffer,
-      this.dimension,
-      4
+    const queryState = createTransientView(
+      graph,
+      `${this.id}-query-state`,
+      'uint32',
+      GRID_QUERY_STATE_LENGTH,
+      Buffer.STORAGE | Buffer.INDIRECT
     );
-    const outputBinding = this.index.boundsBuffer ? 5 : 4;
+    nodes.push(...addQueryPreparationPass(graph, this, queryState, maximum));
+
     const cellCount = this.index.cellOffsets.length - 1;
     const cells = alignGraphVectorViews(graph, [
       getGraphDataRange(graph, this.index.cellOffsets, 0, cellCount),
@@ -197,109 +210,136 @@ fn main(@builtin(workgroup_id) workgroupId: vec3u, @builtin(local_invocation_ind
         'uint32',
         objectIds.length
       );
+      const selectedSlots = createTransientView(
+        graph,
+        `${this.id}-selected-slots-${objectChunkIndex}`,
+        'uint32',
+        objectIds.length
+      );
+      const selectedState = createTransientView(
+        graph,
+        `${this.id}-selected-state-${objectChunkIndex}`,
+        'uint32',
+        4,
+        Buffer.STORAGE | Buffer.INDIRECT
+      );
       const dispatch = getGPUGridIndexDispatchLayout(objectIds.length, maximum);
       nodes.push(
         createChunkNode(graph, {
           id: `${this.id}-clear-ranks-${objectChunkIndex}`,
-          outputs: {ranks},
+          outputs: {ranks, selectedState},
           dispatch,
           source: `
 @group(0) @binding(0) var<storage, read_write> ranks: array<u32>;
+@group(0) @binding(1) var<storage, read_write> selectedState: array<u32>;
 @compute @workgroup_size(256)
 fn main(@builtin(workgroup_id) workgroupId: vec3u, @builtin(local_invocation_index) localInvocationIndex: u32) {
   ${getGPUGridIndexInvocationIndexSource(dispatch)}
   if (index < ${objectIds.length}u) { ranks[index] = 0xffffffffu; }
+  if (index < 4u) { selectedState[index] = 0u; }
 }`
         })
       );
       let cellStart = 0;
       for (const [cellChunkIndex, [starts, ends]] of cells.entries()) {
         nodes.push(
-          createChunkNode(graph, {
+          createIndirectQueryNode(graph, {
             id: `${this.id}-query-${objectChunkIndex}-${cellChunkIndex}`,
-            inputs: {
+            views: {
               starts,
               ends,
               indexCount: this.index.count,
               queryValues: this.query,
-              ...(this.index.boundsBuffer ? {boundsValues: this.index.boundsBuffer} : {})
+              queryState,
+              ...(this.index.boundsBuffer ? {boundsValues: this.index.boundsBuffer} : {}),
+              selectedSlots,
+              selectedState,
+              outputOverflow: this.overflow
             },
-            outputs: {ranks, outputCount: this.count, outputOverflow: this.overflow},
-            dispatch,
-            source: `
-const WIDTH: u32 = ${this.index.gridSize[0]}u;
-const HEIGHT: u32 = ${this.index.gridSize[1]}u;
-const DEPTH: u32 = ${this.index.gridSize[2] ?? 1}u;
-const QUERY_OFFSET: u32 = ${getViewElementOffset(this.query)}u;
-${boundsSource.declarations}@group(0) @binding(0) var<storage, read> starts: array<u32>;
-@group(0) @binding(1) var<storage, read> ends: array<u32>;
-@group(0) @binding(2) var<storage, read> indexCount: array<u32>;
-@group(0) @binding(3) var<storage, read> queryValues: array<f32>;
-@group(0) @binding(${outputBinding}) var<storage, read_write> ranks: array<u32>;
-@group(0) @binding(${outputBinding + 1}) var<storage, read_write> outputCount: array<atomic<u32>>;
-@group(0) @binding(${outputBinding + 2}) var<storage, read_write> outputOverflow: array<atomic<u32>>;
-fn finite(value: f32) -> bool {
-  return value == value && abs(value) <= 3.402823466e+38;
-}
-
-fn getCoordinate(value: f32, minimum: f32, maximum: f32, size: u32) -> u32 {
-  if (!finite(value)) { return 0u; }
-  if (maximum == minimum || value == minimum) { return 0u; }
-  if (value == maximum) { return size - 1u; }
-  if (minimum < 0.0 && maximum > 0.0) {
-    let scale = max(abs(minimum), abs(maximum));
-    let scaledValue = value / scale;
-    let scaledMinimum = minimum / scale;
-    let scaledMaximum = maximum / scale;
-    return min(
-      u32((scaledValue - scaledMinimum) / (scaledMaximum - scaledMinimum) * f32(size)),
-      size - 1u
-    );
-  }
-  return min(u32((value - minimum) / (maximum - minimum) * f32(size)), size - 1u);
-}
-fn cellMinimum(coordinate: u32, size: u32, minimum: f32, maximum: f32) -> f32 {
-  let ratio = f32(coordinate) / f32(size);
-  return minimum * (1.0 - ratio) + maximum * ratio;
-}
-
-fn cellMaximum(coordinate: u32, size: u32, minimum: f32, maximum: f32) -> f32 {
-  if (coordinate + 1u == size) { return maximum; }
-  let ratio = f32(coordinate + 1u) / f32(size);
-  return minimum * (1.0 - ratio) + maximum * ratio;
-}
-
-@compute @workgroup_size(256)
-fn main(@builtin(workgroup_id) workgroupId: vec3u, @builtin(local_invocation_index) localInvocationIndex: u32) {
-  ${getGPUGridIndexInvocationIndexSource(dispatch)}
-  if (index >= ${objectIds.length}u) { return; }
-  let objectIndex = ${objectStart}u + index;
-  if (objectIndex >= indexCount[${getViewElementOffset(this.index.count)}u]) { return; }
-  var low = 0u;
-  var high = ${ends.length}u;
-  loop {
-    if (low >= high) { break; }
-    let middle = low + (high - low) / 2u;
-    if (ends[${getViewElementOffset(ends)}u + middle] <= objectIndex) { low = middle + 1u; }
-    else { high = middle; }
-  }
-  if (low == ${ends.length}u) { return; }
-  if (starts[${getViewElementOffset(starts)}u + low] > objectIndex) { return; }
-  let cellIndex = ${cellStart}u + low;
-  let column = cellIndex % WIDTH;
-  let row = (cellIndex / WIDTH) % HEIGHT;
-  let layer = cellIndex / (WIDTH * HEIGHT);
-  ${makeCellSelection(this, boundsSource)}
-  if (selected) {
-    let destination = atomicAdd(&outputCount[${getViewElementOffset(this.count)}u], 1u);
-    ranks[index] = destination;
-    if (destination >= ${this.output.length}u) { atomicStore(&outputOverflow[${getViewElementOffset(this.overflow)}u], 1u); }
-  }
-}`
+            resources: [
+              {buffer: starts, usage: 'storage-read'},
+              {buffer: ends, usage: 'storage-read'},
+              {buffer: this.index.count, usage: 'storage-read'},
+              {buffer: this.query, usage: 'storage-read'},
+              {buffer: queryState, usage: 'storage-read'},
+              ...(this.index.boundsBuffer
+                ? ([
+                    {buffer: this.index.boundsBuffer, usage: 'storage-read'}
+                  ] as QueryPassResource[])
+                : []),
+              {buffer: selectedSlots, usage: 'storage-write'},
+              {buffer: selectedState, usage: 'storage-read-write'},
+              {buffer: this.overflow, usage: 'storage-write'}
+            ],
+            dispatchBuffer: queryState.buffer,
+            source: makeCellGatherSource(this, {
+              starts,
+              ends,
+              queryState,
+              selectedSlots,
+              selectedState,
+              cellStart,
+              objectStart,
+              objectCount: objectIds.length
+            })
           })
         );
         cellStart += starts.length;
       }
+      nodes.push(
+        createChunkNode(graph, {
+          id: `${this.id}-publish-${objectChunkIndex}`,
+          outputs: {selectedState},
+          dispatch: {x: 1, y: 1, z: 1},
+          workgroupSize: 1,
+          source: `
+@group(0) @binding(0) var<storage, read_write> selectedState: array<u32>;
+@compute @workgroup_size(1)
+fn main() {
+  let count = min(selectedState[0], ${objectIds.length}u);
+  selectedState[1] = count / ${GRID_QUERY_WORKGROUP_SIZE}u + select(0u, 1u, count % ${GRID_QUERY_WORKGROUP_SIZE}u != 0u);
+  selectedState[2] = 1u;
+  selectedState[3] = 1u;
+}`
+        })
+      );
+      nodes.push(
+        createIndirectQueryNode(graph, {
+          id: `${this.id}-rank-${objectChunkIndex}`,
+          views: {
+            selectedSlots,
+            selectedState,
+            ranks,
+            outputCount: this.count,
+            outputOverflow: this.overflow
+          },
+          resources: [
+            {buffer: selectedSlots, usage: 'storage-read'},
+            {buffer: selectedState, usage: 'storage-read'},
+            {buffer: ranks, usage: 'storage-write'},
+            {buffer: this.count, usage: 'storage-read-write'},
+            {buffer: this.overflow, usage: 'storage-write'}
+          ],
+          dispatchBuffer: selectedState.buffer,
+          dispatchByteOffset: selectedState.byteOffset + Uint32Array.BYTES_PER_ELEMENT,
+          source: `
+@group(0) @binding(0) var<storage, read> selectedSlots: array<u32>;
+@group(0) @binding(1) var<storage, read> selectedState: array<u32>;
+@group(0) @binding(2) var<storage, read_write> ranks: array<u32>;
+@group(0) @binding(3) var<storage, read_write> outputCount: array<atomic<u32>>;
+@group(0) @binding(4) var<storage, read_write> outputOverflow: array<atomic<u32>>;
+@compute @workgroup_size(${GRID_QUERY_WORKGROUP_SIZE})
+fn main(@builtin(global_invocation_id) globalId: vec3u) {
+  if (globalId.x >= min(selectedState[0], ${objectIds.length}u)) { return; }
+  let localObjectIndex = selectedSlots[globalId.x];
+  let destination = atomicAdd(&outputCount[${getViewElementOffset(this.count)}u], 1u);
+  ranks[localObjectIndex] = destination;
+  if (destination >= ${this.output.length}u) {
+    atomicStore(&outputOverflow[${getViewElementOffset(this.overflow)}u], 1u);
+  }
+}`
+        })
+      );
       nodes.push(
         ...new GPUScatter({
           id: `${this.id}-scatter-${objectChunkIndex}`,
@@ -327,8 +367,7 @@ fn main(@builtin(workgroup_id) workgroupId: vec3u, @builtin(local_invocation_ind
 @compute @workgroup_size(256)
 fn main(@builtin(workgroup_id) workgroupId: vec3u, @builtin(local_invocation_index) localInvocationIndex: u32) {
   ${getGPUGridIndexInvocationIndexSource(dispatch)}
-  if (index >= ${objectIds.length}u) { return; }
-  if (ranks[index] == 0xffffffffu) { return; }
+  if (index >= ${objectIds.length}u || ranks[index] == 0xffffffffu) { return; }
   let objectId = objectIds[${getViewElementOffset(objectIds)}u + index];
   if (objectId >= ${maskStart}u && objectId - ${maskStart}u < ${mask.length}u) {
     atomicStore(&mask[${getViewElementOffset(mask)}u + objectId - ${maskStart}u], 1u);
@@ -342,6 +381,328 @@ fn main(@builtin(workgroup_id) workgroupId: vec3u, @builtin(local_invocation_ind
     }
     return nodes;
   }
+}
+
+type QueryPassResource = {
+  buffer: GraphDataView;
+  usage: 'storage-read' | 'storage-write' | 'storage-read-write';
+};
+
+function addQueryPreparationPass<Parameters>(
+  graph: GPUCommandGraph<Parameters>,
+  query: GPUGridIndexQuery,
+  queryState: GraphDataView<'uint32'>,
+  maximum: number
+): readonly GPUCommandNode<Parameters>[] {
+  const boundsBinding = query.index.boundsBuffer ? 1 : undefined;
+  const stateBinding = query.index.boundsBuffer ? 2 : 1;
+  const bounds = getGPUGridIndexBoundsSource(
+    query.index.bounds,
+    query.index.boundsBuffer,
+    query.dimension,
+    boundsBinding ?? 0
+  );
+  const inputs = {
+    queryValues: query.query,
+    ...(query.index.boundsBuffer ? {boundsValues: query.index.boundsBuffer} : {})
+  };
+  const source = /* wgsl */ `
+const QUERY_OFFSET: u32 = ${getViewElementOffset(query.query)}u;
+const STATE_OFFSET: u32 = ${getViewElementOffset(queryState)}u;
+const WIDTH: u32 = ${query.index.gridSize[0]}u;
+const HEIGHT: u32 = ${query.index.gridSize[1]}u;
+const DEPTH: u32 = ${query.index.gridSize[2] ?? 1}u;
+const MAXIMUM_DISPATCH: u32 = ${maximum}u;
+@group(0) @binding(0) var<storage, read> queryValues: array<f32>;
+${bounds.declarations}@group(0) @binding(${stateBinding}) var<storage, read_write> queryState: array<u32>;
+
+fn finite(value: f32) -> bool {
+  return value == value && abs(value) <= 3.402823466e+38;
+}
+
+fn getCoordinate(value: f32, minimum: f32, maximum: f32, size: u32) -> u32 {
+  if (maximum == minimum || value <= minimum) { return 0u; }
+  if (value >= maximum) { return size - 1u; }
+  if (minimum < 0.0 && maximum > 0.0) {
+    let scale = max(abs(minimum), abs(maximum));
+    let scaledValue = value / scale;
+    let scaledMinimum = minimum / scale;
+    let scaledMaximum = maximum / scale;
+    return min(u32((scaledValue - scaledMinimum) / (scaledMaximum - scaledMinimum) * f32(size)), size - 1u);
+  }
+  return min(u32((value - minimum) / (maximum - minimum) * f32(size)), size - 1u);
+}
+
+fn divideRoundUp(value: u32, divisor: u32) -> u32 {
+  return value / divisor + select(0u, 1u, value % divisor != 0u);
+}
+
+@compute @workgroup_size(1)
+fn main() {
+  ${makeQueryCellEnvelope(query, bounds)}
+  var minimumCell = vec3u(0u);
+  var cellExtent = vec3u(1u);
+  var workgroupCount = 0u;
+  if (valid) {
+    let mappedMinimum = vec3u(
+      getCoordinate(envelopeMinimum.x, ${bounds.minimum[0]}, ${bounds.maximum[0]}, WIDTH),
+      getCoordinate(envelopeMinimum.y, ${bounds.minimum[1]}, ${bounds.maximum[1]}, HEIGHT),
+      ${query.dimension === 3 ? `getCoordinate(envelopeMinimum.z, ${bounds.minimum[2]}, ${bounds.maximum[2]}, DEPTH)` : '0u'}
+    );
+    let mappedMaximum = vec3u(
+      getCoordinate(envelopeMaximum.x, ${bounds.minimum[0]}, ${bounds.maximum[0]}, WIDTH),
+      getCoordinate(envelopeMaximum.y, ${bounds.minimum[1]}, ${bounds.maximum[1]}, HEIGHT),
+      ${query.dimension === 3 ? `getCoordinate(envelopeMaximum.z, ${bounds.minimum[2]}, ${bounds.maximum[2]}, DEPTH)` : '0u'}
+    );
+    let gridMaximum = vec3u(WIDTH - 1u, HEIGHT - 1u, DEPTH - 1u);
+    minimumCell = mappedMinimum - min(mappedMinimum, vec3u(1u));
+    let maximumCell = min(mappedMaximum + vec3u(1u), gridMaximum);
+    cellExtent = maximumCell - minimumCell + vec3u(1u);
+    workgroupCount = cellExtent.x * cellExtent.y * cellExtent.z;
+  }
+  var dispatchSize = vec3u(0u, 1u, 1u);
+  if (workgroupCount > 0u) {
+    dispatchSize.x = min(workgroupCount, MAXIMUM_DISPATCH);
+    let remaining = divideRoundUp(workgroupCount, dispatchSize.x);
+    dispatchSize.y = min(remaining, MAXIMUM_DISPATCH);
+    dispatchSize.z = divideRoundUp(remaining, dispatchSize.y);
+  }
+  queryState[STATE_OFFSET] = dispatchSize.x;
+  queryState[STATE_OFFSET + 1u] = dispatchSize.y;
+  queryState[STATE_OFFSET + 2u] = dispatchSize.z;
+  queryState[STATE_OFFSET + 3u] = minimumCell.x;
+  queryState[STATE_OFFSET + 4u] = minimumCell.y;
+  queryState[STATE_OFFSET + 5u] = minimumCell.z;
+  queryState[STATE_OFFSET + 6u] = cellExtent.x;
+  queryState[STATE_OFFSET + 7u] = cellExtent.y;
+  queryState[STATE_OFFSET + 8u] = cellExtent.z;
+  queryState[STATE_OFFSET + 9u] = workgroupCount;
+  queryState[STATE_OFFSET + 10u] = dispatchSize.x;
+  queryState[STATE_OFFSET + 11u] = dispatchSize.y;
+}`;
+  return [
+    createChunkNode(graph, {
+      id: `${query.id}-prepare-query-cells`,
+      inputs,
+      outputs: {queryState},
+      dispatch: {x: 1, y: 1, z: 1},
+      workgroupSize: 1,
+      source
+    })
+  ];
+}
+
+function makeQueryCellEnvelope(
+  query: GPUGridIndexQuery,
+  bounds: ReturnType<typeof getGPUGridIndexBoundsSource>
+): string {
+  const components = query.dimension === 2 ? ['x', 'y'] : ['x', 'y', 'z'];
+  const domainOverlap = components
+    .map(
+      (component, axis) =>
+        `envelopeMaximum.${component} >= ${bounds.minimum[axis]} && envelopeMinimum.${component} <= ${bounds.maximum[axis]}`
+    )
+    .join(' && ');
+  if (query.kind === 'point') {
+    const reads = components
+      .map(
+        (component, axis) =>
+          `let query${component.toUpperCase()} = queryValues[QUERY_OFFSET + ${axis}u];`
+      )
+      .join('\n  ');
+    const finiteValues = components
+      .map(component => `finite(query${component.toUpperCase()})`)
+      .join(' && ');
+    return `${reads}
+  let envelopeMinimum = vec3f(queryX, queryY, ${query.dimension === 3 ? 'queryZ' : '0.0'});
+  let envelopeMaximum = envelopeMinimum;
+  let valid = ${bounds.validity}${finiteValues} && ${domainOverlap};`;
+  }
+  if (query.kind === 'radius') {
+    const reads = components
+      .map(
+        (component, axis) =>
+          `let query${component.toUpperCase()} = queryValues[QUERY_OFFSET + ${axis}u];`
+      )
+      .join('\n  ');
+    const finiteValues = components
+      .map(component => `finite(query${component.toUpperCase()})`)
+      .join(' && ');
+    return `${reads}
+  let radius = queryValues[QUERY_OFFSET + ${query.dimension}u];
+  let center = vec3f(queryX, queryY, ${query.dimension === 3 ? 'queryZ' : '0.0'});
+  let envelopeMinimum = center - vec3f(radius);
+  let envelopeMaximum = center + vec3f(radius);
+  let valid = ${bounds.validity}${finiteValues} && finite(radius) && radius >= 0.0 && ${domainOverlap};`;
+  }
+  const minimumReads = components
+    .map(
+      (component, axis) =>
+        `let minimum${component.toUpperCase()} = queryValues[QUERY_OFFSET + ${axis}u];`
+    )
+    .join('\n  ');
+  const maximumReads = components
+    .map(
+      (component, axis) =>
+        `let maximum${component.toUpperCase()} = queryValues[QUERY_OFFSET + ${axis + query.dimension}u];`
+    )
+    .join('\n  ');
+  const ordered = components
+    .map(component => {
+      const upper = component.toUpperCase();
+      return `finite(minimum${upper}) && finite(maximum${upper}) && minimum${upper} <= maximum${upper}`;
+    })
+    .join(' && ');
+  return `${minimumReads}
+  ${maximumReads}
+  let envelopeMinimum = vec3f(minimumX, minimumY, ${query.dimension === 3 ? 'minimumZ' : '0.0'});
+  let envelopeMaximum = vec3f(maximumX, maximumY, ${query.dimension === 3 ? 'maximumZ' : '0.0'});
+  let valid = ${bounds.validity}${ordered} && ${domainOverlap};`;
+}
+
+function makeCellGatherSource(
+  query: GPUGridIndexQuery,
+  props: {
+    starts: GraphDataView<'uint32'>;
+    ends: GraphDataView<'uint32'>;
+    queryState: GraphDataView<'uint32'>;
+    selectedSlots: GraphDataView<'uint32'>;
+    selectedState: GraphDataView<'uint32'>;
+    cellStart: number;
+    objectStart: number;
+    objectCount: number;
+  }
+): string {
+  const boundsBinding = query.index.boundsBuffer ? 5 : undefined;
+  const selectedSlotsBinding = query.index.boundsBuffer ? 6 : 5;
+  const selectedStateBinding = selectedSlotsBinding + 1;
+  const overflowBinding = selectedStateBinding + 1;
+  const bounds = getGPUGridIndexBoundsSource(
+    query.index.bounds,
+    query.index.boundsBuffer,
+    query.dimension,
+    boundsBinding ?? 0
+  );
+  return /* wgsl */ `
+const WIDTH: u32 = ${query.index.gridSize[0]}u;
+const HEIGHT: u32 = ${query.index.gridSize[1]}u;
+const DEPTH: u32 = ${query.index.gridSize[2] ?? 1}u;
+const QUERY_OFFSET: u32 = ${getViewElementOffset(query.query)}u;
+const STATE_OFFSET: u32 = ${getViewElementOffset(props.queryState)}u;
+const OBJECT_START: u32 = ${props.objectStart}u;
+const OBJECT_END: u32 = ${props.objectStart + props.objectCount}u;
+${bounds.declarations}@group(0) @binding(0) var<storage, read> starts: array<u32>;
+@group(0) @binding(1) var<storage, read> ends: array<u32>;
+@group(0) @binding(2) var<storage, read> indexCount: array<u32>;
+@group(0) @binding(3) var<storage, read> queryValues: array<f32>;
+@group(0) @binding(4) var<storage, read> queryState: array<u32>;
+@group(0) @binding(${selectedSlotsBinding}) var<storage, read_write> selectedSlots: array<u32>;
+@group(0) @binding(${selectedStateBinding}) var<storage, read_write> selectedState: array<atomic<u32>>;
+@group(0) @binding(${overflowBinding}) var<storage, read_write> outputOverflow: array<atomic<u32>>;
+
+fn finite(value: f32) -> bool { return value == value && abs(value) <= 3.402823466e+38; }
+fn getCoordinate(value: f32, minimum: f32, maximum: f32, size: u32) -> u32 {
+  if (!finite(value) || maximum == minimum || value <= minimum) { return 0u; }
+  if (value >= maximum) { return size - 1u; }
+  if (minimum < 0.0 && maximum > 0.0) {
+    let scale = max(abs(minimum), abs(maximum));
+    return min(u32(((value / scale) - (minimum / scale)) / ((maximum / scale) - (minimum / scale)) * f32(size)), size - 1u);
+  }
+  return min(u32((value - minimum) / (maximum - minimum) * f32(size)), size - 1u);
+}
+fn cellMinimum(coordinate: u32, size: u32, minimum: f32, maximum: f32) -> f32 {
+  let ratio = f32(coordinate) / f32(size);
+  return minimum * (1.0 - ratio) + maximum * ratio;
+}
+fn cellMaximum(coordinate: u32, size: u32, minimum: f32, maximum: f32) -> f32 {
+  if (coordinate + 1u == size) { return maximum; }
+  let ratio = f32(coordinate + 1u) / f32(size);
+  return minimum * (1.0 - ratio) + maximum * ratio;
+}
+
+@compute @workgroup_size(${GRID_QUERY_WORKGROUP_SIZE})
+fn main(@builtin(workgroup_id) workgroupId: vec3u, @builtin(local_invocation_index) localId: u32) {
+  let dispatchWidth = queryState[STATE_OFFSET + 10u];
+  let workgroupCount = queryState[STATE_OFFSET + 9u];
+  let dispatchRow = workgroupId.z * queryState[STATE_OFFSET + 11u] + workgroupId.y;
+  let cellOrdinal = dispatchRow * dispatchWidth + workgroupId.x;
+  if (cellOrdinal >= workgroupCount) { return; }
+  let extentX = queryState[STATE_OFFSET + 6u];
+  let extentY = queryState[STATE_OFFSET + 7u];
+  let column = queryState[STATE_OFFSET + 3u] + cellOrdinal % extentX;
+  let row = queryState[STATE_OFFSET + 4u] + (cellOrdinal / extentX) % extentY;
+  let layer = queryState[STATE_OFFSET + 5u] + cellOrdinal / (extentX * extentY);
+  let cellIndex = (layer * HEIGHT + row) * WIDTH + column;
+  if (cellIndex < ${props.cellStart}u || cellIndex - ${props.cellStart}u >= ${props.starts.length}u) { return; }
+  ${makeCellSelection(query, bounds)}
+  if (!selected) { return; }
+  let localCell = cellIndex - ${props.cellStart}u;
+  let storedCount = min(indexCount[${getViewElementOffset(query.index.count)}u], ${query.index.objectIds.length}u);
+  let firstObject = max(min(starts[${getViewElementOffset(props.starts)}u + localCell], storedCount), OBJECT_START);
+  let endObject = min(min(ends[${getViewElementOffset(props.ends)}u + localCell], storedCount), OBJECT_END);
+  for (var objectIndex = firstObject + localId; objectIndex < endObject; objectIndex += ${GRID_QUERY_WORKGROUP_SIZE}u) {
+    let slot = atomicAdd(&selectedState[${getViewElementOffset(props.selectedState)}u], 1u);
+    if (slot < ${props.objectCount}u) {
+      selectedSlots[${getViewElementOffset(props.selectedSlots)}u + slot] = objectIndex - OBJECT_START;
+    } else {
+      atomicStore(&outputOverflow[${getViewElementOffset(query.overflow)}u], 1u);
+    }
+  }
+}`;
+}
+
+function createIndirectQueryNode<Parameters>(
+  graph: GPUCommandGraph<Parameters>,
+  props: {
+    id: string;
+    source: string;
+    views: Record<string, GraphDataView>;
+    resources: QueryPassResource[];
+    dispatchBuffer: GraphBufferHandle;
+    dispatchByteOffset?: number;
+  }
+): GPUCommandNode<Parameters> {
+  return createGPUComputeCommandNode<Parameters>({
+    id: props.id,
+    resources: [...props.resources, {buffer: props.dispatchBuffer, usage: 'indirect'}],
+    compile: ({device}) => {
+      const kernel = makeQueryKernel(device, props.id, props.source, props.views);
+      return {
+        encode: ({computePass, getBuffer}) => {
+          const bindings: Record<string, Binding> = {};
+          for (const [name, view] of Object.entries(props.views)) {
+            bindings[name] = getViewBinding(view, getBuffer);
+          }
+          kernel.dispatchIndirect(computePass, {
+            bindings,
+            indirectBuffer: getBuffer(props.dispatchBuffer),
+            indirectOffset: props.dispatchByteOffset ?? 0
+          });
+        },
+        destroy: () => kernel.destroy()
+      };
+    }
+  });
+}
+
+function makeQueryKernel(
+  device: Device,
+  id: string,
+  source: string,
+  views: Record<string, GraphDataView>
+): Kernel {
+  return new Kernel(device, {
+    id,
+    source,
+    shaderLayout: {
+      bindings: Object.keys(views).map((name, location) => ({
+        name,
+        type: 'storage' as const,
+        group: 0,
+        location
+      }))
+    }
+  });
 }
 
 function makeCellSelection(
@@ -535,6 +896,9 @@ function validateIndexView(id: string, index: GPUGridIndexView, dimension: 2 | 3
     throw new Error(`${id} index bounds must contain finite ordered minima and maxima`);
   }
   const cellCount = index.gridSize.reduce((product, size) => product * size, 1);
+  if (!Number.isSafeInteger(cellCount) || cellCount > 0xffffffff) {
+    throw new Error(`${id} index gridSize product must fit in uint32`);
+  }
   for (const [name, view] of [
     ['cellOffsets', index.cellOffsets],
     ['objectIds', index.objectIds],

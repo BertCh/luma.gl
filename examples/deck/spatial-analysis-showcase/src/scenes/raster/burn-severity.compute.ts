@@ -100,7 +100,7 @@ const HISTOGRAM_BINS = 1024;
 /** Hectares in one 20 m pixel. */
 const PIXEL_HECTARES = 0.04;
 const SETTLE_MILLISECONDS = 350;
-const SPARK = ['▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'];
+const SPARK = ['.', ':', '-', '=', '+', '*', '#', '@'];
 const COLUMN_NAMES = [
   'pixelCounts',
   'areas',

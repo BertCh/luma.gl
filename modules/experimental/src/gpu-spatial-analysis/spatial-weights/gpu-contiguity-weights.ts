@@ -73,8 +73,9 @@ export type GPUContiguityWeightsProps = {
   /** Optional caller-owned one-row unclamped distinct neighbor-slot total (a lower bound after a pair overflow). */
   totalNeighbors?: GraphDataView<'uint32'>;
   /**
-   * Capacity of the intermediate directed polygon-pair list, which holds duplicates (polygons that
-   * share several vertices or edges appear several times before deduplication). Defaults to
+   * Capacity of the intermediate directed polygon-pair list, which holds duplicates when polygons
+   * share several distinct vertices or edges before final deduplication. Repeated occurrences of
+   * one polygon in a single equal-key group are collapsed before pairs are emitted. Defaults to
    * `4 * weights.neighbors.length`. Compile-time; larger values cost sort time and memory.
    */
   pairCapacity?: number;
@@ -99,11 +100,12 @@ export type GPUContiguityWeightsProps = {
  * Algorithm: vertices get a 64-bit key `(q_x, q_y)` and are sorted with two stable radix sorts, so
  * the grouping is exact (no hash collisions). Queen groups the vertices by key; rook assigns each
  * distinct point a dense ID, keys each ring edge by `(min, max)` of its endpoint IDs and groups the
- * edges the same way. Every group of equal keys emits the directed polygon pairs `(i, j)` between
- * its distinct polygons; the pair list is sorted by `(i, j)`, deduplicated and compacted into CSR
- * (a scan marks the unique pairs and one binary search per row gives the CSR offsets). Output is deterministic. A point shared by `m`
- * polygons costs `O(m^2)` pairs, which is fine for map data but not for thousands of polygons
- * touching one point.
+ * edges the same way. Stable sorting keeps polygon IDs together inside each equal-key group, so
+ * repeated vertices or edges from one polygon are collapsed before the group emits the directed
+ * polygon pairs `(i, j)` between its distinct polygons. The pair list is sorted by `(i, j)`,
+ * deduplicated and compacted into CSR (a scan marks the unique pairs and one binary search per row
+ * gives the CSR offsets). Output is deterministic. A point shared by `m` distinct polygons costs
+ * `O(m^2)` pairs, which is fine for map data but not for thousands of polygons touching one point.
  *
  * Polygons are the unit of the result. MultiPolygon features must be flattened to one polygon
  * row per part, or merged afterwards.
@@ -384,11 +386,22 @@ fn quantise(value: f32) -> u32 {
   let polygon = itemPolygon[itemPolygonOffset + item];
   if (polygon != ${INVALID}) {
     let groupId = groupIndex[groupIndexOffset + index] - 1u;
+    let begin = groupStarts[groupStartsOffset + groupId];
     let end = groupStarts[groupStartsOffset + groupId + 1u];
-    for (var other = groupStarts[groupStartsOffset + groupId]; other < end; other++) {
-      let otherPolygon = itemPolygon[itemPolygonOffset + sortedItems[sortedItemsOffset + other]];
-      if (otherPolygon != ${INVALID} && otherPolygon != polygon) {
-        ${onPair}
+    var firstPolygonOccurrence = index == begin;
+    if (!firstPolygonOccurrence) {
+      let previousItem = sortedItems[sortedItemsOffset + index - 1u];
+      firstPolygonOccurrence = itemPolygon[itemPolygonOffset + previousItem] != polygon;
+    }
+    if (firstPolygonOccurrence) {
+      var previousOtherPolygon = ${INVALID};
+      for (var other = begin; other < end; other++) {
+        let otherPolygon = itemPolygon[itemPolygonOffset + sortedItems[sortedItemsOffset + other]];
+        let firstOtherPolygonOccurrence = otherPolygon != previousOtherPolygon;
+        previousOtherPolygon = otherPolygon;
+        if (firstOtherPolygonOccurrence && otherPolygon != ${INVALID} && otherPolygon != polygon) {
+          ${onPair}
+        }
       }
     }
   }`;

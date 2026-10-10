@@ -65,6 +65,7 @@ it('addClusterAndOutlineRecipe clusters points and outlines each cluster with it
     const perimeters = fixture.output('perimeters', 'float32', MAXIMUM_CLUSTERS);
     const recipe = addClusterAndOutlineRecipe(fixture.graph, {
       positions: fixture.input('positions', positions, 'float32x2', pointCount),
+      spatialContext: {coordinateSpace: 'planar', metric: 'native', units: 'native'},
       clusteringParameters: fixture.parameters(
         'clustering-parameters',
         'float32',
@@ -79,17 +80,21 @@ it('addClusterAndOutlineRecipe clusters points and outlines each cluster with it
       maximumClusterCount: MAXIMUM_CLUSTERS,
       maximumVerticesPerHull: 64,
       hullCapacity: 1024,
-      labels: labels.view,
-      clusterCount: count.view,
-      counts: memberCounts.view,
-      meanCenters: meanCenters.view,
-      hullOffsets: hullOffsets.view,
-      hullCounts: hullCounts.view,
-      hullPositions: hullPositions.view,
-      hullVertexIndices: hullIndices.view,
-      hullOverflow: hullOverflow.view,
-      areas: areas.view,
-      perimeters: perimeters.view
+      outputs: {
+        labels: labels.view,
+        clusterCount: count.view,
+        hullOffsets: hullOffsets.view,
+        hullPositions: hullPositions.view,
+        hullOverflow: hullOverflow.view,
+        areas: areas.view,
+        perimeters: perimeters.view
+      },
+      scratch: {
+        counts: memberCounts.view,
+        meanCenters: meanCenters.view,
+        hullCounts: hullCounts.view,
+        hullVertexIndices: hullIndices.view
+      }
     });
     expect(recipe.contributors.length).toBe(4);
     fixture.run();

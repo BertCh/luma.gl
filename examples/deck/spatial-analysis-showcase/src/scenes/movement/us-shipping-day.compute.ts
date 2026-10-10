@@ -674,7 +674,11 @@ const RADIANS_TO_DEGREES: f32 = 57.29577951308232;`,
         ),
         columns,
         rows,
-        coordinateSystem: 'spherical',
+        spatialContext: {
+          coordinateSpace: 'longitude-latitude',
+          metric: 'great-circle',
+          units: 'meters'
+        },
         maximumRecords: Math.max(1024, 6 * vertexCount),
         parameters: densityParameters.importToGraph(graph),
         output: {

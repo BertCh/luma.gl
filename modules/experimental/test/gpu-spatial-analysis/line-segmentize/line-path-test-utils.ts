@@ -24,7 +24,7 @@ export type LinePathReadback = {
   pathOffsets: number[];
   count: number;
   overflow: number;
-  totalCount: number;
+  requiredCount: number;
   pathCount: number;
   sourcePaths: number[];
   sourceRows: number[];
@@ -91,7 +91,7 @@ export function createLinePathFixture(
     pathOffsets: output('path-offsets', pathCapacity + 1),
     count: output('count', 1),
     overflow: output('overflow', 1),
-    totalCount: output('total', 1),
+    requiredCount: output('total', 1),
     pathCount: output('path-count', 1),
     sourcePaths: output('source-paths', pathCapacity),
     sourceRows: output('source-rows', capacity),
@@ -114,7 +114,7 @@ export function createLinePathFixture(
       ),
       count: importGraphBuffer(graph, 'o-count', outputs.count, 'uint32', 1),
       overflow: importGraphBuffer(graph, 'o-overflow', outputs.overflow, 'uint32', 1),
-      totalCount: importGraphBuffer(graph, 'o-total', outputs.totalCount, 'uint32', 1),
+      requiredCount: importGraphBuffer(graph, 'o-total', outputs.requiredCount, 'uint32', 1),
       pathCount: importGraphBuffer(graph, 'o-path-count', outputs.pathCount, 'uint32', 1),
       sourcePaths: importGraphBuffer(
         graph,
@@ -153,7 +153,7 @@ export function createLinePathFixture(
         pathOffsets: await readUint32(outputs.pathOffsets, pathCapacity + 1),
         count,
         overflow: (await readUint32(outputs.overflow, 1))[0],
-        totalCount: (await readUint32(outputs.totalCount, 1))[0],
+        requiredCount: (await readUint32(outputs.requiredCount, 1))[0],
         pathCount: (await readUint32(outputs.pathCount, 1))[0],
         sourcePaths: await readUint32(outputs.sourcePaths, pathCapacity),
         sourceRows: (await readUint32(outputs.sourceRows, capacity)).slice(0, count),
@@ -192,7 +192,7 @@ export function expectLinePathParity(
   expectedOverflow?: number
 ): number {
   const total = expected.positions.length;
-  expect(actual.totalCount).toBe(total);
+  expect(actual.requiredCount).toBe(total);
   expect(actual.count).toBe(Math.min(total, capacity));
   expect(actual.overflow).toBe(expectedOverflow ?? (total > capacity ? 1 : 0));
   expect(actual.pathOffsets).toEqual(

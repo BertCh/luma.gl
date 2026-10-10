@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {ground} from '../../cartography/grounds';
 import {defineScene, type LegendSpec} from '../scene';
 import type {LocalRelationshipsOptions} from './local-relationships.compute';
 
@@ -21,11 +22,11 @@ const MAP_LABELS: Record<LocalRelationshipsOptions['map'], string> = {
 /** Geographically weighted regression of county diabetes prevalence. */
 export default defineScene<LocalRelationshipsOptions>({
   id: 'local-relationships',
-  title: 'Does the income-health link change across America?',
+  title: 'County diabetes-income coefficients across local bandwidths',
   chapter: 'regression',
   order: 2,
   summary:
-    'One national regression says income and diabetes are linked. Geographically weighted regression fits a separate model around every one of 3,100 counties and shows where, and how strongly, that link changes. A Monte Carlo test says which variation is more than chance.',
+    'Geographically weighted regression and a Monte Carlo nonstationarity test use CDC PLACES and Census county data to map local diabetes-income coefficients and diagnostics; correlated predictors and county aggregation limit interpretation.',
   contributors: [
     'GPUGeographicallyWeightedRegression',
     'GPUGeographicallyWeightedRegressionNonstationarityTest',
@@ -36,6 +37,16 @@ export default defineScene<LocalRelationshipsOptions>({
     {id: 'us-states', role: 'state borders'}
   ],
   initialView: {longitude: -96.3, latitude: 38.4, zoom: 3.55},
+  basemap: ground('night'),
+  furniture: {
+    title: {
+      title: 'County diabetes-income coefficients',
+      subtitle: 'Local regression across 3,100 US counties'
+    },
+    scaleBar: {units: 'metric'},
+    credit: 'CDC PLACES; US Census Bureau SAIPE and county boundaries',
+    caveat: 'Local coefficients are associations and can be unstable under collinearity.'
+  },
 
   options: [
     {
@@ -239,7 +250,7 @@ export default defineScene<LocalRelationshipsOptions>({
       entries.push({
         kind: 'ramp',
         title: MAP_LABELS.localR2,
-        ramp: 'viridis',
+        ramp: 'blues',
         extent: [0, 1],
         labels: ['0: no fit', '1: perfect fit']
       });
@@ -265,6 +276,7 @@ export default defineScene<LocalRelationshipsOptions>({
         id: 'residual',
         title: `${MAP_LABELS[state.map]} (observed minus fitted)`,
         ramp: 'diverging',
+        midpoint: 0,
         extent: 'gpu',
         unit: 'percentage points',
         labels: ['over-predicted', 'under-predicted'],
@@ -276,6 +288,7 @@ export default defineScene<LocalRelationshipsOptions>({
         id: 'coefficient',
         title: MAP_LABELS[state.map],
         ramp: 'diverging',
+        midpoint: state.center === 'zero' ? 0 : undefined,
         extent: 'gpu',
         unit: 'points of prevalence per standard deviation',
         labels: [
@@ -336,6 +349,9 @@ permutationParameters.write(getGPUPermutationParameterValues({seed: ${state.seed
     {
       id: 'question',
       title: 'Is “richer means healthier” true everywhere?',
+      headline: 'National income coefficients vary across counties',
+      textAlternative:
+        'US counties are shaded by local income coefficients, showing geographic variation around the national diabetes relationship.',
       body: 'Across 3,100 US counties, age-adjusted **diabetes prevalence** falls as **median household income** rises (CDC PLACES and Census SAIPE data). That is one average slope for a whole country. But the Mississippi Delta, Appalachia, the Southwest and the Northeast have very different histories, so **where does the link bend**?\n\nThe map shows the finished answer for income: one local coefficient per county from **`GPUGeographicallyWeightedRegression`**. Blue counties are where more income goes with less diabetes (**Map** below picks what is shown); the story below explains how it is made.',
       options: {map: 'income'},
       camera: {longitude: -96.3, latitude: 38.4, zoom: 3.55},
@@ -344,6 +360,9 @@ permutationParameters.write(getGPUPermutationParameterValues({seed: ${state.seed
     {
       id: 'national',
       title: 'First, one line for the whole country',
+      headline: 'National residuals form broad regional patterns',
+      textAlternative:
+        'A diverging county map shows broad regions where national OLS overpredicts or underpredicts diabetes prevalence.',
       body: '**`GPUOrdinaryLeastSquares`** fits `diabetes = β₀ + β₁·ln income + β₂·ln density + β₃·age 65+ + β₄·no diploma` once, with all predictors standardized, so each coefficient is points of prevalence per standard deviation. The readout **National OLS coefficients** lists them.\n\nThe map shows the national model’s **residuals**: observed minus fitted. They are clearly not random: whole regions are red (more diabetes than the model expects), notably the Deep South, and others blue. Residuals with a spatial pattern are the sign that coefficients may not be constant.',
       options: {map: 'olsResiduals'},
       controls: ['map'],
@@ -352,6 +371,9 @@ permutationParameters.write(getGPUPermutationParameterValues({seed: ${state.seed
     {
       id: 'gwr',
       title: 'A separate regression around every county',
+      headline: 'Local fits improve on national OLS',
+      textAlternative:
+        'County colors encode geographically weighted income coefficients centered on zero, with bandwidth and AICc readouts.',
       body: 'Geographically weighted regression fits a weighted least-squares model **at each county**, giving nearby counties large weights and distant ones little (`w = K(d / h)`). The kernel width **h** is the bandwidth. Here **Bandwidth type** is *adaptive*: the 24 to 128 nearest counties, chosen by lowest AICc. This is the model behind mgwr and ArcGIS “Geographically Weighted Regression”.\n\nThe map is the local coefficient of **ln income**: the center of the color scale is zero. Read **Selected bandwidth** and **AICc: GWR vs national OLS** in the readouts: a lower AICc means local fits improve on the national model even after paying for their extra effective parameters (the **hat trace**).',
       options: {map: 'income', center: 'zero'},
       controls: ['map', 'mode'],
@@ -360,6 +382,9 @@ permutationParameters.write(getGPUPermutationParameterValues({seed: ${state.seed
     {
       id: 'center',
       title: 'Stronger or weaker than the national average?',
+      headline: 'County slopes differ from the national average',
+      textAlternative:
+        'County colors are recentered on the national income coefficient so deviations from the national slope are directly visible.',
       body: '**Center the colors on** is now *National OLS coefficient* (set it back to zero to compare). White now means “the same as the national slope”. Blue counties have a stronger link between income and lower diabetes than the nation, orange a weaker or even reversed one. Check the **Local coefficient 5th to 95th percentile** readout for the range.',
       options: {center: 'global'},
       controls: ['center', 'map'],
@@ -368,6 +393,9 @@ permutationParameters.write(getGPUPermutationParameterValues({seed: ${state.seed
     {
       id: 'bandwidth',
       title: 'The bandwidth is the whole trade',
+      headline: 'Small bandwidths produce noisier coefficient surfaces',
+      textAlternative:
+        'The income-coefficient map breaks into smaller patches when each local regression uses only 24 nearby counties.',
       body: 'Slide **Bandwidth (ladder step)** from auto to *ladder step 1* (the 24 nearest counties). Local fits become more local and noisier: patches break up. Step 8 (128 counties) approaches a regional average. Auto picks the step with the lowest **AICc**; the **AICc per ladder step** readout lists all eight.\n\nChanging the bandwidth only writes the 8-value ladder into a parameter buffer, so the compiled graph is simply encoded again. **Kernel** (bisquare or Gaussian) and **Bandwidth type** (adaptive or fixed distance) are parameters too.',
       options: {center: 'global', bandwidth: 1},
       controls: ['bandwidth', 'mode', 'kernel'],
@@ -376,6 +404,9 @@ permutationParameters.write(getGPUPermutationParameterValues({seed: ${state.seed
     {
       id: 'reliability',
       title: 'Where is the local model reliable?',
+      headline: 'High condition numbers flag unstable local fits',
+      textAlternative:
+        'Diagnostic county maps switch among local R-squared, condition number and leverage to identify unreliable estimates.',
       body: 'Not every local fit deserves trust. Set **Map** to *Local R²*, *Local condition number (collinearity)* or *Hat-matrix diagonal (influence)*. The **local R²** map shows where the four variables explain diabetes well. The **local condition number** (mgwr `local_collinearity`) flags neighbourhoods where income, density, age and education are nearly collinear: above 30, local coefficients become unstable. The **hat-matrix diagonal** shows how much each county’s own value drives its fit.\n\nSwitch between these maps and compare them with the coefficient pattern before reading a coefficient as a finding.',
       options: {bandwidth: 0, map: 'localR2'},
       controls: ['map'],
@@ -384,6 +415,9 @@ permutationParameters.write(getGPUPermutationParameterValues({seed: ${state.seed
     {
       id: 'test',
       title: 'Is the variation real, or just noise?',
+      headline: 'Permutation tests distinguish variation from chance',
+      textAlternative:
+        'The local income-coefficient surface is paired with Monte Carlo p-values for spatial variation in each coefficient.',
       body: 'Local coefficients always vary, even for data with no spatial structure. **`GPUGeographicallyWeightedRegressionNonstationarityTest`** measures how much each coefficient surface varies (its standard deviation across counties), then shuffles which county holds which observation, refits all counties at the selected bandwidth and counts the shuffles that vary as much. Press **Run the Monte Carlo test** and read the pseudo p-value of each coefficient: small means more variation than chance.\n\nTry the **Counties included (mask)** (metro only, South only), *Fixed* **Bandwidth type** with a *Gaussian* **Kernel**, more **Monte Carlo permutations** and other **Permutation seed** values. **Limits:** counties are large and heterogeneous; PLACES values are modelled estimates; and a GWR with several correlated predictors can show spurious local patterns, so check the condition numbers. mgwr’s multiscale (MGWR) variant is not included.',
       options: {map: 'income', center: 'global'},
       controls: ['runTest', 'permutations', 'subset', 'mode', 'kernel'],

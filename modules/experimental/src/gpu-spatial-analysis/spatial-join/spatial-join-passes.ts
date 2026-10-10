@@ -6,6 +6,7 @@ import {
   createTransientView,
   doGraphDataViewsOverlap,
   GPUBVH,
+  GPUScan,
   GPUSort,
   GraphVectorView,
   type GPUCommandGraph,
@@ -566,8 +567,8 @@ export function getChunkNodeId(
 }
 
 /**
- * Builds one stackless BVH probe per nonempty point chunk that appends `[pointRow, featureRow]`
- * candidate pairs and writes each candidate's point into `candidatePoints`.
+ * Builds counted stackless BVH probes for point chunks, scans per-point counts, and writes stable
+ * `[pointRow, featureRow]` candidate pairs without a contended global append atomic.
  *
  * @internal
  */
@@ -591,36 +592,32 @@ export function getSpatialJoinProbeNodes<Parameters>(
 ): GPUCommandNode<Parameters>[] {
   const nodes: GPUCommandNode<Parameters>[] = [];
   const {bvh} = props;
-  let chunkFirstRow = 0;
-  for (const [chunkIndex, chunk] of getGraphViewChunks(props.points).entries()) {
-    if (chunk.length > 0) {
-      const bindings: WGSLKernelBinding[] = [
-        {name: 'points', view: chunk, type: 'f32', access: 'read'},
-        {name: 'nodeMinima', view: bvh.nodeMinima, type: 'f32', access: 'read'},
-        {name: 'nodeMaxima', view: bvh.nodeMaxima, type: 'f32', access: 'read'},
-        {name: 'leafIds', view: bvh.leafIds, type: 'u32', access: 'read'},
-        {name: 'state', view: props.state, type: 'atomic<u32>', access: 'read_write'},
-        {name: 'candidatePairs', view: props.candidatePairs, type: 'u32', access: 'read_write'},
-        {name: 'candidatePoints', view: props.candidatePoints, type: 'f32', access: 'read_write'}
-      ];
-      if (props.radius) {
-        bindings.push({name: 'radius', view: props.radius, type: 'f32', access: 'read'});
-      }
-      const query = props.radius
-        ? `let searchRadius = radius[radiusOffset];
-  if (!(searchRadius >= 0.0) || searchRadius > FLOAT32_MAXIMUM) { return; }
-  let queryMinimum = point - vec2f(searchRadius);
-  let queryMaximum = point + vec2f(searchRadius);`
-        : `let queryMinimum = point;
-  let queryMaximum = point;`;
-      nodes.push(
-        createWGSLKernelNode<Parameters>(graph, {
-          id: getChunkNodeId(props.id, props.points, chunkIndex),
-          operation: props.operation,
-          variant: 'probe',
-          bindings,
-          invocationCount: chunk.length,
-          declarations: `${SPATIAL_JOIN_WGSL_HELPERS}
+  const pointCounts = createTransientView(
+    graph,
+    `${props.id}-point-counts`,
+    'uint32',
+    props.points.length
+  );
+  const pointOffsets = createTransientView(
+    graph,
+    `${props.id}-point-offsets`,
+    'uint32',
+    props.points.length
+  );
+  const getBindings = (
+    chunk: GraphDataView<'float32x2'>,
+    extra: WGSLKernelBinding[]
+  ): WGSLKernelBinding[] => [
+    {name: 'points', view: chunk, type: 'f32', access: 'read'},
+    {name: 'nodeMinima', view: bvh.nodeMinima, type: 'f32', access: 'read'},
+    {name: 'nodeMaxima', view: bvh.nodeMaxima, type: 'f32', access: 'read'},
+    {name: 'leafIds', view: bvh.leafIds, type: 'u32', access: 'read'},
+    ...(props.radius
+      ? [{name: 'radius', view: props.radius, type: 'f32', access: 'read'} as const]
+      : []),
+    ...extra
+  ];
+  const declarations = (chunkFirstRow: number) => `${SPATIAL_JOIN_WGSL_HELPERS}
 const CHUNK_FIRST_ROW: u32 = ${chunkFirstRow}u;
 const INTERNAL_NODE_COUNT: u32 = ${bvh.internalNodeCount}u;
 const FEATURE_COUNT: u32 = ${props.featureCount}u;
@@ -630,8 +627,21 @@ fn nodeOverlaps(node: u32, queryMinimum: vec2f, queryMaximum: vec2f) -> bool {
   let minimum = vec2f(nodeMinima[nodeMinimaOffset + component], nodeMinima[nodeMinimaOffset + component + 1u]);
   let maximum = vec2f(nodeMaxima[nodeMaximaOffset + component], nodeMaxima[nodeMaximaOffset + component + 1u]);
   return all(minimum <= queryMaximum) && all(queryMinimum <= maximum);
-}`,
-          body: `let row = CHUNK_FIRST_ROW + index;
+}`;
+  const query = props.radius
+    ? `let searchRadius = radius[radiusOffset];
+  if (!(searchRadius >= 0.0) || searchRadius > FLOAT32_MAXIMUM) { return; }
+  let queryMinimum = point - vec2f(searchRadius);
+  let queryMaximum = point + vec2f(searchRadius);`
+    : `let queryMinimum = point;
+  let queryMaximum = point;`;
+  const probeBody = (
+    leaf: string,
+    prologue: string,
+    epilogue: string
+  ) => `let row = CHUNK_FIRST_ROW + index;
+  ${prologue}
+  var found = 0u;
   let point = vec2f(points[pointsOffset + index * 2u], points[pointsOffset + index * 2u + 1u]);
   if (!isFiniteValue(point.x) || !isFiniteValue(point.y)) { return; }
   ${query}
@@ -644,14 +654,7 @@ fn nodeOverlaps(node: u32, queryMinimum: vec2f, queryMaximum: vec2f) -> bool {
       }
       let featureRow = leafIds[leafIdsOffset + node - INTERNAL_NODE_COUNT];
       if (featureRow < FEATURE_COUNT) {
-        let slot = atomicAdd(&state[stateOffset], 1u);
-        if (slot < CANDIDATE_CAPACITY) {
-          candidatePairs[candidatePairsOffset + slot * 2u] = row;
-          candidatePairs[candidatePairsOffset + slot * 2u + 1u] = featureRow;
-          let pointRow = slot * ${props.pointRowScale}u + ${props.pointRowOffset}u;
-          candidatePoints[candidatePointsOffset + pointRow * 2u] = point.x;
-          candidatePoints[candidatePointsOffset + pointRow * 2u + 1u] = point.y;
-        }
+        ${leaf}
       }
     }
     // Climb while the node is a right child, then step to the right sibling.
@@ -661,7 +664,96 @@ fn nodeOverlaps(node: u32, queryMinimum: vec2f, queryMaximum: vec2f) -> bool {
     }
     if (node == 0u) { break; }
     node = node + 1u;
-  }`
+  }
+  ${epilogue}`;
+
+  if (props.points.length === 0) {
+    return nodes;
+  }
+
+  let chunkFirstRow = 0;
+  for (const [chunkIndex, chunk] of getGraphViewChunks(props.points).entries()) {
+    if (chunk.length > 0) {
+      nodes.push(
+        createWGSLKernelNode<Parameters>(graph, {
+          id: getChunkNodeId(props.id, props.points, chunkIndex),
+          operation: props.operation,
+          variant: 'probe-count',
+          bindings: getBindings(chunk, [
+            {name: 'pointCounts', view: pointCounts, type: 'u32', access: 'read_write'}
+          ]),
+          invocationCount: chunk.length,
+          declarations: declarations(chunkFirstRow),
+          body: probeBody(
+            'found = found + 1u;',
+            'pointCounts[pointCountsOffset + row] = 0u;',
+            'pointCounts[pointCountsOffset + row] = found;'
+          )
+        })
+      );
+    }
+    chunkFirstRow += chunk.length;
+  }
+  nodes.push(
+    ...new GPUScan({
+      id: `${props.id}-scan`,
+      input: pointCounts,
+      output: pointOffsets,
+      mode: 'exclusive'
+    }).getCommandNodes(graph)
+  );
+  nodes.push(
+    createWGSLKernelNode<Parameters>(graph, {
+      id: `${props.id}-total`,
+      operation: props.operation,
+      variant: 'probe-total',
+      bindings: [
+        {name: 'pointCounts', view: pointCounts, type: 'u32', access: 'read'},
+        {name: 'pointOffsets', view: pointOffsets, type: 'u32', access: 'read'},
+        {name: 'state', view: props.state, type: 'u32', access: 'read_write'}
+      ],
+      invocationCount: 1,
+      body: `state[stateOffset] = pointOffsets[pointOffsetsOffset + ${props.points.length - 1}u] + pointCounts[pointCountsOffset + ${props.points.length - 1}u];`
+    })
+  );
+  chunkFirstRow = 0;
+  for (const [chunkIndex, chunk] of getGraphViewChunks(props.points).entries()) {
+    if (chunk.length > 0) {
+      nodes.push(
+        createWGSLKernelNode<Parameters>(graph, {
+          id: `${getChunkNodeId(props.id, props.points, chunkIndex)}-write`,
+          operation: props.operation,
+          variant: 'probe-write',
+          bindings: getBindings(chunk, [
+            {name: 'pointOffsets', view: pointOffsets, type: 'u32', access: 'read'},
+            {
+              name: 'candidatePairs',
+              view: props.candidatePairs,
+              type: 'u32',
+              access: 'read_write'
+            },
+            {
+              name: 'candidatePoints',
+              view: props.candidatePoints,
+              type: 'f32',
+              access: 'read_write'
+            }
+          ]),
+          invocationCount: chunk.length,
+          declarations: declarations(chunkFirstRow),
+          body: probeBody(
+            `let slot = pointOffsets[pointOffsetsOffset + row] + found;
+        if (slot < CANDIDATE_CAPACITY) {
+          candidatePairs[candidatePairsOffset + slot * 2u] = row;
+          candidatePairs[candidatePairsOffset + slot * 2u + 1u] = featureRow;
+          let pointRow = slot * ${props.pointRowScale}u + ${props.pointRowOffset}u;
+          candidatePoints[candidatePointsOffset + pointRow * 2u] = point.x;
+          candidatePoints[candidatePointsOffset + pointRow * 2u + 1u] = point.y;
+        }
+        found = found + 1u;`,
+            '',
+            ''
+          )
         })
       );
     }
@@ -744,7 +836,7 @@ const CHUNK_FIRST_ROW: u32 = ${chunkFirstRow}u;`,
   return nodes;
 }
 
-/** Appends stable IDs of matched points into `matches.ids`, counting the total in state[2]. @internal */
+/** Stably compacts matched point IDs and writes the total to `state[2]`. @internal */
 export function getSpatialJoinCollectNodes<Parameters>(
   graph: GPUCommandGraph<Parameters>,
   props: {
@@ -760,44 +852,86 @@ export function getSpatialJoinCollectNodes<Parameters>(
   const nodes: GPUCommandNode<Parameters>[] = [];
   const sourceChunks = props.sourceIds ? getGraphViewChunks(props.sourceIds) : [];
   const capacity = props.matches.ids.length;
+  const pointCount = props.points.length;
+  if (pointCount === 0) {
+    return nodes;
+  }
+  const flags = createTransientView(graph, `${props.id}-flags`, 'uint32', pointCount);
+  const offsets = createTransientView(graph, `${props.id}-offsets`, 'uint32', pointCount);
   let chunkFirstRow = 0;
   for (const [chunkIndex, chunk] of getGraphViewChunks(props.points).entries()) {
     if (chunk.length > 0) {
-      const sourceChunk = sourceChunks[chunkIndex];
-      const bindings: WGSLKernelBinding[] = [
-        {name: 'assignment', view: props.assignment, type: 'u32', access: 'read'},
-        {name: 'state', view: props.state, type: 'atomic<u32>', access: 'read_write'}
-      ];
-      if (sourceChunk) {
-        bindings.push({name: 'sourceIds', view: sourceChunk, type: 'u32', access: 'read'});
-      }
-      if (capacity > 0) {
-        bindings.push({
-          name: 'matchIds',
-          view: props.matches.ids,
-          type: 'u32',
-          access: 'read_write'
-        });
-      }
       nodes.push(
         createWGSLKernelNode<Parameters>(graph, {
           id: getChunkNodeId(props.id, props.points, chunkIndex),
           operation: props.operation,
-          variant: 'collect-matches',
+          variant: 'collect-match-flags',
+          bindings: [
+            {name: 'assignment', view: props.assignment, type: 'u32', access: 'read'},
+            {name: 'flags', view: flags, type: 'u32', access: 'read_write'}
+          ],
+          invocationCount: chunk.length,
+          declarations: `${SPATIAL_JOIN_WGSL_HELPERS}
+const CHUNK_FIRST_ROW: u32 = ${chunkFirstRow}u;`,
+          body: `let row = CHUNK_FIRST_ROW + index;
+  flags[flagsOffset + row] = select(0u, 1u, assignment[assignmentOffset + row] != NO_FEATURE);`
+        })
+      );
+    }
+    chunkFirstRow += chunk.length;
+  }
+  nodes.push(
+    ...new GPUScan({
+      id: `${props.id}-scan`,
+      input: flags,
+      output: offsets,
+      mode: 'exclusive'
+    }).getCommandNodes(graph)
+  );
+  nodes.push(
+    createWGSLKernelNode<Parameters>(graph, {
+      id: `${props.id}-total`,
+      operation: props.operation,
+      variant: 'collect-match-total',
+      bindings: [
+        {name: 'flags', view: flags, type: 'u32', access: 'read'},
+        {name: 'offsets', view: offsets, type: 'u32', access: 'read'},
+        {name: 'state', view: props.state, type: 'u32', access: 'read_write'}
+      ],
+      invocationCount: 1,
+      body: `state[stateOffset + 2u] = offsets[offsetsOffset + ${pointCount - 1}u] + flags[flagsOffset + ${pointCount - 1}u];`
+    })
+  );
+  if (capacity === 0) {
+    return nodes;
+  }
+  chunkFirstRow = 0;
+  for (const [chunkIndex, chunk] of getGraphViewChunks(props.points).entries()) {
+    if (chunk.length > 0) {
+      const sourceChunk = sourceChunks[chunkIndex];
+      const bindings: WGSLKernelBinding[] = [
+        {name: 'flags', view: flags, type: 'u32', access: 'read'},
+        {name: 'offsets', view: offsets, type: 'u32', access: 'read'},
+        {name: 'matchIds', view: props.matches.ids, type: 'u32', access: 'read_write'}
+      ];
+      if (sourceChunk) {
+        bindings.push({name: 'sourceIds', view: sourceChunk, type: 'u32', access: 'read'});
+      }
+      nodes.push(
+        createWGSLKernelNode<Parameters>(graph, {
+          id: `${getChunkNodeId(props.id, props.points, chunkIndex)}-write`,
+          operation: props.operation,
+          variant: 'collect-match-write',
           bindings,
           invocationCount: chunk.length,
           declarations: `${SPATIAL_JOIN_WGSL_HELPERS}
 const CHUNK_FIRST_ROW: u32 = ${chunkFirstRow}u;
 const MATCH_CAPACITY: u32 = ${capacity}u;`,
           body: `let row = CHUNK_FIRST_ROW + index;
-  if (assignment[assignmentOffset + row] == NO_FEATURE) { return; }
-  let slot = atomicAdd(&state[stateOffset + 2u], 1u);
-  ${
-    capacity > 0
-      ? `if (slot < MATCH_CAPACITY) {
+  if (flags[flagsOffset + row] == 0u) { return; }
+  let slot = offsets[offsetsOffset + row];
+  if (slot < MATCH_CAPACITY) {
     matchIds[matchIdsOffset + slot] = ${sourceChunk ? 'sourceIds[sourceIdsOffset + index]' : 'row'};
-  }`
-      : ''
   }`
         })
       );
@@ -849,10 +983,10 @@ export function createSpatialJoinFinalizeNode<Parameters>(
       {name: 'matchCount', view: matches.count, type: 'u32', access: 'read_write'},
       {name: 'matchOverflow', view: matches.overflow, type: 'u32', access: 'read_write'}
     );
-    if (matches.totalCount) {
+    if (matches.requiredCount) {
       bindings.push({
         name: 'matchTotalCount',
-        view: matches.totalCount,
+        view: matches.requiredCount,
         type: 'u32',
         access: 'read_write'
       });
@@ -880,7 +1014,7 @@ const MATCH_CAPACITY: u32 = ${matchCapacity}u;`,
     matches
       ? `matchCount[matchCountOffset] = min(matchTotal, MATCH_CAPACITY);
   matchOverflow[matchOverflowOffset] = overflowValue;
-  ${matches.totalCount ? 'matchTotalCount[matchTotalCountOffset] = matchTotal;' : ''}`
+  ${matches.requiredCount ? 'matchTotalCount[matchTotalCountOffset] = matchTotal;' : ''}`
       : ''
   }`
   });

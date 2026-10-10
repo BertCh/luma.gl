@@ -306,7 +306,7 @@ export class GPUNetworkNeighborhood implements GPUCommandNodeProducer {
           createPublishNode<Parameters>(graph, {
             id: `${id}-edge-publish`,
             operation: OPERATION,
-            totalCount: total,
+            requiredCount: total,
             output: props.edges
           })
         );
@@ -347,7 +347,7 @@ function getCompactNodes<Parameters>(
     createPublishNode<Parameters>(graph, {
       id: `${id}-publish`,
       operation: OPERATION,
-      totalCount: total,
+      requiredCount: total,
       compactIds: direct ? undefined : compactIds,
       output
     })
@@ -365,10 +365,10 @@ function getOutputViews(
     props.nodes?.ids,
     props.nodes?.count,
     props.nodes?.overflow,
-    props.nodes?.totalCount,
+    props.nodes?.requiredCount,
     props.edges?.ids,
     props.edges?.count,
     props.edges?.overflow,
-    props.edges?.totalCount
+    props.edges?.requiredCount
   ];
 }

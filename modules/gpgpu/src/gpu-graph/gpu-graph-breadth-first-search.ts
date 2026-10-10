@@ -48,6 +48,7 @@ export type GPUGraphBreadthFirstSearchProps = {
  * select the lowest stable parent vertex identifier. Invalid or inactive seeds are ignored. Any
  * overflow in the selected adjacency direction leaves every distance and predecessor unreachable
  * and clears the optional mask, preventing partial topology from producing misleading paths.
+ * Expansion remains GPU-resident and dispatches only the compact active frontier at each depth.
  */
 export class GPUGraphBreadthFirstSearch {
   /** Prefix for generated command-graph nodes and imported-resource identifiers. */

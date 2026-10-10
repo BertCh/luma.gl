@@ -398,6 +398,10 @@ window.write(getGPUTimeWindowParameterValues({start: playhead, end: playhead}));
         'Warning polygons and reports appear through time over a quiet Plains paper map.',
       optionsMode: 'fresh',
       body: 'Press **Play** or scrub the UTC clock. Warning polygons are shown only while valid, and reports appear in a short trailing window. The live input readout keeps the report and polygon-version counts visible.\n\nThis opening view is not verification yet: it establishes the event layers that the next three tests will join.',
+      evidence:
+        'At **{{clock}}**, **{{activeWarnings}}** warning versions are valid and **{{reportsSeen}}** reports are visible within the selected trailing window; the complete inputs are **{{inputs}}**.',
+      caveat:
+        'Visible overlap is descriptive only. A report and polygon must still pass explicit spatial, temporal and hazard-compatibility rules.',
       camera: {...UPPER_MIDWEST_VIEW, transitionMs: 1400},
       options: {time: 38700, play: false, colorReportsBy: 'kind', reportMinutes: 90},
       controls: ['play', 'time', 'speed'],
@@ -411,6 +415,10 @@ window.write(getGPUTimeWindowParameterValues({start: playhead, end: playhead}));
         'Reports and warning outlines show the spatial-candidate stage of verification.',
       optionsMode: 'fresh',
       body: '**`GPUSpatialPredicateJoin`** indexes warning polygons, then emits report–polygon pairs that pass the selected spatial test. The join output exposes its candidate count and capacity state.\n\nTolerance is a rule choice: it changes which reports are close enough to an edge, and writes only a parameter buffer. Space alone cannot tell whether a polygon was valid then.',
+      evidence:
+        'The selected boundary rule yields **{{pairs}}** from **{{inputs}}** before warning validity or hazard type is considered.',
+      caveat:
+        'Boundary coordinates and the tolerance choice can change edge cases; a spatial candidate says nothing about whether the warning was active at report time.',
       camera: {...STORM_VIEW, transitionMs: 1400},
       options: {
         time: 54000,
@@ -431,6 +439,10 @@ window.write(getGPUTimeWindowParameterValues({start: playhead, end: playhead}));
         'Report verdict symbols retain no-warning rings while valid warning outlines remain visible.',
       optionsMode: 'fresh',
       body: 'The second kernel keeps candidates whose warning was valid at the report time; the grace control makes its policy visible. A no-warning report stays on the map rather than disappearing.\n\nThe three verdict symbols have redundant form as well as colour: verified, another warning type, and no active warning.',
+      evidence:
+        '**{{anyWarningShare}}** reports intersect a time-valid warning, while **{{unwarned}}** remain visible rather than leaving the denominator.',
+      caveat:
+        'Grace minutes are an analyst-selected policy, not part of the original warning validity interval; the hazard match is applied only in the next stage.',
       camera: {...STORM_VIEW, transitionMs: 1400},
       options: {
         time: 54000,
@@ -450,6 +462,10 @@ window.write(getGPUTimeWindowParameterValues({start: playhead, end: playhead}));
         'Verdict symbols and a kind chart show the hazard-matching stage of verification.',
       optionsMode: 'fresh',
       body: 'The final report-side test uses an allowed report-kind / warning-kind table. Change the matching rule to see the same spatial and temporal pairs receive different verdicts.\n\nThe kind chart prints **N** beside each category: a small kind should not be read like a stable rate. Every result retains the original report denominator.',
+      evidence:
+        'Under the selected matching rule, **{{verifiedShare}}** pass all three stages; the kind and funnel charts retain category counts and the full report denominator.',
+      caveat:
+        'Hazard taxonomies are not interchangeable, and percentages for small report kinds are unstable even when the overall denominator is visible.',
       camera: {...SOUTHERN_PLAINS_VIEW, transitionMs: 1400},
       options: {time: 54000, play: false, colorReportsBy: 'verdict', matching: 'hazard'},
       controls: ['matching', 'colorReportsBy'],
@@ -463,6 +479,10 @@ window.write(getGPUTimeWindowParameterValues({start: playhead, end: playhead}));
         'A lead-time histogram and verdict map distinguish valid matches from retained misses.',
       optionsMode: 'fresh',
       body: 'For verified reports, lead time is minutes from the earliest matching issue to the report. The histogram reads from the live join result and marks its median.\n\nNo-warning reports remain a separate verdict rather than being averaged away. Move tolerance or grace and the entire funnel and lead distribution update from the same result.',
+      evidence:
+        'Among matching reports, **{{medianLead}}**; separately, **{{warningsVerified}}** warning chains contain at least one compatible report.',
+      caveat:
+        'Lead time is conditional on a reported event that matched. Misses stay in the chart but have no lead value, and warnings without reports are not confirmed false alarms.',
       camera: {...STORM_VIEW, transitionMs: 1400},
       options: {
         time: 54000,
@@ -482,6 +502,10 @@ window.write(getGPUTimeWindowParameterValues({start: playhead, end: playhead}));
         'A verdict map and verification funnel explain reporting, boundary, and false-alarm limitations.',
       optionsMode: 'fresh',
       body: 'Reports depend on observers and reporting practice; polygons have boundary uncertainty; event taxonomy and a single time window shape the join. The report table cannot enumerate quiet places, so it cannot supply a false-alarm denominator.\n\nTry a different tolerance, grace period, or matching rule. Keep the counts and rule alongside the verified share rather than treating it as an official performance statistic.',
+      evidence:
+        'The sensitivity setting still exposes **{{verifiedShare}}**, **{{unwarned}}** and **{{warningsVerified}}** alongside the unchanged inputs: **{{inputs}}**.',
+      caveat:
+        'Reports are observer-dependent positive events, not a census of all hazardous and quiet places; this dataset cannot estimate an official false-alarm ratio.',
       camera: {...UPPER_MIDWEST_VIEW, transitionMs: 1400},
       options: {
         time: 45000,

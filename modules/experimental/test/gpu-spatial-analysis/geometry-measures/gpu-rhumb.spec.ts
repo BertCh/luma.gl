@@ -117,6 +117,7 @@ it('GPUGeodesicPairs rhumb matches the f64 closed form (pinned to turf)', async 
   };
   graph.add(
     new GPUGeodesicPairs({
+      spatialContext: {coordinateSpace: 'longitude-latitude', metric: 'rhumb', units: 'meters'},
       origins: importGraphBuffer(
         graph,
         'origins',
@@ -131,7 +132,7 @@ it('GPUGeodesicPairs rhumb matches the f64 closed form (pinned to turf)', async 
         'float32x2',
         count
       ),
-      model: 'rhumb',
+
       output: {
         distances: importGraphBuffer(graph, 'o-d', outputs.distances, 'float32', count),
         initialBearings: importGraphBuffer(graph, 'o-i', outputs.initialBearings, 'float32', count),
@@ -197,6 +198,7 @@ it('GPUGeodesicDestination rhumb matches the f64 closed form (pinned to turf)', 
   const finalBearings = track(createOutputBuffer(device, count));
   graph.add(
     new GPUGeodesicDestination({
+      spatialContext: {coordinateSpace: 'longitude-latitude', metric: 'rhumb', units: 'meters'},
       origins: importGraphBuffer(
         graph,
         'origins',
@@ -218,7 +220,7 @@ it('GPUGeodesicDestination rhumb matches the f64 closed form (pinned to turf)', 
         'float32',
         count
       ),
-      model: 'rhumb',
+
       output: {
         destinations: importGraphBuffer(graph, 'o-dest', destinations, 'float32x2', count),
         finalBearings: importGraphBuffer(graph, 'o-final', finalBearings, 'float32', count)

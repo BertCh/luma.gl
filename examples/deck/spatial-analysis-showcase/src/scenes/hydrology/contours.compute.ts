@@ -42,7 +42,7 @@ export type ContoursOptions = {
   slopeWindow: readonly [number, number];
   showBands: boolean;
   bandOpacity: number;
-  ramp: Extract<RampName, 'cividis' | 'viridis' | 'magma' | 'inferno' | 'grayscale'>;
+  ramp: Extract<RampName, 'isolum' | 'cividis' | 'viridis' | 'magma' | 'inferno' | 'grayscale'>;
   showLines: boolean;
   stitchLines: boolean;
   indexEvery: number;

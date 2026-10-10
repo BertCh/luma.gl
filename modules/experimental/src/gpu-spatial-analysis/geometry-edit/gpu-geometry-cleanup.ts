@@ -86,7 +86,7 @@ type GPUGeometryCleanupBaseOutput = {
   /** One-row scalar receiving `1` when the vertex capacity overflowed, otherwise `0`. */
   overflow: GraphDataView<'uint32'>;
   /** Optional one-row scalar receiving the unclamped vertex count. */
-  totalCount?: GraphDataView<'uint32'>;
+  requiredCount?: GraphDataView<'uint32'>;
 };
 
 /** Caller-owned, capacity-bounded point outputs of {@link GPUGeometryCleanup}. */
@@ -238,7 +238,7 @@ export class GPUGeometryCleanup implements GPUCommandNodeProducer {
     for (const [name, scalar] of [
       ['count', output.count],
       ['overflow', output.overflow],
-      ['totalCount', output.totalCount],
+      ['requiredCount', output.requiredCount],
       ['collapsedRings', outputCollapsedRings]
     ] as const) {
       if (scalar) {
@@ -255,7 +255,7 @@ export class GPUGeometryCleanup implements GPUCommandNodeProducer {
         outputRingOffsets,
         output.count,
         output.overflow,
-        output.totalCount,
+        output.requiredCount,
         outputCollapsedRings
       ],
       [props.positions, ringOffsets, props.parameters]
@@ -277,7 +277,7 @@ export class GPUGeometryCleanup implements GPUCommandNodeProducer {
         output.positions,
         output.count,
         output.overflow,
-        output.totalCount
+        output.requiredCount
       ]);
       return [
         createCleanupPointsNode<Parameters>(graph, {
@@ -288,7 +288,7 @@ export class GPUGeometryCleanup implements GPUCommandNodeProducer {
           outputPositions: output.positions,
           count: output.count,
           overflow: output.overflow,
-          totalCount: output.totalCount
+          requiredCount: output.requiredCount
         })
       ];
     }
@@ -301,7 +301,7 @@ export class GPUGeometryCleanup implements GPUCommandNodeProducer {
       output.ringOffsets,
       output.count,
       output.overflow,
-      output.totalCount,
+      output.requiredCount,
       output.collapsedRings
     ]);
     const vertexCount = props.positions.length;
@@ -359,7 +359,7 @@ export class GPUGeometryCleanup implements GPUCommandNodeProducer {
         outputRingOffsets: output.ringOffsets,
         count: output.count,
         overflow: output.overflow,
-        totalCount: output.totalCount,
+        requiredCount: output.requiredCount,
         capacity: output.positions.length
       })
     ];

@@ -52,7 +52,7 @@ type TileRun = {
   ids: number[];
   count: number;
   overflow: number;
-  totalCount: number;
+  requiredCount: number;
   statistics: number[];
   instanceCount: number;
   requestIds: number[];
@@ -110,7 +110,7 @@ function createTileFixture(device: Device, options: TileOptions = {}) {
     ids: output(capacity),
     count: output(1),
     overflow: output(1),
-    totalCount: output(1),
+    requiredCount: output(1),
     statistics: output(8),
     requestIds: output(requestCapacity),
     requestCount: output(1),
@@ -167,7 +167,7 @@ function createTileFixture(device: Device, options: TileOptions = {}) {
         ids: importGraphBuffer(graph, 'ids', buffers.ids, 'uint32', capacity),
         count: importGraphBuffer(graph, 'count', buffers.count, 'uint32', 1),
         overflow: importGraphBuffer(graph, 'overflow', buffers.overflow, 'uint32', 1),
-        totalCount: importGraphBuffer(graph, 'total', buffers.totalCount, 'uint32', 1)
+        requiredCount: importGraphBuffer(graph, 'total', buffers.requiredCount, 'uint32', 1)
       },
       requests: {
         ids: importGraphBuffer(graph, 'request-ids', buffers.requestIds, 'uint32', requestCapacity),
@@ -179,7 +179,7 @@ function createTileFixture(device: Device, options: TileOptions = {}) {
           'uint32',
           1
         ),
-        totalCount: importGraphBuffer(graph, 'request-total', buffers.requestTotal, 'uint32', 1),
+        requiredCount: importGraphBuffer(graph, 'request-total', buffers.requestTotal, 'uint32', 1),
         priorities: importGraphBuffer(
           graph,
           'request-priorities',
@@ -223,7 +223,7 @@ function createTileFixture(device: Device, options: TileOptions = {}) {
       ids: await readCompactIds(buffers.ids, buffers.count),
       count: (await readUint32(buffers.count, 1))[0],
       overflow: (await readUint32(buffers.overflow, 1))[0],
-      totalCount: (await readUint32(buffers.totalCount, 1))[0],
+      requiredCount: (await readUint32(buffers.requiredCount, 1))[0],
       statistics: await readUint32(buffers.statistics, 8),
       instanceCount: new Uint32Array(instanceBytes.buffer, instanceBytes.byteOffset, 1)[0],
       requestIds: await readUint32(buffers.requestIds, requestCount),
@@ -254,7 +254,7 @@ function createTileFixture(device: Device, options: TileOptions = {}) {
         budget: options.budget ? (state.budget ?? [UNLIMITED, UNLIMITED]) : undefined
       }
     );
-    expect(result.totalCount).toBe(oracle.drawnIds.length);
+    expect(result.requiredCount).toBe(oracle.drawnIds.length);
     expect(result.ids).toEqual(oracle.drawnIds.slice(0, capacity));
     expect(result.statistics).toEqual(oracle.statistics);
     expect(result.requestTotal).toBe(oracle.requestedIds.length);
@@ -301,7 +301,7 @@ it('GPUTileLODSelection sweeps thresholds per frame with statistics, indirect dr
     ids: [1200, 1201],
     count: 2,
     overflow: 1,
-    totalCount: 4,
+    requiredCount: 4,
     instanceCount: 2
   });
   result = await bounded.run(at(100));

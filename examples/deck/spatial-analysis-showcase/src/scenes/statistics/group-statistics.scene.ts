@@ -128,10 +128,15 @@ graph.add(new GPUGroupStatistics({
     {values: hour, statistics: ['mean', 'median', 'standardDeviation', 'percentiles', 'mode'], output: hourOutput},
     {values: researchGrade, statistics: ['sum', 'mean'], output: gradeOutput},
     {values: category, statistics: ['mode', 'uniqueCount'], output: categoryOutput},
-    {values: taxon, statistics: ['uniqueCount'], output: taxonOutput},
-    {values: introduced, statistics: ['mean'], output: introducedOutput}
+    {values: taxon, statistics: ['uniqueCount'], output: taxonOutput}
   ],
   output: {keys, counts, count, overflow}
+}));
+// A contributor accepts up to four value columns; additional columns reuse the same keys and mask.
+graph.add(new GPUGroupStatistics({
+  keys: observationArea, mask: filterMask, keyCount: 77,
+  columns: [{values: introduced, statistics: ['mean'], output: introducedOutput}],
+  output: introducedGroupTable
 }));
 
 // 1:n join: sum what lives in the tracts of each area. Income is joined as income x residents,

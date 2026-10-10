@@ -204,7 +204,7 @@ it('GPUCostDistancePath schedules a walk and publish node and validates props', 
       ids: createTransientView(graph, 'ids', 'uint32', 8),
       count: createTransientView(graph, 'count', 'uint32', 1),
       overflow: createTransientView(graph, 'overflow', 'uint32', 1),
-      totalCount: createTransientView(graph, 'total-count', 'uint32', 1)
+      requiredCount: createTransientView(graph, 'total-count', 'uint32', 1)
     }
   };
   const contributor = new GPUCostDistancePath(props);

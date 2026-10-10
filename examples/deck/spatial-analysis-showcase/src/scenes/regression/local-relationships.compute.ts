@@ -769,7 +769,7 @@ export async function createLocalRelationships(
             ...common,
             id: 'counties-r2',
             values: localR2Buffer,
-            colormap: 'viridis',
+            colormap: 'blues',
             valueRange: [0, 1]
           })
         );

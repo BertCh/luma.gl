@@ -285,6 +285,16 @@ export async function createGroupStatistics(
   const outputKeysBuffer = resources.createBuffer('output-keys', ZONE_COUNT * 4);
   const outputCountBuffer = resources.createBuffer('output-count', 4);
   const outputOverflowBuffer = resources.createBuffer('output-overflow', 4);
+  const introducedOutputKeysBuffer = resources.createBuffer(
+    'introduced-output-keys',
+    ZONE_COUNT * 4
+  );
+  const introducedOutputCountsBuffer = resources.createBuffer(
+    'introduced-output-counts',
+    ZONE_COUNT * 4
+  );
+  const introducedOutputCountBuffer = resources.createBuffer('introduced-output-count', 4);
+  const introducedOutputOverflowBuffer = resources.createBuffer('introduced-output-overflow', 4);
   const maskParameters = resources.createParameterBuffer('mask-parameters', 'uint32', 4);
   const percentileParameters = resources.createParameterBuffer(
     'percentiles',
@@ -332,6 +342,7 @@ export async function createGroupStatistics(
     const hour = bind.float(hourBuffer, observationCount);
     const category = bind.float(categoryBuffer, observationCount);
     const grade = bind.float(gradeBuffer, observationCount);
+    const minimum = minimumParameters.importToGraph(graph);
 
     // The filter mask is built on the GPU from the options (a four-word parameter write).
     addKernelPass(graph, {
@@ -414,11 +425,6 @@ export async function createGroupStatistics(
             values: bind.float(speciesBuffer, observationCount),
             statistics: ['uniqueCount'],
             output: {uniqueCounts: slots.view(SLOT.speciesUnique, 'uint32', ZONE_COUNT)}
-          },
-          {
-            values: bind.float(introducedBuffer, observationCount),
-            statistics: ['mean'],
-            output: {means: slots.view(SLOT.introducedMean, 'float32', ZONE_COUNT)}
           }
         ],
         output: {
@@ -426,6 +432,29 @@ export async function createGroupStatistics(
           counts: slots.view(SLOT.counts, 'uint32', ZONE_COUNT),
           count: bind.word(outputCountBuffer, 1),
           overflow: bind.word(outputOverflowBuffer, 1)
+        }
+      })
+    );
+    // One contributor accepts up to four value columns. Run the fifth against the same dense keys
+    // and mask with scratch group-table outputs; only its mean column is consumed downstream.
+    graph.add(
+      new GPUGroupStatistics({
+        id: 'nature-introduced-statistics',
+        keys: bind.word(keysBuffer, observationCount),
+        mask: maskView,
+        keyCount: ZONE_COUNT,
+        columns: [
+          {
+            values: bind.float(introducedBuffer, observationCount),
+            statistics: ['mean'],
+            output: {means: slots.view(SLOT.introducedMean, 'float32', ZONE_COUNT)}
+          }
+        ],
+        output: {
+          keys: bind.word(introducedOutputKeysBuffer, ZONE_COUNT),
+          counts: bind.word(introducedOutputCountsBuffer, ZONE_COUNT),
+          count: bind.word(introducedOutputCountBuffer, 1),
+          overflow: bind.word(introducedOutputOverflowBuffer, 1)
         }
       })
     );
@@ -478,7 +507,7 @@ export async function createGroupStatistics(
         },
         {
           name: 'minimum',
-          view: minimumParameters.importToGraph(graph),
+          view: minimum,
           type: 'u32',
           access: 'read'
         },
@@ -540,7 +569,7 @@ export async function createGroupStatistics(
       bindings: [
         {
           name: 'minimum',
-          view: minimumParameters.importToGraph(graph),
+          view: minimum,
           type: 'u32',
           access: 'read'
         },

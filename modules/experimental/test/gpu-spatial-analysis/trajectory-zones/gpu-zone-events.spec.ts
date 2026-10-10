@@ -71,7 +71,7 @@ function expectTableParity(actual: ZoneGPUResult, expected: ZoneOracleResult, la
   const cells = expected.visitCounts.flatMap((visits, cell) => (visits > 0 ? [cell] : []));
   const {table} = actual;
   expect(table.count, `${label} table count`).toBe(cells.length);
-  expect(table.totalCount, `${label} table total`).toBe(cells.length);
+  expect(table.requiredCount, `${label} table total`).toBe(cells.length);
   expect(table.overflow, `${label} table overflow`).toBe(0);
   for (const [row, cell] of cells.entries()) {
     const track = Math.floor(cell / zoneCount);
@@ -107,7 +107,7 @@ function expectParity(actual: ZoneGPUResult, expected: ZoneOracleResult, label: 
     y: actual.positions[2 * index + 1]
   }));
   expect(actual.count, `${label} count`).toBe(expected.events.length);
-  expect(actual.totalCount, `${label} total`).toBe(expected.events.length);
+  expect(actual.requiredCount, `${label} total`).toBe(expected.events.length);
   expect(actual.overflow, `${label} overflow`).toBe(0);
   // Global order: track, then time.
   for (let index = 1; index < actualEvents.length; index++) {
@@ -280,7 +280,7 @@ it('GPUZoneEvents bounds events per track and flags overflow', async () => {
     eventCapacity: 10
   });
   expect(clamped.count).toBe(10);
-  expect(clamped.totalCount).toBe(expected.events.length);
+  expect(clamped.requiredCount).toBe(expected.events.length);
   expect(clamped.overflow).toBe(1);
   expect([clamped.candidateOverflow, clamped.trackOverflow, clamped.eventOverflow]).toEqual([
     0, 0, 1
@@ -325,7 +325,7 @@ it('GPUZoneEvents bounds the sparse table and reports its total', async () => {
     eventCapacity: 2048,
     tableCapacity: 10
   });
-  expect(result.table.totalCount).toBe(visited);
+  expect(result.table.requiredCount).toBe(visited);
   expect(result.table.count).toBe(10);
   expect(result.table.overflow).toBe(1);
   // The kept rows are the first ten visited cells in track, zone order.

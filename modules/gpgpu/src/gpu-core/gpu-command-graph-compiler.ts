@@ -3,6 +3,7 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {GPUPlanningHeap} from './gpu-planning-heap';
+import {GPUPlanningOrderedSet} from './gpu-planning-ordered-set';
 import {Buffer, PipelineFactory, Texture, textureFormatDecoder} from '@luma.gl/core';
 import type {Device, TextureFormat} from '@luma.gl/core';
 import type {
@@ -755,8 +756,9 @@ function intervalsOverlap(
 /**
  * Assigns transient buffers to reusable physical allocations.
  *
- * The earliest available allocation is selected by smallest capacity. Capacity grows to the
- * largest assigned handle and usage flags are combined across all assigned handles.
+ * The smallest fitting available allocation is preferred. When every available allocation is
+ * undersized, the largest one grows to the requested capacity. Usage flags are combined across
+ * all assigned handles.
  */
 function getBufferTransientAllocationPlan<Parameters>(
   nodes: GPUCommandGraphNode<Parameters>[],
@@ -775,13 +777,13 @@ function getBufferTransientAllocationPlan<Parameters>(
         (right.lifetime?.firstUse ?? Number.MAX_SAFE_INTEGER)
     );
 
-  // Completed allocations enter a capacity-ordered pool. Each allocation changes heaps only
-  // once per lifetime; a large set of simultaneously live chunks no longer causes full scans.
+  // Completed allocations enter a capacity-ordered set. Lower-bound selection finds the smallest
+  // sufficient allocation; when none fits, the largest allocation is the cheapest one to grow.
   type Candidate = {allocation: BufferTransientAllocation; index: number};
   const active = new GPUPlanningHeap<Candidate>(
     (left, right) => left.allocation.lastUse - right.allocation.lastUse || left.index - right.index
   );
-  const available = new GPUPlanningHeap<Candidate>(
+  const available = new GPUPlanningOrderedSet<Candidate>(
     (left, right) =>
       left.allocation.byteLength - right.allocation.byteLength || left.index - right.index
   );
@@ -791,9 +793,18 @@ function getBufferTransientAllocationPlan<Parameters>(
       continue;
     }
     while (active.peek() && active.peek()!.allocation.lastUse < lifetime.firstUse) {
-      available.push(active.pop()!);
+      available.add(active.pop()!);
     }
-    let candidate = available.pop();
+    const lowerBound = {
+      allocation: {
+        byteLength: buffer.byteLength,
+        usage: 0,
+        lastUse: -1,
+        handles: []
+      },
+      index: -1
+    };
+    let candidate = available.takeLowerBound(lowerBound) ?? available.takeMaximum();
     if (!candidate) {
       candidate = {
         allocation: {byteLength: 0, usage: 0, lastUse: -1, handles: []},

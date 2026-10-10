@@ -479,7 +479,7 @@ import {GPUTemporalReduction, getGPUTemporalReductionParameterValues} from '@lum
 // timestamps: float32 seconds since 15 July, trackOffsets: uint32 (31 birds + 1)
 
 // 1. Metrics and stopovers
-graph.add(new GPUTrajectoryMetrics({
+graph.add(new GPUTrajectoryMetrics({spatialContext: {coordinateSpace: 'planar', metric: 'native', units: 'native'},
   positions, timestamps, trackOffsets, parameters: stopParameters.importToGraph(graph),
   trackLengths, averageSpeeds, maximumSpeeds, stepSpeeds, trackStopCounts,
   stops: {output: {ids, count, overflow}, centroids, durations, startRows, endRows}

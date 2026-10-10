@@ -217,7 +217,7 @@ export function createLineClipPublishNode<Parameters>(
     totals: GraphDataView<'uint32'>;
     count: GraphDataView<'uint32'>;
     overflow: GraphDataView<'uint32'>;
-    totalCount?: GraphDataView<'uint32'>;
+    requiredCount?: GraphDataView<'uint32'>;
   }
 ): GPUCommandNode<Parameters> {
   const bindings: WGSLKernelBinding[] = [
@@ -229,8 +229,8 @@ export function createLineClipPublishNode<Parameters>(
     {name: 'countOut', view: props.count, type: 'u32', access: 'read_write'},
     {name: 'overflowOut', view: props.overflow, type: 'u32', access: 'read_write'}
   ];
-  if (props.totalCount) {
-    bindings.push({name: 'totalOut', view: props.totalCount, type: 'u32', access: 'read_write'});
+  if (props.requiredCount) {
+    bindings.push({name: 'totalOut', view: props.requiredCount, type: 'u32', access: 'read_write'});
   }
   const last = props.starts.length - 1;
   return createWGSLKernelNode<Parameters>(graph, {
@@ -246,7 +246,7 @@ export function createLineClipPublishNode<Parameters>(
   totals[totalsOffset + 1u] = pathClamped;
   countOut[countOutOffset] = min(vertexTotal, ${props.capacity}u);
   overflowOut[overflowOutOffset] = select(0u, 1u, vertexTotal > ${props.capacity}u || pathTotal > ${props.pathCapacity}u);
-  ${props.totalCount ? 'totalOut[totalOutOffset] = vertexTotal;' : ''}`
+  ${props.requiredCount ? 'totalOut[totalOutOffset] = vertexTotal;' : ''}`
   });
 }
 
@@ -498,7 +498,7 @@ export function createPolygonPublishNode<Parameters>(
     stageFlags: GraphDataView<'uint32'>;
     count: GraphDataView<'uint32'>;
     overflow: GraphDataView<'uint32'>;
-    totalCount?: GraphDataView<'uint32'>;
+    requiredCount?: GraphDataView<'uint32'>;
     pathCount?: GraphDataView<'uint32'>;
   }
 ): GPUCommandNode<Parameters> {
@@ -507,8 +507,8 @@ export function createPolygonPublishNode<Parameters>(
     {name: 'countOut', view: props.count, type: 'u32', access: 'read_write'},
     {name: 'overflowOut', view: props.overflow, type: 'u32', access: 'read_write'}
   ];
-  if (props.totalCount) {
-    bindings.push({name: 'totalOut', view: props.totalCount, type: 'u32', access: 'read_write'});
+  if (props.requiredCount) {
+    bindings.push({name: 'totalOut', view: props.requiredCount, type: 'u32', access: 'read_write'});
   }
   if (props.pathCount) {
     bindings.push({name: 'pathCountOut', view: props.pathCount, type: 'u32', access: 'read_write'});
@@ -527,7 +527,7 @@ export function createPolygonPublishNode<Parameters>(
   }
   countOut[countOutOffset] = min(finalTotal, ${props.capacity}u);
   overflowOut[overflowOutOffset] = select(0u, 1u, overflow);
-  ${props.totalCount ? 'totalOut[totalOutOffset] = finalTotal;' : ''}
+  ${props.requiredCount ? 'totalOut[totalOutOffset] = finalTotal;' : ''}
   ${props.pathCount ? `pathCountOut[pathCountOutOffset] = ${props.ringCount}u;` : ''}`
   });
 }

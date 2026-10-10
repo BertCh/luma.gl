@@ -14,7 +14,13 @@ import {
   GPUSpatialRegressionDiagnostics
 } from '../spatial-regression/index';
 import type {GPUSpatialWeights} from '../spatial-weights/index';
-import {assertRecipe, getOrCreateView, RecipeBuilder, type GPURecipeResult} from './recipe-utils';
+import {
+  assertRecipe,
+  getOrCreateView,
+  RecipeBuilder,
+  type GPURecipeOverrides,
+  type GPURecipeResult
+} from './recipe-utils';
 
 /** Optional geographically weighted fits added to the regression recipe. */
 export type GPUSpatialRegressionLocalFitOptions = {
@@ -26,22 +32,42 @@ export type GPUSpatialRegressionLocalFitOptions = {
   maximumBandwidthCount?: number;
   /** Compile-time adaptive neighbor bound (default of the contributor: 128). */
   maximumNeighborCount?: number;
-  /** Caller-owned local coefficients, `rowCount * (predictorCount + 1)` rows. */
-  coefficients?: GraphDataView<'float32'>;
-  /** Caller-owned local R squared per row. */
-  localR2?: GraphDataView<'float32'>;
-  /** Caller-owned local residuals. */
-  residuals?: GraphDataView<'float32'>;
-  /** Caller-owned `[ladder index, bandwidth]`. */
-  selectedBandwidth?: GraphDataView<'float32'>;
-  /** Caller-owned per-row status. */
-  localStatus?: GraphDataView<'uint32'>;
-  /** Caller-owned global summary (`GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_SUMMARY_LENGTH` rows). */
-  summary?: GraphDataView<'float32'>;
 };
 
 /** Properties for {@link addSpatialRegressionRecipe}. */
-export type GPUSpatialRegressionRecipeProps = {
+export type GPUSpatialRegressionRecipeProps = GPURecipeOverrides<
+  Record<never, never>,
+  {
+    ols?: {
+      coefficients?: GraphDataView<'float32'>;
+      standardErrors?: GraphDataView<'float32'>;
+      tStatistics?: GraphDataView<'float32'>;
+      summary?: GraphDataView<'float32'>;
+      status?: GraphDataView<'uint32'>;
+      residuals?: GraphDataView<'float32'>;
+      fitted?: GraphDataView<'float32'>;
+    };
+    diagnostics?: {
+      tests?: GraphDataView<'float32'>;
+      summary?: GraphDataView<'float32'>;
+      status?: GraphDataView<'uint32'>;
+    };
+    residualMoran?: {
+      zScores?: GraphDataView<'float32'>;
+      localI?: GraphDataView<'float32'>;
+      quadrants?: GraphDataView<'uint32'>;
+      pValues?: GraphDataView<'float32'>;
+    };
+    localFits?: {
+      coefficients?: GraphDataView<'float32'>;
+      localR2?: GraphDataView<'float32'>;
+      residuals?: GraphDataView<'float32'>;
+      selectedBandwidth?: GraphDataView<'float32'>;
+      localStatus?: GraphDataView<'uint32'>;
+      summary?: GraphDataView<'float32'>;
+    };
+  }
+> & {
   /** Prefix for every node and transient ID. Defaults to `'spatial-regression'`. */
   id?: string;
   /** Row-major `row * predictorCount + column` predictors, without intercept. */
@@ -62,29 +88,6 @@ export type GPUSpatialRegressionRecipeProps = {
   olsParameters?: GraphDataView<'float32'>;
   /** Rows per tile of the OLS and diagnostics reductions. */
   tileRowCount?: number;
-  /** Caller-owned OLS outputs; missing ones are graph-owned transients. */
-  ols?: {
-    coefficients?: GraphDataView<'float32'>;
-    standardErrors?: GraphDataView<'float32'>;
-    tStatistics?: GraphDataView<'float32'>;
-    summary?: GraphDataView<'float32'>;
-    status?: GraphDataView<'uint32'>;
-    residuals?: GraphDataView<'float32'>;
-    fitted?: GraphDataView<'float32'>;
-  };
-  /** Caller-owned diagnostics outputs. */
-  diagnostics?: {
-    tests?: GraphDataView<'float32'>;
-    summary?: GraphDataView<'float32'>;
-    status?: GraphDataView<'uint32'>;
-  };
-  /** Caller-owned residual local Moran outputs. */
-  residualMoran?: {
-    zScores?: GraphDataView<'float32'>;
-    localI?: GraphDataView<'float32'>;
-    quadrants?: GraphDataView<'uint32'>;
-    pValues?: GraphDataView<'float32'>;
-  };
   /** Geographically weighted local fits; skipped when absent. */
   localFits?: GPUSpatialRegressionLocalFitOptions;
 };
@@ -138,6 +141,7 @@ export function addSpatialRegressionRecipe<Parameters>(
 ): GPUSpatialRegressionRecipeResult {
   const id = props.id ?? 'spatial-regression';
   const builder = new RecipeBuilder(graph);
+  const outputOverrides = props.outputs ?? {};
   const rowCount = props.response.length;
   const {predictorCount} = props;
   assertRecipe(
@@ -146,7 +150,7 @@ export function addSpatialRegressionRecipe<Parameters>(
     'predictors must hold rowCount * predictorCount values'
   );
 
-  const olsInput = props.ols ?? {};
+  const olsInput = outputOverrides.ols ?? {};
   const ols = {
     coefficients: getOrCreateView(
       graph,
@@ -192,7 +196,7 @@ export function addSpatialRegressionRecipe<Parameters>(
     })
   );
 
-  const diagnosticsInput = props.diagnostics ?? {};
+  const diagnosticsInput = outputOverrides.diagnostics ?? {};
   const diagnostics = {
     tests: getOrCreateView(
       graph,
@@ -223,7 +227,7 @@ export function addSpatialRegressionRecipe<Parameters>(
     })
   );
 
-  const moranInput = props.residualMoran ?? {};
+  const moranInput = outputOverrides.residualMoran ?? {};
   const residualMoran = {
     zScores: getOrCreateView(graph, `${id}-moran-z`, 'float32', rowCount, moranInput.zScores),
     localI: getOrCreateView(graph, `${id}-moran-i`, 'float32', rowCount, moranInput.localI),
@@ -251,47 +255,56 @@ export function addSpatialRegressionRecipe<Parameters>(
     rowCount,
     ols,
     diagnostics,
-    residualMoran
+    residualMoran,
+    outputs: {ols, diagnostics, residualMoran},
+    intermediates: {},
+    status: {
+      stages: [
+        {stage: 'ordinary-least-squares', status: {invalidCount: ols.status}},
+        {stage: 'spatial-diagnostics', status: {invalidCount: diagnostics.status}}
+      ]
+    }
   };
 
   const local = props.localFits;
   if (local) {
+    const provided = outputOverrides.localFits ?? {};
     const outputs = {
       coefficients: getOrCreateView(
         graph,
         `${id}-local-coefficients`,
         'float32',
         rowCount * (predictorCount + 1),
-        local.coefficients
+        provided.coefficients
       ),
-      localR2: getOrCreateView(graph, `${id}-local-r2`, 'float32', rowCount, local.localR2),
+      localR2: getOrCreateView(graph, `${id}-local-r2`, 'float32', rowCount, provided.localR2),
       residuals: getOrCreateView(
         graph,
         `${id}-local-residuals`,
         'float32',
         rowCount,
-        local.residuals
+        provided.residuals
       ),
       selectedBandwidth: getOrCreateView(
         graph,
         `${id}-selected-bandwidth`,
         'float32',
         2,
-        local.selectedBandwidth
+        provided.selectedBandwidth
       ),
       localStatus: getOrCreateView(
         graph,
         `${id}-local-status`,
         'uint32',
         rowCount,
-        local.localStatus
+        provided.localStatus
       ),
       summary: getOrCreateView(
         graph,
         `${id}-local-summary`,
         'float32',
         GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_SUMMARY_LENGTH,
-        local.summary
+        provided.summary
       )
     };
     builder.add(
@@ -308,6 +321,7 @@ export function addSpatialRegressionRecipe<Parameters>(
       })
     );
     result.localFits = outputs;
+    result.outputs['localFits'] = outputs;
   }
   return result;
 }

@@ -20,7 +20,9 @@ export type {GPUGreatCircleArcsProps} from './gpu-great-circle-arcs';
 export {
   getGPUGreatCircleArcsParameterValues,
   getGPULineSegmentizeParameterValues,
-  GPU_LINE_SEGMENTIZE_PARAMETER_LENGTH
+  GPU_GREAT_CIRCLE_ARCS_PARAMETER_SCHEMA,
+  GPU_LINE_SEGMENTIZE_PARAMETER_LENGTH,
+  GPU_LINE_SEGMENTIZE_PARAMETER_SCHEMA
 } from './line-segmentize-parameters';
 export type {
   GPUGreatCircleArcsParameters,

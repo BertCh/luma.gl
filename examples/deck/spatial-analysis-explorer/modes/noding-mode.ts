@@ -146,6 +146,7 @@ export const nodingMode: SpatialAnalysisModeDefinition = {
     const rowPieces = resources.createBuffer('row-pieces', vertexCapacity * 4);
     const rowCosts = resources.createBuffer('row-costs', vertexCapacity * 4);
     const nodeDegrees = resources.createBuffer('node-degrees', nodeCapacity * 4);
+    const pieceOverflow = resources.createBuffer('piece-overflow', 4);
 
     const graph = new GPUCommandGraph<void>(device, {id: 'noding'});
     const scalarView = <Format extends 'uint32' | 'float32'>(
@@ -187,16 +188,22 @@ export const nodingMode: SpatialAnalysisModeDefinition = {
         intersectionCapacity,
         tolerance: tolerance.importToGraph(graph),
         pieces: {
-          lineIds: views.pieceLines,
-          offsets: views.pieceOffsets,
-          positions: views.piecePositions,
-          count: views.pieceCount,
-          totalCount: scalarView('piece-total', pieceTotal, 'uint32', 1)
+          geometry: {
+            kind: 'lines',
+            positions: views.piecePositions,
+            lineOffsets: views.pieceOffsets
+          },
+          sourceIds: views.pieceLines,
+          status: {
+            count: views.pieceCount,
+            overflow: scalarView('piece-overflow', pieceOverflow, 'uint32', 1),
+            requiredCount: scalarView('piece-total', pieceTotal, 'uint32', 1)
+          }
         },
         nodes: {
           positions: views.nodePositions,
           count: views.nodeCount,
-          totalCount: scalarView('node-total', nodeTotal, 'uint32', 1)
+          requiredCount: scalarView('node-total', nodeTotal, 'uint32', 1)
         },
         edges: {
           fromNodes: views.fromNodes,

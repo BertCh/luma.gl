@@ -1321,7 +1321,7 @@ export default class BillionPointSpatialAtlasAnimationLoopTemplate extends Anima
       length: 1,
       byteOffset: resources.drawCommands.getInstanceCountByteOffset(0)
     });
-    const totalCount = graph.createDataView(totalCountBuffer, {format: 'uint32', length: 1});
+    const requiredCount = graph.createDataView(totalCountBuffer, {format: 'uint32', length: 1});
     const overflow = graph.createDataView(queryOverflowBuffer, {format: 'uint32', length: 1});
     const intersectedCellCount = graph.createDataView(queryDiagnosticsBuffer, {
       format: 'uint32',
@@ -1372,7 +1372,7 @@ export default class BillionPointSpatialAtlasAnimationLoopTemplate extends Anima
         : {}),
       intersectedCellCount,
       candidateCount,
-      output: {ids, count, overflow, totalCount}
+      output: {ids, count, overflow, requiredCount}
     }).addToGraph(graph);
 
     const sceneColorView = graph.createTextureView(sceneColor);

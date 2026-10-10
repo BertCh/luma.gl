@@ -72,6 +72,46 @@ it('GPUPointDensity orders weighted grid steps', () => {
   device.destroy();
 });
 
+it('GPUPointDensity auto sum accumulation avoids workgroup scans for diffuse inputs', () => {
+  const device = createNullWebGPUDevice();
+  const graph = new GPUCommandGraph(device);
+  const createWeightedDensity = (
+    id: string,
+    rowCount: number,
+    gridSize: readonly [number, number],
+    sumAccumulation?: GPUPointDensityProps['sumAccumulation']
+  ) => {
+    const cellCount = gridSize[0] * gridSize[1];
+    return new GPUPointDensity({
+      id,
+      positions: createTransientView(graph, `${id}-positions`, 'float32x2', rowCount),
+      weights: createTransientView(graph, `${id}-weights`, 'float32', rowCount),
+      bounds: [0, 0, 1, 1],
+      gridSize,
+      sumAccumulation,
+      statistic: 'sum',
+      output: {values: createTransientView(graph, `${id}-values`, 'float32', cellCount)}
+    });
+  };
+  const getIds = (density: GPUPointDensity) => density.getCommandNodes(graph).map(node => node.id);
+
+  const diffuse = createWeightedDensity('diffuse', 4096, [256, 256]);
+  expect(diffuse.sumAccumulation).toBe('atomic');
+  expect(getIds(diffuse)).not.toContain('diffuse-sums-grid-keys-0');
+
+  const dense = createWeightedDensity('dense', 8192, [16, 16]);
+  expect(dense.sumAccumulation).toBe('workgroup');
+  expect(getIds(dense)).toContain('dense-sums-grid-keys-0');
+
+  expect(createWeightedDensity('forced-atomic', 8192, [16, 16], 'atomic').sumAccumulation).toBe(
+    'atomic'
+  );
+  expect(
+    createWeightedDensity('forced-workgroup', 4096, [256, 256], 'workgroup').sumAccumulation
+  ).toBe('workgroup');
+  device.destroy();
+});
+
 it('GPUPointDensity emits one hexagon keys node per nonempty chunk', () => {
   const device = createNullWebGPUDevice();
   const graph = new GPUCommandGraph(device);

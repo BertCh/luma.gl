@@ -100,6 +100,7 @@ function createHarness(device: Device, tracks: TrajectoryTracks, capacity: numbe
   ) => importGraphBuffer(graph, id, buffer, format, length);
   graph.add(
     new GPUTrajectoryMetrics({
+      spatialContext: {coordinateSpace: 'planar', metric: 'native', units: 'native'},
       positions: importView('positions', positionsBuffer, 'float32x2', rowCount),
       timestamps: importView('timestamps', timestampsBuffer, 'float32', rowCount),
       trackOffsets: importView('offsets', offsetsBuffer, 'uint32', trackCount + 1),
@@ -114,7 +115,7 @@ function createHarness(device: Device, tracks: TrajectoryTracks, capacity: numbe
           ids: importView('stop-ids', outputs.stopIds, 'uint32', capacity),
           count: importView('count', outputs.count, 'uint32', 1),
           overflow: importView('overflow', outputs.overflow, 'uint32', 1),
-          totalCount: importView('total', outputs.total, 'uint32', 1)
+          requiredCount: importView('total', outputs.total, 'uint32', 1)
         },
         startRows: importView('stop-starts', outputs.stopStarts, 'uint32', capacity),
         endRows: importView('stop-ends', outputs.stopEnds, 'uint32', capacity),
@@ -417,6 +418,7 @@ it('GPUTrajectoryMetrics supports minimal output subsets', async () => {
   const averageGraph = new GPUCommandGraph(device, {id: 'subset-average'});
   averageGraph.add(
     new GPUTrajectoryMetrics({
+      spatialContext: {coordinateSpace: 'planar', metric: 'native', units: 'native'},
       positions: importGraphBuffer(averageGraph, 'p', positions, 'float32x2', rowCount),
       timestamps: importGraphBuffer(averageGraph, 't', timestamps, 'float32', rowCount),
       trackOffsets: importGraphBuffer(averageGraph, 'o', offsets, 'uint32', trackCount + 1),
@@ -433,6 +435,7 @@ it('GPUTrajectoryMetrics supports minimal output subsets', async () => {
   const countGraph = new GPUCommandGraph(device, {id: 'subset-count'});
   countGraph.add(
     new GPUTrajectoryMetrics({
+      spatialContext: {coordinateSpace: 'planar', metric: 'native', units: 'native'},
       positions: importGraphBuffer(countGraph, 'p', positions, 'float32x2', rowCount),
       timestamps: importGraphBuffer(countGraph, 't', timestamps, 'float32', rowCount),
       trackOffsets: importGraphBuffer(countGraph, 'o', offsets, 'uint32', trackCount + 1),
@@ -449,6 +452,7 @@ it('GPUTrajectoryMetrics supports minimal output subsets', async () => {
   const idGraph = new GPUCommandGraph(device, {id: 'subset-ids'});
   idGraph.add(
     new GPUTrajectoryMetrics({
+      spatialContext: {coordinateSpace: 'planar', metric: 'native', units: 'native'},
       positions: importGraphBuffer(idGraph, 'p', positions, 'float32x2', rowCount),
       timestamps: importGraphBuffer(idGraph, 't', timestamps, 'float32', rowCount),
       trackOffsets: importGraphBuffer(idGraph, 'o', offsets, 'uint32', trackCount + 1),

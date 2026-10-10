@@ -39,7 +39,7 @@ export type CrossfilterInterfaceCallbacks = {
 
 /** Optional instrumentation is omitted until the application can report a real value. */
 export type CrossfilterSummaryDisplay = {
-  totalCount: number;
+  requiredCount: number;
   selectedCount: number;
   frameRate?: number;
   readbackTimeMilliseconds?: number;
@@ -170,7 +170,7 @@ export class CrossfilterInterface {
     this.observeResize();
     this.setGroups(DEFAULT_GROUPS);
     this.setFilters([]);
-    this.setSummary({totalCount: 1_048_576, selectedCount: 1_048_576});
+    this.setSummary({requiredCount: 1_048_576, selectedCount: 1_048_576});
     this.setStatus(
       'Synthetic signal field ready · drag any view to compose a GPU-native selection.'
     );
@@ -178,7 +178,7 @@ export class CrossfilterInterface {
 
   /** Updates only existing text nodes, avoiding reflow while the render loop is active. */
   setSummary(summary: CrossfilterSummaryDisplay): void {
-    const safeTotalCount = Math.max(0, Math.floor(summary.totalCount));
+    const safeTotalCount = Math.max(0, Math.floor(summary.requiredCount));
     const safeSelectedCount = Math.max(0, Math.floor(summary.selectedCount));
     const selectedPercentage =
       safeTotalCount === 0 ? 0 : Math.min(100, (safeSelectedCount / safeTotalCount) * 100);

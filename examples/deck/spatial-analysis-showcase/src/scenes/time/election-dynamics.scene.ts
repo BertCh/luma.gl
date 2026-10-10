@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {ground} from '../../cartography/grounds';
 import {defineScene} from '../scene';
 import type {ElectionDynamicsOptions} from './election-dynamics.compute';
 
@@ -22,7 +23,7 @@ const TURNOUT_COLORS = [
   [253, 231, 37, 245]
 ] as const;
 const LISA = [
-  {color: [120, 130, 145, 120], label: 'Not significant'},
+  {color: [120, 130, 145, 80], label: 'Not significant'},
   {color: [215, 48, 39, 250], label: 'HH: high, high neighbors'},
   {color: [145, 191, 219, 250], label: 'LH: low, high neighbors'},
   {color: [49, 54, 149, 250], label: 'LL: low, low neighbors'},
@@ -38,11 +39,11 @@ const variableName = (variable: ElectionDynamicsOptions['variable']) =>
 
 export default defineScene<ElectionDynamicsOptions>({
   id: 'election-dynamics',
-  title: 'Do counties change sides, and do their neighbors matter?',
+  title: 'US county vote-class transitions, 2000–2024',
   chapter: 'time',
   order: 3,
   summary:
-    'Presidential voting in 3,100 US counties from 2000 to 2024, classified once and followed through time. Markov transition matrices show how often a county stays in its class, the spatial Markov conditions that on its neighbors, and the LISA Markov follows local clusters.',
+    'Transition, spatial Markov and LISA Markov models use county presidential returns from 2000–2024 to map class persistence and neighbor-conditioned change; county units, missing returns and class breaks constrain comparisons.',
   contributors: ['GPUTransitionMatrix', 'GPUSpatialMarkov', 'GPULISAMarkov'],
   datasets: [
     {id: 'us-counties', role: 'county boundaries'},
@@ -50,6 +51,16 @@ export default defineScene<ElectionDynamicsOptions>({
     {id: 'us-states', role: 'state outlines'}
   ],
   initialView: {longitude: -96.2, latitude: 38.2, zoom: 3.6},
+  basemap: ground('paperCity'),
+  furniture: {
+    title: {
+      title: 'US county vote transitions',
+      subtitle: 'Presidential returns, 2000–2024'
+    },
+    scaleBar: {units: 'metric'},
+    credit: 'MIT Election Data and Science Lab; US Census Bureau',
+    caveat: 'Results count counties, not voters; some 2024 county returns are unavailable.'
+  },
 
   options: [
     {
@@ -409,6 +420,9 @@ lisaParameters.write(getGPUSpatialAutocorrelationParameterValues(
     {
       id: 'question',
       title: "How sticky is a county's vote?",
+      headline: 'Most counties remain in the same vote class',
+      textAlternative:
+        'US counties are assigned consistent red-to-blue vote-share classes for the selected presidential election.',
       body: 'Presidential returns for about 3,000 US counties, 2000 to 2024. Each county-year is put in one of five classes of Democratic two-party share, using **one set of breaks for all years** so a color means the same share in 2000 and in 2024. Red classes are Republican-leaning, blue Democratic-leaning.\n\nDrag the **Election** slider or tick **Play through the elections** below to watch the map change. **Variable** picks what is classified. Most counties barely move; the interesting question is how many move, which way, and whether it depends on the neighbors.',
       options: {mapView: 'class', year: 6},
       controls: ['variable', 'year', 'play'],
@@ -417,6 +431,9 @@ lisaParameters.write(getGPUSpatialAutocorrelationParameterValues(
     {
       id: 'classes',
       title: 'Classes: equal bands or equal counts',
+      headline: 'Class definitions change county assignments',
+      textAlternative:
+        'The county map and class-edge readout update as equal-interval, quantile or natural-break definitions are selected.',
       body: '**`GPUClassBreaks`** computes breaks over the pooled county-years and **`GPUClassAssignment`** puts every county-year in a class. With equal-interval breaks the readout **Class edges** are vote-share bands; with *quantile* each class holds the same number of county-years and classes mean relative standing, which hides a national swing.\n\nTry **Class method** *Natural breaks (Jenks)* and a lower **Number of classes**. The class method and count are per-frame parameters; the whole chain re-runs without recompiling. The 2024 returns are rebuilt from precinct data and are missing for Indiana, Louisiana, New Jersey, New York and Alaska, so those states are blank when 2024 is included.',
       options: {year: 0},
       camera: {zoom: 3.6, transitionMs: 1000},
@@ -426,6 +443,9 @@ lisaParameters.write(getGPUSpatialAutocorrelationParameterValues(
     {
       id: 'markov',
       title: 'The transition matrix: how often does a county stay put?',
+      headline: 'Middle vote classes change most often',
+      textAlternative:
+        'County move colors accompany a transition matrix whose diagonal reports persistence between presidential elections.',
       body: '**`GPUTransitionMatrix`** counts, for every pair of consecutive elections, how many counties moved from class a to class b. Each row of the matrix is the class now, each column the class one election (four years) later, and the numbers are probabilities (`p_ab = n_ab / n_a`). A strong diagonal means persistence.\n\nThe readouts below show the rows of the matrix chosen in **Transition matrix shown**, and the share of transitions that stayed in the same class. Counties in the middle classes are the likeliest to move, since they have a neighbor class on both sides; the extreme classes can only move one way. Switch **Transition step** to two elections (eight years) and the diagonal typically weakens: longer steps give more time to move.',
       options: {matrix: 'pooled', mapView: 'move', year: 4},
       highlight: {readout: 'stay'},
@@ -435,6 +455,9 @@ lisaParameters.write(getGPUSpatialAutocorrelationParameterValues(
     {
       id: 'spatial-markov',
       title: 'Does the neighborhood matter? The spatial Markov',
+      headline: 'Persistence differs by neighboring vote class',
+      textAlternative:
+        'Counties are shaded by neighbor-average class while conditioned transition rows compare low, middle and high surroundings.',
       body: "**`GPUSpatialMarkov`** repeats the matrix but splits every transition by the class of the **average of the county's neighbors** at the start (queen contiguity, row-standardised). Three matrices result: for counties in low, middle and high surroundings.\n\nIf the three matrices were the same, location would not matter. Switch **Transition matrix shown** between *low-lag*, *middle-lag* and *high-lag* and compare the rows and **Stay by neighbors**. Setting **Map shows** to *Class of the neighbors' average* shows the context itself. The lag classes come from their own pooled breaks, set by **Neighbor class method** and **Neighbor classes**.",
       options: {matrix: 'lag0', mapView: 'lag', year: 6},
       highlight: {readout: 'stayLag'},
@@ -444,6 +467,9 @@ lisaParameters.write(getGPUSpatialAutocorrelationParameterValues(
     {
       id: 'lisa-markov',
       title: 'Clusters through time: the LISA Markov',
+      headline: 'Local Moran states persist across elections',
+      textAlternative:
+        'Counties are classified as high-high, low-low, spatial outliers or nonsignificant for the selected election.',
       body: '**`GPULISAMarkov`** runs a local Moran test in each election and counts how counties move between the states HH (high among high), LL (low among low), LH, HL and not significant. HH and LL are the regional blocs, for example the Democratic urban and coastal counties and the Republican Great Plains and South.\n\nThe **Local Moran reference** choice matters: on each year\'s own mean, "high" is relative to that election; pooled, "high" means above the 24-year mean, so a national shift moves counties between states. The test is analytic (a z-test), not a permutation test, so p-values differ from esda\'s permutation inference. **LISA significance level** sets the threshold.',
       options: {matrix: 'lisa', mapView: 'lisa', year: 6, lisaSignificance: 0.05},
       highlight: {readout: 'stayLisa'},
@@ -453,6 +479,9 @@ lisaParameters.write(getGPUSpatialAutocorrelationParameterValues(
     {
       id: 'movers',
       title: 'Who moved? Class changes between elections',
+      headline: 'County class changes form regional patterns',
+      textAlternative:
+        'Purple and orange counties mark downward and upward class changes to the next election, with gray counties unchanged.',
       body: 'The *Move to the next election* view of **Map shows** colors each county by how many classes it changed by to the next election: purple down, orange up, gray the same. The dataset notes that 239 counties changed winner from 2012 to 2016, 78 from 2016 to 2020 and 74 from 2020 to 2024, and that the median Republican two-party swing from 2020 to 2024 was +1.5 points, largest in Texas border counties.\n\nStep the **Election** slider through 2000 to 2020 and compare the pattern of movers: is it scattered or regional? That regionality is what the spatial Markov and LISA Markov quantify. Set **Elections included** to *2000 to 2020* to keep Indiana, Louisiana, New Jersey and New York in the analysis (a rebuild).',
       options: {mapView: 'move', year: 5, matrix: 'pooled'},
       controls: ['mapView', 'year', 'through'],
@@ -461,6 +490,9 @@ lisaParameters.write(getGPUSpatialAutocorrelationParameterValues(
     {
       id: 'limits',
       title: 'Limits, and things to try',
+      headline: 'Turnout transitions depend on population denominator',
+      textAlternative:
+        'Counties are classified by votes per 2020 resident, exposing denominator effects across election years.',
       body: 'Counties are not equal voters and their boundaries are not equal areas; results are about *counties*. Pooled equal-interval breaks make the classes sensitive to the extremes; quantile breaks hide national swings. Connecticut is reported by planning region in the boundaries but by legacy county in the returns, so it is blank. Turnout is votes per 2020 resident, so it is inflated for fast-growing counties in early years.\n\nTry: **Variable** *Turnout proxy* (a sequential palette); **Transition step** two elections; **Class method** *Quantile*; and the pooled **Local Moran reference**. Compare the readouts across variants: the stay probability is a single number worth comparing.',
       options: {variable: 'turnout', mapView: 'class', year: 6},
       controls: ['variable', 'periodLag', 'classMethod', 'lisaMoments'],

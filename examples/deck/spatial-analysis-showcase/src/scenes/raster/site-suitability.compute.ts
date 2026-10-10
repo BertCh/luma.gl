@@ -1051,7 +1051,7 @@ export async function createSiteSuitability(
             instanceCount: Math.min(state.siteCount, maximumSites),
             values: siteValues,
             valueFormat: 'float32',
-            colormap: 'viridis',
+            colormap: 'cividis',
             valueRange: [0, 1],
             discardAtOrBelow: state.siteThreshold,
             radiusPixels: state.siteSize,

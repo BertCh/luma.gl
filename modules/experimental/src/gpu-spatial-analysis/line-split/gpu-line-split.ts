@@ -5,7 +5,6 @@
 import {
   createTransientView,
   GPUScan,
-  GPUSort,
   validatePackedUint32View,
   validatePackedView,
   type GPUCommandGraph,
@@ -15,12 +14,14 @@ import {
 } from '@luma.gl/gpgpu/gpu-core';
 import {createWGSLKernelNode, type WGSLKernelBinding} from '../../utils/wgsl-kernel-nodes';
 import {validateGraphViewsBelongToGraph} from '../../utils/gpu-contributor-utils';
+import {createStableLexicographicIndexSortNodes} from '../../utils/stable-lexicographic-index-sort';
+import type {GPUGeneratedGeometryPort, GPULineGeometryPort} from '../contracts/index';
 import {GPUSegmentIntersection} from '../segment-intersection/index';
 import type {GPUSpatialJoinLines} from '../spatial-join/index';
 
 const OPERATION = 'GPULineSplit';
 
-/** Value written to `pieces.lineIds` slots that hold no piece. */
+/** Value written to `pieces.sourceIds` slots that hold no piece. */
 export const GPU_LINE_SPLIT_NONE = 0xffffffff;
 
 /** Number of `u32` words per piece-table row. */
@@ -33,26 +34,15 @@ const SPLIT_STRIDE = 4;
  * Caller-owned, capacity-bounded output pieces of {@link GPULineSplit}, in GeoArrow linestring
  * layout. Piece `q` is the vertex run `positions[offsets[q] .. offsets[q + 1])`.
  */
-export type GPULineSplitPieces = {
-  /** Source linestring row of each piece. Capacity is the length; unused slots hold `GPU_LINE_SPLIT_NONE`. */
-  lineIds: GraphDataView<'uint32'>;
-  /**
-   * Piece-to-vertex offsets with `lineIds.length + 1` entries, first 0. Entries after `count`
-   * repeat `vertexCount`, so the array is always monotone.
-   */
-  offsets: GraphDataView<'uint32'>;
-  /** Vertices of all pieces, split points included. Capacity is the length. */
-  positions: GraphDataView<'float32x2'>;
-  /** One-row scalar receiving the number of complete pieces written. */
-  count: GraphDataView<'uint32'>;
+export type GPULineSplitPieces = GPUGeneratedGeometryPort<GPULineGeometryPort> & {
+  geometry: GPULineGeometryPort & {
+    positions: GraphDataView<'float32x2'>;
+  };
+  sourceIds: GraphDataView<'uint32'>;
   /** Optional one-row scalar receiving the number of vertices written. */
   vertexCount?: GraphDataView<'uint32'>;
-  /** One-row scalar receiving `1` when any capacity was exceeded (pieces, vertices, intersections). */
-  overflow?: GraphDataView<'uint32'>;
-  /** Optional one-row scalar receiving the unclamped number of pieces. */
-  totalCount?: GraphDataView<'uint32'>;
   /** Optional one-row scalar receiving the unclamped number of vertices. */
-  totalVertexCount?: GraphDataView<'uint32'>;
+  requiredVertexCount?: GraphDataView<'uint32'>;
 };
 
 /**
@@ -69,7 +59,7 @@ export type GPULineSplitProps = {
   /**
    * Capacity of the internal `GPUSegmentIntersection` pair list. Splitting needs at most four
    * transient rows per pair. When the intersection overflows, pieces are produced from the sorted
-   * prefix of pairs and `pieces.overflow` is set.
+   * prefix of pairs and `pieces.status.candidateOverflow` is set.
    */
   intersectionCapacity: number;
   /** Output pieces. */
@@ -100,7 +90,8 @@ function getBitCount(value: number): number {
  * traversal order, so concatenating the pieces of line `i` reproduces it. A line with fewer than
  * two vertices yields no piece; an unsplit line yields one piece equal to the input. Overlapping
  * collinear spans split at both ends of the shared span. Pieces whose end would exceed the vertex
- * capacity are dropped as a suffix and `pieces.overflow` is set.
+ * capacity are dropped as a suffix and `pieces.status.overflow` is set. Candidate and final
+ * output incompleteness are reported independently.
  *
  * Intersection points of proper crossings are rounded to f32 once per pair, so both lines receive
  * the identical point. Nothing is read back.
@@ -138,25 +129,31 @@ export class GPULineSplit implements GPUCommandNodeProducer {
     if (!Number.isSafeInteger(props.intersectionCapacity) || props.intersectionCapacity < 1) {
       throw new Error(`${id} intersectionCapacity must be a positive integer`);
     }
+    if (pieces.geometry.kind !== 'lines') {
+      throw new Error(`${id} pieces.geometry must be linestring geometry`);
+    }
     this.vertexCount = lines.positions.length;
     this.lineCount = lines.lineOffsets.length - 1;
-    validatePackedUint32View(pieces.lineIds, `${id} pieces.lineIds`);
-    validatePackedUint32View(pieces.offsets, `${id} pieces.offsets`);
-    validatePackedView(pieces.positions, ['float32x2'], `${id} pieces.positions`);
-    this.pieceCapacity = pieces.lineIds.length;
-    this.vertexCapacity = pieces.positions.length;
-    if (this.pieceCapacity < 1 || pieces.offsets.length !== this.pieceCapacity + 1) {
-      throw new Error(`${id} pieces.offsets length must be pieces.lineIds.length + 1`);
+    validatePackedUint32View(pieces.sourceIds, `${id} pieces.sourceIds`);
+    validatePackedUint32View(pieces.geometry.lineOffsets, `${id} pieces.geometry.lineOffsets`);
+    validatePackedView(pieces.geometry.positions, ['float32x2'], `${id} pieces.geometry.positions`);
+    this.pieceCapacity = pieces.sourceIds.length;
+    this.vertexCapacity = pieces.geometry.positions.length;
+    if (this.pieceCapacity < 1 || pieces.geometry.lineOffsets.length !== this.pieceCapacity + 1) {
+      throw new Error(
+        `${id} pieces.geometry.lineOffsets length must be pieces.sourceIds.length + 1`
+      );
     }
     if (this.vertexCapacity < 1) {
-      throw new Error(`${id} pieces.positions must be non-empty`);
+      throw new Error(`${id} pieces.geometry.positions must be non-empty`);
     }
     for (const [name, view] of [
-      ['count', pieces.count],
+      ['count', pieces.status.count],
       ['vertexCount', pieces.vertexCount],
-      ['overflow', pieces.overflow],
-      ['totalCount', pieces.totalCount],
-      ['totalVertexCount', pieces.totalVertexCount],
+      ['overflow', pieces.status.overflow],
+      ['candidateOverflow', pieces.status.candidateOverflow],
+      ['requiredCount', pieces.status.requiredCount],
+      ['requiredVertexCount', pieces.requiredVertexCount],
       ['uncertainCount', props.uncertainCount]
     ] as const) {
       if (view) {
@@ -177,14 +174,15 @@ export class GPULineSplit implements GPUCommandNodeProducer {
     validateGraphViewsBelongToGraph(id, graph, [
       lines.positions,
       lines.lineOffsets,
-      pieces.lineIds,
-      pieces.offsets,
-      pieces.positions,
-      pieces.count,
+      pieces.sourceIds,
+      pieces.geometry.lineOffsets,
+      pieces.geometry.positions,
+      pieces.status.count,
       pieces.vertexCount,
-      pieces.overflow,
-      pieces.totalCount,
-      pieces.totalVertexCount,
+      pieces.status.overflow,
+      pieces.status.candidateOverflow,
+      pieces.status.requiredCount,
+      pieces.requiredVertexCount,
       props.uncertainCount
     ]);
     const nodes: GPUCommandNode<Parameters>[] = [];
@@ -229,6 +227,8 @@ export class GPULineSplit implements GPUCommandNodeProducer {
     const eventPoints = T('event-points', 'float32x2', eventCount);
     const eventIndices = T('event-indices', 'uint32', eventCount);
     const eventSlots = T('event-slots', 'uint32', eventCount);
+    const eventPhases = T('event-phases', 'uint32', eventCount);
+    const eventOrderKeys = T('event-order-keys', 'uint32', eventCount);
     const eventTable = T('event-table', 'uint32', eventCount * 2);
     nodes.push(
       createWGSLKernelNode<Parameters>(graph, {
@@ -305,6 +305,8 @@ fn vertexAt(vertex: u32) -> vec2f {
           {name: 'positions', view: lines.positions, type: 'f32', access: 'read'},
           {name: 'lineOffsets', view: lines.lineOffsets, type: 'u32', access: 'read'},
           {name: 'eventSlots', view: eventSlots, type: 'u32', access: 'read_write'},
+          {name: 'eventPhases', view: eventPhases, type: 'u32', access: 'read_write'},
+          {name: 'eventOrderKeys', view: eventOrderKeys, type: 'u32', access: 'read_write'},
           {name: 'eventTable', view: eventTable, type: 'u32', access: 'read_write'}
         ],
         invocationCount: eventCount,
@@ -333,108 +335,37 @@ fn vertexAt(vertex: u32) -> vec2f {
     }
   }
   eventSlots[eventSlotsOffset + index] = slot;
+  eventPhases[eventPhasesOffset + index] = phase;
+  let keyBits = bitcast<u32>(key);
+  eventOrderKeys[eventOrderKeysOffset + index] = select(keyBits ^ 0xffffffffu, keyBits ^ 0x80000000u, (keyBits & 0x80000000u) == 0u);
   eventTable[eventTableOffset + index * 2u] = phase;
   eventTable[eventTableOffset + index * 2u + 1u] = bitcast<u32>(key);`
       })
     );
 
-    // 4. Group events by slot (stable), then order and deduplicate inside every group.
-    const sortedSlots = T('sorted-slots', 'uint32', eventCount);
-    const sortedEvents = T('sorted-events', 'uint32', eventCount);
-    nodes.push(
-      ...new GPUSort({
-        id: `${id}-sort`,
-        keys: eventSlots,
-        values: eventIndices,
-        outputKeys: sortedSlots,
-        outputValues: sortedEvents,
-        keyBits: getBitCount(vertexCount)
-      }).getCommandNodes(graph)
-    );
+    // 4. Stable least-to-most passes order every event by (slot, phase, directed coordinate).
+    // Unlike a thread-per-slot heapsort, a segment with arbitrarily many crossings now uses the
+    // full radix pipeline rather than leaving one invocation on its critical path.
+    const eventSort = createStableLexicographicIndexSortNodes(graph, {
+      id: `${id}-event-order`,
+      operation: OPERATION,
+      indices: eventIndices,
+      keys: [
+        {view: eventSlots, keyBits: getBitCount(vertexCount)},
+        {view: eventPhases, keyBits: 1},
+        {view: eventOrderKeys}
+      ]
+    });
+    nodes.push(...eventSort.nodes);
+    const sortedSlots = eventSort.sortedPrimaryKeys;
+    const sortedEvents = eventSort.sortedIndices;
     const eventOrderWGSL = `
 const VERTEX_COUNT: u32 = ${vertexCount}u;
-const EVENT_COUNT: u32 = ${eventCount}u;
 fn eventPhase(event: u32) -> u32 { return eventTable[eventTableOffset + event * 2u]; }
 fn eventKey(event: u32) -> f32 { return bitcast<f32>(eventTable[eventTableOffset + event * 2u + 1u]); }
-fn eventLess(first: u32, second: u32) -> bool {
-  if (eventPhase(first) != eventPhase(second)) { return eventPhase(first) < eventPhase(second); }
-  return eventKey(first) < eventKey(second);
-}
 fn eventSame(first: u32, second: u32) -> bool {
   return eventPhase(first) == eventPhase(second) && eventKey(first) == eventKey(second);
 }`;
-    nodes.push(
-      createWGSLKernelNode<Parameters>(graph, {
-        id: `${id}-order-groups`,
-        operation: OPERATION,
-        variant: 'order-groups',
-        bindings: [
-          {name: 'sortedSlots', view: sortedSlots, type: 'u32', access: 'read'},
-          {name: 'sortedEvents', view: sortedEvents, type: 'u32', access: 'read_write'},
-          {name: 'eventTable', view: eventTable, type: 'u32', access: 'read'}
-        ],
-        invocationCount: eventCount,
-        declarations: `${eventOrderWGSL}
-const INSERTION_SORT_LIMIT: u32 = 16u;
-// Total order: the event order, then the event index (what the stable slot sort already gives).
-fn eventBefore(first: u32, second: u32) -> bool {
-  if (eventLess(first, second)) { return true; }
-  if (eventLess(second, first)) { return false; }
-  return first < second;
-}
-fn eventAt(base: u32, position: u32) -> u32 { return sortedEvents[sortedEventsOffset + base + position]; }
-fn siftDown(base: u32, rootStart: u32, count: u32) {
-  var root = rootStart;
-  let value = eventAt(base, root);
-  loop {
-    var child = 2u * root + 1u;
-    if (child >= count) { break; }
-    if (child + 1u < count && eventBefore(eventAt(base, child), eventAt(base, child + 1u))) { child = child + 1u; }
-    let childValue = eventAt(base, child);
-    if (!eventBefore(value, childValue)) { break; }
-    sortedEvents[sortedEventsOffset + base + root] = childValue;
-    root = child;
-  }
-  sortedEvents[sortedEventsOffset + base + root] = value;
-}`,
-        // One thread per slot orders that slot's events. Few events (the usual case) use a stable
-        // insertion sort; a segment crossed by many lines uses an in-place heapsort so a slot with
-        // k events costs O(k log k) instead of O(k^2).
-        body: `let slot = sortedSlots[sortedSlotsOffset + index];
-  if (slot >= VERTEX_COUNT) { return; }
-  if (index > 0u && sortedSlots[sortedSlotsOffset + index - 1u] == slot) { return; }
-  var end = index + 1u;
-  while (end < EVENT_COUNT && sortedSlots[sortedSlotsOffset + end] == slot) { end = end + 1u; }
-  let count = end - index;
-  if (count <= INSERTION_SORT_LIMIT) {
-    for (var item = index + 1u; item < end; item++) {
-      let value = sortedEvents[sortedEventsOffset + item];
-      var hole = item;
-      while (hole > index) {
-        let previous = sortedEvents[sortedEventsOffset + hole - 1u];
-        if (!eventLess(value, previous)) { break; }
-        sortedEvents[sortedEventsOffset + hole] = previous;
-        hole = hole - 1u;
-      }
-      sortedEvents[sortedEventsOffset + hole] = value;
-    }
-    return;
-  }
-  var start = count / 2u;
-  while (start > 0u) {
-    start = start - 1u;
-    siftDown(index, start, count);
-  }
-  var last = count;
-  while (last > 1u) {
-    last = last - 1u;
-    let top = eventAt(index, 0u);
-    sortedEvents[sortedEventsOffset + index] = eventAt(index, last);
-    sortedEvents[sortedEventsOffset + index + last] = top;
-    siftDown(index, 0u, last);
-  }`
-      })
-    );
     const uniqueFlags = T('unique-flags', 'uint32', eventCount);
     const uniqueRanks = T('unique-ranks', 'uint32', eventCount);
     const splitTable = T('split-table', 'uint32', eventCount * SPLIT_STRIDE);
@@ -644,7 +575,8 @@ fn pieceEnd(piece: u32) -> u32 { return vertexStarts[vertexStartsOffset + piece]
   state[stateOffset + 1u] = written;
   state[stateOffset + 2u] = totalPieces;
   state[stateOffset + 3u] = totalVertices;
-  state[stateOffset + 4u] = select(0u, 1u, low < totalPieces || pairOverflow[pairOverflowOffset] != 0u);`
+  state[stateOffset + 4u] = select(0u, 1u, low < totalPieces);
+  state[stateOffset + 5u] = pairOverflow[pairOverflowOffset];`
       }),
       createWGSLKernelNode<Parameters>(graph, {
         id: `${id}-write-pieces`,
@@ -654,8 +586,8 @@ fn pieceEnd(piece: u32) -> u32 { return vertexStarts[vertexStartsOffset + piece]
           {name: 'state', view: state, type: 'u32', access: 'read'},
           {name: 'pieceTable', view: pieceTable, type: 'u32', access: 'read'},
           {name: 'vertexStarts', view: pieceVertexStarts, type: 'u32', access: 'read'},
-          {name: 'lineIds', view: pieces.lineIds, type: 'u32', access: 'read_write'},
-          {name: 'offsets', view: pieces.offsets, type: 'u32', access: 'read_write'}
+          {name: 'lineIds', view: pieces.sourceIds, type: 'u32', access: 'read_write'},
+          {name: 'offsets', view: pieces.geometry.lineOffsets, type: 'u32', access: 'read_write'}
         ],
         invocationCount: pieceCapacity + 1,
         declarations: `const PIECE_CAPACITY: u32 = ${pieceCapacity}u;`,
@@ -677,7 +609,7 @@ fn pieceEnd(piece: u32) -> u32 { return vertexStarts[vertexStartsOffset + piece]
           {name: 'pieceTable', view: pieceTable, type: 'u32', access: 'read'},
           {name: 'vertexStarts', view: pieceVertexStarts, type: 'u32', access: 'read'},
           {name: 'positions', view: lines.positions, type: 'f32', access: 'read'},
-          {name: 'outPositions', view: pieces.positions, type: 'f32', access: 'read_write'}
+          {name: 'outPositions', view: pieces.geometry.positions, type: 'f32', access: 'read_write'}
         ],
         invocationCount: vertexCapacity,
         body: `if (index >= state[stateOffset + 1u]) { return; }
@@ -719,11 +651,12 @@ fn pieceEnd(piece: u32) -> u32 { return vertexStarts[vertexStartsOffset + piece]
       {name: 'state', view: state, type: 'u32', access: 'read'}
     ];
     const scalars: [string, GraphDataView<'uint32'> | undefined, number][] = [
-      ['count', pieces.count, 0],
+      ['count', pieces.status.count, 0],
       ['vertexCount', pieces.vertexCount, 1],
-      ['totalCount', pieces.totalCount, 2],
-      ['totalVertexCount', pieces.totalVertexCount, 3],
-      ['overflow', pieces.overflow, 4]
+      ['requiredCount', pieces.status.requiredCount, 2],
+      ['requiredVertexCount', pieces.requiredVertexCount, 3],
+      ['overflow', pieces.status.overflow, 4],
+      ['candidateOverflow', pieces.status.candidateOverflow, 5]
     ];
     for (const [name, view] of scalars) {
       if (view) {

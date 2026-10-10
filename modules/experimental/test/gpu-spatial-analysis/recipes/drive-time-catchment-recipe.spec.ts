@@ -99,17 +99,19 @@ it('addDriveTimeCatchmentRecipe bands demand by drive time to the nearest facili
       maxIterations: 64,
       bandBreaks: fixture.input('band-breaks', Float32Array.from(BAND_BREAKS), 'float32', 4),
       bandCapacity: 8,
-      assignments: outputs.assignments.view,
-      nodeCosts: outputs.nodeCosts.view,
-      demandTimes: outputs.times.view,
-      demandBands: outputs.bands.view,
-      bands: {
-        keys: outputs.keys.view,
-        counts: outputs.counts.view,
-        count: outputs.count.view,
-        overflow: outputs.overflow.view,
-        sumValues: outputs.sums.view,
-        means: outputs.means.view
+      outputs: {
+        assignments: outputs.assignments.view,
+        nodeCosts: outputs.nodeCosts.view,
+        demandTimes: outputs.times.view,
+        demandBands: outputs.bands.view,
+        bands: {
+          keys: outputs.keys.view,
+          counts: outputs.counts.view,
+          count: outputs.count.view,
+          overflow: outputs.overflow.view,
+          sumValues: outputs.sums.view,
+          means: outputs.means.view
+        }
       },
       isochrones: {
         breaks: fixture.input('iso-breaks', Float32Array.from(BAND_BREAKS), 'float32', 4),
@@ -135,6 +137,13 @@ it('addDriveTimeCatchmentRecipe bands demand by drive time to the nearest facili
       }
     });
     expect(recipe.contributors.length).toBe(5);
+    expect(recipe.outputs?.demandTimes).toBe(recipe.demandTimes);
+    expect(recipe.intermediates?.seedNodes).toBe(recipe.seedNodes);
+    expect(recipe.status.stages.map(({stage}) => stage)).toEqual([
+      'service-areas',
+      'band-statistics'
+    ]);
+    expect(recipe.status.stages[1].status.overflow).toBe(recipe.bands.overflow);
     fixture.run();
 
     const gpuCosts = await fixture.readFloat32(outputs.nodeCosts, NODE_COUNT);
@@ -247,7 +256,7 @@ it('addDriveTimeCatchmentRecipe returns isochrone rings and joins demand against
       polygonPositions: fixture.output('polygon-positions', 'float32x2', vertexCapacity),
       polygonRingOffsets: fixture.output('polygon-ring-offsets', 'uint32', ringCapacity + 1),
       polygonOffsets: fixture.output('polygon-offsets', 'uint32', ringCapacity + 1),
-      featureOffsets: fixture.output('feature-offsets', 'uint32', 2),
+      featureOffsets: fixture.output('feature-offsets', 'uint32', ringCapacity + 1),
       inside: fixture.output('isochrone-demand', 'uint32', demandCount),
       joinOverflow: fixture.output('join-overflow', 'uint32', 1)
     };
@@ -262,7 +271,13 @@ it('addDriveTimeCatchmentRecipe returns isochrone rings and joins demand against
       demand: fixture.input('demand', demand, 'float32x2', demandCount),
       maxIterations: 64,
       bandBreaks: fixture.input('band-breaks', Float32Array.from(BAND_BREAKS), 'float32', 4),
-      nodeCosts: outputs.nodeCosts.view,
+      outputs: {
+        nodeCosts: outputs.nodeCosts.view,
+        isochroneDemand: {
+          pointFeatureIds: outputs.inside.view,
+          overflow: outputs.joinOverflow.view
+        }
+      },
       isochrones: {
         breaks: fixture.input('iso-breaks', Float32Array.of(costLimit), 'float32', 1),
         parameters: fixture.parameters(
@@ -294,6 +309,7 @@ it('addDriveTimeCatchmentRecipe returns isochrone rings and joins demand against
               ringIsHole: outputs.ringIsHole.view,
               ringShells: outputs.ringShells.view,
               polygons: {
+                kind: 'polygons',
                 positions: outputs.polygonPositions.view,
                 ringOffsets: outputs.polygonRingOffsets.view,
                 polygonOffsets: outputs.polygonOffsets.view,
@@ -305,11 +321,7 @@ it('addDriveTimeCatchmentRecipe returns isochrone rings and joins demand against
             }
           }
         },
-        joinDemand: {
-          candidateCapacity: 2 * demandCount,
-          pointFeatureIds: outputs.inside.view,
-          overflow: outputs.joinOverflow.view
-        }
+        joinDemand: {candidateCapacity: 2 * demandCount}
       }
     });
     expect(recipe.isochroneRings).toBeDefined();

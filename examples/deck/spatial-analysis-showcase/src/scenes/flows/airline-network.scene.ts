@@ -200,7 +200,7 @@ export default defineScene<AirlineNetworkOptions>({
       min: 50,
       max: 1000,
       step: 50,
-      default: 250,
+      default: 500,
       unit: 'km',
       expert: true,
       disabledWhen: state => state.view !== 'arcs',
@@ -295,7 +295,7 @@ export default defineScene<AirlineNetworkOptions>({
       apply: 'compile',
       default: '128',
       expert: true,
-      help: 'Budget of single-vertex moves (one per round). More rounds can improve the score further; the optimizer status says whether it stopped at a local optimum. Rebuilds the optimizer and the sweep.',
+      help: 'Budget of single-vertex moves (one per round). More rounds can improve the score further; the optimizer status says whether it stopped at a local optimum. Rebuilds the optimizer and clears the optional sweep.',
       options: [
         {value: '64', label: '64'},
         {value: '128', label: '128'},
@@ -315,7 +315,7 @@ export default defineScene<AirlineNetworkOptions>({
       default: 0,
       expert: true,
       format: value => value.toExponential(1),
-      help: 'A move is accepted only if it raises modularity by more than this. Larger values stop the optimizer earlier, at a coarser partition. Rebuilds the optimizer and the sweep.'
+      help: 'A move is accepted only if it raises modularity by more than this. Larger values stop the optimizer earlier, at a coarser partition. Rebuilds the optimizer and clears the optional sweep.'
     },
     {
       kind: 'button',
@@ -377,9 +377,9 @@ export default defineScene<AirlineNetworkOptions>({
       label: 'Repulsion',
       group: 'Layout',
       apply: 'compile',
-      default: 'exact',
+      default: 'spatial',
       expert: true,
-      help: 'Exact all-pairs repulsion, or the spatial grid that treats distant cells as one mass (faster at large sizes, approximate). If an airport leaves the grid bounds the spatial layout freezes; the layout status says so. Rebuilds the layout graph.',
+      help: 'The spatial grid treats distant cells as one mass and keeps this 3,257-airport layout interactive. Exact all-pairs repulsion is available for comparison but is substantially more expensive. If an airport leaves the grid bounds the spatial layout freezes; the layout status says so. Rebuilds the layout graph.',
       options: [
         {value: 'exact', label: 'Exact all-pairs (GPUGraphForceLayout)'},
         {value: 'spatial', label: 'Spatial approximation (GPUGraphSpatialForceLayout)'}
@@ -473,7 +473,7 @@ export default defineScene<AirlineNetworkOptions>({
       label: 'Steps per frame',
       group: 'Layout',
       apply: 'compile',
-      default: '4',
+      default: '2',
       expert: true,
       help: 'Force steps encoded per frame. More settles faster and costs GPU time (exact repulsion is quadratic in airports). Rebuilds the layout graph.',
       options: [
@@ -771,7 +771,7 @@ export default defineScene<AirlineNetworkOptions>({
     const between = {
       color: info?.between ?? [244, 241, 232, 255],
       label: 'Route between two groups',
-      count: 0,
+      count: info?.betweenCount ?? 0,
       shape: 'line' as const
     };
     const asEntries = (entries: NetworkLegendData['continent']) =>

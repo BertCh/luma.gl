@@ -210,14 +210,14 @@ export class GPUNetworkPathExtraction implements GPUCommandNodeProducer {
       props.output.ids,
       props.output.count,
       props.output.overflow,
-      props.output.totalCount,
+      props.output.requiredCount,
       props.pathOffsets,
       props.pathCosts,
       props.pathFound,
       edges?.output.ids,
       edges?.output.count,
       edges?.output.overflow,
-      edges?.output.totalCount,
+      edges?.output.requiredCount,
       edges?.pathOffsets
     ]
       .filter(view => view !== undefined)
@@ -269,7 +269,7 @@ export class GPUNetworkPathExtraction implements GPUCommandNodeProducer {
         createPublishNode<Parameters>(graph, {
           id: `${id}-publish`,
           operation: OPERATION,
-          totalCount: nodeTotal,
+          requiredCount: nodeTotal,
           output: props.output
         })
       );
@@ -278,7 +278,7 @@ export class GPUNetworkPathExtraction implements GPUCommandNodeProducer {
           createPublishNode<Parameters>(graph, {
             id: `${id}-edge-publish`,
             operation: OPERATION,
-            totalCount: edgeTotal,
+            requiredCount: edgeTotal,
             output: edges.output
           })
         );
@@ -373,7 +373,7 @@ export class GPUNetworkPathExtraction implements GPUCommandNodeProducer {
       createPublishNode<Parameters>(graph, {
         id: `${id}-publish`,
         operation: OPERATION,
-        totalCount: nodeTotal,
+        requiredCount: nodeTotal,
         output: props.output,
         overflowSources: [status]
       })
@@ -420,7 +420,7 @@ export class GPUNetworkPathExtraction implements GPUCommandNodeProducer {
         createPublishNode<Parameters>(graph, {
           id: `${id}-edge-publish`,
           operation: OPERATION,
-          totalCount: edgeTotal,
+          requiredCount: edgeTotal,
           output: edges.output,
           overflowSources: [status]
         })
@@ -442,7 +442,7 @@ function getViews(props: GPUNetworkPathExtractionProps): (GraphDataView | undefi
     props.output.ids,
     props.output.count,
     props.output.overflow,
-    props.output.totalCount,
+    props.output.requiredCount,
     props.pathOffsets,
     props.pathCosts,
     props.pathFound,
@@ -453,7 +453,7 @@ function getViews(props: GPUNetworkPathExtractionProps): (GraphDataView | undefi
     edges?.output.ids,
     edges?.output.count,
     edges?.output.overflow,
-    edges?.output.totalCount,
+    edges?.output.requiredCount,
     edges?.pathOffsets
   ];
 }

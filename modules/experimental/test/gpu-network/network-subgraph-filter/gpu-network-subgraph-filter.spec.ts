@@ -161,7 +161,7 @@ class Fixture {
       ids: output(`${name}-ids`, capacity),
       count: output(`${name}-count`, 1),
       overflow: output(`${name}-overflow`, 1),
-      totalCount: output(`${name}-total`, 1)
+      requiredCount: output(`${name}-total`, 1)
     });
     this.contributor = new GPUNetworkSubgraphFilter({
       id: 'sub',

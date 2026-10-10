@@ -5,38 +5,39 @@
 import type {GPUCommandGraph, GPUCommandNode, GraphDataView} from '@luma.gl/gpgpu/gpu-core';
 import {createFrontierKernelNode} from './frontier-kernel';
 
-export const FRONTIER_NEURAL_CHANNEL_COUNT = 4;
-export const FRONTIER_NEURAL_FEATURE_COUNT = 8;
-export const FRONTIER_NEURAL_HIDDEN_COUNT = 16;
-export const FRONTIER_NEURAL_WEIGHT_COUNT =
-  FRONTIER_NEURAL_FEATURE_COUNT * FRONTIER_NEURAL_HIDDEN_COUNT +
-  FRONTIER_NEURAL_HIDDEN_COUNT +
-  FRONTIER_NEURAL_CHANNEL_COUNT * FRONTIER_NEURAL_HIDDEN_COUNT +
-  FRONTIER_NEURAL_CHANNEL_COUNT;
-export const FRONTIER_NEURAL_PARAMETER_LENGTH = 8;
+export const FRONTIER_RESIDUAL_CHANNEL_COUNT = 4;
+export const FRONTIER_RESIDUAL_FEATURE_COUNT = 8;
+export const FRONTIER_RESIDUAL_HIDDEN_COUNT = 16;
+export const FRONTIER_RESIDUAL_COEFFICIENT_COUNT =
+  FRONTIER_RESIDUAL_FEATURE_COUNT * FRONTIER_RESIDUAL_HIDDEN_COUNT +
+  FRONTIER_RESIDUAL_HIDDEN_COUNT +
+  FRONTIER_RESIDUAL_CHANNEL_COUNT * FRONTIER_RESIDUAL_HIDDEN_COUNT +
+  FRONTIER_RESIDUAL_CHANNEL_COUNT;
+export const FRONTIER_RESIDUAL_PARAMETER_LENGTH = 8;
 
-/** Tiny 848-byte residual-diffusion preset; replaceable without graph recompilation. */
-export function getFrontierNeuralWeights(): Float32Array {
-  const weights = new Float32Array(FRONTIER_NEURAL_WEIGHT_COUNT);
+/** Fixed 848-byte matrix that expresses a four-neighbor Laplacian update. */
+export function getFrontierResidualDiffusionCoefficients(): Float32Array {
+  const coefficients = new Float32Array(FRONTIER_RESIDUAL_COEFFICIENT_COUNT);
   const outputWeightOffset =
-    FRONTIER_NEURAL_FEATURE_COUNT * FRONTIER_NEURAL_HIDDEN_COUNT + FRONTIER_NEURAL_HIDDEN_COUNT;
+    FRONTIER_RESIDUAL_FEATURE_COUNT * FRONTIER_RESIDUAL_HIDDEN_COUNT +
+    FRONTIER_RESIDUAL_HIDDEN_COUNT;
   const setInput = (hidden: number, feature: number, value: number) => {
-    weights[hidden * FRONTIER_NEURAL_FEATURE_COUNT + feature] = value;
+    coefficients[hidden * FRONTIER_RESIDUAL_FEATURE_COUNT + feature] = value;
   };
   const setOutput = (channel: number, hidden: number, value: number) => {
-    weights[outputWeightOffset + channel * FRONTIER_NEURAL_HIDDEN_COUNT + hidden] = value;
+    coefficients[outputWeightOffset + channel * FRONTIER_RESIDUAL_HIDDEN_COUNT + hidden] = value;
   };
-  for (let channel = 0; channel < FRONTIER_NEURAL_CHANNEL_COUNT; channel++) {
+  for (let channel = 0; channel < FRONTIER_RESIDUAL_CHANNEL_COUNT; channel++) {
     setInput(4 + channel * 2, 4 + channel, 1);
     setInput(5 + channel * 2, 4 + channel, -1);
     setOutput(channel, 4 + channel * 2, 0.24);
     setOutput(channel, 5 + channel * 2, -0.24);
   }
-  return weights;
+  return coefficients;
 }
 
-/** Live controls of one neural cellular update. */
-export type FrontierNeuralSettings = {
+/** Live controls of one cellular residual-diffusion update. */
+export type FrontierResidualDiffusionSettings = {
   stepScale?: number;
   brushPosition?: readonly [number, number];
   brushRadius?: number;
@@ -46,10 +47,10 @@ export type FrontierNeuralSettings = {
   damping?: number;
 };
 
-/** Packs the live neural controls. */
-export function getFrontierNeuralParameterValues(
-  settings: FrontierNeuralSettings = {},
-  target = new Float32Array(FRONTIER_NEURAL_PARAMETER_LENGTH)
+/** Packs the live residual-diffusion controls. */
+export function getFrontierResidualDiffusionParameterValues(
+  settings: FrontierResidualDiffusionSettings = {},
+  target = new Float32Array(FRONTIER_RESIDUAL_PARAMETER_LENGTH)
 ): Float32Array {
   const brush = settings.brushPosition ?? [-1e6, -1e6];
   target.set([
@@ -65,13 +66,13 @@ export function getFrontierNeuralParameterValues(
   return target;
 }
 
-/** Inputs and outputs of one Frontier Lab NCA step. */
-export type FrontierNeuralProps = {
+/** Inputs and outputs of one cellular residual-diffusion step. */
+export type FrontierResidualDiffusionProps = {
   id?: string;
   width: number;
   height: number;
   state: GraphDataView<'float32'>;
-  weights: GraphDataView<'float32'>;
+  coefficients: GraphDataView<'float32'>;
   parameters: GraphDataView<'float32'>;
   /** Per-cell upper bound. Image inpainting uses one for every cell. */
   habitat: GraphDataView<'float32'>;
@@ -83,13 +84,13 @@ export type FrontierNeuralProps = {
   boundary?: 'clamp' | 'wrap';
 };
 
-/** One compact neural-style MLP local-rule update over a four-channel cellular field. */
-export class FrontierNeuralAutomaton {
+/** One deterministic Laplacian update over a four-channel cellular field. */
+export class FrontierResidualDiffusion {
   readonly id: string;
-  readonly props: FrontierNeuralProps;
+  readonly props: FrontierResidualDiffusionProps;
 
-  constructor(props: FrontierNeuralProps) {
-    this.id = props.id ?? 'frontier-neural';
+  constructor(props: FrontierResidualDiffusionProps) {
+    this.id = props.id ?? 'frontier-residual-diffusion';
     this.props = props;
   }
 
@@ -101,18 +102,18 @@ export class FrontierNeuralAutomaton {
       (props.boundary ?? 'clamp') === 'wrap'
         ? 'return (value % size + size) % size;'
         : 'return clamp(value, 0, size - 1);';
-    const hiddenBiasOffset = FRONTIER_NEURAL_FEATURE_COUNT * FRONTIER_NEURAL_HIDDEN_COUNT;
-    const outputWeightOffset = hiddenBiasOffset + FRONTIER_NEURAL_HIDDEN_COUNT;
+    const hiddenBiasOffset = FRONTIER_RESIDUAL_FEATURE_COUNT * FRONTIER_RESIDUAL_HIDDEN_COUNT;
+    const outputWeightOffset = hiddenBiasOffset + FRONTIER_RESIDUAL_HIDDEN_COUNT;
     const outputBiasOffset =
-      outputWeightOffset + FRONTIER_NEURAL_CHANNEL_COUNT * FRONTIER_NEURAL_HIDDEN_COUNT;
+      outputWeightOffset + FRONTIER_RESIDUAL_CHANNEL_COUNT * FRONTIER_RESIDUAL_HIDDEN_COUNT;
     return [
       createFrontierKernelNode(graph, {
         id: `${this.id}-step`,
-        operation: 'FrontierNeuralAutomaton',
+        operation: 'FrontierResidualDiffusion',
         variant: props.boundary ?? 'clamp',
         bindings: [
           {name: 'state', view: props.state, type: 'f32', access: 'read'},
-          {name: 'weights', view: props.weights, type: 'f32', access: 'read'},
+          {name: 'coefficients', view: props.coefficients, type: 'f32', access: 'read'},
           {name: 'parameters', view: props.parameters, type: 'f32', access: 'read'},
           {name: 'habitat', view: props.habitat, type: 'f32', access: 'read'},
           {name: 'prior', view: props.prior, type: 'f32', access: 'read'},
@@ -122,9 +123,9 @@ export class FrontierNeuralAutomaton {
         invocationCount: props.width * props.height,
         declarations: `const WIDTH: i32 = ${props.width};
 const HEIGHT: i32 = ${props.height};
-const CHANNEL_COUNT: u32 = ${FRONTIER_NEURAL_CHANNEL_COUNT}u;
-const FEATURE_COUNT: u32 = ${FRONTIER_NEURAL_FEATURE_COUNT}u;
-const HIDDEN_COUNT: u32 = ${FRONTIER_NEURAL_HIDDEN_COUNT}u;
+const CHANNEL_COUNT: u32 = ${FRONTIER_RESIDUAL_CHANNEL_COUNT}u;
+const FEATURE_COUNT: u32 = ${FRONTIER_RESIDUAL_FEATURE_COUNT}u;
+const HIDDEN_COUNT: u32 = ${FRONTIER_RESIDUAL_HIDDEN_COUNT}u;
 const HIDDEN_BIAS_OFFSET: u32 = ${hiddenBiasOffset}u;
 const OUTPUT_WEIGHT_OFFSET: u32 = ${outputWeightOffset}u;
 const OUTPUT_BIAS_OFFSET: u32 = ${outputBiasOffset}u;
@@ -144,7 +145,7 @@ fn hash(value: u32) -> f32 {
 }`,
         body: `let column = i32(index % u32(WIDTH));
   let row = i32(index / u32(WIDTH));
-  var feature: array<f32, ${FRONTIER_NEURAL_FEATURE_COUNT}>;
+  var feature: array<f32, ${FRONTIER_RESIDUAL_FEATURE_COUNT}>;
   for (var channel = 0u; channel < CHANNEL_COUNT; channel++) {
     let center = loadState(column, row, channel);
     feature[channel] = center;
@@ -152,20 +153,20 @@ fn hash(value: u32) -> f32 {
       loadState(column - 1, row, channel) + loadState(column + 1, row, channel) +
       loadState(column, row - 1, channel) + loadState(column, row + 1, channel) - 4.0 * center;
   }
-  var hidden: array<f32, ${FRONTIER_NEURAL_HIDDEN_COUNT}>;
+  var hidden: array<f32, ${FRONTIER_RESIDUAL_HIDDEN_COUNT}>;
   for (var hiddenIndex = 0u; hiddenIndex < HIDDEN_COUNT; hiddenIndex++) {
-    var value = weights[weightsOffset + HIDDEN_BIAS_OFFSET + hiddenIndex];
+    var value = coefficients[coefficientsOffset + HIDDEN_BIAS_OFFSET + hiddenIndex];
     for (var featureIndex = 0u; featureIndex < FEATURE_COUNT; featureIndex++) {
-      value += weights[weightsOffset + hiddenIndex * FEATURE_COUNT + featureIndex] * feature[featureIndex];
+      value += coefficients[coefficientsOffset + hiddenIndex * FEATURE_COUNT + featureIndex] * feature[featureIndex];
     }
     hidden[hiddenIndex] = max(value, 0.0);
   }
   let viability = habitat[habitatOffset + index];
-  var next: array<f32, ${FRONTIER_NEURAL_CHANNEL_COUNT}>;
+  var next: array<f32, ${FRONTIER_RESIDUAL_CHANNEL_COUNT}>;
   for (var outputIndex = 0u; outputIndex < CHANNEL_COUNT; outputIndex++) {
-    var delta = weights[weightsOffset + OUTPUT_BIAS_OFFSET + outputIndex];
+    var delta = coefficients[coefficientsOffset + OUTPUT_BIAS_OFFSET + outputIndex];
     for (var hiddenIndex = 0u; hiddenIndex < HIDDEN_COUNT; hiddenIndex++) {
-      delta += weights[weightsOffset + OUTPUT_WEIGHT_OFFSET + outputIndex * HIDDEN_COUNT + hiddenIndex] * hidden[hiddenIndex];
+      delta += coefficients[coefficientsOffset + OUTPUT_WEIGHT_OFFSET + outputIndex * HIDDEN_COUNT + hiddenIndex] * hidden[hiddenIndex];
     }
     if (feature[3] >= 0.999) {
       next[outputIndex] = feature[outputIndex];

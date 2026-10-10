@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {ground} from '../../cartography/grounds';
 import {defineScene, type LegendSpec} from '../scene';
 import type {NearTransitOptions} from './near-transit.compute';
 
@@ -24,11 +25,11 @@ const POINT_LABELS: Record<NearTransitOptions['points'], string> = {
 
 export default defineScene<NearTransitOptions>({
   id: 'near-transit',
-  title: 'Select by distance from the L',
+  title: 'Chicago observations: share within transit distance',
   chapter: 'joins',
   order: 3,
   summary:
-    'Which nature observations, places or crashes lie within a distance of an L line, an L station or a bus stop? The distance is a per-frame float, the selection is drawn straight from the GPU with an indirect draw and no readback, and a category readout shows what the buffer over-represents.',
+    'A GPU buffer selection measures which Chicago observations, places or crashes fall within a chosen transit distance. The output is a straight-line proximity selection and does not represent walking routes or causation.',
   contributors: ['GPUBufferSelection'],
   datasets: [
     {id: 'chicago-nature', role: 'points to select'},
@@ -37,6 +38,13 @@ export default defineScene<NearTransitOptions>({
     {id: 'cta-transit', role: 'L lines, L stations and bus stops'}
   ],
   initialView: {longitude: -87.66, latitude: 41.87, zoom: 10.2},
+  basemap: ground('paperCity'),
+  furniture: {
+    title: {title: 'Transit proximity', subtitle: 'Selected points within a planar distance'},
+    scaleBar: {units: 'metric'},
+    credit: 'Chicago Transit Authority; City of Chicago; iNaturalist; Overture Maps Foundation',
+    caveat: 'Planar distance is not network travel distance and does not imply transit effects.'
+  },
 
   options: [
     {
@@ -134,7 +142,7 @@ export default defineScene<NearTransitOptions>({
       label: 'Distance ramp',
       group: 'Display',
       apply: 'param',
-      default: 'viridis',
+      default: 'cividis',
       disabledWhen: state => state.colorBy !== 'distance',
       help: 'Perceptually uniform ramps. The legend and the map share one ramp table.',
       options: [
@@ -264,7 +272,7 @@ graph.add(
     candidateCapacity: points.length * ${state.features === 'lines' ? 40 : 24},
     spatialSort: ${state.spatialSort},
     outputMask,                              // per point: 0 or 1
-    output: {ids, count, overflow, totalCount}, // selected ids, ascending
+    output: {ids, count, overflow, requiredCount}, // selected ids, ascending
     // the clamped count goes straight into the indirect draw record:
     drawInstanceCount: graph.importGPUData('count', drawCommands.getInstanceCountData(0)),
     distances, nearestFeatureIds, overflow
@@ -287,6 +295,9 @@ compiled.encode(commandEncoder, {parameters: undefined});
   story: [
     {
       id: 'the-question',
+      headline: 'Many observations fall within 800 metres of stations',
+      textAlternative:
+        'Selected Chicago nature observations are highlighted within an 800-metre radius of L stations.',
       controls: ['points', 'features', 'distance'],
       readouts: ['selected', 'composition'],
       title: 'How much wildlife is logged within a short walk of an L station?',
@@ -297,6 +308,9 @@ compiled.encode(commandEncoder, {parameters: undefined});
     },
     {
       id: 'distance-is-a-float',
+      headline: 'Selection counts respond directly to buffer distance',
+      textAlternative:
+        'A distance slider expands or contracts the selected points around transit features.',
       controls: ['distance'],
       readouts: ['selected', 'distanceUsed'],
       title: 'The buffer distance is one float per frame',
@@ -305,6 +319,9 @@ compiled.encode(commandEncoder, {parameters: undefined});
     },
     {
       id: 'track-corridor',
+      headline: 'Track distance selects a different corridor population',
+      textAlternative:
+        'Points near rail lines are selected by segment distance rather than station circles.',
       controls: ['features', 'distance', 'colorBy'],
       readouts: ['selected'],
       title: 'Distance to the track, not the station',
@@ -314,6 +331,8 @@ compiled.encode(commandEncoder, {parameters: undefined});
     },
     {
       id: 'one-line',
+      headline: 'Route filtering changes the selected observation share',
+      textAlternative: 'Only points near the chosen colored L route remain selected.',
       controls: ['line', 'colorBy'],
       readouts: ['composition'],
       title: 'One line, no recompile',
@@ -323,6 +342,9 @@ compiled.encode(commandEncoder, {parameters: undefined});
     },
     {
       id: 'places-baseline',
+      headline: 'Place proximity provides a human-activity comparison',
+      textAlternative:
+        'Mapped places replace nature records to compare proximity patterns around transit.',
       controls: ['points', 'features'],
       readouts: ['selected', 'composition'],
       title: 'Compare with where people go',
@@ -338,6 +360,9 @@ compiled.encode(commandEncoder, {parameters: undefined});
     },
     {
       id: 'bus-and-limits',
+      headline: 'Dense bus stops expand straight-line coverage',
+      textAlternative:
+        'Bus-stop buffers select points across Chicago, with no street-network routing.',
       controls: ['features', 'spatialSort', 'measure'],
       readouts: ['timeSort'],
       title: 'Bus stops, sorting, and what the map cannot say',

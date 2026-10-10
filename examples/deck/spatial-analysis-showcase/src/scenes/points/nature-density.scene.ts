@@ -60,7 +60,7 @@ export default defineScene<NatureDensityOptions>({
   chapter: 'points',
   order: 1,
   summary:
-    'A camera-following heat map of 43,557 iNaturalist observations of wild plants, animals and fungi in Chicago in 2023, binned on the GPU. Switch squares for hexagons, smooth with a separable Gaussian, and slice by hour, weekday and group.',
+    'A camera-following map of 43,557 iNaturalist records—not 43,557 organisms—reveals where Chicago nature gets noticed. Move from points to a GPU density estimate, then test bandwidth, grid and observer-time assumptions.',
   contributors: ['GPUPointDensity'],
   datasets: [
     {id: 'chicago-nature', role: 'iNaturalist observations (2023)'},
@@ -195,7 +195,7 @@ export default defineScene<NatureDensityOptions>({
       step: 1,
       default: [0, 24],
       format: hourLabel,
-      help: 'Keeps observations whose hour falls in [from, to). The mask buffer is rewritten on the CPU and the GPU skips masked points; the graph is not rebuilt.'
+      help: 'Keeps observations whose Chicago local wall-clock hour falls in [from, to). Times are stored as if UTC and are never timezone-converted. The mask buffer is rewritten on the CPU; the graph is not rebuilt.'
     },
     {
       kind: 'toggle',
@@ -326,6 +326,11 @@ export default defineScene<NatureDensityOptions>({
       help: 'Share of all records inside an OpenStreetMap park, preserve or woodland polygon.'
     },
     {id: 'kept', label: 'Records kept', help: 'Records passing the hour, day and group filters.'},
+    {
+      id: 'challengePulse',
+      label: 'City Nature Challenge pulse',
+      help: 'Selected records made from 28 April through 1 May 2023, divided by all selected records.'
+    },
     {
       id: 'cellSize',
       label: 'Cell size',
@@ -559,7 +564,11 @@ new SpatialAnalysisPointLayer({positions, instanceCount,
       headline: 'Dots pile up faster than the eye can count',
       textAlternative:
         'Dark map of Chicago covered in glowing amber dots, densest along the lakefront and in the large parks.',
-      body: 'Each dot is one wild plant, animal or fungus logged on iNaturalist inside Chicago in 2023: **{{records}}** records of {{taxa}} taxa. Light on a dark ground is the figure, and **additive blending** lets overlapping dots add their light, so stacks glow.\n\nSwitch **Dot blending** to *Normal*: a pile of a hundred now looks like a pile of five. That is overplotting.',
+      body: 'Each dot is one iNaturalist **record** made inside Chicago in 2023: **{{records}}** records spanning {{taxa}} taxa. It is not one organism, and repeated visits, prolific observers and many photographs at one site all make more dots. Light on a dark ground is the figure, and **additive blending** lets overlapping dots add their light, so stacks glow.\n\nSwitch **Dot blending** to *Normal*: a pile of a hundred now looks like a pile of five. That is overplotting.',
+      evidence:
+        'The map starts with the complete filtered sample: **{{records}} records**, not an estimated population of organisms.',
+      caveat:
+        'Absence of a record can mean nobody looked, nobody uploaded, or nothing was observed; these data cannot separate those explanations.',
       optionsMode: 'fresh',
       options: {view: 'points', blending: 'additive'},
       controls: ['blending'],
@@ -589,7 +598,7 @@ new SpatialAnalysisPointLayer({positions, instanceCount,
       headline: 'A handful of cells hold the glow',
       textAlternative:
         'Density map of Chicago in inferno on a dark ground: a few bright cells on the lakefront and many faint ones inland.',
-      body: 'The first GPU stage lays a grid over the screen and adds each dot to its cell. The busiest cell, **{{cellSize}}** across, holds **{{peak}}**, {{peakShare}} of the kept records, {{peakPlace}}.\n\nThe colour scale is a square root, clipped at the 98th percentile, so the long tail does not paint the city black. Hover a cell for its rank.',
+      body: 'Without changing the camera, the first GPU stage lays a grid over the same point cloud and adds each dot to its cell. The busiest cell, **{{cellSize}}** across, holds **{{peak}}**, {{peakShare}} of the kept records, {{peakPlace}}.\n\nThe colour scale is a square root, clipped at the 98th percentile, so the long tail does not paint the city black. Hover a cell for its rank. This is still observer activity, now aggregated—not a census of abundance.',
       optionsMode: 'fresh',
       options: {view: 'density', smoothing: 'off', binning: 'grid', resolution: 'medium'},
       controls: ['resolution', 'view'],
@@ -641,11 +650,11 @@ new SpatialAnalysisPointLayer({positions, instanceCount,
       headline: 'Counts follow observers, so ask who looked',
       textAlternative:
         'Density map of Chicago over amber dots, ready to filter by hour, group and statistic.',
-      body: `A density surface answers *where*, not *how much lives there*. **{{kept}}** records are kept now and the busiest cell holds **{{peak}}**.\n\nAsk your own question: Birds at dawn, Insects after dark, weekends only. Or switch **Statistic** to a share: a rate needs a denominator.\n\n${nextStoryLine('nature-density')}`,
+      body: `A density surface answers *where records concentrate*, not *how much lives there*. **{{kept}}** records are kept now and the busiest cell holds **{{peak}}**. The City Nature Challenge window, 28 April through 1 May, contributes **{{challengePulse}}** of the selected sample—a coordinated observer pulse that can look biological.\n\nAsk your own question: Birds at dawn, Insects after dark, weekends only. Hour labels are **Chicago local wall-clock time stored as if UTC**; there is no timezone conversion. Or switch **Statistic** to a share: a rate needs a denominator, and its N must stay visible.\n\n${nextStoryLine('nature-density')}`,
       optionsMode: 'fresh',
       options: {view: 'both', smoothing: 'gaussian-separable', sigma: 1.5},
       controls: ['category', 'hours', 'statistic'],
-      readouts: ['kept', 'peak'],
+      readouts: ['kept', 'challengePulse', 'peak'],
       stage: 'draw',
       camera: {...CITY_FRAMES.chicago, transitionMs: 1600},
       furniture: {title: cartouche('What would you ask?', 'Filtered records per cell')}

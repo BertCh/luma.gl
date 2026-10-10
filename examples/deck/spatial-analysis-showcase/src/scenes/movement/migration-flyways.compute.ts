@@ -151,7 +151,11 @@ export async function createMigrationFlyways(
           pathOffsets: view(graph, 'offsets', variant.offsets, 'uint32', subset.trackCount + 1),
           columns: COLUMNS,
           rows: ROWS,
-          coordinateSystem: 'spherical',
+          spatialContext: {
+            coordinateSpace: 'longitude-latitude',
+            metric: 'great-circle',
+            units: 'meters'
+          },
           maximumRecords: Math.max(1024, 6 * subset.vertexCount),
           parameters: densityParameters.importToGraph(graph),
           output: {

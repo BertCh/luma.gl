@@ -18,6 +18,12 @@ export type ComputePassProps = ResourceProps & {
   endTimestampIndex?: number;
 };
 
+/** Internal options used by reusable compute paths to preserve bind-group cache reuse. */
+export type ComputePassBindingOptions = {
+  /** @internal Stable keys for backend bind-group reuse. */
+  _bindGroupCacheKeys?: Partial<Record<number, object>>;
+};
+
 export abstract class ComputePass extends Resource<ComputePassProps> {
   constructor(device: Device, props: ComputePassProps) {
     super(device, props, ComputePass.defaultProps);
@@ -30,7 +36,10 @@ export abstract class ComputePass extends Resource<ComputePassProps> {
   abstract setPipeline(pipeline: ComputePipeline): void;
 
   /** Replaces the bindings used by subsequent dispatch commands. */
-  abstract setBindings(bindings: Bindings | BindingsByGroup): void;
+  abstract setBindings(
+    bindings: Bindings | BindingsByGroup,
+    options?: ComputePassBindingOptions
+  ): void;
 
   /**
    * Dispatch work to be performed with the current ComputePipeline.

@@ -67,7 +67,7 @@ export type BixiTidesOptions = {
 /** Rows of the top-K flow list (compile-time capacity). */
 export const TIDES_TOP_FLOW_COUNT = 512;
 /** First and last start hour of the playback (the slider range). */
-export const TIDES_FIRST_HOUR = 5;
+export const TIDES_FIRST_HOUR = 0;
 export const TIDES_LAST_HOUR = 23;
 /** Longest flow arrow, in CSS pixels (the shortest is {@link FLOW_MIN_PIXELS}). */
 export const TIDES_FLOW_MAX_PIXELS = 6;
@@ -134,7 +134,12 @@ export async function createBixiTides(
   ctx: SceneContext<BixiTidesOptions>
 ): Promise<SceneInstance<BixiTidesOptions>> {
   const {device} = ctx;
-  const flows = readBixiFlows(ctx.datasets.get('bixi-flows'));
+  const flowDataset = ctx.datasets.get('bixi-flows');
+  const flows = readBixiFlows(flowDataset);
+  const sourceProperties = flowDataset.properties as {
+    droppedShortRides?: number;
+    hourlyMin?: number;
+  };
   const {zoneCount, stationCount, slices} = flows;
   const rows = slices.rowCount;
   const dayCounts = getMonthDayCounts(flows);
@@ -295,7 +300,7 @@ export async function createBixiTides(
     const k = TIDES_TOP_FLOW_COUNT;
     const ids = graphResources.createBuffer('ids', k * 4);
     const count = graphResources.createBuffer('count', 4);
-    const totalCount = graphResources.createBuffer('total-count', 4);
+    const requiredCount = graphResources.createBuffer('total-count', 4);
     const overflow = graphResources.createBuffer('overflow', 4);
     const pairOverflow = graphResources.createBuffer('pair-overflow', 4);
     const originZones = graphResources.createBuffer('flow-origin', k * 4);
@@ -339,7 +344,7 @@ export async function createBixiTides(
           ids: importGraphBuffer(commandGraph, 'ids', ids, 'uint32', k),
           count: importGraphBuffer(commandGraph, 'count', count, 'uint32', 1),
           overflow: importGraphBuffer(commandGraph, 'overflow', overflow, 'uint32', 1),
-          totalCount: importGraphBuffer(commandGraph, 'total-count', totalCount, 'uint32', 1)
+          requiredCount: importGraphBuffer(commandGraph, 'total-count', requiredCount, 'uint32', 1)
         },
         flowOriginZoneIds: importGraphBuffer(commandGraph, 'flow-origin', originZones, 'uint32', k),
         flowDestinationZoneIds: importGraphBuffer(
@@ -387,7 +392,7 @@ export async function createBixiTides(
       `bixi-tides-${view.slot}-${id}`,
       [
         {buffer: count, size: 4},
-        {buffer: totalCount, size: 4},
+        {buffer: requiredCount, size: 4},
         {buffer: overflow, size: 4},
         {buffer: pairOverflow, size: 4},
         {buffer: originZones, size: k * 4},
@@ -741,6 +746,7 @@ export async function createBixiTides(
     if (station < 0) {
       ctx.setChart('stationChart', null);
       ctx.setReadout('station', 'click a station');
+      ctx.setReadout('stationEvidence', null);
       return;
     }
     const hourStarts = Array.from({length: 24}, (_, hour) => hour);
@@ -775,6 +781,16 @@ export async function createBixiTides(
     ctx.setReadout(
       'station',
       `${flows.names[station]}\n${flows.boroughNames[flows.borough[station]]}\nweekdays: most leave at ${formatClockHour(worstHour)} (${formatSigned(weekday[worstHour], 1)} per hour)\nmost arrive at ${formatClockHour(bestHour)} (${formatSigned(weekday[bestHour], 1)} per hour)`
+    );
+    const formatEvidenceHour = (hour: number) => {
+      const slot = station * SLOT_COUNT + slotOf('weekday', hour);
+      const arrivals = profiles.incoming[slot] / dayCounts.weekday;
+      const departures = profiles.out[slot] / dayCounts.weekday;
+      return `${formatClockHour(hour)} ${formatSigned(arrivals - departures, 1)} net (${formatCount(arrivals)} in / ${formatCount(departures)} out)`;
+    };
+    ctx.setReadout(
+      'stationEvidence',
+      `${formatEvidenceHour(8)}\n${formatEvidenceHour(17)}\nRates are per average weekday; capacity and truck moves are unknown.`
     );
   }
 
@@ -862,6 +878,10 @@ export async function createBixiTides(
   ctx.setReadout(
     'dayCounts',
     `${dayCounts.weekday} weekdays and ${dayCounts.weekend} weekend days`
+  );
+  ctx.setReadout(
+    'sourceBasis',
+    `${formatCount(flows.totalRides)} retained rides after ${formatCount(sourceProperties.droppedShortRides ?? 0)} trips under 60 seconds were dropped; ${formatCount(flows.sameStationRides)} same-station rides are outside the station-to-station flows. Station totals remain exact because pairs below ${formatCount(sourceProperties.hourlyMin ?? 10)} August rides are folded into residual station rows; ranked arrows show frequent pairs only.`
   );
   rebuild();
   writeMask();

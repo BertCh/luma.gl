@@ -52,13 +52,13 @@ it('GPUPointSpatialQuery rejects every overlapping output pair', async () => {
       length: 1,
       byteOffset: STORAGE_BINDING_ALIGNMENT * 2
     }),
-    totalCount: graph.createDataView(outputHandle, {
+    requiredCount: graph.createDataView(outputHandle, {
       format: 'uint32',
       length: 1,
       byteOffset: STORAGE_BINDING_ALIGNMENT * 3
     })
   };
-  const outputNames = ['ids', 'count', 'overflow', 'totalCount'] as const;
+  const outputNames = ['ids', 'count', 'overflow', 'requiredCount'] as const;
   const intersectedCellCount = graph.createDataView(outputHandle, {
     format: 'uint32',
     length: 1,
@@ -261,7 +261,7 @@ it('GPUPointSpatialQuery rejects every overlapping output pair', async () => {
   ).toBe(0);
   expect(
     await readUint32At(outputBuffer, STORAGE_BINDING_ALIGNMENT * 3),
-    'aligned output totalCount is writable'
+    'aligned output requiredCount is writable'
   ).toBe(1);
   expect(
     await readUint32At(outputBuffer, STORAGE_BINDING_ALIGNMENT * 4),
@@ -283,7 +283,7 @@ it('GPUPointSpatialQuery rejects every overlapping output pair', async () => {
   void 0;
 });
 
-it('GPUPointSpatialQuery clamps an indirect draw count but preserves totalCount', async () => {
+it('GPUPointSpatialQuery clamps an indirect draw count but preserves requiredCount', async () => {
   const device = await getWebGPUTestDevice();
   if (!device) {
     void 0;
@@ -317,7 +317,7 @@ it('GPUPointSpatialQuery clamps an indirect draw count but preserves totalCount'
       ids: importView(graph, 'ids', idsBuffer, 'uint32', 2),
       count: graph.importGPUData('draw-count', drawCommands.getInstanceCountData(0)),
       overflow: importView(graph, 'overflow', overflowBuffer, 'uint32', 1),
-      totalCount: importView(graph, 'total-count', totalCountBuffer, 'uint32', 1)
+      requiredCount: importView(graph, 'total-count', totalCountBuffer, 'uint32', 1)
     },
     intersectedCellCount: importView(
       graph,
@@ -335,7 +335,7 @@ it('GPUPointSpatialQuery clamps an indirect draw count but preserves totalCount'
 
   expect(drawCount, 'the DrawCommandBuffer instance count is clamped to ID capacity').toBe(2);
   const ids = await readUint32(idsBuffer, Math.min(drawCount, 2));
-  expect((await readUint32(totalCountBuffer, 1))[0], 'totalCount remains unclamped').toBe(6);
+  expect((await readUint32(totalCountBuffer, 1))[0], 'requiredCount remains unclamped').toBe(6);
   expect(
     (await readUint32(intersectedCellCountBuffer, 1))[0],
     'a scan reports zero intersected cells'
@@ -420,7 +420,7 @@ it('GPUPointSpatialQuery propagates index overflow independently of result capac
       ids: importView(graph, 'ids', idsBuffer, 'uint32', 5),
       count: importView(graph, 'count', countBuffer, 'uint32', 1),
       overflow: importView(graph, 'overflow', overflowBuffer, 'uint32', 1),
-      totalCount: importView(graph, 'total-count', totalCountBuffer, 'uint32', 1)
+      requiredCount: importView(graph, 'total-count', totalCountBuffer, 'uint32', 1)
     },
     intersectedCellCount: importView(
       graph,
@@ -442,7 +442,7 @@ it('GPUPointSpatialQuery propagates index overflow independently of result capac
   expect(count, 'only stored row indices are refined').toBe(2);
   expect(
     (await readUint32(totalCountBuffer, 1))[0],
-    'totalCount covers only the candidates retained by the overflowing index'
+    'requiredCount covers only the candidates retained by the overflowing index'
   ).toBe(2);
   expect(
     (await readUint32(intersectedCellCountBuffer, 1))[0],
@@ -535,7 +535,7 @@ it('GPUPointSpatialQuery reports exact indexed broad-phase work without source-s
       ids: importView(graph, 'ids', idsBuffer, 'uint32', outputCapacity),
       count: importView(graph, 'count', countBuffer, 'uint32', 1),
       overflow: importView(graph, 'overflow', overflowBuffer, 'uint32', 1),
-      totalCount: importView(graph, 'total-count', totalCountBuffer, 'uint32', 1)
+      requiredCount: importView(graph, 'total-count', totalCountBuffer, 'uint32', 1)
     },
     intersectedCellCount: importView(
       graph,

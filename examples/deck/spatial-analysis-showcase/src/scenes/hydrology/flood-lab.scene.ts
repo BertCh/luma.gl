@@ -9,11 +9,11 @@ import type {FloodLabOptions} from './flood-lab.compute';
 /** A live shallow-water sandbox over the real Grand Canyon elevation grid. */
 export default defineScene<FloodLabOptions>({
   id: 'flood-lab',
-  title: 'Flood Lab: can water find the Canyon?',
+  title: 'Flood routing over the Grand Canyon DEM',
   chapter: 'hydrology',
   order: 20,
   summary:
-    'Rain, infiltration and a movable release drive a persistent shallow-water simulation over the Grand Canyon, with water depth rendered directly from its GPU state.',
+    'Uniform rain, infiltration and a fixed release drive an approximately 124 m local-inertial shallow-water screening simulation over the Grand Canyon DEM. Water depth, maximum depth and stored volume come directly from GPU state.',
   contributors: ['FrontierFloodSimulation'],
   datasets: [
     {id: 'grand-canyon-dem', role: 'real 15 m terrain, block-averaged to the solver grid'}
@@ -21,7 +21,7 @@ export default defineScene<FloodLabOptions>({
   initialView: {longitude: -112.1, latitude: 36.1, zoom: 11.2},
   basemap: ground('relief'),
   furniture: {
-    title: {title: 'Flood Lab', subtitle: 'Persistent shallow water over the Grand Canyon DEM'},
+    title: {title: 'Flood routing', subtitle: 'Approximately 124 m local-inertial grid'},
     scaleBar: {units: 'metric'},
     credit: 'Terrain Tiles on AWS / USGS 3DEP',
     caveat: 'Interactive screening scenario, not a calibrated flood forecast.'
@@ -136,50 +136,61 @@ export default defineScene<FloodLabOptions>({
   story: [
     {
       id: 'rain',
-      title: 'Where does an impossible cloudburst go?',
-      headline: 'Water follows the surface, not a cached drainage map',
-      body: 'This is the real Grand Canyon elevation window under a deliberately adjustable storm. `FrontierFloodSimulation` stores depth in cells and discharge on their faces, so every drop leaving one cell enters the next. Blue-gold color is **water depth**; dry cells remain transparent.\n\nChange **Rainfall** and **Infiltration** below. Both are four-byte parameter changes, while the water already on the GPU keeps moving.',
+      title: 'Route uniform rainfall across the elevation surface',
+      headline: 'Surface gradient controls simulated discharge',
+      textAlternative:
+        'Simulated water depth follows the block-averaged Grand Canyon elevation gradient on an approximately 124 metre grid under uniform rainfall and infiltration inputs.',
+      body: 'The source DEM is block-averaged eight cells at a time; **Solver lattice** reports the resulting ground resolution. `FrontierFloodSimulation` stores depth in cells and discharge on their faces with closed outer boundaries. Blue-gold color is **water depth**; dry cells remain transparent.\n\nChange **Rainfall** and **Infiltration** below. Both update parameter values while the existing GPU state persists. These uniform rates define a screening scenario, not an observed storm or calibrated forecast.',
       controls: ['rainfall', 'infiltration'],
-      readouts: ['simulatedTime']
+      readouts: ['simulatedTime', 'grid', 'storedWater', 'maximumDepth']
     },
     {
       id: 'release',
-      title: 'Give the solver something dramatic to route',
-      headline: 'A localized pulse exposes the drainage structure',
-      body: 'A localized release near Bright Angel Creek makes the drainage structure legible in seconds. Increase **Release rate** or spread it with **Release radius** below. The advancing front bends around ridges because its face flux follows the water-surface slope, not a precomputed flow-direction map.',
+      title: 'Add a fixed release near Bright Angel Creek',
+      headline: 'The fixed release enters mapped channels',
+      textAlternative:
+        'A fixed synthetic release near Bright Angel Creek adds water to the depth field; the map shows flow entering terrain-defined channels as stored volume and maximum depth increase.',
+      body: 'A fixed release near Bright Angel Creek makes the routing pattern visible before uniform rainfall accumulates. Increase **Release rate** or spread it with **Release radius** below. **Scenario forcing** reports imposed input and the upper bound on infiltration; effective infiltration is limited by available water.',
       controls: ['sourceRate', 'sourceRadius'],
-      readouts: ['grid']
+      readouts: ['forcing', 'storedWater', 'maximumDepth']
     },
     {
       id: 'friction',
       title: 'Friction changes timing, not topography',
-      headline: 'Rough ground slows and broadens the front',
+      headline: 'Roughness reduces simulated discharge',
+      textAlternative:
+        'Increasing Manning roughness slows and broadens the simulated water front while the elevation surface and closed outer boundary remain fixed.',
       body: '**Manning roughness** below damps fast shallow flow. Low values produce a sharp, quick front; high values leave a broader, slower sheet. **Solver time step** changes how much simulated time each frame advances; the Courant clamp limits any face from moving too much water at once.',
       controls: ['roughness', 'timeStep'],
       readouts: ['simulatedTime']
     },
     {
       id: 'persistent',
-      title: 'The map is the state, not a CPU snapshot',
-      headline: 'Pause and the exact GPU state stays on screen',
-      body: 'Pause **Run simulation** below: the exact GPU buffers remain on screen. Resume and the next command buffer continues from them. There is no depth download in the frame loop, and deck.gl shades the same storage buffer that the solver just wrote.\n\nUse **Drain and restart** to clear the experiment, then try a short violent pulse followed by infiltration.',
+      title: 'Pause or reset the persistent simulation state',
+      headline: 'Pause preserves the current depth field',
+      textAlternative:
+        'Pausing preserves GPU depth and face-discharge buffers; resuming continues from that state, while reset clears depth, discharge, elapsed time, and summary diagnostics.',
+      body: 'Pause **Run simulation** below: the GPU depth and face-discharge buffers remain unchanged. Resume and the next command buffer continues from that state. A periodic deterministic reduction reads maximum depth and stored volume; deck.gl draws the full depth field without downloading it.\n\nUse **Drain and restart** to clear the experiment, then compare a short high-rate release with a lower sustained release.',
       controls: ['play', 'reset', 'opacity'],
-      readouts: ['simulatedTime']
+      readouts: ['simulatedTime', 'storedWater', 'maximumDepth']
     }
   ],
   legends: () => [
     {
       kind: 'ramp',
+      id: 'depth',
       title: 'Water depth',
       ramp: 'cividis',
-      extent: [0, 2.5],
-      unit: 'm',
-      labels: ['film', 'deep']
+      extent: 'gpu',
+      unit: 'm'
     }
   ],
   readouts: [
     {id: 'simulatedTime', label: 'Simulated time', format: 'text'},
-    {id: 'grid', label: 'Solver lattice', format: 'text'}
+    {id: 'grid', label: 'Solver lattice', format: 'text'},
+    {id: 'forcing', label: 'Scenario forcing', format: 'text'},
+    {id: 'maximumDepth', label: 'Maximum depth', format: 'decimal', unit: 'm'},
+    {id: 'storedWater', label: 'Stored water', format: 'text'}
   ],
   snippet: state => `const flood = new FrontierFloodSimulation({
   width, height, terrain, parameters, state: {depth, xFlux, yFlux}, display,
@@ -189,8 +200,8 @@ parameters.write(getFrontierFloodParameterValues({
   cellSize, timeStep: ${state.timeStep}, rainfallRate: ${state.rainfall} / 3.6e6
 }));`,
   about: {
-    what: 'A local-inertial shallow-water approximation with persistent depth and face-discharge buffers. It is a screening sandbox, not a calibrated hydraulic forecast.',
-    why: 'Flooding makes WebGPU’s advantage tangible: many small dependent updates, persistent state and immediate visual feedback.',
+    what: 'A local-inertial shallow-water approximation on an approximately 124 m grid with persistent depth and face-discharge buffers, uniform forcing and closed outer boundaries. It is a screening simulation, not a calibrated hydraulic forecast.',
+    why: 'The workload consists of repeated dependent flux and depth updates over a persistent raster. GPU reductions provide depth and storage diagnostics without transferring the full field.',
     howToRead:
       'Colored cells are simulated water depth over the real DEM. The fixed local release and uniform rainfall are scenarios, not observations.'
   },

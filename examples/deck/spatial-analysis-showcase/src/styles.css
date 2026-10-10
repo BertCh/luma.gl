@@ -303,6 +303,8 @@ code, pre, .mono { font-family: var(--mono); font-size: 0.9em; }
 .scene-card-body { padding: var(--s-3) 14px 14px; display: flex; flex-direction: column; gap: 6px; flex: 1; }
 .scene-card-body h3 { margin: 0; }
 .scene-card-body p { margin: 0; color: var(--muted); font-size: var(--fs-md); line-height: var(--lh-snug); flex: 1; }
+.scene-card-body .scene-card-meta { display: flex; flex: 0; flex-wrap: wrap; gap: 4px 12px; padding-top: 4px; color: var(--text); font-size: var(--fs-sm); font-variant-numeric: tabular-nums; }
+.scene-card-meta span:not(:first-child)::before { content: '\00b7'; margin-right: 12px; color: var(--muted); }
 .coming-soon { color: var(--muted); font-style: italic; padding: var(--s-3); border: 1px dashed var(--border-strong); border-radius: var(--radius-card); }
 
 .section-title { font-size: var(--fs-base); font-weight: 600; margin: 0; }

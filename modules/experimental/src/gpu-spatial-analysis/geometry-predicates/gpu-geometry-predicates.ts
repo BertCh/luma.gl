@@ -444,7 +444,7 @@ export class GPUGeometryPredicates implements GPUCommandNodeProducer {
           rightIds: pairRight,
           count: pairCount,
           overflow: props.overflow as GraphDataView<'uint32'>,
-          totalCount: props.intersectionCount
+          requiredCount: props.intersectionCount
         },
         leftFeatures,
         leftRings,

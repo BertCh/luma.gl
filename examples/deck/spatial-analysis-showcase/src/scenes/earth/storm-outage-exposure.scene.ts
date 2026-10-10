@@ -27,7 +27,7 @@ export default defineScene<StormOutageExposureOptions>({
   chapter: 'earth',
   order: 7,
   summary:
-    'Compare population-normalised outage burden with county-scale storm exposure, without treating association as a causal estimate.',
+    'County outage snapshots, radar-derived storm-cell tracks and a seeded lightning sample are grouped on the GPU into outage rates and two exposure proxies; small county summaries are read to the CPU for charts. The resident denominator, nonzero outage rows and county aggregation do not support causal or customer-level inference.',
   contributors: [
     'GPULineLengthPerPolygon',
     'GPUZonalStatistics',
@@ -272,6 +272,7 @@ export default defineScene<StormOutageExposureOptions>({
         extent: range ? ([range.low, range.high] as const) : ([0, 1] as const),
         sqrtScale: true,
         unit: labels.unit,
+        note: 'Fixed full-event domain for this metric; the scale does not change during playback.',
         format: (value: number) =>
           value >= 100 ? value.toFixed(0) : value >= 10 ? value.toFixed(1) : value.toFixed(2)
       }
@@ -350,7 +351,7 @@ flashWindow.write(getGPUTimeWindowParameterValues({start: 0, end: ${state.exposu
     northArrow: 'always',
     credit: joinCredits(CREDITS.usCensus, 'DOE EAGLE-I; NOAA MRMS and GOES-16 GLM (public domain)'),
     caveat:
-      'Customers out is not a customers-served denominator; county association does not establish a storm cause.'
+      'Outage snapshots contain nonzero county rows and use residents, not customers served, as the denominator; county association is not a causal estimate.'
   },
   annotations: OUTAGE_LABELS,
 
@@ -360,12 +361,16 @@ flashWindow.write(getGPUTimeWindowParameterValues({start: 0, end: ${state.exposu
   story: [
     {
       id: 'snapshots',
-      title: 'Outage counts follow population too',
-      headline: 'Counts are an orientation, not a rate',
+      title: 'Raw county outage counts',
+      headline: 'Raw outage counts lack a population denominator',
       textAlternative:
-        'A paper county map shows raw customers-out counts beside the outage timeline.',
+        'County map of raw customers reported without power at one 15-minute snapshot, with a timeline of the regional total and no storm tracks displayed.',
       optionsMode: 'fresh',
-      body: 'The outage table records nonzero county snapshots at a fixed cadence. Start with raw customers out to see the reporting table and its clock; the timeline supplies the total at each snapshot.\n\nRaw counts are an orientation view only. A large county can have more customers out without a larger burden on residents.',
+      body: 'The input contains nonzero county outage rows at 15-minute intervals. At the playhead, the GPU windows the rows and sums customers out by county for the map; the CPU prepares the regional timeline and reads small county summaries for the card. Raw counts have no population or customers-served denominator.',
+      evidence:
+        'At **{{clock}}**, the mapped counties report **{{customersNow}}**; the timeline shows the regional total by snapshot.',
+      caveat:
+        'Absent rows cannot distinguish zero outages from missing reports, and larger populations can produce larger counts without larger per-person burden.',
       camera: {...PLAINS_VIEW, transitionMs: 1400},
       options: {metric: 'outageNow', time: 43200, play: false, showTracks: false},
       controls: ['play', 'time', 'metric'],
@@ -374,10 +379,15 @@ flashWindow.write(getGPUTimeWindowParameterValues({start: 0, end: ${state.exposu
     {
       id: 'rates',
       title: 'A denominator changes the map',
-      headline: 'Map customers out per 1,000 residents',
-      textAlternative: 'A rate map uses warm classes to show customers out per 1,000 residents.',
+      headline: 'Rates use residents as the denominator',
+      textAlternative:
+        'County choropleth of peak reported customers without power per 1,000 residents, with legend, regional peak total and selected-county readout.',
       optionsMode: 'fresh',
       body: '**`GPUGroupStatistics`** reduces the long outage table by county. Its live result can show a current snapshot or each county’s event peak.\n\nThe authored map divides customers out by residents and labels the denominator. The data contain no served-account or household denominator.',
+      evidence:
+        'The event-wide regional maximum is **{{peakTotal}}**; at the shared playhead the current storm-region total is **{{customersNow}}**.',
+      caveat:
+        'The numerator is customers without power, but the available denominator is residents. The resulting rate is not a percentage of customers, meters or households.',
       camera: {...STORM_VIEW, transitionMs: 1400},
       options: {metric: 'outagePeak', time: 54000, play: false, showTracks: false},
       controls: ['metric', 'time'],
@@ -386,11 +396,15 @@ flashWindow.write(getGPUTimeWindowParameterValues({start: 0, end: ${state.exposu
     {
       id: 'track-exposure',
       title: 'Cut every track at county edges',
-      headline: 'Exposure begins as line length in polygons',
+      headline: 'County track length is an exposure proxy',
       textAlternative:
-        'Violet county classes and cased radar-track segments show track length per county.',
+        'County choropleth of radar-derived storm-cell track kilometers within each polygon, with the source tracks drawn over whole-event exposure.',
       optionsMode: 'fresh',
       body: '**`GPULineLengthPerPolygon`** splits every radar-derived path where it meets a county boundary, then sums the in-county length in metres. The violet classes are a footprint proxy, not measured damage.\n\nSwitch between the clock-to-date and whole-event windows to see exposure accumulate. The computation uses an azimuthal metric frame; map display remains Web Mercator.',
+      evidence:
+        'At **{{clock}}**, the computation covers **{{inputs}}** and clips each track at every county edge before summing length.',
+      caveat:
+        'Track kilometres measure repeated centreline passage, not storm width, duration, surface wind, precipitation or damage.',
       camera: {...PLAINS_VIEW, transitionMs: 1400},
       options: {
         metric: 'trackKm',
@@ -405,11 +419,15 @@ flashWindow.write(getGPUTimeWindowParameterValues({start: 0, end: ${state.exposu
     {
       id: 'flash-exposure',
       title: 'A second exposure changes the groups',
-      headline: 'Sampled flashes offer another exposure proxy',
+      headline: 'Flash density provides a second exposure proxy',
       textAlternative:
-        'Violet county classes show estimated flashes per area without radar tracks.',
+        'County choropleth of estimated sampled lightning flashes per 1,000 square kilometers for the whole event, with no radar tracks displayed.',
       optionsMode: 'fresh',
       body: '**`GPUZonalStatistics`** joins sampled flashes to counties once, then re-sums only the active time window. The map reports estimated flashes per area and keeps the sampled count visible.\n\nChanging the exposure definition changes the county groups. Sorted accumulation is reproducible; atomic accumulation is an expert numerical trade-off.',
+      evidence:
+        '**{{flashesCounted}}** estimated flashes contribute to the selected UTC window; **{{overflow}}** reports whether either fixed-capacity GPU result was truncated.',
+      caveat:
+        'Counts are expanded from a seeded sample and divided by county area. They do not measure lightning exposure of people or infrastructure within each county.',
       camera: {...EAST_VIEW, transitionMs: 1400},
       options: {
         metric: 'flashDensity',
@@ -424,11 +442,15 @@ flashWindow.write(getGPUTimeWindowParameterValues({start: 0, end: ${state.exposu
     {
       id: 'comparison',
       title: 'Compare rates, not just totals',
-      headline: 'Keep N beside every exposure group',
+      headline: 'Exposure groups require rates and sample sizes',
       textAlternative:
-        'A county comparison shows exposure groups, outage-rate threshold shares, and group sizes.',
+        'Three-by-three county map of storm exposure and population-normalized outage burden, with a chart reporting threshold shares and county counts for each exposure group.',
       optionsMode: 'fresh',
       body: 'The comparison groups counties by the selected proxy, then reports the share crossing the rate threshold with each group’s **N** in the chart label. Move either threshold: the grouping rule is part of the result.\n\nThis is association at county scale, not an estimate that tracked cells or lightning caused the outages. The bivariate reading is exposure on one axis and population-normalised outage burden on the other.',
+      evidence:
+        'Above the selected exposure threshold, **{{exposedShare}}** crossed the outage threshold versus **{{unexposedShare}}** among the remaining counties, a displayed ratio of **{{ratio}}**.',
+      caveat:
+        'The chart labels retain each group’s county count. Unequal counties, threshold choices, missing zero rows and omitted grid or vegetation conditions limit the comparison.',
       camera: {...STORM_VIEW, transitionMs: 1400},
       options: {
         metric: 'bivariate',
@@ -446,11 +468,15 @@ flashWindow.write(getGPUTimeWindowParameterValues({start: 0, end: ${state.exposu
     {
       id: 'limits',
       title: 'Exposure is not proof of cause',
-      headline: 'County associations have ecological limits',
+      headline: 'County association does not estimate causation',
       textAlternative:
-        'A rate map and comparison chart retain the group counts while explaining the limits of inference.',
+        'County outage-rate map with radar tracks and comparison readouts; the displayed association remains aggregated by county and omits infrastructure, vegetation and ground-level wind.',
       optionsMode: 'fresh',
       body: 'Radar cells and lightning are storm-intensity proxies, not measurements of damaging wind at the ground. Infrastructure, vegetation, reporting practice and timing are absent; counties are unequal aggregation units; and nonzero outage rows require careful zero/no-data interpretation.\n\nTry the time-to-date window and change exposure definition. The next story asks a different three-stage question: whether a report was inside a compatible, valid warning.',
+      evidence:
+        'The current configuration reports **{{ratio}}** while **{{customersNow}}** are present in the selected snapshot, keeping the association and its time slice together.',
+      caveat:
+        'This ecological comparison has no customer-level linkage or causal adjustment; absent county rows cannot distinguish a true zero from missing reporting.',
       camera: {...PLAINS_VIEW, transitionMs: 1400},
       options: {
         metric: 'outageNow',

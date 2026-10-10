@@ -160,7 +160,7 @@ export function createPlayheadFixture(
       ids: importGraphBuffer(graph, 'o-ids', out.ids, 'uint32', capacity),
       count: importGraphBuffer(graph, 'o-count', out.count, 'uint32', 1),
       overflow: importGraphBuffer(graph, 'o-overflow', out.overflow, 'uint32', 1),
-      totalCount: importGraphBuffer(graph, 'o-total', out.total, 'uint32', 1)
+      requiredCount: importGraphBuffer(graph, 'o-total', out.total, 'uint32', 1)
     },
     drawInstanceCount: importGraphBuffer(graph, 'o-draw', out.draw, 'uint32', 1)
   });

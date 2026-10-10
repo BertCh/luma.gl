@@ -697,7 +697,7 @@ export function createLineKeptRangesNode<Parameters>(
     id: string;
     trackOffsets: GraphDataView<'uint32'>;
     compactRows: GraphDataView<'uint32'>;
-    totalCount: GraphDataView<'uint32'>;
+    requiredCount: GraphDataView<'uint32'>;
     lineCounts?: GraphDataView<'uint32'>;
     lineStarts?: GraphDataView<'uint32'>;
   }
@@ -716,7 +716,7 @@ export function createLineKeptRangesNode<Parameters>(
       type: 'u32',
       access: 'read'
     },
-    {name: 'totalCount', view: props.totalCount, type: 'u32', access: 'read'}
+    {name: 'requiredCount', view: props.requiredCount, type: 'u32', access: 'read'}
   ];
   if (props.lineCounts) {
     bindings.push({
@@ -755,7 +755,7 @@ fn lowerBoundKeptRow(row: u32, count: u32) -> u32 {
   }
   return low;
 }`,
-    body: `let keptCount = min(totalCount[totalCountOffset], COMPACT_CAPACITY);
+    body: `let keptCount = min(requiredCount[requiredCountOffset], COMPACT_CAPACITY);
   let lineStart = trackOffsets[trackOffsetsOffset + index];
   let lineEnd = max(trackOffsets[trackOffsetsOffset + index + 1u], lineStart);
   let first = lowerBoundKeptRow(lineStart, keptCount);

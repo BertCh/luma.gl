@@ -291,7 +291,11 @@ export async function createSatelliteGroundTracks(
         pathOffsets: offsetsView,
         columns: grid.columns,
         rows: grid.rows,
-        coordinateSystem: 'spherical',
+        spatialContext: {
+          coordinateSpace: 'longitude-latitude',
+          metric: 'great-circle',
+          units: 'meters'
+        },
         maximumRecords: Math.max(1024, subset.vertexCount * 2),
         parameters: densityParameters.importToGraph(graph),
         output: {

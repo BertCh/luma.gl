@@ -99,19 +99,21 @@ it('addSpaceTimeHotSpotsRecipe counts events into a cube and classifies emerging
         bounds: [0, 0, WIDTH, HEIGHT]
       },
       parameters: fixture.parameters('emerging-parameters', 'float32', packed),
-      cube: cubeOutput.view,
-      giZScores: giZScores.view,
-      category: category.view,
-      hotSliceCount: hotSlices.view,
-      trendS: trendS.view,
+      outputs: {
+        cube: cubeOutput.view,
+        giZScores: giZScores.view,
+        category: category.view,
+        hotSliceCount: hotSlices.view,
+        trendS: trendS.view,
+        colors: colors.view
+      },
       color: {
         palette: fixture.input('palette', Uint32Array.from(palette), 'uint32', 17),
         parameters: fixture.parameters(
           'color-parameters',
           'float32',
           getGPUColorScaleParameterValues({scale: 'ordinal', domainCount: 0, paletteCount: 17})
-        ),
-        colors: colors.view
+        )
       }
     });
     expect(recipe.contributors.length).toBe(4);
@@ -225,8 +227,7 @@ it('addSpaceTimeHotSpotsRecipe accepts cell ids with weights and skips out-of-ra
         'float32',
         getGPUEmergingHotSpotParameterValues({temporalWindow: 1})
       ),
-      cube: cubeOutput.view,
-      giZScores: giZScores.view
+      outputs: {cube: cubeOutput.view, giZScores: giZScores.view}
     });
     fixture.run();
     expect(await fixture.readUint32(cubeOutput, CELLS * sliceCount)).toEqual([...expected]);

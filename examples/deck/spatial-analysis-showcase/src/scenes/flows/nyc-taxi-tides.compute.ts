@@ -110,7 +110,7 @@ const NYC_PLACES: Gazetteer = {
 type SideGraph = {
   compiled: CompiledGPUCommandGraph<void>;
   count: Buffer;
-  totalCount: Buffer;
+  requiredCount: Buffer;
   pairOverflow: Buffer;
   originZones: Buffer;
   destinationZones: Buffer;
@@ -290,7 +290,7 @@ export async function createNycTaxiTides(
     const k = TOP_FLOW_COUNT;
     const ids = graphResources.createBuffer(`${name}-ids`, k * 4);
     const flowCount = graphResources.createBuffer(`${name}-count`, 4);
-    const totalCount = graphResources.createBuffer(`${name}-total-count`, 4);
+    const requiredCount = graphResources.createBuffer(`${name}-total-count`, 4);
     const overflow = graphResources.createBuffer(`${name}-overflow`, 4);
     const pairOverflow = graphResources.createBuffer(`${name}-pair-overflow`, 4);
     const originZones = graphResources.createBuffer(`${name}-flow-origin`, k * 4);
@@ -343,7 +343,7 @@ export async function createNycTaxiTides(
           ids: view('ids', ids, 'uint32', k),
           count: view('count', flowCount, 'uint32', 1),
           overflow: view('overflow', overflow, 'uint32', 1),
-          totalCount: view('total-count', totalCount, 'uint32', 1)
+          requiredCount: view('total-count', requiredCount, 'uint32', 1)
         },
         flowOriginZoneIds: view('flow-origin', originZones, 'uint32', k),
         flowDestinationZoneIds: view('flow-destination', destinationZones, 'uint32', k),
@@ -358,7 +358,7 @@ export async function createNycTaxiTides(
     return {
       compiled: graphResources.track(commandGraph.compile()),
       count: flowCount,
-      totalCount,
+      requiredCount,
       pairOverflow,
       originZones,
       destinationZones,
@@ -413,7 +413,7 @@ export async function createNycTaxiTides(
       `taxi-tides-${id}`,
       [
         {buffer: departures.count, size: 4},
-        {buffer: departures.totalCount, size: 4},
+        {buffer: departures.requiredCount, size: 4},
         {buffer: departures.pairOverflow, size: 4},
         {buffer: arrivals.pairOverflow, size: 4},
         {buffer: departures.zoneOutCounts, size: zoneCount * 4},

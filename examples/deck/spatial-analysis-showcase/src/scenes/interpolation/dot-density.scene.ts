@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {ground} from '../../cartography/grounds';
 import {defineScene} from '../scene';
 import {DOT_VALUE_SETS} from './b7-dot-style';
 import type {DotDensityOptions} from './dot-density.compute';
@@ -14,11 +15,11 @@ const formatPeople = (log: number) => {
 /** Chapter `interpolation`, scene 3: a dasymetric dot map of Chicago. */
 export default defineScene<DotDensityOptions>({
   id: 'dot-density',
-  title: 'One dot per person: a dot map of Chicago',
+  title: 'Chicago residents: categorical dots from census tracts',
   chapter: 'interpolation',
   order: 3,
   summary:
-    'Draw census counts as stable random dots inside each tract, colored by group, on the GPU. Dots are added and never move as you zoom or change the dot value; a street-density mask pulls them out of parks and rail yards; a second contributor scatters uniform random points for comparison.',
+    'GPU sampling converts Chicago census-tract counts into stable categorical dots, optionally weighted by street or place density. The output shows aggregate density and composition, not household locations.',
   contributors: ['GPUDotDensity', 'GPURandomPointsInPolygon'],
   datasets: [
     {id: 'chicago-tracts', role: 'tract polygons with race, poverty and vehicle counts'},
@@ -26,6 +27,13 @@ export default defineScene<DotDensityOptions>({
     {id: 'chicago-places', role: 'place density for the dasymetric mask'}
   ],
   initialView: {longitude: -87.78, latitude: 41.84, zoom: 10},
+  basemap: ground('paperCity'),
+  furniture: {
+    title: {title: 'Chicago dot density', subtitle: 'Residents represented by stable sampled dots'},
+    scaleBar: {units: 'metric'},
+    credit: 'U.S. Census Bureau; OpenStreetMap contributors',
+    caveat: 'Dots are random within tracts and do not identify residential locations.'
+  },
 
   options: [
     {
@@ -240,7 +248,7 @@ graph.add(new GPUDotDensity({
   output: {
     positions, categories, slotCounts, slotOffsets,
     dots: {ids, count: graph.importGPUData('count', drawCommands.getInstanceCountData(0)),
-           overflow, totalCount},
+           overflow, requiredCount},
     failedCount
   }
 }));
@@ -269,6 +277,9 @@ const random = new GPURandomPointsInPolygon({
   story: [
     {
       id: 'the-map',
+      headline: 'Dots show tract density and group composition',
+      textAlternative:
+        'Stable colored dots represent census groups within Chicago tract boundaries.',
       title: 'Who lives where in Chicago?',
       body: 'A choropleth of Chicago’s 791 census tracts hides two things: how many people live in a tract, and how mixed it is. A **dot map** shows both. **`GPUDotDensity`** draws one dot per N residents of each group, at a random position inside the tract, all on the GPU: about 100,000 dots here, colored by race and ethnicity from the 2020 Census (**What the dots count**, below).\n\nThe broad pattern is the one Chicago is known for: large, nearly uniform areas on the South and West sides, mixed neighbourhoods on the North Side and along the lakefront, and the Loop’s thin population. Hover a tract for its counts and shares.',
       camera: {longitude: -87.78, latitude: 41.84, zoom: 10, transitionMs: 1500},
@@ -278,6 +289,9 @@ const random = new GPURandomPointsInPolygon({
     },
     {
       id: 'stable-dots',
+      headline: 'Higher zoom appends dots without moving existing samples',
+      textAlternative:
+        'A neighborhood view adds finer sampled dots while earlier dot positions remain fixed.',
       title: 'Zoom in: dots are added, and never move',
       body: 'The number of dots in a (tract, category) slot is `ceil(value × dotsPerUnit − u)`, where `u` is a per-slot random number, so it never decreases as the dot value shrinks. Dot *j* of a slot is placed by rejection sampling from random numbers that depend on the seed, the slot and *j*, not on the dot value. So zooming in only **appends** dots; the ones you see keep their exact position.\n\n**Zoom coupling** ties the dot value to the zoom: at 1.5, each zoom level multiplies dots per resident by about 2.8. Press **Check that dots never move (GPU read-back)** below: the GPU runs the graph at two dot values, reads both back, and the **Dot stability** readout reports how many dots moved (zero).',
       camera: {longitude: -87.65, latitude: 41.85, zoom: 12.4, transitionMs: 2200},
@@ -288,6 +302,9 @@ const random = new GPURandomPointsInPolygon({
     },
     {
       id: 'segregation',
+      headline: 'Group composition changes sharply across tract boundaries',
+      textAlternative:
+        'Categorical dots show differing racial and ethnic composition across adjacent Chicago tracts.',
       title: 'Boundaries you can see',
       body: 'At neighbourhood scale the mixture becomes a map of boundaries: Pilsen and Little Village (Hispanic or Latino, green), Bronzeville and Englewood (Black, orange), Chinatown (Asian, yellow) and the Near North lakefront (White, blue) meet along a few streets. Dots are random inside a tract, so a sharp edge is a *tract* edge, not a street.\n\nSwitch **What the dots count** to *Poverty status* or *Household vehicle access* below to see the same tracts through a different lens; the graph is not recompiled, only the values buffer is rewritten.',
       camera: {longitude: -87.66, latitude: 41.835, zoom: 11.6, transitionMs: 2200},
@@ -297,6 +314,9 @@ const random = new GPURandomPointsInPolygon({
     },
     {
       id: 'dasymetric',
+      headline: 'Street weights reduce dots in open land',
+      textAlternative:
+        'A street-density mask removes many sampled resident dots from parks and rail yards.',
       title: 'Keep dots out of parks and rail yards',
       body: 'Inside a tract, `GPUDotDensity` is uniform: it will put people in a park or on a rail line. A **dasymetric mask** fixes that. A raster of weights in [0, 1] thins candidate positions: a position is kept with probability equal to its cell’s weight. Here the weight is OpenStreetMap street length per cell: where there are no streets, there are few dots.\n\nSet **Dasymetric mask** to *Street density* and watch Washington and Jackson Parks, the rail yards and the lakefront empty out and the streets fill up. Street density is only a proxy for housing: with real building footprints or land cover you would do better. **Failed dots** counts dots whose sampling attempts all missed; a very restrictive mask makes it grow.',
       camera: {longitude: -87.612, latitude: 41.793, zoom: 12.6, transitionMs: 2200},
@@ -307,6 +327,9 @@ const random = new GPURandomPointsInPolygon({
     },
     {
       id: 'random-points',
+      headline: 'Equal samples overrepresent small tracts',
+      textAlternative:
+        'Uniform points place the same count in every tract, producing higher density in smaller polygons.',
       title: 'The same sampler without categories',
       body: '**`GPURandomPointsInPolygon`** is the sampler on its own: N uniform random points per polygon, with an optional mask, in its own compiled graph. Switch **Show** to *Uniform random points* and the colors disappear: you see where the dots are placed, not who they represent. With **Points per tract** set to *The same in every tract* (**Fixed points per tract**) every tract gets 100 points, which paints small tracts black and big ones sparse, a reminder of why the dot value should be per resident, not per polygon.\n\nThis is also how you build a synthetic population to feed a simulation, or a Monte Carlo sample of a polygon for a statistic.',
       options: {display: 'random', randomCounts: 'fixed', randomFixed: 100},
@@ -315,6 +338,9 @@ const random = new GPURandomPointsInPolygon({
     },
     {
       id: 'limits',
+      headline: 'Dot positions remain synthetic within each tract',
+      textAlternative:
+        'The citywide dot map shows aggregate tract composition; individual dot locations are random.',
       title: 'Limits, and things to try',
       body: 'A dot map is not a census of people: dots are random inside a tract and say nothing about where a person lives, and tract boundaries still cut neighbourhoods. The map shows 2020 counts; a tract’s mix can change in a year. Dasymetric weights from streets or places only shift dots; they do not know where housing is.\n\nTry: **New seed (every dot moves)** (the picture changes in detail, not in pattern), a larger **Residents per dot at zoom 10** at full view, *Places density* as the **Dasymetric mask** (dots follow commercial streets), a **Zoom coupling** of 0 (fixed dot value: zooming in shows the same dots, bigger), and *Poverty status* in **What the dots count** at the city scale.',
       camera: {longitude: -87.78, latitude: 41.84, zoom: 10, transitionMs: 1800},

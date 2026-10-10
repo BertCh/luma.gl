@@ -34,7 +34,7 @@ export type GPUOffsetExpansionOutput = {
   /** One-row scalar receiving `1` when `offsets[last] > owners.length`, otherwise `0`. */
   overflow: GraphDataView<'uint32'>;
   /** Optional one-row scalar receiving the unclamped child row count `offsets[last]`. */
-  totalCount?: GraphDataView<'uint32'>;
+  requiredCount?: GraphDataView<'uint32'>;
 };
 
 /**
@@ -72,7 +72,7 @@ export type GPUOffsetExpansionProps = {
  * row, so owners with an empty range produce no rows (Shapely `get_coordinates` drops empty
  * geometries; `get_parts` and `explode` keep an empty polygon as one part, which is what
  * `get_num_geometries` offsets already say). `localIndex[i] = i - offsets[p]`. Deterministic, no
- * atomics. Output is bounded by `output.owners.length`; surplus rows are counted in `totalCount`
+ * atomics. Output is bounded by `output.owners.length`; surplus rows are counted in `requiredCount`
  * and flagged by `overflow`.
  *
  * Chain levels by expanding each offsets view and feeding the owner rows of the coarser level as
@@ -113,7 +113,7 @@ export class GPUOffsetExpansion implements GPUCommandNodeProducer {
     for (const [name, scalar] of [
       ['count', output.count],
       ['overflow', output.overflow],
-      ['totalCount', output.totalCount]
+      ['requiredCount', output.requiredCount]
     ] as const) {
       if (scalar) {
         validatePackedUint32View(scalar, `${id} output.${name}`);
@@ -124,7 +124,7 @@ export class GPUOffsetExpansion implements GPUCommandNodeProducer {
     }
     validateGraphOutputsDisjointFromInputs(
       id,
-      [output.owners, output.localIndex, output.count, output.overflow, output.totalCount],
+      [output.owners, output.localIndex, output.count, output.overflow, output.requiredCount],
       [props.offsets, props.ownerMap]
     );
   }
@@ -142,7 +142,7 @@ export class GPUOffsetExpansion implements GPUCommandNodeProducer {
       output.localIndex,
       output.count,
       output.overflow,
-      output.totalCount
+      output.requiredCount
     ]);
     const ownerCount = props.offsets.length - 1;
     const bindings: WGSLKernelBinding[] = [
@@ -162,8 +162,13 @@ export class GPUOffsetExpansion implements GPUCommandNodeProducer {
         access: 'read_write'
       });
     }
-    if (output.totalCount) {
-      bindings.push({name: 'totalOut', view: output.totalCount, type: 'u32', access: 'read_write'});
+    if (output.requiredCount) {
+      bindings.push({
+        name: 'totalOut',
+        view: output.requiredCount,
+        type: 'u32',
+        access: 'read_write'
+      });
     }
     return [
       createWGSLKernelNode<Parameters>(graph, {
@@ -178,7 +183,7 @@ const NO_OWNER: u32 = ${GPU_OFFSET_EXPANSION_NO_OWNER}u;`,
   if (index == 0u) {
     countOut[countOutOffset] = min(total, CAPACITY);
     overflowOut[overflowOutOffset] = select(0u, 1u, total > CAPACITY);
-    ${output.totalCount ? 'totalOut[totalOutOffset] = total;' : ''}
+    ${output.requiredCount ? 'totalOut[totalOutOffset] = total;' : ''}
   }
   // Count the owners whose first row is at or before this row (offsets are non-decreasing).
   var low = 0u;

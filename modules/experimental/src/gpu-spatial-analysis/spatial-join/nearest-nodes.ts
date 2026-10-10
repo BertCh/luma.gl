@@ -310,7 +310,8 @@ export function getNearestBVHNodes<Parameters>(
  * Builds the best-first k-nearest pipeline: bounds, BVH, packed node table, polygon ring ranges,
  * header clear, one traversal per query chunk, optional foot-point pass, and column writes.
  *
- * Every pass is a fixed-size dispatch; nothing is read back.
+ * Expensive foot-point evaluation dispatches once per query and visits only the neighbors actually
+ * found. Column passes still initialize every caller-owned output slot.
  *
  * @internal
  */
@@ -590,23 +591,24 @@ const STRIDE: u32 = ${stride}u;`,
             topkBinding('read'),
             {name: 'extras', view: extras, type: 'u32', access: 'read_write'}
           ],
-          invocationCount: dispatch.count * capacity,
+          invocationCount: dispatch.count,
           declarations: `${sideWGSL}
 const CAPACITY: u32 = ${capacity}u;
 const STRIDE: u32 = ${stride}u;
 const CHUNK_FIRST_ROW: u32 = ${dispatch.firstRow}u;`,
-          body: `let localQuery = index / CAPACITY;
-  let slot = index % CAPACITY;
+          body: `let localQuery = index;
   let row = CHUNK_FIRST_ROW + localQuery;
   let header = topkOffset + row * STRIDE;
-  if (slot >= topk[header]) { return; }
-  let result = pairResult(localQuery, topk[header + 3u + slot * 2u]);
-  let output = extrasOffset + (row * CAPACITY + slot) * ${EXTRA_WORDS}u;
-  extras[output] = bitcast<u32>(result.foot.x);
-  extras[output + 1u] = bitcast<u32>(result.foot.y);
-  extras[output + 2u] = result.segment;
-  extras[output + 3u] = bitcast<u32>(result.queryFoot.x);
-  extras[output + 4u] = bitcast<u32>(result.queryFoot.y);`
+  let count = topk[header];
+  for (var slot = 0u; slot < count; slot++) {
+    let result = pairResult(localQuery, topk[header + 3u + slot * 2u]);
+    let output = extrasOffset + (row * CAPACITY + slot) * ${EXTRA_WORDS}u;
+    extras[output] = bitcast<u32>(result.foot.x);
+    extras[output + 1u] = bitcast<u32>(result.foot.y);
+    extras[output + 2u] = result.segment;
+    extras[output + 3u] = bitcast<u32>(result.queryFoot.x);
+    extras[output + 4u] = bitcast<u32>(result.queryFoot.y);
+  }`
         })
       );
     }

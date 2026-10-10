@@ -139,7 +139,12 @@ export async function createBixiBundles(
   ctx: SceneContext<BixiBundlesOptions>
 ): Promise<SceneInstance<BixiBundlesOptions>> {
   const {device} = ctx;
-  const flows = readBixiFlows(ctx.datasets.get('bixi-flows'));
+  const flowDataset = ctx.datasets.get('bixi-flows');
+  const flows = readBixiFlows(flowDataset);
+  const sourceProperties = flowDataset.properties as {
+    droppedShortRides?: number;
+    pairMin?: number;
+  };
   const rideData = ctx.datasets.get('poopdeck-bixi-rides');
   const allEdges = buildUndirectedEdges(flows);
   const edgeCount = Math.min(BUNDLE_EDGE_CAPACITY, allEdges.count);
@@ -171,6 +176,7 @@ export async function createBixiBundles(
     }
   }
   const pareto = getParetoSeries(cumulativeRides, stationToStationRides);
+  const eligiblePairRides = cumulativeRides[allEdges.count];
 
   // The busiest partner of every station: edges are ranked by rides, so the first one seen wins.
   const partner = new Int32Array(stationCount).fill(-1);
@@ -726,6 +732,18 @@ export async function createBixiBundles(
 
   ctx.setReadout('rides', trackCount);
   ctx.setReadout('streetDistance', STREET_DISTANCE_METERS);
+  ctx.setReadout(
+    'eligibleCoverage',
+    stationToStationRides > 0 ? eligiblePairRides / stationToStationRides : null
+  );
+  ctx.setReadout(
+    'sourceAudit',
+    `${formatCount(flows.totalRides)} retained rides after ${formatCount(sourceProperties.droppedShortRides ?? 0)} trips under 60 seconds were dropped; ${formatCount(flows.sameStationRides)} same-station rides do not form a pair. Bundling starts from ${formatCount(allEdges.count)} undirected pairs whose directed source pair had at least ${formatCount(sourceProperties.pairMin ?? 3)} rides; the drawn share still uses every retained inter-station ride as its denominator.`
+  );
+  ctx.setReadout(
+    'routeEvidence',
+    `${formatCount(trackCount)} OSRM bicycle-profile routes from one morning (15 August, 07:30–10:00), not GPS traces and not a complete street inventory.`
+  );
   ctx.setFurniture({
     title: {
       sample: `${formatCount(edgeCount)} busiest station pairs of ${formatCount(allEdges.count)}, August 2024`

@@ -460,7 +460,10 @@ export async function createStreetDensity(
         ),
         columns: COLUMNS,
         rows: ROWS,
-        coordinateSystem: system,
+        spatialContext:
+          system === 'spherical'
+            ? {coordinateSpace: 'longitude-latitude', metric: 'great-circle', units: 'meters'}
+            : {coordinateSpace: 'planar', metric: 'native', units: 'native'},
         maximumRecords: getMaximumRecords(road),
         parameters: parameters.importToGraph(graph),
         output: {

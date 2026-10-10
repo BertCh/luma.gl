@@ -152,6 +152,43 @@ it('GPUBVH checks workgroup capacity and rejects unsupported forced fusion', () 
   ).toThrow(/fused strategy exceeds portable single-workgroup limits/);
 });
 
+it('GPUBVH rejects overlapping source and output storage', () => {
+  const graph = makeGraph();
+  const minima = makeView(graph, 'float32x2', 3);
+  expect(
+    () =>
+      new GPUBVH({
+        id: 'overlapping-input-bvh',
+        minima,
+        maxima: makeView(graph, 'float32x2', 3),
+        leafCapacity: 2,
+        nodeMinima: minima,
+        nodeMaxima: makeView(graph, 'float32x2', 3),
+        nodeChildren: makeView(graph, 'uint32x2', 3),
+        leafIds: makeView(graph, 'uint32', 2),
+        count: makeView(graph, 'uint32', 1),
+        overflow: makeView(graph, 'uint32', 1)
+      })
+  ).toThrow(/output views must not overlap source inputs/);
+
+  const sharedNodeBounds = makeView(graph, 'float32x2', 3);
+  expect(
+    () =>
+      new GPUBVH({
+        id: 'overlapping-output-bvh',
+        minima: makeView(graph, 'float32x2', 2),
+        maxima: makeView(graph, 'float32x2', 2),
+        leafCapacity: 2,
+        nodeMinima: sharedNodeBounds,
+        nodeMaxima: sharedNodeBounds,
+        nodeChildren: makeView(graph, 'uint32x2', 3),
+        leafIds: makeView(graph, 'uint32', 2),
+        count: makeView(graph, 'uint32', 1),
+        overflow: makeView(graph, 'uint32', 1)
+      })
+  ).toThrow(/output views must not overlap one another/);
+});
+
 function makeGraph(limitOverrides: Record<string, number> = {}): MockGraph {
   const recordedNodes: RecordedGraphNode[] = [];
   return {

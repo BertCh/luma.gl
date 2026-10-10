@@ -27,6 +27,8 @@ export type KernelProps = Omit<ComputePipelineProps, 'shader'> & {
 /** Bindings and workgroup dimensions for one direct dispatch. */
 export type KernelDispatchOptions = {
   bindings?: Record<string, Binding>;
+  /** @internal Stable keys for backend bind-group reuse. */
+  _bindGroupCacheKeys?: Partial<Record<number, object>>;
   x: number;
   y?: number;
   z?: number;
@@ -35,6 +37,8 @@ export type KernelDispatchOptions = {
 /** Bindings and GPU-written dispatch record for one indirect dispatch. */
 export type KernelDispatchIndirectOptions = {
   bindings?: Record<string, Binding>;
+  /** @internal Stable keys for backend bind-group reuse. */
+  _bindGroupCacheKeys?: Partial<Record<number, object>>;
   indirectBuffer: Buffer;
   indirectOffset?: number;
 };
@@ -122,13 +126,13 @@ export class Kernel {
 
   /** Applies per-dispatch bindings and records a direct compute dispatch. */
   dispatch(computePass: ComputePass, options: KernelDispatchOptions): void {
-    this._setPipeline(computePass, options.bindings);
+    this._setPipeline(computePass, options.bindings, options._bindGroupCacheKeys);
     computePass.dispatch(options.x, options.y, options.z);
   }
 
   /** Applies per-dispatch bindings and records a GPU-driven indirect compute dispatch. */
   dispatchIndirect(computePass: ComputePass, options: KernelDispatchIndirectOptions): void {
-    this._setPipeline(computePass, options.bindings);
+    this._setPipeline(computePass, options.bindings, options._bindGroupCacheKeys);
     computePass.dispatchIndirect(options.indirectBuffer, options.indirectOffset ?? 0);
   }
 
@@ -139,8 +143,16 @@ export class Kernel {
     this._destroyed = true;
   }
 
-  private _setPipeline(computePass: ComputePass, bindings: Record<string, Binding> = {}): void {
+  private _setPipeline(
+    computePass: ComputePass,
+    bindings: Record<string, Binding> = {},
+    bindGroupCacheKeys?: Partial<Record<number, object>>
+  ): void {
     computePass.setPipeline(this.pipeline);
-    computePass.setBindings(bindings);
+    if (bindGroupCacheKeys) {
+      computePass.setBindings(bindings, {_bindGroupCacheKeys: bindGroupCacheKeys});
+    } else {
+      computePass.setBindings(bindings);
+    }
   }
 }

@@ -48,7 +48,7 @@ graph.add(new GPUVirtualGeometrySelection({
   },
   output: visibleClusterIds,
   count,
-  totalCount,
+  requiredCount,
   overflow
 }));
 ```
@@ -125,11 +125,11 @@ source node order rather than workgroup scheduling.
 `output.length` is the retained capacity. Every encoding publishes:
 
 ```text
-count = min(totalCount, output.length)
-overflow = totalCount > output.length ? 1 : 0
+count = min(requiredCount, output.length)
+overflow = requiredCount > output.length ? 1 : 0
 ```
 
-The optional `totalCount` preserves the full selected count. `count`, `totalCount`, and `overflow`
+The optional `requiredCount` preserves the full selected count. `count`, `requiredCount`, and `overflow`
 are reset on every encoding. Point `count` at `DrawCommandBuffer.getInstanceCountData()` to feed a
 later indirect draw directly; `DrawCommandBuffer` continues to own the indirect record layout and
 render-pass replay.

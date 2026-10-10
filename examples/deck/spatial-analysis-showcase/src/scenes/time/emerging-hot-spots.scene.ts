@@ -2,8 +2,9 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {ground} from '../../cartography/grounds';
 import {defineScene} from '../scene';
-import {EMERGING_CATEGORY_COLORS} from './b13-category-layer';
+import {EMERGING_CATEGORY_COLORS} from './b13-categories';
 import type {EmergingHotSpotsOptions} from './emerging-hot-spots.compute';
 
 const GROUPS = [
@@ -44,14 +45,24 @@ const CATEGORY_ENTRIES = [
 
 export default defineScene<EmergingHotSpotsOptions>({
   id: 'emerging-hot-spots',
-  title: 'Where do Chicago nature hot spots persist, and which are seasonal?',
+  title: 'Chicago nature hot-spot persistence across weekly cells',
   chapter: 'time',
   order: 1,
   summary:
-    'A space-time cube of 43,557 iNaturalist observations from 2023 on 500 m cells, classified on the GPU into the 17 emerging hot spot categories: space-time Gi*, a Mann-Kendall trend per cell, and ArcGIS-style new, intensifying, persistent, diminishing, sporadic and historical patterns.',
+    'Space-time Gi* and Mann-Kendall tests classify 43,557 2023 iNaturalist records in 500 m weekly cells into emerging hot-spot categories; volunteer effort, multiple testing and sparse bins limit habitat inference.',
   contributors: ['GPUEmergingHotSpots', 'addSpaceTimeHotSpotsRecipe', 'GPUTemporalReduction'],
   datasets: [{id: 'chicago-nature', role: 'timestamped nature observations'}],
   initialView: {longitude: -87.68, latitude: 41.835, zoom: 9.9},
+  basemap: ground('night'),
+  furniture: {
+    title: {
+      title: 'Chicago nature hot-spot persistence',
+      subtitle: 'Weekly 500 m cells, iNaturalist 2023'
+    },
+    scaleBar: {units: 'metric'},
+    credit: 'iNaturalist contributors',
+    caveat: 'Hot spots combine ecological activity with volunteer observation effort.'
+  },
 
   options: [
     {
@@ -85,7 +96,7 @@ export default defineScene<EmergingHotSpotsOptions>({
         {
           value: 'hours',
           label: '24 hours of the day (recipe)',
-          help: 'A cyclic cube: slice 0 is midnight. Trends over the day are read loosely because 23:00 and 00:00 are neighbours.'
+          help: 'A cyclic cube in Chicago local wall-clock time as recorded, with no timezone conversion. Slice 0 is midnight; trends are read loosely because 23:00 and 00:00 are neighbours.'
         }
       ],
       help: 'How events are cut into slices. The slice count is fixed when the graph is compiled, so changing it rebuilds (each variant is cached).'
@@ -279,20 +290,48 @@ export default defineScene<EmergingHotSpotsOptions>({
   ],
 
   readouts: [
-    {id: 'events', label: 'Events counted', help: 'Observations passing the group filter.'},
+    {id: 'events', label: 'Records counted', help: 'iNaturalist records passing the group filter.'},
+    {
+      id: 'challengePulse',
+      label: 'City Nature Challenge pulse',
+      help: 'Selected records from 28 April through 1 May 2023, divided by all records in the selected group.'
+    },
     {id: 'grid', label: 'Lattice'},
     {id: 'cells', label: 'Study-area cells', help: 'Cells above the study-area threshold.'},
     {id: 'cubeEvents', label: 'Cube'},
     {id: 'busiest', label: 'Busiest slice'},
     {id: 'sliceLabel', label: 'Slice shown'},
+    {
+      id: 'tests',
+      label: 'Significance family',
+      help: 'Active cells times slices. Each Gi* bin is tested at the selected confidence without a multiple-testing correction.'
+    },
+    {
+      id: 'sliceTimeline',
+      label: 'Observations through time',
+      kind: 'chart',
+      help: 'Counts in every slice, summed over the active study area. Drag the playhead to change the map.'
+    },
     {id: 'hot', label: 'Hot spot cells', format: 'integer', help: 'Categories 1 to 8.'},
     {id: 'cold', label: 'Cold spot cells', format: 'integer', help: 'Categories 9 to 16.'},
     {id: 'new', label: 'New hot spots', format: 'integer'},
     {id: 'intensifying', label: 'Intensifying hot spots', format: 'integer'},
     {id: 'persistent', label: 'Persistent hot spots', format: 'integer'},
     {id: 'diminishing', label: 'Diminishing hot spots', format: 'integer'},
-    {id: 'sporadic', label: 'Sporadic hot spots', format: 'integer'}
+    {id: 'sporadic', label: 'Sporadic hot spots', format: 'integer'},
+    {
+      id: 'categoryProfile',
+      label: 'Emerging-pattern profile',
+      kind: 'chart',
+      help: 'Active cells in each of the eight hot and eight cold categories.'
+    }
   ],
+
+  timeline: {
+    time: 'slice',
+    play: 'play',
+    format: value => `Slice ${Math.round(value)}`
+  },
 
   legends: state => {
     switch (state.mapView) {
@@ -311,6 +350,7 @@ export default defineScene<EmergingHotSpotsOptions>({
             kind: 'ramp',
             title: 'Space-time Gi* z-score',
             ramp: 'diverging',
+            midpoint: 0,
             extent: [-4, 4],
             labels: ['cold (z = -4)', 'hot (z = +4)'],
             unit: 'z'
@@ -322,6 +362,7 @@ export default defineScene<EmergingHotSpotsOptions>({
             kind: 'ramp',
             title: 'Mann-Kendall trend of Gi*',
             ramp: 'diverging',
+            midpoint: 0,
             extent: [-4, 4],
             labels: ['falling', 'rising'],
             unit: 'z'
@@ -342,7 +383,7 @@ export default defineScene<EmergingHotSpotsOptions>({
           {
             kind: 'ramp',
             title: 'Cold slices per cell',
-            ramp: 'viridis',
+            ramp: 'cividis',
             extent: [0, state.cube === 'months' ? 12 : state.cube === 'hours' ? 24 : 52],
             unit: 'slices'
           }
@@ -420,65 +461,107 @@ compiled.encode(commandEncoder, {parameters: undefined});`,
     {
       id: 'question',
       title: 'Where is nature-watching new, and where is it entrenched?',
-      body: 'Chicagoans posted 43,557 wild observations to iNaturalist in 2023. A heat map of the year shows where, not when. **`GPUEmergingHotSpots`** adds the time axis: it counts observations per 500 m cell and per week (a *space-time cube*), tests every bin with a Gi* hot spot statistic, then classifies each cell by how its hot or cold status evolved over the year.\n\nWarm cells are hot at the end of the year, cool cells cold, and pale cells less settled than saturated ones. Hover a cell for its counts and trend; **Group of life** and **Map shows**, below, change what is counted and what is drawn. The legend lists all 16 categories; "no pattern" is transparent.',
+      headline: 'Year-end patterns differ across Chicago cells',
+      textAlternative:
+        'Warm and cool 500-meter cells classify how significant observation hot and cold spots evolved through 2023.',
+      body: 'Chicagoans posted 43,557 iNaturalist **records** in 2023—not 43,557 organisms. **`GPUEmergingHotSpots`** adds the time axis: it counts records in fixed 500 m cells and weekly slices (a *space-time cube*), tests every bin with Gi*, then classifies each cell by how its hot or cold status evolved. The 500 m boundaries do not move between slices, so change over time is not confused with a changing grid.\n\nWarm cells are hot at year end, cool cells cold, and pale cells less settled than saturated ones. Hover a cell for its N and trend; **Group of life** and **Map shows** change what is counted and drawn. “No pattern” is transparent.',
+      evidence:
+        '**{{events}}** records feed the cube; the profile counts **{{hot}}** hot-pattern cells and **{{cold}}** cold-pattern cells.',
+      caveat:
+        'These are volunteer observations, so the categories combine wildlife activity with where and when people looked.',
       controls: ['groupType', 'mapView'],
-      readouts: ['events', 'hot', 'cold']
+      readouts: ['events', 'hot', 'cold', 'categoryProfile']
     },
     {
       id: 'the-cube',
       title: 'First, the cube: a count per cell and week',
-      body: 'The cube here comes from **`GPUTemporalReduction`**: every observation is assigned to a cell and to a seven-day bucket counted from 1 January (52 buckets; 31 December falls outside 52 whole weeks and is dropped). That is a plain count per bin, drawn for one week.\n\nThe **Busiest slice** readout names the week with the most observations: for all groups it is week 19, 7 to 13 May, with 1,811, the height of spring migration. Move the **Slice shown** slider or turn on **Play through the slices** to watch the city bloom in April and May, hold through the summer and fade by November. The study area is the roughly 300 cells with at least 20 observations in the year (**Study-area threshold**); the lake, rail yards and industrial land are masked.',
+      headline: 'Spring migration produces the busiest weekly slice',
+      textAlternative:
+        'Cell counts for 7–13 May show the busiest weekly slice, with activity concentrated along Chicago’s lakefront.',
+      body: 'The cube here comes from **`GPUTemporalReduction`**: every record is assigned to one fixed cell and one seven-day bucket counted from 1 January (52 buckets; 31 December falls outside the 52 whole weeks). The timeline is the resulting N per week.\n\nMove **Slice shown** or turn on **Play** to watch the city brighten in spring, hold through summer and fade by November. But do not label every pulse biological: the coordinated City Nature Challenge from 28 April through 1 May contributes **{{challengePulse}}** of the selected records. Dates and hours are Chicago **local wall-clock values stored as if UTC**, with no timezone conversion.',
+      evidence:
+        'The timeline is summed from the computed cube; **{{busiest}}** is its maximum, and the map shows **{{sliceLabel}}**.',
+      caveat:
+        'A weekly peak can reflect migration, weather, a bioblitz or simply more observers; the counts alone cannot separate them.',
       options: {mapView: 'events', slice: 19},
       controls: ['slice', 'play', 'minimumEvents'],
-      readouts: ['busiest', 'sliceLabel', 'cells']
+      readouts: ['sliceTimeline', 'busiest', 'challengePulse', 'sliceLabel']
     },
     {
       id: 'gi-star',
       title: 'Space-time Gi*: is this bin hotter than chance?',
+      headline: 'North lakefront cells retain high Gi* scores',
+      textAlternative:
+        'A diverging cell map shows significant positive Gi-star scores along the north lakefront and negative scores elsewhere.',
       body: 'For every bin, Gi* sums the counts of its **space-time neighborhood** (cells within the radius, in the current and the previous two weeks, set by **Temporal window**) and compares the sum with what random arrangement of all bins would give. The result is a z-score: `z = sum(x_j - mean) / (S * sqrt((n k - k^2) / (n - 1)))` where `k` is the number of bins in the neighborhood.\n\nRed is significantly high, blue significantly low, white unremarkable. A bin is a *hot spot* when z reaches the critical value of the **Hot spot confidence** (1.96 at 95%). Move **Slice shown** to see the pattern change week to week. The persistent dark red is the north lakefront: Lincoln Park, Montrose Point and Uptown, where neighborhood after neighborhood stays far above the citywide mean.',
+      evidence:
+        'The playhead locates **{{sliceLabel}}** in the full record curve; the mapped z-scores test that slice in its spatial and temporal neighbourhood. The current family contains **{{tests}}**.',
+      caveat:
+        'Gi* tests concentration relative to this study area and neighbourhood, not ecological abundance or habitat quality. The displayed confidence is per bin; it is not a family-wise error guarantee.',
       options: {mapView: 'gi', slice: 29},
       controls: ['slice', 'confidence'],
-      readouts: ['sliceLabel']
+      readouts: ['sliceTimeline', 'sliceLabel', 'tests']
     },
     {
       id: 'categories',
       title: 'A Mann-Kendall trend turns z-scores into 16 categories',
+      headline: 'Persistent and sporadic categories separate histories',
+      textAlternative:
+        'Categorical cell colors distinguish persistent, intensifying, sporadic and historical observation hot and cold spots.',
       body: 'Each cell now has a series of 52 Gi* scores. The **Mann-Kendall** test asks whether the series rises or falls, without assuming a straight line. Together with how often the cell was hot, it gives the ArcGIS-style categories: **new** (hot only in the last week), **consecutive**, **intensifying** (hot most of the time and getting hotter), **persistent** (hot most of the time, no trend), **diminishing**, **sporadic**, **oscillating** and **historical**; cold spots mirror them.\n\nThe readouts count cells per class. The cell around Montrose Point, the busiest of all, has observations in all 52 weeks of 2023, so it is the natural candidate for a long-running hot spot. Sporadic ones flare for a migration week or a bioblitz and go quiet. Hover cells for their hot-week counts, and try one **Group of life** at a time.',
+      evidence:
+        'The category profile compares every computed class: **{{persistent}}** cells are persistent, **{{intensifying}}** intensify and **{{sporadic}}** are sporadic.',
+      caveat:
+        'The classification compresses 52 z-scores into one label; cells near the confidence or persistence thresholds can change category after small parameter changes.',
       options: {mapView: 'category'},
+      compare: {labels: ['N in the selected slice', 'Pattern across all slices'], position: 0.5},
       callout: {coordinate: [-87.6325, 41.9625], text: 'Montrose Point: observed every week'},
       controls: ['mapView'],
-      readouts: ['intensifying', 'persistent', 'sporadic']
+      readouts: ['categoryProfile', 'intensifying', 'persistent', 'sporadic']
     },
     {
       id: 'persistence',
       title: 'Persistence share: how settled must a spot be?',
+      headline: 'Higher confidence reduces persistent classifications',
+      textAlternative:
+        'Fewer cells remain in persistent categories when confidence rises to 99 percent and the required hot-slice share changes.',
       body: 'A cell is "persistent", "intensifying" or "diminishing" only when it is hot in at least the **Persistence share** of the weeks (90% by default). Lower it to 60% and sporadic cells with a long record are promoted into the entrenched classes; raise **Hot spot confidence** to 99% and weak hot spots drop out entirely.\n\nThese are parameters of the classification, not of the cube, so the map updates without recomputing the counts. The trend p-value follows the confidence level unless you untick **Trend level follows confidence**.',
+      evidence:
+        'The profile and counts update together: **{{persistent}}** persistent versus **{{sporadic}}** sporadic cells under the selected thresholds.',
+      caveat:
+        'These thresholds encode an analytical definition of “settled”; they are not estimated biological boundaries.',
       options: {persistentFraction: 0.6, confidence: '0.99'},
       controls: ['persistentFraction', 'confidence', 'tieTrend'],
-      readouts: ['persistent', 'sporadic']
+      readouts: ['categoryProfile', 'persistent', 'sporadic']
     },
     {
       id: 'neighborhood',
       title: 'Bigger neighborhoods, longer memory',
-      body: 'The **Neighborhood radius** (cells) and the **Temporal window** (previous slices) define the space-time neighborhood. A radius of 3 cells (1.5 km) and a window of 4 weeks smooths over single sites and merges nearby hot spots into broad regions, such as the whole lakefront; a radius of 0 and a window of 0 tests each bin alone and is noisy, especially here, where most bins hold zero or one observation.\n\nThe radius is a per-frame parameter; only its maximum (4 cells) is compiled into the graph. Try 1 cell: the hot areas fragment into individual parks and preserves.',
-      options: {radius: 3, temporalWindow: 4, confidence: '0.95', persistentFraction: 0.9},
-      controls: ['radius', 'temporalWindow'],
-      readouts: ['hot']
-    },
-    {
-      id: 'weights-mode',
-      title: 'Same answer from a weights table, plus distance decay',
-      body: 'In **weights mode** (**Neighborhood source** set to *Neighbor-search weights*) the neighbors do not come from lattice offsets but from a `GPUNeighborSearch` distance band over the cell centers, handed to the contributor as a weights table. With binary weights it reproduces the lattice result (a handful of cells on the significance boundary can flip because of floating-point order). That is the path for H3 cells, polygons or points, which have no lattice.\n\nOnly weights mode can decay neighbors with distance: set **Weights in weights mode** to *Triangular kernel* and nearer cells count more. This is a compile-time choice, so the control shows a rebuild badge; the variant is cached afterwards.',
-      options: {neighborhood: 'weights', weightKind: 'kernel', radius: 2.5, temporalWindow: 2},
-      controls: ['neighborhood', 'weightKind', 'radius'],
+      headline: 'Larger neighborhoods merge nearby hot cells',
+      textAlternative:
+        'A three-cell radius and four-week temporal window merge individual park hot spots into broader lakefront regions.',
+      body: 'The **Neighborhood radius** (cells) and the **Temporal window** (previous slices) define the space-time neighborhood. A radius of 3 cells (1.5 km) and a window of 4 weeks smooths over single sites and merges nearby hot spots into broad regions, such as the whole lakefront; a radius of 0 and a window of 0 tests each bin alone and is noisy, especially here, where most bins hold zero or one observation.\n\nThe radius is a per-frame parameter; only its maximum (4 cells) is compiled into the graph. **Neighborhood source** can instead use a `GPUNeighborSearch` weights table, which supports irregular cells; **Weights in weights mode** applies distance decay, but compiles a cached variant. Binary weights should closely reproduce the lattice result, although floating-point order can flip marginal cells.',
+      options: {
+        neighborhood: 'weights',
+        weightKind: 'kernel',
+        radius: 3,
+        temporalWindow: 4,
+        confidence: '0.95',
+        persistentFraction: 0.9
+      },
+      controls: ['neighborhood', 'weightKind', 'radius', 'temporalWindow'],
       readouts: ['hot']
     },
     {
       id: 'limits',
       title: 'Limits, and things to try',
-      body: 'These are observations by volunteers, not a census: where and when people look shapes the map, and a hot spot may be a popular trailhead rather than the richest habitat. The City Nature Challenge weekend (28 April to 1 May 2023) alone adds a visible pulse. The cube treats a bin with zero observations as a valid low value, which is why the study-area threshold matters. Gi* runs hundreds of tests, so some hot cells are chance; the Mann-Kendall test on 52 slices is also sensitive to autocorrelation. Hours of the day are a cyclic cube, so read those trends loosely.\n\nTry: switch **Group of life** to *Insects* or *Fungi*; set **Time slices** to *12 calendar months* (the recipe path with `GPUCalendarBuckets`) and compare; or to *24 hours of the day* to see where the morning and afternoon hot spots sit.',
+      headline: 'Volunteer effort limits habitat interpretation',
+      textAlternative:
+        'Monthly insect categories show observation hot spots shaped by biological activity and uneven volunteer effort.',
+      body: 'These are volunteer records, not a census: where and when people look shapes the map, and a hot spot may be a popular trailhead rather than rich habitat. Zero records is treated as a valid low value inside the study area, so the threshold matters. Gi* runs **{{tests}}** without a multiple-testing correction; some significant bins will occur by chance. Mann-Kendall assumes more independence than 52 overlapping, temporally smoothed slices provide, so positive autocorrelation can make trends look more certain than they are. The categories are screening signals, not confirmatory ecological claims.\n\nTry *Insects* or *Fungi*; switch to 12 calendar months; or use 24 local-clock hours. Hour-of-day is cyclic, so an ordered Mann-Kendall trend from midnight to 23:00 is especially weak evidence.',
       options: {groupType: '2', cube: 'months', neighborhood: 'lattice', mapView: 'category'},
-      controls: ['groupType', 'cube']
+      controls: ['groupType', 'cube'],
+      readouts: ['challengePulse', 'tests']
     }
   ]
 });

@@ -2,7 +2,6 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import {createTransientView} from '@luma.gl/gpgpu/gpu-core';
 import type {GPUCommandGraph, GraphDataView} from '@luma.gl/gpgpu/gpu-core';
 import {GPUClassBreaks, GPUColorScale} from '../../gpu-dataframe/column-classification/index';
 import {createWGSLKernelNode} from '../../utils/wgsl-kernel-nodes';
@@ -14,7 +13,13 @@ import type {
   GPUCellTableCompareOutput,
   GPUCellTableCompareZScore
 } from '../cell-table-compare/index';
-import {assertRecipe, getOrCreateView, RecipeBuilder, type GPURecipeResult} from './recipe-utils';
+import {
+  assertRecipe,
+  getOrCreateView,
+  RecipeBuilder,
+  type GPURecipeOverrides,
+  type GPURecipeResult
+} from './recipe-utils';
 
 const ID = 'addPeriodComparisonRecipe';
 
@@ -28,15 +33,27 @@ export type GPUPeriodRows = {
   values?: GraphDataView<'float32'>;
   /** Per-row mask. */
   mask?: GraphDataView<'uint32'>;
-  /** Caller-owned cell table of this period; missing columns are graph-owned transients. */
-  table?: Partial<GPUCellTable>;
 };
 
 /** Column of the comparison that is classified and colored. */
 export type GPUPeriodComparisonVariable = 'delta' | 'ratio' | 'percentChange' | 'zScore';
 
 /** Properties for {@link addPeriodComparisonRecipe}. */
-export type GPUPeriodComparisonRecipeProps = {
+export type GPUPeriodComparisonRecipeProps = GPURecipeOverrides<
+  Record<never, never>,
+  {
+    comparison?: Partial<GPUCellTableCompareOutput>;
+    breaks?: GraphDataView<'float32'>;
+    classCount?: GraphDataView<'uint32'>;
+    colors?: GraphDataView<'uint32'>;
+    classIndices?: GraphDataView<'uint32'>;
+  },
+  {
+    before?: Partial<GPUCellTable>;
+    after?: Partial<GPUCellTable>;
+    mask?: GraphDataView<'uint32'>;
+  }
+> & {
   /** Prefix for every node and transient ID. Defaults to `'period-comparison'`. */
   id?: string;
   /** Grid family shared by both periods. */
@@ -55,8 +72,6 @@ export type GPUPeriodComparisonRecipeProps = {
   measure?: GPUCellTableCompareMeasure;
   /** Score written to `zScore`. */
   zScore?: GPUCellTableCompareZScore;
-  /** Caller-owned comparison columns. `cells`, `delta`, `count` and `overflow` are always produced. */
-  output?: Partial<GPUCellTableCompareOutput>;
   /** Classified column. Defaults to `'delta'`. */
   classify?: GPUPeriodComparisonVariable;
   /**
@@ -83,14 +98,6 @@ export type GPUPeriodComparisonRecipeProps = {
   colorScaleParameters: GraphDataView<'float32'>;
   /** Compile-time palette bound. */
   maximumPaletteCount: number;
-  /** Caller-owned class edges (`maximumClassCount + 1` rows). */
-  breaks?: GraphDataView<'float32'>;
-  /** Caller-owned class count. */
-  classCount?: GraphDataView<'uint32'>;
-  /** Caller-owned rgba8 color per union row (`unionCapacity` rows). */
-  colors?: GraphDataView<'uint32'>;
-  /** Caller-owned palette class per union row. */
-  classIndices?: GraphDataView<'uint32'>;
 };
 
 /** Named outputs of {@link addPeriodComparisonRecipe}. */
@@ -122,6 +129,8 @@ export function addPeriodComparisonRecipe<Parameters>(
 ): GPUPeriodComparisonRecipeResult {
   const id = props.id ?? 'period-comparison';
   const builder = new RecipeBuilder(graph);
+  const outputs = props.outputs ?? {};
+  const scratch = props.scratch ?? {};
   const {tableCapacity} = props;
   const unionCapacity = props.unionCapacity ?? 2 * tableCapacity;
   const measure = props.measure ?? 'count';
@@ -140,7 +149,7 @@ export function addPeriodComparisonRecipe<Parameters>(
       measure === 'count' || Boolean(rows.values),
       `${period} needs values for the 'sum' measure`
     );
-    const provided = rows.table ?? {};
+    const provided = scratch[period] ?? {};
     const table: GPUCellTable = {
       cells: getOrCreateView(
         graph,
@@ -178,7 +187,7 @@ export function addPeriodComparisonRecipe<Parameters>(
   });
   const [before, after] = tables;
 
-  const given = props.output ?? {};
+  const given = outputs.comparison ?? {};
   const comparison: GPUCellTableCompareOutput = {
     cells: getOrCreateView(graph, `${id}-union-cells`, 'uint32x2', unionCapacity, given.cells),
     presence: given.presence,
@@ -190,7 +199,7 @@ export function addPeriodComparisonRecipe<Parameters>(
     zScore: given.zScore,
     count: getOrCreateView(graph, `${id}-union-count`, 'uint32', 1, given.count),
     overflow: getOrCreateView(graph, `${id}-union-overflow`, 'uint32', 1, given.overflow),
-    totalCount: given.totalCount
+    requiredCount: given.requiredCount
   };
   if (classify === 'ratio') {
     comparison.ratio = getOrCreateView(graph, `${id}-ratio`, 'float32', unionCapacity, given.ratio);
@@ -222,7 +231,7 @@ export function addPeriodComparisonRecipe<Parameters>(
     })
   );
 
-  const mask = createTransientView(graph, `${id}-union-mask`, 'uint32', unionCapacity);
+  const mask = getOrCreateView(graph, `${id}-union-mask`, 'uint32', unionCapacity, scratch.mask);
   graph.add(
     createWGSLKernelNode<Parameters>(graph, {
       id: `${id}-union-mask`,
@@ -242,16 +251,16 @@ export function addPeriodComparisonRecipe<Parameters>(
     `${id}-breaks`,
     'float32',
     props.maximumClassCount + 1,
-    props.breaks
+    outputs.breaks
   );
-  const classCount = getOrCreateView(graph, `${id}-class-count`, 'uint32', 1, props.classCount);
-  const colors = getOrCreateView(graph, `${id}-colors`, 'uint32', unionCapacity, props.colors);
+  const classCount = getOrCreateView(graph, `${id}-class-count`, 'uint32', 1, outputs.classCount);
+  const colors = getOrCreateView(graph, `${id}-colors`, 'uint32', unionCapacity, outputs.colors);
   const classIndices = getOrCreateView(
     graph,
     `${id}-class-indices`,
     'uint32',
     unionCapacity,
-    props.classIndices
+    outputs.classIndices
   );
   builder.add(
     new GPUClassBreaks({
@@ -289,6 +298,22 @@ export function addPeriodComparisonRecipe<Parameters>(
     breaks,
     classCount,
     colors,
-    classIndices
+    classIndices,
+    outputs: {comparison, breaks, classCount, colors, classIndices},
+    intermediates: {before, after, mask},
+    status: {
+      stages: [
+        {stage: 'before-aggregation', status: {count: before.count, overflow: before.overflow}},
+        {stage: 'after-aggregation', status: {count: after.count, overflow: after.overflow}},
+        {
+          stage: 'comparison',
+          status: {
+            count: comparison.count,
+            requiredCount: comparison.requiredCount,
+            overflow: comparison.overflow
+          }
+        }
+      ]
+    }
   };
 }

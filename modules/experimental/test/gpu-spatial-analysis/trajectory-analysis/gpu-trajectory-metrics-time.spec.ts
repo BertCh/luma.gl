@@ -157,6 +157,7 @@ async function runMetrics(
   };
   graph.add(
     new GPUTrajectoryMetrics({
+      spatialContext: {coordinateSpace: 'planar', metric: 'native', units: 'native'},
       positions: view('positions', positionsBuffer, 'float32x2', rowCount),
       ...timeProps,
       trackOffsets: view('offsets', offsetsBuffer, 'uint32', trackCount + 1),
@@ -171,7 +172,7 @@ async function runMetrics(
           ids: view('stop-ids', out.stopIds, 'uint32', capacity),
           count: view('count', out.count, 'uint32', 1),
           overflow: view('overflow', out.overflow, 'uint32', 1),
-          totalCount: view('total', out.total, 'uint32', 1)
+          requiredCount: view('total', out.total, 'uint32', 1)
         },
         startRows: view('stop-starts', out.stopStarts, 'uint32', capacity),
         endRows: view('stop-ends', out.stopEnds, 'uint32', capacity),

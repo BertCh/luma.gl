@@ -54,7 +54,7 @@ function createHarness(device: Device, options: HarnessOptions) {
     segmentEdges: createOutputBuffer(device, 2 * capacity),
     count: createOutputBuffer(device, 1),
     overflow: createOutputBuffer(device, 1),
-    totalCount: createOutputBuffer(device, 1),
+    requiredCount: createOutputBuffer(device, 1),
     vertices: createOutputBuffer(device, 2 * vertexCapacity),
     polylineOffsets: createOutputBuffer(device, capacity + 1),
     polylineLevels: createOutputBuffer(device, capacity),
@@ -87,7 +87,7 @@ function createHarness(device: Device, options: HarnessOptions) {
         segmentEdges: importView('segment-edges', buffers.segmentEdges, 'uint32x2', capacity),
         count: importView('count', buffers.count, 'uint32', 1),
         overflow: importView('overflow', buffers.overflow, 'uint32', 1),
-        totalCount: importView('total-count', buffers.totalCount, 'uint32', 1)
+        requiredCount: importView('total-count', buffers.requiredCount, 'uint32', 1)
       },
       polylines: options.polylines
         ? {
@@ -137,14 +137,14 @@ function createHarness(device: Device, options: HarnessOptions) {
       submitGraph(device, compiled, undefined);
       const [count] = await readUint32(buffers.count, 1);
       const [overflow] = await readUint32(buffers.overflow, 1);
-      const [totalCount] = await readUint32(buffers.totalCount, 1);
+      const [requiredCount] = await readUint32(buffers.requiredCount, 1);
       const floats = await readFloat32(buffers.segments, 4 * count);
       const segmentLevels = await readUint32(buffers.segmentLevels, count);
       const edgeWords = await readUint32(buffers.segmentEdges, 2 * count);
       const result = {
         count,
         overflow,
-        totalCount,
+        requiredCount,
         segments: Array.from({length: count}, (_, index) => ({
           p0: [floats[4 * index], floats[4 * index + 1]] as [number, number],
           p1: [floats[4 * index + 2], floats[4 * index + 3]] as [number, number],
@@ -191,7 +191,7 @@ function expectSegmentsMatch(
 ) {
   const expected = computeIsolinesOnCPU(scene, levelCount);
   const tolerance = getCoordinateTolerance(scene);
-  expect(actual.totalCount, `${label} total`).toBe(expected.length);
+  expect(actual.requiredCount, `${label} total`).toBe(expected.length);
   const comparable = Math.min(expected.length, actual.segments.length);
   expect(actual.count, `${label} count`).toBe(comparable);
   for (let index = 0; index < comparable; index++) {
@@ -346,7 +346,7 @@ it('GPUIsolines resolves both saddle types and keeps a plateau empty', async () 
   const plateau = {...make(1, 1), levels: [1]};
   const empty = await harness.run(plateau);
   expect(empty.count).toBe(0);
-  expect(empty.totalCount).toBe(0);
+  expect(empty.requiredCount).toBe(0);
   expect(empty.polylineCount).toBe(0);
   expect(empty.overflow).toBe(0);
   expect(empty.polylineOverflow).toBe(0);
@@ -447,7 +447,7 @@ it('GPUIsolines clamps to capacity, reports overflow, and drops polylines on ove
   const actual = await small.run(scene);
   expectSegmentsMatch(actual, scene, 4, 'overflow');
   expect(actual.count).toBe(37);
-  expect(actual.totalCount).toBe(full.length);
+  expect(actual.requiredCount).toBe(full.length);
   expect(actual.overflow).toBe(1);
   expect(actual.polylineCount).toBe(0);
   expect(actual.vertexCount).toBe(0);

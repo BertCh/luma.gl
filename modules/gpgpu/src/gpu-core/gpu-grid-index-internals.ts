@@ -19,6 +19,11 @@ import {
 } from './graph-data-view-utils';
 import {getGraphVectorData} from './graph-vector-view-utils';
 import {getGraphDataRange, createChunkNode, validateChunkViews} from './gpu-chunk-utils';
+import {
+  getSpatialFloat32Literal,
+  GPU_GRID_COORDINATE_WGSL,
+  isFiniteFloat32
+} from './gpu-spatial-utils';
 
 const GRID_INDEX_WORKGROUP_SIZE = 256;
 
@@ -241,7 +246,7 @@ function makePositionPassSource(
       : 'let finiteZ = true;\n    let inZ = true;';
   const zCoordinate =
     props.dimension === 3
-      ? `let layer = getCoordinate(z, ${bounds.minimum[2]}, ${bounds.maximum[2]}, DEPTH);`
+      ? `let layer = getGridCoordinate(z, ${bounds.minimum[2]}, ${bounds.maximum[2]}, DEPTH);`
       : 'let layer = 0u;';
   return /* wgsl */ `
 const ELEMENT_COUNT: u32 = ${positions.length}u;
@@ -252,21 +257,7 @@ const DEPTH: u32 = ${depth}u;
 ${bounds.declarations}@group(0) @binding(0) var<storage, read> positions: array<f32>;
 ${bindings}
 
-fn getCoordinate(value: f32, minimum: f32, maximum: f32, size: u32) -> u32 {
-  if (maximum == minimum || value == minimum) { return 0u; }
-  if (value == maximum) { return size - 1u; }
-  if (minimum < 0.0 && maximum > 0.0) {
-    let scale = max(abs(minimum), abs(maximum));
-    let scaledValue = value / scale;
-    let scaledMinimum = minimum / scale;
-    let scaledMaximum = maximum / scale;
-    return min(
-      u32((scaledValue - scaledMinimum) / (scaledMaximum - scaledMinimum) * f32(size)),
-      size - 1u
-    );
-  }
-  return min(u32((value - minimum) / (maximum - minimum) * f32(size)), size - 1u);
-}
+${GPU_GRID_COORDINATE_WGSL}
 
 @compute @workgroup_size(256)
 fn main(@builtin(workgroup_id) workgroupId: vec3u, @builtin(local_invocation_index) localInvocationIndex: u32) {
@@ -282,8 +273,8 @@ fn main(@builtin(workgroup_id) workgroupId: vec3u, @builtin(local_invocation_ind
     let inY = y >= ${bounds.minimum[1]} && y <= ${bounds.maximum[1]};
     if (${bounds.validity}finiteXY && finiteZ && inX && inY && inZ) {
       accepted = true;
-      let column = getCoordinate(x, ${bounds.minimum[0]}, ${bounds.maximum[0]}, WIDTH);
-      let row = getCoordinate(y, ${bounds.minimum[1]}, ${bounds.maximum[1]}, HEIGHT);
+      let column = getGridCoordinate(x, ${bounds.minimum[0]}, ${bounds.maximum[0]}, WIDTH);
+      let row = getGridCoordinate(y, ${bounds.minimum[1]}, ${bounds.maximum[1]}, HEIGHT);
       ${zCoordinate}
       cellIndex = (layer * HEIGHT + row) * WIDTH + column;
     }
@@ -314,7 +305,7 @@ function getBoundsInput(index: GPUGridIndex): {boundsBuffer?: GraphDataView<'flo
 export function isOrderedFiniteBounds(bounds: GPUGridIndexBounds): boolean {
   const dimension = bounds.length / 2;
   return (
-    bounds.every(Number.isFinite) &&
+    bounds.every(isFiniteFloat32) &&
     Array.from({length: dimension}, (_, axis) => axis).every(
       axis => bounds[axis]! <= bounds[axis + dimension]!
     )
@@ -336,9 +327,11 @@ export function getGPUGridIndexBoundsSource(
 ): {minimum: string[]; maximum: string[]; declarations: string; validity: string} {
   if (!boundsBuffer) {
     return {
-      minimum: Array.from({length: dimension}, (_, axis) => getFloatLiteral(bounds[axis]!)),
+      minimum: Array.from({length: dimension}, (_, axis) =>
+        getSpatialFloat32Literal(bounds[axis]!)
+      ),
       maximum: Array.from({length: dimension}, (_, axis) =>
-        getFloatLiteral(bounds[axis + dimension]!)
+        getSpatialFloat32Literal(bounds[axis + dimension]!)
       ),
       declarations: '',
       validity: ''
@@ -359,9 +352,4 @@ export function getGPUGridIndexBoundsSource(
 `,
     validity: `${validity.join(' && ')} && `
   };
-}
-
-export function getFloatLiteral(value: number): string {
-  const literal = `${Math.fround(value)}`;
-  return literal.includes('.') || literal.includes('e') ? literal : `${literal}.0`;
 }

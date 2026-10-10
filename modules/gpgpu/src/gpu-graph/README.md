@@ -89,8 +89,10 @@ neighbors also connect to one another. Directed graphs count distinct directed l
 neighbors, so reciprocal links count twice; undirected graphs count unique incident triangles.
 Self-loops and duplicate edges do not inflate the result. The caller receives one `float32`
 coefficient per vertex and can optionally request `uint32` directed-closure or triangle counts.
-Unsorted CSR makes exact neighbor matching up to `O(sum(degree³))`, so dense hubs need careful
-measurement.
+Auto mode keeps the original one-kernel scan for sparse, low-degree CSR. Above eight physical
+forward-plus-reverse slots per vertex, the operation canonicalizes unordered CSR into graph-owned
+sorted-unique scratch without modifying caller buffers, then intersects sorted rows. Callers with
+sparse but exceptionally skewed hubs can force that path with `algorithm: 'canonical'`.
 
 ## Durable cores and community quality
 
@@ -127,7 +129,9 @@ the unchanged initial partition. Directed graphs require reverse CSR, original w
 multiplicity are preserved, and invalid labels, invalid accepted weights, zero edge weight, or
 adjacency overflow fail closed. Tie-breaking is stable for fixed computed gains, but unordered
 atomic `float32` additions can alter near-tied gains, threshold decisions, labels, and scores
-across GPU execution orders or adapters; weighted partitions can vary. This is
+across GPU execution orders or adapters; weighted partitions can vary. Per-vertex hash aggregation
+normally scans each adjacency and unique neighboring community once per round, while devices that
+cannot bind the linear scratch retain the bounded rescan path. This is
 single-level Louvain-style local moving, not full multilevel Louvain, Leiden refinement, graph
 coarsening, or a global optimum.
 

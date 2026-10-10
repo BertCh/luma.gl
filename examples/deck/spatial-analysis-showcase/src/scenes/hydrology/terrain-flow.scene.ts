@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {ground} from '../../cartography/grounds';
 import {defineScene, type LegendSpec} from '../scene';
 import type {TerrainFlowOptions} from './terrain-flow.compute';
 
@@ -24,14 +25,24 @@ const describeBearing = (bearing: number): string =>
  */
 export default defineScene<TerrainFlowOptions>({
   id: 'terrain-flow',
-  title: 'Wind through the Canyon',
+  title: 'Grand Canyon terrain-adjusted wind speed',
   chapter: 'hydrology',
   order: 2,
   summary:
-    'One uniform wind is bent around the Grand Canyon’s walls by a terrain-following field, and 40,000 GPU particles show where it funnels along side canyons and where it stalls against cliffs.',
+    'GPU terrain projection and particle advection apply a specified wind to the Grand Canyon elevation grid. The outputs are relative speed, shelter fractions and trails; the kinematic model omits pressure, buoyancy and mass conservation.',
   contributors: ['GPUTerrainFlowField', 'GPUParticleAdvection', 'GPUTerrainDerivatives'],
   datasets: [{id: 'grand-canyon-dem', role: 'elevation under the wind'}],
   initialView: {longitude: -112.1, latitude: 36.1, zoom: 11.2},
+  basemap: ground('relief'),
+  furniture: {
+    title: {
+      title: 'Grand Canyon terrain-adjusted wind',
+      subtitle: 'Relative field speed, shelter and particle trajectories'
+    },
+    scaleBar: {units: 'metric'},
+    credit: 'US Geological Survey (public domain)',
+    caveat: 'Kinematic terrain steering is not an atmospheric forecast.'
+  },
 
   options: [
     {
@@ -92,10 +103,10 @@ export default defineScene<TerrainFlowOptions>({
       label: 'Trail color ramp',
       group: 'Display',
       apply: 'param',
-      default: 'viridis',
+      default: 'isolum',
       help: 'Color of a trail by the speed of its particle.',
       options: [
-        {value: 'viridis', label: 'Viridis'},
+        {value: 'isolum', label: 'Isoluminant terrain overlay'},
         {value: 'magma', label: 'Magma'},
         {value: 'inferno', label: 'Inferno'},
         {value: 'cividis', label: 'Cividis'}
@@ -239,6 +250,9 @@ export default defineScene<TerrainFlowOptions>({
     {
       id: 'question',
       title: 'Where does a storm front thread the Canyon?',
+      headline: 'Terrain reduces modeled wind speed near steep walls',
+      textAlternative:
+        'Colored particle trails cross Grand Canyon relief, moving faster along open or aligned terrain and slowing near steep opposing walls.',
       body: 'A winter front crosses the Colorado Plateau from the west-south-west at 50 km/h. The rims are 1.9 km above the river, so the air cannot simply go straight on: it climbs, stalls against cliffs and squeezes along side canyons. `GPUTerrainFlowField` and `GPUParticleAdvection` turn the DEM into an animated picture of that.\n\nEach streak is one of 40,000 particles. Its **color is its speed** (legend), its tail fades with age. Hover the map for elevations.',
       camera: {longitude: -112.1, latitude: 36.1, zoom: 11.2, transitionMs: 1400},
       options: {background: 'relief'},
@@ -247,6 +261,9 @@ export default defineScene<TerrainFlowOptions>({
     {
       id: 'field',
       title: 'A field made of one rule',
+      headline: 'Terrain projection creates sheltered low-speed cells',
+      textAlternative:
+        'A continuous speed surface shows the terrain-projected wind as a share of free-stream speed, with sheltered fractions reported.',
       body: '`GPUTerrainFlowField` is a single kernel with one rule: air cannot enter the ground, so the 3D wind is projected onto the terrain’s tangent plane. With the surface gradient `g`, the horizontal wind becomes\n\n`v = w − (w · g) g / (1 + |g|²)`\n\nWind **across** a slope (`w · g = 0`) is unchanged; wind **straight up** a slope loses a factor `1 / (1 + |g|²)`; a vertical wall stops it. Set by **Backdrop** below, the map now shows the result as a share of the free-stream speed (dark = sheltered). The readout counts how much of the window sits below half and a tenth of it.',
       options: {background: 'speed'},
       controls: ['background', 'windSpeed'],
@@ -256,6 +273,9 @@ export default defineScene<TerrainFlowOptions>({
     {
       id: 'funnel',
       title: 'Turn the wind and watch it funnel',
+      headline: 'Wind alignment preserves speed along Bright Angel Canyon',
+      textAlternative:
+        'After the bearing changes, higher relative speeds follow Bright Angel Canyon while opposing walls contain darker low-speed cells.',
       body: 'The wind now blows toward the north-north-east (bearing 20°), almost straight up Bright Angel Canyon from the Colorado to the North Rim. Because only the component *across* the walls survives a cliff, air that meets the side walls head-on stalls and the part along the fault line keeps its speed: the canyon floor and its trails glow while the walls go dark.\n\nDrag **Wind blows toward** below around the compass. The field kernel re-runs on the next frame as a parameter write; nothing recompiles.',
       camera: {longitude: -112.09, latitude: 36.12, zoom: 12.3, transitionMs: 1800},
       options: {windBearing: 20, background: 'speed'},
@@ -265,6 +285,9 @@ export default defineScene<TerrainFlowOptions>({
     {
       id: 'deflection',
       title: 'How stiff is the ground?',
+      headline: 'Greater deflection expands modeled shelter',
+      textAlternative:
+        'Increasing terrain deflection darkens a larger share of the speed field and raises sheltered and nearly blocked readouts.',
       body: '**Terrain deflection** multiplies the gradient before the projection. At 1× only the steepest walls matter; at 8× (default) every slope above a few degrees acts like an obstacle, which models stable evening air that goes around hills rather than over them; at 20× the Canyon becomes a maze of near-closed channels. Slide it and read the *Sheltered* and *Nearly blocked* readouts change: it comes from a `GPUHistogram` of the field speed, refreshed whenever the field is rewritten.\n\nThis is a kinematic model, not a weather simulation: it has no pressure, no buoyancy and no mass conservation, so it shows where terrain can steer a wind, not what a real storm will do.',
       options: {exaggeration: 14, windBearing: 20, background: 'speed'},
       controls: ['exaggeration'],
@@ -274,6 +297,9 @@ export default defineScene<TerrainFlowOptions>({
     {
       id: 'particles',
       title: 'Particles in data space',
+      headline: 'Particle trails reproduce the computed velocity field',
+      textAlternative:
+        'Persistent colored trails advect through the field, with length and travel readouts responding to time step, playback speed and particle age.',
       body: '`GPUParticleAdvection` moves every particle with a midpoint (RK2) step through the field, using bilinear sampling by hand so no float-filterable texture is needed. Positions live in ground meters, so trails stay attached to the terrain as you pan and zoom. Particles respawn when they age out, drop out randomly, or slow below **Respawn below speed**, which is why there is no dead pile-up behind cliffs.\n\nTry **Time step**, **Playback speed** and **Maximum age** below. The random numbers are Philox 4x32-10: choose a **Random seed**, press **Restart particles**, and the same motion replays bit for bit.',
       options: {windBearing: 75, exaggeration: 8, background: 'relief', speedScale: 2},
       controls: ['timeStep', 'speedScale', 'maximumAge', 'seed', 'reset'],
@@ -282,6 +308,9 @@ export default defineScene<TerrainFlowOptions>({
     {
       id: 'zoom',
       title: 'Spend every particle where you are looking',
+      headline: 'View-based respawning increases local trail density',
+      textAlternative:
+        'At a closer canyon view, all particles respawn inside the current map bounds, increasing trail density without changing the velocity field.',
       body: 'Set **Respawn region** below to *Visible map only* and zoom into a side canyon: all 40,000 particles now respawn inside the view, so the density rises many-fold and individual eddies become visible. `spawnBounds` is a per-frame rectangle in the particle parameter buffer, so following the camera costs nothing.\n\nThings to try with the controls below: a wind blowing along the canyon axis (about 250° or 70°), a calm 3 m/s breeze with low deflection, or the speed backdrop to find the stagnation zones directly upwind of the Redwall cliffs.',
       camera: {longitude: -112.07, latitude: 36.105, zoom: 13.2, transitionMs: 2000},
       options: {spawnRegion: 'view', windBearing: 75},

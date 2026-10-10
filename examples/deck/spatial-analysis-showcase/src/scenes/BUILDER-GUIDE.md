@@ -106,6 +106,8 @@ Four to six steps. Each step:
   id: 'kebab-id',                 // used in the URL
   title: 'A sentence-style title',
   body: 'Markdown. `GPUFoo` mentions auto-link to the reference.',
+  evidence: 'What the reader can see or measure: **{{hotCount}}** hot cells.',
+  caveat: 'The claim stops at the sampled dates; this is not a forecast.',
   camera?: {zoom, latitude, longitude, pitch, bearing, transitionMs},  // flies when the step opens
   options?: {radius: 900},        // set when the step opens
   controls?: ['radius', 'ramp'],  // controls shown inside the step card, under the text
@@ -130,9 +132,13 @@ Narrative quality bar (this is what reviewers check):
    the step text, and every other option lives in the "All controls" tab. Refer to a control by its
    exact label in bold and say "below", never "in the Options panel". A listed control must not be
    disabled in the step's state. Put the numbers the text cites in `readouts`.
-5. Real data, honest limits: caveats of the dataset or method belong in a step or in `about`.
+5. **Evidence before interpretation**: use `evidence` to name the observation that supports the
+   headline, preferably with a live `{{readoutId}}` or a chart shown in `readouts`. Use `caveat` to
+   state the most important uncertainty, data boundary or plausible alternative explanation.
+6. Real data, honest limits: broader dataset or method context belongs in `about`.
 
-Open with the question, end with something to try. Keep a step to two short paragraphs.
+Open with the question, end with something to try. Keep the body to two short paragraphs; the
+structured evidence and caveat keep claims scannable without burying them in prose.
 
 ### Story in markdown
 

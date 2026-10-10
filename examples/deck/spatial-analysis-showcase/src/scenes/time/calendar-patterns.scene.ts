@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {ground} from '../../cartography/grounds';
 import {defineScene} from '../scene';
 import type {CalendarPatternsOptions, CalendarStatistic} from './calendar-patterns.compute';
 
@@ -61,17 +62,27 @@ const STATISTIC_TITLES: Record<
 
 export default defineScene<CalendarPatternsOptions>({
   id: 'calendar-patterns',
-  title: 'When do Chicagoans see wildlife, and where at which hour?',
+  title: 'Chicago nature observations by hour and community area',
   chapter: 'time',
   order: 4,
   summary:
-    'An hour-by-weekday matrix and per-community-area statistics of 43,557 iNaturalist observations made in Chicago in 2023, decoded on the GPU. Slide a date window through the seasons, brush hours and weekdays, and map the count, median hour, research-grade share or percentile for the observations you brushed.',
+    'GPU calendar decoding and grouped statistics use 43,557 iNaturalist records to map hourly and seasonal observation metrics by Chicago community area; observer effort and linear hour summaries limit ecological interpretation.',
   contributors: ['GPUCalendarBuckets', 'GPUTimeWindowFilter', 'GPUGroupStatistics'],
   datasets: [
     {id: 'chicago-nature', role: 'timestamped nature observations'},
     {id: 'chicago-community-areas', role: 'zones for the group statistics'}
   ],
   initialView: {longitude: -87.5, latitude: 41.835, zoom: 9.7},
+  basemap: ground('night'),
+  furniture: {
+    title: {
+      title: 'Chicago observation calendar',
+      subtitle: 'iNaturalist records by hour and community area'
+    },
+    scaleBar: {units: 'metric'},
+    credit: 'iNaturalist contributors; Chicago community-area boundaries',
+    caveat: 'Counts measure observer effort as well as wildlife activity.'
+  },
 
   options: [
     {
@@ -294,9 +305,9 @@ export default defineScene<CalendarPatternsOptions>({
       label: 'Color ramp',
       group: 'Display',
       apply: 'param',
-      default: 'viridis',
+      default: 'cividis',
       options: [
-        {value: 'viridis', label: 'Viridis'},
+        {value: 'ylgnbu', label: 'Yellow-green-blue'},
         {value: 'magma', label: 'Magma'},
         {value: 'inferno', label: 'Inferno'},
         {value: 'cividis', label: 'Cividis (color-blind optimised)'}
@@ -427,6 +438,9 @@ calendarParameters.write(getGPUCalendarBucketsParameterValues(${state.utcOffset 
     {
       id: 'question',
       title: 'When does the week of observing peak?',
+      headline: 'Observation activity peaks Saturday late morning',
+      textAlternative:
+        'An hour-by-weekday matrix peaks on Saturday at 11:00 while community areas show annual observation counts.',
       body: 'Every iNaturalist observation has a timestamp. **`GPUCalendarBuckets`** decodes all 43,557 of them into hour and weekday on the GPU, with integer arithmetic and no per-row `Date`, and counts them in a 7 by 24 matrix. The matrix is drawn in Lake Michigan east of the Loop: columns are hours 0 to 23 (grid lines every six hours), rows are weekdays from Monday at the top.\n\nThe community areas are colored by the number of observations (**Statistic per area**, below). The busiest are Lincoln Park (5,526), Uptown (4,887) and Lincoln Square (4,142): the lakefront parks and Montrose Point draw the observers. The brightest matrix cell is Saturday at 11:00, with 1,348 observations. Almost nothing happens between midnight and 05:00: this is a daylight, human-paced rhythm.',
       options: {statistic: 'count', showMatrix: true},
       highlight: {readout: 'busiestCell'},
@@ -436,6 +450,9 @@ calendarParameters.write(getGPUCalendarBucketsParameterValues(${state.utcOffset 
     {
       id: 'window',
       title: 'Cut the year with an exact time window',
+      headline: 'Four-week windows expose seasonal observation peaks',
+      textAlternative:
+        'A moving four-week window updates the calendar matrix and community-area counts as observation activity rises and falls through 2023.',
       body: '**`GPUTimeWindowFilter`** keeps only observations inside a date window. Times are exact Int64 milliseconds (an Arrow-style timestamp column) and the window is eight parameter words, so dragging **Date window** is a buffer write. The group mask (**Group of life**) rides along as an extra predicate.\n\nTurn on **Slide a window through the year**, set its length with **Sliding window length**, and watch the matrix and the area map follow the seasons. July is the peak month (6,554 observations) and December the quietest (551). Pick *Birds* and the window lights up in April and May, the spring migration; pick *Insects* and it swells in July; pick *Fungi* and it stays alive into October. The date window feeds the calendar decode, so the matrix always describes the window.',
       options: {playWindow: true, windowDays: 28},
       controls: ['dateRange', 'playWindow', 'windowDays', 'groupType'],
@@ -444,6 +461,9 @@ calendarParameters.write(getGPUCalendarBucketsParameterValues(${state.utcOffset 
     {
       id: 'brush',
       title: 'Brush hours and weekdays',
+      headline: 'Weekend morning records concentrate near lakefront parks',
+      textAlternative:
+        'The matrix highlights weekend hours from 06:00 to 10:00 and the map shows the density of matching records by community area.',
       body: 'Set **Hours in the brush** to 06:00 to 10:00 and **Weekdays in the brush** to *Saturday and Sunday*: the early weekend birding window. The matrix dims everything outside the brush and the area statistics now describe only those mornings. Tick **Invert the hour brush** to see the complement instead: midday, afternoon and evening.\n\nThe brush is a four-word parameter buffer applied by a small kernel to the calendar columns, so it responds instantly. Set **Statistic per area** to *Observations per square kilometer* and compare weekend mornings with weekday afternoons. Observers record more per day on weekends (about 139 per Saturday or Sunday against about 111 per weekday, from the 2023 totals). Compare the maps to see whether the same places lead.',
       options: {
         hours: [6, 10],
@@ -457,6 +477,9 @@ calendarParameters.write(getGPUCalendarBucketsParameterValues(${state.utcOffset 
     {
       id: 'group-statistics',
       title: 'Group statistics: when does each area peak?',
+      headline: 'Median observation hour varies among community areas',
+      textAlternative:
+        'Community areas are shaded from earlier to later median observation hours after GPU grouped statistics.',
       body: '**`GPUGroupStatistics`** reduces the brushed observations per community area in dense mode (one output row per area, in feature order, so the table maps directly onto the polygons). It computes count, mean, median, standard deviation, a percentile, the mode, unique days, and the mean of the research-grade and introduced flags, all in one pass; the map just selects which output buffer to color.\n\nSwitch **Statistic per area** to *Median hour of day* with every day and hour brushed. Areas are shaded from earlier to later in the day: Uptown, home of Montrose Point, sits near 11:00, while Lincoln Square is closer to 16:00. Hours are numbers on a line, so these are best for areas with one daily peak.',
       options: {
         hours: [0, 23],
@@ -472,6 +495,9 @@ calendarParameters.write(getGPUCalendarBucketsParameterValues(${state.utcOffset 
     {
       id: 'percentile',
       title: 'Percentiles, shares and unique days',
+      headline: 'Sparse areas produce unstable hourly summaries',
+      textAlternative:
+        'Community areas show the 90th-percentile observation hour, with areas below 30 records left blank.',
       body: "Set **Statistic per area** to *Percentile of the hour of day* and move **Percentile**: at 0.9, nine in ten of an area's observations are made by that hour. Try *Research-grade share* (the mean of a 0/1 flag): Uptown is near 78% community-confirmed, Lincoln Park near 51%, so the same species list is easier to confirm in some places than others. *Introduced-species share* maps where non-native taxa dominate (Lincoln Park is near 15%, Uptown near 11%). *Days with at least one observation* (a unique count of the day of the year) separates places watched all year from places visited in bursts.\n\nAreas with fewer observations than **Hide areas with fewer observations** are left blank, because shares and medians of a handful of records are noise. The **Standard deviation uses** option (sample or population variance) is compiled into the statistics graph, so it counts as a rebuild.",
       options: {statistic: 'percentile-hour', percentile: 0.9, minimumEvents: 30},
       controls: ['statistic', 'percentile', 'minimumEvents', 'variance'],
@@ -480,6 +506,9 @@ calendarParameters.write(getGPUCalendarBucketsParameterValues(${state.utcOffset 
     {
       id: 'clock',
       title: 'Clocks and daylight saving',
+      headline: 'Fixed offsets shift the calendar matrix',
+      textAlternative:
+        'The hour-by-weekday matrix shifts when a synthetic UTC offset and Chicago daylight-saving adjustments are applied.',
       body: 'iNaturalist records the local clock time of each observation, so a **Clock offset** of 0 is right. Calendar decoding takes one fixed UTC offset as a parameter; set +6 and the matrix slides six columns, as if the timestamps had been in UTC. **Week starts on** reorders the rows (Monday, Sunday or Saturday first) without touching the observations.\n\nDaylight saving cannot be a single offset. **Pretend timestamps are UTC and apply Chicago daylight saving** adds a per-row offset column (-6 h in winter, -5 h in summer), which is how `GPUCalendarBuckets` handles zones with transitions. The data are already local, so the result is deliberately wrong: it shows the mechanism, and why a published clock time must never be converted twice.',
       options: {statistic: 'count', daylightSaving: true, utcOffset: 0},
       controls: ['utcOffset', 'firstDay', 'daylightSaving'],
@@ -488,6 +517,9 @@ calendarParameters.write(getGPUCalendarBucketsParameterValues(${state.utcOffset 
     {
       id: 'limits',
       title: 'Limits, and things to try',
+      headline: 'Observation counts reflect effort and habitat',
+      textAlternative:
+        'Observation points and area counts show concentrated recording effort around parks and organized events.',
       body: 'Observations follow observers: counts measure effort as much as wildlife. The City Nature Challenge weekend (28 April to 1 May 2023) puts a spike into the calendar, and the busiest single day, 21 June, has 667 records. Timestamps are local clock times stored as UTC. Statistics of hours are linear, not circular. Community areas are large and uneven, so counts per area say more about area size and park cover than about abundance: use density.\n\nTry: a single **Group of life** (*Birds*, *Insects*, *Fungi*) and see its own weekly and seasonal rhythm; **Observation points colored by hour** to see the compacted point set drawn by an indirect command; and **Statistic per area** set to *Median hour of day* for *Birds* versus *Insects*.',
       options: {daylightSaving: false, showPoints: true, statistic: 'count', groupType: 'all'},
       controls: ['groupType', 'showPoints', 'statistic']

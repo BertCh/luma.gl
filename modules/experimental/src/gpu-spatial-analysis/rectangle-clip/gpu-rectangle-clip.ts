@@ -267,7 +267,7 @@ export class GPURectangleClip implements GPUCommandNodeProducer {
         totals,
         count: output.count,
         overflow: output.overflow,
-        totalCount: output.totalCount
+        requiredCount: output.requiredCount
       }),
       createPathTailNode<Parameters>(graph, {
         id: `${id}-path-tail`,
@@ -355,7 +355,7 @@ export class GPURectangleClip implements GPUCommandNodeProducer {
         stageFlags,
         count: output.count,
         overflow: output.overflow,
-        totalCount: output.totalCount,
+        requiredCount: output.requiredCount,
         pathCount: output.pathCount
       })
     );

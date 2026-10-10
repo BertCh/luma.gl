@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import type {Binding} from '@luma.gl/core';
+import type {Binding, Buffer} from '@luma.gl/core';
 import {Kernel} from '@luma.gl/engine';
 import {createGPUComputeCommandNode, type GPUCommandNode} from './gpu-command-node';
 import type {GPUCommandGraph, GraphBufferUse, GraphDataView} from './gpu-command-graph';
@@ -12,6 +12,50 @@ import {
   getViewBinding,
   getViewBindingRange
 } from './graph-data-view-utils';
+
+/** WGSL helpers shared by grid kernels that map finite coordinates into ordered bounds. @internal */
+export const GPU_GRID_COORDINATE_WGSL = /* wgsl */ `
+fn isFiniteGridValue(value: f32) -> bool {
+  return value == value && abs(value) <= 3.402823466e+38;
+}
+
+// The scaled cross-zero branch avoids overflowing maximum - minimum for valid float32 bounds.
+fn getGridCoordinate(value: f32, minimum: f32, maximum: f32, size: u32) -> u32 {
+  if (maximum == minimum || value == minimum) { return 0u; }
+  if (value == maximum) { return size - 1u; }
+  if (minimum < 0.0 && maximum > 0.0) {
+    let scale = max(abs(minimum), abs(maximum));
+    let scaledValue = value / scale;
+    let scaledMinimum = minimum / scale;
+    let scaledMaximum = maximum / scale;
+    return min(
+      u32((scaledValue - scaledMinimum) / (scaledMaximum - scaledMinimum) * f32(size)),
+      size - 1u
+    );
+  }
+  return min(u32((value - minimum) / (maximum - minimum) * f32(size)), size - 1u);
+}
+`;
+
+/** Returns whether a JavaScript number can be represented as a finite WGSL `f32`. @internal */
+export function isFiniteFloat32(value: number): boolean {
+  return Number.isFinite(Math.fround(value));
+}
+
+/** Formats a finite, representable JavaScript number as a WGSL `f32` literal. @internal */
+export function getSpatialFloat32Literal(value: number): string {
+  const float32Value = Math.fround(value);
+  if (!Number.isFinite(float32Value)) {
+    throw new Error(
+      'GPU spatial numeric properties must be representable as finite float32 values'
+    );
+  }
+  if (Object.is(float32Value, -0)) {
+    return '-0.0';
+  }
+  const literal = String(float32Value);
+  return literal.includes('.') || /e/i.test(literal) ? literal : `${literal}.0`;
+}
 
 /** Validates writable spatial columns without changing their storage. @internal */
 export function validateSpatialWrites(
@@ -62,14 +106,29 @@ export function getSpatialCommandNodes<Parameters>(
             }))
           }
         });
+        const bindingEntries = Object.entries(props.bindings);
+        let resolvedBuffers: Buffer[] = [];
+        let resolvedBindings: Record<string, Binding> = {};
+        let bindGroupCacheKey = {};
         return {
           encode: ({computePass, getBuffer}) => {
-            const bindings: Record<string, Binding> = {};
-            for (const [name, view] of Object.entries(props.bindings))
-              bindings[name] = getViewBinding(view, getBuffer);
+            const nextBuffers = bindingEntries.map(([, view]) => getBuffer(view));
+            const bindingsChanged = nextBuffers.some(
+              (buffer, index) => buffer !== resolvedBuffers[index]
+            );
+            if (bindingsChanged || nextBuffers.length !== resolvedBuffers.length) {
+              resolvedBuffers = nextBuffers;
+              resolvedBindings = {};
+              for (const [index, [name, view]] of bindingEntries.entries()) {
+                const buffer = nextBuffers[index]!;
+                resolvedBindings[name] = getViewBinding(view, () => buffer);
+              }
+              bindGroupCacheKey = {};
+            }
 
             kernel.dispatch(computePass, {
-              bindings,
+              bindings: resolvedBindings,
+              _bindGroupCacheKeys: {0: bindGroupCacheKey},
               x: props.dispatch.x,
               y: props.dispatch.y,
               z: props.dispatch.z

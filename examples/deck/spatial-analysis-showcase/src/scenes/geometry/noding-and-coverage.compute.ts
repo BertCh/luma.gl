@@ -259,7 +259,7 @@ function createCrossingsView(env: Environment): View {
           rightIds: imp('pair-right', pairRight, 'uint32', PAIR_CAPACITY),
           count: imp('count', count, 'uint32', 1),
           overflow: imp('overflow', overflow, 'uint32', 1),
-          totalCount: imp('total', total, 'uint32', 1)
+          requiredCount: imp('total', total, 'uint32', 1)
         },
         kinds: kindsView,
         points: imp('points', points, 'float32x2', PAIR_CAPACITY),
@@ -529,13 +529,14 @@ function createNodingView(env: Environment): View {
           spatialSort: options.nodingSpatialSort,
           uncertainCount: imp('split-uncertain', splitUncertain, 'uint32', 1),
           pieces: {
-            lineIds: imp('split-line-ids', splitLineIds, 'uint32', pieceCapacity),
-            offsets: offsetsView,
-            positions: positionsView,
-            count: imp('split-count', splitCount, 'uint32', 1),
-            vertexCount: imp('split-vertices', splitVertices, 'uint32', 1),
-            overflow: imp('split-overflow', splitOverflow, 'uint32', 1),
-            totalCount: imp('split-total', splitTotal, 'uint32', 1)
+            geometry: {kind: 'lines', positions: positionsView, lineOffsets: offsetsView},
+            sourceIds: imp('split-line-ids', splitLineIds, 'uint32', pieceCapacity),
+            status: {
+              count: imp('split-count', splitCount, 'uint32', 1),
+              overflow: imp('split-overflow', splitOverflow, 'uint32', 1),
+              requiredCount: imp('split-total', splitTotal, 'uint32', 1)
+            },
+            vertexCount: imp('split-vertices', splitVertices, 'uint32', 1)
           }
         })
       );
@@ -625,17 +626,23 @@ function createNodingView(env: Environment): View {
           uncertainCount: imp('net-uncertain', netUncertain, 'uint32', 1),
           tolerance: tolerance.importToGraph(graphB),
           pieces: {
-            lineIds: imp('net-line-ids', piecesLineIds, 'uint32', pieceCapacity),
-            offsets: imp('net-offsets', piecesOffsets, 'uint32', pieceCapacity + 1),
-            positions: imp('net-positions', piecesPositions, 'float32x2', vertexCapacity),
-            count: imp('net-count', piecesCount, 'uint32', 1),
-            vertexCount: imp('net-vertices', piecesVertices, 'uint32', 1),
-            totalCount: imp('net-total', piecesTotal, 'uint32', 1)
+            geometry: {
+              kind: 'lines',
+              positions: imp('net-positions', piecesPositions, 'float32x2', vertexCapacity),
+              lineOffsets: imp('net-offsets', piecesOffsets, 'uint32', pieceCapacity + 1)
+            },
+            sourceIds: imp('net-line-ids', piecesLineIds, 'uint32', pieceCapacity),
+            status: {
+              count: imp('net-count', piecesCount, 'uint32', 1),
+              overflow: imp('net-piece-overflow', splitOverflow, 'uint32', 1),
+              requiredCount: imp('net-total', piecesTotal, 'uint32', 1)
+            },
+            vertexCount: imp('net-vertices', piecesVertices, 'uint32', 1)
           },
           nodes: {
             positions: imp('node-positions', nodePositions, 'float32x2', nodeCapacity),
             count: nodeCountView,
-            totalCount: imp('node-total', nodeTotal, 'uint32', 1)
+            requiredCount: imp('node-total', nodeTotal, 'uint32', 1)
           },
           edges: {
             fromNodes: imp('from-nodes', fromNodes, 'uint32', pieceCapacity),
@@ -966,7 +973,7 @@ function createDissolveView(env: Environment): View {
           segmentFlags: imp('flags', flags, 'uint32', segmentCount),
           count: countView,
           overflow: imp('overflow', overflow, 'uint32', 1),
-          totalCount: imp('total', total, 'uint32', 1),
+          requiredCount: imp('total', total, 'uint32', 1),
           openSegmentCount: imp('open', open, 'uint32', 1),
           touchingSegmentCount: imp('touching', touching, 'uint32', 1)
         }

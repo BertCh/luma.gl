@@ -137,7 +137,7 @@ async function runRandomPoints(
           ids: ids.view as never,
           count: count.view as never,
           overflow: overflow.view as never,
-          totalCount: total.view as never
+          requiredCount: total.view as never
         },
         fractions: fractions.view as never
       }

@@ -360,7 +360,7 @@ const HISTOGRAM_BIN_COUNT: u32 = ${cumulativeHistogram.length}u;
 
 @compute @workgroup_size(1)
 fn main() {
-  let totalCount = cumulativeHistogram[HISTOGRAM_OFFSET + HISTOGRAM_BIN_COUNT - 1u];
+  let requiredCount = cumulativeHistogram[HISTOGRAM_OFFSET + HISTOGRAM_BIN_COUNT - 1u];
   var firstIndex = 0u;
   var pastLastIndex = HISTOGRAM_BIN_COUNT;
   while (firstIndex < pastLastIndex) {
@@ -376,7 +376,7 @@ fn main() {
     firstCount = cumulativeHistogram[HISTOGRAM_OFFSET + firstIndex];
   }
   histogramSummary[SUMMARY_OFFSET] = firstCount;
-  histogramSummary[SUMMARY_OFFSET + 1u] = totalCount;
+  histogramSummary[SUMMARY_OFFSET + 1u] = requiredCount;
 }`,
           shaderLayout: {
             bindings: [
@@ -440,13 +440,13 @@ fn main() {
       u32(normalizedSample * f32(HISTOGRAM_BIN_COUNT)),
       HISTOGRAM_BIN_COUNT - 1u
     );
-    let totalCount = histogramSummary[SUMMARY_OFFSET + 1u];
-    if (totalCount == 0u) {
+    let requiredCount = histogramSummary[SUMMARY_OFFSET + 1u];
+    if (requiredCount == 0u) {
       validSample = false;
     } else {
       let firstCount = histogramSummary[SUMMARY_OFFSET];
       let cumulativeCount = cumulativeHistogram[HISTOGRAM_OFFSET + histogramIndex];
-      let cumulativeWidth = totalCount - firstCount;
+      let cumulativeWidth = requiredCount - firstCount;
       if (cumulativeWidth > 0u) {
         normalizedSample = f32(cumulativeCount - min(cumulativeCount, firstCount)) / f32(cumulativeWidth);
       }

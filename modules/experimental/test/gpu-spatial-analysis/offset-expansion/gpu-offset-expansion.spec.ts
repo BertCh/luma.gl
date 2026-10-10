@@ -47,7 +47,7 @@ function createExpansionFixture(
       ...(withLocal ? {localIndex: {format: 'uint32' as const, length: capacity}} : {}),
       count: {format: 'uint32', length: 1},
       overflow: {format: 'uint32', length: 1},
-      totalCount: {format: 'uint32', length: 1}
+      requiredCount: {format: 'uint32', length: 1}
     },
     create: ({inputs, outputs}) =>
       new GPUOffsetExpansion({
@@ -57,7 +57,7 @@ function createExpansionFixture(
           localIndex: outputs['localIndex'] as never,
           count: outputs['count'] as never,
           overflow: outputs['overflow'] as never,
-          totalCount: outputs['totalCount'] as never
+          requiredCount: outputs['requiredCount'] as never
         }
       })
   });
@@ -71,7 +71,7 @@ it('GPUOffsetExpansion matches shapely get_coordinates(return_index=True) with l
   const fixture = createExpansionFixture(device, COORD_OFFSETS, 40, true);
   const result = await fixture.run();
   expect(result['count'][0]).toBe(29);
-  expect(result['totalCount'][0]).toBe(29);
+  expect(result['requiredCount'][0]).toBe(29);
   expect(result['overflow'][0]).toBe(0);
   expect(result['owners'].slice(0, 29)).toEqual(COORD_OWNERS);
   expect(result['localIndex'].slice(0, 29)).toEqual(COORD_LOCAL);
@@ -101,7 +101,7 @@ it('GPUOffsetExpansion skips empty owners and reports overflow', async () => {
   // Empty owners at the start, middle and end; rows 0..4 belong to owners 1, 1, 3, 3, 3.
   const fixture = createExpansionFixture(device, [0, 0, 2, 2, 5, 5, 5], 3, false);
   const result = await fixture.run();
-  expect(result['totalCount'][0]).toBe(5);
+  expect(result['requiredCount'][0]).toBe(5);
   expect(result['count'][0]).toBe(3);
   expect(result['overflow'][0]).toBe(1);
   expect(result['owners']).toEqual([1, 1, 3]);

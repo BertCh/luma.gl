@@ -72,7 +72,7 @@ function expectMatchesOracle(
   }
 }
 
-it('GPULocalPermutationTest matches the oracle for local Moran, G and G* on kNN weights', async () => {
+it('GPULocalPermutationTest matches the oracle for local Moran, Geary, G and G* on kNN weights', async () => {
   const device = await getWebGPUTestDevice();
   if (!device) {
     return;
@@ -80,6 +80,7 @@ it('GPULocalPermutationTest matches the oracle for local Moran, G and G* on kNN 
   const {positions, values} = createClusteredScene(700, 1);
   for (const [statistic, weights] of [
     ['localMoran', createKnnWeights(positions, 6, true)],
+    ['localGeary', createKnnWeights(positions, 6, true)],
     ['localG', createKnnWeights(positions, 5, false)],
     ['localGStar', createKnnWeights(positions, 8, false)]
   ] as const) {

@@ -497,7 +497,7 @@ const densityGraph = new GPUCommandGraph(device, {id: 'corridors'});
 densityGraph.add(new GPULineDensity({
   positions: lngLat, pathOffsets: trackOffsets,
   columns: ${Math.round(60 / Number(state.cellDegrees))}, rows: ${Math.round(25 / Number(state.cellDegrees))},      // ${state.cellDegrees} degree cells, compile-time
-  coordinateSystem: 'spherical',                                       // degrees in, great-circle metres out
+  spatialContext: {coordinateSpace: 'longitude-latitude', metric: 'great-circle', units: 'meters'},                                       // degrees in, great-circle metres out
   maximumRecords,                                                      // compile-time piece capacity
   parameters: densityParameters.importToGraph(densityGraph),
   output: {lengths, densities, overflow, totalRecords}

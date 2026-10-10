@@ -10,7 +10,7 @@ Hold the compare button to flip between the evening and the morning on the same 
 
 ## Play the day on one scale {#play-the-day}
 
-Press **Play**: the window sweeps from dawn to night, and the classes never change, so one colour is always one net. Now set **Scale** to per hour: every hour stretches to its own maximum and looks equally dramatic, even a quiet one.
+Press **Play**: the window sweeps all 24 start hours, midnight through 23:00, and the classes never change, so one colour is always one net. Now set **Scale** to per hour: every hour stretches to its own maximum and looks equally dramatic, even a quiet one.
 
 *Fix the scale before you animate.*
 
@@ -23,3 +23,5 @@ August holds **{{dayCounts}}**. A total adds up every day, so weekdays carried {
 ## One station, one day {#one-station}
 
 The outlined station is the biggest morning drain. Where its line sits below zero the dock drains, above zero it fills, and the weekend line follows another rhythm. Click any station to chart it. Set **Window start**, **Day type** and **Unit** below, on the fixed scale.
+
+The evidence card holds 08:00 and 17:00 together: arrivals, departures and their net on the same per-weekday basis. It shows a rider-made reversal, not an occupancy history. Dock capacity and truck rebalancing are absent, so the map cannot say a station was empty or full.

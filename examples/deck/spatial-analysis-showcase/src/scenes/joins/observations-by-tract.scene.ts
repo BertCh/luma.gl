@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {ground} from '../../cartography/grounds';
 import {RAMP_STOPS} from '../../engine/ramps';
 import {defineScene} from '../scene';
 import type {ObservationsByTractOptions} from './observations-by-tract.compute';
@@ -45,11 +46,11 @@ const STATISTIC_TITLES: Record<ObservationsByTractOptions['statistic'], string> 
 
 export default defineScene<ObservationsByTractOptions>({
   id: 'observations-by-tract',
-  title: 'Nature observations by census tract',
+  title: 'Chicago nature observations: counts by census tract',
   chapter: 'joins',
   order: 1,
   summary:
-    'Join 43,557 iNaturalist observations of Chicago wildlife to 791 census tracts on the GPU, aggregate them into counts, densities and shares, and classify the result in one recipe. Compare a prepared tract index with a rebuilt one.',
+    'A GPU point-in-polygon join aggregates 43,557 iNaturalist records into 791 Chicago census tracts as counts, densities or shares. The output reflects observer effort and unstable small denominators.',
   contributors: [
     'GPUPointInPolygonJoin',
     'GPUSpatialJoinPrepared',
@@ -62,6 +63,13 @@ export default defineScene<ObservationsByTractOptions>({
     {id: 'chicago-community-areas', role: 'names for tooltips'}
   ],
   initialView: {longitude: -87.68, latitude: 41.84, zoom: 10},
+  basemap: ground('paperCity'),
+  furniture: {
+    title: {title: 'Nature observations by tract', subtitle: 'Joined counts, densities and shares'},
+    scaleBar: {units: 'metric'},
+    credit: 'iNaturalist; U.S. Census Bureau; City of Chicago',
+    caveat: 'Observation density measures reporting effort as well as ecological occurrence.'
+  },
 
   options: [
     {
@@ -265,7 +273,7 @@ export default defineScene<ObservationsByTractOptions>({
       label: 'Colour ramp',
       group: 'Display',
       apply: 'param',
-      default: 'magma',
+      default: 'cividis',
       help: 'Perceptually uniform ramps. Classed maps sample the same ramp evenly.',
       options: [
         {value: 'magma', label: 'Magma'},
@@ -380,8 +388,8 @@ export default defineScene<ObservationsByTractOptions>({
     {id: 'zonalUncertain', label: 'Zonal uncertain pairs'},
     {
       id: 'top',
-      label: 'Highest tract',
-      help: 'Tract GEOID, community area and value of the statistic.'
+      label: 'Highest tract (value · N)',
+      help: 'Tract GEOID, community area and mapped value. Rates and shares keep their observation count N beside them.'
     },
     {id: 'cityRate', label: 'City density'},
     {
@@ -524,6 +532,9 @@ compiled.encode(commandEncoder, {parameters: undefined});`,
   story: [
     {
       id: 'the-question',
+      headline: 'Lakefront tracts contain the highest observation counts',
+      textAlternative:
+        'A tract choropleth aggregates Chicago iNaturalist observations with source points optionally visible.',
       controls: ['statistic'],
       readouts: ['joined', 'top'],
       title: 'Where do Chicagoans find wildlife, tract by tract?',
@@ -534,23 +545,36 @@ compiled.encode(commandEncoder, {parameters: undefined});`,
     },
     {
       id: 'per-area',
+      headline: 'Area normalization changes the leading tract',
+      textAlternative:
+        'Observation density per square kilometre emphasizes compact tracts rather than large count totals.',
       controls: ['statistic', 'denominator'],
-      readouts: ['unstableRates', 'cityRate', 'areaCheck'],
+      readouts: ['top', 'unstableRates', 'cityRate', 'areaCheck'],
       title: 'Counts follow tract size. Normalise.',
-      body: 'A count says nothing about how much ground a tract covers. Set **Statistic per tract** to *Density* with **Normalise density by** *Area*: the GPU computes each polygon\u2019s area itself, so `densities = counts / area` is observations per square kilometre, and the **GPU polygon area** readout checks the total against the area stored in the data.\n\nThe map changes. By count the Montrose Point tract leads; per square kilometre a compact Lincoln Park tract (community area 7) leads, at about 3,900 observations per km2. Look at the **Empty and crowded tracts** readout below: most tracts have a handful of observations while a few have thousands, because people photograph nature in parks and along the lake. Try *Residents (per 1,000)* as well: it makes a tract in community area 13 with 1,545 residents and 2,523 observations score 1,633 per 1,000 residents, because visitors to its green space are not in the denominator.',
+      body: 'A count says nothing about how much ground a tract covers. Set **Statistic per tract** to *Density* with **Normalise density by** *Area*: the GPU computes each polygon\u2019s area itself, so `densities = counts / area` is observation records per square kilometre, and the **GPU polygon area** readout checks the total against the area stored in the data.\n\nThe map changes. By count the Montrose Point tract leads; per square kilometre a compact Lincoln Park tract (community area 7) leads, at about 3,900 records per km2. Area asks how intensively a place was recorded. *Residents (per 1,000)* asks a different question and is a poor effort denominator when visitors make the observations: it makes a tract in community area 13 with 1,545 residents and 2,523 records score 1,633 per 1,000 residents. In both cases the **Highest tract** readout keeps N beside the rate.',
       options: {statistic: 'density', denominator: 'area'},
       highlight: {readout: 'unstableRates'}
     },
     {
       id: 'share-introduced',
+      headline: 'Introduced-species shares vary with tract sample size',
+      textAlternative:
+        'Tracts are colored by the fraction of observations classified as introduced taxa.',
       controls: ['statistic', 'valueKind', 'groupType'],
       readouts: ['top'],
       title: 'What share of observations are introduced species?',
-      body: 'Zonal statistics also reduce a per-point **value**. With **Statistic per tract** on *Mean of a value* and **Value per observation** set to *Introduced, non-native taxon (0/1)*, the mean per tract is the share of observations of non-native life. The mean is `sum(v) / valueCount`; tracts with no observations have no mean and are drawn gray.\n\nCitywide 15.7% of observations are of introduced taxa (feral pigeons are among the most observed birds). Read the shares next to the counts: a tract with one observation of a pigeon has a 100% share. Change **Value per observation** to *Research grade*, citywide 63.0%, or *Made on a Saturday or Sunday*. To follow one group, set **Value per observation** to *Is the chosen group* and pick a **Group**: the mean is its share of all observations in the tract, and *Sum of a value* gives its count. The value is a buffer of 43,557 floats rewritten on the CPU. The graph does not rebuild.',
-      options: {statistic: 'mean', valueKind: 'introduced', sqrtScale: false, ramp: 'viridis'}
+      body: 'Zonal statistics also reduce a per-record **value**. With **Statistic per tract** on *Mean of a value* and **Value per observation** set to *Introduced, non-native taxon (0/1)*, the mean per tract is the share of records marked introduced. The mean is `sum(v) / valueCount`; tracts with no records have no mean and are drawn gray.\n\nCitywide 15.7% of N=43,557 records are marked introduced. Never read a share without its N: the **Highest tract** readout prints both, because one pigeon record makes a tract 100% introduced but not well sampled. Change **Value per observation** to *Research grade* (citywide 63.0%), *Made on a Saturday or Sunday*, or a chosen group. *Sum* gives its numerator; *Mean* divides by all tract records. The value buffer is rewritten without rebuilding the graph.',
+      evidence:
+        '**{{top}}** reports the mapped share and the record count supporting it in the same line.',
+      caveat:
+        'The denominator is uploaded records, not survey effort, visits, hours searched, residents or organisms present.',
+      options: {statistic: 'mean', valueKind: 'introduced', sqrtScale: false, ramp: 'cividis'}
     },
     {
       id: 'classed-recipe',
+      headline: 'Classification method changes the visible tract distribution',
+      textAlternative:
+        'The same tract values are grouped into quantile, equal-interval or natural-break classes.',
       controls: ['classMethod', 'classCount', 'backend'],
       readouts: ['classBreaks', 'classesUsed'],
       title: 'One recipe from points to classed colours',
@@ -560,11 +584,14 @@ compiled.encode(commandEncoder, {parameters: undefined});`,
         display: 'classes',
         classMethod: 'quantile',
         classCount: 5,
-        ramp: 'magma'
+        ramp: 'cividis'
       }
     },
     {
       id: 'prepared-index',
+      headline: 'Index reuse avoids repeated tract-tree construction',
+      textAlternative:
+        'Prepared and rebuilt spatial joins return the same tract aggregation with different setup work.',
       controls: ['prepared', 'rerunEveryFrame', 'invalidateEveryFrame', 'measure'],
       readouts: ['indexBuilds', 'timePlain', 'timePrepared'],
       title: 'Build the tract index once',
@@ -580,10 +607,13 @@ compiled.encode(commandEncoder, {parameters: undefined});`,
     },
     {
       id: 'check-and-limits',
+      headline: 'GPU tract totals agree away from boundary ambiguity',
+      textAlternative:
+        'Comparison readouts audit GPU assignments against GeoPandas and identify edge-adjacent differences.',
       controls: ['pointsMode', 'includeBoundary'],
       readouts: ['agreement', 'differenceNearEdge', 'tractParity'],
       title: 'Check against GeoPandas, then mind the limits',
-      body: 'The data pipeline joined the same points with GeoPandas. **Agrees with GeoPandas** reports the share of observations where the GPU tract equals that tract index, and **Tract totals vs table** compares every per-tract count. **Where the differences are** shows that any disagreement lies within 2 m of a tract edge, where float32 coordinates (about half a metre) can put a point on either side. Toggling **Count points on a tract edge** only matters for points exactly on an edge, which is very rare with precise coordinates. **Observation points** is set to *Only observations outside every tract* to show who is left out: every observation in this data lies inside a tract, so expect none.\n\n**Limits.** Observations measure observers as much as wildlife: parks, the lakefront and the neighbourhoods of enthusiastic users dominate, and the City Nature Challenge weekend of 28 April to 1 May adds a spike. A tract with few observations says little about its wildlife. Take the classed map to the Moran scenes in the weights chapter.',
+      body: 'The data pipeline joined the same points with GeoPandas. **Agrees with GeoPandas** reports the share of records where the GPU tract equals that tract index, and **Tract totals vs table** compares every per-tract count. **Where the differences are** shows that any disagreement lies within 2 m of a tract edge, where float32 coordinates can put a point on either side. **Observation points** is set to *Only records outside every tract*: every record in this data lies inside a tract, so expect none.\n\n**Limits.** Tracts stabilize the denominator but introduce fixed administrative boundaries. Parks, the lakefront and enthusiastic users dominate, and the City Nature Challenge pulse from 28 April through 1 May moves counts without proving an ecological change. The next time story replaces tracts with fixed 500 m cells and keeps those boundaries constant through 52 weekly slices—then tests how much the result changes with neighbourhood and significance choices.',
       options: {
         pointsMode: 'outside',
         display: 'ramp',

@@ -307,7 +307,7 @@ it('GPUGeometryCleanup snaps and removes repeated points like shapely, per-frame
           ringOffsets: offsetsOutput.view as GraphDataView<'uint32'>,
           count: count.view as GraphDataView<'uint32'>,
           overflow: overflow.view as GraphDataView<'uint32'>,
-          totalCount: total.view as GraphDataView<'uint32'>,
+          requiredCount: total.view as GraphDataView<'uint32'>,
           collapsedRings: collapsed.view as GraphDataView<'uint32'>
         }
       })
@@ -426,7 +426,7 @@ it('GPUGeometryCleanup reports Point capacity overflow', async () => {
         positions: positionsOutput.view as GraphDataView<'float32x2'>,
         count: count.view as GraphDataView<'uint32'>,
         overflow: overflow.view as GraphDataView<'uint32'>,
-        totalCount: total.view as GraphDataView<'uint32'>
+        requiredCount: total.view as GraphDataView<'uint32'>
       }
     })
   );
@@ -483,7 +483,7 @@ it('GPUGeometryCleanup reports overflow with clamped offsets', async () => {
         ringOffsets: offsetsOutput.view as GraphDataView<'uint32'>,
         count: count.view as GraphDataView<'uint32'>,
         overflow: overflow.view as GraphDataView<'uint32'>,
-        totalCount: total.view as GraphDataView<'uint32'>
+        requiredCount: total.view as GraphDataView<'uint32'>
       }
     })
   );

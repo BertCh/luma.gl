@@ -550,43 +550,47 @@ export async function createZoneDwell(
       zoneCount,
       candidateCapacity: EVENT_CANDIDATE_CAPACITY,
       maxEventsPerTrack: eventsPerVessel,
-      events: {
-        output: {
-          ids: view('event-tracks', eventTracks, 'uint32', capacity),
-          count: view('event-count', eventCount, 'uint32', 1),
-          overflow: view('event-overflow', eventOverflow, 'uint32', 1)
+      outputs: {
+        events: {
+          output: {
+            ids: view('event-tracks', eventTracks, 'uint32', capacity),
+            count: view('event-count', eventCount, 'uint32', 1),
+            overflow: view('event-overflow', eventOverflow, 'uint32', 1)
+          },
+          eventZones: view('event-zones', eventZones, 'uint32', capacity),
+          eventTypes: view('event-types', eventTypes, 'uint32', capacity),
+          eventTimes: view('event-times', eventTimes, 'float32', capacity),
+          eventPositions: importGraphBuffer(
+            graph,
+            'event-positions',
+            eventPositions,
+            'float32x2',
+            capacity
+          )
         },
-        eventZones: view('event-zones', eventZones, 'uint32', capacity),
-        eventTypes: view('event-types', eventTypes, 'uint32', capacity),
-        eventTimes: view('event-times', eventTimes, 'float32', capacity),
-        eventPositions: importGraphBuffer(
-          graph,
-          'event-positions',
-          eventPositions,
-          'float32x2',
-          capacity
-        )
-      },
-      diagnostics: {
-        candidateCount: view('candidate-count', candidateCount, 'uint32', 1),
-        candidateOverflow: view('candidate-overflow', candidateOverflow, 'uint32', 1),
-        trackOverflow: view('track-overflow', trackOverflow, 'uint32', 1),
-        eventOverflow: view('event-list-overflow', eventListOverflow, 'uint32', 1)
-      },
-      visitTable: {
-        output: {
-          ids: view('visit-tracks', visitTracks, 'uint32', VISIT_CAPACITY),
-          count: view('visit-count', visitCount, 'uint32', 1),
-          overflow: view('visit-overflow', visitOverflow, 'uint32', 1)
+        diagnostics: {
+          candidateCount: view('candidate-count', candidateCount, 'uint32', 1),
+          candidateOverflow: view('candidate-overflow', candidateOverflow, 'uint32', 1),
+          trackOverflow: view('track-overflow', trackOverflow, 'uint32', 1),
+          eventOverflow: view('event-list-overflow', eventListOverflow, 'uint32', 1)
         },
-        zones: view('visit-zones', visitZones, 'uint32', VISIT_CAPACITY),
-        dwellTimes: view('visit-dwell', visitDwell, 'float32', VISIT_CAPACITY)
+        table: {
+          counts: view('zone-counts', zoneTable.counts, 'uint32', zoneCount),
+          sumValues: view('zone-sums', zoneTable.sums, 'float32', zoneCount),
+          means: view('zone-means', zoneTable.means, 'float32', zoneCount),
+          maximums: view('zone-maximums', zoneTable.maximums, 'float32', zoneCount)
+        }
       },
-      table: {
-        counts: view('zone-counts', zoneTable.counts, 'uint32', zoneCount),
-        sumValues: view('zone-sums', zoneTable.sums, 'float32', zoneCount),
-        means: view('zone-means', zoneTable.means, 'float32', zoneCount),
-        maximums: view('zone-maximums', zoneTable.maximums, 'float32', zoneCount)
+      scratch: {
+        visitTable: {
+          output: {
+            ids: view('visit-tracks', visitTracks, 'uint32', VISIT_CAPACITY),
+            count: view('visit-count', visitCount, 'uint32', 1),
+            overflow: view('visit-overflow', visitOverflow, 'uint32', 1)
+          },
+          zones: view('visit-zones', visitZones, 'uint32', VISIT_CAPACITY),
+          dwellTimes: view('visit-dwell', visitDwell, 'float32', VISIT_CAPACITY)
+        }
       }
     });
     const compiled = resources.track(graph.compile());
@@ -655,27 +659,29 @@ export async function createZoneDwell(
         ),
         candidateCapacity: STOP_CANDIDATE_CAPACITY
       },
-      stops: {
-        ids: view('stop-ids', stopIds, 'uint32', STOP_CAPACITY),
-        count: view('stop-count', stopCount, 'uint32', 1),
-        overflow: view('stop-overflow', stopOverflow, 'uint32', 1),
-        centroids: importGraphBuffer(
-          graph,
-          'stop-centroids',
-          stopCentroids,
-          'float32x2',
-          STOP_CAPACITY
-        ),
-        durations: view('stop-durations', stopDurations, 'float32', STOP_CAPACITY)
+      outputs: {
+        stops: {
+          ids: view('stop-ids', stopIds, 'uint32', STOP_CAPACITY),
+          count: view('stop-count', stopCount, 'uint32', 1),
+          overflow: view('stop-overflow', stopOverflow, 'uint32', 1),
+          centroids: importGraphBuffer(
+            graph,
+            'stop-centroids',
+            stopCentroids,
+            'float32x2',
+            STOP_CAPACITY
+          ),
+          durations: view('stop-durations', stopDurations, 'float32', STOP_CAPACITY)
+        },
+        joinOverflow: view('join-overflow', joinOverflow, 'uint32', 1),
+        table: {
+          counts: view('zone-counts', zoneTable.counts, 'uint32', zoneCount),
+          sumValues: view('zone-sums', zoneTable.sums, 'float32', zoneCount),
+          means: view('zone-means', zoneTable.means, 'float32', zoneCount),
+          maximums: view('zone-maximums', zoneTable.maximums, 'float32', zoneCount)
+        }
       },
-      stopZones: view('stop-zones', stopZones, 'uint32', STOP_CAPACITY),
-      joinOverflow: view('join-overflow', joinOverflow, 'uint32', 1),
-      table: {
-        counts: view('zone-counts', zoneTable.counts, 'uint32', zoneCount),
-        sumValues: view('zone-sums', zoneTable.sums, 'float32', zoneCount),
-        means: view('zone-means', zoneTable.means, 'float32', zoneCount),
-        maximums: view('zone-maximums', zoneTable.maximums, 'float32', zoneCount)
-      }
+      scratch: {stopZones: view('stop-zones', stopZones, 'uint32', STOP_CAPACITY)}
     });
     const compiled = resources.track(graph.compile());
     const state: VariantState = {

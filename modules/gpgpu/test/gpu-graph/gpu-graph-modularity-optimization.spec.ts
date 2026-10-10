@@ -17,6 +17,7 @@ import {getWebGPUTestDevice} from '@luma.gl/test-utils';
 import {expect, it, vi} from 'vitest';
 import {
   addGPUGraphModularityOptimizationToGraphWithDispatchLimit,
+  getCommunityAggregationCapacity,
   getGPUGraphModularityOptimizationDispatchLayout
 } from '../../src/gpu-graph/gpu-graph-modularity-optimization-internals';
 
@@ -292,6 +293,15 @@ const optimizationScenarios: OptimizationScenario[] = [
     iterations: 3
   },
   {
+    name: 'a directed hub aggregates repeated communities, parallel edges, and asymmetric weights',
+    vertexCount: 16,
+    sourceChunks: [[0, 0, 0, 0, 0, 0, 0, 0], [], [0, 0, 0, 0, 13, 14, 0, 0]],
+    targetChunks: [[1, 2, 3, 4, 5, 6, 7, 8], [], [9, 10, 11, 12, 0, 0, 0, 4]],
+    weightChunks: [[1, 2, 3, 4, 5, 6, 7, 8], [], [9, 10, 11, 12, 3, 5, 7, 11]],
+    initialCommunities: [0, 1, 1, 2, 2, 3, 3, 4, 4, 5, 5, 6, 6, 1, 2, 15],
+    iterations: 2
+  },
+  {
     name: 'weighted undirected transitions preserve original positive edge strengths',
     vertexCount: 5,
     sourceChunks: [[0, 0], [], [3]],
@@ -526,6 +536,13 @@ it('GPUGraphModularityOptimization plans bounded three-dimensional graph dispatc
   expect(() => getGPUGraphModularityOptimizationDispatchLayout(2049, 2)).toThrow(
     /3D dispatch limit/
   );
+});
+
+it('GPUGraphModularityOptimization plans half-full disjoint community aggregation scratch', () => {
+  expect(getCommunityAggregationCapacity(3, 5, 7)).toBe(27);
+  expect(getCommunityAggregationCapacity(0, 0, 0)).toBe(0);
+  expect(getCommunityAggregationCapacity(1, 0x80000000, 0)).toBeUndefined();
+  expect(() => getCommunityAggregationCapacity(-1, 0, 0)).toThrow(/non-negative safe integers/);
 });
 
 for (const scenario of optimizationScenarios) {

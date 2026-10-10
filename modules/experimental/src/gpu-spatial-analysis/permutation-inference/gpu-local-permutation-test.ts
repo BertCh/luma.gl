@@ -50,7 +50,7 @@ export const GPU_LOCAL_PERMUTATION_NOT_TESTED = 0xffffffff;
 export const GPU_LOCAL_PERMUTATION_MAXIMUM_NEIGHBORS = 64;
 
 /** A local statistic tested by {@link GPULocalPermutationTest}. */
-export type GPULocalPermutationStatistic = 'localMoran' | 'localG' | 'localGStar';
+export type GPULocalPermutationStatistic = 'localMoran' | 'localGeary' | 'localG' | 'localGStar';
 
 /**
  * Properties for {@link GPULocalPermutationTest}.
@@ -109,14 +109,15 @@ export type GPULocalPermutationTestProps = {
 };
 
 /**
- * Conditional-permutation (pseudo p-value) inference for local Moran's I and local Getis-Ord
- * G / G*, matching PySAL esda's `Moran_Local` and `G_Local` conditional randomization.
+ * Conditional-permutation (pseudo p-value) inference for local Moran's I, local Geary and local
+ * Getis-Ord G / G*, matching the same conditional-randomization scheme.
  *
  * Definitions, over the `n` included rows (mask nonzero, finite value):
  * - Neighbors of row `i` are its CSR slots whose neighbor is included and is not `i`; `k_i` is
  *   their count. Rows with `k_i = 0` (islands) or `k_i > maximumNeighbors` are not tested.
  * - Statistics (weights used as given): local Moran `I_i = (n-1) c_i sum_s w_s c_s / sum c^2` with
- *   `c = x - mean`; `G_i = sum_s w_s x_s / (sum x - x_i)`; `G*_i = (x_i + sum_s w_s x_s) / sum x`,
+ *   `c = x - mean`; local Geary `c_i = n sum_s w_s (c_i - c_s)^2 / sum c^2`;
+ *   `G_i = sum_s w_s x_s / (sum x - x_i)`; `G*_i = (x_i + sum_s w_s x_s) / sum x`,
  *   that is, a self weight of 1 (esda's `star=True` with binary weights).
  * - Each permutation draws an ordered sample of `k_i` distinct rows uniformly from the other
  *   `n - 1` included rows (a partial Fisher-Yates shuffle of their compacted positions) and
@@ -144,7 +145,7 @@ export class GPULocalPermutationTest implements GPUCommandNodeProducer {
     this.id = id;
     this.props = props;
     const rows = validatePermutationInputs({...props, id, operation: OPERATION});
-    if (!['localMoran', 'localG', 'localGStar'].includes(props.statistic)) {
+    if (!['localMoran', 'localGeary', 'localG', 'localGStar'].includes(props.statistic)) {
       throw new Error(`${id} unknown statistic ${props.statistic}`);
     }
     resolvePermutationAlternative(id, props.alternative);
@@ -225,7 +226,7 @@ export class GPULocalPermutationTest implements GPUCommandNodeProducer {
       ...props,
       id: `${id}-inputs`,
       operation: OPERATION,
-      centerX: statistic === 'localMoran'
+      centerX: statistic === 'localMoran' || statistic === 'localGeary'
     });
     const nodes = inputs.nodes;
     const {rowPositions, compactX, totals} = inputs;
@@ -238,7 +239,7 @@ const NOT_TESTED: u32 = ${GPU_LOCAL_PERMUTATION_NOT_TESTED}u;
 ${PERMUTATION_FLOAT_WGSL}
 // The statistic up to a positive per-row constant; identical for observed and simulated terms.
 fn getLocalTerm(focus: f32, lag: f32) -> f32 {
-  ${statistic === 'localMoran' ? 'return focus * lag;' : statistic === 'localG' ? 'return lag;' : 'return lag + focus;'}
+  ${statistic === 'localMoran' ? 'return focus * lag;' : statistic === 'localG' || statistic === 'localGeary' ? 'return lag;' : 'return lag + focus;'}
 }`;
     const neighborLoopWGSL = (
       action: string
@@ -285,7 +286,7 @@ fn getLocalTerm(focus: f32, lag: f32) -> f32 {
   if (position != INVALID_POSITION) {
     var lag = 0.0;
     var neighborCount = 0u;
-    ${neighborLoopWGSL(`lag += weights[weightsOffset + slot] * compactX[compactXOffset + neighborPosition];
+    ${neighborLoopWGSL(`lag += weights[weightsOffset + slot] * ${statistic === 'localGeary' ? '(compactX[compactXOffset + position] - compactX[compactXOffset + neighborPosition]) * (compactX[compactXOffset + position] - compactX[compactXOffset + neighborPosition])' : 'compactX[compactXOffset + neighborPosition]'};
       neighborCount++;`)}
     if (neighborCount > MAXIMUM_NEIGHBORS) {
       atomicMax(&overflow[overflowOffset], 1u);
@@ -379,7 +380,8 @@ fn readSwap(
         swapCount = max(swapCount, entry + 1u);
       }
       let drawnPosition = chosen + select(0u, 1u, chosen >= position);
-      lag += slotWeights[drawn] * compactX[compactXOffset + drawnPosition];
+      let drawnValue = compactX[compactXOffset + drawnPosition];
+      lag += slotWeights[drawn] * ${statistic === 'localGeary' ? '(focus - drawnValue) * (focus - drawnValue)' : 'drawnValue'};
     }
     let simulated = getLocalTerm(focus, lag);
     ${
@@ -403,9 +405,11 @@ fn readSwap(
       const observedWGSL =
         statistic === 'localMoran'
           ? '(totals[totalsOffset] - 1.0) * raw / totals[totalsOffset + 3u]'
-          : statistic === 'localG'
-            ? 'raw / (totals[totalsOffset + 1u] - compactX[compactXOffset + position])'
-            : 'raw / totals[totalsOffset + 1u]';
+          : statistic === 'localGeary'
+            ? 'raw * totals[totalsOffset] / totals[totalsOffset + 3u]'
+            : statistic === 'localG'
+              ? 'raw / (totals[totalsOffset + 1u] - compactX[compactXOffset + position])'
+              : 'raw / totals[totalsOffset + 1u]';
       nodes.push(
         createWGSLKernelNode<Parameters>(graph, {
           id: `${id}-observed-statistic`,

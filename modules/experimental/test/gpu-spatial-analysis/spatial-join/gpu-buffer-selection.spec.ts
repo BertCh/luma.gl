@@ -187,7 +187,7 @@ it('GPUBufferSelection selects points near polylines and follows a per-frame dis
         ids: outputIds.view,
         count: outputCount.view,
         overflow: outputOverflow.view,
-        totalCount: outputTotal.view
+        requiredCount: outputTotal.view
       },
       distances: distances.view,
       nearestFeatureIds: nearest.view,
@@ -421,7 +421,7 @@ it('GPUBufferSelection clamps output and reports overflow when capacity is too s
         ids: outputIds.view,
         count: outputCount.view,
         overflow: outputOverflow.view,
-        totalCount: outputTotal.view
+        requiredCount: outputTotal.view
       }
     })
   );

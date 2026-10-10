@@ -11,12 +11,28 @@ import type {
   GPURasterZonalStatisticsSumOrder
 } from '../../gpu-raster/raster-zonal-statistics/index';
 import type {GPURasterBand} from '../../gpu-raster/index';
-import {assertRecipe, getOrCreateView, RecipeBuilder, type GPURecipeResult} from './recipe-utils';
+import {
+  assertRecipe,
+  getOrCreateView,
+  RecipeBuilder,
+  type GPURecipeOverrides,
+  type GPURecipeResult
+} from './recipe-utils';
 
 const ID = 'GPUStraightLineCatchmentsRecipe';
 
 /** Properties for {@link addStraightLineCatchmentsRecipe}. */
-export type GPUStraightLineCatchmentsRecipeProps = {
+export type GPUStraightLineCatchmentsRecipeProps = GPURecipeOverrides<
+  Record<never, never>,
+  {
+    /** Caller-owned catchment id (nearest facility) per cell. */
+    allocation?: GraphDataView<'uint32'>;
+    /** Caller-owned distance to the nearest facility per cell. */
+    distances?: GraphDataView<'float32'>;
+    /** Caller-owned per-catchment statistics. */
+    statistics?: GPURasterZonalStatisticsOutput;
+  }
+> & {
   /** Prefix for every node and transient ID. Defaults to `'straight-line-catchments'`. */
   id?: string;
   /** Grid width in cells. */
@@ -37,12 +53,6 @@ export type GPUStraightLineCatchmentsRecipeProps = {
   mode?: GPUDistanceFieldMode;
   /** Zonal sum accumulation. Defaults to the contributor default. */
   sumOrder?: GPURasterZonalStatisticsSumOrder;
-  /** Caller-owned catchment id (nearest facility) per cell; `0xffffffff` when no facility is in range. */
-  allocation?: GraphDataView<'uint32'>;
-  /** Caller-owned distance to the nearest facility per cell. */
-  distances?: GraphDataView<'float32'>;
-  /** Caller-owned per-catchment statistics, `seedPositions.length` rows each. */
-  statistics?: GPURasterZonalStatisticsOutput;
 };
 
 /** Named outputs of {@link addStraightLineCatchmentsRecipe}. */
@@ -70,6 +80,7 @@ export function addStraightLineCatchmentsRecipe<Parameters>(
   const builder = new RecipeBuilder(graph);
   const {width, height} = props;
   const cellCount = width * height;
+  const outputs = props.outputs ?? {};
   const zoneCapacity = props.seedPositions.length;
   assertRecipe(ID, cellCount >= 1, 'needs a non-empty grid');
   assertRecipe(ID, zoneCapacity >= 1, 'needs at least one facility row');
@@ -79,14 +90,14 @@ export function addStraightLineCatchmentsRecipe<Parameters>(
     `${id}-allocation`,
     'uint32',
     cellCount,
-    props.allocation
+    outputs.allocation
   );
   const distances = getOrCreateView(
     graph,
     `${id}-distances`,
     'float32',
     cellCount,
-    props.distances
+    outputs.distances
   );
   builder.add(
     new GPUDistanceField({
@@ -102,7 +113,7 @@ export function addStraightLineCatchmentsRecipe<Parameters>(
     })
   );
 
-  const provided = props.statistics ?? {};
+  const provided = outputs.statistics ?? {};
   const statistics = {
     cellCounts: getOrCreateView(
       graph,
@@ -143,5 +154,13 @@ export function addStraightLineCatchmentsRecipe<Parameters>(
       output: statistics
     })
   );
-  return {contributors: builder.contributors, allocation, distances, statistics};
+  return {
+    contributors: builder.contributors,
+    allocation,
+    distances,
+    statistics,
+    outputs: {allocation, distances, statistics},
+    intermediates: {},
+    status: {stages: []}
+  };
 }

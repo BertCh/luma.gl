@@ -450,6 +450,45 @@ it('GPUEmergingHotSpots matches the oracle for slice counts that tile the Gi* wo
   }
 }, 120000);
 
+it('GPUEmergingHotSpots guards padded cooperative workgroups under bounded dispatch', async () => {
+  const device = await getWebGPUTestDevice();
+  if (!device) {
+    return;
+  }
+  const descriptor = Object.getOwnPropertyDescriptor(device, 'limits');
+  const limits = device.limits;
+  Object.defineProperty(device, 'limits', {
+    configurable: true,
+    value: new Proxy(limits, {
+      get: (target, property) =>
+        property === 'maxComputeWorkgroupsPerDimension' ? 2 : Reflect.get(target, property, target)
+    })
+  });
+  try {
+    // Five cells require a padded 2x2x2 dispatch when each dimension is limited to two.
+    const cube = {
+      gridWidth: 5,
+      gridHeight: 1,
+      sliceCount: 7,
+      values: Float32Array.from({length: 35}, (_, index) =>
+        index === 4 ? NaN : ((index * 17) % 23) / 3
+      )
+    };
+    const harness = createHarness(device, cube, {maximumRadius: 0});
+    try {
+      const frame = {radius: 0, temporalWindow: 0};
+      const result = await harness.run(frame);
+      expectCellsMatchOracle(result, cube, frame, 'bounded dispatch');
+    } finally {
+      harness.destroy();
+    }
+  } finally {
+    if (descriptor) {
+      Object.defineProperty(device, 'limits', descriptor);
+    }
+  }
+}, 60000);
+
 it('GPUEmergingHotSpots accepts uint32 counts like GPUTemporalReduction output', async () => {
   const device = await getWebGPUTestDevice();
   if (!device) {

@@ -609,7 +609,7 @@ export const groupStatisticsMode: SpatialAnalysisModeDefinition = {
             counts: slices.view(ZONE_ROWS_SLOT, 'uint32'),
             count: importGraphBuffer(zoneGraph, 'io-zone-count', zoneCount, 'uint32', 1),
             overflow: importGraphBuffer(zoneGraph, 'io-zone-overflow', zoneOverflow, 'uint32', 1),
-            totalCount: importGraphBuffer(zoneGraph, 'io-zone-total', zoneTotal, 'uint32', 1)
+            requiredCount: importGraphBuffer(zoneGraph, 'io-zone-total', zoneTotal, 'uint32', 1)
           }
         })
       );
@@ -649,7 +649,7 @@ export const groupStatisticsMode: SpatialAnalysisModeDefinition = {
         ),
         count: importGraphBuffer(compareGraph, table.count.id, table.count, 'uint32', 1),
         overflow: importGraphBuffer(compareGraph, table.overflow.id, table.overflow, 'uint32', 1),
-        totalCount: importGraphBuffer(compareGraph, table.total.id, table.total, 'uint32', 1),
+        requiredCount: importGraphBuffer(compareGraph, table.total.id, table.total, 'uint32', 1),
         mask: importGraphBuffer(
           compareGraph,
           `mask-${index ? 'b' : 'a'}`,
@@ -723,7 +723,7 @@ export const groupStatisticsMode: SpatialAnalysisModeDefinition = {
               'uint32',
               1
             ),
-            totalCount: importGraphBuffer(
+            requiredCount: importGraphBuffer(
               compareGraph,
               'io-compare-total',
               compareTotal,

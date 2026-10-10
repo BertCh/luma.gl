@@ -543,7 +543,7 @@ import {GPUTimeWindowFilter, getGPUTimeWindowParameterValues} from '@luma.gl/exp
 
 // Each track on its own tangent plane (x east, y north, meters): speeds and headings are true.
 const metrics = new GPUCommandGraph(device, {id: 'metrics'});
-metrics.add(new GPUTrajectoryMetrics({
+metrics.add(new GPUTrajectoryMetrics({spatialContext: {coordinateSpace: 'planar', metric: 'native', units: 'native'},
   positions: localMeters, timestamps, trackOffsets,
   parameters: stallParameters.importToGraph(metrics),
   stepSpeeds, stepHeadings, trackStopCounts,
@@ -640,6 +640,10 @@ play.encode(commandEncoder, {parameters: undefined});`,
         'Neutral arrowheads and short trails show live radar-derived cells over a dark central-US map.',
       optionsMode: 'fresh',
       body: 'Press **Play** or drag **Time (UTC)**. Each neutral arrow is one radar-derived cell at the clock; its short trail is the preceding time window. The live sample line and flash-rate chart keep the temporal frame visible.\n\nThis is an object tracker over intense radar echoes, not a catalogue of named storms. Reduced motion starts paused; the clock can always be scrubbed directly.',
+      evidence:
+        'At **{{clock}}**, **{{activeCells}}** radar-derived cells are active; the fixed 18-hour rate chart keeps that instant anchored in the full event.',
+      caveat:
+        'Cell identities can end, merge or restart as the radar tracker links echoes; an arrow is not a named storm or an independently observed object.',
       camera: {...IOWA_VIEW, transitionMs: 1400},
       options: {time: 34200, play: false, showTrails: true},
       controls: ['play', 'time', 'speed'],
@@ -653,6 +657,10 @@ play.encode(commandEncoder, {parameters: undefined});`,
         'Classed warm-to-cool speed trails and arrowheads sit over dim context tracks.',
       optionsMode: 'fresh',
       body: '**`GPUTrajectoryMetrics`** measures each segment on its own tangent plane: distance divided by elapsed time gives speed. The histogram is the full step distribution; the live readouts report the median and fastest step.\n\nSteps above the displayed range are tracker-jump candidates, not evidence of a faster storm. Fixes are about ten minutes apart, so a cell head is an interpolation between observations.',
+      evidence:
+        'Across **{{tracks}}**, the median is **{{medianSpeed}}** and the largest observed step is **{{fastest}}**; the histogram keeps every 10-minute step in the denominator.',
+      caveat:
+        'The 0–120 km/h display domain is fixed across the story. Values beyond it remain in the readout but are commonly tracker jumps at cell mergers or splits.',
       camera: {...STORM_VIEW, transitionMs: 1400},
       options: {time: 36000, play: false, showTrails: true, trailMinutes: 120, colorBy: 'speed'},
       controls: ['colorBy', 'trailMinutes'],
@@ -666,6 +674,10 @@ play.encode(commandEncoder, {parameters: undefined});`,
         'A cyclic compass palette and rose chart show direction of travel for the active tracks.',
       optionsMode: 'fresh',
       body: 'Direction is circular: north-west and north-east are neighbours, so a linear colour scale would make adjacent headings look unrelated. The compass palette closes at north and the rose chart uses the same order.\n\nThe heading is where the radar object travels, not where wind comes from. Compare it with speed without encoding both variables on one mark.',
+      evidence:
+        'The compass rose counts every qualifying step, while **{{activeCells}}** cells at the shared UTC playhead average **{{activeSpeed}}**.',
+      caveat:
+        'Heading is the tracked echo’s direction of travel, not wind direction; steps below 1 km/h are excluded from the directional rose.',
       camera: {...IOWA_VIEW, transitionMs: 1400},
       options: {
         time: 34200,
@@ -686,6 +698,10 @@ play.encode(commandEncoder, {parameters: undefined});`,
         'A selected cell has a dashed forward vector and arrival ring over a dark map.',
       optionsMode: 'fresh',
       body: 'A lookup reads the current step’s speed and heading and draws a dashed line for the selected number of minutes. It is a straight-line extrapolation, not a forecast: cells turn, merge, split and decay.\n\nChange **Vector time** to see distance scale directly with time. The active-cell count makes clear how many independent motion vectors are present at this moment.',
+      evidence:
+        'At **{{clock}}**, **{{activeCells}}** active cells have a mean current-step speed of **{{activeSpeed}}**; vector length is that speed multiplied by the selected duration.',
+      caveat:
+        'The vector assumes unchanged speed and heading. It contains no atmospheric model, uncertainty cone, cell-growth term or merger logic.',
       camera: {...STORM_VIEW, transitionMs: 1400},
       options: {
         showArrows: true,
@@ -706,6 +722,10 @@ play.encode(commandEncoder, {parameters: undefined});`,
       textAlternative: 'A translucent violet buffered corridor retains its radar-track centreline.',
       optionsMode: 'fresh',
       body: '**`GPUOutlineGeometry`** buffers each path by a chosen spherical-metre distance. The translucent ribbon is a *buffered track corridor*; it is neither a radar footprint nor a merged coverage area.\n\nOverlaps darken because triangles overlap. Adjust the width as a sensitivity test, and keep the centreline visible so the construction is legible.',
+      evidence:
+        '**{{tracks}}** are buffered to **{{swathWidth}}**; at **{{clock}}** the same UTC clock controls whether the corridor stops at the playhead or spans the event.',
+      caveat:
+        'Overlapping ribbons are drawn on top of one another rather than unioned, so darker colour means repeated geometry, not greater storm intensity.',
       camera: {...STORM_VIEW, transitionMs: 1400},
       options: {
         showLightning: false,
@@ -728,6 +748,10 @@ play.encode(commandEncoder, {parameters: undefined});`,
         'Amber sampled lightning points sit over a classed dark density grid with highlighted cells.',
       optionsMode: 'fresh',
       body: '**`GPUPointDensity`** bins the sampled flashes into the current map grid, then smooths the cells. Change **Resolution**: the same flashes can fall into different cells, so the rank and shape of a hot cell change with the aggregation unit. That is the modifiable areal unit problem, not a significance test.\n\nThe count is a sample of GLM detections. Keep the point layer on while comparing grids, and read the density value as sampled flashes rather than an absolute total. Next: do counties crossed by these cells show more outages?',
+      evidence:
+        'The active window contains **{{flashesNow}}** sampled flashes; each cell is **{{cellSize}}** wide, and **{{hotCells}}** exceed the selected percentile among non-empty cells.',
+      caveat:
+        '**{{flashes}}** are a seeded sample. Hot cells depend on the view, grid resolution, smoothing and percentile and are not a significance test.',
       camera: {...PLAINS_VIEW, transitionMs: 1600},
       options: {
         showLightning: true,

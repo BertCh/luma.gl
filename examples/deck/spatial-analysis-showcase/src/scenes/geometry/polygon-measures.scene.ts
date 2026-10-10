@@ -729,10 +729,10 @@ import {
 
 const graph = new GPUCommandGraph(device, {id: 'polygons'});
 // positions: lng/lat float32x2; ringOffsets/featureRingOffsets: GeoArrow offsets (uint32).
-graph.add(new GPUGeometryMeasures({
+graph.add(new GPUGeometryMeasures({spatialContext: {coordinateSpace: ('${state.areaSystem}') === 'planar' ? 'planar' : 'longitude-latitude', metric: ('${state.areaSystem}') === 'planar' ? 'native' : ('${state.areaSystem}') === 'spherical' ? 'great-circle' : 'ellipsoidal', units: ('${state.areaSystem}') === 'planar' ? 'native' : 'meters'},ellipsoidalEdgeModel: ('${state.areaSystem}') === 'wgs84' ? 'coordinate-linear' : undefined,
   positions, ringOffsets, featureRingOffsets,
   geometryType: 'polygons',
-  coordinateSystem: '${state.areaSystem}',   // planar | spherical | wgs84
+     // planar | spherical | wgs84
   holeRule: '${state.holeRule}',
   output: {areas, lengths, centroids, bounds, vertexCounts}
 }));

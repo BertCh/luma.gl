@@ -222,6 +222,44 @@ body.is-story .view {
   font-size: var(--fs-base);
   line-height: var(--lh-body);
 }
+.step-notes {
+  margin-top: var(--s-3);
+}
+.step-note-list {
+  display: grid;
+  gap: 6px;
+  margin: 0;
+}
+.step-note {
+  display: grid;
+  grid-template-columns: 58px minmax(0, 1fr);
+  gap: var(--s-2);
+  padding: 8px 10px;
+  background: var(--accent-soft);
+  border-left: 3px solid var(--accent);
+  border-radius: var(--radius-chrome);
+}
+.step-note dt {
+  color: var(--accent-strong);
+  font-size: var(--fs-xs);
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  line-height: var(--lh-body);
+  text-transform: uppercase;
+}
+.step-note dd {
+  min-width: 0;
+  margin: 0;
+  font-size: var(--fs-md);
+  line-height: var(--lh-body);
+}
+.step-note-caveat {
+  background: var(--warn-soft);
+  border-left-color: var(--warn);
+}
+.step-note-caveat dt {
+  color: var(--warn);
+}
 .live-readout {
   font-weight: 600;
   font-variant-numeric: tabular-nums;
@@ -664,112 +702,6 @@ button.pipeline-chip:hover {
 }
 
 /* ------------------------------------------------------------------------------------------ */
-/* Loading cover: fetch, compile, first frame                                                  */
-/* ------------------------------------------------------------------------------------------ */
-
-.map-loading {
-  position: absolute;
-  inset: 0;
-  z-index: 25;
-  display: grid;
-  place-items: center;
-  overflow: hidden;
-  background: color-mix(in srgb, var(--map-paper, var(--sunken)) 92%, transparent);
-  transition: opacity 220ms var(--ease);
-  pointer-events: none;
-}
-.map-loading.is-leaving {
-  opacity: 0;
-}
-.map-loading[data-phase='compile']::before {
-  content: '';
-  position: absolute;
-  inset: 0;
-  background: linear-gradient(
-    100deg,
-    transparent 30%,
-    color-mix(in srgb, var(--map-ink, var(--text)) 9%, transparent) 50%,
-    transparent 70%
-  );
-  background-size: 220% 100%;
-  animation: story-shimmer 1.6s linear infinite;
-}
-@keyframes story-shimmer {
-  from {
-    background-position: 120% 0;
-  }
-  to {
-    background-position: -120% 0;
-  }
-}
-.map-loading-card {
-  position: relative;
-  width: min(360px, calc(100% - 32px));
-  padding: var(--s-3) var(--s-4);
-  color: var(--map-ink, var(--text));
-  font-family: var(--map-font, var(--font));
-  font-size: var(--fs-sm);
-  background: var(--map-furniture-bg, var(--surface-glass));
-  border: 1px solid color-mix(in srgb, var(--map-ink, var(--text)) 14%, transparent);
-  border-radius: var(--radius-chrome);
-}
-.map-loading[data-phase='compile'] .map-loading-datasets {
-  display: none;
-}
-.map-loading-title {
-  margin: 0 0 var(--s-2);
-  font-size: var(--fs-base);
-  font-weight: 600;
-}
-.map-loading-datasets {
-  display: grid;
-  gap: var(--s-2);
-  margin: 0;
-  padding: 0;
-  list-style: none;
-}
-.map-loading-row {
-  display: grid;
-  grid-template-columns: 1fr auto;
-  gap: 2px var(--s-3);
-}
-.map-loading-size {
-  color: var(--map-ink-muted, var(--muted));
-  font-variant-numeric: tabular-nums;
-}
-.map-loading-bar {
-  grid-column: 1 / -1;
-  height: 2px;
-  overflow: hidden;
-  background: color-mix(in srgb, var(--map-ink, var(--text)) 16%, transparent);
-  border-radius: 1px;
-}
-.map-loading-bar-fill {
-  display: block;
-  width: 100%;
-  height: 100%;
-  background: var(--map-accent, var(--accent));
-  transform: scaleX(0);
-  transform-origin: left;
-  transition: transform 160ms linear;
-}
-.map-loading-row.is-done .map-loading-size::after {
-  content: ' \2713';
-}
-.map-loading-message {
-  min-height: 1.2em;
-  margin: var(--s-2) 0 0;
-  color: var(--map-ink-muted, var(--muted));
-}
-.map-loading-message:empty {
-  display: none;
-}
-.map-loading.is-error .map-loading-message {
-  color: var(--map-ink, var(--text));
-  font-weight: 600;
-}
-
-/* ------------------------------------------------------------------------------------------ */
 /* Phone: the panel is a bottom sheet with three detents                                       */
 /* ------------------------------------------------------------------------------------------ */
 
@@ -907,16 +839,12 @@ button.pipeline-chip:hover {
   .cost-chip.is-pulse-b {
     animation: none;
   }
-  .map-loading[data-phase='compile']::before {
-    animation: none;
-  }
 }
 
 @media (forced-colors: active) {
   .step-item,
   .pipeline-chip,
-  .readout.is-tile,
-  .map-loading-card {
+  .readout.is-tile {
     border: 1px solid CanvasText;
   }
   .step-item.is-active,
@@ -925,8 +853,7 @@ button.pipeline-chip:hover {
     outline: 2px solid Highlight;
   }
   .step-badge,
-  .step-segment::before,
-  .map-loading-bar-fill {
+  .step-segment::before {
     forced-color-adjust: none;
   }
 }

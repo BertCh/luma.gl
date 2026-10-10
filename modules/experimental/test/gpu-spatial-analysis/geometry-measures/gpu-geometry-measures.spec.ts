@@ -45,10 +45,9 @@ type MeasuresResult = {
   groupBits?: number[];
 };
 
-type MeasuresOptions = Pick<
-  GPUGeometryMeasuresProps,
-  'geometryType' | 'coordinateSystem' | 'holeRule' | 'radius'
-> & {
+type MeasuresOptions = Pick<GPUGeometryMeasuresProps, 'geometryType' | 'holeRule'> & {
+  coordinateSystem: 'planar' | 'spherical' | 'wgs84' | 'geodesic';
+  radius?: number;
   groupIds?: number[];
   groupCount?: number;
 };
@@ -171,6 +170,18 @@ function createMeasuresFixture(
     : undefined;
   graph.add(
     new GPUGeometryMeasures({
+      spatialContext: {
+        coordinateSpace: options.coordinateSystem === 'planar' ? 'planar' : 'longitude-latitude',
+        metric:
+          options.coordinateSystem === 'planar'
+            ? 'native'
+            : options.coordinateSystem === 'spherical'
+              ? 'great-circle'
+              : 'ellipsoidal',
+        units: options.coordinateSystem === 'planar' ? 'native' : 'meters',
+        sphereRadius: options.coordinateSystem === 'spherical' ? options.radius : undefined
+      },
+      ellipsoidalEdgeModel: options.coordinateSystem === 'wgs84' ? 'coordinate-linear' : undefined,
       positions: importGraphBuffer(graph, 'positions', positionsBuffer, 'float32x2', rowCount),
       ringOffsets: importGraphBuffer(
         graph,
@@ -187,9 +198,9 @@ function createMeasuresFixture(
         flat.featureRingOffsets.length
       ),
       geometryType: options.geometryType,
-      coordinateSystem: options.coordinateSystem,
+
       holeRule: options.holeRule,
-      radius: options.radius,
+
       output: featureColumns.views,
       ...(options.groupIds && groupColumns
         ? {
@@ -349,7 +360,11 @@ it('GPUGeometryMeasures matches the planar oracle under both hole rules', async 
   }
   const features = roundFeatures(PLANAR_FEATURES);
   for (const holeRule of ['winding', 'first-ring-exterior'] as const) {
-    const fixture = createMeasuresFixture(device, features, {geometryType: 'polygons', holeRule});
+    const fixture = createMeasuresFixture(device, features, {
+      geometryType: 'polygons',
+      coordinateSystem: 'planar',
+      holeRule
+    });
     const {features: actual} = await fixture.run();
     const expected = features.map(feature =>
       measureFeature(feature, {isPolygon: true, coordinateSystem: 'planar', holeRule})
@@ -358,7 +373,10 @@ it('GPUGeometryMeasures matches the planar oracle under both hole rules', async 
     fixture.destroy();
   }
   // Spot checks of the semantics, independent of the oracle.
-  const fixture = createMeasuresFixture(device, features, {geometryType: 'polygons'});
+  const fixture = createMeasuresFixture(device, features, {
+    geometryType: 'polygons',
+    coordinateSystem: 'planar'
+  });
   const {features: winding} = await fixture.run();
   expect(winding.areas.slice(0, 5)).toEqual([1, 91, 109, 5, 3]);
   expect(winding.signedAreas[4]).toBe(-3);
@@ -403,7 +421,10 @@ it('GPUGeometryMeasures measures lines with length-weighted centroids', async ()
       ]
     ]
   ]);
-  const fixture = createMeasuresFixture(device, features, {geometryType: 'lines'});
+  const fixture = createMeasuresFixture(device, features, {
+    geometryType: 'lines',
+    coordinateSystem: 'planar'
+  });
   const {features: actual} = await fixture.run();
   const expected = features.map(feature =>
     measureFeature(feature, {isPolygon: false, coordinateSystem: 'planar'})
@@ -592,6 +613,7 @@ it('GPUGeometryMeasures reduces groups deterministically and re-encodes new posi
   const rounded = roundFeatures(features);
   const fixture = createMeasuresFixture(device, rounded, {
     geometryType: 'polygons',
+    coordinateSystem: 'planar',
     groupIds,
     groupCount
   });

@@ -7,6 +7,7 @@ import {
   validatePackedView,
   type GraphDataView
 } from '@luma.gl/gpgpu/gpu-core';
+import type {GPUSpatialWeightsPort} from '../contracts/index';
 
 /**
  * A spatial-weights matrix in CSR form: row `i` lists the neighbors `j` of focus row `i` and the
@@ -29,7 +30,7 @@ import {
  * The row and neighbor-ID spaces may differ for cross (query to target) weights; the statistics
  * contributors require square self-join weights where `neighbors` index the same rows as `offsets`.
  */
-export type GPUSpatialWeights = {
+export type GPUSpatialWeights = GPUSpatialWeightsPort & {
   /** `rows + 1` exclusive row offsets into the neighbor slots. */
   offsets: GraphDataView<'uint32'>;
   /** Neighbor row IDs, ascending within each row. Its length is the slot capacity. */

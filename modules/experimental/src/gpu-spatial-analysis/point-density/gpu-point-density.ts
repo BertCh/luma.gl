@@ -27,6 +27,7 @@ import {
   getGraphViewChunks,
   validateGraphViewsBelongToGraph
 } from '../../utils/gpu-contributor-utils';
+import type {GPUSampledSurfacePort} from '../contracts/index';
 import {
   createPointDensityClearOverflowNode,
   createPointDensityClearSumsNode,
@@ -35,6 +36,7 @@ import {
   createPointDensityHexagonKeysNode,
   createPointDensityMaskedPositionsNode,
   createPointDensityWorkgroupSumNode,
+  POINT_DENSITY_WORKGROUP_SUM_SIZE,
   type PointDensityResolvedBounds
 } from './point-density-kernels';
 
@@ -45,13 +47,33 @@ export type GPUPointDensityBinning = 'grid' | 'hexagon';
 export type GPUPointDensityStatistic = 'count' | 'sum' | 'mean';
 
 /**
- * How weighted per-cell sums are accumulated. `'workgroup'` (default) pre-aggregates rows that
- * share a cell inside each workgroup, so hotspot cells stay fast (1M points in one cell: tens of
- * milliseconds). `'atomic'` adds every row with a global compare-exchange float atomic: it skips
- * the key pass but serializes on cells that many points share (seconds at 1M points per cell).
+ * How weighted per-cell sums are accumulated. `'auto'` (default) uses workgroup pre-aggregation
+ * only for sufficiently large, dense inputs over a small cell grid. `'workgroup'` pre-aggregates
+ * rows that share a cell inside each workgroup, so hotspot cells stay fast (1M points in one cell:
+ * tens of milliseconds). `'atomic'` adds every row with a global compare-exchange float atomic: it
+ * skips the key pass but serializes on cells that many points share (seconds at 1M points per cell).
  * Both are order-dependent in the last float bits.
  */
-export type GPUPointDensitySumAccumulation = 'workgroup' | 'atomic';
+export type GPUPointDensitySumAccumulation = 'auto' | 'workgroup' | 'atomic';
+
+const AUTO_WORKGROUP_SUM_MINIMUM_ROW_COUNT = POINT_DENSITY_WORKGROUP_SUM_SIZE * 4;
+const AUTO_WORKGROUP_SUM_MINIMUM_ROWS_PER_CELL = 32;
+
+/** Selects the sum implementation from compile-time topology without inspecting GPU-resident keys. */
+function resolvePointDensitySumAccumulation(
+  requested: GPUPointDensitySumAccumulation | undefined,
+  rowCount: number,
+  cellCount: number
+): Exclude<GPUPointDensitySumAccumulation, 'auto'> {
+  if (requested === 'atomic' || requested === 'workgroup') {
+    return requested;
+  }
+  return rowCount >= AUTO_WORKGROUP_SUM_MINIMUM_ROW_COUNT &&
+    cellCount <= POINT_DENSITY_WORKGROUP_SUM_SIZE &&
+    rowCount / cellCount >= AUTO_WORKGROUP_SUM_MINIMUM_ROWS_PER_CELL
+    ? 'workgroup'
+    : 'atomic';
+}
 
 /**
  * Inclusive `[minX, minY, maxX, maxY]` domain.
@@ -159,7 +181,11 @@ export type GPUPointDensityProps = {
    * compile-time; a one-row float32 view is per-frame.
    */
   hexagonRadius?: number | GraphDataView<'float32'>;
-  /** Weighted sum accumulation. Defaults to `'workgroup'`. Ignored without `weights`. */
+  /**
+   * Weighted sum accumulation. Defaults to `'auto'`. Auto selects workgroup aggregation only for
+   * at least 1,024 rows, at most 256 cells, and at least 32 input rows per cell on average. Ignored
+   * without `weights`.
+   */
   sumAccumulation?: GPUPointDensitySumAccumulation;
   /** Field statistic. Defaults to `'count'`. `'sum'` and `'mean'` require `weights`. */
   statistic?: GPUPointDensityStatistic;
@@ -186,8 +212,12 @@ export class GPUPointDensity implements GPUCommandNodeProducer {
   readonly binning: GPUPointDensityBinning;
   /** Resolved field statistic. */
   readonly statistic: GPUPointDensityStatistic;
+  /** Resolved weighted-sum implementation. */
+  readonly sumAccumulation: Exclude<GPUPointDensitySumAccumulation, 'auto'>;
   /** `gridSize[0] * gridSize[1]`. */
   readonly cellCount: number;
+  /** Canonical sampled-surface port for downstream raster and classification contributors. */
+  readonly surface: GPUSampledSurfacePort<'float32'>;
 
   constructor(props: GPUPointDensityProps) {
     this.id = props.id ?? 'point-density';
@@ -197,6 +227,12 @@ export class GPUPointDensity implements GPUCommandNodeProducer {
     const id = this.id;
     const [columns, rows] = props.gridSize;
     this.cellCount = columns * rows;
+    this.sumAccumulation = resolvePointDensitySumAccumulation(
+      props.sumAccumulation,
+      props.positions.length,
+      this.cellCount
+    );
+    this.surface = {values: props.output.values, columns, rows};
     const {output, weights, smoothing, mask} = props;
 
     if (!['grid', 'hexagon'].includes(this.binning)) {
@@ -204,6 +240,9 @@ export class GPUPointDensity implements GPUCommandNodeProducer {
     }
     if (!['count', 'sum', 'mean'].includes(this.statistic)) {
       throw new Error(`${id} statistic must be count, sum, or mean`);
+    }
+    if (!['auto', 'workgroup', 'atomic'].includes(props.sumAccumulation ?? 'auto')) {
+      throw new Error(`${id} sumAccumulation must be auto, workgroup, or atomic`);
     }
     if (
       !Number.isSafeInteger(columns) ||
@@ -371,7 +410,7 @@ export class GPUPointDensity implements GPUCommandNodeProducer {
   getCommandNodes<Parameters>(
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
-    const {id, props, statistic, cellCount} = this;
+    const {id, props, statistic, sumAccumulation, cellCount} = this;
     const {positions, weights, smoothing, output, gridSize, mask} = props;
     const boundsView = Array.isArray(props.bounds) ? undefined : (props.bounds as GraphDataView);
     const radiusView = typeof props.hexagonRadius === 'object' ? props.hexagonRadius : undefined;
@@ -452,7 +491,7 @@ export class GPUPointDensity implements GPUCommandNodeProducer {
         )
       );
       if (sums && weights) {
-        if (props.sumAccumulation === 'atomic') {
+        if (sumAccumulation === 'atomic') {
           nodes.push(
             ...new GPUGroupAggregation({
               id: `${id}-sums`,
@@ -503,7 +542,7 @@ export class GPUPointDensity implements GPUCommandNodeProducer {
         }).getCommandNodes(graph)
       );
       if (sums && weights) {
-        if (props.sumAccumulation === 'atomic') {
+        if (sumAccumulation === 'atomic') {
           nodes.push(
             ...new GPUGridAggregation({
               id: `${id}-sums`,
@@ -636,8 +675,13 @@ export class GPUPointDensity implements GPUCommandNodeProducer {
 function validatePointDensityBounds(id: string, bounds: GPUPointDensityBounds): void {
   if (Array.isArray(bounds)) {
     const [minX, minY, maxX, maxY] = bounds as readonly number[];
-    if (bounds.length !== 4 || !bounds.every(Number.isFinite) || minX > maxX || minY > maxY) {
-      throw new Error(`${id} bounds must be finite [minX, minY, maxX, maxY]`);
+    if (
+      bounds.length !== 4 ||
+      !bounds.every(value => Number.isFinite(Math.fround(value))) ||
+      minX > maxX ||
+      minY > maxY
+    ) {
+      throw new Error(`${id} bounds must be finite float32 [minX, minY, maxX, maxY]`);
     }
     return;
   }

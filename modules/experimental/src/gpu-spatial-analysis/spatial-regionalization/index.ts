@@ -22,3 +22,22 @@ export {
   GPU_REGION_PARTITION_EVALUATION_MAXIMUM_COLUMNS
 } from './gpu-region-partition-evaluation';
 export type {GPURegionPartitionEvaluationProps} from './gpu-region-partition-evaluation';
+export {
+  GPUAZPRegions,
+  GPU_AZP_MAXIMUM_COLUMNS,
+  GPU_AZP_MAXIMUM_ITERATIONS,
+  GPU_AZP_STATUS
+} from './gpu-azp-regions';
+export type {GPUAZPRegionsProps} from './gpu-azp-regions';
+export {
+  GPUWardRegions,
+  GPU_WARD_MAXIMUM_COLUMNS,
+  GPU_WARD_STATUS
+} from './gpu-ward-regions';
+export type {GPUWardRegionsProps} from './gpu-ward-regions';
+export {
+  GPUMaxPRegions,
+  GPU_MAX_P_MAXIMUM_COLUMNS,
+  GPU_MAX_P_STATUS
+} from './gpu-max-p-regions';
+export type {GPUMaxPRegionsOutput, GPUMaxPRegionsProps} from './gpu-max-p-regions';

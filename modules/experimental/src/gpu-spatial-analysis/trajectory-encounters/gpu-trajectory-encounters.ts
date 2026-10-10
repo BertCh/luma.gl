@@ -15,7 +15,7 @@ import {
   type GraphDataView
 } from '@luma.gl/gpgpu/gpu-core';
 import type {GPUCompactOutput} from '../../utils/gpu-contributor-types';
-import {createPublishNode} from '../../utils/wgsl-kernel-nodes';
+import {createPublishNode, createWGSLKernelNode} from '../../utils/wgsl-kernel-nodes';
 import {
   validateCompactOutput,
   validateGraphOutputsDisjointFromInputs,
@@ -50,6 +50,8 @@ const MAXIMUM_CELL_COUNT = 1 << 27;
 export type GPUTrajectoryEncounterOutput = {
   /** Bounded compact result. `ids` holds the lower track index of each pair. */
   output: GPUCompactOutput;
+  /** Candidate-stage incompleteness from the hit scratch or grid index. */
+  candidateOverflow: GraphDataView<'uint32'>;
   /** Optional higher track index of each pair. */
   partners?: GraphDataView<'uint32'>;
   /** Optional first time bucket in which the pair was within the distance. */
@@ -134,9 +136,9 @@ export type GPUTrajectoryEncountersProps = {
  * for tracks with different time windows, or supply your own table and mark absent samples with
  * NaN or `trackValid`.
  *
- * Bounds: `pairs.output.overflow` is 1 when the hit scratch overflowed (after which pairs may be
- * missing or have too-small counts), when more pairs exist than `pairs.output.ids.length`, or when
- * the grid index overflowed. The lattice must hold at most 2^27 cells.
+ * Bounds: `pairs.candidateOverflow` is 1 when the hit scratch or grid index overflowed, after
+ * which pairs may be missing or have too-small counts. `pairs.output.overflow` is independently 1
+ * only when the final pair capacity is too small. The lattice must hold at most 2^27 cells.
  */
 export class GPUTrajectoryEncounters implements GPUCommandNodeProducer {
   /** Prefix for every node and transient ID. */
@@ -200,6 +202,10 @@ export class GPUTrajectoryEncounters implements GPUCommandNodeProducer {
     }
     const {pairs} = props;
     validateCompactOutput(id, pairs.output);
+    validatePackedUint32View(pairs.candidateOverflow, `${id} pairs.candidateOverflow`);
+    if (pairs.candidateOverflow.length < 1) {
+      throw new Error(`${id} pairs.candidateOverflow must contain one uint32 row`);
+    }
     const capacity = pairs.output.ids.length;
     for (const [name, view, format] of [
       ['partners', pairs.partners, 'uint32'],
@@ -230,7 +236,8 @@ export class GPUTrajectoryEncounters implements GPUCommandNodeProducer {
         pairs.output.ids,
         pairs.output.count,
         pairs.output.overflow,
-        pairs.output.totalCount,
+        pairs.output.requiredCount,
+        pairs.candidateOverflow,
         pairs.partners,
         pairs.firstBuckets,
         pairs.minimumDistances,
@@ -255,7 +262,8 @@ export class GPUTrajectoryEncounters implements GPUCommandNodeProducer {
       pairs.output.ids,
       pairs.output.count,
       pairs.output.overflow,
-      pairs.output.totalCount,
+      pairs.output.requiredCount,
+      pairs.candidateOverflow,
       pairs.partners,
       pairs.firstBuckets,
       pairs.minimumDistances,
@@ -486,12 +494,30 @@ export class GPUTrajectoryEncounters implements GPUCommandNodeProducer {
         state,
         flag: overflowFlag
       }),
+      createWGSLKernelNode<Parameters>(graph, {
+        id: `${id}-candidate-overflow`,
+        operation: OPERATION,
+        variant: 'candidate-overflow',
+        bindings: [
+          {name: 'hitOverflow', view: overflowFlag, type: 'u32', access: 'read'},
+          {name: 'gridOverflow', view: gridOverflow, type: 'u32', access: 'read'},
+          {
+            name: 'candidateOverflow',
+            view: pairs.candidateOverflow,
+            type: 'u32',
+            access: 'read_write'
+          }
+        ],
+        invocationCount: 1,
+        body: `candidateOverflow[candidateOverflowOffset] =
+  select(0u, 1u, hitOverflow[hitOverflowOffset] != 0u || gridOverflow[gridOverflowOffset] != 0u);`
+      }),
       createPublishNode<Parameters>(graph, {
         id: `${id}-publish`,
         operation: OPERATION,
-        totalCount: runCount,
+        requiredCount: runCount,
         output: pairs.output,
-        overflowSources: [overflowFlag, gridOverflow]
+        overflowSources: []
       })
     );
     return nodes;

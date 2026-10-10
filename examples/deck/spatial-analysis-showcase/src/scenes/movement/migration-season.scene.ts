@@ -245,6 +245,10 @@ windowParameters.write(getGPUTimeWindowParameterValues({
         'A dark Europe-to-Africa map with glowing species dots and a calendar clock.',
       optionsMode: 'fresh',
       body: "Every dot is a GPS-tagged bird, placed where it was on this day of the year: **55 marsh harrier**, **23 Montagu's harrier** and **23 spoonbill** animal-years, folded onto one calendar. The clock starts on 1 March and runs through the year. Watch the harriers (blue and orange) leave the Low Countries in late summer, pour south and wait out the winter in the Sahel; the spoonbills (pink) hardly move.\n\nThe controls are the clock: **Play**, **Day of the year** and **Play speed**.",
+      evidence:
+        'At **{{clock}}**, **{{birds}}**; the moving total exposes where seasonal coverage is strong or sparse.',
+      caveat:
+        '**{{birds}}** counts animal-years, not unique birds, because repeated years are folded onto the same calendar.',
       camera: {...EUROPE_AFRICA_VIEW, transitionMs: 1200},
       options: {play: true, day: 60},
       controls: ['play', 'day', 'playSpeed'],
@@ -257,6 +261,10 @@ windowParameters.write(getGPUTimeWindowParameterValues({
       textAlternative: 'A selected bird advances along an interpolated GPS route.',
       optionsMode: 'fresh',
       body: 'The tags log a fix about every two hours, but the clock has no reason to land on one. **`GPUTrajectoryPlayhead`** searches each track for the two fixes around the playhead and interpolates, for all 101 tracks at once, then compacts the list of tracks that have data now and sets the marker count with an indirect draw: no CPU loop touches a bird.\n\nA tag that goes quiet leaves a gap. **Hold a bird after a gap of** below decides when a bird sitting inside a long gap is held at its last fix instead of sliding across it; drag it to 3 hours and many birds freeze between fixes. **Birds with data** counts the tracks the playhead covers.',
+      evidence:
+        'At **{{clock}}**, the gap rule leaves **{{birds}}** available for interpolation and drawing.',
+      caveat:
+        'The visible sample—**{{birds}}**—changes with the maximum-gap rule as well as with real tag coverage.',
       options: {play: false, day: 260, maxGapHours: 48},
       camera: {longitude: 0, latitude: 40, zoom: 4.2, transitionMs: 1400},
       highlight: {readout: 'birds'},
@@ -270,6 +278,10 @@ windowParameters.write(getGPUTimeWindowParameterValues({
       textAlternative: 'Fading trails show equal spans of recent time.',
       optionsMode: 'fresh',
       body: "The comet tails come from **`GPUTimeWindowFilter`**: every frame it picks the segments of every track whose time span overlaps the window behind the playhead, writes them as a compact list and gives each a fade weight and a clip fraction, so a tail dissolves smoothly instead of popping.\n\nSlide **Trail length** from 1 to 60 days: at 3 days you see this week's movement, at 60 days the whole autumn passage. **Tail fade** sets how much of the trail is faded. The window is two numbers, so nothing recompiles.",
+      evidence:
+        'The live window draws **{{trailSegments}}** segments behind **{{birds}}**, so the amount of trail is inspectable rather than inferred from brightness.',
+      caveat:
+        '**{{trailSegments}}** counts overlapping track segments, not independent birds or equal distances travelled.',
       options: {play: true, day: 235, showTrails: true, trailDays: 14, tailFade: 0.8, playSpeed: 3},
       camera: {longitude: -2, latitude: 36, zoom: 3.6, transitionMs: 1400},
       highlight: {readout: 'trailSegments'},
@@ -283,6 +295,10 @@ windowParameters.write(getGPUTimeWindowParameterValues({
       textAlternative: 'A calendar chart compares the species south of the Mediterranean.',
       optionsMode: 'fresh',
       body: "The chart is computed from the tracks once: for each day, the share of each species' tagged birds south of 35 N, roughly the line of the Mediterranean. The marsh harriers are mostly south of it from about **15 September to 26 March**, six months; Montagu's harriers from about **9 September to 20 April**, nearly seven. The spoonbills never cross.\n\nThe playhead is the rule on the chart. Scrub **Day of the year** to a date in October and read the **In Africa** readout: nearly every harrier is south, and the median latitude is about 14 N.",
+      evidence:
+        'At the chart’s playhead, **{{africa}}**; the simultaneous position summary is **{{latitude}}**.',
+      caveat:
+        '“In Africa” is the fixed 35° N counting rule, and **{{africa}}** includes only tracks with usable data on that day.',
       options: {play: false, day: 300},
       camera: {longitude: -8, latitude: 24, zoom: 3.3, transitionMs: 1400},
       highlight: {readout: 'africa'},
@@ -296,6 +312,10 @@ windowParameters.write(getGPUTimeWindowParameterValues({
       textAlternative: 'One selected bird is followed across the migration map.',
       optionsMode: 'fresh',
       body: "Click a dot (or a track) to select a bird, then turn on **Follow the selected bird**: the camera now rides with it while the clock runs. The white line is its whole track, and the readout names it. The first selection is the longest track that covers most of the year.\n\nThe limits: 42 birds, which is not the population; some contribute several years, which are folded onto one calendar, so a dot in March may be the same bird as another dot in March of a different year; and the interpolation between two-hourly fixes is a straight line, not the bird's true path. **Try:** play at 20 days per second with **Trail length** at 60 and watch the whole population draw the flyway.",
+      evidence:
+        'The followed line is **{{selected}}**, located against the shared folded-year clock at **{{clock}}**.',
+      caveat:
+        '**{{selected}}** is one tagged animal-year; its route explains a case, not the population represented by all dots.',
       options: {play: true, day: 190, followSelected: true, playSpeed: 3, trailDays: 14},
       camera: {zoom: 5, transitionMs: 1000},
       controls: ['followSelected', 'play', 'playSpeed'],

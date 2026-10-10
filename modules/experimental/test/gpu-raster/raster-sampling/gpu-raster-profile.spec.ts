@@ -77,12 +77,12 @@ async function createHarness(
   const scalars = {
     count: createOutputBuffer(device, 1),
     overflow: createOutputBuffer(device, 1),
-    totalCount: createOutputBuffer(device, 1)
+    requiredCount: createOutputBuffer(device, 1)
   };
   const output: Record<string, unknown> = {
     count: importGraphBuffer(graph, 'count', scalars.count, 'uint32', 1),
     overflow: importGraphBuffer(graph, 'overflow', scalars.overflow, 'uint32', 1),
-    totalCount: importGraphBuffer(graph, 'total-count', scalars.totalCount, 'uint32', 1)
+    requiredCount: importGraphBuffer(graph, 'total-count', scalars.requiredCount, 'uint32', 1)
   };
   const outputBuffers: Record<string, ReturnType<typeof createOutputBuffer>> = {};
   const lengths: Record<string, number> = {};
@@ -149,7 +149,7 @@ async function createHarness(
         columns: read,
         count: (await readUint32(scalars.count, 1))[0],
         overflow: (await readUint32(scalars.overflow, 1))[0],
-        totalCount: (await readUint32(scalars.totalCount, 1))[0]
+        requiredCount: (await readUint32(scalars.requiredCount, 1))[0]
       };
     },
     get rebuildCount() {
@@ -177,11 +177,11 @@ function expectMatchesOracle(
   maximumUlp: number,
   label: string
 ): void {
-  const count = Math.min(expected.totalCount, capacity);
-  expect(result.totalCount, `${label} totalCount`).toBe(expected.totalCount);
+  const count = Math.min(expected.requiredCount, capacity);
+  expect(result.requiredCount, `${label} requiredCount`).toBe(expected.requiredCount);
   expect(result.count, `${label} count`).toBe(count);
   expect(result.overflow, `${label} overflow`).toBe(
-    expected.totalCount > capacity || expected.truncated ? 1 : 0
+    expected.requiredCount > capacity || expected.truncated ? 1 : 0
   );
   const pad = (rows: ArrayLike<number>, wordsPerRow: number, fill: number) => {
     const padded = new Array<number>(capacity * wordsPerRow).fill(fill);
@@ -230,7 +230,7 @@ function expectMatchesOracle(
       Array.from(expected.sampleOffsets, offset => Math.min(offset, capacity))
     );
   }
-  if (expected.totalCount <= capacity) {
+  if (expected.requiredCount <= capacity) {
     for (const name of ['pathGain', 'pathLoss', 'pathMinimum', 'pathMaximum'] as const) {
       if (columns[name]) {
         expectFloatArraysClose(columns[name], expected[name], maximumUlp, `${label} ${name}`);
@@ -392,7 +392,7 @@ it('GPURasterProfile matches the oracle bit-exactly on exact multi-path scenes f
       scene.pathPositions,
       scene.pathOffsets
     );
-    expect(expected.totalCount).toBeGreaterThan(50);
+    expect(expected.requiredCount).toBeGreaterThan(50);
     sawNaNValue ||= expected.sampleValues.some(Number.isNaN);
     const result = await harness.run(settings);
     // renormalize divides, which WebGPU only bounds; everything else is exact.
@@ -425,8 +425,8 @@ it('GPURasterProfile clamps to the sample capacity and reports overflow and the 
     scene.pathPositions,
     scene.pathOffsets
   );
-  expect(expected.totalCount).toBeGreaterThan(40);
-  for (const capacity of [40, expected.totalCount, expected.totalCount + 25]) {
+  expect(expected.requiredCount).toBeGreaterThan(40);
+  for (const capacity of [40, expected.requiredCount, expected.requiredCount + 25]) {
     const harness = await createHarness(scene, capacity, {
       samples: ALL_SAMPLES,
       paths: ALL_PATHS,
@@ -437,7 +437,7 @@ it('GPURasterProfile clamps to the sample capacity and reports overflow and the 
     }
     const result = await harness.run(settings);
     expectMatchesOracle(result, expected, capacity, 0, `capacity ${capacity}`);
-    expect(result.overflow).toBe(capacity < expected.totalCount ? 1 : 0);
+    expect(result.overflow).toBe(capacity < expected.requiredCount ? 1 : 0);
     harness.destroy();
   }
 });
@@ -529,7 +529,7 @@ it('GPURasterProfile limits samples per path and flags the truncation', async ()
     spacing: 1e-7
   });
   const perPath = 1 << 24;
-  expect(result.totalCount).toBe(3 * perPath + 1);
+  expect(result.requiredCount).toBe(3 * perPath + 1);
   expect(result.count).toBe(16);
   expect(result.overflow).toBe(1);
   expect(result.columns.pathSampleOffsets).toEqual([0, 16, 16, 16, 16]);

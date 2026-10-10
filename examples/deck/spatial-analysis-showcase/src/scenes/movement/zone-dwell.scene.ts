@@ -67,7 +67,7 @@ export default defineScene<ZoneDwellOptions>({
   chapter: 'movement',
   order: 3,
   summary:
-    'Cross a day of AIS tracks with the harbor zones (anchorages, channels, terminals, the Narrows gate, the ferry lane): enter and exit events with their exact crossing positions, and dwell per zone as a total, a rate or vessels present, counted either as any time inside or as time spent stopped.',
+    'One day of AIS track segments is intersected on the GPU with anchorage, channel, terminal and hand-drawn zone boundaries to measure visits, vessel-hours, rates or stopped time; small per-zone tables are read to the CPU for units, classes and charts. Overlapping zones count the same vessel separately, and some boundaries are approximate.',
   contributors: [
     'GPUZoneEvents',
     'addFleetDwellZoneEventsRecipe',
@@ -436,6 +436,8 @@ export default defineScene<ZoneDwellOptions>({
     title: cartouche('Where does the harbour spend its time?', 'Vessel-hours in each zone · total'),
     scaleBar: {units: 'nautical'},
     credit: PLATE_CREDIT,
+    caveat:
+      'Overlapping zones count the same vessel in each polygon; dashed zones are hand-drawn, long AIS gaps split tracks and moored fixes are thinned.',
     clock: false
   },
 
@@ -493,10 +495,14 @@ const eventsCompiled = eventsGraph.compile();          // once`;
     {
       id: 'the-question',
       title: 'Where does the harbour spend its time?',
-      headline: 'The busiest zones, ranked by total time',
+      headline: 'Total vessel-hours rank zones by accumulated time',
       textAlternative:
-        'Map of New York Harbor with its anchorages, channels and hand-drawn zones filled in warm classes by total vessel-hours: the darker the zone, the more vessel time it holds.',
-      body: '{{zonesUsed}} hold some vessel time in this day of AIS tracks. Colour is the total vessel-hours each holds, in classes with about as many zones in each; {{topZone}} leads. Narrow the map with **Zones shown** below.\n\nThis is the map of time, not yet of intensity: a total adds up hours over whatever area a polygon happens to cover.\n\n*A total is a count; compare areas with rates.*',
+        'New York Harbor zones classed by total vessel-hours from one day of AIS tracks; solid, light and dashed outlines distinguish official anchorages, channels and hand-drawn zones.',
+      body: 'The GPU intersects AIS track segments with zone boundaries, pairs entry and exit events, and sums visit duration by zone. Small per-zone tables are read to the CPU for unit conversion, classification, ranking and charts. The displayed metric is total vessel-hours; use **Zones shown** below to filter zone types.',
+      evidence:
+        '**{{zonesUsed}}** zones contain recorded vessel time, and **{{topZone}}** has the largest total under the current filter.',
+      caveat:
+        'Totals increase with polygon area and AIS observations; overlapping zones count the same vessel in each zone.',
       optionsMode: 'fresh',
       options: {showTracks: true},
       controls: ['zoneKind'],
@@ -508,7 +514,8 @@ const eventsCompiled = eventsGraph.compile();          // once`;
           'Vessel-hours in each zone · total · quantile classes',
           HAND_DRAWN_CHIP
         ),
-        caveat: 'Zones overlap: a vessel counts in every zone it is in',
+        caveat:
+          'Overlapping polygons count the same vessel in each zone; some zones are hand-drawn.',
         clock: false
       },
       annotations: places(
@@ -529,9 +536,9 @@ const eventsCompiled = eventsGraph.compile();          // once`;
     {
       id: 'big-zones-win',
       title: 'Big zones win by being big',
-      headline: 'Totals favour big zones; rates reorder the map',
+      headline: 'Area normalization changes the zone ranking',
       textAlternative:
-        'The same zones coloured by vessel-hours, with notes on the largest zone and the highest zone; switching the unit to per square kilometre recolours and reorders them.',
+        'New York Harbor zones classed by total vessel-hours, vessel-hours per square kilometer or mean vessels present; labels and a ranking chart identify changes between units.',
       body: 'The ten highest zones in the current unit have a median area of {{busiestArea}}, against {{typicalArea}} for every zone with time. Flip **Unit** below and the ranking reshuffles: {{topZone}} leads.\n\nVessels present is the total divided by the hours of the day, so it shares the total’s breaks; per km² gets its own.\n\n*Normalise before you compare areas.*',
       optionsMode: 'fresh',
       options: {unit: 'total', notes: 'size'},
@@ -544,7 +551,8 @@ const eventsCompiled = eventsGraph.compile();          // once`;
           'Total, per km² or vessels present · quantile classes · classes fixed per unit',
           HAND_DRAWN_CHIP
         ),
-        caveat: 'Zones overlap: a vessel counts in every zone it is in',
+        caveat:
+          'Overlapping polygons count the same vessel in each zone; rate values depend on polygon area.',
         clock: false
       },
       annotations: places(
@@ -556,9 +564,9 @@ const eventsCompiled = eventsGraph.compile();          // once`;
     {
       id: 'crossing-the-line',
       title: 'Enter and exit decide every visit',
-      headline: 'Enter and exit decide every visit',
+      headline: 'Boundary crossings delimit each zone visit',
       textAlternative:
-        'Close map of the Verrazzano-Narrows gate zone with sky-blue and orange rings pulsing where tracks cross its edge, one vessel’s track outlined with numbered crossings, and a Gantt chart of its visits.',
+        'Close map of the Verrazzano-Narrows gate with blue entry rings, orange exit rings, numbered crossings on one AIS track and a chart of the resulting visit intervals.',
       body: 'Press **Play** below. A ring marks each crossing of a zone edge ({{events}}): sky blue enters, orange exits. `GPUZoneEvents` finds the exact point on the segment and decides enter or exit by parity, so the numbered crossings of {{followed}} alternate enter, exit.\n\nA visit is an enter and its exit, as the Gantt chart shows. Drag **Time of day (UTC)** to replay it.\n\n*Parity, not polygon orientation, decides.*',
       optionsMode: 'fresh',
       options: {
@@ -591,9 +599,9 @@ const eventsCompiled = eventsGraph.compile();          // once`;
     {
       id: 'waiting-rooms',
       title: 'Waiting rooms',
-      headline: 'Most anchorage visits are passages, not waits',
+      headline: 'Most anchorage visits remain below stop duration',
       textAlternative:
-        'Map of the Upper and Lower Bay anchorages coloured by their longest single stay.',
+        'Upper and Lower Bay anchorages classed by longest recorded visit, with readouts for the share of short passages, mean visit and longest visit.',
       body: 'Anchorages exist for waiting, yet {{passageShare}} of their visits end before a vessel could count as stopped; the average visit lasts {{meanVisit}}. Long stays are the exception: the longest is {{longestVisit}}.\n\nChoose **Colour zones by** to compare the longest stay with the mean visit and the number of visits.\n\n*Time inside is not time waiting.*',
       optionsMode: 'fresh',
       options: {zoneKind: 'anchorage', metric: 'longest'},
@@ -605,7 +613,8 @@ const eventsCompiled = eventsGraph.compile();          // once`;
           'Most anchorage visits are passages',
           'Longest single stay per anchorage · hours · manual classes · 12 June 2024 UTC'
         ),
-        caveat: 'Anchorage pieces with one number are added up',
+        caveat:
+          'Disconnected polygons with the same anchorage identifier are combined into one value.',
         clock: false
       },
       annotations: places(
@@ -617,9 +626,9 @@ const eventsCompiled = eventsGraph.compile();          // once`;
     {
       id: 'passing-is-not-waiting',
       title: 'Passing through is not waiting',
-      headline: 'Passing through is not waiting',
+      headline: 'Stopped time is lower than total inside time',
       textAlternative:
-        'The harbour split by a swipe divider: vessel-hours counted as any time inside on the left and as time spent stopped on the right, on one shared set of classes.',
+        'Swipe comparison of total vessel-hours inside each harbor zone and vessel-hours meeting the stop rule, using one shared class table.',
       body: 'Drag the divider: the left counts any time inside a zone, the right only time spent stopped, on one shared set of classes. Channels keep {{channelKeep}} of their hours as stopped time, anchorages {{anchorageKeep}}.\n\nThe stopped side runs `GPUTrajectoryMetrics` stops, then a point-in-polygon join. Change **Minimum stop duration** below to redraw it.\n\n*A definition is a choice, not a fact.*',
       optionsMode: 'fresh',
       options: {compareVariants: true},
@@ -633,7 +642,8 @@ const eventsCompiled = eventsGraph.compile();          // once`;
           'Vessel-hours inside against stopped · one shared table · 12 June 2024 UTC',
           HAND_DRAWN_CHIP
         ),
-        caveat: 'Both sides use the classes of the inside totals',
+        caveat:
+          'Both sides use breaks derived from total inside time, so stopped values occupy lower classes.',
         clock: false
       },
       annotations: places(
@@ -652,9 +662,9 @@ const eventsCompiled = eventsGraph.compile();          // once`;
     {
       id: 'what-counts',
       title: 'What counts as time in a zone?',
-      headline: 'The definition moves the hours',
+      headline: 'Stop thresholds change accumulated zone time',
       textAlternative:
-        'The stopped-time map with a disc for every stop inside a zone and the hand-drawn zones outlined with dashes and a note giving their share of all hours.',
+        'Harbor zones classed by stopped vessel-hours, with a point for each qualifying stop and dashed outlines for hand-drawn zones; controls set speed and duration thresholds.',
       body:
         'A stop is a rule: slower than **Stop speed threshold** for at least **Minimum stop duration**. Change either, or **Unit**, and the map redraws on the same classes ({{stopCount}}).\n\nZone edges are a definition too: {{approxShare}} of the hours inside fall in the {{approxZones}}, dashed. Overlaps count a vessel in each zone, a long gap splits a track, moored fixes were thinned.\n\n' +
         NEXT_STORY_LINE,
@@ -669,7 +679,7 @@ const eventsCompiled = eventsGraph.compile();          // once`;
           'Stopped vessel-hours · minimum stop and speed adjustable · 12 June 2024 UTC',
           HAND_DRAWN_CHIP
         ),
-        caveat: 'Dashed zones were drawn by hand; the others are NOAA boundaries',
+        caveat: 'Dashed zones are hand-drawn; solid and light outlines use NOAA boundaries.',
         clock: false
       },
       annotations: places(

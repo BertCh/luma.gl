@@ -610,7 +610,7 @@ it('GPUSpatialJoinCandidates reads a per-frame distance and emits sorted candida
           rightIds: rightIds.view,
           count: count.view,
           overflow: overflow.view,
-          totalCount: total.view
+          requiredCount: total.view
         }
       })
     );

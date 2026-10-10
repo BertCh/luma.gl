@@ -11,17 +11,17 @@ import {SpatialAnalysisResources} from '../../engine/resources';
 import type {LocalMetricProjection} from '../../engine/projection';
 import type {SceneContext, SceneInstance} from '../scene';
 import {
-  FRONTIER_NEURAL_PARAMETER_LENGTH,
-  FrontierNeuralAutomaton,
-  getFrontierNeuralParameterValues,
-  getFrontierNeuralWeights
+  FRONTIER_RESIDUAL_PARAMETER_LENGTH,
+  FrontierResidualDiffusion,
+  getFrontierResidualDiffusionCoefficients,
+  getFrontierResidualDiffusionParameterValues
 } from '../frontier/frontier-neural';
 
 export type CloudRepairPlace = 'oahu' | 'venice';
-export type CloudRepairDisplay = 'cloudy' | 'neural' | 'naive' | 'prior';
+export type CloudRepairDisplay = 'cloudy' | 'diffusion' | 'naive' | 'prior';
 
 /** Live controls of the temporal cloud-repair field. */
-export type NeuralGrowthOptions = {
+export type ResidualRepairOptions = {
   place: CloudRepairPlace;
   display: CloudRepairDisplay;
   play: boolean;
@@ -45,7 +45,7 @@ type PreparedPlace = PlaceRasters & {
   state: Float32Array;
   priorValues: Float32Array;
   cloudyDisplay: Uint32Array;
-  neuralDisplay: Uint32Array;
+  diffusionDisplay: Uint32Array;
   naiveDisplay: Uint32Array;
   priorDisplay: Uint32Array;
   maskedPixels: number;
@@ -96,7 +96,7 @@ function preparePlace(dataset: LoadedDataset, place: PlaceRasters): PreparedPlac
   const state = new Float32Array(cellCount * 4);
   const priorValues = new Float32Array(cellCount * 3);
   const cloudyDisplay = new Uint32Array(cellCount);
-  const neuralDisplay = new Uint32Array(cellCount);
+  const diffusionDisplay = new Uint32Array(cellCount);
   const naiveDisplay = new Uint32Array(cellCount);
   const priorDisplay = new Uint32Array(cellCount);
   const meanResidual = [0, 0, 0];
@@ -137,7 +137,7 @@ function preparePlace(dataset: LoadedDataset, place: PlaceRasters): PreparedPlac
     cloudyDisplay[cell] = packRgba(afterRed, afterGreen, afterBlue);
     priorDisplay[cell] = packRgba(beforeRed, beforeGreen, beforeBlue);
     naiveDisplay[cell] = masked ? priorDisplay[cell] : cloudyDisplay[cell];
-    neuralDisplay[cell] = masked
+    diffusionDisplay[cell] = masked
       ? packRgba(
           beforeRed + meanResidual[0],
           beforeGreen + meanResidual[1],
@@ -159,17 +159,17 @@ function preparePlace(dataset: LoadedDataset, place: PlaceRasters): PreparedPlac
     state,
     priorValues,
     cloudyDisplay,
-    neuralDisplay,
+    diffusionDisplay,
     naiveDisplay,
     priorDisplay,
     maskedPixels
   };
 }
 
-/** Tiny neural cellular temporal inpainting over two real Sentinel-2 cloud/clear pairs. */
-export async function createNeuralGrowth(
-  ctx: SceneContext<NeuralGrowthOptions>
-): Promise<SceneInstance<NeuralGrowthOptions>> {
+/** Deterministic cellular residual diffusion over two Sentinel-2 cloud/clear pairs. */
+export async function createResidualRepair(
+  ctx: SceneContext<ResidualRepairOptions>
+): Promise<SceneInstance<ResidualRepairOptions>> {
   const dataset = ctx.datasets.get('sentinel-cloud-repair');
   const oahuTarget = dataset.raster;
   if (!oahuTarget) throw new Error('sentinel-cloud-repair has no primary Oahu target');
@@ -211,27 +211,27 @@ export async function createNeuralGrowth(
   let active = places[ctx.options.place];
   const stateA = upload('state-a', active.state);
   const stateB = upload('state-b', active.state);
-  const weights = upload('weights', getFrontierNeuralWeights());
+  const coefficients = upload('coefficients', getFrontierResidualDiffusionCoefficients());
   const habitat = upload('habitat', new Float32Array(cellCount).fill(1));
   const prior = upload('prior', active.priorValues);
   const cloudyDisplay = upload('cloudy-display', active.cloudyDisplay);
   const naiveDisplay = upload('naive-display', active.naiveDisplay);
   const referenceDisplay = upload('reference-display', active.priorDisplay);
-  const display = upload('display', active.neuralDisplay);
+  const display = upload('display', active.diffusionDisplay);
   const parameters = resources.createParameterBuffer(
     'parameters',
     'float32',
-    FRONTIER_NEURAL_PARAMETER_LENGTH
+    FRONTIER_RESIDUAL_PARAMETER_LENGTH
   );
   const buildGraph = (id: string, input: typeof stateA, output: typeof stateB) => {
     const graph = new GPUCommandGraph<void>(device, {id});
     graph.add(
-      new FrontierNeuralAutomaton({
+      new FrontierResidualDiffusion({
         id,
         width,
         height,
         state: importGraphBuffer(graph, `${id}-state`, input, 'float32', cellCount * 4),
-        weights: importGraphBuffer(graph, `${id}-weights`, weights, 'float32', 212),
+        coefficients: importGraphBuffer(graph, `${id}-coefficients`, coefficients, 'float32', 212),
         parameters: parameters.importToGraph(graph),
         habitat: importGraphBuffer(graph, `${id}-habitat`, habitat, 'float32', cellCount),
         prior: importGraphBuffer(graph, `${id}-prior`, prior, 'float32', cellCount * 3),
@@ -243,20 +243,20 @@ export async function createNeuralGrowth(
     return resources.track(graph.compile());
   };
   const graphs = [
-    buildGraph('neural-growth-a', stateA, stateB),
-    buildGraph('neural-growth-b', stateB, stateA)
+    buildGraph('residual-repair-a', stateA, stateB),
+    buildGraph('residual-repair-b', stateB, stateA)
   ];
   let generation = 0;
 
   const updateReadouts = () => {
-    ctx.setReadout('generation', generation);
+    ctx.setReadout('iterations', generation);
     ctx.setReadout('cloud', `${((active.maskedPixels / cellCount) * 100).toFixed(1)}%`);
     ctx.setReadout('image', `${active.title} · ${active.targetDate} / ${active.priorDate}`);
   };
   const reset = () => {
     stateA.write(active.state);
     stateB.write(active.state);
-    display.write(active.neuralDisplay);
+    display.write(active.diffusionDisplay);
     generation = 0;
     updateReadouts();
   };
@@ -271,17 +271,22 @@ export async function createNeuralGrowth(
     ctx.requestLayers();
   };
 
-  ctx.setReadout('weights', `${getFrontierNeuralWeights().byteLength} bytes`);
+  ctx.setReadout(
+    'coefficients',
+    `${getFrontierResidualDiffusionCoefficients().byteLength} bytes · fixed`
+  );
   ctx.setReadout('cells', cellCount);
   updateReadouts();
-  ctx.setStatus('Cloud mask and both dated observations are resident; choose a repair method.');
+  ctx.setStatus(
+    'Cloud mask and dated observations are resident; residual diffusion is deterministic.'
+  );
 
   return {
     getCompiledGraphs: () => graphs as CompiledGPUCommandGraph<never>[],
     encode(commandEncoder, frame) {
-      if (!ctx.options.play || ctx.options.display !== 'neural') return;
+      if (!ctx.options.play || ctx.options.display !== 'diffusion') return;
       parameters.write(
-        getFrontierNeuralParameterValues({
+        getFrontierResidualDiffusionParameterValues({
           stepScale: ctx.options.stepScale,
           mutation: 0,
           damping: 0,
@@ -292,7 +297,7 @@ export async function createNeuralGrowth(
         graphs[generation & 1].encode(commandEncoder, {parameters: undefined});
         generation++;
       }
-      if (frame.frameIndex % 15 === 0) ctx.setReadout('generation', generation);
+      if (frame.frameIndex % 15 === 0) ctx.setReadout('iterations', generation);
     },
     getLayers(): Layer[] {
       const values =
@@ -305,7 +310,7 @@ export async function createNeuralGrowth(
               : display;
       return [
         new SpatialAnalysisRasterLayer({
-          id: 'neural-growth-field',
+          id: 'residual-repair-field',
           coordinateOrigin: [active.origin[0], active.origin[1], 0],
           gridSize: [width, height],
           bounds: active.bounds,

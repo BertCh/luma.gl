@@ -374,7 +374,7 @@ export class GPUNetworkCoarsening implements GPUCommandNodeProducer {
       props.edges.ids,
       props.edges.count,
       props.edges.overflow,
-      props.edges.totalCount,
+      props.edges.requiredCount,
       props.edgeTargets,
       props.edgeCounts,
       props.edgeWeights,
@@ -1020,7 +1020,7 @@ ${getFixedPointSource(scale)}`,
       createPublishNode<Parameters>(graph, {
         id: `${id}-publish`,
         operation: OPERATION,
-        totalCount: segmentTotal,
+        requiredCount: segmentTotal,
         output: props.edges,
         overflowSources: [overflowFlag]
       })

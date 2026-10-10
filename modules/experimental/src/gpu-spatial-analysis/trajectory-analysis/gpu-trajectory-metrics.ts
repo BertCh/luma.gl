@@ -20,6 +20,7 @@ import {
   validateGraphViewsBelongToGraph,
   validateCompactOutput
 } from '../../utils/gpu-contributor-utils';
+import {validateGPUSpatialContext, type GPUSpatialContext} from '../contracts/index';
 import {
   createTrajectoryCentroidOffsetsNode,
   createTrajectoryFinalizeNode,
@@ -71,6 +72,8 @@ export type GPUTrajectoryStopOutput = {
 export type GPUTrajectoryMetricsProps = {
   /** Prefix for generated node and transient IDs. Defaults to `'trajectory-metrics'`. */
   id?: string;
+  /** Planar metric context of the trajectory positions and derived distances. */
+  spatialContext: GPUSpatialContext;
   /** Packed planar positions, one row per sample, sorted by track and then time. Compile-time length. */
   positions: GraphDataView<'float32x2'>;
   /**
@@ -191,11 +194,21 @@ export class GPUTrajectoryMetrics implements GPUCommandNodeProducer {
   readonly id: string;
   /** Validated properties. */
   readonly props: GPUTrajectoryMetricsProps;
+  /** Coordinate and metric contract shared with downstream movement contributors. */
+  readonly spatialContext: GPUSpatialContext;
 
   constructor(props: GPUTrajectoryMetricsProps) {
     this.id = props.id ?? 'trajectory-metrics';
     this.props = props;
     const id = this.id;
+    this.spatialContext = props.spatialContext;
+    validateGPUSpatialContext(id, this.spatialContext);
+    if (
+      this.spatialContext.coordinateSpace !== 'planar' ||
+      !['native', 'none'].includes(this.spatialContext.metric)
+    ) {
+      throw new Error(`${id} trajectory metrics require a planar spatial context`);
+    }
     validatePackedView(props.positions, ['float32x2'], `${id} positions`);
     validatePackedView(props.timestamps, ['float32', 'uint32x2'], `${id} timestamps`);
     if (props.timestampsLow) {
@@ -313,7 +326,7 @@ export class GPUTrajectoryMetrics implements GPUCommandNodeProducer {
         stops?.output.ids,
         stops?.output.count,
         stops?.output.overflow,
-        stops?.output.totalCount,
+        stops?.output.requiredCount,
         stops?.drawInstanceCount,
         stops?.startRows,
         stops?.endRows,
@@ -350,7 +363,7 @@ export class GPUTrajectoryMetrics implements GPUCommandNodeProducer {
       stops?.output.ids,
       stops?.output.count,
       stops?.output.overflow,
-      stops?.output.totalCount,
+      stops?.output.requiredCount,
       stops?.drawInstanceCount,
       stops?.startRows,
       stops?.endRows,
@@ -618,7 +631,7 @@ export class GPUTrajectoryMetrics implements GPUCommandNodeProducer {
         createPublishNode<Parameters>(graph, {
           id: `${id}-publish`,
           operation: 'GPUTrajectoryMetrics',
-          totalCount: stopTotal,
+          requiredCount: stopTotal,
           output: stops.output,
           extraCounts: stops.drawInstanceCount ? [stops.drawInstanceCount] : []
         })

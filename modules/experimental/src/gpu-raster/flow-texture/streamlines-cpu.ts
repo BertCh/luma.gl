@@ -54,7 +54,7 @@ export type StreamlinesCPUResult = {
   /** Published points, `pathOffsets[ids.length] * 2` floats. */
   points: Float32Array;
   /** Number of accepted lines before capacity. */
-  totalCount: number;
+  requiredCount: number;
   /** 1 when lines were dropped for capacity. */
   overflow: number;
 };
@@ -271,7 +271,7 @@ export function generateStreamlinesOnCPU(
     ids,
     pathOffsets,
     points: new Float32Array(points),
-    totalCount: acceptedSeeds.length,
+    requiredCount: acceptedSeeds.length,
     overflow: ids.length < acceptedSeeds.length ? 1 : 0
   };
 }

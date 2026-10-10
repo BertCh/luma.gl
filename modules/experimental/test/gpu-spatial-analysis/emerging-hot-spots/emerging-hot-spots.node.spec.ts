@@ -181,7 +181,8 @@ it('GPUEmergingHotSpots creates deterministic nodes', () => {
   const graph = new GPUCommandGraph(device);
   const mask = createTransientView(graph, 'mask', 'uint32', 12);
   const contributor = new GPUEmergingHotSpots(createProps(graph, {id: 'eh', mask}));
-  const ids = contributor.getCommandNodes(graph).map(node => node.id);
+  const nodes = contributor.getCommandNodes(graph);
+  const ids = nodes.map(node => node.id);
   expect(ids).toEqual([
     'eh-block-sums',
     'eh-mean',
@@ -191,6 +192,23 @@ it('GPUEmergingHotSpots creates deterministic nodes', () => {
     // Mann-Kendall and the category classification share one pass over each cell's series.
     'eh-mann-kendall'
   ]);
+  expect(nodes.at(-1)?.workload).toMatchObject({
+    variant: 'mann-kendall-classify',
+    maximumInvocationCount: 12
+  });
+  const longSeriesGraph = new GPUCommandGraph(device);
+  const longSeries = new GPUEmergingHotSpots(
+    createProps(longSeriesGraph, {
+      sliceCount: 64,
+      values: createTransientView(longSeriesGraph, 'long-values', 'float32', 12 * 64),
+      giZScores: createTransientView(longSeriesGraph, 'long-z', 'float32', 12 * 64)
+    })
+  );
+  expect(longSeries.getCommandNodes(longSeriesGraph).at(-1)?.workload).toMatchObject({
+    variant: 'mann-kendall-cooperative',
+    maximumWorkgroupCount: 12,
+    maximumInvocationCount: 12 * 64
+  });
   const secondGraph = new GPUCommandGraph(device);
   const again = new GPUEmergingHotSpots(createProps(secondGraph, {id: 'eh'}));
   expect(again.getCommandNodes(secondGraph).map(node => node.id)).toEqual(ids);

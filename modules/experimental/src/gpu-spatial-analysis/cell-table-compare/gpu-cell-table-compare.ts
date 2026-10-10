@@ -71,12 +71,12 @@ export type GPUCellTableCompareOutput = {
   percentChange?: GraphDataView<'float32'>;
   /** The configured z-score, see {@link GPUCellTableCompareZScore}. */
   zScore?: GraphDataView<'float32'>;
-  /** One-row scalar receiving `min(totalCount, cells.length)`. */
+  /** One-row scalar receiving `min(requiredCount, cells.length)`. */
   count: GraphDataView<'uint32'>;
   /** One-row scalar receiving 1 when union cells were dropped or either input table overflowed. */
   overflow: GraphDataView<'uint32'>;
   /** Optional one-row scalar receiving the unclamped number of union cells. */
-  totalCount?: GraphDataView<'uint32'>;
+  requiredCount?: GraphDataView<'uint32'>;
 };
 
 /**
@@ -190,7 +190,7 @@ export class GPUCellTableCompare implements GPUCommandNodeProducer {
         throw new Error(`${id} output.${name} must have the same length as output.cells`);
       }
     }
-    for (const name of ['count', 'overflow', 'totalCount'] as const) {
+    for (const name of ['count', 'overflow', 'requiredCount'] as const) {
       const view = output[name];
       if (!view) {
         continue;
@@ -556,13 +556,13 @@ const NO_ROW: u32 = 0xffffffffu;`,
       createPublishNode<Parameters>(graph, {
         id: `${id}-publish`,
         operation: OPERATION,
-        totalCount: total,
+        requiredCount: total,
         // Only the capacity of `ids` is used: nothing is copied without `compactIds`.
         output: {
           ids: output.cells as unknown as GraphDataView<'uint32'>,
           count: output.count,
           overflow: output.overflow,
-          totalCount: output.totalCount
+          requiredCount: output.requiredCount
         },
         overflowSources: [before.overflow, after.overflow]
       })
@@ -583,6 +583,6 @@ function getOutputViews(output: GPUCellTableCompareOutput): (GraphDataView | und
     output.zScore,
     output.count,
     output.overflow,
-    output.totalCount
+    output.requiredCount
   ];
 }

@@ -319,7 +319,7 @@ it('GPUPointSpatialQuery keeps indexed row addressing separate from returned sou
     'indexed and unindexed results remain equivalent after mutation'
   ).toEqual([4040, 5050, 7070]);
   expect(indexedUpdated.count, 'the clamped result count is refreshed').toBe(3);
-  expect(indexedUpdated.totalCount, 'the diagnostic total count is refreshed').toBe(3);
+  expect(indexedUpdated.requiredCount, 'the diagnostic total count is refreshed').toBe(3);
   expect(indexedUpdated.overflow, 'the rebuilt index and result both fit capacity').toBe(0);
 
   destroyFixture(indexed);
@@ -368,7 +368,7 @@ it('GPUPointSpatialQuery preserves duplicate source IDs as distinct matching row
     'the scan path preserves the same duplicate application IDs'
   ).toEqual([42, 42]);
   expect(indexedResult.count, 'both matching rows contribute to the clamped count').toBe(2);
-  expect(indexedResult.totalCount, 'both matching rows contribute to totalCount').toBe(2);
+  expect(indexedResult.requiredCount, 'both matching rows contribute to requiredCount').toBe(2);
 
   destroyFixture(indexed);
   destroyFixture(scanned);
@@ -488,7 +488,7 @@ it('GPUPointSpatialQuery handles empty inputs and zero-capacity output', async (
     ids: [],
     count: 0,
     overflow: 0,
-    totalCount: 0
+    requiredCount: 0
   });
 
   destroyFixture(fixture);
@@ -518,7 +518,7 @@ type QueryFixture = {
     ids: Buffer;
     count: Buffer;
     overflow: Buffer;
-    totalCount: Buffer;
+    requiredCount: Buffer;
   };
   buffers: Buffer[];
 };
@@ -537,7 +537,7 @@ function createQueryFixture(device: Device, props: QueryFixtureProps): QueryFixt
     ids: createOutputBuffer(device, capacity),
     count: createOutputBuffer(device, 1),
     overflow: createOutputBuffer(device, 1),
-    totalCount: createOutputBuffer(device, 1)
+    requiredCount: createOutputBuffer(device, 1)
   };
   const graph = new GPUCommandGraph(device, {id: props.id});
   const positions =
@@ -631,7 +631,13 @@ function createQueryFixture(device: Device, props: QueryFixtureProps): QueryFixt
   const ids = importView(graph, `${props.id}-ids`, output.ids, 'uint32', capacity);
   const count = importView(graph, `${props.id}-count`, output.count, 'uint32', 1);
   const overflow = importView(graph, `${props.id}-overflow`, output.overflow, 'uint32', 1);
-  const totalCount = importView(graph, `${props.id}-total-count`, output.totalCount, 'uint32', 1);
+  const requiredCount = importView(
+    graph,
+    `${props.id}-total-count`,
+    output.requiredCount,
+    'uint32',
+    1
+  );
   new GPUPointSpatialQuery({
     id: `${props.id}-query-contributor`,
     positions,
@@ -640,10 +646,10 @@ function createQueryFixture(device: Device, props: QueryFixtureProps): QueryFixt
     kind: props.kind,
     query,
     polygon,
-    output: {ids, count, overflow, totalCount}
+    output: {ids, count, overflow, requiredCount}
   }).addToGraph(graph);
 
-  buffers.push(output.ids, output.count, output.overflow, output.totalCount);
+  buffers.push(output.ids, output.count, output.overflow, output.requiredCount);
   return {compiled: graph.compile(), query: queryBuffer, output, buffers};
 }
 
@@ -651,16 +657,16 @@ async function readResult(fixture: QueryFixture): Promise<{
   ids: number[];
   count: number;
   overflow: number;
-  totalCount: number;
+  requiredCount: number;
 }> {
   const [count] = await readUint32(fixture.output.count, 1);
   const [overflow] = await readUint32(fixture.output.overflow, 1);
-  const [totalCount] = await readUint32(fixture.output.totalCount, 1);
+  const [requiredCount] = await readUint32(fixture.output.requiredCount, 1);
   return {
     ids: await readUint32(fixture.output.ids, count),
     count,
     overflow,
-    totalCount
+    requiredCount
   };
 }
 

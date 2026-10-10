@@ -457,7 +457,11 @@ export async function createFlightCorridors(
         columns: grid.columns,
         rows: grid.rows,
         // Grid and positions are longitude/latitude degrees; lengths are great-circle metres.
-        coordinateSystem: 'spherical',
+        spatialContext: {
+          coordinateSpace: 'longitude-latitude',
+          metric: 'great-circle',
+          units: 'meters'
+        },
         maximumRecords: capacity,
         parameters: grid.parameters.importToGraph(graph),
         output: {
@@ -543,7 +547,11 @@ export async function createFlightCorridors(
           ),
           columns: grid.columns,
           rows: grid.rows,
-          coordinateSystem: 'spherical',
+          spatialContext: {
+            coordinateSpace: 'longitude-latitude',
+            metric: 'great-circle',
+            units: 'meters'
+          },
           maximumRecords: capacity,
           parameters: grid.parameters.importToGraph(graph),
           output: {

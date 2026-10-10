@@ -537,6 +537,10 @@ compiled.encode(commandEncoder, {parameters: undefined});`,
       readouts: ['routeTime', 'routeLength'],
       title: 'One path from the Loop',
       body: 'The orange line walks predecessors backward from O’Hare to Willis Tower. It is a best-case free-flow model, not observed traffic. Change the two places to recompute the selected path from the same street graph.',
+      evidence:
+        'The selected path is **{{routeTime}}** over **{{routeLength}}**; both figures come from the same predecessor chain drawn in orange.',
+      caveat:
+        'This is a class-speed scenario with a constant intersection delay. It does not include observed congestion, incidents or route-choice behaviour.',
       camera: {longitude: -87.78, latitude: 41.93, zoom: 10.2, transitionMs: 1200},
       options: {destinationCount: 1, base: 'time'},
       highlight: {readout: 'routeTime'}
@@ -551,6 +555,10 @@ compiled.encode(commandEncoder, {parameters: undefined});`,
       readouts: ['reached', 'reachCurve', 'solver'],
       title: 'One search, every street',
       body: 'The shortest-path tree retains one cost and predecessor for every reached intersection. Fixed 0–10 through 60–90 minute classes keep later comparisons honest; the cumulative chart is counted directly from those node costs.',
+      evidence:
+        '**{{reached}}** intersections receive a finite cost. The cumulative curve shows when each additional part of the network enters the reachable set.',
+      caveat:
+        'Changing the search budget truncates the tree; an unreached street is outside this computation, not necessarily inaccessible in the real city.',
       camera: {longitude: -87.7, latitude: 41.84, zoom: 9.7, transitionMs: 1200},
       options: {costLimitMinutes: 60, base: 'time'},
       highlight: {readout: 'reachCurve'}
@@ -565,6 +573,10 @@ compiled.encode(commandEncoder, {parameters: undefined});`,
       readouts: ['routeTimes', 'routeComparison'],
       title: 'Walk the tree back',
       body: 'One predecessor field yields routes to O’Hare, Midway, Wrigley Field, Soldier Field, the Museum of Science and Industry and United Center. Ring-dot numbers and chart labels use the same places; the selected route stays above the thinner comparisons.',
+      evidence:
+        'The named comparison chart and numbered map destinations expose the same six modeled times: **{{routeTimes}}**.',
+      caveat:
+        'All six routes share one origin and one cost surface, so this compares destinations—not independent trips or travelers.',
       camera: {longitude: -87.72, latitude: 41.87, zoom: 10.1, transitionMs: 1200},
       annotations: DESTINATION_NUMBER_ANNOTATIONS,
       options: {destinationCount: 6},
@@ -580,6 +592,10 @@ compiled.encode(commandEncoder, {parameters: undefined});`,
       readouts: ['freeFlowRoute', 'scenarioDelta', 'scenarioComparison', 'expressways'],
       title: 'Scenario delta',
       body: 'This illustrative slowdown counterfactual rewrites motorway and trunk weights; it is not observed traffic. The retained free-flow tree and fixed PuRd 0, 0–5, 5–10, 10–20 and >20 minute table make actual minutes-added visible.',
+      evidence:
+        'The selected free-flow route is **{{freeFlowRoute}}**; the counterfactual changes it by **{{scenarioDelta}}**. The paired bars preserve those absolute values.',
+      caveat:
+        'The slowdown is deliberately synthetic. Read the map as sensitivity to changed edge weights, not as a forecast of diverted traffic.',
       options: {destinationCount: 1, expresswaySlowdown: 4, base: 'delta'},
       highlight: {readout: 'scenarioDelta'}
     },
@@ -593,6 +609,10 @@ compiled.encode(commandEncoder, {parameters: undefined});`,
       readouts: ['plainTurns', 'turnTurns', 'turnCost', 'turnComparison'],
       title: 'Turns cost time too',
       body: 'A line graph makes each directed edge a node, so the next edge can charge an angle or left-turn cost. Orange is the plain route; purple dashes pay turn costs. The paired readouts count turns from the two extracted paths.',
+      evidence:
+        'Plain route: **{{plainTurns}}**. Turn-aware route: **{{turnTurns}}**. The dumbbell chart makes the exchange between turn types visible.',
+      caveat:
+        'Turn penalties are generalized costs chosen for the scenario, not measured intersection delays or legal restrictions.',
       camera: {longitude: -87.665, latitude: 41.915, zoom: 11.5, transitionMs: 1400},
       options: {
         expresswaySlowdown: 1,
@@ -613,6 +633,10 @@ compiled.encode(commandEncoder, {parameters: undefined});`,
       readouts: ['hood', 'solver'],
       title: 'Blocks are not minutes',
       body: 'A k-hop neighbourhood counts street segments, not their length or speed. It therefore forms a different shape from the travel-time tree. Solver rounds and capacities are implementation details; free-flow weights, nearest-node snapping, graph clipping and simplified turn restrictions limit this model.',
+      evidence:
+        'The hop rule retains **{{hood}}** around the origin, visibly diverging from equal-time reach where blocks differ in length or road class.',
+      caveat:
+        'Hop count is a topological distance. It should not be interpreted as travel time, physical distance or pedestrian accessibility.',
       camera: {longitude: -87.63, latitude: 41.88, zoom: 12.4, transitionMs: 1200},
       options: {
         base: 'hops',

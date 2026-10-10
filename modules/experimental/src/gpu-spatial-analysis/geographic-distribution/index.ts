@@ -12,6 +12,12 @@ export {
   GPU_GEOGRAPHIC_DISTRIBUTION_DEFAULT_MEDIAN_TOLERANCE,
   GPU_GEOGRAPHIC_DISTRIBUTION_PARAMETER_LENGTH
 } from './geographic-distribution-parameters';
+export {
+  GPURoseStatistic,
+  GPU_ROSE_STATISTIC_SUMMARY,
+  GPU_ROSE_STATISTIC_SUMMARY_STRIDE
+} from './gpu-rose-statistic';
+export type {GPURoseStatisticProps} from './gpu-rose-statistic';
 export type {
   GPUGeographicDistributionEllipseConvention,
   GPUGeographicDistributionParameters

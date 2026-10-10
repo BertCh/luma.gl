@@ -61,7 +61,7 @@ export type GPUCoverageSimplificationOutput = {
   /** One-row flag: 1 when more vertices were kept than `positions` can hold, else 0. */
   overflow: GraphDataView<'uint32'>;
   /** Optional one-row unclamped kept-vertex total. */
-  totalCount?: GraphDataView<'uint32'>;
+  requiredCount?: GraphDataView<'uint32'>;
   /**
    * Optional {@link GPU_COVERAGE_SIMPLIFICATION_TOPOLOGY_STATS_LENGTH} rows describing the topology
    * pass (all zero when `topologyRounds` is 0):
@@ -257,10 +257,10 @@ export class GPUCoverageSimplification implements GPUCommandNodeProducer {
         );
       }
     }
-    if (output.totalCount) {
-      validatePackedUint32View(output.totalCount, `${id} output.totalCount`);
-      if (output.totalCount.length < 1) {
-        throw new Error(`${id} output.totalCount must hold one uint32`);
+    if (output.requiredCount) {
+      validatePackedUint32View(output.requiredCount, `${id} output.requiredCount`);
+      if (output.requiredCount.length < 1) {
+        throw new Error(`${id} output.requiredCount must hold one uint32`);
       }
     }
     if (props.converged) {
@@ -276,7 +276,7 @@ export class GPUCoverageSimplification implements GPUCommandNodeProducer {
         output.ringOffsets,
         output.keepMask,
         output.overflow,
-        output.totalCount,
+        output.requiredCount,
         output.topologyStats,
         props.converged
       ],
@@ -300,7 +300,7 @@ export class GPUCoverageSimplification implements GPUCommandNodeProducer {
       output.ringOffsets,
       output.keepMask,
       output.overflow,
-      output.totalCount,
+      output.requiredCount,
       output.topologyStats
     ]);
     const vertexCount = positions.length;
@@ -894,7 +894,7 @@ const RING_COUNT: u32 = ${ringCount}u;`,
         keepRank,
         outputRingOffsets: output.ringOffsets,
         overflow: output.overflow,
-        totalCount: output.totalCount,
+        requiredCount: output.requiredCount,
         vertexCount,
         ringCount,
         capacity: outputCapacity
@@ -970,13 +970,13 @@ function createEmitOffsetsNode<Parameters>(
     keepRank: GraphDataView<'uint32'>;
     outputRingOffsets: GraphDataView<'uint32'>;
     overflow: GraphDataView<'uint32'>;
-    totalCount?: GraphDataView<'uint32'>;
+    requiredCount?: GraphDataView<'uint32'>;
     vertexCount: number;
     ringCount: number;
     capacity: number;
   }
 ): GPUCommandNode<Parameters> {
-  const {totalCount} = props;
+  const {requiredCount} = props;
   return createWGSLKernelNode<Parameters>(graph, {
     id: props.id,
     operation: OPERATION,
@@ -987,11 +987,11 @@ function createEmitOffsetsNode<Parameters>(
       {name: 'keepRank', view: props.keepRank, type: 'u32', access: 'read'},
       {name: 'outputRingOffsets', view: props.outputRingOffsets, type: 'u32', access: 'read_write'},
       {name: 'overflow', view: props.overflow, type: 'u32', access: 'read_write'},
-      ...(totalCount
+      ...(requiredCount
         ? [
             {
-              name: 'totalCount',
-              view: totalCount,
+              name: 'requiredCount',
+              view: requiredCount,
               type: 'u32' as const,
               access: 'read_write' as const
             }
@@ -1013,7 +1013,7 @@ const CAPACITY: u32 = ${props.capacity}u;`,
   outputRingOffsets[outputRingOffsetsOffset + index] = min(begin, CAPACITY);
   if (index == RING_COUNT) {
     overflow[overflowOffset] = select(0u, 1u, total > CAPACITY);
-    ${totalCount ? 'totalCount[totalCountOffset] = total;' : ''}
+    ${requiredCount ? 'requiredCount[requiredCountOffset] = total;' : ''}
   }`
   });
 }

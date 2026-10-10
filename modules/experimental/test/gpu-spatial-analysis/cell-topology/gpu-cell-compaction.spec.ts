@@ -117,7 +117,7 @@ async function runCompaction(device: Device, options: RunOptions): Promise<RunRe
         cells: importView('cells-out', cellsOut, 'uint32x2', capacity),
         count: importView('count-out', countOut, 'uint32', 1),
         overflow: importView('overflow-out', overflowOut, 'uint32', 1),
-        totalCount: importView('total-out', totalOut, 'uint32', 1),
+        requiredCount: importView('total-out', totalOut, 'uint32', 1),
         droppedCount: importView('dropped-out', droppedOut, 'uint32', 1)
       }
     })

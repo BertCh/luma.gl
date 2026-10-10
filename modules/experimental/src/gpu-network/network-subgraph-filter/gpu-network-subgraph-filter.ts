@@ -298,11 +298,11 @@ export class GPUNetworkSubgraphFilter implements GPUCommandNodeProducer {
       output.liveVertices?.ids,
       output.liveVertices?.count,
       output.liveVertices?.overflow,
-      output.liveVertices?.totalCount,
+      output.liveVertices?.requiredCount,
       output.liveEdgeSlots?.ids,
       output.liveEdgeSlots?.count,
       output.liveEdgeSlots?.overflow,
-      output.liveEdgeSlots?.totalCount,
+      output.liveEdgeSlots?.requiredCount,
       output.inducedCSR?.offsets,
       output.inducedCSR?.neighbors,
       output.inducedCSR?.sourceSlots,
@@ -818,7 +818,7 @@ const ROW_COUNT: u32 = ${rowCount}u;`
         createPublishNode<Parameters>(graph, {
           id: `${id}-${step}-publish`,
           operation: OPERATION,
-          totalCount: total,
+          requiredCount: total,
           output: compact
         })
       );

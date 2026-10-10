@@ -23,12 +23,14 @@ import {
 } from '@luma.gl/experimental/gpu-spatial-analysis';
 import {GPUCommandGraph, type CompiledGPUCommandGraph} from '@luma.gl/gpgpu/gpu-core';
 import type {GPUVectorFormat} from '@luma.gl/gpgpu/gpu-data';
+import {createPlaybackClock} from '../../engine/playback';
 import {importGraphBuffer} from '../../engine/graph-buffers';
 import {SpatialAnalysisPointLayer, SpatialAnalysisRasterLayer} from '../../engine/layers';
 import {formatCount, SpatialAnalysisResources} from '../../engine/resources';
 import {SummaryReader} from '../../engine/summary-reader';
 import type {SceneContext, SceneInstance} from '../scene';
-import {EMERGING_CATEGORY_NAMES, EmergingCategoryRasterLayer} from './b13-category-layer';
+import {EmergingCategoryRasterLayer} from './b13-category-layer';
+import {EMERGING_CATEGORY_COLORS, EMERGING_CATEGORY_NAMES} from './b13-categories';
 import {
   NATURE_YEAR_SECONDS,
   fillCategoryMask,
@@ -61,8 +63,10 @@ const CELL_METERS = 500;
 const MAXIMUM_RADIUS_CELLS = 4;
 const WEEK_SECONDS = 7 * 86400;
 const WEEK_COUNT = 52;
+/** 28 April through 1 May, inclusive, in Chicago local-wall-clock seconds. */
+const CITY_NATURE_CHALLENGE_START = 117 * 86400;
+const CITY_NATURE_CHALLENGE_END = 121 * 86400;
 const _NO_CELL = 0xffffffff;
-const PLAY_SECONDS_PER_SLICE = 0.45;
 const MONTH_NAMES = [
   'Jan',
   'Feb',
@@ -219,7 +223,6 @@ export async function createEmergingHotSpots(
   let destroyed = false;
   let dirty = true;
   let shownSlice = 0;
-  let lastAdvance = 0;
   let activeCells = 0;
   let included = 0;
   let current: Variant | null = null;
@@ -228,6 +231,7 @@ export async function createEmergingHotSpots(
   let cpuHot: Uint32Array | null = null;
   let cpuCold: Uint32Array | null = null;
   let cpuCounts: Uint32Array | null = null;
+  let sliceTotals: number[] | null = null;
   let countMaximum = 1;
   const variants = new Map<string, Variant>();
 
@@ -372,14 +376,16 @@ export async function createEmergingHotSpots(
             },
         cellMask: v('cell-mask', cellMaskBuffer, 'uint32', cellCount),
         parameters: hotSpotParameters.importToGraph(graph),
-        cube: v('counts', counts, 'uint32', binCount),
-        giZScores: v('gi-z', giZ, 'float32', binCount),
-        trendZ: v('trend-z', trendZ, 'float32', cellCount),
-        trendP: v('trend-p', trendP, 'float32', cellCount),
-        trendS: v('trend-s', trendS, 'sint32', cellCount),
-        category: v('category', category, 'uint32', cellCount),
-        hotSliceCount: v('hot-slices', hotSlices, 'uint32', cellCount),
-        coldSliceCount: v('cold-slices', coldSlices, 'uint32', cellCount)
+        outputs: {
+          cube: v('counts', counts, 'uint32', binCount),
+          giZScores: v('gi-z', giZ, 'float32', binCount),
+          trendZ: v('trend-z', trendZ, 'float32', cellCount),
+          trendP: v('trend-p', trendP, 'float32', cellCount),
+          trendS: v('trend-s', trendS, 'sint32', cellCount),
+          category: v('category', category, 'uint32', cellCount),
+          hotSliceCount: v('hot-slices', hotSlices, 'uint32', cellCount),
+          coldSliceCount: v('cold-slices', coldSlices, 'uint32', cellCount)
+        }
       });
     }
     const compiled = resources.track(graph.compile());
@@ -434,8 +440,22 @@ export async function createEmergingHotSpots(
   function writeEventMask(): void {
     const mask = new Uint32Array(eventCount);
     included = fillCategoryMask(events, ctx.options.groupType, mask);
+    let challengeIncluded = 0;
+    for (let index = 0; index < eventCount; index++) {
+      if (
+        mask[index] &&
+        events.seconds[index] >= CITY_NATURE_CHALLENGE_START &&
+        events.seconds[index] < CITY_NATURE_CHALLENGE_END
+      ) {
+        challengeIncluded++;
+      }
+    }
     eventMaskBuffer.write(mask);
     ctx.setReadout('events', `${formatCount(included)} of ${formatCount(eventCount)}`);
+    ctx.setReadout(
+      'challengePulse',
+      `${formatCount(challengeIncluded)} records (${((100 * challengeIncluded) / Math.max(1, included)).toFixed(1)}%)`
+    );
     dirty = true;
   }
 
@@ -449,7 +469,14 @@ export async function createEmergingHotSpots(
     }
     cellMaskBuffer.write(mask);
     ctx.setReadout('cells', `${formatCount(activeCells)} of ${formatCount(cellCount)}`);
+    publishTestFamily();
     dirty = true;
+  }
+
+  /** Number of Gi* decisions in the active family; shown because no multiplicity correction is applied. */
+  function publishTestFamily(): void {
+    const sliceCount = current?.sliceCount ?? CUBES[ctx.options.cube].sliceCount;
+    ctx.setReadout('tests', `${formatCount(activeCells * sliceCount)} Gi* bins (uncorrected)`);
   }
 
   function writeParameters(): void {
@@ -495,6 +522,32 @@ export async function createEmergingHotSpots(
     sliceIndexBuffer.write(indices);
     shownSlice = clamped;
     ctx.setReadout('sliceLabel', formatSliceLabel(ctx.options.cube, clamped));
+    publishSliceTimeline();
+  }
+
+  function publishSliceTimeline(): void {
+    if (!sliceTotals) {
+      ctx.setChart('sliceTimeline', null);
+      return;
+    }
+    const x = sliceTotals.map((_, index) => index + 1);
+    ctx.setChart('sliceTimeline', {
+      kind: 'timeline',
+      title: 'Observations by time slice',
+      x,
+      y: sliceTotals,
+      mode: 'area',
+      playhead: shownSlice + 1,
+      xLabel: ctx.options.cube === 'hours' ? 'hour of day' : 'time slice',
+      yLabel: 'observations',
+      formatX: value => formatSliceLabel(ctx.options.cube, Math.round(value) - 1),
+      link: {
+        option: 'slice',
+        label: value => formatSliceLabel(ctx.options.cube, Math.round(value) - 1)
+      },
+      description:
+        'Records in every time slice, summed across the active study-area cells. Dates and hours use the source Chicago local wall clock; the playhead is the slice shown on the map.'
+    });
   }
 
   function showSummary(): void {
@@ -512,18 +565,45 @@ export async function createEmergingHotSpots(
     ctx.setReadout('persistent', categoryCounts[4]);
     ctx.setReadout('diminishing', categoryCounts[5]);
     ctx.setReadout('sporadic', categoryCounts[6]);
+    ctx.setChart('categoryProfile', {
+      kind: 'bars',
+      title: 'Cells by emerging hot-spot category',
+      values: categoryCounts.slice(1),
+      labels: EMERGING_CATEGORY_NAMES.slice(1),
+      colors: EMERGING_CATEGORY_COLORS.slice(1),
+      horizontal: true,
+      table: false,
+      description:
+        'Counts of active cells in each of the eight hot and eight cold emerging-pattern categories.'
+    });
     const slices = current.sliceCount;
     const perSlice = new Array<number>(slices).fill(0);
     let total = 0;
     countMaximum = 1;
-    for (let bin = 0; bin < cpuCounts.length; bin++) {
-      perSlice[bin % slices] += cpuCounts[bin];
-      total += cpuCounts[bin];
-      countMaximum = Math.max(countMaximum, cpuCounts[bin]);
+    for (let cell = 0; cell < cellCount; cell++) {
+      if (yearTotals[cell] < ctx.options.minimumEvents) continue;
+      for (let slice = 0; slice < slices; slice++) {
+        const count = cpuCounts[cell * slices + slice];
+        perSlice[slice] += count;
+        total += count;
+        countMaximum = Math.max(countMaximum, count);
+      }
     }
+    sliceTotals = perSlice;
+    publishSliceTimeline();
+    ctx.setTimelineData({
+      domain: [1, slices],
+      histogram: perSlice,
+      events:
+        ctx.options.cube === 'weeks'
+          ? [{at: 17.7, label: 'City Nature Challenge, 28 Apr–1 May'}]
+          : ctx.options.cube === 'months'
+            ? [{at: 4, label: 'City Nature Challenge, 28 Apr–1 May'}]
+            : []
+    });
     ctx.setReadout(
       'cubeEvents',
-      `${formatCount(total)} observations in ${formatCount(cpuCounts.length)} bins`
+      `${formatCount(total)} observations in ${formatCount(activeCells * slices)} active bins`
     );
     let busiest = 0;
     for (let slice = 1; slice < slices; slice++)
@@ -540,6 +620,12 @@ export async function createEmergingHotSpots(
   writeCellMask();
   writeParameters();
   current = getVariant();
+  const playbackClock = createPlaybackClock(
+    ctx,
+    {time: 'slice', play: 'play'},
+    {range: [1, current.sliceCount], step: 1, rate: 1 / 0.45}
+  );
+  publishTestFamily();
   writeSliceIndices(ctx.options.slice - 1);
   ctx.setReadout('grid', `${gridWidth} x ${gridHeight} cells of ${CELL_METERS} m`);
 
@@ -549,6 +635,12 @@ export async function createEmergingHotSpots(
     setOption(id, _value, state) {
       if (id === 'cube' || id === 'neighborhood') {
         current = getVariant();
+        playbackClock.setRange(1, current.sliceCount);
+        publishTestFamily();
+        if (id === 'cube') {
+          sliceTotals = null;
+          ctx.setChart('sliceTimeline', null);
+        }
         writeSliceIndices(state.slice - 1);
         cpuCategory = null;
         dirty = true;
@@ -578,6 +670,10 @@ export async function createEmergingHotSpots(
       ctx.requestLayers();
     },
 
+    onCompareChange() {
+      ctx.requestLayers();
+    },
+
     getTooltip({coordinate}) {
       if (!coordinate || !cpuCategory || !cpuCounts || !current) return null;
       const projection = ctx.datasets.get('chicago-nature').getProjection(origin);
@@ -601,14 +697,9 @@ export async function createEmergingHotSpots(
 
     encode(commandEncoder, frame) {
       if (!current) return;
-      const options = ctx.options;
-      if (options.play) {
-        if (frame.timeSeconds - lastAdvance > PLAY_SECONDS_PER_SLICE) {
-          lastAdvance = frame.timeSeconds;
-          writeSliceIndices((shownSlice + 1) % current.sliceCount);
-        }
-      } else if (shownSlice !== Math.min(options.slice - 1, current.sliceCount - 1)) {
-        writeSliceIndices(options.slice - 1);
+      const playbackSlice = Math.round(playbackClock.advance(frame)) - 1;
+      if (shownSlice !== Math.min(playbackSlice, current.sliceCount - 1)) {
+        writeSliceIndices(playbackSlice);
       }
       if (dirty || frame.frameIndex < 3) {
         current.compiled.encode(commandEncoder, {parameters: undefined});
@@ -648,6 +739,23 @@ export async function createEmergingHotSpots(
       };
       switch (options.mapView) {
         case 'category':
+          if (ctx.getCompare()) {
+            layers.push(
+              new SpatialAnalysisRasterLayer({
+                ...common,
+                id: 'emerging-category-compare-events',
+                values: current.counts,
+                valueIndices: sliceIndexBuffer,
+                valueFormat: 'uint32',
+                colormap: 'magma',
+                valueRange: [0, countMaximum],
+                sqrtScale: true,
+                discardAtOrBelow: 0,
+                color: [255, 255, 255, 255],
+                compareSide: 'a'
+              })
+            );
+          }
           layers.push(
             new EmergingCategoryRasterLayer({
               ...common,
@@ -655,7 +763,8 @@ export async function createEmergingHotSpots(
               values: current.category,
               valueFormat: 'uint32',
               colormap: 'category',
-              color: [255, 255, 255, 255]
+              color: [255, 255, 255, 255],
+              ...(ctx.getCompare() ? {compareSide: 'b' as const} : {})
             })
           );
           break;
@@ -694,7 +803,7 @@ export async function createEmergingHotSpots(
               id: `emerging-${options.mapView}`,
               values: options.mapView === 'hot-count' ? current.hotSlices : current.coldSlices,
               valueFormat: 'uint32',
-              colormap: options.mapView === 'hot-count' ? 'inferno' : 'viridis',
+              colormap: options.mapView === 'hot-count' ? 'inferno' : 'cividis',
               valueRange: [0, current.sliceCount],
               discardAtOrBelow: 0,
               color: [255, 255, 255, 255]

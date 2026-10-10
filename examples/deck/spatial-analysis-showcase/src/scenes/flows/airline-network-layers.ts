@@ -480,6 +480,9 @@ export class CategoryPathLayer extends Layer<CategoryPathLayerProps> {
     const {model, styleBuffer} = this.state as RouteLayerState;
     // The bundle shader reuses `pathOffsetCount` as the control points per path.
     writeRouteStyle(styleBuffer, this.props, this.props.pointsPerPath, this.context);
+    // Deck can reset model draw state between passes. Keep the path count authoritative here,
+    // rather than relying on initializeState or updateState having run immediately before draw.
+    model.setInstanceCount(this.props.pathCount);
     model.draw(renderPass);
   }
 

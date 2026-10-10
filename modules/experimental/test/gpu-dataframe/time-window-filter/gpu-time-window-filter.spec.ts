@@ -133,7 +133,7 @@ it('GPUTimeWindowFilter clamps instant rows, fades, and updates without recompil
         ids: importGraphBuffer(graph, 'ids', idsBuffer, 'uint32', 3),
         count: importGraphBuffer(graph, 'count', countBuffer, 'uint32', 1),
         overflow: importGraphBuffer(graph, 'overflow', overflowBuffer, 'uint32', 1),
-        totalCount: importGraphBuffer(graph, 'total', totalBuffer, 'uint32', 1)
+        requiredCount: importGraphBuffer(graph, 'total', totalBuffer, 'uint32', 1)
       },
       fadeWeights: importGraphBuffer(graph, 'weights', weightsBuffer, 'float32', 8),
       drawInstanceCount: graph.importGPUData('draw-count', drawCommands.getInstanceCountData(0))

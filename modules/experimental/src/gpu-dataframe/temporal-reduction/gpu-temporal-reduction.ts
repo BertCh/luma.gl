@@ -219,7 +219,7 @@ export class GPUTemporalReduction implements GPUCommandNodeProducer {
         output.occupiedSlots.ids,
         output.occupiedSlots.count,
         output.occupiedSlots.overflow,
-        output.occupiedSlots.totalCount
+        output.occupiedSlots.requiredCount
       ],
       [props.cellIds, props.timestamps, props.values, props.mask, props.parameters]
     );
@@ -245,7 +245,7 @@ export class GPUTemporalReduction implements GPUCommandNodeProducer {
       output.occupiedSlots.ids,
       output.occupiedSlots.count,
       output.occupiedSlots.overflow,
-      output.occupiedSlots.totalCount
+      output.occupiedSlots.requiredCount
     ]);
     const rows = props.values.length;
     const isWordMode = props.timestamps.format === 'uint32x2';
@@ -503,7 +503,7 @@ var<workgroup> localLastTimes: array<atomic<u32>, ${slotCount}>;`,
       createPublishNode<Parameters>(graph, {
         id: `${id}-publish`,
         operation: OPERATION,
-        totalCount: total,
+        requiredCount: total,
         compactIds: direct ? undefined : compactIds,
         output: output.occupiedSlots
       })

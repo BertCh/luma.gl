@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {ground} from '../../cartography/grounds';
 import {playbackOptions} from '../../engine/playback';
 import {defineScene, type LegendSpec} from '../scene';
 import type {OsmDrawsItselfOptions} from './osm-history-draws-itself.compute';
@@ -19,11 +20,11 @@ const formatDay = (day: number) => {
 
 export default defineScene<OsmDrawsItselfOptions>({
   id: 'osm-history-draws-itself',
-  title: 'How does New York draw itself on OpenStreetMap?',
+  title: 'New York OSM nodes by creation date',
   chapter: 'dataframe',
   order: 1,
   summary:
-    'Replay 19 years of OpenStreetMap node creations in New York City: 400,000 sampled nodes appear as ink on the day a mapper placed them, while a GPU space-time reduction counts nodes per cell and per time bucket.',
+    'GPU time filtering and temporal reduction summarize a sample of New York OpenStreetMap node history. The outputs are cumulative points, recent-work marks and cell densities; sampling and bulk imports limit inference about mapping effort.',
   contributors: ['GPUTemporalReduction', 'GPUTimeWindowFilter'],
   datasets: [
     {
@@ -32,6 +33,16 @@ export default defineScene<OsmDrawsItselfOptions>({
     }
   ],
   initialView: {longitude: -73.97, latitude: 40.71, zoom: 10.4},
+  basemap: ground('night'),
+  furniture: {
+    title: {
+      title: 'New York OSM node creation',
+      subtitle: 'Cumulative points and cell density through time'
+    },
+    scaleBar: {units: 'metric'},
+    credit: '© OpenStreetMap contributors (ODbL)',
+    caveat: 'Creation dates and bulk imports measure mapping activity, not urban growth.'
+  },
 
   options: [
     ...playbackOptions<OsmDrawsItselfOptions>({
@@ -84,10 +95,10 @@ export default defineScene<OsmDrawsItselfOptions>({
       label: 'Color ramp',
       group: 'Ink (time window)',
       apply: 'param',
-      default: 'viridis',
+      default: 'lajolla',
       help: 'Ramp for the creation date and for the cell densities. Darker ramp ends vanish on a dark map.',
       options: [
-        {value: 'viridis', label: 'Viridis'},
+        {value: 'lajolla', label: 'Lajolla'},
         {value: 'magma', label: 'Magma'},
         {value: 'inferno', label: 'Inferno'},
         {value: 'cividis', label: 'Cividis'}
@@ -212,6 +223,9 @@ export default defineScene<OsmDrawsItselfOptions>({
     {
       id: 'finished-city',
       title: 'How did a city get drawn, one node at a time?',
+      headline: 'Creation dates form spatially uneven layers',
+      textAlternative:
+        'New York nodes are colored by creation date from early dark tones to recent light tones, revealing different mapping periods across the city.',
       body: 'Every dot is a tagged OpenStreetMap node in New York City (a bench, a hydrant, a shop, an address), placed where a mapper created it. The map shows a **400,000-node sample** of the **901,827** nodes ever created, colored by creation date: purple is 2007, yellow is 2026. Pick a **Color ramp** below, then compare the **Node size**.',
       camera: {
         longitude: -73.97,
@@ -228,6 +242,9 @@ export default defineScene<OsmDrawsItselfOptions>({
     {
       id: 'ink',
       title: 'Press play: the map fills with ink',
+      headline: 'Cumulative nodes expand unevenly through time',
+      textAlternative:
+        'The map progressively adds node points as the date advances, with the current date and visible-node count reported beside the animation.',
       body: 'Each node appears on the day it was created and stays. `GPUTimeWindowFilter` selects the nodes created before the playhead on the GPU every frame and writes the draw count, with no recompile. Press **Play** and watch Manhattan arrive in 2007 and 2008, then the city fill in later. Drag **Date** to scrub.',
       camera: {zoom: 10.8, transitionMs: 1200},
       options: {play: true, time: 0, speed: 1},
@@ -237,6 +254,9 @@ export default defineScene<OsmDrawsItselfOptions>({
     {
       id: 'cells',
       title: 'Count the ink: nodes per cell per year',
+      headline: 'Cell densities summarize cumulative creation activity',
+      textAlternative:
+        'A regular grid replaces points and colors each cell by sampled nodes per square kilometer accumulated through the selected date.',
       body: '`GPUTemporalReduction` folds every node into one record per **(cell, time bucket)**: the slot is `cell x buckets + bucket`. A small kernel sums the buckets up to the date into one density per cell. Switch to a **Time bucket** of a year and a **Cell size** of 500 m, and read the legend in sampled nodes per km2.',
       options: {showPoints: false, showCells: true, play: false, time: MAX_DAY},
       controls: ['cellSize', 'bucket', 'ceiling'],
@@ -245,6 +265,9 @@ export default defineScene<OsmDrawsItselfOptions>({
     {
       id: 'imports-by-year',
       title: 'See where mapping happened in one period',
+      headline: 'Annual cells isolate concentrated creation periods',
+      textAlternative:
+        'Cells show nodes created only during the selected year, while a citywide bar chart identifies high-volume time buckets.',
       body: 'Set **Cell value** to the current bucket only, and drag the date to December 2013. The cells that light up are where mappers worked in that year, not where the city has most nodes overall. The chart shows nodes created per bucket across the city: the tall bars are bulk imports, which the next two scenes dissect.',
       options: {
         showPoints: false,
@@ -261,6 +284,9 @@ export default defineScene<OsmDrawsItselfOptions>({
     {
       id: 'recent-work',
       title: 'Where is mapping happening right now?',
+      headline: 'Recent creation clusters shift across the city',
+      textAlternative:
+        'Bright halos identify nodes created within the selected recent window, superimposed on older New York node context.',
       body: 'Switch the nodes back on, turn on **Highlight recent nodes** and widen or narrow the **Recent window**. The bright discs are nodes created in the last few weeks before the date: a second `GPUTimeWindowFilter`, a different window, the same buffers. Try scrubbing through 2021 to see the bursts.',
       options: {
         showPoints: true,
@@ -286,6 +312,7 @@ export default defineScene<OsmDrawsItselfOptions>({
                 title: 'Node creation date',
                 ramp: state.ramp,
                 extent: [2007.5, 2026.4],
+                unit: 'calendar year',
                 format: (value: number) => value.toFixed(0)
               }
             : {

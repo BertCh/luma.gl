@@ -281,7 +281,7 @@ export async function createTopologicalRelations(
         rightIds: importGraphBuffer(graph, 'right-ids', rightIds, 'uint32', pairCapacity),
         count: importGraphBuffer(graph, 'pair-count', pairCount, 'uint32', 1),
         overflow: importGraphBuffer(graph, 'pair-overflow', pairOverflow, 'uint32', 1),
-        totalCount: importGraphBuffer(graph, 'pair-total', pairTotal, 'uint32', 1)
+        requiredCount: importGraphBuffer(graph, 'pair-total', pairTotal, 'uint32', 1)
       },
       ...(hasMatrix
         ? {relate: importGraphBuffer(graph, 'relate', relateBuffer, 'uint32', pairCapacity)}

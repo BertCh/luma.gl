@@ -9,7 +9,13 @@ import {GPUClassBreaks, GPUColorScale} from '../../gpu-dataframe/column-classifi
 import type {GPUClassBreaksProps} from '../../gpu-dataframe/column-classification/index';
 import {GPUPointInPolygonJoin} from '../spatial-join/index';
 import {GPUZonalStatistics} from '../zonal-statistics/index';
-import {assertRecipe, getOrCreateView, RecipeBuilder, type GPURecipeResult} from './recipe-utils';
+import {
+  assertRecipe,
+  getOrCreateView,
+  RecipeBuilder,
+  type GPURecipeOverrides,
+  type GPURecipeResult
+} from './recipe-utils';
 
 const ID = 'GPUPointsInPolygonsChoroplethRecipe';
 
@@ -48,18 +54,23 @@ export type GPUChoroplethColorOptions = {
   palette: GraphDataView<'uint32'>;
   /** Compile-time palette length bound. */
   maximumPaletteCount: number;
-  /** Caller-owned class edges (`maximumClassCount + 1` rows). */
-  breaks?: GraphDataView<'float32'>;
-  /** Caller-owned class count (one row). */
-  classCount?: GraphDataView<'uint32'>;
-  /** Caller-owned color per feature. */
-  colors?: GraphDataView<'uint32'>;
-  /** Caller-owned palette class per feature. */
-  classIndices?: GraphDataView<'uint32'>;
 };
 
 /** Properties for {@link addPointsInPolygonsChoroplethRecipe}. */
-export type GPUPointsInPolygonsChoroplethRecipeProps = {
+export type GPUPointsInPolygonsChoroplethRecipeProps = GPURecipeOverrides<
+  Record<never, never>,
+  {
+    counts?: GraphDataView<'uint32'>;
+    featureValues?: GraphDataView<'float32'>;
+    overflow?: GraphDataView<'uint32'>;
+    color?: {
+      breaks?: GraphDataView<'float32'>;
+      classCount?: GraphDataView<'uint32'>;
+      colors?: GraphDataView<'uint32'>;
+      classIndices?: GraphDataView<'uint32'>;
+    };
+  }
+> & {
   /** Prefix for every node and transient ID. Defaults to `'choropleth-recipe'`. */
   id?: string;
   /**
@@ -76,16 +87,6 @@ export type GPUPointsInPolygonsChoroplethRecipeProps = {
   polygons: GPUChoroplethPolygons;
   /** Statistic to map. Defaults to `'count'`. */
   statistic?: GPUChoroplethStatistic;
-  /** Caller-owned per-feature point counts. */
-  counts?: GraphDataView<'uint32'>;
-  /**
-   * Caller-owned per-feature statistic for `'sum'`, `'mean'`, `'minimum'` and `'maximum'`;
-   * features with no points hold 0 (sum) or NaN. Not allowed for `'count'`, whose value column is
-   * the `uint32` `counts` view itself.
-   */
-  featureValues?: GraphDataView<'float32'>;
-  /** Caller-owned one-row join overflow flag. */
-  overflow?: GraphDataView<'uint32'>;
   /** Class breaks and colors; skipped when absent. */
   color?: GPUChoroplethColorOptions;
 };
@@ -125,13 +126,24 @@ export function addPointsInPolygonsChoroplethRecipe<Parameters>(
   const id = props.id ?? 'choropleth-recipe';
   const statistic = props.statistic ?? 'count';
   const backend = props.backend ?? 'zonal';
+  const providedOutputs = props.outputs ?? {};
   const {polygons, points} = props;
   const featureCount = polygons.featureOffsets.length - 1;
   assertRecipe(ID, featureCount >= 1, 'needs at least one feature');
   assertRecipe(ID, statistic === 'count' || props.values, `statistic ${statistic} needs values`);
   const builder = new RecipeBuilder(graph);
-  const counts = getOrCreateView(graph, `${id}-counts`, 'uint32', featureCount, props.counts);
-  assertRecipe(ID, statistic !== 'count' || !props.featureValues, 'count has no featureValues');
+  const counts = getOrCreateView(
+    graph,
+    `${id}-counts`,
+    'uint32',
+    featureCount,
+    providedOutputs.counts
+  );
+  assertRecipe(
+    ID,
+    statistic !== 'count' || !providedOutputs.featureValues,
+    'count has no featureValues'
+  );
   const featureValues: GraphDataView<'float32'> | GraphDataView<'uint32'> =
     statistic === 'count'
       ? counts
@@ -140,9 +152,11 @@ export function addPointsInPolygonsChoroplethRecipe<Parameters>(
           `${id}-feature-values`,
           'float32',
           featureCount,
-          props.featureValues
+          providedOutputs.featureValues
         );
-  const overflow = getOrCreateView(graph, `${id}-overflow`, 'uint32', 1, props.overflow);
+  const overflow = getOrCreateView(graph, `${id}-overflow`, 'uint32', 1, providedOutputs.overflow);
+  let groupCount: GraphDataView<'uint32'> | undefined;
+  let groupOverflow: GraphDataView<'uint32'> | undefined;
 
   if (backend === 'zonal') {
     const statisticOutput = {
@@ -181,8 +195,8 @@ export function addPointsInPolygonsChoroplethRecipe<Parameters>(
       })
     );
     const groupKeys = getOrCreateView(graph, `${id}-group-keys`, 'uint32', featureCount);
-    const groupCount = getOrCreateView(graph, `${id}-group-count`, 'uint32', 1);
-    const groupOverflow = getOrCreateView(graph, `${id}-group-overflow`, 'uint32', 1);
+    groupCount = getOrCreateView(graph, `${id}-group-count`, 'uint32', 1);
+    groupOverflow = getOrCreateView(graph, `${id}-group-overflow`, 'uint32', 1);
     const columnOutput = {
       sum: {sumValues: featureValues},
       mean: {means: featureValues},
@@ -214,26 +228,50 @@ export function addPointsInPolygonsChoroplethRecipe<Parameters>(
     featureCount,
     counts,
     featureValues,
-    overflow
+    overflow,
+    outputs: {counts, featureValues},
+    intermediates: {},
+    status: {
+      stages:
+        backend === 'zonal'
+          ? [{stage: 'zonal-statistics', status: {overflow}}]
+          : [
+              {stage: 'point-in-polygon', status: {overflow}},
+              {stage: 'group-statistics', status: {count: groupCount!, overflow: groupOverflow!}}
+            ]
+    }
   };
   const {color} = props;
   if (color) {
+    const providedColorOutputs = providedOutputs.color ?? {};
     const outputs = {
       breaks: getOrCreateView(
         graph,
         `${id}-breaks`,
         'float32',
         color.maximumClassCount + 1,
-        color.breaks
+        providedColorOutputs.breaks
       ),
-      classCount: getOrCreateView(graph, `${id}-class-count`, 'uint32', 1, color.classCount),
-      colors: getOrCreateView(graph, `${id}-colors`, 'uint32', featureCount, color.colors),
+      classCount: getOrCreateView(
+        graph,
+        `${id}-class-count`,
+        'uint32',
+        1,
+        providedColorOutputs.classCount
+      ),
+      colors: getOrCreateView(
+        graph,
+        `${id}-colors`,
+        'uint32',
+        featureCount,
+        providedColorOutputs.colors
+      ),
       classIndices: getOrCreateView(
         graph,
         `${id}-class-indices`,
         'uint32',
         featureCount,
-        color.classIndices
+        providedColorOutputs.classIndices
       )
     };
     builder.add(
@@ -261,6 +299,9 @@ export function addPointsInPolygonsChoroplethRecipe<Parameters>(
       })
     );
     result.color = outputs;
+  }
+  if (result.color) {
+    result.outputs['color'] = result.color;
   }
   return result;
 }

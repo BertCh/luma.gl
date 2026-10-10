@@ -31,6 +31,7 @@ type ClusteringScenario = {
   triangles?: boolean;
   byteOffset?: number;
   maximumWorkgroups?: number;
+  algorithm?: 'auto' | 'direct' | 'canonical';
   expectedCoefficients?: number[];
   expectedTriangles?: number[];
 };
@@ -56,6 +57,34 @@ type ClusteringExecutionFixture = {
   compiled?: ReturnType<GPUCommandGraph['compile']>;
 };
 
+/**
+ * Complete directed graph with every slot repeated and rows emitted in descending destination
+ * order. This is deliberately hostile to the former first-occurrence and linear-membership
+ * scans: 33 vertices produce 3,168 physical slots but only 1,056 distinct directed edges.
+ */
+function createDuplicateCliqueScenario(): ClusteringScenario {
+  const vertexCount = 33;
+  const sources: number[] = [];
+  const targets: number[] = [];
+  for (let source = vertexCount - 1; source >= 0; source--) {
+    for (let target = vertexCount - 1; target >= 0; target--) {
+      if (source === target) continue;
+      for (let duplicate = 0; duplicate < 3; duplicate++) {
+        sources.push(source);
+        targets.push(target);
+      }
+    }
+  }
+  return {
+    name: 'unordered duplicate-heavy clique uses exact canonical row intersections',
+    vertexCount,
+    sourceChunks: [sources.slice(0, 777), [], sources.slice(777)],
+    targetChunks: [targets.slice(0, 777), [], targets.slice(777)],
+    expectedCoefficients: Array(vertexCount).fill(1),
+    expectedTriangles: Array(vertexCount).fill((vertexCount - 1) * (vertexCount - 2))
+  };
+}
+
 const clusteringScenarios: ClusteringScenario[] = [
   {
     name: 'empty directed graph preserves empty coefficient and triangle buffers',
@@ -76,6 +105,7 @@ const clusteringScenarios: ClusteringScenario[] = [
     sourceChunks: [[2, 0], [], [1]],
     targetChunks: [[0, 1], [], [2]],
     directed: false,
+    algorithm: 'canonical',
     expectedCoefficients: [1, 1, 1, 0],
     expectedTriangles: [1, 1, 1, 0]
   },
@@ -188,7 +218,8 @@ const clusteringScenarios: ClusteringScenario[] = [
     sourceChunks: [[1024, 0, 1]],
     targetChunks: [[0, 1, 1024]],
     maximumWorkgroups: 2
-  }
+  },
+  createDuplicateCliqueScenario()
 ];
 
 for (const scenario of clusteringScenarios) {
@@ -426,7 +457,12 @@ function createExecutionFixture(
           scenario.vertexCount,
           scenario.byteOffset
         );
-  const clustering = new GPUGraphLocalClusteringCoefficient({topology, output, triangles});
+  const clustering = new GPUGraphLocalClusteringCoefficient({
+    topology,
+    output,
+    triangles,
+    algorithm: scenario.algorithm
+  });
 
   return {
     device,

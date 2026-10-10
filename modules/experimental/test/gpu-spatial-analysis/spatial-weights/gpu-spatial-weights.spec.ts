@@ -240,6 +240,67 @@ it('GPUContiguityWeights handles holes, corner contact and non-finite vertices',
   expect(rook.neighbors.slice(rook.offsets[2], rook.offsets[3])).toEqual([]);
 });
 
+it('GPUContiguityWeights collapses repeated polygon occurrences before emitting pairs', async () => {
+  const device = await getWebGPUTestDevice();
+  if (!device) return;
+  const cases: {criterion: 'queen' | 'rook'; polygons: OraclePolygons}[] = [
+    {
+      criterion: 'queen',
+      polygons: [
+        [
+          [
+            [0, 0],
+            [0, 0],
+            [0, 0],
+            [1, 0]
+          ]
+        ],
+        [
+          [
+            [0, 0],
+            [0, 0],
+            [2, 0]
+          ]
+        ]
+      ]
+    },
+    {
+      criterion: 'rook',
+      // Every edge has the same undirected key, repeated four times by each polygon.
+      polygons: [
+        [
+          [
+            [0, 0],
+            [1, 0],
+            [0, 0],
+            [1, 0]
+          ]
+        ],
+        [
+          [
+            [0, 0],
+            [1, 0],
+            [0, 0],
+            [1, 0]
+          ]
+        ]
+      ]
+    }
+  ];
+  for (const {criterion, polygons} of cases) {
+    const expected = computeContiguityOracle(polygons, criterion);
+    expect(expected.neighbors).toEqual([1, 0]);
+    const result = await runContiguity(device, polygons, criterion, {
+      capacity: 2,
+      pairCapacity: 2
+    });
+    expect(result.csr.offsets, `${criterion} offsets`).toEqual(expected.offsets);
+    expect(result.csr.neighbors, `${criterion} neighbors`).toEqual(expected.neighbors);
+    expect(result.overflow, `${criterion} overflow`).toBe(0);
+    expect(result.total, `${criterion} total`).toBe(2);
+  }
+});
+
 it('GPUContiguityWeights snapTolerance joins near-coincident vertices', async () => {
   const device = await getWebGPUTestDevice();
   if (!device) return;

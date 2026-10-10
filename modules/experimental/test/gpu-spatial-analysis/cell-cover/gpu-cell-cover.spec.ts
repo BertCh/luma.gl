@@ -38,6 +38,7 @@ import {isCellInsideFeature} from './cell-cover-core-oracle';
 type CoverRun = CoverResult & {
   count: number;
   overflow: number;
+  candidateOverflow: number;
   total: number;
   featureIds: number[];
   core: number[];
@@ -76,6 +77,7 @@ async function runCover(
     core: output(outputCapacity),
     count: output(1),
     overflow: output(1),
+    candidateOverflow: output(1),
     total: output(1)
   };
   const graph = new GPUCommandGraph(device, {id: 'cell-cover-graph'});
@@ -142,7 +144,14 @@ async function runCover(
         core: importGraphBuffer(graph, 'out-core', outputBuffers.core, 'uint32', outputCapacity),
         count: importGraphBuffer(graph, 'out-count', outputBuffers.count, 'uint32', 1),
         overflow: importGraphBuffer(graph, 'out-overflow', outputBuffers.overflow, 'uint32', 1),
-        totalCount: importGraphBuffer(graph, 'out-total', outputBuffers.total, 'uint32', 1)
+        candidateOverflow: importGraphBuffer(
+          graph,
+          'out-candidate-overflow',
+          outputBuffers.candidateOverflow,
+          'uint32',
+          1
+        ),
+        requiredCount: importGraphBuffer(graph, 'out-total', outputBuffers.total, 'uint32', 1)
       }
     })
   );
@@ -150,6 +159,7 @@ async function runCover(
   submitGraph(device, compiled, undefined);
   const [count] = await readUint32(outputBuffers.count, 1);
   const [overflow] = await readUint32(outputBuffers.overflow, 1);
+  const [candidateOverflow] = await readUint32(outputBuffers.candidateOverflow, 1);
   const [total] = await readUint32(outputBuffers.total, 1);
   const ids = await readUint32(outputBuffers.featureIds, outputCapacity);
   const words = await readUint32(outputBuffers.cells, 2 * outputCapacity);
@@ -158,6 +168,7 @@ async function runCover(
     core: core.slice(0, count),
     count,
     overflow,
+    candidateOverflow,
     total,
     featureIds: ids.slice(0, count),
     featureRows: [],
@@ -280,6 +291,7 @@ it('GPUCellCover reports overflow, clamps count and uses feature ids', async () 
     featureIds: [700, 900]
   });
   expect(actual.overflow).toBe(1);
+  expect(actual.candidateOverflow).toBe(0);
   expect(actual.total).toBe(expected.cells.length);
   expect(actual.count).toBe(capacity);
   expect(actual.cells.map(cell => cell.toString(16))).toEqual(
@@ -295,7 +307,8 @@ it('GPUCellCover reports overflow, clamps count and uses feature ids', async () 
     candidateCapacity: 50,
     outputCapacity: 4096
   });
-  expect(limited.overflow).toBe(1);
+  expect(limited.overflow).toBe(0);
+  expect(limited.candidateOverflow).toBe(1);
   const limitedExpected = coverQuadbinOnCPU(flattenCoverFeatures(features), 9, 'center', 50);
   expect(limited.cells).toEqual(limitedExpected.cells);
 });

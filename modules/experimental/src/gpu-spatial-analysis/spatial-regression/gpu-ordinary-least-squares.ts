@@ -34,6 +34,7 @@ import {
   getCholeskyWGSL,
   SPATIAL_REGRESSION_MAXIMUM_PREDICTOR_COUNT
 } from './spatial-regression-solve';
+import type {GPUSolverStatusPort} from '../contracts/index';
 
 const OPERATION = 'GPUOrdinaryLeastSquares';
 const TILE_WORKGROUP_SIZE = 64;
@@ -41,7 +42,7 @@ const MAXIMUM_DEFAULT_TILE_COUNT = 4096;
 const MINIMUM_DEFAULT_TILE_ROWS = 64;
 
 /** Caller-owned outputs of {@link GPUOrdinaryLeastSquares}. */
-export type GPUOrdinaryLeastSquaresOutput = {
+export type GPUOrdinaryLeastSquaresOutput = GPUSolverStatusPort & {
   /** `predictorCount + 1` coefficients, intercept first, then one per predictor column. */
   coefficients: GraphDataView<'float32'>;
   /** Coefficient standard errors, same layout as `coefficients`. */
@@ -54,8 +55,6 @@ export type GPUOrdinaryLeastSquaresOutput = {
    * Breusch-Pagan and p-value, RSS, TSS, skewness, kurtosis, ridge lambda.
    */
   summary: GraphDataView<'float32'>;
-  /** One uint32: 0 ok, 1 singular or ill-conditioned, 2 too few rows (`n <= predictorCount + 1`). */
-  status: GraphDataView<'uint32'>;
   /** Optional per-row residuals `y - fitted`; NaN for excluded rows and for a failed fit. */
   residuals?: GraphDataView<'float32'>;
   /** Optional per-row fitted values; NaN for excluded rows and for a failed fit. */

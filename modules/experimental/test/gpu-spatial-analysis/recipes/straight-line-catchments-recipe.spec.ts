@@ -94,15 +94,17 @@ it('addStraightLineCatchmentsRecipe allocates cells to the nearest facility and 
       seedPositions: fixture.input('seeds', seeds, 'float32x2', seedCount),
       values: fixture.input('values', values, 'float32', values.length),
       sumOrder: 'sorted',
-      allocation: outputs.allocation.view,
-      distances: outputs.distances.view,
-      statistics: {
-        cellCounts: outputs.cellCounts.view,
-        valueCounts: outputs.valueCounts.view,
-        sums: outputs.sums.view,
-        means: outputs.means.view,
-        minimums: outputs.minimums.view,
-        maximums: outputs.maximums.view
+      outputs: {
+        allocation: outputs.allocation.view,
+        distances: outputs.distances.view,
+        statistics: {
+          cellCounts: outputs.cellCounts.view,
+          valueCounts: outputs.valueCounts.view,
+          sums: outputs.sums.view,
+          means: outputs.means.view,
+          minimums: outputs.minimums.view,
+          maximums: outputs.maximums.view
+        }
       }
     });
     expect(recipe.contributors.length).toBe(2);

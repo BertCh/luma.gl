@@ -172,7 +172,7 @@ function getRingOutput(
     segmentFlags: importGraphBuffer(graph, 'segment-flags', buffers.flags, 'uint32', segments),
     count: importGraphBuffer(graph, 'ring-count', buffers.count, 'uint32', 1),
     overflow: importGraphBuffer(graph, 'ring-overflow', buffers.overflow, 'uint32', 1),
-    totalCount: importGraphBuffer(graph, 'ring-total', buffers.total, 'uint32', 1),
+    requiredCount: importGraphBuffer(graph, 'ring-total', buffers.total, 'uint32', 1),
     openSegmentCount: importGraphBuffer(graph, 'ring-open', buffers.open, 'uint32', 1),
     touchingSegmentCount: importGraphBuffer(graph, 'ring-touching', buffers.touching, 'uint32', 1)
   };
@@ -1007,13 +1007,14 @@ async function runPolygons(
     positions: track(createOutputBuffer(device, 2 * options.vertexCapacity)),
     ringOffsets: track(createOutputBuffer(device, options.ringCapacity + 1)),
     polygonOffsets: track(createOutputBuffer(device, options.ringCapacity + 1)),
-    featureOffsets: track(createOutputBuffer(device, 2)),
+    featureOffsets: track(createOutputBuffer(device, options.ringCapacity + 1)),
     pointFeatureIds: track(createOutputBuffer(device, points.length)),
     overflow: track(createOutputBuffer(device, 1)),
     uncertain: track(createOutputBuffer(device, 1))
   };
   const graph = new GPUCommandGraph(device, {id: 'ring-polygons-graph'});
   const polygons = {
+    kind: 'polygons' as const,
     positions: importGraphBuffer(
       graph,
       'polygon-positions',
@@ -1040,7 +1041,7 @@ async function runPolygons(
       'feature-offsets',
       polygonBuffers.featureOffsets,
       'uint32',
-      2
+      options.ringCapacity + 1
     )
   };
   graph.add(
@@ -1096,7 +1097,7 @@ async function runPolygons(
   const result: PolygonRun = {
     ringOffsets: await readUint32(polygonBuffers.ringOffsets, options.ringCapacity + 1),
     polygonOffsets: await readUint32(polygonBuffers.polygonOffsets, options.ringCapacity + 1),
-    featureOffsets: await readUint32(polygonBuffers.featureOffsets, 2),
+    featureOffsets: await readUint32(polygonBuffers.featureOffsets, options.ringCapacity + 1),
     positions: Array.from({length: options.vertexCapacity}, (_, index) => [
       coordinates[2 * index],
       coordinates[2 * index + 1]
@@ -1160,7 +1161,12 @@ it('GPUSegmentRingAssembly polygon layout feeds GPUPointInPolygonJoin', async ()
   const run = await runPolygons(device, scene, options, points);
   expect(run.joinOverflow).toBe(0);
   expect(run.uncertain).toBe(0);
-  expect(run.featureOffsets).toEqual([0, shellStarts.length]);
+  expect(run.featureOffsets.slice(0, shellStarts.length + 1)).toEqual(
+    Array.from({length: shellStarts.length + 1}, (_, index) => index)
+  );
+  for (let feature = shellStarts.length; feature <= options.ringCapacity; feature++) {
+    expect(run.featureOffsets[feature]).toBe(shellStarts.length);
+  }
   expect(run.ringOffsets.slice(0, order.length + 1)).toEqual(expectedRingOffsets);
   for (let ring = order.length; ring <= options.ringCapacity; ring++) {
     expect(run.ringOffsets[ring]).toBe(expectedRingOffsets[order.length]);

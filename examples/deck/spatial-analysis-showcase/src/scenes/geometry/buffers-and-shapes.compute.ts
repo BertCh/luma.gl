@@ -1307,7 +1307,7 @@ function createClipView(env: ViewEnvironment): View {
       `clip-${geometry}`,
       [
         {buffer: output.count, size: 4},
-        {buffer: output.totalCount, size: 4},
+        {buffer: output.requiredCount, size: 4},
         {buffer: output.overflow, size: 4},
         {buffer: output.pathCount, size: 4}
       ],

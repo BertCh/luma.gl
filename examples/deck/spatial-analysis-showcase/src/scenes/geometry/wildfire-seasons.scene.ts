@@ -188,6 +188,8 @@ export default defineScene<WildfireSeasonsOptions>({
   story: storyFromMarkdown<WildfireSeasonsOptions>(narrative, {
     records: {
       headline: 'These are final perimeter records',
+      textAlternative:
+        'Loaded western wildfire perimeter records are sized by agency acres and coloured by record age through January 2024; they are a subset of final mapped perimeters, not ignition events or fire-growth observations.',
       camera: {longitude: -116.5, latitude: 40, zoom: 4.2, transitionMs: 1400},
       optionsMode: 'fresh',
       options: {play: false, time: 1450, trailDays: 1461, colorBy: 'age'},
@@ -195,7 +197,9 @@ export default defineScene<WildfireSeasonsOptions>({
       readouts: ['firesShown', 'totalGpu', 'totalNifc']
     },
     play: {
-      headline: 'Record dates arrive through the seasons',
+      headline: 'Record dates span multiple fire seasons',
+      textAlternative:
+        'Wildfire symbols appear as the playhead crosses perimeter record dates, with symbol area encoding agency acres, colour encoding age and a neutral halo marking the newest record; record timing does not describe fire progression.',
       camera: {longitude: -116.5, latitude: 40, zoom: 4.2, transitionMs: 1400},
       optionsMode: 'fresh',
       options: {play: false, time: 140, speed: '1', trailDays: 365, tailFade: 0.6, colorBy: 'age'},
@@ -203,7 +207,9 @@ export default defineScene<WildfireSeasonsOptions>({
       readouts: ['date', 'firesShown', 'cumulative', 'cumulativeChart']
     },
     window: {
-      headline: 'A fading window is GPU state',
+      headline: 'Time windows encode age and visibility',
+      textAlternative:
+        'A 60-day GPU window shows accepted wildfire records and colours them from older to newly mapped using fade weights; the window filters archive record dates rather than ignition, containment or daily perimeter history.',
       camera: {longitude: -120, latitude: 41, zoom: 5.2, transitionMs: 1600},
       optionsMode: 'fresh',
       options: {play: false, time: 263, trailDays: 60, tailFade: 0.8, colorBy: 'age'},
@@ -212,6 +218,8 @@ export default defineScene<WildfireSeasonsOptions>({
     },
     ledger: {
       headline: 'GPU acres reproduce source polygons',
+      textAlternative:
+        'Grouped bars compare WGS84 GPU-measured polygon acres with agency acres, while a difference scatter and relative-error readouts show agreement; both values describe the loaded final perimeter records, not burned-area progression.',
       camera: {longitude: -116.5, latitude: 40, zoom: 4.2, transitionMs: 1400},
       optionsMode: 'fresh',
       options: {play: false, time: 1450, trailDays: 1461, colorBy: 'age', groupBy: 'year'},
@@ -219,7 +227,9 @@ export default defineScene<WildfireSeasonsOptions>({
       readouts: ['totalGpu', 'totalNifc', 'medianRelativeDifference', 'ledgerChart']
     },
     tour: {
-      headline: 'A few records dominate this subset',
+      headline: 'A few records dominate subset acreage',
+      textAlternative:
+        'A ranked wildfire record is outlined and followed while its agency acreage, date, share and cumulative contribution are reported; rankings apply only to the loaded final-perimeter subset and not to all western fires.',
       camera: {longitude: -120, latitude: 40, zoom: 5.5, transitionMs: 1400},
       optionsMode: 'fresh',
       options: {
@@ -359,9 +369,9 @@ graph.add(new GPUTimeWindowFilter({
   outputMask,                          // 1 for fires in the window
   fadeWeights                          // 0..1, dims toward the old end
 }));
-graph.add(new GPUGeometryMeasures({
+graph.add(new GPUGeometryMeasures({spatialContext: {coordinateSpace: ('${state.areaSystem}') === 'planar' ? 'planar' : 'longitude-latitude', metric: ('${state.areaSystem}') === 'planar' ? 'native' : ('${state.areaSystem}') === 'spherical' ? 'great-circle' : 'ellipsoidal', units: ('${state.areaSystem}') === 'planar' ? 'native' : 'meters'},ellipsoidalEdgeModel: ('${state.areaSystem}') === 'wgs84' ? 'coordinate-linear' : undefined,
   positions, ringOffsets, featureRingOffsets,
-  geometryType: 'polygons', coordinateSystem: '${state.areaSystem}',
+  geometryType: 'polygons',
   groupIds, groupCount: 4,             // ${state.groupBy}
   output: {areas},
   groupOutput: {areas: groupAreas, featureCounts}

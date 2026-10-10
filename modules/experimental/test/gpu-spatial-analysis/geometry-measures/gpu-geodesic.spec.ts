@@ -70,9 +70,13 @@ function createPairsFixture(device: Device, model: 'sphere' | 'wgs84', pairCount
   };
   graph.add(
     new GPUGeodesicPairs({
+      spatialContext: {
+        coordinateSpace: 'longitude-latitude',
+        metric: model === 'wgs84' ? 'ellipsoidal' : 'great-circle',
+        units: 'meters'
+      },
       origins: importGraphBuffer(graph, 'origins', origins, 'float32x2', pairCount),
       targets: importGraphBuffer(graph, 'targets', targets, 'float32x2', pairCount),
-      model,
       output: {
         distances: importGraphBuffer(graph, 'o-distances', outputs.distances, 'float32', pairCount),
         initialBearings: importGraphBuffer(
@@ -254,6 +258,11 @@ it('GPUGeodesicDestination matches f64 sphere and Vincenty direct solutions', as
     const converged = track(createOutputBuffer(device, rows.length));
     graph.add(
       new GPUGeodesicDestination({
+        spatialContext: {
+          coordinateSpace: 'longitude-latitude',
+          metric: model === 'wgs84' ? 'ellipsoidal' : 'great-circle',
+          units: 'meters'
+        },
         origins: importGraphBuffer(
           graph,
           'origins',
@@ -275,7 +284,6 @@ it('GPUGeodesicDestination matches f64 sphere and Vincenty direct solutions', as
           'float32',
           rows.length
         ),
-        model,
         output: {
           destinations: importGraphBuffer(
             graph,

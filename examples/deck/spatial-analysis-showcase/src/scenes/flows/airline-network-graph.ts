@@ -3,7 +3,11 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {Buffer, type Device} from '@luma.gl/core';
-import {GPUCommandGraph, type CompiledGPUCommandGraph} from '@luma.gl/gpgpu/gpu-core';
+import {
+  GPUCommandGraph,
+  type CompiledGPUCommandGraph,
+  type GPUCommandGraphExecution
+} from '@luma.gl/gpgpu/gpu-core';
 import {GPUData, GPUVector} from '@luma.gl/gpgpu/gpu-data';
 import {
   GPUGraph,
@@ -20,6 +24,10 @@ import {SpatialAnalysisResources} from '../../engine/resources';
 import {SummaryReader} from '../../engine/summary-reader';
 
 const SCALAR_BYTES = 4;
+/** Four nine-node aggregated rounds keep submissions bounded while avoiding frame-paced latency. */
+const OPTIMIZATION_ROUNDS_PER_STEP = 4;
+const OPTIMIZATION_NODES_PER_ROUND = 9;
+const OPTIMIZATION_NODES_PER_STEP = OPTIMIZATION_ROUNDS_PER_STEP * OPTIMIZATION_NODES_PER_ROUND;
 
 type ScalarFormat = 'uint32' | 'float32';
 
@@ -348,10 +356,9 @@ export type OptimizationSettings = {
 export type OptimizationRun = {
   resources: SpatialAnalysisResources;
   compiled: CompiledGPUCommandGraph<void>;
+  execution: GPUCommandGraphExecution<void>;
   reader: SummaryReader;
   settings: OptimizationSettings;
-  /** True until the run has been encoded once. */
-  pending: boolean;
 };
 
 /** What an optimization run reports. */
@@ -416,6 +423,16 @@ export function buildOptimizationRun(
     resolution: settings.resolution
   }).addToGraph(graph);
   const compiled = resources.track(graph.compile());
+  // The optimizer synchronizes after every accepted single-vertex move. Encoding every round into
+  // one command buffer can produce thousands of passes and trip a browser GPU watchdog.
+  // Node-count budgeting works here even though these graph kernels predate workload annotations.
+  const execution = compiled.createExecution(
+    {
+      maximumInvocationCount: Number.MAX_SAFE_INTEGER,
+      maximumNodeCount: OPTIMIZATION_NODES_PER_STEP
+    },
+    {latencyPriority: 'background'}
+  );
   const columnBytes = vertexCount * SCALAR_BYTES;
   const reader = new SummaryReader(
     resources,
@@ -441,5 +458,5 @@ export function buildOptimizationRun(
       });
     }
   );
-  return {resources, compiled, reader, settings, pending: true};
+  return {resources, compiled, execution, reader, settings};
 }

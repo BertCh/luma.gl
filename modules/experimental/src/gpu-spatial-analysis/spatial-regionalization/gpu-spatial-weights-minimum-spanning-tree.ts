@@ -194,7 +194,7 @@ export class GPUSpatialWeightsMinimumSpanningTree implements GPUCommandNodeProdu
       props.edges?.ids,
       props.edges?.count,
       props.edges?.overflow,
-      props.edges?.totalCount,
+      props.edges?.requiredCount,
       props.edgeEndpoints,
       props.edgeCosts,
       weights.offsets,
@@ -523,7 +523,7 @@ fn reduceLanes(lane: u32, value: f32) -> f32 {
       const {edges} = props;
       const slotIds = createTransientView(graph, `${id}-slot-ids`, 'uint32', capacity);
       const compactSlots = createTransientView(graph, `${id}-compact-slots`, 'uint32', capacity);
-      const totalCount = createTransientView(graph, `${id}-edge-total`, 'uint32', 1);
+      const requiredCount = createTransientView(graph, `${id}-edge-total`, 'uint32', 1);
       nodes.push(
         createWGSLKernelNode<Parameters>(graph, {
           id: `${id}-slot-ids`,
@@ -538,12 +538,12 @@ fn reduceLanes(lane: u32, value: f32) -> f32 {
           input: slotIds,
           flags: treeEdgeFlags,
           output: compactSlots,
-          count: totalCount
+          count: requiredCount
         }).getCommandNodes(graph),
         createPublishNode<Parameters>(graph, {
           id: `${id}-publish`,
           operation: OPERATION,
-          totalCount,
+          requiredCount,
           compactIds: compactSlots,
           output: edges
         })

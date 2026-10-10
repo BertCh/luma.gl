@@ -388,6 +388,8 @@ export default defineScene<BuffersAndShapesOptions>({
       id: 'walk-shed',
       title: 'Which parts of Chicago are a walk from an L station?',
       headline: 'Straight-line bands surround every station',
+      textAlternative:
+        'Translucent 800-metre discs surround 135 Chicago L station points, showing straight-line proximity to rail; overlapping discs remain separate and the result does not represent routes along the street network.',
       body: `A planner draws an 800 m circle around every rail station to see which neighbourhoods have rapid transit within about a ten-minute walk. \`GPUOutlineGeometry\` builds that picture on the GPU: for each of the 135 stations it writes a round-join disc as a triangle list, straight into a buffer the map draws.
 
 The translucent blue is the buffered area; the dots are the stations. Slide **Buffer distance** below: the triangles are rewritten every frame with no recompile. The big gaps on the far south and west sides are the neighbourhoods more than a walk from the L. This is a picture only: overlaps are not merged, so use a distance query (\`dwithin\`) when you need the numbers.`,
@@ -398,7 +400,9 @@ The translucent blue is the buffered area; the dots are the stations. Slide **Bu
     {
       id: 'corridors',
       title: 'Buffer a line, not a point',
-      headline: 'Transparent overlap invents false density',
+      headline: 'Translucent overlaps do not encode density',
+      textAlternative:
+        'A translucent 400-metre corridor follows eight Chicago L route lines using rectangular segments and round joins; darker overlaps are not density, buffers are not unioned, and low join-segment counts understate the requested distance.',
       body: `The same tool buffers **lines**: every vertex of the eight L routes gets a round join and a rectangle toward the next vertex, so the result is a continuous corridor. Set the distance to 400 m and you see the strip within a five-minute walk of the track, not just of the stations, a useful contrast with the station circles for noise or right-of-way questions.
 
 Set **Buffer around** to *Rings* for buffers of the 77 community area outlines. **Distance units** switches between local metres and spherical mode (positions stay in degrees and metres are scaled per vertex). **Round-join segments** trades smoothness for work: the disc is inscribed, so with only 6 segments the corridor is visibly narrower than 400 m.`,
@@ -410,6 +414,8 @@ Set **Buffer around** to *Rings* for buffers of the 77 community area outlines. 
       id: 'sectors',
       title: 'Sectors that face the Loop',
       headline: 'A shape needs direction and units',
+      textAlternative:
+        'Station-centred sectors point toward the Chicago Loop and are coloured by distance to it from 0 to 20 kilometres; radius, sweep and ring resolution are selectable, while planar and geodesic constructions use different distance models.',
       body: `\`GPUShapeGenerator\` generates **circles, sectors and ellipses** around every station. Here each sector is a pie slice centred on the bearing from the station to the Loop: an inbound catchment. The colour is distance to the Loop from 0 to 20 km, so the outer terminals are bright.
 
 The compile-time choices are the shape and the coordinate system (planar or geodesic); **Segments per ring**, **Radius** and **Sector sweep** are parameter writes. Set **Shape** to *Ellipse* to point a long axis at the Loop, or **Radii are** to *Geodesic metres* to see the spherical ring: at city scale they agree to a metre or two. The readout reports vertices per ring.`,
@@ -420,7 +426,9 @@ The compile-time choices are the shape and the coordinate system (planar or geod
     {
       id: 'grid-and-curve',
       title: 'Tile the city and order it along a curve',
-      headline: 'Cell shape changes the hot cells',
+      headline: 'Cell geometry changes the generated lattice',
+      textAlternative:
+        'A 56 by 72 square lattice is coloured by order-five Hilbert key and joined through sorted cell centres; cell size and geometry change the lattice, while Hilbert order limits key resolution rather than measuring intensity.',
       body: `\`GPUGridGenerator\` tessellates an extent: here a fixed 56 × 72 lattice of squares whose **Cell width** you resize live (below). Each cell is then keyed by \`GPUHilbertKeys\`, a space-filling curve whose consecutive keys are edge-adjacent cells, and the colour shows the position along that curve.
 
 The line is the curve itself, drawn through the cells in sorted order. Raise **Hilbert order** from 3 to 7: each step splits every block in four, so more cells get distinct keys and the curve gets finer (order is compile-time because it sets the radix-sort width). Try **Grid type** *Hexagon*, *Triangle* and *Points*: the generator offers all four layouts.`,
@@ -431,7 +439,9 @@ The line is the curve itself, drawn through the cells in sorted order. Raise **H
     {
       id: 'sort-the-stops',
       title: 'Sort 10,601 transit stops along the curve',
-      headline: 'Nearby keys usually stay nearby',
+      headline: 'Hilbert keys preserve local proximity imperfectly',
+      textAlternative:
+        'All 10,601 Chicago transit stops are ordered by order-eight Hilbert keys and connected in that sequence, with mean consecutive distance compared against file order; spatial proximity is encouraged but not guaranteed.',
       body: `Why order data by a space-filling curve? Locality: items that are near each other in the order are near each other on the map, so tiles, indexes and compression work better. Set **Order** to *All 10,601 transit stops*: each stop gets a Hilbert key within the Chicago bounds and a stable radix sort produces the curve order.
 
 The readout compares the mean hop between consecutive stops along the curve with the hop in file order. Raise **Hilbert order** to 10: the curve now threads the bus network block by block.`,
@@ -443,6 +453,8 @@ The readout compares the mean hop between consecutive stops along the curve with
       id: 'clip',
       title: 'Cut everything to a box',
       headline: 'Clipping creates vertices at boundaries',
+      textAlternative:
+        'Chicago street lines are clipped to a movable axis-aligned rectangle and coloured by source road class, with surviving vertices and pieces reported; clipping is planar and output beyond the fixed capacity is truncated and flagged.',
       body: `\`GPURectangleClip\` clips line and polygon layers to an axis-aligned rectangle on the GPU. Here 100 000 street vertices are cut to a box you can **drag** (or click to move); **Rectangle half-width** below resizes it. Streets that leave and re-enter the box become several pieces; each piece keeps its source street through the \`sourcePaths\` output, so it can be coloured by road class.
 
 The readouts show the vertices that survive, the number of pieces and whether the output overflowed. The rectangle is a per-frame parameter, so dragging costs only a parameter write and one encode.`,
@@ -455,6 +467,8 @@ The readouts show the vertices that survive, the number of pieces and whether th
       id: 'limits',
       title: 'Limits and things to try',
       headline: 'Buffers are not network walksheds',
+      textAlternative:
+        'Community-area rings are clipped to an eight-kilometre half-width rectangle and retain source categories; the planar clip has fixed output capacity, and polygon outlines may include zero-width traces along rectangle boundaries.',
       body: `**Limits.** Buffers are drawn, not unioned (no area, no queries) and have no negative or one-sided mode. Grids are not clipped to an extent and the lattice size is fixed at compile time. Hilbert keys inherit the f32 resolution of the cell choice. Rectangle clipping is planar and truncates output past its capacity (the overflow readout reports it); polygon clips keep zero-width bridges along the box edges, so the filled area is exact but the outline can trace the border.
 
 **Try it.** Set **Clip** to *Community area rings* and watch each ring become one output ring. Switch **Tool** to *Grids and Hilbert order*, set **Hilbert order** to 1 and 2 and count the distinct colours, or to *Circles, sectors, ellipses* and make **Sector sweep** 360 degrees: a full turn keeps its centre spokes.`,
@@ -560,7 +574,7 @@ The readouts show the vertices that survive, the number of pieces and whether th
     {
       id: 'clipTotal',
       label: 'Total vertices before capacity',
-      help: 'The unclamped count (totalCount output).'
+      help: 'The unclamped count (requiredCount output).'
     },
     {id: 'clipOverflow', label: 'Output overflowed'}
   ],
@@ -626,7 +640,7 @@ graph.add(new GPURectangleClip({
   positions, pathOffsets,
   geometryType: '${state.clipGeometry === 'roads' ? 'lines' : 'polygons'}',
   parameters: clipParameters.importToGraph(graph),
-  output: {positions: out, pathOffsets: outOffsets, count, overflow${state.clipGeometry === 'roads' ? ', totalCount, pathCount, sourcePaths' : ''}}
+  output: {positions: out, pathOffsets: outOffsets, count, overflow${state.clipGeometry === 'roads' ? ', requiredCount, pathCount, sourcePaths' : ''}}
 }));
 
 // the rectangle is a per-frame parameter

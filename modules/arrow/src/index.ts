@@ -237,7 +237,10 @@ export {
   type PrepareArrowInputProps
 } from './arrow/gpu/arrow-input-schema';
 export {
+  getGPUPartitionDescriptorFromArrowTable,
+  iterateGPUAnalyticsPartitionsFromArrowTable,
   makeGPUAnalyticsTableFromArrowTable,
+  type GPUAnalyticsArrowPartition,
   type GPUAnalyticsDictionary,
   type GPUAnalyticsTableFromArrowTableProps,
   type GPUAnalyticsTableFromArrowTableResult,

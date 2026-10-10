@@ -144,17 +144,22 @@ export const buildHotSpotScene: RecipeSceneBuilder = async host => {
       tableCapacity: capacity,
       neighborCapacity: capacity * HOT_SPOT_NEIGHBORS_PER_ROW,
       gridSize: [64, 64],
-      neighborSearchParameters: searchParameters.view,
-      table: {cells: tableCells.view, count: tableCount.view, overflow: tableOverflow.view}
+      neighborSearchParameters: searchParameters.view
     },
     parameters: autocorrelation.view,
-    bins: bins.view,
-    globalStatistics: globalStatistics.view,
-    weightsOverflow: weightsOverflow.view,
+    scratch: {
+      table: {cells: tableCells.view, count: tableCount.view, overflow: tableOverflow.view}
+    },
+    outputs: {
+      bins: bins.view,
+      globalStatistics: globalStatistics.view,
+      weightsOverflow: weightsOverflow.view,
+      permutation: {significant: significant.view},
+      color: {colors: colors.view}
+    },
     permutation: {
       parameters: permutationParameters.view,
-      maximumPermutations: HOT_SPOT_MAXIMUM_PERMUTATIONS,
-      significant: significant.view
+      maximumPermutations: HOT_SPOT_MAXIMUM_PERMUTATIONS
     },
     color: {
       classBreaksParameters: classBreaksParameters.view,
@@ -162,8 +167,7 @@ export const buildHotSpotScene: RecipeSceneBuilder = async host => {
       methods: ['equal-interval'],
       colorScaleParameters: colorScaleParameters.view,
       palette: palette.view,
-      maximumPaletteCount: 5,
-      colors: colors.view
+      maximumPaletteCount: 5
     }
   });
   // Display adapter: dim the cells the permutation test does not confirm (a per-frame gate).
@@ -402,15 +406,21 @@ export const buildPeriodComparisonScene: RecipeSceneBuilder = async host => {
     unionCapacity: PERIOD_UNION_CAPACITY,
     before: {
       positions: positions.view,
-      mask: before.view,
-      table: {count: beforeTableCount.view}
+      mask: before.view
     },
-    after: {positions: positions.view, mask: after.view, table: {count: afterTableCount.view}},
-    output: {
-      cells: unionCells.view,
-      delta: delta.view,
-      count: unionCount.view,
-      overflow: unionOverflow.view
+    after: {positions: positions.view, mask: after.view},
+    scratch: {
+      before: {count: beforeTableCount.view},
+      after: {count: afterTableCount.view}
+    },
+    outputs: {
+      comparison: {
+        cells: unionCells.view,
+        delta: delta.view,
+        count: unionCount.view,
+        overflow: unionOverflow.view
+      },
+      colors: colors.view
     },
     classify: 'delta',
     classBreaksParameters: classBreaks.view,
@@ -418,8 +428,7 @@ export const buildPeriodComparisonScene: RecipeSceneBuilder = async host => {
     methods: ['custom'],
     palette: palette.view,
     colorScaleParameters: colorScale.view,
-    maximumPaletteCount: 5,
-    colors: colors.view
+    maximumPaletteCount: 5
   });
   const compiled = kit.compile();
 
@@ -675,10 +684,13 @@ export const buildSpaceTimeScene: RecipeSceneBuilder = async host => {
       bounds
     },
     parameters: emerging.view,
-    category: category.view,
-    hotSliceCount: hotSlices.view,
-    coldSliceCount: coldSlices.view,
-    color: {palette: palette.view, parameters: colorScale.view, colors: colors.view}
+    outputs: {
+      category: category.view,
+      hotSliceCount: hotSlices.view,
+      coldSliceCount: coldSlices.view,
+      colors: colors.view
+    },
+    color: {palette: palette.view, parameters: colorScale.view}
   });
   const compiled = kit.compile();
 

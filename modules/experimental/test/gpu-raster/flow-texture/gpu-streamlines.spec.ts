@@ -32,7 +32,7 @@ type Result = {
   points: Float32Array;
   count: number;
   overflow: number;
-  totalCount: number;
+  requiredCount: number;
   pointCount: number;
   unconverged: number;
   candidates: StreamlineCandidates;
@@ -108,7 +108,7 @@ function createFixture(
           ids: importGraphBuffer(graph, 'ids', outputs.ids, 'uint32', config.lineCapacity),
           count: importGraphBuffer(graph, 'count', outputs.count, 'uint32', 1),
           overflow: importGraphBuffer(graph, 'overflow', outputs.overflow, 'uint32', 1),
-          totalCount: importGraphBuffer(graph, 'total', outputs.total, 'uint32', 1)
+          requiredCount: importGraphBuffer(graph, 'total', outputs.total, 'uint32', 1)
         },
         pathOffsets: importGraphBuffer(
           graph,
@@ -158,7 +158,7 @@ function createFixture(
         count,
         pointCount,
         overflow: (await readUint32(outputs.overflow, 1))[0],
-        totalCount: (await readUint32(outputs.total, 1))[0],
+        requiredCount: (await readUint32(outputs.total, 1))[0],
         unconverged: (await readUint32(outputs.unconverged, 1))[0],
         ids: await readUint32(outputs.ids, count),
         pathOffsets: await readUint32(outputs.pathOffsets, count + 1),
@@ -199,7 +199,7 @@ function expectPruningMatchesOracle(
   expect(actual.ids).toEqual(expected.ids);
   expect(actual.pathOffsets).toEqual(expected.pathOffsets);
   expect(new Uint32Array(actual.points.buffer)).toEqual(new Uint32Array(expected.points.buffer));
-  expect(actual.totalCount).toBe(expected.totalCount);
+  expect(actual.requiredCount).toBe(expected.requiredCount);
   expect(actual.overflow).toBe(expected.overflow);
   expect(actual.pointCount).toBe(expected.pathOffsets[expected.ids.length]);
   return expected;
@@ -349,7 +349,7 @@ it('GPUStreamlines reports capacity overflow, non-convergence, replays and resee
     expect(actual.overflow).toBe(1);
     expect(actual.count).toBeLessThanOrEqual(8);
     expect(actual.pointCount).toBeLessThanOrEqual(200);
-    expect(actual.totalCount).toBeGreaterThan(actual.count);
+    expect(actual.requiredCount).toBeGreaterThan(actual.count);
     expectPruningMatchesOracle(actual, field, smallConfig, VORTEX_SETTINGS);
 
     // Same graph, new seed: different lines; old seed again: bitwise replay.

@@ -48,7 +48,7 @@ type HarnessResult = {
   ids: number[];
   count: number;
   overflow: number;
-  totalCount: number;
+  requiredCount: number;
   drawInstanceCount: number;
   sizes: number[];
   centroids: number[];
@@ -74,7 +74,7 @@ function createHarness(device: Device, options: HarnessOptions) {
     | 'ids'
     | 'count'
     | 'overflow'
-    | 'totalCount'
+    | 'requiredCount'
     | 'drawInstanceCount'
     | 'sizes'
     | 'centroids',
@@ -87,7 +87,7 @@ function createHarness(device: Device, options: HarnessOptions) {
     ids: createOutputBuffer(device, capacity),
     count: createOutputBuffer(device, 1),
     overflow: createOutputBuffer(device, 1),
-    totalCount: createOutputBuffer(device, 1),
+    requiredCount: createOutputBuffer(device, 1),
     drawInstanceCount: createOutputBuffer(device, 1),
     sizes: createOutputBuffer(device, capacity),
     centroids: createOutputBuffer(device, capacity * 2)
@@ -108,7 +108,7 @@ function createHarness(device: Device, options: HarnessOptions) {
       ids: importGraphBuffer(graph, 'ids', outputs.ids, 'uint32', capacity),
       count: importGraphBuffer(graph, 'count', outputs.count, 'uint32', 1),
       overflow: importGraphBuffer(graph, 'overflow', outputs.overflow, 'uint32', 1),
-      totalCount: importGraphBuffer(graph, 'total-count', outputs.totalCount, 'uint32', 1)
+      requiredCount: importGraphBuffer(graph, 'total-count', outputs.requiredCount, 'uint32', 1)
     },
     drawInstanceCount: importGraphBuffer(
       graph,
@@ -151,7 +151,7 @@ function createHarness(device: Device, options: HarnessOptions) {
         ids: await readUint32(outputs.ids, count),
         count,
         overflow: (await readUint32(outputs.overflow, 1))[0],
-        totalCount: (await readUint32(outputs.totalCount, 1))[0],
+        requiredCount: (await readUint32(outputs.requiredCount, 1))[0],
         drawInstanceCount: (await readUint32(outputs.drawInstanceCount, 1))[0],
         sizes: await readUint32(outputs.sizes, capacity),
         centroids: await readFloat32(outputs.centroids, capacity * 2)
@@ -184,7 +184,7 @@ function expectMatchesOracle(
   expect(result.clusterCount).toBe(oracle.clusterCount);
   const bounded = Math.min(oracle.clusterCount, capacity);
   expect(result.count).toBe(bounded);
-  expect(result.totalCount).toBe(oracle.clusterCount);
+  expect(result.requiredCount).toBe(oracle.clusterCount);
   expect(result.overflow).toBe(oracle.clusterCount > capacity ? 1 : 0);
   expect(result.drawInstanceCount).toBe(result.count);
   expect(result.ids).toEqual(oracle.clusterRoots.slice(0, bounded));
@@ -432,7 +432,7 @@ it('GPUSpatialClustering reports cluster capacity overflow', async () => {
     expectMatchesOracle(result, oracle, 2);
     expect(result.count).toBe(2);
     expect(result.overflow).toBe(1);
-    expect(result.totalCount).toBe(oracle.clusterCount);
+    expect(result.requiredCount).toBe(oracle.clusterCount);
     expect(result.clusterCount).toBe(oracle.clusterCount);
   } finally {
     harness.destroy();
@@ -459,7 +459,7 @@ it('GPUSpatialClustering handles empty, single-point, and all-noise inputs', asy
     expect(result.labels).toEqual([]);
     expect(result.clusterCount).toBe(0);
     expect(result.count).toBe(0);
-    expect(result.totalCount).toBe(0);
+    expect(result.requiredCount).toBe(0);
     expect(result.overflow).toBe(0);
     expect(result.sizes).toEqual([0, 0, 0, 0]);
     expect(result.centroids).toEqual(new Array(8).fill(0));

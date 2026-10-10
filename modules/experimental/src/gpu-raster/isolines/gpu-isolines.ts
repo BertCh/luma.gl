@@ -46,12 +46,12 @@ export type GPUIsolinesOutput = {
    * `(c, r) -> (c, r + 1)` is `height * (width - 1) + r * width + c`.
    */
   segmentEdges?: GraphDataView<'uint32x2'>;
-  /** One row receiving `min(totalCount, segments.length)`. */
+  /** One row receiving `min(requiredCount, segments.length)`. */
   count: GraphDataView<'uint32'>;
   /** One row receiving 1 when segments were dropped for lack of capacity, otherwise 0. */
   overflow: GraphDataView<'uint32'>;
   /** Optional one row receiving the unclamped segment count. */
-  totalCount?: GraphDataView<'uint32'>;
+  requiredCount?: GraphDataView<'uint32'>;
 };
 
 /**
@@ -180,9 +180,9 @@ export class GPUIsolines implements GPUCommandNodeProducer {
     for (const [name, scalar] of [
       ['count', output.count],
       ['overflow', output.overflow],
-      ['totalCount', output.totalCount]
+      ['requiredCount', output.requiredCount]
     ] as const) {
-      if (name !== 'totalCount' && !scalar) {
+      if (name !== 'requiredCount' && !scalar) {
         throw new Error(`${id} needs output.${name}`);
       }
       validateIsolinesView(id, `output.${name}`, scalar, 'uint32', 1);
@@ -232,7 +232,7 @@ export class GPUIsolines implements GPUCommandNodeProducer {
       output.segmentEdges,
       output.count,
       output.overflow,
-      output.totalCount,
+      output.requiredCount,
       polylines?.vertices,
       polylines?.polylineOffsets,
       polylines?.polylineLevels,
@@ -398,12 +398,12 @@ ${getCrossingWGSL()}`,
       createPublishNode<Parameters>(graph, {
         id: `${id}-publish`,
         operation: OPERATION,
-        totalCount: total,
+        requiredCount: total,
         output: {
           ids: output.segmentLevels,
           count: output.count,
           overflow: output.overflow,
-          totalCount: output.totalCount
+          requiredCount: output.requiredCount
         }
       })
     );

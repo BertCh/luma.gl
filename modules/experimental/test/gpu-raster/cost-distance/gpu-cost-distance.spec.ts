@@ -50,7 +50,7 @@ type BufferName =
   | 'ids'
   | 'count'
   | 'overflow'
-  | 'totalCount';
+  | 'requiredCount';
 
 type FixtureOptions = {
   width: number;
@@ -203,7 +203,7 @@ function createFixture(device: Device, options: FixtureOptions): Fixture {
     buffers.ids = createOutputBuffer(device, options.path.capacity);
     buffers.count = createOutputBuffer(device, 1);
     buffers.overflow = createOutputBuffer(device, 1);
-    buffers.totalCount = createOutputBuffer(device, 1);
+    buffers.requiredCount = createOutputBuffer(device, 1);
     graph.add(
       new GPUCostDistancePath({
         id: 'cdp',
@@ -215,7 +215,7 @@ function createFixture(device: Device, options: FixtureOptions): Fixture {
           ids: view('ids', 'uint32', options.path.capacity),
           count: view('count', 'uint32', 1),
           overflow: view('overflow', 'uint32', 1),
-          totalCount: view('totalCount', 'uint32', 1)
+          requiredCount: view('requiredCount', 'uint32', 1)
         }
       })
     );
@@ -807,7 +807,7 @@ it('GPUCostDistance emits exact back-links and GPUCostDistancePath extracts exac
       ids: await readUint32(fixture.buffers.ids, count),
       count,
       overflow: (await readUint32(fixture.buffers.overflow, 1))[0],
-      total: (await readUint32(fixture.buffers.totalCount, 1))[0]
+      total: (await readUint32(fixture.buffers.requiredCount, 1))[0]
     };
   };
   expect(await readPath()).toEqual({
@@ -871,7 +871,7 @@ it('GPUCostDistancePath reports overflow with the exact total when capacity is s
   expect(await readUint32(fixture.buffers.ids, 2)).toEqual([8, 5]);
   expect(await readUint32(fixture.buffers.count, 1)).toEqual([2]);
   expect(await readUint32(fixture.buffers.overflow, 1)).toEqual([1]);
-  expect(await readUint32(fixture.buffers.totalCount, 1)).toEqual([4]);
+  expect(await readUint32(fixture.buffers.requiredCount, 1)).toEqual([4]);
   compiled.destroy();
   destroyFixture(fixture);
 });
@@ -941,7 +941,7 @@ async function expectTieSafeBackLinks(
   let path: number[] | undefined;
   if (options.path) {
     const [count] = await readUint32(fixture.buffers.count, 1);
-    const [total] = await readUint32(fixture.buffers.totalCount, 1);
+    const [total] = await readUint32(fixture.buffers.requiredCount, 1);
     path = await readUint32(fixture.buffers.ids, count);
     expect(total).toBe(count);
   }

@@ -135,7 +135,7 @@ it('geometry edit contributors validate props and declare nodes', () => {
       positions: view('float32x2', 8),
       count: view('uint32', 1),
       overflow: view('uint32', 1),
-      totalCount: view('uint32', 1)
+      requiredCount: view('uint32', 1)
     }
   };
   expect(new GPUGeometryCleanup(pointCleanup).getCommandNodes(graph)).toHaveLength(1);

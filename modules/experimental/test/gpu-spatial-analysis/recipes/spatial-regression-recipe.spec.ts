@@ -111,17 +111,24 @@ it('addSpatialRegressionRecipe chains OLS, diagnostics, residual Moran and local
         'float32',
         getGPUSpatialAutocorrelationParameterValues({})
       ),
-      ols: {
-        coefficients: coefficients.view,
-        status: olsStatus.view,
-        residuals: residuals.view
+      outputs: {
+        ols: {
+          coefficients: coefficients.view,
+          status: olsStatus.view,
+          residuals: residuals.view
+        },
+        diagnostics: {
+          tests: tests.view,
+          summary: diagnosticsSummary.view,
+          status: diagnosticsStatus.view
+        },
+        residualMoran: {zScores: moranZ.view},
+        localFits: {
+          coefficients: localCoefficients.view,
+          selectedBandwidth: selectedBandwidth.view,
+          summary: localSummary.view
+        }
       },
-      diagnostics: {
-        tests: tests.view,
-        summary: diagnosticsSummary.view,
-        status: diagnosticsStatus.view
-      },
-      residualMoran: {zScores: moranZ.view},
       localFits: {
         positions: fixture.input('positions', positions, 'float32x2', rowCount),
         parameters: fixture.parameters(
@@ -129,10 +136,7 @@ it('addSpatialRegressionRecipe chains OLS, diagnostics, residual Moran and local
           'float32',
           getGPUGeographicallyWeightedRegressionParameterValues(settings, LADDER_CAPACITY)
         ),
-        maximumBandwidthCount: LADDER_CAPACITY,
-        coefficients: localCoefficients.view,
-        selectedBandwidth: selectedBandwidth.view,
-        summary: localSummary.view
+        maximumBandwidthCount: LADDER_CAPACITY
       }
     });
     expect(recipe.contributors.length).toBe(4);

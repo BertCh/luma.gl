@@ -229,7 +229,7 @@ function createJoin(fixture: Fixture, scene: Scene) {
                 ids: importGraphBuffer(graph, 'ids', outputs.ids, 'uint32', scene.capacity),
                 count: importGraphBuffer(graph, 'count', outputs.count, 'uint32', 1),
                 overflow: importGraphBuffer(graph, 'overflow', outputs.overflow, 'uint32', 1),
-                totalCount: importGraphBuffer(graph, 'total', outputs.total, 'uint32', 1)
+                requiredCount: importGraphBuffer(graph, 'total', outputs.total, 'uint32', 1)
               }
             : undefined
       }

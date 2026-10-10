@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {ground} from '../../cartography/grounds';
 import {defineScene, type LegendSpec} from '../scene';
 import {REGION_PALETTE} from './b6-colors';
 import type {RegionalizationOptions} from './regionalization.compute';
@@ -12,11 +13,11 @@ const ATTRIBUTE_HELP = (text: string) =>
 /** Regionalization of Chicago tracts: SKATER regions versus aspatial k-means. */
 export default defineScene<RegionalizationOptions>({
   id: 'regionalization',
-  title: 'Can Chicago be divided into similar neighbourhood regions?',
+  title: 'Chicago tract variance across contiguous regionalizations',
   chapter: 'regression',
   order: 3,
   summary:
-    'Group 780-odd census tracts into contiguous regions of similar socioeconomic and health character with SKATER, by cutting a minimum spanning tree, and score the result against k-means, which ignores geography.',
+    'SKATER cuts a minimum spanning tree of Chicago ACS and PLACES tract attributes to map contiguous regions and compare explained variance with k-means; greedy cuts and tract estimates limit the partition.',
   contributors: [
     'GPUSpatialWeightsMinimumSpanningTree',
     'GPUSkaterRegions',
@@ -26,6 +27,16 @@ export default defineScene<RegionalizationOptions>({
   ],
   datasets: [{id: 'chicago-tracts', role: 'tract polygons with ACS, SVI and PLACES attributes'}],
   initialView: {longitude: -87.68, latitude: 41.84, zoom: 9.9},
+  basemap: ground('night'),
+  furniture: {
+    title: {
+      title: 'Chicago contiguous regions',
+      subtitle: 'SKATER partitions of socioeconomic and health attributes'
+    },
+    scaleBar: {units: 'metric'},
+    credit: 'US Census Bureau ACS; CDC PLACES',
+    caveat: 'Greedy tree cuts are one feasible partition, not a unique regionalization.'
+  },
 
   options: [
     {
@@ -324,6 +335,9 @@ graph.add(new GPUKMeans({positions: principalPlane, k: ${state.kmeansClusters}, 
     {
       id: 'question',
       title: 'Where are Chicago’s distinct neighbourhood types?',
+      headline: 'Eight contiguous regions partition Chicago tracts',
+      textAlternative:
+        'Chicago census tracts are colored as eight contiguous SKATER regions derived from socioeconomic and health attributes.',
       body: 'Chicago has 780-odd census tracts and dozens of attributes. A planner wants a handful of **regions**: each internally similar (poverty, income, insurance, age, car access and diabetes), but also **contiguous**, so a region can be a service district or a sampling stratum. That is *regionalization*.\n\nThe map shows the finished answer, eight regions from **`GPUSkaterRegions`**, colored so neighbouring regions differ. The next steps build it from the neighbour graph.',
       options: {regions: 8, showTree: false, showCuts: false},
       controls: ['regions'],
@@ -332,6 +346,9 @@ graph.add(new GPUKMeans({positions: principalPlane, k: ${state.kmeansClusters}, 
     {
       id: 'tree',
       title: 'Step 1: the cheapest tree through the neighbour graph',
+      headline: 'Minimum spanning tree connects adjacent similar tracts',
+      textAlternative:
+        'A tree links neighboring Chicago tracts, with brighter edges indicating greater squared attribute dissimilarity.',
       body: '**`GPUContiguityWeights`** finds which tracts touch (queen: share a boundary point). **`GPUSpatialWeightsMinimumSpanningTree`** then keeps just enough links to connect everything at the lowest total cost, where the cost of a link is the **squared distance between the two tracts’ attribute vectors** (SKATER’s metric, spopt `SpanningForest`). It uses Borůvka rounds on the GPU.\n\nWith **Regions** set to 1 the whole city is one region and the tree is drawn: dark lines join similar neighbours, bright ones join neighbours that differ most. Those bright edges are the natural place to cut.',
       options: {regions: 1, showTree: true, treeByCost: true, showCuts: false},
       controls: ['regions', 'showTree', 'treeByCost'],
@@ -340,6 +357,9 @@ graph.add(new GPUKMeans({positions: principalPlane, k: ${state.kmeansClusters}, 
     {
       id: 'cuts',
       title: 'Step 2: cut the tree where it hurts least',
+      headline: 'Seven cuts produce eight contiguous regions',
+      textAlternative:
+        'Red cut edges divide the spanning tree into eight colored contiguous tract regions.',
       body: '**SKATER** (Spatial “K”luster Analysis by Tree Edge Removal) greedily removes the tree edge whose cut most reduces the total within-region sum of squares, then repeats. Every piece of a tree is connected, so every region is **contiguous by construction**. Red lines (**Show the SKATER cuts**) are the cuts for eight regions.\n\nThe readout **Variance removed by each cut** lists the gain of the first cuts. Early cuts separate the South and West sides from the North; later ones carve smaller pockets.',
       options: {regions: 8, showTree: true, showCuts: true},
       controls: ['regions', 'showCuts'],
@@ -348,6 +368,9 @@ graph.add(new GPUKMeans({positions: principalPlane, k: ${state.kmeansClusters}, 
     {
       id: 'region-count',
       title: 'How many regions? Scrub it',
+      headline: 'Additional cuts yield diminishing variance reduction',
+      textAlternative:
+        'Twelve colored regions show a finer partition while readouts list explained variance and successive cut gains.',
       body: 'Move **Regions** from 2 to 20. The partition with k regions is the one with k+1 plus its last cut undone, so the compiled graph holds the whole cut log and the slider is only a parameter write (**Under the hood** shows no rebuild). Watch **Explained variance** and the gains: when each extra cut explains little, you have found the elbow.\n\nRaise **Minimum region size** to forbid tiny regions: a cut is refused when either side would be smaller, so the region count can fall short of the target.',
       options: {regions: 12, minimumSize: 12, showTree: false},
       controls: ['regions', 'minimumSize'],
@@ -356,6 +379,9 @@ graph.add(new GPUKMeans({positions: principalPlane, k: ${state.kmeansClusters}, 
     {
       id: 'standardize',
       title: 'Units matter unless you standardize',
+      headline: 'Unscaled attributes dominate tree costs',
+      textAlternative:
+        'The tract partition changes when raw attribute units replace standardized inputs in the tree cost.',
       body: 'Tree costs add up squared differences across attributes. Turn **Standardize attributes** off and the columns keep their own units: poverty and uninsured rates in points, car-free households in points, diabetes in points, but **ln income** in tiny log units. Large-unit variables now dominate and income barely matters. This is a compile-time option of the spanning tree, so the graph variant compiles once.\n\nTurn it back on before you trust a result: z-scoring gives every attribute an equal voice.',
       options: {regions: 8, standardize: false},
       controls: ['standardize'],
@@ -364,6 +390,9 @@ graph.add(new GPUKMeans({positions: principalPlane, k: ${state.kmeansClusters}, 
     {
       id: 'kmeans',
       title: 'What if geography is ignored? k-means',
+      headline: 'Aspatial clusters split into disconnected pieces',
+      textAlternative:
+        'K-means colors recur in separated Chicago tracts, unlike the connected SKATER regions.',
       body: 'Plain **`GPUKMeans`** groups tracts by attribute similarity alone (here on the first two principal components of the same attributes). Switch **Fill** to *k-means clusters (aspatial)* and set **k-means clusters (for comparison)** to match **Regions**. Every cluster is labelled, but look at the map and the **Connected pieces** readout: a cluster is scattered across many tracts that do not touch.\n\n**`GPURegionPartitionEvaluation`** scores both partitions with one metric. k-means usually explains slightly more variance because it is unconstrained; SKATER pays a small price for contiguity and keeps **Boundary links** far lower. Choose by purpose: typologies for statistics (k-means), territories for action (SKATER).',
       options: {standardize: true, regions: 8, map: 'kmeans', showCuts: false},
       controls: ['map', 'kmeansClusters', 'regions'],
@@ -372,6 +401,9 @@ graph.add(new GPUKMeans({positions: principalPlane, k: ${state.kmeansClusters}, 
     {
       id: 'try',
       title: 'Try it, and know the limits',
+      headline: 'Race-share inputs materially change partitions',
+      textAlternative:
+        'The SKATER partition updates after Black and Hispanic population shares are added to the tract attributes.',
       body: 'Switch on **Black share** and **Hispanic share**: the regions follow Chicago’s well-known segregation pattern. Switch **Contiguity** to rook, change the attribute set, or compare **k-means clusters (for comparison)** with the same count.\n\n**Limits:** SKATER is greedy, so it can miss the best partition; a tree keeps only n-1 links, so some good regions that need a different tree are out of reach; attributes at tract level carry sampling error (ACS, modelled PLACES); and the tool does not decide the right number of regions for you. Reference: spopt `Skater`, ArcGIS Spatially Constrained Multivariate Clustering.',
       options: {map: 'skater', black: true, hispanic: true, regions: 8},
       controls: ['black', 'hispanic', 'criterion', 'kmeansClusters'],

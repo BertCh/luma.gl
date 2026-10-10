@@ -290,7 +290,7 @@ export class GPUKeyJoin implements GPUCommandNodeProducer {
       output.rows?.ids,
       output.rows?.count,
       output.rows?.overflow,
-      output.rows?.totalCount,
+      output.rows?.requiredCount,
       ...gather.map(entry => entry.output),
       ...aggregates.flatMap(entry => [entry.output, entry.sums])
     ];
@@ -319,7 +319,7 @@ export class GPUKeyJoin implements GPUCommandNodeProducer {
       output.rows?.ids,
       output.rows?.count,
       output.rows?.overflow,
-      output.rows?.totalCount
+      output.rows?.requiredCount
     ]);
     const twoWords = props.leftKeys.format === 'uint32x2';
     const leftCount = props.leftKeys.length;
@@ -844,7 +844,7 @@ fn isKeyLess(left: vec2u, right: vec2u) -> bool {
         createPublishNode<Parameters>(graph, {
           id: `${id}-publish`,
           operation: OPERATION,
-          totalCount: total,
+          requiredCount: total,
           output: output.rows
         })
       );

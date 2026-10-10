@@ -114,7 +114,7 @@ class Fixture {
         ids: output('edge-ids', 'uint32', edgeCapacity, 1) as never,
         count: output('edge-count', 'uint32', 1, 1) as never,
         overflow: output('edge-overflow', 'uint32', 1, 1) as never,
-        totalCount: output('edge-total', 'uint32', 1, 1) as never
+        requiredCount: output('edge-total', 'uint32', 1, 1) as never
       },
       edgeTargets: output('edge-targets', 'uint32', edgeCapacity, 1) as never,
       edgeCounts: output('edge-counts', 'uint32', edgeCapacity, 1) as never,

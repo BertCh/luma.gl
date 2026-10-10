@@ -210,6 +210,7 @@ export async function createGullMigration(
   );
   metricsGraph.add(
     new GPUTrajectoryMetrics({
+      spatialContext: {coordinateSpace: 'planar', metric: 'native', units: 'native'},
       id: 'metrics',
       positions: importGraphBuffer(
         metricsGraph,
@@ -280,7 +281,7 @@ export async function createGullMigration(
           ids: importGraphBuffer(metricsGraph, 'stop-ids', stopIds, 'uint32', STOP_CAPACITY),
           count: stopCountView,
           overflow: importGraphBuffer(metricsGraph, 'stop-overflow', stopOverflow, 'uint32', 1),
-          totalCount: importGraphBuffer(metricsGraph, 'stop-total', stopTotal, 'uint32', 1)
+          requiredCount: importGraphBuffer(metricsGraph, 'stop-total', stopTotal, 'uint32', 1)
         },
         drawInstanceCount: metricsGraph.importGPUData(
           'stop-draw-count',
@@ -414,7 +415,7 @@ export async function createGullMigration(
             ids: importGraphBuffer(selectionGraph, 'kept-ids', keptIds, 'uint32', vertexCount),
             count: importGraphBuffer(selectionGraph, 'kept-count', keptCount, 'uint32', 1),
             overflow: importGraphBuffer(selectionGraph, 'kept-overflow', keptOverflow, 'uint32', 1),
-            totalCount: importGraphBuffer(selectionGraph, 'kept-total', keptTotal, 'uint32', 1)
+            requiredCount: importGraphBuffer(selectionGraph, 'kept-total', keptTotal, 'uint32', 1)
           }
         }
       })

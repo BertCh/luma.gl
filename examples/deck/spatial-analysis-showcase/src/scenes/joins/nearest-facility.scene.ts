@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {ground} from '../../cartography/grounds';
 import {defineScene, type LegendSpec} from '../scene';
 import type {NearestFacilityOptions} from './nearest-facility.compute';
 
@@ -35,11 +36,11 @@ const FEATURE_LABELS: Record<NearestFacilityOptions['featureSet'], string> = {
 
 export default defineScene<NearestFacilityOptions>({
   id: 'nearest-facility',
-  title: 'How far is the nearest hospital?',
+  title: 'Chicago places: distance to nearest facility',
   chapter: 'joins',
   order: 2,
   summary:
-    'Snap 105,808 Chicago places to the nearest hospital, library, school, fire station, L station, bus stop or L line within a radius, find their k nearest with foot points, turn kNN into spatial weights and see the bounding-box candidates behind a distance join.',
+    'A GPU nearest-feature join measures straight-line distance from 105,808 Chicago places to facilities, transit stops or rail lines and can return k-neighbor weights. Results exclude route impedance and service capacity.',
   contributors: ['GPUNearestFeatureJoin', 'GPUNearestFeatureWeights', 'GPUSpatialJoinCandidates'],
   datasets: [
     {id: 'chicago-places', role: 'places to join (queries)'},
@@ -48,6 +49,13 @@ export default defineScene<NearestFacilityOptions>({
     {id: 'chicago-tracts', role: 'polygons for the candidate stage'}
   ],
   initialView: {longitude: -87.68, latitude: 41.84, zoom: 10},
+  basemap: ground('paperCity'),
+  furniture: {
+    title: {title: 'Nearest facility', subtitle: 'Planar distance from mapped Chicago places'},
+    scaleBar: {units: 'metric'},
+    credit: 'City of Chicago; Chicago Transit Authority; Overture Maps Foundation',
+    caveat: 'Straight-line proximity excludes street access, travel time, capacity and eligibility.'
+  },
 
   options: [
     {
@@ -255,7 +263,7 @@ export default defineScene<NearestFacilityOptions>({
       label: 'Colour ramp',
       group: 'Display',
       apply: 'param',
-      default: 'viridis',
+      default: 'cividis',
       disabledWhen: state => state.mode === 'weights' || state.mode === 'candidates',
       help: 'Perceptually uniform ramps. The legend and the map share one ramp table.',
       options: [
@@ -407,7 +415,7 @@ export default defineScene<NearestFacilityOptions>({
           kind: 'ramp',
           id: 'catchment',
           title: `Places nearest to each ${label}`,
-          ramp: 'magma',
+          ramp: 'cividis',
           extent: 'gpu',
           sqrtScale: true,
           unit: 'places',
@@ -469,7 +477,7 @@ graph.add(
     left: {kind: 'points', positions: facilities},
     right: {kind: 'polygons', positions, featureOffsets, polygonOffsets, ringOffsets},
     distance: candidateDistance.importToGraph(graph),        // one-row float32, read per frame
-    pairs: {leftIds, rightIds, count, overflow, totalCount}  // sorted by (left, right)
+    pairs: {leftIds, rightIds, count, overflow, requiredCount}  // sorted by (left, right)
   })
 );`;
     return `${join}
@@ -489,6 +497,9 @@ compiled.encode(commandEncoder, {parameters: undefined});`;
   story: [
     {
       id: 'the-question',
+      headline: 'Most mapped places receive one nearest hospital',
+      textAlternative:
+        'Lines connect Chicago places to their nearest hospital within the selected radius.',
       controls: ['featureSet', 'radius'],
       readouts: ['median', 'catchment'],
       title: 'How far is every place from the nearest hospital?',
@@ -505,6 +516,9 @@ compiled.encode(commandEncoder, {parameters: undefined});`;
     },
     {
       id: 'snap-radius',
+      headline: 'A finite radius leaves unmatched places',
+      textAlternative:
+        'Places beyond the maximum snap radius remain unlinked to any selected facility.',
       controls: ['radius', 'showLinks'],
       readouts: ['matched', 'overflow'],
       title: 'Snap only within a radius',
@@ -513,6 +527,9 @@ compiled.encode(commandEncoder, {parameters: undefined});`;
     },
     {
       id: 'walk-to-a-stop',
+      headline: 'Bus-stop proximity increases matches within walking distance',
+      textAlternative:
+        'Chicago places connect to the nearest bus stop inside the chosen straight-line threshold.',
       controls: ['featureSet', 'radius', 'spatialSort', 'measure'],
       readouts: ['walkable', 'timeSort'],
       title: 'Change the question: a bus stop within a walk',
@@ -522,6 +539,9 @@ compiled.encode(commandEncoder, {parameters: undefined});`;
     },
     {
       id: 'k-nearest',
+      headline: 'Each place returns ordered facilities and foot points',
+      textAlternative:
+        'Multiple links join a place to its nearest facilities at exact closest points.',
       controls: ['maxDistance', 'kShown', 'ties'],
       title: 'k nearest, with the foot point',
       body: '**Join mode** *k nearest with foot points* returns an ordered list of the k nearest features per place with **exact distances and the foot point**: the closest point on the feature, here a spot on an L track. **Search limit** is the outer bound on how far it looks. Features can be lines or polygons, not only points. Inside that bound the traversal prunes branches farther than the current k-th distance, so the limit only has to be generous, not tuned to the answer.\n\nThe join is compiled for k = 8 and **Neighbours drawn (k)** just shows the first slots. Compare **Ties at the k-th distance** set to *Keep all tied features*: that is pandas `sjoin_nearest` semantics and needs spare slots.',
@@ -538,6 +558,9 @@ compiled.encode(commandEncoder, {parameters: undefined});`;
     },
     {
       id: 'knn-weights',
+      headline: 'Distance weighting reduces influence from farther neighbors',
+      textAlternative:
+        'Nearest-neighbor links vary in weight according to selected distance-decay parameters.',
       controls: ['weightK', 'weightType', 'weightPower'],
       readouts: ['weightsRows', 'weightsSymmetry'],
       title: 'Turn nearest neighbours into spatial weights',
@@ -553,6 +576,9 @@ compiled.encode(commandEncoder, {parameters: undefined});`;
     },
     {
       id: 'candidate-stage',
+      headline: 'Bounding boxes reduce exact distance tests',
+      textAlternative:
+        'Candidate geometry pairs appear before exact point-to-feature distances are evaluated.',
       controls: ['candidateDistance'],
       readouts: ['candidatePairs', 'candidateExact', 'candidateTracts'],
       title: 'What a distance join looks at first',
@@ -562,6 +588,9 @@ compiled.encode(commandEncoder, {parameters: undefined});`;
     },
     {
       id: 'limits',
+      headline: 'Straight-line distance excludes route accessibility',
+      textAlternative:
+        'Nearest links cross the map directly without accounting for streets, barriers or service capacity.',
       controls: ['featureSet', 'radius', 'placeCategory'],
       readouts: ['matched'],
       title: 'Straight lines are not travel time',

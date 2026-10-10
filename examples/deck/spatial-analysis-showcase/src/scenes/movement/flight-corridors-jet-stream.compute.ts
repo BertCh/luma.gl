@@ -5,7 +5,6 @@
 import type {Layer} from '@deck.gl/core';
 import {GPUTrajectoryMetrics} from '@luma.gl/experimental/gpu-spatial-analysis';
 import {GPUCommandGraph} from '@luma.gl/gpgpu/gpu-core';
-import {US} from '../../cartography/gazetteer';
 import {importGraphBuffer} from '../../engine/graph-buffers';
 import type {RampName} from '../../engine/ramps';
 import {formatCount, SpatialAnalysisResources} from '../../engine/resources';
@@ -20,8 +19,8 @@ import {
 } from './flight-corridors-data';
 import {FlightSegmentLayer} from './flight-corridors-layers';
 
-/** Option state of the jet stream scene. */
-export type JetStreamOptions = {
+/** Option state of the directional flight-speed contrast scene. */
+export type FlightSpeedContrastOptions = {
   show: 'all' | 'east' | 'west';
   minAltitude: number;
   coneDegrees: number;
@@ -46,18 +45,18 @@ const PROFILES = {
 type Snapshot = {speeds: Float32Array; headings: Float32Array};
 
 /**
- * Jet stream from aircraft alone. One `GPUTrajectoryMetrics` graph measures the speed and heading
- * of every step of every flight (in azimuthal-equidistant metres, once, since the data is static).
- * The map colors the steps straight from those GPU buffers with a shader-side cruise-altitude and
- * direction filter; the statistics read the same two columns back once and bin them on the CPU.
+ * Directional cruise-speed contrast. One `GPUTrajectoryMetrics` graph measures speed and heading
+ * for every flight step in azimuthal-equidistant metres. The map reads those GPU buffers through a
+ * shader-side altitude and direction filter. Statistics read the columns back once and compare
+ * unmatched eastbound and westbound samples on the CPU.
  */
-export async function createJetStream(
-  ctx: SceneContext<JetStreamOptions>
-): Promise<SceneInstance<JetStreamOptions>> {
+export async function createFlightSpeedContrast(
+  ctx: SceneContext<FlightSpeedContrastOptions>
+): Promise<SceneInstance<FlightSpeedContrastOptions>> {
   const flights: FlightSet = loadFlights(ctx.datasets.get(FLIGHT_DATASET_ID));
   const {device} = ctx;
   const {trackCount, vertexCount, segmentCount} = flights;
-  const resources = new SpatialAnalysisResources(device, 'jet-stream');
+  const resources = new SpatialAnalysisResources(device, 'flight-speed-contrast');
 
   const positionsBuffer = resources.createBuffer('positions', flights.positions);
   const lngLatBuffer = resources.createBuffer('lng-lat', flights.lngLat);
@@ -69,9 +68,10 @@ export async function createJetStream(
   const stepSpeeds = resources.createBuffer('step-speeds', vertexCount * 4);
   const stepHeadings = resources.createBuffer('step-headings', vertexCount * 4);
 
-  const metricsGraph = new GPUCommandGraph<void>(device, {id: 'jet-stream-metrics'});
+  const metricsGraph = new GPUCommandGraph<void>(device, {id: 'flight-speed-contrast-metrics'});
   metricsGraph.add(
     new GPUTrajectoryMetrics({
+      spatialContext: {coordinateSpace: 'planar', metric: 'native', units: 'native'},
       id: 'metrics',
       positions: importGraphBuffer(
         metricsGraph,
@@ -118,10 +118,13 @@ export async function createJetStream(
 
   ctx.setReadout('flights', `${formatCount(trackCount)} flights`);
   ctx.setReadout('steps', `${formatCount(segmentCount)} steps measured on the GPU`);
+  ctx.setStatus(
+    'Directional samples are unmatched; aircraft, route, altitude, location, and time confound the half-difference proxy.'
+  );
 
   const reader = new SummaryReader(
     resources,
-    'jet-stream-steps',
+    'flight-speed-contrast-steps',
     [
       {buffer: stepSpeeds, size: vertexCount * 4},
       {buffer: stepHeadings, size: vertexCount * 4}
@@ -195,16 +198,18 @@ export async function createJetStream(
     ctx.setReadout(
       'difference',
       eastCount && westCount
-        ? `${difference.toFixed(0)} kn (${(difference * 1.852).toFixed(0)} km/h) faster eastbound`
+        ? `${difference.toFixed(0)} kn (${(difference * 1.852).toFixed(0)} km/h) east−west`
         : 'n/a'
     );
     ctx.setReadout(
-      'airspeed',
+      'midpoint',
       eastCount && westCount ? `${((eastMedian + westMedian) / 2).toFixed(0)} kn` : 'n/a'
     );
     ctx.setReadout(
-      'wind',
-      eastCount && westCount ? `${(difference / 2).toFixed(0)} kn along the flight axis` : 'n/a'
+      'windProxy',
+      eastCount && westCount
+        ? `${(difference / 2).toFixed(0)} kn half-difference; unmatched samples`
+        : 'n/a'
     );
     ctx.setReadout(
       'samples',
@@ -216,30 +221,6 @@ export async function createJetStream(
         ? `median |derived - reported| = ${getMedian(differences).toFixed(1)} kn over ${formatCount(differences.length)} steps`
         : 'n/a'
     );
-    // The two arrows make the signed quantity spatial: orange reads as a tailwind along an
-    // eastbound route, purple as a headwind along a westbound route. Their anchors are verified
-    // airport gazetteer locations, rather than coordinates embedded in the story.
-    ctx.setAnnotations('wind-direction', [
-      {
-        kind: 'arrow',
-        id: 'tailwind',
-        from: US.places.den.lngLat,
-        to: US.places.ord.lngLat,
-        text: `eastbound: ${(difference / 2).toFixed(0)} kn tailwind`,
-        tone: 'signal',
-        priority: 8
-      },
-      {
-        kind: 'arrow',
-        id: 'headwind',
-        from: US.places.ord.lngLat,
-        to: US.places.den.lngLat,
-        text: `westbound: ${(difference / 2).toFixed(0)} kn headwind`,
-        tone: 'muted',
-        priority: 7
-      }
-    ]);
-
     const centers = Array.from(
       {length: histogramBins},
       (_, bin) => HISTOGRAM_LOW + (bin + 0.5) * HISTOGRAM_BIN
@@ -288,7 +269,7 @@ export async function createJetStream(
     const westProfile = westBins.map(values =>
       values.length >= MINIMUM_BIN_SAMPLES ? getMedian(values) : Number.NaN
     );
-    const wind = eastProfile.map((value, bin) => (value - westProfile[bin]) / 2);
+    const windProxy = eastProfile.map((value, bin) => (value - westProfile[bin]) / 2);
     ctx.setChart('profileChart', {
       kind: 'line',
       height: 150,
@@ -298,11 +279,11 @@ export async function createJetStream(
       series: [
         {label: 'eastbound', x: profileCenters, y: eastProfile, color: 0},
         {label: 'westbound', x: profileCenters, y: westProfile, color: 1},
-        {label: 'half the difference', x: profileCenters, y: wind, color: 2, dashed: true}
+        {label: 'half-difference proxy', x: profileCenters, y: windProxy, color: 2, dashed: true}
       ],
       formatX: value => (chartBy === 'altitude' ? `${Math.round(value)}` : value.toFixed(0)),
       formatY: value => `${Math.round(value)}`,
-      description: `Median ground speed of eastbound and westbound steps by ${chartBy}; the dashed line is half their difference, the average tailwind component.`
+      description: `Median ground speed of unmatched eastbound and westbound steps by ${chartBy}; the dashed line is their half-difference, an effective along-track wind proxy confounded by aircraft, route, altitude, location, and time sampling.`
     });
   }
 
@@ -341,7 +322,7 @@ export async function createJetStream(
       const derived = options.speedSource === 'derived';
       const layers: Layer[] = [
         new FlightSegmentLayer({
-          id: 'jet-stream-steps',
+          id: 'flight-speed-contrast-steps',
           lngLat: lngLatBuffer,
           elevations: altitudeBuffer,
           endVertices: endVerticesBuffer,

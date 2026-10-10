@@ -101,12 +101,18 @@ it('addPeriodComparisonRecipe aggregates two periods, compares them and colors t
           periods.after.length / 2
         )
       },
-      output: {
-        cells: cells.view,
-        delta: delta.view,
-        zScore: zScore.view,
-        count: count.view,
-        overflow: overflow.view
+      outputs: {
+        comparison: {
+          cells: cells.view,
+          delta: delta.view,
+          zScore: zScore.view,
+          count: count.view,
+          overflow: overflow.view
+        },
+        breaks: breaks.view,
+        classCount: classCount.view,
+        colors: colors.view,
+        classIndices: classIndices.view
       },
       classify: 'delta',
       classBreaksParameters: fixture.parameters(
@@ -127,11 +133,7 @@ it('addPeriodComparisonRecipe aggregates two periods, compares them and colors t
           noDataColor: packGPUColor(0, 0, 0, 0)
         })
       ),
-      maximumPaletteCount: 5,
-      breaks: breaks.view,
-      classCount: classCount.view,
-      colors: colors.view,
-      classIndices: classIndices.view
+      maximumPaletteCount: 5
     });
     expect(recipe.contributors.length).toBe(5);
     fixture.run();

@@ -8,18 +8,22 @@ import {Kernel} from '@luma.gl/engine';
 import {getGPUVectorFormatInfo} from '@luma.gl/gpgpu/gpu-data';
 import type {GPUCommandGraph, GraphBufferUse, GraphDataView} from './gpu-command-graph';
 import {
+  doGraphDataViewsOverlap,
   getViewBinding,
   getViewElementOffset,
   validatePackedUint32View,
   validatePackedView
 } from './graph-data-view-utils';
+import {
+  getBoundedDispatchLayout,
+  getBoundedInvocationIndexSource,
+  type GPUBoundedDispatchLayout
+} from './gpu-dispatch-utils';
 
 const BVH_WORKGROUP_SIZE = 256;
 const MAXIMUM_FUSED_LEAF_CAPACITY = 128;
 const FUSED_WORKGROUP_BYTES_PER_LEAF = 64;
 const INVALID_NODE = 0xffffffff;
-
-type GPUBVHDispatchLayout = {x: number; y: number; z: number};
 
 /** Packed two- or three-dimensional bounds consumed and published by {@link GPUBVH}. */
 export type GPUBVHBoundsView = GraphDataView<'float32x2'> | GraphDataView<'float32x3'>;
@@ -169,6 +173,7 @@ export class GPUBVH {
     if (this.count.length < 1 || this.overflow.length < 1) {
       throw new Error(`${this.id} count and overflow must each contain one uint32 row`);
     }
+    validateDisjointViews(this);
 
     const boundsByteLength = getGPUVectorFormatInfo(this.minima.format).byteLength;
     this.stats = {
@@ -211,8 +216,10 @@ export class GPUBVH {
         ...addLoadLeavesPass(
           graph,
           this,
-          getGPUBVHDispatchLayout(
+          getBoundedDispatchLayout(
+            `${this.id}-load-leaves`,
             this.nodeCount,
+            BVH_WORKGROUP_SIZE,
             graph.device.limits.maxComputeWorkgroupsPerDimension
           )
         )
@@ -364,7 +371,7 @@ fn finite(value: f32) -> bool {
         outputCount: bvh.count,
         outputOverflow: bvh.overflow
       },
-      dispatchCount: 1
+      dispatch: {x: 1, y: 1, z: 1}
     })
   );
 
@@ -374,7 +381,7 @@ fn finite(value: f32) -> bool {
 function addLoadLeavesPass<Parameters>(
   graph: GPUCommandGraph<Parameters>,
   bvh: GPUBVH,
-  dispatchLayout: GPUBVHDispatchLayout
+  dispatch: GPUBoundedDispatchLayout
 ): readonly GPUCommandNode<Parameters>[] {
   const nodes: GPUCommandNode<Parameters>[] = [];
   const source = /* wgsl */ `
@@ -407,10 +414,10 @@ fn finite(value: f32) -> bool {
 
 @compute @workgroup_size(${BVH_WORKGROUP_SIZE}) fn main(
   @builtin(workgroup_id) workgroupId: vec3<u32>,
-  @builtin(local_invocation_id) localId: vec3<u32>
+  @builtin(local_invocation_index) localInvocationIndex: u32
 ) {
-  let workgroupIndex = (workgroupId.z * ${dispatchLayout.y}u + workgroupId.y) * ${dispatchLayout.x}u + workgroupId.x;
-  let nodeIndex = workgroupIndex * ${BVH_WORKGROUP_SIZE}u + localId.x;
+  ${getBoundedInvocationIndexSource(dispatch, BVH_WORKGROUP_SIZE)}
+  let nodeIndex = index;
   if (nodeIndex >= NODE_COUNT) { return; }
   let nodeComponent = nodeIndex * DIMENSION;
   for (var axis = 0u; axis < DIMENSION; axis++) {
@@ -475,7 +482,7 @@ fn finite(value: f32) -> bool {
         outputCount: bvh.count,
         outputOverflow: bvh.overflow
       },
-      dispatchSize: dispatchLayout
+      dispatch
     })
   );
 
@@ -490,8 +497,10 @@ function addRemapSourceIdsPass<Parameters>(
 ): readonly GPUCommandNode<Parameters>[] {
   const nodes: GPUCommandNode<Parameters>[] = [];
   const storedCount = Math.min(sourceIds.length, bvh.leafCapacity);
-  const dispatchLayout = getGPUBVHDispatchLayout(
+  const dispatch = getBoundedDispatchLayout(
+    `${bvh.id}-remap-source-ids`,
     storedCount,
+    BVH_WORKGROUP_SIZE,
     graph.device.limits.maxComputeWorkgroupsPerDimension
   );
   const source = /* wgsl */ `
@@ -503,10 +512,10 @@ const LEAF_IDS_OFFSET: u32 = ${getViewElementOffset(bvh.leafIds)}u;
 
 @compute @workgroup_size(${BVH_WORKGROUP_SIZE}) fn main(
   @builtin(workgroup_id) workgroupId: vec3<u32>,
-  @builtin(local_invocation_id) localId: vec3<u32>
+  @builtin(local_invocation_index) localInvocationIndex: u32
 ) {
-  let workgroupIndex = (workgroupId.z * ${dispatchLayout.y}u + workgroupId.y) * ${dispatchLayout.x}u + workgroupId.x;
-  let leafIndex = workgroupIndex * ${BVH_WORKGROUP_SIZE}u + localId.x;
+  ${getBoundedInvocationIndexSource(dispatch, BVH_WORKGROUP_SIZE)}
+  let leafIndex = index;
   if (leafIndex >= STORED_COUNT) { return; }
   let sourceIndex = leafIds[LEAF_IDS_OFFSET + leafIndex];
   if (sourceIndex == ${INVALID_NODE}u) { return; }
@@ -521,11 +530,32 @@ const LEAF_IDS_OFFSET: u32 = ${getViewElementOffset(bvh.leafIds)}u;
         {buffer: bvh.leafIds, usage: 'storage-read-write'}
       ],
       bindings: {sourceIds, leafIds: bvh.leafIds},
-      dispatchSize: dispatchLayout
+      dispatch
     })
   );
 
   return nodes;
+}
+
+function validateDisjointViews(bvh: GPUBVH): void {
+  const inputs = [bvh.minima, bvh.maxima, ...(bvh.sourceIds ? [bvh.sourceIds] : [])];
+  const outputs = [
+    bvh.nodeMinima,
+    bvh.nodeMaxima,
+    bvh.nodeChildren,
+    bvh.leafIds,
+    bvh.count,
+    bvh.overflow
+  ];
+  for (let outputIndex = 0; outputIndex < outputs.length; outputIndex++) {
+    const output = outputs[outputIndex]!;
+    if (inputs.some(input => doGraphDataViewsOverlap(input, output))) {
+      throw new Error(`${bvh.id} output views must not overlap source inputs`);
+    }
+    if (outputs.slice(outputIndex + 1).some(other => doGraphDataViewsOverlap(output, other))) {
+      throw new Error(`${bvh.id} output views must not overlap one another`);
+    }
+  }
 }
 
 function addRefitLevelPass<Parameters>(
@@ -536,6 +566,12 @@ function addRefitLevelPass<Parameters>(
   const nodes: GPUCommandNode<Parameters>[] = [];
   const firstNode = 2 ** depth - 1;
   const levelNodeCount = 2 ** depth;
+  const dispatch = getBoundedDispatchLayout(
+    `${bvh.id}-refit-depth-${depth}`,
+    levelNodeCount,
+    BVH_WORKGROUP_SIZE,
+    graph.device.limits.maxComputeWorkgroupsPerDimension
+  );
   const source = /* wgsl */ `
 const FIRST_NODE: u32 = ${firstNode}u;
 const LEVEL_NODE_COUNT: u32 = ${levelNodeCount}u;
@@ -548,10 +584,12 @@ const CHILDREN_OFFSET: u32 = ${getViewElementOffset(bvh.nodeChildren)}u;
 @group(0) @binding(2) var<storage, read> nodeChildren: array<u32>;
 
 @compute @workgroup_size(${BVH_WORKGROUP_SIZE}) fn main(
-  @builtin(global_invocation_id) globalId: vec3<u32>
+  @builtin(workgroup_id) workgroupId: vec3<u32>,
+  @builtin(local_invocation_index) localInvocationIndex: u32
 ) {
-  if (globalId.x >= LEVEL_NODE_COUNT) { return; }
-  let nodeIndex = FIRST_NODE + globalId.x;
+  ${getBoundedInvocationIndexSource(dispatch, BVH_WORKGROUP_SIZE)}
+  if (index >= LEVEL_NODE_COUNT) { return; }
+  let nodeIndex = FIRST_NODE + index;
   let childComponent = nodeIndex * 2u;
   let left = nodeChildren[CHILDREN_OFFSET + childComponent];
   let right = nodeChildren[CHILDREN_OFFSET + childComponent + 1u];
@@ -580,7 +618,7 @@ const CHILDREN_OFFSET: u32 = ${getViewElementOffset(bvh.nodeChildren)}u;
         nodeMaxima: bvh.nodeMaxima,
         nodeChildren: bvh.nodeChildren
       },
-      dispatchCount: Math.ceil(levelNodeCount / BVH_WORKGROUP_SIZE)
+      dispatch
     })
   );
 
@@ -594,8 +632,7 @@ function addKernelPass<Parameters>(
     source: string;
     resources: GraphBufferUse[];
     bindings: Record<string, GraphDataView>;
-    dispatchCount?: number;
-    dispatchSize?: GPUBVHDispatchLayout;
+    dispatch: GPUBoundedDispatchLayout;
   }
 ): readonly GPUCommandNode<Parameters>[] {
   const nodes: GPUCommandNode<Parameters>[] = [];
@@ -623,16 +660,12 @@ function addKernelPass<Parameters>(
               bindings[name] = getViewBinding(view, getBuffer);
             }
 
-            if (props.dispatchSize) {
-              kernel.dispatch(computePass, {
-                bindings,
-                x: props.dispatchSize.x,
-                y: props.dispatchSize.y,
-                z: props.dispatchSize.z
-              });
-            } else {
-              kernel.dispatch(computePass, {bindings, x: props.dispatchCount!});
-            }
+            kernel.dispatch(computePass, {
+              bindings,
+              x: props.dispatch.x,
+              y: props.dispatch.y,
+              z: props.dispatch.z
+            });
           },
           destroy: () => kernel.destroy()
         };
@@ -641,24 +674,6 @@ function addKernelPass<Parameters>(
   );
 
   return nodes;
-}
-
-/** Plans a bounded 3D dispatch for BVH node initialization. @internal */
-export function getGPUBVHDispatchLayout(
-  nodeCount: number,
-  maxComputeWorkgroupsPerDimension: number
-): GPUBVHDispatchLayout {
-  const maximum = Math.floor(maxComputeWorkgroupsPerDimension);
-  const workgroupCount = Math.max(1, Math.ceil(nodeCount / BVH_WORKGROUP_SIZE));
-  const x = Math.min(workgroupCount, maximum);
-  const y = Math.min(Math.ceil(workgroupCount / x), maximum);
-  const z = Math.ceil(workgroupCount / x / y);
-  if (z > maximum) {
-    throw new Error(
-      `GPUBVH requires ${workgroupCount} workgroups, exceeding the 3D dispatch limit of ${maximum} per dimension`
-    );
-  }
-  return {x, y, z};
 }
 
 function isPowerOfTwo(value: number): boolean {

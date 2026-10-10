@@ -250,7 +250,7 @@ export type IsobandsGeometry = {
   /** Cell index per emitted triangle. */
   cells: number[];
   /** Unclamped triangle count. */
-  totalCount: number;
+  requiredCount: number;
 };
 
 /** Converts pieces to fan triangles `(p0, p[i], p[i + 1])`. */
@@ -266,7 +266,7 @@ export function fanTriangulate(piece: readonly BandVertex[]): BandVertex[][] {
  * Whole-raster band triangles in (cell, band, piece, fan) order, mirroring the GPU contributor.
  *
  * @param parameters Packed `getGPUIsobandsParameterValues` array.
- * @param capacity Triangle capacity; extra triangles only count toward `totalCount`.
+ * @param capacity Triangle capacity; extra triangles only count toward `requiredCount`.
  */
 export function buildIsobandTrianglesOnCPU(
   scene: IsobandsScene,
@@ -277,7 +277,7 @@ export function buildIsobandTrianglesOnCPU(
   const breakCount = Math.min(parameters[0], maximumBreakCount);
   const firstBand = Math.min(parameters[1], maximumBreakCount);
   const lastBand = Math.min(parameters[2], maximumBreakCount, breakCount);
-  const result: IsobandsGeometry = {triangles: [], bands: [], cells: [], totalCount: 0};
+  const result: IsobandsGeometry = {triangles: [], bands: [], cells: [], requiredCount: 0};
   const cellColumns = scene.width - 1;
   for (let cell = 0; cell < cellColumns * (scene.height - 1); cell++) {
     const column = cell % cellColumns;
@@ -301,12 +301,12 @@ export function buildIsobandTrianglesOnCPU(
       const hi = band < breakCount ? scene.breaks[band] : null;
       for (const piece of buildCellBandPieces(corners, geometry, lo, hi)) {
         for (const triangle of fanTriangulate(piece)) {
-          if (result.totalCount < capacity) {
+          if (result.requiredCount < capacity) {
             for (const vertex of triangle) result.triangles.push(vertex.x, vertex.y);
             result.bands.push(band);
             result.cells.push(cell);
           }
-          result.totalCount++;
+          result.requiredCount++;
         }
       }
     }

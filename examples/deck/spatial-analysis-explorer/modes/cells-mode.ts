@@ -514,7 +514,7 @@ export const cellsMode: SpatialAnalysisModeDefinition = {
               counts: tableCountsView,
               count: tableCountView,
               overflow: importCellBuffer(indexGraph, 'table-overflow', tableOverflow, 'uint32', 1),
-              totalCount: importCellBuffer(indexGraph, 'table-total', tableTotal, 'uint32', 1)
+              requiredCount: importCellBuffer(indexGraph, 'table-total', tableTotal, 'uint32', 1)
             }
           })
         );
@@ -717,6 +717,7 @@ export const cellsMode: SpatialAnalysisModeDefinition = {
         const coverCore = create('cover-core', COVER_CAPACITY * 4);
         const coverCount = create('cover-count', 4);
         const coverOverflow = create('cover-overflow', 4);
+        const coverCandidateOverflow = create('cover-candidate-overflow', 4);
         const coverTotal = create('cover-total', 4);
         const compactCells = create('compact-cells', COVER_CAPACITY * 8);
         const compactCount = create('compact-count', 4);
@@ -786,7 +787,14 @@ export const cellsMode: SpatialAnalysisModeDefinition = {
               cells: coverCellsView,
               count: coverCountView,
               overflow: importCellBuffer(graph, 'cover-overflow', coverOverflow, 'uint32', 1),
-              totalCount: importCellBuffer(graph, 'cover-total', coverTotal, 'uint32', 1)
+              candidateOverflow: importCellBuffer(
+                graph,
+                'cover-candidate-overflow',
+                coverCandidateOverflow,
+                'uint32',
+                1
+              ),
+              requiredCount: importCellBuffer(graph, 'cover-total', coverTotal, 'uint32', 1)
             }
           })
         );

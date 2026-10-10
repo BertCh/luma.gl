@@ -254,7 +254,7 @@ export class GPUBufferSelection implements GPUCommandNodeProducer {
         createPublishNode<Parameters>(graph, {
           id: `${id}-publish`,
           operation: OPERATION,
-          totalCount: selectedTotal,
+          requiredCount: selectedTotal,
           compactIds: selectedIds,
           output,
           overflowSources: [joinOverflow],
@@ -293,6 +293,6 @@ function getOutputs(
     output?.ids,
     output?.count,
     output?.overflow,
-    output?.totalCount
+    output?.requiredCount
   ];
 }

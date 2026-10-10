@@ -41,7 +41,6 @@ import {getReferenceHash, getStoryHash, navigate, replaceHash, type Route} from 
 import {openShortcutSheet, type Shortcut} from './shortcut-sheet';
 import {CostRow, createPipelineStrip, type StepCost} from './story-card-parts';
 import {createUnderTheHood, measureActiveScene, type UnderTheHood} from './story-engine';
-import {LoadingOverlay} from './story-loading';
 import {
   formatReadout,
   getChartLink,
@@ -223,7 +222,6 @@ export class StoryView {
   private compareDivider: CompareDivider | null = null;
   private compareActive = false;
   private compareState: CompareState | null = null;
-  private loading: LoadingOverlay | null = null;
   private sheet: SheetController | null = null;
   private obstacleObserver: ResizeObserver | null = null;
   private obstacleFrame = 0;
@@ -246,7 +244,6 @@ export class StoryView {
     this.root = root;
     const generation = ++this.mountGeneration;
     clearElement(root);
-    root.append(h('div', {class: 'page-loading'}, 'Loading story…'));
     const scene = await loadScene(route.sceneId);
     if (generation !== this.mountGeneration) return;
     if (!scene) {
@@ -320,7 +317,6 @@ export class StoryView {
     this.timeBar?.destroy();
     this.chips?.destroy();
     this.tooltip?.destroy();
-    this.loading?.destroy();
     this.sheet?.destroy();
     for (const {inset} of this.insetViews.values()) inset.destroy();
     this.insetViews.clear();
@@ -344,7 +340,6 @@ export class StoryView {
     this.compareDivider = null;
     this.compareActive = false;
     this.compareState = null;
-    this.loading = null;
     this.sheet = null;
     this.root?.replaceChildren();
     this.scene = null;
@@ -959,8 +954,6 @@ export class StoryView {
       if (layoutGeneration !== this.mountGeneration) return;
       scene.datasets.forEach((ref, index) => {
         datasetList.append(this.renderDatasetItem(ref.id, ref.role, infos[index]));
-        const title = infos[index]?.title;
-        if (title) this.loading?.setTitle(ref.id, title);
       });
       this.credits = infos.map(info => info?.attribution ?? '').filter(Boolean);
       this.applyStepCartography();
@@ -986,7 +979,13 @@ export class StoryView {
         'div',
         {class: 'chips details-chips'},
         scene.contributors.map(name =>
-          h('a', {class: 'chip', href: getReferenceHash(name), title: `Reference: ${name}`}, name)
+          name.startsWith('Frontier')
+            ? h('span', {class: 'chip chip-static', title: 'Scene-local prototype'}, name)
+            : h(
+                'a',
+                {class: 'chip', href: getReferenceHash(name), title: `Reference: ${name}`},
+                name
+              )
         )
       ),
       codeSection,
@@ -1283,7 +1282,7 @@ export class StoryView {
     }
   }
 
-  /** Builds the map overlays: corner stacks, tooltip, chips, time bar, compare divider, loading. */
+  /** Builds the map overlays: corner stacks, tooltip, chips, time bar and compare divider. */
   private setupMapSlot(mapSlot: HTMLElement, scene: AnyScene, host: DeckHost): void {
     // Furniture, chips, insets and the legend share four corner stacks over the map.
     const furniture = new MapFurniture();
@@ -1309,14 +1308,10 @@ export class StoryView {
 
     const divider = new CompareDivider(state => this.handleCompareChange(state));
     this.compareDivider = divider;
-    const loading = new LoadingOverlay();
-    loading.setDatasets(scene.datasets.map(ref => ({id: ref.id, title: ref.id})));
-    this.loading = loading;
     const tooltip = new MapTooltip();
     this.tooltip = tooltip;
 
     mapSlot.append(
-      loading.element,
       divider.element,
       corners.topLeft,
       corners.topRight,
@@ -1554,16 +1549,12 @@ export class StoryView {
         const loaded = new Map<string, LoadedDataset>();
         await Promise.all(
           scene.datasets.map(async ref => {
-            const dataset = await catalog.load(ref.id, services.signal, progress => {
-              if (generation === this.mountGeneration) this.loading?.setProgress(ref.id, progress);
-            });
+            const dataset = await catalog.load(ref.id, services.signal);
             loaded.set(ref.id, dataset);
-            if (generation === this.mountGeneration) this.loading?.setDatasetDone(ref.id);
           })
         );
         services.signal.throwIfAborted();
         if (generation === this.mountGeneration) {
-          this.loading?.setPhase('compile');
           const synthetic = [...loaded.values()].some(dataset => dataset.origin === 'synthetic');
           if (synthetic) {
             this.statusLine.textContent =
@@ -1663,20 +1654,13 @@ export class StoryView {
         }) as Promise<ShellInstance>;
       }
     });
-    // The first frame is on screen once the host reports ready: cross-fade the cover away.
-    const readyTimer = window.setInterval(() => {
-      if (generation !== this.mountGeneration) return;
-      if (host.state.error) {
-        this.loading?.setMessage(`This analysis could not start: ${host.state.error}`, true);
-        clearInterval(readyTimer);
-      } else if (host.state.ready) {
-        this.loading?.finish();
-        clearInterval(readyTimer);
-      }
-    }, 100);
-    this.cleanups.push(() => clearInterval(readyTimer));
     const instance = await activation;
-    if (!instance || generation !== this.mountGeneration) return;
+    if (!instance || generation !== this.mountGeneration) {
+      if (generation === this.mountGeneration && host.state.error) {
+        this.statusLine.textContent = `This analysis could not start: ${host.state.error}`;
+      }
+      return;
+    }
     this.instance = instance;
     if (this.statusLine.textContent && !this.statusLine.textContent.startsWith('Using')) {
       this.statusLine.textContent = '';
@@ -1851,8 +1835,11 @@ export class StoryView {
       for (const id of getStepReadoutIds(step)) {
         if (!readoutIds.has(id)) problems.push(`${step.id}: readout "${id}"`);
       }
-      for (const id of getInterpolatedReadoutIds(step.body)) {
-        if (!readoutIds.has(id)) problems.push(`${step.id}: {{${id}}}`);
+      for (const narrative of [step.body, step.evidence, step.caveat]) {
+        if (!narrative) continue;
+        for (const id of getInterpolatedReadoutIds(narrative)) {
+          if (!readoutIds.has(id)) problems.push(`${step.id}: {{${id}}}`);
+        }
       }
       if (step.stage && !stageIds.has(step.stage))
         problems.push(`${step.id}: stage "${step.stage}"`);
@@ -1870,8 +1857,8 @@ export class StoryView {
   // ---------------------------------------------------------------------------------------------
 
   /**
-   * Fills the active step's card: headline, cost chips, pipeline strip, body with live readouts,
-   * diagram, "Adjust" controls and readouts (key figures as tiles).
+   * Fills the active step's card: headline, cost chips, pipeline strip, body, evidence and caveat
+   * with live readouts, diagram, "Adjust" controls and readouts (key figures as tiles).
    */
   private renderStepDetail(index: number): void {
     const scene = this.scene!;
@@ -1884,6 +1871,10 @@ export class StoryView {
     this.liveReadoutSpans = new Map();
     this.costRow = null;
     const parts: (HTMLElement | null)[] = [];
+    const formatStepReadout = (readoutId: string): string => {
+      const spec = this.readoutSpecs.get(readoutId);
+      return spec ? formatReadout(spec, this.readoutValues.get(readoutId) ?? null) : '—';
+    };
 
     if (step.headline) parts.push(h('p', {class: 'step-headline'}, step.headline));
 
@@ -1903,18 +1894,34 @@ export class StoryView {
 
     const body = h('div', {
       class: 'prose step-body',
-      html: renderStepBody(step.body, id => {
-        const spec = this.readoutSpecs.get(id);
-        return spec ? formatReadout(spec, this.readoutValues.get(id) ?? null) : '—';
-      })
+      html: renderStepBody(step.body, formatStepReadout)
     });
-    for (const span of body.querySelectorAll<HTMLElement>('.live-readout')) {
-      const id = span.dataset['readout'] ?? '';
-      const spans = this.liveReadoutSpans.get(id) ?? [];
-      spans.push(span);
-      this.liveReadoutSpans.set(id, spans);
-    }
     parts.push(body);
+
+    const narrativeNotes: {kind: 'evidence' | 'caveat'; label: string; text: string}[] = [];
+    if (step.evidence) {
+      narrativeNotes.push({kind: 'evidence', label: 'Evidence', text: step.evidence});
+    }
+    if (step.caveat) {
+      narrativeNotes.push({kind: 'caveat', label: 'Caveat', text: step.caveat});
+    }
+    if (narrativeNotes.length) {
+      const noteList = h('dl', {class: 'step-note-list'});
+      for (const note of narrativeNotes) {
+        noteList.append(
+          h(
+            'div',
+            {class: `step-note step-note-${note.kind}`},
+            h('dt', {}, note.label),
+            h('dd', {
+              class: 'prose',
+              html: renderStepBody(note.text, formatStepReadout)
+            })
+          )
+        );
+      }
+      parts.push(h('aside', {class: 'step-notes', 'aria-label': 'Interpretation notes'}, noteList));
+    }
 
     if (step.diagram) {
       parts.push(h('figure', {class: 'step-diagram'}, renderChart(step.diagram)));
@@ -1964,6 +1971,12 @@ export class StoryView {
       parts.push(list);
     }
     detail.replaceChildren(...parts.filter((part): part is HTMLElement => Boolean(part)));
+    for (const span of detail.querySelectorAll<HTMLElement>('.live-readout')) {
+      const id = span.dataset['readout'] ?? '';
+      const spans = this.liveReadoutSpans.get(id) ?? [];
+      spans.push(span);
+      this.liveReadoutSpans.set(id, spans);
+    }
     this.optionsPanel?.setStepControls(specs.map(spec => spec.id));
   }
 

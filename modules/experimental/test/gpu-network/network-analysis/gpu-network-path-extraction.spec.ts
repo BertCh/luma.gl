@@ -145,7 +145,7 @@ function createHarness(device: Device, options: HarnessOptions) {
       ids: importGraphBuffer(graph, 'out-ids', outputIds, 'uint32', options.capacity),
       count: importGraphBuffer(graph, 'out-count', outputCount, 'uint32', 1),
       overflow: importGraphBuffer(graph, 'out-overflow', outputOverflow, 'uint32', 1),
-      totalCount: importGraphBuffer(graph, 'out-total', outputTotal, 'uint32', 1)
+      requiredCount: importGraphBuffer(graph, 'out-total', outputTotal, 'uint32', 1)
     },
     pathOffsets: importGraphBuffer(
       graph,
@@ -166,7 +166,7 @@ function createHarness(device: Device, options: HarnessOptions) {
             ids: importGraphBuffer(graph, 'edge-ids', edgeIdsOut, 'uint32', options.edgeCapacity),
             count: importGraphBuffer(graph, 'edge-count', edgeCountOut, 'uint32', 1),
             overflow: importGraphBuffer(graph, 'edge-overflow', edgeOverflowOut, 'uint32', 1),
-            totalCount: importGraphBuffer(graph, 'edge-total', edgeTotalOut, 'uint32', 1)
+            requiredCount: importGraphBuffer(graph, 'edge-total', edgeTotalOut, 'uint32', 1)
           },
           pathOffsets: importGraphBuffer(
             graph,
@@ -215,7 +215,7 @@ function createHarness(device: Device, options: HarnessOptions) {
       const [count] = await readUint32(outputCount, 1);
       expect(count).toBe(expected.count);
       expect(await readUint32(outputIds, count)).toEqual(expected.ids);
-      expect(await readUint32(outputTotal, 1)).toEqual([expected.totalCount]);
+      expect(await readUint32(outputTotal, 1)).toEqual([expected.requiredCount]);
       expect(await readUint32(outputOverflow, 1)).toEqual([expected.overflow]);
       expect(await readUint32(pathOffsets, targetCapacity + 1)).toEqual(expected.pathOffsets);
       expect(await readFloat32(pathCosts, targetCapacity)).toEqual(expected.pathCosts);
@@ -311,7 +311,7 @@ it('GPUNetworkPathExtraction matches the oracle on a random network', async () =
   });
   const result = await harness.run();
   expect(result.found.filter(Boolean).length).toBeGreaterThan(8);
-  expect(result.totalCount).toBeGreaterThan(64);
+  expect(result.requiredCount).toBeGreaterThan(64);
   expect(result.edgeIds.every(edge => edge !== NONE)).toBe(true);
   harness.destroy();
 });
@@ -360,7 +360,7 @@ it('GPUNetworkPathExtraction reports capacity overflow with a clamped count', as
   });
   const result = await harness.run();
   expect(result.count).toBe(3);
-  expect(result.totalCount).toBe(6);
+  expect(result.requiredCount).toBe(6);
   expect(result.overflow).toBe(1);
   expect(result.edgeCount).toBe(2);
   expect(result.edgeTotalCount).toBe(4);
@@ -415,9 +415,9 @@ it('GPUNetworkPathExtraction re-encodes after target and count changes', async (
     maxPathLength: 16,
     maxIterations: 16
   });
-  expect((await harness.run()).totalCount).toBe(6);
+  expect((await harness.run()).requiredCount).toBe(6);
   harness.setTargetCount(4);
-  expect((await harness.run()).totalCount).toBe(6 + 4 + 3);
+  expect((await harness.run()).requiredCount).toBe(6 + 4 + 3);
   harness.setTargets([1, 3, 4, 0]);
   expect((await harness.run()).ids.slice(0, 3)).toEqual([0, 2, 1]);
   harness.setTargetCount(0);

@@ -28,10 +28,10 @@ export type GPUFloat32Positions = GraphDataView<'float32x2'> | GraphVectorView<'
 export type GPUCompactOutput = {
   /** Compact stable source IDs, or zero-based row indices when the contributor has no source IDs. */
   ids: GraphDataView<'uint32'>;
-  /** One-row scalar receiving `min(totalCount, ids.length)`. */
+  /** One-row scalar receiving `min(requiredCount, ids.length)`. */
   count: GraphDataView<'uint32'>;
   /** One-row scalar receiving `1` when any capacity in the contributor overflowed, otherwise `0`. */
   overflow: GraphDataView<'uint32'>;
   /** Optional one-row scalar receiving the unclamped number of accepted rows. */
-  totalCount?: GraphDataView<'uint32'>;
+  requiredCount?: GraphDataView<'uint32'>;
 };

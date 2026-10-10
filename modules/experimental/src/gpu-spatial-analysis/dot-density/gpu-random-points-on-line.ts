@@ -324,7 +324,7 @@ fn isFiniteFloat(value: f32) -> bool { return (bitcast<u32>(value) & 0x7f800000u
       createPublishNode<Parameters>(graph, {
         id: `${id}-publish`,
         operation: OPERATION,
-        totalCount: total,
+        requiredCount: total,
         output: output.points,
         overflowSources: [clampFlag]
       })
@@ -346,7 +346,7 @@ function getOutputs(props: GPURandomPointsOnLineProps): (GraphDataView | undefin
     output.points.ids,
     output.points.count,
     output.points.overflow,
-    output.points.totalCount,
+    output.points.requiredCount,
     output.fractions
   ];
 }

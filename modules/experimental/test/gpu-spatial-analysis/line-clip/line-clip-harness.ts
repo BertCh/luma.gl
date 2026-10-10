@@ -28,8 +28,8 @@ export type ClipResult = {
   count: number;
   vertexCount: number;
   overflow: number;
-  totalCount: number;
-  totalVertexCount: number;
+  requiredCount: number;
+  requiredVertexCount: number;
   uncertainCount: number;
 };
 
@@ -155,8 +155,8 @@ export async function runLineClip(
   const count = output('count', 1);
   const vertexCount = output('vertex-count', 1);
   const overflow = output('overflow', 1);
-  const totalCount = output('total-count', 1);
-  const totalVertexCount = output('total-vertex-count', 1);
+  const requiredCount = output('total-count', 1);
+  const requiredVertexCount = output('total-vertex-count', 1);
   const uncertainCount = output('uncertain-count', 1);
   graph.add(
     new GPULineClipByPolygon({
@@ -176,14 +176,19 @@ export async function runLineClip(
       intersectionCapacity: options.intersectionCapacity ?? 2048,
       candidateCapacity: options.candidateCapacity ?? 4096,
       pieces: {
-        lineIds: lineIds.view,
-        offsets: offsets.view,
-        positions: positions.view,
-        count: count.view,
+        geometry: {
+          kind: 'lines',
+          positions: positions.view,
+          lineOffsets: offsets.view
+        },
+        sourceIds: lineIds.view,
+        status: {
+          count: count.view,
+          overflow: overflow.view,
+          requiredCount: requiredCount.view
+        },
         vertexCount: vertexCount.view,
-        overflow: overflow.view,
-        totalCount: totalCount.view,
-        totalVertexCount: totalVertexCount.view
+        requiredVertexCount: requiredVertexCount.view
       },
       uncertainCount: uncertainCount.view
     })
@@ -204,8 +209,8 @@ export async function runLineClip(
     count: pieceCount,
     vertexCount: (await readUint32(vertexCount.buffer, 1))[0],
     overflow: (await readUint32(overflow.buffer, 1))[0],
-    totalCount: (await readUint32(totalCount.buffer, 1))[0],
-    totalVertexCount: (await readUint32(totalVertexCount.buffer, 1))[0],
+    requiredCount: (await readUint32(requiredCount.buffer, 1))[0],
+    requiredVertexCount: (await readUint32(requiredVertexCount.buffer, 1))[0],
     uncertainCount: (await readUint32(uncertainCount.buffer, 1))[0]
   };
   compiled.destroy();
@@ -223,7 +228,7 @@ export type SharedResult = {
   count: number;
   vertexCount: number;
   overflow: number;
-  totalCount: number;
+  requiredCount: number;
 };
 
 export type SharedOptions = {
@@ -253,7 +258,7 @@ export async function runSharedPaths(
   const count = output('count', 1);
   const vertexCount = output('vertex-count', 1);
   const overflow = output('overflow', 1);
-  const totalCount = output('total-count', 1);
+  const requiredCount = output('total-count', 1);
   graph.add(
     new GPUSharedPaths({
       left: {
@@ -276,7 +281,7 @@ export async function runSharedPaths(
         count: count.view,
         vertexCount: vertexCount.view,
         overflow: overflow.view,
-        totalCount: totalCount.view
+        requiredCount: requiredCount.view
       }
     })
   );
@@ -291,7 +296,7 @@ export async function runSharedPaths(
     count: runTotal,
     vertexCount: (await readUint32(vertexCount.buffer, 1))[0],
     overflow: (await readUint32(overflow.buffer, 1))[0],
-    totalCount: (await readUint32(totalCount.buffer, 1))[0]
+    requiredCount: (await readUint32(requiredCount.buffer, 1))[0]
   };
   compiled.destroy();
   for (const buffer of buffers) {

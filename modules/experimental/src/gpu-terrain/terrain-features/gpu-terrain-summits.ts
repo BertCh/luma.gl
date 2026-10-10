@@ -249,7 +249,7 @@ export class GPUTerrainSummits implements GPUCommandNodeProducer {
         props.output?.ids,
         props.output?.count,
         props.output?.overflow,
-        props.output?.totalCount
+        props.output?.requiredCount
       ],
       [...getTerrainBandViews(props.elevation), props.settings]
     );
@@ -271,7 +271,7 @@ export class GPUTerrainSummits implements GPUCommandNodeProducer {
       output?.ids,
       output?.count,
       output?.overflow,
-      output?.totalCount
+      output?.requiredCount
     ]);
     const pixelCount = width * height;
     const cellSizeMode = props.cellSizeMode ?? 'uniform';
@@ -424,7 +424,7 @@ fn evaluateSummit(column: i32, row: i32, index: u32) -> bool {
     if (output && mask) {
       const pixelIds = createTransientView(graph, `${id}-pixel-ids`, 'uint32', pixelCount);
       const compactRows = createTransientView(graph, `${id}-compact-rows`, 'uint32', pixelCount);
-      const totalCount = createTransientView(graph, `${id}-summit-total`, 'uint32', 1);
+      const requiredCount = createTransientView(graph, `${id}-summit-total`, 'uint32', 1);
       nodes.push(
         createWGSLKernelNode<Parameters>(graph, {
           id: `${id}-pixel-ids`,
@@ -439,12 +439,12 @@ fn evaluateSummit(column: i32, row: i32, index: u32) -> bool {
           input: pixelIds,
           flags: mask,
           output: compactRows,
-          count: totalCount
+          count: requiredCount
         }).getCommandNodes(graph),
         createPublishNode<Parameters>(graph, {
           id: `${id}-publish`,
           operation: 'GPUTerrainSummits',
-          totalCount,
+          requiredCount,
           compactIds: compactRows,
           output
         })

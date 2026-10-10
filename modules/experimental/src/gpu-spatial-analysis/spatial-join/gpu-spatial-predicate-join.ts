@@ -8,6 +8,7 @@ import {
   validatePackedUint32View,
   validatePackedView,
   type GPUCommandGraph,
+  type GPUCommandGraphGPUIndirectCondition,
   type GPUCommandNode,
   type GPUCommandNodeProducer,
   type GraphDataView
@@ -16,7 +17,12 @@ import {
   GPU_POINT_IN_POLYGON_CLASSIFICATION,
   GPUPairwisePointInPolygon
 } from '../../geospatial/gpu-pairwise-point-in-polygon';
-import {createWGSLKernelNode, type WGSLKernelBinding} from '../../utils/wgsl-kernel-nodes';
+import {
+  createWGSLActiveCountDispatch,
+  createWGSLKernelNode,
+  type WGSLActiveCountDispatch,
+  type WGSLKernelBinding
+} from '../../utils/wgsl-kernel-nodes';
 import type {GPUCompactOutput} from '../../utils/gpu-contributor-types';
 import {
   captureGraphCommandNodes,
@@ -72,10 +78,10 @@ import {
   getSpatialRelateWorkgroupWGSL,
   SPATIAL_RELATE_WORKGROUP_SIZE
 } from './spatial-relate-wgsl';
-import type {
-  GPUSpatialJoinGeometry,
-  GPUSpatialJoinOnAttribute,
-  GPUSpatialJoinPairs
+import {
+  type GPUSpatialJoinGeometry,
+  type GPUSpatialJoinOnAttribute,
+  type GPUSpatialJoinPairs
 } from './spatial-join-types';
 
 const OPERATION = 'GPUSpatialPredicateJoin';
@@ -513,7 +519,8 @@ export class GPUSpatialPredicateJoin implements GPUCommandNodeProducer {
         for (const [name, view] of [
           ['count', pairs.count],
           ['overflow', pairs.overflow],
-          ['totalCount', pairs.totalCount]
+          ['candidateOverflow', pairs.candidateOverflow],
+          ['requiredCount', pairs.requiredCount]
         ] as const) {
           if (view) {
             validatePackedUint32View(view, `${id} pairs.${name}`);
@@ -589,7 +596,8 @@ export class GPUSpatialPredicateJoin implements GPUCommandNodeProducer {
       pairs?.rightIds,
       pairs?.count,
       pairs?.overflow,
-      pairs?.totalCount,
+      pairs?.candidateOverflow,
+      pairs?.requiredCount,
       relate,
       weights?.offsets,
       weights?.neighbors,
@@ -597,7 +605,7 @@ export class GPUSpatialPredicateJoin implements GPUCommandNodeProducer {
       unmatched?.ids,
       unmatched?.count,
       unmatched?.overflow,
-      unmatched?.totalCount,
+      unmatched?.requiredCount,
       overflow,
       candidateCount,
       uncertainCount
@@ -744,7 +752,8 @@ export class GPUSpatialPredicateJoin implements GPUCommandNodeProducer {
     {
       const bindings: WGSLKernelBinding[] = [
         {name: 'state', view: state, type: 'u32', access: 'read_write'},
-        {name: 'candidatePairs', view: candidatePairs, type: 'u32', access: 'read_write'}
+        {name: 'candidatePairs', view: candidatePairs, type: 'u32', access: 'read_write'},
+        {name: 'flags', view: flags, type: 'u32', access: 'read_write'}
       ];
       if (this.distanceView) {
         bindings.push({name: 'distanceRow', view: this.distanceView, type: 'f32', access: 'read'});
@@ -786,6 +795,7 @@ export class GPUSpatialPredicateJoin implements GPUCommandNodeProducer {
   if (index < ${candidateCapacity}u) {
     candidatePairs[candidatePairsOffset + index * 2u] = NO_FEATURE;
     candidatePairs[candidatePairsOffset + index * 2u + 1u] = NO_FEATURE;
+    flags[flagsOffset + index] = 0u;
   }
   ${this.distanceView ? `if (index == 0u) { candidatePairs[candidatePairsOffset + ${candidateCapacity * 2}u] = bitcast<u32>(distanceRow[distanceRowOffset]); }` : ''}
   ${leftMatchCounts ? `if (index <= ${leftCount}u) { leftMatchCounts[leftMatchCountsOffset + index] = 0u; }` : ''}
@@ -822,6 +832,30 @@ export class GPUSpatialPredicateJoin implements GPUCommandNodeProducer {
         candidatePairs
       })
     );
+    const candidateDispatch = createWGSLActiveCountDispatch(graph, {
+      id: `${id}-candidate-dispatch`,
+      operation: OPERATION,
+      count: state,
+      maximumItemCount: candidateCapacity
+    });
+    nodes.push(candidateDispatch.updateNode);
+    const cooperativeDispatches = new Map<number, WGSLActiveCountDispatch<Parameters>>();
+    const getCooperativeDispatch = (workgroupSize: number): WGSLActiveCountDispatch<Parameters> => {
+      let dispatch = cooperativeDispatches.get(workgroupSize);
+      if (!dispatch) {
+        dispatch = createWGSLActiveCountDispatch(graph, {
+          id: `${id}-candidate-dispatch-${workgroupSize}`,
+          operation: OPERATION,
+          count: state,
+          maximumItemCount: candidateCapacity,
+          workgroupSize,
+          invocationsPerItem: workgroupSize
+        });
+        cooperativeDispatches.set(workgroupSize, dispatch);
+        nodes.push(dispatch.updateNode);
+      }
+      return dispatch;
+    };
 
     // Attribute equality: candidates with unequal keys become empty slots, which every later
     // kernel already skips.
@@ -837,6 +871,7 @@ export class GPUSpatialPredicateJoin implements GPUCommandNodeProducer {
             {name: 'rightKeys', view: props.onAttribute.right, type: 'u32', access: 'read'}
           ],
           invocationCount: candidateCapacity,
+          condition: candidateDispatch.condition,
           declarations: SPATIAL_JOIN_WGSL_HELPERS,
           body: `let left = candidatePairs[candidatePairsOffset + index * 2u];
   if (left == NO_FEATURE) { return; }
@@ -924,6 +959,7 @@ export class GPUSpatialPredicateJoin implements GPUCommandNodeProducer {
             }
           ],
           invocationCount: candidateCapacity,
+          condition: candidateDispatch.condition,
           declarations: SPATIAL_JOIN_WGSL_HELPERS,
           body: `let left = candidatePairs[candidatePairsOffset + index * 2u];
   if (left == NO_FEATURE) { return; }
@@ -937,6 +973,15 @@ export class GPUSpatialPredicateJoin implements GPUCommandNodeProducer {
   pairGeometryOffsets[pairGeometryOffsetsOffset + row + 1u] = featureOffsets[featureOffsetsOffset + polygonRow + 1u];`
         })
       );
+      const robustDispatch = createWGSLActiveCountDispatch(graph, {
+        id: `${id}-robust-dispatch`,
+        operation: OPERATION,
+        count: state,
+        maximumItemCount: candidateCapacity,
+        invocationsPerItem: 2,
+        additionalInvocationCount: 1
+      });
+      nodes.push(robustDispatch.updateNode);
       nodes.push(
         ...captureGraphCommandNodes(graph, () =>
           new GPUPairwisePointInPolygon({
@@ -948,7 +993,12 @@ export class GPUSpatialPredicateJoin implements GPUCommandNodeProducer {
             ringOffsets: polygonGeometry.ringOffsets,
             output: robust.pairClassifications
           }).addToGraph(graph)
-        )
+        ).map(node => {
+          if (node.type !== 'compute') {
+            throw new Error(`${id}-classify expected a compute node`);
+          }
+          return {...node, condition: robustDispatch.condition};
+        })
       );
     }
 
@@ -962,7 +1012,11 @@ export class GPUSpatialPredicateJoin implements GPUCommandNodeProducer {
         flags,
         state,
         robust,
-        sameRowTest
+        sameRowTest,
+        candidateCondition: candidateDispatch.condition,
+        cooperativeCondition: robust
+          ? undefined
+          : getCooperativeDispatch(SPATIAL_RELATE_WORKGROUP_SIZE).condition
       });
     } else if (robust) {
       // A point never contains a polygon and a polygon is never within a point; otherwise
@@ -991,6 +1045,7 @@ export class GPUSpatialPredicateJoin implements GPUCommandNodeProducer {
             {name: 'state', view: state, type: 'atomic<u32>', access: 'read_write'}
           ],
           invocationCount: candidateCapacity,
+          condition: candidateDispatch.condition,
           declarations: `${SPATIAL_JOIN_WGSL_HELPERS}
 const INSIDE: u32 = ${GPU_POINT_IN_POLYGON_CLASSIFICATION.inside}u;
 const BOUNDARY: u32 = ${GPU_POINT_IN_POLYGON_CLASSIFICATION.boundary}u;
@@ -1027,6 +1082,7 @@ const UNCERTAIN: u32 = ${GPU_POINT_IN_POLYGON_CLASSIFICATION.uncertain}u;`,
             {name: 'flags', view: flags, type: 'u32', access: 'read_write'}
           ],
           invocationCount: candidateCapacity,
+          condition: candidateDispatch.condition,
           declarations: `${getSpatialPredicateWGSL(sideSpecs[0], sideSpecs[1], predicate as SpatialLegacyPredicateName, 0)}
 const UNCERTAIN: u32 = ${GPU_POINT_IN_POLYGON_CLASSIFICATION.uncertain}u;`,
           body: `let left = candidatePairs[candidatePairsOffset + index * 2u];
@@ -1053,6 +1109,7 @@ const UNCERTAIN: u32 = ${GPU_POINT_IN_POLYGON_CLASSIFICATION.uncertain}u;`,
                 invocationCount: candidateCapacity * SPATIAL_DWITHIN_WORKGROUP_SIZE,
                 workgroupSize: SPATIAL_DWITHIN_WORKGROUP_SIZE,
                 guardIndex: false,
+                condition: getCooperativeDispatch(SPATIAL_DWITHIN_WORKGROUP_SIZE).condition,
                 declarations: getSpatialDwithinWorkgroupWGSL(sideSpecs[0], sideSpecs[1], distance),
                 body: `let slot = index / ${SPATIAL_DWITHIN_WORKGROUP_SIZE}u;
   let left = candidatePairs[candidatePairsOffset + slot * 2u];
@@ -1064,6 +1121,7 @@ const UNCERTAIN: u32 = ${GPU_POINT_IN_POLYGON_CLASSIFICATION.uncertain}u;`,
               }
             : {
                 invocationCount: candidateCapacity,
+                condition: candidateDispatch.condition,
                 declarations: getSpatialPredicateWGSL(
                   sideSpecs[0],
                   sideSpecs[1],
@@ -1083,7 +1141,14 @@ const UNCERTAIN: u32 = ${GPU_POINT_IN_POLYGON_CLASSIFICATION.uncertain}u;`,
     }
 
     if (isAnti && unmatched && leftMatchCounts) {
-      this.addAntiNodes(graph, nodes, {candidatePairs, flags, leftMatchCounts, unmatched, state});
+      this.addAntiNodes(graph, nodes, {
+        candidatePairs,
+        flags,
+        leftMatchCounts,
+        unmatched,
+        state,
+        candidateCondition: candidateDispatch.condition
+      });
     } else if (leftIds && rightIds && flagOffsets) {
       // Stable compaction of flagged candidates into the (left, right) output.
       nodes.push(
@@ -1094,13 +1159,29 @@ const UNCERTAIN: u32 = ${GPU_POINT_IN_POLYGON_CLASSIFICATION.uncertain}u;`,
           mode: 'exclusive'
         }).getCommandNodes(graph)
       );
+      nodes.push(
+        createWGSLKernelNode<Parameters>(graph, {
+          id: `${id}-match-total`,
+          operation: OPERATION,
+          variant: 'match-total',
+          bindings: [
+            {name: 'state', view: state, type: 'u32', access: 'read_write'},
+            {name: 'flags', view: flags, type: 'u32', access: 'read'},
+            {name: 'flagOffsets', view: flagOffsets, type: 'u32', access: 'read'}
+          ],
+          invocationCount: 1,
+          declarations: `const CANDIDATE_CAPACITY: u32 = ${candidateCapacity}u;`,
+          body: `state[stateOffset + 2u] =
+    flagOffsets[flagOffsetsOffset + CANDIDATE_CAPACITY - 1u] +
+    flags[flagsOffset + CANDIDATE_CAPACITY - 1u];`
+        })
+      );
       const scatterBindings: WGSLKernelBinding[] = [
         {name: 'candidatePairs', view: candidatePairs, type: 'u32', access: 'read'},
         {name: 'flags', view: flags, type: 'u32', access: 'read'},
         {name: 'flagOffsets', view: flagOffsets, type: 'u32', access: 'read'},
         {name: 'leftIds', view: leftIds, type: 'u32', access: 'read_write'},
-        {name: 'rightIds', view: rightIds, type: 'u32', access: 'read_write'},
-        {name: 'state', view: state, type: 'u32', access: 'read_write'}
+        {name: 'rightIds', view: rightIds, type: 'u32', access: 'read_write'}
       ];
       if (relate && matrices) {
         scatterBindings.push(
@@ -1115,6 +1196,7 @@ const UNCERTAIN: u32 = ${GPU_POINT_IN_POLYGON_CLASSIFICATION.uncertain}u;`,
           variant: relate ? 'scatter-relate' : 'scatter',
           bindings: scatterBindings,
           invocationCount: candidateCapacity,
+          condition: candidateDispatch.condition,
           declarations: `const PAIR_CAPACITY: u32 = ${pairCapacity}u;`,
           body: `if (flags[flagsOffset + index] != 0u) {
     let slot = flagOffsets[flagOffsetsOffset + index];
@@ -1123,9 +1205,6 @@ const UNCERTAIN: u32 = ${GPU_POINT_IN_POLYGON_CLASSIFICATION.uncertain}u;`,
       rightIds[rightIdsOffset + slot] = candidatePairs[candidatePairsOffset + index * 2u + 1u];
       ${relate && matrices ? 'relateOut[relateOutOffset + slot] = matrices[matricesOffset + index] & 0x3ffffu;' : ''}
     }
-  }
-  if (index == ${candidateCapacity - 1}u) {
-    state[stateOffset + 2u] = flagOffsets[flagOffsetsOffset + index] + flags[flagsOffset + index];
   }`
         })
       );
@@ -1140,11 +1219,12 @@ const UNCERTAIN: u32 = ${GPU_POINT_IN_POLYGON_CLASSIFICATION.uncertain}u;`,
       const scalars: [string, GraphDataView<'uint32'> | undefined][] = [
         ['overflow', props.overflow],
         ['pairsOverflow', pairs?.overflow],
+        ['pairsCandidateOverflow', pairs?.candidateOverflow],
         ['pairsCount', pairs?.count],
-        ['pairsTotal', pairs?.totalCount],
+        ['pairsTotal', pairs?.requiredCount],
         ['unmatchedOverflow', unmatched?.overflow],
         ['unmatchedCount', unmatched?.count],
-        ['unmatchedTotal', unmatched?.totalCount],
+        ['unmatchedTotal', unmatched?.requiredCount],
         ['candidateCount', props.candidateCount],
         ['uncertainCount', props.uncertainCount]
       ];
@@ -1167,11 +1247,13 @@ const UNMATCHED_CAPACITY: u32 = ${unmatched?.ids.length ?? 0}u;`,
           body: `let candidateTotal = state[stateOffset];
   let matchTotal = ${isAnti ? '0u' : 'state[stateOffset + 2u]'};
   let unmatchedTotalValue = ${isAnti ? 'state[stateOffset + 3u]' : '0u'};
-  let overflowed = bvhOverflow[bvhOverflowOffset] != 0u || candidateTotal > CANDIDATE_CAPACITY ||
-    matchTotal > PAIR_CAPACITY || unmatchedTotalValue > UNMATCHED_CAPACITY;
-  let overflowValue = select(0u, 1u, overflowed);
+  let candidateIncomplete = bvhOverflow[bvhOverflowOffset] != 0u || candidateTotal > CANDIDATE_CAPACITY;
+  let pairIncomplete = matchTotal > PAIR_CAPACITY;
+  let unmatchedIncomplete = unmatchedTotalValue > UNMATCHED_CAPACITY;
+  let overflowValue = select(0u, 1u, candidateIncomplete || pairIncomplete || unmatchedIncomplete);
   ${has('overflow') ? 'overflow[overflowOffset] = overflowValue;' : ''}
-  ${has('pairsOverflow') ? 'pairsOverflow[pairsOverflowOffset] = overflowValue;' : ''}
+  ${has('pairsOverflow') ? 'pairsOverflow[pairsOverflowOffset] = select(0u, 1u, pairIncomplete);' : ''}
+  ${has('pairsCandidateOverflow') ? 'pairsCandidateOverflow[pairsCandidateOverflowOffset] = select(0u, 1u, candidateIncomplete);' : ''}
   ${has('pairsCount') ? 'pairsCount[pairsCountOffset] = min(matchTotal, PAIR_CAPACITY);' : ''}
   ${has('pairsTotal') ? 'pairsTotal[pairsTotalOffset] = matchTotal;' : ''}
   ${has('unmatchedOverflow') ? 'unmatchedOverflow[unmatchedOverflowOffset] = overflowValue;' : ''}
@@ -1185,6 +1267,14 @@ const UNMATCHED_CAPACITY: u32 = ${unmatched?.ids.length ?? 0}u;`,
 
     // Optional CSR: rows are left features and pairs are already sorted by left row.
     if (weights && leftMatchCounts && leftIds && rightIds) {
+      const pairDispatch = createWGSLActiveCountDispatch(graph, {
+        id: `${id}-pair-dispatch`,
+        operation: OPERATION,
+        count: state,
+        countRow: 2,
+        maximumItemCount: pairCapacity
+      });
+      nodes.push(pairDispatch.updateNode);
       nodes.push(
         createWGSLKernelNode<Parameters>(graph, {
           id: `${id}-count-matches`,
@@ -1201,6 +1291,7 @@ const UNMATCHED_CAPACITY: u32 = ${unmatched?.ids.length ?? 0}u;`,
             }
           ],
           invocationCount: pairCapacity,
+          condition: pairDispatch.condition,
           declarations: `const PAIR_CAPACITY: u32 = ${pairCapacity}u;`,
           body: `if (index >= min(state[stateOffset + 2u], PAIR_CAPACITY)) { return; }
   atomicAdd(&leftMatchCounts[leftMatchCountsOffset + leftIds[leftIdsOffset + index]], 1u);`
@@ -1226,6 +1317,7 @@ const UNMATCHED_CAPACITY: u32 = ${unmatched?.ids.length ?? 0}u;`,
             {name: 'weightValues', view: weights.weights, type: 'f32', access: 'read_write'}
           ],
           invocationCount: pairCapacity,
+          condition: pairDispatch.condition,
           declarations: `const PAIR_CAPACITY: u32 = ${pairCapacity}u;`,
           body: `if (index >= min(state[stateOffset + 2u], PAIR_CAPACITY)) { return; }
   neighbors[neighborsOffset + index] = rightIds[rightIdsOffset + index];
@@ -1257,6 +1349,8 @@ const UNMATCHED_CAPACITY: u32 = ${unmatched?.ids.length ?? 0}u;`,
           }
         | undefined;
       sameRowTest: string;
+      candidateCondition: GPUCommandGraphGPUIndirectCondition;
+      cooperativeCondition?: GPUCommandGraphGPUIndirectCondition;
     }
   ): void {
     const {id, props, candidateCapacity} = this;
@@ -1286,6 +1380,7 @@ const UNMATCHED_CAPACITY: u32 = ${unmatched?.ids.length ?? 0}u;`,
             {name: 'matrices', view: matrices, type: 'u32', access: 'read_write'}
           ],
           invocationCount: candidateCapacity,
+          condition: context.candidateCondition,
           declarations: `${SPATIAL_JOIN_WGSL_HELPERS}
 const INSIDE: u32 = ${classification.inside}u;
 const BOUNDARY: u32 = ${classification.boundary}u;
@@ -1316,6 +1411,7 @@ const UNCERTAIN: u32 = ${classification.uncertain}u;`,
             {name: 'matrices', view: matrices, type: 'u32', access: 'read_write'}
           ],
           invocationCount: candidateCapacity,
+          condition: context.candidateCondition,
           declarations: `${getSpatialRelateWGSL(sideSpecs[0], sideSpecs[1])}
 const UNCERTAIN: u32 = ${classification.uncertain}u;`,
           body: `let left = candidatePairs[candidatePairsOffset + index * 2u];
@@ -1340,6 +1436,7 @@ const UNCERTAIN: u32 = ${classification.uncertain}u;`,
           invocationCount: candidateCapacity * SPATIAL_RELATE_WORKGROUP_SIZE,
           workgroupSize: SPATIAL_RELATE_WORKGROUP_SIZE,
           guardIndex: false,
+          condition: context.cooperativeCondition,
           declarations: `${getSpatialRelateWGSL(sideSpecs[0], sideSpecs[1], true)}
 ${getSpatialRelateWorkgroupWGSL(sideSpecs)}`,
           body: `let slot = index / ${SPATIAL_RELATE_WORKGROUP_SIZE}u;
@@ -1367,6 +1464,7 @@ ${getSpatialRelateWorkgroupWGSL(sideSpecs)}`,
             : [])
         ],
         invocationCount: candidateCapacity,
+        condition: context.candidateCondition,
         declarations: `${SPATIAL_JOIN_WGSL_HELPERS}
 ${
   this.patternView
@@ -1398,6 +1496,7 @@ ${
       leftMatchCounts: GraphDataView<'uint32'>;
       unmatched: GPUCompactOutput;
       state: GraphDataView<'uint32'>;
+      candidateCondition: GPUCommandGraphGPUIndirectCondition;
     }
   ): void {
     const {id, leftCount, candidateCapacity} = this;
@@ -1425,6 +1524,7 @@ ${
           }
         ],
         invocationCount: candidateCapacity,
+        condition: context.candidateCondition,
         body: `if (flags[flagsOffset + index] != 0u) {
     atomicAdd(&leftMatchCounts[leftMatchCountsOffset + candidatePairs[candidatePairsOffset + index * 2u]], 1u);
   }`

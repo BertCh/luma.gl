@@ -408,9 +408,12 @@ describe('GPU Graph GPU-resident graph analytics documentation', () => {
     expect(graphDocumentation).toContain('Every output label then becomes `0xffffffff`');
     expect(graphDocumentation).toContain('validity zero, and convergence one');
     expect(graphDocumentation).toContain('final `GPUGraphModularity` scoring');
+    expect(graphDocumentation).toContain('private, half-full hash');
+    expect(graphDocumentation).toContain('Expected work for `K` rounds is therefore');
+    expect(graphDocumentation).toContain('`O(K × (V + E))`');
     expect(graphDocumentation).toContain('`O(K × (V + E + sum(degree²)))`');
-    expect(graphDocumentation).toContain('`O(V + E)` graph-owned packed scratch');
-    expect(graphDocumentation).toContain('linear per-round community occupancy and vacancy checks');
+    expect(graphDocumentation).toContain('graph-owned packed and aggregation scratch');
+    expect(graphDocumentation).toContain('automatically retain the same bounded rescan path');
     expect(graphDocumentation).toContain('**single-level Louvain-style local moving**');
     expect(graphDocumentation).toContain('not the complete multilevel');
     expect(graphDocumentation).toContain('Leiden refinement');
@@ -419,6 +422,7 @@ describe('GPU Graph GPU-resident graph analytics documentation', () => {
     expect(packageDocumentation).toContain(
       'single globally largest strictly positive modularity gain'
     );
+    expect(packageDocumentation).toContain('Per-vertex hash aggregation');
     expect(packageDocumentation).toContain('single-level Louvain-style local moving');
     expect(packageDocumentation).toContain('lowest genuinely unused\ncommunity label');
     expect(packageDocumentation).toContain('occupancy includes zero-degree isolates');

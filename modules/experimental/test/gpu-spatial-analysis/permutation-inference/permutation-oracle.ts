@@ -176,7 +176,7 @@ export function computeLocalPermutationOracle(input: {
   weights: CPUSpatialWeights;
   values: Float32Array;
   mask?: Uint32Array;
-  statistic: 'localMoran' | 'localG' | 'localGStar';
+  statistic: 'localMoran' | 'localGeary' | 'localG' | 'localGStar';
   seed: number;
   permutations: number;
   significanceLevel: number;
@@ -187,7 +187,7 @@ export function computeLocalPermutationOracle(input: {
   const rowCount = values.length;
   const compacted = compact(values, input.mask);
   const {positions, count} = compacted;
-  const centered = statistic === 'localMoran';
+  const centered = statistic === 'localMoran' || statistic === 'localGeary';
   const compactX = compacted.rows.map(row =>
     centered ? f32(values[row] - compacted.mean) : values[row]
   );
@@ -197,7 +197,11 @@ export function computeLocalPermutationOracle(input: {
     0
   );
   const term = (focus: number, lag: number) =>
-    statistic === 'localMoran' ? f32(focus * lag) : statistic === 'localG' ? lag : f32(lag + focus);
+    statistic === 'localMoran'
+      ? f32(focus * lag)
+      : statistic === 'localG' || statistic === 'localGeary'
+        ? lag
+        : f32(lag + focus);
   const key = getPermutationSeedKey(input.seed);
   const result: LocalPermutationOracle = {
     exceedances: [],
@@ -224,13 +228,20 @@ export function computeLocalPermutationOracle(input: {
       result.observed.push(NaN);
       continue;
     }
+    const focus = compactX[position];
     let observedLag = 0;
     for (const slot of slots) {
+      const neighborValue = compactX[positions[weights.neighbors[slot]]];
       observedLag = f32(
-        observedLag + f32(weights.weights[slot] * compactX[positions[weights.neighbors[slot]]])
+        observedLag +
+          f32(
+            weights.weights[slot] *
+              (statistic === 'localGeary'
+                ? f32(focusDifference(focus, neighborValue) ** 2)
+                : neighborValue)
+          )
       );
     }
-    const focus = compactX[position];
     const observed = term(focus, observedLag);
     const others = count - 1;
     let greater = 0;
@@ -247,7 +258,16 @@ export function computeLocalPermutationOracle(input: {
           swaps.set(pick, swaps.get(drawn) ?? drawn);
         }
         const drawnPosition = chosen + (chosen >= position ? 1 : 0);
-        lag = f32(lag + f32(weights.weights[slot] * compactX[drawnPosition]));
+        const drawnValue = compactX[drawnPosition];
+        lag = f32(
+          lag +
+            f32(
+              weights.weights[slot] *
+                (statistic === 'localGeary'
+                  ? f32(focusDifference(focus, drawnValue) ** 2)
+                  : drawnValue)
+            )
+        );
       }
       const simulated = term(focus, lag);
       greater += simulated >= observed ? 1 : 0;
@@ -270,9 +290,11 @@ export function computeLocalPermutationOracle(input: {
     result.observed.push(
       statistic === 'localMoran'
         ? ((count - 1) * observed) / sumSquares
-        : statistic === 'localG'
-          ? observedLag / (sumX - x)
-          : observed / sumX
+        : statistic === 'localGeary'
+          ? (observed * count) / sumSquares
+          : statistic === 'localG'
+            ? observedLag / (sumX - x)
+            : observed / sumX
     );
   }
   const level = f32(input.significanceLevel);
@@ -311,6 +333,10 @@ export function computeLocalPermutationOracle(input: {
     result.significantFalseDiscoveryRate.push(rank > 0 && rank <= threshold ? 1 : 0);
   }
   return result;
+}
+
+function focusDifference(focus: number, other: number): number {
+  return f32(focus - other);
 }
 
 /** Result of {@link computeGlobalPermutationOracle}. */

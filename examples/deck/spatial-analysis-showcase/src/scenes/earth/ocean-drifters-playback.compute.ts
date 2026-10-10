@@ -310,7 +310,11 @@ export async function createOceanDriftersPlayback(
         pathOffsets: view('offsets', offsetsBuffer, 'uint32', pieceCount + 1),
         columns,
         rows,
-        coordinateSystem: 'spherical',
+        spatialContext: {
+          coordinateSpace: 'longitude-latitude',
+          metric: 'great-circle',
+          units: 'meters'
+        },
         parameters: parameters.importToGraph(graph),
         output: {
           lengths: view('lengths', lengths, 'float32', cells),
@@ -347,6 +351,10 @@ export async function createOceanDriftersPlayback(
     bytes => {
       const words = new Uint32Array(bytes);
       ctx.setReadout('active', words[0]);
+      ctx.setReadout(
+        'coverageNow',
+        `${words[0].toLocaleString('en-US')} active track pieces of ${pieceCount.toLocaleString('en-US')} loaded · instrument availability, not ocean coverage`
+      );
       ctx.setReadout('trailSegments', words[1]);
       ctx.setReadout('overflow', words[2] ? 'active list overflowed' : 'none');
     }
@@ -426,6 +434,18 @@ export async function createOceanDriftersPlayback(
   );
   ctx.setReadout('peakActive', peakActive);
   ctx.setReadout('density', 'computing');
+  ctx.setReadout(
+    'sampleContract',
+    '2017 archive · first 60 days of each retained record · roughly 12-hourly fixes · deployments spatially uneven'
+  );
+  ctx.setReadout(
+    'densityMeaning',
+    'track kilometres / 1,000 km² = observing effort × ocean transport; it is not current speed'
+  );
+  ctx.setReadout(
+    'temperatureCaveat',
+    `${sstCount.toLocaleString('en-US')} finite buoy-sensor temperatures · in-water measurement, not calibrated skin temperature`
+  );
   ctx.setStatus('');
 
   const regionOf = (id: string) =>

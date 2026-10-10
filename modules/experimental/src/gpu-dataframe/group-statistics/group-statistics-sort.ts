@@ -144,7 +144,7 @@ export function getGroupStructureNodes<Parameters>(
       counts: GraphDataView<'uint32'>;
       count: GraphDataView<'uint32'>;
       overflow: GraphDataView<'uint32'>;
-      totalCount?: GraphDataView<'uint32'>;
+      requiredCount?: GraphDataView<'uint32'>;
     };
   }
 ): {nodes: GPUCommandNode<Parameters>[]; structure: GroupStructure} {
@@ -440,12 +440,12 @@ const GROUP_NONE: u32 = ${GROUP_NONE}u;`,
     createPublishNode<Parameters>(graph, {
       id: `${id}-publish`,
       operation,
-      totalCount: groupTotal,
+      requiredCount: groupTotal,
       output: {
         ids: output.counts,
         count: output.count,
         overflow: output.overflow,
-        totalCount: output.totalCount
+        requiredCount: output.requiredCount
       }
     })
   );

@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {ground} from '../../cartography/grounds';
 import {playbackOptions} from '../../engine/playback';
 import {defineScene, type LegendSpec} from '../scene';
 import type {OsmImportWavesOptions} from './osm-history-import-waves.compute';
@@ -30,11 +31,11 @@ const MONTH_COUNT = 228;
 
 export default defineScene<OsmImportWavesOptions>({
   id: 'osm-history-import-waves',
-  title: 'When did OpenStreetMap New York grow in waves?',
+  title: 'New York OSM nodes by monthly creation volume',
   chapter: 'dataframe',
   order: 4,
   summary:
-    'A GPU dataframe turns 400,000 sampled OpenStreetMap node creations into a monthly histogram and a per-kind count for a sliding window. Spikes mark bulk imports; the share held by one account tells an import from a crowd.',
+    'GPU histograms summarize a sample of New York OpenStreetMap node creation by month, kind and contributor. The outputs identify high-volume windows and contributor shares; sampling and tags cannot establish import provenance.',
   contributors: [
     'GPUDataFrameHistogramQuery',
     'GPUDataFrameGroupedAggregationQuery',
@@ -47,6 +48,16 @@ export default defineScene<OsmImportWavesOptions>({
     }
   ],
   initialView: {longitude: -73.97, latitude: 40.71, zoom: 10.4},
+  basemap: ground('paperCity'),
+  furniture: {
+    title: {
+      title: 'New York OSM monthly creation volume',
+      subtitle: 'Window totals, node kinds and leading-contributor share'
+    },
+    scaleBar: {units: 'metric'},
+    credit: '© OpenStreetMap contributors (ODbL)',
+    caveat: 'Spikes indicate concentrated activity but do not prove import provenance.'
+  },
 
   options: [
     ...playbackOptions<OsmImportWavesOptions>({
@@ -178,6 +189,9 @@ export default defineScene<OsmImportWavesOptions>({
     {
       id: 'question',
       title: 'Does a map grow steadily, or in waves?',
+      headline: 'Monthly creation volume contains sharp peaks',
+      textAlternative:
+        'A monthly node-creation chart contains several narrow high-volume peaks, with points from the active window mapped across New York.',
       body: 'The chart is the number of nodes created in New York per calendar month since June 2007. A `GPUDataFrameHistogramQuery` with irregular edges at the true month boundaries counts the **400,000-node sample** on the GPU, scaled up to the full history (solid), and the dashed line is the exact count. The tall spikes are waves. Choose how sensitive the detector is with **Spike sensitivity** below.',
       camera: {
         longitude: -73.97,
@@ -194,22 +208,31 @@ export default defineScene<OsmImportWavesOptions>({
     {
       id: 'first-wave',
       title: 'September 2007: one account, 73,000 nodes',
+      headline: 'One account dominates the first major peak',
+      textAlternative:
+        'September 2007 nodes cover broad parts of New York while the contributor-share chart assigns nearly the entire selected month to one account.',
       body: 'Set the window to **Sep 2007** with the **Window start** slider below. The month holds about 73,000 nodes and one account made 99% of them (the share chart): this is a bulk upload, consistent with the TIGER-era imports of the first years, not people mapping. The map shows where it landed.',
       options: {time: monthOf(2007, 9), width: 1},
       controls: ['time', 'width'],
-      readouts: ['clock', 'window', 'topAccount', 'check', 'share']
+      readouts: ['clock', 'window', 'topAccount', 'share']
     },
     {
       id: 'building-import',
       title: 'October 2013 to May 2014: the NYC building import',
+      headline: 'Several accounts share the prolonged creation peak',
+      textAlternative:
+        'The eight-month 2013 to 2014 window maps dense node additions by block, with monthly volume and node-kind charts showing the prolonged concentration.',
       body: 'Widen the window to **8 months** from Oct 2013. Four months top 30,000 nodes each, and the kind bars show almost all of them in one kind (the poopdeck.gl grouping puts them in Other tagged nodes, not Buildings: the tags decide the group, so the data cannot say more). The top account made 39% to 78% of each month: several accounts working in parallel, an import team rather than one upload. The map fills block by block across the boroughs.',
       options: {time: monthOf(2013, 10), width: 8},
       controls: ['width', 'time'],
-      readouts: ['clock', 'window', 'topKind', 'kinds', 'monthly']
+      readouts: ['clock', 'window', 'kinds', 'monthly']
     },
     {
       id: 'prolific-hands',
       title: 'Who made them? Color by prolific contributor',
+      headline: 'One contributor dominates the 2021 window',
+      textAlternative:
+        'Most nodes in the May to June 2021 window use the prolific-contributor color, and the share chart attributes the dominant portion to one account.',
       body: 'Switch **Color window nodes by** to prolific contributors and choose how many count as prolific with **Prolific contributors**. In **May and June 2021** (a window of two months) nearly every node is orange: 92% came from a single account. Compare with the 2013 to 2014 window, where the top 10 ranks made about 76% of the nodes.',
       options: {time: monthOf(2021, 5), width: 2, colorBy: 'prolific', prolificCount: 10},
       controls: ['colorBy', 'prolificCount'],
@@ -218,10 +241,13 @@ export default defineScene<OsmImportWavesOptions>({
     {
       id: 'crowd',
       title: 'A spike is not always an import: March 2024',
+      headline: 'The 2024 peak is distributed across contributors',
+      textAlternative:
+        'March to April 2024 nodes are colored by kind; contributor share is lower than in import-like peaks while land and transport categories predominate.',
       body: 'Set the window to **Mar 2024**, two months wide. Volume is high, but the top account made under a fifth of it, none of the top 10 contributors took part in the sample, and the kinds are land and transport, not the import kind: many hands were mapping. The **share by the top account** is what separates a crowd from a bulk upload. Try **Play** and watch the share chart.',
       options: {time: monthOf(2024, 3), width: 2, colorBy: 'kind'},
       controls: ['play', 'time', 'width'],
-      readouts: ['clock', 'topAccount', 'topKind', 'kinds', 'share']
+      readouts: ['clock', 'topAccount', 'kinds', 'share']
     }
   ],
 

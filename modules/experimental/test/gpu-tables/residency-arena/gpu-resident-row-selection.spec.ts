@@ -134,7 +134,7 @@ async function createFullHarness(
         ids: view('ids', capacity),
         count: view('count', 1),
         overflow: view('overflow', 1),
-        totalCount: view('total', 1)
+        requiredCount: view('total', 1)
       },
       outputMask: view('mask', ROW_CAPACITY),
       drawInstanceCount: graph.importGPUData('draw-count', drawCommands.getInstanceCountData(0))

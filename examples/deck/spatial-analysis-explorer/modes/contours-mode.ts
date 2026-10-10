@@ -342,13 +342,11 @@ export const contoursMode: SpatialAnalysisModeDefinition = {
       (RING_CAPACITY + 1) * 4
     );
     const polygonOffsetsBuffer = resources.createBuffer('polygon-offsets', (RING_CAPACITY + 1) * 4);
-    const polygonFeatureOffsetsBuffer = resources.createBuffer('polygon-feature-offsets', 8);
-    const polygonGroupsBuffer = resources.createBuffer('polygon-groups', RING_CAPACITY * 4);
-    // One feature per polygon: the zone raster then holds the polygon row.
-    const polygonFeaturesBuffer = resources.createBuffer(
-      'polygon-features',
-      Uint32Array.from({length: RING_CAPACITY + 1}, (_, index) => index)
+    const polygonFeatureOffsetsBuffer = resources.createBuffer(
+      'polygon-feature-offsets',
+      (RING_CAPACITY + 1) * 4
     );
+    const polygonSourceIdsBuffer = resources.createBuffer('polygon-source-ids', RING_CAPACITY * 4);
     const zonesBuffer = resources.createBuffer('zones', cellCount * 4);
     const zoneOverflowBuffer = resources.createBuffer('zone-overflow', 4);
     const crossingCountBuffer = resources.createBuffer('crossing-count', 4);
@@ -643,6 +641,7 @@ export const contoursMode: SpatialAnalysisModeDefinition = {
               RING_CAPACITY
             ),
             polygons: {
+              kind: 'polygons',
               positions: polygonPositionsView,
               ringOffsets: polygonRingOffsetsView,
               polygonOffsets: polygonOffsetsView,
@@ -651,12 +650,12 @@ export const contoursMode: SpatialAnalysisModeDefinition = {
                 'polygon-feature-offsets',
                 polygonFeatureOffsetsBuffer,
                 'uint32',
-                2
+                RING_CAPACITY + 1
               ),
-              polygonGroups: importGraphBuffer(
+              sourceIds: importGraphBuffer(
                 graph,
-                'polygon-groups',
-                polygonGroupsBuffer,
+                'polygon-source-ids',
+                polygonSourceIdsBuffer,
                 'uint32',
                 RING_CAPACITY
               )
@@ -684,8 +683,8 @@ export const contoursMode: SpatialAnalysisModeDefinition = {
           polygonPositions: polygonPositionsView,
           featureOffsets: importGraphBuffer(
             graph,
-            'polygon-features',
-            polygonFeaturesBuffer,
+            'polygon-feature-offsets-raster',
+            polygonFeatureOffsetsBuffer,
             'uint32',
             RING_CAPACITY + 1
           ),
@@ -1466,7 +1465,7 @@ export const contoursMode: SpatialAnalysisModeDefinition = {
                 rowOrigin: 'north',
                 values: zonesBuffer,
                 valueFormat: 'uint32',
-                zoneBands: polygonGroupsBuffer,
+                zoneBands: polygonSourceIdsBuffer,
                 bandPalette: paletteBuffer,
                 extent: isobandParameters.buffer,
                 opacity: bandOpacity

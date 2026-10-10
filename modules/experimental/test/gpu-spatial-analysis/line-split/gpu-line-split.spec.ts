@@ -40,8 +40,8 @@ it('GPULineSplit#splits an X crossing at the crossing point', async () => {
     ]
   ]);
   expect(result.overflow).toBe(0);
-  expect(result.totalCount).toBe(4);
-  expect(result.totalVertexCount).toBe(8);
+  expect(result.requiredCount).toBe(4);
+  expect(result.requiredVertexCount).toBe(8);
 });
 
 it('GPULineSplit#splits at a shared vertex without duplicating it and ignores line ends', async () => {
@@ -173,13 +173,14 @@ it('GPULineSplit#reports overflow and keeps a consistent prefix', async () => {
   const limitedPieces = await runLineSplit(device, lines, {pieceCapacity: 3});
   expect(limitedPieces.count).toBe(3);
   expect(limitedPieces.overflow).toBe(1);
-  expect(limitedPieces.totalCount).toBe(4);
+  expect(limitedPieces.requiredCount).toBe(4);
   const limitedVertices = await runLineSplit(device, lines, {vertexCapacity: 5});
   expect(limitedVertices.count).toBe(2);
   expect(limitedVertices.vertexCount).toBe(4);
   expect(limitedVertices.overflow).toBe(1);
   const limitedPairs = await runLineSplit(device, lines, {intersectionCapacity: 1});
   expect(limitedPairs.overflow).toBe(0);
+  expect(limitedPairs.candidateOverflow).toBe(0);
   expect(limitedPairs.count).toBe(4);
   const manyLines: Point[][] = [];
   for (let line = 0; line < 6; line++) {
@@ -192,7 +193,9 @@ it('GPULineSplit#reports overflow and keeps a consistent prefix', async () => {
       [10, line + 0.5]
     ]);
   }
-  expect((await runLineSplit(device, manyLines, {intersectionCapacity: 4})).overflow).toBe(1);
+  const limitedIntersections = await runLineSplit(device, manyLines, {intersectionCapacity: 4});
+  expect(limitedIntersections.overflow).toBe(0);
+  expect(limitedIntersections.candidateOverflow).toBe(1);
 });
 
 it('GPULineSplit#matches Shapely unary_union noding on random lines', async () => {
@@ -233,21 +236,21 @@ it('GPULineSplit#matches Shapely unary_union noding on random lines', async () =
   expect(unused.size).toBe(0);
 });
 
-it('GPULineSplit#orders many crossings of one segment (heap-sorted slot) and keeps duplicates once', async () => {
+it('GPULineSplit#orders a long skewed crossing segment and keeps duplicates once', async () => {
   const device = await getWebGPUTestDevice();
   if (!device) return;
   // 90 vertical lines cross one 2-vertex segment: far more events on a single slot than the
-  // insertion-sort limit, listed in a scrambled order. Two of them coincide at x = 45.
-  const crossingCount = 90;
+  // size of a workgroup, listed in a scrambled order. Two of them coincide at x = 257.
+  const crossingCount = 513;
   const xs: number[] = [];
   for (let index = 0; index < crossingCount; index++) {
-    xs.push(1 + ((index * 37) % crossingCount));
+    xs.push(1 + ((index * 227) % crossingCount));
   }
-  xs.push(45);
+  xs.push(257);
   const lines: [number, number][][] = [
     [
       [0, 0],
-      [100, 0]
+      [crossingCount + 2, 0]
     ]
   ];
   for (const x of xs) {
@@ -258,12 +261,12 @@ it('GPULineSplit#orders many crossings of one segment (heap-sorted slot) and kee
   }
   const result = await runLineSplit(device, lines, {
     intersectionCapacity: 1024,
-    pieceCapacity: 1024,
-    vertexCapacity: 8192
+    pieceCapacity: 4096,
+    vertexCapacity: 16384
   });
   const first = result.pieces.slice(0, result.lineIds.lastIndexOf(0) + 1);
   const unique = [...new Set(xs)].sort((a, b) => a - b);
-  const expectedBreaks = [0, ...unique, 100];
+  const expectedBreaks = [0, ...unique, crossingCount + 2];
   expect(first.map(piece => [piece[0][0], piece[piece.length - 1][0]])).toEqual(
     expectedBreaks.slice(0, -1).map((x, index) => [x, expectedBreaks[index + 1]])
   );

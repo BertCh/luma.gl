@@ -140,7 +140,8 @@ async function runClockEncounters(
     counts: output(PAIR_CAPACITY),
     times: output(PAIR_CAPACITY),
     count: output(1),
-    overflow: output(1)
+    overflow: output(1),
+    candidateOverflow: output(1)
   };
   const timestampData = isWordMode
     ? getInt64TimeWords(BigInt64Array.from(tracks.times.values as bigint[]))
@@ -180,6 +181,13 @@ async function runClockEncounters(
     bounds: BOUNDS,
     hitCapacity: 16384,
     pairs: {
+      candidateOverflow: importGraphBuffer(
+        graph,
+        'o-candidate-overflow',
+        out.candidateOverflow,
+        'uint32',
+        1
+      ),
       output: {
         ids: importGraphBuffer(graph, 'o-ids', out.ids, 'uint32', PAIR_CAPACITY),
         count: importGraphBuffer(graph, 'o-count', out.count, 'uint32', 1),

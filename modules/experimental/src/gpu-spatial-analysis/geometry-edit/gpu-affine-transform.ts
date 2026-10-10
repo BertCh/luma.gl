@@ -321,6 +321,7 @@ export class GPUAffineTransform implements GPUCommandNodeProducer {
         : undefined;
       nodes.push(
         ...new GPUGeometryMeasures({
+          spatialContext: {coordinateSpace: 'planar', metric: 'native', units: 'native'},
           id: `${id}-measures`,
           positions: props.positions,
           geometryType: this.geometryType === 'polygons' ? 'polygons' : 'lines',

@@ -537,8 +537,7 @@ export async function createChangeOfSupport(
           'uint32',
           grids.targetCount + 1
         ),
-        crossingCapacity: CROSSING_CAPACITY,
-        raster: importGraphBuffer(graph, 'target-zones', targetZones, 'uint32', CELL_COUNT)
+        crossingCapacity: CROSSING_CAPACITY
       };
     } else {
       targetSystem = {
@@ -570,8 +569,7 @@ export async function createChangeOfSupport(
           'uint32',
           communities.ringOffsets.length
         ),
-        crossingCapacity: CROSSING_CAPACITY,
-        raster: importGraphBuffer(graph, 'target-zones', targetZones, 'uint32', CELL_COUNT)
+        crossingCapacity: CROSSING_CAPACITY
       };
     }
     const offsetsView = importGraphBuffer(
@@ -615,8 +613,7 @@ export async function createChangeOfSupport(
           'uint32',
           sources.ringOffsets.length
         ),
-        crossingCapacity: CROSSING_CAPACITY,
-        raster: importGraphBuffer(graph, 'source-zones', sourceZones, 'uint32', CELL_COUNT)
+        crossingCapacity: CROSSING_CAPACITY
       },
       target: targetSystem,
       cellWeights: importGraphBuffer(graph, 'cell-weights', cellWeights, 'float32', CELL_COUNT),
@@ -630,20 +627,10 @@ export async function createChangeOfSupport(
         sourceCount * COLUMN_COUNT
       ),
       columnCount: COLUMN_COUNT,
-      extensiveValues: importGraphBuffer(
-        graph,
-        'extensive',
-        extensiveValues,
-        'float32',
-        targetCount * COLUMN_COUNT
-      ),
-      intensiveValues: importGraphBuffer(
-        graph,
-        'intensive',
-        intensiveValues,
-        'float32',
-        targetCount * COLUMN_COUNT
-      ),
+      scratch: {
+        sourceZones: importGraphBuffer(graph, 'source-zones', sourceZones, 'uint32', CELL_COUNT),
+        targetZones: importGraphBuffer(graph, 'target-zones', targetZones, 'uint32', CELL_COUNT)
+      },
       categories: {
         sourceCategories: importGraphBuffer(
           graph,
@@ -655,27 +642,49 @@ export async function createChangeOfSupport(
         categoryCount: CATEGORY_COUNT,
         output: importGraphBuffer(graph, 'shares', shares, 'float32', targetCount * CATEGORY_COUNT)
       },
-      extensiveWeights: {
-        offsets: offsetsView,
-        neighbors: importGraphBuffer(
+      outputs: {
+        extensiveValues: importGraphBuffer(
           graph,
-          'pair-neighbors',
-          pairNeighbors,
-          'uint32',
+          'extensive',
+          extensiveValues,
+          'float32',
+          targetCount * COLUMN_COUNT
+        ),
+        intensiveValues: importGraphBuffer(
+          graph,
+          'intensive',
+          intensiveValues,
+          'float32',
+          targetCount * COLUMN_COUNT
+        ),
+        extensiveWeights: {
+          offsets: offsetsView,
+          neighbors: importGraphBuffer(
+            graph,
+            'pair-neighbors',
+            pairNeighbors,
+            'uint32',
+            PAIR_CAPACITY
+          ),
+          weights: importGraphBuffer(
+            graph,
+            'pair-extensive',
+            pairExtensive,
+            'float32',
+            PAIR_CAPACITY
+          )
+        },
+        intensiveWeightValues: importGraphBuffer(
+          graph,
+          'pair-intensive',
+          pairIntensive,
+          'float32',
           PAIR_CAPACITY
         ),
-        weights: importGraphBuffer(graph, 'pair-extensive', pairExtensive, 'float32', PAIR_CAPACITY)
-      },
-      intensiveWeightValues: importGraphBuffer(
-        graph,
-        'pair-intensive',
-        pairIntensive,
-        'float32',
-        PAIR_CAPACITY
-      ),
-      areas: importGraphBuffer(graph, 'pair-areas', pairAreas, 'float32', PAIR_CAPACITY),
-      overflow: importGraphBuffer(graph, 'overflow', overflowFlag, 'uint32', 1),
-      totalPairs: importGraphBuffer(graph, 'total-pairs', totalPairs, 'uint32', 1)
+        areas: importGraphBuffer(graph, 'pair-areas', pairAreas, 'float32', PAIR_CAPACITY),
+        overflow: importGraphBuffer(graph, 'overflow', overflowFlag, 'uint32', 1),
+        requiredCount: importGraphBuffer(graph, 'total-pairs', totalPairs, 'uint32', 1)
+      }
     });
     let outline: Variant['outline'] = null;
     if (grids && gridVerticesView) {
@@ -1097,6 +1106,102 @@ export async function createChangeOfSupport(
       'coverage',
       `${formatCount(covered)} of ${formatCount(targetCount)} target zones overlap a tract`
     );
+    if (meta.kind === 'category') {
+      const dominantCounts = new Uint32Array(CATEGORY_COUNT);
+      for (let target = 0; target < targetCount; target++) {
+        if (read.offsets[target + 1] <= read.offsets[target]) continue;
+        let dominant = 0;
+        for (let group = 1; group < CATEGORY_COUNT; group++) {
+          if (
+            read.shares[target * CATEGORY_COUNT + group] >
+            read.shares[target * CATEGORY_COUNT + dominant]
+          ) {
+            dominant = group;
+          }
+        }
+        dominantCounts[dominant]++;
+      }
+      ctx.setChart('targetDistribution', {
+        kind: 'bars',
+        title: 'Target zones by largest overlap-area group',
+        values: dominantCounts,
+        labels: COS_GROUPS.map(group => group.label),
+        colors: COS_GROUPS.map(group => group.color),
+        horizontal: true,
+        description:
+          'Count of covered target zones assigned to each group by the largest share of overlap area; these are zone counts, not population counts.'
+      });
+      ctx.setChart('conservationChart', null);
+    } else {
+      const targetValues: number[] = [];
+      for (let target = 0; target < targetCount; target++) {
+        if (read.offsets[target + 1] <= read.offsets[target]) continue;
+        const value = getTargetValue(target);
+        if (Number.isFinite(value)) targetValues.push(value);
+      }
+      targetValues.sort((a, b) => a - b);
+      if (targetValues.length > 0) {
+        const binCount = 18;
+        const minimum = targetValues[0];
+        const maximum = targetValues[targetValues.length - 1];
+        const span = maximum - minimum || 1;
+        const counts = new Uint32Array(binCount);
+        for (const value of targetValues) {
+          const bin = Math.min(binCount - 1, Math.floor(((value - minimum) / span) * binCount));
+          counts[bin]++;
+        }
+        ctx.setChart('targetDistribution', {
+          kind: 'histogram',
+          title: `${meta.label} across covered target zones`,
+          values: counts,
+          xDomain: [minimum, maximum > minimum ? maximum : minimum + 1],
+          xLabel: meta.unit,
+          yLabel: 'Target zones',
+          markers: [
+            {
+              x: targetValues[Math.floor(targetValues.length / 2)],
+              label: 'median'
+            }
+          ],
+          description: `Distribution of the displayed ${meta.unit} values across ${targetValues.length.toLocaleString()} covered target zones under the selected transfer rule.`
+        });
+      } else {
+        ctx.setChart('targetDistribution', null);
+      }
+      ctx.setChart('conservationChart', {
+        kind: 'dumbbell',
+        title: 'Extensive totals before and after transfer',
+        xLabel: 'Count',
+        aLabel: 'Source tracts',
+        bLabel: 'Target zones',
+        rows:
+          meta.kind === 'count'
+            ? [
+                {
+                  label: meta.unit,
+                  a: data.numeratorTotal,
+                  b: extensiveNumerator,
+                  highlight: true
+                }
+              ]
+            : [
+                {
+                  label: 'Numerator',
+                  a: data.numeratorTotal,
+                  b: extensiveNumerator,
+                  highlight: true
+                },
+                {
+                  label: 'Denominator',
+                  a: data.denominatorTotal,
+                  b: extensiveDenominator
+                }
+              ],
+        formatX: formatCount,
+        description:
+          'Source and target totals for the extensive count columns used by the conserving transfer. A gap indicates mass lost or gained at rasterized boundaries.'
+      });
+    }
     // Robust color range from the displayed raster.
     const values: number[] = [];
     for (let cell = 0; cell < CELL_COUNT; cell += 3) {

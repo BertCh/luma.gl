@@ -112,6 +112,9 @@ export class GPUPairwisePointLinestringNearest {
     if (this.linestringOffsets.length < 1) {
       throw new Error(`${this.id} linestringOffsets must contain a terminal offset`);
     }
+    if (this.linestringOffsets.length - 1 + this.linestringPositions.length > 0xffffffff) {
+      throw new Error(`${this.id} linestring traversal length must fit in uint32`);
+    }
 
     const precise = this.points.format === 'uint32x4';
     validateRowView(this.output, [precise ? 'float32x2' : 'float32'], `${this.id} output`);
@@ -405,36 +408,34 @@ function getFloat32NearestExpression(
         directSegment,
         point - start
       );
-      let coordinateScale = max(
-        1.0,
-        max(
-          max(max(abs(point.x), abs(point.y)), max(abs(start.x), abs(start.y))),
-          max(abs(end.x), abs(end.y))
-        )
-      );
-      // A reciprocal of an extreme finite coordinate can be subnormal and flush to zero. Scaling
-      // by the coordinate exponent keeps both normalization and reconstruction in the normal path.
-      let coordinateExponent = frexp(coordinateScale).exp;
-      let normalizedPoint = ldexp(point, vec2i(-coordinateExponent));
-      let normalizedStart = ldexp(start, vec2i(-coordinateExponent));
-      let normalizedEnd = ldexp(end, vec2i(-coordinateExponent));
-      let normalizedSegment = normalizedEnd - normalizedStart;
-      let normalizedProjection = geospatial_project_onto_segment_f32(
-        normalizedSegment,
-        normalizedPoint - normalizedStart
-      );
       var projectedDelta = directProjection.projectedDelta;
       var candidatePoint = start;
-      if (!directProjection.valid) {
-        projectedDelta = normalizedProjection.projectedDelta;
-        rowValid = normalizedProjection.valid;
-      }
-      if (!rowValid) {
-        continue;
-      }
       if (directProjection.valid) {
         candidatePoint = start + projectedDelta;
       } else {
+        let coordinateScale = max(
+          1.0,
+          max(
+            max(max(abs(point.x), abs(point.y)), max(abs(start.x), abs(start.y))),
+            max(abs(end.x), abs(end.y))
+          )
+        );
+        // A reciprocal of an extreme finite coordinate can be subnormal and flush to zero.
+        // Scaling by the coordinate exponent keeps normalization and reconstruction normal.
+        let coordinateExponent = frexp(coordinateScale).exp;
+        let normalizedPoint = ldexp(point, vec2i(-coordinateExponent));
+        let normalizedStart = ldexp(start, vec2i(-coordinateExponent));
+        let normalizedEnd = ldexp(end, vec2i(-coordinateExponent));
+        let normalizedSegment = normalizedEnd - normalizedStart;
+        let normalizedProjection = geospatial_project_onto_segment_f32(
+          normalizedSegment,
+          normalizedPoint - normalizedStart
+        );
+        projectedDelta = normalizedProjection.projectedDelta;
+        rowValid = normalizedProjection.valid;
+        if (!rowValid) {
+          continue;
+        }
         candidatePoint = ldexp(
           normalizedStart + projectedDelta,
           vec2i(coordinateExponent)

@@ -117,7 +117,7 @@ function getLegends(
       ],
       note:
         state.gating === 'permutation'
-          ? `Conditional permutation, ${state.permutations} permutations, p <= ${state.significance}${state.falseDiscoveryRate ? ', Benjamini-Hochberg corrected' : ''}.`
+          ? `Conditional permutation, ${state.permutations} permutations (minimum attainable p = ${(1 / (state.permutations + 1)).toFixed(4)}), p <= ${state.significance}${state.falseDiscoveryRate ? ', Benjamini-Hochberg FDR gate' : ', uncorrected across counties'}.`
           : `Analytic p <= ${state.significance}.`
     });
   }
@@ -163,11 +163,11 @@ graph.add(new GPUSpatialEmpiricalBayesRates({
 
 export default defineScene<RateSmoothingOptions>({
   id: 'rate-smoothing',
-  title: 'Small numbers, loud maps',
+  title: 'Small numbers, honest uncertainty',
   chapter: 'statistics',
   order: 2,
   summary:
-    'Raw county birth rates are loudest where counties are smallest. Empirical Bayes shrinks each rate toward what its population can support, spatial EB borrows from neighbours, and a rate cluster map finds the regions that are more than noise.',
+    'A county birth-rate story that keeps the event count, exposure, shrinkage weight and inferential resolution visible—from the raw funnel through empirical Bayes and spatial pooling to FDR-gated local clusters.',
   contributors: [
     'GPUEmpiricalBayesRates',
     'GPUSpatialEmpiricalBayesRates',
@@ -359,6 +359,16 @@ export default defineScene<RateSmoothingOptions>({
       help: 'The lowest and highest raw county rates, per 1,000 women aged 15-44 per year.'
     },
     {
+      id: 'nationalRatio',
+      label: 'National numerator / exposure',
+      help: 'The pooled rate is total births divided by total woman-years at risk. The denominator is exposure over all three years, not total population.'
+    },
+    {
+      id: 'exposureRange',
+      label: 'County exposure range',
+      help: 'Minimum to maximum woman-years at risk over 2021-2023. The funnel uses this denominator on its horizontal axis.'
+    },
+    {
       id: 'rawTopClass',
       label: 'Raw: counties in the darkest class',
       format: 'integer',
@@ -430,6 +440,12 @@ export default defineScene<RateSmoothingOptions>({
       help: 'Global spatial autocorrelation of the spatial empirical-Bayes rate. Pooling with neighbours builds similarity in, so it is higher by construction.'
     },
     {
+      id: 'moranComparison',
+      label: "Moran's I by rate estimate",
+      kind: 'chart',
+      help: 'The raw, empirical-Bayes, spatial empirical-Bayes and standardised rates under the same weights matrix.'
+    },
+    {
       id: 'localPool',
       label: 'Local pooled rate of the selected county',
       help: 'Click a county: the rate of the county together with its neighbours, the local prior mean of spatial empirical Bayes.'
@@ -447,6 +463,21 @@ export default defineScene<RateSmoothingOptions>({
       id: 'testName',
       label: 'Significance test in use',
       help: 'The conditional permutation test with its permutation count, or the analytic p-value.'
+    },
+    {
+      id: 'testResolution',
+      label: 'Smallest attainable pseudo-p',
+      help: 'Permutation p-values are discrete. With P permutations, the minimum possible pseudo-p is 1 / (P + 1).'
+    },
+    {
+      id: 'multiplicity',
+      label: 'Multiplicity rule',
+      help: 'Whether the county-level decisions are uncorrected or gated by Benjamini-Hochberg false-discovery-rate control.'
+    },
+    {
+      id: 'fdrResolutionBarrier',
+      label: 'FDR resolution barrier',
+      help: 'The minimum number of counties that would need to attain the smallest pseudo-p before the Benjamini-Hochberg threshold can reach that discrete p-value.'
     },
     {id: 'hhCount', label: 'High-high counties', format: 'integer', emphasis: 'tile'},
     {id: 'llCount', label: 'Low-low counties', format: 'integer', emphasis: 'tile'},
@@ -472,7 +503,11 @@ export default defineScene<RateSmoothingOptions>({
       help: 'Estimated variance of the true rates, in births per 1,000 women a year squared (esda does not clamp it).'
     },
     {id: 'priorCheck', label: 'Prior variance sign', hood: true},
-    {id: 'weightSpread', label: 'Weight on own births', hood: true},
+    {
+      id: 'weightSpread',
+      label: "Weight on each county's own births",
+      help: 'The 5th to 95th percentile of w = a / (a + m / b). The remainder, 1 - w, is the weight implicitly borrowed from the national prior.'
+    },
     {id: 'moranRaw', label: "Moran's I, raw", hood: true},
     {id: 'moranZ', label: "Moran's I, standardised", hood: true},
     {id: 'neighbourDetail', label: 'Contiguity detail', hood: true}
@@ -538,11 +573,15 @@ export default defineScene<RateSmoothingOptions>({
       headline: 'The darkest counties tend to be the smallest',
       textAlternative:
         'Map of US counties in seven shades of brown by raw birth rate: dark counties are scattered across the Plains and the interior West, many of them very small.',
-      body: 'Births per 1,000 women aged 15-44 a year, against a national rate of **{{pooledRate}}**. The classes are septiles of the smoothed rate, so each should hold about the same number of counties. The raw rate puts **{{rawTopClass}}** in the darkest class, whose median county has **{{darkestPopulation}}**, and **{{rawBottomClass}}** in the palest. Flip **Map shows** to compare.\n\n*Equal classes, unequal counties.*',
+      body: 'The raw estimator is explicit: **N births / woman-years at risk**. Nationally that is **{{nationalRatio}}**, or **{{pooledRate}}**. The classes are septiles of the smoothed rate, so each should hold about the same number of counties; the raw map instead puts **{{rawTopClass}}** in the darkest class and **{{rawBottomClass}}** in the palest. Flip **Map shows** to compare.\n\n*Equal classes, radically unequal exposure.*',
+      evidence:
+        'Across **{{counties}}** counties, exposure spans **{{exposureRange}}**; the darkest raw class is therefore not a like-for-like ranking of equally precise estimates.',
+      caveat:
+        'The denominator estimates women aged 15–44, not biological fertility opportunity. Residence, migration and college enrollment can change the exposure model without changing births.',
       options: {map: 'raw'},
       optionsMode: 'fresh',
       controls: ['map'],
-      readouts: ['pooledRate', 'counties', 'rawTopClass', 'rawBottomClass'],
+      readouts: ['nationalRatio', 'pooledRate', 'exposureRange', 'rawTopClass'],
       camera: {bounds: CONUS_BOUNDS, transitionMs: 1600},
       basemap: ground('paperSheet'),
       furniture: {
@@ -562,7 +601,11 @@ export default defineScene<RateSmoothingOptions>({
       headline: 'The loudest rates come from small counties',
       textAlternative:
         'The Plains with the highest raw rates ringed in solid ink and the lowest dashed; a funnel chart shows the rates fanning out for small counties.',
-      body: 'Solid rings mark the highest raw rates. Those counties have a median of **{{extremePopulation}}** against **{{allPopulation}}** overall, and in the chart they sit on the wide left of the funnel. Dashed rings mark the lowest: larger than typical (**{{lowPopulation}}**), and partly college towns whose students inflate the denominator. Toggle **Ring the extremes**.\n\n*Small numbers make loud maps.*',
+      body: 'Each dot is a county: vertical position is N / exposure and horizontal position is its 2021–2023 woman-years. The dotted 95% and 99.8% limits widen exactly where sampling noise is largest. Solid rings mark the highest raw rates; those counties have a median of **{{extremePopulation}}** against **{{allPopulation}}** overall. **{{fewBirths}}** counties recorded fewer than 30 births.\n\n*The funnel makes uncertainty visible before smoothing it.*',
+      evidence:
+        'The funnel widens as the denominator shrinks; the highest-rate counties have median population **{{extremePopulation}}**, versus **{{allPopulation}}** overall.',
+      caveat:
+        'These are sampling limits around one pooled Poisson rate, not confidence that the exposure model is valid. Genuine county differences, overdispersion and denominator bias can also place a county outside them.',
       options: {map: 'raw', showExtremes: true},
       optionsMode: 'fresh',
       controls: ['showExtremes'],
@@ -589,11 +632,20 @@ export default defineScene<RateSmoothingOptions>({
       headline: 'Shrinkage tames small counties and spares large ones',
       textAlternative:
         'The same Plains map split by a divider: raw rates on the left, empirical-Bayes rates on the right on identical classes; the rings stay where they were but the extreme colours fade.',
-      body: 'Empirical Bayes estimates how far true county rates really differ (a spread of **{{trueSpread}}**) and pulls each raw rate toward the pooled rate, more for smaller counties. Drag the divider: in **{{smallLabel}}** the raw rates spread **{{smallRaw}}** but the smoothed ones **{{smallEb}}**. **Fade unreliable counties** shows how much of each estimate is its own.\n\n*Shrinkage trades a little bias for much less noise.*',
-      options: {map: 'smoothed', swipe: 'raw-eb', showExtremes: true},
+      body: 'Empirical Bayes estimates how far true county rates differ (spread **{{trueSpread}}**) and forms w × raw + (1 − w) × pooled, where w = a / (a + m / b). Across counties, the middle 90% of w runs **{{weightSpread}}**. Drag the divider: in **{{smallLabel}}**, raw rates span **{{smallRaw}}** but smoothed rates **{{smallEb}}**. Fading is reliability: transparent counties borrow more.\n\n*Shrinkage changes the estimate because the precision changed.*',
+      evidence:
+        'For the same small counties, the 5th–95th percentile span contracts from **{{smallRaw}}** to **{{smallEb}}** after smoothing.',
+      caveat:
+        'This corrects sampling noise under a shared-rate model; it cannot repair a misspecified exposure denominator. An unusual small county can also be pulled too far toward the prior.',
+      options: {
+        map: 'smoothed',
+        swipe: 'raw-eb',
+        showExtremes: true,
+        fadeUnreliable: true
+      },
       optionsMode: 'fresh',
       controls: ['fadeUnreliable'],
-      readouts: ['funnel', 'trueSpread', 'smallRaw', 'smallEb'],
+      readouts: ['funnel', 'weightSpread', 'smallRaw', 'smallEb'],
       camera: {bounds: PLAINS_BOUNDS, transitionMs: 1000},
       compare: {labels: ['Raw rate', 'Empirical Bayes'], position: 0.5},
       furniture: {
@@ -614,10 +666,14 @@ export default defineScene<RateSmoothingOptions>({
       textAlternative:
         'Mountain West counties split by a divider: national empirical Bayes on the left, spatial empirical Bayes on the right; a clicked county has its neighbourhood outlined.',
       body: "Spatial empirical Bayes pools each county with its queen neighbours (**{{neighbourMean}}** on average) instead of the nation. Drag the divider, then click a county to outline its neighbourhood and read its local rate (**{{localPool}}**). Under **Neighbour definition**, rook counts shared edges only. Moran's I rises from **{{moranEb}}** to **{{moranSpatial}}**, partly because pooling builds similarity in.\n\n*Pooling with neighbours smooths the map and builds similarity into it.*",
-      options: {map: 'spatial', swipe: 'eb-spatial'},
+      evidence:
+        "The comparison chart puts the same weights beside every transformation: Moran's I moves from **{{moranEb}}** for national EB to **{{moranSpatial}}** for spatial EB.",
+      caveat:
+        'The increase is not independent confirmation of a spatial process: borrowing from neighbours mechanically introduces spatial similarity.',
+      options: {map: 'spatial', swipe: 'eb-spatial', fadeUnreliable: true},
       optionsMode: 'fresh',
       controls: ['criterion'],
-      readouts: ['neighbourMean', 'moranEb', 'moranSpatial', 'localPool'],
+      readouts: ['moranComparison', 'neighbourMean', 'moranSpatial', 'localPool'],
       camera: {bounds: MOUNTAIN_BOUNDS, transitionMs: 1600},
       compare: {labels: ['Empirical Bayes', 'Spatial EB'], position: 0.5},
       furniture: {
@@ -644,7 +700,11 @@ export default defineScene<RateSmoothingOptions>({
       headline: 'Standardising asks how surprising each rate is',
       textAlternative:
         'US county map in seven red-blue classes by standardised rate: most counties are pale and as expected, with red counties above and blue counties below the pooled rate.',
-      body: 'Each rate is compared with the pooled rate in units of its own sampling noise: z = (rate - pooled) / sqrt(a + m / b). **{{beyond196}}** counties lie beyond 1.96 (**{{above196}}** above, **{{below196}}** below), the dots outside the curves in the chart. Tiny counties need a huge excess to qualify. Flip **Map shows** to compare rate and z.\n\n*z answers how surprising, not how high.*',
+      body: 'Each county becomes z = (raw − pooled) / sqrt(a + m / b): departure divided by its model standard error. **{{beyond196}}** counties lie beyond |1.96| (**{{above196}}** above, **{{below196}}** below). The same raw difference is less surprising when b is small. Hover a county to see N, exposure, standard error and shrinkage weight together.\n\n*z answers “surprising under this model,” not “important.”*',
+      evidence:
+        'The funnel and threshold counts agree: **{{beyond196}}** counties exceed |1.96|, split into **{{above196}}** above and **{{below196}}** below the pooled rate.',
+      caveat:
+        'A standardised extreme is evidence against the pooled-rate sampling model, not proof of a substantively high or low underlying fertility rate. The z score inherits the denominator and prior assumptions.',
       options: {map: 'standardized'},
       optionsMode: 'fresh',
       controls: ['map'],
@@ -659,15 +719,24 @@ export default defineScene<RateSmoothingOptions>({
     },
     {
       id: 'clusters',
-      title: 'Where high and low birth rates cluster',
-      headline: 'High and low birth rates cluster by region',
+      title: 'Can the cluster map survive 3,109 tests?',
+      headline: 'Permutation resolution is part of the evidence',
       textAlternative:
-        'US county cluster map: red high-high clusters and blue low-low clusters in separate regions, with most counties not significant and drawn as a pale ghost.',
-      body: "Local Moran on the smoothed rate, tested by **{{testName}}**, finds **{{hhCount}}** high-high counties, led by **{{hhRegion}}**, and **{{llCount}}** low-low, led by **{{llRegion}}**; **{{notSignificantShare}}** are not significant. Try **Benjamini-Hochberg FDR** and **Significance level**. Limits: births are counted by mother's residence, and students inflate college-town denominators. LISA itself is in *Hot spots beyond chance*.\n\n*A cluster map says where; the test says whether.*",
-      options: {map: 'cluster', gating: 'permutation', permutations: 499},
+        'At the default 499-permutation, five-percent FDR setting, the US county map is entirely pale because no local Moran cluster clears the attainable multiple-testing threshold; disabling FDR reveals uncorrected red, blue and outlier classes.',
+      body: 'Local Moran tests each county against conditional permutations of its neighbours. **{{testName}}** can resolve no p below **{{testResolution}}**; **{{multiplicity}}**. At this resolution, **{{fdrResolutionBarrier}}**. The surviving map contains **{{hhCount}}** high–high and **{{llCount}}** low–low counties, while **{{notSignificantShare}}** are not discoveries. Change permutations or toggle FDR to move the evidentiary gate—not the underlying rates.\n\n*An empty corrected map can be an honest result, not a broken one.*',
+      evidence:
+        'At the current permutation resolution and multiplicity rule, **{{hhCount}}** High-High and **{{llCount}}** Low-Low counties pass the gate; **{{notSignificantShare}}** do not.',
+      caveat:
+        'FDR limits the expected share of false discoveries among rejected local tests; it does not validate the exposure denominator, remove spatial dependence, estimate an effect size or identify a cause.',
+      options: {
+        map: 'cluster',
+        gating: 'permutation',
+        permutations: 499,
+        falseDiscoveryRate: true
+      },
       optionsMode: 'fresh',
-      controls: ['falseDiscoveryRate', 'significance'],
-      readouts: ['hhCount', 'llCount', 'notSignificantShare', 'clusterBars'],
+      controls: ['permutations', 'falseDiscoveryRate', 'significance'],
+      readouts: ['testResolution', 'fdrResolutionBarrier', 'notSignificantShare', 'clusterBars'],
       camera: {bounds: CONUS_BOUNDS, transitionMs: 1600},
       furniture: {
         ...NATIONAL_FURNITURE,

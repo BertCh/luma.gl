@@ -117,7 +117,7 @@ test('graph scheduling retains ready waves, forward references, hazards and cycl
   }
 });
 
-test('transient allocation matches smallest-capacity reuse over overlapping lifetimes', () => {
+test('transient allocation matches best-fit reuse over overlapping lifetimes', () => {
   const graph = makeGraph();
   // Deterministic irregular lifetimes include capacity ties, unused gaps and same-node endpoints.
   const lifetimes = Array.from({length: 256}, (_, index) => ({
@@ -147,9 +147,11 @@ test('transient allocation matches smallest-capacity reuse over overlapping life
   }
   const expected: {last: number; bytes: number; handles: number[]}[] = [];
   for (const lifetime of [...lifetimes].sort((left, right) => left.first - right.first)) {
-    let allocation = expected
-      .filter(candidate => candidate.last < lifetime.first)
+    const available = expected.filter(candidate => candidate.last < lifetime.first);
+    let allocation = available
+      .filter(candidate => candidate.bytes >= lifetime.bytes)
       .sort((left, right) => left.bytes - right.bytes)[0];
+    allocation ??= available.sort((left, right) => right.bytes - left.bytes)[0];
     if (!allocation) {
       allocation = {last: -1, bytes: 0, handles: []};
       expected.push(allocation);
@@ -170,6 +172,44 @@ test('transient allocation matches smallest-capacity reuse over overlapping life
     for (const allocation of expected) {
       expect(new Set(allocation.handles.map(index => actual.get(handles[index]))).size).toBe(1);
     }
+  } finally {
+    compiled.destroy();
+  }
+});
+
+test('transient allocation preserves a fitting allocation instead of growing the smallest', () => {
+  const graph = makeGraph();
+  const small = graph.createTransientBuffer({
+    id: 'small',
+    byteLength: 4,
+    usage: Buffer.STORAGE
+  });
+  const large = graph.createTransientBuffer({
+    id: 'large',
+    byteLength: 1024,
+    usage: Buffer.STORAGE
+  });
+  const medium = graph.createTransientBuffer({
+    id: 'medium',
+    byteLength: 900,
+    usage: Buffer.STORAGE
+  });
+  graph.addCopyPass({
+    id: 'initialize-pool',
+    resources: [small, large].map(buffer => ({buffer, usage: 'storage-read-write'}) as const),
+    compile: () => ({encode: () => {}})
+  });
+  graph.addCopyPass({
+    id: 'reuse-best-fit',
+    dependsOn: ['initialize-pool'],
+    resources: [{buffer: medium, usage: 'storage-read-write'}],
+    compile: () => ({encode: () => {}})
+  });
+
+  const compiled = graph.compile();
+  try {
+    expect(compiled.stats.physicalTransientBufferCount).toBe(2);
+    expect(compiled.stats.physicalTransientBytes).toBe(1028);
   } finally {
     compiled.destroy();
   }

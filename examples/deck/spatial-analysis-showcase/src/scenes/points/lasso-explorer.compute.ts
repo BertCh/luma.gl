@@ -542,7 +542,7 @@ export async function createLassoExplorer(
                   'uint32',
                   1
                 ),
-                totalCount: importGraphBuffer(graph, 'selected-ids-total', idsTotal, 'uint32', 1)
+                requiredCount: importGraphBuffer(graph, 'selected-ids-total', idsTotal, 'uint32', 1)
               },
               drawInstanceCount: graph.importGPUData(
                 'draw-instance-count',

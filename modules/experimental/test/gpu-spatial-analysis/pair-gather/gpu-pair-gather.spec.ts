@@ -235,6 +235,7 @@ function createPredicateFixture(device: TestDevice, how: GPUPairGatherHow, capac
       pairLeft: {values: pad(PREDICATE.pairsLeft, 16), format: 'uint32'},
       pairRight: {values: pad(PREDICATE.pairsRight, 16), format: 'uint32'},
       pairCount: {values: new Uint32Array([PREDICATE.pairsLeft.length]), format: 'uint32'},
+      pairRequired: {values: new Uint32Array([PREDICATE.pairsLeft.length]), format: 'uint32'},
       pairOverflow: {values: new Uint32Array([0]), format: 'uint32'},
       unmatchedIds: {values: pad(PREDICATE.unmatched, 32), format: 'uint32'},
       unmatchedCount: {values: new Uint32Array([PREDICATE.unmatched.length]), format: 'uint32'},
@@ -251,6 +252,7 @@ function createPredicateFixture(device: TestDevice, how: GPUPairGatherHow, capac
           leftIds: inputs['pairLeft'],
           rightIds: inputs['pairRight'],
           count: inputs['pairCount'],
+          requiredCount: inputs['pairRequired'],
           overflow: inputs['pairOverflow']
         },
         ...(how === 'left'

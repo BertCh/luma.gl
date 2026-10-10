@@ -4,6 +4,7 @@
 
 import {
   ComputePass,
+  ComputePassBindingOptions,
   ComputePassProps,
   ComputePipeline,
   Buffer,
@@ -87,10 +88,14 @@ export class WebGPUComputePass extends ComputePass {
    * Sets an array of bindings (uniform buffers, samplers, textures, ...)
    * TODO - still some API confusion - does this method go here or on the pipeline?
    */
-  setBindings(bindings: Bindings | BindingsByGroup): void {
+  setBindings(bindings: Bindings | BindingsByGroup, options?: ComputePassBindingOptions): void {
     const bindGroups =
       (this._webgpuPipeline &&
-        _getDefaultBindGroupFactory(this.device).getBindGroups(this._webgpuPipeline, bindings)) ||
+        _getDefaultBindGroupFactory(this.device).getBindGroups(
+          this._webgpuPipeline,
+          bindings,
+          options?._bindGroupCacheKeys
+        )) ||
       {};
     for (const [group, bindGroup] of Object.entries(bindGroups)) {
       if (bindGroup) {

@@ -29,15 +29,15 @@ export const GPU_NETWORK_NODING_NONE = 0xffffffff;
 export type GPUNetworkNodingNodes = {
   /** Node coordinates. Capacity (`nodeCount` rows of the CSR) is the length. */
   positions: GraphDataView<'float32x2'>;
-  /** One-row scalar receiving `min(totalCount, positions.length)`. */
+  /** One-row scalar receiving `min(requiredCount, positions.length)`. */
   count: GraphDataView<'uint32'>;
   /** Optional one-row scalar receiving the unclamped number of distinct nodes. */
-  totalCount?: GraphDataView<'uint32'>;
+  requiredCount?: GraphDataView<'uint32'>;
 };
 
 /** Edge list of a noded network: edge `e` is piece `e` of {@link GPUNetworkNodingProps.pieces}. */
 export type GPUNetworkNodingEdges = {
-  /** Node ID at the start of each piece. `GPU_NETWORK_NODING_NONE` beyond `pieces.count`. */
+  /** Node ID at the start of each piece. `GPU_NETWORK_NODING_NONE` beyond `pieces.status.count`. */
   fromNodes: GraphDataView<'uint32'>;
   /** Node ID at the end of each piece. */
   toNodes: GraphDataView<'uint32'>;
@@ -54,7 +54,7 @@ export type GPUNetworkNodingEdges = {
 export type GPUNetworkNodingCSR = {
   /** Row offsets with `nodes.positions.length + 1` entries. Rows of unused nodes are empty. */
   offsets: GraphDataView<'uint32'>;
-  /** Neighbor node per entry. Capacity `2 * pieces.lineIds.length`. */
+  /** Neighbor node per entry. Capacity `2 * pieces.sourceIds.length`. */
   neighbors: GraphDataView<'uint32'>;
   /** Edge length per entry. 3.4028234e38 beyond the last valid entry, which no traversal reaches. */
   weights: GraphDataView<'float32'>;
@@ -142,7 +142,7 @@ export class GPUNetworkNoding implements GPUCommandNodeProducer {
     validatePackedView(nodes.positions, ['float32x2'], `${id} nodes.positions`);
     for (const [name, view] of [
       ['nodes.count', nodes.count],
-      ['nodes.totalCount', nodes.totalCount],
+      ['nodes.requiredCount', nodes.requiredCount],
       ['overflow', props.overflow],
       ['uncertainCount', props.uncertainCount]
     ] as const) {
@@ -154,7 +154,7 @@ export class GPUNetworkNoding implements GPUCommandNodeProducer {
       }
     }
     this.nodeCapacity = nodes.positions.length;
-    this.edgeCapacity = pieces.lineIds.length;
+    this.edgeCapacity = pieces.sourceIds.length;
     if (this.nodeCapacity < 1) {
       throw new Error(`${id} nodes.positions must be non-empty`);
     }
@@ -182,7 +182,7 @@ export class GPUNetworkNoding implements GPUCommandNodeProducer {
       ['edges.lengths', edges.lengths]
     ] as const) {
       if (view.length !== this.edgeCapacity) {
-        throw new Error(`${id} ${name} length must equal pieces.lineIds.length`);
+        throw new Error(`${id} ${name} length must equal pieces.sourceIds.length`);
       }
     }
   }
@@ -197,7 +197,7 @@ export class GPUNetworkNoding implements GPUCommandNodeProducer {
       tolerance,
       nodeOutputs.positions,
       nodeOutputs.count,
-      nodeOutputs.totalCount,
+      nodeOutputs.requiredCount,
       edges.fromNodes,
       edges.toNodes,
       edges.lengths,
@@ -215,7 +215,7 @@ export class GPUNetworkNoding implements GPUCommandNodeProducer {
       length: number
     ) => createTransientView(graph, `${id}-${name}`, format, length);
 
-    const splitOverflow = pieces.overflow ?? T('split-overflow', 'uint32', 1);
+    const splitOverflow = pieces.status.overflow;
     nodes.push(
       ...new GPULineSplit({
         id: `${id}-split`,
@@ -224,7 +224,7 @@ export class GPUNetworkNoding implements GPUCommandNodeProducer {
         spatialSort: props.spatialSort,
         leafCapacity: props.leafCapacity,
         uncertainCount: props.uncertainCount,
-        pieces: {...pieces, overflow: splitOverflow}
+        pieces
       }).getCommandNodes(graph)
     );
 
@@ -239,9 +239,9 @@ export class GPUNetworkNoding implements GPUCommandNodeProducer {
         operation: OPERATION,
         variant: 'endpoint-keys',
         bindings: [
-          {name: 'pieceCount', view: pieces.count, type: 'u32', access: 'read'},
-          {name: 'pieceOffsets', view: pieces.offsets, type: 'u32', access: 'read'},
-          {name: 'piecePositions', view: pieces.positions, type: 'f32', access: 'read'},
+          {name: 'pieceCount', view: pieces.status.count, type: 'u32', access: 'read'},
+          {name: 'pieceOffsets', view: pieces.geometry.lineOffsets, type: 'u32', access: 'read'},
+          {name: 'piecePositions', view: pieces.geometry.positions, type: 'f32', access: 'read'},
           {name: 'tolerance', view: tolerance, type: 'f32', access: 'read'},
           {name: 'keysX', view: keysX, type: 'u32', access: 'read_write'},
           {name: 'keysY', view: keysY, type: 'u32', access: 'read_write'},
@@ -378,9 +378,9 @@ export class GPUNetworkNoding implements GPUCommandNodeProducer {
         operation: OPERATION,
         variant: 'edges',
         bindings: [
-          {name: 'pieceCount', view: pieces.count, type: 'u32', access: 'read'},
-          {name: 'pieceOffsets', view: pieces.offsets, type: 'u32', access: 'read'},
-          {name: 'piecePositions', view: pieces.positions, type: 'f32', access: 'read'},
+          {name: 'pieceCount', view: pieces.status.count, type: 'u32', access: 'read'},
+          {name: 'pieceOffsets', view: pieces.geometry.lineOffsets, type: 'u32', access: 'read'},
+          {name: 'piecePositions', view: pieces.geometry.positions, type: 'f32', access: 'read'},
           {name: 'endpointNodes', view: endpointNodes, type: 'u32', access: 'read'},
           {name: 'fromNodes', view: edges.fromNodes, type: 'u32', access: 'read_write'},
           {name: 'toNodes', view: edges.toNodes, type: 'u32', access: 'read_write'},
@@ -524,10 +524,10 @@ const LAST: u32 = ${endpointCount - 1}u;`,
       {name: 'splitOverflow', view: splitOverflow, type: 'u32', access: 'read'},
       {name: 'nodeCount', view: nodeOutputs.count, type: 'u32', access: 'read_write'}
     ];
-    if (nodeOutputs.totalCount) {
+    if (nodeOutputs.requiredCount) {
       scalarBindings.push({
-        name: 'totalCount',
-        view: nodeOutputs.totalCount,
+        name: 'requiredCount',
+        view: nodeOutputs.requiredCount,
         type: 'u32',
         access: 'read_write'
       });
@@ -551,7 +551,7 @@ const LAST: u32 = ${endpointCount - 1}u;`,
 const LAST: u32 = ${endpointCount - 1}u;`,
         body: `let total = headRanks[headRanksOffset + LAST] + headFlags[headFlagsOffset + LAST];
   nodeCount[nodeCountOffset] = min(total, NODE_CAPACITY);
-  ${nodeOutputs.totalCount ? 'totalCount[totalCountOffset] = total;' : ''}
+  ${nodeOutputs.requiredCount ? 'requiredCount[requiredCountOffset] = total;' : ''}
   ${props.overflow ? 'overflow[overflowOffset] = select(0u, 1u, total > NODE_CAPACITY || splitOverflow[splitOverflowOffset] != 0u);' : ''}`
       })
     );

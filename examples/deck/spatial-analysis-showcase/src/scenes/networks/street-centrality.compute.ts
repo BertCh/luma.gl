@@ -207,7 +207,7 @@ export async function createStreetCentrality(
     'uint32',
     GPU_NETWORK_STATISTICS_PARAMETER_LENGTH
   );
-  const styleParameters = resources.createParameterBuffer('style-parameters', 'uint32', 2);
+  const styleParameters = resources.createParameterBuffer('style-parameters', 'uint32', 3);
   const undirectedTopology = buildTopology(graph, false);
   const directedTopology = buildTopology(graph, true);
 
@@ -444,13 +444,14 @@ export async function createStreetCentrality(
       length: number
     ) => importGraphBuffer(styleGraph, name, buffer, format, length);
     const slotSourceView = sView('slot-source', csr.slotSource, 'uint32', slots);
+    const styleParametersView = styleParameters.importToGraph(styleGraph);
     addKernelPass(styleGraph, {
       id: 'slot-scalar',
       bindings: [
         {
           name: 'nodeScalar',
-          view: sView('node-scalar', buffers.nodeScalar, 'float32', nodeCount),
-          type: 'f32',
+          view: sView('node-scalar', buffers.nodeScalar, 'uint32', nodeCount),
+          type: 'u32',
           access: 'read'
         },
         {name: 'slotSource', view: slotSourceView, type: 'u32', access: 'read'},
@@ -460,6 +461,7 @@ export async function createStreetCentrality(
           type: 'u32',
           access: 'read'
         },
+        {name: 'style', view: styleParametersView, type: 'u32', access: 'read'},
         {
           name: 'slotScalar',
           view: sView('slot-scalar', buffers.slotScalar, 'float32', slots),
@@ -468,8 +470,12 @@ export async function createStreetCentrality(
         }
       ],
       invocationCount: slots,
-      body: `let a = nodeScalar[nodeScalarOffset + slotSource[slotSourceOffset + index]];
-  let b = nodeScalar[nodeScalarOffset + neighbors[neighborsOffset + index]];
+      body: `let sourceBits = nodeScalar[nodeScalarOffset + slotSource[slotSourceOffset + index]];
+  let targetBits = nodeScalar[nodeScalarOffset + neighbors[neighborsOffset + index]];
+  // style[2] distinguishes integer metrics from the raw IEEE-754 bits copied for PageRank.
+  let integerMetric = style[styleOffset + 2u] != 0u;
+  let a = select(bitcast<f32>(sourceBits), f32(sourceBits), integerMetric);
+  let b = select(bitcast<f32>(targetBits), f32(targetBits), integerMetric);
   slotScalar[slotScalarOffset + index] = 0.5 * (a + b);`
     });
     addKernelPass(styleGraph, {
@@ -484,7 +490,7 @@ export async function createStreetCentrality(
         {name: 'slotSource', view: slotSourceView, type: 'u32', access: 'read'},
         {
           name: 'style',
-          view: styleParameters.importToGraph(styleGraph),
+          view: styleParametersView,
           type: 'u32',
           access: 'read'
         },
@@ -778,8 +784,16 @@ export async function createStreetCentrality(
   }
 
   function writeStyleParameters(): void {
+    const integerMetric =
+      ctx.options.metric === 'degree' ||
+      ctx.options.metric === 'inDegree' ||
+      ctx.options.metric === 'core';
     styleParameters.write(
-      Uint32Array.of(largestComponentLabel, ctx.options.metric === 'component' ? 1 : 0)
+      Uint32Array.of(
+        largestComponentLabel,
+        ctx.options.metric === 'component' ? 1 : 0,
+        integerMetric ? 1 : 0
+      )
     );
     styleDirty = true;
   }

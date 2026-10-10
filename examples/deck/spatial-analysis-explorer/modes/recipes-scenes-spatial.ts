@@ -111,21 +111,23 @@ export const buildClusterAndOutlineScene: RecipeSceneBuilder = async host => {
   const perimeters = kit.output('perimeters', 'float32', CLUSTER_MAXIMUM_COUNT);
   const recipe = addClusterAndOutlineRecipe(kit.graph, {
     positions: pointsInput.view,
+    spatialContext: {coordinateSpace: 'planar', metric: 'native', units: 'native'},
     clusteringParameters: clustering.view,
     gridSize: [256, 256],
     geometryParameters: geometry.view,
     maximumClusterCount: CLUSTER_MAXIMUM_COUNT,
     maximumVerticesPerHull: CLUSTER_MAXIMUM_HULL_VERTICES,
     hullCapacity: CLUSTER_HULL_CAPACITY,
-    labels: labels.view,
-    clusterCount: clusterCount.view,
-    counts: counts.view,
-    hullOffsets: hullOffsets.view,
-    hullCounts: hullCounts.view,
-    hullPositions: hullPositions.view,
-    hullOverflow: hullOverflow.view,
-    areas: areas.view,
-    perimeters: perimeters.view
+    outputs: {
+      labels: labels.view,
+      clusterCount: clusterCount.view,
+      hullOffsets: hullOffsets.view,
+      hullPositions: hullPositions.view,
+      hullOverflow: hullOverflow.view,
+      areas: areas.view,
+      perimeters: perimeters.view
+    },
+    scratch: {counts: counts.view, hullCounts: hullCounts.view}
   });
   // Display adapter: one drawable edge per hull slot (NaN past the cluster's last vertex).
   const hullEdges = kit.output('hull-edges', 'float32x4', CLUSTER_HULL_CAPACITY);
@@ -481,26 +483,30 @@ export const buildSpatialRegressionScene: RecipeSceneBuilder = async host => {
     },
     parameters: autocorrelation.view,
     olsParameters: olsParameters.view,
-    ols: {
-      coefficients: olsCoefficients.view,
-      summary: olsSummary.view,
-      status: olsStatus.view,
-      residuals: residuals.view
+    outputs: {
+      ols: {
+        coefficients: olsCoefficients.view,
+        summary: olsSummary.view,
+        status: olsStatus.view,
+        residuals: residuals.view
+      },
+      diagnostics: {
+        tests: tests.view,
+        summary: diagnosticsSummary.view,
+        status: diagnosticsStatus.view
+      },
+      residualMoran: {zScores: moranZ.view},
+      localFits: {
+        coefficients: localCoefficients.view,
+        localR2: localR2.view,
+        localStatus: localStatus.view,
+        summary: gwrSummary.view
+      }
     },
-    diagnostics: {
-      tests: tests.view,
-      summary: diagnosticsSummary.view,
-      status: diagnosticsStatus.view
-    },
-    residualMoran: {zScores: moranZ.view},
     localFits: {
       positions: centersInput.view,
       parameters: gwrParameters.view,
-      maximumBandwidthCount: REGRESSION_LADDER_CAPACITY,
-      coefficients: localCoefficients.view,
-      localR2: localR2.view,
-      localStatus: localStatus.view,
-      summary: gwrSummary.view
+      maximumBandwidthCount: REGRESSION_LADDER_CAPACITY
     }
   });
   const compiled = kit.compile();
@@ -882,15 +888,17 @@ export const buildDriveTimeScene: RecipeSceneBuilder = async host => {
     maxIterations: 64,
     bandBreaks: bandBreaks.view,
     bandCapacity: 8,
-    nodeCosts: nodeCosts.view,
-    demandTimes: demandTimes.view,
-    demandBands: demandBands.view,
-    bands: {
-      keys: bandKeys.view,
-      counts: bandCounts.view,
-      count: bandCount.view,
-      overflow: bandOverflow.view,
-      sumValues: bandSums.view
+    outputs: {
+      nodeCosts: nodeCosts.view,
+      demandTimes: demandTimes.view,
+      demandBands: demandBands.view,
+      bands: {
+        keys: bandKeys.view,
+        counts: bandCounts.view,
+        count: bandCount.view,
+        overflow: bandOverflow.view,
+        sumValues: bandSums.view
+      }
     },
     isochrones: {
       breaks: isochroneBreaks.view,
@@ -1199,15 +1207,17 @@ export const buildStraightLineScene: RecipeSceneBuilder = async host => {
     seedPositions: seeds.view,
     seedCount: seedCount.view,
     values: values.view,
-    allocation: allocation.view,
-    distances: distances.view,
-    statistics: {
-      cellCounts: cellCounts.view,
-      valueCounts: valueCounts.view,
-      sums: sums.view,
-      means: means.view,
-      minimums: minimums.view,
-      maximums: maximums.view
+    outputs: {
+      allocation: allocation.view,
+      distances: distances.view,
+      statistics: {
+        cellCounts: cellCounts.view,
+        valueCounts: valueCounts.view,
+        sums: sums.view,
+        means: means.view,
+        minimums: minimums.view,
+        maximums: maximums.view
+      }
     }
   });
   const compiled = kit.compile();

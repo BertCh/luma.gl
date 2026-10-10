@@ -435,6 +435,10 @@ graph.compile(); straight.compile();   // once; moving a facility is one buffer 
       readouts: ['servedBands', 'bandPopulation', 'servedWithin'],
       title: 'Who falls inside each band?',
       body: 'These are analytical breaks at 2, 4, 6 and 8 minutes, not a compliance finding. Demand dots use the same fixed classes; hollow plum rings are tract centroids beyond eight minutes.',
+      evidence:
+        'The fixed bands contain **{{servedBands}}** people respectively; **{{servedWithin}}** fall within the eight-minute modeled threshold.',
+      caveat:
+        'The demand unit is a tract centroid, so a whole tract changes class when its representative point crosses a band.',
       camera: {longitude: -87.68, latitude: 41.84, zoom: 10.0, transitionMs: 1200},
       options: {
         facilityType: 'fire_station',
@@ -453,6 +457,10 @@ graph.compile(); straight.compile();   // once; moving a facility is one buffer 
       readouts: ['moved'],
       title: 'Every street belongs to one station',
       body: '`GPUNetworkServiceAreas` runs one search from all stations at once. Each intersection keeps its nearest seed; ties use a stable row order. The muted allocation colours repeat after five hues, while facilities stay ink ring-dots.',
+      evidence:
+        'Moving facilities updates the same multi-source allocation; the current intervention count is **{{moved}}**.',
+      caveat:
+        'Nearest modeled time is not operational dispatch territory. Capacity, unit availability and jurisdiction are outside this partition.',
       camera: {longitude: -87.66, latitude: 41.87, zoom: 11.2, transitionMs: 1400},
       options: {
         showServiceAreas: true,
@@ -471,6 +479,10 @@ graph.compile(); straight.compile();   // once; moving a facility is one buffer 
       readouts: ['servedWithin'],
       title: 'A network band is not a circle',
       body: 'The dashed true-radius ring and the isochrone now use one selected facility, so this is a like-for-like comparison. The network footprint follows directed streets; the circle is only a geometric reference.',
+      evidence:
+        'The selected network catchment serves **{{servedWithin}}** within eight minutes; the dashed circle reveals where straight-line proximity overstates or understates that reach.',
+      caveat:
+        'Both shapes are model products: one uses class-default road speeds, the other ignores the street network entirely.',
       camera: {longitude: -87.64, latitude: 41.82, zoom: 11.6, transitionMs: 1400},
       options: {
         facilityType: 'fire_station',
@@ -491,6 +503,10 @@ graph.compile(); straight.compile();   // once; moving a facility is one buffer 
       readouts: ['servedBands', 'bandPopulation', 'servedWithin'],
       title: 'Counting the people in each band',
       body: 'Each tract is represented by its centroid, snapped to its nearest street edge and classed in network space. Population totals are live, but a centroid cannot describe variation inside a tract.',
+      evidence:
+        'The population chart keeps the class totals adjacent to the spatial pattern: **{{servedBands}}**, with **{{servedWithin}}** inside eight minutes.',
+      caveat:
+        'Centroid assignment can place residents on the wrong side of a catchment edge; this is a screening analysis, not address-level coverage.',
       camera: {longitude: -87.68, latitude: 41.84, zoom: 10.0, transitionMs: 1400},
       options: {showDemand: true, showBands: true},
       highlight: {readout: 'servedWithin'}
@@ -505,6 +521,10 @@ graph.compile(); straight.compile();   // once; moving a facility is one buffer 
       readouts: ['ringJoin', 'ringJoinGap', 'ringHealth', 'ringComparison'],
       title: 'A coverage polygon from cells',
       body: 'Faint cell boundaries sit below the assembled ink ring. The chart compares the direct network-count with the polygon join, making the cell representation and MAUP difference explicit.',
+      evidence:
+        'The polygon join reports **{{ringJoin}}**; its difference from the direct network classification is **{{ringJoinGap}}**.',
+      caveat:
+        'Changing cell family or resolution changes which centroids fall inside the assembled outline—a visible modifiable-areal-unit effect.',
       camera: {longitude: -87.62, latitude: 41.87, zoom: 10.9, transitionMs: 1400},
       options: {showRings: true, showBands: false, showDemand: true, cellChoice: 'h3-9'},
       highlight: {readout: 'ringJoin'}
@@ -519,6 +539,10 @@ graph.compile(); straight.compile();   // once; moving a facility is one buffer 
       readouts: ['servedWithin', 'raster'],
       title: 'The data ends at the edge',
       body: 'The dashed data frame marks the road-graph extent: outside it, this model makes no service claim. Times are free-flow with fixed intersection delay; raster, cell, distance and sum variants are engineering choices, not observed travel.',
+      evidence:
+        'The active raster reports **{{raster}}** while the displayed coverage remains **{{servedWithin}}** inside the modeled threshold.',
+      caveat:
+        'No result beyond the dashed graph boundary is evidence of missing network coverage, not evidence of slow service.',
       camera: {longitude: -87.68, latitude: 41.84, zoom: 10.0, transitionMs: 1200},
       options: {showStraightLine: false, showRings: false, showBands: true, showDemand: true}
     }

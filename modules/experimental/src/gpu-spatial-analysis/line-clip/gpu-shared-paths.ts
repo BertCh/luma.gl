@@ -57,9 +57,9 @@ export type GPUSharedPathsRuns = {
   /** Optional one-row scalar receiving `1` when any capacity was exceeded. */
   overflow?: GraphDataView<'uint32'>;
   /** Optional one-row scalar receiving the unclamped number of runs. */
-  totalCount?: GraphDataView<'uint32'>;
+  requiredCount?: GraphDataView<'uint32'>;
   /** Optional one-row scalar receiving the unclamped number of vertices. */
-  totalVertexCount?: GraphDataView<'uint32'>;
+  requiredVertexCount?: GraphDataView<'uint32'>;
 };
 
 /**
@@ -178,8 +178,8 @@ export class GPUSharedPaths implements GPUCommandNodeProducer {
       ['count', runs.count],
       ['vertexCount', runs.vertexCount],
       ['overflow', runs.overflow],
-      ['totalCount', runs.totalCount],
-      ['totalVertexCount', runs.totalVertexCount],
+      ['requiredCount', runs.requiredCount],
+      ['requiredVertexCount', runs.requiredVertexCount],
       ['uncertainCount', props.uncertainCount]
     ] as const) {
       if (view) {
@@ -210,8 +210,8 @@ export class GPUSharedPaths implements GPUCommandNodeProducer {
       runs.count,
       runs.vertexCount,
       runs.overflow,
-      runs.totalCount,
-      runs.totalVertexCount,
+      runs.requiredCount,
+      runs.requiredVertexCount,
       props.uncertainCount
     ]);
     const nodes: GPUCommandNode<Parameters>[] = [];
@@ -569,8 +569,8 @@ const VERTEX_CAPACITY: u32 = ${vertexCapacity}u;`,
     const scalars: [string, GraphDataView<'uint32'> | undefined, number][] = [
       ['count', runs.count, 0],
       ['vertexCount', runs.vertexCount, 1],
-      ['totalCount', runs.totalCount, 2],
-      ['totalVertexCount', runs.totalVertexCount, 3],
+      ['requiredCount', runs.requiredCount, 2],
+      ['requiredVertexCount', runs.requiredVertexCount, 3],
       ['overflow', runs.overflow, 4]
     ];
     for (const [name, view] of scalars) {

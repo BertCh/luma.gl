@@ -143,6 +143,8 @@ export type NetworkLegendData = {
   community: NetworkLegendEntry[];
   /** The between-groups ink, for the "route between two groups" entry. */
   between: readonly [number, number, number, number];
+  /** Routes between groups in the partition currently shown on the map. */
+  betweenCount: number;
   /** True while the swipe compare shows continents beside communities. */
   comparing: boolean;
   /** Largest value of every size metric (the full-radius value of the size legend). */
@@ -351,7 +353,7 @@ export async function createAirlineNetwork(
       bindings: [
         {name: 'geo', view: geo, type: 'f32', access: 'read'},
         {
-          name: 'layout',
+          name: 'layoutPositions',
           view: imp('layout', factory.getBuffer(layoutPositions), 'float32x2', vertexCount),
           type: 'f32',
           access: 'read'
@@ -366,7 +368,7 @@ export async function createAirlineNetwork(
   let layoutCenter = vec2<f32>(parameters[parametersOffset + 2u], parameters[parametersOffset + 3u]);
   let mapCenter = vec2<f32>(parameters[parametersOffset + 4u], parameters[parametersOffset + 5u]);
   let geoPoint = vec2<f32>(geo[geoOffset + 2u * index], geo[geoOffset + 2u * index + 1u]);
-  let layoutPoint = vec2<f32>(layout[layoutOffset + 2u * index], layout[layoutOffset + 2u * index + 1u]);
+  let layoutPoint = vec2<f32>(layoutPositions[layoutPositionsOffset + 2u * index], layoutPositions[layoutPositionsOffset + 2u * index + 1u]);
   let mapped = mapCenter + (layoutPoint - layoutCenter) * scale;
   let result = mix(geoPoint, mapped, eased);
   morphed[morphedOffset + 2u * index] = result.x;
@@ -467,6 +469,10 @@ export async function createAirlineNetwork(
   // Mutable scene state -----------------------------------------------------------------------
   const retired: {item: Destroyable; frames: number}[] = [];
   const retire = (item: Destroyable) => retired.push({item, frames: 0});
+  const retireOptimizationRun = (run: OptimizationRun) => {
+    run.reader.stop();
+    retire(run.resources);
+  };
   let destroyed = false;
   let analysis: AnalysisSummary | null = null;
   let analysisGraph: CompiledGPUCommandGraph<void> | null = null;
@@ -568,7 +574,7 @@ export async function createAirlineNetwork(
     if (!analysis) return;
     // The previous result stays on the map until the new graph reports, so a slider drag does not
     // flash the label-propagation colours.
-    if (activeRun) retire(activeRun.resources);
+    if (activeRun) retireOptimizationRun(activeRun);
     activeSettingsKey = getOptimizationKey();
     const settings = {
       resolution: ctx.options.resolution,
@@ -580,16 +586,16 @@ export async function createAirlineNetwork(
       if (destroyed || activeRun !== run) return;
       activeResult = result;
       processOptimization(result);
-      if (sweepResults.length === 0 && !sweepRun) startSweep();
     });
     activeRun = run;
+    ctx.setReadout('optimizerStatus', 'running 0%');
   }
 
   /** Drops the sweep in progress and its chart. */
   function cancelSweep(): void {
     sweepSerial++;
     sweepResults.length = 0;
-    if (sweepRun) retire(sweepRun.resources);
+    if (sweepRun) retireOptimizationRun(sweepRun);
     sweepRun = null;
   }
 
@@ -623,7 +629,7 @@ export async function createAirlineNetwork(
             propagation: result.propagationModularity,
             continents: result.continentModularity
           });
-          retire(run.resources);
+          retireOptimizationRun(run);
           if (sweepRun === run) sweepRun = null;
           renderModularityChart();
           scheduleSweepStep(serial);
@@ -1256,6 +1262,7 @@ export async function createAirlineNetwork(
       continent: entries(continentColoring, true),
       community: entries(communityColoring, false),
       between: nodePalette[BETWEEN_GROUPS_INDEX],
+      betweenCount: (getDisplayedColoring() ?? communityColoring).betweenCount,
       comparing: legendComparing,
       sizeMaxima: {...sizeMaxima}
     };
@@ -1537,7 +1544,7 @@ export async function createAirlineNetwork(
       if (destroyed) return;
       buildAnalysis();
       if (resetOptimization) {
-        if (activeRun) retire(activeRun.resources);
+        if (activeRun) retireOptimizationRun(activeRun);
         activeRun = null;
         activeResult = null;
         cancelSweep();
@@ -1547,12 +1554,15 @@ export async function createAirlineNetwork(
   }
 
   /** Debounced rebuild of the optimization run (resolution, rounds, minimum gain). */
-  function scheduleOptimizationRebuild(restartSweep: boolean): void {
+  function scheduleOptimizationRebuild(clearSweep: boolean): void {
     clearTimeout(optimizationTimer);
     optimizationTimer = setTimeout(() => {
       if (destroyed) return;
       buildActiveOptimization();
-      if (restartSweep) startSweep();
+      if (clearSweep) {
+        cancelSweep();
+        renderModularityChart();
+      }
       ctx.requestLayers();
     }, REBUILD_DEBOUNCE_MS);
   }
@@ -1697,17 +1707,25 @@ export async function createAirlineNetwork(
         analysisReader.flush(commandEncoder);
       }
 
-      if (activeRun?.pending && analysis) {
-        activeRun.compiled.encode(commandEncoder, {parameters: undefined});
-        activeRun.reader.request(commandEncoder);
-        activeRun.pending = false;
+      const activeExecutionRunning = Boolean(
+        activeRun && analysis && !activeRun.execution.completed
+      );
+      if (activeRun && activeExecutionRunning) {
+        const step = activeRun.execution.encodeNext(commandEncoder, {parameters: undefined});
+        ctx.setReadout('optimizerStatus', `running ${Math.round(step.progress * 100)}%`);
+        if (step.completed) activeRun.reader.request(commandEncoder);
       } else {
         activeRun?.reader.flush(commandEncoder);
       }
-      if (sweepRun?.pending) {
-        sweepRun.compiled.encode(commandEncoder, {parameters: undefined});
-        sweepRun.reader.request(commandEncoder);
-        sweepRun.pending = false;
+      // Never place two expensive candidate rounds in the same browser submission. A manual
+      // resolution sweep yields to the interactive active-resolution result.
+      if (sweepRun && !activeExecutionRunning && !sweepRun.execution.completed) {
+        const step = sweepRun.execution.encodeNext(commandEncoder, {parameters: undefined});
+        ctx.setReadout(
+          'sweepStatus',
+          `${sweepResults.length} of ${SWEEP_RESOLUTIONS.length} resolutions done · ${Math.round(step.progress * 100)}% current`
+        );
+        if (step.completed) sweepRun.reader.request(commandEncoder);
       } else {
         sweepRun?.reader.flush(commandEncoder);
       }
@@ -1726,7 +1744,7 @@ export async function createAirlineNetwork(
         bundlingFrames--;
       }
 
-      if (layoutGraph && options.layoutRunning) {
+      if (layoutGraph && options.layoutRunning && options.view === 'morph') {
         layoutGraph.encode(commandEncoder, {parameters: undefined});
         layoutSteps += Number(options.iterationsPerFrame);
         if (frame.frameIndex % LAYOUT_READ_FRAMES === 0 || layoutSteps <= 8) {
@@ -1776,7 +1794,11 @@ export async function createAirlineNetwork(
             }
           ];
       const egoActive = egoAirport >= 0 && options.view === 'arcs';
-      const passes: RouteDrawPass[] = ['within', 'between'];
+      // Two passes are only useful when both coloured classes are visible: the second pass puts
+      // between-group routes over the within-group routes. Neutral ink and single-class filters
+      // would otherwise submit every arc or bundle twice for exactly the same image.
+      const passes: RouteDrawPass[] =
+        neutral || options.edgeFilter !== 'all' ? ['all'] : ['within', 'between'];
 
       for (const {side, partition} of sides) {
         const key = `${side ?? 'x'}-${partition}`;

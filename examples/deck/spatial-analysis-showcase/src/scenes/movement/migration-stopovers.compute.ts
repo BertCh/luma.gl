@@ -135,6 +135,7 @@ export async function createMigrationStopovers(
   const endRowsView = view(metricsGraph, 'stop-end-rows', stopEndRows, 'uint32', STOP_CAPACITY);
   metricsGraph.add(
     new GPUTrajectoryMetrics({
+      spatialContext: {coordinateSpace: 'planar', metric: 'native', units: 'native'},
       id: 'metrics',
       positions: view(metricsGraph, 'positions', positionsBuffer, 'float32x2', vertexCount),
       timestamps: view(metricsGraph, 'timestamps', timestampsBuffer, 'float32', vertexCount),
@@ -154,7 +155,7 @@ export async function createMigrationStopovers(
           ids: view(metricsGraph, 'stop-ids', stopIds, 'uint32', STOP_CAPACITY),
           count: stopCountView,
           overflow: view(metricsGraph, 'stop-overflow', stopOverflow, 'uint32', 1),
-          totalCount: view(metricsGraph, 'stop-total', stopTotal, 'uint32', 1)
+          requiredCount: view(metricsGraph, 'stop-total', stopTotal, 'uint32', 1)
         },
         startRows: startRowsView,
         endRows: endRowsView,
@@ -211,6 +212,27 @@ export async function createMigrationStopovers(
   // [species mask, longest stay (s), season start (s), season end (s)]
   const selectionParameters = resources.createParameterBuffer('selection-parameters', 'float32', 4);
   const selectionGraph = new GPUCommandGraph<void>(device, {id: 'stopovers-selection'});
+  const selectedMetersView = view(
+    selectionGraph,
+    'selected-meters',
+    selectedMeters,
+    'float32x2',
+    STOP_CAPACITY
+  );
+  const stopLngLatView = view(
+    selectionGraph,
+    'stop-lng-lat',
+    stopLngLat,
+    'float32x2',
+    STOP_CAPACITY
+  );
+  const selectedLngLatView = view(
+    selectionGraph,
+    'selected-lng-lat',
+    selectedLngLat,
+    'float32x2',
+    STOP_CAPACITY
+  );
   addKernelPass(selectionGraph, {
     id: 'stop-selection',
     invocationCount: STOP_CAPACITY,
@@ -246,12 +268,6 @@ export async function createMigrationStopovers(
         access: 'read'
       },
       {
-        name: 'lngLatIn',
-        view: view(selectionGraph, 'stop-lng-lat', stopLngLat, 'float32x2', STOP_CAPACITY),
-        type: 'f32',
-        access: 'read'
-      },
-      {
         name: 'times',
         view: view(selectionGraph, 'timestamps', timestampsBuffer, 'float32', vertexCount),
         type: 'f32',
@@ -271,13 +287,7 @@ export async function createMigrationStopovers(
       },
       {
         name: 'meters',
-        view: view(selectionGraph, 'selected-meters', selectedMeters, 'float32x2', STOP_CAPACITY),
-        type: 'f32',
-        access: 'read_write'
-      },
-      {
-        name: 'lngLatOut',
-        view: view(selectionGraph, 'selected-lng-lat', selectedLngLat, 'float32x2', STOP_CAPACITY),
+        view: selectedMetersView,
         type: 'f32',
         access: 'read_write'
       }
@@ -294,13 +304,42 @@ export async function createMigrationStopovers(
       && startTime <= rules[rulesOffset + 3u];
   }
   let meter = vec2<f32>(centroids[centroidsOffset + index * 2u], centroids[centroidsOffset + index * 2u + 1u]);
-  let degree = vec2<f32>(lngLatIn[lngLatInOffset + index * 2u], lngLatIn[lngLatInOffset + index * 2u + 1u]);
   let hiddenMeter = select(vec2<f32>(nan), meter, accepted);
-  let hiddenDegree = select(vec2<f32>(nan), degree, accepted);
   meters[metersOffset + index * 2u] = hiddenMeter.x;
-  meters[metersOffset + index * 2u + 1u] = hiddenMeter.y;
-  lngLatOut[lngLatOutOffset + index * 2u] = hiddenDegree.x;
-  lngLatOut[lngLatOutOffset + index * 2u + 1u] = hiddenDegree.y;`
+  meters[metersOffset + index * 2u + 1u] = hiddenMeter.y;`
+  });
+  // Keep each shader within the WebGPU minimum of ten storage buffers. The accepted flag is
+  // already encoded by the finite/NaN planar output, so the drawing coordinates need only a
+  // small follow-up pass.
+  addKernelPass(selectionGraph, {
+    id: 'stop-selection-lng-lat',
+    invocationCount: STOP_CAPACITY,
+    bindings: [
+      {
+        name: 'meters',
+        view: selectedMetersView,
+        type: 'f32',
+        access: 'read'
+      },
+      {
+        name: 'lngLatIn',
+        view: stopLngLatView,
+        type: 'f32',
+        access: 'read'
+      },
+      {
+        name: 'lngLatOut',
+        view: selectedLngLatView,
+        type: 'f32',
+        access: 'read_write'
+      }
+    ],
+    body: `let nan = bitcast<f32>(0x7fc00000u | (index & 0u));
+  let accepted = meters[metersOffset + index * 2u] == meters[metersOffset + index * 2u];
+  let degree = vec2<f32>(lngLatIn[lngLatInOffset + index * 2u], lngLatIn[lngLatInOffset + index * 2u + 1u]);
+  let output = select(vec2<f32>(nan), degree, accepted);
+  lngLatOut[lngLatOutOffset + index * 2u] = output.x;
+  lngLatOut[lngLatOutOffset + index * 2u + 1u] = output.y;`
   });
   const selectionCompiled = resources.track(selectionGraph.compile());
 

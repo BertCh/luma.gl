@@ -428,35 +428,39 @@ export async function createObservationsByTract(
         candidateCapacity: pointCount * CANDIDATES_PER_POINT,
         includeBoundary: state.includeBoundary
       },
-      counts: importGraphBuffer(graph, 'recipe-counts', recipeCounts, 'uint32', featureCount),
-      ...(statistic === 'count'
-        ? {}
-        : {
-            featureValues: importGraphBuffer(
-              graph,
-              'recipe-values',
-              recipeValues,
-              'float32',
-              featureCount
-            )
-          }),
-      overflow: importGraphBuffer(graph, 'recipe-overflow', recipeOverflow, 'uint32', 1),
+      outputs: {
+        counts: importGraphBuffer(graph, 'recipe-counts', recipeCounts, 'uint32', featureCount),
+        ...(statistic === 'count'
+          ? {}
+          : {
+              featureValues: importGraphBuffer(
+                graph,
+                'recipe-values',
+                recipeValues,
+                'float32',
+                featureCount
+              )
+            }),
+        overflow: importGraphBuffer(graph, 'recipe-overflow', recipeOverflow, 'uint32', 1),
+        color: {
+          breaks: importGraphBuffer(
+            graph,
+            'recipe-breaks',
+            recipeBreaks,
+            'float32',
+            MAXIMUM_CLASSES + 1
+          ),
+          classCount: importGraphBuffer(graph, 'recipe-class-count', recipeClassCount, 'uint32', 1),
+          colors: importGraphBuffer(graph, 'recipe-colors', recipeColors, 'uint32', featureCount)
+        }
+      },
       color: {
         classBreaksParameters: classBreaksParameters.importToGraph(graph),
         maximumClassCount: MAXIMUM_CLASSES,
         methods: [...CLASS_METHODS],
         colorScaleParameters: colorScaleParameters.importToGraph(graph),
         palette: importGraphBuffer(graph, 'palette', palette, 'uint32', MAXIMUM_CLASSES),
-        maximumPaletteCount: MAXIMUM_CLASSES,
-        breaks: importGraphBuffer(
-          graph,
-          'recipe-breaks',
-          recipeBreaks,
-          'float32',
-          MAXIMUM_CLASSES + 1
-        ),
-        classCount: importGraphBuffer(graph, 'recipe-class-count', recipeClassCount, 'uint32', 1),
-        colors: importGraphBuffer(graph, 'recipe-colors', recipeColors, 'uint32', featureCount)
+        maximumPaletteCount: MAXIMUM_CLASSES
       }
     });
     built = {key, compiled: resources.track(graph.compile()), usedClasses: 0};
@@ -611,7 +615,7 @@ export async function createObservationsByTract(
     ctx.setReadout(
       'top',
       hottest >= 0
-        ? `${geoids[hottest]} (${areaNames[tractCommunityArea[hottest] - 1] ?? 'no community area'}): ${formatCompact(hottestValue * scale)}`
+        ? `${geoids[hottest]} (${areaNames[tractCommunityArea[hottest] - 1] ?? 'no community area'}): ${formatCompact(hottestValue * scale)}${options.statistic === 'count' ? '' : ` · N=${formatInteger(tractCounts[hottest])}`}`
         : 'n/a'
     );
     let observationsTotal = 0;

@@ -41,7 +41,7 @@ type SearchScenario = {
   reverseCapacity?: number;
   maximumWorkgroups?: number;
   byteOffset?: number;
-  assertNoScratch?: boolean;
+  assertCompactFrontier?: boolean;
 };
 
 type ExpectedSearch = {
@@ -92,7 +92,15 @@ const searchScenarios: SearchScenario[] = [
     targetChunks: [[1, 2], [], [3, 4]],
     seedChunks: [[0]],
     maxDepth: 4,
-    assertNoScratch: true
+    assertCompactFrontier: true
+  },
+  {
+    name: 'duplicate roots and edges append each reached vertex to the compact frontier once',
+    vertexCount: 3,
+    sourceChunks: [new Array<number>(300).fill(0), [1]],
+    targetChunks: [new Array<number>(300).fill(1), [2]],
+    seedChunks: [new Array<number>(300).fill(0), [], [0]],
+    maxDepth: 2
   },
   {
     name: 'diamond ties select the lowest predecessor despite shuffled duplicate CSR edges',
@@ -280,11 +288,11 @@ const searchScenarios: SearchScenario[] = [
     byteOffset: 4
   },
   {
-    name: 'bounded 3D dispatch reaches the final seed and final source vertex of 1025 rows',
-    vertexCount: 1025,
+    name: 'bounded indirect 3D frontier reaches the final source of 1025 active roots',
+    vertexCount: 1026,
     sourceChunks: [[1024]],
-    targetChunks: [[512]],
-    seedChunks: [Array.from({length: 1025}, (_, seedIndex) => (seedIndex === 1024 ? 1024 : 2000))],
+    targetChunks: [[1025]],
+    seedChunks: [Array.from({length: 1025}, (_, seedIndex) => seedIndex)],
     maxDepth: 1,
     maximumWorkgroups: 2
   }
@@ -315,11 +323,19 @@ for (const scenario of searchScenarios) {
         fixture.search.seeds.data.map(chunk => chunk.length),
         'traversal preserves ordered seed chunks and empty seed batches'
       ).toEqual(scenario.seedChunks.map(chunk => chunk.length));
-      if (scenario.assertNoScratch) {
+      if (scenario.assertCompactFrontier) {
         expect(
           fixture.compiled?.stats.logicalTransientBufferCount,
-          'shortest-path traversal adds no frontier or scratch buffers beyond CSR construction'
-        ).toBe(3);
+          'the compiled graph includes bounded GPU-owned frontier storage'
+        ).toBeGreaterThanOrEqual(5);
+        const expansionNodes = fixture.compiled?.preflight.nodes.filter(
+          node => node.id.includes('-depth-') && !node.id.endsWith('-frontier')
+        );
+        expect(expansionNodes).toHaveLength(scenario.maxDepth ?? 1);
+        expect(
+          expansionNodes?.every(node => node.condition?.mode === 'indirect'),
+          'every depth expansion is driven by a GPU-written frontier dispatch'
+        ).toBe(true);
       }
     } finally {
       destroyExecutionFixture(fixture);

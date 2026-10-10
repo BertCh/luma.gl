@@ -74,6 +74,7 @@ async function runNoding(
   const pieceOffsets = output('piece-offsets', pieceCapacity + 1);
   const piecePositions = output('piece-positions', 512, 'float32x2');
   const pieceCount = output('piece-count', 1);
+  const pieceOverflow = output('piece-overflow', 1);
   const nodePositions = output('node-positions', nodeCapacity, 'float32x2');
   const nodeCount = output('node-count', 1);
   const totalNodeCount = output('total-node-count', 1);
@@ -95,15 +96,18 @@ async function runNoding(
       intersectionCapacity: 256,
       tolerance: tolerance.view,
       pieces: {
-        lineIds: pieceLines.view,
-        offsets: pieceOffsets.view,
-        positions: piecePositions.view,
-        count: pieceCount.view
+        geometry: {
+          kind: 'lines',
+          positions: piecePositions.view,
+          lineOffsets: pieceOffsets.view
+        },
+        sourceIds: pieceLines.view,
+        status: {count: pieceCount.view, overflow: pieceOverflow.view}
       },
       nodes: {
         positions: nodePositions.view,
         count: nodeCount.view,
-        totalCount: totalNodeCount.view
+        requiredCount: totalNodeCount.view
       },
       edges: {fromNodes: from.view, toNodes: to.view, lengths: lengths.view},
       csr: {

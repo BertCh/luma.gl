@@ -5,6 +5,7 @@
 import type {Device} from '@luma.gl/core';
 import {getWebGPUTestDevice} from '@luma.gl/test-utils';
 import {expect, it} from 'vitest';
+import {getGPUSpatialJoinCapacityPlan} from '../../../src/gpu-spatial-analysis/contracts/index';
 import './spatial-relate-benchmark';
 import {createRandom, type OraclePolygonFeature} from './spatial-join-oracle';
 import {
@@ -38,6 +39,8 @@ type BenchmarkRow = {
   visitedSorted: number;
   millisecondsUnsorted: number;
   millisecondsSorted: number;
+  plannedWorkItems: number;
+  plannedPeakTransientBytes: number;
 };
 
 const rows: BenchmarkRow[] = [];
@@ -91,6 +94,14 @@ async function benchmarkScenario(
   );
   // The overlap set is independent of leaf order.
   expect(sortedModel.candidates).toBe(unsortedModel.candidates);
+  const capacityPlan = getGPUSpatialJoinCapacityPlan({
+    leftCount: points.length,
+    rightCount: featureBounds.length,
+    candidateCapacity,
+    pairCapacity: candidateCapacity,
+    observedCandidateCount: sortedResult.candidateCount,
+    observedRequiredCount: sortedResult.counts.reduce((sum, count) => sum + count, 0)
+  });
   rows.push({
     scenario,
     features: featureBounds.length,
@@ -99,7 +110,9 @@ async function benchmarkScenario(
     visitedUnsorted: unsortedModel.visitedPerPoint,
     visitedSorted: sortedModel.visitedPerPoint,
     millisecondsUnsorted,
-    millisecondsSorted
+    millisecondsSorted,
+    plannedWorkItems: capacityPlan.estimatedWorkItems,
+    plannedPeakTransientBytes: capacityPlan.estimatedPeakTransientBytes
   });
 }
 
@@ -212,12 +225,13 @@ it('spatial join sort benchmark: report', () => {
       `${row.scenario.padEnd(20)} ${String(row.features).padStart(6)} ${String(row.points).padStart(7)} ` +
       `${String(row.candidates).padStart(8)} ${format(row.visitedUnsorted, 1).padStart(9)} ` +
       `${format(row.visitedSorted, 1).padStart(9)} ${format(row.millisecondsUnsorted, 2).padStart(9)} ` +
-      `${format(row.millisecondsSorted, 2).padStart(9)}`
+      `${format(row.millisecondsSorted, 2).padStart(9)} ${String(row.plannedWorkItems).padStart(10)} ` +
+      `${format(row.plannedPeakTransientBytes / 1048576, 2).padStart(9)}`
   );
   // eslint-disable-next-line no-console
   console.log(
     [
-      'scenario              feats  points  candidat  visit/pt  visit/pt   ms/enc    ms/enc',
+      'scenario              feats  points  candidat  visit/pt  visit/pt   ms/enc    ms/enc       work  peak MiB',
       '                                              unsorted    sorted unsorted    sorted',
       ...lines
     ].join('\n')

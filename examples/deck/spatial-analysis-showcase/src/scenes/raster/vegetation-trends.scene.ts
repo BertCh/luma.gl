@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {ground} from '../../cartography/grounds';
 import {defineScene} from '../scene';
 import type {VegetationTrendsOptions} from './vegetation-trends.compute';
 
@@ -47,16 +48,26 @@ const SIGNED_TITLES: Record<string, string> = {
 
 export default defineScene<VegetationTrendsOptions>({
   id: 'vegetation-trends',
-  title: 'Has the forest around Greenville come back?',
+  title: 'Greenville vegetation: NDVI trend across 16 dates',
   chapter: 'raster',
   order: 3,
   summary:
-    'Sixteen summers of Sentinel-2 NDVI become a per-pixel trend map: Welch t-test, Mann-Kendall and Theil-Sen slope for 65,000 pixels at once on the GPU, around the Dixie Fire burn scar.',
+    'GPU change detection applies Welch, Mann-Kendall and Theil-Sen statistics to 16 Sentinel-2 NDVI dates around Greenville. The outputs describe sampled-date trends, with cloud, season and serial dependence limitations.',
   contributors: ['GPUChangeDetection'],
   // `ndvi-timeseries` is fetched by the scene itself (see the handoff: the shared catalog cannot
   // decode its raw uint8 stack); restore `datasets: [{id: 'ndvi-timeseries', ...}]` once it can.
   datasets: [],
   initialView: {longitude: -121.0, latitude: 40.17, zoom: 10.6},
+  basemap: ground('relief'),
+  furniture: {
+    title: {
+      title: 'Greenville vegetation trends',
+      subtitle: 'NDVI change across 16 Sentinel-2 dates'
+    },
+    scaleBar: {units: 'metric'},
+    credit: 'Copernicus Sentinel-2',
+    caveat: 'Sparse seasonal acquisitions do not isolate fire recovery from phenology or weather.'
+  },
 
   options: [
     {
@@ -82,6 +93,7 @@ export default defineScene<VegetationTrendsOptions>({
       max: 15,
       step: 1,
       default: 9,
+      autoSweep: {from: 7, to: 15, durationMs: 6500, ease: 'in-out'},
       format: formatDate,
       help: '2021-09-21 is the post-fire image used in the burn severity story.'
     },
@@ -206,7 +218,7 @@ export default defineScene<VegetationTrendsOptions>({
       label: 'Color ramp',
       group: 'Display',
       apply: 'param',
-      default: 'viridis',
+      default: 'cividis',
       help: 'For NDVI and the p-values. The signed statistics always use the diverging ramp, centred on zero.',
       options: [
         {value: 'viridis', label: 'Viridis'},
@@ -248,6 +260,11 @@ export default defineScene<VegetationTrendsOptions>({
       id: 'meanSeries',
       label: 'Window mean NDVI, 16 dates',
       help: 'Mean NDVI of the whole 25.6 km window on each date (from the dataset): the fire is the step in 2021.'
+    },
+    {
+      id: 'acquisitionContract',
+      label: 'Evidence · acquisition coverage',
+      help: 'The number and date span of the irregular summer acquisitions, plus the range of valid-pixel coverage after cloud screening.'
     },
     {id: 'analysed', label: 'Cells analysed'},
     {
@@ -373,33 +390,61 @@ compiled.encode(commandEncoder, {parameters: undefined});`,
   story: [
     {
       id: 'the-question',
+      headline: 'NDVI trajectories vary across the burn scar',
+      textAlternative:
+        'A per-pixel vegetation trend raster summarizes 16 Sentinel-2 acquisition dates around Greenville.',
       title: 'Has the forest around Greenville come back since the Dixie Fire?',
       body: 'Sixteen cloud-screened Sentinel-2 summer scenes, from **2017 to 2024**, give every 100 m pixel around Greenville a time series of NDVI, a measure of green leaf cover. The **Dixie Fire** burned through in July to October 2021.\n\n`GPUChangeDetection` tests all 65,000 series at once. The map shows where the NDVI trend is **significantly down** (red), **significantly up** (green) or indistinguishable from noise (grey). The sparkline in the panel is the window mean: a step down in 2021 and a partial recovery. **Map shows** below picks the statistic to draw.',
+      evidence:
+        '**{{acquisitionContract}}**. The window mean series shows the 2021 step and the sampled trajectory that follows.',
+      caveat:
+        'Sixteen summer acquisitions are a sparse, irregular sample. They cannot separate fire recovery from rainfall, phenology, sun angle or residual cloud effects.',
       camera: {longitude: -121.0, latitude: 40.17, zoom: 10.6, transitionMs: 1200},
       controls: ['layer'],
-      readouts: ['meanSeries'],
+      readouts: ['meanSeries', 'acquisitionContract'],
       highlight: {readout: 'meanSeries'}
     },
     {
       id: 'two-dates',
+      headline: 'Post-fire NDVI falls across much of Greenville',
+      textAlternative:
+        'A signed raster subtracts pre-fire NDVI from a selected post-fire observation.',
       title: 'Start with two dates: the fire as a difference',
       body: 'The simplest change detector subtracts one date from another. `GPUChangeDetection` writes the **difference**, the **log ratio** and the **percent change** between the *before* date (**2021-07-13**, the day the fire started) and the *after* date (**2021-09-21**).\n\nBlue is NDVI lost. A two-date map has no idea of noise: a hazy morning or a different sun angle also shows up. Drag **Before date** and **After date** below to see the difference move, and try the log ratio in **Map shows**: its guard, **Log ratio guard (epsilon)**, keeps near-zero NDVI finite.',
+      evidence:
+        '**{{acquisitionContract}}**. Play **After date** to watch the signed change depend on which post-fire observation closes the pair.',
+      caveat:
+        'A two-date difference has no sampling distribution. Atmospheric residue, phenology and illumination can move it along with vegetation.',
       options: {layer: 'difference', beforeSlice: 7, afterSlice: 9},
-      controls: ['beforeSlice', 'afterSlice', 'layer', 'epsilon']
+      controls: ['beforeSlice', 'afterSlice', 'layer', 'epsilon'],
+      readouts: ['acquisitionContract']
     },
     {
       id: 't-test',
+      headline: 'Welch statistics separate periods with unequal variance',
+      textAlternative: 'Per-pixel t statistics compare selected before and after NDVI date groups.',
       title: 'A Welch t-test asks whether before and after really differ',
       body: 'The t-test splits each series at a date: slices before it are one group, the rest the other. It compares the means, allowing different variances (**Welch**), and converts the **t statistic** into a p-value with the regularized incomplete beta function (the contributor is accurate to about 1e-4 for the degrees of freedom here).\n\nWith **First date of the "after" group** at **2021-09-11** the fire sits between the groups, and the scar lights up red. **Significance level (alpha)** is the threshold: lower it and only the strongest changes keep their color. Cells need at least two valid dates in each group.',
+      evidence:
+        '**{{shares}}** among **{{analysed}}**. Both the class and its denominator update when the split, alpha or valid-date rule changes.',
+      caveat:
+        'The per-pixel p-values are uncorrected across roughly 65,000 spatially dependent tests, and the before/after grouping still treats acquisition dates as exchangeable samples.',
       options: {layer: 'significance', significanceSource: 't-test', splitSlice: 8, alpha: 0.05},
       controls: ['splitSlice', 'alpha'],
-      readouts: ['shares'],
+      readouts: ['shares', 'analysed'],
       highlight: {readout: 'shares'}
     },
     {
       id: 'mann-kendall',
+      headline: 'Mann-Kendall identifies monotonic sampled-date trends',
+      textAlternative:
+        'A diverging raster maps positive and negative rank-based NDVI trend statistics.',
       title: 'Mann-Kendall tests for a drift without assuming a shape',
       body: 'Mann-Kendall counts, over every pair of dates, whether NDVI rose or fell: **S = sum of sign(x_j - x_i)**. A strongly positive or negative S means a consistent drift. The variance is corrected for ties, and **Z** (with continuity correction) becomes a normal p-value.\n\nSwitching **Significance from** below to Mann-Kendall is a *compile-time* option of the contributor, so the control is marked *rebuild*; the two graphs were compiled up front and this just selects one. The pattern differs: Mann-Kendall favours steady trends, so slowly recovering or dying pixels appear that the step test misses.',
+      evidence:
+        '**{{shares}}**. The seeded CPU parity sample reports **{{parity}}**, keeping the GPU statistic auditable.',
+      caveat:
+        'Mann-Kendall tests monotonic ordering on the sampled dates; it does not model the 2021 intervention, unequal time gaps or spatial dependence between neighboring pixels.',
       options: {layer: 'significance', significanceSource: 'mann-kendall'},
       controls: ['significanceSource', 'alpha'],
       readouts: ['shares', 'parity'],
@@ -407,8 +452,15 @@ compiled.encode(commandEncoder, {parameters: undefined});`,
     },
     {
       id: 'sen-slope',
+      headline: 'Theil-Sen estimates median NDVI change per date',
+      textAlternative:
+        'A signed slope raster reports the median pairwise NDVI change at each pixel.',
       title: 'Theil-Sen gives the size of the trend',
       body: 'A p-value says *whether*; the **Theil-Sen slope** says *how much*: the median of the slopes `(x_j - x_i) / (j - i)` over all pairs of dates. Because it is a median, one cloudy outlier barely moves it, unlike a least-squares line. The contributor selects the exact median inside each thread with a bounded heap (limited to 64 dates).\n\nThe unit is **NDVI per date step**, and the dates are not evenly spaced (two per summer), so read it as a rate on the ordinal axis. Use **Color range scale** below to stretch the contrast. Click any pixel: the readout shows its series with the GPU and the CPU values side by side.',
+      evidence:
+        'For the clicked pixel, **{{pixelSeries}}** shows all sampled values beside the GPU and CPU slope and test statistics.',
+      caveat:
+        'The slope unit is NDVI per acquisition step, not per day or year. Unequal gaps mean equal horizontal steps do not represent equal elapsed time.',
       options: {layer: 'senSlope', significanceSource: 'mann-kendall'},
       controls: ['layer', 'colorScale'],
       readouts: ['pixelSeries', 'pixel'],
@@ -416,8 +468,15 @@ compiled.encode(commandEncoder, {parameters: undefined});`,
     },
     {
       id: 'recovery',
+      headline: 'Later date windows alter estimated vegetation recovery',
+      textAlternative:
+        'Restricting the acquisition window recalculates post-fire NDVI trend estimates.',
       title: 'Restrict the dates to see the recovery',
       body: 'The 2021 step dominates a trend over all dates. To ask about regrowth alone, restrict **Dates used** below to **2021-09-21 or later**. The contributor drops the excluded dates (they become NaN in the stack, one buffer write) and the tests run on what is left.\n\nNow green cells are real recovery: significant greening since the fire. They are fewer and weaker, which matches the window mean rising only from 0.35 to about 0.47 by 2024.',
+      evidence:
+        'Within the selected recovery window, **{{analysed}}** and **{{shares}}**; the map and counts use the same valid-date mask.',
+      caveat:
+        'Post-fire greening is an observed spectral trajectory, not proof of ecological recovery or attribution to the fire alone.',
       options: {
         layer: 'significance',
         significanceSource: 'mann-kendall',
@@ -426,13 +485,20 @@ compiled.encode(commandEncoder, {parameters: undefined});`,
         splitSlice: 12
       },
       controls: ['dateWindow', 'minimumValid'],
-      readouts: ['shares'],
+      readouts: ['shares', 'analysed'],
       highlight: {readout: 'shares'}
     },
     {
       id: 'caveats',
+      headline: 'Sparse dates limit trend attribution',
+      textAlternative:
+        'Trend colors reflect available clear observations and cannot isolate fire recovery from seasonal effects.',
       title: 'What these tests can and cannot say',
       body: '**Limits:** 16 dates are few for a trend test. Dates are treated as ordinal, not as time. Summer NDVI also varies with rainfall, phenology and sun angle. Nearby pixels are not independent, so the p-values are optimistic, and **alpha is not corrected for the number of cells**: at 0.05 about one pixel in twenty passes by chance (see the **Multiple testing** readout). Clouds are masked, so a masked date is simply missing.\n\n**Try:** **Significance level (alpha)**, lowered from 0.05 to see the chance passes disappear, the split at 2022-06-23 (with **Significance from** on the Welch t-test), **Dates used** 2017 to 2021-07-13 (pre-fire noise only: the trend map should be mostly grey), or **Minimum valid dates per pixel** at 14.',
+      evidence:
+        '**{{falsePositives}}**. The current mask retains **{{analysed}}** under the chosen date window and minimum-valid rule.',
+      caveat:
+        'Lowering alpha changes a decision threshold; it does not correct multiplicity, restore missing acquisitions or make nearby pixels independent.',
       options: {
         layer: 'significance',
         significanceSource: 'mann-kendall',
@@ -441,7 +507,7 @@ compiled.encode(commandEncoder, {parameters: undefined});`,
         minimumValid: 8
       },
       controls: ['alpha', 'significanceSource', 'splitSlice', 'dateWindow', 'minimumValid'],
-      readouts: ['falsePositives'],
+      readouts: ['falsePositives', 'analysed', 'acquisitionContract'],
       highlight: {readout: 'falsePositives'}
     }
   ]

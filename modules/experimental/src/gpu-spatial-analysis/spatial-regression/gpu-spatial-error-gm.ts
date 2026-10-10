@@ -26,6 +26,7 @@ import {
   GPU_SPATIAL_ERROR_GM_TABLE_STRIDE
 } from './spatial-error-gm-parameters';
 import {getCholeskyWGSL} from './spatial-regression-solve';
+import type {GPUSolverStatusPort} from '../contracts/index';
 
 const OPERATION = 'GPUSpatialErrorGM';
 const TILE_WORKGROUP_SIZE = 64;
@@ -43,7 +44,7 @@ const LAMBDA_SCAN_STEPS = 1024;
 const LAMBDA_BISECTION_STEPS = 40;
 
 /** Caller-owned outputs of {@link GPUSpatialErrorGM}. */
-export type GPUSpatialErrorGMOutput = {
+export type GPUSpatialErrorGMOutput = GPUSolverStatusPort & {
   /**
    * `(predictorCount + 2) * 4` float32 values: one row per coefficient in spreg order (intercept,
    * one per predictor, then the spatial error parameter `lambda` last), each row holding the
@@ -53,8 +54,6 @@ export type GPUSpatialErrorGMOutput = {
   table: GraphDataView<'float32'>;
   /** At least 6 float32 values; see the `GPU_SPATIAL_ERROR_GM_SUMMARY_*` slots. */
   summary: GraphDataView<'float32'>;
-  /** One uint32; see the `GPU_SPATIAL_ERROR_GM_STATUS_*` constants. */
-  status: GraphDataView<'uint32'>;
   /** Optional per-row residuals `u = y - X b` (spreg `u`); NaN for a failed fit. */
   residuals?: GraphDataView<'float32'>;
 };

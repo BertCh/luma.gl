@@ -626,7 +626,7 @@ it('GPUDataFrame globally orders preserved batches through bounded three-dimensi
   let compiled: CompiledGPUDataFrameGlobalSort<GPUSortSourceSchema> | undefined;
 
   try {
-    compiled = frame.topKGlobal('score', 25).compile(
+    compiled = frame.topKGlobal('score', 25, {algorithm: 'bitonic'}).compile(
       new GPUCommandGraph<GPUDataFrameQueryParameters>(device, {
         id: 'gpu-dataframe-global-bounded-sort'
       })

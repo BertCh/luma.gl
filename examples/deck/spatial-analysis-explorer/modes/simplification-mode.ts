@@ -182,7 +182,7 @@ export const simplificationMode: SpatialAnalysisModeDefinition = {
               'uint32',
               1
             ),
-            totalCount: importGraphBuffer(
+            requiredCount: importGraphBuffer(
               selectionGraph,
               'kept-total',
               keptTotalBuffer,

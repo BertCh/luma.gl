@@ -22,7 +22,13 @@ import {
 
 import {getGraphVectorData} from './graph-vector-view-utils';
 import {getBoundedDispatchLayout, getBoundedInvocationIndexSource} from './gpu-dispatch-utils';
-import {getSpatialCommandNodes, validateSpatialWrites} from './gpu-spatial-utils';
+import {
+  getSpatialCommandNodes,
+  getSpatialFloat32Literal,
+  GPU_GRID_COORDINATE_WGSL,
+  isFiniteFloat32,
+  validateSpatialWrites
+} from './gpu-spatial-utils';
 
 const GRID_WORKGROUP_SIZE = 256;
 const MAXIMUM_LOCAL_CELL_COUNT = 256;
@@ -117,7 +123,7 @@ export class GPUGridBinning {
       const [minimumX, minimumY, maximumX, maximumY] = this.bounds;
       if (
         this.bounds.length !== 4 ||
-        !this.bounds.every(Number.isFinite) ||
+        !this.bounds.every(isFiniteFloat32) ||
         minimumX > maximumX ||
         minimumY > maximumY
       ) {
@@ -256,10 +262,10 @@ function addGridPass<Parameters>(
   let minimumY = boundsValues[BOUNDS_OFFSET + 1u];
   let maximumX = boundsValues[BOUNDS_OFFSET + 2u];
   let maximumY = boundsValues[BOUNDS_OFFSET + 3u];`
-    : `let minimumX = ${getFloatLiteral(literalBounds[0])};
-  let minimumY = ${getFloatLiteral(literalBounds[1])};
-  let maximumX = ${getFloatLiteral(literalBounds[2])};
-  let maximumY = ${getFloatLiteral(literalBounds[3])};`;
+    : `let minimumX = ${getSpatialFloat32Literal(literalBounds[0])};
+  let minimumY = ${getSpatialFloat32Literal(literalBounds[1])};
+  let maximumX = ${getSpatialFloat32Literal(literalBounds[2])};
+  let maximumY = ${getSpatialFloat32Literal(literalBounds[3])};`;
   const localAccumulation = useSubgroups
     ? getSubgroupCoalescedAtomicAddWGSL(
         'accepted',
@@ -291,11 +297,7 @@ ${boundsBinding}
 ${local ? `var<workgroup> localCounts: array<atomic<u32>, ${binning.output.length}>;` : ''}
 ${useSubgroups ? getSubgroupBallotHelpersWGSL() : ''}
 
-fn getCoordinate(value: f32, minimum: f32, maximum: f32, size: u32) -> u32 {
-  if (maximum == minimum || value == minimum) { return 0u; }
-  if (value == maximum) { return size - 1u; }
-  return min(u32((value - minimum) / (maximum - minimum) * f32(size)), size - 1u);
-}
+${GPU_GRID_COORDINATE_WGSL}
 
 @compute @workgroup_size(${GRID_WORKGROUP_SIZE}) fn main(
   @builtin(workgroup_id) workgroupId: vec3<u32>,
@@ -308,15 +310,18 @@ fn getCoordinate(value: f32, minimum: f32, maximum: f32, size: u32) -> u32 {
   ${local ? 'if (lane < CELL_COUNT) { atomicStore(&localCounts[lane], 0u); }\n  workgroupBarrier();' : ''}
   var accepted = false;
   var cellIndex = 0u;
-  if (index < ELEMENT_COUNT && maximumX >= minimumX && maximumY >= minimumY) {
+  let finiteBounds = isFiniteGridValue(minimumX) && isFiniteGridValue(minimumY) &&
+    isFiniteGridValue(maximumX) && isFiniteGridValue(maximumY);
+  let orderedBounds = minimumX <= maximumX && minimumY <= maximumY;
+  if (index < ELEMENT_COUNT && finiteBounds && orderedBounds) {
     let x = positions[POSITIONS_OFFSET + index * 2u];
     let y = positions[POSITIONS_OFFSET + index * 2u + 1u];
     let finite = x == x && y == y && abs(x) <= 3.402823466e+38 && abs(y) <= 3.402823466e+38;
     let inX = x >= minimumX && x <= maximumX && (maximumX != minimumX || x == minimumX);
     let inY = y >= minimumY && y <= maximumY && (maximumY != minimumY || y == minimumY);
     if (finite && inX && inY) {
-      let column = getCoordinate(x, minimumX, maximumX, WIDTH);
-      let row = getCoordinate(y, minimumY, maximumY, HEIGHT);
+      let column = getGridCoordinate(x, minimumX, maximumX, WIDTH);
+      let row = getGridCoordinate(y, minimumY, maximumY, HEIGHT);
       let globalCell = row * WIDTH + column;
       accepted = globalCell >= OUTPUT_START && globalCell - OUTPUT_START < CELL_COUNT;
       if (accepted) { cellIndex = globalCell - OUTPUT_START; }
@@ -346,11 +351,6 @@ fn getCoordinate(value: f32, minimum: f32, maximum: f32, size: u32) -> u32 {
   );
 
   return nodes;
-}
-
-/** Formats a finite JavaScript number as a WGSL `f32` literal. */
-function getFloatLiteral(value: number): string {
-  return Number.isInteger(value) ? `${value}.0` : `${value}`;
 }
 
 /** Narrows grid bounds to their GPU-resident `float32x4` view form. */

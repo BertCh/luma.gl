@@ -201,7 +201,7 @@ it('GPULineClipByPolygon#reports overflow and keeps a consistent prefix', async 
   ];
   const pieces = await runLineClip(device, lines, SQUARE, {pieceCapacity: 2});
   expect(pieces.count).toBe(2);
-  expect(pieces.totalCount).toBe(3);
+  expect(pieces.requiredCount).toBe(3);
   expect(pieces.overflow).toBe(1);
   expect(pieces.lineIds).toEqual([0, 1]);
   const vertices = await runLineClip(device, lines, SQUARE, {vertexCapacity: 5});
@@ -210,6 +210,44 @@ it('GPULineClipByPolygon#reports overflow and keeps a consistent prefix', async 
   expect(vertices.overflow).toBe(1);
   const pairs = await runLineClip(device, lines, SQUARE, {intersectionCapacity: 2});
   expect(pairs.overflow).toBe(1);
+});
+
+it('GPULineClipByPolygon#orders a long skewed crossing stream with cooperative radix passes', async () => {
+  const device = await getWebGPUTestDevice();
+  if (!device) return;
+  const toothCount = 257;
+  const ring: Point[] = [
+    [0, 1],
+    [toothCount * 2, 1],
+    [toothCount * 2, -1]
+  ];
+  for (let tooth = toothCount * 2 - 1; tooth >= 0; tooth--) {
+    ring.push([tooth, tooth % 2 === 0 ? 0.5 : -1]);
+  }
+  ring.push([0, -1]);
+  const result = await runLineClip(
+    device,
+    [
+      [
+        [-1, 0],
+        [toothCount * 2 + 1, 0]
+      ]
+    ],
+    [[[ring]]],
+    {
+      intersectionCapacity: 2048,
+      candidateCapacity: 2048,
+      pieceCapacity: toothCount + 4,
+      vertexCapacity: toothCount * 2 + 8
+    }
+  );
+  expect(result.overflow).toBe(0);
+  expect(result.pieces.length).toBeGreaterThan(256);
+  for (let piece = 1; piece < result.pieces.length; piece++) {
+    expect(result.pieces[piece][0][0]).toBeGreaterThanOrEqual(
+      result.pieces[piece - 1][result.pieces[piece - 1].length - 1][0]
+    );
+  }
 });
 
 it('GPULineClipByPolygon#compiles within the default storage buffer limit', async () => {

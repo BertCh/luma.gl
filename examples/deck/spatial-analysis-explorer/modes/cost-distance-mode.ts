@@ -256,7 +256,7 @@ export const costDistanceMode: SpatialAnalysisModeDefinition = {
           ids: pathIds,
           count: pathCount,
           overflow: importGraphBuffer(pathGraph, 'path-overflow', pathOverflowBuffer, 'uint32', 1),
-          totalCount: importGraphBuffer(
+          requiredCount: importGraphBuffer(
             pathGraph,
             'path-total-output',
             pathTotalBuffer,

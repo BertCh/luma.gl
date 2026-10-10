@@ -185,7 +185,7 @@ export function validateDotSamplingConfig(config: DotSamplingConfig): number {
       output.dots.ids,
       output.dots.count,
       output.dots.overflow,
-      output.dots.totalCount,
+      output.dots.requiredCount,
       output.categories,
       output.failedCount,
       output.slotCounts,
@@ -228,7 +228,7 @@ export function getDotSamplingNodes<Parameters>(
     output.dots.ids,
     output.dots.count,
     output.dots.overflow,
-    output.dots.totalCount,
+    output.dots.requiredCount,
     output.categories,
     output.failedCount,
     output.slotCounts,
@@ -638,7 +638,7 @@ fn getMaskWeight(point: vec2<f32>) -> f32 {
     createPublishNode<Parameters>(graph, {
       id: `${id}-publish`,
       operation,
-      totalCount: total,
+      requiredCount: total,
       output: output.dots,
       overflowSources: [clampFlag]
     })

@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {ground} from '../../cartography/grounds';
 import {defineScene} from '../scene';
 import type {WindFlowOptions} from './wind-flow.compute';
 import {WIND_RAMP} from './b16-colors';
@@ -16,14 +17,21 @@ const formatHour = (value: number) => {
 
 export default defineScene<WindFlowOptions>({
   id: 'wind-flow',
-  title: 'How did Hurricane Helene organise the wind?',
+  title: 'Hurricane Helene: GFS wind speed and direction',
   chapter: 'raster',
   order: 4,
   summary:
-    'GFS winds around Hurricane Helene drawn three ways from one GPU velocity field: 30,000 advected particles with trails, a line-integral-convolution texture and evenly spaced streamlines that follow the camera.',
+    'GPU particles, line-integral convolution and streamlines render NOAA GFS winds around Hurricane Helene from one velocity field. The forecast grid and interpolated time steps do not reproduce observed local gusts.',
   contributors: ['GPUParticleAdvection', 'GPULineIntegralConvolution', 'GPUStreamlines'],
   datasets: [{id: 'gfs-wind', role: '10 m and 250 hPa u/v wind, 2024-09-26 12Z run'}],
   initialView: {longitude: -83, latitude: 28.5, zoom: 4.6},
+  basemap: ground('abyss'),
+  furniture: {
+    title: {title: 'Helene wind field', subtitle: 'GFS speed and direction at 10 m or 250 hPa'},
+    scaleBar: {units: 'metric'},
+    credit: 'NOAA Global Forecast System',
+    caveat: 'Forecast-grid winds are not station observations or local gust measurements.'
+  },
 
   options: [
     {
@@ -524,6 +532,9 @@ particleGraph.compile().encode(commandEncoder, {parameters: undefined});`,
   story: [
     {
       id: 'the-question',
+      headline: 'GFS winds strengthen near Helene’s center',
+      textAlternative:
+        'A wind-speed raster and moving flow marks show the forecast field around Hurricane Helene.',
       title: 'How did Hurricane Helene organise the wind as it reached Florida?',
       body: 'Hurricane Helene made landfall near Perry, Florida, as a category 4 storm at about **03 UTC on 27 September 2024**. This map is the **NOAA GFS 10 m wind** for that hour, from the run of 26 September 12 UTC, on a 0.25 degree grid.\n\nThe moving streaks are **particles**: every one is advected through the wind field on the GPU, every frame. Trails fade with age and are colored by speed. The faint texture underneath is **line integral convolution**. Hover for the wind at any point, or change **Level**, **Forecast hour**, **Particles and trails** and **Line integral convolution texture** below; the peak (45 m/s) sits at the eye wall just off the Big Bend coast.',
       camera: {longitude: -84, latitude: 28.5, zoom: 5.2, transitionMs: 1500},
@@ -535,6 +546,9 @@ particleGraph.compile().encode(commandEncoder, {parameters: undefined});`,
     },
     {
       id: 'particles',
+      headline: 'Particle trails follow the gridded velocity field',
+      textAlternative:
+        'Thousands of particles advect through GFS wind vectors and leave short directional trails.',
       title: 'Particles are advected through the field',
       body: '`GPUParticleAdvection` moves each particle with a **midpoint (RK2) step**: it samples the velocity at the particle, steps half way, samples again there and takes the full step with that second velocity. The field is interpolated bilinearly inside the shader, so no float texture filtering is needed. A particle respawns when it leaves the field, gets too old, is too slow or loses the **drop rate** lottery.\n\nThe velocities are in **degrees per second**: u becomes `u / (R cos latitude)` and v becomes `v / R`, so the integration is exact on this longitude and latitude grid. Try **Drop rate**, **Speed scale** and **Maximum age** below; every one is a parameter write.',
       options: {showParticles: true, showLic: false, showStreamlines: false, speedScale: 1},
@@ -543,6 +557,9 @@ particleGraph.compile().encode(commandEncoder, {parameters: undefined});`,
     },
     {
       id: 'time',
+      headline: 'Forecast-hour changes update wind speed and direction',
+      textAlternative:
+        'The wind field interpolates between forecast frames as the time control advances.',
       title: 'Let the forecast run: time is a buffer write',
       body: 'Switch on **Play the forecast** below (it is on now). The hour advances, the two bracketing GFS frames are blended on the CPU and written into the velocity buffer ten times a second. The particles never restart: their positions live on the GPU, and the next step simply uses the new wind. Watch the storm come ashore and decay as the **valid time** readout counts.\n\nNothing is recompiled; the **Under the hood** panel keeps its rebuild count at zero. Change **Playback speed**, or turn playback off and drag **Forecast hour** to scrub.',
       options: {play: true, playSpeed: 1.5, hour: 12},
@@ -551,6 +568,9 @@ particleGraph.compile().encode(commandEncoder, {parameters: undefined});`,
     },
     {
       id: 'lic',
+      headline: 'LIC texture resolves continuous local flow orientation',
+      textAlternative:
+        'A line-integral-convolution texture traces wind direction throughout the raster.',
       title: 'Line integral convolution shows the whole pattern',
       body: '`GPULineIntegralConvolution` takes a white-noise texture and, for every output pixel, averages the noise along the streamline through that pixel (a Hann-weighted kernel, 32 taps each way). Pixels on one streamline share noise, so streaks appear along the flow, showing direction and shape everywhere at once: the closed spiral of the eye is obvious.\n\nThe output raster covers the **visible map** (an output extent independent of the field), so it stays sharp when you zoom. **Ripple period** and **Animate the ripple phase** make the texture flow; **Taps in each direction** is compile-time and rebuilds just this graph.',
       options: {play: false, hour: 14, showParticles: false, showLic: true, licOpacity: 0.9},
@@ -560,6 +580,8 @@ particleGraph.compile().encode(commandEncoder, {parameters: undefined});`,
     },
     {
       id: 'streamlines',
+      headline: 'Evenly spaced streamlines summarize instantaneous flow',
+      textAlternative: 'Curves seeded across the viewport follow the current GFS velocity field.',
       title: 'Streamlines give clean, evenly spaced lines',
       body: "`GPUStreamlines` traces candidate lines from a jittered seed lattice in both directions and keeps them in order of a random priority unless they come closer than the **line spacing** to a line already kept (Jobard and Lefer spacing, with the pruning made deterministic). The result is a set of polylines in CSR form, drawn from the output buffer; the point count becomes the draw call's instance count without a readback.\n\nThe occupancy grid is placed from the camera and the **spacing in pixels**, so zooming re-extracts lines at the same screen density. Try **Line spacing** 12 for a dense field and 40 for a sparse one; change the **Seed** below for another equally even layout, or raise **Shortest line** to drop stubs.",
       options: {showParticles: false, showLic: false, showStreamlines: true, spacing: 22},
@@ -568,6 +590,9 @@ particleGraph.compile().encode(commandEncoder, {parameters: undefined});`,
     },
     {
       id: 'jet',
+      headline: 'Upper-level winds exceed near-surface speeds',
+      textAlternative:
+        'The 250-hectopascal field shows faster jet-stream flow above the hurricane.',
       title: 'The jet stream at 250 hPa steered the storm',
       body: 'The field is now the **250 hPa** level (**Level** below), about 10 km up. Wind there reaches 78 m/s in this window, and a **trough over the central United States** with its jet is what pulled Helene north. Only the buffer changes: the same graphs, the same compiled kernels.\n\nThe 250 hPa frames are 3-hourly, so fractional hours blend frames three hours apart. **Speed at the end of the ramp** is raised to about 80 m/s so the colors span the jet; lower it to see the ramp saturate. Zoom out to see the whole domain.',
       options: {
@@ -585,6 +610,9 @@ particleGraph.compile().encode(commandEncoder, {parameters: undefined});`,
     },
     {
       id: 'caveats',
+      headline: 'Grid resolution limits local wind interpretation',
+      textAlternative:
+        'Forecast vectors show broad flow and omit observed station gusts and terrain-scale effects.',
       title: 'Limits, and things to try',
       body: '**Limits:** the field is a 0.25 degree (about 28 km) model analysis and forecast, so it smooths the hurricane: GFS winds are weaker and wider than the real eye wall. The PNGs quantise u and v to 8 bits (steps of about 0.3 to 0.5 m/s). Hourly frames are blended linearly in time, which is not a model state between them. Particle paths are not trajectories of real air, because the wind changes while they move.\n\n**Try**, below: **Particle count** 60,000, **Trail length** 32 frames, **Drop rate** 0, **Speed scale** 4, and **Spawn only in the view** off to see particles spread over the whole domain.',
       options: {

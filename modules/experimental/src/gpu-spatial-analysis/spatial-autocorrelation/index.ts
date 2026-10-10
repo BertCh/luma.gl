@@ -12,9 +12,24 @@ export {
   GPU_HOT_SPOT_SIGNIFICANCE_LEVELS,
   GPU_LOCAL_MORAN_QUADRANT,
   GPU_SPATIAL_AUTOCORRELATION_PARAMETER_LENGTH,
+  GPU_SPATIAL_AUTOCORRELATION_PARAMETER_SCHEMA,
   GPU_SPATIAL_AUTOCORRELATION_STATISTICS_LENGTH
 } from './spatial-autocorrelation-parameters';
 export type {
   GPUSpatialAutocorrelationFixedMoments,
   GPUSpatialAutocorrelationParameters
 } from './spatial-autocorrelation-parameters';
+export {
+  getGPUGammaPermutationAdapter,
+  GPU_LOCAL_GEARY_PERMUTATION_ADAPTER,
+  GPU_SPATIAL_PEARSON_PERMUTATION_ADAPTER,
+  GPUGammaStatistic,
+  GPULocalGeary,
+  GPUSpatialPearson
+} from './gpu-additional-spatial-statistics';
+export type {
+  GPUGammaOperation,
+  GPUGammaStatisticProps,
+  GPULocalGearyProps,
+  GPUSpatialPearsonProps
+} from './gpu-additional-spatial-statistics';

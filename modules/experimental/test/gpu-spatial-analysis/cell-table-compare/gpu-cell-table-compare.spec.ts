@@ -171,7 +171,7 @@ function importCompareOutput(graph: GPUCommandGraph, buffers: CompareBuffers, ca
     zScore: view('zScore', 'float32'),
     count: view('count', 'uint32', 1),
     overflow: view('overflow', 'uint32', 1),
-    totalCount: view('total', 'uint32', 1)
+    requiredCount: view('total', 'uint32', 1)
   };
 }
 

@@ -108,7 +108,7 @@ type Result = {
   positions: number[];
   ringOffsets: number[];
   overflow: number;
-  totalCount: number;
+  requiredCount: number;
   converged: number;
   /** `[initial crossings, remaining crossings, restored vertices, overflow]`. */
   topologyStats: number[];
@@ -130,7 +130,7 @@ async function runCoverage(
   const outputOffsets = rig.output('uint32', ringCount + 1);
   const keepMask = rig.output('uint32', vertexCount);
   const overflow = rig.output('uint32', 1);
-  const totalCount = rig.output('uint32', 1);
+  const requiredCount = rig.output('uint32', 1);
   const converged = rig.output('uint32', 1);
   const topologyStats = rig.output('uint32', 4);
   const parameters = new GPUParameterBuffer(device, {
@@ -154,7 +154,7 @@ async function runCoverage(
         ringOffsets: outputOffsets.view,
         keepMask: keepMask.view,
         overflow: overflow.view,
-        totalCount: totalCount.view,
+        requiredCount: requiredCount.view,
         topologyStats: topologyStats.view
       }
     })
@@ -165,7 +165,7 @@ async function runCoverage(
     positions: await readFloat32(outputPositions.buffer, 2 * ringOffsetValues[ringCount]),
     ringOffsets: ringOffsetValues,
     overflow: (await readUint32(overflow.buffer, 1))[0],
-    totalCount: (await readUint32(totalCount.buffer, 1))[0],
+    requiredCount: (await readUint32(requiredCount.buffer, 1))[0],
     converged: (await readUint32(converged.buffer, 1))[0],
     topologyStats: Array.from(await readUint32(topologyStats.buffer, 4))
   };
@@ -179,7 +179,7 @@ function expectMatchesOracle(polygons: OraclePolygons, tolerance: number, result
   const expected = computeCoverageSimplificationOracle(polygons, tolerance);
   expect(result.keepMask).toEqual(expected.keepMask);
   const keptTotal = expected.keepMask.reduce((sum, flag) => sum + flag, 0);
-  expect(result.totalCount).toBe(keptTotal);
+  expect(result.requiredCount).toBe(keptTotal);
   expect(result.overflow).toBe(0);
   expect(result.converged).toBe(1);
   // Ring offsets and positions are the filtered input, ring after ring.
@@ -240,10 +240,10 @@ it('GPUCoverageSimplification clamps to the output capacity and flags overflow',
   if (!device) return;
   const polygons = createJaggedGrid(3, 3, 5);
   const full = await runCoverage(device, polygons, 0);
-  const capacity = Math.floor(full.totalCount / 2);
+  const capacity = Math.floor(full.requiredCount / 2);
   const small = await runCoverage(device, polygons, 0, capacity);
   expect(small.overflow).toBe(1);
-  expect(small.totalCount).toBe(full.totalCount);
+  expect(small.requiredCount).toBe(full.requiredCount);
   expect(small.ringOffsets.every(offset => offset <= capacity)).toBe(true);
   expect(small.ringOffsets.at(-1)).toBe(capacity);
 });

@@ -146,7 +146,6 @@ const browserBenchmarkTestPatterns = [
   'modules/experimental/test/gpu-spatial-analysis/spatial-regression/gwr-benchmark.spec.ts',
   'modules/gpgpu/test/gpu-core/gpu-kernel-benchmark.spec.ts',
   'modules/gpgpu/test/gpu-core/gpu-fragmentation-benchmark.spec.ts',
-  'modules/gpgpu/test/gpu-core/gpu-spatial-query-benchmark.spec.ts',
   'modules/gpgpu/test/gpu-core/gpu-workgroup-reduction-benchmark.spec.ts',
   'modules/gpgpu/test/gpu-core/gpu-workgroup-scan-benchmark.spec.ts',
   'modules/gpgpu/test/gpu-graph/gpu-graph-benchmark.spec.ts',

@@ -222,7 +222,7 @@ export class GPURegionStatistics implements GPUCommandNodeProducer {
         output?.ids,
         output?.count,
         output?.overflow,
-        output?.totalCount,
+        output?.requiredCount,
         props.drawInstanceCount
       ],
       getStatisticsInputs(props)
@@ -241,7 +241,7 @@ export class GPURegionStatistics implements GPUCommandNodeProducer {
       output?.ids,
       output?.count,
       output?.overflow,
-      output?.totalCount,
+      output?.requiredCount,
       props.drawInstanceCount,
       ...getStatisticsInputs(props)
     ]);
@@ -451,7 +451,7 @@ export class GPURegionStatistics implements GPUCommandNodeProducer {
         createPublishNode<Parameters>(graph, {
           id: `${id}-selection-finalize`,
           operation: OPERATION,
-          totalCount: selectionTotal,
+          requiredCount: selectionTotal,
           compactIds: selectionIds,
           output,
           overflowSources: candidates

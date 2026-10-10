@@ -316,6 +316,12 @@ export default defineScene<HarborPlaybackOptions>({
       help: 'The hour of the day in which the most tracks report at least one fix.'
     },
     {
+      id: 'activityChart',
+      label: 'Tracks reporting through the day',
+      kind: 'chart',
+      help: 'Tracks with at least one AIS fix in each 15-minute bin. The vertical rule follows the playhead, and the reporting silence remains visible as a break in coverage.'
+    },
+    {
       id: 'silence',
       label: 'Longest silence of the whole feed',
       help: 'The longest stretch in which no vessel at all reported a fix.'
@@ -523,7 +529,7 @@ trailGraph.add(new GPUTimeWindowFilter({
   state.showStops
     ? `
 const stopGraph = new GPUCommandGraph(device, {id: 'stops'});
-stopGraph.add(new GPUTrajectoryMetrics({
+stopGraph.add(new GPUTrajectoryMetrics({spatialContext: {coordinateSpace: 'planar', metric: 'native', units: 'native'},
   positions, timestamps, trackOffsets,
   parameters: stopParameters.importToGraph(stopGraph),
   stepSpeeds, averageSpeeds, maximumSpeeds, trackStopCounts,
@@ -592,6 +598,10 @@ new VesselMarkerLayer({
       textAlternative:
         'Dark map of New York Harbor with faint grey shipping lanes and many small amber arrows, the Staten Island ferries moving between St. George and Whitehall.',
       body: 'Each arrow is a vessel with a position now, **{{active}}** of them, pointing the way it moves. AIS reports about every {{fixCadence}}, so between fixes an arrow is an estimate. Press **Play** and one clock drives every track at once; drag **Time of day (UTC)** to jump. The busiest hour starts at {{busiestHour}}. Later no vessel reports for {{silence}}.',
+      evidence:
+        '**{{active}}** vessels have an interpolated position now; the full-day activity chart peaks at **{{busiestHour}}**.',
+      caveat:
+        'The feed contains a shared reporting gap of **{{silence}}**; a quiet map then is missing coverage, not an empty harbour.',
       optionsMode: 'fresh',
       options: {
         time: 68400,
@@ -601,7 +611,7 @@ new VesselMarkerLayer({
         labelFerry: true
       },
       controls: ['playing', 'time'],
-      readouts: ['active', 'busiestHour', 'silence'],
+      readouts: ['active', 'activityChart', 'busiestHour', 'silence'],
       stage: 'playhead',
       camera: {...HARBOR_VIEW, transitionMs: 1400},
       furniture: {
@@ -631,6 +641,10 @@ new VesselMarkerLayer({
       textAlternative:
         'The Upper Bay with vessels as coloured arrows and squares; most marks are small squares at the piers, with a few arrows crossing the water.',
       body: 'Set **Colour arrows by** to *Speed*: value says how fast, in the speed classes of the histogram. *Group* gives hue instead: what a vessel is. Shape adds a third variable: squares are slower than the stop speed, arrows are underway. **{{stoppedNow}}** of {{active}} vessels here are squares, {{stoppedShare}}. Drag **Time of day (UTC)** to see it change. *Hue for kinds, value for amounts, shape for state.*',
+      evidence:
+        '**{{stoppedNow}}** of **{{active}}** active vessels are below the current stop-speed threshold; the histogram gives the distribution behind the classes.',
+      caveat:
+        '“Stopped” is a thresholded state, so the same **{{active}}** vessels can divide differently when the stop-speed rule changes.',
       optionsMode: 'fresh',
       options: {
         time: 68400,
@@ -669,6 +683,10 @@ new VesselMarkerLayer({
       textAlternative:
         'A Staten Island ferry mid-crossing: hollow rings for its AIS fixes, two filled rings either side of the arrow, and a straight chord between them.',
       body: 'Rings are real AIS fixes; the filled pair brackets the playhead. The GPU finds it by binary search and puts the arrow **{{fraction}}** of the way along the chord. Drag **Time of day (UTC)** and watch it run. Moored vessels were thinned to one fix per {{mooredCadence}} by our preprocessing: raise **Maximum fix gap** and they vanish for a reason that is ours, not AIS silence.',
+      evidence:
+        'For the highlighted ferry, the live playhead lies **{{fraction}}** of the way between the two filled fixes; **{{inGap}}** tracks are currently rejected as gaps.',
+      caveat:
+        'A gap count of **{{inGap}}** depends on the chosen maximum fix gap, and moored reports were already thinned before this analysis.',
       optionsMode: 'fresh',
       options: {
         time: 68870,
@@ -696,6 +714,10 @@ new VesselMarkerLayer({
       textAlternative:
         'The harbour with fading trails behind each vessel, long bright streaks behind ferries and short stubs behind tugs, coloured by speed class.',
       body: 'A trail keeps the segments whose time interval overlaps a window behind the playhead, fading toward the tail. The GPU kept **{{keptShare}}** of all segments this frame and wrote the count into the draw call, so drawing needs no readback. Change **Trail length** and every streak stretches at once; set **Tail fade** to none and the fade goes. Colours are the speed classes of the arrows.',
+      evidence:
+        'The current window contains **{{trailSegments}}** route segments, **{{keptShare}}** of the day’s segment table.',
+      caveat:
+        '**{{trailSegments}}** is a segment count, not a vessel count; fast vessels contribute longer-looking trails over the same time window.',
       optionsMode: 'fresh',
       options: {
         time: 68400,
@@ -732,6 +754,10 @@ new VesselMarkerLayer({
       textAlternative:
         'One vessel passage with hollow rings for its fixes and orange dots for the resampled points, spread evenly along the route or piled where it waited.',
       body: 'Many analyses need routes of equal length, so resampling rebuilds a track as a fixed number of points. Rings are real fixes, dots are the new samples. Switch **Sample spacing** and read what the GPU did: {{sampleSpacing}}. Spacing is a compile-time option. Then turn on **All routes**: the fingerprint of the harbour, every track with the same number of points.',
+      evidence:
+        'The selected route is rebuilt as **{{resampled}}**; under the current rule that means **{{sampleSpacing}}**.',
+      caveat:
+        '**{{resampled}}** standardises row length, not information content: time spacing can pile samples into a wait while distance spacing smooths it away.',
       optionsMode: 'fresh',
       options: {
         time: 68400,
@@ -759,6 +785,10 @@ new VesselMarkerLayer({
       textAlternative:
         'Harbour map with thin outlines of the official anchorages and discs for stops, sized and coloured by how long each vessel stayed; most discs sit at slips and yards, few inside the outlines.',
       body: 'A stop is a rule: slower than **Stop speed threshold** for at least **Minimum stop duration**. Only **{{anchoredShare}}** of the {{stops}} stops fall inside an official anchorage (the hairlines); tugs and passenger boats make {{stopShare}} of them. Across the sweep of thresholds the count moves by {{sweepSpread}}: try the duration. *A stop is a rule, not an observation.* Next: [which vessels meet?](#/story/vessel-encounters)',
+      evidence:
+        'Of **{{stops}}** detected stops, **{{anchoredShare}}** fall in official anchorages; the threshold-sweep chart shows a **{{sweepSpread}}** spread in the count.',
+      caveat:
+        'The longest detected stop is **{{longestStop}}**, but every stop—including that one—is conditional on the speed and duration rules.',
       optionsMode: 'fresh',
       options: {
         time: 68400,

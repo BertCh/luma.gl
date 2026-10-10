@@ -441,25 +441,30 @@ export async function createNatureClusters(
       addClusterAndOutlineRecipe(graph, {
         id: 'cluster-outline',
         positions: view('positions', positionsBuffer, 'float32x2', pointCount),
+        spatialContext: {coordinateSpace: 'planar', metric: 'native', units: 'native'},
         clusteringParameters: clusteringParameters.importToGraph(graph),
         gridSize: GRID_SIZE,
         geometryParameters: geometryParameters.importToGraph(graph),
         maximumClusterCount: CLUSTER_CAPACITY,
         maximumVerticesPerHull: HULL_MAXIMUM_VERTICES,
         hullCapacity: HULL_CAPACITY,
-        labels: view('labels', labels, 'uint32', pointCount),
-        clusterCount: view('cluster-count', clusterCount, 'uint32', 1),
-        counts: view('counts', geometryCounts, 'uint32', groupCount),
-        bounds: view('bounds', geometryBounds, 'float32x4', groupCount),
-        meanCenters: view('mean-centers', meanCenters, 'float32x2', groupCount),
-        hullVertexIndices: view('hull-indices', hullIndices, 'uint32', HULL_CAPACITY),
-        hullPositions: view('hull-positions', hullPositions, 'float32x2', HULL_CAPACITY),
-        hullOffsets: view('hull-offsets', hullOffsets, 'uint32', groupCount + 1),
-        hullCounts: view('hull-counts', hullCounts, 'uint32', groupCount),
-        hullOverflow: view('hull-overflow', hullOverflow, 'uint32', 1),
-        areas: view('areas', areas, 'float32', groupCount),
-        perimeters: view('perimeters', perimeters, 'float32', groupCount),
-        centroids: view('hull-centroids', hullCentroids, 'float32x2', groupCount)
+        outputs: {
+          labels: view('labels', labels, 'uint32', pointCount),
+          clusterCount: view('cluster-count', clusterCount, 'uint32', 1),
+          hullPositions: view('hull-positions', hullPositions, 'float32x2', HULL_CAPACITY),
+          hullOffsets: view('hull-offsets', hullOffsets, 'uint32', groupCount + 1),
+          hullOverflow: view('hull-overflow', hullOverflow, 'uint32', 1),
+          areas: view('areas', areas, 'float32', groupCount),
+          perimeters: view('perimeters', perimeters, 'float32', groupCount),
+          centroids: view('hull-centroids', hullCentroids, 'float32x2', groupCount)
+        },
+        scratch: {
+          counts: view('counts', geometryCounts, 'uint32', groupCount),
+          bounds: view('bounds', geometryBounds, 'float32x4', groupCount),
+          meanCenters: view('mean-centers', meanCenters, 'float32x2', groupCount),
+          hullVertexIndices: view('hull-indices', hullIndices, 'uint32', HULL_CAPACITY),
+          hullCounts: view('hull-counts', hullCounts, 'uint32', groupCount)
+        }
       });
       clusterGraph = resources.track(graph.compile());
     } else {

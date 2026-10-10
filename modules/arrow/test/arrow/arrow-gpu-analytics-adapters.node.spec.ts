@@ -5,6 +5,8 @@
 import {readFileSync} from 'node:fs';
 
 import {
+  getGPUPartitionDescriptorFromArrowTable,
+  iterateGPUAnalyticsPartitionsFromArrowTable,
   makeArrowTableFromGPUAnalyticsTable,
   makeGPUAnalyticsTableFromArrowTable
 } from '@luma.gl/arrow';
@@ -124,6 +126,27 @@ describe('makeGPUAnalyticsTableFromArrowTable source preservation', () => {
     expect(result.table.gpuVectors['fare'].data.map(data => data.length)).toEqual([2, 0, 3]);
     expect(result.table.gpuVectors['category'].dataType).toBeInstanceOf(arrow.Dictionary);
     expect(result.table.gpuVectors['fare'].data[1].buffer.byteLength).toBeGreaterThanOrEqual(4);
+    expect(result.partitioning).toEqual({
+      length: 5,
+      partitions: [
+        {id: 0, coreStart: 0, coreEnd: 2, haloStart: 0, haloEnd: 2},
+        {id: 1, coreStart: 2, coreEnd: 2, haloStart: 2, haloEnd: 2},
+        {id: 2, coreStart: 2, coreEnd: 5, haloStart: 2, haloEnd: 5}
+      ],
+      seamOwnership: {kind: 'lowest-partition-id'}
+    });
+    expect(getGPUPartitionDescriptorFromArrowTable(source, 1).partitions).toEqual([
+      {id: 0, coreStart: 0, coreEnd: 2, haloStart: 0, haloEnd: 3},
+      {id: 1, coreStart: 2, coreEnd: 2, haloStart: 1, haloEnd: 3},
+      {id: 2, coreStart: 2, coreEnd: 5, haloStart: 1, haloEnd: 5}
+    ]);
+    expect(result.partitionMemory).toEqual({
+      packedRows: 5,
+      peakPartitionRows: 3,
+      packedBytes: 120,
+      peakPartitionBytes: 72,
+      savedPeakBytes: 48
+    });
 
     for (const batch of result.table.batches) {
       for (const data of Object.values(batch.gpuData)) {
@@ -140,6 +163,39 @@ describe('makeGPUAnalyticsTableFromArrowTable source preservation', () => {
     submit.mockRestore();
     createCommandEncoder.mockRestore();
     destroyAnalyticsResult(result);
+  });
+
+  test('uploads and releases one source partition at a time with stable global identity', () => {
+    const device = new NullDevice({id: 'arrow-analytics-partitions'});
+    const source = createAnalyticsTable();
+    let peakBatchBytes = 0;
+    let cumulativeBatchBytes = 0;
+    const identities: Array<[number, number, number]> = [];
+    for (const partition of iterateGPUAnalyticsPartitionsFromArrowTable(device, source)) {
+      const valueBytes = Object.values(partition.analytics.table.batches[0].gpuData).reduce(
+        (sum, data) => sum + data.buffer.byteLength,
+        0
+      );
+      const validityBytes = Object.values(partition.analytics.validity).reduce(
+        (sum, vector) => sum + vector!.data[0].buffer.byteLength,
+        0
+      );
+      const batchBytes = valueBytes + validityBytes;
+      peakBatchBytes = Math.max(peakBatchBytes, batchBytes);
+      cumulativeBatchBytes += batchBytes;
+      identities.push([
+        partition.sourceBatchIndex,
+        partition.sourceRowIndexOffset,
+        partition.sourceRowCount
+      ]);
+      destroyAnalyticsResult(partition.analytics);
+    }
+    expect(identities).toEqual([
+      [0, 0, 2],
+      [1, 2, 0],
+      [2, 2, 3]
+    ]);
+    expect(peakBatchBytes).toBeLessThan(cumulativeBatchBytes);
   });
 
   test('keeps table, field, and source-batch metadata independent', () => {

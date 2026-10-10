@@ -556,6 +556,13 @@ export async function createMapMatching(
   }
   classes[classesOffset + index] = accuracy;`
     });
+    const matchedSegmentsView = view(
+      'matched-segments',
+      matchedSegments,
+      'float32',
+      pointCount * 4
+    );
+    const matchedWeightsView = view('matched-weights', matchedWeights, 'float32', pointCount);
     addKernelPass(graph, {
       id: 'matched-rows',
       bindings: [
@@ -565,21 +572,40 @@ export async function createMapMatching(
         {name: 'hasNext', view: hasNextView, type: 'u32', access: 'read'},
         {name: 'trackOfPoint', view: trackOfPointView, type: 'u32', access: 'read'},
         {name: 'focus', view: focusView, type: 'u32', access: 'read'},
-        {name: 'rowEdge', view: rowEdgeView, type: 'u32', access: 'read'},
-        {name: 'truthEdge', view: truthEdgeView, type: 'u32', access: 'read'},
-        {name: 'reverse', view: reverseView, type: 'u32', access: 'read'},
         {
           name: 'segments',
-          view: view('matched-segments', matchedSegments, 'float32', pointCount * 4),
+          view: matchedSegmentsView,
           type: 'f32',
           access: 'read_write'
         },
         {
           name: 'weights',
-          view: view('matched-weights', matchedWeights, 'float32', pointCount),
+          view: matchedWeightsView,
           type: 'f32',
           access: 'read_write'
-        },
+        }
+      ],
+      invocationCount: pointCount,
+      declarations: `const POINT_COUNT: u32 = ${pointCount}u;
+const NONE: u32 = ${NONE}u;`,
+      body: `let next = min(index + 1u, POINT_COUNT - 1u);
+  segments[segmentsOffset + index * 4u] = points[pointsOffset + index * 2u];
+  segments[segmentsOffset + index * 4u + 1u] = points[pointsOffset + index * 2u + 1u];
+  segments[segmentsOffset + index * 4u + 2u] = points[pointsOffset + next * 2u];
+  segments[segmentsOffset + index * 4u + 3u] = points[pointsOffset + next * 2u + 1u];
+  let inFocus = focus[focusOffset] == 0u || trackOfPoint[trackOfPointOffset + index] + 1u == focus[focusOffset];
+  let isDrawn = hasNext[hasNextOffset + index] != 0u && inFocus && matched[matchedOffset + index] != NONE &&
+    matched[matchedOffset + next] != NONE && breaks[breaksOffset + next] == 0u;
+  weights[weightsOffset + index] = select(0.0, 1.0, isDrawn);`
+    });
+    addKernelPass(graph, {
+      id: 'matched-outcomes',
+      bindings: [
+        {name: 'matched', view: matchedEdgesView, type: 'u32', access: 'read'},
+        {name: 'weights', view: matchedWeightsView, type: 'f32', access: 'read'},
+        {name: 'rowEdge', view: rowEdgeView, type: 'u32', access: 'read'},
+        {name: 'truthEdge', view: truthEdgeView, type: 'u32', access: 'read'},
+        {name: 'reverse', view: reverseView, type: 'u32', access: 'read'},
         {
           name: 'wrongWeights',
           view: view('wrong-street-weights', wrongStreetWeights, 'float32', pointCount),
@@ -600,17 +626,8 @@ export async function createMapMatching(
         }
       ],
       invocationCount: pointCount,
-      declarations: `const POINT_COUNT: u32 = ${pointCount}u;
-const NONE: u32 = ${NONE}u;`,
-      body: `let next = min(index + 1u, POINT_COUNT - 1u);
-  segments[segmentsOffset + index * 4u] = points[pointsOffset + index * 2u];
-  segments[segmentsOffset + index * 4u + 1u] = points[pointsOffset + index * 2u + 1u];
-  segments[segmentsOffset + index * 4u + 2u] = points[pointsOffset + next * 2u];
-  segments[segmentsOffset + index * 4u + 3u] = points[pointsOffset + next * 2u + 1u];
-  let inFocus = focus[focusOffset] == 0u || trackOfPoint[trackOfPointOffset + index] + 1u == focus[focusOffset];
-  let isDrawn = hasNext[hasNextOffset + index] != 0u && inFocus && matched[matchedOffset + index] != NONE &&
-    matched[matchedOffset + next] != NONE && breaks[breaksOffset + next] == 0u;
-  weights[weightsOffset + index] = select(0.0, 1.0, isDrawn);
+      declarations: `const NONE: u32 = ${NONE}u;`,
+      body: `let isDrawn = weights[weightsOffset + index] != 0.0;
   var outcome = 0u;
   if (isDrawn) {
     let edge = rowEdge[rowEdgeOffset + matched[matchedOffset + index]];

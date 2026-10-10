@@ -337,7 +337,7 @@ type GPURasterContourOutput = {
   /** Retained segment count, clamped to the available segment capacity. */
   count: GraphDataView<'uint32'>;
   overflow: GraphDataView<'uint32'>;
-  totalCount?: GraphDataView<'uint32'>;
+  requiredCount?: GraphDataView<'uint32'>;
   /** Double-precision world-space origin for local float32 positions. */
   origin: readonly [number, number];
   affine: readonly [number, number, number, number, number, number];

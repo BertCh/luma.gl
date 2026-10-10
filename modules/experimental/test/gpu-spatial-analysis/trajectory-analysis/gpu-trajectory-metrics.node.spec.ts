@@ -21,6 +21,7 @@ function createProps(
   overrides: Partial<GPUTrajectoryMetricsProps> = {}
 ): GPUTrajectoryMetricsProps {
   return {
+    spatialContext: {coordinateSpace: 'planar', metric: 'native', units: 'native'},
     positions: createTransientView(graph, unique('positions'), 'float32x2', 8),
     timestamps: createTransientView(graph, unique('timestamps'), 'float32', 8),
     trackOffsets: createTransientView(graph, unique('offsets'), 'uint32', 3),
@@ -58,7 +59,7 @@ it('getGPUTrajectoryMetricsParameterValues packs and validates', () => {
   ).toThrow(/finite/);
   expect(() =>
     getGPUTrajectoryMetricsParameterValues({stopSpeedThreshold: -1, stopMinimumDuration: 1})
-  ).toThrow(/non-negative/);
+  ).toThrow(/minimum/);
   expect(() =>
     getGPUTrajectoryMetricsParameterValues(
       {stopSpeedThreshold: 1, stopMinimumDuration: 1},

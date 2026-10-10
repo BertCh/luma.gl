@@ -657,7 +657,7 @@ export async function createTradeAreas(
                   ? access3
                   : tradeAreaProbability,
             valueFormat: 'float32',
-            colormap: 'viridis',
+            colormap: 'ylgnbu',
             valueRange: map === 'huffProbability' ? [0, 1] : [0, accessRange[map]]
           })
         );

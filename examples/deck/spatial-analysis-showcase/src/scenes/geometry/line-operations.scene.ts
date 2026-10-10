@@ -397,6 +397,8 @@ export default defineScene<LineOperationsOptions>({
       id: 'densify',
       title: 'A vertex every 100 metres',
       headline: 'Spacing changes vertices, not the route',
+      textAlternative:
+        'Chicago L routes are coloured by distance from each route start after adding vertices at a 100-metre maximum spacing; the operation preserves the route shape, and planar and spherical measures differ slightly.',
       body: `A transit planner needs the Chicago L as points: a vertex every 100 m along each route, each carrying its **distance from the route start**. \`GPULineSegmentize\` does that on the GPU: every input vertex is kept and any long segment is split into equal pieces no longer than the **maximum segment length** you choose.
 
 The colour is the measure output, from 0 at the start to the length of the longest route at the far end (see the legend). Slide **Maximum segment length** below (log scale) and watch the vertex count in the readout change; nothing recompiles. Switch **Lengths measured** to *Spherical* to measure along the sphere instead of the local plane: over a city the two agree to a few metres.`,
@@ -409,7 +411,9 @@ The colour is the measure output, from 0 at the start to the length of the longe
     {
       id: 'chunk',
       title: 'Cut the routes into kilometre pieces',
-      headline: 'Chunks turn distance into a ruler',
+      headline: 'Chunks encode fixed distance intervals',
+      textAlternative:
+        'Chicago L routes are divided into one-kilometre pieces with cyclic categorical colours and a reported piece count; adjacent pieces share a boundary point, and repeated colours do not identify unique pieces.',
       body: `Now split each route into **one-kilometre chunks** with \`GPULineChunk\` in \`chunk\` mode (turf \`lineChunk\`). The colours cycle through the output pieces, so you can count kilometres along each line; consecutive chunks share their boundary point.
 
 The number of pieces depends on the data, so the contributor reports it through the \`pathCount\` output (see the readout) and the offsets past it equal the vertex count. Slide **Chunk length** below from 100 m to 10 km. Set **Line tool** to *Substring* to extract the stretch between a start and an end measure instead, as ST_LineSubstring does: a quick way to reveal a route a bit at a time.`,
@@ -422,6 +426,8 @@ The number of pieces depends on the data, so the contributor reports it through 
       id: 'locate',
       title: 'Run a train along each line',
       headline: 'Measure and offset locate an event',
+      textAlternative:
+        'Markers are positioned one kilometre apart along each Chicago L route, with white ticks showing route tangents; distance or fractional measures and lateral offsets are selectable, while events beyond a route end are clamped.',
       body: `\`GPULineLocate\` turns "N km along route R" into a map position and a direction. Here 320 markers (40 per route) sit a kilometre apart and **run along the lines**: only the \`measureOffset\` parameter changes each frame, a single buffer write.
 
 Each marker also reports a tangent (the white tick) so it can point along the track, and a status that says when it was clamped at the route end. Raise **Spacing scale** above 1 and markers pile up at the end of the shorter routes (see the clamped count). Add a **Lateral offset** to put alternate markers on either side. Set **Measure is a** to *Fraction* to place markers by fraction of route length instead of distance.`,
@@ -434,6 +440,8 @@ Each marker also reports a tangent (the white tick) so it can point along the tr
       id: 'snap',
       title: 'Nearest street is an inference',
       headline: 'A nearest segment is not an address',
+      textAlternative:
+        'Chicago place points are linked to the nearest eligible street segment within 60 metres and coloured by signed side; median and p90 snap distance quantify proximity, but the source does not assert address matches.',
       body: `\`GPULinearReferencing\` finds the nearest eligible street segment within a search radius for wholesome Chicago places: grocery, education, recreation, culture and community sites. It returns the foot point, measure and signed offset. The source has no asserted street edge, so this demonstrates proximity rather than an address match.
 
 Lines join each place to its inferred foot point. Side is relative to the street's digitising direction. Read the matched share, median and p90 distance, then use **Place category** and **Search radius** below to see how the eligible input changes.`,
@@ -447,6 +455,8 @@ Lines join each place to its inferred foot point. Side is relative to the street
       id: 'simplify',
       title: 'Thin the ship tracks',
       headline: 'Tolerance belongs to map scale',
+      textAlternative:
+        'Orange simplified New York Harbor AIS tracks overlay faint originals, with the kept-fix ratio determined by a metre, pixel or time-ratio tolerance; unconverged importance rounds and removed observations limit fidelity.',
       body: `897 AIS tracks of vessels in New York Harbor hold 124,780 position fixes. \`GPULineSimplification\` computes a Douglas-Peucker **importance** for every fix once (64 gated rounds on the GPU), then the **tolerance** you set, in metres or in pixels at the current zoom, only re-selects the vertices to keep.
 
 Orange is the simplified track over the faint original. Slide **Tolerance** below: at 30 m the kept fraction drops to a few percent while the shape stays right. The readouts show whether the rounds converged (then the result equals the classic recursive algorithm) and how many rounds ran. Switch **Distance measure** to *Time-ratio* (or tick **Tolerance follows the zoom**) to keep the fixes that matter for speed, not just shape (TD-TR).`,
@@ -459,7 +469,9 @@ Orange is the simplified track over the faint original. Slide **Tolerance** belo
     {
       id: 'compare-methods',
       title: 'Compare methods on one track',
-      headline: 'Simplifying and smoothing invent different errors',
+      headline: 'Simplification and smoothing introduce different errors',
+      textAlternative:
+        'One AIS track compares retained observations from Douglas-Peucker or time-ratio simplification with points created by three Chaikin iterations at a 0.25 cut ratio; visual smoothness does not indicate measurement accuracy.',
       body: `Use the same AIS track to compare Douglas-Peucker, time-ratio simplification and then Chaikin corner cutting. The simplifiers retain observations; Chaikin creates points between them. **Chaikin iterations** are compile-time and its **cut ratio** is a parameter write, so smooth-looking geometry is not a more faithful measurement.`,
       optionsMode: 'fresh',
       options: {view: 'tracks', trackTool: 'smooth', smoothIterations: 3, smoothRatio: 0.25},
@@ -680,7 +692,7 @@ importanceGraph.add(new GPULineSimplification({
 selectionGraph.add(new GPULineSimplification({
   positions, trackOffsets, importance, computeImportance: false,
   parameters: tolerance.importToGraph(selectionGraph),
-  selection: {output: {ids, count, overflow, totalCount}}
+  selection: {output: {ids, count, overflow, requiredCount}}
 }));
 tolerance.write(getGPULineSimplificationParameterValues({tolerance: 30}));`;
   },

@@ -16,3 +16,11 @@ export type {
   GPUSegmentRingPolygonOutput,
   GPUSegmentRingAssemblyProps
 } from './gpu-segment-ring-assembly';
+export {getSegmentPolygonizationDiagnostics} from './segment-polygonization-diagnostics';
+export type {
+  PolygonizationSegment,
+  SegmentPolygonizationClassification,
+  SegmentPolygonizationDiagnostics,
+  SegmentPolygonizationDiagnosticsInput,
+  SegmentPolygonizationRing
+} from './segment-polygonization-diagnostics';

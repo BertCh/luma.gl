@@ -135,16 +135,18 @@ it('addChangeOfSupportRecipe rasterizes two zone systems and transfers values by
       target: toZones(target, 'target'),
       pairCapacity: capacity,
       sourceValues: fixture.input('source-values', sourceValues, 'float32', 4),
-      extensiveWeights: {
-        offsets: offsets.view,
-        neighbors: neighbors.view,
-        weights: weights.view
-      },
-      intensiveWeightValues: intensiveWeightValues.view,
-      overflow: overflow.view,
-      totalPairs: totalPairs.view,
-      extensiveValues: extensive.view,
-      intensiveValues: intensive.view
+      outputs: {
+        extensiveWeights: {
+          offsets: offsets.view,
+          neighbors: neighbors.view,
+          weights: weights.view
+        },
+        intensiveWeightValues: intensiveWeightValues.view,
+        overflow: overflow.view,
+        requiredCount: totalPairs.view,
+        extensiveValues: extensive.view,
+        intensiveValues: intensive.view
+      }
     });
     expect(recipe.contributors.length).toBe(5);
     fixture.run();

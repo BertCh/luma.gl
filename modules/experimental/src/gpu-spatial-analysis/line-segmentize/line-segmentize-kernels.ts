@@ -655,7 +655,7 @@ export type PathOffsetsPublishNodeProps = {
   capacity: number;
   count: GraphDataView<'uint32'>;
   overflow: GraphDataView<'uint32'>;
-  totalCount?: GraphDataView<'uint32'>;
+  requiredCount?: GraphDataView<'uint32'>;
   pathCountOutput?: GraphDataView<'uint32'>;
 };
 
@@ -695,10 +695,10 @@ export function createPathOffsetsPublishNode<Parameters>(
       access: 'read_write'
     }
   );
-  if (props.totalCount) {
+  if (props.requiredCount) {
     bindings.push({
       name: 'totalOut',
-      view: props.totalCount,
+      view: props.requiredCount,
       type: 'u32',
       access: 'read_write'
     });
@@ -733,7 +733,7 @@ const PATH_COUNT: u32 = ${props.pathCount}u;`,
   if (index == 0u) {
     countOut[countOutOffset] = min(total, CAPACITY);
     overflowOut[overflowOutOffset] = select(0u, 1u, total > CAPACITY);
-    ${props.totalCount ? 'totalOut[totalOutOffset] = total;' : ''}
+    ${props.requiredCount ? 'totalOut[totalOutOffset] = total;' : ''}
     ${props.pathCountOutput ? 'pathCountOut[pathCountOutOffset] = PATH_COUNT;' : ''}
   }`
   });

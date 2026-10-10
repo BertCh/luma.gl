@@ -11,12 +11,39 @@ import {
 } from '@luma.gl/gpgpu/gpu-core';
 import {createWGSLKernelNode} from '../../utils/wgsl-kernel-nodes';
 import type {GPUCellTable} from '../cell-aggregation/index';
+import type {GPURecipeStatusPort} from '../contracts/index';
 import type {GPUSpatialWeights} from '../spatial-weights/index';
 
+/**
+ * The only caller-ownership override categories accepted by recipes.
+ *
+ * `inputs` reuses a caller-owned value produced before the recipe, `outputs` publishes terminal
+ * values, and `scratch` exposes storage that only connects recipe stages. Algorithm parameters
+ * remain ordinary recipe properties because they are not ownership overrides.
+ */
+export type GPURecipeOverrides<
+  Inputs extends object = Record<never, never>,
+  Outputs extends object = Record<never, never>,
+  Scratch extends object = Record<never, never>
+> = {
+  inputs?: Inputs;
+  outputs?: Outputs;
+  scratch?: Scratch;
+};
+
 /** Fields every recipe result carries. */
-export type GPURecipeResult = {
+export type GPURecipeResult<
+  Outputs extends Record<string, unknown> = Record<string, unknown>,
+  Intermediates extends Record<string, unknown> = Record<string, unknown>
+> = {
   /** Contributors the recipe added to the graph, in declaration (execution) order. */
   contributors: readonly GPUCommandNodeProducer<never>[];
+  /** Stable named terminal outputs. */
+  outputs: Outputs;
+  /** Useful named ports between stages; graph-owned views are not readback-capable. */
+  intermediates: Intermediates;
+  /** GPU-resident completeness and convergence views, grouped by the responsible stage. */
+  status: GPURecipeStatusPort;
 };
 
 /**

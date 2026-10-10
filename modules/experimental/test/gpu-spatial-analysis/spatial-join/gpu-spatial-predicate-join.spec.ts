@@ -37,6 +37,7 @@ type JoinResult = {
   count: number;
   total: number;
   overflow: number;
+  candidateOverflow: number;
   candidateCount: number;
   uncertainCount: number;
   weightOffsets: number[];
@@ -114,6 +115,7 @@ async function runJoin(
   const rightIds = output('right-ids', pairCapacity);
   const count = output('count', 1);
   const overflow = output('overflow', 1);
+  const candidateOverflow = output('candidate-overflow', 1);
   const total = output('total', 1);
   const candidateCount = output('candidate-count', 1);
   const uncertain = output('uncertain', 1);
@@ -134,7 +136,8 @@ async function runJoin(
       rightIds: rightIds.view,
       count: count.view,
       overflow: overflow.view,
-      totalCount: total.view
+      candidateOverflow: candidateOverflow.view,
+      requiredCount: total.view
     },
     weights: {
       offsets: offsets.view,
@@ -157,6 +160,7 @@ async function runJoin(
     count: countValue,
     total: totalValue,
     overflow: (await readUint32(overflow.buffer, 1))[0],
+    candidateOverflow: (await readUint32(candidateOverflow.buffer, 1))[0],
     candidateCount: (await readUint32(candidateCount.buffer, 1))[0],
     uncertainCount: (await readUint32(uncertain.buffer, 1))[0],
     weightOffsets: await readUint32(offsets.buffer, lefts.length + 1),
@@ -508,7 +512,8 @@ it('GPUSpatialPredicateJoin reports overflow and keeps a sorted prefix', async (
       candidateCapacity: 6
     }
   );
-  expect(candidateLimited.overflow).toBe(1);
+  expect(candidateLimited.overflow).toBe(0);
+  expect(candidateLimited.candidateOverflow).toBe(1);
   expect(candidateLimited.candidateCount).toBeGreaterThan(6);
   // Dropped candidates are the tail of the (left, right) order, so the output stays sorted.
   const expectedKeys = new Set(expected.map(pair => pair.join(',')));
@@ -523,7 +528,8 @@ it('GPUSpatialPredicateJoin reports overflow and keeps a sorted prefix', async (
   const leafLimited = await runJoin(device, 'polygons', lefts, 'polygons', rights, 'intersects', {
     leafCapacity: 2
   });
-  expect(leafLimited.overflow).toBe(1);
+  expect(leafLimited.overflow).toBe(0);
+  expect(leafLimited.candidateOverflow).toBe(1);
 });
 
 it('GPUSpatialPredicateJoin updates per frame', async () => {

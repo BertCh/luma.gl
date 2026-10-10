@@ -54,7 +54,7 @@ function createSummitsFixture(device: Device, options: FixtureOptions) {
   const ids = track(createOutputBuffer(device, capacity));
   const count = track(createOutputBuffer(device, 1));
   const listOverflow = track(createOutputBuffer(device, 1));
-  const totalCount = track(createOutputBuffer(device, 1));
+  const requiredCount = track(createOutputBuffer(device, 1));
   const outputDrop = track(createOutputBuffer(device, capacity));
   const radiusOverflow = track(createOutputBuffer(device, 1));
   const settingsBuffer = new GPUParameterBuffer(device, {
@@ -86,7 +86,7 @@ function createSummitsFixture(device: Device, options: FixtureOptions) {
         ids: importGraphBuffer(graph, 'ids', ids, 'uint32', capacity),
         count: importGraphBuffer(graph, 'count', count, 'uint32', 1),
         overflow: importGraphBuffer(graph, 'list-overflow', listOverflow, 'uint32', 1),
-        totalCount: importGraphBuffer(graph, 'total', totalCount, 'uint32', 1)
+        requiredCount: importGraphBuffer(graph, 'total', requiredCount, 'uint32', 1)
       },
       outputDrop: importGraphBuffer(graph, 'output-drop', outputDrop, 'float32', capacity),
       overflow: options.overflow
@@ -107,7 +107,7 @@ function createSummitsFixture(device: Device, options: FixtureOptions) {
         ids: (await readUint32(ids, capacity)).slice(0, listCount),
         count: listCount,
         listOverflow: (await readUint32(listOverflow, 1))[0],
-        total: (await readUint32(totalCount, 1))[0],
+        total: (await readUint32(requiredCount, 1))[0],
         outputDrop: await readFloat32(outputDrop, capacity),
         radiusOverflow: (await readUint32(radiusOverflow, 1))[0]
       };

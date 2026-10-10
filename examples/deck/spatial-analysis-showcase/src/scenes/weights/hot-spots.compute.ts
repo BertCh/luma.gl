@@ -778,6 +778,22 @@ export async function createHotSpots(
         formatCount(snapshot.counts[0] + snapshot.counts[1] + snapshot.counts[2])
       );
       ctx.setReadout('notSignificantShare', formatPercent(snapshot.counts[3] / Math.max(total, 1)));
+      const table = getGiTable(ctx.ground(), 'No data');
+      ctx.setChart('resultBalance', {
+        kind: 'bars',
+        title: 'Tested places by result',
+        values: [
+          snapshot.counts[4] + snapshot.counts[5] + snapshot.counts[6],
+          snapshot.counts[0] + snapshot.counts[1] + snapshot.counts[2],
+          snapshot.counts[3]
+        ],
+        labels: ['Hot spot', 'Cold spot', 'Not significant'],
+        colors: [table.colors[6], table.colors[0], table.colors[3]],
+        horizontal: true,
+        table: false,
+        description:
+          'Counts of tested places classified as hot, cold or not significant at the selected inference settings.'
+      });
     } else {
       ctx.setReadout('hot', count(1));
       ctx.setReadout('cold', count(3));
@@ -786,6 +802,23 @@ export async function createHotSpots(
       ctx.setReadout('hotTotal', count(1));
       ctx.setReadout('coldTotal', count(3));
       ctx.setReadout('notSignificantShare', formatPercent(snapshot.counts[0] / Math.max(total, 1)));
+      const colors = getMoranQuadrantColors(getGiTable(ctx.ground(), 'No data'));
+      ctx.setChart('resultBalance', {
+        kind: 'bars',
+        title: 'Tested places by local Moran result',
+        values: [
+          snapshot.counts[1],
+          snapshot.counts[3],
+          snapshot.counts[2] + snapshot.counts[4],
+          snapshot.counts[0]
+        ],
+        labels: ['High-high', 'Low-low', 'Outlier', 'Not significant'],
+        colors: [colors.highHigh, colors.lowLow, colors.highLow, colors.notSignificant],
+        horizontal: true,
+        table: false,
+        description:
+          'Counts of tested places classified as high-high, low-low, spatial outliers or not significant.'
+      });
     }
     ctx.setReadout(
       'moments',
@@ -969,24 +1002,35 @@ export async function createHotSpots(
           tableCapacity: rows,
           neighborCapacity: slots,
           gridSize: [128, 128],
-          neighborSearchParameters: searchParameters.importToGraph(graph),
-          table,
-          centers
+          neighborSearchParameters: searchParameters.importToGraph(graph)
         },
         parameters: parameters.importToGraph(graph),
         selfWeight: variant.selfWeight,
         falseDiscoveryRate: variant.falseDiscoveryRate,
-        zScores: view('z-scores', buffers.zScores, 'float32', rows),
-        bins: view('bins', buffers.base, 'sint32', rows),
-        pValues: view('p-values', buffers.pValues, 'float32', rows),
-        neighborCounts: view('neighbor-counts', buffers.neighborCounts, 'uint32', rows),
-        globalStatistics: view('statistics', buffers.statistics, 'float32', 4),
-        weights: {
-          offsets: view('offsets', csr.offsets, 'uint32', rows + 1),
-          neighbors: view('neighbors', csr.neighbors, 'uint32', slots),
-          weights: view('weights', csr.weights, 'float32', slots)
+        outputs: {
+          zScores: view('z-scores', buffers.zScores, 'float32', rows),
+          bins: view('bins', buffers.base, 'sint32', rows),
+          pValues: view('p-values', buffers.pValues, 'float32', rows),
+          neighborCounts: view('neighbor-counts', buffers.neighborCounts, 'uint32', rows),
+          globalStatistics: view('statistics', buffers.statistics, 'float32', 4),
+          weightsOverflow: view('weights-overflow', weightsOverflow, 'uint32', 1),
+          permutation: usePermutation
+            ? {
+                exceedances: view('exceedances', buffers.exceedances, 'uint32', rows),
+                pseudoPValues: view('pseudo-p-values', buffers.pseudoPValues, 'float32', rows),
+                significant: view('significant', buffers.significant, 'uint32', rows)
+              }
+            : undefined
         },
-        weightsOverflow: view('weights-overflow', weightsOverflow, 'uint32', 1),
+        scratch: {
+          table,
+          centers,
+          weights: {
+            offsets: view('offsets', csr.offsets, 'uint32', rows + 1),
+            neighbors: view('neighbors', csr.neighbors, 'uint32', slots),
+            weights: view('weights', csr.weights, 'float32', slots)
+          }
+        },
         permutation: usePermutation
           ? {
               parameters: permutationParameters.importToGraph(graph),
@@ -994,10 +1038,7 @@ export async function createHotSpots(
               statistic: variant.selfWeight === 1 ? 'localGStar' : 'localG',
               alternative: o.alternative,
               maximumNeighbors: Number(o.maximumNeighbors),
-              falseDiscoveryRate: variant.falseDiscoveryRate,
-              exceedances: view('exceedances', buffers.exceedances, 'uint32', rows),
-              pseudoPValues: view('pseudo-p-values', buffers.pseudoPValues, 'float32', rows),
-              significant: view('significant', buffers.significant, 'uint32', rows)
+              falseDiscoveryRate: variant.falseDiscoveryRate
             }
           : undefined
       });

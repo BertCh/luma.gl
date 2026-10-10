@@ -2,8 +2,37 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {defineGPUSpatialParameterSchema, packGPUSpatialParameterValues} from '../contracts/index';
+
 /** Number of float32 elements in a trajectory-metrics parameter buffer. */
 export const GPU_TRAJECTORY_METRICS_PARAMETER_LENGTH = 4;
+
+/** Declarative layout shared by trajectory-metrics parameter writers and the contributor. */
+export const GPU_TRAJECTORY_METRICS_PARAMETER_SCHEMA = defineGPUSpatialParameterSchema({
+  id: 'trajectory-metrics',
+  format: 'float32',
+  wordLength: GPU_TRAJECTORY_METRICS_PARAMETER_LENGTH,
+  fields: [
+    {
+      name: 'stopSpeedThreshold',
+      format: 'float32',
+      wordOffset: 0,
+      defaultValue: 0,
+      minimum: 0,
+      units: 'spatial-context-units-per-time-unit',
+      dynamic: true
+    },
+    {
+      name: 'stopMinimumDuration',
+      format: 'float32',
+      wordOffset: 1,
+      defaultValue: 0,
+      minimum: 0,
+      units: 'time-units',
+      dynamic: true
+    }
+  ]
+});
 
 /**
  * CPU description of the per-frame stop-detection parameters of `GPUTrajectoryMetrics`.
@@ -43,14 +72,6 @@ export function getGPUTrajectoryMetricsParameterValues(
       `Trajectory metrics target must hold ${GPU_TRAJECTORY_METRICS_PARAMETER_LENGTH} elements`
     );
   }
-  for (const value of [parameters.stopSpeedThreshold, parameters.stopMinimumDuration]) {
-    if (!Number.isFinite(value)) {
-      throw new Error('Trajectory metrics parameters must be finite');
-    }
-    if (value < 0) {
-      throw new Error('Trajectory metrics parameters must be non-negative');
-    }
-  }
-  target.set([parameters.stopSpeedThreshold, parameters.stopMinimumDuration, 0, 0]);
+  target.set(packGPUSpatialParameterValues(GPU_TRAJECTORY_METRICS_PARAMETER_SCHEMA, parameters));
   return target;
 }

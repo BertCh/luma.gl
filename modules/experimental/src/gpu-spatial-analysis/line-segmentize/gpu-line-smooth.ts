@@ -272,7 +272,7 @@ export class GPULineSmooth implements GPUCommandNodeProducer {
         outputPathOffsets: output.pathOffsets,
         count: output.count,
         overflow: output.overflow,
-        totalCount: output.totalCount,
+        requiredCount: output.requiredCount,
         pathCountOutput: output.pathCount
       })
     );

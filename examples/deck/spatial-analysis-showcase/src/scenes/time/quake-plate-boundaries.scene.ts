@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {ground} from '../../cartography/grounds';
 import {defineScene, type LegendSpec} from '../scene';
 import type {QuakePlateBoundariesOptions} from './quake-plate-boundaries.compute';
 import {
@@ -20,17 +21,27 @@ const FAMILY_COLORS = [
 
 export default defineScene<QuakePlateBoundariesOptions>({
   id: 'quake-plate-boundaries',
-  title: 'How far from a plate boundary, how deep, how big?',
+  title: 'Earthquake depth by distance from plate boundaries',
   chapter: 'time',
   order: 6,
   summary:
-    'Compute the exact distance from every point of a region to the nearest plate boundary on the GPU, sample it at 77,000 earthquakes, and let three group tables answer three questions: how depth changes with distance (subduction slabs), where each depth class lives, and how many events there are per magnitude (the Gutenberg-Richter b-value).',
+    'A GPU distance field and grouped statistics combine PB2002 boundaries with 77,000 USGS events to map depth-distance profiles and magnitude frequency; model boundaries, planar windows and catalog completeness limit precision.',
   contributors: ['GPUDistanceField', 'GPUGroupStatistics'],
   datasets: [
     {id: 'poopdeck-earthquakes', role: 'USGS M4+ catalog, 2020 to 2024'},
     {id: 'plate-boundaries', role: 'PB2002 boundary steps (seeds)'}
   ],
   initialView: QUAKE_REGIONS.japan.view,
+  basemap: ground('night'),
+  furniture: {
+    title: {
+      title: 'Earthquake depth and boundary distance',
+      subtitle: 'USGS events sampled against PB2002 boundaries'
+    },
+    scaleBar: {units: 'metric'},
+    credit: 'US Geological Survey; PB2002 plate-boundary model',
+    caveat: 'Boundary positions, planar distance and catalog completeness limit precision.'
+  },
 
   options: [
     {
@@ -341,6 +352,9 @@ export default defineScene<QuakePlateBoundariesOptions>({
     {
       id: 'boundaries',
       title: 'Earthquakes follow plate boundaries',
+      headline: 'Earthquakes concentrate along mapped plate boundaries',
+      textAlternative:
+        'Magnitude-scaled, depth-colored earthquakes trace convergent, divergent and transform boundaries around Japan.',
       body: "Every disc is a magnitude 4.5+ earthquake of 2020 to 2024 from the USGS catalog; radius is **magnitude** and color is **depth class**. The lines are the 5,824 boundary steps of Peter Bird's PB2002 plate model, drawn in red where plates converge, blue where they separate and yellow where they slide past. Around Japan the events trace the Kuril, Japan, Izu-Bonin and Ryukyu trenches.\n\nThe question here is quantitative: *how far* from a boundary does an earthquake happen, and does that distance say anything about depth? Change **Region** below to look at another subduction margin; **Map shows** switches the raster under the events.",
       camera: {...QUAKE_REGIONS.japan.view, pitch: 0, bearing: 0, transitionMs: 1500},
       options: {
@@ -355,6 +369,9 @@ export default defineScene<QuakePlateBoundariesOptions>({
     {
       id: 'distance',
       title: 'Distance to the boundary, everywhere',
+      headline: 'Most events occur near a boundary',
+      textAlternative:
+        'A sequential raster brightens near mapped plate boundaries while earthquake symbols show sampled event locations.',
       body: '`GPUDistanceField` computes, for each of 1,048,576 cells, the exact distance to the nearest boundary seed and which seed it is. Seeds are points sampled along the boundary steps every 0.8 cells. The map is bright on the boundary and darkens away from it; the exact algorithm is the separable Felzenszwalb-Huttenlocher transform.\n\nA kernel then reads the grid at each event, so every earthquake has a distance. **Measure distance to** picks which boundaries count (try *Subduction zones only*), **Distance cap** limits how far the field reaches, and **Distance algorithm** swaps to the jump-flood preview. The readout is the share of events within 100 km of a boundary.',
       camera: {...QUAKE_REGIONS.japan.view, transitionMs: 1000},
       options: {mapShows: 'distance', mapOpacity: 0.55},
@@ -364,6 +381,9 @@ export default defineScene<QuakePlateBoundariesOptions>({
     {
       id: 'slab',
       title: 'Depth grows with distance: the slab',
+      headline: 'Andean earthquake depth increases inland',
+      textAlternative:
+        'Andean earthquakes deepen with distance from the trench, with lines connecting deep events to nearest subduction boundaries.',
       body: 'At a subduction zone the oceanic plate dips beneath the other, so earthquakes along the sinking slab get deeper the farther they are from the trench. Peru and Chile is the clearest case: the Nazca plate descends beneath South America at about 7 cm per year, and the catalog has events down to 600 km, far inland. The chart shows median depth (and the band between the two percentiles) in each distance bin, computed by `GPUGroupStatistics`.\n\nTurn on **Link deep events to their boundary** to draw a line from each deep event to the cell of its nearest trench seed, and slide **Link events deeper than** to see how far they reach. The apparent dip is the slope of median depth against distance: it mixes segments with a steep slab and the flat-slab segments of Peru and central Chile, so treat it as a rough number.',
       camera: {...QUAKE_REGIONS.andes.view, transitionMs: 2000},
       options: {
@@ -381,6 +401,9 @@ export default defineScene<QuakePlateBoundariesOptions>({
     {
       id: 'classes',
       title: 'Where each depth class lives',
+      headline: 'Deep classes occur farther from trenches',
+      textAlternative:
+        'Depth-class event colors around Japan accompany distributions showing intermediate and deep events farther from trenches.',
       body: 'The second group table counts events by depth class and distance bin; the chart shows, for each class, the share of its events in each bin. **Shallow** events (above 70 km) pile up at the boundary: they include the megathrust itself and the crust either side. **Intermediate** (70 to 300 km) and **deep** (below 300 km) events sit where the slab is, tens to hundreds of kilometers away; in Japan the deep ones lie under the Sea of Japan and the Izu-Bonin arc, hundreds of kilometers from the trench.\n\nMove **Shallow / intermediate limit** and **Intermediate / deep limit** to redefine the classes: the keys are recomputed on the GPU. **Minimum magnitude** below thins the small events, and the medians per class are in the readout.',
       camera: {...QUAKE_REGIONS.japan.view, transitionMs: 1800},
       options: {
@@ -396,6 +419,9 @@ export default defineScene<QuakePlateBoundariesOptions>({
     {
       id: 'gutenberg',
       title: 'Small quakes outnumber big ones: b-value',
+      headline: 'Magnitude counts decline approximately exponentially',
+      textAlternative:
+        'Japan’s earthquake map accompanies a cumulative magnitude-frequency chart and fitted Gutenberg-Richter line above completeness magnitude.',
       body: 'Across the world, each step up in magnitude has about ten times fewer events: **log10 N = a - b M** with **b** close to 1 (Gutenberg and Richter, 1944). The third group table counts events per 0.1 magnitude bin; the chart is the cumulative count on a log axis, and the dashed line is the Aki maximum-likelihood fit above the completeness magnitude **Mc**. Below Mc the catalog misses events and the curve bends away from the line.\n\nThe catalog peaks at M4.4 to 4.5, so it is complete above about **Mc** M4.5. Around Japan the fit gives b of about 1.3, a little above the textbook 1, and the estimate slides toward 1 as you raise **Mc** (it is near 1.0 to 1.2 above M5.2): the M4.5 to 5 range is probably still a little incomplete, so judge by the standard error and the bend. Compare **Magnitude table uses** near and far from boundaries: differences within the error shown are noise.',
       camera: {...QUAKE_REGIONS.japan.view, transitionMs: 1000},
       options: {
@@ -411,6 +437,9 @@ export default defineScene<QuakePlateBoundariesOptions>({
     {
       id: 'limits',
       title: 'What the distance does not tell you',
+      headline: 'Unsigned nearest-boundary distance can misassign events',
+      textAlternative:
+        'The Sunda allocation raster partitions locations by nearest boundary family, including abrupt changes unrelated to tectonic side.',
       body: 'The distance is **unsigned** and to the *nearest* boundary: an event behind an arc may be measured to a transform fault on the wrong side, and the allocation map shows where the nearest family changes. PB2002 is a model whose boundary positions are good to tens of kilometers at best, so distances under that are in the noise; the grid is 3 to 4 km per cell; intraplate earthquakes are far from every boundary by construction.\n\nThe frame is planar, so distances are exact on the center latitude and drift by up to about 12% toward the top and bottom of a window, and the windows avoid the antimeridian. Depths of 10 km are often a network default. Try **Distance algorithm** (jump flooding) against the exact one on the slab chart, or **Deviation kind**, which only changes the spread readout.',
       camera: {...QUAKE_REGIONS.sunda.view, transitionMs: 1800},
       options: {

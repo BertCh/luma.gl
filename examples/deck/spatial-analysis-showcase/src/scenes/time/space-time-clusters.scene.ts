@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {ground} from '../../cartography/grounds';
 import {defineScene} from '../scene';
 import type {SpaceTimeClustersOptions} from './space-time-clusters.compute';
 
@@ -17,11 +18,11 @@ const CLUSTER_COLORS = [
 
 export default defineScene<SpaceTimeClustersOptions>({
   id: 'space-time-clusters',
-  title: 'Do sightings follow each other, and where is the burst?',
+  title: 'Chicago event pair excess and scan clusters',
   chapter: 'time',
   order: 2,
   summary:
-    'Two questions about events in space and time. Knox and Mantel tests ask whether fungi, insect or bird sightings near each other in space are also near in time (a fruiting flush, or observers returning to the same patch); a Kulldorff scan statistic finds the tracts and fortnights with more observations than expected, with Monte Carlo p-values.',
+    'Knox, Mantel and Kulldorff scan tests use Chicago nature and complaint records to map close-pair excess and tract-fortnight clusters; volunteer effort, thinning and multiple candidate windows limit interpretation.',
   contributors: ['GPUKnoxTest', 'GPUMantelTest', 'GPUSpatialScanStatistic'],
   datasets: [
     {id: 'chicago-nature', role: 'nature observations'},
@@ -29,6 +30,16 @@ export default defineScene<SpaceTimeClustersOptions>({
     {id: 'chicago-tracts', role: 'scan zones and residents'}
   ],
   initialView: {longitude: -87.68, latitude: 41.835, zoom: 9.9},
+  basemap: ground('night'),
+  furniture: {
+    title: {
+      title: 'Chicago space-time clusters',
+      subtitle: 'Pair tests and tract-fortnight scan statistics'
+    },
+    scaleBar: {units: 'metric'},
+    credit: 'iNaturalist contributors; City of Chicago; US Census Bureau',
+    caveat: 'Observation effort and candidate-window selection affect significance.'
+  },
 
   options: [
     {
@@ -274,7 +285,7 @@ export default defineScene<SpaceTimeClustersOptions>({
           {
             kind: 'ramp',
             title: 'Event date',
-            ramp: 'viridis',
+            ramp: 'lajolla',
             extent: [0, 365],
             labels: ['1 Jan', '31 Dec'],
             unit: 'day of 2023'
@@ -324,7 +335,7 @@ export default defineScene<SpaceTimeClustersOptions>({
                 kind: 'ramp',
                 id: 'rate',
                 title: 'Observations per 1,000 residents in 2023',
-                ramp: 'viridis',
+                ramp: 'ylorrd',
                 extent: 'gpu',
                 sqrtScale: true,
                 unit: 'per 1,000',
@@ -377,15 +388,21 @@ scanParameters.write(getGPUSpatialScanParameterValues({
   story: [
     {
       id: 'question',
-      title: 'Do fungi sightings follow each other?',
-      body: 'When a mushroom flush starts, observers return to the same logs and trails for a few weeks. **`GPUKnoxTest`** tests that on the 3,762 fungi observations made in Chicago in 2023: it counts pairs of sightings within 150 m of each other (**Spatial threshold**) that were also made within 14 days (**Time threshold**), then shuffles the dates over the same places to see how many such pairs chance alone produces.\n\nOrange links are those pairs; dots are colored by date (purple January, yellow December). The readouts show the observed count, the expected count and a pseudo p-value.',
+      title: 'Test short-range space-time association',
+      headline: 'Fungi pairs exceed space-time independence',
+      textAlternative:
+        'Orange links connect Chicago fungi observations within 150 meters and 14 days, over points colored by date.',
+      body: '**`GPUKnoxTest`** evaluates short-range space-time association in 3,762 Chicago fungi observations from 2023. It counts pairs within 150 m (**Spatial threshold**) and 14 days (**Time threshold**), then permutes dates over the observed locations to estimate the count under space-time independence. This conditional null preserves the sampled locations and their observer-access pattern.\n\nOrange links are qualifying pairs; points encode observation date from January to December. The readouts report the observed count, permutation expectation and pseudo p-value.',
       controls: ['source', 'spatialRadius', 'timeThreshold'],
       readouts: ['knoxObserved', 'knoxExpected', 'knoxP']
     },
     {
       id: 'knox',
       title: 'Reading the Knox test',
-      body: 'Knox counts `X` = pairs close in space **and** time. If dates were unrelated to places, `E[X] = S * T / (n (n - 1) / 2)` where `S` is the number of spatial pairs and `T` the number of time-close pairs. For fungi at 150 m and 14 days the observed count is about 16,100 against about 7,400 expected, a ratio near 2.2, and no permutation reaches it, so the pseudo p-value is the minimum possible, `1 / (permutations + 1)`, which **Permutations (Knox, Mantel)** sets. **Show pairs close in space only** also draws the pairs that are near in space but not in time.\n\nThe sparkline in the **Knox null distribution** readout is the histogram of the permuted counts; "observed beats 100%" means the data lie beyond the whole null. The classic Poisson p-value agrees. The excess has two ingredients you cannot separate here: fungi really do fruit in place and season, and the same few observers keep visiting the same patches.',
+      headline: 'Observed close pairs exceed every permutation',
+      textAlternative:
+        'Temporal-close and spatial-only fungi links are mapped while the permutation readout places observed pair counts beyond the null.',
+      body: 'Knox counts `X` = pairs close in space **and** time. Under space-time independence, `E[X] = S * T / (n (n - 1) / 2)` where `S` is the number of spatial pairs and `T` the number of time-close pairs. For fungi at 150 m and 14 days the observed count is about 16,100 against about 7,400 expected, a ratio near 2.2. No permutation reaches the observed count, so the pseudo p-value is the minimum possible, `1 / (permutations + 1)`, set by **Permutations (Knox, Mantel)**. **Show pairs close in space only** also draws pairs that are near in space but not in time.\n\nThe **Knox null distribution** readout charts the permuted counts. The result combines biological seasonality with repeated observer sampling; this design cannot estimate their separate contributions.',
       options: {showSpatialOnly: true},
       highlight: {readout: 'knoxP'},
       controls: ['showSpatialOnly', 'permutations'],
@@ -394,7 +411,10 @@ scanParameters.write(getGPUSpatialScanParameterValues({
     {
       id: 'thresholds',
       title: 'The answer depends on the thresholds',
-      body: 'Move **Spatial threshold** and **Time threshold**. The spatial radius only re-lists the pairs, and the time threshold needs no new pairs at all, so neither rebuilds the graph. Tighten the window to 150 m and 7 days and the ratio rises to about 3.2; widen it and it dilutes toward 1 (about 1.2 at 600 m and 60 days). Tight thresholds probe the flush itself, wide ones average in the whole season.\n\n**`GPUMantelTest`** avoids thresholds on time: it correlates the distance between two sightings with the gap between their dates over the same pairs. A positive r means near pairs are nearer in time. Its p-value comes from the same kind of permutations. Press **New random seed** to see how stable the p-values are.',
+      headline: 'Tighter thresholds increase measured pair excess',
+      textAlternative:
+        'Fungi pair links contract to smaller space-time thresholds while Knox and Mantel statistics update.',
+      body: 'Move **Spatial threshold** and **Time threshold**. The spatial radius re-lists candidate pairs, while the time threshold filters the existing pair list, so neither option recompiles the graph. At 150 m and 7 days the ratio is about 3.2; at 600 m and 60 days it approaches 1.2. The statistic therefore describes a selected support rather than a scale-invariant process.\n\n**`GPUMantelTest`** avoids a binary time threshold: it correlates spatial distance with temporal separation over the same pairs. A positive coefficient means spatially closer pairs tend to have smaller time gaps. Its p-value uses the same permutation design. Press **New random seed** to inspect Monte Carlo stability.',
       options: {spatialRadius: 150, timeThreshold: 7},
       highlight: {readout: 'mantelR'},
       controls: ['spatialRadius', 'timeThreshold', 'reseed'],
@@ -403,6 +423,9 @@ scanParameters.write(getGPUSpatialScanParameterValues({
     {
       id: 'scan',
       title: 'Where and when? The scan statistic',
+      headline: 'Scan statistics localize tract-fortnight excess',
+      textAlternative:
+        'Colored Chicago tracts form ranked space-time scan clusters with readouts for dates, observed cases and expected cases.',
       body: 'Knox says "yes, there is interaction"; it does not say where. **`GPUSpatialScanStatistic`** slides cylinders over the 791 census tracts and 26 fortnights: each window is a tract, its nearest neighbors (a circle) and a run of consecutive fortnights. For each it computes a Poisson log-likelihood ratio comparing observed sightings with the number expected from the **baseline**; the largest ratio is the most likely cluster.\n\nThe tract counts come from `GPUTemporalReduction` (observations per tract and fortnight, on the GPU). Colored tracts form clusters whose p-value is at or below the **Significance level** (**Scan map shows** switches the view); the readouts give each cluster\'s tracts, radius, dates and observed versus expected counts.',
       options: {analysis: 'scan'},
       camera: {zoom: 10.1, transitionMs: 1200},
@@ -412,6 +435,9 @@ scanParameters.write(getGPUSpatialScanParameterValues({
     {
       id: 'baseline',
       title: 'The baseline decides what "unusual" means',
+      headline: 'Population baselines shift detected clusters',
+      textAlternative:
+        'Significant tract clusters move toward high observation rates relative to residents under the population baseline.',
       body: 'The default **independence** baseline gives each tract its own yearly total and each fortnight its citywide share, so a cluster is a burst in a place and time that exceeds both. Set **Expected cases (baseline)** to *Residents x city-wide timing* and clusters can shift toward tracts where sightings are high relative to residents, which favors parks and preserves with few residents; set it to *Uniform* and clusters simply follow where the observations are.\n\nShrink **Largest window (share of baseline)** or **Largest window (tracts)** for tighter clusters, and change **Longest cluster duration** from 6 fortnights to 1 to find single-fortnight bursts. The scan re-runs a moment after you stop dragging; the p-values are limited by the number of **Monte Carlo replicates**.',
       options: {analysis: 'scan', baseline: 'population', maximumWindowZones: 12},
       controls: [
@@ -426,6 +452,9 @@ scanParameters.write(getGPUSpatialScanParameterValues({
     {
       id: 'other-events',
       title: 'Try other groups, and know the limits',
+      headline: 'Event sources produce different clustering estimates',
+      textAlternative:
+        'Insect observations produce a distinct network of close pairs and different Knox statistics under the same thresholds.',
       body: 'Switch **Events** to *Insects*, *Birds* or *311 rodent complaints*. Insects swarm in July and birds pass through in May, so each shows its own season in the pairs and in the scan. Birds and plants pile up so densely at a few sites that the pair list may overflow; lower **Spatial threshold** if the readout says so. Rodent complaints differ again: a complaint pair close in space and time may be the same neighborhood reporting the same alley.\n\nCaveats: the sightings are volunteer records, so a cluster can be a bioblitz or a popular trail as much as a biological flush (the City Nature Challenge weekend, 28 April to 1 May 2023, is a built-in time cluster); Knox and Mantel use at most 24,000 events (a regular thinning that keeps the null valid); the scan finds the *most likely* clusters, and secondary ones are tested against the same maxima as in SaTScan; the 365th day is dropped from the fortnight buckets.',
       options: {analysis: 'pairs', source: 'insects', spatialRadius: 100, timeThreshold: 7},
       controls: ['source', 'spatialRadius', 'timeThreshold'],

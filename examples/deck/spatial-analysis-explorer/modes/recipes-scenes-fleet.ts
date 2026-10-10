@@ -149,14 +149,16 @@ export function createFleetDwellScene(variant: 'stops' | 'zone-events'): RecipeS
           ).view,
           candidateCapacity: FLEET_STOP_CAPACITY * 4
         },
-        stops: {
-          count: stopTotal.view,
-          overflow: stopOverflow.view,
-          centroids: stopCentroids.view,
-          durations: stopDurations.view
-        },
-        joinOverflow: joinOverflow.view,
-        table
+        outputs: {
+          stops: {
+            count: stopTotal.view,
+            overflow: stopOverflow.view,
+            centroids: stopCentroids.view,
+            durations: stopDurations.view
+          },
+          joinOverflow: joinOverflow.view,
+          table
+        }
       });
       contributorCount = recipe.contributors.length;
     } else {
@@ -177,14 +179,16 @@ export function createFleetDwellScene(variant: 'stops' | 'zone-events'): RecipeS
         zoneCount,
         candidateCapacity: FLEET_CANDIDATE_CAPACITY,
         maxEventsPerTrack: 64,
-        events: {output: {count: eventCount.view, overflow: eventOverflow.view}},
-        diagnostics: {
-          candidateCount: candidateCount.view,
-          candidateOverflow: candidateOverflow.view,
-          trackOverflow: trackOverflow.view,
-          eventOverflow: eventCapacityOverflow.view
-        },
-        table
+        outputs: {
+          events: {output: {count: eventCount.view, overflow: eventOverflow.view}},
+          diagnostics: {
+            candidateCount: candidateCount.view,
+            candidateOverflow: candidateOverflow.view,
+            trackOverflow: trackOverflow.view,
+            eventOverflow: eventCapacityOverflow.view
+          },
+          table
+        }
       });
       contributorCount = recipe.contributors.length;
     }

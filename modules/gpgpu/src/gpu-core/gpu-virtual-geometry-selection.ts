@@ -70,8 +70,8 @@ export type GPUVirtualGeometrySelectionProps = {
   /** Borrowed retained count; may target an indirect instance-count word. */
   count: GraphDataView<'uint32'>;
   /** Optional full selected count before output-capacity clamping. */
-  totalCount?: GraphDataView<'uint32'>;
-  /** One when `totalCount` exceeds `output.length`, otherwise zero. */
+  requiredCount?: GraphDataView<'uint32'>;
+  /** One when `requiredCount` exceeds `output.length`, otherwise zero. */
   overflow: GraphDataView<'uint32'>;
 };
 
@@ -126,7 +126,7 @@ export function makeGPUVirtualGeometrySelectionPlan(
  * compaction of cluster IDs, so multiple roots and convergent child activation cannot duplicate a
  * node. A coarse shared parent suppresses its shared children, preserving frontier exclusivity.
  * The final pass copies only retained IDs and resets the
- * borrowed count, optional `totalCount`, and `overflow` rows on every graph encoding.
+ * borrowed count, optional `requiredCount`, and `overflow` rows on every graph encoding.
  */
 export class GPUVirtualGeometrySelection {
   readonly id: string;
@@ -134,7 +134,7 @@ export class GPUVirtualGeometrySelection {
   readonly view: GPUVirtualGeometryView;
   readonly output: GraphDataView<'uint32'>;
   readonly count: GraphDataView<'uint32'>;
-  readonly totalCount?: GraphDataView<'uint32'>;
+  readonly requiredCount?: GraphDataView<'uint32'>;
   readonly overflow: GraphDataView<'uint32'>;
   readonly plan: Readonly<GPUVirtualGeometrySelectionPlan>;
   private readonly ownedBuffers: Buffer[] = [];
@@ -147,7 +147,7 @@ export class GPUVirtualGeometrySelection {
     this.view = props.view;
     this.output = props.output;
     this.count = props.count;
-    this.totalCount = props.totalCount;
+    this.requiredCount = props.requiredCount;
     this.overflow = props.overflow;
     this.plan = makeGPUVirtualGeometrySelectionPlan(
       this.hierarchy.levelOffsets,
@@ -194,19 +194,20 @@ export class GPUVirtualGeometrySelection {
     validatePackedUint32View(this.output, `${this.id} output`);
     validatePackedUint32View(this.count, `${this.id} count`);
     validatePackedUint32View(this.overflow, `${this.id} overflow`);
-    if (this.totalCount) validatePackedUint32View(this.totalCount, `${this.id} totalCount`);
+    if (this.requiredCount)
+      validatePackedUint32View(this.requiredCount, `${this.id} requiredCount`);
     if (
       this.count.length < 1 ||
       this.overflow.length < 1 ||
-      (this.totalCount && this.totalCount.length < 1)
+      (this.requiredCount && this.requiredCount.length < 1)
     ) {
-      throw new Error(`${this.id} count, totalCount, and overflow must contain one uint32 row`);
+      throw new Error(`${this.id} count, requiredCount, and overflow must contain one uint32 row`);
     }
     const outputs = [
       this.output,
       this.count,
       this.overflow,
-      ...(this.totalCount ? [this.totalCount] : [])
+      ...(this.requiredCount ? [this.requiredCount] : [])
     ];
     for (let firstIndex = 0; firstIndex < outputs.length; firstIndex++) {
       for (let secondIndex = firstIndex + 1; secondIndex < outputs.length; secondIndex++) {
@@ -241,7 +242,7 @@ export class GPUVirtualGeometrySelection {
       this.output,
       this.count,
       this.overflow,
-      ...(this.totalCount ? [this.totalCount] : [])
+      ...(this.requiredCount ? [this.requiredCount] : [])
     ];
     if (views.some(view => view.buffer.graph !== graph)) {
       throw new Error(`${this.id} views must belong to the target graph`);
@@ -559,10 +560,10 @@ function addFinalizePass<Parameters>(
   selectedTotalCount: GraphDataView<'uint32'>
 ): readonly GPUCommandNode<Parameters>[] {
   const nodes: GPUCommandNode<Parameters>[] = [];
-  const totalCountBinding = selection.totalCount
+  const totalCountBinding = selection.requiredCount
     ? '@group(0) @binding(5) var<storage, read_write> publishedTotalCount: array<u32>;'
     : '';
-  const totalCountWrite = selection.totalCount
+  const totalCountWrite = selection.requiredCount
     ? 'publishedTotalCount[PUBLISHED_TOTAL_OFFSET] = totalCountValue;'
     : '';
   const source = /* wgsl */ `
@@ -573,8 +574,8 @@ const OUTPUT_OFFSET: u32 = ${getViewElementOffset(selection.output)}u;
 const COUNT_OFFSET: u32 = ${getViewElementOffset(selection.count)}u;
 const OVERFLOW_OFFSET: u32 = ${getViewElementOffset(selection.overflow)}u;
 ${
-  selection.totalCount
-    ? `const PUBLISHED_TOTAL_OFFSET: u32 = ${getViewElementOffset(selection.totalCount)}u;`
+  selection.requiredCount
+    ? `const PUBLISHED_TOTAL_OFFSET: u32 = ${getViewElementOffset(selection.requiredCount)}u;`
     : ''
 }
 @group(0) @binding(0) var<storage, read> sourceIds: array<u32>;
@@ -609,8 +610,8 @@ ${totalCountBinding}
         {buffer: selection.output, usage: 'storage-write'},
         {buffer: selection.count, usage: 'storage-write'},
         {buffer: selection.overflow, usage: 'storage-write'},
-        ...(selection.totalCount
-          ? ([{buffer: selection.totalCount, usage: 'storage-write'}] as GraphBufferUse[])
+        ...(selection.requiredCount
+          ? ([{buffer: selection.requiredCount, usage: 'storage-write'}] as GraphBufferUse[])
           : [])
       ],
       bindings: {
@@ -619,7 +620,7 @@ ${totalCountBinding}
         outputIds: selection.output,
         outputCount: selection.count,
         outputOverflow: selection.overflow,
-        ...(selection.totalCount ? {publishedTotalCount: selection.totalCount} : {})
+        ...(selection.requiredCount ? {publishedTotalCount: selection.requiredCount} : {})
       },
       dispatchCount: Math.ceil(
         Math.max(selection.output.length, 1) / VIRTUAL_GEOMETRY_WORKGROUP_SIZE

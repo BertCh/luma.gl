@@ -17,6 +17,7 @@ import {
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph
 } from '../../utils/gpu-contributor-utils';
+import {validateGPUSpatialContext, type GPUSpatialContext} from '../contracts/index';
 import {getSortKeyBits} from '../../utils/sorted-segment-sums';
 import {createSortedSegmentOffsetsNode} from '../../utils/sorted-segment-offsets';
 import {GPU_GEODESIC_MEAN_EARTH_RADIUS} from './geodesic-wgsl';
@@ -80,6 +81,8 @@ export type GPUGeometryMeasuresGroupOutput = Omit<GPUGeometryMeasuresOutput, 'ex
 export type GPUGeometryMeasuresProps = {
   /** Prefix for generated node and transient IDs. Defaults to `'geometry-measures'`. */
   id?: string;
+  /** Coordinate, metric and output-unit contract of the geometry. */
+  spatialContext: GPUSpatialContext;
   /**
    * Packed vertex positions: planar coordinates, or longitude/latitude degrees for `'spherical'`
    * `'wgs84'` and `'geodesic'`.
@@ -113,12 +116,8 @@ export type GPUGeometryMeasuresProps = {
    * and GeographicLib. Edges of 20 km or more are sampled along the geodesic (see
    * {@link GPUGeometryMeasures}); centroids still use straight edges of the equal-area projection.
    */
-  coordinateSystem?: GPUGeometryCoordinateSystem;
-  /**
-   * Sphere radius of `'spherical'`. Defaults to {@link GPU_GEODESIC_MEAN_EARTH_RADIUS}; pass
-   * `GPU_GEODESIC_WGS84_SEMI_MAJOR_AXIS` for turf `area` parity.
-   */
-  radius?: number;
+  /** Ellipsoidal polygon-edge interpretation. Defaults to geodesic edges. */
+  ellipsoidalEdgeModel?: 'coordinate-linear' | 'geodesic';
   /**
    * How rings of one polygon feature combine. `'winding'` (default) sums signed ring areas, so
    * holes subtract when they wind opposite to the exterior (GeoJSON RFC 7946). `'first-ring-exterior'`
@@ -193,6 +192,8 @@ export class GPUGeometryMeasures implements GPUCommandNodeProducer {
   readonly id: string;
   /** Validated properties. */
   readonly props: GPUGeometryMeasuresProps;
+  /** Canonical coordinate and metric contract. */
+  readonly spatialContext: GPUSpatialContext;
   /** Number of features. */
   readonly featureCount: number;
   /** Resolved coordinate system. */
@@ -207,9 +208,19 @@ export class GPUGeometryMeasures implements GPUCommandNodeProducer {
   constructor(props: GPUGeometryMeasuresProps) {
     this.id = props.id ?? 'geometry-measures';
     this.props = props;
-    this.coordinateSystem = props.coordinateSystem ?? 'planar';
+    this.spatialContext = props.spatialContext;
+    validateGPUSpatialContext(this.id, this.spatialContext);
+    this.coordinateSystem = resolveGeometryMeasureCoordinateSystem(
+      this.id,
+      this.spatialContext,
+      props.ellipsoidalEdgeModel
+    );
     this.holeRule = props.holeRule ?? 'winding';
-    this.radius = props.radius ?? GPU_GEODESIC_MEAN_EARTH_RADIUS;
+    this.radius =
+      this.spatialContext.sphereRadius ??
+      (this.spatialContext.units === 'kilometers'
+        ? GPU_GEODESIC_MEAN_EARTH_RADIUS / 1000
+        : GPU_GEODESIC_MEAN_EARTH_RADIUS);
     this.cooperativeRingRows = props.cooperativeRingRows ?? COOPERATIVE_RING_ROWS;
     const {id} = this;
     const output = props.output ?? {};
@@ -227,11 +238,6 @@ export class GPUGeometryMeasures implements GPUCommandNodeProducer {
     }
     if (!['lines', 'polygons', 'points'].includes(props.geometryType)) {
       throw new Error(`${id} geometryType must be 'lines', 'polygons' or 'points'`);
-    }
-    if (!['planar', 'spherical', 'wgs84', 'geodesic'].includes(this.coordinateSystem)) {
-      throw new Error(
-        `${id} coordinateSystem must be 'planar', 'spherical', 'wgs84' or 'geodesic'`
-      );
     }
     if (this.holeRule !== 'winding' && this.holeRule !== 'first-ring-exterior') {
       throw new Error(`${id} holeRule must be 'winding' or 'first-ring-exterior'`);
@@ -440,6 +446,41 @@ export class GPUGeometryMeasures implements GPUCommandNodeProducer {
       })
     ];
   }
+}
+
+function resolveGeometryMeasureCoordinateSystem(
+  id: string,
+  spatialContext: GPUSpatialContext,
+  ellipsoidalEdgeModel: 'coordinate-linear' | 'geodesic' | undefined
+): GPUGeometryCoordinateSystem {
+  if (
+    spatialContext.coordinateSpace === 'planar' &&
+    (spatialContext.metric === 'native' || spatialContext.metric === 'none')
+  ) {
+    if (ellipsoidalEdgeModel) {
+      throw new Error(`${id} ellipsoidalEdgeModel requires an ellipsoidal spatial context`);
+    }
+    return 'planar';
+  }
+  if (
+    spatialContext.coordinateSpace === 'longitude-latitude' &&
+    spatialContext.metric === 'great-circle'
+  ) {
+    if (ellipsoidalEdgeModel) {
+      throw new Error(`${id} ellipsoidalEdgeModel requires an ellipsoidal spatial context`);
+    }
+    return 'spherical';
+  }
+  if (
+    spatialContext.coordinateSpace === 'longitude-latitude' &&
+    spatialContext.metric === 'ellipsoidal'
+  ) {
+    if (spatialContext.units === 'kilometers') {
+      throw new Error(`${id} ellipsoidal geometry measures currently publish meters`);
+    }
+    return ellipsoidalEdgeModel === 'coordinate-linear' ? 'wgs84' : 'geodesic';
+  }
+  throw new Error(`${id} spatial context is not supported by geometry measures`);
 }
 
 function validateMeasureColumns(

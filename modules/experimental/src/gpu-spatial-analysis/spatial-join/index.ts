@@ -2,7 +2,10 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-export {GPU_SPATIAL_JOIN_NO_DISTANCE, GPU_SPATIAL_JOIN_NO_FEATURE} from './spatial-join-types';
+export {
+  GPU_SPATIAL_JOIN_NO_DISTANCE,
+  GPU_SPATIAL_JOIN_NO_FEATURE
+} from './spatial-join-types';
 export type {
   GPUNearestFeaturePoints,
   GPUNearestFeatureSegments,

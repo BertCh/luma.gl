@@ -389,6 +389,8 @@ export default defineScene<NodingAndCoverageOptions>({
       id: 'crossings',
       title: 'Where do streets cross the L?',
       headline: 'A crossing has several geometric kinds',
+      textAlternative:
+        'Red points mark proper geometric intersections between loaded Chicago street and L segments, with pair counts by intersection kind; fixed candidate capacity and uncertain classifications are reported, and crossings do not imply network connectivity.',
       body: `This card reports geometric intersections between the loaded street and rail linework. \`GPUSegmentIntersection\` emits candidate pairs within its fixed capacity and classifies the segment relationship; uncertainty and overflow remain visible outputs.
 
 Red marks are **proper crossings**: a street segment cuts an L segment without sharing a vertex. Each has a point and a kind; the readout counts the pairs. Set **Intersect** below to *Streets × streets (self)* to see where streets cross each other without a shared node.`,
@@ -402,6 +404,8 @@ Red marks are **proper crossings**: a street segment cuts an L segment without s
       id: 'network-node',
       title: 'Crossing does not guarantee connection',
       headline: 'Crossing does not guarantee connection',
+      textAlternative:
+        'Street self-intersections are classified as proper crossings or endpoint touches and summarized by kind; only endpoint matches are candidate source nodes, and missing structural-level attributes prevent bridge or tunnel interpretation.',
       body: `A geometric crossing is not yet a source-network node. Compare each reported crossing with source endpoints: an endpoint match is a candidate shared node; other crossings are simply crossings without a shared source node. The archive has no structural-level attributes, so this card makes no construction claim.
 
 Switch **Show** below between proper crossings and touches. The uncertainty and capacity readouts remain part of the interpretation.`,
@@ -415,6 +419,8 @@ Switch **Show** below between proper crossings and touches. The uncertainty and 
       id: 'noding',
       title: 'Turn routes into a network',
       headline: 'Split first, then merge chains',
+      textAlternative:
+        'Six Chicago L route lines are split into cyclically coloured pieces at crossings, touches and overlaps, then optionally merged or shown as a degree-coloured node-edge network; snap tolerance can merge nearby endpoints.',
       body: `A routing engine needs **edges between nodes**, not overlapping polylines. \`GPULineSplit\` cuts every route at each place it crosses, touches or shares a stretch with another; each piece is coloured. Six L lines share the Loop and trunk tracks, so shared sections split at both ends.
 
 Set **Show** to *Merged chains*: \`GPULineMerge\` joins pieces where exactly two ends meet. Then *Network*: \`GPUNetworkNoding\` numbers the end points into nodes (red is a dead end: a terminal) and builds an edge list and a routing-ready adjacency. Raise **Snap tolerance** below to merge end points that nearly coincide.`,
@@ -428,6 +434,8 @@ Set **Show** to *Merged chains*: \`GPULineMerge\` joins pieces where exactly two
       id: 'capacity',
       title: 'The messy case: every CTA route downtown',
       headline: 'A fixed list can overflow',
+      textAlternative:
+        'Downtown CTA rail and bus routes are rendered as a node-edge network coloured by node degree, with piece and edge totals reported; intersections beyond the selected fixed capacity produce a flagged partial prefix.',
       body: `Now the bus routes too: every CTA route inside a 7 km window of the Loop, hundreds of polylines that overlap along the same streets. Splitting finds each overlap's two ends. Look at the readouts: how many pieces, how many nodes, and what the degrees say about the downtown grid.
 
 Set **Lines to node** to *All CTA routes downtown* (already on). **Intersection capacity** is the size of the internal pair list. With 1,024 it overflows: the output is a prefix and the overflow flag is raised, never a silent loss. Pick 65,536 or more in **Intersection capacity** and the network is complete.`,
@@ -440,7 +448,9 @@ Set **Lines to node** to *All CTA routes downtown* (already on). **Intersection 
     {
       id: 'dissolve',
       title: 'Dissolve counties into states',
-      headline: 'Opposing shared edges cancel',
+      headline: 'Opposing shared edges are removed',
+      textAlternative:
+        'The boundaries of 3,109 counties are grouped by state and assembled into filled state rings, with shared opposing edges removed and holes identified; unmatched or open boundary chains are counted and not written as rings.',
       body: `Dissolving is the overlay step behind every "county to state" map. \`GPUSegmentRingAssembly\` takes **directed boundary segments** and chains them into closed rings with holes. Here the input is every edge of 3,109 counties, labelled with the state; **Cancel opposing segments** removes the edges two counties share, leaving only each state's outer boundary.
 
 Change **Dissolve counties by** below to the USDA rural-urban continuum code: the regions are now metro and rural belts, not states, and the ring and hole counts change. The readouts count rings, holes, cancelled segments and segments on no ring.`,
@@ -453,7 +463,9 @@ Change **Dissolve counties by** below to the USDA rural-urban continuum code: th
     {
       id: 'coverage',
       title: 'Simplify without opening gaps',
-      headline: 'A shared border is one fact',
+      headline: 'Shared-border simplification preserves coincident vertices',
+      textAlternative:
+        'Blue county outlines simplify each shared arc once while red outlines simplify rings independently, with kept-vertex shares and repaired crossings reported; the selected distance tolerance does not preserve polygon area.',
       body: `Simplifying every county on its own is the classic trap: two neighbours decide differently about their shared boundary and a **gap or overlap** opens. \`GPUCoverageSimplification\` simplifies every shared arc once, so neighbours keep identical vertices. Blue is the coverage result; red is each ring simplified independently with \`GPULineSimplification\`.
 
 Use **Outlines** to show one result at a time, and zoom into a state border and raise **Tolerance** below: the blue line is single, the red one splits into two lines that disagree. **Topology repair rounds** (below) also find crossings and restore vertices (see the readout). Compare the kept percentage of the two.`,
@@ -467,6 +479,8 @@ Use **Outlines** to show one result at a time, and zoom into a state border and 
       id: 'limits',
       title: 'Limits and things to try',
       headline: 'Topology depends on tolerance and capacity',
+      textAlternative:
+        'County coverage outlines compare shared-edge and independent simplification with topology repair disabled, exposing remaining crossings; fixed capacities can truncate results, endpoint snapping omits near-line connections, and simplification uses distance rather than area.',
       body: `**Limits.** Capacities are fixed at compile time: a too-small intersection or ring capacity truncates and sets a flag. Noding snaps end points only: a line that stops near the middle of another is not connected, and a bridge cannot be excluded. Ring assembly leaves open chains unwritten. Coverage simplification uses a distance, not an area, criterion, and a huge arc is processed serially.
 
 **Try it.** Set **Topology repair rounds** to 0 and watch the crossings reported. Then switch **Tool** to *Dissolve counties (ring assembly)* and turn **Cancel opposing segments** off, or make **Vertex matching distance** 0.005° (about 500 m) and see rings merge. Under *Crossings*, set **Intersect** to *Streets × streets (self)* and **Show** to *Overlaps* to find duplicated street geometry.`,
@@ -570,7 +584,7 @@ Use **Outlines** to show one result at a time, and zoom into a state border and 
 graph.add(new GPUSegmentIntersection({
   left: {kind: 'lines', positions: streets, lineOffsets: streetOffsets},${state.crossMode === 'streets-rail' ? "\n  right: {kind: 'lines', positions: rail, lineOffsets: railOffsets}," : `\n  sameFeatureOnly: ${state.sameFeatureOnly},`}
   spatialSort: ${state.crossSpatialSort},
-  pairs: {leftIds, rightIds, count, overflow, totalCount},
+  pairs: {leftIds, rightIds, count, overflow, requiredCount},
   kinds, points, uncertainCount          // 1 proper, 2 touch, 3 collinear touch, 4 overlap
 }));`;
     }

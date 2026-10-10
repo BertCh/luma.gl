@@ -115,6 +115,10 @@ function createViewer(graph: GPUCommandGraph<void>): Viewer {
 
 /** Statistics per lead day over the selected drifters. */
 type LeadStatistics = {
+  /** Selected drifters with a real daily fix: the denominator for loss. */
+  observed: Float64Array;
+  /** Observed drifters whose virtual twin is still inside the model field. */
+  survivors: Float64Array;
   count: Float64Array;
   median: Float64Array;
   p10: Float64Array;
@@ -155,9 +159,6 @@ export async function createOceanDriftersVsModel(
   const slots = LEAD_SLOTS;
   const trackRows = count * slots;
   const segmentRows = count * LEAD_DAYS;
-  if (ctx.limits.maxStorageBuffersPerShaderStage < 13) {
-    throw new Error('This scene needs 13 storage buffers per shader stage; the GPU grants fewer');
-  }
   const resources = new SpatialAnalysisResources(device, 'drifters');
   const drawProps = {coordinateSystem: COORDINATE_SYSTEM.LNGLAT} as const;
 
@@ -307,10 +308,14 @@ export async function createOceanDriftersVsModel(
     const view = createViewer(graph);
     graph.add(
       new GPUGeodesicPairs({
+        spatialContext: {
+          coordinateSpace: 'longitude-latitude',
+          metric: model === 'wgs84' ? 'ellipsoidal' : model === 'rhumb' ? 'rhumb' : 'great-circle',
+          units: 'meters'
+        },
         id: `pairs-${model}`,
         origins: view('virtual-track', virtualTrackBuffer, 'float32x2', trackRows),
         targets: view('daily', dailyBuffer, 'float32x2', trackRows),
-        model,
         output: {distances: view('distances', distanceBuffer, 'float32', trackRows)}
       })
     );
@@ -329,7 +334,11 @@ export async function createOceanDriftersVsModel(
         pathOffsets: view('first-month-offsets', firstMonthOffsets, 'uint32'),
         columns: FIELD.width,
         rows: FIELD.height,
-        coordinateSystem: 'spherical',
+        spatialContext: {
+          coordinateSpace: 'longitude-latitude',
+          metric: 'great-circle',
+          units: 'meters'
+        },
         parameters,
         output: {
           lengths: view('real-lengths', realLengths, 'float32', FIELD_CELLS),
@@ -345,7 +354,11 @@ export async function createOceanDriftersVsModel(
         pathOffsets: view('model-offsets', modelOffsets, 'uint32', count + 1),
         columns: FIELD.width,
         rows: FIELD.height,
-        coordinateSystem: 'spherical',
+        spatialContext: {
+          coordinateSpace: 'longitude-latitude',
+          metric: 'great-circle',
+          units: 'meters'
+        },
         parameters,
         output: {
           lengths: view('model-lengths', modelLengths, 'float32', FIELD_CELLS),
@@ -406,6 +419,7 @@ export async function createOceanDriftersVsModel(
   const nowGraph = new GPUCommandGraph<void>(device, {id: 'drifters-now'});
   {
     const view = createViewer(nowGraph);
+    const lead = leadParameters.importToGraph(nowGraph);
     addKernelPass(nowGraph, {
       id: 'drifters-now',
       invocationCount: count,
@@ -443,7 +457,7 @@ fn isNonFinite(value: f32) -> bool { return (bitcast<u32>(value) & 0x7fffffffu) 
           type: 'f32',
           access: 'read'
         },
-        {name: 'lead', view: leadParameters.importToGraph(nowGraph), type: 'f32', access: 'read'},
+        {name: 'lead', view: lead, type: 'f32', access: 'read'},
         {
           name: 'virtualNow',
           view: view('virtual-now', virtualNow, 'float32x2', count),
@@ -467,6 +481,81 @@ fn isNonFinite(value: f32) -> bool { return (bitcast<u32>(value) & 0x7fffffffu) 
           view: view('pair-flag', pairFlag, 'float32', count),
           type: 'f32',
           access: 'read_write'
+        }
+      ],
+      body: /* wgsl */ `
+  let nan = getQuietNaN();
+  let leadDays = clamp(lead[leadOffset], 0.0, ${LEAD_DAYS}.0);
+  let day = min(u32(floor(leadDays)), ${LEAD_DAYS - 1}u);
+  let fraction = leadDays - f32(day);
+  let slotA = (index * ${slots}u + day) * 2u;
+  let slotB = slotA + 2u;
+  let virtualA = vec2<f32>(virtualTrack[virtualTrackOffset + slotA], virtualTrack[virtualTrackOffset + slotA + 1u]);
+  let virtualB = vec2<f32>(virtualTrack[virtualTrackOffset + slotB], virtualTrack[virtualTrackOffset + slotB + 1u]);
+  let realA = vec2<f32>(daily[dailyOffset + slotA], daily[dailyOffset + slotA + 1u]);
+  let realB = vec2<f32>(daily[dailyOffset + slotB], daily[dailyOffset + slotB + 1u]);
+  let enabled = mask[maskOffset + index] > 0.5;
+  let lastDay = select(day, day + 1u, fraction > 0.0);
+  let virtualOk = enabled && lastDay < alive[aliveOffset + index];
+  let realOk = enabled && !isNonFinite(realA.x) && !isNonFinite(realA.y) &&
+    (fraction == 0.0 || (!isNonFinite(realB.x) && !isNonFinite(realB.y)));
+  var virtualPosition = vec2<f32>(nan, nan);
+  var realPosition = vec2<f32>(nan, nan);
+  var separationValue = nan;
+  if (virtualOk) {
+    virtualPosition = mix(virtualA, virtualB, fraction);
+  }
+  if (realOk) {
+    // Do not blend across the antimeridian: take the nearer fix.
+    if (abs(realB.x - realA.x) > 180.0) {
+      realPosition = select(realA, realB, fraction >= 0.5);
+    } else {
+      realPosition = mix(realA, realB, fraction);
+    }
+  }
+  if (virtualOk && realOk) {
+    let distanceA = distances[distancesOffset + index * ${slots}u + day];
+    let distanceB = distances[distancesOffset + index * ${slots}u + min(day + 1u, ${LEAD_DAYS}u)];
+    separationValue = mix(distanceA, distanceB, fraction);
+  }
+  virtualNow[virtualNowOffset + 2u * index] = virtualPosition.x;
+  virtualNow[virtualNowOffset + 2u * index + 1u] = virtualPosition.y;
+  realNow[realNowOffset + 2u * index] = realPosition.x;
+  realNow[realNowOffset + 2u * index + 1u] = realPosition.y;
+  separation[separationOffset + index] = separationValue;
+  flag[flagOffset + index] = select(0.0, 1.0, virtualOk && realOk);`
+    });
+    // The WebGPU portability floor is ten storage buffers per stage. Build the link and head
+    // segments in a second pass from the positions above instead of binding thirteen at once.
+    addKernelPass(nowGraph, {
+      id: 'drifters-now-segments',
+      invocationCount: count,
+      declarations: /* wgsl */ `fn getQuietNaN() -> f32 { var bits = 0x7fc00000u; return bitcast<f32>(bits); }`,
+      bindings: [
+        {
+          name: 'virtualTrack',
+          view: view('virtual-track', virtualTrackBuffer, 'float32x2', trackRows),
+          type: 'f32',
+          access: 'read'
+        },
+        {
+          name: 'daily',
+          view: view('daily', dailyBuffer, 'float32x2', trackRows),
+          type: 'f32',
+          access: 'read'
+        },
+        {name: 'lead', view: lead, type: 'f32', access: 'read'},
+        {
+          name: 'virtualNow',
+          view: view('virtual-now', virtualNow, 'float32x2', count),
+          type: 'f32',
+          access: 'read'
+        },
+        {
+          name: 'realNow',
+          view: view('real-now', realNow, 'float32x2', count),
+          type: 'f32',
+          access: 'read'
         },
         {
           name: 'links',
@@ -489,62 +578,27 @@ fn isNonFinite(value: f32) -> bool { return (bitcast<u32>(value) & 0x7fffffffu) 
       ],
       body: /* wgsl */ `
   let nan = getQuietNaN();
-  let leadDays = clamp(lead[leadOffset], 0.0, ${LEAD_DAYS}.0);
-  let day = min(u32(floor(leadDays)), ${LEAD_DAYS - 1}u);
-  let fraction = leadDays - f32(day);
-  let slotA = (index * ${slots}u + day) * 2u;
-  let slotB = slotA + 2u;
-  let virtualA = vec2<f32>(virtualTrack[virtualTrackOffset + slotA], virtualTrack[virtualTrackOffset + slotA + 1u]);
-  let virtualB = vec2<f32>(virtualTrack[virtualTrackOffset + slotB], virtualTrack[virtualTrackOffset + slotB + 1u]);
-  let realA = vec2<f32>(daily[dailyOffset + slotA], daily[dailyOffset + slotA + 1u]);
-  let realB = vec2<f32>(daily[dailyOffset + slotB], daily[dailyOffset + slotB + 1u]);
-  let enabled = mask[maskOffset + index] > 0.5;
-  let lastDay = select(day, day + 1u, fraction > 0.0);
-  let virtualOk = enabled && lastDay < alive[aliveOffset + index];
-  let realOk = enabled && !isNonFinite(realA.x) && !isNonFinite(realA.y) &&
-    (fraction == 0.0 || (!isNonFinite(realB.x) && !isNonFinite(realB.y)));
-  var virtualPosition = vec2<f32>(nan, nan);
-  var realPosition = vec2<f32>(nan, nan);
-  var separationValue = nan;
-  var headVirtualA = vec2<f32>(nan, nan);
-  var headRealA = vec2<f32>(nan, nan);
-  if (virtualOk) {
-    virtualPosition = mix(virtualA, virtualB, fraction);
-    headVirtualA = virtualA;
-  }
-  if (realOk) {
-    // Do not blend across the antimeridian: take the nearer fix.
-    if (abs(realB.x - realA.x) > 180.0) {
-      realPosition = select(realA, realB, fraction >= 0.5);
-    } else {
-      realPosition = mix(realA, realB, fraction);
-    }
-    headRealA = realA;
-  }
-  if (virtualOk && realOk) {
-    let distanceA = distances[distancesOffset + index * ${slots}u + day];
-    let distanceB = distances[distancesOffset + index * ${slots}u + min(day + 1u, ${LEAD_DAYS}u)];
-    separationValue = mix(distanceA, distanceB, fraction);
-  }
-  virtualNow[virtualNowOffset + 2u * index] = virtualPosition.x;
-  virtualNow[virtualNowOffset + 2u * index + 1u] = virtualPosition.y;
-  realNow[realNowOffset + 2u * index] = realPosition.x;
-  realNow[realNowOffset + 2u * index + 1u] = realPosition.y;
-  separation[separationOffset + index] = separationValue;
-  flag[flagOffset + index] = select(0.0, 1.0, virtualOk && realOk);
+  let day = min(u32(floor(clamp(lead[leadOffset], 0.0, ${LEAD_DAYS}.0))), ${LEAD_DAYS - 1}u);
+  let slot = (index * ${slots}u + day) * 2u;
+  let virtualPosition = vec2<f32>(virtualNow[virtualNowOffset + 2u * index], virtualNow[virtualNowOffset + 2u * index + 1u]);
+  let realPosition = vec2<f32>(realNow[realNowOffset + 2u * index], realNow[realNowOffset + 2u * index + 1u]);
+  let virtualOk = virtualPosition.x == virtualPosition.x;
+  let realOk = realPosition.x == realPosition.x;
+  let virtualOrigin = select(vec2<f32>(nan), vec2<f32>(virtualTrack[virtualTrackOffset + slot], virtualTrack[virtualTrackOffset + slot + 1u]), virtualOk);
+  let realOrigin = select(vec2<f32>(nan), vec2<f32>(daily[dailyOffset + slot], daily[dailyOffset + slot + 1u]), realOk);
   let linkBase = linksOffset + 4u * index;
   links[linkBase] = realPosition.x;
   links[linkBase + 1u] = realPosition.y;
   links[linkBase + 2u] = virtualPosition.x;
   links[linkBase + 3u] = virtualPosition.y;
   let headVirtualBase = headVirtualOffset + 4u * index;
-  headVirtual[headVirtualBase] = headVirtualA.x;
-  headVirtual[headVirtualBase + 1u] = headVirtualA.y;
+  headVirtual[headVirtualBase] = virtualOrigin.x;
+  headVirtual[headVirtualBase + 1u] = virtualOrigin.y;
   headVirtual[headVirtualBase + 2u] = virtualPosition.x;
   headVirtual[headVirtualBase + 3u] = virtualPosition.y;
   let headRealBase = headRealOffset + 4u * index;
-  headReal[headRealBase] = headRealA.x;
-  headReal[headRealBase + 1u] = headRealA.y;
+  headReal[headRealBase] = realOrigin.x;
+  headReal[headRealBase + 1u] = realOrigin.y;
   headReal[headRealBase + 2u] = realPosition.x;
   headReal[headRealBase + 3u] = realPosition.y;`
     });
@@ -644,6 +698,8 @@ fn isNonFinite(value: f32) -> bool { return (bitcast<u32>(value) & 0x7fffffffu) 
     selection: (track: number) => boolean
   ): LeadStatistics => {
     const result: LeadStatistics = {
+      observed: new Float64Array(slots),
+      survivors: new Float64Array(slots),
       count: new Float64Array(slots),
       median: new Float64Array(slots),
       p10: new Float64Array(slots),
@@ -682,6 +738,8 @@ fn isNonFinite(value: f32) -> bool { return (bitcast<u32>(value) & 0x7fffffffu) 
       const sortedDistances = distances.slice(0, valid).sort();
       const sortedStays = stays.slice(0, valid).sort();
       result.count[day] = valid;
+      result.observed[day] = withReal;
+      result.survivors[day] = withReal - lost;
       result.median[day] = getSortedQuantile(sortedDistances, valid, 0.5);
       result.p10[day] = getSortedQuantile(sortedDistances, valid, 0.1);
       result.p25[day] = getSortedQuantile(sortedDistances, valid, 0.25);
@@ -793,22 +851,31 @@ fn isNonFinite(value: f32) -> bool { return (bitcast<u32>(value) & 0x7fffffffu) 
     });
     const regionLabels: string[] = [];
     const regionValues: number[] = [];
+    const regionalResults: {label: string; skill: number; count: number}[] = [];
     for (const region of OCEAN_REGIONS.slice(1)) {
-      const regional = computeRegionMedian(lastRun, day, region.id);
-      regionLabels.push(region.label);
-      regionValues.push(Number.isFinite(regional) ? regional / 1000 : 0);
+      const regional = computeRegionStatistics(lastRun, day, region.id);
+      const skill =
+        Number.isFinite(regional.median) && regional.stayMedian > 0
+          ? (1 - regional.median / regional.stayMedian) * 100
+          : Number.NaN;
+      regionLabels.push(`${region.label} (n=${regional.count})`);
+      regionValues.push(Number.isFinite(skill) ? skill : 0);
+      regionalResults.push({label: region.label, skill, count: regional.count});
     }
     ctx.setChart('regionChart', {
       kind: 'bars',
       height: 130,
       values: regionValues,
       labels: regionLabels,
+      horizontal: true,
       highlight:
         ctx.options.region === 'all'
           ? []
           : [Math.max(0, OCEAN_REGIONS.findIndex(r => r.id === ctx.options.region) - 1)],
-      yLabel: `median separation, day ${day} (km)`,
-      formatY: value => `${Math.round(value)}`
+      xLabel: `improvement over stay-put, day ${day} (%)`,
+      formatY: value => `${Math.round(value)}%`,
+      description:
+        'Regional median model separation compared with the regional median distance travelled from release. Positive bars beat staying put; labels show the surviving matched-pair count.'
     });
     lastChartDay = day;
     // Numbers the story cites.
@@ -816,6 +883,10 @@ fn isNonFinite(value: f32) -> bool { return (bitcast<u32>(value) & 0x7fffffffu) 
     const stay = stats.stayMedian[day];
     ctx.setReadout('lead', `day ${clock.time.toFixed(1)} after release`);
     ctx.setReadout('comparedCount', stats.count[day]);
+    ctx.setReadout(
+      'pairDenominator',
+      `${stats.count[day].toLocaleString('en-US')} compared · ${stats.survivors[day].toLocaleString('en-US')} model survivors · ${stats.observed[day].toLocaleString('en-US')} with observations · ${selectedCount.toLocaleString('en-US')} selected`
+    );
     ctx.setReadout('median', formatKilometers(median));
     ctx.setReadout(
       'middleHalf',
@@ -826,13 +897,52 @@ fn isNonFinite(value: f32) -> bool { return (bitcast<u32>(value) & 0x7fffffffu) 
       'improvement',
       Number.isFinite(median) && stay > 0 ? `${Math.round((1 - median / stay) * 100)}%` : 'n/a'
     );
+    const improvement =
+      Number.isFinite(median) && stay > 0 ? (1 - median / stay) * 100 : Number.NaN;
+    ctx.setReadout(
+      'skillVerdict',
+      Number.isFinite(improvement)
+        ? improvement >= 0
+          ? `model median is ${Math.round(improvement)}% lower than stay-put`
+          : `model median is ${Math.round(Math.abs(improvement))}% higher than stay-put`
+        : 'not enough surviving matched pairs'
+    );
     ctx.setReadout('lost', `${(stats.lostFraction[day] * 100).toFixed(1)}%`);
+    const classCounts = [0, 0, 0, 0, 0];
+    for (const separation of separations) {
+      const classIndex = SEPARATION_BREAKS_KILOMETERS.findIndex(
+        breakpoint => separation < breakpoint
+      );
+      classCounts[classIndex < 0 ? classCounts.length - 1 : classIndex]++;
+    }
+    ctx.setReadout(
+      'distanceClasses',
+      `<100 km ${classCounts[0]} · 100–250 ${classCounts[1]} · 250–500 ${classCounts[2]} · 500–1,000 ${classCounts[3]} · 1,000+ ${classCounts[4]}`
+    );
+    const rankedRegions = regionalResults
+      .filter(result => Number.isFinite(result.skill) && result.count > 0)
+      .sort((first, second) => second.skill - first.skill);
+    ctx.setReadout(
+      'regionalSkill',
+      rankedRegions.length > 1
+        ? `best ${rankedRegions[0].label} ${Math.round(rankedRegions[0].skill)}% · weakest ${rankedRegions[rankedRegions.length - 1].label} ${Math.round(rankedRegions[rankedRegions.length - 1].skill)}%`
+        : 'not enough regional pairs'
+    );
+    ctx.setReadout(
+      'modelContract',
+      `annual-mean 0.5° field · one RK2 step/day · ${ctx.options.coast === 'remove' ? 'missing coast cells remove particles' : 'missing coast cells hold particles'} · ${ctx.options.distanceModel} distance · no wind or diffusion`
+    );
   };
 
-  const computeRegionMedian = (run: ModelRun, day: number, regionId: string): number => {
+  const computeRegionStatistics = (
+    run: ModelRun,
+    day: number,
+    regionId: string
+  ): {median: number; stayMedian: number; count: number} => {
     const region = regionOf(regionId);
     const options = ctx.options;
     const values: number[] = [];
+    const stays: number[] = [];
     for (let track = 0; track < count; track++) {
       if (!releaseValid[track] || day >= run.alive[track]) continue;
       const setOk =
@@ -843,11 +953,25 @@ fn isNonFinite(value: f32) -> bool { return (bitcast<u32>(value) & 0x7fffffffu) 
       if (!setOk || !region.contains(drifters.release[track * 2], drifters.release[track * 2 + 1]))
         continue;
       const value = run.distances[track * slots + day];
-      if (Number.isFinite(value) && Number.isFinite(drifters.daily[(track * slots + day) * 2]))
+      if (Number.isFinite(value) && Number.isFinite(drifters.daily[(track * slots + day) * 2])) {
         values.push(value);
+        stays.push(
+          getGreatCircleMeters(
+            drifters.release[track * 2],
+            drifters.release[track * 2 + 1],
+            drifters.daily[(track * slots + day) * 2],
+            drifters.daily[(track * slots + day) * 2 + 1]
+          )
+        );
+      }
     }
     values.sort((a, b) => a - b);
-    return getSortedQuantile(values, values.length, 0.5);
+    stays.sort((a, b) => a - b);
+    return {
+      median: getSortedQuantile(values, values.length, 0.5),
+      stayMedian: getSortedQuantile(stays, stays.length, 0.5),
+      count: values.length
+    };
   };
 
   const readInto = async (

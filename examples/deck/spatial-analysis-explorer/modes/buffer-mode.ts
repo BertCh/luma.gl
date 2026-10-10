@@ -135,7 +135,7 @@ export const bufferMode: SpatialAnalysisModeDefinition = {
             ids: importGraphBuffer(graph, 'output-ids', outputIds, 'uint32', pointCount),
             count: importGraphBuffer(graph, 'output-count', outputCount, 'uint32', 1),
             overflow: importGraphBuffer(graph, 'output-overflow', outputOverflow, 'uint32', 1),
-            totalCount: importGraphBuffer(graph, 'output-total', outputTotal, 'uint32', 1)
+            requiredCount: importGraphBuffer(graph, 'output-total', outputTotal, 'uint32', 1)
           },
           // The clamped selected count lands directly in the indirect draw record.
           drawInstanceCount: graph.importGPUData(

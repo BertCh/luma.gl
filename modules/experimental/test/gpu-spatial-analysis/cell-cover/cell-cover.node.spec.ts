@@ -43,7 +43,8 @@ function createProps(
       featureIds: view('uint32', 16),
       cells: view('uint32x2', 16),
       count: view('uint32', 1),
-      overflow: view('uint32', 1)
+      overflow: view('uint32', 1),
+      candidateOverflow: view('uint32', 1)
     },
     ...overrides
   };
@@ -73,7 +74,8 @@ it('GPUCellCover validates its props', () => {
             featureIds: view('uint32', 4),
             cells: view('uint32x2', 5),
             count: view('uint32', 1),
-            overflow: view('uint32', 1)
+            overflow: view('uint32', 1),
+            candidateOverflow: view('uint32', 1)
           }
         })
       )

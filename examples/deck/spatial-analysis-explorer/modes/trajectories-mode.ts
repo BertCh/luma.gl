@@ -175,6 +175,7 @@ export const trajectoriesMode: SpatialAnalysisModeDefinition = {
     const graph = new GPUCommandGraph<void>(device, {id: 'trajectories'});
     graph.add(
       new GPUTrajectoryMetrics({
+        spatialContext: {coordinateSpace: 'planar', metric: 'native', units: 'native'},
         id: 'trajectories',
         positions: importGraphBuffer(graph, 'positions', positionsBuffer, 'float32x2', vertexCount),
         timestamps: importGraphBuffer(
@@ -253,7 +254,7 @@ export const trajectoriesMode: SpatialAnalysisModeDefinition = {
             ids: importGraphBuffer(graph, 'stop-ids', stopIdsBuffer, 'uint32', STOP_CAPACITY),
             count: importGraphBuffer(graph, 'stop-count', stopCountBuffer, 'uint32', 1),
             overflow: importGraphBuffer(graph, 'stop-overflow', stopOverflowBuffer, 'uint32', 1),
-            totalCount: importGraphBuffer(graph, 'stop-total', stopTotalBuffer, 'uint32', 1)
+            requiredCount: importGraphBuffer(graph, 'stop-total', stopTotalBuffer, 'uint32', 1)
           },
           drawInstanceCount: graph.importGPUData(
             'stop-draw-count',

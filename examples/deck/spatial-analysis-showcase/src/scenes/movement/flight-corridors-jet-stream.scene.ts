@@ -5,30 +5,32 @@
 import {joinCredits} from '../../cartography/credits';
 import {ground} from '../../cartography/grounds';
 import {defineScene} from '../scene';
-import type {JetStreamOptions} from './flight-corridors-jet-stream.compute';
+import type {FlightSpeedContrastOptions} from './flight-corridors-jet-stream.compute';
 import {MOVEMENT_CREDITS} from './movement-style';
 
 const US_VIEW = {longitude: -96, latitude: 38.5, zoom: 3.9};
 
-export default defineScene<JetStreamOptions>({
+export default defineScene<FlightSpeedContrastOptions>({
   id: 'flight-corridors-jet-stream',
-  title: 'Can aircraft measure the jet stream?',
+  title: 'East–West Cruise-Speed Contrast',
   chapter: 'movement',
   order: 11,
   summary:
-    'Measure the speed and heading of every step of 38,135 US flights on the GPU, then compare eastbound with westbound ground speed at cruise altitude: the jet stream, found from aircraft alone.',
+    'Measure speed and heading for 38,135 US flights on the GPU. Half the difference between unmatched eastbound and westbound median ground speeds is an effective along-track wind proxy, confounded by aircraft mix, route and altitude selection, and unequal sampling in space and time.',
   contributors: ['GPUTrajectoryMetrics'],
   datasets: [{id: 'poopdeck-adsb-paths', role: 'flight trajectories (OpenSky ADS-B, 6 Jan 2020)'}],
   initialView: US_VIEW,
   basemap: ground('night', {labels: 'none'}),
   furniture: {
     title: {
-      title: 'Aircraft as a wind instrument',
-      subtitle: 'Along-track wind from ADS-B ground speed · 6 January 2020',
-      chips: ['OBSERVED ground speed', 'DERIVED wind']
+      title: 'East–West Cruise-Speed Contrast',
+      subtitle: 'Effective along-track proxy from unmatched ADS-B samples · 6 January 2020',
+      chips: ['OBSERVED ground speed', 'DERIVED proxy']
     },
     scaleBar: {units: 'metric'},
-    credit: joinCredits(MOVEMENT_CREDITS.openSky)
+    credit: joinCredits(MOVEMENT_CREDITS.openSky),
+    caveat:
+      'The half-difference is not a wind observation: aircraft mix, route choice, altitude, and space–time sampling differ by direction.'
   },
 
   options: [
@@ -66,7 +68,7 @@ export default defineScene<JetStreamOptions>({
       group: 'Map',
       apply: 'param',
       default: 'magma',
-      help: 'All four are perceptually uniform.',
+      help: 'Each ramp is perceptually uniform.',
       options: [
         {value: 'magma', label: 'Magma'},
         {value: 'inferno', label: 'Inferno'},
@@ -133,7 +135,7 @@ export default defineScene<JetStreamOptions>({
       group: 'Charts',
       apply: 'param',
       default: 'longitude',
-      help: 'What the second chart bins the steps by: where the jet stream is strong (longitude, latitude) or how it changes with flight level (altitude). Bins with fewer than 30 steps are left blank.',
+      help: 'Bins the directional ground-speed contrast by longitude, latitude or altitude. The half-difference is an effective along-track wind proxy, not a matched wind estimate. Bins with fewer than 30 steps are blank.',
       options: [
         {value: 'longitude', label: 'Longitude (4 degree bins)'},
         {value: 'latitude', label: 'Latitude (2 degree bins)'},
@@ -151,26 +153,26 @@ export default defineScene<JetStreamOptions>({
     },
     {
       id: 'profileChart',
-      label: 'Median ground speed by position',
+      label: 'Directional medians and proxy by bin',
       kind: 'chart',
-      help: 'Median ground speed of each direction in bins of longitude, latitude or altitude. The dashed line is half the difference, the average tailwind component.'
+      help: 'Median ground speed by direction. The dashed half-difference is an effective along-track wind proxy; aircraft, routes, altitudes, locations and times are not matched.'
     },
     {id: 'eastMedian', label: 'Eastbound median'},
     {id: 'westMedian', label: 'Westbound median'},
     {
       id: 'difference',
-      label: 'Median difference',
-      help: 'Eastbound median minus westbound median ground speed.'
+      label: 'Directional median difference',
+      help: 'Eastbound minus westbound median ground speed from unmatched samples.'
     },
     {
-      id: 'airspeed',
-      label: 'Implied airspeed',
-      help: 'Average of the two medians. If the tailwind is the same size either way, it cancels: what is left is the speed through the air, about 450 knots for an airliner at cruise.'
+      id: 'midpoint',
+      label: 'Median midpoint',
+      help: 'Average of the two directional medians. It is not an airspeed estimate because aircraft and sampling differ by direction.'
     },
     {
-      id: 'wind',
-      label: 'Implied wind',
-      help: 'Half the median difference: the average tailwind component along the flight axis, with no wind data used.'
+      id: 'windProxy',
+      label: 'Effective along-track wind proxy',
+      help: 'Half the unmatched directional median difference. Aircraft performance, route choice, altitude, location and time sampling remain confounders.'
     },
     {id: 'samples', label: 'Steps used'},
     {
@@ -186,7 +188,9 @@ export default defineScene<JetStreamOptions>({
     {
       kind: 'ramp' as const,
       title:
-        state.speedSource === 'derived' ? 'Ground speed (measured)' : 'Ground speed (reported)',
+        state.speedSource === 'derived'
+          ? 'Measured ground speed; unmatched proxy input'
+          : 'Reported ground speed; unmatched proxy input',
       ramp: state.ramp,
       extent: state.speedRange,
       unit: 'kn',
@@ -199,8 +203,8 @@ import {GPUTrajectoryMetrics} from '@luma.gl/experimental/gpu-spatial-analysis';
 
 // positions: float32x2 planar metres (azimuthal equidistant around 38.5 N 96 W),
 // timestamps: float32 seconds, trackOffsets: uint32 (flights + 1)
-const graph = new GPUCommandGraph(device, {id: 'jet-stream'});
-graph.add(new GPUTrajectoryMetrics({
+const graph = new GPUCommandGraph(device, {id: 'flight-speed-contrast'});
+graph.add(new GPUTrajectoryMetrics({spatialContext: {coordinateSpace: 'planar', metric: 'native', units: 'native'},
   positions, timestamps, trackOffsets,
   stepSpeeds,      // per row: speed of the step that ends there, m/s
   stepHeadings     // per row: atan2(dy, dx) of that step, radians counter-clockwise from +x
@@ -210,25 +214,28 @@ compiled.encode(commandEncoder, {parameters: undefined});   // once: the tracks 
 
 // shader-side filter, ${state.show}: cos(heading) ${state.show === 'east' ? '> ' : state.show === 'west' ? '< -' : 'ignored '}cos(${state.coneDegrees} deg), lower end >= ${state.minAltitude} m
 // speed in knots = stepSpeeds[row] * 3600 / 1852
-// eastbound median - westbound median, over steps at or above ${state.minAltitude} m, is twice the average tailwind`,
+// Half the unmatched east-west median difference is an effective along-track wind proxy.
+// Aircraft type, route, altitude, location, and time are not matched between directions.`,
 
   about: {
-    what: '`GPUTrajectoryMetrics` measures every step of every flight at once: the distance between two stored positions divided by the time between them, and the heading of the step. The two columns stay on the GPU, where the map colors steps from them with a cruise-altitude and direction filter; they are read back once so the statistics can be binned.',
-    why: 'An aircraft flies at a roughly fixed speed through the air, so its speed over the ground is that plus the wind along its track. Flying one way and then the other cancels the aircraft out and leaves the wind. A day of flights is therefore a wind instrument: the jet stream measured with no weather data at all.',
+    what: '`GPUTrajectoryMetrics` computes step distance over time and projected heading for every flight. The columns remain on the GPU for map filtering and are read back once for directional distributions and binned summaries.',
+    why: 'Ground speed combines airspeed with the along-track wind component. The east–west half-difference is therefore a useful effective proxy, but these are unmatched observational samples rather than reciprocal measurements of the same aircraft, route, altitude, place and time.',
     howToRead:
-      'Bright steps are fast over the ground. With eastbound only, the cruise tracks are bright; with westbound only, dim. The first chart is the speed distribution for each direction and the second shows where the difference is largest. Half the difference is the average tailwind; half the sum is the airspeed. Angles are on the map projection grid and speeds are planar speeds, up to about 4% too long at the coasts.'
+      'Brightness encodes ground speed. The first chart compares unmatched directional distributions. The second reports directional medians and their half-difference by bin. Treat the half-difference as an effective along-track wind proxy, not a jet-stream detection or direct wind estimate. Projection distance error reaches about 4% at the coasts.'
   },
 
-  create: async ctx => (await import('./flight-corridors-jet-stream.compute')).createJetStream(ctx),
+  create: async ctx =>
+    (await import('./flight-corridors-jet-stream.compute')).createFlightSpeedContrast(ctx),
 
   story: [
     {
       id: 'the-question',
-      headline: 'Ground speeds can measure a wind',
-      textAlternative: 'Aircraft ground-speed lines form a dark US map.',
+      headline: 'Directional ground speeds define an indirect proxy',
+      textAlternative:
+        'Flight steps over the contiguous United States are coloured by ground speed; direction is not encoded until filtered.',
       optionsMode: 'fresh',
-      title: 'How fast is an aircraft really moving, and does it depend on direction?',
-      body: 'Each line is one step between two recorded positions of a flight on Monday 6 January 2020, colored by the **speed over the ground** it covered (legend), and only at cruise altitude. Look at the colors: some tracks are much brighter than others.\n\nThe data is **38,135 US flights** from the OpenSky ADS-B network. Nothing about wind is in it, only where each aircraft was and when. Set **Show steps heading** below to *Eastbound only* and then *Westbound only*, and compare.',
+      title: 'What does the east–west cruise-speed difference contain?',
+      body: 'Each line is one step between two recorded positions on 6 January 2020, colored by **ground speed** and filtered to cruise altitude. The data contains **38,135 US flights** from OpenSky ADS-B; it contains no wind observations.\n\nEastbound and westbound steps are not matched by aircraft type, route, altitude, location or time. Their speed difference therefore combines along-track wind with aircraft-performance and sampling effects. Set **Show steps heading** to *Eastbound only* and then *Westbound only* to inspect the two input populations.',
       camera: {...US_VIEW, transitionMs: 1200},
       options: {show: 'all', speedSource: 'derived', minAltitude: 9000},
       controls: ['show', 'speedRange', 'ramp'],
@@ -237,21 +244,23 @@ compiled.encode(commandEncoder, {parameters: undefined});   // once: the tracks 
     {
       id: 'metrics',
       headline: 'One pass measures every flight step',
-      textAlternative: 'A selected flight shows measured ground speed along its route.',
+      textAlternative:
+        'Each flight step is coloured by position-derived or reported ground speed after the selected altitude filter.',
       optionsMode: 'fresh',
       title: 'One pass measures every step',
-      body: '**`GPUTrajectoryMetrics`** computes, for every row of every track, the speed and the heading of the step that ends there: a distance and a time difference per row, no loops over flights on the CPU. The result is two float columns that the map reads directly. The graph runs **once**, because the tracks never change; every control here just changes what the shader and the statistics keep.\n\nSlide **Cruise altitude from** down to 6,000 m and climbs and descents join the map; they are slower and head every which way. The default of 9,000 m keeps level flight at about 30,000 feet and above.',
+      body: '**`GPUTrajectoryMetrics`** computes the projected distance, elapsed time and heading of the step ending at every row. The result is two float columns that the map reads directly. The graph runs once because the tracks are static; controls change shader filtering and statistical selection.\n\nSet **Cruise altitude from** to 6,000 m to include more climb and descent segments. The 9,000 m default restricts the sample to approximately 30,000 feet and above; it does not equalize altitude or flight phase between directions.',
       options: {minAltitude: 9000, show: 'all'},
       controls: ['minAltitude', 'speedSource'],
       readouts: ['samples', 'agreement']
     },
     {
       id: 'east-west',
-      headline: 'Eastbound ground speeds are faster',
-      textAlternative: 'Eastbound and westbound speed distributions are compared.',
+      headline: 'The directional distributions differ',
+      textAlternative:
+        'A line chart compares unmatched eastbound and westbound ground-speed distributions and marks each median.',
       optionsMode: 'fresh',
-      title: 'Eastbound jets are faster, westbound are slower',
-      body: 'The chart shows ground speed for the steps that head within **Direction cone** of east (blue) and of west (orange). The two humps barely overlap: the median **eastbound** step covers the ground far faster than the median **westbound** one, over the same country, by the same airliner types.\n\nThat gap is the **median difference** readout. It is the jet stream, a river of fast westerly air at cruise altitude: it carries eastbound flights and holds back westbound ones. Narrow **Direction cone** to 25 degrees to check that it is not an artifact of the boundary.',
+      title: 'Compare the directional ground-speed distributions',
+      body: 'The chart includes steps within **Direction cone** of east (blue) or west (orange). The **directional median difference** is an observed contrast between two unmatched populations.\n\nHalf of that contrast is reported as an **effective along-track wind proxy**. It is not a direct wind measurement and does not identify a jet stream: aircraft mix, route choice, altitude, location and observation time differ between directions. Change **Direction cone** to test sensitivity to the heading definition.',
       camera: {longitude: -96, latitude: 39, zoom: 4.2, transitionMs: 1400},
       options: {show: 'east', coneDegrees: 45, minAltitude: 9000, speedSource: 'derived'},
       highlight: {readout: 'difference'},
@@ -260,34 +269,37 @@ compiled.encode(commandEncoder, {parameters: undefined});   // once: the tracks 
     },
     {
       id: 'airspeed-and-wind',
-      headline: 'Subtract airspeed and reveal wind',
-      textAlternative: 'A signed wind map uses a zero-centred diverging legend.',
+      headline: 'The half-difference is a conditional proxy',
+      textAlternative:
+        'Readouts show the midpoint and half-difference of unmatched directional medians; neither is a direct airspeed or wind observation.',
       optionsMode: 'fresh',
-      title: 'Cancel the aircraft, keep the wind',
-      body: 'If every aircraft flew at the same speed through the air, eastbound ground speed would be airspeed plus wind and westbound airspeed minus wind. Half the difference is then the average **wind**; half the sum, the **implied airspeed**. Read both in the panel: the airspeed lands near the 450 knots an airliner cruises at, which is a sign the reasoning holds.\n\nNow switch **Ground speed from** to *Reported by the aircraft*. Each aircraft broadcast its own ground speed, independent of our position arithmetic, and the medians barely move. The **agreement** readout gives the typical difference between the two for the same step.',
+      title: 'State the assumptions behind the proxy',
+      body: 'For reciprocal observations with equal airspeed and opposite, equal-magnitude along-track wind, half the east–west ground-speed difference equals the wind component. This dataset does not provide those matched observations. The reported half-difference is therefore an effective proxy, and the median midpoint is only an algebraic summary, not inferred airspeed.\n\nSwitch **Ground speed from** to *Reported by the aircraft*. The **agreement** readout compares reported speed with position-derived speed for the same steps; agreement checks the speed calculation, not the assumptions required to isolate wind.',
       options: {show: 'all', speedSource: 'derived', minAltitude: 9000, coneDegrees: 45},
-      highlight: {readout: 'wind'},
+      highlight: {readout: 'windProxy'},
       controls: ['speedSource', 'minAltitude'],
-      readouts: ['airspeed', 'wind', 'agreement']
+      readouts: ['midpoint', 'windProxy', 'agreement']
     },
     {
       id: 'where',
-      headline: 'The strongest wind forms a band',
-      textAlternative: 'A gridded wind map and profile identify the jet band.',
+      headline: 'The proxy varies across the sampled dimensions',
+      textAlternative:
+        'A profile chart shows directional median ground speeds and their dashed half-difference proxy by the selected bin dimension.',
       optionsMode: 'fresh',
-      title: 'Where, and how high, is it strongest?',
-      body: 'The second chart bins the steps by position. Each point is the median ground speed in one bin of **Profile chart by**; the dashed line is half the difference, the wind. Start with *Longitude*: how does the wind change from the west coast to the east?\n\nThen try *Latitude*: the jet stream follows a meandering track, so the headwind and tailwind depend on which state you cross. Finally *Altitude*: the wind increases with height up to the jet core, which is why long-haul flights climb to the same flight levels. Bins with too few steps are left blank.',
+      title: 'Stratify the contrast by longitude, latitude and altitude',
+      body: 'The second chart bins steps by **Profile chart by**. Solid lines are directional median ground speeds; the dashed line is their half-difference proxy. A bin is omitted when either direction has fewer than 30 steps.\n\nChanging the bin variable changes both the physical conditions and the sample composition. Longitude and latitude bins contain different routes and aircraft; altitude bins contain different flight phases and route choices. The profiles describe this sample and do not locate or measure a jet-stream core.',
       options: {show: 'all', chartBy: 'longitude'},
       controls: ['chartBy'],
-      readouts: ['profileChart', 'wind']
+      readouts: ['profileChart', 'windProxy']
     },
     {
       id: 'limits',
-      headline: 'One Monday needs careful reading',
-      textAlternative: 'The wind estimate is shown with sampling limits.',
+      headline: 'Interpret the proxy within its sampling limits',
+      textAlternative:
+        'The altitude profile shows unmatched directional medians and their half-difference; missing bins have fewer than 30 steps in either direction.',
       optionsMode: 'fresh',
-      title: 'What to remember, and what to try',
-      body: 'This is one winter Monday, so the jet stream is at its strongest; a summer day would show a much smaller gap. The steps are long (up to 10 minutes, simplified from ADS-B pings), speeds are planar speeds in an azimuthal projection that stretches distances up to about 4% at the coasts, and angles are on that grid. Aircraft do not all fly the same airspeed, and pilots choose routes and altitudes to use the wind, so this is the effective wind they experienced, not a weather model. The data stops at the edge of the contiguous US, so there is no Atlantic here.\n\n**Try it:** compare *Altitude* and *Latitude* profiles; set **Cruise altitude from** to 11,000 m and see what changes; widen **Direction cone** to 75 degrees and watch the two humps mix.',
+      title: 'Sampling and measurement constraints',
+      body: 'The sample covers one day. Steps can span up to 10 minutes after trajectory simplification. Speeds and headings use an azimuthal-equidistant planar projection; distance error reaches about 4% at the coasts and projected headings differ from true bearings. Coverage ends at the contiguous-US boundary.\n\nThe principal confounders are aircraft performance, fleet composition, route selection, altitude selection, and unequal location and time sampling by direction. Compare altitude and latitude profiles, change the minimum altitude, and widen the direction cone to evaluate sensitivity. These checks do not convert the proxy into a wind observation.',
       camera: {...US_VIEW, transitionMs: 1400},
       options: {show: 'all', chartBy: 'altitude'},
       controls: ['chartBy', 'coneDegrees', 'minAltitude'],

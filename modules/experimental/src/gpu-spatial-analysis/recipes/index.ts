@@ -11,7 +11,7 @@ export type {
   GPUHotSpotPermutationOptions,
   GPUHotSpotPointsSource
 } from './hot-spot-analysis-recipe';
-export type {GPURecipeResult} from './recipe-utils';
+export type {GPURecipeOverrides, GPURecipeResult} from './recipe-utils';
 
 export {
   addRateClusterMapRecipe,

@@ -165,7 +165,7 @@ export function buildTaxiClassTables(trips: TaxiTrips): TaxiClassTables {
   const fareEqual = buildTable(trips.fare, 'equal-interval', 'USD', formatFare);
   const distance = buildTable(trips.distance, 'quantile', 'miles', formatMiles);
   const passengers = makeClassTable({
-    breaks: [2, 3, 4, 5],
+    breaks: [2, 3, 4, 5, 6],
     colors: [...PASSENGER_COLORS],
     labels: [...PASSENGER_LABELS],
     unit: 'passengers',

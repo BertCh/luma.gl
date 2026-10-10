@@ -19,6 +19,7 @@ import {
   getWGSLFloatLiteral,
   type WGSLKernelBinding
 } from '../../utils/wgsl-kernel-nodes';
+import type {GPUCellTablePort} from '../contracts/index';
 import {CELL_KEY_WGSL, type CellKeyLayout} from './cell-keys';
 
 /** Default fixed-point scale of {@link GPUCellTable.sums}: 16 fractional bits. */
@@ -36,7 +37,7 @@ export const GPU_CELL_EMPTY_KEY_WORD = 0xffffffff;
  * NaN extremes. When more cells exist than fit, the cells with the largest keys are dropped and
  * `overflow` is 1. Every column must hold `cells.length` rows.
  */
-export type GPUCellTable = {
+export type GPUCellTable = GPUCellTablePort & {
   /**
    * 64-bit cell keys as little-endian `(low, high)` `uint32` words, the layout of Arrow `Uint64`
    * columns and of `GPUH3CellProjection` input, so an H3 table feeds the projection directly.
@@ -57,12 +58,12 @@ export type GPUCellTable = {
   minimums?: GraphDataView<'float32'>;
   /** Maximum value per cell. */
   maximums?: GraphDataView<'float32'>;
-  /** One-row scalar receiving the occupied row count, `min(totalCount, cells.length)`. */
+  /** One-row scalar receiving the occupied row count, `min(requiredCount, cells.length)`. */
   count: GraphDataView<'uint32'>;
   /** One-row scalar receiving 1 when cells were dropped here or in any source level. */
   overflow: GraphDataView<'uint32'>;
   /** Optional one-row scalar receiving the unclamped number of occupied cells. */
-  totalCount?: GraphDataView<'uint32'>;
+  requiredCount?: GraphDataView<'uint32'>;
 };
 
 /** Returns every view of a cell table, for graph membership and aliasing checks. @internal */
@@ -76,7 +77,7 @@ export function getCellTableViews(table: GPUCellTable): (GraphDataView | undefin
     table.maximums,
     table.count,
     table.overflow,
-    table.totalCount
+    table.requiredCount
   ];
 }
 
@@ -113,7 +114,7 @@ export function validateCellTable(id: string, name: string, table: GPUCellTable)
       throw new Error(`${id} ${name}.${column} must have the same length as ${name}.cells`);
     }
   }
-  for (const column of ['count', 'overflow', 'totalCount'] as const) {
+  for (const column of ['count', 'overflow', 'requiredCount'] as const) {
     const view = table[column];
     if (!view) {
       continue;
@@ -674,12 +675,12 @@ ${getFixedPointWGSL(props.sumScale)}`,
     createPublishNode<Parameters>(graph, {
       id: `${id}-publish`,
       operation,
-      totalCount: cellTotal,
+      requiredCount: cellTotal,
       output: {
         ids: output.counts,
         count: output.count,
         overflow: output.overflow,
-        totalCount: output.totalCount
+        requiredCount: output.requiredCount
       },
       overflowSources: props.overflowSources,
       extraCounts: props.extraCounts

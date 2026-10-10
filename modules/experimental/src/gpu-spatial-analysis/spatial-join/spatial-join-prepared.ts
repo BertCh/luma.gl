@@ -15,6 +15,10 @@ import {
   validateGraphViewsBelongToGraph
 } from '../../utils/gpu-contributor-utils';
 import {
+  validateGPUPartitionDescriptor,
+  type GPUPartitionDescriptor
+} from '../contracts/partitioning';
+import {
   createBoundsNode,
   createFeatureRingsNode,
   getSpatialJoinFeatureCount,
@@ -22,6 +26,7 @@ import {
   validateSpatialJoinGeometry
 } from './spatial-join-geometry';
 import {
+  getDefaultSpatialSort,
   getNextPowerOfTwo,
   getSortedFeatureBVHNodes,
   isPowerOfTwo,
@@ -49,12 +54,15 @@ export type GPUSpatialJoinPreparedProps = {
    * views as their `right` (and, for `GPUPointInPolygonJoin`, the same polygon views).
    */
   geometry: GPUSpatialJoinGeometry;
+  /** Feature-row partitions retained by the prepared index for tiled and streaming execution. */
+  partitioning?: GPUPartitionDescriptor;
   /** Power-of-two BVH leaf slots. Defaults to the next power of two of the feature count. */
   leafCapacity?: number;
   /**
    * Reorder features along a Hilbert curve before the build. Tightens the tree for large,
    * spatially incoherent right-hand sides. Candidate order is then unspecified, so it is only
-   * accepted by joins that do not promise sorted output (`GPUPointInPolygonJoin`). Default false.
+   * accepted by joins that do not promise sorted output. Defaults on from 256 features; pass false
+   * when using the handle with a contributor that requires source-ordered candidates.
    */
   spatialSort?: boolean;
   /**
@@ -102,6 +110,8 @@ export class GPUSpatialJoinPrepared implements GPUCommandNodeProducer {
   readonly leafCapacity: number;
   /** Whether features are spatially sorted before the build. */
   readonly spatialSort: boolean;
+  /** Feature-row partitions associated with this index, when it is built per partition. */
+  readonly partitioning?: GPUPartitionDescriptor;
   /** Number of encodings that rebuilt the index so far (counted on the CPU at encode time). */
   encodedBuildCount = 0;
 
@@ -117,11 +127,18 @@ export class GPUSpatialJoinPrepared implements GPUCommandNodeProducer {
     this.geometry = props.geometry;
     validateSpatialJoinGeometry(this.id, 'geometry', props.geometry);
     this.featureCount = getSpatialJoinFeatureCount(props.geometry);
+    this.partitioning = props.partitioning;
+    if (this.partitioning) {
+      validateGPUPartitionDescriptor(`${this.id} partitioning`, this.partitioning);
+      if (this.partitioning.length !== this.featureCount) {
+        throw new Error(`${this.id} partitioning length must equal the feature count`);
+      }
+    }
     this.leafCapacity = props.leafCapacity ?? getNextPowerOfTwo(Math.max(this.featureCount, 1));
     if (!isPowerOfTwo(this.leafCapacity)) {
       throw new Error(`${this.id} leafCapacity must be a positive power of two`);
     }
-    this.spatialSort = props.spatialSort ?? false;
+    this.spatialSort = props.spatialSort ?? getDefaultSpatialSort(this.featureCount);
     this.preparedStorage = props.storage;
     if (props.storage) {
       this.validateStorage(props.storage);

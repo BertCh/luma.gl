@@ -42,7 +42,7 @@ export type GPULinePathOutput = {
   /** One-row scalar receiving `1` when the vertex or path capacity overflowed, otherwise `0`. */
   overflow: GraphDataView<'uint32'>;
   /** Optional one-row scalar receiving the unclamped vertex count. */
-  totalCount?: GraphDataView<'uint32'>;
+  requiredCount?: GraphDataView<'uint32'>;
   /**
    * Optional one-row scalar receiving the clamped number of output paths. Required by contributors
    * whose path count is data dependent (chunking); otherwise equals the input path count.

@@ -623,7 +623,7 @@ graph.add(new GPUPickRegionMask({result, outputMask: pickMask, overflow}));
     return `${pre}graph.add(new GPURegionStatistics({
   ${selection}${state.path === 'direct' ? '\n  positions,' : ''}
   values: ${state.value},                             // float32 per observation
-  histogram: ${histogram},${state.withMask && state.path === 'direct' ? '\n  outputMask: mask,' : ''}${state.selectedIds === 'ids' && state.path === 'direct' ? '\n  output: {ids, count, overflow, totalCount},\n  drawInstanceCount: drawCommands.getInstanceCountData(0),' : ''}${state.gridIndex && state.path === 'direct' ? `\n  spatialIndex: {kind: 'grid', index: gridIndex, candidateCapacity: ${Math.ceil(43557 * Number(state.candidateCapacity))}},` : ''}
+  histogram: ${histogram},${state.withMask && state.path === 'direct' ? '\n  outputMask: mask,' : ''}${state.selectedIds === 'ids' && state.path === 'direct' ? '\n  output: {ids, count, overflow, requiredCount},\n  drawInstanceCount: drawCommands.getInstanceCountData(0),' : ''}${state.gridIndex && state.path === 'direct' ? `\n  spatialIndex: {kind: 'grid', index: gridIndex, candidateCapacity: ${Math.ceil(43557 * Number(state.candidateCapacity))}},` : ''}
   summary
 }));
 const compiled = graph.compile();            // once per combination of options

@@ -142,6 +142,17 @@ export async function createWildfireSeasons(
     const lngLat = imp('lnglat', lngLatBuffer, 'float32x2', layout.vertexCount);
     graph.add(
       new GPUGeometryMeasures({
+        spatialContext: {
+          coordinateSpace: options.areaSystem === 'planar' ? 'planar' : 'longitude-latitude',
+          metric:
+            options.areaSystem === 'planar'
+              ? 'native'
+              : options.areaSystem === 'spherical'
+                ? 'great-circle'
+                : 'ellipsoidal',
+          units: options.areaSystem === 'planar' ? 'native' : 'meters'
+        },
+        ellipsoidalEdgeModel: options.areaSystem === 'wgs84' ? 'coordinate-linear' : undefined,
         id: 'seasons-area',
         positions:
           options.areaSystem === 'planar'
@@ -150,7 +161,7 @@ export async function createWildfireSeasons(
         ringOffsets,
         featureRingOffsets: featureRings,
         geometryType: 'polygons',
-        coordinateSystem: options.areaSystem,
+
         groupIds: imp('group-ids', groupIdsBuffer, 'uint32', count),
         groupCount: 4,
         output: {areas: imp('areas', areas, 'float32', count)},
@@ -162,12 +173,18 @@ export async function createWildfireSeasons(
     );
     graph.add(
       new GPUGeometryMeasures({
+        spatialContext: {
+          coordinateSpace: 'longitude-latitude',
+          metric: 'ellipsoidal',
+          units: 'meters'
+        },
+        ellipsoidalEdgeModel: 'coordinate-linear',
         id: 'seasons-centroids',
         positions: lngLat,
         ringOffsets,
         featureRingOffsets: featureRings,
         geometryType: 'polygons',
-        coordinateSystem: 'wgs84',
+
         output: {centroids: imp('centroids', centroids, 'float32x2', count)}
       })
     );

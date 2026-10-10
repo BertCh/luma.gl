@@ -45,7 +45,7 @@ export type GPUStreamlinesOutput = {
   /**
    * Published lines in ascending seed index: `ids` holds the seed index of each line, `count` the
    * number of published lines, `overflow` is 1 when accepted lines were dropped because the line or
-   * point capacity was full, and `totalCount` the number of accepted lines before capacity.
+   * point capacity was full, and `requiredCount` the number of accepted lines before capacity.
    */
   lines: GPUCompactOutput;
   /**
@@ -235,7 +235,7 @@ export class GPUStreamlines implements GPUCommandNodeProducer {
         output.lines.ids,
         output.lines.count,
         output.lines.overflow,
-        output.lines.totalCount,
+        output.lines.requiredCount,
         output.pathOffsets,
         output.points,
         output.pointCount,
@@ -264,7 +264,7 @@ export class GPUStreamlines implements GPUCommandNodeProducer {
       output.lines.ids,
       output.lines.count,
       output.lines.overflow,
-      output.lines.totalCount,
+      output.lines.requiredCount,
       output.pathOffsets,
       output.points,
       output.pointCount,
@@ -844,11 +844,11 @@ ${fitsDeclaration}`,
       }
     ] as const;
     const optionalBindings = [
-      ...(output.lines.totalCount
+      ...(output.lines.requiredCount
         ? [
             {
               name: 'totalOut',
-              view: output.lines.totalCount,
+              view: output.lines.requiredCount,
               type: 'u32',
               access: 'read_write'
             } as const
@@ -879,7 +879,7 @@ ${fitsDeclaration}`,
   countOut[countOutOffset] = count;
   overflowOut[overflowOutOffset] = select(0u, 1u, count < total);
   pointCountOut[pointCountOutOffset] = select(0u, pathOffsets[pathOffsetsOffset + count], count > 0u);
-  ${output.lines.totalCount ? 'totalOut[totalOutOffset] = total;' : ''}
+  ${output.lines.requiredCount ? 'totalOut[totalOutOffset] = total;' : ''}
   ${output.unconverged ? 'unconvergedOut[unconvergedOutOffset] = state[stateOffset + 1u];' : ''}`
       })
     );

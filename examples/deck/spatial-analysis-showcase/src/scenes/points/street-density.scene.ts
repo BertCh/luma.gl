@@ -366,7 +366,7 @@ const density = new GPUCommandGraph(device, {id: 'line-density'});
 density.add(new GPULineDensity({
   positions, pathOffsets,                    // ${state.system === 'spherical' ? 'longitude / latitude degrees' : 'float32x2 meters'}
   columns: 192, rows: 120,
-  coordinateSystem: '${state.system}',
+  spatialContext: '${state.system}' === 'spherical' ? {coordinateSpace: 'longitude-latitude', metric: 'great-circle', units: 'meters'} : {coordinateSpace: 'planar', metric: 'native', units: 'native'},
   maximumRecords: 4 * vertexCount,           // compile-time; \`overflow\` says if it was too small
   parameters: gridParameters.importToGraph(density),
   output: {lengths, densities, overflow, totalRecords}

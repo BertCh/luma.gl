@@ -154,7 +154,7 @@ function createJoinFixture(
       ),
       count: importGraphBuffer(graph, 'match-count', buffers.matchCount, 'uint32', 1),
       overflow: importGraphBuffer(graph, 'match-overflow', buffers.matchOverflow, 'uint32', 1),
-      totalCount: importGraphBuffer(graph, 'match-total', buffers.matchTotal, 'uint32', 1)
+      requiredCount: importGraphBuffer(graph, 'match-total', buffers.matchTotal, 'uint32', 1)
     },
     ...overrides
   };

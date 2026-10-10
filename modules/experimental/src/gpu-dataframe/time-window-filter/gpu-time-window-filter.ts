@@ -209,7 +209,7 @@ export class GPUTimeWindowFilter implements GPUCommandNodeProducer {
         props.output.ids,
         props.output.count,
         props.output.overflow,
-        props.output.totalCount,
+        props.output.requiredCount,
         props.outputMask,
         props.fadeWeights,
         props.clipFractions,
@@ -252,7 +252,7 @@ export class GPUTimeWindowFilter implements GPUCommandNodeProducer {
       output.ids,
       output.count,
       output.overflow,
-      output.totalCount,
+      output.requiredCount,
       ...additionalPredicates.map(predicate => predicate.mask)
     ]);
     const rows = props.timestamps.length;
@@ -320,7 +320,7 @@ export class GPUTimeWindowFilter implements GPUCommandNodeProducer {
       createPublishNode<Parameters>(graph, {
         id: `${id}-publish`,
         operation: 'GPUTimeWindowFilter',
-        totalCount: total,
+        requiredCount: total,
         compactIds: direct ? undefined : compactIds,
         output,
         extraCounts: drawInstanceCount ? [drawInstanceCount] : []

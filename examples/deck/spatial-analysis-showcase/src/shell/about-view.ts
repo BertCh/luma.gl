@@ -20,12 +20,12 @@ export function renderAbout(root: HTMLElement): void {
         h(
           'p',
           {},
-          'This site shows the luma.gl spatial-analysis contributors working on real data. A contributor is a node in a GPU command graph: you compile the graph once, rewrite small parameter buffers each frame, and draw results straight from the GPU buffers they wrote.'
+          'This site applies luma.gl spatial-analysis contributors to observed, modeled and synthetic datasets. A contributor is a node in a GPU command graph: the graph is compiled once, parameters are updated when inputs change, and GPU-backed layers consume its output buffers.'
         ),
         h(
           'p',
           {},
-          'The map is deck.gl (WebGPU) over a MapLibre basemap. The analysis stays on the GPU; the only readbacks are tiny summaries that feed the readouts and legends.'
+          'The map uses deck.gl (WebGPU) over a MapLibre basemap. Large analysis outputs remain GPU-resident. Small asynchronous summary readbacks and scene-specific CPU preparation or post-processing are identified in the story and detail panel.'
         ),
         h(
           'p',

@@ -364,21 +364,28 @@ export class SegmentIndex {
     const reach = Math.ceil(maximumDistance / this.cellSize);
     let best = -1;
     let bestDistance = maximumDistance * maximumDistance;
-    for (let dRow = -reach; dRow <= reach; dRow++) {
-      for (let dColumn = -reach; dColumn <= reach; dColumn++) {
-        const c = column + dColumn;
-        const r = row + dRow;
-        if (c < 0 || r < 0 || c >= this.columns || r >= this.rows) continue;
-        const cell = r * this.columns + c;
-        for (let item = this.cellStart[cell]; item < this.cellStart[cell + 1]; item++) {
-          const segment = this.cellItems[item];
-          const distance = this.distanceSquared(segment, x, y);
-          if (distance < bestDistance) {
-            bestDistance = distance;
-            best = segment;
+    for (let ring = 0; ring <= reach; ring++) {
+      for (let rowOffset = -ring; rowOffset <= ring; rowOffset++) {
+        for (let columnOffset = -ring; columnOffset <= ring; columnOffset++) {
+          if (ring && Math.abs(rowOffset) !== ring && Math.abs(columnOffset) !== ring) continue;
+          const c = column + columnOffset;
+          const r = row + rowOffset;
+          if (c < 0 || r < 0 || c >= this.columns || r >= this.rows) continue;
+          const cell = r * this.columns + c;
+          for (let item = this.cellStart[cell]; item < this.cellStart[cell + 1]; item++) {
+            const segment = this.cellItems[item];
+            const distance = this.distanceSquared(segment, x, y);
+            if (distance < bestDistance) {
+              bestDistance = distance;
+              best = segment;
+            }
           }
         }
       }
+      // Segments are sampled into the grid at half-cell intervals. Two extra rings cover the
+      // cell containing the closest sampled point before the distance bound can terminate search.
+      const searchedDistance = Math.max(0, ring - 2) * this.cellSize;
+      if (best >= 0 && bestDistance <= searchedDistance * searchedDistance) break;
     }
     return best;
   }

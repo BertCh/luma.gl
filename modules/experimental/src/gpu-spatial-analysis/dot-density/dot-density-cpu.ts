@@ -46,8 +46,8 @@ export type DotDensityCPUResult = {
   /** Exclusive prefix of `slotCounts`. */
   slotOffsets: Uint32Array;
   /** Unclamped total dot count. */
-  totalCount: number;
-  /** `min(totalCount, capacity)`. */
+  requiredCount: number;
+  /** `min(requiredCount, capacity)`. */
   count: number;
   /** 1 when the total exceeds the capacity or a slot count was clamped. */
   overflow: number;
@@ -195,12 +195,12 @@ export function generateDotsOnCPU(input: DotDensityCPUInput): DotDensityCPUResul
     slotCounts[slot] = dots;
   }
   const slotOffsets = new Uint32Array(slotCount);
-  let totalCount = 0;
+  let requiredCount = 0;
   for (let slot = 0; slot < slotCount; slot++) {
-    slotOffsets[slot] = totalCount;
-    totalCount += slotCounts[slot];
+    slotOffsets[slot] = requiredCount;
+    requiredCount += slotCounts[slot];
   }
-  const count = Math.min(totalCount, input.capacity);
+  const count = Math.min(requiredCount, input.capacity);
   const positions = new Float32Array(count * 2);
   const featureIds = new Uint32Array(count);
   const categories = new Uint32Array(count);
@@ -247,9 +247,9 @@ export function generateDotsOnCPU(input: DotDensityCPUInput): DotDensityCPUResul
   return {
     slotCounts,
     slotOffsets,
-    totalCount,
+    requiredCount,
     count,
-    overflow: totalCount > input.capacity || clamped ? 1 : 0,
+    overflow: requiredCount > input.capacity || clamped ? 1 : 0,
     positions,
     featureIds,
     categories,

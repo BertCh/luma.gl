@@ -161,7 +161,7 @@ async function runRaster(
           triangleBands: importGraphBuffer(graph, 'bands', out.bands, 'uint32', triangleCapacity),
           count: importGraphBuffer(graph, 'count', out.count, 'uint32', 1),
           overflow: importGraphBuffer(graph, 'overflow', out.overflow, 'uint32', 1),
-          totalCount: importGraphBuffer(graph, 'total', out.total, 'uint32', 1)
+          requiredCount: importGraphBuffer(graph, 'total', out.total, 'uint32', 1)
         }
       }
     })

@@ -37,7 +37,8 @@ export type GPUCellCoverContainment = 'center' | 'full' | 'intersects';
  * Caller-owned, capacity-bounded result of {@link GPUCellCover}.
  *
  * `featureIds` and `cells` are parallel columns of the same capacity. `count` is clamped to that
- * capacity and `overflow` is 1 when the accepted cells or the candidate capacity overflowed.
+ * capacity. `overflow` reports only final output truncation; `candidateOverflow` independently
+ * reports an incomplete candidate stage.
  */
 export type GPUCellCoverOutput = {
   /** Source feature ID (or feature row when no `featureIds` input) per output cell. */
@@ -54,12 +55,14 @@ export type GPUCellCoverOutput = {
    * core may still lie entirely inside. Rows past `count` are not written.
    */
   core?: GraphDataView<'uint32'>;
-  /** One-row scalar receiving `min(totalCount, capacity)`. */
+  /** One-row scalar receiving `min(requiredCount, capacity)`. */
   count: GraphDataView<'uint32'>;
-  /** One-row scalar receiving 1 when any capacity overflowed. */
+  /** One-row scalar receiving 1 when accepted cells exceeded the final output capacity. */
   overflow: GraphDataView<'uint32'>;
-  /** Optional one-row scalar receiving the unclamped accepted cell count. */
-  totalCount?: GraphDataView<'uint32'>;
+  /** One-row scalar receiving 1 when `candidateCapacity` truncated candidate enumeration. */
+  candidateOverflow: GraphDataView<'uint32'>;
+  /** Optional unclamped accepted count; exact only when `candidateOverflow` is zero. */
+  requiredCount?: GraphDataView<'uint32'>;
 };
 
 /**
@@ -227,7 +230,8 @@ export class GPUCellCover implements GPUCommandNodeProducer {
     for (const [name, view] of [
       ['count', output.count],
       ['overflow', output.overflow],
-      ['totalCount', output.totalCount]
+      ['candidateOverflow', output.candidateOverflow],
+      ['requiredCount', output.requiredCount]
     ] as const) {
       if (view) {
         validatePackedUint32View(view, `${id} output.${name}`);
@@ -244,7 +248,8 @@ export class GPUCellCover implements GPUCommandNodeProducer {
         output.core,
         output.count,
         output.overflow,
-        output.totalCount
+        output.candidateOverflow,
+        output.requiredCount
       ],
       [
         props.polygonPositions,
@@ -273,7 +278,7 @@ export class GPUCellCover implements GPUCommandNodeProducer {
       output.core,
       output.count,
       output.overflow,
-      output.totalCount
+      output.requiredCount
     ]);
     const vertexCount = props.polygonPositions.length;
     const slabCapacities = this.edgeSlabs
@@ -313,7 +318,6 @@ export class GPUCellCover implements GPUCommandNodeProducer {
       candidateCapacity
     );
     const total = createTransientView(graph, `${id}-total`, 'uint32', 1);
-    const candidateOverflow = createTransientView(graph, `${id}-candidate-overflow`, 'uint32', 1);
     const slabNodes: GPUCommandNode<Parameters>[] = [];
     let slabViews:
       | {
@@ -450,19 +454,19 @@ export class GPUCellCover implements GPUCommandNodeProducer {
         starts,
         accepted,
         total,
-        candidateOverflow
+        candidateOverflow: output.candidateOverflow
       }),
       createPublishNode<Parameters>(graph, {
         id: `${id}-publish`,
         operation: 'GPUCellCover',
-        totalCount: total,
+        requiredCount: total,
         output: {
           ids: output.featureIds,
           count: output.count,
           overflow: output.overflow,
-          totalCount: output.totalCount
+          requiredCount: output.requiredCount
         },
-        overflowSources: [candidateOverflow]
+        overflowSources: []
       })
     ];
   }

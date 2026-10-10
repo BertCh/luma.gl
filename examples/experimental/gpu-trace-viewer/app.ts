@@ -6352,10 +6352,10 @@ export default class GPUTraceViewerAnimationLoopTemplate extends AnimationLoopTe
         ${makeMetricCard('Device contract', capacityContract.fitsChunkedDeviceLimits ? 'Fits' : 'Exceeds', formatBytes(this.device.limits.maxStorageBufferBindingSize))}`;
     }
     if (this.aggregationElement) {
-      const totalCount = this.groupAggregationCounts.reduce((sum, count) => sum + count, 0);
+      const requiredCount = this.groupAggregationCounts.reduce((sum, count) => sum + count, 0);
       this.aggregationElement.innerHTML = TRACE_GROUPS.map((group, groupIndex) => {
         const count = this.groupAggregationCounts[groupIndex];
-        const share = totalCount > 0 ? count / totalCount : 0;
+        const share = requiredCount > 0 ? count / requiredCount : 0;
         return `<article class="trace-group-row" style="--trace-group-color:${TRACE_GROUP_COLORS[groupIndex]}">
           <div class="trace-group-heading"><span><i></i>${group}</span><strong>${formatCount(count)}</strong></div>
           <div class="trace-group-track"><span style="width:${(share * 100).toFixed(2)}%"></span></div>
@@ -6364,10 +6364,10 @@ export default class GPUTraceViewerAnimationLoopTemplate extends AnimationLoopTe
       }).join('');
     }
     if (this.statusAggregationElement) {
-      const totalCount = this.statusAggregationCounts.reduce((sum, count) => sum + count, 0);
+      const requiredCount = this.statusAggregationCounts.reduce((sum, count) => sum + count, 0);
       this.statusAggregationElement.innerHTML = STATUS_NAMES.map((status, statusIndex) => {
         const count = this.statusAggregationCounts[statusIndex];
-        const share = totalCount > 0 ? count / totalCount : 0;
+        const share = requiredCount > 0 ? count / requiredCount : 0;
         return `<article class="trace-status-card" style="--trace-status-color:${TRACE_STATUS_COLORS[statusIndex]}">
           <span><i></i>${status}</span>
           <strong>${formatCount(count)}</strong>
@@ -6376,11 +6376,11 @@ export default class GPUTraceViewerAnimationLoopTemplate extends AnimationLoopTe
       }).join('');
     }
     if (this.operationAggregationElement) {
-      const totalCount = this.operationAggregationCounts.reduce((sum, count) => sum + count, 0);
+      const requiredCount = this.operationAggregationCounts.reduce((sum, count) => sum + count, 0);
       this.operationAggregationElement.innerHTML = TRACE_LABEL_DICTIONARY.map(
         (operation, operationIndex) => {
           const count = this.operationAggregationCounts[operationIndex];
-          const share = totalCount > 0 ? count / totalCount : 0;
+          const share = requiredCount > 0 ? count / requiredCount : 0;
           const groupIndex = Math.floor(operationIndex / TRACE_STATUS_COUNT);
           return `<article class="trace-status-card" style="--trace-status-color:${TRACE_GROUP_COLORS[groupIndex]}">
             <span title="${operation}"><i></i>${operation}</span>
@@ -6391,7 +6391,7 @@ export default class GPUTraceViewerAnimationLoopTemplate extends AnimationLoopTe
       ).join('');
     }
     if (this.aggregationSummaryElement) {
-      const totalCount = this.groupAggregationCounts.reduce((sum, count) => sum + count, 0);
+      const requiredCount = this.groupAggregationCounts.reduce((sum, count) => sum + count, 0);
       const totalDuration = this.groupAggregationDurationSums.reduce(
         (sum, duration) => sum + duration,
         0
@@ -6405,14 +6405,14 @@ export default class GPUTraceViewerAnimationLoopTemplate extends AnimationLoopTe
         0
       );
       const errorCount = this.statusAggregationCounts[STATUS_NAMES.indexOf('error')];
-      const errorRate = totalCount > 0 ? errorCount / totalCount : 0;
+      const errorRate = requiredCount > 0 ? errorCount / requiredCount : 0;
       const busiestProcessIndex = getMaximumValueIndex(this.processAggregationCounts);
       const busiestThreadIndex = getMaximumValueIndex(this.threadAggregationCounts);
       const busiestOperationIndex = getMaximumValueIndex(this.operationAggregationCounts);
       const busiestThreadProcessIndex = Math.floor(busiestThreadIndex / TRACE_THREADS_PER_PROCESS);
       const busiestLocalThreadIndex = busiestThreadIndex % TRACE_THREADS_PER_PROCESS;
       this.aggregationSummaryElement.innerHTML = `
-        ${makeMetricCard('Matched spans', formatCount(totalCount), 'GPU interval mask')}
+        ${makeMetricCard('Matched spans', formatCount(requiredCount), 'GPU interval mask')}
         ${makeMetricCard('Span duration', formatTraceDuration(totalDuration), 'full duration of intersecting spans')}
         ${makeMetricCard('Active lane-time', formatTraceDuration(totalOccupiedLaneTime), 'clipped to analysis interval')}
         ${makeMetricCard('Idle lane-time', formatTraceDuration(totalIdleLaneTime), `${formatCount(TRACE_LANE_COUNT)} lane capacity`)}

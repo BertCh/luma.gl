@@ -2,8 +2,53 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {defineGPUSpatialParameterSchema} from '../contracts/index';
+
 /** Number of float32 elements in a {@link GPUNeighborSearch} parameter view. */
 export const GPU_NEIGHBOR_SEARCH_PARAMETER_LENGTH = 12;
+
+/** Declarative layout of the packed neighbor-search view. */
+export const GPU_NEIGHBOR_SEARCH_PARAMETER_SCHEMA = defineGPUSpatialParameterSchema({
+  id: 'neighbor-search',
+  format: 'float32',
+  wordLength: GPU_NEIGHBOR_SEARCH_PARAMETER_LENGTH,
+  fields: [
+    {name: 'minimumX', format: 'float32', wordOffset: 0, defaultValue: 0, dynamic: true},
+    {name: 'minimumY', format: 'float32', wordOffset: 1, defaultValue: 0, dynamic: true},
+    {name: 'maximumX', format: 'float32', wordOffset: 2, defaultValue: 0, dynamic: true},
+    {name: 'maximumY', format: 'float32', wordOffset: 3, defaultValue: 0, dynamic: true},
+    {
+      name: 'radius',
+      format: 'float32',
+      wordOffset: 4,
+      defaultValue: Infinity,
+      allowNonFinite: true,
+      units: 'position-units',
+      dynamic: true
+    },
+    {name: 'weightKind', format: 'float32', wordOffset: 5, defaultValue: 0, dynamic: true},
+    {name: 'power', format: 'float32', wordOffset: 6, defaultValue: 1, dynamic: true},
+    {
+      name: 'distanceFloor',
+      format: 'float32',
+      wordOffset: 7,
+      defaultValue: 0,
+      minimum: 0,
+      units: 'position-units',
+      dynamic: true
+    },
+    {name: 'kernel', format: 'float32', wordOffset: 8, defaultValue: 1, dynamic: true},
+    {
+      name: 'rowStandardize',
+      format: 'float32',
+      wordOffset: 9,
+      defaultValue: 0,
+      minimum: 0,
+      maximum: 1,
+      dynamic: true
+    }
+  ]
+});
 
 /** Encoded `weightKind` values stored in parameter slot 5. */
 export const GPU_NEIGHBOR_SEARCH_WEIGHT_KIND = {

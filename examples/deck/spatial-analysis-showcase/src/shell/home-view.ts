@@ -14,6 +14,7 @@ export async function renderHome(root: HTMLElement, focusChapter: string | null)
   root.replaceChildren(h('div', {class: 'page-loading'}, 'Loading stories…'));
   const scenes = await loadScenes();
   const total = scenes.length;
+  const validatedStart = scenes.find(scene => scene.id === 'rainfall-interpolation') ?? scenes[0];
   const hero = h(
     'section',
     {class: 'hero'},
@@ -22,16 +23,16 @@ export async function renderHome(root: HTMLElement, focusChapter: string | null)
     h(
       'p',
       {class: 'lede'},
-      'Real datasets, guided stories and live controls for luma.gl’s analysis contributors. Every map you see is computed in WebGPU compute shaders and drawn straight from GPU buffers, with no readback in the frame loop.'
+      'Start with a spatial question, follow the evidence across maps and linked charts, then test the assumptions with live controls. Each story names its data, method and limits while GPU command graphs feed the analysis directly into the view.'
     ),
     h(
       'div',
       {class: 'hero-actions'},
-      total
+      validatedStart
         ? h(
             'a',
-            {class: 'btn btn-primary', href: getStoryHash(scenes[0].id)},
-            'Start with the first story'
+            {class: 'btn btn-primary', href: getStoryHash(validatedStart.id)},
+            'Open a validated example'
           )
         : null,
       h('a', {class: 'btn', href: getReferenceHash()}, 'Browse the reference'),
@@ -69,6 +70,10 @@ export async function renderHome(root: HTMLElement, focusChapter: string | null)
 }
 
 function renderSceneCard(scene: AnyScene): HTMLElement {
+  const chartCount = (scene.readouts ?? []).filter(readout => readout.kind === 'chart').length;
+  const storyLabel = `${scene.story.length}-step story`;
+  const chartLabel = `${chartCount} ${chartCount === 1 ? 'chart' : 'charts'}`;
+  const datasetLabel = `${scene.datasets.length} ${scene.datasets.length === 1 ? 'dataset' : 'datasets'}`;
   return h(
     'a',
     {class: 'scene-card', href: getStoryHash(scene.id)},
@@ -82,6 +87,13 @@ function renderSceneCard(scene: AnyScene): HTMLElement {
       {class: 'scene-card-body'},
       h('h3', {}, scene.title),
       h('p', {}, scene.summary),
+      h(
+        'p',
+        {class: 'scene-card-meta', 'aria-label': `${storyLabel}, ${chartLabel}, ${datasetLabel}`},
+        h('span', {}, storyLabel),
+        h('span', {}, chartLabel),
+        h('span', {}, datasetLabel)
+      ),
       h(
         'div',
         {class: 'chips'},

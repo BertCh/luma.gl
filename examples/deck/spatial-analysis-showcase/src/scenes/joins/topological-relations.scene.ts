@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {ground} from '../../cartography/grounds';
 import {defineScene, type LegendSpec} from '../scene';
 import type {TopologicalOptions} from './topological-relations.compute';
 
@@ -13,11 +14,11 @@ const COMBO_LABELS: Record<TopologicalOptions['combo'], {left: string; right: st
 
 export default defineScene<TopologicalOptions>({
   id: 'topological-relations',
-  title: 'Topological relations between layers',
+  title: 'Chicago geometries: exact topological relation counts',
   chapter: 'joins',
   order: 4,
   summary:
-    'Exact OGC predicates on the GPU: which tracts nest in community areas, which straddle a boundary, which roads cross tracts, and queen and rook contiguity from DE-9IM patterns. Anti joins, engines and relate matrices included.',
+    'GPU OGC predicates and DE-9IM patterns join Chicago tracts, community areas and roads into relation counts and contiguity links. Float32 coordinates and mismatched source boundaries limit exact agreement.',
   contributors: ['GPUSpatialPredicateJoin', 'GPUSpatialJoinPrepared'],
   datasets: [
     {id: 'chicago-tracts', role: 'left and right polygons'},
@@ -25,6 +26,16 @@ export default defineScene<TopologicalOptions>({
     {id: 'chicago-roads', role: 'left lines'}
   ],
   initialView: {longitude: -87.68, latitude: 41.84, zoom: 10},
+  basemap: ground('paperCity'),
+  furniture: {
+    title: {
+      title: 'Topological relations',
+      subtitle: 'Exact predicate matches between Chicago layers'
+    },
+    scaleBar: {units: 'metric'},
+    credit: 'U.S. Census Bureau; City of Chicago; OpenStreetMap contributors',
+    caveat: 'Source-boundary mismatch and float32 coordinates affect exact predicates.'
+  },
 
   options: [
     {
@@ -187,7 +198,7 @@ export default defineScene<TopologicalOptions>({
       label: 'Count ramp',
       group: 'Display',
       apply: 'param',
-      default: 'viridis',
+      default: 'cividis',
       disabledWhen: state => state.show !== 'count',
       help: 'Ramp for the number of matches.',
       options: [
@@ -343,7 +354,7 @@ graph.add(
     }${['intersects', 'contains', 'within', 'dwithin'].includes(state.predicate) ? `\n    engine: '${state.engine}',` : ''}${state.combo === 'tracts-self' ? '\n    excludeSameRow: true,' : ''}
     candidateCapacity,
     prepared,
-    pairs: {leftIds, rightIds, count, overflow, totalCount},${state.matrix && state.predicate !== 'dwithin' ? '\n    relate: matrices,                         // formatGPUSpatialRelate(word)' : ''}${state.combo === 'tracts-self' ? '\n    weights: {offsets, neighbors, weights},   // cross weights, CSR' : ''}
+    pairs: {leftIds, rightIds, count, overflow, requiredCount},${state.matrix && state.predicate !== 'dwithin' ? '\n    relate: matrices,                         // formatGPUSpatialRelate(word)' : ''}${state.combo === 'tracts-self' ? '\n    weights: {offsets, neighbors, weights},   // cross weights, CSR' : ''}
     uncertainCount, candidateCount
   })
 );
@@ -365,6 +376,9 @@ compiled.encode(commandEncoder, {parameters: undefined});`;
   story: [
     {
       id: 'the-question',
+      headline: 'Some tracts fail exact containment by community areas',
+      textAlternative:
+        'Chicago census tracts are colored by exact within matches against community-area polygons.',
       controls: ['combo', 'predicate', 'show'],
       readouts: ['pairs', 'candidates'],
       title: 'Do census tracts nest inside community areas?',
@@ -375,6 +389,9 @@ compiled.encode(commandEncoder, {parameters: undefined});`;
     },
     {
       id: 'anti-join',
+      headline: 'The anti-join isolates tracts without containment matches',
+      textAlternative:
+        'Unmatched tracts are highlighted where exact boundaries prevent a within relation.',
       controls: ['show'],
       readouts: ['anti', 'selection'],
       title: 'The anti join: tracts that nest nowhere',
@@ -383,6 +400,9 @@ compiled.encode(commandEncoder, {parameters: undefined});`;
     },
     {
       id: 'straddlers',
+      headline: 'Overlaps identify tracts crossing area boundaries',
+      textAlternative:
+        'Selected tracts intersect community-area interiors without being contained by either polygon.',
       controls: ['predicate', 'matrix'],
       readouts: ['matrices', 'selection', 'engine'],
       title: 'overlaps finds the straddlers',
@@ -391,6 +411,8 @@ compiled.encode(commandEncoder, {parameters: undefined});`;
     },
     {
       id: 'queen-contiguity',
+      headline: 'Queen contiguity averages multiple neighbors per tract',
+      textAlternative: 'Tracts are colored by touching-neighbor count, including shared corners.',
       controls: ['combo', 'predicate', 'show'],
       readouts: ['contiguity', 'parity'],
       title: 'Queen contiguity is the touches predicate',
@@ -399,6 +421,8 @@ compiled.encode(commandEncoder, {parameters: undefined});`;
     },
     {
       id: 'rook-from-a-pattern',
+      headline: 'Rook contiguity excludes corner-only neighbors',
+      textAlternative: 'A DE-9IM edge-sharing pattern links tracts that share boundary segments.',
       controls: ['predicate', 'pattern'],
       readouts: ['contiguity', 'parity'],
       title: 'Rook contiguity from a DE-9IM pattern',
@@ -407,6 +431,9 @@ compiled.encode(commandEncoder, {parameters: undefined});`;
     },
     {
       id: 'roads-cross-tracts',
+      headline: 'Road segments produce distinct crossing and containment matches',
+      textAlternative:
+        'Road edges are tested against census tracts for crosses, within and intersects relations.',
       controls: ['predicate', 'show'],
       readouts: ['pairs', 'engine'],
       title: 'Roads against tracts: crosses and within',
@@ -416,6 +443,8 @@ compiled.encode(commandEncoder, {parameters: undefined});`;
     },
     {
       id: 'distance-and-limits',
+      headline: 'Distance tolerance admits near-boundary geometry pairs',
+      textAlternative: 'A planar tolerance includes geometry pairs separated by small gaps.',
       controls: ['predicate', 'distance', 'measure'],
       readouts: ['timing', 'flags'],
       title: 'A distance instead of topology, and the limits',

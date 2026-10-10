@@ -574,7 +574,7 @@ graph.add(
     excludeSelfFlows: ${state.excludeSelf},
     sumOrder: '${state.sumOrder}',
     pairCapacity: ${state.source === 'taxi' ? '16384' : '131072'},
-    output: {ids, count, overflow, totalCount},         // top-${TOP_FLOW_COUNT} pairs, heaviest first
+    output: {ids, count, overflow, requiredCount},         // top-${TOP_FLOW_COUNT} pairs, heaviest first
     flowOriginZoneIds, flowDestinationZoneIds, flowWeights,
     zoneOutWeights, zoneInWeights                       // per-zone totals
   })

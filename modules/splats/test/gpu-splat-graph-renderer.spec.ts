@@ -314,11 +314,7 @@ it('GPUSplatGraphRenderer evaluates higher-order spherical harmonics on real Web
     device.submit();
     const initialGraph = renderer.compiledGraph;
     const firstRecordBytes = await renderer.projectedRecordBuffer!.readAsync();
-    const firstRecord = new Float32Array(
-      firstRecordBytes.buffer,
-      firstRecordBytes.byteOffset,
-      firstRecordBytes.byteLength / Float32Array.BYTES_PER_ELEMENT
-    );
+    const firstRecord = unpackProjectedRecord(firstRecordBytes, 0);
     const firstRed = firstRecord[8];
     const firstGreen = firstRecord[9];
     expect(
@@ -331,11 +327,7 @@ it('GPUSplatGraphRenderer evaluates higher-order spherical harmonics on real Web
     renderer.encode(device.commandEncoder);
     device.submit();
     const secondRecordBytes = await renderer.projectedRecordBuffer!.readAsync();
-    const secondRecord = new Float32Array(
-      secondRecordBytes.buffer,
-      secondRecordBytes.byteOffset,
-      secondRecordBytes.byteLength / Float32Array.BYTES_PER_ELEMENT
-    );
+    const secondRecord = unpackProjectedRecord(secondRecordBytes, 0);
     expect(
       Boolean(secondRecord[8] > firstRed + 0.7),
       'reverses the SH basis when the camera crosses the row'
@@ -367,11 +359,7 @@ it('GPUSplatGraphRenderer evaluates higher-order spherical harmonics on real Web
     renderer.encode(device.commandEncoder);
     device.submit();
     const secondDegreeBytes = await renderer.projectedRecordBuffer!.readAsync();
-    const secondDegreeRecord = new Float32Array(
-      secondDegreeBytes.buffer,
-      secondDegreeBytes.byteOffset,
-      secondDegreeBytes.byteLength / Float32Array.BYTES_PER_ELEMENT
-    );
+    const secondDegreeRecord = unpackProjectedRecord(secondDegreeBytes, 0);
     expect(
       Boolean(secondDegreeRecord[9] > 0.55),
       'evaluates the complete second-order zonal green basis'
@@ -385,11 +373,7 @@ it('GPUSplatGraphRenderer evaluates higher-order spherical harmonics on real Web
     renderer.encode(device.commandEncoder);
     device.submit();
     const thirdDegreeBytes = await renderer.projectedRecordBuffer!.readAsync();
-    const thirdDegreeRecord = new Float32Array(
-      thirdDegreeBytes.buffer,
-      thirdDegreeBytes.byteOffset,
-      thirdDegreeBytes.byteLength / Float32Array.BYTES_PER_ELEMENT
-    );
+    const thirdDegreeRecord = unpackProjectedRecord(thirdDegreeBytes, 0);
     expect(
       Boolean(thirdDegreeRecord[10] > 0.6),
       'evaluates the complete third-order zonal blue basis'
@@ -402,11 +386,7 @@ it('GPUSplatGraphRenderer evaluates higher-order spherical harmonics on real Web
     renderer.encode(device.commandEncoder);
     device.submit();
     const restoredRecordBytes = await renderer.projectedRecordBuffer!.readAsync();
-    const restoredRecord = new Float32Array(
-      restoredRecordBytes.buffer,
-      restoredRecordBytes.byteOffset,
-      restoredRecordBytes.byteLength / Float32Array.BYTES_PER_ELEMENT
-    );
+    const restoredRecord = unpackProjectedRecord(restoredRecordBytes, 0);
     expect(
       Boolean(Math.abs(restoredRecord[8] - 0.5) < 0.0001),
       'restores DC radiance when bands are disabled'
@@ -629,4 +609,46 @@ function makeBrowserGraphSplatSource(depths: readonly number[], rowIndexBase: nu
     opacities[rowIndex] = 1;
   }
   return {positions, scales, rotations, colors, opacities, rowIndexBase};
+}
+
+/** Decodes one packed 32-byte projected record into its logical Float32 components. */
+function unpackProjectedRecord(bytes: Uint8Array, recordIndex: number): Float32Array {
+  const words = new Uint32Array(bytes.buffer, bytes.byteOffset, bytes.byteLength / 4);
+  const floats = new Float32Array(bytes.buffer, bytes.byteOffset, bytes.byteLength / 4);
+  const base = recordIndex * 8;
+  const [axisX0, axisY0] = unpackHalfPair(words[base + 4]);
+  const [axisX1, axisY1] = unpackHalfPair(words[base + 5]);
+  const [red, green] = unpackHalfPair(words[base + 6]);
+  const [blue, alpha] = unpackHalfPair(words[base + 7]);
+  return Float32Array.from([
+    floats[base],
+    floats[base + 1],
+    floats[base + 2],
+    floats[base + 3],
+    axisX0,
+    axisY0,
+    axisX1,
+    axisY1,
+    red,
+    green,
+    blue,
+    alpha
+  ]);
+}
+
+function unpackHalfPair(packed: number): [number, number] {
+  return [decodeHalfPrecision(packed & 0xffff), decodeHalfPrecision(packed >>> 16)];
+}
+
+function decodeHalfPrecision(bits: number): number {
+  const sign = bits & 0x8000 ? -1 : 1;
+  const exponent = (bits >> 10) & 0x1f;
+  const fraction = bits & 0x3ff;
+  if (exponent === 0) {
+    return sign * fraction * 2 ** -24;
+  }
+  if (exponent === 0x1f) {
+    return fraction ? Number.NaN : sign * Number.POSITIVE_INFINITY;
+  }
+  return sign * (1 + fraction / 1024) * 2 ** (exponent - 15);
 }

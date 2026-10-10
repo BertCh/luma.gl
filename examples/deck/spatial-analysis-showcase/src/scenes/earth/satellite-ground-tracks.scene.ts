@@ -275,7 +275,7 @@ export default defineScene<SatelliteGroundTracksOptions>({
 // positions: float32x2 [longitude, latitude] degrees; tracks are cut at the antimeridian
 graph.add(new GPULineDensity({
   positions, pathOffsets: trackOffsets,
-  columns: 180, rows: 85, coordinateSystem: 'spherical',   // 2 degree cells, exact spherical areas
+  columns: 180, rows: 85, spatialContext: {coordinateSpace: 'longitude-latitude', metric: 'great-circle', units: 'meters'},   // 2 degree cells, exact spherical areas
   parameters: gridParameters.importToGraph(graph),
   output: {lengths, densities, overflow}
 }));

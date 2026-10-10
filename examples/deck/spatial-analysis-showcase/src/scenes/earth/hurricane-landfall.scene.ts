@@ -374,7 +374,7 @@ import {GPUDistanceField, getGPUDistanceFieldParameterValues} from '@luma.gl/exp
 
 // Where tracks pass: one density node per wind threshold (paths split where wind < threshold)
 for (const [index, threshold] of [0, 34, 64, 96].entries()) {
-  densityGraph.add(new GPULineDensity({
+  densityGraph.add(new GPULineDensity({spatialContext: {coordinateSpace: 'planar', metric: 'native', units: 'native'},
     id: 'density-' + index, positions: pathsAbove[index], pathOffsets: offsetsAbove[index],
     columns: ${360}, rows: ${232}, parameters: gridParameters,   // [minX, minY, cellWidth, cellHeight]
     output: {lengths: lengths[index], overflow}

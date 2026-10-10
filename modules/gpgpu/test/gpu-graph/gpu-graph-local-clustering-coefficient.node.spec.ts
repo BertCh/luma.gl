@@ -5,6 +5,7 @@
 import {Buffer} from '@luma.gl/core';
 import {DynamicBuffer} from '@luma.gl/engine';
 import * as experimentalModule from '@luma.gl/experimental';
+import {GPUCommandGraph} from '@luma.gl/gpgpu/gpu-core';
 import {
   GPUGraph,
   GPUGraphLocalClusteringCoefficient,
@@ -15,7 +16,10 @@ import {
 import {GPUData, GPUVector} from '@luma.gl/gpgpu/gpu-data';
 import {NullDevice} from '@luma.gl/test-utils';
 import {afterEach, describe, expect, test, vi} from 'vitest';
-import {getGPUGraphLocalClusteringCoefficientDispatchLayout} from '../../src/gpu-graph/gpu-graph-local-clustering-coefficient-internals';
+import {
+  getGPUGraphLocalClusteringCoefficientAlgorithm,
+  getGPUGraphLocalClusteringCoefficientDispatchLayout
+} from '../../src/gpu-graph/gpu-graph-local-clustering-coefficient-internals';
 
 type ScalarFormat = 'uint32' | 'float32';
 type ScalarValues = Uint32Array | Float32Array;
@@ -139,9 +143,86 @@ describe('GPUGraphLocalClusteringCoefficient public contract and ownership', () 
       /3D dispatch limit/
     );
   });
+
+  test('canonicalizes both directed CSR orientations before one merge-intersection pass', () => {
+    const fixture = createClusteringFixture();
+    const clustering = new GPUGraphLocalClusteringCoefficient({
+      ...createClusteringProps(fixture, {triangles: true}),
+      algorithm: 'canonical'
+    });
+    Object.defineProperty(fixture.device, 'type', {value: 'webgpu'});
+    Object.defineProperty(fixture.device, 'limits', {
+      value: {...fixture.device.limits, maxComputeWorkgroupsPerDimension: 65_535}
+    });
+    const graph = new GPUCommandGraph(fixture.device);
+    const addComputePass = vi.spyOn(graph, 'addComputePass');
+    clustering.topology.addToGraph(graph);
+    clustering.addToGraph(graph);
+    const nodeOrder = addComputePass.mock.calls.map(([pass]) => pass.id);
+    const prefix = 'gpu-graph-local-clustering-coefficient';
+
+    for (const direction of ['forward', 'reverse']) {
+      const materialize = nodeOrder.indexOf(`${prefix}-${direction}-canonical-materialize`);
+      const sortNeighbor = nodeOrder.indexOf(
+        `${prefix}-${direction}-canonical-sort-neighbor-bitonic-local`
+      );
+      const sortRow = nodeOrder.indexOf(`${prefix}-${direction}-canonical-sort-row-bitonic-local`);
+      const calculate = nodeOrder.indexOf(`${prefix}-calculate`);
+      expect(materialize).toBeGreaterThanOrEqual(0);
+      expect(sortNeighbor).toBeGreaterThan(materialize);
+      expect(sortRow).toBeGreaterThan(sortNeighbor);
+      const uniqueFlags = nodeOrder.indexOf(`${prefix}-${direction}-canonical-unique-flags`);
+      const uniqueScatter = nodeOrder.indexOf(`${prefix}-${direction}-canonical-unique-scatter`);
+      expect(uniqueFlags).toBeGreaterThan(sortRow);
+      expect(uniqueScatter).toBeGreaterThan(uniqueFlags);
+      expect(calculate).toBeGreaterThan(uniqueScatter);
+    }
+    expect(
+      nodeOrder.filter(identifier => identifier === `${prefix}-calculate`),
+      'one intersection pass replaces per-neighbor membership-search dispatches'
+    ).toHaveLength(1);
+  });
+
+  test('auto keeps sparse graphs direct and sends dense capacity to canonical intersections', () => {
+    expect(getGPUGraphLocalClusteringCoefficientAlgorithm('auto', 1_000, 2_000, 2_000)).toBe(
+      'direct'
+    );
+    expect(getGPUGraphLocalClusteringCoefficientAlgorithm('auto', 1_000, 4_001, 4_000)).toBe(
+      'canonical'
+    );
+    expect(getGPUGraphLocalClusteringCoefficientAlgorithm('canonical', 1_000, 1, 1)).toBe(
+      'canonical'
+    );
+    expect(getGPUGraphLocalClusteringCoefficientAlgorithm('direct', 1, 10_000, 10_000)).toBe(
+      'direct'
+    );
+
+    const fixture = createClusteringFixture();
+    Object.defineProperty(fixture.device, 'type', {value: 'webgpu'});
+    Object.defineProperty(fixture.device, 'limits', {
+      value: {...fixture.device.limits, maxComputeWorkgroupsPerDimension: 65_535}
+    });
+    const graph = new GPUCommandGraph(fixture.device);
+    const addComputePass = vi.spyOn(graph, 'addComputePass');
+    new GPUGraphLocalClusteringCoefficient(createClusteringProps(fixture)).addToGraph(graph);
+    expect(addComputePass.mock.calls.map(([pass]) => pass.id)).toEqual([
+      'gpu-graph-local-clustering-coefficient-calculate-direct'
+    ]);
+  });
 });
 
 describe('GPUGraphLocalClusteringCoefficient output validation', () => {
+  test('rejects an unknown clustering algorithm', () => {
+    const fixture = createClusteringFixture();
+    expect(
+      () =>
+        new GPUGraphLocalClusteringCoefficient({
+          ...createClusteringProps(fixture),
+          algorithm: 'quadratic' as never
+        })
+    ).toThrow(/algorithm/);
+  });
+
   test.each([5, 7])('requires exactly one coefficient row per vertex: %i', length => {
     const fixture = createClusteringFixture();
     const props = createClusteringProps(fixture);

@@ -87,7 +87,7 @@ The application compiles, encodes, submits, and decides whether any bounded resu
   application rewrites with `write()`. Lengths, capacities, grid sizes, and which optional views
   exist are compile-time topology; each prop's TSDoc says which category it belongs to.
 - **Bounded results report overflow on the GPU.** Compact ID lists use `GPUCompactOutput`
-  (`ids`, `count`, `overflow`, optional `totalCount`). `count` is clamped to `ids.length` and can be
+  (`ids`, `count`, `overflow`, optional `requiredCount`). `count` is clamped to `ids.length` and can be
   an indirect draw instance count; `overflow` is rewritten every encoding.
 - **Stable IDs.** Result IDs are the caller's `sourceIds[row]` (or tile IDs) when given and zero-based
   rows otherwise. Node and transient IDs are `${id}-<step>`, so two instances in one graph need

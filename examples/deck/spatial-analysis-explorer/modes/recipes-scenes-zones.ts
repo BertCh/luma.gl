@@ -200,17 +200,19 @@ export function createRateClusterScene(analyze: 'standardized' | 'smoothed'): Re
       parameters: autocorrelation.view,
       permutation: {
         parameters: permutationParameters.view,
-        maximumPermutations: 199,
-        significant: significant.view
+        maximumPermutations: 199
       },
       palette: palette.view,
-      summary: summary.view,
-      weightsOverflow: weightsOverflow.view,
-      zScores: zScores.view,
-      standardizedRates: analyze === 'standardized' ? rates.view : undefined,
-      smoothedRates: analyze === 'smoothed' ? rates.view : undefined,
-      quadrants: quadrants.view,
-      colors: colors.view
+      outputs: {
+        weightsOverflow: weightsOverflow.view,
+        zScores: zScores.view,
+        standardizedRates: analyze === 'standardized' ? rates.view : undefined,
+        smoothedRates: analyze === 'smoothed' ? rates.view : undefined,
+        quadrants: quadrants.view,
+        colors: colors.view,
+        permutation: {significant: significant.view}
+      },
+      scratch: {summary: summary.view}
     });
     const compiled = kit.compile();
 
@@ -397,19 +399,19 @@ export function createChoroplethScene(backend: 'zonal' | 'group'): RecipeSceneBu
         ...geometry,
         candidateCapacity: Math.max(4096, pointCount * 4)
       },
-      counts: counts.view,
-      featureValues: meanValues?.view,
-      overflow: overflow.view,
+      outputs: {
+        counts: counts.view,
+        featureValues: meanValues?.view,
+        overflow: overflow.view,
+        color: {breaks: breaks.view, classCount: classes.view, colors: colors.view}
+      },
       color: {
         classBreaksParameters: classBreaks.view,
         maximumClassCount: CHOROPLETH_MAXIMUM_CLASSES,
         methods: [...CHOROPLETH_METHODS],
         colorScaleParameters: colorScale.view,
         palette: palette.view,
-        maximumPaletteCount: CHOROPLETH_MAXIMUM_CLASSES,
-        breaks: breaks.view,
-        classCount: classes.view,
-        colors: colors.view
+        maximumPaletteCount: CHOROPLETH_MAXIMUM_CLASSES
       }
     });
     const compiled = kit.compile();
@@ -610,10 +612,12 @@ export const buildChangeOfSupportScene: RecipeSceneBuilder = async host => {
     cellWeights: cellWeights.view,
     pairCapacity,
     sourceValues: sourceInput.view,
-    extensiveValues: extensive.view,
-    intensiveValues: intensiveValues.view,
-    overflow: overflow.view,
-    totalPairs: totalPairs.view
+    outputs: {
+      extensiveValues: extensive.view,
+      intensiveValues: intensiveValues.view,
+      overflow: overflow.view,
+      requiredCount: totalPairs.view
+    }
   });
   writeWeights();
   const compiled = kit.compile();

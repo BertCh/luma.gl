@@ -11,22 +11,39 @@ import {
   getBoundedDispatchLayout,
   getBoundedInvocationIndexSource
 } from '../gpu-core/gpu-dispatch-utils';
-import {getViewBinding, getViewElementOffset} from '../gpu-core/graph-data-view-utils';
+import {
+  createTransientView,
+  getViewBinding,
+  getViewElementOffset
+} from '../gpu-core/graph-data-view-utils';
+import {GPUScan} from '../gpu-core/gpu-scan';
+import {GPUSort} from '../gpu-core/gpu-sort';
 import type {GPUGraphLocalClusteringCoefficient} from './gpu-graph-local-clustering-coefficient';
+import {addDirectLocalClusteringToGraph} from './gpu-graph-local-clustering-coefficient-direct';
 
 const LOCAL_CLUSTERING_WORKGROUP_SIZE = 256;
 const INVALID_TRIANGLE_COUNT = 0xffffffff;
+/** Above this physical slot density, sort/compact cost is amortized by shorter intersections. */
+const DIRECT_MAXIMUM_SLOTS_PER_VERTEX = 8;
+
+type ImportedAdjacency = {
+  id: string;
+  offsets: GraphDataView<'uint32'>;
+  neighbors: GraphDataView<'uint32'>;
+  overflow: GraphDataView<'uint32'>;
+};
+
+type CanonicalAdjacency = {
+  rows: GraphDataView<'uint32'>;
+  neighbors: GraphDataView<'uint32'>;
+};
 
 type ImportedLocalClustering = {
   id: string;
   vertexCount: number;
   directed: boolean;
-  forwardOffsets: GraphDataView<'uint32'>;
-  forwardNeighbors: GraphDataView<'uint32'>;
-  forwardOverflow: GraphDataView<'uint32'>;
-  reverseOffsets?: GraphDataView<'uint32'>;
-  reverseNeighbors?: GraphDataView<'uint32'>;
-  reverseOverflow?: GraphDataView<'uint32'>;
+  forward: ImportedAdjacency;
+  reverse?: ImportedAdjacency;
   output: GraphDataView<'float32'>;
   triangles?: GraphDataView<'uint32'>;
 };
@@ -36,7 +53,15 @@ type LocalClusteringBinding = {
   usage: GraphBufferUse['usage'];
 };
 
-/** Declares exact Graphalytics clustering across existing unordered weak neighborhoods. @internal */
+/**
+ * Declares exact Graphalytics clustering through operation-owned sorted adjacency scratch.
+ *
+ * The canonicalization is deliberately local to this operation: caller-owned CSR order and
+ * duplicate slots remain untouched. Each orientation is stably sorted by neighbor and then row,
+ * yielding lexicographic `(row, neighbor)` order before a flag-scan-scatter removes equal pairs.
+ * The final pass intersects sorted unique rows, reducing a hub from cubic membership scans to
+ * quadratic merge work in its distinct degree. @internal
+ */
 export function addGPUGraphLocalClusteringCoefficientToGraphWithDispatchLimit<Parameters>(
   clustering: GPUGraphLocalClusteringCoefficient,
   commandGraph: GPUCommandGraph<Parameters>,
@@ -45,39 +70,30 @@ export function addGPUGraphLocalClusteringCoefficientToGraphWithDispatchLimit<Pa
   const vertexCount = clustering.topology.graph.vertexCount;
   if (vertexCount === 0) return;
 
-  const reverse = clustering.topology.graph.directed ? clustering.topology.reverse : undefined;
+  const topology = clustering.topology;
+  const reverse = topology.graph.directed ? topology.reverse : undefined;
+  const algorithm = getGPUGraphLocalClusteringCoefficientAlgorithm(
+    clustering.algorithm,
+    vertexCount,
+    topology.forward.neighbors.length,
+    reverse?.neighbors.length ?? 0
+  );
+  if (algorithm === 'direct') {
+    addDirectLocalClusteringToGraph(clustering, commandGraph, maxComputeWorkgroupsPerDimension);
+    return;
+  }
+  const importAdjacency = (id: string, adjacency: typeof topology.forward): ImportedAdjacency => ({
+    id,
+    offsets: commandGraph.importGPUVector(`${id}-offsets`, adjacency.offsets).data[0],
+    neighbors: commandGraph.importGPUVector(`${id}-neighbors`, adjacency.neighbors).data[0],
+    overflow: commandGraph.importGPUVector(`${id}-overflow`, adjacency.overflow).data[0]
+  });
   const state: ImportedLocalClustering = {
     id: clustering.id,
     vertexCount,
-    directed: clustering.topology.graph.directed,
-    forwardOffsets: commandGraph.importGPUVector(
-      `${clustering.id}-forward-offsets`,
-      clustering.topology.forward.offsets
-    ).data[0],
-    forwardNeighbors: commandGraph.importGPUVector(
-      `${clustering.id}-forward-neighbors`,
-      clustering.topology.forward.neighbors
-    ).data[0],
-    forwardOverflow: commandGraph.importGPUVector(
-      `${clustering.id}-forward-overflow`,
-      clustering.topology.forward.overflow
-    ).data[0],
-    ...(reverse
-      ? {
-          reverseOffsets: commandGraph.importGPUVector(
-            `${clustering.id}-reverse-offsets`,
-            reverse.offsets
-          ).data[0],
-          reverseNeighbors: commandGraph.importGPUVector(
-            `${clustering.id}-reverse-neighbors`,
-            reverse.neighbors
-          ).data[0],
-          reverseOverflow: commandGraph.importGPUVector(
-            `${clustering.id}-reverse-overflow`,
-            reverse.overflow
-          ).data[0]
-        }
-      : {}),
+    directed: topology.graph.directed,
+    forward: importAdjacency(`${clustering.id}-forward`, topology.forward),
+    ...(reverse ? {reverse: importAdjacency(`${clustering.id}-reverse`, reverse)} : {}),
     output: commandGraph.importGPUVector(`${clustering.id}-output`, clustering.output).data[0],
     ...(clustering.triangles
       ? {
@@ -89,25 +105,391 @@ export function addGPUGraphLocalClusteringCoefficientToGraphWithDispatchLimit<Pa
       : {})
   };
 
+  const forward = addCanonicalAdjacency(
+    commandGraph,
+    state.forward,
+    vertexCount,
+    maxComputeWorkgroupsPerDimension
+  );
+  const canonicalReverse = state.reverse
+    ? addCanonicalAdjacency(
+        commandGraph,
+        state.reverse,
+        vertexCount,
+        maxComputeWorkgroupsPerDimension
+      )
+    : undefined;
+  addClusteringPass(
+    commandGraph,
+    state,
+    forward,
+    canonicalReverse,
+    maxComputeWorkgroupsPerDimension
+  );
+}
+
+/** Resolves the compile-time sparse/dense crossover without inspecting or reading GPU data. */
+export function getGPUGraphLocalClusteringCoefficientAlgorithm(
+  requested: 'auto' | 'direct' | 'canonical',
+  vertexCount: number,
+  forwardCapacity: number,
+  reverseCapacity: number
+): 'direct' | 'canonical' {
+  if (requested !== 'auto') return requested;
+  const totalCapacity = forwardCapacity + reverseCapacity;
+  return totalCapacity <= vertexCount * DIRECT_MAXIMUM_SLOTS_PER_VERTEX ? 'direct' : 'canonical';
+}
+
+/** Builds lexicographically sorted `(row, neighbor)` scratch without modifying source CSR. */
+function addCanonicalAdjacency<Parameters>(
+  commandGraph: GPUCommandGraph<Parameters>,
+  adjacency: ImportedAdjacency,
+  vertexCount: number,
+  maxComputeWorkgroupsPerDimension: number
+): CanonicalAdjacency {
+  const capacity = adjacency.neighbors.length;
+  const inputRows = createTransientView(
+    commandGraph,
+    `${adjacency.id}-canonical-input-rows`,
+    'uint32',
+    capacity
+  );
+  const neighborSorted = createTransientView(
+    commandGraph,
+    `${adjacency.id}-canonical-neighbor-sorted`,
+    'uint32',
+    capacity
+  );
+  const neighborSortedRows = createTransientView(
+    commandGraph,
+    `${adjacency.id}-canonical-neighbor-sorted-rows`,
+    'uint32',
+    capacity
+  );
+  const sortedRows = createTransientView(
+    commandGraph,
+    `${adjacency.id}-canonical-sorted-rows`,
+    'uint32',
+    capacity
+  );
+  const sortedNeighbors = createTransientView(
+    commandGraph,
+    `${adjacency.id}-canonical-sorted-neighbors`,
+    'uint32',
+    capacity
+  );
+  const rows = createTransientView(
+    commandGraph,
+    `${adjacency.id}-canonical-rows`,
+    'uint32',
+    capacity
+  );
+  const neighbors = createTransientView(
+    commandGraph,
+    `${adjacency.id}-canonical-neighbors`,
+    'uint32',
+    capacity
+  );
+
+  if (capacity === 0) return {rows, neighbors};
+
+  const dispatchLayout = getBoundedDispatchLayout(
+    'GPUGraphLocalClusteringCoefficient canonicalization',
+    capacity,
+    LOCAL_CLUSTERING_WORKGROUP_SIZE,
+    maxComputeWorkgroupsPerDimension
+  );
+  const source = /* wgsl */ `
+const VERTEX_COUNT: u32 = ${vertexCount}u;
+const CAPACITY: u32 = ${capacity}u;
+const OFFSETS_OFFSET: u32 = ${getViewElementOffset(adjacency.offsets)}u;
+const NEIGHBORS_OFFSET: u32 = ${getViewElementOffset(adjacency.neighbors)}u;
+const ROWS_OFFSET: u32 = ${getViewElementOffset(inputRows)}u;
+@group(0) @binding(0) var<storage, read> offsets: array<u32>;
+@group(0) @binding(1) var<storage, read> sourceNeighbors: array<u32>;
+@group(0) @binding(2) var<storage, read_write> rows: array<u32>;
+
+@compute @workgroup_size(${LOCAL_CLUSTERING_WORKGROUP_SIZE})
+fn main(
+  @builtin(workgroup_id) workgroupId: vec3<u32>,
+  @builtin(local_invocation_index) localInvocationIndex: u32
+) {
+  ${getBoundedInvocationIndexSource(dispatchLayout, LOCAL_CLUSTERING_WORKGROUP_SIZE)}
+  if (index >= CAPACITY) { return; }
+
+  var row = VERTEX_COUNT;
+  let used = min(offsets[OFFSETS_OFFSET + VERTEX_COUNT], CAPACITY);
+  if (index < used) {
+    var low = 0u;
+    var high = VERTEX_COUNT;
+    while (low < high) {
+      let middle = (low + high) / 2u;
+      let nextOffset = min(offsets[OFFSETS_OFFSET + middle + 1u], CAPACITY);
+      if (nextOffset <= index) {
+        low = middle + 1u;
+      } else {
+        high = middle;
+      }
+    }
+    let candidate = sourceNeighbors[NEIGHBORS_OFFSET + index];
+    if (low < VERTEX_COUNT && candidate < VERTEX_COUNT && candidate != low) {
+      row = low;
+    }
+  }
+  rows[ROWS_OFFSET + index] = row;
+}`;
+  commandGraph.addComputePass({
+    id: `${adjacency.id}-canonical-materialize`,
+    resources: [
+      {buffer: adjacency.offsets, usage: 'storage-read'},
+      {buffer: adjacency.neighbors, usage: 'storage-read'},
+      {buffer: inputRows, usage: 'storage-write'}
+    ],
+    compile: ({device}) => {
+      const computation = new Computation(device, {
+        id: `${adjacency.id}-canonical-materialize`,
+        source,
+        shaderLayout: {
+          bindings: [
+            {name: 'offsets', type: 'storage', group: 0, location: 0},
+            {name: 'sourceNeighbors', type: 'storage', group: 0, location: 1},
+            {name: 'rows', type: 'storage', group: 0, location: 2}
+          ]
+        }
+      });
+      return {
+        encode: ({computePass, getBuffer}) => {
+          computation.setBindings({
+            offsets: getViewBinding(adjacency.offsets, getBuffer),
+            sourceNeighbors: getViewBinding(adjacency.neighbors, getBuffer),
+            rows: getViewBinding(inputRows, getBuffer)
+          });
+          computation.dispatch(computePass, dispatchLayout.x, dispatchLayout.y, dispatchLayout.z);
+        },
+        destroy: () => computation.destroy()
+      };
+    }
+  });
+
+  const keyBits = Math.max(1, Math.ceil(Math.log2(vertexCount + 1)));
+  commandGraph.add(
+    new GPUSort({
+      id: `${adjacency.id}-canonical-sort-neighbor`,
+      keys: adjacency.neighbors,
+      values: inputRows,
+      outputKeys: neighborSorted,
+      outputValues: neighborSortedRows,
+      keyBits
+    })
+  );
+  // The sort is stable, so sorting neighbor-ordered pairs by row produces lexicographic order.
+  commandGraph.add(
+    new GPUSort({
+      id: `${adjacency.id}-canonical-sort-row`,
+      keys: neighborSortedRows,
+      values: neighborSorted,
+      outputKeys: sortedRows,
+      outputValues: sortedNeighbors,
+      keyBits
+    })
+  );
+  addUniqueCompaction(
+    commandGraph,
+    adjacency.id,
+    vertexCount,
+    sortedRows,
+    sortedNeighbors,
+    rows,
+    neighbors,
+    maxComputeWorkgroupsPerDimension
+  );
+  return {rows, neighbors};
+}
+
+/** Compacts adjacent equal pairs and sentinel-fills unused capacity for bounded binary searches. */
+function addUniqueCompaction<Parameters>(
+  commandGraph: GPUCommandGraph<Parameters>,
+  id: string,
+  vertexCount: number,
+  sortedRows: GraphDataView<'uint32'>,
+  sortedNeighbors: GraphDataView<'uint32'>,
+  rows: GraphDataView<'uint32'>,
+  neighbors: GraphDataView<'uint32'>,
+  maxComputeWorkgroupsPerDimension: number
+): void {
+  const capacity = sortedRows.length;
+  const flags = createTransientView(
+    commandGraph,
+    `${id}-canonical-unique-flags`,
+    'uint32',
+    capacity
+  );
+  const positions = createTransientView(
+    commandGraph,
+    `${id}-canonical-unique-positions`,
+    'uint32',
+    capacity
+  );
+  const dispatchLayout = getBoundedDispatchLayout(
+    'GPUGraphLocalClusteringCoefficient unique compaction',
+    capacity,
+    LOCAL_CLUSTERING_WORKGROUP_SIZE,
+    maxComputeWorkgroupsPerDimension
+  );
+  const constants = `const VERTEX_COUNT: u32 = ${vertexCount}u;
+const CAPACITY: u32 = ${capacity}u;
+const SORTED_ROWS_OFFSET: u32 = ${getViewElementOffset(sortedRows)}u;
+const SORTED_NEIGHBORS_OFFSET: u32 = ${getViewElementOffset(sortedNeighbors)}u;
+const FLAGS_OFFSET: u32 = ${getViewElementOffset(flags)}u;
+const POSITIONS_OFFSET: u32 = ${getViewElementOffset(positions)}u;
+const ROWS_OFFSET: u32 = ${getViewElementOffset(rows)}u;
+const NEIGHBORS_OFFSET: u32 = ${getViewElementOffset(neighbors)}u;`;
+  addCanonicalKernelPass(commandGraph, {
+    id: `${id}-canonical-unique-flags`,
+    source: `${constants}
+@group(0) @binding(0) var<storage, read> sortedRows: array<u32>;
+@group(0) @binding(1) var<storage, read> sortedNeighbors: array<u32>;
+@group(0) @binding(2) var<storage, read_write> flags: array<u32>;
+@group(0) @binding(3) var<storage, read_write> rows: array<u32>;
+@group(0) @binding(4) var<storage, read_write> neighbors: array<u32>;
+@compute @workgroup_size(${LOCAL_CLUSTERING_WORKGROUP_SIZE})
+fn main(
+  @builtin(workgroup_id) workgroupId: vec3<u32>,
+  @builtin(local_invocation_index) localInvocationIndex: u32
+) {
+  ${getBoundedInvocationIndexSource(dispatchLayout, LOCAL_CLUSTERING_WORKGROUP_SIZE)}
+  if (index >= CAPACITY) { return; }
+  let row = sortedRows[SORTED_ROWS_OFFSET + index];
+  let neighbor = sortedNeighbors[SORTED_NEIGHBORS_OFFSET + index];
+  var unique = row < VERTEX_COUNT;
+  if (unique && index > 0u) {
+    unique = sortedRows[SORTED_ROWS_OFFSET + index - 1u] != row ||
+      sortedNeighbors[SORTED_NEIGHBORS_OFFSET + index - 1u] != neighbor;
+  }
+  flags[FLAGS_OFFSET + index] = select(0u, 1u, unique);
+  rows[ROWS_OFFSET + index] = VERTEX_COUNT;
+  neighbors[NEIGHBORS_OFFSET + index] = VERTEX_COUNT;
+}`,
+    resources: [
+      {buffer: sortedRows, usage: 'storage-read'},
+      {buffer: sortedNeighbors, usage: 'storage-read'},
+      {buffer: flags, usage: 'storage-write'},
+      {buffer: rows, usage: 'storage-write'},
+      {buffer: neighbors, usage: 'storage-write'}
+    ],
+    bindings: {sortedRows, sortedNeighbors, flags, rows, neighbors},
+    dispatchLayout
+  });
+  commandGraph.add(
+    new GPUScan({id: `${id}-canonical-unique-scan`, input: flags, output: positions})
+  );
+  addCanonicalKernelPass(commandGraph, {
+    id: `${id}-canonical-unique-scatter`,
+    source: `${constants}
+@group(0) @binding(0) var<storage, read> sortedRows: array<u32>;
+@group(0) @binding(1) var<storage, read> sortedNeighbors: array<u32>;
+@group(0) @binding(2) var<storage, read> flags: array<u32>;
+@group(0) @binding(3) var<storage, read> positions: array<u32>;
+@group(0) @binding(4) var<storage, read_write> rows: array<u32>;
+@group(0) @binding(5) var<storage, read_write> neighbors: array<u32>;
+@compute @workgroup_size(${LOCAL_CLUSTERING_WORKGROUP_SIZE})
+fn main(
+  @builtin(workgroup_id) workgroupId: vec3<u32>,
+  @builtin(local_invocation_index) localInvocationIndex: u32
+) {
+  ${getBoundedInvocationIndexSource(dispatchLayout, LOCAL_CLUSTERING_WORKGROUP_SIZE)}
+  if (index >= CAPACITY || flags[FLAGS_OFFSET + index] == 0u) { return; }
+  let outputIndex = positions[POSITIONS_OFFSET + index];
+  rows[ROWS_OFFSET + outputIndex] = sortedRows[SORTED_ROWS_OFFSET + index];
+  neighbors[NEIGHBORS_OFFSET + outputIndex] = sortedNeighbors[SORTED_NEIGHBORS_OFFSET + index];
+}`,
+    resources: [
+      {buffer: sortedRows, usage: 'storage-read'},
+      {buffer: sortedNeighbors, usage: 'storage-read'},
+      {buffer: flags, usage: 'storage-read'},
+      {buffer: positions, usage: 'storage-read'},
+      {buffer: rows, usage: 'storage-write'},
+      {buffer: neighbors, usage: 'storage-write'}
+    ],
+    bindings: {sortedRows, sortedNeighbors, flags, positions, rows, neighbors},
+    dispatchLayout
+  });
+}
+
+/** Adds one fixed-binding canonicalization kernel. */
+function addCanonicalKernelPass<Parameters>(
+  commandGraph: GPUCommandGraph<Parameters>,
+  props: {
+    id: string;
+    source: string;
+    resources: GraphBufferUse[];
+    bindings: Record<string, GraphDataView<'uint32'>>;
+    dispatchLayout: GPUBoundedDispatchLayout;
+  }
+): void {
+  commandGraph.addComputePass({
+    id: props.id,
+    resources: props.resources,
+    compile: ({device}) => {
+      const computation = new Computation(device, {
+        id: props.id,
+        source: props.source,
+        shaderLayout: {
+          bindings: Object.keys(props.bindings).map((name, location) => ({
+            name,
+            type: 'storage' as const,
+            group: 0,
+            location
+          }))
+        }
+      });
+      return {
+        encode: ({computePass, getBuffer}) => {
+          const shaderBindings: Record<string, Binding> = {};
+          for (const [name, view] of Object.entries(props.bindings)) {
+            shaderBindings[name] = getViewBinding(view, getBuffer);
+          }
+          computation.setBindings(shaderBindings);
+          computation.dispatch(
+            computePass,
+            props.dispatchLayout.x,
+            props.dispatchLayout.y,
+            props.dispatchLayout.z
+          );
+        },
+        destroy: () => computation.destroy()
+      };
+    }
+  });
+}
+
+/** Counts closures with sorted row intersections and publishes one result per vertex. */
+function addClusteringPass<Parameters>(
+  commandGraph: GPUCommandGraph<Parameters>,
+  state: ImportedLocalClustering,
+  forward: CanonicalAdjacency,
+  reverse: CanonicalAdjacency | undefined,
+  maxComputeWorkgroupsPerDimension: number
+): void {
   const bindings: Record<string, LocalClusteringBinding> = {
-    forwardOffsets: {view: state.forwardOffsets, usage: 'storage-read'},
-    forwardNeighbors: {view: state.forwardNeighbors, usage: 'storage-read'},
-    forwardOverflow: {view: state.forwardOverflow, usage: 'storage-read'},
-    ...(state.reverseOffsets && state.reverseNeighbors && state.reverseOverflow
+    forwardRows: {view: forward.rows, usage: 'storage-read'},
+    forwardNeighbors: {view: forward.neighbors, usage: 'storage-read'},
+    forwardOverflow: {view: state.forward.overflow, usage: 'storage-read'},
+    ...(reverse
       ? {
-          reverseOffsets: {view: state.reverseOffsets, usage: 'storage-read'},
-          reverseNeighbors: {view: state.reverseNeighbors, usage: 'storage-read'},
-          reverseOverflow: {view: state.reverseOverflow, usage: 'storage-read'}
+          reverseRows: {view: reverse.rows, usage: 'storage-read' as const},
+          reverseNeighbors: {view: reverse.neighbors, usage: 'storage-read' as const},
+          reverseOverflow: {view: state.reverse!.overflow, usage: 'storage-read' as const}
         }
       : {}),
     output: {view: state.output, usage: 'storage-write'},
     ...(state.triangles ? {triangles: {view: state.triangles, usage: 'storage-write'}} : {})
   };
   const dispatchLayout = getGPUGraphLocalClusteringCoefficientDispatchLayout(
-    vertexCount,
+    state.vertexCount,
     maxComputeWorkgroupsPerDimension
   );
-  const source = getLocalClusteringSource(state, bindings, dispatchLayout);
+  const source = getLocalClusteringSource(state, bindings, forward, reverse, dispatchLayout);
 
   commandGraph.addComputePass({
     id: `${state.id}-calculate`,
@@ -140,44 +522,75 @@ export function addGPUGraphLocalClusteringCoefficientToGraphWithDispatchLimit<Pa
   });
 }
 
-/** Generates one bounded pass using at most eight baseline WebGPU storage-buffer bindings. */
+/** Generates the merge-intersection pass using at most eight baseline storage bindings. */
 function getLocalClusteringSource(
   state: ImportedLocalClustering,
   bindings: Record<string, LocalClusteringBinding>,
+  forward: CanonicalAdjacency,
+  reverse: CanonicalAdjacency | undefined,
   dispatchLayout: GPUBoundedDispatchLayout
 ): string {
-  const hasReverse = Boolean(
-    state.reverseOffsets && state.reverseNeighbors && state.reverseOverflow
-  );
+  const hasReverse = Boolean(reverse);
   const reverseConstants = hasReverse
-    ? `const REVERSE_CAPACITY: u32 = ${state.reverseNeighbors!.length}u;
-const REVERSE_OFFSETS_OFFSET: u32 = ${getViewElementOffset(state.reverseOffsets!)}u;
-const REVERSE_NEIGHBORS_OFFSET: u32 = ${getViewElementOffset(state.reverseNeighbors!)}u;
-const REVERSE_OVERFLOW_OFFSET: u32 = ${getViewElementOffset(state.reverseOverflow!)}u;`
+    ? `const REVERSE_CAPACITY: u32 = ${reverse!.neighbors.length}u;
+const REVERSE_ROWS_OFFSET: u32 = ${getViewElementOffset(reverse!.rows)}u;
+const REVERSE_NEIGHBORS_OFFSET: u32 = ${getViewElementOffset(reverse!.neighbors)}u;
+const REVERSE_OVERFLOW_OFFSET: u32 = ${getViewElementOffset(state.reverse!.overflow)}u;`
     : '';
   const reverseOverflow = hasReverse ? ' || reverseOverflow[REVERSE_OVERFLOW_OFFSET] != 0u' : '';
-  const reverseFirstSlot = hasReverse
-    ? `if (direction == 1u) {
-    return min(reverseOffsets[REVERSE_OFFSETS_OFFSET + vertex], REVERSE_CAPACITY);
-  }`
+  const reverseRangeHelpers = hasReverse
+    ? `
+fn getReverseRowFirst(row: u32) -> u32 {
+  var low = 0u;
+  var high = REVERSE_CAPACITY;
+  while (low < high) {
+    let middle = (low + high) / 2u;
+    if (reverseRows[REVERSE_ROWS_OFFSET + middle] < row) { low = middle + 1u; } else { high = middle; }
+  }
+  return low;
+}
+
+fn getReverseRowEnd(row: u32) -> u32 {
+  var low = 0u;
+  var high = REVERSE_CAPACITY;
+  while (low < high) {
+    let middle = (low + high) / 2u;
+    if (reverseRows[REVERSE_ROWS_OFFSET + middle] <= row) { low = middle + 1u; } else { high = middle; }
+  }
+  return low;
+}`
     : '';
-  const reverseLastSlot = hasReverse
-    ? `if (direction == 1u) {
-    return min(reverseOffsets[REVERSE_OFFSETS_OFFSET + vertex + 1u], REVERSE_CAPACITY);
-  }`
+  const reverseIntersectionInitialization = hasReverse
+    ? `var reverseCursor = getReverseRowFirst(center);
+  let reverseEnd = getReverseRowEnd(center);`
     : '';
-  const reverseNeighbor = hasReverse
-    ? `if (direction == 1u) {
-    return reverseNeighbors[REVERSE_NEIGHBORS_OFFSET + slot];
-  }`
+  const reverseIntersectionCondition = hasReverse ? ' || reverseCursor < reverseEnd' : '';
+  const reverseIntersectionCandidate = hasReverse
+    ? `if (reverseCursor < reverseEnd) {
+      weakNeighbor = min(weakNeighbor, reverseNeighbors[REVERSE_NEIGHBORS_OFFSET + reverseCursor]);
+    }`
     : '';
-  const scanEarlierReverse = hasReverse
-    ? `if (direction == 1u) {
-    let reverseFirst = min(reverseOffsets[REVERSE_OFFSETS_OFFSET + vertex], REVERSE_CAPACITY);
-    for (var previous = reverseFirst; previous < slot; previous++) {
-      if (reverseNeighbors[REVERSE_NEIGHBORS_OFFSET + previous] == candidate) { return false; }
-    }
-  }`
+  const reverseIntersectionAdvance = hasReverse
+    ? `while (reverseCursor < reverseEnd &&
+           reverseNeighbors[REVERSE_NEIGHBORS_OFFSET + reverseCursor] == weakNeighbor) {
+      reverseCursor++;
+    }`
+    : '';
+  const reverseMainInitialization = hasReverse
+    ? `var reverseCursor = getReverseRowFirst(index);
+  let reverseEnd = getReverseRowEnd(index);`
+    : '';
+  const reverseMainCondition = hasReverse ? ' || reverseCursor < reverseEnd' : '';
+  const reverseMainCandidate = hasReverse
+    ? `if (reverseCursor < reverseEnd) {
+      neighbor = min(neighbor, reverseNeighbors[REVERSE_NEIGHBORS_OFFSET + reverseCursor]);
+    }`
+    : '';
+  const reverseMainAdvance = hasReverse
+    ? `while (reverseCursor < reverseEnd &&
+           reverseNeighbors[REVERSE_NEIGHBORS_OFFSET + reverseCursor] == neighbor) {
+      reverseCursor++;
+    }`
     : '';
   const triangleOffset = state.triangles
     ? `const TRIANGLES_OFFSET: u32 = ${getViewElementOffset(state.triangles)}u;`
@@ -198,50 +611,70 @@ const REVERSE_OVERFLOW_OFFSET: u32 = ${getViewElementOffset(state.reverseOverflo
 
   return /* wgsl */ `
 const VERTEX_COUNT: u32 = ${state.vertexCount}u;
-const FORWARD_CAPACITY: u32 = ${state.forwardNeighbors.length}u;
-const FORWARD_OFFSETS_OFFSET: u32 = ${getViewElementOffset(state.forwardOffsets)}u;
-const FORWARD_NEIGHBORS_OFFSET: u32 = ${getViewElementOffset(state.forwardNeighbors)}u;
-const FORWARD_OVERFLOW_OFFSET: u32 = ${getViewElementOffset(state.forwardOverflow)}u;
+const FORWARD_CAPACITY: u32 = ${forward.neighbors.length}u;
+const FORWARD_ROWS_OFFSET: u32 = ${getViewElementOffset(forward.rows)}u;
+const FORWARD_NEIGHBORS_OFFSET: u32 = ${getViewElementOffset(forward.neighbors)}u;
+const FORWARD_OVERFLOW_OFFSET: u32 = ${getViewElementOffset(state.forward.overflow)}u;
 const OUTPUT_OFFSET: u32 = ${getViewElementOffset(state.output)}u;
-const NEIGHBOR_DIRECTION_COUNT: u32 = ${hasReverse ? 2 : 1}u;
 ${reverseConstants}
 ${triangleOffset}
 ${declarations}
 
-fn getFirstNeighborSlot(vertex: u32, direction: u32) -> u32 {
-  ${reverseFirstSlot}
-  return min(forwardOffsets[FORWARD_OFFSETS_OFFSET + vertex], FORWARD_CAPACITY);
-}
-
-fn getLastNeighborSlot(vertex: u32, direction: u32) -> u32 {
-  ${reverseLastSlot}
-  return min(forwardOffsets[FORWARD_OFFSETS_OFFSET + vertex + 1u], FORWARD_CAPACITY);
-}
-
-fn getNeighbor(direction: u32, slot: u32) -> u32 {
-  ${reverseNeighbor}
-  return forwardNeighbors[FORWARD_NEIGHBORS_OFFSET + slot];
-}
-
-fn isFirstDistinctNeighbor(vertex: u32, direction: u32, slot: u32, candidate: u32) -> bool {
-  if (candidate >= VERTEX_COUNT || candidate == vertex) { return false; }
-
-  let forwardFirst = min(forwardOffsets[FORWARD_OFFSETS_OFFSET + vertex], FORWARD_CAPACITY);
-  let forwardEnd = select(slot, min(forwardOffsets[FORWARD_OFFSETS_OFFSET + vertex + 1u], FORWARD_CAPACITY), direction != 0u);
-  for (var previous = forwardFirst; previous < forwardEnd; previous++) {
-    if (forwardNeighbors[FORWARD_NEIGHBORS_OFFSET + previous] == candidate) { return false; }
+fn getForwardRowFirst(row: u32) -> u32 {
+  var low = 0u;
+  var high = FORWARD_CAPACITY;
+  while (low < high) {
+    let middle = (low + high) / 2u;
+    if (forwardRows[FORWARD_ROWS_OFFSET + middle] < row) { low = middle + 1u; } else { high = middle; }
   }
-  ${scanEarlierReverse}
-  return true;
+  return low;
 }
 
-fn containsForwardEdge(sourceVertex: u32, targetVertex: u32) -> bool {
-  let first = min(forwardOffsets[FORWARD_OFFSETS_OFFSET + sourceVertex], FORWARD_CAPACITY);
-  let last = min(forwardOffsets[FORWARD_OFFSETS_OFFSET + sourceVertex + 1u], FORWARD_CAPACITY);
-  for (var slot = first; slot < last; slot++) {
-    if (forwardNeighbors[FORWARD_NEIGHBORS_OFFSET + slot] == targetVertex) { return true; }
+fn getForwardRowEnd(row: u32) -> u32 {
+  var low = 0u;
+  var high = FORWARD_CAPACITY;
+  while (low < high) {
+    let middle = (low + high) / 2u;
+    if (forwardRows[FORWARD_ROWS_OFFSET + middle] <= row) { low = middle + 1u; } else { high = middle; }
   }
-  return false;
+  return low;
+}
+${reverseRangeHelpers}
+
+// Intersects the center's sorted weak-neighbor union with one neighbor's sorted outgoing row.
+// Equal runs advance together, so duplicate source slots never inflate the closure count.
+fn countNeighborClosures(center: u32, neighbor: u32) -> u32 {
+  var forwardCursor = getForwardRowFirst(center);
+  let forwardEnd = getForwardRowEnd(center);
+  ${reverseIntersectionInitialization}
+  var edgeCursor = getForwardRowFirst(neighbor);
+  let edgeEnd = getForwardRowEnd(neighbor);
+  var count = 0u;
+
+  while (edgeCursor < edgeEnd && (forwardCursor < forwardEnd${reverseIntersectionCondition})) {
+    var weakNeighbor = 0xffffffffu;
+    if (forwardCursor < forwardEnd) {
+      weakNeighbor = forwardNeighbors[FORWARD_NEIGHBORS_OFFSET + forwardCursor];
+    }
+    ${reverseIntersectionCandidate}
+    let edgeNeighbor = forwardNeighbors[FORWARD_NEIGHBORS_OFFSET + edgeCursor];
+    if (weakNeighbor == edgeNeighbor) { count++; }
+
+    if (weakNeighbor <= edgeNeighbor) {
+      while (forwardCursor < forwardEnd &&
+             forwardNeighbors[FORWARD_NEIGHBORS_OFFSET + forwardCursor] == weakNeighbor) {
+        forwardCursor++;
+      }
+      ${reverseIntersectionAdvance}
+    }
+    if (edgeNeighbor <= weakNeighbor) {
+      while (edgeCursor < edgeEnd &&
+             forwardNeighbors[FORWARD_NEIGHBORS_OFFSET + edgeCursor] == edgeNeighbor) {
+        edgeCursor++;
+      }
+    }
+  }
+  return count;
 }
 
 @compute @workgroup_size(${LOCAL_CLUSTERING_WORKGROUP_SIZE})
@@ -257,38 +690,31 @@ fn main(
     return;
   }
 
+  var forwardCursor = getForwardRowFirst(index);
+  let forwardEnd = getForwardRowEnd(index);
+  ${reverseMainInitialization}
   var degree = 0u;
   var closureCount = 0u;
-  for (var firstDirection = 0u; firstDirection < NEIGHBOR_DIRECTION_COUNT; firstDirection++) {
-    let firstStart = getFirstNeighborSlot(index, firstDirection);
-    let firstEnd = getLastNeighborSlot(index, firstDirection);
-    for (var firstSlot = firstStart; firstSlot < firstEnd; firstSlot++) {
-      let firstNeighbor = getNeighbor(firstDirection, firstSlot);
-      if (!isFirstDistinctNeighbor(index, firstDirection, firstSlot, firstNeighbor)) { continue; }
-      degree++;
-
-      for (var secondDirection = 0u; secondDirection < NEIGHBOR_DIRECTION_COUNT; secondDirection++) {
-        let secondStart = getFirstNeighborSlot(index, secondDirection);
-        let secondEnd = getLastNeighborSlot(index, secondDirection);
-        for (var secondSlot = secondStart; secondSlot < secondEnd; secondSlot++) {
-          let secondNeighbor = getNeighbor(secondDirection, secondSlot);
-          if (firstNeighbor >= secondNeighbor ||
-              !isFirstDistinctNeighbor(index, secondDirection, secondSlot, secondNeighbor)) {
-            continue;
-          }
-
-          let forwardClosure = select(0u, 1u, containsForwardEdge(firstNeighbor, secondNeighbor));
-          let reverseClosure = select(0u, 1u, containsForwardEdge(secondNeighbor, firstNeighbor));
-          let increment = forwardClosure + reverseClosure;
-          if (closureCount >= ${INVALID_TRIANGLE_COUNT}u - increment) {
-            output[OUTPUT_OFFSET + index] = 0.0;
-            ${publishInvalidTriangles}
-            return;
-          }
-          closureCount += increment;
-        }
-      }
+  while (forwardCursor < forwardEnd${reverseMainCondition}) {
+    var neighbor = 0xffffffffu;
+    if (forwardCursor < forwardEnd) {
+      neighbor = forwardNeighbors[FORWARD_NEIGHBORS_OFFSET + forwardCursor];
     }
+    ${reverseMainCandidate}
+    while (forwardCursor < forwardEnd &&
+           forwardNeighbors[FORWARD_NEIGHBORS_OFFSET + forwardCursor] == neighbor) {
+      forwardCursor++;
+    }
+    ${reverseMainAdvance}
+    degree++;
+
+    let increment = countNeighborClosures(index, neighbor);
+    if (closureCount >= ${INVALID_TRIANGLE_COUNT}u - increment) {
+      output[OUTPUT_OFFSET + index] = 0.0;
+      ${publishInvalidTriangles}
+      return;
+    }
+    closureCount += increment;
   }
 
   output[OUTPUT_OFFSET + index] = select(

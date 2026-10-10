@@ -325,7 +325,7 @@ export class GPUProfilePeaks implements GPUCommandNodeProducer {
         props.output?.ids,
         props.output?.count,
         props.output?.overflow,
-        props.output?.totalCount
+        props.output?.requiredCount
       ],
       [props.values, props.validity, props.offsets, props.settings]
     );
@@ -349,7 +349,7 @@ export class GPUProfilePeaks implements GPUCommandNodeProducer {
       props.output?.ids,
       props.output?.count,
       props.output?.overflow,
-      props.output?.totalCount
+      props.output?.requiredCount
     ]);
     const sampleCount = props.values.length;
     const profileCount = props.offsets.length - 1;
@@ -702,19 +702,19 @@ ${getNanFunction()}`,
     }
     if (props.output && peakMask && rowIds) {
       const compactRows = createTransientView(graph, `${id}-compact-rows`, 'uint32', sampleCount);
-      const totalCount = createTransientView(graph, `${id}-peak-total`, 'uint32', 1);
+      const requiredCount = createTransientView(graph, `${id}-peak-total`, 'uint32', 1);
       nodes.push(
         ...new GPUCompaction({
           id: `${id}-compaction`,
           input: rowIds,
           flags: peakMask,
           output: compactRows,
-          count: totalCount
+          count: requiredCount
         }).getCommandNodes(graph),
         createPublishNode<Parameters>(graph, {
           id: `${id}-publish`,
           operation: OPERATION,
-          totalCount,
+          requiredCount,
           compactIds: compactRows,
           output: props.output
         })

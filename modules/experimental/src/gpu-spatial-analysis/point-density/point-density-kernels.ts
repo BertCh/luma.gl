@@ -116,9 +116,12 @@ ${GPU_POINT_DENSITY_HEXAGON_WGSL}`,
   var key = INVALID_KEY;
   let included = ${props.mask ? 'rowMask[rowMaskOffset + MASK_START + index] != 0u' : 'true'};
   let finite = included && abs(x) <= MAXIMUM_FLOAT && abs(y) <= MAXIMUM_FLOAT;
+  let finiteBounds = abs(minimumX) <= MAXIMUM_FLOAT && abs(minimumY) <= MAXIMUM_FLOAT &&
+    abs(maximumX) <= MAXIMUM_FLOAT && abs(maximumY) <= MAXIMUM_FLOAT;
+  let orderedBounds = minimumX <= maximumX && minimumY <= maximumY;
   let inside = x >= minimumX && x <= maximumX && y >= minimumY && y <= maximumY;
   let validRadius = radius > 0.0 && radius <= MAXIMUM_FLOAT;
-  if (finite && inside && validRadius) {
+  if (finite && finiteBounds && orderedBounds && inside && validRadius) {
     let cell = getPointDensityHexagonCell(x, y, minimumX, minimumY, radius);
     if (cell.x >= 0 && cell.y >= 0 && u32(cell.x) < COLUMNS && u32(cell.y) < ROWS) {
       key = u32(cell.y) * COLUMNS + u32(cell.x);
@@ -211,7 +214,7 @@ export function createPointDensityFinalizeNode<Parameters>(
 }
 
 /** Items combined by one workgroup of {@link createPointDensityWorkgroupSumNode}. @internal */
-const WORKGROUP_SUM_SIZE = 256;
+export const POINT_DENSITY_WORKGROUP_SUM_SIZE = 256;
 
 /**
  * Writes one row-major grid cell key per position in `keys`, or `0xffffffff` for non-finite and
@@ -265,6 +268,16 @@ const ROWS: u32 = ${props.gridSize[1]}u;
 fn getCoordinate(value: f32, minimum: f32, maximum: f32, size: u32) -> u32 {
   if (maximum == minimum || value == minimum) { return 0u; }
   if (value == maximum) { return size - 1u; }
+  if (minimum < 0.0 && maximum > 0.0) {
+    let scale = max(abs(minimum), abs(maximum));
+    let scaledValue = value / scale;
+    let scaledMinimum = minimum / scale;
+    let scaledMaximum = maximum / scale;
+    return min(
+      u32((scaledValue - scaledMinimum) / (scaledMaximum - scaledMinimum) * f32(size)),
+      size - 1u
+    );
+  }
   return min(u32((value - minimum) / (maximum - minimum) * f32(size)), size - 1u);
 }`,
     body: `${boundsSource}
@@ -272,9 +285,13 @@ fn getCoordinate(value: f32, minimum: f32, maximum: f32, size: u32) -> u32 {
   let y = positions[positionsOffset + index * 2u + 1u];
   var key = 0xffffffffu;
   let finite = x == x && y == y && abs(x) <= 3.402823466e+38 && abs(y) <= 3.402823466e+38;
+  let finiteBounds = minimumX == minimumX && minimumY == minimumY &&
+    maximumX == maximumX && maximumY == maximumY &&
+    abs(minimumX) <= 3.402823466e+38 && abs(minimumY) <= 3.402823466e+38 &&
+    abs(maximumX) <= 3.402823466e+38 && abs(maximumY) <= 3.402823466e+38;
   let inX = x >= minimumX && x <= maximumX && (maximumX != minimumX || x == minimumX);
   let inY = y >= minimumY && y <= maximumY && (maximumY != minimumY || y == minimumY);
-  if (maximumX >= minimumX && maximumY >= minimumY && finite && inX && inY) {
+  if (finiteBounds && maximumX >= minimumX && maximumY >= minimumY && finite && inX && inY) {
     key = getCoordinate(y, minimumY, maximumY, ROWS) * COLUMNS + getCoordinate(x, minimumX, maximumX, COLUMNS);
   }
   keys[keysOffset + KEY_START + index] = key;`
@@ -320,7 +337,7 @@ export function createPointDensityWorkgroupSumNode<Parameters>(
     sums: GraphDataView<'float32'>;
   }
 ): GPUCommandNode<Parameters> {
-  const size = WORKGROUP_SUM_SIZE;
+  const size = POINT_DENSITY_WORKGROUP_SUM_SIZE;
   return createWGSLKernelNode<Parameters>(graph, {
     id: props.id,
     operation: OPERATION,

@@ -33,9 +33,10 @@ import {
 } from '@luma.gl/gpgpu/gpu-graph';
 
 // Caller-owned vectors: edge columns (rides as weights), CSR, and every output.
-// Edges that fail the filters get an out-of-domain source endpoint, so a filter is a buffer write.
+// Edges below ${state.minRides} rides/day, beyond ${state.maxDistanceKm} km or outside the
+// strongest-${state.neighbors} neighborhood get an out-of-domain source: filters are buffer writes.
 const graph = new GPUGraph({vertexCount: 905, sourceVertices, targetVertices,
-  edgeWeights: ${state.weighting === 'rides' ? 'rides' : state.weighting === 'sqrt' ? 'sqrtRides' : 'ones'}, directed: false});
+  edgeWeights: ${state.weighting === 'rides' ? 'ridesPerDay' : state.weighting === 'sqrt' ? 'sqrtRidesPerDay' : 'ones'}, directed: false});
 const topology = new GPUGraphTopology({graph, forward, invalidEdgeCount});
 
 const commandGraph = new GPUCommandGraph(device, {id: 'communities'});
@@ -177,15 +178,28 @@ export default defineScene<BixiCommunitiesOptions>({
     {
       kind: 'slider',
       id: 'minRides',
-      label: 'Minimum rides on a pair',
+      label: 'Minimum rides per day',
       group: 'Graph',
       apply: 'param',
-      min: 1,
-      max: 200,
-      step: 1,
+      min: 0,
+      max: 50,
+      step: 0.5,
       default: 1,
-      unit: 'rides',
-      help: 'Drops pairs with fewer rides in August. Filtered edges get an out-of-domain endpoint, which the graph contributors ignore.'
+      unit: 'rides/day',
+      help: 'Drops pairs below this average-day rate. Weekdays divide by 22 days and weekends by nine before this threshold, so changing Day type compares rates rather than unequal August totals.'
+    },
+    {
+      kind: 'slider',
+      id: 'maxDistanceKm',
+      label: 'Maximum link distance',
+      group: 'Graph',
+      apply: 'param',
+      min: 0.5,
+      max: 50,
+      step: 0.5,
+      default: 50,
+      unit: 'km',
+      help: 'Drops station pairs farther apart than this straight-line distance. Lower it to test how much of the apparent community structure comes from geographic proximity alone.'
     },
     {
       kind: 'select',
@@ -195,7 +209,7 @@ export default defineScene<BixiCommunitiesOptions>({
       apply: 'param',
       display: 'segmented',
       default: 'rides',
-      help: 'How a pair counts in the modularity objective and its score: by rides, by the square root of rides (evens out the downtown giants) or equally. Label propagation ignores weights.',
+      help: 'How a pair counts in the modularity objective and its score: by average rides per day, by their square root (evens out the downtown giants) or equally. Label propagation ignores weights.',
       options: [
         {value: 'rides', label: 'Rides'},
         {value: 'sqrt', label: 'Square root'},
@@ -210,7 +224,7 @@ export default defineScene<BixiCommunitiesOptions>({
       apply: 'param',
       display: 'segmented',
       default: 'all',
-      help: 'Build the graph from all rides, from weekday rides or from weekend rides (pairs with at least ten rides in August only, from the hourly rows). A buffer write.',
+      help: 'Build the graph from average daily rates for all days, weekdays or weekend days. Weekday and weekend graphs use pairs with at least ten August rides from the hourly rows, so their eligible topology is narrower than the all-days graph.',
       options: [
         {value: 'all', label: 'All days'},
         {value: 'weekday', label: 'Weekdays'},
@@ -386,11 +400,30 @@ export default defineScene<BixiCommunitiesOptions>({
     {id: 'stations', label: 'Stations', format: 'integer', hood: true},
     {id: 'edgesKept', label: 'Edges in the graph', hood: true},
     {
-      id: 'ridesKept',
-      label: 'Rides kept',
+      id: 'graphBasis',
+      label: 'Eligible-pair basis',
+      hood: true,
+      help: 'All days start from month pairs with at least three rides. Weekday and weekend graphs start from hourly pairs with at least ten August rides. Every weight is converted to rides per average day.'
+    },
+    {
+      id: 'candidateCoverage',
+      label: 'Source rides represented before filters',
       format: 'percent',
       hood: true,
-      help: 'Share of all inter-station pair rides on the kept edges.'
+      help: 'Share of the exact station-to-station ride rate represented by the eligible pair table, before the neighbor, rate and distance filters.'
+    },
+    {
+      id: 'ridesKept',
+      label: 'Source rides kept after filters',
+      format: 'percent',
+      hood: true,
+      help: 'Share of the exact station-to-station ride rate carried by the graph after the neighbor, rate and distance filters.'
+    },
+    {
+      id: 'isolatedStations',
+      label: 'Stations isolated by filters',
+      hood: true,
+      help: 'Stations with no surviving graph edge. Their singleton labels are an input/filter outcome, not a discovered riding community.'
     },
     {id: 'validity', label: 'Graph status', hood: true}
   ],
@@ -429,7 +462,7 @@ export default defineScene<BixiCommunitiesOptions>({
 
   about: {
     what: 'Previously: communities of airports (airline-network). Next: bundles of rides (bixi-bundles).\n\n`GPUGraphLabelPropagation` groups stations by the label most common among themselves and their neighbours, in synchronous rounds with ties to the lowest label and no use of weights. `GPUGraphModularityOptimization` improves that partition by moving one station at a time to the neighbouring group that raises weighted modularity most, and `GPUGraphModularity` scores any partition, here also the published boroughs at the same resolution. The hues, hulls, seams and the round-by-round replay of the vote are CPU work on the few KB read back.',
-    why: 'Service areas, rebalancing routes and station placement should follow how people ride, not how a map is drawn. A riding-group partition scored against the borough partition tells you where the two disagree, with a number instead of an impression. How many groups you get is a resolution choice, not a fact (the resolution limit of modularity: Fortunato and Barthélemy, PNAS 2007), and a spatial network clusters by distance alone, so a group is not by itself a behaviour (Austwick, O’Brien, Strano and Viana, PLoS ONE 2013).',
+    why: 'Service areas, rebalancing routes and station placement should follow how people ride, not how a map is drawn. A riding-group partition scored against the borough partition tells you where the two disagree, with a number instead of an impression. How many groups you get is a resolution choice, not a fact (the resolution limit of modularity: Fortunato and Barthélemy, PNAS 2007), and a spatial network clusters by distance alone, so a group is not by itself a behaviour (Austwick, O’Brien, Strano and Viana, PLoS ONE 2013). Weekday and weekend weights are rates per average day—22 weekdays versus nine weekend days—not incomparable August totals.',
     howToRead:
       'Dots and lines take the hue of their riding group, west to east on first load and inherited afterwards, so a hue is an identity, not a rank. Only the seven largest groups of eight or more stations have a hue; the rest are grey. Pale washes are the hulls of groups; grey lines cross a boundary. Rings are seam stations. Higher modularity means more rides inside groups than a random network with the same degrees would keep there. Stations outside the agglomeration (Laval, the south shore) have no borough outline.'
   },
@@ -513,11 +546,11 @@ export default defineScene<BixiCommunitiesOptions>({
     'read-with-care': {
       headline: 'Distance alone would make clusters too',
       textAlternative:
-        'The riding groups again, with controls to change the edge weighting, the day type and the number of strongest links per station.',
+        'The riding groups again, with controls for edge weighting, average weekday or weekend rates, strongest links, minimum rate and maximum link distance.',
       optionsMode: 'fresh',
       options: {partition: 'optimized'},
-      controls: ['weighting', 'dayType', 'neighbors'],
-      readouts: ['medianLink', 'agreement', 'modularityRefined', 'communityCount'],
+      controls: ['weighting', 'dayType', 'neighbors', 'minRides', 'maxDistanceKm'],
+      readouts: ['medianLink', 'agreement', 'candidateCoverage', 'ridesKept'],
       camera: {...CITY_FRAMES.montreal, transitionMs: 1200},
       furniture: cartouche('Read communities with care'),
       annotations: labelsFor(MONTREAL, ['downtown', 'plateau', 'villeray', 'verdun', 'hochelaga']),

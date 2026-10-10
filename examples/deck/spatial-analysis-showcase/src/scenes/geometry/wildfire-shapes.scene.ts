@@ -271,7 +271,9 @@ export default defineScene<WildfireShapesOptions>({
 
   story: storyFromMarkdown<WildfireShapesOptions>(narrative, {
     gallery: {
-      headline: 'Equal size reveals shape, not acreage',
+      headline: 'Equal extents isolate shape from acreage',
+      textAlternative:
+        'Twelve north-up wildfire outlines at the lowest and highest Polsby-Popper values are scaled to equal extents and coloured by fixed compactness classes; this removes acreage scale and retains differences in mapped boundary detail.',
       camera: {longitude: -116.5, latitude: 40, zoom: 4.2, transitionMs: 1400},
       optionsMode: 'fresh',
       options: {metric: 'polsbyPopper', showMarkers: false, shapeView: 'gallery'},
@@ -280,6 +282,8 @@ export default defineScene<WildfireShapesOptions>({
     },
     multipart: {
       headline: 'One fire may contain many polygons',
+      textAlternative:
+        'A selected multipart wildfire perimeter shows its rings and WGS84 area alongside agency acres, with fill colour encoding area; treating every later ring as a hole is invalid when separate exterior polygon parts are present.',
       camera: {longitude: -121.6, latitude: 38.6, zoom: 6.6, transitionMs: 1800},
       optionsMode: 'fresh',
       options: {metric: 'area', areaSystem: 'wgs84', shapeView: 'map'},
@@ -288,6 +292,8 @@ export default defineScene<WildfireShapesOptions>({
     },
     compactness: {
       headline: 'Rings need an explicit hole rule',
+      textAlternative:
+        'Wildfire polygons are coloured by fixed Polsby-Popper compactness classes and a selected outline reports the largest area discrepancy; compactness depends on the chosen ring hole rule and mapped perimeter detail.',
       camera: {longitude: -121.7, latitude: 38.4, zoom: 7.2, transitionMs: 1800},
       optionsMode: 'fresh',
       options: {metric: 'polsbyPopper', areaSystem: 'wgs84', shapeView: 'map'},
@@ -296,6 +302,8 @@ export default defineScene<WildfireShapesOptions>({
     },
     trend: {
       headline: 'Compactness describes mapped outlines',
+      textAlternative:
+        'Wildfire centroids and polygons are coloured by fixed Polsby-Popper classes, with compactness plotted against acreage and summarized by rank correlation; the relationship describes this filtered mapped-perimeter sample, not fire behaviour.',
       camera: {longitude: -116.5, latitude: 40, zoom: 4.2, transitionMs: 1800},
       optionsMode: 'fresh',
       options: {metric: 'polsbyPopper', showMarkers: true, shapeView: 'map'},
@@ -303,7 +311,9 @@ export default defineScene<WildfireShapesOptions>({
       readouts: ['medianCompactness', 'areaCompactness', 'trendChart', 'classChart']
     },
     detail: {
-      headline: 'More vertices can lengthen perimeter',
+      headline: 'More vertices increase measured perimeter detail',
+      textAlternative:
+        'One wildfire ring is shown with its original vertices and coloured by vertex count, while vertices per kilometre and the area-vertex rank correlation quantify detail; no topology-safe simplified comparison is available.',
       camera: {longitude: -121.09, latitude: 40.3, zoom: 8.2, transitionMs: 1800},
       optionsMode: 'fresh',
       options: {metric: 'vertices', showMarkers: false, shapeView: 'detail'},
@@ -312,6 +322,8 @@ export default defineScene<WildfireShapesOptions>({
     },
     'other-shapes': {
       headline: 'One index cannot describe every form',
+      textAlternative:
+        'Wildfire polygons are coloured by elongation and a selected feature carries its second-moment major axis, with area-elongation rank correlation reported; elongation, compactness and convexity measure different properties and do not explain fire processes.',
       camera: {longitude: -121.6, latitude: 38.8, zoom: 6.4, transitionMs: 1800},
       optionsMode: 'fresh',
       options: {metric: 'elongation', showAxes: true, shapeView: 'map'},
@@ -449,11 +461,11 @@ import {
 
 // One feature per fire: featureRingOffsets maps fires to rings, ringOffsets to vertices.
 const graph = new GPUCommandGraph(device, {id: 'wildfires'});
-graph.add(new GPUGeometryMeasures({
+graph.add(new GPUGeometryMeasures({spatialContext: {coordinateSpace: ('${state.areaSystem}') === 'planar' ? 'planar' : 'longitude-latitude', metric: ('${state.areaSystem}') === 'planar' ? 'native' : ('${state.areaSystem}') === 'spherical' ? 'great-circle' : 'ellipsoidal', units: ('${state.areaSystem}') === 'planar' ? 'native' : 'meters'},ellipsoidalEdgeModel: ('${state.areaSystem}') === 'wgs84' ? 'coordinate-linear' : undefined,
   positions: lngLat,                    // float32x2 lon/lat (planar: Web Mercator meters)
   ringOffsets, featureRingOffsets,
   geometryType: 'polygons',
-  coordinateSystem: '${state.areaSystem}',
+
   holeRule: '${state.holeRule}',${state.largeRings === 'serial' ? '\n  cooperativeRingRows: 0,' : ''}
   output: {areas, lengths, centroids, vertexCounts}
 }));

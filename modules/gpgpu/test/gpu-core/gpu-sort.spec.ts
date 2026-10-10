@@ -146,7 +146,7 @@ it('GPUSort radix scans digit histograms across multiple workgroups on CORE WebG
   });
   const values = Uint32Array.from({length: keys.length}, (_, index) => index);
   for (const direction of ['ascending', 'descending'] as const) {
-    const result = await runSort(device, keys, values, 'auto', direction);
+    const result = await runSort(device, keys, values, 'auto', direction, undefined, undefined, 1);
     const expected = getStableSortedPairs(keys, values, direction);
 
     expect(result.keys, `${direction} multi-workgroup histogram keys match`).toEqual(expected.keys);

@@ -284,12 +284,23 @@ export async function createWildfireShapes(
     for (const system of SYSTEMS) {
       graph.add(
         new GPUGeometryMeasures({
+          spatialContext: {
+            coordinateSpace: system === 'planar' ? 'planar' : 'longitude-latitude',
+            metric:
+              system === 'planar'
+                ? 'native'
+                : system === 'spherical'
+                  ? 'great-circle'
+                  : 'ellipsoidal',
+            units: system === 'planar' ? 'native' : 'meters'
+          },
+          ellipsoidalEdgeModel: system === 'wgs84' ? 'coordinate-linear' : undefined,
           id: `measures-${system}`,
           positions: system === 'planar' ? planar : lngLat,
           ringOffsets,
           featureRingOffsets: featureRings,
           geometryType: 'polygons',
-          coordinateSystem: system,
+
           holeRule: options.holeRule,
           ...largeRingProps,
           output: {

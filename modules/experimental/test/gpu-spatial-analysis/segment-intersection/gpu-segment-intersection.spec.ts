@@ -100,7 +100,7 @@ async function runIntersection(
         rightIds: rightIds.view,
         count: count.view,
         overflow: overflow.view,
-        totalCount: total.view
+        requiredCount: total.view
       },
       uncertainCount: uncertain.view,
       kinds: kinds.view,

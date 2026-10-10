@@ -83,7 +83,7 @@ function createFixture(
       mask: {format: 'uint32', length: 42},
       count: {format: 'uint32', length: 1},
       overflow: {format: 'uint32', length: 1},
-      totalCount: {format: 'uint32', length: 1}
+      requiredCount: {format: 'uint32', length: 1}
     },
     create: ({inputs, outputs, parameters}) =>
       new GPUBoundsFilter({
@@ -95,7 +95,7 @@ function createFixture(
           ids: outputs['ids'] as never,
           count: outputs['count'] as never,
           overflow: outputs['overflow'] as never,
-          totalCount: outputs['totalCount'] as never
+          requiredCount: outputs['requiredCount'] as never
         }
       })
   });
@@ -117,7 +117,7 @@ for (const mode of ['intersects', 'within', 'contains'] as const) {
       }
       expect(result['overflow'][0]).toBe(0);
       expect(result['count'][0]).toBe(expected.length);
-      expect(result['totalCount'][0]).toBe(expected.length);
+      expect(result['requiredCount'][0]).toBe(expected.length);
       expect(result['ids'].slice(0, expected.length)).toEqual(expected);
       expect(result['mask'].reduce((sum, value) => sum + value, 0)).toBe(expected.length);
       expect(result['mask'][EMPTY_ROW]).toBe(0);
@@ -136,7 +136,7 @@ it('GPUBoundsFilter clamps to a smaller capacity and reports overflow', async ()
   const result = await fixture.run(
     getGPUBoundsFilterParameterValues({minX: 0, minY: 0, maxX: 16, maxY: 16})
   );
-  expect(result['totalCount'][0]).toBe(41);
+  expect(result['requiredCount'][0]).toBe(41);
   expect(result['count'][0]).toBe(5);
   expect(result['overflow'][0]).toBe(1);
   expect(result['ids']).toEqual(CASES[1].intersects.slice(0, 5));

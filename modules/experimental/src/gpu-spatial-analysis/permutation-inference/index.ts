@@ -20,6 +20,7 @@ export type {
   GPUGlobalPermutationTestProps
 } from './gpu-global-permutation-test';
 export {
+  getGPUPermutationMetadata,
   getGPUPermutationParameterValues,
   GPU_PERMUTATION_PARAMETER_LENGTH
 } from './permutation-parameters';

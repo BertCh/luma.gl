@@ -587,6 +587,16 @@ export type StoryStep<O = OptionState> = {
   textAlternative?: string;
   /** Markdown. Explain what is shown, what the tool computes, why it matters, how to read it. */
   body: string;
+  /**
+   * Markdown summary of the observation or readout that supports the headline. Keep this distinct
+   * from interpretation: state what the reader can see or measure. Supports `{{readoutId}}` slots.
+   */
+  evidence?: string;
+  /**
+   * Markdown boundary on the claim: a data limitation, uncertainty or plausible alternative
+   * explanation. Supports `{{readoutId}}` slots.
+   */
+  caveat?: string;
   /** Camera move applied when the step opens. */
   camera?: StepCamera;
   /** Options set when the step opens (applied on top of defaults and earlier steps). */
@@ -833,7 +843,7 @@ export type Scene<O extends object = OptionState> = {
   order: number;
   /** One or two sentences for the gallery card. */
   summary: string;
-  /** Contributor class names, linked to the reference docs (`#/reference/<Name>`). */
+  /** Contributor names. Documented APIs link to the reference; `Frontier*` prototypes stay local. */
   contributors: readonly string[];
   /** Dataset ids the scene uses; loaded before `create` and credited in the panel. */
   datasets: readonly DatasetRef[];

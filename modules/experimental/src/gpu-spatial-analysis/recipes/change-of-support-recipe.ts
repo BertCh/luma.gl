@@ -16,6 +16,7 @@ import {
   createTransientSpatialWeights,
   getOrCreateView,
   RecipeBuilder,
+  type GPURecipeOverrides,
   type GPURecipeResult
 } from './recipe-utils';
 
@@ -33,12 +34,26 @@ export type GPUChangeOfSupportZones = {
   ringOffsets: GraphDataView<'uint32'>;
   /** Capacity of the rasterizer's scanline crossing list. */
   crossingCapacity: number;
-  /** Caller-owned zone raster (`width * height` rows); graph-owned when absent. */
-  raster?: GraphDataView<'uint32'>;
 };
 
 /** Properties for {@link addChangeOfSupportRecipe}. */
-export type GPUChangeOfSupportRecipeProps = {
+export type GPUChangeOfSupportRecipeProps = GPURecipeOverrides<
+  Record<never, never>,
+  {
+    extensiveWeights?: Partial<GPUSpatialWeights>;
+    intensiveWeightValues?: GraphDataView<'float32'>;
+    areas?: GraphDataView<'float32'>;
+    overflow?: GraphDataView<'uint32'>;
+    requiredCount?: GraphDataView<'uint32'>;
+    rasterOverflow?: [GraphDataView<'uint32'>, GraphDataView<'uint32'>];
+    extensiveValues?: GraphDataView<'float32'>;
+    intensiveValues?: GraphDataView<'float32'>;
+  },
+  {
+    sourceZones?: GraphDataView<'uint32'>;
+    targetZones?: GraphDataView<'uint32'>;
+  }
+> & {
   /** Prefix for every node and transient ID. Defaults to `'change-of-support-recipe'`. */
   id?: string;
   /** Common raster columns. */
@@ -64,22 +79,8 @@ export type GPUChangeOfSupportRecipeProps = {
   sourceValues?: GraphDataView<'float32'>;
   /** Values per source zone. Defaults to 1. */
   columnCount?: number;
-  /** Caller-owned extensive transfer (`targetCount * columnCount`): source mass split by area. */
-  extensiveValues?: GraphDataView<'float32'>;
-  /** Caller-owned intensive transfer (`targetCount * columnCount`): area-weighted source mean. */
-  intensiveValues?: GraphDataView<'float32'>;
   /** Optional categorical shares of the sources per target. */
   categories?: GPUArealCategories;
-  /** Caller-owned extensive weights CSR (targets by sources). */
-  extensiveWeights?: Partial<GPUSpatialWeights>;
-  /** Caller-owned intensive weights values (one per pair slot). */
-  intensiveWeightValues?: GraphDataView<'float32'>;
-  /** Caller-owned raw overlap area per pair slot. */
-  areas?: GraphDataView<'float32'>;
-  /** Caller-owned one-row flag: 1 when any rasterization or the pair list overflowed. */
-  overflow?: GraphDataView<'uint32'>;
-  /** Caller-owned one-row unclamped pair count. */
-  totalPairs?: GraphDataView<'uint32'>;
 };
 
 /** Named outputs of {@link addChangeOfSupportRecipe}. */
@@ -122,11 +123,19 @@ export function addChangeOfSupportRecipe<Parameters>(
   const targetCount = props.target.featureOffsets.length - 1;
   assertRecipe(ID, sourceCount >= 1 && targetCount >= 1, 'needs source and target zones');
   const columnCount = props.columnCount ?? 1;
+  const outputs = props.outputs ?? {};
+  const scratch = props.scratch ?? {};
   const builder = new RecipeBuilder(graph);
 
   const rasterOverflow: [GraphDataView<'uint32'>, GraphDataView<'uint32'>] = [
-    getOrCreateView(graph, `${id}-source-raster-overflow`, 'uint32', 1),
-    getOrCreateView(graph, `${id}-target-raster-overflow`, 'uint32', 1)
+    getOrCreateView(
+      graph,
+      `${id}-source-raster-overflow`,
+      'uint32',
+      1,
+      outputs.rasterOverflow?.[0]
+    ),
+    getOrCreateView(graph, `${id}-target-raster-overflow`, 'uint32', 1, outputs.rasterOverflow?.[1])
   ];
   const zones = [props.source, props.target].map((system, index) => {
     const name = index === 0 ? 'source' : 'target';
@@ -135,7 +144,7 @@ export function addChangeOfSupportRecipe<Parameters>(
       `${id}-${name}-zones`,
       'uint32',
       cellCount,
-      system.raster
+      index === 0 ? scratch.sourceZones : scratch.targetZones
     );
     builder.add(
       new GPUPolygonRasterization({
@@ -160,18 +169,24 @@ export function addChangeOfSupportRecipe<Parameters>(
     `${id}-extensive`,
     targetCount,
     props.pairCapacity,
-    props.extensiveWeights
+    outputs.extensiveWeights
   );
   const intensiveValues = getOrCreateView(
     graph,
     `${id}-intensive-weights`,
     'float32',
     props.pairCapacity,
-    props.intensiveWeightValues
+    outputs.intensiveWeightValues
   );
-  const areas = getOrCreateView(graph, `${id}-areas`, 'float32', props.pairCapacity, props.areas);
-  const overflow = getOrCreateView(graph, `${id}-overflow`, 'uint32', 1, props.overflow);
-  const totalPairs = getOrCreateView(graph, `${id}-total-pairs`, 'uint32', 1, props.totalPairs);
+  const areas = getOrCreateView(graph, `${id}-areas`, 'float32', props.pairCapacity, outputs.areas);
+  const overflow = getOrCreateView(graph, `${id}-overflow`, 'uint32', 1, outputs.overflow);
+  const totalPairs = getOrCreateView(
+    graph,
+    `${id}-required-count`,
+    'uint32',
+    1,
+    outputs.requiredCount
+  );
   builder.add(
     new GPUArealInterpolation({
       id: `${id}-areal`,
@@ -203,11 +218,20 @@ export function addChangeOfSupportRecipe<Parameters>(
     areas,
     overflow,
     totalPairs,
-    rasterOverflow
+    rasterOverflow,
+    outputs: {extensiveWeights, intensiveWeights, areas},
+    intermediates: {sourceZones: zones[0], targetZones: zones[1]},
+    status: {
+      stages: [
+        {stage: 'source-rasterization', status: {overflow: rasterOverflow[0]}},
+        {stage: 'target-rasterization', status: {overflow: rasterOverflow[1]}},
+        {stage: 'areal-interpolation', status: {overflow, requiredCount: totalPairs}}
+      ]
+    }
   };
   if (props.sourceValues) {
     for (const kind of ['extensive', 'intensive'] as const) {
-      const provided = kind === 'extensive' ? props.extensiveValues : props.intensiveValues;
+      const provided = kind === 'extensive' ? outputs.extensiveValues : outputs.intensiveValues;
       const output = getOrCreateView(
         graph,
         `${id}-${kind}-values`,
@@ -226,6 +250,7 @@ export function addChangeOfSupportRecipe<Parameters>(
         })
       );
       result[`${kind}Values`] = output;
+      result.outputs[`${kind}Values`] = output;
     }
   }
   return result;

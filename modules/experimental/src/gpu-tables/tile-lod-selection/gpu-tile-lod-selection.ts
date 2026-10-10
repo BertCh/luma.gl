@@ -334,7 +334,7 @@ export class GPUTileLODSelection implements GPUCommandNodeProducer {
       createPublishNode<Parameters>(graph, {
         id: `${id}-draw-publish`,
         operation: 'GPUTileLODSelection',
-        totalCount: drawTotal,
+        requiredCount: drawTotal,
         compactIds: drawIds,
         output
       })
@@ -393,7 +393,7 @@ export class GPUTileLODSelection implements GPUCommandNodeProducer {
         createPublishNode<Parameters>(graph, {
           id: `${id}-request-publish`,
           operation: 'GPUTileLODSelection',
-          totalCount: requestTotal,
+          requiredCount: requestTotal,
           compactIds: requestIds,
           output: requests,
           extraColumn:
@@ -443,11 +443,11 @@ function getOutputViews(props: GPUTileLODSelectionProps): GraphDataView[] {
     props.output.ids,
     props.output.count,
     props.output.overflow,
-    props.output.totalCount,
+    props.output.requiredCount,
     props.requests?.ids,
     props.requests?.count,
     props.requests?.overflow,
-    props.requests?.totalCount,
+    props.requests?.requiredCount,
     props.requests?.priorities,
     props.drawMask,
     props.desiredMask,

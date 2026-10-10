@@ -66,12 +66,12 @@ export type GPUCellSetOutlineOutput = {
   endpoints: GraphDataView<'float32x4'>;
   /** Optional group label of the owning cell (when `groups` is an input). */
   groups?: GraphDataView<'uint32'>;
-  /** One-row scalar receiving `min(totalCount, capacity)`. */
+  /** One-row scalar receiving `min(requiredCount, capacity)`. */
   count: GraphDataView<'uint32'>;
   /** One-row scalar receiving 1 when more segments existed than the capacity. */
   overflow: GraphDataView<'uint32'>;
   /** Optional one-row scalar receiving the unclamped segment count. */
-  totalCount?: GraphDataView<'uint32'>;
+  requiredCount?: GraphDataView<'uint32'>;
 };
 
 /**
@@ -185,7 +185,7 @@ export class GPUCellSetOutline implements GPUCommandNodeProducer {
       ['count', props.count],
       ['output.count', output.count],
       ['output.overflow', output.overflow],
-      ['output.totalCount', output.totalCount]
+      ['output.requiredCount', output.requiredCount]
     ] as const) {
       if (view) {
         validatePackedUint32View(view, `${id} ${name}`);
@@ -413,12 +413,12 @@ const OUTPUT_CAPACITY: u32 = ${capacity}u;`,
       createPublishNode<Parameters>(graph, {
         id: `${id}-publish`,
         operation: OPERATION,
-        totalCount: total,
+        requiredCount: total,
         output: {
           ids: output.rows,
           count: output.count,
           overflow: output.overflow,
-          totalCount: output.totalCount
+          requiredCount: output.requiredCount
         }
       }),
       ...ringNodes
@@ -435,7 +435,7 @@ function getOutputViews(output: GPUCellSetOutlineOutput) {
     output.groups,
     output.count,
     output.overflow,
-    output.totalCount
+    output.requiredCount
   ];
 }
 

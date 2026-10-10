@@ -123,7 +123,7 @@ function createFixture(device: Device, scene: Scene): Fixture {
           ids: importGraphBuffer(graph, 'o-ids', outputs.ids, 'uint32', capacity),
           count: importGraphBuffer(graph, 'o-count', outputs.count, 'uint32', 1),
           overflow: importGraphBuffer(graph, 'o-overflow', outputs.overflow, 'uint32', 1),
-          totalCount: importGraphBuffer(graph, 'o-total', outputs.total, 'uint32', 1)
+          requiredCount: importGraphBuffer(graph, 'o-total', outputs.total, 'uint32', 1)
         }
       }
     })

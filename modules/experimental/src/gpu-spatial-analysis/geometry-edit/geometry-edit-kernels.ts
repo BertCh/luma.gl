@@ -354,7 +354,7 @@ export type CleanupPointsNodeProps = {
   /** One-row scalar receiving `1` when the point capacity overflowed, otherwise `0`. */
   overflow: GraphDataView<'uint32'>;
   /** Optional one-row scalar receiving the unclamped point count. */
-  totalCount?: GraphDataView<'uint32'>;
+  requiredCount?: GraphDataView<'uint32'>;
 };
 
 /**
@@ -375,8 +375,8 @@ export function createCleanupPointsNode<Parameters>(
     {name: 'countOut', view: props.count, type: 'u32', access: 'read_write'},
     {name: 'overflowOut', view: props.overflow, type: 'u32', access: 'read_write'}
   ];
-  if (props.totalCount) {
-    bindings.push({name: 'totalOut', view: props.totalCount, type: 'u32', access: 'read_write'});
+  if (props.requiredCount) {
+    bindings.push({name: 'totalOut', view: props.requiredCount, type: 'u32', access: 'read_write'});
   }
   return createWGSLKernelNode<Parameters>(graph, {
     id: props.id,
@@ -391,7 +391,7 @@ ${SNAP_SOURCE}`,
   if (index == 0u) {
     countOut[countOutOffset] = min(POINT_COUNT, CAPACITY);
     overflowOut[overflowOutOffset] = select(0u, 1u, POINT_COUNT > CAPACITY);
-    ${props.totalCount ? 'totalOut[totalOutOffset] = POINT_COUNT;' : ''}
+    ${props.requiredCount ? 'totalOut[totalOutOffset] = POINT_COUNT;' : ''}
   }
   if (index >= CAPACITY) {
     return;
@@ -547,7 +547,7 @@ export type CleanupPublishNodeProps = {
   outputRingOffsets: GraphDataView<'uint32'>;
   count: GraphDataView<'uint32'>;
   overflow: GraphDataView<'uint32'>;
-  totalCount?: GraphDataView<'uint32'>;
+  requiredCount?: GraphDataView<'uint32'>;
   /** Vertex capacity of the output positions. */
   capacity: number;
 };
@@ -571,8 +571,8 @@ export function createCleanupPublishNode<Parameters>(
     {name: 'countOut', view: props.count, type: 'u32', access: 'read_write'},
     {name: 'overflowOut', view: props.overflow, type: 'u32', access: 'read_write'}
   ];
-  if (props.totalCount) {
-    bindings.push({name: 'totalOut', view: props.totalCount, type: 'u32', access: 'read_write'});
+  if (props.requiredCount) {
+    bindings.push({name: 'totalOut', view: props.requiredCount, type: 'u32', access: 'read_write'});
   }
   return createWGSLKernelNode<Parameters>(graph, {
     id: props.id,
@@ -595,7 +595,7 @@ const RING_OFFSET_COUNT: u32 = ${props.ringOffsets.length}u;`,
   if (index == 0u) {
     countOut[countOutOffset] = min(total, CAPACITY);
     overflowOut[overflowOutOffset] = select(0u, 1u, total > CAPACITY);
-    ${props.totalCount ? 'totalOut[totalOutOffset] = total;' : ''}
+    ${props.requiredCount ? 'totalOut[totalOutOffset] = total;' : ''}
   }`
   });
 }

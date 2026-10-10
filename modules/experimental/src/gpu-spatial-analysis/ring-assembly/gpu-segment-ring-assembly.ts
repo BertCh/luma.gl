@@ -23,6 +23,7 @@ import {
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph
 } from '../../utils/gpu-contributor-utils';
+import type {GPUPolygonGeometryPort} from '../contracts/index';
 
 const OPERATION = 'GPUSegmentRingAssembly';
 /** Lanes per workgroup; a workgroup owns this many rings and sums its larger rings cooperatively. */
@@ -48,29 +49,27 @@ export const GPU_SEGMENT_RING_ASSEMBLY_FLAG_CANCELLED = 8;
 export type GPUSegmentRingAssemblyInteriorSide = 'left' | 'right';
 
 /**
- * Polygon layout of {@link GPUSegmentRingAssemblyOutput}: rings regrouped so every polygon is its
- * shell followed by its holes, in GeoArrow layout with implicitly closed rings (the repeated closing
- * vertex is dropped). Offsets are GPU-written and padded flat past the data, so views of fixed
- * length stay valid for compile-time topologies: unused polygons and rings are empty. Holes with no
- * enclosing shell are left out. The ordering is deterministic: polygons by shell ring index, holes
- * by ring index.
+ * Polygon layout of {@link GPUSegmentRingAssemblyOutput}: rings regrouped so every polygon feature
+ * is its shell followed by its holes, in GeoArrow layout with implicitly closed rings (the repeated
+ * closing vertex is dropped). Offsets are GPU-written and padded flat past the data, so views of
+ * fixed length stay valid for compile-time topologies: unused polygons and rings are empty. Holes
+ * with no enclosing shell are left out. The ordering is deterministic: polygons by shell ring
+ * index, holes by ring index.
  */
-export type GPUSegmentRingPolygonOutput = {
+export type GPUSegmentRingPolygonOutput = Omit<GPUPolygonGeometryPort, 'sourceIds'> & {
   /** Ring vertices in polygon order, without closing duplicates. Length at most `positions.length`. */
   positions: GraphDataView<'float32x2'>;
   /** Ring-to-vertex offsets, length `ringCapacity + 1`. */
   ringOffsets: GraphDataView<'uint32'>;
   /** Polygon-to-ring offsets, length `ringCapacity + 1` (the first ring of a polygon is its shell). */
   polygonOffsets: GraphDataView<'uint32'>;
-  /** Two-row `[0, polygonCount]`: one feature holding every polygon. */
+  /** Identity feature-to-polygon offsets, padded with `polygonCount`; one feature per polygon. */
   featureOffsets: GraphDataView<'uint32'>;
   /**
-   * Optional group label of each polygon (its shell's group), length `ringCapacity`; unused
-   * polygons hold `0xffffffff` ({@link GPU_SEGMENT_RING_ASSEMBLY_NONE}). Needs the `groups`
-   * input. With one feature per polygon (an identity feature offset table) it maps a
-   * `GPUPolygonRasterization` zone row to its group.
+   * Optional stable source ID of each polygon feature (its shell's group). Unused rows hold
+   * `0xffffffff` ({@link GPU_SEGMENT_RING_ASSEMBLY_NONE}). Needs the `groups` input.
    */
-  polygonGroups?: GraphDataView<'uint32'>;
+  sourceIds?: GraphDataView<'uint32'>;
 };
 
 /**
@@ -119,7 +118,7 @@ export type GPUSegmentRingAssemblyOutput = {
   /** One-row scalar receiving 1 when ring or vertex capacity dropped rings. */
   overflow: GraphDataView<'uint32'>;
   /** Optional one-row scalar receiving the unclamped ring count. */
-  totalCount?: GraphDataView<'uint32'>;
+  requiredCount?: GraphDataView<'uint32'>;
   /** Optional one-row scalar receiving the number of valid segments that lie on no closed ring. */
   openSegmentCount?: GraphDataView<'uint32'>;
   /** Optional one-row scalar receiving the number of segments whose end vertex is shared. */
@@ -136,6 +135,11 @@ export type GPUSegmentRingAssemblyProps = {
   count?: GraphDataView<'uint32'>;
   /** Optional group label per segment; a ring never mixes groups. */
   groups?: GraphDataView<'uint32'>;
+  /**
+   * Treat consecutive even/odd segment rows as opposite directed half-edges and never immediately
+   * return along the twin. Used by general polygonization. Defaults to false.
+   */
+  pairedOpposites?: boolean;
   /**
    * Compile-time vertex matching distance (Chebyshev, input units). Two vertices match when
    * both coordinates differ by at most this value. Choose at least four times the f32 spacing of
@@ -243,7 +247,7 @@ export class GPUSegmentRingAssembly implements GPUCommandNodeProducer {
       ['count', props.count],
       ['output.count', output.count],
       ['output.overflow', output.overflow],
-      ['output.totalCount', output.totalCount],
+      ['output.requiredCount', output.requiredCount],
       ['output.openSegmentCount', output.openSegmentCount],
       ['output.touchingSegmentCount', output.touchingSegmentCount]
     ] as const) {
@@ -296,21 +300,21 @@ export class GPUSegmentRingAssembly implements GPUCommandNodeProducer {
       if (polygons.positions.length !== output.positions.length) {
         throw new Error(`${id} output.polygons.positions must match output.positions length`);
       }
-      if (polygons.polygonGroups) {
+      if (polygons.sourceIds) {
         if (!props.groups) {
-          throw new Error(`${id} output.polygons.polygonGroups needs the groups input`);
+          throw new Error(`${id} output.polygons.sourceIds needs the groups input`);
         }
-        validatePackedUint32View(polygons.polygonGroups, `${id} output.polygons.polygonGroups`);
-        if (polygons.polygonGroups.length !== ringCapacity) {
+        validatePackedUint32View(polygons.sourceIds, `${id} output.polygons.sourceIds`);
+        if (polygons.sourceIds.length !== ringCapacity) {
           throw new Error(
-            `${id} output.polygons.polygonGroups must have ${ringCapacity} rows (the ring capacity)`
+            `${id} output.polygons.sourceIds must have ${ringCapacity} rows (the ring capacity)`
           );
         }
       }
       for (const [name, view, length] of [
         ['ringOffsets', polygons.ringOffsets, ringCapacity + 1],
         ['polygonOffsets', polygons.polygonOffsets, ringCapacity + 1],
-        ['featureOffsets', polygons.featureOffsets, 2]
+        ['featureOffsets', polygons.featureOffsets, ringCapacity + 1]
       ] as const) {
         validatePackedUint32View(view, `${id} output.polygons.${name}`);
         if (view.length !== length) {
@@ -605,6 +609,7 @@ fn findReverse(index: u32) -> u32 {
         let candidate = sortedIds[sortedIdsOffset + position];
         position++;
         if (candidate >= valid || candidate == index) { continue; }
+        ${props.pairedOpposites ? 'if (candidate == (index ^ 1u)) { continue; }' : ''}
         ${cancelOpposing ? `if ((flags[flagsOffset + candidate] & ${GPU_SEGMENT_RING_ASSEMBLY_FLAG_CANCELLED}u) != 0u) { continue; }` : ''}
         let candidateStart = ringStart(candidate);
         if (abs(candidateStart.x - vertex.x) > TOLERANCE || abs(candidateStart.y - vertex.y) > TOLERANCE) { continue; }
@@ -1095,10 +1100,14 @@ fn publishRing(ring: u32, sum: f32, minimum: vec2f, maximum: vec2f) {
   let probe = 0.5 * (a + b);
   var best = ${none};
   var bestArea = 0.0;
+  let holeArea = abs(areas[areasOffset + index]);
   for (var shell = 0u; shell < rings; shell++) {
     if (isHole[isHoleOffset + shell] != 0u) { continue; }
     ${ringGroups ? 'if (ringGroups[ringGroupsOffset + shell] != ringGroups[ringGroupsOffset + index]) { continue; }' : ''}
     let area = abs(areas[areasOffset + shell]);
+    // A bidirected boundary produces an equal-area reverse walk for the unbounded side. It cannot
+    // own itself as a hole; a containing shell must have strictly larger area.
+    if (area <= holeArea) { continue; }
     if (best != ${none} && area >= bestArea) { continue; }
     // A probe outside the shell's bounding box (or left of it, where a closed ring crosses the ray
     // an even number of times) cannot be inside: skip the vertex walk.
@@ -1144,6 +1153,7 @@ fn publishRing(ring: u32, sum: f32, minimum: vec2f, maximum: vec2f) {
           'polygon-keys',
           [
             read('ringCount', ringCount),
+            read('areas', ringAreas, 'f32'),
             read('isHole', ringIsHole),
             read('shells', ringShells),
             write('keys', polygonKeys),
@@ -1152,7 +1162,7 @@ fn publishRing(ring: u32, sum: f32, minimum: vec2f, maximum: vec2f) {
           ringCapacity,
           `ids[idsOffset + index] = index;
   var key = ${none};
-  if (index < ringCount[ringCountOffset] && shells[shellsOffset + index] != ${none}) {
+  if (index < ringCount[ringCountOffset] && abs(areas[areasOffset + index]) > 0.0 && shells[shellsOffset + index] != ${none}) {
     key = shells[shellsOffset + index] * 2u + isHole[isHoleOffset + index];
   }
   keys[keysOffset + index] = key;`
@@ -1204,7 +1214,7 @@ fn publishRing(ring: u32, sum: f32, minimum: vec2f, maximum: vec2f) {
     polygonStarts[polygonStartsOffset + shellScan[shellScanOffset + index] - 1u] = index;
   }`
         ),
-        ...(polygons.polygonGroups && ringGroups
+        ...(polygons.sourceIds && ringGroups
           ? [
               kernel(
                 'polygon-groups',
@@ -1213,14 +1223,14 @@ fn publishRing(ring: u32, sum: f32, minimum: vec2f, maximum: vec2f) {
                   read('polygonStarts', polygonStarts),
                   read('sortedIds', sortedPolygonIds),
                   read('ringGroups', ringGroups),
-                  write('polygonGroups', polygons.polygonGroups)
+                  write('sourceIds', polygons.sourceIds)
                 ],
                 ringCapacity,
                 `var group = ${none};
   if (index < shellScan[shellScanOffset + ${ringCapacity - 1}u]) {
     group = ringGroups[ringGroupsOffset + sortedIds[sortedIdsOffset + polygonStarts[polygonStartsOffset + index]]];
   }
-  polygonGroups[polygonGroupsOffset + index] = group;`
+  sourceIds[sourceIdsOffset + index] = group;`
               )
             ]
           : []),
@@ -1240,8 +1250,10 @@ fn publishRing(ring: u32, sum: f32, minimum: vec2f, maximum: vec2f) {
     if (sortedKeys[sortedKeysOffset + middle] == ${none}) { high = middle; } else { low = middle + 1u; }
   }
   validRings[validRingsOffset] = low;
-  featureOffsets[featureOffsetsOffset] = 0u;
-  featureOffsets[featureOffsetsOffset + 1u] = shellScan[shellScanOffset + ${ringCapacity - 1}u];`
+  let polygonCount = shellScan[shellScanOffset + ${ringCapacity - 1}u];
+  for (var feature = 0u; feature <= ${ringCapacity}u; feature++) {
+    featureOffsets[featureOffsetsOffset + feature] = min(feature, polygonCount);
+  }`
         ),
         kernel(
           'polygon-offsets',
@@ -1296,14 +1308,14 @@ fn publishRing(ring: u32, sum: f32, minimum: vec2f, maximum: vec2f) {
           read('ringCount', ringCount),
           write('outCount', output.count),
           write('outOverflow', output.overflow),
-          ...(output.totalCount ? [write('outTotal', output.totalCount)] : [])
+          ...(output.requiredCount ? [write('outTotal', output.requiredCount)] : [])
         ],
         1,
         `let total = ringScan[ringScanOffset + ${segments - 1}u];
   let written = ringCount[ringCountOffset];
   outCount[outCountOffset] = written;
   outOverflow[outOverflowOffset] = select(0u, 1u, written < total);
-  ${output.totalCount ? 'outTotal[outTotalOffset] = total;' : ''}`
+  ${output.requiredCount ? 'outTotal[outTotalOffset] = total;' : ''}`
       )
     );
     if (output.openSegmentCount || output.touchingSegmentCount) {
@@ -1357,6 +1369,7 @@ fn publishRing(ring: u32, sum: f32, minimum: vec2f, maximum: vec2f) {
 }
 
 function getOutputViews(output: GPUSegmentRingAssemblyOutput) {
+  const {kind: _kind, ...polygonViews} = output.polygons ?? {};
   return [
     output.ringOffsets,
     output.positions,
@@ -1364,13 +1377,13 @@ function getOutputViews(output: GPUSegmentRingAssemblyOutput) {
     output.ringIsHole,
     output.ringShells,
     output.ringGroups,
-    ...(output.polygons ? Object.values(output.polygons) : []),
+    ...Object.values(polygonViews),
     output.segmentRings,
     output.segmentVertices,
     output.segmentFlags,
     output.count,
     output.overflow,
-    output.totalCount,
+    output.requiredCount,
     output.openSegmentCount,
     output.touchingSegmentCount
   ];

@@ -447,14 +447,14 @@ fn main() {
     return;
   }
 
-  var totalCount = 0u;
+  var requiredCount = 0u;
   var totalWeightedIndex = 0.0;
   for (var binIndex = 0u; binIndex < BIN_COUNT; binIndex++) {
     let count = histogramValues[HISTOGRAM_OFFSET + binIndex];
-    totalCount += count;
+    requiredCount += count;
     totalWeightedIndex += f32(binIndex) * f32(count);
   }
-  if (totalCount == 0u) {
+  if (requiredCount == 0u) {
     outputThreshold[OUTPUT_OFFSET] = 0.0;
     return;
   }
@@ -467,7 +467,7 @@ fn main() {
     let count = histogramValues[HISTOGRAM_OFFSET + binIndex];
     lowerCount += count;
     lowerWeightedIndex += f32(binIndex) * f32(count);
-    let upperCount = totalCount - lowerCount;
+    let upperCount = requiredCount - lowerCount;
     if (lowerCount > 0u && upperCount > 0u) {
       let lowerMean = lowerWeightedIndex / f32(lowerCount);
       let upperMean = (totalWeightedIndex - lowerWeightedIndex) / f32(upperCount);

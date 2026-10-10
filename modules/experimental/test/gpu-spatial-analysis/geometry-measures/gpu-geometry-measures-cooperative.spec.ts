@@ -6,10 +6,7 @@ import type {Buffer, Device} from '@luma.gl/core';
 import {GPUCommandGraph} from '@luma.gl/gpgpu/gpu-core';
 import {getWebGPUTestDevice} from '@luma.gl/test-utils';
 import {expect, it} from 'vitest';
-import {
-  GPUGeometryMeasures,
-  type GPUGeometryMeasuresProps
-} from '../../../src/gpu-spatial-analysis/geometry-measures';
+import {GPUGeometryMeasures} from '../../../src/gpu-spatial-analysis/geometry-measures';
 import {importGraphBuffer} from '../../../src/utils/gpu-contributor-utils';
 import {
   createInputBuffer,
@@ -34,7 +31,11 @@ type Readback = {
 async function measure(
   device: Device,
   features: NestedFeatures,
-  options: Pick<GPUGeometryMeasuresProps, 'geometryType' | 'coordinateSystem' | 'holeRule'>,
+  options: {
+    geometryType: 'lines' | 'polygons' | 'points';
+    coordinateSystem: 'planar' | 'spherical' | 'wgs84' | 'geodesic';
+    holeRule?: 'winding' | 'first-ring-exterior';
+  },
   cooperativeRingRows: number
 ): Promise<Readback> {
   const flat = createFlatGeometry(features);
@@ -55,6 +56,17 @@ async function measure(
   const extremes = track(createOutputBuffer(device, 4 * count));
   graph.add(
     new GPUGeometryMeasures({
+      spatialContext: {
+        coordinateSpace: options.coordinateSystem === 'planar' ? 'planar' : 'longitude-latitude',
+        metric:
+          options.coordinateSystem === 'planar'
+            ? 'native'
+            : options.coordinateSystem === 'spherical'
+              ? 'great-circle'
+              : 'ellipsoidal',
+        units: options.coordinateSystem === 'planar' ? 'native' : 'meters'
+      },
+      ellipsoidalEdgeModel: options.coordinateSystem === 'wgs84' ? 'coordinate-linear' : undefined,
       positions: importGraphBuffer(
         graph,
         'positions',
@@ -76,7 +88,8 @@ async function measure(
         'uint32',
         flat.featureRingOffsets.length
       ),
-      ...options,
+      geometryType: options.geometryType,
+      holeRule: options.holeRule,
       cooperativeRingRows,
       output: {
         lengths: importGraphBuffer(graph, 'lengths', lengths, 'float32', count),
@@ -216,10 +229,14 @@ it('GPUGeometryMeasures cooperative rings match the serial walk (planar polygons
   }
   const features = createPlanarFeatures(createRandom(5));
   for (const options of [
-    {geometryType: 'polygons' as const},
-    {geometryType: 'polygons' as const, holeRule: 'first-ring-exterior' as const},
-    {geometryType: 'lines' as const},
-    {geometryType: 'points' as const}
+    {geometryType: 'polygons' as const, coordinateSystem: 'planar' as const},
+    {
+      geometryType: 'polygons' as const,
+      coordinateSystem: 'planar' as const,
+      holeRule: 'first-ring-exterior' as const
+    },
+    {geometryType: 'lines' as const, coordinateSystem: 'planar' as const},
+    {geometryType: 'points' as const, coordinateSystem: 'planar' as const}
   ]) {
     const serial = await measure(device, features, options, 0);
     // A threshold of 6 sends every feature with a ring above 6 vertices down the cooperative path.
@@ -280,7 +297,12 @@ it('GPUGeometryMeasures measures a 6000-vertex ring cooperatively against a clos
   ]);
   // One huge ring among small features, as in the skewed case the cooperative path targets.
   const features: NestedFeatures = [[ring.slice(0, 4)], [ring], [ring.slice(10, 18)]];
-  const result = await measure(device, features, {geometryType: 'polygons'}, 512);
+  const result = await measure(
+    device,
+    features,
+    {geometryType: 'polygons', coordinateSystem: 'planar'},
+    512
+  );
   const expectedArea = 0.5 * count * radius * radius * Math.sin((2 * Math.PI) / count);
   const expectedPerimeter = 2 * count * radius * Math.sin(Math.PI / count);
   expect(Math.abs(result.areas[1] - expectedArea) / expectedArea).toBeLessThan(2e-5);
@@ -289,7 +311,12 @@ it('GPUGeometryMeasures measures a 6000-vertex ring cooperatively against a clos
   expect(Math.abs(result.centroids[2] - 40000)).toBeLessThan(0.05);
   expect(Math.abs(result.centroids[3] + 9000)).toBeLessThan(0.05);
   // The first row with the smallest x and the largest y wins ties: rows are in the feature's range.
-  const serial = await measure(device, features, {geometryType: 'polygons'}, 0);
+  const serial = await measure(
+    device,
+    features,
+    {geometryType: 'polygons', coordinateSystem: 'planar'},
+    0
+  );
   expect(result.extremes).toEqual(serial.extremes);
   device.destroy?.();
 });

@@ -450,61 +450,63 @@ export async function createHealthRegression(
       weights: importWeights(recipeGraph),
       parameters: moranParameters.importToGraph(recipeGraph),
       olsParameters: olsParameters.importToGraph(recipeGraph),
-      ols: {
-        coefficients: view(
-          recipeGraph,
-          'coefficients',
-          buffers.coefficients,
-          'float32',
-          predictorCount + 1
-        ),
-        standardErrors: view(
-          recipeGraph,
-          'standard-errors',
-          buffers.standardErrors,
-          'float32',
-          predictorCount + 1
-        ),
-        tStatistics: view(
-          recipeGraph,
-          't-statistics',
-          buffers.tStatistics,
-          'float32',
-          predictorCount + 1
-        ),
-        summary: view(
-          recipeGraph,
-          'ols-summary',
-          buffers.olsSummary,
-          'float32',
-          GPU_ORDINARY_LEAST_SQUARES_SUMMARY_LENGTH
-        ),
-        status: view(recipeGraph, 'ols-status', buffers.olsStatus, 'uint32', 1),
-        residuals: view(recipeGraph, 'ols-residuals', buffers.olsResiduals, 'float32', rowCount),
-        fitted: view(recipeGraph, 'fitted', buffers.fitted, 'float32', rowCount)
-      },
-      diagnostics: {
-        tests: view(
-          recipeGraph,
-          'tests',
-          buffers.tests,
-          'float32',
-          GPU_SPATIAL_REGRESSION_DIAGNOSTICS_TESTS_LENGTH
-        ),
-        summary: view(
-          recipeGraph,
-          'diagnostics-summary',
-          buffers.diagnosticsSummary,
-          'float32',
-          GPU_SPATIAL_REGRESSION_DIAGNOSTICS_SUMMARY_LENGTH
-        ),
-        status: view(recipeGraph, 'diagnostics-status', buffers.diagnosticsStatus, 'uint32', 1)
-      },
-      residualMoran: {
-        zScores: view(recipeGraph, 'moran-z', buffers.zScores, 'float32', rowCount),
-        localI: view(recipeGraph, 'moran-i', buffers.localI, 'float32', rowCount),
-        quadrants: view(recipeGraph, 'quadrants', buffers.quadrants, 'uint32', rowCount),
-        pValues: view(recipeGraph, 'moran-p', buffers.pValues, 'float32', rowCount)
+      outputs: {
+        ols: {
+          coefficients: view(
+            recipeGraph,
+            'coefficients',
+            buffers.coefficients,
+            'float32',
+            predictorCount + 1
+          ),
+          standardErrors: view(
+            recipeGraph,
+            'standard-errors',
+            buffers.standardErrors,
+            'float32',
+            predictorCount + 1
+          ),
+          tStatistics: view(
+            recipeGraph,
+            't-statistics',
+            buffers.tStatistics,
+            'float32',
+            predictorCount + 1
+          ),
+          summary: view(
+            recipeGraph,
+            'ols-summary',
+            buffers.olsSummary,
+            'float32',
+            GPU_ORDINARY_LEAST_SQUARES_SUMMARY_LENGTH
+          ),
+          status: view(recipeGraph, 'ols-status', buffers.olsStatus, 'uint32', 1),
+          residuals: view(recipeGraph, 'ols-residuals', buffers.olsResiduals, 'float32', rowCount),
+          fitted: view(recipeGraph, 'fitted', buffers.fitted, 'float32', rowCount)
+        },
+        diagnostics: {
+          tests: view(
+            recipeGraph,
+            'tests',
+            buffers.tests,
+            'float32',
+            GPU_SPATIAL_REGRESSION_DIAGNOSTICS_TESTS_LENGTH
+          ),
+          summary: view(
+            recipeGraph,
+            'diagnostics-summary',
+            buffers.diagnosticsSummary,
+            'float32',
+            GPU_SPATIAL_REGRESSION_DIAGNOSTICS_SUMMARY_LENGTH
+          ),
+          status: view(recipeGraph, 'diagnostics-status', buffers.diagnosticsStatus, 'uint32', 1)
+        },
+        residualMoran: {
+          zScores: view(recipeGraph, 'moran-z', buffers.zScores, 'float32', rowCount),
+          localI: view(recipeGraph, 'moran-i', buffers.localI, 'float32', rowCount),
+          quadrants: view(recipeGraph, 'quadrants', buffers.quadrants, 'uint32', rowCount),
+          pValues: view(recipeGraph, 'moran-p', buffers.pValues, 'float32', rowCount)
+        }
       }
     });
     const recipe = resources.track(recipeGraph.compile());
@@ -937,7 +939,7 @@ export async function createHealthRegression(
             id: `health-${map}`,
             values: map === 'fitted' ? variant.buffers.fitted : responseBuffer,
             valueFormat: 'float32',
-            colormap: 'viridis',
+            colormap: 'ylorrd',
             valueRange: responseRange,
             color: [255, 255, 255, 255],
             noDataColor: [0, 0, 0, 0]

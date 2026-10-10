@@ -105,6 +105,9 @@ const KERNEL_RADIUS = 8;
 const KERNEL_WIDTH = KERNEL_RADIUS * 2 + 1;
 const HISTOGRAM_BINS = 16;
 const SETTLE_MILLISECONDS = 500;
+/** 28 April through 1 May, inclusive, in the dataset's Chicago local-wall-clock seconds. */
+const CITY_NATURE_CHALLENGE_START = 117 * 86400;
+const CITY_NATURE_CHALLENGE_END = 121 * 86400;
 
 type DensityGraph = {
   compiled: CompiledGPUCommandGraph<void>;
@@ -173,6 +176,7 @@ export async function createNatureDensity(
   const origin = columns.origin;
   const projection = observations.getProjection(origin);
   const pointCount = columns.count;
+  const timestamps = observations.column<Uint32Array>('timestamp');
   const categoryIndex = (name: string) =>
     name === 'all' ? -1 : columns.categoryNames.indexOf(name);
 
@@ -201,6 +205,8 @@ export async function createNatureDensity(
 
   let destroyed = false;
   let measuring = false;
+  /** True when analysis inputs changed and the displayed density graph needs another encoding. */
+  let densityDirty = true;
   let settleStale = true;
   let lastChangeTime = performance.now();
   let lastBounds: Float32Array | null = null;
@@ -222,6 +228,7 @@ export async function createNatureDensity(
   ctx.setReadout('kernelRadius', `${getKernelRadius(ctx.options.sigma)} cells`);
 
   const markChanged = () => {
+    densityDirty = true;
     settleStale = true;
     lastChangeTime = performance.now();
   };
@@ -729,9 +736,23 @@ export async function createNatureDensity(
       {hours, invertHours, dayType, category: categoryIndex(category)},
       mask
     );
+    let challengeIncluded = 0;
+    for (let index = 0; index < pointCount; index++) {
+      if (
+        mask[index] &&
+        timestamps[index] >= CITY_NATURE_CHALLENGE_START &&
+        timestamps[index] < CITY_NATURE_CHALLENGE_END
+      ) {
+        challengeIncluded++;
+      }
+    }
     maskBuffer.write(mask);
     includedCount = included;
     ctx.setReadout('kept', formatCount(included));
+    ctx.setReadout(
+      'challengePulse',
+      `${formatCount(challengeIncluded)} records (${formatPercent(challengeIncluded / Math.max(1, included), 1)})`
+    );
     ctx.setReadout('window', formatHourWindow(hours, invertHours));
     markChanged();
     publishCost();
@@ -801,7 +822,6 @@ export async function createNatureDensity(
         if (state.showContext) computeParkShare();
         ctx.requestLayers();
       } else {
-        if (id === 'view') markChanged();
         ctx.requestLayers();
       }
       if (id === 'showKernel' || id === 'view' || id === 'binning') updateKernelRing();
@@ -897,6 +917,10 @@ export async function createNatureDensity(
       if (!displayed || !current) return;
       const {binning} = ctx.options;
       const viewBounds = getViewportMetricBounds(frame.viewport, projection);
+      const boundsData = Float32Array.from(viewBounds);
+      const boundsChanged =
+        !lastBounds || boundsData.some((value, index) => value !== lastBounds![index]);
+      if (boundsChanged) markChanged();
       let cellText: string;
       if (binning === 'hexagon') {
         const [columnsCount, rowsCount] = current.gridSize;
@@ -904,7 +928,7 @@ export async function createNatureDensity(
           (viewBounds[2] - viewBounds[0]) / (SQRT3 * (columnsCount - 1)),
           (viewBounds[3] - viewBounds[1]) / (1.5 * (rowsCount - 1))
         );
-        hexagonRadius.write(Float32Array.of(radius));
+        if (densityDirty) hexagonRadius.write(Float32Array.of(radius));
         cellMeters = radius;
         cellText = `${formatDistance(radius)} hexagon radius`;
       } else {
@@ -915,12 +939,12 @@ export async function createNatureDensity(
         lastCellText = cellText;
         ctx.setReadout('cellSize', cellText);
       }
-      const boundsData = Float32Array.from(viewBounds);
-      if (!lastBounds || boundsData.some((value, index) => value !== lastBounds![index]))
-        markChanged();
       lastBounds = boundsData;
-      bounds.write(boundsData);
-      displayed.compiled.encode(commandEncoder, {parameters: undefined});
+      if (densityDirty) {
+        bounds.write(boundsData);
+        displayed.compiled.encode(commandEncoder, {parameters: undefined});
+        densityDirty = false;
+      }
       const settled = performance.now() - lastChangeTime > SETTLE_MILLISECONDS;
       if (settleStale && settled && !displayed.fieldReader.isPending) {
         readBounds = boundsData;

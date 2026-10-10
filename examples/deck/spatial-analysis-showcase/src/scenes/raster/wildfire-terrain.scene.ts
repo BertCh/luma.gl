@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {ground} from '../../cartography/grounds';
 import {defineScene} from '../scene';
 import {storyFromMarkdown} from '../story-markdown';
 import narrative from './wildfire-terrain.md?raw';
@@ -9,11 +10,11 @@ import type {WildfireTerrainOptions} from './wildfire-terrain.compute';
 
 export default defineScene<WildfireTerrainOptions>({
   id: 'wildfire-terrain',
-  title: 'Do wildfires burn steeper ground?',
+  title: 'California wildfires: terrain differences inside perimeters',
   chapter: 'raster',
   order: 5,
   summary:
-    'Fire perimeters rasterized onto a California DEM, a distance-field ring of unburned land around each, Horn slope and aspect, and zonal statistics comparing inside against ring: slope, elevation, steepness and a facing-direction chart for 24 fires.',
+    'GPU rasterization and terrain derivatives compare slope, elevation and aspect inside 24 California fire perimeters with nearby rings on a 239-m DEM. The observational comparison does not estimate fire causation.',
   contributors: [
     'GPUPolygonRasterization',
     'GPUDistanceField',
@@ -25,6 +26,16 @@ export default defineScene<WildfireTerrainOptions>({
     {id: 'wildfire-california-dem', role: 'Terrarium elevation grid, 239 m'}
   ],
   initialView: {longitude: -121.7, latitude: 38.7, zoom: 6},
+  basemap: ground('relief'),
+  furniture: {
+    title: {
+      title: 'Wildfire terrain comparison',
+      subtitle: 'Perimeter interiors versus nearby rings'
+    },
+    scaleBar: {units: 'metric'},
+    credit: 'CAL FIRE; USGS elevation',
+    caveat: 'Terrain associations do not control for weather, fuels, suppression or ignition.'
+  },
 
   options: [
     {
@@ -280,12 +291,18 @@ export default defineScene<WildfireTerrainOptions>({
 
   story: storyFromMarkdown<WildfireTerrainOptions>(narrative, {
     'burn-scars': {
+      headline: 'Burned terrain differs from nearby comparison rings',
+      textAlternative:
+        'California fire interiors appear as red cells and nearby unburned comparison rings as blue cells.',
       camera: {longitude: -121.7, latitude: 38.7, zoom: 6, transitionMs: 1400},
       options: {display: 'zones'},
       controls: ['display', 'year', 'minAcres'],
       readouts: ['comparable', 'cellsInside', 'cellsRing']
     },
     rasterize: {
+      headline: 'Boundary cells expose polygon rasterization uncertainty',
+      textAlternative:
+        'White grid cells mark where fire-perimeter edges intersect the terrain raster.',
       camera: {longitude: -120.85, latitude: 40.3, zoom: 8.2, transitionMs: 1800},
       options: {display: 'boundary', overlayOpacity: 0.9},
       controls: ['display', 'overlayOpacity'],
@@ -293,32 +310,34 @@ export default defineScene<WildfireTerrainOptions>({
       callout: {coordinate: [-121.09, 40.32], text: 'Dixie Fire'}
     },
     terrain: {
+      headline: 'Horn derivatives map slope and aspect',
+      textAlternative: 'A terrain raster encodes slope derived from the California elevation grid.',
       camera: {longitude: -122.1, latitude: 38.2, zoom: 7.4, transitionMs: 1800},
       options: {display: 'slope'},
       controls: ['display', 'sunAzimuth', 'zFactor', 'borderMode'],
       readouts: []
     },
     ring: {
+      headline: 'Distance fields assign nearby unburned comparison cells',
+      textAlternative:
+        'Blue ring cells surround red fire-interior cells at the selected ground-distance interval.',
       camera: {longitude: -120.85, latitude: 40.3, zoom: 8.2, transitionMs: 1800},
       options: {display: 'zones', ringOuter: 5},
       controls: ['ringOuter', 'ringInner', 'distanceMode', 'refinement'],
       readouts: ['cellsInside', 'cellsRing']
     },
     'slope-result': {
+      headline: 'Burned cells average steeper than comparison rings',
+      textAlternative: 'Slope summaries compare each fire interior with its nearby unburned ring.',
       camera: {longitude: -121.7, latitude: 38.7, zoom: 6, transitionMs: 1800},
       options: {display: 'slope'},
       controls: ['steepSlope', 'ringOuter', 'sumOrder'],
-      readouts: [
-        'scope',
-        'slopeMean',
-        'steepShare',
-        'steeperFires',
-        'elevation',
-        'slopeChart',
-        'differenceChart'
-      ]
+      readouts: ['scope', 'slopeMean', 'steepShare', 'differenceChart']
     },
     'aspect-result': {
+      headline: 'South-facing shares are similar inside and outside',
+      textAlternative:
+        'Aspect summaries compare compass-direction shares for burned interiors and nearby rings.',
       camera: {longitude: -121.7, latitude: 38.7, zoom: 6, transitionMs: 1800},
       options: {display: 'southness'},
       controls: ['flatSlope', 'display', 'year', 'minAcres'],

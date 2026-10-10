@@ -166,9 +166,10 @@ ${destinationValidity ? '@group(0) @binding(auto) var<storage, read_write> outpu
 fn main(@builtin(workgroup_id) workgroupId: vec3u, @builtin(local_invocation_id) localId: vec3u) {
   ${getGeospatialInvocationIndexSource(dispatchLayout)}
   if (index >= ${input.length}u) { return; }
+  ${destinationValidity ? `outputValidity[${getViewElementOffset(destinationValidity)}u + index] = 0u;` : ''}
   let result = ${shader.entryPoint}(positions[${getViewElementOffset(input) / inputWidth}u + index], ${sourceValidity ? `inputValidity[${getViewElementOffset(sourceValidity)}u + index]` : '1u'});
   outputPositions[${getViewElementOffset(destination) / outputWidth}u + index] = result.position;
-  ${destinationValidity ? `outputValidity[${getViewElementOffset(destinationValidity)}u + index] = result.valid;` : ''}
+  ${destinationValidity ? `outputValidity[${getViewElementOffset(destinationValidity)}u + index] = select(0u, 1u, result.valid == 1u);` : ''}
 }`
       });
     }

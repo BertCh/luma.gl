@@ -14,6 +14,7 @@ import {
   createTransientSpatialWeights,
   getOrCreateView,
   RecipeBuilder,
+  type GPURecipeOverrides,
   type GPURecipeResult
 } from './recipe-utils';
 
@@ -63,44 +64,37 @@ export type GPURateClusterMapRecipeProps = {
     maximumNeighbors?: number;
     /** Benjamini-Hochberg control of `significant`. */
     falseDiscoveryRate?: boolean;
-    /** Caller-owned pseudo p-values. */
-    pseudoPValues?: GraphDataView<'float32'>;
-    /** Caller-owned significance mask. */
-    significant?: GraphDataView<'uint32'>;
   };
   /**
    * Packed rgba8 palette of `GPU_RATE_CLUSTER_MAP_PALETTE_LENGTH` entries indexed by quadrant:
    * 0 not significant (grey), 1 high-high, 2 low-high, 3 low-low, 4 high-low.
    */
   palette: GraphDataView<'uint32'>;
-  /** Caller-owned standardized rates. */
-  standardizedRates?: GraphDataView<'float32'>;
-  /** Caller-owned smoothed rates. */
-  smoothedRates?: GraphDataView<'float32'>;
-  /** Caller-owned raw rates. */
-  rawRates?: GraphDataView<'float32'>;
-  /** Caller-owned `GPU_EMPIRICAL_BAYES_SUMMARY` row. */
-  summary?: GraphDataView<'float32'>;
-  /** Caller-owned weights CSR pieces. */
-  weights?: Partial<GPUSpatialWeights>;
-  /** Caller-owned weights overflow flag. */
-  weightsOverflow?: GraphDataView<'uint32'>;
-  /** Caller-owned local Moran z-scores. */
-  zScores?: GraphDataView<'float32'>;
-  /** Caller-owned local Moran I. */
-  localI?: GraphDataView<'float32'>;
-  /** Caller-owned spatial lag of the centered rate. */
-  spatialLag?: GraphDataView<'float32'>;
-  /**
-   * Caller-owned `GPULocalMoran` quadrants: gated by the analytic level without `permutation`,
-   * ungated with it.
-   */
-  analyticQuadrants?: GraphDataView<'uint32'>;
-  /** Caller-owned final quadrant code per polygon (0 not significant, 1 HH, 2 LH, 3 LL, 4 HL). */
-  quadrants?: GraphDataView<'uint32'>;
-  /** Caller-owned rgba8 color per polygon. */
-  colors?: GraphDataView<'uint32'>;
-};
+} & GPURecipeOverrides<
+  Record<never, never>,
+  {
+    standardizedRates?: GraphDataView<'float32'>;
+    smoothedRates?: GraphDataView<'float32'>;
+    zScores?: GraphDataView<'float32'>;
+    localI?: GraphDataView<'float32'>;
+    quadrants?: GraphDataView<'uint32'>;
+    colors?: GraphDataView<'uint32'>;
+    weightsOverflow?: GraphDataView<'uint32'>;
+    permutation?: {
+      exceedances?: GraphDataView<'uint32'>;
+      pseudoPValues?: GraphDataView<'float32'>;
+      significant?: GraphDataView<'uint32'>;
+      overflow?: GraphDataView<'uint32'>;
+    };
+  },
+  {
+    rawRates?: GraphDataView<'float32'>;
+    summary?: GraphDataView<'float32'>;
+    weights?: Partial<GPUSpatialWeights>;
+    spatialLag?: GraphDataView<'float32'>;
+    analyticQuadrants?: GraphDataView<'uint32'>;
+  }
+>;
 
 /** Named outputs of {@link addRateClusterMapRecipe}. */
 export type GPURateClusterMapRecipeResult = GPURecipeResult & {
@@ -141,6 +135,8 @@ export function addRateClusterMapRecipe<Parameters>(
 ): GPURateClusterMapRecipeResult {
   const id = props.id ?? 'rate-cluster-map';
   const builder = new RecipeBuilder(graph);
+  const outputs = props.outputs ?? {};
+  const scratch = props.scratch ?? {};
   const rowCount = props.polygonOffsets.length - 1;
   if (rowCount < 3) {
     throw new Error('addRateClusterMapRecipe needs at least three polygons');
@@ -153,14 +149,14 @@ export function addRateClusterMapRecipe<Parameters>(
     `${id}-standardized`,
     'float32',
     rowCount,
-    props.standardizedRates
+    outputs.standardizedRates
   );
   const smoothedRates = getOrCreateView(
     graph,
     `${id}-smoothed`,
     'float32',
     rowCount,
-    props.smoothedRates
+    outputs.smoothedRates
   );
   builder.add(
     new GPUEmpiricalBayesRates({
@@ -170,8 +166,8 @@ export function addRateClusterMapRecipe<Parameters>(
       mask: props.mask,
       standardizedRates,
       smoothedRates,
-      rawRates: props.rawRates,
-      summary: props.summary
+      rawRates: scratch.rawRates,
+      summary: scratch.summary
     })
   );
   const analyzedRates = props.analyze === 'smoothed' ? smoothedRates : standardizedRates;
@@ -181,14 +177,14 @@ export function addRateClusterMapRecipe<Parameters>(
     `${id}-weights`,
     rowCount,
     props.neighborCapacity,
-    props.weights
+    scratch.weights
   );
   const weightsOverflow = getOrCreateView(
     graph,
     `${id}-weights-overflow`,
     'uint32',
     1,
-    props.weightsOverflow
+    outputs.weightsOverflow
   );
   builder.add(
     new GPUContiguityWeights({
@@ -207,13 +203,13 @@ export function addRateClusterMapRecipe<Parameters>(
     new GPUSpatialWeightsTransform({id: `${id}-row-standardize`, operation: 'row', weights})
   );
 
-  const zScores = getOrCreateView(graph, `${id}-z-scores`, 'float32', rowCount, props.zScores);
+  const zScores = getOrCreateView(graph, `${id}-z-scores`, 'float32', rowCount, outputs.zScores);
   const spatialLag = getOrCreateView(
     graph,
     `${id}-spatial-lag`,
     'float32',
     rowCount,
-    props.spatialLag
+    scratch.spatialLag
   );
   // With permutation inference the analytic quadrant gate is switched off, so the permutation
   // result is the only gate; without it the analytic gate applies.
@@ -222,7 +218,7 @@ export function addRateClusterMapRecipe<Parameters>(
     `${id}-local-quadrants`,
     'uint32',
     rowCount,
-    props.analyticQuadrants
+    scratch.analyticQuadrants
   );
   builder.add(
     new GPULocalMoran({
@@ -231,7 +227,7 @@ export function addRateClusterMapRecipe<Parameters>(
       values: analyzedRates,
       parameters: props.parameters,
       zScores,
-      localI: props.localI,
+      localI: outputs.localI,
       spatialLag,
       quadrants: localQuadrants,
       quadrantGating: props.permutation ? 'none' : 'analytic'
@@ -241,23 +237,30 @@ export function addRateClusterMapRecipe<Parameters>(
   let permutation: GPURateClusterMapRecipeResult['permutation'];
   if (props.permutation) {
     const options = props.permutation;
+    const provided = outputs.permutation ?? {};
     permutation = {
-      exceedances: getOrCreateView(graph, `${id}-exceedances`, 'uint32', rowCount),
+      exceedances: getOrCreateView(
+        graph,
+        `${id}-exceedances`,
+        'uint32',
+        rowCount,
+        provided.exceedances
+      ),
       pseudoPValues: getOrCreateView(
         graph,
         `${id}-pseudo-p-values`,
         'float32',
         rowCount,
-        options.pseudoPValues
+        provided.pseudoPValues
       ),
       significant: getOrCreateView(
         graph,
         `${id}-significant`,
         'uint32',
         rowCount,
-        options.significant
+        provided.significant
       ),
-      overflow: getOrCreateView(graph, `${id}-permutation-overflow`, 'uint32', 1)
+      overflow: getOrCreateView(graph, `${id}-permutation-overflow`, 'uint32', 1, provided.overflow)
     };
     builder.add(
       new GPULocalPermutationTest({
@@ -275,8 +278,14 @@ export function addRateClusterMapRecipe<Parameters>(
     );
   }
 
-  const quadrants = getOrCreateView(graph, `${id}-quadrants`, 'uint32', rowCount, props.quadrants);
-  const colors = getOrCreateView(graph, `${id}-colors`, 'uint32', rowCount, props.colors);
+  const quadrants = getOrCreateView(
+    graph,
+    `${id}-quadrants`,
+    'uint32',
+    rowCount,
+    outputs.quadrants
+  );
+  const colors = getOrCreateView(graph, `${id}-colors`, 'uint32', rowCount, outputs.colors);
   graph.add(
     createWGSLKernelNode<Parameters>(graph, {
       id: `${id}-quadrant-colors`,
@@ -311,6 +320,22 @@ export function addRateClusterMapRecipe<Parameters>(
     spatialLag,
     quadrants,
     colors,
-    permutation
+    permutation,
+    outputs: {
+      analyzedRates,
+      standardizedRates,
+      smoothedRates,
+      zScores,
+      quadrants,
+      colors,
+      ...(permutation ? {permutation} : {})
+    },
+    intermediates: {weights, spatialLag},
+    status: {
+      stages: [
+        {stage: 'weights', status: {overflow: weightsOverflow}},
+        ...(permutation ? [{stage: 'permutation', status: {overflow: permutation.overflow}}] : [])
+      ]
+    }
   };
 }

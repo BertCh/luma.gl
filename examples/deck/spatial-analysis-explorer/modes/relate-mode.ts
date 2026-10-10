@@ -511,7 +511,7 @@ export const relateMode: SpatialAnalysisModeDefinition = {
           rightIds: view('right-ids', rightIds, 'uint32', pairCapacity),
           count: view('pair-count', pairCount, 'uint32', 1),
           overflow: view('pair-overflow', pairOverflow, 'uint32', 1),
-          totalCount: view('pair-total', pairTotal, 'uint32', 1)
+          requiredCount: view('pair-total', pairTotal, 'uint32', 1)
         },
         // dwithin has no DE-9IM matrix.
         ...(predicate === 'dwithin'

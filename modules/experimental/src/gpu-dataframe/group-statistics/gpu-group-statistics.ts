@@ -128,7 +128,7 @@ export type GPUGroupStatisticsProps = {
    * exactly `keyCount` rows, row `k` describes key `k`, and keys without rows stay in the table
    * with `counts` 0, NaN float statistics (mean, minimum, maximum, variance, standard deviation,
    * skewness, kurtosis, median, percentiles, mode) and 0 sums and unique counts. `output.keys[k]`
-   * is `k`, `output.count` and `output.totalCount` are `keyCount` and `overflow` is 0. Rows whose
+   * is `k`, `output.count` and `output.requiredCount` are `keyCount` and `overflow` is 0. Rows whose
    * key is outside the range (or all-ones) are skipped like masked rows. No key sort of the
    * output is needed, so dense choropleth tables line up with feature rows. Topology.
    * Defaults to the compact table of occupied keys.
@@ -152,12 +152,12 @@ export type GPUGroupStatisticsProps = {
     keys: GraphDataView<'uint32'> | GraphDataView<'uint32x2'>;
     /** Valid rows per group (mask set and key valid, regardless of value finiteness). */
     counts: GraphDataView<'uint32'>;
-    /** One-row scalar receiving `min(totalCount, capacity)`. */
+    /** One-row scalar receiving `min(requiredCount, capacity)`. */
     count: GraphDataView<'uint32'>;
     /** One-row scalar receiving 1 when groups were dropped for lack of capacity. */
     overflow: GraphDataView<'uint32'>;
     /** Optional one-row scalar receiving the unclamped number of groups. */
-    totalCount?: GraphDataView<'uint32'>;
+    requiredCount?: GraphDataView<'uint32'>;
   };
 };
 
@@ -250,7 +250,7 @@ export class GPUGroupStatistics implements GPUCommandNodeProducer {
       ['output.counts', output.counts],
       ['output.count', output.count],
       ['output.overflow', output.overflow],
-      ['output.totalCount', output.totalCount]
+      ['output.requiredCount', output.requiredCount]
     ];
     for (const [name, view] of singleViews) {
       if ((view as unknown) instanceof GraphVectorView) {
@@ -288,7 +288,7 @@ export class GPUGroupStatistics implements GPUCommandNodeProducer {
     if (output.counts.length !== capacity) {
       throw new Error(`${id} output.counts must have the same length as output.keys`);
     }
-    for (const name of ['count', 'overflow', 'totalCount'] as const) {
+    for (const name of ['count', 'overflow', 'requiredCount'] as const) {
       const view = output[name];
       if (!view) {
         continue;
@@ -431,7 +431,7 @@ export class GPUGroupStatistics implements GPUCommandNodeProducer {
       output.counts,
       output.count,
       output.overflow,
-      output.totalCount,
+      output.requiredCount,
       ...this.props.columns.flatMap(column => Object.values(column.output))
     ];
   }

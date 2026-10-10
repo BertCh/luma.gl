@@ -848,11 +848,7 @@ it('GPUPagedSplatRenderer reuses sparse real WebGPU graphs for semantic and row-
     ).toEqual([2, 2, 0]);
 
     const initialProjectedBytes = await originalOutput.readAsync();
-    const initialProjected = new Float32Array(
-      initialProjectedBytes.buffer,
-      initialProjectedBytes.byteOffset,
-      initialProjectedBytes.byteLength / Float32Array.BYTES_PER_ELEMENT
-    );
+    const initialProjected = unpackProjectedRecord(initialProjectedBytes, 0);
     const initialDirectionalRed = initialProjected[8];
     renderer.setProps({cameraPosition: [1, 0, 0.9], semanticFilter: {include: [4, 9]}});
     expect(
@@ -875,11 +871,7 @@ it('GPUPagedSplatRenderer reuses sparse real WebGPU graphs for semantic and row-
       'restores all included sparse rows and splits GPU visibility over ordered output segments'
     ).toEqual([4, 2, 2]);
     const updatedProjectedBytes = await originalOutput.readAsync();
-    const updatedProjected = new Float32Array(
-      updatedProjectedBytes.buffer,
-      updatedProjectedBytes.byteOffset,
-      updatedProjectedBytes.byteLength / Float32Array.BYTES_PER_ELEMENT
-    );
+    const updatedProjected = unpackProjectedRecord(updatedProjectedBytes, 0);
     expect(
       Boolean(Math.abs(initialDirectionalRed - updatedProjected[8]) > 0.2),
       'evaluates original page-owned higher-order SH against the updated camera direction'
@@ -1097,13 +1089,9 @@ it('GPUPagedSplatRenderer binds aligned real WebGPU source ranges across sparse 
         'globally interleaves preserved sparse page rows across three source-binding windows'
       ).toEqual([3, 2, 4, 1, 0, 5]);
       const projectedBytes = await renderer.projectedRecordBuffers[0].readAsync();
-      const projectedRecords = new Float32Array(
-        projectedBytes.buffer,
-        projectedBytes.byteOffset,
-        projectedBytes.byteLength / Float32Array.BYTES_PER_ELEMENT
-      );
+      const projectedRecord = unpackProjectedRecord(projectedBytes, 0);
       expect(
-        Boolean(projectedRecords[8] > 1.5),
+        Boolean(projectedRecord[8] > 1.5),
         'retains unquantized Float32 page radiance while evaluating degree-three source SH'
       ).toBe(true);
     } finally {

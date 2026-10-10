@@ -125,22 +125,25 @@ it('addRateClusterMapRecipe smooths rates, builds contiguity and colors signific
           getGPUPermutationParameterValues(permutationParameters)
         ),
         maximumPermutations: PERMUTATIONS,
-        alternative: 'two-sided',
-        significant: significant.view,
-        pseudoPValues: pseudoPValues.view
+        alternative: 'two-sided'
       },
       palette: fixture.input('palette', Uint32Array.from(palette), 'uint32', 5),
-      standardizedRates: standardized.view,
-      zScores: zScores.view,
-      spatialLag: lag.view,
-      quadrants: quadrants.view,
-      colors: colors.view,
-      weights: {
-        offsets: weightsOffsets.view,
-        neighbors: weightsNeighbors.view,
-        weights: weightsValues.view
+      outputs: {
+        standardizedRates: standardized.view,
+        zScores: zScores.view,
+        quadrants: quadrants.view,
+        colors: colors.view,
+        weightsOverflow: overflow.view,
+        permutation: {significant: significant.view, pseudoPValues: pseudoPValues.view}
       },
-      weightsOverflow: overflow.view
+      scratch: {
+        spatialLag: lag.view,
+        weights: {
+          offsets: weightsOffsets.view,
+          neighbors: weightsNeighbors.view,
+          weights: weightsValues.view
+        }
+      }
     });
     expect(recipe.contributors.length).toBe(5);
     fixture.run();

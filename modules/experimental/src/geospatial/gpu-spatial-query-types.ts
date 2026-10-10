@@ -14,7 +14,7 @@ import type {GraphDataView} from '@luma.gl/gpgpu/gpu-core';
 export type GPUSpatialQueryOutput = {
   /** Compact application IDs, or position-row indices when no source-ID view is supplied. */
   ids: GraphDataView<'uint32'>;
-  /** Scalar receiving `min(totalCount, ids.length)`, suitable for an indirect draw count. */
+  /** Scalar receiving `min(requiredCount, ids.length)`, suitable for an indirect draw count. */
   count: GraphDataView<'uint32'>;
   /** Scalar receiving `1` when the index or result capacity overflowed, otherwise `0`. */
   overflow: GraphDataView<'uint32'>;
@@ -24,5 +24,5 @@ export type GPUSpatialQueryOutput = {
    * When index overflow is set, the index stores only a subset of its source rows, so this count
    * is incomplete rather than a total over the original positions.
    */
-  totalCount?: GraphDataView<'uint32'>;
+  requiredCount?: GraphDataView<'uint32'>;
 };

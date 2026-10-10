@@ -296,7 +296,7 @@ export class GPUTrajectoryPlayhead implements GPUCommandNodeProducer {
         createPublishNode<Parameters>(graph, {
           id: `${id}-publish`,
           operation: 'GPUTrajectoryPlayhead',
-          totalCount: activeTotal,
+          requiredCount: activeTotal,
           compactIds,
           output: activeTracks,
           extraCounts: props.drawInstanceCount ? [props.drawInstanceCount] : []
@@ -319,7 +319,7 @@ export class GPUTrajectoryPlayhead implements GPUCommandNodeProducer {
       props.activeTracks?.ids,
       props.activeTracks?.count,
       props.activeTracks?.overflow,
-      props.activeTracks?.totalCount,
+      props.activeTracks?.requiredCount,
       props.drawInstanceCount
     ];
   }

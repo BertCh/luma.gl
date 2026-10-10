@@ -19,6 +19,12 @@ import {
 } from '../../utils/gpu-contributor-utils';
 import {getSortedSegmentSumNodes} from '../../utils/sorted-segment-sums';
 import {createFillNode} from '../../utils/wgsl-kernel-nodes';
+import {
+  defineGPUSpatialParameterSchema,
+  packGPUSpatialParameterValues,
+  validateGPUSpatialContext,
+  type GPUSpatialContext
+} from '../contracts/index';
 import {GPU_GEODESIC_MEAN_EARTH_RADIUS} from '../geometry-measures/geodesic-wgsl';
 import {
   createDensityNode,
@@ -32,6 +38,35 @@ const OPERATION = 'GPULineDensity';
 
 /** Number of float32 elements in a {@link GPULineDensity} parameter buffer. */
 export const GPU_LINE_DENSITY_PARAMETER_LENGTH = 4;
+
+/** Declarative layout of the per-encoding line-density grid. */
+export const GPU_LINE_DENSITY_PARAMETER_SCHEMA = defineGPUSpatialParameterSchema({
+  id: 'line-density',
+  format: 'float32',
+  wordLength: GPU_LINE_DENSITY_PARAMETER_LENGTH,
+  fields: [
+    {name: 'minimumX', format: 'float32', wordOffset: 0, defaultValue: 0, dynamic: true},
+    {name: 'minimumY', format: 'float32', wordOffset: 1, defaultValue: 0, dynamic: true},
+    {
+      name: 'cellWidth',
+      format: 'float32',
+      wordOffset: 2,
+      defaultValue: 1,
+      minimum: Number.MIN_VALUE,
+      units: 'position-units',
+      dynamic: true
+    },
+    {
+      name: 'cellHeight',
+      format: 'float32',
+      wordOffset: 3,
+      defaultValue: 1,
+      minimum: Number.MIN_VALUE,
+      units: 'position-units',
+      dynamic: true
+    }
+  ]
+});
 
 /** CPU description of the per-frame grid of {@link GPULineDensity}. */
 export type GPULineDensityParameters = {
@@ -61,14 +96,14 @@ export function getGPULineDensityParameterValues(
   if (target.length < GPU_LINE_DENSITY_PARAMETER_LENGTH) {
     throw new Error(`Line density target must hold ${GPU_LINE_DENSITY_PARAMETER_LENGTH} elements`);
   }
-  const {minX, minY, cellWidth, cellHeight} = parameters;
-  if (![minX, minY, cellWidth, cellHeight].every(Number.isFinite)) {
-    throw new Error('Line density parameters must be finite');
-  }
-  if (cellWidth <= 0 || cellHeight <= 0) {
-    throw new Error('Line density cellWidth and cellHeight must be positive');
-  }
-  target.set([minX, minY, cellWidth, cellHeight]);
+  target.set(
+    packGPUSpatialParameterValues(GPU_LINE_DENSITY_PARAMETER_SCHEMA, {
+      minimumX: parameters.minX,
+      minimumY: parameters.minY,
+      cellWidth: parameters.cellWidth,
+      cellHeight: parameters.cellHeight
+    })
+  );
   return target;
 }
 
@@ -101,6 +136,8 @@ export type GPULineDensityOutput = {
 export type GPULineDensityProps = {
   /** Prefix for generated node and transient IDs. Defaults to `'line-density'`. */
   id?: string;
+  /** Planar/native or longitude-latitude/great-circle context for positions and lengths. */
+  spatialContext: GPUSpatialContext;
   /** Packed positions sorted by path: planar coordinates, or longitude/latitude degrees. */
   positions: GraphDataView<'float32x2'>;
   /** `pathCount + 1` monotonic row offsets; path `p` owns rows `[pathOffsets[p], pathOffsets[p + 1])`. */
@@ -109,14 +146,6 @@ export type GPULineDensityProps = {
   columns: number;
   /** Grid rows (compile time). */
   rows: number;
-  /**
-   * `'planar'` (default): Euclidean lengths. `'spherical'`: positions and the grid are in
-   * longitude/latitude degrees, segments are straight in longitude/latitude, and each clipped
-   * piece is measured as the great-circle distance between its endpoints.
-   */
-  coordinateSystem?: 'planar' | 'spherical';
-  /** Sphere radius of `'spherical'`. Defaults to {@link GPU_GEODESIC_MEAN_EARTH_RADIUS}. */
-  radius?: number;
   /**
    * Compile-time capacity of segment-cell pieces. A segment crossing `k` grid lines produces
    * `k + 1` pieces. Default `max(1024, 4 * positions.length)`. When exceeded, `overflow` is set
@@ -153,6 +182,8 @@ export class GPULineDensity implements GPUCommandNodeProducer {
   readonly id: string;
   /** Validated properties. */
   readonly props: GPULineDensityProps;
+  /** Canonical coordinate and metric contract. */
+  readonly spatialContext: GPUSpatialContext;
   /** Number of grid cells. */
   readonly cellCount: number;
   /** Resolved coordinate system. */
@@ -165,8 +196,23 @@ export class GPULineDensity implements GPUCommandNodeProducer {
   constructor(props: GPULineDensityProps) {
     this.id = props.id ?? 'line-density';
     this.props = props;
-    this.coordinateSystem = props.coordinateSystem ?? 'planar';
-    this.radius = props.radius ?? GPU_GEODESIC_MEAN_EARTH_RADIUS;
+    this.spatialContext = props.spatialContext;
+    validateGPUSpatialContext(this.id, this.spatialContext);
+    const spherical =
+      this.spatialContext.coordinateSpace === 'longitude-latitude' &&
+      this.spatialContext.metric === 'great-circle';
+    const planar =
+      this.spatialContext.coordinateSpace === 'planar' &&
+      ['native', 'none'].includes(this.spatialContext.metric);
+    if (!planar && !spherical) {
+      throw new Error(
+        `${this.id} requires a planar/native or longitude-latitude/great-circle spatial context`
+      );
+    }
+    this.coordinateSystem = spherical ? 'spherical' : 'planar';
+    this.radius = spherical
+      ? (this.spatialContext.sphereRadius ?? GPU_GEODESIC_MEAN_EARTH_RADIUS)
+      : 1;
     this.maximumRecords = props.maximumRecords ?? Math.max(1024, 4 * props.positions.length);
     const {id} = this;
     for (const [name, view] of Object.entries({
@@ -190,12 +236,6 @@ export class GPULineDensity implements GPUCommandNodeProducer {
     this.cellCount = props.columns * props.rows;
     if (this.cellCount > 0x7fffffff) {
       throw new Error(`${id} grid is too large`);
-    }
-    if (this.coordinateSystem !== 'planar' && this.coordinateSystem !== 'spherical') {
-      throw new Error(`${id} coordinateSystem must be 'planar' or 'spherical'`);
-    }
-    if (!Number.isFinite(this.radius) || this.radius <= 0) {
-      throw new Error(`${id} radius must be a positive finite number`);
     }
     if (!Number.isSafeInteger(this.maximumRecords) || this.maximumRecords < 1) {
       throw new Error(`${id} maximumRecords must be a positive integer`);

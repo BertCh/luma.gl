@@ -69,12 +69,12 @@ export type GPUCellUncompactOperation = {
 export type GPUCellCompactionOutput = {
   /** Output cell keys as little-endian `(low, high)` words; rows past `count` are zero. */
   cells: GraphDataView<'uint32x2'>;
-  /** One-row scalar receiving `min(totalCount, cells.length)`. */
+  /** One-row scalar receiving `min(requiredCount, cells.length)`. */
   count: GraphDataView<'uint32'>;
   /** One-row scalar receiving 1 when more cells exist than `cells.length`, otherwise 0. */
   overflow: GraphDataView<'uint32'>;
   /** Optional one-row scalar receiving the unclamped number of output cells. */
-  totalCount?: GraphDataView<'uint32'>;
+  requiredCount?: GraphDataView<'uint32'>;
   /**
    * Optional one-row scalar receiving the number of input rows (within `count`) that were
    * dropped: invalid keys, masked rows, other resolutions (`compact`), cells below the target
@@ -238,7 +238,7 @@ export class GPUCellCompaction implements GPUCommandNodeProducer {
       ['count', props.count],
       ['output.count', output.count],
       ['output.overflow', output.overflow],
-      ['output.totalCount', output.totalCount],
+      ['output.requiredCount', output.requiredCount],
       ['output.droppedCount', output.droppedCount]
     ] as const) {
       if (!view) {
@@ -255,14 +255,14 @@ export class GPUCellCompaction implements GPUCommandNodeProducer {
     }
     validateGraphOutputsDisjointFromInputs(
       id,
-      [output.cells, output.count, output.overflow, output.totalCount, output.droppedCount],
+      [output.cells, output.count, output.overflow, output.requiredCount, output.droppedCount],
       [props.cells, props.mask, props.count]
     );
     const outputs = [
       output.cells,
       output.count,
       output.overflow,
-      output.totalCount,
+      output.requiredCount,
       output.droppedCount
     ].filter(Boolean) as GraphDataView[];
     if (new Set(outputs).size !== outputs.length) {
@@ -282,7 +282,7 @@ export class GPUCellCompaction implements GPUCommandNodeProducer {
       props.output.cells,
       props.output.count,
       props.output.overflow,
-      props.output.totalCount,
+      props.output.requiredCount,
       props.output.droppedCount
     ]);
     return props.operation.type === 'compact'
@@ -574,11 +574,11 @@ ${familyWGSL}`,
           {name: 'cellsOut', view: output.cells, type: 'u32', access: 'read_write'},
           {name: 'countOut', view: output.count, type: 'u32', access: 'read_write'},
           {name: 'overflowOut', view: output.overflow, type: 'u32', access: 'read_write'},
-          ...(output.totalCount
+          ...(output.requiredCount
             ? [
                 {
                   name: 'totalOut',
-                  view: output.totalCount,
+                  view: output.requiredCount,
                   type: 'u32',
                   access: 'read_write'
                 } as const
@@ -592,7 +592,7 @@ ${familyWGSL}`,
   if (index == 0u) {
     countOut[countOutOffset] = count;
     overflowOut[overflowOutOffset] = select(0u, 1u, totalCells > CAPACITY);
-    ${output.totalCount ? 'totalOut[totalOutOffset] = totalCells;' : ''}
+    ${output.requiredCount ? 'totalOut[totalOutOffset] = totalCells;' : ''}
   }
   var low = 0u;
   var high = 0u;
@@ -709,11 +709,11 @@ fn getCompact(key: vec2u, resolution: u32) -> vec2u {
           {name: 'cellsOut', view: output.cells, type: 'u32', access: 'read_write'},
           {name: 'countOut', view: output.count, type: 'u32', access: 'read_write'},
           {name: 'overflowOut', view: output.overflow, type: 'u32', access: 'read_write'},
-          ...(output.totalCount
+          ...(output.requiredCount
             ? [
                 {
                   name: 'totalOut',
-                  view: output.totalCount,
+                  view: output.requiredCount,
                   type: 'u32',
                   access: 'read_write'
                 } as const
@@ -759,7 +759,7 @@ fn getDescendant(compact: vec2u, resolution: u32, depth: u32, rankIn: u32) -> ve
   if (index == 0u) {
     countOut[countOutOffset] = count;
     overflowOut[overflowOutOffset] = select(0u, 1u, totalCells > CAPACITY);
-    ${output.totalCount ? 'totalOut[totalOutOffset] = totalCells;' : ''}
+    ${output.requiredCount ? 'totalOut[totalOutOffset] = totalCells;' : ''}
   }
   var result = vec2u(0u);
   if (index < count) {

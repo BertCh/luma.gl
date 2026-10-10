@@ -5,6 +5,7 @@
 import {getWebGPUTestDevice} from '@luma.gl/test-utils';
 import {expect, it} from 'vitest';
 import {
+  getGPUPermutationMetadata,
   GPU_GLOBAL_PERMUTATION_RESULT,
   GPU_LOCAL_PERMUTATION_NOT_TESTED
 } from '../../../src/gpu-spatial-analysis/permutation-inference';
@@ -21,6 +22,21 @@ import {
 
 const R = GPU_GLOBAL_PERMUTATION_RESULT;
 const ALTERNATIVES: OracleAlternative[] = ['directed', 'two-sided', 'greater', 'lesser'];
+
+it('publishes canonical reproducibility metadata', () => {
+  expect(
+    getGPUPermutationMetadata(
+      {seed: 9, permutations: 199},
+      {alternative: 'two-sided', multipleTesting: 'benjamini-hochberg'}
+    )
+  ).toEqual({
+    seed: 9,
+    permutationCount: 199,
+    alternative: 'two-sided',
+    multipleTesting: 'benjamini-hochberg',
+    includeObserved: true
+  });
+});
 
 function createScene(count: number, seed: number, sign: number) {
   const random = createSeededRandom(seed);

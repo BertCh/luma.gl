@@ -24,7 +24,7 @@ import {
 import {FLOW_CREDITS, FLOW_INK, getFlowWidthLegend, NET_FLOW_WORDS} from './flows-style';
 
 /** Mirrors the compute module without importing it (scene files stay light). */
-const FIRST_HOUR = 5;
+const FIRST_HOUR = 0;
 const LAST_HOUR = 23;
 const FLOW_MAX_PIXELS = 6;
 /** Weekdays of August 2024, only for the legend before any data has been read. */
@@ -114,7 +114,7 @@ graph.add(
     excludeSelfFlows: ${state.excludeSelf},
     sumOrder: '${state.sumOrder}',
     pairCapacity: 131072,
-    output: {ids, count, overflow, totalCount},   // top-512 pairs, heaviest first
+    output: {ids, count, overflow, requiredCount},   // top-512 pairs, heaviest first
     flowOriginZoneIds, flowDestinationZoneIds, flowWeights,
     zoneOutWeights, zoneInWeights                 // per-station totals
   })
@@ -152,7 +152,7 @@ export default defineScene<BixiTidesOptions>({
         default: 8,
         label: 'Window start',
         format: formatPlaybackTime.hour,
-        help: 'Start hour of the one-hour window, Montreal local time. A ride is counted in the hour it starts. The window is a four-number parameter buffer: moving it never recompiles. Play sweeps it across the day.'
+        help: 'Start hour of the one-hour window, Montreal local time. A ride is counted in the hour it starts. The window is a four-number parameter buffer: moving it never recompiles. Play sweeps all 24 start hours on one fixed scale.'
       },
       speed: {
         min: 0.5,
@@ -336,6 +336,19 @@ export default defineScene<BixiTidesOptions>({
     },
     {id: 'station', label: 'Outlined station', layout: 'block'},
     {
+      id: 'stationEvidence',
+      label: 'Morning ↔ evening evidence',
+      layout: 'block',
+      help: 'The selected station at 08:00 and 17:00 on an average weekday: net, arrivals and departures. This is evidence for the tide story, not dock occupancy, because capacity and truck rebalancing are absent.'
+    },
+    {
+      id: 'sourceBasis',
+      label: 'Source and filtering basis',
+      layout: 'block',
+      hood: true,
+      help: 'Retained source rides, preprocessing exclusions, and the distinction between exact station totals and the frequent-pair arrows.'
+    },
+    {
       id: 'cityChart',
       label: 'Rides per hour of the day',
       kind: 'chart',
@@ -399,7 +412,8 @@ export default defineScene<BixiTidesOptions>({
     title: {title: 'Which docks drain in the morning?'},
     scaleBar: {units: 'metric'},
     credit: CREDIT,
-    caveat: 'No dock capacity in the data: net is bikes, not a share of a dock.'
+    caveat:
+      'No dock capacity or truck rebalancing in the data: net is rider pressure, not occupancy.'
   },
 
   snippet: getSnippet,
@@ -508,7 +522,7 @@ export default defineScene<BixiTidesOptions>({
         flowCount: 0
       },
       controls: ['units', 'dayType'],
-      readouts: ['dayCounts', 'weekdayTotal', 'weekendTotal'],
+      readouts: ['dayCounts', 'weekdayTotal', 'weekendTotal', 'sourceBasis'],
       camera: {...CITY_FRAMES.montreal, transitionMs: 1200},
       furniture: {title: {title: 'Totals or rates?'}, clock: false},
       annotations: labelsFor(MONTREAL, ['downtown', 'plateau', 'mile-end', 'saint-lawrence']),
@@ -528,7 +542,7 @@ export default defineScene<BixiTidesOptions>({
         flowCount: 0
       },
       controls: ['hour', 'dayType', 'units'],
-      readouts: ['station', 'stationChart'],
+      readouts: ['station', 'stationEvidence', 'stationChart'],
       furniture: {title: {title: 'One station through the day'}, clock: false},
       annotations: labelsFor(MONTREAL, [
         'parc-jeanne-mance',

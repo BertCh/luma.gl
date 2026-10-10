@@ -120,7 +120,7 @@ const make = (gateTimes) => {
     excludeSelfFlows: ${state.excludeSelf},
     sumOrder: '${state.sumOrder}',
     pairCapacity: 524288,
-    output: {ids, count, overflow, totalCount},
+    output: {ids, count, overflow, requiredCount},
     zoneOutCounts, zoneInCounts,
     flowOriginZoneIds, flowDestinationZoneIds, flowWeights   // top-K flows
   }));

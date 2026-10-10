@@ -36,6 +36,7 @@ function createProps(
   overrides: Partial<GPUGeometryMeasuresProps> = {}
 ): GPUGeometryMeasuresProps {
   return {
+    spatialContext: {coordinateSpace: 'planar', metric: 'native', units: 'native'},
     positions: view(graph, 'float32x2', 20),
     geometryType: 'polygons',
     ringOffsets: view(graph, 'uint32', 6),
@@ -48,6 +49,7 @@ function createProps(
 it('GPUGeometryMeasures validates layouts and emits deterministic nodes', () => {
   const graph = new GPUCommandGraph(createNullWebGPUDevice(), {id: 'measures'});
   const contributor = new GPUGeometryMeasures({
+    spatialContext: {coordinateSpace: 'planar', metric: 'native', units: 'native'},
     ...createProps(graph),
     groupIds: view(graph, 'uint32', 3),
     groupCount: 2,
@@ -78,8 +80,13 @@ it('GPUGeometryMeasures validates layouts and emits deterministic nodes', () => 
       new GPUGeometryMeasures(createProps(graph, {groupOutput: {areas: view(graph, 'float32', 2)}}))
   ).toThrow(/groupOutput requires groupIds/);
   expect(
-    () => new GPUGeometryMeasures(createProps(graph, {coordinateSystem: 'mercator' as never}))
-  ).toThrow(/coordinateSystem/);
+    () =>
+      new GPUGeometryMeasures(
+        createProps(graph, {
+          spatialContext: {coordinateSpace: 'longitude-latitude', metric: 'native'}
+        })
+      )
+  ).toThrow(/metric/);
   expect(() => new GPUGeometryMeasures(createProps(graph, {holeRule: 'evenodd' as never}))).toThrow(
     /holeRule/
   );
@@ -124,24 +131,47 @@ it('GPUGeodesicPairs and GPUGeodesicDestination validate columns and models', ()
   const origins = view(graph, 'float32x2', 4);
   const targets = view(graph, 'float32x2', 4);
   const pairs = new GPUGeodesicPairs({
+    spatialContext: {coordinateSpace: 'longitude-latitude', metric: 'ellipsoidal', units: 'meters'},
     origins,
     targets,
-    model: 'wgs84',
+
     output: {distances: view(graph, 'float32', 4), converged: view(graph, 'uint32', 4)}
   });
   expect(pairs.getCommandNodes(graph).map(node => node.id)).toEqual(['geodesic-pairs-pairs']);
   expect(
     () =>
       new GPUGeodesicPairs({
+        spatialContext: {
+          coordinateSpace: 'longitude-latitude',
+          metric: 'great-circle',
+          units: 'meters'
+        },
         origins,
         targets,
         output: {converged: view(graph, 'uint32', 4)}
       })
   ).toThrow(/requires model 'wgs84'/);
-  expect(() => new GPUGeodesicPairs({origins, targets, output: {}})).toThrow(/at least one/);
   expect(
     () =>
       new GPUGeodesicPairs({
+        spatialContext: {
+          coordinateSpace: 'longitude-latitude',
+          metric: 'great-circle',
+          units: 'meters'
+        },
+        origins,
+        targets,
+        output: {}
+      })
+  ).toThrow(/at least one/);
+  expect(
+    () =>
+      new GPUGeodesicPairs({
+        spatialContext: {
+          coordinateSpace: 'longitude-latitude',
+          metric: 'great-circle',
+          units: 'meters'
+        },
         origins,
         targets: view(graph, 'float32x2', 3),
         output: {distances: view(graph, 'float32', 4)}
@@ -150,13 +180,23 @@ it('GPUGeodesicPairs and GPUGeodesicDestination validate columns and models', ()
   expect(
     () =>
       new GPUGeodesicPairs({
+        spatialContext: {
+          coordinateSpace: 'longitude-latitude',
+          metric: 'clarke' as never,
+          units: 'meters'
+        },
         origins,
         targets,
-        model: 'clarke' as never,
+
         output: {distances: view(graph, 'float32', 4)}
       })
-  ).toThrow(/model/);
+  ).toThrow(/metric/);
   const destination = new GPUGeodesicDestination({
+    spatialContext: {
+      coordinateSpace: 'longitude-latitude',
+      metric: 'great-circle',
+      units: 'meters'
+    },
     origins,
     bearings: view(graph, 'float32', 4),
     distances: view(graph, 'float32', 4),
@@ -166,6 +206,11 @@ it('GPUGeodesicPairs and GPUGeodesicDestination validate columns and models', ()
   expect(
     () =>
       new GPUGeodesicDestination({
+        spatialContext: {
+          coordinateSpace: 'longitude-latitude',
+          metric: 'great-circle',
+          units: 'meters'
+        },
         origins,
         bearings: view(graph, 'float32', 3),
         distances: view(graph, 'float32', 4),

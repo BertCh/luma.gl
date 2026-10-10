@@ -4,3 +4,4 @@
 
 import './gpu-hot-spot-analysis.spec';
 import './gpu-local-moran.spec';
+import './additional-spatial-statistics.spec';

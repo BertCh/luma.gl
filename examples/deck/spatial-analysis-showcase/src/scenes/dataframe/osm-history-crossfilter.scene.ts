@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {ground} from '../../cartography/grounds';
 import {defineScene, type LegendSpec} from '../scene';
 import type {OsmCrossfilterOptions} from './osm-history-crossfilter.compute';
 
@@ -10,11 +11,11 @@ const LAST_YEAR = 2026.4;
 
 export default defineScene<OsmCrossfilterOptions>({
   id: 'osm-history-crossfilter',
-  title: 'Which nodes, when? Brush OpenStreetMap New York by year and kind',
+  title: 'New York OSM nodes by time and kind',
   chapter: 'dataframe',
   order: 2,
   summary:
-    'Linked brushing over 400,000 OpenStreetMap node creations in New York City: brush the years, the kind, the top contributors or the current map view, and the map, the time histogram and the kind bars all update from one GPU graph.',
+    'GPU crossfiltering links a sample of New York OpenStreetMap node history to temporal, category and map selections. The outputs are filtered points and charts; the sample and source tags constrain interpretation.',
   contributors: ['GPUCrossfilter'],
   datasets: [
     {
@@ -23,6 +24,16 @@ export default defineScene<OsmCrossfilterOptions>({
     }
   ],
   initialView: {longitude: -73.97, latitude: 40.71, zoom: 10.4},
+  basemap: ground('paperCity'),
+  furniture: {
+    title: {
+      title: 'New York OSM node history',
+      subtitle: 'Crossfiltered creation time, kind, contributor and map extent'
+    },
+    scaleBar: {units: 'metric'},
+    credit: '© OpenStreetMap contributors (ODbL)',
+    caveat: 'The displayed map is a uniform sample of node history.'
+  },
 
   options: [
     {
@@ -107,11 +118,11 @@ export default defineScene<OsmCrossfilterOptions>({
       label: 'Color ramp',
       group: 'Display',
       apply: 'param',
-      default: 'viridis',
+      default: 'lajolla',
       disabledWhen: state => state.colorBy !== 'year',
       help: 'Ramp for the creation date.',
       options: [
-        {value: 'viridis', label: 'Viridis'},
+        {value: 'lajolla', label: 'Lajolla'},
         {value: 'magma', label: 'Magma'},
         {value: 'inferno', label: 'Inferno'},
         {value: 'cividis', label: 'Cividis'}
@@ -158,6 +169,9 @@ export default defineScene<OsmCrossfilterOptions>({
     {
       id: 'question',
       title: 'What was added to the map, and when?',
+      headline: 'Node creation varies by period and kind',
+      textAlternative:
+        'New York node points are linked to a quarterly time histogram and kind bars, with selected counts updating across all views.',
       body: 'The map shows a **400,000-node sample** of OpenStreetMap New York, colored by kind. The chart is the number of nodes created per quarter since 2007. `GPUCrossfilter` links this map and these charts: brush one and the others answer. Start by choosing how to color the nodes with **Color selected nodes by** below.',
       camera: {
         longitude: -73.97,
@@ -173,14 +187,20 @@ export default defineScene<OsmCrossfilterOptions>({
     {
       id: 'brush-years',
       title: 'Brush two years: the 2013 to 2014 surge',
+      headline: 'One node kind dominates the selected surge',
+      textAlternative:
+        'The 2013 to 2014 time interval is shaded in the histogram, selected points remain on the map and one kind dominates the linked bars.',
       body: 'Drag **Creation years** to 2013.5 to 2014.5. The map keeps only nodes created then, the histogram keeps its full shape (a view never filters itself, so you still see the context) and shades the part inside your brush, and the kind bars recount. Almost everything in that window sits in one kind.',
       options: {years: [2013.5, 2014.5]},
       controls: ['years'],
-      readouts: ['selected', 'share', 'topKind', 'timeChart', 'kindChart']
+      readouts: ['selected', 'share', 'timeChart', 'kindChart']
     },
     {
       id: 'kind',
       title: 'Add a second brush: one kind',
+      headline: 'Kind filtering isolates distinct mapping periods',
+      textAlternative:
+        'A selected node kind is highlighted in the bars while the map and time histogram retain only rows passing both time and kind filters.',
       body: 'Pick **Kind of node** to cut the same window by kind. The kind bars never filter themselves, so they keep showing what the other brushes leave, with your pick highlighted. Compare the **Other tagged nodes** with **Transport**: one is a bulk import, the other steady human mapping.',
       options: {years: [2013.5, 2014.5], kind: '1'},
       controls: ['kind', 'years'],
@@ -189,6 +209,9 @@ export default defineScene<OsmCrossfilterOptions>({
     {
       id: 'view',
       title: 'Brush the map by looking at it',
+      headline: 'Map bounds restrict all linked summaries',
+      textAlternative:
+        'A Brooklyn-centered map extent filters visible points, and the linked time histogram reports only node history within the current bounds.',
       body: 'Turn on **Brush to the map view** and pan or zoom. The rectangle you see is a bounds selection, re-written when the view moves and re-run on the GPU; the charts then describe only the neighbourhood on screen. Try Brooklyn, then Manhattan, with the 2013 to 2014 brush still on.',
       camera: {longitude: -73.93, latitude: 40.68, zoom: 11.6, transitionMs: 1600},
       options: {years: [2013.5, 2014.5], kind: '1', viewBrush: true},
@@ -198,6 +221,9 @@ export default defineScene<OsmCrossfilterOptions>({
     {
       id: 'prolific',
       title: 'Who made the nodes? Brush contributors',
+      headline: 'Leading accounts produce distinct temporal bursts',
+      textAlternative:
+        'Nodes from the ten leading contributor ranks are selected across New York, and concentrated creation periods appear in the linked histogram.',
       body: 'Clear the other brushes and choose **Contributors**: the top 10 accounts, out of 11,361, made over a third of all nodes ever created. Compare **Top 100** with **Everyone** in the histogram: whole bursts of the history belong to a few accounts. The next scenes explain how concentrated that is.',
       camera: {longitude: -73.97, latitude: 40.71, zoom: 10.4, transitionMs: 1400},
       options: {topContributors: '10'},

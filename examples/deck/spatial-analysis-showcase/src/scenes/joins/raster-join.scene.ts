@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {ground} from '../../cartography/grounds';
 import {defineScene, type LegendSpec} from '../scene';
 import type {RasterJoinOptions} from './raster-join.compute';
 
@@ -15,17 +16,24 @@ const METRIC_TITLES: Record<RasterJoinOptions['metric'], string> = {
 
 export default defineScene<RasterJoinOptions>({
   id: 'raster-join',
-  title: 'Raster join: count points without testing polygons',
+  title: 'Chicago observations: raster-joined counts by community area',
   chapter: 'joins',
   order: 5,
   summary:
-    'Rasterize the 77 Chicago community areas into a zone grid on the GPU and bin 43,557 nature observations into it in O(1) per point. Compare with the exact join, see where the error can be, and watch it shrink as the raster gets finer.',
+    'GPU rasterization assigns 43,557 iNaturalist points to 77 Chicago community areas through a zone grid and compares counts with an exact polygon join. Boundary error depends on cell size and extent.',
   contributors: ['GPUPolygonRasterization', 'GPURasterJoin', 'GPUPointInPolygonJoin'],
   datasets: [
     {id: 'chicago-nature', role: 'points to join'},
     {id: 'chicago-community-areas', role: 'polygons'}
   ],
   initialView: {longitude: -87.68, latitude: 41.84, zoom: 10},
+  basemap: ground('paperCity'),
+  furniture: {
+    title: {title: 'Raster join', subtitle: 'Community-area counts from a zone grid'},
+    scaleBar: {units: 'metric'},
+    credit: 'iNaturalist; City of Chicago',
+    caveat: 'Boundary cells can assign points differently from exact polygon tests.'
+  },
 
   options: [
     {
@@ -285,6 +293,9 @@ compiled.encode(commandEncoder, {parameters: undefined});`,
   story: [
     {
       id: 'the-question',
+      headline: 'Raster lookup approximates exact community-area counts',
+      textAlternative:
+        'Chicago community areas are colored by observation counts obtained from a zone raster.',
       controls: ['resolutionLevel', 'metric'],
       readouts: ['joined', 'mismatch'],
       title: 'Count observations per community area without testing polygons',
@@ -294,6 +305,9 @@ compiled.encode(commandEncoder, {parameters: undefined});`,
     },
     {
       id: 'the-zone-raster',
+      headline: 'Each grid cell stores one community-area identifier',
+      textAlternative:
+        'A categorical raster shows the community-area identifier assigned to every grid cell.',
       controls: ['layer'],
       readouts: ['cells', 'cellSize'],
       title: 'The zone raster: a table from cell to area',
@@ -302,6 +316,9 @@ compiled.encode(commandEncoder, {parameters: undefined});`,
     },
     {
       id: 'boundary-cells',
+      headline: 'Assignment differences occur only near polygon boundaries',
+      textAlternative:
+        'Highlighted boundary cells identify where raster and exact polygon joins can disagree.',
       controls: ['showBoundary', 'points'],
       readouts: ['mismatch', 'explained', 'boundaryJoined'],
       title: 'Only boundary cells can be wrong',
@@ -311,6 +328,9 @@ compiled.encode(commandEncoder, {parameters: undefined});`,
     },
     {
       id: 'finer-raster',
+      headline: 'Smaller cells reduce raster-join mismatch',
+      textAlternative:
+        'Increasing raster resolution narrows boundary cells and lowers count differences.',
       controls: ['resolutionLevel', 'metric'],
       readouts: ['difference', 'bound'],
       title: 'Finer cells, smaller error',
@@ -326,6 +346,8 @@ compiled.encode(commandEncoder, {parameters: undefined});`,
     },
     {
       id: 'follow-the-viewport',
+      headline: 'Viewport fitting changes cell size without recompilation',
+      textAlternative: 'The zone grid refits to the current camera extent as the map zoom changes.',
       controls: ['extent', 'resolutionLevel'],
       readouts: ['cellSize', 'rasterOverflow'],
       title: 'Let the raster follow the camera',
@@ -335,6 +357,9 @@ compiled.encode(commandEncoder, {parameters: undefined});`,
     },
     {
       id: 'cost-and-limits',
+      headline: 'Raster speed trades memory for boundary precision',
+      textAlternative:
+        'A fixed grid accelerates point assignment while retaining cell-size-dependent boundary error.',
       controls: ['measure', 'metric'],
       readouts: ['timing'],
       title: 'What it costs, and when not to use it',

@@ -33,6 +33,7 @@ type OptimizationView =
   | GraphDataView<'uint32'>
   | GraphDataView<'float32'>
   | GraphDataView<'uint32x2'>
+  | GraphDataView<'float32x2'>
   | GraphDataView<'float32x4'>;
 
 type OptimizationBinding = {
@@ -71,10 +72,19 @@ type ImportedOptimization = {
   initialCommunities?: GraphDataView<'uint32'>;
   output: GraphDataView<'uint32'>;
   statistics: GraphDataView<'float32x4'>;
+  aggregatedCommunities?: GraphDataView<'uint32'>;
+  aggregatedWeights?: GraphDataView<'float32x2'>;
+  aggregationRanges?: GraphDataView<'uint32x2'>;
   candidates: GraphDataView<'uint32x2'>;
   control: GraphDataView<'uint32'>;
   converged?: GraphDataView<'uint32'>;
   maxComputeWorkgroupsPerDimension: number;
+};
+
+type AggregatedOptimization = ImportedOptimization & {
+  aggregatedCommunities: GraphDataView<'uint32'>;
+  aggregatedWeights: GraphDataView<'float32x2'>;
+  aggregationRanges: GraphDataView<'uint32x2'>;
 };
 
 /** Composes single-level modularity local moving with stable ties for computed GPU gains. */
@@ -86,6 +96,21 @@ export function addGPUGraphModularityOptimizationToGraphWithDispatchLimit<Parame
   const topology = optimization.topology;
   const vertexCount = topology.graph.vertexCount;
   const reverse = topology.graph.directed ? topology.reverse : undefined;
+  const aggregationCapacity = getCommunityAggregationCapacity(
+    vertexCount,
+    topology.forward.neighbors.length,
+    reverse?.neighbors.length ?? 0
+  );
+  const maximumScratchBindingByteLength = Math.min(
+    commandGraph.device.limits.maxBufferSize,
+    commandGraph.device.limits.maxStorageBufferBindingSize
+  );
+  const supportedAggregationCapacity =
+    aggregationCapacity !== undefined &&
+    aggregationCapacity * 8 <= maximumScratchBindingByteLength &&
+    vertexCount * 8 <= maximumScratchBindingByteLength
+      ? aggregationCapacity
+      : undefined;
   const state: ImportedOptimization = {
     id: optimization.id,
     vertexCount,
@@ -180,6 +205,28 @@ export function addGPUGraphModularityOptimizationToGraphWithDispatchLimit<Parame
       'float32x4',
       vertexCount
     ),
+    ...(supportedAggregationCapacity !== undefined
+      ? {
+          aggregatedCommunities: createTransientView(
+            commandGraph,
+            `${optimization.id}-aggregated-communities`,
+            'uint32',
+            supportedAggregationCapacity
+          ),
+          aggregatedWeights: createTransientView(
+            commandGraph,
+            `${optimization.id}-aggregated-community-weights`,
+            'float32x2',
+            supportedAggregationCapacity
+          ),
+          aggregationRanges: createTransientView(
+            commandGraph,
+            `${optimization.id}-community-aggregation-ranges`,
+            'uint32x2',
+            vertexCount
+          )
+        }
+      : {}),
     candidates: createTransientView(
       commandGraph,
       `${optimization.id}-candidate-moves`,
@@ -245,7 +292,12 @@ export function addGPUGraphModularityOptimizationToGraphWithDispatchLimit<Parame
       });
     }
     if (iteration < optimization.iterations && vertexCount > 0) {
-      addCandidatePass(commandGraph, {state, iteration});
+      if (hasCommunityAggregation(state)) {
+        addCommunityAggregationPass(commandGraph, {state, iteration});
+        addAggregatedCandidatePass(commandGraph, {state, iteration});
+      } else {
+        addRescanCandidatePass(commandGraph, {state, iteration});
+      }
       addWinnerSelectionPass(commandGraph, {state, iteration});
       addWinnerApplicationPass(commandGraph, {state, iteration});
     }
@@ -604,8 +656,275 @@ fn main(
   });
 }
 
-/** Scores neighboring and unused community candidates with at most eight storage bindings. */
-function addCandidatePass<Parameters>(
+/** Narrows optional large scratch after device-limit-aware planning. */
+function hasCommunityAggregation(state: ImportedOptimization): state is AggregatedOptimization {
+  return Boolean(state.aggregatedCommunities && state.aggregatedWeights && state.aggregationRanges);
+}
+
+/** Aggregates each vertex's weak-neighbor weights once into a private open-addressed segment. */
+function addCommunityAggregationPass<Parameters>(
+  commandGraph: GPUCommandGraph<Parameters>,
+  props: {state: AggregatedOptimization; iteration: number}
+): void {
+  const {state} = props;
+  const bindings: Record<string, OptimizationBinding> = {
+    forwardOffsets: {view: state.forwardOffsets, usage: 'storage-read'},
+    packedForward: {view: state.packedForward, usage: 'storage-read'},
+    ...(state.reverseOffsets && state.packedReverse
+      ? {
+          reverseOffsets: {view: state.reverseOffsets, usage: 'storage-read' as const},
+          packedReverse: {view: state.packedReverse, usage: 'storage-read' as const}
+        }
+      : {}),
+    communities: {view: state.output, usage: 'storage-read'},
+    aggregatedCommunities: {view: state.aggregatedCommunities, usage: 'storage-write'},
+    aggregatedWeights: {view: state.aggregatedWeights, usage: 'storage-write'},
+    aggregationRanges: {view: state.aggregationRanges, usage: 'storage-write'}
+  };
+  const dispatchLayout = getDispatchLayout(state, state.vertexCount);
+  const source = /* wgsl */ `
+const VERTEX_COUNT: u32 = ${state.vertexCount}u;
+const COMMUNITY_OFFSET: u32 = ${getViewElementOffset(state.output)}u;
+const FORWARD_OFFSETS_OFFSET: u32 = ${getViewElementOffset(state.forwardOffsets)}u;
+const FORWARD_CAPACITY: u32 = ${state.packedForward.length}u;
+const DIRECTION_COUNT: u32 = ${state.directed ? 2 : 1}u;
+${
+  state.reverseOffsets && state.packedReverse
+    ? `const REVERSE_OFFSETS_OFFSET: u32 = ${getViewElementOffset(state.reverseOffsets)}u;
+const REVERSE_CAPACITY: u32 = ${state.packedReverse.length}u;`
+    : ''
+}
+${getBindingDeclarations(bindings)}
+
+${getNeighborAccessSource(state)}
+
+fn getAggregationRange(vertex: u32) -> vec2<u32> {
+  let forwardStart = getNeighborStart(vertex, 0u);
+  let forwardDegree = getNeighborEnd(vertex, 0u) - forwardStart;
+  var weakStart = forwardStart;
+  var weakDegree = forwardDegree;
+  ${
+    state.directed
+      ? `let reverseStart = getNeighborStart(vertex, 1u);
+  weakStart += reverseStart;
+  weakDegree += getNeighborEnd(vertex, 1u) - reverseStart;`
+      : ''
+  }
+  let first = 2u * weakStart + vertex;
+  return vec2<u32>(first, first + 2u * weakDegree + 1u);
+}
+
+fn hashCommunity(community: u32) -> u32 {
+  var hash = community;
+  hash = (hash ^ (hash >> 16u)) * 0x7feb352du;
+  hash = (hash ^ (hash >> 15u)) * 0x846ca68bu;
+  return hash ^ (hash >> 16u);
+}
+
+@compute @workgroup_size(${OPTIMIZATION_WORKGROUP_SIZE})
+fn main(
+  @builtin(workgroup_id) workgroupId: vec3<u32>,
+  @builtin(local_invocation_index) localInvocationIndex: u32
+) {
+  ${getBoundedInvocationIndexSource(dispatchLayout, OPTIMIZATION_WORKGROUP_SIZE)}
+  if (index >= VERTEX_COUNT) { return; }
+
+  let range = getAggregationRange(index);
+  aggregationRanges[index] = range;
+  let segmentCapacity = range.y - range.x;
+  for (var slot = range.x; slot < range.y; slot++) {
+    aggregatedCommunities[slot] = ${INVALID_COMMUNITY}u;
+    aggregatedWeights[slot] = vec2<f32>(0.0);
+  }
+
+  for (var direction = 0u; direction < DIRECTION_COUNT; direction++) {
+    let first = getNeighborStart(index, direction);
+    let last = getNeighborEnd(index, direction);
+    for (var neighborSlot = first; neighborSlot < last; neighborSlot++) {
+      let neighbor = getNeighbor(neighborSlot, direction);
+      if (neighbor.x >= VERTEX_COUNT || neighbor.x == index) { continue; }
+      let neighborCommunity = communities[COMMUNITY_OFFSET + neighbor.x];
+      let edgeWeight = bitcast<f32>(neighbor.y);
+      let contribution = select(
+        vec2<f32>(edgeWeight, 0.0),
+        vec2<f32>(0.0, edgeWeight),
+        direction == 1u
+      );
+      var aggregateSlot = range.x + hashCommunity(neighborCommunity) % segmentCapacity;
+      for (var attempt = 0u; attempt < segmentCapacity; attempt++) {
+        let aggregateCommunity = aggregatedCommunities[aggregateSlot];
+        if (aggregateCommunity == ${INVALID_COMMUNITY}u) {
+          aggregatedCommunities[aggregateSlot] = neighborCommunity;
+          aggregatedWeights[aggregateSlot] = contribution;
+          break;
+        }
+        if (aggregateCommunity == neighborCommunity) {
+          aggregatedWeights[aggregateSlot] += contribution;
+          break;
+        }
+        aggregateSlot = range.x + (aggregateSlot - range.x + 1u) % segmentCapacity;
+      }
+    }
+  }
+}`;
+  addOptimizationPass(commandGraph, {
+    id: `${state.id}-iteration-${props.iteration}-aggregate-neighbor-communities`,
+    source,
+    bindings,
+    dispatchLayout
+  });
+}
+
+/** Scores each unique neighboring and unused community with at most seven storage bindings. */
+function addAggregatedCandidatePass<Parameters>(
+  commandGraph: GPUCommandGraph<Parameters>,
+  props: {state: AggregatedOptimization; iteration: number}
+): void {
+  const {state} = props;
+  const bindings: Record<string, OptimizationBinding> = {
+    communities: {view: state.output, usage: 'storage-read'},
+    statistics: {view: state.statistics, usage: 'storage-read'},
+    aggregatedCommunities: {view: state.aggregatedCommunities, usage: 'storage-read'},
+    aggregatedWeights: {view: state.aggregatedWeights, usage: 'storage-read'},
+    aggregationRanges: {view: state.aggregationRanges, usage: 'storage-read'},
+    candidates: {view: state.candidates, usage: 'storage-write'},
+    control: {view: state.control, usage: 'storage-read-write', atomic: true}
+  };
+  const dispatchLayout = getDispatchLayout(state, state.vertexCount);
+  const source = /* wgsl */ `
+const VERTEX_COUNT: u32 = ${state.vertexCount}u;
+const COMMUNITY_OFFSET: u32 = ${getViewElementOffset(state.output)}u;
+const RESOLUTION: f32 = ${state.resolution.toExponential()};
+const MINIMUM_GAIN: f32 = ${state.minimumGain.toExponential()};
+${getBindingDeclarations(bindings)}
+
+fn isFiniteValue(value: f32) -> bool {
+  return (bitcast<u32>(value) & 0x7fffffffu) < 0x7f800000u;
+}
+
+fn isFiniteVector(value: vec4<f32>) -> bool {
+  let magnitude = bitcast<vec4<u32>>(value) & vec4<u32>(0x7fffffffu);
+  return all(magnitude < vec4<u32>(0x7f800000u));
+}
+
+@compute @workgroup_size(${OPTIMIZATION_WORKGROUP_SIZE})
+fn main(
+  @builtin(workgroup_id) workgroupId: vec3<u32>,
+  @builtin(local_invocation_index) localInvocationIndex: u32
+) {
+  ${getBoundedInvocationIndexSource(dispatchLayout, OPTIMIZATION_WORKGROUP_SIZE)}
+  if (index >= VERTEX_COUNT || atomicLoad(&control[1u]) != 0u) { return; }
+
+  let total = bitcast<f32>(atomicLoad(&control[0u]));
+  if (!isFiniteValue(total) || total <= 0.0) {
+    atomicOr(&control[1u], ${INVALID_STATUS}u);
+    return;
+  }
+
+  let currentCommunity = communities[COMMUNITY_OFFSET + index];
+  if (currentCommunity >= VERTEX_COUNT) {
+    atomicOr(&control[1u], ${INVALID_STATUS}u);
+    return;
+  }
+
+  let vertexStatistics = statistics[index];
+  let currentStatistics = statistics[currentCommunity];
+  if (!isFiniteVector(vertexStatistics) || !isFiniteVector(currentStatistics)) {
+    atomicOr(&control[1u], ${INVALID_STATUS}u);
+    return;
+  }
+
+  let aggregationRange = aggregationRanges[index];
+  var currentWeights = vec2<f32>(0.0);
+  for (var slot = aggregationRange.x; slot < aggregationRange.y; slot++) {
+    if (aggregatedCommunities[slot] == currentCommunity) {
+      currentWeights = aggregatedWeights[slot];
+      break;
+    }
+  }
+  let currentOutgoingWeight = currentWeights.x;
+  let currentIncomingWeight = ${state.directed ? 'currentWeights.y' : 'currentWeights.x'};
+  var bestCommunity = currentCommunity;
+  var bestGain = 0.0;
+
+  for (var slot = aggregationRange.x; slot < aggregationRange.y; slot++) {
+    let candidateCommunity = aggregatedCommunities[slot];
+    if (candidateCommunity >= VERTEX_COUNT || candidateCommunity == currentCommunity) {
+      continue;
+    }
+
+    let candidateStatistics = statistics[candidateCommunity];
+    if (!isFiniteVector(candidateStatistics)) {
+      atomicOr(&control[1u], ${INVALID_STATUS}u);
+      return;
+    }
+
+    let weights = aggregatedWeights[slot];
+    let outgoingWeight = weights.x;
+    let incomingWeight = ${state.directed ? 'weights.y' : 'weights.x'};
+    let observedGain =
+      ((outgoingWeight - currentOutgoingWeight) +
+       (incomingWeight - currentIncomingWeight)) / total;
+    let expectedGain = RESOLUTION * (
+      (vertexStatistics.y / total) *
+        ((candidateStatistics.z - (currentStatistics.z - vertexStatistics.x)) / total) +
+      (vertexStatistics.x / total) *
+        ((candidateStatistics.w - (currentStatistics.w - vertexStatistics.y)) / total)
+    );
+    let gain = observedGain - expectedGain;
+    if (!isFiniteValue(gain)) {
+      atomicOr(&control[1u], ${INVALID_STATUS}u);
+      return;
+    }
+    if (gain > MINIMUM_GAIN &&
+        (gain > bestGain || (gain == bestGain && candidateCommunity < bestCommunity))) {
+      bestGain = gain;
+      bestCommunity = candidateCommunity;
+    }
+  }
+
+  let availableCommunity = atomicLoad(&control[4u]);
+  if (availableCommunity < VERTEX_COUNT && availableCommunity != currentCommunity) {
+    let availableStatistics = statistics[availableCommunity];
+    if (!isFiniteVector(availableStatistics)) {
+      atomicOr(&control[1u], ${INVALID_STATUS}u);
+      return;
+    }
+    let observedGain =
+      ((0.0 - currentOutgoingWeight) + (0.0 - currentIncomingWeight)) / total;
+    let expectedGain = RESOLUTION * (
+      (vertexStatistics.y / total) *
+        ((availableStatistics.z - (currentStatistics.z - vertexStatistics.x)) / total) +
+      (vertexStatistics.x / total) *
+        ((availableStatistics.w - (currentStatistics.w - vertexStatistics.y)) / total)
+    );
+    let gain = observedGain - expectedGain;
+    if (!isFiniteValue(gain)) {
+      atomicOr(&control[1u], ${INVALID_STATUS}u);
+      return;
+    }
+    if (gain > MINIMUM_GAIN &&
+        (gain > bestGain || (gain == bestGain && availableCommunity < bestCommunity))) {
+      bestGain = gain;
+      bestCommunity = availableCommunity;
+    }
+  }
+
+  candidates[index] = vec2<u32>(bestCommunity, bitcast<u32>(bestGain));
+  if (bestGain > MINIMUM_GAIN) {
+    atomicMax(&control[2u], bitcast<u32>(bestGain));
+  }
+}`;
+  addOptimizationPass(commandGraph, {
+    id: `${state.id}-iteration-${props.iteration}-evaluate-candidates`,
+    source,
+    bindings,
+    dispatchLayout
+  });
+}
+
+/** Preserves the bounded no-extra-scratch path when a device cannot bind aggregation storage. */
+function addRescanCandidatePass<Parameters>(
   commandGraph: GPUCommandGraph<Parameters>,
   props: {state: ImportedOptimization; iteration: number}
 ): void {
@@ -781,7 +1100,7 @@ fn main(
   }
 }`;
   addOptimizationPass(commandGraph, {
-    id: `${state.id}-iteration-${props.iteration}-evaluate-candidates`,
+    id: `${state.id}-iteration-${props.iteration}-evaluate-candidates-by-rescan`,
     source,
     bindings,
     dispatchLayout
@@ -978,6 +1297,8 @@ function getBindingDeclarations(bindings: Record<string, OptimizationBinding>): 
         element = 'atomic<u32>';
       } else if (binding.view.format === 'float32') {
         element = 'f32';
+      } else if (binding.view.format === 'float32x2') {
+        element = 'vec2<f32>';
       } else if (binding.view.format === 'uint32x2') {
         element = 'vec2<u32>';
       } else if (binding.view.format === 'float32x4') {
@@ -1038,6 +1359,29 @@ function getDispatchLayout(
     elementCount,
     state.maxComputeWorkgroupsPerDimension
   );
+}
+
+/** Sizes disjoint half-full hash segments without overflowing WGSL's uint32 addressing. */
+export function getCommunityAggregationCapacity(
+  vertexCount: number,
+  forwardCapacity: number,
+  reverseCapacity: number
+): number | undefined {
+  if (
+    !Number.isSafeInteger(vertexCount) ||
+    vertexCount < 0 ||
+    !Number.isSafeInteger(forwardCapacity) ||
+    forwardCapacity < 0 ||
+    !Number.isSafeInteger(reverseCapacity) ||
+    reverseCapacity < 0
+  ) {
+    throw new Error('Community aggregation sizes must be non-negative safe integers');
+  }
+  const capacity = 2 * (forwardCapacity + reverseCapacity) + vertexCount;
+  if (!Number.isSafeInteger(capacity) || capacity > 0xffffffff) {
+    return undefined;
+  }
+  return capacity;
 }
 
 /** Plans bounded, true three-dimensional adjacency, edge, vertex, or finalization work. */

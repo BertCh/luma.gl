@@ -120,7 +120,7 @@ it('oracle: keys, masks, reserved keys, capacity and z-scores', () => {
     sumScale: 65536,
     capacity: 1
   });
-  expect(result.totalCount).toBe(2);
+  expect(result.requiredCount).toBe(2);
   expect(result.groups.map(group => [group.key, group.count])).toEqual([[2n, 2]]);
   expect(result.groups[0].columns[0].mean).toBe(15);
   // Group 2 has values 10 and 20: sd = sqrt(50), z = +-1/sqrt(2).
@@ -340,7 +340,7 @@ it('GPUGroupStatistics emits deterministic nodes for every statistic', () => {
       counts: view('uint32', 5),
       count: view('uint32', 1),
       overflow: view('uint32', 1),
-      totalCount: view('uint32', 1)
+      requiredCount: view('uint32', 1)
     }
   };
   const contributor = new GPUGroupStatistics(props);

@@ -909,7 +909,8 @@ export async function createElectionDynamics(
           palette,
           noDataColor: [0, 0, 0, 0],
           opacity: options.opacity,
-          color: [255, 255, 255, 255]
+          color: [255, 255, 255, 255],
+          tessellation: 64
         })
       ];
       if (options.showStates) {

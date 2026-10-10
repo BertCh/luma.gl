@@ -692,6 +692,10 @@ export default defineScene<GlobalAutocorrelationOptions>({
       textAlternative:
         'Map of the contiguous US in five classes of county diabetes prevalence, pale yellow to dark brown: the darkest counties form a belt across the South and Appalachia, the palest lie in the Rockies and the Upper Midwest.',
       body: "Five equal-count classes show a belt of high prevalence across the South and Appalachia, and low values from the Rockies to the Upper Midwest.\n\n**Moran's I** puts one number on the pattern: **{{moran}}** over {{places}} counties, z = {{moranZ}}. With no pattern it would be close to zero. Compare another **Variable**.\n\n*Near things are more alike: Moran's I measures how much.*",
+      evidence:
+        "Across **{{places}}** counties, Moran's I is **{{moran}}** with randomisation z-score **{{moranZ}}**; the map shows where the same-class belts sit.",
+      caveat:
+        'The statistic describes association under queen contiguity. It does not explain the belt, and the county values are model-based estimates.',
       optionsMode: 'fresh',
       options: {
         geography: 'us-counties',
@@ -730,6 +734,10 @@ export default defineScene<GlobalAutocorrelationOptions>({
       textAlternative:
         'Map of US counties coloured by Moran quadrant, beside a scatterplot of each county against the average of its neighbours: the cloud rises from lower left to upper right along a fitted line.',
       body: "Each dot is a county: its value (across) against the average of its neighbours (up), both as standard scores. The line through the cloud has slope **{{moran}}**, Moran's I; **{{quadrantShare}}** of counties sit in the High-High or Low-Low corners.\n\nDrag on the chart to outline counties on the map; **Map shows** switches between values, neighbour average and quadrants (signs only, not tested).\n\n*Autocorrelation is a county against its surroundings.*",
+      evidence:
+        'The fitted scatterplot slope equals **{{moran}}** and **{{quadrantShare}}** of counties occupy the two same-sign quadrants.',
+      caveat:
+        'Quadrants are descriptive signs around the mean, not local significance tests; influential counties can affect the fitted slope.',
       optionsMode: 'fresh',
       options: {
         geography: 'us-counties',
@@ -761,6 +769,10 @@ export default defineScene<GlobalAutocorrelationOptions>({
       textAlternative:
         'A swipe between a shuffled county map, which looks like salt and pepper, on the left and the real map with its southern belt on the right, above a histogram of Moran I over the shuffles with the observed value far to the right.',
       body: 'Deal the county values out at random and the belt vanishes: left is one shuffle (I = **{{shuffledI}}**), right the real map (I = **{{moran}}**). **{{permutations}}** shuffles built the histogram; **{{exceedances}}** reached the real I, so p_sim is **{{pSim}}** and cannot go below **{{pFloor}}**, 1 / (shuffles + 1).\n\nStep the **Shuffle seed**; change **Permutations**.\n\n*Beyond chance means beyond shuffling.*',
+      evidence:
+        'The observed statistic sits against its full shuffled reference distribution: **{{exceedances}}** of **{{permutations}}** shuffles are at least as extreme, giving p = **{{pSim}}**.',
+      caveat:
+        'The permutation test rejects random placement under this weights graph; it does not rule out shared measurement, regional policy or other spatially structured explanations.',
       optionsMode: 'fresh',
       options: {
         geography: 'us-counties',
@@ -796,6 +808,10 @@ export default defineScene<GlobalAutocorrelationOptions>({
       textAlternative:
         'A horizontal bar chart of Moran I under queen, rook, nearest-neighbour and distance-band rules, all strongly positive, beside the quadrant map under the chosen rule.',
       body: "Moran's I depends on who counts as a neighbour. Under four rules it runs over **{{iRange}}**; the highlighted bar is the rule chosen in **Neighbours are...**.\n\nEach rule is its own weights graph, compiled once and reused (see the cost line); the data never change.\n\n*A statistic belongs to its weights matrix.*",
+      evidence:
+        "The four-bar sensitivity analysis holds the county values fixed and shows Moran's I spanning **{{iRange}}** across queen, rook, nearest-neighbour and distance-band rules.",
+      caveat:
+        'Agreement across four plausible rules increases robustness, but it does not make any one neighbourhood definition objectively correct.',
       optionsMode: 'fresh',
       options: {
         geography: 'us-counties',
@@ -828,6 +844,10 @@ export default defineScene<GlobalAutocorrelationOptions>({
       textAlternative:
         'Bivariate map of the South-East: counties coloured by tertiles of diabetes and of income, with the darkest blue-violet for high diabetes and low income covering the Black Belt, Appalachia and the Rio Grande Valley.',
       body: "Counties are cut into tertiles of diabetes (across) and income (up, inverted), so the darkest colour is high diabetes with low income: **{{darkCorner}}** counties, dominating the Black Belt, Appalachia and the Rio Grande Valley. Bivariate Moran's I is **{{bivariate}}**, p_sim **{{pSim}}**: x here against y around here, not within a county.\n\nTry **Variable y** or **Map shows**.\n\n*A pattern across places is not a correlation within them.*",
+      evidence:
+        'The nine-cell bivariate map contains **{{darkCorner}}** counties in its high-diabetes/low-income corner; neighbour-lag association is **{{bivariate}}** with p = **{{pSim}}**.',
+      caveat:
+        'Bivariate Moran compares one variable here with another nearby. It is neither an individual-level relationship nor evidence that income causes diabetes.',
       optionsMode: 'fresh',
       options: {
         geography: 'us-counties',
@@ -857,6 +877,10 @@ export default defineScene<GlobalAutocorrelationOptions>({
       textAlternative:
         'Map of US counties with two rings around Cook County: a dashed ring at the longest distance and a solid ring where the correlogram peaks, above a line chart of Moran I falling as the distance grows.',
       body: "Moran's I for neighbours within growing distances: z peaks near **{{peak}}**, the solid ring around the focus county (click the map to move it); the dashed ring is the longest distance, **{{maxDistance}}**.\n\nWiden **Maximum distance**, switch **Band type**, or set **Geography** to tracts: the zoning changes the answer. Every setting is open in All controls.\n\n*County values are model estimates, so part of the clustering may come from the model.*",
+      evidence:
+        'The correlogram traces the statistic over every band: its strongest standardised evidence occurs near **{{peak}}** and is followed to **{{maxDistance}}**.',
+      caveat:
+        'Distance is planar within the map frame, cumulative bands reuse many pairs and county zoning changes the curve; adjacent points are not independent estimates.',
       optionsMode: 'fresh',
       options: {
         geography: 'us-counties',

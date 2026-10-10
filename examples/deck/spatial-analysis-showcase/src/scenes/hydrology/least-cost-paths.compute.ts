@@ -31,7 +31,6 @@ import {
   SpatialAnalysisSegmentLayer
 } from '../../engine/layers';
 import {addKernelPass} from '../../engine/mode-kernels';
-import {sampleRamp} from '../../engine/ramps';
 import {SpatialAnalysisResources} from '../../engine/resources';
 import {SummaryReader} from '../../engine/summary-reader';
 import {measureCompiledGraph} from '../../engine/vector-timing';
@@ -49,6 +48,14 @@ import {
   NAN_DECLARATIONS,
   type TerrainGrid
 } from './b15-common';
+import {
+  BAND_COUNT,
+  BAND_PALETTE,
+  LAND_COVER_PALETTE,
+  NO_COST_LIMIT_MINUTES,
+  NO_DISTANCE_CAP_KILOMETERS,
+  START_PALETTE
+} from './least-cost-paths-style';
 
 /** Option state of the least-cost-paths scene. */
 export type LeastCostOptions = {
@@ -76,13 +83,8 @@ export type LeastCostOptions = {
   overlayOpacity: number;
 };
 
-/** Cost limit slider value that means "no limit" (minutes). */
-export const NO_COST_LIMIT_MINUTES = 720;
-/** Distance cap slider value that means "no cap" (kilometers). */
-export const NO_DISTANCE_CAP_KILOMETERS = 40;
 const MAXIMUM_ITERATIONS = 384;
 const PATH_CAPACITY = 4096;
-export const BAND_COUNT = 8;
 const SOURCE_CAPACITY = 8;
 /** Walking minutes per meter at the reference pace of 6 km/h on flat ground. */
 const FLAT_MINUTES_PER_METER = 0.01;
@@ -94,44 +96,6 @@ const SUN_ALTITUDE_DEGREES = 40;
 const CLASS_TABLE_SIZE = 11;
 const FRICTION_PARAMETER_LENGTH = 16;
 const NO_SEED_CLASS = 255;
-
-/** Colors of the eight land cover classes the scene displays, in `LAND_COVER_CLASSES` order. */
-export const LAND_COVER_PALETTE = [
-  [34, 102, 51, 255],
-  [143, 170, 70, 255],
-  [200, 210, 110, 255],
-  [230, 190, 90, 255],
-  [205, 60, 60, 255],
-  [190, 180, 160, 255],
-  [60, 120, 220, 255],
-  [90, 170, 170, 255]
-] as const;
-export const LAND_COVER_CLASSES = [
-  'Tree cover',
-  'Shrubland',
-  'Grassland',
-  'Cropland',
-  'Built-up',
-  'Bare / sparse',
-  'Water',
-  'Wetland'
-] as const;
-/** Colors of the start points in the nearest-start (Voronoi) display. */
-export const START_PALETTE = [
-  [255, 190, 60, 235],
-  [90, 190, 255, 235],
-  [190, 130, 255, 235],
-  [90, 225, 160, 235],
-  [255, 120, 160, 235],
-  [240, 235, 90, 235],
-  [140, 160, 255, 235],
-  [255, 140, 90, 235]
-] as const;
-/** Travel-time band colors, nearest first (viridis from yellow to purple). */
-export const BAND_PALETTE = Array.from({length: BAND_COUNT}, (_, band) => {
-  const [r, g, b] = sampleRamp('viridis', 1 - (band + 0.5) / BAND_COUNT);
-  return [r, g, b, 235] as const;
-});
 
 type PlaceDefinition = {
   name: string;
@@ -471,7 +435,7 @@ export async function createLeastCostPaths(
             'uint32',
             1
           ),
-          totalCount: importGraphBuffer(
+          requiredCount: importGraphBuffer(
             pathGraph,
             'path-total-output',
             buffers.pathTotal,
@@ -1134,7 +1098,7 @@ export async function createLeastCostPaths(
                 id: `least-cost-${key}-cost`,
                 values: buffers.costDisplay,
                 valueFormat: 'float32',
-                colormap: 'viridis',
+                colormap: 'lajolla',
                 valueRange: [0, rangeMinutes],
                 discardAtOrBelow: -0.5,
                 color: [255, 255, 255, alpha]

@@ -9,6 +9,7 @@ export type {
 } from './gpu-trajectory-metrics';
 export {
   getGPUTrajectoryMetricsParameterValues,
-  GPU_TRAJECTORY_METRICS_PARAMETER_LENGTH
+  GPU_TRAJECTORY_METRICS_PARAMETER_LENGTH,
+  GPU_TRAJECTORY_METRICS_PARAMETER_SCHEMA
 } from './trajectory-metrics-parameters';
 export type {GPUTrajectoryStopParameters} from './trajectory-metrics-parameters';

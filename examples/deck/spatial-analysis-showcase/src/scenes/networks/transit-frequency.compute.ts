@@ -161,7 +161,7 @@ export async function createTransitFrequency(
         pathOffsets: view(offsets, 'uint32', paths + 1),
         columns: COLUMNS,
         rows: ROWS,
-        coordinateSystem: 'planar',
+        spatialContext: {coordinateSpace: 'planar', metric: 'native', units: 'native'},
         parameters: gridParameters.importToGraph(graph),
         output: {
           lengths: view(lengthsBuffer, 'float32', CELL_COUNT),
@@ -197,6 +197,7 @@ export async function createTransitFrequency(
     const speeds = view(averageSpeeds, 'float32', trackCount);
     statisticsGraph.add(
       new GPUTrajectoryMetrics({
+        spatialContext: {coordinateSpace: 'planar', metric: 'native', units: 'native'},
         id: 'trip-metrics',
         positions: view(positionsBuffer, 'float32x2', vertexCount),
         timestamps: view(timestampsBuffer, 'float32', vertexCount),

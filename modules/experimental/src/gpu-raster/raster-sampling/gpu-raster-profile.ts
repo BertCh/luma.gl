@@ -36,7 +36,7 @@ export type GPURasterProfileOutput = {
   /** One-row flag: 1 when samples exceeded the capacity or a path hit the per-path limit. */
   overflow: GraphDataView<'uint32'>;
   /** Optional one-row unclamped sample count. */
-  totalCount?: GraphDataView<'uint32'>;
+  requiredCount?: GraphDataView<'uint32'>;
   /** Sample positions; NaN at rows at or beyond `count`. */
   samplePositions?: GraphDataView<'float32x2'>;
   /** Planar distance along the path of each sample; NaN beyond `count`. */
@@ -181,7 +181,7 @@ export class GPURasterProfile implements GPUCommandNodeProducer {
         validateRasterSamplingView(id, `output.${name}`, output[name], format, capacity);
       }
     }
-    for (const name of ['count', 'overflow', 'totalCount'] as const) {
+    for (const name of ['count', 'overflow', 'requiredCount'] as const) {
       if (output[name]) {
         validateRasterSamplingView(id, `output.${name}`, output[name], 'uint32', 1);
       }
@@ -601,10 +601,10 @@ fn isFiniteValue(value: f32) -> bool { return (bitcast<u32>(value) & 0x7fffffffu
       {name: 'countOut', view: output.count, type: 'u32', access: 'read_write'},
       {name: 'overflowOut', view: output.overflow, type: 'u32', access: 'read_write'}
     ];
-    if (output.totalCount) {
+    if (output.requiredCount) {
       countBindings.push({
         name: 'totalOut',
-        view: output.totalCount,
+        view: output.requiredCount,
         type: 'u32',
         access: 'read_write'
       });
@@ -621,7 +621,7 @@ const SAMPLE_CAPACITY: u32 = ${sampleCapacity}u;`,
         body: `let total = sampleOffsets[sampleOffsetsOffset + PATH_COUNT];
   countOut[countOutOffset] = min(total, SAMPLE_CAPACITY);
   overflowOut[overflowOutOffset] = select(0u, 1u, total > SAMPLE_CAPACITY || truncated[truncatedOffset] != 0u);
-  ${output.totalCount ? 'totalOut[totalOutOffset] = total;' : ''}`
+  ${output.requiredCount ? 'totalOut[totalOutOffset] = total;' : ''}`
       })
     );
     return nodes;

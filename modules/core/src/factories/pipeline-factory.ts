@@ -370,7 +370,11 @@ export class PipelineFactory {
     const {type} = this.device;
     const shaderHash = this._getHash(props.shader.source);
     const shaderLayoutHash = this._getHash(JSON.stringify(props.shaderLayout));
-    return `${type}/C/${shaderHash}SL${shaderLayoutHash}`;
+    const constants = Object.entries(props.constants ?? {}).sort(([left], [right]) =>
+      left.localeCompare(right)
+    );
+    const constantsHash = this._getHash(JSON.stringify(constants));
+    return `${type}/C/${shaderHash}E${props.entryPoint ?? ''}SC${constantsHash}SL${shaderLayoutHash}`;
   }
 
   /** Calculate a hash based on all the inputs for a render pipeline */

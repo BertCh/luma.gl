@@ -212,6 +212,13 @@ export async function createStormCellTracks(
     'float32x2',
     vertexCount
   );
+  const stepSpeedsView = importGraphBuffer(
+    metricsGraph,
+    'step-speeds',
+    stepSpeeds,
+    'float32',
+    vertexCount
+  );
   const stepHeadingsView = importGraphBuffer(
     metricsGraph,
     'step-headings',
@@ -249,6 +256,7 @@ export async function createStormCellTracks(
   );
   metricsGraph.add(
     new GPUTrajectoryMetrics({
+      spatialContext: {coordinateSpace: 'planar', metric: 'native', units: 'native'},
       id: 'metrics',
       positions: importGraphBuffer(
         metricsGraph,
@@ -300,13 +308,7 @@ export async function createStormCellTracks(
         'float32',
         trackCount
       ),
-      stepSpeeds: importGraphBuffer(
-        metricsGraph,
-        'step-speeds',
-        stepSpeeds,
-        'float32',
-        vertexCount
-      ),
+      stepSpeeds: stepSpeedsView,
       stepHeadings: stepHeadingsView,
       trackStopCounts: importGraphBuffer(
         metricsGraph,
@@ -320,7 +322,7 @@ export async function createStormCellTracks(
           ids: importGraphBuffer(metricsGraph, 'stop-ids', stopIds, 'uint32', STOP_CAPACITY),
           count: importGraphBuffer(metricsGraph, 'stop-count', stopCount, 'uint32', 1),
           overflow: importGraphBuffer(metricsGraph, 'stop-overflow', stopOverflow, 'uint32', 1),
-          totalCount: importGraphBuffer(metricsGraph, 'stop-total', stopTotal, 'uint32', 1)
+          requiredCount: importGraphBuffer(metricsGraph, 'stop-total', stopTotal, 'uint32', 1)
         },
         drawInstanceCount: metricsGraph.importGPUData(
           'stop-draw-count',
@@ -363,13 +365,7 @@ export async function createStormCellTracks(
     bindings: [
       {
         name: 'speeds',
-        view: importGraphBuffer(
-          metricsGraph,
-          'step-speeds-class',
-          stepSpeeds,
-          'float32',
-          vertexCount
-        ),
+        view: stepSpeedsView,
         type: 'f32',
         access: 'read'
       },

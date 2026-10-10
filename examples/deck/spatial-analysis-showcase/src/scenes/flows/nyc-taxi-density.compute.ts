@@ -146,6 +146,10 @@ export async function createNycTaxiDensity(
   const gridLines = resources.createBuffer('grid-lines', GRID_LINE_CAPACITY);
 
   let destroyed = false;
+  /** True when analysis inputs changed and the selected density graphs need another encoding. */
+  let densityDirty = true;
+  /** Grid geometry is CPU-derived and can change without invalidating the density field. */
+  let gridDirty = true;
   let settleStale = true;
   let lastChangeTime = performance.now();
   let lastBounds: Float32Array | null = null;
@@ -180,6 +184,7 @@ export async function createNycTaxiDensity(
   const dropoffsPerHour = countBins(trips.dropoffHour, 0, HOURS, HOURS);
 
   const markChanged = () => {
+    densityDirty = true;
     settleStale = true;
     lastChangeTime = performance.now();
   };
@@ -323,6 +328,7 @@ export async function createNycTaxiDensity(
       'grid',
       `${columns} × ${rows} ${options.binning === 'hexagon' ? 'hexagons' : 'cells'}`
     );
+    gridDirty = true;
     publishCost();
     markChanged();
   }
@@ -828,7 +834,7 @@ export async function createNycTaxiDensity(
           ctx.requestLayers();
           break;
         case 'showGrid':
-          lastBounds = null;
+          gridDirty = true;
           ctx.requestLayers();
           break;
         case 'scale':
@@ -959,12 +965,16 @@ export async function createNycTaxiDensity(
       const options = ctx.options;
       const viewBounds = getViewportMetricBounds(frame.viewport, projection);
       const [columns, rows] = primary.gridSize;
+      const boundsData = Float32Array.from(viewBounds);
+      const boundsChanged =
+        !lastBounds || boundsData.some((value, index) => value !== lastBounds![index]);
+      if (boundsChanged) markChanged();
       if (options.binning === 'hexagon') {
         const radius = Math.max(
           (viewBounds[2] - viewBounds[0]) / (SQRT3 * (columns - 1)),
           (viewBounds[3] - viewBounds[1]) / (1.5 * (rows - 1))
         );
-        hexagonRadius.write(Float32Array.of(radius));
+        if (densityDirty) hexagonRadius.write(Float32Array.of(radius));
         cellWidthMeters = radius * SQRT3;
         cellHeightMeters = radius * 1.5;
         cellAreaKm2 = (1.5 * SQRT3 * radius * radius) / 1e6;
@@ -983,17 +993,17 @@ export async function createNycTaxiDensity(
         lastLayerArea = cellAreaKm2;
         ctx.requestLayers();
       }
-      const boundsData = Float32Array.from(viewBounds);
-      if (!lastBounds || boundsData.some((value, index) => value !== lastBounds![index])) {
-        markChanged();
-        if (options.showGrid && options.binning === 'grid') {
-          gridLineCount = writeGridLines(boundsData, columns, rows);
-        }
+      if ((boundsChanged || gridDirty) && options.showGrid && options.binning === 'grid') {
+        gridLineCount = writeGridLines(boundsData, columns, rows);
       }
+      gridDirty = false;
       lastBounds = boundsData;
-      bounds.write(boundsData);
-      primary.compiled.encode(commandEncoder, {parameters: undefined});
-      secondary?.compiled.encode(commandEncoder, {parameters: undefined});
+      if (densityDirty) {
+        bounds.write(boundsData);
+        primary.compiled.encode(commandEncoder, {parameters: undefined});
+        secondary?.compiled.encode(commandEncoder, {parameters: undefined});
+        densityDirty = false;
+      }
       const settled = performance.now() - lastChangeTime > SETTLE_MILLISECONDS;
       const busy = primary.reader.isPending || Boolean(secondary?.reader.isPending);
       if (settleStale && settled && !busy) {

@@ -261,7 +261,7 @@ export class GPUSpatialClustering implements GPUCommandNodeProducer {
         props.clusters?.ids,
         props.clusters?.count,
         props.clusters?.overflow,
-        props.clusters?.totalCount,
+        props.clusters?.requiredCount,
         props.clusterSizes,
         props.clusterCentroids,
         props.drawInstanceCount
@@ -328,7 +328,7 @@ export class GPUSpatialClustering implements GPUCommandNodeProducer {
       clusters?.ids,
       clusters?.count,
       clusters?.overflow,
-      clusters?.totalCount,
+      clusters?.requiredCount,
       props.clusterSizes,
       props.clusterCentroids,
       props.drawInstanceCount
@@ -382,7 +382,7 @@ export class GPUSpatialClustering implements GPUCommandNodeProducer {
           createPublishNode<Parameters>(graph, {
             id: `${id}-publish`,
             operation: OPERATION,
-            totalCount: clusterCount,
+            requiredCount: clusterCount,
             output: clusters,
             extraCounts: props.drawInstanceCount ? [props.drawInstanceCount] : []
           })
@@ -596,7 +596,7 @@ export class GPUSpatialClustering implements GPUCommandNodeProducer {
       createPublishNode<Parameters>(graph, {
         id: `${id}-publish`,
         operation: OPERATION,
-        totalCount: clusterCount,
+        requiredCount: clusterCount,
         compactIds: rootIds,
         output: clusters,
         extraCounts: props.drawInstanceCount ? [props.drawInstanceCount] : []

@@ -177,9 +177,17 @@ for (const backend of ['zonal', 'group'] as const) {
             ),
             candidateCapacity: 4096
           },
-          counts: counts.view,
-          ...(statistic === 'count' ? {} : {featureValues: featureValues.view}),
-          overflow: overflow.view,
+          outputs: {
+            counts: counts.view,
+            ...(statistic === 'count' ? {} : {featureValues: featureValues.view}),
+            overflow: overflow.view,
+            color: {
+              breaks: breaks.view,
+              classCount: classCount.view,
+              colors: colors.view,
+              classIndices: classIndices.view
+            }
+          },
           color: {
             classBreaksParameters: fixture.parameters(
               'class-breaks-parameters',
@@ -194,14 +202,12 @@ for (const backend of ['zonal', 'group'] as const) {
               getGPUColorScaleParameterValues({scale: 'quantile', domainCount: 4, paletteCount: 3})
             ),
             palette: fixture.input('palette', Uint32Array.from(palette), 'uint32', 3),
-            maximumPaletteCount: 3,
-            breaks: breaks.view,
-            classCount: classCount.view,
-            colors: colors.view,
-            classIndices: classIndices.view
+            maximumPaletteCount: 3
           }
         });
         expect(recipe.contributors.length).toBe(backend === 'zonal' ? 3 : 4);
+        expect(recipe.outputs.counts).toBe(recipe.counts);
+        expect(recipe.status.stages[0].status.overflow).toBe(recipe.overflow);
         fixture.run();
 
         expect((await fixture.readUint32(overflow, 1))[0]).toBe(0);

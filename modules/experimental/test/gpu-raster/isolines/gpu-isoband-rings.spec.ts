@@ -95,8 +95,8 @@ for (const integerSamples of [false, true]) {
       polygonPositions: createOutputBuffer(device, VERTEX_CAPACITY * 2),
       polygonRingOffsets: createOutputBuffer(device, RING_CAPACITY + 1),
       polygonOffsets: createOutputBuffer(device, RING_CAPACITY + 1),
-      featureOffsets: createOutputBuffer(device, 2),
-      polygonGroups: createOutputBuffer(device, RING_CAPACITY)
+      featureOffsets: createOutputBuffer(device, RING_CAPACITY + 1),
+      sourceIds: createOutputBuffer(device, RING_CAPACITY)
     };
     const graph = new GPUCommandGraph(device, {id: 'isoband-rings-graph'});
     graph.add(
@@ -128,6 +128,7 @@ for (const integerSamples of [false, true]) {
           edgeCount: importGraphBuffer(graph, 'ec', outputs.edgeCount, 'uint32', 1),
           edgeOverflow: importGraphBuffer(graph, 'eo', outputs.edgeOverflow, 'uint32', 1),
           polygons: {
+            kind: 'polygons',
             positions: importGraphBuffer(
               graph,
               'pp',
@@ -149,14 +150,14 @@ for (const integerSamples of [false, true]) {
               'uint32',
               RING_CAPACITY + 1
             ),
-            featureOffsets: importGraphBuffer(graph, 'pfo', outputs.featureOffsets, 'uint32', 2),
-            polygonGroups: importGraphBuffer(
+            featureOffsets: importGraphBuffer(
               graph,
-              'pg',
-              outputs.polygonGroups,
+              'pfo',
+              outputs.featureOffsets,
               'uint32',
-              RING_CAPACITY
-            )
+              RING_CAPACITY + 1
+            ),
+            sourceIds: importGraphBuffer(graph, 'pg', outputs.sourceIds, 'uint32', RING_CAPACITY)
           }
         }
       })
@@ -264,14 +265,18 @@ for (const integerSamples of [false, true]) {
             'the crater produces holes'
           ).toBe(true);
         }
-        const [polygonFeatureStart, polygonCount] = await readUint32(outputs.featureOffsets, 2);
-        expect(polygonFeatureStart).toBe(0);
+        const polygonFeatureOffsets = await readUint32(outputs.featureOffsets, RING_CAPACITY + 1);
+        const polygonCount = polygonFeatureOffsets[RING_CAPACITY];
+        expect(polygonFeatureOffsets[0]).toBe(0);
+        expect(polygonFeatureOffsets.slice(0, polygonCount + 1)).toEqual(
+          Array.from({length: polygonCount + 1}, (_, index) => index)
+        );
         expect(polygonCount).toBe(isHole.filter(value => value === 0).length);
-        const polygonGroups = await readUint32(outputs.polygonGroups, RING_CAPACITY);
-        expect(polygonGroups.slice(0, polygonCount).sort()).toEqual(
+        const sourceIds = await readUint32(outputs.sourceIds, RING_CAPACITY);
+        expect(sourceIds.slice(0, polygonCount).sort()).toEqual(
           bands.filter((_, ring) => isHole[ring] === 0).sort()
         );
-        expect(polygonGroups.slice(polygonCount).every(value => value === NONE)).toBe(true);
+        expect(sourceIds.slice(polygonCount).every(value => value === NONE)).toBe(true);
       }
     }
     compiled.destroy();

@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {ground} from '../../cartography/grounds';
 import type {LegendSpec} from '../scene';
 import {defineScene} from '../scene';
 import {CATEGORY_SELECT_OPTIONS, CHICAGO_VIEW, MONTH_NAMES} from './b8-common';
@@ -31,11 +32,11 @@ const isTabularOnly = (state: H3AggregationOptions) =>
 /** Chicago observations keyed to H3, Quadbin and other grid cells on the GPU. GPU work is in `h3-aggregation.compute.ts`. */
 export default defineScene<H3AggregationOptions>({
   id: 'h3-aggregation',
-  title: 'Observations on a global grid',
+  title: 'Chicago observations by global grid cell',
   chapter: 'cells',
   order: 1,
   summary:
-    'Key 43,600 Chicago wildlife observations to H3, Quadbin, quadkey, geohash or S2 cells on the GPU, count them per cell, trace the borders of the occupied set, expand a clicked cell into its neighbours, and polyfill the 77 community areas.',
+    'GPU cell indexing aggregates the 2023 Chicago iNaturalist observations across H3, Quadbin and three comparison grids. The outputs include counts, topology and polygon covers; finite capacity and observer effort limit interpretation.',
   contributors: [
     'GPUPointToCell',
     'GPUCellAggregation',
@@ -50,6 +51,16 @@ export default defineScene<H3AggregationOptions>({
     {id: 'chicago-community-areas', role: 'polygons to polyfill'}
   ],
   initialView: {...CHICAGO_VIEW},
+  basemap: ground('paperCity'),
+  furniture: {
+    title: {
+      title: 'Chicago observations by grid cell',
+      subtitle: 'Counts, occupied-set topology and community-area covers'
+    },
+    scaleBar: {units: 'metric'},
+    credit: 'iNaturalist contributors · City of Chicago Data Portal',
+    caveat: 'Cell counts reflect observer effort and the selected grid resolution.'
+  },
 
   options: [
     {
@@ -288,11 +299,11 @@ export default defineScene<H3AggregationOptions>({
       label: 'Color ramp',
       group: 'Cell color',
       apply: 'param',
-      default: 'viridis',
+      default: 'ylgnbu',
       disabledWhen: isTabularOnly,
-      help: 'Ramp for observations per cell. Viridis and cividis are perceptually uniform; magma and inferno suit dark basemaps.',
+      help: 'Sequential ramp for observations per cell; yellow-green-blue is the paper-ground default.',
       options: [
-        {value: 'viridis', label: 'Viridis'},
+        {value: 'ylgnbu', label: 'Yellow-green-blue'},
         {value: 'magma', label: 'Magma'},
         {value: 'inferno', label: 'Inferno'},
         {value: 'cividis', label: 'Cividis'},
@@ -544,6 +555,9 @@ export default defineScene<H3AggregationOptions>({
     {
       id: 'question',
       title: 'Where do sightings pile up, at any scale?',
+      headline: 'Lakefront cells contain the highest counts',
+      textAlternative:
+        'Blue-green H3 hexagons cover Chicago, with the highest observation counts concentrated near Montrose Point and other lakefront sites.',
       body: 'People logged **43,557 wild plants, animals and fungi in Chicago on iNaturalist in 2023**. A dot map hides the answer behind overplotting, and a choropleth by community area forces one scale on every question.\n\nA **discrete global grid** gives a better common key: every place on Earth has a cell ID at every resolution. This map is already that answer: each observation was keyed to an **H3 hexagon** and counted, all on the GPU. Bright hexagons hold the most observations (legend, square-root scale). Filter by **Group** or **Months of 2023** below to see how the pattern moves; the next steps open the pipeline one contributor at a time.',
       options: {family: 'h3', resolutionOffset: 0},
       camera: {...CHICAGO_VIEW, transitionMs: 1200},
@@ -554,6 +568,9 @@ export default defineScene<H3AggregationOptions>({
     {
       id: 'resolution',
       title: 'Keys first, then counts',
+      headline: 'Finer cells separate local observation concentrations',
+      textAlternative:
+        'A finer H3 grid divides broad concentrations into smaller occupied hexagons while readouts report grid resolution, occupancy and busiest-cell count.',
       body: '**`GPUPointToCell`** turns each longitude/latitude into a 64-bit H3 key. **`GPUCellAggregation`** then radix-sorts the keys and counts runs, writing a compact table of `(cell, count)` with integer atomics, so the result is exact and does not depend on thread order. Readouts show how many cells are occupied and the busiest one.\n\nSlide **Resolution (relative to default)** below by one step. H3 resolution 9 cells are about 2.7 times smaller in each direction: the Montrose Point hot spot splits into the harbor, the dunes and the meadow and the hot spots sharpen, while the map gets noisier. Changing it recompiles the graphs once (the badge says so); the observation mask, in contrast, is only a buffer write.',
       options: {resolutionOffset: 1},
       camera: {longitude: MONTROSE[0], latitude: MONTROSE[1], zoom: 12.6, transitionMs: 1600},
@@ -565,6 +582,9 @@ export default defineScene<H3AggregationOptions>({
     {
       id: 'families',
       title: 'Five grids, one pipeline',
+      headline: 'Grid families partition the same observations differently',
+      textAlternative:
+        'H3, Quadbin, quadkey, geohash and S2 cells can replace one another over the same Chicago observations, revealing their different shapes and sizes.',
       body: 'The same keying runs for **Quadbin** (Web Mercator tiles, as in CARTO), quadkey, geohash and S2. Quadbin keys are bit-exact integers. H3 and S2 use f32 sphere math, so the readout shows how accuracy degrades at finer resolutions: use H3 up to about res 10 here.\n\nOnly H3 and Quadbin have an aggregation table. Set **Cell family** to *Quadkey*, *Geohash* or *S2*: `GPUCellGeometry` decodes one cell per observation and translucent overlap becomes the density.',
       options: {family: 'quadbin', resolutionOffset: 0},
       camera: {longitude: -87.68, latitude: 41.835, zoom: 9.9, transitionMs: 1400},
@@ -575,6 +595,9 @@ export default defineScene<H3AggregationOptions>({
     {
       id: 'outlines',
       title: 'Outline the occupied set',
+      headline: 'Boundary segments isolate the occupied cell set',
+      textAlternative:
+        'Cell fills are supplemented by an outline around occupied cells or borders between count tiers, with segment and ring totals reported.',
       body: '**`GPUCellSetOutline`** finds, for every cell, which edges face a neighbour that is not in the table, and emits only those segments. Set **Cell-set outline** below to *Closed rings*: the contributor can also assemble the segments into closed rings with shells and holes. Choose *Borders between count tiers* and it labels each cell with `floor(log2(count))`, so edges appear wherever the neighbour sits in another tier: instant isolines of observation density.\n\nSegment counts come from the GPU, so the layer draws exactly that many instances through an indirect draw record.',
       options: {family: 'h3', resolutionOffset: 0, outline: 'groups'},
       camera: {longitude: -87.68, latitude: 41.835, zoom: 9.9, transitionMs: 1400},
@@ -585,6 +608,9 @@ export default defineScene<H3AggregationOptions>({
     {
       id: 'neighbourhood',
       title: 'Click a cell: its neighbourhood',
+      headline: 'Selected cells expand into ordered neighbourhoods',
+      textAlternative:
+        'A selected Chicago cell has a magenta outline and surrounding cyan cells fade with grid distance for disk, ring, parent or child operations.',
       body: '**`GPUCellTopology`** expands one cell into its grid **disk** (all cells within distance k), a **ring** (distance exactly k), its **parent** at a coarser resolution, or its **children** at a finer one. Click any hexagon. The magenta outline is the clicked cell; cyan cells fade with distance. **Topology operation** below switches between the four.\n\nThe disk is always computed at k = 8 and **Disk radius k** only filters its distance column on the GPU. The readout adds up the observations of the neighbourhood: a quick "how much is seen around here" without any spatial join.',
       options: {outline: 'off', showSelection: true, selectionOperation: 'disk', diskRadius: 3},
       camera: {longitude: MONTROSE[0], latitude: MONTROSE[1], zoom: 13, transitionMs: 1600},
@@ -596,6 +622,9 @@ export default defineScene<H3AggregationOptions>({
     {
       id: 'cover',
       title: 'Polyfill the community areas, then compact',
+      headline: 'Compaction preserves the community-area cell cover',
+      textAlternative:
+        'Cells fill Chicago community-area polygons; compacted parent outlines reduce representation while the round-trip readout confirms the original cover count.',
       body: '**`GPUCellCover`** does the reverse of keying: it fills polygons with cells. Here are the 77 Chicago community areas. With H3 only the **center** rule exists; with Quadbin (set **Cell family** below) you can compare **full** (whole cell inside) and **intersects** (any overlap) with **Containment rule**, which bracket the true area. Set **Cover color** to *Core cells vs border cells* to see which cells are provably inside, so a point join could skip the exact polygon test.\n\n**`GPUCellCompaction`** merges complete groups of sibling cells into their parent (**Outline the compacted cover**, yellow outlines; **Merge up to N levels** sets the reach) and an uncompact node expands it back: the readout confirms the round trip returns the same number of cells.',
       options: {
         showSelection: false,
@@ -613,6 +642,9 @@ export default defineScene<H3AggregationOptions>({
     {
       id: 'limits',
       title: 'Limits, and things to try',
+      headline: 'Fine grids expose capacity and precision limits',
+      textAlternative:
+        'The cell map remains visible with controls for family, resolution and observation group, and readouts indicate overflow or reduced key precision.',
       body: 'Caveats: the table holds 65,536 cells and says OVERFLOW when a resolution is too fine; and observations follow the observers, so cells measure **effort** (where people look and upload) as much as wildlife.\n\nTry it: set **Group** to *Fungi* or *Birds* and **Months of 2023** to a single season; set **Topology operation** to *Children* and click a cell; or set **Cell family** to *Geohash* with **Resolution (relative to default)** at +2 to see where the f32 keys and a 5-character cell stop making sense.',
       options: {
         showCells: true,

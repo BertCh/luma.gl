@@ -3,6 +3,7 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import type {GraphDataView} from '@luma.gl/gpgpu/gpu-core';
+import type {GPUCompactPairPort} from '../contracts/index';
 
 /** Value written to per-point feature outputs when a point joins no feature. */
 export const GPU_SPATIAL_JOIN_NO_FEATURE = 0xffffffff;
@@ -93,21 +94,12 @@ export type GPUSpatialJoinGeometry =
  * Caller-owned, capacity-bounded list of matched `(left, right)` feature rows.
  *
  * Slots `[0, count)` are sorted by `leftIds` and then `rightIds`, with no duplicates. `count` is
- * clamped to the capacity (`leftIds.length`), like `GPUCompactOutput`. Writable views must
- * not alias each other or the join inputs.
+ * clamped to the capacity (`leftIds.length`). `overflow` reports only final pair truncation;
+ * provide `candidateOverflow` to observe an incomplete BVH/candidate stage independently.
+ * `requiredCount` is exact only when `candidateOverflow` is zero. Writable views must not alias
+ * each other or the join inputs.
  */
-export type GPUSpatialJoinPairs = {
-  /** Left feature row per matched pair. Its length is the pair capacity. */
-  leftIds: GraphDataView<'uint32'>;
-  /** Right feature row per matched pair; same length as `leftIds`. */
-  rightIds: GraphDataView<'uint32'>;
-  /** One-row scalar receiving `min(totalCount, leftIds.length)`. */
-  count: GraphDataView<'uint32'>;
-  /** One-row scalar receiving `1` when any capacity overflowed, otherwise `0`. */
-  overflow: GraphDataView<'uint32'>;
-  /** Optional one-row scalar receiving the unclamped number of matched pairs. */
-  totalCount?: GraphDataView<'uint32'>;
-};
+export type GPUSpatialJoinPairs = GPUCompactPairPort;
 
 /**
  * Key columns for an attribute-equality join condition (GeoPandas `sjoin(on_attribute=...)`).

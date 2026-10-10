@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {ground} from '../../cartography/grounds';
 import {defineScene, type LegendSpec} from '../scene';
 import {REGION_PALETTE} from './b6-colors';
 import type {TradeAreasOptions} from './trade-areas.compute';
@@ -17,11 +18,11 @@ const FACILITY_NOUN: Record<TradeAreasOptions['facility'], string> = {
 /** Floating catchment accessibility and Huff trade areas for Chicago census tracts. */
 export default defineScene<TradeAreasOptions>({
   id: 'trade-areas',
-  title: 'Who can reach a grocery store?',
+  title: 'Chicago facility access per 1,000 residents',
   chapter: 'regression',
   order: 4,
   summary:
-    'Counting stores within reach is not enough: the same store serves many neighbourhoods. Two- and three-step floating catchment accessibility and the Huff model share each facility’s supply among the tracts that can reach it, so food deserts and trade areas appear.',
+    'Floating catchment and Huff models combine Chicago tracts with mapped facilities to estimate access per 1,000 demand units and modal trade areas; straight-line centroids and site counts approximate travel and capacity.',
   contributors: ['GPUCatchmentAccessibility', 'GPUHuffTradeAreas', 'GPUNeighborSearch'],
   datasets: [
     {id: 'chicago-tracts', role: 'demand: population counts per tract'},
@@ -29,6 +30,16 @@ export default defineScene<TradeAreasOptions>({
     {id: 'chicago-facilities', role: 'hospitals, libraries and CPS schools'}
   ],
   initialView: {longitude: -87.68, latitude: 41.84, zoom: 9.9},
+  basemap: ground('night'),
+  furniture: {
+    title: {
+      title: 'Chicago facility access',
+      subtitle: 'Floating catchments and Huff trade areas'
+    },
+    scaleBar: {units: 'metric'},
+    credit: 'US Census Bureau ACS; Overture Maps Foundation; City of Chicago',
+    caveat: 'Straight-line centroid distances and facility counts approximate travel and capacity.'
+  },
 
   options: [
     {
@@ -255,7 +266,7 @@ export default defineScene<TradeAreasOptions>({
         kind: 'ramp',
         id: 'access',
         title: `${state.map === 'access2sfca' ? '2SFCA' : '3SFCA'} accessibility to ${FACILITY_NOUN[state.facility]}`,
-        ramp: 'viridis',
+        ramp: 'ylgnbu',
         extent: 'gpu',
         unit: 'facility-equivalents per 1,000',
         labels: ['poor access', '95th percentile'],
@@ -265,7 +276,7 @@ export default defineScene<TradeAreasOptions>({
       entries.push({
         kind: 'ramp',
         title: 'Huff probability of the modal facility',
-        ramp: 'viridis',
+        ramp: 'ylgnbu',
         extent: [0, 1],
         labels: ['0: choice is split', '1: one clear choice']
       });
@@ -346,6 +357,9 @@ parameters.write(getGPUNeighborSearchParameterValues({
     {
       id: 'question',
       title: 'Which Chicago neighbourhoods can walk to a grocery store?',
+      headline: 'Some tracts reach no grocery stores',
+      textAlternative:
+        'Chicago tracts are shaded by the number of grocery stores within 1,600 meters, including tracts with none.',
       body: 'Food access is a classic planning question: who lives far from a supermarket? A first answer counts the stores within reach. The map shows how many of about 1,250 open **grocery stores** (Overture Maps; **Facility (supply)** below) fall within **1,600 m of each census tract’s centroid** (**Catchment radius**), a roughly 20-minute walk.\n\nDark tracts have none. But counting stores treats a lone store the same whether it serves 500 residents or 50,000. The next steps fix that.',
       options: {map: 'reachable', facility: 'grocery', bandwidth: 1600, decay: 'binary'},
       camera: {longitude: -87.68, latitude: 41.84, zoom: 9.9},
@@ -355,6 +369,9 @@ parameters.write(getGPUNeighborSearchParameterValues({
     {
       id: 'two-step',
       title: 'Two steps: supply per demand, then access',
+      headline: 'Supply allocation exposes demand-adjusted shortages',
+      textAlternative:
+        'A sequential tract map shows two-step floating-catchment access as facility-equivalents per 1,000 residents.',
       body: '**`GPUCatchmentAccessibility`** with the **2SFCA** method (Luo and Wang 2003; **Color tracts by** *2SFCA accessibility*). Step 1: for each store, divide its supply by the **demand of all tracts that can reach it**: `R_j = S_j / Σ P_i`. Step 2: each tract adds up the ratios of the stores it can reach: `A_i = Σ R_j`. Accessibility is therefore stores per resident, and total supply is conserved. The legend is per 1,000 residents.\n\nTwo **`GPUNeighborSearch`** runs write the weights in both directions on the GPU. See **Supply conservation**: 1.0 means every store’s supply was allocated exactly once.',
       options: {map: 'access2sfca'},
       controls: ['map'],
@@ -363,6 +380,9 @@ parameters.write(getGPUNeighborSearchParameterValues({
     {
       id: 'decay',
       title: 'Distance should matter inside the catchment',
+      headline: 'Distance decay lowers peripheral facility access',
+      textAlternative:
+        'Tract accessibility declines where reachable grocery stores lie near the edge of the Gaussian catchment.',
       body: 'A store at the edge of the radius counts as much as one next door. **Distance decay** is now *Gaussian*: access falls smoothly with distance, and the demand sharing each store also decays. Try *Linear* too, or *Inverse distance power* and then its **Inverse-distance power** exponent. Moving the **Catchment radius** slider rewrites the search parameters and re-runs the same compiled graph: nothing is rebuilt.',
       options: {map: 'access2sfca', decay: 'gaussian'},
       controls: ['decay', 'power', 'bandwidth'],
@@ -371,6 +391,9 @@ parameters.write(getGPUNeighborSearchParameterValues({
     {
       id: 'three-step',
       title: 'Three steps: stores compete with each other',
+      headline: 'Competition redistributes access among nearby stores',
+      textAlternative:
+        'Three-step floating-catchment colors show access after each tract distributes demand among competing nearby stores.',
       body: '2SFCA lets every store in the catchment count fully, however many nearer stores the tract also has. **3SFCA** (Wan et al. 2012) adds a **Huff-style selection weight**: a tract divides its demand among the stores it can reach in proportion to their closeness, so close stores take most of it. **Color tracts by** is now *3SFCA accessibility*. Dense cores of stores share demand more fairly, and tracts that only reach one far-away store score lower. The equity readout compares high- and low-poverty tracts.',
       options: {map: 'access3sfca', decay: 'gaussian'},
       controls: ['map', 'decay'],
@@ -379,6 +402,9 @@ parameters.write(getGPUNeighborSearchParameterValues({
     {
       id: 'demand',
       title: 'Who is demand? Households without a car',
+      headline: 'Car-free demand shifts low-access tracts',
+      textAlternative:
+        'Accessibility is recalculated and mapped using households without vehicles rather than total population as demand.',
       body: 'Demand need not be everyone. **Demand** is now *Households without a vehicle*: each store’s supply is divided only among the households who must walk or take transit. The pattern shifts toward the South and West sides, where car-free households are concentrated. The **Equity gap (3SFCA)** readout reports the demand-weighted access in tracts with at least 30 percent poverty against those under 10 percent. Try seniors, children and uninsured residents with *Clinics and doctors (Overture)* as the **Facility (supply)**.',
       options: {demand: 'noVehicle'},
       controls: ['demand', 'facility'],
@@ -387,6 +413,9 @@ parameters.write(getGPUNeighborSearchParameterValues({
     {
       id: 'huff',
       title: 'Where will people actually shop? Huff trade areas',
+      headline: 'Huff probabilities partition tracts by likely facility',
+      textAlternative:
+        'Categorical tract colors and spokes identify each tract’s highest-probability grocery store and its expected demand.',
       body: '**`GPUHuffTradeAreas`** gives each tract the probability of choosing every reachable store: `p_ij = A_j^α · w_ij / Σ_k A_k^α · w_ik`. The tract fill is now the **modal store** (its most probable choice) and the spokes link each tract to it, so the map divides into **trade areas**. The discs (**Facility discs show**) show each store’s **expected demand**: the sum of the demand it is expected to capture.\n\nThe exponent **α** only matters when stores differ in size: set **Facility size (supply and attractiveness)** to *Listings within 150 m* and raise **Huff attractiveness exponent α** to let agglomerated stores win more of their neighbours.',
       options: {map: 'tradeArea', showSpokes: true, decay: 'inverse'},
       controls: ['map', 'showSpokes', 'facilityView', 'supply', 'alpha'],
@@ -395,6 +424,9 @@ parameters.write(getGPUNeighborSearchParameterValues({
     {
       id: 'try',
       title: 'Try other services, and know the limits',
+      headline: 'Hospital catchments leave fewer tracts unreached',
+      textAlternative:
+        'Chicago tracts are shaded by three-step hospital access within a five-kilometer straight-line catchment.',
       body: 'Switch **Facility (supply)** to *Hospitals (approximate)* (about 53) and raise the **Catchment radius** to 5,000 m or more: hospital access is a regional question. Try libraries or CPS schools with *Residents under 18* as **Demand (who needs it)**.\n\n**Limits:** distances are straight lines between tract centroids, not walking or driving time (network catchments are in the Networks chapter); supply is a count of sites because open data has no floor area or bed counts; demand sits at one point per tract; and Overture’s coverage varies by neighbourhood, so a gap may be a data gap. Reference: `access` `two_step_fca`, Luo and Wang (2003), Wan et al. (2012), CARTO Huff.',
       options: {
         facility: 'hospital',

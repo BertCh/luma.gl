@@ -343,7 +343,7 @@ export type PathOutputBuffers = {
   offsets: Buffer;
   count: Buffer;
   overflow: Buffer;
-  totalCount: Buffer;
+  requiredCount: Buffer;
   pathCount: Buffer;
   measures: Buffer;
   sourcePaths: Buffer;
@@ -365,7 +365,7 @@ export function createPathOutputBuffers(
     offsets: resources.createBuffer(`${name}-offsets`, (pathCapacity + 1) * 4),
     count: resources.createBuffer(`${name}-count`, 4),
     overflow: resources.createBuffer(`${name}-overflow`, 4),
-    totalCount: resources.createBuffer(`${name}-total`, 4),
+    requiredCount: resources.createBuffer(`${name}-total`, 4),
     pathCount: resources.createBuffer(`${name}-path-count`, 4),
     measures: resources.createBuffer(`${name}-measures`, vertexCapacity * 4),
     sourcePaths: resources.createBuffer(`${name}-source-paths`, pathCapacity * 4),
@@ -421,7 +421,7 @@ export function importPathOutput(
     ),
     count: importGraphBuffer(graph, 'out-count', output.count, 'uint32', 1),
     overflow: importGraphBuffer(graph, 'out-overflow', output.overflow, 'uint32', 1),
-    totalCount: importGraphBuffer(graph, 'out-total', output.totalCount, 'uint32', 1),
+    requiredCount: importGraphBuffer(graph, 'out-total', output.requiredCount, 'uint32', 1),
     ...(options.pathCount
       ? {pathCount: importGraphBuffer(graph, 'out-path-count', output.pathCount, 'uint32', 1)}
       : {}),

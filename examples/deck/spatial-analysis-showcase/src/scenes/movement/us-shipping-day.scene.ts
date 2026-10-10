@@ -632,7 +632,7 @@ ${
 const density = new GPUCommandGraph(device, {id: 'density'});
 density.add(new GPULineDensity({
   positions: lngLat, pathOffsets,                       // float32x2 degrees, one row per fix
-  columns: ${state.densityGrid}, rows: ${Number(state.densityGrid) / 2}, coordinateSystem: 'spherical',   // compile-time
+  columns: ${state.densityGrid}, rows: ${Number(state.densityGrid) / 2}, spatialContext: {coordinateSpace: 'longitude-latitude', metric: 'great-circle', units: 'meters'},   // compile-time
   maximumRecords: 6 * fixCount,
   parameters: densityParameters.importToGraph(density), // [minX, minY, cellWidth, cellHeight]
   output: {lengths, densities, overflow, totalRecords}

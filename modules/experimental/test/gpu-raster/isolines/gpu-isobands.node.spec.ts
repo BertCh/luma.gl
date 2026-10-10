@@ -242,10 +242,10 @@ describe('GPUIsobands oracle', () => {
     });
     const windowed = buildIsobandTrianglesOnCPU(scene, windowParameters, 5);
     expect(new Set(windowed.bands)).toEqual(new Set([1, 2]));
-    expect(windowed.totalCount).toBe(all.bands.filter(band => band === 1 || band === 2).length);
+    expect(windowed.requiredCount).toBe(all.bands.filter(band => band === 1 || band === 2).length);
     const clamped = buildIsobandTrianglesOnCPU(scene, parameters, 5, 10);
     expect(clamped.bands.length).toBe(10);
-    expect(clamped.totalCount).toBe(all.totalCount);
+    expect(clamped.requiredCount).toBe(all.requiredCount);
     expect(clamped.triangles).toEqual(all.triangles.slice(0, 60));
   });
 
@@ -346,7 +346,7 @@ describe('GPUIsobands validation and wiring', () => {
         triangleBands: view('uint32', 20),
         count: view('uint32', 1),
         overflow: view('uint32', 1),
-        totalCount: view('uint32', 1),
+        requiredCount: view('uint32', 1),
         vertexCount: view('uint32', 1)
       }
     });

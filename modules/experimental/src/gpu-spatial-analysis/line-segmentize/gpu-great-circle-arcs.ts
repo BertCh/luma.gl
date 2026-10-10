@@ -194,7 +194,7 @@ export class GPUGreatCircleArcs implements GPUCommandNodeProducer {
         capacity: output.positions.length,
         count: output.count,
         overflow: output.overflow,
-        totalCount: output.totalCount,
+        requiredCount: output.requiredCount,
         pathCountOutput: output.pathCount
       })
     ];

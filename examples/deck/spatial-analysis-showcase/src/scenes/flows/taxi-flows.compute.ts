@@ -483,7 +483,7 @@ export async function createTaxiFlows(
     };
     const ids = graphResources.createBuffer('ids', k * 4);
     const count = graphResources.createBuffer('count', 4);
-    const totalCount = graphResources.createBuffer('total-count', 4);
+    const requiredCount = graphResources.createBuffer('total-count', 4);
     const overflow = graphResources.createBuffer('overflow', 4);
     const pairOverflow = graphResources.createBuffer('pair-overflow', 4);
     const originZones = graphResources.createBuffer('flow-origin', k * 4);
@@ -578,7 +578,7 @@ export async function createTaxiFlows(
           ids: importGraphBuffer(commandGraph, 'ids', ids, 'uint32', k),
           count: importGraphBuffer(commandGraph, 'count', count, 'uint32', 1),
           overflow: importGraphBuffer(commandGraph, 'overflow', overflow, 'uint32', 1),
-          totalCount: importGraphBuffer(commandGraph, 'total-count', totalCount, 'uint32', 1)
+          requiredCount: importGraphBuffer(commandGraph, 'total-count', requiredCount, 'uint32', 1)
         },
         flowOriginZoneIds: importGraphBuffer(commandGraph, 'flow-origin', originZones, 'uint32', k),
         flowDestinationZoneIds: importGraphBuffer(
@@ -640,7 +640,7 @@ export async function createTaxiFlows(
       `taxi-flows-${id}`,
       [
         {buffer: count, size: 4},
-        {buffer: totalCount, size: 4},
+        {buffer: requiredCount, size: 4},
         {buffer: overflow, size: 4},
         {buffer: pairOverflow, size: 4},
         {buffer: originZones, size: k * 4},

@@ -785,7 +785,7 @@ fn locateInShell(point: vec2f, shellStart: u32, count: u32, shellRing: u32, lane
         rightIds: pairRight,
         count: pairCount,
         overflow: props.overflow as GraphDataView<'uint32'>,
-        totalCount: props.intersectionCount
+        requiredCount: props.intersectionCount
       },
       kinds,
       leftFeatures,

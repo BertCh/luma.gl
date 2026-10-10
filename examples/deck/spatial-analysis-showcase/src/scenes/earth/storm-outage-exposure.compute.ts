@@ -181,6 +181,38 @@ export async function createStormOutageExposure(
   let peakTotal = 0;
   for (const value of totalByTime.values()) peakTotal = Math.max(peakTotal, value);
 
+  // Fixed, event-wide display domains. Animation must not recolor an unchanged value merely
+  // because another county enters or leaves the current snapshot. These limits are calculated
+  // once from the loaded event rather than from each GPU readback.
+  let maximumOutageRate = 0;
+  let maximumOutageCount = 0;
+  for (let row = 0; row < snapshotCount; row++) {
+    const county = snapshotCounty[row];
+    if (county === 0xffffffff || !inRegion[county]) continue;
+    maximumOutageCount = Math.max(maximumOutageCount, snapshotValues[row]);
+    maximumOutageRate = Math.max(
+      maximumOutageRate,
+      (snapshotValues[row] / Math.max(1, population[county])) * 1000
+    );
+  }
+
+  let maximumReflectivity = 0;
+  for (const reflectivity of tracks.peakDbz) {
+    if (Number.isFinite(reflectivity))
+      maximumReflectivity = Math.max(maximumReflectivity, reflectivity);
+  }
+  const fixedValueRanges: Record<
+    Exclude<StormOutageExposureOptions['metric'], 'bivariate'>,
+    [number, number]
+  > = {
+    outageNow: [0, Math.max(1, maximumOutageRate)],
+    outagePeak: [0, Math.max(1, maximumOutageRate)],
+    outageCount: [0, Math.max(1, maximumOutageCount)],
+    trackKm: [0, 1],
+    flashDensity: [0, 1],
+    meanDbz: [0, Math.max(1, maximumReflectivity)]
+  };
+
   // ---- Buffers ------------------------------------------------------------------------------
   const flashCount = flashes.count;
   const trackCount = tracks.trackCount;
@@ -219,6 +251,11 @@ export async function createStormOutageExposure(
   const pointCounty = resources.createBuffer('point-county', flashCount * 4);
   const flashTotals = resources.createBuffer('flash-totals', countyCount * 4);
   const zonalOverflow = resources.createBuffer('zonal-overflow', 4);
+  const fullEventTrackLengths = resources.createBuffer(
+    'full-event-county-track-lengths',
+    countyCount * 4
+  );
+  const staticLineOverflow = resources.createBuffer('full-event-line-overflow', 4);
   const peakOutage = resources.createBuffer('peak-outage', countyCount * 4);
   const outageCustomerSnapshots = resources.createBuffer('outage-sums', countyCount * 4);
   const peakKeys = resources.createBuffer('peak-keys', countyCount * 4);
@@ -362,6 +399,73 @@ export async function createStormOutageExposure(
         counts: importGraphBuffer(staticGraph, 'peak-counts', peakCounts, 'uint32', countyCount),
         count: importGraphBuffer(staticGraph, 'peak-count', peakCount, 'uint32', 1),
         overflow: importGraphBuffer(staticGraph, 'peak-overflow', peakOverflow, 'uint32', 1)
+      }
+    })
+  );
+  staticGraph.add(
+    new GPULineLengthPerPolygon({
+      id: 'full-event-track-length',
+      positions: importGraphBuffer(
+        staticGraph,
+        'full-event-track-aeqd',
+        trackAeqdBuffer,
+        'float32x2',
+        vertexCount
+      ),
+      pathOffsets: importGraphBuffer(
+        staticGraph,
+        'full-event-track-offsets',
+        trackOffsetsBuffer,
+        'uint32',
+        trackCount + 1
+      ),
+      maximumCandidatePairs: Math.max(1024, 64 * vertexCount),
+      polygons: {
+        kind: 'polygons',
+        positions: importGraphBuffer(
+          staticGraph,
+          'full-event-county-aeqd',
+          countyVerticesBuffer,
+          'float32x2',
+          countyAeqd.length / 2
+        ),
+        featureOffsets: importGraphBuffer(
+          staticGraph,
+          'full-event-county-feature-offsets',
+          countyFeatureOffsets,
+          'uint32',
+          countyPolygonOffsets.length
+        ),
+        polygonOffsets: importGraphBuffer(
+          staticGraph,
+          'full-event-county-polygon-offsets',
+          countyPolygonRingOffsets,
+          'uint32',
+          layout.polygonRingOffsets.length
+        ),
+        ringOffsets: importGraphBuffer(
+          staticGraph,
+          'full-event-county-ring-offsets',
+          countyRingOffsets,
+          'uint32',
+          layout.ringOffsets.length
+        )
+      },
+      output: {
+        lengths: importGraphBuffer(
+          staticGraph,
+          'full-event-county-track-lengths',
+          fullEventTrackLengths,
+          'float32',
+          countyCount
+        ),
+        overflow: importGraphBuffer(
+          staticGraph,
+          'full-event-line-overflow',
+          staticLineOverflow,
+          'uint32',
+          1
+        )
       }
     })
   );
@@ -689,10 +793,26 @@ export async function createStormOutageExposure(
     trackLengths: Float32Array;
     flashSums: Float32Array;
   } | null = null;
-  let valueRange: [number, number] = [0, 1];
+  let valueRange: [number, number] = fixedValueRanges.outageNow;
   let hoveredCounty = -1;
-  let legendMetric = '';
   const flashScale = 1 / flashes.sampleFraction;
+  let staticOverflowed = false;
+  let exposureOverflowed = false;
+
+  function updateOverflowReadout(): void {
+    ctx.setReadout(
+      'overflow',
+      staticOverflowed || exposureOverflowed
+        ? 'a fixed-capacity result overflowed'
+        : 'no capacity overflowed'
+    );
+  }
+
+  function updateValueRange(): void {
+    const metric = ctx.options.metric === 'bivariate' ? 'outagePeak' : ctx.options.metric;
+    valueRange = fixedValueRanges[metric];
+    ctx.setLegendData('range', {low: valueRange[0], high: valueRange[1], metric});
+  }
 
   function writeComposeParameters(): void {
     composeParameters.write(
@@ -707,6 +827,7 @@ export async function createStormOutageExposure(
     );
     exposureDirty = true;
   }
+  updateValueRange();
   function writeWindows(): void {
     const options = ctx.options;
     const quantized = Math.floor(playhead / STATUS_STEP_SECONDS) * STATUS_STEP_SECONDS;
@@ -756,20 +877,38 @@ export async function createStormOutageExposure(
     'storm-outage-static',
     [
       {buffer: peakOutage, size: countyCount * 4},
+      {buffer: flashTotals, size: countyCount * 4},
+      {buffer: fullEventTrackLengths, size: countyCount * 4},
       {buffer: zonalOverflow, size: 4},
-      {buffer: peakOverflow, size: 4}
+      {buffer: peakOverflow, size: 4},
+      {buffer: staticLineOverflow, size: 4}
     ],
     bytes => {
       if (destroyed) return;
       const peaks = new Float32Array(bytes, 0, countyCount);
+      const eventFlashCounts = new Uint32Array(bytes, countyCount * 4, countyCount);
+      const eventTrackLengths = new Float32Array(bytes, countyCount * 8, countyCount);
       peakPerThousand = Float32Array.from(peaks, (value, county) =>
         Number.isFinite(value) ? (value / Math.max(1, population[county])) * 1000 : 0
       );
-      const flags = new Uint32Array(bytes, countyCount * 4, 2);
-      ctx.setReadout(
-        'overflow',
-        flags[0] || flags[1] ? 'a capacity overflowed' : 'no capacity overflowed'
-      );
+      let maximumTrackKilometers = 0;
+      let maximumFlashDensity = 0;
+      for (let county = 0; county < countyCount; county++) {
+        if (!inRegion[county]) continue;
+        maximumTrackKilometers = Math.max(maximumTrackKilometers, eventTrackLengths[county] / 1000);
+        maximumFlashDensity = Math.max(
+          maximumFlashDensity,
+          ((eventFlashCounts[county] * flashScale) /
+            Math.max(0.001, countyStatic[county * 4 + 1])) *
+            1000
+        );
+      }
+      fixedValueRanges.trackKm = [0, Math.max(1, maximumTrackKilometers)];
+      fixedValueRanges.flashDensity = [0, Math.max(1, maximumFlashDensity)];
+      updateValueRange();
+      const flags = new Uint32Array(bytes, countyCount * 12, 3);
+      staticOverflowed = Boolean(flags[0] || flags[1] || flags[2]);
+      updateOverflowReadout();
       refreshStatistics();
     }
   );
@@ -795,28 +934,11 @@ export async function createStormOutageExposure(
       };
       const tail = new Uint32Array(bytes, stride * 16, 2);
       ctx.setReadout('flashesCounted', formatInteger(tail[0] * flashScale));
+      exposureOverflowed = Boolean(tail[1]);
+      updateOverflowReadout();
       refreshStatistics();
     }
   );
-
-  function updateRange(): void {
-    if (!latest) return;
-    const finite: number[] = [];
-    for (const value of latest.values) if (Number.isFinite(value)) finite.push(value);
-    finite.sort((a, b) => a - b);
-    const high = finite.length
-      ? finite[Math.min(finite.length - 1, Math.floor(0.98 * finite.length))]
-      : 1;
-    const next: [number, number] = [0, Math.max(high, 1e-6)];
-    const changed =
-      Math.abs(next[1] - valueRange[1]) > 0.02 * valueRange[1] ||
-      legendMetric !== ctx.options.metric;
-    valueRange = next;
-    if (changed) {
-      legendMetric = ctx.options.metric;
-      ctx.setLegendData('range', {low: 0, high: next[1], metric: ctx.options.metric});
-    }
-  }
 
   function exposureOf(county: number): number {
     if (!latest) return 0;
@@ -845,7 +967,6 @@ export async function createStormOutageExposure(
 
   function refreshStatistics(): void {
     if (!latest) return;
-    updateRange();
     ctx.requestLayers();
     ctx.setReadout(
       'customersNow',
@@ -936,6 +1057,7 @@ export async function createStormOutageExposure(
       switch (id) {
         case 'metric':
           writeComposeParameters();
+          updateValueRange();
           break;
         case 'exposureWindow':
           writeWindows();

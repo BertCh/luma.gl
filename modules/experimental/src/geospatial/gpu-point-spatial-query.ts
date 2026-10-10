@@ -17,6 +17,7 @@ import {
 } from '@luma.gl/gpgpu/gpu-core';
 import {
   GEOSPATIAL_INTEGER_FP64_ARITHMETIC_MODULE,
+  getFloat32Literal,
   type GeospatialDispatchLayout
 } from './geospatial-utils';
 import type {GPUSpatialQueryOutput} from './gpu-spatial-query-types';
@@ -101,9 +102,9 @@ export type GPUPointSpatialQueryProps = {
  * An indexed query first maps its query envelope to a compact rectangular cell range. A GPU-written
  * indirect dispatch launches one workgroup per intersecting cell, so work scales with intersected
  * cells plus candidates instead of the complete index. The result count is safe to consume as an
- * indirect draw count: it is always clamped to `output.ids.length`; `totalCount` remains unclamped
+ * indirect draw count: it is always clamped to `output.ids.length`; `requiredCount` remains unclamped
  * over the candidates that refinement examined. An overflowing index makes that candidate set, and
- * therefore `totalCount` and `candidateCount`, incomplete relative to the original positions.
+ * therefore `requiredCount` and `candidateCount`, incomplete relative to the original positions.
  * Results contain `sourceIds[rowIndex]` when aligned source IDs are supplied, or row indices by
  * default. Query-facing index entries are always row indices, independent of result identity.
  * Polygon tests use f32 even/odd fill semantics and include points on a ring boundary; they do not
@@ -181,7 +182,7 @@ export class GPUPointSpatialQuery {
       this.output.ids,
       this.output.count,
       this.output.overflow,
-      ...(this.output.totalCount ? [this.output.totalCount] : []),
+      ...(this.output.requiredCount ? [this.output.requiredCount] : []),
       ...(this.intersectedCellCount ? [this.intersectedCellCount] : []),
       ...(this.candidateCount ? [this.candidateCount] : []),
       ...(this.index
@@ -264,8 +265,8 @@ const RESULT_OFFSET: u32 = ${getViewElementOffset(resultState)}u;
 const WIDTH: u32 = ${width}u;
 const HEIGHT: u32 = ${height}u;
 const DEPTH: u32 = ${depth}u;
-const DOMAIN_MINIMUM = vec3<f32>(${getFloatLiteral(bounds[0])}, ${getFloatLiteral(bounds[1])}, ${getFloatLiteral(query.dimension === 3 ? bounds[2]! : 0)});
-const DOMAIN_MAXIMUM = vec3<f32>(${getFloatLiteral(bounds[query.dimension])}, ${getFloatLiteral(bounds[query.dimension + 1])}, ${getFloatLiteral(query.dimension === 3 ? bounds[5]! : 0)});
+const DOMAIN_MINIMUM = vec3<f32>(${getFloat32Literal(bounds[0])}, ${getFloat32Literal(bounds[1])}, ${getFloat32Literal(query.dimension === 3 ? bounds[2]! : 0)});
+const DOMAIN_MAXIMUM = vec3<f32>(${getFloat32Literal(bounds[query.dimension])}, ${getFloat32Literal(bounds[query.dimension + 1])}, ${getFloat32Literal(query.dimension === 3 ? bounds[5]! : 0)});
 @group(0) @binding(0) var<storage, read> queryValues: array<f32>;
 @group(0) @binding(1) var<storage, read_write> queryState: array<u32>;
 @group(0) @binding(2) var<storage, read_write> resultState: array<u32>;
@@ -575,16 +576,18 @@ function addFinalizePass<Parameters>(
   resultState: GraphDataView<'uint32'>
 ): void {
   let nextBinding = 3;
-  const totalCountBinding = query.output.totalCount ? nextBinding++ : undefined;
+  const totalCountBinding = query.output.requiredCount ? nextBinding++ : undefined;
   const readsQueryState = Boolean(query.intersectedCellCount && query.index);
   const queryStateBinding = readsQueryState ? nextBinding++ : undefined;
   const intersectedCellCountBinding = query.intersectedCellCount ? nextBinding++ : undefined;
   const candidateCountBinding = query.candidateCount ? nextBinding++ : undefined;
-  const totalCountDeclaration = query.output.totalCount
-    ? `const TOTAL_OFFSET: u32 = ${getViewElementOffset(query.output.totalCount)}u;
+  const totalCountDeclaration = query.output.requiredCount
+    ? `const TOTAL_OFFSET: u32 = ${getViewElementOffset(query.output.requiredCount)}u;
 @group(0) @binding(${totalCountBinding}) var<storage, read_write> outputTotalCount: array<u32>;`
     : '';
-  const totalCountWrite = query.output.totalCount ? 'outputTotalCount[TOTAL_OFFSET] = total;' : '';
+  const totalCountWrite = query.output.requiredCount
+    ? 'outputTotalCount[TOTAL_OFFSET] = total;'
+    : '';
   const intersectedCellCountDeclaration = query.intersectedCellCount
     ? `${
         readsQueryState
@@ -636,8 +639,8 @@ ${candidateCountDeclaration}
       {buffer: resultState, usage: 'storage-read'},
       {buffer: query.output.count, usage: 'storage-write'},
       {buffer: query.output.overflow, usage: 'storage-write'},
-      ...(query.output.totalCount
-        ? ([{buffer: query.output.totalCount, usage: 'storage-write'}] as GraphBufferUse[])
+      ...(query.output.requiredCount
+        ? ([{buffer: query.output.requiredCount, usage: 'storage-write'}] as GraphBufferUse[])
         : []),
       ...(query.intersectedCellCount
         ? ([
@@ -653,7 +656,7 @@ ${candidateCountDeclaration}
       resultState,
       outputCount: query.output.count,
       outputOverflow: query.output.overflow,
-      ...(query.output.totalCount ? {outputTotalCount: query.output.totalCount} : {}),
+      ...(query.output.requiredCount ? {outputTotalCount: query.output.requiredCount} : {}),
       ...(query.intersectedCellCount
         ? {
             ...(readsQueryState ? {queryState} : {}),
@@ -837,13 +840,14 @@ function validateQueryOutput(id: string, output: GPUSpatialQueryOutput): void {
   validatePackedUint32View(output.ids, `${id} output ids`);
   validatePackedUint32View(output.count, `${id} output count`);
   validatePackedUint32View(output.overflow, `${id} output overflow`);
-  if (output.totalCount) validatePackedUint32View(output.totalCount, `${id} output totalCount`);
+  if (output.requiredCount)
+    validatePackedUint32View(output.requiredCount, `${id} output requiredCount`);
   if (
     output.count.length < 1 ||
     output.overflow.length < 1 ||
-    (output.totalCount && output.totalCount.length < 1)
+    (output.requiredCount && output.requiredCount.length < 1)
   ) {
-    throw new Error(`${id} output count, overflow, and totalCount must contain one uint32 row`);
+    throw new Error(`${id} output count, overflow, and requiredCount must contain one uint32 row`);
   }
 }
 
@@ -882,8 +886,8 @@ function validateDisjointQueryViews(id: string, query: GPUPointSpatialQuery): vo
     ['ids', query.output.ids],
     ['count', query.output.count],
     ['overflow', query.output.overflow],
-    ...(query.output.totalCount
-      ? ([['totalCount', query.output.totalCount]] as [string, GraphDataView][])
+    ...(query.output.requiredCount
+      ? ([['requiredCount', query.output.requiredCount]] as [string, GraphDataView][])
       : []),
     ...(query.intersectedCellCount
       ? ([['intersectedCellCount', query.intersectedCellCount]] as [string, GraphDataView][])
@@ -945,14 +949,17 @@ function validateIndexView(id: string, index: GPUGridIndexView, dimension: 2 | 3
     throw new Error(`${id} index gridSize must contain positive integers`);
   }
   if (
-    !index.bounds.every(Number.isFinite) ||
+    !index.bounds.every(value => Number.isFinite(Math.fround(value))) ||
     Array.from({length: dimension}, (_, axis) => axis).some(
       axis => index.bounds[axis] > index.bounds[axis + dimension]
     )
   ) {
-    throw new Error(`${id} index bounds must contain finite ordered minima and maxima`);
+    throw new Error(`${id} index bounds must contain finite float32 ordered minima and maxima`);
   }
   const cellCount = index.gridSize.reduce((product, size) => product * size, 1);
+  if (!Number.isSafeInteger(cellCount) || cellCount > 0xffffffff) {
+    throw new Error(`${id} index gridSize product must fit in uint32`);
+  }
   for (const [name, view] of [
     ['cellOffsets', index.cellOffsets],
     ['rowIndices', index.rowIndices],
@@ -1025,8 +1032,4 @@ function makeUnindexedBounds(dimension: 2 | 3): GPUGridIndexBounds {
 
 function makeNestedMaximum(values: string[]): string {
   return values.slice(1).reduce((maximum, value) => `max(${maximum}, ${value})`, values[0]);
-}
-
-function getFloatLiteral(value: number): string {
-  return Number.isInteger(value) ? `${value}.0` : `${value}`;
 }

@@ -78,7 +78,7 @@ compiled.encode(device.commandEncoder, {parameters: undefined});
   application rewrites with `write()`. Lengths, capacities, grid sizes, and which optional views
   exist are compile-time topology; each prop's TSDoc says which category it belongs to.
 - **Bounded results report overflow on the GPU.** Compact ID lists use `GPUCompactOutput`
-  (`ids`, `count`, `overflow`, optional `totalCount`). `count` is clamped to `ids.length` and can be
+  (`ids`, `count`, `overflow`, optional `requiredCount`). `count` is clamped to `ids.length` and can be
   an indirect draw instance count; `overflow` is rewritten every encoding.
 - **Stable IDs.** Result IDs are the caller's `sourceIds[row]` (or tile IDs) when given and zero-based
   rows otherwise. Node and transient IDs are `${id}-<step>`, so two instances in one graph need
@@ -329,7 +329,7 @@ const lineParameters = new GPUParameterBuffer(device, {
 graph.add(new GPUIsolines({
   width, height, values, levels, // levels: maximumLevelCount rows, contents per frame
   parameters: lineParameters.importToGraph(graph),
-  output: {segments, segmentLevels, count, overflow, totalCount},
+  output: {segments, segmentLevels, count, overflow, requiredCount},
   polylines: {vertices, polylineOffsets, polylineLevels, polylineClosed, polylineCount, vertexCount, overflow: polylineOverflow}
 }));
 graph.add(new GPUIsobands({
@@ -348,14 +348,14 @@ lower break) writes none, so edges lying on a break leave no slits.
 
 `GPUIsobandRings` chains those edges into closed rings with `GPUSegmentRingAssembly`, grouped by band, so
 every band comes as shells and holes (holes attach within a band) and, optionally, GeoArrow polygons with
-`polygonGroups`. Props: `width`, `height`, `values`, `breaks`, `parameters` (same packing as
+`sourceIds`. Props: `width`, `height`, `values`, `breaks`, `parameters` (same packing as
 `GPUIsobands`), a compile-time `edgeCapacity`, `vertexTolerance`, `splitTouchingRings` and `output` (the
 `GPUSegmentRingAssembly` outputs plus optional `edgeCount` and `edgeOverflow`). Unlike the triangle fill it
 gives true boundary geometry, but filling it for display needs polygon triangulation or rasterization
 (`GPUPolygonRasterization` gives an exact even-odd fill at raster resolution).
 
 Outputs are ordered by count, `GPUScan`, and scatter, so they are deterministic; capacities are
-`segments.length` and `triangleBands.length`, with clamped `count`, `overflow`, and `totalCount`
+`segments.length` and `triangleBands.length`, with clamped `count`, `overflow`, and `requiredCount`
 rewritten every encoding. If segments overflow, stitching produces no polylines and sets its own
 overflow; a short `vertices` buffer keeps only the complete polylines that fit (the worst case is
 `2 * segmentCapacity` vertices). Coordinates match an f32 CPU oracle within a few ULP (GPU
@@ -382,7 +382,7 @@ at a per-frame `spacing` (planar distances in extent units). Each path emits sam
 one sample, an empty path none. Outputs (any subset): sample positions, distances, values, path IDs,
 cumulative gain and loss; per path: sample offsets (clamped to capacity), length, gain, loss, minimum,
 and maximum over finite samples (gain and loss sum positive and negative differences between
-consecutive finite samples); plus `count`, `overflow`, and `totalCount`.
+consecutive finite samples); plus `count`, `overflow`, and `requiredCount`.
 
 ```ts
 const samplingParameters = new GPUParameterBuffer(device, {
@@ -501,7 +501,7 @@ graph.add(
     seedColumns: 90, seedRows: 45, stepsPerDirection: 60, roundCount: 16,
     parameters: parameters.importToGraph(graph), // float32, 12
     wordParameters: words.importToGraph(graph), // uint32, 4
-    output: {lines: {ids, count, overflow, totalCount}, pathOffsets, points, pointCount, unconverged}
+    output: {lines: {ids, count, overflow, requiredCount}, pathOffsets, points, pointCount, unconverged}
   })
 );
 parameters.write(

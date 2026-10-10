@@ -76,7 +76,7 @@ compiled.encode(device.commandEncoder, {parameters: undefined});
   application rewrites with `write()`. Lengths, capacities, grid sizes, and which optional views
   exist are compile-time topology; each prop's TSDoc says which category it belongs to.
 - **Bounded results report overflow on the GPU.** Compact ID lists use `GPUCompactOutput`
-  (`ids`, `count`, `overflow`, optional `totalCount`). `count` is clamped to `ids.length` and can be
+  (`ids`, `count`, `overflow`, optional `requiredCount`). `count` is clamped to `ids.length` and can be
   an indirect draw instance count; `overflow` is rewritten every encoding.
 - **Stable IDs.** Result IDs are the caller's `sourceIds[row]` (or tile IDs) when given and zero-based
   rows otherwise. Node and transient IDs are `${id}-<step>`, so two instances in one graph need
@@ -264,17 +264,17 @@ graph.add(
     ],
     variance: 'sample', // or 'population'
     percentiles: fractions.importToGraph(graph),
-    output: {keys: groupKeys, counts: groupCounts, count, overflow, totalCount}
+    output: {keys: groupKeys, counts: groupCounts, count, overflow, requiredCount}
   })
 );
 fractions.write(Float32Array.of(0.1, 0.5, 0.9)); // no recompile
 ```
 
-- Output groups are ascending by key, capacity is `output.keys.length`. When more groups exist, the smallest keys are kept, `overflow` is 1 and `totalCount` is the unclamped number. Tail rows hold the all-ones key, count 0, sums 0 and NaN for every other float statistic.
+- Output groups are ascending by key, capacity is `output.keys.length`. When more groups exist, the smallest keys are kept, `overflow` is 1 and `requiredCount` is the unclamped number. Tail rows hold the all-ones key, count 0, sums 0 and NaN for every other float statistic.
 - `output.counts` counts valid rows (mask set, key valid); each column's `counts` counts finite values. Zero to four columns; each column lists the statistics it needs (a compile-time set) and supplies exactly the matching output views: `counts`, `sums` (exact signed 64-bit fixed point, `uint32x2`, scale `sumScale`, default 65536) and/or `sumValues` for `sum`, `means`, `minimums`, `maximums`, `variances`, `standardDeviations`, `skewness`, `kurtosis`, `medians`, `percentiles` (`capacity * P`, group-major), `modes`, `uniqueCounts`, and `zScores` (one row per source row).
 - Exactness: counts, fixed-point sums, minimum, maximum, median, percentiles, mode and unique counts are bit-identical to a CPU reference. Percentiles use the numpy `linear` rule (`h = (n - 1) p`, `lo + (hi - lo) * (h - floor h)` in f32), with `p` read per frame and clamped to [0, 1] (NaN gives NaN). Mode is the longest run of equal values (ties: smallest value). `-0` is treated as `+0`; NaN and infinities are excluded.
 - Moments are corrected two-pass: `d = v - mean` is summed in a fixed order (one 256-thread workgroup per group, strided partials and a binary tree), so a second encode is bitwise identical, and central moments about the true mean come from the shifted power sums. Measured agreement with a float64 reference on mixed data is about 1e-7 for mean and variance, 2e-6 for skewness and kurtosis, 7e-6 for z-scores (relative). Skewness is Fisher-Pearson `g1`, kurtosis is excess `g2`; both are NaN for constant groups, a group whose variance is under 2^-19 of its shifted sum of squares is treated as constant (the fixed-point mean carries 2^-17 absolute error). Sample variance of one value is NaN; z-score is 0 when the deviation is 0 or a sample group has one value, NaN for masked, invalid-key, non-finite or capacity-dropped rows.
-- Dense mode: `keyCount` (compile-time) requires `uint32` keys in `[0, keyCount)`. `output.keys.length` and every per-group output hold exactly `keyCount` rows, and row `k` is key `k` (`output.keys[k] = k`, `output.count` and `totalCount` are `keyCount`, `overflow` is 0). Keys with no rows keep a row: `counts` 0, `sums` and `uniqueCounts` 0, and NaN for mean, minimum, maximum, variance, standard deviation, skewness, kurtosis, median, percentiles and mode. Keys outside the range and the reserved all-ones key are skipped like masked rows and are not reported as overflow. It costs one binary search per key instead of a group scan, and suits region IDs or other small dense key spaces (the choropleth recipe uses it so empty polygons keep a row). The default compact table of occupied keys is unchanged.
+- Dense mode: `keyCount` (compile-time) requires `uint32` keys in `[0, keyCount)`. `output.keys.length` and every per-group output hold exactly `keyCount` rows, and row `k` is key `k` (`output.keys[k] = k`, `output.count` and `requiredCount` are `keyCount`, `overflow` is 0). Keys with no rows keep a row: `counts` 0, `sums` and `uniqueCounts` 0, and NaN for mean, minimum, maximum, variance, standard deviation, skewness, kurtosis, median, percentiles and mode. Keys outside the range and the reserved all-ones key are skipped like masked rows and are not reported as overflow. It costs one binary search per key instead of a group scan, and suits region IDs or other small dense key spaces (the choropleth recipe uses it so empty polygons keep a row). The default compact table of occupied keys is unchanged.
 - Cost: one stable key sort (two 32-bit radix sorts for 64-bit keys); each column that asks for median, percentiles, mode or unique count adds a value sort plus a key re-sort. Inputs must be single packed views. Approximate distinct counts (HyperLogLog) are not included.
 
 ## `GPUKeyJoin`
@@ -308,7 +308,7 @@ each left row binary-searches them on the unsigned `(high, low)` order.
 - `output.rightRows`, `matchCounts`, `matched` (usable as a crossfilter live mask) are left-aligned;
   `rightMatched` is right-aligned (1 when some valid left row has the same key).
 - `kind: 'inner'` additionally compacts matched left row IDs, ascending, into `output.rows`
-  (`count` clamped, `overflow`, optional `totalCount`; ids past `count` are `0xffffffff`). Other
+  (`count` clamped, `overflow`, optional `requiredCount`; ids past `count` are `0xffffffff`). Other
   outputs stay left-aligned. `'left'` rejects `output.rows`.
 
 All results are integer or fixed-point, independent of thread order, and bitwise reproducible.

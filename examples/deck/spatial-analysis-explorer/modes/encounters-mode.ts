@@ -160,6 +160,7 @@ export const encountersMode: SpatialAnalysisModeDefinition = {
     const pairBucketCounts = resources.createBuffer('pair-bucket-counts', PAIR_CAPACITY * 4);
     const pairCount = resources.createBuffer('pair-count', 4);
     const pairOverflow = resources.createBuffer('pair-overflow', 4);
+    const pairCandidateOverflow = resources.createBuffer('pair-candidate-overflow', 4);
     const pairHausdorff = resources.createBuffer('pair-hausdorff', PAIR_CAPACITY * 4);
     const pairFrechet = resources.createBuffer('pair-frechet', PAIR_CAPACITY * 4);
     const pairStatus = resources.createBuffer('pair-status', PAIR_CAPACITY * 4);
@@ -240,6 +241,7 @@ export const encountersMode: SpatialAnalysisModeDefinition = {
       bounds,
       hitCapacity: HIT_CAPACITY,
       pairs: {
+        candidateOverflow: pairView('pair-candidate-overflow', pairCandidateOverflow, 'uint32', 1),
         output: {
           ids: pairIdsView,
           count: pairCountView,
@@ -529,6 +531,7 @@ export const encountersMode: SpatialAnalysisModeDefinition = {
       [
         {buffer: pairCount, size: 4},
         {buffer: pairOverflow, size: 4},
+        {buffer: pairCandidateOverflow, size: 4},
         {buffer: pairHausdorff, size: PAIR_CAPACITY * 4},
         {buffer: pairStatus, size: PAIR_CAPACITY * 4}
       ],
@@ -541,7 +544,7 @@ export const encountersMode: SpatialAnalysisModeDefinition = {
         let sum = 0;
         let together = 0;
         for (let pair = 0; pair < count; pair++) {
-          const value = floats[2 + pair];
+          const value = floats[3 + pair];
           if (Number.isFinite(value)) {
             finite++;
             sum += value;
@@ -550,7 +553,8 @@ export const encountersMode: SpatialAnalysisModeDefinition = {
         }
         pairReadout.setValue(
           `${formatCount(words[0])} of ${formatCount(PAIR_CAPACITY)}` +
-            `${words[1] ? ' OVERFLOW (hit scratch or pair capacity)' : ''}`
+            `${words[1] ? ' OUTPUT OVERFLOW' : ''}` +
+            `${words[2] ? ' CANDIDATE OVERFLOW' : ''}`
         );
         pairSimilarityReadout.setValue(
           finite

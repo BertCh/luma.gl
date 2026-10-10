@@ -106,6 +106,7 @@ it('GPUShapeDescriptors requires an output and composes measures with kernels', 
 it('GPULineDensity, GPURectangleClip and GPUGridGenerator validate their props', () => {
   const graph = new GPUCommandGraph(createNullWebGPUDevice(), {id: 'misc'});
   const density = new GPULineDensity({
+    spatialContext: {coordinateSpace: 'planar', metric: 'native', units: 'native'},
     positions: view(graph, 'float32x2', 6),
     pathOffsets: view(graph, 'uint32', 3),
     columns: 4,
@@ -119,6 +120,7 @@ it('GPULineDensity, GPURectangleClip and GPUGridGenerator validate their props',
   expect(
     () =>
       new GPULineDensity({
+        spatialContext: {coordinateSpace: 'planar', metric: 'native', units: 'native'},
         positions: view(graph, 'float32x2', 6),
         pathOffsets: view(graph, 'uint32', 3),
         columns: 4,

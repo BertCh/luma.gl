@@ -301,7 +301,10 @@ export async function createIsochrones(
     (RING_CAPACITY + 1) * 4
   );
   const polygonOffsets = resources.createBuffer('polygon-offsets', (RING_CAPACITY + 1) * 4);
-  const polygonFeatureOffsets = resources.createBuffer('polygon-feature-offsets', 8);
+  const polygonFeatureOffsets = resources.createBuffer(
+    'polygon-feature-offsets',
+    (RING_CAPACITY + 1) * 4
+  );
   const demandInside = resources.createBuffer('demand-inside', demand.count * 4);
   const joinOverflow = resources.createBuffer('join-overflow', 4);
   const drawCommands = resources.track(
@@ -643,17 +646,19 @@ export async function createIsochrones(
         maxIterations: MAXIMUM_ITERATIONS,
         bandBreaks: breaks,
         bandCapacity: BAND_TABLE_CAPACITY,
-        assignments,
-        nodeCosts: nodeCostsView,
-        demandTimes: view(demandTimesBuffer, 'float32', demand.count),
-        demandBands: view(demandBandsBuffer, 'uint32', demand.count),
-        bands: {
-          keys: view(bandKeys, 'uint32', BAND_TABLE_CAPACITY),
-          counts: view(bandCounts, 'uint32', BAND_TABLE_CAPACITY),
-          count: view(bandCount, 'uint32', 1),
-          overflow: view(bandOverflow, 'uint32', 1),
-          sumValues: view(bandSums, 'float32', BAND_TABLE_CAPACITY),
-          means: view(bandMeans, 'float32', BAND_TABLE_CAPACITY)
+        outputs: {
+          assignments,
+          nodeCosts: nodeCostsView,
+          demandTimes: view(demandTimesBuffer, 'float32', demand.count),
+          demandBands: view(demandBandsBuffer, 'uint32', demand.count),
+          bands: {
+            keys: view(bandKeys, 'uint32', BAND_TABLE_CAPACITY),
+            counts: view(bandCounts, 'uint32', BAND_TABLE_CAPACITY),
+            count: view(bandCount, 'uint32', 1),
+            overflow: view(bandOverflow, 'uint32', 1),
+            sumValues: view(bandSums, 'float32', BAND_TABLE_CAPACITY),
+            means: view(bandMeans, 'float32', BAND_TABLE_CAPACITY)
+          }
         },
         isochrones: {
           breaks,
@@ -710,7 +715,7 @@ boundary[boundaryOffset + index] = select(0u, 1u, sourceFinite && targetFinite &
       const polygonPositionsView = view(polygonPositions, 'float32x2', RING_VERTEX_CAPACITY);
       const polygonRingOffsetsView = view(polygonRingOffsets, 'uint32', RING_CAPACITY + 1);
       const polygonOffsetsView = view(polygonOffsets, 'uint32', RING_CAPACITY + 1);
-      const polygonFeatureOffsetsView = view(polygonFeatureOffsets, 'uint32', 2);
+      const polygonFeatureOffsetsView = view(polygonFeatureOffsets, 'uint32', RING_CAPACITY + 1);
       catchmentGraph.add(
         new GPUNetworkIsochrones({
           id: 'catchment-rings',
@@ -739,10 +744,11 @@ boundary[boundaryOffset + index] = select(0u, 1u, sourceFinite && targetFinite &
                 ringShells: view(ringShells, 'uint32', RING_CAPACITY),
                 count: view(ringCount, 'uint32', 1),
                 overflow: view(ringOverflow, 'uint32', 1),
-                totalCount: view(ringTotal, 'uint32', 1),
+                requiredCount: view(ringTotal, 'uint32', 1),
                 openSegmentCount: view(ringOpen, 'uint32', 1),
                 touchingSegmentCount: view(ringTouching, 'uint32', 1),
                 polygons: {
+                  kind: 'polygons',
                   positions: polygonPositionsView,
                   ringOffsets: polygonRingOffsetsView,
                   polygonOffsets: polygonOffsetsView,
@@ -757,7 +763,7 @@ boundary[boundaryOffset + index] = select(0u, 1u, sourceFinite && targetFinite &
               endpoints: view(outlineEndpoints, 'float32x4', SEGMENT_CAPACITY),
               count: view(outlineCount, 'uint32', 1),
               overflow: view(outlineOverflow, 'uint32', 1),
-              totalCount: view(outlineTotal, 'uint32', 1)
+              requiredCount: view(outlineTotal, 'uint32', 1)
             }
           }
         })
@@ -807,15 +813,17 @@ boundary[boundaryOffset + index] = select(0u, 1u, sourceFinite && targetFinite &
         values: view(populationRasterBuffer, 'float32', straightCellCount),
         mode: options.distanceMode,
         sumOrder: options.sumOrder,
-        allocation: view(allocationBuffer, 'uint32', straightCellCount),
-        distances: view(distancesBuffer, 'float32', straightCellCount),
-        statistics: {
-          cellCounts: view(statistics[0], 'uint32', facilityCount),
-          valueCounts: view(statistics[1], 'uint32', facilityCount),
-          sums: view(statistics[2], 'float32', facilityCount),
-          means: view(statistics[3], 'float32', facilityCount),
-          minimums: view(statistics[4], 'float32', facilityCount),
-          maximums: view(statistics[5], 'float32', facilityCount)
+        outputs: {
+          allocation: view(allocationBuffer, 'uint32', straightCellCount),
+          distances: view(distancesBuffer, 'float32', straightCellCount),
+          statistics: {
+            cellCounts: view(statistics[0], 'uint32', facilityCount),
+            valueCounts: view(statistics[1], 'uint32', facilityCount),
+            sums: view(statistics[2], 'float32', facilityCount),
+            means: view(statistics[3], 'float32', facilityCount),
+            minimums: view(statistics[4], 'float32', facilityCount),
+            maximums: view(statistics[5], 'float32', facilityCount)
+          }
         }
       });
     }

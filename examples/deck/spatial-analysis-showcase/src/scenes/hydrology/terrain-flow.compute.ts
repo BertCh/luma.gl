@@ -44,7 +44,7 @@ export type TerrainFlowOptions = {
   seed: number;
   trailWidth: number;
   trailOpacity: number;
-  ramp: Extract<RampName, 'viridis' | 'magma' | 'inferno' | 'cividis'>;
+  ramp: Extract<RampName, 'isolum' | 'viridis' | 'magma' | 'inferno' | 'cividis'>;
   paused: boolean;
 };
 

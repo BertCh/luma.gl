@@ -43,7 +43,7 @@ const GARBAGE = 0xdeadbeef;
 type FlowResult = {
   ids: number[];
   count: number;
-  totalCount: number;
+  requiredCount: number;
   overflow: number;
   pairOverflow: number;
   drawInstanceCount: number;
@@ -98,7 +98,7 @@ function createHarness(device: Device, options: HarnessOptions): Harness {
   const ids = createOutput('ids', 'uint32', topCount);
   const count = createOutput('count', 'uint32', 1);
   const overflow = createOutput('overflow', 'uint32', 1);
-  const totalCount = createOutput('total', 'uint32', 1);
+  const requiredCount = createOutput('total', 'uint32', 1);
   const pairOverflow = createOutput('pair-overflow', 'uint32', 1);
   const drawInstanceCount = createOutput('draw', 'uint32', 1);
   const originZones = createOutput('origin-zones', 'uint32', topCount);
@@ -119,7 +119,7 @@ function createHarness(device: Device, options: HarnessOptions): Harness {
       ids: ids.view,
       count: count.view,
       overflow: overflow.view,
-      totalCount: totalCount.view
+      requiredCount: requiredCount.view
     },
     pairOverflow: pairOverflow.view,
     drawInstanceCount: drawInstanceCount.view,
@@ -149,7 +149,7 @@ function createHarness(device: Device, options: HarnessOptions): Harness {
     read: async () => ({
       ids: await readUint32(ids.buffer, topCount),
       count: (await readUint32(count.buffer, 1))[0],
-      totalCount: (await readUint32(totalCount.buffer, 1))[0],
+      requiredCount: (await readUint32(requiredCount.buffer, 1))[0],
       overflow: (await readUint32(overflow.buffer, 1))[0],
       pairOverflow: (await readUint32(pairOverflow.buffer, 1))[0],
       drawInstanceCount: (await readUint32(drawInstanceCount.buffer, 1))[0],
@@ -182,7 +182,7 @@ function expectMatchesOracle(
   const count = Math.min(distinct, topCount);
   expect(result.count).toBe(count);
   expect(result.drawInstanceCount).toBe(count);
-  expect(result.totalCount).toBe(distinct);
+  expect(result.requiredCount).toBe(distinct);
   expect(result.pairOverflow).toBe(0);
   expect(result.overflow).toBe(distinct > topCount ? 1 : 0);
   for (let rank = 0; rank < topCount; rank++) {
@@ -287,7 +287,7 @@ it('GPUFlowAggregation aggregates grid zones against the oracle (weighted and un
       if (topCount === 50) {
         expect(result.overflow).toBe(1);
         expect(result.count).toBe(50);
-        expect(result.totalCount).toBe(oracle.flows.length);
+        expect(result.requiredCount).toBe(oracle.flows.length);
       }
       harness.destroy();
       for (const buffer of buffers) buffer.destroy();
@@ -569,7 +569,7 @@ it('GPUFlowAggregation reports pair table overflow and keeps zone totals exact',
   expect(oracle.flows.length).toBeGreaterThan(4);
   expect(result.pairOverflow).toBe(1);
   expect(result.overflow).toBe(1);
-  expect(result.totalCount).toBe(4);
+  expect(result.requiredCount).toBe(4);
   expect(result.count).toBe(4);
   expect(result.drawInstanceCount).toBe(4);
   for (let rank = 0; rank < topCount; rank++) {

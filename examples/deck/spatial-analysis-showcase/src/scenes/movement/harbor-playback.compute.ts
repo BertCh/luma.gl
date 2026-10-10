@@ -408,6 +408,7 @@ export async function createHarborPlayback(
   const metricsGraph = new GPUCommandGraph<void>(device, {id: 'harbor-metrics'});
   metricsGraph.add(
     new GPUTrajectoryMetrics({
+      spatialContext: {coordinateSpace: 'planar', metric: 'native', units: 'native'},
       id: 'metrics',
       positions: importGraphBuffer(
         metricsGraph,
@@ -478,7 +479,7 @@ export async function createHarborPlayback(
           ids: importGraphBuffer(metricsGraph, 'stop-ids', stopIds, 'uint32', STOP_CAPACITY),
           count: importGraphBuffer(metricsGraph, 'stop-count', stopCount, 'uint32', 1),
           overflow: importGraphBuffer(metricsGraph, 'stop-overflow', stopOverflow, 'uint32', 1),
-          totalCount: importGraphBuffer(metricsGraph, 'stop-total', stopTotal, 'uint32', 1)
+          requiredCount: importGraphBuffer(metricsGraph, 'stop-total', stopTotal, 'uint32', 1)
         },
         drawInstanceCount: metricsGraph.importGPUData(
           'stop-draw-count',
@@ -608,6 +609,7 @@ export async function createHarborPlayback(
   );
   let playhead = ctx.options.time;
   let frameCounter = 0;
+  let activityChartBin = -1;
   let selectedTrack = NO_TRACK;
   let destroyed = false;
   let metricsDirty = true;
@@ -639,6 +641,36 @@ export async function createHarborPlayback(
     NYC.places['whitehall-terminal'].lngLat
   );
   const transitTrack = pickTransitTrack(vessels, stoppedSpeedDefault);
+
+  const activityHours = Array.from(
+    {length: profile.quarterHourTracks.length},
+    (_, bin) => (bin + 0.5) / 4
+  );
+  function updateActivityChart(): void {
+    const bin = Math.min(
+      profile.quarterHourTracks.length - 1,
+      Math.max(0, Math.floor(playhead / 900))
+    );
+    if (bin === activityChartBin) return;
+    activityChartBin = bin;
+    ctx.setChart(
+      'activityChart',
+      lineChart(activityHours, profile.quarterHourTracks, {
+        label: 'reporting tracks',
+        xLabel: 'time of day (New York)',
+        yLabel: 'tracks reporting',
+        xDomain: [0, 24],
+        yDomain: [0, Math.max(...profile.quarterHourTracks) * 1.08],
+        markers: [{x: (bin + 0.5) / 4, label: 'now'}],
+        formatX: value =>
+          formatZonedClock(value * 3600, DAY_ORIGIN, NEW_YORK).replace(/:\d\d /, ' '),
+        formatY: value => formatCount(value),
+        description:
+          'Tracks with at least one AIS fix in each 15-minute interval of the UTC day, labelled in New York local time. The vertical rule is the shared playhead; an afternoon break records the feed-wide reporting silence.'
+      })
+    );
+  }
+  updateActivityChart();
 
   ctx.setLegendData('ground', ctx.ground());
   ctx.setTimelineData({
@@ -1389,6 +1421,7 @@ export async function createHarborPlayback(
       frameCounter = frame.frameIndex;
       // Paused, the clock sits on the slider, so every story step and deep link is deterministic.
       playhead = clock.advance(frame);
+      updateActivityChart();
 
       if (!focusInitialised && frame.frameIndex >= 1) {
         focusInitialised = true;

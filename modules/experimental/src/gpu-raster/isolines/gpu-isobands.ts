@@ -31,7 +31,7 @@ const OPERATION = 'GPUIsobands';
 
 /**
  * Caller-owned outputs of {@link GPUIsobands}. Provide any of `bandClasses`, the geometry group
- * (`triangles`, `triangleBands`, `count`, `overflow`, optional `totalCount` and `vertexCount`) and
+ * (`triangles`, `triangleBands`, `count`, `overflow`, optional `requiredCount` and `vertexCount`) and
  * the boundary edge group (`edges`, `edgeBands`, `edgeCount`, `edgeOverflow`, optional
  * `edgeTotalCount`).
  */
@@ -55,7 +55,7 @@ export type GPUIsobandsOutput = {
   /** One-row scalar receiving 1 when more triangles were produced than fit, otherwise 0. */
   overflow?: GraphDataView<'uint32'>;
   /** Optional one-row scalar receiving the unclamped triangle count. */
-  totalCount?: GraphDataView<'uint32'>;
+  requiredCount?: GraphDataView<'uint32'>;
   /** Optional one-row scalar receiving `3 * count`, the vertex count of a non-indexed indirect draw. */
   vertexCount?: GraphDataView<'uint32'>;
   /**
@@ -205,8 +205,8 @@ export class GPUIsobands implements GPUCommandNodeProducer {
         throw new Error(`${id} output.edges must be packed float32x4`);
       }
     }
-    if (!hasGeometry && (output.totalCount || output.vertexCount)) {
-      throw new Error(`${id} totalCount and vertexCount belong to the geometry output`);
+    if (!hasGeometry && (output.requiredCount || output.vertexCount)) {
+      throw new Error(`${id} requiredCount and vertexCount belong to the geometry output`);
     }
     this.triangleCapacity = output.triangleBands?.length ?? 0;
     if (hasGeometry) {
@@ -222,7 +222,7 @@ export class GPUIsobands implements GPUCommandNodeProducer {
       for (const [name, view] of [
         ['count', output.count],
         ['overflow', output.overflow],
-        ['totalCount', output.totalCount],
+        ['requiredCount', output.requiredCount],
         ['vertexCount', output.vertexCount]
       ] as const) {
         validateRasterAlgebraView(id, `output.${name}`, view, 'uint32', 1);
@@ -237,7 +237,7 @@ export class GPUIsobands implements GPUCommandNodeProducer {
       output.triangleBands,
       output.count,
       output.overflow,
-      output.totalCount,
+      output.requiredCount,
       output.vertexCount,
       output.edgeBands,
       output.edgeCount,
@@ -267,7 +267,7 @@ export class GPUIsobands implements GPUCommandNodeProducer {
       output.triangleBands,
       output.count,
       output.overflow,
-      output.totalCount,
+      output.requiredCount,
       output.vertexCount,
       output.edges,
       output.edgeBands,
@@ -396,12 +396,12 @@ ${cellWGSL}`,
         createPublishNode<Parameters>(graph, {
           id: `${id}-publish`,
           operation: OPERATION,
-          totalCount: total,
+          requiredCount: total,
           output: {
             ids: output.triangleBands,
             count: output.count,
             overflow: output.overflow,
-            totalCount: output.totalCount
+            requiredCount: output.requiredCount
           }
         })
       );
@@ -508,12 +508,12 @@ ${cellWGSL}`,
         createPublishNode<Parameters>(graph, {
           id: `${id}-edge-publish`,
           operation: OPERATION,
-          totalCount: edgeTotal,
+          requiredCount: edgeTotal,
           output: {
             ids: output.edgeBands,
             count: output.edgeCount,
             overflow: output.edgeOverflow,
-            totalCount: output.edgeTotalCount
+            requiredCount: output.edgeTotalCount
           }
         })
       );

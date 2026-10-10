@@ -53,6 +53,7 @@ struct Lattice {
   cellHeight: f32,
   columns: u32,
   rows: u32,
+  radius: f32,
   radiusSquared: f32
 }
 
@@ -79,6 +80,7 @@ fn readLattice() -> Lattice {
   lattice.minimumY = minimumY;
   lattice.maximumX = maximumX;
   lattice.maximumY = maximumY;
+  lattice.radius = radius;
   lattice.radiusSquared = radiusSquared;
   lattice.valid =
     isFiniteFloat(minimumX) && isFiniteFloat(minimumY) && isFiniteFloat(maximumX) &&
@@ -125,8 +127,12 @@ ${NEIGHBOR_SEARCH_FLOAT_WGSL}
 /**
  * WGSL statements that visit every valid target within the 3x3 cell neighborhood of `(x, y)` and
  * inside the distance band, running `action` with `neighbor` (target row) and `distanceSquared`
- * in scope. Requires bindings `sortedTargets` (`[x bits, y bits, row]` triples in cell order, `u32`), `cellOffsets` and locals `lattice`, `x`,
- * `y`. The visiting order is fixed but not by ID; callers sort.
+ * in scope. On coarse lattices, cells whose bounding boxes cannot intersect the distance band are
+ * skipped before any targets are loaded. The conservative rounding slack keeps points on cell and
+ * radius boundaries.
+ * Requires bindings `sortedTargets` (`[x bits, y bits, row]` triples in cell order, `u32`),
+ * `cellOffsets` and locals `lattice`, `x`, `y`. The visiting order is fixed but not by ID; callers
+ * sort.
  *
  * @internal
  */
@@ -138,17 +144,47 @@ export function getRadiusNeighborLoopWGSL(action: string): string {
   let lastColumn = min(column + 1u, lattice.columns - 1u);
   let firstRow = max(row, 1u) - 1u;
   let lastRow = min(row + 1u, lattice.rows - 1u);
-  for (var cellRow = firstRow; cellRow <= lastRow; cellRow++) {
-    let rowBase = cellRow * COLUMNS;
-    let cellBegin = cellOffsets[cellOffsetsOffset + rowBase + firstColumn];
-    let cellEnd = cellOffsets[cellOffsetsOffset + rowBase + lastColumn + 1u];
-    for (var cellSlot = cellBegin; cellSlot < cellEnd; cellSlot++) {
-      let neighbor = sortedTargets[sortedTargetsOffset + cellSlot * 3u + 2u];
-      let deltaX = bitcast<f32>(sortedTargets[sortedTargetsOffset + cellSlot * 3u]) - x;
-      let deltaY = bitcast<f32>(sortedTargets[sortedTargetsOffset + cellSlot * 3u + 1u]) - y;
-      let distanceSquared = deltaX * deltaX + deltaY * deltaY;
-      if (distanceSquared <= lattice.radiusSquared) {
-        ${action}
+  if (lattice.cellWidth > lattice.radius * 2.0 || lattice.cellHeight > lattice.radius * 2.0) {
+    // Coarse grids can put many irrelevant targets in the neighboring cells. Test each cell's
+    // distance lower bound before touching its target range.
+    let slack = (lattice.cellWidth + lattice.cellHeight) * 0.0009765625 +
+      (abs(lattice.minimumX) + abs(lattice.maximumX) + abs(lattice.minimumY) + abs(lattice.maximumY)) * 0.00000095367431640625;
+    for (var cellRow = firstRow; cellRow <= lastRow; cellRow++) {
+      let rowGap = max(getAxisGap(y, lattice.minimumY, lattice.cellHeight, i32(row), i32(cellRow)) - slack, 0.0);
+      let rowGapSquared = rowGap * rowGap;
+      let rowBase = cellRow * COLUMNS;
+      for (var cellColumn = firstColumn; cellColumn <= lastColumn; cellColumn++) {
+        let columnGap = max(getAxisGap(x, lattice.minimumX, lattice.cellWidth, i32(column), i32(cellColumn)) - slack, 0.0);
+        if (columnGap * columnGap + rowGapSquared <= lattice.radiusSquared) {
+          let cell = rowBase + cellColumn;
+          let cellBegin = cellOffsets[cellOffsetsOffset + cell];
+          let cellEnd = cellOffsets[cellOffsetsOffset + cell + 1u];
+          for (var cellSlot = cellBegin; cellSlot < cellEnd; cellSlot++) {
+            let neighbor = sortedTargets[sortedTargetsOffset + cellSlot * 3u + 2u];
+            let deltaX = bitcast<f32>(sortedTargets[sortedTargetsOffset + cellSlot * 3u]) - x;
+            let deltaY = bitcast<f32>(sortedTargets[sortedTargetsOffset + cellSlot * 3u + 1u]) - y;
+            let distanceSquared = deltaX * deltaX + deltaY * deltaY;
+            if (distanceSquared <= lattice.radiusSquared) {
+              ${action}
+            }
+          }
+        }
+      }
+    }
+  } else {
+    // Fine grids already have radius-sized cells. Preserve contiguous reads across each row.
+    for (var cellRow = firstRow; cellRow <= lastRow; cellRow++) {
+      let rowBase = cellRow * COLUMNS;
+      let cellBegin = cellOffsets[cellOffsetsOffset + rowBase + firstColumn];
+      let cellEnd = cellOffsets[cellOffsetsOffset + rowBase + lastColumn + 1u];
+      for (var cellSlot = cellBegin; cellSlot < cellEnd; cellSlot++) {
+        let neighbor = sortedTargets[sortedTargetsOffset + cellSlot * 3u + 2u];
+        let deltaX = bitcast<f32>(sortedTargets[sortedTargetsOffset + cellSlot * 3u]) - x;
+        let deltaY = bitcast<f32>(sortedTargets[sortedTargetsOffset + cellSlot * 3u + 1u]) - y;
+        let distanceSquared = deltaX * deltaX + deltaY * deltaY;
+        if (distanceSquared <= lattice.radiusSquared) {
+          ${action}
+        }
       }
     }
   }`;

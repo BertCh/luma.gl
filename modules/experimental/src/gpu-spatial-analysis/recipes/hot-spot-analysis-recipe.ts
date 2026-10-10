@@ -26,6 +26,7 @@ import {
   createTransientSpatialWeights,
   getOrCreateView,
   RecipeBuilder,
+  type GPURecipeOverrides,
   type GPURecipeResult
 } from './recipe-utils';
 
@@ -55,10 +56,6 @@ export type GPUHotSpotPointsSource = {
    * in cell-center units (degrees), `radius`, binary weights for classic Gi*.
    */
   neighborSearchParameters: GraphDataView<'float32'>;
-  /** Optional caller-owned cell-table columns; missing ones are graph-owned transients. */
-  table?: Partial<GPUCellTable>;
-  /** Optional caller-owned cell centers (degrees). */
-  centers?: GraphDataView<'float32x2'>;
 };
 
 /** Input rows: a dense raster of values on a regular lattice (row-major `y * width + x`). */
@@ -94,12 +91,6 @@ export type GPUHotSpotPermutationOptions = {
   maximumNeighbors?: number;
   /** Benjamini-Hochberg control of `significant`. */
   falseDiscoveryRate?: boolean;
-  /** Caller-owned exceedance counts, one per row. */
-  exceedances?: GraphDataView<'uint32'>;
-  /** Caller-owned pseudo p-values, one per row. */
-  pseudoPValues?: GraphDataView<'float32'>;
-  /** Caller-owned significance mask, one per row. */
-  significant?: GraphDataView<'uint32'>;
 };
 
 /** Optional class breaks and colors of the Gi* z-scores. */
@@ -116,18 +107,40 @@ export type GPUHotSpotColorOptions = {
   palette: GraphDataView<'uint32'>;
   /** Compile-time palette length bound. */
   maximumPaletteCount: number;
-  /** Caller-owned class edges (`maximumClassCount + 1` rows). */
-  breaks?: GraphDataView<'float32'>;
-  /** Caller-owned class count (one row). */
-  classCount?: GraphDataView<'uint32'>;
-  /** Caller-owned colors, one rgba8 per row. */
-  colors?: GraphDataView<'uint32'>;
-  /** Caller-owned palette class per row. */
-  classIndices?: GraphDataView<'uint32'>;
 };
 
 /** Properties for {@link addHotSpotAnalysisRecipe}. */
-export type GPUHotSpotAnalysisRecipeProps = {
+export type GPUHotSpotAnalysisRecipeProps = GPURecipeOverrides<
+  Record<never, never>,
+  {
+    zScores?: GraphDataView<'float32'>;
+    bins?: GraphDataView<'sint32'>;
+    pValues?: GraphDataView<'float32'>;
+    neighborCounts?: GraphDataView<'uint32'>;
+    globalStatistics?: GraphDataView<'float32'>;
+    weightsOverflow?: GraphDataView<'uint32'>;
+    permutation?: {
+      exceedances?: GraphDataView<'uint32'>;
+      pseudoPValues?: GraphDataView<'float32'>;
+      significant?: GraphDataView<'uint32'>;
+      overflow?: GraphDataView<'uint32'>;
+    };
+    color?: {
+      breaks?: GraphDataView<'float32'>;
+      classCount?: GraphDataView<'uint32'>;
+      colors?: GraphDataView<'uint32'>;
+      classIndices?: GraphDataView<'uint32'>;
+    };
+  },
+  {
+    table?: Partial<GPUCellTable>;
+    centers?: GraphDataView<'float32x2'>;
+    values?: GraphDataView<'float32'>;
+    mask?: GraphDataView<'uint32'>;
+    weights?: Partial<GPUSpatialWeights>;
+    pointKeys?: GraphDataView<'uint32x2'>;
+  }
+> & {
   /** Prefix for every node and transient ID. Defaults to `'hot-spot-recipe'`. */
   id?: string;
   /** Where the rows come from. */
@@ -138,20 +151,6 @@ export type GPUHotSpotAnalysisRecipeProps = {
   selfWeight?: number;
   /** Benjamini-Hochberg false discovery rate correction of the Gi* bins. */
   falseDiscoveryRate?: boolean;
-  /** Caller-owned Gi* z-scores. */
-  zScores?: GraphDataView<'float32'>;
-  /** Caller-owned confidence bins (`-3..3`). */
-  bins?: GraphDataView<'sint32'>;
-  /** Caller-owned two-sided p-values. */
-  pValues?: GraphDataView<'float32'>;
-  /** Caller-owned neighbor counts. */
-  neighborCounts?: GraphDataView<'uint32'>;
-  /** Caller-owned `[count, mean, variance, ...]` global statistics (4 rows). */
-  globalStatistics?: GraphDataView<'float32'>;
-  /** Caller-owned weights CSR pieces. */
-  weights?: Partial<GPUSpatialWeights>;
-  /** Caller-owned one-row overflow flag of the weights; transient when absent. */
-  weightsOverflow?: GraphDataView<'uint32'>;
   /** Permutation confirmation; skipped when absent. */
   permutation?: GPUHotSpotPermutationOptions;
   /** Class breaks and colors of the z-scores; skipped when absent. */
@@ -211,6 +210,8 @@ export function addHotSpotAnalysisRecipe<Parameters>(
 ): GPUHotSpotAnalysisRecipeResult {
   const id = props.id ?? 'hot-spot-recipe';
   const builder = new RecipeBuilder(graph);
+  const outputs = props.outputs ?? {};
+  const scratch = props.scratch ?? {};
   const {source} = props;
   let rowCount: number;
   let values: GraphDataView<'float32'>;
@@ -223,13 +224,13 @@ export function addHotSpotAnalysisRecipe<Parameters>(
     `${id}-weights-overflow`,
     'uint32',
     1,
-    props.weightsOverflow
+    outputs.weightsOverflow
   );
 
   if (source.kind === 'points') {
     rowCount = source.tableCapacity;
     assertRecipe(ID, rowCount >= 1, 'tableCapacity must be positive');
-    const provided = source.table ?? {};
+    const provided = scratch.table ?? {};
     table = {
       cells: getOrCreateView(graph, `${id}-cells`, 'uint32x2', rowCount, provided.cells),
       counts: getOrCreateView(graph, `${id}-counts`, 'uint32', rowCount, provided.counts),
@@ -252,7 +253,13 @@ export function addHotSpotAnalysisRecipe<Parameters>(
         })
       );
     } else {
-      const keys = getOrCreateView(graph, `${id}-point-keys`, 'uint32x2', source.positions.length);
+      const keys = getOrCreateView(
+        graph,
+        `${id}-point-keys`,
+        'uint32x2',
+        source.positions.length,
+        scratch.pointKeys
+      );
       builder.add(
         new GPUPointToCell({
           id: `${id}-point-to-cell`,
@@ -275,7 +282,7 @@ export function addHotSpotAnalysisRecipe<Parameters>(
         })
       );
     }
-    centers = getOrCreateView(graph, `${id}-centers`, 'float32x2', rowCount, source.centers);
+    centers = getOrCreateView(graph, `${id}-centers`, 'float32x2', rowCount, scratch.centers);
     builder.add(
       new GPUCellGeometry({
         id: `${id}-geometry`,
@@ -284,15 +291,15 @@ export function addHotSpotAnalysisRecipe<Parameters>(
         output: {centers}
       })
     );
-    values = getOrCreateView(graph, `${id}-values`, 'float32', rowCount);
-    mask = getOrCreateView(graph, `${id}-mask`, 'uint32', rowCount);
+    values = getOrCreateView(graph, `${id}-values`, 'float32', rowCount, scratch.values);
+    mask = getOrCreateView(graph, `${id}-mask`, 'uint32', rowCount, scratch.mask);
     addCellTableColumnsNode(graph, id, table, {values, mask});
     weights = createTransientSpatialWeights(
       graph,
       `${id}-weights`,
       rowCount,
       source.neighborCapacity,
-      props.weights
+      scratch.weights
     );
     builder.add(
       new GPUNeighborSearch({
@@ -315,7 +322,7 @@ export function addHotSpotAnalysisRecipe<Parameters>(
       `${id}-weights`,
       rowCount,
       source.neighborCapacity,
-      props.weights
+      scratch.weights
     );
     builder.add(
       new GPULatticeWeights({
@@ -331,22 +338,22 @@ export function addHotSpotAnalysisRecipe<Parameters>(
     );
   }
 
-  const zScores = getOrCreateView(graph, `${id}-z-scores`, 'float32', rowCount, props.zScores);
-  const bins = getOrCreateView(graph, `${id}-bins`, 'sint32', rowCount, props.bins);
-  const pValues = getOrCreateView(graph, `${id}-p-values`, 'float32', rowCount, props.pValues);
+  const zScores = getOrCreateView(graph, `${id}-z-scores`, 'float32', rowCount, outputs.zScores);
+  const bins = getOrCreateView(graph, `${id}-bins`, 'sint32', rowCount, outputs.bins);
+  const pValues = getOrCreateView(graph, `${id}-p-values`, 'float32', rowCount, outputs.pValues);
   const neighborCounts = getOrCreateView(
     graph,
     `${id}-neighbor-counts`,
     'uint32',
     rowCount,
-    props.neighborCounts
+    outputs.neighborCounts
   );
   const globalStatistics = getOrCreateView(
     graph,
     `${id}-global-statistics`,
     'float32',
     4,
-    props.globalStatistics
+    outputs.globalStatistics
   );
   builder.add(
     new GPUHotSpotAnalysis({
@@ -378,34 +385,45 @@ export function addHotSpotAnalysisRecipe<Parameters>(
     bins,
     pValues,
     neighborCounts,
-    globalStatistics
+    globalStatistics,
+    outputs: {zScores, bins, pValues, neighborCounts, globalStatistics},
+    intermediates: {table, centers, values, mask, weights},
+    status: {
+      stages: [
+        ...(table
+          ? [{stage: 'cell-aggregation', status: {count: table.count, overflow: table.overflow}}]
+          : []),
+        {stage: 'weights', status: {overflow: weightsOverflow}}
+      ]
+    }
   };
 
   const {permutation} = props;
   if (permutation) {
-    const outputs = {
+    const provided = outputs.permutation ?? {};
+    const permutationOutputs = {
       exceedances: getOrCreateView(
         graph,
         `${id}-exceedances`,
         'uint32',
         rowCount,
-        permutation.exceedances
+        provided.exceedances
       ),
       pseudoPValues: getOrCreateView(
         graph,
         `${id}-pseudo-p-values`,
         'float32',
         rowCount,
-        permutation.pseudoPValues
+        provided.pseudoPValues
       ),
       significant: getOrCreateView(
         graph,
         `${id}-significant`,
         'uint32',
         rowCount,
-        permutation.significant
+        provided.significant
       ),
-      overflow: getOrCreateView(graph, `${id}-permutation-overflow`, 'uint32', 1)
+      overflow: getOrCreateView(graph, `${id}-permutation-overflow`, 'uint32', 1, provided.overflow)
     };
     builder.add(
       new GPULocalPermutationTest({
@@ -419,30 +437,36 @@ export function addHotSpotAnalysisRecipe<Parameters>(
         maximumPermutations: permutation.maximumPermutations,
         maximumNeighbors: permutation.maximumNeighbors,
         falseDiscoveryRate: permutation.falseDiscoveryRate,
-        ...outputs
+        ...permutationOutputs
       })
     );
-    result.permutation = outputs;
+    result.permutation = permutationOutputs;
+    result.outputs['permutation'] = permutationOutputs;
+    result.status.stages = [
+      ...result.status.stages,
+      {stage: 'permutation', status: {overflow: permutationOutputs.overflow}}
+    ];
   }
 
   const {color} = props;
   if (color) {
-    const outputs = {
+    const provided = outputs.color ?? {};
+    const colorOutputs = {
       breaks: getOrCreateView(
         graph,
         `${id}-breaks`,
         'float32',
         color.maximumClassCount + 1,
-        color.breaks
+        provided.breaks
       ),
-      classCount: getOrCreateView(graph, `${id}-class-count`, 'uint32', 1, color.classCount),
-      colors: getOrCreateView(graph, `${id}-colors`, 'uint32', rowCount, color.colors),
+      classCount: getOrCreateView(graph, `${id}-class-count`, 'uint32', 1, provided.classCount),
+      colors: getOrCreateView(graph, `${id}-colors`, 'uint32', rowCount, provided.colors),
       classIndices: getOrCreateView(
         graph,
         `${id}-class-indices`,
         'uint32',
         rowCount,
-        color.classIndices
+        provided.classIndices
       )
     };
     builder.add(
@@ -453,23 +477,24 @@ export function addHotSpotAnalysisRecipe<Parameters>(
         parameters: color.classBreaksParameters,
         maximumClassCount: color.maximumClassCount,
         methods: color.methods,
-        output: {breaks: outputs.breaks, classCount: outputs.classCount}
+        output: {breaks: colorOutputs.breaks, classCount: colorOutputs.classCount}
       })
     );
     const colorProps: GPUColorScaleProps = {
       id: `${id}-color-scale`,
       values: zScores,
       mask,
-      domain: outputs.breaks,
-      domainCount: outputs.classCount,
+      domain: colorOutputs.breaks,
+      domainCount: colorOutputs.classCount,
       palette: color.palette,
       parameters: color.colorScaleParameters,
       maximumDomainCount: color.maximumClassCount + 1,
       maximumPaletteCount: color.maximumPaletteCount,
-      output: {colors: outputs.colors, classIndices: outputs.classIndices}
+      output: {colors: colorOutputs.colors, classIndices: colorOutputs.classIndices}
     };
     builder.add(new GPUColorScale(colorProps));
-    result.color = outputs;
+    result.color = colorOutputs;
+    result.outputs['color'] = colorOutputs;
   }
   return result;
 }

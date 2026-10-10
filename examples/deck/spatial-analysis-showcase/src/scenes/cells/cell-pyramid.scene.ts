@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {ground} from '../../cartography/grounds';
 import {sampleRamp} from '../../engine/ramps';
 import type {LegendSpec} from '../scene';
 import {defineScene} from '../scene';
@@ -21,11 +22,11 @@ const monthFormat = (value: number) => MONTH_NAMES[Math.round(value) - 1];
 /** Quadbin cell pyramid, roll-up, class map and period comparison. GPU work is in `cell-pyramid.compute.ts`. */
 export default defineScene<CellPyramidOptions>({
   id: 'cell-pyramid',
-  title: 'Nature change between seasons',
+  title: 'Chicago nature observations by cell and period',
   chapter: 'cells',
   order: 2,
   summary:
-    'One Quadbin pyramid serves every zoom level of 43,600 Chicago wildlife observations. Roll it up exactly, classify the cells with class breaks, and compare the first and second half of 2023 as a cell-by-cell change map.',
+    'GPU Quadbin aggregation summarizes the 2023 Chicago iNaturalist observations by level, class and period. The outputs are density, roll-up and change maps; observation effort and a single year limit inference.',
   contributors: [
     'GPUCellPyramid',
     'GPUCellLevelSelection',
@@ -42,6 +43,16 @@ export default defineScene<CellPyramidOptions>({
     {id: 'chicago-community-areas', role: 'place names for readouts and tooltips'}
   ],
   initialView: {...CHICAGO_VIEW},
+  basemap: ground('paperCity'),
+  furniture: {
+    title: {
+      title: 'Chicago nature observations',
+      subtitle: 'Density, classified counts and period change by Quadbin cell'
+    },
+    scaleBar: {units: 'metric'},
+    credit: 'iNaturalist contributors · City of Chicago Data Portal',
+    caveat: 'Counts measure observation effort as well as wildlife activity.'
+  },
 
   options: [
     {
@@ -368,11 +379,11 @@ export default defineScene<CellPyramidOptions>({
       label: 'Color ramp',
       group: 'Color',
       apply: 'param',
-      default: 'viridis',
+      default: 'ylgnbu',
       disabledWhen: inView('pyramid', 'rollup', 'classes'),
       help: 'Ramp of the density, rate and class maps. The comparison always uses a diverging ramp (blue fewer, red more).',
       options: [
-        {value: 'viridis', label: 'Viridis'},
+        {value: 'ylgnbu', label: 'Yellow-green-blue'},
         {value: 'magma', label: 'Magma'},
         {value: 'inferno', label: 'Inferno'},
         {value: 'cividis', label: 'Cividis'},
@@ -574,6 +585,9 @@ const recipe = addPeriodComparisonRecipe(graph, {
     {
       id: 'question',
       title: 'Can one table serve every zoom level?',
+      headline: 'Density remains comparable across Quadbin levels',
+      textAlternative:
+        'Chicago is covered by blue-green Quadbin cells whose density and size change with map zoom; the busiest cells remain concentrated along the lakefront.',
       body: 'A city-wide nature map should show neighbourhoods when you are zoomed out and blocks when you are zoomed in, without waiting for a server to re-aggregate. Here **`GPUCellPyramid`** keys all 43,557 observations into **Quadbin** cells once, at tile zoom 17 (about 230 m), then rolls the table up level by level to zoom 4.\n\nBright cells hold more observations per km2 (log scale, so levels stay comparable). Zoom and pan: the cells change resolution but nothing is recomputed. **Group** below filters the observations in every view (try Birds or Fungi).',
       options: {view: 'pyramid'},
       camera: {...CHICAGO_VIEW, transitionMs: 1200},
@@ -583,6 +597,9 @@ const recipe = addPeriodComparisonRecipe(graph, {
     {
       id: 'levels',
       title: 'The level is chosen on the GPU',
+      headline: 'Zoom selects one precomputed pyramid level',
+      textAlternative:
+        'The map shows a single Quadbin resolution selected from the precomputed pyramid, with active-cell and zoom-level readouts beside the map.',
       body: "Every frame, the map zoom goes into a one-word buffer and **`GPUCellLevelSelection`** publishes that level's row count and first row into an indirect draw record. The layer simply replays the record: no CPU work, no rebuild. The **Under the hood** drawer shows the pyramid graph encoded once (and again only when you change the filter).\n\nSlide **Cells finer than the zoom level** below to trade detail for noise, or tick **Choose the level by hand** and then slide **Quadbin resolution** to compare resolutions at one camera.",
       options: {resolutionOffset: 4},
       camera: {longitude: MONTROSE[0], latitude: MONTROSE[1], zoom: 13.4, transitionMs: 2000},
@@ -594,6 +611,9 @@ const recipe = addPeriodComparisonRecipe(graph, {
     {
       id: 'rollup',
       title: 'Roll up exactly',
+      headline: 'Parent cells preserve observation totals exactly',
+      textAlternative:
+        'Coarser Quadbin cells replace the fine grid while readouts report identical observation and research-grade totals before and after roll-up.',
       body: '**`GPUCellRollup`** reads the finest table and merges it to a coarser **parent resolution**. Counts and fixed-point sums are integers, so a parent holds exactly the sum of its children: the readouts compare the totals before and after and say *conserved exactly* and *bit-exact*. Floating-point sums could not promise that.\n\nThe table also carries the sum of the 0/1 research-grade flag, so the **research-grade share** (research-grade observations / observations) is available per cell for free. Raise **Parent resolution** below, or switch **Color the roll-up by** between density and research-grade share: each resolution is a small graph compiled the first time you use it.',
       options: {view: 'rollup', rollupResolution: 14, rollupColor: 'researchShare'},
       camera: {...CHICAGO_VIEW, transitionMs: 1400},
@@ -604,6 +624,9 @@ const recipe = addPeriodComparisonRecipe(graph, {
     {
       id: 'classes',
       title: 'From a table to a classified map',
+      headline: 'Class breaks separate the heavy-tailed counts',
+      textAlternative:
+        'The Chicago grid is divided into ordered color classes, with a legend and readout listing the GPU-computed class edges.',
       body: 'An analyst usually wants a choropleth, not raw counts. The adapter **`addCellTableColumnsNode`** turns the roll-up table into a value column plus a mask of occupied rows; **`GPUClassBreaks`** computes the class edges on the GPU and **`GPUColorScale`** colors the cells, with no readback in between.\n\nSwitch the **Classification method** below: quantile gives every class the same number of cells, natural breaks minimises within-class variance, head/tail suits the heavy-tailed research-grade observations. The **Class edges** readout below lists the edges the GPU found.',
       options: {
         view: 'classes',
@@ -620,6 +643,9 @@ const recipe = addPeriodComparisonRecipe(graph, {
     {
       id: 'compare',
       title: 'Which half of the year was busier, where?',
+      headline: 'Second-half gains vary across Chicago cells',
+      textAlternative:
+        'A diverging cell map compares January through June with July through December; red cells gained observations, blue cells lost them and gray cells changed little.',
       body: 'Chicago has one year of data here (2023), so the comparison is **January to June against July to December**. **`addPeriodComparisonRecipe`** keys each period into its own cell table (`GPUCellAggregation`), outer-joins them with **`GPUCellTableCompare`** and classifies the change around zero.\n\nRed cells gained observations in the second half, blue lost them, gray changed less than the **No-change band**. Move **Earlier period (months)** and **Later period (months)** to compare other seasons. The second half has 23,167 observations against 20,390 in the first, but the year is lopsided: the spring surge around the City Nature Challenge (late April) lands in the first half, so lakefront and park cells can go either way. Look for the cells that go against the citywide trend.',
       options: {view: 'compare', changeColumn: 'classes', stableBand: 8},
       camera: {...CHICAGO_VIEW, transitionMs: 1400},
@@ -630,6 +656,9 @@ const recipe = addPeriodComparisonRecipe(graph, {
     {
       id: 'columns',
       title: 'Delta, ratio, percent or z-score?',
+      headline: 'Change metrics emphasize different cells',
+      textAlternative:
+        'The period comparison is displayed as z-scores, highlighting cells whose change is large relative to Poisson count variation.',
       body: 'The join writes four columns and each answers a different question. **Delta** (after - before) finds absolute change, which the lakefront parks dominate. **Ratio** and **percent change** find relative change, but are undefined where there was nothing before (gray) and explode on tiny counts. The **z-score** divides by the Poisson noise, `delta / sqrt(before + after)`, so only changes larger than chance stand out.\n\nHere is winter (Jan-Mar, 3,672 observations) against summer (Jul-Sep, 17,145) as z-scores, so nearly everything is red (**Show** below picks the column). Hover a cell for its before and after counts. Set **z-score** to *Standardized (across cells)* to score each cell against the spread of all changes instead.',
       options: {
         view: 'compare',
@@ -646,6 +675,9 @@ const recipe = addPeriodComparisonRecipe(graph, {
     {
       id: 'limits',
       title: 'Limits, and things to try',
+      headline: 'Resolution changes the apparent seasonal pattern',
+      textAlternative:
+        'The comparison map remains visible while controls expose period, measure and resolution choices that alter the cell-level pattern.',
       body: 'Caveats: seasons are not years, so you cannot call a half-year difference a trend; periods of unequal length bias the totals; observations follow the observers, so counts measure effort as much as wildlife, and tile edges change which cell a sighting lands in (the modifiable areal unit problem: change the **Comparison resolution** and watch the pattern move); and the Poisson score ignores that observations are clustered, so treat it as a screening, not a test.\n\nTry it: set **Compared measure** to *Research-grade observations (sum of values)*, set **Group** to *Birds* (spring migration) or *Fungi*, or compare Mar-May (**Earlier period (months)**) with Jun-Aug (**Later period (months)**).',
       options: {view: 'compare', changeColumn: 'classes', periodA: [1, 6], periodB: [7, 12]},
       camera: {...CHICAGO_VIEW, transitionMs: 1400},

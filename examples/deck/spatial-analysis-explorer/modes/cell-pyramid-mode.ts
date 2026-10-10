@@ -197,7 +197,7 @@ export const cellPyramidMode: SpatialAnalysisModeDefinition = {
           overflow: importSlice(levelOverflowBuffers[parity], 'uint32', 4, levelIndex, 1),
           ...(levelIndex === 0
             ? {
-                totalCount: importSlice(levelTotalsBuffer, 'uint32', 4, 0, 1),
+                requiredCount: importSlice(levelTotalsBuffer, 'uint32', 4, 0, 1),
                 sums: importSlice(finestSumsBuffer, 'uint32x2', 8, 0, capacity)
               }
             : {})

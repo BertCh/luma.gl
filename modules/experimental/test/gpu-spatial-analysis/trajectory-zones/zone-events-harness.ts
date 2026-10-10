@@ -21,7 +21,7 @@ import type {ZoneEdges} from './zone-events-oracle';
 export type ZoneGPUResult = {
   count: number;
   overflow: number;
-  totalCount: number;
+  requiredCount: number;
   tracks: number[];
   zones: number[];
   types: number[];
@@ -31,7 +31,7 @@ export type ZoneGPUResult = {
   table: {
     count: number;
     overflow: number;
-    totalCount: number;
+    requiredCount: number;
     tracks: number[];
     zones: number[];
     visits: number[];
@@ -153,7 +153,7 @@ export async function runZoneEvents(
           ids: importGraphBuffer(graph, 'o-ids', out.ids, 'uint32', eventCapacity),
           count: importGraphBuffer(graph, 'o-count', out.count, 'uint32', 1),
           overflow: importGraphBuffer(graph, 'o-overflow', out.overflow, 'uint32', 1),
-          totalCount: importGraphBuffer(graph, 'o-total', out.total, 'uint32', 1)
+          requiredCount: importGraphBuffer(graph, 'o-total', out.total, 'uint32', 1)
         },
         eventZones: importGraphBuffer(graph, 'o-zones', out.zones, 'uint32', eventCapacity),
         eventTypes: importGraphBuffer(graph, 'o-types', out.types, 'uint32', eventCapacity),
@@ -172,7 +172,7 @@ export async function runZoneEvents(
           ids: importGraphBuffer(graph, 't-ids', out.tableIds, 'uint32', tableCapacity),
           count: importGraphBuffer(graph, 't-count', out.tableCount, 'uint32', 1),
           overflow: importGraphBuffer(graph, 't-overflow', out.tableOverflow, 'uint32', 1),
-          totalCount: importGraphBuffer(graph, 't-total', out.tableTotal, 'uint32', 1)
+          requiredCount: importGraphBuffer(graph, 't-total', out.tableTotal, 'uint32', 1)
         },
         zones: importGraphBuffer(graph, 't-zones', out.tableZones, 'uint32', tableCapacity),
         visits: importGraphBuffer(graph, 't-visits', out.tableVisits, 'uint32', tableCapacity),
@@ -213,12 +213,12 @@ export async function runZoneEvents(
   submitGraph(device, compiled, undefined);
   const [count] = await readUint32(out.count, 1);
   const [overflow] = await readUint32(out.overflow, 1);
-  const [totalCount] = await readUint32(out.total, 1);
+  const [requiredCount] = await readUint32(out.total, 1);
   const [tableCount] = await readUint32(out.tableCount, 1);
   const result: ZoneGPUResult = {
     count,
     overflow,
-    totalCount,
+    requiredCount,
     tracks: await readUint32(out.ids, eventCapacity),
     zones: await readUint32(out.zones, eventCapacity),
     types: await readUint32(out.types, eventCapacity),
@@ -228,7 +228,7 @@ export async function runZoneEvents(
     table: {
       count: tableCount,
       overflow: (await readUint32(out.tableOverflow, 1))[0],
-      totalCount: (await readUint32(out.tableTotal, 1))[0],
+      requiredCount: (await readUint32(out.tableTotal, 1))[0],
       tracks: await readUint32(out.tableIds, tableCapacity),
       zones: await readUint32(out.tableZones, tableCapacity),
       visits: await readUint32(out.tableVisits, tableCapacity),

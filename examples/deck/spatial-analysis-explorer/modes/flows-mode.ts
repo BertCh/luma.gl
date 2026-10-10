@@ -71,7 +71,7 @@ type FlowGraph = {
   zoneInCounts: Buffer;
   drawCommands: DrawCommandBuffer;
   count: Buffer;
-  totalCount: Buffer;
+  requiredCount: Buffer;
   overflow: Buffer;
   pairOverflow: Buffer;
   readbackRing: GPUReadbackRing;
@@ -215,7 +215,7 @@ export const flowsMode: SpatialAnalysisModeDefinition = {
       const graphResources = new SpatialAnalysisResources(device, `flows-${++serial}`);
       const idsBuffer = graphResources.createBuffer('ids', TOP_FLOW_COUNT * 4);
       const count = graphResources.createBuffer('count', 4);
-      const totalCount = graphResources.createBuffer('total-count', 4);
+      const requiredCount = graphResources.createBuffer('total-count', 4);
       const overflow = graphResources.createBuffer('overflow', 4);
       const pairOverflow = graphResources.createBuffer('pair-overflow', 4);
       const flowOriginZoneIds = graphResources.createBuffer('flow-origins', TOP_FLOW_COUNT * 4);
@@ -293,7 +293,13 @@ export const flowsMode: SpatialAnalysisModeDefinition = {
             ids: importGraphBuffer(commandGraph, 'ids', idsBuffer, 'uint32', TOP_FLOW_COUNT),
             count: importGraphBuffer(commandGraph, 'count', count, 'uint32', 1),
             overflow: importGraphBuffer(commandGraph, 'overflow', overflow, 'uint32', 1),
-            totalCount: importGraphBuffer(commandGraph, 'total-count', totalCount, 'uint32', 1)
+            requiredCount: importGraphBuffer(
+              commandGraph,
+              'total-count',
+              requiredCount,
+              'uint32',
+              1
+            )
           },
           flowOriginZoneIds: importGraphBuffer(
             commandGraph,
@@ -374,7 +380,7 @@ export const flowsMode: SpatialAnalysisModeDefinition = {
         zoneInCounts,
         drawCommands,
         count,
-        totalCount,
+        requiredCount,
         overflow,
         pairOverflow,
         readbackRing,
@@ -543,7 +549,7 @@ export const flowsMode: SpatialAnalysisModeDefinition = {
           size
         });
       copy(current.count, 0, 4);
-      copy(current.totalCount, 4, 4);
+      copy(current.requiredCount, 4, 4);
       copy(current.overflow, 8, 4);
       copy(current.pairOverflow, 12, 4);
       copy(current.flowWeights, 16, 4);

@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {ground} from '../../cartography/grounds';
 import {defineScene} from '../scene';
 import type {BurnSeverityOptions} from './burn-severity.compute';
 import {SEVERITY_COLORS, SEVERITY_NAMES} from './b16-colors';
@@ -59,11 +60,11 @@ const severityLegend = (state: BurnSeverityOptions) => {
 
 export default defineScene<BurnSeverityOptions>({
   id: 'burn-severity',
-  title: 'How hard did the Dixie Fire burn Greenville?',
+  title: 'Dixie Fire: dNBR severity near Greenville',
   chapter: 'raster',
   order: 1,
   summary:
-    'Sentinel-2 bands from before and after the 2021 Dixie Fire become burn severity on the GPU: NBR band math, dNBR differencing, a cloud screen, USGS severity classes, a contrast stretch, and patch metrics with a sieve.',
+    'GPU band arithmetic converts pre- and post-fire Sentinel-2 imagery into dNBR, severity classes and patch metrics near Greenville. Canopy response, acquisition dates and 20-m pixels limit interpretation.',
   contributors: [
     'GPURasterArithmetic',
     'GPURasterConditional',
@@ -77,6 +78,13 @@ export default defineScene<BurnSeverityOptions>({
   ],
   datasets: [{id: 'dixie-fire', role: 'Sentinel-2 bands before and after, WorldCover, DEM'}],
   initialView: {longitude: -121.0, latitude: 40.17, zoom: 11.5},
+  basemap: ground('relief'),
+  furniture: {
+    title: {title: 'Dixie Fire severity', subtitle: 'Sentinel-2 dNBR near Greenville'},
+    scaleBar: {units: 'metric'},
+    credit: 'Copernicus Sentinel-2; USGS burn-severity thresholds',
+    caveat: 'dNBR measures spectral canopy change, not direct ground severity.'
+  },
 
   options: [
     {
@@ -272,6 +280,7 @@ export default defineScene<BurnSeverityOptions>({
       max: 1.2,
       step: 0.01,
       default: 0.27,
+      autoSweep: {from: 0.1, to: 0.66, durationMs: 6000, ease: 'in-out'},
       unit: 'dNBR',
       help: '0.27 is the USGS moderate-low severity boundary. Per-frame parameter: the map follows the slider.'
     },
@@ -457,7 +466,7 @@ export default defineScene<BurnSeverityOptions>({
       label: 'Color ramp',
       group: 'Display',
       apply: 'param',
-      default: 'magma',
+      default: 'cividis',
       help: 'Applies to the continuous layers (indices and dNBR).',
       options: RAMPS,
       disabledWhen: state => ['severity', 'burned', 'patches'].includes(state.layer)
@@ -558,6 +567,7 @@ export default defineScene<BurnSeverityOptions>({
         title: titles[state.layer] ?? 'Index',
         ramp: state.ramp,
         extent: 'gpu' as const,
+        unit: 'index',
         labels:
           state.stretchMode === 'equalize'
             ? (['lowest values', 'highest values'] as const)
@@ -646,27 +656,48 @@ compiled.encode(commandEncoder, {parameters: undefined});`,
   story: [
     {
       id: 'the-question',
+      headline: 'Dixie Fire dNBR is elevated around Greenville',
+      textAlternative:
+        'A dNBR raster shows Sentinel-2 spectral change across the Greenville study area.',
       title: 'Where did the Dixie Fire burn hardest around Greenville?',
       body: 'The Dixie Fire started on **13 July 2021** near Cresta Dam, destroyed **Greenville on 4 August** and finally burned about 963,000 acres, the second largest fire in California history. This map covers a 15 km square around Greenville at 20 m resolution.\n\nTwo Sentinel-2 scenes frame the fire: **2021-07-13** (the ignition day) and **2021-09-21**. The colors show **dNBR**, how much the burn ratio fell between them. Brighter means a harder burn; **Map shows** below switches layers. Everything you see is computed live on the GPU from the raw red, near-infrared and shortwave-infrared bands.',
+      evidence:
+        'The analysis covers **{{grid}}**; **{{validCells}}** survive the paired-scene and cloud mask, with mean **{{meanDnbr}}**.',
+      caveat:
+        'dNBR is spectral canopy change between two dates, not observed ground severity. The 20 m cells can mix burned and surviving cover.',
       camera: {longitude: -121.0, latitude: 40.17, zoom: 11.5, transitionMs: 1200},
       controls: ['layer', 'opacity'],
-      readouts: ['meanDnbr'],
+      readouts: ['grid', 'validCells', 'meanDnbr'],
       callout: {coordinate: GREENVILLE, text: 'Greenville'},
       highlight: {readout: 'meanDnbr'}
     },
     {
       id: 'band-math',
+      headline: 'NBR declines across the mapped burn scar',
+      textAlternative:
+        'Before and after normalized burn-ratio rasters derive from near- and shortwave-infrared bands.',
       title: 'Step one is band math: the burn ratio',
       body: '`GPURasterArithmetic` evaluates `(A - B) / (A + B)` for every pixel. With A = near-infrared (band 8) and B = shortwave-infrared (band 12) that is the **normalized burn ratio, NBR**. Healthy leaves reflect a lot of near-infrared and little shortwave, so NBR is high (the legend is bright); char and bare soil flip it.\n\nThis is the **before** scene. The same kernel runs again on the after bands, and a third time on red and near-infrared for **NDVI**. Switch **Map shows** below to *NBR after* to see the scar appear, and try **Index formula** for a simple ratio: the operation is a parameter, not a recompile. The readouts quote the CPU reference next to each GPU mean.',
-      options: {layer: 'nbr-before', stretchMode: 'linear', domain: 'fixed', ramp: 'viridis'},
+      evidence:
+        '**{{meanNbr}}** across the cloud-screened cells; switching before and after preserves one authored display domain.',
+      caveat:
+        'NBR responds to water, soil, shadow and canopy moisture as well as fire. Band math alone does not identify a causal mechanism.',
+      options: {layer: 'nbr-before', stretchMode: 'linear', domain: 'fixed', ramp: 'cividis'},
       controls: ['layer', 'indexFormula'],
       readouts: ['meanNbr'],
       highlight: {readout: 'meanNbr'}
     },
     {
       id: 'differencing',
+      headline: 'Positive dNBR marks reduced post-fire vegetation response',
+      textAlternative:
+        'The raster subtracts post-fire NBR from pre-fire NBR for every valid pixel.',
       title: 'Differencing the dates gives dNBR',
       body: 'A second `GPURasterArithmetic` node subtracts the two NBR rasters: **dNBR = NBR before - NBR after**. Positive values mean the burn ratio fell. The mean over the window is **0.489** on the CPU and the GPU matches it; 63% of pixels exceed 0.27, the USGS moderate-low severity boundary.\n\nThe operation is again a parameter. Switch **Change operation** below to the absolute difference and regrowth becomes indistinguishable from burn, a good reason for keeping the sign. The reference method is `gdal_calc.py` or rasterio band math.',
+      evidence:
+        'The live paired-scene result is **{{meanDnbr}}**; the signed operation retains the direction that absolute difference discards.',
+      caveat:
+        'The after image is 70 days after ignition while the fire was still evolving, so this is not a settled final-severity census.',
       options: {layer: 'dnbr'},
       controls: ['changeOperation'],
       readouts: ['meanDnbr'],
@@ -674,8 +705,15 @@ compiled.encode(commandEncoder, {parameters: undefined});`,
     },
     {
       id: 'stretch',
+      headline: 'Percentile clipping increases visible dNBR contrast',
+      textAlternative:
+        'A stretched continuous raster redistributes colors across the selected dNBR value range.',
       title: 'A stretch makes the signal readable',
       body: '`GPURasterStretch` computes the exact range, a 1024-bin histogram and its cumulative distribution on the GPU, then maps every pixel to 0 to 1. The default clips the 2nd and 98th percentile so a few extreme pixels do not flatten the map; *Linear* uses the full range and *Histogram equalization* gives each color the same area; pick one with **Stretch** below.\n\nTry **Percentile clip**, **Gamma**, the **Sigmoidal contrast** S-curve, and **Stretch to the visible extent**: zoom into a single canyon and the statistics window is rewritten from the camera every frame, as in QGIS. Percentile bounds are accurate to one histogram bin.',
+      evidence:
+        'The active stretch maps **{{stretchRange}}** across the displayed histogram; changing the view can recompute that display window.',
+      caveat:
+        'Stretching changes visual contrast, not dNBR values. A view-dependent stretch cannot support comparisons between different map extents.',
       options: {stretchMode: 'percentile', percentiles: [2, 98], gamma: 1.2, stretchToView: false},
       controls: ['stretchMode', 'percentiles', 'gamma', 'sigmoidContrast', 'stretchToView'],
       readouts: ['stretchRange', 'histogram'],
@@ -683,8 +721,15 @@ compiled.encode(commandEncoder, {parameters: undefined});`,
     },
     {
       id: 'burned-mask',
+      headline: 'The threshold classifies most valid cells as burned',
+      textAlternative:
+        'A binary raster separates cells above and below the selected dNBR threshold.',
       title: 'A conditional turns the index into a decision',
       body: '`GPURasterConditional` is "where X take A, else B". First it uses the Sentinel-2 scene classification to drop cloud pixels from dNBR, then it compares what is left with a threshold to build the **burned mask**. At the USGS value of 0.27 the burned share is **63.4%**, matching the CPU reference.\n\nToggle **Screen clouds with the SCL layer**, then drag the **Threshold** and the map follows; set **Burned if dNBR is** to *between* to isolate a band of severity, or to *<* to find vegetation that grew. The comparison and thresholds are parameters of one compiled node.',
+      evidence:
+        '**{{burnedShare}}** among **{{validCells}}**. Play the threshold sweep to see classification sensitivity without changing the underlying raster.',
+      caveat:
+        'The threshold is a rule, not a discovered boundary. Cloud screening and mixed 20 m cells change the population being classified.',
       options: {layer: 'burned', comparison: '>', threshold: 0.27},
       controls: ['maskClouds', 'threshold', 'comparison'],
       readouts: ['burnedShare', 'validCells'],
@@ -692,8 +737,15 @@ compiled.encode(commandEncoder, {parameters: undefined});`,
     },
     {
       id: 'severity-classes',
+      headline: 'USGS breaks partition dNBR into seven classes',
+      textAlternative:
+        'Categorical colors encode enhanced regrowth through high-severity dNBR classes.',
       title: 'Reclassify into severity classes',
       body: '`GPURasterReclassify` finds, by binary search in a break table, how many breaks are at or below each value: that count is the class. The USGS table has six breaks and seven classes, from enhanced regrowth through **high severity above 0.66**. The class counts come from integer atomics, so they are exact and repeatable.\n\nSwitch **Class scheme** below to *Custom* and move the breaks (**Low break**, **Moderate break** and **High break** stay greyed out under the USGS scheme and wake up with *Custom*), or flip **Closed interval side** to see which class owns a value that sits exactly on a break. The same node serves every scheme because only the break count and values change.',
+      evidence:
+        '**{{highShare}}**; the complete partition is **{{classShares}}** and updates from the same break table used by the map.',
+      caveat:
+        'The published breaks are regional rules of thumb. Moving a break changes labels, not the measured reflectance or ecological condition.',
       options: {layer: 'severity', classScheme: 'usgs'},
       controls: ['classScheme', 'lowBreak', 'moderateBreak', 'highBreak', 'closed'],
       readouts: ['highShare', 'classShares'],
@@ -701,8 +753,15 @@ compiled.encode(commandEncoder, {parameters: undefined});`,
     },
     {
       id: 'patches',
+      headline: 'Connectivity groups burned cells into measurable patches',
+      textAlternative:
+        'Connected burned pixels form labeled patches whose areas and perimeters are summarized.',
       title: 'Measure the scar, sieve the specks, mind the limits',
       body: 'The burned mask is labelled into connected **patches** (`GPURasterConnectedComponents`, `GPURasterDenseComponents`), each measured for area, perimeter and bounding box (`GPURasterPatchMetrics`, the FRAGSTATS way), and `GPURasterSieve` drops patches under a minimum size like `gdal_sieve`. Raise **Minimum patch size** below and the specks vanish; switch **Patches of** to *Unburned pixels (islands)* to see the islands inside the scar. Click a patch for its numbers.\n\n**Limits:** Sentinel-2 sees canopy, not ground; a 20 m pixel can hide unburned pockets; dNBR depends on the dates (the after image is 70 days post-ignition, the burn was still growing); and the 0.27 and 0.66 breaks are regional rules of thumb. **Try:** **Pixel connectivity** 8, a 10 ha sieve, the threshold at 0.44, or percentile 0 to 100.',
+      evidence:
+        'After connectivity and sieving, **{{patchCount}}** remain; **{{largestPatch}}**, while **{{sieved}}** were removed by the current size rule.',
+      caveat:
+        'Patch identity depends on the threshold, four- versus eight-neighbor connectivity and sieve size. It is a raster topology, not a field-mapped fire perimeter.',
       options: {layer: 'patches', minimumPatchHa: 1.2},
       controls: ['patchTarget', 'minimumPatchHa', 'connectivity', 'sieveMode'],
       readouts: ['patchCount', 'largestPatch', 'sieved'],

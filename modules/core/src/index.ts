@@ -72,7 +72,7 @@ export {RenderBundle, RenderBundleEncoder} from './adapter/resources/render-bund
 export type {ComputePipelineProps} from './adapter/resources/compute-pipeline';
 export {ComputePipeline} from './adapter/resources/compute-pipeline';
 
-export type {ComputePassProps} from './adapter/resources/compute-pass';
+export type {ComputePassBindingOptions, ComputePassProps} from './adapter/resources/compute-pass';
 export {ComputePass} from './adapter/resources/compute-pass';
 
 export type {CommandEncoderProps} from './adapter/resources/command-encoder';

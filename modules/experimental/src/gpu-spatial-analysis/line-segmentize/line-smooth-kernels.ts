@@ -234,7 +234,7 @@ export function createSmoothPublishNode<Parameters>(
     outputPathOffsets: GraphDataView<'uint32'>;
     count: GraphDataView<'uint32'>;
     overflow: GraphDataView<'uint32'>;
-    totalCount?: GraphDataView<'uint32'>;
+    requiredCount?: GraphDataView<'uint32'>;
     pathCountOutput?: GraphDataView<'uint32'>;
   }
 ): GPUCommandNode<Parameters> {
@@ -255,8 +255,8 @@ export function createSmoothPublishNode<Parameters>(
     {name: 'countOut', view: props.count, type: 'u32', access: 'read_write'},
     {name: 'overflowOut', view: props.overflow, type: 'u32', access: 'read_write'}
   );
-  if (props.totalCount) {
-    bindings.push({name: 'totalOut', view: props.totalCount, type: 'u32', access: 'read_write'});
+  if (props.requiredCount) {
+    bindings.push({name: 'totalOut', view: props.requiredCount, type: 'u32', access: 'read_write'});
   }
   if (props.pathCountOutput) {
     bindings.push({
@@ -285,7 +285,7 @@ ${LEVEL_OFFSETS_WGSL}`,
   if (index == 0u) {
     countOut[countOutOffset] = min(total, CAPACITY);
     overflowOut[overflowOutOffset] = select(0u, 1u, total > CAPACITY);
-    ${props.totalCount ? 'totalOut[totalOutOffset] = total;' : ''}
+    ${props.requiredCount ? 'totalOut[totalOutOffset] = total;' : ''}
     ${props.pathCountOutput ? 'pathCountOut[pathCountOutOffset] = PATH_COUNT;' : ''}
   }`
   });

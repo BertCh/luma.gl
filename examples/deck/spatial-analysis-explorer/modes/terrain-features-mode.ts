@@ -398,7 +398,7 @@ export const terrainFeaturesMode: SpatialAnalysisModeDefinition = {
           ids: importGraphBuffer(summitGraph, 'ids', summitIds, 'uint32', SUMMIT_CAPACITY),
           count: importGraphBuffer(summitGraph, 'count', summitCount, 'uint32', 1),
           overflow: importGraphBuffer(summitGraph, 'overflow', summitOverflow, 'uint32', 1),
-          totalCount: importGraphBuffer(summitGraph, 'total', summitTotal, 'uint32', 1)
+          requiredCount: importGraphBuffer(summitGraph, 'total', summitTotal, 'uint32', 1)
         },
         outputDrop: importGraphBuffer(
           summitGraph,

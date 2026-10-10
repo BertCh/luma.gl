@@ -106,7 +106,7 @@ it('GPUIsobands matches the CPU oracle as breaks, counts and windows change with
       triangleBands: importGraphBuffer(graph, 'bands', bandsBuffer, 'uint32', CAPACITY),
       count: importGraphBuffer(graph, 'count', countBuffer, 'uint32', 1),
       overflow: importGraphBuffer(graph, 'overflow', overflowBuffer, 'uint32', 1),
-      totalCount: importGraphBuffer(graph, 'total', totalBuffer, 'uint32', 1),
+      requiredCount: importGraphBuffer(graph, 'total', totalBuffer, 'uint32', 1),
       vertexCount: importGraphBuffer(graph, 'vertex-count', vertexCountBuffer, 'uint32', 1)
     }
   });
@@ -151,7 +151,7 @@ it('GPUIsobands matches the CPU oracle as breaks, counts and windows change with
     const expected = buildIsobandTrianglesOnCPU(scene, parameters, MAXIMUM_BREAK_COUNT, CAPACITY);
     const [count] = await readUint32(countBuffer, 1);
     expect(count, `${label} count`).toBe(expected.bands.length);
-    expect(await readUint32(totalBuffer, 1), `${label} total`).toEqual([expected.totalCount]);
+    expect(await readUint32(totalBuffer, 1), `${label} total`).toEqual([expected.requiredCount]);
     expect(await readUint32(overflowBuffer, 1), `${label} overflow`).toEqual([0]);
     expect(await readUint32(vertexCountBuffer, 1), `${label} vertexCount`).toEqual([3 * count]);
     expect(count, `${label} nonempty`).toBeGreaterThan(0);
@@ -168,7 +168,7 @@ it('GPUIsobands matches the CPU oracle as breaks, counts and windows change with
   }
   expect(compileCount - 1, 'rebuilds').toBe(0);
 
-  // Capacity overflow: a smaller graph reuses the same oracle; totalCount stays unclamped.
+  // Capacity overflow: a smaller graph reuses the same oracle; requiredCount stays unclamped.
   const smallCapacity = 40;
   const smallGraph = new GPUCommandGraph(device, {id: 'isobands-small'});
   smallGraph.add(
@@ -191,7 +191,7 @@ it('GPUIsobands matches the CPU oracle as breaks, counts and windows change with
         triangleBands: importGraphBuffer(smallGraph, 'bands', bandsBuffer, 'uint32', smallCapacity),
         count: importGraphBuffer(smallGraph, 'count', countBuffer, 'uint32', 1),
         overflow: importGraphBuffer(smallGraph, 'overflow', overflowBuffer, 'uint32', 1),
-        totalCount: importGraphBuffer(smallGraph, 'total', totalBuffer, 'uint32', 1)
+        requiredCount: importGraphBuffer(smallGraph, 'total', totalBuffer, 'uint32', 1)
       }
     })
   );
@@ -209,10 +209,10 @@ it('GPUIsobands matches the CPU oracle as breaks, counts and windows change with
     MAXIMUM_BREAK_COUNT,
     smallCapacity
   );
-  expect(expected.totalCount).toBeGreaterThan(smallCapacity);
+  expect(expected.requiredCount).toBeGreaterThan(smallCapacity);
   expect(await readUint32(countBuffer, 1)).toEqual([smallCapacity]);
   expect(await readUint32(overflowBuffer, 1)).toEqual([1]);
-  expect(await readUint32(totalBuffer, 1)).toEqual([expected.totalCount]);
+  expect(await readUint32(totalBuffer, 1)).toEqual([expected.requiredCount]);
   expect(await readUint32(bandsBuffer, smallCapacity)).toEqual(expected.bands);
 
   smallCompiled.destroy();

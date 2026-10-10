@@ -230,7 +230,10 @@ export const isochronesMode: SpatialAnalysisModeDefinition = {
       (RING_CAPACITY + 1) * 4
     );
     const polygonOffsets = resources.createBuffer('polygon-offsets', (RING_CAPACITY + 1) * 4);
-    const polygonFeatureOffsets = resources.createBuffer('polygon-feature-offsets', 8);
+    const polygonFeatureOffsets = resources.createBuffer(
+      'polygon-feature-offsets',
+      (RING_CAPACITY + 1) * 4
+    );
     const costs = resources.createBuffer('costs', nodeCount * 4);
     const assignments = resources.createBuffer('assignments', nodeCount * 4);
     const pixelFacilities = resources.createBuffer(
@@ -329,7 +332,7 @@ export const isochronesMode: SpatialAnalysisModeDefinition = {
         'polygon-feature-offsets',
         polygonFeatureOffsets,
         'uint32',
-        2
+        RING_CAPACITY + 1
       );
       const costsView = importGraphBuffer(graph, 'costs', costs, 'float32', nodeCount);
       const assignmentsView = importGraphBuffer(
@@ -484,7 +487,7 @@ export const isochronesMode: SpatialAnalysisModeDefinition = {
                 ),
                 count: importGraphBuffer(graph, 'ring-count', ringCount, 'uint32', 1),
                 overflow: importGraphBuffer(graph, 'ring-overflow', ringOverflow, 'uint32', 1),
-                totalCount: importGraphBuffer(graph, 'ring-total', ringTotal, 'uint32', 1),
+                requiredCount: importGraphBuffer(graph, 'ring-total', ringTotal, 'uint32', 1),
                 openSegmentCount: importGraphBuffer(graph, 'ring-open', ringOpen, 'uint32', 1),
                 touchingSegmentCount: importGraphBuffer(
                   graph,
@@ -494,6 +497,7 @@ export const isochronesMode: SpatialAnalysisModeDefinition = {
                   1
                 ),
                 polygons: {
+                  kind: 'polygons',
                   positions: polygonPositionsView,
                   ringOffsets: polygonRingOffsetsView,
                   polygonOffsets: polygonOffsetsView,
@@ -539,7 +543,7 @@ export const isochronesMode: SpatialAnalysisModeDefinition = {
               ),
               count: importGraphBuffer(graph, 'outline-count', outlineCount, 'uint32', 1),
               overflow: importGraphBuffer(graph, 'outline-overflow', outlineOverflow, 'uint32', 1),
-              totalCount: importGraphBuffer(graph, 'outline-total', outlineTotal, 'uint32', 1)
+              requiredCount: importGraphBuffer(graph, 'outline-total', outlineTotal, 'uint32', 1)
             }
           }
         })

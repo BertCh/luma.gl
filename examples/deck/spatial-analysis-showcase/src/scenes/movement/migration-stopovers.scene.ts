@@ -315,9 +315,9 @@ import {
 
 // positions: azimuthal-equidistant meters, timestamps: float32 seconds of the folded year
 // 1. Dwells: runs of slow steps lasting at least the minimum stay
-metricsGraph.add(new GPUTrajectoryMetrics({
+metricsGraph.add(new GPUTrajectoryMetrics({spatialContext: {coordinateSpace: 'planar', metric: 'native', units: 'native'},
   positions, timestamps, trackOffsets, parameters: metricsParameters.importToGraph(metricsGraph),
-  stops: {output: {ids, count, overflow, totalCount}, startRows, endRows, centroids, durations}  // capacity 16,384
+  stops: {output: {ids, count, overflow, requiredCount}, startRows, endRows, centroids, durations}  // capacity 16,384
 }));
 metricsParameters.write(getGPUTrajectoryMetricsParameterValues({
   stopSpeedThreshold: ${state.stopSpeed}, stopMinimumDuration: ${state.minStayHours * 3600}     // m/s, s

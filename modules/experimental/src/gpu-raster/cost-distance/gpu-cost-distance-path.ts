@@ -41,7 +41,7 @@ export type GPUCostDistancePathProps = {
   /**
    * Caller-owned bounded output. `ids` holds cell indices from the target (first) to the source
    * cell (last); capacity is `ids.length` (compile-time). `count` is clamped, `overflow` is 1 when
-   * the path is longer than the capacity, `totalCount` is the exact path length. The path is empty
+   * the path is longer than the capacity, `requiredCount` is the exact path length. The path is empty
    * (count 0) when the target is out of range or unreached.
    */
   output: GPUCompactOutput;
@@ -73,7 +73,7 @@ export class GPUCostDistancePath implements GPUCommandNodeProducer {
       ['output ids', output.ids],
       ['output count', output.count],
       ['output overflow', output.overflow],
-      ['output totalCount', output.totalCount]
+      ['output requiredCount', output.requiredCount]
     ] as const) {
       if (view) {
         validatePackedUint32View(view, `${id} ${name}`);
@@ -86,7 +86,7 @@ export class GPUCostDistancePath implements GPUCommandNodeProducer {
       ['target', props.target],
       ['output count', output.count],
       ['output overflow', output.overflow],
-      ['output totalCount', output.totalCount]
+      ['output requiredCount', output.requiredCount]
     ] as const) {
       if (view && view.length !== 1) {
         throw new Error(`${id} ${name} must contain exactly one row`);
@@ -97,7 +97,7 @@ export class GPUCostDistancePath implements GPUCommandNodeProducer {
     }
     validateTerrainBuffersDistinct(
       id,
-      [output.ids, output.count, output.overflow, output.totalCount],
+      [output.ids, output.count, output.overflow, output.requiredCount],
       [props.backLinks, props.target]
     );
   }
@@ -114,7 +114,7 @@ export class GPUCostDistancePath implements GPUCommandNodeProducer {
       output.ids,
       output.count,
       output.overflow,
-      output.totalCount
+      output.requiredCount
     ]);
     const cellCount = props.width * props.height;
     const total = createContributorTransientView(graph, OPERATION, id, `${id}-total`, 'uint32', 1);
@@ -169,7 +169,7 @@ fn getNeighbor(cell: u32, direction: u32) -> u32 {
       createPublishNode<Parameters>(graph, {
         id: `${id}-publish`,
         operation: OPERATION,
-        totalCount: total,
+        requiredCount: total,
         output
       })
     ];

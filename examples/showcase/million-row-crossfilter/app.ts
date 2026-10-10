@@ -197,7 +197,7 @@ export default class MillionRowCrossfilterAnimationLoopTemplate extends Animatio
         this.redrawRequested = true;
       }
     });
-    this.interface.setSummary({totalCount: this.rowCount, selectedCount: 0});
+    this.interface.setSummary({requiredCount: this.rowCount, selectedCount: 0});
     this.interface.setStatus('Preparing GPU-resident transaction columns · 0%');
 
     // Paint the dashboard before generating a million rows, then yield between bounded batches so
@@ -517,7 +517,7 @@ export default class MillionRowCrossfilterAnimationLoopTemplate extends Animatio
 
   private updateSummary(summary: CrossfilterSummary): void {
     this.interface?.setSummary({
-      totalCount: summary.rowCount,
+      requiredCount: summary.rowCount,
       selectedCount: summary.selectedCount,
       frameRate: this.frameRate,
       encodeTimeMilliseconds: summary.encodeTimeMilliseconds,

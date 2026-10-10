@@ -3,3 +3,4 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import './gpu-geographic-distribution.spec';
+import './gpu-rose-statistic.spec';

@@ -73,7 +73,9 @@ function createFixture(
         pathOffsets: inputs['pathOffsets'] as never,
         columns: options.columns,
         rows: options.rows,
-        coordinateSystem: options.spherical ? 'spherical' : 'planar',
+        spatialContext: options.spherical
+          ? {coordinateSpace: 'longitude-latitude', metric: 'great-circle', units: 'meters'}
+          : {coordinateSpace: 'planar', metric: 'native', units: 'native'},
         maximumRecords: options.maximumRecords,
         parameters,
         output: {

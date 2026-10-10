@@ -32,6 +32,10 @@ import {
   GPUTileLODSelection,
   makeGPUTileLODQuadtree
 } from '@luma.gl/experimental/gpu-tables';
+import {
+  validateGPUTilePartitionDescriptor,
+  type GPUTilePartitionDescriptor
+} from '@luma.gl/experimental/gpu-spatial-analysis';
 import {importGraphBuffer} from '../graph-buffers';
 import {NEW_YORK_ORIGIN} from '../spatial-analysis-data';
 import type {
@@ -100,6 +104,31 @@ export const tileLodMode: SpatialAnalysisModeDefinition = {
       tileBounds.set([minX, minY, minX + width, minY + width], node * 4);
       tileLevels[node] = level;
     }
+    const tilePartitioning: GPUTilePartitionDescriptor = {
+      tiles: Array.from({length: nodeCount}, (_, id) => {
+        const offset = 4 * id;
+        const bounds = [
+          tileBounds[offset],
+          tileBounds[offset + 1],
+          tileBounds[offset + 2],
+          tileBounds[offset + 3]
+        ] as const;
+        // Two percent overlap is an explicit read halo; lowest tile ID owns duplicate seam work.
+        const halo = 0.02 * (bounds[2] - bounds[0]);
+        return {
+          id,
+          bounds,
+          haloBounds: [
+            bounds[0] - halo,
+            bounds[1] - halo,
+            bounds[2] + halo,
+            bounds[3] + halo
+          ] as const
+        };
+      }),
+      seamOwnership: 'lowest-tile-id'
+    };
+    validateGPUTilePartitionDescriptor('tile-lod', tilePartitioning);
     const tileBoundsBuffer = resources.createBuffer('tile-bounds', tileBounds);
     const tileLevelsBuffer = resources.createBuffer('tile-levels', tileLevels);
 
@@ -175,13 +204,13 @@ export const tileLodMode: SpatialAnalysisModeDefinition = {
           ids: importGraphBuffer(graph, 'drawn-ids', drawnIds, 'uint32', DRAWN_CAPACITY),
           count: importGraphBuffer(graph, 'drawn-count', drawnCount, 'uint32', 1),
           overflow: importGraphBuffer(graph, 'drawn-overflow', drawnOverflow, 'uint32', 1),
-          totalCount: importGraphBuffer(graph, 'drawn-total', drawnTotal, 'uint32', 1)
+          requiredCount: importGraphBuffer(graph, 'drawn-total', drawnTotal, 'uint32', 1)
         },
         requests: {
           ids: importGraphBuffer(graph, 'request-ids', requestIds, 'uint32', REQUEST_CAPACITY),
           count: importGraphBuffer(graph, 'request-count', requestCount, 'uint32', 1),
           overflow: importGraphBuffer(graph, 'request-overflow', requestOverflow, 'uint32', 1),
-          totalCount: importGraphBuffer(graph, 'request-total', requestTotal, 'uint32', 1),
+          requiredCount: importGraphBuffer(graph, 'request-total', requestTotal, 'uint32', 1),
           priorities: importGraphBuffer(
             graph,
             'request-priorities',
@@ -290,8 +319,10 @@ export const tileLodMode: SpatialAnalysisModeDefinition = {
     const budgetReadout = context.controls.addReadout('Budget');
     const errorReadout = context.controls.addReadout('Max screen-space error');
     context.controls.addNote(
-      'Hierarchy, view, residency, and budget are GPU buffers; only a 556-byte summary is read ' +
-        'back every 10 frames to drive the simulated loader (300-800 ms latency, nothing evicted).'
+      `Hierarchy, view, residency, and budget are GPU buffers. ${formatCount(tilePartitioning.tiles.length)} ` +
+        'tile identities retain explicit two-percent halos with lowest-ID seam ownership. Only a ' +
+        '556-byte summary is read back every 10 frames to drive the simulated loader ' +
+        '(300-800 ms latency, nothing evicted).'
     );
     totalReadout.setValue(`${formatCount(nodeCount)} (${MAXIMUM_LEVEL + 1} levels)`);
 

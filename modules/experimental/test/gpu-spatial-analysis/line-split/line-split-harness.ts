@@ -24,8 +24,9 @@ export type SplitResult = {
   count: number;
   vertexCount: number;
   overflow: number;
-  totalCount: number;
-  totalVertexCount: number;
+  candidateOverflow: number;
+  requiredCount: number;
+  requiredVertexCount: number;
 };
 
 export type SplitOptions = {
@@ -84,8 +85,9 @@ export async function runLineSplit(
   const count = output('count', 1);
   const vertexCount = output('vertex-count', 1);
   const overflow = output('overflow', 1);
-  const totalCount = output('total-count', 1);
-  const totalVertexCount = output('total-vertex-count', 1);
+  const candidateOverflow = output('candidate-overflow', 1);
+  const requiredCount = output('total-count', 1);
+  const requiredVertexCount = output('total-vertex-count', 1);
   graph.add(
     new GPULineSplit({
       lines: {
@@ -95,14 +97,20 @@ export async function runLineSplit(
       },
       intersectionCapacity: options.intersectionCapacity ?? 512,
       pieces: {
-        lineIds: lineIds.view,
-        offsets: offsets.view,
-        positions: positions.view,
-        count: count.view,
+        geometry: {
+          kind: 'lines',
+          positions: positions.view,
+          lineOffsets: offsets.view
+        },
+        sourceIds: lineIds.view,
+        status: {
+          count: count.view,
+          overflow: overflow.view,
+          candidateOverflow: candidateOverflow.view,
+          requiredCount: requiredCount.view
+        },
         vertexCount: vertexCount.view,
-        overflow: overflow.view,
-        totalCount: totalCount.view,
-        totalVertexCount: totalVertexCount.view
+        requiredVertexCount: requiredVertexCount.view
       }
     })
   );
@@ -127,8 +135,9 @@ export async function runLineSplit(
     count: pieceCount,
     vertexCount: vertexTotal,
     overflow: (await readUint32(overflow.buffer, 1))[0],
-    totalCount: (await readUint32(totalCount.buffer, 1))[0],
-    totalVertexCount: (await readUint32(totalVertexCount.buffer, 1))[0]
+    candidateOverflow: (await readUint32(candidateOverflow.buffer, 1))[0],
+    requiredCount: (await readUint32(requiredCount.buffer, 1))[0],
+    requiredVertexCount: (await readUint32(requiredVertexCount.buffer, 1))[0]
   };
   compiled.destroy();
   for (const buffer of buffers) {

@@ -268,7 +268,7 @@ export default defineScene<JobAccessibilityOptions>({
   chapter: 'networks',
   order: 3,
   summary:
-    'Cumulative, gravity and two-step job accessibility for every Chicago intersection on foot and by CTA, scored from one cost matrix of the 256 job-richest census tracts.',
+    'The default 256 highest-job Chicago census tracts are snapped to a walk-and-scheduled-CTA network; GPU cost matrices provide cumulative, gravity and 2SFCA scores at intersections, while small summaries are read to the CPU. Jobs outside the retained tracts and observed travel reliability are not represented.',
   contributors: ['GPUNetworkSnapping', 'GPUNetworkCostMatrix', 'GPUNetworkAccessibility'],
   datasets: [
     {id: 'chicago-roads', role: 'walkable streets'},
@@ -279,7 +279,9 @@ export default defineScene<JobAccessibilityOptions>({
   basemap: ground('paperCity'),
   furniture: {
     title: {title: 'Jobs reachable without a car'},
-    credit: 'LEHD · CTA · Census · OpenStreetMap contributors (ODbL)'
+    credit: 'LEHD · CTA · Census · OpenStreetMap contributors (ODbL)',
+    caveat:
+      'The default support is the 256 highest-job tracts; scheduled travel costs and tract centroids do not represent all jobs or observed trips.'
   },
   options,
 
@@ -450,76 +452,100 @@ scoring.write(encodeGPUNetworkAccessibilityParameters(${
     {
       id: 'opportunities',
       title: 'Jobs are not evenly distributed',
-      headline: 'Opportunity comes before travel.',
+      headline: 'Retained tracts contain an incomplete job sample',
       textAlternative:
-        'Tract outlines and hollow circles sized by loaded workplace jobs; the adjacent chart reports their live shares.',
+        'Map of the default 256 retained Chicago tracts; hollow circles at tract centroids are sized by workplace jobs, and the chart reports the retained share of city jobs.',
       optionsMode: 'fresh',
       controls: ['showOpportunities'],
       readouts: ['opportunityShare', 'topOpportunity'],
       options: {showOpportunities: true, showTransit: false},
       camera: {longitude: -87.7, latitude: 41.84, zoom: 10.2},
-      body: 'Hollow circles are area-scaled workplace jobs in the retained, loaded tracts. The share chart and top-tract annotation are calculated from those rows, rather than asserting a city total or a downtown share.'
+      body: 'The input ranks Chicago census tracts by LEHD workplace jobs and retains the selected row count; the default is 256. Hollow centroid circles show those job weights before network scoring. The CPU prepares the tract rows and summary chart; later steps snap them and compute travel costs on the GPU.',
+      evidence:
+        'The live composition chart summarizes the loaded opportunity rows, while **{{topOpportunity}}** anchors the largest retained tract on the map.',
+      caveat:
+        'These are tract-level workplace estimates represented at centroids, not establishment points or a complete citywide employment census.'
     },
     {
       id: 'walk',
       title: 'Walking draws a small labour market',
-      headline: 'The threshold has fixed job classes.',
+      headline: 'Walking access uses fixed cumulative-job classes',
       textAlternative:
-        'Classed cumulative walk-only accessibility with visible zero streets and a metric scale bar.',
+        'Chicago street intersections classed by jobs reachable within 30 modeled walking minutes; gray streets reach no retained job tract, and the legend uses fixed job-count breaks.',
       optionsMode: 'fresh',
       controls: ['thresholdMinutes', 'walkSpeed'],
       readouts: ['reached', 'median'],
       options: {transit: false, measure: 'cumulative', thresholdMinutes: 30},
-      body: 'Walking-only scores use the published zero, 1–5k, 5–25k, 25–100k, 100–250k and >250k job classes. Zero stays a neutral street, not missing data.'
+      body: 'Walking-only scores use the published zero, 1–5k, 5–25k, 25–100k, 100–250k and >250k job classes. Zero stays a neutral street, not missing data.',
+      evidence:
+        '**{{reached}}** intersections reach at least one retained opportunity; the median modeled access is **{{median}}**.',
+      caveat:
+        'Walking speed is uniform and the street graph does not encode sidewalk quality, crossings, grade or personal mobility constraints.'
     },
     {
       id: 'transit',
       title: 'Transit opens narrow corridors',
-      headline: 'Scheduled CTA changes the same classes.',
+      headline: 'CTA changes modeled access on fixed classes',
       textAlternative:
-        'The same cumulative classes compare walking with the scheduled CTA network while rail remains neutral and cased.',
+        'Chicago intersections classed by jobs reachable within 45 modeled minutes using walking and scheduled CTA; the comparison chart uses the same job-count breaks as walking only.',
       optionsMode: 'fresh',
       controls: ['transit', 'waitFactor'],
       readouts: ['transitComparison', 'median', 'encodes'],
       options: {transit: true, measure: 'cumulative', thresholdMinutes: 45, showTransit: true},
-      body: 'This uses scheduled median hops and expected half-headway waiting: a scheduled approximation, not a reliability percentile. The fixed classes make the walk and CTA comparison legible.'
+      body: 'This uses scheduled median hops and expected half-headway waiting: a scheduled approximation, not a reliability percentile. The fixed classes make the walk and CTA comparison legible.',
+      evidence:
+        'The paired distribution chart holds the job classes constant; the current median is **{{median}}**, so color changes mean changed access rather than a rescaled legend.',
+      caveat:
+        'Scheduled service omits missed connections, crowding, disruptions and day-to-day reliability. The result is a planning baseline, not a promised trip.'
     },
     {
       id: 'matrix-row',
       title: 'One row is one destination',
-      headline: 'A retained opportunity has street bands.',
+      headline: 'One retained tract defines each matrix row',
       textAlternative:
-        'Snap leaders link retained opportunity centroids to streets and a selected matrix row is shown in ten-minute travel bands.',
+        'Lines connect retained tract centroids to their snapped street positions; one GPU matrix row colors streets in ten-minute modeled travel-cost bands.',
       optionsMode: 'fresh',
       controls: ['showSnaps', 'maxSnapDistance', 'opportunityRows'],
       readouts: ['matrix', 'selectedRow', 'snapDistance'],
       options: {showSnaps: true, showOpportunities: true, transit: true},
       camera: {longitude: -87.64, latitude: 41.88, zoom: 12.2},
-      body: 'Each retained opportunity is snapped before the reverse cost-matrix search. The selected row is copied from the retained matrix for a local ten-minute band display; it does not trigger a CPU matrix readback.'
+      body: 'Each retained opportunity is snapped before the reverse cost-matrix search. The selected row is copied from the retained matrix for a local ten-minute band display; it does not trigger a CPU matrix readback.',
+      evidence:
+        'The matrix currently reports **{{matrix}}**; the selected opportunity row is **{{selectedRow}}** with **{{snapDistance}}** of snap distance.',
+      caveat:
+        'Rows beyond the retained matrix capacity are excluded before scoring, and distant snaps can blur the relationship between a tract centroid and its actual access point.'
     },
     {
       id: 'decay',
       title: 'A threshold is a cliff',
-      headline: 'Decay re-scores without another search.',
+      headline: 'Decay re-scores without rebuilding travel costs',
       textAlternative:
-        'A chart compares the cumulative threshold cliff with exponential and power decay responses linked to the threshold and beta controls.',
+        'Response chart comparing cumulative cutoff, exponential decay and power decay against modeled travel minutes; score changes reuse the GPU cost matrix.',
       optionsMode: 'fresh',
       controls: ['thresholdMinutes', 'beta', 'measure'],
       readouts: ['scoreTime', 'matrixTime', 'encodes'],
       options: {transit: true, measure: 'gravity-exponential', thresholdMinutes: 45, beta: 1},
-      body: 'The cumulative, exponential and power responses are charted from the current scoring controls. Only the score graph changes when threshold or decay changes; the matrix encode count remains fixed.'
+      body: 'The cumulative, exponential and power responses are charted from the current scoring controls. Only the score graph changes when threshold or decay changes; the matrix encode count remains fixed.',
+      evidence:
+        'The retained search costs **{{matrixTime}}** to recompute versus **{{scoreTime}}** to re-score; encode counts are **{{encodes}}**.',
+      caveat:
+        'Decay is a behavioral assumption. A smoother curve avoids a hard cutoff but does not reveal the true willingness of travelers to accept longer trips.'
     },
     {
       id: 'competition',
       title: 'Jobs per competing worker',
-      headline: 'Competition changes accessibility counts.',
+      headline: '2SFCA divides jobs by reachable worker counts',
       textAlternative:
-        'Fixed cumulative and 2SFCA comparisons label the latter as jobs per 1,000 competing workers.',
+        'Chicago intersections compared with fixed cumulative-job classes and 2SFCA classes measured as retained jobs per 1,000 reachable workers.',
       optionsMode: 'fresh',
       controls: ['measure', 'thresholdMinutes'],
       readouts: ['competitionComparison', 'median', 'mean', 'top'],
       options: {transit: true, measure: 'two-step', thresholdMinutes: 45},
-      body: '2SFCA divides jobs by workers able to reach each opportunity and is shown as jobs per 1,000 competing workers. It shares the scheduled, centroid and retained-row limitations of this demonstration.'
+      body: '2SFCA divides jobs by workers able to reach each opportunity and is shown as jobs per 1,000 competing workers. It shares the scheduled, centroid and retained-row limitations of this demonstration.',
+      evidence:
+        'The fixed comparison reports a median of **{{median}}**, a mean of **{{mean}}** and an observed maximum of **{{top}}**.',
+      caveat:
+        '2SFCA treats every reachable worker as an equal competitor and every retained job as interchangeable; occupation fit and hiring barriers are not represented.'
     }
   ]
 });

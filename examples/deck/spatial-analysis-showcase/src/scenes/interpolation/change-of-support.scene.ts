@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {ground} from '../../cartography/grounds';
 import {defineScene} from '../scene';
 import {COS_GROUPS, COS_VARIABLES, getCosLegendText, getCosVariable} from './b7-cos-style';
 import type {ChangeOfSupportOptions} from './change-of-support.compute';
@@ -11,11 +12,11 @@ const ITERATION_LADDER = [0, 2, 8, 32, 128, 512];
 /** Chapter `interpolation`, scene 2: census tracts moved to hexagons and community areas. */
 export default defineScene<ChangeOfSupportOptions>({
   id: 'change-of-support',
-  title: 'Move Chicago’s census numbers onto a hexagon grid',
+  title: 'Chicago population: transferred counts by target zone',
   chapter: 'interpolation',
   order: 2,
   summary:
-    'Chicago publishes data by census tract, but planners work in community areas and grids. Move counts, rates and categories between zone systems on the GPU with area-share weights, refine them with a street-density (dasymetric) raster, and build Tobler’s smooth mass-preserving surface.',
+    'GPU areal interpolation transfers Chicago census-tract counts, rates and categories to hexagons or community areas, with optional street-density weighting. The output depends on raster resolution, zone alignment and the selected denominator.',
   contributors: ['GPUArealInterpolation', 'GPUPycnophylactic', 'addChangeOfSupportRecipe'],
   datasets: [
     {
@@ -27,6 +28,14 @@ export default defineScene<ChangeOfSupportOptions>({
     {id: 'chicago-places', role: 'point-of-interest density for dasymetric weights'}
   ],
   initialView: {longitude: -87.78, latitude: 41.84, zoom: 9.9},
+  basemap: ground('paperCity'),
+  furniture: {
+    title: {title: 'Chicago change of support', subtitle: 'Census-tract values by target zone'},
+    scaleBar: {units: 'metric'},
+    credit: 'U.S. Census Bureau; City of Chicago; OpenStreetMap contributors',
+    caveat:
+      'Transferred values depend on raster resolution, target geometry and weighting assumptions.'
+  },
 
   options: [
     {
@@ -216,7 +225,7 @@ export default defineScene<ChangeOfSupportOptions>({
       label: 'Color ramp',
       group: 'Display',
       apply: 'param',
-      default: 'viridis',
+      default: 'cividis',
       help: 'The legend range is the 1st to 98.5th percentile of the drawn values, so a few extreme tracts do not wash out the map.',
       options: [
         {value: 'viridis', label: 'Viridis'},
@@ -273,6 +282,18 @@ export default defineScene<ChangeOfSupportOptions>({
       id: 'conservation',
       label: 'Totals, tracts → targets',
       help: 'The sum of the transferred counts against the sum of the tract counts. Extensive transfers conserve mass up to the raster resolution.'
+    },
+    {
+      id: 'conservationChart',
+      label: 'Conservation comparison',
+      kind: 'chart',
+      help: 'Source and target totals for the extensive count columns used by the conserving rule.'
+    },
+    {
+      id: 'targetDistribution',
+      label: 'Target-zone distribution',
+      kind: 'chart',
+      help: 'Distribution of the currently selected transfer across covered target zones.'
     },
     {
       id: 'pairs',
@@ -371,52 +392,89 @@ compiled.encode(commandEncoder, {parameters: undefined});
   story: [
     {
       id: 'the-problem',
+      headline: 'Tract totals require a target-zone allocation rule',
+      textAlternative:
+        'A tract choropleth shows Chicago population before transfer to a regular hexagon grid.',
       title: 'How many people live in each hexagon?',
       body: 'Chicago’s 2020 census counts are published for **791 tracts**: irregular zones drawn to hold about 4,000 people, so a tract in the Loop is tiny and one on the Southwest Side is huge. A planner wants the same numbers on a **regular hexagon grid**, or for the 77 **community areas** the city uses for reporting. The boundaries do not line up, so someone has to decide how to cut a tract in two.\n\nThat is **change of support**. Here are the raw tract populations (2.7 million residents), with the tract outlines; **Tract variable**, **Target zones** and **Show** below choose what is moved, where to and what is drawn. Hover a tract for its identifier and population.',
       camera: {longitude: -87.78, latitude: 41.84, zoom: 9.9, transitionMs: 1500},
       options: {view: 'source', variable: 'population', target: 'hexagon'},
       controls: ['variable', 'target', 'view'],
-      readouts: ['tracts']
+      readouts: ['tracts'],
+      evidence:
+        'The source layer contains one observed table row per census tract; the transfer begins from those published zone totals.',
+      caveat: 'A tract total says nothing about where residents are located inside that tract.'
     },
     {
       id: 'extensive',
+      headline: 'Area shares preserve transferred population totals',
+      textAlternative:
+        'Hexagons display population allocated from intersecting census tracts by shared area.',
       title: 'Counts are split by area share',
       body: 'A count is **extensive**: it adds up. `GPUArealInterpolation` rasterizes tracts and hexagons onto one fine grid and counts the cells where tract *s* and hexagon *t* overlap, `aₛₜ`. The share of tract *s* that lands in hexagon *t* is `wₜₛ = aₛₜ / Aₛ`, so a hexagon holds `Σₛ wₜₛ xₛ` residents and every tract’s people are divided, never duplicated.\n\nThe **Totals, tracts → targets** readout checks it: tracts in, hexagons out, within a rounding fraction of a percent. Slide the **Grid cell width** (a per-frame parameter) and try **Grid offset**: the same data on a shifted grid gives different cell values, the modifiable areal unit problem. This is the recipe `addChangeOfSupportRecipe` assembles from a rasterizer, `GPUArealInterpolation` and `GPUSpatialLag`; it matches `tobler.area_interpolate` with extensive variables.',
       camera: {longitude: -87.78, latitude: 41.84, zoom: 10.1, transitionMs: 1500},
       options: {view: 'target', cellWidth: 1200},
       controls: ['cellWidth', 'gridShift'],
-      readouts: ['conservation']
+      readouts: ['conservation', 'conservationChart', 'targetDistribution'],
+      evidence:
+        'The conservation chart compares the actual summed source columns with the GPU-transferred target columns; the histogram shows how the same total is redistributed among target zones.',
+      caveat:
+        'Rasterized overlap introduces boundary error, and changing grid width or offset changes the target-zone distribution even when the source data stay fixed.'
     },
     {
       id: 'rates',
+      headline: 'Rate reconstruction changes unequal-population target values',
+      textAlternative:
+        'Target zones show poverty rates rebuilt from transferred numerator and denominator counts.',
       title: 'Rates must be rebuilt from counts',
       body: 'A poverty rate is **not** extensive: two tracts at 25% do not make a 50% hexagon. The textbook alternative is the **intensive** rule, the area-weighted mean of tract rates `wₜₛ = aₛₜ / Bₜ`, which is what you see now. It treats a nearly empty lakefront tract like a crowded block of the same size.\n\nThe better answer here moves the *counts* (people below 150% of poverty, and residents) as extensive transfers, then divides: switch **Transfer rule** to *By variable type (extensive, ratio of extensives)*. The map changes where tracts are very unequal in population, and the **Totals, tracts → targets** readout shows the two counts it moved (people below the line, and residents). The third choice sums rates as if they were counts: the numbers are meaningless, which is why the label says wrong.',
       camera: {longitude: -87.7, latitude: 41.85, zoom: 10.4, transitionMs: 1500},
       options: {variable: 'poverty', rule: 'area-mean'},
       controls: ['variable', 'rule'],
-      readouts: ['conservation']
+      readouts: ['conservation', 'conservationChart', 'targetDistribution'],
+      evidence:
+        'For ratio variables, the chart exposes the transferred numerator and denominator totals separately before the displayed rate is recomputed.',
+      caveat:
+        'An area-weighted mean assumes the tract rate is spatially uniform; treating a rate as a count has no valid additive interpretation.'
     },
     {
       id: 'dasymetric',
+      headline: 'Street-density weights shift allocations toward built areas',
+      textAlternative:
+        'Population dots and transferred values concentrate near mapped streets rather than open land.',
       title: 'Tell the weights where people actually are',
       body: 'Uniform zones put people in parks, rail yards and runways. A **dasymetric** raster fixes that: `cellWeights` makes each area a *sum of weights*, so a tract’s residents are split in proportion to where the weight is. Here the weight is OpenStreetMap street length per cell, a rough proxy for built-up land.\n\nWatch the lakefront parks (Jackson and Washington Park) and the big industrial blocks lose people to the neighbouring streets, while totals stay conserved. Honest limit: street density is only a proxy; real dasymetric work uses land cover, building footprints or night lights. Set **Dasymetric weights** to *Places (points of interest) density* with **Tract variable** *Jobs by workplace (count)*, where businesses are the better guide.',
       camera: {longitude: -87.62, latitude: 41.78, zoom: 11.0, transitionMs: 1800},
       options: {variable: 'population', rule: 'conserving', ancillary: 'streets', cellWidth: 700},
       callout: {coordinate: [-87.6, 41.79], text: 'Jackson & Washington Parks'},
       controls: ['ancillary', 'variable'],
-      readouts: ['conservation']
+      readouts: ['conservation', 'targetDistribution'],
+      evidence:
+        'The target-zone histogram is recalculated from the transferred GPU outputs, so changes in the distribution are visible beyond local color changes on the map.',
+      caveat:
+        'Street and place density are proxies for within-tract allocation, not direct observations of residents or jobs.'
     },
     {
       id: 'community-areas',
+      headline: 'Denominator choice changes community-area totals',
+      textAlternative:
+        'Chicago community areas receive tract values under whole-zone or overlap-only denominators.',
       title: 'Real boundaries, and the denominator',
       body: 'Now move the tracts to the **77 community areas**. Tract and community-area boundaries mostly align, but the two files do not cover exactly the same ground, so the choice of **Area denominator** matters. With *Whole zone (tobler)* (the tobler default) a source’s mass is divided by its entire area, and the part that falls outside every target is lost; *Overlap only* divides by the shared part, which conserves what overlaps.\n\nCompare the **Totals, tracts → targets** readout between the two denominators. Community areas have unequal areas, so a count per area is not comparable between them: for fair comparison use a rate. Notice also that the thick outlines are real polygons, rasterized by the same `GPUPolygonRasterization` used for the grids.',
       camera: {longitude: -87.7, latitude: 41.84, zoom: 10.0, transitionMs: 1800},
       options: {target: 'community', denominator: 'zone', ancillary: 'none'},
       controls: ['target', 'denominator'],
-      readouts: ['conservation']
+      readouts: ['conservation', 'conservationChart', 'targetDistribution'],
+      evidence:
+        'Source and target totals reveal how much mass the selected denominator retains across the shared rasterized extent.',
+      caveat:
+        'Community-area and tract boundaries come from different zone systems and may not cover exactly the same footprint.'
     },
     {
       id: 'categories',
+      headline: 'Largest area share assigns each target category',
+      textAlternative:
+        'Each target hexagon is colored by the source category covering its largest area share.',
       title: 'Even a label can be transferred',
       body: 'Categories cannot be added or averaged. `GPUArealInterpolation` also takes a categorical source (here, the largest of five race and ethnicity groups in each tract) and returns the **share of each target covered by each category**, `share(t, k) = Σₛ∈k aₛₜ / Σₛ aₛₜ`. The map shows the group with the largest area share; hover for all five shares.\n\nThe pattern is the city’s well-known segregation: broad Black, Hispanic and White areas with tracts that change character quickly. Remember that area shares are not population shares: a large, sparse tract can outvote a dense small one.',
       camera: {longitude: -87.7, latitude: 41.84, zoom: 10.0, transitionMs: 1500},
@@ -426,16 +484,28 @@ compiled.encode(commandEncoder, {parameters: undefined});
         denominator: 'overlap',
         cellWidth: 1200
       },
-      controls: ['variable']
+      controls: ['variable'],
+      readouts: ['targetDistribution'],
+      evidence:
+        'The bar chart counts target zones by the category with the largest computed overlap-area share.',
+      caveat:
+        'Area shares are not population shares, and a largest-share label hides mixed target zones.'
     },
     {
       id: 'surface',
+      headline: 'Smoothing preserves each tract population total',
+      textAlternative:
+        'A continuous population-density raster smooths tract interiors while retaining each tract total.',
       title: 'A smooth surface that keeps every total, then try your own',
       body: '**`GPUPycnophylactic`** (Tobler 1979) builds a continuous density surface instead of zones. It starts with each tract’s density, repeatedly replaces every cell by the average of its neighbours, then rescales each tract so its total is restored and nothing goes negative. Boundaries between tracts melt away and people are spread smoothly, yet **every tract total is exact**; the readout sums the surface over every tract to prove it.\n\n**Pycnophylactic iterations** is compile-time (each step is its own cached graph): 0 is the flat tract density, 512 is nearly a smooth hill. Limits: it assumes people spread smoothly, ignoring parks and the lake, and it has no ancillary data or barriers; the dasymetric weights above do not apply to it. Try the *Introduced share of observations (rate)* variable, **Smoothing neighbourhood** *Box (3 × 3)*.',
       camera: {longitude: -87.7, latitude: 41.84, zoom: 10.0, transitionMs: 1500},
-      options: {variable: 'population', view: 'surface', iterations: 3, ramp: 'inferno'},
+      options: {variable: 'population', view: 'surface', iterations: 3, ramp: 'cividis'},
       controls: ['view', 'iterations', 'kernel', 'variable'],
-      readouts: ['pycnoCheck']
+      readouts: ['pycnoCheck'],
+      evidence:
+        'The check aggregates the smoothed raster back to every source tract and reports the largest relative mass error.',
+      caveat:
+        'Mass preservation does not make the within-tract surface true; smoothing still assumes gradual spatial variation and ignores barriers.'
     }
   ]
 });

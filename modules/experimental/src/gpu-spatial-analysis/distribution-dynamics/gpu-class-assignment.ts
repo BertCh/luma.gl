@@ -15,6 +15,7 @@ import {
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph
 } from '../../utils/gpu-contributor-utils';
+import type {GPUClassifiedValuesPort} from '../contracts/index';
 
 const OPERATION = 'GPUClassAssignment';
 
@@ -64,11 +65,18 @@ export class GPUClassAssignment implements GPUCommandNodeProducer {
   readonly id: string;
   /** Validated properties. */
   readonly props: GPUClassAssignmentProps;
+  /** Canonical classified-values port consumed by distribution and transition workflows. */
+  readonly classifiedValues: GPUClassifiedValuesPort;
 
   constructor(props: GPUClassAssignmentProps) {
     const id = props.id ?? 'class-assignment';
     this.id = id;
     this.props = props;
+    this.classifiedValues = {
+      classes: props.output,
+      mask: props.mask,
+      classCount: props.classCount
+    };
     validatePackedView(props.values, ['float32'], `${id} values`);
     validatePackedView(props.breaks, ['float32'], `${id} breaks`);
     validatePackedUint32View(props.classCount, `${id} classCount`);

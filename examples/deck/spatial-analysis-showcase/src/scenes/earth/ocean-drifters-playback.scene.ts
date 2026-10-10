@@ -279,6 +279,11 @@ export default defineScene<OceanDriftersPlaybackOptions>({
       help: 'Pieces whose first and last fix bracket the playhead (and pass the gap test), counted by GPUTrajectoryPlayhead.'
     },
     {
+      id: 'coverageNow',
+      label: 'Evidence · instruments available now',
+      help: 'Active track pieces at the playhead against all loaded pieces. This is record availability, not a denominator for ocean area or circulation.'
+    },
+    {
       id: 'trailSegments',
       label: 'Trail segments live',
       format: 'integer',
@@ -289,7 +294,22 @@ export default defineScene<OceanDriftersPlaybackOptions>({
     {id: 'vertices', label: 'Fixes', help: 'About one every 12 hours (the archive is 6-hourly).'},
     {id: 'sstRange', label: 'Temperature range'},
     {id: 'peakActive', label: 'Peak drifters reporting on one day', format: 'integer'},
-    {id: 'density', label: 'Density grids'}
+    {id: 'density', label: 'Density grids'},
+    {
+      id: 'sampleContract',
+      label: 'Caveat · sample contract',
+      help: 'The time span, retained-record window, fix cadence and deployment design that bound what this scene can show.'
+    },
+    {
+      id: 'densityMeaning',
+      label: 'Interpretation · density means',
+      help: 'Track density combines where instruments were placed with where currents carried them. It is not a velocity estimate.'
+    },
+    {
+      id: 'temperatureCaveat',
+      label: 'Caveat · temperature sensor',
+      help: 'Finite temperatures are buoy measurements in the water; they should not be read as satellite skin temperature.'
+    }
   ],
 
   pipeline: [
@@ -374,7 +394,7 @@ const densityGraph = new GPUCommandGraph(device, {id: 'density'});
 densityGraph.add(new GPULineDensity({
   positions, pathOffsets: trackOffsets,
   columns: ${Math.round(360 / Number(state.densityCell))}, rows: ${Math.round(160 / Number(state.densityCell))},       // compile-time: ${state.densityCell} degree cells
-  coordinateSystem: 'spherical',                              // lengths are great-circle meters
+  spatialContext: {coordinateSpace: 'longitude-latitude', metric: 'great-circle', units: 'meters'},                              // lengths are great-circle meters
   parameters: gridParameters.importToGraph(densityGraph),     // [west, south, cellWidth, cellHeight]
   output: {lengths, densities, overflow}
 }));
@@ -426,7 +446,7 @@ play.encode(commandEncoder, {parameters: undefined});`,
       camera: {...GLOBAL_VIEW, transitionMs: 1200},
       options: {play: true, time: 0, trailDays: 14},
       controls: ['play', 'time', 'speed'],
-      readouts: ['tracks', 'vertices', 'releaseChart', 'active']
+      readouts: ['tracks', 'releaseChart', 'coverageNow', 'sampleContract']
     },
     {
       id: 'temperature',
@@ -438,7 +458,7 @@ play.encode(commandEncoder, {parameters: undefined});`,
       camera: {longitude: -40, latitude: 25, zoom: 2.6, transitionMs: 1400},
       options: {play: false, time: 100, trailDays: 30, showBackdrop: true},
       controls: ['colorBy', 'sstRange', 'ramp'],
-      readouts: ['sstRange', 'sstChart']
+      readouts: ['sstRange', 'sstChart', 'temperatureCaveat']
     },
     {
       id: 'time-window',
@@ -470,7 +490,7 @@ play.encode(commandEncoder, {parameters: undefined});`,
         densityCell: '0.5'
       },
       controls: ['densityCell', 'densityMax', 'backgroundOpacity'],
-      readouts: ['density']
+      readouts: ['density', 'densityMeaning', 'sampleContract']
     },
     {
       id: 'boundary-currents',

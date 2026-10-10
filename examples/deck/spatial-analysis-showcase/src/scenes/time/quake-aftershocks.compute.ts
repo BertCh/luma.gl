@@ -707,7 +707,7 @@ export async function createQuakeAftershocks(
           tessellation: 32,
           opacity: options.gridOpacity,
           color: [255, 255, 255, 255] as const,
-          colormap: 'viridis' as const
+          colormap: 'cividis' as const
         };
         if (options.gridView === 'burst') {
           layers.push(

@@ -13,7 +13,11 @@ import {
   type GraphVectorView
 } from '@luma.gl/gpgpu/gpu-core';
 import {GPUPairwisePointSegmentDistance} from '../../geospatial/gpu-pairwise-point-segment-distance';
-import {createWGSLKernelNode, type WGSLKernelBinding} from '../../utils/wgsl-kernel-nodes';
+import {
+  createWGSLActiveCountDispatch,
+  createWGSLKernelNode,
+  type WGSLKernelBinding
+} from '../../utils/wgsl-kernel-nodes';
 import type {
   GPUCompactOutput,
   GPUFloat32Positions,
@@ -626,6 +630,13 @@ export class GPUNearestFeatureJoin implements GPUCommandNodeProducer {
         radius
       })
     );
+    const candidateDispatch = createWGSLActiveCountDispatch(graph, {
+      id: `${id}-candidate-dispatch`,
+      operation: OPERATION,
+      count: state,
+      maximumItemCount: candidateCapacity
+    });
+    nodes.push(candidateDispatch.updateNode);
 
     const expandBindings: WGSLKernelBinding[] = [
       {name: 'state', view: state, type: 'u32', access: 'read'},
@@ -656,6 +667,7 @@ export class GPUNearestFeatureJoin implements GPUCommandNodeProducer {
         variant: `expand-${features.kind}`,
         bindings: expandBindings,
         invocationCount: candidateCapacity,
+        condition: candidateDispatch.condition,
         declarations: `const CANDIDATE_CAPACITY: u32 = ${candidateCapacity}u;`,
         body: `let activeCount = min(state[stateOffset], CANDIDATE_CAPACITY);
   if (index >= activeCount) { return; }
@@ -675,7 +687,12 @@ export class GPUNearestFeatureJoin implements GPUCommandNodeProducer {
           segmentEnds: candidateEnds,
           output: candidateDistances
         }).addToGraph(graph)
-      )
+      ).map(node => {
+        if (node.type !== 'compute') {
+          throw new Error(`${id}-distance expected a compute node`);
+        }
+        return {...node, condition: candidateDispatch.condition};
+      })
     );
     // Candidates failing `exclusive` or `onAttribute` never compete for the nearest feature.
     const filterBindings: WGSLKernelBinding[] = [];
@@ -739,6 +756,7 @@ export class GPUNearestFeatureJoin implements GPUCommandNodeProducer {
           ...filterBindings
         ],
         invocationCount: candidateCapacity,
+        condition: candidateDispatch.condition,
         declarations: `const CANDIDATE_CAPACITY: u32 = ${candidateCapacity}u;`,
         body: `${reducePrologue}
   atomicMin(&bestDistanceBits[bestDistanceBitsOffset + pointRow], distanceBits);`
@@ -759,6 +777,7 @@ export class GPUNearestFeatureJoin implements GPUCommandNodeProducer {
           ...filterBindings
         ],
         invocationCount: candidateCapacity,
+        condition: candidateDispatch.condition,
         declarations: `const CANDIDATE_CAPACITY: u32 = ${candidateCapacity}u;`,
         body: `${reducePrologue}
   if (distanceBits == bestDistanceBits[bestDistanceBitsOffset + pointRow]) {
@@ -845,6 +864,6 @@ function getOutputs(
     props.matches?.ids,
     props.matches?.count,
     props.matches?.overflow,
-    props.matches?.totalCount
+    props.matches?.requiredCount
   ];
 }

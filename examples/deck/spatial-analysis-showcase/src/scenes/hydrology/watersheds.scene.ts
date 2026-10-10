@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {ground} from '../../cartography/grounds';
 import {defineScene, type LegendSpec} from '../scene';
 import type {WatershedsOptions} from './watersheds.compute';
 
@@ -40,11 +41,11 @@ const formatSquareKilometers = (logSquareMeters: number): string => {
  */
 export default defineScene<WatershedsOptions>({
   id: 'watersheds',
-  title: 'Where does the Canyon’s rain go?',
+  title: 'Grand Canyon drainage area and watershed structure',
   chapter: 'hydrology',
   order: 1,
   summary:
-    'Fill the Grand Canyon DEM, route every cell downhill, accumulate the flow and read off streams, Strahler orders, watersheds from pour points, a flood-stage map and wetness indices, all on the GPU.',
+    'GPU terrain routing derives drainage area, stream order, watersheds and hydrologic indices from a 15 m Grand Canyon elevation grid. The outputs are terrain proxies; they do not model rainfall, discharge or flood timing.',
   contributors: [
     'GPUTerrainFlow',
     'GPUTerrainWatersheds',
@@ -55,6 +56,16 @@ export default defineScene<WatershedsOptions>({
   ],
   datasets: [{id: 'grand-canyon-dem', role: 'elevation, 15 m Terrarium tiles (Web Mercator)'}],
   initialView: {longitude: -112.1, latitude: 36.1, zoom: 11.1},
+  basemap: ground('relief'),
+  furniture: {
+    title: {
+      title: 'Grand Canyon drainage structure',
+      subtitle: 'Contributing area, stream order, watersheds and terrain indices'
+    },
+    scaleBar: {units: 'metric'},
+    credit: 'US Geological Survey (public domain)',
+    caveat: 'Terrain-derived products are not rainfall, discharge or flood forecasts.'
+  },
 
   options: [
     {
@@ -263,7 +274,10 @@ export default defineScene<WatershedsOptions>({
     {
       id: 'question',
       title: 'Where does South Rim rain end up?',
-      body: 'Rain that falls on the South Rim at Grand Canyon Village does not reach the Colorado River by one route: it is gathered by dozens of side canyons first. `GPUTerrainFlow` answers the first question every hydrologist asks of a DEM: **how much land drains through each cell?**\n\nThe map shows that **contributing area** on a log scale over shaded relief (viridis: dark is a hillside rill, yellow is the Colorado draining the whole window). The Colorado is the bright trunk; Bright Angel Creek is the bright branch from the North Rim. The window is 32 km wide with 1.9 km of relief from rim to river.',
+      headline: 'Drainage area concentrates along canyon channels',
+      textAlternative:
+        'A terrain map colors each Grand Canyon cell by contributing area, with narrow high-value corridors following the main drainage network.',
+      body: 'Rain that falls on the South Rim at Grand Canyon Village does not reach the Colorado River by one route: it is gathered by dozens of side canyons first. `GPUTerrainFlow` answers the first question every hydrologist asks of a DEM: **how much land drains through each cell?**\n\nThe map shows that **contributing area** on a log scale over shaded relief (bamako: dark is a hillside rill, light is the Colorado draining the whole window). The Colorado is the light trunk; Bright Angel Creek is the light branch from the North Rim. The window is 32 km wide with 1.9 km of relief from rim to river.',
       camera: {longitude: -112.1, latitude: 36.1, zoom: 11.1, transitionMs: 1400},
       options: {product: 'accumulation'},
       controls: ['product', 'overlayOpacity'],
@@ -273,6 +287,9 @@ export default defineScene<WatershedsOptions>({
     {
       id: 'fill-route-accumulate',
       title: 'Fill, route, accumulate',
+      headline: 'Depression filling produces continuous downslope drainage',
+      textAlternative:
+        'Filled terrain and flow accumulation reveal connected downslope routes from uplands into tributaries and the Colorado River corridor.',
       body: '`GPUTerrainFlow` does three things in one node. It **fills depressions** (Planchon-Darboux relaxation, so water has a way out of every pit), **routes** each cell to a downhill neighbour (D8: the steepest of eight, ESRI codes 1 to 128) and **accumulates** the area of every upstream cell in square metres. Cell sizes come from the Web Mercator tiles, so a cell is 15.4 m on the ground, not the 19.1 m a pixel has on screen.\n\nWatch the *Converged* readout: the relaxation loops stop as soon as nothing changes, and it reports iterations used out of the compile-time limit. Zoom to Bright Angel Canyon to see the creek carve its fault line to the river at Phantom Ranch. Cross-check: this is the same D8 model as `richdem.FlowAccumulation`, `pysheds` and GRASS `r.watershed`. Switch **Product** below to *Depression fill depth* to see what the fill changed, and try **Resolve flats** and **Fill gradient**.',
       camera: {longitude: -112.085, latitude: 36.135, zoom: 12.3, transitionMs: 1800},
       controls: ['product', 'resolveFlats', 'fillEpsilon'],
@@ -283,6 +300,9 @@ export default defineScene<WatershedsOptions>({
     {
       id: 'routing',
       title: 'Split the flow: D8 versus multiple directions',
+      headline: 'Routing choice changes flow concentration on slopes',
+      textAlternative:
+        'The accumulation surface changes between single-direction D8 and multiple-flow routing, especially across broad slopes and convergent channels.',
       body: 'D8 sends everything down one neighbour, so channels are one cell thin and flow on a smooth slope runs in parallel lines. **Multiple flow direction** (`mfd-freeman`, set here) splits a cell’s flow among *all* lower neighbours in proportion to `tan(slope)^p`, so water spreads over the Tonto Platform and the Redwall benches before it gathers into a channel. `d-infinity` is the middle way (Tarboton 1997).\n\nThe routing choice is compile-time, so the control is marked *rebuild*; the buffers are shared and the graph is rebuilt in a few milliseconds. Slide **Flow exponent p** below (per-frame) to make the split sharper. Ridges stay dark, benches turn smooth.',
       camera: {longitude: -112.115, latitude: 36.085, zoom: 12.6, transitionMs: 1600},
       options: {routing: 'mfd-freeman'},
@@ -291,6 +311,9 @@ export default defineScene<WatershedsOptions>({
     {
       id: 'stream-order',
       title: 'Rank the network with Strahler order',
+      headline: 'Stream order increases at tributary confluences',
+      textAlternative:
+        'Colored stream lines become wider and advance through ordered classes where tributaries of equal order join.',
       body: '`GPUTerrainStreamOrder` ranks every stream cell. Headwater reaches are **order 1**; where two streams of equal order meet the order rises by one, otherwise the larger order continues (Strahler 1957). A high order marks a trunk stream that carries many tributaries, so order is a quick proxy for channel size and flood hazard.\n\nThe thicker, warmer lines are the higher orders (legend). The **Stream threshold** slider below decides which cells count as streams at all: lower it to see side-canyon rills, raise it to keep only the main stems. Routing returns to D8 so the accumulation and the D8 tracing that ranks the streams agree.',
       camera: {longitude: -112.1, latitude: 36.1, zoom: 11.4, transitionMs: 1600},
       options: {product: 'stream-order', routing: 'd8', streamArea: -1},
@@ -301,6 +324,9 @@ export default defineScene<WatershedsOptions>({
     {
       id: 'watersheds',
       title: 'Watersheds from pour points',
+      headline: 'Pour points delineate distinct upstream catchments',
+      textAlternative:
+        'Three colored catchment polygons extend upstream from selected pour points, with mapped area totals reported for each watershed.',
       body: '`GPUTerrainWatersheds` labels every cell with the **nearest downstream pour point**. Three are placed for you: Phantom Ranch on Bright Angel Creek (1, red), Indian Garden on Garden Creek (2, orange) and the Colorado at the creek’s mouth (3, yellow). Because labelling follows the flow downhill, watershed 1 is *nested inside* watershed 3, and the areas appear in the readout.\n\n**Click the map** to add a pour point: it snaps to the highest-accumulation cell within five cells so a click near a creek lands on the creek. Switch **Basins from** below to *every outlet* to see the automatic basins the contributor builds without pour points.',
       camera: {longitude: -112.09, latitude: 36.095, zoom: 11.7, transitionMs: 1600},
       options: {product: 'watersheds', showStreams: true},
@@ -311,6 +337,9 @@ export default defineScene<WatershedsOptions>({
     {
       id: 'flood',
       title: 'How high above the river is that campground?',
+      headline: 'Low HAND values follow the drainage network',
+      textAlternative:
+        'Height-above-drainage values identify low cells adjacent to channels, and the flood-stage overlay selects terrain below the chosen relative height.',
       body: '`GPUTerrainHeightAboveDrainage` (HAND, Rennó et al. 2008) follows each cell’s flow path down to the first stream cell and reports the **height above it**. A flat-ish bench 10 m above the creek and 400 m from it is HAND 10; a cliff top is HAND 300. Thresholding HAND at a stage gives an inundation map without a hydraulic model: the colour here is the depth of water at a **Flood stage** of 12 m.\n\nDrag **Flood stage** up to 40 m and watch the inner gorge, the Tonto benches and the lower side canyons fill. HAND uses the *streams* you chose, so changing **Stream threshold** changes what counts as the nearby drainage. This is a screening tool for relative exposure, not a flood forecast.',
       camera: {longitude: -112.093, latitude: 36.106, zoom: 13.2, transitionMs: 1800},
       options: {product: 'flood', floodStage: 12},
@@ -322,6 +351,9 @@ export default defineScene<WatershedsOptions>({
     {
       id: 'indices',
       title: 'Where does the ground stay wet?',
+      headline: 'Wetness index peaks in convergent low-slope terrain',
+      textAlternative:
+        'A sequential terrain overlay highlights cells with high topographic wetness, concentrated where large contributing area combines with low slope.',
       body: '`GPUTerrainHydrologicIndices` combines the contributing area with the local slope. With **specific catchment area** `a = A / width`, the **topographic wetness index** is `ln(a / tan β)`: high where a large area drains to a gentle slope (benches, creek flats, springs such as Indian Garden), low on steep ridges. **Stream power** `a · tan β` marks where flowing water has the most erosive energy, the cliffs under big side canyons.\n\nLimits: the DEM is a 15 m model of a canyon whose steepest walls are vertical, flow accumulation depends on the routing you chose, and slopes are D8 descent slopes (TauDEM and SAGA use 3 x 3 or D-infinity slopes, so values differ). Below, switch **Hydrologic index** between the three outputs, try wetness with **Flow routing** on *Multiple flow direction*, then raise **Minimum slope** to see how the flat bench floors change.',
       camera: {longitude: -112.12, latitude: 36.08, zoom: 12.2, transitionMs: 1600},
       options: {product: 'indices', indexKind: 'wetness'},
@@ -343,7 +375,7 @@ export default defineScene<WatershedsOptions>({
         legends.push({
           kind: 'ramp',
           title: 'Contributing area',
-          ramp: 'viridis',
+          ramp: 'bamako',
           extent: [4, 8.8],
           format: formatSquareKilometers,
           unit: 'drained through the cell'
@@ -404,7 +436,7 @@ export default defineScene<WatershedsOptions>({
             ? {
                 kind: 'ramp',
                 title: 'Topographic wetness index',
-                ramp: 'viridis',
+                ramp: 'bamako',
                 extent: [2, 18],
                 unit: 'ln(a / tan β)'
               }
@@ -412,7 +444,7 @@ export default defineScene<WatershedsOptions>({
               ? {
                   kind: 'ramp',
                   title: 'Specific catchment area',
-                  ramp: 'viridis',
+                  ramp: 'bamako',
                   extent: [0.5, 3.5],
                   unit: 'log10 m',
                   format: value => `10^${value.toFixed(1)}`

@@ -37,6 +37,10 @@ const BIN_BLOCK = 4096;
 const MOMENT_WORKGROUP_SIZE = 256;
 /** Threads per workgroup of the space-time Gi* kernel; each workgroup covers whole cells. */
 const GI_WORKGROUP_SIZE = 256;
+/** Threads per cell in the cooperative Mann-Kendall pass. */
+const MANN_KENDALL_WORKGROUP_SIZE = 64;
+/** Below this series length a single invocation is cheaper than workgroup setup and reduction. */
+const MANN_KENDALL_COOPERATIVE_SLICE_COUNT = 64;
 const MAXIMUM_BIN_COUNT = 2 ** 31 - 1;
 
 /**
@@ -310,6 +314,7 @@ export class GPUEmergingHotSpots implements GPUCommandNodeProducer {
     const maximumRadius = props.maximumRadius ?? 4;
     const cellCount = weights ? weights.offsets.length - 1 : gridWidth * gridHeight;
     const binCount = cellCount * sliceCount;
+    const cooperativeMannKendall = sliceCount >= MANN_KENDALL_COOPERATIVE_SLICE_COUNT;
     const blockCount = Math.ceil(binCount / BIN_BLOCK);
     const valueType = values.format === 'uint32' ? 'u32' : 'f32';
     const sumPartials = createTransientView(graph, `${id}-sum-partials`, 'float32', blockCount);
@@ -690,7 +695,7 @@ var<workgroup> instantSquare: array<f32, ${GI_WORKGROUP_SIZE}>;`,
       createWGSLKernelNode<Parameters>(graph, {
         id: `${id}-mann-kendall`,
         operation: OPERATION,
-        variant: 'mann-kendall-classify',
+        variant: cooperativeMannKendall ? 'mann-kendall-cooperative' : 'mann-kendall-classify',
         bindings: [
           parametersBinding,
           {name: 'giZScores', view: giZScores, type: 'f32', access: 'read'},
@@ -731,13 +736,185 @@ var<workgroup> instantSquare: array<f32, ${GI_WORKGROUP_SIZE}>;`,
             access: 'read_write'
           }
         ],
-        invocationCount: cellCount,
-        declarations: `const SLICE_COUNT: u32 = ${sliceCount}u;
+        // One workgroup owns one cell. Pair comparisons are striped across lanes instead of one
+        // invocation holding a 256-value private array and serially visiting every pair. Apart
+        // from dividing the long dependent chain across 64 lanes, this avoids private-array
+        // register pressure and the driver-dependent scratch-memory spill it can cause.
+        workgroupSize: cooperativeMannKendall ? MANN_KENDALL_WORKGROUP_SIZE : undefined,
+        invocationCount: cooperativeMannKendall
+          ? cellCount * MANN_KENDALL_WORKGROUP_SIZE
+          : cellCount,
+        guardIndex: !cooperativeMannKendall,
+        declarations: cooperativeMannKendall
+          ? `const CELL_COUNT: u32 = ${cellCount}u;
+const SLICE_COUNT: u32 = ${sliceCount}u;
+const MANN_KENDALL_LANES: u32 = ${MANN_KENDALL_WORKGROUP_SIZE}u;
+var<workgroup> partialStatistics: array<i32, ${MANN_KENDALL_WORKGROUP_SIZE}>;
+var<workgroup> partialTieTerms: array<u32, ${MANN_KENDALL_WORKGROUP_SIZE}>;
+var<workgroup> sharedSeries: array<f32, ${sliceCount}>;
+var<workgroup> tieCandidates: array<u32, ${sliceCount}>;
+var<workgroup> equalBeforeBits: array<atomic<u32>, ${Math.ceil(sliceCount / 32)}>;
+${SPATIAL_AUTOCORRELATION_FLOAT_WGSL}`
+          : `const SLICE_COUNT: u32 = ${sliceCount}u;
 ${SPATIAL_AUTOCORRELATION_FLOAT_WGSL}`,
-        // The series is read once into private memory (compacted to its finite values) and the
-        // pair loop visits each unordered pair once: the sign sums over i < j, and tie groups are
-        // found by marking, from the first member, every later equal member in a bitset.
-        body: `let criticalZ = parameters[parametersOffset + 2u];
+        body: cooperativeMannKendall
+          ? `let cell = index / MANN_KENDALL_LANES;
+  let lane = localInvocationIndex;
+  let isActiveCell = cell < CELL_COUNT;
+  let base = cell * SLICE_COUNT;
+  for (var slice = lane; slice < SLICE_COUNT; slice += MANN_KENDALL_LANES) {
+    var value = getQuietNaN(index);
+    if (isActiveCell) {
+      value = giZScores[giZScoresOffset + base + slice];
+    }
+    sharedSeries[slice] = value;
+    tieCandidates[slice] = 0u;
+  }
+  for (var word = lane; word < ${Math.ceil(sliceCount / 32)}u; word += MANN_KENDALL_LANES) {
+    atomicStore(&equalBeforeBits[word], 0u);
+  }
+  workgroupBarrier();
+  var laneStatistic = 0;
+  for (var first = lane; first < SLICE_COUNT; first += MANN_KENDALL_LANES) {
+    let firstValue = sharedSeries[first];
+    if (isFiniteFloat(firstValue)) {
+      var groupSize = 1u;
+      for (var second = first + 1u; second < SLICE_COUNT; second++) {
+        let secondValue = sharedSeries[second];
+        if (isFiniteFloat(secondValue)) {
+          laneStatistic += select(select(0, -1, secondValue < firstValue), 1, secondValue > firstValue);
+          if (secondValue == firstValue) {
+            groupSize++;
+            atomicOr(&equalBeforeBits[second / 32u], 1u << (second % 32u));
+          }
+        }
+      }
+      if (groupSize > 1u) {
+        tieCandidates[first] = groupSize * (groupSize - 1u) * (2u * groupSize + 5u);
+      }
+    }
+  }
+  partialStatistics[lane] = laneStatistic;
+  workgroupBarrier();
+  var laneTieTerm = 0u;
+  for (var first = lane; first < SLICE_COUNT; first += MANN_KENDALL_LANES) {
+    let hasEqualBefore = (atomicLoad(&equalBeforeBits[first / 32u]) & (1u << (first % 32u))) != 0u;
+    if (!hasEqualBefore) {
+      laneTieTerm += tieCandidates[first];
+    }
+  }
+  partialTieTerms[lane] = laneTieTerm;
+  workgroupBarrier();
+  for (var stride = MANN_KENDALL_LANES / 2u; stride > 0u; stride /= 2u) {
+    if (lane < stride) {
+      partialStatistics[lane] += partialStatistics[lane + stride];
+      partialTieTerms[lane] += partialTieTerms[lane + stride];
+    }
+    workgroupBarrier();
+  }
+  if (lane == 0u && isActiveCell) {
+  let criticalZ = parameters[parametersOffset + 2u];
+  let trendLevel = parameters[parametersOffset + 3u];
+  let fraction = parameters[parametersOffset + 4u];
+  let statistic = partialStatistics[0];
+  let tieTerm = partialTieTerms[0];
+  var valid = 0u;
+  var hot = 0u;
+  var cold = 0u;
+  var trailingHot = 0u;
+  var trailingCold = 0u;
+  var finalState = 0u;
+  for (var slice = 0u; slice < SLICE_COUNT; slice++) {
+    let value = sharedSeries[slice];
+    if (isFiniteFloat(value)) {
+      valid++;
+      if (value >= criticalZ) {
+        hot++;
+        trailingHot++;
+        trailingCold = 0u;
+        finalState = 1u;
+      } else if (value <= -criticalZ) {
+        cold++;
+        trailingCold++;
+        trailingHot = 0u;
+        finalState = 2u;
+      } else {
+        trailingHot = 0u;
+        trailingCold = 0u;
+        finalState = 0u;
+      }
+    }
+  }
+  var numerator = 0u;
+  if (valid >= 2u) {
+    numerator = valid * (valid - 1u) * (2u * valid + 5u) - tieTerm;
+  }
+  var trendZScore = 0.0;
+  var trendPValue = 1.0;
+  if (numerator > 0u) {
+    let deviation = sqrt(f32(numerator) / 18.0);
+    if (statistic > 0) {
+      trendZScore = f32(statistic - 1) / deviation;
+    } else if (statistic < 0) {
+      trendZScore = f32(statistic + 1) / deviation;
+    }
+    trendPValue = getTwoSidedPValue(trendZScore);
+  }
+  trendZ[trendZOffset + cell] = trendZScore;
+  trendP[trendPOffset + cell] = trendPValue;
+  trendS[trendSOffset + cell] = statistic;
+  hotSliceCount[hotSliceCountOffset + cell] = hot;
+  coldSliceCount[coldSliceCountOffset + cell] = cold;
+  let threshold = fraction * f32(valid);
+  let hotPersistent = f32(hot) >= threshold;
+  let coldPersistent = f32(cold) >= threshold;
+  let trendSignificant = trendPValue <= trendLevel;
+  let trendUp = trendSignificant && trendZScore > 0.0;
+  let trendDown = trendSignificant && trendZScore < 0.0;
+  var result = 0u;
+  if (valid > 0u) {
+    if (finalState == 1u) {
+      if (hot == 1u) {
+        result = 1u;
+      } else if (trailingHot >= 2u && trailingHot == hot && !hotPersistent) {
+        result = 2u;
+      } else if (hotPersistent) {
+        result = select(select(4u, 5u, trendDown), 3u, trendUp);
+      } else {
+        result = select(7u, 6u, cold == 0u);
+      }
+    } else if (finalState == 2u) {
+      if (cold == 1u) {
+        result = 9u;
+      } else if (trailingCold >= 2u && trailingCold == cold && !coldPersistent) {
+        result = 10u;
+      } else if (coldPersistent) {
+        result = select(select(12u, 13u, trendUp), 11u, trendDown);
+      } else {
+        result = select(15u, 14u, hot == 0u);
+      }
+    } else if (hot > 0u && hotPersistent) {
+      result = 8u;
+    } else if (cold > 0u && coldPersistent) {
+      result = 16u;
+    } else if (hot > 0u && cold == 0u) {
+      result = 6u;
+    } else if (cold > 0u && hot == 0u) {
+      result = 14u;
+    }
+  }
+  category[categoryOffset + cell] = result;
+  }`
+          : getSerialMannKendallBody(sliceCount)
+      })
+    );
+    return nodes;
+  }
+}
+
+/** Serial exact pass retained for short series where cooperative setup would dominate. */
+function getSerialMannKendallBody(sliceCount: number): string {
+  return /* wgsl */ `let criticalZ = parameters[parametersOffset + 2u];
   let trendLevel = parameters[parametersOffset + 3u];
   let fraction = parameters[parametersOffset + 4u];
   let base = index * SLICE_COUNT;
@@ -847,9 +1024,5 @@ ${SPATIAL_AUTOCORRELATION_FLOAT_WGSL}`,
       result = 14u;
     }
   }
-  category[categoryOffset + index] = result;`
-      })
-    );
-    return nodes;
-  }
+  category[categoryOffset + index] = result;`;
 }

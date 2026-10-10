@@ -116,7 +116,7 @@ async function runOutline(
           : undefined,
         count: importGraphBuffer(graph, 'out-count', out.count, 'uint32', 1),
         overflow: importGraphBuffer(graph, 'out-overflow', out.overflow, 'uint32', 1),
-        totalCount: importGraphBuffer(graph, 'out-total', out.total, 'uint32', 1)
+        requiredCount: importGraphBuffer(graph, 'out-total', out.total, 'uint32', 1)
       }
     })
   );

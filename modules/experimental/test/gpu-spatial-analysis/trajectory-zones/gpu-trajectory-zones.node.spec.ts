@@ -83,6 +83,7 @@ it('GPUTrajectoryEncounters validates props and declares nodes', () => {
     bounds: [0, 0, 100, 100] as const,
     hitCapacity: 32,
     pairs: {
+      candidateOverflow: view('uint32', 1),
       output: createCompactOutput(graph, 8),
       partners: view('uint32', 8),
       firstBuckets: view('uint32', 8),

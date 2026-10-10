@@ -25,7 +25,13 @@ import {
 import {SpatialAnalysisResources} from '../../engine/resources';
 import {SummaryReader} from '../../engine/summary-reader';
 import type {SceneContext, SceneInstance, TooltipContent} from '../scene';
-import {findStationNearPixel, MONTREAL_ORIGIN, readBixiFlows, type BixiFlows} from './bixi-data';
+import {
+  findStationNearPixel,
+  getMonthDayCounts,
+  MONTREAL_ORIGIN,
+  readBixiFlows,
+  type BixiFlows
+} from './bixi-data';
 import {
   assignGroupHues,
   getConvexHull,
@@ -67,6 +73,8 @@ export type BixiCommunitiesOptions = {
   edges: number;
   neighbors: number;
   minRides: number;
+  /** Longest straight station-to-station link admitted to the graph. */
+  maxDistanceKm: number;
   weighting: 'rides' | 'sqrt' | 'equal';
   dayType: 'all' | 'weekday' | 'weekend';
   propagationRounds: number;
@@ -144,6 +152,7 @@ export async function createBixiCommunities(
   const flows = readBixiFlows(ctx.datasets.get('bixi-flows'));
   const boroughDataset = ctx.datasets.get('montreal-boroughs');
   const stationCount = flows.stationCount;
+  const dayCounts = getMonthDayCounts(flows);
   const edges = buildUndirectedEdges(flows);
   const resources = new SpatialAnalysisResources(device, 'bixi-communities');
   const coordinateOrigin: [number, number, number] = [MONTREAL_ORIGIN[0], MONTREAL_ORIGIN[1], 0];
@@ -157,7 +166,7 @@ export async function createBixiCommunities(
     edgeMeters[edge * 4 + 2] = centers[edges.b[edge] * 2];
     edgeMeters[edge * 4 + 3] = centers[edges.b[edge] * 2 + 1];
   }
-  const ridesByDayType = buildRidesByDayType(flows, edges);
+  const ridesByDayType = buildRidesByDayType(flows, edges, dayCounts);
   const sortedEdges: Record<DayType, Uint32Array> = {
     all: getRidesOrder(ridesByDayType.all),
     weekday: getRidesOrder(ridesByDayType.weekday),
@@ -176,10 +185,20 @@ export async function createBixiCommunities(
   /** CSR over all edges with edge ids, for per-station shares. */
   const adjacency = buildAdjacency(edges.a, edges.b, edges.count, stationCount);
   const boroughLabels = Uint32Array.from(flows.borough);
-  /** Rides on the pairs of the month table (pairs with at least three rides). */
-  const pairRidesTotal = ridesByDayType.all.reduce((sum, value) => sum + value, 0);
   /** Rides that go from one station to another, from the exact per-station totals. */
   const stationToStationRides = flows.departures.reduce((sum, value) => sum + value, 0);
+  /** Exact source rates, including the rare pairs folded into the sentinel rows. */
+  const sourceRidesPerDay: Record<DayType, number> = {
+    all: stationToStationRides / dayCounts.total,
+    weekday: 0,
+    weekend: 0
+  };
+  for (let row = 0; row < flows.slices.rowCount; row++) {
+    if (flows.slices.origin[row] >= stationCount) continue;
+    const dayType = flows.slices.dayType[row] === 0 ? 'weekday' : 'weekend';
+    sourceRidesPerDay[dayType] +=
+      flows.slices.count[row] / (dayType === 'weekday' ? dayCounts.weekday : dayCounts.weekend);
+  }
   /** Straight-line length of every edge in metres. */
   const edgeLengths = new Float32Array(edges.count);
   for (let edge = 0; edge < edges.count; edge++) {
@@ -269,7 +288,7 @@ export async function createBixiCommunities(
 
   /** An edge stays when it is strong enough and among the strongest links of either end. */
   function computeActiveEdges(): void {
-    const {minRides, neighbors, dayType} = ctx.options;
+    const {minRides, maxDistanceKm, neighbors, dayType} = ctx.options;
     const rides = ridesByDayType[dayType];
     const rank = ranks[dayType];
     activeCount = 0;
@@ -277,6 +296,7 @@ export async function createBixiCommunities(
       const keep =
         rides[edge] > 0 &&
         rides[edge] >= minRides &&
+        edgeLengths[edge] <= maxDistanceKm * 1000 &&
         Math.min(rank.a[edge], rank.b[edge]) < neighbors;
       activeMask[edge] = keep ? 1 : 0;
       if (keep) activeCount++;
@@ -484,6 +504,7 @@ export async function createBixiCommunities(
     return [
       o.neighbors,
       o.minRides,
+      o.maxDistanceKm,
       o.weighting,
       o.dayType,
       o.propagationRounds,
@@ -768,7 +789,33 @@ export async function createBixiCommunities(
     const modularity = (score: number) => (Number.isFinite(score) ? score : null);
     ctx.setReadout('stations', stationCount);
     ctx.setReadout('edgesKept', `${formatCount(activeCount)} of ${formatCount(edges.count)}`);
-    ctx.setReadout('ridesKept', pairRidesTotal > 0 ? stats.keptRides / pairRidesTotal : null);
+    const candidateRidesPerDay = getRides().reduce((sum, value) => sum + value, 0);
+    const sourceRate = sourceRidesPerDay[ctx.options.dayType];
+    ctx.setReadout(
+      'graphBasis',
+      `${
+        ctx.options.dayType === 'all'
+          ? 'pairs with at least 3 rides in August, expressed per calendar day'
+          : `pairs with at least 10 rides in August, ${ctx.options.dayType} rate per day`
+      }; keep at least ${ctx.options.minRides} rides/day, at most ${ctx.options.maxDistanceKm} km, among the strongest ${ctx.options.neighbors} links of either station`
+    );
+    ctx.setReadout('candidateCoverage', sourceRate > 0 ? candidateRidesPerDay / sourceRate : null);
+    ctx.setReadout('ridesKept', sourceRate > 0 ? stats.keptRides / sourceRate : null);
+    let activeStations = 0;
+    for (let station = 0; station < stationCount; station++) {
+      let hasEdge = false;
+      for (let slot = adjacency.offsets[station]; slot < adjacency.offsets[station + 1]; slot++) {
+        if (activeMask[adjacency.edgeIds[slot]]) {
+          hasEdge = true;
+          break;
+        }
+      }
+      if (hasEdge) activeStations++;
+    }
+    ctx.setReadout(
+      'isolatedStations',
+      `${formatCount(stationCount - activeStations)} of ${formatCount(stationCount)}`
+    );
     ctx.setReadout('communityCount', groups.groupCount);
     const largest = groups.hued[0];
     ctx.setReadout(
@@ -881,18 +928,26 @@ export async function createBixiCommunities(
   }
 
   function updateFurniture(replayRound: number | null): void {
-    const {partition, resolution, propagationRounds} = ctx.options;
+    const {partition, resolution, propagationRounds, dayType, minRides, maxDistanceKm, neighbors} =
+      ctx.options;
     const rides = formatCount(stationToStationRides);
+    const dayLabel =
+      dayType === 'all'
+        ? 'all-day rate'
+        : dayType === 'weekday'
+          ? 'average weekday rate'
+          : 'average weekend-day rate';
+    const filterText = `${dayLabel}; at least ${minRides}/day; at most ${maxDistanceKm} km; strongest ${neighbors} links/station`;
     let subtitle: string;
     if (partition === 'boroughs') {
-      subtitle = 'Stations by borough of the agglomeration, BIXI station pairs, August 2024';
+      subtitle = `Stations by borough of the agglomeration; ${filterText}`;
     } else if (partition === 'propagation') {
       subtitle =
         replayRound === null
-          ? `Label propagation after ${propagationRounds} rounds (GPU), BIXI station pairs, August 2024`
-          : `Label propagation after round ${replayRound} of ${propagationRounds} (CPU replay), BIXI station pairs, August 2024`;
+          ? `Label propagation after ${propagationRounds} rounds (GPU); ${filterText}`
+          : `Label propagation after round ${replayRound} of ${propagationRounds} (CPU replay); ${filterText}`;
     } else {
-      subtitle = `Riding groups by modularity optimisation, resolution ${resolution}, BIXI station pairs, August 2024`;
+      subtitle = `Riding groups, resolution ${resolution}; ${filterText}`;
     }
     const key = `${subtitle}|${rides}`;
     if (key === lastSubtitle) return;
@@ -1007,6 +1062,7 @@ export async function createBixiCommunities(
           break;
         case 'weighting':
         case 'minRides':
+        case 'maxDistanceKm':
         case 'neighbors':
         case 'dayType':
           updateEdgeInputs();
@@ -1262,13 +1318,15 @@ export async function createBixiCommunities(
 // ---------------------------------------------------------------------------------------------
 
 /**
- * Rides per undirected edge for all days, weekdays and weekend days. The day-type columns come
- * from the hourly slice rows (pairs with at least ten rides in August), so a pair that is only in
- * the month table has no weekday or weekend rides and drops out of those graphs.
+ * Average rides per day on each undirected edge, for all days, weekdays and weekend days. The
+ * day-type columns come from the hourly slice rows (pairs with at least ten rides in August), so a
+ * pair that is only in the month table has no weekday or weekend rate and drops out of those
+ * graphs. Rates, rather than August totals, make the 22 weekdays and nine weekend days comparable.
  */
 function buildRidesByDayType(
   flows: BixiFlows,
-  edges: ReturnType<typeof buildUndirectedEdges>
+  edges: ReturnType<typeof buildUndirectedEdges>,
+  dayCounts: {weekday: number; weekend: number; total: number}
 ): Record<DayType, Float32Array> {
   const index = new Map<number, number>();
   const {stationCount, slices} = flows;
@@ -1283,9 +1341,15 @@ function buildRidesByDayType(
     if (from >= stationCount || to >= stationCount || from === to) continue;
     const edge = index.get(from < to ? from * stationCount + to : to * stationCount + from);
     if (edge === undefined) continue;
-    (slices.dayType[row] === 0 ? weekday : weekend)[edge] += slices.count[row];
+    const weekdayRow = slices.dayType[row] === 0;
+    (weekdayRow ? weekday : weekend)[edge] +=
+      slices.count[row] / (weekdayRow ? dayCounts.weekday : dayCounts.weekend);
   }
-  return {all: edges.rides, weekday, weekend};
+  return {
+    all: Float32Array.from(edges.rides, rides => rides / dayCounts.total),
+    weekday,
+    weekend
+  };
 }
 
 /** Edge indices, most rides first (ties by index). */

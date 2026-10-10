@@ -101,7 +101,7 @@ export type GPUZoneEventOutput = {
  * must have exactly that many rows. Rows are ordered by track, then zone. `output.ids` holds the
  * track index. Rows at and after `output.count` hold sentinels: `0xffffffff` for IDs, zones and
  * visits, `0` for times. `output.overflow` is 1 when more pairs have visits than rows, and
- * `output.totalCount` (when present) receives the unclamped number of such pairs.
+ * `output.requiredCount` (when present) receives the unclamped number of such pairs.
  */
 export type GPUZoneVisitTableOutput = {
   /** Bounded compact result. `ids` holds the track index of each row. */
@@ -378,7 +378,7 @@ export class GPUZoneEvents implements GPUCommandNodeProducer {
         events.output.ids,
         events.output.count,
         events.output.overflow,
-        events.output.totalCount,
+        events.output.requiredCount,
         events.eventZones,
         events.eventTypes,
         events.eventTimes,
@@ -417,7 +417,7 @@ export class GPUZoneEvents implements GPUCommandNodeProducer {
       events.output.ids,
       events.output.count,
       events.output.overflow,
-      events.output.totalCount,
+      events.output.requiredCount,
       events.eventZones,
       events.eventTypes,
       events.eventTimes,
@@ -788,7 +788,7 @@ export class GPUZoneEvents implements GPUCommandNodeProducer {
       createPublishNode<Parameters>(graph, {
         id: `${id}-publish`,
         operation: OPERATION,
-        totalCount: keptTotal,
+        requiredCount: keptTotal,
         output: events.output,
         overflowSources: [overflowFlag]
       })
@@ -815,7 +815,7 @@ export class GPUZoneEvents implements GPUCommandNodeProducer {
           table.output.ids,
           table.output.count,
           table.output.overflow,
-          table.output.totalCount,
+          table.output.requiredCount,
           table.zones,
           table.visits,
           table.dwellTimes,
@@ -915,7 +915,7 @@ export class GPUZoneEvents implements GPUCommandNodeProducer {
       createPublishNode<Parameters>(graph, {
         id: `${id}-table-publish`,
         operation: OPERATION,
-        totalCount: keptTotal,
+        requiredCount: keptTotal,
         output: table.output
       })
     );

@@ -19,15 +19,20 @@ import {
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph
 } from '../../utils/gpu-contributor-utils';
+import type {GPUSpatialContext} from '../contracts/index';
 import {RHUMB_WGSL} from './rhumb-wgsl';
-import {GEODESIC_WGSL, GPU_GEODESIC_MEAN_EARTH_RADIUS} from './geodesic-wgsl';
+import {GEODESIC_WGSL} from './geodesic-wgsl';
 import {
   getVincentyWGSL,
   GPU_GEODESIC_DEFAULT_ITERATIONS,
   SPHERE_PAIR_WGSL,
   type GPUGeodesicModel
 } from './geodesic-kernels';
-import {validateGeodesicColumns, validateGeodesicOptions} from './gpu-geodesic-pairs';
+import {
+  resolveGeodesicSpatialContext,
+  validateGeodesicColumns,
+  validateGeodesicOptions
+} from './gpu-geodesic-pairs';
 
 const OPERATION = 'GPUGeodesicDestination';
 
@@ -50,20 +55,14 @@ export type GPUGeodesicDestinationOutput = {
 export type GPUGeodesicDestinationProps = {
   /** Prefix for generated node IDs. Defaults to `'geodesic-destination'`. */
   id?: string;
+  /** Longitude/latitude metric and output-unit contract. */
+  spatialContext: GPUSpatialContext;
   /** Origins, longitude/latitude degrees. */
   origins: GraphDataView<'float32x2'>;
   /** Initial bearings in degrees clockwise from north, aligned with `origins`. */
   bearings: GraphDataView<'float32'>;
   /** Distances in radius units (`'sphere'`, `'rhumb'`) or meters (`'wgs84'`), aligned with `origins`. */
   distances: GraphDataView<'float32'>;
-  /**
-   * `'sphere'` (default), `'wgs84'` (Vincenty's direct solution) or `'rhumb'` (constant-bearing
-   * line on a sphere of `radius`, turf `rhumbDestination`; a destination past a pole is reflected
-   * back across it and its final bearing flips north/south).
-   */
-  model?: GPUGeodesicModel;
-  /** Sphere radius. Defaults to {@link GPU_GEODESIC_MEAN_EARTH_RADIUS}. */
-  radius?: number;
   /** Compile-time Vincenty iteration cap for `'wgs84'`. Default 16. */
   iterations?: number;
   /** Per-row outputs; at least one. */
@@ -83,6 +82,8 @@ export class GPUGeodesicDestination implements GPUCommandNodeProducer {
   readonly id: string;
   /** Validated properties. */
   readonly props: GPUGeodesicDestinationProps;
+  /** Canonical coordinate and metric contract. */
+  readonly spatialContext: GPUSpatialContext;
   /** Resolved model. */
   readonly model: GPUGeodesicModel;
   /** Resolved radius. */
@@ -93,8 +94,10 @@ export class GPUGeodesicDestination implements GPUCommandNodeProducer {
   constructor(props: GPUGeodesicDestinationProps) {
     this.id = props.id ?? 'geodesic-destination';
     this.props = props;
-    this.model = props.model ?? 'sphere';
-    this.radius = props.radius ?? GPU_GEODESIC_MEAN_EARTH_RADIUS;
+    this.spatialContext = props.spatialContext;
+    const metric = resolveGeodesicSpatialContext(this.id, this.spatialContext);
+    this.model = metric.model;
+    this.radius = metric.radius;
     this.iterations = props.iterations ?? GPU_GEODESIC_DEFAULT_ITERATIONS;
     validateGeodesicOptions(this.id, this.model, this.radius, this.iterations);
     const {id} = this;

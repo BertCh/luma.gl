@@ -64,7 +64,7 @@ export type GroupStatisticsOracleInput = {
 /** Result of {@link computeGroupStatisticsOnCPU}. */
 export type GroupStatisticsOracleResult = {
   /** Unclamped number of groups. */
-  totalCount: number;
+  requiredCount: number;
   /** Groups ascending by key, clamped to the capacity. */
   groups: OracleGroup[];
   /** Per column, per source row z-score (NaN when undefined). */
@@ -224,5 +224,5 @@ export function computeGroupStatisticsOnCPU(
       }
     }
   }
-  return {totalCount: keys.length, groups, zScores};
+  return {requiredCount: keys.length, groups, zScores};
 }

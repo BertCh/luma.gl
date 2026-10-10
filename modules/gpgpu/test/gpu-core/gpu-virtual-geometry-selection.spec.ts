@@ -27,7 +27,9 @@ it('GPUVirtualGeometrySelection publishes a stable bounded indirect frontier', a
     'stable node order retains the coarse second root before refined first-root children'
   ).toEqual([101, 200]);
   expect(await readDrawCount(fixture.drawCommands), 'indirect count is capacity-clamped').toBe(2);
-  expect(await readUint32(fixture.totalCount, 1), 'full frontier count is explicit').toEqual([3]);
+  expect(await readUint32(fixture.requiredCount, 1), 'full frontier count is explicit').toEqual([
+    3
+  ]);
   expect(await readUint32(fixture.overflow, 1), 'truncation sets overflow').toEqual([1]);
 
   fixture.maximumScreenSpaceError.write(Float32Array.of(200));
@@ -37,7 +39,7 @@ it('GPUVirtualGeometrySelection publishes a stable bounded indirect frontier', a
     'a larger error tolerance selects both coarse roots'
   ).toEqual([100, 101]);
   expect(await readDrawCount(fixture.drawCommands), 'the indirect slot resets each encode').toBe(2);
-  expect(await readUint32(fixture.totalCount, 1)).toEqual([2]);
+  expect(await readUint32(fixture.requiredCount, 1)).toEqual([2]);
   expect(await readUint32(fixture.overflow, 1), 'overflow clears when capacity fits').toEqual([0]);
 
   fixture.cameraPosition.write(Float32Array.of(8, 0, 30));
@@ -47,7 +49,7 @@ it('GPUVirtualGeometrySelection publishes a stable bounded indirect frontier', a
     await readUint32(fixture.output, 2),
     'camera-inside selection refines conservatively despite a large threshold'
   ).toEqual([100, 300]);
-  expect(await readUint32(fixture.totalCount, 1)).toEqual([3]);
+  expect(await readUint32(fixture.requiredCount, 1)).toEqual([3]);
 
   expect(
     Boolean(
@@ -118,7 +120,7 @@ type Fixture = {
   pixelProjectionScale: Buffer;
   maximumScreenSpaceError: Buffer;
   output: Buffer;
-  totalCount: Buffer;
+  requiredCount: Buffer;
   overflow: Buffer;
   buffers: Buffer[];
 };
@@ -141,7 +143,7 @@ function createFixture(device: Device, outputCapacity: number): Fixture {
   const pixelProjectionScale = createInputBuffer(device, Float32Array.of(100));
   const maximumScreenSpaceError = createInputBuffer(device, Float32Array.of(50));
   const output = createOutputBuffer(device, outputCapacity);
-  const totalCount = createOutputBuffer(device, 1);
+  const requiredCount = createOutputBuffer(device, 1);
   const overflow = createOutputBuffer(device, 1);
   const drawCommands = new DrawCommandBuffer(device, {
     id: 'virtual-geometry-draw',
@@ -179,7 +181,7 @@ function createFixture(device: Device, outputCapacity: number): Fixture {
     },
     output: importView(graph, 'output', output, 'uint32', outputCapacity),
     count: graph.importGPUData('draw-count', drawCommands.getInstanceCountData(0)),
-    totalCount: importView(graph, 'total-count', totalCount, 'uint32', 1),
+    requiredCount: importView(graph, 'total-count', requiredCount, 'uint32', 1),
     overflow: importView(graph, 'overflow', overflow, 'uint32', 1)
   });
   graph.add(selection);
@@ -193,7 +195,7 @@ function createFixture(device: Device, outputCapacity: number): Fixture {
     pixelProjectionScale,
     maximumScreenSpaceError,
     output,
-    totalCount,
+    requiredCount,
     overflow,
     buffers: [
       sphereBounds,
@@ -205,7 +207,7 @@ function createFixture(device: Device, outputCapacity: number): Fixture {
       pixelProjectionScale,
       maximumScreenSpaceError,
       output,
-      totalCount,
+      requiredCount,
       overflow
     ]
   };

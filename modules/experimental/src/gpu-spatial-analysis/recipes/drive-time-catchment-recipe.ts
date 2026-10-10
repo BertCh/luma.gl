@@ -14,7 +14,13 @@ import type {
 import {GPUPointInPolygonJoin} from '../spatial-join/index';
 import type {GPUSegmentRingAssemblyOutput} from '../ring-assembly/index';
 import {createWGSLKernelNode} from '../../utils/wgsl-kernel-nodes';
-import {assertRecipe, getOrCreateView, RecipeBuilder, type GPURecipeResult} from './recipe-utils';
+import {
+  assertRecipe,
+  getOrCreateView,
+  RecipeBuilder,
+  type GPURecipeOverrides,
+  type GPURecipeResult
+} from './recipe-utils';
 
 const ID = 'GPUDriveTimeCatchmentRecipe';
 
@@ -41,12 +47,6 @@ export type GPUDriveTimeNetwork = {
 export type GPUDriveTimeIsochroneJoinOptions = {
   /** Maximum `(demand point, isochrone)` bounding-box candidates per encoding. */
   candidateCapacity: number;
-  /** Optional caller-owned per demand point: 0 inside the isochrone polygons, else `GPU_SPATIAL_JOIN_NO_FEATURE`. */
-  pointFeatureIds?: GraphDataView<'uint32'>;
-  /** Optional one-row join overflow flag. */
-  overflow?: GraphDataView<'uint32'>;
-  /** Optional one-row count of candidates the join could not classify. */
-  uncertainCount?: GraphDataView<'uint32'>;
 };
 
 /**
@@ -70,7 +70,38 @@ export type GPUDriveTimeIsochroneOptions = {
 };
 
 /** Properties for {@link addDriveTimeCatchmentRecipe}. */
-export type GPUDriveTimeCatchmentRecipeProps = {
+export type GPUDriveTimeCatchmentRecipeProps = GPURecipeOverrides<
+  Record<never, never>,
+  {
+    assignments?: GraphDataView<'uint32'>;
+    nodeCosts?: GraphDataView<'float32'>;
+    serviceAreaConverged?: GraphDataView<'uint32'>;
+    demandTimes?: GraphDataView<'float32'>;
+    demandBands?: GraphDataView<'uint32'>;
+    bands?: {
+      keys?: GraphDataView<'uint32'>;
+      counts?: GraphDataView<'uint32'>;
+      count?: GraphDataView<'uint32'>;
+      overflow?: GraphDataView<'uint32'>;
+      sumValues?: GraphDataView<'float32'>;
+      means?: GraphDataView<'float32'>;
+    };
+    isochroneDemand?: {
+      pointFeatureIds?: GraphDataView<'uint32'>;
+      overflow?: GraphDataView<'uint32'>;
+      uncertainCount?: GraphDataView<'uint32'>;
+    };
+  },
+  {
+    seedNodes?: GraphDataView<'uint32'>;
+    seedCosts?: GraphDataView<'float32'>;
+    facilityEdges?: GraphDataView<'uint32'>;
+    demandEdges?: GraphDataView<'uint32'>;
+    demandSourceCosts?: GraphDataView<'float32'>;
+    demandTargetCosts?: GraphDataView<'float32'>;
+    bandSumWords?: GraphDataView<'uint32x2'>;
+  }
+> & {
   /** Prefix for every node and transient ID. Defaults to `'drive-time-catchment'`. */
   id?: string;
   /** Road network. */
@@ -96,23 +127,6 @@ export type GPUDriveTimeCatchmentRecipeProps = {
   bandBreaks: GraphDataView<'float32'>;
   /** Rows of the band table; defaults to `bandBreaks.length`. */
   bandCapacity?: number;
-  /** Caller-owned per-node facility seed row (`seedNodes` row, so facility = row / 2). */
-  assignments?: GraphDataView<'uint32'>;
-  /** Caller-owned per-node minimum cost to a facility (`+Infinity` when unreached). */
-  nodeCosts?: GraphDataView<'float32'>;
-  /** Caller-owned drive time of each demand point (`+Infinity` when unreachable). */
-  demandTimes?: GraphDataView<'float32'>;
-  /** Caller-owned band of each demand point. */
-  demandBands?: GraphDataView<'uint32'>;
-  /** Caller-owned band table: ascending band keys, counts, and optional per-band sum/mean. */
-  bands?: {
-    keys?: GraphDataView<'uint32'>;
-    counts?: GraphDataView<'uint32'>;
-    count?: GraphDataView<'uint32'>;
-    overflow?: GraphDataView<'uint32'>;
-    sumValues?: GraphDataView<'float32'>;
-    means?: GraphDataView<'float32'>;
-  };
   /** Optional isochrone polygons of the same costs. */
   isochrones?: GPUDriveTimeIsochroneOptions;
 };
@@ -124,6 +138,7 @@ export type GPUDriveTimeCatchmentRecipeResult = GPURecipeResult & {
   seedCosts: GraphDataView<'float32'>;
   assignments: GraphDataView<'uint32'>;
   nodeCosts: GraphDataView<'float32'>;
+  serviceAreaConverged: GraphDataView<'uint32'>;
   demandTimes: GraphDataView<'float32'>;
   demandBands: GraphDataView<'uint32'>;
   bands: {
@@ -168,6 +183,8 @@ export function addDriveTimeCatchmentRecipe<Parameters>(
   const id = props.id ?? 'drive-time-catchment';
   const builder = new RecipeBuilder(graph);
   const {network} = props;
+  const outputs = props.outputs ?? {};
+  const scratch = props.scratch ?? {};
   const nodeCount = network.nodePositions.length;
   const facilityCount = props.facilities.length;
   const demandCount = props.demand.length;
@@ -179,8 +196,20 @@ export function addDriveTimeCatchmentRecipe<Parameters>(
   );
   assertRecipe(ID, bandCount >= 1, 'bandBreaks must not be empty');
 
-  const seedNodes = getOrCreateView(graph, `${id}-seed-nodes`, 'uint32', 2 * facilityCount);
-  const seedCosts = getOrCreateView(graph, `${id}-seed-costs`, 'float32', 2 * facilityCount);
+  const seedNodes = getOrCreateView(
+    graph,
+    `${id}-seed-nodes`,
+    'uint32',
+    2 * facilityCount,
+    scratch.seedNodes
+  );
+  const seedCosts = getOrCreateView(
+    graph,
+    `${id}-seed-costs`,
+    'float32',
+    2 * facilityCount,
+    scratch.seedCosts
+  );
   builder.add(
     new GPUNetworkSnapping({
       id: `${id}-snap-facilities`,
@@ -191,7 +220,13 @@ export function addDriveTimeCatchmentRecipe<Parameters>(
       edgeCosts: network.weights,
       maxSnapDistance: props.maxSnapDistance,
       candidateCapacity: props.candidateCapacity,
-      snappedEdges: getOrCreateView(graph, `${id}-facility-edges`, 'uint32', facilityCount),
+      snappedEdges: getOrCreateView(
+        graph,
+        `${id}-facility-edges`,
+        'uint32',
+        facilityCount,
+        scratch.facilityEdges
+      ),
       seedNodes,
       seedCosts
     })
@@ -202,14 +237,21 @@ export function addDriveTimeCatchmentRecipe<Parameters>(
     `${id}-assignments`,
     'uint32',
     nodeCount,
-    props.assignments
+    outputs.assignments
   );
   const nodeCosts = getOrCreateView(
     graph,
     `${id}-node-costs`,
     'float32',
     nodeCount,
-    props.nodeCosts
+    outputs.nodeCosts
+  );
+  const serviceAreaConverged = getOrCreateView(
+    graph,
+    `${id}-service-area-converged`,
+    'uint32',
+    1,
+    outputs.serviceAreaConverged
   );
   builder.add(
     new GPUNetworkServiceAreas({
@@ -222,7 +264,8 @@ export function addDriveTimeCatchmentRecipe<Parameters>(
       costLimit: props.costLimit,
       maxIterations: props.maxIterations,
       assignments,
-      costs: nodeCosts
+      costs: nodeCosts,
+      converged: serviceAreaConverged
     })
   );
 
@@ -257,21 +300,28 @@ export function addDriveTimeCatchmentRecipe<Parameters>(
   const polygons = isochrones?.cellOutline?.rings?.output.polygons;
   if (isochrones?.joinDemand && polygons) {
     const join = isochrones.joinDemand;
+    const provided = outputs.isochroneDemand ?? {};
     isochroneDemand = {
       pointFeatureIds: getOrCreateView(
         graph,
         `${id}-isochrone-demand`,
         'uint32',
         demandCount,
-        join.pointFeatureIds
+        provided.pointFeatureIds
       ),
-      overflow: getOrCreateView(graph, `${id}-isochrone-join-overflow`, 'uint32', 1, join.overflow),
+      overflow: getOrCreateView(
+        graph,
+        `${id}-isochrone-join-overflow`,
+        'uint32',
+        1,
+        provided.overflow
+      ),
       uncertainCount: getOrCreateView(
         graph,
         `${id}-isochrone-join-uncertain`,
         'uint32',
         1,
-        join.uncertainCount
+        provided.uncertainCount
       )
     };
     builder.add(
@@ -290,9 +340,27 @@ export function addDriveTimeCatchmentRecipe<Parameters>(
     );
   }
 
-  const snappedEdges = getOrCreateView(graph, `${id}-demand-edges`, 'uint32', demandCount);
-  const sourceCosts = getOrCreateView(graph, `${id}-demand-source-costs`, 'float32', demandCount);
-  const targetCosts = getOrCreateView(graph, `${id}-demand-target-costs`, 'float32', demandCount);
+  const snappedEdges = getOrCreateView(
+    graph,
+    `${id}-demand-edges`,
+    'uint32',
+    demandCount,
+    scratch.demandEdges
+  );
+  const sourceCosts = getOrCreateView(
+    graph,
+    `${id}-demand-source-costs`,
+    'float32',
+    demandCount,
+    scratch.demandSourceCosts
+  );
+  const targetCosts = getOrCreateView(
+    graph,
+    `${id}-demand-target-costs`,
+    'float32',
+    demandCount,
+    scratch.demandTargetCosts
+  );
   builder.add(
     new GPUNetworkSnapping({
       id: `${id}-snap-demand`,
@@ -315,7 +383,7 @@ export function addDriveTimeCatchmentRecipe<Parameters>(
     `${id}-demand-times`,
     'float32',
     demandCount,
-    props.demandTimes
+    outputs.demandTimes
   );
   graph.add(
     createWGSLKernelNode<Parameters>(graph, {
@@ -374,7 +442,7 @@ const UNREACHED: f32 = 3.0e38;`,
     `${id}-demand-bands`,
     'uint32',
     demandCount,
-    props.demandBands
+    outputs.demandBands
   );
   graph.add(
     createWGSLKernelNode<Parameters>(graph, {
@@ -403,7 +471,7 @@ const UNREACHED: f32 = 3.0e38;`,
   );
 
   const capacity = props.bandCapacity ?? bandCount;
-  const provided = props.bands ?? {};
+  const provided = outputs.bands ?? {};
   const bands = {
     keys: getOrCreateView(graph, `${id}-band-keys`, 'uint32', capacity, provided.keys),
     counts: getOrCreateView(graph, `${id}-band-counts`, 'uint32', capacity, provided.counts),
@@ -426,7 +494,13 @@ const UNREACHED: f32 = 3.0e38;`,
               values: props.demandValues,
               statistics: ['sum', 'mean'],
               output: {
-                sums: getOrCreateView(graph, `${id}-band-sum-words`, 'uint32x2', capacity),
+                sums: getOrCreateView(
+                  graph,
+                  `${id}-band-sum-words`,
+                  'uint32x2',
+                  capacity,
+                  scratch.bandSumWords
+                ),
                 sumValues: bands.sumValues,
                 means: bands.means
               }
@@ -448,10 +522,38 @@ const UNREACHED: f32 = 3.0e38;`,
     seedCosts,
     assignments,
     nodeCosts,
+    serviceAreaConverged,
     demandTimes,
     demandBands,
     bands,
     isochroneRings: isochrones?.cellOutline?.rings?.output,
-    isochroneDemand
+    isochroneDemand,
+    outputs: {
+      assignments,
+      nodeCosts,
+      serviceAreaConverged,
+      demandTimes,
+      demandBands,
+      bands,
+      ...(isochroneDemand ? {isochroneDemand} : {})
+    },
+    intermediates: {seedNodes, seedCosts},
+    status: {
+      stages: [
+        {stage: 'service-areas', status: {converged: serviceAreaConverged}},
+        {stage: 'band-statistics', status: {count: bands.count, overflow: bands.overflow}},
+        ...(isochroneDemand
+          ? [
+              {
+                stage: 'isochrone-demand',
+                status: {
+                  overflow: isochroneDemand.overflow,
+                  uncertainCount: isochroneDemand.uncertainCount
+                }
+              }
+            ]
+          : [])
+      ]
+    }
   };
 }

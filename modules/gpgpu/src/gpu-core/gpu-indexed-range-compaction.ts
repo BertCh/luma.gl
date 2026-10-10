@@ -742,15 +742,15 @@ const COUNT_OFFSET: u32 = ${getViewElementOffset(compaction.count)}u;
 
 @compute @workgroup_size(1)
 fn main() {
-  var totalCount = 0u;
+  var requiredCount = 0u;
   for (var partitionIndex = 0u; partitionIndex < PARTITION_COUNT; partitionIndex++) {
     let lastRangeIndex = RANGE_ENDS[partitionIndex] - 1u;
     let partitionCount = rangeOffsets[RANGE_OFFSETS_OFFSET + lastRangeIndex] +
       rangeCounts[RANGE_COUNTS_OFFSET + lastRangeIndex];
     partitionCounts[PARTITION_COUNTS_OFFSET + partitionIndex] = partitionCount;
-    totalCount += partitionCount;
+    requiredCount += partitionCount;
   }
-  outputCount[COUNT_OFFSET] = totalCount;
+  outputCount[COUNT_OFFSET] = requiredCount;
 }`;
   nodes.push(
     ...addDirectPass(graph, {

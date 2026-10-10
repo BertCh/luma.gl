@@ -103,7 +103,7 @@ export function compileSummitGraph(
         ids: importGraphBuffer(graph, 'ids', buffers.ids, 'uint32', capacity),
         count: importGraphBuffer(graph, 'count', buffers.count, 'uint32', 1),
         overflow: importGraphBuffer(graph, 'overflow', buffers.overflow, 'uint32', 1),
-        totalCount: importGraphBuffer(graph, 'total', buffers.total, 'uint32', 1)
+        requiredCount: importGraphBuffer(graph, 'total', buffers.total, 'uint32', 1)
       },
       outputDrop: importGraphBuffer(graph, 'drops', buffers.drops, 'float32', capacity),
       overflow: importGraphBuffer(graph, 'clamped', buffers.clamped, 'uint32', 1)

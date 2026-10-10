@@ -84,7 +84,7 @@ compiled.encode(device.commandEncoder, {parameters: undefined});
   application rewrites with `write()`. Lengths, capacities, grid sizes, and which optional views
   exist are compile-time topology; each prop's TSDoc says which category it belongs to.
 - **Bounded results report overflow on the GPU.** Compact ID lists use `GPUCompactOutput`
-  (`ids`, `count`, `overflow`, optional `totalCount`). `count` is clamped to `ids.length` and can be
+  (`ids`, `count`, `overflow`, optional `requiredCount`). `count` is clamped to `ids.length` and can be
   an indirect draw instance count; `overflow` is rewritten every encoding.
 - **Stable IDs.** Result IDs are the caller's `sourceIds[row]` (or tile IDs) when given and zero-based
   rows otherwise. Node and transient IDs are `${id}-<step>`, so two instances in one graph need
@@ -333,7 +333,7 @@ Builds a routable network from raw linestrings. `GPULineSplit` pieces
 are the edges. Their end points are snapped by a per-frame `tolerance` (a one-row `float32` view; grid
 cells `floor(x / tolerance)`, 0 means exact), deduplicated by a stable two-pass `GPUSort`, and the node ID
 is the group rank. Props: `lines`, `intersectionCapacity`, `tolerance`, and the outputs `pieces`, `nodes`
-(`positions`, `count`, optional `totalCount`), `edges` (`fromNodes`, `toNodes`, `lengths`) and `csr`
+(`positions`, `count`, optional `requiredCount`), `edges` (`fromNodes`, `toNodes`, `lengths`) and `csr`
 (`offsets`, `neighbors`, `weights`, optional `edgeIds`), with optional `overflow` and `uncertainCount`.
 The CSR is undirected and feeds `GPUNetworkReachability`, `GPUNetworkServiceAreas` and the other
 contributors directly.
@@ -498,7 +498,7 @@ two stable `GPUSort` passes. The result is a deterministic top-K list (weight de
 origin then destination zone) with zone columns, counts, and weights for an `ArcLayer`, plus
 per-zone outgoing and incoming totals. An optional caller mask and per-frame time window
 (`getGPUTimeWindowParameterValues`) gate rows without recompiling. `pairOverflow` reports a full
-pair table, while `totalCount > ids.length` only means the list was truncated to the top K.
+pair table, while `requiredCount > ids.length` only means the list was truncated to the top K.
 
 For grid and hexagon zones, `zones.activeGridSize` is a per-frame packed `uint32` `[columns, rows]`
 clamped to `1..gridSize`, so `gridSize` becomes the compile-time capacity: zone IDs are row-major in the
@@ -520,7 +520,7 @@ graph.add(new GPUFlowAggregation({
   origins, destinations, weights: tripCounts,
   timeWindow: {timestamps: departures, window: window.importToGraph(graph)},
   pairCapacity: 8192, excludeSelfFlows: true,
-  output: {ids: flowKeys, count, overflow, totalCount},
+  output: {ids: flowKeys, count, overflow, requiredCount},
   flowOriginZoneIds, flowDestinationZoneIds, flowWeights, zoneOutCounts, zoneInCounts,
   drawInstanceCount: graph.importGPUData('arcs', arcDraws.getInstanceCountData(0))
 }));

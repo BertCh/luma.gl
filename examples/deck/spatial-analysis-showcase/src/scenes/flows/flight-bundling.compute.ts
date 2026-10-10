@@ -159,6 +159,10 @@ export async function createFlightBundling(
     loadAirportTable('openflights', ctx.signal),
     loadAirportTable('us-airline-flows', ctx.signal)
   ]);
+  const canvas = device.getDefaultCanvasContext().canvas;
+  const canvasElement = canvas instanceof HTMLCanvasElement ? canvas : null;
+  const previousMixBlendMode = canvasElement?.style.mixBlendMode ?? '';
+  if (canvasElement) canvasElement.style.mixBlendMode = 'multiply';
   const networks = new Map<FlightNetwork['id'], NetworkBuffers>();
   const parameterBuffer = resources.createParameterBuffer('parameters', 'uint32', 5);
 
@@ -917,6 +921,9 @@ export async function createFlightBundling(
 
     destroy() {
       destroyed = true;
+      if (canvasElement?.style.mixBlendMode === 'multiply') {
+        canvasElement.style.mixBlendMode = previousMixBlendMode;
+      }
       graph?.reader.stop();
       graph?.resources.destroy();
       for (const entry of retired) entry.resources.destroy();

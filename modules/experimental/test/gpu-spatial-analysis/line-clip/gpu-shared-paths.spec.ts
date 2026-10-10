@@ -159,7 +159,7 @@ it('GPUSharedPaths#reports overflow and keeps a consistent prefix', async () => 
   ];
   const limited = await runSharedPaths(device, left, right, {runCapacity: 1});
   expect(limited.count).toBe(1);
-  expect(limited.totalCount).toBe(2);
+  expect(limited.requiredCount).toBe(2);
   expect(limited.overflow).toBe(1);
   const pairs = await runSharedPaths(device, left, right, {intersectionCapacity: 1});
   expect(pairs.overflow).toBe(1);

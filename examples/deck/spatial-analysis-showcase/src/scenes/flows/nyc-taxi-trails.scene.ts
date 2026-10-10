@@ -157,7 +157,7 @@ export default defineScene<NycTaxiTrailsOptions>({
   chapter: 'flows',
   order: 5,
   summary:
-    'Nine thousand OSRM-routed taxi trips on a Friday morning: a GPU playhead interpolates every cab, a time-window graph draws fading trails, and the story teaches trail length as memory, routes versus traces, heading as a cycle and ramps matched to the ground.',
+    'A seeded 9,000-trip sample of Friday yellow-cab pickups and drop-offs is routed with OSRM; GPU playhead and time-window graphs draw interpolated positions and recent route segments directly, while the CPU derives route, fare and heading summaries. These are modeled routes rather than GPS traces, and the sample undercounts all trips.',
   contributors: ['GPUTrajectoryPlayhead', 'GPUTimeWindowFilter'],
   datasets: [
     {id: 'poopdeck-nyc-taxi-paths', role: '9,000 routed taxi trips with a time on every vertex'}
@@ -374,7 +374,8 @@ export default defineScene<NycTaxiTrailsOptions>({
     },
     scaleBar: {units: 'metric'},
     credit: CREDIT,
-    caveat: 'Routes are modelled between pickup and drop-off, not GPS traces.',
+    caveat:
+      'The 9,000-trip sample uses modeled routes between recorded endpoints, not GPS traces; counts underrepresent all yellow-cab trips and early trail windows are incomplete.',
     clock: {
       option: 'time',
       // The archive stores New York local time as if UTC: 07:59:00 local is 12:59:00 UTC.
@@ -399,9 +400,13 @@ export default defineScene<NycTaxiTrailsOptions>({
 
   story: storyFromMarkdown<NycTaxiTrailsOptions>(narrative, {
     'eight-oclock': {
-      headline: 'A rush hour, one cab at a time',
+      headline: 'GPU playhead locates active modeled taxi trips',
       textAlternative:
-        'Dark map of Midtown Manhattan with hundreds of white dots, each a taxi, trailing faint yellow lines along the avenues.',
+        'Midtown map of active trips from a 9,000-trip sample; white points mark GPU-interpolated taxi positions and yellow lines show two minutes of modeled route history.',
+      evidence:
+        '**{{active}}** sampled trips are active at **{{clock}}**; **{{trips}}** is the full retained trip count.',
+      caveat:
+        'Trips are a seeded half-sample routed between recorded endpoints, not GPS traces; counts are lower bounds and early trail windows are incomplete.',
       optionsMode: 'fresh',
       options: {
         play: true,
@@ -416,13 +421,13 @@ export default defineScene<NycTaxiTrailsOptions>({
       controls: ['play', 'playSpeed'],
       readouts: ['clock', 'active', 'trips', 'roadChart'],
       camera: {...MIDTOWN_VIEW, transitionMs: 1400},
-      furniture: cartouche('A rush hour, one cab at a time'),
+      furniture: cartouche('Active modeled taxi trips'),
       stage: 'playhead'
     },
     'trail-is-memory': {
-      headline: 'Longer trails turn dots into streets',
+      headline: 'Trail duration determines visible route history',
       textAlternative:
-        'The same map with trails that grow longer: short trails are dots with tails, long trails draw the avenue grid.',
+        'Midtown map of active sampled trips as the trail window increases; each line shows a longer interval of the modeled route and the visible segment count rises.',
       optionsMode: 'fresh',
       options: {play: true, time: 480, playSpeed: 60, trailMinutes: 2, colorBy: 'none'},
       controls: ['trailMinutes'],
@@ -433,9 +438,9 @@ export default defineScene<NycTaxiTrailsOptions>({
       stage: 'window'
     },
     'routes-not-traces': {
-      headline: 'These lines are routes, not GPS',
+      headline: 'Displayed paths are modeled routes, not traces',
       textAlternative:
-        'Faint grey network of every route, with dashed straight chords and bright full routes for a few dozen taxis frozen at one moment.',
+        'Paused Midtown map showing all modeled OSRM routes in gray, pickup-to-drop-off chords as dashed lines and selected full routes at one playhead time.',
       optionsMode: 'fresh',
       options: {
         play: false,
@@ -452,9 +457,9 @@ export default defineScene<NycTaxiTrailsOptions>({
       stage: 'draw'
     },
     heading: {
-      headline: 'Avenues move one way, in pairs',
+      headline: 'Modeled routes preserve paired avenue directions',
       textAlternative:
-        'Midtown trails coloured by compass heading on a cyclic ramp: avenues form opposite pairs of hues, with a rose chart of cab headings showing four spikes.',
+        'Midtown modeled route segments colored by compass heading on a cyclic ramp, with a rose chart counting active sampled trips by heading.',
       optionsMode: 'fresh',
       options: {
         play: true,
@@ -471,9 +476,9 @@ export default defineScene<NycTaxiTrailsOptions>({
       stage: 'playhead'
     },
     'fare-colour': {
-      headline: 'Match the ramp to the ground',
+      headline: 'Fare ramp orientation changes class contrast',
       textAlternative:
-        'Trails coloured by fare classes, split by a divider: on the left the ramp runs against the dark ground and the dearest trips fade away, on the right the dearest are brightest.',
+        'Split Midtown map using the same five fare quantile classes; the reversed ramp at left gives higher fares lower contrast, while the matched ramp at right makes them brighter.',
       optionsMode: 'fresh',
       options: {
         play: true,
@@ -491,9 +496,9 @@ export default defineScene<NycTaxiTrailsOptions>({
       stage: 'draw'
     },
     'how-the-gpu-does-it': {
-      headline: 'Every frame is a binary search per cab',
+      headline: 'Each update searches every trip timeline',
       textAlternative:
-        'One long taxi route drawn in grey over a faint network, with a tick at each vertex of its timestamp table and a ring around its white head.',
+        'Paused Midtown map with one modeled trip route, timestamped vertices and interpolated position, plus readouts for binary-search steps and visible route segments.',
       optionsMode: 'fresh',
       options: {
         play: false,
@@ -510,5 +515,13 @@ export default defineScene<NycTaxiTrailsOptions>({
       furniture: cartouche('One cab, one binary search'),
       stage: 'playhead'
     }
-  })
+  }).map(step =>
+    step.id === 'eight-oclock'
+      ? {
+          ...step,
+          title: 'Active modeled taxi trips',
+          body: '`GPUTrajectoryPlayhead` binary-searches the modeled timestamp vertices for each routed trip and interpolates active positions. GPU-produced active ids and indirect draw counts remain on the device; the CPU reads small status summaries for the card. **{{active}}** sample trips are active at **{{clock}}**. Use **Play** or **Playback speed** below.'
+        }
+      : step
+  )
 });

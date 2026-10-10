@@ -381,6 +381,61 @@ it('PipelineFactory#caching with WebGPU attachment formats', async () => {
   void 0;
 });
 
+it('PipelineFactory#compute caching includes entry points and specialization constants', async () => {
+  const webgpuDevice = await getWebGPUTestDevice();
+  if (!webgpuDevice?.props._cachePipelines) {
+    return;
+  }
+
+  const pipelineFactory = new PipelineFactory(webgpuDevice);
+  const shader = webgpuDevice.createShader({
+    source: /* wgsl */ `
+override FIRST: u32;
+override SECOND: u32;
+@compute @workgroup_size(1) fn main() { _ = FIRST + SECOND; }
+@compute @workgroup_size(1) fn alternate() { _ = FIRST + SECOND; }
+`
+  });
+  const firstPipeline = pipelineFactory.createComputePipeline({
+    shader,
+    entryPoint: 'main',
+    constants: {FIRST: 1, SECOND: 2},
+    shaderLayout: {bindings: []}
+  });
+  const reorderedPipeline = pipelineFactory.createComputePipeline({
+    shader,
+    entryPoint: 'main',
+    constants: {SECOND: 2, FIRST: 1},
+    shaderLayout: {bindings: []}
+  });
+  const differentConstantsPipeline = pipelineFactory.createComputePipeline({
+    shader,
+    entryPoint: 'main',
+    constants: {FIRST: 2, SECOND: 2},
+    shaderLayout: {bindings: []}
+  });
+  const differentEntryPointPipeline = pipelineFactory.createComputePipeline({
+    shader,
+    entryPoint: 'alternate',
+    constants: {FIRST: 1, SECOND: 2},
+    shaderLayout: {bindings: []}
+  });
+
+  expect(reorderedPipeline, 'constant insertion order does not change cache identity').toBe(
+    firstPipeline
+  );
+  expect(differentConstantsPipeline, 'specialization values change cache identity').not.toBe(
+    firstPipeline
+  );
+  expect(differentEntryPointPipeline, 'entry points change cache identity').not.toBe(firstPipeline);
+
+  pipelineFactory.release(firstPipeline);
+  pipelineFactory.release(reorderedPipeline);
+  pipelineFactory.release(differentConstantsPipeline);
+  pipelineFactory.release(differentEntryPointPipeline);
+  shader.destroy();
+});
+
 it('PipelineFactory preserves a synchronous compute cache entry when async compilation finishes', async () => {
   const webgpuDevice = await getWebGPUTestDevice();
   if (!webgpuDevice?.props._cachePipelines) {

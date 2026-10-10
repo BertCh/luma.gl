@@ -7,8 +7,10 @@ import {expect, it} from 'vitest';
 import {
   GPUNearestFeatureJoin,
   GPUPointInPolygonJoin,
+  GPUSpatialPredicateJoin,
   type GPUNearestFeatureJoinProps,
-  type GPUPointInPolygonJoinProps
+  type GPUPointInPolygonJoinProps,
+  type GPUSpatialPredicateJoinProps
 } from '../../../src/gpu-spatial-analysis/spatial-join';
 import {createNullWebGPUDevice, createVectorView} from '../../utils/gpu-contributor-test-utils';
 import {
@@ -89,12 +91,17 @@ it('GPUPointInPolygonJoin schedules nodes in dependency order', () => {
     'j-bounds',
     'j-clear',
     'j-probe',
-    'j-expand',
+    'j-probe-scan-level-0-scan',
+    'j-probe-total',
+    'j-probe-write',
+    'j-candidate-dispatch',
     'j-classify',
-    'j-exact',
     'j-resolve',
     'j-assign',
     'j-collect-matches',
+    'j-collect-matches-scan-level-0-scan',
+    'j-collect-matches-total',
+    'j-collect-matches-write',
     'j-finalize'
   ]);
   const firstBVH = ids.findIndex(id => id.startsWith('j-bvh-'));
@@ -137,21 +144,109 @@ it('GPUPointInPolygonJoin suffixes per-chunk nodes', () => {
 it('GPUNearestFeatureJoin schedules nodes in dependency order', () => {
   const device = createNullWebGPUDevice();
   const graph = new GPUCommandGraph(device);
-  const ids = new GPUNearestFeatureJoin(createNearestProps(graph))
-    .getCommandNodes(graph)
-    .map(node => node.id);
+  const nodes = new GPUNearestFeatureJoin(createNearestProps(graph)).getCommandNodes(graph);
+  const ids = nodes.map(node => node.id);
   expect(ids.filter(id => !id.startsWith('n-bvh-'))).toEqual([
     'n-bounds',
     'n-clear',
     'n-probe',
+    'n-probe-scan-level-0-scan',
+    'n-probe-total',
+    'n-probe-write',
+    'n-candidate-dispatch',
     'n-expand',
     'n-distance',
     'n-reduce-distance',
     'n-reduce-feature',
     'n-assign',
     'n-collect-matches',
+    'n-collect-matches-scan-level-0-scan',
+    'n-collect-matches-total',
+    'n-collect-matches-write',
     'n-finalize'
   ]);
+  for (const id of ['n-expand', 'n-distance', 'n-reduce-distance', 'n-reduce-feature']) {
+    expect(nodes.find(node => node.id === id)?.condition).toMatchObject({
+      source: 'gpu',
+      mode: 'indirect'
+    });
+  }
+  device.destroy();
+});
+
+it('GPUSpatialPredicateJoin indirectly dispatches candidate and cooperative refinement', () => {
+  const device = createNullWebGPUDevice();
+  const graph = new GPUCommandGraph(device);
+  const view = <Format extends 'uint32' | 'float32' | 'float32x2'>(
+    name: string,
+    format: Format,
+    length: number
+  ) => createTransientView(graph, name, format, length);
+  const createProps = (
+    id: string,
+    overrides: Partial<GPUSpatialPredicateJoinProps> = {}
+  ): GPUSpatialPredicateJoinProps => ({
+    id,
+    left: {kind: 'points', positions: view(`${id}-left`, 'float32x2', 4)},
+    right: {kind: 'points', positions: view(`${id}-right`, 'float32x2', 3)},
+    predicate: 'intersects',
+    candidateCapacity: 4096,
+    pairs: {
+      leftIds: view(`${id}-left-ids`, 'uint32', 4096),
+      rightIds: view(`${id}-right-ids`, 'uint32', 4096)
+    },
+    ...overrides
+  });
+  const fastNodes = new GPUSpatialPredicateJoin(createProps('p')).getCommandNodes(graph);
+  for (const id of ['p-exact', 'p-scatter']) {
+    expect(fastNodes.find(node => node.id === id)?.condition).toMatchObject({
+      source: 'gpu',
+      mode: 'indirect'
+    });
+  }
+  expect(fastNodes.map(node => node.id)).toContain('p-match-total');
+
+  const cooperativeNodes = new GPUSpatialPredicateJoin(
+    createProps('w', {
+      predicate: 'dwithin',
+      distance: view('w-distance', 'float32', 1),
+      engine: 'relate'
+    })
+  ).getCommandNodes(graph);
+  expect(cooperativeNodes.map(node => node.id)).toContain('w-candidate-dispatch-64');
+  expect(cooperativeNodes.find(node => node.id === 'w-exact')?.condition).toMatchObject({
+    source: 'gpu',
+    mode: 'indirect'
+  });
+  device.destroy();
+});
+
+it('GPUNearestFeatureJoin evaluates neighbor foot points with one invocation per query', () => {
+  const device = createNullWebGPUDevice();
+  const graph = new GPUCommandGraph(device);
+  const queryCount = 3;
+  const neighborCapacity = 64;
+  const slotCount = queryCount * neighborCapacity;
+  const nodes = new GPUNearestFeatureJoin({
+    id: 'knn',
+    points: createTransientView(graph, 'knn-points', 'float32x2', queryCount),
+    features: {
+      kind: 'segments',
+      starts: createTransientView(graph, 'knn-starts', 'float32x2', 2),
+      ends: createTransientView(graph, 'knn-ends', 'float32x2', 2)
+    },
+    k: 1,
+    ties: 'all',
+    neighborCapacity,
+    neighborIds: createTransientView(graph, 'knn-ids', 'uint32', slotCount),
+    neighborCounts: createTransientView(graph, 'knn-counts', 'uint32', queryCount),
+    neighborDistances: createTransientView(graph, 'knn-distances', 'float32', slotCount),
+    neighborFootPoints: createTransientView(graph, 'knn-foot', 'float32x2', slotCount),
+    overflow: createTransientView(graph, 'knn-overflow', 'uint32', 1)
+  }).getCommandNodes(graph);
+  expect(nodes.find(node => node.id === 'knn-foot-points')?.workload?.maximumInvocationCount).toBe(
+    queryCount
+  );
   device.destroy();
 });
 

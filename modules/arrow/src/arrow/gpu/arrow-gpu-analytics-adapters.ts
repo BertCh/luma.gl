@@ -12,9 +12,15 @@ import {
   type GPUTypeMap
 } from '@luma.gl/experimental/gpu-tables';
 import {
+  getGPUPartitionMemoryPlan,
+  type GPUPartitionDescriptor,
+  type GPUPartitionMemoryPlan
+} from '@luma.gl/experimental/gpu-spatial-analysis';
+import {
   DataType,
   Dictionary,
   Precision,
+  Table as ArrowTable,
   type Data,
   type Field,
   type Float32,
@@ -60,6 +66,8 @@ export type GPUAnalyticsTableFromArrowTableProps<T extends GPUTypeMap = GPUTypeM
   columns?: readonly (keyof T & string)[];
   /** Additional buffer properties; required storage and copy usage are always retained. */
   bufferProps?: GPUVectorBufferProps;
+  /** Logical rows exposed on each side of a source record batch for partition-aware analysis. */
+  partitionHaloRows?: number;
 };
 
 /** GPU table plus explicit analytical metadata retained outside generic GPU table storage. */
@@ -72,6 +80,19 @@ export type GPUAnalyticsTableFromArrowTableResult<T extends GPUTypeMap = GPUType
   dictionaries: Partial<Record<keyof T & string, GPUAnalyticsDictionary>>;
   /** Per-field Arrow null counts in source record-batch order. */
   nullCounts: Partial<Record<keyof T & string, readonly number[]>>;
+  /** Source record batches represented as canonical partitions; no batch is implicitly packed. */
+  partitioning: GPUPartitionDescriptor;
+  /** Static memory plan for potential sequential batch execution versus implicit packing. */
+  partitionMemory: GPUPartitionMemoryPlan;
+};
+
+/** One lazily uploaded Arrow record batch with its stable global partition identity. */
+export type GPUAnalyticsArrowPartition<T extends GPUTypeMap = GPUTypeMap> = {
+  sourceBatchIndex: number;
+  sourceRowIndexOffset: number;
+  sourceRowCount: number;
+  partition: GPUPartitionDescriptor['partitions'][number];
+  analytics: GPUAnalyticsTableFromArrowTableResult<T>;
 };
 
 /** Fully validated source metadata collected before allocating any GPU resources. */
@@ -105,7 +126,10 @@ export function makeGPUAnalyticsTableFromArrowTable<T extends GPUTypeMap = GPUTy
   options: GPUAnalyticsTableFromArrowTableProps<T> = {}
 ): GPUAnalyticsTableFromArrowTableResult<T> {
   validateGPUAnalyticsBufferProps(options.bufferProps);
+  const partitioning = getGPUPartitionDescriptorFromArrowTable(table, options.partitionHaloRows);
   const columns = prepareGPUAnalyticsColumns(table, options.columns);
+  const bytesPerRow = columns.reduce((sum, column) => sum + 4 + (column.field.nullable ? 4 : 0), 0);
+  const partitionMemory = getGPUPartitionMemoryPlan(partitioning, bytesPerRow);
   const requiredBufferProps = {
     ...options.bufferProps,
     usage: (options.bufferProps?.usage ?? 0) | GPU_ANALYTICS_BUFFER_USAGE
@@ -198,7 +222,7 @@ export function makeGPUAnalyticsTableFromArrowTable<T extends GPUTypeMap = GPUTy
       });
     }
 
-    return {table: gpuTable, validity, dictionaries, nullCounts};
+    return {table: gpuTable, validity, dictionaries, nullCounts, partitioning, partitionMemory};
   } catch (error) {
     gpuTable?.destroy();
     for (const data of allocatedData) {
@@ -208,6 +232,63 @@ export function makeGPUAnalyticsTableFromArrowTable<T extends GPUTypeMap = GPUTy
       data.destroy();
     }
     throw error;
+  }
+}
+
+/** Maps Arrow record-batch boundaries to canonical core/halo partitions without moving rows. */
+export function getGPUPartitionDescriptorFromArrowTable(
+  table: Table,
+  haloRows: number = 0
+): GPUPartitionDescriptor {
+  if (!Number.isSafeInteger(haloRows) || haloRows < 0) {
+    throw new Error('partitionHaloRows must be a non-negative safe integer');
+  }
+  let coreStart = 0;
+  const partitions = table.batches.map((batch, id) => {
+    const coreEnd = coreStart + batch.numRows;
+    const partition = {
+      id,
+      coreStart,
+      coreEnd,
+      haloStart: Math.max(0, coreStart - haloRows),
+      haloEnd: Math.min(table.numRows, coreEnd + haloRows)
+    };
+    coreStart = coreEnd;
+    return partition;
+  });
+  return {
+    length: table.numRows,
+    partitions,
+    seamOwnership: {kind: 'lowest-partition-id'}
+  };
+}
+
+/**
+ * Lazily uploads one Arrow record batch at a time for bounded-memory spatial analysis.
+ *
+ * Consume and destroy each yielded `analytics` result before requesting the next item to keep peak
+ * GPU residency at one source batch. Stable global row offsets and partition IDs remain outside the
+ * one-batch table, so no packing or identity rewrite is required.
+ */
+export function* iterateGPUAnalyticsPartitionsFromArrowTable<T extends TypeMap>(
+  device: Device,
+  table: Table<T>,
+  options: GPUAnalyticsTableFromArrowTableProps<GPUAnalyticsTypeMapForArrow<T>> = {}
+): Generator<GPUAnalyticsArrowPartition<GPUAnalyticsTypeMapForArrow<T>>> {
+  const descriptor = getGPUPartitionDescriptorFromArrowTable(table, options.partitionHaloRows);
+  let sourceRowIndexOffset = 0;
+  for (const [sourceBatchIndex, batch] of table.batches.entries()) {
+    const sourceRowCount = batch.numRows;
+    const singleBatchTable = new ArrowTable(table.schema, [batch]);
+    const analytics = makeGPUAnalyticsTableFromArrowTable(device, singleBatchTable, options);
+    yield {
+      sourceBatchIndex,
+      sourceRowIndexOffset,
+      sourceRowCount,
+      partition: descriptor.partitions[sourceBatchIndex],
+      analytics
+    };
+    sourceRowIndexOffset += sourceRowCount;
   }
 }
 

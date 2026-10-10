@@ -30,7 +30,7 @@ import {
   SPATIAL_JOIN_WGSL_HELPERS,
   validateDisjointOutputs
 } from './spatial-join-passes';
-import type {GPUSpatialJoinGeometry, GPUSpatialJoinPairs} from './spatial-join-types';
+import {type GPUSpatialJoinGeometry, type GPUSpatialJoinPairs} from './spatial-join-types';
 
 const OPERATION = 'GPUSpatialJoinCandidates';
 
@@ -240,7 +240,7 @@ export type GPUSpatialJoinCandidatesProps = {
   leafCapacity?: number;
   /**
    * Candidate pairs sorted by `(left, right)`. `pairs.leftIds.length` is the candidate capacity;
-   * `count` is clamped to it, `totalCount` is the unclamped number and `overflow` is set when
+   * `count` is clamped to it, `requiredCount` is the unclamped number and `overflow` is set when
    * candidates were dropped or the BVH overflowed.
    */
   pairs: GPUSpatialJoinPairs;
@@ -300,7 +300,7 @@ export class GPUSpatialJoinCandidates implements GPUCommandNodeProducer {
     for (const [name, view] of [
       ['count', pairs.count],
       ['overflow', pairs.overflow],
-      ['totalCount', pairs.totalCount]
+      ['requiredCount', pairs.requiredCount]
     ] as const) {
       if (view) {
         validatePackedUint32View(view, `${id} pairs.${name}`);
@@ -334,7 +334,7 @@ export class GPUSpatialJoinCandidates implements GPUCommandNodeProducer {
         ...getSpatialJoinGeometryViews(props.right),
         typeof props.distance === 'number' ? undefined : props.distance
       ],
-      [pairs.leftIds, pairs.rightIds, pairs.count, pairs.overflow, pairs.totalCount]
+      [pairs.leftIds, pairs.rightIds, pairs.count, pairs.overflow, pairs.requiredCount]
     );
   }
 
@@ -352,7 +352,7 @@ export class GPUSpatialJoinCandidates implements GPUCommandNodeProducer {
       pairs.rightIds,
       pairs.count,
       pairs.overflow,
-      pairs.totalCount
+      pairs.requiredCount
     ]);
     if (prepared && !prepared.isDeclaredIn(graph)) {
       throw new Error(`${id} requires prepared to be added to the graph first`);
@@ -478,7 +478,7 @@ export class GPUSpatialJoinCandidates implements GPUCommandNodeProducer {
     const scalars: [string, GraphDataView<'uint32'> | undefined][] = [
       ['pairsCount', pairs.count],
       ['pairsOverflow', pairs.overflow],
-      ['pairsTotal', pairs.totalCount]
+      ['pairsTotal', pairs.requiredCount]
     ];
     const bindings: WGSLKernelBinding[] = [
       {name: 'candidatePairs', view: candidatePairs, type: 'u32', access: 'read'},

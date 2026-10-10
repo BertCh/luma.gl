@@ -2,8 +2,54 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {defineGPUSpatialParameterSchema} from '../contracts/index';
+
 /** Number of float32 elements in a spatial-autocorrelation parameter buffer. */
 export const GPU_SPATIAL_AUTOCORRELATION_PARAMETER_LENGTH = 8;
+
+/** Declarative layout shared by local Moran and hot-spot analysis. */
+export const GPU_SPATIAL_AUTOCORRELATION_PARAMETER_SCHEMA = defineGPUSpatialParameterSchema({
+  id: 'spatial-autocorrelation',
+  format: 'float32',
+  wordLength: GPU_SPATIAL_AUTOCORRELATION_PARAMETER_LENGTH,
+  fields: [
+    {
+      name: 'significanceLevel',
+      format: 'float32',
+      wordOffset: 0,
+      defaultValue: 0.05,
+      minimum: Number.MIN_VALUE,
+      maximum: 1,
+      dynamic: true
+    },
+    {
+      name: 'useFixedMoments',
+      format: 'float32',
+      wordOffset: 1,
+      defaultValue: 0,
+      minimum: 0,
+      maximum: 1,
+      dynamic: true
+    },
+    {
+      name: 'fixedCount',
+      format: 'float32',
+      wordOffset: 2,
+      defaultValue: 0,
+      minimum: 0,
+      dynamic: true
+    },
+    {name: 'fixedMean', format: 'float32', wordOffset: 3, defaultValue: 0, dynamic: true},
+    {
+      name: 'fixedVariance',
+      format: 'float32',
+      wordOffset: 4,
+      defaultValue: 0,
+      minimum: 0,
+      dynamic: true
+    }
+  ]
+});
 
 /** Number of float32 rows written to an optional `globalStatistics` output. */
 export const GPU_SPATIAL_AUTOCORRELATION_STATISTICS_LENGTH = 4;

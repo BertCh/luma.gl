@@ -5,6 +5,7 @@
 export {
   getGPULineDensityParameterValues,
   GPU_LINE_DENSITY_PARAMETER_LENGTH,
+  GPU_LINE_DENSITY_PARAMETER_SCHEMA,
   GPULineDensity
 } from './gpu-line-density';
 export type {

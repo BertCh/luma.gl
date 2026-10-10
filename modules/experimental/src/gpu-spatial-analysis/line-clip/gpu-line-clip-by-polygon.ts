@@ -14,6 +14,7 @@ import {
 } from '@luma.gl/gpgpu/gpu-core';
 import {createWGSLKernelNode, type WGSLKernelBinding} from '../../utils/wgsl-kernel-nodes';
 import {validateGraphViewsBelongToGraph} from '../../utils/gpu-contributor-utils';
+import {createStableLexicographicIndexSortNodes} from '../../utils/stable-lexicographic-index-sort';
 import {GPUSegmentIntersection} from '../segment-intersection/index';
 import {GPUPointInPolygonJoin, GPU_SPATIAL_JOIN_NO_FEATURE} from '../spatial-join/index';
 import type {GPUSpatialJoinLines, GPUSpatialJoinPolygons} from '../spatial-join/index';
@@ -59,12 +60,12 @@ export type GPULineClipByPolygonProps = {
   /**
    * Capacity of the internal `GPUSegmentIntersection` pair list, which holds one row per
    * (line segment, polygon segment) intersection. When it overflows, pieces are produced from the
-   * sorted prefix of pairs and `pieces.overflow` is set.
+   * sorted prefix of pairs and `pieces.status.overflow` is set.
    */
   intersectionCapacity: number;
   /**
    * Maximum (sub-piece midpoint, polygon feature) bounding-box candidates of the internal
-   * `GPUPointInPolygonJoin`. Overflow sets `pieces.overflow`.
+   * `GPUPointInPolygonJoin`. Overflow sets `pieces.status.overflow`.
    */
   candidateCapacity: number;
   /** Output pieces, in the layout of {@link GPULineSplitPieces}. */
@@ -99,7 +100,7 @@ export type GPULineClipByPolygonProps = {
  * traversal order. Pieces are linestrings with at least two vertices; a line that only touches a
  * polygon at a point yields no piece (GeoPandas `keep_geom_type=True`). A line that is clipped to
  * nothing yields no row, and a closed line that is kept whole is not rejoined at its start. Pieces
- * whose end would exceed the capacities are dropped as a suffix and `pieces.overflow` is set.
+ * whose end would exceed the capacities are dropped as a suffix and `pieces.status.overflow` is set.
  *
  * Crossings of proper intersections are rounded to f32 once per pair. A sub-piece shorter than
  * a few f32 ulps next to a polygon edge can have its midpoint classified on the wrong side.
@@ -168,23 +169,25 @@ export class GPULineClipByPolygon implements GPUCommandNodeProducer {
     this.keepInside = props.mode !== 'outside';
     this.vertexCount = lines.positions.length;
     this.lineCount = lines.lineOffsets.length - 1;
-    validatePackedUint32View(pieces.lineIds, `${id} pieces.lineIds`);
-    validatePackedUint32View(pieces.offsets, `${id} pieces.offsets`);
-    validatePackedView(pieces.positions, ['float32x2'], `${id} pieces.positions`);
-    this.pieceCapacity = pieces.lineIds.length;
-    this.vertexCapacity = pieces.positions.length;
-    if (this.pieceCapacity < 1 || pieces.offsets.length !== this.pieceCapacity + 1) {
-      throw new Error(`${id} pieces.offsets length must be pieces.lineIds.length + 1`);
+    validatePackedUint32View(pieces.sourceIds, `${id} pieces.sourceIds`);
+    validatePackedUint32View(pieces.geometry.lineOffsets, `${id} pieces.geometry.lineOffsets`);
+    validatePackedView(pieces.geometry.positions, ['float32x2'], `${id} pieces.geometry.positions`);
+    this.pieceCapacity = pieces.sourceIds.length;
+    this.vertexCapacity = pieces.geometry.positions.length;
+    if (this.pieceCapacity < 1 || pieces.geometry.lineOffsets.length !== this.pieceCapacity + 1) {
+      throw new Error(
+        `${id} pieces.geometry.lineOffsets length must be pieces.sourceIds.length + 1`
+      );
     }
     if (this.vertexCapacity < 1) {
-      throw new Error(`${id} pieces.positions must be non-empty`);
+      throw new Error(`${id} pieces.geometry.positions must be non-empty`);
     }
     for (const [name, view] of [
-      ['count', pieces.count],
+      ['count', pieces.status.count],
       ['vertexCount', pieces.vertexCount],
-      ['overflow', pieces.overflow],
-      ['totalCount', pieces.totalCount],
-      ['totalVertexCount', pieces.totalVertexCount],
+      ['overflow', pieces.status.overflow],
+      ['requiredCount', pieces.status.requiredCount],
+      ['requiredVertexCount', pieces.requiredVertexCount],
       ['uncertainCount', props.uncertainCount]
     ] as const) {
       if (view) {
@@ -209,14 +212,14 @@ export class GPULineClipByPolygon implements GPUCommandNodeProducer {
       polygons.featureOffsets,
       polygons.polygonOffsets,
       polygons.ringOffsets,
-      pieces.lineIds,
-      pieces.offsets,
-      pieces.positions,
-      pieces.count,
+      pieces.sourceIds,
+      pieces.geometry.lineOffsets,
+      pieces.geometry.positions,
+      pieces.status.count,
       pieces.vertexCount,
-      pieces.overflow,
-      pieces.totalCount,
-      pieces.totalVertexCount,
+      pieces.status.overflow,
+      pieces.status.requiredCount,
+      pieces.requiredVertexCount,
       props.uncertainCount
     ]);
     const nodes: GPUCommandNode<Parameters>[] = [];
@@ -331,6 +334,10 @@ fn lowerBound(value: u32) -> u32 {
 
     // 3. Crossing events: up to two per pair (both ends of an overlap).
     const eventTable = T('event-table', 'uint32', eventCount * EVENT_STRIDE);
+    const eventSegments = T('event-segments', 'uint32', eventCount);
+    const eventOrderKeys = T('event-order-keys', 'uint32', eventCount);
+    const eventOtherKeys = T('event-other-keys', 'uint32', eventCount);
+    const eventIndices = T('event-indices', 'uint32', eventCount);
     nodes.push(
       createWGSLKernelNode<Parameters>(graph, {
         id: `${id}-events`,
@@ -384,75 +391,123 @@ ${lineLookupWGSL.slice(lineLookupWGSL.indexOf('// Coordinate of p'))}`,
   eventTable[row + 5u] = bitcast<u32>(key);
   eventTable[row + 6u] = bitcast<u32>(other);
   eventTable[row + 7u] = 0u;`
+      }),
+      createWGSLKernelNode<Parameters>(graph, {
+        id: `${id}-event-sort-keys`,
+        operation: OPERATION,
+        variant: 'event-sort-keys',
+        bindings: [
+          {name: 'pairLeft', view: pairLeft, type: 'u32', access: 'read'},
+          {name: 'eventTable', view: eventTable, type: 'u32', access: 'read'},
+          {name: 'eventSegments', view: eventSegments, type: 'u32', access: 'read_write'},
+          {name: 'eventOrderKeys', view: eventOrderKeys, type: 'u32', access: 'read_write'},
+          {name: 'eventOtherKeys', view: eventOtherKeys, type: 'u32', access: 'read_write'},
+          {name: 'eventIndices', view: eventIndices, type: 'u32', access: 'read_write'}
+        ],
+        invocationCount: eventCount,
+        declarations: `const VERTEX_COUNT: u32 = ${vertexCount}u;`,
+        body: `let row = eventTableOffset + index * ${EVENT_STRIDE}u;
+  let valid = (eventTable[row] & 1u) != 0u;
+  let keyBits = eventTable[row + 5u];
+  let otherBits = eventTable[row + 6u];
+  eventSegments[eventSegmentsOffset + index] = select(VERTEX_COUNT, pairLeft[pairLeftOffset + index / 2u], valid);
+  eventOrderKeys[eventOrderKeysOffset + index] = select(keyBits ^ 0xffffffffu, keyBits ^ 0x80000000u, (keyBits & 0x80000000u) == 0u);
+  eventOtherKeys[eventOtherKeysOffset + index] = select(otherBits ^ 0xffffffffu, otherBits ^ 0x80000000u, (otherBits & 0x80000000u) == 0u);
+  eventIndices[eventIndicesOffset + index] = index;`
       })
     );
 
-    // 4. Deduplicate and rank the interior events of each segment.
+    // 4. Order, deduplicate and rank the interior events of each segment. Stable tuple passes
+    // distribute a dense segment over the radix workgroups instead of making every event scan the
+    // full segment range (quadratic work and capacity-wide dependent depth).
     const eventAccessWGSL = `
-fn eventValid(event: u32) -> bool { return (eventTable[eventTableOffset + event * ${EVENT_STRIDE}u] & 1u) != 0u; }
-fn eventUnique(event: u32) -> bool { return eventTable[eventTableOffset + event * ${EVENT_STRIDE}u + 1u] != 0u; }
-fn eventRank(event: u32) -> u32 { return eventTable[eventTableOffset + event * ${EVENT_STRIDE}u + 2u]; }
 fn eventPointBits(event: u32) -> vec2u {
   let row = eventTableOffset + event * ${EVENT_STRIDE}u;
   return vec2u(eventTable[row + 3u], eventTable[row + 4u]);
 }
 fn eventPoint(event: u32) -> vec2f { return bitcast<vec2f>(eventPointBits(event)); }
 fn eventKey(event: u32) -> f32 { return bitcast<f32>(eventTable[eventTableOffset + event * ${EVENT_STRIDE}u + 5u]); }
-fn eventOther(event: u32) -> f32 { return bitcast<f32>(eventTable[eventTableOffset + event * ${EVENT_STRIDE}u + 6u]); }
-fn eventLess(first: u32, second: u32) -> bool {
-  if (eventKey(first) != eventKey(second)) { return eventKey(first) < eventKey(second); }
-  return eventOther(first) < eventOther(second);
-}`;
+`;
+    const eventSort = createStableLexicographicIndexSortNodes(graph, {
+      id: `${id}-event-order`,
+      operation: OPERATION,
+      indices: eventIndices,
+      keys: [{view: eventSegments}, {view: eventOrderKeys}, {view: eventOtherKeys}]
+    });
+    nodes.push(...eventSort.nodes);
+    const sortedSegments = eventSort.sortedPrimaryKeys;
+    const sortedEvents = eventSort.sortedIndices;
+    const uniqueFlags = T('event-unique-flags', 'uint32', eventCount);
+    const uniqueRanks = T('event-unique-ranks', 'uint32', eventCount);
     nodes.push(
       createWGSLKernelNode<Parameters>(graph, {
         id: `${id}-event-unique`,
         operation: OPERATION,
         variant: 'event-unique',
         bindings: [
-          {name: 'pairLeft', view: pairLeft, type: 'u32', access: 'read'},
-          {name: 'segmentTable', view: segmentTable, type: 'u32', access: 'read'},
-          {name: 'eventTable', view: eventTable, type: 'u32', access: 'read_write'}
+          {name: 'sortedSegments', view: sortedSegments, type: 'u32', access: 'read'},
+          {name: 'sortedEvents', view: sortedEvents, type: 'u32', access: 'read'},
+          {name: 'eventTable', view: eventTable, type: 'u32', access: 'read'},
+          {name: 'uniqueFlags', view: uniqueFlags, type: 'u32', access: 'read_write'}
         ],
         invocationCount: eventCount,
-        declarations: eventAccessWGSL,
-        body: `if (!eventValid(index)) { return; }
-  let segment = pairLeft[pairLeftOffset + index / 2u];
-  let first = segmentTable[segmentTableOffset + segment * 4u];
+        declarations: `const VERTEX_COUNT: u32 = ${vertexCount}u;
+${eventAccessWGSL}`,
+        body: `let segment = sortedSegments[sortedSegmentsOffset + index];
   var unique = 1u;
-  for (var event = first * 2u; event < index; event++) {
-    if (eventValid(event) && all(eventPointBits(event) == eventPointBits(index))) { unique = 0u; break; }
+  if (segment >= VERTEX_COUNT) { unique = 0u; }
+  if (unique != 0u && index > 0u && sortedSegments[sortedSegmentsOffset + index - 1u] == segment) {
+    let event = sortedEvents[sortedEventsOffset + index];
+    let previous = sortedEvents[sortedEventsOffset + index - 1u];
+    if (all(eventPointBits(event) == eventPointBits(previous))) { unique = 0u; }
   }
-  eventTable[eventTableOffset + index * ${EVENT_STRIDE}u + 1u] = unique;`
+  uniqueFlags[uniqueFlagsOffset + index] = unique;`
       }),
+      ...new GPUScan({
+        id: `${id}-event-unique-scan`,
+        input: uniqueFlags,
+        output: uniqueRanks,
+        mode: 'exclusive'
+      }).getCommandNodes(graph),
       createWGSLKernelNode<Parameters>(graph, {
         id: `${id}-event-rank`,
         operation: OPERATION,
         variant: 'event-rank',
         bindings: [
-          {name: 'pairLeft', view: pairLeft, type: 'u32', access: 'read'},
-          {name: 'segmentTable', view: segmentTable, type: 'u32', access: 'read'},
+          {name: 'sortedSegments', view: sortedSegments, type: 'u32', access: 'read'},
+          {name: 'sortedEvents', view: sortedEvents, type: 'u32', access: 'read'},
+          {name: 'uniqueFlags', view: uniqueFlags, type: 'u32', access: 'read'},
+          {name: 'uniqueRanks', view: uniqueRanks, type: 'u32', access: 'read'},
           {name: 'eventTable', view: eventTable, type: 'u32', access: 'read_write'}
         ],
         invocationCount: eventCount,
-        declarations: eventAccessWGSL,
-        body: `if (!eventValid(index) || !eventUnique(index)) { return; }
-  let segment = pairLeft[pairLeftOffset + index / 2u];
-  let first = segmentTable[segmentTableOffset + segment * 4u];
-  let last = segmentTable[segmentTableOffset + segment * 4u + 1u];
-  var rank = 0u;
-  for (var event = first * 2u; event < last * 2u; event++) {
-    if (event != index && eventValid(event) && eventUnique(event) && eventLess(event, index)) { rank = rank + 1u; }
+        declarations: `const EVENT_COUNT: u32 = ${eventCount}u;
+fn lowerBoundSegment(value: u32) -> u32 {
+  var low = 0u;
+  var high = EVENT_COUNT;
+  while (low < high) {
+    let middle = (low + high) / 2u;
+    if (sortedSegments[sortedSegmentsOffset + middle] < value) { low = middle + 1u; } else { high = middle; }
   }
-  eventTable[eventTableOffset + index * ${EVENT_STRIDE}u + 2u] = rank;
-  // Inverse table: word 7 of row (first * 2 + rank) names the event of that rank, so the sub-piece
-  // kernel finds the end points of a rank in O(1) instead of scanning the segment's events.
-  // Ranks of one segment are distinct and below its event row count, so rows never collide.
-  eventTable[eventTableOffset + (first * 2u + rank) * ${EVENT_STRIDE}u + 7u] = index;`
+  return low;
+}`,
+        body: `if (uniqueFlags[uniqueFlagsOffset + index] == 0u) { return; }
+  let event = sortedEvents[sortedEventsOffset + index];
+  let segment = sortedSegments[sortedSegmentsOffset + index];
+  let first = lowerBoundSegment(segment);
+  let rank = uniqueRanks[uniqueRanksOffset + index] - uniqueRanks[uniqueRanksOffset + first];
+  eventTable[eventTableOffset + event * ${EVENT_STRIDE}u + 1u] = 1u;
+  eventTable[eventTableOffset + event * ${EVENT_STRIDE}u + 2u] = rank;
+  // Word 7 of the globally compacted unique-event row names the original event. Segment bases
+  // turn local ranks into these O(1) lookups without reusing pair-table ranges.
+  let globalRank = uniqueRanks[uniqueRanksOffset + index];
+  eventTable[eventTableOffset + globalRank * ${EVENT_STRIDE}u + 7u] = event;`
       })
     );
 
     // 5. Sub-pieces per segment: unique interior events plus one.
     const subCounts = T('sub-counts', 'uint32', vertexCount);
+    const segmentUniqueBases = T('segment-unique-bases', 'uint32', vertexCount);
     const subStarts = T('sub-starts', 'uint32', vertexCount);
     nodes.push(
       createWGSLKernelNode<Parameters>(graph, {
@@ -461,18 +516,34 @@ fn eventLess(first: u32, second: u32) -> bool {
         variant: 'sub-counts',
         bindings: [
           {name: 'segmentTable', view: segmentTable, type: 'u32', access: 'read'},
-          {name: 'eventTable', view: eventTable, type: 'u32', access: 'read'},
+          {name: 'sortedSegments', view: sortedSegments, type: 'u32', access: 'read'},
+          {name: 'uniqueFlags', view: uniqueFlags, type: 'u32', access: 'read'},
+          {name: 'uniqueRanks', view: uniqueRanks, type: 'u32', access: 'read'},
+          {name: 'segmentUniqueBases', view: segmentUniqueBases, type: 'u32', access: 'read_write'},
           {name: 'subCounts', view: subCounts, type: 'u32', access: 'read_write'}
         ],
         invocationCount: vertexCount,
-        declarations: eventAccessWGSL,
+        declarations: `const EVENT_COUNT: u32 = ${eventCount}u;
+fn lowerBoundSegment(value: u32) -> u32 {
+  var low = 0u;
+  var high = EVENT_COUNT;
+  while (low < high) {
+    let middle = (low + high) / 2u;
+    if (sortedSegments[sortedSegmentsOffset + middle] < value) { low = middle + 1u; } else { high = middle; }
+  }
+  return low;
+}
+fn uniquePrefix(position: u32) -> u32 {
+  if (position < EVENT_COUNT) { return uniqueRanks[uniqueRanksOffset + position]; }
+  return uniqueRanks[uniqueRanksOffset + EVENT_COUNT - 1u] + uniqueFlags[uniqueFlagsOffset + EVENT_COUNT - 1u];
+}`,
         body: `let row = segmentTableOffset + index * 4u;
   var count = 0u;
   if (segmentTable[row + 2u] != 0u) {
-    count = 1u;
-    for (var event = segmentTable[row] * 2u; event < segmentTable[row + 1u] * 2u; event++) {
-      if (eventValid(event) && eventUnique(event)) { count = count + 1u; }
-    }
+    let begin = lowerBoundSegment(index);
+    let end = lowerBoundSegment(index + 1u);
+    segmentUniqueBases[segmentUniqueBasesOffset + index] = uniquePrefix(begin);
+    count = 1u + uniquePrefix(end) - uniquePrefix(begin);
   }
   subCounts[subCountsOffset + index] = count;`
       }),
@@ -498,6 +569,7 @@ fn eventLess(first: u32, second: u32) -> bool {
           {name: 'eventTable', view: eventTable, type: 'u32', access: 'read'},
           {name: 'subStarts', view: subStarts, type: 'u32', access: 'read'},
           {name: 'subCounts', view: subCounts, type: 'u32', access: 'read'},
+          {name: 'segmentUniqueBases', view: segmentUniqueBases, type: 'u32', access: 'read'},
           {name: 'subTable', view: subTable, type: 'u32', access: 'read_write'},
           {name: 'subMidpoints', view: subMidpoints, type: 'f32', access: 'read_write'}
         ],
@@ -508,8 +580,8 @@ fn vertexAt(vertex: u32) -> vec2f {
 }
 ${lineLookupWGSL.slice(lineLookupWGSL.indexOf('// Coordinate of p'))}
 ${eventAccessWGSL}
-fn pointOfRank(first: u32, rank: u32) -> vec2f {
-  return eventPoint(eventTable[eventTableOffset + (first * 2u + rank) * ${EVENT_STRIDE}u + 7u]);
+fn pointOfRank(base: u32, rank: u32) -> vec2f {
+  return eventPoint(eventTable[eventTableOffset + (base + rank) * ${EVENT_STRIDE}u + 7u]);
 }`,
         body: `let total = subStarts[subStartsOffset + VERTEX_COUNT - 1u] + subCounts[subCountsOffset + VERTEX_COUNT - 1u];
   let row = subTableOffset + index * ${SUB_PIECE_STRIDE}u;
@@ -531,13 +603,14 @@ fn pointOfRank(first: u32, rank: u32) -> vec2f {
   let uniqueCount = subCounts[subCountsOffset + segment] - 1u;
   let first = segmentTable[segmentTableOffset + segment * 4u];
   let last = segmentTable[segmentTableOffset + segment * 4u + 1u];
+  let uniqueBase = segmentUniqueBases[segmentUniqueBasesOffset + segment];
   let a = vertexAt(segment);
   let b = vertexAt(segment + 1u);
   let direction = b - a;
   var startPoint = a;
   var endPoint = b;
-  if (local > 0u) { startPoint = pointOfRank(first, local - 1u); }
-  if (local < uniqueCount) { endPoint = pointOfRank(first, local); }
+  if (local > 0u) { startPoint = pointOfRank(uniqueBase, local - 1u); }
+  if (local < uniqueCount) { endPoint = pointOfRank(uniqueBase, local); }
   let startKey = keyOf(startPoint, direction);
   let endKey = keyOf(endPoint, direction);
   var flags = ${FLAG_VALID}u;
@@ -734,8 +807,8 @@ const VERTEX_CAPACITY: u32 = ${vertexCapacity}u;`,
         bindings: [
           {name: 'state', view: state, type: 'u32', access: 'read'},
           {name: 'runTable', view: runTable, type: 'u32', access: 'read'},
-          {name: 'lineIds', view: pieces.lineIds, type: 'u32', access: 'read_write'},
-          {name: 'offsets', view: pieces.offsets, type: 'u32', access: 'read_write'}
+          {name: 'lineIds', view: pieces.sourceIds, type: 'u32', access: 'read_write'},
+          {name: 'offsets', view: pieces.geometry.lineOffsets, type: 'u32', access: 'read_write'}
         ],
         invocationCount: pieceCapacity + 1,
         declarations: `const PIECE_CAPACITY: u32 = ${pieceCapacity}u;`,
@@ -757,7 +830,7 @@ const VERTEX_CAPACITY: u32 = ${vertexCapacity}u;`,
           {name: 'runFlags', view: runFlags, type: 'u32', access: 'read'},
           {name: 'runRanks', view: runRanks, type: 'u32', access: 'read'},
           {name: 'vertexStarts', view: vertexStarts, type: 'u32', access: 'read'},
-          {name: 'outPositions', view: pieces.positions, type: 'f32', access: 'read_write'}
+          {name: 'outPositions', view: pieces.geometry.positions, type: 'f32', access: 'read_write'}
         ],
         invocationCount: subPieceBound,
         declarations: subAccessWGSL,
@@ -785,11 +858,11 @@ const VERTEX_CAPACITY: u32 = ${vertexCapacity}u;`,
       {name: 'state', view: state, type: 'u32', access: 'read'}
     ];
     const scalars: [string, GraphDataView<'uint32'> | undefined, number][] = [
-      ['count', pieces.count, 0],
+      ['count', pieces.status.count, 0],
       ['vertexCount', pieces.vertexCount, 1],
-      ['totalCount', pieces.totalCount, 2],
-      ['totalVertexCount', pieces.totalVertexCount, 3],
-      ['overflow', pieces.overflow, 4],
+      ['requiredCount', pieces.status.requiredCount, 2],
+      ['requiredVertexCount', pieces.requiredVertexCount, 3],
+      ['overflow', pieces.status.overflow, 4],
       ['uncertainCount', props.uncertainCount, 5]
     ];
     for (const [name, view] of scalars) {

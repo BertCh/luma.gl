@@ -22,6 +22,14 @@ export type GPUGraphLocalClusteringCoefficientProps = {
   output: GPUVector<'float32'>;
   /** Optional packed per-vertex triangle count or directed neighbor-edge closure count. */
   triangles?: GPUVector<'uint32'>;
+  /**
+   * Implementation strategy. `'direct'` uses one kernel over caller CSR and is best for sparse,
+   * low-degree graphs. `'canonical'` sorts and deduplicates operation-owned scratch before row
+   * intersections and is best for dense or duplicate-heavy graphs. `'auto'` (default) chooses
+   * from the compile-time adjacency capacity per vertex; force `'canonical'` for sparse graphs
+   * known to contain exceptional hubs.
+   */
+  algorithm?: 'auto' | 'direct' | 'canonical';
 };
 
 /**
@@ -38,9 +46,12 @@ export type GPUGraphLocalClusteringCoefficientProps = {
  * unique incident triangles for undirected graphs. Required adjacency overflow or uint32
  * closure-count overflow publishes zero coefficients and `0xffffffff` triangle sentinels.
  *
- * Existing adjacency is intentionally unordered and may contain duplicates, so exact GPU
- * deduplication and membership scans have cubic worst-case work in vertex degree. No source
- * vectors are sorted, repacked, read back, or implicitly destroyed.
+ * Existing adjacency may be unordered and contain duplicate slots. Auto mode keeps a one-kernel
+ * direct scan for low slot density, avoiding fixed sort overhead on ordinary sparse graphs. Dense
+ * inputs build graph-owned lexicographically sorted, unique `(row, neighbor)` scratch and count
+ * closures by merging sorted rows, bounding per-vertex hub work by pairwise row intersections
+ * instead of cubic membership scans. Source vectors are never sorted, repacked, read back, or
+ * implicitly destroyed.
  */
 export class GPUGraphLocalClusteringCoefficient {
   /** Prefix for generated command-graph node and imported-resource identifiers. */
@@ -51,6 +62,8 @@ export class GPUGraphLocalClusteringCoefficient {
   readonly output: GPUVector<'float32'>;
   /** Optional caller-owned unsigned incident-triangle or directed-closure counts. */
   readonly triangles?: GPUVector<'uint32'>;
+  /** Requested implementation strategy. */
+  readonly algorithm: 'auto' | 'direct' | 'canonical';
 
   /** Validates caller metadata without allocating, submitting, reading, or destroying work. */
   constructor(props: GPUGraphLocalClusteringCoefficientProps) {
@@ -58,6 +71,11 @@ export class GPUGraphLocalClusteringCoefficient {
     this.topology = props.topology;
     this.output = props.output;
     this.triangles = props.triangles;
+    this.algorithm = props.algorithm ?? 'auto';
+
+    if (!['auto', 'direct', 'canonical'].includes(this.algorithm)) {
+      throw new Error(`${this.id} algorithm must be auto, direct, or canonical`);
+    }
 
     if (this.topology.graph.directed && !this.topology.reverse) {
       throw new Error(`${this.id} directed weak-neighbor clustering requires reverse adjacency`);

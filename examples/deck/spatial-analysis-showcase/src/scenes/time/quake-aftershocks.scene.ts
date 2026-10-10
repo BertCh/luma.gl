@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {ground} from '../../cartography/grounds';
 import {playbackOptions} from '../../engine/playback';
 import {defineScene, type LegendSpec} from '../scene';
 import type {QuakeAftershocksOptions} from './quake-aftershocks.compute';
@@ -19,14 +20,24 @@ const NOTO_DAY = getQuakeDay(2024, 1, 1);
 
 export default defineScene<QuakeAftershocksOptions>({
   id: 'quake-aftershocks',
-  title: 'Do earthquakes cluster in time as well as space?',
+  title: 'Earthquake space-time pair excess, 2020–2024',
   chapter: 'time',
   order: 5,
   summary:
-    'Replay five years of magnitude 4+ earthquakes, then test on the GPU whether events near each other in space are also near in time more often than chance allows (a Knox test with a permutation reference), and bin them into a grid cell by month table to find where activity comes in bursts.',
+    'A permutation Knox test and monthly grid reduction use the 2020–2024 USGS M4+ catalog to map close-pair excess and burstiness; catalog completeness, planar distances and dominant sequences limit inference.',
   contributors: ['GPUNeighborSearch', 'GPUKnoxTest', 'GPUTemporalReduction'],
   datasets: [{id: 'poopdeck-earthquakes', role: 'USGS M4+ catalog, 2020 to 2024'}],
   initialView: QUAKE_REGIONS.turkiye.view,
+  basemap: ground('night'),
+  furniture: {
+    title: {
+      title: 'Earthquake space-time clustering',
+      subtitle: 'USGS M4+ catalog, 2020–2024'
+    },
+    scaleBar: {units: 'metric'},
+    credit: 'US Geological Survey (public domain)',
+    caveat: 'Catalog completeness and planar windows constrain the clustering estimates.'
+  },
 
   options: [
     ...playbackOptions<QuakeAftershocksOptions>({
@@ -247,6 +258,9 @@ export default defineScene<QuakeAftershocksOptions>({
     {
       id: 'bursts',
       title: 'Earthquakes arrive in bursts',
+      headline: 'Earthquakes occur in distinct temporal bursts',
+      textAlternative:
+        'Magnitude-scaled earthquakes appear and fade across Türkiye, revealing intermittent clusters against a steady background.',
       body: 'Every disc is a magnitude 4.5+ earthquake from the USGS catalog, from 2020 to 2024, in the belt from the Aegean to Iran. Radius is **magnitude**, color is **depth**, and each event swells when it happens and fades over **Event lifetime**. Watch the date run: the background is a steady trickle, but now and then one place lights up for weeks.\n\nThe question for this scene is the one a hazard analyst asks of any catalog: are events that happen near each other *also* near in time more often than chance, and where does that clustering live? **Playback speed** below controls how fast the years pass; drag **Date** to jump.',
       camera: {...QUAKE_REGIONS.turkiye.view, pitch: 0, bearing: 0, transitionMs: 1500},
       options: {
@@ -263,6 +277,9 @@ export default defineScene<QuakeAftershocksOptions>({
     {
       id: 'doublet',
       title: 'One day in February 2023',
+      headline: 'Türkiye doublet initiates a dense aftershock sequence',
+      textAlternative:
+        'Two large February 2023 earthquakes near southern Türkiye are followed by many nearby magnitude 4.5 and larger events.',
       body: 'At 01:17 UTC on 6 February 2023 a **magnitude 7.8** earthquake ruptured the East Anatolian Fault in southern Türkiye, a left-lateral strike-slip rupture some 300 km long at shallow depth. Nine hours later, at 10:24 UTC, a **magnitude 7.5** shock struck about 90 km to the north on a different, east-west striking fault. Two events of that size so close in time are a *doublet*, and the second is not simply an aftershock of the first. Playback is slowed to six hours per second: watch the swarm of M4.5+ aftershocks that follows.\n\nThe counts here are catalog events, not damage. **Event lifetime** is short (3 days) so the picture is the sequence alone; lengthen it below to see it accumulate.',
       camera: {longitude: 37.4, latitude: 37.6, zoom: 6.4, transitionMs: 2200},
       options: {
@@ -279,6 +296,9 @@ export default defineScene<QuakeAftershocksOptions>({
     {
       id: 'knox',
       title: 'Is that more clustering than chance?',
+      headline: 'Close event pairs exceed permuted expectations',
+      textAlternative:
+        'Lines connect earthquakes within 50 kilometers and seven days, concentrated around the Türkiye doublet.',
       body: '`GPUNeighborSearch` lists every pair of events closer than **Spatial threshold**. `GPUKnoxTest` counts how many of those pairs are also within **Time threshold** of each other: the *Knox count*. To know what chance would give, it reassigns the five years of event times over the fixed locations **Permutations** times (a Monte Carlo test that makes no Poisson assumption) and compares. Close pairs are drawn as lines: look at the knot at the doublet.\n\nThe observed count towers over the permutation histogram: with the defaults it is roughly nine times what independence predicts, and the p-value sits at its floor of 1 / (permutations + 1). The useful number is the **ratio** and how it changes: it rises when you shrink the **Time threshold** to a day, and falls toward 3 or 4 when you widen both thresholds (200 km, 60 days), because the background of unrelated events starts to count.',
       camera: {...QUAKE_REGIONS.turkiye.view, transitionMs: 1800},
       options: {
@@ -291,20 +311,15 @@ export default defineScene<QuakeAftershocksOptions>({
         timeThreshold: 7
       },
       controls: ['spatialRadius', 'timeThreshold', 'permutations', 'showPairs'],
-      readouts: [
-        'pairs',
-        'timeClose',
-        'knoxObserved',
-        'knoxExpected',
-        'knoxRatio',
-        'knoxP',
-        'knoxHistogram'
-      ],
+      readouts: ['knoxObserved', 'knoxExpected', 'knoxRatio', 'knoxP'],
       highlight: {readout: 'knoxRatio'}
     },
     {
       id: 'noto',
       title: 'Another region, another sequence',
+      headline: 'Noto sequence produces stronger pair excess',
+      textAlternative:
+        'Magnitude-scaled events and close-pair lines cluster around the Noto Peninsula after the January 2024 mainshock.',
       body: 'Switch the window to **Japan, Izu-Bonin and the Kurils**. On 1 January 2024 a magnitude 7.5 earthquake struck the Noto Peninsula on the Sea of Japan coast; its aftershocks dominate the map for weeks. Play is set to six hours per second again.\n\nThe Knox ratio here is higher than in Türkiye (roughly 19 times with the defaults, against 9): this window holds many separate sequences, and each adds close pairs. Try **Minimum magnitude** below: the ratio usually grows as you keep only larger events, because small events are mostly background and the large ones carry the aftershocks.',
       camera: {longitude: 138.5, latitude: 37.2, zoom: 6.2, transitionMs: 2200},
       options: {
@@ -323,6 +338,9 @@ export default defineScene<QuakeAftershocksOptions>({
     {
       id: 'grid',
       title: 'Where do the bursts hide?',
+      headline: 'Monthly concentration identifies burst-dominated cells',
+      textAlternative:
+        'A raster over Japan highlights cells where one month contains a large share of five years of earthquakes.',
       body: '`GPUTemporalReduction` cuts the window into a grid and the five years into 60 thirty-day months, then reduces every event into its (cell, month) slot: count, smallest, largest, first and last magnitude. The map now shows **burstiness**: the busiest month of a cell divided by its average month. A cell with a steady trickle scores near 1; a cell whose five years of events fell in a single month scores up to 60.\n\nBright cells are sequences, not background. Hover a cell for its busiest month, and switch **Cell grid shows** to the largest magnitude per month to see the same table as a map of the playhead month. The chart below the map is the same reduction summed over cells.',
       camera: {...QUAKE_REGIONS.japan.view, transitionMs: 1600},
       options: {
@@ -343,6 +361,9 @@ export default defineScene<QuakeAftershocksOptions>({
     {
       id: 'limits',
       title: 'What this does not tell you',
+      headline: 'Knox ratios do not identify causal processes',
+      textAlternative:
+        'The Sunda region shows earthquake events alongside clustering statistics whose interpretation is constrained by catalog and distance assumptions.',
       body: 'Read the numbers as a **screen for clustering**, not a forecast. A Knox test does not know about aftershock physics: the Omori-Utsu law says the rate of aftershocks decays roughly as 1 / (c + t) after a mainshock, so most close pairs fall in the first days. The test also counts every pair, so a single large sequence with hundreds of events dominates the count (n events make n(n-1)/2 pairs).\n\nThe frame is planar: each window is meters around its center, so distances are exact on the center latitude and off by up to about 12% at the top and bottom. The catalog is incomplete for small events right after a large shock. Try the other regions with a short **Time threshold** (a day or less) to isolate the aftershock burst from the background.',
       camera: {...QUAKE_REGIONS.sunda.view, transitionMs: 1800},
       options: {
@@ -400,7 +421,7 @@ export default defineScene<QuakeAftershocksOptions>({
       entries.push({
         kind: 'ramp',
         title: 'Events in the playhead month',
-        ramp: 'viridis',
+        ramp: 'cividis',
         extent: [0, 20],
         sqrtScale: true,
         unit: 'events per cell'
@@ -409,7 +430,7 @@ export default defineScene<QuakeAftershocksOptions>({
       entries.push({
         kind: 'ramp',
         title: 'Largest magnitude of the month',
-        ramp: 'viridis',
+        ramp: 'cividis',
         extent: [4, 8],
         unit: 'M'
       });
@@ -417,7 +438,7 @@ export default defineScene<QuakeAftershocksOptions>({
       entries.push({
         kind: 'ramp',
         title: 'Burstiness: busiest month / average month',
-        ramp: 'viridis',
+        ramp: 'cividis',
         extent: [1, 40],
         sqrtScale: true,
         unit: 'times the average'

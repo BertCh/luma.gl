@@ -426,7 +426,7 @@ graph.add(new GPUTerrainSummits({
   maximumRadiusPixels: ${state.summitMaximumRadius},                     // compile-time loop bound
   incompleteNeighborhood: '${state.incompleteNeighborhood}',
   settings: summitSettings.importToGraph(graph),
-  output: {ids, count, overflow, totalCount},     // compact list of disc maxima
+  output: {ids, count, overflow, requiredCount},     // compact list of disc maxima
   outputDrop                                      // drop of each listed maximum
 }));
 graph.add(new GPUTerrainPeakSnap({

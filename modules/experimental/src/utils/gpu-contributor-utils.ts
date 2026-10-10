@@ -195,7 +195,7 @@ export function validateCompactOutput(id: string, output: GPUCompactOutput): voi
   for (const [name, scalar] of [
     ['count', output.count],
     ['overflow', output.overflow],
-    ['totalCount', output.totalCount]
+    ['requiredCount', output.requiredCount]
   ] as const) {
     if (!scalar) {
       continue;

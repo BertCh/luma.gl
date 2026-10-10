@@ -53,7 +53,7 @@ export type VegetationTrendsOptions = {
 };
 
 const SETTLE_MILLISECONDS = 350;
-const SPARK = ['▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'];
+const SPARK = ['.', ':', '-', '=', '+', '*', '#', '@'];
 const CHECK_PIXELS = 400;
 
 type OutputName =
@@ -102,7 +102,7 @@ type NdviManifest = {
     boundsProjected: [number, number, number, number];
     cellSizeM: number;
   };
-  properties: {dates: string[]; scenes: {meanNDVI: number}[]};
+  properties: {dates: string[]; scenes: {meanNDVI: number; validFraction: number}[]};
 };
 
 /**
@@ -455,6 +455,11 @@ export async function createVegetationTrends(
     'meanSeries',
     sparkline(ndvi.meanNdvi) +
       `  (${ndvi.meanNdvi[0].toFixed(2)} in ${ndvi.dates[0].slice(0, 4)}, ${Math.min(...ndvi.meanNdvi).toFixed(2)} lowest, ${ndvi.meanNdvi[ndvi.meanNdvi.length - 1].toFixed(2)} in ${ndvi.dates[ndvi.dates.length - 1].slice(0, 4)})`
+  );
+  const validFractions = manifest.properties.scenes.map(scene => scene.validFraction);
+  ctx.setReadout(
+    'acquisitionContract',
+    `${sliceCount} irregular summer acquisitions · ${ndvi.dates[0]} to ${ndvi.dates[sliceCount - 1]} · ${(Math.min(...validFractions) * 100).toFixed(1)}–${(Math.max(...validFractions) * 100).toFixed(1)}% valid pixels per scene`
   );
   ctx.setReadout('pixel', 'click the map');
   ctx.setReadout('pixelSeries', 'click the map');

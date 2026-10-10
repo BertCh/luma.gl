@@ -334,7 +334,7 @@ export async function createStormWarningVerification(
           rightIds: rightView,
           count: countView,
           overflow: importGraphBuffer(graph, 'pair-overflow', pairOverflow, 'uint32', 1),
-          totalCount: importGraphBuffer(graph, 'pair-total', pairTotal, 'uint32', 1)
+          requiredCount: importGraphBuffer(graph, 'pair-total', pairTotal, 'uint32', 1)
         },
         candidateCount: importGraphBuffer(graph, 'candidates', candidateCount, 'uint32', 1)
       })

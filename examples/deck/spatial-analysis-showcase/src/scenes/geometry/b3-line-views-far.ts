@@ -235,7 +235,7 @@ export function createTracksView(env: TrackEnvironment): GeometryView<Options> {
               ids: imp('ids', ids, 'uint32', vertexCount),
               count: imp('count', count, 'uint32', 1),
               overflow: imp('overflow', overflow, 'uint32', 1),
-              totalCount: imp('total', total, 'uint32', 1)
+              requiredCount: imp('total', total, 'uint32', 1)
             }
           }
         })
@@ -753,14 +753,20 @@ export function createWorldView(env: WorldEnvironment): GeometryView<WorldOption
       const imp = createGraphImporter(graph);
       graph.add(
         new GPUGeodesicPairs({
+          spatialContext: {
+            coordinateSpace: 'longitude-latitude',
+            metric: model === 'wgs84' ? 'ellipsoidal' : 'great-circle',
+            units: 'meters'
+          },
           id: `pairs-${model}`,
           origins: imp('origins', hubOrigins, 'float32x2', airportCount),
           targets: imp('airports', airportBuffer, 'float32x2', airportCount),
-          model,
           output: {
             distances: imp('distances', airportDistances, 'float32', airportCount),
             initialBearings: imp('bearings', airportBearings, 'float32', airportCount),
-            converged: imp('converged', airportConverged, 'uint32', airportCount)
+            ...(model === 'wgs84'
+              ? {converged: imp('converged', airportConverged, 'uint32', airportCount)}
+              : {})
           }
         })
       );
@@ -795,11 +801,15 @@ export function createWorldView(env: WorldEnvironment): GeometryView<WorldOption
       const imp = createGraphImporter(graph);
       graph.add(
         new GPUGeodesicDestination({
+          spatialContext: {
+            coordinateSpace: 'longitude-latitude',
+            metric: model === 'wgs84' ? 'ellipsoidal' : 'great-circle',
+            units: 'meters'
+          },
           id: `ring-${model}`,
           origins: imp('origins', ringOrigins, 'float32x2', RING_VERTEX_COUNT),
           bearings: imp('bearings', ringBearings, 'float32', RING_VERTEX_COUNT),
           distances: imp('distances', ringDistances, 'float32', RING_VERTEX_COUNT),
-          model,
           output: {
             destinations: imp('destinations', ringDestinations, 'float32x2', RING_VERTEX_COUNT)
           }

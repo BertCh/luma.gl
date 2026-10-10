@@ -118,27 +118,37 @@ it('addHotSpotAnalysisRecipe bins points, links cell centers and matches the Gi*
           'neighbor-parameters',
           'float32',
           getGPUNeighborSearchParameterValues({bounds: [5, 5, 25, 25], radius: RADIUS})
-        ),
-        table: {count: tableCount.view}
+        )
       },
       parameters: fixture.parameters(
         'autocorrelation-parameters',
         'float32',
         getGPUSpatialAutocorrelationParameterValues({})
       ),
-      zScores: zScores.view,
-      bins: bins.view,
-      neighborCounts: neighborCounts.view,
+      scratch: {table: {count: tableCount.view}},
+      outputs: {
+        zScores: zScores.view,
+        bins: bins.view,
+        neighborCounts: neighborCounts.view,
+        permutation: {
+          exceedances: exceedances.view,
+          pseudoPValues: pseudoPValues.view,
+          significant: significant.view
+        },
+        color: {
+          breaks: breaks.view,
+          classCount: classCount.view,
+          colors: colors.view,
+          classIndices: classIndices.view
+        }
+      },
       permutation: {
         parameters: fixture.parameters(
           'permutation-parameters',
           'uint32',
           getGPUPermutationParameterValues(permutationParameters)
         ),
-        maximumPermutations: 199,
-        exceedances: exceedances.view,
-        pseudoPValues: pseudoPValues.view,
-        significant: significant.view
+        maximumPermutations: 199
       },
       color: {
         classBreaksParameters: fixture.parameters(
@@ -154,11 +164,7 @@ it('addHotSpotAnalysisRecipe bins points, links cell centers and matches the Gi*
           getGPUColorScaleParameterValues({scale: 'quantile', domainCount: 6, paletteCount: 5})
         ),
         palette: fixture.input('palette', Uint32Array.from(palette), 'uint32', 5),
-        maximumPaletteCount: 5,
-        breaks: breaks.view,
-        classCount: classCount.view,
-        colors: colors.view,
-        classIndices: classIndices.view
+        maximumPaletteCount: 5
       }
     });
     expect(recipe.contributors.length).toBe(7);
@@ -293,8 +299,7 @@ it('addHotSpotAnalysisRecipe analyses a dense lattice with queen weights', async
         'float32',
         getGPUSpatialAutocorrelationParameterValues({})
       ),
-      weightsOverflow: overflow.view,
-      zScores: zScores.view
+      outputs: {weightsOverflow: overflow.view, zScores: zScores.view}
     });
     fixture.run();
     expect((await fixture.readUint32(overflow, 1))[0]).toBe(0);

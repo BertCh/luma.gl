@@ -55,7 +55,7 @@ function createFixture(
       pathOffsets: {format: 'uint32', length: pathCapacity + 1},
       count: {format: 'uint32', length: 1},
       overflow: {format: 'uint32', length: 1},
-      totalCount: {format: 'uint32', length: 1},
+      requiredCount: {format: 'uint32', length: 1},
       pathCount: {format: 'uint32', length: 1},
       ...(geometryType === 'lines'
         ? {sourcePaths: {format: 'uint32' as const, length: pathCapacity}}
@@ -72,7 +72,7 @@ function createFixture(
           pathOffsets: outputs['pathOffsets'] as never,
           count: outputs['count'] as never,
           overflow: outputs['overflow'] as never,
-          totalCount: outputs['totalCount'] as never,
+          requiredCount: outputs['requiredCount'] as never,
           pathCount: outputs['pathCount'] as never,
           sourcePaths: outputs['sourcePaths'] as never
         }
@@ -149,7 +149,7 @@ it('GPURectangleClip clips lines like the f64 oracle and matches Shapely clip_by
       expect(result['overflow'][0]).toBe(0);
       expect(result['pathCount'][0]).toBe(expected.paths.length);
       expect(result['count'][0]).toBe(expected.paths.flat().length);
-      expect(result['totalCount'][0]).toBe(expected.paths.flat().length);
+      expect(result['requiredCount'][0]).toBe(expected.paths.flat().length);
       expect(result['count'][0]).toBeGreaterThan(0);
       expectPathsClose(readPaths(result, result['pathCount'][0]), expected.paths, 1e-4);
       expect(result['sourcePaths'].slice(0, expected.paths.length)).toEqual(expected.sourcePaths);
@@ -190,7 +190,7 @@ it('GPURectangleClip reports overflow when path or vertex capacity is exceeded',
   );
   expect(result['overflow'][0]).toBe(1);
   expect(result['count'][0]).toBeLessThanOrEqual(16);
-  expect(result['totalCount'][0]).toBeGreaterThan(16);
+  expect(result['requiredCount'][0]).toBeGreaterThan(16);
   expect(result['pathOffsets'][4]).toBeLessThanOrEqual(16);
   fixture.destroy();
 });

@@ -2,8 +2,28 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {defineGPUSpatialParameterSchema} from '../contracts/index';
+
 /** Number of float32 elements in a `GPUGeometryPredicates` parameter buffer. */
 export const GPU_GEOMETRY_PREDICATES_PARAMETER_LENGTH = 4;
+
+/** Declarative layout used by validation, discovery and interactive controls. */
+export const GPU_GEOMETRY_PREDICATES_PARAMETER_SCHEMA = defineGPUSpatialParameterSchema({
+  id: 'geometry-predicates',
+  format: 'float32',
+  wordLength: GPU_GEOMETRY_PREDICATES_PARAMETER_LENGTH,
+  fields: [
+    {
+      name: 'tolerance',
+      format: 'float32',
+      wordOffset: 0,
+      defaultValue: 0,
+      minimum: 0,
+      units: 'position-units',
+      dynamic: true
+    }
+  ]
+});
 
 /** CPU description of the per-frame parameters of `GPUGeometryPredicates`. */
 export type GPUGeometryPredicatesParameters = {

@@ -72,7 +72,7 @@ function createCompactOutput(
       ids: importGraphBuffer(graph, `${name}-ids`, ids, 'uint32', ROW_CAPACITY),
       count: importGraphBuffer(graph, `${name}-count`, count, 'uint32', 1),
       overflow: importGraphBuffer(graph, `${name}-overflow`, overflow, 'uint32', 1),
-      totalCount: importGraphBuffer(graph, `${name}-total`, total, 'uint32', 1)
+      requiredCount: importGraphBuffer(graph, `${name}-total`, total, 'uint32', 1)
     }
   };
 }

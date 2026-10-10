@@ -238,7 +238,7 @@ export async function createDotDensity(
           ids: importGraphBuffer(dotGraph, 'dot-ids', dotIds, 'uint32', DOT_CAPACITY),
           count: dotGraph.importGPUData('dot-count', dotDrawCommands.getInstanceCountData(0)),
           overflow: importGraphBuffer(dotGraph, 'dot-overflow', dotOverflow, 'uint32', 1),
-          totalCount: importGraphBuffer(dotGraph, 'dot-total', dotTotal, 'uint32', 1)
+          requiredCount: importGraphBuffer(dotGraph, 'dot-total', dotTotal, 'uint32', 1)
         },
         categories: importGraphBuffer(
           dotGraph,

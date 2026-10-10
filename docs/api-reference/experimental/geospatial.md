@@ -247,14 +247,14 @@ type GPUSpatialQueryOutput = {
   ids: GraphDataView<'uint32'>;
   count: GraphDataView<'uint32'>;
   overflow: GraphDataView<'uint32'>;
-  totalCount?: GraphDataView<'uint32'>;
+  requiredCount?: GraphDataView<'uint32'>;
 };
 ```
 
-`count` is clamped to `ids.length` and can alias an indirect draw count. `totalCount`, when
+`count` is clamped to `ids.length` and can alias an indirect draw count. `requiredCount`, when
 provided, receives the unclamped number of matches among candidates actually examined by
 refinement. If the index overflowed, its stored candidates are only a subset of the accepted source
-rows, so `totalCount` is incomplete relative to the original positions. `overflow` is set when
+rows, so `requiredCount` is incomplete relative to the original positions. `overflow` is set when
 either the index or result capacity overflows. The four writable output views must have mutually
 disjoint aligned storage-binding ranges and must not overlap positions, source IDs, query values,
 index storage, or polygon storage. This includes the one-row binding footprint of a zero-capacity

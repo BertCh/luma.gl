@@ -176,7 +176,7 @@ export type RasterProfileOracle = {
   vertexDistances: Float32Array;
   pathLength: Float32Array;
   sampleOffsets: Uint32Array;
-  totalCount: number;
+  requiredCount: number;
   truncated: boolean;
   samplePositions: Float32Array;
   sampleDistances: Float32Array;
@@ -243,13 +243,13 @@ export function profileRasterOnCPU(
   for (let path = 0; path < pathCount; path++) {
     sampleOffsets[path + 1] = sampleOffsets[path] + counts[path];
   }
-  const totalCount = sampleOffsets[pathCount];
-  const samplePositions = new Float32Array(totalCount * 2);
-  const sampleDistances = new Float32Array(totalCount);
-  const sampleValues = new Float32Array(totalCount);
-  const samplePathIds = new Uint32Array(totalCount);
-  const sampleCumulativeGain = new Float32Array(totalCount);
-  const sampleCumulativeLoss = new Float32Array(totalCount);
+  const requiredCount = sampleOffsets[pathCount];
+  const samplePositions = new Float32Array(requiredCount * 2);
+  const sampleDistances = new Float32Array(requiredCount);
+  const sampleValues = new Float32Array(requiredCount);
+  const samplePathIds = new Uint32Array(requiredCount);
+  const sampleCumulativeGain = new Float32Array(requiredCount);
+  const sampleCumulativeLoss = new Float32Array(requiredCount);
   const pathGain = new Float32Array(pathCount);
   const pathLoss = new Float32Array(pathCount);
   const pathMinimum = new Float32Array(pathCount).fill(NaN);
@@ -329,7 +329,7 @@ export function profileRasterOnCPU(
     vertexDistances,
     pathLength,
     sampleOffsets,
-    totalCount,
+    requiredCount,
     truncated,
     samplePositions,
     sampleDistances,

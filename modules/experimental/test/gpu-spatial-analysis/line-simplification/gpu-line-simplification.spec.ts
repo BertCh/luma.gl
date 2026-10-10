@@ -42,7 +42,7 @@ type SelectionResult = {
   ids: number[];
   count: number;
   overflow: number;
-  totalCount: number;
+  requiredCount: number;
   keepMask: number[];
   lineCounts: number[];
   lineStarts: number[];
@@ -91,7 +91,7 @@ function createFixture(
     ids: output(capacity),
     count: output(1),
     overflow: output(1),
-    totalCount: output(1),
+    requiredCount: output(1),
     keepMask: output(rowCount),
     lineCounts: output(lineCount),
     lineStarts: output(lineCount)
@@ -151,7 +151,13 @@ function createFixture(
           ids: importGraphBuffer(selectionGraph, 'o-ids', outputs.ids, 'uint32', capacity),
           count: importGraphBuffer(selectionGraph, 'o-count', outputs.count, 'uint32', 1),
           overflow: importGraphBuffer(selectionGraph, 'o-overflow', outputs.overflow, 'uint32', 1),
-          totalCount: importGraphBuffer(selectionGraph, 'o-total', outputs.totalCount, 'uint32', 1)
+          requiredCount: importGraphBuffer(
+            selectionGraph,
+            'o-total',
+            outputs.requiredCount,
+            'uint32',
+            1
+          )
         },
         keepMask: importGraphBuffer(selectionGraph, 'o-mask', outputs.keepMask, 'uint32', rowCount),
         lineCounts: importGraphBuffer(
@@ -191,7 +197,7 @@ function createFixture(
         ids: await readUint32(outputs.ids, count),
         count,
         overflow: (await readUint32(outputs.overflow, 1))[0],
-        totalCount: (await readUint32(outputs.totalCount, 1))[0],
+        requiredCount: (await readUint32(outputs.requiredCount, 1))[0],
         keepMask: await readUint32(outputs.keepMask, rowCount),
         lineCounts: await readUint32(outputs.lineCounts, lineCount),
         lineStarts: await readUint32(outputs.lineStarts, lineCount)
@@ -219,7 +225,7 @@ function expectSelectionParity(
   capacity: number
 ): number[] {
   const kept = getKeptRowsFromImportance(scene, importanceBits, tolerance);
-  expect(actual.totalCount).toBe(kept.length);
+  expect(actual.requiredCount).toBe(kept.length);
   expect(actual.count).toBe(Math.min(kept.length, capacity));
   expect(actual.overflow).toBe(kept.length > capacity ? 1 : 0);
   expect(actual.ids).toEqual(kept.slice(0, capacity));

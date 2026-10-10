@@ -93,26 +93,35 @@ it('addFleetDwellRecipe joins stop centroids to zones and summarises dwell per z
         candidateCapacity: 4096
       },
       zoneCapacity: 32,
-      stops: {
-        ids: outputs.ids.view,
-        count: outputs.count.view,
-        overflow: outputs.overflow.view,
-        centroids: outputs.centroids.view,
-        durations: outputs.durations.view
+      outputs: {
+        stops: {
+          ids: outputs.ids.view,
+          count: outputs.count.view,
+          overflow: outputs.overflow.view,
+          centroids: outputs.centroids.view,
+          durations: outputs.durations.view
+        },
+        joinOverflow: outputs.joinOverflow.view,
+        table: {
+          keys: outputs.keys.view,
+          counts: outputs.counts.view,
+          count: outputs.tableCount.view,
+          overflow: outputs.tableOverflow.view,
+          sumValues: outputs.sums.view,
+          means: outputs.means.view,
+          maximums: outputs.maximums.view
+        }
       },
-      stopZones: outputs.zones.view,
-      joinOverflow: outputs.joinOverflow.view,
-      table: {
-        keys: outputs.keys.view,
-        counts: outputs.counts.view,
-        count: outputs.tableCount.view,
-        overflow: outputs.tableOverflow.view,
-        sumValues: outputs.sums.view,
-        means: outputs.means.view,
-        maximums: outputs.maximums.view
-      }
+      scratch: {stopZones: outputs.zones.view}
     });
     expect(recipe.contributors.length).toBe(3);
+    expect(recipe.outputs?.stops).toBe(recipe.stops);
+    expect(recipe.intermediates?.stopZones).toBe(recipe.stopZones);
+    expect(recipe.status?.stages.map(({stage}) => stage)).toEqual([
+      'metrics',
+      'zone-join',
+      'zone-statistics'
+    ]);
     fixture.run();
 
     // Stops match the trajectory oracle.
@@ -228,20 +237,22 @@ it('addFleetDwellZoneEventsRecipe rolls dwell per (track, zone) up per zone', as
       zoneCount,
       candidateCapacity: 1 << 16,
       maxEventsPerTrack,
-      events: {
-        output: {count: outputs.eventCount.view, overflow: outputs.eventOverflow.view},
-        eventTypes: outputs.eventTypes.view
-      },
-      diagnostics: {candidateCount: outputs.candidateCount.view},
-      dwellTimes: outputs.dwell.view,
-      visitCounts: outputs.visits.view,
-      table: {
-        keys: outputs.keys.view,
-        counts: outputs.counts.view,
-        count: outputs.count.view,
-        sumValues: outputs.sums.view,
-        means: outputs.means.view,
-        maximums: outputs.maximums.view
+      outputs: {
+        events: {
+          output: {count: outputs.eventCount.view, overflow: outputs.eventOverflow.view},
+          eventTypes: outputs.eventTypes.view
+        },
+        diagnostics: {candidateCount: outputs.candidateCount.view},
+        dwellTimes: outputs.dwell.view,
+        visitCounts: outputs.visits.view,
+        table: {
+          keys: outputs.keys.view,
+          counts: outputs.counts.view,
+          count: outputs.count.view,
+          sumValues: outputs.sums.view,
+          means: outputs.means.view,
+          maximums: outputs.maximums.view
+        }
       }
     });
     expect(recipe.contributors.length).toBe(2);

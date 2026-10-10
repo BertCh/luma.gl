@@ -25,7 +25,7 @@ export type PathExtractionOracleResult = {
   /** Clamped node prefix. */
   ids: number[];
   count: number;
-  totalCount: number;
+  requiredCount: number;
   overflow: number;
   /** `targets.length + 1` unclamped starts. */
   pathOffsets: number[];
@@ -142,7 +142,7 @@ export function extractPathsOracle(input: PathExtractionOracleInput): PathExtrac
   return {
     ids: allIds.slice(0, count),
     count,
-    totalCount: allIds.length,
+    requiredCount: allIds.length,
     overflow: allIds.length > capacity || truncated ? 1 : 0,
     pathOffsets,
     pathCosts,

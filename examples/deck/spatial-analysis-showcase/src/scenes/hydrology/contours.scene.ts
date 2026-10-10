@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {ground} from '../../cartography/grounds';
 import {defineScene, type LegendSpec} from '../scene';
 import type {ContoursOptions} from './contours.compute';
 
@@ -11,14 +12,24 @@ import type {ContoursOptions} from './contours.compute';
  */
 export default defineScene<ContoursOptions>({
   id: 'contours',
-  title: 'Contours, bands and rings of the Canyon',
+  title: 'Grand Canyon elevation and slope contours',
   chapter: 'hydrology',
   order: 4,
   summary:
-    'Marching-squares contour lines, filled elevation bands and closed shell-and-hole polygon rings of the Grand Canyon, extracted on the GPU from elevation or slope and re-levelled by a slider.',
+    'GPU marching squares derives lines, bands and rings from a 31 m Grand Canyon elevation and slope grid. The outputs support selectable intervals and windows; raster resolution and ring tolerance limit boundary precision.',
   contributors: ['GPUIsolines', 'GPUIsobands', 'GPUIsobandRings', 'GPUTerrainDerivatives'],
   datasets: [{id: 'grand-canyon-dem', role: 'elevation and slope on a 31 m grid'}],
   initialView: {longitude: -112.1, latitude: 36.1, zoom: 11.2},
+  basemap: ground('relief'),
+  furniture: {
+    title: {
+      title: 'Grand Canyon terrain contours',
+      subtitle: 'Elevation and slope lines, bands and polygon rings'
+    },
+    scaleBar: {units: 'metric'},
+    credit: 'US Geological Survey (public domain)',
+    caveat: 'Boundaries inherit the 31 m analysis grid and selected ring tolerance.'
+  },
 
   options: [
     {
@@ -114,9 +125,10 @@ export default defineScene<ContoursOptions>({
       label: 'Band palette',
       group: 'Layers',
       apply: 'param',
-      default: 'cividis',
+      default: 'isolum',
       help: 'Ramp sampled by band index. Written into a 256-entry palette buffer.',
       options: [
+        {value: 'isolum', label: 'Isoluminant terrain overlay'},
         {value: 'cividis', label: 'Cividis'},
         {value: 'viridis', label: 'Viridis'},
         {value: 'magma', label: 'Magma'},
@@ -226,6 +238,9 @@ export default defineScene<ContoursOptions>({
     {
       id: 'question',
       title: 'Where do the Canyon’s cliffs and benches sit?',
+      headline: 'Elevation bands separate rims, benches and canyon floor',
+      textAlternative:
+        'Grand Canyon shaded relief is overlaid with ordered elevation bands and contour lines that distinguish the high rims from lower benches and river corridor.',
       body: 'A topographic map answers that with one trick: draw a line wherever the ground crosses a chosen height. Where lines crowd together, the ground is steep; where they space out, it is a bench. The Grand Canyon’s layered rock makes this unusually legible: wide Tonto Platform benches, Redwall cliffs, side canyons with their own tiny staircases.\n\nHere three GPU contributors do it on a 31 m raster of the 15 m DEM: `GPUIsolines` draws the **lines**, `GPUIsobands` the **filled bands** between them, and `GPUIsobandRings` the **polygons** of those bands. Bands run from blue (low, the river) to yellow (the rims); every fifth line is an *index contour*.',
       camera: {longitude: -112.1, latitude: 36.1, zoom: 11.2, transitionMs: 1400},
       controls: ['source', 'elevationInterval', 'indexEvery'],
@@ -235,6 +250,9 @@ export default defineScene<ContoursOptions>({
     {
       id: 'lines',
       title: 'Marching squares: GPUIsolines',
+      headline: 'Contour segments follow each selected elevation level',
+      textAlternative:
+        'Thin contour segments cross the terrain at regular elevation intervals, with the level and segment counts reported beside the map.',
       body: '`GPUIsolines` walks every cell of the raster once. A corner is *high* when its value is at least the level; a cell with both high and low corners is crossed by the contour, and the crossing points on its edges are found by linear interpolation. When opposite corners agree and the other two do not (a *saddle*) the cell-centre average decides which way the line goes. The segments come out ordered by cell, level and slot, so the result is deterministic.\n\nBands are off now so only lines remain, at 50 m. Drag **Elevation interval** below: the levels are a buffer write and the lines re-extract on the next frame, no recompile. Zoom to the Bright Angel Trail: the lines bunch into the Redwall cliff and spread over the Tonto bench.',
       camera: {longitude: -112.125, latitude: 36.07, zoom: 12.7, transitionMs: 1800},
       options: {showBands: false, elevationInterval: 50, showRelief: true},
@@ -245,6 +263,9 @@ export default defineScene<ContoursOptions>({
     {
       id: 'polylines',
       title: 'From segments to polylines',
+      headline: 'Stitching converts segments into continuous contour paths',
+      textAlternative:
+        'Previously separate contour segments are joined into longer polylines, reducing visible breaks while retaining the same elevation levels.',
       body: 'A million loose segments are fine to draw but useless to export or label. **Stitch into polylines** adds the second output of `GPUIsolines`: the segments are linked end to end on the GPU by pointer jumping (about log2 of the capacity rounds), then compacted into polylines with their level and a *closed* flag, plus offsets that index the shared vertex buffer.\n\nTurn on **Stitch into polylines** below. It is a compile-time choice, so the control is marked *rebuild*: it selects a second compiled graph that has the polyline buffers. Watch the readouts: *Polylines* counts lines and vertices; every closed contour around a butte becomes one line.',
       options: {showBands: false, elevationInterval: 50, stitchLines: true},
       controls: ['stitchLines'],
@@ -254,6 +275,9 @@ export default defineScene<ContoursOptions>({
     {
       id: 'bands',
       title: 'Fill between the lines: GPUIsobands',
+      headline: 'Filled intervals expose broad terrain zones',
+      textAlternative:
+        'Isoband triangles fill the space between elevation contours with an ordered terrain-overlay palette over shaded relief.',
       body: '`GPUIsobands` produces the **filled bands** between consecutive levels as triangles, by walking each cell’s boundary combinatorially (no floating-point polygon clipping), so a band’s edge matches the contour line of the same level **bit for bit**: no slivers, no gaps. A cell contributes at most two convex pieces per band. The triangles go to a GPU buffer and the layer draws them with a vertex count the GPU wrote.\n\nThe color of a band is its **index** sampled through the palette, so the legend is a ramp across the elevation range. Switch **Band palette** below, or change **Band opacity**; the 100 m default gives about 20 bands.',
       options: {showBands: true, elevationInterval: 100, stitchLines: false},
       camera: {longitude: -112.1, latitude: 36.1, zoom: 11.2, transitionMs: 1400},
@@ -264,8 +288,11 @@ export default defineScene<ContoursOptions>({
     {
       id: 'window',
       title: 'Isolate a layer of the Canyon',
+      headline: 'The selected elevation window isolates middle benches',
+      textAlternative:
+        'Only elevation bands between 1,000 and 1,600 meters are filled, isolating intermediate benches while contours retain terrain context.',
       body: 'The **Elevation window** below keeps only the bands between two heights: here 1,000 to 1,600 m, roughly the Tonto Platform bench (Indian Garden is at about 1,150 m) and the Redwall cliff above it. It maps the heights to band numbers and writes `firstBand` and `lastBand` into the band parameters, so the triangles of every other band are not even emitted. Lines and rings are unaffected.\n\nThis is how you cut a *stratum* out of a terrain model: change the window and the geometry follows within a frame. Notice that the triangle readout drops with the window.',
-      options: {elevationWindow: [1000, 1600], showLines: true, ramp: 'viridis'},
+      options: {elevationWindow: [1000, 1600], showLines: true, ramp: 'isolum'},
       controls: ['elevationWindow'],
       readouts: ['bandWindow', 'triangles'],
       highlight: {readout: 'bandWindow'}
@@ -273,6 +300,9 @@ export default defineScene<ContoursOptions>({
     {
       id: 'slope',
       title: 'Contour the slope: where are the cliffs?',
+      headline: 'High-slope bands align with canyon walls',
+      textAlternative:
+        'The mapped variable changes from elevation to slope, and the highest slope bands trace the steep canyon walls and tributary incisions.',
       body: 'The same three contributors can contour *any* raster. **Raster to contour** is now set to slope: the values are degrees from `GPUTerrainDerivatives` (steepest-descent from a 3 x 3 window), contoured every 5 degrees. The narrow, dark bands in the high end are cliffs; the broad low bands are benches and the rim plateaus. It is the picture a trail planner wants: the cliff limit of the least-cost scene is just the 38 degree line here.\n\nTry the **Slope window** at 35 to 85 degrees to isolate the walls, and a coarser **Slope interval** for a cleaner map.',
       options: {
         source: 'slope',
@@ -289,6 +319,9 @@ export default defineScene<ContoursOptions>({
     {
       id: 'rings',
       title: 'Polygons you can hand off: GPUIsobandRings, and limits',
+      headline: 'Ring assembly preserves shells and interior holes',
+      textAlternative:
+        'Selected isobands are outlined as closed polygon rings with separate shells and holes; tolerance controls simplify the raster-derived boundaries.',
       body: 'Triangles draw well but cannot be exported. `GPUIsobandRings` chains each band’s boundary edges into **closed rings**: counter-clockwise shells (white) and clockwise holes (magenta), with each hole attached to the shell it sits in and every ring tagged with its band. The readouts count them and report the boundary edges and open segments (should be 0). Change **Vertex tolerance** and **Split rings that touch themselves** below to see what they do to the counts; both are compile-time.\n\nLimits: the DEM is Terrarium (0.5 m vertical steps) resampled to 31 m, so cliffs under 31 m wide vanish; the buffers have fixed capacities (the readouts show use against capacity and flag overflow); the contours match marching squares and GDAL’s contour tools in method, not in output order. Try **Elevation interval** at 50 m with rings on.',
       options: {
         source: 'elevation',

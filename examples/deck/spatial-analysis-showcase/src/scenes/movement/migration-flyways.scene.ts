@@ -346,7 +346,7 @@ import {
 // 1. Line length and density per grid cell, measured as great-circle pieces
 graph.add(new GPULineDensity({
   positions, pathOffsets, columns: 320, rows: 280,
-  coordinateSystem: 'spherical',                  // lengths in meters, densities in 1/m
+  spatialContext: {coordinateSpace: 'longitude-latitude', metric: 'great-circle', units: 'meters'},                  // lengths in meters, densities in 1/m
   parameters: densityParameters.importToGraph(graph),
   output: {lengths, densities, overflow, totalRecords}
 }));

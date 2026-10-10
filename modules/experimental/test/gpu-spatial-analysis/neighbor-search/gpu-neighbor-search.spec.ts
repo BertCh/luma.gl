@@ -246,6 +246,38 @@ it('GPUNeighborSearch radius self join follows per-frame radius and weights with
   harness.destroy();
 });
 
+it('GPUNeighborSearch radius cell pruning preserves exact cell and circle boundaries', async () => {
+  const device = await getWebGPUTestDevice();
+  if (!device) {
+    return;
+  }
+  // The two-by-two lattice has 100-unit cells while the radius is one. These points exercise
+  // targets exactly one unit away across horizontal and vertical cell boundaries, a diagonal cell
+  // whose near corner is outside the circle, and far targets in every surrounding cell.
+  const positions = new Float32Array([
+    0, -1, -1, 0, 0, 0, -2, -1, -1, -2, 75, -1, -75, -1, -1, 75, -1, -75
+  ]);
+  const queryPositions = new Float32Array([-1, -1]);
+  const parameters: GPUNeighborSearchParameters = {
+    bounds: [-100, -100, 100, 100],
+    radius: 1
+  };
+  const harness = createNeighborSearchHarness(device, {
+    mode: 'radius',
+    positions,
+    queryPositions,
+    capacity: positions.length / 2,
+    parameters,
+    gridSize: [2, 2]
+  });
+  expectMatchesOracle(
+    await harness.run(),
+    {mode: 'radius', positions, queryPositions, parameters},
+    'coarse-grid boundaries'
+  );
+  harness.destroy();
+});
+
 it('GPUNeighborSearch kNN adaptive kernel weights and row standardization match the oracle', async () => {
   const device = await getWebGPUTestDevice();
   if (!device) {

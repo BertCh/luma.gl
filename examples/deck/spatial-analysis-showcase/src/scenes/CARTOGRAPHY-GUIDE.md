@@ -367,6 +367,8 @@ furniture: {
   headline: 'A wider kernel merges the lakefront hot spots',   // <= 9 words, says something
   textAlternative: 'Density map of Chicago with a 600 m kernel: the lakefront reads as one ridge.',
   body: 'At **{{bandwidth}}** the three peaks merge into one ridge holding {{peakShare}} of records...',
+  evidence: '**{{peakShare}}** of records now fall in the connected lakefront ridge.',
+  caveat: 'The ridge depends on bandwidth and on where observers recorded points.',
   options: {sigma: 2.5}, optionsMode: 'fresh',                 // no hidden state from earlier steps
   controls: ['sigma'], readouts: ['bandwidth', 'peakShare'],
   camera: {bounds: [-87.75, 41.85, -87.58, 41.99]},            // fitted to the free map area
@@ -377,8 +379,9 @@ furniture: {
 
 - Card anatomy: progress, title, **headline**, cost chip row (`ctx.setCost({records, passes})` +
   GPU time + rebuilds), pipeline strip (`scene.pipeline`, step `stage`), body (<= 70 words, one bold
-  control reference per control, `{{readoutId}}` live numbers), 1-2 controls (3 in the final
-  explore step), consequence readout (one number with unit, a chart or a delta), Back/Next.
+  control reference per control), structured `evidence` and `caveat` notes (both support
+  `{{readoutId}}` live numbers), 1-2 controls (3 in the final explore step), consequence readout
+  (one number with unit, a chart or a delta), Back/Next.
 - Action links in markdown: `[Lincoln Park](action:fly?lng=-87.636&lat=41.921&z=14)`,
   `[top 5 %](action:set?threshold=0.95)`, `(action:reset)`, `(action:camera)`,
   `(action:step?id=summary)`, `(action:highlight?lng=..&lat=..)`.
@@ -564,7 +567,8 @@ progress (the shell shows it).
 20. Shared datasets get additive columns or sibling datasets only.
 21. Wholesome data only: no crime, police, enforcement, injury-victim or redlining data.
 22. No performance caches as fixes; cost that teaches is shown as such ("compiled once, 6 cached").
-23. Copy voice: the headline states the finding; the principle named in an italic closing line.
+23. Copy voice: the headline states the finding; `evidence` names what is visible or measured;
+    `caveat` bounds the claim; the principle is named in the explanatory body.
 24. Chapter summaries as decided in SYNTHESIS 3.1 rule 24.
 
 Principle owners (teach once, cite elsewhere) are listed in SYNTHESIS 3.2: e.g. observer effort,

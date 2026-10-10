@@ -36,7 +36,7 @@ const DEFAULT_SNAPPED_VERTEX_TOLERANCE = 1e-6;
 /**
  * Caller-owned outputs of {@link GPUCoverageDissolve}: the outputs of `GPUSegmentRingAssembly`
  * (rings, holes, shells, the GeoArrow `polygons` layout, `count`, `overflow`, ...) plus the number
- * of boundary segments. Request `polygons` with `polygonGroups` to receive one polygon per
+ * of boundary segments. Request `polygons` with `sourceIds` to receive one polygon per
  * connected region together with its label, or `ringGroups` for the label of every ring.
  */
 export type GPUCoverageDissolveOutput = GPUSegmentRingAssemblyOutput & {
@@ -114,7 +114,7 @@ export type GPUCoverageDissolveProps = {
  *
  * **Output.** Rings and polygons are in `GPUSegmentRingAssembly` order (deterministic: by lowest
  * boundary-segment index, which follows input vertex order). The label of a polygon is in
- * `output.polygons.polygonGroups`. Ring and vertex capacity of the output are caller-set; the
+ * `output.polygons.sourceIds`. Ring and vertex capacity of the output are caller-set; the
  * input vertex count always suffices for vertices (plus one closing vertex per ring).
  *
  * **Cost.** Two sorts of `O(vertices)` keys, scans, a per-ring serial area walk and the assembly.
@@ -175,10 +175,10 @@ export class GPUCoverageDissolve implements GPUCommandNodeProducer {
         ringOutput.polygons?.ringOffsets,
         ringOutput.polygons?.polygonOffsets,
         ringOutput.polygons?.featureOffsets,
-        ringOutput.polygons?.polygonGroups,
+        ringOutput.polygons?.sourceIds,
         ringOutput.count,
         ringOutput.overflow,
-        ringOutput.totalCount,
+        ringOutput.requiredCount,
         ringOutput.openSegmentCount,
         ringOutput.touchingSegmentCount,
         boundarySegmentCount

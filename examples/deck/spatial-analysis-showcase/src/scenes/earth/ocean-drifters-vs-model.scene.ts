@@ -294,9 +294,9 @@ export default defineScene<OceanDriftersVsModelOptions>({
     },
     {
       id: 'regionChart',
-      label: 'Median separation by region',
+      label: 'Regional skill against staying put',
       kind: 'chart',
-      help: 'Median separation at the lead day for drifters released in each region (the drifter set filter applies, the region filter does not).'
+      help: 'Percent improvement of regional median model separation over the regional stay-put median. Positive bars beat the benchmark; negative bars are worse. Labels include the surviving matched-pair count. The drifter-set filter applies; the region filter does not.'
     },
     {id: 'lead', label: 'Lead time'},
     {
@@ -304,6 +304,11 @@ export default defineScene<OceanDriftersVsModelOptions>({
       label: 'Drifters compared',
       format: 'integer',
       help: 'Selected drifters with a real fix at the lead day and a virtual particle still in the model.'
+    },
+    {
+      id: 'pairDenominator',
+      label: 'Evidence · paired denominator',
+      help: 'The denominator chain at this lead: selected releases, those with a real daily observation, virtual twins still inside the model, and finite pairs used for separation. Loss is computed from drifters with observations, not all releases.'
     },
     {
       id: 'median',
@@ -322,9 +327,29 @@ export default defineScene<OceanDriftersVsModelOptions>({
       help: '1 minus (median model separation / median staying-put separation). Zero means the model is no better than not moving; negative would be worse.'
     },
     {
+      id: 'skillVerdict',
+      label: 'Interpretation · benchmark result',
+      help: 'A plain-language reading of the median comparison. It describes this selection and survivor denominator, not every release.'
+    },
+    {
       id: 'lost',
       label: 'Lost to the coast or the edge',
       help: 'Share of drifters with a real fix whose virtual particle has left the field (or stepped onto a cell without data) by the lead day. They are removed from the separation statistics.'
+    },
+    {
+      id: 'distanceClasses',
+      label: 'Evidence · fixed distance classes',
+      help: 'Surviving matched pairs in the same five fixed classes used by the map. The classes do not stretch when the histogram range changes.'
+    },
+    {
+      id: 'regionalSkill',
+      label: 'Interpretation · regional contrast',
+      help: 'Strongest and weakest improvement over staying put among the named regions at this lead. This is descriptive; regions overlap broader circulation systems and sample sizes differ.'
+    },
+    {
+      id: 'modelContract',
+      label: 'Caveat · model contract',
+      help: 'Live assumptions for the run: annual-mean half-degree currents, a one-day RK2 integration step, the selected coast policy, and omitted wind and diffusion.'
     },
     {
       id: 'selected',
@@ -436,17 +461,17 @@ advect.add(new GPUParticleAdvection({
 const stepAdvection = advect.compile();
 
 const pairs = new GPUCommandGraph(device, {id: 'pairs'});
-pairs.add(new GPUGeodesicPairs({
+pairs.add(new GPUGeodesicPairs({spatialContext: {coordinateSpace: 'longitude-latitude', metric: '${state.distanceModel}' === 'wgs84' ? 'ellipsoidal' : '${state.distanceModel}' === 'rhumb' ? 'rhumb' : 'great-circle', units: 'meters'},
   origins: snapshots,           // virtual drifter at day d, tracks x 31 rows
   targets: realDaily,           // real drifter at day d, same layout (NaN = no fix)
-  model: '${state.distanceModel}',
+
   output: {distances}
 }));
 
 const density = new GPUCommandGraph(device, {id: 'density'});
 for (const [positions, pathOffsets] of [[realTrack, realOffsets], [snapshots, snapshotOffsets]]) {
   density.add(new GPULineDensity({
-    positions, pathOffsets, columns: 720, rows: 320, coordinateSystem: 'spherical',
+    positions, pathOffsets, columns: 720, rows: 320, spatialContext: {coordinateSpace: 'longitude-latitude', metric: 'great-circle', units: 'meters'},
     parameters: grid.importToGraph(density),     // [west, south, cellWidth, cellHeight]
     output: {lengths, densities, overflow}
   }));
@@ -486,7 +511,7 @@ for (let day = 1; day <= 30; day++) {
     },
     credit: joinCredits('NOAA Global Drifter Program', 'ECCO V4r4', CREDITS.naturalEarth),
     caveat:
-      'Blue is observed and orange is modelled. This is an annual-mean field, not a daily forecast; pairs lost to missing observations stay out of its denominator.'
+      'Blue is observed and orange is modelled. This is an annual-mean field, not a daily forecast; missing observations and model-coast losses both narrow the paired denominator.'
   },
   annotations: TWIN_LABELS,
 
@@ -523,7 +548,7 @@ for (let day = 1; day <= 30; day++) {
       },
       camera: {...GLOBAL_VIEW, transitionMs: 1400},
       controls: ['background', 'speedMax', 'coast'],
-      readouts: ['field', 'samples']
+      readouts: ['field', 'samples', 'modelContract']
     },
     {
       id: 'separation-grows',
@@ -532,18 +557,19 @@ for (let day = 1; day <= 30; day++) {
       textAlternative:
         'Blue and orange twins are joined by short separation links across the ocean.',
       optionsMode: 'fresh',
-      body: '**`GPUGeodesicPairs`** measures the distance between every virtual particle and its real twin on every lead day. Each link below joins a pair; the fixed legend classes make a short, medium or long mismatch readable without changing the meaning of orange and blue.\n\nDrag **Lead time** from 0 to 30 days and watch the links stretch. The chart is the whole answer: the solid line is the median separation at each lead day and the band is the middle half of the drifters. Switch **Distance model** to *Rhumb line* or *WGS84 ellipsoid* and compare the measurement assumptions.',
+      body: '**`GPUGeodesicPairs`** measures the distance between every virtual particle and its real twin on every lead day. Each link below joins a pair; the five fixed classes—under 100, 100–250, 250–500, 500–1,000 and 1,000+ km—keep the map’s meaning stable while the twins separate.\n\nLet the lead-time animation run or scrub it yourself. The solid chart line is median separation and the band is the middle half. The live class counts are evidence, while the benchmark readout below is interpretation. Switch **Distance model** to *Rhumb line* or *WGS84 ellipsoid* to test the measurement assumption.',
       options: {
         showTrails: false,
         showLinks: true,
         showReleases: true,
-        play: false,
-        time: 15,
+        play: true,
+        speed: 1,
+        time: 0,
         background: 'none'
       },
       camera: {...GLOBAL_VIEW, transitionMs: 1400},
       controls: ['time', 'sepMax', 'distanceModel'],
-      readouts: ['median', 'middleHalf', 'comparedCount', 'separationChart']
+      readouts: ['median', 'pairDenominator', 'distanceClasses', 'separationChart']
     },
     {
       id: 'beating-nothing',
@@ -552,7 +578,7 @@ for (let day = 1; day <= 30; day++) {
       textAlternative:
         'Matched drifter links and a comparison chart separate surviving pairs from losses.',
       optionsMode: 'fresh',
-      body: 'A skill number needs a benchmark. The dashed line in the chart is the median distance from the release point to the real buoy: what you get by **ignoring the ocean**. The model is only useful where its solid line is clearly below that one, and the **Improvement over staying put** readout turns that into a percentage.\n\nChange the **Drifters** filter to compare drifters that were *already at sea* with *new deployments*, and pick a **Region** to see its own curve: the histogram shows how spread the separations are, and the bars compare regions at the same lead day. A large share of **lost** particles means the comparison is made on the survivors.',
+      body: 'A skill number needs a benchmark. The dashed line is the median distance from release to the real buoy: the error from **ignoring the ocean**. The model has positive skill only when its median error is lower. The regional bars repeat that same comparison inside each named ocean region, with the surviving pair count printed in every label.\n\nChange **Drifters** to compare records already at sea with new deployments. Then move among regions: a regional difference may reflect circulation, coarse model resolution, release mix, or survivor mix. The denominator readout keeps those ingredients visible; a large **lost** share means the result describes survivors.',
       options: {
         showTrails: false,
         showLinks: true,
@@ -562,7 +588,7 @@ for (let day = 1; day <= 30; day++) {
         background: 'none'
       },
       controls: ['releaseSet', 'region', 'time'],
-      readouts: ['stayPut', 'improvement', 'lost', 'separationHistogram']
+      readouts: ['skillVerdict', 'pairDenominator', 'regionChart', 'separationHistogram']
     },
     {
       id: 'where-it-fails',
@@ -594,7 +620,7 @@ for (let day = 1; day <= 30; day++) {
       headline: 'A mean field is not a forecast',
       textAlternative: 'A global map shows observed and modelled twins with a survivorship chart.',
       optionsMode: 'fresh',
-      body: 'How much faster would the model ocean have to be? Press **Find the best speed scale**: the 30 days are run at nine scales and the slider is set to the one with the smallest mean median separation for the current selection. A winner near 1x says the mean model speed is about right on average; a winner above 1x says it underestimates the real drift. Either way a single number hides the regions: real drifters also feel the **wind** (windage) and the **Ekman layer**, which an annual-mean ocean current does not contain, and the boundary currents are far faster than the mean field.\n\nRemember: the field is a **time mean** (no seasons, no eddies), there is **no diffusion**, ECCO is coarse, some drifters **lost their drogue** (this archive does not say which), steps are one day long, and lost particles are excluded from the statistics. Try it for one region at a time.',
+      body: 'How much faster would the model ocean have to be? Press **Find the best speed scale**: the 30 days are run at nine scales and the slider is set to the one with the smallest mean median separation for the current selection. Treat that as a sensitivity test, not calibration: one multiplier cannot restore seasons, eddies, winds or narrow boundary currents.\n\nThe live model contract keeps the simplifying choices separate from the evidence: the current field is an **annual mean** on a half-degree grid, integration takes **one RK2 step per day**, there is **no diffusion or wind**, and **Particles at the coast** either removes a twin at missing data or holds it still. The separation statistics exclude removed twins, so read the survivor denominator beside every apparent improvement.',
       options: {
         showTrails: true,
         showLinks: true,
@@ -608,7 +634,7 @@ for (let day = 1; day <= 30; day++) {
       },
       camera: {...GLOBAL_VIEW, transitionMs: 1400},
       controls: ['sweep', 'speedScale', 'coast', 'region'],
-      readouts: ['sweep', 'median', 'improvement', 'runTime']
+      readouts: ['sweep', 'skillVerdict', 'pairDenominator', 'modelContract']
     }
   ]
 });

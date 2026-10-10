@@ -630,15 +630,15 @@ const slots = colourPartition(centres, k, previousSlots, 7);`;
       return `const graph = new GPUCommandGraph(device, {id: 'cluster-outline'});
 addClusterAndOutlineRecipe(graph, {
   positions,
+  spatialContext: {coordinateSpace: 'planar', metric: 'native', units: 'native'},
   clusteringParameters: clusteringParameters.importToGraph(graph),  // bounds, epsilon, minimumPoints
   gridSize: [256, 256],
   geometryParameters: geometryParameters.importToGraph(graph),
   maximumClusterCount: 2048,
   maximumVerticesPerHull: 256,
   hullCapacity: 1 << 14,
-  labels, counts, bounds, meanCenters,
-  hullPositions, hullOffsets, hullCounts, hullOverflow,
-  areas, perimeters, centroids              // hull measures, per cluster
+  outputs: {labels, hullPositions, hullOffsets, hullOverflow, areas, perimeters, centroids},
+  scratch: {counts, bounds, meanCenters, hullCounts}
 });
 const compiled = graph.compile();
 // each change of epsilon / minimumPoints:

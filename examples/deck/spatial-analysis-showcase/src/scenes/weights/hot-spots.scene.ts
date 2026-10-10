@@ -711,6 +711,12 @@ export default defineScene<HotSpotsOptions>({
       help: 'Places by z-score; the guides are the 90, 95 and 99 percent critical values.'
     },
     {
+      id: 'resultBalance',
+      label: 'Results by test outcome',
+      kind: 'chart',
+      help: 'Tested places split into hot, cold and not significant results, or local Moran cluster types.'
+    },
+    {
       id: 'hot',
       label: 'Hot 99 / 95 / 90% (or HH)',
       hood: true,
@@ -820,10 +826,14 @@ export default defineScene<HotSpotsOptions>({
       textAlternative:
         'Map of Chicago cells in seven classes from blue cold spots to red hot spots; most cells are faint and not significant, and red cells cluster on the lakefront.',
       body: "**Gi\\*** compares the sum of counts in each cell's neighbourhood with what random placement would give. **{{hotTotal}}** cells are hot spots and **{{coldTotal}}** cold; **{{notSignificantShare}}** are not significant, drawn as a ghost so the parks show through.\n\nHover a cell for its z-score and p-value, or click a legend class to isolate it. These hot spots still measure observer effort.",
+      evidence:
+        'The z-score distribution shows the tested signal, while the result balance counts **{{hotTotal}}** hot, **{{coldTotal}}** cold and the remaining non-significant cells.',
+      caveat:
+        'A hot spot here is a concentration of records, which can be caused by observer access and effort as well as wildlife.',
       optionsMode: 'fresh',
       options: {source: 'nature-cells', display: 'classes', statistic: 'gi-star'},
       controls: ['display', 'selfWeight', 'labelHotSpots'],
-      readouts: ['hotTotal', 'coldTotal', 'notSignificantShare', 'zHistogram'],
+      readouts: ['resultBalance', 'zHistogram', 'hotTotal', 'notSignificantShare'],
       stage: 'z',
       camera: {...CITY_FRAMES.chicago, transitionMs: 1400},
       furniture: {
@@ -859,6 +869,10 @@ export default defineScene<HotSpotsOptions>({
       textAlternative:
         'The same hot-spot map with fewer coloured cells: only cells that survive the false discovery correction and the permutation test keep their colour.',
       body: 'Every cell is a test, so some pass by chance. The **Benjamini-Hochberg** correction and a **permutation test** (shuffle the other counts and see how often chance beats the cell) raise the bar: **{{hotTotal}}** hot cells survive and **{{confirmed}}** are confirmed.\n\nToggle **Benjamini-Hochberg FDR correction** or change **Permutations** and watch the counts fall.\n\n*The more tests, the stricter the bar.*',
+      evidence:
+        'The balance chart shows how many cells retain a named result; **{{confirmed}}** pass the conditional permutation test.',
+      caveat:
+        'FDR controls the expected false-discovery share across the family of tests; it does not guarantee that every coloured cell is real.',
       optionsMode: 'fresh',
       options: {
         source: 'nature-cells',
@@ -870,7 +884,7 @@ export default defineScene<HotSpotsOptions>({
         falseDiscoveryRate: true
       },
       controls: ['falseDiscoveryRate', 'inference', 'permutations'],
-      readouts: ['hotTotal', 'confirmed', 'zHistogram'],
+      readouts: ['resultBalance', 'hotTotal', 'confirmed', 'zHistogram'],
       stage: 'test',
       camera: {...CITY_FRAMES.chicago, transitionMs: 1400},
       furniture: {title: cartouche('Which hot spots are real?', 'Gi* with false discovery control')}
@@ -882,6 +896,10 @@ export default defineScene<HotSpotsOptions>({
       textAlternative:
         'Map of US counties coloured by local Moran quadrant: High-High clusters across the South and Appalachia, Low-Low clusters in the Mountain West and Upper Midwest.',
       body: 'The same machinery works on areas. Local Moran of diabetes prevalence finds **{{hotTotal}}** High-High counties, mostly across the South and Appalachia, and **{{coldTotal}}** Low-Low counties in the Mountain West and Upper Midwest: the belt that *Is it clustered at all?* measured with one number, now located county by county.\n\nTry **Statistic**, **Variable** or **Neighbours are...** below.\n\n*A cluster describes a pattern, not a cause; county values are model-based.*',
+      evidence:
+        'The local result profile separates **{{hotTotal}}** High-High counties, **{{coldTotal}}** Low-Low counties and the spatial outliers.',
+      caveat:
+        'County prevalence is model-based and local Moran depends on the chosen neighbour graph; neither establishes a causal regional effect.',
       optionsMode: 'fresh',
       options: {
         source: 'us-counties',
@@ -894,7 +912,7 @@ export default defineScene<HotSpotsOptions>({
         display: 'classes'
       },
       controls: ['source', 'variable', 'statistic', 'weights'],
-      readouts: ['hotTotal', 'coldTotal', 'outliers'],
+      readouts: ['resultBalance', 'hotTotal', 'coldTotal', 'outliers'],
       stage: 'classes',
       // An atlas page: no tiles, a flat sheet, state lines over the counties.
       basemap: ground('paperSheet'),

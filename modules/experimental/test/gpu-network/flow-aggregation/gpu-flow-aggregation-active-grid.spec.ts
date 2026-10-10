@@ -81,7 +81,7 @@ it('GPUFlowAggregation applies a per-frame active grid size and reports the zone
         ids: view('ids', 'uint32', TOP_COUNT),
         count: view('count', 'uint32', 1),
         overflow: view('overflow', 'uint32', 1),
-        totalCount: view('total', 'uint32', 1)
+        requiredCount: view('total', 'uint32', 1)
       },
       flowOriginZoneIds: view('origins', 'uint32', TOP_COUNT),
       flowDestinationZoneIds: view('destinations', 'uint32', TOP_COUNT),

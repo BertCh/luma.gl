@@ -20,6 +20,7 @@ import {
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph
 } from '../../utils/gpu-contributor-utils';
+import {validateGPUSpatialContext, type GPUSpatialContext} from '../contracts/index';
 import {RHUMB_WGSL} from './rhumb-wgsl';
 import {GEODESIC_WGSL, GPU_GEODESIC_MEAN_EARTH_RADIUS} from './geodesic-wgsl';
 import {
@@ -57,19 +58,12 @@ export type GPUGeodesicPairsOutput = {
 export type GPUGeodesicPairsProps = {
   /** Prefix for generated node IDs. Defaults to `'geodesic-pairs'`. */
   id?: string;
+  /** Longitude/latitude metric and output-unit contract. */
+  spatialContext: GPUSpatialContext;
   /** Origins, longitude/latitude degrees. */
   origins: GraphDataView<'float32x2'>;
   /** Targets aligned with `origins`. */
   targets: GraphDataView<'float32x2'>;
-  /**
-   * `'sphere'` (default): haversine distance and spherical bearings on a sphere of `radius`.
-   * `'wgs84'`: Vincenty's inverse solution on the WGS84 ellipsoid.
-   * `'rhumb'`: constant-bearing line on a sphere of `radius` (turf `rhumbDistance`,
-   * `rhumbBearing`); both bearings equal the line's bearing and `midpoints` is the rhumb midpoint.
-   */
-  model?: GPUGeodesicModel;
-  /** Sphere radius. Defaults to {@link GPU_GEODESIC_MEAN_EARTH_RADIUS}; also the WGS84 fallback radius. */
-  radius?: number;
   /** Compile-time Vincenty iteration cap for `'wgs84'`. Default 16. */
   iterations?: number;
   /** Per-pair outputs; at least one. */
@@ -92,6 +86,8 @@ export class GPUGeodesicPairs implements GPUCommandNodeProducer {
   readonly id: string;
   /** Validated properties. */
   readonly props: GPUGeodesicPairsProps;
+  /** Canonical coordinate and metric contract. */
+  readonly spatialContext: GPUSpatialContext;
   /** Resolved model. */
   readonly model: GPUGeodesicModel;
   /** Resolved radius. */
@@ -102,8 +98,10 @@ export class GPUGeodesicPairs implements GPUCommandNodeProducer {
   constructor(props: GPUGeodesicPairsProps) {
     this.id = props.id ?? 'geodesic-pairs';
     this.props = props;
-    this.model = props.model ?? 'sphere';
-    this.radius = props.radius ?? GPU_GEODESIC_MEAN_EARTH_RADIUS;
+    this.spatialContext = props.spatialContext;
+    const metric = resolveGeodesicSpatialContext(this.id, this.spatialContext);
+    this.model = metric.model;
+    this.radius = metric.radius;
     this.iterations = props.iterations ?? GPU_GEODESIC_DEFAULT_ITERATIONS;
     validateGeodesicOptions(this.id, this.model, this.radius, this.iterations);
     const {id} = this;
@@ -223,6 +221,35 @@ const RADIUS: f32 = ${getWGSLFloatLiteral(this.radius)};`,
       })
     ];
   }
+}
+
+/** Resolves a canonical spatial context to the kernel model shared by geodesic contributors. */
+export function resolveGeodesicSpatialContext(
+  id: string,
+  spatialContext: GPUSpatialContext
+): {model: GPUGeodesicModel; radius: number} {
+  validateGPUSpatialContext(id, spatialContext);
+  if (spatialContext.coordinateSpace !== 'longitude-latitude') {
+    throw new Error(`${id} requires longitude-latitude coordinates`);
+  }
+  const model: GPUGeodesicModel =
+    spatialContext.metric === 'great-circle'
+      ? 'sphere'
+      : spatialContext.metric === 'rhumb'
+        ? 'rhumb'
+        : spatialContext.metric === 'ellipsoidal'
+          ? 'wgs84'
+          : (() => {
+              throw new Error(`${id} requires a great-circle, rhumb, or ellipsoidal metric`);
+            })();
+  if (model === 'wgs84' && spatialContext.units === 'kilometers') {
+    throw new Error(`${id} ellipsoidal kernels currently publish meters`);
+  }
+  const defaultRadius =
+    spatialContext.units === 'kilometers'
+      ? GPU_GEODESIC_MEAN_EARTH_RADIUS / 1000
+      : GPU_GEODESIC_MEAN_EARTH_RADIUS;
+  return {model, radius: spatialContext.sphereRadius ?? defaultRadius};
 }
 
 /** Validates the shared model options of the geodesic column contributors. @internal */

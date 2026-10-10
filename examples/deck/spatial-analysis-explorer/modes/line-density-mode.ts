@@ -169,6 +169,7 @@ export const lineDensityMode: SpatialAnalysisModeDefinition = {
     const densityGraph = new GPUCommandGraph<void>(device, {id: 'line-density'});
     densityGraph.add(
       new GPULineDensity({
+        spatialContext: {coordinateSpace: 'planar', metric: 'native', units: 'native'},
         id: 'line-density',
         positions: importGraphBuffer(
           densityGraph,

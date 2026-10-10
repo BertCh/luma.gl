@@ -226,7 +226,7 @@ async function createRun(harness: Harness, scene: Scene) {
       counts: importGraphBuffer(graph, 'out-counts', outputBuffers.counts, 'uint32', capacity),
       count: importGraphBuffer(graph, 'out-count', outputBuffers.count, 'uint32', 1),
       overflow: importGraphBuffer(graph, 'out-overflow', outputBuffers.overflow, 'uint32', 1),
-      totalCount: importGraphBuffer(graph, 'out-total', outputBuffers.total, 'uint32', 1)
+      requiredCount: importGraphBuffer(graph, 'out-total', outputBuffers.total, 'uint32', 1)
     }
   });
   graph.add(contributor);
@@ -360,9 +360,11 @@ function expectMatchesOracle(
       );
     }
   } else {
-    expect(actual.total, `${label} total`).toBe(expected.totalCount);
+    expect(actual.total, `${label} total`).toBe(expected.requiredCount);
     expect(actual.count, `${label} count`).toBe(groupCount);
-    expect(actual.overflow, `${label} overflow`).toBe(expected.totalCount > scene.capacity ? 1 : 0);
+    expect(actual.overflow, `${label} overflow`).toBe(
+      expected.requiredCount > scene.capacity ? 1 : 0
+    );
     expect(actual.keys.slice(0, groupCount), `${label} keys`).toEqual(
       expected.groups.map(group => group.key)
     );

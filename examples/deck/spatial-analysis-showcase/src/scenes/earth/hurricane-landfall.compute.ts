@@ -334,6 +334,7 @@ export async function createHurricaneLandfall(
     );
     densityGraph.add(
       new GPULineDensity({
+        spatialContext: {coordinateSpace: 'planar', metric: 'native', units: 'native'},
         id: `density-${variant}`,
         positions: importGraphBuffer(
           densityGraph,

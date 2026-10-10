@@ -49,8 +49,8 @@ export type FrontierSourceProps = {
   sensorPositions: GraphDataView<'float32x2'>;
   sensorValues: GraphDataView<'float32'>;
   parameters: GraphDataView<'float32'>;
-  likelihoods: GraphDataView<'float32'>;
-  /** `[maximumLikelihoodBits, bestCell]`. */
+  scores: GraphDataView<'float32'>;
+  /** `[maximumScoreBits, bestCell]`. */
   summary: GraphDataView<'uint32'>;
   /** One `float32x2` row receiving the winning candidate position. */
   bestPosition: GraphDataView<'float32x2'>;
@@ -59,8 +59,8 @@ export type FrontierSourceProps = {
 /**
  * Scores a candidate raster against sparse sensors and publishes the best position on the GPU.
  *
- * The likelihood surface and marker position feed deck.gl storage-buffer layers directly. The
- * two-word atomic summary is never needed by the frame loop.
+ * The relative-fit surface and marker position feed deck.gl storage-buffer layers directly. The
+ * two-word atomic summary supports asynchronous scalar diagnostics without reading back the field.
  */
 export class FrontierSourceInference {
   readonly id: string;
@@ -99,7 +99,7 @@ export class FrontierSourceInference {
           {name: 'sensors', view: props.sensorPositions, type: 'f32', access: 'read'},
           {name: 'observations', view: props.sensorValues, type: 'f32', access: 'read'},
           {name: 'parameters', view: props.parameters, type: 'f32', access: 'read'},
-          {name: 'likelihoods', view: props.likelihoods, type: 'f32', access: 'read_write'},
+          {name: 'scores', view: props.scores, type: 'f32', access: 'read_write'},
           {name: 'summary', view: props.summary, type: 'atomic<u32>', access: 'read_write'}
         ],
         invocationCount: cellCount,
@@ -137,21 +137,21 @@ const SENSOR_COUNT: u32 = ${props.sensorCount}u;`,
     let residual = (observations[observationsOffset + sensor] - predicted) / noiseSigma;
     squaredError += residual * residual;
   }
-  let likelihood = exp(-0.5 * squaredError / f32(SENSOR_COUNT));
-  likelihoods[likelihoodsOffset + index] = likelihood;
-  atomicMax(&summary[summaryOffset], bitcast<u32>(likelihood));`
+  let score = exp(-0.5 * squaredError / f32(SENSOR_COUNT));
+  scores[scoresOffset + index] = score;
+  atomicMax(&summary[summaryOffset], bitcast<u32>(score));`
       }),
       createFrontierKernelNode(graph, {
         id: `${this.id}-select`,
         operation: 'FrontierSourceInference',
         variant: 'select',
         bindings: [
-          {name: 'likelihoods', view: props.likelihoods, type: 'f32', access: 'read'},
+          {name: 'scores', view: props.scores, type: 'f32', access: 'read'},
           {name: 'summary', view: props.summary, type: 'atomic<u32>', access: 'read_write'}
         ],
         invocationCount: cellCount,
         body: `let maximumBits = atomicLoad(&summary[summaryOffset]);
-  if (bitcast<u32>(likelihoods[likelihoodsOffset + index]) == maximumBits) {
+  if (bitcast<u32>(scores[scoresOffset + index]) == maximumBits) {
     atomicMin(&summary[summaryOffset + 1u], index);
   }`
       }),

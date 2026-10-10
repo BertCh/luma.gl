@@ -2,6 +2,9 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import type {GPUMultipleTestingMethod, GPUPermutationMetadata} from '../contracts/index';
+import type {GPUPermutationAlternative} from './permutation-alternative';
+
 /** Number of uint32 elements in a permutation-test parameter view. */
 export const GPU_PERMUTATION_PARAMETER_LENGTH = 4;
 
@@ -38,6 +41,25 @@ export function getGPUPermutationParameterValues(
   values[2] = permutations;
   values[3] = new Uint32Array(new Float32Array([parameters.significanceLevel ?? 0.05]).buffer)[0];
   return values;
+}
+
+/** Returns the serializable metadata shared by every permutation contributor. */
+export function getGPUPermutationMetadata(
+  parameters: GPUPermutationParameters,
+  options: {
+    alternative?: GPUPermutationAlternative;
+    multipleTesting?: GPUMultipleTestingMethod;
+  } = {}
+): GPUPermutationMetadata {
+  // Packing performs the canonical seed and count validation.
+  getGPUPermutationParameterValues(parameters);
+  return {
+    seed: parameters.seed,
+    permutationCount: parameters.permutations,
+    alternative: options.alternative ?? 'directed',
+    multipleTesting: options.multipleTesting ?? 'none',
+    includeObserved: true
+  };
 }
 
 /** Splits a seed into the two Philox key words, as the kernels do. @internal */

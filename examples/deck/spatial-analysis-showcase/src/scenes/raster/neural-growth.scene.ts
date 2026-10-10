@@ -4,17 +4,17 @@
 
 import {ground} from '../../cartography/grounds';
 import {defineScene} from '../scene';
-import type {NeuralGrowthOptions} from './neural-growth.compute';
+import type {ResidualRepairOptions} from './neural-growth.compute';
 
 /** Temporal cloud repair over paired Sentinel-2 observations. */
-export default defineScene<NeuralGrowthOptions>({
+export default defineScene<ResidualRepairOptions>({
   id: 'neural-growth',
-  title: 'Neural Cloud Repair: two places, two dates',
+  title: 'GPU Residual Diffusion for Cloud Repair',
   chapter: 'raster',
   order: 20,
   summary:
-    'Remove real Sentinel-2 clouds over Oʻahu or Venice. The SCL mask chooses missing pixels, an older clear observation supplies detail, and a tiny 8→16→4 cellular MLP adapts the colour residual on WebGPU. Compare it directly with a naive prior-image paste.',
-  contributors: ['FrontierNeuralAutomaton'],
+    'Repair Sentinel-2 cloud masks over Oʻahu or Venice with deterministic GPU diffusion. Clear target pixels pin the observed target-minus-prior residual; a fixed four-neighbor Laplacian propagates that residual into masked pixels. No parameters are learned.',
+  contributors: ['FrontierResidualDiffusion'],
   datasets: [
     {
       id: 'sentinel-cloud-repair',
@@ -25,8 +25,8 @@ export default defineScene<NeuralGrowthOptions>({
   basemap: ground('paperCity'),
   furniture: {
     title: {
-      title: 'Neural Cloud Repair',
-      subtitle: 'A dated clear image is the prior—not a hallucination'
+      title: 'GPU Residual Diffusion',
+      subtitle: 'Deterministic cellular repair from paired observations'
     },
     scaleBar: {units: 'metric'},
     credit: 'Contains modified Copernicus Sentinel data (2026)',
@@ -49,7 +49,7 @@ export default defineScene<NeuralGrowthOptions>({
         {
           value: 'venice',
           label: 'Venice Lagoon',
-          help: 'One-day prior; a clean occlusion-removal control.'
+          help: 'One-day prior; less temporal separation than the Oʻahu pair.'
         }
       ],
       help: 'Switches all resident image, prior and mask buffers, then moves the camera.'
@@ -63,7 +63,7 @@ export default defineScene<NeuralGrowthOptions>({
       default: 'cloudy',
       options: [
         {value: 'cloudy', label: 'Cloudy observation'},
-        {value: 'neural', label: 'Neural residual repair'},
+        {value: 'diffusion', label: 'Residual diffusion repair'},
         {value: 'naive', label: 'Naive older-image paste'},
         {value: 'prior', label: 'Older clear reference'}
       ],
@@ -72,17 +72,17 @@ export default defineScene<NeuralGrowthOptions>({
     {
       kind: 'toggle',
       id: 'play',
-      label: 'Run neural repair',
-      group: 'Neural repair',
+      label: 'Run residual diffusion',
+      group: 'Residual diffusion',
       apply: 'param',
       default: true,
-      help: 'Runs four local MLP updates per frame while the neural result is visible.'
+      help: 'Runs four deterministic four-neighbor diffusion updates per frame while the residual repair is visible.'
     },
     {
       kind: 'slider',
       id: 'stepScale',
       label: 'Repair rate',
-      group: 'Neural repair',
+      group: 'Residual diffusion',
       apply: 'param',
       min: 0.1,
       max: 1,
@@ -93,9 +93,9 @@ export default defineScene<NeuralGrowthOptions>({
     {
       kind: 'button',
       id: 'restart',
-      label: 'Restart neural repair',
-      group: 'Neural repair',
-      help: 'Restores the common initialization so the neural and naive results can be compared again.'
+      label: 'Restart diffusion',
+      group: 'Residual diffusion',
+      help: 'Restores the mean-residual initialization so the diffusion and naive results can be compared again.'
     },
     {
       kind: 'slider',
@@ -114,6 +114,8 @@ export default defineScene<NeuralGrowthOptions>({
       id: 'clouds',
       title: 'Two real cloudy observations',
       headline: 'Clouds hide Oʻahu ridges and Venice docks',
+      textAlternative:
+        'A natural-colour Sentinel-2 target crop shows cloud-obscured terrain at 10 metres per pixel.',
       body: 'Choose **Waimānalo, Oʻahu** or **Venice Lagoon**. Each view is a natural-colour, 512 × 512 Sentinel‑2 Level‑2A crop covering **5.12 km** at **10 metres per pixel**. These are observed clouds—not a painted circular hole. The target Scene Classification Layer marks cloud, cirrus, shadow, uncertainty and defective pixels, then a one-cell halo catches mixed cloud edges.',
       options: {display: 'cloudy'},
       controls: ['place', 'display'],
@@ -121,50 +123,58 @@ export default defineScene<NeuralGrowthOptions>({
     },
     {
       id: 'naive',
-      title: 'First establish the naive baseline',
-      headline: 'A hard prior paste is already surprisingly strong',
-      body: '**Naive older-image paste** copies the clear observation only where the SCL mask is invalid and leaves every clear target pixel untouched. Venice uses the previous day, making it a clean control. Oʻahu uses an eight-month-old image, so seams in water colour, vegetation and illumination reveal the limitation of simple temporal substitution.',
+      title: 'Establish the direct-substitution baseline',
+      headline: 'The baseline copies prior pixels inside the mask',
+      textAlternative:
+        'Masked target pixels show the older clear observation; unmasked pixels retain target-date colour.',
+      body: '**Naive older-image paste** copies the prior observation where the SCL mask is invalid and leaves every clear target pixel unchanged. Venice uses the previous day. Oʻahu uses an observation acquired eight months earlier, increasing exposure to changes in water colour, vegetation and illumination.',
       options: {display: 'naive'},
       controls: ['display', 'place'],
       readouts: ['cloud']
     },
     {
-      id: 'neural',
-      title: 'Now adapt the old detail to the target',
-      headline: 'The GPU propagates observed date-to-date colour change',
-      body: 'Switch to **Neural residual repair**. Clear target pixels store their exact target-minus-prior RGB residual and are pinned. Masked pixels start from the scene-wide residual; an 8→16→4 ReLU cellular MLP repeatedly mixes local residual and confidence Laplacians across the boundary. The display remains the sharp older image plus the inferred residual, so the model adjusts tone without blurring streets, roofs or ridges.',
-      options: {display: 'neural'},
+      id: 'diffusion',
+      title: 'Diffuse observed residuals into the mask',
+      headline: 'A fixed Laplacian propagates date-to-date colour residuals',
+      textAlternative:
+        'Masked pixels show the prior image plus an iteratively diffused RGB residual; observed target pixels remain fixed.',
+      body: 'Switch to **Residual diffusion repair**. Each clear target pixel stores its observed target-minus-prior RGB residual and confidence 1; these values remain fixed. Masked pixels start at the scene-wide mean residual and confidence 0. Each GPU update adds 0.24 times the four-neighbor Laplacian, scaled by **Repair rate**, to all four channels. This is a deterministic finite-difference rule with fixed coefficients, not a trained model. The display adds the resulting RGB residual to the older clear image.',
+      options: {display: 'diffusion'},
       controls: ['display', 'play', 'stepScale', 'restart'],
-      readouts: ['generation', 'weights']
+      readouts: ['iterations', 'coefficients']
     },
     {
       id: 'compare',
-      title: 'Neural versus naive is the actual test',
-      headline: 'Improved seams do not prove hidden change',
-      body: 'Toggle between **Neural residual repair** and **Naive older-image paste** after the generation count rises. The neural result should better match the target’s surrounding colour and illumination; the naive result is the unadjusted historical measurement. Neither can recover an object that changed while hidden. Use **Older clear reference** to inspect exactly which real detail both methods borrow.',
+      title: 'Compare diffusion with direct substitution',
+      headline: 'Boundary continuity does not validate hidden content',
+      textAlternative:
+        'Residual diffusion and direct prior substitution reuse the same older detail; no target-date reference is available under cloud.',
+      body: 'Toggle between **Residual diffusion repair** and **Naive older-image paste** after the iteration count rises. Diffusion transfers the observed surrounding residual into the mask; the naive result uses the unadjusted historical measurement. No target-date reference exists under the cloud, so this comparison cannot measure reconstruction accuracy or recover changes that occurred while hidden. Use **Older clear reference** to inspect the detail both methods reuse.',
       controls: ['display', 'place'],
-      readouts: ['generation', 'image']
+      readouts: ['iterations', 'image']
     }
   ],
   legends: () => [],
   readouts: [
-    {id: 'weights', label: 'MLP payload', format: 'text'},
-    {id: 'generation', label: 'Generation', format: 'integer'},
+    {id: 'coefficients', label: 'Fixed coefficient matrix', format: 'text'},
+    {id: 'iterations', label: 'Diffusion iterations', format: 'integer'},
     {id: 'cloud', label: 'Masked pixels', format: 'text'},
     {id: 'cells', label: 'Pixels per pass', format: 'integer'},
     {id: 'image', label: 'Observation pair', format: 'text'}
   ],
-  snippet: state => `const automaton = new FrontierNeuralAutomaton({
-  width, height, state, nextState, weights, parameters, habitat, prior, display
+  snippet:
+    state => `// Fixed coefficients implement 0.24 × the four-neighbor Laplacian; no training occurs.
+const diffusion = new FrontierResidualDiffusion({
+  width, height, state, nextState, coefficients, parameters, habitat, prior, display
 });
-parameters.write(getFrontierNeuralParameterValues({
+parameters.write(getFrontierResidualDiffusionParameterValues({
   stepScale: ${state.stepScale}, mutation: 0, damping: 0
 }));`,
   about: {
-    what: 'A compact neural cellular rule that removes pixels flagged by Sentinel‑2 scene classification and temporally inpaints them from a registered older clear observation.',
-    why: 'Cloud removal is a credible browser-sized neural workload with an immediate visual baseline. The naive paste makes the contribution of the GPU model inspectable instead of asking the viewer to trust a “before/after” trick.',
+    what: 'A deterministic cellular residual-diffusion rule repairs pixels flagged by Sentinel‑2 scene classification using a registered older clear observation.',
+    why: 'The paired observations expose the contribution of residual diffusion relative to direct prior-image substitution. The operation is reproducible and contains no learned parameters.',
     howToRead:
-      'The cloudy image and both dated references are real. White cloud is never fed to the model as valid colour. Neural output is older detail plus an inferred target-date residual; hidden physical changes remain unknowable.'
+      'The cloudy image and dated prior are observed. Cloud-masked target pixels do not contribute colour. The repaired output is older detail plus a spatially diffused residual; target-date content hidden by cloud is not observed or validated.'
   },
-  create: async ctx => (await import('./neural-growth.compute')).createNeuralGrowth(ctx)
+  create: async ctx => (await import('./neural-growth.compute')).createResidualRepair(ctx)
 });

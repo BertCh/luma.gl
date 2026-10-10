@@ -4,3 +4,4 @@
 
 import './gpu-segment-ring-assembly.spec';
 import './gpu-segment-ring-assembly.node.spec';
+import './segment-polygonization-diagnostics.spec';

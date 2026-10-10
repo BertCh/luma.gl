@@ -16,7 +16,7 @@ type OptionSet = {
   sourceIds?: boolean;
   outputMask?: boolean;
   drawInstanceCount?: boolean;
-  totalCount?: boolean;
+  requiredCount?: boolean;
 };
 
 function createProps(
@@ -46,7 +46,9 @@ function createProps(
       ids: createTransientView(graph, 'ids', 'uint32', capacity),
       count: createTransientView(graph, 'count', 'uint32', 1),
       overflow: createTransientView(graph, 'overflow', 'uint32', 1),
-      totalCount: options.totalCount ? createTransientView(graph, 'total', 'uint32', 1) : undefined
+      requiredCount: options.requiredCount
+        ? createTransientView(graph, 'total', 'uint32', 1)
+        : undefined
     }
   };
 }
@@ -100,7 +102,7 @@ it('GPUResidentRowSelection node count depends only on the option set', () => {
         sourceIds: true,
         outputMask: true,
         drawInstanceCount: true,
-        totalCount: true
+        requiredCount: true
       }
     ]
   ];

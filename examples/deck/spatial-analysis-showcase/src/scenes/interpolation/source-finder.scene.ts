@@ -6,28 +6,29 @@ import {ground} from '../../cartography/grounds';
 import {defineScene} from '../scene';
 import type {SourceFinderOptions} from './source-finder.compute';
 
-/** An inverse problem: infer a staged release from sparse sensors at real Chicago facilities. */
+/** An inverse problem: localize a synthetic release from sparse sensors at real facilities. */
 export default defineScene<SourceFinderOptions>({
   id: 'source-finder',
-  title: 'Source Finder: where did the plume begin?',
+  title: 'Source Finder: inverse plume localization',
   chapter: 'interpolation',
   order: 20,
   summary:
-    'A Gaussian-plume inverse model scores 36,000 candidate origins against synthetic readings at real Chicago hospitals and fire stations, then publishes its best estimate entirely on the GPU.',
+    'A GPU inverse model evaluates 36,000 candidate origins against 32 synthetic sensor readings. The observations use a distinct forward model with deterministic spatial and heteroscedastic error; the surface is a relative fit score, not a probability.',
   contributors: ['FrontierSourceInference'],
   datasets: [
     {
       id: 'chicago-facilities',
-      role: 'real hospital and fire-station sites used as a staged sensor network'
+      role: 'real hospital and fire-station sites used in a synthetic sensor-placement experiment'
     }
   ],
   initialView: {longitude: -87.67, latitude: 41.88, zoom: 10.2},
   basemap: ground('night'),
   furniture: {
-    title: {title: 'Source Finder', subtitle: 'Candidate likelihood from 32 staged sensors'},
+    title: {title: 'Source Finder', subtitle: 'Relative fit across 36,000 candidate origins'},
     scaleBar: {units: 'metric'},
     credit: 'City of Chicago; Overture Maps Foundation',
-    caveat: 'Facility sites are real; concentrations and source are synthetic.'
+    caveat:
+      'Facility sites are real. Sensor placement, concentrations and source are synthetic; the model is not calibrated for operational atmospheric inference.'
   },
   options: [
     {
@@ -53,7 +54,7 @@ export default defineScene<SourceFinderOptions>({
       max: 2,
       step: 0.05,
       default: 1,
-      help: 'Assumed source concentration scale. The staged readings were generated at 1.0.'
+      help: 'Assumed source concentration scale. The fitted default is 1.0; the synthetic generator uses 1.04.'
     },
     {
       kind: 'slider',
@@ -91,7 +92,7 @@ export default defineScene<SourceFinderOptions>({
       max: 0.3,
       step: 0.01,
       default: 0.08,
-      help: 'Standard deviation used by the likelihood. Larger values admit a wider set of plausible origins.'
+      help: 'Residual scale used by the relative fit score. Larger values reduce the score penalty for disagreement.'
     },
     {
       kind: 'toggle',
@@ -100,12 +101,12 @@ export default defineScene<SourceFinderOptions>({
       group: 'Display',
       apply: 'param',
       default: true,
-      help: 'Shows the real facility locations colored by their staged concentration reading.'
+      help: 'Shows the selected facility locations colored by synthetic concentration.'
     },
     {
       kind: 'toggle',
       id: 'revealSource',
-      label: 'Reveal staged source',
+      label: 'Reveal synthetic source',
       group: 'Display',
       apply: 'param',
       default: false,
@@ -114,83 +115,115 @@ export default defineScene<SourceFinderOptions>({
     {
       kind: 'slider',
       id: 'opacity',
-      label: 'Likelihood opacity',
+      label: 'Fit surface opacity',
       group: 'Display',
       apply: 'param',
       min: 0.25,
       max: 1,
       step: 0.05,
       default: 0.78,
-      help: 'Opacity of the candidate likelihood field.'
+      help: 'Opacity of the relative fit score surface.'
     }
   ],
   story: [
     {
       id: 'incident',
-      title: 'Thirty-two alarms, one unknown origin',
-      headline: 'Sparse sensors leave a field of plausible origins',
-      body: 'Hospitals and fire stations are real City of Chicago and Overture sites; their readings are a clearly staged incident so this story remains reproducible. `FrontierSourceInference` asks the inverse question: which source would have produced all of those readings together?\n\nGold points are high readings, dark points are low. The magenta surface is candidate likelihood and the cyan marker is its GPU-selected maximum.',
+      title: 'Synthetic observations at 32 facility sites',
+      headline: 'A maximin placement design samples the Chicago study area',
+      textAlternative:
+        'A relative-fit raster covers Chicago. Thirty-two spatially distributed facility sensors are colored by synthetic concentration, and a cyan marker identifies the maximum-score candidate origin.',
+      body: 'Hospital and fire-station coordinates are real City of Chicago and Overture sites. A deterministic maximin design selects 32 spatially separated facilities; it is a sensor-placement experiment, not an operational network. Synthetic concentrations use a plume with 525 m initial dispersion, 7.5 m per square-root metre growth and 11,200 m decay length, plus deterministic spatially correlated, heteroscedastic perturbations. The fitted model uses a different dispersion and decay specification to avoid an exact inverse crime.\n\nGold points have higher readings. The magenta raster is a relative fit score and the cyan marker is its GPU-selected maximum. The score is not normalized over candidates and is not a posterior probability.',
       controls: ['showSensors'],
-      readouts: ['sensors', 'candidates']
+      readouts: ['sensors', 'candidates', 'sensorProfile', 'bestScore'],
+      evidence:
+        'The sensor profile plots every synthetic observation against its signed downwind distance from the known generating source; the background level and source crosswind plane are explicit references.',
+      caveat:
+        'The observations are synthetic and the facility locations are an experimental maximin subset, not a deployed monitoring network.'
     },
     {
       id: 'wind',
       title: 'Turn the wind and the answer moves',
       headline: 'One assumption can move the maximum across the city',
-      body: 'Every candidate predicts zero plume upwind and a widening Gaussian profile downwind. Change **Wind blows toward** below: 36,000 candidates × 32 sensors are rescored on the next frame, and the cyan maximum moves without rebuilding or downloading the field.',
+      textAlternative:
+        'The relative-fit surface and cyan maximum shift when the assumed wind bearing changes; all 36,000 candidate origins are evaluated against the same 32 sensor values.',
+      body: 'Each candidate predicts background concentration upwind and a widening Gaussian profile downwind. Changing **Wind blows toward** triggers one evaluation of 36,000 candidates × 32 sensors. Display frames reuse the GPU outputs until an analytic option changes; the field is not downloaded for rendering.',
       controls: ['windBearing'],
-      readouts: ['candidates']
+      readouts: ['candidates', 'bestScore'],
+      evidence:
+        'The reported best score and cyan marker come from the same GPU reduction over the complete 180 × 200 candidate grid.',
+      caveat:
+        'A high relative score only ranks candidates under the selected transport parameters; it is not a calibrated probability.'
     },
     {
       id: 'uncertainty',
       title: 'Assumptions are part of the map',
-      headline: 'A sharp likelihood peak is not the same as certainty',
-      body: '**Sensor noise** below controls how harshly residuals are penalized; **Initial plume width** controls how much crosswind disagreement the model tolerates. A crisp peak does not mean certainty if these assumptions are wrong. Try a very wide plume and then rotate the wind ten degrees.',
+      headline: 'Residual scale controls contrast, not inferential certainty',
+      textAlternative:
+        'Changing residual scale, plume width, or decay length changes the contrast and location of the relative-fit surface; the display is not a probability or confidence region.',
+      body: '**Sensor noise** sets the residual scale in the score; **Initial plume width** controls crosswind dispersion. The score omits parameter uncertainty, atmospheric variability, sensor bias and a probability normalization. A concentrated score surface therefore does not establish a confidence region.',
       controls: ['noiseSigma', 'dispersion', 'decayLength'],
-      readouts: ['sensors']
+      readouts: ['bestScore', 'localizationError'],
+      evidence:
+        'Every analytic control re-evaluates all candidates against the same 32 readings, making changes in the maximum attributable to the stated assumption.',
+      caveat:
+        'The surface conditions on one parameter setting at a time and does not marginalize over uncertain wind, dispersion, decay or sensor error.'
     },
     {
       id: 'check',
-      title: 'Reveal the answer—then break the model',
-      headline: 'The right answer depends on the right transport model',
-      body: 'Turn on **Reveal staged source** below. The red dot is the known synthetic origin; the cyan dot is the best candidate written by the reduction graph. At the default assumptions they nearly coincide. Now change **Emission strength** or wind: the failure is visible, which is exactly why inverse maps should expose their assumptions.',
+      title: 'Compare the estimate with synthetic truth',
+      headline: 'Localization error measures displacement from the generating source',
+      textAlternative:
+        'A cyan maximum-score marker is compared with the revealed red synthetic source; the localization-error readout reports their planar separation in metres.',
+      body: 'Enable **Reveal synthetic source**. The red marker is the synthetic source and the cyan marker is the maximum-score grid cell written by the GPU reduction. **Localization error** is their planar distance in metres. Changing **Emission strength** or wind quantifies sensitivity to misspecified transport assumptions.',
       controls: ['revealSource', 'emissionRate', 'windBearing'],
-      readouts: ['candidates']
+      readouts: ['bestScore', 'localizationError'],
+      evidence:
+        'Localization error is calculated directly from the winning grid-cell center and the known synthetic source in the scene projection.',
+      caveat:
+        'The grid imposes a finite spatial resolution, so even a correctly specified model cannot localize more precisely than its candidate cells.'
     }
   ],
   legends: () => [
     {
       kind: 'ramp',
-      title: 'Candidate likelihood',
+      title: 'Relative fit score',
       ramp: 'magma',
       extent: [0.05, 1],
-      labels: ['unlikely', 'best fit']
+      labels: ['lower fit', 'higher fit']
     },
     {
       kind: 'categories',
       title: 'Markers',
       entries: [
         {color: [0, 190, 255, 255], label: 'GPU estimate'},
-        {color: [255, 88, 70, 255], label: 'staged truth (when revealed)'}
+        {color: [255, 88, 70, 255], label: 'synthetic truth (when revealed)'}
       ]
     }
   ],
   readouts: [
     {id: 'sensors', label: 'Sensor sites', format: 'integer'},
-    {id: 'candidates', label: 'Candidates per frame', format: 'integer'}
+    {id: 'candidates', label: 'Candidates per evaluation', format: 'integer'},
+    {
+      id: 'sensorProfile',
+      label: 'Observation profile',
+      kind: 'chart',
+      help: 'Each synthetic reading plotted against signed distance along the known generating wind direction.'
+    },
+    {id: 'bestScore', label: 'Best fit score'},
+    {id: 'localizationError', label: 'Localization error'}
   ],
   snippet: state => `const inference = new FrontierSourceInference({
   width: 180, height: 200, sensorCount: 32,
-  sensorPositions, sensorValues, parameters, likelihoods, summary, bestPosition
+  sensorPositions, sensorValues, parameters, scores, summary, bestPosition
 });
 parameters.write(getFrontierSourceParameterValues({
   bounds, wind: windFromBearing(${state.windBearing}), noiseSigma: ${state.noiseSigma}
 }));`,
   about: {
-    what: 'A browser-sized inverse problem using a steady Gaussian plume and a deterministic staged incident at real facility sites.',
-    why: 'Inverse mapping turns sparse observations into a spatial hypothesis and makes thousands of independent candidate evaluations ideal for GPU compute.',
+    what: 'A controlled inverse-source experiment using real facility coordinates, synthetic concentrations from a distinct forward model, deterministic spatial and heteroscedastic perturbations, and a 180 × 200 candidate grid.',
+    why: 'The implementation measures GPU evaluation of independent candidate origins and exposes localization sensitivity to transport assumptions. It does not estimate a calibrated posterior distribution.',
     howToRead:
-      'Brighter cells fit all sensor readings better under the chosen assumptions. Cyan is the GPU maximum; red, when enabled, is the staged truth.'
+      'Brighter cells have a higher relative residual score under the selected assumptions. Cyan is the maximum-score cell; red is synthetic truth when enabled. Use the localization-error readout for the planar displacement in metres.'
   },
   create: async ctx => (await import('./source-finder.compute')).createSourceFinder(ctx)
 });

@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {ground} from '../../cartography/grounds';
 import {defineScene} from '../scene';
 import type {SiteSuitabilityOptions} from './site-suitability.compute';
 import {COVER_COLORS, COVER_NAMES} from './b16-colors';
@@ -36,11 +37,11 @@ const coverSlider = (
 
 export default defineScene<SiteSuitabilityOptions>({
   id: 'site-suitability',
-  title: 'Where should post-fire erosion crews work first?',
+  title: 'Dixie Fire: erosion-treatment suitability score',
   chapter: 'raster',
   order: 2,
   summary:
-    'After the Dixie Fire, a weighted overlay of burn severity, slope, land cover, distance to Greenville and remaining greenness ranks every 20 m cell. Cell statistics show where the criteria disagree; sampling and zonal statistics turn the raster into candidate sites and per-cover numbers.',
+    'A GPU weighted overlay combines Dixie Fire severity, slope, land cover, Greenville proximity and greenness into 20-m suitability scores and candidate sites. User-selected weights are illustrative, not a calibrated hazard model.',
   contributors: [
     'GPUWeightedOverlay',
     'GPURasterCellStatistics',
@@ -53,6 +54,16 @@ export default defineScene<SiteSuitabilityOptions>({
   ],
   datasets: [{id: 'dixie-fire', role: 'Sentinel-2 bands, WorldCover, DEM'}],
   initialView: {longitude: -121.0, latitude: 40.17, zoom: 11.5},
+  basemap: ground('relief'),
+  furniture: {
+    title: {
+      title: 'Erosion-treatment suitability',
+      subtitle: 'Weighted 20-m criteria after the Dixie Fire'
+    },
+    scaleBar: {units: 'metric'},
+    credit: 'Copernicus Sentinel-2; ESA WorldCover; USGS elevation',
+    caveat: 'Scores reflect selected criteria and weights, not validated erosion probability.'
+  },
 
   options: [
     {
@@ -364,7 +375,7 @@ export default defineScene<SiteSuitabilityOptions>({
       label: 'Color ramp',
       group: 'Display',
       apply: 'param',
-      default: 'viridis',
+      default: 'cividis',
       help: 'For the continuous layers.',
       options: RAMPS,
       disabledWhen: state => state.layer === 'cover'
@@ -461,6 +472,7 @@ export default defineScene<SiteSuitabilityOptions>({
         title: 'Suitability score',
         ramp: state.ramp,
         extent: 'gpu',
+        unit: 'score (0–1)',
         format: value => value.toFixed(2)
       });
     } else if (state.layer === 'cover') {
@@ -506,7 +518,7 @@ export default defineScene<SiteSuitabilityOptions>({
       legends.push({
         kind: 'ramp',
         title: 'Sampled score at candidate sites',
-        ramp: 'viridis',
+        ramp: 'cividis',
         extent: [0, 1],
         format: value => value.toFixed(1)
       });
@@ -564,6 +576,9 @@ compiled.encode(commandEncoder, {parameters: undefined});`,
   story: [
     {
       id: 'the-question',
+      headline: 'High scores combine severity, slope and access',
+      textAlternative:
+        'A continuous suitability raster combines post-fire criteria near Greenville.',
       title: 'Where should erosion crews work first after the Dixie Fire?',
       body: 'A burned slope above a town sheds ash and soil into the first heavy rain. Emergency teams (in the US, BAER teams) have to pick where mulch, straw wattles and debris basins go. Here the question is asked of the 15 km square around **Greenville**, which the fire destroyed on 4 August 2021.\n\nFive criteria become one map: **burn severity** (dNBR), **slope**, **land cover**, **closeness to Greenville** and **loss of greenness**. The map shows the weighted result: bright cells are the highest priority. The weights are yours to change, with the sliders below.',
       camera: {longitude: -121.0, latitude: 40.17, zoom: 11.5, transitionMs: 1200},
@@ -580,13 +595,19 @@ compiled.encode(commandEncoder, {parameters: undefined});`,
     },
     {
       id: 'rescaling',
+      headline: 'Linear transforms place criteria on one score scale',
+      textAlternative:
+        'Individual severity, slope, proximity and vegetation rasters are normalized from zero to one.',
       title: 'Every criterion is rescaled to 0 to 1',
       body: "Slope is measured in degrees and dNBR is unitless, so each layer is first mapped to 0 to 1. This map is the **slope criterion**: `GPUTerrainDerivatives` (Horn's 3 x 3 method) derives it from the DEM, and a linear ramp from 5 to 35 degrees turns it into a score. Cells flatter than 5 degrees score 0; cells steeper than 35 score 1.\n\nDrag **Slope ramp** below, or switch **Map shows** to another criterion and drag its ramp. The overlay does the same rescaling internally from `inputMin` and `inputMax`, and `invert` flips a layer so near scores high. Both are per-frame parameters.",
-      options: {layer: 'c-slope', ramp: 'viridis'},
+      options: {layer: 'c-slope', ramp: 'cividis'},
       controls: ['slopeRange', 'layer']
     },
     {
       id: 'weights',
+      headline: 'Selected weights determine the composite suitability score',
+      textAlternative:
+        'The weighted overlay brightens cells where multiple normalized criteria score highly.',
       title: 'The weighted overlay combines them',
       body: '`GPUWeightedOverlay` computes `score = sum(weight_i x score_i)`, divided by the sum of the weights when **Normalize weights** is on. The loop runs in a fixed layer order in float32, so the result is repeatable. The readout shows the exact range of the defined scores.\n\nMove **Slope weight** to 1 and the map becomes a slope map; move **Burn severity weight** to 1 and it becomes a severity map. Negative weights are allowed by the contributor (they subtract), but the sliders here stay positive. The method matches the ArcGIS Weighted Overlay tool.',
       options: {layer: 'score'},
@@ -595,6 +616,9 @@ compiled.encode(commandEncoder, {parameters: undefined});`,
     },
     {
       id: 'land-cover',
+      headline: 'Land-cover scores exclude restricted classes',
+      textAlternative:
+        'WorldCover categories contribute table-based scores or mask cells from consideration.',
       title: 'Land cover enters through a table, with restricted classes',
       body: "Land cover is categorical, so the overlay classifies it through a **break table** (`mode: 'table'`): WorldCover codes 10, 20, 30 ... fall into classes and each class gets the score you set (**Tree cover**, **Bare / sparse vegetation** and the other class sliders below). Water and built-up land get **NaN**, which marks a **restricted** class: those cells are excluded from the score entirely.\n\nTurn off **Restrict built-up land and open water** below and they are scored instead. The same table also drives a `GPURasterReclassify` node that feeds the cell statistics below.",
       options: {layer: 'cover'},
@@ -602,13 +626,18 @@ compiled.encode(commandEncoder, {parameters: undefined});`,
     },
     {
       id: 'agreement',
+      headline: 'Criterion spread identifies internally inconsistent high scores',
+      textAlternative: 'Cell statistics map the mean and disagreement among suitability criteria.',
       title: 'Cell statistics audit the score',
       body: '`GPURasterCellStatistics` reads the five rescaled layers of every cell and reports the **standard deviation** (population, centred second pass). A bright cell is one where the criteria disagree: for example steep but unburned.\n\nChange **Missing layer policy** below to *Propagate* and every restricted cell becomes nodata; set **Minimum valid layers** to 5 for the same effect. Switch **Map shows** to *Weakest criterion* to see the layer holding each cell back.',
-      options: {layer: 'spread', ramp: 'magma'},
+      options: {layer: 'spread', ramp: 'cividis'},
       controls: ['statisticsPolicy', 'minimumValid', 'layer']
     },
     {
       id: 'sites',
+      headline: 'Spatial sampling converts high scores into candidate points',
+      textAlternative:
+        'Candidate treatment points are sampled from cells above the selected suitability threshold.',
       title: 'Sampling turns the raster into candidate sites',
       body: '`GPURasterSampling` reads the score raster at jittered points, up to 5,400 of them and 3,000 active here ("extract values to points"). Only sites above the threshold are drawn. The active point count is a parameter, so **Active sites** needs no recompile; **Show sites scoring above** hides the weak ones.\n\nTry the three **Interpolation** methods below: *Nearest cell* is exact (the readout recomputes the score on the CPU and reports the largest difference), *Bilinear* blends four cells and *Bicubic* sixteen. With **Nodata in the support** set to *Strict*, a site next to water or town returns NaN; *Renormalize* keeps it.',
       options: {
@@ -625,6 +654,9 @@ compiled.encode(commandEncoder, {parameters: undefined});`,
     },
     {
       id: 'zonal',
+      headline: 'Land-cover zones summarize score and candidate allocation',
+      textAlternative:
+        'Per-cover statistics compare suitability totals and selected candidate counts.',
       title: 'Zonal statistics summarise by land cover, then the caveats',
       body: "`GPURasterZonalStatistics` takes the WorldCover class raster as zones and reports each class's cell count, mean, minimum and maximum score. A second instance averages a 0/1 burned raster, so its mean is the **burned share per class**: tree cover 66%, grassland 31%, cropland 27%, built-up 23% in the CPU reference, and the GPU matches. Press **Time sorted vs atomic zonal sums** to see why sorted sums are the default for contiguous zones.\n\n**Limits:** the criteria are proxies, not a hydrologic model; the weights are a judgement; 20 m pixels average mixed ground; and the overflow readout shows the zone capacity (8) being exceeded by a single wetland pixel. **Try:** **Leave tree cover out of the zones**, bicubic sampling with renormalize, severity weight 1 and slope weight 1.",
       options: {layer: 'score', ignoreTrees: false},
