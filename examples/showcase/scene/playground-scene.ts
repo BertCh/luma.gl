@@ -203,6 +203,7 @@ export type ANARIJSONSceneHandle = {
   cameraTarget: ANARIVector3;
   cameraPosition: ANARIVector3;
   cameraOrbitSpeed: number;
+  instanceIdentifiers: ReadonlyMap<ANARIInstance, string>;
   animations?: ANARIAnimationSceneHandle;
   update: (time: number) => void;
   destroy: () => void;
@@ -215,7 +216,10 @@ const GEOMETRY_SUBTYPES: readonly ANARIGeometrySubtype[] = [
   'sphere',
   'cylinder',
   'cone',
-  'quad'
+  'quad',
+  'hexPrism',
+  'torus',
+  'ring'
 ];
 const MATERIAL_SUBTYPES: readonly ANARIMaterialSubtype[] = ['matte', 'physicallyBased'];
 const LIGHT_SUBTYPES: readonly ANARILightSubtype[] = ['ambient', 'directional', 'point', 'spot'];
@@ -581,6 +585,9 @@ export function createANARIJSONScene(
     cameraTarget: target,
     cameraPosition: position,
     cameraOrbitSpeed: orbit?.speed || 0,
+    instanceIdentifiers: new Map(
+      Array.from(instances, ([identifier, instance]) => [instance, identifier])
+    ),
     animations,
     update(time: number): void {
       animations?.update(time);

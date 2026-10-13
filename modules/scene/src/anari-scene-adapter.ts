@@ -8,7 +8,9 @@ import {
   CylinderGeometry,
   Geometry,
   PlaneGeometry,
-  SphereGeometry
+  SphereGeometry,
+  TorusGeometry,
+  RingGeometry
 } from '@luma.gl/engine';
 import type {
   SceneCamera,
@@ -23,6 +25,7 @@ import {
   pbrMaterial
 } from '@luma.gl/shadertools';
 import {Matrix4, type NumberArray9} from '@math.gl/core';
+import {unpackIndexedGeometry} from '@math.gl/geometry';
 import {
   ANARIArray,
   type ANARICamera,
@@ -77,6 +80,7 @@ type CachedSceneSurface = {
 type CachedWorldScene = {
   world: ANARIWorld;
   surfaces: SceneSurface[];
+  pickPlacements: ReadonlyMap<string, SurfacePlacement>;
   surfaceEntries: CachedSceneSurface[];
   lights: Light[];
   analyticPrimitives: Record<string, CachedAnalyticPrimitive>;
@@ -351,6 +355,11 @@ export class ANARISceneAdapter {
     return cachedWorld.analyticPrimitives;
   }
 
+  /** Snapshot of retained objects associated with the last extracted placement identities. */
+  getPickPlacements(world: ANARIWorld): ReadonlyMap<string, SurfacePlacement> {
+    return this.worlds.get(world)?.pickPlacements ?? new Map();
+  }
+
   destroy(): void {
     this.geometries.clear();
     this.materials.clear();
@@ -361,6 +370,7 @@ export class ANARISceneAdapter {
     const cachedWorld: CachedWorldScene = {
       world,
       surfaces: [],
+      pickPlacements: new Map(),
       surfaceEntries: [],
       lights: [],
       analyticPrimitives: {},
@@ -483,7 +493,11 @@ export class ANARISceneAdapter {
 
   private makeSceneSurfaces(cachedWorld: CachedWorldScene): SceneSurface[] {
     const placementsBySurface = new Map<ANARISurface, SurfacePlacement[]>();
-    for (const placement of collectSurfacePlacements(cachedWorld.world, cachedWorld)) {
+    const surfacePlacements = collectSurfacePlacements(cachedWorld.world, cachedWorld);
+    cachedWorld.pickPlacements = new Map(
+      surfacePlacements.map(placement => [placement.instanceId, placement])
+    );
+    for (const placement of surfacePlacements) {
       const placements = placementsBySurface.get(placement.surface) || [];
       placements.push(placement);
       placementsBySurface.set(placement.surface, placements);
@@ -1009,6 +1023,27 @@ function makeEngineGeometry(geometry: ANARIGeometry): Geometry {
         nlong: segments * 2
       });
       break;
+    case 'hexPrism': {
+      const mesh = unpackIndexedGeometry(
+        new CylinderGeometry({
+          radius: parameters.radius ?? 1,
+          height: parameters.height ?? 1,
+          nradial: 6,
+          nvertical: 1,
+          topCap: true,
+          bottomCap: true
+        })
+      );
+      const positions = mesh.attributes['POSITION']!.value;
+      sourceGeometry = new Geometry({
+        topology: 'triangle-list',
+        attributes: {
+          ...mesh.attributes,
+          NORMAL: {size: 3, value: makeVertexNormals(new Float32Array(positions))}
+        }
+      });
+      break;
+    }
     case 'cylinder':
       sourceGeometry = new CylinderGeometry({
         radius: parameters.radius ?? 1,
@@ -1017,6 +1052,25 @@ function makeEngineGeometry(geometry: ANARIGeometry): Geometry {
         nvertical: 1,
         topCap: true,
         bottomCap: true
+      });
+      break;
+    case 'ring':
+      sourceGeometry = new RingGeometry({
+        innerRadius: parameters.innerRadius,
+        outerRadius: parameters.outerRadius,
+        height: parameters.height,
+        segments: parameters.segments,
+        startAngle: parameters.startAngle,
+        angle: parameters.angle
+      });
+      break;
+    case 'torus':
+      sourceGeometry = new TorusGeometry({
+        majorRadius: parameters.majorRadius,
+        minorRadius: parameters.minorRadius,
+        majorSegments: parameters.majorSegments,
+        minorSegments: parameters.minorSegments,
+        arc: parameters.arc
       });
       break;
     case 'cone':

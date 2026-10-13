@@ -91,6 +91,38 @@ export const ANARIGeometrySchema = z
       segments: z.number().int().min(3).optional()
     }),
     z.strictObject({
+      '@@type': z.literal('hexPrism'),
+      radius: positiveNumberSchema.optional(),
+      height: positiveNumberSchema.optional()
+    }),
+    z
+      .strictObject({
+        '@@type': z.literal('torus'),
+        majorRadius: positiveNumberSchema.optional(),
+        minorRadius: positiveNumberSchema.optional(),
+        majorSegments: z.number().int().min(3).optional(),
+        minorSegments: z.number().int().min(3).optional(),
+        arc: positiveNumberSchema.max(Math.PI * 2).optional()
+      })
+      .refine(parameters => (parameters.minorRadius ?? 0.3) < (parameters.majorRadius ?? 1), {
+        path: ['minorRadius'],
+        message: 'minorRadius must be smaller than majorRadius'
+      }),
+    z
+      .strictObject({
+        '@@type': z.literal('ring'),
+        innerRadius: nonnegativeNumberSchema.optional(),
+        outerRadius: positiveNumberSchema.optional(),
+        height: positiveNumberSchema.optional(),
+        segments: z.number().int().min(3).optional(),
+        startAngle: numberSchema.optional(),
+        angle: positiveNumberSchema.max(Math.PI * 2).optional()
+      })
+      .refine(parameters => (parameters.innerRadius ?? 0.5) < (parameters.outerRadius ?? 1), {
+        path: ['innerRadius'],
+        message: 'innerRadius must be smaller than outerRadius'
+      }),
+    z.strictObject({
       '@@type': z.literal('quad'),
       width: positiveNumberSchema.optional(),
       height: positiveNumberSchema.optional()
@@ -300,6 +332,13 @@ const rendererProperties = {
 const raytraceRendererProperties = {
   ...rendererProperties,
   samplesPerPixel: z.number().int().positive().optional(),
+  samplingSeed: z.number().int().min(0).max(0xffffffff).optional(),
+  historySampleLimit: z.number().int().min(1).max(256).optional(),
+  denoiseRadius: z.union([z.literal(0), z.literal(1), z.literal(2)]).optional(),
+  debugView: z.enum(['color', 'normal', 'cameraDistance', 'identity', 'history']).optional(),
+  transportMode: z.enum(['diffuse', 'pbr']).optional(),
+  emitterSampling: z.boolean().optional(),
+  emitterSelection: z.enum(['uniform', 'power']).optional(),
   maxBounces: z.number().int().nonnegative().optional(),
   progressive: z.boolean().optional(),
   shadows: z.boolean().optional(),

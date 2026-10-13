@@ -132,7 +132,7 @@ separately loads the retained JSON validation helpers.
 | Object type | Supported subtypes |
 | --- | --- |
 | Array | `array1D` |
-| Geometry | `triangle`, `sphere`, `cylinder`, `cone`, `quad` |
+| Geometry | `triangle`, `sphere`, `cylinder`, `cone`, `quad`, `hexPrism`, `torus`, `ring` |
 | Material | `matte`, `physicallyBased` |
 | Sampler | `image2D` |
 | Surface | `default` |
@@ -147,6 +147,9 @@ separately loads the retained JSON validation helpers.
 Query the actual subtype list with `anariDevice.getObjectSubtypes(type)` instead of assuming future implementations expose the same set.
 
 ## Compatibility
+
+For support by renderer subtype, including deferred forward fallback and ray-tracing limitations,
+see the [renderer feature comparison](/docs/api-reference/scene/anari-rendering#renderer-feature-comparison).
 
 | Capability | WebGPU | WebGL 2 |
 | --- | --- | --- |

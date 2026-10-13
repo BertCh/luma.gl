@@ -59,7 +59,7 @@ const DEFAULT_BROWSER_FONT_ATLAS_SETTINGS: ResolvedBrowserFontAtlasSettings = {
   fontSize: 64,
   buffer: 4
 };
-const MAX_CANVAS_WIDTH = 1024;
+export const MAX_CANVAS_WIDTH = 1024;
 const DEFAULT_ASCENT = 0.9;
 const DEFAULT_DESCENT = 0.3;
 const CACHE_LIMIT = 3;
@@ -170,6 +170,7 @@ function drawCharacters(
 
   for (const character of characterSet) {
     const frame = mapping[character];
+    const measuredWidth = frame.width;
     const {data, left = 0, top = 0} = renderer.draw(character);
     const x = frame.x - left;
     const y = frame.y - top;
@@ -178,8 +179,15 @@ function drawCharacters(
     const width = Math.min(data.width, context.canvas.width - x0);
     const height = Math.min(data.height, context.canvas.height - y0);
     context.putImageData(data, x0, y0, 0, 0, width, height);
-    frame.x += x0 - x;
-    frame.y += y0 - y;
+    // deck.gl#10545: retain the entire rasterized halo while preserving advances and baselines.
+    frame.x = x0;
+    frame.y = y0;
+    frame.width = width;
+    frame.height = height;
+    frame.anchorX += width / 2 - left - measuredWidth / 2;
+    frame.anchorY += top;
+    frame.layoutOffsetX = (frame.layoutOffsetX ?? 0) + x0 - x - left;
+    frame.layoutOffsetY = (frame.layoutOffsetY ?? 0) + y0 - y - top;
   }
 }
 

@@ -3,12 +3,14 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {describe, expect, test} from 'vitest';
-import {WgslReflect} from 'wgsl_reflect';
+import {ResourceType, WgslReflect} from 'wgsl_reflect';
 import {
   getRayTracingScenePresentationShader,
   RAY_TRACING_BOUNDS_SHADER,
   RAY_TRACING_HISTORY_CARRY_SHADER,
-  RAY_TRACING_SCENE_SHADER
+  RAY_TRACING_SCENE_SHADER,
+  RAY_TRACING_PICK_SHADER,
+  RAY_TRACING_CHANNEL_SHADER
 } from '../../src/engine/ray-tracing-scene-shaders';
 
 describe('graph-accelerated ray tracing shaders', () => {
@@ -19,7 +21,7 @@ describe('graph-accelerated ray tracing shaders', () => {
     expect(reflection.uniforms.map(({name, binding}) => ({name, binding}))).toEqual([
       {name: 'uniforms', binding: 0}
     ]);
-    expect(reflection.uniforms[0].size).toBe(272);
+    expect(reflection.uniforms[0].size).toBe(320);
     expect(reflection.uniforms[0].members?.map(({name, offset}) => ({name, offset}))).toEqual([
       {name: 'inverseViewProjection', offset: 0},
       {name: 'cameraPosition', offset: 64},
@@ -31,7 +33,10 @@ describe('graph-accelerated ray tracing shaders', () => {
       {name: 'displayPhase', offset: 160},
       {name: 'temporal', offset: 176},
       {name: 'previousViewProjection', offset: 192},
-      {name: 'previousCameraPosition', offset: 256}
+      {name: 'previousCameraPosition', offset: 256},
+      {name: 'sampling', offset: 272},
+      {name: 'imageRegion', offset: 288},
+      {name: 'emitters', offset: 304}
     ]);
     expect(reflection.storage.map(({name, binding}) => ({name, binding}))).toEqual([
       {name: 'primitives', binding: 1},
@@ -39,7 +44,7 @@ describe('graph-accelerated ray tracing shaders', () => {
       {name: 'primitiveMaxima', binding: 3},
       {name: 'blasNodes', binding: 4}
     ]);
-    expect(reflection.storage[0].format?.size).toBe(272);
+    expect(reflection.storage[0].format?.size).toBe(288);
     expect(reflection.storage.find(({name}) => name === 'blasNodes')?.format?.size).toBe(32);
     expect(reflection.uniforms.length + reflection.storage.length).toBe(5);
     expect(RAY_TRACING_BOUNDS_SHADER).toContain('@workgroup_size(128)');
@@ -63,7 +68,7 @@ describe('graph-accelerated ray tracing shaders', () => {
     expect(reflection.uniforms.map(({name, binding}) => ({name, binding}))).toEqual([
       {name: 'uniforms', binding: 0}
     ]);
-    expect(reflection.uniforms[0].size).toBe(272);
+    expect(reflection.uniforms[0].size).toBe(320);
     expect(reflection.textures.map(({name, binding}) => ({name, binding}))).toEqual([
       {name: 'historyImage', binding: 1},
       {name: 'historyMetadata', binding: 2}
@@ -121,7 +126,7 @@ describe('graph-accelerated ray tracing shaders', () => {
     expect(reflection.uniforms.map(({name, binding}) => ({name, binding}))).toEqual([
       {name: 'uniforms', binding: 0}
     ]);
-    expect(reflection.uniforms[0].size).toBe(272);
+    expect(reflection.uniforms[0].size).toBe(320);
     expect(storageBuffers.map(({name, binding}) => ({name, binding}))).toEqual([
       {name: 'primitives', binding: 1},
       {name: 'triangles', binding: 2},
@@ -133,7 +138,7 @@ describe('graph-accelerated ray tracing shaders', () => {
       {name: 'blasTriangleIds', binding: 8}
     ]);
     expect(storageBuffers).toHaveLength(8);
-    expect(storageBuffers[0].format?.size).toBe(272);
+    expect(storageBuffers[0].format?.size).toBe(288);
     expect(storageBuffers.find(({name}) => name === 'blasNodes')?.format?.size).toBe(32);
     expect(reflection.storage.find(({name}) => name === 'outputImage')?.binding).toBe(11);
     expect(reflection.storage.find(({name}) => name === 'outputMetadata')?.binding).toBe(12);
@@ -551,7 +556,7 @@ describe('graph-accelerated ray tracing shaders', () => {
       'let historicalSample = getHistoricalRaySample(pixel, guideRay, guideHit, color)'
     );
 
-    const functionStart = RAY_TRACING_SCENE_SHADER.indexOf('fn makeCameraRayAtOffset(');
+    const functionStart = RAY_TRACING_SCENE_SHADER.indexOf('fn makeCameraRayAtFullCoordinates(');
     const functionEnd = RAY_TRACING_SCENE_SHADER.indexOf('\nfn ', functionStart + 1);
     const cameraRaySource = RAY_TRACING_SCENE_SHADER.slice(functionStart, functionEnd);
     const orthographicBranch = cameraRaySource.indexOf('if (uniforms.cameraPosition.w > 0.5)');
@@ -735,4 +740,67 @@ describe('graph-accelerated ray tracing shaders', () => {
       );
     }
   });
+});
+
+test('ray picking uses integer hit identifiers within WebGPU CORE storage limits', () => {
+  const reflection = new WgslReflect(RAY_TRACING_PICK_SHADER);
+  const pickingEntry = reflection.entry.compute.find(entry => entry.name === 'pick');
+  expect(pickingEntry).toBeDefined();
+  const resources = pickingEntry?.resources || [];
+  const storageResources = resources.filter(resource => reflection.storage.includes(resource));
+  expect(storageResources).toHaveLength(8);
+  expect(resources.some(resource => resource.name === 'lights')).toBe(false);
+  const result = reflection.storage.find(resource => resource.name === 'pickResult');
+  expect(result?.size).toBe(32);
+  expect(result?.members?.find(member => member.name === 'primitiveIdentifier')?.offset).toBe(28);
+});
+
+test('full-frame channels fit CORE buffer and storage texture limits', () => {
+  const reflection = new WgslReflect(RAY_TRACING_CHANNEL_SHADER);
+  const entry = reflection.entry.compute.find(entry => entry.name === 'captureChannels');
+  expect(entry).toBeDefined();
+  const resources = entry?.resources || [];
+  expect(resources.filter(resource => resource.resourceType === ResourceType.Storage)).toHaveLength(
+    7
+  );
+  expect(
+    resources.filter(resource => resource.resourceType === ResourceType.StorageTexture)
+  ).toHaveLength(4);
+  expect(resources.some(resource => resource.name === 'lights')).toBe(false);
+  expect(resources.map(resource => resource.name)).toEqual(
+    expect.arrayContaining([
+      'identifierImage',
+      'distanceImage',
+      'normalImage',
+      'projectedDepthImage',
+      'channelViewProjection'
+    ])
+  );
+});
+
+test('guided presentation adds only a sampled metadata binding', () => {
+  for (const denoiseRadius of [1, 2] as const) {
+    const reflection = new WgslReflect(
+      getRayTracingScenePresentationShader({toneMapMode: 0, outputEncoding: 0, denoiseRadius})
+    );
+    expect(reflection.textures.map(({name, binding}) => ({name, binding}))).toEqual([
+      {name: 'image', binding: 0},
+      {name: 'metadata', binding: 1}
+    ]);
+    expect(reflection.storage).toEqual([]);
+  }
+});
+
+test('primary-hit diagnostics keep presentation within sampled-texture bindings', () => {
+  for (const debugView of ['normal', 'cameraDistance', 'identity', 'history'] as const) {
+    const reflection = new WgslReflect(
+      getRayTracingScenePresentationShader({toneMapMode: 2, outputEncoding: 1, debugView})
+    );
+    expect(reflection.textures.map(({name, binding}) => ({name, binding}))).toEqual([
+      {name: 'image', binding: 0},
+      {name: 'metadata', binding: 1}
+    ]);
+    expect(reflection.storage).toEqual([]);
+    expect(reflection.uniforms).toEqual([]);
+  }
 });

@@ -18,6 +18,20 @@ import type {
   ANARIWorld
 } from './anari-objects';
 
+/** Caller-owned full-resolution primary-hit GPU snapshot. Submit final GPU use before destroy(). */
+export type ANARIFrameChannels = {
+  /** Texel identifier index + 1 resolves to this retained placement; zero denotes a miss. */
+  identifiers: readonly {surface: ANARISurface; instance?: ANARIInstance; placementId: string}[];
+  identifierTexture: Texture;
+  /** Ray-origin distance in world units, not projected device depth; zero denotes a miss. */
+  distanceTexture: Texture;
+  /** World-space xyz normal with hit validity in alpha. Misses are all zero. */
+  normalTexture: Texture;
+  /** Projected depth in WebGPU zero-to-one range; background is one. */
+  projectedDepthTexture: Texture;
+  destroy(): void;
+};
+
 export type ANARIObjectType =
   | 'array'
   | 'camera'
@@ -32,7 +46,15 @@ export type ANARIObjectType =
   | 'surface'
   | 'world';
 
-export type ANARIGeometrySubtype = 'triangle' | 'sphere' | 'cylinder' | 'cone' | 'quad';
+export type ANARIGeometrySubtype =
+  | 'triangle'
+  | 'sphere'
+  | 'cylinder'
+  | 'cone'
+  | 'quad'
+  | 'hexPrism'
+  | 'torus'
+  | 'ring';
 export type ANARIMaterialSubtype = 'matte' | 'physicallyBased';
 export type ANARISamplerSubtype = 'image2D';
 export type ANARILightSubtype = 'ambient' | 'directional' | 'point' | 'spot';
@@ -93,6 +115,16 @@ export type ANARIGeometryParameters = {
   height?: number;
   width?: number;
   segments?: number;
+  innerRadius?: number;
+  outerRadius?: number;
+  startAngle?: number;
+  angle?: number;
+  majorRadius?: number;
+  minorRadius?: number;
+  majorSegments?: number;
+  minorSegments?: number;
+  /** Torus sweep in radians; partial sweeps have open ends. */
+  arc?: number;
 };
 
 export type ANARIMaterialParameters = {
@@ -227,6 +259,21 @@ export type ANARIRendererParameters = {
   /** Explicit output transfer; omitted values follow the render-target format. */
   outputColorSpace?: 'linear' | 'srgb';
   samplesPerPixel?: number;
+  /** Uint32 primary and secondary sampling seed. Changing it resets accumulation. */
+  samplingSeed?: number;
+  /** Maximum retained samples per pixel, from 1 to 256; defaults to 64. */
+  historySampleLimit?: number;
+  /** Presentation-only guided filter radius in internal pixels; defaults to zero. */
+  denoiseRadius?: 0 | 1 | 2;
+  /** Presentation-only primary-hit diagnostics for ray tracing. */
+  debugView?: 'color' | 'normal' | 'cameraDistance' | 'identity' | 'history';
+  /** Defaults to diffuse; pbr enables opaque metallic/roughness secondary reflections. */
+  transportMode?: 'diffuse' | 'pbr';
+  /** Explicit emissive geometry connections for ray lighting. */
+  emitterSampling?: boolean;
+  /** Emitter selection distribution; defaults to uniform. Power uses area × luminance. */
+  emitterSelection?: 'uniform' | 'power';
+  /** Secondary bounce budget, clamped to 0–8; defaults to zero. */
   maxBounces?: number;
   progressive?: boolean;
   shadows?: boolean;
@@ -245,6 +292,17 @@ export type ANARIRendererParameters = {
   bloomRadius?: number;
   fogColor?: ANARIVector3;
   fogDensity?: number;
+};
+
+/** Retained objects and world-space hit information from a submitted ray-traced frame. */
+export type ANARIPickResult = {
+  surface: ANARISurface;
+  instance?: ANARIInstance;
+  placementId: string;
+  position: ANARIVector3;
+  normal: ANARIVector3;
+  /** Distance from the primary ray origin (the near plane for orthographic cameras). */
+  distance: number;
 };
 
 export type ANARIFrameParameters = {
@@ -282,6 +340,14 @@ export type ANARIFrameStatistics = {
     sampledPixelCoverage: number;
     frameTimeMilliseconds: number;
     accumulatedSamples: number;
+    /** Logical owned allocations; excludes caller targets and driver/pipeline overhead. */
+    memory?: {
+      sceneBufferBytes: number;
+      historyTextureBytes: number;
+      graphTransientBytes: number;
+      totalBytes: number;
+    };
+
     graph?: ANARIRayTracingGraphStatistics;
   };
 };

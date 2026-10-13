@@ -454,3 +454,42 @@ it('ANARI scene schemas validate advanced retained texture references', () => {
   }
   void 0;
 });
+
+it('ray quality schema accepts bounded controls and rejects invalid budgets', () => {
+  for (const historySampleLimit of [1, 64, 256]) {
+    for (const denoiseRadius of [0, 1, 2]) {
+      expect(
+        ANARIRendererSchema.safeParse({'@@type': 'raytrace', historySampleLimit, denoiseRadius})
+          .success
+      ).toBe(true);
+    }
+  }
+  for (const historySampleLimit of [0, 257, 1.5]) {
+    expect(ANARIRendererSchema.safeParse({'@@type': 'raytrace', historySampleLimit}).success).toBe(
+      false
+    );
+  }
+  expect(ANARIRendererSchema.safeParse({'@@type': 'raytrace', denoiseRadius: 3}).success).toBe(
+    false
+  );
+});
+
+it('debug views are ray-only renderer settings with known names', () => {
+  for (const debugView of ['color', 'normal', 'cameraDistance', 'identity', 'history']) {
+    expect(ANARIRendererSchema.safeParse({'@@type': 'raytrace', debugView}).success).toBe(true);
+    expect(ANARIRendererSchema.safeParse({'@@type': 'default', debugView}).success).toBe(false);
+  }
+  expect(
+    ANARIRendererSchema.safeParse({'@@type': 'raytrace', debugView: 'unrecognized'}).success
+  ).toBe(false);
+});
+
+it('transport modes are opt-in ray settings with bounded names', () => {
+  for (const transportMode of ['diffuse', 'pbr']) {
+    expect(ANARIRendererSchema.safeParse({'@@type': 'raytrace', transportMode}).success).toBe(true);
+    expect(ANARIRendererSchema.safeParse({'@@type': 'default', transportMode}).success).toBe(false);
+  }
+  expect(
+    ANARIRendererSchema.safeParse({'@@type': 'raytrace', transportMode: 'glass'}).success
+  ).toBe(false);
+});

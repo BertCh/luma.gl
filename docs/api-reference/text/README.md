@@ -28,6 +28,13 @@ The subpath has no luma.gl, loaders.gl, or GPU module imports. Existing imports 
 - `buildSdfFontAtlas()` uses the same measurement and packing path, but rasterizes glyphs as signed
   distance fields and records the required threshold and smoothing settings.
 
+SDF atlases request `ceil(radius * (1 - cutoff))` pixels of padding (9 pixels with the
+defaults). Following deck.gl, this automatic padding is capped at
+`floor(atlasWidth / 2 - fontSize)` to leave room for wide glyphs. Very large font sizes or
+distance-field radii can therefore still truncate the field. Larger caller-provided
+`buffer` values are preserved. Glyph frames from `buildSdfFontAtlas()` include the
+rasterized padding while layout advances and baselines remain unchanged.
+
 Both builders cache identical inputs and incrementally add newly requested characters.
 
 `@luma.gl/arrow` owns Arrow source data, source mapping, upload, and Arrow UTF-8/dictionary preparation. It converts Arrow vectors into `GPUVector` objects or prepared GPU state, then constructs renderer models that only know about GPU-resident resources.

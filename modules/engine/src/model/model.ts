@@ -53,7 +53,7 @@ import {
   ShaderAssembler
 } from '@luma.gl/shadertools';
 
-import type {Geometry} from '../geometry/geometry';
+import type {Geometry} from '@math.gl/geometry';
 import {GPUGeometry, makeGPUGeometry} from '../geometry/gpu-geometry';
 import {getDebugTableForShaderLayout} from '../debug/debug-shader-layout';
 import {debugFramebuffer} from '../debug/debug-framebuffer';
@@ -770,13 +770,18 @@ export class Model {
 
   /**
    * Set GPU parameters.
-   * @note Can trigger a pipeline rebuild / pipeline cache fetch.
+   * @note Can trigger a pipeline rebuild / pipeline cache fetch on WebGPU.
+   * On WebGL, parameters are applied at each draw call, so the pipeline is kept.
    * @param parameters
    */
   setParameters(parameters: RenderPipelineParameters) {
     if (!deepEqual(parameters, this.parameters, 2)) {
       this.parameters = parameters;
-      this._setPipelineNeedsUpdate('parameters');
+      if (this.device.type === 'webgl') {
+        this.setNeedsRedraw('parameters');
+      } else {
+        this._setPipelineNeedsUpdate('parameters');
+      }
     }
   }
 

@@ -8,6 +8,7 @@ import {
   type Binding,
   type CommandEncoder,
   type Device,
+  type RenderPass,
   type ShaderLayout
 } from '@luma.gl/core';
 import {Computation, Model} from '@luma.gl/engine';
@@ -54,12 +55,11 @@ import {
 /**
  * Depth-key distribution for paged hierarchies.
  *
- * Half-precision bit patterns spend their 31745 buckets in proportion to distance, which is what a
- * paged scene needs: a hierarchy streams over a depth range far wider than a single scene, and a
- * uniformly quantized key would collapse its far pages into ties.
+ * Single-precision bit patterns retain exact linear camera-depth ordering across the full paged
+ * hierarchy. The shared key packer handles perspective and affine projections consistently.
  */
-const PAGED_DEPTH_KEY_MODE_CODE = 2;
-const PAGED_DEPTH_KEY_BITS = getSplatDepthKeyBits('float16');
+const PAGED_DEPTH_KEY_MODE_CODE = 3;
+const PAGED_DEPTH_KEY_BITS = getSplatDepthKeyBits('float32');
 
 const WORKGROUP_SIZE = 256;
 const MINIMUM_SEMANTIC_SELECTION_CAPACITY = 64;
@@ -80,7 +80,7 @@ export type GPUPagedSplatPage = {
  * Shared camera/style controls plus independently projected page and output segment limits.
  *
  * Graph-renderer controls the paged renderer does not implement are omitted rather than silently
- * ignored: it always applies Mip-Splatting dilation compensation, uses a fixed-width float16 depth
+ * ignored: it always applies Mip-Splatting dilation compensation, uses a fixed-width float32 depth
  * key, alpha-blends, presents through its own segmented render pass, and does not clip, pick,
  * refilter per batch, or switch fragment kernels, support-radius policy or render paths.
  */
@@ -177,6 +177,7 @@ type PlannedSourceSegment = {
 };
 
 type SourceSegment = PlannedSourceSegment & {
+  activeRowsDirty: boolean;
   activeRowBuffer: Buffer;
   projectedRecordBuffer: Buffer;
   uniformBuffer: Buffer;
@@ -263,6 +264,7 @@ export class GPUPagedSplatRenderer {
   private readonly outputSegments: OutputSegment[] = [];
   private readonly pageRevisions = new Map<string, number>();
   private plannedSegments: PlannedSourceSegment[] = [];
+  private includeRenderPass = true;
   private model?: Model;
   private sortedValuesBuffer?: Buffer;
   private semanticSelectionBuffer?: Buffer;
@@ -361,7 +363,11 @@ export class GPUPagedSplatRenderer {
     return this.isDestroyed;
   }
 
-  /** Replaces the active row frontier while retaining all caller-owned source allocations. */
+  /**
+   * Replaces the active row frontier while retaining caller-owned source allocations.
+   * Unsplit active-row arrays are borrowed until the next call; resubmit after changing their
+   * contents. Camera-only updates do not copy or reupload unchanged active-row indirection.
+   */
   setFrontier(pages: readonly GPUPagedSplatPage[]): void {
     if (this.isDestroyed) {
       throw new Error('Cannot update a destroyed paged Gaussian splat renderer');
@@ -421,6 +427,7 @@ export class GPUPagedSplatRenderer {
     if (canReuseGraph) {
       for (let segmentIndex = 0; segmentIndex < this.sourceSegments.length; segmentIndex++) {
         Object.assign(this.sourceSegments[segmentIndex], nextSegments[segmentIndex]);
+        this.sourceSegments[segmentIndex].activeRowsDirty = true;
       }
     } else if (nextSegments.length > 0) {
       this.requiresGraphRebuild = true;
@@ -517,14 +524,55 @@ export class GPUPagedSplatRenderer {
 
   /** Encodes sparse projection, exact cross-page ordering, segmented gather, and one render pass. */
   encode(commandEncoder: CommandEncoder): GPUCommandGraphEncoding | undefined {
+    return this.encodeFrame(commandEncoder, true);
+  }
+
+  /**
+   * Prepares globally ordered splats without opening or clearing a render pass.
+   * Call before the host begins its render pass, then call {@link draw} inside that pass.
+   */
+  prepare(commandEncoder: CommandEncoder): GPUCommandGraphEncoding | undefined {
+    return this.encodeFrame(commandEncoder, false);
+  }
+
+  /** Draws prepared splats into a caller-owned pass without clearing, ending, or submitting it. */
+  draw(renderPass: RenderPass): void {
+    if (this.isDestroyed || !this.hasPresentedContent || !this.model) {
+      return;
+    }
+    renderPass.setPipeline(this.model.pipeline);
+    renderPass.setVertexArray(this.model.vertexArray);
+    for (const segment of this.outputSegments) {
+      renderPass.setBindings({
+        graphUniforms: this.sourceSegments[0].uniformBuffer,
+        projectedRecords: segment.projectedRecordBuffer
+      });
+      this.drawCommands.draw(renderPass, segment.index + 1);
+    }
+  }
+
+  private encodeFrame(
+    commandEncoder: CommandEncoder,
+    includeRenderPass: boolean
+  ): GPUCommandGraphEncoding | undefined {
     if (this.isDestroyed) {
       return undefined;
+    }
+    if (this.includeRenderPass !== includeRenderPass) {
+      this.includeRenderPass = includeRenderPass;
+      this.requiresGraphRebuild = true;
+      this.requiresEncoding = true;
     }
     const activeRowCount = this.plannedSegments.reduce(
       (totalRowCount, segment) => totalRowCount + segment.activeRowCount,
       0
     );
     if (activeRowCount === 0) {
+      if (!includeRenderPass) {
+        this.hasPresentedContent = false;
+        this.requiresEncoding = false;
+        return undefined;
+      }
       if (!this.requiresEncoding || !this.hasPresentedContent) {
         return undefined;
       }
@@ -572,6 +620,8 @@ export class GPUPagedSplatRenderer {
       return undefined;
     }
     this.writeSourceUniforms();
+    // The graph's optional presentation pass calls draw() during encoding.
+    this.hasPresentedContent = true;
     this.lastEncoding = this.compiledGraph.encode(commandEncoder, {parameters: undefined});
     this.hasPresentedContent = true;
     this.requiresEncoding = false;
@@ -775,6 +825,7 @@ export class GPUPagedSplatRenderer {
     );
     return {
       ...planned,
+      activeRowsDirty: true,
       activeRowBuffer,
       projectedRecordBuffer,
       uniformBuffer,
@@ -1169,6 +1220,9 @@ fn main() {
         blendAlphaDstFactor: 'one-minus-src-alpha'
       }
     });
+    if (!this.includeRenderPass) {
+      return;
+    }
     graph.addRenderPass({
       id: 'paged-gaussian-segmented-render',
       resources: [
@@ -1186,20 +1240,7 @@ fn main() {
           clearDepth: 1,
           clearStencil: false
         }),
-        encode: ({renderPass, getBuffer}) => {
-          if (!this.model) {
-            return;
-          }
-          renderPass.setPipeline(this.model.pipeline);
-          renderPass.setVertexArray(this.model.vertexArray);
-          for (const segment of this.outputSegments) {
-            renderPass.setBindings({
-              graphUniforms: getBuffer(firstUniform),
-              projectedRecords: getBuffer(segment.graphProjectedRecords)
-            });
-            this.drawCommands.draw(renderPass, segment.index + 1);
-          }
-        }
+        encode: ({renderPass}) => this.draw(renderPass)
       })
     });
   }
@@ -1284,9 +1325,10 @@ fn main() {
       this.semanticSelectionBuffer?.write(this.semanticSelectionValues);
     }
     for (const segment of this.sourceSegments) {
-      if (segment.activeRows) {
+      if (segment.activeRows && segment.activeRowsDirty) {
         segment.activeRowBuffer.write(segment.activeRows);
       }
+      segment.activeRowsDirty = false;
       const uniformData = new ArrayBuffer(GPU_SPLAT_GRAPH_UNIFORM_BYTE_LENGTH);
       const floatValues = new Float32Array(uniformData);
       const integerValues = new Uint32Array(uniformData);
@@ -1406,18 +1448,19 @@ fn main() {
           );
           const capacityRowCount = segmentSourceRowEnd - segmentSourceRowStart;
           const selectedRows = page.activeRows
-            ? Uint32Array.from(
-                Array.from(page.activeRows).filter(
-                  rowIndex => rowIndex >= segmentSourceRowStart && rowIndex < segmentSourceRowEnd
-                ),
-                rowIndex => rowIndex - (usesSourceRanges ? sourceWindowStart : 0)
-              )
+            ? segmentSourceRowStart === 0 && segmentSourceRowEnd === page.data.length
+              ? page.activeRows
+              : page.activeRows
+                  .filter(
+                    rowIndex => rowIndex >= segmentSourceRowStart && rowIndex < segmentSourceRowEnd
+                  )
+                  .map(rowIndex => rowIndex - (usesSourceRanges ? sourceWindowStart : 0))
             : undefined;
           const activeRowCount = selectedRows?.length ?? capacityRowCount;
           plannedSegments.push({
             id: `${page.id}-${pageSegmentIndex++}`,
             page,
-            ...(selectedRows ? {activeRows: selectedRows} : {}),
+            activeRows: selectedRows,
             capacityRowCount,
             activeRowCount,
             sourceRowOffset: usesSourceRanges

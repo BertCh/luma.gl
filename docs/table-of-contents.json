@@ -674,6 +674,9 @@
                 "items": [
                   "api-reference/experimental/scene-renderer",
                   "api-reference/experimental/deferred-scene-renderer",
+                  "api-reference/experimental/selection-outline",
+          "api-reference/experimental/depth-texture-copy",
+          "api-reference/experimental/ray-tracing-quality-presets",
                   "api-reference/experimental/pbr-environment"
                 ]
               },
@@ -809,6 +812,11 @@
           "api-reference/gltf/gltf-interchange",
           "api-reference/gltf/gltf-extensions"
         ]
+      },
+      {
+        "type": "category",
+        "label": "@luma.gl/three (Prototype, v10)",
+        "items": ["api-reference/three/README"]
       },
       {
         "type": "category",

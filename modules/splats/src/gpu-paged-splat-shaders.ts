@@ -183,6 +183,14 @@ export const GPU_PAGED_SPLAT_RENDER_SHADER = [
   [
     '  let projected = projectedRecords[sortedIds[instanceIndex]];',
     '  let projected = projectedRecords[instanceIndex];'
+  ],
+  [
+    '  output.position = quad.position;',
+    `  output.position = vec4<f32>(
+    quad.position.xy,
+    (quad.position.z + quad.position.w) * 0.5,
+    quad.position.w
+  );`
   ]
 ].reduce(
   (source, [search, replacement]) => replacePagedShaderSource(source, search, replacement),
