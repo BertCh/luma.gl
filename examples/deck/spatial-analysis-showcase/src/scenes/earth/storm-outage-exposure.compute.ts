@@ -31,6 +31,7 @@ import {
 /** Track lengths: longitude/latitude positions, great-circle meters. */
 const GREAT_CIRCLE_METERS: GPUSpatialContext = {
   coordinateSpace: 'longitude-latitude',
+  datum: 'EPSG:4326',
   metric: 'great-circle',
   units: 'meters'
 };

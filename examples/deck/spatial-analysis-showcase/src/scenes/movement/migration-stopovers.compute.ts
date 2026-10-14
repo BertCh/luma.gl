@@ -10,6 +10,7 @@ import {
   GPU_SPATIAL_CLUSTERING_PARAMETER_LENGTH,
   GPU_TRAJECTORY_METRICS_PARAMETER_LENGTH,
   GPUSpatialClustering,
+  type GPUSpatialContext,
   GPUTrajectoryMetrics
 } from '@luma.gl/experimental/gpu-spatial-analysis';
 import {GPUCommandGraph} from '@luma.gl/gpgpu/gpu-core';
@@ -49,6 +50,13 @@ export type MigrationStopoversOptions = {
 };
 
 const STOP_CAPACITY = 16384;
+/** Stop sites are lon/lat; DBSCAN epsilon is meters of great-circle distance. */
+const CLUSTER_SPATIAL_CONTEXT: GPUSpatialContext = {
+  coordinateSpace: 'longitude-latitude',
+  datum: 'EPSG:4326',
+  metric: 'great-circle',
+  units: 'meters'
+};
 const CLUSTER_CAPACITY = 512;
 const SITES_DRAWN = 24;
 const SITES_LISTED = 10;
@@ -137,6 +145,7 @@ export async function createMigrationStopovers(
     new GPUTrajectoryMetrics({
       spatialContext: {
         coordinateSpace: 'longitude-latitude',
+        datum: 'EPSG:4326',
         metric: 'great-circle',
         units: 'meters'
       },
@@ -333,11 +342,7 @@ export async function createMigrationStopovers(
     new GPUSpatialClustering({
       id: 'sites',
       positions: view(clusterGraph, 'selected-lng-lat', selectedLngLat, 'float32x2', STOP_CAPACITY),
-      spatialContext: {
-        coordinateSpace: 'longitude-latitude',
-        metric: 'great-circle',
-        units: 'meters'
-      },
+      spatialContext: CLUSTER_SPATIAL_CONTEXT,
       parameters: clusterParameters.importToGraph(clusterGraph),
       gridSize: [192, 192],
       output: {
@@ -450,6 +455,7 @@ export async function createMigrationStopovers(
   function writeClusterParameters(): void {
     clusterParameters.write(
       getGPUSpatialClusteringParameterValues({
+        spatialContext: CLUSTER_SPATIAL_CONTEXT,
         bounds,
         epsilon: ctx.options.epsilonKm * 1000,
         minimumPoints: ctx.options.minimumStops

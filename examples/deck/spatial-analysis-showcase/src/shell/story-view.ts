@@ -1906,18 +1906,16 @@ export class StoryView {
       narrativeNotes.push({kind: 'caveat', label: 'Caveat', text: step.caveat});
     }
     if (narrativeNotes.length) {
-      const noteList = h('dl', {class: 'step-note-list'});
+      const noteList = h('div', {class: 'step-note-list'});
       for (const note of narrativeNotes) {
+        // Colour distinguishes evidence from caveat; the label stays for screen readers only.
         noteList.append(
-          h(
-            'div',
-            {class: `step-note step-note-${note.kind}`},
-            h('dt', {}, note.label),
-            h('dd', {
-              class: 'prose',
-              html: renderStepBody(note.text, formatStepReadout)
-            })
-          )
+          h('div', {
+            class: `prose step-note step-note-${note.kind}`,
+            role: 'note',
+            'aria-label': note.label,
+            html: renderStepBody(note.text, formatStepReadout)
+          })
         );
       }
       parts.push(h('aside', {class: 'step-notes', 'aria-label': 'Interpretation notes'}, noteList));

@@ -362,6 +362,7 @@ export const suitabilityMode: SpatialAnalysisModeDefinition = {
         id: 'slope',
         grid,
         elevation: {
+          // terrain.png names no vertical datum (and may use synthetic fallback), so verticalDatum stays undeclared.
           id: 'elevation',
           format: 'float32',
           storage: {

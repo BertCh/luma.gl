@@ -256,6 +256,7 @@ export async function createStormCellTracks(
     new GPUTrajectoryMetrics({
       spatialContext: {
         coordinateSpace: 'longitude-latitude',
+        datum: 'EPSG:4326',
         metric: 'great-circle',
         units: 'meters'
       },
@@ -829,6 +830,7 @@ export async function createStormCellTracks(
         lineOffsets: importGraphBuffer(graph, 'offsets', offsetsBuffer, 'uint32', trackCount + 1),
         spatialContext: {
           coordinateSpace: 'longitude-latitude',
+          datum: 'EPSG:4326',
           metric: 'great-circle',
           units: 'meters'
         },

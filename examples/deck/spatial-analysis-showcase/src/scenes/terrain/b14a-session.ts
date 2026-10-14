@@ -479,6 +479,7 @@ export class TerrainSession {
   /** Elevation band (buffer plus validity) imported into `graph`. */
   importElevation(graph: GPUCommandGraph<void>) {
     return {
+      // Mapterhorn mixes swissALTI3D and Copernicus sources: vertical datum unspecified, so verticalDatum stays undeclared.
       id: 'elevation',
       format: 'float32' as const,
       storage: {

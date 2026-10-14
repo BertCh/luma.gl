@@ -158,6 +158,7 @@ export async function createMigrationFlyways(
           rows: ROWS,
           spatialContext: {
             coordinateSpace: 'longitude-latitude',
+            datum: 'EPSG:4326',
             metric: 'great-circle',
             units: 'meters'
           },
@@ -220,6 +221,7 @@ export async function createMigrationFlyways(
         id: `routes-${spacing}`,
         spatialContext: {
           coordinateSpace: 'longitude-latitude',
+          datum: 'EPSG:4326',
           metric: 'great-circle',
           units: 'meters'
         },
@@ -243,6 +245,7 @@ export async function createMigrationFlyways(
       id: 'route-similarity',
       spatialContext: {
         coordinateSpace: 'longitude-latitude',
+        datum: 'EPSG:4326',
         metric: 'great-circle',
         units: 'meters'
       },

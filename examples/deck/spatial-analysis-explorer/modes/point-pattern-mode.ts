@@ -3,7 +3,7 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 /**
- * Point-pattern analysis of New York points of interest by category. Two compiled graphs share the
+ * Point-pattern analysis of New York points of interest by category. The graphs share the
  * POI positions:
  *
  * - A distribution graph: `GPUGeographicDistribution` per category (mean and median centres,
@@ -15,15 +15,15 @@
  *   the readback), `GPUSpatialCorrelogram` (Moran's I by distance band) and `GPUPointPatternIndices`
  *   (Clark-Evans and quadrat variance-to-mean ratio).
  *
- * The analysis window, the maximum distance, the edge correction, the azimuth offset, the category
- * and the weighting are all buffer writes (the window can follow the map view): the rebuild counter
- * stays 0. Both graphs are encoded only when an input changed; the readbacks are one ring-buffered
- * summary of a few kilobytes that feeds the readouts and three small canvas charts.
+ * Polygon and rectangle pattern variants compile once each, lazily. Window bounds, distance,
+ * corrections, azimuth, category and weighting are buffer writes. Each variant owns one persistent
+ * window preparation, invalidated when its geometry changes. Graphs encode only on input changes;
+ * the existing readback ring carries statistics and the GPU window summary to the charts/readouts.
  */
 
 import {scheduleReadback} from '../readback-scheduling';
 import type {Layer} from '@deck.gl/core';
-import {GPUCommandGraph, GPUReadbackRing} from '@luma.gl/gpgpu/gpu-core';
+import {createTransientView, GPUCommandGraph, GPUReadbackRing} from '@luma.gl/gpgpu/gpu-core';
 import {
   fitVariogramModel,
   evaluateVariogramModel,
@@ -56,9 +56,14 @@ import {
 import {
   getGPUGeographicDistributionParameterValues,
   GPU_GEOGRAPHIC_DISTRIBUTION_PARAMETER_LENGTH,
-  GPUGeographicDistribution
+  GPUGeographicDistribution,
+  GPURectangleClip,
+  GPUStudyWindowPreparation,
+  GPU_STUDY_WINDOW_SUMMARY_LENGTH
 } from '@luma.gl/experimental/gpu-spatial-analysis';
 import {importGraphBuffer} from '../graph-buffers';
+import {GraphSwap} from '../graph-swap';
+import {NEW_YORK_LAND} from '../new-york-land';
 import {
   SpatialAnalysisPointLayer,
   SpatialAnalysisSegmentLayer,
@@ -104,6 +109,7 @@ const GROUP_COLORS: readonly (readonly [number, number, number])[] = [
 
 // Float32 word offsets of the readback summary.
 type SummaryLayoutKey =
+  | 'windowSummary'
   | 'rippleL'
   | 'ripleyG'
   | 'ripleyF'
@@ -134,6 +140,7 @@ const SUMMARY_LAYOUT = (() => {
     layout[name] = offset;
     offset += words;
   };
+  add('windowSummary', GPU_STUDY_WINDOW_SUMMARY_LENGTH);
   add('rippleL', RIPLEY_RADII);
   add('ripleyG', RIPLEY_RADII);
   add('ripleyF', RIPLEY_RADII);
@@ -160,7 +167,7 @@ const SUMMARY_LAYOUT = (() => {
   return layout;
 })();
 
-type WindowChoice = 'extent' | 'view';
+type WindowChoice = 'land' | 'extent' | 'view';
 type CategoryChoice = 'all' | `${number}`;
 type Bounds = [number, number, number, number];
 
@@ -174,7 +181,9 @@ export const pointPatternMode: SpatialAnalysisModeDefinition = {
     'GPURipley',
     'GPURipleyDistanceFunctions',
     'GPUPointPatternIndices',
-    'GPUGeographicDistribution'
+    'GPUGeographicDistribution',
+    'GPURectangleClip',
+    'GPUStudyWindowPreparation'
   ],
   description:
     'Where do the points of interest of each category sit, and how clustered are they? Mean ' +
@@ -245,7 +254,9 @@ export const pointPatternMode: SpatialAnalysisModeDefinition = {
     const extentBounds: Bounds = [minimumX - 5, minimumY - 5, maximumX + 5, maximumY + 5];
 
     // Controls state.
-    let windowChoice: WindowChoice = 'extent';
+    const hasLandWindow = pois.source === 'remote';
+    let windowChoice: WindowChoice = hasLandWindow ? 'land' : 'extent';
+    const usesPolygonWindow = () => hasLandWindow && windowChoice !== 'extent';
     let maximumDistance = 800;
     let edgeCorrection: GPURipleyEdgeCorrection = 'isotropic';
     let distanceEdgeCorrection: GPURipleyDistanceEdgeCorrection = 'border';
@@ -269,6 +280,13 @@ export const pointPatternMode: SpatialAnalysisModeDefinition = {
     let needsReadback = true;
     let readbackPending = false;
     let destroyed = false;
+    let inputRevision = 0;
+    let guardDistance = 800 / RIPLEY_RADII;
+    let lastSummaryGuardDistance = guardDistance;
+    let lastSummaryRevision = -1;
+    let lastViewSignature = '';
+    let lastViewport: Parameters<SpatialAnalysisModeInstance['encode']>[1]['viewport'] | null =
+      null;
     let lastSummary: Float32Array | null = null;
     let lastSummaryWords: Uint32Array | null = null;
 
@@ -316,8 +334,52 @@ export const pointPatternMode: SpatialAnalysisModeDefinition = {
       )
     };
 
+    // Data preparation only: project the boundary once into exactly the POI analysis frame.
+    const landPositions = new Float32Array(hasLandWindow ? NEW_YORK_LAND.lngLat.length : 0);
+    for (let index = 0; index < landPositions.length; index += 2) {
+      landPositions.set(
+        projection.project(NEW_YORK_LAND.lngLat[index], NEW_YORK_LAND.lngLat[index + 1]),
+        index
+      );
+    }
+    const landPositionsBuffer = resources.createBuffer('land-positions', landPositions);
+    const landRingOffsetsBuffer = resources.createBuffer(
+      'land-rings',
+      Uint32Array.from(NEW_YORK_LAND.ringOffsets)
+    );
+    const landPolygonOffsetsBuffer = resources.createBuffer(
+      'land-polygons',
+      Uint32Array.from(NEW_YORK_LAND.polygonOffsets)
+    );
+    const landFeatureOffsetsBuffer = resources.createBuffer(
+      'land-feature',
+      Uint32Array.of(0, NEW_YORK_LAND.polygonOffsets.length - 1)
+    );
+    const rectanglePositionsBuffer = resources.createBuffer('rectangle-positions', 8 * 4);
+    const rectangleRingOffsetsBuffer = resources.createBuffer(
+      'rectangle-rings',
+      Uint32Array.of(0, 4)
+    );
+    const rectanglePolygonOffsetsBuffer = resources.createBuffer(
+      'rectangle-polygons',
+      Uint32Array.of(0, 1)
+    );
+    const rectangleFeatureOffsetsBuffer = resources.createBuffer(
+      'rectangle-feature',
+      Uint32Array.of(0, 1)
+    );
+    const clipParameters = resources.createParameterBuffer('clip-bounds', 'float32', 4);
+    // Four clip stages can each double the vertex count. Empty ring slots remain in the output.
+    const windowVertexCapacity = Math.max(4, (landPositions.length / 2) * 16);
+    const patternSwap = resources.track(new GraphSwap());
+
     // Pattern outputs.
     const outputs = {
+      windowSummary: resources.createBuffer('window-summary', GPU_STUDY_WINDOW_SUMMARY_LENGTH * 4),
+      windowOutline: resources.createBuffer('window-outline', windowVertexCapacity * 16),
+      nearestDistances: resources.createBuffer('nearest-distances', pointCount * 4),
+      displayGroups: resources.createBuffer('display-groups', pointCount * 4),
+      quadratAreas: resources.createBuffer('quadrat-areas', QUADRAT_GRID[0] * QUADRAT_GRID[1] * 4),
       lMinusR: resources.createBuffer('l-minus-r', RIPLEY_RADII * 4),
       ripleyG: resources.createBuffer('ripley-g', RIPLEY_RADII * 4),
       ripleyF: resources.createBuffer('ripley-f', RIPLEY_RADII * 4),
@@ -361,9 +423,115 @@ export const pointPatternMode: SpatialAnalysisModeDefinition = {
       })
     );
 
-    // The pattern graph: four contributors over the same points, mask and bounds.
-    const patternGraph = new GPUCommandGraph<void>(device, {id: 'pattern'});
-    {
+    // Both cached variants share imported outputs; only the active variant is ever encoded.
+    async function buildPatternVariant(polygon: boolean) {
+      const patternGraph = new GPUCommandGraph<void>(device, {
+        id: polygon ? 'pattern-land' : 'pattern-rectangle'
+      });
+      const geometry = polygon
+        ? {
+            positions: importGraphBuffer(
+              patternGraph,
+              'land-input-positions',
+              landPositionsBuffer,
+              'float32x2'
+            ),
+            ringOffsets: importGraphBuffer(
+              patternGraph,
+              'land-input-rings',
+              landRingOffsetsBuffer,
+              'uint32'
+            ),
+            polygonOffsets: importGraphBuffer(
+              patternGraph,
+              'land-input-polygons',
+              landPolygonOffsetsBuffer,
+              'uint32'
+            ),
+            featureOffsets: importGraphBuffer(
+              patternGraph,
+              'land-input-feature',
+              landFeatureOffsetsBuffer,
+              'uint32'
+            )
+          }
+        : {
+            positions: importGraphBuffer(
+              patternGraph,
+              'rectangle-input-positions',
+              rectanglePositionsBuffer,
+              'float32x2'
+            ),
+            ringOffsets: importGraphBuffer(
+              patternGraph,
+              'rectangle-input-rings',
+              rectangleRingOffsetsBuffer,
+              'uint32'
+            ),
+            polygonOffsets: importGraphBuffer(
+              patternGraph,
+              'rectangle-input-polygons',
+              rectanglePolygonOffsetsBuffer,
+              'uint32'
+            ),
+            featureOffsets: importGraphBuffer(
+              patternGraph,
+              'rectangle-input-feature',
+              rectangleFeatureOffsetsBuffer,
+              'uint32'
+            )
+          };
+      if (polygon) {
+        const positions = createTransientView(
+          patternGraph,
+          'clipped-positions',
+          'float32x2',
+          windowVertexCapacity
+        );
+        const ringOffsets = createTransientView(
+          patternGraph,
+          'clipped-rings',
+          'uint32',
+          geometry.ringOffsets.length
+        );
+        patternGraph.add(
+          new GPURectangleClip({
+            id: 'clip-land',
+            geometryType: 'polygons',
+            ...geometry,
+            spatialContext: projection.spatialContext,
+            parameters: clipParameters.importToGraph(patternGraph),
+            output: {
+              positions,
+              lineOffsets: ringOffsets,
+              status: {
+                count: createTransientView(patternGraph, 'clip-count', 'uint32', 1),
+                overflow: createTransientView(patternGraph, 'clip-overflow', 'uint32', 1)
+              }
+            }
+          })
+        );
+        // Feed the clip's offsets and positions directly to the persistent preparation.
+        geometry.positions = positions;
+        geometry.ringOffsets = ringOffsets;
+      }
+      const preparation = resources.track(
+        new GPUStudyWindowPreparation({
+          id: 'study-window',
+          ...geometry,
+          spatialContext: projection.spatialContext,
+          output: {
+            summary: importGraphBuffer(
+              patternGraph,
+              'window-summary',
+              outputs.windowSummary,
+              'float32'
+            )
+          }
+        })
+      );
+      patternGraph.add(preparation);
+      const studyWindow = polygon ? preparation : ('rectangle' as const);
       const positions = importGraphBuffer(
         patternGraph,
         'positions',
@@ -381,6 +549,7 @@ export const pointPatternMode: SpatialAnalysisModeDefinition = {
       patternGraph.add(
         new GPURipley({
           spatialContext: pois.frame.spatialContext,
+          studyWindow,
           id: 'ripley',
           positions,
           mask,
@@ -402,6 +571,7 @@ export const pointPatternMode: SpatialAnalysisModeDefinition = {
       patternGraph.add(
         new GPURipleyDistanceFunctions({
           spatialContext: pois.frame.spatialContext,
+          studyWindow,
           id: 'ripley-distance',
           positions,
           mask,
@@ -419,6 +589,7 @@ export const pointPatternMode: SpatialAnalysisModeDefinition = {
       patternGraph.add(
         new GPUVariogram({
           spatialContext: pois.frame.spatialContext,
+          studyWindow,
           id: 'variogram',
           positions,
           values,
@@ -439,6 +610,7 @@ export const pointPatternMode: SpatialAnalysisModeDefinition = {
       patternGraph.add(
         new GPUSpatialCorrelogram({
           spatialContext: pois.frame.spatialContext,
+          studyWindow,
           id: 'correlogram',
           positions,
           values,
@@ -461,9 +633,11 @@ export const pointPatternMode: SpatialAnalysisModeDefinition = {
           }
         })
       );
+      const nearestDistances = view('nearestDistances', 'float32', pointCount);
       patternGraph.add(
         new GPUPointPatternIndices({
           spatialContext: pois.frame.spatialContext,
+          studyWindow,
           id: 'indices',
           positions,
           mask,
@@ -471,6 +645,8 @@ export const pointPatternMode: SpatialAnalysisModeDefinition = {
           gridSize: GRID_SIZE,
           quadratGrid: QUADRAT_GRID,
           output: {
+            nearestNeighborDistances: nearestDistances,
+            quadratAreas: view('quadratAreas', 'float32', QUADRAT_GRID[0] * QUADRAT_GRID[1]),
             clarkEvans: view('clarkEvans', 'float32', GPU_CLARK_EVANS_LENGTH),
             quadratStatistics: view('quadrat', 'float32', GPU_QUADRAT_STATISTICS_LENGTH),
             quadratCounts: importGraphBuffer(
@@ -483,8 +659,62 @@ export const pointPatternMode: SpatialAnalysisModeDefinition = {
           }
         })
       );
+      const edges = preparation.getViews(patternGraph).edges;
+      addKernelPass(patternGraph, {
+        id: 'window-outline',
+        invocationCount: edges.length,
+        bindings: [
+          {name: 'edges', view: edges, type: 'f32', access: 'read'},
+          {
+            name: 'outline',
+            view: view('windowOutline', 'float32', edges.length),
+            type: 'f32',
+            access: 'read_write'
+          }
+        ],
+        body: 'outline[outlineOffset + index] = edges[edgesOffset + index];'
+      });
+      addKernelPass(patternGraph, {
+        id: 'point-display-groups',
+        invocationCount: pointCount,
+        bindings: [
+          {
+            name: 'nearest',
+            view: nearestDistances,
+            type: 'f32',
+            access: 'read'
+          },
+          {
+            name: 'groups',
+            view: importGraphBuffer(patternGraph, 'display-input-groups', groupIdsBuffer, 'uint32'),
+            type: 'u32',
+            access: 'read'
+          },
+          {
+            name: 'display',
+            view: view('displayGroups', 'uint32', pointCount),
+            type: 'u32',
+            access: 'read_write'
+          }
+        ],
+        // Excluded rows have NaN nearest distances. Their category is drawn only in the dim layer.
+        body: `let finite = (bitcast<u32>(nearest[nearestOffset + index]) & 0x7f800000u) != 0x7f800000u;
+          display[displayOffset + index] = select(0xffffffffu, groups[groupsOffset + index], finite);`
+      });
+      const compiled = resources.track(await patternGraph.compileAsync());
+      return {compiled, preparation, polygon, edgeCapacity: edges.length / 4};
     }
-    const patternCompiled = resources.track(await patternGraph.compileAsync());
+    type PatternVariant = Awaited<ReturnType<typeof buildPatternVariant>>;
+    const patternVariants = new Map<boolean, PatternVariant>();
+    async function getPatternVariant(polygon: boolean): Promise<PatternVariant> {
+      const existing = patternVariants.get(polygon);
+      if (existing) return existing;
+      const variant = await buildPatternVariant(polygon);
+      patternVariants.set(polygon, variant);
+      return variant;
+    }
+    let activePattern = await getPatternVariant(usesPolygonWindow());
+    context.signal.throwIfAborted();
 
     // The distribution graph plus the passes that turn its rings into drawable segments.
     const distributionGraph = new GPUCommandGraph<void>(device, {id: 'distribution'});
@@ -574,8 +804,9 @@ export const pointPatternMode: SpatialAnalysisModeDefinition = {
     const distributionCompiled = resources.track(await distributionGraph.compileAsync());
 
     const writePatternParameters = () => {
-      const bounds = currentBounds;
-      patternBoundsGuard(bounds);
+      patternBoundsGuard(currentBounds);
+      const bounds = usesPolygonWindow() ? 'study-window' : currentBounds;
+      inputRevision++;
       parameterBuffers.ripley.write(
         getGPURipleyParameterValues({bounds, maximumDistance, edgeCorrection})
       );
@@ -597,7 +828,12 @@ export const pointPatternMode: SpatialAnalysisModeDefinition = {
         getGPUSpatialCorrelogramParameterValues({bounds, maximumDistance, varianceAssumption})
       );
       parameterBuffers.indices.write(
-        getGPUPointPatternIndicesParameterValues({bounds, maximumDistance})
+        getGPUPointPatternIndicesParameterValues({
+          bounds,
+          maximumDistance,
+          clarkEvansCorrection: 'guard',
+          guardDistance
+        })
       );
       patternDirty = true;
       needsReadback = true;
@@ -607,7 +843,26 @@ export const pointPatternMode: SpatialAnalysisModeDefinition = {
         throw new Error('Pattern window has no area');
       }
     };
+    const writeWindowGeometry = () => {
+      clipParameters.write(Float32Array.from(currentBounds));
+      const [minimumX, minimumY, maximumX, maximumY] = currentBounds;
+      rectanglePositionsBuffer.write(
+        Float32Array.of(
+          minimumX,
+          minimumY,
+          maximumX,
+          minimumY,
+          maximumX,
+          maximumY,
+          minimumX,
+          maximumY
+        )
+      );
+      for (const variant of patternVariants.values()) variant.preparation.invalidate();
+      writePatternParameters();
+    };
     const writeDistributionParameters = () => {
+      inputRevision++;
       parameterBuffers.distribution.write(
         getGPUGeographicDistributionParameterValues({standardDeviations, ellipseConvention})
       );
@@ -615,6 +870,7 @@ export const pointPatternMode: SpatialAnalysisModeDefinition = {
       needsReadback = true;
     };
     const writeMask = () => {
+      inputRevision++;
       const mask = new Uint32Array(pointCount);
       const selected = categoryChoice === 'all' ? -1 : Number(categoryChoice);
       for (let index = 0; index < pointCount; index++) {
@@ -642,18 +898,43 @@ export const pointPatternMode: SpatialAnalysisModeDefinition = {
       }
     });
     context.controls.addSelect<WindowChoice>({
-      label: 'Analysis window (per-frame bounds)',
+      label: 'Analysis window',
       options: [
-        {value: 'extent', label: 'Data extent'},
-        {value: 'view', label: 'Current map view (follows pan and zoom)'}
+        ...(hasLandWindow
+          ? [{value: 'land' as const, label: 'New York land inside the POI extent'}]
+          : []),
+        {
+          value: 'extent',
+          label: hasLandWindow ? 'Extent rectangle (includes water)' : 'Data extent rectangle'
+        },
+        {
+          value: 'view',
+          label: hasLandWindow ? 'New York land in current view' : 'Current view rectangle'
+        }
       ],
       value: windowChoice,
       onChange: value => {
         windowChoice = value;
-        if (value === 'extent') {
-          currentBounds = extentBounds;
-          writePatternParameters();
-        }
+        lastViewSignature = '';
+        currentBounds =
+          value === 'view' && lastViewport
+            ? getViewportMetricBounds(lastViewport, projection)
+            : extentBounds;
+        writeWindowGeometry();
+        const polygon = usesPolygonWindow();
+        void patternSwap
+          .request({
+            build: () => getPatternVariant(polygon),
+            commit: variant => {
+              activePattern = variant;
+              // Shared summary/outline outputs may still hold the other variant's results.
+              writeWindowGeometry();
+              context.updateLayers();
+            }
+          })
+          .catch(error => {
+            if (!destroyed) patternTimingReadout.setValue(`failed: ${String(error)}`);
+          });
       }
     });
     context.controls.addSlider({
@@ -665,6 +946,7 @@ export const pointPatternMode: SpatialAnalysisModeDefinition = {
       format: value => `${value} m`,
       onChange: value => {
         maximumDistance = value;
+        guardDistance = Math.max(guardDistance, maximumDistance / RIPLEY_RADII);
         writePatternParameters();
       }
     });
@@ -776,6 +1058,7 @@ export const pointPatternMode: SpatialAnalysisModeDefinition = {
       value: weighted,
       onChange: value => {
         weighted = value;
+        inputRevision++;
         weightsBuffer.write(value ? activityWeights : unitWeights);
         distributionDirty = true;
         needsReadback = true;
@@ -847,6 +1130,15 @@ export const pointPatternMode: SpatialAnalysisModeDefinition = {
         "Moran's I per distance band (filled where |z| > 1.96)."
     );
 
+    context.controls.addNote(
+      hasLandWindow
+        ? 'Land is NYC DCP shoreline geometry within the POI extent plus 500 m. View clips this local fixture to the viewport; panning beyond it does not load more land. Extent includes water as a teaching contrast. Points outside the window are excluded from pattern statistics and dimmed; distribution ellipses still describe all category points.'
+        : 'Synthetic points are not on real land: extent and view both use rectangle windows.'
+    );
+    context.controls.addNote(
+      'Clark-Evans uses a guard band in both window variants, at least one radius step and twice the spacing estimated from the GPU count/area. Quadrats use window-area-weighted expectations.'
+    );
+
     const rippleChart = new MiniChart('Ripley L(r) - r', 'm');
     const distanceChart = new MiniChart('Ripley G (blue), F (orange), CSR (grey)', 'm');
     const jChart = new MiniChart('Ripley J = (1 - G) / (1 - F), CSR = 1', 'm');
@@ -860,11 +1152,15 @@ export const pointPatternMode: SpatialAnalysisModeDefinition = {
     context.controls.addReadout('Points of interest', formatCount(pointCount));
     const windowReadout = context.controls.addReadout('Window (area)');
     const selectedReadout = context.controls.addReadout('Included in the pattern');
+    const intensityReadout = context.controls.addReadout('Intensity (points / km² of window)');
+    const landShareReadout = context.controls.addReadout('Land share of view rectangle');
+    const guardReadout = context.controls.addReadout('Clark-Evans guard distance');
+    const preparationReadout = context.controls.addReadout('Pattern variants / window builds');
     const clarkEvansReadout = context.controls.addReadout(
       'Clark-Evans R (z, two-sided p, edge corrected)'
     );
     const nearestReadout = context.controls.addReadout('Mean NN distance (expected)');
-    const quadratReadout = context.controls.addReadout('Quadrats VMR (12 x 12)');
+    const quadratReadout = context.controls.addReadout('Quadrats dispersion (12 x 12)');
     const quadratTestReadout = context.controls.addReadout('Quadrat chi-square (df), p');
     const rippleReadout = context.controls.addReadout('Ripley max L - r (at r)');
     const nearestFunctionReadout = context.controls.addReadout(
@@ -880,7 +1176,10 @@ export const pointPatternMode: SpatialAnalysisModeDefinition = {
     const distanceReadout = context.controls.addReadout('Standard distance');
     const ellipseReadout = context.controls.addReadout('Ellipse sigma long / short');
     const bearingReadout = context.controls.addReadout('Ellipse long axis bearing');
-    context.controls.addReadout('Data', `${pois.attribution}; ${trips.attribution}`);
+    context.controls.addReadout(
+      'Data',
+      `${pois.attribution}; ${trips.attribution}${hasLandWindow ? `; ${NEW_YORK_LAND.attribution}` : ''}`
+    );
     const patternTimingReadout = context.controls.addReadout('Pattern graph (GPU)', '...');
     const distributionTimingReadout = context.controls.addReadout(
       'Distribution graph (GPU)',
@@ -896,6 +1195,8 @@ export const pointPatternMode: SpatialAnalysisModeDefinition = {
             signal: context.signal
           };
           try {
+            if (patternSwap.pending || activePattern.polygon !== usesPolygonWindow()) return;
+            const patternCompiled = activePattern.compiled;
             const pattern = await measureCompiledGraph(device, patternCompiled, options);
             if (destroyed) return;
             patternTimingReadout.setValue(
@@ -917,7 +1218,7 @@ export const pointPatternMode: SpatialAnalysisModeDefinition = {
       }
     });
 
-    writePatternParameters();
+    writeWindowGeometry();
     writeDistributionParameters();
     writeMask();
 
@@ -932,9 +1233,7 @@ export const pointPatternMode: SpatialAnalysisModeDefinition = {
     }
 
     function redrawCharts() {
-      if (!lastSummary || !lastSummaryWords) return;
-      const bounds = currentBounds;
-      void bounds;
+      if (!lastSummary || !lastSummaryWords || lastSummaryRevision !== inputRevision) return;
       // Ripley.
       const rippleValues = getSlice('rippleL', RIPLEY_RADII);
       const radii = Array.from(
@@ -949,8 +1248,7 @@ export const pointPatternMode: SpatialAnalysisModeDefinition = {
 
       // Ripley G, F and J against complete spatial randomness: 1 - exp(-lambda pi r^2).
       const includedCount = getSlice('clarkEvans', GPU_CLARK_EVANS_LENGTH)[0];
-      const windowArea =
-        (currentBounds[2] - currentBounds[0]) * (currentBounds[3] - currentBounds[1]);
+      const windowArea = getSlice('windowSummary', GPU_STUDY_WINDOW_SUMMARY_LENGTH)[4];
       const intensity = includedCount / windowArea;
       const theory = radii.map(radius => 1 - Math.exp(-intensity * Math.PI * radius * radius));
       const ripleyG = getSlice('ripleyG', RIPLEY_RADII);
@@ -1097,15 +1395,30 @@ export const pointPatternMode: SpatialAnalysisModeDefinition = {
     }
 
     function updateReadouts() {
-      if (!lastSummary || !lastSummaryWords) return;
-      const area = (currentBounds[2] - currentBounds[0]) * (currentBounds[3] - currentBounds[1]);
+      if (!lastSummary || !lastSummaryWords || lastSummaryRevision !== inputRevision) return;
+      const summary = getSlice('windowSummary', GPU_STUDY_WINDOW_SUMMARY_LENGTH);
+      const area = summary[4];
+      const rectangleArea =
+        (currentBounds[2] - currentBounds[0]) * (currentBounds[3] - currentBounds[1]);
       windowReadout.setValue(
-        `${((currentBounds[2] - currentBounds[0]) / 1000).toFixed(1)} x ${(
-          (currentBounds[3] - currentBounds[1]) / 1000
-        ).toFixed(1)} km (${(area / 1e6).toFixed(1)} km²)`
+        `${usesPolygonWindow() ? 'Land' : 'Rectangle'}: ${formatNumber(area / 1e6, 2)} km²${area > 0 ? '' : ' (empty window)'}`
       );
       const clark = getSlice('clarkEvans', GPU_CLARK_EVANS_LENGTH);
-      selectedReadout.setValue(formatCount(clark[0]));
+      const selectedCount =
+        categoryChoice === 'all' ? pointCount : groupTotals[Number(categoryChoice)];
+      selectedReadout.setValue(
+        `${formatCount(clark[0])}; ${formatCount(Math.max(0, selectedCount - clark[0]))} selected points outside the window`
+      );
+      intensityReadout.setValue(formatNumber(area > 0 ? (clark[0] / area) * 1e6 : NaN, 1));
+      landShareReadout.setValue(
+        windowChoice === 'view' && hasLandWindow
+          ? `${formatNumber((area / rectangleArea) * 100, 1)}% (local land fixture)`
+          : 'n/a'
+      );
+      guardReadout.setValue(`${formatNumber(lastSummaryGuardDistance, 1)} m`);
+      preparationReadout.setValue(
+        `${patternVariants.size} / ${[...patternVariants.values()].reduce((sum, variant) => sum + variant.preparation.encodedBuildCount, 0)}`
+      );
       clarkEvansReadout.setValue(
         `${formatNumber(clark[3])} (z ${formatNumber(clark[5], 1)}, p ${formatP(clark[6])})`
       );
@@ -1182,6 +1495,8 @@ export const pointPatternMode: SpatialAnalysisModeDefinition = {
     const readSummary = async (
       commandEncoder: Parameters<SpatialAnalysisModeInstance['encode']>[0]
     ) => {
+      const revision = inputRevision;
+      const encodedGuardDistance = guardDistance;
       const ticket = readbackRing.tryAcquire();
       if (!ticket) return;
       const copy = (name: keyof typeof outputs, key: SummaryLayoutKey, words: number) =>
@@ -1191,6 +1506,7 @@ export const pointPatternMode: SpatialAnalysisModeDefinition = {
           destinationOffset: SUMMARY_LAYOUT[key] * 4,
           size: words * 4
         });
+      copy('windowSummary', 'windowSummary', GPU_STUDY_WINDOW_SUMMARY_LENGTH);
       copy('lMinusR', 'rippleL', RIPLEY_RADII);
       copy('ripleyG', 'ripleyG', RIPLEY_RADII);
       copy('ripleyF', 'ripleyF', RIPLEY_RADII);
@@ -1223,12 +1539,29 @@ export const pointPatternMode: SpatialAnalysisModeDefinition = {
       try {
         const bytes = await scheduleReadback(() => ticket.read());
         if (destroyed) return;
+        if (revision !== inputRevision) {
+          needsReadback = true;
+          return;
+        }
+        lastSummaryGuardDistance = encodedGuardDistance;
+        lastSummaryRevision = revision;
         // Copy: the ring recycles its mapped memory.
         const copyBuffer = bytes.slice().buffer;
         lastSummary = new Float32Array(copyBuffer, 0, SUMMARY_LAYOUT['words']);
         lastSummaryWords = new Uint32Array(copyBuffer, 0, SUMMARY_LAYOUT['words']);
         updateReadouts();
         redrawCharts();
+        const area = getSlice('windowSummary', GPU_STUDY_WINDOW_SUMMARY_LENGTH)[4];
+        const count = getSlice('clarkEvans', GPU_CLARK_EVANS_LENGTH)[0];
+        const nextGuardDistance = Math.max(
+          maximumDistance / RIPLEY_RADII,
+          count > 0 && area > 0 ? 2 * Math.sqrt(area / count) : 0
+        );
+        // One follow-up encoding uses the GPU-derived guard; the count/area do not depend on it.
+        if (Math.abs(nextGuardDistance - guardDistance) > 0.01) {
+          guardDistance = nextGuardDistance;
+          writePatternParameters();
+        }
       } catch {
         needsReadback = true;
       } finally {
@@ -1237,35 +1570,34 @@ export const pointPatternMode: SpatialAnalysisModeDefinition = {
     };
 
     // The view window follows the map: re-derive it when the view moved noticeably.
-    let lastViewSignature = '';
     const followView = (
       viewport: Parameters<SpatialAnalysisModeInstance['encode']>[1]['viewport']
     ) => {
       const bounds = getViewportMetricBounds(viewport, projection);
-      const width = bounds[2] - bounds[0];
-      const height = bounds[3] - bounds[1];
-      const quantum = Math.max(10, Math.min(width, height) / 100);
-      const signature = bounds.map(value => Math.round(value / quantum)).join(',');
+      // Fixed metre quantization also detects zooms centred on the frame origin.
+      const signature = bounds.map(value => Math.round(value / 5)).join(',');
       if (signature === lastViewSignature) return;
       lastViewSignature = signature;
       currentBounds = bounds;
-      writePatternParameters();
+      writeWindowGeometry();
     };
 
     const instance: SpatialAnalysisModeInstance = {
-      getCompiledGraphs: () => [patternCompiled, distributionCompiled],
+      getCompiledGraphs: () => [activePattern.compiled, distributionCompiled],
       encode(commandEncoder, frame) {
+        lastViewport = frame.viewport;
         if (windowChoice === 'view') followView(frame.viewport);
         // Static data: re-run a graph only when one of its inputs or parameters changed.
-        if (patternDirty || frame.frameIndex < 2) {
-          patternCompiled.encode(commandEncoder, {parameters: undefined});
+        const patternReady = !patternSwap.pending && activePattern.polygon === usesPolygonWindow();
+        if (patternReady && (patternDirty || frame.frameIndex < 2)) {
+          activePattern.compiled.encode(commandEncoder, {parameters: undefined});
           patternDirty = false;
         }
         if (distributionDirty || frame.frameIndex < 2) {
           distributionCompiled.encode(commandEncoder, {parameters: undefined});
           distributionDirty = false;
         }
-        if (needsReadback && !readbackPending && frame.frameIndex >= 1) {
+        if (patternReady && needsReadback && !readbackPending && frame.frameIndex >= 1) {
           void readSummary(commandEncoder);
         }
       },
@@ -1279,18 +1611,40 @@ export const pointPatternMode: SpatialAnalysisModeDefinition = {
         if (showPoints) {
           layers.push(
             new SpatialAnalysisPointLayer({
-              id: 'pattern-points',
+              id: 'pattern-points-dim',
               coordinateOrigin,
               positions: positionsBuffer,
               instanceCount: pointCount,
               values: groupIdsBuffer,
               valueFormat: 'uint32',
               colormap: 'category',
+              palette: palette(30),
+              radiusPixels: 1.8
+            }),
+            new SpatialAnalysisPointLayer({
+              id: 'pattern-points',
+              coordinateOrigin,
+              positions: positionsBuffer,
+              instanceCount: pointCount,
+              values: outputs.displayGroups,
+              valueFormat: 'uint32',
+              colormap: 'category',
               palette: palette(150),
+              noDataColor: HIDDEN,
               radiusPixels: 1.8
             })
           );
         }
+        layers.push(
+          new SpatialAnalysisSegmentLayer({
+            id: 'pattern-window',
+            coordinateOrigin,
+            segments: outputs.windowOutline,
+            instanceCount: activePattern.edgeCapacity,
+            widthPixels: 1.5,
+            color: [235, 230, 195, 235]
+          })
+        );
         const ringCommon = {
           coordinateOrigin,
           instanceCount: GROUP_COUNT * RING_VERTICES,

@@ -790,7 +790,7 @@ export async function createAirlineNetwork(
         sourceNodes: importGraphBuffer(graph, 'sources', bundleSources, 'uint32', bundleEdgeCount),
         targetNodes: importGraphBuffer(graph, 'targets', bundleTargets, 'uint32', bundleEdgeCount),
         edgeMask: importGraphBuffer(graph, 'mask', bundleMask, 'uint32', bundleEdgeCount),
-        spatialContext: {coordinateSpace: 'longitude-latitude', metric: 'none'},
+        spatialContext: {coordinateSpace: 'longitude-latitude', datum: 'EPSG:4326', metric: 'none'},
         pointsPerEdge,
         maximumIterations: MAXIMUM_BUNDLE_ITERATIONS,
         densityResolution,

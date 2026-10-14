@@ -127,6 +127,7 @@ export const rasterZonalMode: SpatialAnalysisModeDefinition = {
       buffer: Buffer,
       validity: GraphDataView<'uint32'>
     ): GPURasterBand => ({
+      // terrain.png names no vertical datum (and may use synthetic fallback), so verticalDatum stays undeclared.
       id: name,
       format: 'float32',
       storage: {

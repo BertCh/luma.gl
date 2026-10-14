@@ -68,7 +68,8 @@ export default defineScene<ObservationsByTractOptions>({
     title: {title: 'Nature observations by tract', subtitle: 'Joined counts, densities and shares'},
     scaleBar: {units: 'metric'},
     credit: 'iNaturalist; U.S. Census Bureau; City of Chicago',
-    caveat: 'Observation density measures reporting effort as well as ecological occurrence.'
+    caveat:
+      'Observation density measures reporting effort as well as occurrence, and tract counts change with tract size and boundaries.'
   },
 
   options: [

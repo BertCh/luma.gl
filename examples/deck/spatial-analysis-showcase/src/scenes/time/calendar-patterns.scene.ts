@@ -270,7 +270,7 @@ export default defineScene<CalendarPatternsOptions>({
       group: 'Calendar',
       apply: 'compile',
       default: false,
-      help: 'Adds the per-row UTC offset column (-6 h in winter, -5 h in summer) that is the only way GPUCalendarBuckets handles daylight saving. The data are already local time, so this is a demonstration of the mechanism: the whole matrix slides by five or six hours.'
+      help: 'Adds a time zone transition table (America/Chicago) that GPUCalendarBuckets searches per row on the GPU. The data are already local time, so the matrix slides by five or six hours: a demonstration of the mechanism.'
     },
     {
       kind: 'toggle',
@@ -394,6 +394,7 @@ export default defineScene<CalendarPatternsOptions>({
 
   snippet: state => `import {
   getGPUCalendarBucketsParameterValues, getGPUTimeWindowFilterWordParameterValues,
+  getGPUTimeZoneTransitionTable,
   GPUCalendarBuckets, GPUGroupStatistics, GPUTimeWindowFilter
 } from '@luma.gl/experimental/gpu-dataframe';
 
@@ -406,8 +407,27 @@ graph.add(new GPUTimeWindowFilter({
     drawInstanceCount: drawCommands.getInstanceCountData(0)}   // indirect draw: no readback
 }));
 // 2. hour, weekday, day of year and the 7 x 24 count matrix
+${
+  state.daylightSaving
+    ? `const chicagoTimeZone = getGPUTimeZoneTransitionTable('America/Chicago', {
+  start: Date.UTC(2023, 0, 1), end: Date.UTC(2024, 0, 1) - 1
+});
+// Upload once; v imports each buffer as a typed graph view.
+const timeZoneTransitionsBuffer = resources.createBuffer('time-zone-transitions', chicagoTimeZone.transitions);
+const timeZoneOffsetsBuffer = resources.createBuffer('time-zone-offsets', chicagoTimeZone.offsets);
+`
+    : ''
+}
 graph.add(new GPUCalendarBuckets({
-  timestamps: timeWords, mask: windowMask,${state.daylightSaving ? '\n  utcOffsets,                               // per-row offset column: the daylight saving path' : ''}
+  timestamps: timeWords, mask: windowMask,${
+    state.daylightSaving
+      ? `
+  timeZone: {
+    transitions: v('time-zone-transitions', timeZoneTransitionsBuffer, 'uint32x2', chicagoTimeZone.transitions.length / 2),
+    offsets: v('time-zone-offsets', timeZoneOffsetsBuffer, 'sint32', chicagoTimeZone.offsets.length)
+  },`
+      : ''
+  }
   parameters: calendarParameters,
   output: {hour, weekday, dayOfYear, hourWeekdayCounts: matrix}
 }));
@@ -509,7 +529,7 @@ calendarParameters.write(getGPUCalendarBucketsParameterValues(${state.utcOffset 
       headline: 'Fixed offsets shift the calendar matrix',
       textAlternative:
         'The hour-by-weekday matrix shifts when a synthetic UTC offset and Chicago daylight-saving adjustments are applied.',
-      body: 'iNaturalist records the local clock time of each observation, so a **Clock offset** of 0 is right. Calendar decoding takes one fixed UTC offset as a parameter; set +6 and the matrix slides six columns, as if the timestamps had been in UTC. **Week starts on** reorders the rows (Monday, Sunday or Saturday first) without touching the observations.\n\nDaylight saving cannot be a single offset. **Pretend timestamps are UTC and apply Chicago daylight saving** adds a per-row offset column (-6 h in winter, -5 h in summer), which is how `GPUCalendarBuckets` handles zones with transitions. The data are already local, so the result is deliberately wrong: it shows the mechanism, and why a published clock time must never be converted twice.',
+      body: 'iNaturalist records the local clock time of each observation, so a **Clock offset** of 0 is right. Calendar decoding takes one fixed UTC offset as a parameter; set +6 and the matrix slides six columns, as if the timestamps had been in UTC. **Week starts on** reorders the rows (Monday, Sunday or Saturday first) without touching the observations.\n\nDaylight saving cannot be a single offset. **Pretend timestamps are UTC and apply Chicago daylight saving** adds an America/Chicago transition table that the GPU searches per row, which is how `GPUCalendarBuckets` handles daylight saving. The data are already local, so the result is deliberately wrong: it shows the mechanism, and why a published clock time must never be converted twice.',
       options: {statistic: 'count', daylightSaving: true, utcOffset: 0},
       controls: ['utcOffset', 'firstDay', 'daylightSaving'],
       readouts: ['busiestCell']
@@ -520,7 +540,7 @@ calendarParameters.write(getGPUCalendarBucketsParameterValues(${state.utcOffset 
       headline: 'Observation counts reflect effort and habitat',
       textAlternative:
         'Observation points and area counts show concentrated recording effort around parks and organized events.',
-      body: 'Observations follow observers: counts measure effort as much as wildlife. The City Nature Challenge weekend (28 April to 1 May 2023) puts a spike into the calendar, and the busiest single day, 21 June, has 667 records. Timestamps are local clock times stored as UTC. Statistics of hours are linear, not circular. Community areas are large and uneven, so counts per area say more about area size and park cover than about abundance: use density.\n\nTry: a single **Group of life** (*Birds*, *Insects*, *Fungi*) and see its own weekly and seasonal rhythm; **Observation points colored by hour** to see the compacted point set drawn by an indirect command; and **Statistic per area** set to *Median hour of day* for *Birds* versus *Insects*.',
+      body: 'Observations follow observers: counts measure effort as much as wildlife. The City Nature Challenge weekend (28 April to 1 May 2023) puts a spike into the calendar, and the busiest single day, 21 June, has 667 records. Timestamps are local clock times stored as UTC. Times are wall-clock, so a duration across a daylight-saving night is off by one hour. Statistics of hours are linear, not circular. Community areas are large and uneven, so counts per area say more about area size and park cover than about abundance: use density.\n\nTry: a single **Group of life** (*Birds*, *Insects*, *Fungi*) and see its own weekly and seasonal rhythm; **Observation points colored by hour** to see the compacted point set drawn by an indirect command; and **Statistic per area** set to *Median hour of day* for *Birds* versus *Insects*.',
       options: {daylightSaving: false, showPoints: true, statistic: 'count', groupType: 'all'},
       controls: ['groupType', 'showPoints', 'statistic']
     }

@@ -76,6 +76,7 @@ export const GULL_SEX_COLORS: readonly (readonly [number, number, number, number
 
 const GREAT_CIRCLE_METERS = {
   coordinateSpace: 'longitude-latitude',
+  datum: 'EPSG:4326',
   metric: 'great-circle',
   units: 'meters'
 } as const;

@@ -184,6 +184,7 @@ export async function createFlightCorridors(
     new GPUTrajectoryPlayhead({
       spatialContext: {
         coordinateSpace: 'longitude-latitude',
+        datum: 'EPSG:4326',
         metric: 'great-circle',
         units: 'meters'
       },
@@ -478,6 +479,7 @@ export async function createFlightCorridors(
         // Grid and positions are longitude/latitude degrees; lengths are great-circle metres.
         spatialContext: {
           coordinateSpace: 'longitude-latitude',
+          datum: 'EPSG:4326',
           metric: 'great-circle',
           units: 'meters'
         },
@@ -570,6 +572,7 @@ export async function createFlightCorridors(
           rows: grid.rows,
           spatialContext: {
             coordinateSpace: 'longitude-latitude',
+            datum: 'EPSG:4326',
             metric: 'great-circle',
             units: 'meters'
           },

@@ -6,6 +6,7 @@ import type {Layer} from '@deck.gl/core';
 import {
   getGPUCalendarBucketsParameterValues,
   getGPUTimeWindowFilterWordParameterValues,
+  getGPUTimeZoneTransitionTable,
   GPU_CALENDAR_BUCKETS_MATRIX_LENGTH,
   GPU_CALENDAR_BUCKETS_PARAMETER_LENGTH,
   GPU_TIME_WINDOW_FILTER_WORD_PARAMETER_LENGTH,
@@ -127,13 +128,6 @@ const formatDate = (day: number) => {
   return `${['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'][date.getUTCMonth()]} ${date.getUTCDate()}`;
 };
 
-/** Chicago's UTC offset in minutes for an instant, 2023 US daylight saving rules. */
-function getChicagoOffsetMinutes(utcMilliseconds: number): number {
-  const start = Date.UTC(2023, 2, 12, 8);
-  const end = Date.UTC(2023, 10, 5, 7);
-  return utcMilliseconds >= start && utcMilliseconds < end ? -300 : -360;
-}
-
 type Variant = {
   key: string;
   compiled: CompiledGPUCommandGraph<void>;
@@ -147,8 +141,8 @@ type Variant = {
  * the hour and weekday brush, and `GPUGroupStatistics` computes per-community-area statistics
  * of the brushed events (dense keys, one row per area). Two small kernels pick the chosen
  * statistic into one metric buffer that a raster layer colors. The window, calendar parameters,
- * brush, statistic and percentile are parameter writes; daylight saving (a per-row offset
- * column) and the variance kind are compile-time, so four graph variants are compiled on demand.
+ * brush, statistic and percentile are parameter writes; daylight saving (a time zone transition
+ * table) and the variance kind are compile-time, so four graph variants are compiled on demand.
  */
 export async function createCalendarPatterns(
   ctx: SceneContext<CalendarPatternsOptions>
@@ -185,7 +179,6 @@ export async function createCalendarPatterns(
   const areaKeys = new Uint32Array(eventCount);
   const researchGradeFlags = new Float32Array(eventCount);
   const introducedFlags = new Float32Array(eventCount);
-  const chicagoOffsets = new Int32Array(eventCount);
   for (let index = 0; index < eventCount; index++) {
     areaKeys[index] =
       communityArea[index] > 0 && communityArea[index] <= AREA_COUNT
@@ -193,14 +186,25 @@ export async function createCalendarPatterns(
         : 0xffffffff;
     researchGradeFlags[index] = researchGrade[index] ? 1 : 0;
     introducedFlags[index] = introduced[index] ? 1 : 0;
-    chicagoOffsets[index] = getChicagoOffsetMinutes(YEAR_START_MS + events.seconds[index] * 1000);
   }
+
+  const chicagoTimeZone = getGPUTimeZoneTransitionTable('America/Chicago', {
+    start: YEAR_START_MS,
+    end: Date.UTC(2024, 0, 1) - 1
+  });
 
   const resources = new SpatialAnalysisResources(device, 'calendar');
   const graphSwap = resources.track(new GraphSwap());
   const positionsBuffer = resources.createBuffer('positions', events.positions);
   const timeWordsBuffer = resources.createBuffer('time-words', events.timeWords as Uint32Array);
-  const offsetsBuffer = resources.createBuffer('utc-offsets', chicagoOffsets);
+  const timeZoneTransitionsBuffer = resources.createBuffer(
+    'time-zone-transitions',
+    chicagoTimeZone.transitions
+  );
+  const timeZoneOffsetsBuffer = resources.createBuffer(
+    'time-zone-offsets',
+    chicagoTimeZone.offsets
+  );
   const categoryMaskBuffer = resources.createBuffer('category-mask', eventCount * 4);
   const areaKeyBuffer = resources.createBuffer('area-keys', areaKeys);
   const researchGradeBuffer = resources.createBuffer('researchGrade', researchGradeFlags);
@@ -339,8 +343,21 @@ export async function createCalendarPatterns(
         id: `${key}-calendar`,
         timestamps: timeWords,
         mask: windowMask,
-        utcOffsets: daylightSaving
-          ? v('utc-offsets', offsetsBuffer, 'sint32', eventCount)
+        timeZone: daylightSaving
+          ? {
+              transitions: v(
+                'time-zone-transitions',
+                timeZoneTransitionsBuffer,
+                'uint32x2',
+                chicagoTimeZone.transitions.length / 2
+              ),
+              offsets: v(
+                'time-zone-offsets',
+                timeZoneOffsetsBuffer,
+                'sint32',
+                chicagoTimeZone.offsets.length
+              )
+            }
           : undefined,
         parameters: calendarParameters.importToGraph(graph),
         output: {

@@ -1067,7 +1067,7 @@ async function createDissolveView(env: Environment): Promise<View> {
         endpoints: imp('endpoints', endpoints, 'float32x4', segmentCount),
         groups: imp('segment-groups', segmentGroups, 'uint32', segmentCount),
         // County rings are longitude/latitude degrees: turns at shared vertices are judged on the ground.
-        spatialContext: {coordinateSpace: 'longitude-latitude', metric: 'none'},
+        spatialContext: {coordinateSpace: 'longitude-latitude', datum: 'EPSG:4326', metric: 'none'},
         vertexTolerance: Number(options.vertexTolerance),
         interiorSide: options.interiorSide,
         normalizeWinding: options.normalizeWinding,

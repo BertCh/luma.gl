@@ -135,6 +135,7 @@ export const terrainMode: SpatialAnalysisModeDefinition = {
     });
     const graph = new GPUCommandGraph<void>(device, {id: 'terrain'});
     const elevation = {
+      // terrain.png names no vertical datum (and may use synthetic fallback), so verticalDatum stays undeclared.
       id: 'elevation',
       format: 'float32' as const,
       storage: {

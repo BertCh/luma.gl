@@ -115,6 +115,7 @@ export async function createMigrationSeason(
     new GPUTrajectoryPlayhead({
       spatialContext: {
         coordinateSpace: 'longitude-latitude',
+        datum: 'EPSG:4326',
         metric: 'great-circle',
         units: 'meters'
       },

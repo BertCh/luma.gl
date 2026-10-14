@@ -135,6 +135,15 @@ fn getBundleDirection(fromPoint: vec2<f32>, toPoint: vec2<f32>, fallback: vec2<f
   if (bundleStyle.useMask != 0u && bundleMask[path] == 0u) {
     return getHiddenBundleVertex();
   }
+  let classIndex = u32(max(bundleClasses[path], 0.0));
+  var color = bundleStyle.flatColor;
+  if (bundleStyle.useFlatColor == 0u) {
+    color = bundleStyle.palette[min(classIndex, ${PALETTE_SLOTS - 1}u)];
+  }
+  // A transparent slot draws nothing: skip the projection (per-class passes rely on this).
+  if (color.a <= 0.0) {
+    return getHiddenBundleVertex();
+  }
   let corners = array<vec2<f32>, 6>(
     vec2<f32>(0.0, -1.0), vec2<f32>(1.0, -1.0), vec2<f32>(0.0, 1.0),
     vec2<f32>(0.0, 1.0), vec2<f32>(1.0, -1.0), vec2<f32>(1.0, 1.0)
@@ -187,11 +196,6 @@ fn getBundleDirection(fromPoint: vec2<f32>, toPoint: vec2<f32>, fallback: vec2<f
   let halfWidth = widthPixels * 0.5;
   let halfGeometry = halfWidth + 0.5;
 
-  let classIndex = u32(max(bundleClasses[path], 0.0));
-  var color = bundleStyle.flatColor;
-  if (bundleStyle.useFlatColor == 0u) {
-    color = bundleStyle.palette[min(classIndex, ${PALETTE_SLOTS - 1}u)];
-  }
   if (bundleStyle.highlightMask != 0u && ((bundleStyle.highlightMask >> min(classIndex, 31u)) & 1u) == 0u) {
     color.a = color.a * bundleStyle.dimAlpha;
   }

@@ -208,6 +208,7 @@ export const reliefMode: SpatialAnalysisModeDefinition = {
     // --- Graphs --------------------------------------------------------------------------------
     /** Elevation band for one graph; every graph imports the same caller-owned buffers. */
     const importElevation = (graph: GPUCommandGraph<void>) => ({
+      // terrain.png names no vertical datum (and may use synthetic fallback), so verticalDatum stays undeclared.
       id: 'elevation',
       format: 'float32' as const,
       storage: {

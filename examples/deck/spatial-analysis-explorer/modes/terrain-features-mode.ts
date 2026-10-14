@@ -327,6 +327,7 @@ export const terrainFeaturesMode: SpatialAnalysisModeDefinition = {
         id: 'repair',
         grid,
         elevation: {
+          // terrain.png names no vertical datum (and may use synthetic fallback), so verticalDatum stays undeclared.
           id: 'decoded',
           format: 'float32',
           storage: {kind: 'buffer', values: decodedValuesView},

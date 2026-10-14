@@ -746,7 +746,13 @@ boundary[boundaryOffset + index] = select(0u, 1u, sourceFinite && targetFinite &
       const polygonFeatureOffsetsView = view(polygonFeatureOffsets, 'uint32', RING_CAPACITY + 1);
       catchmentGraph.add(
         new GPUNetworkIsochrones({
-          spatialContext: {coordinateSpace: 'longitude-latitude', metric: 'none'},
+          // H3 res >= 5 outlines: great circle and straight degree edges differ by < 2 m, so the linear model is kept
+          spatialContext: {
+            coordinateSpace: 'longitude-latitude',
+            datum: 'EPSG:4326',
+            metric: 'none',
+            edgeModel: 'linear'
+          },
           id: 'catchment-rings',
           topology: {
             offsets,
@@ -807,7 +813,13 @@ boundary[boundaryOffset + index] = select(0u, 1u, sourceFinite && targetFinite &
       );
       catchmentGraph.add(
         new GPUPointInPolygonJoin({
-          spatialContext: {coordinateSpace: 'longitude-latitude', metric: 'none'},
+          // H3 res >= 5 outlines: great circle and straight degree edges differ by < 2 m, so the linear model is kept
+          spatialContext: {
+            coordinateSpace: 'longitude-latitude',
+            datum: 'EPSG:4326',
+            metric: 'none',
+            edgeModel: 'linear'
+          },
           id: 'catchment-join',
           points: {
             kind: 'points',

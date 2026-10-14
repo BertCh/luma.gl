@@ -125,7 +125,7 @@ export default defineScene<NatureClusterOptions>({
       danger: [50, 90],
       describe: value => `${value} m is about ${(value / 201).toFixed(1)} Chicago blocks`,
       autoSweep: {from: 100, to: 800, durationMs: 9000, ease: 'in-out'},
-      help: 'Two observations are neighbours when closer than this. Written into a parameter buffer: dragging it reruns the graphs without recompiling. Play sweeps 100 to 800 m.'
+      help: "Two observations are neighbours when closer than this. Written into a parameter buffer: dragging it reruns the graphs without recompiling. Play sweeps 100 to 800 m. Radii under about 250 m are inside the records' stated positional accuracy (the dataset keeps accuracy ≤ 250 m)."
     },
     {
       kind: 'slider',
@@ -682,7 +682,9 @@ const sizeClass = size => breaks.filter(boundary => size >= boundary).length;`;
   furniture: {
     title: pointsCartouche('Where are the bird hot spots?', 'iNaturalist records, 2023'),
     scaleBar: {units: 'metric'},
-    credit: POINTS_CREDITS.nature
+    credit: POINTS_CREDITS.nature,
+    caveat:
+      'Records follow observers and carry up to 250 m positional error, so hot spots smaller than that are not resolved.'
   },
   annotations: ORIENTATION,
 

@@ -294,6 +294,7 @@ export async function createSatelliteGroundTracks(
         rows: grid.rows,
         spatialContext: {
           coordinateSpace: 'longitude-latitude',
+          datum: 'EPSG:4326',
           metric: 'great-circle',
           units: 'meters'
         },

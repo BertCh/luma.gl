@@ -523,6 +523,11 @@ div.map-legend {
   font-size: var(--fs-xs, 11px);
   color: var(--map-ink-muted);
 }
+.map-legend .legend-axis > * {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
 .map-legend .legend-axis-y {
   writing-mode: vertical-rl;
   transform: rotate(180deg);

@@ -80,7 +80,11 @@ const DEGREES_TO_RADIANS = Math.PI / 180;
  */
 export function createAnalysisFrameProjection(frame: AnalysisFrame): AnalysisFrameProjection {
   if (frame.kind === 'albers-equal-area') return createAlbersProjection(frame);
-  const localFrame = createGPULocalFrame({origin: frame.origin, kind: frame.kind});
+  const localFrame = createGPULocalFrame({
+    origin: frame.origin,
+    datum: 'EPSG:4326',
+    kind: frame.kind
+  });
   return {
     frame,
     spatialContext: localFrame.spatialContext,
@@ -102,10 +106,12 @@ export function createAnalysisFrameProjection(frame: AnalysisFrame): AnalysisFra
 /** Returns the same spatial context and frame id carried by this frame's projection. */
 export function getAnalysisFrameSpatialContext(frame: AnalysisFrame): GPUSpatialContext {
   if (frame.kind !== 'albers-equal-area') {
-    return createGPULocalFrame({origin: frame.origin, kind: frame.kind}).spatialContext;
+    return createGPULocalFrame({origin: frame.origin, datum: 'EPSG:4326', kind: frame.kind})
+      .spatialContext;
   }
   return Object.freeze({
     coordinateSpace: 'planar',
+    datum: 'EPSG:4326',
     metric: 'native',
     units: 'meters',
     frame: Object.freeze({

@@ -118,6 +118,7 @@ export async function createTerrainFlow(
   // The raster is south-first (rows advance north), so row 0 starts at the south edge.
   const southFirstGrid = createSouthFirstRasterGrid(grid);
   const elevationBand = (graph: GPUCommandGraph<void>) => ({
+    // Terrarium mixes sources (3DEP, SRTM, Copernicus...): vertical datum unspecified, so verticalDatum stays undeclared.
     id: 'elevation',
     format: 'float32' as const,
     storage: {

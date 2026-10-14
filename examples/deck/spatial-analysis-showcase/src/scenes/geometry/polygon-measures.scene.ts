@@ -67,6 +67,7 @@ export default defineScene<PolygonMeasuresOptions>({
     'Measure every US county, Chicago community area and census tract on the GPU: area on a plane, a sphere and the WGS84 ellipsoid, compactness, label points, validity and a four-to-six colouring.',
   contributors: [
     'GPUGeometryMeasures',
+    'GPULonLatPolygonPreparation',
     'GPUShapeDescriptors',
     'GPULabelPoint',
     'GPUGeometryValidity',
@@ -113,12 +114,18 @@ export default defineScene<PolygonMeasuresOptions>({
           value: 'chicago-tracts',
           label: 'Chicago census tracts (791)',
           help: 'Small polygons; rings wind clockwise.'
+        },
+        {
+          value: 'antimeridian-and-poles',
+          label: 'Antimeridian and poles (inline fixture)',
+          help: 'Compare raw and prepared spherical areas of Fiji, Antarctica and the Arctic.'
         }
       ]
     },
     {
       kind: 'select',
       id: 'areaSystem',
+      disabledWhen: state => state.dataset === 'antimeridian-and-poles',
       label: 'Coordinate system',
       group: 'Measures',
       apply: 'param',
@@ -141,6 +148,7 @@ export default defineScene<PolygonMeasuresOptions>({
     {
       kind: 'select',
       id: 'ringGrouping',
+      disabledWhen: state => state.dataset === 'antimeridian-and-poles',
       label: 'Ring grouping',
       group: 'Measures',
       apply: 'compile',
@@ -162,6 +170,7 @@ export default defineScene<PolygonMeasuresOptions>({
     {
       kind: 'slider',
       id: 'sliverThreshold',
+      disabledWhen: state => state.dataset === 'antimeridian-and-poles',
       label: 'Sliver threshold',
       group: 'Shape descriptors',
       apply: 'param',
@@ -174,6 +183,7 @@ export default defineScene<PolygonMeasuresOptions>({
     {
       kind: 'toggle',
       id: 'showAxes',
+      disabledWhen: state => state.dataset === 'antimeridian-and-poles',
       label: 'Long-axis glyphs',
       group: 'Shape descriptors',
       apply: 'param',
@@ -183,6 +193,7 @@ export default defineScene<PolygonMeasuresOptions>({
     {
       kind: 'toggle',
       id: 'showLabels',
+      disabledWhen: state => state.dataset === 'antimeridian-and-poles',
       label: 'Label points',
       group: 'Label points',
       apply: 'param',
@@ -192,6 +203,7 @@ export default defineScene<PolygonMeasuresOptions>({
     {
       kind: 'toggle',
       id: 'showInscribed',
+      disabledWhen: state => state.dataset === 'antimeridian-and-poles',
       label: 'Inscribed circles',
       group: 'Label points',
       apply: 'param',
@@ -201,6 +213,7 @@ export default defineScene<PolygonMeasuresOptions>({
     {
       kind: 'toggle',
       id: 'showCentroids',
+      disabledWhen: state => state.dataset === 'antimeridian-and-poles',
       label: 'Centroids',
       group: 'Label points',
       apply: 'param',
@@ -210,6 +223,7 @@ export default defineScene<PolygonMeasuresOptions>({
     {
       kind: 'toggle',
       id: 'showBounds',
+      disabledWhen: state => state.dataset === 'antimeridian-and-poles',
       label: 'Bounding boxes',
       group: 'Label points',
       apply: 'param',
@@ -219,6 +233,7 @@ export default defineScene<PolygonMeasuresOptions>({
     {
       kind: 'slider',
       id: 'initialGridSize',
+      disabledWhen: state => state.dataset === 'antimeridian-and-poles',
       label: 'Initial search grid',
       group: 'Label points',
       apply: 'compile',
@@ -232,6 +247,7 @@ export default defineScene<PolygonMeasuresOptions>({
     {
       kind: 'slider',
       id: 'refinementCandidates',
+      disabledWhen: state => state.dataset === 'antimeridian-and-poles',
       label: 'Refinement candidates',
       group: 'Label points',
       apply: 'compile',
@@ -244,6 +260,7 @@ export default defineScene<PolygonMeasuresOptions>({
     {
       kind: 'select',
       id: 'orientation',
+      disabledWhen: state => state.dataset === 'antimeridian-and-poles',
       label: 'Ring orientation convention',
       group: 'Validity',
       apply: 'compile',
@@ -266,6 +283,7 @@ export default defineScene<PolygonMeasuresOptions>({
     {
       kind: 'select',
       id: 'ringClosure',
+      disabledWhen: state => state.dataset === 'antimeridian-and-poles',
       label: 'Ring closure',
       group: 'Validity',
       apply: 'compile',
@@ -283,6 +301,7 @@ export default defineScene<PolygonMeasuresOptions>({
     {
       kind: 'toggle',
       id: 'injectDefects',
+      disabledWhen: state => state.dataset === 'antimeridian-and-poles',
       label: 'Inject six test defects',
       group: 'Validity',
       apply: 'param',
@@ -292,6 +311,7 @@ export default defineScene<PolygonMeasuresOptions>({
     {
       kind: 'select',
       id: 'contiguity',
+      disabledWhen: state => state.dataset === 'antimeridian-and-poles',
       label: 'Adjacency for colouring',
       group: 'Map colouring',
       apply: 'compile',
@@ -305,6 +325,7 @@ export default defineScene<PolygonMeasuresOptions>({
     {
       kind: 'slider',
       id: 'colorSeed',
+      disabledWhen: state => state.dataset === 'antimeridian-and-poles',
       label: 'Priority seed',
       group: 'Map colouring',
       apply: 'param',
@@ -317,6 +338,7 @@ export default defineScene<PolygonMeasuresOptions>({
     {
       kind: 'slider',
       id: 'maxRounds',
+      disabledWhen: state => state.dataset === 'antimeridian-and-poles',
       label: 'Maximum rounds',
       group: 'Map colouring',
       apply: 'compile',
@@ -329,6 +351,7 @@ export default defineScene<PolygonMeasuresOptions>({
     {
       kind: 'select',
       id: 'areaClassification',
+      disabledWhen: state => state.dataset === 'antimeridian-and-poles',
       label: 'Compare area classes',
       group: 'Measures',
       apply: 'param',
@@ -344,6 +367,7 @@ export default defineScene<PolygonMeasuresOptions>({
     {
       kind: 'toggle',
       id: 'showDeflate',
+      disabledWhen: state => state.dataset === 'antimeridian-and-poles',
       label: 'Deflate about GPU centroid',
       group: 'Display',
       apply: 'param',
@@ -352,6 +376,7 @@ export default defineScene<PolygonMeasuresOptions>({
     {
       kind: 'toggle',
       id: 'showLabelSearch',
+      disabledWhen: state => state.dataset === 'antimeridian-and-poles',
       label: 'Show search grid',
       group: 'Label points',
       apply: 'param',
@@ -360,6 +385,7 @@ export default defineScene<PolygonMeasuresOptions>({
     {
       kind: 'select',
       id: 'coloringMethod',
+      disabledWhen: state => state.dataset === 'antimeridian-and-poles',
       label: 'Colour assignment',
       group: 'Map colouring',
       apply: 'param',
@@ -373,6 +399,7 @@ export default defineScene<PolygonMeasuresOptions>({
     {
       kind: 'select',
       id: 'metric',
+      disabledWhen: state => state.dataset === 'antimeridian-and-poles',
       label: 'Colour polygons by',
       group: 'Display',
       apply: 'param',
@@ -581,6 +608,25 @@ export default defineScene<PolygonMeasuresOptions>({
       controls: ['coloringMethod', 'contiguity'],
       readouts: ['coloring', 'adjacencies'],
       stage: 'colouring'
+    },
+    {
+      id: 'antimeridian-and-poles',
+      title: 'Antimeridian and poles',
+      headline: 'Prepare global rings before measuring',
+      textAlternative: 'Raw and prepared spherical areas compared with closed-form references.',
+      body: 'Unprepared measures reject the pole-enclosing Arctic ring. Preparation splits Fiji at ±180°, caps the Arctic ring and keeps Antarctica’s pole edges, so all three areas match the closed-form values within float32 error.',
+      camera: {longitude: 0, latitude: 0, zoom: 0.4, pitch: 0, bearing: 0},
+      optionsMode: 'fresh',
+      options: {dataset: 'antimeridian-and-poles', metric: 'area', areaSystem: 'spherical'},
+      controls: ['dataset', 'opacity', 'showOutlines'],
+      readouts: [
+        'globalArea0',
+        'globalArea1',
+        'globalArea2',
+        'globalRejected',
+        'globalPreparation'
+      ],
+      stage: 'measures'
     }
   ],
 
@@ -592,6 +638,17 @@ export default defineScene<PolygonMeasuresOptions>({
   },
 
   legends: state => {
+    if (state.dataset === 'antimeridian-and-poles')
+      return [
+        {
+          kind: 'ramp',
+          title: 'Prepared spherical area',
+          ramp: 'viridis',
+          extent: [0, 16e6],
+          unit: 'km²',
+          note: 'Linear lon/lat edges; WGS84 authalic sphere. Poles clipped for display only.'
+        }
+      ];
     const legends: LegendSpec[] = [];
     const metric = state.metric;
     if (metric === 'area') {
@@ -667,7 +724,17 @@ export default defineScene<PolygonMeasuresOptions>({
   },
 
   readouts: [
-    {id: 'features', label: 'Polygons', format: 'integer'},
+    {id: 'globalArea0', label: 'Fiji box · km²', layout: 'block'},
+    {id: 'globalArea1', label: 'Antarctica band · km²', layout: 'block'},
+    {id: 'globalArea2', label: 'Arctic ring · km²', layout: 'block'},
+    {id: 'globalRejected', label: 'Unprepared'},
+    {id: 'globalPreparation', label: 'Preparation', layout: 'block'},
+    {
+      id: 'features',
+      label: 'Polygons',
+      format: 'integer',
+      help: 'Includes rejected features, when present, for the selected coordinate system.'
+    },
     {id: 'areaClasses', label: 'Area class counts'},
     {id: 'vertices', label: 'Vertices', format: 'integer'},
     {id: 'areaWgs84', label: 'Total area, WGS84', help: 'Sum of the ellipsoidal areas.'},
@@ -721,6 +788,29 @@ export default defineScene<PolygonMeasuresOptions>({
   ],
 
   snippet: state => {
+    if (state.dataset === 'antimeridian-and-poles')
+      return `
+// Linear lon/lat edges; spherical area uses the WGS84 authalic radius.
+const spatialContext = {coordinateSpace: 'longitude-latitude', datum: 'EPSG:4326',
+  metric: 'great-circle', units: 'meters', edgeModel: 'linear'};
+rawGraph.add(new GPUGeometryMeasures({
+  ...raw, spatialContext, geometryType: 'polygons',
+  output: {areas: rawAreas, status: {invalidCount: rawRejected}}
+}));
+// Allocate F+1 feature offsets, 2P+1 polygon offsets, 2R+1 ring offsets,
+// and 1024 positions. Parameter packer: getGPULonLatPolygonPreparationParameterValues('linear').
+const preparation = new GPULonLatPolygonPreparation({
+  ...raw, spatialContext, parameters,
+  output: {...prepared, ringFlags, status: {overflow, requiredCount, invalidCount}}
+});
+preparedGraph.add(preparation);
+preparedGraph.add(new GPUGeometryMeasures({
+  ...prepared, spatialContext: {...preparation.spatialContext, metric: 'great-circle', units: 'meters'},
+  geometryType: 'polygons', output: {areas: preparedAreas}
+}));
+// Inspect overflow before displaying results. Clamp latitudes only in the display kernel.
+`;
+
     const measures = `import {GPUCommandGraph} from '@luma.gl/gpgpu/gpu-core';
 import {
   GPUGeometryMeasures, GPUShapeDescriptors, GPULabelPoint,
@@ -731,7 +821,7 @@ const graph = new GPUCommandGraph(device, {id: 'polygons'});
 // positions: lng/lat float32x2; featureOffsets, polygonOffsets, ringOffsets: the four-level polygon
 // layout (uint32). Rows are features; the first ring of each polygon is its shell, later rings are holes.
 // Ring grouping here: ${state.ringGrouping === 'parts' ? 'real polygon parts' : 'one polygon per feature (polygonOffsets = feature ring offsets)'}.
-graph.add(new GPUGeometryMeasures({spatialContext: ('${state.areaSystem}') === 'planar' ? planarProjection.spatialContext : {coordinateSpace: 'longitude-latitude', metric: ('${state.areaSystem}') === 'spherical' ? 'great-circle' : 'ellipsoidal', units: 'meters'}, ellipsoidalEdgeModel: ('${state.areaSystem}') === 'wgs84' ? 'coordinate-linear' : undefined,
+graph.add(new GPUGeometryMeasures({spatialContext: ('${state.areaSystem}') === 'planar' ? planarProjection.spatialContext : {coordinateSpace: 'longitude-latitude', datum: 'EPSG:4326', metric: ('${state.areaSystem}') === 'spherical' ? 'great-circle' : 'ellipsoidal', units: 'meters'}, ellipsoidalEdgeModel: ('${state.areaSystem}') === 'wgs84' ? 'coordinate-linear' : undefined,
   geometryType: 'polygons', positions, featureOffsets, polygonOffsets, ringOffsets,
      // planar | spherical | wgs84
   output: {areas, lengths, centroids, bounds, vertexCounts}

@@ -245,6 +245,7 @@ export async function createSiteSuitability(
 
   // --- Graphs ----------------------------------------------------------------------------------
   const band = (id: string, values: GraphDataView<'float32'>): GPURasterBufferBand<'float32'> => ({
+    // Terrarium mixes sources (3DEP, SRTM, Copernicus...): vertical datum unspecified, so verticalDatum stays undeclared.
     id,
     format: 'float32',
     storage: {kind: 'buffer', values}

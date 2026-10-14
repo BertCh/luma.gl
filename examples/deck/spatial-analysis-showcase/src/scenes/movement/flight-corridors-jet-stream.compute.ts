@@ -74,6 +74,7 @@ export async function createFlightSpeedContrast(
     new GPUTrajectoryMetrics({
       spatialContext: {
         coordinateSpace: 'longitude-latitude',
+        datum: 'EPSG:4326',
         metric: 'great-circle',
         units: 'meters'
       },

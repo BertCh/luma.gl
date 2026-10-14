@@ -176,6 +176,7 @@ const Z_BIN_COUNT = 32;
  */
 const CELL_SPATIAL_CONTEXT: GPUSpatialContext = {
   coordinateSpace: 'longitude-latitude',
+  datum: 'EPSG:4326',
   metric: 'great-circle',
   units: 'meters'
 };
@@ -1137,7 +1138,11 @@ export async function createHotSpots(
         resources.track(
           new GPULocalFrameProjection({
             id: 'cells-centers',
-            frame: createGPULocalFrame({kind: 'azimuthal-equidistant', origin: tracts.origin}),
+            frame: createGPULocalFrame({
+              kind: 'azimuthal-equidistant',
+              datum: 'EPSG:4326',
+              origin: tracts.origin
+            }),
             positions: centers,
             output: view('centers-meters', centersMeters, 'float32x2', rows),
             // Cell centres can fall beyond the study polygon at the coarsest resolutions.
@@ -1200,6 +1205,7 @@ export async function createHotSpots(
         paddingLatitude / Math.cos(Math.max(Math.abs(south), Math.abs(north)) * DEGREES);
       searchParameters.write(
         getGPUNeighborSearchParameterValues({
+          spatialContext: CELL_SPATIAL_CONTEXT,
           bounds: [
             west - paddingLongitude,
             south - paddingLatitude,

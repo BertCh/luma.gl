@@ -8,8 +8,12 @@
  *
  * - **Corridors are cool, volume is gold.** The chapter's gold (`FLOW_INK`) means volume. Bundles
  *   are corridors of grouped routes, not volume, so they get the cool `mako` ramp, trimmed to
- *   `[0.3, 1]` so the shortest class stays visible on the night ground, and the two meanings are
+ *   `[0.4, 1]` so the shortest class stays a visible blue on the night ground, and the two meanings are
  *   never confused. Short routes are dim, long routes bright (luminance carries the hierarchy).
+ * - **Classes are drawn as their legend colours.** Classed routes use normal alpha blending, one
+ *   pass per class with the longest (or worst) on top, so overlaps converge to the class hue.
+ *   Additive light would sum every hue to white and leave the dim classes invisible; only the
+ *   unclassed single colour stays additive, where piling up is the message.
  * - **Delay is an intensity.** The US step uses magma trimmed to t 0.45-1 (harm on a dark ground).
  * - One slot table feeds the layer palette, the legend and the tooltips.
  */
@@ -26,11 +30,8 @@ export const DISTANCE_BREAKS: readonly number[] = [500, 1500, 3000, 6000];
 /** Interior breaks of the mean departure delay classes, in minutes. */
 export const DELAY_BREAKS: readonly number[] = [10, 20, 30, 45];
 
-/**
- * Alpha of each distance class on the additive night ground (short dim, long bright). Additive
- * light saturates quickly where thousands of routes overlap, so these are low.
- */
-export const DISTANCE_ALPHA: readonly number[] = [0.1, 0.13, 0.17, 0.22, 0.28];
+/** Alpha of each distance class (normal blending, longest drawn last): short dim, long bright. */
+export const DISTANCE_ALPHA: readonly number[] = [0.35, 0.4, 0.5, 0.6, 0.7];
 
 /** Alpha of each delay class (normal blending, worst drawn last): the worst corridors lead. */
 export const DELAY_ALPHA: readonly number[] = [0.45, 0.55, 0.65, 0.8, 0.92];
@@ -45,8 +46,15 @@ export const UNDER_FLOOR_ALPHA = 0.15;
 /** Alpha of the straight ghost under the bundles; drawn half a pixel wide, so it shows at about 0.10. */
 export const GHOST_ALPHA = 0.2;
 
-/** Alpha multiplier of every non-probe route while the probe routes are shown. */
-export const PROBE_DIM = 0.35;
+/**
+ * Alpha multiplier of every non-probe route while the probe routes are shown. The probes are drawn
+ * last and wider, so a mild dim is enough; a strong one sinks the classes into the ground.
+ */
+export const PROBE_DIM = 0.5;
+
+/** Width of the classed routes and of the probe routes, in CSS pixels. */
+export const ROUTE_WIDTH_PIXELS = 1;
+export const PROBE_WIDTH_PIXELS = 2.5;
 
 /** The white ring of hub airports: dark fill, 1.4 px white stroke, no orange. */
 export const HUB_FILL: PaletteColor = [10, 13, 18, 204];
@@ -114,7 +122,7 @@ export const UNDER_FLOOR_COLOR: PaletteColor = [
 
 /** Opaque class colours of the distance classes (cool mako, trimmed), low class first. */
 export function getDistanceColors(): PaletteColor[] {
-  return getClassColors('mako', 5, false, 255, [0.3, 1]);
+  return getClassColors('mako', 5, false, 255, [0.4, 1]);
 }
 
 /**
@@ -198,4 +206,27 @@ export function getRoutePalette(
     });
   }
   return palette;
+}
+
+/**
+ * The palette slots of the classed route layer, one draw pass per entry, bottom first: the grey
+ * under-floor pairs, then each class from the shortest (or least delayed) up, then the probes on
+ * top. Each pass draws only its slots, so the order of the classes is the order of the passes.
+ */
+export function getRoutePassSlots(probesActive: boolean): number[][] {
+  const classes = [0, 1, 2, 3, 4].map(index => [SLOT.firstClass + index]);
+  if (probesActive) {
+    return [...classes, PROBE_ROUTES.map((probe, index) => SLOT.firstProbe + index)];
+  }
+  return [[SLOT.underFloor], ...classes];
+}
+
+/** The palette with every slot outside `slots` made transparent (the shader skips those paths). */
+export function getPassPalette(
+  palette: readonly PaletteColor[],
+  slots: readonly number[]
+): PaletteColor[] {
+  return palette.map((color, slot) =>
+    slots.includes(slot) ? color : ([color[0], color[1], color[2], 0] as PaletteColor)
+  );
 }

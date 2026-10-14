@@ -651,6 +651,9 @@ export const spaceTimeMode: SpatialAnalysisModeDefinition = {
         updateSliceLabels();
       }
     });
+    context.controls.addNote(
+      'Fixed offsets only; the clock is nominal (no real calendar), so daylight saving does not apply here.'
+    );
     const hourFromControl = context.controls.addSlider({
       label: 'Local hour filter: from',
       min: 0,

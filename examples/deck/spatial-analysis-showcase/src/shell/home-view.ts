@@ -18,7 +18,6 @@ export async function renderHome(root: HTMLElement, focusChapter: string | null)
   const hero = h(
     'section',
     {class: 'hero'},
-    h('p', {class: 'eyebrow'}, 'luma.gl · WebGPU'),
     h('h1', {}, 'Spatial analysis on the GPU'),
     h(
       'p',

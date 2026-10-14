@@ -784,6 +784,7 @@ export async function createWorldView(env: WorldEnvironment): Promise<GeometryVi
         new GPUGeodesicPairs({
           spatialContext: {
             coordinateSpace: 'longitude-latitude',
+            datum: 'EPSG:4326',
             metric: model === 'wgs84' ? 'ellipsoidal' : 'great-circle',
             units: 'meters'
           },
@@ -832,6 +833,7 @@ export async function createWorldView(env: WorldEnvironment): Promise<GeometryVi
         new GPUGeodesicDestination({
           spatialContext: {
             coordinateSpace: 'longitude-latitude',
+            datum: 'EPSG:4326',
             metric: model === 'wgs84' ? 'ellipsoidal' : 'great-circle',
             units: 'meters'
           },

@@ -275,6 +275,7 @@ export function createElevationBand<Parameters>(
   pixelCount: number
 ) {
   return {
+    // Mapterhorn mixes swissALTI3D and Copernicus sources: vertical datum unspecified, so verticalDatum stays undeclared.
     id: `${prefix}-elevation`,
     format: 'float32' as const,
     storage: {

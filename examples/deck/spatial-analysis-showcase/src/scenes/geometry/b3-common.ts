@@ -33,6 +33,7 @@ import type {SceneFrame, ScenePointerEvent} from '../scene';
 /** Longitude/latitude positions, great-circle metric, meters: the context of the spherical variants. */
 export const GREAT_CIRCLE_CONTEXT = {
   coordinateSpace: 'longitude-latitude',
+  datum: 'EPSG:4326',
   metric: 'great-circle',
   units: 'meters'
 } as const;
@@ -122,6 +123,7 @@ export function loadPolygonLayout(dataset: LoadedDataset): PolygonLayout {
 export const WEB_MERCATOR_PROJECTION = {
   spatialContext: {
     ...GPU_PLANAR_SPATIAL_CONTEXT,
+    datum: 'EPSG:4326',
     units: 'meters',
     frame: {kind: 'crs', id: 'EPSG:3857', crs: 'EPSG:3857'}
   } satisfies GPUSpatialContext,

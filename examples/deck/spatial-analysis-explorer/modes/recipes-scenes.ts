@@ -106,7 +106,7 @@ export const RECIPE_ENTRIES: readonly RecipeEntry[] = [
     id: 'straight-line-catchments',
     label: 'addStraightLineCatchmentsRecipe',
     summary:
-      'Nearest-facility zones of points of interest on a raster, with the trip density each zone holds.',
+      'Nearest-facility zones of points of interest on a raster, with the trip density each zone holds. Zones use straight-line distance, not travel along streets.',
     build: buildStraightLineScene
   },
   {

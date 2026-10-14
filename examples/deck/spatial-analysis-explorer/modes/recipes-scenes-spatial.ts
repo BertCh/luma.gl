@@ -880,7 +880,7 @@ export const buildDriveTimeScene: RecipeSceneBuilder = async host => {
   const recipe = addDriveTimeCatchmentRecipe(kit.graph, {
     // Longitude/latitude: the isochrone cell outline needs it, and the recipe snaps great-circle
     // on longitude/latitude (meters).
-    spatialContext: {coordinateSpace: 'longitude-latitude', metric: 'none'},
+    spatialContext: {coordinateSpace: 'longitude-latitude', datum: 'EPSG:4326', metric: 'none'},
     topology: {
       offsets: csrOffsets.view,
       neighbors: csrNeighbors.view,

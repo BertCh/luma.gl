@@ -32,6 +32,13 @@ export type CityGeometry = {
   cityPolygons: PolygonRings[];
   /** Every city ring in local metres, flattened `x, y` pairs (for the even-odd test). */
   cityRingsMeters: Float64Array[];
+  /** One GeoArrow multipolygon feature in the same frame; shell/hole roles follow ring order. */
+  cityWindowColumns: {
+    positions: Float32Array;
+    featureOffsets: Uint32Array;
+    polygonOffsets: Uint32Array;
+    ringOffsets: Uint32Array;
+  };
   /** City bounding box in local metres `[minX, minY, maxX, maxY]`. */
   cityBoundsMeters: [number, number, number, number];
   /** City area in km² (planar, local metres). */
@@ -47,7 +54,7 @@ export type CityGeometry = {
   outsideMesh: PolygonMesh;
   /** Lake Michigan triangulated in local metres (null if the lake did not load). */
   lakeMesh: PolygonMesh | null;
-  /** True when local metres `(x, y)` are inside the city limit (even-odd over every ring). */
+  /** Display/picking only: tests local metres against city rings. Analysis must use GPU inclusion. */
   containsMeters: (x: number, y: number) => boolean;
   /** True when `[lng, lat]` is inside the city limit. */
   contains: (lngLat: LngLat) => boolean;
@@ -86,6 +93,9 @@ export function buildCityGeometry(
     : getLocalProjector(origin);
   const cityPolygons = getInputPolygons(city).map(({polygon}) => polygon);
   const cityRingsMeters: Float64Array[] = [];
+  const windowPositions: number[] = [];
+  const polygonOffsets = [0];
+  const ringOffsets = [0];
   let minX = Infinity;
   let minY = Infinity;
   let maxX = -Infinity;
@@ -104,9 +114,12 @@ export function buildCityGeometry(
         maxY = Math.max(maxY, y);
       });
       cityRingsMeters.push(flat);
+      windowPositions.push(...flat);
+      ringOffsets.push(windowPositions.length / 2);
       const area = Math.abs(getSignedArea(flat));
       areaSquareMeters += ringIndex === 0 ? area : -area;
     });
+    polygonOffsets.push(ringOffsets.length - 1);
   }
 
   const containsMeters = (x: number, y: number): boolean => {
@@ -154,6 +167,12 @@ export function buildCityGeometry(
     lake,
     cityPolygons,
     cityRingsMeters,
+    cityWindowColumns: {
+      positions: Float32Array.from(windowPositions),
+      featureOffsets: Uint32Array.of(0, cityPolygons.length),
+      polygonOffsets: Uint32Array.from(polygonOffsets),
+      ringOffsets: Uint32Array.from(ringOffsets)
+    },
     cityBoundsMeters: [minX, minY, maxX, maxY],
     cityAreaKm2: areaSquareMeters / 1e6,
     cityOutlineSegments: projectRingsToSegments(

@@ -28,21 +28,25 @@ export const SAN_FRANCISCO_ORIGIN: readonly [number, number] = [-122.44, 37.76];
 /** Azimuthal-equidistant frame for distance analysis of New York datasets. */
 export const NEW_YORK_FRAME = createGPULocalFrame({
   origin: NEW_YORK_ORIGIN,
+  datum: 'EPSG:4326',
   kind: 'azimuthal-equidistant'
 });
 /** Azimuthal-equidistant frame for distance analysis of San Francisco datasets. */
 export const SAN_FRANCISCO_FRAME = createGPULocalFrame({
   origin: SAN_FRANCISCO_ORIGIN,
+  datum: 'EPSG:4326',
   kind: 'azimuthal-equidistant'
 });
 /** Lambert equal-area frame for area and density analysis of New York datasets. */
 export const NEW_YORK_AREA_FRAME = createGPULocalFrame({
   origin: NEW_YORK_ORIGIN,
+  datum: 'EPSG:4326',
   kind: 'lambert-equal-area'
 });
 /** Lambert equal-area frame for area and density analysis of San Francisco datasets. */
 export const SAN_FRANCISCO_AREA_FRAME = createGPULocalFrame({
   origin: SAN_FRANCISCO_ORIGIN,
+  datum: 'EPSG:4326',
   kind: 'lambert-equal-area'
 });
 
@@ -495,6 +499,7 @@ async function loadSanFranciscoTerrain(): Promise<SpatialAnalysisTerrain> {
   }
   context.drawImage(bitmap, 0, 0, size, size);
   const pixels = context.getImageData(0, 0, size, size).data;
+  // terrain.png identifies only USGS DEM, not a vertical datum, so verticalDatum stays undeclared.
   const elevation = new Float32Array(size * size);
   for (let index = 0; index < elevation.length; index++) {
     // deck.gl TerrainLayer docs decode this USGS DEM with rScaler 2, offset 0.

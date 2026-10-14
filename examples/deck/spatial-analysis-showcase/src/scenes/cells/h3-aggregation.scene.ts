@@ -355,7 +355,11 @@ export default defineScene<H3AggregationOptions>({
     {id: 'groupBorders', label: 'Tier borders'},
     {id: 'selected', label: 'Clicked cell'},
     {id: 'selection', label: 'Topology result'},
-    {id: 'cover', label: 'Cover cells'},
+    {
+      id: 'cover',
+      label: 'Cover cells',
+      help: 'Reports rejected features and features beyond the polar lattice limit when present.'
+    },
     {id: 'core', label: 'Core and border cells'},
     {id: 'compacted', label: 'Compacted cells'},
     {id: 'roundTrip', label: 'Uncompact round trip'},
@@ -646,7 +650,7 @@ export default defineScene<H3AggregationOptions>({
       camera: {longitude: -87.68, latitude: 41.835, zoom: 9.9, transitionMs: 1600},
       highlight: {readout: 'compacted'},
       controls: ['family', 'containment', 'coverColor', 'showCompacted', 'compactDepth'],
-      readouts: ['core', 'compacted', 'roundTrip']
+      readouts: ['cover', 'core', 'compacted', 'roundTrip']
     },
     {
       id: 'limits',

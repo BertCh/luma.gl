@@ -518,6 +518,7 @@ async function createArcsView(
     new GPUGeodesicPairs({
       spatialContext: {
         coordinateSpace: 'longitude-latitude',
+        datum: 'EPSG:4326',
         metric: 'ellipsoidal',
         units: 'meters'
       },
@@ -550,6 +551,7 @@ async function createArcsView(
     new GPUGeodesicDestination({
       spatialContext: {
         coordinateSpace: 'longitude-latitude',
+        datum: 'EPSG:4326',
         metric: 'ellipsoidal',
         units: 'meters'
       },
@@ -1916,6 +1918,7 @@ async function createMeasuresView(
           ? zones.frame.spatialContext
           : {
               coordinateSpace: 'longitude-latitude',
+              datum: 'EPSG:4326',
               metric: entry.id === 'spherical' ? 'great-circle' : 'ellipsoidal',
               units: 'meters'
             },

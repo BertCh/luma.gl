@@ -802,6 +802,8 @@ export async function createH3Aggregation(
     const coverCount = create('cover-count', 4);
     const coverOverflow = create('cover-overflow', 4);
     const coverCandidateOverflow = create('cover-candidate-overflow', 4);
+    const coverInvalidCount = create('cover-invalid-count', 4);
+    const coverUncertainCount = create('cover-uncertain-count', 4);
     const coverTotal = create('cover-total', 4);
     const compactCells = create('compact-cells', COVER_CAPACITY * 8);
     const compactCount = create('compact-count', 4);
@@ -885,6 +887,20 @@ export async function createH3Aggregation(
             count: coverCountView,
             requiredCount: importCellBuffer(graph, 'cover-total', coverTotal, 'uint32', 1),
             overflow: importCellBuffer(graph, 'cover-overflow', coverOverflow, 'uint32', 1),
+            invalidCount: importCellBuffer(
+              graph,
+              'cover-invalid-count',
+              coverInvalidCount,
+              'uint32',
+              1
+            ),
+            uncertainCount: importCellBuffer(
+              graph,
+              'cover-uncertain-count',
+              coverUncertainCount,
+              'uint32',
+              1
+            ),
             candidateOverflow: importCellBuffer(
               graph,
               'cover-candidate-overflow',
@@ -961,6 +977,8 @@ export async function createH3Aggregation(
         {buffer: uncompactCount, size: 4},
         {buffer: uncompactOverflow, size: 4},
         {buffer: uncompactDropped, size: 4},
+        {buffer: coverInvalidCount, size: 4},
+        {buffer: coverUncertainCount, size: 4},
         {buffer: coverCore, size: COVER_CAPACITY * 4},
         {buffer: coverFeatureIds, size: COVER_CAPACITY * 4}
       ],
@@ -986,15 +1004,26 @@ export async function createH3Aggregation(
     let coreCells = 0;
     const perArea = new Uint32Array(areas.names.length);
     for (let row = 0; row < coverRows; row++) {
-      if (words[8 + row] === 1) coreCells++;
-      const feature = words[8 + COVER_CAPACITY + row];
+      if (words[10 + row] === 1) coreCells++;
+      const feature = words[10 + COVER_CAPACITY + row];
       if (feature < perArea.length) perArea[feature]++;
     }
     coverAreaCells = perArea;
     const emptyAreas = perArea.reduce((total, value) => total + (value === 0 ? 1 : 0), 0);
+    const invalidCount = words[8];
+    const uncertainCount = words[9];
+    const warnings = [
+      ...(invalidCount > 0
+        ? [`${invalidCount} features rejected: ambiguous or over-wide rings`]
+        : []),
+      ...(uncertainCount > 0 ? [`${uncertainCount} features beyond the polar lattice limit`] : [])
+    ];
     ctx.setReadout(
       'cover',
-      `${formatCount(coverRows)} cells (${formatCount(words[2])} unclamped${words[1] ? ', OVERFLOW' : ''}); ${emptyAreas} of ${areas.names.length} areas get no cell`
+      [
+        `${formatCount(coverRows)} cells (${formatCount(words[2])} unclamped${words[1] ? ', OVERFLOW' : ''}); ${emptyAreas} of ${areas.names.length} areas get no cell`,
+        ...warnings
+      ].join('; ')
     );
     ctx.setReadout(
       'core',

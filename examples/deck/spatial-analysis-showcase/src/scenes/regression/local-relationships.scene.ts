@@ -45,7 +45,8 @@ export default defineScene<LocalRelationshipsOptions>({
     },
     scaleBar: {units: 'metric'},
     credit: 'CDC PLACES; US Census Bureau SAIPE and county boundaries',
-    caveat: 'Local coefficients are associations and can be unstable under collinearity.'
+    caveat:
+      'Local coefficients are county-level associations, unstable under collinearity, and do not apply to individuals.'
   },
 
   options: [

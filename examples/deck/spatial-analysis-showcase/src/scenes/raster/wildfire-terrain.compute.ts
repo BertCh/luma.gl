@@ -376,6 +376,7 @@ export async function createWildfireTerrain(
         id: 'derivatives',
         grid: mercatorGrid,
         elevation: {
+          // Terrarium mixes sources (3DEP, SRTM, Copernicus...): vertical datum unspecified, so verticalDatum stays undeclared.
           id: 'dem',
           format: 'float32',
           noDataValue: spec.noData,

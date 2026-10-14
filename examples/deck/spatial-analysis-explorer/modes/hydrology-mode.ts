@@ -132,6 +132,7 @@ export const hydrologyMode: SpatialAnalysisModeDefinition = {
       cellCount
     );
     const elevation = {
+      // terrain.png names no vertical datum (and may use synthetic fallback), so verticalDatum stays undeclared.
       id: 'elevation',
       format: 'float32' as const,
       storage: {kind: 'buffer' as const, values: elevationView},

@@ -239,6 +239,7 @@ export async function createWatersheds(
       id: 'derivatives',
       grid: grid.rasterGrid,
       elevation: {
+        // Terrarium mixes sources (3DEP, SRTM, Copernicus...): vertical datum unspecified, so verticalDatum stays undeclared.
         id: 'elevation',
         format: 'float32' as const,
         storage: {

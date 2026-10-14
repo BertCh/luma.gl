@@ -318,6 +318,7 @@ export async function createOceanDriftersPlayback(
         rows,
         spatialContext: {
           coordinateSpace: 'longitude-latitude',
+          datum: 'EPSG:4326',
           metric: 'great-circle',
           units: 'meters'
         },

@@ -19,7 +19,22 @@ import {
   type GPURipleyDistanceEdgeCorrection,
   type GPURipleyEdgeCorrection
 } from '@luma.gl/experimental/gpu-dataframe';
-import {GPUCommandGraph, type CompiledGPUCommandGraph} from '@luma.gl/gpgpu/gpu-core';
+import {
+  GPU_STUDY_WINDOW_SUMMARY_LENGTH,
+  type GPUPolygonGeometryFields,
+  GPUStudyWindowPreparation,
+  GPURectangleClip,
+  GPURandomPointsInPolygon,
+  GPU_DOT_DENSITY_PARAMETER_LENGTH,
+  getGPUDotDensityParameterValues,
+  getGPUNeighborSearchParameterValues,
+  GPU_NEIGHBOR_SEARCH_PARAMETER_LENGTH
+} from '@luma.gl/experimental/gpu-spatial-analysis';
+import {
+  createTransientView,
+  GPUCommandGraph,
+  type CompiledGPUCommandGraph
+} from '@luma.gl/gpgpu/gpu-core';
 import {
   getClassIndexOf,
   getClassLabel,
@@ -38,6 +53,12 @@ import {createNearestIndex, type NearestIndex} from '../../cartography/picking';
 import {buildPolygonMesh, type PolygonMesh} from '../../cartography/polygon-mesh';
 import type {ClassTable, LngLat, MapAnnotation} from '../../cartography/types';
 import {DENSE_POINT_RADIUS_STOPS} from '../../cartography/zoom';
+import {
+  createAnalysisFrameProjection,
+  getViewportFrameBounds,
+  projectLngLatToFrame
+} from '../../engine/analysis-frame';
+import {addKernelPass} from '../../engine/mode-kernels';
 import {importGraphBuffer} from '../../engine/graph-buffers';
 import {GraphSwap} from '../../engine/graph-swap';
 import {
@@ -47,8 +68,7 @@ import {
   SpatialAnalysisSegmentLayer
 } from '../../engine/layers';
 import {createPolygonMeshBuffers} from '../../engine/polygon-buffers';
-import {createSeededRandom} from '../../engine/projection';
-import {getViewportMetricBounds, SpatialAnalysisResources} from '../../engine/resources';
+import {SpatialAnalysisResources} from '../../engine/resources';
 import {SummaryReader} from '../../engine/summary-reader';
 import {formatCompiledGraphTiming, measureCompiledGraph} from '../../engine/vector-timing';
 import type {SceneContext, SceneInstance, TooltipContent, TooltipRow} from '../scene';
@@ -73,20 +93,13 @@ import {
   type PreviousCurve
 } from './point-patterns-charts';
 import {makeNearestTable, makeQuadratTable, type QuadratClasses} from './point-patterns-classes';
+import {ENVELOPE_RUNS, EnvelopeAccumulator, type PatternBounds} from './point-patterns-envelope';
 import {
-  createLandSampler,
-  ENVELOPE_RUNS,
-  EnvelopeAccumulator,
-  fillRandomPositions,
-  type LandSampler,
-  type PatternBounds
-} from './point-patterns-envelope';
-import {
-  countSharedCoordinates,
-  findDensestPoint,
-  getNearestDistance,
+  addDensestPoint,
+  addSharedCoordinates,
   type DensestPoint
 } from './point-patterns-neighbours';
+import {createPatternJitter} from './point-patterns-jitter';
 
 /** A p-value for a readout: three decimals below 0.1, two above, `p < 0.001` below that. */
 function formatPValue(p: number): string {
@@ -100,7 +113,7 @@ export type PointPatternOptions = {
   groupCategory: string;
   placeCategory: string;
   maximumDistance: number;
-  window: 'city' | 'view';
+  window: 'city' | 'rectangle' | 'view';
   nullModel: 'window' | 'city';
   radius: number;
   ripleyCorrection: GPURipleyEdgeCorrection;
@@ -152,10 +165,10 @@ type SubjectData = {
   id: 'observations' | 'places';
   label: string;
   count: number;
-  /** Loaded positions in local metres. */
-  base: Float32Array;
-  /** Positions currently uploaded (the base, or the jittered copy). */
-  current: Float32Array;
+  /** Immutable unjittered positions, used by GPU jitter and duplicate counts. */
+  baseBuffer: Buffer;
+  jitter: Awaited<ReturnType<typeof createPatternJitter>> | null;
+  jitterDirty: boolean;
   /** Raw `lng, lat` pairs, for the hover index. */
   lngLat: Float32Array;
   category: Uint8Array;
@@ -164,7 +177,6 @@ type SubjectData = {
   maskBuffer: Buffer;
   /** One complete-spatial-randomness realisation of the same size, drawn when "random" is shown. */
   randomBuffer: Buffer;
-  randomScratch: Float32Array;
   /** CPU copy of the 0/1 mask. */
   selected: Uint32Array;
   jitterApplied: number;
@@ -181,6 +193,10 @@ type PatternSet = {
   compiled: CompiledGPUCommandGraph<void>;
   nearestDistances: Buffer;
   quadratCounts: Buffer;
+  quadratRatios: Buffer;
+  windowOutline: Buffer;
+  windowOutlineWeights: Buffer;
+  windowEdgeCapacity: number;
   reader: SummaryReader;
 };
 
@@ -191,10 +207,6 @@ type SimulationSet = {
   radiusCount: number;
   compiled: CompiledGPUCommandGraph<void>;
   positionsBuffer: Buffer;
-  maskBuffer: Buffer;
-  /** Rows currently set to 1 in the mask buffer. */
-  maskCount: number;
-  scratch: Float32Array;
   reader: SummaryReader;
 };
 
@@ -211,6 +223,8 @@ type ObservedResult = {
   clark: Float32Array;
   quadrat: Float32Array;
   counts: Uint32Array;
+  areas: Float32Array;
+  ratios: Float32Array;
 };
 
 type OutsideHatch = {
@@ -223,12 +237,12 @@ type OutsideHatch = {
  * Clark-Evans, quadrat counts) run over the same points, mask and window.
  *
  * The Monte Carlo envelope reuses the compiled Ripley and distance-function graphs on a second graph
- * over a simulation positions buffer: each of 39 random patterns is a positions-buffer write plus one
+ * over a simulation positions buffer: each of 39 random patterns is a GPU sampling pass plus one
  * encode of the same compiled graph, never a recompile. The null model is complete spatial randomness
- * in the window rectangle or on city land (rejection sampling with the city polygon).
+ * in the window rectangle or exactly on city land, sampled by GPURandomPointsInPolygon.
  *
- * The category, window, radius, edge corrections and jitter are buffer writes; the number of radii,
- * the quadrat grid and the F reference lattice are compile-time and select cached graphs.
+ * The category, radius, edge corrections and jitter are buffer writes; window mode, null model,
+ * radius count, quadrat grid and the F reference lattice select compiled graph variants.
  */
 export async function createPointPatterns(
   ctx: SceneContext<PointPatternOptions>
@@ -237,8 +251,8 @@ export async function createPointPatterns(
   const observations = ctx.datasets.get('chicago-nature');
   const places = ctx.datasets.get('chicago-places');
   const origin = observations.defaultOrigin;
-  const projection = observations.getProjection(origin);
-  const city = await loadCityGeometry(ctx, origin);
+  const projection = createAnalysisFrameProjection({kind: 'lambert-equal-area', origin});
+  const city = await loadCityGeometry(ctx, origin, projection.project);
   const resources = new SpatialAnalysisResources(device, 'point-patterns');
 
   const makeSubject = (
@@ -246,21 +260,21 @@ export async function createPointPatterns(
     label: string,
     dataset: typeof observations
   ): SubjectData => {
-    const base = dataset.projectColumn('position', origin);
+    const base = projectLngLatToFrame(projection, dataset.column<Float32Array>('position'));
     const count = base.length / 2;
     return {
       id,
       label,
       count,
-      base,
-      current: base,
+      baseBuffer: resources.createBuffer(`${id}-base`, base),
+      jitter: null,
+      jitterDirty: false,
       lngLat: dataset.column<Float32Array>('position'),
       category: dataset.column<Uint8Array>('category'),
       categoryNames: dataset.categories('category'),
       positionsBuffer: resources.createBuffer(`${id}-positions`, base.slice()),
       maskBuffer: resources.createBuffer(`${id}-mask`, new Uint32Array(count).fill(1)),
       randomBuffer: resources.createBuffer(`${id}-random`, count * 8),
-      randomScratch: new Float32Array(count * 2),
       selected: new Uint32Array(count).fill(1),
       jitterApplied: 0,
       index: null,
@@ -272,23 +286,16 @@ export async function createPointPatterns(
     places: makeSubject('places', 'Places (Overture)', places)
   };
 
-  // The study window of "the city": the observation bounding box widened to hold the whole city
-  // limit, so the hatched outside mask can be the window rectangle minus the city.
-  const cityWindow = ((): PatternBounds => {
-    const [cityMinX, cityMinY, cityMaxX, cityMaxY] = city.cityBoundsMeters;
-    let minX = cityMinX;
-    let minY = cityMinY;
-    let maxX = cityMaxX;
-    let maxY = cityMaxY;
-    const {base, count} = subjects.observations;
-    for (let index = 0; index < count; index++) {
-      minX = Math.min(minX, base[index * 2]);
-      maxX = Math.max(maxX, base[index * 2]);
-      minY = Math.min(minY, base[index * 2 + 1]);
-      maxY = Math.max(maxY, base[index * 2 + 1]);
-    }
-    return [minX - 5, minY - 5, maxX + 5, maxY + 5];
-  })();
+  for (const subject of Object.values(subjects)) {
+    subject.jitter = await createPatternJitter(
+      resources,
+      subject,
+      projection.spatialContext,
+      subject.id === 'observations' ? 11 : 23
+    );
+  }
+
+  const cityWindow: PatternBounds = [...city.cityBoundsMeters];
 
   /** The window rectangle minus the city limit, triangulated for the hatch. */
   const buildCityWindowMesh = (): PolygonMesh => {
@@ -311,16 +318,30 @@ export async function createPointPatterns(
               ...city.cityPolygons.map(polygon => polygon[0] as number[][])
             ]
           }
-        }
+        },
+        ...city.cityPolygons.flatMap(polygon =>
+          polygon.slice(1).map(ring => ({
+            type: 'Feature' as const,
+            properties: null,
+            geometry: {type: 'Polygon' as const, coordinates: [ring as number[][]]}
+          }))
+        )
       ],
       (longitude, latitude) => projection.project(longitude, latitude)
     );
   };
-  const hatches: Record<'city' | 'view', OutsideHatch> = {
-    city: {mesh: createPolygonMeshBuffers(resources, buildCityWindowMesh(), 'outside-window')},
-    view: {mesh: createPolygonMeshBuffers(resources, city.outsideMesh, 'outside-city')}
+  const cityHatch = {
+    mesh: createPolygonMeshBuffers(resources, buildCityWindowMesh(), 'outside-window')
   };
-  const hatchValues = resources.createBuffer('hatch-values', new Uint32Array([0]));
+  const hatches: Record<PointPatternOptions['window'], OutsideHatch> = {
+    city: cityHatch,
+    rectangle: cityHatch,
+    view: cityHatch
+  };
+  const hatchValues = resources.createBuffer(
+    'hatch-values',
+    new Uint32Array(1 + city.cityPolygons.reduce((count, polygon) => count + polygon.length - 1, 0))
+  );
 
   const ripleyParameters = resources.createParameterBuffer(
     'ripley',
@@ -337,8 +358,39 @@ export async function createPointPatterns(
     'float32',
     GPU_POINT_PATTERN_INDICES_PARAMETER_LENGTH
   );
+  const neighborParameters = resources.createParameterBuffer(
+    'neighbors',
+    'float32',
+    GPU_NEIGHBOR_SEARCH_PARAMETER_LENGTH
+  );
   const windowBuffer = resources.createParameterBuffer('window', 'float32', 4);
-  const windowSegments = resources.createBuffer('window-segments', 4 * 16);
+  // Each handle is added to one graph and tracked before that graph, so disposal is reversed.
+  // Only preparations reading rectangle positions or clip output need geometry invalidation.
+  const mutablePreparations: GPUStudyWindowPreparation[] = [];
+  const clipParameters = resources.createParameterBuffer('clip-window', 'float32', 4);
+  const randomParameters = resources.createParameterBuffer(
+    'random',
+    'uint32',
+    GPU_DOT_DENSITY_PARAMETER_LENGTH
+  );
+  const randomCounts = resources.createBuffer('random-counts', Uint32Array.of(0));
+  const rectanglePositions = resources.createBuffer('rectangle-positions', 8 * 4);
+  const cityColumns = city.cityWindowColumns;
+  const cityBuffers = {
+    positions: resources.createBuffer('city-positions', cityColumns.positions),
+    featureOffsets: resources.createBuffer('city-features', cityColumns.featureOffsets),
+    polygonOffsets: resources.createBuffer('city-polygons', cityColumns.polygonOffsets),
+    ringOffsets: resources.createBuffer('city-rings', cityColumns.ringOffsets)
+  };
+  const rectangleFeatureOffsets = resources.createBuffer(
+    'rectangle-features',
+    Uint32Array.of(0, 1)
+  );
+  const rectanglePolygonOffsets = resources.createBuffer(
+    'rectangle-polygons',
+    Uint32Array.of(0, 1)
+  );
+  const rectangleRingOffsets = resources.createBuffer('rectangle-rings', Uint32Array.of(0, 4));
 
   // ---- state -------------------------------------------------------------------------------
   let destroyed = false;
@@ -353,7 +405,6 @@ export async function createPointPatterns(
 
   // Work to do once the camera and options settle.
   let derivedDirty = true;
-  let landDirty = true;
   let observedDirty = true;
   let envelopeDirty = true;
   let observedGeneration = 0;
@@ -361,12 +412,15 @@ export async function createPointPatterns(
   let observedJobs: Job[] = [];
   let inFlight: Job | null = null;
   let inFlightSince = 0;
-  // The r-ring follows the radius slider live; the densest point is only recomputed after a pause.
-  let densestDirty = false;
-  let densestChangeTime = 0;
+  // Hover reads are lazy and versioned against the exact observed encoding.
+  let nearestRun = 0;
+  let nearestReadyRun = -1;
+  let nearestRequestedRun = -1;
+  let nearestReadback: Float32Array | null = null;
 
-  // Replaced by the first `derive()`; the raster costs a few polygon tests per cell.
-  let land: LandSampler = {landShare: 0, contains: () => false};
+  let measuredWindowArea = Number.NaN;
+  let measuredLandShare = Number.NaN;
+  let lastGuardDistance = Number.NaN;
   let selectedInside = 0;
   let densest: (DensestPoint & {x: number; y: number}) | null = null;
   let observed: ObservedResult | null = null;
@@ -395,16 +449,141 @@ export async function createPointPatterns(
       : (PLACE_LABELS[category] ?? category);
   };
   const getNullName = (model: PointPatternOptions['nullModel']) =>
-    model === 'city' ? 'random on city land' : 'random in the rectangle';
+    model === 'city'
+      ? ctx.options.window === 'view'
+        ? 'random on city land within the view'
+        : 'random on city land'
+      : ctx.options.window === 'view'
+        ? 'random in the viewport rectangle'
+        : 'random in the rectangle';
   const getSetKey = (options: PointPatternOptions) =>
-    `${options.subject}|${options.radiusCount}|${options.quadratGrid}|${options.referenceGrid}`;
+    `${options.subject}|${options.radiusCount}|${options.quadratGrid}|${options.referenceGrid}|${options.window}`;
   const getSimulationKey = (options: PointPatternOptions) =>
-    `${options.subject}|${options.radiusCount}|${options.referenceGrid}`;
+    `${options.subject}|${options.radiusCount}|${options.referenceGrid}|${options.window}|${options.nullModel}`;
   const parseGrid = (value: string): [number, number] => [Number(value), Number(value)];
-  const windowArea = () => (bounds[2] - bounds[0]) * (bounds[3] - bounds[1]);
+  const windowArea = () => measuredWindowArea;
   const toLngLat = (x: number, y: number): LngLat => projection.unproject(x, y) as LngLat;
 
   // ---- graphs ------------------------------------------------------------------------------
+
+  /** Imports the one-feature city and rectangle layouts; all positions share the analysis frame. */
+  function importWindowGeometry(graph: GPUCommandGraph<void>) {
+    const cityGeometry: GPUPolygonGeometryFields = {
+      positions: importGraphBuffer(graph, 'city-positions', cityBuffers.positions, 'float32x2'),
+      featureOffsets: importGraphBuffer(
+        graph,
+        'city-features',
+        cityBuffers.featureOffsets,
+        'uint32'
+      ),
+      polygonOffsets: importGraphBuffer(
+        graph,
+        'city-polygons',
+        cityBuffers.polygonOffsets,
+        'uint32'
+      ),
+      ringOffsets: importGraphBuffer(graph, 'city-rings', cityBuffers.ringOffsets, 'uint32')
+    };
+    const rectangleGeometry: GPUPolygonGeometryFields = {
+      positions: importGraphBuffer(graph, 'rectangle-positions', rectanglePositions, 'float32x2'),
+      featureOffsets: importGraphBuffer(
+        graph,
+        'rectangle-features',
+        rectangleFeatureOffsets,
+        'uint32'
+      ),
+      polygonOffsets: importGraphBuffer(
+        graph,
+        'rectangle-polygons',
+        rectanglePolygonOffsets,
+        'uint32'
+      ),
+      ringOffsets: importGraphBuffer(graph, 'rectangle-rings', rectangleRingOffsets, 'uint32')
+    };
+    return {cityGeometry, rectangleGeometry};
+  }
+
+  /** Prepares the GPU window; clipped city rings also supply the viewport land-area readout. */
+  function addStudyWindow(graph: GPUCommandGraph<void>, options: PointPatternOptions) {
+    const {cityGeometry, rectangleGeometry} = importWindowGeometry(graph);
+    let landGeometry = cityGeometry;
+    if (options.window === 'view') {
+      // Four Sutherland-Hodgman stages can each double the vertex count. Ring slots stay fixed.
+      const positions = createTransientView(
+        graph,
+        'clipped-positions',
+        'float32x2',
+        cityGeometry.positions.length * 16
+      );
+      const ringOffsets = createTransientView(
+        graph,
+        'clipped-rings',
+        'uint32',
+        cityGeometry.ringOffsets.length
+      );
+      graph.add(
+        new GPURectangleClip({
+          id: 'clip-city',
+          geometryType: 'polygons',
+          ...cityGeometry,
+          spatialContext: projection.spatialContext,
+          parameters: clipParameters.importToGraph(graph),
+          output: {
+            positions,
+            lineOffsets: ringOffsets,
+            status: {
+              count: createTransientView(graph, 'clip-count', 'uint32', 1),
+              overflow: createTransientView(graph, 'clip-overflow', 'uint32', 1)
+            }
+          }
+        })
+      );
+      landGeometry = {...cityGeometry, positions, ringOffsets};
+    }
+    const geometry = options.window === 'rectangle' ? rectangleGeometry : landGeometry;
+    const summaryBuffer = resources.createBuffer(
+      `${graph.id}-window-summary`,
+      GPU_STUDY_WINDOW_SUMMARY_LENGTH * 4
+    );
+    const summary = importGraphBuffer(graph, 'window-summary', summaryBuffer, 'float32');
+    const preparation = resources.track(
+      new GPUStudyWindowPreparation({
+        id: 'study-window',
+        ...geometry,
+        spatialContext: projection.spatialContext,
+        output: {summary}
+      })
+    );
+    graph.add(preparation);
+    if (options.window !== 'city') mutablePreparations.push(preparation);
+    let citySummaryBuffer = summaryBuffer;
+    if (options.window === 'rectangle') {
+      citySummaryBuffer = resources.createBuffer(
+        `${graph.id}-city-summary`,
+        GPU_STUDY_WINDOW_SUMMARY_LENGTH * 4
+      );
+      const cityPreparation = resources.track(
+        new GPUStudyWindowPreparation({
+          id: 'city-land-window',
+          ...cityGeometry,
+          spatialContext: projection.spatialContext,
+          output: {
+            summary: importGraphBuffer(graph, 'city-summary', citySummaryBuffer, 'float32')
+          }
+        })
+      );
+      graph.add(cityPreparation);
+    }
+    return {
+      preparation,
+      summary,
+      summaryBuffer,
+      landSummaryBuffer: options.window === 'rectangle' ? citySummaryBuffer : summaryBuffer,
+      studyWindow: options.window === 'rectangle' ? ('rectangle' as const) : preparation,
+      // Under `view`, the clipped land: the sampler skips the clip's empty and degenerate rings.
+      randomGeometry: options.nullModel === 'city' ? landGeometry : rectangleGeometry
+    };
+  }
 
   async function buildSet(options: PointPatternOptions): Promise<PatternSet> {
     const key = getSetKey(options);
@@ -427,9 +606,14 @@ export async function createPointPatterns(
       nearest: buffer('nearest', subject.count),
       clarkEvans: buffer('clark-evans', GPU_CLARK_EVANS_LENGTH),
       quadratCounts: buffer('quadrat-counts', quadratCells),
-      quadratStatistics: buffer('quadrat-statistics', GPU_QUADRAT_STATISTICS_LENGTH)
+      quadratAreas: buffer('quadrat-areas', quadratCells),
+      quadratRatios: buffer('quadrat-ratios', quadratCells),
+      quadratStatistics: buffer('quadrat-statistics', GPU_QUADRAT_STATISTICS_LENGTH),
+      densest: buffer('densest', 2),
+      duplicateShare: buffer('duplicate-share', 1)
     };
     const graph = new GPUCommandGraph<void>(device, {id: `point-patterns-${id}`});
+    const window = addStudyWindow(graph, options);
     const positions = importGraphBuffer(
       graph,
       'positions',
@@ -443,9 +627,15 @@ export async function createPointPatterns(
       format: F,
       length: number
     ) => importGraphBuffer(graph, name, outputs[name], format, length);
+    const quadratCounts = view('quadratCounts', 'uint32', quadratCells);
+    const quadratAreas = view('quadratAreas', 'float32', quadratCells);
+    const quadratRatios = view('quadratRatios', 'float32', quadratCells);
+    const clarkEvans = view('clarkEvans', 'float32', GPU_CLARK_EVANS_LENGTH);
+    const nearest = view('nearest', 'float32', subject.count);
     graph.add(
       new GPURipley({
         spatialContext: projection.spatialContext,
+        studyWindow: window.studyWindow,
         id: 'ripley',
         positions,
         mask,
@@ -463,6 +653,7 @@ export async function createPointPatterns(
     graph.add(
       new GPURipleyDistanceFunctions({
         spatialContext: projection.spatialContext,
+        studyWindow: window.studyWindow,
         id: 'ripley-distance',
         positions,
         mask,
@@ -480,6 +671,7 @@ export async function createPointPatterns(
     graph.add(
       new GPUPointPatternIndices({
         spatialContext: projection.spatialContext,
+        studyWindow: window.studyWindow,
         id: 'indices',
         positions,
         mask,
@@ -487,13 +679,71 @@ export async function createPointPatterns(
         gridSize: SEARCH_GRID,
         quadratGrid,
         output: {
-          nearestNeighborDistances: view('nearest', 'float32', subject.count),
-          clarkEvans: view('clarkEvans', 'float32', GPU_CLARK_EVANS_LENGTH),
-          quadratCounts: view('quadratCounts', 'uint32', quadratCells),
+          nearestNeighborDistances: nearest,
+          clarkEvans: clarkEvans,
+          quadratCounts: quadratCounts,
+          quadratAreas: quadratAreas,
           quadratStatistics: view('quadratStatistics', 'float32', GPU_QUADRAT_STATISTICS_LENGTH)
         }
       })
     );
+    addDensestPoint(graph, {
+      positions,
+      nearest,
+      spatialContext: projection.spatialContext,
+      parameters: neighborParameters.importToGraph(graph),
+      output: view('densest', 'uint32', 2)
+    });
+    addSharedCoordinates(
+      graph,
+      importGraphBuffer(graph, 'base', subject.baseBuffer, 'float32x2'),
+      mask,
+      view('duplicateShare', 'float32', 1)
+    );
+    addKernelPass(graph, {
+      id: 'quadrat-relative-counts',
+      invocationCount: quadratCells,
+      bindings: [
+        {name: 'counts', view: quadratCounts, type: 'u32', access: 'read'},
+        {name: 'areas', view: quadratAreas, type: 'f32', access: 'read'},
+        {name: 'clark', view: clarkEvans, type: 'f32', access: 'read'},
+        {name: 'summary', view: window.summary, type: 'f32', access: 'read'},
+        {name: 'ratios', view: quadratRatios, type: 'f32', access: 'read_write'}
+      ],
+      body: `var nanBits = 0x7fc00000u;
+        let expected = clark[clarkOffset] * areas[areasOffset + index] / summary[summaryOffset + 4u];
+        ratios[ratiosOffset + index] = select(bitcast<f32>(nanBits), f32(counts[countsOffset + index]) / expected, expected > 0.0);`
+    });
+    const edges = window.preparation.getViews(graph).edges;
+    const windowOutline = resources.createBuffer(`${id}-outline`, edges.length * 4);
+    const windowOutlineWeights = resources.createBuffer(`${id}-outline-weights`, edges.length);
+    addKernelPass(graph, {
+      id: 'window-outline',
+      invocationCount: edges.length / 4,
+      bindings: [
+        {name: 'edges', view: edges, type: 'f32', access: 'read'},
+        {
+          name: 'weights',
+          view: importGraphBuffer(graph, 'outline-weights', windowOutlineWeights, 'float32'),
+          type: 'f32',
+          access: 'read_write'
+        },
+        {
+          name: 'outline',
+          view: importGraphBuffer(graph, 'outline', windowOutline, 'float32'),
+          type: 'f32',
+          access: 'read_write'
+        }
+      ],
+      body: `var valid = true;
+        for (var component = 0u; component < 4u; component++) {
+          valid = valid && (bitcast<u32>(edges[edgesOffset + 4u * index + component]) & 0x7fffffffu) < 0x7f800000u;
+        }
+        weights[weightsOffset + index] = select(0.0, 1.0, valid);
+        for (var component = 0u; component < 4u; component++) {
+          outline[outlineOffset + 4u * index + component] = select(0.0, edges[edgesOffset + 4u * index + component], valid);
+        }`
+    });
     const compiled = resources.track(await graph.compileAsync());
     const set: PatternSet = {
       key,
@@ -503,6 +753,10 @@ export async function createPointPatterns(
       compiled,
       nearestDistances: outputs.nearest,
       quadratCounts: outputs.quadratCounts,
+      quadratRatios: outputs.quadratRatios,
+      windowOutline,
+      windowOutlineWeights,
+      windowEdgeCapacity: edges.length / 4,
       reader: new SummaryReader(
         resources,
         `summary-${id}`,
@@ -514,7 +768,13 @@ export async function createPointPatterns(
           {buffer: outputs.radii, size: radiusCount * 4},
           {buffer: outputs.clarkEvans, size: GPU_CLARK_EVANS_LENGTH * 4},
           {buffer: outputs.quadratStatistics, size: GPU_QUADRAT_STATISTICS_LENGTH * 4},
-          {buffer: outputs.quadratCounts, size: quadratCells * 4}
+          {buffer: outputs.quadratCounts, size: quadratCells * 4},
+          {buffer: outputs.quadratAreas, size: quadratCells * 4},
+          {buffer: outputs.quadratRatios, size: quadratCells * 4},
+          {buffer: window.summaryBuffer, size: GPU_STUDY_WINDOW_SUMMARY_LENGTH * 4},
+          {buffer: window.landSummaryBuffer, size: GPU_STUDY_WINDOW_SUMMARY_LENGTH * 4},
+          {buffer: outputs.densest, size: 8},
+          {buffer: outputs.duplicateShare, size: 4}
         ],
         bytes => handleObservedSummary(set, bytes)
       )
@@ -523,8 +783,8 @@ export async function createPointPatterns(
   }
 
   /**
-   * The envelope's graph: Ripley and the distance functions again, compiled once over their own
-   * positions and mask buffers (the random pattern), sharing the observed graph's parameter buffers.
+   * The envelope's graph: GPU sampling followed by Ripley and the distance functions over the
+   * sampled positions. Unused rows are NaN; statistics share the observed graph's parameters.
    */
   async function buildSimulation(options: PointPatternOptions): Promise<SimulationSet> {
     const key = getSimulationKey(options);
@@ -535,7 +795,6 @@ export async function createPointPatterns(
     const buffer = (name: string, floats: number) =>
       resources.createBuffer(`${id}-${name}`, floats * 4);
     const positionsBuffer = resources.createBuffer(`${id}-positions`, subject.count * 8);
-    const maskBuffer = resources.createBuffer(`${id}-mask`, new Uint32Array(subject.count));
     const outputs = {
       k: buffer('k', radiusCount),
       l: buffer('l', radiusCount),
@@ -546,6 +805,7 @@ export async function createPointPatterns(
       j: buffer('j', radiusCount)
     };
     const graph = new GPUCommandGraph<void>(device, {id: `point-patterns-${id}`});
+    const window = addStudyWindow(graph, options);
     const positions = importGraphBuffer(
       graph,
       'positions',
@@ -553,15 +813,55 @@ export async function createPointPatterns(
       'float32x2',
       subject.count
     );
-    const mask = importGraphBuffer(graph, 'mask', maskBuffer, 'uint32', subject.count);
+    const failedBuffer = resources.createBuffer(`${id}-failed`, 4);
+    const parameters = randomParameters.importToGraph(graph);
+    const requestedCount = importGraphBuffer(graph, 'random-counts', randomCounts, 'uint32');
+    const failedCount = importGraphBuffer(graph, 'random-failed', failedBuffer, 'uint32');
+    graph.add(
+      new GPURandomPointsInPolygon({
+        id: 'random-points',
+        ...window.randomGeometry,
+        spatialContext: projection.spatialContext,
+        counts: requestedCount,
+        parameters,
+        output: {
+          positions,
+          dots: {
+            ids: createTransientView(graph, 'random-ids', 'uint32', subject.count),
+            status: {
+              count: createTransientView(graph, 'random-count', 'uint32', 1),
+              overflow: createTransientView(graph, 'random-overflow', 'uint32', 1)
+            }
+          },
+          status: {failedCount}
+        }
+      })
+    );
+    addKernelPass(graph, {
+      id: 'retain-first-random-pattern',
+      invocationCount: subject.count * 2,
+      bindings: [
+        {name: 'positions', view: positions, type: 'f32', access: 'read'},
+        {name: 'parameters', view: parameters, type: 'u32', access: 'read'},
+        {
+          name: 'displayPositions',
+          view: importGraphBuffer(graph, 'random-display', subject.randomBuffer, 'float32x2'),
+          type: 'f32',
+          access: 'read_write'
+        }
+      ],
+      body: `if (parameters[parametersOffset] == ${RANDOM_SEED}u) {
+        displayPositions[displayPositionsOffset + index] = positions[positionsOffset + index];
+      }`
+    });
     const view = (name: keyof typeof outputs) =>
       importGraphBuffer(graph, name, outputs[name], 'float32', radiusCount);
     graph.add(
       new GPURipley({
         spatialContext: projection.spatialContext,
+        studyWindow: window.studyWindow,
         id: 'ripley',
         positions,
-        mask,
         parameters: ripleyParameters.importToGraph(graph),
         gridSize: SEARCH_GRID,
         radiusCount,
@@ -576,9 +876,9 @@ export async function createPointPatterns(
     graph.add(
       new GPURipleyDistanceFunctions({
         spatialContext: projection.spatialContext,
+        studyWindow: window.studyWindow,
         id: 'ripley-distance',
         positions,
-        mask,
         parameters: distanceParameters.importToGraph(graph),
         gridSize: SEARCH_GRID,
         referenceGrid,
@@ -597,9 +897,6 @@ export async function createPointPatterns(
       radiusCount,
       compiled,
       positionsBuffer,
-      maskBuffer,
-      maskCount: 0,
-      scratch: new Float32Array(subject.count * 2),
       reader: new SummaryReader(
         resources,
         `summary-${id}`,
@@ -607,7 +904,9 @@ export async function createPointPatterns(
           {buffer: outputs.lMinusR, size: radiusCount * 4},
           {buffer: outputs.g, size: radiusCount * 4},
           {buffer: outputs.f, size: radiusCount * 4},
-          {buffer: outputs.j, size: radiusCount * 4}
+          {buffer: outputs.j, size: radiusCount * 4},
+          {buffer: failedBuffer, size: 4},
+          {buffer: window.summaryBuffer, size: GPU_STUDY_WINDOW_SUMMARY_LENGTH * 4}
         ],
         bytes => handleSimulationSummary(simulation, bytes)
       )
@@ -624,6 +923,8 @@ export async function createPointPatterns(
    */
   function requestSet(afterSelect?: () => void): Promise<boolean> {
     const options = {...ctx.options};
+    markObservedChanged();
+    markEnvelopeChanged();
     return setSwap.request({
       build: async () => {
         const key = getSetKey(options);
@@ -654,6 +955,7 @@ export async function createPointPatterns(
     writeJitter(subjectOf(ctx.options), ctx.options.jitter);
     writeMask();
     observed = null;
+    quadratClasses = null;
     for (const name of CORRECTIONS) delete edgeCurves[name];
     markObservedChanged();
     markEnvelopeChanged();
@@ -665,6 +967,9 @@ export async function createPointPatterns(
   /** The observed pattern changed (jitter, grids, corrections): re-run the observed graph. */
   function markObservedChanged(): void {
     observedGeneration++;
+    nearestRun++;
+    nearestReadyRun = -1;
+    nearestReadback = null;
     observedJobs = [];
     observedDirty = true;
     derivedDirty = true;
@@ -675,6 +980,7 @@ export async function createPointPatterns(
   function markEnvelopeChanged(): void {
     envelopeGeneration++;
     envelopeRunning = false;
+    randomCount = 0;
     envelopeDirty = true;
     derivedDirty = true;
     // The live simulation's count: a pending radiusCount swap applies its own reset at commit.
@@ -683,79 +989,22 @@ export async function createPointPatterns(
     ctx.setReadout('simulations', `0 of ${ENVELOPE_RUNS} random patterns`);
   }
 
-  // ---- CPU derived quantities --------------------------------------------------------------
-
-  function recountSelection(): void {
-    const subject = subjectOf(ctx.options);
-    let count = 0;
-    for (let row = 0; row < subject.count; row++) {
-      if (!subject.selected[row]) continue;
-      const x = subject.current[row * 2];
-      const y = subject.current[row * 2 + 1];
-      if (x >= bounds[0] && x <= bounds[2] && y >= bounds[1] && y <= bounds[3]) count++;
-    }
-    selectedInside = count;
-  }
-
-  /** Draws the random pattern shown on the map: the first of the envelope's simulations. */
-  function refreshRandom(): void {
-    const subject = subjectOf(ctx.options);
-    const sampler = ctx.options.nullModel === 'city' ? land : null;
-    fillRandomPositions(
-      subject.randomScratch,
-      selectedInside,
-      bounds,
-      sampler,
-      createSeededRandom(RANDOM_SEED)
-    );
-    if (selectedInside > 0) {
-      subject.randomBuffer.write(subject.randomScratch.subarray(0, selectedInside * 2));
-    }
-    randomCount = selectedInside;
-  }
+  // ---- display derived from GPU summaries --------------------------------------------------
 
   function startEnvelope(): void {
     envelopeDirty = false;
     simulationsStarted = 0;
     envelopeRunning = selectedInside >= 3;
-    refreshRandom();
+    randomCount = 0;
     publishCurveChart();
     publishDistanceChart();
     if (ctx.options.showRandom) ctx.requestLayers();
   }
 
-  function refreshDensest(): void {
-    densestDirty = false;
-    const options = ctx.options;
-    const subject = subjectOf(options);
-    const found = findDensestPoint(subject.current, subject.selected, bounds, options.radius);
-    densest = found
-      ? {
-          ...found,
-          x: subject.current[found.row * 2],
-          y: subject.current[found.row * 2 + 1]
-        }
-      : null;
-    publishRadius();
-  }
-
-  function refreshShared(): void {
-    const subject = subjectOf(ctx.options);
-    const {share} = countSharedCoordinates(subject.base, subject.selected);
-    ctx.setReadout('duplicateShare', Number.isFinite(share) ? formatPercent(share, 1) : null);
-  }
-
   function derive(): void {
     derivedDirty = false;
-    if (landDirty) {
-      landDirty = false;
-      land = createLandSampler(city.containsMeters, bounds);
-    }
-    recountSelection();
     publishWindow();
-    if (envelopeDirty) startEnvelope();
-    refreshDensest();
-    refreshShared();
+    publishRadius();
     ctx.setCost({
       records: selectedInside,
       passes: active ? active.compiled.stats.nodeOrder.length : undefined
@@ -768,14 +1017,14 @@ export async function createPointPatterns(
     const options = ctx.options;
     const area = windowArea();
     ctx.setReadout('windowArea', formatArea(area));
-    ctx.setReadout('windowLandShare', formatPercent(land.landShare));
-    ctx.setReadout('outsideShare', formatPercent(1 - land.landShare));
+    ctx.setReadout('windowLandShare', formatPercent(measuredLandShare));
+    ctx.setReadout('outsideShare', formatPercent(1 - measuredLandShare));
     ctx.setReadout('nullName', getNullName(options.nullModel));
     ctx.setReadout('intensity', `${formatRate(selectedInside / (area / 1e6), 'km²')} of window`);
     const [west, south] = toLngLat(bounds[0], bounds[1]);
     const [east, north] = toLngLat(bounds[2], bounds[3]);
     const annotations: MapAnnotation[] =
-      options.window === 'city'
+      options.window === 'rectangle'
         ? [
             {
               kind: 'frame',
@@ -795,8 +1044,8 @@ export async function createPointPatterns(
               kind: 'note',
               id: 'outside-note',
               coordinate: lake.lngLat as LngLat,
-              title: `${formatPercent(1 - land.landShare)} of the window`,
-              text: 'Lake and suburbs: no record can fall here'
+              title: `${formatPercent(1 - measuredLandShare)} outside city land in the bounding box`,
+              text: 'Hatching marks areas outside the city boundary'
             }
           ]
         : null
@@ -821,7 +1070,7 @@ export async function createPointPatterns(
     });
   }
 
-  /** The r-ring and its note at the densest selected point (cheap: runs on every radius change). */
+  /** Places the r-ring at the source coordinate of the GPU-selected row (display only). */
   function publishRadius(): void {
     const options = ctx.options;
     publishFurniture();
@@ -911,7 +1160,7 @@ export async function createPointPatterns(
     if (envelope.isComplete) {
       ctx.setReadout(
         'graphs',
-        `2 graphs compiled once, ${formatCount(envelope.count)} random runs of one of them`
+        `2 analysis graphs and 2 jitter graphs compiled once; ${formatCount(envelope.count)} random runs`
       );
     }
     publishCurveChart();
@@ -958,7 +1207,45 @@ export async function createPointPatterns(
     const quadrat = floats.slice(quadratOffset, countsOffset);
     const quadratCells = set.quadratGrid[0] * set.quadratGrid[1];
     const counts = words.slice(countsOffset, countsOffset + quadratCells);
-    observed = {radii, lMinusR, g, f, j, clark, quadrat, counts};
+    const areasOffset = countsOffset + quadratCells;
+    const areas = floats.slice(areasOffset, areasOffset + quadratCells);
+    const ratios = floats.slice(areasOffset + quadratCells, areasOffset + quadratCells * 2);
+    const summaryOffset = areasOffset + quadratCells * 2;
+    const summary = floats.subarray(summaryOffset, summaryOffset + GPU_STUDY_WINDOW_SUMMARY_LENGTH);
+    const landArea = floats[summaryOffset + GPU_STUDY_WINDOW_SUMMARY_LENGTH + 4];
+    measuredWindowArea = summary[4];
+    measuredLandShare = landArea / ((bounds[2] - bounds[0]) * (bounds[3] - bounds[1]));
+    const helperOffset = summaryOffset + GPU_STUDY_WINDOW_SUMMARY_LENGTH * 2;
+    const densestRow = words[helperOffset];
+    // CPU lon/lat is used only to place a display annotation for the GPU-selected row.
+    const coordinate =
+      densestRow < set.subject.count
+        ? projection.project(
+            set.subject.lngLat[densestRow * 2],
+            set.subject.lngLat[densestRow * 2 + 1]
+          )
+        : null;
+    densest = coordinate
+      ? {row: densestRow, neighbours: words[helperOffset + 1], x: coordinate[0], y: coordinate[1]}
+      : null;
+    const duplicateShare = floats[helperOffset + 2];
+    ctx.setReadout(
+      'duplicateShare',
+      Number.isFinite(duplicateShare) ? formatPercent(duplicateShare, 1) : null
+    );
+    publishRadius();
+    nearestReadyRun = nearestRun;
+    selectedInside = clark[0];
+    windowBuffer.write(summary.subarray(0, 4));
+    observed = {radii, lMinusR, g, f, j, clark, quadrat, counts, areas, ratios};
+    // Bootstrap the guard from GPU n/A, then rerun once if the last readback changed it.
+    if (lastGuardDistance !== getGuardDistance()) {
+      observedDirty = true;
+      publishWindow();
+      return;
+    }
+    if (envelopeDirty) startEnvelope();
+    ctx.setCost({records: selectedInside, passes: set.compiled.stats.nodeOrder.length});
     const options = ctx.options;
 
     ctx.setReadout('included', formatCount(clark[0]));
@@ -990,7 +1277,7 @@ export async function createPointPatterns(
     };
 
     // Clark-Evans: [n, observed, expected, ratio, standardError, z, p]. The expectation carries
-    // Donnelly's edge correction (the library default); p is two-sided.
+    // Guard correction averages interior focus points; n includes all selected points in the window.
     const ratio = clark[3];
     ctx.setReadout('clarkEvansR', Number.isFinite(ratio) ? ratio.toFixed(2) : null);
     ctx.setReadout(
@@ -1019,8 +1306,8 @@ export async function createPointPatterns(
       ctx.requestLayers();
     }
 
-    // Quadrat: [count, mean, variance, VMR, chiSquare, df, p]. The classes are computed once per
-    // selection, window and grid and then frozen, so toggling anything else keeps the same breaks.
+    // Quadrat: [count, mean, residual variance, reduced chi-square, chi-square, df, p].
+    // The fixed ratio breaks compare each cell with its own area-weighted expectation.
     ctx.setReadout('vmr', Number.isFinite(quadrat[3]) ? quadrat[3].toFixed(1) : null);
     ctx.setReadout(
       'chiSquare',
@@ -1028,16 +1315,16 @@ export async function createPointPatterns(
         ? `chi-square ${formatCount(quadrat[4])} on ${formatCount(quadrat[5])} degrees of freedom, ${formatPValue(quadrat[6])}`
         : null
     );
-    const nextQuadratKey = `${set.key}|${categoryOf(options)}|${options.window}`;
+    const nextQuadratKey = `${set.key}|${categoryOf(options)}|${bounds.join()}|${options.jitter}`;
     if (!quadratClasses || nextQuadratKey !== quadratKey) {
       quadratKey = nextQuadratKey;
-      quadratClasses = makeQuadratTable(counts, ground);
+      quadratClasses = makeQuadratTable(ratios, ground);
       ctx.setLegendData('quadrat', quadratClasses);
       ctx.requestLayers();
     }
     ctx.setChart(
       'quadratHistogram',
-      buildQuadratChart(counts, quadrat[1], quadrat[3], quadratClasses.table)
+      buildQuadratChart(ratios, 1, quadrat[3], quadratClasses.table)
     );
 
     publishWindow();
@@ -1052,6 +1339,21 @@ export async function createPointPatterns(
     if (job.generation !== envelopeGeneration || simulation !== activeSimulation) return;
     const floats = new Float32Array(bytes);
     const count = simulation.radiusCount;
+    const failed = new Uint32Array(bytes)[count * 4];
+    if (failed > 0) {
+      envelopeRunning = false;
+      randomCount = 0;
+      ctx.setReadout(
+        'simulations',
+        `GPU sampler could not place ${formatCount(failed)} points; envelope stopped`
+      );
+      ctx.requestLayers();
+      return;
+    }
+    if (job.index === 0) {
+      randomCount = selectedInside;
+      ctx.requestLayers();
+    }
     envelope.add({
       lMinusR: floats.subarray(0, count),
       g: floats.subarray(count, count * 2),
@@ -1064,35 +1366,52 @@ export async function createPointPatterns(
 
   // ---- parameters and buffers --------------------------------------------------------------
 
+  /** Guard width from the last GPU count/area, never smaller than one radius step. */
+  function getGuardDistance(): number {
+    const radiusStep = ctx.options.maximumDistance / Number(ctx.options.radiusCount);
+    return selectedInside > 0 && measuredWindowArea > 0
+      ? Math.max(2 * Math.sqrt(measuredWindowArea / selectedInside), radiusStep)
+      : radiusStep;
+  }
+
   /** Writes the shared parameter buffers; one job per frame, so the values are the job's. */
   function writeParameters(ripleyCorrection: GPURipleyEdgeCorrection): void {
     const options = ctx.options;
     const maximumDistance = options.maximumDistance;
+    const parameterBounds = options.window === 'rectangle' ? bounds : 'study-window';
+    neighborParameters.write(getGPUNeighborSearchParameterValues({bounds, radius: options.radius}));
+    lastGuardDistance = getGuardDistance();
     ripleyParameters.write(
-      getGPURipleyParameterValues({bounds, maximumDistance, edgeCorrection: ripleyCorrection})
+      getGPURipleyParameterValues({
+        bounds: parameterBounds,
+        maximumDistance,
+        edgeCorrection: ripleyCorrection
+      })
     );
     distanceParameters.write(
       getGPURipleyDistanceFunctionsParameterValues({
-        bounds,
+        bounds: parameterBounds,
         maximumDistance,
         edgeCorrection: options.distanceCorrection
       })
     );
     indicesParameters.write(
       getGPUPointPatternIndicesParameterValues({
-        bounds,
+        bounds: parameterBounds,
+        clarkEvansCorrection: 'guard',
+        guardDistance: lastGuardDistance,
         maximumDistance: Math.min(maximumDistance, 400)
       })
     );
   }
 
-  /** The window as a parameter buffer (the quadrat raster reads it) and a frame of four segments. */
+  /** Writes rectangle inputs; the GPU summary later supplies the quadrat raster bounds. */
   function writeWindowGeometry(): void {
     windowBuffer.write(Float32Array.from(bounds));
     const [x0, y0, x1, y1] = bounds;
-    windowSegments.write(
-      Float32Array.of(x0, y0, x1, y0, x1, y0, x1, y1, x1, y1, x0, y1, x0, y1, x0, y0)
-    );
+    clipParameters.write(Float32Array.from(bounds));
+    rectanglePositions.write(Float32Array.of(x0, y0, x1, y0, x1, y1, x0, y1));
+    for (const preparation of mutablePreparations) preparation.invalidate();
   }
 
   function writeMask(): void {
@@ -1110,23 +1429,12 @@ export async function createPointPatterns(
     subject.maskBuffer.write(mask);
   }
 
+  /** Updates only the radius; the subject's precompiled GPU graph writes the positions. */
   function writeJitter(subject: SubjectData, radius: number): void {
     if (subject.jitterApplied === radius) return;
     subject.jitterApplied = radius;
-    if (radius === 0) {
-      subject.current = subject.base;
-    } else {
-      const random = createSeededRandom(subject.id === 'observations' ? 11 : 23);
-      const jittered = new Float32Array(subject.base.length);
-      for (let index = 0; index < subject.count; index++) {
-        const angle = random() * Math.PI * 2;
-        const distance = Math.sqrt(random()) * radius;
-        jittered[index * 2] = subject.base[index * 2] + Math.cos(angle) * distance;
-        jittered[index * 2 + 1] = subject.base[index * 2 + 1] + Math.sin(angle) * distance;
-      }
-      subject.current = jittered;
-    }
-    subject.positionsBuffer.write(subject.current);
+    subject.jitter?.radius.write(Float32Array.of(radius));
+    subject.jitterDirty = true;
   }
 
   /** Remembers the curve being replaced so the next selection can be compared with it. */
@@ -1156,10 +1464,13 @@ export async function createPointPatterns(
     ctx.options.subject === 'observations' ? ctx.options.jitter : 0
   );
   writeJitter(subjects.places, ctx.options.subject === 'places' ? ctx.options.jitter : 0);
+  const initialViewport = ctx.getViewport();
+  if (ctx.options.window === 'view' && initialViewport) {
+    bounds = getViewportFrameBounds(initialViewport, projection);
+  }
   writeWindowGeometry();
   await requestSet();
   envelope.reset(Number(ctx.options.radiusCount));
-  landDirty = true;
   derive();
   lastChangeTime = performance.now();
 
@@ -1168,6 +1479,7 @@ export async function createPointPatterns(
     if (!set || measuring || destroyed) return;
     measuring = true;
     ctx.setReadout('timing', 'measuring…');
+    writeParameters(ctx.options.ripleyCorrection);
     try {
       const timing = await measureCompiledGraph(device, set.compiled, {
         parameters: undefined,
@@ -1189,7 +1501,7 @@ export async function createPointPatterns(
 
   ctx.setReadout(
     'isotropicCap',
-    'Isotropic edge weights are capped at 100, so pairs very near the window edge at large r are under-corrected. Kaplan-Meier and Hanisch weights exist for G, F and J only. Positions are float32 metres.'
+    'Isotropic weights are capped at 100. Polygon Hanisch and quadrat areas use lattices. Positions are Lambert equal-area float32 metres; city-scale distance distortion is below 0.01%.'
   );
 
   // ---- jobs --------------------------------------------------------------------------------
@@ -1215,6 +1527,9 @@ export async function createPointPatterns(
     commandEncoder: Parameters<SceneInstance<PointPatternOptions>['encode']>[0]
   ): void {
     writeParameters(job.correction);
+    nearestRun++;
+    nearestReadyRun = -1;
+    nearestReadback = null;
     set.compiled.encode(commandEncoder, {parameters: undefined});
     set.reader.request(commandEncoder);
   }
@@ -1224,21 +1539,8 @@ export async function createPointPatterns(
     simulation: SimulationSet,
     commandEncoder: Parameters<SceneInstance<PointPatternOptions>['encode']>[0]
   ): void {
-    const count = selectedInside;
-    if (simulation.maskCount !== count) {
-      const mask = new Uint32Array(simulation.subject.count);
-      mask.fill(1, 0, count);
-      simulation.maskBuffer.write(mask);
-      simulation.maskCount = count;
-    }
-    fillRandomPositions(
-      simulation.scratch,
-      count,
-      bounds,
-      ctx.options.nullModel === 'city' ? land : null,
-      createSeededRandom(RANDOM_SEED + job.index)
-    );
-    if (count > 0) simulation.positionsBuffer.write(simulation.scratch.subarray(0, count * 2));
+    randomCounts.write(Uint32Array.of(selectedInside));
+    randomParameters.write(getGPUDotDensityParameterValues({seed: RANDOM_SEED + job.index}));
     writeParameters(ctx.options.ripleyCorrection);
     simulation.compiled.encode(commandEncoder, {parameters: undefined});
     simulation.reader.request(commandEncoder);
@@ -1254,9 +1556,11 @@ export async function createPointPatterns(
 
   return {
     getCompiledGraphs: () =>
-      [active?.compiled, activeSimulation?.compiled].filter(
-        Boolean
-      ) as unknown as CompiledGPUCommandGraph<never>[],
+      [
+        active?.compiled,
+        activeSimulation?.compiled,
+        ...Object.values(subjects).map(subject => subject.jitter?.compiled)
+      ].filter(Boolean) as unknown as CompiledGPUCommandGraph<never>[],
 
     setOption(id, _value, state) {
       switch (id) {
@@ -1274,14 +1578,13 @@ export async function createPointPatterns(
         case 'jitter':
           writeJitter(subjectOf(state), state.jitter);
           markObservedChanged();
+          markEnvelopeChanged();
           break;
         case 'window':
-          if (state.window === 'city') bounds = [...cityWindow];
+          bounds = [...cityWindow];
           lastViewSignature = null;
           writeWindowGeometry();
-          landDirty = true;
-          markObservedChanged();
-          markEnvelopeChanged();
+          void requestSet(applySelection);
           break;
         case 'maximumDistance':
         case 'ripleyCorrection':
@@ -1291,16 +1594,17 @@ export async function createPointPatterns(
           markEnvelopeChanged();
           break;
         case 'nullModel':
-          markEnvelopeChanged();
+          void requestSet(applySelection);
           break;
         case 'compareCorrections':
           for (const name of CORRECTIONS) delete edgeCurves[name];
           markObservedChanged();
           break;
         case 'radius':
+          markObservedChanged();
+          publishRadius();
+          break;
         case 'showRadius':
-          densestDirty = true;
-          densestChangeTime = performance.now();
           publishRadius();
           break;
         case 'emphasizeEdge':
@@ -1326,7 +1630,7 @@ export async function createPointPatterns(
         ctx.setLegendData('nearestTable', nearestTable);
       }
       if (observed) {
-        quadratClasses = makeQuadratTable(observed.counts, ground);
+        quadratClasses = makeQuadratTable(observed.ratios, ground);
         ctx.setLegendData('quadrat', quadratClasses);
         publishCurveChart();
       }
@@ -1344,19 +1648,33 @@ export async function createPointPatterns(
       if (!hit || !rows) return null;
       const row = rows[hit.index];
       const lngLat: LngLat = [subject.lngLat[row * 2], subject.lngLat[row * 2 + 1]];
-      const neighbours = index.within(lngLat, options.radius).length - 1;
-      let nearest = Number.POSITIVE_INFINITY;
-      for (const searchRadius of [25, 100, 400, 1600, 6400]) {
-        const near = index.within(lngLat, searchRadius).map(slot => rows[slot]);
-        nearest = getNearestDistance(subject.current, row, near);
-        if (Number.isFinite(nearest)) break;
+      if (active && nearestReadyRun === nearestRun && nearestRequestedRun !== nearestRun) {
+        const run = nearestRun;
+        const set = active;
+        nearestRequestedRun = run;
+        void set.nearestDistances
+          .readAsync()
+          .then(bytes => {
+            if (!destroyed && active === set && run === nearestRun) {
+              nearestReadback = new Float32Array(bytes.slice().buffer);
+              ctx.requestLayers();
+            }
+          })
+          .catch(() => {
+            // A disposed scene or lost device cannot supply a tooltip value.
+          });
       }
+      const nearest = nearestReadback?.[row] ?? Number.NaN;
       const expected = observed.clark[2];
       const classIndex = nearestTable ? getClassIndexOf(nearestTable, nearest) : -1;
       const tooltipRows: TooltipRow[] = [
         {
           label: 'Nearest neighbour',
-          value: Number.isFinite(nearest) ? formatDistance(nearest) : 'none',
+          value: !nearestReadback
+            ? '…'
+            : Number.isFinite(nearest)
+              ? formatDistance(nearest)
+              : 'none',
           swatch: nearestTable && classIndex >= 0 ? nearestTable.colors[classIndex] : undefined,
           emphasis: true
         }
@@ -1371,11 +1689,6 @@ export async function createPointPatterns(
           unit: 'expected'
         });
       }
-      tooltipRows.push({
-        label: `Within ${formatDistance(options.radius)}`,
-        value: formatCount(neighbours),
-        unit: options.subject === 'observations' ? 'other sightings' : 'other places'
-      });
       return {
         title: categoryLabel(options),
         subtitle: nearestPlaceLabel(CHICAGO, lngLat, {maxDistanceMeters: 8000}) ?? undefined,
@@ -1385,17 +1698,22 @@ export async function createPointPatterns(
     },
 
     encode(commandEncoder, frame) {
+      for (const subject of Object.values(subjects)) {
+        if (subject.jitterDirty && subject.jitter) {
+          subject.jitter.compiled.encode(commandEncoder, {parameters: undefined});
+          subject.jitterDirty = false;
+        }
+      }
       const set = active;
       const simulation = activeSimulation;
       if (!set || !simulation) return;
       if (ctx.options.window === 'view') {
-        const viewBounds = getViewportMetricBounds(frame.viewport, projection);
+        const viewBounds = getViewportFrameBounds(frame.viewport, projection);
         const signature = viewBounds.map(value => Math.round(value / 5)).join(',');
         if (signature !== lastViewSignature) {
           lastViewSignature = signature;
           bounds = [...viewBounds];
           writeWindowGeometry();
-          landDirty = true;
           markObservedChanged();
           markEnvelopeChanged();
         }
@@ -1404,7 +1722,7 @@ export async function createPointPatterns(
       set.reader.flush(commandEncoder);
       simulation.reader.flush(commandEncoder);
       const now = performance.now();
-      if (densestDirty && now - densestChangeTime > 200) refreshDensest();
+      if (setSwap.pending || measuring) return;
       if (inFlight) {
         // A readback that ended without a result (device or ring torn down) must not block the queue.
         if (now - inFlightSince > 4000 && !set.reader.isPending && !simulation.reader.isPending) {
@@ -1438,16 +1756,18 @@ export async function createPointPatterns(
       const coordinateOrigin: [number, number, number] = [origin[0], origin[1], 0];
       const layers: Layer[] = [];
 
-      // Quadrat fill: one frozen class table, empty quadrats transparent (the lake stays empty).
+      // Counts relative to area-weighted expectation; zero-area quadrats carry NaN.
       if (options.showQuadrats && quadratClasses) {
         layers.push(
           new SpatialAnalysisRasterLayer({
             id: `pattern-quadrats-${set.key}`,
             coordinateOrigin,
+            analysisFrame: projection.frame,
             gridSize: set.quadratGrid,
             bounds: windowBuffer.buffer,
-            values: set.quadratCounts,
-            valueFormat: 'uint32',
+            values: set.quadratRatios,
+            valueFormat: 'float32',
+            noDataColor: [0, 0, 0, 0],
             colormap: 'uniform',
             ...getClassTableLayerProps(quadratClasses.table),
             outlineClasses: {color: getParameterInk(ground, 90), widthPixels: 0.7},
@@ -1456,12 +1776,13 @@ export async function createPointPatterns(
         );
       }
 
-      // The window: everything inside it that is not city land is hatched ("no record can fall here").
+      // Outside-city hatching includes holes and stays in the same analysis frame.
       const hatch = hatches[options.window];
       layers.push(
         new SpatialAnalysisPolygonLayer({
           id: `pattern-outside-${options.window}`,
           coordinateOrigin,
+          analysisFrame: projection.frame,
           triangles: hatch.mesh.triangles,
           features: hatch.mesh.triangleFeatures,
           vertexCount: hatch.mesh.vertexCount,
@@ -1485,6 +1806,7 @@ export async function createPointPatterns(
           new SpatialAnalysisPointLayer({
             id: `pattern-others-${subject.id}`,
             coordinateOrigin,
+            analysisFrame: projection.frame,
             positions: subject.positionsBuffer,
             instanceCount: subject.count,
             radiusPixels: 0.8,
@@ -1504,6 +1826,7 @@ export async function createPointPatterns(
           new SpatialAnalysisPointLayer({
             id: `pattern-nearest-${subject.id}`,
             coordinateOrigin,
+            analysisFrame: projection.frame,
             positions: subject.positionsBuffer,
             instanceCount: subject.count,
             values: set.nearestDistances,
@@ -1518,6 +1841,7 @@ export async function createPointPatterns(
           new SpatialAnalysisPointLayer({
             id: `pattern-duplicates-${subject.id}`,
             coordinateOrigin,
+            analysisFrame: projection.frame,
             positions: subject.positionsBuffer,
             instanceCount: subject.count,
             values: set.nearestDistances,
@@ -1537,6 +1861,7 @@ export async function createPointPatterns(
           new SpatialAnalysisPointLayer({
             id: `pattern-random-${subject.id}`,
             coordinateOrigin,
+            analysisFrame: projection.frame,
             positions: subject.randomBuffer,
             instanceCount: randomCount,
             radiusPixels: radiusStops,
@@ -1553,6 +1878,7 @@ export async function createPointPatterns(
           new SpatialAnalysisPointLayer({
             id: `pattern-selected-${subject.id}`,
             coordinateOrigin,
+            analysisFrame: projection.frame,
             positions: subject.positionsBuffer,
             instanceCount: subject.count,
             values: subject.maskBuffer,
@@ -1573,8 +1899,10 @@ export async function createPointPatterns(
         new SpatialAnalysisSegmentLayer({
           id: 'pattern-window',
           coordinateOrigin,
-          segments: windowSegments,
-          instanceCount: 4,
+          analysisFrame: projection.frame,
+          segments: set.windowOutline,
+          weights: set.windowOutlineWeights,
+          instanceCount: set.windowEdgeCapacity,
           widthPixels: 1.5,
           color: getParameterInk(ground, 235)
         })

@@ -172,6 +172,7 @@ export const visibilityMode: SpatialAnalysisModeDefinition = {
     // --- Setup graph: hillshade and the extrema pyramid, run once ------------------------------
     const setupGraph = new GPUCommandGraph<void>(device, {id: 'visibility-setup'});
     const setupElevation = {
+      // terrain.png names no vertical datum (and may use synthetic fallback), so verticalDatum stays undeclared.
       id: 'elevation',
       format: 'float32' as const,
       storage: {

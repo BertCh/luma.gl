@@ -339,6 +339,7 @@ export async function decodeRasterImage(
     }
     return {width, height, values: uv, encoding, depth: 1, bands: 2};
   }
+  // Terrarium/Mapbox tiles mix sources: vertical datum unspecified, so verticalDatum stays undeclared.
   const elevation = new Float32Array(count);
   for (let index = 0; index < count; index++) {
     const red = pixels[index * 4];

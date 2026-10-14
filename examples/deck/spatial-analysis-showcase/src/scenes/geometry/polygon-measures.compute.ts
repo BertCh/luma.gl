@@ -41,10 +41,14 @@ import {SummaryReader} from '../../engine/summary-reader';
 import {makeClassTable} from '../../cartography/class-table';
 import type {ClassTable} from '../../cartography/types';
 import type {SceneContext, SceneInstance} from '../scene';
+import {createGlobalPolygonMeasures} from './polygon-measures-global';
 import {B3_PALETTE, FeatureTriangleLayer, PairSegmentLayer, type B3ValueMapping} from './b3-layers';
 
 /** Datasets of the scene. */
-export type PolygonDatasetId = 'us-counties' | 'chicago-community-areas' | 'chicago-tracts';
+type RegionalPolygonDatasetId = 'us-counties' | 'chicago-community-areas' | 'chicago-tracts';
+
+/** Loaded polygon layers and the inline global fixture. */
+export type PolygonDatasetId = RegionalPolygonDatasetId | 'antimeridian-and-poles';
 
 /** What colors the polygons. */
 export type PolygonMetric =
@@ -151,7 +155,7 @@ type DatasetSpec = {
   groupName: (row: number) => string;
 };
 
-const DATASET_SPECS: Record<PolygonDatasetId, DatasetSpec> = {
+const DATASET_SPECS: Record<RegionalPolygonDatasetId, DatasetSpec> = {
   'us-counties': {
     space: 'mercator',
     groupColumn: 'stateFips',
@@ -206,7 +210,7 @@ type ColoringTable = {
 
 /** Everything built for one dataset; destroyed when the dataset option changes. */
 type DatasetState = {
-  id: PolygonDatasetId;
+  id: RegionalPolygonDatasetId;
   layout: PolygonLayout;
   names: string[];
   groupIds: Uint32Array;
@@ -259,6 +263,8 @@ type DatasetState = {
   labelFeature: number;
   labelGridCount: number;
   validityOverflow: number;
+  /** Rejected feature counts read from each measures node's GPU status. */
+  measuresInvalidCounts: Record<PolygonMeasuresOptions['areaSystem'], number>;
   selectedEdgeCapacity: number;
   builders: {
     measures: (options: PolygonMeasuresOptions) => Promise<CompiledGPUCommandGraph<void>>;
@@ -288,15 +294,15 @@ type DatasetState = {
  * over the whole layer; the per-feature outputs are bound straight into the fill layer, and a
  * small summary table is read back once the controls settle for tooltips and legends.
  */
-export async function createPolygonMeasures(
-  ctx: SceneContext<PolygonMeasuresOptions>
+async function createRegionalPolygonMeasures(
+  ctx: SceneContext<PolygonMeasuresOptions & {dataset: RegionalPolygonDatasetId}>
 ): Promise<SceneInstance<PolygonMeasuresOptions>> {
   const {device} = ctx;
   let destroyed = false;
   let state: DatasetState | null = null;
-  const layouts = new Map<PolygonDatasetId, PolygonLayout>();
+  const layouts = new Map<RegionalPolygonDatasetId, PolygonLayout>();
 
-  const getLayout = (id: PolygonDatasetId): PolygonLayout => {
+  const getLayout = (id: RegionalPolygonDatasetId): PolygonLayout => {
     let layout = layouts.get(id);
     if (!layout) {
       layout = loadPolygonLayout(ctx.datasets.get(id));
@@ -309,7 +315,7 @@ export async function createPolygonMeasures(
   // Building
   // -------------------------------------------------------------------------------------------
 
-  async function buildDataset(id: PolygonDatasetId): Promise<DatasetState> {
+  async function buildDataset(id: RegionalPolygonDatasetId): Promise<DatasetState> {
     const dataset = ctx.datasets.get(id);
     const spec = DATASET_SPECS[id];
     const layout = getLayout(id);
@@ -417,6 +423,9 @@ export async function createPolygonMeasures(
     const centroidsWgs84 = makeColumn('centroids-wgs84', featureCount * 2);
     const boundsWgs84 = makeColumn('bounds-wgs84', featureCount * 4);
     const vertexCounts = makeColumn('vertex-counts');
+    const planarInvalidCount = makeColumn('planar-invalid-count', 1);
+    const sphereInvalidCount = makeColumn('sphere-invalid-count', 1);
+    const wgs84InvalidCount = makeColumn('wgs84-invalid-count', 1);
     const groupAreas = makeColumn('group-areas', groupCount);
     const groupCentroids = makeColumn('group-centroids', groupCount * 2);
     const groupFeatureCounts = makeColumn('group-feature-counts', groupCount);
@@ -517,7 +526,8 @@ fn toLngLat(p: vec2<f32>) -> vec2<f32> {
           output: {
             areas: areaPlanar,
             lengths: view('length-planar', columns.lengthPlanar),
-            centroids: imp('centroids-planar', centroidsPlanar, 'float32x2', featureCount)
+            centroids: imp('centroids-planar', centroidsPlanar, 'float32x2', featureCount),
+            status: {invalidCount: imp('planar-invalid-count', planarInvalidCount, 'uint32', 1)}
           }
         })
       );
@@ -525,6 +535,7 @@ fn toLngLat(p: vec2<f32>) -> vec2<f32> {
         new GPUGeometryMeasures({
           spatialContext: {
             coordinateSpace: 'longitude-latitude',
+            datum: 'EPSG:4326',
             metric: 'great-circle',
             units: 'meters'
           },
@@ -533,7 +544,8 @@ fn toLngLat(p: vec2<f32>) -> vec2<f32> {
           ...common,
           output: {
             areas: view('area-sphere', columns.areaSphere),
-            lengths: view('length-sphere', columns.lengthSphere)
+            lengths: view('length-sphere', columns.lengthSphere),
+            status: {invalidCount: imp('sphere-invalid-count', sphereInvalidCount, 'uint32', 1)}
           }
         })
       );
@@ -552,6 +564,7 @@ fn toLngLat(p: vec2<f32>) -> vec2<f32> {
         new GPUGeometryMeasures({
           spatialContext: {
             coordinateSpace: 'longitude-latitude',
+            datum: 'EPSG:4326',
             metric: 'ellipsoidal',
             units: 'meters'
           },
@@ -564,7 +577,8 @@ fn toLngLat(p: vec2<f32>) -> vec2<f32> {
             lengths: view('length-wgs84', columns.lengthWgs84),
             centroids: imp('centroids-wgs84', centroidsWgs84, 'float32x2', featureCount),
             bounds: imp('bounds-wgs84', boundsWgs84, 'float32x4', featureCount),
-            vertexCounts: imp('vertex-counts', vertexCounts, 'uint32', featureCount)
+            vertexCounts: imp('vertex-counts', vertexCounts, 'uint32', featureCount),
+            status: {invalidCount: imp('wgs84-invalid-count', wgs84InvalidCount, 'uint32', 1)}
           },
           ...groupArrays
         })
@@ -972,6 +986,7 @@ fn toLngLat(p: vec2<f32>) -> vec2<f32> {
       labelFeature,
       labelGridCount: 0,
       validityOverflow: 0,
+      measuresInvalidCounts: {planar: 0, spherical: 0, wgs84: 0},
       selectedEdgeCapacity,
       builders: {
         measures: buildMeasures,
@@ -1016,7 +1031,10 @@ fn toLngLat(p: vec2<f32>) -> vec2<f32> {
       float(centroidsWgs84, featureCount * 2),
       float(mask, featureCount),
       float(groupAreas, groupCount),
-      {buffer: validityOverflow, size: 4}
+      {buffer: validityOverflow, size: 4},
+      {buffer: planarInvalidCount, size: 4},
+      {buffer: sphereInvalidCount, size: 4},
+      {buffer: wgs84InvalidCount, size: 4}
     ];
     next.tableReader = new SummaryReader(resources, `table-${id}`, tableSources, bytes => {
       if (destroyed || state !== next) return;
@@ -1052,6 +1070,11 @@ fn toLngLat(p: vec2<f32>) -> vec2<f32> {
         groupAreas: f32(groupCount)
       };
       next.validityOverflow = u32(1)[0];
+      next.measuresInvalidCounts = {
+        planar: u32(1)[0],
+        spherical: u32(1)[0],
+        wgs84: u32(1)[0]
+      };
       publishTable(next);
     });
     next.coloringReader = new SummaryReader(
@@ -1242,7 +1265,13 @@ fn toLngLat(p: vec2<f32>) -> vec2<f32> {
     }
     writeDeflatedGeometry(active, table);
     writeLabelSearchGrid(active, options);
-    ctx.setReadout('features', featureCount);
+    const invalidCount = active.measuresInvalidCounts[options.areaSystem];
+    ctx.setReadout(
+      'features',
+      invalidCount > 0
+        ? `${formatCount(featureCount)}; ${invalidCount} features rejected: ambiguous or over-wide rings`
+        : featureCount
+    );
     ctx.setReadout('vertices', active.layout.vertexCount);
     let planarTotal = 0;
     let sphereTotal = 0;
@@ -1922,6 +1951,102 @@ fn toLngLat(p: vec2<f32>) -> vec2<f32> {
         state.resources.destroy();
         state = null;
       }
+    }
+  };
+}
+
+/** Switches complete dataset pipelines; the global fixture only prepares and measures area. */
+export async function createPolygonMeasures(
+  ctx: SceneContext<PolygonMeasuresOptions>
+): Promise<SceneInstance<PolygonMeasuresOptions>> {
+  const graphSwap = new GraphSwap();
+  const readoutIds = new Set<string>();
+  const chartIds = new Set<string>();
+  let active: Awaited<ReturnType<typeof buildInstance>> | null = null;
+
+  async function buildInstance() {
+    let options = {...ctx.options};
+    const context: SceneContext<PolygonMeasuresOptions> = {
+      ...ctx,
+      get options() {
+        return options;
+      },
+      setReadout(id, value) {
+        if (active?.context !== context) return;
+        readoutIds.add(id);
+        ctx.setReadout(id, value);
+      },
+      setChart(id, chart) {
+        if (active?.context !== context) return;
+        chartIds.add(id);
+        ctx.setChart(id, chart);
+      },
+      setStatus(message) {
+        if (active?.context === context) ctx.setStatus(message);
+      }
+    };
+    const dataset = options.dataset;
+    const instance =
+      dataset === 'antimeridian-and-poles'
+        ? await createGlobalPolygonMeasures(context)
+        : await createRegionalPolygonMeasures({
+            ...context,
+            get options() {
+              return {...options, dataset};
+            }
+          });
+    return {
+      context,
+      instance,
+      dataset,
+      updateOptions(next: PolygonMeasuresOptions) {
+        options = {...next};
+      }
+    };
+  }
+
+  function commitInstance(next: NonNullable<typeof active>) {
+    const previous = active;
+    active = next;
+    previous?.instance.destroy();
+    for (const id of readoutIds) ctx.setReadout(id, null);
+    for (const id of chartIds) ctx.setChart(id, null);
+    readoutIds.clear();
+    chartIds.clear();
+    ctx.setStatus('');
+    if (next.dataset === 'antimeridian-and-poles') {
+      ctx.flyTo({longitude: 0, latitude: 0, pitch: 0, bearing: 0});
+      ctx.fitBounds([-180, -85.0511, 180, 85.0511], {padding: 20});
+    }
+    ctx.requestLayers();
+  }
+
+  commitInstance(await buildInstance());
+  return {
+    getCompiledGraphs: () => active?.instance.getCompiledGraphs() ?? [],
+    encode: (encoder, frame) => active?.instance.encode(encoder, frame),
+    getLayers: () => active?.instance.getLayers() ?? [],
+    getTooltip: event => active?.instance.getTooltip?.(event) ?? null,
+    onClick: event => active?.instance.onClick?.(event) ?? false,
+    onThemeChange: theme => active?.instance.onThemeChange?.(theme),
+    setOption(id, value, options) {
+      if (id === 'dataset' || graphSwap.pending) {
+        void graphSwap
+          .request({
+            build: buildInstance,
+            commit: commitInstance,
+            discard: next => next.instance.destroy()
+          })
+          .catch(error => ctx.setStatus(String(error)));
+        return;
+      }
+      active?.updateOptions(options);
+      active?.instance.setOption?.(id, value, options);
+    },
+    destroy() {
+      graphSwap.destroy();
+      active?.instance.destroy();
+      active = null;
     }
   };
 }

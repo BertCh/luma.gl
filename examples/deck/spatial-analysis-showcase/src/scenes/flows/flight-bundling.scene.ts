@@ -307,7 +307,7 @@ export default defineScene<FlightBundlingOptions>({
       max: 3,
       step: 0.05,
       default: 1,
-      help: 'Scales the light of every route. Routes add up on the night ground, so crowded corridors read brighter; lower it to see through the hairball.'
+      help: 'Scales the opacity of every route. In one colour the routes add up as light, so crowded corridors read brighter; in classes, longer (or later) routes are drawn on top. Lower it to see through the hairball.'
     },
     {
       kind: 'select',
@@ -517,7 +517,7 @@ compiled.encode(commandEncoder, {parameters: undefined});
     what: 'Previously: who holds the airline network together (airline network). Next: the same pairs as a matrix (flight matrix).\n\n`GPUEdgeBundling` is kernel-density edge bundling (KDEEB, Hurter, Ersoy and Telea) as compute: every edge becomes a polyline whose control points are repeatedly pulled up the gradient of a control-point density field, resampled to even spacing and smoothed, with the endpoints pinned. The density grid covers a square work box computed on the GPU from the live edges, so the kernel radius is a fraction of that box.',
     why: 'Origin-destination data has far more edges than a map can show. Bundling turns “everything crosses everything” into corridors, which is how you see where flows concentrate. It is a display transformation: it generalises the way a cartographer does, and it invents corridor positions. Know when not to bundle: to compare pairs, use a matrix.',
     howToRead:
-      'Cool, dim lines are short routes; bright ones are long. Where many lines run together the light adds up. A bundle tells you that routes share a corridor, not which way any route flies: its curvature carries no meaning. White rings are the best-connected airports. Caveats: OpenFlights is a community snapshot frozen in 2014 (routes, not seats or schedules); the US data is scheduled flights of the largest carriers in July 2023 from the BTS On-Time file, merged to pairs; the radius is relative to the data you feed in; float32 chaos means bundles agree statistically, not bit for bit, between GPUs; and edges are straight in longitude and latitude and bundled in that space, not on the sphere (great-circle initial subdivision would be a library addition).'
+      'Cool, dim lines are short routes; bright ones are long, drawn on top. In one colour, the light adds up where many lines run together. A bundle tells you that routes share a corridor, not which way any route flies: its curvature carries no meaning. White rings are the best-connected airports. Caveats: OpenFlights is a community snapshot frozen in 2014 (routes, not seats or schedules); the US data is scheduled flights of the largest carriers in July 2023 from the BTS On-Time file, merged to pairs; the radius is relative to the data you feed in; float32 chaos means bundles agree statistically, not bit for bit, between GPUs; and edges are straight in longitude and latitude and bundled in that space, not on the sphere (great-circle initial subdivision would be a library addition).'
   },
 
   create: async ctx => (await import('./flight-bundling.compute')).createFlightBundling(ctx),

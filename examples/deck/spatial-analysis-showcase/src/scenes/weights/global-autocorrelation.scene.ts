@@ -678,7 +678,9 @@ export default defineScene<GlobalAutocorrelationOptions>({
       'Is diabetes clustered?',
       'Age-adjusted prevalence, CDC PLACES 2024, quantile classes'
     ),
-    credit: CREDIT
+    credit: CREDIT,
+    caveat:
+      "Moran's I depends on the zoning: tracts and counties give different values for the same process (MAUP)."
   },
   annotations: [],
 

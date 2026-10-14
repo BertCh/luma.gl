@@ -155,6 +155,7 @@ export async function createWildfireSeasons(
             ? WEB_MERCATOR_PROJECTION.spatialContext
             : {
                 coordinateSpace: 'longitude-latitude',
+                datum: 'EPSG:4326',
                 metric: options.areaSystem === 'spherical' ? 'great-circle' : 'ellipsoidal',
                 units: 'meters'
               },
@@ -179,6 +180,7 @@ export async function createWildfireSeasons(
       new GPUGeometryMeasures({
         spatialContext: {
           coordinateSpace: 'longitude-latitude',
+          datum: 'EPSG:4326',
           metric: 'ellipsoidal',
           units: 'meters'
         },

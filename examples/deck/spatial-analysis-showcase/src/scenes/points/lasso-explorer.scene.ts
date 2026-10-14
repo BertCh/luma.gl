@@ -4,7 +4,7 @@
 
 import {CHICAGO, labelsFor, MONTROSE_POINT} from '../../cartography/gazetteer';
 import {ground} from '../../cartography/grounds';
-import {getRegistryColors} from '../../cartography/hue-registry';
+import {EFFORT_CAVEAT, getRegistryColors} from '../../cartography/hue-registry';
 import {defineScene, type LegendSpec} from '../scene';
 import {
   getGhostColor,
@@ -144,7 +144,8 @@ export default defineScene<LassoOptions>({
   furniture: {
     title: pointsCartouche('When does Uptown log nature?', 'Records inside the shape, by hour'),
     scaleBar: {units: 'metric'},
-    credit: POINTS_CREDITS.nature
+    credit: POINTS_CREDITS.nature,
+    caveat: EFFORT_CAVEAT
   },
   annotations: labelsFor(CHICAGO, ['lake-michigan', 'loop'], {
     ...LAKE_LABEL,

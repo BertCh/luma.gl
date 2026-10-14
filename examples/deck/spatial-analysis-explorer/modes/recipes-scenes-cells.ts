@@ -21,7 +21,8 @@ import {
   GPU_EMERGING_HOT_SPOTS_PARAMETER_LENGTH,
   GPU_PERMUTATION_PARAMETER_LENGTH,
   GPU_SPATIAL_AUTOCORRELATION_PARAMETER_LENGTH,
-  GPU_WGS84_SEMI_MAJOR_AXIS_METERS
+  GPU_WGS84_SEMI_MAJOR_AXIS_METERS,
+  type GPUSpatialContext
 } from '@luma.gl/experimental/gpu-spatial-analysis';
 import {formatCount} from '../spatial-analysis-resources';
 import {PackedColorRasterLayer, PackedQuadbinCellLayer} from './classification-layers';
@@ -44,6 +45,12 @@ const HOT_SPOT_NEIGHBORS_PER_ROW = 40;
 /** Quadbin cell width at the equator in meters (Web Mercator circumference over 2^resolution). */
 const HOT_SPOT_CELL_EQUATOR_METERS = (2 * Math.PI * GPU_WGS84_SEMI_MAJOR_AXIS_METERS) / 2 ** 15;
 const HOT_SPOT_MAXIMUM_PERMUTATIONS = 199;
+/** Cell centers are lon/lat; the distance band is great-circle meters. */
+const HOT_SPOT_SPATIAL_CONTEXT: GPUSpatialContext = {
+  coordinateSpace: 'longitude-latitude',
+  datum: 'EPSG:4326',
+  metric: 'great-circle'
+};
 /** Width of a Quadbin cell in degrees of longitude at the resolution. */
 const HOT_SPOT_CELL_DEGREES = 360 / 2 ** HOT_SPOT_RESOLUTION;
 
@@ -120,6 +127,7 @@ export const buildHotSpotScene: RecipeSceneBuilder = async host => {
     'search-parameters',
     'float32',
     getGPUNeighborSearchParameterValues({
+      spatialContext: HOT_SPOT_SPATIAL_CONTEXT,
       bounds,
       radius: radiusCells * cellMeters,
       weightKind: 'binary'
@@ -187,7 +195,7 @@ export const buildHotSpotScene: RecipeSceneBuilder = async host => {
       },
       cellCapacity: capacity,
       distanceBand: {
-        spatialContext: {coordinateSpace: 'longitude-latitude', metric: 'great-circle'},
+        spatialContext: HOT_SPOT_SPATIAL_CONTEXT,
         neighborSearchParameters: searchParameters.view,
         gridSize: [64, 64],
         neighborCapacity: capacity * HOT_SPOT_NEIGHBORS_PER_ROW
@@ -281,6 +289,7 @@ export const buildHotSpotScene: RecipeSceneBuilder = async host => {
   const writeNeighborParameters = () => {
     searchParameters.parameters.write(
       getGPUNeighborSearchParameterValues({
+        spatialContext: HOT_SPOT_SPATIAL_CONTEXT,
         bounds,
         radius: radiusCells * cellMeters,
         weightKind: 'binary'

@@ -283,6 +283,7 @@ export async function createHurricaneFamilies(
         id: 'routes',
         spatialContext: {
           coordinateSpace: 'longitude-latitude',
+          datum: 'EPSG:4326',
           metric: 'great-circle',
           units: 'meters'
         },
@@ -346,6 +347,7 @@ export async function createHurricaneFamilies(
         id: 'route-similarity',
         spatialContext: {
           coordinateSpace: 'longitude-latitude',
+          datum: 'EPSG:4326',
           metric: 'great-circle',
           units: 'meters'
         },

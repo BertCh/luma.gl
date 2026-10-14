@@ -414,7 +414,7 @@ export async function createBixiBundles(
         sourceNodes: importGraphBuffer(commandGraph, 'sources', sources, 'uint32', edgeCount),
         targetNodes: importGraphBuffer(commandGraph, 'targets', targets, 'uint32', edgeCount),
         edgeMask: importGraphBuffer(commandGraph, 'mask', mask, 'uint32', edgeCount),
-        spatialContext: {coordinateSpace: 'longitude-latitude', metric: 'none'},
+        spatialContext: {coordinateSpace: 'longitude-latitude', datum: 'EPSG:4326', metric: 'none'},
         pointsPerEdge,
         maximumIterations: BUNDLE_MAXIMUM_ITERATIONS,
         densityResolution,

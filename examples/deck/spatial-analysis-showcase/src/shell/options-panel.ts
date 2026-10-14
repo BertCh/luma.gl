@@ -118,7 +118,7 @@ export class OptionsPanel {
       const item = h(
         'div',
         {class: 'control-item'},
-        h('span', {class: 'step-tag'}, 'this step'),
+        h('span', {class: 'step-tag'}, 'This step'),
         control.element,
         hasState
           ? h('div', {class: 'control-side'}, h('span', {class: 'modified-dot'}), resetButton)

@@ -506,6 +506,9 @@
 
 /* Show values */
 .chart-box .chart-table {
+  display: block;
+  max-width: 100%;
+  overflow-x: auto;
   margin-top: 6px;
   font-size: var(--fs-sm, 12px);
 }

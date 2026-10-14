@@ -265,13 +265,13 @@ ${Number.isFinite(ratio) ? `<line class="diagram-accent" x1="${markerX}" y1="26"
 }
 
 /**
- * Histogram of the quadrat counts with the mean (the expectation of a random pattern) marked. Bars
+ * Histogram of GPU observed-to-expected quadrat ratios with the CSR expectation (1) marked. Bars
  * are coloured by the class table of the map; the empty class is grey so the lake does not hide the
  * rest.
  *
- * @param counts Records per quadrat.
- * @param mean Mean count per quadrat.
- * @param varianceToMeanRatio VMR, quoted in the description.
+ * @param counts GPU ratios of observed to area-weighted expected counts; NaN outside.
+ * @param mean Expected ratio (1).
+ * @param varianceToMeanRatio Reduced chi-square, quoted in the description.
  * @param table The quadrat class table drawn on the map.
  */
 export function buildQuadratChart(
@@ -281,12 +281,14 @@ export function buildQuadratChart(
   table: ClassTable
 ): BarChartData {
   let maximum = 1;
-  for (let index = 0; index < counts.length; index++) maximum = Math.max(maximum, counts[index]);
-  const integerBins = maximum <= 24;
-  const binCount = integerBins ? maximum + 1 : 16;
-  const high = integerBins ? maximum + 1 : maximum;
+  for (let index = 0; index < counts.length; index++) {
+    if (Number.isFinite(counts[index])) maximum = Math.max(maximum, counts[index]);
+  }
+  const binCount = 16;
+  const high = maximum;
   const values = new Array<number>(binCount).fill(0);
   for (let index = 0; index < counts.length; index++) {
+    if (!Number.isFinite(counts[index])) continue;
     const bin = Math.min(binCount - 1, Math.floor((counts[index] / high) * binCount));
     values[bin]++;
   }
@@ -301,8 +303,8 @@ export function buildQuadratChart(
     ),
     now: mean,
     nowLabel: 'random expects',
-    xLabel: 'records per quadrat',
+    xLabel: 'observed / area-weighted expected',
     yLabel: 'quadrats',
-    description: `Quadrat counts. A random pattern has a variance equal to its mean (VMR 1); here the variance-to-mean ratio is ${Number.isFinite(varianceToMeanRatio) ? varianceToMeanRatio.toFixed(1) : 'undefined'}.`
+    description: `Quadrat counts relative to area-weighted expectation (1). Zero-area quadrats are excluded. The reduced chi-square is ${Number.isFinite(varianceToMeanRatio) ? varianceToMeanRatio.toFixed(1) : 'undefined'}.`
   };
 }

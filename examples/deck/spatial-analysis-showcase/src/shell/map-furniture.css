@@ -118,6 +118,9 @@
   font-weight: 600;
   line-height: 1.5;
   color: var(--map-ink);
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
   white-space: nowrap;
 }
 
@@ -345,6 +348,9 @@
   margin-top: 3px;
   font-size: 11px;
   color: var(--map-ink-muted);
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
   white-space: nowrap;
 }
 

@@ -34,6 +34,7 @@ export class LocalMetricProjection {
     this.origin = origin;
     this.spatialContext = Object.freeze({
       coordinateSpace: 'planar',
+      datum: 'EPSG:4326',
       metric: 'native',
       units: 'meters',
       frame: Object.freeze({

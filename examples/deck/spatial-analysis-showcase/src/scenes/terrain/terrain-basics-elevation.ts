@@ -155,6 +155,7 @@ export async function createElevationPipeline(
       id: 'repair',
       grid: grid.grid,
       elevation: {
+        // Mapterhorn mixes swissALTI3D and Copernicus sources: vertical datum unspecified, so verticalDatum stays undeclared.
         id: 'decoded',
         format: 'float32',
         storage: {

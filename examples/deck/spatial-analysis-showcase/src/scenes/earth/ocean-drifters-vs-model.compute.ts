@@ -310,6 +310,7 @@ export async function createOceanDriftersVsModel(
       new GPUGeodesicPairs({
         spatialContext: {
           coordinateSpace: 'longitude-latitude',
+          datum: 'EPSG:4326',
           metric: model === 'wgs84' ? 'ellipsoidal' : model === 'rhumb' ? 'rhumb' : 'great-circle',
           units: 'meters'
         },
@@ -336,6 +337,7 @@ export async function createOceanDriftersVsModel(
         rows: FIELD.height,
         spatialContext: {
           coordinateSpace: 'longitude-latitude',
+          datum: 'EPSG:4326',
           metric: 'great-circle',
           units: 'meters'
         },
@@ -356,6 +358,7 @@ export async function createOceanDriftersVsModel(
         rows: FIELD.height,
         spatialContext: {
           coordinateSpace: 'longitude-latitude',
+          datum: 'EPSG:4326',
           metric: 'great-circle',
           units: 'meters'
         },

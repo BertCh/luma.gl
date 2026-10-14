@@ -231,39 +231,21 @@ body.is-story .view {
   margin: 0;
 }
 .step-note {
-  display: grid;
-  grid-template-columns: 58px minmax(0, 1fr);
-  gap: var(--s-2);
-  padding: 8px 10px;
+  min-width: 0;
+  padding: 8px 12px;
+  font-size: var(--fs-md);
+  line-height: var(--lh-body);
   background: var(--accent-soft);
   border-left: 3px solid var(--accent);
   border-radius: var(--radius-chrome);
-}
-.step-note dt {
-  color: var(--accent-strong);
-  font-size: var(--fs-xs);
-  font-weight: 700;
-  letter-spacing: 0.04em;
-  line-height: var(--lh-body);
-  text-transform: uppercase;
-}
-.step-note dd {
-  min-width: 0;
-  margin: 0;
-  font-size: var(--fs-md);
-  line-height: var(--lh-body);
 }
 .step-note-caveat {
   background: var(--warn-soft);
   border-left-color: var(--warn);
 }
-.step-note-caveat dt {
-  color: var(--warn);
-}
 .live-readout {
   font-weight: 600;
   font-variant-numeric: tabular-nums;
-  white-space: nowrap;
 }
 .step-diagram {
   margin: var(--s-3) 0 0;
@@ -468,13 +450,16 @@ button.pipeline-chip:hover {
 }
 .hood-grid {
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 6px var(--s-4);
   margin: 0 0 10px;
 }
 .hood-grid div {
   display: flex;
   justify-content: space-between;
+  gap: var(--s-2);
+  min-width: 0;
+  overflow-wrap: anywhere;
   font-size: var(--fs-md);
 }
 .hood-grid dt {

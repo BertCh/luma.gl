@@ -198,6 +198,7 @@ export async function createSatelliteSwath(
         ),
         spatialContext: {
           coordinateSpace: 'longitude-latitude',
+          datum: 'EPSG:4326',
           metric: 'great-circle',
           units: 'meters'
         },
@@ -246,6 +247,7 @@ export async function createSatelliteSwath(
       ),
       spatialContext: {
         coordinateSpace: 'longitude-latitude',
+        datum: 'EPSG:4326',
         metric: 'great-circle',
         units: 'meters'
       },

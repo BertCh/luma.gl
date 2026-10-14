@@ -133,6 +133,7 @@ export const patchesMode: SpatialAnalysisModeDefinition = {
     ) => importGraphBuffer(graph, name, buffer, format, length) as GraphDataView<Format>;
     {
       const elevation: GPURasterBufferBand<'float32'> = {
+        // terrain.png names no vertical datum (and may use synthetic fallback), so verticalDatum stays undeclared.
         id: 'elevation',
         format: 'float32',
         storage: {kind: 'buffer', values: view('elevation', elevationBuffer, 'float32', cellCount)},

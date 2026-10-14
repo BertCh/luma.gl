@@ -43,7 +43,8 @@ export default defineScene<NearTransitOptions>({
     title: {title: 'Transit proximity', subtitle: 'Selected points within a planar distance'},
     scaleBar: {units: 'metric'},
     credit: 'Chicago Transit Authority; City of Chicago; iNaturalist; Overture Maps Foundation',
-    caveat: 'Planar distance is not network travel distance and does not imply transit effects.'
+    caveat:
+      'Straight-line distance, not walking distance; records near transit also reflect where observers travel.'
   },
 
   options: [

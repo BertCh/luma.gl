@@ -35,7 +35,8 @@ export default defineScene<RegionalizationOptions>({
     },
     scaleBar: {units: 'metric'},
     credit: 'US Census Bureau ACS; CDC PLACES',
-    caveat: 'Greedy tree cuts are one feasible partition, not a unique regionalization.'
+    caveat:
+      'Greedy tree cuts are one feasible partition; regions built from tract averages describe places, not the people in them.'
   },
 
   options: [

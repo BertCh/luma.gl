@@ -316,6 +316,7 @@ export async function createWildfireShapes(
               ? WEB_MERCATOR_PROJECTION.spatialContext
               : {
                   coordinateSpace: 'longitude-latitude',
+                  datum: 'EPSG:4326',
                   metric: system === 'spherical' ? 'great-circle' : 'ellipsoidal',
                   units: 'meters'
                 },

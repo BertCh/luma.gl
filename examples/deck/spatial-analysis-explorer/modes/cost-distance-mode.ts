@@ -163,6 +163,7 @@ export const costDistanceMode: SpatialAnalysisModeDefinition = {
     // --- Cost graph: slope, friction, accumulated cost, back-links, bands -----------------------
     const costGraph = new GPUCommandGraph<void>(device, {id: 'cost-distance'});
     const elevation = {
+      // terrain.png names no vertical datum (and may use synthetic fallback), so verticalDatum stays undeclared.
       id: 'elevation',
       format: 'float32' as const,
       storage: {

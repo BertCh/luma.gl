@@ -279,6 +279,7 @@ export async function createUsShippingDay(
     new GPUTrajectoryPlayhead({
       spatialContext: {
         coordinateSpace: 'longitude-latitude',
+        datum: 'EPSG:4326',
         metric: 'great-circle',
         units: 'meters'
       },
@@ -711,6 +712,7 @@ const RADIANS_TO_DEGREES: f32 = 57.29577951308232;`,
         rows,
         spatialContext: {
           coordinateSpace: 'longitude-latitude',
+          datum: 'EPSG:4326',
           metric: 'great-circle',
           units: 'meters'
         },

@@ -53,7 +53,8 @@ export default defineScene<BuffersAndShapesOptions>({
       subtitle: 'Straight-line reach, grids and clipping'
     },
     scaleBar: {units: 'metric'},
-    credit: joinCredits(CREDITS.cta, CREDITS.cityOfChicago, CREDITS.openStreetMap)
+    credit: joinCredits(CREDITS.cta, CREDITS.cityOfChicago, CREDITS.openStreetMap),
+    caveat: 'Buffers are straight-line reach; street walksheds are smaller and follow the grid.'
   },
 
   options: [

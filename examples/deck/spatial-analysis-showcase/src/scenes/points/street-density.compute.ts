@@ -470,7 +470,12 @@ export async function createStreetDensity(
         rows: ROWS,
         spatialContext:
           system === 'spherical'
-            ? {coordinateSpace: 'longitude-latitude', metric: 'great-circle', units: 'meters'}
+            ? {
+                coordinateSpace: 'longitude-latitude',
+                datum: 'EPSG:4326',
+                metric: 'great-circle',
+                units: 'meters'
+              }
             : projection.spatialContext,
         recordCapacity: getMaximumRecords(road),
         parameters: parameters.importToGraph(graph),
@@ -646,7 +651,12 @@ export async function createStreetDensity(
         lineOffsets: view('path-offsets', buffers.pathOffsets, 'uint32', road.pathCount + 1),
         lineWeights: view('line-weights', buffers.lineWeights, 'float32', road.pathCount),
         spatialContext: spherical
-          ? {coordinateSpace: 'longitude-latitude', metric: 'great-circle', units: 'meters'}
+          ? {
+              coordinateSpace: 'longitude-latitude',
+              datum: 'EPSG:4326',
+              metric: 'great-circle',
+              units: 'meters'
+            }
           : projection.spatialContext,
         polygons: {
           kind: 'polygons',

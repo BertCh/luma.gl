@@ -42,11 +42,15 @@ import {
   DELAY_BREAKS,
   DISTANCE_BREAKS,
   getClassOf,
+  getPassPalette,
   getProbeColor,
   getRoutePalette,
+  getRoutePassSlots,
   HUB_FILL,
   HUB_STROKE,
   PROBE_ROUTES,
+  PROBE_WIDTH_PIXELS,
+  ROUTE_WIDTH_PIXELS,
   SLOT,
   UNDER_FLOOR_COLOR
 } from './flight-bundling-style';
@@ -160,10 +164,6 @@ export async function createFlightBundling(
     loadAirportTable('openflights', ctx.signal),
     loadAirportTable('us-airline-flows', ctx.signal)
   ]);
-  const canvas = device.getDefaultCanvasContext().canvas;
-  const canvasElement = canvas instanceof HTMLCanvasElement ? canvas : null;
-  const previousMixBlendMode = canvasElement?.style.mixBlendMode ?? '';
-  if (canvasElement) canvasElement.style.mixBlendMode = 'multiply';
   const networks = new Map<FlightNetwork['id'], NetworkBuffers>();
   const parameterBuffer = resources.createParameterBuffer('parameters', 'uint32', 5);
 
@@ -539,7 +539,7 @@ export async function createFlightBundling(
           'uint32',
           buffers.edgeCount
         ),
-        spatialContext: {coordinateSpace: 'longitude-latitude', metric: 'none'},
+        spatialContext: {coordinateSpace: 'longitude-latitude', datum: 'EPSG:4326', metric: 'none'},
         pointsPerEdge,
         maximumIterations: MAXIMUM_ITERATIONS,
         densityResolution,
@@ -802,9 +802,10 @@ export async function createFlightBundling(
       const {buffers, pointsPerEdge} = graph;
       const lngLat = COORDINATE_SYSTEM.LNGLAT;
       const attribute = getColorAttribute();
-      // Distance and the single colour are light on the night ground: additive, order free. The
-      // delay classes stack with alpha, one pass per class, so the worst pairs are on top.
-      const additive = attribute !== 'delay';
+      // The single colour is light on the night ground: additive, order free, brighter where routes
+      // pile up. Classes stack with alpha, one pass per class (longest or worst on top), so a
+      // corridor shows its legend hue; additive light would sum every hue to white.
+      const additive = attribute === 'plain';
       const probes = options.probes ? buffers.probes : [];
       const palette = getRoutePalette(attribute, options.brightness, probes.length > 0);
       const layers: Layer[] = [];
@@ -839,24 +840,33 @@ export async function createFlightBundling(
         pointsPerPath: number,
         compareSide?: 'a' | 'b'
       ) => {
-        layers.push(
-          new BundleRibbonLayer({
-            id: `flight-${name}-${buffers.network.id}-${pointsPerPath}`,
-            paths,
-            pointsPerPath,
-            pathCount: buffers.edgeCount,
-            values: buffers.maskWeights,
-            classes: buffers.slots,
-            edgeMask: buffers.mask,
-            palette,
-            maximumValue: 1,
-            widthMinPixels: 1,
-            widthByValue: false,
-            heaviestLast: false,
-            compareSide,
-            parameters: additive ? ADDITIVE_ROUTE_PARAMETERS : NORMAL_ROUTE_PARAMETERS
-          })
-        );
+        const passes = additive ? [null] : getRoutePassSlots(probes.length > 0);
+        passes.forEach((slots, pass) => {
+          layers.push(
+            new BundleRibbonLayer({
+              id: `flight-${name}-${buffers.network.id}-${pointsPerPath}-${pass}`,
+              paths,
+              pointsPerPath,
+              pathCount: buffers.edgeCount,
+              values: buffers.maskWeights,
+              classes: buffers.slots,
+              edgeMask: buffers.mask,
+              palette: slots ? getPassPalette(palette, slots) : palette,
+              maximumValue: 1,
+              // The probe pass (slots from firstProbe up, drawn last) is wider than the classes.
+              widthMinPixels:
+                probes.length > 0 && slots?.[0] === SLOT.firstProbe
+                  ? PROBE_WIDTH_PIXELS
+                  : additive
+                    ? 1
+                    : ROUTE_WIDTH_PIXELS,
+              widthByValue: false,
+              heaviestLast: false,
+              compareSide,
+              parameters: additive ? ADDITIVE_ROUTE_PARAMETERS : NORMAL_ROUTE_PARAMETERS
+            })
+          );
+        });
       };
 
       if (options.straight === 'ghost') {
@@ -940,9 +950,6 @@ export async function createFlightBundling(
 
     destroy() {
       destroyed = true;
-      if (canvasElement?.style.mixBlendMode === 'multiply') {
-        canvasElement.style.mixBlendMode = previousMixBlendMode;
-      }
       graph?.reader.stop();
       graph?.resources.destroy();
       for (const entry of retired) entry.resources.destroy();

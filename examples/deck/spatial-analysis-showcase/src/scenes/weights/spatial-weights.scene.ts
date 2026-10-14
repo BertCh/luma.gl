@@ -1083,7 +1083,9 @@ export default defineScene<SpatialWeightsOptions>({
   basemap: ground('paperSheet'),
   furniture: {
     title: cartouche('Who counts as a neighbour?', 'Queen contiguity of counties'),
-    credit: COUNTY_CREDIT
+    credit: COUNTY_CREDIT,
+    caveat:
+      'Neighbour structure, and every statistic built on it, changes with the areal units chosen.'
   },
 
   snippet: getSnippet,

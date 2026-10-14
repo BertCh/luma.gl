@@ -153,7 +153,7 @@ export const edgeBundlingMode: SpatialAnalysisModeDefinition = {
         nodePositions: importGraphBuffer(graph, 'positions', positions, 'float32x2', vertexCount),
         sourceNodes: importGraphBuffer(graph, 'sources', sourceBuffer, 'uint32', edgeCount),
         targetNodes: importGraphBuffer(graph, 'targets', targetBuffer, 'uint32', edgeCount),
-        spatialContext: {coordinateSpace: 'longitude-latitude', metric: 'none'},
+        spatialContext: {coordinateSpace: 'longitude-latitude', datum: 'EPSG:4326', metric: 'none'},
         pointsPerEdge: POINTS_PER_EDGE,
         maximumIterations: MAXIMUM_ITERATIONS,
         densityResolution: DENSITY_RESOLUTION,
