@@ -209,6 +209,13 @@ as boundary; an exactly zero non-axis-aligned determinant remains uncertain with
 exact predicate. A cuSpatial-compatible boolean projection is
 `classification === GPU_POINT_IN_POLYGON_CLASSIFICATION.inside`, so boundary remains false.
 
+**Longitude/latitude polygons.** The optional `spatialContext` defaults to planar and is exposed
+on the contributor. Longitude/latitude accepts metric `'none'` and linear edges only; great-circle
+metrics or edges throw at construction. This declaration leaves the degree-plane even-odd
+predicate unchanged. Prepare polygons crossing ±180 or enclosing a pole with
+`GPULonLatPolygonPreparation` before classification; this operator does not shift longitude copies.
+The existing `uncertain` rule still applies to empty rings emitted by preparation.
+
 ## `GPUPairwisePointLinestringNearest`
 
 `GPUPairwisePointLinestringNearest` finds the nearest point on one paired multipart linestring for
@@ -278,7 +285,11 @@ remains a generic index and can still store arbitrary IDs for other consumers.
 
 `bounds` and `polygon` queries do no metric math, so their `spatialContext` may also be
 `{coordinateSpace: 'longitude-latitude', metric: 'none'}`; bounds and polygon edges are then
-straight lines in degree space, with no antimeridian wrapping. `radius` queries are planar only.
+straight lines in degree space. Polygon queries require linear edges. Prepare polygons that cross
+±180 or enclose a pole with `GPULonLatPolygonPreparation`; optional one-row `uint32` fields
+`output.status.antimeridianUncertainCount` / `output.status.poleUncertainCount` report unprepared
+rings and are cleared every encoding. Planar contexts and non-polygon queries leave these fields
+untouched. `radius` queries are planar only.
 
 Polygon positions use packed `float32x2` rows. `ringOffsets` contains a start offset for each ring
 plus one terminal offset; rings close implicitly and use even/odd fill semantics. Boundary points

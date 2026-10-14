@@ -128,6 +128,38 @@ rebuilding without a stall, submission and why `parameters` is `undefined`.
     geometry take the same fields flat, without `kind` (`GPUPolygonGeometryFields`). See
     [Shared ports](./gpu-spatial-analysis.md#shared-ports-status-and-planning).
 
+## Heights and datums
+
+Declare height datums when combining DEM elevations with absolute observer or catalogue heights.
+
+Absolute heights and DEM heights must share one vertical datum, and observer positions must share the DEM grid's horizontal datum. Declare both (`verticalDatum` on the band, `observerVerticalDatum` on the operator, `datum` on contexts). The library checks the declarations and never converts. Heights above the ground (`heightReference: 'ground'`) need no conversion. For a few observers, convert them on the CPU in binary64: h_orthometric = h_ellipsoidal − N(lat, lon), with N taken from the DEM's own geoid model (PROJ, pyproj or GeographicLib). For many observers or targets, convert the DEM on the GPU: resample N onto the DEM grid, add it with `GPURasterBandMath('add')`, and declare `'ellipsoidal'`. Convert horizontal datums (NAD27, GCJ-02) on the CPU before upload.
+
+| Source | Vertical datum to declare |
+| --- | --- |
+| SRTM/NASADEM/AW3D30 | EGM96 (`'EPSG:5773'`) |
+| Copernicus GLO-30 | EGM2008 (`'EPSG:3855'`) |
+| USGS 3DEP | NAVD88 (`'EPSG:5703'`) |
+| Terrarium / Mapbox Terrain-RGB | "above sea level", unspecified geoid — leave `verticalDatum` undeclared |
+| GNSS receivers | `'ellipsoidal'` |
+| drone metadata | vendor-dependent, verify before declaring |
+
+- **Absolute inputs.** `GPUPointHorizonProfile`, `GPUPointHorizonVisibility`, `GPUTerrainViewshed`,
+  `GPUTerrainLineOfSight`, and `GPUTerrainCumulativeViewshed` accept `heightReference: 'absolute'`
+  (default: `'ground'`). Their `observerVerticalDatum` is checked against the elevation band's
+  `verticalDatum`; declaring it in ground mode throws. `GPUTerrainPeakSnap` checks
+  `candidateVerticalDatum` against the band's `verticalDatum` for absolute `candidateHeights`;
+  declaring it without `candidateHeights` throws.
+- **Compatibility.** A mismatch between two declared vertical datums throws; either undeclared
+  passes. Comparison trims whitespace and is case-insensitive, with no aliases.
+- **Absolute observers.** Set the observer height explicitly: the `observerHeight` default of 1.7
+  is meaningless in absolute mode. The observer component of LOS `pairHeights` and cumulative
+  `observerHeights` also becomes absolute. Observers must be inside the grid but may sit over
+  no-data ground. Targets stay ground-relative; an eye below the ground hides most targets.
+- **Conversion.** There is no geoid-undulation input: the contract performs no CRS conversion,
+  GPU Project rejects geoid grids, and a constant undulation can be silently wrong across a DEM.
+  Use `GPURasterBandMath` with `'add'` or `'subtract'` and an undulation raster on the same grid;
+  a band `offset` is appropriate only when the correction really is constant.
+
 ## API
 
 ### `GPUTerrainDerivatives`, `GPUTerrainContours`, `GPUTerrainViewshed`, `GPUTerrainLineOfSight`, and `GPUTerrainCumulativeViewshed`
@@ -151,6 +183,10 @@ how grid world units become ground meters:
   `output.marginalCount`), with `observersPerDispatch` observers per node. It uses the packer of
   `GPUTerrainLineOfSight` (`getGPUTerrainLineOfSightParameterValues`) because the heights, distance,
   cell size, curvature and tolerance semantics are shared.
+
+All three accept `heightReference` (default `'ground'`) and, for absolute observer heights,
+`observerVerticalDatum`, checked against the elevation band's `verticalDatum`. Targets remain
+ground-relative. See [Heights and datums](#heights-and-datums).
 
 ```ts
 const grid = makeGPURasterMetadata({width, height, cellSize: 30});
@@ -239,7 +275,7 @@ Settings of `getGPUTerrainLineOfSightParameterValues`:
 
 | Field | Type | Description |
 |---|---|---|
-| `observerHeight` (optional) | `number` | Eye height above the terrain in elevation units. Defaults to 1.7. |
+| `observerHeight` (optional) | `number` | Eye height above terrain, or absolute eye elevation with `heightReference: 'absolute'`. In elevation-band units. Defaults to 1.7; set explicitly in absolute mode. |
 | `targetHeight` (optional) | `number` | Height added to the target elevation. Defaults to 0. |
 | `maximumDistance` (optional) | `number` | Ground radius in metres; `<= 0` means unlimited. Defaults to 0. |
 | `curvatureCoefficient` (optional) | `number` | Drop coefficient `c` in 1/metres. Defaults to 0. |
@@ -288,7 +324,7 @@ Settings of `getGPUTerrainLineOfSightParameterValues`:
 
 | Field | Type | Description |
 |---|---|---|
-| `observerHeight` (optional) | `number` | Eye height above the terrain in elevation units. Defaults to 1.7. |
+| `observerHeight` (optional) | `number` | Eye height above terrain, or absolute eye elevation with `heightReference: 'absolute'`. In elevation-band units. Defaults to 1.7; set explicitly in absolute mode. |
 | `targetHeight` (optional) | `number` | Height added to the target elevation. Defaults to 0. |
 | `maximumDistance` (optional) | `number` | Ground radius in metres; `<= 0` means unlimited. Defaults to 0. |
 | `curvatureCoefficient` (optional) | `number` | Drop coefficient `c` in 1/metres. Defaults to 0. |
@@ -322,7 +358,7 @@ Settings of `getGPUTerrainViewshedParameterValues`:
 | Field | Type | Description |
 |---|---|---|
 | `observer` | `readonly [number, number]` | Observer `[column, row]` in pixel-center index space; fractional values allowed. |
-| `observerHeight` (optional) | `number` | Eye height above the terrain in elevation units. Defaults to 1.7. |
+| `observerHeight` (optional) | `number` | Eye height above terrain, or absolute eye elevation with `heightReference: 'absolute'`. In elevation-band units. Defaults to 1.7; set explicitly in absolute mode. |
 | `targetHeight` (optional) | `number` | Height added to every target cell. Defaults to 0. |
 | `maximumDistance` (optional) | `number` | Ground radius in meters; `<= 0` means unlimited. Defaults to 0. |
 | `curvatureCoefficient` (optional) | `number` | Drop coefficient `c` in 1/meters: terrain at distance `d` is lowered by `c * d^2`. Defaults to 0. |
@@ -353,6 +389,8 @@ A 360° horizon profile from any number of observers, ported from mt-image's hor
 
 - **Inputs.** The elevation raster is the `elevation` prop on a `grid`. Observers are
   `[column, row, height, 0]`. `heightReference` is `'ground'` (the default) or `'absolute'`.
+  In absolute mode, `observerVerticalDatum` declares the observer heights' datum and is checked
+  against the elevation band's `verticalDatum`; see [Heights and datums](#heights-and-datums).
 - **Outputs.** In `output`, for each (observer, azimuth bin) the profile writes the maximum
   apparent-elevation tangent `t = (h − h0)/d − c·d`, the `skylineAngle` in degrees (−90 when nothing was sampled), and the
   crest distance. Azimuth bin `i` is at `i·360/azimuthCount` degrees clockwise from north. Sectors
@@ -582,6 +620,10 @@ Each candidate gets `output.snapStatus` from `GPU_TERRAIN_PEAK_SNAP_STATUS`, bes
 `output.positions`, `output.heights` and the optional `output.snapDistance`. mt-image's distance
 rule
 `min(250, 60 + 0.004·d)` m can be supplied through `candidateRadii`.
+
+Optional `candidateHeights` supplies absolute catalogue elevations. `candidateVerticalDatum`
+requires `candidateHeights` and is checked against the elevation band's `verticalDatum`;
+see [Heights and datums](#heights-and-datums).
 
 **`GPUTerrainCriticalPoints`** classifies each pixel as regular, peak, pit, saddle, boundary or
 noData by counting sign changes around its ring. Equal heights are ordered by index (simulation of

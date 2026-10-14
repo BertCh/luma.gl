@@ -77,6 +77,34 @@ Target Release Date: Q3, 2026
 - **Spatial analysis performance** - Zonal, flow and clustering sums default to a reproducible `sumOrder: 'sorted'`, which avoids 10-60x slowdowns from float-atomic contention on shared zones. Reachability chains 32 hops per round, cost matrices size `laneCount` with `recommendLaneCount()`, and cost distance and hydrology use directional sweeps for long corridors. `GPUTextureShading` gains `hasNodata` and `downsampleLevels`.
 - **One analysis vocabulary** - The analysis entries share one layer of contracts (`analysis-core`) and one set of names: every contributor takes its caller-owned views in one `output` bag with GPU-written status words in `output.status`, per-frame `parameters` packed from a `GPU<Class>Settings` object, `maximum*` compile-time caps, geometry ports (`GPUPolygonGeometryPort` four-level polygons, `positions` + `lineOffsets`/`trackOffsets`), one network `topology` that is also a spatial-weights CSR, and `GPUCompactOutput` (`{ids, status: {count, overflow, requiredCount}}`) for every compact list. Terrain and raster contributors take one `grid: GPURasterMetadata`; packers read cell size and latitude band from it, and the simple local relief and vector ruggedness window radius is per frame. `GPUNetworkCostWeights` turns cost matrices into spatial weights, and `GPUCatchmentAccessibility` is the one 2SFCA/3SFCA kernel. See the [upgrade guide](/docs/upgrade-guide#analysis-contributors-vocabulary).
 
+- **Spatial correctness: study windows, longitude/latitude polygons, datums and precision**
+  - **Polygon study windows** - `GPUStudyWindowPreparation` gives Ripley K/L/pcf, envelopes, G/F/J,
+    Clark-Evans (`'guard'`), quadrats, variogram, correlogram and kernel density a polygon window for
+    edge correction (default `'rectangle'`). The preparation persists until invalidated or until
+    `rebuildWhen` fires, and accepts clipped polygons with empty or degenerate rings.
+  - **Longitude/latitude polygons** - Spatial contexts declare `edgeModel` (`'linear'` default, as in
+    RFC 7946, or `'great-circle'`). `GPULonLatPolygonPreparation` splits antimeridian crossings, caps
+    pole rings and densifies great-circle edges on the GPU; choropleth, change-of-support and hot-spot
+    recipes insert it with `prepare: true`. Polygon consumers reject great-circle edges and expose
+    `antimeridianUncertainCount` / `poleUncertainCount`. `GPULineSegmentize.closedLines` densifies
+    implicit closing edges, polygon rasterization, raster join and pairwise point-in-polygon accept
+    `spatialContext`, and `GPUGeometryMeasures` reports `'sphere-polygon'` area for great-circle edges.
+  - **Datums** - Spatial contexts and `createGPULocalFrame` declare a horizontal `datum`, checked where
+    two contexts meet (`getGPUDatumKey`). Joins, zonal and region statistics, raster join, pairwise
+    point-in-polygon, line clip, overlay, zone events and the polygon recipes take an optional context
+    for their second input (`polygonsSpatialContext`, `rightSpatialContext`, `featuresSpatialContext`,
+    ...), checked by `resolveGPUSecondarySpatialContext`, so a datum, frame or edge-model mismatch
+    between the two sides throws. Raster bands declare `verticalDatum`; viewshed, line of sight and
+    cumulative viewshed take absolute observer heights (`heightReference: 'absolute'`) with
+    `observerVerticalDatum`, checked by `assertCompatibleGPUVerticalDatums`, and peak snap checks
+    `candidateVerticalDatum`.
+  - **Precision and time zones** - Short float32 lon/lat distances warn once per operator class
+    (`getGPULongitudeLatitudeQuantum`, `isGPUShortLongitudeLatitudeDistance`,
+    `warnGPUShortLongitudeLatitudeDistance`, `GPU_SHORT_LONGITUDE_LATITUDE_DISTANCE_FACTOR`), and tier-2
+    parameter settings accept an optional `spatialContext` without changing packed layouts.
+    `addSpaceTimeHotSpotsRecipe` accepts `timeZone` transition tables, mutually exclusive with
+    `utcOffsets`. See [Precision of longitude/latitude positions](/docs/api-reference/experimental/gpu-spatial-analysis#precision-of-longitudelatitude-positions).
+
 **@luma.gl/engine**
 
 - **Attribute byte offsets** - `Model.setAttributes(buffers, {byteOffsets})` binds each named buffer at the byte offset where its vertex data starts.

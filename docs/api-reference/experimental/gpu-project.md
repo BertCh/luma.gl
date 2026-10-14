@@ -525,6 +525,7 @@ Raw PROJJSON/WKT dimensional checks remain necessary because normalized metadata
 No implicit WGS84 assumption, horizontal extraction, network CRS resolution or grid loading is
 performed; only explicit async preparation may load algorithm modules. Both entry points return structured unsupported results, or throw
 `ProjectionPlanningError` with `onUnsupported: 'throw'` (a rejected promise for async preparation).
+GPU Project performs no vertical-datum work; declare terrain height datums on raster bands as described in [GPU Terrain: Heights and datums](./gpu-terrain.md#heights-and-datums).
 
 ### Native PROJJSON coordinate frames
 

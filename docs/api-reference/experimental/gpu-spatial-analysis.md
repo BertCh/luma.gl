@@ -146,12 +146,21 @@ Planar native contexts may declare `units: 'meters'` (local frames do); `'kilome
 Planar `'native'` units are undeclared and compatible with planar `'meters'`; meters and kilometers are incompatible.
 The `frame` identity has kind `'local-azimuthal-equidistant'`, `'local-lambert-equal-area'` or `'crs'`;
 `assertCompatibleGPUSpatialContexts` rejects contexts with different frame ids.
+`datum` declares the horizontal datum of longitude/latitude positions or of a planar frame's source (for example `'EPSG:4326'`, `'EPSG:4269'`, `'GCJ-02'`); `createGPULocalFrame({datum})` copies it to the frame's context.
+Two declared datums must match by `getGPUDatumKey` (trimmed, upper-cased; only WGS84 spellings alias to `'EPSG:4326'`), and an undeclared datum matches any; the library never converts datums.
+The check runs where two contexts meet; `GPUProjection` CRS ids already imply their datum.
+Two-input operators (joins, zonal and region statistics, raster join, pairwise point-in-polygon, line clip, overlay, zone events and the choropleth, change-of-support and hot-spot recipes) take an optional context for their second input, named after that input (`polygonsSpatialContext`, `rightSpatialContext`, `featuresSpatialContext`, `regionSpatialContext`, `zonesSpatialContext`, ...).
+When given, `resolveGPUSecondarySpatialContext` validates it, applies the operator's edge-model requirement to it and checks it against `spatialContext`, so a datum, frame, units or metric mismatch between the two sides throws `<id> <side>SpatialContext incompatible spatial contexts: <reason>`; omitted, `spatialContext` describes both inputs and nothing is checked between them.
+`edgeModel` (longitude/latitude only) says how polygon and line edges run between vertices: `'linear'` (default, straight in degrees as in RFC 7946, GEOS and turf) or `'great-circle'` (minor arcs, as in PostGIS `geography`, BigQuery `GEOGRAPHY` and S2); ellipsoidal contexts use `ellipsoidalEdgeModel` instead.
+Polygon consumers declare `edgeModels: GPU_LINEAR_EDGE_MODELS` and reject great-circle input with a pointer to `GPULonLatPolygonPreparation`, which splits rings at the antimeridian, caps pole rings and densifies great-circle edges; their optional `status: GPULonLatPolygonStatusPort` counts unprepared rings (`antimeridianUncertainCount`, `poleUncertainCount`).
+Point-pattern statistics and kernel density take a `studyWindow`: `'rectangle'` (default, per-frame bounds) or a `GPUPolygonStudyWindow` built by `GPUStudyWindowPreparation` in the same planar frame, checked by `resolveGPUStudyWindow`.
 Support declarations use `measure: 'distance' | 'area'`: distance operators reject Lambert equal-area frames,
 while area/density operators reject azimuthal-equidistant frames, with an error naming the frame to project into.
 This measure check accepts `'crs'` frames and frameless contexts.
 Spherical distances use `getGPUSphereRadius` (mean radius 6371008.8 m); spherical areas use `getGPUAuthalicSphereRadius` (WGS84 authalic radius 6371007.1809 m).
 Both honour `sphereRadius` in the context's units; `units: 'kilometers'` divides default radii by 1000, giving areas in km².
 Ellipsoidal metrics use `getGPUEllipsoid` (`context.ellipsoid` or `GPU_WGS84_ELLIPSOID`).
+Terrain heights declare a vertical datum the same way (`GPUTerrainHeightReference`, `GPU_ELLIPSOIDAL_VERTICAL_DATUM`, `assertCompatibleGPUVerticalDatums`); see [GPU Terrain](./gpu-terrain.md).
 `getGPULengthUnits` gives the length unit reported by `GPUMeasureDescription`.
 Compatibility helpers reject invalid workflow connections during graph construction and contain no
 CRS parsing or reprojection; that remains the responsibility of GPU Project.
@@ -222,6 +231,52 @@ Recipe results use a required common envelope with `outputs`, `intermediates` an
     `positions`, `featureOffsets`, `polygonOffsets` and `ringOffsets`. Contributors with a single
     geometry take the same fields flat, without `kind` (`GPUPolygonGeometryFields`). See
     [Shared ports](./gpu-spatial-analysis.md#shared-ports-status-and-planning).
+
+### Precision of longitude/latitude positions
+
+Longitude/latitude positions are float32 degrees, never split into high/low parts. At
+`|longitude| >= 128°`, the worst-case ground quantum is `Q = 2⁻¹⁶° · π/180 · R ≈ 1.70 m`
+for the mean Earth radius `R = 6371008.8 m` (the equatorial worst case). Representative combined
+east-west/north-south quanta are:
+
+| Location | Ground quantum |
+| --- | --- |
+| Chicago | 0.76 m |
+| NYC | 0.77 m |
+| San Francisco | 0.79 m |
+| London | 0.42 m |
+| Sydney | 1.47 m |
+| Equator near ±180° | 1.70 m |
+
+Great-circle distance kernels use haversine, so short-distance arithmetic is not the limit;
+the rounded inputs are. Use `createGPULocalFrame` for sub-17 m work, projecting before rounding
+positions to float32 degrees. When a host-known distance is finite, greater than zero and less
+than `10·Q` (16.97 m; 0.01697 km with the default sphere), operators warn once per operator class:
+`<Operation> distance is too short for float32 lon/lat; use createGPULocalFrame`.
+This precision check never throws; zero, NaN and non-finite distances do not warn.
+
+The exported helpers are `getGPULongitudeLatitudeQuantum(context)`,
+`isGPUShortLongitudeLatitudeDistance(context, distance)` and
+`warnGPUShortLongitudeLatitudeDistance(operation, context, distance)`, with
+`GPU_SHORT_LONGITUDE_LATITUDE_DISTANCE_FACTOR = 10`. The quantum uses the context's sphere radius
+(or ellipsoid semi-major axis) and length unit; it is zero for planar contexts or metric `'none'`.
+
+- **Tier 1 — construction.** `GPUSpatialPredicateJoin` checks numeric `dwithin` distances;
+  `GPUTrajectoryEncounters` checks its derived `maximumDistance`.
+- **Tier 2 — per-frame writers.** Pass optional `spatialContext` in the settings passed to the
+  parameter writer to check neighbor-search `radius`, DBSCAN `epsilon`, IDW `searchRadius`,
+  kriging `searchRadius` and `range`, Douglas-Peucker `tolerance`, line segmentize / great-circle
+  arcs `maximumSegmentLength`, line chunk `chunkLength`, outline `distance`, map matching
+  `sigma` and `searchRadius`, and GWR fixed `bandwidths`. Packed parameter layouts are unchanged;
+  omitting the settings context disables this warning.
+- **Tier 3 — GPU views.** No warning is possible for `GPUBufferSelection.distance`,
+  `GPUNearestFeatureJoin.radius`, a view-valued `GPUSpatialPredicateJoin.distance`,
+  `GPUTrajectoryEncounters.distance`, `GPUTrackSimilarity.frechetEpsilon`,
+  `GPULinearReferencing.radius`, `GPUNetworkSnapping.maximumSnapDistance`,
+  `GPUNetworkKFunction` distance views, the drive-time catchment recipe's `maximumSnapDistance`, or
+  `GPUGeodesicDestination.distances`: the host does not read these GPU values. Trajectory-metrics
+  stop detection also cannot warn: the affected distance is speed × sampling interval, so float32
+  position noise means about ±0.8 m/s at 1 Hz in Chicago; use a local frame.
 
 ### Running contributors
 
@@ -515,6 +570,8 @@ Web Mercator (~1e7) quantize to 0.5 to 1 m and make band edges and ties noisy. P
 frame with `createGPULocalFrame` (or subtract an origin) before upload; the node cannot recover
 digits lost in its inputs.
 
+Pass optional `spatialContext` to `getGPUNeighborSearchParameterValues(settings)` to warn on short `radius` values; see [Precision of longitude/latitude positions](#precision-of-longitudelatitude-positions).
+
 **Row standardization.** The optional compile-time `rowStandardize` prop is the single source of truth
 when given: the weights kernel uses it as a constant and ignores the per-frame `rowStandardize`
 parameter. Consumers re-standardize rows over the neighbors left after masking only when
@@ -571,6 +628,7 @@ Settings of `getGPUNeighborSearchParameterValues`:
 
 | Field | Type | Description |
 |---|---|---|
+| `spatialContext` (optional) | `GPUSpatialContext` | Spatial context of the positions; when it is longitude/latitude, a distance under 10 float32 quanta (about 17 m) logs a warning (see Precision of longitude/latitude positions). Does not change the packed values. |
 | `bounds` | `readonly [number, number, number, number]` | `[minX, minY, maxX, maxY]` extent of the search lattice. Targets and queries outside it (or with non-finite coordinates) are excluded: they become isolates and never a neighbor, so it must cover every point of interest (count the dropped rows with `invalidCount`). For a great-circle search these are degrees `[minLongitude, minLatitude, maxLongitude, maxLatitude]` with a longitude span of at most 360 (`[-180, -90, 180, 90]` for the world). |
 | `radius` (optional) | `number` | In the units of the spatial context (position units, or meters/kilometers of great-circle distance). Radius mode: the distance band (neighbors satisfy `d <= radius`); a non-positive or non-finite radius yields empty rows. kNN mode: an optional maximum distance; `Infinity` (the default) or any non-positive value means unbounded. |
 | `weightKind` (optional) | `GPUNeighborSearchWeightKind` | Weight function. Defaults to `'binary'`. |
@@ -1602,7 +1660,8 @@ is planar only, and other metrics (rhumb, ellipsoidal) throw. Geographic results
 Planar positions are float32, so the representable spacing near a coordinate of magnitude `M` is about
 `M * 1.2e-7`: UTM northings near 5e6 are only 0.5 m apart, and an `epsilon` below a few such spacings
 (a few metres) is unreliable. Subtract a local origin from the coordinates (and from `bounds`) before
-upload so the spacing stays far below `epsilon`. Float32 longitudes near 180 degrees have about 1 m spacing.
+upload so the spacing stays far below `epsilon`.
+Pass optional `spatialContext` to `getGPUSpatialClusteringParameterValues(settings)` to warn on short `epsilon` values; see [Precision of longitude/latitude positions](#precision-of-longitudelatitude-positions).
 
 {/* parameters: GPUSpatialClustering generated by modules/experimental/test/analysis-core/doc-parameters.ts from the TSDoc; do not edit */}
 
@@ -1614,6 +1673,7 @@ Settings of `getGPUSpatialClusteringParameterValues`:
 
 | Field | Type | Description |
 |---|---|---|
+| `spatialContext` (optional) | `GPUSpatialContext` | Spatial context of the positions; when it is longitude/latitude, a distance under 10 float32 quanta (about 17 m) logs a warning (see Precision of longitude/latitude positions). Does not change the packed values. |
 | `bounds` | `readonly [number, number, number, number]` | Inclusive `[minX, minY, maxX, maxY]` extent of the data. Points outside it, or with a non-finite coordinate, are excluded and labeled noise. Bounds should cover the data: they size the active cell lattice, and a tighter extent makes the neighbor search cheaper. Bounds with `maxX < minX` or `maxY < minY` exclude every point. |
 | `epsilon` | `number` | Neighbor radius. Two points are neighbors when their distance is `<= epsilon`. Positive. |
 | `minimumPoints` | `number` | Integer `>= 1`. A point is a core point when its epsilon-neighborhood, including the point itself, holds at least this many points. |
@@ -2110,6 +2170,11 @@ integer arithmetic on the GPU (Hinnant's `days_from_civil`) and on the CPU
 in the `slice-range` status stage (`invalidCount`, or the `outputs.status.skippedEventCount` override). The sorted path's
 `cube-counts` stage also reports `requiredCount` (the `outputs.status.groupRequiredCount` output).
 
+Optional `timeZone: GPUCalendarBucketsTimeZone` forwards a transition table from
+`getGPUTimeZoneTransitionTable` to `GPUCalendarBuckets`, which searches it per row on the GPU.
+It is mutually exclusive with `utcOffsets`; setting both throws. With an `'hour'` step, local
+slices on transition days are 0 h or 2 h long, so use UTC for hourly cubes.
+
 Cyclic fields (month of year, weekday, hour of day, day of year) are no longer accepted: `month = 1`
 would pool every January of a multi-year range, and a trend over hour or weekday is meaningless.
 Cyclic profiles belong in a non-trend summary such as `GPUCalendarBuckets` `hourWeekdayCounts`.
@@ -2231,7 +2296,13 @@ f32 crossing abscissa decides the result.
 
 Coordinates: `spatialContext` defaults to native planar. Rectangle, lasso and pick regions are
 topological tests and also accept `longitude-latitude` (metric `'none'`): edges are straight lines
-in degree space and the antimeridian is not handled. A `'radius'` region is a planar distance in
+in degree space and require linear edges. Prepare polygons that cross ±180 or enclose a pole with
+`GPULonLatPolygonPreparation`. Optional `output.status.antimeridianUncertainCount` and
+`output.status.poleUncertainCount` report unprepared rings in `GPURegionMask` and
+`GPURegionStatistics`. These one-row `uint32` counters are cleared and rewritten every encoding
+for world-space lon/lat lassos; planar contexts, screen-space lassos and other region kinds leave
+them untouched. A lasso consumes one ring at a time, including an empty prepared copy through a
+zero active vertex count. A `'radius'` region is a planar distance in
 position units, so it throws at construction in `longitude-latitude` (the region kind is
 compile-time); project positions to a planar frame first, or use a rectangle or lasso. Geographic
 metrics are rejected. Radius selections measure distance and reject `local-lambert-equal-area` frames. `GPURegionMask` takes the same `spatialContext`; `GPUPickRegionMask` reads no
@@ -2298,7 +2369,11 @@ always 0 for caller-supplied feature rows.
 - Coordinates. `spatialContext` accepts planar (default) or `longitude-latitude` with metric `'none'`.
   Membership runs `GPUPointInPolygonJoin` with a containment-only context derived from `spatialContext`
   (metric `'none'`), so in degrees it is topological with straight edges (not geodesics) and polygons
-  crossing the antimeridian must be split. The shoelace area of degrees is
+  require linear edges. Prepare polygons that cross ±180 or enclose a pole with
+  `GPULonLatPolygonPreparation`; optional one-row `uint32`
+  `output.status.antimeridianUncertainCount` / `output.status.poleUncertainCount` report unprepared
+  rings and are cleared every encoding. Planar contexts and caller-supplied feature rows leave
+  those counters untouched. The shoelace area of degrees is
   wrong, so a longitude-latitude context rejects GPU areas (`densities`, `weightedDensities`,
   `featureAreas` without `areas`) at construction: pass spherical `areas` in square meters, for example
   from `GPUGeometryMeasures`. GPU-computed planar areas and densities measure area and reject
@@ -3189,13 +3264,20 @@ planar kernels) and by the network snapping contributors, so there is one conven
 foot is exact to first order for edges of road length, so densify long edges. Distances are accurate to f32
 rounding across the antimeridian and over a pole, up to about 8000 km (a larger compile-time distance throws,
 a larger per-frame value selects nothing). Pairs whose geometries intersect in the degree plane count as
-distance 0. Polygons that span the antimeridian are not split. Oracle: numpy haversine and
+distance 0. Prepare polygons that cross ±180 or enclose a pole with `GPULonLatPolygonPreparation`.
+Longitude/latitude contexts require `edgeModel: 'linear'` (the default); `'great-circle'` edges throw
+with a preparation hint. Optional `output.status.antimeridianUncertainCount` and
+`output.status.poleUncertainCount` report unprepared rings, accumulated over both polygon inputs.
+They are cleared each encoding in longitude/latitude contexts; planar contexts leave these fields
+untouched and build no ring check. A numeric great-circle `dwithin` distance below ten float32
+longitude/latitude quanta (about 17 m on the default sphere) warns to use `createGPULocalFrame`.
+Oracle: numpy haversine and
 `pyproj.Geod(a=R, f=0)` for point pairs, shapely distances in the azimuthal equidistant projection for
 polygons (see the spec fixtures).
 
 The topological predicates take `metric: 'none'`; `metric: 'great-circle'` with them throws, and `dwithin`
-with `metric: 'none'` throws, so the intent is explicit. `GPUSpatialJoinCandidates` and `GPUPointInPolygonJoin`
-are planar only and throw for longitude/latitude with a hint to project first; `GPUNearestFeatureJoin` and
+with `metric: 'none'` throws, so the intent is explicit. `GPUSpatialJoinCandidates` is planar only;
+`GPUPointInPolygonJoin` also accepts longitude/latitude with `metric: 'none'`. `GPUNearestFeatureJoin` and
 `GPUBufferSelection` also take `metric: 'great-circle'` (see their section); `GPUSpatialJoinPrepared` and `GPUNearestFeatureWeights` take no positions with a metric
 (a prepared tree is a bounding-box tree and may serve a great-circle join) and have no context.
 
@@ -3282,6 +3364,15 @@ longitude/latitude context with a metric such as `'great-circle'` throws at cons
 has no geodesic edges ("project positions to a planar frame first"). `GPUNearestFeatureJoin` also takes the
 great-circle context below.
 
+Both joins require linear longitude/latitude edges (omitted `edgeModel` means `'linear'`);
+`edgeModel: 'great-circle'` throws with a preparation hint. Prepare polygons that cross ±180 or enclose
+a pole with `GPULonLatPolygonPreparation`. Optional `output.status.antimeridianUncertainCount` and
+`output.status.poleUncertainCount` report unprepared rings; nearest joins count both polygon inputs.
+These counters reset each encoding for longitude/latitude and remain untouched for planar contexts,
+which build no ring check. Empty rings and polygons in the preparation's fixed 2x topology are accepted.
+`getPointInPolygonContainmentContext` preserves the input edge model and datum when selecting
+`metric: 'none'`, so it cannot bypass edge-model validation.
+
 **Great-circle nearest features (`GPUNearestFeatureJoin`, `GPUBufferSelection`).** With
 `spatialContext: {coordinateSpace: 'longitude-latitude', metric: 'great-circle'}` positions are longitude and
 latitude in degrees and every distance (`radius`, `nearestDistances`, `neighborDistances`,
@@ -3303,8 +3394,9 @@ in the degree plane with the exact orientation sign after the second edge is shi
 degrees to overlap the first, and counts as distance 0. Foot points and query points are on the edges with
 longitude wrapped to +-180. The mixed convention of the planar-in-degrees tests is therefore one edge model;
 densify edges longer than a few kilometers, because the foot is exact to first order in the local frame of the
-query. A polygon that spans the antimeridian is not split. Positions are float32, so a distance carries the
-quantization of the coordinates (about 1 m at longitude 100). The planar kernels are unchanged and compile
+query. Prepare crossing and pole-enclosing polygons as described above.
+No warning is possible because the distance is a GPU view; see [Precision of longitude/latitude positions](#precision-of-longitudelatitude-positions).
+The planar kernels are unchanged and compile
 none of this code. Oracle: `geodesic-nearest-fixtures.ts` (numpy 2.5.4 haversine of the edge densified in
 longitude/latitude, `pyproj` 3.8.0 `Geod(a=R, f=0)` cross-check), scenes at the equator, latitude 60, across
 the antimeridian and next to the pole. `GPUNearestFeatureWeights` adapts the join's outputs; pass the
@@ -3515,6 +3607,8 @@ Settings of `getGPUBoundsFilterParameterValues`:
 {/* /parameters */}
 
 ### `GPUBufferSelection`
+
+No warning is possible because the distance is a GPU view; see [Precision of longitude/latitude positions](#precision-of-longitudelatitude-positions).
 
 Selects points within a per-frame distance (inclusive) of point or segment features. A
 polyline is passed as consecutive segment rows. The contributor composes `GPUNearestFeatureJoin`. Unlike
@@ -3768,6 +3862,71 @@ columns.
 `getGPUPointDensityHexagonGridSize` sizes a hexagon lattice that covers given bounds, and
 `GPU_POINT_DENSITY_HEXAGON_WGSL` lets render shaders place hexagon bins.
 
+### `GPUStudyWindowPreparation`
+
+Prepares one valid polygon or multipolygon, including holes and disconnected islands, as a reusable
+`studyWindow` handle for point-pattern statistics and kernel-density edge correction. Add the
+preparation to the graph before adding its consumers. One handle belongs to one graph; declaring
+it a second time throws, including in the same graph. `isDeclaredIn(graph)` reports its declaration.
+
+The first encoding builds the window into owned persistent buffers. Later encodings skip all
+preparation work until `invalidate()` is called or the optional CPU `rebuildWhen(parameters)`
+predicate returns true. The decision is latched once per encoding; `encodedBuildCount` counts
+encodings that rebuild. Changed geometry needs invalidation, otherwise consumers deliberately
+reuse the previous build. It reuses a build, it never caches results: consumers evaluate their
+current inputs on every encoding. Changing view lengths requires a new handle and graph.
+`destroy()` frees the handle's buffers and allows re-adding it; destroy compiled graphs using it
+first. `getViews(graph)` throws until this handle has been declared in that graph.
+
+```ts
+const studyWindow = new GPUStudyWindowPreparation({
+  positions: windowPositions,
+  featureOffsets: windowFeatureOffsets, // exactly two entries: one feature
+  polygonOffsets: windowPolygonOffsets,
+  ringOffsets: windowRingOffsets,
+  spatialContext,
+  samplingGrid: [256, 256],
+  output: {summary: windowSummary} // optional caller-owned float32[8] readback copy
+});
+graph.add(studyWindow);
+// Pass studyWindow to consumers added after this preparation.
+```
+
+The geometry uses the GeoArrow polygon layout: the first ring of each polygon is its shell,
+regardless of winding. Only planar frames are supported. Project longitude/latitude positions first
+with `GPULocalFrame.projectArray`, using the same frame as the observations. The polygon must be
+valid; consider `GPUGeometryValidity`. Self-intersections or overlapping polygons invalidate the
+fan identity used by consumers.
+
+`GPURectangleClip` polygon output can feed the preparation directly, including empty polygon and
+ring slots. A ring with fewer than three vertices, or exactly zero orientation for every triangle
+`(first, vertex, next)` in its fan, is degenerate. Such rings contribute no area, perimeter, edge
+count, bounding box or uncertainty flag; their oriented edges are NaN. The constructor still needs
+at least three vertex rows and one ring slot. An all-degenerate window is legal and produces EMPTY
+at encode time. The raster sampler reads raw positions, so degenerate rings can only add boundary
+flags (extra exact inclusion tests), never change coverage.
+
+The GPU copies oriented edges with the interior on their left and computes the eight-float
+`GPU_STUDY_WINDOW_SUMMARY` row: `[minX, minY, maxX, maxY, area, perimeter, edgeCount, flags]`.
+Area subtracts holes; perimeter includes them. Flag 1
+(`GPU_STUDY_WINDOW_FLAG_ORIENTATION_UNCERTAIN`) indicates a ring area within a conservative f32
+rounding bound of zero, or non-finite orientation; flag 2 (`GPU_STUDY_WINDOW_FLAG_EMPTY`) indicates
+non-finite or non-positive total area. Ring areas use a fixed pairwise reduction of determinants
+relative to the first vertex. The orientation bound is
+`8 * epsilon_f32 * (1 + ceil(log2(vertexCount))) * sum(abs(products))` on doubled area.
+
+`samplingGrid` is compile-time, defaults to `[256, 256]`, and must contain positive integers with a
+product no larger than 1048576. The sampler compacts inside or boundary cells in row-major order;
+bit 31 marks a boundary cell that needs an inclusion test. `crossingCapacity` is forwarded to
+`GPUPolygonRasterization` and defaults to `4 * samplingGrid[1] * ringCount`; size it for polygons
+with many crossings per row. On crossing overflow, a slower exact GPU center test preserves
+sampler coverage. `slabEntryCapacity` controls the optional edge index, whose overflow
+falls back to walking edges. `getViews(graph)` exposes the edge, summary, slab and sampler views;
+its packed view is internal to consumers.
+
+All preparation runs on the GPU. Each rebuild's fixed ring tree costs O(V log V); sampler cost
+also depends on the grid and crossing capacity.
+
 ### `GPUKernelDensity`
 
 Maximum: `indexGridSize` has at most `getGPUGridIndexMaximumCellCount(device)` (`2^25 - 1` on a default device: `cells + 1` uint32 cell offsets in one 128 MiB binding) cells.
@@ -3827,8 +3986,19 @@ kdeParameters.write(
   outside the window are excluded and cells whose centers are outside are NaN. `e(u)` is closed form,
   with no quadrature: normal-CDF differences for the gaussian, and an exact inclusion-exclusion of
   four disk-clipped quadrant integrals for quartic and epanechnikov. `getGPUKernelDensityWindowMass`
-  is the float64 reference. The window is a rectangle; an irregular study area is not supported (use
-  a grid that matches your bounding region and mask the output, accepting the bias at concave edges).
+  is the float64 rectangle reference. For a polygon, pass a `GPUStudyWindowPreparation` as the
+  compile-time `studyWindow` prop (default `'rectangle'`) and add it to the graph before the KDE.
+  Set `window: 'study-window'` in the parameter packer; slots 5–8 become NaN and polygon kernels
+  read the prepared window instead. A rectangle-mode operator given this sentinel with edge
+  correction produces NaN cells. Polygon windows work with `'exact'`, `'binned'` and `'auto'`.
+  Outside points are excluded and cells with centers outside W are NaN. Polygon `e(u)` uses
+  oriented fan decomposition, with analytic compact-kernel integrals and Gaussian quadrature
+  (2e-5 relative accuracy); only edges within the kernel support contribute corrections.
+  Uniform correction divides by `e(u)`; Diggle correction uses `w_i / e(x_i)`. Both retain the
+  rectangle small-mass guard (`mass > 1e-6`). The window must be valid (consider
+  `GPUGeometryValidity`) and in the same planar frame as the KDE. Window queries use absolute
+  frame coordinates, without subtracting `gridStart`. Polygon plus `edgeCorrection: 'none'`
+  throws `${id} studyWindow is ignored without edge correction; set edgeCorrection to 'uniform' or 'diggle'`.
 - **Bandwidth.** It is per-frame, in position units, and should reflect the question (a service
   distance, a neighborhood). Pass `bandwidthRule: 'scott'` or `'silverman'` to have the GPU compute a
   normal-reference bandwidth from the points every encoding, with no read-back: `h = n_eff^(-1/6)
@@ -3873,7 +4043,7 @@ kdeParameters.write(
 - `spatialContext` is planar/native only (omitted means planar/native). It measures area, so `local-azimuthal-equidistant` frames throw.
 
 Not provided: adaptive or space-time bandwidths, network KDE (see the network contributors), reflection
-boundaries, and non-rectangular windows.
+boundaries.
 
 {/* parameters: GPUKernelDensity generated by modules/experimental/test/analysis-core/doc-parameters.ts from the TSDoc; do not edit */}
 
@@ -3887,7 +4057,7 @@ Settings of `getGPUKernelDensityParameterValues`:
 | Field | Type | Description |
 |---|---|---|
 | `bandwidth` | `number` | Kernel bandwidth `h` in position units (ground units). Positive and finite. Ignored (the GPU computes it) when `GPUKernelDensityProps.bandwidthRule` is set; pass any positive value. |
-| `window` (optional) | `GPUKernelDensityWindow` | Study window `[minX, minY, maxX, maxY]` of the edge correction. Defaults to the ordered rectangle of the output grid. Ignored without edge correction. |
+| `window` (optional) | `GPUKernelDensityWindow \| 'study-window'` | Study window `[minX, minY, maxX, maxY]` of the edge correction. Defaults to the ordered rectangle of the output grid. Ignored without edge correction. Use `'study-window'` with a polygon `studyWindow`; it writes NaN rectangle slots, so a rectangle-mode operator with edge correction yields NaN cells. |
 
 {/* /parameters */}
 
@@ -3950,8 +4120,9 @@ idwParameters.write(
   kilometers with `units: 'kilometers'`), on a sphere of `sphereRadius` or the mean Earth radius in that unit. Neighbors and radius
   tests order by the haversine term. The query box is conservative (longitude span widened by the
   cosine of the highest latitude reached, full span near the poles) but does not wrap the
-  antimeridian, and the nearest-k limit scans the whole box instead of early-stopping. f32
-  absolute lon/lat gives about 1 m accuracy at Earth scale. Other longitude/latitude metrics
+  antimeridian, and the nearest-k limit scans the whole box instead of early-stopping.
+  Pass optional `spatialContext` to `getGPUInverseDistanceWeightingParameterValues(settings, grid)` to warn on short `searchRadius` values; see [Precision of longitude/latitude positions](#precision-of-longitudelatitude-positions).
+  Other longitude/latitude metrics
   (rhumb, ellipsoidal, none) throw; project to a planar frame (for example `createGPULocalFrame`)
   for them. It measures distance, so `local-lambert-equal-area` frames throw.
 - `taper: 'none'` (default) is `w = 1 / d^p` inside the radius, a hard cutoff: a sample entering
@@ -3987,6 +4158,7 @@ Settings of `getGPUInverseDistanceWeightingParameterValues`:
 
 | Field | Type | Description |
 |---|---|---|
+| `spatialContext` (optional) | `GPUSpatialContext` | Spatial context of the positions; when it is longitude/latitude, a distance under 10 float32 quanta (about 17 m) logs a warning (see Precision of longitude/latitude positions). Does not change the packed values. |
 | `searchRadius` | `number` | Search radius in position units. `Infinity` searches the whole index domain, except with the `'modified-shepard'` taper, which needs a finite radius. |
 | `power` (optional) | `number` | Distance power `p` in `w = 1 / d^p`. Zero gives an unweighted mean. Defaults to 2. |
 | `taper` (optional) | `GPUInverseDistanceWeightingTaper` | Weight taper at the search radius. Defaults to `'none'` (hard cutoff). |
@@ -4041,8 +4213,9 @@ graph.add(
   Neighbors are ordered by `(haversine term, row)`; exact hits and duplicate coalescing compare
   degree positions exactly; leave-one-out uses the same metric. The query box is conservative and
   does not wrap the antimeridian, and the ring scan's early stop is disabled (the whole box is
-  scanned, so an unbounded radius is `O(samples)` per cell). f32 absolute lon/lat gives about 1 m
-  accuracy at Earth scale. Other longitude/latitude metrics throw. It measures distance, so `local-lambert-equal-area` frames throw.
+  scanned, so an unbounded radius is `O(samples)` per cell).
+  Pass optional `spatialContext` to `getGPUKrigingParameterValues(settings, grid)` to warn on short `searchRadius` and `range` values; see [Precision of longitude/latitude positions](#precision-of-longitudelatitude-positions).
+  Other longitude/latitude metrics throw. It measures distance, so `local-lambert-equal-area` frames throw.
 - Status: `invalidCount` counts cells that are NaN for lack of data or invalid settings (fewer than
   `minimumNeighborCount` distinct positions, no sample in the radius, outside the index domain).
   `uncertainCount` counts cells rejected by the numerical checks below. Both are computed over the
@@ -4092,6 +4265,7 @@ Settings of `getGPUKrigingParameterValues`:
 
 | Field | Type | Description |
 |---|---|---|
+| `spatialContext` (optional) | `GPUSpatialContext` | Spatial context of the positions; when it is longitude/latitude, a distance under 10 float32 quanta (about 17 m) logs a warning (see Precision of longitude/latitude positions). Does not change the packed values. |
 | `searchRadius` | `number` | Search radius in position units. `Infinity` searches the whole index domain. |
 | `neighborCount` (optional) | `number` | Neighborhood size `k`. Clamped to the contributor's compile-time `maximumNeighborCount`. Defaults to that capacity. |
 | `minimumNeighborCount` (optional) | `number` | Cells with fewer contributing samples (and no exact hit) are nodata. Defaults to 3. |
@@ -4138,11 +4312,18 @@ parameters.write(
 - Dots are ordered by feature, category and rank (offsets from a prefix scan). `dots.ids` holds the
   feature row of each dot and `dots.status.count` is safe as an instance count; rows past it are NaN /
   `0xffffffff`.
-- **`status.failedCount`** counts dots that could not be placed and keep their slot with a NaN position: all
-  dots of a feature with a polygon that failed to triangulate (self-intersecting rings, fewer than three
-  shell vertices, triangulation work budget exceeded) or with zero or non-finite area, plus masked dots
-  whose attempts all missed (probability `(1 - w)^maximumAttempts` for mean mask weight `w`). It is zero
-  for valid geometry without a mask. A feature with no requested dots reports nothing.
+- Empty polygons and degenerate rings from clipping are skipped on the GPU. A ring is degenerate
+  when it has fewer than three vertices or every first-vertex fan triangle has exact orientation zero,
+  matching `GPUStudyWindowPreparation`; an uncertified orientation is retained. A degenerate shell
+  makes its entire polygon empty. Removing these entries while retaining feature rows preserves
+  triangle selection and Philox draws bitwise.
+- Features with zero total area get zero slots, so they consume no capacity and contribute zero to
+  `slotCounts`, `dots.status.count` and `dots.status.requiredCount`. Their clamped requested dot counts
+  are reported in **`status.failedCount`**, without an exception.
+- **`status.failedCount`** also counts other placement failures, which keep a NaN slot: untriangulable
+  polygons, exceeded triangulation budgets, non-finite areas and masked dots whose attempts all missed
+  (probability `(1 - w)^maximumAttempts` for mean mask weight `w`). A feature with no requested dots
+  reports nothing.
 - **Coordinates.** Dots are uniform in coordinate space, so `spatialContext` is planar/native only (omitted
   means planar/native), on `GPUDotDensity`, `GPURandomPointsInPolygon` and `GPURandomPointsOnLine`.
   Longitude/latitude throws. `GPUDotDensity` and `GPURandomPointsInPolygon` declare `measure: 'area'`:
@@ -4293,6 +4474,10 @@ and `GPUH3CellProjection` read. The zero key means "no cell".
   - H3 boundaries follow h3-js `cellToBoundary` exactly in vertex count and order. That includes
     face-crossing distortion vertices (up to 10, so use stride 10) and pentagons.
   - Quadbin, quadkey, geohash and S2 have 4 vertices; A5 has 5.
+  - `edgeModel` and `outputSpatialContext.edgeModel` are `'great-circle'` for H3, S2 and A5,
+    and `'linear'` for quadbin, quadkey and geohash. Before linear polygon consumers, prepare
+    great-circle boundaries with `GPULonLatPolygonPreparation`; see the
+    [H3 edge-deviation table](#gpucellsetoutline) below.
 
 ```ts
 graph.add(new GPUPointToCell({family: 'h3', resolution: 8, positions, output: {cells}}));
@@ -4410,11 +4595,14 @@ Polyfills polygons (with holes) into Quadbin or H3 cells, like CARTO `QUADBIN_PO
   even-odd over all rings, decided exactly (exact orientation signs, a cell centre exactly on an edge
   resolved by the shared Simulation-of-Simplicity tie rule of `utils/exact-geometry-wgsl.ts`).
   `spatialContext` defaults to, and must be, longitude/latitude without a
-  metric (planar contexts throw).
-- **Antimeridian and poles.** Polygons must not cross the antimeridian. A feature whose bounding
-  box is wider than 180 degrees of longitude (every antimeridian-crossing ring, since such a ring has
-  an edge with a longitude difference above 180) gets no cells and is counted in the optional
-  `output.status.invalidCount`; split it at +-180 first. A feature reaching past the cover's latitude limit
+  metric and with linear edges (planar contexts and great-circle edges throw).
+- **Antimeridian and poles.** A feature with a non-pole edge whose raw longitude difference exceeds
+  180 degrees gets no cells and increments `output.status.invalidCount`; prepare it with
+  `GPULonLatPolygonPreparation` first. Pre-split multipolygons and same-pole edges are accepted,
+  including split Fiji and Natural-Earth Antarctica. Empty rings contribute no bounds.
+  Full-width features enumerate full-width lattices; with `candidateEnumeration: 'bounds'`,
+  provision `candidateCapacity` accordingly and inspect `candidateCount` and `candidateOverflow`.
+  A feature reaching past the cover's latitude limit
   (89 degrees for H3, 85.051129 for Quadbin) loses its polar cells and is counted in the optional
   `output.status.uncertainCount`. Both scalars are cleared on every encoding.
 - **Containment.**
@@ -4492,7 +4680,8 @@ cell is core.
 ### `GPUCellSetOutline`
 
 It consumes cell keys, so it takes no `spatialContext`; the segments and rings it produces are
-longitude/latitude degrees (the `GPU_LONGITUDE_LATITUDE_SPATIAL_CONTEXT` convention).
+longitude/latitude degrees. `edgeModel` and `outputSpatialContext.edgeModel` are `'great-circle'`
+for H3 and `'linear'` for Quadbin; `outputSpatialContext.metric` is `'none'`.
 
 The boundary edges of a set of H3 or Quadbin cells, the `cellsToMultiPolygon` outline. Set `rings` to chain
 the edges into closed rings with shells and holes on the GPU ([`GPUSegmentRingAssembly`](#gpusegmentringassembly)).
@@ -4527,9 +4716,27 @@ graph.add(new GPUCellSetOutline({
   (counter-clockwise shells) and `'right'` for Quadbin (clockwise shells).
 - `rings: {vertexTolerance?, normalizeWinding?, output: GPUSegmentRingAssemblyOutput}` composes
   `GPUSegmentRingAssembly` after the outline, with `output.endpoints`, `output.status.count` and `output.groups`
-  as its inputs and `interiorSide` taken from the family. Use `normalizeWinding: true` for
+  as its inputs, `outputSpatialContext` as its context and `interiorSide` taken from the family. Use `normalizeWinding: true` for
   counter-clockwise shells and clockwise holes in both families. Without `rings`, hole detection and ring
   orientation are left to the caller.
+
+For an east-west edge of ground length `L` at latitude `phi`, the great-circle arc deviates from
+the degree-straight edge by approximately `tan(phi) * L² / (8R)`. For average H3 edge lengths at 45°N:
+
+| H3 resolution | Average edge length | Approximate deviation |
+| --- | --- | --- |
+| 0 | 1281 km | 32 km |
+| 1 | 483 km | 4.6 km |
+| 2 | 183 km | 660 m |
+| 3 | 69 km | 93 m |
+| 4 | 26 km | 13 m |
+| 5 | 9.9 km | 1.9 m |
+
+Run outlines of H3 resolution <= 4 through `GPULonLatPolygonPreparation` with
+`spatialContext.edgeModel: 'great-circle'` before linear consumers. At resolution >= 5, the
+average-edge approximation at 45°N is within 2 m; this is not a global bound (multiply the table's
+deviations by about 1.7 at 60°). Preparing preserves the declared great-circle meaning while
+producing a linear output context. Global or antimeridian-crossing rings also need preparation.
 
 ### `GPUSegmentRingAssembly`
 
@@ -4538,6 +4745,12 @@ graph.add(new GPUCellSetOutline({
 Chains directed boundary segments into closed rings on the GPU, the ring-assembly step of
 `cellsToMultiPolygon`. It consumes `GPUCellSetOutline` output, or any `float32x4` segment list whose
 vertices meet within a tolerance.
+
+The resolved `spatialContext` describes both input and output. For longitude/latitude it preserves
+the input `edgeModel`, including omission; both `'linear'` and `'great-circle'` edges are accepted
+with metric `'none'`. Pass `outline.outputSpatialContext` when assembling cell outline segments.
+Prepare global or antimeridian-crossing rings with `GPULonLatPolygonPreparation` before polygon
+consumers, and prepare great-circle rings before consumers that require linear edges.
 
 ```ts
 graph.add(new GPUSegmentRingAssembly({
@@ -4612,7 +4825,8 @@ graph.add(new GPUSegmentRingAssembly({
   compile-time topology is the ring capacity and unused polygons and rings are empty.
 - Deterministic (integer atomics only). The cost is two pointer-jumping phases of `ceil(log2(rows))`
   dispatches each (plus the second tracing pass), a sort and scans. Rings that cross the antimeridian keep
-  the input longitudes. Turn comparison uses a monotone pseudo angle, not `atan2`. Ring areas are f32.
+  the input longitudes; use `GPULonLatPolygonPreparation` for global or antimeridian-crossing rings.
+  Turn comparison uses a monotone pseudo angle, not `atan2`. Ring areas are f32.
 
 ### `GPULineNoding`, `GPUPolygonize` and `GPUMakeValid`
 
@@ -4720,7 +4934,13 @@ chunkParameters.write(getGPULineChunkParameterValues({chunkLength: 1000}));
 
 - `GPULineSegmentize` (PostGIS `ST_Segmentize`, densify): every segment of length `L` becomes
   `clamp(ceil(L / maximumSegmentLength), 1, maximumPieceCount)` equal pieces; input vertices
-  are kept. With a great-circle `spatialContext`, positions are longitude/latitude degrees: lengths
+  are kept. With compile-time `closedLines: true` (default false), each line is a ring that closes
+  implicitly: the closing edge is densified and no vertex is repeated. A last row that repeats
+  the first row bit-exactly is dropped; other repeated input vertices are preserved. Output keeps
+  one line per input line, including empty and single-vertex lines, following the implicit polygon
+  ring convention used by `GPURectangleClip`. The spherical closing edge follows the short way
+  across the antimeridian using the last row's longitude shift.
+  With a great-circle `spatialContext`, positions are longitude/latitude degrees: lengths
   are great-circle distances times the context's `sphereRadius` (default mean Earth radius,
   `GPU_EARTH_MEAN_RADIUS_METERS`; meters, or kilometers with `units: 'kilometers'`), interior points
   are slerped, and longitudes are unwrapped along each line so it stays continuous across the
@@ -4753,6 +4973,14 @@ chunkParameters.write(getGPULineChunkParameterValues({chunkLength: 1000}));
 - Precision (f32, measured against f64 oracles on Apple Metal): planar densify and chunks within
   2e-5 of the coordinate scale; spherical densify within 2.9 m, arcs up to 16,500 km within 5.7 m.
 
+`getGPULineSegmentizeParameterValues`, `getGPUGreatCircleArcsParameterValues`, and
+`getGPULineChunkParameterValues` accept optional `settings.spatialContext`, the context of the
+lengths. A lon/lat context warns when a positive finite `maximumSegmentLength` or `chunkLength`
+is below ten times the float32 position resolution (about 16.97 meters on the default sphere):
+`<ClassName> distance is too short for float32 lon/lat; use createGPULocalFrame`.
+Pass the same context used by the contributor. This setting does not change the four-float packed
+layout; planar contexts and omitted contexts do not warn.
+
 {/* parameters: GPUGreatCircleArcs generated by modules/experimental/test/analysis-core/doc-parameters.ts from the TSDoc; do not edit */}
 
 #### `GPUGreatCircleArcs` parameters
@@ -4764,6 +4992,7 @@ Settings of `getGPUGreatCircleArcsParameterValues`:
 
 | Field | Type | Description |
 |---|---|---|
+| `spatialContext` (optional) | `GPUSpatialContext` | Context of the lengths; a lon/lat context warns when the length is below float32 resolution. |
 | `maximumSegmentLength` | `number` | Largest arc segment length in sphere-radius units (meters by default). `0` or `Infinity` lets `minimumSegments` alone decide the resolution. |
 | `minimumSegments` (optional) | `number` | Smallest number of segments per arc. Set `maximumSegmentLength` to `0` and this to `n` for a fixed `n` segments per arc. Default 1. |
 
@@ -4771,6 +5000,7 @@ Settings of `getGPULineSegmentizeParameterValues`:
 
 | Field | Type | Description |
 |---|---|---|
+| `spatialContext` (optional) | `GPUSpatialContext` | Context of the lengths; a lon/lat context warns when the length is below float32 resolution. |
 | `maximumSegmentLength` | `number` | Largest output segment length, in position units (`'planar'`) or sphere-radius units (`'spherical'`, meters by default). `0` or `Infinity` disables densification. |
 
 {/* /parameters */}
@@ -4785,6 +5015,7 @@ Settings of `getGPULineChunkParameterValues`:
 
 | Field | Type | Description |
 |---|---|---|
+| `spatialContext` (optional) | `GPUSpatialContext` | Context of the lengths; a lon/lat context warns when the length is below float32 resolution. |
 | `chunkLength` (optional) | `number` | `'chunk'` mode: piece length in position (or sphere-radius) units. |
 | `startMeasure` (optional) | `number` | `'substring'` mode: start distance from each line's first vertex, clamped to the line. |
 | `endMeasure` (optional) | `number` | `'substring'` mode: end distance, clamped to the line. A start past the end gives an empty line. |
@@ -4801,6 +5032,7 @@ Settings of `getGPULineSegmentizeParameterValues`:
 
 | Field | Type | Description |
 |---|---|---|
+| `spatialContext` (optional) | `GPUSpatialContext` | Context of the lengths; a lon/lat context warns when the length is below float32 resolution. |
 | `maximumSegmentLength` | `number` | Largest output segment length, in position units (`'planar'`) or sphere-radius units (`'spherical'`, meters by default). `0` or `Infinity` disables densification. |
 
 {/* /parameters */}
@@ -4869,31 +5101,38 @@ graph.add(new GPUGeodesicDestination({origins, bearings, distances, spatialConte
   correctly, and `areas` is non-negative. `GPUShapeDescriptors`, `GPUPolygonTriangulation` and
   `GPUAffineTransform` (centroid origins) use the same layout and rule; `GPULabelPoint` uses even-odd,
   which agrees with it for valid (non-overlapping) polygons.
-- Great-circle (`metric: 'great-circle'`) areas are the Chamberlain-Duquette formula turf uses
-  (shoelace in the Lambert cylindrical equal-area projection, exact for longitude/latitude boxes;
-  long edges are straight in that projection, not geodesics); pass
+- With `metric: 'great-circle'` and linear edges (the default), area uses Chamberlain-Duquette
+  (turf parity): an approximation of degree-straight edges with second-order error in latitude
+  span, exact for longitude/latitude boxes. With `edgeModel: 'great-circle'`, area uses signed
+  spherical excess on the context sphere (`areaModel: 'sphere-polygon'`). Perimeter uses
+  great-circle chords for both edge models; centroids retain the straight Lambert equal-area
+  construction. For linear-edge area, pass
   `sphereRadius: GPU_WGS84_SEMI_MAJOR_AXIS_METERS` for turf `area` parity. Ellipsoidal with
   `ellipsoidalEdgeModel: 'coordinate-linear'` maps latitude to authalic latitude (exact equal-area
   ellipsoid mapping) and measures edges with an f32 Vincenty inverse.
 - **Measure model.** The instance's `measures` field (`GPUMeasureDescription`) says what the length
   and area outputs mean: `lengthModel` (`'planar'`, `'great-circle'`, `'ellipsoidal-geodesic'`),
-  `areaModel` (`'planar'`, `'sphere-equal-area'`, `'wgs84-authalic'`, `'geodesic'`) and the length
+  `areaModel` (`'planar'`, `'sphere-equal-area'`, `'sphere-polygon'`, `'wgs84-authalic'`, `'geodesic'`) and the length
   and area units. Units follow `getGPULengthUnits`: native planar uses position units; a meters local
   frame reports meters and square meters. Geographic lengths default to meters and areas to square
   meters; `units: 'kilometers'` gives kilometers and square kilometers, including ellipsoidal kernels
   (previously rejected). Feature and group areas use the context's length unit squared.
-- Spherical areas use `getGPUAuthalicSphereRadius` (the new `areaRadius` field); lengths keep the
+- Linear-edge spherical areas use `getGPUAuthalicSphereRadius` (`areaRadius`); great-circle-edge
+  areas use `getGPUSphereRadius`. Lengths keep the
   mean radius (`radius`). With the default sphere, area results change by about `5e-7` relative.
   Ellipsoidal kernels honor `spatialContext.ellipsoid` (default WGS84); the geodesic classes expose the
   resolved `ellipsoid` in the context's length unit.
-- **Antimeridian and poles (geographic polygons).** Longitude steps are wrapped per edge, so an
+- **Antimeridian and poles (geographic polygons).** Non-pole longitude steps are wrapped, so an
   edge with a longitude difference above 180 degrees (Fiji's 179 to -179) takes the short way and
-  the ring is measured correctly. A ring whose wrapped steps sum to +-360 degrees encloses a pole,
-  and an edge whose wrapped step reaches 180 degrees (or whose raw step is a full 360) has no
-  unique interior side. Features owning such a ring report NaN `areas` and
+  the ring is measured correctly. Same-pole edges retain their raw step, so explicitly capped
+  Antarctica rings have zero winding and finite area. Unprepared rings with winding +-360,
+  rings wider than 360 degrees, and ambiguous edges report NaN `areas` and
   `centroids` (lengths, bounds and vertex counts stay valid) and are counted in
-  `output.status.invalidCount`, a one-row `uint32` view cleared every encoding. Split such polygons at the
-  antimeridian, or project them to a polar frame first. The check covers the serial and cooperative
+  `output.status.invalidCount`, a one-row `uint32` view cleared every encoding. Linear edges with
+  a wrapped step of 180 degrees are ambiguous; great-circle edges are ambiguous when antipodal
+  or passing through a pole. Prepare global rings with `GPULonLatPolygonPreparation`.
+  Ellipsoidal contexts take `ellipsoidalEdgeModel`; declaring `edgeModel` throws.
+  The check covers the serial and cooperative
   kernels. Line features are unaffected.
 - Groups: features are stably sorted by group ID and one workgroup per group reduces them with a
   fixed tree, so group sums are bitwise reproducible. Group centroids are area- (or length-)
@@ -4923,6 +5162,7 @@ graph.add(new GPUGeodesicDestination({origins, bearings, distances, spatialConte
   back to the sphere.
 - `GPUGeodesicDestination`: destination and final bearing from origin, bearing and distance
   columns, on the sphere or by Vincenty's direct solution.
+  No warning is possible because the distance is a GPU view; see [Precision of longitude/latitude positions](#precision-of-longitudelatitude-positions).
 - `model: 'rhumb'` on both classes (turf `rhumbDistance`, `rhumbBearing`, `rhumbDestination`; geo `Rhumb`):
   a line of constant bearing on a sphere of `radius` (default 6371008.8 m). Pairs give `distances` (in
   `radius` units), `initialBearings` equal to `finalBearings` (constant, in `(-180, 180]`) and the rhumb
@@ -4938,6 +5178,7 @@ graph.add(new GPUGeodesicDestination({origins, bearings, distances, spatialConte
   WGS84 and spherical box areas within 3e-7 relative from 100 m blocks to 2,000 km boxes;
   sphere pair distances 1e-7 m at 1 m and 0.9 m at 10,000 km; destinations within 1 m, bounded by
   the f32 resolution of output latitudes (about 0.4 m).
+  See [Precision of longitude/latitude positions](#precision-of-longitudelatitude-positions) for input quantization.
 
 ### `GEODESIC_WGSL`, `createGPULocalFrame`, and `GPULocalFrameProjection`
 
@@ -4961,8 +5202,9 @@ Two ways to work on longitude/latitude data, used consistently across the packag
   `project(lng, lat)`, `unproject(x, y)` and `projectArray(lngLats, stride)` for uploads, and a
   `spatialContext` that carries the frame identity: contexts of frames with different origins are
   incompatible, so data projected around different origins is not mixed. Float32 frame coordinates
-  keep about 1e-7 of the frame extent (millimeters at 10 km) instead of the 0.4 to 1 m resolution of
-  float32 degrees. `GPULocalFrameProjection` projects GPU-resident `float32x2` or binary64
+  keep about 1e-7 of the frame extent (millimeters at 10 km).
+  See [Precision of longitude/latitude positions](#precision-of-longitudelatitude-positions) for float32 degrees.
+  `GPULocalFrameProjection` projects GPU-resident `float32x2` or binary64
   (`uint32x4`) longitude/latitude rows into the frame without a readback (compiled adaptive patches
   from `gpu-project`, default tolerance 1 cm, output in absolute frame meters). Add it with
   `graph.add(new GPULocalFrameProjection({frame, positions, output, bounds}))`.
@@ -4972,6 +5214,8 @@ Two ways to work on longitude/latitude data, used consistently across the packag
   is the frame's context.
 
 ### `GPULinearReferencing` and `GPULineLocate`
+
+For `GPULinearReferencing.radius`, no warning is possible because the distance is a GPU view; see [Precision of longitude/latitude positions](#precision-of-longitudelatitude-positions).
 
 Maxima (functions of the device, default-device values for 128 MiB bindings in parentheses): `GPULinearReferencing` takes at most `getGPULinearReferencingMaximumQueryCount(device)` (3,728,270) `queryPositions` and `positions` of at most `getGPULinearReferencingMaximumPlanarPositionCount(device)` (2^23, planar BVH) or `getGPULinearReferencingMaximumSphericalPositionCount(device)` (2^21, arc table). `GPULineLocate` takes at most `getGPULineLocateMaximumEventCount(device)` (5,592,405) events.
 
@@ -5129,6 +5373,8 @@ coincident right segments emit duplicate runs.
 
 ### `GPULineSimplification`
 
+Pass optional `spatialContext` to `getGPULineSimplificationParameterValues(settings)` to warn on short Douglas-Peucker `tolerance` values; see [Precision of longitude/latitude positions](#precision-of-longitudelatitude-positions).
+
 `spatialContext` defaults to native planar coordinates, with the tolerance in position units. `{coordinateSpace: 'longitude-latitude', metric: 'great-circle'}` (optional `sphereRadius`, default mean Earth radius) runs Douglas-Peucker (both metrics) with great-circle distances: `tolerance` and `importance` use the context's length unit (meters by default, now also kilometers with `units: 'kilometers'`), chords are straight in longitude/latitude, and the distance from a vertex to its chord is the haversine distance to the closest point of the chord (found in the local equirectangular frame of the vertex, exact to first order for chords of kilometers). The `'time-ratio'` expected position is interpolated linearly in longitude/latitude with the longitude difference wrapped. Great-circle distances use f32 transcendental functions, so the bit-exactness below holds for planar contexts only. `method: 'visvalingam'` is planar only and throws in a great-circle context (its tolerance is an area, its rounds mirror a bit-exact planar triangle area, and no spherical-excess variant exists); other metrics throw. For Visvalingam, or to keep planar bit-exactness, project first (`createGPULocalFrame`, `GPULocalFrameProjection`). Douglas-Peucker declares `measure: 'distance'` (a Lambert equal-area frame throws; use azimuthal-equidistant); Visvalingam declares `measure: 'area'` (an azimuthal-equidistant frame throws; use Lambert equal-area).
 
 Douglas-Peucker (and approximate Visvalingam-Whyatt) simplification of many polylines or tracks, stored as rows sorted by line and
@@ -5201,7 +5447,9 @@ Settings of `getGPULineSimplificationParameterValues`:
 
 | Field | Type | Description |
 |---|---|---|
-| `tolerance` | `number` | Douglas-Peucker tolerance in position units (the context length unit in a great-circle context). A vertex is kept when its importance is strictly greater than the tolerance, which is the classic `dmax > epsilon` split rule. Line endpoints are always kept. Must be finite and non-negative. |
+| `spatialContext` (optional) | `GPUSpatialContext` | Spatial context of the positions; when it is longitude/latitude, a distance under 10 float32 quanta (about 17 m) logs a warning (see Precision of longitude/latitude positions). Does not change the packed values. |
+| `tolerance` | `number` | Douglas-Peucker tolerance in position units (the context length unit in a great-circle context). A vertex is kept when its importance is strictly greater than the tolerance, which is the classic `dmax > epsilon` split rule. Line endpoints are always kept. Visvalingam uses an effective-area tolerance in squared position units. Must be finite and non-negative. |
+| `method` (optional) | `GPULineSimplificationMethod` | Algorithm used by the operator. Defaults to `'douglas-peucker'`; `'visvalingam'` uses an area tolerance and skips the distance warning. Does not change the packed values. |
 
 {/* /parameters */}
 
@@ -5267,7 +5515,9 @@ Settings of `getGPULineSimplificationParameterValues`:
 
 | Field | Type | Description |
 |---|---|---|
-| `tolerance` | `number` | Douglas-Peucker tolerance in position units (the context length unit in a great-circle context). A vertex is kept when its importance is strictly greater than the tolerance, which is the classic `dmax > epsilon` split rule. Line endpoints are always kept. Must be finite and non-negative. |
+| `spatialContext` (optional) | `GPUSpatialContext` | Spatial context of the positions; when it is longitude/latitude, a distance under 10 float32 quanta (about 17 m) logs a warning (see Precision of longitude/latitude positions). Does not change the packed values. |
+| `tolerance` | `number` | Douglas-Peucker tolerance in position units (the context length unit in a great-circle context). A vertex is kept when its importance is strictly greater than the tolerance, which is the classic `dmax > epsilon` split rule. Line endpoints are always kept. Visvalingam uses an effective-area tolerance in squared position units. Must be finite and non-negative. |
+| `method` (optional) | `GPULineSimplificationMethod` | Algorithm used by the operator. Defaults to `'douglas-peucker'`; `'visvalingam'` uses an area tolerance and skips the distance warning. Does not change the packed values. |
 
 {/* /parameters */}
 
@@ -5332,8 +5582,10 @@ step distances and `trackLengths` are in the context's length unit (meters by de
 east in `(-pi, pi]` (`pi / 2 - bearing`, where `GPUGeodesicPairs` reports the bearing in degrees clockwise
 from north), so headings mean the same in every context. Longitude/latitude without the `great-circle` metric throws. It measures distance, so `local-lambert-equal-area` frames throw.
 Stop `centroids` are arithmetic means of coordinates, so a dwell straddling the antimeridian or a pole has a
-meaningless centroid. Positions are float32 degrees (about 1 m resolution at mid-latitudes); for
-sub-meter work project to a local frame instead. The `spatialContext` prop used to be required and
+meaningless centroid. For stop detection, the affected distance is `stopSpeedThreshold` × sampling
+interval: float32 position noise is about ±0.8 m/s at 1 Hz in Chicago, so use a local frame.
+No warning is possible because the distance is a GPU view; see [Precision of longitude/latitude positions](#precision-of-longitudelatitude-positions).
+The `spatialContext` prop used to be required and
 planar-only.
 
 {/* parameters: GPUTrajectoryMetrics generated by modules/experimental/test/analysis-core/doc-parameters.ts from the TSDoc; do not edit */}
@@ -5544,6 +5796,8 @@ Status: the optional `output.status` takes four one-row `uint32` views, `candida
 
 ### `GPUTrajectoryEncounters`
 
+Construction warns when the host-known `maximumDistance` derived from `cellSize` is too short for float32 lon/lat; see [Precision of longitude/latitude positions](#precision-of-longitudelatitude-positions) for this check and the unchecked per-frame `distance` GPU view.
+
 Maximum: `columns * rows * bucketCount` of the lattice is at most `getGPUGridIndexMaximumCellCount(device)` (2^25 - 1 on a default device); raise `cellSize` or lower `bucketCount`.
 
 Pairs of tracks within `distance` in the same time bucket (MobilityDB `tdwithin` on resampled tracks).
@@ -5640,6 +5894,8 @@ graph.add(new GPUTrajectoryClosestApproach({
 
 ### `GPUTrackSimilarity`
 
+For `frechetEpsilon`, no warning is possible because the distance is a GPU view; see [Precision of longitude/latitude positions](#precision-of-longitudelatitude-positions).
+
 Maximum: the pair capacity `pairA.length` is at most `GPU_TRACK_SIMILARITY_MAXIMUM_PAIR_COUNT` (2^24 - 1).
 
 `spatialContext` defaults to native planar (Euclidean distances in the f32 input coordinates; the planar kernels
@@ -5714,6 +5970,8 @@ All of these are contributors: construct, then `graph.add`. Per-frame values go 
 
 ### `GPUOutlineGeometry`
 
+Pass optional `spatialContext` to `getGPUOutlineGeometryParameterValues(settings)` to warn on short `distance` values; see [Precision of longitude/latitude positions](#precision-of-longitudelatitude-positions).
+
 Buffer-like outline geometry for drawing (turf `buffer` and `lineOffset`, PostGIS `ST_Buffer` as a
 picture). Props: `positions`, `geometryType` (`'points'`, `'lines'` or `'polygons'`; lines take `lineOffsets`, polygons the four-level
 `featureOffsets`, `polygonOffsets` and `ringOffsets`), `spatialContext` (omitted is planar; `{coordinateSpace: 'longitude-latitude', metric:
@@ -5737,6 +5995,7 @@ Settings of `getGPUOutlineGeometryParameterValues`:
 
 | Field | Type | Description |
 |---|---|---|
+| `spatialContext` (optional) | `GPUSpatialContext` | Spatial context of the positions; when it is longitude/latitude, a distance under 10 float32 quanta (about 17 m) logs a warning (see Precision of longitude/latitude positions). Does not change the packed values. |
 | `distance` | `number` | Offset distance, in position units (planar context) or in the context's `units` on its sphere (longitude/latitude context, meters by default). Must be non-negative; `0` draws nothing visible. |
 
 {/* /parameters */}
@@ -6016,21 +6275,28 @@ Planar only: `spatialContext` defaults to native planar coordinates and a longit
 
 Earcut on the GPU (`earcut`, deck.gl `PolygonLayer` tessellation, geo `TriangulateEarcut`, Sedona
 `ST_TriangulatePolygon` as earcut, not constrained Delaunay). Props: the four-level layout (`positions`,
-`featureOffsets`, `polygonOffsets`, `ringOffsets`), `output: {indices, valid, triangleCount?}` and
+`featureOffsets`, `polygonOffsets`, `ringOffsets`), `output: {indices, valid, triangleCount?, triangleOffsets?}` and
 `maximumWork` (default 4M steps, roughly rings of a few thousand vertices). Slices, `valid` and
 `triangleCount` are per polygon; the polygons of feature `f` are `[featureOffsets[f], featureOffsets[f + 1])`. The first ring is the shell and the others holes, with any winding.
 The ear search's diagonal-midpoint inside test is an exact parity (the Simulation-of-Simplicity rule of
 `utils/exact-geometry-wgsl.ts`), not an f32 ray crossing.
-Polygon `p` owns exactly `3 * (vertices + 2 * holes - 2)` index slots, so no count pass is needed
-(`getPolygonTriangulationIndexCount(vertexCount, ringCount, polygonCount)` sizes the buffer), and indices
-are rows of `positions`. Unused slots (dropped collinear or duplicate vertices, failed polygons) hold the
-degenerate triangle `(first, first, first)`, so the whole buffer is drawable. `valid[p]` is 1 when the
-triangulation completed and 0 for shells under 3 vertices, self-intersecting rings, scratch overflow or
-exceeded `maximumWork` (the slice is then all degenerate, unless the monotone path below completes it). One
+GPU layout preparation skips degenerate rings and scans triangle slice capacities. A ring is degenerate
+when it has fewer than three vertices or every first-vertex fan triangle has exact orientation zero;
+uncertified orientations are retained, matching `GPUStudyWindowPreparation`. Empty polygons and polygons
+with a degenerate shell contribute zero triangles, including any holes, and complete with `valid = 1`.
+Other polygons own `3 * (vertices + 2 * holes - 2)` index slots after the skipped rings are removed.
+Optional `triangleOffsets` has `polygonCount + 1` triangle offsets, including the terminal; polygon `p`
+starts at index `3 * triangleOffsets[p]`. Non-degenerate layouts retain their original slices and triangles.
+`getPolygonTriangulationIndexCount(vertexCount, ringCount, polygonCount)` returns a safe capacity:
+`3 * max(0, vertexCount + 2 * ringCount - 4)` when polygons exist, otherwise zero. Smaller legacy buffers
+are still accepted, with insufficient slices flagged invalid. Indices refer to rows of `positions`.
+Unused polygon slots hold `(first, first, first)`; spare capacity is zeroed. With no positions, the used
+triangle count is zero and nothing should be drawn. `valid[p]` is 0 for untriangulable rings, scratch
+overflow or exceeded `maximumWork` (the slice is then all degenerate, unless the monotone path completes it). One
 invocation per polygon, so Earcut scales with polygon count, not ring size; ear tests use Earcut's z-order hash
 above 80 vertices (`useZOrderHash`). Orientation tests use the exact predicate of
-`GPUSegmentIntersection`. Every polygon must have a shell of at least 3 vertices and no empty rings, or
-later slices shift. Triangle area equaled Shapely `area` and the triangle count equaled the `earcut` npm
+`GPUSegmentIntersection`. Empty rings and polygon slots from `GPURectangleClip` are accepted directly.
+Triangle area equaled Shapely `area` and the triangle count equaled the `earcut` npm
 package on 14 hand-built cases (order differs), and area matched on 60 random polygons. Delaunay variants
 are separate because this contributor preserves polygon constraints and holes.
 
@@ -6242,6 +6508,12 @@ per segment) and `segmentCounts` counts segments with positive length inside. A 
 longitude/latitude, as `GPULineDensity` does, and measures each piece as the great-circle distance between its
 endpoints. `status.overflow` is 1 when the candidate, BVH or crossing capacity was exceeded, and lengths can then be low.
 
+Longitude/latitude edges must be linear. Prepare polygons that cross ±180 or enclose a pole with
+`GPULonLatPolygonPreparation`; optional one-row `uint32` fields
+`output.status.antimeridianUncertainCount` / `output.status.poleUncertainCount` report unprepared
+rings. They are cleared and rewritten every encoding in lon/lat contexts. Supplying them with a
+planar context is allowed and leaves them untouched.
+
 Declares `measure: 'distance'`: a Lambert equal-area local frame throws; use an azimuthal-equidistant
 frame. Longitude/latitude requires `metric: 'great-circle'`; other metrics throw the shared
 `resolveGPUSpatialContext` error. Lengths use the context's length unit (meters by default for
@@ -6355,6 +6627,107 @@ The Hilbert order clusters better than Morton: a CPU tree-cost proxy (sum of nod
 binary BVH over 16,000 boxes) was 27 percent lower on uniform, 21 percent on clustered and 15 percent on
 road-like data. The joins' `spatialSort` now uses it by default (see
 [Spatial sort default](#spatial-sort-default)).
+
+### `GPULonLatPolygonPreparation`
+
+Prepares longitude/latitude polygon rings for linear-degree containment, rasterization and other
+polygon consumers. All classification, densification, capping and splitting runs on the GPU;
+construction validates only declared properties and view lengths. Non-pole edges take the short
+longitude path. A degree-plane edge along the same pole retains its raw longitude step, so
+Natural-Earth-style Antarctica needs no extra cap or split.
+
+| Prop | Contract |
+| --- | --- |
+| `positions`, `featureOffsets`, `polygonOffsets`, `ringOffsets` | `GPUPolygonGeometryFields`; implicit ring closure, shell first and holes afterward. |
+| `spatialContext` | Declare `coordinateSpace: 'longitude-latitude'`, metric `'none'` or `'great-circle'`, and optional `edgeModel: 'linear'` (default) or `'great-circle'`. |
+| `parameters` | Four float32 words from `getGPULonLatPolygonPreparationParameterValues(edgeModel, settings?, target?)`; `GPU_LON_LAT_POLYGON_PREPARATION_PARAMETER_LENGTH = 4`. |
+| `maximumPieceCount` | Integer in `[1, 65536]`, default `1024`, caps pieces per original edge. |
+| `antimeridian` | `'split'` (default) or `'reject'` crossing features. |
+| `poleRings` | `'cap'` (default) or `'reject'` pole-enclosing features. |
+| `output` | `GPULonLatPolygonPreparationOutput`, caller-owned views and status scalars. |
+| `id` | Defaults to `'lon-lat-polygon-preparation'`. |
+
+`GPULonLatPolygonPreparationSettings.maximumSegmentDegrees` is the largest longitude or central-angle
+step in degrees: default `0.1` for great-circle input and `0` for linear input. Zero disables
+densification; great-circle input with zero is passed through as linear and sets `approximation`.
+The helper rejects negative or NaN steps with
+`getGPULonLatPolygonPreparationParameterValues maximumSegmentDegrees must be >= 0`.
+
+The output `spatialContext` preserves the input metric, units and datum and declares
+`edgeModel: 'linear'`. `output.positions` is a capacity-sized `float32x2` view with written longitudes
+in `[-180, 180]`. Given F features, P polygons and R rings, allocate `featureOffsets` with F + 1
+rows, `polygonOffsets` with 2P + 1 rows and `ringOffsets` with 2R + 1 rows. Each input feature keeps
+its row: `featureOffsetsOut[f] = 2 * featureOffsetsIn[f]`. Within a feature, all main polygon copies
+come first, then all east copies. Ring roles are preserved, including zero-vertex east copies for
+noncrossing polygons. Unused rings and polygons stay in the topology. Any invalid ring empties its
+whole feature; ambiguity, width greater than 360 degrees, nonfinite coordinates, latitude outside
+`[-90, 90]`, or either reject option can cause this.
+
+Optional `ringFlags` has R uint32 rows: bit 0 crossing, bit 1 pole-capped, bit 2 ambiguous edge,
+bit 3 wider than 360 degrees, bit 4 nonfinite coordinate or invalid latitude, bit 5 densification
+clamped. `status.overflow` is required; optional `count` reports vertices written, `requiredCount`
+reports the exact final total when no intermediate stage overflowed, `invalidCount` counts rejected
+features once each, and `approximation` is one when great-circle densification was clamped or disabled.
+Dense, cap and both copies' clip streams each have capacity `output.positions.length`; clipping runs
+only against longitude -180 and 180 because classification validates latitudes. Overflow from any
+stage, including final merge, sets `overflow = 1`; all offsets remain monotone and within capacity.
+Status is rewritten each encoding. If an intermediate stage overflowed, `requiredCount` instead
+reports the conservative bound `8 * (D + 3 * R)`, where D is the unclamped dense vertex count
+(after `maximumPieceCount`) and R is the input ring count. Capping adds at most three vertices per
+ring, each longitude boundary at most doubles a stream, and there are two copies. This bound fits
+every intermediate stream and the final output on a rerun with the same input and parameters.
+Size `output.positions` from `requiredCount`; transient memory scales with it. Additional source-row
+scan arrays and topology metadata scale with input vertices and rings, without a `maximumPieceCount`
+multiplier. An overflowed intermediate result is incomplete; use the resized rerun for analysis.
+
+Applications can format readback diagnostics with these exact messages (the library does not log):
+
+- `${n} features rejected: ambiguous or over-wide rings`
+- `${n} rings cross the antimeridian; prepare polygons first` (consumer `antimeridianUncertainCount`)
+- `${n} rings enclose a pole; prepare polygons first` (consumer `poleUncertainCount`)
+- `densification clamped; raise maximumPieceCount`
+
+Sutherland-Hodgman clipping can leave zero-width bridges on the seam. The half-open containment
+rule assigns a point at -180 to the west side only; a point at +180 belongs to neither side.
+Kept canonical vertices retain their exact float32 bits. Wrapped longitude plus integer turns
+persists through intermediate buffers; reconstructed longitudes exist only in shader registers.
+
+A ring winding once around longitude is capped at the nearer pole, using the sign of its
+mid-latitude `(minLat + maxLat) / 2`; exactly zero is ambiguous. The cap retains the unwrapped
+closing endpoint before the two pole vertices, preserving the final edge. The heuristic ignores
+winding direction and can choose the wrong cap for an intended complement. Represent that
+complement as a world shell with the ring as a hole, or choose `poleRings: 'reject'`.
+Great-circle minor arcs through a pole, and antipodal endpoints, are ambiguous in v1.
+
+Edge models matter for long edges. At 45 degrees latitude, an east-west edge spanning 1 degree
+bows about 120 m as a great circle; 10 degrees gives about 12 km. A 60-degree edge reaches about
+49.1 N instead of 45 N, a deviation of about 455 km. Approximate H3 average-edge deviations at 45 N:
+
+| Resolution | Average edge length | Great-circle / linear-degree deviation |
+| --- | --- | --- |
+| 0 | 1281 km | about 32 km |
+| 1 | 483 km | about 4.6 km |
+| 2 | 183 km | about 660 m |
+| 3 | 69 km | about 93 m |
+| 4 | 26 km | about 13 m |
+| 5 | 9.9 km | about 1.9 m |
+
+Multiply these estimates by about 1.7 at 60 degrees. The originally proposed 1.2 m bound for a
+0.1-degree step is slightly low: the binary64 oracle measures 1.336 m on the 60-degree edge at
+45 N. Use **about 1.3 m** for that fixture (the regression limit is 1.4 m), before float32 position
+rounding; this is not a universal certified error bound. See the longitude/latitude precision
+notes for the additional coordinate quantization error.
+
+
+{/* parameters: GPULonLatPolygonPreparation generated by modules/experimental/test/analysis-core/doc-parameters.ts from the TSDoc; do not edit */}
+
+#### `GPULonLatPolygonPreparation` parameters
+
+- Packer: `getGPULonLatPolygonPreparationParameterValues(edgeModel, settings?)`, writes `GPU_LON_LAT_POLYGON_PREPARATION_PARAMETER_LENGTH` (4) `float32` values.
+  - `edgeModel` (`GPUSpatialEdgeModel`)
+  - `settings` (`GPULonLatPolygonPreparationSettings`)
+
+{/* /parameters */}
 
 ### `GPURectangleClip`
 
@@ -6490,6 +6863,8 @@ Settings of `getGPUOrdinaryLeastSquaresParameterValues`:
 {/* /parameters */}
 
 ### `GPUGeographicallyWeightedRegression`
+
+Pass optional `spatialContext` to `getGPUGeographicallyWeightedRegressionParameterValues(settings)` to warn on short fixed `bandwidths`; see [Precision of longitude/latitude positions](#precision-of-longitudelatitude-positions).
 
 Geographically weighted regression with AICc bandwidth selection (Fotheringham, Brunsdon and
 Charlton 2002; mgwr, ArcGIS GWR). For every included row `i` it fits a weighted least squares
@@ -6668,6 +7043,7 @@ Settings of `getGPUGeographicallyWeightedRegressionParameterValues`:
 
 | Field | Type | Description |
 |---|---|---|
+| `spatialContext` (optional) | `GPUSpatialContext` | Spatial context of the positions; when it is longitude/latitude, a distance under 10 float32 quanta (about 17 m) logs a warning (see Precision of longitude/latitude positions). Does not change the packed values. |
 | `kernel` (optional) | `GPUGeographicallyWeightedRegressionKernel` | Weight kernel. Defaults to `'bisquare'`. |
 | `bandwidthMode` (optional) | `GPUGeographicallyWeightedRegressionBandwidthMode` | Meaning of the ladder values. Defaults to `'fixed'`. |
 | `bandwidths` | `ArrayLike<number>` | Candidate bandwidths: distances (`'fixed'`) or neighbour counts `k` (`'adaptive'`, rounded to integers). One value is a fixed bandwidth; several are searched by AICc (and refined, see `refinementPassCount`). With `bandwidthSearch: 'golden-section'` the first two values are the search bounds `[minimum, maximum]` (a value of 0 or less takes mgwr's default for that bound); further values are ignored. |
@@ -6704,6 +7080,7 @@ Settings of `getGPUGeographicallyWeightedRegressionParameterValues`:
 
 | Field | Type | Description |
 |---|---|---|
+| `spatialContext` (optional) | `GPUSpatialContext` | Spatial context of the positions; when it is longitude/latitude, a distance under 10 float32 quanta (about 17 m) logs a warning (see Precision of longitude/latitude positions). Does not change the packed values. |
 | `kernel` (optional) | `GPUGeographicallyWeightedRegressionKernel` | Weight kernel. Defaults to `'bisquare'`. |
 | `bandwidthMode` (optional) | `GPUGeographicallyWeightedRegressionBandwidthMode` | Meaning of the ladder values. Defaults to `'fixed'`. |
 | `bandwidths` | `ArrayLike<number>` | Candidate bandwidths: distances (`'fixed'`) or neighbour counts `k` (`'adaptive'`, rounded to integers). One value is a fixed bandwidth; several are searched by AICc (and refined, see `refinementPassCount`). With `bandwidthSearch: 'golden-section'` the first two values are the search bounds `[minimum, maximum]` (a value of 0 or less takes mgwr's default for that bound); further values are ignored. |
@@ -7210,6 +7587,14 @@ Points on a study area, or a raster, to Getis-Ord Gi* hot and cold spots.
 
 Points source (breaking change from the occupied-cells design):
 
+- Recipe `spatialContext` describes study-area polygons (default longitude/latitude, metric `'none'`,
+  linear edges). For antimeridian crossings or great-circle edges, set `prepare: true` or prepare with
+  `GPULonLatPolygonPreparation`. Preparation requires `preparedPositionCapacity` and a per-frame
+  `preparationParameters` view from `getGPULonLatPolygonPreparationParameterValues(edgeModel, settings)`.
+  It runs before cell cover and preserves feature rows; `status.stages` adds `study-area-preparation`
+  with `overflow`, `requiredCount`, `invalidCount` and `approximation`. Preparation requires a points
+  source and a longitude/latitude context. The cover's `invalidCount` counts features with unsplit
+  non-pole antimeridian-crossing edges, not wide bounding boxes.
 - `studyArea` (a `GPUPolygonGeometryPort` plus `candidateCapacity`, optional `coverCapacity`) and
   `cellCapacity` are required. The recipe covers the polygons with `GPUCellCover` (`'center'` containment),
   deduplicates and sorts the cells with `GPUCellAggregation`, aggregates the points the same way and joins them
@@ -7323,8 +7708,14 @@ Transfers values between two polygon zone systems by area: both systems are rast
   The areal stage weights each cell by its area on the authalic sphere in the context's length unit squared
   (square meters by default; square kilometers with `units: 'kilometers'`). It measures area, so
   `local-azimuthal-equidistant` frames throw. Rasterization itself only
-  tests cell centers in the coordinates as given (straight polygon edges in degrees; split polygons at the
-  antimeridian). The resolved context is returned as `result.spatialContext`.
+  tests cell centers with straight polygon edges in degrees. For antimeridian crossings or great-circle
+  edges, set `prepare: true` or prepare with `GPULonLatPolygonPreparation`.
+  The resolved context is returned as `result.spatialContext`.
+- `prepare` defaults to false and requires a longitude/latitude context, `preparedPositionCapacity`
+  (applied separately to each zone system), and a per-frame `preparationParameters` view from
+  `getGPULonLatPolygonPreparationParameterValues(edgeModel, settings)`. Preparation runs before each
+  rasterization and preserves zone IDs. Stages `source-preparation` and `target-preparation` expose
+  `overflow`, `requiredCount`, `invalidCount` and `approximation`.
 - Accuracy is bounded by the raster resolution (cell centers decide membership), never an exact polygon
   intersection.
 
@@ -7337,9 +7728,15 @@ minimum, maximum) or 0 (count, sum).
 
 - Coordinates: `spatialContext` omitted is native planar. `longitude-latitude` is accepted because the
   mapped statistics are topological: containment uses straight polygon edges in degrees (not geodesics) and
-  polygons crossing the antimeridian must be split. No density is mapped, so no polygon area is needed; for
+  for antimeridian crossings or great-circle edges, set `prepare: true` or prepare with
+  `GPULonLatPolygonPreparation`. No density is mapped, so no polygon area is needed; for
   a density per square meter use `GPUZonalStatistics` directly with spherical `areas`. Other spaces throw.
-  The resolved context is returned as `result.spatialContext`.
+  The resolved context is returned as `result.spatialContext` (linear edges after preparation).
+- `prepare` defaults to false and requires a longitude/latitude context, `preparedPositionCapacity`,
+  and a per-frame `preparationParameters` view from
+  `getGPULonLatPolygonPreparationParameterValues(edgeModel, settings)`. Both backends prepare before
+  containment; feature rows and output counts retain their original IDs. Stage `polygon-preparation`
+  exposes `overflow`, `requiredCount`, `invalidCount` and `approximation`.
 
 ## Cross-reference
 

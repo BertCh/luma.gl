@@ -572,9 +572,18 @@ All five classes (and `GPURipleyEnvelope`) take an optional `spatialContext` and
 distances and window areas are Euclidean in the units of `positions`. Omitting it means native
 planar coordinates; a `longitude-latitude` context throws at construction ("project positions to a
 planar frame first"), because degrees give latitude-dependent distances, wrong areas and biased
-indices. The resolved context is exposed as `spatialContext`. The window is always the `bounds`
-rectangle: for an irregular study area the bounding box overstates the area and makes every
-pattern look clustered (polygon windows are not implemented).
+indices. The resolved context is exposed as `spatialContext`. By default the window is the `bounds`
+rectangle. `GPURipley`, `GPUVariogram` and `GPUSpatialCorrelogram` also accept a compile-time
+`studyWindow` prepared by `GPUStudyWindowPreparation` from
+`@luma.gl/experimental/gpu-spatial-analysis`. Add the preparation to the same graph before the consumer and use
+`bounds: 'study-window'` (`GPUPairStatisticsBounds`) in the per-frame settings. The GPU copies the
+parameters and replaces the bounds with the prepared polygon's bbox; the original buffer is unchanged.
+The window and points must share a planar spatial context. Windows may contain holes and disjoint
+components, but must be valid, without self-intersections or overlapping polygons; consider
+`GPUGeometryValidity` before preparation. `studyWindow` exposes the resolved handle or `'rectangle'`.
+Passing `bounds: 'study-window'` to a rectangle-mode operator produces NaN statistics; unusable polygon
+windows exclude every row. For an irregular study area, using its bbox as the observation window
+instead of the polygon overstates the area and can make a pattern look clustered.
 `GPUVariogram` and `GPUSpatialCorrelogram` measure distance and reject `local-lambert-equal-area` frames.
 Ripley statistics (including distance functions and envelopes) and point-pattern indices combine distance
 and window area, so neither local frame is exact: use an azimuthal-equidistant frame only where its area
@@ -592,7 +601,8 @@ parameters.write(getGPUVariogramParameterValues({bounds, maximumDistance: 500, a
 const model = fitVariogramModel({distances, semivariances, pairCounts}, {model: 'spherical'});
 ```
 
-- `GPUVariogram`: Matheron semivariance, pair count, mean lag distance and Cressie-Hawkins robust
+- `GPUVariogram`: polygon windows filter rows only; no area or edge correction is applied.
+  Matheron semivariance, pair count, mean lag distance and Cressie-Hawkins robust
   semivariance per lag and optional azimuth sector (`directionCount` equal sectors over `[0, pi)`
   from a per-frame `azimuthOffset`). Matheron precision: a term `(z_i - z_j)^2 / 2` is scaled by
   `2^24 / u` and rounded to an integer, where `u` is the robust variance `(IQR / 1.349)^2` of the
@@ -615,7 +625,8 @@ const model = fitVariogramModel({distances, semivariances, pairCounts}, {model: 
   when `output.status.overflow` is 1. The Matheron and Cressie-Hawkins bins, pair counts and mean distances are
   checked against scikit-gstat 1.0.24 (including an embedded 2e4 sentinel) by the committed
   generator `test/oracles/dataframe-variogram.py`, with tolerances derived from the bounds above.
-- `GPUSpatialCorrelogram`: global Moran's I per distance band (`'cumulative'` bands as PySAL
+- `GPUSpatialCorrelogram`: polygon windows filter rows only; no area or edge correction is applied.
+  Global Moran's I per distance band (`'cumulative'` bands as PySAL
   `DistanceBand` / ArcGIS Incremental Spatial Autocorrelation, or `'annulus'`), with `E[I]`,
   normality or randomization variance (per-frame), z, p, unordered pair counts, and
   `[firstPeakBand, maximumBand]`. Variances lost to f32 cancellation (for example a band holding
@@ -626,16 +637,23 @@ const model = fitVariogramModel({distances, semivariances, pairCounts}, {model: 
   channel. The optional `overflow` output is 1 when a product sum, a clamped product or a band pair
   count (saturated at `0xffffffff`) left its range.
 - `GPURipley`: K, L, L - r and an annulus pair-correlation estimate over `radiusCount` radii in a
-  rectangular window, with `'none'`, `'border'` (reduced sample, spatstat `Kest` border estimator
+  rectangle or prepared polygon window, with `'none'`, `'border'` (reduced sample, spatstat `Kest`
+  border estimator
   with `lambda = n / A`, so `K = A * numerator / (n * borderCount)`) or `'isotropic'` (Ripley 1977
-  rectangle, weights capped at 100 like spatstat `edge.Ripley` `maxweight`) edge correction
+  weights capped at 100 like spatstat `edge.Ripley` `maxweight`) edge correction
   switchable per frame. Border `K` changed from `lambda = (n - 1) / A` to `n / A` to match spatstat,
   which lowers it by the factor `(n - 1) / n`. The isotropic rectangle formula is exact at every
   radius (checked against brute-force circle sampling), so there is no radius guard; the practical
   limits are variance and the weight cap, which biases `K` low once less than 1% of a circle is
   inside, so keep `maximumDistance` well below the shorter window side (spatstat's default `rmax` is
-  a quarter of it). The pair correlation is an unsmoothed annulus difference and is noisy.
-- `GPURipleyEnvelope`: Monte Carlo CSR envelopes of K, L or `L - r` (`statistic`, default
+  a quarter of it). Polygon mode uses the polygon area, the distance to its boundary for border
+  correction, and an oriented-edge fan sum for the isotropic circle fraction. Interior circles use
+  weight 1 without an edge scan. The same weight cap of 100 applies. The pair correlation is an
+  unsmoothed annulus difference and is noisy.
+- `GPURipleyEnvelope`: `studyWindow` defaults to `'rectangle'`; pass a valid, non-overlapping
+  polygon prepared by `GPUStudyWindowPreparation` in the same planar frame and pack
+  `bounds: 'study-window'` to use its bbox, inclusion rule and area. The observed pass and every
+  simulation must share this window. Monte Carlo CSR envelopes of K, L or `L - r` (`statistic`, default
   `'l-minus-r'`), with `simulationCount` (at most 199) binomial CSR patterns of the observed
   included count `n`, drawn with Philox from the per-frame `seed` (`getGPURipleyParameterValues({..,
   seed})`, a uint32 stored as a word) and measured by a full `GPURipley` pass each, with the same window,
@@ -651,7 +669,14 @@ const model = fitVariogramModel({distances, semivariances, pairCounts}, {model: 
   override constant, so every simulation shares the same pipelines (an override still compiles one
   pipeline per value). Radii where an estimate is NaN are skipped per
   curve, so prefer `'isotropic'` or `'none'` for exact Monte Carlo validity. Cross-type K and
-  inhomogeneous K (Kinhom) are not implemented.
+  inhomogeneous K (Kinhom) are not implemented. Polygon simulations uniformly choose an equal-area
+  sampler cell, draw a point within it, and reject points outside boundary cells; each rejection
+  restarts from the cell draw. Philox uses `(row, simulationIndex, attempt, 0)`. Compile-time
+  `maximumAttempts` defaults to 32 and must be an integer in `[1, 256]`. Failed draws are masked;
+  optional `output.unplacedCount` is one uint32 word totaling failures across simulations, cleared
+  each encoding. An empty sampler or unusable window cannot place points. Undefined curves remain
+  NaN. Rectangle draws retain their original attempt-0 sequence. Using `'study-window'` bounds
+  without a polygon produces NaN statistics.
 - `GPURipleyDistanceFunctions`: the distance functions next to `GPURipley` (spatstat `Gest`, `Fest`,
   `Jest`). `G` is the nearest-neighbour distance function of the events, `F` the empty-space function
   over a `referenceGrid` lattice of reference locations, and `J = (1 - G) / (1 - F)` (below 1 is
@@ -669,7 +694,16 @@ const model = fitVariogramModel({distances, semivariances, pairCounts}, {model: 
   oracle written from the spatstat definitions, not against spatstat itself, and K and L (`GPURipley`) have
   no Kaplan-Meier or Hanisch option. The pass uses 8 channels per radius (a `radiusCount` of 256 still fits
   the default 16 KB of workgroup memory exactly). F depends on the reference lattice, so keep it coprime with the
-  window so no reference location sits exactly on a radius.
+  window so no reference location sits exactly on a radius. `studyWindow` accepts a valid polygon
+  prepared by `GPUStudyWindowPreparation` in the same planar frame (default `'rectangle'`). Pack
+  `bounds: 'study-window'`: the effective bbox sizes the search and reference lattices, while event
+  inclusion and border/Kaplan-Meier censoring use the polygon boundary, including holes. F counts
+  only reference cell centres inside the polygon. Polygon Hanisch estimates eroded area as
+  `A * insideReferencesWithBorderDistanceAtLeast(r) / insideReferenceCount`, using an integer
+  histogram with `4 * radiusCount` sub-slots and linear interpolation at each nearest distance.
+  This pass also runs for G-only output. Refine `referenceGrid` to improve the area estimate; the
+  weight cap remains 1024. An empty inside reference set gives NaN F and J. `'study-window'` bounds
+  in rectangle mode give NaN statistics; the existing rectangle shaders and draws are unchanged.
 - `GPUPointPatternIndices`: exact nearest neighbour per row (ring search, ties to the smallest row),
   Clark-Evans `[n, observed, expected, R, standardError, z, pValue]`, and quadrat counts with
   `[m, mean, variance, varianceToMeanRatio, chiSquare, degreesOfFreedom, pValue]`. The per-frame
@@ -684,6 +718,28 @@ const model = fitVariogramModel({distances, semivariances, pairCounts}, {model: 
   of freedom and the Wilson-Hilferty approximation (absolute error below 2e-4) above; assume
   expected counts of about 5 or more per quadrat. `GPU_CLARK_EVANS_LENGTH` and
   `GPU_QUADRAT_STATISTICS_LENGTH` are now 7.
+  Set compile-time `studyWindow` to a `GPUStudyWindowPreparation` added before this consumer in the
+  same graph and planar frame. Polygon windows must be valid (non-overlapping, non-self-intersecting);
+  holes and disjoint components are supported. Pack `bounds: 'study-window'` and explicitly choose
+  `clarkEvansCorrection: 'guard'` or `'none'`; `'donnelly'` and an omitted correction are rejected.
+  A polygon kernel given code 1 directly writes NaN expected distance, standard error, ratio, z and p.
+  Packing `'study-window'` without a polygon window leaves invalid bounds and undefined statistics.
+  For `'guard'` (also valid for rectangles), set a positive finite per-frame `guardDistance` (slot 7).
+  Only included points at least that far from every boundary contribute to the observed mean;
+  their neighbors still come from all included points. With `n_focus` focus points, the expectation
+  is `0.5 sqrt(A / n)` and standard error is `0.26136 sqrt(A / (n * n_focus))`. Row 0 still reports
+  all `n` included points; zero focus points give NaN statistics. Recommend
+  `guardDistance >= 2 / sqrt(lambda)`, where `lambda = n / A`.
+  Polygon quadrats use a compile-time `quadratSamples` by `quadratSamples` sub-cell-centre lattice
+  (default 16 per axis, positive integer, `quadratCount * quadratSamples² <= 16777216`). Sampled
+  areas are rescaled to sum to the window area `A`. Zero-area quadrats are dropped; with
+  `e_q = n * a_q / A` and `df = m_eff - 1`, rows are
+  `[m_eff, n/m_eff, sum((c_q-e_q)²)/df, chiSquare/df, chiSquare, df, pValue]`, where
+  `chiSquare = sum((c_q-e_q)²/e_q)`. Equal areas preserve the existing rectangle formula exactly.
+  Optional `output.quadratAreas` has one float32 area per row-major quadrat (plain cell areas for
+  rectangles) and requires `quadratGrid`, just like counts and statistics. Lattice accuracy depends
+  on `quadratSamples`; increase it for narrow boundary features. Counts and fixed-order sums are
+  deterministic.
 
 Measured on an Apple M3 Pro (headless Chromium), `GPUVariogram` with 32 lags including the cell
 sort: 100k points with 54M pairs in range in 10 ms; 20k points all-pairs (200M pairs) in 12 ms.
@@ -698,9 +754,10 @@ Settings of `getGPUPointPatternIndicesParameterValues`:
 
 | Field | Type | Description |
 |---|---|---|
-| `bounds` | `readonly [number, number, number, number]` | Inclusive `[minX, minY, maxX, maxY]` window. Rows outside it, or with a non-finite coordinate, are excluded. Its area is the study area of the Clark-Evans index and the quadrats tile it. |
+| `bounds` | `GPUPairStatisticsBounds` | Inclusive `[minX, minY, maxX, maxY]` window. Rows outside it, or with a non-finite coordinate, are excluded. Its area is the study area of the Clark-Evans index and the quadrats tile it. Use 'study-window' for a prepared polygon; writes NaN bounds until GPU window resolution. |
 | `maximumDistance` | `number` | Size hint of the neighbor-search cells (cells are at least this wide). Results never depend on it, only speed: a value near the expected nearest-neighbor distance is fastest. |
-| `clarkEvansCorrection` (optional) | `GPUClarkEvansCorrection` | Clark-Evans edge correction. Defaults to `'donnelly'` (Donnelly 1978: expected mean distance `0.5 sqrt(A / n) + (0.0514 + 0.041 / sqrt(n)) P / n`, variance `0.0703 A / n^2 + 0.037 P sqrt(A / n^5)`, `P` the window perimeter), because the plain expectation is biased toward apparent clustering for windows with a large perimeter. `'none'` gives the classic `0.5 sqrt(A / n)` with standard error `0.26136 sqrt(A) / n` (pointpats, ArcGIS). |
+| `clarkEvansCorrection` (optional) | `GPUClarkEvansCorrection` | Clark-Evans edge correction. Defaults to `'donnelly'` (Donnelly 1978: expected mean distance `0.5 sqrt(A / n) + (0.0514 + 0.041 / sqrt(n)) P / n`, variance `0.0703 A / n^2 + 0.037 P sqrt(A / n^5)`, `P` the window perimeter), because the plain expectation is biased toward apparent clustering for windows with a large perimeter. `'none'` gives the classic `0.5 sqrt(A / n)` with standard error `0.26136 sqrt(A) / n` (pointpats, ArcGIS). Polygon windows require explicit 'guard' or 'none'. 'guard' uses all included neighbors but averages only the interior focus points. |
+| `guardDistance` (optional) | `number` | Positive finite guard width (slot 7); required for 'guard'. Recommend >= 2 / sqrt(n / A). |
 | `alternative` (optional) | `GPUInferenceAlternative` | Tail of the Clark-Evans z-test and the quadrat chi-square test. Defaults to `'two-sided'`. `'greater'` tests for a statistic above its complete-spatial-randomness expectation (Clark-Evans: regular; quadrat chi-square: clustered), `'lesser'` for one below it. The permutation-only tails `'folded'` and `'directed'` throw. |
 
 {/* /parameters */}
@@ -715,7 +772,7 @@ Settings of `getGPURipleyParameterValues`:
 
 | Field | Type | Description |
 |---|---|---|
-| `bounds` | `readonly [number, number, number, number]` | Inclusive `[minX, minY, maxX, maxY]` observation window. Rows outside it, or with a non-finite coordinate, are excluded. Its area is the study area of the estimators. |
+| `bounds` | `GPUPairStatisticsBounds` | Inclusive `[minX, minY, maxX, maxY]` observation window. Rows outside it, or with a non-finite coordinate, are excluded. Its area is the study area of the estimators. Use `'study-window'` with a compile-time polygon window; it writes NaN bounds slots. |
 | `maximumDistance` | `number` | Largest radius: radius `b` is `maximumDistance * (b + 1) / radiusCount`. Keep it well below the shorter window side (spatstat's default is a quarter): K is unbiased at any radius, but its variance grows and the isotropic weight cap biases it low once a circle is mostly outside. |
 | `edgeCorrection` (optional) | `GPURipleyEdgeCorrection` | Edge-correction mode. Defaults to `'isotropic'`. |
 | `seed` (optional) | `number` | Monte Carlo seed of `GPURipleyEnvelope`, a uint32. `GPURipley` ignores it. Defaults to 0. The same seed reproduces the same simulated patterns exactly. |
@@ -732,7 +789,7 @@ Settings of `getGPURipleyDistanceFunctionsParameterValues`:
 
 | Field | Type | Description |
 |---|---|---|
-| `bounds` | `readonly [number, number, number, number]` | Inclusive `[minX, minY, maxX, maxY]` observation window. Events outside it, or with a non-finite coordinate, are excluded. The reference lattice of F covers this rectangle. |
+| `bounds` | `GPUPairStatisticsBounds` | Inclusive `[minX, minY, maxX, maxY]` observation window. Events outside it, or with a non-finite coordinate, are excluded. Use 'study-window' for a prepared polygon; its bbox supplies the reference lattice. Only reference centres inside the window count. Rectangle mode with these NaN bounds is undefined. |
 | `maximumDistance` | `number` | Largest radius: radius `b` is `maximumDistance * (b + 1) / radiusCount`. |
 | `edgeCorrection` (optional) | `GPURipleyDistanceEdgeCorrection` | `'border'` (default) divides by the points farther from the window edge than `r`; `'kaplan-meier'` and `'hanisch'` use every point (see `GPURipleyDistanceFunctions`). |
 
@@ -748,7 +805,7 @@ Settings of `getGPURipleyParameterValues`:
 
 | Field | Type | Description |
 |---|---|---|
-| `bounds` | `readonly [number, number, number, number]` | Inclusive `[minX, minY, maxX, maxY]` observation window. Rows outside it, or with a non-finite coordinate, are excluded. Its area is the study area of the estimators. |
+| `bounds` | `GPUPairStatisticsBounds` | Inclusive `[minX, minY, maxX, maxY]` observation window. Rows outside it, or with a non-finite coordinate, are excluded. Its area is the study area of the estimators. Use `'study-window'` with a compile-time polygon window; it writes NaN bounds slots. |
 | `maximumDistance` | `number` | Largest radius: radius `b` is `maximumDistance * (b + 1) / radiusCount`. Keep it well below the shorter window side (spatstat's default is a quarter): K is unbiased at any radius, but its variance grows and the isotropic weight cap biases it low once a circle is mostly outside. |
 | `edgeCorrection` (optional) | `GPURipleyEdgeCorrection` | Edge-correction mode. Defaults to `'isotropic'`. |
 | `seed` (optional) | `number` | Monte Carlo seed of `GPURipleyEnvelope`, a uint32. `GPURipley` ignores it. Defaults to 0. The same seed reproduces the same simulated patterns exactly. |
@@ -765,7 +822,7 @@ Settings of `getGPUSpatialCorrelogramParameterValues`:
 
 | Field | Type | Description |
 |---|---|---|
-| `bounds` | `readonly [number, number, number, number]` | Inclusive `[minX, minY, maxX, maxY]` extent. Rows outside it, or with a non-finite coordinate or value, are excluded. The extent also sizes the neighbor-search lattice. |
+| `bounds` | `GPUPairStatisticsBounds` | Inclusive `[minX, minY, maxX, maxY]` extent. Rows outside it, or with a non-finite coordinate or value, are excluded. The extent also sizes the neighbor-search lattice. Use `'study-window'` with a compile-time polygon window; it writes NaN bounds slots. |
 | `maximumDistance` | `number` | Upper distance of the last band. Band `b` ends at `maximumDistance * (b + 1) / bandCount`. |
 | `varianceAssumption` (optional) | `GPUSpatialCorrelogramVarianceAssumption` | Variance assumption of the z-scores and p-values. Defaults to `'randomization'`. |
 
@@ -781,7 +838,7 @@ Settings of `getGPUVariogramParameterValues`:
 
 | Field | Type | Description |
 |---|---|---|
-| `bounds` | `readonly [number, number, number, number]` | Inclusive `[minX, minY, maxX, maxY]` extent. Rows outside it, or with a non-finite coordinate or value, are excluded. The extent also sizes the neighbor-search lattice. |
+| `bounds` | `GPUPairStatisticsBounds` | Inclusive `[minX, minY, maxX, maxY]` extent. Rows outside it, or with a non-finite coordinate or value, are excluded. The extent also sizes the neighbor-search lattice. Use `'study-window'` with a compile-time polygon window; it writes NaN bounds slots. |
 | `maximumDistance` | `number` | Largest lag: pairs farther apart are ignored. Lag bins split `[0, maximumDistance]`. |
 | `azimuthOffset` (optional) | `number` | Start of the first direction sector, in radians counterclockwise from +x. Sector `s` holds pairs whose undirected direction (taken modulo pi) minus this offset, again modulo pi, lies in `[s * pi / directionCount, (s + 1) * pi / directionCount)`. Ignored when `directionCount` is 1. Defaults to 0. |
 

@@ -922,6 +922,24 @@ sizes threw later from a kernel, a graph buffer or a dispatch check, or failed a
   `requiredCount` of `0xffffffff` in `GPUSegmentIntersection` (and everything built on it) and the
   spatial join candidate and probe passes, instead of wrapping to a small count.
 
+### Longitude/latitude polygon behavior
+
+- `GPUCellCover.status.invalidCount` now counts features with a non-pole antimeridian-crossing
+  edge, instead of features whose bounding box is wider than 180 degrees. Wide features and
+  correctly pre-split multipolygons are covered.
+- `GPUGeometryMeasures` measures rings containing pole edges, including Natural Earth Antarctica,
+  instead of returning NaN for those rings.
+- Linear polygon consumers reject `edgeModel: 'great-circle'` contexts, and
+  `getPointInPolygonContainmentContext` preserves the declared `edgeModel`. Prepare those polygons
+  with `GPULonLatPolygonPreparation`, or set `prepare: true` on the choropleth, change-of-support
+  and hot-spot recipes, before feeding their linear output to containment.
+
+### Polygon study-window parameters
+
+Polygon consumers use `bounds: 'study-window'`. With these bounds, `GPUPointPatternIndices` now
+requires explicit `clarkEvansCorrection: 'guard'` (with positive `guardDistance`) or `'none'`;
+`'donnelly'` is rectangle-only. Rectangle users retain the existing default behavior.
+
 ## Upgrading to v9.4
 
 **@luma.gl/core**

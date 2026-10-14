@@ -67,6 +67,8 @@ Values alone do not explain where a pixel is or what it measures. GPURaster pres
 - The grid width and height.
 - Each band's native scalar format: `float32`, `uint32`, or `sint32`.
 - Optional band calibration: `physicalValue = rawValue * scale + offset`.
+- Optional band `verticalDatum`: descriptive height-datum metadata, which derived bands do not
+  inherit. See [GPU Terrain: Heights and datums](../gpu-terrain.md#heights-and-datums).
 - An affine transform from pixel positions to spatial coordinates.
 - The coordinate reference system, when supplied.
 - Whether a pixel represents an area or a point.

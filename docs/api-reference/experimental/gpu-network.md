@@ -434,6 +434,8 @@ Settings of `getGPUAdjacencyMatrixParameterValues`:
 
 ### `GPUNetworkSnapping`, `GPUNetworkCostMatrix`, and `GPUNetworkAccessibility`
 
+For `GPUNetworkSnapping.maximumSnapDistance`, no warning is possible because the distance is a GPU view; see [Precision of longitude/latitude positions](./gpu-spatial-analysis.md#precision-of-longitudelatitude-positions).
+
 Accessibility over the same directed CSR road network as `GPUNetworkReachability`, in three steps.
 
 - `GPUNetworkSnapping` snaps planar points (origins, facilities, opportunities) to the nearest
@@ -611,6 +613,7 @@ omitting it accepts that truncation unchecked.
   `addDriveTimeCatchmentRecipe` wires as `isochrones.joinDemand`. The recipe is exported from this
   entry (`@luma.gl/experimental/gpu-network`) and documented with the other recipes in
   [spatial analysis](/docs/api-reference/experimental/gpu-spatial-analysis).
+  For the recipe's `maximumSnapDistance`, no warning is possible because the distance is a GPU view; see [Precision of longitude/latitude positions](./gpu-spatial-analysis.md#precision-of-longitudelatitude-positions).
 - **Parameters.** Per-frame values are packed with
   `getGPUNetworkIsochronesParameterValues({breakCount, extent, bufferRadius, walkCostPerUnit,
   firstBand, lastBand, cellCostLimit})` into a 12-element float32 view. `costBreaks` is a float32 view
@@ -802,6 +805,8 @@ graph.add(new GPUMapMatching({
 
 ### `GPUMapMatching`
 
+Pass optional `spatialContext` in the settings of `getGPUMapMatchingParameterValues` to warn when finite positive `sigma` or `searchRadius` is below `10·Q` (16.97 m with the default sphere); see [Precision of longitude/latitude positions](./gpu-spatial-analysis.md#precision-of-longitudelatitude-positions).
+
 Maximums: `topology` has at most `getGPUMapMatchingMaximumEdgeCount(device)` (11184810 on a default device) edges and `entryCapacity` is at most `getGPUMapMatchingMaximumEntryCapacity(device)` (33554432); the default `entryCapacity` is capped there and `status.overflow` reports lost entries.
 
 Hidden Markov model map matching of GPS tracks to a directed network (Newson and Krumm 2009). Per point,
@@ -865,6 +870,7 @@ Settings of `getGPUMapMatchingParameterValues`:
 
 | Field | Type | Description |
 |---|---|---|
+| `spatialContext` (optional) | `GPUSpatialContext` | Spatial context of the positions; when it is longitude/latitude, a distance under 10 float32 quanta (about 17 m) logs a warning (see Precision of longitude/latitude positions). Does not change the packed values. |
 | `sigma` | `number` | GPS noise standard deviation in the context's length unit. Must be positive. |
 | `beta` | `number` | Scale in the context's length unit of `exp(-\|straight - route\| / beta)`. Must be positive. |
 | `searchRadius` | `number` | Candidate search radius in the context's length unit. Edges farther away are not candidates. Values above `2 * cellSize` are clamped to `2 * cellSize` (on longitude/latitude, to the context's length unit equivalent of `2 * cellSize` degrees of latitude). |
@@ -874,6 +880,8 @@ Settings of `getGPUMapMatchingParameterValues`:
 {/* /parameters */}
 
 ### `GPUNetworkKFunction`
+
+For `maximumSnapDistance` and `maximumDistance`, no warning is possible because the distance is a GPU view; see [Precision of longitude/latitude positions](./gpu-spatial-analysis.md#precision-of-longitudelatitude-positions).
 
 Maximum: `rowsPerBlock * events` is at most 4294967295 (one 1-D dispatch), checked under the contributor's own ID.
 

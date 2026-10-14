@@ -524,3 +524,37 @@ same as tranche completion. Tranches 1, 2, 3, 5 and 6 were downgraded to Partial
 | 7 — Tiled/partition scale | Complete | Public partition, halo, seam, prepared-index and cost contracts are tested. Arrow iteration allocates one record batch at a time with stable global identity and measured value-plus-validity peak residency below packed residency; tile LOD consumes the same deterministic ownership vocabulary. |
 | 8 — Statistical breadth | Complete | Local Geary, spatial Pearson, Gamma and directional/axial Rose statistics use shared inference vocabulary and deterministic CPU oracles. `GPUAZPRegions` publishes reproducible initialization, objective, iteration and convergence status. Permutation work is shared rather than copied. |
 | 9 — Advanced models/graduation | Gate enforced | `GPUSolverStatusPort` is shared by OLS, spatial error GM and spatial 2SLS, and package/ownership/status audits are executable. No likelihood, panel, regimes, SUR, probit or MGWR API is admitted because none meets the roadmap's two-independent-consumer and browser-GPU evidence gate; this is an explicit scope decision, not a stub surface. |
+
+## Spatial-correctness follow-ups (2026-10-14)
+
+After the projection consistency round, four silent-error gaps were audited and closed on `map-contributors`
+(uncommitted), in two rounds (proj3, then the proj3b completion round). All new analysis runs on the GPU; CPU code is
+a test oracle or a display-only reference. Headless GPU specs are run by the main session after each round.
+
+| Gap | Status | What landed |
+| --- | --- | --- |
+| 1 — Polygon study windows | Done | `GPUStudyWindowPreparation` (oriented edges, summary, edge slabs, sampler cells) feeds Ripley K/L/pcf, the envelope, G/F/J, Clark-Evans `'guard'`, quadrats, variogram, correlogram and KDE edge correction. proj3b: persistent preparation (`rebuildWhen` / `invalidate()` as in `GPUSpatialJoinPrepared`), empty and degenerate rings tolerated so `GPURectangleClip` output feeds it (true `view` window), point-pattern helpers on the GPU, an explorer polygon window, and an isotropic-envelope A/B benchmark. |
+| 2 — Longitude/latitude polygons | Done | `edgeModel` on contexts (`'linear'` default per RFC 7946); `GPULonLatPolygonPreparation` (densify, split at ±180, pole cap); consumers reject great-circle edges and count unprepared rings; measures fix pole edges and add `'sphere-polygon'` area; cell cover's `invalidCount` is edge-based. proj3b: the polygon-measures scene's "Antimeridian and poles" fixture compares unprepared and prepared areas with closed-form values. |
+| 3 — Datums and heights | Done | `datum` on contexts and local frames, checked where contexts meet; `verticalDatum` on bands; absolute observer heights with `observerVerticalDatum` for viewshed, line of sight, cumulative viewshed, point horizon and peak snap. proj3b: two-input operators take an optional `<side>SpatialContext` for their second input, checked by `resolveGPUSecondarySpatialContext`; apps declare `datum: 'EPSG:4326'`; Terrarium DEMs stay undeclared; the horizon scene states the catalogue-versus-DEM datum uncertainty. |
+| 4 — Float32 precision and methodology | Done | Short lon/lat distance warnings (threshold 10·Q ≈ 16.97 m, warn only) in tier-1/tier-2 operators; recipe `timeZone` passthrough; methodology caveats in the apps. |
+
+Deviations from the audits (details in the stream handoffs):
+- Contract: an extra message for unknown `edgeModel` values; datum reasons quote the declared strings.
+- Lon/lat polygons: the densification bound is about 1.34 m, not 1.2 m; preparation transients are sized from the
+  caller's output capacity; `GPURasterJoin` takes a declarative context (it does no rasterization); H3/S2/A5 output
+  contexts carry `edgeModel: 'great-circle'`.
+- Second-side contexts are named after each operator's prop for that input (`polygonsSpatialContext`,
+  `rightSpatialContext`, `featuresSpatialContext`, `regionSpatialContext`, `zonesSpatialContext`,
+  `otherSpatialContext`, `linestringsSpatialContext`, `polygonSpatialContext`, and `sourceSpatialContext` /
+  `targetSpatialContext` / `studyAreaSpatialContext` on recipes). Screen-space, pick and mask regions reject one.
+- Precision: `GPULineSimplificationSettings.method` was added so Visvalingam skips the warning.
+
+Remaining non-goals:
+- No datum or vertical-datum conversion, and no geoid-undulation input. Declarations are checked, never verified
+  or converted. Only WGS84 spellings alias (`NAD83` vs `EPSG:4269` throws by design). Realizations and epochs are
+  out of scope.
+- The second-side check runs only when the caller declares that side. Operators whose inputs share one grid
+  (`GPUPolygonRasterization`, areal interpolation, pycnophylactic) and point-to-point or line-to-line pair operators
+  (pairwise distance, segment distance, segment intersection, shared paths) keep one context.
+- Clark-Evans `'donnelly'` stays rectangle-only. Ellipsoidal geodesic polygon edges stay governed by
+  `ellipsoidalEdgeModel`.

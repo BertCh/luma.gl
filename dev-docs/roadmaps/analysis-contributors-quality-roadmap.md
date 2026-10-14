@@ -33,6 +33,10 @@ GPU spec run serially. Oracles come from reference packages.
 | Q4 test and doc integrity | Done | `requireTestDevice` covers 1,448 guards, and the canary fails headless. The kernel-audit node spec builds all 295 public contributors on a fake `'core'` device and checks limits, reserved words, NaN self-compares, const non-finite bitcasts and undeclared calls. All 142 doc `ts` blocks type-check. Parameters subsections are generated for 131 classes. Committed generators under `test/oracles/` cover networkx, GDAL 3.12 via rasterio, pysheds, shapely, scipy, h3-py, esda, spreg, libpysal, mgwr, mapclassify, scikit-gstat, statsmodels and PySAL `access`. |
 | Smaller items | Done | C-14 is now done. C-21 is rejected, because corrupt links already return an empty path. Of the 34 unverified suspicions across the reports, 7 were real and are fixed, and 2 are upstream. |
 
+The four spatial-correctness gaps found after the projection round (polygon study windows, longitude/latitude
+polygons, datums and heights, float32 precision) are closed; see
+[Spatial-correctness follow-ups](./gpu-spatial-analysis-roadmap.md#spatial-correctness-follow-ups-2026-10-14).
+
 Bugs found on the way that the review had not listed:
 - WGSL reserved words used as identifiers (`target`, `active`) in four kernels that never compiled on Dawn.
 - 3SFCA missing its decay factor (it now matches PySAL `access` to 3e-16).
