@@ -575,6 +575,10 @@ planar frame first"), because degrees give latitude-dependent distances, wrong a
 indices. The resolved context is exposed as `spatialContext`. The window is always the `bounds`
 rectangle: for an irregular study area the bounding box overstates the area and makes every
 pattern look clustered (polygon windows are not implemented).
+`GPUVariogram` and `GPUSpatialCorrelogram` measure distance and reject `local-lambert-equal-area` frames.
+Ripley statistics (including distance functions and envelopes) and point-pattern indices combine distance
+and window area, so neither local frame is exact: use an azimuthal-equidistant frame only where its area
+distortion is negligible, or use a projected CRS.
 
 ```ts
 graph.add(

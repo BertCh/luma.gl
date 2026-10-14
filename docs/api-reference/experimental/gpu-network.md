@@ -22,6 +22,36 @@ command nodes into a caller-owned [`GPUCommandGraph`](./gpu-core/gpu-command-gra
 `getCommandNodes(graph)` (`GPUCommandNodeProducer`). It never compiles, submits, encodes, or reads
 back.
 
+## Spatial contexts and length units
+
+Distance operators (`GPUNetworkSnapping`, `GPUMapMatching`, `GPUNetworkKFunction`,
+`GPUNetworkLineGraph`, `GPUNetworkNoding`, `GPUNetworkIsochrones` and
+`addDriveTimeCatchmentRecipe`) accept planar azimuthal-equidistant (AEQD) frames from
+`createGPULocalFrame(...).spatialContext`, including `units: 'meters'`, and reject Lambert
+equal-area frames. Project positions into the declared frame before passing them to an operator.
+Where supported, longitude/latitude degrees with `metric: 'great-circle'` are an alternative.
+`GPUEdgeBundling` declares no measure: lengths are fractions of its work box, so either local
+frame is accepted.
+
+| Contributor | Longitude/latitude and kilometers |
+| --- | --- |
+| `GPUNetworkSnapping` | Great-circle distances in the context's length unit; `units: 'kilometers'` selects kilometers. |
+| `GPUMapMatching` | Great-circle distances and distance parameters in the context's length unit, including kilometers. |
+| `GPUNetworkKFunction` | Great-circle snapping; weights, distance thresholds, network length, K values and envelope in the context's length unit, including kilometers. |
+| `GPUNetworkLineGraph` | Great-circle turn bearings accept meters or kilometers; angles and caller-owned travel costs are unchanged. |
+| `GPUNetworkNoding` | Planar only; snap tolerance and output lengths are in the context's length unit. Longitude/latitude is rejected. |
+| `GPUNetworkIsochrones` | Raster is planar; buffer radius and extent are in the context's length unit. Cell outlines accept longitude/latitude, including kilometer contexts, but only index positions in degrees. |
+| `addDriveTimeCatchmentRecipe` | Longitude/latitude with metric `'none'` or `'great-circle'` uses great-circle snapping in the context's length unit, including kilometers. Travel costs keep the units of `topology.weights`. |
+| `GPUEdgeBundling` | Longitude/latitude selects a degree-aware work box; kilometer contexts are accepted without physical distance measurements. |
+
+Geographic distance units default to meters. `sphereRadius`, when supplied, is in the context's
+length unit. Kilometer inputs must use kilometer-valued radii, thresholds and distance weights;
+positions remain longitude/latitude degrees. Map matching's default `routeSlack` is 50 in the
+context's length unit; supply `0.05` for a 50-meter allowance in a kilometer context.
+
+Great-circle snapping searches all edges regardless of `candidateCapacity`, in meters or
+kilometers alike.
+
 ## When to use it
 
 Use GPU Network for map and road-network tasks that need bounded, renderable results: isochrone
@@ -421,7 +451,7 @@ Accessibility over the same directed CSR road network as `GPUNetworkReachability
   `spatialContext: {coordinateSpace: 'longitude-latitude', metric: 'great-circle'}` points and nodes
   are degrees: the closest point of an edge is found in the point's local equirectangular frame
   (longitudes wrapped at +-180), and snap distances, `maximumSnapDistance` and default edge costs are
-  great-circle meters. Edges should be road-length. With `candidateCapacity` the context is passed to
+  in the context's length unit (meters or kilometers). Edges should be road-length. With `candidateCapacity` the context is passed to
   `GPUNearestFeatureJoin`, whose great-circle search ignores the capacity. Edge rows past
   `offsets[nodeCount]` (a CSR shorter than `neighbors`) are not part of the network:
   every edge-source row is cleared before the expansion, so no stale row becomes a phantom edge.
@@ -602,9 +632,12 @@ omitting it accepts that truncation unchecked.
   On the cell path `cellOutline.byFacility` with `cellFacilities` gives each cell the facility of its
   cheapest node and outlines with groups, so rings never mix facilities (Quadbin is keyed through
   `GPUPointToCell`).
-- **Coordinates.** An optional `spatialContext` is checked at construction: the raster path is planar
-  (a longitude/latitude context with `raster` throws; project first), and the cell path needs
-  longitude/latitude (a planar context with `cellOutline` throws).
+- **Coordinates.** The public `spatialContext` always holds a resolved context. Omitted means
+  native planar for `raster`, or `{coordinateSpace: 'longitude-latitude', metric: 'none'}` for
+  `cellOutline` alone. With both outputs and no context, the raster's planar default applies and
+  cell-outline positions remain unchecked for compatibility. An explicit context checks both
+  paths: longitude/latitude with `raster` throws (project into an AEQD frame first), and planar
+  with `cellOutline` throws. Lambert equal-area frames are rejected because buffers measure distance.
 - **Limits.** The cell path samples reached nodes only, so long edges on sparse networks drop cells. The
   rings follow the cell outline, so they have cell resolution. Three mid-latitude H3 pentagons (resolutions
   2, 3 and 5; alone, in disks, as holes and open rings) match h3-js `cellsToMultiPolygon`; the two polar
@@ -633,9 +666,9 @@ Settings of `getGPUNetworkIsochronesParameterValues`:
 | Field | Type | Description |
 |---|---|---|
 | `breakCount` | `number` | Number of active ascending cost breaks, at most `costBreaks.length`. `breakCount + 1` bands exist: band `k` holds cost in `[costBreaks[k - 1], costBreaks[k])`, band 0 everything below the first break and the last band everything at or above the last active break (including unreached pixels). |
-| `extent` | `readonly [number, number, number, number]` | Raster extent `[minX, minY, maxX, maxY]` in the units of `nodePositions`. Row 0 is at `minY`. |
-| `bufferRadius` (optional) | `number` | Walking buffer radius in `nodePositions` units. Pixels within it of an edge sample get that sample's cost plus `walkCostPerUnit` times the distance. The effective radius is at least half a pixel diagonal so every sample marks its own pixel. Defaults to 0. |
-| `walkCostPerUnit` (optional) | `number` | Cost per distance unit walked off the network inside the buffer. Defaults to 0. |
+| `extent` | `readonly [number, number, number, number]` | Raster extent `[minX, minY, maxX, maxY]` in the context's length unit. Row 0 is at `minY`. |
+| `bufferRadius` (optional) | `number` | Walking buffer radius in the context's length unit. Pixels within it of an edge sample get that sample's cost plus `walkCostPerUnit` times the distance. The effective radius is at least half a pixel diagonal so every sample marks its own pixel. Defaults to 0. |
+| `walkCostPerUnit` (optional) | `number` | Cost per context length unit walked off the network inside the buffer. Defaults to 0. |
 | `firstBand` (optional) | `number` | First band emitted as geometry. Defaults to 0. |
 | `lastBand` (optional) | `number` | Last band (inclusive) emitted as geometry. Defaults to `breakCount - 1`, so unreached space has no triangles. |
 | `cellCostLimit` (optional) | `number` | Cost limit of the cell-outline path: nodes with cost `<=` it contribute their cell. Defaults to `Infinity`, every reached node. |
@@ -787,7 +820,7 @@ infeasible. Viterbi runs one thread per track.
   `spatialContext`.
 - Geodesic: with `spatialContext: {coordinateSpace: 'longitude-latitude', metric: 'great-circle'}` positions
   and nodes are degrees and every distance (emission, straight line, edge and route lengths, and the
-  parameters) is great-circle meters; the A* heuristic stays consistent. `cellSize` and `bounds` stay in
+  distance parameters) is in the context's length unit (meters or kilometers); the A* heuristic stays consistent. `cellSize` and `bounds` stay in
   degrees, the candidate window widens in longitude by `1 / cos` of its highest latitude, and longitudes
   are unwrapped around the grid center, so give bounds across the antimeridian (for example 179.9 to
   180.1) for a network that crosses it.
@@ -799,8 +832,7 @@ infeasible. Viterbi runs one thread per track.
   but did not fit the table. `status.overflow` is 1 when the edge grid or any route table dropped entries, and
   `status.routeOverflow` counts the dropped route nodes (saturating at `0xffffffff`).
 - `routeTable` (optional): a `GPUNetworkCostTable` of the same network, built with `weights` equal to the
-  edge lengths this contributor measures from the node positions (meters with a great-circle
-  `spatialContext`), passed as `{offsets, targets, costs, costLimit, status?: {overflow}}`. A route search whose
+  edge lengths this contributor measures from the node positions (in the context's length unit), passed as `{offsets, targets, costs, costLimit, status?: {overflow}}`. A route search whose
   allowance (`routeFactor * straight + routeSlack` minus the tail of the source edge) is within the table's
   `costLimit` reads its network costs by binary search of the source node's row, with no search and no node
   budget, so it is exact and never counted in `status.routeOverflow`. Searches above the limit, or all of
@@ -833,11 +865,11 @@ Settings of `getGPUMapMatchingParameterValues`:
 
 | Field | Type | Description |
 |---|---|---|
-| `sigma` | `number` | GPS noise standard deviation of the Gaussian emission model. Must be positive. |
-| `beta` | `number` | Scale of the exponential transition model, `exp(-\|straight - route\| / beta)`. Must be positive. |
-| `searchRadius` | `number` | Candidate search radius. Edges farther than this from a point are not candidates. Values above `2 * cellSize` are clamped to `2 * cellSize` (on longitude/latitude, to the meters of `2 * cellSize` degrees of latitude). |
+| `sigma` | `number` | GPS noise standard deviation in the context's length unit. Must be positive. |
+| `beta` | `number` | Scale in the context's length unit of `exp(-\|straight - route\| / beta)`. Must be positive. |
+| `searchRadius` | `number` | Candidate search radius in the context's length unit. Edges farther away are not candidates. Values above `2 * cellSize` are clamped to `2 * cellSize` (on longitude/latitude, to the context's length unit equivalent of `2 * cellSize` degrees of latitude). |
 | `routeFactor` (optional) | `number` | A route, including the partial edges at both ends, may be at most `routeFactor * straightDistance + routeSlack` long; longer routes are infeasible. Defaults to 3. |
-| `routeSlack` (optional) | `number` | Additive route allowance, see `routeFactor`. Defaults to 50. |
+| `routeSlack` (optional) | `number` | Additive route allowance in the context's length unit, see `routeFactor`. Defaults to 50 (50 m in meters; pass for example 0.05 with a kilometer context). |
 
 {/* /parameters */}
 
@@ -865,8 +897,9 @@ shares one set of pipelines.
   `rowsPerBlock`, `candidateCapacity`. For many events pass `candidateCapacity` (with `maximumSnapDistance`) so
   snapping uses the BVH join instead of scanning every edge per event; `output.status.overflow` is then required and
   is set when the snap candidates overflow (K is then inexact). `spatialContext` is passed to
-  `GPUNetworkSnapping`: a great-circle context snaps longitude/latitude events in meters (give
-  `weights`, `maximumDistance` and `networkLength` in meters too).
+  `GPUNetworkSnapping`: a great-circle context snaps longitude/latitude events in the context's length unit (give
+  `weights`, `maximumDistance`, `maximumSnapDistance` and `networkLength` in that unit too).
+  `kValues` and `envelope` are also in the context's length unit.
 - Outputs (`output`): `kValues`, optional `pairCounts`, `envelope` (min, mean and max per band), `snappedEventCount`,
   `status.overflow` and `status.converged`.
 - Counts and K are pinned to spaghetti 1.7.6. Parallel edges between the same two nodes count as one road,

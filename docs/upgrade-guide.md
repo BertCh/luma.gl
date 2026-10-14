@@ -339,6 +339,25 @@ change.
 - Longitude/latitude with a metric other than `'great-circle'` on great-circle contributors now fails with
   "positions need the great-circle metric". `GPUNeighborSearch` uses an explicit `sphereRadius` as given in
   the result units with `units: 'kilometers'` (it was divided by 1000).
+- `createGPULocalFrame(...).spatialContext` now declares `units: 'meters'` (was `'native'`); planar
+  native contexts accept `'meters'`, and planar `'native'` stays compatible with it. Code comparing
+  `units === 'native'` on frame contexts must accept `'meters'`.
+- Distance operators now throw on a `local-lambert-equal-area` frame context, and area/density operators
+  on a `local-azimuthal-equidistant` one (`<id> measures distance; project into an azimuthal-equidistant
+  frame, not lambert-equal-area`). Project into the matching frame kind.
+- Spherical raster/cell areas use `getGPUAuthalicSphereRadius` and honour `units: 'kilometers'`
+  (areas in km², previously m² regardless of units). `getRasterSphereRadius` is deprecated.
+- Operators that measure distance or area reject planar `metric: 'none'` ("planar positions need the
+  native metric"); use `'native'` or omit `spatialContext`.
+- `GPUZonalStatistics` accepts longitude/latitude only with `metric: 'none'` (membership is tested in
+  degrees and areas are caller-supplied). `addChangeOfSupportRecipe` needs `metric: 'great-circle'` on
+  longitude/latitude, like `GPUArealInterpolation`.
+- `addClusterAndOutlineRecipe` is planar only (its group summaries and hulls are planar); project
+  longitude/latitude points first. Its `spatialContext` is now optional.
+- `GPUSpatialScanStatistic` takes a `spatialContext`: longitude/latitude positions need
+  `metric: 'great-circle'` (degrees were silently treated as planar).
+- Trajectory metrics, resample, playhead and encounters, `GPUTrackSimilarity`, `GPUBufferSelection` and
+  `GPUNearestFeatureJoin` accept `units: 'kilometers'` (results in kilometers) instead of throwing.
 
 #### Dataframe and geospatial
 
@@ -531,6 +550,8 @@ change.
   `pathSampleOffsets` → `lineSampleOffsets`, `pathLength` → `lineLengths`, `pathGain` → `lineGains`,
   `pathLoss` → `lineLosses`, `pathMinimum` → `lineMinimums`, `pathMaximum` → `lineMaximums`,
   `GPU_RASTER_PROFILE_NO_PATH_ID` → `GPU_RASTER_PROFILE_NO_LINE_ID`, instance field `pathCount` → `lineCount`.
+- `GPU_TERRAIN_VIEWSHED_PARAMETER_LENGTH` is 10 (was 8): `getGPUTerrainViewshedParameterValues` appends
+  `[northEdge, southEdge]` for the new `cellSizeMode`. Allocate parameter buffers with the constant.
 
 #### Raster grids in spatial analysis
 
@@ -717,6 +738,15 @@ change.
 - `GPUSegmentRingAssembly` decides `ringIsHole` (and so shells, holes and `polygons`) from the exact turn at
   each ring's lowest vertex instead of the f32 sign of `ringAreas`. Results change only for thin rings whose
   f32 shoelace sum had the wrong sign or was zero; `ringAreas` itself is unchanged.
+- `GPUArealInterpolation` and `GPUPycnophylactic` need `metric: 'great-circle'` on longitude/latitude
+  rasters (`'none'` throws). Their cell areas, and the great-circle areas of `GPUGeometryMeasures` and
+  `GPULineDensity`, use the authalic radius (about 5e-7 relative change) in the context's length unit, so
+  `units: 'kilometers'` gives square kilometers.
+- Ellipsoidal `GPUGeometryMeasures`, `GPUGeodesicPairs` and `GPUGeodesicDestination` honour
+  `spatialContext.ellipsoid` (WGS84 was always used) and accept `units: 'kilometers'`.
+  `GPULineSimplification` accepts `units: 'kilometers'`.
+- `GPULineSimplification` measures distance with `'douglas-peucker'` and area with `'visvalingam'`, so each
+  method rejects the other local frame kind.
 
 #### Network
 
@@ -766,6 +796,9 @@ change.
 - `GPUNetworkStatistics.destroy()`, `GPUNetworkAnalyticsColumns.destroy()` and edge bundling's public
   `geographic` field are removed: statistics scratch is now graph transients.
 - `GPUDriveTimeCatchmentRecipeResult` → `GPUDriveTimeCatchmentRecipeOutput`.
+- `GPUNetworkIsochrones.spatialContext` is always resolved (planar by default) instead of `undefined`.
+- Network distance operators (snapping, map matching, K function, line graph, noding, isochrones,
+  drive-time catchment) throw on a `local-lambert-equal-area` frame and accept `units: 'kilometers'`.
 
 #### Algorithms (2026-10-14): statistics, dataframe and crossfilter
 

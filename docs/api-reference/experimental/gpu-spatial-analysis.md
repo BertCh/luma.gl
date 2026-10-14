@@ -141,7 +141,18 @@ ports (`GPUCardinalityPort`, `GPUOverflowStatusPort`, `GPUIterationStatusPort`, 
 its own `status` (`output.pieces.status.requiredVertexCount`), stage-prefixed words keep their prefix
 (`output.status.pairOverflow`), and model fits report their solver `status.code`.
 
-`GPUSpatialContext` separates coordinate space, metric, units and sphere/ellipsoid parameters.
+`GPUSpatialContext` separates coordinate space, metric, units and sphere/ellipsoid parameters; omitted context means native planar coordinates.
+Planar native contexts may declare `units: 'meters'` (local frames do); `'kilometers'` is only for geographic metrics.
+Planar `'native'` units are undeclared and compatible with planar `'meters'`; meters and kilometers are incompatible.
+The `frame` identity has kind `'local-azimuthal-equidistant'`, `'local-lambert-equal-area'` or `'crs'`;
+`assertCompatibleGPUSpatialContexts` rejects contexts with different frame ids.
+Support declarations use `measure: 'distance' | 'area'`: distance operators reject Lambert equal-area frames,
+while area/density operators reject azimuthal-equidistant frames, with an error naming the frame to project into.
+This measure check accepts `'crs'` frames and frameless contexts.
+Spherical distances use `getGPUSphereRadius` (mean radius 6371008.8 m); spherical areas use `getGPUAuthalicSphereRadius` (WGS84 authalic radius 6371007.1809 m).
+Both honour `sphereRadius` in the context's units; `units: 'kilometers'` divides default radii by 1000, giving areas in km².
+Ellipsoidal metrics use `getGPUEllipsoid` (`context.ellipsoid` or `GPU_WGS84_ELLIPSOID`).
+`getGPULengthUnits` gives the length unit reported by `GPUMeasureDescription`.
 Compatibility helpers reject invalid workflow connections during graph construction and contain no
 CRS parsing or reprojection; that remains the responsibility of GPU Project.
 
@@ -291,6 +302,12 @@ Uploaded weights may omit `information`, which reads as `'unknown'`. `validateGP
 checks on the CPU what it can: view formats and lengths, `information.rowCount`, the declared
 transform and symmetry, and the status formats.
 
+The optional `spatialContext` describes the coordinates and metric used to build the weights;
+`distances` and `information.provenance.radius` use its length unit. `GPUNeighborSearch` sets it;
+`GPUNearestFeatureWeights` sets it from the producing join's context passed to the adapter.
+Transforms, transpose and algebra propagate it; algebra checks declared input contexts with
+`assertCompatibleGPUSpatialContexts`. Topology-only producers and uploaded weights may omit it.
+
 One neighbor definition is used everywhere: a slot is an active neighbor when its weight is
 positive, its neighbor ID is below the row count and it is not the row itself. A zero-weight slot is
 listed but is not a neighbor. An island is a row with no active slot, whatever slots it lists.
@@ -367,7 +384,10 @@ the exact unclamped neighbor total; `getCapacityPlan({requiredCount})` plans the
 ### `GPUSpatialWeightsTransform`
 
 Rewrites weights in place or into a separate `output`. Chain several instances, for example a kernel
-followed by row standardization.
+followed by row standardization. Numeric `bandwidth` uses the length unit of
+`weights.spatialContext`, matching `weights.distances`. The optional `spatialContext` declares the
+bandwidth's context and is checked against `weights.spatialContext` with
+`assertCompatibleGPUSpatialContexts` when both are supplied.
 
 - `'row'`: `w_ij / sum_j w_ij`. A row whose weights sum to zero (or to a non-finite value) stays all
   zero: it has no active neighbor, so it is an island for every statistic (no uniform fallback).
@@ -472,9 +492,12 @@ graph.add(new GPUNeighborSearch({
 }));
 ```
 
-**Spatial context.** `spatialContext` (compile-time) defaults to native planar coordinates. For
+**Spatial context.** `spatialContext` (compile-time) defaults to native planar coordinates. Planar
+contexts require metric `'native'`; local frames with `units: 'meters'` are accepted. This operator
+measures distance, so `local-lambert-equal-area` frames throw. The resolved context is attached to
+`outputWeights.spatialContext`. For
 longitude/latitude pass `{coordinateSpace: 'longitude-latitude', metric: 'great-circle', units?:
-'meters' | 'kilometers', sphereRadius?}` (`sphereRadius` in meters, default the mean Earth radius).
+'meters' | 'kilometers', sphereRadius?}` (`sphereRadius` in the context's length unit, default the mean Earth radius).
 Positions are `[longitude, latitude]` degrees, `bounds` are `[minLongitude, minLatitude,
 maxLongitude, maxLatitude]` degrees (longitude span at most 360, for example the world), and
 `radius`, `distanceFloor` and the output `distances` are great-circle distances in `units`
@@ -659,7 +682,8 @@ graph.add(new GPUSpatialWeightsValidation({
 
 ### `GPUMapColoring`
 
-Consumes an adjacency pattern only, so it takes no `spatialContext`.
+Consumes an adjacency pattern only, so it takes no `spatialContext`. Weights may carry their own
+context; no compatibility check is needed because coloring uses only adjacency.
 
 Greedy parallel graph coloring (Jones-Plassmann, largest degree first by default) over a
 symmetric `GPUSpatialWeights` such as contiguity, for choropleth maps where neighbors need distinct
@@ -1565,7 +1589,7 @@ and cluster sizes are exact either way. `'atomic'` skips the sorts but uses floa
 between runs. Behavior change: last-bit differences versus the previous atomic default.
 
 `spatialContext` (optional) declares the coordinate space of `positions`. Omitted or planar, the search is
-Euclidean in position units. `{coordinateSpace: 'longitude-latitude', metric: 'great-circle'}` clusters
+Euclidean in position units. It measures distance, so `local-lambert-equal-area` frames throw. `{coordinateSpace: 'longitude-latitude', metric: 'great-circle'}` clusters
 `[longitude, latitude]` degrees with `epsilon` a great-circle distance in meters (kilometers with
 `units: 'kilometers'`, or any `sphereRadius`; the mean Earth radius by default). Then `bounds` are
 `[minLon, minLat, maxLon, maxLat]` degrees inside `[-180, 180] x [-90, 90]`. The neighbor test is the
@@ -1599,7 +1623,8 @@ Settings of `getGPUSpatialClusteringParameterValues`:
 ### `GPUKMeans`
 
 Deterministic k-means over planar points (scikit-learn `KMeans`, PostGIS `ST_ClusterKMeans`). Props:
-`positions`, optional planar `spatialContext` (a longitude/latitude context throws; project first), `k`
+`positions`, optional planar `spatialContext` (longitude/latitude throws; project first; it measures
+distance, so `local-lambert-equal-area` frames also throw), `k`
 (1 to 256), `maximumIterations` (1 to 64), `initialization` (`'kmeans++'` by default, or `'first-valid'`),
 `restartCount` (1 to 32, default 1), the per-frame `parameters` view
 (`getGPUKMeansParameterValues({seed, tolerance})`, `GPU_KMEANS_PARAMETER_LENGTH` `uint32` words) and the
@@ -1765,6 +1790,8 @@ Settings of `getGPUSkaterRegionsParameterValues`:
 Planar only: `spatialContext` defaults to native planar coordinates and a longitude/latitude context
 throws at construction (project first with `createGPULocalFrame` and `GPULocalFrameProjection`).
 Geographic group centroids live in `GPUGeometryMeasures`.
+Declares `measure: 'distance'`: a Lambert equal-area local frame throws; use an
+azimuthal-equidistant frame.
 
 Per-label summaries over a `uint32` label column, for example the output of `GPUSpatialClustering`:
 count, bounds `[minX, minY, maxX, maxY]`, mean center, weighted center, weight sum, medoid, standard
@@ -2056,6 +2083,10 @@ Timestamped events to an emerging hot spot map: `GPUCalendarBuckets` decodes the
 adapter bins every event into a dense `cell * sliceCount + slice` cube, `GPUEmergingHotSpots`
 classifies it and an ordinal `GPUColorScale` colors the categories (18 palette entries, 0 to 17).
 
+For `cells.kind: 'lattice'`, optional `cells.spatialContext` describes positions and bounds, defaults to
+native planar, and rejects longitude/latitude. `result.spatialContext` returns this resolved context;
+with caller-supplied cell IDs it carries `cells.weights.spatialContext` when declared.
+
 Slices are absolute time steps, the ArcGIS "time step interval", so the Mann-Kendall trend runs over
 a monotone axis:
 
@@ -2101,6 +2132,9 @@ polygon rings for the ellipse and the standard-distance circle. Every statistic 
 spherical mean centre (normalised mean of 3D unit vectors) and a great-circle standard distance are
 deferred, because they need a second implementation of every reduction pass in both the chunked and
 the sorted path.
+
+Declares `measure: 'distance'`: a Lambert equal-area local frame throws; use an
+azimuthal-equidistant frame.
 
 ```ts
 const parameters = new GPUParameterBuffer(device, {
@@ -2200,7 +2234,7 @@ topological tests and also accept `longitude-latitude` (metric `'none'`): edges 
 in degree space and the antimeridian is not handled. A `'radius'` region is a planar distance in
 position units, so it throws at construction in `longitude-latitude` (the region kind is
 compile-time); project positions to a planar frame first, or use a rectangle or lasso. Geographic
-metrics are rejected. `GPURegionMask` takes the same `spatialContext`; `GPUPickRegionMask` reads no
+metrics are rejected. Radius selections measure distance and reject `local-lambert-equal-area` frames. `GPURegionMask` takes the same `spatialContext`; `GPUPickRegionMask` reads no
 positions and has none.
 
 An optional `spatialIndex: {kind: 'grid', index, candidateCapacity}` takes a caller-built
@@ -2261,13 +2295,15 @@ always 0 for caller-supplied feature rows.
   `sumOrder`. Checked against numpy in `zonal_variance.py`.
 - Weighted density. `output.weightedDensities` is `weightSums / area` (needs `weights`); the area rules
   of `densities` apply (finite and positive, else NaN).
-- Coordinates. `spatialContext` accepts planar (default) or `longitude-latitude` with any metric.
+- Coordinates. `spatialContext` accepts planar (default) or `longitude-latitude` with metric `'none'`.
   Membership runs `GPUPointInPolygonJoin` with a containment-only context derived from `spatialContext`
   (metric `'none'`), so in degrees it is topological with straight edges (not geodesics) and polygons
   crossing the antimeridian must be split. The shoelace area of degrees is
   wrong, so a longitude-latitude context rejects GPU areas (`densities`, `weightedDensities`,
   `featureAreas` without `areas`) at construction: pass spherical `areas` in square meters, for example
-  from `GPUGeometryMeasures`. Counts, sums, means, extrema and variances need no area.
+  from `GPUGeometryMeasures`. GPU-computed planar areas and densities measure area and reject
+  `local-azimuthal-equidistant` frames; supplied `areas` and means-only configurations do not trigger
+  this area-frame restriction. Counts, sums, means, extrema and variances need no area.
 - Not provided: median and quantiles (they need a per-feature sort of the values), weighted minima and
   maxima, fractional polygon coverage (a point belongs to a feature or it does not).
 
@@ -2377,8 +2413,9 @@ p-value, nothing "significant". Choose `k` (the neighbor count of the table) of 
 the smallest group that should count as a cluster rather than as outliers (Breunig 2000), and compare
 scores only at the same `k`. The input must be a true kNN list; with ties at the k-th distance a list cut
 at exactly `k` entries changes the k-distance neighborhood (as in scikit-learn). The class reads only
-distances, so it has no `spatialContext`: build the table from projected planar coordinates (raw lon/lat
-degrees distort with latitude). The floor keeps coincident clusters finite at density `1 / densityFloor`, and
+distances; `neighbors.spatialContext` describes their length unit, which also applies to `densityFloor`.
+Optional `spatialContext` declares the floor's context and is checked against `neighbors.spatialContext`
+with `assertCompatibleGPUSpatialContexts` when both are supplied. LOF itself is a unit-free ratio. The floor keeps coincident clusters finite at density `1 / densityFloor`, and
 points whose neighbors are such duplicates score enormous values, as in scikit-learn, so use a `k` above
 the duplicate count or a larger floor. A row with no neighbors gets kDistance 0, density 0 and lof 1 and is
 never flagged. A radius-mode table works, but the k-distance is then the largest in-band distance. Against
@@ -2396,7 +2433,7 @@ Settings of `getGPULocalOutlierFactorParameterValues`:
 | Field | Type | Description |
 |---|---|---|
 | `threshold` (optional) | `number` | Rows with `lof > threshold` are flagged in the `outlier` mask and counted. There is no default: LOF has no null distribution, so no cut is calibrated (Breunig et al. 2000 give none; values near 1 are as dense as their neighbors, well above 1 locally sparse, and the scale depends on `k` and the data). Choose it from the score distribution, for example a top fraction. When omitted the packed threshold is NaN, no row is flagged, the `outlier` mask is all 0 and `outlierCount` is 0; the `lof` scores are unaffected. The flag is exploratory, not a significance statement. |
-| `densityFloor` (optional) | `number` | Added to each row's mean reachability distance before inverting it, so a cluster of coincident points (mean reachability 0) gets a large finite density `1 / densityFloor` instead of infinity. Must be positive and finite. Defaults to scikit-learn's `1e-10`. Raise it (for example to the coordinate resolution) to make duplicate-heavy data less extreme. |
+| `densityFloor` (optional) | `number` | Added to each row's mean reachability distance before inverting it, so a cluster of coincident points (mean reachability 0) gets a large finite density `1 / densityFloor` instead of infinity. Must be positive and finite. Defaults to scikit-learn's `1e-10`. Raise it (for example to the coordinate resolution) to make duplicate-heavy data less extreme. Its unit is the length unit of `neighbors.spatialContext`; declare the context of this value through `GPULocalOutlierFactorProps.spatialContext` to check compatibility. |
 
 {/* /parameters */}
 
@@ -2543,6 +2580,8 @@ Space-time interaction tests over the pairs of a self-join `GPUSpatialWeights` (
 exactly once (a symmetric list takes it from the lower row, a pair listed only from the higher row, as in a
 kNN list, is taken from that row; duplicate and self entries are ignored; lists need not be sorted). Results
 are only as complete as the pair list; the capacity overflow flag lives on `GPUNeighborSearch`.
+Pairs carry their own `spatialContext`; Knox needs no context check because it only counts spatial pairs.
+Mantel needs no context check because its correlation is unit-free and it takes no spatial distance parameter.
 
 - `GPUKnoxTest({pairs, times, parameters, maximumPermutations, output: {statistics, summary}})` counts the pairs
   that are close in space and have `|t_i - t_j| <= timeThreshold`, then runs a Monte Carlo (modified Knox)
@@ -2653,6 +2692,12 @@ compile-time `model` selects the null:
   the Poisson model with a static population would report as an "emerging cluster". Needs
   `timeBuckets > 1` to be meaningful.
 
+`spatialContext` is optional and defaults to native planar coordinates. Longitude/latitude positions
+require metric `'great-circle'`: windows are ranked by great-circle distance using the shared haversine
+separation key, rather than distances in degrees. Cluster `radius` uses the context's length unit
+(meters by default for great-circle; kilometers with `units: 'kilometers'`), with `sphereRadius` or the
+mean Earth radius in that unit. This operator measures distance, so `local-lambert-equal-area` frames throw.
+
 Windows and defaults:
 
 - Spatial: the `k` nearest zones of every center (the `'circle'` shape never splits equidistant zones;
@@ -2662,7 +2707,8 @@ Windows and defaults:
   `zones^2 <= 2^24` (4096 zones) and otherwise to the largest capacity that fits
   (`GPU_SPATIAL_SCAN_STATISTIC_MAXIMUM_NEIGHBOR_WORDS`; use `getGPUSpatialScanStatisticLayout` to see it). Each center's
   table is a radix select (when the capacity is below the zone count) and an LSD radix sort of its zones by
-  (squared distance, zone index), about `zones * (5 * zones + 12 * capacity)` operations per frame, so the
+  (separation key, zone index), with squared distance for planar and the haversine term for great-circle,
+  about `zones * (5 * zones + 12 * capacity)` operations per frame, so the
   neighbor step grows with `zones^2`, not `zones^2 * capacity`.
   A window the capacity cut short while the population fraction would still allow it is never silent:
   `output.summary` word `overflow` counts the affected centers and the cluster record carries
@@ -2769,6 +2815,8 @@ caller-owned `output: {accessibility, ratios?, reachableFacilities?}` (`GPUCatch
 A non-finite demand, or a non-finite ratio from a non-finite supply, is a missing value and adds nothing.
 The operator reads weights, not positions, so it has no `spatialContext`; distance units and the coordinate
 space (planar, or great-circle meters) are those of the weights' producer.
+When both `facilityWeights` and `demandWeights` carry `spatialContext`, the contexts must be
+compatible; otherwise construction throws.
 
 This is the one 2SFCA/3SFCA kernel. Over a network cost matrix, turn the matrix into weights with
 `GPUNetworkCostWeights`, or use the `catchment` option of
@@ -2786,7 +2834,8 @@ one row per facility), `demandWeights` (row `i` lists the facilities of demand `
 outputs are `probabilities` (one per `demandWeights` slot, aligned with `demandWeights.neighbors`),
 `tradeAreaProbability` (per demand row) and `expectedDemand`, `expectedDemand_j = sum_i P_i p_ij`, which
 needs `facilityWeights` (the transpose of `demandWeights`) and `demand`. Like `GPUCatchmentAccessibility` it reads weights only and has no
-`spatialContext`.
+`spatialContext`. When both `demandWeights` and `facilityWeights` carry `spatialContext`, the contexts
+must be compatible; otherwise construction throws.
 
 {/* parameters: GPUHuffTradeAreas generated by modules/experimental/test/analysis-core/doc-parameters.ts from the TSDoc; do not edit */}
 
@@ -2840,9 +2889,14 @@ raster) and pass the two zone views, so H3 or hexagon rasters work too.
   belongs to no source or to one that keeps another cell. Remaining empty sources stay in `status.invalidCount`.
 - Coordinates. Planar by default (areas are cell counts or `cellWeights` sums, which is an equal-share
   only on an equal-area raster). With `spatialContext: {coordinateSpace: 'longitude-latitude', metric:
-  'great-circle'}` (or `'none'`) and `parameters` (the per-frame `getGPUPolygonRasterizationParameterValues(grid)`
-  view, the same view as `GPUPolygonRasterization.parameters`), each cell weighs its spherical area `R^2 dLon (sin(top) - sin(bottom))` in square meters, times `cellWeights`, with `R` the
-  WGS84 authalic radius or `context.sphereRadius`. Pair `areas` and `sourceAreas` are then square meters.
+  'great-circle'}` and `parameters` (the per-frame `getGPUPolygonRasterizationParameterValues(grid)`
+  view, the same view as `GPUPolygonRasterization.parameters`), each cell weighs its spherical area
+  `R^2 dLon (sin(top) - sin(bottom))`, times `cellWeights`. `R` comes from `getGPUAuthalicSphereRadius`:
+  the WGS84 authalic radius or `context.sphereRadius`, in the context's length unit. Pair `areas` and
+  `sourceAreas` use that unit squared: square meters by default, square kilometers with
+  `units: 'kilometers'` (previously still square meters).
+  **Breaking:** longitude/latitude now requires `metric: 'great-circle'`; `'none'` throws.
+  Declares `measure: 'area'`: an azimuthal-equidistant local frame throws; project into a Lambert equal-area frame.
   North-up grids (a negative packed cell height) are handled: the area of a stored row follows the mirrored row.
   Other spaces throw. Checked against a numeric integral of `R^2 cos(lat)` (`spherical_cell_area.py`).
 - Categorical share `(t, k)` is the overlap area with sources of class `k` divided by the area of `t`
@@ -2900,9 +2954,13 @@ is smoother. Reference: Tobler (1979), JASA 74(367).
   `GPUArealInterpolation.sourceAnchorCells`; ascending zone order, the cell's owner must keep one cell),
   and `output.status.invalidCount` counts zones that still have no cell or no area.
 - Coordinates. With a `longitude-latitude` `spatialContext` plus `parameters` (as above; north-up grids are handled) the smoothed
-  quantity is the density per square meter and the totals are enforced on density times the spherical
+  quantity is density per context length unit squared (per square meter by default, per square kilometer
+  with `units: 'kilometers'`, previously still per square meter). Cell areas use
+  `getGPUAuthalicSphereRadius` in the context's length unit, and totals are enforced on density times the spherical
   cell area, so `output.mass` is mass per cell (density times area) and the optional `output.density`
   view is the surface itself. Without it every cell counts the same, which is only right on an equal-area raster.
+  **Breaking:** longitude/latitude now requires `metric: 'great-circle'`; `'none'` throws.
+  Declares `measure: 'area'`: an azimuthal-equidistant local frame throws; project into a Lambert equal-area frame.
   The focal mean is still by cell index, so away from the equator it is anisotropic on the ground.
 - Limits. Counts are f32 sums, exact to 2^24 cells per zone; a larger zone loses count precision (the
   mass still holds to f32 accuracy). Oracles: a float64 numpy reimplementation of the documented
@@ -3227,10 +3285,10 @@ great-circle context below.
 **Great-circle nearest features (`GPUNearestFeatureJoin`, `GPUBufferSelection`).** With
 `spatialContext: {coordinateSpace: 'longitude-latitude', metric: 'great-circle'}` positions are longitude and
 latitude in degrees and every distance (`radius`, `nearestDistances`, `neighborDistances`,
-`GPUBufferSelection` `distance` and `output.distances`) is meters on a sphere of radius
-`GPU_EARTH_MEAN_RADIUS_METERS` (`sphereRadius` of the context overrides it; `units: 'kilometers'`, a
-`longitude-latitude` context with another metric, and planar contexts with `great-circle` throw at
-construction). Both output modes use the branch-and-bound BVH traversal of the neighbors mode (nearest-feature
+`GPUBufferSelection` `distance` and `output.distances`) is in the context's length unit (meters by default;
+kilometers with `units: 'kilometers'`) on the mean Earth sphere (`sphereRadius` overrides the radius in
+that unit). A `longitude-latitude` context with another metric and planar contexts with `great-circle`
+throw at construction. Both distance operators reject `local-lambert-equal-area` frames. Both output modes use the branch-and-bound BVH traversal of the neighbors mode (nearest-feature
 mode is the `k = 1` traversal followed by the nearest-feature columns, counts and matches), so
 `candidateCapacity` is not used on this path (it is accepted and ignored, `candidateCount` reads 0, and
 `GPUBufferSelection` still validates it). The traversal orders and bounds by central angle. A node is pruned
@@ -3249,9 +3307,9 @@ query. A polygon that spans the antimeridian is not split. Positions are float32
 quantization of the coordinates (about 1 m at longitude 100). The planar kernels are unchanged and compile
 none of this code. Oracle: `geodesic-nearest-fixtures.ts` (numpy 2.5.4 haversine of the edge densified in
 longitude/latitude, `pyproj` 3.8.0 `Geod(a=R, f=0)` cross-check), scenes at the equator, latitude 60, across
-the antimeridian and next to the pole. `GPUNearestFeatureWeights` is an adapter over the join's outputs and has
-no context: its distances, `distanceFloor` and inverse-distance weights are in meters when the join is
-great-circle.
+the antimeridian and next to the pole. `GPUNearestFeatureWeights` adapts the join's outputs; pass the
+join's `spatialContext` so its distances and `distanceFloor` share the context's length unit and
+inverse-distance weights use those distances.
 
 **Exact orientation.** The classifier and the nearest-feature kernels use the same exact orientation sign
 (an f32 filter with an exact 256-bit integer fallback), so "on the edge" means the same thing in the
@@ -3352,10 +3410,11 @@ spatially coherent in row order.
 Adapter from the k-nearest output of `GPUNearestFeatureJoin` to a `GPUSpatialWeights` CSR (libpysal 4.15 `KNN`
 and `Graph.build_knn`, for points, lines or polygons, using the join's exact geometry distances). Pass the
 join's `neighborIds`, `neighborCounts`, optional `neighborDistances` and its `neighborCapacity` as
-`slotCapacity`. Per row it keeps the first `k` valid slots in the join's distance order, drops padding and
+`slotCapacity`. Pass the join's resolved `spatialContext` to the adapter (omitted means native planar);
+`distanceFloor` uses its length unit and `outputWeights.spatialContext` carries it to consumers. Per row it keeps the first `k` valid slots in the join's distance order, drops padding and
 (with `excludeSelf`, for self-joins run with `k + 1`) the row's own ID, then sorts the IDs ascending. Short rows
 stay short. `weightType` is `'binary'` (default) or `'inverse-distance'` (`1 / max(d, distanceFloor)^power`),
-and `output.distances` is filled when present (in the units of the join: meters for a great-circle join, so `distanceFloor` is meters there). The output is directed, so for `'symmetrize'` or symmetric
+and `output.distances` is filled when present (in the join's context length unit, also used by `distanceFloor`). The output is directed, so for `'symmetrize'` or symmetric
 statistics take the union of the weights and their `GPUSpatialWeightsTranspose`. `excludeSelf` compares IDs to
 the query row, so do not use feature `sourceIds` in the join with it. `output` is a
 `GPUSpatialWeightsOutput` (the CSR views plus `status.overflow`).
@@ -3457,7 +3516,7 @@ Settings of `getGPUBoundsFilterParameterValues`:
 
 ### `GPUBufferSelection`
 
-Selects points within a per-frame planar distance (inclusive) of point or segment features. A
+Selects points within a per-frame distance (inclusive) of point or segment features. A
 polyline is passed as consecutive segment rows. The contributor composes `GPUNearestFeatureJoin`. Unlike
 the join's unordered `matches`, it writes a source-aligned 0/1 mask and stable IDs in ascending row
 order (`output.outputMask`, `output.matches`), with a clamped count and overflow that covers both the
@@ -3465,8 +3524,10 @@ output capacity and the join. `points` is a `GPUPointGeometryPort` whose `source
 `output.drawInstanceCount` (one `uint32` row, requires `output.matches`) receives the clamped selected count
 from the publish node, so it can be bound as an indirect draw instance count. The distance is planar in
 coordinate units by default; with `spatialContext: {coordinateSpace: 'longitude-latitude', metric:
-'great-circle'}` it is a great-circle distance in meters (forwarded to `GPUNearestFeatureJoin`, whose section
-lists the edge model, the sphere radius and the rejected combinations), and `candidateCapacity` is ignored.
+'great-circle'}` it is a great-circle distance in the context's length unit (meters by default; kilometers
+with `units: 'kilometers'`). The context is forwarded to `GPUNearestFeatureJoin`, whose section lists the
+edge model, sphere radius and rejected combinations; `candidateCapacity` is ignored.
+It measures distance, so `local-lambert-equal-area` frames throw.
 
 ```ts
 graph.add(new GPUBufferSelection({
@@ -3603,7 +3664,7 @@ Settings of `getGPUGeometryPredicatesParameterValues`:
 Maximum: `geometry.positions` has at most `getGPUSegmentIntersectionMaximumVertexCount(device)` (4,194,304 on a default device) rows, because the 32-byte segment table per vertex must fit one 128 MiB binding.
 
 Planar only: a longitude/latitude `spatialContext` throws at construction; project first with
-`createGPULocalFrame` and `GPULocalFrameProjection`.
+`createGPULocalFrame` and `GPULocalFrameProjection`. It measures distance, so `local-lambert-equal-area` frames throw.
 
 Per-feature `shapely.minimum_clearance` and `minimum_clearance_line` for linestrings and
 (multi)polygons: the smallest distance one vertex could move to make the feature invalid, as the minimum
@@ -3671,6 +3732,7 @@ field is underestimated within about two sigma of the border, and a grid whose c
 the ground smooths anisotropically. For intensity per unit area, a bandwidth in ground units, a
 choice of kernels, and edge correction use [`GPUKernelDensity`](#gpukerneldensity). `spatialContext`
 is planar/native only (omitted means planar/native); longitude/latitude throws, so project first.
+It measures area, so `local-azimuthal-equidistant` frames throw.
 
 Weighted sums default to `sumAccumulation: 'auto'`, which always selects the deterministic
 `'workgroup'` path, because reproducible sums are the contract. `'atomic'` (direct float
@@ -3808,7 +3870,7 @@ kdeParameters.write(
   `(width + 2 binnedPadding + 2) * (height + 2 binnedPadding + 2)` cells of 20 bytes.
 - Pinned to `sklearn.neighbors.KernelDensity` (gaussian, epanechnikov), numpy (quartic), and
   `scipy.integrate.dblquad` (window mass, edge-corrected fields); bandwidth rules to `scipy.stats.gaussian_kde`.
-- `spatialContext` is planar/native only (omitted means planar/native).
+- `spatialContext` is planar/native only (omitted means planar/native). It measures area, so `local-azimuthal-equidistant` frames throw.
 
 Not provided: adaptive or space-time bandwidths, network KDE (see the network contributors), reflection
 boundaries, and non-rectangular windows.
@@ -3884,14 +3946,14 @@ idwParameters.write(
   distances are differences of offsets from the grid's start corner, so large absolute coordinates (UTM
   northings) do not quantize them. With `spatialContext: {coordinateSpace: 'longitude-latitude',
   metric: 'great-circle'}` positions are absolute lon/lat degrees, the index and output grid stay
-  in degrees, and distances are haversine meters on a sphere (`sphereRadius`, else 6371008.8 m;
-  kilometers with `units: 'kilometers'`), so `searchRadius` is in meters. Neighbors and radius
+  in degrees, and distances and `searchRadius` use the context's length unit (meters by default;
+  kilometers with `units: 'kilometers'`), on a sphere of `sphereRadius` or the mean Earth radius in that unit. Neighbors and radius
   tests order by the haversine term. The query box is conservative (longitude span widened by the
   cosine of the highest latitude reached, full span near the poles) but does not wrap the
   antimeridian, and the nearest-k limit scans the whole box instead of early-stopping. f32
   absolute lon/lat gives about 1 m accuracy at Earth scale. Other longitude/latitude metrics
   (rhumb, ellipsoidal, none) throw; project to a planar frame (for example `createGPULocalFrame`)
-  for them.
+  for them. It measures distance, so `local-lambert-equal-area` frames throw.
 - `taper: 'none'` (default) is `w = 1 / d^p` inside the radius, a hard cutoff: a sample entering
   or leaving the radius changes the surface discontinuously. `taper: 'modified-shepard'` is the
   Franke and Nielson (1980) weight `w = ((R - d)+ / (R d))^p` with `R = searchRadius`, which falls
@@ -3980,7 +4042,7 @@ graph.add(
   degree positions exactly; leave-one-out uses the same metric. The query box is conservative and
   does not wrap the antimeridian, and the ring scan's early stop is disabled (the whole box is
   scanned, so an unbounded radius is `O(samples)` per cell). f32 absolute lon/lat gives about 1 m
-  accuracy at Earth scale. Other longitude/latitude metrics throw.
+  accuracy at Earth scale. Other longitude/latitude metrics throw. It measures distance, so `local-lambert-equal-area` frames throw.
 - Status: `invalidCount` counts cells that are NaN for lack of data or invalid settings (fewer than
   `minimumNeighborCount` distinct positions, no sample in the radius, outside the index domain).
   `uncertainCount` counts cells rejected by the numerical checks below. Both are computed over the
@@ -4083,8 +4145,10 @@ parameters.write(
   for valid geometry without a mask. A feature with no requested dots reports nothing.
 - **Coordinates.** Dots are uniform in coordinate space, so `spatialContext` is planar/native only (omitted
   means planar/native), on `GPUDotDensity`, `GPURandomPointsInPolygon` and `GPURandomPointsOnLine`.
-  Longitude/latitude throws: degrees are not an equal-area frame, so project to an equal-area planar frame
-  first.
+  Longitude/latitude throws. `GPUDotDensity` and `GPURandomPointsInPolygon` declare `measure: 'area'`:
+  an azimuthal-equidistant local frame throws; project into a Lambert equal-area frame.
+  `GPURandomPointsOnLine` declares `measure: 'distance'`: a Lambert equal-area local frame throws;
+  use an azimuthal-equidistant frame.
 - Ring roles follow GeoArrow position, not an even-odd test: ring 0 of each polygon is the shell and
   later rings are holes (either winding). The triangulation scratch is about 56 bytes per input vertex.
 
@@ -4626,6 +4690,8 @@ Geometry-producing line contributors. Each writes a `GPULineGeometryOutput`: fla
 segment row) and `measures` (distance along the source line). The vertex capacity is
 `positions.length`; offsets are clamped to it, so a truncated result is still a valid layout.
 Inputs are packed `positions` sorted by line with `lineOffsets` (`lineCount + 1` rows).
+`GPULineSegmentize`, `GPULineChunk` and `GPUGreatCircleArcs` declare `measure: 'distance'`;
+Lambert equal-area local frames throw (use an azimuthal-equidistant frame for planar lines).
 
 ```ts
 graph.add(new GPULineSegmentize({
@@ -4760,6 +4826,11 @@ on the Earth (turf `area`, `length`, `centroid`, `bbox`, `distance`, `bearing`, 
 `midpoint`; PostGIS `ST_Area`, `ST_Length`, `ST_Perimeter`, `ST_Centroid`, `ST_Envelope`,
 `ST_NPoints`, `ST_Distance(geography)`, `ST_Azimuth`, `ST_Project`).
 
+`GPUGeometryMeasures.spatialContext` is optional (native planar by default). `GPUGeodesicPairs` and
+`GPUGeodesicDestination` require a longitude/latitude context and declare `measure: 'distance'`;
+geometry measures declare no measure because they output both lengths and areas. All three use
+`resolveGPUSpatialContext` and its shared validation errors.
+
 ```ts
 graph.add(new GPUGeometryMeasures({
   geometryType: 'polygons',
@@ -4807,8 +4878,14 @@ graph.add(new GPUGeodesicDestination({origins, bearings, distances, spatialConte
 - **Measure model.** The instance's `measures` field (`GPUMeasureDescription`) says what the length
   and area outputs mean: `lengthModel` (`'planar'`, `'great-circle'`, `'ellipsoidal-geodesic'`),
   `areaModel` (`'planar'`, `'sphere-equal-area'`, `'wgs84-authalic'`, `'geodesic'`) and the length
-  and area units (planar: native; geographic: meters and square meters, or kilometers on a sphere
-  context with `units: 'kilometers'`).
+  and area units. Units follow `getGPULengthUnits`: native planar uses position units; a meters local
+  frame reports meters and square meters. Geographic lengths default to meters and areas to square
+  meters; `units: 'kilometers'` gives kilometers and square kilometers, including ellipsoidal kernels
+  (previously rejected). Feature and group areas use the context's length unit squared.
+- Spherical areas use `getGPUAuthalicSphereRadius` (the new `areaRadius` field); lengths keep the
+  mean radius (`radius`). With the default sphere, area results change by about `5e-7` relative.
+  Ellipsoidal kernels honor `spatialContext.ellipsoid` (default WGS84); the geodesic classes expose the
+  resolved `ellipsoid` in the context's length unit.
 - **Antimeridian and poles (geographic polygons).** Longitude steps are wrapped per edge, so an
   edge with a longitude difference above 180 degrees (Fiji's 179 to -179) takes the short way and
   the ring is measured correctly. A ring whose wrapped steps sum to +-360 degrees encloses a pole,
@@ -4826,8 +4903,8 @@ graph.add(new GPUGeodesicDestination({origins, bearings, distances, spatialConte
   instead of at longitude 0. An antipodal group has no mean direction and reports NaN; a group
   containing an invalid feature reports NaN. Planar groups are unchanged.
 - `'geodesic'` (`pyproj.Geod.geometry_area_perimeter`, geo `GeodesicArea`): lengths and perimeters are
-  Vincenty geodesic lengths, as `'wgs84'`, and polygon areas follow geodesic edges on the WGS84
-  ellipsoid. Edges of 20 km or more are sampled along the geodesic (spans of at most 250 km, at most 16)
+  Vincenty geodesic lengths, as `'wgs84'`, and polygon areas follow geodesic edges on the context's
+  ellipsoid (WGS84 by default). Edges of 20 km or more are sampled along the geodesic (spans of at most 250 km, at most 16)
   and summed as a chord plus the exact parabolic-segment bulge in local equal-area coordinates, so f32
   never subtracts two huge areas. Within 1e-6 relative of pyproj on regional and continental polygons
   (perimeter 8e-6), where `'wgs84'` straight edges are off by up to 30% on very long edges. Centroids
@@ -4889,6 +4966,10 @@ Two ways to work on longitude/latitude data, used consistently across the packag
   (`uint32x4`) longitude/latitude rows into the frame without a readback (compiled adaptive patches
   from `gpu-project`, default tolerance 1 cm, output in absolute frame meters). Add it with
   `graph.add(new GPULocalFrameProjection({frame, positions, output, bounds}))`.
+  The frame's `spatialContext` is `{coordinateSpace: 'planar', metric: 'native', units: 'meters', frame}`.
+  Choose `'azimuthal-equidistant'` for distance operators and `'lambert-equal-area'` for area/density
+  operators; the wrong frame kind throws at operator construction. `GPULocalFrameProjection.spatialContext`
+  is the frame's context.
 
 ### `GPULinearReferencing` and `GPULineLocate`
 
@@ -4938,15 +5019,17 @@ locateParameters.write(getGPULineLocateParameterValues({measureOffset: elapsedMe
   `GPULineLocate({measureMode: 'fraction'})` is `line_interpolate_point(normalized=True)`.
 - `spatialContext: {coordinateSpace: 'longitude-latitude', metric: 'great-circle'}` on both classes
   (planar is the default): positions are longitude and latitude in degrees and segments are
-  great-circle arcs. `distances`, `measures`, `signedOffsets` and the search `radius` are meters on the
-  context's `sphereRadius` (default 6371008.8; `radius` already names the search radius).
+  great-circle arcs. `distances`, `measures`, `signedOffsets` and the search `radius` use the context's
+  length unit (meters by default, kilometers with `units: 'kilometers'`) on its `sphereRadius`
+  (default mean Earth radius, 6371008.8 meters; `radius` already names the search radius).
+  Both declare `measure: 'distance'`: a Lambert equal-area local frame throws; use an azimuthal-equidistant frame.
   **Breaking:** the `coordinateSystem` and `sphereRadius` props are removed in favor of
   `spatialContext`; other contexts throw.
   The foot point is the closest point on the arc (geo `HaversineClosestPoint`), with a longitude that is
   continuous with the segment start, so it can exceed 180 across the antimeridian. `distances` is the
   cross-track distance and `measures` the along-track measure. `GPULineLocate` slerps along the arc
   (`Geod.fwd`, `npts`): `tangents` are `(east, north)` compass components, offsets move along the left
-  compass bearing in meters and `angles` are counter-clockwise from east. The nearest-arc search walks
+  compass bearing in the context's length unit and `angles` are counter-clockwise from east. The nearest-arc search walks
   a `GPUBVH` over conservative longitude/latitude boxes of the arcs (the great circle's latitude peak
   included; arcs across the antimeridian or near a pole span every longitude), Hilbert sorted from 256
   positions (`spatialSort`), branch-and-bound with a great-circle box lower bound and exact arc
@@ -5046,7 +5129,7 @@ coincident right segments emit duplicate runs.
 
 ### `GPULineSimplification`
 
-`spatialContext` defaults to native planar coordinates, with the tolerance in position units. `{coordinateSpace: 'longitude-latitude', metric: 'great-circle'}` (optional `sphereRadius`, default `GPU_EARTH_MEAN_RADIUS_METERS`) runs Douglas-Peucker (both metrics) with great-circle meters: `tolerance` and `importance` are meters, chords are straight in longitude/latitude, and the distance from a vertex to its chord is the haversine distance to the closest point of the chord (found in the local equirectangular frame of the vertex, exact to first order for chords of kilometers). The `'time-ratio'` expected position is interpolated linearly in longitude/latitude with the longitude difference wrapped. Great-circle distances use f32 transcendental functions, so the bit-exactness below holds for planar contexts only. `method: 'visvalingam'` is planar only and throws in a great-circle context (its tolerance is an area, its rounds mirror a bit-exact planar triangle area, and no spherical-excess variant exists); kilometers and other metrics throw. For Visvalingam, or to keep planar bit-exactness, project first (`createGPULocalFrame`, `GPULocalFrameProjection`).
+`spatialContext` defaults to native planar coordinates, with the tolerance in position units. `{coordinateSpace: 'longitude-latitude', metric: 'great-circle'}` (optional `sphereRadius`, default mean Earth radius) runs Douglas-Peucker (both metrics) with great-circle distances: `tolerance` and `importance` use the context's length unit (meters by default, now also kilometers with `units: 'kilometers'`), chords are straight in longitude/latitude, and the distance from a vertex to its chord is the haversine distance to the closest point of the chord (found in the local equirectangular frame of the vertex, exact to first order for chords of kilometers). The `'time-ratio'` expected position is interpolated linearly in longitude/latitude with the longitude difference wrapped. Great-circle distances use f32 transcendental functions, so the bit-exactness below holds for planar contexts only. `method: 'visvalingam'` is planar only and throws in a great-circle context (its tolerance is an area, its rounds mirror a bit-exact planar triangle area, and no spherical-excess variant exists); other metrics throw. For Visvalingam, or to keep planar bit-exactness, project first (`createGPULocalFrame`, `GPULocalFrameProjection`). Douglas-Peucker declares `measure: 'distance'` (a Lambert equal-area frame throws; use azimuthal-equidistant); Visvalingam declares `measure: 'area'` (an azimuthal-equidistant frame throws; use Lambert equal-area).
 
 Douglas-Peucker (and approximate Visvalingam-Whyatt) simplification of many polylines or tracks, stored as rows sorted by line and
 delimited by `lineOffsets`. It runs in two parts: a
@@ -5095,8 +5178,8 @@ toleranceParameters.write(getGPULineSimplificationParameterValues({tolerance: 2}
 - Use tile- or view-local coordinates. Simplified lines may self-intersect, because topology is
   not preserved (Douglas-Peucker and Visvalingam alike).
 
-**Visvalingam-Whyatt.** `method: 'visvalingam'` writes each vertex's effective triangle area (squared
-position units) into `importance`, and the per-frame `tolerance` is then an area: a vertex is kept when
+**Visvalingam-Whyatt.** `method: 'visvalingam'` writes each vertex's effective triangle area (the context's
+length unit squared; square meters in a default local frame) into `importance`, and the per-frame `tolerance` is then an area: a vertex is kept when
 `importance > tolerance`, and endpoints are always kept. The selection outputs are the same as for
 Douglas-Peucker. Each round removes every surviving vertex whose area is the smallest within
 `neighborhoodRadius` steps both ways (1 to 8, default 3, compile-time), then unlinks them; the effective
@@ -5118,7 +5201,7 @@ Settings of `getGPULineSimplificationParameterValues`:
 
 | Field | Type | Description |
 |---|---|---|
-| `tolerance` | `number` | Douglas-Peucker tolerance in position units (meters in a great-circle context). A vertex is kept when its importance is strictly greater than the tolerance, which is the classic `dmax > epsilon` split rule. Line endpoints are always kept. Must be finite and non-negative. |
+| `tolerance` | `number` | Douglas-Peucker tolerance in position units (the context length unit in a great-circle context). A vertex is kept when its importance is strictly greater than the tolerance, which is the classic `dmax > epsilon` split rule. Line endpoints are always kept. Must be finite and non-negative. |
 
 {/* /parameters */}
 
@@ -5126,7 +5209,7 @@ Settings of `getGPULineSimplificationParameterValues`:
 
 Maximum: `positions` has at most `getGPUSegmentIntersectionMaximumVertexCount(device)` (4194304 on a default device: the 32-byte segment-table row per vertex must fit one storage binding) rows.
 
-Planar only: `spatialContext` defaults to native planar coordinates and a longitude-latitude context throws; project to a planar frame first (`createGPULocalFrame`, `GPULocalFrameProjection`). The tolerance is in position units.
+Planar only: `spatialContext` defaults to native planar coordinates and a longitude-latitude context throws; project to a planar frame first (`createGPULocalFrame`, `GPULocalFrameProjection`). The tolerance is in position units. It measures distance, so `local-lambert-equal-area` frames throw.
 
 Gap-free simplification of a polygon coverage (Shapely `simplify_coverage`, PostGIS `ST_CoverageSimplify`).
 Every arc shared by two polygons is simplified once, so both neighbors keep the same vertices along it.
@@ -5184,7 +5267,7 @@ Settings of `getGPULineSimplificationParameterValues`:
 
 | Field | Type | Description |
 |---|---|---|
-| `tolerance` | `number` | Douglas-Peucker tolerance in position units (meters in a great-circle context). A vertex is kept when its importance is strictly greater than the tolerance, which is the classic `dmax > epsilon` split rule. Line endpoints are always kept. Must be finite and non-negative. |
+| `tolerance` | `number` | Douglas-Peucker tolerance in position units (the context length unit in a great-circle context). A vertex is kept when its importance is strictly greater than the tolerance, which is the classic `dmax > epsilon` split rule. Line endpoints are always kept. Must be finite and non-negative. |
 
 {/* /parameters */}
 
@@ -5215,7 +5298,8 @@ duration, centroid) and unclamped per-track stop counts.
 `timestamps` may be `float32`, `float32` plus `timestampsLow` (double-single), or exact `Int64`
 words (`uint32x2`). Every time difference (steps, track durations, dwells) is taken exactly or in
 double-single before conversion to float32, so multi-year epoch-millisecond tracks keep
-millisecond steps. Durations, speeds and the stop parameters use the unit of the timestamps.
+millisecond steps. Durations and `stopMinimumDuration` use the timestamp unit; speeds and
+`stopSpeedThreshold` use the context's length unit per timestamp unit.
 
 ```ts
 graph.add(new GPUTrajectoryMetrics({
@@ -5241,11 +5325,12 @@ the clamped stop count, for example an indirect draw record's instance count.
 
 `spatialContext` is optional. Omitted (or planar) means Euclidean distances in position units and headings
 `atan2(dy, dx)`. With `{coordinateSpace: 'longitude-latitude', metric: 'great-circle'}` (optional
-`sphereRadius`, default `GPU_EARTH_MEAN_RADIUS_METERS`) the positions are `(longitude, latitude)` degrees,
-step distances and `trackLengths` are great-circle meters, speeds and `stopSpeedThreshold` are meters per
-timestamp unit, and `stepHeadings` are initial bearings in the planar heading convention, radians counterclockwise from
+`sphereRadius`, default the mean Earth radius in the context's length unit) the positions are `(longitude, latitude)` degrees,
+step distances and `trackLengths` are in the context's length unit (meters by default; kilometers with
+`units: 'kilometers'`); speeds and `stopSpeedThreshold` use that unit per timestamp unit.
+`stepHeadings` are initial bearings in the planar heading convention, radians counterclockwise from
 east in `(-pi, pi]` (`pi / 2 - bearing`, where `GPUGeodesicPairs` reports the bearing in degrees clockwise
-from north), so headings mean the same in every context. Longitude/latitude without the `great-circle` metric, kilometer units and the ellipsoidal metric throw.
+from north), so headings mean the same in every context. Longitude/latitude without the `great-circle` metric throws. It measures distance, so `local-lambert-equal-area` frames throw.
 Stop `centroids` are arithmetic means of coordinates, so a dwell straddling the antimeridian or a pole has a
 meaningless centroid. Positions are float32 degrees (about 1 m resolution at mid-latitudes); for
 sub-meter work project to a local frame instead. The `spatialContext` prop used to be required and
@@ -5261,7 +5346,7 @@ Settings of `getGPUTrajectoryMetricsParameterValues`:
 
 | Field | Type | Description |
 |---|---|---|
-| `stopSpeedThreshold` | `number` | A step between two consecutive samples is slow when its speed is below this value. Must be finite and non-negative. A threshold of 0 only treats zero-distance steps as slow. |
+| `stopSpeedThreshold` | `number` | Speed threshold in the context's length unit per timestamp unit. A step is slow below this value. Must be finite and non-negative. A threshold of 0 only treats zero-distance steps as slow. |
 | `stopMinimumDuration` | `number` | A dwell (a maximal run of slow steps) is reported as a stop when its duration is at least this value. Must be finite and non-negative. |
 
 {/* /parameters */}
@@ -5304,21 +5389,21 @@ playheadParameters.write(getGPUTrajectoryPlayheadParameterValues({playhead: 125.
 - Heading is `atan2(dy, dx)` (0 along +x, counterclockwise); compass bearing is `π/2 - heading`.
   Zero-length segments give 0. Positions are planar unless `spatialContext` is great-circle.
 - Great-circle (`spatialContext: {coordinateSpace: 'longitude-latitude', metric: 'great-circle'}`, optional
-  `sphereRadius`, default `GPU_EARTH_MEAN_RADIUS_METERS`): positions are `(longitude, latitude)` degrees and
+  `sphereRadius`, default the mean Earth radius in the context's length unit): positions are `(longitude, latitude)` degrees and
   each segment is interpolated by spherical linear interpolation instead of a linear blend of degrees. The
   heading is the segment's initial bearing in the planar convention (radians counterclockwise from east,
-  `pi / 2 - bearing`, in `(-pi, pi]`), and `speeds` are
-  great-circle meters per timestamp unit. Interpolated longitudes are continuous with the segment's start
+  `pi / 2 - bearing`, in `(-pi, pi]`), and `speeds` use the context's length unit per timestamp unit
+  (meters by default; kilometers with `units: 'kilometers'`). Interpolated longitudes are continuous with the segment's start
   row, so a segment that crosses the antimeridian yields longitudes beyond ±180 (the end row is `b` shifted
   by a multiple of 360 degrees) rather than jumping; wrap downstream if needed. Fractions 0 and 1 return
   the start and end row exactly (up to that shift). Other contexts throw. Ellipsoidal interpolation is a
-  non-goal.
+  non-goal. Both playhead and resample measure distance, so `local-lambert-equal-area` frames throw.
 - Time: comparisons are exact in both modes (Int64 words compare integer words, then the f32
   playhead fraction); differences are subtracted exactly and then rounded to f32.
 
 `GPUTrajectoryResample` resamples every track to `sampleCount` samples, uniformly in time
-(`spacing: 'time'`, default) or along the path (`'arc-length'`: planar length, or great-circle meters with a
-great-circle `spatialContext`, which also slerps the samples as the playhead does), into a dense
+(`spacing: 'time'`, default) or along the path (`'arc-length'`: length in the context's unit; a
+great-circle `spatialContext` also slerps the samples as the playhead does), into a dense
 `[trackCount × sampleCount]` `float32x2` buffer (row `track * sampleCount + k`), with optional
 elevations and sample times relative to the track start. It is the fixed-length input for
 trajectory similarity, k-means, and fixed-vertex trails.
@@ -5477,7 +5562,9 @@ Pairs of tracks within `distance` in the same time bucket (MobilityDB `tdwithin`
   three stable sorts of the hits and `GPUCompaction` for the runs.
 - Great-circle: with `spatialContext: {coordinateSpace: 'longitude-latitude', metric: 'great-circle'}`
   (optional `sphereRadius`) the samples are `(longitude, latitude)` degrees, `distance` and the reported
-  `minimumDistances` are great-circle meters, and `cellSize` and `bounds` stay in degrees. The test is the
+  `minimumDistances` are in the context's length unit (meters by default; kilometers with
+  `units: 'kilometers'`), and `cellSize` and `bounds` stay in degrees. The default sphere radius is the
+  mean Earth radius in that unit. It measures distance, so `local-lambert-equal-area` frames throw. The test is the
   great-circle distance of the two samples of one bucket, so there is no tangent-plane approximation. Pruning
   is conservative: two points within angle `theta` differ by at most `theta` in latitude and by at most
   `asin(sin(theta) / cos(L))` in longitude, where `L` is the largest `|latitude|` of `bounds`. The lattice
@@ -5557,8 +5644,9 @@ Maximum: the pair capacity `pairA.length` is at most `GPU_TRACK_SIMILARITY_MAXIM
 
 `spatialContext` defaults to native planar (Euclidean distances in the f32 input coordinates; the planar kernels
 compile no geodesic code). `{coordinateSpace: 'longitude-latitude', metric: 'great-circle'}` makes Hausdorff,
-Frechet and `maximumDistance` great-circle distances in meters on a sphere of `sphereRadius` (default
-`GPU_EARTH_MEAN_RADIUS_METERS`); kilometers and other metrics throw. Vertices are `[longitude, latitude]` degrees
+Frechet and `maximumDistance` great-circle distances in the context's length unit (meters by default;
+kilometers with `units: 'kilometers'`) on a sphere of `sphereRadius` (default the mean Earth radius in
+that unit). Other geographic metrics throw. It measures distance, so `local-lambert-equal-area` frames throw. Vertices are `[longitude, latitude]` degrees
 and segments are straight in longitude/latitude, as everywhere in this package. The vertex-to-segment distance is
 the haversine distance to the closest point of the segment, with that point found in the local equirectangular
 frame of the vertex (`geodesicSegmentFraction`, `geodesicSegmentDistance`): exact to first order for segments of
@@ -5596,7 +5684,7 @@ graph.add(new GPUTrackSimilarity({
 ```
 
 Two more measures share the Frechet layout and its shorter-track cap. `output.frechetWithin` (`uint32`,
-with the per-frame one-row `frechetEpsilon`) is the Frechet decision, 1 when the discrete Frechet distance
+with the per-frame one-row `frechetEpsilon` in the context's length unit) is the Frechet decision, 1 when the discrete Frechet distance
 is at most epsilon: endpoint distances reject pairs before scanning their vertices; a fixed monotone coupling
 accepts pairs in `O(n + m)`. Undecided planar pairs also use coordinate-extrema bounding-box lower bounds.
 The rest run the boolean free-space program, evaluating distances only for cells with reachable predecessors; it stops once no
@@ -5604,7 +5692,7 @@ monotone path can survive a row or two consecutive anti-diagonals. Use it to fil
 threshold without requesting the full distance or DTW, which still compute when requested alongside the decision.
 `track-similarity-dtw-frechet-ab.spec.ts` times decision-only and distance-only graphs separately.
 `output.dynamicTimeWarping` is the dynamic time warping cost, the
-smallest sum of point distances over monotone warping paths (`similaritymeasures.dtw`; not the square root
+smallest sum of point distances in the context's length unit over monotone warping paths (`similaritymeasures.dtw`; not the square root
 of summed squares of tslearn and dtaidistance), with an optional compile-time Sakoe-Chiba band
 `dynamicTimeWarpingBandRadius` equal to `tslearn.metrics.sakoe_chiba_mask(n, m, radius)`; cells outside
 the band are never evaluated. Both are verified against `test/oracles/track-similarity-dtw-frechet.py`
@@ -5637,7 +5725,7 @@ vertices: per input vertex a round-join disc fan plus a quad to the next vertex,
 degenerate. There is no capacity and no overflow. Overlaps are not unioned, so it is for drawing only;
 queries use `dwithin` and `GPUBufferSelection`. Spherical mode converts meters with each vertex's local
 east and north scale (equirectangular, not geodesic; wrong near the poles and across the antimeridian).
-There are no negative buffers. A one-sided offset line is [`GPUOffsetCurve`](#gpuoffsetcurve-and-gpuvertexsnap).
+It measures distance, so `local-lambert-equal-area` frames throw. There are no negative buffers. A one-sided offset line is [`GPUOffsetCurve`](#gpuoffsetcurve-and-gpuvertexsnap).
 
 {/* parameters: GPUOutlineGeometry generated by modules/experimental/test/analysis-core/doc-parameters.ts from the TSDoc; do not edit */}
 
@@ -5668,6 +5756,7 @@ self-cross. GEOS clamps `quad_segs` to at least 8, so round-join parity is pinne
 leaves the corner at a ring's first vertex open on the outside and this closes it. Points were within 2e-4
 of Shapely 2.1.2. Planar only (`spatialContext` defaults to planar; a longitude/latitude context throws,
 so project first with `createGPULocalFrame` and `GPULocalFrameProjection`), rings are implicit-closed.
+Both `GPUOffsetCurve` and `GPUVertexSnap` measure distance and reject `local-lambert-equal-area` frames.
 
 `GPUVertexSnap` is the vertex-to-vertex subset of `shapely.snap`: each vertex with a reference vertex
 strictly closer than the per-frame `tolerance` moves to the nearest one (lowest row on ties) and the layout
@@ -5710,7 +5799,7 @@ Maximum (`GPUPolygonOverlay`): both operands together have at most `getGPUSegmen
 
 `GPUBufferSurface` maximum: the boundary rows (raw offset-curve rows plus one closing vertex per raw ring, `(1 + 2 * rowsPerVertex) * vertices + 3 * rings` for polygons) plus `capacity.intersections` are at most `getGPUBufferSurfaceMaximumBoundaryRowCount(device)` (1,048,576 on a default device, a quarter of the overlay's segment table); 17 rows per vertex for the default round joins.
 
-Both classes are planar only: `spatialContext` defaults to native planar coordinates and a longitude-latitude context throws. `GPUBufferSurface` distance is in position units, so project first (`createGPULocalFrame`, `GPULocalFrameProjection`) and buffer in the frame's meters; buffering degrees gives an ellipse on the ground.
+Both classes are planar only: `spatialContext` defaults to native planar coordinates and a longitude-latitude context throws. `GPUBufferSurface` measures distance and rejects `local-lambert-equal-area` frames; its distance is in position units, so project first (`createGPULocalFrame`, `GPULocalFrameProjection`) and buffer in the frame's meters; buffering degrees gives an ellipse on the ground.
 
 `GPUPolygonOverlay` produces polygon geometry for `intersection`, `union`, `difference`,
 `symmetric-difference`, and unary `dissolve`. It combines both operand boundaries and nodes them by
@@ -6040,7 +6129,8 @@ and `GPULocalFrameProjection`), because a lng/lat Delaunay is not a spherical on
 ### `GPULabelPoint`
 
 Planar only: a longitude/latitude `spatialContext` throws at construction; project first with
-`createGPULocalFrame` and `GPULocalFrameProjection`.
+`createGPULocalFrame` and `GPULocalFrameProjection`. Declares `measure: 'distance'`: a Lambert
+equal-area local frame throws; use an azimuthal-equidistant frame.
 
 A label point inside each polygon, the pole of inaccessibility (turf `pointOnFeature`, Shapely
 `representative_point`, polylabel). Props: the four-level polygon layout (`positions`, `featureOffsets`,
@@ -6091,19 +6181,25 @@ Settings of `getGPUShapeDescriptorsParameterValues`:
 Maximum: `columns * rows` is at most `GPU_LINE_DENSITY_MAXIMUM_CELL_COUNT` (16,777,215), a device-independent constant: the per-cell sum dispatches one 256-thread workgroup per cell and the invocation index is a `u32`.
 
 Line length per grid cell and its density (QGIS line density). Props: `positions`, `lineOffsets`,
-`columns`, `rows`, `spatialContext` (planar/native, or longitude-latitude with the great-circle metric),
+`columns`, `rows`, optional `spatialContext` (native planar by default, or longitude-latitude with the great-circle metric),
 `recordCapacity`, `parameters`
 (`getGPULineDensityParameterValues({minX, minY, cellWidth, cellHeight})`) and
 `output: {lengths, densities?, status: {overflow, requiredCount?}}`. Segments are clipped to the grid and walked cell
 by cell, and the lengths are summed per cell by a stable sort and a fixed-order reduction, so results are
-bitwise reproducible. Spherical mode uses the great-circle meters of each clipped piece and exact
-spherical cell areas for the densities. Exceeding `recordCapacity` sets `status.overflow` and under-counts the
+bitwise reproducible. Spherical mode measures each clipped piece in the context's length unit using
+the mean radius (`radius`); cell areas use `getGPUAuthalicSphereRadius` (the new `areaRadius` field),
+in that unit squared. Lengths default to meters and cell areas to square meters; `units: 'kilometers'`
+gives kilometers and square kilometers. Exceeding `recordCapacity` sets `status.overflow` and under-counts the
 last segments. A segment on a cell boundary goes to the upper or right cell, and closed rings are not
 special (pass ring edges as lines). Length per polygon is
 [`GPULineLengthPerPolygon`](#gpulinelengthperpolygon).
 
+Uses `resolveGPUSpatialContext` and its shared validation errors. Declares `measure: 'area'`:
+an azimuthal-equidistant local frame throws; project into a Lambert equal-area frame.
+
 **Semantics.** `densities` is the line length inside the cell divided by the cell area, a box kernel
-with the grid cell as its support. It is not the ArcGIS or QGIS circular-search-radius line density,
+with the grid cell as its support, in context length units per square unit (meters per square meter
+by default for longitude/latitude, kilometers per square kilometer with `units: 'kilometers'`). It is not the ArcGIS or QGIS circular-search-radius line density,
 which spreads each line over a disk and is smooth; those need a smoothing step. For a smooth field,
 rasterize `lengths` (or `densities`) and convolve it with `GPUConvolution` (with the same cell-index and
 zero-boundary caveats as [`GPUPointDensity`](#gpupointdensity) smoothing), or sample line points with
@@ -6145,6 +6241,11 @@ are summed per polygon by a stable sort and a fixed-order segmented sum, so resu
 per segment) and `segmentCounts` counts segments with positive length inside. A longitude-latitude context clips straight in
 longitude/latitude, as `GPULineDensity` does, and measures each piece as the great-circle distance between its
 endpoints. `status.overflow` is 1 when the candidate, BVH or crossing capacity was exceeded, and lengths can then be low.
+
+Declares `measure: 'distance'`: a Lambert equal-area local frame throws; use an azimuthal-equidistant
+frame. Longitude/latitude requires `metric: 'great-circle'`; other metrics throw the shared
+`resolveGPUSpatialContext` error. Lengths use the context's length unit (meters by default for
+longitude/latitude, kilometers with `units: 'kilometers'`).
 
 Limits: pieces lying exactly along a ring edge are ambiguous and may or may not count; lines are not
 unioned, so overlaps count once per line, as in QGIS; f32 precision (about 1e-6 of the segment length). The spec
@@ -6207,7 +6308,7 @@ Settings of `getGPUGridGeneratorParameterValues`:
 Circles, sectors and ellipses around per-feature centers and radii (turf `circle`, `sector`, `ellipse`).
 Props include `shape` (`GPUShapeType`), `centers`, `radii`, optional sector `bearings` and ellipse
 `rotations`, `spatialContext` (planar by default, or `{coordinateSpace: 'longitude-latitude', metric:
-'great-circle'}` with spherical destination and radii in meters on the mean Earth radius; this replaces
+'great-circle'}` with spherical destination and radii in the context's length unit, meters by default on the mean Earth radius; this replaces
 the removed `coordinateSystem` prop and `GPU_SHAPE_GENERATOR_EARTH_RADIUS`), compile-time `maximumSegments` and per-frame `parameters`
 (`getGPUShapeGeneratorParameterValues`). The segment count and the radius scale are per-frame, up to
 `maximumSegments`; size outputs with `getGPUShapeVertexCount` and `getGPUShapeMinimumSegments`. The output
@@ -6218,6 +6319,9 @@ table per feature and inverts it for approximately equal edge lengths. The table
 and, for geodesic shapes, before spherical destination; it costs 1028 transient bytes per feature and one
 additional compute pass. Coincident sector bearings keep their center spokes. Geodesic f32 coordinates
 round to about 0.5 m.
+
+Declares `measure: 'distance'`: a Lambert equal-area local frame throws; use an
+azimuthal-equidistant frame.
 
 {/* parameters: GPUShapeGenerator generated by modules/experimental/test/analysis-core/doc-parameters.ts from the TSDoc; do not edit */}
 
@@ -6516,7 +6620,7 @@ parameters.write(
   `akaikeInformationCriterion` `= -2 llf + 2 (tr S + 1)` and `correctedAkaikeInformationCriterion`
   (mgwr `llf`, `aic`, `aicc`), `rSquared`) plus `effectiveParameterCount`, `singularRowCount`,
   `includedRowCount`, `adjustedAlpha`, `criticalT` and `selectedBandwidth`.
-- `spatialContext` (new): omitted is planar. `{coordinateSpace: 'longitude-latitude', metric:
+- `spatialContext` (new): omitted is planar. It measures distance, so `local-lambert-equal-area` frames throw. `{coordinateSpace: 'longitude-latitude', metric:
   'great-circle', units: 'meters'}` makes `positions` `(longitude, latitude)` degrees and every
   distance (kernels, fixed bandwidths, the adaptive k-th neighbour) a haversine distance on a sphere of
   `sphereRadius` (default the mean Earth radius 6,371,008.8 m); bandwidths are then metres. Rows with a
@@ -7081,6 +7185,8 @@ Notes:
   `GPUColorScale` read as numbers (`integerValues: 'numeric'`); the `featureValues` prop is rejected for
   `'count'`, and the result type is `float32` or `uint32`.
 - The spatial regression recipe requires a finite residual on every row; the weights pattern may be asymmetric.
+  Optional local fits pass their `spatialContext` to `GPUGeographicallyWeightedRegression`; omitted means
+  native planar, and fixed bandwidths use the context's length unit.
   Its `settings.significanceLevel` (default 0.05) is packed once into the autocorrelation `parameters`
   buffer and read per frame by both the specification search and the residual `GPULocalMoran` (it used to
   be a compile-time constant of the search kernel); `result.inference` and `result.setSettings` follow it.
@@ -7089,6 +7195,10 @@ Notes:
   `GPUZoneEvents` directly (no edge lists) with `trackEventCapacity` events kept per track. The
   straight-line catchments recipe takes `grid`, `parameters` and `facilities` (`GPUPointGeometryPort`,
   `sourceIds` as zone IDs); the cluster recipe takes `points` (`GPUPointGeometryPort`).
+- The cluster recipe's optional `spatialContext` defaults to native planar and is returned as
+  `result.spatialContext`. It is planar only because group summaries and convex hulls are planar:
+  longitude/latitude throws, so project first. Clustering measures distance and rejects
+  `local-lambert-equal-area` frames; `epsilon` uses the context's length unit.
 - The cluster recipe drops clusters at or above `maximumClusterCount`, and the caller supplies the
   geometry parameters. The change-of-support recipe's `status.overflow` covers the overlap list only; the raster
   flags are returned as `status.rasterOverflow` and `status.rasterRequiredCount` (stages `source-rasterization` and
@@ -7209,8 +7319,10 @@ Transfers values between two polygon zone systems by area: both systems are rast
   or smaller than a cell, shows up there instead of silently losing mass; `sourceAnchorCells` rescues the
   latter.
 - Coordinates: `spatialContext` omitted is native planar (cell counts are areas). `longitude-latitude`
-  (metric `'none'` or `'great-circle'`) declares a longitude/latitude raster whose `parameters` are in degrees,
-  and the areal stage weights each cell by its spherical area in square meters. Rasterization itself only
+  requires metric `'great-circle'` and declares a longitude/latitude raster whose `parameters` are in degrees.
+  The areal stage weights each cell by its area on the authalic sphere in the context's length unit squared
+  (square meters by default; square kilometers with `units: 'kilometers'`). It measures area, so
+  `local-azimuthal-equidistant` frames throw. Rasterization itself only
   tests cell centers in the coordinates as given (straight polygon edges in degrees; split polygons at the
   antimeridian). The resolved context is returned as `result.spatialContext`.
 - Accuracy is bounded by the raster resolution (cell centers decide membership), never an exact polygon

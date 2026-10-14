@@ -869,6 +869,9 @@ is unambiguous.
 - Local Float32 output remains relative to an explicit destination origin; double-single output is
   absolute high/low pairs.
 - Optional validity rows distinguish rejected inputs from legitimate zero coordinates.
+- `GPUProjection({targetCrs: 'EPSG:32633', ...})` exposes `spatialContext`, a planar context with
+  frame `{kind: 'crs', id: targetCrs, crs: targetCrs}` to pass to planar spatial-analysis operators;
+  rows projected into different CRSs are incompatible. Units stay undeclared (native).
 
 ## Operations and API index
 

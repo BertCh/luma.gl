@@ -254,11 +254,15 @@ add a second pass over the cells, so request them only when needed.
 ## `GPUDistanceField`
 
 Euclidean distance transform and nearest-seed allocation (Voronoi zones) on a raster grid, from
-seed points snapped to cells, a labeled seed raster, or both. `distances` holds the ground distance
+seed points snapped to cells, a labeled seed raster, or both. `distances` holds the grid distance
 from each cell center to the nearest seed cell center (`+Infinity` when unreached), `allocation`
 the nearest seed's ID, and `nearestCells` its cell; ties break on the smallest seed ID. A
 per-frame `maximumDistance` clears cells beyond it and fills an optional `withinDistance` mask, and an
 optional `r32float` texture receives a copy of `distances`. Cell sizes may differ in x and y.
+
+Distances use grid units (world units of the affine), so degree grids yield degree distances, not
+meters; ground-meter conversion is a non-goal of `GPUDistanceField`—use `GPUCostDistance` with
+`cellSizeMode: 'geographic' | 'web-mercator'` and unit friction for ground-meter distances.
 
 ```ts
 const parameters = new GPUParameterBuffer(device, {id: 'df-parameters', format: 'float32', length: 8});
