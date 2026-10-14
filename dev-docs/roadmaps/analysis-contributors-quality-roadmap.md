@@ -1,6 +1,7 @@
 # Analysis contributors: quality roadmap
 
-Status: proposal, 2026-10-13. Based on a read-only, five-stream review of every analysis contributor
+Status: implemented 2026-10-14 (see [Implementation status](#implementation-status-2026-10-14)); proposed
+2026-10-13. Based on a read-only, five-stream review of every analysis contributor
 (`gpu-spatial-analysis`, `gpu-network`, `gpu-terrain`, the `gpu-raster` and `gpu-dataframe` subdirs, `geospatial`
 and `src/utils`) for consistency, correctness, performance and ergonomics. The evidence (file and line, a reproducer
 or oracle replay, and a proposed fix for each finding) is in
@@ -16,6 +17,40 @@ otherwise:
 
 The statistics methodology (inference, weights, islands, missing values, spatial context) was settled by the
 2026-10-13 correctness round, so this review treats it as given.
+
+## Implementation status (2026-10-14)
+
+Every tranche was implemented on `map-contributors` (uncommitted) on top of the 2026-10-13 correctness round. Each item
+was checked against the code before it was fixed. Each fix has a node spec and, where GPU results change, a headless
+GPU spec run serially. Oracles come from reference packages.
+
+| Tranche | Status | Notes |
+|---|---|---|
+| Q0 silent wrong results | Done | D-01 to D-15, B-01 to B-11, C-01 to C-09, A-1/A-2, E-10/E-11 and the algorithms P0s. C-09 now writes unresolved sentinels (NaN costs, UNRESOLVED codes). |
+| Q1 compile cost | Done | Rule 12 holds library-wide. Each fix has a node spec asserting the pipeline count is unchanged at N and N+1. Reachability: 64 → 1 relax pipeline. Default terrain flow: ~60 → 15. Class breaks: 62/65 → 45. GWR pass cursor. E-05: no synchronous `.compile()` in either app, which swap graphs through `GraphSwap`. |
+| Q2 wasted GPU work | Done, except one item | Rule 13 gates, two-stage reductions and per-workgroup atomics. Scan `nearest` uses radix select. Ripley F is 24% faster with bitwise-equal output. The Delaunay rebuild is 1.9x faster at 3,000 sites. Texture bindings in `createWGSLKernelNode` retire the escape hatches. **Open:** coverage-repair rounds are not gated, because upstream `GPUScan` and `GPUSegmentIntersection` take no `condition`. |
+| Q3 one library | Done | `src/analysis-core/` sits below every entry, and the import DAG is enforced by a spec. The barrels are `export *` with a diff spec. The canonical vocabulary is enforced by a Props-parsing spec; its allowlist holds only upstream-owned files. All status words live in `output.status`. `GPUNetworkTopology`, `grid: GPURasterMetadata` and the four-level polygon port are used everywhere. Feature-row contiguity and `uint32 \| float32` counts let points → counts → W → Moran chain with no cast. There is one 2SFCA/3SFCA kernel, plus the new `GPUNetworkCostWeights`. The capacity plans drive the W and join grow loops. Construction uses `getCommandNodes` only. Errors go through the shared validators and `assert`. B-22 has one Philox purpose registry. |
+| Q4 test and doc integrity | Done | `requireTestDevice` covers 1,448 guards, and the canary fails headless. The kernel-audit node spec builds all 295 public contributors on a fake `'core'` device and checks limits, reserved words, NaN self-compares, const non-finite bitcasts and undeclared calls. All 142 doc `ts` blocks type-check. Parameters subsections are generated for 131 classes. Committed generators under `test/oracles/` cover networkx, GDAL 3.12 via rasterio, pysheds, shapely, scipy, h3-py, esda, spreg, libpysal, mgwr, mapclassify, scikit-gstat, statsmodels and PySAL `access`. |
+| Smaller items | Done | C-14 is now done. C-21 is rejected, because corrupt links already return an empty path. Of the 34 unverified suspicions across the reports, 7 were real and are fixed, and 2 are upstream. |
+
+Bugs found on the way that the review had not listed:
+- WGSL reserved words used as identifiers (`target`, `active`) in four kernels that never compiled on Dawn.
+- 3SFCA missing its decay factor (it now matches PySAL `access` to 3e-16).
+- Moran/Geary on constant values.
+- North-up lon/lat areal weights of 0.
+- Multipart ZIP attributes in the explorer.
+- Line-noding pair overflow never reported.
+- k-means convergence reported on an f32 overflow.
+
+Still open:
+- AZP articulation test (algorithms P3 #3). The interim row cap is 32,768.
+- D-06 crossing points, superseded by snap rounding (algorithms roadmap item 2).
+- A-18 for `GPUTerrainSpikeRepair`: gpgpu has no graph-owned persistent buffer API.
+- Upstream items:
+  - `@luma.gl/gpgpu` kernels still emit folded `v == v` NaN tests (about 6,300 generated kernels).
+  - `GPUSort` bakes a constant per pass.
+  - Dawn does not enforce the 8 KB private-memory limit.
+  - `GPUGridIndex` keeps flat `count`/`overflow`.
 
 ## Verdict
 

@@ -75,6 +75,7 @@ Target Release Date: Q3, 2026
 - **Stable sparse GPU joins** - [`GPUHashJoin`](/docs/api-reference/experimental/gpu-core/gpu-hash-join) composes exact hash lookup, scan, and bounded pair publication into stable many-to-one inner joins. Aligned left-join masks, required counts, overflow, and probe statistics remain GPU-resident and explicit.
 - **Batch-preserving sparse GPU joins** - [`GPUBatchHashJoin`](/docs/api-reference/experimental/gpu-core/gpu-batch-hash-join) independently joins ordered `GraphVectorView` chunks against one shared right index. Per-batch capacities, required counts, source-or-output overflow, and probe statistics preserve streaming source partitions without implicit packing.
 - **Spatial analysis performance** - Zonal, flow and clustering sums default to a reproducible `sumOrder: 'sorted'`, which avoids 10-60x slowdowns from float-atomic contention on shared zones. Reachability chains 32 hops per round, cost matrices size `laneCount` with `recommendLaneCount()`, and cost distance and hydrology use directional sweeps for long corridors. `GPUTextureShading` gains `hasNodata` and `downsampleLevels`.
+- **One analysis vocabulary** - The analysis entries share one layer of contracts (`analysis-core`) and one set of names: every contributor takes its caller-owned views in one `output` bag with GPU-written status words in `output.status`, per-frame `parameters` packed from a `GPU<Class>Settings` object, `maximum*` compile-time caps, geometry ports (`GPUPolygonGeometryPort` four-level polygons, `positions` + `lineOffsets`/`trackOffsets`), one network `topology` that is also a spatial-weights CSR, and `GPUCompactOutput` (`{ids, status: {count, overflow, requiredCount}}`) for every compact list. Terrain and raster contributors take one `grid: GPURasterMetadata`; packers read cell size and latitude band from it, and the simple local relief and vector ruggedness window radius is per frame. `GPUNetworkCostWeights` turns cost matrices into spatial weights, and `GPUCatchmentAccessibility` is the one 2SFCA/3SFCA kernel. See the [upgrade guide](/docs/upgrade-guide#analysis-contributors-vocabulary).
 
 **@luma.gl/engine**
 
@@ -176,6 +177,87 @@ _Splat hierarchy (`SplatHierarchyManager`):_
 - **`blend: false` wins** - an explicit `blend: false` now removes blend state even when blend
   factors are also supplied, matching WebGL and keeping non-blendable (32-bit float) targets valid.
 - **Attach to application-created `GPUDevice`s** - `luma.attachDevice(gpuDevice, {adapters: [webgpuAdapter]})` and `webgpuAdapter.attach(gpuDevice)` wrap an existing WebGPU device, so an application and deck.gl can share one device with the application's requested limits and features. `device.destroy()` leaves the `GPUDevice` usable; the application destroys it.
+
+### Algorithms (2026-10-14): statistics, dataframe and crossfilter
+
+- `GPUWardRegions` `mergeSchedule: 'mutual-nearest'` merges all reciprocal cheapest pairs per round (about `log2(n)` rounds instead of `n - k` merges); the default `'sequential'` is unchanged.
+- `GPUCrossfilter` `skipUnchangedDimensions` (opt-in) re-runs only the nodes that depend on a changed brush, so views that exclude the brushed dimension are not recomputed; `invalidate()` reports changed source contents.
+- `GPUCrossfilter` `histogramCubes` (opt-in) with `activateView()` / `deactivateView()` serves linked histograms from Falcon-style cubes, `O(bins)` per brush for tables beyond 10M rows.
+- `GPUAZPRegions` applies batches of conflict-free improving moves per round with a local articulation test (no per-candidate reachability set), so it has no row cap and needs far fewer rounds.
+- `GPUMaxPRegions` constructs in parallel: seed waves plant many seeds at once, regions claim one frontier row per gated round, and enclave rounds absorb failed regions, with no row cap (`maximumGrowthSteps` bounds the region size in rows); the region count matches spopt's `MaxPHeuristic` within 3 percent.
+- `GPUTimeWindowFilter` `sorted` (opt-in) finds the accepted rows of time-sorted instants with two binary searches: O(log n) per frame, no compaction, range in `output.rowRange` and `output.drawFirstInstance`; `validateOrder` checks the precondition.
+- `GPUTemporalReduction` `sorted` (opt-in) reduces only the contiguous range of rows inside the bucket window, so a scrub costs O(range) instead of O(rows), with bit-identical results.
+- `GPULocalPermutationTest` and `GPUGlobalPermutationTest` `stopAfterExceedances` (opt-in, Besag and Clifford 1991) stops each row (or the global test, in batches) at the first permutation where the exceedance count reaches `h`, with `p = min(1, m h / L)`; `L` is reported in `output.permutationCounts` (local) or the `permutationCount` summary field (global).
+- `GPULocationAllocation` swap scoring uses the Whitaker / Resende-Werneck gain decomposition evaluated per candidate in parallel (`O(facilityCount * demandCount)` per iteration instead of `O(maximumFacilityCount * facilityCount * demandCount)`).
+- `GPULocationAllocation` `sparseCosts` (CSR `offsets`, `facilities`, `costs`; unlisted pairs are unreachable) replaces the dense matrix for every operation and lifts the dense `demand rows x facilityCount` limit.
+- `GPUCalendarBuckets` `timeZone` transition table (offsets in seconds, per-row binary search on the GPU) replaces per-row CPU daylight saving offsets; `getGPUTimeZoneTransitionTable` builds it from `Intl`.
+- `GPUSpatialScanStatistic` runs its Monte Carlo replicates in GPU-gated batches that fold into a running maximum, so the `(maximumPermutations + 1) * zones * timeBuckets <= 2^25` cap is gone and `maximumPermutations` goes up to 99999 (SaTScan-style runs); results are bit-identical to the single pass for any batch size.
+- `GPUKnoxTest` and `GPUMantelTest` `stopAfterExceedances` (opt-in) stops the Monte Carlo at the first permutation `L` with `h` exceedances and reports `min(1, h / L)` (Besag-Clifford); permutations run in gated batches scanned in order, so `L` does not depend on the batch size, and `output.permutationCount` reports `L`.
+- `GPUGeographicallyWeightedRegression` `bandwidthSearch: 'golden-section'` (opt-in) is mgwr's golden-section bandwidth search as a fixed-depth gated GPU loop with mgwr's default bounds computed on the GPU: about 12 to 20 candidate evaluations instead of a ladder of up to 32 per refinement pass, no read-back; the default `'ladder'` is unchanged.
+- `GPUGeographicallyWeightedRegression` `gaussianCutoff` (opt-in) sets Gaussian weights beyond a multiple of the bandwidth to exactly 0, so the Gaussian kernel uses the grid index like bisquare (`O(n * neighbours)` instead of `O(n^2)`); 5 bandwidths is recommended.
+- `GPUClassBreaks` `'natural-breaks'` runs a monotone divide-and-conquer Fisher-Jenks over exact 64-bit prefix sums (`O(k * bins * log(bins))`, no `bins x bins` cost table) and refines every break on the rows, so the breaks are actual data values that equal the exact partition (jenkspy, mapclassify) on 32 of 34 reference cases, including heavy ties and a single extreme outlier, instead of snapping to bin edges; a class count above the distinct values gives one class per value.
+
+### Algorithms (2026-10-14): geometry, joins and cells
+
+- `GPUPointInPolygonJoin`, `GPUNearestFeatureJoin` and `GPUBufferSelection` process point queries in
+  Hilbert order (`querySort`, on from 4096 queries) for coherent BVH traversal; outputs are identical.
+- `GPUPointInPolygonJoin` `edgeSlabs`: the exact refine tests only the y-slab edges of each polygon part;
+  `GPUSpatialJoinPrepared({edgeSlabs: true})` builds the index once.
+- `GPUNeighborSearch` `searchStructure` (`'auto'` default, `'grid'`, `'bvh'`): a point BVH chosen on the
+  GPU by grid occupancy keeps kNN and radius search fast on clustered points, with identical results.
+- `GPUPolygonTriangulation` triangulates polygons beyond Earcut's budget with a parallel y-monotone
+  decomposition (`largePolygonMethod`), so large polygons no longer come back `valid = 0`.
+- `GPUKernelDensity` `method: 'binned' | 'auto'`: linear binning plus an almost-gaussian blur, with cost
+  independent of the bandwidth and a documented error bound.
+- `GPUCellCover` `candidateEnumeration` (`'auto'` default): boundary trace plus scanline fill enumerates
+  only the row intervals a thin or sparse polygon occupies; cells and order are unchanged.
+- `GPUGroupConvexHull` discards rows strictly inside each group's extreme-point octagon (Akl–Toussaint,
+  `extremePointFilter`); hulls are unchanged bit for bit.
+- `GPUMapColoring` colors largest-degree-first by default (fewer colors); `GPUGeometryCleanup` removes
+  exact repeats with vertex-parallel passes at `tolerance = 0`, chosen on the GPU per frame.
+- `GPUPointDensity` weighted sums are deterministic by default (fixed point).
+
+### Algorithms (2026-10-14): movement and clustering
+
+- `GPUTrajectoryClosestApproach`: exact trajectory encounters (MobilityDB `tdwithin`): the closest point of approach between linearly moving tracks over a hashed space-time segment grid, with minimum distance, its time, first time and duration within a distance. `GPUTrajectoryEncounters` and `addClockEncounters` remain the bucketed preview.
+- `GPUHierarchicalDensityClustering`: HDBSCAN fully on the GPU (k-nearest core distances, Boruvka minimum spanning tree over mutual reachability, single-linkage dendrogram, condensing by pointer jumping, excess-of-mass selection), matching scikit-learn's `HDBSCAN` defaults up to tie order.
+- `GPUTrackSimilarity`: `output.frechetWithin` (Frechet decision against a per-frame `frechetEpsilon`, with bound pruning and free-space early exit) and `output.dynamicTimeWarping` (sum-of-distances DTW, optionally in a Sakoe-Chiba band `dynamicTimeWarpingBandRadius`).
+- `GPUZoneEvents` replaces the per-track sequential walk with a cell sort and a load-balanced segmented sum, so tracks with thousands of crossings no longer serialize one thread.
+- `GPULinearReferencing` with a great-circle context walks a BVH over conservative arc boxes instead of scanning every arc per point.
+- `GPUSpatialClustering` (DBSCAN) scans positions and core flags from grid-cell-ordered copies (coalesced reads).
+
+### Algorithms (2026-10-14): topology
+
+- `GPUDelaunayTessellation` runs gDel2D-style parallel insertion and exact Lawson flipping (no star
+  splaying needed with exact predicates): O(n log n) work in about nine graph nodes per step, where the
+  replaced Bowyer-Watson did O(n^2) work in four nodes per site, so 1e5 sites now fit in one graph.
+- `GPUPolygonOverlay` uses snap-rounded noding (exact crossings rounded to an integer lattice, every
+  edge rerouted through the hot pixels it crosses, as GEOS OverlayNG) and face labelling (one exact
+  ray shoot per edge group plus pointer jumping), replacing the per-segment probe of every ring. Nodes
+  are exact lattice points, so node drift and f32 crossing points (D-06) are gone; dissolve and
+  `GPUBufferSurface` inherit both.
+
+### Algorithms (2026-10-14): network
+
+- `GPUNetworkCentrality`: radius-bounded betweenness, closeness and harmonic closeness from exact or
+  sampled pivots (lane-batched reachability, tight-edge sigma/delta accumulation), matching networkx.
+- `GPUNetworkCostTable`: a GPU-built bounded all-pairs cost table (UBODT-style) for static networks.
+  `GPUMapMatching` `routeTable` reads routes from it and keeps the bounded A* only for routes beyond
+  the table's cost limit.
+- `GPUNetworkCostMatrix` `targetNodes` writes a compact `[rowCount x targetCount]` matrix instead of the
+  dense `rowCount x nodeCount` one.
+- `GPUNetworkReachability` can count edge relaxations and reached edges (`output.status.relaxationCount`,
+  `output.status.reachedEdgeCount`); `getGPUNetworkReachabilityInflation()` gives the work-inflation ratio.
+- `GPUNetworkStatistics` slot loops are load-balanced, so a hub row no longer serializes on one thread.
+
+### Algorithms (2026-10-14): terrain and raster
+
+- `GPUTerrainFlow` fills depressions with a tiled spill graph (Barnes 2016) when `fillEpsilon` is 0: O(log n) GPU rounds whatever the basin shape, bit-identical to the Planchon-Darboux fixpoint, so long spirals and lakes spanning many tiles no longer hit `maximumFillIterations`.
+- `GPUTerrainFlow` D8 `'cells'` accumulation and `GPUTerrainStreamOrder` use tree contraction on an Euler tour of the receiver forest: exact integer counts and Strahler orders for any stem length, in O(log n) rounds instead of a 64-round cap.
+- `GPUTerrainSummits` finds the disc maximum by a quadtree descent over a `GPURasterExtremaPyramid` (O(R) per pixel instead of O(R²)), bit-identical, with an optional shared `pyramid`.
+- `GPUSimpleLocalRelief` and `GPUMultiScaleRelief` read their window means from an exact 64-bit summed-area table, O(1) per pixel for any radius.
+- `GPUDistanceField` `'exact'` is banded as in the Parallel Banding Algorithm, so every pass has `width * height / 32`-way parallelism, bit-identical to the sequential envelope.
+- `GPUCostDistance` `continuation` (opt-in) resumes an unconverged relaxation in the next execution from caller-owned state, so an interactive graph unrolls 64 rounds instead of 512.
 
 ### Experimental Slang package
 

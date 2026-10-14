@@ -28,6 +28,8 @@ computation instead of flattening them into display colors.
 | Obtain contiguous region IDs and a bounded exact component count | `GPURasterDenseComponents` | Converged representative roots become compact deterministic IDs with explicit capacity and overflow. |
 | Measure intensity, population, centroid, and area for each region | `GPURasterRegionMeasurements` | Independent geometry and intensity masks produce bounded GPU records while preserving high-precision spatial metadata. |
 
+One-dimensional dispatch maxima: `GPURasterStatistics`, `GPURasterGlobalStatisticsMerge` and `GPURasterGlobalHistogramMerge` accept at most `getGPURasterStatisticsMaximumPixelCount(device)` / `getGPURasterGlobalMergeMaximumPixelCount(device)` pixels (`maxComputeWorkgroupsPerDimension * 256`, 16776960 on a default device). `GPURasterRegionMeasurements` uses `getGPURasterRegionMeasurementsMaximumCapacity(device)` (same value). `GPURasterCrossTileComponents` uses `getGPURasterCrossTileComponentsMaximumCapacity(device)`, additionally bounded by 12 bytes per region per storage binding (11184810 on a default device). Its intensity and coordinate sums use the shared deterministic 96-bit fixed-point accumulator: finite tile partials are quantized with a GPU-derived scale, summed with integer atomics, then rounded once to float32. Larger capacities throw at declaration.
+
 For a guided explanation of missing observations, grid ownership, replay, resource lifetimes,
 and common mistakes, read
 [GPURaster Concepts and Execution Model](/docs/api-reference/experimental/gpu-raster/concepts).
@@ -254,7 +256,7 @@ new GPURasterHistogram({
   domainOutput: histogramDomain
 }).addToGraph(graph);
 
-const compiled = graph.compile();
+const compiled = await graph.compileAsync();
 const encoder = device.createCommandEncoder();
 compiled.encode(encoder, {parameters: undefined});
 device.submit(encoder.finish());

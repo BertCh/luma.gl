@@ -83,6 +83,49 @@ Across about 150 contributors:
    only for raster band math. Request raised storage-buffer limits when offered and keep the 8-binding
    path.
 
+## Implementation status (2026-10-14)
+
+Every tranche below was implemented on `map-contributors` (uncommitted). Each item has node specs and headless GPU
+specs (run serially), oracles from reference packages, and a same-run A/B against the path it replaced. Timings are
+medians on one Apple-silicon WebGPU adapter.
+
+| Item | Status | Evidence |
+|---|---|---|
+| Decisions 3–4 | Done | `createLoadBalancedForEachNode` / `createLoadBalancedSegmentSumNodes` (merge-path) and a 96-bit fixed-point accumulator, both in `src/utils`. Spatial lag hub: 18.1 → 4.6 ms. Network statistics hub: 21.5 → 0.9 ms. Point density sums are now bitwise deterministic. |
+| P0 | Done | See the quality roadmap. |
+| P1 `compileAsync` | Done | No synchronous compile in either app. |
+| P1 time-window `sorted` range mode, timezone table, Besag–Clifford stopping, crossfilter skip | Done | All opt-in; defaults keep esda parity. |
+| P1 cost-matrix `targetNodes`, reachability relaxation counter | Done | The inflation probe is run; the delta-stepping verdict stays deferred per the rejected list. |
+| P1 viewshed `'pyramid'` default | **Rejected (measured)** | At 512², viewshed `'march'` takes 1.1 ms against 3.3 ms for the pyramid, so `'march'` stays the default. |
+| P1 scan `nearest` | Done | Radix select instead of grid kNN: at the default capacity a grid cannot prune. |
+| P1 DBSCAN cell order, Hilbert query sort | Done | Point-query sort: nearest k=1/k=4 0.70×/0.68×, PIP 0.92×. Line and polygon query sort defaults off: it measured slower (1.2 → 1.7 ms). |
+| P1 Akl–Toussaint, degree-first coloring, parallel cleanup | Done / partial | Cleanup at tolerance 0: 184 → 2.6 ms. Akl–Toussaint filters points but cannot shrink the sorts, because `GPUSort` has a fixed length (upstream). |
+| P1 SLRM/MSRM via the 64-bit SAT | Done | 4.6 ms at 1024², with an origin-relative anchor. |
+| P2 y-slab PIP refine | Done | 5 × 50k-vertex polygons × 1e6 points: walk 1,833 ms → slabs 115 ms. Slabs are chosen from GPU edge-travel statistics. |
+| P2 large-polygon triangulation | Done | Skyline-50k: earcut 542 ms → monotone 118 ms. Double-comb-50k: 34,080 ms → 115 ms. |
+| P2 point-BVH kNN/radius | Done, opt-in | The BVH loses to the grid on every measured workload (1.6–4.7×), so `'auto'` selects the grid without building the BVH. |
+| P2 Fisher–Jenks D&C | Done (histogram approximation) | 32/34 fixtures are exact. Two are single-cut local minima (worst GVF shortfall 3.4e-8), documented. |
+| P2 p-median swap quality, sparse costs; GWR golden section; scan replicate batching; Ward mutual merges | Done | The scan replicate cap is removed (permutations up to 99,999). |
+| P2 tree contraction for accumulation and Strahler | Done | Exact on integers; no 64-round cap. D∞ costs 3.4× D8 at 2048² (55.7 vs 16.3 ms), not 10–50×. |
+| P2 summits range max, PBA EDT, relaxation continuation | Done | EDT exact at 1024² with 1,000 seeds: 2.3 ms. |
+| P2 KDE linear binning | Done | Exact 395 ms → binned 4.4 ms; max error 5e-3 against a 0.8 peak. |
+| P2 zone-event segmented scan, spherical BVH line locate, map-matching cost table | Done | Route table 4.9 ms per frame after a 51 ms build. |
+| P3 #1 GPU Delaunay (parallel insertion and flipping) | Done | Faster at every measured size: 1e3 sites 36.5 → 15.1 ms, 1e4 1,094 → 495 ms, 1e5 517 ms (the legacy path is infeasible). A gated continuation covers collinear inputs. |
+| P3 #2 OverlayNG face labelling and snap rounding | Done | 182 shapely fixtures; three invalid-input contract differences are documented. Closes D-06. Robustness costs speed at small sizes: intersection 1e3 7.5 → 13.0 ms and 1e4 48 → 62 ms. It scales where the legacy path cannot: 1e5 vertices in 651 ms for intersection and 181 ms for dissolve. The legacy f32 path is not kept for small inputs, because it carries the D-06 precision bug. |
+| P3 #3 Max-P rewrite and AZP articulation | Done | Both row caps are removed. |
+| P3 #4 exact CPA encounters | Done | 2,000 tracks: 10.1 ms. |
+| P3 #5 Fréchet decision and banded DTW | Done | 10k pairs × 200 vertices: distance 39 ms, decision 1–3 ms. |
+| P3 #6 radius-bounded betweenness and closeness | Done | `GPUNetworkCentrality`: 4.5–7× faster than CPU Brandes (networkx oracle). |
+| P3 #7 HDBSCAN on the GPU | Done | Parallel merge tree and EOM; matches sklearn exactly on 4 of 6 scenes, ARI ≥ 0.983 on the other two. 100k points: 125 ms. |
+| P3 #8 tiled spill-graph depression fill and peak prominence | Done | Spirals 425 → 36 ms (relaxation did not converge). 2048² pits 241 → 126 ms. Prominence shares the merge-tree helper. |
+| P3 #9 Falcon cube | Done | Crossfilter histogram views. |
+| P3 #10 scanline cell cover | Done | H3 res 9: 487 → 26 ms; 0.01°×20° strip: 628 ms (overflow) → 88 ms. |
+
+Upstream items that blocked parts of this work:
+- `GPUSort` with a GPU-side row count.
+- Gateable `GPUBVH`, `GPUSort` and `GPUScan` builds.
+- Folded `v == v` NaN tests in gpgpu kernels.
+
 ## Tranches
 
 Effort: S ≈ hours, M ≈ a day or two, L ≈ multi-day. Each item lands with a quick same-run A/B against

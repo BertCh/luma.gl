@@ -22,15 +22,26 @@ analytical values usually belong in a renderer or shader module instead.
 
 ```ts
 import {GPUCommandGraph} from '@luma.gl/gpgpu/gpu-core';
-import {GPURasterBand, GPURasterStatistics} from '@luma.gl/experimental/gpu-raster';
+import {
+  GPURasterStatistics,
+  makeGPURasterBand,
+  makeGPURasterMetadata
+} from '@luma.gl/experimental/gpu-raster';
 
-const graph = new GPUCommandGraph({device, id: 'raster-analysis'});
-const band = new GPURasterBand({device, graph, values, validity, width, height});
-const statistics = new GPURasterStatistics({device, graph, band});
+const graph = new GPUCommandGraph(device, {id: 'raster-analysis'});
+const grid = makeGPURasterMetadata({width, height, cellSize: 30});
+// `values` (float32) and `validity` (uint32) are graph views with one row per pixel; `count`,
+// `sum` and `mean` are caller-owned one-row views and `extent` a two-row view.
+const input = makeGPURasterBand<'float32'>(values, grid, {validity});
+new GPURasterStatistics({width, height, input, count, sum, mean, extent}).addToGraph(graph);
 
-statistics.addPasses();
-const compiledGraph = graph.compile();
+const compiled = await graph.compileAsync();
+compiled.encode(device.commandEncoder, {parameters: undefined});
+device.submit();
 ```
+
+See [Running contributors](../gpu-spatial-analysis.md#running-contributors) for the compile, encode
+and submit pattern every analysis entry shares.
 
 ## Core concepts and data model
 

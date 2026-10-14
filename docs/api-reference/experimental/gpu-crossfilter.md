@@ -147,6 +147,63 @@ const filter = new GPUCrossfilter(graph, {
 Mask composition splits into intermediate masks when the dimension count exceeds the device's
 storage-buffer binding limit, so the number of dimensions is not bounded by one compute pass.
 
+## Skipping unchanged dimensions
+
+By default every node runs on every encoding, because the contract lets you rewrite source buffers
+between encodings. For large tables set `skipUnchangedDimensions: true`: each node then records which
+selections (and which source contents) it depends on and runs only when one changed, so a brush costs
+work proportional to what depends on it, as in the original crossfilter.js.
+
+```ts
+const filter = new GPUCrossfilter(graph, {dimensions, views, skipUnchangedDimensions: true});
+
+filter.setRange('value', [20, 40]); // re-runs the value predicate, the composed masks that include
+// it, and the views that include its brush; the value histogram (self-excluding) is not recomputed
+filter.invalidate('value'); // after rewriting the value input buffer
+filter.invalidate(); // after rewriting any other source: group keys, liveMask, other view inputs
+```
+
+- Source buffers, group keys and values, `liveMask`, and view domains are assumed constant until
+  `invalidate()`. A dimension id refreshes that dimension's predicate and its own histogram.
+- Masks become persistent buffers, and view outputs are rewritten only when they can change.
+- Change tracking is recorded when the graph evaluates each node's condition, that is, at encode
+  time. If an encoding is never submitted, the skipped nodes' outputs stay stale until the next
+  change; call `invalidate()` to refresh everything.
+
+## Histogram cubes for very large tables
+
+For tens of millions of rows, set `histogramCubes: true` and make one histogram view active. This
+follows the Falcon system (Moritz, Howe, Heer, "Falcon: Balancing Interactive Latency and Resolution
+Sensitivity for Scalable Linked Visualizations", CHI 2019).
+
+```ts
+const filter = new GPUCrossfilter(graph, {dimensions, views, histogramCubes: true});
+
+filter.activateView('value-histogram'); // its dimension becomes the active dimension
+filter.setRange('value', [20, 40]); // every other histogram now reads a cube: O(bins), not O(rows)
+filter.deactivateView(); // all views return to their exact path
+```
+
+While a view is active, the GPU builds for every other histogram view `V` an exact integer cube of
+the rows that pass every selection except the active one (and except `V`'s own when `V` excludes it),
+by (active bin, `V` bin), prefix-summed over the active bins. A brush on the active dimension is then
+`cube[last] - cube[first - 1]` per bin. Cubes are rebuilt when the activation or a non-active dimension
+changes, and an unbrushed active view keeps the exact path.
+
+- The active view must be a histogram of a `range` dimension, with that dimension's own `input`
+  object, and not `exclusiveMaximum`. Views that are not histograms keep the exact path.
+- The brush snaps outward to the active view's bins. Results equal the exact path for edge-aligned
+  brushes: the lower endpoint is a bin's lower boundary and the upper endpoint lies in the last
+  included bin (for integer data, one below the next boundary). Rows outside the active view's domain or
+  edges are not counted.
+- Memory is `activeBins * linkedBins * 4` bytes per linked view; construction throws when a cube
+  exceeds the device's storage-binding limit. GPU-resident `edges` must be valid and increasing.
+- Source rows are assumed constant until `invalidate()`.
+- When every view is a histogram and no public mask exists, the masks that depend on the brushed
+  dimension stop updating while cubes serve its brush (`getDimensionMask()` and `mask` are stale until
+  `deactivateView()` or a clear). With other views, those passes keep running and only the histogram
+  passes are saved.
+
 ## Core concepts and data model
 
 - Dimensions own active range or rectangular selection state.
@@ -162,6 +219,8 @@ storage-buffer binding limit, so the number of dimensions is not bounded by one 
 | `GPUCrossfilter` | Declares linked dimensions and views in one command graph |
 | `setRange()` / `setBounds()` | Updates control state without rebuilding graph topology |
 | `clear()` / `clearAll()` | Removes one or all active predicates |
+| `invalidate()` | Reports changed source contents when `skipUnchangedDimensions` or `histogramCubes` is on |
+| `activateView()` / `deactivateView()` | Starts or stops serving linked histograms from Falcon-style cubes (`histogramCubes`) |
 | Histogram view | Publishes a dense self-excluding distribution |
 | Group view | Publishes dense grouped count, sum, minimum, maximum, or mean |
 | Visibility view | Publishes stable compacted source IDs and a count |

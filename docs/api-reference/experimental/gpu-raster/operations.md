@@ -37,8 +37,8 @@ neighborhood stencils, direct convolution, separable Gaussian/box smoothing, sig
 Sobel/Scharr/Laplacian derivatives, gradient magnitude, binary/grayscale dilation, erosion,
 opening, closing, deterministic connected foreground components, bounded dense region labels and
 counts, grouped intensity and spatial region measurements, GPU-resident marching-squares
-contours, indirect vector overlays, and adapter-limit planning. They implement
-`GPUCommandGraphContributor` structurally: calling `addToGraph(graph)` only declares work. No
+contours, indirect vector overlays, and adapter-limit planning. Each exposes
+`addToGraph(graph)`, which only declares work. No
 contributor submits commands or reads results back.
 
 ## Choose an operation family

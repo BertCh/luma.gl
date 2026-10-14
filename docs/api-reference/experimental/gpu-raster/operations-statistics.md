@@ -31,7 +31,7 @@ const accumulator: GPURasterGlobalAccumulator = {
 
 All five buffers remain caller-owned. Extent and sum retain calibrated scientific values, while
 population and histogram bins use `uint32`. Initialization, statistics, histogram replay, and
-percentile publication are separate `GPUCommandGraphContributor` operations. None of them
+percentile publication are separate operations, each added with `addToGraph(graph)`. None of them
 decodes tiles, loads an adapter, acquires residency, submits commands, creates completion
 fences, downloads pixels, or polls a GPU result.
 
@@ -207,7 +207,7 @@ new GPURasterHistogram({
   domainOutput: validExtent
 }).addToGraph(graph);
 
-const compiled = graph.compile();
+const compiled = await graph.compileAsync();
 const encoder = device.createCommandEncoder();
 compiled.encode(encoder, {parameters: undefined});
 device.submit(encoder.finish());

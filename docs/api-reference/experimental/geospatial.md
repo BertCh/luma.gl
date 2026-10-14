@@ -18,7 +18,7 @@ projection and distance kernels plus a flat grid index and point-query workflow:
 - `GPUGridIndex`
 - `GPUPointSpatialQuery`
 
-These classes structurally implement `GPUCommandGraphContributor`. Calling `addToGraph()` declares
+These classes implement `GPUCommandNodeProducer`. `graph.add(contributor)` declares their
 work, but does not compile the graph, submit commands, allocate caller-visible outputs, or read
 results back. Projection and simple pairwise distance kernels accept caller-allocated
 `GraphDataView` objects or matching `GraphVectorView` objects. The nested-offset point-in-polygon
@@ -31,13 +31,15 @@ import {GPUHaversineDistance} from '@luma.gl/experimental/geospatial';
 
 const graph = new GPUCommandGraph(device);
 
-new GPUHaversineDistance({
-  left: pickupLocations,
-  right: dropoffLocations,
-  output: distances
-}).addToGraph(graph);
+graph.add(
+  new GPUHaversineDistance({
+    left: pickupLocations,
+    right: dropoffLocations,
+    output: distances
+  })
+);
 
-const compiled = graph.compile();
+const compiled = await graph.compileAsync();
 ```
 
 The geospatial entry point is intentionally separate from the experimental root and standalone
@@ -85,6 +87,26 @@ dispatching work. Nested geometry offsets cannot safely span independently chunk
 two pairwise geometry APIs intentionally accept flat data views only. Each output must use storage
 separate from its inputs, and view byte offsets must be naturally aligned to the row format.
 
+## Conventions
+
+- **Shared contracts.** Four shapes mean the same on every analysis page:
+  - **Status.** Every GPU-written status word sits in the `status` member of the bag that owns it:
+    `output.status.overflow`, `output.status.converged`, and `output.status.code` for model fits.
+  - **Grid.** Raster and terrain contributors take `grid: GPURasterMetadata`, and their packers read
+    the cell size from it (see [GPU Terrain conventions](./gpu-terrain.md#conventions)).
+  - **Network.** Network contributors take `topology: GPUNetworkTopology` (`offsets`, `neighbors`,
+    `weights`, optional `nodePositions`). Its CSR part can be passed as `GPUSpatialWeights` (see
+    [GPU Network conventions](./gpu-network.md#conventions)).
+  - **Polygons.** Polygons use the four-level `GPUPolygonGeometryPort`: `kind: 'polygons'`,
+    `positions`, `featureOffsets`, `polygonOffsets` and `ringOffsets`. Contributors with a single
+    geometry take the same fields flat, without `kind` (`GPUPolygonGeometryFields`). See
+    [Shared ports](./gpu-spatial-analysis.md#shared-ports-status-and-planning).
+- **Geospatial specifics.** The pairwise kernels take flat data views, so their polygon offsets
+  use the port's field names without `kind`. The `polygon` of `GPUPointSpatialQuery` is a single
+  query region (`positions`, `ringOffsets`), not a feature table. `GPUPointSpatialQuery` publishes a
+  `GPUCompactOutput` (`ids`, `status.count`, `status.overflow`). Compile and run these kernels as
+  shown in [Running contributors](./gpu-spatial-analysis.md#running-contributors).
+
 ## `GPUSinusoidalProjection`
 
 `GPUSinusoidalProjection` matches the cuSpatial longitude/latitude convention. Coordinates and the
@@ -119,11 +141,11 @@ remaining arithmetic are f32. This kernel does not claim f64-transcendental accu
 ## `GPUHaversineDistance`
 
 `GPUHaversineDistance` calculates pairwise great-circle distance from longitude/latitude degrees.
-Results are meters by default; pass `units: 'kilometers'` for kilometers. The positive `radius` is
+Results are meters by default; pass `units: 'kilometers'` for kilometers. The positive `sphereRadius` is
 in the same units and defaults to the IUGG mean Earth radius `GPU_EARTH_MEAN_RADIUS_METERS`
 (6371008.8 m, or 6371.0088 km); it must be finite and representable as a finite f32 value.
 Before this change the default was kilometers on a 6371 km sphere; pass
-`units: 'kilometers', radius: 6371` to reproduce those values exactly.
+`units: 'kilometers', sphereRadius: 6371` to reproduce those values exactly.
 
 For angular deltas below `1e-4` radians, the implementation uses the local equirectangular limit so
 that adapters do not collapse tiny f32 trigonometric inputs to zero. Intermediate paths use the
@@ -157,9 +179,10 @@ input/output pairings are the same as `GPUPairwisePointDistance`.
 ## `GPUPairwisePointInPolygon`
 
 `GPUPairwisePointInPolygon` classifies one point against one polygon or multipolygon per row. It
-accepts flat point and vertex views plus three caller-owned `uint32` offset views:
+accepts flat `queryPositions` (one point per row) and polygon vertex `positions`, plus the three
+`uint32` offset views of the four-level polygon layout (`GPUPolygonGeometryPort` names):
 
-- `geometryOffsets` maps each point row to a range of polygons;
+- `featureOffsets` maps each point row to a range of polygons;
 - `polygonOffsets` maps each polygon to a range of rings; and
 - `ringOffsets` maps each ring to a range of flattened polygon positions.
 
@@ -189,8 +212,8 @@ exact predicate. A cuSpatial-compatible boolean projection is
 ## `GPUPairwisePointLinestringNearest`
 
 `GPUPairwisePointLinestringNearest` finds the nearest point on one paired multipart linestring for
-each input point. `geometryOffsets` maps each point row to linestring parts, and
-`linestringOffsets` maps each part to flattened positions. Parts are never joined or closed
+each `queryPositions` row. `featureOffsets` maps each row to its lines, and `lineOffsets` maps each
+line to flattened `positions`. Parts are never joined or closed
 implicitly. Empty and singleton parts contain no segment; repeated-vertex segments remain valid
 distance candidates. Equal-distance ties preserve the first part and segment.
 
@@ -198,9 +221,10 @@ Both offset views start at zero, are nondecreasing, and end at the next level's 
 Malformed reachable spans invalidate the complete paired row rather than being clamped into a
 different geometry.
 
-The required `output` follows the planar distance format pairing: f32 inputs write `float32`, while
-raw binary64 inputs write double-single `float32x2`. Optional outputs include the nearest point,
-the local linestring-part index, and the local segment index. F32 nearest points use `float32x2`;
+All outputs live in `output`. The required `output.distances` follows the planar distance format
+pairing: f32 inputs write `float32`, while raw binary64 inputs write double-single `float32x2`.
+Optional outputs are `output.nearestPositions`, the local line index `output.lineIndices`, and the
+local segment index `output.segmentIndices`. F32 nearest points use `float32x2`;
 raw binary64 nearest points use absolute `[xHigh, xLow, yHigh, yLow]` `float32x4` rows. When no
 finite segment remains, numeric outputs are NaN and indices are `0xffffffff`.
 
@@ -234,7 +258,7 @@ compact cell offsets require a complete rebuild after point positions or members
 ## `GPUPointSpatialQuery`
 
 `GPUPointSpatialQuery` selects rows from packed `float32x2` or `float32x3` positions. It accepts a
-mutable f32 `query` view with one of these layouts:
+per-frame f32 `parameters` view with one of these layouts:
 
 | Kind | 2D layout | 3D layout |
 | --- | --- | --- |
@@ -264,32 +288,33 @@ does not distinguish `inside`, `boundary`, or an ambiguous result.
 All query outputs are caller-owned:
 
 ```ts
-type GPUSpatialQueryOutput = {
+type GPUCompactOutput = {
   ids: GraphDataView<'uint32'>;
-  count: GraphDataView<'uint32'>;
-  overflow: GraphDataView<'uint32'>;
-  requiredCount?: GraphDataView<'uint32'>;
+  status: {
+    count: GraphDataView<'uint32'>;
+    overflow: GraphDataView<'uint32'>;
+    requiredCount?: GraphDataView<'uint32'>;
+  };
 };
 ```
 
-`count` is clamped to `ids.length` and can alias an indirect draw count. `requiredCount`, when
+`status.count` is clamped to `ids.length` and can alias an indirect draw count. `status.requiredCount`, when
 provided, receives the unclamped number of matches among candidates actually examined by
 refinement. If the index overflowed, its stored candidates are only a subset of the accepted source
-rows, so `requiredCount` is incomplete relative to the original positions. `overflow` is set when
+rows, so `status.requiredCount` is incomplete relative to the original positions. `status.overflow` is set when
 either the index or result capacity overflows. The four writable output views must have mutually
 disjoint aligned storage-binding ranges and must not overlap positions, source IDs, query values,
 index storage, or polygon storage. This includes the one-row binding footprint of a zero-capacity
 `ids` view. Result order is unspecified; no CPU readback is required for rendering.
 
-Two optional packed scalar views can be supplied directly to `GPUPointSpatialQuery` for
+Two optional packed scalar views can be supplied in `output`, next to the compact fields, for
 GPU-resident broad-phase diagnostics:
 
 ```ts
-new GPUPointSpatialQuery({
-  // ...query inputs and output...
-  intersectedCellCount,
-  candidateCount
-});
+graph.add(new GPUPointSpatialQuery({
+  positions, index, kind: 'bounds', parameters: queryParameters.importToGraph(graph),
+  output: {ids, status: {count, overflow}, intersectedCellCount, candidateCount}
+}));
 ```
 
 `intersectedCellCount` is the exact number of indexed cells dispatched for refinement. It is zero
@@ -299,7 +324,7 @@ a valid scan, or every retained row ID in the intersected indexed cells. It deli
 duplicate row IDs and invalid retained row IDs that the narrow phase later rejects. When an index
 overflows, the count covers only candidates retained by the capacity-bounded `rowIndices` view, not
 the missing source rows. These diagnostics are finalized by the existing query passes, require no
-CPU synchronization, and do not change `GPUSpatialQueryOutput` or its indirect-draw layout. Like the
+CPU synchronization, and do not change `GPUCompactOutput` or its indirect-draw layout. Like the
 query outputs, both diagnostic views must be disjoint packed `uint32` scalars belonging to the same
 graph as every other binding.
 
