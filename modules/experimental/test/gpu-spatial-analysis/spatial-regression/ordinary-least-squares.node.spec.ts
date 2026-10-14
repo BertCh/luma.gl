@@ -72,7 +72,7 @@ it('GPUOrdinaryLeastSquares validates its inputs', () => {
         coefficients: view(graph, 'float32', 2),
         standardErrors: view(graph, 'float32', 3),
         tStatistics: view(graph, 'float32', 3),
-        summary: view(graph, 'float32', 16),
+        summary: view(graph, 'float32', GPU_ORDINARY_LEAST_SQUARES_SUMMARY_LENGTH),
         status: view(graph, 'uint32', 1)
       }
     }),
@@ -84,7 +84,7 @@ it('GPUOrdinaryLeastSquares validates its inputs', () => {
         coefficients: view(graph, 'float32', 3),
         standardErrors: view(graph, 'float32', 3),
         tStatistics: view(graph, 'float32', 3),
-        summary: view(graph, 'float32', 15),
+        summary: view(graph, 'float32', GPU_ORDINARY_LEAST_SQUARES_SUMMARY_LENGTH - 1),
         status: view(graph, 'uint32', 1)
       }
     }),
@@ -96,7 +96,7 @@ it('GPUOrdinaryLeastSquares validates its inputs', () => {
         coefficients: view(graph, 'float32', 3),
         standardErrors: view(graph, 'float32', 3),
         tStatistics: view(graph, 'float32', 3),
-        summary: view(graph, 'float32', 16),
+        summary: view(graph, 'float32', GPU_ORDINARY_LEAST_SQUARES_SUMMARY_LENGTH),
         status: view(graph, 'uint32', 1),
         residuals: view(graph, 'float32', 19)
       }
@@ -111,7 +111,7 @@ it('GPUOrdinaryLeastSquares validates its inputs', () => {
         coefficients: view(graph, 'float32', 3),
         standardErrors: view(graph, 'float32', 3),
         tStatistics: view(graph, 'float32', 3),
-        summary: view(graph, 'float32', 16),
+        summary: view(graph, 'float32', GPU_ORDINARY_LEAST_SQUARES_SUMMARY_LENGTH),
         status: view(graph, 'uint32', 1),
         residuals: shared
       }
@@ -157,7 +157,12 @@ it('default tile size caps the tile count at 4096', () => {
       coefficients: createTransientView(graph, 'c', 'float32', 2),
       standardErrors: createTransientView(graph, 's', 'float32', 2),
       tStatistics: createTransientView(graph, 't', 'float32', 2),
-      summary: createTransientView(graph, 'm', 'float32', 16),
+      summary: createTransientView(
+        graph,
+        'm',
+        'float32',
+        GPU_ORDINARY_LEAST_SQUARES_SUMMARY_LENGTH
+      ),
       status: createTransientView(graph, 'u', 'uint32', 1)
     }
   });

@@ -97,7 +97,10 @@ export function createSeededRandom(seed: number): () => number {
   };
 }
 
-/** Asserts `actual` matches `expected` within an absolute plus relative tolerance. */
+/**
+ * Asserts `actual` matches `expected` within an absolute plus relative tolerance. An expected NaN
+ * (a documented "undefined" result) requires an actual NaN.
+ */
 export function expectClose(
   actual: ArrayLike<number>,
   expected: ArrayLike<number>,
@@ -109,6 +112,12 @@ export function expectClose(
     throw new Error(`${label}: length ${actual.length} != ${expected.length}`);
   }
   for (let index = 0; index < expected.length; index++) {
+    if (Number.isNaN(expected[index])) {
+      if (!Number.isNaN(actual[index])) {
+        throw new Error(`${label}: [${index}] ${actual[index]} != NaN`);
+      }
+      continue;
+    }
     if (
       !(
         Math.abs(actual[index] - expected[index]) <=

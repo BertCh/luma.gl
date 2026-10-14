@@ -109,6 +109,8 @@ export function createPolygonJoinRun(
       leafCapacity: options.leafCapacity,
       spatialSort: options.spatialSort,
       spatialSortCurve: options.spatialSortCurve,
+      // The oracle assigns boundary points to the smallest row, which is the closed rule.
+      boundaryRule: 'closed',
       pointFeatureIds: importGraphBuffer(graph, 'ids', ids, 'uint32', pointCount),
       featureCounts: importGraphBuffer(graph, 'counts', counts, 'uint32', featureCount),
       overflow: importGraphBuffer(graph, 'overflow', overflow, 'uint32', 1),

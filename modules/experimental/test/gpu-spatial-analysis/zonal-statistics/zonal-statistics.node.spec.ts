@@ -9,6 +9,7 @@ import {
   type GPUZonalStatisticsOutput,
   type GPUZonalStatisticsProps
 } from '../../../src/gpu-spatial-analysis/zonal-statistics';
+import {getPointInPolygonContainmentContext} from '../../../src/gpu-spatial-analysis/spatial-join/gpu-point-in-polygon-join';
 import {getZonalStatisticsPlan} from '../../../src/gpu-spatial-analysis/zonal-statistics/zonal-statistics-passes';
 import {getSortKeyBits} from '../../../src/utils/sorted-segment-sums';
 import {createNullWebGPUDevice, createVectorView} from '../../utils/gpu-contributor-test-utils';
@@ -457,4 +458,198 @@ it('zonal statistics oracle computes areas and extents', () => {
   expect(withNaNVertex).toBe(24);
   expect(computeExtent([5, Number.NaN, -2, 9], [1, 1, 3, 0])).toEqual([-2, 5]);
   expect(computeExtent([1, 2], [0, 0])).toEqual([0, 0]);
+});
+
+// Oracle: <scratchpad>/fix/work/D/change-of-support/zonal_variance.py (numpy 2.5.4):
+// numpy.var(ddof=1) and numpy.cov(v, aweights=w, ddof=1) over the finite values of each feature;
+// weighted density is sum(w) / area. null means NaN (fewer than two valid rows, or area <= 0).
+const NUMPY_VARIANCE_CASE = {
+  rows: [0, 0, 0, 1, 1, 2, 0, 1, NO_FEATURE, 3, 3, 0, 1, 2],
+  values: [2.0, 4.5, 7.25, -1.0, 3.0, 9.0, Number.NaN, 0.5, 100.0, 5.0, 5.0, 1.5, 8.0, 2.0],
+  weights: [1.0, 2.0, 0.5, 3.0, 1.0, 2.0, 1.0, 0.25, 1.0, 1.0, 4.0, 1.5, 0.75, 1.0],
+  areas: [10.0, 4.0, 0.0, 2.0, 8.0],
+  unweighted: [6.973958333333333, 15.5625, 24.5, 0.0, null],
+  weighted: [4.915178571428571, 18.281521739130437, 24.500000000000004, 0.0, null],
+  weightedDensities: [0.5, 1.25, null, 2.5, 0.0]
+};
+
+it('zonal statistics oracle variances match numpy.var and numpy.cov', () => {
+  const {rows, values, weights, areas, unweighted, weighted, weightedDensities} =
+    NUMPY_VARIANCE_CASE;
+  const unweightedResult = computeZonalStatistics({
+    featureRows: rows,
+    featureCount: 5,
+    values,
+    areas
+  });
+  const weightedResult = computeZonalStatistics({
+    featureRows: rows,
+    featureCount: 5,
+    values,
+    weights,
+    areas
+  });
+  for (let feature = 0; feature < 5; feature++) {
+    for (const [actual, expected] of [
+      [unweightedResult.variances[feature], unweighted[feature]],
+      [weightedResult.variances[feature], weighted[feature]],
+      [weightedResult.weightedDensities[feature], weightedDensities[feature]]
+    ] as const) {
+      if (expected === null) {
+        expect(actual).toBeNaN();
+      } else {
+        expect(actual).toBeCloseTo(expected, 12);
+      }
+    }
+    expect(weightedResult.standardDeviations[feature]).toEqual(
+      Math.sqrt(weightedResult.variances[feature])
+    );
+  }
+});
+
+it('getZonalStatisticsPlan derives variance and weighted density needs', () => {
+  const none = {
+    counts: false,
+    valueCounts: false,
+    sums: false,
+    weightSums: false,
+    means: false,
+    minima: false,
+    maxima: false,
+    densities: false,
+    featureAreas: false,
+    extent: false
+  };
+  expect(
+    getZonalStatisticsPlan({
+      outputs: {...none, standardDeviations: true},
+      hasWeights: false,
+      hasAreas: false,
+      sorted: true
+    })
+  ).toMatchObject({
+    needVariances: true,
+    needMeans: true,
+    needSums: true,
+    needValueCounts: true,
+    needWeightSums: false,
+    needWeightSquareSums: false
+  });
+  expect(
+    getZonalStatisticsPlan({
+      outputs: {...none, variances: true},
+      hasWeights: true,
+      hasAreas: false,
+      sorted: true
+    })
+  ).toMatchObject({needWeightSums: true, needWeightSquareSums: true, needValueCounts: true});
+  expect(
+    getZonalStatisticsPlan({
+      outputs: {...none, weightedDensities: true},
+      hasWeights: true,
+      hasAreas: false,
+      sorted: true
+    })
+  ).toMatchObject({needWeightedDensities: true, needWeightSums: true, needGPUAreas: true});
+});
+
+it('GPUZonalStatistics variances add a second pass and validate their inputs', () => {
+  const nodeIds = (output: (graph: GPUCommandGraph) => GPUZonalStatisticsOutput) => {
+    const graph = new GPUCommandGraph(createNullWebGPUDevice());
+    return getNodeIds(createProps(graph, {}, output(graph)), graph);
+  };
+  const base = nodeIds(graph => ({means: view(graph, 'base-means', 'float32', FEATURE_COUNT)}));
+  const withVariance = nodeIds(graph => ({
+    variances: view(graph, 'variances', 'float32', FEATURE_COUNT),
+    standardDeviations: view(graph, 'deviations', 'float32', FEATURE_COUNT)
+  }));
+  expect(withVariance.some(id => id.includes('deviation'))).toBe(true);
+  expect(withVariance.some(id => id.endsWith('-variances'))).toBe(true);
+  expect(base.some(id => id.includes('deviation'))).toBe(false);
+  const graph = new GPUCommandGraph(createNullWebGPUDevice());
+  const out = (name: string) => view(graph, name, 'float32', FEATURE_COUNT);
+  expect(
+    () =>
+      new GPUZonalStatistics(createProps(graph, {}, {weightedDensities: out('weighted-density')}))
+  ).toThrow(/weightedDensities requires weights/);
+  expect(
+    () =>
+      new GPUZonalStatistics(
+        createProps(
+          graph,
+          {
+            values: createVectorView('chunked-values', 'float32', [
+              view(graph, 'chunk-a', 'float32', 4),
+              view(graph, 'chunk-b', 'float32', 6)
+            ])
+          },
+          {variances: out('chunked-variances')}
+        )
+      )
+  ).toThrow(/packed/);
+});
+
+it('GPUZonalStatistics spatial context: planar default, longitude-latitude needs areas', () => {
+  const graph = new GPUCommandGraph(createNullWebGPUDevice());
+  const out = (name: string) => view(graph, name, 'float32', FEATURE_COUNT);
+  const longitudeLatitude = {
+    coordinateSpace: 'longitude-latitude',
+    metric: 'great-circle'
+  } as const;
+  expect(new GPUZonalStatistics(createProps(graph)).spatialContext.coordinateSpace).toBe('planar');
+  // Counts and sums are topological: allowed in degrees.
+  expect(
+    new GPUZonalStatistics(createProps(graph, {spatialContext: longitudeLatitude})).spatialContext
+      .coordinateSpace
+  ).toBe('longitude-latitude');
+  // Planar shoelace area of degrees is wrong: densities need caller-supplied spherical areas.
+  expect(
+    () =>
+      new GPUZonalStatistics(
+        createProps(graph, {spatialContext: longitudeLatitude}, {densities: out('degree-density')})
+      )
+  ).toThrow(/areas in square meters/);
+  expect(
+    () =>
+      new GPUZonalStatistics(
+        createProps(graph, {spatialContext: longitudeLatitude}, {featureAreas: out('degree-areas')})
+      )
+  ).toThrow(/areas in square meters/);
+  expect(
+    () =>
+      new GPUZonalStatistics(
+        createProps(
+          graph,
+          {spatialContext: longitudeLatitude, areas: out('meter-areas')},
+          {densities: out('meter-density')}
+        )
+      )
+  ).not.toThrow();
+  expect(
+    () =>
+      new GPUZonalStatistics(
+        createProps(graph, {
+          spatialContext: {coordinateSpace: 'discrete-grid', metric: 'none', gridFamily: 'h3'}
+        })
+      )
+  ).toThrow(/does not support discrete-grid/);
+});
+
+it('GPUZonalStatistics gives its membership join a containment context, so longitude-latitude builds', () => {
+  for (const metric of ['none', 'great-circle'] as const) {
+    const graph = new GPUCommandGraph(createNullWebGPUDevice());
+    const zonal = new GPUZonalStatistics(
+      createProps(graph, {spatialContext: {coordinateSpace: 'longitude-latitude', metric}})
+    );
+    // Building the nodes constructs the join with the forwarded context; it used to be planar.
+    expect(zonal.getCommandNodes(graph).some(node => node.id.includes('-join'))).toBe(true);
+  }
+  expect(
+    getPointInPolygonContainmentContext({
+      coordinateSpace: 'longitude-latitude',
+      metric: 'great-circle'
+    })
+  ).toEqual({coordinateSpace: 'longitude-latitude', metric: 'none'});
+  const planar = {coordinateSpace: 'planar', metric: 'native', units: 'meters'} as const;
+  expect(getPointInPolygonContainmentContext(planar)).toBe(planar);
 });

@@ -498,3 +498,68 @@ it('GPUGeometryCleanup reports overflow with clamped offsets', async () => {
   expect(await readUint32(offsetsOutput.buffer, 3)).toEqual([0, 4, 5]);
   run.destroy(compiled);
 });
+
+// Oracle: <scratchpad>/fix/work/E/E5a/sliver3.py (shapely 2.2.0 is_ccw, numpy float32). Each sliver
+// triangle is counter-clockwise by exact arithmetic, yet its f32 shoelace sum (relative to the
+// first vertex) is exactly 0, so the former area-sign test never reversed it.
+const SLIVER_COUNTER_CLOCKWISE_RINGS: Ring[] = [
+  [
+    [0, 0],
+    [4285657, 6015228],
+    [3407926.75, 4783270.5],
+    [0, 0]
+  ],
+  [
+    [0, 0],
+    [4178411, 869954],
+    [3764332.5, 783742],
+    [0, 0]
+  ],
+  [
+    [0, 0],
+    [1899281, 6237658],
+    [890893.875, 2925892.25],
+    [0, 0]
+  ]
+];
+
+it('GPUGeometryOrientation judges sliver ring winding exactly', async () => {
+  const device = await getWebGPUTestDevice('core');
+  if (!device) {
+    return;
+  }
+  const geometry = flattenPolygons(SLIVER_COUNTER_CLOCKWISE_RINGS.map(ring => [ring]));
+  const vertexCount = geometry.positions.length / 2;
+  const ringCount = geometry.ringOffsets.length - 1;
+  const run = createRun(device, geometry, 4);
+  const {graph, views} = run;
+  const orientedOutput = run.output('out-oriented', 'float32x2', vertexCount);
+  const flags = run.output('out-flags', 'uint32', ringCount);
+  graph.add(
+    new GPUGeometryOrientation({
+      id: 'orient-sliver',
+      positions: views['positions'] as GraphDataView<'float32x2'>,
+      ringOffsets: views['ringOffsets'] as GraphDataView<'uint32'>,
+      polygonOffsets: views['polygonOffsets'] as GraphDataView<'uint32'>,
+      mode: 'orient-polygons',
+      parameters: run.parameters,
+      output: {
+        positions: orientedOutput.view as GraphDataView<'float32x2'>,
+        reversedRings: flags.view as GraphDataView<'uint32'>
+      }
+    })
+  );
+  const compiled = graph.compile();
+  for (const {exteriorClockwise, expectedFlag} of [
+    {exteriorClockwise: false, expectedFlag: 0},
+    {exteriorClockwise: true, expectedFlag: 1}
+  ]) {
+    run.parameterBuffer.write(getGPUGeometryOrientationParameterValues({exteriorClockwise}));
+    submitGraph(device, compiled, undefined);
+    const reversedRings = await readUint32(flags.buffer, ringCount);
+    expect(Array.from(reversedRings), `exteriorClockwise=${exteriorClockwise}`).toEqual(
+      Array(ringCount).fill(expectedFlag)
+    );
+  }
+  run.destroy(compiled);
+});

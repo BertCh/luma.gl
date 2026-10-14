@@ -171,13 +171,16 @@ function expectMatchesOracle(
       ).toBeLessThan(1e-5 * gpuDistance);
     }
   }
-  const [n, observed, expected, ratio, standardError, zScore] = oracle.clarkEvans;
+  const [n, observed, expected, ratio, standardError, zScore, pValue] = oracle.clarkEvans;
   expect(result.clarkEvans[0], `${label} n`).toBe(n);
   expectClose(`${label} observed`, result.clarkEvans[1], observed, 1e-5 * Math.abs(observed));
   expectClose(`${label} expected`, result.clarkEvans[2], expected, 1e-6 * Math.abs(expected));
   expectClose(`${label} ratio`, result.clarkEvans[3], ratio, 1e-5 * Math.abs(ratio));
   expectClose(`${label} se`, result.clarkEvans[4], standardError, 1e-6 * Math.abs(standardError));
   expectClose(`${label} z`, result.clarkEvans[5], zScore, 5e-3 + 1e-4 * Math.abs(zScore));
+  // z carries an absolute error of about 5e-3 (f32 cancellation), which maps through the normal
+  // density (at most 0.4) to the p-value.
+  expectClose(`${label} p`, result.clarkEvans[6], pValue, 3e-3 + 1e-4 * Math.abs(pValue));
   expect(result.quadratCounts, `${label} quadrat counts`).toEqual(oracle.quadratCounts);
   const stats = oracle.quadratStatistics;
   expect(result.quadratStatistics[0]).toBe(stats[0]);
@@ -201,6 +204,8 @@ function expectMatchesOracle(
     2e-4 * Math.abs(stats[4]) + 1e-5
   );
   expect(result.quadratStatistics[5]).toBe(stats[5]);
+  // Exact incomplete gamma up to 100 degrees of freedom, Wilson-Hilferty (error < 2e-4) above.
+  expectClose(`${label} chi p`, result.quadratStatistics[6], stats[6], 1e-3);
 }
 
 for (const [name, createScene, quadratGrid] of [
@@ -222,11 +227,15 @@ for (const [name, createScene, quadratGrid] of [
         {bounds: BOUNDS, maximumDistance: 15},
         // Beyond the extent: the lattice collapses to one cell.
         {bounds: BOUNDS, maximumDistance: 400},
-        {bounds: [10, 10, 90, 90], maximumDistance: 4}
+        {bounds: [10, 10, 90, 90], maximumDistance: 4},
+        // Plain Clark-Evans and the other tails.
+        {bounds: BOUNDS, maximumDistance: 15, clarkEvansCorrection: 'none'},
+        {bounds: BOUNDS, maximumDistance: 15, alternative: 'greater'},
+        {bounds: BOUNDS, maximumDistance: 15, clarkEvansCorrection: 'none', alternative: 'lesser'}
       ];
       let firstDistances: number[] | undefined;
       for (const frame of frames) {
-        const label = `${name} D=${frame.maximumDistance} [${frame.bounds}]`;
+        const label = `${name} D=${frame.maximumDistance} [${frame.bounds}] ${frame.clarkEvansCorrection ?? 'donnelly'} ${frame.alternative ?? 'two-sided'}`;
         const result = await harness.run(getGPUPointPatternIndicesParameterValues(frame));
         const oracle = computePointPatternIndicesOnCPU(scene, frame, quadratGrid);
         expect(oracle.clarkEvans[0]).toBeGreaterThan(20);
@@ -260,7 +269,7 @@ it('GPUPointPatternIndices separates clustered, random and regular patterns', as
   if (!device) {
     return;
   }
-  const frame = {bounds: BOUNDS, maximumDistance: 6};
+  const frame = {bounds: BOUNDS, maximumDistance: 6, clarkEvansCorrection: 'none'} as const;
   const run = async (scene: Scene) => {
     const harness = createHarness(
       device,
@@ -301,7 +310,11 @@ it('GPUPointPatternIndices reproduces a hand-checked four-point pattern and its 
   const harness = createHarness(device, scene, [2, 2]);
   try {
     const result = await harness.run(
-      getGPUPointPatternIndicesParameterValues({bounds: [0, 0, 10, 10], maximumDistance: 3})
+      getGPUPointPatternIndicesParameterValues({
+        bounds: [0, 0, 10, 10],
+        maximumDistance: 3,
+        clarkEvansCorrection: 'none'
+      })
     );
     expect(result.nearestNeighborDistances).toEqual([1, 1, 1, 1]);
     expect(result.nearestNeighborIds).toEqual([1, 0, 3, 2]);

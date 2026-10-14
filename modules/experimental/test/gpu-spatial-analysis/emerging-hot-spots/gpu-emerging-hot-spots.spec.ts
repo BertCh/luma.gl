@@ -7,10 +7,12 @@ import {GPUCommandGraph} from '@luma.gl/gpgpu/gpu-core';
 import {getWebGPUTestDevice} from '@luma.gl/test-utils';
 import {expect, it} from 'vitest';
 import type {GPUSpatialWeights} from '../../../src/gpu-spatial-analysis/spatial-weights';
+import type {GPUMultipleTestingMethod} from '../../../src/gpu-spatial-analysis/contracts/inference';
 import {GPUParameterBuffer, importGraphBuffer} from '../../../src/utils/gpu-contributor-utils';
 import {
   getGPUEmergingHotSpotParameterValues,
   GPUEmergingHotSpots,
+  GPU_EMERGING_HOT_SPOT_CATEGORIES,
   GPU_EMERGING_HOT_SPOT_PARAMETER_LENGTH,
   type GPUEmergingHotSpotParameters
 } from '../../../src/gpu-spatial-analysis/emerging-hot-spots';
@@ -29,12 +31,18 @@ import {
   submitGraph
 } from '../../utils/gpu-contributor-test-utils';
 import {
+  computeAdjustedBinPValues,
+  computeBinPValues,
   computeEmergingHotSpotCells,
   computeEmergingHotSpotMoments,
   computeSpaceTimeGiStar,
   computeSpaceTimeGiStarWeighted,
   createDesignedCube,
   createSeededRandom,
+  MULTIPLE_TESTING_ADJUSTED,
+  MULTIPLE_TESTING_SIGNIFICANT,
+  MULTIPLE_TESTING_TOP_BINS,
+  MULTIPLE_TESTING_VALUES,
   type EmergingHotSpotCube
 } from './emerging-hot-spots-oracle';
 
@@ -45,6 +53,9 @@ const Z_RELATIVE_TOLERANCE = 1e-3;
 type Readback = {
   giZScores: number[];
   giZScoreBits: number[];
+  pValues: number[];
+  adjustedPValues: number[];
+  lastValidSlice: number[];
   trendZ: number[];
   trendP: number[];
   trendS: number[];
@@ -69,7 +80,7 @@ type WeightsSource =
 type Harness = {
   readonly buildCount: number;
   run(
-    parameters: GPUEmergingHotSpotParameters,
+    parameters: Omit<GPUEmergingHotSpotParameters, 'multipleTesting'>,
     neighborParameters?: GPUNeighborSearchParameters
   ): Promise<Readback>;
   writeValues(values: Float32Array | Uint32Array): void;
@@ -79,8 +90,16 @@ type Harness = {
 function createHarness(
   device: Device,
   cube: EmergingHotSpotCube & {values: Float32Array | Uint32Array},
-  options: {maximumRadius?: number; weights?: WeightsSource; selfWeight?: number} = {}
+  options: {
+    maximumRadius?: number;
+    weights?: WeightsSource;
+    selfWeight?: number;
+    multipleTesting?: GPUMultipleTestingMethod;
+    finalSlice?: 'require' | 'last-valid';
+  } = {}
 ): Harness {
+  // The node default, and the method the parameters are validated against.
+  const multipleTesting = options.multipleTesting ?? 'benjamini-hochberg';
   const {gridWidth, gridHeight, sliceCount} = cube;
   const cellCount = gridWidth * gridHeight;
   const binCount = cellCount * sliceCount;
@@ -106,7 +125,10 @@ function createHarness(
     | 'category'
     | 'hotSliceCount'
     | 'coldSliceCount'
-    | 'globalStatistics',
+    | 'globalStatistics'
+    | 'pValues'
+    | 'adjustedPValues'
+    | 'lastValidSlice',
     Buffer
   > = {
     giZScores: createOutputBuffer(device, binCount),
@@ -120,7 +142,10 @@ function createHarness(
     category: createOutputBuffer(device, cellCount),
     hotSliceCount: createOutputBuffer(device, cellCount),
     coldSliceCount: createOutputBuffer(device, cellCount),
-    globalStatistics: createOutputBuffer(device, 4)
+    globalStatistics: createOutputBuffer(device, 4),
+    pValues: createOutputBuffer(device, binCount),
+    adjustedPValues: createOutputBuffer(device, binCount),
+    lastValidSlice: createOutputBuffer(device, cellCount)
   };
   const graph = new GPUCommandGraph(device, {id: 'emerging-hot-spots-test'});
   const extraBuffers: Buffer[] = [];
@@ -172,6 +197,23 @@ function createHarness(
     ...(weights ? {weights, selfWeight: options.selfWeight} : {gridWidth, gridHeight}),
     sliceCount,
     maximumRadius: options.maximumRadius,
+    multipleTesting: options.multipleTesting,
+    finalSlice: options.finalSlice,
+    pValues: importGraphBuffer(graph, 'p-values', outputs.pValues, 'float32', binCount),
+    adjustedPValues: importGraphBuffer(
+      graph,
+      'adjusted-p-values',
+      outputs.adjustedPValues,
+      'float32',
+      binCount
+    ),
+    lastValidSlice: importGraphBuffer(
+      graph,
+      'last-valid-slice',
+      outputs.lastValidSlice,
+      'uint32',
+      cellCount
+    ),
     mask: maskBuffer && importGraphBuffer(graph, 'mask', maskBuffer, 'uint32', cellCount),
     parameters: parameterBuffer.importToGraph(graph),
     giZScores: importGraphBuffer(graph, 'gi-z', outputs.giZScores, 'float32', binCount),
@@ -196,7 +238,7 @@ function createHarness(
       return buildCount;
     },
     async run(parameters, neighborParameters) {
-      parameterBuffer.write(getGPUEmergingHotSpotParameterValues(parameters));
+      parameterBuffer.write(getGPUEmergingHotSpotParameterValues({...parameters, multipleTesting}));
       if (neighborParameters && neighborParameterBuffer) {
         neighborParameterBuffer.write(getGPUNeighborSearchParameterValues(neighborParameters));
       }
@@ -212,6 +254,9 @@ function createHarness(
       return {
         giZScores: Array.from(new Float32Array(Uint32Array.from(giZScoreBits).buffer)),
         giZScoreBits,
+        pValues: await readFloat32(outputs.pValues, binCount),
+        adjustedPValues: await readFloat32(outputs.adjustedPValues, binCount),
+        lastValidSlice: await readUint32(outputs.lastValidSlice, cellCount),
         trendZ: await readFloat32(outputs.trendZ, cellCount),
         trendP: await readFloat32(outputs.trendP, cellCount),
         trendS: Array.from(new Int32Array(Uint32Array.from(trendSBits).buffer)),
@@ -262,29 +307,63 @@ function expectZScoresClose(actual: number[], expected: ArrayLike<number>, label
   }
 }
 
-/** Passes 3 and 4 are exact given the GPU's own z-scores, away from the trend p-value bound. */
+/** Relative-or-absolute closeness that treats NaN as equal to NaN only. */
+function isCloseOrBothNaN(actual: number, expected: number, absolute: number, relative: number) {
+  if (Number.isNaN(expected) || Number.isNaN(actual)) {
+    return Number.isNaN(expected) && Number.isNaN(actual);
+  }
+  return Math.abs(actual - expected) <= absolute + relative * Math.abs(expected);
+}
+
+/**
+ * Passes 3 and 4 are exact given the GPU's own z-scores and adjusted p-values, away from the trend
+ * p-value bound. The p-values and adjusted p-values are checked against the double precision oracle.
+ */
 function expectCellsMatchOracle(
   result: Readback,
   cube: EmergingHotSpotCube,
-  parameters: GPUEmergingHotSpotParameters,
-  label: string
+  parameters: Omit<GPUEmergingHotSpotParameters, 'multipleTesting'>,
+  label: string,
+  options: {multipleTesting?: GPUMultipleTestingMethod; finalSlice?: 'require' | 'last-valid'} = {}
 ): void {
-  const packed = getGPUEmergingHotSpotParameterValues(parameters);
-  const oracle = computeEmergingHotSpotCells(result.giZScores, cube, packed);
+  const multipleTesting = options.multipleTesting ?? 'benjamini-hochberg';
+  const packed = getGPUEmergingHotSpotParameterValues({...parameters, multipleTesting});
+  // p-values come from the GPU's own z; the family is every finite z.
+  const oraclePValues = computeBinPValues(result.giZScores);
+  const oracleAdjusted = computeAdjustedBinPValues(result.giZScores, multipleTesting);
+  for (let bin = 0; bin < result.giZScores.length; bin++) {
+    expect(
+      isCloseOrBothNaN(result.pValues[bin], oraclePValues[bin], 1e-7, 2e-3),
+      `${label} p ${bin}: ${result.pValues[bin]} vs ${oraclePValues[bin]}`
+    ).toBe(true);
+    expect(
+      isCloseOrBothNaN(result.adjustedPValues[bin], oracleAdjusted[bin], 1e-7, 5e-3),
+      `${label} adjusted p ${bin}: ${result.adjustedPValues[bin]} vs ${oracleAdjusted[bin]}`
+    ).toBe(true);
+  }
+  // Classification is checked from the GPU's adjusted p-values so a bin within float32 error of the
+  // significance level cannot flip a comparison.
+  const oracle = computeEmergingHotSpotCells(result.giZScores, cube, packed, {
+    multipleTesting,
+    finalSlice: options.finalSlice,
+    adjustedPValues: result.adjustedPValues
+  });
   expect(result.trendS, `${label} trendS`).toEqual(oracle.trendS);
   expect(result.hotSliceCount, `${label} hot`).toEqual(oracle.hotSliceCount);
   expect(result.coldSliceCount, `${label} cold`).toEqual(oracle.coldSliceCount);
+  expect(result.lastValidSlice, `${label} lastValidSlice`).toEqual(oracle.lastValidSlice);
   const level = packed[3];
   for (const [cell, expected] of oracle.category.entries()) {
     expect(
-      Math.abs(result.trendZ[cell] - oracle.trendZ[cell]),
+      isCloseOrBothNaN(result.trendZ[cell], oracle.trendZ[cell], 1e-4, 1e-4),
       `${label} trendZ ${cell}`
-    ).toBeLessThan(1e-4 + 1e-4 * Math.abs(oracle.trendZ[cell]));
+    ).toBe(true);
     expect(
-      Math.abs(result.trendP[cell] - oracle.trendP[cell]),
+      isCloseOrBothNaN(result.trendP[cell], oracle.trendP[cell], 1e-5, 1e-3),
       `${label} trendP ${cell}`
-    ).toBeLessThan(1e-5 + 1e-3 * oracle.trendP[cell]);
-    if (Math.abs(oracle.trendP[cell] - level) > 0.02 * level) {
+    ).toBe(true);
+    // Skip cells whose trend p-value sits on the level (float32 versus double precision).
+    if (!(Math.abs(oracle.trendP[cell] - level) <= 0.02 * level)) {
       expect(result.category[cell], `${label} category ${cell}`).toBe(expected);
     }
   }
@@ -372,7 +451,7 @@ it('GPUEmergingHotSpots matches the space-time oracle across per-frame parameter
       {
         radius: 9,
         temporalWindow: 40,
-        criticalZ: 1.2,
+        confidenceLevel: 0.9,
         trendSignificanceLevel: 0.2
       }
     ];
@@ -535,7 +614,7 @@ it('GPUEmergingHotSpots writes NaN z for degenerate cubes', async () => {
   });
   try {
     // A constant cube has zero deviation: no z, no trend, no pattern.
-    const constant = await harness.run({radius: 1, temporalWindow: 1});
+    const constant = await harness.run({radius: 1, temporalWindow: 1, minimumTrendSliceCount: 0});
     expect(constant.giZScores.every(Number.isNaN)).toBe(true);
     expect(constant.category.every(category => category === 0)).toBe(true);
     expect(constant.trendS.every(statistic => statistic === 0)).toBe(true);
@@ -661,7 +740,7 @@ it('GPUEmergingHotSpots weights mode matches the weighted oracle on irregular we
       for (const frame of [
         {temporalWindow: 0},
         {temporalWindow: 2},
-        {temporalWindow: 9, criticalZ: 1.2}
+        {temporalWindow: 9, confidenceLevel: 0.9}
       ]) {
         const result = await harness.run(frame);
         const label = `self ${selfWeight} standardized ${rowStandardize} ${JSON.stringify(frame)}`;
@@ -713,5 +792,187 @@ it('GPUEmergingHotSpots weights mode consumes weights written by GPUNeighborSear
     expect(harness.buildCount).toBe(1);
   } finally {
     harness.destroy();
+  }
+}, 120000);
+
+/** 100 bins at radius 0 and window 0: Gi* z is the population standard score of the bin. */
+function createMultipleTestingCube() {
+  return {
+    gridWidth: MULTIPLE_TESTING_VALUES.length,
+    gridHeight: 1,
+    sliceCount: 1,
+    values: Float32Array.from(MULTIPLE_TESTING_VALUES)
+  };
+}
+
+it('GPUEmergingHotSpots multiple testing drops weakly significant bins (statsmodels reference)', async () => {
+  const device = await getWebGPUTestDevice();
+  if (!device) {
+    return;
+  }
+  const cube = createMultipleTestingCube();
+  const frame = {radius: 0, temporalWindow: 0};
+  for (const method of [
+    'none',
+    'bonferroni',
+    'holm',
+    'benjamini-hochberg',
+    'benjamini-yekutieli'
+  ] as const) {
+    const harness = createHarness(device, cube, {multipleTesting: method});
+    try {
+      const result = await harness.run(frame);
+      const significant = MULTIPLE_TESTING_SIGNIFICANT[method];
+      // A single-slice bin that is hot is New hot, cold is New cold; the rest have no pattern.
+      const flagged = result.category
+        .map((category, cell) => (category === 0 ? -1 : cell))
+        .filter(cell => cell >= 0);
+      expect(flagged, method).toEqual(significant);
+      if (method !== 'none') {
+        // Adjusted p-values against statsmodels multipletests (float32 erfcc fit, 2e-3 relative).
+        MULTIPLE_TESTING_TOP_BINS.forEach((bin, index) => {
+          const expected = MULTIPLE_TESTING_ADJUSTED[method][index];
+          expect(
+            Math.abs(result.adjustedPValues[bin] - expected),
+            `${method} bin ${bin}`
+          ).toBeLessThan(2e-3 * expected + 1e-7);
+        });
+      }
+      // The legend does not change with the correction: signs map to the same category codes.
+      expect(result.category[92]).toBe(GPU_EMERGING_HOT_SPOT_CATEGORIES.NEW_HOT);
+      expect(result.category[94]).toBe(GPU_EMERGING_HOT_SPOT_CATEGORIES.NEW_COLD);
+      expectCellsMatchOracle(result, cube, frame, method, {multipleTesting: method});
+    } finally {
+      harness.destroy();
+    }
+  }
+}, 120000);
+
+it('GPUEmergingHotSpots criticalZ override reproduces the uncorrected rule with multipleTesting none', async () => {
+  const device = await getWebGPUTestDevice();
+  if (!device) {
+    return;
+  }
+  const cube = createSpaceTimeCube(5);
+  const harness = createHarness(device, cube, {maximumRadius: 4, multipleTesting: 'none'});
+  try {
+    for (const frame of [
+      {radius: 1.5, temporalWindow: 2, confidenceLevel: 0.9 as const},
+      {radius: 2, temporalWindow: 3, criticalZ: 1.2, trendSignificanceLevel: 0.2}
+    ]) {
+      const result = await harness.run(frame);
+      const label = JSON.stringify(frame);
+      // |z| >= criticalZ exactly, on the GPU's own z.
+      const criticalZ = Math.fround(
+        getGPUEmergingHotSpotParameterValues({...frame, multipleTesting: 'none'})[2]
+      );
+      const hot = Array.from({length: 70}, (_, cell) =>
+        result.giZScores
+          .slice(cell * cube.sliceCount, (cell + 1) * cube.sliceCount)
+          .filter(z => z >= criticalZ)
+      );
+      expect(result.hotSliceCount, label).toEqual(hot.map(series => series.length));
+      expectCellsMatchOracle(result, cube, frame, label, {multipleTesting: 'none'});
+    }
+  } finally {
+    harness.destroy();
+  }
+}, 120000);
+
+it('GPUEmergingHotSpots handles a missing final slice under both finalSlice modes', async () => {
+  const device = await getWebGPUTestDevice();
+  if (!device) {
+    return;
+  }
+  const cube = createSpaceTimeCube(5);
+  const {sliceCount} = cube;
+  // Stale cells: final slice missing. One cell is entirely missing.
+  const staleCells = [3, 17, 40];
+  const values = Float32Array.from(cube.values);
+  for (const cell of staleCells) {
+    values[cell * sliceCount + sliceCount - 1] = NaN;
+  }
+  values.fill(NaN, 50 * sliceCount, 51 * sliceCount);
+  const staleCube = {...cube, values};
+  const frame = {radius: 1, temporalWindow: 2};
+  const results = new Map<string, Readback>();
+  for (const finalSlice of ['require', 'last-valid'] as const) {
+    const harness = createHarness(device, staleCube, {finalSlice});
+    try {
+      const result = await harness.run(frame);
+      results.set(finalSlice, result);
+      expectCellsMatchOracle(result, staleCube, frame, finalSlice, {finalSlice});
+      for (const cell of staleCells) {
+        expect(result.lastValidSlice[cell], `${finalSlice} last valid ${cell}`).toBe(
+          sliceCount - 2
+        );
+      }
+      // A cell with no data at all has no pattern under either mode.
+      expect(result.lastValidSlice[50]).toBe(0xffffffff);
+      expect(result.category[50]).toBe(GPU_EMERGING_HOT_SPOT_CATEGORIES.NO_PATTERN);
+    } finally {
+      harness.destroy();
+    }
+  }
+  const required = results.get('require')!;
+  const lastValid = results.get('last-valid')!;
+  for (const cell of staleCells) {
+    expect(required.category[cell], `require ${cell}`).toBe(
+      GPU_EMERGING_HOT_SPOT_CATEGORIES.UNDETERMINED
+    );
+    expect(lastValid.category[cell], `last-valid ${cell}`).not.toBe(
+      GPU_EMERGING_HOT_SPOT_CATEGORIES.UNDETERMINED
+    );
+  }
+  // Cells with a final slice are identical under both modes.
+  for (let cell = 0; cell < required.category.length; cell++) {
+    if (!staleCells.includes(cell) && cell !== 50) {
+      expect(required.category[cell], `cell ${cell}`).toBe(lastValid.category[cell]);
+    }
+  }
+}, 120000);
+
+it('GPUEmergingHotSpots reports undetermined categories for series below the Mann-Kendall minimum', async () => {
+  const device = await getWebGPUTestDevice();
+  if (!device) {
+    return;
+  }
+  // 5 x 4 cells, six slices: cell 0 constantly hot, cell 1 constantly cold, the rest noise.
+  const sliceCount = 6;
+  const cellCount = 20;
+  const random = createSeededRandom(2);
+  const values = new Float32Array(cellCount * sliceCount);
+  for (let cell = 0; cell < cellCount; cell++) {
+    for (let slice = 0; slice < sliceCount; slice++) {
+      values[cell * sliceCount + slice] = cell === 0 ? 30 : cell === 1 ? -30 : random() * 2 - 1;
+    }
+  }
+  const cube = {gridWidth: 5, gridHeight: 4, sliceCount, values};
+  const frame = {radius: 0, temporalWindow: 0};
+  const categories = GPU_EMERGING_HOT_SPOT_CATEGORIES;
+  const guarded = createHarness(device, cube);
+  try {
+    // Default minimumTrendSliceCount 10 > 6: no trend z or p, and the persistent classes are
+    // undetermined instead of silently Persistent.
+    const result = await guarded.run(frame);
+    expect(result.category[0]).toBe(categories.UNDETERMINED);
+    expect(result.category[1]).toBe(categories.UNDETERMINED);
+    expect(result.trendZ.every(Number.isNaN)).toBe(true);
+    expect(result.trendP.every(Number.isNaN)).toBe(true);
+    expect(result.trendS[0]).toBe(0);
+    expectCellsMatchOracle(result, cube, frame, 'guarded');
+  } finally {
+    guarded.destroy();
+  }
+  const unguarded = createHarness(device, cube);
+  try {
+    const parameters = {...frame, minimumTrendSliceCount: 0};
+    const result = await unguarded.run(parameters);
+    expect(result.category[0]).toBe(categories.PERSISTENT_HOT);
+    expect(result.category[1]).toBe(categories.PERSISTENT_COLD);
+    expect(result.trendP[0]).toBe(1);
+    expectCellsMatchOracle(result, cube, parameters, 'unguarded');
+  } finally {
+    unguarded.destroy();
   }
 }, 120000);

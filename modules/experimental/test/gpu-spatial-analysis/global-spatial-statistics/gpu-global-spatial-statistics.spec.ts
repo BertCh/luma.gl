@@ -27,6 +27,7 @@ import {
   readUint32,
   submitGraph
 } from '../../utils/gpu-contributor-test-utils';
+import {GLOBAL_STATISTICS_REFERENCE as REFERENCE} from './global-spatial-statistics-reference';
 import {
   computeGlobalSpatialStatisticsOracle,
   createGridWeights,
@@ -55,7 +56,21 @@ type Scene = {
 };
 
 /** Builds one compiled graph; `run` rewrites the inputs and returns results and join counts. */
-function createHarness(device: Device, scene: Scene, statistics = ALL) {
+type HarnessOptions = {
+  islands?: 'exclude' | 'keep';
+  alternative?: 'two-sided' | 'greater' | 'lesser';
+  /** Declares `weights.info.transform` 'row'. */
+  standardized?: boolean;
+  /** Carries a nonzero `weights.status.overflow`. */
+  truncated?: boolean;
+};
+
+function createHarness(
+  device: Device,
+  scene: Scene,
+  statistics = ALL,
+  options: HarnessOptions = {}
+) {
   const rows = scene.values.length;
   const capacity = scene.weights.neighbors.length;
   const buffers = {
@@ -65,6 +80,7 @@ function createHarness(device: Device, scene: Scene, statistics = ALL) {
     values: createInputBuffer(device, scene.values),
     secondValues: scene.secondValues && createInputBuffer(device, scene.secondValues),
     mask: scene.mask && createInputBuffer(device, scene.mask),
+    overflow: options.truncated ? createInputBuffer(device, new Uint32Array([1])) : undefined,
     results: createOutputBuffer(device, LAYOUT.length),
     joinCounts: createOutputBuffer(device, 3)
   };
@@ -73,8 +89,16 @@ function createHarness(device: Device, scene: Scene, statistics = ALL) {
     weights: {
       offsets: importGraphBuffer(graph, 'offsets', buffers.offsets, 'uint32', rows + 1),
       neighbors: importGraphBuffer(graph, 'neighbors', buffers.neighbors, 'uint32', capacity),
-      weights: importGraphBuffer(graph, 'weights', buffers.weights, 'float32', capacity)
+      weights: importGraphBuffer(graph, 'weights', buffers.weights, 'float32', capacity),
+      info: options.standardized
+        ? {rowCount: rows, transform: 'row', symmetric: 'unknown'}
+        : undefined,
+      status: buffers.overflow
+        ? {overflow: importGraphBuffer(graph, 'weights-overflow', buffers.overflow, 'uint32', 1)}
+        : undefined
     },
+    islands: options.islands,
+    alternative: options.alternative,
     values: importGraphBuffer(graph, 'values', buffers.values, 'float32', rows),
     secondValues:
       buffers.secondValues &&
@@ -464,4 +488,269 @@ it('GPUGlobalSpatialStatistics consumes the CSR written by GPUNeighborSearch in 
   for (const buffer of Object.values(buffers)) {
     buffer.destroy();
   }
+});
+
+/** The esda fixture of `oracle-u6-global.py`: asymmetric positive weights and two island rows. */
+function createReferenceScene() {
+  const lists = REFERENCE.rows.map(row =>
+    row.neighbors.map((neighbor, slot): [number, number] => [neighbor, row.weights[slot]])
+  );
+  return {
+    lists,
+    weights: createWeights(lists),
+    binary: createWeights(
+      lists.map(list => list.map(([neighbor]): [number, number] => [neighbor, 1]))
+    ),
+    values: Float32Array.from(REFERENCE.values)
+  };
+}
+
+type ReferenceCase = {
+  count: number;
+  s0: number;
+  s1: number;
+  s2: number;
+  mean: number;
+  variance: number;
+} & Partial<Record<'moran' | 'geary' | 'getisOrdG', Record<string, number>>>;
+
+/** Compares a run with pinned esda values (Oracle: fix/work/A/oracle-u6-global.py, esda 2.10.0). */
+function expectMatchesEsda(
+  results: number[],
+  reference: ReferenceCase,
+  label: string,
+  suffix: '' | 'Greater' | 'Lesser' = ''
+): void {
+  const summary = GPU_GLOBAL_SPATIAL_STATISTICS_SUMMARY;
+  expect(results[summary.count], `${label} n`).toBe(reference.count);
+  expectField(results[summary.s0], reference.s0, `${label} S0`, 1e-5, 1e-5);
+  expectField(results[summary.s1], reference.s1, `${label} S1`, 1e-5, 1e-5);
+  expectField(results[summary.s2], reference.s2, `${label} S2`, 1e-5, 1e-5);
+  expectField(results[summary.mean], reference.mean, `${label} mean`, 1e-5, 1e-5);
+  expectField(results[summary.variance], reference.variance, `${label} variance`, 1e-6, 1e-4);
+  for (const statistic of ['moran', 'geary', 'getisOrdG'] as const) {
+    const expected = reference[statistic];
+    if (!expected) {
+      continue;
+    }
+    for (const [name, field] of Object.entries(FIELD)) {
+      const key = name.startsWith('p') && suffix ? `${name}${suffix}` : name;
+      if (!(key in expected)) {
+        continue;
+      }
+      const tolerance = name.startsWith('p')
+        ? [2e-5, 5e-3]
+        : name.startsWith('z')
+          ? [2e-3, 2e-3]
+          : [1e-6, 1e-3];
+      expectField(
+        results[LAYOUT[statistic] + field],
+        expected[key],
+        `${label} ${statistic}.${key}`,
+        tolerance[0],
+        tolerance[1]
+      );
+    }
+  }
+}
+
+it('GPUGlobalSpatialStatistics matches esda with islands kept, and zero-weight slots are not neighbors', async () => {
+  const device = await getWebGPUTestDevice();
+  if (!device) {
+    return;
+  }
+  const {lists, weights, binary, values} = createReferenceScene();
+  // The same W with a zero-weight slot added to every row (including both islands): not neighbors.
+  const withZeroSlots = createWeights(
+    lists.map((list, row): [number, number][] => {
+      const target = (row + 5) % lists.length;
+      return list.some(([neighbor]) => neighbor === target) ? list : [...list, [target, 0]];
+    })
+  );
+  expect(withZeroSlots.neighbors.length).toBeGreaterThan(weights.neighbors.length);
+  const moranGeary = ['moran', 'geary'] as const;
+  for (const [label, scene] of [
+    ['weighted', weights],
+    ['weighted with zero-weight slots', withZeroSlots]
+  ] as const) {
+    const harness = createHarness(device, {weights: scene, values}, [...moranGeary], {
+      islands: 'keep'
+    });
+    const result = await harness.run();
+    expect(result.results[GPU_GLOBAL_SPATIAL_STATISTICS_SUMMARY.islandCount], label).toBe(2);
+    expectMatchesEsda(result.results, REFERENCE.keep, `keep ${label}`);
+    harness.destroy();
+  }
+  // General G: esda forces binary weights, so it is pinned on the binary W.
+  const harness = createHarness(
+    device,
+    {weights: binary, values},
+    ['moran', 'geary', 'getisOrdG'],
+    {
+      islands: 'keep'
+    }
+  );
+  expectMatchesEsda((await harness.run()).results, REFERENCE.binaryKeep, 'keep binary');
+  harness.destroy();
+});
+
+it('GPUGlobalSpatialStatistics excludes islands by default (esda on W.subset without the islands)', async () => {
+  const device = await getWebGPUTestDevice();
+  if (!device) {
+    return;
+  }
+  const {weights, binary, values} = createReferenceScene();
+  const weighted = createHarness(device, {weights, values}, ['moran', 'geary']);
+  const result = await weighted.run();
+  // Islands are out of n, the moments and the weight sums, and reported.
+  expect(result.results[GPU_GLOBAL_SPATIAL_STATISTICS_SUMMARY.islandCount]).toBe(2);
+  expectMatchesEsda(result.results, REFERENCE.excludeSubset, 'exclude weighted');
+  weighted.destroy();
+  const harness = createHarness(
+    device,
+    {weights: binary, values},
+    ['moran', 'geary', 'getisOrdG'],
+    {
+      islands: 'exclude'
+    }
+  );
+  expectMatchesEsda((await harness.run()).results, REFERENCE.binaryExclude, 'exclude binary');
+  harness.destroy();
+});
+
+it('GPUGlobalSpatialStatistics re-standardizes row-standardized weights over unmasked neighbors', async () => {
+  const device = await getWebGPUTestDevice();
+  if (!device) {
+    return;
+  }
+  const {lists, values} = createReferenceScene();
+  // The input W is row standardized over its full neighborhoods, then rows are masked.
+  const standardized = createWeights(
+    lists.map(list => {
+      const sum = list.reduce((total, [, weight]) => total + weight, 0);
+      return list.map(([neighbor, weight]): [number, number] => [neighbor, weight / sum]);
+    })
+  );
+  const mask = Uint32Array.from(values, (_, row) =>
+    (REFERENCE.masked as readonly number[]).includes(row) ? 0 : 1
+  );
+  // Oracle: esda on the subset W without the masked rows, row standardized again.
+  const harness = createHarness(device, {weights: standardized, values, mask}, ['moran', 'geary'], {
+    islands: 'keep',
+    standardized: true
+  });
+  const result = await harness.run();
+  expectMatchesEsda(result.results, REFERENCE.standardizedMasked, 'standardized masked');
+  // Without the 'row' declaration the weights are used as given and S0 shrinks below the row count.
+  const asGiven = createHarness(device, {weights: standardized, values, mask}, ['moran'], {
+    islands: 'keep'
+  });
+  const asGivenResult = await asGiven.run();
+  expect(asGivenResult.results[GPU_GLOBAL_SPATIAL_STATISTICS_SUMMARY.s0]).toBeLessThan(
+    REFERENCE.standardizedMasked.s0 - 0.5
+  );
+  harness.destroy();
+  asGiven.destroy();
+});
+
+it('GPUGlobalSpatialStatistics supports one-sided analytic p-values', async () => {
+  const device = await getWebGPUTestDevice();
+  if (!device) {
+    return;
+  }
+  const {weights, values} = createReferenceScene();
+  // Oracle: scipy.stats.norm.sf(z) and norm.cdf(z) of esda's z (pRandomizationGreater / Lesser).
+  for (const [alternative, suffix] of [
+    ['greater', 'Greater'],
+    ['lesser', 'Lesser']
+  ] as const) {
+    const harness = createHarness(device, {weights, values}, ['moran', 'geary'], {
+      islands: 'keep',
+      alternative
+    });
+    expectMatchesEsda((await harness.run()).results, REFERENCE.keep, alternative, suffix);
+    harness.destroy();
+  }
+  // Positive autocorrelation: the upper tail is the small one, the lower tail the complement.
+  const greater = createHarness(device, {weights, values}, ['moran'], {alternative: 'greater'});
+  const lesser = createHarness(device, {weights, values}, ['moran'], {alternative: 'lesser'});
+  const upper = (await greater.run()).results[LAYOUT.moran + FIELD.pRandomization];
+  const lower = (await lesser.run()).results[LAYOUT.moran + FIELD.pRandomization];
+  expect(upper).toBeLessThan(0.01);
+  expect(upper + lower).toBeCloseTo(1, 5);
+  greater.destroy();
+  lesser.destroy();
+});
+
+it('GPUGlobalSpatialStatistics writes NaN General G for negative values and NaN everything for truncated weights', async () => {
+  const device = await getWebGPUTestDevice();
+  if (!device) {
+    return;
+  }
+  const {weights, values} = createReferenceScene();
+  const negative = Float32Array.from(values);
+  negative[3] = -1;
+  const harness = createHarness(device, {weights, values: negative}, ['moran', 'getisOrdG']);
+  const result = await harness.run();
+  for (let field = 0; field < 8; field++) {
+    expect(result.results[LAYOUT.getisOrdG + field], `G field ${field}`).toBeNaN();
+  }
+  expect(Number.isFinite(result.results[LAYOUT.moran + FIELD.statistic])).toBe(true);
+  expectMatchesOracle(
+    result.results,
+    result.joinCounts,
+    computeGlobalSpatialStatisticsOracle({weights, values: negative}),
+    'negative',
+    ['moran', 'getisOrdG']
+  );
+  harness.destroy();
+
+  const truncated = createHarness(
+    device,
+    {weights, values, secondValues: values.map(value => -value)},
+    ALL,
+    {truncated: true}
+  );
+  const truncatedResult = await truncated.run();
+  const summary = GPU_GLOBAL_SPATIAL_STATISTICS_SUMMARY;
+  expect(truncatedResult.results[summary.count]).toBe(38);
+  expect(truncatedResult.results[summary.islandCount]).toBe(2);
+  for (const field of [summary.s0, summary.s1, summary.s2, summary.mean, summary.variance]) {
+    expect(truncatedResult.results[field], `summary ${field}`).toBeNaN();
+  }
+  for (const block of [LAYOUT.moran, LAYOUT.geary, LAYOUT.getisOrdG, LAYOUT.bivariateMoran]) {
+    for (let field = 0; field < 8; field++) {
+      expect(truncatedResult.results[block + field], `block ${block} field ${field}`).toBeNaN();
+    }
+  }
+  for (let field = 0; field < 12; field++) {
+    expect(truncatedResult.results[LAYOUT.joinCount + field], `join ${field}`).toBeNaN();
+  }
+  expect(truncatedResult.joinCounts).toEqual([0, 0, 0]);
+  truncated.destroy();
+});
+
+it('GPUGlobalSpatialStatistics keeps the variance exact for values with a large offset (second-pass mean)', async () => {
+  const device = await getWebGPUTestDevice();
+  if (!device) {
+    return;
+  }
+  const columns = 60;
+  const weights = createGridWeights(columns, 50);
+  const random = createSeededRandom(31);
+  // 2^20 + noise: f32 spacing is 1/8 there, and a single-pass f32 mean is off by many ulps.
+  const values = Float32Array.from({length: columns * 50}, () => 1048576 + random() * 8);
+  const harness = createHarness(device, {weights, values}, ['moran', 'geary']);
+  const result = await harness.run();
+  const oracle = computeGlobalSpatialStatisticsOracle({weights, values});
+  const summary = GPU_GLOBAL_SPATIAL_STATISTICS_SUMMARY;
+  expectField(result.results[summary.variance], oracle.variance, 'offset variance', 1e-6, 1e-4);
+  expectField(
+    result.results[LAYOUT.moran + FIELD.statistic],
+    oracle.moran.statistic,
+    'offset Moran I',
+    1e-6,
+    1e-3
+  );
+  harness.destroy();
 });

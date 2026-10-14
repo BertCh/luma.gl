@@ -34,6 +34,9 @@ type RunResult = {
   ringOffsets: number[];
   diagnostics: number[];
   overflow: number;
+  requiredCount: number;
+  candidateOverflow: number;
+  polygonPositions: number[];
 };
 
 async function runPolygonize(
@@ -205,6 +208,7 @@ async function runPolygonize(
   const [writtenSegments] = await readUint32(nodedCount.buffer, 1);
   const [requiredSegments] = await readUint32(nodedRequired.buffer, 1);
   const [writtenPolygons] = await readUint32(count.buffer, 1);
+  const polygonOffsetValues = await readUint32(polygonOffsets.buffer, ringCapacity + 1);
   const result: RunResult = {
     nodedCount: writtenSegments,
     nodedRequiredCount: requiredSegments,
@@ -227,18 +231,18 @@ async function runPolygonize(
       writtenSegments
     ),
     polygonCount: writtenPolygons,
-    polygonOffsets: (await readUint32(polygonOffsets.buffer, ringCapacity + 1)).slice(
-      0,
-      writtenPolygons + 1
-    ),
+    polygonOffsets: polygonOffsetValues.slice(0, writtenPolygons + 1),
     ringOffsets: (await readUint32(ringOffsets.buffer, ringCapacity + 1)).slice(
       0,
-      writtenPolygons + 1
+      polygonOffsetValues[writtenPolygons] + 1
     ),
     diagnostics: await Promise.all(
       diagnosticScalars.map(async diagnostic => (await readUint32(diagnostic.buffer, 1))[0])
     ),
-    overflow: (await readUint32(overflow.buffer, 1))[0]
+    overflow: (await readUint32(overflow.buffer, 1))[0],
+    requiredCount: (await readUint32(required.buffer, 1))[0],
+    candidateOverflow: (await readUint32(candidateOverflow.buffer, 1))[0],
+    polygonPositions: await readFloat32(polygonPositions.buffer, vertexCapacity * 2)
   };
   compiled.destroy();
   for (const buffer of buffers) buffer.destroy();
@@ -336,6 +340,19 @@ it('GPUPolygonize exposes exact required cardinality when noded output capacity 
   expect(result.nodedOverflow).toBe(1);
   expect(result.nodedCandidateOverflow).toBe(0);
   expect(result.overflow).toBe(1);
+  // candidateOverflow is the noding candidate flag only; capacity overflow does not set it.
+  expect(result.candidateOverflow).toBe(0);
+});
+
+it('GPUPolygonize publishes the ring-assembly requirement, not the written polygon count', async () => {
+  const device = await getWebGPUTestDevice();
+  if (!device) return;
+  // A square with a hole polygonizes into the annulus ring, its hole ring, the island face and
+  // the clockwise unbounded walk: more rings are required than polygons are written.
+  const result = await runPolygonize(device, SQUARE_WITH_HOLE);
+  expect(result.polygonCount).toBe(2);
+  expect(result.requiredCount).toBeGreaterThan(result.polygonCount);
+  expect(result.candidateOverflow).toBe(0);
 });
 
 it('GPUPolygonize extracts a bounded face and reports complete use', async () => {
@@ -404,4 +421,204 @@ it('GPUMakeValid rebuilds a self-crossing polygon boundary', async () => {
   );
   expect(result.polygonCount).toBe(2);
   expect(result.overflow).toBe(0);
+});
+
+type PolygonSummary = {area: number; ringCount: number};
+
+/** Area (shell minus holes) and ring count of every written polygon, sorted by area then rings. */
+function summarizePolygons(result: RunResult): PolygonSummary[] {
+  const ringArea = (ring: number) => {
+    const start = result.ringOffsets[ring];
+    const end = result.ringOffsets[ring + 1];
+    let twiceArea = 0;
+    for (let i = start; i < end; i++) {
+      const next = i + 1 < end ? i + 1 : start;
+      twiceArea +=
+        result.polygonPositions[2 * i] * result.polygonPositions[2 * next + 1] -
+        result.polygonPositions[2 * next] * result.polygonPositions[2 * i + 1];
+    }
+    return Math.abs(twiceArea) / 2;
+  };
+  const summaries: PolygonSummary[] = [];
+  for (let polygon = 0; polygon < result.polygonCount; polygon++) {
+    const first = result.polygonOffsets[polygon];
+    const end = result.polygonOffsets[polygon + 1];
+    let area = ringArea(first);
+    for (let ring = first + 1; ring < end; ring++) area -= ringArea(ring);
+    summaries.push({area, ringCount: end - first});
+  }
+  return summaries.sort((a, b) => a.area - b.area || a.ringCount - b.ringCount);
+}
+
+function expectMakeValidMatches(result: RunResult, expected: readonly [number, number][]) {
+  const summaries = summarizePolygons(result);
+  expect(summaries.length).toBe(expected.length);
+  for (let i = 0; i < expected.length; i++) {
+    expect(summaries[i].area).toBeCloseTo(expected[i][0], 5);
+    expect(summaries[i].ringCount).toBe(expected[i][1]);
+  }
+  expect(summaries.reduce((total, summary) => total + summary.area, 0)).toBeCloseTo(
+    expected.reduce((total, [area]) => total + area, 0),
+    5
+  );
+  expect(result.polygonOffsets[result.polygonCount]).toBe(
+    expected.reduce((total, [, rings]) => total + rings, 0)
+  );
+  expect(result.overflow).toBe(0);
+  expect(result.candidateOverflow).toBe(0);
+}
+
+// Expected (area, ring count) per output polygon, sorted by area: shapely 2.2.0
+// `shapely.validation.make_valid` on the same rings, see
+// scratchpad/fix/work/W2A/makevalid/oracle.py. The fill rule is source parity (even-odd).
+const SQUARE_WITH_HOLE: Point[][] = [
+  [
+    [0, 0],
+    [4, 0],
+    [4, 4],
+    [0, 4],
+    [0, 0]
+  ],
+  [
+    [1, 1],
+    [1, 3],
+    [3, 3],
+    [3, 1],
+    [1, 1]
+  ]
+];
+
+it('GPUMakeValid keeps only the annulus of a valid polygon with a hole', async () => {
+  const device = await getWebGPUTestDevice();
+  if (!device) return;
+  // make_valid: Polygon, area 12, shell + 1 hole. GPUPolygonize would add the island face.
+  expectMakeValidMatches(await runPolygonize(device, SQUARE_WITH_HOLE, 'make-valid'), [[12, 2]]);
+  const polygonized = await runPolygonize(device, SQUARE_WITH_HOLE);
+  expect(polygonized.polygonCount).toBe(2);
+});
+
+it('GPUMakeValid keeps a polygon with two holes whole', async () => {
+  const device = await getWebGPUTestDevice();
+  if (!device) return;
+  // make_valid: Polygon, area 24, shell + 2 holes.
+  const result = await runPolygonize(
+    device,
+    [
+      [
+        [0, 0],
+        [8, 0],
+        [8, 4],
+        [0, 4],
+        [0, 0]
+      ],
+      [
+        [1, 1],
+        [1, 3],
+        [3, 3],
+        [3, 1],
+        [1, 1]
+      ],
+      [
+        [5, 1],
+        [5, 3],
+        [7, 3],
+        [7, 1],
+        [5, 1]
+      ]
+    ],
+    'make-valid'
+  );
+  expectMakeValidMatches(result, [[24, 3]]);
+});
+
+it('GPUMakeValid splits a bow tie into two triangles', async () => {
+  const device = await getWebGPUTestDevice();
+  if (!device) return;
+  // make_valid: MultiPolygon, two parts of area 1.
+  const result = await runPolygonize(
+    device,
+    [
+      [
+        [0, 0],
+        [2, 2],
+        [0, 2],
+        [2, 0],
+        [0, 0]
+      ]
+    ],
+    'make-valid'
+  );
+  expectMakeValidMatches(result, [
+    [1, 1],
+    [1, 1]
+  ]);
+});
+
+it('GPUMakeValid drops the doubly covered lens of a hole ring crossing the shell', async () => {
+  const device = await getWebGPUTestDevice();
+  if (!device) return;
+  // make_valid: MultiPolygon, parts of area 2 (the lobe outside the shell) and 14 (the shell
+  // minus the lens); the lens covered by shell and hole ring has even parity and is dropped.
+  const result = await runPolygonize(
+    device,
+    [
+      [
+        [0, 0],
+        [4, 0],
+        [4, 4],
+        [0, 4],
+        [0, 0]
+      ],
+      [
+        [3, 1],
+        [5, 1],
+        [5, 3],
+        [3, 3],
+        [3, 1]
+      ]
+    ],
+    'make-valid'
+  );
+  expectMakeValidMatches(result, [
+    [2, 1],
+    [14, 1]
+  ]);
+});
+
+it('GPUMakeValid keeps an island inside a hole as its own polygon by parity', async () => {
+  const device = await getWebGPUTestDevice();
+  if (!device) return;
+  // make_valid of MultiPolygon(lake with hole, island): parts of area 4 (island) and 64
+  // (lake, shell + 1 hole), total 68. The island face is covered three times (odd).
+  const result = await runPolygonize(
+    device,
+    [
+      [
+        [0, 0],
+        [10, 0],
+        [10, 10],
+        [0, 10],
+        [0, 0]
+      ],
+      [
+        [2, 2],
+        [2, 8],
+        [8, 8],
+        [8, 2],
+        [2, 2]
+      ],
+      [
+        [4, 4],
+        [6, 4],
+        [6, 6],
+        [4, 6],
+        [4, 4]
+      ]
+    ],
+    'make-valid'
+  );
+  expectMakeValidMatches(result, [
+    [4, 1],
+    [64, 2]
+  ]);
 });

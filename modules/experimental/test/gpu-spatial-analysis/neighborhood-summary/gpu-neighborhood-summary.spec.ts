@@ -68,6 +68,10 @@ async function runSummary(
     statistics: GPUNeighborhoodSummaryStatistic[];
     maximumNeighbors?: number;
     categorical?: boolean;
+    /** Declares `weights.info.transform` 'row' (re-standardization over the active members). */
+    standardized?: boolean;
+    /** Carries a nonzero `weights.status.overflow` (truncated weights). */
+    truncated?: boolean;
   }
 ) {
   const rows = scene.values.length;
@@ -79,7 +83,8 @@ async function runSummary(
     weights: createInputBuffer(device, scene.weights.weights),
     values: createInputBuffer(device, scene.values),
     categories: createInputBuffer(device, scene.categories),
-    mask: scene.mask && createInputBuffer(device, scene.mask)
+    mask: scene.mask && createInputBuffer(device, scene.mask),
+    weightsOverflow: options.truncated ? createInputBuffer(device, new Uint32Array([1])) : undefined
   };
   const outputs = {
     output: createOutputBuffer(device, rows * Math.max(options.statistics.length, 1)),
@@ -95,7 +100,21 @@ async function runSummary(
     weights: {
       offsets: importGraphBuffer(graph, 'offsets', buffers.offsets, 'uint32', rows + 1),
       neighbors: importGraphBuffer(graph, 'neighbors', buffers.neighbors, 'uint32', capacity),
-      weights: importGraphBuffer(graph, 'weights', buffers.weights, 'float32', capacity)
+      weights: importGraphBuffer(graph, 'weights', buffers.weights, 'float32', capacity),
+      info: options.standardized
+        ? {rowCount: rows, transform: 'row', symmetric: 'unknown'}
+        : undefined,
+      status: buffers.weightsOverflow
+        ? {
+            overflow: importGraphBuffer(
+              graph,
+              'weights-overflow',
+              buffers.weightsOverflow,
+              'uint32',
+              1
+            )
+          }
+        : undefined
     },
     values: importGraphBuffer(graph, 'values', buffers.values, 'float32', rows),
     categories: importGraphBuffer(graph, 'categories', buffers.categories, 'uint32', rows),
@@ -228,4 +247,100 @@ it('GPUNeighborhoodSummary mode breaks ties to the lowest category and entropy i
   expect(result.entropy[2]).toBe(0);
   expect(result.entropy[3]).toBeNaN();
   expect(result.table.slice(0, 4)).toEqual([4, 3.5, 2, 5]);
+});
+
+it('GPUNeighborhoodSummary ignores zero-weight slots (count, min, max, median, mode)', async () => {
+  const device = await getWebGPUTestDevice();
+  if (!device) {
+    return;
+  }
+  // Row 0 lists neighbors 1 (weight 1), 2 (weight 0, value 100, category 1) and 3 (weight 2).
+  // Zero-weight members would give count 3, max 100, median 3 and mode 1 (tie to the lowest).
+  const weights = createWeights([
+    [
+      [1, 1],
+      [2, 0],
+      [3, 2]
+    ],
+    [[0, 1]],
+    [[0, 1]],
+    [[0, 1]]
+  ]);
+  const values = Float32Array.from([0, 2, 100, 6]);
+  const categories = Uint32Array.from([5, 7, 1, 9]);
+  const result = await runSummary(
+    device,
+    {weights, values, categories},
+    {statistics: ['count', 'weightSum', 'min', 'max', 'median'], categorical: true}
+  );
+  // Oracle by hand: members {1: w1, 3: w2}, so count 2, W 3, min 2, max 6, median 4, mode 9 (w2).
+  expect(result.table.slice(0, 5)).toEqual([2, 3, 2, 6, 4]);
+  expect(result.modes[0]).toBe(9);
+  expect(result.entropy[0]).toBeCloseTo(
+    -((1 / 3) * Math.log(1 / 3) + (2 / 3) * Math.log(2 / 3)),
+    6
+  );
+  const oracle = computeNeighborhoodSummaryOracle({weights, values, categories});
+  expect(oracle[0].count).toBe(2);
+});
+
+it('GPUNeighborhoodSummary re-standardizes row-standardized weights over unmasked members', async () => {
+  const device = await getWebGPUTestDevice();
+  if (!device) {
+    return;
+  }
+  const scene = createScene(300);
+  // Row-standardize the CSR (weights sum to 1 per non-island row) before masking.
+  const standardizedWeights = Float32Array.from(scene.weights.weights);
+  for (let row = 0; row < 300; row++) {
+    let sum = 0;
+    for (let slot = scene.weights.offsets[row]; slot < scene.weights.offsets[row + 1]; slot++) {
+      sum += standardizedWeights[slot];
+    }
+    for (let slot = scene.weights.offsets[row]; slot < scene.weights.offsets[row + 1]; slot++) {
+      standardizedWeights[slot] = Math.fround(standardizedWeights[slot] / sum);
+    }
+  }
+  const weights = {...scene.weights, weights: standardizedWeights};
+  const mask = Uint32Array.from({length: 300}, (_, row) => (row % 7 === 3 ? 0 : 1));
+  const statistics: GPUNeighborhoodSummaryStatistic[] = ['count', 'weightSum', 'sum', 'mean'];
+  const result = await runSummary(
+    device,
+    {...scene, weights, mask},
+    {statistics, categorical: true, standardized: true}
+  );
+  const oracle = computeNeighborhoodSummaryOracle({...scene, weights, mask, standardized: true});
+  let reweighted = 0;
+  for (const [row, expected] of oracle.entries()) {
+    for (const [column, statistic] of statistics.entries()) {
+      expectClose(result.table[row * 4 + column], expected[statistic], `row ${row} ${statistic}`);
+    }
+    expect(result.modes[row], `row ${row} mode`).toBe(expected.mode);
+    if (expected.count > 0) {
+      // Every row with a member sums to exactly 1 again, however many neighbors were masked.
+      expectClose(result.table[row * 4 + 1], 1, `row ${row} weightSum`);
+      reweighted++;
+    }
+  }
+  expect(reweighted).toBeGreaterThan(100);
+});
+
+it('GPUNeighborhoodSummary writes NaN for every output when the weights are truncated', async () => {
+  const device = await getWebGPUTestDevice();
+  if (!device) {
+    return;
+  }
+  const scene = createScene(50);
+  const result = await runSummary(device, scene, {
+    statistics: ['count', 'mean'],
+    categorical: true,
+    truncated: true
+  });
+  for (const value of result.table) {
+    expect(value).toBeNaN();
+  }
+  for (let row = 0; row < 50; row++) {
+    expect(result.modes[row]).toBe(GPU_NEIGHBORHOOD_SUMMARY_NO_MODE);
+    expect(result.entropy[row]).toBeNaN();
+  }
 });

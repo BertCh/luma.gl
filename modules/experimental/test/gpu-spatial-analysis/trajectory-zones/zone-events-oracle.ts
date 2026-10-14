@@ -3,10 +3,12 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 /**
- * CPU reference for `GPUZoneEvents`, written in float64 from the documented rules: half-open
- * segment-edge crossings, an even-odd +x ray for the initial state, per-(track, zone) toggling,
- * and `(track, time, edge)` ordering.
+ * CPU reference for `GPUZoneEvents`, written from the documented rules: exact perturbed-track
+ * segment-edge crossings and +x ray (see `zone-crossing-rule.ts`), per-(track, zone) toggling, and
+ * `(track, time, edge)` ordering. Crossing times use float64 parameters.
  */
+
+import {rayCrossesEdge, segmentCrossesEdge} from './zone-crossing-rule';
 
 import type {OracleTracks} from '../trajectory-interpolation/trajectory-interpolation-oracle';
 
@@ -110,10 +112,10 @@ export function computeZoneEventsOracle(
     for (let edge = 0; edge < edgeCount; edge++) {
       const [ax, ay] = [edges.starts[2 * edge], edges.starts[2 * edge + 1]];
       const [bx, by] = [edges.ends[2 * edge], edges.ends[2 * edge + 1]];
-      if (edges.zones[edge] >= zoneCount || ay > py === by > py) {
+      if (edges.zones[edge] >= zoneCount) {
         continue;
       }
-      if (px < ax + ((py - ay) * (bx - ax)) / (by - ay)) {
+      if (rayCrossesEdge([px, py], [ax, ay], [bx, by])) {
         state[edges.zones[edge]] ^= 1;
       }
     }
@@ -132,14 +134,25 @@ export function computeZoneEventsOracle(
         }
         const [ax, ay] = [edges.starts[2 * edge], edges.starts[2 * edge + 1]];
         const [ex, ey] = [edges.ends[2 * edge] - ax, edges.ends[2 * edge + 1] - ay];
-        const denominator = dx * ey - dy * ex;
-        if (denominator === 0) {
+        const [x1, y1] = [positions[2 * row], positions[2 * row + 1]];
+        if (
+          !segmentCrossesEdge(
+            [x0, y0],
+            [x1, y1],
+            [ax, ay],
+            [edges.ends[2 * edge], edges.ends[2 * edge + 1]]
+          )
+        ) {
           continue;
         }
         const [wx, wy] = [ax - x0, ay - y0];
-        const along = (wx * ey - wy * ex) / denominator;
-        const across = (wx * dy - wy * dx) / denominator;
-        if (along >= 0 && along < 1 && across >= 0 && across < 1) {
+        const denominator = dx * ey - dy * ex;
+        let along =
+          denominator !== 0
+            ? (wx * ey - wy * ex) / denominator
+            : (wx * dx + wy * dy) / (dx * dx + dy * dy);
+        along = Math.min(Math.max(along, 0), 1);
+        {
           const t0 = times[row - 1 - start];
           const t1 = times[row - start];
           trackEvents.push({

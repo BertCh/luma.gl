@@ -7,11 +7,11 @@ import {expect, it} from 'vitest';
 import {
   getGPUShapeGeneratorParameterValues,
   getGPUShapeVertexCount,
-  GPU_SHAPE_GENERATOR_EARTH_RADIUS,
   GPUShapeGenerator,
   type GPUShapeGeneratorProps,
   type GPUShapeType
 } from '../../../src/gpu-spatial-analysis/grid-generators/index';
+import {GPU_EARTH_MEAN_RADIUS_METERS} from '../../../src/gpu-spatial-analysis/contracts/earth';
 import {createGeometryFixture} from '../outline-geometry/geometry-fixture';
 import {
   TURF_ELLIPSE_AXES,
@@ -63,7 +63,10 @@ function createShapeFixture(
     create: ({inputs, outputs, parameters}) =>
       new GPUShapeGenerator({
         shape,
-        coordinateSystem,
+        spatialContext:
+          coordinateSystem === 'geodesic'
+            ? {coordinateSpace: 'longitude-latitude', metric: 'great-circle'}
+            : undefined,
         ellipseSpacing: options.ellipseSpacing,
         maximumSegments,
         centers: inputs['centers'] as never,
@@ -368,7 +371,7 @@ it('GPUShapeGenerator geodesic arc-length ellipses apply spherical destination a
       const oracle = getEllipseArcOracle([...axes], 31);
       for (let vertex = 0; vertex <= 31; vertex++) {
         const [east, north] = rotateEllipsePoint(oracle[vertex], rotation);
-        const distance = Math.hypot(east, north) / GPU_SHAPE_GENERATOR_EARTH_RADIUS;
+        const distance = Math.hypot(east, north) / GPU_EARTH_MEAN_RADIUS_METERS;
         const bearing = Math.atan2(east, north);
         const latitude = (center[1] * Math.PI) / 180;
         const latitude2 = Math.asin(

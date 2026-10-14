@@ -2,6 +2,13 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {
+  computeLocalMoranOracle,
+  type OracleWeights
+} from '../spatial-autocorrelation/spatial-autocorrelation-oracle';
+
+const NO_CLASS = 0xffffffff;
+
 /** Class of a value under the shared rule: inner edges `e[1..k-1]` at or below the value. */
 export function getOracleClass(
   value: number,
@@ -75,4 +82,56 @@ export function getOracleQuantile(sorted: readonly number[], probability: number
   const low = Math.floor(position);
   const high = Math.ceil(position);
   return sorted[low] + (sorted[high] - sorted[low]) * (position - low);
+}
+
+/**
+ * LISA Markov states per row and period (period-major), in double precision on top of the local
+ * Moran oracle. A row-period that is masked, not finite or without an included neighbor is
+ * `0xffffffff`. Gated: the quadrant of an analytically significant row, else 0. Ungated: the
+ * quadrant from the signs of the centered value and the lag, `0xffffffff` when either is zero.
+ */
+export function computeLisaStatesOracle(options: {
+  weights: OracleWeights;
+  values: Float32Array;
+  rows: number;
+  periods: number;
+  gating: 'significance' | 'none';
+  significanceLevel?: number;
+  mask?: Uint32Array;
+  rowStandardized?: boolean;
+}): number[] {
+  const {rows, periods} = options;
+  const states: number[] = [];
+  for (let period = 0; period < periods; period++) {
+    const values = options.values.subarray(period * rows, (period + 1) * rows);
+    const result = computeLocalMoranOracle({
+      weights: options.weights,
+      values,
+      mask: options.mask,
+      parameters: {significanceLevel: options.significanceLevel ?? 0.05},
+      rowStandardized: options.rowStandardized
+    });
+    for (let row = 0; row < rows; row++) {
+      if (!Number.isFinite(values[row]) || result.neighborCounts[row] === 0) {
+        states.push(NO_CLASS);
+      } else if (options.gating === 'significance') {
+        states.push(result.quadrants[row]);
+      } else {
+        const centered = values[row] - result.moments.mean;
+        const lag = result.spatialLag[row];
+        states.push(
+          centered === 0 || lag === 0
+            ? NO_CLASS
+            : centered > 0
+              ? lag > 0
+                ? 1
+                : 4
+              : lag > 0
+                ? 2
+                : 3
+        );
+      }
+    }
+  }
+  return states;
 }

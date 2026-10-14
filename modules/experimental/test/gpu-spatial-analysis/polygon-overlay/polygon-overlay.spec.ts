@@ -426,3 +426,131 @@ it('GPUBufferSurface grows and shrinks polygon surfaces with signed distance', a
     }
   }
 });
+
+// Two same-orientation nested squares in one polygon: even-odd reads the inner ring as a hole
+// (shapely.Polygon(shell, [hole]).area = 16 - 4 = 12); the winding rules cover it twice and keep
+// it inside (shapely.unary_union of the two squares has area 16).
+it('GPUPolygonOverlay fill rule decides regions a boundary covers twice', async () => {
+  const device = await getWebGPUTestDevice();
+  if (!device) {
+    return;
+  }
+  for (const [fillRule, expectedArea] of [
+    ['even-odd', 12],
+    ['positive', 16],
+    ['nonzero', 16],
+    ['negative', 0]
+  ] as const) {
+    const graph = new GPUCommandGraph(device, {id: `overlay-fill-${fillRule}`});
+    const graphBuffers = createGraphBuffers(device, graph);
+    const result = createOverlayOutput(graphBuffers, `fill-${fillRule}`);
+    graph.add(
+      new GPUPolygonOverlay({
+        left: {
+          kind: 'polygons',
+          positions: graphBuffers.input(
+            `fill-positions-${fillRule}`,
+            Float32Array.of(0, 0, 4, 0, 4, 4, 0, 4, 1, 1, 3, 1, 3, 3, 1, 3),
+            'float32x2',
+            8
+          ),
+          featureOffsets: graphBuffers.input(
+            `fill-feature-${fillRule}`,
+            Uint32Array.of(0, 1),
+            'uint32',
+            2
+          ),
+          polygonOffsets: graphBuffers.input(
+            `fill-polygon-${fillRule}`,
+            Uint32Array.of(0, 2),
+            'uint32',
+            2
+          ),
+          ringOffsets: graphBuffers.input(
+            `fill-ring-${fillRule}`,
+            Uint32Array.of(0, 4, 8),
+            'uint32',
+            3
+          )
+        },
+        operation: 'dissolve',
+        fillRule,
+        capacity: {intersections: 128, nodedSegments: 128},
+        vertexTolerance: 1e-5,
+        output: result.output
+      })
+    );
+    const compiled = graph.compile();
+    submitGraph(device, compiled, undefined);
+    const [overflow, area] = await Promise.all([
+      readUint32(result.overflow, 1).then(values => values[0]),
+      readPolygonArea(result)
+    ]);
+    expect(overflow, fillRule).toBe(0);
+    expect(area, fillRule).toBeCloseTo(expectedArea, 4);
+    compiled.destroy();
+    for (const buffer of graphBuffers.buffers) {
+      buffer.destroy();
+    }
+  }
+});
+
+it('GPUPolygonOverlay publishes the unclamped ring requirement', async () => {
+  const device = await getWebGPUTestDevice();
+  if (!device) {
+    return;
+  }
+  const graph = new GPUCommandGraph(device, {id: 'overlay-required-count'});
+  const graphBuffers = createGraphBuffers(device, graph);
+  // Three disjoint unit squares dissolve into three rings; the output holds two.
+  const result = createOverlayOutput(graphBuffers, 'required', 128, 2, 128);
+  graph.add(
+    new GPUPolygonOverlay({
+      left: {
+        kind: 'polygons',
+        positions: graphBuffers.input(
+          'required-input-positions',
+          Float32Array.of(0, 0, 1, 0, 1, 1, 0, 1, 2, 0, 3, 0, 3, 1, 2, 1, 4, 0, 5, 0, 5, 1, 4, 1),
+          'float32x2',
+          12
+        ),
+        featureOffsets: graphBuffers.input(
+          'required-input-feature',
+          Uint32Array.of(0, 1, 2, 3),
+          'uint32',
+          4
+        ),
+        polygonOffsets: graphBuffers.input(
+          'required-input-polygon',
+          Uint32Array.of(0, 1, 2, 3),
+          'uint32',
+          4
+        ),
+        ringOffsets: graphBuffers.input(
+          'required-input-ring',
+          Uint32Array.of(0, 4, 8, 12),
+          'uint32',
+          4
+        )
+      },
+      operation: 'dissolve',
+      capacity: {intersections: 128, nodedSegments: 128},
+      vertexTolerance: 1e-5,
+      output: result.output
+    })
+  );
+  const compiled = graph.compile();
+  submitGraph(device, compiled, undefined);
+  const [count, requiredCount, overflow] = await Promise.all([
+    readUint32(result.count, 1).then(values => values[0]),
+    readUint32(result.requiredCount, 1).then(values => values[0]),
+    readUint32(result.overflow, 1).then(values => values[0])
+  ]);
+  expect(overflow).toBe(1);
+  expect(count).toBeLessThanOrEqual(2);
+  expect(requiredCount).toBe(3);
+  compiled.destroy();
+  for (const buffer of graphBuffers.buffers) {
+    buffer.destroy();
+  }
+});

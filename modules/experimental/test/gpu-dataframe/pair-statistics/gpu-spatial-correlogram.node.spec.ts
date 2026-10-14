@@ -158,3 +158,16 @@ it('getTwoSidedNormalPValue matches reference normal tail probabilities', () => 
   expect(getTwoSidedNormalPValue(1.959963984540054)).toBeCloseTo(0.05, 6);
   expect(getTwoSidedNormalPValue(-2.5758293035489004)).toBeCloseTo(0.01, 6);
 });
+
+it('gpu-spatial-correlogram declares planar-only spatial support', () => {
+  expectThrows(
+    () => ({
+      spatialContext: {coordinateSpace: 'longitude-latitude', metric: 'great-circle'} as const
+    }),
+    /project positions to a planar frame first/
+  );
+  expectThrows(
+    () => ({spatialContext: {coordinateSpace: 'discrete-grid', metric: 'none', gridFamily: 'h3'}}),
+    /does not support discrete-grid/
+  );
+});

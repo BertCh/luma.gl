@@ -15,7 +15,11 @@ import {
   GPU_SCAN_STATISTIC_SUMMARY_LENGTH
 } from '../../../src/gpu-spatial-analysis/scan-statistics/index';
 import {AnalysisRig, createSeededRandom} from '../catchment-accessibility/rig';
-import {computeScanOracle, type ScanOracleInput} from './scan-statistic-oracle';
+import {
+  computeScanOracle,
+  createRegionalClusterScene,
+  type ScanOracleInput
+} from './scan-statistic-oracle';
 
 /** A 7x7 lattice (spacing 10, exact in f32) with a planted space-time hot spot and a weaker one. */
 function createScene(timeBuckets: number, seed: number, side = 7): ScanOracleInput {
@@ -79,8 +83,10 @@ async function runScan(scene: ScanOracleInput) {
   rig.run(
     new GPUSpatialScanStatistic({
       positions: rig.input(scene.positions, 'float32x2', zones),
+      model: scene.model,
       cases: rig.input(scene.cases, 'uint32'),
-      baseline: rig.input(scene.baseline, 'float32'),
+      ...(scene.baseline ? {baseline: rig.input(scene.baseline, 'float32')} : {}),
+      ...(scene.controls ? {controls: rig.input(scene.controls, 'uint32')} : {}),
       timeBuckets: scene.timeBuckets,
       maximumWindowZones: scene.maximumWindowZones,
       maximumPermutations,
@@ -91,7 +97,8 @@ async function runScan(scene: ScanOracleInput) {
           permutations: scene.permutations,
           maximumPopulationFraction: scene.maximumPopulationFraction,
           maximumTimeBuckets: scene.maximumTimeBuckets,
-          windowShape: scene.windowShape
+          windowShape: scene.windowShape,
+          rateDirection: scene.rateDirection
         }),
         'uint32'
       ),
@@ -115,14 +122,16 @@ async function runScan(scene: ScanOracleInput) {
 
 function expectMatches(
   scene: ScanOracleInput,
-  actual: NonNullable<Awaited<ReturnType<typeof runScan>>>
+  actual: NonNullable<Awaited<ReturnType<typeof runScan>>>,
+  minimumClusters = 1
 ) {
   const expected = computeScanOracle(scene);
   const {center, zoneCount, firstBucket, lastBucket} = GPU_SCAN_STATISTIC_CLUSTER_INDEX;
   const clusterCount = actual.summary[GPU_SCAN_STATISTIC_SUMMARY.clusterCount];
   expect(actual.summary[GPU_SCAN_STATISTIC_SUMMARY.totalCases]).toBe(expected.totalCases);
   expect(actual.summary[GPU_SCAN_STATISTIC_SUMMARY.permutations]).toBe(scene.permutations);
-  expect(expected.clusters.length).toBeGreaterThanOrEqual(2);
+  expect(actual.summary[GPU_SCAN_STATISTIC_SUMMARY.overflow]).toBe(expected.overflow);
+  expect(expected.clusters.length).toBeGreaterThanOrEqual(minimumClusters);
   expect(clusterCount).toBe(expected.clusters.length);
   for (let index = 0; index < clusterCount; index++) {
     const record = index * GPU_SCAN_STATISTIC_INDEX_WORDS;
@@ -144,6 +153,9 @@ function expectMatches(
       2
     );
     expect(stats[statistic + GPU_SCAN_STATISTIC_CLUSTER.radius]).toBeCloseTo(oracle.radius, 3);
+    expect(stats[statistic + GPU_SCAN_STATISTIC_CLUSTER.truncatedByZoneCap]).toBe(
+      oracle.truncatedByZoneCap ? 1 : 0
+    );
     expect(
       Math.abs(stats[statistic + GPU_SCAN_STATISTIC_CLUSTER.pValue] - oracle.pValue)
     ).toBeLessThanOrEqual(0.03);
@@ -173,7 +185,8 @@ it('GPUSpatialScanStatistic finds the planted space-time cylinder and matches th
   const scene = createScene(4, 21);
   const actual = await runScan(scene);
   if (!actual) return;
-  const expected = expectMatches(scene, actual);
+  // The secondary-cluster path must be exercised (the oracle finds 4 clusters here).
+  const expected = expectMatches(scene, actual, 2);
   // The planted cluster covers buckets 1-2 around zones (1..2, 1..2).
   const primary = expected.clusters[0];
   expect(primary.firstBucket).toBeGreaterThanOrEqual(1);
@@ -189,7 +202,7 @@ it('GPUSpatialScanStatistic scans space only with k-nearest windows', async () =
   };
   const actual = await runScan(scene);
   if (!actual) return;
-  expectMatches(scene, actual);
+  expectMatches(scene, actual, 2);
 });
 
 it('GPUSpatialScanStatistic reduces replicate maxima across several workgroups of centers', async () => {
@@ -197,5 +210,74 @@ it('GPUSpatialScanStatistic reduces replicate maxima across several workgroups o
   const scene: ScanOracleInput = {...createScene(2, 8, 18), maximumTimeBuckets: 2};
   const actual = await runScan(scene);
   if (!actual) return;
+  expectMatches(scene, actual, 2);
+});
+
+it('GPUSpatialScanStatistic lets the population share govern windows beyond 32 zones', async () => {
+  // 144 zones, a 60-zone regional cluster: one cluster, no truncation.
+  const scene = createRegionalClusterScene(12, 5, 11);
+  const actual = await runScan(scene);
+  if (!actual) return;
+  const expected = expectMatches(scene, actual);
+  expect(expected.clusters[0].zoneCount).toBeGreaterThanOrEqual(50);
+  expect(actual.summary[GPU_SCAN_STATISTIC_SUMMARY.overflow]).toBe(0);
+});
+
+it('GPUSpatialScanStatistic reports windows cut by the zone capacity', async () => {
+  const scene = {...createRegionalClusterScene(12, 5, 11), maximumWindowZones: 32};
+  const actual = await runScan(scene);
+  if (!actual) return;
+  const expected = expectMatches(scene, actual);
+  expect(expected.overflow).toBeGreaterThan(0);
+});
+
+it('GPUSpatialScanStatistic scans low rates and both directions', async () => {
+  for (const rateDirection of ['low', 'both'] as const) {
+    const scene: ScanOracleInput = {...createScene(2, 8), maximumTimeBuckets: 2, rateDirection};
+    const actual = await runScan(scene);
+    if (!actual) return;
+    expectMatches(scene, actual);
+  }
+});
+
+it('GPUSpatialScanStatistic defaults the time window to half the study period', async () => {
+  const scene = createScene(4, 21);
+  delete (scene as {maximumTimeBuckets?: number}).maximumTimeBuckets;
+  const actual = await runScan(scene);
+  if (!actual) return;
+  const expected = expectMatches(scene, actual);
+  for (const cluster of expected.clusters) {
+    expect(cluster.lastBucket - cluster.firstBucket + 1).toBeLessThanOrEqual(2);
+  }
+});
+
+it('GPUSpatialScanStatistic scans the Bernoulli model', async () => {
+  const base = createRegionalClusterScene(8, 2, 3);
+  const controls = new Uint32Array(base.cases.length);
+  for (let zone = 0; zone < controls.length; zone++) controls[zone] = 100 - base.cases[zone];
+  const scene: ScanOracleInput = {
+    ...base,
+    model: 'bernoulli',
+    baseline: undefined,
+    controls,
+    permutations: 49
+  };
+  const actual = await runScan(scene);
+  if (!actual) return;
   expectMatches(scene, actual);
+});
+
+it('GPUSpatialScanStatistic scans the space-time permutation model', async () => {
+  const scene = createScene(4, 21);
+  // Cases only: the expectation comes from their margins.
+  const spaceTime: ScanOracleInput = {
+    ...scene,
+    model: 'space-time-permutation',
+    baseline: undefined,
+    maximumTimeBuckets: 2,
+    permutations: 49
+  };
+  const actual = await runScan(spaceTime);
+  if (!actual) return;
+  expectMatches(spaceTime, actual);
 });

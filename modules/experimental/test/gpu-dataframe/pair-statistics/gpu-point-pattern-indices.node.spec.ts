@@ -10,10 +10,18 @@ import {
 } from '../../../src/gpu-dataframe/pair-statistics/gpu-point-pattern-indices';
 import {
   getGPUPointPatternIndicesParameterValues,
+  GPU_CLARK_EVANS_CORRECTION,
+  GPU_CLARK_EVANS_LENGTH,
+  GPU_POINT_PATTERN_ALTERNATIVE,
   GPU_POINT_PATTERN_INDICES_PARAMETER_LENGTH
 } from '../../../src/gpu-dataframe/pair-statistics/point-pattern-indices-parameters';
 import {createNullWebGPUDevice} from '../../utils/gpu-contributor-test-utils';
-import {computePointPatternIndicesOnCPU} from './point-pattern-indices-oracle';
+import {
+  computePointPatternIndicesOnCPU,
+  getChiSquarePValueOnCPU,
+  getGammaTailsOnCPU,
+  getNormalPValueOnCPU
+} from './point-pattern-indices-oracle';
 
 let serial = 0;
 
@@ -29,7 +37,7 @@ function createProps(
     positions: view('float32x2', 10),
     parameters: view('float32', GPU_POINT_PATTERN_INDICES_PARAMETER_LENGTH),
     gridSize: [4, 4],
-    clarkEvans: view('float32', 6),
+    clarkEvans: view('float32', GPU_CLARK_EVANS_LENGTH),
     ...overrides
   };
 }
@@ -47,8 +55,46 @@ function expectThrows(
 it('getGPUPointPatternIndicesParameterValues packs and validates the layout', () => {
   expect(
     Array.from(getGPUPointPatternIndicesParameterValues({bounds: [0, 1, 2, 3], maximumDistance: 4}))
-  ).toEqual([0, 1, 2, 3, 4, 0, 0, 0]);
+  ).toEqual([
+    0,
+    1,
+    2,
+    3,
+    4,
+    GPU_CLARK_EVANS_CORRECTION.donnelly,
+    GPU_POINT_PATTERN_ALTERNATIVE['two-sided'],
+    0
+  ]);
   const bounds = [0, 0, 1, 1] as const;
+  const packed = getGPUPointPatternIndicesParameterValues({
+    bounds,
+    maximumDistance: 1,
+    clarkEvansCorrection: 'none',
+    alternative: 'less'
+  });
+  expect(packed[5]).toBe(GPU_CLARK_EVANS_CORRECTION.none);
+  expect(packed[6]).toBe(GPU_POINT_PATTERN_ALTERNATIVE.lesser);
+  expect(
+    getGPUPointPatternIndicesParameterValues({
+      bounds,
+      maximumDistance: 1,
+      alternative: 'greater'
+    })[6]
+  ).toBe(GPU_POINT_PATTERN_ALTERNATIVE.greater);
+  expect(() =>
+    getGPUPointPatternIndicesParameterValues({
+      bounds,
+      maximumDistance: 1,
+      clarkEvansCorrection: 'ripley' as never
+    })
+  ).toThrow(/clarkEvansCorrection/);
+  expect(() =>
+    getGPUPointPatternIndicesParameterValues({
+      bounds,
+      maximumDistance: 1,
+      alternative: 'directed' as never
+    })
+  ).toThrow(/alternative/);
   expect(() => getGPUPointPatternIndicesParameterValues({bounds, maximumDistance: 0})).toThrow(
     /positive/
   );
@@ -74,7 +120,7 @@ it('GPUPointPatternIndices validates its inputs and outputs', () => {
     /positions/
   );
   expectThrows(() => ({clarkEvans: undefined}), /at least one output/);
-  expectThrows(graph => ({clarkEvans: view(graph, 'float32', 5)}), /clarkEvans/);
+  expectThrows(graph => ({clarkEvans: view(graph, 'float32', 6)}), /clarkEvans/);
   expectThrows(
     graph => ({nearestNeighborDistances: view(graph, 'float32', 9)}),
     /nearestNeighborDistances/
@@ -94,7 +140,7 @@ it('GPUPointPatternIndices validates its inputs and outputs', () => {
     /quadratCounts/
   );
   expectThrows(
-    graph => ({quadratStatistics: view(graph, 'float32', 5), quadratGrid: [3, 2]}),
+    graph => ({quadratStatistics: view(graph, 'float32', 6), quadratGrid: [3, 2]}),
     /quadratStatistics/
   );
   expectThrows(() => ({quadratGrid: [2, 2]}), /quadratGrid needs/);
@@ -127,7 +173,7 @@ it('GPUPointPatternIndices builds only the nodes of the requested parts', () => 
   const quadratOnly = ids(graph => ({
     clarkEvans: undefined,
     quadratGrid: [3, 2],
-    quadratStatistics: view(graph, 'float32', 6)
+    quadratStatistics: view(graph, 'float32', 7)
   }));
   expect(quadratOnly).toContain('p-quadrat-counts');
   expect(quadratOnly).toContain('p-quadrat-statistics');
@@ -147,7 +193,7 @@ it('computePointPatternIndicesOnCPU matches hand-computed values', () => {
   const positions = new Float32Array([1, 1, 2, 1, 8, 8, 9, 8]);
   const result = computePointPatternIndicesOnCPU(
     {positions},
-    {bounds: [0, 0, 10, 10], maximumDistance: 3},
+    {bounds: [0, 0, 10, 10], maximumDistance: 3, clarkEvansCorrection: 'none'},
     [2, 2]
   );
   expect(result.nearestNeighborDistances).toEqual([1, 1, 1, 1]);
@@ -186,4 +232,114 @@ it('computePointPatternIndicesOnCPU breaks nearest-neighbor ties to the smallest
   expect(single.nearestNeighborDistances[0]).toBeNaN();
   expect(single.nearestNeighborIds[0]).toBe(0xffffffff);
   expect(single.nearestNeighborIds[1]).toBe(0xffffffff);
+});
+
+// Oracle constants: <scratchpad>/fix/work/D/point-patterns/clark_evans.py (pointpats 2.6.0 mean
+// nearest-neighbor distance; numpy 2.5.4 and scipy 1.18.1 for the published Clark-Evans (1954) and
+// Donnelly (1978) formulas and the normal / chi-square p-values).
+const ORACLE_POINTS = [
+  1, 1.5, 2, 4, 3.5, 2.5, 4, 5.5, 5, 3, 6, 1, 6.5, 5, 7.5, 3.5, 8, 6, 9, 2, 2.5, 3, 5.5, 4.5
+];
+const ORACLE_FRAME = {bounds: [0, 0, 10, 7] as const, maximumDistance: 3};
+const ORACLE_OBSERVED = 1.5881953626373935;
+const ORACLE_CLARK_EVANS = {
+  none: {
+    expected: 1.20761472884912,
+    ratio: 1.3151507055159672,
+    standardError: 0.18222455377912164,
+    z: 2.088525535639855,
+    pTwoSided: 0.036750454408795236,
+    pGreater: 0.018375227204397618,
+    pLesser: 0.9816247727956023
+  },
+  donnelly: {
+    expected: 1.386782490317884,
+    ratio: 1.145237536330114,
+    standardError: 0.23510279456525304,
+    z: 0.8567013109816825,
+    pTwoSided: 0.39160997863450153,
+    pGreater: 0.19580498931725077,
+    pLesser: 0.8041950106827492
+  }
+} as const;
+
+it('computePointPatternIndicesOnCPU matches pointpats / numpy Clark-Evans with and without Donnelly', () => {
+  const scene = {positions: new Float32Array(ORACLE_POINTS)};
+  for (const correction of ['none', 'donnelly'] as const) {
+    const expected = ORACLE_CLARK_EVANS[correction];
+    const cases = [
+      ['two-sided', expected.pTwoSided],
+      ['greater', expected.pGreater],
+      ['lesser', expected.pLesser]
+    ] as const;
+    for (const [alternative, pValue] of cases) {
+      const [n, observed, mean, ratio, standardError, z, p] = computePointPatternIndicesOnCPU(
+        scene,
+        {...ORACLE_FRAME, clarkEvansCorrection: correction, alternative}
+      ).clarkEvans;
+      expect(n).toBe(12);
+      expect(observed).toBeCloseTo(ORACLE_OBSERVED, 6);
+      expect(mean).toBeCloseTo(expected.expected, 12);
+      expect(ratio).toBeCloseTo(expected.ratio, 6);
+      expect(standardError).toBeCloseTo(expected.standardError, 12);
+      expect(z).toBeCloseTo(expected.z, 5);
+      expect(p, `${correction} ${alternative}`).toBeCloseTo(pValue, 6);
+    }
+  }
+  // The default is the Donnelly correction.
+  expect(computePointPatternIndicesOnCPU(scene, ORACLE_FRAME).clarkEvans[2]).toBeCloseTo(
+    ORACLE_CLARK_EVANS.donnelly.expected,
+    12
+  );
+});
+
+it('the oracle incomplete gamma and chi-square p-values match scipy', () => {
+  // chi_square cases: [x, degreesOfFreedom, lower, upper, twoSided] from scipy.stats.chi2.
+  const cases = [
+    [3.2, 5, 0.33081709796675673, 0.6691829020332433, 0.6616341959335135],
+    [11.0, 24, 0.010988141058626786, 0.9890118589413732, 0.02197628211725357],
+    [30.0, 24, 0.8152482009760686, 0.1847517990239314, 0.3695035980478628],
+    [95.0, 99, 0.4049220955704821, 0.5950779044295179, 0.8098441911409642],
+    [130.0, 100, 0.9764876021901913, 0.023512397809808714, 0.04702479561961743],
+    [160.0, 150, 0.726842194708074, 0.27315780529192607, 0.5463156105838521],
+    [480.0, 500, 0.2676500698540158, 0.7323499301459842, 0.5353001397080316]
+  ] as const;
+  for (const [x, degrees, lower, upper, twoSided] of cases) {
+    const [gammaLower, gammaUpper] = getGammaTailsOnCPU(degrees / 2, x / 2);
+    expect(gammaLower).toBeCloseTo(lower, 9);
+    expect(gammaUpper).toBeCloseTo(upper, 9);
+    expect(getChiSquarePValueOnCPU(x, degrees, 'lesser')).toBeCloseTo(lower, 9);
+    expect(getChiSquarePValueOnCPU(x, degrees, 'greater')).toBeCloseTo(upper, 9);
+    expect(getChiSquarePValueOnCPU(x, degrees, 'two-sided')).toBeCloseTo(twoSided, 9);
+  }
+  // Normal tails are complementary.
+  for (const z of [-2.5, -0.3, 0, 0.8567013109816825, 3.1]) {
+    expect(getNormalPValueOnCPU(z, 'greater') + getNormalPValueOnCPU(z, 'lesser')).toBeCloseTo(
+      1,
+      12
+    );
+  }
+});
+
+it('computePointPatternIndicesOnCPU attaches the chi-square p-value to the quadrat summary', () => {
+  // Counts [2, 0, 0, 2]: chi-square 4 on 3 degrees of freedom (clark_evans.py, last line).
+  const result = computePointPatternIndicesOnCPU(
+    {positions: new Float32Array([1, 1, 2, 1, 8, 8, 9, 8])},
+    {bounds: [0, 0, 10, 10], maximumDistance: 3, alternative: 'greater'},
+    [2, 2]
+  );
+  expect(result.quadratStatistics[6]).toBeCloseTo(0.26146412994911034, 9);
+});
+
+it('gpu-point-pattern-indices declares planar-only spatial support', () => {
+  expectThrows(
+    () => ({
+      spatialContext: {coordinateSpace: 'longitude-latitude', metric: 'great-circle'} as const
+    }),
+    /project positions to a planar frame first/
+  );
+  expectThrows(
+    () => ({spatialContext: {coordinateSpace: 'discrete-grid', metric: 'none', gridFamily: 'h3'}}),
+    /does not support discrete-grid/
+  );
 });

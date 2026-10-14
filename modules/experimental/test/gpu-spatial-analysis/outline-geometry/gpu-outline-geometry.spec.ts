@@ -156,7 +156,11 @@ it('GPUOutlineGeometry offsets spherical vertices by meters', async () => {
         positions: inputs['positions'] as never,
         pathOffsets: inputs['pathOffsets'] as never,
         geometryType: 'lines',
-        coordinateSystem: 'spherical',
+        spatialContext: {
+          coordinateSpace: 'longitude-latitude',
+          metric: 'great-circle',
+          units: 'meters'
+        },
         joinSegments: 8,
         parameters,
         output: {positions: outputs['output'] as never}

@@ -13,18 +13,51 @@ import {
   GPUClassAssignment,
   GPULISAMarkov,
   GPUSpatialMarkov,
+  GPUTransitionDiagnostics,
   GPUTransitionMatrix,
-  GPU_LISA_MARKOV_STATE_COUNT
+  GPU_LISA_MARKOV_STATE_COUNT,
+  GPU_TRANSITION_HOMOGENEITY,
+  GPU_TRANSITION_STATE_SPARSITY
 } from '../../../src/gpu-spatial-analysis/distribution-dynamics/index';
 import {
-  computeLocalMoranOracle,
   createAutocorrelatedScene,
   createDistanceBandWeights
 } from '../spatial-autocorrelation/spatial-autocorrelation-oracle';
 import {AnalysisRig, createSeededRandom} from '../catchment-accessibility/rig';
-import {computeTransitionOracle, getOracleClass, getOracleQuantile} from './distribution-oracle';
+import {
+  computeLisaStatesOracle,
+  computeTransitionOracle,
+  getOracleClass,
+  getOracleQuantile
+} from './distribution-oracle';
+import * as giddy from './markov-giddy-fixture';
 
 const NO_CLASS = 0xffffffff;
+
+/** Like `expectClose` but NaN must match NaN exactly. */
+function expectCloseOrNaN(
+  actual: number[],
+  expected: number[],
+  label: string,
+  relative = 1e-4,
+  absolute = 1e-6
+): void {
+  expect(actual.length, `${label} length`).toBe(expected.length);
+  for (let index = 0; index < expected.length; index++) {
+    if (Number.isNaN(expected[index]) || Number.isNaN(actual[index])) {
+      if (!(Number.isNaN(expected[index]) && Number.isNaN(actual[index]))) {
+        throw new Error(
+          `${label}: [${index}] ${actual[index]} != ${expected[index]} (NaN mismatch)`
+        );
+      }
+    } else if (
+      Math.abs(actual[index] - expected[index]) >
+      absolute + relative * Math.abs(expected[index])
+    ) {
+      throw new Error(`${label}: [${index}] ${actual[index]} != ${expected[index]}`);
+    }
+  }
+}
 
 function expectClose(actual: number[], expected: number[], label: string, relative = 1e-5): void {
   expect(actual.length, `${label} length`).toBe(expected.length);
@@ -293,21 +326,24 @@ it('GPULISAMarkov counts transitions between per-period LISA quadrants', async (
       }),
       periods,
       parameters: rig.input(parameters, 'float32'),
+      gating: 'significance',
       output: {counts, rowTotals, quadrants}
     })
   );
-  const expectedQuadrants: number[] = [];
-  for (let period = 0; period < periods; period++) {
-    const result = computeLocalMoranOracle({
-      weights,
-      values: values.subarray(period * rows, (period + 1) * rows),
-      parameters: {significanceLevel: 0.1}
-    });
-    expectedQuadrants.push(...result.quadrants);
-  }
+  // Gated states: the quadrant of an analytically significant row, else 0; rows outside the
+  // analysis (islands) are the out-of-range class instead of state 0.
+  const expectedQuadrants = computeLisaStatesOracle({
+    weights,
+    values,
+    rows,
+    periods,
+    gating: 'significance',
+    significanceLevel: 0.1
+  });
   const actualQuadrants = await rig.readUint(quadrants);
   expect(actualQuadrants).toEqual(expectedQuadrants);
-  expect(actualQuadrants.filter(value => value > 0).length).toBeGreaterThan(10);
+  expect(actualQuadrants.filter(value => value > 0 && value < 5).length).toBeGreaterThan(10);
+  expect(actualQuadrants.filter(value => value === 0).length).toBeGreaterThan(10);
   const expected = computeTransitionOracle({
     classes: expectedQuadrants,
     rows,
@@ -353,4 +389,233 @@ it('GPUTransitionMatrix reproduces giddy Markov counts and probabilities', async
   expect(await rig.readUint(counts)).toEqual(GIDDY_COUNTS);
   expectClose(await rig.readFloat(probabilities), GIDDY_P, 'giddy p', 1e-5);
   rig.destroy();
+});
+
+it('GPUTransitionMatrix homogeneity, steady states and sparsity match giddy Spatial_Markov', async () => {
+  const device = await getWebGPUTestDevice();
+  if (!device) return;
+  const rows = 60;
+  const periods = 5;
+  const classCount = 3;
+  const conditionCount = 3;
+  const rig = new AnalysisRig(device);
+  const counts = rig.output('uint32', conditionCount * classCount * classCount);
+  const homogeneity = rig.output('float32', 5);
+  const steadyStates = rig.output('float32', (conditionCount + 1) * classCount);
+  const stateSparsity = rig.output('uint32', 2);
+  const converged = rig.output('uint32', 1);
+  rig.run(
+    new GPUTransitionMatrix({
+      classes: rig.input(Uint32Array.from(giddy.A_CLASSES), 'uint32'),
+      rows,
+      periods,
+      classCount,
+      conditionClasses: rig.input(Uint32Array.from(giddy.A_CONDITIONS), 'uint32'),
+      conditionCount,
+      minimumTransitions: giddy.A_SPARSITY_THRESHOLD,
+      output: {counts, homogeneity, steadyStates, stateSparsity, status: {converged}}
+    })
+  );
+  expect(await rig.readUint(counts)).toEqual(giddy.A_COUNTS);
+  const actual = await rig.readFloat(homogeneity);
+  const expected = giddy.A_HOMOGENEITY;
+  // Q and LR are f32 sums; the p-values go through the f32 incomplete gamma (about 6e-5 relative).
+  expectCloseOrNaN([actual[GPU_TRANSITION_HOMOGENEITY.Q]], [expected.Q], 'Q', 1e-4);
+  expectCloseOrNaN([actual[GPU_TRANSITION_HOMOGENEITY.LR]], [expected.LR], 'LR', 1e-4);
+  expect(actual[GPU_TRANSITION_HOMOGENEITY.DEGREES_OF_FREEDOM]).toBe(expected.dof);
+  expectCloseOrNaN(
+    [actual[GPU_TRANSITION_HOMOGENEITY.Q_P_VALUE]],
+    [expected.Qp],
+    'Q p',
+    2e-3,
+    1e-9
+  );
+  expectCloseOrNaN(
+    [actual[GPU_TRANSITION_HOMOGENEITY.LR_P_VALUE]],
+    [expected.LRp],
+    'LR p',
+    2e-3,
+    1e-9
+  );
+  expectCloseOrNaN(await rig.readFloat(steadyStates), giddy.A_STEADY_STATES, 'steady states', 1e-4);
+  const sparsity = await rig.readUint(stateSparsity);
+  expect(sparsity[GPU_TRANSITION_STATE_SPARSITY.SPARSE]).toBe(giddy.A_SPARSITY.sparse);
+  expect(sparsity[GPU_TRANSITION_STATE_SPARSITY.EMPTY]).toBe(giddy.A_SPARSITY.empty);
+  expect((await rig.readUint(converged))[0]).toBe(1);
+  rig.destroy();
+});
+
+it('GPUTransitionDiagnostics handles empty rows, periodic, reducible and dead-end chains like giddy', async () => {
+  const device = await getWebGPUTestDevice();
+  if (!device) return;
+  const classCount = 4;
+  for (const {name, counts: countValues, homogeneity: expected, steady, sparsity, converged} of [
+    {
+      name: 'ergodic and periodic conditions',
+      counts: giddy.B_GOOD_COUNTS,
+      homogeneity: giddy.B_GOOD_HOMOGENEITY,
+      steady: giddy.B_GOOD_STEADY_STATES,
+      sparsity: giddy.B_GOOD_SPARSITY,
+      converged: 1
+    },
+    {
+      name: 'plus a reducible and a dead-end condition',
+      counts: giddy.B_ALL_COUNTS,
+      homogeneity: giddy.B_ALL_HOMOGENEITY,
+      steady: giddy.B_ALL_STEADY_STATES,
+      sparsity: giddy.B_ALL_SPARSITY,
+      converged: 0
+    }
+  ]) {
+    const conditionCount = countValues.length / (classCount * classCount);
+    const rig = new AnalysisRig(device);
+    const homogeneity = rig.output('float32', 5);
+    const steadyStates = rig.output('float32', (conditionCount + 1) * classCount);
+    const stateSparsity = rig.output('uint32', 2);
+    const convergedView = rig.output('uint32', 1);
+    rig.run(
+      new GPUTransitionDiagnostics({
+        counts: rig.input(Uint32Array.from(countValues), 'uint32'),
+        classCount,
+        conditionCount,
+        output: {homogeneity, steadyStates, stateSparsity, status: {converged: convergedView}}
+      })
+    );
+    const actual = await rig.readFloat(homogeneity);
+    // dof excludes the one from-state without any transition (giddy adds 1 for it, see fixture).
+    expect(actual[GPU_TRANSITION_HOMOGENEITY.DEGREES_OF_FREEDOM], name).toBe(expected.dof);
+    expectCloseOrNaN([actual[GPU_TRANSITION_HOMOGENEITY.Q]], [expected.Q], `${name} Q`, 1e-4);
+    expectCloseOrNaN([actual[GPU_TRANSITION_HOMOGENEITY.LR]], [expected.LR], `${name} LR`, 1e-4);
+    expectCloseOrNaN(
+      [actual[GPU_TRANSITION_HOMOGENEITY.Q_P_VALUE]],
+      [expected.Qp],
+      `${name} Q p`,
+      2e-3,
+      1e-9
+    );
+    expectCloseOrNaN(
+      [actual[GPU_TRANSITION_HOMOGENEITY.LR_P_VALUE]],
+      [expected.LRp],
+      `${name} LR p`,
+      2e-3,
+      1e-9
+    );
+    expectCloseOrNaN(await rig.readFloat(steadyStates), steady, `${name} steady states`, 1e-4);
+    const actualSparsity = await rig.readUint(stateSparsity);
+    expect(actualSparsity[GPU_TRANSITION_STATE_SPARSITY.SPARSE]).toBe(sparsity.sparse);
+    expect(actualSparsity[GPU_TRANSITION_STATE_SPARSITY.EMPTY]).toBe(sparsity.empty);
+    expect((await rig.readUint(convergedView))[0], `${name} converged`).toBe(converged);
+    rig.destroy();
+  }
+});
+
+/** Row-standardized rook weights of a `side x side` grid plus one isolated row at the end. */
+function createGridWeightsWithIsland(side: number): {
+  offsets: number[];
+  neighbors: number[];
+  weights: number[];
+} {
+  const offsets = [0];
+  const neighbors: number[] = [];
+  const weights: number[] = [];
+  for (let row = 0; row < side * side; row++) {
+    const r = Math.floor(row / side);
+    const c = row % side;
+    const list: number[] = [];
+    if (r > 0) list.push(row - side);
+    if (c > 0) list.push(row - 1);
+    if (c < side - 1) list.push(row + 1);
+    if (r < side - 1) list.push(row + side);
+    for (const neighbor of list) {
+      neighbors.push(neighbor);
+      weights.push(Math.fround(1 / list.length));
+    }
+    offsets.push(neighbors.length);
+  }
+  // Island: no neighbors.
+  offsets.push(neighbors.length);
+  return {offsets, neighbors, weights};
+}
+
+it('GPULISAMarkov excludes NaN rows and islands and matches giddy LISA_Markov ungated', async () => {
+  const device = await getWebGPUTestDevice();
+  if (!device) return;
+  const side = 6;
+  const rows = side * side + 1;
+  const periods = 4;
+  const csr = createGridWeightsWithIsland(side);
+  const oracleWeights = {
+    offsets: Uint32Array.from(csr.offsets),
+    neighbors: Uint32Array.from(csr.neighbors),
+    weights: Float32Array.from(csr.weights)
+  };
+  for (const {name, values: fixtureValues, counts: expectedCounts, states, ignored} of [
+    {
+      // Row 7 is NaN in every period: giddy LISA_Markov over the 34 complete rows (row 7 and the
+      // island removed, weights rebuilt and row-standardized) has the same counts.
+      name: 'NaN row in every period',
+      values: giddy.C1_VALUES,
+      counts: giddy.C1_COUNTS,
+      states: giddy.C1_STATES,
+      ignored: giddy.C1_IGNORED
+    },
+    {
+      // Row 20 is NaN in period 2 only: expected states come from esda Moran_Local per period on
+      // that period's valid rows, counted over pairs valid at both ends (giddy has no missing data).
+      name: 'NaN row in one period',
+      values: giddy.C2_VALUES,
+      counts: giddy.C2_COUNTS,
+      states: giddy.C2_STATES,
+      ignored: giddy.C2_IGNORED
+    }
+  ]) {
+    const values = Float32Array.from(fixtureValues);
+    const rig = new AnalysisRig(device);
+    const counts = rig.output('uint32', 25);
+    const quadrants = rig.output('uint32', rows * periods);
+    const ignoredView = rig.output('uint32', 1);
+    const steadyStates = rig.output('float32', GPU_LISA_MARKOV_STATE_COUNT);
+    const stateSparsity = rig.output('uint32', 2);
+    rig.run(
+      new GPULISAMarkov({
+        values: rig.input(values, 'float32'),
+        weights: {
+          ...rig.weights(csr),
+          info: {rowCount: rows, transform: 'row', symmetric: false}
+        },
+        periods,
+        parameters: rig.input(getGPUSpatialAutocorrelationParameterValues({}), 'float32'),
+        output: {counts, quadrants, ignored: ignoredView, steadyStates, stateSparsity}
+      })
+    );
+    const expectedStates = states.map(state => (state < 0 ? NO_CLASS : state));
+    const actualStates = await rig.readUint(quadrants);
+    expect(actualStates, `${name} states`).toEqual(expectedStates);
+    // Never state 0 under the default ungated chain, and no missing row is state 0.
+    expect(actualStates.filter(state => state === 0).length).toBe(0);
+    expect(await rig.readUint(counts), `${name} counts`).toEqual(expectedCounts);
+    expect((await rig.readUint(ignoredView))[0], `${name} ignored`).toBe(ignored);
+    // The CPU oracle built on the double-precision local Moran oracle agrees with the fixture.
+    expect(
+      computeLisaStatesOracle({
+        weights: oracleWeights,
+        values,
+        rows,
+        periods,
+        gating: 'none',
+        rowStandardized: true
+      }),
+      `${name} oracle`
+    ).toEqual(expectedStates);
+    // Steady state of the 4-state chain: state 0 is unused (probability 0).
+    if (name === 'NaN row in every period') {
+      expectCloseOrNaN(
+        await rig.readFloat(steadyStates),
+        giddy.C1_STEADY_STATE,
+        'LISA steady',
+        1e-4
+      );
+    }
+    rig.destroy();
+  }
 });

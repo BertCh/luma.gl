@@ -4,3 +4,4 @@
 
 import './gpu-point-density.spec';
 import './gpu-point-density-mask.spec';
+import './gpu-kernel-density.spec';

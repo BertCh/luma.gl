@@ -5,12 +5,28 @@
 import {GPUCommandGraph} from '@luma.gl/gpgpu/gpu-core';
 import {getWebGPUTestDevice} from '@luma.gl/test-utils';
 import {expect, it} from 'vitest';
+import type {Device} from '@luma.gl/core';
 import {
   getGPUSpatialAutocorrelationParameterValues,
   GPUGammaStatistic,
   GPULocalGeary,
+  GPU_LEES_L_PERMUTATION_ADAPTERS,
+  GPU_LOCAL_BIVARIATE_JOIN_COUNT_PERMUTATION_ADAPTER,
+  GPU_LOCAL_BIVARIATE_MORAN_PERMUTATION_ADAPTER,
+  GPU_LOCAL_GEARY_PERMUTATION_ADAPTER,
+  GPU_LOCAL_JOIN_COUNT_PERMUTATION_ADAPTER,
   GPUSpatialPearson
 } from '../../../src/gpu-spatial-analysis/spatial-autocorrelation';
+import type {GPUIslandPolicy} from '../../../src/gpu-spatial-analysis/spatial-weights';
+import {
+  getReferenceMask,
+  getReferenceValues,
+  getReferenceWeights,
+  REFERENCE_ROW_COUNT
+} from './spatial-autocorrelation-fixture';
+import type {OracleWeights} from './spatial-autocorrelation-oracle';
+import {isClose} from './spatial-autocorrelation-harness';
+import {REFERENCE} from './spatial-autocorrelation-reference';
 import {importGraphBuffer} from '../../../src/utils/gpu-contributor-utils';
 import {
   createInputBuffer,
@@ -153,4 +169,140 @@ it('additional spatial statistics match direct CPU edge oracles', async () => {
   compiled.destroy();
   Object.values(inputBuffers).forEach(buffer => buffer.destroy());
   Object.values(outputBuffers).forEach(buffer => buffer.destroy());
+});
+
+/** Runs `GPULocalGeary` once and returns its values and global statistics. */
+async function runLocalGeary(
+  device: Device,
+  options: {
+    values: Float32Array;
+    csr: OracleWeights;
+    mask?: Uint32Array;
+    islands?: GPUIslandPolicy;
+    rowStandardized?: boolean;
+  }
+): Promise<{values: number[]; globalStatistics: number[]}> {
+  const {values, csr} = options;
+  const rows = values.length;
+  const parameters = getGPUSpatialAutocorrelationParameterValues();
+  const graph = new GPUCommandGraph(device, {id: 'local-geary-test'});
+  const inputs = {
+    offsets: createInputBuffer(device, csr.offsets),
+    neighbors: createInputBuffer(device, csr.neighbors),
+    weights: createInputBuffer(device, csr.weights),
+    values: createInputBuffer(device, values),
+    parameters: createInputBuffer(device, parameters),
+    mask: options.mask && createInputBuffer(device, options.mask)
+  };
+  const outputs = {
+    geary: createOutputBuffer(device, rows),
+    globalStatistics: createOutputBuffer(device, 5)
+  };
+  graph.add(
+    new GPULocalGeary({
+      weights: {
+        offsets: importGraphBuffer(graph, 'offsets', inputs.offsets, 'uint32', rows + 1),
+        neighbors: importGraphBuffer(
+          graph,
+          'neighbors',
+          inputs.neighbors,
+          'uint32',
+          csr.neighbors.length
+        ),
+        weights: importGraphBuffer(graph, 'weights', inputs.weights, 'float32', csr.weights.length),
+        info: options.rowStandardized
+          ? {rowCount: rows, transform: 'row', symmetric: 'unknown'}
+          : undefined
+      },
+      values: importGraphBuffer(graph, 'values', inputs.values, 'float32', rows),
+      parameters: importGraphBuffer(
+        graph,
+        'parameters',
+        inputs.parameters,
+        'float32',
+        parameters.length
+      ),
+      mask: inputs.mask && importGraphBuffer(graph, 'mask', inputs.mask, 'uint32', rows),
+      islands: options.islands,
+      result: {statistic: importGraphBuffer(graph, 'geary', outputs.geary, 'float32', rows)},
+      globalStatistics: importGraphBuffer(
+        graph,
+        'global-statistics',
+        outputs.globalStatistics,
+        'float32',
+        5
+      )
+    })
+  );
+  const compiled = graph.compile();
+  submitGraph(device, compiled, undefined);
+  const result = {
+    values: await readFloat32(outputs.geary, rows),
+    globalStatistics: await readFloat32(outputs.globalStatistics, 5)
+  };
+  compiled.destroy();
+  Object.values(inputs).forEach(buffer => buffer?.destroy());
+  Object.values(outputs).forEach(buffer => buffer.destroy());
+  return result;
+}
+
+it('GPULocalGeary matches esda Geary_Local on a fixture with an island (keep, exclude, masked)', async () => {
+  const device = await getWebGPUTestDevice();
+  if (!device) return;
+  const values = getReferenceValues();
+  // Oracle: fix/work/A/oracle-u3-autocorrelation.py (esda 2.10.0 Geary_Local, row-standardized).
+  // The masked configuration is esda on the subset W re-row-standardized.
+  for (const [policy, mask, reference, count, islandCount] of [
+    ['keep', undefined, REFERENCE.keep, REFERENCE_ROW_COUNT, 1],
+    ['exclude', undefined, REFERENCE.exclude, REFERENCE_ROW_COUNT - 1, 1],
+    ['exclude', getReferenceMask(), REFERENCE.masked, REFERENCE.masked.count, 0]
+  ] as const) {
+    const result = await runLocalGeary(device, {
+      values,
+      csr: getReferenceWeights({rowStandardize: true}),
+      mask,
+      islands: policy,
+      rowStandardized: true
+    });
+    const label = `${policy}${mask ? ' masked' : ''}`;
+    for (let row = 0; row < REFERENCE_ROW_COUNT; row++) {
+      if (!isClose(result.values[row], reference.gearyRow[row], 1e-4, 1e-3)) {
+        throw new Error(
+          `${label}: row ${row} c ${result.values[row]} != esda ${reference.gearyRow[row]}`
+        );
+      }
+    }
+    expect(result.globalStatistics[0], label).toBe(count);
+    expect(result.globalStatistics[4], label).toBe(islandCount);
+    // A kept island has c = 0 (esda); an excluded island is NaN.
+    expect(result.values[REFERENCE.island], label).toSatisfy((value: number) =>
+      policy === 'keep' ? value === 0 : Number.isNaN(value)
+    );
+  }
+}, 60000);
+
+it('local Geary permutation adapter reads clusters from the lower tail', () => {
+  // Small c_i means similar neighbors, so the clustering tail is the lower one.
+  expect(GPU_LOCAL_GEARY_PERMUTATION_ADAPTER.alternative).toBe('lesser');
+});
+
+it('permutation adapters of the local bivariate, join count and Lee statistics name the engine statistic', () => {
+  expect(GPU_LOCAL_BIVARIATE_MORAN_PERMUTATION_ADAPTER).toMatchObject({
+    scope: 'local',
+    statistic: 'localBivariateMoran',
+    permutedVariable: 'secondValues'
+  });
+  // Clustering is more joins than expected: the upper tail.
+  expect(GPU_LOCAL_JOIN_COUNT_PERMUTATION_ADAPTER.alternative).toBe('greater');
+  expect(GPU_LOCAL_BIVARIATE_JOIN_COUNT_PERMUTATION_ADAPTER.statistic).toBe(
+    'localBivariateJoinCount'
+  );
+  expect(GPU_LEES_L_PERMUTATION_ADAPTERS.global).toMatchObject({
+    scope: 'global',
+    statistic: 'leesL'
+  });
+  expect(GPU_LEES_L_PERMUTATION_ADAPTERS.local).toMatchObject({
+    scope: 'local',
+    statistic: 'localLeeL'
+  });
 });

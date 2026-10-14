@@ -115,6 +115,8 @@ function createJoinFixture(
     ),
     featureIds: importGraphBuffer(graph, 'feature-ids', buffers.featureIds, 'uint32', featureCount),
     candidateCapacity: 16,
+    // These specs pin the closed rule (smallest row wins); the half-open default has its own spec.
+    boundaryRule: 'closed',
     pointFeatureIds: importGraphBuffer(
       graph,
       'point-feature-ids',
@@ -215,7 +217,7 @@ it('GPUPointInPolygonJoin excludes boundary points when requested', async () => 
   if (!device) {
     return;
   }
-  const fixture = createJoinFixture(device, POLYGON_POINTS, {includeBoundary: false});
+  const fixture = createJoinFixture(device, POLYGON_POINTS, {boundaryRule: 'open'});
   fixture.graph.add(new GPUPointInPolygonJoin(fixture.props));
   const compiled = fixture.graph.compile();
   submitGraph(device, compiled, undefined);

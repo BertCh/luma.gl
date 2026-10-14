@@ -4,3 +4,4 @@
 
 import './gpu-segment-intersection.spec';
 import './orientation-predicate.spec';
+import './planar-operators-spatial-context.node.spec';

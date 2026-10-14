@@ -9,10 +9,10 @@ import {
 } from '../../../src/gpu-spatial-analysis/outlier-detection/index';
 
 describe('getGPULocalOutlierFactorParameterValues', () => {
-  it('packs threshold and density floor with defaults', () => {
+  it('packs threshold and density floor; an omitted threshold is NaN, not a hidden 1.5', () => {
     const values = getGPULocalOutlierFactorParameterValues();
     expect(values.length).toBe(GPU_LOCAL_OUTLIER_FACTOR_PARAMETER_LENGTH);
-    expect(values[0]).toBe(1.5);
+    expect(Number.isNaN(values[0])).toBe(true);
     expect(values[1]).toBe(Math.fround(1e-10));
     expect(
       Array.from(getGPULocalOutlierFactorParameterValues({threshold: 2, densityFloor: 0.5}))

@@ -32,7 +32,7 @@ function expectClose(actual: number[], expected: number[], label: string, relati
 async function runLof(
   device: Device,
   fixture: LocalOutlierFactorFixture,
-  threshold: number,
+  threshold: number | undefined,
   useNeighborSearch: boolean
 ) {
   const rows = fixture.points.length / 2;
@@ -120,4 +120,14 @@ it('GPULocalOutlierFactor keeps coincident points finite through the density flo
     expect(result.lof[row]).toBeCloseTo(1, 5);
   }
   expect(result.lof.every(Number.isFinite)).toBe(true);
+});
+
+it('GPULocalOutlierFactor flags nothing without a threshold (there is no default cut)', async () => {
+  const device = await getWebGPUTestDevice();
+  if (!device) return;
+  const result = await runLof(device, RANDOM_FIXTURE, undefined, false);
+  expectClose(result.lof, RANDOM_FIXTURE.lof, 'no-threshold lof', 1e-4);
+  expect(RANDOM_FIXTURE.lof.some(value => value > 1.5)).toBe(true);
+  expect(result.outlier.every(flag => flag === 0)).toBe(true);
+  expect(result.count).toBe(0);
 });

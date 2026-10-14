@@ -2,27 +2,50 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import {
-  getFeistelPermutationIndex,
-  getFeistelRoundKeys
-} from '../../../src/gpu-spatial-analysis/permutation-inference/permutation-random';
+import {fillShufflePermutation} from '../../../src/gpu-spatial-analysis/permutation-inference/permutation-shuffle';
 import {getPermutationSeedKey} from '../../../src/gpu-spatial-analysis/permutation-inference/permutation-parameters';
 
-/** Pair list: entries `j > i` of a CSR with optional distances. */
+/** Pair list: a CSR with optional distances; each unordered pair counts once if listed in either direction. */
 export type OraclePairs = {
   offsets: ArrayLike<number>;
   neighbors: ArrayLike<number>;
   distances?: ArrayLike<number>;
 };
 
-/** Returns the time of every row under permutation `slot` (0 is identity, `s >= 1` is permutation `s - 1`). */
+/**
+ * Unique unordered pairs of a CSR in either direction, independent of the GPU mask kernel: rows
+ * ascend, so a pair listed from its lower row takes that entry's distance, otherwise the higher
+ * row's. Self entries, out-of-range IDs and duplicates are dropped.
+ */
+export function getUniquePairs(pairs: OraclePairs, rows: number) {
+  const seen = new Set<number>();
+  const first: number[] = [];
+  const second: number[] = [];
+  const distances: number[] = [];
+  for (let row = 0; row < rows; row++) {
+    for (let entry = pairs.offsets[row]; entry < pairs.offsets[row + 1]; entry++) {
+      const other = pairs.neighbors[entry];
+      if (other === row || other >= rows) continue;
+      const key = Math.min(row, other) * rows + Math.max(row, other);
+      if (seen.has(key)) continue;
+      seen.add(key);
+      first.push(row);
+      second.push(other);
+      if (pairs.distances) distances.push(pairs.distances[entry]);
+    }
+  }
+  return {first, second, distances};
+}
+
+/**
+ * Returns the time of every row under permutation `slot` (0 is identity, `s >= 1` is draw `s` of
+ * the swap-or-not shuffle, the CPU twin of the GPU kernels).
+ */
 export function getPermutedTimes(times: Float32Array, slot: number, seed: number): Float32Array {
   if (slot === 0) return times;
-  const keys = getFeistelRoundKeys(getPermutationSeedKey(seed), slot - 1);
-  return Float32Array.from(
-    times,
-    (_, row) => times[getFeistelPermutationIndex(row, times.length, keys)]
-  );
+  const permutation = new Uint32Array(times.length);
+  fillShufflePermutation(permutation, times.length, getPermutationSeedKey(seed), slot);
+  return Float32Array.from(times, (_, row) => times[permutation[row]]);
 }
 
 /** Brute-force Knox counts for the identity and every permutation. */
@@ -35,22 +58,18 @@ export function computeKnoxOracle(
 ) {
   const rows = times.length;
   const statistics: number[] = [];
-  let pairCount = 0;
+  const unique = getUniquePairs(pairs, rows);
+  const pairCount = unique.first.length;
   for (let slot = 0; slot <= permutations; slot++) {
     const permuted = getPermutedTimes(times, slot, seed);
     let count = 0;
-    let spatial = 0;
-    for (let row = 0; row < rows; row++) {
-      for (let entry = pairs.offsets[row]; entry < pairs.offsets[row + 1]; entry++) {
-        const other = pairs.neighbors[entry];
-        if (other > row) {
-          spatial++;
-          if (Math.abs(Math.fround(permuted[row] - permuted[other])) <= threshold) count++;
-        }
-      }
+    for (let index = 0; index < pairCount; index++) {
+      const difference = Math.fround(
+        permuted[unique.first[index]] - permuted[unique.second[index]]
+      );
+      if (Math.abs(difference) <= threshold) count++;
     }
     statistics.push(count);
-    pairCount = spatial;
   }
   let timeClose = 0;
   for (let first = 0; first < rows; first++) {
@@ -74,19 +93,13 @@ export function computeMantelOracle(
 ): number[] {
   const rows = times.length;
   const results: number[] = [];
+  const unique = getUniquePairs(pairs, rows);
   for (let slot = 0; slot <= permutations; slot++) {
     const permuted = getPermutedTimes(times, slot, seed);
-    const xs: number[] = [];
-    const ys: number[] = [];
-    for (let row = 0; row < rows; row++) {
-      for (let entry = pairs.offsets[row]; entry < pairs.offsets[row + 1]; entry++) {
-        const other = pairs.neighbors[entry];
-        if (other > row) {
-          xs.push(pairs.distances![entry]);
-          ys.push(Math.abs(permuted[row] - permuted[other]));
-        }
-      }
-    }
+    const xs = unique.distances;
+    const ys = unique.first.map((row, index) =>
+      Math.abs(permuted[row] - permuted[unique.second[index]])
+    );
     const mean = (values: number[]) =>
       values.reduce((sum, value) => sum + value, 0) / values.length;
     const meanX = mean(xs);

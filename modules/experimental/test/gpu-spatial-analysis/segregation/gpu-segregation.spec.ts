@@ -8,15 +8,12 @@ import {
   getGPUSegregationLayout,
   GPUSegregation
 } from '../../../src/gpu-spatial-analysis/segregation/index';
-import {
-  createSeededRandom,
-  expectClose,
-  GraphRig
-} from '../areal-interpolation/areal-interpolation-harness';
+import {createSeededRandom, GraphRig} from '../areal-interpolation/areal-interpolation-harness';
 import {
   computeSegregationOracle,
   computeTextbookDissimilarity,
-  createGridBandWeights
+  createGridBandWeights,
+  expectSegregationClose
 } from './segregation-oracle';
 
 const COLUMNS = 9;
@@ -112,33 +109,33 @@ it('GPUSegregation matches the oracle for the aspatial indices and a multiscale 
   });
   const stride = layout.stride;
   for (let scale = 0; scale < expected.length; scale++) {
-    expectClose(
+    expectSegregationClose(
       actual.indices.slice(scale * stride, (scale + 1) * stride),
       expected[scale].indices,
       `scale ${scale} indices`,
       2e-4,
       1e-5
     );
-    expectClose(
+    expectSegregationClose(
       actual.environment.slice(scale * UNITS * GROUPS, (scale + 1) * UNITS * GROUPS),
       expected[scale].environment,
       `scale ${scale} environment`
     );
-    expectClose(
+    expectSegregationClose(
       actual.entropy.slice(scale * UNITS, (scale + 1) * UNITS),
       expected[scale].entropy,
       `scale ${scale} local entropy`,
       1e-4,
       1e-5
     );
-    expectClose(
+    expectSegregationClose(
       actual.theil.slice(scale * UNITS, (scale + 1) * UNITS),
       expected[scale].theil,
       `scale ${scale} local theil`,
       1e-3,
       1e-6
     );
-    expectClose(
+    expectSegregationClose(
       actual.dissimilarity.slice(scale * UNITS * GROUPS, (scale + 1) * UNITS * GROUPS),
       expected[scale].dissimilarity,
       `scale ${scale} local dissimilarity`,
@@ -235,4 +232,89 @@ it('GPUSegregation reports zero segregation for identical unit compositions', as
   // Isolation of a group equals its population share when unit compositions are identical.
   expect(result[layout.isolation]).toBeCloseTo(0.3, 3);
   expect(result[layout.isolation + 1]).toBeCloseTo(0.7, 3);
+});
+
+/** Runs the aspatial scale on explicit counts and returns the index row plus local outputs. */
+async function runAspatial(
+  device: NonNullable<Awaited<ReturnType<typeof getWebGPUTestDevice>>>,
+  groupCount: number,
+  counts: Float32Array
+) {
+  const unitCount = counts.length / groupCount;
+  const layout = getGPUSegregationLayout(groupCount);
+  const rig = new GraphRig(device);
+  const indices = rig.output('float32', layout.stride);
+  const environment = rig.output('float32', unitCount * groupCount);
+  const entropy = rig.output('float32', unitCount);
+  const dissimilarity = rig.output('float32', unitCount * groupCount);
+  const theil = rig.output('float32', unitCount);
+  rig.run(
+    new GPUSegregation({
+      unitCount,
+      groupCount,
+      groupCounts: rig.input(counts, 'float32'),
+      indices: indices.view,
+      local: {
+        environment: environment.view,
+        entropy: entropy.view,
+        dissimilarity: dissimilarity.view,
+        theil: theil.view
+      }
+    })
+  );
+  const result = {
+    layout,
+    indices: await indices.readFloat32(),
+    environment: await environment.readFloat32(),
+    entropy: await entropy.readFloat32(),
+    dissimilarity: await dissimilarity.readFloat32(),
+    theil: await theil.readFloat32()
+  };
+  rig.destroy();
+  return result;
+}
+
+it('GPUSegregation writes NaN, not 0, for undefined indices', async () => {
+  const device = await getWebGPUTestDevice();
+  if (!device) return;
+  // Empty total: everything undefined (the diversity too).
+  const empty = await runAspatial(device, 2, new Float32Array(8));
+  for (const value of empty.indices) expect(value).toBeNaN();
+  for (const value of empty.environment) expect(value).toBeNaN();
+  for (const value of empty.entropy) expect(value).toBeNaN();
+  // Group 1 absent: its D_g, Atkinson and exposures are undefined; group 0 is everyone, so its
+  // D_g and Atkinson are undefined too. E = 0 makes H undefined while E itself is the defined 0.
+  const single = await runAspatial(device, 2, Float32Array.from([5, 0, 7, 0, 3, 0]));
+  const {layout} = single;
+  expect(single.indices[layout.diversity]).toBe(0);
+  expect(single.indices[layout.entropy]).toBeNaN();
+  expect(single.indices[layout.multiGroupDissimilarity]).toBeNaN();
+  for (let group = 0; group < 2; group++) {
+    expect(single.indices[layout.dissimilarity + group]).toBeNaN();
+    expect(single.indices[layout.atkinson + group]).toBeNaN();
+  }
+  expect(single.indices[layout.isolation]).toBeCloseTo(1, 5);
+  expect(single.indices[layout.isolation + 1]).toBeNaN();
+  expect(single.indices[layout.interaction + 2]).toBeNaN();
+  expect(single.indices[layout.interaction + 3]).toBeNaN();
+  expect(single.theil.every(Number.isNaN)).toBe(true);
+  // A defined, mixed scene keeps finite values; its empty unit has NaN local values.
+  const mixed = await runAspatial(device, 2, Float32Array.from([8, 2, 0, 0, 1, 9]));
+  expect(Number.isFinite(mixed.indices[layout.entropy])).toBe(true);
+  expect(Number.isFinite(mixed.indices[layout.dissimilarity])).toBe(true);
+  expect(mixed.environment[2]).toBeNaN();
+  expect(mixed.environment[3]).toBeNaN();
+  expect(mixed.entropy[1]).toBeNaN();
+  expect(mixed.theil[1]).toBeNaN();
+  expect(mixed.dissimilarity[2]).toBeNaN();
+  expect(Number.isFinite(mixed.theil[0])).toBe(true);
+  // The oracle encodes the same rules.
+  const expected = computeSegregationOracle({
+    unitCount: 3,
+    groupCount: 2,
+    counts: [8, 2, 0, 0, 1, 9],
+    weights: null
+  });
+  expectSegregationClose(mixed.indices, expected.indices, 'mixed indices', 2e-4, 1e-5);
+  expectSegregationClose(mixed.theil, expected.theil, 'mixed theil', 1e-3, 1e-6);
 });

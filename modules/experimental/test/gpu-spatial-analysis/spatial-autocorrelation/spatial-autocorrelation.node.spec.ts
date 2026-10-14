@@ -12,6 +12,11 @@ import {
   type GPUHotSpotAnalysisProps,
   type GPULocalMoranProps
 } from '../../../src/gpu-spatial-analysis/spatial-autocorrelation';
+import {
+  GPU_HOT_SPOT_SIGNIFICANCE_LEVELS,
+  GPU_SPATIAL_AUTOCORRELATION_STATISTICS_LENGTH,
+  GPULocalGeary
+} from '../../../src/gpu-spatial-analysis/spatial-autocorrelation';
 import {createNullWebGPUDevice} from '../../utils/gpu-contributor-test-utils';
 import {
   computeHotSpotOracle,
@@ -21,6 +26,12 @@ import {
   getFalseDiscoveryRateLevels,
   getTwoSidedPValue
 } from './spatial-autocorrelation-oracle';
+import {
+  getReferenceMask,
+  getReferenceValues,
+  getReferenceWeights
+} from './spatial-autocorrelation-fixture';
+import {REFERENCE} from './spatial-autocorrelation-reference';
 
 let serial = 0;
 
@@ -178,25 +189,47 @@ it('the Gi* oracle equals the uncentered Ord-Getis formula for weighted neighbor
     ...base,
     weights: Float32Array.from(base.weights, (_, slot) => 1 / (1 + (slot % 3)))
   };
-  const mean = values.reduce((sum, value) => sum + value, 0) / count;
-  const deviation = Math.sqrt(
-    values.reduce((sum, value) => sum + value * value, 0) / count - mean * mean
-  );
+  const sum = values.reduce((total, value) => total + value, 0);
+  const sumOfSquares = values.reduce((total, value) => total + value * value, 0);
+  const mean = sum / count;
+  const deviation = Math.sqrt(sumOfSquares / count - mean * mean);
   for (const selfWeight of [1, 0, 0.5]) {
-    const oracle = computeHotSpotOracle({values, weights, selfWeight});
+    // Rows without neighbors have no z-score, so the island policy only changes the moments.
+    const oracle = computeHotSpotOracle({values, weights, selfWeight, islands: 'keep'});
     for (let row = 0; row < count; row++) {
       let weightedSum = selfWeight * values[row];
       let weightSum = selfWeight;
       let squareSum = selfWeight * selfWeight;
+      let neighborSum = 0;
+      let neighborWeight = 0;
+      let neighborSquare = 0;
       for (let slot = weights.offsets[row]; slot < weights.offsets[row + 1]; slot++) {
         weightedSum += weights.weights[slot] * values[weights.neighbors[slot]];
         weightSum += weights.weights[slot];
         squareSum += weights.weights[slot] ** 2;
+        neighborSum += weights.weights[slot] * values[weights.neighbors[slot]];
+        neighborWeight += weights.weights[slot];
+        neighborSquare += weights.weights[slot] ** 2;
       }
-      // esda G_Local(star): (sum w x - X W) / (S sqrt((n S1 - W^2) / (n - 1))).
-      const spread = (count * squareSum - weightSum ** 2) / (count - 1);
-      const expected =
-        spread > 0 ? (weightedSum - mean * weightSum) / (deviation * Math.sqrt(spread)) : NaN;
+      let expected = NaN;
+      if (weights.offsets[row + 1] > weights.offsets[row]) {
+        if (selfWeight > 0) {
+          // esda G_Local(star): (sum w x - X W) / (S sqrt((n S1 - W^2) / (n - 1))).
+          const spread = (count * squareSum - weightSum ** 2) / (count - 1);
+          expected =
+            spread > 0 ? (weightedSum - mean * weightSum) / (deviation * Math.sqrt(spread)) : NaN;
+        } else {
+          // Ord-Getis Gi: the mean and variance of the other n - 1 values.
+          const otherMean = (sum - values[row]) / (count - 1);
+          const otherVariance =
+            (sumOfSquares - values[row] ** 2) / (count - 1) - otherMean * otherMean;
+          const spread = ((count - 1) * neighborSquare - neighborWeight ** 2) / (count - 2);
+          expected =
+            spread > 0
+              ? (neighborSum - neighborWeight * otherMean) / Math.sqrt(otherVariance * spread)
+              : NaN;
+        }
+      }
       if (Number.isNaN(expected)) {
         expect(oracle.zScores[row]).toBeNaN();
       } else {
@@ -211,8 +244,12 @@ it('the local Moran oracle scales I like esda and keeps z invariant to row scali
   const values = Float32Array.from([10, 12, 11, 2, 3, 1, 9, 4]);
   const binary = createDistanceBandWeights(positions, 1.5);
   const standardized = createDistanceBandWeights(positions, 1.5, {rowStandardize: true});
-  const binaryResult = computeLocalMoranOracle({weights: binary, values});
-  const rowResult = computeLocalMoranOracle({weights: standardized, values});
+  const binaryResult = computeLocalMoranOracle({weights: binary, values, islands: 'keep'});
+  const rowResult = computeLocalMoranOracle({
+    weights: standardized,
+    values,
+    islands: 'keep'
+  });
   for (const [row, zScore] of binaryResult.zScores.entries()) {
     if (Number.isNaN(zScore)) {
       expect(rowResult.zScores[row]).toBeNaN();
@@ -313,33 +350,39 @@ it('GPUHotSpotAnalysis and GPULocalMoran reject invalid properties', () => {
 
 it('spatial-autocorrelation contributors create deterministic node IDs', () => {
   const device = createNullWebGPUDevice();
-  for (const falseDiscoveryRate of [false, true]) {
+  for (const multipleTesting of ['none', 'benjamini-hochberg'] as const) {
+    const isCorrected = multipleTesting !== 'none';
     const graph = new GPUCommandGraph(device);
-    const hotSpot = new GPUHotSpotAnalysis(createHotSpotProps(graph, {falseDiscoveryRate}));
+    const hotSpot = new GPUHotSpotAnalysis(createHotSpotProps(graph, {multipleTesting}));
     const hotSpotIds = hotSpot.getCommandNodes(graph).map(node => node.id);
     for (const step of [
+      'row-states',
       'moments-blocks',
       'moments-mean',
+      'moments-deviations',
+      'moments-correct',
       'center',
       'moments-variance',
       'neighbors'
     ]) {
       expect(hotSpotIds).toContain(`hot-spot-analysis-${step}`);
     }
-    // Without FDR the classification is fused into the neighbor kernel.
-    expect(hotSpotIds.includes('hot-spot-analysis-classify')).toBe(falseDiscoveryRate);
+    // Without a correction the classification is fused into the neighbor kernel.
+    expect(hotSpotIds.includes('hot-spot-analysis-classify')).toBe(isCorrected);
     expect(hotSpotIds.some(id => id.includes('cell-'))).toBe(false);
-    expect(hotSpotIds.includes('hot-spot-analysis-fdr-thresholds')).toBe(falseDiscoveryRate);
+    expect(hotSpotIds.some(id => id.startsWith('hot-spot-analysis-multiple-testing'))).toBe(
+      isCorrected
+    );
     expect(new Set(hotSpotIds).size).toBe(hotSpotIds.length);
 
     const moranGraph = new GPUCommandGraph(device);
-    const moran = new GPULocalMoran(createLocalMoranProps(moranGraph, {falseDiscoveryRate}));
+    const moran = new GPULocalMoran(createLocalMoranProps(moranGraph, {multipleTesting}));
     const moranIds = moran.getCommandNodes(moranGraph).map(node => node.id);
     expect(moranIds).toContain('local-moran-neighbors');
-    // The local-I epilogue is always fused; the classification only without FDR.
+    // The local-I epilogue is always fused; the classification only without a correction.
     expect(moranIds.includes('local-moran-local-i')).toBe(false);
-    expect(moranIds.includes('local-moran-classify')).toBe(falseDiscoveryRate);
-    expect(moranIds.includes('local-moran-fdr-ranks')).toBe(falseDiscoveryRate);
+    expect(moranIds.includes('local-moran-classify')).toBe(isCorrected);
+    expect(moranIds.some(id => id.startsWith('local-moran-multiple-testing'))).toBe(isCorrected);
   }
   // Without bins or p-values there is no classify node.
   const graph = new GPUCommandGraph(device);
@@ -350,4 +393,193 @@ it('spatial-autocorrelation contributors create deterministic node IDs', () => {
     'hot-spot-analysis-classify'
   );
   device.destroy();
+});
+
+it('multipleTesting, falseDiscoveryRate, islands and minimumNeighbors are validated', () => {
+  const device = createNullWebGPUDevice();
+  const graph = new GPUCommandGraph(device);
+  // The deprecated boolean is an alias of benjamini-hochberg.
+  expect(
+    new GPUHotSpotAnalysis(createHotSpotProps(graph, {falseDiscoveryRate: true})).multipleTesting
+  ).toBe('benjamini-hochberg');
+  expect(
+    new GPULocalMoran(createLocalMoranProps(graph, {falseDiscoveryRate: true})).multipleTesting
+  ).toBe('benjamini-hochberg');
+  expect(
+    new GPUHotSpotAnalysis(
+      createHotSpotProps(graph, {falseDiscoveryRate: true, multipleTesting: 'benjamini-hochberg'})
+    ).multipleTesting
+  ).toBe('benjamini-hochberg');
+  expect(new GPUHotSpotAnalysis(createHotSpotProps(graph)).multipleTesting).toBe('none');
+  expect(
+    () =>
+      new GPUHotSpotAnalysis(
+        createHotSpotProps(graph, {falseDiscoveryRate: true, multipleTesting: 'holm'})
+      )
+  ).toThrow(/falseDiscoveryRate/);
+  expect(
+    () =>
+      new GPULocalMoran(
+        createLocalMoranProps(graph, {falseDiscoveryRate: false, multipleTesting: 'bonferroni'})
+      )
+  ).toThrow(/falseDiscoveryRate/);
+  expect(
+    () =>
+      new GPULocalMoran(
+        createLocalMoranProps(graph, {quadrantGating: 'none', multipleTesting: 'holm'})
+      )
+  ).toThrow(/quadrantGating/);
+  expect(
+    () => new GPUHotSpotAnalysis(createHotSpotProps(graph, {multipleTesting: 'sidak' as never}))
+  ).toThrow(/multipleTesting|method/);
+  // Defaults: islands are excluded and one neighbor is enough.
+  const defaults = new GPUHotSpotAnalysis(createHotSpotProps(graph));
+  expect(defaults.islands).toBe('exclude');
+  expect(defaults.minimumNeighbors).toBe(1);
+  expect(
+    new GPULocalMoran(createLocalMoranProps(graph, {islands: 'keep', minimumNeighbors: 8}))
+  ).toMatchObject({islands: 'keep', minimumNeighbors: 8});
+  for (const minimumNeighbors of [0, -1, 1.5, NaN]) {
+    expect(() => new GPUHotSpotAnalysis(createHotSpotProps(graph, {minimumNeighbors}))).toThrow(
+      /minimumNeighbors/
+    );
+    expect(() => new GPULocalMoran(createLocalMoranProps(graph, {minimumNeighbors}))).toThrow(
+      /minimumNeighbors/
+    );
+  }
+  expect(
+    () => new GPUHotSpotAnalysis(createHotSpotProps(graph, {islands: 'drop' as never}))
+  ).toThrow(/islands/);
+  expect(
+    () =>
+      new GPULocalGeary({
+        weights: createWeightsViews(graph),
+        values: createTransientView(graph, 'geary-values', 'float32', 10),
+        parameters: createTransientView(
+          graph,
+          'geary-parameters',
+          'float32',
+          GPU_SPATIAL_AUTOCORRELATION_PARAMETER_LENGTH
+        ),
+        islands: 'drop' as never,
+        result: {statistic: createTransientView(graph, 'geary-result', 'float32', 10)}
+      })
+  ).toThrow(/islands/);
+  // globalStatistics reports [n, mean, variance, sd, islandCount].
+  expect(GPU_SPATIAL_AUTOCORRELATION_STATISTICS_LENGTH).toBe(5);
+  device.destroy();
+});
+
+it('getInferenceMetadata describes the p-values for a legend', () => {
+  const device = createNullWebGPUDevice();
+  const graph = new GPUCommandGraph(device);
+  const hotSpot = new GPUHotSpotAnalysis(
+    createHotSpotProps(graph, {multipleTesting: 'holm', minimumNeighbors: 8})
+  );
+  expect(hotSpot.getInferenceMetadata()).toMatchObject({
+    alternative: 'two-sided',
+    permutationCount: 0,
+    multipleTesting: 'holm'
+  });
+  expect(hotSpot.getInferenceMetadata().testedRowsDefinition).toMatch(/8 active neighbors/);
+  expect(hotSpot.getInferenceMetadata().significanceLevel).toBeUndefined();
+  const moran = new GPULocalMoran(createLocalMoranProps(graph, {islands: 'keep'}));
+  expect(moran.getInferenceMetadata(0.01)).toMatchObject({
+    alternative: 'two-sided',
+    permutationCount: 0,
+    multipleTesting: 'none',
+    significanceLevel: 0.01
+  });
+  expect(moran.getInferenceMetadata().significanceLevel).toBe(0.05);
+  expect(moran.getInferenceMetadata().testedRowsDefinition).not.toMatch(/islands excluded/);
+  device.destroy();
+});
+
+/** CPU oracle outputs against the esda configurations of the reference fixture. */
+it('the CPU oracles reproduce esda G_Local, Moran_Local and statsmodels on the island fixture', () => {
+  // Oracle values: fix/work/A/oracle-u3-autocorrelation.py (esda 2.10.0, statsmodels 0.15.0).
+  const values = getReferenceValues();
+  const weights = getReferenceWeights();
+  const rowWeights = getReferenceWeights({rowStandardize: true});
+  const mask = getReferenceMask();
+  const configurations = [
+    {name: 'keep', input: {values, islands: 'keep' as const}, reference: REFERENCE.keep},
+    {name: 'exclude', input: {values, islands: 'exclude' as const}, reference: REFERENCE.exclude},
+    {
+      name: 'masked',
+      input: {values, mask, islands: 'exclude' as const},
+      reference: REFERENCE.masked
+    }
+  ];
+  for (const {name, input, reference} of configurations) {
+    expect(computeHotSpotOracle({...input, weights}).moments.count, name).toBe(reference.count);
+    expect(computeHotSpotOracle({...input, weights}).moments.mean, name).toBeCloseTo(
+      reference.mean,
+      9
+    );
+    for (const [selfWeight, expected] of [
+      [1, reference.giStar],
+      [0, reference.gi]
+    ] as const) {
+      const oracle = computeHotSpotOracle({...input, weights, selfWeight});
+      for (const [row, zScore] of expected.entries()) {
+        if (Number.isNaN(zScore)) {
+          expect(oracle.zScores[row], `${name} self ${selfWeight} row ${row}`).toBeNaN();
+        } else {
+          expect(oracle.zScores[row], `${name} self ${selfWeight} row ${row}`).toBeCloseTo(
+            zScore,
+            9
+          );
+        }
+      }
+    }
+    for (const [standardized, expectedI, expectedLag] of [
+      [true, reference.localIRow, reference.lagRow],
+      [false, reference.localIBinary, reference.lagBinary]
+    ] as const) {
+      const oracle = computeLocalMoranOracle({
+        ...input,
+        weights: standardized ? rowWeights : weights,
+        rowStandardized: standardized
+      });
+      for (const [row, localI] of expectedI.entries()) {
+        const label = `${name} ${standardized ? 'row' : 'binary'} row ${row}`;
+        if (Number.isNaN(localI)) {
+          expect(oracle.localI[row], label).toBeNaN();
+        } else {
+          expect(oracle.localI[row], label).toBeCloseTo(localI, 9);
+          expect(oracle.spatialLag[row], label).toBeCloseTo(expectedLag[row], 9);
+        }
+      }
+    }
+  }
+  // Islands: 'keep' counts the island, and the island has no z-score under either policy.
+  expect(computeHotSpotOracle({values, weights, islands: 'keep'}).islandCount).toBe(1);
+  expect(computeHotSpotOracle({values, weights}).zScores[REFERENCE.island]).toBeNaN();
+  expect(
+    computeHotSpotOracle({values, weights, islands: 'keep'}).zScores[REFERENCE.island]
+  ).toBeNaN();
+  // Multiple testing: bins from the adjusted p-values equal statsmodels.
+  for (const method of [
+    'none',
+    'bonferroni',
+    'holm',
+    'benjamini-hochberg',
+    'benjamini-yekutieli'
+  ] as const) {
+    const oracle = computeHotSpotOracle(
+      {values, weights, islands: 'keep'},
+      {multipleTesting: method}
+    );
+    expect(oracle.bins, method).toEqual(REFERENCE.multipleTesting[method].bins);
+    for (const [row, adjusted] of REFERENCE.multipleTesting[method].adjusted.entries()) {
+      if (Number.isNaN(adjusted)) {
+        expect(oracle.adjustedPValues[row], `${method} row ${row}`).toBeNaN();
+      } else {
+        expect(oracle.adjustedPValues[row], `${method} row ${row}`).toBeCloseTo(adjusted, 6);
+      }
+    }
+  }
+  expect(REFERENCE.multipleTesting.none.bins).toEqual(REFERENCE.noneBinsFromZ);
+  expect(GPU_HOT_SPOT_SIGNIFICANCE_LEVELS).toEqual([0.1, 0.05, 0.01]);
 });

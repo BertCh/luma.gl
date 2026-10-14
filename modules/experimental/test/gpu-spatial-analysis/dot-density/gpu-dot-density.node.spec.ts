@@ -224,3 +224,14 @@ it('generateDotsOnCPU honours the mask and reports failures and clamping', () =>
   expect(huge.slotCounts[0]).toBe(5);
   expect(huge.overflow).toBe(1);
 });
+
+it('GPUDotDensity and GPURandomPointsInPolygon accept planar contexts and reject longitude-latitude', () => {
+  const device = createNullWebGPUDevice();
+  const graph = new GPUCommandGraph(device);
+  const geographic = {coordinateSpace: 'longitude-latitude', metric: 'great-circle'} as const;
+  expect(new GPUDotDensity(createProps(graph)).spatialContext.coordinateSpace).toBe('planar');
+  expect(() => new GPUDotDensity(createProps(graph, {spatialContext: geographic}))).toThrow(
+    /project positions to a planar frame/
+  );
+  device.destroy();
+});

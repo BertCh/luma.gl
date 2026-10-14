@@ -2,7 +2,9 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import type {GPUMultipleTestingMethod} from '../../../src/gpu-spatial-analysis/contracts/inference';
 import {GPU_EMERGING_HOT_SPOT_CATEGORIES} from '../../../src/gpu-spatial-analysis/emerging-hot-spots';
+import {getMultipleTestingAdjustedPValues} from '../../../src/gpu-spatial-analysis/multiple-testing';
 import {getTwoSidedPValue} from '../spatial-autocorrelation/spatial-autocorrelation-oracle';
 
 const fround = Math.fround;
@@ -220,36 +222,114 @@ export function computeMannKendall(series: ArrayLike<number>): MannKendallResult
 /** Per-series inputs of {@link classifyEmergingHotSpotSeries} beyond the z series itself. */
 export type EmergingHotSpotTrend = {z: number; p: number};
 
+/** Options shared by the oracle's classification functions. */
+export type EmergingHotSpotOracleOptions = {
+  /** Correction method of the node under test. Defaults to `'benjamini-hochberg'`, like the node. */
+  multipleTesting?: GPUMultipleTestingMethod;
+  /** Final slice rule of the node under test. Defaults to `'require'`. */
+  finalSlice?: 'require' | 'last-valid';
+  /**
+   * Adjusted p-value per bin (for example read back from the GPU) used instead of recomputing it
+   * from z, so a bin whose p-value sits within float32 error of the level cannot flip a comparison.
+   * Ignored with `'none'`.
+   */
+  adjustedPValues?: ArrayLike<number>;
+};
+
+/** Two-sided normal p-value of every finite z (the WGSL's erfcc fit in double precision); NaN otherwise. */
+export function computeBinPValues(zScores: ArrayLike<number>): Float64Array {
+  return Float64Array.from({length: zScores.length}, (_, bin) =>
+    Number.isFinite(zScores[bin]) ? getTwoSidedPValue(zScores[bin]) : NaN
+  );
+}
+
+/** Adjusted p-values over the family of all finite-z bins, using the stream A CPU reference. */
+export function computeAdjustedBinPValues(
+  zScores: ArrayLike<number>,
+  method: GPUMultipleTestingMethod
+): Float64Array {
+  return getMultipleTestingAdjustedPValues(computeBinPValues(zScores), method);
+}
+
+/**
+ * Hot (1) and cold (2) bins, 0 otherwise. Without a correction: `z >= criticalZ` and
+ * `z <= -criticalZ`. With one: adjusted p at most `fround(1 - confidenceLevel)` (`packed[6]`) with the
+ * sign of z.
+ */
+export function computeBinStates(
+  zScores: ArrayLike<number>,
+  packed: ArrayLike<number>,
+  options: EmergingHotSpotOracleOptions = {}
+): Uint8Array {
+  const method = options.multipleTesting ?? 'benjamini-hochberg';
+  const states = new Uint8Array(zScores.length);
+  const adjusted =
+    method === 'none'
+      ? undefined
+      : (options.adjustedPValues ?? computeAdjustedBinPValues(zScores, method));
+  const criticalZ = fround(packed[2]);
+  const level = fround(packed[6]);
+  for (let bin = 0; bin < zScores.length; bin++) {
+    const z = zScores[bin];
+    if (!Number.isFinite(z)) {
+      continue;
+    }
+    if (adjusted) {
+      if (adjusted[bin] <= level) {
+        states[bin] = z > 0 ? 1 : z < 0 ? 2 : 0;
+      }
+    } else if (z >= criticalZ) {
+      states[bin] = 1;
+    } else if (z <= -criticalZ) {
+      states[bin] = 2;
+    }
+  }
+  return states;
+}
+
 /**
  * Pass 4 for one z series (see `GPUEmergingHotSpots` for the rules). `packed` is the float32
- * parameter array; thresholds use the same f32 arithmetic as the WGSL.
+ * parameter array; thresholds use the same f32 arithmetic as the WGSL. `options.states` gives the
+ * hot (1) and cold (2) state of every slice; without it the pre-correction `|z| >= criticalZ` rule
+ * applies. A `trend` with fewer finite slices than `packed[5]` is treated as unavailable.
  */
 export function classifyEmergingHotSpotSeries(
   series: ArrayLike<number>,
   trend: EmergingHotSpotTrend,
-  packed: ArrayLike<number>
+  packed: ArrayLike<number>,
+  options: {states?: ArrayLike<number>; finalSlice?: 'require' | 'last-valid'} = {}
 ): number {
   const criticalZ = fround(packed[2]);
   const trendLevel = fround(packed[3]);
   const fraction = fround(packed[4]);
+  const minimumTrendSliceCount = fround(packed[5]);
   let valid = 0;
   let hot = 0;
   let cold = 0;
   let trailingHot = 0;
   let trailingCold = 0;
   let finalState = 0;
+  let lastValid = -1;
   for (let index = 0; index < series.length; index++) {
     const z = series[index];
     if (!Number.isFinite(z)) {
       continue;
     }
     valid++;
-    if (z >= criticalZ) {
+    lastValid = index;
+    const state = options.states
+      ? options.states[index]
+      : z >= criticalZ
+        ? 1
+        : z <= -criticalZ
+          ? 2
+          : 0;
+    if (state === 1) {
       hot++;
       trailingHot++;
       trailingCold = 0;
       finalState = 1;
-    } else if (z <= -criticalZ) {
+    } else if (state === 2) {
       cold++;
       trailingCold++;
       trailingHot = 0;
@@ -264,6 +344,10 @@ export function classifyEmergingHotSpotSeries(
   if (valid === 0) {
     return categories.NO_PATTERN;
   }
+  if ((options.finalSlice ?? 'require') === 'require' && lastValid !== series.length - 1) {
+    return categories.UNDETERMINED;
+  }
+  const isTrendKnown = valid >= minimumTrendSliceCount;
   const threshold = fround(fraction * valid);
   const hotPersistent = hot >= threshold;
   const coldPersistent = cold >= threshold;
@@ -278,6 +362,9 @@ export function classifyEmergingHotSpotSeries(
       return categories.CONSECUTIVE_HOT;
     }
     if (hotPersistent) {
+      if (!isTrendKnown) {
+        return categories.UNDETERMINED;
+      }
       return trendUp
         ? categories.INTENSIFYING_HOT
         : trendDown
@@ -294,6 +381,9 @@ export function classifyEmergingHotSpotSeries(
       return categories.CONSECUTIVE_COLD;
     }
     if (coldPersistent) {
+      if (!isTrendKnown) {
+        return categories.UNDETERMINED;
+      }
       return trendDown
         ? categories.INTENSIFYING_COLD
         : trendUp
@@ -325,36 +415,49 @@ export type EmergingHotSpotCellResults = {
   category: number[];
   hotSliceCount: number[];
   coldSliceCount: number[];
+  /** Index of the last finite slice per cell, or `0xffffffff`. */
+  lastValidSlice: number[];
 };
 
 /** Runs passes 3 and 4 over every cell of a z cube (for example the GPU's own `giZScores`). */
 export function computeEmergingHotSpotCells(
   zScores: ArrayLike<number>,
   shape: EmergingHotSpotCubeShape,
-  packed: ArrayLike<number>
+  packed: ArrayLike<number>,
+  options: EmergingHotSpotOracleOptions = {}
 ): EmergingHotSpotCellResults {
   const cellCount = shape.gridWidth * shape.gridHeight;
-  const criticalZ = fround(packed[2]);
+  const states = computeBinStates(zScores, packed, options);
+  const minimumTrendSliceCount = fround(packed[5]);
   const results: EmergingHotSpotCellResults = {
     trendZ: [],
     trendP: [],
     trendS: [],
     category: [],
     hotSliceCount: [],
-    coldSliceCount: []
+    coldSliceCount: [],
+    lastValidSlice: []
   };
   for (let cell = 0; cell < cellCount; cell++) {
-    const series = Array.from(
-      {length: shape.sliceCount},
-      (_, slice) => zScores[cell * shape.sliceCount + slice]
-    );
+    const begin = cell * shape.sliceCount;
+    const series = Array.from({length: shape.sliceCount}, (_, slice) => zScores[begin + slice]);
+    const cellStates = Array.from(states.subarray(begin, begin + shape.sliceCount));
     const trend = computeMannKendall(series);
-    results.trendZ.push(trend.z);
-    results.trendP.push(trend.p);
+    const isTrendKnown = trend.count >= minimumTrendSliceCount;
+    const reported = isTrendKnown ? trend : {...trend, z: NaN, p: NaN};
+    results.trendZ.push(reported.z);
+    results.trendP.push(reported.p);
     results.trendS.push(trend.statistic);
-    results.category.push(classifyEmergingHotSpotSeries(series, trend, packed));
-    results.hotSliceCount.push(series.filter(z => Number.isFinite(z) && z >= criticalZ).length);
-    results.coldSliceCount.push(series.filter(z => Number.isFinite(z) && z <= -criticalZ).length);
+    results.category.push(
+      classifyEmergingHotSpotSeries(series, reported, packed, {
+        states: cellStates,
+        finalSlice: options.finalSlice
+      })
+    );
+    results.hotSliceCount.push(cellStates.filter(state => state === 1).length);
+    results.coldSliceCount.push(cellStates.filter(state => state === 2).length);
+    const lastFinite = series.findLastIndex(z => Number.isFinite(z));
+    results.lastValidSlice.push(lastFinite < 0 ? 0xffffffff : lastFinite);
   }
   return results;
 }
@@ -494,15 +597,19 @@ export function createDesignedSeries(): DesignedSeries[] {
   return series;
 }
 
-/** Designed 8 x 8 x 20 cube: one designed series per cell, then masked, all-NaN and noise cells. */
+/**
+ * Designed 24 x 24 x 20 cube: one designed series per cell, then masked, all-NaN and many noise
+ * cells. The large noise background keeps the designed bins' z far above the level a
+ * Benjamini-Hochberg correction over all valid bins requires.
+ */
 export function createDesignedCube(): {
   cube: EmergingHotSpotCube & {mask: Uint32Array; values: Float32Array};
   designed: DesignedSeries[];
   expectedCategories: number[];
 } {
   const designed = createDesignedSeries();
-  const shape = {gridWidth: 8, gridHeight: 8, sliceCount: 20};
-  const cellCount = 64;
+  const shape = {gridWidth: 24, gridHeight: 24, sliceCount: 20};
+  const cellCount = shape.gridWidth * shape.gridHeight;
   const values = new Float32Array(cellCount * shape.sliceCount);
   const mask = new Uint32Array(cellCount).fill(1);
   const random = createSeededRandom(11);
@@ -528,3 +635,129 @@ export function createDesignedCube(): {
   );
   return {cube: {...shape, values, mask}, designed, expectedCategories};
 }
+
+// Multiple-testing reference. 100 bins at radius 0 and window 0, so the Gi* z of a bin is its
+// population standard score; bins 92..97 are the strong (92-94) and weak (95-97) outliers.
+// p = 2 * scipy.stats.norm.sf(|z|); adjusted values from statsmodels 0.15.0 multipletests
+// (bonferroni, holm, fdr_bh, fdr_by). Script: scratchpad/fix/work/B/b5_emerging_ref.py
+// (numpy 2.5.4, scipy 1.18.1, statsmodels 0.15.0).
+export const MULTIPLE_TESTING_VALUES = [
+  0.0, 0.3, -0.3, -0.9, -0.5, -1.0, 0.1, 1.3, -0.5, -0.6, 0.5, 0.4, 0.1, -0.9, -0.0, 0.7, -1.3,
+  -0.5, -1.9, -1.3, -1.8, -0.2, -1.3, 0.3, 0.2, -0.2, -2.5, -0.5, -0.0, 0.1, -1.5, -0.5, -1.0, -0.8,
+  1.1, -0.8, -0.0, 0.9, -0.6, -0.1, 0.1, 0.1, -1.2, 0.1, 1.4, -1.5, 0.9, 0.1, -0.6, 2.0, 0.8, -1.2,
+  0.1, 0.6, -0.2, 0.7, -0.1, 0.7, 1.4, -0.7, 0.2, -0.5, 0.1, -1.2, -0.6, -0.2, 0.9, 1.1, -1.3, -0.8,
+  0.6, -2.0, -0.5, -0.1, 1.3, 0.7, -0.3, -0.4, -0.3, 1.5, -0.4, -0.3, 0.4, -0.1, -0.2, -1.1, -0.0,
+  -0.4, 1.2, 0.7, -0.0, 0.7, 7.0, 6.0, -6.5, 3.4, -3.3, 3.1, 0.0, 0.0
+];
+export const MULTIPLE_TESTING_TOP_BINS = [92, 93, 94, 95, 96, 97];
+export const MULTIPLE_TESTING_P = [
+  3.2348898651709686e-6, 6.50581295177076e-5, 1.895532573171461e-5, 0.023001976038730457,
+  0.03080369422046859, 0.03799494754735993
+];
+export const MULTIPLE_TESTING_ADJUSTED: Record<string, number[]> = {
+  bonferroni: [0.0003234889865170969, 0.006505812951770759, 0.001895532573171461, 1.0, 1.0, 1.0],
+  holm: [0.0003234889865170969, 0.006375696692735344, 0.0018765772474397461, 1.0, 1.0, 1.0],
+  'benjamini-hochberg': [
+    0.0003234889865170969, 0.0021686043172569197, 0.0009477662865857304, 0.5750494009682614,
+    0.6160738844093718, 0.6332491257893322
+  ],
+  'benjamini-yekutieli': [
+    0.0016780594958628148, 0.011249369279994764, 0.004916421527011608, 1.0, 1.0, 1.0
+  ]
+};
+// Bins significant at an adjusted p of 0.05 (statsmodels).
+export const MULTIPLE_TESTING_SIGNIFICANT: Record<string, number[]> = {
+  none: [92, 93, 94, 95, 96, 97],
+  bonferroni: [92, 93, 94],
+  holm: [92, 93, 94],
+  'benjamini-hochberg': [92, 93, 94],
+  'benjamini-yekutieli': [92, 93, 94]
+};
+
+// Time-step slicing reference: python datetime / calendar arithmetic, independent of the
+// days_from_civil formula. Script: scratchpad/fix/work/B/b5_emerging_ref.py.
+export const SLICE_EVENTS = [
+  [2022, 10, 31, 23],
+  [2022, 11, 1, 0],
+  [2022, 12, 25, 23],
+  [2022, 12, 26, 0],
+  [2022, 12, 31, 23],
+  [2023, 1, 1, 0],
+  [2023, 1, 1, 23],
+  [2023, 1, 2, 0],
+  [2023, 2, 19, 12],
+  [2023, 2, 20, 0],
+  [2023, 4, 30, 12],
+  [2023, 5, 1, 0],
+  [2023, 12, 29, 12],
+  [2023, 12, 30, 0],
+  [2023, 12, 31, 23],
+  [2024, 1, 1, 0],
+  [2024, 2, 28, 23],
+  [2024, 2, 29, 5],
+  [2024, 3, 1, 5]
+];
+export const SLICE_CASES = [
+  {
+    step: 'month',
+    interval: 1,
+    origin: [2022, 11],
+    count: 6,
+    expected: [-1, 0, 1, 1, 1, 2, 2, 2, 3, 3, 5, -1, -1, -1, -1, -1, -1, -1, -1]
+  },
+  {
+    step: 'month',
+    interval: 2,
+    origin: [2022, 11],
+    count: 3,
+    expected: [-1, 0, 0, 0, 0, 1, 1, 1, 1, 1, 2, -1, -1, -1, -1, -1, -1, -1, -1]
+  },
+  {
+    step: 'week',
+    interval: 1,
+    origin: [2022, 12, 26],
+    count: 8,
+    expected: [-1, -1, -1, 0, 0, 0, 0, 1, 7, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1]
+  },
+  {
+    step: 'week',
+    interval: 2,
+    origin: [2022, 12, 26],
+    count: 4,
+    expected: [-1, -1, -1, 0, 0, 0, 0, 0, 3, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1]
+  },
+  {
+    step: 'day',
+    interval: 1,
+    origin: [2023, 12, 30],
+    count: 100,
+    expected: [-1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, 0, 1, 2, 60, 61, 62]
+  },
+  {
+    step: 'quarter',
+    interval: 1,
+    origin: [2022, 10],
+    count: 4,
+    expected: [0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 2, 2, -1, -1, -1, -1, -1, -1, -1]
+  },
+  {
+    step: 'year',
+    interval: 1,
+    origin: [2022],
+    count: 3,
+    expected: [0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 2, 2, 2, 2]
+  },
+  {
+    step: 'hour',
+    interval: 6,
+    origin: [2024, 2, 29, 0],
+    count: 20,
+    expected: [-1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, 0, 4]
+  }
+] as {
+  step: 'year' | 'quarter' | 'month' | 'week' | 'day' | 'hour';
+  interval: number;
+  origin: number[];
+  count: number;
+  expected: number[];
+}[];

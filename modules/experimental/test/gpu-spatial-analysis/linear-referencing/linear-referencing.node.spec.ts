@@ -135,3 +135,36 @@ it('linear referencing oracles agree with each other', () => {
   expect(locateAlong(paths, measures, 5, 1).status).toBe(2);
   expect(locateAlong(paths, measures, 1, 0).tangent).toEqual([0, 0]);
 });
+
+it('linear referencing selects planar or great-circle through spatialContext', () => {
+  const graph = new GPUCommandGraph(createNullWebGPUDevice(), {id: 'referencing-context'});
+  const greatCircle = {coordinateSpace: 'longitude-latitude', metric: 'great-circle'} as const;
+  const planarReferencing = new GPULinearReferencing(createReferencingProps(graph));
+  expect(planarReferencing.coordinateSystem).toBe('planar');
+  expect(planarReferencing.spatialContext.coordinateSpace).toBe('planar');
+  const sphericalReferencing = new GPULinearReferencing(
+    createReferencingProps(graph, {spatialContext: greatCircle, candidateCapacity: undefined})
+  );
+  expect(sphericalReferencing.coordinateSystem).toBe('spherical');
+  expect(sphericalReferencing.sphereRadius).toBe(6371008.8);
+  expect(
+    new GPULineLocate(createLocateProps(graph, {spatialContext: {...greatCircle, sphereRadius: 1}}))
+      .sphereRadius
+  ).toBe(1);
+  for (const construct of [
+    () =>
+      new GPULinearReferencing(
+        createReferencingProps(graph, {
+          spatialContext: {coordinateSpace: 'longitude-latitude', metric: 'none'}
+        })
+      ),
+    () =>
+      new GPULineLocate(
+        createLocateProps(graph, {
+          spatialContext: {coordinateSpace: 'topology-only', metric: 'none'}
+        })
+      )
+  ]) {
+    expect(construct).toThrow();
+  }
+});

@@ -3,3 +3,4 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import './gpu-track-similarity.spec';
+import './gpu-track-similarity-great-circle.spec';

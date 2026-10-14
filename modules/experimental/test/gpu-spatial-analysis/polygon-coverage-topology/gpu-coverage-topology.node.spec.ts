@@ -98,3 +98,41 @@ it('GPUCoverageValidity and GPUCoverageDissolve validate props and declare nodes
   expect(dissolveIds).toContain('coverage-dissolve-compact');
   expect(dissolveIds.some(id => id.startsWith('coverage-dissolve-assembly'))).toBe(true);
 });
+
+it('coverage topology operators are planar only', () => {
+  const graph = new GPUCommandGraph(createNullWebGPUDevice(), {id: 'coverage-topology-context'});
+  let serial = 0;
+  const view = <Format extends 'uint32' | 'float32' | 'float32x2'>(
+    format: Format,
+    length: number
+  ) => createTransientView(graph, `context-view-${serial++}`, format, length);
+  const geometry = () => ({
+    positions: view('float32x2', 12),
+    ringOffsets: view('uint32', 4),
+    polygonOffsets: view('uint32', 4)
+  });
+  const geographic = {coordinateSpace: 'longitude-latitude', metric: 'great-circle'} as const;
+  const validity = {
+    ...geometry(),
+    parameters: view('float32', 4),
+    output: {segmentFlags: view('uint32', 12)}
+  };
+  expect(new GPUCoverageValidity(validity).spatialContext.coordinateSpace).toBe('planar');
+  expect(() => new GPUCoverageValidity({...validity, spatialContext: geographic})).toThrow(
+    /project positions to a planar frame/
+  );
+  const dissolve = {
+    ...geometry(),
+    labels: view('uint32', 3),
+    output: {
+      ringOffsets: view('uint32', 5),
+      positions: view('float32x2', 16),
+      count: view('uint32', 1),
+      overflow: view('uint32', 1)
+    }
+  };
+  expect(new GPUCoverageDissolve(dissolve).spatialContext.coordinateSpace).toBe('planar');
+  expect(() => new GPUCoverageDissolve({...dissolve, spatialContext: geographic})).toThrow(
+    /project positions to a planar frame/
+  );
+});

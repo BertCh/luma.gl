@@ -5,11 +5,16 @@
 import {getWebGPUTestDevice} from '@luma.gl/test-utils';
 import {expect, it} from 'vitest';
 import {getGPUSpatialAutocorrelationParameterValues} from '../../../src/gpu-spatial-analysis/spatial-autocorrelation/index';
-import {addSpatialRegressionRecipe} from '../../../src/gpu-spatial-analysis/recipes/spatial-regression-recipe';
+import {
+  addSpatialRegressionRecipe,
+  getSpatialRegressionSpecification
+} from '../../../src/gpu-spatial-analysis/recipes/spatial-regression-recipe';
 import {
   getGPUGeographicallyWeightedRegressionParameterValues,
+  GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_DEFAULT_REFINEMENT_PASS_COUNT,
   GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_SUMMARY_LENGTH,
   GPU_ORDINARY_LEAST_SQUARES_SUMMARY_LENGTH,
+  GPU_SPATIAL_REGRESSION_DIAGNOSTICS_SUMMARY_EXCLUDED_ROW_COUNT,
   GPU_SPATIAL_REGRESSION_DIAGNOSTICS_SUMMARY_LENGTH,
   GPU_SPATIAL_REGRESSION_DIAGNOSTICS_TESTS_LENGTH
 } from '../../../src/gpu-spatial-analysis/spatial-regression/index';
@@ -17,6 +22,7 @@ import {computeGeographicallyWeightedRegressionOnCPU} from '../spatial-regressio
 import {fitOrdinaryLeastSquaresOnCPU} from '../spatial-regression/ordinary-least-squares-oracle';
 import {
   computeSpatialRegressionDiagnosticsOnCPU,
+  createDiagnosticsExclusionMask,
   createDiagnosticsScene
 } from '../spatial-regression/spatial-regression-diagnostics-oracle';
 import {computeLocalMoranOracle} from '../spatial-autocorrelation/spatial-autocorrelation-oracle';
@@ -60,7 +66,10 @@ it('addSpatialRegressionRecipe chains OLS, diagnostics, residual Moran and local
     predictors: scene.predictors,
     predictorCount: k,
     response: scene.response,
-    settings
+    settings,
+    // The recipe keeps the contributor default: two refinement passes over a capacity-4 ladder.
+    maximumBandwidthCount: LADDER_CAPACITY,
+    refinementPassCount: GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_DEFAULT_REFINEMENT_PASS_COUNT
   });
 
   const fixture = new RecipeTestFixture(device, 'spatial-regression-recipe-test');
@@ -79,6 +88,7 @@ it('addSpatialRegressionRecipe chains OLS, diagnostics, residual Moran and local
       GPU_SPATIAL_REGRESSION_DIAGNOSTICS_SUMMARY_LENGTH
     );
     const diagnosticsStatus = fixture.output('diagnostics-status', 'uint32', 1);
+    const decision = fixture.output('decision', 'uint32', 1);
     const moranZ = fixture.output('moran-z', 'float32', rowCount);
     const localCoefficients = fixture.output('local-coefficients', 'float32', rowCount * (k + 1));
     const selectedBandwidth = fixture.output('selected-bandwidth', 'float32', 2);
@@ -122,6 +132,7 @@ it('addSpatialRegressionRecipe chains OLS, diagnostics, residual Moran and local
           summary: diagnosticsSummary.view,
           status: diagnosticsStatus.view
         },
+        specification: {decision: decision.view},
         residualMoran: {zScores: moranZ.view},
         localFits: {
           coefficients: localCoefficients.view,
@@ -139,7 +150,8 @@ it('addSpatialRegressionRecipe chains OLS, diagnostics, residual Moran and local
         maximumBandwidthCount: LADDER_CAPACITY
       }
     });
-    expect(recipe.contributors.length).toBe(4);
+    // OLS, diagnostics, the specification decision kernel, residual local Moran, GWR.
+    expect(recipe.contributors.length).toBe(5);
     fixture.run();
 
     expect((await fixture.readUint32(olsStatus, 1))[0]).toBe(0);
@@ -172,6 +184,13 @@ it('addSpatialRegressionRecipe chains OLS, diagnostics, residual Moran and local
     expect(gpuTests[3]).toBeGreaterThan(5);
     expect(isClose(gpuTests[15], diagnostics.moranZ, 1e-2, 2e-2)).toBe(true);
 
+    // Specification decision: strong error dependence only (spreg LM-lag p 0.14, LM-error p 0.0015)
+    // gives the spatial error model, and the GPU decision equals the CPU rule on the GPU p-values.
+    const gpuDecision = (await fixture.readUint32(decision, 1))[0];
+    expect(gpuDecision).toBe(2);
+    expect(gpuDecision).toBe(getSpatialRegressionSpecification(gpuTests, 0));
+    expect(recipe.specification.decision).toBeDefined();
+
     // Residual local Moran on the GPU residuals.
     const gpuResiduals = await fixture.readFloat32(residuals, rowCount);
     const z = await fixture.readFloat32(moranZ, rowCount);
@@ -203,6 +222,92 @@ it('addSpatialRegressionRecipe chains OLS, diagnostics, residual Moran and local
     expect(comparedLocal).toBeGreaterThan(rowCount);
     expect(Math.max(...gpuLocal.map(Math.abs))).toBeGreaterThan(0.5);
     expect(GPU_ORDINARY_LEAST_SQUARES_SUMMARY_LENGTH).toBeGreaterThan(0);
+  } finally {
+    fixture.destroy();
+  }
+}, 120000);
+
+it('addSpatialRegressionRecipe runs diagnostics after a masked OLS fit and writes the decision', async () => {
+  const device = await getWebGPUTestDevice();
+  if (!device) {
+    return;
+  }
+  const scene = createDiagnosticsScene(SIDE, 11, 0.6, true);
+  const rowCount = SIDE * SIDE;
+  const k = scene.predictorCount;
+  const mask = createDiagnosticsExclusionMask(rowCount, 7, 3);
+  const expected = computeSpatialRegressionDiagnosticsOnCPU(
+    scene.weights,
+    scene.predictors,
+    scene.response,
+    k,
+    {mask, restandardizeRows: true}
+  );
+  const fixture = new RecipeTestFixture(device, 'spatial-regression-recipe-masked-test');
+  try {
+    const tests = fixture.output(
+      'tests',
+      'float32',
+      GPU_SPATIAL_REGRESSION_DIAGNOSTICS_TESTS_LENGTH
+    );
+    const summary = fixture.output(
+      'diagnostics-summary',
+      'float32',
+      GPU_SPATIAL_REGRESSION_DIAGNOSTICS_SUMMARY_LENGTH
+    );
+    const status = fixture.output('diagnostics-status', 'uint32', 1);
+    const decision = fixture.output('decision', 'uint32', 1);
+    addSpatialRegressionRecipe(fixture.graph, {
+      predictors: fixture.input('predictors', scene.predictors, 'float32', rowCount * k),
+      response: fixture.input('response', scene.response, 'float32', rowCount),
+      mask: fixture.input('mask', mask, 'uint32', rowCount),
+      restandardizeRows: true,
+      significanceLevel: 0.01,
+      predictorCount: k,
+      weights: {
+        offsets: fixture.input('offsets', scene.weights.offsets, 'uint32', rowCount + 1),
+        neighbors: fixture.input(
+          'neighbors',
+          scene.weights.neighbors,
+          'uint32',
+          scene.weights.neighbors.length
+        ),
+        weights: fixture.input(
+          'weights',
+          scene.weights.weights,
+          'float32',
+          scene.weights.weights.length
+        )
+      },
+      parameters: fixture.parameters(
+        'autocorrelation-parameters',
+        'float32',
+        getGPUSpatialAutocorrelationParameterValues({})
+      ),
+      outputs: {
+        diagnostics: {tests: tests.view, summary: summary.view, status: status.view},
+        specification: {decision: decision.view}
+      }
+    });
+    fixture.run();
+    expect((await fixture.readUint32(status, 1))[0]).toBe(0);
+    const gpuTests = await fixture.readFloat32(
+      tests,
+      GPU_SPATIAL_REGRESSION_DIAGNOSTICS_TESTS_LENGTH
+    );
+    const gpuSummary = await fixture.readFloat32(
+      summary,
+      GPU_SPATIAL_REGRESSION_DIAGNOSTICS_SUMMARY_LENGTH
+    );
+    expect(gpuSummary[0]).toBe(expected.rowCount);
+    expect(gpuSummary[GPU_SPATIAL_REGRESSION_DIAGNOSTICS_SUMMARY_EXCLUDED_ROW_COUNT]).toBe(
+      expected.excludedRowCount
+    );
+    expect(isClose(gpuTests[3], expected.lmError.statistic, 1e-3, 5e-3)).toBe(true);
+    expect(isClose(gpuTests[0], expected.lmLag.statistic, 1e-3, 5e-3)).toBe(true);
+    expect((await fixture.readUint32(decision, 1))[0]).toBe(
+      getSpatialRegressionSpecification(gpuTests, 0, 0.01)
+    );
   } finally {
     fixture.destroy();
   }

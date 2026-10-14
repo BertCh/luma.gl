@@ -18,6 +18,8 @@ import {
 import {createPairStatisticsHarness, getFloatBits} from './pair-statistics-harness';
 import {createRandom} from './pair-statistics-oracle';
 import {computeSpatialCorrelogramOnCPU} from './spatial-correlogram-oracle';
+import {CORRELOGRAM_OUTLIER_REFERENCES} from './correlogram-outlier-reference';
+import {createVariogramOutlierScene, VARIOGRAM_OUTLIER_FRAME} from './variogram-outlier-fixture';
 
 const BOUNDS = [0, 0, 100, 100] as const;
 
@@ -58,7 +60,8 @@ function createHarness(
       varianceI: {format: 'float32', length: bandCount},
       pairCounts: {format: 'uint32', length: bandCount},
       peakBands: {format: 'uint32', length: 2},
-      statistics: {format: 'float32', length: GPU_SPATIAL_CORRELOGRAM_STATISTICS_LENGTH}
+      statistics: {format: 'float32', length: GPU_SPATIAL_CORRELOGRAM_STATISTICS_LENGTH},
+      overflow: {format: 'uint32', length: 1}
     },
     createContributor: views =>
       new GPUSpatialCorrelogram({
@@ -76,7 +79,8 @@ function createHarness(
         varianceI: views.outputs.varianceI as never,
         pairCounts: views.outputs.pairCounts as never,
         peakBands: views.outputs.peakBands as never,
-        statistics: views.outputs.statistics as never
+        statistics: views.outputs.statistics as never,
+        overflow: views.outputs.overflow as never
       })
   });
 }
@@ -112,6 +116,7 @@ for (const bandMode of ['cumulative', 'annulus'] as const) {
         const label = `${bandMode} ${frame.maximumDistance} ${frame.varianceAssumption ?? ''}`;
         const result = await harness.run(getGPUSpatialCorrelogramParameterValues(frame));
         const oracle = computeSpatialCorrelogramOnCPU(scene, frame, bandCount, bandMode);
+        expect(result.overflow, `${label} overflow`).toEqual([0]);
         let comparedBands = 0;
         for (let band = 0; band < bandCount; band++) {
           const countDifference = Math.abs(result.pairCounts[band] - oracle.pairCounts[band]);
@@ -213,3 +218,68 @@ it('GPUSpatialCorrelogram reports NaN for empty bands and too few rows', async (
     harness.destroy();
   }
 });
+
+it("GPUSpatialCorrelogram keeps Moran's I when one outlier or sentinel inflates the products", async () => {
+  const device = await getWebGPUTestDevice();
+  if (!device) {
+    return;
+  }
+  // N(0, 1) values on 4000 seeded points with an isolated outlier of 2e4 or 1e5 standard
+  // deviations: it joins no pair but pulls the mean (to 5 and 25) and the sum of squares. The
+  // former unit `2^24 / max|c|^2` rounded every pair product to 0 (I = 0). Reference: esda Moran,
+  // see correlogram-outlier-reference.ts.
+  const {bounds} = VARIOGRAM_OUTLIER_FRAME;
+  const bandCount = 4;
+  for (const name of ['clean', 'isolated-2e4', 'isolated-1e5']) {
+    const scene =
+      name === 'clean'
+        ? createVariogramOutlierScene()
+        : createVariogramOutlierScene(name === 'isolated-2e4' ? 2e4 : 1e5, 'isolated');
+    const reference = CORRELOGRAM_OUTLIER_REFERENCES[name];
+    const harness = createPairStatisticsHarness(device, {
+      ...scene,
+      parameterLength: GPU_SPATIAL_CORRELOGRAM_PARAMETER_LENGTH,
+      outputs: {
+        moransI: {format: 'float32', length: bandCount},
+        pairCounts: {format: 'uint32', length: bandCount},
+        overflow: {format: 'uint32', length: 1}
+      },
+      createContributor: views =>
+        new GPUSpatialCorrelogram({
+          positions: views.positions,
+          values: views.values!,
+          parameters: views.parameters,
+          gridSize: [32, 32],
+          bandCount,
+          bandMode: 'cumulative',
+          moransI: views.outputs.moransI as never,
+          pairCounts: views.outputs.pairCounts as never,
+          overflow: views.outputs.overflow as never
+        })
+    });
+    try {
+      const result = await harness.run(
+        getGPUSpatialCorrelogramParameterValues({
+          bounds: [...bounds],
+          maximumDistance: VARIOGRAM_OUTLIER_FRAME.maximumDistance
+        })
+      );
+      expect(result.overflow, name).toEqual([0]);
+      for (let band = 0; band < bandCount; band++) {
+        // GPU division rounding may move a pair lying on a band edge into the next band.
+        expect(
+          Math.abs(2 * result.pairCounts[band] - reference.weightSums[band]),
+          `${name} band ${band} pairs`
+        ).toBeLessThanOrEqual(8);
+        expectClose(
+          `${name} band ${band} I`,
+          result.moransI[band],
+          reference.moransI[band],
+          2e-3 * Math.abs(reference.moransI[band])
+        );
+      }
+    } finally {
+      harness.destroy();
+    }
+  }
+}, 120000);

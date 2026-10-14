@@ -317,16 +317,25 @@ it('GPUGeometryMeasures reports extreme vertices with lowest-row ties', async ()
     // Empty feature.
     [[]]
   ]);
-  const points = await measure(device, features, {geometryType: 'points'});
+  const points = await measure(device, features, {
+    geometryType: 'points',
+    coordinateSystem: 'planar'
+  });
   expect(points.features.extremes.slice(0, 4)).toEqual([1, 3, 2, 4]);
   expect(points.features.extremes.slice(4, 8)).toEqual([6, 6, 7, 8]);
   expect(points.features.extremes.slice(8, 12)).toEqual([
     0xffffffff, 0xffffffff, 0xffffffff, 0xffffffff
   ]);
-  const polygons = await measure(device, features, {geometryType: 'polygons'});
+  const polygons = await measure(device, features, {
+    geometryType: 'polygons',
+    coordinateSystem: 'planar'
+  });
   expect(polygons.features.extremes.slice(0, 4)).toEqual([1, 3, 2, 4]);
   expect(polygons.features.extremes.slice(4, 8)).toEqual([6, 6, 7, 8]);
-  const lines = await measure(device, features, {geometryType: 'lines'});
+  const lines = await measure(device, features, {
+    geometryType: 'lines',
+    coordinateSystem: 'planar'
+  });
   expect(lines.features.extremes.slice(0, 4)).toEqual([1, 3, 2, 4]);
 });
 
@@ -354,7 +363,9 @@ it('GPUGeometryMeasures point features match shapely MultiPoint centroids', asyn
   const result = await measure(
     device,
     features,
-    {geometryType: 'points'},
+    // Planar: the oracle is shapely's planar MultiPoint centroid. Omitting the system used to
+    // select a longitude/latitude context, where group centroids are spherical means.
+    {geometryType: 'points', coordinateSystem: 'planar'},
     {groupIds: [0, 1, 1], groupCount: 2}
   );
   expect(result.features.vertexCounts).toEqual([6, 1, 2]);

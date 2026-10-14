@@ -17,6 +17,7 @@ import {
   NO_ZONE
 } from './areal-interpolation-oracle';
 import {createSeededRandom, expectClose, GraphRig} from './areal-interpolation-harness';
+import {AREAL_NUMPY} from './change-of-support-numpy-fixtures';
 
 type Device = NonNullable<Awaited<ReturnType<typeof getWebGPUTestDevice>>>;
 
@@ -579,3 +580,119 @@ for (const [sourceColumns, sourceRows, targetColumns, targetRows] of [
     rig.destroy();
   });
 }
+
+// Oracle: <scratchpad>/fix/work/D/change-of-support/areal_interpolation.py (numpy 2.5.4, float64),
+// pinned in change-of-support-numpy-fixtures.ts and reproduced by the TS oracle in the node spec.
+type NumpyArealCase = keyof Omit<typeof AREAL_NUMPY, 'fixture' | 'geographic' | 'cellAreas'>;
+
+async function runNumpyArealCase(
+  device: Device,
+  name: NumpyArealCase,
+  options: {
+    denominator?:
+      | 'zone'
+      | 'overlap'
+      | {extensive?: 'zone' | 'overlap'; intensive?: 'zone' | 'overlap'};
+    anchors?: boolean;
+    geographic?: boolean;
+  }
+) {
+  const {fixture} = AREAL_NUMPY;
+  const expected = AREAL_NUMPY[name];
+  const pairCount = expected.pairs.length;
+  const rig = new GraphRig(device);
+  const capacity = pairCount + 3;
+  const offsets = rig.output('uint32', fixture.targetCount + 1);
+  const neighbors = rig.output('uint32', capacity);
+  const weights = rig.output('float32', capacity);
+  const alternate = rig.output('float32', capacity);
+  const areas = rig.output('float32', capacity);
+  const overflow = rig.output('uint32', 1);
+  const sourceAreas = rig.output('float32', fixture.sourceCount);
+  const fractions = rig.output('float32', fixture.sourceCount);
+  const invalid = rig.output('uint32', 1);
+  const geographic = AREAL_NUMPY.geographic;
+  rig.run(
+    new GPUArealInterpolation({
+      sourceZones: rig.input(Uint32Array.from(fixture.sourceZones), 'uint32'),
+      targetZones: rig.input(Uint32Array.from(fixture.targetZones), 'uint32'),
+      sourceCount: fixture.sourceCount,
+      targetCount: fixture.targetCount,
+      denominator: options.denominator,
+      mode: 'extensive',
+      weights: {offsets: offsets.view, neighbors: neighbors.view, weights: weights.view},
+      alternateWeights: alternate.view,
+      areas: areas.view,
+      overflow: overflow.view,
+      sourceAreas: sourceAreas.view,
+      sourceTransferredFractions: fractions.view,
+      invalidCount: invalid.view,
+      sourceAnchorCells: options.anchors
+        ? rig.input(Uint32Array.from(fixture.anchors), 'uint32')
+        : undefined,
+      ...(options.geographic
+        ? {
+            spatialContext: {
+              coordinateSpace: 'longitude-latitude',
+              metric: 'great-circle'
+            } as const,
+            width: fixture.width,
+            extent: rig.input(
+              Float32Array.of(
+                10,
+                geographic.originLatitude,
+                geographic.cellWidth,
+                geographic.cellHeight
+              ),
+              'float32'
+            )
+          }
+        : {})
+    })
+  );
+  const actual = {
+    neighbors: (await neighbors.readUint32()).slice(0, pairCount),
+    areas: (await areas.readFloat32()).slice(0, pairCount),
+    extensive: (await weights.readFloat32()).slice(0, pairCount),
+    intensive: (await alternate.readFloat32()).slice(0, pairCount),
+    sourceAreas: await sourceAreas.readFloat32(),
+    fractions: await fractions.readFloat32(),
+    invalid: (await invalid.readUint32())[0],
+    overflow: (await overflow.readUint32())[0]
+  };
+  rig.destroy();
+  expect(actual.overflow).toBe(0);
+  expect(actual.neighbors).toEqual(expected.pairs.map(([, source]) => source));
+  expectClose(actual.areas, expected.areas, `${name} areas`, 1e-4, 1e-6);
+  expectClose(actual.extensive, expected.extensive, `${name} extensive`, 1e-4, 1e-6);
+  expectClose(actual.intensive, expected.intensive, `${name} intensive`, 1e-4, 1e-6);
+  expectClose(actual.sourceAreas, expected.sourceAreas, `${name} sourceAreas`, 1e-4, 1e-6);
+  expectClose(
+    actual.fractions,
+    expected.transferred.map(value => value ?? Number.NaN),
+    `${name} fractions`,
+    1e-4,
+    1e-6
+  );
+  expect(actual.invalid).toBe(expected.invalidCount);
+}
+
+it('GPUArealInterpolation uses extensive zone and intensive overlap denominators by default (numpy)', async () => {
+  const device = await getWebGPUTestDevice();
+  if (!device) return;
+  await runNumpyArealCase(device, 'default', {});
+  await runNumpyArealCase(device, 'zoneZone', {denominator: 'zone'});
+  await runNumpyArealCase(device, 'overlapOverlap', {denominator: 'overlap'});
+});
+
+it('GPUArealInterpolation anchors keep a source smaller than a cell (numpy)', async () => {
+  const device = await getWebGPUTestDevice();
+  if (!device) return;
+  await runNumpyArealCase(device, 'defaultAnchored', {anchors: true});
+});
+
+it('GPUArealInterpolation weights cells by spherical area on a longitude/latitude raster (numpy)', async () => {
+  const device = await getWebGPUTestDevice();
+  if (!device) return;
+  await runNumpyArealCase(device, 'geographicDefault', {geographic: true});
+});

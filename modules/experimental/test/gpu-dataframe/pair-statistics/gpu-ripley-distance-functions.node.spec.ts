@@ -87,3 +87,20 @@ it('GPURipleyDistanceFunctions validates props and declares nodes', () => {
   expect(ids.at(-1)).toBe('ripley-distance-functions-finish');
   device.destroy();
 });
+
+it('GPURipleyDistanceFunctions declares planar-only spatial support', () => {
+  const device = createNullWebGPUDevice();
+  const graph = new GPUCommandGraph(device);
+  expect(
+    () =>
+      new GPURipleyDistanceFunctions(
+        createProps(graph, {
+          spatialContext: {coordinateSpace: 'longitude-latitude', metric: 'great-circle'} as const
+        })
+      )
+  ).toThrow(/project positions to a planar frame first/);
+  expect(new GPURipleyDistanceFunctions(createProps(graph)).spatialContext.coordinateSpace).toBe(
+    'planar'
+  );
+  device.destroy();
+});

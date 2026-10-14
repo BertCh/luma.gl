@@ -45,12 +45,31 @@ export function computeNeighborhoodSummaryOracle(input: {
   includeFocal?: boolean;
   focalWeight?: number;
   maximumNeighbors?: number;
+  /** Re-standardize slot weights over the active members (`weights.info.transform === 'row'`). */
+  standardized?: boolean;
+  /** `weights.status.overflow` is nonzero: every output is NaN. */
+  truncated?: boolean;
 }): OracleSummary[] {
   const {weights, values, categories, mask} = input;
   const rows = values.length;
   const maximumNeighbors = input.maximumNeighbors ?? 32;
   const summaries: OracleSummary[] = [];
   for (let row = 0; row < rows; row++) {
+    if (!(mask && mask[row] === 0) && input.truncated) {
+      summaries.push({
+        count: NaN,
+        weightSum: NaN,
+        sum: NaN,
+        mean: NaN,
+        min: NaN,
+        max: NaN,
+        standardDeviation: NaN,
+        median: NaN,
+        mode: 0xffffffff,
+        entropy: NaN
+      });
+      continue;
+    }
     if (mask && mask[row] === 0) {
       summaries.push({
         count: 0,
@@ -66,18 +85,36 @@ export function computeNeighborhoodSummaryOracle(input: {
       });
       continue;
     }
-    const members: {row: number; weight: number}[] = [];
-    if (input.includeFocal) {
-      members.push({row, weight: f32(input.focalWeight ?? 1)});
-    }
+    const slotMembers: {row: number; weight: number}[] = [];
+    // Active slots only: another row with a positive weight.
     for (let slot = weights.offsets[row]; slot < weights.offsets[row + 1]; slot++) {
       const neighbor = weights.neighbors[slot];
-      if (neighbor < rows && neighbor !== row) {
-        members.push({row: neighbor, weight: weights.weights[slot]});
+      if (neighbor < rows && neighbor !== row && weights.weights[slot] > 0) {
+        slotMembers.push({row: neighbor, weight: weights.weights[slot]});
       }
     }
-    const included = members.filter(member => !mask || mask[member.row] !== 0);
-    const numeric = included.filter(member => Number.isFinite(values[member.row]));
+    // Slots valid for a member filter, re-standardized by their summed weight in slot order.
+    const withFocal = (filter: (member: {row: number}) => boolean) => {
+      const valid = slotMembers.filter(
+        member => (!mask || mask[member.row] !== 0) && filter(member)
+      );
+      let sum = 0;
+      for (const member of valid) {
+        sum = f32(sum + member.weight);
+      }
+      const scale = input.standardized ? (sum > 0 ? f32(1 / sum) : 0) : 1;
+      const scaled = valid.map(member => ({
+        row: member.row,
+        weight: input.standardized ? f32(member.weight * scale) : member.weight
+      }));
+      const focal =
+        input.includeFocal && (!mask || mask[row] !== 0) && filter({row})
+          ? [{row, weight: f32(input.focalWeight ?? 1)}]
+          : [];
+      return [...focal, ...scaled];
+    };
+    const included = withFocal(() => true);
+    const numeric = withFocal(member => Number.isFinite(values[member.row]));
     let weightSum = 0;
     let weightedSum = 0;
     for (const member of numeric) {

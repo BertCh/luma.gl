@@ -183,9 +183,10 @@ export function computeRipleyOnCPU(
           2e-5 * cumulativeWeight);
     } else if (borderFoci[b] > 0) {
       const foci = borderFoci[b];
-      k[b] = (area * borderNumerator[b]) / ((n - 1) * foci);
+      // spatstat Kest border estimator: lambda = n / A.
+      k[b] = (area * borderNumerator[b]) / (n * foci);
       kTolerance[b] =
-        (area / (n - 1)) *
+        (area / n) *
         ((pairSlack[b] + focusSlack[b] * maximumFocusPairs) / foci +
           (borderNumerator[b] * focusSlack[b]) / (foci * foci));
     }

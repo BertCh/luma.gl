@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import type {GPUMultipleTestingMethod} from '../../../src/gpu-spatial-analysis/contracts';
+import {getMultipleTestingAdjustedPValues} from '../../../src/gpu-spatial-analysis/multiple-testing';
 import {
   GPU_HOT_SPOT_CRITICAL_Z_SCORES,
   GPU_HOT_SPOT_SIGNIFICANCE_LEVELS,
@@ -29,6 +31,20 @@ export type SpatialAutocorrelationOracleInput = {
   parameters?: GPUSpatialAutocorrelationParameters;
   /** Gi* only: weight `w_ii` of the focal row. Defaults to 1. */
   selfWeight?: number;
+  /** Island policy, as `GPUHotSpotAnalysis`. Defaults to `'exclude'`. */
+  islands?: 'exclude' | 'keep';
+  /** Rows with fewer active neighbors have no z-score. Defaults to 1. */
+  minimumNeighbors?: number;
+  /** Re-standardize each row over its remaining neighbors (`weights.info.transform === 'row'`). */
+  rowStandardized?: boolean;
+};
+
+/** Options of the oracles. */
+export type SpatialAutocorrelationOracleOptions = {
+  /** Multiple-testing correction of the p-values. Defaults to `'none'`. */
+  multipleTesting?: GPUMultipleTestingMethod;
+  /** @deprecated Alias of `multipleTesting: 'benjamini-hochberg'`. */
+  falseDiscoveryRate?: boolean;
 };
 
 /** Global moments used by both statistics. */
@@ -42,9 +58,14 @@ export type SpatialAutocorrelationOracleMoments = {
 /** Gi* oracle result. */
 export type HotSpotOracleResult = {
   moments: SpatialAutocorrelationOracleMoments;
+  /** Rows with a finite value and nonzero mask. */
   included: boolean[];
+  /** Included rows without an active neighbor among the included rows. */
+  islands: boolean[];
+  islandCount: number;
   zScores: number[];
   pValues: number[];
+  adjustedPValues: number[];
   bins: number[];
   neighborCounts: number[];
 };
@@ -53,8 +74,11 @@ export type HotSpotOracleResult = {
 export type LocalMoranOracleResult = {
   moments: SpatialAutocorrelationOracleMoments;
   included: boolean[];
+  islands: boolean[];
+  islandCount: number;
   zScores: number[];
   pValues: number[];
+  adjustedPValues: number[];
   localI: number[];
   spatialLag: number[];
   quadrants: number[];
@@ -151,22 +175,67 @@ export function createDistanceBandWeights(
 }
 
 /**
- * Included neighbors of `row` (other rows that are included) with their weights, in slot order,
- * plus the sums `W = sum w`, `S1 = sum w^2` the statistics need.
+ * Islands: included rows without an active slot (a neighbor other than the row, with a positive
+ * weight, that is an included row).
+ */
+export function getIslandRows(input: SpatialAutocorrelationOracleInput): boolean[] {
+  const included = getIncludedRows(input);
+  const {offsets, neighbors, weights} = input.weights;
+  return included.map((isIncluded, row) => {
+    if (!isIncluded) {
+      return false;
+    }
+    for (let slot = offsets[row]; slot < offsets[row + 1]; slot++) {
+      const neighbor = neighbors[slot];
+      if (
+        neighbor < included.length &&
+        neighbor !== row &&
+        weights[slot] > 0 &&
+        included[neighbor]
+      ) {
+        return false;
+      }
+    }
+    return true;
+  });
+}
+
+/** Rows that enter the moments and can be neighbors: included rows, minus islands under 'exclude'. */
+export function getMomentRows(input: SpatialAutocorrelationOracleInput): boolean[] {
+  const included = getIncludedRows(input);
+  if (input.islands === 'keep') {
+    return included;
+  }
+  const islands = getIslandRows(input);
+  return included.map((isIncluded, row) => isIncluded && !islands[row]);
+}
+
+/**
+ * Active neighbors of `row` among `momentRows` with their weights, in slot order: positive
+ * weight, not the row itself. Weights are divided by their sum when `rowStandardized`.
  */
 export function getIncludedNeighbors(
   input: SpatialAutocorrelationOracleInput,
-  included: boolean[],
+  momentRows: boolean[],
   row: number
 ): {neighbors: number[]; weights: number[]} {
   const {offsets, neighbors, weights} = input.weights;
   const result = {neighbors: [] as number[], weights: [] as number[]};
   for (let slot = offsets[row]; slot < offsets[row + 1]; slot++) {
     const neighbor = neighbors[slot];
-    if (neighbor !== row && included[neighbor]) {
+    if (
+      neighbor < momentRows.length &&
+      neighbor !== row &&
+      weights[slot] > 0 &&
+      momentRows[neighbor]
+    ) {
       result.neighbors.push(neighbor);
       result.weights.push(weights[slot]);
     }
+  }
+  if (input.rowStandardized && result.weights.length > 0) {
+    const total = result.weights.reduce((sum, weight) => sum + weight, 0);
+    result.weights = result.weights.map(weight => weight / total);
   }
   return result;
 }
@@ -254,48 +323,131 @@ export function getFalseDiscoveryRateMargin(
 }
 
 /**
- * Brute-force Getis-Ord Gi* oracle in double precision: the Ord-Getis z-score for arbitrary weights
- * `z = sum w (x - X) / (S sqrt((n S1 - W^2) / (n - 1)))` with the focal weight `selfWeight`.
+ * Adjusted two-sided p-values of GPU z-scores: the CPU reference (`getMultipleTestingAdjustedPValues`)
+ * over `erfc` p-values of the given finite z-scores. Non-finite z-scores are not tested (NaN).
+ */
+export function getAdjustedPValuesFromZScores(
+  zScores: ArrayLike<number>,
+  method: GPUMultipleTestingMethod
+): number[] {
+  const pValues = Array.from(zScores, zScore =>
+    Number.isFinite(zScore) ? getTwoSidedPValue(zScore) : NaN
+  );
+  return Array.from(getMultipleTestingAdjustedPValues(pValues, method));
+}
+
+/**
+ * Smallest relative distance between any finite adjusted p-value and one of `levels`, used by
+ * tests to make sure the f32 GPU and double CPU decisions cannot disagree by rounding.
+ */
+export function getAdjustedPValueMargin(
+  adjustedPValues: ArrayLike<number>,
+  levels: readonly number[]
+): number {
+  let margin = Infinity;
+  for (const adjusted of Array.from(adjustedPValues)) {
+    if (Number.isFinite(adjusted)) {
+      for (const level of levels) {
+        margin = Math.min(margin, Math.abs(adjusted - level) / level);
+      }
+    }
+  }
+  return margin;
+}
+
+function getMethod(options: SpatialAutocorrelationOracleOptions): GPUMultipleTestingMethod {
+  return options.multipleTesting ?? (options.falseDiscoveryRate ? 'benjamini-hochberg' : 'none');
+}
+
+function getAdjustedPValues(
+  pValues: number[],
+  options: SpatialAutocorrelationOracleOptions
+): number[] {
+  return Array.from(getMultipleTestingAdjustedPValues(pValues, getMethod(options)));
+}
+
+/**
+ * Brute-force Getis-Ord Gi* oracle in double precision. With `selfWeight > 0` the Ord-Getis Gi*
+ * z-score for arbitrary weights `z = sum w (x - X) / (S sqrt((n S1 - W^2) / (n - 1)))` with the
+ * focal weight `selfWeight`; with `selfWeight = 0` the exact Ord-Getis Gi, standardized with the
+ * mean and variance of the other `n - 1` rows. Rows with fewer than `minimumNeighbors` active
+ * neighbors have no z-score.
  */
 export function computeHotSpotOracle(
   input: SpatialAutocorrelationOracleInput,
-  options: {falseDiscoveryRate?: boolean} = {}
+  options: SpatialAutocorrelationOracleOptions = {}
 ): HotSpotOracleResult {
   const rows = input.values.length;
   const included = getIncludedRows(input);
-  const moments = getOracleMoments(input, included);
+  const islands = getIslandRows(input);
+  const momentRows = getMomentRows(input);
+  const moments = getOracleMoments(input, momentRows);
   const selfWeight = input.selfWeight ?? 1;
+  const minimumNeighbors = input.minimumNeighbors ?? 1;
   const zScores = new Array<number>(rows).fill(NaN);
   const neighborCounts = new Array<number>(rows).fill(0);
   const standardDeviation = Math.sqrt(moments.variance);
   for (let row = 0; row < rows; row++) {
-    if (!included[row]) {
+    if (!momentRows[row]) {
       continue;
     }
-    const {neighbors, weights} = getIncludedNeighbors(input, included, row);
-    let weightedSum = selfWeight * (input.values[row] - moments.mean);
-    let weightSum = selfWeight;
-    let squareSum = selfWeight * selfWeight;
+    const {neighbors, weights} = getIncludedNeighbors(input, momentRows, row);
+    neighborCounts[row] = neighbors.length;
+    if (neighbors.length < minimumNeighbors || neighbors.length === 0) {
+      continue;
+    }
+    const centered = input.values[row] - moments.mean;
+    let weightedSum = 0;
+    let weightSum = 0;
+    let squareSum = 0;
     for (const [slot, neighbor] of neighbors.entries()) {
       weightedSum += weights[slot] * (input.values[neighbor] - moments.mean);
       weightSum += weights[slot];
       squareSum += weights[slot] * weights[slot];
     }
-    neighborCounts[row] = neighbors.length + (selfWeight !== 0 ? 1 : 0);
     const {count} = moments;
-    const spread = (count * squareSum - weightSum * weightSum) / (count - 1);
-    if (count >= 2 && moments.variance > 0 && spread > 0) {
-      zScores[row] = weightedSum / (standardDeviation * Math.sqrt(spread));
+    if (selfWeight === 0) {
+      const others = count - 1;
+      const otherMean = -centered / others;
+      const otherVariance = (moments.sumOfSquares - centered * centered) / others - otherMean ** 2;
+      const spread = (others * squareSum - weightSum * weightSum) / (others - 1);
+      if (others >= 2 && otherVariance > 0 && spread > 0) {
+        zScores[row] = (weightedSum - weightSum * otherMean) / Math.sqrt(otherVariance * spread);
+      }
+    } else {
+      weightedSum += selfWeight * centered;
+      weightSum += selfWeight;
+      squareSum += selfWeight * selfWeight;
+      const spread = (count * squareSum - weightSum * weightSum) / (count - 1);
+      if (count >= 2 && moments.variance > 0 && spread > 0) {
+        zScores[row] = weightedSum / (standardDeviation * Math.sqrt(spread));
+      }
     }
   }
   const pValues = zScores.map(zScore =>
     Number.isFinite(zScore) ? getTwoSidedPValue(zScore) : NaN
   );
-  const levels = options.falseDiscoveryRate
-    ? getFalseDiscoveryRateLevels(zScores, GPU_HOT_SPOT_SIGNIFICANCE_LEVELS)
+  const adjustedPValues = getAdjustedPValues(pValues, options);
+  const hasCorrection = getMethod(options) !== 'none';
+  const levels = hasCorrection
+    ? adjustedPValues.map(adjusted =>
+        Number.isFinite(adjusted)
+          ? GPU_HOT_SPOT_SIGNIFICANCE_LEVELS.filter(level => adjusted <= level).length
+          : 0
+      )
     : zScores.map(zScore => getUncorrectedHotSpotLevel(zScore));
   const bins = zScores.map((zScore, row) => (zScore < 0 ? -levels[row] : levels[row]) || 0);
-  return {moments, included, zScores, pValues, bins, neighborCounts};
+  return {
+    moments,
+    included,
+    islands,
+    islandCount: islands.filter(Boolean).length,
+    zScores,
+    pValues,
+    adjustedPValues,
+    bins,
+    neighborCounts
+  };
 }
 
 /** Uncorrected Gi* confidence level `0..3` of one z-score. */
@@ -308,26 +460,29 @@ export function getUncorrectedHotSpotLevel(zScore: number): number {
 
 /**
  * Brute-force local Moran oracle in double precision with the conditional-randomization analytic
- * moments, for weights used as given.
+ * moments, for weights used as given (or re-standardized with `rowStandardized`).
  */
 export function computeLocalMoranOracle(
   input: SpatialAutocorrelationOracleInput,
-  options: {falseDiscoveryRate?: boolean} = {}
+  options: SpatialAutocorrelationOracleOptions = {}
 ): LocalMoranOracleResult {
   const rows = input.values.length;
   const included = getIncludedRows(input);
-  const moments = getOracleMoments(input, included);
+  const islands = getIslandRows(input);
+  const momentRows = getMomentRows(input);
+  const moments = getOracleMoments(input, momentRows);
   const significanceLevel = input.parameters?.significanceLevel ?? 0.05;
+  const minimumNeighbors = input.minimumNeighbors ?? 1;
   const zScores = new Array<number>(rows).fill(NaN);
   const localI = new Array<number>(rows).fill(NaN);
   const spatialLag = new Array<number>(rows).fill(NaN);
   const neighborCounts = new Array<number>(rows).fill(0);
   for (let row = 0; row < rows; row++) {
-    if (!included[row]) {
+    if (!momentRows[row]) {
       continue;
     }
     const centered = input.values[row] - moments.mean;
-    const {neighbors, weights} = getIncludedNeighbors(input, included, row);
+    const {neighbors, weights} = getIncludedNeighbors(input, momentRows, row);
     let lag = 0;
     let weightSum = 0;
     let squareSum = 0;
@@ -346,7 +501,12 @@ export function computeLocalMoranOracle(
       weightSum,
       squareSum
     );
-    if (moments.count - 1 >= 2 && centered !== 0 && neighbors.length > 0 && variance > 0) {
+    if (
+      moments.count - 1 >= 2 &&
+      centered !== 0 &&
+      neighbors.length >= Math.max(1, minimumNeighbors) &&
+      variance > 0
+    ) {
       const lagZ = (lag - mean) / Math.sqrt(variance);
       zScores[row] = centered < 0 ? -lagZ : lagZ;
     }
@@ -354,13 +514,24 @@ export function computeLocalMoranOracle(
   const pValues = zScores.map(zScore =>
     Number.isFinite(zScore) ? getTwoSidedPValue(zScore) : NaN
   );
-  const significant = options.falseDiscoveryRate
-    ? getFalseDiscoveryRateLevels(zScores, [significanceLevel]).map(level => level > 0)
-    : pValues.map(pValue => pValue <= significanceLevel);
+  const adjustedPValues = getAdjustedPValues(pValues, options);
+  const significant = adjustedPValues.map(adjusted => adjusted <= significanceLevel);
   const quadrants = zScores.map((_, row) =>
     significant[row] ? getQuadrant(input.values[row] - moments.mean, spatialLag[row]) : 0
   );
-  return {moments, included, zScores, pValues, localI, spatialLag, quadrants, neighborCounts};
+  return {
+    moments,
+    included,
+    islands,
+    islandCount: islands.filter(Boolean).length,
+    zScores,
+    pValues,
+    adjustedPValues,
+    localI,
+    spatialLag,
+    quadrants,
+    neighborCounts
+  };
 }
 
 /**

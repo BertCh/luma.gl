@@ -14,3 +14,6 @@ import './gpu-spatial-relate-scale.spec';
 import './gpu-spatial-small-shared-boundary.spec';
 import './gpu-nearest-feature-weights.spec';
 import './spatial-join-options.spec';
+import './gpu-point-in-polygon-half-open.spec';
+import './gpu-spatial-predicate-geodesic.spec';
+import './gpu-nearest-feature-join-geodesic.spec';

@@ -17,6 +17,13 @@ import {
   readUint32,
   submitGraph
 } from '../../utils/gpu-contributor-test-utils';
+import {
+  checkTriangulation,
+  createUniformFixture,
+  digestTriangleSet,
+  SCIPY_FIXTURES,
+  toTriangleRows
+} from './delaunay-reference';
 
 async function runDelaunay(device: Device, coordinates: Float32Array, triangleCapacity: number) {
   const graph = new GPUCommandGraph(device, {id: 'delaunay-bounded-test'});
@@ -187,6 +194,128 @@ it('GPUDelaunayTessellation reports collinear, cocircular, and capacity edge cas
 
   const bounded = await runDelaunay(device, Float32Array.of(0, 0, 1, 0, 1, 1, 0, 1, 0.5, 0.5), 2);
   expect(bounded).toMatchObject({written: 2, required: 4, didOverflow: 1, invalid: 0});
+});
+
+// Symbolic super vertices (finding D-01): the finite supertriangle lost real hull triangles on
+// ordinary input. Expected counts, hull counts and triangle-set digests are scipy.spatial 1.18.1
+// constants from scratchpad/fix/work/W2A/delaunay/oracle.py; emptiness is checked in exact
+// rational arithmetic on the f32 inputs, so no assertion depends on tie-breaking.
+for (const [name, fixture] of Object.entries(SCIPY_FIXTURES)) {
+  it(`GPUDelaunayTessellation keeps every hull triangle on ${name} (T = 2n - 2 - h)`, async () => {
+    const device = await getWebGPUTestDevice();
+    if (!device) {
+      return;
+    }
+    const coordinates = createUniformFixture(
+      fixture.seed,
+      fixture.count,
+      fixture.width,
+      fixture.height
+    );
+    const result = await runDelaunay(device, coordinates, 2 * fixture.count);
+    expect(result).toMatchObject({
+      written: 2 * fixture.count - 2 - fixture.hull,
+      required: fixture.triangles,
+      didOverflow: 0,
+      invalid: 0,
+      duplicates: 0
+    });
+    const triangles = toTriangleRows(result.indices);
+    expect(digestTriangleSet(triangles)).toBe(fixture.digest);
+    expect(checkTriangulation(coordinates, triangles)).toEqual({
+      degenerate: 0,
+      circleViolations: 0,
+      duplicateEdges: 0,
+      areaDifference: 0n
+    });
+  });
+}
+
+it('GPUDelaunayTessellation triangulates cocircular and hull-collinear sites without losing area', async () => {
+  const device = await getWebGPUTestDevice();
+  if (!device) {
+    return;
+  }
+  const cases: {name: string; points: number[][]; triangles: number}[] = [
+    {
+      // Every site is a hull vertex: T = 2n - 2 - n = 10 whatever diagonals the ties select.
+      name: 'twelve cocircular sites',
+      points: [
+        [5, 0],
+        [4, 3],
+        [3, 4],
+        [0, 5],
+        [-3, 4],
+        [-4, 3],
+        [-5, 0],
+        [-4, -3],
+        [-3, -4],
+        [0, -5],
+        [3, -4],
+        [4, -3]
+      ],
+      triangles: 10
+    },
+    {
+      // Boundary points b = 8 (corners and midpoints), n = 9: T = 2n - 2 - b = 8; scipy agrees.
+      name: 'square with edge midpoints, corners first',
+      points: [
+        [0, 0],
+        [2, 0],
+        [2, 2],
+        [0, 2],
+        [1, 1],
+        [1, 0],
+        [2, 1],
+        [1, 2],
+        [0, 1]
+      ],
+      triangles: 8
+    },
+    {
+      name: 'square with edge midpoints, midpoints first',
+      points: [
+        [1, 0],
+        [2, 1],
+        [1, 2],
+        [0, 1],
+        [0, 0],
+        [2, 0],
+        [2, 2],
+        [0, 2],
+        [1, 1]
+      ],
+      triangles: 8
+    },
+    {
+      // Boundary points 16, n = 25: T = 32; scipy agrees.
+      name: '5x5 lattice',
+      points: Array.from({length: 25}, (_, index) => [index % 5, Math.floor(index / 5)]),
+      triangles: 32
+    }
+  ];
+  for (const {name, points, triangles: expected} of cases) {
+    const coordinates = Float32Array.from(points.flat());
+    const result = await runDelaunay(device, coordinates, 2 * points.length);
+    expect({
+      name,
+      written: result.written,
+      required: result.required,
+      overflow: result.didOverflow
+    }).toEqual({
+      name,
+      written: expected,
+      required: expected,
+      overflow: 0
+    });
+    expect({name, ...checkTriangulation(coordinates, toTriangleRows(result.indices))}).toEqual({
+      name,
+      degenerate: 0,
+      circleViolations: 0,
+      duplicateEdges: 0,
+      areaDifference: 0n
+    });
+  }
 });
 
 it('GPUVoronoiDiagram derives compact internal and clipped hull edges', async () => {

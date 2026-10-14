@@ -105,7 +105,10 @@ async function runProjection(
   const overflow = helpers.output('o-overflow', 'uint32', 1);
   helpers.graph.add(
     new GPULinearReferencing({
-      coordinateSystem,
+      spatialContext:
+        coordinateSystem === 'spherical'
+          ? {coordinateSpace: 'longitude-latitude', metric: 'great-circle'}
+          : undefined,
       points: helpers.input('points', points, 'float32x2'),
       positions: helpers.input('positions', positions, 'float32x2'),
       pathOffsets: helpers.input('path-offsets', pathOffsets, 'uint32'),
@@ -243,7 +246,10 @@ async function runLocate(
   };
   helpers.graph.add(
     new GPULineLocate({
-      coordinateSystem,
+      spatialContext:
+        coordinateSystem === 'spherical'
+          ? {coordinateSpace: 'longitude-latitude', metric: 'great-circle'}
+          : undefined,
       measureMode,
       positions: helpers.input('positions', positions, 'float32x2'),
       pathOffsets: helpers.input('path-offsets', pathOffsets, 'uint32'),

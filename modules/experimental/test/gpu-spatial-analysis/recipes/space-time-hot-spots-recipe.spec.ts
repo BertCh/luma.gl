@@ -17,7 +17,9 @@ import {addSpaceTimeHotSpotsRecipe} from '../../../src/gpu-spatial-analysis/reci
 import {
   computeEmergingHotSpotCells,
   computeSpaceTimeGiStar,
-  createSeededRandom
+  createSeededRandom,
+  SLICE_CASES,
+  SLICE_EVENTS
 } from '../emerging-hot-spots/emerging-hot-spots-oracle';
 import {RecipeTestFixture, isClose} from './recipe-harness';
 
@@ -26,7 +28,7 @@ const HEIGHT = 5;
 const SLICES = 12;
 const CELLS = WIDTH * HEIGHT;
 
-/** Events on a 6x5 lattice over twelve months of 2023; two cells have designed trends. */
+/** Events on a 6x5 lattice over twelve months of 2023: a hot block with growing counts, a cold block. */
 function createEvents() {
   const random = createSeededRandom(31);
   const positions: number[] = [];
@@ -35,11 +37,15 @@ function createEvents() {
   const counts = new Uint32Array(CELLS * SLICES);
   for (let cell = 0; cell < CELLS; cell++) {
     for (let month = 0; month < SLICES; month++) {
-      let eventCount = 2 + Math.floor(random() * 3);
-      if (cell === 1 * WIDTH + 1) {
-        eventCount += 3 * month;
-      } else if (cell === 3 * WIDTH + 4) {
-        eventCount += 25;
+      const column = cell % WIDTH;
+      const row = Math.floor(cell / WIDTH);
+      let eventCount = 8 + Math.floor(random() * 5);
+      if (column >= 1 && column <= 3 && row >= 1 && row <= 2) {
+        // A hot block whose counts grow every month.
+        eventCount += 6 * month;
+      } else if (column >= 4 && row >= 3) {
+        // A cold block with almost no events.
+        eventCount = Math.floor(random() * 2);
       }
       for (let event = 0; event < eventCount; event++) {
         const x = (cell % WIDTH) + 0.05 + 0.9 * random();
@@ -70,7 +76,8 @@ it('addSpaceTimeHotSpotsRecipe counts events into a cube and classifies emerging
   const cube = {gridWidth: WIDTH, gridHeight: HEIGHT, sliceCount: SLICES, values: events.counts};
   const frame = {radius: 1.5, temporalWindow: 1};
   const packed = getGPUEmergingHotSpotParameterValues(frame);
-  const palette = Array.from({length: 17}, (_, category) =>
+  // 18 codes: the 17 ArcGIS categories and UNDETERMINED.
+  const palette = Array.from({length: 18}, (_, category) =>
     packGPUColor(category * 14, 255 - category * 14, 128)
   );
 
@@ -78,6 +85,7 @@ it('addSpaceTimeHotSpotsRecipe counts events into a cube and classifies emerging
   try {
     const cubeOutput = fixture.output('cube', 'uint32', CELLS * SLICES);
     const giZScores = fixture.output('gi-z', 'float32', CELLS * SLICES);
+    const adjustedPValues = fixture.output('adjusted-p', 'float32', CELLS * SLICES);
     const category = fixture.output('category', 'uint32', CELLS);
     const hotSlices = fixture.output('hot-slices', 'uint32', CELLS);
     const trendS = fixture.output('trend-s', 'sint32', CELLS);
@@ -90,7 +98,7 @@ it('addSpaceTimeHotSpotsRecipe counts events into a cube and classifies emerging
         'sint32',
         2
       ),
-      slices: {field: 'month', firstValue: 1, count: SLICES},
+      slices: {step: 'month', origin: {year: 2023, month: 1}, count: SLICES},
       cells: {
         kind: 'lattice',
         positions: fixture.input('positions', events.positions, 'float32x2', eventCount),
@@ -102,20 +110,28 @@ it('addSpaceTimeHotSpotsRecipe counts events into a cube and classifies emerging
       outputs: {
         cube: cubeOutput.view,
         giZScores: giZScores.view,
+        adjustedPValues: adjustedPValues.view,
         category: category.view,
         hotSliceCount: hotSlices.view,
         trendS: trendS.view,
         colors: colors.view
       },
       color: {
-        palette: fixture.input('palette', Uint32Array.from(palette), 'uint32', 17),
+        palette: fixture.input('palette', Uint32Array.from(palette), 'uint32', 18),
         parameters: fixture.parameters(
           'color-parameters',
           'float32',
-          getGPUColorScaleParameterValues({scale: 'ordinal', domainCount: 0, paletteCount: 17})
+          getGPUColorScaleParameterValues({scale: 'ordinal', domainCount: 0, paletteCount: 18})
         )
       }
     });
+    expect(recipe.inference).toEqual({
+      alternative: 'two-sided',
+      permutationCount: 0,
+      multipleTesting: 'benjamini-hochberg',
+      testedRowsDefinition: 'valid space-time bins'
+    });
+    expect(Object.getPrototypeOf(recipe.inference)).toBe(Object.prototype);
     // Calendar, emerging hot spots and color scale: the atomic count path adds no contributor.
     expect(recipe.contributors.length).toBe(3);
     fixture.run();
@@ -130,12 +146,15 @@ it('addSpaceTimeHotSpotsRecipe counts events into a cube and classifies emerging
     for (let bin = 0; bin < z.length; bin++) {
       expect(isClose(z[bin], oracleZ[bin], 2e-3, 1e-3), `z bin ${bin}`).toBe(true);
     }
-    const oracle = computeEmergingHotSpotCells(z, cube, packed);
+    // Default correction: Benjamini-Hochberg. Classification uses the GPU's adjusted p-values.
+    const oracle = computeEmergingHotSpotCells(z, cube, packed, {
+      adjustedPValues: await fixture.readFloat32(adjustedPValues, CELLS * SLICES)
+    });
     const gpuCategory = await fixture.readUint32(category, CELLS);
     const level = packed[3];
     let compared = 0;
     for (let cell = 0; cell < CELLS; cell++) {
-      if (Math.abs(oracle.trendP[cell] - level) > 0.02 * level) {
+      if (!(Math.abs(oracle.trendP[cell] - level) <= 0.02 * level)) {
         expect(gpuCategory[cell], `category ${cell}`).toBe(oracle.category[cell]);
         compared++;
       }
@@ -202,7 +221,7 @@ it('addSpaceTimeHotSpotsRecipe accepts cell ids with weights and skips out-of-ra
         'sint32',
         2
       ),
-      slices: {field: 'month', firstValue: 1, count: sliceCount},
+      slices: {step: 'month', origin: {year: 2023, month: 1}, count: sliceCount},
       cells: {
         kind: 'ids',
         cellIds: fixture.input('cell-ids', events.cellIds, 'uint32', eventCount),
@@ -344,7 +363,7 @@ it('addSpaceTimeHotSpotsRecipe atomic counts match the sorted GPUGroupStatistics
           timestamps,
           mask: eventMask,
           calendarParameters,
-          slices: {field: 'month', firstValue: 1, count: sliceCount},
+          slices: {step: 'month', origin: {year: 2023, month: 1}, count: sliceCount},
           cells,
           parameters,
           outputs: {
@@ -356,7 +375,8 @@ it('addSpaceTimeHotSpotsRecipe atomic counts match the sorted GPUGroupStatistics
           }
         });
         expect(recipe.contributors.length, name).toBe(path === 'sorted' ? 3 : 2);
-        expect(recipe.status.stages.length, name).toBe(path === 'sorted' ? 1 : 0);
+        // The slice-range stage is always present; the sorted path adds cube-counts.
+        expect(recipe.status.stages.length, name).toBe(path === 'sorted' ? 2 : 1);
         runs.push({name, path, cube, giZScores, category, groupOverflow});
       }
     }
@@ -378,6 +398,87 @@ it('addSpaceTimeHotSpotsRecipe atomic counts match the sorted GPUGroupStatistics
       );
     }
     expect(expected[(3 * WIDTH + 2) * sliceCount + 4]).toBeGreaterThanOrEqual(160);
+  } finally {
+    fixture.destroy();
+  }
+}, 120000);
+
+it('addSpaceTimeHotSpotsRecipe bins absolute time steps across year boundaries (python calendar reference)', async () => {
+  const device = await getWebGPUTestDevice();
+  if (!device) {
+    return;
+  }
+  // One cell, one event per reference timestamp. Expected slices come from python datetime
+  // arithmetic (scratchpad/fix/work/B/b5_emerging_ref.py), independent of the shader formulas.
+  const eventCount = SLICE_EVENTS.length;
+  const words: number[] = [];
+  for (const [year, month, day, hour] of SLICE_EVENTS) {
+    const milliseconds = Date.UTC(year, month - 1, day, hour);
+    words.push(milliseconds % 2 ** 32, Math.floor(milliseconds / 2 ** 32));
+  }
+  const fixture = new RecipeTestFixture(device, 'space-time-hot-spots-steps-test');
+  try {
+    const timestamps = fixture.input('timestamps', Uint32Array.from(words), 'uint32x2', eventCount);
+    const positions = fixture.input(
+      'positions',
+      new Float32Array(eventCount * 2).fill(0.5),
+      'float32x2',
+      eventCount
+    );
+    const calendarParameters = fixture.input(
+      'calendar-parameters',
+      getGPUCalendarBucketsParameterValues(0),
+      'sint32',
+      2
+    );
+    const parameters = fixture.parameters(
+      'emerging-parameters',
+      'float32',
+      getGPUEmergingHotSpotParameterValues({radius: 0, temporalWindow: 0})
+    );
+    const runs = SLICE_CASES.map((testCase, index) => {
+      const [year, month, day, hour] = testCase.origin;
+      const name = `${testCase.step}-${testCase.interval}-${index}`;
+      const cube = fixture.output(`${name}-cube`, 'uint32', testCase.count);
+      const skipped = fixture.output(`${name}-skipped`, 'uint32', 1);
+      const recipe = addSpaceTimeHotSpotsRecipe(fixture.graph, {
+        id: name,
+        timestamps,
+        calendarParameters,
+        slices: {
+          step: testCase.step,
+          interval: testCase.interval,
+          origin: {year, month, day, hour},
+          count: testCase.count
+        },
+        cells: {
+          kind: 'lattice',
+          positions,
+          width: 1,
+          height: 1,
+          bounds: [0, 0, 1, 1]
+        },
+        parameters,
+        outputs: {cube: cube.view, skippedEventCount: skipped.view}
+      });
+      // The slice-range stage exposes the same count as invalidCount.
+      expect(recipe.status.stages[0].stage).toBe('slice-range');
+      return {testCase, name, cube, skipped};
+    });
+    fixture.run();
+    for (const {testCase, name, cube, skipped} of runs) {
+      const expected = new Array<number>(testCase.count).fill(0);
+      let expectedSkipped = 0;
+      for (const slice of testCase.expected) {
+        if (slice >= 0) {
+          expected[slice]++;
+        } else {
+          expectedSkipped++;
+        }
+      }
+      expect(await fixture.readUint32(cube, testCase.count), name).toEqual(expected);
+      expect(await fixture.readUint32(skipped, 1), name).toEqual([expectedSkipped]);
+    }
   } finally {
     fixture.destroy();
   }

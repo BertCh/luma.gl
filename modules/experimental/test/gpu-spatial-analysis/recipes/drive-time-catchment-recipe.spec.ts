@@ -16,6 +16,7 @@ import {
   NONE,
   snapOracle
 } from '../../gpu-network/network-accessibility/network-accessibility-oracle';
+import {createGreatCircleNetworkMetric} from '../../gpu-network/network-metric-oracle';
 import {quadbinCellToTile, quadbinPointToCell} from '../cell-aggregation/cell-aggregation-oracle';
 import {webMercatorTileBounds} from '../cell-indexing/cell-indexing-oracle';
 import {GPU_SPATIAL_JOIN_NO_FEATURE} from '../../../src/gpu-spatial-analysis/spatial-join/index';
@@ -395,6 +396,116 @@ it('addDriveTimeCatchmentRecipe returns isochrone rings and joins demand against
     expect(compared).toBeGreaterThan(demandCount * 0.7);
     expect(expectedInside).toBeGreaterThan(10);
     expect(expectedInside).toBeLessThan(compared - 10);
+  } finally {
+    fixture.destroy();
+  }
+}, 120000);
+
+it('addDriveTimeCatchmentRecipe snaps lon/lat great-circle and reports snapping overflow', async () => {
+  const device = await getWebGPUTestDevice();
+  if (!device) {
+    return;
+  }
+  // At 60 N a degree of longitude spans half a degree of latitude. The grid is square on the
+  // ground (0.02 degrees of longitude by 0.01 of latitude, about 1.11 km each way), so snapping
+  // in raw degrees prefers east-west roads; the great-circle snap does not.
+  const origin = [10, 60];
+  const {positions: gridPositions, edges} = createGridFixture(3, WIDTH, HEIGHT);
+  const positions = Float32Array.from(gridPositions, (value, index) =>
+    Math.fround(origin[index % 2] + (index % 2 === 0 ? 0.02 : 0.01) * value)
+  );
+  const csr = buildCSR(NODE_COUNT, edges);
+  const random = createSeededRandom(33);
+  const facilities = Float32Array.from([10.023, 60.012, 10.071, 60.031]);
+  const demandCount = 120;
+  const demand = new Float32Array(demandCount * 2);
+  for (let row = 0; row < demandCount; row++) {
+    demand[2 * row] = Math.fround(origin[0] + 0.02 * random() * (WIDTH - 1));
+    demand[2 * row + 1] = Math.fround(origin[1] + 0.01 * random() * (HEIGHT - 1));
+  }
+  const maxSnapDistance = 2000;
+  const metric = createGreatCircleNetworkMetric();
+  const snapOptions = {edgeCosts: csr.weights, maxSnapDistance, metric};
+  const facilitySnaps = snapOracle(facilities, positions, csr.sources, csr.neighbors, snapOptions);
+  const nodeCosts = dijkstra(
+    csr,
+    NODE_COUNT,
+    facilitySnaps.flatMap(snap => [
+      {node: csr.sources[snap.edge], cost: snap.sourceCost},
+      {node: csr.neighbors[snap.edge], cost: snap.targetCost}
+    ])
+  );
+  const demandSnaps = snapOracle(demand, positions, csr.sources, csr.neighbors, snapOptions);
+  const times = demandSnaps.map(snap =>
+    snap.edge === NONE
+      ? Infinity
+      : Math.min(
+          nodeCosts[csr.sources[snap.edge]] + snap.sourceCost,
+          nodeCosts[csr.neighbors[snap.edge]] + snap.targetCost
+        )
+  );
+  // The fixture discriminates: raw-degree snapping picks other edges for some demand.
+  const degreeSnaps = snapOracle(demand, positions, csr.sources, csr.neighbors, {
+    edgeCosts: csr.weights
+  });
+  expect(
+    degreeSnaps.filter((snap, row) => {
+      const edge = demandSnaps[row].edge;
+      const sameRoad =
+        Math.min(csr.sources[snap.edge], csr.neighbors[snap.edge]) ===
+          Math.min(csr.sources[edge], csr.neighbors[edge]) &&
+        Math.max(csr.sources[snap.edge], csr.neighbors[snap.edge]) ===
+          Math.max(csr.sources[edge], csr.neighbors[edge]);
+      return !sameRoad;
+    }).length
+  ).toBeGreaterThan(5);
+
+  const fixture = new RecipeTestFixture(device, 'drive-time-great-circle-test');
+  try {
+    const {graph} = fixture;
+    const outputs = {
+      times: fixture.output('demand-times', 'float32', demandCount),
+      facilitiesOverflow: fixture.output('snap-facilities-overflow', 'uint32', 1),
+      demandOverflow: fixture.output('snap-demand-overflow', 'uint32', 1)
+    };
+    const recipe = addDriveTimeCatchmentRecipe(graph, {
+      spatialContext: {coordinateSpace: 'longitude-latitude', metric: 'none'},
+      network: {
+        offsets: fixture.input('offsets', csr.offsets, 'uint32', NODE_COUNT + 1),
+        neighbors: fixture.input('neighbors', csr.neighbors, 'uint32', csr.neighbors.length),
+        weights: fixture.input('weights', csr.weights, 'float32', csr.weights.length),
+        nodePositions: fixture.input('positions', positions, 'float32x2', NODE_COUNT)
+      },
+      facilities: fixture.input('facilities', facilities, 'float32x2', 2),
+      demand: fixture.input('demand', demand, 'float32x2', demandCount),
+      maxSnapDistance: fixture.input(
+        'max-snap-distance',
+        Float32Array.of(maxSnapDistance),
+        'float32',
+        1
+      ),
+      candidateCapacity: 64,
+      maxIterations: 64,
+      bandBreaks: fixture.input('band-breaks', Float32Array.from(BAND_BREAKS), 'float32', 4),
+      outputs: {
+        demandTimes: outputs.times.view,
+        snapping: {
+          facilitiesOverflow: outputs.facilitiesOverflow.view,
+          demandOverflow: outputs.demandOverflow.view
+        }
+      }
+    });
+    expect(recipe.status.stages.map(({stage}) => stage).slice(0, 2)).toEqual([
+      'snap-facilities',
+      'snap-demand'
+    ]);
+    fixture.run();
+    expect((await fixture.readUint32(outputs.facilitiesOverflow, 1))[0]).toBe(0);
+    expect((await fixture.readUint32(outputs.demandOverflow, 1))[0]).toBe(0);
+    const gpuTimes = await fixture.readFloat32(outputs.times, demandCount);
+    for (let row = 0; row < demandCount; row++) {
+      expect(isClose(gpuTimes[row], times[row], 1e-3, 1e-4), `time ${row}`).toBe(true);
+    }
   } finally {
     fixture.destroy();
   }

@@ -8,6 +8,7 @@ import {
   getGPUGeographicDistributionParameterValues,
   GPU_GEOGRAPHIC_DISTRIBUTION_PARAMETER_LENGTH,
   GPUGeographicDistribution,
+  GPURoseStatistic,
   type GPUGeographicDistributionOutput,
   type GPUGeographicDistributionProps
 } from '../../../src/gpu-spatial-analysis/geographic-distribution';
@@ -326,4 +327,48 @@ it('oracle: median centre and directional mean', () => {
   });
   closeTo(degenerate.directionalMeans[0], Math.PI / 2, 1e-12);
   closeTo(degenerate.directionalMeans[2], 2, 1e-12);
+});
+
+it('GPUGeographicDistribution and GPURoseStatistic are planar only', () => {
+  const graph = new GPUCommandGraph(createNullWebGPUDevice(), {id: 'spatial-context'});
+  const lonLat = {coordinateSpace: 'longitude-latitude', metric: 'none'} as const;
+  const greatCircle = {coordinateSpace: 'longitude-latitude', metric: 'great-circle'} as const;
+  expect(new GPUGeographicDistribution(createProps(graph)).spatialContext).toMatchObject({
+    coordinateSpace: 'planar',
+    metric: 'native'
+  });
+  const planar = {coordinateSpace: 'planar', metric: 'native', units: 'native'} as const;
+  expect(
+    new GPUGeographicDistribution(createProps(graph, {spatialContext: planar})).spatialContext
+  ).toBe(planar);
+  for (const context of [lonLat, greatCircle]) {
+    expect(
+      () => new GPUGeographicDistribution(createProps(graph, {spatialContext: context}))
+    ).toThrow(/does not support longitude-latitude coordinates; project positions to a planar/);
+  }
+  expect(
+    () =>
+      new GPUGeographicDistribution(
+        createProps(graph, {
+          spatialContext: {coordinateSpace: 'discrete-grid', metric: 'none', gridFamily: 'h3'}
+        })
+      )
+  ).toThrow(/does not support discrete-grid/);
+
+  const roseProps = (spatialContext?: typeof lonLat) => ({
+    id: 'rose',
+    spatialContext,
+    starts: view(graph, 'rose-starts', 'float32x2', 4),
+    ends: view(graph, 'rose-ends', 'float32x2', 4),
+    circular: {
+      mode: 'directional',
+      angleUnit: 'radians',
+      origin: 'positive-x-counter-clockwise',
+      binCount: 4
+    } as const,
+    summary: view(graph, 'rose-summary', 'float32', 5),
+    bins: view(graph, 'rose-bins', 'float32', 4)
+  });
+  expect(new GPURoseStatistic(roseProps()).spatialContext.coordinateSpace).toBe('planar');
+  expect(() => new GPURoseStatistic(roseProps(lonLat))).toThrow(/project positions to a planar/);
 });

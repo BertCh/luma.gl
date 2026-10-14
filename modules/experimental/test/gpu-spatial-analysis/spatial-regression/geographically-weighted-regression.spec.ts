@@ -166,6 +166,8 @@ function createFixture(device: Device, scene: Scene): Fixture {
       parameters: parameterBuffer.importToGraph(graph),
       maximumBandwidthCount: LADDER_CAPACITY,
       maximumNeighborCount: MAXIMUM_NEIGHBOR_COUNT,
+      // The oracle compares the caller ladder; refinement has its own spec.
+      refinement: false,
       output: {
         coefficients: float('coefficients', rows * p),
         localR2: float('localR2', rows),

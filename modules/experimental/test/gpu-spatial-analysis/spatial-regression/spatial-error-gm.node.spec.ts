@@ -28,29 +28,51 @@ it('GPUSpatialErrorGM validates its inputs and declares its nodes', () => {
     predictors: view('float32', 20),
     response: view('float32', 10),
     predictorCount: 2,
-    output: {table: view('float32', 16), summary: view('float32', 6), status: view('uint32', 1)},
+    output: {table: view('float32', 16), summary: view('float32', 13), status: view('uint32', 1)},
     ...overrides
   });
   const expectThrows = (overrides: Partial<GPUSpatialErrorGMProps>, message: RegExp) =>
     expect(() => new GPUSpatialErrorGM(createProps(overrides))).toThrow(message);
   expectThrows({predictorCount: 0}, /predictorCount/);
-  expectThrows({predictorCount: 9}, /predictorCount/);
+  expectThrows({predictorCount: 16}, /predictorCount/);
+  expectThrows({estimator: 'ml' as 'homoskedastic'}, /estimator/);
   expectThrows({response: view('float32', 9)}, /response length/);
   expectThrows({predictors: view('float32', 19)}, /predictors length/);
   expectThrows({tileRowCount: 0}, /tileRowCount/);
   expectThrows(
-    {output: {table: view('float32', 15), summary: view('float32', 6), status: view('uint32', 1)}},
+    {output: {table: view('float32', 15), summary: view('float32', 13), status: view('uint32', 1)}},
     /output.table/
   );
   expectThrows(
-    {output: {table: view('float32', 16), summary: view('float32', 5), status: view('uint32', 1)}},
+    {output: {table: view('float32', 16), summary: view('float32', 12), status: view('uint32', 1)}},
     /output.summary/
   );
-  const nodes = new GPUSpatialErrorGM(createProps()).getCommandNodes(graph);
-  const names = nodes.map(node => node.id.replace('spatial-error-gm-', ''));
-  expect(names.filter(name => !name.startsWith('ols-'))).toEqual([
+  // 15 predictors (the OLS and 16-wide Cholesky limit) are accepted.
+  expect(
+    () =>
+      new GPUSpatialErrorGM(
+        createProps({
+          predictorCount: 15,
+          predictors: view('float32', 150),
+          output: {
+            table: view('float32', 68),
+            summary: view('float32', 13),
+            status: view('uint32', 1)
+          }
+        })
+      )
+  ).not.toThrow();
+  const kelejianPrucha = new GPUSpatialErrorGM(
+    createProps({estimator: 'kelejian-prucha', id: 'kp'})
+  );
+  const kelejianPruchaNames = kelejianPrucha
+    .getCommandNodes(graph)
+    .map(node => node.id.replace('kp-', ''));
+  expect(kelejianPruchaNames.filter(name => !name.startsWith('ols-'))).toEqual([
     'means-tiles',
     'means-merge',
+    'weights-norm-tiles',
+    'weights-norm-merge',
     'residual-lag',
     'moments-tiles',
     'moments-merge',
@@ -62,7 +84,39 @@ it('GPUSpatialErrorGM validates its inputs and declares its nodes', () => {
     'residuals-merge',
     'finish'
   ]);
+  const homoskedastic = new GPUSpatialErrorGM(createProps());
+  expect(homoskedastic.estimator).toBe('homoskedastic');
+  const names = homoskedastic
+    .getCommandNodes(graph)
+    .map(node => node.id.replace('spatial-error-gm-', ''));
+  expect(names.filter(name => !name.startsWith('ols-') && !name.startsWith('traces-'))).toEqual([
+    'means-tiles',
+    'means-merge',
+    'weights-norm-tiles',
+    'weights-norm-merge',
+    'residual-lag',
+    'moments-tiles',
+    'moments-merge',
+    'lambda-solve',
+    'filtered-moments-tiles',
+    'filtered-moments-merge',
+    'filtered-solve',
+    'residuals-tiles',
+    'residuals-merge',
+    'residual-lag-fgls',
+    'moments-tiles-fgls',
+    'moments-merge-fgls',
+    'power-sums-tiles-first',
+    'power-sums-merge-first',
+    'lambda-solve-weighted',
+    'power-sums-tiles-final',
+    'power-sums-merge-final',
+    'filtered-moments-tiles-final',
+    'filtered-moments-merge-final',
+    'finish'
+  ]);
   expect(names.some(name => name.startsWith('ols-'))).toBe(true);
+  expect(names.some(name => name.startsWith('traces-'))).toBe(true);
   device.destroy();
 });
 

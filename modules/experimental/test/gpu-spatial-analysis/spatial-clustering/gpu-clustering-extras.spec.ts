@@ -16,7 +16,14 @@ import {
 } from '../../../src/gpu-spatial-analysis/spatial-clustering/index';
 import {readFloat32, readUint32} from '../../utils/gpu-contributor-test-utils';
 import {WeightsRig} from '../spatial-weights/spatial-weights-harness';
-import {computeKMeansOracle} from './kmeans-oracle';
+import {getKMeansRestartSeed} from '../../../src/gpu-spatial-analysis/spatial-clustering/gpu-kmeans';
+import {
+  computeKMeansOracle,
+  computeKMeansOracleFromCenters,
+  createSeparatedBlobScene,
+  selectBestKMeansRestart,
+  SKLEARN_RELOCATION_FIXTURES
+} from './kmeans-oracle';
 import {
   clusterPointsOracle,
   createClusteredPoints,
@@ -156,6 +163,7 @@ async function runKMeans(
     tolerance?: number;
     initialization?: GPUKMeansInitialization;
     seed?: number;
+    restartCount?: number;
   }
 ) {
   const rows = positions.length / 2;
@@ -165,15 +173,19 @@ async function runKMeans(
   const sizes = rig.output('uint32', options.k);
   const squaredDistances = rig.output('float32', rows);
   const convergence = rig.output('uint32', 2);
+  const inertia = rig.output('float32', 1);
   rig.run(
     new GPUKMeans({
       positions: rig.input(positions, 'float32x2', rows),
+      // The default initialization is 'kmeans++'; the first-valid oracle specs pin it explicitly.
+      initialization: 'first-valid',
       ...options,
       labels: labels.view,
       centers: centers.view,
       sizes: sizes.view,
       squaredDistances: squaredDistances.view,
-      convergence: convergence.view
+      convergence: convergence.view,
+      inertia: inertia.view
     })
   );
   const result = {
@@ -181,7 +193,8 @@ async function runKMeans(
     centers: await readFloat32(centers.buffer, options.k * 2),
     sizes: await readUint32(sizes.buffer, options.k),
     squaredDistances: await readFloat32(squaredDistances.buffer, rows),
-    convergence: await readUint32(convergence.buffer, 2)
+    convergence: await readUint32(convergence.buffer, 2),
+    inertia: (await readFloat32(inertia.buffer, 1))[0]
   };
   rig.destroy();
   return result;
@@ -293,6 +306,38 @@ it('GPUKMeans leaves centers empty when there are fewer valid points than k', as
   expect(result.squaredDistances[0]).toBe(0);
 });
 
+for (const fixture of SKLEARN_RELOCATION_FIXTURES) {
+  it(`GPUKMeans relocates empty clusters like scikit-learn (${fixture.name})`, async () => {
+    const device = await getWebGPUTestDevice();
+    if (!device) return;
+    const positions = new Float32Array(fixture.positions);
+    // The duplicated first rows are the 'first-valid' centers, so the duplicates start empty.
+    for (const [steps, expected] of Object.entries(fixture.steps)) {
+      const result = await runKMeans(device, positions, {k: fixture.k, iterations: Number(steps)});
+      expect(result.labels).toEqual(expected.labels);
+      for (let index = 0; index < expected.centers.length; index++) {
+        expect(Math.abs(result.centers[index] - expected.centers[index])).toBeLessThan(
+          1e-4 * (1 + Math.abs(expected.centers[index]))
+        );
+      }
+      expect(Math.abs(result.inertia - expected.inertia)).toBeLessThan(1e-4 * expected.inertia);
+      expect(result.sizes.every(size => size > 0)).toBe(true);
+    }
+  });
+}
+
+it('GPUKMeans moves still-empty clusters to the largest cluster when all points coincide', async () => {
+  const device = await getWebGPUTestDevice();
+  if (!device) return;
+  // Every distance is 0, so scikit-learn relocates nothing and averages the empty centers onto the
+  // largest cluster.
+  const positions = new Float32Array([3, 4, 3, 4, 3, 4, 3, 4]);
+  const result = await runKMeans(device, positions, {k: 3, iterations: 4});
+  expect(result.sizes).toEqual([4, 0, 0]);
+  expect(Array.from(result.centers)).toEqual([3, 4, 3, 4, 3, 4]);
+  expect(result.inertia).toBe(0);
+});
+
 it("GPUKMeans 'kmeans++' is deterministic per seed and recovers separated blobs", async () => {
   const device = await getWebGPUTestDevice();
   if (!device) return;
@@ -329,4 +374,59 @@ it("GPUKMeans 'kmeans++' is deterministic per seed and recovers separated blobs"
   }
   // Seeds permute which blob seeds which cluster ID, so the result is seed dependent.
   expect(new Set(outcomes).size).toBeGreaterThan(1);
+});
+
+it('GPUKMeans reports the total inertia of the returned clustering', async () => {
+  const device = await getWebGPUTestDevice();
+  if (!device) return;
+  const positions = createBlobs(5, 150);
+  const expected = computeKMeansOracle(positions, 3, 8);
+  const result = await runKMeans(device, positions, {k: 3, iterations: 8});
+  expect(Math.abs(result.inertia - expected.inertia)).toBeLessThan(1e-4 * expected.inertia);
+});
+
+it('GPUKMeans restartCount returns the lowest-inertia restart (ties: lowest index)', async () => {
+  const device = await getWebGPUTestDevice();
+  if (!device) return;
+  const positions = createBlobs(11, 240);
+  const options = {k: 6, iterations: 30, initialization: 'kmeans++' as const, seed: 3};
+  const restartCount = 5;
+  // Reproduce every restart on its own with the derived seed, then apply the restart rule.
+  const singles = [];
+  for (let restart = 0; restart < restartCount; restart++) {
+    singles.push(
+      await runKMeans(device, positions, {...options, seed: getKMeansRestartSeed(3, restart)})
+    );
+  }
+  const winner = selectBestKMeansRestart(singles.map(single => single.inertia));
+  const multi = await runKMeans(device, positions, {...options, restartCount});
+  expect(multi.labels).toEqual(singles[winner].labels);
+  expect(multi.sizes).toEqual(singles[winner].sizes);
+  expect(Array.from(multi.centers)).toEqual(Array.from(singles[winner].centers));
+  expect(multi.inertia).toBe(singles[winner].inertia);
+  expect(Array.from(multi.convergence)).toEqual(Array.from(singles[winner].convergence));
+  // Best-of-n can only match or beat the first restart.
+  expect(multi.inertia).toBeLessThanOrEqual(singles[0].inertia);
+  // Labels are the nearest-center assignment against the returned centers (zero update steps).
+  const refit = computeKMeansOracleFromCenters(positions, Array.from(multi.centers), 0);
+  expect(refit.labels).toEqual(multi.labels);
+});
+
+it('GPUKMeans reaches the scikit-learn inertia on a well-separated scene for every seed', async () => {
+  const device = await getWebGPUTestDevice();
+  if (!device) return;
+  // Oracle: scikit-learn 1.9.1 KMeans, fix/work/C/U7/kmeans-sklearn.py (see the node spec).
+  const sklearnInertia = 3707.8660708989237;
+  const positions = createSeparatedBlobScene(4, 60);
+  for (const restartCount of [1, 4]) {
+    const result = await runKMeans(device, positions, {
+      k: 4,
+      iterations: 30,
+      initialization: 'kmeans++',
+      seed: 5,
+      restartCount
+    });
+    expect(result.sizes).toEqual([60, 60, 60, 60]);
+    expect(Math.abs(result.inertia - sklearnInertia)).toBeLessThan(2e-4 * sklearnInertia);
+  }
 });

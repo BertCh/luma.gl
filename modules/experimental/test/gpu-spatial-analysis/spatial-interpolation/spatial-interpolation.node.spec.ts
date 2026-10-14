@@ -9,10 +9,13 @@ import {
   getGPUInverseDistanceWeightingParameterValues,
   GPUFocalStatistics,
   GPUInverseDistanceWeighting,
+  GPUKriging,
   type GPUFocalStatisticsProps,
-  type GPUInverseDistanceWeightingProps
+  type GPUInverseDistanceWeightingProps,
+  type GPUKrigingProps
 } from '../../../src/gpu-spatial-analysis/spatial-interpolation';
 import {createNullWebGPUDevice} from '../../utils/gpu-contributor-test-utils';
+import {KRIGING_ROBUSTNESS_REFERENCE} from './kriging-robustness-reference';
 import {
   computeFocalStatisticsOnCPU,
   interpolateInverseDistanceWeightingOnCPU
@@ -35,7 +38,7 @@ function createInterpolationProps(
   return {
     positions: view(graph, 'float32x2', 10),
     values: view(graph, 'float32', 10),
-    parameters: view(graph, 'float32', 8),
+    parameters: view(graph, 'float32', 9),
     width: 4,
     height: 3,
     indexGridSize: [2, 2],
@@ -44,6 +47,23 @@ function createInterpolationProps(
       values: view(graph, 'float32', 12),
       counts: view(graph, 'uint32', 12)
     },
+    ...overrides
+  };
+}
+
+function createKrigingProps(
+  graph: GPUCommandGraph,
+  overrides: Partial<GPUKrigingProps> = {}
+): GPUKrigingProps {
+  return {
+    positions: view(graph, 'float32x2', 10),
+    values: view(graph, 'float32', 10),
+    parameters: view(graph, 'float32', 12),
+    width: 4,
+    height: 3,
+    indexGridSize: [2, 2],
+    indexBounds: [0, 0, 1, 1],
+    output: {values: view(graph, 'float32', 12)},
     ...overrides
   };
 }
@@ -80,7 +100,7 @@ it('spatial interpolation parameter helpers pack layouts', () => {
         minimumNeighborCount: 2
       })
     )
-  ).toEqual([0, 1, 2, 3, 5, 3, 4, 2]);
+  ).toEqual([0, 1, 2, 3, 5, 3, 4, 2, 0]);
   expect(
     Array.from(
       getGPUInverseDistanceWeightingParameterValues({
@@ -88,7 +108,7 @@ it('spatial interpolation parameter helpers pack layouts', () => {
         searchRadius: 1
       })
     )
-  ).toEqual([0, 0, 1, 1, 1, 2, 0, 1]);
+  ).toEqual([0, 0, 1, 1, 1, 2, 0, 1, 0]);
   expect(() =>
     getGPUInverseDistanceWeightingParameterValues({
       extent: [0, 0, 1, 1],
@@ -184,6 +204,200 @@ it('GPUInverseDistanceWeighting returns deterministic node IDs', () => {
     expect(ids[0].every(id => id.startsWith('idw-'))).toBe(true);
     expect(ids[0].slice(-2)).toEqual(['idw-sort-cells', 'idw-gather']);
   }
+});
+
+it('inverse distance weighting packs and validates the taper', () => {
+  const values = (taper: 'none' | 'modified-shepard' | undefined, searchRadius = 5) =>
+    getGPUInverseDistanceWeightingParameterValues({extent: [0, 0, 1, 1], searchRadius, taper});
+  expect(values('modified-shepard')[8]).toBe(1);
+  expect(values('none')[8]).toBe(0);
+  expect(values(undefined)[8]).toBe(0);
+  // The Franke-Nielson weight is undefined without a finite radius.
+  expect(() => values('modified-shepard', Infinity)).toThrow(/finite searchRadius/);
+  expect(values('none', Infinity)[4]).toBe(Infinity);
+  expect(() => values('shepard' as never)).toThrow(/taper/);
+});
+
+it('interpolateInverseDistanceWeightingOnCPU matches numpy for the modified Shepard taper', () => {
+  // Oracle: scratchpad/fix/work/D/interpolation/kriging_oracle.py F5 (numpy 2.5.4), Franke and
+  // Nielson (1980) weights ((R - d)+ / (R d))^p versus 1 / d^p on a 5 x 3 raster.
+  const reference = KRIGING_ROBUSTNESS_REFERENCE.idwTaper;
+  for (const testCase of reference.cases) {
+    const result = interpolateInverseDistanceWeightingOnCPU({
+      positions: Float32Array.from(reference.positions),
+      values: Float32Array.from(reference.values),
+      width: reference.width,
+      height: reference.height,
+      indexBounds: [0, 0, 5, 3],
+      extent: reference.extent as [number, number, number, number],
+      searchRadius: testCase.radius,
+      power: testCase.power,
+      neighborCount: 0,
+      minimumNeighborCount: 1,
+      taper: testCase.taper as 'none' | 'modified-shepard'
+    });
+    for (let cell = 0; cell < result.values.length; cell++) {
+      const expected = testCase.expected[cell];
+      if (Number.isNaN(expected)) {
+        expect(Number.isNaN(result.values[cell]), `cell ${cell}`).toBe(true);
+      } else {
+        expect(result.values[cell], `${testCase.taper} cell ${cell}`).toBeCloseTo(expected, 4);
+      }
+    }
+  }
+  // The taper really changes the surface: same radius, different weights.
+  const [hardCutoff, tapered] = reference.cases;
+  expect(tapered.expected).not.toEqual(hardCutoff.expected);
+});
+
+it('interpolation operators accept planar and great-circle contexts only', () => {
+  const geographic = {coordinateSpace: 'longitude-latitude', metric: 'great-circle'} as const;
+  const projected = {
+    coordinateSpace: 'planar',
+    metric: 'native',
+    units: 'native',
+    frame: {id: 'utm-32632', kind: 'crs', crs: 'EPSG:32632'}
+  } as const;
+  withGraph(graph => {
+    expect(
+      new GPUKriging(createKrigingProps(graph, {spatialContext: geographic})).spatialContext.metric
+    ).toBe('great-circle');
+    expect(
+      new GPUInverseDistanceWeighting(createInterpolationProps(graph, {spatialContext: geographic}))
+        .spatialContext.metric
+    ).toBe('great-circle');
+    // Rhumb, ellipsoidal and absent metrics would silently differ from the sphere.
+    for (const metric of ['none', 'rhumb', 'ellipsoidal'] as const) {
+      const context = {coordinateSpace: 'longitude-latitude', metric} as const;
+      expect(() => new GPUKriging(createKrigingProps(graph, {spatialContext: context}))).toThrow(
+        /great-circle|metric/
+      );
+      expect(
+        () =>
+          new GPUInverseDistanceWeighting(
+            createInterpolationProps(graph, {spatialContext: context})
+          )
+      ).toThrow(/great-circle|metric/);
+    }
+    // Discrete grids and topology-only contexts are not coordinates.
+    expect(
+      () =>
+        new GPUKriging(
+          createKrigingProps(graph, {
+            spatialContext: {coordinateSpace: 'topology-only', metric: 'none'}
+          })
+        )
+    ).toThrow(/does not support/);
+    expect(new GPUKriging(createKrigingProps(graph)).spatialContext.coordinateSpace).toBe('planar');
+    expect(
+      new GPUKriging(createKrigingProps(graph, {spatialContext: projected})).spatialContext.frame
+        ?.id
+    ).toBe('utm-32632');
+    expect(
+      new GPUInverseDistanceWeighting(createInterpolationProps(graph, {spatialContext: projected}))
+        .spatialContext.frame?.id
+    ).toBe('utm-32632');
+    // The great-circle kernels still fit eight storage bindings.
+    const full = new GPUKriging(createKrigingProps(graph, {id: 'kg', spatialContext: geographic}));
+    expect(
+      full
+        .getCommandNodes(graph)
+        .map(node => node.id)
+        .slice(-1)
+    ).toEqual(['kg-solve']);
+  });
+});
+
+it('GPUKriging validates its props', () => {
+  const cases: [(graph: GPUCommandGraph) => Partial<GPUKrigingProps>, RegExp][] = [
+    [() => ({width: 0}), /width/],
+    [() => ({maximumNeighborCount: 17}), /maximumNeighborCount/],
+    [() => ({indexBounds: [0, 0, -1, 1]}), /indexBounds/],
+    [graph => ({mask: view(graph, 'uint32', 9)}), /mask length/],
+    [graph => ({parameters: view(graph, 'float32', 11)}), /parameters/],
+    [graph => ({output: {values: view(graph, 'float32', 11)}}), /output.values/],
+    [
+      graph => ({
+        output: {
+          values: view(graph, 'float32', 12),
+          crossValidationVariance: view(graph, 'float32', 10)
+        }
+      }),
+      /needs output.crossValidationPrediction/
+    ],
+    [
+      graph => ({
+        output: {
+          values: view(graph, 'float32', 12),
+          crossValidationPrediction: view(graph, 'float32', 9)
+        }
+      }),
+      /one row per sample/
+    ],
+    [
+      graph => ({
+        output: {values: view(graph, 'float32', 12), uncertainCount: view(graph, 'uint32', 0)}
+      }),
+      /uncertainCount must contain one uint32 row/
+    ],
+    [
+      graph => ({
+        output: {
+          values: view(graph, 'float32', 12),
+          invalidCount: view(graph, 'float32', 1) as never
+        }
+      }),
+      /invalidCount/
+    ]
+  ];
+  for (const [overrides, message] of cases) {
+    withGraph(graph => {
+      expect(() => new GPUKriging(createKrigingProps(graph, overrides(graph)))).toThrow(message);
+    });
+  }
+});
+
+it('GPUKriging schedules only requested nodes within eight storage bindings', () => {
+  withGraph(graph => {
+    const minimal = new GPUKriging(createKrigingProps(graph, {id: 'kr'}));
+    expect(
+      minimal
+        .getCommandNodes(graph)
+        .map(node => node.id)
+        .slice(-1)
+    ).toEqual(['kr-solve']);
+  });
+  withGraph(graph => {
+    // The maximum combination (mask, variance, both counters, cross-validation) must still fit
+    // the default eight bindings per kernel; createWGSLKernelNode throws otherwise.
+    const full = new GPUKriging(
+      createKrigingProps(graph, {
+        id: 'kr',
+        mask: view(graph, 'uint32', 10),
+        output: {
+          values: view(graph, 'float32', 12),
+          variance: view(graph, 'float32', 12),
+          crossValidationPrediction: view(graph, 'float32', 10),
+          crossValidationVariance: view(graph, 'float32', 10),
+          invalidCount: view(graph, 'uint32', 1),
+          uncertainCount: view(graph, 'uint32', 1)
+        }
+      })
+    );
+    expect(
+      full
+        .getCommandNodes(graph)
+        .map(node => node.id)
+        .slice(-6)
+    ).toEqual([
+      'kr-apply-mask',
+      'kr-solve',
+      'kr-cross-validation',
+      'kr-clear-invalid',
+      'kr-clear-uncertain',
+      'kr-count-status'
+    ]);
+  });
 });
 
 it('GPUFocalStatistics validates its props and schedules only requested kernels', () => {

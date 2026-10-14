@@ -4,3 +4,4 @@
 
 import './gpu-line-simplification.spec';
 import './gpu-visvalingam.spec';
+import './gpu-line-simplification-great-circle.spec';

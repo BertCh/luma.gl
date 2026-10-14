@@ -13,6 +13,7 @@ import {
   GPU_SEGMENT_RING_ASSEMBLY_NONE
 } from '../../../src/gpu-spatial-analysis/ring-assembly';
 import {GPUCellSetOutline} from '../../../src/gpu-spatial-analysis/cell-set-outline';
+import type {GPUSpatialContext} from '../../../src/gpu-spatial-analysis/contracts/spatial-context';
 import {
   GPUPointInPolygonJoin,
   GPU_SPATIAL_JOIN_NO_FEATURE
@@ -38,6 +39,11 @@ import {
   containsPoint,
   type OracleSegment
 } from './ring-assembly-oracle';
+
+/** The former `geographic` flag (default true in the harness) expressed as a spatial context. */
+function getSpatialContext(geographic: boolean | undefined): GPUSpatialContext | undefined {
+  return (geographic ?? true) ? {coordinateSpace: 'longitude-latitude', metric: 'none'} : undefined;
+}
 
 const NONE = GPU_SEGMENT_RING_ASSEMBLY_NONE;
 
@@ -253,7 +259,7 @@ async function runAssembly(
       vertexTolerance: options.tolerance,
       interiorSide: options.interiorSide,
       normalizeWinding: options.normalizeWinding,
-      geographic: options.geographic,
+      spatialContext: getSpatialContext(options.geographic),
       splitTouchingRings: options.splitTouchingRings,
       cancelOpposingSegments: options.cancelOpposingSegments,
       output: getRingOutput(graph, buffers, segments.length, options, withGroups)
@@ -506,6 +512,58 @@ it('GPUSegmentRingAssembly chains shells, holes, islands and touching corners', 
   const again = await runAssembly(device, scene, options);
   expect(again.positions).toEqual(run.positions);
   expect(again.offsets).toEqual(run.offsets);
+});
+
+it('GPUSegmentRingAssembly chains UTM-offset rings at tiny tolerances and flags non-finite vertices', async () => {
+  const device = await getWebGPUTestDevice();
+  if (!device) {
+    return;
+  }
+  // Vertices near x 500,000, y 4,500,000 m (C-04): the old i32 floor(v * k) saturated, so every
+  // vertex shared one hash bucket and assembly went quadratic. Integer meters are exact in f32.
+  const scene: OracleSegment[] = [];
+  for (let row = 0; row < 6; row++) {
+    for (let column = 0; column < 6; column++) {
+      scene.push(
+        ...polygonSegments(square(0, 0, 2, 2, true), [500000 + 4 * column, 4500000 + 4 * row])
+      );
+    }
+  }
+  const options: AssemblyOptions = {
+    ringCapacity: 48,
+    vertexCapacity: 6 * 6 * 5 + 16,
+    tolerance: 0.01,
+    geographic: false
+  };
+  const run = await runAssembly(device, scene, options);
+  expect(run.count).toBe(36);
+  expect(run.overflow).toBe(0);
+  expect(run.open).toBe(0);
+  expect(run.touching).toBe(0);
+  for (let ring = 0; ring < 36; ring++) {
+    expect(run.offsets[ring + 1] - run.offsets[ring]).toBe(5);
+  }
+  expect(run.segmentRings.every(ring => ring !== NONE)).toBe(true);
+  // Every ring starts and ends on the same UTM vertex and stays within its 2 m square.
+  for (let ring = 0; ring < 36; ring++) {
+    const first = run.positions[run.offsets[ring]];
+    const last = run.positions[run.offsets[ring + 1] - 1];
+    expect(last).toEqual(first);
+    expect(first[0]).toBeGreaterThanOrEqual(500000);
+    expect(first[1]).toBeGreaterThanOrEqual(4500000);
+  }
+  // Tiny tolerances keep chaining correctly: the cell size grows with the frame extent, so
+  // nothing clamps or collides and overflow stays 0.
+  for (const tolerance of [5e-5, 1e-4, 1e-5, 1e-6]) {
+    const tiny = await runAssembly(device, scene, {...options, tolerance});
+    expect(tiny.count, `tolerance ${tolerance}`).toBe(36);
+    expect(tiny.overflow).toBe(0);
+    expect(tiny.open).toBe(0);
+  }
+  // A non-finite vertex cannot be matched: reported as overflow.
+  const broken = scene.map(segment => [...segment] as OracleSegment);
+  broken[5][0] = Number.NaN;
+  expect((await runAssembly(device, broken, options)).overflow).toBe(1);
 });
 
 it('GPUSegmentRingAssembly honors interiorSide, normalizeWinding and reversed input', async () => {
@@ -1056,7 +1114,7 @@ async function runPolygons(
       vertexTolerance: options.tolerance,
       interiorSide: options.interiorSide,
       normalizeWinding: options.normalizeWinding,
-      geographic: options.geographic,
+      spatialContext: getSpatialContext(options.geographic),
       output: {...getRingOutput(graph, buffers, segments.length, options, false), polygons}
     })
   );

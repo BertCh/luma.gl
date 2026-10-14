@@ -4,7 +4,10 @@
 
 import {getWebGPUTestDevice} from '@luma.gl/test-utils';
 import {expect, it} from 'vitest';
-import {GPU_GLOBAL_PERMUTATION_RESULT} from '../../../src/gpu-spatial-analysis/permutation-inference';
+import {
+  getGPUPermutationParameterValues,
+  GPU_GLOBAL_PERMUTATION_RESULT
+} from '../../../src/gpu-spatial-analysis/permutation-inference';
 import {
   createGlobalPermutationHarness,
   type GlobalPermutationReadback
@@ -13,6 +16,8 @@ import {
   computeGlobalPermutationOracle,
   createKnnWeights,
   createSeededRandom,
+  createWeights,
+  type CPUSpatialWeights,
   type GlobalPermutationOracle
 } from './permutation-oracle';
 
@@ -31,7 +36,8 @@ function expectMatchesOracle(
   result: GlobalPermutationReadback,
   oracle: GlobalPermutationOracle,
   permutations: number,
-  label: string
+  label: string,
+  alternative: 'two-sided' | 'directed' | 'greater' | 'lesser' | 'folded' = 'two-sided'
 ): void {
   const tolerance = 1e-4 * Math.max(...oracle.simulated.map(Math.abs), Math.abs(oracle.observed));
   expect(
@@ -56,7 +62,11 @@ function expectMatchesOracle(
   expect(
     close(
       result.results[R.pseudoPValue],
-      (result.results[R.exceedances] + 1) / (permutations + 1),
+      Math.min(
+        (alternative === 'two-sided' ? 2 : 1) * (result.results[R.exceedances] + 1),
+        permutations + 1
+      ) /
+        (permutations + 1),
       1e-7,
       1e-6
     )
@@ -128,7 +138,10 @@ it('GPUGlobalPermutationTest matches the oracle for Moran, Geary, General G and 
     });
     expectMatchesOracle(result, oracle, 199, statistic);
     // Strong spatial structure: the observed statistic is outside every permutation.
-    expect(result.results[R.pseudoPValue], statistic).toBeCloseTo(1 / 200, 6);
+    // Two-sided (default): 2 (0 + 1) / (P + 1).
+    expect(result.results[R.pseudoPValue], statistic).toBeCloseTo(2 / 200, 6);
+    expect(result.results[R.islandCount]).toBe(0);
+    expect(result.results[R.analysisCount]).toBe(900);
     for (let index = 199; index < 255; index++) {
       expect(result.referenceDistribution[index]).toBeNaN();
     }
@@ -206,5 +219,132 @@ it('GPUGlobalPermutationTest is bitwise reproducible per seed and follows seed, 
     'shuffled'
   );
   expect(harness.buildCount).toBe(1);
+  harness.destroy();
+});
+
+function createLatticeWeights(side: number, rowStandardize: boolean): CPUSpatialWeights {
+  const lists: [number, number][][] = [];
+  for (let row = 0; row < side; row++) {
+    for (let column = 0; column < side; column++) {
+      const neighbors: number[] = [];
+      if (row > 0) neighbors.push((row - 1) * side + column);
+      if (row < side - 1) neighbors.push((row + 1) * side + column);
+      if (column > 0) neighbors.push(row * side + column - 1);
+      if (column < side - 1) neighbors.push(row * side + column + 1);
+      lists.push(
+        neighbors.map((neighbor): [number, number] => [
+          neighbor,
+          rowStandardize ? 1 / neighbors.length : 1
+        ])
+      );
+    }
+  }
+  return createWeights(lists);
+}
+
+it('GPUGlobalPermutationTest handles islands, masks and re-standardization like the oracle', async () => {
+  const device = await getWebGPUTestDevice();
+  if (!device) {
+    return;
+  }
+  const side = 20;
+  const count = side * side;
+  const random = createSeededRandom(31);
+  const lattice = createLatticeWeights(side, true);
+  // Rows 0 and 1 lose every neighbor (islands, and nobody lists them as neighbor either).
+  const lists = Array.from({length: count}, (_, row): [number, number][] => {
+    if (row === 0 || row === 1) {
+      return [];
+    }
+    return Array.from(
+      lattice.neighbors.subarray(lattice.offsets[row], lattice.offsets[row + 1]),
+      (neighbor, slot): [number, number] => [neighbor, lattice.weights[lattice.offsets[row] + slot]]
+    ).filter(([neighbor]) => neighbor > 1);
+  });
+  const weights = createWeights(lists);
+  const values = Float32Array.from({length: count}, () => random() * 3);
+  const mask = Uint32Array.from({length: count}, () => (random() < 0.9 ? 1 : 0));
+  mask[0] = 1;
+  mask[1] = 1;
+  const parameters = {seed: 17, permutations: 199};
+  const analysisCounts: Record<string, number> = {};
+  for (const islands of ['exclude', 'keep'] as const) {
+    const harness = createGlobalPermutationHarness(device, {
+      scene: {weights, values, mask, rowStandardized: true},
+      statistic: 'moran',
+      parameters,
+      islands,
+      maximumPermutations: 255
+    });
+    const result = await harness.run();
+    harness.destroy();
+    const oracle = computeGlobalPermutationOracle({
+      weights,
+      values,
+      mask,
+      statistic: 'moran',
+      islands,
+      rowStandardized: true,
+      ...parameters
+    });
+    expectMatchesOracle(result, oracle, 199, `islands ${islands}`);
+    expect(result.results[R.islandCount]).toBe(oracle.islandCount);
+    expect(result.results[R.islandCount]).toBeGreaterThanOrEqual(2);
+    expect(result.results[R.analysisCount]).toBe(oracle.analysisCount);
+    analysisCounts[islands] = result.results[R.analysisCount];
+  }
+  // Kept islands stay in n; excluded ones do not.
+  expect(analysisCounts['keep']).toBeGreaterThan(analysisCounts['exclude']);
+});
+
+it('GPUGlobalPermutationTest reports p = 1 when every permutation ties the observed statistic', async () => {
+  const device = await getWebGPUTestDevice();
+  if (!device) {
+    return;
+  }
+  const side = 12;
+  const weights = createLatticeWeights(side, false);
+  const values = new Float32Array(side * side).fill(4);
+  for (const alternative of ['directed', 'two-sided'] as const) {
+    const harness = createGlobalPermutationHarness(device, {
+      scene: {weights, values},
+      statistic: 'getisOrdG',
+      parameters: {seed: 2, permutations: 99},
+      alternative,
+      maximumPermutations: 99
+    });
+    const result = await harness.run();
+    harness.destroy();
+    // Every relabeling of constant data is the identity: g = l = P, so p = 1 (not 1 / (P + 1)).
+    expect(result.results[R.pseudoPValue], alternative).toBe(1);
+  }
+});
+
+it('GPUGlobalPermutationTest never clamps an invalid permutation count', async () => {
+  const device = await getWebGPUTestDevice();
+  if (!device) {
+    return;
+  }
+  const {positions, values} = createScene(300, 3);
+  const weights = createKnnWeights(positions, 5, true);
+  const harness = createGlobalPermutationHarness(device, {
+    scene: {weights, values},
+    statistic: 'moran',
+    parameters: {seed: 1, permutations: 49},
+    maximumPermutations: 49
+  });
+  const valid = await harness.run();
+  expect(valid.results[R.permutations]).toBe(49);
+  for (const requested of [0, 50, 5000]) {
+    const words = getGPUPermutationParameterValues({seed: 1, permutations: 49});
+    words[2] = requested;
+    const result = await harness.run(words);
+    expect(result.results[R.permutations], `P=${requested}`).toBeNaN();
+    expect(result.results[R.pseudoPValue], `P=${requested}`).toBeNaN();
+    expect(result.results[R.exceedances]).toBeNaN();
+    expect(result.referenceDistribution.every(Number.isNaN)).toBe(true);
+    // The observed statistic is still reported.
+    expect(result.results[R.observed]).toBeCloseTo(valid.results[R.observed], 6);
+  }
   harness.destroy();
 });

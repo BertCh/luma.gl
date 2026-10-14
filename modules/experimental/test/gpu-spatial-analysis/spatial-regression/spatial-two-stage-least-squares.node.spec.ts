@@ -20,7 +20,7 @@ import {createNullWebGPUDevice} from '../../utils/gpu-contributor-test-utils';
 
 let serial = 0;
 
-it('GPUSpatialTwoStageLeastSquares validates its inputs and declares ten kernels', () => {
+it('GPUSpatialTwoStageLeastSquares validates its inputs and declares its kernels', () => {
   const device = createNullWebGPUDevice();
   const graph = new GPUCommandGraph(device);
   const view = <Format extends 'uint32' | 'float32'>(format: Format, length: number) =>
@@ -36,26 +36,45 @@ it('GPUSpatialTwoStageLeastSquares validates its inputs and declares ten kernels
     predictors: view('float32', 20),
     response: view('float32', 10),
     predictorCount: 2,
-    output: {table: view('float32', 16), summary: view('float32', 7), status: view('uint32', 1)},
+    output: {table: view('float32', 16), summary: view('float32', 16), status: view('uint32', 1)},
     ...overrides
   });
   const expectThrows = (overrides: Partial<GPUSpatialTwoStageLeastSquaresProps>, message: RegExp) =>
     expect(() => new GPUSpatialTwoStageLeastSquares(createProps(overrides))).toThrow(message);
   expectThrows({predictorCount: 0}, /predictorCount/);
   expectThrows({predictorCount: 9}, /predictorCount/);
+  // Order 2 factors 3 k instrument columns in a 16-wide Cholesky: k <= 5 (6 used to throw later).
+  expectThrows({predictorCount: 6, instrumentOrder: 2}, /predictorCount/);
   expectThrows({response: view('float32', 9)}, /response length/);
   expectThrows({predictors: view('float32', 19)}, /predictors length/);
   expectThrows({tileRowCount: 0}, /tileRowCount/);
   expectThrows({instrumentOrder: 3 as 2}, /instrumentOrder/);
   expectThrows(
-    {output: {table: view('float32', 15), summary: view('float32', 7), status: view('uint32', 1)}},
+    {output: {table: view('float32', 15), summary: view('float32', 16), status: view('uint32', 1)}},
     /output.table/
   );
+  expect(
+    () =>
+      new GPUSpatialTwoStageLeastSquares(
+        createProps({
+          predictorCount: 5,
+          instrumentOrder: 2,
+          predictors: view('float32', 50),
+          output: {
+            table: view('float32', 28),
+            summary: view('float32', 16),
+            status: view('uint32', 1)
+          }
+        })
+      )
+  ).not.toThrow();
   const nodes = new GPUSpatialTwoStageLeastSquares(createProps()).getCommandNodes(graph);
   const ids = nodes.map(node => node.id.replace('spatial-two-stage-least-squares-', ''));
   expect(ids.filter(id => !id.startsWith('transpose-'))).toEqual([
     'means-tiles',
     'means-merge',
+    'weights-norm-tiles',
+    'weights-norm-merge',
     'moments-tiles',
     'moments-merge',
     'solve',

@@ -2,10 +2,20 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {GPU_REGRESSION_PRECISION_CONDITION_LIMIT} from '../../../src/gpu-spatial-analysis/contracts/model-result';
 import {
   GPU_ORDINARY_LEAST_SQUARES_PIVOT_TOLERANCE,
-  GPU_ORDINARY_LEAST_SQUARES_SUMMARY_LENGTH
+  GPU_ORDINARY_LEAST_SQUARES_SUMMARY_BREUSCH_PAGAN,
+  GPU_ORDINARY_LEAST_SQUARES_SUMMARY_BREUSCH_PAGAN_P_VALUE,
+  GPU_ORDINARY_LEAST_SQUARES_SUMMARY_CONDITION_NUMBER,
+  GPU_ORDINARY_LEAST_SQUARES_SUMMARY_CORRELATION_CONDITION_NUMBER,
+  GPU_ORDINARY_LEAST_SQUARES_SUMMARY_KOENKER_BASSETT,
+  GPU_ORDINARY_LEAST_SQUARES_SUMMARY_KOENKER_BASSETT_P_VALUE,
+  GPU_ORDINARY_LEAST_SQUARES_SUMMARY_LENGTH,
+  GPU_ORDINARY_LEAST_SQUARES_SUMMARY_MAXIMUM_VARIANCE_INFLATION_FACTOR,
+  GPU_ORDINARY_LEAST_SQUARES_SUMMARY_PRECISION_WARNING
 } from '../../../src/gpu-spatial-analysis/spatial-regression/ordinary-least-squares-parameters';
+import {getSymmetricEigenvalueRangeOnCPU} from '../../../src/gpu-spatial-analysis/spatial-regression/spatial-regression-solve';
 import {getChiSquareSurvival} from '../../../src/gpu-spatial-analysis/spatial-regression/ordinary-least-squares-statistics';
 
 /** Input of {@link fitOrdinaryLeastSquaresOnCPU}. */
@@ -163,8 +173,10 @@ function fitCore(
 
 /**
  * Float64 oracle for `GPUOrdinaryLeastSquares`: centered moments, scaled Cholesky solve, the same
- * pivot tolerance, statistics, Jarque-Bera, and Koenker Breusch-Pagan (regression of `e^2` on the
- * predictors without ridge). Predictor and response values are the exact float32 inputs.
+ * pivot tolerance, statistics, Jarque-Bera, Koenker-Bassett and classic Breusch-Pagan (regression
+ * of `e^2` on the predictors without ridge), and the conditioning slots (Belsley condition number
+ * of the unit-diagonal raw `[1, X]` Gram, correlation condition number and variance inflation of the
+ * factored correlation matrix, precision warning). Predictor and response values are the exact float32 inputs.
  */
 export function fitOrdinaryLeastSquaresOnCPU(
   input: OrdinaryLeastSquaresOracleInput
@@ -256,9 +268,11 @@ export function fitOrdinaryLeastSquaresOnCPU(
   const skewness = sumCubes / n / m2 ** 1.5;
   const kurtosis = sumFourth / n / (m2 * m2);
   const jarqueBera = (n / 6) * (skewness ** 2 + (kurtosis - 3) ** 2 / 4);
-  // Koenker Breusch-Pagan: n R2 of e^2 ~ X (no ridge).
-  let breuschPagan = NaN;
-  let breuschPaganP = NaN;
+  // Koenker-Bassett: n R2 of e^2 ~ X (no ridge); Breusch-Pagan: 0.5 R2 (sum e^4 / s2^2 - n).
+  let koenkerBassett = NaN;
+  let koenkerBassettP = NaN;
+  let classicBreuschPagan = NaN;
+  let classicBreuschPaganP = NaN;
   const breuschPaganFit = fitCore(
     rows.map((row, index) => ({x: row.x, y: squared[index]})),
     k,
@@ -270,9 +284,14 @@ export function fitOrdinaryLeastSquaresOnCPU(
       explained += breuschPaganFit.slopes[j] * breuschPaganFit.moments[j][k];
     }
     const bpR2 = Math.min(1, Math.max(0, explained / breuschPaganFit.moments[k][k]));
-    breuschPagan = n * bpR2;
-    breuschPaganP = getChiSquareSurvival(breuschPagan, k);
+    koenkerBassett = n * bpR2;
+    koenkerBassettP = getChiSquareSurvival(koenkerBassett, k);
+    if (sumSquares > 0) {
+      classicBreuschPagan = 0.5 * bpR2 * ((sumFourth * n * n) / (sumSquares * sumSquares) - n);
+      classicBreuschPaganP = getChiSquareSurvival(classicBreuschPagan, k);
+    }
   }
+  const conditioning = getOrdinaryLeastSquaresConditioning(fit, lambda);
   const summary = result.summary;
   summary[1] = rSquared;
   summary[2] = 1 - ((1 - rSquared) * (n - 1)) / freedom;
@@ -282,14 +301,122 @@ export function fitOrdinaryLeastSquaresOnCPU(
   summary[6] = p * Math.log(n) - 2 * logLikelihood;
   summary[7] = jarqueBera;
   summary[8] = Math.exp(-jarqueBera / 2);
-  summary[9] = breuschPagan;
-  summary[10] = breuschPaganP;
+  summary[GPU_ORDINARY_LEAST_SQUARES_SUMMARY_KOENKER_BASSETT] = koenkerBassett;
+  summary[GPU_ORDINARY_LEAST_SQUARES_SUMMARY_KOENKER_BASSETT_P_VALUE] = koenkerBassettP;
+  summary[GPU_ORDINARY_LEAST_SQUARES_SUMMARY_BREUSCH_PAGAN] = classicBreuschPagan;
+  summary[GPU_ORDINARY_LEAST_SQUARES_SUMMARY_BREUSCH_PAGAN_P_VALUE] = classicBreuschPaganP;
+  summary[GPU_ORDINARY_LEAST_SQUARES_SUMMARY_CONDITION_NUMBER] = conditioning.conditionNumber;
+  summary[GPU_ORDINARY_LEAST_SQUARES_SUMMARY_CORRELATION_CONDITION_NUMBER] =
+    conditioning.correlationConditionNumber;
+  summary[GPU_ORDINARY_LEAST_SQUARES_SUMMARY_MAXIMUM_VARIANCE_INFLATION_FACTOR] =
+    conditioning.maximumVarianceInflationFactor;
+  summary[GPU_ORDINARY_LEAST_SQUARES_SUMMARY_PRECISION_WARNING] =
+    conditioning.correlationConditionNumber > GPU_REGRESSION_PRECISION_CONDITION_LIMIT ? 1 : 0;
   summary[11] = sumSquares;
   summary[12] = totalSumSquares;
   summary[13] = skewness;
   summary[14] = kurtosis;
   summary[15] = lambda;
   return result;
+}
+
+/**
+ * Float64 conditioning of a successful core fit: the Belsley number (raw `[1, X]` Gram scaled to
+ * unit diagonal, rebuilt from the centered moments and means), and the extreme eigenvalues and
+ * inverse diagonal of the factored (ridge-penalized) predictor correlation matrix.
+ */
+function getOrdinaryLeastSquaresConditioning(
+  fit: CoreFit,
+  ridgeLambda: number
+): {
+  conditionNumber: number;
+  correlationConditionNumber: number;
+  maximumVarianceInflationFactor: number;
+} {
+  const k = fit.slopes.length;
+  const p = k + 1;
+  const n = fit.rowCount;
+  const raw = new Float64Array(p * p);
+  raw[0] = n;
+  for (let i = 0; i < k; i++) {
+    raw[1 + i] = n * fit.means[i];
+    raw[(1 + i) * p] = n * fit.means[i];
+    for (let j = 0; j < k; j++) {
+      raw[(1 + i) * p + 1 + j] = fit.moments[i][j] + n * fit.means[i] * fit.means[j];
+    }
+  }
+  const scaled = new Float64Array(p * p);
+  for (let i = 0; i < p; i++) {
+    for (let j = 0; j < p; j++) {
+      scaled[i * p + j] = raw[i * p + j] / Math.sqrt(raw[i * p + i] * raw[j * p + j]);
+    }
+  }
+  const [gramMinimum, gramMaximum] = getSymmetricEigenvalueRangeOnCPU(scaled, p);
+  const correlation = new Float64Array(k * k);
+  for (let i = 0; i < k; i++) {
+    for (let j = 0; j < k; j++) {
+      correlation[i * k + j] =
+        fit.moments[i][j] / (fit.scale[i] * fit.scale[j]) +
+        (i === j ? ridgeLambda / fit.scale[i] ** 2 : 0);
+    }
+  }
+  const [correlationMinimum, correlationMaximum] = getSymmetricEigenvalueRangeOnCPU(correlation, k);
+  return {
+    conditionNumber: Math.sqrt(gramMaximum / gramMinimum),
+    correlationConditionNumber: correlationMaximum / correlationMinimum,
+    maximumVarianceInflationFactor: Math.max(...fit.correlationInverse.map((row, i) => row[i]))
+  };
+}
+
+/**
+ * Scene with strongly heteroskedastic, skewed errors: the noise standard deviation grows with the
+ * first predictor and the noise is a centered exponential, so the normal-error Breusch-Pagan and
+ * the studentized Koenker-Bassett statistics differ clearly.
+ */
+export function createHeteroskedasticOrdinaryLeastSquaresScene(
+  seed: number,
+  rowCount: number
+): OrdinaryLeastSquaresScene {
+  const random = createOrdinaryLeastSquaresRandom(seed);
+  const k = 2;
+  const predictors = new Float32Array(rowCount * k);
+  const response = new Float32Array(rowCount);
+  for (let row = 0; row < rowCount; row++) {
+    const x0 = 40 + 10 * random();
+    const x1 = 43 + 10 * random();
+    predictors[row * k] = x0;
+    predictors[row * k + 1] = x1;
+    const scale = 0.05 * (x0 - 39) ** 2;
+    const noise = (-Math.log(1 - random()) - 1) * scale;
+    response[row] = 2 + 3 * x0 - x1 + noise;
+  }
+  return {predictors, response, predictorCount: k};
+}
+
+/**
+ * Three predictors where the second is the first plus noise of standard deviation
+ * `collinearityNoise` (smaller is more collinear); the third is independent.
+ */
+export function createCollinearOrdinaryLeastSquaresScene(
+  seed: number,
+  rowCount: number,
+  collinearityNoise: number
+): OrdinaryLeastSquaresScene {
+  const random = createOrdinaryLeastSquaresRandom(seed);
+  const k = 3;
+  const predictors = new Float32Array(rowCount * k);
+  const response = new Float32Array(rowCount);
+  for (let row = 0; row < rowCount; row++) {
+    const x0 = 40 + 10 * random();
+    const x1 = x0 + (random() + random() + random() - 1.5) * 2 * collinearityNoise;
+    const x2 = 5 + 4 * random();
+    predictors[row * k] = x0;
+    predictors[row * k + 1] = x1;
+    predictors[row * k + 2] = x2;
+    const noise = (random() + random() + random() + random() - 2) * 0.5;
+    response[row] = 1 + 0.5 * x0 + 0.25 * x1 - 2 * x2 + noise;
+  }
+  return {predictors, response, predictorCount: k};
 }
 
 /** Seeded LCG in [0, 1) (Numerical Recipes constants). */

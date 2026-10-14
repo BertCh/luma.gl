@@ -248,7 +248,8 @@ it('GPUSkaterRegions and GPURegionPartitionEvaluation match spopt SpanningForest
         minimumSize,
         maximumSize,
         crossLinkFraction,
-        ignoredRows
+        ignoredRows,
+        pseudoF
       } = GPU_REGION_PARTITION_EVALUATION_LAYOUT;
       expect(summary[countIndex], `${label} regions`).toBe(expected.regionCount);
       expect(summary[withinSsd]).toBeCloseTo(run.score, 2);
@@ -259,6 +260,10 @@ it('GPUSkaterRegions and GPURegionPartitionEvaluation match spopt SpanningForest
       expect(summary[maximumSize]).toBe(expected.maximumSize);
       expect(summary[crossLinkFraction]).toBeCloseTo(expected.crossLinkFraction, 5);
       expect(summary[ignoredRows]).toBe(0);
+      // Pseudo-F against sklearn.metrics.calinski_harabasz_score (f32 sums: three digits).
+      expect(Math.abs(summary[pseudoF] - run.pseudoF), `${label} pseudo-F`).toBeLessThan(
+        1e-3 * run.pseudoF
+      );
       // The cut log: applied cuts equal the extra regions, and their gains sum to the SSD drop.
       const cuts = await readUint32(skater.cutEdges.buffer, maximumRegionCount - 1);
       const gains = await readFloat32(skater.cutGains.buffer, maximumRegionCount - 1);

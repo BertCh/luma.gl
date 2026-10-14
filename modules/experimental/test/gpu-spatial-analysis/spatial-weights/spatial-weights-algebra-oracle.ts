@@ -187,7 +187,14 @@ export function computeSummaryOracle(csr: OracleCSR, tolerance = 0) {
   const columnSums = new Array<number>(rows).fill(0);
   const cardinality: number[] = [];
   for (let row = 0; row < rows; row++) {
-    cardinality.push(csr.offsets[row + 1] - csr.offsets[row]);
+    // Cardinality counts ACTIVE slots (positive weight, in range, not self): the neighbor definition.
+    let active = 0;
+    for (let slot = csr.offsets[row]; slot < csr.offsets[row + 1]; slot++) {
+      if (csr.weights[slot] > 0 && csr.neighbors[slot] < rows && csr.neighbors[slot] !== row) {
+        active++;
+      }
+    }
+    cardinality.push(active);
     for (let slot = csr.offsets[row]; slot < csr.offsets[row + 1]; slot++) {
       const column = csr.neighbors[slot];
       const weight = csr.weights[slot];
@@ -208,6 +215,10 @@ export function computeSummaryOracle(csr: OracleCSR, tolerance = 0) {
     slots: csr.offsets[rows],
     asymmetricSlots,
     isolates: cardinality.filter(count => count === 0).length,
+    emptyRows: Array.from(
+      {length: rows},
+      (_, row) => csr.offsets[row + 1] - csr.offsets[row]
+    ).filter(count => count === 0).length,
     minimumCardinality: Math.min(...cardinality),
     maximumCardinality: Math.max(...cardinality),
     cardinality

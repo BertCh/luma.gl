@@ -227,3 +227,47 @@ it('H3 lattice algorithm (f64 simulation) matches h3-js polygonToCells', () => {
   );
   expect(totalDisagreements).toBe(0);
 });
+
+it('H3 lattice keeps every cell of tall high-latitude polygons (h3-js oracle)', () => {
+  // D-07: longitude spacing taken at the poleward edge lost 448 of 1756 res-3 cells over 0-85
+  // degrees. Truth is h3-js polygonToCells (the package this spec already imports).
+  const features = roundFeatures([
+    [[createRectangleRing([-20, 0, 20, 80])]],
+    [[createRectangleRing([-141, 41.7, -52, 83.1])]],
+    [[createRectangleRing([30, -82, 45, -5])]]
+  ]);
+  const arrays = flattenCoverFeatures(features);
+  for (const resolution of [2, 3]) {
+    const lattice = coverH3LatticeOnCPU(arrays, resolution);
+    const expected = coverH3OnCPU(features, resolution);
+    expect(expected.cells.length).toBeGreaterThan(100);
+    expect(countCoverDisagreements(lattice, expected)).toBe(0);
+  }
+});
+
+it('GPUCellCover declares longitude/latitude and wires antimeridian and polar status', () => {
+  const graph = new GPUCommandGraph(createNullWebGPUDevice(), {id: 'cell-cover-status'});
+  const view = <Format extends 'uint32'>(format: Format, length: number) =>
+    createTransientView(graph, `status-${serial++}`, format, length);
+  expect(new GPUCellCover(createProps(graph)).spatialContext.coordinateSpace).toBe(
+    'longitude-latitude'
+  );
+  expect(
+    () =>
+      new GPUCellCover(
+        createProps(graph, {spatialContext: {coordinateSpace: 'planar', metric: 'native'}})
+      )
+  ).toThrow(/does not support planar/);
+  const base = createProps(graph);
+  const ids = new GPUCellCover({
+    ...base,
+    output: {...base.output, invalidCount: view('uint32', 1), uncertainCount: view('uint32', 1)}
+  })
+    .getCommandNodes(graph)
+    .map(node => node.id);
+  expect(ids).toContain('cell-cover-clear-invalidCount');
+  expect(ids).toContain('cell-cover-clear-uncertainCount');
+  expect(ids.indexOf('cell-cover-clear-invalidCount')).toBeLessThan(
+    ids.indexOf('cell-cover-count')
+  );
+});

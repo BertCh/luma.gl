@@ -196,10 +196,11 @@ it('computeRipleyOnCPU matches a hand-computed three-point pattern', () => {
   expect(none.pairCorrelation[0]).toBeCloseTo(((100 / 6) * 2) / Math.PI, 12);
   expect(none.pairCorrelation[1]).toBeCloseTo(0, 12);
 
-  // Border: every point is exactly 1 from the boundary, so only r_0 = 1 has a border set, and the
-  // result equals the uncorrected K there (lambda = (n - 1) / A); larger radii are undefined.
+  // Border: every point is exactly 1 from the boundary, so only r_0 = 1 has a border set. With
+  // spatstat's lambda = n / A the estimate is A * 2 / (n * 3) = 100 * 2 / 9 there, which is
+  // (n - 1) / n of the uncorrected K; larger radii are undefined.
   const border = computeRipleyOnCPU(scene, {...frame, edgeCorrection: 'border'}, 5);
-  expect(border.k[0]).toBeCloseTo((100 / 6) * 2, 12);
+  expect(border.k[0]).toBeCloseTo((100 * 2) / 9, 12);
   expect(border.k.slice(1).every(Number.isNaN)).toBe(true);
 
   // Isotropic: the d = 1 pair lies at distance exactly 1 from the left and bottom sides, so the
@@ -248,4 +249,61 @@ it('computeRipleyOnCPU separates clustered, random and regular patterns by L(r) 
   expect(at(clustered)[1]).toBeGreaterThan(2);
   expect(at(regular)[0]).toBeLessThan(-1);
   expect(Math.abs(at(uniform)[2])).toBeLessThan(1.5);
+});
+
+it('gpu-ripley declares planar-only spatial support', () => {
+  expectThrows(
+    () => ({
+      spatialContext: {coordinateSpace: 'longitude-latitude', metric: 'great-circle'} as const
+    }),
+    /project positions to a planar frame first/
+  );
+  expectThrows(
+    () => ({spatialContext: {coordinateSpace: 'discrete-grid', metric: 'none', gridFamily: 'h3'}}),
+    /does not support discrete-grid/
+  );
+});
+
+// Oracle: <scratchpad>/fix/work/D/point-patterns/border_k.py (numpy 2.5.4, spatstat Kest border
+// estimator with lambda = n / A, Baddeley, Rubak and Turner 2015 section 7.4). All coordinates
+// and radii are exact binary fractions, so the f32 oracle path equals the f64 numpy values.
+it('computeRipleyOnCPU border K uses lambda = n / A like spatstat Kest', () => {
+  const positions = new Float32Array([
+    1, 1.5, 2, 4, 3.5, 2.5, 4, 5.5, 5, 3, 6, 1, 6.5, 5, 7.5, 3.5, 8, 6, 9, 2, 2.5, 3, 5.5, 4.5
+  ]);
+  const frame = {bounds: [0, 0, 10, 7] as const, maximumDistance: 3};
+  const border = computeRipleyOnCPU({positions}, {...frame, edgeCorrection: 'border'}, 4);
+  const expectedBorder = [0, 4.375, 18.666666666666668, 40.833333333333336];
+  const expectedNone = [0, 3.1818181818181817, 13.787878787878787, 28.636363636363633];
+  const none = computeRipleyOnCPU({positions}, {...frame, edgeCorrection: 'none'}, 4);
+  expectedBorder.forEach((value, b) => {
+    expect(border.k[b], `border ${b}`).toBeCloseTo(value, 10);
+    expect(none.k[b], `none ${b}`).toBeCloseTo(expectedNone[b], 10);
+  });
+});
+
+it('getIsotropicWeightOnCPU stays exact far beyond half the shorter window side', () => {
+  // Brute-force circle sampling (isotropic_validity.py: max fraction error 1.1e-5 up to radius 25
+  // in a 12 x 7 window): opposite-side arcs never overlap, so the rectangle formula needs no
+  // validity guard on the radius. The weight cap only matters once the fraction drops below 1/100.
+  const random = createRandom(5);
+  const width = 12;
+  const height = 7;
+  const samples = 100000;
+  for (let trial = 0; trial < 40; trial++) {
+    const x = random() * width;
+    const y = random() * height;
+    const distance = 3.6 + random() * 3.4; // beyond height / 2 = 3.5 and up to ~ width / 2 + 1
+    let inside = 0;
+    for (let sample = 0; sample < samples; sample++) {
+      const angle = ((sample + 0.5) / samples) * 2 * Math.PI;
+      const pointX = x + distance * Math.cos(angle);
+      const pointY = y + distance * Math.sin(angle);
+      if (pointX >= 0 && pointX <= width && pointY >= 0 && pointY <= height) {
+        inside++;
+      }
+    }
+    const weight = getIsotropicWeightOnCPU(x, y, width - x, height - y, distance);
+    expect(Math.abs(1 / weight - inside / samples), `trial ${trial}`).toBeLessThan(1e-3);
+  }
 });

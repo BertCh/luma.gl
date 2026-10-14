@@ -10,3 +10,8 @@ import './spatial-two-stage-least-squares.spec';
 import './spatial-error-gm.spec';
 import './geographically-weighted-regression-nonstationarity.spec';
 import './geographically-weighted-regression-adaptive-grid.spec';
+import './spatial-weights-traces.spec';
+import './spatial-lag-impacts.spec';
+import './geographically-weighted-regression-inference.spec';
+import './spatial-lag-maximum-likelihood.spec';
+import './spatial-error-maximum-likelihood.spec';

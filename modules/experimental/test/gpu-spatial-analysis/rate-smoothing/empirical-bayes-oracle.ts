@@ -21,6 +21,8 @@ export function computeEmpiricalBayesOracle(input: {
   events: ArrayLike<number>;
   populations: ArrayLike<number>;
   mask?: ArrayLike<number>;
+  /** Clamp the prior variance at zero in `smoothed` (Marshall 1991). Defaults to false (esda). */
+  clampPriorVariance?: boolean;
 }): EmpiricalBayesOracle {
   const {events, populations, mask} = input;
   const rows = events.length;
@@ -57,7 +59,10 @@ export function computeEmpiricalBayesOracle(input: {
     const rawVariance = priorVariance + noise;
     const variance = rawVariance < 0 ? noise : rawVariance;
     standardized.push((rate - pooledRate) / Math.sqrt(variance));
-    const weight = priorVariance / rawVariance;
+    const clampedVariance = Math.max(priorVariance, 0);
+    const weight = input.clampPriorVariance
+      ? clampedVariance / (clampedVariance + noise)
+      : priorVariance / rawVariance;
     smoothed.push(weight * rate + (1 - weight) * pooledRate);
     raw.push(rate);
   }

@@ -271,3 +271,61 @@ it('GPUCellRollup and GPUCellPyramid validate levels and columns', () => {
   ).toThrow(/levelFirstRows/);
   device.destroy();
 });
+
+it('cell operations declare their coordinate space', () => {
+  const graph = new GPUCommandGraph(createNullWebGPUDevice());
+  const planar = {coordinateSpace: 'planar', metric: 'native', units: 'native'} as const;
+  const keyed = (overrides: Partial<GPUCellAggregationProps> = {}) => {
+    const {positions: _positions, ...rest} = createProps(graph);
+    return {
+      ...rest,
+      cells: createTransientView(graph, `cells-${serial++}`, 'uint32x2', 10),
+      ...overrides
+    };
+  };
+  // Points are longitude/latitude degrees: planar throws, the default is lon/lat.
+  expect(new GPUCellAggregation(createProps(graph)).spatialContext).toMatchObject({
+    coordinateSpace: 'longitude-latitude',
+    metric: 'none'
+  });
+  expect(() => new GPUCellAggregation(createProps(graph, {spatialContext: planar}))).toThrow(
+    /does not support planar coordinates/
+  );
+  expect(
+    () =>
+      new GPUCellAggregation(
+        createProps(graph, {
+          spatialContext: {coordinateSpace: 'longitude-latitude', metric: 'great-circle'}
+        })
+      )
+  ).toThrow(/does not support the great-circle metric/);
+  // Pre-keyed rows are discrete-grid; the family must match.
+  expect(new GPUCellAggregation(keyed()).spatialContext).toMatchObject({
+    coordinateSpace: 'discrete-grid',
+    gridFamily: 'quadbin'
+  });
+  expect(() => new GPUCellAggregation(keyed({spatialContext: planar}))).toThrow(
+    /does not support planar coordinates/
+  );
+  const grid = (gridFamily: string, gridResolution?: number) =>
+    ({coordinateSpace: 'discrete-grid', metric: 'none', gridFamily, gridResolution}) as const;
+  expect(() => new GPUCellAggregation(keyed({spatialContext: grid('h3')}))).toThrow(
+    /gridFamily must be quadbin/
+  );
+  expect(() => new GPUCellAggregation(keyed({spatialContext: grid('Quadbin', 10)}))).not.toThrow();
+  expect(() => new GPUCellAggregation(keyed({spatialContext: grid('quadbin', 6)}))).toThrow(
+    /coarser than the output resolution 8/
+  );
+  const rollup = (spatialContext: typeof planar | ReturnType<typeof grid>) =>
+    new GPUCellRollup({
+      family: 'h3',
+      sourceResolution: 6,
+      resolution: 4,
+      spatialContext,
+      source: createTable(graph, 16),
+      output: createTable(graph, 8)
+    });
+  expect(() => rollup(grid('h3', 6))).not.toThrow();
+  expect(() => rollup(grid('quadbin', 6))).toThrow(/gridFamily must be h3/);
+  expect(() => rollup(planar)).toThrow(/does not support planar coordinates/);
+});

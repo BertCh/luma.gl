@@ -73,6 +73,7 @@ type FixtureOptions = {
   extentStatistic?: GPUZonalStatisticsExtentStatistic;
   candidateCapacity?: number;
   includeBoundary?: boolean;
+  boundaryRule?: 'half-open' | 'closed' | 'open';
 };
 
 function createPolygonFixture(device: Device, options: FixtureOptions): Fixture {
@@ -151,7 +152,8 @@ function createPolygonFixture(device: Device, options: FixtureOptions): Fixture 
         )!,
         ringOffsets: view('ring-offsets', arrays.ringOffsets, 'uint32', arrays.ringOffsets.length)!,
         candidateCapacity: options.candidateCapacity ?? Math.max(pointCount * featureCount, 4),
-        includeBoundary: options.includeBoundary
+        includeBoundary: options.includeBoundary,
+        boundaryRule: options.boundaryRule
       },
       points,
       values: view(
@@ -296,7 +298,7 @@ function getAreas(features: OraclePolygonFeature[]): number[] {
 }
 
 function getOracleRows(scene: RandomScene) {
-  return joinPointsInPolygons(scene.points, scene.features, true);
+  return joinPointsInPolygons(scene.points, scene.features, 'half-open');
 }
 
 const ALL_OUTPUTS: OutputKey[] = [
@@ -375,6 +377,32 @@ for (const sumOrder of ['atomic', 'sorted'] as const) {
     });
   }
 }
+
+it('GPUZonalStatistics counts boundary points once under the half-open default and every rule', async () => {
+  const device = await getWebGPUTestDevice();
+  if (!device) {
+    return;
+  }
+  // Points on a 0.125 lattice and rectangles on a 0.25 lattice put many points exactly on edges and
+  // vertices. Each rule must match the spatial-join oracle of the same rule.
+  const scene = createRandomScene(11, 12, 3000);
+  for (const boundaryRule of ['closed', 'open'] as const) {
+    const joined = joinPointsInPolygons(scene.points, scene.features, boundaryRule);
+    const fixture = createPolygonFixture(device, {
+      ...scene,
+      boundaryRule,
+      outputKeys: ['counts', 'pointFeatureRows', 'overflow']
+    });
+    fixture.run();
+    expect(await fixture.readUint('pointFeatureRows')).toEqual(joined.featureRows);
+    expect(await fixture.readUint('counts')).toEqual(joined.counts);
+    fixture.destroy();
+  }
+  const halfOpen = joinPointsInPolygons(scene.points, scene.features, 'half-open');
+  const closed = joinPointsInPolygons(scene.points, scene.features, 'closed');
+  // The scene must exercise boundary points, or the rules would agree trivially.
+  expect(halfOpen.counts).not.toEqual(closed.counts);
+});
 
 it('GPUZonalStatistics sorted sums are bitwise reproducible and match atomic sums', async () => {
   const device = await getWebGPUTestDevice();
@@ -660,7 +688,7 @@ it('GPUZonalStatistics updates per frame without recompiling', async () => {
     fixture.inputs['weights'].write(Float32Array.from(changed.weights));
     fixture.run();
     const oracle = computeZonalStatistics({
-      featureRows: joinPointsInPolygons(changed.points, scene.features, true).featureRows,
+      featureRows: joinPointsInPolygons(changed.points, scene.features, 'half-open').featureRows,
       featureCount: 12,
       values: changed.values,
       weights: changed.weights
@@ -931,3 +959,75 @@ it('GPUZonalStatistics handles zero points', async () => {
     for (const buffer of buffers) buffer.destroy();
   }
 });
+
+// Oracle: <scratchpad>/fix/work/D/change-of-support/zonal_variance.py (numpy.cov / numpy.var
+// ddof=1), mirrored by computeZonalStatistics and pinned against numpy in the node spec.
+const VARIANCE_ROWS = [0, 0, 0, 1, 1, 2, 0, 1, 0xffffffff, 3, 3, 0, 1, 2];
+const VARIANCE_VALUES = [
+  2.0,
+  4.5,
+  7.25,
+  -1.0,
+  3.0,
+  9.0,
+  Number.NaN,
+  0.5,
+  100.0,
+  5.0,
+  5.0,
+  1.5,
+  8.0,
+  2.0
+];
+const VARIANCE_WEIGHTS = [1.0, 2.0, 0.5, 3.0, 1.0, 2.0, 1.0, 0.25, 1.0, 1.0, 4.0, 1.5, 0.75, 1.0];
+const VARIANCE_AREAS = [10.0, 4.0, 0.0, 2.0, 8.0];
+
+for (const sumOrder of ['atomic', 'sorted'] as const) {
+  for (const weighted of [false, true]) {
+    it(`GPUZonalStatistics variances match numpy.cov (${sumOrder}, ${weighted ? 'weighted' : 'unweighted'})`, async () => {
+      const device = await getWebGPUTestDevice();
+      if (!device) {
+        return;
+      }
+      const outputKeys: OutputKey[] = ['variances', 'standardDeviations', 'valueCounts'];
+      if (weighted) {
+        outputKeys.push('weightedDensities');
+      }
+      const fixture = createRowsFixture(device, {
+        rows: VARIANCE_ROWS,
+        featureCount: 5,
+        values: VARIANCE_VALUES,
+        weights: weighted ? VARIANCE_WEIGHTS : undefined,
+        areas: VARIANCE_AREAS,
+        sumOrder,
+        outputKeys
+      });
+      fixture.run();
+      const oracle = computeZonalStatistics({
+        featureRows: VARIANCE_ROWS,
+        featureCount: 5,
+        values: VARIANCE_VALUES,
+        weights: weighted ? VARIANCE_WEIGHTS : undefined,
+        areas: VARIANCE_AREAS
+      });
+      const variances = await readFloat32(fixture.outputs.variances!, 5);
+      expectRows(variances, oracle.variances, 1e-4);
+      expectRows(
+        await readFloat32(fixture.outputs.standardDeviations!, 5),
+        oracle.standardDeviations,
+        1e-4
+      );
+      // Feature 3 has two equal values (variance 0, not NaN); feature 4 is empty (NaN).
+      expect(variances[3]).toBe(0);
+      expect(variances[4]).toBeNaN();
+      if (weighted) {
+        expectRows(
+          await readFloat32(fixture.outputs.weightedDensities!, 5),
+          oracle.weightedDensities,
+          1e-5
+        );
+      }
+      fixture.destroy();
+    });
+  }
+}

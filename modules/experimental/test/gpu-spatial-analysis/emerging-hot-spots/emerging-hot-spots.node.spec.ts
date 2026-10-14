@@ -11,15 +11,29 @@ import {
   GPU_EMERGING_HOT_SPOT_PARAMETER_LENGTH,
   type GPUEmergingHotSpotsProps
 } from '../../../src/gpu-spatial-analysis/emerging-hot-spots';
+import {
+  getSpaceTimeDaysFromCivil,
+  getSpaceTimeSliceIndex,
+  type GPUSpaceTimeSlices
+} from '../../../src/gpu-spatial-analysis/recipes/space-time-hot-spots-recipe';
 import {createNullWebGPUDevice} from '../../utils/gpu-contributor-test-utils';
 import {
   classifyEmergingHotSpotSeries,
+  computeAdjustedBinPValues,
+  computeBinStates,
   computeEmergingHotSpotCells,
   computeEmergingHotSpotMoments,
   computeMannKendall,
   computeSpaceTimeGiStar,
   createDesignedCube,
-  createDesignedSeries
+  createDesignedSeries,
+  MULTIPLE_TESTING_ADJUSTED,
+  MULTIPLE_TESTING_P,
+  MULTIPLE_TESTING_SIGNIFICANT,
+  MULTIPLE_TESTING_TOP_BINS,
+  MULTIPLE_TESTING_VALUES,
+  SLICE_CASES,
+  SLICE_EVENTS
 } from './emerging-hot-spots-oracle';
 
 let serial = 0;
@@ -59,42 +73,68 @@ function expectThrows(
 }
 
 it('getGPUEmergingHotSpotParameterValues packs and validates the layout', () => {
+  // Defaults: 95% confidence (was 90%), trend level 1 - confidence, minimum trend length 10.
   expect(Array.from(getGPUEmergingHotSpotParameterValues({radius: 2, temporalWindow: 3}))).toEqual([
     2,
     3,
-    Math.fround(1.6448536269514722),
-    Math.fround(0.1),
+    Math.fround(1.959963984540054),
+    Math.fround(1 - 0.95),
     Math.fround(0.9),
-    0,
-    0,
+    10,
+    Math.fround(1 - 0.95),
     0
   ]);
   const strict = getGPUEmergingHotSpotParameterValues({
     radius: 1.5,
     temporalWindow: 0,
     confidenceLevel: 0.99,
-    persistentFraction: 0.8
+    persistentFraction: 0.8,
+    minimumTrendSliceCount: 0
   });
   expect(strict[2]).toBeCloseTo(2.5758293, 6);
   expect(strict[3]).toBeCloseTo(0.01, 6);
   expect(strict[4]).toBeCloseTo(0.8, 6);
+  expect(strict[5]).toBe(0);
+  expect(strict[6]).toBeCloseTo(0.01, 6);
+  // The tabulated critical z of the previous default.
+  expect(
+    getGPUEmergingHotSpotParameterValues({
+      temporalWindow: 0,
+      confidenceLevel: 0.9,
+      multipleTesting: 'none'
+    })[2]
+  ).toBeCloseTo(1.6448536, 6);
+  // criticalZ only goes with 'none'.
   expect(
     getGPUEmergingHotSpotParameterValues({
       radius: 0,
       temporalWindow: 1,
-      criticalZ: 3
+      criticalZ: 3,
+      multipleTesting: 'none'
     })[2]
   ).toBe(3);
+  // Any level is allowed with a correction.
+  expect(
+    getGPUEmergingHotSpotParameterValues({temporalWindow: 0, confidenceLevel: 0.8})[6]
+  ).toBeCloseTo(0.2, 6);
   const bad = (parameters: Parameters<typeof getGPUEmergingHotSpotParameterValues>[0]) =>
     expect(() => getGPUEmergingHotSpotParameterValues(parameters));
   bad({radius: -1, temporalWindow: 0}).toThrow(/radius/);
   bad({radius: NaN, temporalWindow: 0}).toThrow(/radius/);
   bad({radius: 1, temporalWindow: 1.5}).toThrow(/temporalWindow/);
   bad({radius: 1, temporalWindow: -1}).toThrow(/temporalWindow/);
-  bad({radius: 1, temporalWindow: 0, criticalZ: 0}).toThrow(/criticalZ/);
+  bad({radius: 1, temporalWindow: 0, criticalZ: 3}).toThrow(/requires multipleTesting 'none'/);
+  bad({radius: 1, temporalWindow: 0, criticalZ: 0, multipleTesting: 'none'}).toThrow(/criticalZ/);
   bad({radius: 1, temporalWindow: 0, trendSignificanceLevel: 1}).toThrow(/trendSignificanceLevel/);
   bad({radius: 1, temporalWindow: 0, persistentFraction: 0.5}).toThrow(/persistentFraction/);
-  bad({radius: 1, temporalWindow: 0, confidenceLevel: 0.8 as 0.9}).toThrow(/confidenceLevel/);
+  bad({radius: 1, temporalWindow: 0, confidenceLevel: 0.8, multipleTesting: 'none'}).toThrow(
+    /confidenceLevel/
+  );
+  bad({radius: 1, temporalWindow: 0, confidenceLevel: 1}).toThrow(/confidenceLevel/);
+  bad({radius: 1, temporalWindow: 0, minimumTrendSliceCount: 2.5}).toThrow(
+    /minimumTrendSliceCount/
+  );
+  bad({radius: 1, temporalWindow: 0, minimumTrendSliceCount: -1}).toThrow(/minimumTrendSliceCount/);
   expect(() =>
     getGPUEmergingHotSpotParameterValues({radius: 1, temporalWindow: 0}, new Float32Array(2))
   ).toThrow(/target/);
@@ -139,6 +179,24 @@ it('GPUEmergingHotSpots validates its inputs', () => {
     }),
     /values length/
   );
+  expectThrows(() => ({multipleTesting: 'sidak' as never}), /method must be one of/);
+  expectThrows(() => ({finalSlice: 'first' as never}), /finalSlice/);
+  expectThrows(
+    graph => ({pValues: createTransientView(graph, 'p', 'float32', 59)}),
+    /pValues length/
+  );
+  expectThrows(
+    graph => ({adjustedPValues: createTransientView(graph, 'a', 'float32', 12)}),
+    /adjustedPValues length/
+  );
+  expectThrows(
+    graph => ({lastValidSlice: createTransientView(graph, 'l', 'uint32', 60)}),
+    /lastValidSlice length/
+  );
+  expectThrows(graph => {
+    const values = createTransientView(graph, 'alias-p', 'float32', 60);
+    return {values, pValues: values};
+  }, /must not share buffers/);
   expectThrows(() => ({sliceCount: 1.5}), /sliceCount/);
   expectThrows(() => ({sliceCount: 257}), /sliceCount must be at most 256/);
   expectThrows(() => ({maximumRadius: 33}), /maximumRadius/);
@@ -180,7 +238,10 @@ it('GPUEmergingHotSpots creates deterministic nodes', () => {
   const device = createNullWebGPUDevice();
   const graph = new GPUCommandGraph(device);
   const mask = createTransientView(graph, 'mask', 'uint32', 12);
-  const contributor = new GPUEmergingHotSpots(createProps(graph, {id: 'eh', mask}));
+  // Without a correction (and no p-value outputs) the p-value passes are not built.
+  const contributor = new GPUEmergingHotSpots(
+    createProps(graph, {id: 'eh', mask, multipleTesting: 'none'})
+  );
   const nodes = contributor.getCommandNodes(graph);
   const ids = nodes.map(node => node.id);
   expect(ids).toEqual([
@@ -189,6 +250,7 @@ it('GPUEmergingHotSpots creates deterministic nodes', () => {
     'eh-block-squares',
     'eh-deviation',
     'eh-gi-star',
+    'eh-slice-counts',
     // Mann-Kendall and the category classification share one pass over each cell's series.
     'eh-mann-kendall'
   ]);
@@ -196,6 +258,31 @@ it('GPUEmergingHotSpots creates deterministic nodes', () => {
     variant: 'mann-kendall-classify',
     maximumInvocationCount: 12
   });
+  // The default is Benjamini-Hochberg: p-values and the adjustment run between Gi* and the trend.
+  const defaultGraph = new GPUCommandGraph(device);
+  const defaultNodes = new GPUEmergingHotSpots(
+    createProps(defaultGraph, {id: 'eh'})
+  ).getCommandNodes(defaultGraph);
+  const defaultIds = defaultNodes.map(node => node.id);
+  expect(defaultIds.slice(0, 5)).toEqual(ids.slice(0, 5));
+  expect(defaultIds[5]).toBe('eh-p-values');
+  expect(defaultIds.at(-2)).toBe('eh-slice-counts');
+  expect(defaultIds.at(-1)).toBe('eh-mann-kendall');
+  expect(defaultIds.length).toBeGreaterThan(7);
+  expect(new Set(defaultIds).size).toBe(defaultIds.length);
+  // 'none' with a requested p-value output still builds the p-values (and a pass-through adjustment).
+  const outputGraph = new GPUCommandGraph(device);
+  const outputIds = new GPUEmergingHotSpots(
+    createProps(outputGraph, {
+      id: 'eh',
+      multipleTesting: 'none',
+      pValues: createTransientView(outputGraph, 'out-p', 'float32', 60),
+      lastValidSlice: createTransientView(outputGraph, 'out-last', 'uint32', 12)
+    })
+  )
+    .getCommandNodes(outputGraph)
+    .map(node => node.id);
+  expect(outputIds).toContain('eh-p-values');
   const longSeriesGraph = new GPUCommandGraph(device);
   const longSeries = new GPUEmergingHotSpots(
     createProps(longSeriesGraph, {
@@ -210,7 +297,9 @@ it('GPUEmergingHotSpots creates deterministic nodes', () => {
     maximumInvocationCount: 12 * 64
   });
   const secondGraph = new GPUCommandGraph(device);
-  const again = new GPUEmergingHotSpots(createProps(secondGraph, {id: 'eh'}));
+  const again = new GPUEmergingHotSpots(
+    createProps(secondGraph, {id: 'eh', multipleTesting: 'none'})
+  );
   expect(again.getCommandNodes(secondGraph).map(node => node.id)).toEqual(ids);
   // Views from another graph are rejected.
   const foreign = new GPUEmergingHotSpots(createProps(secondGraph, {id: 'foreign'}));
@@ -219,10 +308,32 @@ it('GPUEmergingHotSpots creates deterministic nodes', () => {
   const countsGraph = new GPUCommandGraph(device);
   const counts = new GPUEmergingHotSpots(
     createProps(countsGraph, {
+      multipleTesting: 'none',
       values: createTransientView(countsGraph, 'counts', 'uint32', 60)
     })
   );
-  expect(counts.getCommandNodes(countsGraph)).toHaveLength(6);
+  expect(counts.getCommandNodes(countsGraph)).toHaveLength(7);
+  device.destroy();
+});
+
+it('GPUEmergingHotSpots.getInferenceMetadata describes the inference', () => {
+  const device = createNullWebGPUDevice();
+  const graph = new GPUCommandGraph(device);
+  expect(new GPUEmergingHotSpots(createProps(graph)).getInferenceMetadata()).toEqual({
+    alternative: 'two-sided',
+    permutationCount: 0,
+    multipleTesting: 'benjamini-hochberg',
+    testedRowsDefinition: 'valid space-time bins'
+  });
+  expect(
+    new GPUEmergingHotSpots(
+      createProps(graph, {multipleTesting: 'benjamini-yekutieli'})
+    ).getInferenceMetadata().multipleTesting
+  ).toBe('benjamini-yekutieli');
+  expect(
+    new GPUEmergingHotSpots(createProps(graph, {multipleTesting: 'none'})).getInferenceMetadata()
+      .multipleTesting
+  ).toBe('none');
   device.destroy();
 });
 
@@ -253,10 +364,114 @@ it('the Mann-Kendall oracle matches hand-computed statistics', () => {
   });
 });
 
+// Mann-Kendall reference: numpy implementation (S, tie-corrected Var, continuity-corrected z) with
+// scipy.stats.norm two-sided p; S cross-checked against scipy.stats.kendalltau for tie-free series.
+// Script: scratchpad/fix/work/B/b5_emerging_ref.py (numpy 2.5.4, scipy 1.18.1).
+const MANN_KENDALL_REFERENCE_SERIES: Record<string, number[]> = {
+  twelveTied: [1, 3, 2, 3, 5, 4, 6, 6, 8, 7, 9, 10],
+  sixMonotone: [1, 2, 3, 4, 5, 6],
+  tenDown: [9, 8, 8, 6, 5, 5, 3, 2, 1, 0]
+};
+const MANN_KENDALL_REFERENCE: [string, number, number, number, number, number][] = [
+  ['twelveTied', 12, 58, 210.66666666666666, 3.9271450640930468, 8.596013970178455e-5],
+  ['sixMonotone', 6, 15, 28.333333333333332, 2.630142022557628, 0.008534920414227069],
+  ['tenDown', 10, -43, 123.0, -3.7870124656032154, 0.00015246945382135562]
+];
+
+it('the Mann-Kendall oracle matches the numpy and scipy reference', () => {
+  for (const [name, count, statistic, variance, z, p] of MANN_KENDALL_REFERENCE) {
+    const result = computeMannKendall(MANN_KENDALL_REFERENCE_SERIES[name]);
+    expect(result.count, name).toBe(count);
+    expect(result.statistic, name).toBe(statistic);
+    expect(result.variance, name).toBeCloseTo(variance, 10);
+    expect(result.z, name).toBeCloseTo(z, 10);
+    // The oracle's p uses the same erfcc fit as the shader (relative error below 1.2e-7).
+    expect(Math.abs(result.p - p), name).toBeLessThan(2e-7 * Math.max(p, 1e-3) + 1e-9);
+  }
+});
+
+it('multiple testing removes weakly significant bins and matches statsmodels', () => {
+  const cube = {
+    gridWidth: MULTIPLE_TESTING_VALUES.length,
+    gridHeight: 1,
+    sliceCount: 1,
+    values: Float32Array.from(MULTIPLE_TESTING_VALUES)
+  };
+  const packed = getGPUEmergingHotSpotParameterValues({radius: 0, temporalWindow: 0});
+  const zScores = computeSpaceTimeGiStar(cube, packed);
+  // The oracle's p uses the shader's erfcc fit (relative error below 1.2e-7).
+  const pValues = computeAdjustedBinPValues(zScores, 'none');
+  MULTIPLE_TESTING_TOP_BINS.forEach((bin, index) => {
+    expect(Math.abs(pValues[bin] - MULTIPLE_TESTING_P[index])).toBeLessThan(
+      1e-6 * MULTIPLE_TESTING_P[index] + 1e-12
+    );
+  });
+  for (const [method, expected] of Object.entries(MULTIPLE_TESTING_ADJUSTED)) {
+    const adjusted = computeAdjustedBinPValues(zScores, method as 'holm');
+    MULTIPLE_TESTING_TOP_BINS.forEach((bin, index) => {
+      expect(Math.abs(adjusted[bin] - expected[index]), `${method} bin ${bin}`).toBeLessThan(
+        1e-5 * expected[index] + 1e-9
+      );
+    });
+  }
+  // Hot and cold bins: uncorrected 95% finds all six outliers (the three weak ones at p between
+  // 0.02 and 0.04); every correction keeps only the three strong ones.
+  for (const [method, significant] of Object.entries(MULTIPLE_TESTING_SIGNIFICANT)) {
+    const level = getGPUEmergingHotSpotParameterValues({
+      temporalWindow: 0,
+      multipleTesting: method as 'none'
+    });
+    const states = computeBinStates(zScores, level, {multipleTesting: method as 'none'});
+    const flagged = Array.from(states, (state, bin) => (state > 0 ? bin : -1)).filter(
+      bin => bin >= 0
+    );
+    expect(flagged, method).toEqual(significant);
+  }
+  const states = computeBinStates(zScores, packed, {multipleTesting: 'benjamini-hochberg'});
+  // Strong outliers: 92 and 93 hot, 94 cold. Weak ones are dropped.
+  expect([92, 93, 94, 95, 96, 97].map(bin => states[bin])).toEqual([1, 1, 2, 0, 0, 0]);
+  // The family is every valid bin: an extra missing bin does not change anything.
+  const withMissing = {...cube, values: Float32Array.from([...cube.values, NaN]), gridWidth: 101};
+  const missingZ = computeSpaceTimeGiStar(withMissing, packed);
+  expect(Number.isNaN(missingZ[100])).toBe(true);
+  expect(computeBinStates(missingZ, packed).slice(0, 100)).toEqual(
+    computeBinStates(zScores, packed)
+  );
+});
+
+it('getSpaceTimeSliceIndex matches the python calendar reference across year boundaries', () => {
+  for (const testCase of SLICE_CASES) {
+    const [year, month, day, hour] = testCase.origin;
+    const slices: GPUSpaceTimeSlices = {
+      step: testCase.step,
+      interval: testCase.interval,
+      origin: {year, month, day, hour},
+      count: testCase.count
+    };
+    const actual = SLICE_EVENTS.map(([eventYear, eventMonth, eventDay, eventHour]) =>
+      getSpaceTimeSliceIndex(slices, {
+        year: eventYear,
+        month: eventMonth,
+        day: eventDay,
+        hour: eventHour
+      })
+    );
+    expect(actual, `${testCase.step} x${testCase.interval}`).toEqual(testCase.expected);
+  }
+  // Spot checks of Hinnant's days_from_civil: the epoch, a leap day, a pre-epoch date.
+  expect(getSpaceTimeDaysFromCivil(1970, 1, 1)).toBe(0);
+  expect(getSpaceTimeDaysFromCivil(2024, 2, 29)).toBe(19782);
+  expect(getSpaceTimeDaysFromCivil(1969, 12, 31)).toBe(-1);
+  expect(getSpaceTimeDaysFromCivil(2000, 3, 1) - getSpaceTimeDaysFromCivil(2000, 2, 29)).toBe(1);
+  expect(getSpaceTimeDaysFromCivil(1900, 3, 1) - getSpaceTimeDaysFromCivil(1900, 2, 28)).toBe(1);
+});
+
 it('the classifier oracle reaches all 17 categories on designed z series', () => {
+  // 95% critical z without a correction; the default minimum trend length (10) applies.
   const packed = getGPUEmergingHotSpotParameterValues({
     radius: 0,
-    temporalWindow: 0
+    temporalWindow: 0,
+    multipleTesting: 'none'
   });
   const hot = 3;
   const cold = -3;
@@ -264,8 +479,17 @@ it('the classifier oracle reaches all 17 categories on designed z series', () =>
   const ramp = (from: number, to: number, length = 20) =>
     Array.from({length}, (_, index) => from + ((to - from) * index) / (length - 1));
   const rep = (count: number, value: number) => new Array<number>(count).fill(value);
-  const classify = (values: number[]) =>
-    classifyEmergingHotSpotSeries(values, computeMannKendall(values), packed);
+  const classify = (
+    values: number[],
+    finalSlice: 'require' | 'last-valid' = 'require',
+    parameters = packed
+  ) => {
+    const trend = computeMannKendall(values);
+    const known = trend.count >= parameters[5];
+    return classifyEmergingHotSpotSeries(values, known ? trend : {z: NaN, p: NaN}, parameters, {
+      finalSlice
+    });
+  };
   const categories = GPU_EMERGING_HOT_SPOT_CATEGORIES;
   const cases: [string, number[], number][] = [
     ['new hot', series(rep(9, 0), [hot]), categories.NEW_HOT],
@@ -287,19 +511,48 @@ it('the classifier oracle reaches all 17 categories on designed z series', () =>
     ['historical cold', series(rep(19, cold), [0]), categories.HISTORICAL_COLD],
     ['no pattern', rep(10, 0), categories.NO_PATTERN],
     ['mixed history, quiet end', series([hot, 0, cold, 0]), categories.NO_PATTERN],
-    ['all missing', [NaN, NaN, NaN], categories.NO_PATTERN]
+    ['all missing', [NaN, NaN, NaN], categories.NO_PATTERN],
+    // Persistent hot or cold with fewer than 10 finite slices has no trend decision.
+    ['short persistent hot', rep(6, hot), categories.UNDETERMINED],
+    ['short persistent cold', rep(6, cold), categories.UNDETERMINED],
+    // A missing final slice (default 'require') makes any pattern undetermined.
+    ['missing final slice', series(rep(9, 0), [hot, NaN]), categories.UNDETERMINED]
   ];
   const reached = new Set<number>();
   for (const [name, values, expected] of cases) {
     expect(classify(values), name).toBe(expected);
     reached.add(expected);
   }
-  expect(reached.size).toBe(17);
+  // The 17 ArcGIS categories plus UNDETERMINED (17).
+  expect(reached.size).toBe(18);
   expect(Object.values(categories).sort((a, b) => a - b)).toEqual(
-    Array.from({length: 17}, (_, i) => i)
+    Array.from({length: 18}, (_, i) => i)
   );
-  // Missing slices are skipped: the final finite slice decides.
-  expect(classify([0, 0, hot, NaN])).toBe(categories.NEW_HOT);
+  expect(categories.UNDETERMINED).toBe(17);
+  // finalSlice 'last-valid' keeps the old behavior: the last finite slice decides.
+  expect(classify([0, 0, hot, NaN], 'last-valid')).toBe(categories.NEW_HOT);
+  expect(classify([0, 0, hot, NaN])).toBe(categories.UNDETERMINED);
+  // Interior missing slices are skipped under both modes.
+  expect(classify([0, NaN, 0, hot])).toBe(categories.NEW_HOT);
+  // A series with every pattern finite is unaffected by the mode.
+  expect(classify(rep(20, hot), 'last-valid')).toBe(categories.PERSISTENT_HOT);
+  // minimumTrendSliceCount 0 disables the guard: six constant hot slices are Persistent.
+  const unguarded = getGPUEmergingHotSpotParameterValues({
+    temporalWindow: 0,
+    multipleTesting: 'none',
+    minimumTrendSliceCount: 0
+  });
+  expect(classify(rep(6, hot), 'require', unguarded)).toBe(categories.PERSISTENT_HOT);
+  // Six slices below the minimum of ten give NaN trend z and p.
+  const shortCells = computeEmergingHotSpotCells(
+    [1, 2, 3, 4, 5, 6],
+    {gridWidth: 1, gridHeight: 1, sliceCount: 6},
+    packed,
+    {multipleTesting: 'none'}
+  );
+  expect(shortCells.trendS).toEqual([15]);
+  expect(Number.isNaN(shortCells.trendZ[0])).toBe(true);
+  expect(Number.isNaN(shortCells.trendP[0])).toBe(true);
   // Hot 90% boundary: 9 of 10 is persistent, 8 of 10 is not.
   expect(classify(series(rep(1, 0), rep(9, hot)))).toBe(categories.PERSISTENT_HOT);
   expect(classify(series(rep(2, 0), rep(8, hot)))).toBe(categories.CONSECUTIVE_HOT);
@@ -315,6 +568,28 @@ it('the designed cube is classified as designed by the double precision oracle',
     temporalWindow: 0
   });
   const zScores = computeSpaceTimeGiStar(cube, packed);
+  // The legend contract: the designed categories are the same under every correction method, and
+  // the default is Benjamini-Hochberg.
+  for (const multipleTesting of [
+    'none',
+    'bonferroni',
+    'holm',
+    'benjamini-hochberg',
+    'benjamini-yekutieli'
+  ] as const) {
+    const methodPacked = getGPUEmergingHotSpotParameterValues({
+      radius: 0,
+      temporalWindow: 0,
+      multipleTesting
+    });
+    const methodCells = computeEmergingHotSpotCells(zScores, cube, methodPacked, {multipleTesting});
+    for (const [cell, expected] of expectedCategories.entries()) {
+      expect(
+        methodCells.category[cell],
+        `${multipleTesting} cell ${cell} ${designed[cell]?.name}`
+      ).toBe(expected);
+    }
+  }
   const cells = computeEmergingHotSpotCells(zScores, cube, packed);
   for (const [cell, expected] of expectedCategories.entries()) {
     expect(cells.category[cell], `cell ${cell} ${designed[cell]?.name}`).toBe(expected);

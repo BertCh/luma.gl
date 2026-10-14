@@ -22,6 +22,7 @@ import {
   submitGraph
 } from '../../utils/gpu-contributor-test-utils';
 import {computeEmpiricalBayesOracle} from './empirical-bayes-oracle';
+import {EB_LOW_DISPERSION} from './eb-low-dispersion-fixture';
 
 const GARBAGE = 0x7f7f7f7f;
 const S = GPU_EMPIRICAL_BAYES_SUMMARY;
@@ -43,7 +44,12 @@ function createRates(rows: number) {
 
 async function runRates(
   device: NonNullable<Awaited<ReturnType<typeof getWebGPUTestDevice>>>,
-  input: {events: Float32Array; populations: Float32Array; mask?: Uint32Array}
+  input: {
+    events: Float32Array;
+    populations: Float32Array;
+    mask?: Uint32Array;
+    clampPriorVariance?: boolean;
+  }
 ) {
   const rows = input.events.length;
   const graph = new GPUCommandGraph(device, {id: 'empirical-bayes'});
@@ -66,6 +72,8 @@ async function runRates(
       events: importGraphBuffer(graph, 'events', buffers[0]!, 'float32', rows),
       populations: importGraphBuffer(graph, 'populations', buffers[1]!, 'float32', rows),
       mask: buffers[2] && importGraphBuffer(graph, 'mask', buffers[2], 'uint32', rows),
+      // Existing assertions below are esda parity, which does not clamp.
+      clampPriorVariance: input.clampPriorVariance ?? false,
       standardizedRates: importGraphBuffer(graph, 'z', outputs.standardized, 'float32', rows),
       smoothedRates: importGraphBuffer(graph, 'smoothed', outputs.smoothed, 'float32', rows),
       rawRates: importGraphBuffer(graph, 'raw', outputs.raw, 'float32', rows),
@@ -145,6 +153,34 @@ it('GPUEmpiricalBayesRates matches the CPU oracle with masks and excluded rows',
   // Smoothing shrinks small-population rates toward the pooled rate.
   expect(Number.isNaN(result.standardized[3])).toBe(true);
   expect(Number.isNaN(result.smoothed[4])).toBe(true);
+});
+
+it('GPUEmpiricalBayesRates clamps a negative prior variance at zero by default (Marshall 1991)', async () => {
+  const device = await getWebGPUTestDevice();
+  if (!device) {
+    return;
+  }
+  const events = Float32Array.from(EB_LOW_DISPERSION.events);
+  const populations = Float32Array.from(EB_LOW_DISPERSION.populations);
+  const clamped = await runRates(device, {events, populations, clampPriorVariance: true});
+  const unclamped = await runRates(device, {events, populations, clampPriorVariance: false});
+  // Summary keeps the unclamped a and adds the clamped slot.
+  expect(unclamped.summary[S.priorVariance]).toBeLessThan(0);
+  expectClose(unclamped.summary[S.priorVariance], EB_LOW_DISPERSION.priorVariance, 'a', 1e-2);
+  expect(clamped.summary[S.clampedPriorVariance]).toBe(0);
+  for (const [row, expected] of EB_LOW_DISPERSION.clamped.entries()) {
+    expectClose(clamped.smoothed[row], expected, `clamped ${row}`, 1e-4);
+  }
+  for (const [row, expected] of EB_LOW_DISPERSION.unclamped.entries()) {
+    expectClose(unclamped.smoothed[row], expected, `esda ${row}`, 5e-3);
+  }
+  // esda pushes row 0 below zero; the clamp does not.
+  expect(unclamped.smoothed[0]).toBeLessThan(0);
+  expect(clamped.smoothed[0]).toBeGreaterThan(0);
+  // The standardized path is the same either way.
+  for (let row = 0; row < events.length; row++) {
+    expect(clamped.standardized[row]).toBe(unclamped.standardized[row]);
+  }
 });
 
 it('GPUEmpiricalBayesRates feeds GPUGlobalSpatialStatistics Moran in one graph', async () => {

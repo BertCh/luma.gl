@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {GPU_SPATIAL_WEIGHTS_ADAPTIVE_BANDWIDTH_EPSILON} from '../../../src/gpu-spatial-analysis/spatial-weights/gpu-spatial-weights-transform';
 import {
   GPU_NEIGHBOR_SEARCH_KERNEL,
   type GPUNeighborSearchParameters
@@ -150,7 +151,11 @@ export function computeNeighborSearchOracle(
       candidates.sort((a, b) => a.id - b.id);
     }
     const distances = candidates.map(candidate => f32(Math.sqrt(candidate.distanceSquared)));
-    const bandwidth = mode === 'radius' ? radius : Math.max(0, ...distances);
+    // kNN kernels use libpysal's adaptive bandwidth: k-th neighbor distance times 1.0000001.
+    const bandwidth =
+      mode === 'radius'
+        ? radius
+        : Math.max(0, ...distances) * GPU_SPATIAL_WEIGHTS_ADAPTIVE_BANDWIDTH_EPSILON;
     let weights = distances.map(distance => getNeighborWeight(distance, bandwidth, parameters));
     const sum = weights.reduce((total, weight) => total + weight, 0);
     if (parameters.rowStandardize && sum > 0) {

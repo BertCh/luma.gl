@@ -15,6 +15,13 @@ import {RecipeTestFixture, isClose} from './recipe-harness';
 
 type Rectangle = [number, number, number, number];
 
+// Oracle: <scratchpad>/fix/work/D/change-of-support/change_of_support_recipe.py (numpy 2.5.4):
+// raster area of each source and the fraction of it inside the target system (cell-center rule).
+const NUMPY_SOURCE_AREAS = [108, 108, 108, 108];
+const NUMPY_TRANSFERRED_FRACTIONS = [
+  1.0, 0.9444444444444444, 0.5555555555555556, 0.46296296296296297
+];
+
 const WIDTH = 24;
 const HEIGHT = 18;
 
@@ -78,8 +85,7 @@ it('addChangeOfSupportRecipe rasterizes two zone systems and transfers values by
     sourceZones,
     targetZones,
     sourceCount: 4,
-    targetCount: 5,
-    denominator: 'zone'
+    targetCount: 5
   });
   const pairCount = expected.neighbors.length;
   expect(pairCount).toBeGreaterThan(5);
@@ -95,6 +101,9 @@ it('addChangeOfSupportRecipe rasterizes two zone systems and transfers values by
     const totalPairs = fixture.output('total-pairs', 'uint32', 1);
     const extensive = fixture.output('extensive', 'float32', 5);
     const intensive = fixture.output('intensive', 'float32', 5);
+    const sourceAreas = fixture.output('source-areas', 'float32', 4);
+    const fractions = fixture.output('source-fractions', 'float32', 4);
+    const invalidCount = fixture.output('invalid-count', 'uint32', 1);
     const toZones = (system: ReturnType<typeof createRectangleSystem>, name: string) => ({
       polygonPositions: fixture.input(
         `${name}-positions`,
@@ -145,7 +154,10 @@ it('addChangeOfSupportRecipe rasterizes two zone systems and transfers values by
         overflow: overflow.view,
         requiredCount: totalPairs.view,
         extensiveValues: extensive.view,
-        intensiveValues: intensive.view
+        intensiveValues: intensive.view,
+        sourceAreas: sourceAreas.view,
+        sourceTransferredFractions: fractions.view,
+        invalidCount: invalidCount.view
       }
     });
     expect(recipe.contributors.length).toBe(5);
@@ -179,6 +191,21 @@ it('addChangeOfSupportRecipe rasterizes two zone systems and transfers values by
         `intensive ${zone}`
       ).toBe(true);
     }
+    // Conservation diagnostics: mass lost outside the target system is reported per source.
+    const gpuAreas = await fixture.readFloat32(sourceAreas, 4);
+    const gpuFractions = await fixture.readFloat32(fractions, 4);
+    for (let zone = 0; zone < 4; zone++) {
+      expect(gpuAreas[zone]).toBeCloseTo(NUMPY_SOURCE_AREAS[zone], 3);
+      expect(gpuFractions[zone]).toBeCloseTo(NUMPY_TRANSFERRED_FRACTIONS[zone], 5);
+    }
+    expect((await fixture.readUint32(invalidCount, 1))[0]).toBe(0);
+    // The extensive mass transferred equals the mass of each source times its fraction.
+    const transferredMass = gpuExtensive.reduce((sum, value) => sum + value, 0);
+    const sourceMass = sourceValues.reduce(
+      (sum, value, zone) => sum + value * NUMPY_TRANSFERRED_FRACTIONS[zone],
+      0
+    );
+    expect(transferredMass).toBeCloseTo(sourceMass, 2);
     // Nonzero guards: a failed shader gives silent zeros.
     expect(Math.max(...gpuExtensive)).toBeGreaterThan(1);
     // Intensive values are means of source values.

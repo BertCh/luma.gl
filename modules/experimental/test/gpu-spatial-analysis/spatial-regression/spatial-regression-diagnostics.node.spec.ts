@@ -7,10 +7,12 @@ import {expect, it} from 'vitest';
 import {GPUSpatialRegressionDiagnostics} from '../../../src/gpu-spatial-analysis/spatial-regression/gpu-spatial-regression-diagnostics';
 import type {GPUSpatialRegressionDiagnosticsProps} from '../../../src/gpu-spatial-analysis/spatial-regression/gpu-spatial-regression-diagnostics';
 import {createNullWebGPUDevice} from '../../utils/gpu-contributor-test-utils';
-import {SPREG_DIAGNOSTICS_REFERENCE} from './spreg-reference';
+import {GPU_SPATIAL_REGRESSION_DIAGNOSTICS_SUMMARY_LENGTH} from '../../../src/gpu-spatial-analysis/spatial-regression/spatial-regression-diagnostics-parameters';
+import {SPREG_DIAGNOSTICS_REFERENCE, SPREG_MASKED_DIAGNOSTICS_REFERENCE} from './spreg-reference';
 import {
   computeSpatialRegressionDiagnosticsOnCPU,
   createDiagnosticsScene,
+  createDiagnosticsExclusionMask,
   createNearestNeighborScene,
   createLatticeWeights,
   invertMatrix
@@ -34,7 +36,11 @@ function createProps(
     response: view('float32', 10),
     residuals: view('float32', 10),
     predictorCount: 2,
-    output: {tests: view('float32', 18), summary: view('float32', 12), status: view('uint32', 1)},
+    output: {
+      tests: view('float32', 18),
+      summary: view('float32', GPU_SPATIAL_REGRESSION_DIAGNOSTICS_SUMMARY_LENGTH),
+      status: view('uint32', 1)
+    },
     ...overrides
   };
 }
@@ -57,12 +63,26 @@ it('GPUSpatialRegressionDiagnostics validates its inputs', () => {
   expectThrows({residuals: view('float32', 11)}, /residuals length/);
   expectThrows({predictors: view('float32', 19)}, /predictors length/);
   expectThrows({tileRowCount: 0}, /tileRowCount/);
+  expectThrows({mask: view('uint32', 9)}, /mask length/);
+  expectThrows({mask: view('uint32', 11)}, /mask length/);
   expectThrows(
-    {output: {tests: view('float32', 17), summary: view('float32', 12), status: view('uint32', 1)}},
+    {
+      output: {
+        tests: view('float32', 17),
+        summary: view('float32', GPU_SPATIAL_REGRESSION_DIAGNOSTICS_SUMMARY_LENGTH),
+        status: view('uint32', 1)
+      }
+    },
     /output.tests/
   );
   expectThrows(
-    {output: {tests: view('float32', 18), summary: view('float32', 11), status: view('uint32', 1)}},
+    {
+      output: {
+        tests: view('float32', 18),
+        summary: view('float32', GPU_SPATIAL_REGRESSION_DIAGNOSTICS_SUMMARY_LENGTH - 1),
+        status: view('uint32', 1)
+      }
+    },
     /output.summary/
   );
   device.destroy();
@@ -145,4 +165,110 @@ it('spatial regression diagnostics oracle reproduces spreg to float64 precision'
     expect(result.moranPValue).toBeCloseTo(reference.moran[2], 6);
     expect(result.sigmaSquared).toBeCloseTo(reference.sigmaSquared, 8);
   }
+});
+
+it('GPUSpatialRegressionDiagnostics adds the row-scale kernel only when restandardizing', () => {
+  const device = createNullWebGPUDevice();
+  const graph = new GPUCommandGraph(device);
+  const plain = new GPUSpatialRegressionDiagnostics(
+    createProps(graph, {id: 'plain', mask: createTransientView(graph, 'plain-mask', 'uint32', 10)})
+  )
+    .getCommandNodes(graph)
+    .map(node => node.id);
+  const restandardized = new GPUSpatialRegressionDiagnostics(
+    createProps(graph, {
+      id: 'scaled',
+      mask: createTransientView(graph, 'scaled-mask', 'uint32', 10),
+      restandardizeRows: true
+    })
+  )
+    .getCommandNodes(graph)
+    .map(node => node.id);
+  expect(plain.some(id => id.endsWith('row-scale'))).toBe(false);
+  expect(restandardized).toContain('scaled-row-scale');
+  expect(restandardized.indexOf('scaled-row-scale')).toBeLessThan(
+    restandardized.indexOf('scaled-transposed-lag')
+  );
+  device.destroy();
+});
+
+it('masked diagnostics oracle reproduces spreg on the fitted-row subset, both restandardize modes', () => {
+  const scenes = [
+    [
+      createDiagnosticsScene(8, 11, 0.6, true),
+      createDiagnosticsExclusionMask(64, 7, 3),
+      SPREG_MASKED_DIAGNOSTICS_REFERENCE.lattice
+    ],
+    [
+      createNearestNeighborScene(60, 3, 13, 0.6, false),
+      createDiagnosticsExclusionMask(60, 6, 2),
+      SPREG_MASKED_DIAGNOSTICS_REFERENCE.knnDirected
+    ]
+  ] as const;
+  for (const [scene, mask, reference] of scenes) {
+    for (const restandardizeRows of [false, true]) {
+      const expected = reference[restandardizeRows ? 'restandardized' : 'original'];
+      const result = computeSpatialRegressionDiagnosticsOnCPU(
+        scene.weights,
+        scene.predictors,
+        scene.response,
+        scene.predictorCount,
+        {mask, restandardizeRows}
+      );
+      expect(result.excludedRowCount).toBe(reference.excluded);
+      expect(result.rowCount).toBe(mask.length - reference.excluded);
+      const pairs: [typeof result.lmLag, readonly number[]][] = [
+        [result.lmLag, expected.lmLag],
+        [result.lmError, expected.lmError],
+        [result.robustLmLag, expected.robustLmLag],
+        [result.robustLmError, expected.robustLmError],
+        [result.lmSarma, expected.lmSarma]
+      ];
+      for (const [test, [statistic, pValue]] of pairs) {
+        expect(test.statistic).toBeCloseTo(statistic, 6);
+        expect(test.pValue).toBeCloseTo(pValue, 6);
+      }
+      expect(result.moranI).toBeCloseTo(expected.moran[0], 8);
+      expect(result.moranZ).toBeCloseTo(expected.moran[1], 6);
+      expect(result.moranPValue).toBeCloseTo(expected.moran[2], 6);
+      expect(result.sigmaSquared).toBeCloseTo(expected.sigmaSquared, 8);
+      expect(result.weightsSum).toBeCloseTo(expected.weightsSum, 5);
+    }
+  }
+});
+
+it('masked diagnostics oracle treats non-finite inputs like a mask', () => {
+  const scene = createDiagnosticsScene(8, 11, 0.6, true);
+  const mask = createDiagnosticsExclusionMask(64, 7, 3);
+  const response = Float32Array.from(scene.response);
+  for (let row = 0; row < 64; row++) {
+    if (mask[row] === 0) {
+      response[row] = NaN;
+    }
+  }
+  const viaMask = computeSpatialRegressionDiagnosticsOnCPU(
+    scene.weights,
+    scene.predictors,
+    scene.response,
+    scene.predictorCount,
+    {mask}
+  );
+  const viaNaN = computeSpatialRegressionDiagnosticsOnCPU(
+    scene.weights,
+    scene.predictors,
+    response,
+    scene.predictorCount
+  );
+  expect(viaNaN.excludedRowCount).toBe(viaMask.excludedRowCount);
+  expect(viaNaN.lmError.statistic).toBeCloseTo(viaMask.lmError.statistic, 12);
+  expect(viaNaN.moranZ).toBeCloseTo(viaMask.moranZ, 12);
+  // Dropping links changes the statistics: this is not the unmasked analysis.
+  const full = computeSpatialRegressionDiagnosticsOnCPU(
+    scene.weights,
+    scene.predictors,
+    scene.response,
+    scene.predictorCount
+  );
+  expect(Math.abs(full.lmError.statistic - viaMask.lmError.statistic)).toBeGreaterThan(0.1);
+  expect(full.excludedRowCount).toBe(0);
 });

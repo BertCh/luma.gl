@@ -162,3 +162,39 @@ it('addClusterAndOutlineRecipe clusters points and outlines each cluster with it
     fixture.destroy();
   }
 }, 120000);
+
+it('addClusterAndOutlineRecipe rejects non-great-circle longitude/latitude contexts', async () => {
+  const device = await getWebGPUTestDevice();
+  if (!device) {
+    return;
+  }
+  const fixture = new RecipeTestFixture(device, 'cluster-outline-recipe-lon-lat');
+  try {
+    expect(() =>
+      addClusterAndOutlineRecipe(fixture.graph, {
+        positions: fixture.input('positions', new Float32Array(8), 'float32x2', 4),
+        spatialContext: {coordinateSpace: 'longitude-latitude', metric: 'rhumb'},
+        clusteringParameters: fixture.parameters(
+          'clustering-parameters',
+          'float32',
+          getGPUSpatialClusteringParameterValues({
+            bounds: [0, 0, 1, 1],
+            epsilon: 0.1,
+            minimumPoints: 2
+          })
+        ),
+        gridSize: [4, 4],
+        geometryParameters: fixture.parameters(
+          'geometry-parameters',
+          'float32',
+          getGPUGeographicDistributionParameterValues()
+        ),
+        maximumClusterCount: 4,
+        maximumVerticesPerHull: 8,
+        hullCapacity: 32
+      })
+    ).toThrow(/does not support the rhumb metric/);
+  } finally {
+    fixture.destroy();
+  }
+});

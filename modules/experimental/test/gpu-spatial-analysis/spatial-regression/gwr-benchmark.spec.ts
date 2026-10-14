@@ -68,7 +68,7 @@ async function measure(
     length: getGPUGeographicallyWeightedRegressionParameterLength(LADDER_CAPACITY)
   });
   const coefficients = track(createOutputBuffer(device!, rowCount * 3));
-  const summary = track(createOutputBuffer(device!, 6));
+  const summary = track(createOutputBuffer(device!, 12));
   const graph = new GPUCommandGraph(device!, {id: 'gwr-bench'});
   graph.add(
     new GPUGeographicallyWeightedRegression({
@@ -97,6 +97,8 @@ async function measure(
       ),
       parameters: parameterBuffer.importToGraph(graph),
       maximumBandwidthCount: LADDER_CAPACITY,
+      // These specs compare grid and scan fits of one caller ladder.
+      refinement: false,
       ...(indexGridSize === false ? {indexGridSize} : {}),
       output: {
         coefficients: importGraphBuffer(
@@ -106,7 +108,7 @@ async function measure(
           'float32',
           rowCount * 3
         ),
-        summary: importGraphBuffer(graph, 'summary', summary, 'float32', 6)
+        summary: importGraphBuffer(graph, 'summary', summary, 'float32', 12)
       }
     })
   );
@@ -121,13 +123,13 @@ async function measure(
   for (let iteration = 0; iteration < WARMUP_COUNT + SAMPLE_COUNT; iteration++) {
     const start = performance.now();
     submitGraph(device!, compiled, undefined);
-    await readFloat32(summary, 6);
+    await readFloat32(summary, 12);
     if (iteration >= WARMUP_COUNT) samples.push(performance.now() - start);
   }
   const result = {
     median: samples.sort((a, b) => a - b)[Math.floor(samples.length / 2)],
     coefficients: await readFloat32(coefficients, rowCount * 3),
-    summary: await readFloat32(summary, 6)
+    summary: await readFloat32(summary, 12)
   };
   compiled.destroy();
   parameterBuffer.destroy();

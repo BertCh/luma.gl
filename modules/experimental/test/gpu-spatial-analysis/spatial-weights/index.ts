@@ -8,3 +8,5 @@ import './gpu-spatial-weights-algebra.spec';
 import './gpu-spatial-weights-algebra.node.spec';
 import './gpu-spatial-weights-transpose.spec';
 import './gpu-spatial-weights-transpose.node.spec';
+import './gpu-spatial-weights-first-class.node.spec';
+import './gpu-spatial-weights-first-class.spec';

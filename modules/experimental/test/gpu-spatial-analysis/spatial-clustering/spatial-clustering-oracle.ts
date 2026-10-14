@@ -241,3 +241,110 @@ export function separateNearEpsilonPairs(
   }
   throw new Error('Could not separate near-epsilon pairs');
 }
+
+/** Mean Earth radius in meters, as `GPU_EARTH_MEAN_RADIUS_METERS`. */
+export const ORACLE_EARTH_RADIUS = 6371008.8;
+
+/** Great-circle distance in meters (haversine, f64) between `[lon, lat]` degree points. */
+export function getHaversineDistance(
+  a: readonly [number, number],
+  b: readonly [number, number],
+  radius: number = ORACLE_EARTH_RADIUS
+): number {
+  const toRadians = Math.PI / 180;
+  const deltaLat = (b[1] - a[1]) * toRadians;
+  const deltaLon = (b[0] - a[0]) * toRadians;
+  const h =
+    Math.sin(deltaLat / 2) ** 2 +
+    Math.cos(a[1] * toRadians) * Math.cos(b[1] * toRadians) * Math.sin(deltaLon / 2) ** 2;
+  return 2 * radius * Math.asin(Math.min(1, Math.sqrt(h)));
+}
+
+/**
+ * Brute-force DBSCAN over `[lon, lat]` degrees with a great-circle `epsilon` in meters and the
+ * same canonical labeling as {@link clusterPointsOracle}: clusters are the components of core
+ * points, rooted at their smallest core row; a border point joins the adjacent cluster with the
+ * smallest root; compact IDs rank roots by row. Points outside the bounds or non-finite are noise.
+ */
+export function clusterGeographicPointsOracle(
+  positions: ArrayLike<number>,
+  parameters: {
+    bounds: readonly [number, number, number, number];
+    epsilon: number;
+    minimumPoints: number;
+    radius?: number;
+  }
+): {labels: number[]; coreFlags: number[]; clusterCount: number} {
+  const rows = positions.length / 2;
+  const [minX, minY, maxX, maxY] = parameters.bounds;
+  const valid = Array.from({length: rows}, (_, row) => {
+    const x = positions[2 * row];
+    const y = positions[2 * row + 1];
+    return (
+      Number.isFinite(x) && Number.isFinite(y) && x >= minX && x <= maxX && y >= minY && y <= maxY
+    );
+  });
+  const near = (a: number, b: number) =>
+    getHaversineDistance(
+      [positions[2 * a], positions[2 * a + 1]],
+      [positions[2 * b], positions[2 * b + 1]],
+      parameters.radius
+    ) <= parameters.epsilon;
+  const neighbors: number[][] = Array.from({length: rows}, () => []);
+  for (let a = 0; a < rows; a++) {
+    if (!valid[a]) continue;
+    for (let b = 0; b < rows; b++) if (valid[b] && near(a, b)) neighbors[a].push(b);
+  }
+  const coreFlags = neighbors.map(list => (list.length >= parameters.minimumPoints ? 1 : 0));
+  const root = new Array<number>(rows).fill(-1);
+  for (let start = 0; start < rows; start++) {
+    if (!coreFlags[start] || root[start] >= 0) continue;
+    const stack = [start];
+    root[start] = start;
+    while (stack.length) {
+      const row = stack.pop()!;
+      for (const other of neighbors[row]) {
+        if (coreFlags[other] && root[other] < 0) {
+          root[other] = start;
+          stack.push(other);
+        }
+      }
+    }
+  }
+  for (let row = 0; row < rows; row++) {
+    if (!valid[row] || coreFlags[row]) continue;
+    const roots = neighbors[row].filter(other => coreFlags[other]).map(other => root[other]);
+    if (roots.length) root[row] = Math.min(...roots);
+  }
+  const rootIds = [...new Set(root.filter(value => value >= 0))].sort((a, b) => a - b);
+  const labels = root.map(value => (value < 0 ? ORACLE_NOISE : rootIds.indexOf(value)));
+  return {labels, coreFlags, clusterCount: rootIds.length};
+}
+
+/**
+ * Deterministic longitude/latitude scene: three dense blobs (about 300 m sigma) at latitudes 0, 45
+ * and 70, a cross-shaped chain, and scattered noise. Offsets in meters are converted to degrees
+ * with the local `cos(latitude)`, so one meter epsilon means the same everywhere.
+ */
+export function createGeographicBlobScene(): Float32Array {
+  const random = createSeededRandom(77);
+  const points: number[] = [];
+  for (const [lon, lat] of [
+    [10, 0],
+    [10, 45],
+    [-20, 70]
+  ]) {
+    for (let index = 0; index < 60; index++) {
+      const dx = (random() + random() + random() - 1.5) * 600;
+      const dy = (random() + random() + random() - 1.5) * 600;
+      points.push(
+        lon + dx / ((ORACLE_EARTH_RADIUS * Math.PI * Math.cos((lat * Math.PI) / 180)) / 180),
+        lat + dy / ((ORACLE_EARTH_RADIUS * Math.PI) / 180)
+      );
+    }
+  }
+  for (let index = 0; index < 20; index++) {
+    points.push(-50 + random() * 20, -30 + random() * 20);
+  }
+  return new Float32Array(points);
+}

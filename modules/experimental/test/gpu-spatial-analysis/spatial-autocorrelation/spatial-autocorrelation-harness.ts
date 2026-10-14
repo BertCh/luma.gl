@@ -11,7 +11,11 @@ import {
   GPU_NEIGHBOR_SEARCH_PARAMETER_LENGTH,
   type GPUNeighborSearchParameters
 } from '../../../src/gpu-spatial-analysis/neighbor-search';
-import type {GPUSpatialWeights} from '../../../src/gpu-spatial-analysis/spatial-weights';
+import type {GPUMultipleTestingMethod} from '../../../src/gpu-spatial-analysis/contracts';
+import type {
+  GPUIslandPolicy,
+  GPUSpatialWeights
+} from '../../../src/gpu-spatial-analysis/spatial-weights';
 import {
   getGPUSpatialAutocorrelationParameterValues,
   GPUHotSpotAnalysis,
@@ -54,7 +58,9 @@ export type SpatialAutocorrelationWeightsSource =
 export type SpatialAutocorrelationReadback = {
   zScores: number[];
   pValues: number[];
+  adjustedPValues: number[];
   neighborCounts: number[];
+  /** `[n, mean, variance, standardDeviation, islandCount]`. */
   globalStatistics: number[];
   /** Gi* only. */
   bins: number[];
@@ -90,7 +96,13 @@ export function createSpatialAutocorrelationHarness(
     weights: SpatialAutocorrelationWeightsSource;
     parameters?: GPUSpatialAutocorrelationParameters;
     gridSize?: readonly [number, number];
+    /** @deprecated Use `multipleTesting`. */
     falseDiscoveryRate?: boolean;
+    multipleTesting?: GPUMultipleTestingMethod;
+    islands?: GPUIslandPolicy;
+    minimumNeighbors?: number;
+    /** Declares `weights.info.transform === 'row'`, so rows are re-standardized after masking. */
+    rowStandardized?: boolean;
     /** Local Moran only. */
     quadrantGating?: GPULocalMoranQuadrantGating;
     /** Gi* only. */
@@ -118,6 +130,7 @@ export function createSpatialAutocorrelationHarness(
   const outputs: Record<
     | 'zScores'
     | 'pValues'
+    | 'adjustedPValues'
     | 'neighborCounts'
     | 'globalStatistics'
     | 'bins'
@@ -132,8 +145,9 @@ export function createSpatialAutocorrelationHarness(
   > = {
     zScores: createOutputBuffer(device, rows),
     pValues: createOutputBuffer(device, rows),
+    adjustedPValues: createOutputBuffer(device, rows),
     neighborCounts: createOutputBuffer(device, rows),
-    globalStatistics: createOutputBuffer(device, 4),
+    globalStatistics: createOutputBuffer(device, 5),
     bins: createOutputBuffer(device, rows),
     localI: createOutputBuffer(device, rows),
     spatialLag: createOutputBuffer(device, rows),
@@ -153,7 +167,10 @@ export function createSpatialAutocorrelationHarness(
   const weights: GPUSpatialWeights = {
     offsets: importGraphBuffer(graph, 'offsets', outputs.offsets, 'uint32', rows + 1),
     neighbors: importGraphBuffer(graph, 'neighbors', outputs.neighbors, 'uint32', capacity),
-    weights: importGraphBuffer(graph, 'weights', outputs.weights, 'float32', capacity)
+    weights: importGraphBuffer(graph, 'weights', outputs.weights, 'float32', capacity),
+    info: options.rowStandardized
+      ? {rowCount: rows, transform: 'row', symmetric: 'unknown'}
+      : undefined
   };
   const positionsBuffer = source.kind === 'neighbor-search' ? createBuffer(source.positions) : null;
   const neighborParameterBuffer =
@@ -183,8 +200,18 @@ export function createSpatialAutocorrelationHarness(
     parameters: parameterBuffer.importToGraph(graph),
     mask: maskBuffer && importGraphBuffer(graph, 'mask', maskBuffer, 'uint32', rows),
     falseDiscoveryRate: options.falseDiscoveryRate,
+    multipleTesting: options.multipleTesting,
+    islands: options.islands,
+    minimumNeighbors: options.minimumNeighbors,
     zScores: importGraphBuffer(graph, 'z-scores', outputs.zScores, 'float32', rows),
     pValues: importGraphBuffer(graph, 'p-values', outputs.pValues, 'float32', rows),
+    adjustedPValues: importGraphBuffer(
+      graph,
+      'adjusted-p-values',
+      outputs.adjustedPValues,
+      'float32',
+      rows
+    ),
     neighborCounts: importGraphBuffer(
       graph,
       'neighbor-counts',
@@ -197,7 +224,7 @@ export function createSpatialAutocorrelationHarness(
       'global-statistics',
       outputs.globalStatistics,
       'float32',
-      4
+      5
     )
   };
   const contributor =
@@ -252,8 +279,9 @@ export function createSpatialAutocorrelationHarness(
         zScores: Array.from(new Float32Array(Uint32Array.from(zScoreBits).buffer)),
         zScoreBits,
         pValues: await readFloat32(outputs.pValues, rows),
+        adjustedPValues: await readFloat32(outputs.adjustedPValues, rows),
         neighborCounts: await readUint32(outputs.neighborCounts, rows),
-        globalStatistics: await readFloat32(outputs.globalStatistics, 4),
+        globalStatistics: await readFloat32(outputs.globalStatistics, 5),
         bins: Array.from(new Int32Array(Uint32Array.from(binBits).buffer)),
         localI: await readFloat32(outputs.localI, rows),
         spatialLag: await readFloat32(outputs.spatialLag, rows),

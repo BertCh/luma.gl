@@ -36,6 +36,8 @@ it('publishes canonical reproducibility metadata', () => {
     multipleTesting: 'benjamini-hochberg',
     includeObserved: true
   });
+  // The default tail is two-sided.
+  expect(getGPUPermutationMetadata({seed: 9, permutations: 199}).alternative).toBe('two-sided');
 });
 
 function createScene(count: number, seed: number, sign: number) {
@@ -99,7 +101,7 @@ it('GPULocalPermutationTest alternatives match the oracle and relate as esda def
     expect(mismatched, alternative).toBeLessThanOrEqual(3);
     expect(result.significant.filter(Boolean).length, alternative).toBeGreaterThan(0);
   }
-  // Derived relations: two-sided = min(2 min(g, l), ...) vs. directed and greater/lesser.
+  // Derived relations: two-sided = min(2 (min(g, l) + 1), P + 1) vs. directed and greater/lesser.
   const directed = byAlternative.get('directed')!;
   const twoSided = byAlternative.get('two-sided')!;
   const greater = byAlternative.get('greater')!;
@@ -116,6 +118,8 @@ it('GPULocalPermutationTest alternatives match the oracle and relate as esda def
     expect(twoSided.exceedances[row]).toBe(
       Math.min(greater.exceedances[row], lesser.exceedances[row])
     );
+    // 'directed' counts the smaller tail with ties on both sides, so it shares two-sided's count.
+    expect(directed.exceedances[row]).toBe(twoSided.exceedances[row]);
     expect(
       Math.abs(
         getOraclePValue(twoSided.exceedances[row], 2, permutations) - twoSided.pseudoPValues[row]

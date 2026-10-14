@@ -378,6 +378,40 @@ it('GPUCellCover h3 center matches h3-js polygonToCells', async () => {
   expect(totalDisagreements).toBeLessThanOrEqual(20);
 });
 
+it('GPUCellCover h3 center keeps the cells of tall high-latitude polygons', async () => {
+  const device = await getWebGPUTestDevice();
+  if (!device) {
+    return;
+  }
+  // D-07: a longitude spacing taken at the poleward edge lost 448 of 1756 res-3 cells over 0-85
+  // degrees; the spacing now comes from the most equatorward latitude. Truth: h3-js polygonToCells.
+  const features = roundFeatures([
+    [[createRectangleRing([-20, 0, 20, 80])]],
+    [[createRectangleRing([-141, 41.7, -52, 83.1])]],
+    [[createRectangleRing([30, -82, 45, -5])]]
+  ]);
+  for (const resolution of [2, 3]) {
+    const expected = coverH3OnCPU(features, resolution);
+    const actual = await runCover(device, features, {
+      family: 'h3',
+      resolution,
+      candidateCapacity: 4_000_000,
+      outputCapacity: expected.cells.length + 256
+    });
+    expect(actual.overflow, `res ${resolution} overflow`).toBe(0);
+    const disagreements = listCoverDisagreements(actual, expected);
+    // Only f32 center-on-edge ties may differ (same allowance as the scene above, per cell).
+    for (const row of disagreements) {
+      const [centreLat, centreLng] = cellToLatLng(bigIntToH3(row.cell));
+      const distance = getDistanceToFeatureBoundary(flattenCoverFeatures(features), row.feature, [
+        centreLng,
+        centreLat
+      ]);
+      expect(distance, `res ${resolution} cell ${row.cell}`).toBeLessThan(5e-5);
+    }
+  }
+});
+
 it('GPUCellCover core flag is sound, conservative and nonzero (quadbin and h3)', async () => {
   const device = await getWebGPUTestDevice();
   if (!device) {
@@ -506,4 +540,86 @@ it('GPUCellCover edge slabs give the same cells and core flags as testing every 
       expect(slabbed.core, `${tag} core`).toEqual(reference.core);
     }
   }
+});
+
+it('GPUCellCover rejects antimeridian-spanning features and counts clamped polar features', async () => {
+  const device = await getWebGPUTestDevice();
+  if (!device) {
+    return;
+  }
+  // Feature 0 is ordinary, feature 1 crosses the antimeridian (its bounding box is 340 degrees
+  // wide, edge longitude difference 340), feature 2 reaches past the Web Mercator latitude limit.
+  const features: CoverFeature[] = [
+    [[createRectangleRing([0, 0, 2, 2])]],
+    [[createRectangleRing([170, 0, -170, 2])]],
+    [[createRectangleRing([0, 84, 2, 86])]]
+  ];
+  const arrays = flattenCoverFeatures(features);
+  const buffers: Buffer[] = [];
+  const input = (values: Float32Array | Uint32Array) => {
+    const buffer = createInputBuffer(device, values);
+    buffers.push(buffer);
+    return buffer;
+  };
+  const output = (length: number) => {
+    const buffer = createOutputBuffer(device, length);
+    buffers.push(buffer);
+    return buffer;
+  };
+  const capacity = 256;
+  const featureIds = output(capacity);
+  const cells = output(2 * capacity);
+  const count = output(1);
+  const overflow = output(1);
+  const candidateOverflow = output(1);
+  const invalidCount = output(1);
+  const uncertainCount = output(1);
+  const graph = new GPUCommandGraph(device, {id: 'cell-cover-status'});
+  const view = (name: string, values: Float32Array | Uint32Array, format: 'float32x2' | 'uint32') =>
+    importGraphBuffer(
+      graph,
+      name,
+      input(values),
+      format,
+      format === 'float32x2' ? values.length / 2 : values.length
+    );
+  graph.add(
+    new GPUCellCover({
+      family: 'quadbin',
+      resolution: 4,
+      // A res-4 tile is 22.5 degrees wide, so the 2-degree feature 0 contains no tile center;
+      // 'intersects' gives it cells, which the assertion below needs.
+      containment: 'intersects',
+      polygonPositions: view('positions', arrays.positions, 'float32x2') as never,
+      featureOffsets: view('feature-offsets', arrays.featureOffsets, 'uint32') as never,
+      polygonOffsets: view('polygon-offsets', arrays.polygonOffsets, 'uint32') as never,
+      ringOffsets: view('ring-offsets', arrays.ringOffsets, 'uint32') as never,
+      candidateCapacity: 4096,
+      output: {
+        featureIds: importGraphBuffer(graph, 'out-ids', featureIds, 'uint32', capacity),
+        cells: importGraphBuffer(graph, 'out-cells', cells, 'uint32x2', capacity),
+        count: importGraphBuffer(graph, 'out-count', count, 'uint32', 1),
+        overflow: importGraphBuffer(graph, 'out-overflow', overflow, 'uint32', 1),
+        candidateOverflow: importGraphBuffer(
+          graph,
+          'out-candidate',
+          candidateOverflow,
+          'uint32',
+          1
+        ),
+        invalidCount: importGraphBuffer(graph, 'out-invalid', invalidCount, 'uint32', 1),
+        uncertainCount: importGraphBuffer(graph, 'out-uncertain', uncertainCount, 'uint32', 1)
+      }
+    })
+  );
+  const compiled = graph.compile();
+  submitGraph(device, compiled, undefined);
+  expect((await readUint32(invalidCount, 1))[0]).toBe(1);
+  expect((await readUint32(uncertainCount, 1))[0]).toBe(1);
+  const written = (await readUint32(count, 1))[0];
+  const ids = (await readUint32(featureIds, capacity)).slice(0, written);
+  expect(ids.includes(0)).toBe(true);
+  expect(ids.includes(1)).toBe(false);
+  compiled.destroy();
+  buffers.forEach(buffer => buffer.destroy());
 });

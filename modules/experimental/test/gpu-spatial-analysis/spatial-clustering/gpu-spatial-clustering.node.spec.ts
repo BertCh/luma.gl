@@ -12,7 +12,16 @@ import {
   type GPUSpatialClusteringProps
 } from '../../../src/gpu-spatial-analysis/spatial-clustering';
 import {createNullWebGPUDevice} from '../../utils/gpu-contributor-test-utils';
-import {clusterPointsOracle, ORACLE_NOISE} from './spatial-clustering-oracle';
+import {getSpatialClusteringSharedWGSL} from '../../../src/gpu-spatial-analysis/spatial-clustering/spatial-clustering-kernels';
+import {
+  clusterGeographicPointsOracle,
+  clusterPointsOracle,
+  createGeographicBlobScene,
+  createSeededRandom,
+  getHaversineDistance,
+  ORACLE_EARTH_RADIUS,
+  ORACLE_NOISE
+} from './spatial-clustering-oracle';
 
 function createProps(
   graph: GPUCommandGraph,
@@ -304,4 +313,111 @@ it('GPUSpatialClustering schedules sort nodes for centroids only with sumOrder s
     () => new GPUSpatialClustering(createProps(graph, {sumOrder: 'fast' as unknown as 'sorted'}))
   ).toThrow(/sumOrder must be atomic or sorted/);
   device.destroy();
+});
+
+it('GPUSpatialClustering resolves spatialContext: planar or great-circle only', () => {
+  let serial = 0;
+  const makeGraph = () =>
+    new GPUCommandGraph(createNullWebGPUDevice(), {id: `clustering-context-${serial++}`});
+  const build = (overrides: Partial<GPUSpatialClusteringProps> = {}) => {
+    const graph = makeGraph();
+    return {graph, producer: new GPUSpatialClustering(createProps(graph, overrides))};
+  };
+  const planar = build().producer;
+  expect(planar.spatialContext.coordinateSpace).toBe('planar');
+  expect(planar.geographicRadius).toBeUndefined();
+  const geographic = build({
+    spatialContext: {coordinateSpace: 'longitude-latitude', metric: 'great-circle'}
+  }).producer;
+  expect(geographic.geographicRadius).toBeCloseTo(ORACLE_EARTH_RADIUS, 6);
+  const custom = build({
+    spatialContext: {
+      coordinateSpace: 'longitude-latitude',
+      metric: 'great-circle',
+      sphereRadius: 1000
+    }
+  }).producer;
+  expect(custom.geographicRadius).toBe(1000);
+  expect(
+    () =>
+      build({
+        spatialContext: {coordinateSpace: 'longitude-latitude', metric: 'none'}
+      }).producer
+  ).toThrow(/great-circle/);
+  expect(
+    () =>
+      build({
+        spatialContext: {coordinateSpace: 'discrete-grid', metric: 'none', gridFamily: 'h3'}
+      }).producer
+  ).toThrow(/does not support/);
+  expect(
+    () =>
+      build({
+        denseBoxShortcut: true,
+        spatialContext: {coordinateSpace: 'longitude-latitude', metric: 'great-circle'}
+      }).producer
+  ).toThrow(/denseBoxShortcut is planar only/);
+  const geographicBuilt = build({
+    spatialContext: {coordinateSpace: 'longitude-latitude', metric: 'great-circle'}
+  });
+  const geographicNodes = geographicBuilt.producer
+    .getCommandNodes(geographicBuilt.graph)
+    .map(node => node.id);
+  expect(geographicNodes).toContain('spatial-clustering-core');
+  expect(getSpatialClusteringSharedWGSL(8, 8, 6371008.8)).toContain('geodesicHaversineTerm(');
+  expect(getSpatialClusteringSharedWGSL(8, 8)).not.toContain('geodesicHaversineTerm(');
+});
+
+// Oracle: scikit-learn 1.9.1 DBSCAN(eps=150 / 6371008.8, min_samples=5, metric='haversine') on the
+// f32 scene dumped by fix/work/C/U7/dump-geo.ts, via fix/work/C/U7/dbscan-haversine.py: 5 clusters,
+// 93 noise points, identical core flags, noise set and core partition.
+it('geographic DBSCAN oracle matches scikit-learn haversine DBSCAN on the pinned scene', () => {
+  const positions = createGeographicBlobScene();
+  const result = clusterGeographicPointsOracle(positions, {
+    bounds: [-180, -90, 180, 90],
+    epsilon: 150,
+    minimumPoints: 5
+  });
+  expect(result.clusterCount).toBe(5);
+  expect(result.labels.filter(label => label === ORACLE_NOISE).length).toBe(93);
+  const sizes = new Array<number>(5).fill(0);
+  for (const label of result.labels) if (label !== ORACLE_NOISE) sizes[label]++;
+  expect(sizes.sort((a, b) => a - b)).toEqual([4, 7, 23, 32, 41]);
+});
+
+it('geographic lattice cells bound every epsilon neighbor pair', () => {
+  // The cell height is epsilon / R of latitude and the cell width 2 asin(sin(theta / 2) / cos(lat))
+  // of longitude at the largest |latitude| in the bounds; no pair within epsilon may exceed either.
+  const random = createSeededRandom(5);
+  for (const maxLatitude of [0, 30, 60, 80, 89]) {
+    for (const epsilon of [10, 1000, 100000]) {
+      const theta = epsilon / ORACLE_EARTH_RADIUS;
+      const cosLatitude = Math.cos((maxLatitude * Math.PI) / 180);
+      const ratio = Math.sin(theta / 2) / cosLatitude;
+      const widthDegrees = ratio >= 0.99 ? 360 : (2 * Math.asin(ratio) * 180) / Math.PI;
+      const heightDegrees = (theta * 180) / Math.PI;
+      for (let trial = 0; trial < 400; trial++) {
+        const a: [number, number] = [random() * 20, (random() * 2 - 1) * maxLatitude];
+        // Random direction at a random distance up to epsilon, converted to a nearby point.
+        const distance = random() * epsilon;
+        const bearing = random() * 2 * Math.PI;
+        const latitude = (a[1] * Math.PI) / 180;
+        const lat2 = Math.asin(
+          Math.sin(latitude) * Math.cos(distance / ORACLE_EARTH_RADIUS) +
+            Math.cos(latitude) * Math.sin(distance / ORACLE_EARTH_RADIUS) * Math.cos(bearing)
+        );
+        const lon2 =
+          (a[0] * Math.PI) / 180 +
+          Math.atan2(
+            Math.sin(bearing) * Math.sin(distance / ORACLE_EARTH_RADIUS) * Math.cos(latitude),
+            Math.cos(distance / ORACLE_EARTH_RADIUS) - Math.sin(latitude) * Math.sin(lat2)
+          );
+        const b: [number, number] = [(lon2 * 180) / Math.PI, (lat2 * 180) / Math.PI];
+        if (Math.abs(b[1]) > maxLatitude) continue;
+        expect(getHaversineDistance(a, b)).toBeLessThanOrEqual(epsilon * (1 + 1e-9));
+        expect(Math.abs(b[1] - a[1])).toBeLessThanOrEqual(heightDegrees * (1 + 1e-9));
+        expect(Math.abs(b[0] - a[0])).toBeLessThanOrEqual(widthDegrees * (1 + 1e-9));
+      }
+    }
+  }
 });

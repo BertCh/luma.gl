@@ -73,20 +73,95 @@ export function classifyPointInFeature(
   return inside ? 'inside' : 'outside';
 }
 
-/** Smallest containing feature row per point, plus per-feature counts. */
+/** Classification of a point under the half-open rule, see {@link classifyPointHalfOpen}. */
+export type HalfOpenClassification = 'inside' | 'owned-boundary' | 'unowned-boundary' | 'outside';
+
+/**
+ * Classifies one point against one feature under the half-open rule of `GPUPointInPolygonJoin`:
+ * the point belongs to the feature when it lies inside after an infinitesimal move toward +x and
+ * +y (+y dominates). Same arithmetic as the kernel: an edge whose supporting line contains the
+ * point decides by the sign of dx (the epsilon term), or of -dy for a vertical edge (the epsilon
+ * squared term). Exact for the small integer and dyadic coordinates of the specs.
+ */
+export function classifyPointHalfOpen(
+  point: Point,
+  feature: OraclePolygonFeature
+): HalfOpenClassification {
+  const [x, y] = point;
+  let inside = false;
+  let owned = false;
+  let onBoundary = false;
+  for (const polygon of feature) {
+    let polygonInside = false;
+    let polygonOwned = false;
+    for (const ring of polygon) {
+      for (let index = 0; index < ring.length; index++) {
+        const [ax, ay] = ring[index];
+        const [bx, by] = ring[(index + 1) % ring.length];
+        const cross = (bx - ax) * (y - ay) - (by - ay) * (x - ax);
+        let side = Math.sign(cross);
+        if (cross === 0) {
+          if (
+            x >= Math.min(ax, bx) &&
+            x <= Math.max(ax, bx) &&
+            y >= Math.min(ay, by) &&
+            y <= Math.max(ay, by)
+          ) {
+            onBoundary = true;
+          }
+          side = Math.sign(bx - ax);
+          if (side === 0) {
+            side = -Math.sign(by - ay);
+          }
+        }
+        if (ay > y !== by > y) {
+          if ((by > ay && cross > 0) || (by < ay && cross < 0)) {
+            polygonInside = !polygonInside;
+          }
+          if ((by > ay && side > 0) || (by < ay && side < 0)) {
+            polygonOwned = !polygonOwned;
+          }
+        }
+      }
+    }
+    inside = inside || polygonInside;
+    owned = owned || polygonOwned;
+  }
+  if (onBoundary) {
+    return owned ? 'owned-boundary' : 'unowned-boundary';
+  }
+  return inside ? 'inside' : 'outside';
+}
+
+/** How the oracle treats boundary points: the kernel's `boundaryRule`. */
+export type OracleBoundaryRule = 'half-open' | 'closed' | 'open';
+
+/**
+ * Smallest containing feature row per point, plus per-feature counts. `boundaryRule` follows
+ * `GPUPointInPolygonJoin`; a boolean is the legacy `includeBoundary` (`true` is `'closed'`).
+ */
 export function joinPointsInPolygons(
   points: Point[],
   features: OraclePolygonFeature[],
-  includeBoundary: boolean
+  boundaryRule: OracleBoundaryRule | boolean
 ): {featureRows: number[]; counts: number[]} {
+  const rule: OracleBoundaryRule =
+    typeof boundaryRule === 'boolean' ? (boundaryRule ? 'closed' : 'open') : boundaryRule;
   const counts = new Array<number>(features.length).fill(0);
   const featureRows = points.map(point => {
     if (!Number.isFinite(point[0]) || !Number.isFinite(point[1])) {
       return NO_FEATURE;
     }
     for (const [row, feature] of features.entries()) {
-      const classification = classifyPointInFeature(point, feature);
-      if (classification === 'inside' || (includeBoundary && classification === 'boundary')) {
+      let joins: boolean;
+      if (rule === 'half-open') {
+        const classification = classifyPointHalfOpen(point, feature);
+        joins = classification === 'inside' || classification === 'owned-boundary';
+      } else {
+        const classification = classifyPointInFeature(point, feature);
+        joins = classification === 'inside' || (rule === 'closed' && classification === 'boundary');
+      }
+      if (joins) {
         counts[row]++;
         return row;
       }

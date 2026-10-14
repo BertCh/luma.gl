@@ -95,6 +95,20 @@ it('GPUVariogram validates its inputs and outputs', () => {
   expectThrows(graph => ({semivariances: view(graph, 'float32', 7)}), /semivariances/);
   expectThrows(graph => ({pairCounts: view(graph, 'uint32', 7)}), /pairCounts/);
   expectThrows(graph => ({statistics: view(graph, 'float32', 4)}), /statistics/);
+  expectThrows(graph => ({overflow: view(graph, 'float32', 1)}), /overflow/);
+  expectThrows(
+    graph => ({overflow: view(graph, 'uint32', 1), pairCounts: view(graph, 'uint32', 7)}),
+    /pairCounts/
+  );
+  // 512 bins fill the 2048 accumulators with 4 channels; the robust channel needs a fifth.
+  expectThrows(
+    graph => ({
+      lagCount: 512,
+      semivariances: view(graph, 'float32', 512),
+      robustSemivariances: view(graph, 'float32', 512)
+    }),
+    /accumulators/
+  );
   expectThrows(graph => ({parameters: view(graph, 'float32', 4)}), /parameters/);
   expectThrows(() => ({gridSize: [0, 4]}), /gridSize/);
   expectThrows(graph => {
@@ -111,7 +125,8 @@ it('GPUVariogram emits deterministic node IDs', () => {
       ...createProps(graph),
       id: 'v',
       pairCounts: createTransientView(graph, `counts-${serial++}`, 'uint32', 8),
-      statistics: createTransientView(graph, `stats-${serial++}`, 'float32', 5)
+      statistics: createTransientView(graph, `stats-${serial++}`, 'float32', 5),
+      overflow: createTransientView(graph, `overflow-${serial++}`, 'uint32', 1)
     });
     return contributor.getCommandNodes(graph).map(node => node.id);
   };
@@ -121,6 +136,8 @@ it('GPUVariogram emits deterministic node IDs', () => {
   expect(first).toContain('v-histogram-pairs');
   expect(first).toContain('v-finish');
   expect(first).toContain('v-statistics');
+  expect(first).toContain('v-overflow');
+  expect(first).toContain('v-unit-variance');
   device.destroy();
 });
 
@@ -191,4 +208,17 @@ it('variogram model shapes follow the practical-range convention', () => {
   expect(getVariogramModelShape('exponential', 1)).toBeCloseTo(1 - Math.exp(-3), 12);
   expect(getVariogramModelShape('gaussian', 1)).toBeCloseTo(1 - Math.exp(-3), 12);
   expect(evaluateVariogramModel({model: 'gaussian', nugget: 1, sill: 2, range: 5}, 0)).toBe(0);
+});
+
+it('gpu-variogram declares planar-only spatial support', () => {
+  expectThrows(
+    () => ({
+      spatialContext: {coordinateSpace: 'longitude-latitude', metric: 'great-circle'} as const
+    }),
+    /project positions to a planar frame first/
+  );
+  expectThrows(
+    () => ({spatialContext: {coordinateSpace: 'discrete-grid', metric: 'none', gridFamily: 'h3'}}),
+    /does not support discrete-grid/
+  );
 });

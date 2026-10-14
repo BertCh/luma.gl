@@ -18,6 +18,11 @@ import {
 } from '../../../src/gpu-spatial-analysis/line-segmentize';
 import {createNullWebGPUDevice} from '../../utils/gpu-contributor-test-utils';
 
+const GREAT_CIRCLE = {
+  coordinateSpace: 'longitude-latitude',
+  metric: 'great-circle'
+} as const;
+
 let viewSerial = 0;
 
 /** Returns a graph-unique resource ID. */
@@ -57,19 +62,45 @@ it('GPULineSegmentize validates inputs and emits deterministic node IDs', () => 
   const graph = new GPUCommandGraph(createNullWebGPUDevice(), {id: 'segmentize'});
   const contributor = new GPULineSegmentize({
     ...createSegmentizeProps(graph),
-    coordinateSystem: 'spherical'
+    spatialContext: GREAT_CIRCLE
   });
+  expect(contributor.coordinateSystem).toBe('spherical');
+  expect(contributor.radius).toBe(6371008.8);
   const ids = contributor.getCommandNodes(graph).map(node => node.id);
   expect(ids[0]).toBe('line-segmentize-prefix');
   expect(ids).toContain('line-segmentize-count');
   expect(ids).toContain('line-segmentize-emit');
   expect(ids.at(-1)).toBe('line-segmentize-publish');
 
+  // Planar is the default; an unsupported context or a bad radius throws at construction.
+  expect(new GPULineSegmentize(createSegmentizeProps(graph)).coordinateSystem).toBe('planar');
   expect(
     () =>
-      new GPULineSegmentize(createSegmentizeProps(graph, {coordinateSystem: 'mercator' as never}))
-  ).toThrow(/coordinateSystem/);
-  expect(() => new GPULineSegmentize(createSegmentizeProps(graph, {radius: -1}))).toThrow(/radius/);
+      new GPULineSegmentize(
+        createSegmentizeProps(graph, {
+          spatialContext: {coordinateSpace: 'discrete-grid', metric: 'none', gridFamily: 'h3'}
+        })
+      )
+  ).toThrow(/does not support discrete-grid/);
+  expect(
+    () =>
+      new GPULineSegmentize(
+        createSegmentizeProps(graph, {
+          spatialContext: {coordinateSpace: 'longitude-latitude', metric: 'none'}
+        })
+      )
+  ).toThrow(/great-circle/);
+  expect(
+    () =>
+      new GPULineSegmentize(
+        createSegmentizeProps(graph, {spatialContext: {...GREAT_CIRCLE, sphereRadius: -1}})
+      )
+  ).toThrow(/sphereRadius/);
+  expect(
+    new GPULineSegmentize(
+      createSegmentizeProps(graph, {spatialContext: {...GREAT_CIRCLE, units: 'kilometers'}})
+    ).radius
+  ).toBeCloseTo(6371.0088, 6);
   expect(
     () =>
       new GPULineSegmentize(
@@ -233,4 +264,50 @@ it('GPULineSmooth and GPULineChunk validate their layouts', () => {
     0
   ]);
   expect(() => getGPULineChunkParameterValues({chunkLength: -1})).toThrow();
+});
+
+it('line operations declare their spatial context', () => {
+  const graph = new GPUCommandGraph(createNullWebGPUDevice(), {id: 'line-contexts'});
+  const positions = createTransientView(graph, getViewId('positions'), 'float32x2', 10);
+  const pathOffsets = createTransientView(graph, getViewId('offsets'), 'uint32', 3);
+  const parameters = createTransientView(graph, getViewId('parameters'), 'float32', 4);
+  // Planar-only: great-circle longitude/latitude throws with a project-first hint.
+  expect(
+    () =>
+      new GPULineSmooth({
+        positions,
+        pathOffsets,
+        iterations: 1,
+        parameters,
+        spatialContext: GREAT_CIRCLE,
+        output: {...createOutput(graph, 2), measures: undefined}
+      })
+  ).toThrow(/project positions to a planar frame first/);
+  // Chunk accepts both.
+  const chunkProps = {
+    positions,
+    pathOffsets,
+    mode: 'chunk' as const,
+    parameters,
+    output: {...createOutput(graph, 2), measures: undefined}
+  };
+  expect(new GPULineChunk(chunkProps).coordinateSystem).toBe('planar');
+  expect(new GPULineChunk({...chunkProps, spatialContext: GREAT_CIRCLE}).coordinateSystem).toBe(
+    'spherical'
+  );
+  // Great-circle arcs are inherently geographic: default is longitude/latitude, planar throws.
+  const arcProps = {
+    sources: createTransientView(graph, getViewId('sources'), 'float32x2', 3),
+    targets: createTransientView(graph, getViewId('targets'), 'float32x2', 3),
+    parameters,
+    output: createOutput(graph, 3)
+  };
+  expect(new GPUGreatCircleArcs(arcProps).spatialContext.metric).toBe('great-circle');
+  expect(
+    () =>
+      new GPUGreatCircleArcs({
+        ...arcProps,
+        spatialContext: {coordinateSpace: 'planar', metric: 'native'}
+      })
+  ).toThrow(/does not support planar/);
 });

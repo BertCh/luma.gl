@@ -9,16 +9,24 @@ import {
   GPU_HOT_SPOT_SIGNIFICANCE_LEVELS,
   type GPUSpatialAutocorrelationParameters
 } from '../../../src/gpu-spatial-analysis/spatial-autocorrelation';
+import type {GPUMultipleTestingMethod} from '../../../src/gpu-spatial-analysis/contracts';
 import {
   computeHotSpotOracle,
   createAutocorrelatedScene,
   createDistanceBandWeights,
   createSeededRandom,
-  getFalseDiscoveryRateLevels,
-  getFalseDiscoveryRateMargin,
+  getAdjustedPValueMargin,
+  getAdjustedPValuesFromZScores,
   type HotSpotOracleResult,
   type OracleWeights
 } from './spatial-autocorrelation-oracle';
+import {
+  getReferenceMask,
+  getReferenceValues,
+  getReferenceWeights,
+  REFERENCE_ROW_COUNT
+} from './spatial-autocorrelation-fixture';
+import {REFERENCE} from './spatial-autocorrelation-reference';
 import {
   createSpatialAutocorrelationHarness,
   isClose,
@@ -45,6 +53,7 @@ function expectMatchesOracle(
 ): void {
   expect(result.neighborCounts, label).toEqual(oracle.neighborCounts);
   expect(result.globalStatistics[0], label).toBe(oracle.moments.count);
+  expect(result.globalStatistics[4], `${label} islandCount`).toBe(oracle.islandCount);
   expect(isClose(result.globalStatistics[1], oracle.moments.mean, 1e-4, 1e-6), label).toBe(true);
   expect(isClose(result.globalStatistics[2], oracle.moments.variance, 1e-5, 1e-4), label).toBe(
     true
@@ -90,10 +99,11 @@ it('GPUHotSpotAnalysis matches the Gi* oracle for hand-built CSR weights, self w
       contributor: 'hot-spot',
       scene,
       weights: toCsr(weights),
-      selfWeight
+      selfWeight,
+      rowStandardized: rowStandardize
     });
     try {
-      const input = {...scene, weights, selfWeight};
+      const input = {...scene, weights, selfWeight, rowStandardized: rowStandardize};
       const label = `radius ${radius} self ${selfWeight} standardized ${rowStandardize}`;
       const result = await harness.run();
       expectMatchesOracle(result, computeHotSpotOracle(input), label);
@@ -221,50 +231,110 @@ it('GPUHotSpotAnalysis honors the mask, excluded values, and fixed moments', asy
   }
 }, 120000);
 
-it('GPUHotSpotAnalysis applies Benjamini-Hochberg FDR to the bins', async () => {
+it('GPUHotSpotAnalysis bins follow the adjusted p-value of every multiple-testing method', async () => {
   const device = await getWebGPUTestDevice();
   if (!device) {
     return;
   }
   const scene = createAutocorrelatedScene(31, 2500, [5, 9]);
+  const levels = GPU_HOT_SPOT_SIGNIFICANCE_LEVELS;
   for (const radius of [5, 9]) {
     const weights = createDistanceBandWeights(scene.positions, radius);
+    const uncorrected = new Map<GPUMultipleTestingMethod, number>();
+    for (const method of [
+      'none',
+      'bonferroni',
+      'holm',
+      'benjamini-hochberg',
+      'benjamini-yekutieli'
+    ] as const) {
+      const harness = createSpatialAutocorrelationHarness(device, {
+        contributor: 'hot-spot',
+        scene,
+        weights: toCsr(weights),
+        multipleTesting: method
+      });
+      try {
+        const result = await harness.run();
+        const oracle = computeHotSpotOracle({...scene, weights}, {multipleTesting: method});
+        for (const [row, expected] of oracle.zScores.entries()) {
+          expect(
+            isClose(result.zScores[row], expected, Z_ABSOLUTE_TOLERANCE, Z_RELATIVE_TOLERANCE)
+          ).toBe(true);
+        }
+        // The decision is exact given the GPU z-scores, as long as no adjusted p-value sits on a
+        // level.
+        const adjusted = getAdjustedPValuesFromZScores(result.zScores, method);
+        if (method !== 'none') {
+          expect(getAdjustedPValueMargin(adjusted, levels)).toBeGreaterThan(1e-4);
+          for (const [row, expectedAdjusted] of adjusted.entries()) {
+            expect(
+              isClose(result.adjustedPValues[row], expectedAdjusted, 1e-6, 1e-4),
+              `${method} radius ${radius} row ${row} adjusted ${result.adjustedPValues[row]} != ${expectedAdjusted}`
+            ).toBe(true);
+          }
+          const expectedBins = adjusted.map((value, row) => {
+            const level = Number.isFinite(value) ? levels.filter(l => value <= l).length : 0;
+            return (result.zScores[row] < 0 ? -level : level) || 0;
+          });
+          expect(result.bins, `${method} radius ${radius}`).toEqual(expectedBins);
+        }
+        const significant = result.bins.filter(bin => bin !== 0).length;
+        uncorrected.set(method, significant);
+        expect((await harness.run()).bins).toEqual(result.bins);
+        expect(harness.buildCount).toBe(1);
+      } finally {
+        harness.destroy();
+      }
+    }
+    // A correction never adds significant rows to the uncorrected map; Bonferroni and Holm
+    // control the family-wise error, so they are the strictest.
+    const none = uncorrected.get('none') ?? 0;
+    for (const method of [
+      'bonferroni',
+      'holm',
+      'benjamini-hochberg',
+      'benjamini-yekutieli'
+    ] as const) {
+      expect(uncorrected.get(method) ?? 0, `${method} radius ${radius}`).toBeLessThanOrEqual(none);
+    }
+    expect(uncorrected.get('holm') ?? 0).toBeGreaterThanOrEqual(uncorrected.get('bonferroni') ?? 0);
+    expect(uncorrected.get('benjamini-hochberg') ?? 0).toBeGreaterThan(0);
+    expect(uncorrected.get('benjamini-hochberg') ?? 0).toBeGreaterThanOrEqual(
+      uncorrected.get('benjamini-yekutieli') ?? 0
+    );
+  }
+}, 240000);
+
+it('GPUHotSpotAnalysis keeps the falseDiscoveryRate alias equal to benjamini-hochberg', async () => {
+  const device = await getWebGPUTestDevice();
+  if (!device) {
+    return;
+  }
+  const scene = createAutocorrelatedScene(31, 1200, [6]);
+  const weights = toCsr(createDistanceBandWeights(scene.positions, 6));
+  const bins: number[][] = [];
+  for (const options of [
+    {falseDiscoveryRate: true},
+    {multipleTesting: 'benjamini-hochberg' as const}
+  ]) {
     const harness = createSpatialAutocorrelationHarness(device, {
       contributor: 'hot-spot',
       scene,
-      weights: toCsr(weights),
-      falseDiscoveryRate: true
+      weights,
+      ...options
     });
     try {
-      const result = await harness.run();
-      const oracle = computeHotSpotOracle({...scene, weights});
-      for (const [row, expected] of oracle.zScores.entries()) {
-        expect(
-          isClose(result.zScores[row], expected, Z_ABSOLUTE_TOLERANCE, Z_RELATIVE_TOLERANCE)
-        ).toBe(true);
-      }
-      // The decision is exact given the GPU z-scores, as long as no p-value sits on its BH bound.
-      expect(
-        getFalseDiscoveryRateMargin(result.zScores, GPU_HOT_SPOT_SIGNIFICANCE_LEVELS)
-      ).toBeGreaterThan(1e-4);
-      const levels = getFalseDiscoveryRateLevels(result.zScores, GPU_HOT_SPOT_SIGNIFICANCE_LEVELS);
-      const expectedBins = levels.map(
-        (level, row) => (result.zScores[row] < 0 ? -level : level) || 0
-      );
-      expect(result.bins, `radius ${radius}`).toEqual(expectedBins);
-      const corrected = expectedBins.filter(bin => bin !== 0).length;
-      const uncorrected = oracle.bins.filter(bin => bin !== 0).length;
-      expect(corrected).toBeGreaterThan(0);
-      expect(corrected).toBeLessThanOrEqual(uncorrected);
-      expect((await harness.run()).bins).toEqual(result.bins);
-      expect(harness.buildCount).toBe(1);
+      bins.push((await harness.run()).bins);
     } finally {
       harness.destroy();
     }
   }
+  expect(bins[0]).toEqual(bins[1]);
+  expect(bins[0].some(bin => bin !== 0)).toBe(true);
 }, 120000);
 
-it('GPUHotSpotAnalysis handles islands, degenerate selections and out-of-range neighbors', async () => {
+it('GPUHotSpotAnalysis handles degenerate selections and out-of-range neighbors', async () => {
   const device = await getWebGPUTestDevice();
   if (!device) {
     return;
@@ -279,43 +349,319 @@ it('GPUHotSpotAnalysis handles islands, degenerate selections and out-of-range n
     weights: toCsr(clique)
   });
   try {
-    // One included row: n < 2, so even that row has no z-score.
+    // One included row has no included neighbor: an island, removed from the analysis.
     const single = await harness.run();
     expect(single.zScores.every(Number.isNaN)).toBe(true);
-    expect(single.neighborCounts[5]).toBe(1);
-    expect(single.globalStatistics[0]).toBe(1);
+    expect(single.neighborCounts[5]).toBe(0);
+    expect(single.globalStatistics[0]).toBe(0);
+    expect(single.globalStatistics[4]).toBe(1);
     harness.writeMask(new Uint32Array(64).fill(1));
-    // Every row weighs every other row: k = n, so z is undefined.
+    // Every row weighs every other row: k = n - 1, so with the focal weight z is undefined.
     const everything = await harness.run();
     expect(everything.zScores.every(Number.isNaN)).toBe(true);
-    expect(everything.neighborCounts.every(count => count === 64)).toBe(true);
+    expect(everything.neighborCounts.every(count => count === 63)).toBe(true);
+    expect(everything.globalStatistics[4]).toBe(0);
     expect(harness.buildCount).toBe(1);
   } finally {
     harness.destroy();
   }
 
-  // No neighbors at all (plus one out-of-range ID, which is ignored): with the focal weight each
-  // row is its own neighborhood, so z = (x - X) / S; without it z is undefined.
+  // No neighbors at all (plus one out-of-range ID, which is ignored). A row never gets a z-score
+  // from its own value alone: every output is NaN under both policies, with or without the focal
+  // weight. 'exclude' removes the rows from n; 'keep' leaves them in.
   const rows = 64;
   const islands: OracleWeights = {
     offsets: Uint32Array.from({length: rows + 1}, (_, row) => (row > 0 ? 1 : 0)),
     neighbors: Uint32Array.from([9999]),
     weights: Float32Array.from([1])
   };
-  for (const selfWeight of [1, 0]) {
-    const islandHarness = createSpatialAutocorrelationHarness(device, {
-      contributor: 'hot-spot',
-      scene,
-      weights: toCsr(islands),
-      selfWeight
-    });
-    try {
-      const result = await islandHarness.run();
-      const oracle = computeHotSpotOracle({...scene, weights: islands, selfWeight});
-      expectMatchesOracle(result, oracle, `islands self ${selfWeight}`);
-      expect(result.zScores.every(Number.isNaN)).toBe(selfWeight === 0);
-    } finally {
-      islandHarness.destroy();
+  for (const policy of ['exclude', 'keep'] as const) {
+    for (const selfWeight of [1, 0]) {
+      const islandHarness = createSpatialAutocorrelationHarness(device, {
+        contributor: 'hot-spot',
+        scene,
+        weights: toCsr(islands),
+        selfWeight,
+        islands: policy
+      });
+      try {
+        const result = await islandHarness.run();
+        const label = `islands ${policy} self ${selfWeight}`;
+        expectMatchesOracle(
+          result,
+          computeHotSpotOracle({...scene, weights: islands, selfWeight, islands: policy}),
+          label
+        );
+        expect(result.zScores.every(Number.isNaN), label).toBe(true);
+        expect(
+          result.bins.every(bin => bin === 0),
+          label
+        ).toBe(true);
+        expect(result.globalStatistics[0], label).toBe(policy === 'keep' ? rows : 0);
+        expect(result.globalStatistics[4], label).toBe(rows);
+      } finally {
+        islandHarness.destroy();
+      }
     }
   }
 }, 60000);
+
+/** Compares a GPU result with an esda configuration on the shared 60-row fixture. */
+function expectMatchesEsdaZScores(
+  result: SpatialAutocorrelationReadback,
+  expected: readonly number[],
+  label: string
+): void {
+  expect(result.zScores.length, label).toBe(expected.length);
+  for (const [row, zScore] of expected.entries()) {
+    if (!isClose(result.zScores[row], zScore, Z_ABSOLUTE_TOLERANCE, Z_RELATIVE_TOLERANCE)) {
+      throw new Error(`${label}: row ${row} z ${result.zScores[row]} != esda ${zScore}`);
+    }
+  }
+}
+
+it('GPUHotSpotAnalysis matches esda G_Local on a fixture with an island (islands keep and exclude)', async () => {
+  const device = await getWebGPUTestDevice();
+  if (!device) {
+    return;
+  }
+  const values = getReferenceValues();
+  const weights = getReferenceWeights();
+  // Oracle: fix/work/A/oracle-u3-autocorrelation.py (esda 2.10.0, G_Local transform 'B').
+  // esda keeps the island in n (islands: 'keep'); its own z for the island is not compared.
+  for (const [policy, mask, expectedStar, expectedGi, count] of [
+    ['keep', undefined, REFERENCE.keep.giStar, REFERENCE.keep.gi, REFERENCE_ROW_COUNT],
+    ['exclude', undefined, REFERENCE.exclude.giStar, REFERENCE.exclude.gi, REFERENCE_ROW_COUNT - 1],
+    [
+      'exclude',
+      getReferenceMask(),
+      REFERENCE.masked.giStar,
+      REFERENCE.masked.gi,
+      REFERENCE.masked.count
+    ]
+  ] as const) {
+    for (const [selfWeight, expected] of [
+      [1, expectedStar],
+      [0, expectedGi]
+    ] as const) {
+      const harness = createSpatialAutocorrelationHarness(device, {
+        contributor: 'hot-spot',
+        scene: {values, mask},
+        weights: toCsr(weights),
+        selfWeight,
+        islands: policy
+      });
+      try {
+        const label = `esda ${policy}${mask ? ' masked' : ''} self ${selfWeight}`;
+        const result = await harness.run();
+        expectMatchesEsdaZScores(result, expected, label);
+        expect(result.globalStatistics[0], label).toBe(count);
+        expect(result.globalStatistics[4], label).toBe(mask ? 0 : 1);
+        expect(result.zScores[REFERENCE.island], `${label} island`).toBeNaN();
+        expect(result.bins[REFERENCE.island], `${label} island bin`).toBe(0);
+        expect(isClose(result.globalStatistics[1], expectedMean(policy, mask), 1e-4, 1e-6)).toBe(
+          true
+        );
+      } finally {
+        harness.destroy();
+      }
+    }
+  }
+}, 120000);
+
+function expectedMean(policy: 'keep' | 'exclude', mask: Uint32Array | undefined): number {
+  return mask
+    ? REFERENCE.masked.mean
+    : policy === 'keep'
+      ? REFERENCE.keep.mean
+      : REFERENCE.exclude.mean;
+}
+
+it('GPUHotSpotAnalysis counts positive-weight neighbors only and honors minimumNeighbors', async () => {
+  const device = await getWebGPUTestDevice();
+  if (!device) {
+    return;
+  }
+  const values = getReferenceValues();
+  const weights = getReferenceWeights();
+  // The same neighborhoods with a zero-weight slot inserted before every row's last neighbor and a
+  // self slot: neither is a neighbor, so every output is bitwise identical.
+  const offsets = [0];
+  const neighbors: number[] = [];
+  const padded: number[] = [];
+  for (let row = 0; row < REFERENCE_ROW_COUNT; row++) {
+    const slots: [number, number][] = [];
+    for (let slot = weights.offsets[row]; slot < weights.offsets[row + 1]; slot++) {
+      slots.push([weights.neighbors[slot], weights.weights[slot]]);
+    }
+    if (slots.length > 0) {
+      slots.push([row, 1]);
+      slots.push([(row + 7) % REFERENCE_ROW_COUNT, 0]);
+      slots.sort((left, right) => left[0] - right[0]);
+    }
+    for (const [neighbor, weight] of slots) {
+      neighbors.push(neighbor);
+      padded.push(weight);
+    }
+    offsets.push(neighbors.length);
+  }
+  const paddedWeights = {
+    offsets: Uint32Array.from(offsets),
+    neighbors: Uint32Array.from(neighbors),
+    weights: Float32Array.from(padded)
+  };
+  const plain = createSpatialAutocorrelationHarness(device, {
+    contributor: 'hot-spot',
+    scene: {values},
+    weights: toCsr(weights),
+    islands: 'keep'
+  });
+  const withZeroSlots = createSpatialAutocorrelationHarness(device, {
+    contributor: 'hot-spot',
+    scene: {values},
+    weights: toCsr(paddedWeights),
+    islands: 'keep'
+  });
+  const minimum = createSpatialAutocorrelationHarness(device, {
+    contributor: 'hot-spot',
+    scene: {values},
+    weights: toCsr(weights),
+    islands: 'keep',
+    minimumNeighbors: 4
+  });
+  try {
+    const expected = await plain.run();
+    const padding = await withZeroSlots.run();
+    expect(padding.zScoreBits).toEqual(expected.zScoreBits);
+    expect(padding.neighborCounts).toEqual(expected.neighborCounts);
+    expect(padding.neighborCounts[REFERENCE.island]).toBe(0);
+    // Interior rows have 4 neighbors, rows next to the ends 3 or 2, the island 0.
+    const strict = await minimum.run();
+    for (let row = 0; row < REFERENCE_ROW_COUNT; row++) {
+      if (expected.neighborCounts[row] >= 4) {
+        expect(strict.zScoreBits[row], `row ${row}`).toBe(expected.zScoreBits[row]);
+      } else {
+        expect(strict.zScores[row], `row ${row}`).toBeNaN();
+        expect(strict.pValues[row], `row ${row}`).toBeNaN();
+        expect(strict.bins[row], `row ${row}`).toBe(0);
+      }
+    }
+    expect(strict.zScores.filter(Number.isNaN).length).toBeGreaterThan(1);
+    // Moments are unchanged: minimumNeighbors only removes rows from the output.
+    expect(strict.globalStatistics.slice(0, 4)).toEqual(expected.globalStatistics.slice(0, 4));
+  } finally {
+    plain.destroy();
+    withZeroSlots.destroy();
+    minimum.destroy();
+  }
+}, 120000);
+
+it('GPUHotSpotAnalysis multipleTesting bins equal statsmodels on the esda Gi* p-values', async () => {
+  const device = await getWebGPUTestDevice();
+  if (!device) {
+    return;
+  }
+  const values = getReferenceValues();
+  const weights = getReferenceWeights();
+  // Oracle: fix/work/A/oracle-u3-autocorrelation.py (esda 2.10.0 G_Local Zs, statsmodels 0.15.0
+  // multipletests bonferroni / holm / fdr_bh / fdr_by). The family is the 59 non-island rows.
+  expect(REFERENCE.minimumMargin).toBeGreaterThan(1e-3);
+  for (const method of [
+    'none',
+    'bonferroni',
+    'holm',
+    'benjamini-hochberg',
+    'benjamini-yekutieli'
+  ] as const) {
+    const harness = createSpatialAutocorrelationHarness(device, {
+      contributor: 'hot-spot',
+      scene: {values},
+      weights: toCsr(weights),
+      islands: 'keep',
+      multipleTesting: method
+    });
+    try {
+      const result = await harness.run();
+      const reference = REFERENCE.multipleTesting[method];
+      expect(result.bins, method).toEqual(reference.bins);
+      for (const [row, adjusted] of reference.adjusted.entries()) {
+        expect(
+          isClose(result.adjustedPValues[row], adjusted, 1e-6, 2e-3),
+          `${method} row ${row} adjusted ${result.adjustedPValues[row]} != ${adjusted}`
+        ).toBe(true);
+      }
+    } finally {
+      harness.destroy();
+    }
+  }
+  // The uncorrected bins keep using the critical z-scores.
+  expect(REFERENCE.multipleTesting.none.bins).toEqual(REFERENCE.noneBinsFromZ);
+}, 120000);
+
+it('GPUHotSpotAnalysis re-standardizes row-standardized weights over the unmasked neighbors', async () => {
+  const device = await getWebGPUTestDevice();
+  if (!device) {
+    return;
+  }
+  const scene = createAutocorrelatedScene(53, 1500, [6]);
+  const weights = createDistanceBandWeights(scene.positions, 6, {rowStandardize: true});
+  const random = createSeededRandom(77);
+  const mask = Uint32Array.from({length: scene.values.length}, () => (random() < 0.7 ? 1 : 0));
+  for (const selfWeight of [1, 0]) {
+    const harness = createSpatialAutocorrelationHarness(device, {
+      contributor: 'hot-spot',
+      scene: {...scene, mask},
+      weights: toCsr(weights),
+      selfWeight,
+      rowStandardized: true
+    });
+    try {
+      const result = await harness.run();
+      const oracle = computeHotSpotOracle({
+        ...scene,
+        mask,
+        weights,
+        selfWeight,
+        rowStandardized: true
+      });
+      expectMatchesOracle(result, oracle, `re-standardized self ${selfWeight}`);
+      // Masked neighbors really were removed from the row sums. Without a self weight, z is
+      // invariant to rescaling a row of weights (numerator and denominator are both linear in w),
+      // so re-standardizing cannot change it. With selfWeight 1 the self term keeps its absolute
+      // weight next to neighbors that were rescaled, so the declaration changes z.
+      const asGiven = computeHotSpotOracle({...scene, mask, weights, selfWeight});
+      const changed = oracle.zScores.some(
+        (zScore, row) => Number.isFinite(zScore) && Math.abs(zScore - asGiven.zScores[row]) > 0.05
+      );
+      expect(changed, `re-standardized self ${selfWeight} changes z`).toBe(selfWeight !== 0);
+    } finally {
+      harness.destroy();
+    }
+  }
+}, 120000);
+
+it('GPUHotSpotAnalysis centers large-offset values with a second-pass mean', async () => {
+  const device = await getWebGPUTestDevice();
+  if (!device) {
+    return;
+  }
+  const scene = createAutocorrelatedScene(61, 3000, [6]);
+  // Mean about 1e6 with a spread of a few units: a single f32 tree sum loses the low bits.
+  const values = Float32Array.from(scene.values, value => 1e6 + (value - 100));
+  const weights = createDistanceBandWeights(scene.positions, 6);
+  const harness = createSpatialAutocorrelationHarness(device, {
+    contributor: 'hot-spot',
+    scene: {values},
+    weights: toCsr(weights)
+  });
+  try {
+    const result = await harness.run();
+    // Exact moments of the f32 inputs the GPU reads, over the non-island rows.
+    const oracle = computeHotSpotOracle({values, weights});
+    expect(result.globalStatistics[0]).toBe(oracle.moments.count);
+    expect(Math.abs(result.globalStatistics[1] - oracle.moments.mean)).toBeLessThan(0.0625);
+    expect(isClose(result.globalStatistics[2], oracle.moments.variance, 1e-3, 5e-3)).toBe(true);
+  } finally {
+    harness.destroy();
+  }
+}, 120000);

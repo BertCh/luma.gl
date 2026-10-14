@@ -159,3 +159,31 @@ it('GPUCellTopology oracle sanity (quadbin wrap, clipping, pentagons)', () => {
   ).toBe(6);
   expect(getCellTopologyRowOnCPU('h3', {type: 'disk', k: 1}, 0n).cells).toEqual([]);
 });
+
+it('GPUCellTopology rejects an output binding above maxStorageBufferBindingSize at declaration', () => {
+  // E-11: an H3 k = 2 disk writes 19 uint32x2 entries per row, so 900k rows need 136.8 MB in one
+  // binding, above the 128 MiB default; WebGPU used to reject it only at dispatch.
+  const device = createNullWebGPUDevice();
+  const operation: GPUCellTopologyOperation = {type: 'disk', k: 2};
+  const stride = getCellTopologyStride('h3', operation);
+  expect(stride).toBe(19);
+  for (const [rows, fits] of [
+    [800_000, true],
+    [900_000, false]
+  ] as const) {
+    const graph = new GPUCommandGraph(device);
+    const contributor = new GPUCellTopology({
+      id: `disk-${rows}`,
+      family: 'h3',
+      operation,
+      cells: view(graph, 'uint32x2', rows),
+      output: {cells: view(graph, 'uint32x2', rows * stride)}
+    });
+    if (fits) {
+      expect(() => contributor.getCommandNodes(graph)).not.toThrow();
+    } else {
+      expect(() => contributor.getCommandNodes(graph)).toThrow(/output.cells.*limit 134217728/);
+    }
+  }
+  device.destroy();
+});

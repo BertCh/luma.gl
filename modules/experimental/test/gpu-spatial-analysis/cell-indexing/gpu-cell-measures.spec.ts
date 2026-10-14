@@ -59,6 +59,8 @@ it('GPUCellMeasures area, perimeter, edge lengths and pentagon flags match pytho
       family: 'h3',
       cells: importGraphBuffer(graph, 'cells', cellsBuffer, 'uint32x2', rows),
       maximumEdgeCount: MAXIMUM_EDGE_COUNT,
+      // The python h3 fixtures are kilometers; meters are the default unit.
+      units: 'kilometers',
       output: {
         areas: importGraphBuffer(graph, 'areas', areasBuffer, 'float32', rows),
         perimeters: importGraphBuffer(graph, 'perimeters', perimetersBuffer, 'float32', rows),
@@ -153,3 +155,49 @@ it('GPUCellMeasures validates its properties', async () => {
   buffer.destroy();
   outBuffer.destroy();
 });
+
+it('GPUCellMeasures publishes meters and square meters by default', async () => {
+  const device = await getWebGPUTestDevice();
+  if (!device) {
+    return;
+  }
+  // Single-face hexagons take the exact path, so the python h3 kilometer fixtures scale exactly.
+  const fixtures = H3_MEASURES_FIXTURES.filter(row => row[4] === 1 && row[5] === 0).slice(0, 16);
+  const rows = fixtures.length;
+  const words = new Uint32Array(2 * rows);
+  fixtures.forEach((row, index) => words.set(splitCellKey(h3ToBigInt(row[0])), 2 * index));
+  const graph = new GPUCommandGraph(device, {id: 'cell-measures-meters'});
+  const cellsBuffer = createInputBuffer(device, words);
+  const areasBuffer = createOutputBuffer(device, rows);
+  const perimetersBuffer = createOutputBuffer(device, rows);
+  const measures = new GPUCellMeasures({
+    family: 'h3',
+    cells: importGraphBuffer(graph, 'cells', cellsBuffer, 'uint32x2', rows),
+    output: {
+      areas: importGraphBuffer(graph, 'areas', areasBuffer, 'float32', rows),
+      perimeters: importGraphBuffer(graph, 'perimeters', perimetersBuffer, 'float32', rows)
+    }
+  });
+  expect(measures.measures).toEqual({
+    lengthModel: 'great-circle',
+    areaModel: 'sphere-polygon',
+    lengthUnits: 'meters',
+    areaUnits: 'square-meters'
+  });
+  graph.add(measures);
+  const compiled = graph.compile();
+  submitGraph(device, compiled, undefined);
+  const areas = await readFloat32(areasBuffer, rows);
+  const perimeters = await readFloat32(perimetersBuffer, rows);
+  fixtures.forEach(([cell, areaKm2, perimeterKm], row) => {
+    expect(Math.abs(areas[row] - areaKm2 * 1e6) / (areaKm2 * 1e6), `${cell} area`).toBeLessThan(
+      getRelativeTolerance(true)
+    );
+    expect(
+      Math.abs(perimeters[row] - perimeterKm * 1e3) / (perimeterKm * 1e3),
+      `${cell} perimeter`
+    ).toBeLessThan(getRelativeTolerance(true));
+  });
+  compiled.destroy();
+  [cellsBuffer, areasBuffer, perimetersBuffer].forEach(buffer => buffer.destroy());
+}, 120_000);

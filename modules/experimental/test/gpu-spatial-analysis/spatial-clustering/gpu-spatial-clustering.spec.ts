@@ -21,7 +21,10 @@ import {
   readUint32,
   submitGraph
 } from '../../utils/gpu-contributor-test-utils';
+import type {GPUSpatialContext} from '../../../src/gpu-spatial-analysis/contracts/spatial-context';
 import {
+  clusterGeographicPointsOracle,
+  createGeographicBlobScene,
   clusterPointsOracle,
   createClusteredPoints,
   createSeededRandom,
@@ -38,6 +41,7 @@ type HarnessOptions = {
   capacity?: number;
   sourceIds?: Uint32Array;
   sumOrder?: 'atomic' | 'sorted';
+  spatialContext?: GPUSpatialContext;
 };
 
 type HarnessResult = {
@@ -98,6 +102,7 @@ function createHarness(device: Device, options: HarnessOptions) {
     parameters: parameterBuffer.importToGraph(graph),
     gridSize: options.gridSize ?? [32, 32],
     sumOrder: options.sumOrder,
+    spatialContext: options.spatialContext,
     sourceIds:
       sourceIdsBuffer && importGraphBuffer(graph, 'source-ids', sourceIdsBuffer, 'uint32', rows),
     labels: importGraphBuffer(graph, 'labels', outputs.labels, 'uint32', rows),
@@ -659,3 +664,39 @@ it("GPUSpatialClustering sumOrder 'sorted' matches the oracle with capacity over
     }
   }
 }, 120000);
+
+it('GPUSpatialClustering clusters longitude/latitude points with a great-circle epsilon in meters', async () => {
+  const device = await getWebGPUTestDevice();
+  if (!device) {
+    return;
+  }
+  // Blobs at latitudes 0, 45 and 70: the same metric epsilon spans very different longitude steps.
+  const positions = createGeographicBlobScene();
+  const spatialContext: GPUSpatialContext = {
+    coordinateSpace: 'longitude-latitude',
+    metric: 'great-circle',
+    units: 'meters'
+  };
+  for (const [epsilon, minimumPoints] of [
+    [150, 5],
+    [400, 8],
+    [60, 3]
+  ]) {
+    const parameters = {bounds: [-180, -90, 180, 90] as const, epsilon, minimumPoints};
+    const harness = createHarness(device, {positions, parameters, spatialContext});
+    const result = await harness.run(getGPUSpatialClusteringParameterValues(parameters));
+    const expected = clusterGeographicPointsOracle(positions, parameters);
+    // Points whose distance to a neighbor is within f32 error of epsilon could flip; the scene's
+    // continuous offsets make that vanishingly unlikely, so labels must match exactly.
+    expect(result.labels, `epsilon ${epsilon}`).toEqual(expected.labels);
+    expect(result.coreFlags, `epsilon ${epsilon}`).toEqual(expected.coreFlags);
+    expect(result.clusterCount, `epsilon ${epsilon}`).toBe(expected.clusterCount);
+    harness.destroy();
+  }
+  // Bounds restrict the valid set; a context outside [-180, 180] x [-90, 90] marks all noise.
+  const wide = {bounds: [-190, -90, 180, 90] as const, epsilon: 150, minimumPoints: 5};
+  const harness = createHarness(device, {positions, parameters: wide, spatialContext});
+  const result = await harness.run(getGPUSpatialClusteringParameterValues(wide));
+  expect(result.clusterCount).toBe(0);
+  harness.destroy();
+});

@@ -36,6 +36,50 @@ export function createNullWebGPUDevice(): Device {
   return device;
 }
 
+/** WGSL of one compute kernel, as recorded by {@link getGPUCommandNodeKernelSources}. */
+export type RecordedGPUKernelSource = {
+  /** Kernel ID (the pipeline ID). */
+  id: string;
+  /** `workload.operation` of the command node that compiled the kernel. */
+  operation: string;
+  /** The complete WGSL module passed to the pipeline. */
+  source: string;
+};
+
+/**
+ * Compiles command nodes on a CPU-only WebGPU device that records the WGSL of every compute
+ * pipeline instead of creating it, for `.node.spec.ts` checks of generated kernels (WGSL parsing,
+ * binding counts, private and workgroup memory) at the core limits of {@link createNullWebGPUDevice}.
+ *
+ * Use it instead of `vi.mock`: the node project runs with `isolate: false`, so a module mock of
+ * `@luma.gl/engine` is not applied reliably when another spec file loaded the module first.
+ */
+export function getGPUCommandNodeKernelSources(
+  nodes: readonly unknown[]
+): RecordedGPUKernelSource[] {
+  const device = createNullWebGPUDevice();
+  Object.defineProperty(device, 'props', {
+    value: {...device.props, _cacheShaders: false, _cachePipelines: false}
+  });
+  const sources: RecordedGPUKernelSource[] = [];
+  let operation = '';
+  Object.defineProperty(device, 'createComputePipeline', {
+    value: (props: {id?: string; shader: {source: string}}) => {
+      sources.push({id: props.id ?? '', operation, source: props.shader.source});
+      return {id: props.id ?? '', hash: '', destroy: () => {}};
+    }
+  });
+  for (const node of nodes as {
+    workload?: {operation?: string};
+    compile?: (context: {device: Device}) => unknown;
+  }[]) {
+    operation = node.workload?.operation ?? '';
+    node.compile?.({device});
+  }
+  device.destroy();
+  return sources;
+}
+
 /** Creates a storage input buffer initialized with `values`. */
 export function createInputBuffer(
   device: Device,

@@ -218,3 +218,19 @@ it('GPUPointDensity validates props', () => {
   );
   device.destroy();
 });
+
+it('GPUPointDensity is planar-only', () => {
+  const device = createNullWebGPUDevice();
+  expect(
+    new GPUPointDensity(createProps(new GPUCommandGraph(device))).spatialContext.coordinateSpace
+  ).toBe('planar');
+  expect(
+    () =>
+      new GPUPointDensity(
+        createProps(new GPUCommandGraph(device), {
+          spatialContext: {coordinateSpace: 'longitude-latitude', metric: 'great-circle'}
+        })
+      )
+  ).toThrow(/project positions to a planar frame/);
+  device.destroy();
+});

@@ -10,7 +10,15 @@ import {GPUParameterBuffer, importGraphBuffer} from '../../../src/utils/gpu-cont
 import {GPUOrdinaryLeastSquares} from '../../../src/gpu-spatial-analysis/spatial-regression/gpu-ordinary-least-squares';
 import {
   getGPUOrdinaryLeastSquaresParameterValues,
-  GPU_ORDINARY_LEAST_SQUARES_SUMMARY_LENGTH
+  GPU_ORDINARY_LEAST_SQUARES_SUMMARY_BREUSCH_PAGAN,
+  GPU_ORDINARY_LEAST_SQUARES_SUMMARY_BREUSCH_PAGAN_P_VALUE,
+  GPU_ORDINARY_LEAST_SQUARES_SUMMARY_CONDITION_NUMBER,
+  GPU_ORDINARY_LEAST_SQUARES_SUMMARY_CORRELATION_CONDITION_NUMBER,
+  GPU_ORDINARY_LEAST_SQUARES_SUMMARY_KOENKER_BASSETT,
+  GPU_ORDINARY_LEAST_SQUARES_SUMMARY_KOENKER_BASSETT_P_VALUE,
+  GPU_ORDINARY_LEAST_SQUARES_SUMMARY_LENGTH,
+  GPU_ORDINARY_LEAST_SQUARES_SUMMARY_MAXIMUM_VARIANCE_INFLATION_FACTOR,
+  GPU_ORDINARY_LEAST_SQUARES_SUMMARY_PRECISION_WARNING
 } from '../../../src/gpu-spatial-analysis/spatial-regression/ordinary-least-squares-parameters';
 import {
   createInputBuffer,
@@ -20,12 +28,15 @@ import {
   submitGraph
 } from '../../utils/gpu-contributor-test-utils';
 import {
+  createCollinearOrdinaryLeastSquaresScene,
+  createHeteroskedasticOrdinaryLeastSquaresScene,
   createOrdinaryLeastSquaresRandom,
   createOrdinaryLeastSquaresScene,
   fitOrdinaryLeastSquaresOnCPU,
   type OrdinaryLeastSquaresOracleResult,
   type OrdinaryLeastSquaresScene
 } from './ordinary-least-squares-oracle';
+import {SPREG_ORDINARY_LEAST_SQUARES_REFERENCE} from './spreg-ols-reference';
 
 type Result = {
   status: number;
@@ -202,8 +213,40 @@ function expectParity(
   expectClose('moments', [s[13], s[14]], [e[13], e[14]], 5e-3, 1);
   expectClose('jarqueBera', [s[7]], [e[7]], 1e-2, 1);
   expect(Math.abs(s[8] - e[8])).toBeLessThan(1e-2);
-  expectClose('breuschPagan', [s[9]], [e[9]], 2e-3, 1);
-  expect(Math.abs(s[10] - e[10])).toBeLessThan(1e-2);
+  const koenker = GPU_ORDINARY_LEAST_SQUARES_SUMMARY_KOENKER_BASSETT;
+  expectClose('koenkerBassett', [s[koenker]], [e[koenker]], 2e-3, 1);
+  expect(
+    Math.abs(
+      s[GPU_ORDINARY_LEAST_SQUARES_SUMMARY_KOENKER_BASSETT_P_VALUE] -
+        e[GPU_ORDINARY_LEAST_SQUARES_SUMMARY_KOENKER_BASSETT_P_VALUE]
+    )
+  ).toBeLessThan(1e-2);
+  const breusch = GPU_ORDINARY_LEAST_SQUARES_SUMMARY_BREUSCH_PAGAN;
+  expectClose('breuschPagan', [s[breusch]], [e[breusch]], 5e-3, 1);
+  expect(
+    Math.abs(
+      s[GPU_ORDINARY_LEAST_SQUARES_SUMMARY_BREUSCH_PAGAN_P_VALUE] -
+        e[GPU_ORDINARY_LEAST_SQUARES_SUMMARY_BREUSCH_PAGAN_P_VALUE]
+    )
+  ).toBeLessThan(1e-2);
+  expectClose(
+    'conditioning',
+    [
+      s[GPU_ORDINARY_LEAST_SQUARES_SUMMARY_CONDITION_NUMBER],
+      s[GPU_ORDINARY_LEAST_SQUARES_SUMMARY_CORRELATION_CONDITION_NUMBER],
+      s[GPU_ORDINARY_LEAST_SQUARES_SUMMARY_MAXIMUM_VARIANCE_INFLATION_FACTOR]
+    ],
+    [
+      e[GPU_ORDINARY_LEAST_SQUARES_SUMMARY_CONDITION_NUMBER],
+      e[GPU_ORDINARY_LEAST_SQUARES_SUMMARY_CORRELATION_CONDITION_NUMBER],
+      e[GPU_ORDINARY_LEAST_SQUARES_SUMMARY_MAXIMUM_VARIANCE_INFLATION_FACTOR]
+    ],
+    2e-2,
+    1
+  );
+  expect(s[GPU_ORDINARY_LEAST_SQUARES_SUMMARY_PRECISION_WARNING]).toBe(
+    e[GPU_ORDINARY_LEAST_SQUARES_SUMMARY_PRECISION_WARNING]
+  );
   expect(s[15]).toBe(e[15]);
   for (let row = 0; row < expected.residuals.length; row++) {
     if (Number.isNaN(expected.residuals[row])) {
@@ -349,8 +392,9 @@ it('GPUOrdinaryLeastSquares detects heteroskedastic residuals with Breusch-Pagan
   const result = await fixture.run();
   const expected = fitOrdinaryLeastSquaresOnCPU(scene);
   expectParity(result, expected);
-  expect(result.summary[10]).toBeLessThan(1e-6);
-  expect(expected.summary[10]).toBeLessThan(1e-6);
+  const koenkerP = GPU_ORDINARY_LEAST_SQUARES_SUMMARY_KOENKER_BASSETT_P_VALUE;
+  expect(result.summary[koenkerP]).toBeLessThan(1e-6);
+  expect(expected.summary[koenkerP]).toBeLessThan(1e-6);
   // Homoskedastic uniform noise: a large p-value.
   const calm = createOrdinaryLeastSquaresScene(42, 4000, 1, [2, 0.5], 1);
   const calmFixture = createFixture(device, calm);
@@ -358,6 +402,83 @@ it('GPUOrdinaryLeastSquares detects heteroskedastic residuals with Breusch-Pagan
   expectParity(calmResult, fitOrdinaryLeastSquaresOnCPU(calm));
   fixture.destroy();
   calmFixture.destroy();
+});
+
+it('GPUOrdinaryLeastSquares separates Breusch-Pagan from Koenker-Bassett and matches spreg', async () => {
+  const device = await getWebGPUTestDevice();
+  if (!device) {
+    return;
+  }
+  // Skewed heteroskedastic errors: spreg breusch_pagan and koenker_bassett differ by 8x.
+  const scene = createHeteroskedasticOrdinaryLeastSquaresScene(41, 300);
+  const reference = SPREG_ORDINARY_LEAST_SQUARES_REFERENCE.heteroskedastic;
+  const fixture = createFixture(device, scene);
+  const result = await fixture.run();
+  expectParity(result, fitOrdinaryLeastSquaresOnCPU(scene));
+  const s = result.summary;
+  expectClose(
+    'spreg bp',
+    [s[GPU_ORDINARY_LEAST_SQUARES_SUMMARY_BREUSCH_PAGAN]],
+    [reference.breuschPagan[0]],
+    1e-2,
+    1
+  );
+  expectClose(
+    'spreg kb',
+    [s[GPU_ORDINARY_LEAST_SQUARES_SUMMARY_KOENKER_BASSETT]],
+    [reference.koenkerBassett[0]],
+    1e-2,
+    1
+  );
+  expect(s[GPU_ORDINARY_LEAST_SQUARES_SUMMARY_BREUSCH_PAGAN]).toBeGreaterThan(
+    5 * s[GPU_ORDINARY_LEAST_SQUARES_SUMMARY_KOENKER_BASSETT]
+  );
+  fixture.destroy();
+});
+
+it('GPUOrdinaryLeastSquares reports Belsley and correlation conditioning and the precision warning', async () => {
+  const device = await getWebGPUTestDevice();
+  if (!device) {
+    return;
+  }
+  const cases = [
+    ['collinearModerate', createCollinearOrdinaryLeastSquaresScene(17, 200, 0.3), 0],
+    ['collinearSevere', createCollinearOrdinaryLeastSquaresScene(19, 200, 0.03), 1]
+  ] as const;
+  for (const [name, scene, warning] of cases) {
+    const reference = SPREG_ORDINARY_LEAST_SQUARES_REFERENCE[name];
+    const fixture = createFixture(device, scene);
+    const result = await fixture.run();
+    // A warning is not a failure: the fit is still reported.
+    expect(result.status).toBe(0);
+    expect(Number.isFinite(result.coefficients[1])).toBe(true);
+    const s = result.summary;
+    expect(s[GPU_ORDINARY_LEAST_SQUARES_SUMMARY_PRECISION_WARNING]).toBe(warning);
+    // One-sided f32 Jacobi on the factored design: error about 6e-8 * cond (3e-4 at cond 4.5e3)
+    // plus moment rounding; 5e-2 relative against spreg mulColli.
+    expectClose(
+      'mulColli',
+      [s[GPU_ORDINARY_LEAST_SQUARES_SUMMARY_CONDITION_NUMBER]],
+      [reference.mulColli],
+      5e-2,
+      1
+    );
+    expectClose(
+      'correlation condition',
+      [s[GPU_ORDINARY_LEAST_SQUARES_SUMMARY_CORRELATION_CONDITION_NUMBER]],
+      [reference.correlationConditionNumber],
+      1e-1,
+      1
+    );
+    expectClose(
+      'maximum vif',
+      [s[GPU_ORDINARY_LEAST_SQUARES_SUMMARY_MAXIMUM_VARIANCE_INFLATION_FACTOR]],
+      [reference.maximumVif],
+      1e-1,
+      1
+    );
+    fixture.destroy();
+  }
 });
 
 it('GPUOrdinaryLeastSquares reports singular and short designs through status', async () => {

@@ -5,8 +5,10 @@
 import type {Buffer, Device} from '@luma.gl/core';
 import {GPUCommandGraph} from '@luma.gl/gpgpu/gpu-core';
 import {GPUParameterBuffer, importGraphBuffer} from '../../../src/utils/gpu-contributor-utils';
+import type {GPUSpatialContext} from '../../../src/gpu-spatial-analysis/contracts';
 import {
   getGPUNeighborSearchParameterValues,
+  getGPUNeighborSearchWeightTransform,
   GPUNeighborSearch,
   GPU_NEIGHBOR_SEARCH_PARAMETER_LENGTH,
   type GPUNeighborSearchParameters
@@ -32,6 +34,7 @@ export type NeighborSearchHarnessOptions = {
   gridSize?: readonly [number, number];
   capacity: number;
   parameters: GPUNeighborSearchParameters;
+  spatialContext?: GPUSpatialContext;
 };
 
 /** One encoding read back. Neighbor columns are trimmed to `offsets[rows]`. */
@@ -43,6 +46,7 @@ export type NeighborSearchReadback = {
   overflow: number;
   totalNeighbors: number;
   neighborCounts: number[];
+  invalidCount: number;
   /** Raw weight bits for bitwise determinism checks. */
   weightBits: number[];
 };
@@ -75,7 +79,7 @@ export function createNeighborSearchHarness(
     values: getGPUNeighborSearchParameterValues(options.parameters)
   });
   const outputs: Record<
-    'offsets' | 'neighbors' | 'distances' | 'weights' | 'overflow' | 'total' | 'counts',
+    'offsets' | 'neighbors' | 'distances' | 'weights' | 'overflow' | 'total' | 'counts' | 'invalid',
     Buffer
   > = {
     offsets: createOutputBuffer(device, queryRows + 1),
@@ -84,11 +88,14 @@ export function createNeighborSearchHarness(
     weights: createOutputBuffer(device, capacity),
     overflow: createOutputBuffer(device, 1),
     total: createOutputBuffer(device, 1),
-    counts: createOutputBuffer(device, queryRows)
+    counts: createOutputBuffer(device, queryRows),
+    invalid: createOutputBuffer(device, 1)
   };
   const graph = new GPUCommandGraph(device, {id: 'neighbor-search-test'});
   const contributor = new GPUNeighborSearch({
     mode: options.mode,
+    spatialContext: options.spatialContext,
+    weightTransform: getGPUNeighborSearchWeightTransform(options.parameters),
     k: options.k,
     gridSize: options.gridSize ?? [16, 16],
     positions: importGraphBuffer(graph, 'positions', positionsBuffer, 'float32x2', targetRows),
@@ -108,7 +115,8 @@ export function createNeighborSearchHarness(
     },
     overflow: importGraphBuffer(graph, 'overflow', outputs.overflow, 'uint32', 1),
     totalNeighbors: importGraphBuffer(graph, 'total', outputs.total, 'uint32', 1),
-    neighborCounts: importGraphBuffer(graph, 'counts', outputs.counts, 'uint32', queryRows)
+    neighborCounts: importGraphBuffer(graph, 'counts', outputs.counts, 'uint32', queryRows),
+    invalidCount: importGraphBuffer(graph, 'invalid', outputs.invalid, 'uint32', 1)
   });
   let buildCount = 0;
   const getCommandNodes = contributor.getCommandNodes.bind(contributor);
@@ -141,7 +149,8 @@ export function createNeighborSearchHarness(
         weightBits: await readUint32(outputs.weights, used),
         overflow: (await readUint32(outputs.overflow, 1))[0],
         totalNeighbors: (await readUint32(outputs.total, 1))[0],
-        neighborCounts: await readUint32(outputs.counts, queryRows)
+        neighborCounts: await readUint32(outputs.counts, queryRows),
+        invalidCount: (await readUint32(outputs.invalid, 1))[0]
       };
     },
     writePositions(positions) {

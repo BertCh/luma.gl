@@ -66,9 +66,30 @@ export function getTwoSidedPValue(z: number): number {
   return erfc(Math.abs(z) / Math.SQRT2);
 }
 
+/** Normal p-value of z for the analytic tail (`'two-sided'`, `'greater'` or `'lesser'`). */
+export function getPValue(z: number, alternative: Alternative = 'two-sided'): number {
+  if (!Number.isFinite(z)) {
+    return NaN;
+  }
+  switch (alternative) {
+    case 'greater':
+      return Math.min(0.5 * erfc(z / Math.SQRT2), 1);
+    case 'lesser':
+      return Math.min(0.5 * erfc(-z / Math.SQRT2), 1);
+    default:
+      return getTwoSidedPValue(z);
+  }
+}
+
+/** Analytic tails of `GPUGlobalSpatialStatistics`. */
+export type Alternative = 'two-sided' | 'greater' | 'lesser';
+
 function erfc(x: number): number {
   // W. J. Cody's rational approximations are overkill here; use the Numerical Recipes erfcc,
   // which has fractional error below 1.2e-7, ample for comparing f32 GPU output.
+  if (x < 0) {
+    return 2 - erfc(-x);
+  }
   const t = 1 / (1 + 0.5 * x);
   const exponent =
     -x * x -
@@ -196,7 +217,11 @@ export function createKnnWeights(
   return createWeights(lists);
 }
 
-function getDenseWeights(weights: CPUSpatialWeights, included: boolean[]): DenseWeights {
+function getDenseWeights(
+  weights: CPUSpatialWeights,
+  included: boolean[],
+  standardized: boolean
+): DenseWeights {
   const rows = included.flatMap((value, row) => (value ? [row] : []));
   const position = new Map(rows.map((row, index) => [row, index]));
   const matrix = rows.map(() => new Array<number>(rows.length).fill(0));
@@ -205,8 +230,18 @@ function getDenseWeights(weights: CPUSpatialWeights, included: boolean[]): Dense
     for (let slot = weights.offsets[row]; slot < weights.offsets[row + 1] && slot < total; slot++) {
       const neighbor = weights.neighbors[slot];
       const column = position.get(neighbor);
-      if (column !== undefined && neighbor !== row) {
+      // Active slots only: a positive weight to another analysis row.
+      if (column !== undefined && neighbor !== row && weights.weights[slot] > 0) {
         matrix[position.get(row)!][column] = weights.weights[slot];
+      }
+    }
+  }
+  if (standardized) {
+    // w'_ij = w_ij / sum of the active weights of row i.
+    for (const row of matrix) {
+      const sum = row.reduce((total, weight) => total + weight, 0);
+      for (let column = 0; column < row.length; column++) {
+        row[column] = sum > 0 ? row[column] / sum : 0;
       }
     }
   }
@@ -245,7 +280,8 @@ function getStatistic(
   statistic: number,
   expected: number,
   varianceNormality: number,
-  varianceRandomization: number
+  varianceRandomization: number,
+  alternative: Alternative = 'two-sided'
 ): GlobalStatisticOracle {
   const z = (variance: number) =>
     variance > 0 ? (statistic - expected) / Math.sqrt(variance) : NaN;
@@ -256,10 +292,10 @@ function getStatistic(
     expected,
     varianceNormality,
     zNormality,
-    pNormality: getTwoSidedPValue(zNormality),
+    pNormality: getPValue(zNormality, alternative),
     varianceRandomization,
     zRandomization,
-    pRandomization: getTwoSidedPValue(zRandomization)
+    pRandomization: getPValue(zRandomization, alternative)
   };
 }
 
@@ -360,17 +396,40 @@ export function computeGlobalSpatialStatisticsOracle(input: {
   values: Float32Array;
   secondValues?: Float32Array;
   mask?: Uint32Array;
+  /** Island policy, as `GPUGlobalSpatialStatistics` (default 'exclude'). */
+  islands?: 'exclude' | 'keep';
+  /** Re-standardize rows over their active neighbors (`weights.info.transform === 'row'`). */
+  standardized?: boolean;
+  /** Analytic tail of the p-values (default 'two-sided'). */
+  alternative?: Alternative;
+  /** `weights.status.overflow` is nonzero: every statistic is NaN. */
+  truncated?: boolean;
 }): GlobalSpatialStatisticsOracle {
   const {weights, values, secondValues, mask} = input;
+  const alternative = input.alternative ?? 'two-sided';
   const rowCount = values.length;
-  const included = Array.from(
+  const base = Array.from(
     {length: rowCount},
     (_, row) =>
       (!mask || mask[row] !== 0) &&
       Number.isFinite(values[row]) &&
       (!secondValues || Number.isFinite(secondValues[row]))
   );
-  const dense = getDenseWeights(weights, included);
+  // Island: an included row with no active slot (positive weight) to another included row.
+  const island = base.map((isBase, row) => {
+    if (!isBase) {
+      return false;
+    }
+    for (let slot = weights.offsets[row]; slot < weights.offsets[row + 1]; slot++) {
+      const neighbor = weights.neighbors[slot];
+      if (neighbor < rowCount && neighbor !== row && base[neighbor] && weights.weights[slot] > 0) {
+        return false;
+      }
+    }
+    return true;
+  });
+  const included = base.map((isBase, row) => isBase && (input.islands === 'keep' || !island[row]));
+  const dense = getDenseWeights(weights, included, Boolean(input.standardized));
   const {matrix, rows} = dense;
   const n = rows.length;
   const x = rows.map(row => values[row]);
@@ -432,6 +491,7 @@ export function computeGlobalSpatialStatisticsOracle(input: {
   const binarySums = getWeightSums(binary);
   const [expectedBlackBlack, rawVarianceBlackBlack, expectedBlackWhite, rawVarianceBlackWhite] =
     getJoinCountMoments(n, blackCount, binarySums.s0, binarySums.s1, binarySums.s2);
+  const hasNegative = x.some(value => value < 0);
   const binaryValid = n >= 4 && binarySums.s0 > 0;
   // One colour: every join count is constant.
   const oneColour = blackCount === 0 || blackCount === n;
@@ -447,12 +507,8 @@ export function computeGlobalSpatialStatisticsOracle(input: {
     varianceBlackWhite > 0
       ? (blackWhite - expectedBlackWhite) / Math.sqrt(varianceBlackWhite)
       : NaN;
-  const degrees = binary.map(
-    (row, i) =>
-      row.reduce((a: number, b) => a + b, 0) + binary.reduce((t: number, r) => t + r[i], 0)
-  );
 
-  return {
+  const result: GlobalSpatialStatisticsOracle = {
     count: n,
     s0,
     s1,
@@ -460,30 +516,34 @@ export function computeGlobalSpatialStatisticsOracle(input: {
     mean,
     variance: sumSquares / n,
     blackCount,
-    islandCount: degrees.filter(degree => degree === 0).length,
+    islandCount: island.filter(Boolean).length,
     moran: getStatistic(
       (scale * moranCross) / sumSquares,
       moranExpected,
       orNaN(moranNormality),
-      orNaN(moranRandomization)
+      orNaN(moranRandomization),
+      alternative
     ),
     geary: getStatistic(
       ((n - 1) * gearySum) / (2 * s0 * sumSquares),
       1,
       orNaN(gearyNormality),
-      orNaN(gearyRandomization)
+      orNaN(gearyRandomization),
+      alternative
     ),
     getisOrdG: getStatistic(
       gCross / (sumX * sumX - sumX2),
       s0 / (n * (n - 1)),
       NaN,
-      orNaN(getGeneralGVariance(x, s0, s1, s2))
+      hasNegative ? NaN : orNaN(getGeneralGVariance(x, s0, s1, s2)),
+      alternative
     ),
     bivariateMoran: getStatistic(
       (scale * bivariateCross) / Math.sqrt(sumSquares * sumSquaresY),
       0,
       NaN,
-      orNaN((scale * scale * lagDeviation) / ((n - 1) * sumSquares))
+      orNaN((scale * scale * lagDeviation) / ((n - 1) * sumSquares)),
+      alternative
     ),
     joinCount: {
       blackBlack,
@@ -493,14 +553,35 @@ export function computeGlobalSpatialStatisticsOracle(input: {
       expectedBlackBlack,
       varianceBlackBlack: binaryValid ? varianceBlackBlack : NaN,
       zBlackBlack: binaryValid ? zBlackBlack : NaN,
-      pBlackBlack: binaryValid ? getTwoSidedPValue(zBlackBlack) : NaN,
+      pBlackBlack: binaryValid ? getPValue(zBlackBlack, alternative) : NaN,
       expectedBlackWhite,
       varianceBlackWhite: binaryValid ? varianceBlackWhite : NaN,
       zBlackWhite: binaryValid ? zBlackWhite : NaN,
-      pBlackWhite: binaryValid ? getTwoSidedPValue(zBlackWhite) : NaN,
+      pBlackWhite: binaryValid ? getPValue(zBlackWhite, alternative) : NaN,
       ordered
     }
   };
+  const nanBlock = (block: GlobalStatisticOracle): GlobalStatisticOracle =>
+    Object.fromEntries(Object.keys(block).map(key => [key, NaN])) as GlobalStatisticOracle;
+  if (hasNegative) {
+    // General G needs non-negative data: the whole block is NaN.
+    result.getisOrdG = nanBlock(result.getisOrdG);
+  }
+  if (input.truncated) {
+    // Truncated weights: every statistic and weight sum is NaN; counts stay informative.
+    Object.assign(result, {s0: NaN, s1: NaN, s2: NaN, mean: NaN, variance: NaN});
+    result.moran = nanBlock(result.moran);
+    result.geary = nanBlock(result.geary);
+    result.getisOrdG = nanBlock(result.getisOrdG);
+    result.bivariateMoran = nanBlock(result.bivariateMoran);
+    result.joinCount = {
+      ...(Object.fromEntries(
+        Object.keys(result.joinCount).map(key => [key, NaN])
+      ) as JoinCountOracle),
+      ordered: [0, 0, 0]
+    };
+  }
+  return result;
 }
 
 /**

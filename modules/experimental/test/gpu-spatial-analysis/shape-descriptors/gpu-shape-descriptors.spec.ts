@@ -203,3 +203,86 @@ for (const [holeRule, convexityMethod] of CASES) {
     fixture.destroy();
   });
 }
+
+// Oracle: scratchpad fix/work/E/E5b-planar-shapes/convexity_degenerate.py (shapely 2.2.0),
+// convexity = polygon area / convex hull area on the float32-rounded rings.
+const COLLINEAR_CONVEXITY_CASES: {name: string; ring: Ring; expected: number}[] = [
+  {
+    name: 'square with collinear edge vertices',
+    ring: [
+      [0, 0],
+      [1, 0],
+      [2, 0],
+      [3, 0],
+      [3, 1],
+      [3, 2],
+      [3, 3],
+      [2, 3],
+      [1, 3],
+      [0, 3],
+      [0, 2],
+      [0, 1]
+    ],
+    expected: 1
+  },
+  {
+    name: 'L shape with collinear vertices',
+    ring: [
+      [0, 0],
+      [2, 0],
+      [4, 0],
+      [4, 2],
+      [4, 4],
+      [2, 4],
+      [2, 2],
+      [0, 2],
+      [0, 1]
+    ],
+    expected: 0.8571428571428571
+  },
+  {
+    name: 'triangle with collinear vertices far from the origin',
+    ring: [
+      [100000, 200000],
+      [100000.25, 200000.25],
+      [100000.5, 200000.5],
+      [100000.75, 200000.75],
+      [100001, 200001],
+      [100000, 200001],
+      [100000, 200000.5]
+    ],
+    expected: 1
+  }
+];
+
+for (const convexityMethod of ['gift-wrapping', 'monotone-chain'] as const) {
+  it(`GPUShapeDescriptors ${convexityMethod} convexity handles collinear hull vertices`, async () => {
+    const device = await getWebGPUTestDevice();
+    if (!device) {
+      return;
+    }
+    const flat = flattenFeatures(COLLINEAR_CONVEXITY_CASES.map(({ring}) => [ring]));
+    const fixture = createGeometryFixture(device, {
+      inputs: {
+        positions: {values: flat.positions, format: 'float32x2'},
+        ringOffsets: {values: flat.ringOffsets, format: 'uint32'},
+        featureRingOffsets: {values: flat.featureRingOffsets, format: 'uint32'}
+      },
+      outputs: {convexity: {format: 'float32', length: COLLINEAR_CONVEXITY_CASES.length}},
+      create: ({inputs, outputs, parameters}) =>
+        new GPUShapeDescriptors({
+          positions: inputs['positions'] as never,
+          ringOffsets: inputs['ringOffsets'] as never,
+          featureRingOffsets: inputs['featureRingOffsets'] as never,
+          convexityMethod,
+          parameters,
+          output: {convexity: outputs['convexity'] as never}
+        })
+    });
+    const result = await fixture.run(getGPUShapeDescriptorsParameterValues({}));
+    COLLINEAR_CONVEXITY_CASES.forEach(({name, expected}, index) => {
+      expectClose(result['convexity'][index], expected, 1e-4, 1e-5, name);
+    });
+    fixture.destroy();
+  });
+}

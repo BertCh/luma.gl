@@ -329,3 +329,36 @@ it('GPUCellGeometry validates props and emits deterministic nodes', () => {
   ).not.toThrow();
   device.destroy();
 });
+
+it('cell indexing classes declare their spatial context', () => {
+  const graph = new GPUCommandGraph(createNullWebGPUDevice(), {id: 'cell-contexts'});
+  const view = <Format extends 'float32x2' | 'uint32x2' | 'uint32'>(
+    format: Format,
+    length: number
+  ) => createTransientView(graph, `context-${format}-${length}-${Math.random()}`, format, length);
+  const props = (spatialContext?: GPUPointToCellProps['spatialContext']): GPUPointToCellProps => ({
+    family: 'quadbin',
+    resolution: 5,
+    positions: view('float32x2', 4),
+    output: {cells: view('uint32x2', 4)},
+    spatialContext
+  });
+  expect(new GPUPointToCell(props()).spatialContext).toEqual({
+    coordinateSpace: 'longitude-latitude',
+    metric: 'none'
+  });
+  expect(() => new GPUPointToCell(props({coordinateSpace: 'planar', metric: 'native'}))).toThrow(
+    /does not support planar/
+  );
+  expect(
+    () => new GPUPointToCell(props({coordinateSpace: 'longitude-latitude', metric: 'great-circle'}))
+  ).toThrow(/does not support the great-circle metric/);
+  // Cell identifiers carry no coordinates: no prop, but decoded geometry is longitude/latitude.
+  expect(
+    new GPUCellGeometry({
+      family: 'h3',
+      cells: view('uint32x2', 2),
+      output: {centers: view('float32x2', 2)}
+    }).outputSpatialContext.coordinateSpace
+  ).toBe('longitude-latitude');
+});

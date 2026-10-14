@@ -261,3 +261,47 @@ it('GPURegionStatistics validates props', () => {
   );
   device.destroy();
 });
+
+it('region selections accept longitude/latitude except radius', () => {
+  const graph = new GPUCommandGraph(createNullWebGPUDevice());
+  const lonLat = {coordinateSpace: 'longitude-latitude', metric: 'none'} as const;
+  expect(new GPURegionStatistics(createProps(graph, 'a-')).spatialContext).toMatchObject({
+    coordinateSpace: 'planar',
+    metric: 'native'
+  });
+  // Rectangle: a topological test, accepted in degree space.
+  expect(
+    new GPURegionStatistics(createProps(graph, 'b-', {spatialContext: lonLat})).spatialContext
+  ).toBe(lonLat);
+  // Radius: a planar distance in position units, so degrees are rejected at construction.
+  const radius = {
+    kind: 'radius',
+    circle: createTransientView(graph, 'c-circle', 'float32', 3)
+  } as const;
+  expect(
+    () => new GPURegionStatistics(createProps(graph, 'c-', {selection: radius}))
+  ).not.toThrow();
+  expect(
+    () =>
+      new GPURegionStatistics(createProps(graph, 'd-', {selection: radius, spatialContext: lonLat}))
+  ).toThrow(/radius selections need planar coordinates/);
+  // Geographic metrics are not supported: nothing here measures on the sphere.
+  expect(
+    () =>
+      new GPURegionStatistics(
+        createProps(graph, 'e-', {
+          spatialContext: {coordinateSpace: 'longitude-latitude', metric: 'great-circle'}
+        })
+      )
+  ).toThrow(/does not support the great-circle metric/);
+  expect(
+    () =>
+      new GPURegionMask({
+        positions: createTransientView(graph, 'f-p', 'float32x2', 4),
+        region: {kind: 'rectangle', bounds: createTransientView(graph, 'f-b', 'float32', 4)},
+        outputMask: createTransientView(graph, 'f-m', 'uint32', 4),
+        overflow: createTransientView(graph, 'f-o', 'uint32', 1),
+        spatialContext: lonLat
+      })
+  ).not.toThrow();
+});

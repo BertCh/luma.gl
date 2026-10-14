@@ -41,7 +41,9 @@ function createChunkFixture(
         positions: inputs['positions'] as GraphDataView<'float32x2'>,
         pathOffsets: inputs['pathOffsets'] as GraphDataView<'uint32'>,
         mode: options.mode,
-        coordinateSystem: options.spherical ? 'spherical' : 'planar',
+        spatialContext: options.spherical
+          ? {coordinateSpace: 'longitude-latitude', metric: 'great-circle'}
+          : undefined,
         parameters,
         output
       })

@@ -5,9 +5,9 @@
 import type {GPUGeographicallyWeightedRegressionSettings} from '../../../src/gpu-spatial-analysis/spatial-regression/geographically-weighted-regression-parameters';
 import {getPermutationSeedKey} from '../../../src/gpu-spatial-analysis/permutation-inference/permutation-parameters';
 import {
-  getFeistelPermutationIndex,
-  getFeistelRoundKeys
-} from '../../../src/gpu-spatial-analysis/permutation-inference/permutation-random';
+  getSwapOrNotPermutationIndex,
+  getSwapOrNotRounds
+} from '../../../src/gpu-spatial-analysis/permutation-inference/permutation-shuffle';
 import {computeGeographicallyWeightedRegressionOnCPU} from './geographically-weighted-regression-oracle';
 
 /** Scene of the non-stationarity specs. */
@@ -60,7 +60,7 @@ export function createNonstationarityScene(side: number, seed: number): Nonstati
 
 /**
  * The relabelling of permutation `permutation` (1-based): location `j` receives the observation of
- * row `result[j]`, for `count` included rows (the keyed Feistel bijection of the permutation
+ * row `result[j]`, for `count` included rows (the keyed swap-or-not shuffle of the permutation
  * contributors).
  */
 export function getNonstationarityAssignment(
@@ -68,9 +68,9 @@ export function getNonstationarityAssignment(
   seed: number,
   permutation: number
 ): number[] {
-  const roundKeys = getFeistelRoundKeys(getPermutationSeedKey(seed), permutation);
+  const rounds = getSwapOrNotRounds(getPermutationSeedKey(seed), permutation, count);
   return Array.from({length: count}, (_, location) =>
-    getFeistelPermutationIndex(location, count, roundKeys)
+    getSwapOrNotPermutationIndex(location, count, rounds)
   );
 }
 
@@ -110,7 +110,7 @@ export type NonstationarityOracleResult = {
 
 /**
  * Float64 reference of `GPUGeographicallyWeightedRegressionNonstationarityTest`: every permutation
- * physically rearranges `(X, y)` among the locations by the Feistel assignment and refits with the
+ * physically rearranges `(X, y)` among the locations by the swap-or-not assignment and refits with the
  * float64 `GPUGeographicallyWeightedRegression` oracle at the same fixed bandwidth, then compares
  * the standard deviations of the local estimates.
  */

@@ -22,7 +22,11 @@ import {
   createRookLattice,
   findDisconnectedLabels
 } from './large-lattice-invariants';
-import {evaluatePartition} from './spatial-regionalization-oracle';
+import {
+  canonicalizePartition,
+  evaluatePartition,
+  standardizeColumns
+} from './spatial-regionalization-oracle';
 
 it('GPUWardRegions merges the least-cost adjacent regions to its target', async () => {
   const device = await getWebGPUTestDevice();
@@ -58,6 +62,8 @@ it('GPUWardRegions merges the least-cost adjacent regions to its target', async 
         weights: importGraphBuffer(graph, 'weights', inputs.weights, 'float32', edgeWeights.length)
       },
       values: importGraphBuffer(graph, 'values', inputs.values, 'float32', values.length),
+      // Pinned raw-unit expectations: the default standardization is covered separately.
+      standardize: false,
       targetRegionCount: 2,
       maximumIterations: 2,
       seed,
@@ -121,6 +127,8 @@ it('GPUWardRegions merges a 900-row lattice to its target with contiguous region
         weights: importGraphBuffer(graph, 'weights', inputs.weights, 'float32', edgeWeights.length)
       },
       values: importGraphBuffer(graph, 'values', inputs.values, 'float32', rowCount),
+      // Pinned raw-unit expectations: the default standardization is covered separately.
+      standardize: false,
       targetRegionCount,
       maximumIterations: rowCount - targetRegionCount,
       seed,
@@ -191,6 +199,8 @@ it('GPUWardRegions gates off merges once disconnected weights leave no adjacent 
         weights: importGraphBuffer(graph, 'weights', inputs.weights, 'float32', edgeWeights.length)
       },
       values: importGraphBuffer(graph, 'values', inputs.values, 'float32', values.length),
+      // Pinned raw-unit expectations: the default standardization is covered separately.
+      standardize: false,
       targetRegionCount: 1,
       maximumIterations: 3,
       seed,
@@ -219,4 +229,111 @@ it('GPUWardRegions gates off merges once disconnected weights leave no adjacent 
   compiled.destroy();
   Object.values(inputs).forEach(buffer => buffer.destroy());
   Object.values(outputs).forEach(buffer => buffer.destroy());
+});
+
+/** Runs one `GPUWardRegions` graph on a unit-weight chain and reads everything back. */
+async function runWardChain(
+  device: NonNullable<Awaited<ReturnType<typeof getWebGPUTestDevice>>>,
+  scene: {
+    offsets: Uint32Array;
+    neighbors: Uint32Array;
+    values: Float32Array;
+    standardize?: boolean;
+  }
+) {
+  const rowCount = scene.offsets.length - 1;
+  const edgeWeights = Float32Array.from({length: scene.neighbors.length}, () => 1);
+  const graph = new GPUCommandGraph(device, {id: 'ward-regions-chain'});
+  const inputs = {
+    offsets: createInputBuffer(device, scene.offsets),
+    neighbors: createInputBuffer(device, scene.neighbors),
+    weights: createInputBuffer(device, edgeWeights),
+    values: createInputBuffer(device, scene.values)
+  };
+  const outputs = {
+    labels: createOutputBuffer(device, rowCount),
+    objective: createOutputBuffer(device, 1),
+    status: createOutputBuffer(device, GPU_WARD_STATUS.length)
+  };
+  const seed = 0;
+  graph.add(
+    new GPUWardRegions({
+      weights: {
+        offsets: importGraphBuffer(
+          graph,
+          'offsets',
+          inputs.offsets,
+          'uint32',
+          scene.offsets.length
+        ),
+        neighbors: importGraphBuffer(
+          graph,
+          'neighbors',
+          inputs.neighbors,
+          'uint32',
+          scene.neighbors.length
+        ),
+        weights: importGraphBuffer(graph, 'weights', inputs.weights, 'float32', edgeWeights.length)
+      },
+      values: importGraphBuffer(graph, 'values', inputs.values, 'float32', rowCount),
+      standardize: scene.standardize,
+      targetRegionCount: 2,
+      maximumIterations: rowCount - 2,
+      seed,
+      labels: importGraphBuffer(graph, 'labels', outputs.labels, 'uint32', rowCount),
+      optimization: {
+        objective: importGraphBuffer(graph, 'objective', outputs.objective, 'float32', 1),
+        status: importGraphBuffer(
+          graph,
+          'status',
+          outputs.status,
+          'uint32',
+          GPU_WARD_STATUS.length
+        ),
+        seed
+      }
+    })
+  );
+  const compiled = graph.compile();
+  submitGraph(device, compiled, undefined);
+  const result = {
+    labels: await readUint32(outputs.labels, rowCount),
+    objective: (await readFloat32(outputs.objective, 1))[0],
+    status: await readUint32(outputs.status, GPU_WARD_STATUS.length)
+  };
+  compiled.destroy();
+  Object.values(inputs).forEach(buffer => buffer.destroy());
+  Object.values(outputs).forEach(buffer => buffer.destroy());
+  return result;
+}
+
+it('GPUWardRegions treats directed weights as undirected adjacency', async () => {
+  const device = await getWebGPUTestDevice();
+  if (!device) return;
+  // Each row lists only its lower neighbor. A pair is only a candidate from its lower region's
+  // side, so merges across a link that lists the higher region first need the transposed link.
+  const result = await runWardChain(device, {
+    offsets: Uint32Array.from([0, 0, 1, 2, 3]),
+    neighbors: Uint32Array.from([0, 1, 2]),
+    values: Float32Array.from([0, 1, 10, 11]),
+    standardize: false
+  });
+  expect(canonicalizePartition(result.labels)).toEqual([0, 0, 1, 1]);
+  expect(result.objective).toBeCloseTo(1, 5);
+  expect(result.status.slice(0, 4)).toEqual([2, 1, 0, 0]);
+});
+
+it('GPUWardRegions standardizes columns by default', async () => {
+  const device = await getWebGPUTestDevice();
+  if (!device) return;
+  const values = Float32Array.from([0, 1, 10, 11]);
+  const result = await runWardChain(device, {
+    offsets: Uint32Array.from([0, 1, 3, 5, 6]),
+    neighbors: Uint32Array.from([1, 0, 2, 1, 3, 2]),
+    values
+  });
+  expect(canonicalizePartition(result.labels)).toEqual([0, 0, 1, 1]);
+  // Population z-scores: the within-region sum of squares is 1 / 25.25 for the raw pair split.
+  const expected = evaluatePartition(standardizeColumns(values, 1), 1, result.labels).withinSsd;
+  expect(result.objective).toBeCloseTo(expected, 5);
 });

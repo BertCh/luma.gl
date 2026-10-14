@@ -347,7 +347,7 @@ it('GPUSpatialWeightsSummary matches the oracle and the libpysal 3x3 rook values
     const rig = new WeightsRig(device);
     const weights = rig.uploadWeights(csr, 3);
     const statistics = rig.output('float32', 3);
-    const counts = rig.output('uint32', 5);
+    const counts = rig.output('uint32', 6);
     const cardinality = rig.output('uint32', rows);
     rig.run(
       new GPUSpatialWeightsSummary({
@@ -360,12 +360,13 @@ it('GPUSpatialWeightsSummary matches the oracle and the libpysal 3x3 rook values
     const expected = computeSummaryOracle(csr);
     const [s0, s1, s2] = await readFloat32(statistics.buffer, 3);
     expectClose([s0, s1, s2], [expected.s0, expected.s1, expected.s2], `${name} S0 S1 S2`, 1e-5);
-    expect(await readUint32(counts.buffer, 5), `${name} counts`).toEqual([
+    expect(await readUint32(counts.buffer, 6), `${name} counts`).toEqual([
       expected.slots,
       expected.asymmetricSlots,
       expected.isolates,
       expected.minimumCardinality,
-      expected.maximumCardinality
+      expected.maximumCardinality,
+      expected.emptyRows
     ]);
     expect(await readUint32(cardinality.buffer, rows)).toEqual(expected.cardinality);
     expect(s0).toBeGreaterThan(0);

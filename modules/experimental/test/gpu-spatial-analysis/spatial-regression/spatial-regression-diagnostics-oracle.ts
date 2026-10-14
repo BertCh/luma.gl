@@ -30,8 +30,77 @@ export type DiagnosticsOracleResult = {
   moranVariance: number;
   moranZ: number;
   moranPValue: number;
+  /** OLS residuals of the analyzed rows only, in row order. */
   residuals: Float64Array;
+  /** Number of analyzed rows. */
+  rowCount: number;
+  /** Rows dropped by the mask. */
+  excludedRowCount: number;
 };
+
+/** Options of {@link computeSpatialRegressionDiagnosticsOnCPU}. */
+export type DiagnosticsOracleOptions = {
+  /** Zero entries are excluded from the OLS fit and from `W` (rows and links). */
+  mask?: Uint32Array;
+  /** Rescale each remaining row of the restricted `W` to sum to 1 (`w_subset` + `transform = 'r'`). */
+  restandardizeRows?: boolean;
+};
+
+/**
+ * Restricts CSR weights to the kept rows the way `libpysal.weights.w_subset` does: the kept rows are
+ * renumbered in order, links to dropped rows disappear, remaining values are unchanged, and with
+ * `restandardizeRows` each non-empty row is divided by its remaining sum.
+ */
+export function restrictDiagnosticsWeights(
+  weights: DiagnosticsOracleWeights,
+  keep: readonly boolean[],
+  restandardizeRows: boolean
+): DiagnosticsOracleWeights {
+  const renumbered = new Map<number, number>();
+  keep.forEach((kept, row) => {
+    if (kept) {
+      renumbered.set(row, renumbered.size);
+    }
+  });
+  const offsets = [0];
+  const neighbors: number[] = [];
+  const values: number[] = [];
+  keep.forEach((kept, row) => {
+    if (!kept) {
+      return;
+    }
+    const first = neighbors.length;
+    let sum = 0;
+    for (let slot = weights.offsets[row]; slot < weights.offsets[row + 1]; slot++) {
+      const neighbor = renumbered.get(weights.neighbors[slot]);
+      if (neighbor !== undefined) {
+        neighbors.push(neighbor);
+        values.push(weights.weights[slot]);
+        sum += weights.weights[slot];
+      }
+    }
+    if (restandardizeRows && sum > 0) {
+      for (let slot = first; slot < values.length; slot++) {
+        values[slot] /= sum;
+      }
+    }
+    offsets.push(neighbors.length);
+  });
+  return {
+    offsets: Uint32Array.from(offsets),
+    neighbors: Uint32Array.from(neighbors),
+    weights: Float32Array.from(values)
+  };
+}
+
+/** Mask with zeros at rows where `row % modulus === remainder`. */
+export function createDiagnosticsExclusionMask(
+  rowCount: number,
+  modulus: number,
+  remainder: number
+): Uint32Array {
+  return Uint32Array.from({length: rowCount}, (_, row) => (row % modulus === remainder ? 0 : 1));
+}
 
 type Matrix = number[][];
 
@@ -155,8 +224,37 @@ export function computeSpatialRegressionDiagnosticsOnCPU(
   weights: DiagnosticsOracleWeights,
   predictors: Float32Array,
   response: Float32Array,
-  predictorCount: number
+  predictorCount: number,
+  options: DiagnosticsOracleOptions = {}
 ): DiagnosticsOracleResult {
+  const totalRows = response.length;
+  const keep = Array.from({length: totalRows}, (_, row) => {
+    if (options.mask && options.mask[row] === 0) {
+      return false;
+    }
+    let finite = Number.isFinite(response[row]);
+    for (let column = 0; column < predictorCount; column++) {
+      finite = finite && Number.isFinite(predictors[row * predictorCount + column]);
+    }
+    return finite;
+  });
+  if (keep.some(kept => !kept)) {
+    const keptRows = keep.flatMap((kept, row) => (kept ? [row] : []));
+    const subset = computeSpatialRegressionDiagnosticsOnCPU(
+      restrictDiagnosticsWeights(weights, keep, options.restandardizeRows === true),
+      Float32Array.from(
+        keptRows.flatMap(row =>
+          Array.from(predictors.subarray(row * predictorCount, (row + 1) * predictorCount))
+        )
+      ),
+      Float32Array.from(keptRows, row => response[row]),
+      predictorCount
+    );
+    return {...subset, excludedRowCount: totalRows - keptRows.length};
+  }
+  if (options.restandardizeRows) {
+    weights = restrictDiagnosticsWeights(weights, keep, true);
+  }
   const n = response.length;
   const p = predictorCount + 1;
   const w = toDenseWeights(weights);
@@ -227,7 +325,9 @@ export function computeSpatialRegressionDiagnosticsOnCPU(
     moranVariance,
     moranZ,
     moranPValue: getChiSquareSurvival(moranZ * moranZ, 1),
-    residuals: Float64Array.from(e, value => value[0])
+    residuals: Float64Array.from(e, value => value[0]),
+    rowCount: n,
+    excludedRowCount: 0
   };
 }
 

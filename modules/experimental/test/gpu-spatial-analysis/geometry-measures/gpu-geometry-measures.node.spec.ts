@@ -227,3 +227,53 @@ it('vincenty oracle round-trips direct and inverse solutions', () => {
   expect(direct.finalBearing).toBeCloseTo(inverse.finalBearing, 9);
   expect(getVincentyInverse([0, 0], [179.7, 0.2]).converged).toBe(false);
 });
+
+it('GPUGeometryMeasures describes its measure model and validates status', () => {
+  const graph = new GPUCommandGraph(createNullWebGPUDevice(), {id: 'measures-model'});
+  const planar = new GPUGeometryMeasures(createProps(graph));
+  expect(planar.measures).toEqual({
+    lengthModel: 'planar',
+    areaModel: 'planar',
+    lengthUnits: 'native',
+    areaUnits: 'native-squared'
+  });
+  const describe = (
+    spatialContext: GPUGeometryMeasuresProps['spatialContext'],
+    edge?: 'coordinate-linear'
+  ) =>
+    new GPUGeometryMeasures(createProps(graph, {spatialContext, ellipsoidalEdgeModel: edge}))
+      .measures;
+  expect(
+    describe({coordinateSpace: 'longitude-latitude', metric: 'great-circle', units: 'meters'})
+  ).toEqual({
+    lengthModel: 'great-circle',
+    areaModel: 'sphere-equal-area',
+    lengthUnits: 'meters',
+    areaUnits: 'square-meters'
+  });
+  expect(
+    describe({coordinateSpace: 'longitude-latitude', metric: 'great-circle', units: 'kilometers'})
+      .areaUnits
+  ).toBe('square-kilometers');
+  expect(describe({coordinateSpace: 'longitude-latitude', metric: 'ellipsoidal'}).areaModel).toBe(
+    'geodesic'
+  );
+  expect(
+    describe({coordinateSpace: 'longitude-latitude', metric: 'ellipsoidal'}, 'coordinate-linear')
+      .areaModel
+  ).toBe('wgs84-authalic');
+
+  const ids = new GPUGeometryMeasures(
+    createProps(graph, {status: {invalidCount: view(graph, 'uint32', 1)}})
+  )
+    .getCommandNodes(graph)
+    .map(node => node.id);
+  expect(ids).toContain('geometry-measures-clear-invalid-count');
+  expect(ids).toContain('geometry-measures-invalid-count');
+  expect(
+    () =>
+      new GPUGeometryMeasures(
+        createProps(graph, {status: {invalidCount: view(graph, 'float32', 1) as never}})
+      )
+  ).toThrow(/invalidCount/);
+});

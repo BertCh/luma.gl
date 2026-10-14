@@ -69,7 +69,7 @@ function uploadPairs(rig: AnalysisRig, csr: CPUWeights & {distances: number[]}) 
   };
 }
 
-it('GPUKnoxTest matches the Feistel permutation oracle exactly', async () => {
+it('GPUKnoxTest matches the swap-or-not permutation oracle exactly', async () => {
   const device = await getWebGPUTestDevice();
   if (!device) return;
   for (const {count, radius, threshold, permutations, seed} of [
@@ -345,5 +345,190 @@ it('GPUMantelTest matches the oracle with more rows than blocks and a skewed pai
   for (let slot = 0; slot <= permutations; slot++) {
     expect(Math.abs(actual[slot] - expected[slot]), `slot ${slot}`).toBeLessThan(2e-4);
   }
+  rig.destroy();
+});
+
+/**
+ * Drops one direction of most pairs (some only from the lower row, some only from the higher row,
+ * the kNN-style asymmetry) and adds duplicate entries, keeping every unordered pair listed at
+ * least once.
+ */
+function makeAsymmetric(csr: CPUWeights & {distances: number[]}) {
+  const rows = csr.offsets.length - 1;
+  const result = {
+    offsets: [0],
+    neighbors: [] as number[],
+    weights: [] as number[],
+    distances: [] as number[]
+  };
+  for (let row = 0; row < rows; row++) {
+    let firstEntry = -1;
+    for (let entry = csr.offsets[row]; entry < csr.offsets[row + 1]; entry++) {
+      const other = csr.neighbors[entry];
+      const mode = (row + other) % 3;
+      // mode 0: higher row only; mode 1: lower row only; mode 2: both directions.
+      const keep = mode === 2 || (mode === 0 ? row > other : row < other);
+      if (!keep) continue;
+      if (firstEntry < 0) firstEntry = entry;
+      result.neighbors.push(other);
+      result.weights.push(1);
+      result.distances.push(csr.distances[entry]);
+    }
+    if (firstEntry >= 0 && row % 7 === 0) {
+      // A duplicate of an existing entry must not count twice.
+      result.neighbors.push(csr.neighbors[firstEntry]);
+      result.weights.push(1);
+      result.distances.push(csr.distances[firstEntry]);
+    }
+    result.offsets.push(result.neighbors.length);
+  }
+  return result;
+}
+
+it('GPUKnoxTest counts a pair listed only from the higher row exactly once', async () => {
+  const device = await getWebGPUTestDevice();
+  if (!device) return;
+  const {positions, times} = createEvents(240, 5);
+  const symmetric = buildBand(positions, 9);
+  const asymmetric = makeAsymmetric(symmetric);
+  // The asymmetric list really has higher-row-only pairs, and fewer entries than the symmetric one.
+  expect(asymmetric.neighbors.length).toBeLessThan(symmetric.neighbors.length);
+  const permutations = 40;
+  const seed = 17;
+  const threshold = 3;
+  const run = async (csr: CPUWeights & {distances: number[]}) => {
+    const rig = new AnalysisRig(device);
+    const statistics = rig.output('uint32', 64 + 1);
+    const summary = rig.output('float32', GPU_SPACE_TIME_SUMMARY_LENGTH);
+    rig.run(
+      new GPUKnoxTest({
+        pairs: rig.weights(csr, 4),
+        times: rig.input(times, 'float32'),
+        parameters: rig.input(
+          getGPUSpaceTimeParameterValues({seed, permutations, timeThreshold: threshold}),
+          'uint32'
+        ),
+        maximumPermutations: 64,
+        statistics,
+        summary
+      })
+    );
+    const result = {
+      statistics: Array.from((await rig.readUint(statistics)).slice(0, permutations + 1)),
+      summary: await rig.readFloat(summary)
+    };
+    rig.destroy();
+    return result;
+  };
+  const full = await run(symmetric);
+  const partial = await run(asymmetric);
+  const expected = computeKnoxOracle(asymmetric, times, seed, permutations, threshold);
+  expect(partial.statistics).toEqual(expected.statistics);
+  // Same unordered pair set, so identical counts, pair count and expectation.
+  expect(partial.statistics).toEqual(full.statistics);
+  expect(partial.summary[GPU_SPACE_TIME_SUMMARY.pairCount]).toBe(symmetric.neighbors.length / 2);
+  expect(partial.summary[GPU_SPACE_TIME_SUMMARY.pairCount]).toBe(expected.pairCount);
+  expect(partial.summary[GPU_SPACE_TIME_SUMMARY.expected]).toBeCloseTo(
+    full.summary[GPU_SPACE_TIME_SUMMARY.expected],
+    4
+  );
+});
+
+it('GPUMantelTest uses each unordered pair once with asymmetric and duplicated lists', async () => {
+  const device = await getWebGPUTestDevice();
+  if (!device) return;
+  const {positions, times} = createEvents(200, 11);
+  const symmetric = buildBand(positions, 14);
+  const asymmetric = makeAsymmetric(symmetric);
+  const permutations = 30;
+  const seed = 4;
+  const run = async (csr: CPUWeights & {distances: number[]}) => {
+    const rig = new AnalysisRig(device);
+    const statistics = rig.output('float32', 32 + 1);
+    const summary = rig.output('float32', GPU_SPACE_TIME_SUMMARY_LENGTH);
+    rig.run(
+      new GPUMantelTest({
+        pairs: uploadPairs(rig, csr),
+        times: rig.input(times, 'float32'),
+        parameters: rig.input(getGPUSpaceTimeParameterValues({seed, permutations}), 'uint32'),
+        maximumPermutations: 32,
+        statistics,
+        summary
+      })
+    );
+    const result = {
+      statistics: await rig.readFloat(statistics),
+      pairCount: (await rig.readFloat(summary))[GPU_SPACE_TIME_SUMMARY.pairCount]
+    };
+    rig.destroy();
+    return result;
+  };
+  const partial = await run(asymmetric);
+  const expected = computeMantelOracle(asymmetric, times, seed, permutations);
+  expect(partial.pairCount).toBe(symmetric.neighbors.length / 2);
+  for (let slot = 0; slot <= permutations; slot++) {
+    expect(Math.abs(partial.statistics[slot] - expected[slot]), `slot ${slot}`).toBeLessThan(2e-4);
+  }
+});
+
+it('GPUKnoxTest and GPUMantelTest state the one-sided alternative', async () => {
+  const device = await getWebGPUTestDevice();
+  if (!device) return;
+  const {positions, times} = createEvents(50, 3);
+  const csr = buildBand(positions, 20);
+  const rig = new AnalysisRig(device);
+  const parameters = rig.input(
+    getGPUSpaceTimeParameterValues({seed: 1, permutations: 8}),
+    'uint32'
+  );
+  const knox = new GPUKnoxTest({
+    pairs: rig.weights(csr, 4),
+    times: rig.input(times, 'float32'),
+    parameters,
+    maximumPermutations: 8,
+    statistics: rig.output('uint32', 9),
+    summary: rig.output('float32', GPU_SPACE_TIME_SUMMARY_LENGTH)
+  });
+  expect(knox.getInferenceMetadata()).toMatchObject({
+    alternative: 'greater',
+    permutationCount: 8,
+    multipleTesting: 'none'
+  });
+  expect(knox.getInferenceMetadata({seed: 5, permutations: 4})).toMatchObject({
+    permutationCount: 4,
+    seed: 5
+  });
+  rig.destroy();
+});
+
+// Oracle: <scratchpad>/fix/work/B/knox_pointpats.py (pointpats 2.6.0 Knox, delta=3, tau=4, permutations=0)
+// gives nst = 29 and ns = the number of spatial pairs; an asymmetric, duplicated list of the same
+// pairs must reproduce both.
+it('GPUKnoxTest reproduces the pointpats count from an asymmetric pair list', async () => {
+  const device = await getWebGPUTestDevice();
+  if (!device) return;
+  const positions = Float32Array.from(POINTPATS_XY);
+  const times = Float32Array.from(POINTPATS_TIMES);
+  const symmetric = buildBand(positions, 3);
+  const csr = makeAsymmetric(symmetric);
+  const rig = new AnalysisRig(device);
+  const summary = rig.output('float32', GPU_SPACE_TIME_SUMMARY_LENGTH);
+  rig.run(
+    new GPUKnoxTest({
+      pairs: rig.weights(csr, 4),
+      times: rig.input(times, 'float32'),
+      parameters: rig.input(
+        getGPUSpaceTimeParameterValues({seed: 1, permutations: 16, timeThreshold: 4}),
+        'uint32'
+      ),
+      maximumPermutations: 16,
+      statistics: rig.output('uint32', 17),
+      summary
+    })
+  );
+  const result = await rig.readFloat(summary);
+  expect(result[GPU_SPACE_TIME_SUMMARY.observed]).toBe(29);
+  expect(result[GPU_SPACE_TIME_SUMMARY.pairCount]).toBe(symmetric.neighbors.length / 2);
+  expect(Math.abs(result[GPU_SPACE_TIME_SUMMARY.expected] - 31.76091954)).toBeLessThan(1e-3);
   rig.destroy();
 });

@@ -51,7 +51,9 @@ function createSegmentizeFixture(
       new GPULineSegmentize({
         positions: inputs['positions'] as GraphDataView<'float32x2'>,
         pathOffsets: inputs['pathOffsets'] as GraphDataView<'uint32'>,
-        coordinateSystem: options.spherical ? 'spherical' : 'planar',
+        spatialContext: options.spherical
+          ? {coordinateSpace: 'longitude-latitude', metric: 'great-circle'}
+          : undefined,
         maximumPiecesPerSegment: options.maximumPieces,
         parameters,
         output

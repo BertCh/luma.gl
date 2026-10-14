@@ -10,6 +10,16 @@ import {
   GPU_LOCATION_ALLOCATION_STATUS,
   type GPULocationAllocationOperation
 } from '../../../src/gpu-spatial-analysis/location-allocation';
+import {
+  createPartlyReachableCostMatrix,
+  getBruteForceOptimum,
+  getObjective,
+  getPMedianObjectiveParts,
+  runGreedyOnCPU as runReachabilityAwareGreedyOnCPU,
+  runSwapPhaseOnCPU,
+  UNREACHABLE_SENTINEL_CASE,
+  type LocationAllocationOracleOperation
+} from './location-allocation-oracle';
 import {importGraphBuffer} from '../../../src/utils/gpu-contributor-utils';
 import {
   createInputBuffer,
@@ -24,7 +34,9 @@ async function runAllocation(
   costs: Float32Array,
   facilityCount: number,
   maximumFacilityCount: number,
-  coverageDistance?: number
+  coverageDistance?: number,
+  // The greedy specs below pin the pure greedy rule, so the swap phase is off unless asked for.
+  maximumSwapIterations = 0
 ) {
   const device = await getWebGPUTestDevice();
   if (!device) return null;
@@ -46,6 +58,7 @@ async function runAllocation(
       facilityCount,
       operation,
       maximumFacilityCount,
+      maximumSwapIterations: operation === 'set-covering' ? undefined : maximumSwapIterations,
       coverageDistance: coverageBuffer
         ? importGraphBuffer(graph, 'coverage', coverageBuffer, 'float32', 1)
         : undefined,
@@ -114,7 +127,7 @@ it('GPULocationAllocation greedily minimizes p-median cost', async () => {
   expect(result.assignments).toEqual([1, 1, 1]);
   expect(result.assignedCosts).toEqual([10, 0, 10]);
   expect(result.objective).toBe(20);
-  expect(result.status).toEqual([1, 0, 1, 0]);
+  expect(result.status).toEqual([1, 0, 1, 0, 0, 0, 0]);
 });
 
 it('GPULocationAllocation reports maximum-coverage budget completion', async () => {
@@ -128,7 +141,7 @@ it('GPULocationAllocation reports maximum-coverage budget completion', async () 
   if (!result) return;
   expect(result.selected).toEqual([1, 0]);
   expect(result.objective).toBe(1);
-  expect(result.status).toEqual([1, 2, 1, 0]);
+  expect(result.status).toEqual([1, 2, 1, 0, 0, 0, 0]);
 });
 
 it('GPULocationAllocation completes deterministic set covering', async () => {
@@ -137,7 +150,7 @@ it('GPULocationAllocation completes deterministic set covering', async () => {
   expect(result.selected).toEqual([1, 1]);
   expect(result.assignments).toEqual([0, 1]);
   expect(result.objective).toBe(2);
-  expect(result.status).toEqual([2, 0, 1, 0]);
+  expect(result.status).toEqual([2, 0, 1, 0, 0, 0, 0]);
 });
 
 // Exact checks. The TSDoc promises the deterministic greedy heuristics (lowest facility row on
@@ -355,5 +368,141 @@ it('GPULocationAllocation set covering covers every reachable row within the har
     for (let k = 1; k <= largestSet; k++) harmonic += 1 / k;
     expect(selected.length, label).toBeGreaterThanOrEqual(optimumSize);
     expect(selected.length, label).toBeLessThanOrEqual(harmonic * optimumSize + 1e-9);
+  }
+});
+
+// Swap phase (Teitz-Bart). The CPU mirror in location-allocation-oracle.ts applies the same rules
+// (best improving pair, ties to the lowest selected facility then candidate, relative tolerance),
+// and the integer costs make every f32 sum exact, so the GPU must match it exactly.
+
+it('GPULocationAllocation swap phase equals the CPU swap mirror and never worsens greedy', async () => {
+  const distance = 8;
+  for (const operation of ['p-median', 'maximum-coverage'] as LocationAllocationOracleOperation[]) {
+    for (const seed of [1, 2, 3, 4, 5, 6, 7, 8]) {
+      const costs = createCostMatrix(seed, EXACT_DEMAND_COUNT, EXACT_FACILITY_COUNT);
+      for (const count of [2, 3, 4]) {
+        const label = `${operation} seed ${seed} p ${count}`;
+        const greedy = runGreedyOnCPU(operation, costs, EXACT_FACILITY_COUNT, count, distance);
+        const mirror = runSwapPhaseOnCPU(
+          operation,
+          costs,
+          EXACT_FACILITY_COUNT,
+          greedy,
+          distance,
+          100
+        );
+        const result = await runAllocation(
+          operation,
+          costs,
+          EXACT_FACILITY_COUNT,
+          count,
+          operation === 'maximum-coverage' ? distance : undefined,
+          100
+        );
+        if (!result) return;
+        expect(getSelectedFacilities(result.selected), label).toEqual(mirror.selected);
+        const objective = getObjective(
+          operation,
+          costs,
+          EXACT_FACILITY_COUNT,
+          mirror.selected,
+          distance
+        );
+        expect(result.objective, label).toBe(objective);
+        const optimum = getBruteForceOptimum(
+          operation,
+          costs,
+          EXACT_FACILITY_COUNT,
+          count,
+          distance
+        );
+        if (operation === 'p-median') {
+          expect(objective, label).toBeGreaterThanOrEqual(optimum);
+        } else {
+          expect(objective, label).toBeLessThanOrEqual(optimum);
+        }
+        expect(result.status[GPU_LOCATION_ALLOCATION_STATUS.swapIterations], label).toBe(
+          mirror.swapIterations
+        );
+        expect(result.status[GPU_LOCATION_ALLOCATION_STATUS.converged], label).toBe(
+          mirror.converged ? 1 : 0
+        );
+        expect(result.status[GPU_LOCATION_ALLOCATION_STATUS.iterationLimitReached], label).toBe(
+          mirror.iterationLimitReached ? 1 : 0
+        );
+      }
+    }
+  }
+});
+
+it('GPULocationAllocation swap phase closes the classic p-median greedy gap and honors its budget', async () => {
+  const costs = Float32Array.from([5, 0, 100, 5, 1, 100, 5, 100, 0, 5, 100, 1]);
+  const full = await runAllocation('p-median', costs, 3, 2, undefined, 10);
+  if (!full) return;
+  expect(full.selected).toEqual([0, 1, 1]);
+  expect(full.objective).toBe(2);
+  expect(full.status[GPU_LOCATION_ALLOCATION_STATUS.converged]).toBe(1);
+  const greedyOnly = await runAllocation('p-median', costs, 3, 2, undefined, 0);
+  if (!greedyOnly) return;
+  expect(greedyOnly.objective).toBeGreaterThan(full.objective);
+  expect(greedyOnly.status.slice(4)).toEqual([0, 0, 0]);
+  const limited = await runAllocation('p-median', costs, 3, 2, undefined, 1);
+  if (!limited) return;
+  expect(limited.status[GPU_LOCATION_ALLOCATION_STATUS.swapIterations]).toBe(1);
+  expect(limited.status[GPU_LOCATION_ALLOCATION_STATUS.iterationLimitReached]).toBe(1);
+  expect(limited.status[GPU_LOCATION_ALLOCATION_STATUS.converged]).toBe(0);
+});
+
+it('GPULocationAllocation rejects a NaN cost instead of treating it as a valid cost', async () => {
+  // A NaN built at runtime from its bit pattern: the kernel must flag it through the bit test,
+  // not through a self-comparison that shader compilers may fold away.
+  const costs = Float32Array.from([1, 2, 3, 4]);
+  new Uint32Array(costs.buffer)[1] = 0x7fc00000;
+  const result = await runAllocation('p-median', costs, 2, 1);
+  if (!result) return;
+  expect(result.status[GPU_LOCATION_ALLOCATION_STATUS.invalidCount]).toBeGreaterThan(0);
+});
+
+it('GPULocationAllocation p-median never sums unreachable rows into the objective', async () => {
+  const {costs, facilityCount, expectedFacility, expectedObjective} = UNREACHABLE_SENTINEL_CASE;
+  const result = await runAllocation('p-median', costs, facilityCount, 1);
+  if (!result) return;
+  // A summed 1e30 sentinel ties both facilities in float32 and picks facility 0 (cost 18).
+  expect(getSelectedFacilities(result.selected)).toEqual([expectedFacility]);
+  expect(result.objective).toBe(expectedObjective);
+  expect(result.status[GPU_LOCATION_ALLOCATION_STATUS.uncoveredDemandCount]).toBe(1);
+  expect(result.status[GPU_LOCATION_ALLOCATION_STATUS.invalidCount]).toBe(0);
+  expect(result.assignments[0]).toBe(0xffffffff);
+  expect(result.assignedCosts[0]).toBe(Infinity);
+
+  for (const seed of [1, 2, 3, 4, 5, 6]) {
+    const sparse = createPartlyReachableCostMatrix(seed, EXACT_DEMAND_COUNT, EXACT_FACILITY_COUNT);
+    for (const count of [1, 2, 3]) {
+      const label = `seed ${seed} p ${count}`;
+      const greedy = runReachabilityAwareGreedyOnCPU(
+        'p-median',
+        sparse,
+        EXACT_FACILITY_COUNT,
+        count,
+        0
+      );
+      const mirror = runSwapPhaseOnCPU('p-median', sparse, EXACT_FACILITY_COUNT, greedy, 0, 100);
+      const parts = getPMedianObjectiveParts(sparse, EXACT_FACILITY_COUNT, mirror.selected);
+      const swapped = await runAllocation(
+        'p-median',
+        sparse,
+        EXACT_FACILITY_COUNT,
+        count,
+        undefined,
+        100
+      );
+      if (!swapped) return;
+      expect(getSelectedFacilities(swapped.selected), label).toEqual(mirror.selected);
+      // Integer costs: the reachable-row sum is exact in float32.
+      expect(swapped.objective, label).toBe(parts.cost);
+      expect(swapped.status[GPU_LOCATION_ALLOCATION_STATUS.uncoveredDemandCount], label).toBe(
+        parts.unreachable
+      );
+    }
   }
 });

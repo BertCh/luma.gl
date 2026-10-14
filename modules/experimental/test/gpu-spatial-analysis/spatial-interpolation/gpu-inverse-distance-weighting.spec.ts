@@ -6,9 +6,11 @@ import type {Buffer, Device} from '@luma.gl/core';
 import {GPUCommandGraph} from '@luma.gl/gpgpu/gpu-core';
 import {getWebGPUTestDevice} from '@luma.gl/test-utils';
 import {expect, it} from 'vitest';
+import type {GPUSpatialContext} from '../../../src/gpu-spatial-analysis/contracts/index';
 import {GPUParameterBuffer, importGraphBuffer} from '../../../src/utils/gpu-contributor-utils';
 import {
   getGPUInverseDistanceWeightingParameterValues,
+  GPU_INVERSE_DISTANCE_WEIGHTING_PARAMETER_LENGTH,
   GPUInverseDistanceWeighting,
   type GPUInverseDistanceWeightingSettings
 } from '../../../src/gpu-spatial-analysis/spatial-interpolation';
@@ -21,6 +23,7 @@ import {
   submitGraph
 } from '../../utils/gpu-contributor-test-utils';
 import {countContourSegments} from '../../gpu-terrain/terrain-analysis/terrain-analysis-oracle';
+import {GREAT_CIRCLE_REFERENCE} from './great-circle-reference';
 import {interpolateInverseDistanceWeightingOnCPU} from './spatial-interpolation-oracle';
 
 /**
@@ -39,6 +42,7 @@ type Scene = {
   indexGridSize: [number, number];
   indexBounds: [number, number, number, number];
   maximumNeighborCount: number;
+  spatialContext?: GPUSpatialContext;
 };
 
 type Result = {values: Float32Array; counts: Uint32Array};
@@ -74,7 +78,7 @@ function createFixture(device: Device, scene: Scene): Fixture {
   const parameterBuffer = new GPUParameterBuffer(device, {
     id: 'idw-parameters',
     format: 'float32',
-    length: 8
+    length: GPU_INVERSE_DISTANCE_WEIGHTING_PARAMETER_LENGTH
   });
   const valuesOut = track(createOutputBuffer(device, cellCount));
   const countsOut = track(createOutputBuffer(device, cellCount));
@@ -82,6 +86,7 @@ function createFixture(device: Device, scene: Scene): Fixture {
   graph.add(
     new GPUInverseDistanceWeighting({
       id: 'idw',
+      spatialContext: scene.spatialContext,
       positions: importGraphBuffer(
         graph,
         'positions',
@@ -153,7 +158,8 @@ function expectParity(
     searchRadius: settings.searchRadius,
     power: settings.power ?? 2,
     neighborCount: Math.min(settings.neighborCount ?? 0, scene.maximumNeighborCount),
-    minimumNeighborCount: settings.minimumNeighborCount ?? 1
+    minimumNeighborCount: settings.minimumNeighborCount ?? 1,
+    taper: settings.taper
   });
   expect(Array.from(actual.counts)).toEqual(Array.from(expected.counts));
   let valueScale = 1;
@@ -236,6 +242,9 @@ it('GPUInverseDistanceWeighting matches the CPU oracle and changes parameters wi
       neighborCount: 8
     },
     {extent, searchRadius: Infinity, power: 2, neighborCount: 6},
+    // Franke-Nielson taper, with and without the nearest-k limit.
+    {extent, searchRadius: 10, power: 2, taper: 'modified-shepard'},
+    {extent, searchRadius: 15, power: 3, neighborCount: 6, taper: 'modified-shepard'},
     {extent, searchRadius: 10, power: 2}
   ];
   let first: Result | undefined;
@@ -251,7 +260,7 @@ it('GPUInverseDistanceWeighting matches the CPU oracle and changes parameters wi
   expect(Array.from(new Uint32Array(repeat.values.buffer))).toEqual(
     Array.from(new Uint32Array(first!.values.buffer))
   );
-  // Radius 4 with minimumNeighborCount 4 leaves nodata cells.
+  // Radius 3 with minimumNeighborCount 4 leaves nodata cells.
   const sparse = await fixture.run(frames[9]);
   expect(Array.from(sparse.values).some(Number.isNaN)).toBe(true);
   expect(fixture.rebuildCount).toBe(0);
@@ -371,7 +380,7 @@ it('GPUInverseDistanceWeighting output feeds GPUTerrainContours in the same grap
   const parameterBuffer = new GPUParameterBuffer(device, {
     id: 'idw-contour-parameters',
     format: 'float32',
-    length: 8,
+    length: GPU_INVERSE_DISTANCE_WEIGHTING_PARAMETER_LENGTH,
     values: getGPUInverseDistanceWeightingParameterValues({
       extent: [0, 0, 100, 60],
       searchRadius: 4,
@@ -479,4 +488,49 @@ it('GPUInverseDistanceWeighting ring walk matches the oracle on clustered sample
   }
   expect(fixture.rebuildCount).toBe(0);
   fixture.destroy();
+});
+
+it('GPUInverseDistanceWeighting great-circle mode matches haversine weights at 47 N', async () => {
+  const device = await getWebGPUTestDevice();
+  if (!device) {
+    return;
+  }
+  // Oracle: geo_oracle.py (haversine, R = 6371008.8 m). The radius is in meters; positions are
+  // absolute f32 lon/lat (about 0.4 m ulp), so the bound is 2e-3 of the data scale.
+  const reference = GREAT_CIRCLE_REFERENCE;
+  for (const maximumNeighborCount of [0, 8]) {
+    const fixture = createFixture(device, {
+      positions: Float32Array.from(reference.positions),
+      values: Float32Array.from(reference.values),
+      width: reference.width,
+      height: reference.height,
+      indexGridSize: [4, 4],
+      indexBounds: [7.7, 46.8, 8.3, 47.2],
+      maximumNeighborCount,
+      spatialContext: {coordinateSpace: 'longitude-latitude', metric: 'great-circle'}
+    });
+    const scale = Math.max(...reference.values);
+    for (const testCase of reference.idw) {
+      const actual = await fixture.run({
+        extent: reference.extent as [number, number, number, number],
+        searchRadius: testCase.radius,
+        power: testCase.power,
+        taper: testCase.taper as 'none' | 'modified-shepard'
+      });
+      for (let cell = 0; cell < actual.values.length; cell++) {
+        const expected = testCase.expected[cell];
+        if (Number.isNaN(expected)) {
+          expect(Number.isNaN(actual.values[cell]), `${testCase.taper} cell ${cell} nodata`).toBe(
+            true
+          );
+        } else {
+          expect(
+            Math.abs(actual.values[cell] - expected),
+            `${testCase.taper} cell ${cell}`
+          ).toBeLessThanOrEqual(2e-3 * scale);
+        }
+      }
+    }
+    fixture.destroy();
+  }
 });

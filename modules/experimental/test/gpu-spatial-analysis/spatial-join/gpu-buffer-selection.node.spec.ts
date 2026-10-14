@@ -110,3 +110,36 @@ it('GPUBufferSelection validates outputs and the distance view', () => {
     /candidateCapacity/
   );
 });
+
+it('GPUBufferSelection resolves planar and great-circle contexts', () => {
+  const graph = new GPUCommandGraph(createNullWebGPUDevice(), {id: 'buffer-selection-context'});
+  expect(new GPUBufferSelection(createProps(graph)).spatialContext.coordinateSpace).toBe('planar');
+  const greatCircle = {coordinateSpace: 'longitude-latitude', metric: 'great-circle'} as const;
+  const geodesic = new GPUBufferSelection(
+    createProps(new GPUCommandGraph(createNullWebGPUDevice()), {spatialContext: greatCircle})
+  );
+  expect(geodesic.spatialContext.metric).toBe('great-circle');
+  // The context reaches the join, which runs the great-circle traversal.
+  const joinGraph = new GPUCommandGraph(createNullWebGPUDevice());
+  const ids = new GPUBufferSelection(createProps(joinGraph, {spatialContext: greatCircle}))
+    .getCommandNodes(joinGraph)
+    .map(node => node.id);
+  expect(ids).toContain('buffer-selection-join-traverse');
+  expect(ids).not.toContain('buffer-selection-join-probe');
+  expect(
+    () =>
+      new GPUBufferSelection(
+        createProps(new GPUCommandGraph(createNullWebGPUDevice()), {
+          spatialContext: {...greatCircle, units: 'kilometers'}
+        })
+      )
+  ).toThrow(/meters/);
+  expect(
+    () =>
+      new GPUBufferSelection(
+        createProps(new GPUCommandGraph(createNullWebGPUDevice()), {
+          spatialContext: {coordinateSpace: 'longitude-latitude', metric: 'none'}
+        })
+      )
+  ).toThrow(/great-circle/);
+});

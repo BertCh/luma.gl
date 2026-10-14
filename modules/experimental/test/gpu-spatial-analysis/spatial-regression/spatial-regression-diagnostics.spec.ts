@@ -11,6 +11,7 @@ import {GPUOrdinaryLeastSquares} from '../../../src/gpu-spatial-analysis/spatial
 import {GPUSpatialRegressionDiagnostics} from '../../../src/gpu-spatial-analysis/spatial-regression/gpu-spatial-regression-diagnostics';
 import {GPU_ORDINARY_LEAST_SQUARES_SUMMARY_LENGTH} from '../../../src/gpu-spatial-analysis/spatial-regression/ordinary-least-squares-parameters';
 import {
+  GPU_SPATIAL_REGRESSION_DIAGNOSTICS_SUMMARY_EXCLUDED_ROW_COUNT,
   GPU_SPATIAL_REGRESSION_DIAGNOSTICS_SUMMARY_LENGTH,
   GPU_SPATIAL_REGRESSION_DIAGNOSTICS_TESTS_LENGTH
 } from '../../../src/gpu-spatial-analysis/spatial-regression/spatial-regression-diagnostics-parameters';
@@ -21,9 +22,14 @@ import {
   readUint32,
   submitGraph
 } from '../../utils/gpu-contributor-test-utils';
-import {SPREG_ASYMMETRIC_KNN_REFERENCE, SPREG_DIAGNOSTICS_REFERENCE} from './spreg-reference';
+import {
+  SPREG_ASYMMETRIC_KNN_REFERENCE,
+  SPREG_DIAGNOSTICS_REFERENCE,
+  SPREG_MASKED_DIAGNOSTICS_REFERENCE
+} from './spreg-reference';
 import {
   computeSpatialRegressionDiagnosticsOnCPU,
+  createDiagnosticsExclusionMask,
   createDiagnosticsScene,
   createNearestNeighborScene,
   type DiagnosticsOracleResult
@@ -33,12 +39,15 @@ type Scene = ReturnType<typeof createDiagnosticsScene>;
 
 type Result = {status: number; tests: Float32Array; summary: Float32Array};
 
+type RunOptions = {mask?: Uint32Array; restandardizeRows?: boolean};
+
 /** Fits OLS and the diagnostics in one graph, so the residuals never leave the GPU. */
 async function runDiagnostics(
   device: Device,
   scene: Scene,
   tileRowCount?: number,
-  residualsOverride?: Float32Array
+  residualsOverride?: Float32Array,
+  options: RunOptions = {}
 ): Promise<Result> {
   const rows = scene.response.length;
   const k = scene.predictorCount;
@@ -62,6 +71,15 @@ async function runDiagnostics(
     'float32',
     rows
   );
+  const mask = options.mask
+    ? importGraphBuffer(
+        graph,
+        'mask',
+        track(createInputBuffer(device, options.mask)),
+        'uint32',
+        rows
+      )
+    : undefined;
   const residualBuffer = track(
     residualsOverride
       ? createInputBuffer(device, residualsOverride)
@@ -74,6 +92,7 @@ async function runDiagnostics(
         id: 'ols',
         predictors,
         response,
+        mask,
         predictorCount: k,
         output: {
           coefficients: importGraphBuffer(
@@ -153,6 +172,8 @@ async function runDiagnostics(
       predictors,
       response,
       residuals,
+      mask,
+      restandardizeRows: options.restandardizeRows,
       predictorCount: k,
       tileRowCount,
       output: {
@@ -303,7 +324,20 @@ it('GPUSpatialRegressionDiagnostics reports weak evidence for independent errors
   expect(actual.tests[5]).toBeGreaterThan(0.01);
 });
 
-it('GPUSpatialRegressionDiagnostics reports non-finite residuals as status 4 with NaN', async () => {
+it('GPUSpatialRegressionDiagnostics reports an exactly zero residual vector as status 4 with NaN', async () => {
+  const device = await getWebGPUTestDevice();
+  if (!device) {
+    return;
+  }
+  const scene = createDiagnosticsScene(6, 3, 0.3, true);
+  const result = await runDiagnostics(device, scene, undefined, new Float32Array(36));
+  expect(result.status).toBe(4);
+  expect(Number.isNaN(result.tests[0])).toBe(true);
+  expect(Number.isNaN(result.summary[5])).toBe(true);
+  expect(result.summary[0]).toBe(36);
+});
+
+it('GPUSpatialRegressionDiagnostics excludes a row with a non-finite residual instead of failing', async () => {
   const device = await getWebGPUTestDevice();
   if (!device) {
     return;
@@ -311,10 +345,26 @@ it('GPUSpatialRegressionDiagnostics reports non-finite residuals as status 4 wit
   const scene = createDiagnosticsScene(6, 3, 0.3, true);
   const residuals = new Float32Array(36).fill(0.5);
   residuals[4] = NaN;
+  residuals[9] = 0.25;
   const result = await runDiagnostics(device, scene, undefined, residuals);
-  expect(result.status).toBe(4);
+  expect(result.status).toBe(0);
+  expect(result.summary[0]).toBe(35);
+  expect(result.summary[GPU_SPATIAL_REGRESSION_DIAGNOSTICS_SUMMARY_EXCLUDED_ROW_COUNT]).toBe(1);
+});
+
+it('GPUSpatialRegressionDiagnostics reports too few fitted rows as status 2 with the excluded count', async () => {
+  const device = await getWebGPUTestDevice();
+  if (!device) {
+    return;
+  }
+  const scene = createDiagnosticsScene(6, 3, 0.3, true);
+  // Keep 3 rows: n <= predictorCount + 1 + 1.
+  const mask = Uint32Array.from({length: 36}, (_, row) => (row < 3 ? 1 : 0));
+  const result = await runDiagnostics(device, scene, undefined, undefined, {mask});
+  expect(result.status).toBe(2);
+  expect(result.summary[0]).toBe(0);
+  expect(result.summary[GPU_SPATIAL_REGRESSION_DIAGNOSTICS_SUMMARY_EXCLUDED_ROW_COUNT]).toBe(36);
   expect(Number.isNaN(result.tests[0])).toBe(true);
-  expect(Number.isNaN(result.summary[5])).toBe(true);
 });
 
 function expectMatchesSpreg(
@@ -410,4 +460,75 @@ it('GPUSpatialRegressionDiagnostics matches spreg on asymmetric directed kNN wei
     const scene = createNearestNeighborScene(count, 3, seed, 0.6, false);
     expectMatchesSpreg(await runDiagnostics(device, scene), reference);
   }
+});
+
+const MASKED_CASES = [
+  [
+    'row-standardized lattice',
+    () => createDiagnosticsScene(8, 11, 0.6, true),
+    createDiagnosticsExclusionMask(64, 7, 3),
+    SPREG_MASKED_DIAGNOSTICS_REFERENCE.lattice
+  ],
+  [
+    'directed kNN with an island after masking',
+    () => createNearestNeighborScene(60, 3, 13, 0.6, false),
+    createDiagnosticsExclusionMask(60, 6, 2),
+    SPREG_MASKED_DIAGNOSTICS_REFERENCE.knnDirected
+  ]
+] as const;
+
+for (const [label, createScene, mask, reference] of MASKED_CASES) {
+  for (const restandardizeRows of [false, true]) {
+    it(`GPUSpatialRegressionDiagnostics after a masked OLS fit matches spreg on the subset (${label}, restandardizeRows ${restandardizeRows})`, async () => {
+      const device = await getWebGPUTestDevice();
+      if (!device) {
+        return;
+      }
+      const scene = createScene();
+      const actual = await runDiagnostics(device, scene, undefined, undefined, {
+        mask,
+        restandardizeRows
+      });
+      const expected = computeSpatialRegressionDiagnosticsOnCPU(
+        scene.weights,
+        scene.predictors,
+        scene.response,
+        scene.predictorCount,
+        {mask, restandardizeRows}
+      );
+      expect(expected.excludedRowCount).toBe(reference.excluded);
+      expectParity(actual, expected);
+      expect(actual.summary[GPU_SPATIAL_REGRESSION_DIAGNOSTICS_SUMMARY_EXCLUDED_ROW_COUNT]).toBe(
+        reference.excluded
+      );
+      // Pinned values: spreg.OLS(spat_diag=True, moran=True) on the w_subset-restricted weights.
+      expectMatchesSpreg(actual, reference[restandardizeRows ? 'restandardized' : 'original']);
+      expectClose(
+        'spreg S0',
+        actual.summary[4],
+        reference[restandardizeRows ? 'restandardized' : 'original'].weightsSum,
+        1e-5
+      );
+    });
+  }
+}
+
+it('GPUSpatialRegressionDiagnostics treats NaN responses like masked rows', async () => {
+  const device = await getWebGPUTestDevice();
+  if (!device) {
+    return;
+  }
+  const scene = createDiagnosticsScene(8, 11, 0.6, true);
+  const mask = createDiagnosticsExclusionMask(64, 7, 3);
+  const missing = {...scene, response: Float32Array.from(scene.response)};
+  for (let row = 0; row < 64; row++) {
+    if (mask[row] === 0) {
+      missing.response[row] = NaN;
+    }
+  }
+  const viaMask = await runDiagnostics(device, scene, undefined, undefined, {mask});
+  const viaNaN = await runDiagnostics(device, missing);
+  expect(viaNaN.status).toBe(0);
+  expect(Array.from(viaNaN.tests)).toEqual(Array.from(viaMask.tests));
+  expect(Array.from(viaNaN.summary)).toEqual(Array.from(viaMask.summary));
 });

@@ -71,6 +71,7 @@ function createFixture(
   options: {
     weights?: number[];
     spherical?: boolean;
+    units?: 'meters' | 'kilometers';
     maximumCandidatePairs?: number;
     maximumCrossings?: number;
   } = {}
@@ -107,7 +108,9 @@ function createFixture(
           polygonOffsets: inputs['polygonOffsets'] as never,
           ringOffsets: inputs['ringOffsets'] as never
         },
-        coordinateSystem: options.spherical ? 'spherical' : 'planar',
+        spatialContext: options.spherical
+          ? {coordinateSpace: 'longitude-latitude', metric: 'great-circle', units: options.units}
+          : undefined,
         maximumCandidatePairs: options.maximumCandidatePairs,
         maximumCrossings: options.maximumCrossings,
         output: {
@@ -301,5 +304,25 @@ it('GPULineLengthPerPolygon measures spherical pieces as great-circle distance',
   const expected = computeLineLengthPerPolygon(paths, undefined, features, true);
   expectClose(result['lengths'][0], expected.lengths[0], 1e-4, 1);
   expect(result['lengths'][0]).toBeGreaterThan(1e6);
+  fixture.destroy();
+});
+
+it('GPULineLengthPerPolygon honours kilometers units on the default sphere', async () => {
+  const device = await getWebGPUTestDevice();
+  if (!device) {
+    return;
+  }
+  const features: OraclePolygonFeature[] = [[[box(0, 0, 10, 10)]]];
+  const paths: Point[][] = [
+    [
+      [-5, 5],
+      [15, 5]
+    ]
+  ];
+  const fixture = createFixture(device, paths, features, {spherical: true, units: 'kilometers'});
+  const result = await fixture.run();
+  // The oracle measures meters on the same default sphere.
+  const expected = computeLineLengthPerPolygon(paths, undefined, features, true);
+  expectClose(result['lengths'][0], expected.lengths[0] / 1000, 1e-4, 1e-3);
   fixture.destroy();
 });

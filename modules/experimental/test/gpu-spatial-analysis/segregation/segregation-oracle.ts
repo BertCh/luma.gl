@@ -16,7 +16,11 @@ export type SegregationOracle = {
   theil: number[];
 };
 
-/** Float64 reference for `GPUSegregation` at one scale (`null` weights is the aspatial scale). */
+/**
+ * Float64 reference for `GPUSegregation` at one scale (`null` weights is the aspatial scale).
+ * Undefined indices and local values are NaN, as the operator writes them; a unit with an empty
+ * environment has NaN local values and contributes nothing to the global sums.
+ */
 export function computeSegregationOracle(props: {
   unitCount: number;
   groupCount: number;
@@ -51,6 +55,7 @@ export function computeSegregationOracle(props: {
 
   const environment = new Array<number>(units * K).fill(0);
   const shares = new Array<number[]>(units);
+  const hasEnvironment = new Array<boolean>(units).fill(false);
   for (let unit = 0; unit < units; unit++) {
     const row = new Array<number>(K).fill(0);
     for (let group = 0; group < K; group++) {
@@ -67,53 +72,59 @@ export function computeSegregationOracle(props: {
       row[group] = sum;
     }
     const rowTotal = row.reduce((a, c) => a + c, 0);
+    hasEnvironment[unit] = rowTotal > 0;
     shares[unit] = row.map(value => (rowTotal > 0 ? value / rowTotal : 0));
-    for (let group = 0; group < K; group++) environment[unit * K + group] = shares[unit][group];
+    for (let group = 0; group < K; group++) {
+      environment[unit * K + group] = rowTotal > 0 ? shares[unit][group] : NaN;
+    }
   }
 
   const layout = getGPUSegregationLayout(K);
-  const indices = new Array<number>(layout.stride).fill(0);
-  const entropy = new Array<number>(units).fill(0);
-  const theil = new Array<number>(units).fill(0);
-  const dissimilarity = new Array<number>(units * K).fill(0);
+  const indices = new Array<number>(layout.stride).fill(NaN);
+  const entropy = new Array<number>(units).fill(NaN);
+  const theil = new Array<number>(units).fill(NaN);
+  const dissimilarity = new Array<number>(units * K).fill(NaN);
   let sumEntropy = 0;
   let sumAbsolute = 0;
   const sumDissimilarity = new Array<number>(K).fill(0);
   const sumAtkinson = new Array<number>(K).fill(0);
   const sumExposure = new Array<number>(K * K).fill(0);
   for (let unit = 0; unit < units; unit++) {
+    if (!hasEnvironment[unit]) continue;
     const t = unitTotal(unit);
-    entropy[unit] = entropyOf(shares[unit]);
-    sumEntropy += t * entropy[unit];
-    theil[unit] = E > 0 && total > 0 ? (t * (E - entropy[unit])) / (E * total) : 0;
+    const unitEntropy = entropyOf(shares[unit]);
+    entropy[unit] = unitEntropy;
+    sumEntropy += t * unitEntropy;
+    if (E > 0 && total > 0) theil[unit] = (t * (E - unitEntropy)) / (E * total);
     for (let group = 0; group < K; group++) {
       const share = shares[unit][group];
       sumAbsolute += t * Math.abs(share - P[group]);
       sumDissimilarity[group] += t * Math.abs(share - P[group]);
       const scale = 2 * total * P[group] * (1 - P[group]);
-      dissimilarity[unit * K + group] = scale > 0 ? (t * Math.abs(share - P[group])) / scale : 0;
+      if (scale > 0) dissimilarity[unit * K + group] = (t * Math.abs(share - P[group])) / scale;
       sumAtkinson[group] += t * Math.pow(Math.max(1 - share, 0), 1 - b) * Math.pow(share, b);
       for (let other = 0; other < K; other++) {
         sumExposure[group * K + other] += count(unit, group) * shares[unit][other];
       }
     }
   }
-  indices[layout.entropy] = E > 0 && total > 0 ? 1 - sumEntropy / (E * total) : 0;
-  indices[layout.multiGroupDissimilarity] = I > 0 && total > 0 ? sumAbsolute / (2 * total * I) : 0;
-  indices[layout.diversity] = E;
+  indices[layout.entropy] = E > 0 && total > 0 ? 1 - sumEntropy / (E * total) : NaN;
+  indices[layout.multiGroupDissimilarity] =
+    I > 0 && total > 0 ? sumAbsolute / (2 * total * I) : NaN;
+  indices[layout.diversity] = total > 0 ? E : NaN;
   for (let group = 0; group < K; group++) {
     const mixed = total > 0 && P[group] > 0 && P[group] < 1;
     indices[layout.dissimilarity + group] = mixed
       ? sumDissimilarity[group] / (2 * total * P[group] * (1 - P[group]))
-      : 0;
+      : NaN;
     indices[layout.atkinson + group] = mixed
       ? 1 -
         (P[group] / (1 - P[group])) *
           Math.pow(Math.abs(sumAtkinson[group] / (P[group] * total)), 1 / (1 - b))
-      : 0;
+      : NaN;
     for (let other = 0; other < K; other++) {
       const value =
-        groupTotals[group] > 0 ? sumExposure[group * K + other] / groupTotals[group] : 0;
+        groupTotals[group] > 0 ? sumExposure[group * K + other] / groupTotals[group] : NaN;
       indices[layout.interaction + group * K + other] = value;
       if (other === group) indices[layout.isolation + group] = value;
     }
@@ -172,4 +183,32 @@ export function createGridBandWeights(
     }
   }
   return {offsets, neighbors, weights};
+}
+
+/**
+ * Like the shared `expectClose`, but NaN must match NaN (an undefined index is NaN, never 0) and
+ * a NaN on only one side fails.
+ */
+export function expectSegregationClose(
+  actual: ArrayLike<number>,
+  expected: ArrayLike<number>,
+  label: string,
+  relative = 2e-5,
+  absolute = 1e-6
+): void {
+  if (actual.length !== expected.length) {
+    throw new Error(`${label}: length ${actual.length} != ${expected.length}`);
+  }
+  for (let index = 0; index < expected.length; index++) {
+    const bothNaN = Number.isNaN(actual[index]) && Number.isNaN(expected[index]);
+    if (
+      !bothNaN &&
+      !(
+        Math.abs(actual[index] - expected[index]) <=
+        absolute + relative * Math.abs(expected[index])
+      )
+    ) {
+      throw new Error(`${label}: [${index}] ${actual[index]} != ${expected[index]}`);
+    }
+  }
 }

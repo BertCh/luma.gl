@@ -24,6 +24,8 @@ export type InverseDistanceWeightingOracleInput = {
   power: number;
   /** Effective nearest-neighbor limit; zero means every sample within the radius. */
   neighborCount: number;
+  /** Weight taper: `'modified-shepard'` uses `((R - d) / (R d))^p` with `R = searchRadius`. */
+  taper?: 'none' | 'modified-shepard';
   /** Minimum contributing samples for a non-exact cell. */
   minimumNeighborCount: number;
 };
@@ -41,8 +43,9 @@ const f = Math.fround;
 /**
  * CPU oracle for `GPUInverseDistanceWeighting`.
  *
- * Candidate selection (cell centers, `d^2`, the radius test, and `(d^2, row)` order) mirrors the
- * kernel's f32 arithmetic with `Math.fround`, assuming no fused multiply-add. Weights and sums are
+ * Candidate selection (cell-center and sample offsets from the extent minimum, `d^2`, the radius
+ * test, and `(d^2, row)` order) mirrors the kernel's f32 arithmetic with `Math.fround`, assuming no
+ * fused multiply-add. Weights and sums are
  * float64, normalized by the nearest contributor, so GPU parity is within f32 rounding, not exact.
  */
 export function interpolateInverseDistanceWeightingOnCPU(
@@ -59,6 +62,7 @@ export function interpolateInverseDistanceWeightingOnCPU(
   const cellWidth = f(f(maxX - minX) / width);
   const cellHeight = f(f(maxY - minY) / height);
   const minimumNeighbors = Math.max(input.minimumNeighborCount, 1);
+  const taper = input.taper ?? 'none';
   const parametersValid = radius >= 0 && Number.isFinite(power) && power >= 0;
 
   const samples: number[] = [];
@@ -83,15 +87,22 @@ export function interpolateInverseDistanceWeightingOnCPU(
   for (let rasterRow = 0; rasterRow < height; rasterRow++) {
     for (let column = 0; column < width; column++) {
       const cell = rasterRow * width + column;
-      const centerX = f(minX + f(f(column + 0.5) * cellWidth));
-      const centerY = f(minY + f(f(rasterRow + 0.5) * cellHeight));
-      if (!parametersValid || !Number.isFinite(centerX) || !Number.isFinite(centerY)) {
+      const localCenterX = f(f(column + 0.5) * cellWidth);
+      const localCenterY = f(f(rasterRow + 0.5) * cellHeight);
+      const centerX = f(minX + localCenterX);
+      const centerY = f(minY + localCenterY);
+      if (
+        !parametersValid ||
+        !Number.isFinite(centerX) ||
+        !Number.isFinite(centerY) ||
+        (taper === 'modified-shepard' && !Number.isFinite(radius))
+      ) {
         continue;
       }
       let candidates: {row: number; distanceSquared: number}[] = [];
       for (const row of samples) {
-        const dx = f(positions[2 * row] - centerX);
-        const dy = f(positions[2 * row + 1] - centerY);
+        const dx = f(f(positions[2 * row] - minX) - localCenterX);
+        const dy = f(f(positions[2 * row + 1] - minY) - localCenterY);
         const distanceSquared = f(f(dx * dx) + f(dy * dy));
         if (distanceSquared <= radiusSquared) {
           candidates.push({row, distanceSquared});
@@ -117,11 +128,25 @@ export function interpolateInverseDistanceWeightingOnCPU(
       if (candidates.length < minimumNeighbors) {
         continue;
       }
-      const nearest = Math.min(...candidates.map(candidate => candidate.distanceSquared));
+      // Log weights relative to the largest one, like the kernel's running maximum.
+      const logWeights = candidates.map(candidate => {
+        const distance = Math.sqrt(candidate.distanceSquared);
+        if (taper === 'modified-shepard') {
+          // Franke and Nielson 1980: ((R - d)+ / (R d))^p, zero at and beyond R.
+          return distance < radius
+            ? power * (Math.log(radius - distance) - Math.log(radius * distance))
+            : -Infinity;
+        }
+        return -power * Math.log(distance);
+      });
+      const maximumLogWeight = Math.max(...logWeights);
+      if (!Number.isFinite(maximumLogWeight)) {
+        continue;
+      }
       let weightSum = 0;
       let weightedSum = 0;
-      for (const candidate of candidates) {
-        const weight = Math.pow(nearest / candidate.distanceSquared, power / 2);
+      for (const [index, candidate] of candidates.entries()) {
+        const weight = Math.exp(logWeights[index] - maximumLogWeight);
         weightSum += weight;
         weightedSum += weight * values[candidate.row];
       }

@@ -2,20 +2,32 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import type {
+  GPUInferenceAlternative,
+  GPUMultipleTestingMethod
+} from '../../../src/gpu-spatial-analysis/contracts';
+import {getMultipleTestingAdjustedPValues} from '../../../src/gpu-spatial-analysis/multiple-testing';
+import {getPermutationPValue} from '../../../src/gpu-spatial-analysis/permutation-inference/permutation-alternative';
+import {PhiloxStream} from '../../../src/gpu-spatial-analysis/permutation-inference/permutation-random';
 import {
-  getFeistelPermutationIndex,
-  getFeistelRoundKeys,
-  PhiloxStream
-} from '../../../src/gpu-spatial-analysis/permutation-inference/permutation-random';
-import {LOCAL_PERMUTATION_RANDOM_TAG} from '../../../src/gpu-spatial-analysis/permutation-inference/gpu-local-permutation-test';
+  getSwapOrNotPermutationIndex,
+  getSwapOrNotRounds
+} from '../../../src/gpu-spatial-analysis/permutation-inference/permutation-shuffle';
+import {
+  GPU_LOCAL_GEARY_CLASS,
+  getLocalStatisticSpec,
+  LOCAL_PERMUTATION_RANDOM_TAG,
+  type GPULocalJoinCountCase,
+  type GPULocalPermutationStatistic
+} from '../../../src/gpu-spatial-analysis/permutation-inference/gpu-local-permutation-test';
 import {getPermutationSeedKey} from '../../../src/gpu-spatial-analysis/permutation-inference/permutation-parameters';
 
 const f32 = Math.fround;
 
-/** Oracle alternative; `'directed'` is the folded count of earlier releases. */
-export type OracleAlternative = 'directed' | 'two-sided' | 'greater' | 'lesser' | 'folded';
+/** Oracle alternative: the shared inference union; `'less'` is accepted as `'lesser'`. */
+export type OracleAlternative = GPUInferenceAlternative;
 
-/** Exceedance count `M` and p-value multiplier for the alternative (esda calculate_significance). */
+/** Exceedance count `M` and p-value multiplier for the alternative (see `getPermutationPValue`). */
 export function getOracleExceedance(
   alternative: OracleAlternative,
   greater: number,
@@ -23,18 +35,8 @@ export function getOracleExceedance(
   permutations: number,
   folded = 0
 ): {count: number; multiplier: number} {
-  switch (alternative) {
-    case 'folded':
-      return {count: folded, multiplier: 1};
-    case 'greater':
-      return {count: greater, multiplier: 1};
-    case 'lesser':
-      return {count: lesser, multiplier: 1};
-    case 'two-sided':
-      return {count: Math.min(greater, lesser), multiplier: 2};
-    default:
-      return {count: Math.min(greater, permutations - greater), multiplier: 1};
-  }
+  const {exceedances} = getPermutationPValue(alternative, {greater, lesser, folded}, permutations);
+  return {count: exceedances, multiplier: alternative === 'two-sided' ? 2 : 1};
 }
 
 /** Pseudo p-value `min(m (M + 1), R + 1) / (R + 1)`. */
@@ -57,7 +59,12 @@ type Compacted = {
   count: number;
   mean: number;
   meanY: number;
+  /** Included rows without an active slot to another included row. */
+  islandCount: number;
 };
+
+/** Island policy of the oracle (see `GPUIslandPolicy`). */
+export type OracleIslands = 'exclude' | 'keep';
 
 /** mulberry32 generator with values in [0, 1). */
 export function createSeededRandom(seed: number): () => number {
@@ -117,18 +124,50 @@ export function createKnnWeights(
   return createWeights(lists);
 }
 
-function compact(values: Float32Array, mask?: Uint32Array, secondValues?: Float32Array): Compacted {
-  const positions: number[] = [];
-  const rows: number[] = [];
-  let sum = 0;
-  let sumY = 0;
-  for (let row = 0; row < values.length; row++) {
-    const included =
+/**
+ * Included rows (mask nonzero, finite values), islands (included rows without an active slot to
+ * another included row) and the analysis rows compacted in ascending row order.
+ */
+function compact(
+  weights: CPUSpatialWeights,
+  values: Float32Array,
+  islands: OracleIslands,
+  mask?: Uint32Array,
+  secondValues?: Float32Array
+): Compacted {
+  const rowCount = values.length;
+  const included = Array.from(
+    {length: rowCount},
+    (_, row) =>
       (!mask || mask[row] !== 0) &&
       Number.isFinite(values[row]) &&
-      (!secondValues || Number.isFinite(secondValues[row]));
-    positions.push(included ? rows.length : -1);
-    if (included) {
+      (!secondValues || Number.isFinite(secondValues[row]))
+  );
+  const positions: number[] = [];
+  const rows: number[] = [];
+  let islandCount = 0;
+  let sum = 0;
+  let sumY = 0;
+  for (let row = 0; row < rowCount; row++) {
+    let hasNeighbor = false;
+    if (included[row]) {
+      for (let slot = weights.offsets[row]; slot < weights.offsets[row + 1]; slot++) {
+        const neighbor = weights.neighbors[slot];
+        if (
+          neighbor < rowCount &&
+          neighbor !== row &&
+          weights.weights[slot] > 0 &&
+          included[neighbor]
+        ) {
+          hasNeighbor = true;
+          break;
+        }
+      }
+    }
+    islandCount += included[row] && !hasNeighbor ? 1 : 0;
+    const analyzed = included[row] && (islands === 'keep' || hasNeighbor);
+    positions.push(analyzed ? rows.length : -1);
+    if (analyzed) {
       rows.push(row);
       sum += values[row];
       sumY += secondValues ? secondValues[row] : 0;
@@ -139,34 +178,103 @@ function compact(values: Float32Array, mask?: Uint32Array, secondValues?: Float3
     rows,
     count: rows.length,
     mean: f32(sum / rows.length),
-    meanY: f32(sumY / rows.length)
+    meanY: f32(sumY / rows.length),
+    islandCount
   };
 }
 
-/** Valid neighbor slots of `row`: included, not the row itself, inside the row's CSR range. */
+/** Active slots of `row`: valid neighbor other than the row, positive weight, analysis row. */
 function getNeighborSlots(weights: CPUSpatialWeights, positions: number[], row: number): number[] {
   const slots: number[] = [];
   for (let slot = weights.offsets[row]; slot < weights.offsets[row + 1]; slot++) {
     const neighbor = weights.neighbors[slot];
-    if (neighbor < positions.length && neighbor !== row && positions[neighbor] >= 0) {
+    if (
+      neighbor < positions.length &&
+      neighbor !== row &&
+      weights.weights[slot] > 0 &&
+      positions[neighbor] >= 0
+    ) {
       slots.push(slot);
     }
   }
   return slots;
 }
 
+/**
+ * The weight the kernels read for each active slot: as given, or, for row-standardized weights,
+ * `f32(w * f32(1 / sum))` with the f32 sum of the active weights in slot order.
+ */
+function getEffectiveWeights(
+  weights: CPUSpatialWeights,
+  slots: number[],
+  standardize: boolean
+): Map<number, number> {
+  let total = 0;
+  for (const slot of slots) {
+    total = f32(total + weights.weights[slot]);
+  }
+  const scale = standardize ? (total > 0 ? f32(1 / total) : 0) : 1;
+  return new Map(
+    slots.map(slot => [
+      slot,
+      standardize ? f32(weights.weights[slot] * scale) : weights.weights[slot]
+    ])
+  );
+}
+
 /** Result of {@link computeLocalPermutationOracle}. */
 export type LocalPermutationOracle = {
-  /** Folded exceedance count, or 0xffffffff when not tested. */
+  /** Exceedance count `M`, or 0xffffffff when not tested. */
   exceedances: number[];
+  /** Unadjusted pseudo p-values, NaN when not tested. */
   pseudoPValues: number[];
+  /** Adjusted p-values for `multipleTesting`, NaN when not tested. */
+  adjustedPValues: number[];
   observed: number[];
+  /** Exact integer `p <= level` for `'none'`, else `adjustedPValue <= level`. */
   significant: number[];
-  significantFalseDiscoveryRate: number[];
+  /** `localGeary` classes (`GPU_LOCAL_GEARY_CLASS`) from the significance rule of `significant`. */
+  classes: number[];
+  /** `localBivariateMoran` quadrants (PySAL scheme), 0 for rows that are not analyzed. */
+  quadrants: number[];
   overflow: number;
-  /** Unfolded simulated terms of row `focusRow` (diagnostics). */
-  simulated?: number[];
+  islandCount: number;
 };
+
+/**
+ * Local Geary classes (esda `Geary_Local(labels=True)` rule, `0` for NaN): positive association
+ * (`observed` below the mean of the finite local values) is 1 high-high or 2 low-low by the sign of
+ * the centered `x`; above the mean is 3 (negative association); `p > level` is 4.
+ */
+export function classifyLocalGeary(input: {
+  observed: readonly number[];
+  centeredValues: readonly number[];
+  pValues: readonly number[];
+  level: number;
+}): number[] {
+  const finite = input.observed.filter(value => Number.isFinite(value));
+  const mean = finite.reduce((total, value) => total + value, 0) / finite.length;
+  return input.observed.map((value, row) => {
+    const p = input.pValues[row];
+    if (!Number.isFinite(value) || !Number.isFinite(p)) {
+      return GPU_LOCAL_GEARY_CLASS.undefined;
+    }
+    if (!(p <= input.level)) {
+      return GPU_LOCAL_GEARY_CLASS.notSignificant;
+    }
+    const x = input.centeredValues[row];
+    if (value < mean) {
+      return x > 0
+        ? GPU_LOCAL_GEARY_CLASS.highHigh
+        : x < 0
+          ? GPU_LOCAL_GEARY_CLASS.lowLow
+          : GPU_LOCAL_GEARY_CLASS.undefined;
+    }
+    return value > mean
+      ? GPU_LOCAL_GEARY_CLASS.negativeAssociation
+      : GPU_LOCAL_GEARY_CLASS.undefined;
+  });
+}
 
 /**
  * Reference of `GPULocalPermutationTest`: identical Philox draws and partial Fisher-Yates, f32
@@ -175,82 +283,159 @@ export type LocalPermutationOracle = {
 export function computeLocalPermutationOracle(input: {
   weights: CPUSpatialWeights;
   values: Float32Array;
+  secondValues?: Float32Array;
   mask?: Uint32Array;
-  statistic: 'localMoran' | 'localGeary' | 'localG' | 'localGStar';
+  statistic: GPULocalPermutationStatistic;
+  joinCase?: GPULocalJoinCountCase;
   seed: number;
   permutations: number;
   significanceLevel: number;
   maximumNeighbors: number;
   alternative?: OracleAlternative;
+  islands?: OracleIslands;
+  /** Weights are row standardized: re-standardize over the active slots. */
+  rowStandardized?: boolean;
+  multipleTesting?: GPUMultipleTestingMethod;
+  /** The contributor's compile-time maximum; a larger `permutations` is invalid. */
+  maximumPermutations?: number;
 }): LocalPermutationOracle {
   const {weights, values, statistic, permutations} = input;
+  const alternative = input.alternative ?? 'two-sided';
+  const keep = input.islands === 'keep';
   const rowCount = values.length;
-  const compacted = compact(values, input.mask);
+  const spec = getLocalStatisticSpec(statistic, input.joinCase);
+  const secondValues = spec.bivariate ? input.secondValues : undefined;
+  const compacted = compact(weights, values, input.islands ?? 'exclude', input.mask, secondValues);
   const {positions, count} = compacted;
-  const centered = statistic === 'localMoran' || statistic === 'localGeary';
   const compactX = compacted.rows.map(row =>
-    centered ? f32(values[row] - compacted.mean) : values[row]
+    spec.centerX ? f32(values[row] - compacted.mean) : values[row]
+  );
+  const compactY = compacted.rows.map(row =>
+    secondValues ? (spec.centerY ? f32(secondValues[row] - compacted.meanY) : secondValues[row]) : 0
   );
   const sumX = compacted.rows.reduce((total, row) => total + values[row], 0);
   const sumSquares = compacted.rows.reduce(
     (total, row) => total + (values[row] - sumX / count) ** 2,
     0
   );
-  const term = (focus: number, lag: number) =>
-    statistic === 'localMoran'
-      ? f32(focus * lag)
-      : statistic === 'localG' || statistic === 'localGeary'
-        ? lag
-        : f32(lag + focus);
+  const sumSquaresY = compactY.reduce((total, value) => total + value * value, 0);
+  const one = (value: number) => (value === 1 ? 1 : 0);
+  // The per-draw terms and the row term of getLocalStatisticSpec, in f32 and in the kernel's order.
+  const drawnA = (fx: number, fy: number, dx: number, dy: number): number => {
+    switch (statistic) {
+      case 'localGeary':
+        return f32(focusDifference(fx, dx) ** 2);
+      case 'localBivariateMoran':
+        return dy;
+      case 'localJoinCount':
+        return one(dx);
+      case 'localBivariateJoinCount':
+        return input.joinCase === 'BJC' ? (1 - one(dx)) * one(dy) : one(dx) * one(dy);
+      default:
+        return dx;
+    }
+  };
+  const drawnB = (dy: number): number => dy;
+  const term = (fx: number, fy: number, lagA: number, lagB: number): number => {
+    switch (statistic) {
+      case 'localMoran':
+      case 'localBivariateMoran':
+        return f32(fx * lagA);
+      case 'localGStar':
+        return f32(lagA + fx);
+      case 'localLeeL':
+        return f32(lagA * lagB);
+      case 'localJoinCount':
+        return f32(one(fx) * lagA);
+      case 'localBivariateJoinCount':
+        return input.joinCase === 'BJC'
+          ? f32(one(fx) * (1 - one(fy)) * lagA)
+          : f32(one(fx) * one(fy) * lagA);
+      default:
+        return lagA;
+    }
+  };
   const key = getPermutationSeedKey(input.seed);
+  const countIsValid =
+    Number.isInteger(permutations) &&
+    permutations >= 1 &&
+    (input.maximumPermutations === undefined || permutations <= input.maximumPermutations);
   const result: LocalPermutationOracle = {
     exceedances: [],
     pseudoPValues: [],
+    adjustedPValues: [],
     observed: [],
     significant: [],
-    significantFalseDiscoveryRate: [],
-    overflow: 0
+    classes: [],
+    quadrants: [],
+    overflow: countIsValid ? 0 : 1,
+    islandCount: compacted.islandCount
   };
-  const multipliers = getOracleExceedance(
-    input.alternative ?? 'directed',
-    0,
-    0,
-    permutations
-  ).multiplier;
+  const multiplier = getOracleExceedance(alternative, 0, 0, permutations).multiplier;
   for (let row = 0; row < rowCount; row++) {
     const position = positions[row];
     const slots = position >= 0 ? getNeighborSlots(weights, positions, row) : [];
-    if (slots.length > input.maximumNeighbors) {
+    if (position >= 0 && countIsValid && slots.length > input.maximumNeighbors) {
       result.overflow = 1;
     }
-    if (position < 0 || slots.length === 0 || slots.length > input.maximumNeighbors) {
+    if (position < 0 || slots.length > input.maximumNeighbors) {
       result.exceedances.push(0xffffffff);
       result.observed.push(NaN);
+      result.quadrants.push(0);
       continue;
     }
-    const focus = compactX[position];
-    let observedLag = 0;
-    for (const slot of slots) {
-      const neighborValue = compactX[positions[weights.neighbors[slot]]];
-      observedLag = f32(
-        observedLag +
-          f32(
-            weights.weights[slot] *
-              (statistic === 'localGeary'
-                ? f32(focusDifference(focus, neighborValue) ** 2)
-                : neighborValue)
-          )
-      );
+    if (slots.length === 0 && !keep) {
+      result.exceedances.push(0xffffffff);
+      result.observed.push(NaN);
+      result.quadrants.push(0);
+      continue;
     }
-    const observed = term(focus, observedLag);
+    const effective = getEffectiveWeights(weights, slots, input.rowStandardized === true);
+    const slotWeight = (slot: number) => (spec.joinCount ? 1 : effective.get(slot)!);
+    const fx = compactX[position];
+    const fy = compactY[position];
+    let lagA = 0;
+    let lagB = 0;
+    for (const slot of slots) {
+      const neighborPosition = positions[weights.neighbors[slot]];
+      const dx = compactX[neighborPosition];
+      const dy = compactY[neighborPosition];
+      lagA = f32(lagA + f32(slotWeight(slot) * drawnA(fx, fy, dx, dy)));
+      lagB = f32(lagB + f32(slotWeight(slot) * drawnB(dy)));
+    }
+    const observed = term(fx, fy, lagA, lagB);
+    const x = values[row];
+    const scaled = {
+      localMoran: ((count - 1) * observed) / sumSquares,
+      localGeary: (observed * count) / sumSquares,
+      localG: lagA / (sumX - x),
+      localGStar: observed / sumX,
+      localBivariateMoran: ((count - 1) * observed) / Math.sqrt(sumSquares * sumSquaresY),
+      localLeeL: (count * observed) / Math.sqrt(sumSquares * sumSquaresY),
+      localJoinCount: observed,
+      localBivariateJoinCount: observed
+    }[statistic];
+    result.observed.push(scaled);
+    result.quadrants.push(lagA > 0 ? (fx > 0 ? 1 : 2) : fx > 0 ? 4 : 3);
     const others = count - 1;
+    if (
+      !countIsValid ||
+      slots.length === 0 ||
+      slots.length > others ||
+      (spec.joinCount && observed === 0)
+    ) {
+      // Kept islands and join counts of zero are never tested, nor is anything when the count is invalid.
+      result.exceedances.push(0xffffffff);
+      continue;
+    }
     let greater = 0;
     let lesser = 0;
     const simulatedValues: number[] = [];
     for (let permutation = 0; permutation < permutations; permutation++) {
       const stream = new PhiloxStream(key, row, permutation, LOCAL_PERMUTATION_RANDOM_TAG);
       const swaps = new Map<number, number>();
-      let lag = 0;
+      let lagSimulatedA = 0;
+      let lagSimulatedB = 0;
       for (const [drawn, slot] of slots.entries()) {
         const pick = drawn + stream.nextBelow(others - drawn);
         const chosen = swaps.get(pick) ?? pick;
@@ -258,18 +443,12 @@ export function computeLocalPermutationOracle(input: {
           swaps.set(pick, swaps.get(drawn) ?? drawn);
         }
         const drawnPosition = chosen + (chosen >= position ? 1 : 0);
-        const drawnValue = compactX[drawnPosition];
-        lag = f32(
-          lag +
-            f32(
-              weights.weights[slot] *
-                (statistic === 'localGeary'
-                  ? f32(focusDifference(focus, drawnValue) ** 2)
-                  : drawnValue)
-            )
-        );
+        const dx = compactX[drawnPosition];
+        const dy = compactY[drawnPosition];
+        lagSimulatedA = f32(lagSimulatedA + f32(slotWeight(slot) * drawnA(fx, fy, dx, dy)));
+        lagSimulatedB = f32(lagSimulatedB + f32(slotWeight(slot) * drawnB(dy)));
       }
-      const simulated = term(focus, lag);
+      const simulated = term(fx, fy, lagSimulatedA, lagSimulatedB);
       greater += simulated >= observed ? 1 : 0;
       lesser += simulated <= observed ? 1 : 0;
       simulatedValues.push(simulated);
@@ -278,59 +457,42 @@ export function computeLocalPermutationOracle(input: {
     const folded = simulatedValues.filter(
       value => Math.abs(value - simulatedMean) >= Math.abs(observed - simulatedMean)
     ).length;
-    const {count: larger} = getOracleExceedance(
-      input.alternative ?? 'directed',
-      greater,
-      lesser,
-      permutations,
-      folded
-    );
-    result.exceedances.push(larger);
-    const x = values[row];
-    result.observed.push(
-      statistic === 'localMoran'
-        ? ((count - 1) * observed) / sumSquares
-        : statistic === 'localGeary'
-          ? (observed * count) / sumSquares
-          : statistic === 'localG'
-            ? observedLag / (sumX - x)
-            : observed / sumX
+    result.exceedances.push(
+      getPermutationPValue(alternative, {greater, lesser, folded}, permutations).exceedances
     );
   }
+  for (const exceedance of result.exceedances) {
+    result.pseudoPValues.push(
+      exceedance !== 0xffffffff ? getOraclePValue(exceedance, multiplier, permutations) : NaN
+    );
+  }
+  const method = input.multipleTesting ?? 'none';
+  const adjusted = getMultipleTestingAdjustedPValues(result.pseudoPValues, method);
   const level = f32(input.significanceLevel);
   const scale = f32(permutations + 1);
-  for (const exceedance of result.exceedances) {
+  for (const [row, exceedance] of result.exceedances.entries()) {
     const tested = exceedance !== 0xffffffff;
-    result.pseudoPValues.push(
-      tested ? getOraclePValue(exceedance, multipliers, permutations) : NaN
-    );
+    result.adjustedPValues.push(tested ? adjusted[row] : NaN);
     result.significant.push(
       tested &&
-        f32(Math.min(multipliers * (exceedance + 1), permutations + 1)) <= f32(level * scale)
+        (method === 'none'
+          ? f32(Math.min(multiplier * (exceedance + 1), permutations + 1)) <= f32(level * scale)
+          : adjusted[row] <= level)
         ? 1
         : 0
     );
   }
-  // Benjamini-Hochberg over the tested rows, sorted by count then row (a stable sort).
-  const tested = result.exceedances
-    .map((exceedance, row) => ({exceedance, row}))
-    .filter(entry => entry.exceedance !== 0xffffffff)
-    .sort((a, b) => a.exceedance - b.exceedance || a.row - b.row);
-  const m = tested.length;
-  let threshold = 0;
-  for (const [index, entry] of tested.entries()) {
-    const rank = index + 1;
-    if (
-      f32(f32(Math.min(multipliers * (entry.exceedance + 1), permutations + 1)) * f32(m)) <=
-      f32(f32(f32(rank) * level) * scale)
-    ) {
-      threshold = rank;
-    }
-  }
-  const ranks = new Map(tested.map((entry, index) => [entry.row, index + 1]));
-  for (let row = 0; row < rowCount; row++) {
-    const rank = ranks.get(row) ?? 0;
-    result.significantFalseDiscoveryRate.push(rank > 0 && rank <= threshold ? 1 : 0);
+  if (statistic === 'localGeary') {
+    // The classification tests significance the way `significant` does (an exact integer rule for 'none').
+    const classifiedP = result.exceedances.map((exceedance, row) =>
+      exceedance === 0xffffffff ? NaN : result.significant[row] === 1 ? 0 : 1
+    );
+    result.classes = classifyLocalGeary({
+      observed: result.observed,
+      centeredValues: positions.map(position => (position >= 0 ? compactX[position] : 0)),
+      pValues: classifiedP,
+      level: 0.5
+    });
   }
   return result;
 }
@@ -354,26 +516,34 @@ export type GlobalPermutationOracle = {
   simulatedMean: number;
   simulatedStandardDeviation: number;
   zSimulated: number;
+  islandCount: number;
+  /** Number `n` of analysis rows. */
+  analysisCount: number;
 };
 
 /**
  * Reference of `GPUGlobalPermutationTest` in double precision with the GPU's exact permutations
- * (the TypeScript Feistel bijection is bit-identical to the WGSL one).
+ * (the TypeScript swap-or-not shuffle is bit-identical to the WGSL one).
  */
 export function computeGlobalPermutationOracle(input: {
   weights: CPUSpatialWeights;
   values: Float32Array;
   secondValues?: Float32Array;
   mask?: Uint32Array;
-  statistic: 'moran' | 'geary' | 'getisOrdG' | 'bivariateMoran';
+  statistic: 'moran' | 'geary' | 'getisOrdG' | 'bivariateMoran' | 'leesL';
   seed: number;
   permutations: number;
   alternative?: OracleAlternative;
+  islands?: OracleIslands;
+  /** Weights are row standardized: re-standardize over the active slots. */
+  rowStandardized?: boolean;
 }): GlobalPermutationOracle {
   const {weights, values, statistic, permutations} = input;
-  const bivariate = statistic === 'bivariateMoran';
+  const alternative = input.alternative ?? 'two-sided';
+  const lee = statistic === 'leesL';
+  const bivariate = statistic === 'bivariateMoran' || lee;
   const secondValues = bivariate ? input.secondValues : undefined;
-  const compacted = compact(values, input.mask, secondValues);
+  const compacted = compact(weights, values, input.islands ?? 'exclude', input.mask, secondValues);
   const {positions, rows, count} = compacted;
   const meanX = rows.reduce((total, row) => total + values[row], 0) / count;
   const meanY = secondValues
@@ -384,30 +554,58 @@ export function computeGlobalPermutationOracle(input: {
   const sumSquares = rows.reduce((total, row) => total + (values[row] - meanX) ** 2, 0);
   const sumSquaresY = compactY.reduce((total, value) => total + value * value, 0);
   const slotsByRow = rows.map(row => getNeighborSlots(weights, positions, row));
+  const standardize = input.rowStandardized === true;
+  // Row-standardized rows with any active slot sum to 1 after re-standardization. A kept island has
+  // no active slot: its scale is 0 (the kernel's rule), not 1 / 0, which would turn 0 * Infinity into NaN.
+  const rowScales = slotsByRow.map(slots =>
+    standardize
+      ? slots.length > 0
+        ? 1 / slots.reduce((total, slot) => total + weights.weights[slot], 0)
+        : 0
+      : 1
+  );
   let s0 = 0;
+  let s0Squared = 0;
   for (const slots of slotsByRow) {
-    for (const slot of slots) {
-      s0 += weights.weights[slot];
+    if (standardize) {
+      s0 += slots.length > 0 ? 1 : 0;
+      s0Squared += slots.length > 0 ? 1 : 0;
+    } else {
+      let rowSum = 0;
+      for (const slot of slots) {
+        s0 += weights.weights[slot];
+        rowSum += weights.weights[slot];
+      }
+      s0Squared += rowSum * rowSum;
     }
   }
   const key = getPermutationSeedKey(input.seed);
   const pairSums: number[] = [];
   for (let permutation = 0; permutation <= permutations; permutation++) {
-    const roundKeys = getFeistelRoundKeys(key, permutation);
+    const shuffle = permutation === 0 ? undefined : getSwapOrNotRounds(key, permutation, count);
     const permute = (position: number) =>
-      permutation === 0 ? position : getFeistelPermutationIndex(position, count, roundKeys);
+      shuffle ? getSwapOrNotPermutationIndex(position, count, shuffle) : position;
     let sum = 0;
     for (let index = 0; index < rows.length; index++) {
       const focus = compactX[bivariate ? index : permute(index)];
       let lag = 0;
+      let lagY = 0;
       for (const slot of slotsByRow[index]) {
         const neighborPosition = permute(positions[weights.neighbors[slot]]);
         const neighborValue = bivariate ? compactY[neighborPosition] : compactX[neighborPosition];
         const weight = weights.weights[slot];
+        if (lee) {
+          // Lee's L permutes x and y together: both lags use the same permuted neighbor.
+          lag += weight * compactX[neighborPosition];
+          lagY += weight * compactY[neighborPosition];
+          continue;
+        }
         lag +=
           statistic === 'geary' ? weight * (focus - neighborValue) ** 2 : weight * neighborValue;
       }
-      sum += statistic === 'geary' ? lag : focus * lag;
+      lag *= rowScales[index];
+      lagY *= rowScales[index];
+      sum += lee ? lag * lagY : statistic === 'geary' ? lag : focus * lag;
     }
     pairSums.push(sum);
   }
@@ -415,7 +613,8 @@ export function computeGlobalPermutationOracle(input: {
     moran: count / (s0 * sumSquares),
     geary: (count - 1) / (2 * s0 * sumSquares),
     getisOrdG: 1 / (count * (count - 1) * meanX * meanX - sumSquares),
-    bivariateMoran: count / (s0 * Math.sqrt(sumSquares * sumSquaresY))
+    bivariateMoran: count / (s0 * Math.sqrt(sumSquares * sumSquaresY)),
+    leesL: count / (s0Squared * Math.sqrt(sumSquares * sumSquaresY))
   }[statistic];
   const simulated = pairSums.slice(1).map(sum => scale * sum);
   const greater = pairSums.slice(1).filter(sum => sum >= pairSums[0]).length;
@@ -425,12 +624,10 @@ export function computeGlobalPermutationOracle(input: {
   const folded = simulated.filter(
     value => Math.abs(value - mean) >= Math.abs(observedStatistic - mean)
   ).length;
-  const {count: larger, multiplier} = getOracleExceedance(
-    input.alternative ?? 'directed',
-    greater,
-    lesser,
-    permutations,
-    folded
+  const {exceedances: larger, pValue} = getPermutationPValue(
+    alternative,
+    {greater, lesser, folded},
+    permutations
   );
   const standardDeviation = Math.sqrt(
     simulated.reduce((total, value) => total + (value - mean) ** 2, 0) / permutations
@@ -441,11 +638,13 @@ export function computeGlobalPermutationOracle(input: {
     simulated,
     pairSums,
     exceedances: larger,
-    pseudoPValue: getOraclePValue(larger, multiplier, permutations),
+    pseudoPValue: pValue,
     greater,
     lesser,
     simulatedMean: mean,
     simulatedStandardDeviation: standardDeviation,
-    zSimulated: (observed - mean) / standardDeviation
+    zSimulated: (observed - mean) / standardDeviation,
+    islandCount: compacted.islandCount,
+    analysisCount: count
   };
 }

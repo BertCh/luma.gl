@@ -724,3 +724,31 @@ describe('partitioning', () => {
     }
   });
 });
+
+describe('measure model helpers', () => {
+  it('maps length units to area units and resolves sphere radii in the context unit', async () => {
+    const {
+      getGPUAreaUnit,
+      getGPUSphereRadius,
+      resolveGPUSpatialContext,
+      GPU_PLANAR_OR_GREAT_CIRCLE_SPATIAL_CONTEXT_SUPPORT
+    } = await import('../../../src/gpu-spatial-analysis/contracts/spatial-context');
+    expect(getGPUAreaUnit('meters')).toBe('square-meters');
+    expect(getGPUAreaUnit('kilometers')).toBe('square-kilometers');
+    expect(getGPUAreaUnit('native')).toBe('native-squared');
+    const greatCircle = {coordinateSpace: 'longitude-latitude', metric: 'great-circle'} as const;
+    expect(getGPUSphereRadius(greatCircle)).toBe(6371008.8);
+    expect(getGPUSphereRadius({...greatCircle, units: 'kilometers'})).toBeCloseTo(6371.0088, 9);
+    expect(getGPUSphereRadius({...greatCircle, sphereRadius: 1})).toBe(1);
+    const support = GPU_PLANAR_OR_GREAT_CIRCLE_SPATIAL_CONTEXT_SUPPORT;
+    expect(resolveGPUSpatialContext('test', undefined, support).coordinateSpace).toBe('planar');
+    expect(resolveGPUSpatialContext('test', greatCircle, support)).toBe(greatCircle);
+    expect(() =>
+      resolveGPUSpatialContext(
+        'test',
+        {coordinateSpace: 'longitude-latitude', metric: 'rhumb'},
+        support
+      )
+    ).toThrow(/rhumb/);
+  });
+});

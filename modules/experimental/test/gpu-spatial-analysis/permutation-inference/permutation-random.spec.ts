@@ -15,6 +15,11 @@ import {
   PERMUTATION_RANDOM_WGSL,
   PhiloxStream
 } from '../../../src/gpu-spatial-analysis/permutation-inference/permutation-random';
+import {
+  getSwapOrNotPermutationIndex,
+  getSwapOrNotRounds,
+  PERMUTATION_SHUFFLE_WGSL
+} from '../../../src/gpu-spatial-analysis/permutation-inference/permutation-shuffle';
 import {createOutputBuffer, readUint32, submitGraph} from '../../utils/gpu-contributor-test-utils';
 
 const BOUNDS = [1, 2, 3, 6, 7, 1000, 65537, 0x80000001, 0xfffffffe, 0xffffffff];
@@ -112,4 +117,63 @@ const FEISTEL_COUNTS = array<u32, ${FEISTEL_COUNTS.length}>(${FEISTEL_COUNTS.map
   blocks.destroy();
   draws.destroy();
   feistel.destroy();
+});
+
+const SHUFFLE_COUNTS = [1, 2, 5, 100, 1000, 4097];
+const SHUFFLE_PERMUTATIONS = [1, 2];
+const SHUFFLE_STRIDE = 4097;
+const SHUFFLE_WORKGROUP = 64;
+
+it('the WGSL swap-or-not shuffle is bit-identical to TypeScript', async () => {
+  const device = await getWebGPUTestDevice();
+  if (!device) {
+    return;
+  }
+  const cases = SHUFFLE_COUNTS.length * SHUFFLE_PERMUTATIONS.length;
+  const words = cases * SHUFFLE_STRIDE;
+  const output = createOutputBuffer(device, words);
+  const graph = new GPUCommandGraph(device, {id: 'shuffle-test'});
+  const outputView = importGraphBuffer(graph, 'shuffle', output, 'uint32', words);
+  graph.add({
+    getCommandNodes: target => [
+      createWGSLKernelNode(target, {
+        id: 'shuffle-test-kernel',
+        operation: 'ShuffleTest',
+        bindings: [{name: 'shuffle', view: outputView, type: 'u32', access: 'read_write'}],
+        workgroupSize: SHUFFLE_WORKGROUP,
+        invocationCount: cases * SHUFFLE_WORKGROUP,
+        guardIndex: false,
+        declarations: `${PERMUTATION_RANDOM_WGSL}
+${PERMUTATION_SHUFFLE_WGSL}
+const SHUFFLE_COUNTS = array<u32, ${SHUFFLE_COUNTS.length}>(${SHUFFLE_COUNTS.map(count => `${count}u`).join(', ')});`,
+        // One workgroup per (count, permutation) case; the barrier is in uniform control flow.
+        body: `let testCase = index / ${SHUFFLE_WORKGROUP}u;
+  let count = SHUFFLE_COUNTS[testCase / ${SHUFFLE_PERMUTATIONS.length}u];
+  let permutation = testCase % ${SHUFFLE_PERMUTATIONS.length}u + 1u;
+  loadSwapOrNotRounds(vec2<u32>(123u, 4u), permutation, count, localInvocationIndex, ${SHUFFLE_WORKGROUP}u);
+  workgroupBarrier();
+  for (var position = localInvocationIndex; position < count; position += ${SHUFFLE_WORKGROUP}u) {
+    shuffle[shuffleOffset + testCase * ${SHUFFLE_STRIDE}u + position] = getSwapOrNotPermutationIndex(position, count);
+  }`
+      })
+    ]
+  });
+  const compiled = graph.compile();
+  submitGraph(device, compiled, undefined);
+  const gpu = await readUint32(output, words);
+  for (const [countIndex, count] of SHUFFLE_COUNTS.entries()) {
+    for (const [permutationIndex, permutation] of SHUFFLE_PERMUTATIONS.entries()) {
+      const rounds = getSwapOrNotRounds([123, 4], permutation, count);
+      const expected = Array.from({length: count}, (_, index) =>
+        getSwapOrNotPermutationIndex(index, count, rounds)
+      );
+      const offset = (countIndex * SHUFFLE_PERMUTATIONS.length + permutationIndex) * SHUFFLE_STRIDE;
+      expect(
+        gpu.slice(offset, offset + count),
+        `shuffle ${count} permutation ${permutation}`
+      ).toEqual(expected);
+    }
+  }
+  compiled.destroy();
+  output.destroy();
 });

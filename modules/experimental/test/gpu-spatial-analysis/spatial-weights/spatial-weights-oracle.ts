@@ -222,10 +222,12 @@ export function computeTransformOracle(
     } else if (operation === 'kernel') {
       let bandwidth = options.bandwidth ?? 'adaptive';
       if (bandwidth === 'adaptive') {
+        // libpysal Kernel(fixed=False): h_i = (distance of the k-th neighbor) * eps, eps = 1.0000001.
         bandwidth = 0;
         for (let slot = begin; slot < end; slot++) {
           bandwidth = Math.max(bandwidth, csr.distances[slot]);
         }
+        bandwidth *= 1.0000001;
       }
       for (let slot = begin; slot < end; slot++) {
         result[slot] = getKernelWeight(

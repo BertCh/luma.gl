@@ -174,7 +174,7 @@ it('GPUSpatialWeightsSummary and the D/V transforms validate props', () => {
       new GPUSpatialWeightsSummary({
         weights: input,
         statistics: view('float32', 2),
-        counts: view('uint32', 5)
+        counts: view('uint32', 6)
       })
   ).toThrow(/statistics/);
   expect(
@@ -190,7 +190,7 @@ it('GPUSpatialWeightsSummary and the D/V transforms validate props', () => {
       new GPUSpatialWeightsSummary({
         weights: input,
         statistics: view('float32', 3),
-        counts: view('uint32', 5),
+        counts: view('uint32', 6),
         cardinality: view('uint32', 3)
       })
   ).toThrow(/cardinality/);
@@ -198,7 +198,7 @@ it('GPUSpatialWeightsSummary and the D/V transforms validate props', () => {
     new GPUSpatialWeightsSummary({
       weights: input,
       statistics: view('float32', 3),
-      counts: view('uint32', 5)
+      counts: view('uint32', 6)
     })
       .getCommandNodes(graph)
       .map(node => node.id)

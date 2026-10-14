@@ -109,6 +109,7 @@ async function runTest(
       mask: maskView,
       parameters,
       maximumBandwidthCount: LADDER_CAPACITY,
+      refinement: false,
       maximumNeighborCount: 32,
       indexGridSize,
       output: {

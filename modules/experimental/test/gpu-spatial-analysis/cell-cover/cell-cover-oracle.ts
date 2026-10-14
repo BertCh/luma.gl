@@ -336,8 +336,10 @@ export function coverH3LatticeOnCPU(
     if (originLat > endLat) {
       continue;
     }
-    const spacingLng =
-      spacingLat / Math.cos((Math.max(Math.abs(originLat), Math.abs(endLat)) * Math.PI) / 180);
+    // Mirrors the kernel: spacing from the most equatorward latitude of the band.
+    const equatorwardLat =
+      originLat <= 0 && endLat >= 0 ? 0 : Math.min(Math.abs(originLat), Math.abs(endLat));
+    const spacingLng = spacingLat / Math.cos((equatorwardLat * Math.PI) / 180);
     const originLng = bounds[0] - spacingLng;
     const width = Math.ceil((bounds[2] + spacingLng - originLng) / spacingLng) + 1;
     const height = Math.ceil((endLat - originLat) / spacingLat) + 1;

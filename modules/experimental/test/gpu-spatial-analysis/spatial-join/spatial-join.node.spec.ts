@@ -7,12 +7,22 @@ import {expect, it} from 'vitest';
 import {
   GPUNearestFeatureJoin,
   GPUPointInPolygonJoin,
+  GPUSpatialJoinCandidates,
+  GPUSpatialJoinPrepared,
   GPUSpatialPredicateJoin,
   type GPUNearestFeatureJoinProps,
   type GPUPointInPolygonJoinProps,
   type GPUSpatialPredicateJoinProps
 } from '../../../src/gpu-spatial-analysis/spatial-join';
 import {createNullWebGPUDevice, createVectorView} from '../../utils/gpu-contributor-test-utils';
+import {HALF_OPEN_SCENES} from './half-open-fixtures';
+import {GPU_EARTH_MEAN_RADIUS_METERS} from '../../../src/gpu-spatial-analysis/contracts/earth';
+import {
+  classifyPointHalfOpen,
+  createRandom,
+  joinPointsInPolygons,
+  type OraclePolygonFeature
+} from './spatial-join-oracle';
 import {
   buildModelBVH,
   getLeafCapacity,
@@ -401,4 +411,408 @@ it('traversal model: Morton order cuts visited nodes and keeps the candidate set
   const model = buildModelBVH(withEmpty, [2, 0, 1], 4);
   expect(simulateTraversal(model, [0.5, 0.5], [0.5, 0.5]).candidates).toBe(1);
   expect(simulateTraversal(model, [100, 100], [100, 100]).candidates).toBe(0);
+});
+
+let serial = 0;
+const GREAT_CIRCLE = {coordinateSpace: 'longitude-latitude', metric: 'great-circle'} as const;
+const DEGREES = {coordinateSpace: 'longitude-latitude', metric: 'none'} as const;
+
+/** Every permutation of `[0, count)`. */
+function getPermutations(count: number): number[][] {
+  if (count <= 1) {
+    return [Array.from({length: count}, (_, row) => row)];
+  }
+  return getPermutations(count - 1).flatMap(permutation =>
+    Array.from({length: count}, (_, slot) => [
+      ...permutation.slice(0, slot),
+      count - 1,
+      ...permutation.slice(slot)
+    ])
+  );
+}
+
+for (const [name, scene] of Object.entries(HALF_OPEN_SCENES)) {
+  it(`half-open oracle matches Shapely 2.2.0 and ignores feature row order (${name})`, () => {
+    // Owners pinned from shapely.Polygon.contains(Point(x + 1e-9, y + 1e-6)), see half-open-fixtures.ts.
+    for (const permutation of getPermutations(scene.features.length)) {
+      const features: OraclePolygonFeature[] = permutation.map(row => scene.features[row]);
+      const {featureRows} = joinPointsInPolygons(scene.points, features, 'half-open');
+      const owners = featureRows.map(row => (row === 0xffffffff ? null : permutation[row]));
+      expect(owners, `${name} order ${permutation}`).toEqual(scene.owners);
+    }
+  });
+}
+
+it('half-open rule partitions a coverage: at most one owner per point, exactly one inside the lower-left closure', () => {
+  const {features} = HALF_OPEN_SCENES.squares;
+  for (let x = -1; x <= 5; x += 0.5) {
+    for (let y = -1; y <= 5; y += 0.5) {
+      const owners = features.filter(feature => {
+        const classification = classifyPointHalfOpen([x, y], feature);
+        return classification === 'inside' || classification === 'owned-boundary';
+      });
+      const inCoverage = x >= 0 && x < 4 && y >= 0 && y < 4;
+      expect(owners.length, `(${x}, ${y})`).toBe(inCoverage ? 1 : 0);
+    }
+  }
+  // The closed rule keeps the smallest row, so the owner of a shared edge follows the feature order.
+  const closed = joinPointsInPolygons([[2, 1]], features, 'closed').featureRows[0];
+  const reordered = joinPointsInPolygons(
+    [[2, 1]],
+    [features[1], features[0], features[2], features[3]],
+    'closed'
+  ).featureRows[0];
+  expect([closed, [1, 0, 2, 3][reordered]]).toEqual([0, 1]);
+});
+
+it('GPUPointInPolygonJoin resolves boundaryRule and the legacy includeBoundary', () => {
+  const device = createNullWebGPUDevice();
+  const graph = new GPUCommandGraph(device);
+  const create = (overrides: Partial<GPUPointInPolygonJoinProps>, prefix: string) =>
+    new GPUPointInPolygonJoin({...createPolygonProps(graph, prefix), ...overrides});
+  expect(create({}, 'a-').boundaryRule).toBe('half-open');
+  expect(create({}, 'b-').includeBoundary).toBe(true);
+  expect(create({includeBoundary: true}, 'c-').boundaryRule).toBe('closed');
+  expect(create({includeBoundary: false}, 'd-').boundaryRule).toBe('open');
+  expect(create({includeBoundary: false}, 'e-').includeBoundary).toBe(false);
+  expect(create({boundaryRule: 'closed', includeBoundary: true}, 'f-').boundaryRule).toBe('closed');
+  expect(() => create({boundaryRule: 'half-open', includeBoundary: true}, 'g-')).toThrow(
+    /conflicts/
+  );
+  expect(() => create({boundaryRule: 'closed', includeBoundary: false}, 'h-')).toThrow(/conflicts/);
+  expect(() => create({boundaryRule: 'inclusive' as never}, 'i-')).toThrow(/boundaryRule/);
+  device.destroy();
+});
+
+it('planar spatial joins resolve a planar context and reject longitude-latitude', () => {
+  const device = createNullWebGPUDevice();
+  const graph = new GPUCommandGraph(device);
+  const pip = new GPUPointInPolygonJoin(createPolygonProps(graph, 'ok-'));
+  expect(pip.spatialContext).toEqual({
+    coordinateSpace: 'planar',
+    metric: 'native',
+    units: 'native'
+  });
+  expect(
+    () =>
+      new GPUPointInPolygonJoin(createPolygonProps(graph, 'bad-', {spatialContext: GREAT_CIRCLE}))
+  ).toThrow(/project positions to a planar frame/);
+  // Containment is topological (edges straight in degrees, as GeoJSON): metric 'none' is planar.
+  const degrees = new GPUPointInPolygonJoin(
+    createPolygonProps(graph, 'deg-', {spatialContext: DEGREES})
+  );
+  expect(degrees.spatialContext).toEqual(DEGREES);
+  const degreeGraph = new GPUCommandGraph(device);
+  const planarGraph = new GPUCommandGraph(device);
+  expect(
+    new GPUPointInPolygonJoin(
+      createPolygonProps(degreeGraph, 'd-', {spatialContext: DEGREES})
+    ).getCommandNodes(degreeGraph).length
+  ).toBe(
+    new GPUPointInPolygonJoin(createPolygonProps(planarGraph, 'p-')).getCommandNodes(planarGraph)
+      .length
+  );
+  expect(
+    () =>
+      new GPUPointInPolygonJoin(
+        createPolygonProps(graph, 'deg-gc-', {
+          spatialContext: {...GREAT_CIRCLE, units: 'meters'}
+        })
+      )
+  ).toThrow(/great-circle metric.*project positions to a planar frame/);
+
+  expect(
+    new GPUNearestFeatureJoin(createNearestProps(new GPUCommandGraph(device))).spatialContext
+      .coordinateSpace
+  ).toBe('planar');
+  // The nearest-feature join also accepts great-circle distances in meters; see the context
+  // matrix test below.
+
+  const candidateGraph = new GPUCommandGraph(device);
+  const candidateProps = (spatialContext?: typeof GREAT_CIRCLE) => ({
+    left: {
+      kind: 'points' as const,
+      positions: createTransientView(candidateGraph, `cl-${serial++}`, 'float32x2', 3)
+    },
+    right: {
+      kind: 'points' as const,
+      positions: createTransientView(candidateGraph, `cr-${serial++}`, 'float32x2', 3)
+    },
+    pairs: {
+      leftIds: createTransientView(candidateGraph, `ci-${serial++}`, 'uint32', 8),
+      rightIds: createTransientView(candidateGraph, `cj-${serial++}`, 'uint32', 8)
+    },
+    spatialContext
+  });
+  expect(new GPUSpatialJoinCandidates(candidateProps()).spatialContext.coordinateSpace).toBe(
+    'planar'
+  );
+  expect(() => new GPUSpatialJoinCandidates(candidateProps(GREAT_CIRCLE))).toThrow(
+    /project positions to a planar frame/
+  );
+  device.destroy();
+});
+
+it('GPUSpatialPredicateJoin accepts great-circle dwithin and planar-in-degrees topology only', () => {
+  const device = createNullWebGPUDevice();
+  const graph = new GPUCommandGraph(device);
+  const create = (overrides: Partial<GPUSpatialPredicateJoinProps>) => {
+    const id = `ctx-${serial++}`;
+    const view = <Format extends 'uint32' | 'float32' | 'float32x2'>(
+      name: string,
+      format: Format,
+      length: number
+    ) => createTransientView(graph, `${id}-${name}`, format, length);
+    return new GPUSpatialPredicateJoin({
+      id,
+      left: {kind: 'points', positions: view('left', 'float32x2', 4)},
+      right: {kind: 'points', positions: view('right', 'float32x2', 3)},
+      predicate: 'intersects',
+      candidateCapacity: 64,
+      pairs: {leftIds: view('left-ids', 'uint32', 64), rightIds: view('right-ids', 'uint32', 64)},
+      ...overrides
+    });
+  };
+  // Default: planar, no radius.
+  expect(create({}).spatialContext.coordinateSpace).toBe('planar');
+  expect(create({}).sphereRadius).toBeUndefined();
+  // Great-circle dwithin, meters on the mean Earth sphere unless the context sets a radius.
+  const geodesic = create({predicate: 'dwithin', distance: 1500, spatialContext: GREAT_CIRCLE});
+  expect(geodesic.sphereRadius).toBe(6371008.8);
+  expect(geodesic.usesWorkgroupDistance).toBe(false);
+  expect(
+    create({
+      predicate: 'dwithin',
+      distance: 1500,
+      spatialContext: {...GREAT_CIRCLE, sphereRadius: 6378137}
+    }).sphereRadius
+  ).toBe(6378137);
+  // `auto` never selects the workgroup kernel for the great-circle metric, even for large features.
+  expect(
+    create({
+      predicate: 'dwithin',
+      distance: 1500,
+      spatialContext: GREAT_CIRCLE,
+      left: {
+        kind: 'polygons',
+        positions: createTransientView(graph, `big-${serial++}`, 'float32x2', 4000),
+        featureOffsets: createTransientView(graph, `big-${serial++}`, 'uint32', 2),
+        polygonOffsets: createTransientView(graph, `big-${serial++}`, 'uint32', 2),
+        ringOffsets: createTransientView(graph, `big-${serial++}`, 'uint32', 2)
+      },
+      right: {
+        kind: 'polygons',
+        positions: createTransientView(graph, `big-${serial++}`, 'float32x2', 4000),
+        featureOffsets: createTransientView(graph, `big-${serial++}`, 'uint32', 2),
+        polygonOffsets: createTransientView(graph, `big-${serial++}`, 'uint32', 2),
+        ringOffsets: createTransientView(graph, `big-${serial++}`, 'uint32', 2)
+      }
+    }).usesWorkgroupDistance
+  ).toBe(false);
+  // Topological predicates take degrees with no metric.
+  expect(create({predicate: 'touches', spatialContext: DEGREES}).spatialContext.metric).toBe(
+    'none'
+  );
+  expect(() => create({predicate: 'intersects', spatialContext: GREAT_CIRCLE})).toThrow(
+    /topological/
+  );
+  expect(() => create({predicate: 'dwithin', distance: 5, spatialContext: DEGREES})).toThrow(
+    /great-circle/
+  );
+  expect(() =>
+    create({
+      predicate: 'dwithin',
+      distance: 5,
+      spatialContext: {coordinateSpace: 'planar', metric: 'great-circle'}
+    })
+  ).toThrow(/incompatible/);
+  expect(() =>
+    create({
+      predicate: 'dwithin',
+      distance: 5,
+      spatialContext: {...GREAT_CIRCLE, units: 'kilometers'}
+    })
+  ).toThrow(/meters/);
+  expect(() =>
+    create({predicate: 'dwithin', distance: 5, engine: 'relate', spatialContext: GREAT_CIRCLE})
+  ).toThrow(/not available for great-circle/);
+  // About 8000 km is the largest great-circle distance.
+  expect(() => create({predicate: 'dwithin', distance: 9e6, spatialContext: GREAT_CIRCLE})).toThrow(
+    /at most 8005809 meters/
+  );
+  expect(
+    create({predicate: 'dwithin', distance: 7.9e6, spatialContext: GREAT_CIRCLE}).sphereRadius
+  ).toBe(6371008.8);
+  expect(() =>
+    create({
+      predicate: 'dwithin',
+      distance: 5,
+      spatialContext: {coordinateSpace: 'discrete-grid', metric: 'none', gridFamily: 'h3'}
+    })
+  ).toThrow(/does not support discrete-grid/);
+  device.destroy();
+});
+
+it('GPUNearestFeatureJoin resolves its spatial context matrix', () => {
+  const device = createNullWebGPUDevice();
+  const create = (overrides: Partial<GPUNearestFeatureJoinProps>) =>
+    new GPUNearestFeatureJoin(createNearestProps(new GPUCommandGraph(device), overrides));
+  expect(create({}).sphereRadius).toBeUndefined();
+  const earth = create({spatialContext: GREAT_CIRCLE});
+  expect(earth.sphereRadius).toBe(GPU_EARTH_MEAN_RADIUS_METERS);
+  expect(earth.spatialContext.coordinateSpace).toBe('longitude-latitude');
+  expect(create({spatialContext: {...GREAT_CIRCLE, sphereRadius: 1737400}}).sphereRadius).toBe(
+    1737400
+  );
+  expect(create({spatialContext: {...GREAT_CIRCLE, units: 'meters'}}).sphereRadius).toBe(
+    GPU_EARTH_MEAN_RADIUS_METERS
+  );
+  // Meters only; degrees need a metric; planar contexts cannot be great-circle.
+  expect(() => create({spatialContext: {...GREAT_CIRCLE, units: 'kilometers'}})).toThrow(/meters/);
+  expect(() => create({spatialContext: DEGREES})).toThrow(/great-circle/);
+  expect(() =>
+    create({spatialContext: {coordinateSpace: 'longitude-latitude', metric: 'rhumb'}})
+  ).toThrow(/does not support the rhumb metric/);
+  expect(() =>
+    create({spatialContext: {coordinateSpace: 'planar', metric: 'great-circle'}})
+  ).toThrow(/incompatible with planar/);
+  // candidateCapacity is unused on the great-circle path, and required on the planar one.
+  expect(() => create({spatialContext: GREAT_CIRCLE, candidateCapacity: undefined})).not.toThrow();
+  expect(() => create({candidateCapacity: undefined})).toThrow(/candidateCapacity/);
+  device.destroy();
+});
+
+it('great-circle nearest-feature mode schedules the k = 1 traversal and the nearest outputs', () => {
+  const device = createNullWebGPUDevice();
+  const graph = new GPUCommandGraph(device);
+  const ids = new GPUNearestFeatureJoin(createNearestProps(graph, {spatialContext: GREAT_CIRCLE}))
+    .getCommandNodes(graph)
+    .map(node => node.id);
+  const own = ids.filter(id => !id.startsWith('n-bvh-'));
+  expect(own).toContain('n-traverse');
+  expect(own).toContain('n-assign');
+  expect(own).toContain('n-collect-matches');
+  expect(own[own.length - 1]).toBe('n-finalize');
+  expect(own).not.toContain('n-probe');
+  expect(own.indexOf('n-clear-state')).toBeLessThan(own.indexOf('n-traverse'));
+  expect(own.indexOf('n-traverse')).toBeLessThan(own.indexOf('n-assign'));
+  device.destroy();
+});
+
+/**
+ * JS port of the great-circle lower bound `boxLowerAngle` (nearest-wgsl.ts) in f64, checked
+ * against the haversine of random point pairs: the bound must never exceed the true distance.
+ */
+function boxLowerAngle(
+  node: [number, number, number, number],
+  query: [number, number, number, number]
+): number {
+  const radians = Math.PI / 180;
+  const latitudeGap = Math.max(node[1] - query[3], query[1] - node[3], 0);
+  let longitudeGap = 0;
+  if (node[2] - node[0] < 180 && query[2] - query[0] < 180) {
+    const direct = Math.max(node[0] - query[2], query[0] - node[2]);
+    const around = 360 - (Math.max(node[2], query[2]) - Math.min(node[0], query[0]));
+    longitudeGap = Math.max(Math.min(direct, around), 0);
+  }
+  const farLatitude = Math.max(
+    Math.abs(node[1]),
+    Math.abs(node[3]),
+    Math.abs(query[1]),
+    Math.abs(query[3])
+  );
+  const cosine = Math.cos(farLatitude * radians);
+  const term =
+    Math.sin((latitudeGap * radians) / 2) ** 2 +
+    cosine ** 2 * Math.sin((longitudeGap * radians) / 2) ** 2;
+  return 2 * Math.asin(Math.sqrt(Math.min(term, 1)));
+}
+
+function haversineAngle(a: [number, number], b: [number, number]): number {
+  const radians = Math.PI / 180;
+  const term =
+    Math.sin(((b[1] - a[1]) * radians) / 2) ** 2 +
+    Math.cos(a[1] * radians) *
+      Math.cos(b[1] * radians) *
+      Math.sin(((b[0] - a[0]) * radians) / 2) ** 2;
+  return 2 * Math.asin(Math.sqrt(Math.min(term, 1)));
+}
+
+it('the great-circle box lower bound never exceeds the distance of any point pair', () => {
+  const random = createRandom(7);
+  const randomBox = (): [number, number, number, number] => {
+    const longitude = random() * 360 - 180;
+    const latitude = random() * 180 - 90;
+    const width = random() * 60;
+    const height = random() * 30;
+    return [longitude, latitude, Math.min(longitude + width, 180), Math.min(latitude + height, 90)];
+  };
+  const pointIn = (box: [number, number, number, number]): [number, number] => [
+    box[0] + random() * (box[2] - box[0]),
+    box[1] + random() * (box[3] - box[1])
+  ];
+  for (let trial = 0; trial < 4000; trial++) {
+    const node = randomBox();
+    const query = randomBox();
+    const bound = boxLowerAngle(node, query);
+    for (let sample = 0; sample < 8; sample++) {
+      expect(bound).toBeLessThanOrEqual(haversineAngle(pointIn(node), pointIn(query)) + 1e-12);
+    }
+  }
+  // Across the antimeridian the circular gap is used.
+  const across = boxLowerAngle([179, 0, 179.5, 0.1], [-179.5, 0, -179, 0.1]);
+  expect(across).toBeCloseTo(haversineAngle([179.5, 0], [-179.5, 0]), 6);
+  // A box straddling the antimeridian (span of 180 degrees or more) never prunes in longitude.
+  expect(boxLowerAngle([-179.9, 10, 179.9, 11], [180, 10, 180, 10.5])).toBe(0);
+});
+
+it('GPUSpatialJoinPrepared validates before allocating and forgets freed storage on destroy', () => {
+  // E-21: a rejected getCommandNodes used to allocate storage and latch the graph first, and
+  // destroy() left the handle pointing at freed buffers.
+  const device = createNullWebGPUDevice();
+  const owner = new GPUCommandGraph(device, {id: 'owner'});
+  const other = new GPUCommandGraph(device, {id: 'other'});
+  const geometry = {
+    kind: 'polygons' as const,
+    positions: createTransientView(owner, 'positions', 'float32x2', 8),
+    featureOffsets: createTransientView(owner, 'feature-offsets', 'uint32', 3),
+    polygonOffsets: createTransientView(owner, 'polygon-offsets', 'uint32', 3),
+    ringOffsets: createTransientView(owner, 'ring-offsets', 'uint32', 3)
+  };
+  const prepared = new GPUSpatialJoinPrepared({id: 'p', geometry});
+  expect(() => prepared.getCommandNodes(other)).toThrow();
+  expect(prepared.isDeclaredIn(other)).toBe(false);
+  expect(() => prepared.storage).toThrow();
+  expect(prepared.getCommandNodes(owner).length).toBeGreaterThan(0);
+  expect(prepared.isDeclaredIn(owner)).toBe(true);
+  expect(prepared.storage.leafIds.length).toBeGreaterThan(0);
+  prepared.destroy();
+  expect(prepared.isDeclaredIn(owner)).toBe(false);
+  expect(() => prepared.storage).toThrow();
+  device.destroy();
+});
+
+it('GPUNearestFeatureJoin stays within 8 storage buffers with every filter enabled', () => {
+  // A-2: exclusive with queryIds and featureIds plus onAttribute bound 9-10 storage buffers in the
+  // reductions; the filters now run in their own pass. Kernel declaration throws above the null
+  // device's limit of 8, so building the nodes is the assertion.
+  const device = createNullWebGPUDevice();
+  const graph = new GPUCommandGraph(device);
+  const join = new GPUNearestFeatureJoin(
+    createNearestProps(graph, {
+      exclusive: true,
+      queryIds: createTransientView(graph, 'query-ids', 'uint32', 6),
+      featureIds: createTransientView(graph, 'feature-ids', 'uint32', 3),
+      onAttribute: {
+        left: createTransientView(graph, 'query-keys', 'uint32', 6),
+        right: createTransientView(graph, 'feature-keys', 'uint32', 3)
+      },
+      featureCounts: createTransientView(graph, 'feature-counts', 'uint32', 3),
+      candidateCount: createTransientView(graph, 'candidate-count', 'uint32', 1)
+    })
+  );
+  const ids = join.getCommandNodes(graph).map(node => node.id);
+  expect(ids).toContain('n-filter');
+  expect(ids.indexOf('n-filter')).toBeLessThan(ids.indexOf('n-reduce-distance'));
+  device.destroy();
 });

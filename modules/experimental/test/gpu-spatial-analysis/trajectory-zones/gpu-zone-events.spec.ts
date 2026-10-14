@@ -333,3 +333,115 @@ it('GPUZoneEvents bounds the sparse table and reports its total', async () => {
   expect(result.table.tracks.slice(0, 10)).toEqual(firstCells.map(cell => Math.floor(cell / 3)));
   device.destroy?.();
 });
+
+/**
+ * Ties between tracks and zone boundaries. Expected values are frozen from the boundary rule
+ * (`zone-crossing-rule.ts`), which `zone-crossing-rule.node.spec.ts` checks against shapely 2.2.0.
+ */
+it('GPUZoneEvents counts touches, turn-backs and vertex passes with exact ties', async () => {
+  const device = await getWebGPUTestDevice();
+  if (!device) {
+    return;
+  }
+  const edges = createRingEdges([
+    [0, [0, 10, 5, 0, 10, 10]],
+    [1, [20, 0, 30, 0, 30, 10, 20, 10]]
+  ]);
+  const zoneOptions = {candidateCapacity: 64, maxEventsPerTrack: 8, eventCapacity: 16};
+  const tracks = packTracks([
+    // Touches the triangle apex (5, 0) from outside: no event.
+    [
+      [0, 0, 0],
+      [10, 0, 10]
+    ],
+    // Touches the bottom edge of the square from below and turns back: no event.
+    [
+      [20, -5, 0],
+      [25, 0, 5],
+      [30, -5, 10]
+    ],
+    // Through the corner (20, 0) into the square: one enter at t = 5, still inside at the end.
+    [
+      [15, -5, 0],
+      [25, 5, 10]
+    ],
+    // Along the bottom edge, then up into the square: one enter at t = 10.
+    [
+      [15, 0, 0],
+      [25, 0, 10],
+      [28, 5, 20]
+    ]
+  ]);
+  const actual = await runZoneEvents(device, tracks, edges, {zoneCount: 2, ...zoneOptions});
+  expect(actual.overflow).toBe(0);
+  expect(actual.trackEventCounts).toEqual([0, 0, 1, 1]);
+  expect(actual.count).toBe(2);
+  expect([actual.tracks[0], actual.zones[0], actual.types[0]]).toEqual([2, 1, 0]);
+  expect(actual.times[0]).toBeCloseTo(5, 3);
+  expect([actual.tracks[1], actual.zones[1], actual.types[1]]).toEqual([3, 1, 0]);
+  expect(actual.times[1]).toBeCloseTo(10, 3);
+  expect(actual.visitCounts).toEqual([0, 0, 0, 0, 0, 1, 0, 1]);
+  expect(actual.dwellTimes[5]).toBeCloseTo(5, 3);
+  expect(actual.dwellTimes[7]).toBeCloseTo(10, 3);
+  expectTieParity(actual, tracks, edges, 2, 'evidence');
+  device.destroy?.();
+});
+
+function expectTieParity(
+  actual: ZoneGPUResult,
+  tracks: ReturnType<typeof packTracks>,
+  edges: ReturnType<typeof createRingEdges>,
+  zoneCount: number,
+  label: string
+): void {
+  const expected = computeZoneEventsOracle(tracks, edges, zoneCount);
+  expect(actual.count, `${label} count`).toBe(expected.events.length);
+  expect(actual.trackEventCounts, `${label} track counts`).toEqual(expected.trackEventCounts);
+  expect(actual.visitCounts, `${label} visits`).toEqual(expected.visitCounts);
+  for (const [index, dwell] of expected.dwellTimes.entries()) {
+    expect(
+      Math.abs(actual.dwellTimes[index] - dwell),
+      `${label} dwell ${index}`
+    ).toBeLessThanOrEqual(2e-3 + 1e-4 * dwell);
+  }
+  const countTypes = (types: number[]) => [0, 1].map(type => types.filter(t => t === type).length);
+  expect(countTypes(actual.types.slice(0, actual.count)), `${label} enter/exit`).toEqual(
+    countTypes(expected.events.map(event => event.type))
+  );
+}
+
+it('GPUZoneEvents matches the exact boundary rule on integer-grid tracks', async () => {
+  const device = await getWebGPUTestDevice();
+  if (!device) {
+    return;
+  }
+  const edges = createRingEdges([
+    [0, [0, 0, 8, 0, 8, 8, 0, 8]],
+    [1, [0, 8, 4, 0, 8, 8]],
+    [2, [7, 6, 3, 4, 0, 2, 6, 3, 1, 0, 7, 1]]
+  ]);
+  const random = createRandom(31);
+  const rows: FixtureRow[][] = [];
+  for (let track = 0; track < 300; track++) {
+    const samples: FixtureRow[] = [];
+    let time = 0;
+    for (let row = 0; row < 2 + (track % 4); row++) {
+      samples.push([Math.floor(random() * 11) - 1, Math.floor(random() * 11) - 1, time]);
+      time += 1 + Math.floor(random() * 9);
+    }
+    rows.push(samples);
+  }
+  const tracks = packTracks(rows);
+  const expected = computeZoneEventsOracle(tracks, edges, 3);
+  // Teeth: boundary ties on a grid produce many events and several multi-event segments.
+  expect(expected.events.length).toBeGreaterThan(200);
+  const actual = await runZoneEvents(device, tracks, edges, {
+    zoneCount: 3,
+    candidateCapacity: 8192,
+    maxEventsPerTrack: 64,
+    eventCapacity: 4096
+  });
+  expect(actual.overflow).toBe(0);
+  expectTieParity(actual, tracks, edges, 3, 'grid');
+  device.destroy?.();
+});

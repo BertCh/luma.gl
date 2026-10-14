@@ -5,8 +5,10 @@
 import {getWebGPUTestDevice} from '@luma.gl/test-utils';
 import {expect, it} from 'vitest';
 import {
+  getGPUGridCellCount,
   getGPUGridCornerCount,
   getGPUGridGeneratorParameterValues,
+  getGPUGridVerticesPerCell,
   GPUGridGenerator
 } from '../../../src/gpu-spatial-analysis/grid-generators';
 import {createGeometryFixture} from '../outline-geometry/geometry-fixture';
@@ -154,3 +156,82 @@ it('GPUGridGenerator masks corner points independently of polygon intersection, 
     fixture.destroy();
   }
 });
+
+for (const gridType of ['square', 'hex', 'hexFlat', 'triangle'] as const) {
+  it(`GPUGridGenerator ${gridType} neighbours share bit-identical vertices`, async () => {
+    const device = await getWebGPUTestDevice();
+    if (!device) {
+      return;
+    }
+    // D-14: vertices were computed per cell (`lower + w`, `center + R * (cos, sin)`), so the copies
+    // of a shared vertex differed by an ulp (560 of 1999 square neighbour pairs at origin -122.5,
+    // w 0.01; every shared hex vertex). Every copy now comes from one lattice expression, which the
+    // corner output also uses.
+    const publicType = gridType === 'hexFlat' ? 'hex' : gridType;
+    const columns = 9;
+    const rows = 7;
+    const cellCount = getGPUGridCellCount(publicType, columns, rows);
+    const verticesPerCell = getGPUGridVerticesPerCell(publicType);
+    const hasCorners = publicType !== 'triangle';
+    const cornerCount = hasCorners ? getGPUGridCornerCount(publicType, columns, rows) : 0;
+    const fixture = createGeometryFixture(device, {
+      inputs: {},
+      outputs: {
+        positions: {format: 'float32x2', length: cellCount * verticesPerCell},
+        ...(hasCorners ? {corners: {format: 'float32x2' as const, length: cornerCount}} : {})
+      },
+      create: ({outputs, parameters}) =>
+        new GPUGridGenerator({
+          gridType: publicType,
+          hexOrientation: gridType === 'hexFlat' ? 'flat' : undefined,
+          columns,
+          rows,
+          parameters,
+          output: {
+            positions: outputs['positions'] as never,
+            ...(hasCorners ? {corners: outputs['corners'] as never} : {})
+          }
+        })
+    });
+    try {
+      for (const [minX, minY, width, height] of [
+        [-122.5, 37.25, 0.01, 0.01],
+        [-122.5, 37.25, 1 / 3, 1 / 3]
+      ]) {
+        const result = await fixture.run(
+          getGPUGridGeneratorParameterValues({minX, minY, cellWidth: width, cellHeight: height})
+        );
+        const positions = result['positions'];
+        // Group vertex copies that are within width / 1000 of each other; all copies in a group
+        // must have the same bits.
+        const quantum = width / 1000;
+        const groups = new Map<string, [number, number]>();
+        let shared = 0;
+        for (let vertex = 0; vertex < positions.length / 2; vertex++) {
+          const x = positions[2 * vertex];
+          const y = positions[2 * vertex + 1];
+          const key = `${Math.round(x / quantum)},${Math.round(y / quantum)}`;
+          const first = groups.get(key);
+          if (first) {
+            shared++;
+            expect([x, y], `${gridType} vertex ${vertex}`).toEqual(first);
+          } else {
+            groups.set(key, [x, y]);
+          }
+        }
+        expect(shared).toBeGreaterThan(cellCount);
+        if (hasCorners) {
+          const corners = new Set<string>();
+          for (let corner = 0; corner < cornerCount; corner++) {
+            corners.add(`${result['corners'][2 * corner]},${result['corners'][2 * corner + 1]}`);
+          }
+          for (const [x, y] of groups.values()) {
+            expect(corners.has(`${x},${y}`), `${gridType} corner ${x},${y}`).toBe(true);
+          }
+        }
+      }
+    } finally {
+      fixture.destroy();
+    }
+  });
+}

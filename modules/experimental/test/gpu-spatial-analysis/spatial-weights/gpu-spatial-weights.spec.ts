@@ -9,6 +9,7 @@ import {
   GPULatticeWeights,
   GPUSpatialLag,
   GPUSpatialWeightsTransform,
+  type GPUSpatialWeights,
   type GPUSpatialWeightsKernel
 } from '../../../src/gpu-spatial-analysis/spatial-weights';
 import {readFloat32, readUint32} from '../../utils/gpu-contributor-test-utils';
@@ -465,7 +466,16 @@ it('GPUSpatialWeightsTransform row, binary, kernel and symmetrize match the orac
   for (const kernel of KERNELS) {
     for (const bandwidth of ['adaptive', 2.5] as const) {
       const rig = new WeightsRig(device);
-      const upload = rig.uploadWeights(base, 3);
+      // The rows here stand in for kNN rows: 'adaptive' needs the kNN criterion label.
+      const upload: GPUSpatialWeights = {
+        ...rig.uploadWeights(base, 3),
+        info: {
+          rowCount: base.offsets.length - 1,
+          transform: 'raw',
+          symmetric: 'unknown',
+          provenance: {source: 'test', criterion: 'knn'}
+        }
+      };
       const output = rig.output('float32', upload.neighbors.length);
       rig.run(
         new GPUSpatialWeightsTransform({

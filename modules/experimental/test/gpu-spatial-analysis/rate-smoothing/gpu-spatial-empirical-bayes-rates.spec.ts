@@ -14,6 +14,7 @@ import {
   submitGraph
 } from '../../utils/gpu-contributor-test-utils';
 import {createRandomWeights} from '../spatial-weights/spatial-weights-algebra-oracle';
+import {ESDA_SPATIAL_EB_LOW_DISPERSION} from './eb-low-dispersion-fixture';
 import {ESDA_SPATIAL_EB_LATTICE} from './esda-spatial-eb-fixture';
 import {computeSpatialEmpiricalBayesOracle} from './spatial-empirical-bayes-oracle';
 
@@ -165,4 +166,25 @@ it('GPUSpatialEmpiricalBayesRates reproduces esda 2.10 Spatial_Rate and Spatial_
   expectClose(result.spatialRate, [...fixture.spatialRate], 'esda spatialRate', 1e-5);
   expectClose(result.smoothed, [...fixture.smoothed], 'esda smoothed', 2e-4);
   expect(result.priorVariance.some(value => value > 0)).toBe(true);
+});
+
+it('GPUSpatialEmpiricalBayesRates clamps local prior variance like esda on low-dispersion data', async () => {
+  const device = await getWebGPUTestDevice();
+  if (!device) {
+    return;
+  }
+  const fixture = ESDA_SPATIAL_EB_LOW_DISPERSION;
+  const result = await run(device, {
+    events: Float32Array.from(fixture.events),
+    populations: Float32Array.from(fixture.populations),
+    offsets: [...fixture.offsets],
+    neighbors: [...fixture.neighbors]
+  });
+  // esda 2.10.0 Spatial_Empirical_Bayes sets r_var[r_var < 0] = 0; common-rate counts make that happen.
+  expect(Math.min(...result.priorVariance)).toBe(0);
+  for (const [row, expected] of fixture.smoothed.entries()) {
+    expect(Math.abs(result.smoothed[row] - expected), `row ${row}`).toBeLessThan(
+      1e-6 + 2e-4 * expected
+    );
+  }
 });

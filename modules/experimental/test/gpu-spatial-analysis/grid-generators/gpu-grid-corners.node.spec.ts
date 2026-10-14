@@ -5,10 +5,17 @@
 import {createTransientView, GPUCommandGraph} from '@luma.gl/gpgpu/gpu-core';
 import {expect, it} from 'vitest';
 import {
+  getGPUGridCellCount,
+  getGPUGridCornerCount,
+  getGPUGridVerticesPerCell,
   GPUGridGenerator,
   type GPUGridGeneratorProps
 } from '../../../src/gpu-spatial-analysis/grid-generators';
-import {createNullWebGPUDevice} from '../../utils/gpu-contributor-test-utils';
+import {WgslReflect} from 'wgsl_reflect';
+import {
+  createNullWebGPUDevice,
+  getGPUCommandNodeKernelSources
+} from '../../utils/gpu-contributor-test-utils';
 
 it('GPUGridGenerator validates corner output capacities, types, dependencies and graph ownership', () => {
   const device = createNullWebGPUDevice();
@@ -85,5 +92,56 @@ it('GPUGridGenerator validates corner output capacities, types, dependencies and
   expect(() =>
     new GPUGridGenerator({...base, output: {corners: foreignCorners}}).getCommandNodes(graph)
   ).toThrow();
+  device.destroy();
+});
+
+it('GPUGridGenerator polygon and corner kernels parse for every grid type', () => {
+  const device = createNullWebGPUDevice();
+  for (const [gridType, hexOrientation] of [
+    ['square', undefined],
+    ['hex', undefined],
+    ['hex', 'flat'],
+    ['triangle', undefined]
+  ] as const) {
+    const graph = new GPUCommandGraph(device);
+    const columns = 3;
+    const rows = 2;
+    const generator = new GPUGridGenerator({
+      gridType,
+      hexOrientation,
+      columns,
+      rows,
+      parameters: createTransientView(graph, 'parameters', 'float32', 4),
+      output: {
+        positions: createTransientView(
+          graph,
+          'positions',
+          'float32x2',
+          getGPUGridCellCount(gridType, columns, rows) * getGPUGridVerticesPerCell(gridType)
+        ),
+        centers: createTransientView(
+          graph,
+          'centers',
+          'float32x2',
+          getGPUGridCellCount(gridType, columns, rows)
+        ),
+        ...(gridType === 'triangle'
+          ? {}
+          : {
+              corners: createTransientView(
+                graph,
+                'corners',
+                'float32x2',
+                getGPUGridCornerCount(gridType, columns, rows)
+              )
+            })
+      }
+    });
+    const kernels = getGPUCommandNodeKernelSources(generator.getCommandNodes(graph));
+    expect(kernels.length).toBeGreaterThan(0);
+    for (const kernel of kernels) {
+      expect(() => new WgslReflect(kernel.source), `${gridType} ${kernel.id}`).not.toThrow();
+    }
+  }
   device.destroy();
 });

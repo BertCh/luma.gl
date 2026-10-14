@@ -81,7 +81,7 @@ it('getGPUGeographicallyWeightedRegressionParameterValues packs kernel, mode and
 
 it('GPUGeographicallyWeightedRegression validates props', () => {
   expectThrows(() => ({predictorCount: 0}), /predictorCount/);
-  expectThrows(() => ({predictorCount: 8}), /predictorCount/);
+  expectThrows(() => ({predictorCount: 12}), /predictorCount/);
   expectThrows(() => ({maximumBandwidthCount: 33}), /maximumBandwidthCount/);
   expectThrows(() => ({maximumNeighborCount: 129}), /maximumNeighborCount/);
   expectThrows(
@@ -153,36 +153,72 @@ it('GPUGeographicallyWeightedRegression emits deterministic node IDs within the 
   const graph = new GPUCommandGraph(device);
   const view = <Format extends 'float32' | 'uint32'>(format: Format, length: number) =>
     createTransientView(graph, `out-${serial++}`, format, length);
-  const minimal = new GPUGeographicallyWeightedRegression(createProps(graph, {id: 'min'}));
+  const minimal = new GPUGeographicallyWeightedRegression(
+    createProps(graph, {id: 'min', refinement: false})
+  );
   const minimalIds = minimal.getCommandNodes(graph).map(node => node.id);
   expect(minimalIds).toEqual([
     'min-validate',
-    'min-tile-response',
-    'min-tile-total',
     'min-candidates',
     'min-tile-candidates',
     'min-select',
-    'min-fit'
+    'min-choose',
+    'min-fit',
+    'min-tile-statistics',
+    'min-summarize'
+  ]);
+  // Refinement adds a ladder node and a candidate pass per refinement pass, before the choice.
+  const refined = new GPUGeographicallyWeightedRegression(createProps(graph, {id: 'ref'}));
+  expect(refined.refinementPassCount).toBe(2);
+  expect(refined.getCommandNodes(graph).map(node => node.id)).toEqual([
+    'ref-validate',
+    'ref-candidates',
+    'ref-tile-candidates',
+    'ref-select',
+    'ref-refine-1-ladder',
+    'ref-refine-1-candidates',
+    'ref-refine-1-tile-candidates',
+    'ref-refine-1-select',
+    'ref-refine-2-ladder',
+    'ref-refine-2-candidates',
+    'ref-refine-2-tile-candidates',
+    'ref-refine-2-select',
+    'ref-choose',
+    'ref-fit',
+    'ref-tile-statistics',
+    'ref-summarize'
   ]);
   const full = new GPUGeographicallyWeightedRegression(
     createProps(graph, {
       id: 'full',
+      refinement: false,
       mask: createTransientView(graph, `mask-${serial++}`, 'uint32', ROWS),
       output: {
         coefficients: view('float32', ROWS * 3),
+        standardErrors: view('float32', ROWS * 3),
+        tValues: view('float32', ROWS * 3),
+        significant: view('uint32', ROWS * 3),
         localR2: view('float32', ROWS),
         fitted: view('float32', ROWS),
         residuals: view('float32', ROWS),
         hatDiagonal: view('float32', ROWS),
         localStatus: view('uint32', ROWS),
+        localConditionNumber: view('float32', ROWS),
         bandwidthScores: view('float32', 32),
+        bandwidthSingularRowCounts: view('uint32', 32),
+        candidateTable: view('float32', 32 * 7),
         selectedBandwidth: view('float32', 2),
-        summary: view('float32', 6)
+        summary: view('float32', 12)
       }
     })
   );
   const fullIds = full.getCommandNodes(graph).map(node => node.id);
-  expect(fullIds).toEqual([...minimalIds.map(name => name.replace('min', 'full')), 'full-publish']);
+  expect(fullIds).toEqual([
+    ...minimalIds.map(name => name.replace('min', 'full')),
+    'full-publish-candidates',
+    'full-publish',
+    'full-publish-inference'
+  ]);
   expect(new Set(fullIds).size).toBe(fullIds.length);
   device.destroy();
 });

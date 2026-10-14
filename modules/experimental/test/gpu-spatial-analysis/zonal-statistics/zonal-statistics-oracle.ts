@@ -30,6 +30,15 @@ export type ZonalOracleResult = {
   minima: number[];
   maxima: number[];
   densities: number[];
+  /** Weight sum divided by area; NaN where the area is not positive. */
+  weightedDensities: number[];
+  /**
+   * Unbiased variance with reliability weights, `sum w (v - m)^2 / (V1 - V2 / V1)` (unit weights
+   * without `weights`, which is `ddof = 1`); NaN below two valid rows or a non-positive denominator.
+   */
+  variances: number[];
+  /** Square root of `variances`. */
+  standardDeviations: number[];
 };
 
 /** Returns whether `value` is a finite number. */
@@ -48,7 +57,10 @@ export function computeZonalStatistics(input: ZonalOracleInput): ZonalOracleResu
     means: new Array<number>(featureCount).fill(Number.NaN),
     minima: new Array<number>(featureCount).fill(Number.NaN),
     maxima: new Array<number>(featureCount).fill(Number.NaN),
-    densities: new Array<number>(featureCount).fill(Number.NaN)
+    densities: new Array<number>(featureCount).fill(Number.NaN),
+    weightedDensities: new Array<number>(featureCount).fill(Number.NaN),
+    variances: new Array<number>(featureCount).fill(Number.NaN),
+    standardDeviations: new Array<number>(featureCount).fill(Number.NaN)
   };
   for (const [pointIndex, row] of featureRows.entries()) {
     if (row >= featureCount) {
@@ -90,6 +102,29 @@ export function computeZonalStatistics(input: ZonalOracleInput): ZonalOracleResu
     const area = areas?.[row];
     if (area !== undefined && isFiniteNumber(area) && area > 0) {
       result.densities[row] = result.counts[row] / area;
+      result.weightedDensities[row] = result.weightSums[row] / area;
+    }
+  }
+  if (values) {
+    // Second pass around the finished means, in float64.
+    const squaredDeviations = zeros();
+    const weightSquares = zeros();
+    for (const [pointIndex, row] of featureRows.entries()) {
+      const value = values[pointIndex];
+      const weight = weights ? weights[pointIndex] : 1;
+      if (row >= featureCount || !isFiniteNumber(value) || !isFiniteNumber(weight)) {
+        continue;
+      }
+      squaredDeviations[row] += weight * (value - result.means[row]) ** 2;
+      weightSquares[row] += weight * weight;
+    }
+    for (let row = 0; row < featureCount; row++) {
+      const totalWeight = weights ? result.weightSums[row] : result.valueCounts[row];
+      const denominator = totalWeight === 0 ? 0 : totalWeight - weightSquares[row] / totalWeight;
+      if (result.valueCounts[row] >= 2 && denominator > 0) {
+        result.variances[row] = squaredDeviations[row] / denominator;
+        result.standardDeviations[row] = Math.sqrt(result.variances[row]);
+      }
     }
   }
   return result;

@@ -6,6 +6,7 @@ import type {Device} from '@luma.gl/core';
 import {getWebGPUTestDevice} from '@luma.gl/test-utils';
 import {expect, it} from 'vitest';
 import {GPUVariogram} from '../../../src/gpu-dataframe/pair-statistics/gpu-variogram';
+import {getPairStatisticsUnitVarianceOnCPU} from '../../../src/gpu-dataframe/pair-statistics/pair-statistics-fixed-point-unit';
 import {
   getGPUVariogramParameterValues,
   GPU_VARIOGRAM_PARAMETER_LENGTH,
@@ -15,6 +16,8 @@ import {
 import {createPairStatisticsHarness, getFloatBits} from './pair-statistics-harness';
 import {createRandom} from './pair-statistics-oracle';
 import {computeVariogramOnCPU} from './variogram-oracle';
+import {createVariogramOutlierScene, VARIOGRAM_OUTLIER_FRAME} from './variogram-outlier-fixture';
+import {VARIOGRAM_OUTLIER_REFERENCES} from './variogram-outlier-reference';
 
 const BOUNDS = [0, 0, 100, 100] as const;
 
@@ -54,7 +57,8 @@ function createHarness(
       pairCounts: {format: 'uint32', length: binCount},
       meanDistances: {format: 'float32', length: binCount},
       robustSemivariances: {format: 'float32', length: binCount},
-      statistics: {format: 'float32', length: GPU_VARIOGRAM_STATISTICS_LENGTH}
+      statistics: {format: 'float32', length: GPU_VARIOGRAM_STATISTICS_LENGTH},
+      overflow: {format: 'uint32', length: 1}
     },
     createContributor: views =>
       new GPUVariogram({
@@ -69,7 +73,8 @@ function createHarness(
         pairCounts: views.outputs.pairCounts as never,
         meanDistances: views.outputs.meanDistances as never,
         robustSemivariances: views.outputs.robustSemivariances as never,
-        statistics: views.outputs.statistics as never
+        statistics: views.outputs.statistics as never,
+        overflow: views.outputs.overflow as never
       })
   });
 }
@@ -106,6 +111,7 @@ it('GPUVariogram matches the f64 oracle across per-frame distances without rebui
       const total = (counts: number[]) => counts.reduce((sum, count) => sum + count, 0);
       expect(total(result.pairCounts), label).toBe(total(oracle.pairCounts));
       expect(total(oracle.pairCounts)).toBeGreaterThan(1000);
+      expect(result.overflow, `${label} overflow`).toEqual([0]);
       for (let bin = 0; bin < lagCount; bin++) {
         // GPU division rounding may move a pair lying on a lag edge into the neighboring lag.
         const countDifference = Math.abs(result.pairCounts[bin] - oracle.pairCounts[bin]);
@@ -283,6 +289,74 @@ it('GPUVariogram bins are bitwise independent of the cell lattice, including dir
       expect(getFloatBits(result.meanDistances), `grid ${gridSize} distance`).toEqual(
         getFloatBits(reference.meanDistances)
       );
+    } finally {
+      harness.destroy();
+    }
+  }
+}, 120000);
+
+it('GPUVariogram keeps the typical semivariance when one outlier or sentinel inflates the range', async () => {
+  const device = await getWebGPUTestDevice();
+  if (!device) {
+    return;
+  }
+  // N(0, 1) values on 4000 seeded points plus one outlier (2e4 or 1e5 standard deviations), either
+  // isolated (it joins no pair but stretches the value range: a range-pegged unit rounded every
+  // typical term to 0 and lost 83% to 100% of the semivariance) or embedded among its neighbors
+  // (huge pair terms go to the exact second channel). Reference: scikit-gstat 1.0.24 Matheron,
+  // see variogram-outlier-reference.ts.
+  const {bounds, maximumDistance, lagCount} = VARIOGRAM_OUTLIER_FRAME;
+  const scenes = {
+    clean: createVariogramOutlierScene(),
+    'isolated-2e4': createVariogramOutlierScene(2e4, 'isolated'),
+    'isolated-1e5': createVariogramOutlierScene(1e5, 'isolated'),
+    'embedded-2e4': createVariogramOutlierScene(2e4, 'embedded'),
+    'embedded-1e5': createVariogramOutlierScene(1e5, 'embedded')
+  };
+  for (const [name, scene] of Object.entries(scenes)) {
+    const reference = VARIOGRAM_OUTLIER_REFERENCES[name];
+    const harness = createPairStatisticsHarness(device, {
+      ...scene,
+      parameterLength: GPU_VARIOGRAM_PARAMETER_LENGTH,
+      outputs: {
+        semivariances: {format: 'float32', length: lagCount},
+        pairCounts: {format: 'uint32', length: lagCount},
+        overflow: {format: 'uint32', length: 1}
+      },
+      createContributor: views =>
+        new GPUVariogram({
+          positions: views.positions,
+          values: views.values!,
+          parameters: views.parameters,
+          gridSize: [32, 32],
+          lagCount,
+          semivariances: views.outputs.semivariances as never,
+          pairCounts: views.outputs.pairCounts as never,
+          overflow: views.outputs.overflow as never
+        })
+    });
+    try {
+      const result = await harness.run(
+        getGPUVariogramParameterValues({bounds: [...bounds], maximumDistance})
+      );
+      expect(result.overflow, name).toEqual([0]);
+      const unit = getPairStatisticsUnitVarianceOnCPU(scene.values);
+      let compared = 0;
+      for (let lag = 0; lag < lagCount; lag++) {
+        // GPU division rounding may move a pair lying on a lag edge into the neighboring lag.
+        if (result.pairCounts[lag] !== reference.pairCounts[lag]) {
+          continue;
+        }
+        compared++;
+        const expected = reference.semivariances[lag];
+        expectClose(
+          `${name} gamma ${lag}`,
+          result.semivariances[lag],
+          expected,
+          unit * 2 ** -25 + 2e-5 * Math.abs(expected)
+        );
+      }
+      expect(compared, name).toBeGreaterThanOrEqual(6);
     } finally {
       harness.destroy();
     }

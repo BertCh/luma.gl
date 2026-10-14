@@ -10,8 +10,10 @@ import {
   type GPUGlobalSpatialStatisticsProps
 } from '../../../src/gpu-spatial-analysis/global-spatial-statistics';
 import {createNullWebGPUDevice} from '../../utils/gpu-contributor-test-utils';
+import {GLOBAL_STATISTICS_REFERENCE as REFERENCE} from './global-spatial-statistics-reference';
 import {
   computeGlobalSpatialStatisticsOracle,
+  getPValue,
   createGridWeights,
   createSeededRandom,
   createWeights,
@@ -110,7 +112,9 @@ it('analytic randomization moments equal exact permutation moments on tiny asymm
     const oracle = computeGlobalSpatialStatisticsOracle({
       weights,
       values: Float32Array.from(values),
-      secondValues: Float32Array.from(secondValues)
+      secondValues: Float32Array.from(secondValues),
+      // The exact permutation moments below are over all n rows, islands included.
+      islands: 'keep'
     });
     const label = `seed ${seed}`;
     const mean = values.reduce((a, b) => a + b, 0) / n;
@@ -174,7 +178,8 @@ it('Cliff-Ord join-count moments equal exact permutation moments and the centere
     const values = [1, 0, 1, 1, 0, 0, 1, 0];
     const oracle = computeGlobalSpatialStatisticsOracle({
       weights,
-      values: Float32Array.from(values)
+      values: Float32Array.from(values),
+      islands: 'keep'
     });
     const blackBlack = (permuted: number[]) => 0.5 * quadraticForm(binary, permuted, permuted);
     const blackWhite = (permuted: number[]) => {
@@ -276,7 +281,143 @@ it('GPUGlobalSpatialStatistics validates its props and emits deterministic node 
   ).toThrow(/must not share/);
   const contributor = new GPUGlobalSpatialStatistics({...createProps(graph), id: 'g'});
   const ids = contributor.getCommandNodes(graph).map(node => node.id);
-  expect(ids[0]).toBe('g-include');
+  expect(ids.slice(0, 3)).toEqual(['g-counters-clear', 'g-include', 'g-islands']);
   expect(ids.at(-1)).toBe('g-finalize');
   expect(new Set(ids).size).toBe(ids.length);
+  // The row-scale kernel exists only for row-standardized weights.
+  expect(ids).not.toContain('g-row-scale');
+  const standardized = new GPUGlobalSpatialStatistics({
+    ...createProps(graph),
+    id: 'h',
+    weights: {
+      ...createProps(graph).weights,
+      info: {rowCount: 10, transform: 'row', symmetric: 'unknown'}
+    }
+  });
+  expect(standardized.getCommandNodes(graph).map(node => node.id)).toContain('h-row-scale');
+});
+
+it('GPUGlobalSpatialStatistics resolves islands and alternative and rejects permutation tails', () => {
+  const graph = new GPUCommandGraph(createNullWebGPUDevice(), {id: 'global-statistics-options'});
+  expect(new GPUGlobalSpatialStatistics(createProps(graph)).islands).toBe('exclude');
+  expect(new GPUGlobalSpatialStatistics(createProps(graph)).alternative).toBe('two-sided');
+  expect(
+    new GPUGlobalSpatialStatistics(createProps(graph, {islands: 'keep', alternative: 'less'}))
+  ).toMatchObject({islands: 'keep', alternative: 'lesser'});
+  expect(
+    () => new GPUGlobalSpatialStatistics(createProps(graph, {islands: 'drop' as 'keep'}))
+  ).toThrow(/islands/);
+  for (const alternative of ['directed', 'folded'] as const) {
+    expect(() => new GPUGlobalSpatialStatistics(createProps(graph, {alternative}))).toThrow(
+      /analytic inference supports/
+    );
+  }
+  expect(
+    new GPUGlobalSpatialStatistics(
+      createProps(graph, {alternative: 'greater'})
+    ).getInferenceMetadata()
+  ).toMatchObject({alternative: 'greater', permutationCount: 0, multipleTesting: 'none'});
+  // Counts and degrees are f32 columns, exact only below 2^24 rows.
+  const view = <Format extends 'uint32' | 'float32'>(format: Format, length: number) =>
+    createTransientView(graph, `limit-${serial++}`, format, length);
+  expect(
+    () =>
+      new GPUGlobalSpatialStatistics(
+        createProps(graph, {
+          weights: {
+            offsets: view('uint32', 2 ** 24 + 1),
+            neighbors: view('uint32', 4),
+            weights: view('float32', 4)
+          },
+          values: view('float32', 2 ** 24)
+        })
+      )
+  ).toThrow(/2\^24 rows/);
+});
+
+it('the oracle reproduces esda on the island, subset and re-standardized fixtures', () => {
+  const lists = REFERENCE.rows.map(row =>
+    row.neighbors.map((neighbor, slot): [number, number] => [neighbor, row.weights[slot]])
+  );
+  const weights = createWeights(lists);
+  const binary = createWeights(
+    lists.map(list => list.map(([neighbor]): [number, number] => [neighbor, 1]))
+  );
+  const values = Float32Array.from(REFERENCE.values);
+  const mask = Uint32Array.from(REFERENCE.values, (_, row) =>
+    (REFERENCE.masked as readonly number[]).includes(row) ? 0 : 1
+  );
+  const cases = [
+    ['keep', {weights, values, islands: 'keep'}],
+    ['excludeSubset', {weights, values, islands: 'exclude'}],
+    // Re-standardizing the raw weights over the unmasked neighbors equals standardizing first.
+    ['standardizedMasked', {weights, values, mask, islands: 'keep', standardized: true}],
+    ['binaryKeep', {weights: binary, values, islands: 'keep'}],
+    ['binaryExclude', {weights: binary, values, islands: 'exclude'}]
+  ] as const;
+  for (const [name, input] of cases) {
+    const reference = REFERENCE[name];
+    const oracle = computeGlobalSpatialStatisticsOracle({...input});
+    expect(oracle.count, name).toBe(reference.count);
+    for (const key of ['s0', 's1', 's2', 'mean', 'variance'] as const) {
+      expectClose(oracle[key], reference[key], `${name} ${key}`);
+    }
+    for (const statistic of ['moran', 'geary', 'getisOrdG'] as const) {
+      const expected = (reference as Record<string, Record<string, number>>)[statistic];
+      if (!expected) {
+        continue;
+      }
+      for (const field of [
+        'statistic',
+        'expected',
+        'varianceNormality',
+        'zNormality',
+        'varianceRandomization',
+        'zRandomization'
+      ]) {
+        if (field in expected) {
+          // The oracle p-values use the Numerical Recipes erfc (fractional error 1.2e-7).
+          expectClose(
+            oracle[statistic][field as 'statistic'],
+            expected[field],
+            `${name} ${statistic}.${field}`
+          );
+        }
+      }
+      for (const [suffix, alternative] of [
+        ['', 'two-sided'],
+        ['Greater', 'greater'],
+        ['Lesser', 'lesser']
+      ] as const) {
+        const expectedP = expected[`pRandomization${suffix}`];
+        const actualP = getPValue(expected.zRandomization, alternative);
+        expect(Math.abs(actualP - expectedP), `${name} ${statistic} p ${alternative}`).toBeLessThan(
+          1e-6 + 1e-6 * expectedP
+        );
+      }
+    }
+  }
+  // Islands: two island rows, excluded from n under 'exclude' and kept under 'keep'.
+  expect(computeGlobalSpatialStatisticsOracle({weights, values}).islandCount).toBe(2);
+  expect(computeGlobalSpatialStatisticsOracle({weights, values}).count).toBe(38);
+  expect(computeGlobalSpatialStatisticsOracle({weights, values, islands: 'keep'}).count).toBe(40);
+});
+
+it('the oracle makes General G NaN for negative data and everything NaN for truncated weights', () => {
+  const weights = createGridWeights(6, 6);
+  const values = Float32Array.from({length: 36}, (_, index) => 1 + (index % 7));
+  const clean = computeGlobalSpatialStatisticsOracle({weights, values});
+  expect(Number.isFinite(clean.getisOrdG.statistic)).toBe(true);
+  const negative = Float32Array.from(values);
+  negative[4] = -2;
+  const withNegative = computeGlobalSpatialStatisticsOracle({weights, values: negative});
+  for (const value of Object.values(withNegative.getisOrdG)) {
+    expect(value).toBeNaN();
+  }
+  expect(Number.isFinite(withNegative.moran.statistic)).toBe(true);
+  const truncated = computeGlobalSpatialStatisticsOracle({weights, values, truncated: true});
+  expect(truncated.count).toBe(36);
+  expect(truncated.s0).toBeNaN();
+  expect(truncated.moran.statistic).toBeNaN();
+  expect(truncated.joinCount.blackBlack).toBeNaN();
 });

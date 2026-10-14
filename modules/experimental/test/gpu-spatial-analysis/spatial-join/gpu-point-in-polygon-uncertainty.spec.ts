@@ -221,3 +221,71 @@ it('GPUPointInPolygonJoin assigns near-collinear points and reports no uncertain
     buffer.destroy();
   }
 });
+
+it('GPUPointInPolygonJoin skips empty parts and short rings instead of rejecting the feature', async () => {
+  const device = await getWebGPUTestDevice();
+  if (!device) {
+    return;
+  }
+  // D-12. Feature 0: a MultiPolygon whose first part is empty, then the square (0,0)-(2,2).
+  // Feature 1: one polygon with a 2-vertex ring first, then the square (4,0)-(6,2). shapely
+  // (2.2: `MultiPolygon([Polygon(), box(0, 0, 2, 2)]).contains(Point(1, 1))` is True) treats
+  // empty parts as containing nothing; before the fix both features were UNCERTAIN for every point.
+  const square = (x: number): Point[] => [
+    [x, 0],
+    [x + 2, 0],
+    [x + 2, 2],
+    [x, 2]
+  ];
+  const vertices: Point[] = [...square(0), [4, 1], [5, 1], ...square(4)];
+  const polygonPositions = Float32Array.from(vertices.flat());
+  const featureOffsets = Uint32Array.from([0, 2, 3]);
+  const polygonOffsets = Uint32Array.from([0, 0, 1, 3]);
+  const ringOffsets = Uint32Array.from([0, 4, 6, 10]);
+  const points: Point[] = [
+    [1, 1],
+    [5, 1],
+    [10, 10]
+  ];
+  const graph = new GPUCommandGraph(device, {id: 'pip-join-empty-parts'});
+  const buffers: Record<string, Buffer> = {
+    points: createInputBuffer(device, toFloat32Points(points)),
+    polygonPositions: createInputBuffer(device, polygonPositions),
+    featureOffsets: createInputBuffer(device, featureOffsets),
+    polygonOffsets: createInputBuffer(device, polygonOffsets),
+    ringOffsets: createInputBuffer(device, ringOffsets),
+    pointFeatureIds: createOutputBuffer(device, points.length),
+    featureCounts: createOutputBuffer(device, 2),
+    overflow: createOutputBuffer(device, 1),
+    uncertainCount: createOutputBuffer(device, 1)
+  };
+  const view = (name: string, format: 'uint32' | 'float32x2', length: number) =>
+    importGraphBuffer(graph, name, buffers[name], format, length);
+  graph.add(
+    new GPUPointInPolygonJoin({
+      points: view('points', 'float32x2', points.length),
+      polygonPositions: view('polygonPositions', 'float32x2', vertices.length),
+      featureOffsets: view('featureOffsets', 'uint32', featureOffsets.length),
+      polygonOffsets: view('polygonOffsets', 'uint32', polygonOffsets.length),
+      ringOffsets: view('ringOffsets', 'uint32', ringOffsets.length),
+      candidateCapacity: points.length * 2,
+      pointFeatureIds: view('pointFeatureIds', 'uint32', points.length),
+      featureCounts: view('featureCounts', 'uint32', 2),
+      overflow: view('overflow', 'uint32', 1),
+      uncertainCount: view('uncertainCount', 'uint32', 1)
+    })
+  );
+  const compiled = graph.compile();
+  submitGraph(device, compiled, undefined);
+  expect(await readUint32(buffers.pointFeatureIds, points.length)).toEqual([
+    0,
+    1,
+    GPU_SPATIAL_JOIN_NO_FEATURE
+  ]);
+  expect(await readUint32(buffers.featureCounts, 2)).toEqual([1, 1]);
+  expect(await readUint32(buffers.uncertainCount, 1)).toEqual([0]);
+  compiled.destroy();
+  for (const buffer of Object.values(buffers)) {
+    buffer.destroy();
+  }
+});

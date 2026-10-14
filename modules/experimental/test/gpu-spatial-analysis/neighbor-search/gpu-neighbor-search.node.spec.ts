@@ -6,7 +6,9 @@ import {createTransientView, GPUCommandGraph} from '@luma.gl/gpgpu/gpu-core';
 import {expect, it} from 'vitest';
 import {
   getGPUNeighborSearchParameterValues,
+  getGPUNeighborSearchWeightTransform,
   GPUNeighborSearch,
+  GPU_NEIGHBOR_SEARCH_GREAT_CIRCLE_SUPPORT,
   GPU_NEIGHBOR_SEARCH_PARAMETER_LENGTH,
   type GPUNeighborSearchProps
 } from '../../../src/gpu-spatial-analysis/neighbor-search';
@@ -162,4 +164,154 @@ it('the neighbor-search oracle selects lowest IDs on ties and sorts rows by ID',
     getNeighborWeight(0.5, 1, {...parameters, weightKind: 'kernel', kernel: 'triangular'})
   ).toBe(0.5);
   expect(getNeighborWeight(0, 1, {...parameters, weightKind: 'inverseDistance'})).toBe(0);
+});
+
+// ---- spatial context, outputWeights and invalidCount (U5) ----
+
+it('GPUNeighborSearch resolves spatial contexts: planar default, great-circle, everything else throws', () => {
+  const graph = new GPUCommandGraph(createNullWebGPUDevice(), {id: 'neighbor-search-context'});
+  const search = new GPUNeighborSearch(createProps(graph));
+  expect(search.spatialContext).toMatchObject({coordinateSpace: 'planar', metric: 'native'});
+  const planar = {coordinateSpace: 'planar', metric: 'native', units: 'native'} as const;
+  expect(() => new GPUNeighborSearch(createProps(graph, {spatialContext: planar}))).not.toThrow();
+  const greatCircle = {coordinateSpace: 'longitude-latitude', metric: 'great-circle'} as const;
+  for (const units of [undefined, 'meters', 'kilometers'] as const) {
+    expect(
+      () => new GPUNeighborSearch(createProps(graph, {spatialContext: {...greatCircle, units}}))
+    ).not.toThrow();
+  }
+  expect(
+    () =>
+      new GPUNeighborSearch(
+        createProps(graph, {spatialContext: {...greatCircle, sphereRadius: 3389500}})
+      )
+  ).not.toThrow();
+  const rejected = [
+    {coordinateSpace: 'longitude-latitude', metric: 'none'},
+    {coordinateSpace: 'longitude-latitude', metric: 'rhumb'},
+    {coordinateSpace: 'longitude-latitude', metric: 'ellipsoidal'},
+    {coordinateSpace: 'discrete-grid', metric: 'none', gridFamily: 'h3'},
+    {coordinateSpace: 'topology-only', metric: 'none'},
+    {coordinateSpace: 'planar', metric: 'none'},
+    {...greatCircle, units: 'native'}
+  ] as const;
+  for (const spatialContext of rejected) {
+    expect(
+      () => new GPUNeighborSearch(createProps(graph, {spatialContext: spatialContext as never})),
+      JSON.stringify(spatialContext)
+    ).toThrow();
+  }
+  expect(GPU_NEIGHBOR_SEARCH_GREAT_CIRCLE_SUPPORT.coordinateSpaces).toEqual([
+    'planar',
+    'longitude-latitude'
+  ]);
+});
+
+it('GPUNeighborSearch great-circle node IDs match the planar ones and compile for every join shape', () => {
+  const graph = new GPUCommandGraph(createNullWebGPUDevice(), {id: 'neighbor-search-geo-nodes'});
+  const geo = {coordinateSpace: 'longitude-latitude', metric: 'great-circle'} as const;
+  const planarIds = new GPUNeighborSearch({...createProps(graph), id: 'a'})
+    .getCommandNodes(graph)
+    .map(node => node.id.replace(/^a/, ''));
+  const geoIds = new GPUNeighborSearch({...createProps(graph, {spatialContext: geo}), id: 'b'})
+    .getCommandNodes(graph)
+    .map(node => node.id.replace(/^b/, ''));
+  expect(geoIds).toEqual(planarIds);
+  expect(() =>
+    new GPUNeighborSearch({
+      ...createProps(graph, {mode: 'radius', spatialContext: geo}),
+      id: 'c'
+    }).getCommandNodes(graph)
+  ).not.toThrow();
+});
+
+it('GPUNeighborSearch outputWeights carries rowCount, provenance, symmetry and status', () => {
+  const graph = new GPUCommandGraph(createNullWebGPUDevice(), {id: 'neighbor-search-output'});
+  const view = <Format extends 'uint32'>(format: Format, length: number) =>
+    createTransientView(graph, `status-${serial++}`, format, length);
+  const total = view('uint32', 1);
+  const invalid = view('uint32', 1);
+  const knn = new GPUNeighborSearch(
+    createProps(graph, {totalNeighbors: total, invalidCount: invalid})
+  );
+  expect(knn.outputWeights.info).toEqual({
+    rowCount: 10,
+    transform: 'unknown',
+    symmetric: 'unknown',
+    hasSelfWeights: false,
+    provenance: {source: 'GPUNeighborSearch', criterion: 'knn', k: 4}
+  });
+  expect(knn.outputWeights.status?.requiredCount).toBe(total);
+  expect(knn.outputWeights.status?.invalidCount).toBe(invalid);
+  expect(knn.outputWeights.status?.overflow).toBe(knn.props.overflow);
+  expect(knn.outputWeights.offsets).toBe(knn.props.weights.offsets);
+
+  const band = new GPUNeighborSearch(
+    createProps(graph, {mode: 'radius', k: undefined, weightTransform: 'binary'})
+  );
+  expect(band.outputWeights.info).toMatchObject({
+    transform: 'binary',
+    symmetric: true,
+    provenance: {criterion: 'distance-band'}
+  });
+  const rowStandardized = new GPUNeighborSearch(
+    createProps(graph, {mode: 'radius', k: undefined, weightTransform: 'row'})
+  );
+  expect(rowStandardized.outputWeights.info?.symmetric).toBe('unknown');
+  const cross = new GPUNeighborSearch(
+    createProps(graph, {
+      mode: 'radius',
+      k: undefined,
+      weightTransform: 'kernel',
+      queryPositions: createTransientView(graph, `query-${serial++}`, 'float32x2', 3),
+      weights: {
+        offsets: view('uint32', 4),
+        neighbors: view('uint32', 4),
+        weights: createTransientView(graph, `cw-${serial++}`, 'float32', 4)
+      }
+    })
+  ).outputWeights.info?.symmetric;
+  expect(cross).toBe('unknown');
+  expect(
+    () => new GPUNeighborSearch(createProps(graph, {weightTransform: 'nope' as 'binary'}))
+  ).toThrow(/weightTransform/);
+  expect(
+    () => new GPUNeighborSearch(createProps(graph, {invalidCount: view('uint32', 0)}))
+  ).toThrow(/invalidCount/);
+});
+
+it('getGPUNeighborSearchWeightTransform derives the declared transform from the parameters', () => {
+  expect(getGPUNeighborSearchWeightTransform({})).toBe('binary');
+  expect(getGPUNeighborSearchWeightTransform({weightKind: 'inverseDistance'})).toBe('raw');
+  expect(getGPUNeighborSearchWeightTransform({weightKind: 'kernel'})).toBe('kernel');
+  expect(getGPUNeighborSearchWeightTransform({weightKind: 'kernel', rowStandardize: true})).toBe(
+    'row'
+  );
+  expect(() => getGPUNeighborSearchWeightTransform({weightKind: 'x' as 'binary'})).toThrow(
+    /weightKind/
+  );
+});
+
+it('GPUNeighborSearch derives outputWeights.info.transform from the compile-time rowStandardize', () => {
+  const graph = new GPUCommandGraph(createNullWebGPUDevice(), {id: 'neighbor-search-row'});
+  const transform = (overrides: Partial<GPUNeighborSearchProps>) =>
+    new GPUNeighborSearch(createProps(graph, {mode: 'radius', k: undefined, ...overrides}))
+      .outputWeights.info;
+  expect(transform({rowStandardize: true})?.transform).toBe('row');
+  expect(transform({rowStandardize: true})?.symmetric).toBe('unknown');
+  expect(transform({rowStandardize: true, weightTransform: 'row'})?.transform).toBe('row');
+  expect(transform({rowStandardize: false})?.transform).toBe('unknown');
+  expect(transform({rowStandardize: false, weightTransform: 'binary'})?.transform).toBe('binary');
+  expect(transform({rowStandardize: false, weightTransform: 'binary'})?.symmetric).toBe(true);
+  // Omitted: the caller's declaration, unchanged.
+  expect(transform({})?.transform).toBe('unknown');
+  expect(transform({weightTransform: 'row'})?.transform).toBe('row');
+  expect(transform({weightTransform: 'kernel'})?.transform).toBe('kernel');
+  expect(() => transform({rowStandardize: true, weightTransform: 'binary'})).toThrow(
+    /rowStandardize/
+  );
+  expect(() => transform({rowStandardize: true, weightTransform: 'raw'})).toThrow(/rowStandardize/);
+  expect(() => transform({rowStandardize: false, weightTransform: 'row'})).toThrow(
+    /rowStandardize/
+  );
 });

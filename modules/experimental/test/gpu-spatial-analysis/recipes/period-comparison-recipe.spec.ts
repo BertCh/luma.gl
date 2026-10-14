@@ -74,6 +74,8 @@ it('addPeriodComparisonRecipe aggregates two periods, compares them and colors t
     const cells = fixture.output('union-cells', 'uint32x2', UNION_CAPACITY);
     const delta = fixture.output('delta', 'float32', UNION_CAPACITY);
     const zScore = fixture.output('z-score', 'float32', UNION_CAPACITY);
+    const ratio = fixture.output('ratio', 'float32', UNION_CAPACITY);
+    const percentChange = fixture.output('percent-change', 'float32', UNION_CAPACITY);
     const count = fixture.output('union-count', 'uint32', 1);
     const overflow = fixture.output('union-overflow', 'uint32', 1);
     const breaks = fixture.output('breaks', 'float32', 6);
@@ -106,6 +108,8 @@ it('addPeriodComparisonRecipe aggregates two periods, compares them and colors t
           cells: cells.view,
           delta: delta.view,
           zScore: zScore.view,
+          ratio: ratio.view,
+          percentChange: percentChange.view,
           count: count.view,
           overflow: overflow.view
         },
@@ -144,15 +148,33 @@ it('addPeriodComparisonRecipe aggregates two periods, compares them and colors t
     const words = await fixture.readUint32(cells, 2 * UNION_CAPACITY);
     const gpuDelta = await fixture.readFloat32(delta, UNION_CAPACITY);
     const gpuZ = await fixture.readFloat32(zScore, UNION_CAPACITY);
+    const gpuRatio = await fixture.readFloat32(ratio, UNION_CAPACITY);
+    const gpuPercent = await fixture.readFloat32(percentChange, UNION_CAPACITY);
+    let undefinedRatios = 0;
     let gained = 0;
     let lost = 0;
     for (const [row, expected] of oracle.rows.entries()) {
       expect(joinCellKey(words[2 * row], words[2 * row + 1]), `key ${row}`).toBe(expected.key);
       expect(gpuDelta[row], `delta ${row}`).toBe(expected.delta);
       expect(isClose(gpuZ[row], expected.zScore, 1e-4, 1e-4), `z ${row}`).toBe(true);
+      // A zero earlier count makes ratio and percent change undefined: NaN, never 0. The Poisson
+      // score is descriptive and defined here because every union cell has before + after > 0.
+      if (expected.before === 0) {
+        undefinedRatios++;
+        expect(gpuRatio[row], `ratio ${row}`).toBeNaN();
+        expect(gpuPercent[row], `percent change ${row}`).toBeNaN();
+      } else {
+        expect(isClose(gpuRatio[row], expected.ratio, 1e-5, 1e-5), `ratio ${row}`).toBe(true);
+        expect(
+          isClose(gpuPercent[row], expected.percentChange, 1e-4, 1e-4),
+          `percent change ${row}`
+        ).toBe(true);
+      }
+      expect(Number.isNaN(gpuZ[row]), `z defined ${row}`).toBe(false);
       gained += expected.delta > 8 ? 1 : 0;
       lost += expected.delta < -8 ? 1 : 0;
     }
+    expect(undefinedRatios).toBeGreaterThan(0);
     // The moving cluster produces both gains and losses.
     expect(gained).toBeGreaterThan(0);
     expect(lost).toBeGreaterThan(0);

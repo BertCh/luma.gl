@@ -784,6 +784,49 @@ it('GPUSpatialPredicateJoin relate is exact for lines against a diagonal polygon
   expect(covers.uncertainCount + crosses.uncertainCount + proper.uncertainCount).toBe(0);
 });
 
+it('GPUSpatialPredicateJoin relate breaks edges by exact signs, not the f32 denominator', async () => {
+  const device = await getWebGPUTestDevice();
+  if (!device) {
+    return;
+  }
+  // D-04 fixtures (all coordinates are f32-exact). Matrices are shapely 2.2.0 `relate`; the search
+  // that found them is scratchpad fix/work/W2A/d04/d04b.py. The first two pairs are exactly
+  // collinear overlapping segments on y = 3x whose f32 cross product of directions is nonzero; the
+  // last two are true crossings whose f32 cross product rounds to exactly zero.
+  const cases: [OracleFeature, OracleFeature, string][] = [
+    [
+      line([30.65172576904297, 91.9551773071289], [79.80841064453125, 239.42523193359375]),
+      line([77.68072509765625, 233.04217529296875], [99.55227661132812, 298.6568298339844]),
+      '1010F0102'
+    ],
+    [
+      line([9.603813171386719, 28.811439514160156], [64.15185546875, 192.45556640625]),
+      line([54.34381103515625, 163.03143310546875], [88.09304809570312, 264.2791442871094]),
+      '1010F0102'
+    ],
+    [
+      line([11.583272933959961, 1.0898594856262207], [13.59148120880127, 3.6340255737304688]),
+      line([11.657428741455078, 1.183806300163269], [12.457427024841309, 2.1973109245300293]),
+      '0F1FF0102'
+    ],
+    [
+      line([0.5082451701164246, 0.8219494223594666], [3.3593668937683105, 3.0935771465301514]),
+      line([0.7852298617362976, 1.0426366329193115], [1.5852302312850952, 1.680035948753357]),
+      '0F1FF0102'
+    ]
+  ];
+  for (const [left, right, expected] of cases) {
+    const result = await runJoin(device, 'lines', [left], 'lines', [right], {
+      predicate: 'relate',
+      pattern: INTERSECTS_PATTERNS,
+      relate: true
+    });
+    expect(result.pairs).toEqual([[0, 0]]);
+    expect(result.matrices).toEqual([expected]);
+    expect(result.uncertainCount).toBe(0);
+  }
+});
+
 it('GPUSpatialPredicateJoin relate still counts non-finite input as uncertain', async () => {
   const device = await getWebGPUTestDevice();
   if (!device) {

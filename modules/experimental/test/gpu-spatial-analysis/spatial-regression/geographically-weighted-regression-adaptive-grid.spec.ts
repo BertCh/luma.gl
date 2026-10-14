@@ -76,7 +76,7 @@ async function fit(
   const coefficients = track(createOutputBuffer(device, rowCount * 3));
   const status = track(createOutputBuffer(device, rowCount));
   const scores = track(createOutputBuffer(device, LADDER_CAPACITY));
-  const summary = track(createOutputBuffer(device, 6));
+  const summary = track(createOutputBuffer(device, 12));
   const graph = new GPUCommandGraph(device, {id: 'gwr-adaptive-grid'});
   graph.add(
     new GPUGeographicallyWeightedRegression({
@@ -112,6 +112,8 @@ async function fit(
       ),
       parameters: parameterBuffer.importToGraph(graph),
       maximumBandwidthCount: LADDER_CAPACITY,
+      // These specs compare grid and scan fits of one caller ladder.
+      refinement: false,
       maximumNeighborCount: 64,
       indexGridSize,
       output: {
@@ -124,7 +126,7 @@ async function fit(
         ),
         localStatus: importGraphBuffer(graph, 'status', status, 'uint32', rowCount),
         bandwidthScores: importGraphBuffer(graph, 'scores', scores, 'float32', LADDER_CAPACITY),
-        summary: importGraphBuffer(graph, 'summary', summary, 'float32', 6)
+        summary: importGraphBuffer(graph, 'summary', summary, 'float32', 12)
       }
     })
   );
@@ -137,7 +139,7 @@ async function fit(
     coefficients: await readFloat32(coefficients, rowCount * 3),
     status: await readUint32(status, rowCount),
     scores: await readFloat32(scores, LADDER_CAPACITY),
-    summary: await readFloat32(summary, 6)
+    summary: await readFloat32(summary, 12)
   };
   compiled.destroy();
   parameterBuffer.destroy();
