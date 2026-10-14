@@ -2,6 +2,10 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {
+  GPU_EARTH_MEAN_RADIUS_METERS,
+  type GPUSpatialContext
+} from '@luma.gl/experimental/gpu-spatial-analysis';
 import {earcut} from '@math.gl/polygon';
 import type {LoadedDataset} from '../../data/catalog';
 import {fetchJson, getDataFileUrl} from '../../data/loaders';
@@ -147,10 +151,12 @@ export type Geography = {
   /**
    * The ANALYSIS frame: what distance bands, kernels, correlogram bins and `medianSpacing` are
    * measured in. Counties use Albers equal-area conic (USGS CONUS parallels, distance scale error
-   * at most 1.44% over the lower 48), tracts the display frame (+-0.3% over Chicago).
+   * at most 1.44% over the lower 48); tracts use AEQD about their centre.
    */
   analysisFrame: {
     name: string;
+    /** Frame identity and metric contract of the analysis coordinates. */
+    spatialContext: GPUSpatialContext;
     /** Largest local distance scale error of the frame over the dataset, as a fraction. */
     maxScaleError: number;
     project: (longitude: number, latitude: number) => [number, number];
@@ -158,10 +164,9 @@ export type Geography = {
     /**
      * The `analysisFrame` layer prop that draws analysis-frame metres (`centroids` and what is
      * built from them, such as weight links) on the map: `ALBERS_CONUS_FRAME` for counties.
-     * Undefined for tracts, whose analysis frame is the display frame (draw with
-     * `coordinateOrigin`).
+     * Tracts use their azimuthal-equidistant frame.
      */
-    layerFrame: AnalysisFrame | undefined;
+    layerFrame: AnalysisFrame;
   };
   /** Metre bounds of the vertices in the analysis frame `[minX, minY, maxX, maxY]`. */
   bounds: [number, number, number, number];
@@ -176,6 +181,8 @@ export type Geography = {
   getCentroidLngLat: (feature: number) => [number, number];
   /** Contiguity layout: vertices in metres with closing duplicates removed. */
   contiguityVertices: Float32Array;
+  /** Matching open-ring vertices in the analysis frame, for analysis operators. */
+  analysisContiguityVertices: Float32Array;
   contiguityRingOffsets: Uint32Array;
   /** Feature to ring offsets (`count + 1`). */
   featureRingOffsets: Uint32Array;
@@ -435,24 +442,44 @@ export async function loadGeography(
   const displayProjection = new LocalMetricProjection(origin);
   // The Albers projection is bit-identical to `projectAlbers` (b6-polygons.ts).
   const albersProjection = createAnalysisFrameProjection(ALBERS_CONUS_FRAME);
+  const tractProjection = createAnalysisFrameProjection({kind: 'azimuthal-equidistant', origin});
+  const vertices = dataset.column<Float32Array>('vertices');
+  let maximumAngularDistance = 0;
+  if (!isCounty) {
+    for (let vertex = 0; vertex < vertices.length; vertex += 2) {
+      const [east, north] = tractProjection.project(vertices[vertex], vertices[vertex + 1]);
+      maximumAngularDistance = Math.max(
+        maximumAngularDistance,
+        Math.hypot(east, north) / GPU_EARTH_MEAN_RADIUS_METERS
+      );
+    }
+  }
   const analysisFrame: Geography['analysisFrame'] = isCounty
     ? {
         name: 'Albers equal-area conic (CONUS)',
+        spatialContext: albersProjection.spatialContext,
         maxScaleError: 0.0144,
         project: albersProjection.project,
         unproject: albersProjection.unproject,
         layerFrame: ALBERS_CONUS_FRAME
       }
     : {
-        name: 'local Mercator meters',
-        maxScaleError: 0.003,
-        project: (longitude, latitude) => displayProjection.project(longitude, latitude),
-        unproject: (x, y) => displayProjection.unproject(x, y),
-        layerFrame: undefined
+        name: 'azimuthal equidistant about the tract centre',
+        spatialContext: tractProjection.spatialContext,
+        maxScaleError:
+          maximumAngularDistance === 0
+            ? 0
+            : maximumAngularDistance / Math.sin(maximumAngularDistance) - 1,
+        project: tractProjection.project,
+        unproject: tractProjection.unproject,
+        layerFrame: tractProjection.frame
       };
-  const analysisMeters = isCounty
-    ? projectRows(dataset.column<Float32Array>('vertices'), analysisFrame.project)
-    : meters;
+  const analysisMeters = projectRows(vertices, analysisFrame.project);
+  const analysisContiguityVertices = new Float32Array(contiguityVertices.length);
+  contiguityKept.forEach((vertex, index) => {
+    analysisContiguityVertices[index * 2] = analysisMeters[vertex * 2];
+    analysisContiguityVertices[index * 2 + 1] = analysisMeters[vertex * 2 + 1];
+  });
   const analysisBounds: [number, number, number, number] = [
     Infinity,
     Infinity,
@@ -520,7 +547,7 @@ export async function loadGeography(
       centroids[feature * 2 + 1] = centroidSums[feature * 2 + 1] / area;
     }
   }
-  // Tracts: the display-frame centroids are the analysis ones.
+  // Compute centroids in the same frame used by distance operators.
   let analysisCentroids: Float32Array = centroids;
   if (isCounty && dataset.hasColumn('centroid')) {
     // The dataset ships equal-area centroids; use them so county points match the published ones.
@@ -528,7 +555,7 @@ export async function loadGeography(
       dataset.column<Float32Array>('centroid'),
       analysisFrame.project
     );
-  } else if (isCounty) {
+  } else {
     analysisCentroids = computeFeatureCentroids(analysisMeters, layout, isClosed);
   }
 
@@ -686,6 +713,7 @@ export async function loadGeography(
     getCentroidLngLat: feature =>
       analysisFrame.unproject(analysisCentroids[feature * 2], analysisCentroids[feature * 2 + 1]),
     contiguityVertices,
+    analysisContiguityVertices,
     contiguityRingOffsets,
     featureRingOffsets,
     featurePolygonOffsets,

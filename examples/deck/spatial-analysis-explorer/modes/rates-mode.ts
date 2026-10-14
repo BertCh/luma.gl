@@ -41,7 +41,7 @@ import {
   type GPUInferenceAlternative
 } from '@luma.gl/experimental/gpu-spatial-analysis';
 import {importGraphBuffer} from '../graph-buffers';
-import {LocalMetricProjection, type SpatialAnalysisPolygons} from '../spatial-analysis-data';
+import {type SpatialAnalysisPolygons} from '../spatial-analysis-data';
 import {
   SpatialAnalysisPointLayer,
   SpatialAnalysisSegmentLayer,
@@ -220,6 +220,7 @@ type SummaryLayout = {
   words: number;
 };
 
+/** Smooths ZIP rates with neighbors in the San Francisco AEQD frame. */
 export const ratesMode: SpatialAnalysisModeDefinition = {
   id: 'rates',
   title: 'Rates',
@@ -250,7 +251,7 @@ export const ratesMode: SpatialAnalysisModeDefinition = {
     const featureCount = zips.featureOffsets.length - 1;
     const segmentCount = zips.outlineSegments.length / 4;
     const geometry = describeZipCodes(zips);
-    const projection = new LocalMetricProjection(zips.origin);
+    const projection = zips.frame;
     const capacity = featureCount * MAXIMUM_K;
 
     let neighborChoice: NeighborChoice = 'k4';
@@ -347,6 +348,7 @@ export const ratesMode: SpatialAnalysisModeDefinition = {
     );
     joinGraph.add(
       new GPUPointInPolygonJoin({
+        spatialContext: zips.frame.spatialContext,
         id: 'rates-polygon-join',
         points: {
           kind: 'points',
@@ -475,6 +477,7 @@ export const ratesMode: SpatialAnalysisModeDefinition = {
       const graph = new GPUCommandGraph<void>(device, {id: `rates-search-k${k}`});
       graph.add(
         new GPUNeighborSearch({
+          spatialContext: zips.frame.spatialContext,
           id: 'rates-neighbors',
           mode: 'knn',
           k,

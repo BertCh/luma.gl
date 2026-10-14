@@ -647,6 +647,7 @@ export async function createRouting(
       const lineWeights = view(lineWeightsBuffer, 'float32', arcCapacity);
       turnGraph.add(
         new GPUNetworkLineGraph({
+          spatialContext: network.projection.spatialContext,
           id: 'turns',
           topology: {
             offsets,

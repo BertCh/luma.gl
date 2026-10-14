@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import type {GPUSpatialContext} from '@luma.gl/experimental/gpu-spatial-analysis';
 import {addMetersToLngLat, getDistanceScales} from '@math.gl/web-mercator';
 
 /** Bbox half-diagonal beyond which {@link LocalMetricProjection} exceeds about 1% scale error. */
@@ -13,18 +14,33 @@ export const LOCAL_METRIC_MAXIMUM_HALF_DIAGONAL_METERS = 150_000;
  *
  * This is Web Mercator scaled to be true at the origin, so it must match deck.gl for drawing. Its
  * local scale error grows with distance from the origin: about +-0.3% over Chicago, +-3% over the
- * Netherlands rail network, and -15% to +21% over the contiguous US. Use it for city-scale
- * analysis only (bbox half-diagonal under about 150 km). For larger extents project with an
- * equal-area (Albers, Lambert azimuthal) or azimuthal equidistant frame, or a great-circle
- * `spatialContext`.
+ * Netherlands rail network, and -15% to +21% over the contiguous US. It is the display frame:
+ * regional analysis must not run in it; use an analysis frame from `analysis-frame.ts` and pass
+ * its projection's `spatialContext` to every operator consuming frame meters. City-scale scenes
+ * that still analyse in these meters pass {@link LocalMetricProjection.spatialContext}, a `'crs'`
+ * frame that names this projection honestly (it is neither equidistant nor equal-area).
  */
 export class LocalMetricProjection {
   /** `[longitude, latitude]` origin. */
   readonly origin: readonly [number, number];
+  /**
+   * Planar context of these meters: a `'crs'` frame `showcase-mercator-local(<lon>,<lat>)`, so data
+   * projected about different origins is never mixed and both distance and area operators accept it.
+   */
+  readonly spatialContext: GPUSpatialContext;
   private readonly metersPerDegree: readonly [number, number];
 
   constructor(origin: readonly [number, number]) {
     this.origin = origin;
+    this.spatialContext = Object.freeze({
+      coordinateSpace: 'planar',
+      metric: 'native',
+      units: 'meters',
+      frame: Object.freeze({
+        kind: 'crs',
+        id: `showcase-mercator-local(${origin[0]},${origin[1]})`
+      })
+    });
     const scales = getDistanceScales({
       longitude: origin[0],
       latitude: origin[1],

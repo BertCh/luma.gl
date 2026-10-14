@@ -2,6 +2,9 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {GPU_EARTH_MEAN_RADIUS_METERS} from '@luma.gl/experimental/gpu-spatial-analysis';
+import {createAnalysisFrameProjection} from '../../engine/analysis-frame';
+
 /**
  * The numbers behind the bixi-bundles story, as pure functions on typed arrays: the work box the
  * bundling kernel is measured in, the Pareto curve of the busiest pairs, and what a bundled
@@ -10,7 +13,7 @@
  */
 
 /** Metres per degree of latitude on a sphere of the mean Earth radius. */
-export const METERS_PER_DEGREE = 111_195;
+export const METERS_PER_DEGREE = (GPU_EARTH_MEAN_RADIUS_METERS * Math.PI) / 180;
 /** `GPUEdgeBundling` pads its square work box by 5 % on each side. */
 const WORK_BOX_SCALE = 1.1;
 /** Side of a coverage cell in degrees (about 220 x 160 m at Montreal). */
@@ -20,17 +23,20 @@ const SAMPLE_SPACING_METERS = 100;
 /** Spacing of the points a routed ride is densified to before it is indexed, in metres. */
 const RIDE_DENSIFY_METERS = 30;
 
-/** Ground distance in kilometres between two lon/lat points (equirectangular, fine at city scale). */
+/** Mean-radius great-circle distance in kilometres between two longitude/latitude points. */
 export function getKilometres(
   longitudeA: number,
   latitudeA: number,
   longitudeB: number,
   latitudeB: number
 ): number {
-  const middle = ((latitudeA + latitudeB) / 2) * (Math.PI / 180);
-  const dx = (longitudeB - longitudeA) * Math.cos(middle);
-  const dy = latitudeB - latitudeA;
-  return (Math.hypot(dx, dy) * METERS_PER_DEGREE) / 1000;
+  const radians = Math.PI / 180;
+  const haversine =
+    Math.sin(((latitudeB - latitudeA) * radians) / 2) ** 2 +
+    Math.cos(latitudeA * radians) *
+      Math.cos(latitudeB * radians) *
+      Math.sin(((longitudeB - longitudeA) * radians) / 2) ** 2;
+  return (2 * GPU_EARTH_MEAN_RADIUS_METERS * Math.asin(Math.min(1, Math.sqrt(haversine)))) / 1000;
 }
 
 /**
@@ -117,7 +123,7 @@ export type StreetIndex = {
 };
 
 /**
- * Indexes routed rides for nearest-street tests: every ride is densified to a point every 30 m
+ * Indexes routed rides in AEQD meters for nearest-street tests: every ride is densified to a point every 30 m
  * and hashed into 100 m cells, so a test looks at nine cells.
  */
 export function createStreetIndex(
@@ -126,7 +132,7 @@ export function createStreetIndex(
   origin: readonly [number, number],
   cellMeters = 100
 ): StreetIndex {
-  const metersPerLongitude = METERS_PER_DEGREE * Math.cos(origin[1] * (Math.PI / 180));
+  const projection = createAnalysisFrameProjection({kind: 'azimuthal-equidistant', origin});
   const cells = new Map<number, number[]>();
   const keyOf = (cellX: number, cellY: number) => (cellX + 32768) * 65536 + (cellY + 32768);
   const add = (x: number, y: number) => {
@@ -138,12 +144,10 @@ export function createStreetIndex(
   const rideCount = offsets.length - 1;
   for (let ride = 0; ride < rideCount; ride++) {
     for (let vertex = offsets[ride]; vertex < offsets[ride + 1]; vertex++) {
-      const x = (vertices[vertex * 2] - origin[0]) * metersPerLongitude;
-      const y = (vertices[vertex * 2 + 1] - origin[1]) * METERS_PER_DEGREE;
+      const [x, y] = projection.project(vertices[vertex * 2], vertices[vertex * 2 + 1]);
       add(x, y);
       if (vertex + 1 >= offsets[ride + 1]) continue;
-      const nextX = (vertices[vertex * 2 + 2] - origin[0]) * metersPerLongitude;
-      const nextY = (vertices[vertex * 2 + 3] - origin[1]) * METERS_PER_DEGREE;
+      const [nextX, nextY] = projection.project(vertices[vertex * 2 + 2], vertices[vertex * 2 + 3]);
       const steps = Math.ceil(Math.hypot(nextX - x, nextY - y) / RIDE_DENSIFY_METERS);
       for (let step = 1; step < steps; step++) {
         add(x + ((nextX - x) * step) / steps, y + ((nextY - y) * step) / steps);
@@ -152,8 +156,7 @@ export function createStreetIndex(
   }
   return {
     isNear(longitude, latitude, radiusMeters) {
-      const x = (longitude - origin[0]) * metersPerLongitude;
-      const y = (latitude - origin[1]) * METERS_PER_DEGREE;
+      const [x, y] = projection.project(longitude, latitude);
       const cellX = Math.floor(x / cellMeters);
       const cellY = Math.floor(y / cellMeters);
       const reach = Math.max(1, Math.ceil(radiusMeters / cellMeters));

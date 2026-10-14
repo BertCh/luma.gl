@@ -55,7 +55,7 @@ import {
 import {makeGPURasterMetadata} from '@luma.gl/experimental/gpu-raster';
 import {GPUTerrainContours} from '@luma.gl/experimental/gpu-terrain';
 import {importGraphBuffer} from '../graph-buffers';
-import {createSeededRandom, LocalMetricProjection} from '../spatial-analysis-data';
+import {createSeededRandom} from '../spatial-analysis-data';
 import {SpatialAnalysisPointLayer, SpatialAnalysisRasterLayer} from '../spatial-analysis-layers';
 import type {
   SpatialAnalysisModeDefinition,
@@ -129,7 +129,7 @@ export const interpolationMode: SpatialAnalysisModeDefinition = {
     const terrain = await context.data.getSanFranciscoTerrain();
     context.signal.throwIfAborted();
     const {device} = context;
-    const projection = new LocalMetricProjection(terrain.origin);
+    const projection = terrain.frame;
     const origin: [number, number, number] = [terrain.origin[0], terrain.origin[1], 0];
     const resources = new SpatialAnalysisResources(device, 'interpolation');
     const {bounds: terrainBounds, cellSize, width: terrainWidth, height: terrainHeight} = terrain;
@@ -245,6 +245,7 @@ export const interpolationMode: SpatialAnalysisModeDefinition = {
     );
     graph.add(
       new GPUInverseDistanceWeighting({
+        spatialContext: terrain.frame.spatialContext,
         id: 'idw',
         positions: positionsView,
         values: valuesView,
@@ -261,6 +262,7 @@ export const interpolationMode: SpatialAnalysisModeDefinition = {
     );
     graph.add(
       new GPUKriging({
+        spatialContext: terrain.frame.spatialContext,
         id: 'kriging',
         positions: positionsView,
         values: valuesView,
@@ -372,6 +374,7 @@ export const interpolationMode: SpatialAnalysisModeDefinition = {
     const variogramGraph = new GPUCommandGraph<void>(device, {id: 'interpolation-variogram'});
     variogramGraph.add(
       new GPUVariogram({
+        spatialContext: terrain.frame.spatialContext,
         id: 'variogram',
         positions: importGraphBuffer(
           variogramGraph,

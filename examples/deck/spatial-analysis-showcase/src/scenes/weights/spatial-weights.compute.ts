@@ -587,6 +587,7 @@ export async function createSpatialWeights(
     const valueMask = create('value-mask', new Uint32Array(rowCount));
     const displayMask = create('display-mask', new Uint32Array(rowCount).fill(1));
     const space = await createAnalysisSpace({
+      spatialContext: geography.analysisFrame.spatialContext,
       device,
       resources,
       id: 'polygons',
@@ -769,6 +770,7 @@ export async function createSpatialWeights(
     const overflow = create('overflow', 4);
     const total = create('total', 4);
     const space = await createAnalysisSpace({
+      spatialContext: target.projection.spatialContext,
       device,
       resources,
       id: 'lattice',
@@ -880,6 +882,7 @@ export async function createSpatialWeights(
       csr: {offsets: Buffer; neighbors: Buffer; weights: Buffer},
       slots: number
     ) => ({
+      spatialContext: target.geography.analysisFrame.spatialContext,
       offsets: importGraphBuffer(graph, `${name}-offsets`, csr.offsets, 'uint32', rowCount + 1),
       neighbors: importGraphBuffer(graph, `${name}-neighbors`, csr.neighbors, 'uint32', slots),
       weights: importGraphBuffer(graph, `${name}-weights`, csr.weights, 'float32', slots)
@@ -1345,7 +1348,7 @@ export async function createSpatialWeights(
     ctx.setReadout('spacing', formatDistance(geography.medianSpacing));
     ctx.setReadout(
       'numerics',
-      `Distances are metres of ${geography.analysisFrame.name}, within ${(geography.analysisFrame.maxScaleError * 100).toFixed(1)}% of ground distance. Band radius ${formatDistance(planar)}. Weights are float32; lags sum in slot order.`
+      `Distances are metres of ${geography.analysisFrame.name}, within ${(Math.ceil(geography.analysisFrame.maxScaleError * 1e6) / 1e4).toFixed(4)}% of ground distance. Band radius ${formatDistance(planar)}. Weights are float32; lags sum in slot order.`
     );
     ctx.setCost({records: rows});
   }

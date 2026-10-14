@@ -235,6 +235,7 @@ export const knoxMode: SpatialAnalysisModeDefinition = {
     const testParametersView = testParameters.importToGraph(graph);
     graph.add(
       new GPUNeighborSearch({
+        spatialContext: trips.frame.spatialContext,
         id: 'knox-search',
         mode: 'radius',
         positions: positionsView,

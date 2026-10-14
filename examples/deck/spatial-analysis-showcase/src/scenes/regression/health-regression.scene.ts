@@ -330,9 +330,9 @@ export default defineScene<HealthRegressionOptions>({
 // 1. Weights ${knn ? `(directed k nearest neighbours, row-standardized)` : `(${state.weights} contiguity from shared vertices, then row-standardized)`}
 ${
   knn
-    ? `graph.add(new GPUNeighborSearch({mode: 'knn', k: ${state.weights.slice(3)}, gridSize: [64, 64], positions, parameters, output: {...weights, status: {overflow}}}));`
+    ? `graph.add(new GPUNeighborSearch({spatialContext: projection.spatialContext, mode: 'knn', k: ${state.weights.slice(3)}, gridSize: [64, 64], positions, parameters, output: {...weights, status: {overflow}}}));`
     : `graph.add(new GPUContiguityWeights({criterion: '${state.weights}', polygons: {kind: 'polygons', positions: vertices, featureOffsets, polygonOffsets, ringOffsets}, output: {...weights, status: {overflow, requiredCount, candidateOverflow}}}));
-graph.add(new GPUSpatialWeightsTransform({operation: 'row', weights}));`
+graph.add(new GPUSpatialWeightsTransform({spatialContext: projection.spatialContext, operation: 'row', weights}));`
 }
 
 // 2. OLS + LM diagnostics + residual local Moran, one recipe

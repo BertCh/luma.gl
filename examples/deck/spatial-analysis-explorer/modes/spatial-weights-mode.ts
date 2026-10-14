@@ -101,7 +101,6 @@ import type {
   SpatialAnalysisModeDefinition,
   SpatialAnalysisModeInstance
 } from '../spatial-analysis-mode';
-import {LocalMetricProjection} from '../spatial-analysis-data';
 import {formatCount, SpatialAnalysisResources} from '../spatial-analysis-resources';
 import {addKernelPass} from './mode-kernels';
 import {
@@ -384,6 +383,7 @@ const SEGMENT_BODY = /* wgsl */ `
   segments[segmentsOffset + index * 4u + 3u] = positions[positionsOffset + neighbor * 2u + 1u];
   fade[fadeOffset + index] = 1.0;`;
 
+/** Builds and explores spatial weights in the New York AEQD frame. */
 export const spatialWeightsMode: SpatialAnalysisModeDefinition = {
   id: 'spatial-weights',
   title: 'Weights',
@@ -535,6 +535,7 @@ export const spatialWeightsMode: SpatialAnalysisModeDefinition = {
       const weights = importWeights(graph);
       graph.add(
         new GPUNeighborSearch({
+          spatialContext: trips.frame.spatialContext,
           id: 'neighbor-search',
           mode,
           k: mode === 'knn' ? k : undefined,
@@ -842,6 +843,7 @@ export const spatialWeightsMode: SpatialAnalysisModeDefinition = {
     const bandGraph = new GPUCommandGraph<void>(device, {id: 'weights-band'});
     bandGraph.add(
       new GPUNeighborSearch({
+        spatialContext: trips.frame.spatialContext,
         id: 'band-search',
         mode: 'radius',
         gridSize: GRID_SIZE,
@@ -1077,7 +1079,7 @@ export const spatialWeightsMode: SpatialAnalysisModeDefinition = {
     const summaryCompiled = resources.track(await summaryGraph.compileAsync());
 
     // ---- Weights sources: the analysis kit (transforms, transpose, lag, focus links) ----------
-    const projection = new LocalMetricProjection(trips.origin);
+    const projection = trips.frame;
     // Focus starts at the row nearest the map center (the data origin).
     const centerX = 0;
     const centerY = 0;

@@ -276,6 +276,7 @@ export const coverageMode: SpatialAnalysisModeDefinition = {
       });
       graph.add(
         new GPUCoverageSimplification({
+          spatialContext: zones.frame.spatialContext,
           id: 'coverage',
           positions: importAll(graph, 'positions', positionsBuffer, 'float32x2', vertexCount),
           featureOffsets: importAll(
@@ -343,6 +344,7 @@ export const coverageMode: SpatialAnalysisModeDefinition = {
     const importanceGraph = new GPUCommandGraph<void>(device, {id: 'coverage-importance'});
     importanceGraph.add(
       new GPULineSimplification({
+        spatialContext: zones.frame.spatialContext,
         id: 'independent-importance',
         ...importanceView(importanceGraph),
         maximumIterations: MAXIMUM_ITERATIONS,
@@ -370,6 +372,7 @@ export const coverageMode: SpatialAnalysisModeDefinition = {
     const selectionGraph = new GPUCommandGraph<void>(device, {id: 'coverage-independent'});
     selectionGraph.add(
       new GPULineSimplification({
+        spatialContext: zones.frame.spatialContext,
         id: 'independent-selection',
         ...importanceView(selectionGraph),
         computeImportance: false,

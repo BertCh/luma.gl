@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import type {Layer} from '@deck.gl/core';
+import {COORDINATE_SYSTEM, type Layer} from '@deck.gl/core';
 import type {CommandEncoder} from '@luma.gl/core';
 import {
   getGPULineDensityParameterValues,
@@ -44,9 +44,9 @@ import {
   SpatialAnalysisSegmentLayer
 } from '../../engine/layers';
 import {addKernelPass} from '../../engine/mode-kernels';
-import {LocalMetricProjection} from '../../engine/projection';
+import {createAnalysisFrameProjection, getViewportFrameBounds} from '../../engine/analysis-frame';
 import {createPolygonMeshBuffers, type PolygonMeshBuffers} from '../../engine/polygon-buffers';
-import {getViewportMetricBounds, SpatialAnalysisResources} from '../../engine/resources';
+import {SpatialAnalysisResources} from '../../engine/resources';
 import {SummaryReader} from '../../engine/summary-reader';
 import {formatCompiledGraphTiming, measureCompiledGraph} from '../../engine/vector-timing';
 import type {SceneContext, SceneInstance, TooltipContent, TooltipRow} from '../scene';
@@ -159,7 +159,14 @@ type DensityVariant = {compiled: CompiledGPUCommandGraph<void>};
 type PolygonVariant = {compiled: CompiledGPUCommandGraph<void>};
 
 /** The density grid in metres: where it sits and how big its cells are. */
-type Grid = {minX: number; minY: number; maxX: number; maxY: number; cellMeters: number};
+type Grid = {
+  minX: number;
+  minY: number;
+  maxX: number;
+  maxY: number;
+  cellMeters: number;
+  spherical?: boolean;
+};
 
 /** One density readback with what was derived from it. */
 type FieldSnapshot = {
@@ -279,7 +286,7 @@ function pickColors(colors: readonly StreetColor[], count: number): StreetColor[
 
 /**
  * Street density of Chicago, from lines. `GPULineDensity` clips every street to a camera-following
- * grid and sums the length per cell (planar metres or longitude/latitude with great-circle
+ * grid and sums the length per cell (Lambert equal-area (WGS84) meters or longitude/latitude with great-circle
  * pieces); `GPULineLengthPerPolygon` clips the same streets into community areas or census tracts
  * and returns length, an attribute-weighted length and a segment count per polygon. The road class
  * subset, the coordinate system and the polygon set are compile-time and compile lazily on first
@@ -295,12 +302,12 @@ export async function createStreetDensity(
   const areasData = ctx.datasets.get('chicago-community-areas');
   const tractsData = ctx.datasets.get('chicago-tracts');
   const origin = roads.defaultOrigin;
-  const projection = new LocalMetricProjection(origin);
+  const projection = createAnalysisFrameProjection({kind: 'lambert-equal-area', origin});
   const resources = new SpatialAnalysisResources(device, 'street-density');
   const coordinateOrigin: [number, number, number] = [origin[0], origin[1], 0];
   const metersPerDegreeLongitude = projection.project(origin[0] + 1, origin[1])[0];
   const metersPerDegreeLatitude = projection.project(origin[0], origin[1] + 1)[1];
-  const city: CityGeometry = await loadCityGeometry(ctx, origin);
+  const city: CityGeometry = await loadCityGeometry(ctx, origin, projection.project);
   const unproject = (x: number, y: number) => projection.unproject(x, y) as LngLat;
   // The edge: the world outside the city (lake included) and the lake itself, uploaded once.
   const outsideBuffers = createPolygonMeshBuffers(resources, city.outsideMesh, 'outside');
@@ -464,7 +471,7 @@ export async function createStreetDensity(
         spatialContext:
           system === 'spherical'
             ? {coordinateSpace: 'longitude-latitude', metric: 'great-circle', units: 'meters'}
-            : {coordinateSpace: 'planar', metric: 'native', units: 'native'},
+            : projection.spatialContext,
         recordCapacity: getMaximumRecords(road),
         parameters: parameters.importToGraph(graph),
         output: {
@@ -640,7 +647,7 @@ export async function createStreetDensity(
         lineWeights: view('line-weights', buffers.lineWeights, 'float32', road.pathCount),
         spatialContext: spherical
           ? {coordinateSpace: 'longitude-latitude', metric: 'great-circle', units: 'meters'}
-          : {coordinateSpace: 'planar', metric: 'native', units: 'native'},
+          : projection.spatialContext,
         polygons: {
           kind: 'polygons',
           positions: view(
@@ -886,14 +893,24 @@ export async function createStreetDensity(
         cellHeight
       })
     );
-    const [x0, y0] = projection.project(minimumLongitude, minimumLatitude);
-    const [x1, y1] = projection.project(
-      minimumLongitude + COLUMNS * cellWidth,
-      minimumLatitude + ROWS * cellHeight
-    );
-    gridBounds.write(Float32Array.of(x0, y0, x1, y1));
-    return {minX: x0, minY: y0, maxX: x1, maxY: y1, cellMeters: size};
+    const grid: Grid = {
+      minX: minimumLongitude,
+      minY: minimumLatitude,
+      maxX: minimumLongitude + COLUMNS * cellWidth,
+      maxY: minimumLatitude + ROWS * cellHeight,
+      cellMeters: size,
+      spherical: true
+    };
+    gridBounds.write(Float32Array.of(grid.minX, grid.minY, grid.maxX, grid.maxY));
+    return grid;
   }
+
+  // Grid coordinates are frame metres for Lambert and longitude/latitude for the spherical path.
+  const getGridLngLat = (grid: Grid, x: number, y: number): LngLat =>
+    grid.spherical ? [x, y] : unproject(x, y);
+  const cityRingsDegrees = city.cityPolygons.flatMap(polygon =>
+    polygon.map(ring => Float64Array.from(ring.flatMap(position => [position[0], position[1]])))
+  );
 
   // ---- The density readback ----
   function getTable(mode: 'density' | 'length' = ctx.options.cellValue): ClassTable {
@@ -908,7 +925,7 @@ export async function createStreetDensity(
     const cellLengths = floats.slice(0, CELL_COUNT);
     const cellDensities = floats.slice(CELL_COUNT);
     const cityMask = rasterizeRingsMask(
-      city.cityRingsMeters,
+      grid.spherical ? cityRingsDegrees : city.cityRingsMeters,
       [grid.minX, grid.minY, grid.maxX, grid.maxY],
       COLUMNS,
       ROWS
@@ -996,9 +1013,10 @@ export async function createStreetDensity(
     if (stats.peakIndex >= 0) {
       const column = stats.peakIndex % COLUMNS;
       const row = Math.floor(stats.peakIndex / COLUMNS);
-      const coordinate = unproject(
-        grid.minX + (column + 0.5) * grid.cellMeters,
-        grid.minY + (row + 0.5) * grid.cellMeters
+      const coordinate = getGridLngLat(
+        grid,
+        grid.minX + ((column + 0.5) * (grid.maxX - grid.minX)) / COLUMNS,
+        grid.minY + ((row + 0.5) * (grid.maxY - grid.minY)) / ROWS
       );
       notes.push({
         kind: 'note',
@@ -1021,7 +1039,7 @@ export async function createStreetDensity(
       minimumCells
     ).slice(0, VOID_NOTE_COUNT);
     voids.forEach((region, rank) => {
-      const coordinate = unproject(region.x, region.y);
+      const coordinate = getGridLngLat(grid, region.x, region.y);
       const place = nearestPlace(CHICAGO, coordinate, {
         maxDistanceMeters: 4000,
         kinds: VOID_PLACE_KINDS
@@ -1547,7 +1565,14 @@ export async function createStreetDensity(
   }
 
   function sameGrid(a: Grid, b: Grid): boolean {
-    return a.minX === b.minX && a.minY === b.minY && a.cellMeters === b.cellMeters;
+    return (
+      a.minX === b.minX &&
+      a.minY === b.minY &&
+      a.maxX === b.maxX &&
+      a.maxY === b.maxY &&
+      a.cellMeters === b.cellMeters &&
+      a.spherical === b.spherical
+    );
   }
 
   async function measureGraphs(): Promise<void> {
@@ -1578,7 +1603,7 @@ export async function createStreetDensity(
       if (!destroyed) {
         ctx.setReadout(
           'timing',
-          `planar ${formatCompiledGraphTiming(planarTiming).split(' · ')[0]}, spherical ${formatCompiledGraphTiming(sphericalTiming).split(' · ')[0]}`
+          `Lambert equal-area (WGS84) meters ${formatCompiledGraphTiming(planarTiming).split(' · ')[0]}, spherical ${formatCompiledGraphTiming(sphericalTiming).split(' · ')[0]}`
         );
       }
     } catch {
@@ -1593,7 +1618,6 @@ export async function createStreetDensity(
   // ---- Tooltips ----
   function getDensityTooltip(coordinate: readonly [number, number]): TooltipContent | null {
     const options = ctx.options;
-    const [x, y] = projection.project(coordinate[0], coordinate[1]);
     const clear = () => {
       if (hoveredCell !== -1) {
         hoveredCell = -1;
@@ -1604,8 +1628,11 @@ export async function createStreetDensity(
     };
     if (!snapshot || !currentGrid || !sameGrid(snapshot.grid, currentGrid)) return clear();
     const {grid} = snapshot;
-    const column = Math.floor((x - grid.minX) / grid.cellMeters);
-    const row = Math.floor((y - grid.minY) / grid.cellMeters);
+    const [x, y] = grid.spherical ? coordinate : projection.project(coordinate[0], coordinate[1]);
+    const cellWidth = (grid.maxX - grid.minX) / COLUMNS;
+    const cellHeight = (grid.maxY - grid.minY) / ROWS;
+    const column = Math.floor((x - grid.minX) / cellWidth);
+    const row = Math.floor((y - grid.minY) / cellHeight);
     if (column < 0 || row < 0 || column >= COLUMNS || row >= ROWS) return clear();
     const index = row * COLUMNS + column;
     if (!snapshot.cityMask[index]) {
@@ -1636,10 +1663,10 @@ export async function createStreetDensity(
     const swatch = table.colors[classIndex];
     const percentile =
       countAtOrBelow(snapshot.stats.sorted, density) / snapshot.stats.sorted.length;
-    const west = grid.minX + column * grid.cellMeters;
-    const south = grid.minY + row * grid.cellMeters;
-    const [west0, south0] = unproject(west, south);
-    const [east1, north1] = unproject(west + grid.cellMeters, south + grid.cellMeters);
+    const west = grid.minX + column * cellWidth;
+    const south = grid.minY + row * cellHeight;
+    const [west0, south0] = getGridLngLat(grid, west, south);
+    const [east1, north1] = getGridLngLat(grid, west + cellWidth, south + cellHeight);
     const rows: TooltipRow[] = [
       mode === 'density'
         ? {
@@ -1666,7 +1693,7 @@ export async function createStreetDensity(
       subtitle:
         nearestPlaceLabel(
           CHICAGO,
-          unproject(west + grid.cellMeters / 2, south + grid.cellMeters / 2),
+          getGridLngLat(grid, west + cellWidth / 2, south + cellHeight / 2),
           {
             maxDistanceMeters: 8000
           }
@@ -1791,7 +1818,7 @@ export async function createStreetDensity(
     encode(commandEncoder, frame) {
       const options = ctx.options;
       if (!displayedDensity) return;
-      const bounds = getViewportMetricBounds(frame.viewport, projection);
+      const bounds = getViewportFrameBounds(frame.viewport, projection);
       lastViewBounds = bounds;
       viewWidth = bounds[2] - bounds[0];
       const signature = [
@@ -1867,6 +1894,7 @@ export async function createStreetDensity(
             new SpatialAnalysisPolygonLayer({
               id: `street-polygons-${options.polygonSet}`,
               coordinateOrigin,
+              analysisFrame: projection.frame,
               triangles: state.meshBuffers.triangles,
               features: state.meshBuffers.triangleFeatures,
               vertexCount: state.meshBuffers.vertexCount,
@@ -1889,6 +1917,7 @@ export async function createStreetDensity(
             new SpatialAnalysisSegmentLayer({
               id: `street-polygon-outline-${options.polygonSet}`,
               coordinateOrigin,
+              analysisFrame: projection.frame,
               segments: state.meshBuffers.outline,
               instanceCount: state.meshBuffers.outlineCount,
               widthPixels: options.polygonSet === 'areas' ? 0.9 : 0.4,
@@ -1909,6 +1938,7 @@ export async function createStreetDensity(
           new SpatialAnalysisSegmentLayer({
             id: 'street-density-local',
             coordinateOrigin,
+            analysisFrame: projection.frame,
             segments: buffers.local,
             instanceCount: buffers.localCount,
             widthPixels: style.local.widthPixels,
@@ -1917,6 +1947,7 @@ export async function createStreetDensity(
           new SpatialAnalysisSegmentLayer({
             id: 'street-density-arterial',
             coordinateOrigin,
+            analysisFrame: projection.frame,
             segments: buffers.arterial,
             instanceCount: buffers.arterialCount,
             widthPixels: style.arterial.widthPixels,
@@ -1929,7 +1960,12 @@ export async function createStreetDensity(
         layers.push(
           new SpatialAnalysisRasterLayer({
             id: 'street-density-cells',
+            coordinateSystem: currentGrid?.spherical
+              ? COORDINATE_SYSTEM.LNGLAT
+              : COORDINATE_SYSTEM.METER_OFFSETS,
             coordinateOrigin,
+            analysisFrame: currentGrid?.spherical ? undefined : projection.frame,
+            tessellation: 32,
             gridSize: [COLUMNS, ROWS],
             bounds: gridBounds.buffer,
             values: length ? lengths : densities,
@@ -1949,6 +1985,7 @@ export async function createStreetDensity(
           new SpatialAnalysisPolygonLayer({
             id: 'street-density-outside',
             coordinateOrigin,
+            analysisFrame: projection.frame,
             triangles: outsideBuffers.triangles,
             features: outsideBuffers.triangleFeatures,
             vertexCount: outsideBuffers.vertexCount,
@@ -1961,6 +1998,7 @@ export async function createStreetDensity(
             new SpatialAnalysisPolygonLayer({
               id: 'street-density-lake',
               coordinateOrigin,
+              analysisFrame: projection.frame,
               triangles: lakeBuffers.triangles,
               features: lakeBuffers.triangleFeatures,
               vertexCount: lakeBuffers.vertexCount,

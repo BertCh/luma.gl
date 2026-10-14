@@ -68,7 +68,6 @@ import {
   GPUTerrainDerivatives
 } from '@luma.gl/experimental/gpu-terrain';
 import {importGraphBuffer} from '../graph-buffers';
-import {LocalMetricProjection} from '../spatial-analysis-data';
 import {SpatialAnalysisSegmentLayer, type SpatialAnalysisColor} from '../spatial-analysis-layers';
 import type {
   SpatialAnalysisModeDefinition,
@@ -215,7 +214,7 @@ export const contoursMode: SpatialAnalysisModeDefinition = {
     const {device} = context;
     const {width, height, bounds, cellSize} = terrain;
     const cellCount = width * height;
-    const projection = new LocalMetricProjection(terrain.origin);
+    const projection = terrain.frame;
     const origin: [number, number, number] = [terrain.origin[0], terrain.origin[1], 0];
     const resources = new SpatialAnalysisResources(device, 'contours');
     // The contributors put row 0 at the minimum y. The terrain has row 0 at the north edge, so the

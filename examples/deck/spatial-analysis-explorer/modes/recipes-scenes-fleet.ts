@@ -151,6 +151,7 @@ export function createFleetDwellScene(variant: 'stops' | 'zone-events'): RecipeS
     let contributorCount = 0;
     if (variant === 'stops') {
       const recipe = addFleetDwellRecipe(kit.graph, {
+        spatialContext: trips.frame.spatialContext,
         trajectories,
         parameters: stopParameters.view,
         stopCapacity: FLEET_STOP_CAPACITY,
@@ -168,6 +169,7 @@ export function createFleetDwellScene(variant: 'stops' | 'zone-events'): RecipeS
       contributorCount = recipe.contributors.length;
     } else {
       const recipe = addFleetDwellZoneEventsRecipe(kit.graph, {
+        spatialContext: trips.frame.spatialContext,
         trajectories,
         zones: zonePorts,
         candidateCapacity: FLEET_CANDIDATE_CAPACITY,

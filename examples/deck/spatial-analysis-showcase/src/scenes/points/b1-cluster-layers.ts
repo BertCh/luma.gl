@@ -3,6 +3,8 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import type {LayerProps} from '@deck.gl/core';
+import type {AnalysisFrame} from '../../engine/analysis-frame';
+import {getAnalysisFrameWgsl} from '../../engine/layer-wgsl';
 import type {Buffer} from '@luma.gl/core';
 import {STORAGE_MODEL_STYLE_BYTE_LENGTH, StorageModelLayer} from './b1-storage-layer';
 
@@ -35,6 +37,14 @@ fn isFiniteVector(value: vec2<f32>) -> bool {
 }
 
 `;
+
+function getShapeShader(source: string, frame: AnalysisFrame | undefined): string {
+  if (!frame) return source;
+  return source.replace(
+    /fn projectShapePosition\(position: vec2<f32>\) -> vec4<f32> \{[\s\S]*?\n\}/,
+    getAnalysisFrameWgsl(frame).replaceAll('projectSpatialAnalysisPosition', 'projectShapePosition')
+  );
+}
 
 const LINE_WGSL = /* wgsl */ `
 struct LineOutput {
@@ -216,6 +226,8 @@ struct MarkerOutput {
 type ShapeColor = readonly [number, number, number, number];
 
 type ShapeStyleProps = {
+  /** Frame of every shape position; omitted for display metres. */
+  analysisFrame?: AnalysisFrame;
   /** Number of groups the shape buffers hold. */
   groupCount: number;
   /** Colors indexed by `group % 8`, RGBA 0-255. Markers use the first entry. */
@@ -260,7 +272,7 @@ export type EllipseOutlineLayerProps = LayerProps &
 export class EllipseOutlineLayer extends StorageModelLayer<EllipseOutlineLayerProps> {
   static override layerName = 'EllipseOutlineLayer';
   protected getShaderSource(): string {
-    return ELLIPSE_OUTLINE_SHADER;
+    return getShapeShader(ELLIPSE_OUTLINE_SHADER, this.props.analysisFrame);
   }
   protected getVertexCount(): number {
     return 6;
@@ -294,7 +306,7 @@ export type BoundsOutlineLayerProps = LayerProps &
 export class BoundsOutlineLayer extends StorageModelLayer<BoundsOutlineLayerProps> {
   static override layerName = 'BoundsOutlineLayer';
   protected getShaderSource(): string {
-    return BOUNDS_OUTLINE_SHADER;
+    return getShapeShader(BOUNDS_OUTLINE_SHADER, this.props.analysisFrame);
   }
   protected getVertexCount(): number {
     return 6;
@@ -339,7 +351,7 @@ const MARKER_SHAPES = {disc: 0, ring: 1, diamond: 2} as const;
 export class GroupMarkerLayer extends StorageModelLayer<GroupMarkerLayerProps> {
   static override layerName = 'GroupMarkerLayer';
   protected getShaderSource(): string {
-    return GROUP_MARKER_SHADER;
+    return getShapeShader(GROUP_MARKER_SHADER, this.props.analysisFrame);
   }
   protected getVertexCount(): number {
     return 6;

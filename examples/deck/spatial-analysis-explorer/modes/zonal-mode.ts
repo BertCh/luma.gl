@@ -32,7 +32,12 @@ import {
 } from '@luma.gl/experimental/gpu-spatial-analysis';
 import {importGraphBuffer} from '../graph-buffers';
 import {GraphSwap} from '../graph-swap';
-import {LocalMetricProjection, type SpatialAnalysisPolygons} from '../spatial-analysis-data';
+import {
+  getDatasetFrame,
+  getFrameDisplayModelMatrix,
+  reprojectFramePositions,
+  type SpatialAnalysisPolygons
+} from '../spatial-analysis-data';
 import {
   SpatialAnalysisPointLayer,
   SpatialAnalysisRasterLayer,
@@ -107,13 +112,15 @@ type FeatureRowGrid = {
   featureRows: Uint32Array;
 };
 
+/** Aggregates bike parking per ZIP in the San Francisco Lambert equal-area frame. */
 export const zonalMode: SpatialAnalysisModeDefinition = {
   id: 'zonal',
   title: 'Zonal stats',
   contributors: ['GPUZonalStatistics'],
   description:
     'Bike-parking racks are aggregated per ZIP code on the GPU: counts, density per km², mean ' +
-    'spaces per rack. The choropleth is a CPU-rasterized grid of ZIP rows, not triangles. ' +
+    'spaces per rack. Positions use Lambert equal-area (WGS84) meters. The choropleth is a ' +
+    'CPU-rasterized grid of ZIP rows, not triangles. ' +
     'Switch the statistic or the sum order (atomic vs reproducible sorted) and hover a ZIP.',
   initialViewState: {longitude: -122.44, latitude: 37.76, zoom: 12.2},
 
@@ -125,11 +132,20 @@ export const zonalMode: SpatialAnalysisModeDefinition = {
     context.signal.throwIfAborted();
     const {device} = context;
     const resources = new SpatialAnalysisResources(device, 'zonal');
-    const pointCount = parking.positions.length / 2;
+    const areaFrame = getDatasetFrame(zips, 'area');
+    const modelMatrix = new Float32Array(getFrameDisplayModelMatrix(areaFrame));
+    const areaPositions = reprojectFramePositions(parking.positions, parking.frame, areaFrame);
+    const areaPolygons = {
+      ...zips,
+      frame: areaFrame,
+      polygonPositions: reprojectFramePositions(zips.polygonPositions, zips.frame, areaFrame),
+      outlineSegments: reprojectFramePositions(zips.outlineSegments, zips.frame, areaFrame)
+    };
+    const pointCount = areaPositions.length / 2;
     const featureCount = zips.featureOffsets.length - 1;
     const segmentCount = zips.outlineSegments.length / 4;
-    const projection = new LocalMetricProjection(zips.origin);
-    const grid = rasterizeFeatureRows(zips);
+    const projection = areaFrame;
+    const grid = rasterizeFeatureRows(areaPolygons);
 
     // Per-point values. `fractional` swaps in non-integer values so float sums become
     // order-sensitive (integer sums below 2^24 are exact in any order).
@@ -139,13 +155,19 @@ export const zonalMode: SpatialAnalysisModeDefinition = {
       value => value * FRACTIONAL_VALUE_SCALE
     );
 
-    const positionsBuffer = resources.createBuffer('positions', parking.positions);
+    const positionsBuffer = resources.createBuffer('positions', areaPositions);
     const valuesBuffer = resources.createBuffer('values', integerValues);
-    const polygonPositions = resources.createBuffer('polygon-positions', zips.polygonPositions);
+    const polygonPositions = resources.createBuffer(
+      'polygon-positions',
+      areaPolygons.polygonPositions
+    );
     const featureOffsets = resources.createBuffer('feature-offsets', zips.featureOffsets);
     const polygonOffsets = resources.createBuffer('polygon-offsets', zips.polygonOffsets);
     const ringOffsets = resources.createBuffer('ring-offsets', zips.ringOffsets);
-    const outlineSegments = resources.createBuffer('outline-segments', zips.outlineSegments);
+    const outlineSegments = resources.createBuffer(
+      'outline-segments',
+      areaPolygons.outlineSegments
+    );
     const cellFeatureRows = resources.createBuffer('cell-feature-rows', grid.featureRows);
 
     // Output buffers: featureCount + 1 rows; the extra row is a sentinel the graph never writes.
@@ -180,6 +202,7 @@ export const zonalMode: SpatialAnalysisModeDefinition = {
       ) => importGraphBuffer(graph, name, buffer, format, length);
       graph.add(
         new GPUZonalStatistics({
+          spatialContext: areaFrame.spatialContext,
           id,
           sumOrder,
           features: {
@@ -289,7 +312,7 @@ export const zonalMode: SpatialAnalysisModeDefinition = {
       value: animate,
       onChange: value => {
         animate = value;
-        if (!animate) positionsBuffer.write(parking.positions);
+        if (!animate) positionsBuffer.write(areaPositions);
         resetReproducibility();
         updateReproducibilityReadout();
       }
@@ -582,10 +605,9 @@ export const zonalMode: SpatialAnalysisModeDefinition = {
           const angularSpeed = 1.2;
           for (let index = 0; index < pointCount; index++) {
             const angle = phases[index] + frame.timeSeconds * angularSpeed;
-            animated[index * 2] =
-              parking.positions[index * 2] + Math.cos(angle) * DRIFT_RADIUS_METERS;
+            animated[index * 2] = areaPositions[index * 2] + Math.cos(angle) * DRIFT_RADIUS_METERS;
             animated[index * 2 + 1] =
-              parking.positions[index * 2 + 1] + Math.sin(angle) * DRIFT_RADIUS_METERS;
+              areaPositions[index * 2 + 1] + Math.sin(angle) * DRIFT_RADIUS_METERS;
           }
           positionsBuffer.write(animated);
         }
@@ -612,6 +634,7 @@ export const zonalMode: SpatialAnalysisModeDefinition = {
           new SpatialAnalysisRasterLayer({
             id: `zonal-choropleth-${statistic}`,
             coordinateOrigin,
+            modelMatrix,
             gridSize: [grid.columns, grid.rows],
             bounds: grid.bounds,
             rowOrigin: 'south',
@@ -629,6 +652,7 @@ export const zonalMode: SpatialAnalysisModeDefinition = {
           new SpatialAnalysisSegmentLayer({
             id: 'zonal-outline',
             coordinateOrigin,
+            modelMatrix,
             segments: outlineSegments,
             instanceCount: segmentCount,
             color: [225, 230, 240, 200],
@@ -637,6 +661,7 @@ export const zonalMode: SpatialAnalysisModeDefinition = {
           new SpatialAnalysisPointLayer({
             id: 'zonal-points',
             coordinateOrigin,
+            modelMatrix,
             positions: positionsBuffer,
             instanceCount: pointCount,
             color: [255, 255, 255, 90],

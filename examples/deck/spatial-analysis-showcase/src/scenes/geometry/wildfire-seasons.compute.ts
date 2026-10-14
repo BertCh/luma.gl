@@ -2,6 +2,14 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {
+  WEB_MERCATOR_PROJECTION,
+  buildRingEdges,
+  createGraphImporter,
+  findFeatureAt,
+  formatNumber,
+  triangulatePolygons
+} from './b3-common';
 import {COORDINATE_SYSTEM, type Layer} from '@deck.gl/core';
 import {
   getGPUTimeWindowFilterParameterValues,
@@ -17,13 +25,6 @@ import {GraphSwap} from '../../engine/graph-swap';
 import {SpatialAnalysisResources} from '../../engine/resources';
 import {SummaryReader} from '../../engine/summary-reader';
 import type {SceneContext, SceneInstance} from '../scene';
-import {
-  buildRingEdges,
-  createGraphImporter,
-  findFeatureAt,
-  formatNumber,
-  triangulatePolygons
-} from './b3-common';
 import {FeatureTriangleLayer} from './b3-layers';
 import {
   ACRES_PER_SQUARE_METER,
@@ -149,16 +150,14 @@ export async function createWildfireSeasons(
     const lngLat = imp('lnglat', lngLatBuffer, 'float32x2', layout.vertexCount);
     graph.add(
       new GPUGeometryMeasures({
-        spatialContext: {
-          coordinateSpace: options.areaSystem === 'planar' ? 'planar' : 'longitude-latitude',
-          metric:
-            options.areaSystem === 'planar'
-              ? 'native'
-              : options.areaSystem === 'spherical'
-                ? 'great-circle'
-                : 'ellipsoidal',
-          units: options.areaSystem === 'planar' ? 'native' : 'meters'
-        },
+        spatialContext:
+          options.areaSystem === 'planar'
+            ? WEB_MERCATOR_PROJECTION.spatialContext
+            : {
+                coordinateSpace: 'longitude-latitude',
+                metric: options.areaSystem === 'spherical' ? 'great-circle' : 'ellipsoidal',
+                units: 'meters'
+              },
         ellipsoidalEdgeModel: options.areaSystem === 'wgs84' ? 'coordinate-linear' : undefined,
         id: 'seasons-area',
         positions:

@@ -176,7 +176,7 @@ export const trajectoriesMode: SpatialAnalysisModeDefinition = {
     const graph = new GPUCommandGraph<void>(device, {id: 'trajectories'});
     graph.add(
       new GPUTrajectoryMetrics({
-        spatialContext: {coordinateSpace: 'planar', metric: 'native', units: 'native'},
+        spatialContext: trips.frame.spatialContext,
         id: 'trajectories',
         positions: importGraphBuffer(graph, 'positions', positionsBuffer, 'float32x2', vertexCount),
         timestamps: importGraphBuffer(

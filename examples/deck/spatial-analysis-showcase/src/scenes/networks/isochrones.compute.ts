@@ -655,6 +655,7 @@ export async function createIsochrones(
       const nodeCostsView = view(nodeCostsBuffer, 'float32', nodeCount);
       const assignments = view(assignmentsBuffer, 'uint32', nodeCount);
       const recipe = addDriveTimeCatchmentRecipe(catchmentGraph, {
+        spatialContext: network.projection.spatialContext,
         id: 'catchment',
         topology: {
           offsets,
@@ -745,6 +746,7 @@ boundary[boundaryOffset + index] = select(0u, 1u, sourceFinite && targetFinite &
       const polygonFeatureOffsetsView = view(polygonFeatureOffsets, 'uint32', RING_CAPACITY + 1);
       catchmentGraph.add(
         new GPUNetworkIsochrones({
+          spatialContext: {coordinateSpace: 'longitude-latitude', metric: 'none'},
           id: 'catchment-rings',
           topology: {
             offsets,
@@ -805,6 +807,7 @@ boundary[boundaryOffset + index] = select(0u, 1u, sourceFinite && targetFinite &
       );
       catchmentGraph.add(
         new GPUPointInPolygonJoin({
+          spatialContext: {coordinateSpace: 'longitude-latitude', metric: 'none'},
           id: 'catchment-join',
           points: {
             kind: 'points',
@@ -847,6 +850,7 @@ boundary[boundaryOffset + index] = select(0u, 1u, sourceFinite && targetFinite &
     {
       const view = importer(straightGraph);
       addStraightLineCatchmentsRecipe(straightGraph, {
+        spatialContext: network.projection.spatialContext,
         id: 'straight',
         grid: straightGrid,
         parameters: distanceSettings.importToGraph(straightGraph),

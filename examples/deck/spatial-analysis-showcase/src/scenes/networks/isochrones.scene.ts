@@ -389,6 +389,7 @@ import {
 
 const graph = new GPUCommandGraph(device, {id: 'catchments'});
 const catchment = addDriveTimeCatchmentRecipe(graph, {
+  spatialContext: network.projection.spatialContext,
   topology: {offsets, neighbors, weights, nodePositions},  // CSR in seconds, planar meters
   facilities, demand, demandValues: population,            // float32x2 points
   costLimit, maximumIterations: 64,
@@ -401,6 +402,7 @@ const catchment = addDriveTimeCatchmentRecipe(graph, {
 });
 // Closed rings of the reached ${state.cellChoice.startsWith('h3') ? 'H3' : 'Quadbin'} cells (resolution ${state.cellChoice.split('-')[1]}):
 graph.add(new GPUNetworkIsochrones({
+  spatialContext: {coordinateSpace: 'longitude-latitude', metric: 'none'},
   topology: {offsets, neighbors, weights, nodePositions: lngLat}, costs: catchment.outputs.nodeCosts, costBreaks: breaks, parameters,
   cellOutline: {family: '${state.cellChoice.startsWith('h3') ? 'h3' : 'quadbin'}', resolution: ${state.cellChoice.split('-')[1]}, output, rings: {output: ringOutput}}
 }));
@@ -412,6 +414,7 @@ breaks.write(Float32Array.of(120, 240, 360, 480, 0, 0));
 // As the crow flies, for comparison:
 const straight = new GPUCommandGraph(device, {id: 'straight'});
 addStraightLineCatchmentsRecipe(straight, {
+        spatialContext: network.projection.spatialContext,
   grid, parameters, facilities: {kind: 'points', positions: facilityPositions}, facilityCount, values: populationRaster,
   mode: '${state.distanceMode}', sumOrder: '${state.sumOrder}', outputs: {allocation, distances, statistics}
 });

@@ -240,6 +240,7 @@ import {
 
 const graph = new GPUCommandGraph(device, {id: 'dot-density'});
 graph.add(new GPUDotDensity({
+  spatialContext: projection.spatialContext,
   ...tractPolygons,                     // positions, featureOffsets, polygonOffsets, ringOffsets
   values,                               // 791 tracts × 5 categories, feature-major
   categoryCount: 5,
@@ -262,6 +263,7 @@ compiled.encode(commandEncoder, {parameters: undefined});
 
 // Uniform random points for comparison
 const random = new GPURandomPointsInPolygon({
+  spatialContext: projection.spatialContext,
   ...tractPolygons, counts, parameters: randomParameters.importToGraph(graph2), mask, output: randomOutput
 });`,
 

@@ -11,6 +11,7 @@ import {
   type UpdateParameters
 } from '@deck.gl/core';
 import {Buffer, type RenderPass} from '@luma.gl/core';
+import type {AnalysisFrame} from '../../engine/analysis-frame';
 import {Model} from '@luma.gl/engine';
 
 /** Uniform bytes every layer built on {@link StorageModelLayer} owns (room for a palette and config). */
@@ -31,7 +32,9 @@ export const STORAGE_MODEL_BLEND = {
 type StorageLayerState = {model: Model; styleBuffer: Buffer};
 
 /** Shared lifecycle: one instanced model, an owned style uniform, storage bindings from props. */
-export abstract class StorageModelLayer<PropsT extends LayerProps> extends Layer<PropsT> {
+export abstract class StorageModelLayer<PropsT extends LayerProps> extends Layer<
+  PropsT & {analysisFrame?: AnalysisFrame}
+> {
   static override layerName = 'StorageModelLayer';
   static override defaultProps = {
     coordinateSystem: COORDINATE_SYSTEM.METER_OFFSETS,
@@ -77,6 +80,21 @@ export abstract class StorageModelLayer<PropsT extends LayerProps> extends Layer
 
   override getModels(): Model[] {
     return [(this.state as StorageLayerState).model];
+  }
+
+  override _drawLayer(options: Parameters<Layer['_drawLayer']>[0]): void {
+    let {shaderModuleProps} = options;
+    if (this.props.analysisFrame && shaderModuleProps?.project) {
+      shaderModuleProps = {
+        ...shaderModuleProps,
+        project: {
+          ...shaderModuleProps.project,
+          coordinateSystem: COORDINATE_SYSTEM.LNGLAT,
+          coordinateOrigin: [0, 0, 0]
+        }
+      };
+    }
+    super._drawLayer({...options, shaderModuleProps});
   }
 
   override draw({renderPass}: {renderPass: RenderPass}): void {

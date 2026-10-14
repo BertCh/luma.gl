@@ -6,7 +6,12 @@ import {
   GPU_EARTH_MEAN_RADIUS_METERS,
   GPU_POINT_DENSITY_HEXAGON_WGSL
 } from '@luma.gl/experimental/gpu-spatial-analysis';
-import {type AlbersAnalysisFrame, type AnalysisFrame, getAlbersConstants} from './analysis-frame';
+import {
+  type AlbersAnalysisFrame,
+  type AnalysisFrame,
+  getAlbersConstants,
+  getLambertFrameConstants
+} from './analysis-frame';
 import {getRampWgsl} from './ramps';
 
 /**
@@ -416,7 +421,7 @@ function formatFloatLiteral(value: number): string {
 }
 
 /**
- * Projection hook of a layer with an `analysisFrame`: the spherical inverse of the frame
+ * Projection hook of a layer with an `analysisFrame`: the inverse of the frame
  * ({@link getAnalysisFrameInverseWgsl}), then deck's `LNGLAT` projection with a 64-bit low part.
  */
 export function getAnalysisFrameWgsl(frame: AnalysisFrame): string {
@@ -425,16 +430,17 @@ export function getAnalysisFrameWgsl(frame: AnalysisFrame): string {
 
 /**
  * WGSL constants and `fn getSpatialAnalysisFrameLngLat(position: vec2<f32>) -> vec3<f32>`: frame
- * meters to `(longitude high, latitude, longitude low)` degrees, the spherical inverse of the
- * frame (the formulas of `createAnalysisFrameProjection` in `analysis-frame.ts`, radius
- * `GPU_EARTH_MEAN_RADIUS_METERS`). Compute kernels that feed a layer drawing longitude/latitude
+ * meters to `(longitude high, latitude, longitude low)` degrees, matching
+ * `createAnalysisFrameProjection` in `analysis-frame.ts`: spherical AEQD on the mean radius,
+ * ellipsoidal WGS84 Lambert, or spherical Albers. Compute kernels feeding longitude/latitude
  * (not an engine spatial-analysis layer) use it too: the longitude is `high + low`.
  *
  * The longitude is split without cancellation, so it survives compilers that reassociate float
  * math: the high part is the origin and the offset both rounded to a 2^-16 degree grid (their sum
  * is exact in f32), the low part is the two remainders. Deck uses the low part from zoom 12 on
  * (offset projection about the viewport centre); below it the high part alone is within 1.7 m.
- * The latitude comes from one f32 `asin` (about 0.5 m).
+ * Latitude uses f32 `asin`; Lambert additionally converts authalic to geodetic latitude with
+ * Snyder's series through eccentricity^6 (the binary64 truncation error is below 0.05 m).
  */
 export function getAnalysisFrameInverseWgsl(frame: AnalysisFrame): string {
   if (frame.kind === 'albers-equal-area') return getAlbersFrameInverseWgsl(frame);
@@ -442,15 +448,23 @@ export function getAnalysisFrameInverseWgsl(frame: AnalysisFrame): string {
   const latitudeRadians = (latitude * Math.PI) / 180;
   const longitudeGrid =
     Math.round(longitude * LONGITUDE_GRID_STEPS_PER_DEGREE) / LONGITUDE_GRID_STEPS_PER_DEGREE;
-  const angle =
-    frame.kind === 'lambert-equal-area'
-      ? '2.0 * asin(min(1.0, rho / (2.0 * SPATIAL_ANALYSIS_FRAME_RADIUS)))'
-      : 'rho / SPATIAL_ANALYSIS_FRAME_RADIUS';
+  const lambert = frame.kind === 'lambert-equal-area' ? getLambertFrameConstants(frame) : undefined;
+  const angle = lambert
+    ? '2.0 * asin(min(1.0, rho / (2.0 * SPATIAL_ANALYSIS_FRAME_RADIUS)))'
+    : 'rho / SPATIAL_ANALYSIS_FRAME_RADIUS';
   return /* wgsl */ `// Analysis frame: ${frame.kind} about (${longitude}, ${latitude}).
-const SPATIAL_ANALYSIS_FRAME_RADIUS: f32 = ${formatFloatLiteral(GPU_EARTH_MEAN_RADIUS_METERS)};
-const SPATIAL_ANALYSIS_FRAME_SIN_LATITUDE: f32 = ${formatFloatLiteral(Math.sin(latitudeRadians))};
-const SPATIAL_ANALYSIS_FRAME_COS_LATITUDE: f32 = ${formatFloatLiteral(Math.cos(latitudeRadians))};
-const SPATIAL_ANALYSIS_FRAME_LATITUDE: f32 = ${formatFloatLiteral(latitude)};
+const SPATIAL_ANALYSIS_FRAME_RADIUS: f32 = ${formatFloatLiteral(lambert?.authalicRadius ?? GPU_EARTH_MEAN_RADIUS_METERS)};
+const SPATIAL_ANALYSIS_FRAME_SIN_LATITUDE: f32 = ${formatFloatLiteral(lambert?.sinAuthalicOrigin ?? Math.sin(latitudeRadians))};
+const SPATIAL_ANALYSIS_FRAME_COS_LATITUDE: f32 = ${formatFloatLiteral(lambert?.cosAuthalicOrigin ?? Math.cos(latitudeRadians))};
+${
+  lambert
+    ? `const SPATIAL_ANALYSIS_FRAME_SCALE_D: f32 = ${formatFloatLiteral(lambert.scaleD)};
+const SPATIAL_ANALYSIS_FRAME_SERIES_A: f32 = ${formatFloatLiteral(lambert.seriesA)};
+const SPATIAL_ANALYSIS_FRAME_SERIES_B: f32 = ${formatFloatLiteral(lambert.seriesB)};
+const SPATIAL_ANALYSIS_FRAME_SERIES_C: f32 = ${formatFloatLiteral(lambert.seriesC)};
+`
+    : ''
+}const SPATIAL_ANALYSIS_FRAME_LATITUDE: f32 = ${formatFloatLiteral(latitude)};
 const SPATIAL_ANALYSIS_FRAME_LONGITUDE_GRID: f32 = ${formatFloatLiteral(longitudeGrid)};
 const SPATIAL_ANALYSIS_FRAME_LONGITUDE_REST: f32 = ${formatFloatLiteral(longitude - longitudeGrid)};
 const SPATIAL_ANALYSIS_FRAME_GRID_STEPS: f32 = ${formatFloatLiteral(LONGITUDE_GRID_STEPS_PER_DEGREE)};
@@ -458,7 +472,12 @@ const SPATIAL_ANALYSIS_RADIANS_TO_DEGREES: f32 = 57.29577951308232;
 
 // Frame meters to (longitude high, latitude, longitude low) degrees.
 fn getSpatialAnalysisFrameLngLat(position: vec2<f32>) -> vec3<f32> {
-  let rho = length(position);
+${
+  lambert
+    ? `  let spherePosition = vec2<f32>(position.x / SPATIAL_ANALYSIS_FRAME_SCALE_D, position.y * SPATIAL_ANALYSIS_FRAME_SCALE_D);
+  let rho = length(spherePosition);`
+    : '  let rho = length(position);'
+}
   var deltaLongitude = 0.0;
   var latitude = SPATIAL_ANALYSIS_FRAME_LATITUDE;
   if (rho > 1e-3) {
@@ -466,11 +485,19 @@ fn getSpatialAnalysisFrameLngLat(position: vec2<f32>) -> vec3<f32> {
     let sinAngle = sin(angle);
     let cosAngle = cos(angle);
     let sinLatitude = cosAngle * SPATIAL_ANALYSIS_FRAME_SIN_LATITUDE +
-      position.y * sinAngle / rho * SPATIAL_ANALYSIS_FRAME_COS_LATITUDE;
-    latitude = asin(clamp(sinLatitude, -1.0, 1.0)) * SPATIAL_ANALYSIS_RADIANS_TO_DEGREES;
+      ${lambert ? 'spherePosition' : 'position'}.y * sinAngle / rho * SPATIAL_ANALYSIS_FRAME_COS_LATITUDE;
+${
+  lambert
+    ? `    let authalicLatitude = asin(clamp(sinLatitude, -1.0, 1.0));
+    latitude = (authalicLatitude +
+      SPATIAL_ANALYSIS_FRAME_SERIES_A * sin(2.0 * authalicLatitude) +
+      SPATIAL_ANALYSIS_FRAME_SERIES_B * sin(4.0 * authalicLatitude) +
+      SPATIAL_ANALYSIS_FRAME_SERIES_C * sin(6.0 * authalicLatitude)) * SPATIAL_ANALYSIS_RADIANS_TO_DEGREES;`
+    : '    latitude = asin(clamp(sinLatitude, -1.0, 1.0)) * SPATIAL_ANALYSIS_RADIANS_TO_DEGREES;'
+}
     deltaLongitude = atan2(
-      position.x * sinAngle,
-      rho * SPATIAL_ANALYSIS_FRAME_COS_LATITUDE * cosAngle - position.y * SPATIAL_ANALYSIS_FRAME_SIN_LATITUDE * sinAngle
+      ${lambert ? 'spherePosition' : 'position'}.x * sinAngle,
+      rho * SPATIAL_ANALYSIS_FRAME_COS_LATITUDE * cosAngle - ${lambert ? 'spherePosition' : 'position'}.y * SPATIAL_ANALYSIS_FRAME_SIN_LATITUDE * sinAngle
     ) * SPATIAL_ANALYSIS_RADIANS_TO_DEGREES;
   }
   let deltaGrid = floor(deltaLongitude * SPATIAL_ANALYSIS_FRAME_GRID_STEPS) / SPATIAL_ANALYSIS_FRAME_GRID_STEPS;

@@ -237,6 +237,7 @@ export const hotSpotsMode: SpatialAnalysisModeDefinition = {
     const searchGraph = new GPUCommandGraph<void>(device, {id: 'hot-spots-neighbor-search'});
     searchGraph.add(
       new GPUNeighborSearch({
+        spatialContext: parking.frame.spatialContext,
         id: 'neighbor-search',
         mode: 'radius',
         gridSize: GRID_SIZE,

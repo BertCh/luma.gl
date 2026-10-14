@@ -495,7 +495,7 @@ graph.add(prepared);                          // built once, reused every run
 `
     : ''
 }graph.add(
-  new GPUPointInPolygonJoin({
+  new GPUPointInPolygonJoin({spatialContext: projection.spatialContext,
     points: {kind: 'points', positions},      // float32x2 meters, uploaded once
     polygons: {kind: 'polygons', positions: tractPositions, featureOffsets, polygonOffsets, ringOffsets},
     candidateCapacity: positions.length * ${8},
@@ -510,6 +510,7 @@ graph.add(prepared);                          // built once, reused every run
 ${
   state.display === 'classes'
     ? `addPointsInPolygonsChoroplethRecipe(graph, {
+    spatialContext: projection.spatialContext,
   backend: '${state.backend}',
   points: {kind: 'points', positions}, ${state.statistic === 'count' || state.statistic === 'density' ? '' : 'values, '}statistic: '${state.statistic === 'density' ? 'count' : state.statistic}',
   polygons: {kind: 'polygons', positions: tractPositions, featureOffsets, polygonOffsets, ringOffsets, candidateCapacity},
@@ -519,7 +520,7 @@ ${
   }
 });`
     : `graph.add(
-  new GPUZonalStatistics({
+  new GPUZonalStatistics({spatialContext: projection.spatialContext,
     features: {kind: 'polygons', positions: tractPositions, featureOffsets, polygonOffsets, ringOffsets, candidateCapacity},
     positions,${state.statistic === 'count' || state.statistic === 'density' ? '' : '\n    values,                                   // per-observation float: introduced, researchGrade, ...'}${state.statistic === 'density' && state.denominator === 'population' ? '\n    areas,                                    // population / 1000 per tract' : ''}
     sumOrder: '${state.sumOrder}',

@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {GPU_WGS84_SEMI_MAJOR_AXIS_METERS} from '@luma.gl/experimental/gpu-spatial-analysis';
 import type {Layer} from '@deck.gl/core';
 import type {Buffer} from '@luma.gl/core';
 import {
@@ -111,6 +112,7 @@ export async function createNearTransit(
   const crashes = ctx.datasets.get('chicago-crashes');
   const transit = ctx.datasets.get('cta-transit');
   const origin = transit.defaultOrigin;
+  const projection = transit.getProjection(origin);
 
   const resources = new SpatialAnalysisResources(device, 'near-transit');
 
@@ -377,6 +379,7 @@ export async function createNearTransit(
           };
     graph.add(
       new GPUBufferSelection({
+        spatialContext: projection.spatialContext,
         id: 'near-transit',
         points: {
           kind: 'points',
@@ -601,7 +604,10 @@ export async function createNearTransit(
     const viewport = ctx.getViewport();
     if (!viewport) return 20;
     const [, latitude] = viewport.unproject([viewport.width / 2, viewport.height / 2]);
-    return (40075016.686 * Math.cos((latitude * Math.PI) / 180)) / (512 * 2 ** viewport.zoom);
+    return (
+      (2 * Math.PI * GPU_WGS84_SEMI_MAJOR_AXIS_METERS * Math.cos((latitude * Math.PI) / 180)) /
+      (512 * 2 ** viewport.zoom)
+    );
   };
 
   return {

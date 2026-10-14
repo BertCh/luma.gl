@@ -32,7 +32,7 @@ import {
   GPUNetworkServiceAreas
 } from '@luma.gl/experimental/gpu-network';
 import {importGraphBuffer} from '../graph-buffers';
-import {LocalMetricProjection, type SpatialAnalysisRoadNetwork} from '../spatial-analysis-data';
+import {type SpatialAnalysisRoadNetwork} from '../spatial-analysis-data';
 import {SpatialAnalysisPointLayer, SpatialAnalysisSegmentLayer} from '../spatial-analysis-layers';
 import type {
   SpatialAnalysisModeDefinition,
@@ -104,6 +104,7 @@ const METRIC_THRESHOLDS: Record<Metric, number> = {
   community: 0
 };
 
+/** Explores road-network costs with picking in the New York AEQD frame. */
 export const networkAnalysisMode: SpatialAnalysisModeDefinition = {
   id: 'network-analysis',
   title: 'Network analysis',
@@ -124,7 +125,7 @@ export const networkAnalysisMode: SpatialAnalysisModeDefinition = {
     const roads = await context.data.getNewYorkRoads();
     context.signal.throwIfAborted();
     const {device} = context;
-    const projection = new LocalMetricProjection(roads.origin);
+    const projection = roads.frame;
     const resources = new SpatialAnalysisResources(device, 'network');
     const nodeCount = roads.nodePositions.length / 2;
     const segmentCount = roads.segmentNodes.length;

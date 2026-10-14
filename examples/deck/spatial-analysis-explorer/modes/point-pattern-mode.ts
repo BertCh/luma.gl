@@ -59,7 +59,6 @@ import {
   GPUGeographicDistribution
 } from '@luma.gl/experimental/gpu-spatial-analysis';
 import {importGraphBuffer} from '../graph-buffers';
-import {LocalMetricProjection} from '../spatial-analysis-data';
 import {
   SpatialAnalysisPointLayer,
   SpatialAnalysisSegmentLayer,
@@ -165,6 +164,7 @@ type WindowChoice = 'extent' | 'view';
 type CategoryChoice = 'all' | `${number}`;
 type Bounds = [number, number, number, number];
 
+/** Explores point-pattern statistics in the New York AEQD frame. */
 export const pointPatternMode: SpatialAnalysisModeDefinition = {
   id: 'point-pattern',
   title: 'Pattern',
@@ -193,7 +193,7 @@ export const pointPatternMode: SpatialAnalysisModeDefinition = {
     const {device} = context;
     const resources = new SpatialAnalysisResources(device, 'point-pattern');
     const pointCount = pois.positions.length / 2;
-    const projection = new LocalMetricProjection(pois.origin);
+    const projection = pois.frame;
 
     // Top categories by count; every other category maps to a group id that is excluded.
     const categoryTotals = new Map<number, number>();
@@ -380,6 +380,7 @@ export const pointPatternMode: SpatialAnalysisModeDefinition = {
       ) => importGraphBuffer(patternGraph, name, outputs[name], format, length);
       patternGraph.add(
         new GPURipley({
+          spatialContext: pois.frame.spatialContext,
           id: 'ripley',
           positions,
           mask,
@@ -400,6 +401,7 @@ export const pointPatternMode: SpatialAnalysisModeDefinition = {
       );
       patternGraph.add(
         new GPURipleyDistanceFunctions({
+          spatialContext: pois.frame.spatialContext,
           id: 'ripley-distance',
           positions,
           mask,
@@ -416,6 +418,7 @@ export const pointPatternMode: SpatialAnalysisModeDefinition = {
       );
       patternGraph.add(
         new GPUVariogram({
+          spatialContext: pois.frame.spatialContext,
           id: 'variogram',
           positions,
           values,
@@ -435,6 +438,7 @@ export const pointPatternMode: SpatialAnalysisModeDefinition = {
       );
       patternGraph.add(
         new GPUSpatialCorrelogram({
+          spatialContext: pois.frame.spatialContext,
           id: 'correlogram',
           positions,
           values,
@@ -459,6 +463,7 @@ export const pointPatternMode: SpatialAnalysisModeDefinition = {
       );
       patternGraph.add(
         new GPUPointPatternIndices({
+          spatialContext: pois.frame.spatialContext,
           id: 'indices',
           positions,
           mask,
@@ -500,6 +505,7 @@ export const pointPatternMode: SpatialAnalysisModeDefinition = {
       const circleVertices = view('circleVertices', 'float32x2', GROUP_COUNT * RING_VERTICES);
       distributionGraph.add(
         new GPUGeographicDistribution({
+          spatialContext: pois.frame.spatialContext,
           id: 'distribution',
           positions,
           weights: importGraphBuffer(

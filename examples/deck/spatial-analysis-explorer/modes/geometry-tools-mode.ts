@@ -18,7 +18,6 @@ import {
   GPU_SHAPE_DESCRIPTORS_PARAMETER_LENGTH
 } from '@luma.gl/experimental/gpu-spatial-analysis';
 import {importGraphBuffer} from '../graph-buffers';
-import {LocalMetricProjection} from '../spatial-analysis-data';
 import {SpatialAnalysisPointLayer, SpatialAnalysisSegmentLayer} from '../spatial-analysis-layers';
 import type {
   SpatialAnalysisModeDefinition,
@@ -93,7 +92,7 @@ export const geometryToolsMode: SpatialAnalysisModeDefinition = {
     const parking = await context.data.getSanFranciscoBikeParking();
     context.signal.throwIfAborted();
     const {device} = context;
-    const projection = new LocalMetricProjection(zones.origin);
+    const projection = zones.frame;
     const resources = new SpatialAnalysisResources(device, 'geometry-tools');
     const featureCount = zones.featureIds.length;
     const vertexCount = zones.polygonPositions.length / 2;
@@ -251,6 +250,7 @@ export const geometryToolsMode: SpatialAnalysisModeDefinition = {
       );
       shapeGraph.add(
         new GPULabelPoint({
+          spatialContext: zones.frame.spatialContext,
           id: 'label-point',
           positions,
           featureOffsets,
@@ -267,6 +267,7 @@ export const geometryToolsMode: SpatialAnalysisModeDefinition = {
       ) as Record<keyof typeof columns, GraphDataView<'float32'>>;
       shapeGraph.add(
         new GPUShapeDescriptors({
+          spatialContext: zones.frame.spatialContext,
           id: 'shape-descriptors',
           positions,
           featureOffsets,
@@ -385,6 +386,7 @@ export const geometryToolsMode: SpatialAnalysisModeDefinition = {
     const outlineGraph = new GPUCommandGraph<void>(device, {id: 'geometry-tools-outline'});
     outlineGraph.add(
       new GPUOutlineGeometry({
+        spatialContext: zones.frame.spatialContext,
         id: 'outline',
         positions: importGraphBuffer(
           outlineGraph,
@@ -450,6 +452,7 @@ export const geometryToolsMode: SpatialAnalysisModeDefinition = {
       const countView = importGraphBuffer(clipGraph, 'clip-count', clipCount, 'uint32', 1);
       clipGraph.add(
         new GPURectangleClip({
+          spatialContext: zones.frame.spatialContext,
           id: 'rectangle-clip',
           positions: importGraphBuffer(
             clipGraph,

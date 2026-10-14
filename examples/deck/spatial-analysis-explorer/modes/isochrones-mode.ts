@@ -37,7 +37,6 @@ import {
 } from '@luma.gl/experimental/gpu-network';
 import {importGraphBuffer} from '../graph-buffers';
 import {GraphSwap} from '../graph-swap';
-import {LocalMetricProjection} from '../spatial-analysis-data';
 import {SpatialAnalysisPointLayer, SpatialAnalysisSegmentLayer} from '../spatial-analysis-layers';
 import type {
   SpatialAnalysisModeDefinition,
@@ -159,7 +158,7 @@ export const isochronesMode: SpatialAnalysisModeDefinition = {
     const roads = await context.data.getNewYorkRoads();
     context.signal.throwIfAborted();
     const {device} = context;
-    const projection = new LocalMetricProjection(roads.origin);
+    const projection = roads.frame;
     const resources = new SpatialAnalysisResources(device, 'isochrones');
     const nodeCount = roads.nodePositions.length / 2;
     const segmentCount = roads.segmentNodes.length;
@@ -349,6 +348,7 @@ export const isochronesMode: SpatialAnalysisModeDefinition = {
       graph.add(
         new GPUNetworkIsochrones({
           id: 'isochrones-raster',
+          spatialContext: roads.frame.spatialContext,
           topology: {
             offsets: csrOffsets,
             neighbors: csrNeighbors,

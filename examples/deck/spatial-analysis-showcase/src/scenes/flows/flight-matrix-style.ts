@@ -17,6 +17,7 @@
  *   with the midpoint "as expected by chance"; orange is above.
  */
 
+import {GPU_WGS84_SEMI_MAJOR_AXIS_METERS} from '@luma.gl/experimental/gpu-spatial-analysis';
 import {getClassPalette, hexToRgba, makeClassTable} from '../../cartography/class-table';
 import {getRegistryColors, type MapGround} from '../../cartography/hue-registry';
 import type {ClassTable} from '../scene';
@@ -38,7 +39,7 @@ export const LABEL_GAP_SHARE = 0.04;
 /** Half the side of the sheet and mask quads: far larger than any view of the card. */
 export const SHEET_HALF = 15_000_000;
 
-const EARTH_RADIUS = 6_378_137;
+const EARTH_RADIUS = GPU_WGS84_SEMI_MAJOR_AXIS_METERS;
 
 /** Web Mercator metres at the equator origin to `[longitude, latitude]` (for camera bounds only). */
 export function metersToLngLat(x: number, y: number): [number, number] {

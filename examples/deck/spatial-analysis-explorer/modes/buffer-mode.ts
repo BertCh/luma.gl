@@ -25,7 +25,6 @@ import {GPUBufferSelection} from '@luma.gl/experimental/gpu-spatial-analysis';
 import {importGraphBuffer} from '../graph-buffers';
 import {GraphSwap} from '../graph-swap';
 import {SpatialAnalysisPointLayer, SpatialAnalysisSegmentLayer} from '../spatial-analysis-layers';
-import {LocalMetricProjection} from '../spatial-analysis-data';
 import type {
   SpatialAnalysisModeDefinition,
   SpatialAnalysisModeInstance
@@ -86,7 +85,7 @@ export const bufferMode: SpatialAnalysisModeDefinition = {
     context.signal.throwIfAborted();
     const {device} = context;
     const resources = new SpatialAnalysisResources(device, 'buffer');
-    const projection = new LocalMetricProjection(roads.origin);
+    const projection = roads.frame;
     const pointCount = pois.positions.length / 2;
     const segmentCount = roads.segments.length / 4;
 
@@ -127,6 +126,7 @@ export const bufferMode: SpatialAnalysisModeDefinition = {
       });
       graph.add(
         new GPUBufferSelection({
+          spatialContext: roads.frame.spatialContext,
           id: 'buffer',
           points: {
             kind: 'points',

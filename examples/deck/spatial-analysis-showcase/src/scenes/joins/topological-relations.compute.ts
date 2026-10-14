@@ -275,6 +275,7 @@ export async function createTopologicalRelations(
       prepared
     };
     const innerJoin = new GPUSpatialPredicateJoin({
+      spatialContext: projection.spatialContext,
       ...common,
       id: 'inner',
       output: {
@@ -325,6 +326,7 @@ export async function createTopologicalRelations(
     });
     graph.add(innerJoin);
     const antiJoin = new GPUSpatialPredicateJoin({
+      spatialContext: projection.spatialContext,
       ...common,
       id: 'anti',
       how: 'anti',

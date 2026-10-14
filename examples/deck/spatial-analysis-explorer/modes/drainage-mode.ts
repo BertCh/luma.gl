@@ -57,7 +57,6 @@ import {
 } from '@luma.gl/experimental/gpu-raster';
 import {importGraphBuffer} from '../graph-buffers';
 import {GraphSwap} from '../graph-swap';
-import {LocalMetricProjection} from '../spatial-analysis-data';
 import {
   SpatialAnalysisPointLayer,
   SpatialAnalysisRasterLayer,
@@ -174,7 +173,7 @@ export const drainageMode: SpatialAnalysisModeDefinition = {
     const cellCount = width * height;
     const grid = makeGPURasterMetadata({width, height, cellSize});
     const origin: [number, number, number] = [terrain.origin[0], terrain.origin[1], 0];
-    const projection = new LocalMetricProjection(terrain.origin);
+    const projection = terrain.frame;
     const resources = new SpatialAnalysisResources(device, 'drainage');
     const cellAreaSquareMeters = cellSize[0] * cellSize[1];
 

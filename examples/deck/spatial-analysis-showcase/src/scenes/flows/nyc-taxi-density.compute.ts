@@ -232,6 +232,7 @@ export async function createNycTaxiDensity(
     const smoothed = spec.kind === 'rides' && options.binning === 'grid';
     graph.add(
       new GPUPointDensity({
+        spatialContext: projection.spatialContext,
         id: 'density',
         positions: importGraphBuffer(graph, 'positions', positionsBuffer, 'float32x2', pointCount),
         mask: importGraphBuffer(

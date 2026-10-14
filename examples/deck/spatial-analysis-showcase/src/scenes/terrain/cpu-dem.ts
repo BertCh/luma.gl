@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {GPU_EARTH_MEAN_RADIUS_METERS} from '@luma.gl/experimental/gpu-spatial-analysis';
 /**
  * CPU probes of a DEM for the terrain chapter: bilinear sampling, Horn's 3 x 3 neighbourhood,
  * a sight line with earth curvature, a horizon fan, geomorphon rays and the summit disc and ring.
@@ -23,7 +24,7 @@ import type {AlpsGrid} from './b14a-grid';
 import type {AlpsTerrain} from './b14b-terrain';
 
 /** Mean Earth radius in metres (the value the viewshed contributors use for curvature). */
-export const EARTH_RADIUS_METERS = 6371008.8;
+export const EARTH_RADIUS_METERS = GPU_EARTH_MEAN_RADIUS_METERS;
 
 /** Standard atmospheric refraction coefficient `k` of terrestrial sight lines. */
 export const DEFAULT_REFRACTION = 0.13;

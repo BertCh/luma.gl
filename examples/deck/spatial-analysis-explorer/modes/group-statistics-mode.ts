@@ -46,7 +46,6 @@ import {
   type GPUGroupStatistic
 } from '@luma.gl/experimental/gpu-dataframe';
 import {importGraphBuffer} from '../graph-buffers';
-import {LocalMetricProjection} from '../spatial-analysis-data';
 import {SpatialAnalysisPointLayer} from '../spatial-analysis-layers';
 import type {
   SpatialAnalysisModeDefinition,
@@ -322,7 +321,7 @@ export const groupStatisticsMode: SpatialAnalysisModeDefinition = {
     const [firstTime, lastTime] = trips.timeRange;
 
     // Quadbin keys need longitude/latitude; the dataset stores planar meters around its origin.
-    const metricProjection = new LocalMetricProjection(trips.origin);
+    const metricProjection = trips.frame;
     const lngLat = new Float32Array(pointCount * 2);
     for (let point = 0; point < pointCount; point++) {
       const [longitude, latitude] = metricProjection.unproject(

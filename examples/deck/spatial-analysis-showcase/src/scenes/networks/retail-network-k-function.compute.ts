@@ -382,6 +382,7 @@ export async function createRetailNetworkKFunction(
     const kGraph = new GPUCommandGraph<void>(device, {id: 'retail-network-k'});
     kGraph.add(
       new GPUNetworkKFunction({
+        spatialContext: projection.spatialContext,
         id: 'k',
         positions: importGraphBuffer(kGraph, 'events', eventBuffer, 'float32x2', EVENT_CAPACITY),
         topology: {

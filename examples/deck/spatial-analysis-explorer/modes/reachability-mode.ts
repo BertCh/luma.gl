@@ -23,7 +23,6 @@ import {
   GPU_NETWORK_REACHABILITY_NONE
 } from '@luma.gl/experimental/gpu-network';
 import {importGraphBuffer} from '../graph-buffers';
-import {LocalMetricProjection} from '../spatial-analysis-data';
 import {SpatialAnalysisPointLayer, SpatialAnalysisSegmentLayer} from '../spatial-analysis-layers';
 import type {
   SpatialAnalysisModeDefinition,
@@ -62,6 +61,7 @@ const UNREACHED_COLOR = [90, 92, 105, 110] as const;
 
 type View = 'bands' | 'continuous';
 
+/** Explores network reachability with picking in the New York AEQD frame. */
 export const reachabilityMode: SpatialAnalysisModeDefinition = {
   id: 'reachability',
   title: 'Reachability',
@@ -75,7 +75,7 @@ export const reachabilityMode: SpatialAnalysisModeDefinition = {
     const roads = await context.data.getNewYorkRoads();
     context.signal.throwIfAborted();
     const {device} = context;
-    const projection = new LocalMetricProjection(roads.origin);
+    const projection = roads.frame;
     const resources = new SpatialAnalysisResources(device, 'reachability');
     const nodeCount = roads.nodePositions.length / 2;
     const segmentCount = roads.segmentNodes.length;

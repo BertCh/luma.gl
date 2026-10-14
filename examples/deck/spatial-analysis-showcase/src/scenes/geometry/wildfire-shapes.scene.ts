@@ -463,12 +463,13 @@ import {
 // ringOffsets maps rings to vertices. The first ring of each part is its shell, later rings are holes.
 // Ring grouping here: ${state.ringGrouping === 'parts' ? 'real polygon parts' : 'one polygon per fire (polygonOffsets = fire ring offsets)'}.
 const graph = new GPUCommandGraph(device, {id: 'wildfires'});
-graph.add(new GPUGeometryMeasures({spatialContext: {coordinateSpace: ('${state.areaSystem}') === 'planar' ? 'planar' : 'longitude-latitude', metric: ('${state.areaSystem}') === 'planar' ? 'native' : ('${state.areaSystem}') === 'spherical' ? 'great-circle' : 'ellipsoidal', units: ('${state.areaSystem}') === 'planar' ? 'native' : 'meters'},ellipsoidalEdgeModel: ('${state.areaSystem}') === 'wgs84' ? 'coordinate-linear' : undefined,
+graph.add(new GPUGeometryMeasures({spatialContext: ('${state.areaSystem}') === 'planar' ? WEB_MERCATOR_PROJECTION.spatialContext : {coordinateSpace: 'longitude-latitude', metric: ('${state.areaSystem}') === 'spherical' ? 'great-circle' : 'ellipsoidal', units: 'meters'}, ellipsoidalEdgeModel: ('${state.areaSystem}') === 'wgs84' ? 'coordinate-linear' : undefined,
   positions: lngLat,                    // float32x2 lon/lat (planar: Web Mercator meters)
   geometryType: 'polygons', featureOffsets, polygonOffsets, ringOffsets,${state.largeRings === 'serial' ? '\n  cooperativeRingRows: 0,' : ''}
   output: {areas, lengths, centroids, vertexCounts}
 }));
 graph.add(new GPUShapeDescriptors({
+  spatialContext: WEB_MERCATOR_PROJECTION.spatialContext,
   positions: webMercatorMeters,         // planar coordinates
   featureOffsets, polygonOffsets, ringOffsets,
   convexityMethod: '${state.convexityMethod}',

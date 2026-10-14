@@ -275,9 +275,10 @@ export default defineScene<TransitPlaybackOptions>({
 import {GPUTrajectoryPlayhead, getGPUTrajectoryPlayheadParameterValues} from '@luma.gl/experimental/gpu-spatial-analysis';
 import {GPUTimeWindowFilter, getGPUTimeWindowFilterParameterValues} from '@luma.gl/experimental/gpu-dataframe';
 
-// positions: float32x2 planar meters, timestamps: float32 seconds since 07:00, trackOffsets: uint32 (trips + 1)
+// positions: float32x2 AEQD frame meters, timestamps: float32 seconds since 07:00, trackOffsets: uint32 (trips + 1)
 const playGraph = new GPUCommandGraph(device, {id: 'timetable-playhead'});
 playGraph.add(new GPUTrajectoryPlayhead({
+  spatialContext: trips.spatialContext,
   positions, timestamps, trackOffsets,
   parameters: playheadParameters.importToGraph(playGraph),
   output: {

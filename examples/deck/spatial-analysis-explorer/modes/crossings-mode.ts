@@ -184,6 +184,7 @@ export const crossingsMode: SpatialAnalysisModeDefinition = {
       const graph = new GPUCommandGraph<void>(device, {id: 'crossings-roads'});
       graph.add(
         new GPUSegmentIntersection({
+          spatialContext: roads.frame.spatialContext,
           id: 'road-crossings',
           left: {
             kind: 'lines',

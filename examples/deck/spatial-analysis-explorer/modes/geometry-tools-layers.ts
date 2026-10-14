@@ -209,6 +209,7 @@ export async function createShapeOverlay(
         const graph = new GPUCommandGraph<void>(device, {id: `geometry-tools-${kind}`});
         graph.add(
           new GPUShapeGenerator({
+            spatialContext: parking.frame.spatialContext,
             id: `shape-${kind}`,
             shape: kind,
             maximumSegments: MAXIMUM_SEGMENTS,
@@ -259,6 +260,7 @@ export async function createShapeOverlay(
     const rows = importGraphBuffer(hilbertGraph, 'rows', hilbertRows, 'uint32', pointCount);
     hilbertGraph.add(
       new GPUHilbertKeys({
+        spatialContext: parking.frame.spatialContext,
         id: 'hilbert',
         order: GPU_HILBERT_MAXIMUM_ORDER,
         positions: centers,

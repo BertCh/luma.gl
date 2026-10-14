@@ -8,12 +8,13 @@
  * TypeScript, no GPU. All coordinates are `[longitude, latitude]` in degrees.
  */
 
+import {GPU_EARTH_MEAN_RADIUS_METERS} from '@luma.gl/experimental/gpu-spatial-analysis';
 import type {GeoJsonGeometry} from '../data/loaders';
 import type {Place} from './gazetteer/types';
 import {getFeatureLabelPoint} from './polygon-mesh';
 
 /** Mean Earth radius in metres used by the haversine formula. */
-const EARTH_RADIUS_METERS = 6371008.8;
+const EARTH_RADIUS_METERS = GPU_EARTH_MEAN_RADIUS_METERS;
 
 /** Metres per degree of latitude (spherical Earth). */
 const METERS_PER_DEGREE = (Math.PI / 180) * EARTH_RADIUS_METERS;

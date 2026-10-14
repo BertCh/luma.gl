@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import type {GPUSpatialContext} from '@luma.gl/experimental/gpu-spatial-analysis';
 /**
  * Analysis kit of the weights scenes, adapted from the explorer's weights mode. It works on any
  * weights source (polygon contiguity, kNN or distance band on centroids, a regular lattice): the
@@ -42,6 +43,8 @@ export type WeightsCsrBuffers = {offsets: Buffer; neighbors: Buffer; weights: Bu
 
 /** Properties of {@link createWeightsKit}. */
 export type WeightsKitProps = {
+  /** Context of the positions used to construct the weights. */
+  spatialContext: GPUSpatialContext;
   device: Device;
   resources: SpatialAnalysisResources;
   /** Prefix for debug IDs. */
@@ -237,6 +240,7 @@ export async function createWeightsKit(props: WeightsKitProps): Promise<WeightsK
     matrix: WeightsCsrBuffers,
     count: number
   ) => ({
+    spatialContext: props.spatialContext,
     offsets: importGraphBuffer(graph, `${name}-offsets`, matrix.offsets, 'uint32', rowCount + 1),
     neighbors: importGraphBuffer(graph, `${name}-neighbors`, matrix.neighbors, 'uint32', count),
     weights: importGraphBuffer(graph, `${name}-weights`, matrix.weights, 'float32', count)

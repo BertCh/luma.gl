@@ -154,7 +154,7 @@ export function createWeightsCore(props: {
     resources.createBuffer(`${id}-${name}`, data);
 
   const positions = create('centroids', geography.centroids);
-  const verticesBuffer = create('contiguity-vertices', geography.contiguityVertices);
+  const verticesBuffer = create('contiguity-vertices', geography.analysisContiguityVertices);
   const ringOffsetsBuffer = create('contiguity-ring-offsets', geography.contiguityRingOffsets);
   const featureOffsetsBuffer = create('feature-polygon-offsets', geography.featurePolygonOffsets);
   const polygonOffsetsBuffer = create('polygon-ring-offsets', geography.polygonRingOffsets);
@@ -197,6 +197,7 @@ export function createWeightsCore(props: {
     withDistances: boolean,
     capacity = slots
   ) => ({
+    spatialContext: geography.analysisFrame.spatialContext,
     offsets: importGraphBuffer(graph, 'offsets', target.offsets, 'uint32', rowCount + 1),
     neighbors: importGraphBuffer(graph, 'neighbors', target.neighbors, 'uint32', capacity),
     weights: importGraphBuffer(graph, 'weights', target.weights, 'float32', capacity),
@@ -248,7 +249,7 @@ export function createWeightsCore(props: {
             'vertices',
             verticesBuffer,
             'float32x2',
-            geography.contiguityVertices.length / 2
+            geography.analysisContiguityVertices.length / 2
           ),
           featureOffsets: importGraphBuffer(
             graph,
@@ -282,6 +283,7 @@ export function createWeightsCore(props: {
     const graph = new GPUCommandGraph<void>(device, {id: `${id}-search-${mode}-${k}`});
     graph.add(
       new GPUNeighborSearch({
+        spatialContext: geography.analysisFrame.spatialContext,
         id: 'neighbor-search',
         mode,
         k: mode === 'knn' ? k : undefined,
@@ -341,6 +343,7 @@ export function createWeightsCore(props: {
     const withDistances = operation === 'kernel';
     graph.add(
       new GPUSpatialWeightsTransform({
+        spatialContext: geography.analysisFrame.spatialContext,
         id: `transform-${operation}`,
         operation,
         weights: {
@@ -459,6 +462,7 @@ export function createWeightsCore(props: {
         const graph = new GPUCommandGraph<void>(device, {id: `${id}-${name}-knn-${k}`});
         graph.add(
           new GPUNeighborSearch({
+            spatialContext: geography.analysisFrame.spatialContext,
             id: `${name}-search`,
             mode: 'knn',
             k,

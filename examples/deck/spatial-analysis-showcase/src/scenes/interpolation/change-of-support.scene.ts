@@ -354,6 +354,7 @@ ${
   state.target === 'community'
     ? '// target zones: the 77 community-area polygons (GeoArrow offsets)'
     : `graph.add(new GPUGridGenerator({
+  spatialContext: projection.spatialContext,
   gridType: '${state.target === 'hexagon' ? 'hex' : state.target}', columns: 56, rows: 76,
   parameters: gridParameters.importToGraph(graph),   // [minX, minY, ${state.cellWidth} m, pitch]
   output: {positions: cellVertices}
@@ -366,6 +367,7 @@ const grid = makeGPURasterMetadata({
 rasterParameters.write(getGPUPolygonRasterizationParameterValues(grid));   // per-frame origin and cell size
 // Zone systems are polygon ports {kind: 'polygons', positions, featureOffsets, polygonOffsets, ringOffsets}.
 const result = addChangeOfSupportRecipe(graph, {
+  spatialContext: projection.spatialContext,
   grid, parameters: rasterParameters.importToGraph(graph),
   source: {...tractPolygons, crossingCapacity: 1 << 18},
   target: {...${state.target === 'community' ? 'communityPolygons' : 'gridPolygons'}, crossingCapacity: 1 << 18},${
@@ -381,6 +383,7 @@ const result = addChangeOfSupportRecipe(graph, {
   outputs: {extensiveValues, intensiveValues, categoryShares: shares}
 });
 graph.add(new GPUPycnophylactic({
+  spatialContext: projection.spatialContext,
   width: 320, height: 384, zones: sourceZones, zoneCount: 791, totals,
   maximumIterations: ${ITERATION_LADDER[state.iterations]}, kernel: '${state.kernel}', output: {mass: surface}
 }));

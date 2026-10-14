@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {GPU_EARTH_MEAN_RADIUS_METERS} from '@luma.gl/experimental/gpu-spatial-analysis';
 import {getGreatCircleKilometers} from './us-shipping.stats';
 import {
   CLIP_WALK_REGION,
@@ -17,7 +18,7 @@ import {
  * the story can draw one real segment cell by cell.
  */
 
-const EARTH_RADIUS_KILOMETERS = 6371.0088;
+const EARTH_RADIUS_KILOMETERS = GPU_EARTH_MEAN_RADIUS_METERS / 1000;
 const DEGREES = Math.PI / 180;
 
 /** The four ways to class a heavy-tailed value, in the order of the control. */

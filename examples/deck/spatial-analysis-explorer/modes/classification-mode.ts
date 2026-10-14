@@ -56,9 +56,13 @@ import {
   GPUClassificationFit,
   GPUPointDensity
 } from '@luma.gl/experimental/gpu-spatial-analysis';
+import {
+  getDatasetFrame,
+  getFrameDisplayModelMatrix,
+  reprojectFramePositions
+} from '../spatial-analysis-data';
 import {importGraphBuffer} from '../graph-buffers';
 import {GraphSwap} from '../graph-swap';
-import {LocalMetricProjection} from '../spatial-analysis-data';
 import type {
   SpatialAnalysisModeDefinition,
   SpatialAnalysisModeInstance
@@ -250,7 +254,9 @@ export const classificationMode: SpatialAnalysisModeDefinition = {
     const trips = await context.data.getNewYorkTrips();
     context.signal.throwIfAborted();
     const {device} = context;
-    const projection = new LocalMetricProjection(trips.origin);
+    const projection = getDatasetFrame(trips, 'area');
+    const modelMatrix = Float64Array.from(getFrameDisplayModelMatrix(projection));
+    const areaPositions = reprojectFramePositions(trips.vertexPositions, trips.frame, projection);
     const resources = new SpatialAnalysisResources(device, 'classification');
     const pointCount = trips.vertexTimestamps.length;
     const speeds = getVertexSpeeds(
@@ -259,7 +265,7 @@ export const classificationMode: SpatialAnalysisModeDefinition = {
       trips.tripOffsets
     );
 
-    const positionsBuffer = resources.createBuffer('positions', trips.vertexPositions);
+    const positionsBuffer = resources.createBuffer('positions', areaPositions);
     const speedsBuffer = resources.createBuffer('speeds', speeds);
     const bounds = resources.createParameterBuffer('bounds', 'float32', 4);
     const hexagonRadius = resources.createParameterBuffer(
@@ -446,6 +452,7 @@ export const classificationMode: SpatialAnalysisModeDefinition = {
       const filter = bind.word(filterMask, cellCount);
       graph.add(
         new GPUPointDensity({
+          spatialContext: projection.spatialContext,
           id: 'density',
           positions: importGraphBuffer(
             graph,
@@ -1180,6 +1187,7 @@ export const classificationMode: SpatialAnalysisModeDefinition = {
         const layers: Layer[] = [
           new PackedColorRasterLayer({
             id: `classification-${binning}-${bivariate ? 'bivariate' : 'classes'}`,
+            modelMatrix,
             coordinateOrigin,
             gridSize: binning === 'grid' ? GRID_SIZE : HEXAGON_GRID_SIZE,
             bounds: bounds.buffer,
@@ -1193,6 +1201,7 @@ export const classificationMode: SpatialAnalysisModeDefinition = {
           layers.push(
             new SpatialAnalysisPointLayer({
               id: 'classification-points',
+              modelMatrix,
               coordinateOrigin,
               positions: positionsBuffer,
               instanceCount: pointCount,

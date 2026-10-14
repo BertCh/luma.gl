@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {LocalMetricProjection} from '../../engine/projection';
 import type {Layer} from '@deck.gl/core';
 import {COORDINATE_SYSTEM} from '@deck.gl/core';
 import type {Buffer} from '@luma.gl/core';
@@ -33,7 +34,6 @@ import {
   computeCentroids,
   computeQueenAdjacency,
   createFeatureLocator,
-  createLocalProjector,
   formatInteger,
   formatNumber,
   getQuantile,
@@ -93,7 +93,8 @@ export async function createTradeAreas(
   const {device} = ctx;
   const resources = new SpatialAnalysisResources(device, 'trade-areas');
   const origin = tracts.defaultOrigin;
-  const project = createLocalProjector(origin);
+  const projection = new LocalMetricProjection(origin);
+  const project = (longitude: number, latitude: number) => projection.project(longitude, latitude);
 
   // ---- Demand: one row per tract (centroid), several measures. ----
   const geometry = readPolygonGeometry(tracts);
@@ -333,6 +334,7 @@ export async function createTradeAreas(
   const supplyView = view('supply', supplyBuffer, 'float32', facilityCount);
   const demandView = view('demand', demandBuffer, 'float32', demandCount);
   const weightsOf = (name: string, csr: Csr) => ({
+    spatialContext: projection.spatialContext,
     offsets: view(`${name}-offsets`, csr.offsets, 'uint32', csr.rows + 1),
     neighbors: view(`${name}-neighbors`, csr.neighbors, 'uint32', csr.slots),
     weights: view(`${name}-weights`, csr.weights, 'float32', csr.slots)
@@ -343,6 +345,7 @@ export async function createTradeAreas(
   // Demand rows list the facilities within reach; facility rows list the demand.
   graph.add(
     new GPUNeighborSearch({
+      spatialContext: projection.spatialContext,
       id: 'demand-to-facility',
       mode: 'radius',
       positions: facilityPositionsView,
@@ -358,6 +361,7 @@ export async function createTradeAreas(
   );
   graph.add(
     new GPUNeighborSearch({
+      spatialContext: projection.spatialContext,
       id: 'facility-to-demand',
       mode: 'radius',
       positions: demandPositionsView,

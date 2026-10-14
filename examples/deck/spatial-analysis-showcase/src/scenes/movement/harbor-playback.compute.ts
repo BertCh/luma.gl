@@ -165,7 +165,6 @@ export async function createHarborPlayback(
   const {device} = ctx;
   const {trackCount, vertexCount, segmentCount} = vessels;
   const resources = new SpatialAnalysisResources(device, 'harbor');
-  const coordinateOrigin: [number, number, number] = [vessels.origin[0], vessels.origin[1], 0];
   const segmentRowStarts = getSegmentRowStarts(vessels);
 
   // ---- Static inputs ----------------------------------------------------------------------------
@@ -244,6 +243,7 @@ export async function createHarborPlayback(
   const playheadGraph = new GPUCommandGraph<void>(device, {id: 'harbor-playhead'});
   playheadGraph.add(
     new GPUTrajectoryPlayhead({
+      spatialContext: vessels.spatialContext,
       id: 'playhead',
       positions: importGraphBuffer(
         playheadGraph,
@@ -421,7 +421,7 @@ export async function createHarborPlayback(
   const metricsGraph = new GPUCommandGraph<void>(device, {id: 'harbor-metrics'});
   metricsGraph.add(
     new GPUTrajectoryMetrics({
-      spatialContext: {coordinateSpace: 'planar', metric: 'native', units: 'native'},
+      spatialContext: vessels.spatialContext,
       id: 'metrics',
       positions: importGraphBuffer(
         metricsGraph,
@@ -557,6 +557,7 @@ export async function createHarborPlayback(
     );
     graph.add(
       new GPUTrajectoryResample({
+        spatialContext: vessels.spatialContext,
         id: 'resample',
         positions: importGraphBuffer(graph, 'positions', positionsBuffer, 'float32x2', vertexCount),
         timestamps: importGraphBuffer(
@@ -1539,7 +1540,7 @@ export async function createHarborPlayback(
         layers.push(
           new SpatialAnalysisSegmentLayer({
             id: 'harbor-backdrop',
-            coordinateOrigin,
+            analysisFrame: vessels.analysisFrame,
             segments: segmentsBuffer,
             instanceCount: segmentCount,
             widthPixels: 0.8,
@@ -1553,7 +1554,7 @@ export async function createHarborPlayback(
         layers.push(
           new SpatialAnalysisSegmentLayer({
             id: 'harbor-anchorages',
-            coordinateOrigin,
+            analysisFrame: vessels.analysisFrame,
             segments: anchorageOutlineBuffer,
             instanceCount: anchorageEdgeCount,
             widthPixels: 0.7,
@@ -1565,7 +1566,7 @@ export async function createHarborPlayback(
         layers.push(
           new SpatialAnalysisSegmentLayer({
             id: `harbor-fingerprint-${resample.sampleCount}`,
-            coordinateOrigin,
+            analysisFrame: vessels.analysisFrame,
             segments: resample.routeSegments,
             instanceCount: trackCount * (resample.sampleCount - 1),
             widthPixels: 1,
@@ -1578,7 +1579,7 @@ export async function createHarborPlayback(
         layers.push(
           new SpatialAnalysisSegmentLayer({
             id: 'harbor-trails',
-            coordinateOrigin,
+            analysisFrame: vessels.analysisFrame,
             segments: segmentsBuffer,
             ids: trailIds,
             drawCommands: trailDraw,
@@ -1601,7 +1602,7 @@ export async function createHarborPlayback(
         layers.push(
           new StopMarkerLayer({
             id: 'harbor-stops',
-            coordinateOrigin,
+            analysisFrame: vessels.analysisFrame,
             centroids: stopCentroids,
             durations: stopDurations,
             drawCommands: stopDraw,
@@ -1670,7 +1671,7 @@ export async function createHarborPlayback(
     const baseSize = options.markerSize + (zoomBand ? 1 : -1);
     return new VesselMarkerLayer({
       id,
-      coordinateOrigin,
+      analysisFrame: vessels.analysisFrame,
       ids: only?.ids ?? activeIds,
       positions: currentPositions,
       headings,
@@ -1704,7 +1705,7 @@ export async function createHarborPlayback(
       layers.push(
         new SpatialAnalysisSegmentLayer({
           id: `harbor-focus-track-${options.focus}`,
-          coordinateOrigin,
+          analysisFrame: vessels.analysisFrame,
           segments: segmentsBuffer,
           ids: focusSegmentIds,
           instanceCount: focusSegmentCount,
@@ -1717,7 +1718,7 @@ export async function createHarborPlayback(
       layers.push(
         new SpatialAnalysisSegmentLayer({
           id: `harbor-focus-route-${resample.sampleCount}`,
-          coordinateOrigin,
+          analysisFrame: vessels.analysisFrame,
           segments: resample.routeSegments,
           ids: routeIds,
           instanceCount: transitIdsSampleCount - 1,
@@ -1730,7 +1731,7 @@ export async function createHarborPlayback(
       layers.push(
         new SpatialAnalysisSegmentLayer({
           id: 'harbor-focus-chord',
-          coordinateOrigin,
+          analysisFrame: vessels.analysisFrame,
           segments: segmentsBuffer,
           ids: bracketSegmentId,
           instanceCount: 1,
@@ -1745,7 +1746,7 @@ export async function createHarborPlayback(
       layers.push(
         new SpatialAnalysisPointLayer({
           id: `harbor-focus-fixes-${options.focus}`,
-          coordinateOrigin,
+          analysisFrame: vessels.analysisFrame,
           positions: positionsBuffer,
           ids: focusFixIds,
           instanceCount: focusFixCount,
@@ -1760,7 +1761,7 @@ export async function createHarborPlayback(
       layers.push(
         new SpatialAnalysisPointLayer({
           id: 'harbor-focus-bracket',
-          coordinateOrigin,
+          analysisFrame: vessels.analysisFrame,
           positions: positionsBuffer,
           ids: bracketFixIds,
           instanceCount: 2,
@@ -1776,7 +1777,7 @@ export async function createHarborPlayback(
       layers.push(
         new SpatialAnalysisPointLayer({
           id: `harbor-focus-samples-${resample.sampleCount}`,
-          coordinateOrigin,
+          analysisFrame: vessels.analysisFrame,
           positions: resample.samples,
           ids: sampleIds,
           instanceCount: transitIdsSampleCount,

@@ -284,6 +284,7 @@ graph.add(
   })
 );
 // exact reference: GPUPointInPolygonJoin({
+//   spatialContext: projection.spatialContext,
 //   points: {kind: 'points', positions}, polygons: {kind: 'polygons', positions, featureOffsets, ...},
 //   output: {pointFeatureIds, featureCounts, status: {overflow}}
 // })

@@ -63,7 +63,6 @@ import {
   GPUTerrainDerivatives
 } from '@luma.gl/experimental/gpu-terrain';
 import {importGraphBuffer} from '../graph-buffers';
-import {LocalMetricProjection} from '../spatial-analysis-data';
 import {
   SpatialAnalysisPointLayer,
   SpatialAnalysisRasterLayer,
@@ -160,6 +159,7 @@ type PathReadback = {
   scores: Float32Array;
 };
 
+/** Explores raster suitability with picking in the San Francisco dataset frame. */
 export const suitabilityMode: SpatialAnalysisModeDefinition = {
   id: 'suitability',
   title: 'Suitability',
@@ -187,7 +187,7 @@ export const suitabilityMode: SpatialAnalysisModeDefinition = {
     const {device} = context;
     const {width, height, bounds, cellSize} = terrain;
     const cellCount = width * height;
-    const projection = new LocalMetricProjection(terrain.origin);
+    const projection = terrain.frame;
     const origin: [number, number, number] = [terrain.origin[0], terrain.origin[1], 0];
     const resources = new SpatialAnalysisResources(device, 'suitability');
     // The contributors put row 0 at the minimum y; the terrain has row 0 at the north edge. All

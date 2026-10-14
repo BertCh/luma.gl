@@ -447,7 +447,7 @@ export default defineScene<StormCellTracksOptions>({
     {
       id: 'cellSize',
       label: 'Cell width',
-      help: 'Width of one density cell at the current zoom, in a Lambert azimuthal equal-area frame about 92° W, 37° N. Every cell covers the same ground area, so a cell value is flashes per cell area with no weighting; cell shapes stretch by at most 2.6% at the far corners of the region (more along the line to the centre, less across it).'
+      help: 'Width of one density cell at the current zoom, in a WGS84 ellipsoidal Lambert azimuthal equal-area frame about 92° W, 37° N. Every cell covers the same ground area, so a cell value is flashes per cell area with no weighting; local shape stretch stays under 3% at the far corners of the flash region.'
     },
     {
       id: 'hotCells',
@@ -584,6 +584,7 @@ flashes.add(new GPUTimeWindowFilter({
   output: {ids, status: {count, overflow}, outputMask: mask}
 }));
 density.add(new GPUPointDensity({
+  spatialContext: STORM_DENSITY_PROJECTION.spatialContext,
   positions: flashEqualAreaMeters, mask, bounds: viewBounds.importToGraph(density),   // Lambert equal-area meters
   gridSize: [${state.resolution === 'coarse' ? 80 : state.resolution === 'fine' ? 192 : 128}, ${state.resolution === 'coarse' ? 52 : state.resolution === 'fine' ? 126 : 84}], statistic: 'count',   // or weights: flashEnergy with statistic 'sum'
   smoothing: {kernel: gaussian.importToGraph(density), kernelWidth: 17, kernelHeight: 17, strategy: 'direct'},

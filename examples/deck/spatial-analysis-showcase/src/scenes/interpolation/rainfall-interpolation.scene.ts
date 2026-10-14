@@ -491,6 +491,7 @@ import {GPUVariogram, fitVariogramModel, getGPUVariogramParameterValues}
 
 // 1. Empirical variogram on the GPU, model fit on the CPU (once per data change)
 variogramGraph.add(new GPUVariogram({
+  spatialContext: projection.spatialContext,
   positions, values, mask,                  // mask: 0 = held-out gauge
   parameters: variogramParameters.importToGraph(variogramGraph),
   gridSize: [32, 32], lagCount: 16, directionCount: 4,
@@ -506,7 +507,9 @@ const model = fitVariogramModel(
 
 // 2. One graph: IDW + kriging + focal statistics over a raster that follows the camera
 const grid = makeGPURasterMetadata({width: 384, height: 240});  // placement is per frame
-const common = {positions, values, mask, grid,
+const common = {
+  spatialContext: projection.spatialContext, // AEQD about 83 W, 32 N
+  positions, values, mask, grid,
   indexGridSize: [64, 64], indexBounds};
 graph.add(new GPUInverseDistanceWeighting({...common, maximumNeighborCount: 32,
   parameters: idwParameters.importToGraph(graph), output: {values: idw, counts}}));

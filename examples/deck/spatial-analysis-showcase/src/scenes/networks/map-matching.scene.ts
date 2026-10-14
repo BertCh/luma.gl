@@ -259,6 +259,7 @@ export default defineScene<MapMatchingOptions>({
 
 // The CSR row is the edge id: list both directions of every two-way street.
 graph.add(new GPUMapMatching({
+  spatialContext: projection.spatialContext,
   positions,                    // float32x2 planar meters, tracks back to back
   trackOffsets,                 // trackCount + 1
   topology: {offsets, neighbors: edgeTargets, nodePositions},

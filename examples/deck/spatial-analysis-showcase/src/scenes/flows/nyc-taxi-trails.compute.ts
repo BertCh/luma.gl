@@ -196,6 +196,7 @@ export async function createNycTaxiTrails(
   const playheadGraph = new GPUCommandGraph<void>(device, {id: 'taxi-playhead'});
   playheadGraph.add(
     new GPUTrajectoryPlayhead({
+      spatialContext: projection.spatialContext,
       id: 'playhead',
       positions: importGraphBuffer(
         playheadGraph,

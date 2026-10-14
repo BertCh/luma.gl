@@ -21,8 +21,8 @@ import {
 /** Snippet lines for the two spatial contexts. */
 const SPHERICAL_CONTEXT_SNIPPET =
   "spatialContext: {coordinateSpace: 'longitude-latitude', metric: 'great-circle', units: 'meters'},";
-const PLANAR_CONTEXT_SNIPPET =
-  "spatialContext: {coordinateSpace: 'planar', metric: 'native', units: 'native'},";
+const LAMBERT_CONTEXT_SNIPPET =
+  'spatialContext: projection.spatialContext, // Lambert equal-area (WGS84) meters';
 
 /** Names that orient the reader in every step (drawn above the data). */
 const ORIENTATION = labelsFor(CHICAGO, ['lake-michigan', 'loop'], {loop: {minZoom: 10.2}});
@@ -212,14 +212,14 @@ export default defineScene<StreetDensityOptions>({
       display: 'segmented',
       help: 'Planar: positions are local meters and lengths are Euclidean. Spherical: positions are longitude and latitude, segments are clipped straight in degrees and each piece is measured as a great-circle distance. At city scale the two differ by a fraction of a percent.',
       options: [
-        {value: 'planar', label: 'Planar'},
+        {value: 'planar', label: 'Lambert equal-area (WGS84) meters'},
         {value: 'spherical', label: 'Spherical'}
       ]
     },
     {
       kind: 'button',
       id: 'measure',
-      label: 'Time planar vs spherical',
+      label: 'Time Lambert equal-area (WGS84) meters vs spherical',
       group: 'Compare',
       expert: true,
       help: 'Runs the density graph in both coordinate systems outside the frame and reports the GPU time of each.'
@@ -367,12 +367,19 @@ import {
   GPULineDensity, GPULineLengthPerPolygon, getGPULineDensityParameterValues
 } from '@luma.gl/experimental/gpu-spatial-analysis';
 
+${
+  state.system === 'spherical'
+    ? ''
+    : `const projection = createAnalysisFrameProjection({kind: 'lambert-equal-area', origin});
+// Project source longitude/latitude into projection before uploading positions.
+`
+}
 // every street polyline is one line: positions sorted by line plus lineCount + 1 offsets
 const density = new GPUCommandGraph(device, {id: 'line-density'});
 density.add(new GPULineDensity({
   positions, lineOffsets,                    // ${state.system === 'spherical' ? 'longitude / latitude degrees' : 'float32x2 meters'}
   columns: 192, rows: 120,
-  ${state.system === 'spherical' ? SPHERICAL_CONTEXT_SNIPPET : PLANAR_CONTEXT_SNIPPET}
+  ${state.system === 'spherical' ? SPHERICAL_CONTEXT_SNIPPET : LAMBERT_CONTEXT_SNIPPET}
   recordCapacity: 4 * vertexCount,           // compile-time; \`overflow\` says if it was too small
   parameters: gridParameters.importToGraph(density),
   output: {lengths, densities, status: {overflow, requiredCount}}
@@ -386,7 +393,7 @@ gridParameters.write(getGPULineDensityParameterValues({
 compiledDensity.encode(commandEncoder, {parameters: undefined});
 
 // classed by fixed breaks (km per km², densities are m per m² x 1000), zero left clear
-new SpatialAnalysisRasterLayer({gridSize: [192, 120], bounds: gridBounds.buffer, values: densities,
+new SpatialAnalysisRasterLayer({${state.system === 'spherical' ? 'coordinateSystem: COORDINATE_SYSTEM.LNGLAT,' : 'analysisFrame: projection.frame,'} gridSize: [192, 120], bounds: gridBounds.buffer, values: densities,
   valueScale: 1000, classBreaks: [5, 10, 15, 20], classColors, discardAtOrBelow: 0});
 
 // street length clipped into polygons
@@ -395,7 +402,7 @@ perPolygon.add(new GPULineLengthPerPolygon({
   positions, lineOffsets,
   lineWeights: ${state.weight},                // optional per-street multiplier
   polygons: {kind: 'polygons', positions: polygonPositions, featureOffsets, polygonOffsets, ringOffsets},
-  ${state.system === 'spherical' ? SPHERICAL_CONTEXT_SNIPPET : PLANAR_CONTEXT_SNIPPET}
+  ${state.system === 'spherical' ? SPHERICAL_CONTEXT_SNIPPET : LAMBERT_CONTEXT_SNIPPET}
   output: {lengths, weightedLengths, segmentCounts, status: {overflow}}
 }));`,
 
@@ -403,7 +410,7 @@ perPolygon.add(new GPULineLengthPerPolygon({
     what: '`GPULineDensity` clips every street segment to the cells of a grid (Liang-Barsky, then a grid walk), sorts the pieces by cell and sums their lengths in a fixed order, then divides by cell area. `GPULineLengthPerPolygon` clips the same streets into polygons, cutting each segment at every polygon edge, and returns the street length, an attribute-weighted length and a segment count per polygon. Parity target: QGIS "Line density" and "Sum line lengths", and PostGIS `ST_Length(ST_Intersection(...))`.',
     why: 'Street density is a basic descriptor of urban form: walkability, connectivity, infrastructure cost per resident, and the grid that observation counts should be normalised by. The unit it is counted in is part of the answer, so the story shows the same city in three units: lines, cells and polygons.',
     howToRead:
-      'Darker cells hold more street per square kilometre, on fixed breaks that never change across steps. A cell with no street is left clear, and outside the city limit is no data, not zero. Lines are not unioned, so a dual carriageway counts twice; planar and spherical lengths differ by a fraction of a percent at city scale.'
+      'Darker cells hold more street per square kilometre, on fixed breaks that never change across steps. A cell with no street is left clear, and outside the city limit is no data, not zero. Lines are not unioned, so a dual carriageway counts twice; Lambert equal-area (WGS84) meters and spherical lengths differ by a fraction of a percent at city scale.'
   },
 
   // The streets are the figure: the night ground until a step needs paper for classed fills.

@@ -229,6 +229,7 @@ export const accessibilityMode: SpatialAnalysisModeDefinition = {
     };
     matrixGraph.add(
       new GPUNetworkSnapping({
+        spatialContext: roads.frame.spatialContext,
         id: 'snapping',
         positions: importGraphBuffer(
           matrixGraph,

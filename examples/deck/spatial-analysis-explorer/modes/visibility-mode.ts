@@ -57,7 +57,6 @@ import {
   type GPUTerrainViewshedProps
 } from '@luma.gl/experimental/gpu-terrain';
 import {importGraphBuffer} from '../graph-buffers';
-import {LocalMetricProjection} from '../spatial-analysis-data';
 import {
   SpatialAnalysisPointLayer,
   SpatialAnalysisRasterLayer,
@@ -126,6 +125,7 @@ type TraversalGraphs = {
   cumulativeCount: Buffer;
 };
 
+/** Explores terrain visibility with observers in the San Francisco dataset frame. */
 export const visibilityMode: SpatialAnalysisModeDefinition = {
   id: 'visibility',
   title: 'Visibility',
@@ -149,7 +149,7 @@ export const visibilityMode: SpatialAnalysisModeDefinition = {
     const {device} = context;
     const {width, height, bounds, cellSize} = terrain;
     const pixelCount = width * height;
-    const projection = new LocalMetricProjection(terrain.origin);
+    const projection = terrain.frame;
     const origin: [number, number, number] = [terrain.origin[0], terrain.origin[1], 0];
     const resources = new SpatialAnalysisResources(device, 'visibility');
     const rayCount = AZIMUTH_COUNT;

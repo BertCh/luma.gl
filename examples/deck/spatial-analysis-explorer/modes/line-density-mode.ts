@@ -16,8 +16,12 @@ import {
   GPU_LINE_DENSITY_PARAMETER_LENGTH,
   type GPUGridType
 } from '@luma.gl/experimental/gpu-spatial-analysis';
+import {
+  getDatasetFrame,
+  getFrameDisplayModelMatrix,
+  reprojectFramePositions
+} from '../spatial-analysis-data';
 import {importGraphBuffer} from '../graph-buffers';
-import {LocalMetricProjection} from '../spatial-analysis-data';
 import {
   SpatialAnalysisPointLayer,
   SpatialAnalysisRasterLayer,
@@ -107,7 +111,10 @@ export const lineDensityMode: SpatialAnalysisModeDefinition = {
     ]);
     context.signal.throwIfAborted();
     const {device} = context;
-    const projection = new LocalMetricProjection(roads.origin);
+    const projection = roads.frame;
+    const areaFrame = getDatasetFrame(roads, 'area');
+    const areaModelMatrix = Float64Array.from(getFrameDisplayModelMatrix(areaFrame));
+    const areaSegments = reprojectFramePositions(roads.segments, roads.frame, areaFrame);
     const resources = new SpatialAnalysisResources(device, 'line-density');
     const segmentCount = roads.segments.length / 4;
     const vertexCount = segmentCount * 2;
@@ -148,6 +155,7 @@ export const lineDensityMode: SpatialAnalysisModeDefinition = {
     let viewWidth = 1;
 
     const segmentsBuffer = resources.createBuffer('segments', roads.segments);
+    const areaSegmentsBuffer = resources.createBuffer('area-segments', areaSegments);
     const pathOffsetsBuffer = resources.createBuffer('path-offsets', pathOffsets);
     const densityParameters = resources.createParameterBuffer(
       'density-parameters',
@@ -169,12 +177,12 @@ export const lineDensityMode: SpatialAnalysisModeDefinition = {
     const densityGraph = new GPUCommandGraph<void>(device, {id: 'line-density'});
     densityGraph.add(
       new GPULineDensity({
-        spatialContext: {coordinateSpace: 'planar', metric: 'native', units: 'native'},
+        spatialContext: areaFrame.spatialContext,
         id: 'line-density',
         positions: importGraphBuffer(
           densityGraph,
           'positions',
-          segmentsBuffer,
+          areaSegmentsBuffer,
           'float32x2',
           vertexCount
         ),
@@ -234,6 +242,7 @@ export const lineDensityMode: SpatialAnalysisModeDefinition = {
         );
         overlayGraph.add(
           new GPUGridGenerator({
+            spatialContext: areaFrame.spatialContext,
             id: `grid-${gridType}`,
             gridType,
             columns: OVERLAY_COLUMNS,
@@ -330,6 +339,7 @@ export const lineDensityMode: SpatialAnalysisModeDefinition = {
       const polygonPositionsBuffer = resources.createBuffer(`${key}-positions`, set.positions);
       graph.add(
         new GPULineLengthPerPolygon({
+          spatialContext: projection.spatialContext,
           id: `line-length-${key}`,
           positions: importGraphBuffer(
             graph,
@@ -657,7 +667,7 @@ export const lineDensityMode: SpatialAnalysisModeDefinition = {
         polygonSets.zips.compiled
       ],
       encode(commandEncoder, frame) {
-        const bounds = getViewportMetricBounds(frame.viewport, projection);
+        const bounds = getViewportMetricBounds(frame.viewport, areaFrame);
         viewWidth = bounds[2] - bounds[0];
         const minimumX = Math.floor(bounds[0] / cellSize) * cellSize;
         const minimumY = Math.floor(bounds[1] / cellSize) * cellSize;
@@ -757,6 +767,7 @@ export const lineDensityMode: SpatialAnalysisModeDefinition = {
           new SpatialAnalysisRasterLayer({
             id: 'line-density-cells',
             coordinateOrigin,
+            modelMatrix: areaModelMatrix,
             gridSize: [COLUMNS, ROWS],
             bounds: gridBounds.buffer,
             values: densities,
@@ -773,7 +784,8 @@ export const lineDensityMode: SpatialAnalysisModeDefinition = {
             new SpatialAnalysisSegmentLayer({
               id: 'line-density-roads',
               coordinateOrigin,
-              segments: segmentsBuffer,
+              modelMatrix: areaModelMatrix,
+              segments: areaSegmentsBuffer,
               instanceCount: segmentCount,
               widthPixels: 0.7,
               color: [140, 200, 255, 70]
@@ -787,6 +799,7 @@ export const lineDensityMode: SpatialAnalysisModeDefinition = {
               new SpatialAnalysisPointLayer({
                 id: 'line-density-overlay-points',
                 coordinateOrigin,
+                modelMatrix: areaModelMatrix,
                 positions: buffers.vertices,
                 instanceCount: overlayCellCount('point'),
                 radiusPixels: 2.4,
@@ -798,6 +811,7 @@ export const lineDensityMode: SpatialAnalysisModeDefinition = {
               new SpatialAnalysisSegmentLayer({
                 id: `line-density-overlay-${overlay}`,
                 coordinateOrigin,
+                modelMatrix: areaModelMatrix,
                 segments: buffers.edges,
                 instanceCount: buffers.edgeCount,
                 widthPixels: 1.3,

@@ -2,6 +2,17 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {
+  STORM_FRAME,
+  formatInteger,
+  formatStormClock,
+  loadStormFlashes,
+  loadStormTracks,
+  METRIC_MODES,
+  projectToStormFrame,
+  seriesChart,
+  STORM_VERIFICATION_RANGE
+} from './storm-data';
 import {COORDINATE_SYSTEM, type Layer} from '@deck.gl/core';
 import {
   getGPUTimeWindowFilterParameterValues,
@@ -35,16 +46,6 @@ import {SummaryReader} from '../../engine/summary-reader';
 import {ChoroplethFillLayer} from '../statistics/b5-choropleth-layer';
 import {buildPolygonMesh, createFeatureLocator, getPolygonLayout} from '../statistics/b5-geometry';
 import type {SceneContext, SceneInstance} from '../scene';
-import {
-  formatInteger,
-  formatStormClock,
-  loadStormFlashes,
-  loadStormTracks,
-  METRIC_MODES,
-  projectToStormFrame,
-  seriesChart,
-  STORM_VERIFICATION_RANGE
-} from './storm-data';
 
 /** Option state of the storm-outage-exposure scene. */
 export type StormOutageExposureOptions = {
@@ -320,6 +321,7 @@ export async function createStormOutageExposure(
   const staticGraph = new GPUCommandGraph<void>(device, {id: 'storm-outage-static'});
   staticGraph.add(
     new GPUZonalStatistics({
+      spatialContext: STORM_FRAME.spatialContext,
       id: 'flash-county',
       features: {
         kind: 'polygons',
@@ -558,6 +560,7 @@ export async function createStormOutageExposure(
     );
     graph.add(
       new GPUZonalStatistics({
+        spatialContext: STORM_FRAME.spatialContext,
         id: 'flash-sums',
         features: {
           kind: 'feature-rows',

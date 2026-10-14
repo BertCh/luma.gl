@@ -16,6 +16,7 @@ import {
   type CompiledGPUCommandGraph,
   type GraphDataView
 } from '@luma.gl/gpgpu/gpu-core';
+import {createAnalysisFrameProjection, projectLngLatToFrame} from '../../engine/analysis-frame';
 import {importGraphBuffer} from '../../engine/graph-buffers';
 import {
   getServiceClassColors,
@@ -91,7 +92,19 @@ export async function createTransitFrequency(
   const {device} = ctx;
   const {trackCount, vertexCount, segmentCount} = trips;
   const resources = new SpatialAnalysisResources(device, 'frequency');
-  const coordinateOrigin: [number, number, number] = [trips.origin[0], trips.origin[1], 0];
+  const densityProjection = createAnalysisFrameProjection({
+    kind: 'lambert-equal-area',
+    origin: trips.origin
+  });
+  const densityPositions = projectLngLatToFrame(densityProjection, trips.lngLat);
+  const densitySegments = new Float32Array(segmentCount * 4);
+  for (let segment = 0; segment < segmentCount; segment++) {
+    const endVertex = trips.segmentEndVertices[segment];
+    densitySegments.set(
+      densityPositions.subarray((endVertex - 1) * 2, (endVertex + 1) * 2),
+      segment * 4
+    );
+  }
 
   // Grid center: the middle of the trips' planar bounds.
   let minX = Infinity;
@@ -99,15 +112,16 @@ export async function createTransitFrequency(
   let maxX = -Infinity;
   let maxY = -Infinity;
   for (let vertex = 0; vertex < vertexCount; vertex++) {
-    minX = Math.min(minX, trips.positions[vertex * 2]);
-    maxX = Math.max(maxX, trips.positions[vertex * 2]);
-    minY = Math.min(minY, trips.positions[vertex * 2 + 1]);
-    maxY = Math.max(maxY, trips.positions[vertex * 2 + 1]);
+    minX = Math.min(minX, densityPositions[vertex * 2]);
+    maxX = Math.max(maxX, densityPositions[vertex * 2]);
+    minY = Math.min(minY, densityPositions[vertex * 2 + 1]);
+    maxY = Math.max(maxY, densityPositions[vertex * 2 + 1]);
   }
   const center: [number, number] = [(minX + maxX) / 2, (minY + maxY) / 2];
 
   // ---- Static inputs ----------------------------------------------------------------------------
   const positionsBuffer = resources.createBuffer('positions', trips.positions);
+  const densityPositionsBuffer = resources.createBuffer('density-positions', densityPositions);
   const timestampsBuffer = resources.createBuffer('timestamps', trips.timestamps);
   const offsetsBuffer = resources.createBuffer('trip-offsets', trips.offsets);
   const segmentsBuffer = resources.createBuffer('segments', trips.segments);
@@ -126,7 +140,7 @@ export async function createTransitFrequency(
   const variants = new Map<string, Variant>();
 
   async function createVariant(filter: string): Promise<Variant> {
-    let positions = positionsBuffer;
+    let positions = densityPositionsBuffer;
     let offsets = offsetsBuffer;
     let rows = vertexCount;
     let paths = trackCount;
@@ -144,7 +158,7 @@ export async function createTransitFrequency(
         subsetOffsets[index] = cursor;
         const from = trips.offsets[trip];
         const to = trips.offsets[trip + 1];
-        subsetPositions.set(trips.positions.subarray(from * 2, to * 2), cursor * 2);
+        subsetPositions.set(densityPositions.subarray(from * 2, to * 2), cursor * 2);
         cursor += to - from;
       });
       subsetOffsets[selected.length] = cursor;
@@ -162,7 +176,7 @@ export async function createTransitFrequency(
         lineOffsets: view(offsets, 'uint32', paths + 1),
         columns: COLUMNS,
         rows: ROWS,
-        spatialContext: {coordinateSpace: 'planar', metric: 'native', units: 'native'},
+        spatialContext: densityProjection.spatialContext,
         parameters: gridParameters.importToGraph(graph),
         output: {
           lengths: view(lengthsBuffer, 'float32', CELL_COUNT),
@@ -200,7 +214,7 @@ export async function createTransitFrequency(
     const speeds = view(averageSpeeds, 'float32', trackCount);
     statisticsGraph.add(
       new GPUTrajectoryMetrics({
-        spatialContext: {coordinateSpace: 'planar', metric: 'native', units: 'native'},
+        spatialContext: trips.spatialContext,
         id: 'trip-metrics',
         positions: view(positionsBuffer, 'float32x2', vertexCount),
         timestamps: view(timestampsBuffer, 'float32', vertexCount),
@@ -265,10 +279,10 @@ export async function createTransitFrequency(
     const totals = new Map<number, number>();
     for (let segment = 0; segment < segmentCount; segment++) {
       const offset = segment * 4;
-      const x0 = trips.segments[offset];
-      const y0 = trips.segments[offset + 1];
-      const x1 = trips.segments[offset + 2];
-      const y1 = trips.segments[offset + 3];
+      const x0 = densitySegments[offset];
+      const y0 = densitySegments[offset + 1];
+      const x1 = densitySegments[offset + 2];
+      const y1 = densitySegments[offset + 3];
       const column = Math.floor(((x0 + x1) / 2 - minX) / cellMeters);
       const row = Math.floor(((y0 + y1) / 2 - minY) / cellMeters);
       if (column < 0 || column >= COLUMNS || row < 0 || row >= ROWS) continue;
@@ -564,7 +578,7 @@ export async function createTransitFrequency(
 
   function cellAt(coordinate: readonly [number, number] | null): number {
     if (!coordinate) return -1;
-    const [x, y] = trips.project(coordinate[0], coordinate[1]);
+    const [x, y] = densityProjection.project(coordinate[0], coordinate[1]);
     const cellMeters = ctx.options.cellMeters;
     const column = Math.floor((x - gridMin[0]) / cellMeters);
     const row = Math.floor((y - gridMin[1]) / cellMeters);
@@ -653,7 +667,7 @@ export async function createTransitFrequency(
         layers.push(
           new SpatialAnalysisSegmentLayer({
             id: 'frequency-routes',
-            coordinateOrigin,
+            analysisFrame: trips.analysisFrame,
             segments: segmentsBuffer,
             instanceCount: segmentCount,
             widthPixels: options.representation === 'routes' ? 1.4 : 0.7,
@@ -667,7 +681,7 @@ export async function createTransitFrequency(
         layers.push(
           new SpatialAnalysisRasterLayer({
             id: 'frequency-density',
-            coordinateOrigin,
+            analysisFrame: densityProjection.frame,
             gridSize: [COLUMNS, ROWS],
             bounds: [grid.min[0], grid.min[1], grid.max[0], grid.max[1]],
             values: lengthsBuffer,
@@ -697,7 +711,7 @@ export async function createTransitFrequency(
       layers.push(
         new SpatialAnalysisSegmentLayer({
           id: 'frequency-data-frame',
-          coordinateOrigin,
+          analysisFrame: densityProjection.frame,
           segments: dataFrameBuffer,
           instanceCount: 4,
           widthPixels: 0.9,
@@ -709,7 +723,7 @@ export async function createTransitFrequency(
         layers.push(
           new SpatialAnalysisSegmentLayer({
             id: 'frequency-hover-cell',
-            coordinateOrigin,
+            analysisFrame: densityProjection.frame,
             segments: hoverCellBuffer,
             instanceCount: 4,
             widthPixels: 2,

@@ -316,6 +316,7 @@ export async function createTransitReachability(
     );
     graph.add(
       new GPUNetworkIsochrones({
+        spatialContext: rail.spatialContext,
         id: 'bands',
         topology: {
           offsets: view(selfOffsetsBuffer, 'uint32', nodeCount + 1),

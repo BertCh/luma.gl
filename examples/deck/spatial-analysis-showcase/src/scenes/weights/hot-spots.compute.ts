@@ -6,6 +6,9 @@ import type {Layer} from '@deck.gl/core';
 import type {Buffer, CommandEncoder} from '@luma.gl/core';
 import {
   addHotSpotAnalysisRecipe,
+  createGPULocalFrame,
+  GPULocalFrameProjection,
+  GPU_WGS84_SEMI_MAJOR_AXIS_METERS,
   getGPUNeighborSearchParameterValues,
   getGPUPermutationParameterValues,
   getGPUSpatialAutocorrelationParameterValues,
@@ -55,8 +58,6 @@ import {
   type SpatialAnalysisColor,
   type SpatialAnalysisStyleProps
 } from '../../engine/layers';
-import {LocalMetricProjection} from '../../engine/projection';
-import {addKernelPass} from '../../engine/mode-kernels';
 import {sampleRamp, type RampName} from '../../engine/ramps';
 import {SpatialAnalysisResources} from '../../engine/resources';
 import {SummaryReader} from '../../engine/summary-reader';
@@ -192,8 +193,7 @@ const H3_EDGE_METERS: Record<number, number> = {
   8: 461,
   9: 174
 };
-const EQUATOR_CIRCUMFERENCE = 40_075_016.68;
-const EARTH_RADIUS = 6_378_137;
+const EQUATOR_CIRCUMFERENCE = 2 * Math.PI * GPU_WGS84_SEMI_MAJOR_AXIS_METERS;
 const DEGREES = Math.PI / 180;
 
 /** Records per square kilometre, one decimal. */
@@ -973,7 +973,7 @@ export async function createHotSpots(
       GPU_NEIGHBOR_SEARCH_PARAMETER_LENGTH
     );
     const [originLng, originLat] = tracts.origin;
-    const cellProjection = new LocalMetricProjection(tracts.origin);
+    const cellProjection = tracts.analysisFrame;
     const tractBuffers = createGeographyBuffers(resources, tracts, 'cells-tracts');
 
     const getResolution = () =>
@@ -1131,28 +1131,20 @@ export async function createHotSpots(
             }
           : undefined
       });
-      // Adapter: cell centres to planar metres.
-      addKernelPass(graph, {
-        id: 'cells-centers',
-        invocationCount: rows,
-        bindings: [
-          {name: 'degrees', view: centers, type: 'f32', access: 'read'},
-          {
-            name: 'meters',
-            view: view('centers-meters', centersMeters, 'float32x2', rows),
-            type: 'f32',
-            access: 'read_write'
-          }
-        ],
-        // Web Mercator offsets around the origin, as deck.gl's METER_OFFSETS system places them.
-        body: `let longitude = degrees[degreesOffset + index * 2u];
-  let latitude = degrees[degreesOffset + index * 2u + 1u];
-  let scale = ${EARTH_RADIUS.toFixed(1)} * cos(${(originLat * DEGREES).toFixed(12)});
-  let projected = log(tan(0.7853981633974483 + latitude * ${DEGREES.toFixed(15)} * 0.5));
-  let origin = log(tan(0.7853981633974483 + ${(originLat * DEGREES).toFixed(12)} * 0.5));
-  meters[metersOffset + index * 2u] = scale * (longitude - (${originLng.toFixed(9)})) * ${DEGREES.toFixed(15)};
-  meters[metersOffset + index * 2u + 1u] = scale * (projected - origin);`
-      });
+      // Keep readouts and metre-sized cell glyphs in the tract AEQD analysis frame.
+      const [west, south, east, north] = tracts.bbox;
+      graph.add(
+        resources.track(
+          new GPULocalFrameProjection({
+            id: 'cells-centers',
+            frame: createGPULocalFrame({kind: 'azimuthal-equidistant', origin: tracts.origin}),
+            positions: centers,
+            output: view('centers-meters', centersMeters, 'float32x2', rows),
+            // Cell centres can fall beyond the study polygon at the coarsest resolutions.
+            bounds: [west - 2, south - 2, east + 2, north + 2]
+          })
+        )
+      );
       recipeResults.set(getRecipeKey(), recipeResult);
       return resources.track(await graph.compileAsync());
     };
@@ -1166,6 +1158,7 @@ export async function createHotSpots(
         statGraphs.set(
           statKey,
           await compileStatGraph({
+            spatialContext: CELL_SPATIAL_CONTEXT,
             device,
             resources,
             id: `hotspots-cells-${statKey}`,
@@ -1319,6 +1312,7 @@ export async function createHotSpots(
               id: `hotspot-cells-${o.family}-${getResolution()}${side ? `-${side}` : ''}`,
               coordinateOrigin: tractOrigin,
               positions: centersMeters,
+              analysisFrame: tracts.analysisFrame.layerFrame,
               instanceCount: rows,
               shape: o.family === 'quadbin' ? 'square' : 'hexagon',
               radiusMeters: getCellRadius() * 0.98,
@@ -1333,7 +1327,7 @@ export async function createHotSpots(
       getTooltip(event) {
         const snapshot = created.snapshot;
         if (!snapshot?.centers || !snapshot.values || !event.coordinate) return clearHover();
-        const [x, y] = tracts.project(event.coordinate[0], event.coordinate[1]);
+        const [x, y] = cellProjection.project(event.coordinate[0], event.coordinate[1]);
         const o = ctx.options;
         const reach = getCellRadius() * 1.05;
         let best = -1;
@@ -1458,6 +1452,7 @@ export async function createHotSpots(
         statGraphs.set(
           key,
           await compileStatGraph({
+            spatialContext: geography.analysisFrame.spatialContext,
             device,
             resources,
             id: `hotspots-${geography.id}-${key}`,
@@ -1511,7 +1506,7 @@ export async function createHotSpots(
     );
 
     writeInputs();
-    const polygonProjection = new LocalMetricProjection(geography.origin);
+    const polygonProjection = geography.analysisFrame;
 
     const created: HotWorld = {
       rows,
@@ -1655,8 +1650,8 @@ export async function createHotSpots(
           ) {
             points.push(
               polygonProjection.unproject(
-                geography.contiguityVertices[vertex * 2],
-                geography.contiguityVertices[vertex * 2 + 1]
+                geography.analysisContiguityVertices[vertex * 2],
+                geography.analysisContiguityVertices[vertex * 2 + 1]
               ) as LngLat
             );
           }

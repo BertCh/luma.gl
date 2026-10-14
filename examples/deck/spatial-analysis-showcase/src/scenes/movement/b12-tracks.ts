@@ -2,6 +2,12 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import type {GPUSpatialContext} from '@luma.gl/experimental/gpu-spatial-analysis';
+import {
+  type AnalysisFrame,
+  createAnalysisFrameProjection,
+  projectLngLatToFrame
+} from '../../engine/analysis-frame';
 import type {LoadedDataset} from '../../data/catalog';
 
 /**
@@ -25,6 +31,10 @@ export type TrackSet = {
   timeRange: readonly [number, number];
   /** `[longitude, latitude]` of the planar origin. */
   origin: readonly [number, number];
+  /** Frame of `project`/`unproject`, when supplied by the caller (not necessarily `positions`). */
+  analysisFrame?: AnalysisFrame;
+  /** Context of `project`/`unproject` output; absent for legacy display-only projections. */
+  spatialContext?: GPUSpatialContext;
   /** Lng/lat to planar meters. */
   project: (longitude: number, latitude: number) => [number, number];
   /** Planar meters to lng/lat. */
@@ -42,7 +52,15 @@ export type TrackSet = {
   longestTrack: number;
 };
 
+/** Track helpers with an explicit analysis frame and its operator context. */
+export type AnalysisTrackSet = TrackSet & {
+  analysisFrame: AnalysisFrame;
+  spatialContext: GPUSpatialContext;
+};
+
 type TrackSetInput = {
+  analysisFrame?: AnalysisFrame;
+  spatialContext?: GPUSpatialContext;
   offsets: Uint32Array;
   positions: Float32Array;
   lngLat: Float32Array;
@@ -54,7 +72,11 @@ type TrackSetInput = {
   drawInDegrees: boolean;
 };
 
-/** Builds the segment tables of a track set. */
+/** Builds segment tables, preserving caller-supplied projection metadata without reprojecting. */
+export function createTrackSet(
+  input: TrackSetInput & Pick<AnalysisTrackSet, 'analysisFrame' | 'spatialContext'>
+): AnalysisTrackSet;
+export function createTrackSet(input: TrackSetInput): TrackSet;
 export function createTrackSet(input: TrackSetInput): TrackSet {
   const {offsets, positions, lngLat, timestamps} = input;
   const trackCount = offsets.length - 1;
@@ -101,6 +123,8 @@ export function createTrackSet(input: TrackSetInput): TrackSet {
     timestamps,
     timeRange: [first, last],
     origin: input.origin,
+    analysisFrame: input.analysisFrame,
+    spatialContext: input.spatialContext,
     project: input.project,
     unproject: input.unproject,
     segments,
@@ -113,8 +137,8 @@ export function createTrackSet(input: TrackSetInput): TrackSet {
   };
 }
 
-/** The AIS vessel tracks of New York / New Jersey Harbor, in local planar meters. */
-export type VesselTrackSet = TrackSet & {
+/** The AIS vessel tracks of New York / New Jersey Harbor, in AEQD frame meters. */
+export type VesselTrackSet = AnalysisTrackSet & {
   /** Vessel category index per track (see {@link VESSEL_CATEGORIES}). */
   category: Uint32Array;
   /** MMSI per track. */
@@ -133,13 +157,15 @@ export type VesselTrackSet = TrackSet & {
 /** Loads the AIS dataset as a {@link VesselTrackSet}. */
 export function loadVesselTracks(dataset: LoadedDataset): VesselTrackSet {
   const origin = dataset.defaultOrigin;
-  const projection = dataset.getProjection(origin);
+  const projection = createAnalysisFrameProjection({kind: 'azimuthal-equidistant', origin});
   const offsets = dataset.column<Uint32Array>('pathOffsets');
   const timestamps = Float32Array.from(dataset.column<Uint32Array>('timestamp'));
   const category = Uint32Array.from(dataset.column<Uint8Array>('category'));
   const set = createTrackSet({
     offsets,
-    positions: dataset.projectColumn('vertices', origin),
+    positions: projectLngLatToFrame(projection, dataset.column('vertices')),
+    analysisFrame: projection.frame,
+    spatialContext: projection.spatialContext,
     lngLat: dataset.column<Float32Array>('vertices'),
     timestamps,
     origin,
@@ -162,49 +188,8 @@ export function loadVesselTracks(dataset: LoadedDataset): VesselTrackSet {
   };
 }
 
-const EARTH_RADIUS_METERS = 6371008.8;
-
-/**
- * Spherical azimuthal-equidistant projection around `center`: distances from the center are exact
- * and distortion stays small across a continent, unlike a flat local projection.
- */
-export function createAzimuthalEquidistant(center: readonly [number, number]): {
-  project: (longitude: number, latitude: number) => [number, number];
-  unproject: (x: number, y: number) => [number, number];
-} {
-  const lambda0 = (center[0] * Math.PI) / 180;
-  const phi0 = (center[1] * Math.PI) / 180;
-  const sinPhi0 = Math.sin(phi0);
-  const cosPhi0 = Math.cos(phi0);
-  return {
-    project(longitude, latitude) {
-      const lambda = (longitude * Math.PI) / 180;
-      const phi = (latitude * Math.PI) / 180;
-      const cosC = sinPhi0 * Math.sin(phi) + cosPhi0 * Math.cos(phi) * Math.cos(lambda - lambda0);
-      const c = Math.acos(Math.min(1, Math.max(-1, cosC)));
-      const k = c < 1e-9 ? 1 : c / Math.sin(c);
-      return [
-        EARTH_RADIUS_METERS * k * Math.cos(phi) * Math.sin(lambda - lambda0),
-        EARTH_RADIUS_METERS *
-          k *
-          (cosPhi0 * Math.sin(phi) - sinPhi0 * Math.cos(phi) * Math.cos(lambda - lambda0))
-      ];
-    },
-    unproject(x, y) {
-      const rho = Math.hypot(x, y);
-      if (rho < 1e-9) return [center[0], center[1]];
-      const c = rho / EARTH_RADIUS_METERS;
-      const phi = Math.asin(Math.cos(c) * sinPhi0 + ((y * Math.sin(c)) / rho) * cosPhi0);
-      const lambda =
-        lambda0 +
-        Math.atan2(x * Math.sin(c), rho * cosPhi0 * Math.cos(c) - y * sinPhi0 * Math.sin(c));
-      return [(lambda * 180) / Math.PI, (phi * 180) / Math.PI];
-    }
-  };
-}
-
 /** The gull tracks, in azimuthal-equidistant meters, drawn from longitude/latitude degrees. */
-export type GullTrackSet = TrackSet & {
+export type GullTrackSet = AnalysisTrackSet & {
   /** Ground speed in m/s per vertex. */
   speed: Float32Array;
   /** Sex per bird: 0 female, 1 male, 2 unknown. */
@@ -217,7 +202,7 @@ export function loadGullTracks(dataset: LoadedDataset): GullTrackSet {
   const lngLat = dataset.column<Float32Array>('vertices');
   const bbox = dataset.manifest.bbox;
   const center: [number, number] = [(bbox[0] + bbox[2]) / 2, (bbox[1] + bbox[3]) / 2];
-  const projection = createAzimuthalEquidistant(center);
+  const projection = createAnalysisFrameProjection({kind: 'azimuthal-equidistant', origin: center});
   const positions = new Float32Array(lngLat.length);
   for (let index = 0; index < lngLat.length; index += 2) {
     const [x, y] = projection.project(lngLat[index], lngLat[index + 1]);
@@ -230,6 +215,8 @@ export function loadGullTracks(dataset: LoadedDataset): GullTrackSet {
     lngLat,
     timestamps: Float32Array.from(dataset.column<Uint32Array>('timestamp')),
     origin: center,
+    analysisFrame: projection.frame,
+    spatialContext: projection.spatialContext,
     project: projection.project,
     unproject: projection.unproject,
     drawInDegrees: true

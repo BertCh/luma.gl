@@ -25,7 +25,6 @@ import {
 import {addClockEncounters} from '@luma.gl/experimental/gpu-spatial-analysis';
 import {getGPUTrajectoryClockParameterValues} from '@luma.gl/experimental/gpu-spatial-analysis';
 import {importGraphBuffer} from '../graph-buffers';
-import {LocalMetricProjection} from '../spatial-analysis-data';
 import {SpatialAnalysisPointLayer, SpatialAnalysisSegmentLayer} from '../spatial-analysis-layers';
 import type {
   SpatialAnalysisModeDefinition,
@@ -83,7 +82,7 @@ export const encountersMode: SpatialAnalysisModeDefinition = {
     const trips = await context.data.getNewYorkTrips();
     context.signal.throwIfAborted();
     const {device} = context;
-    const projection = new LocalMetricProjection(trips.origin);
+    const projection = trips.frame;
     const resources = new SpatialAnalysisResources(device, 'encounters');
 
     const trackCount = trips.vendors.length;
@@ -217,6 +216,7 @@ export const encountersMode: SpatialAnalysisModeDefinition = {
     const pairPartnersView = pairView('pair-partners', pairPartners, 'uint32');
     const pairCountView = pairView('pair-count', pairCount, 'uint32', 1);
     addClockEncounters(encountersGraph, {
+      spatialContext: trips.frame.spatialContext,
       id: 'encounters',
       positions: trackPositions,
       timestamps: importGraphBuffer(
@@ -259,6 +259,7 @@ export const encountersMode: SpatialAnalysisModeDefinition = {
     });
     encountersGraph.add(
       new GPUTrackSimilarity({
+        spatialContext: trips.frame.spatialContext,
         id: 'encounters-pair-similarity',
         linesA: {kind: 'lines', positions: trackPositions, lineOffsets: trackOffsets},
         pairA: pairIdsView,
@@ -390,6 +391,7 @@ export const encountersMode: SpatialAnalysisModeDefinition = {
     });
     selectionGraph.add(
       new GPUTrackSimilarity({
+        spatialContext: trips.frame.spatialContext,
         id: 'encounters-selected-similarity',
         linesA: {
           kind: 'lines',

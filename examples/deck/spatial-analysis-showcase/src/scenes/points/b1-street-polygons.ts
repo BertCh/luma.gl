@@ -3,7 +3,7 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import type {LoadedDataset} from '../../data/catalog';
-import type {LocalMetricProjection} from '../../engine/projection';
+import type {AnalysisFrameProjection} from '../../engine/analysis-frame';
 
 /**
  * Polygons in the layout the `GPULineLengthPerPolygon` graph reads. Drawing and picking use the
@@ -32,7 +32,7 @@ export type StreetPolygonSet = {
  */
 export function readPolygonSet(
   dataset: LoadedDataset,
-  projection: LocalMetricProjection,
+  projection: Pick<AnalysisFrameProjection, 'project'>,
   options: {id: string; label: string; names: readonly string[]; population?: Float32Array}
 ): StreetPolygonSet {
   const vertices = dataset.column<Float32Array>('vertices');

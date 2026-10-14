@@ -550,6 +550,7 @@ export async function createBixiBundles(
   const trackSet = createTrackSet({
     offsets: rideData.column<Uint32Array>('pathOffsets'),
     positions: rideData.projectColumn('vertices', origin),
+    spatialContext: projection.spatialContext,
     lngLat: rideData.column<Float32Array>('vertices'),
     timestamps: Float32Array.from(rideData.column<Uint32Array>('timestamp')),
     origin,
@@ -588,6 +589,7 @@ export async function createBixiBundles(
   const playheadGraph = new GPUCommandGraph<void>(device, {id: 'bixi-playhead'});
   playheadGraph.add(
     new GPUTrajectoryPlayhead({
+      spatialContext: projection.spatialContext,
       id: 'playhead',
       positions: importGraphBuffer(
         playheadGraph,

@@ -731,18 +731,20 @@ const graph = new GPUCommandGraph(device, {id: 'polygons'});
 // positions: lng/lat float32x2; featureOffsets, polygonOffsets, ringOffsets: the four-level polygon
 // layout (uint32). Rows are features; the first ring of each polygon is its shell, later rings are holes.
 // Ring grouping here: ${state.ringGrouping === 'parts' ? 'real polygon parts' : 'one polygon per feature (polygonOffsets = feature ring offsets)'}.
-graph.add(new GPUGeometryMeasures({spatialContext: {coordinateSpace: ('${state.areaSystem}') === 'planar' ? 'planar' : 'longitude-latitude', metric: ('${state.areaSystem}') === 'planar' ? 'native' : ('${state.areaSystem}') === 'spherical' ? 'great-circle' : 'ellipsoidal', units: ('${state.areaSystem}') === 'planar' ? 'native' : 'meters'},ellipsoidalEdgeModel: ('${state.areaSystem}') === 'wgs84' ? 'coordinate-linear' : undefined,
+graph.add(new GPUGeometryMeasures({spatialContext: ('${state.areaSystem}') === 'planar' ? planarProjection.spatialContext : {coordinateSpace: 'longitude-latitude', metric: ('${state.areaSystem}') === 'spherical' ? 'great-circle' : 'ellipsoidal', units: 'meters'}, ellipsoidalEdgeModel: ('${state.areaSystem}') === 'wgs84' ? 'coordinate-linear' : undefined,
   geometryType: 'polygons', positions, featureOffsets, polygonOffsets, ringOffsets,
      // planar | spherical | wgs84
   output: {areas, lengths, centroids, bounds, vertexCounts}
 }));
 `;
     const shape = `graph.add(new GPUShapeDescriptors({
+  spatialContext: planarProjection.spatialContext,
   positions: planarPositions, featureOffsets, polygonOffsets, ringOffsets,
   parameters: sliverParameters.importToGraph(graph),   // sliverThreshold = ${state.sliverThreshold}
   output: {polsbyPopper, schwartzberg, elongation, orientation, convexity, clockwise, sliver}
 }));
 graph.add(new GPULabelPoint({
+  spatialContext: planarProjection.spatialContext,
   positions: planarPositions, featureOffsets, polygonOffsets, ringOffsets,
   initialGridSize: ${state.initialGridSize}, refinementCandidates: ${state.refinementCandidates},
   output: {points, distances, degenerate}

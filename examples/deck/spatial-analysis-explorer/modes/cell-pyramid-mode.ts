@@ -35,7 +35,6 @@ import {
 } from '@luma.gl/experimental/gpu-spatial-analysis';
 import {importGraphBuffer} from '../graph-buffers';
 import type {Buffer} from '@luma.gl/core';
-import {LocalMetricProjection} from '../spatial-analysis-data';
 import type {
   SpatialAnalysisModeDefinition,
   SpatialAnalysisModeInstance
@@ -86,7 +85,7 @@ export const cellPyramidMode: SpatialAnalysisModeDefinition = {
     const trips = await context.data.getNewYorkTrips();
     context.signal.throwIfAborted();
     const {device} = context;
-    const projection = new LocalMetricProjection(trips.origin);
+    const projection = trips.frame;
     const resources = new SpatialAnalysisResources(device, 'cell-pyramid');
     const pointCount = trips.vertexTimestamps.length;
     const capacity = Math.min(Math.ceil(pointCount / 1024) * 1024, MAXIMUM_TABLE_CAPACITY);

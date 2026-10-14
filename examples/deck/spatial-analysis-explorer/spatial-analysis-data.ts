@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {createGPULocalFrame, type GPULocalFrame} from '@luma.gl/experimental/gpu-spatial-analysis';
 import {addMetersToLngLat, getDistanceScales} from '@math.gl/web-mercator';
 
 /**
@@ -10,9 +11,11 @@ import {addMetersToLngLat, getDistanceScales} from '@math.gl/web-mercator';
  * Every loader fetches a small open dataset from the deck.gl-data repository (the same files the
  * deck.gl website examples use) and falls back to a deterministic synthetic dataset when the fetch
  * fails or `?data=synthetic` is set, so the demo works offline and in headless tests. Positions are
- * converted once on the CPU into planar meters east/north of a fixed origin; layers render them
- * with deck.gl `COORDINATE_SYSTEM.METER_OFFSETS` around the same origin, so contributor radii,
- * distances, and costs are in meters.
+ * projected on the CPU into the library's azimuthal-equidistant frame meters about a fixed origin.
+ * Synthetic positions are generated directly in those frame meters. Distance operators use the
+ * dataset frame's spatial context; area/density operators need positions reprojected into the
+ * matching Lambert equal-area frame and its context. Layers display frame meters with deck.gl
+ * `COORDINATE_SYSTEM.METER_OFFSETS` about the same origin, a display-only approximation.
  */
 
 const DECK_DATA_URL = 'https://raw.githubusercontent.com/visgl/deck.gl-data/master';
@@ -22,10 +25,36 @@ export const NEW_YORK_ORIGIN: readonly [number, number] = [-73.985, 40.745];
 /** Origin of the San Francisco datasets. */
 export const SAN_FRANCISCO_ORIGIN: readonly [number, number] = [-122.44, 37.76];
 
+/** Azimuthal-equidistant frame for distance analysis of New York datasets. */
+export const NEW_YORK_FRAME = createGPULocalFrame({
+  origin: NEW_YORK_ORIGIN,
+  kind: 'azimuthal-equidistant'
+});
+/** Azimuthal-equidistant frame for distance analysis of San Francisco datasets. */
+export const SAN_FRANCISCO_FRAME = createGPULocalFrame({
+  origin: SAN_FRANCISCO_ORIGIN,
+  kind: 'azimuthal-equidistant'
+});
+/** Lambert equal-area frame for area and density analysis of New York datasets. */
+export const NEW_YORK_AREA_FRAME = createGPULocalFrame({
+  origin: NEW_YORK_ORIGIN,
+  kind: 'lambert-equal-area'
+});
+/** Lambert equal-area frame for area and density analysis of San Francisco datasets. */
+export const SAN_FRANCISCO_AREA_FRAME = createGPULocalFrame({
+  origin: SAN_FRANCISCO_ORIGIN,
+  kind: 'lambert-equal-area'
+});
+
 /** Where a dataset came from. */
 export type SpatialAnalysisDataSource = 'remote' | 'synthetic';
 
-/** Common fields of every loaded dataset. */
+/**
+ * Common fields of every loaded dataset. Positions are meters of `frame` (azimuthal equidistant
+ * about `origin`). Pass `frame.spatialContext` to distance operators. Area/density operators need
+ * positions reprojected with {@link reprojectFramePositions} into `getDatasetFrame(dataset, 'area')`
+ * and that frame's spatial context.
+ */
 export type SpatialAnalysisDataset = {
   /** Whether the dataset was fetched or synthesized. */
   source: SpatialAnalysisDataSource;
@@ -33,7 +62,90 @@ export type SpatialAnalysisDataset = {
   attribution: string;
   /** `[longitude, latitude]` origin of the planar meter coordinates. */
   origin: readonly [number, number];
+  /** Azimuthal-equidistant frame containing the stored positions. */
+  frame: GPULocalFrame;
 };
+
+/** Returns the distance or area frame at the dataset origin; throws for an unknown origin. */
+export function getDatasetFrame(
+  dataset: SpatialAnalysisDataset,
+  kind: 'distance' | 'area' = 'distance'
+): GPULocalFrame {
+  const [longitude, latitude] = dataset.origin;
+  if (longitude === NEW_YORK_ORIGIN[0] && latitude === NEW_YORK_ORIGIN[1]) {
+    return kind === 'area' ? NEW_YORK_AREA_FRAME : NEW_YORK_FRAME;
+  }
+  if (longitude === SAN_FRANCISCO_ORIGIN[0] && latitude === SAN_FRANCISCO_ORIGIN[1]) {
+    return kind === 'area' ? SAN_FRANCISCO_AREA_FRAME : SAN_FRANCISCO_FRAME;
+  }
+  throw new Error('Unknown dataset origin');
+}
+
+/**
+ * Reprojects interleaved `x, y` frame meters through binary64 longitude/latitude, rounding only
+ * the output to float32. Equal frame ids copy the positions without reprojection. An optional
+ * target must have room for every input value; otherwise a new array is allocated.
+ */
+export function reprojectFramePositions(
+  positions: ArrayLike<number>,
+  from: GPULocalFrame,
+  to: GPULocalFrame,
+  target?: Float32Array
+): Float32Array {
+  const output = target ?? new Float32Array(positions.length);
+  const fromId = from.spatialContext.frame?.id;
+  if (fromId !== undefined && fromId === to.spatialContext.frame?.id) {
+    output.set(positions);
+    return output;
+  }
+  for (let index = 0; index + 1 < positions.length; index += 2) {
+    const [longitude, latitude] = from.unproject(positions[index], positions[index + 1]);
+    const [x, y] = to.project(longitude, latitude);
+    output[index] = x;
+    output[index + 1] = y;
+  }
+  return output;
+}
+
+/**
+ * Column-major layer `modelMatrix` that draws `frame` meters with deck.gl `METER_OFFSETS` about
+ * the frame origin: the Jacobian, at the origin, of frame meters to deck's Mercator-local meters.
+ * It removes the first-order mismatch (0.25% for the WGS84 Lambert frames, whose meters are
+ * ellipsoidal, against deck's spherical meters). The second-order remainder is the curvature of
+ * parallels, about 7 m at 10 km from the origin; drawing frame meters is display-only.
+ */
+export function getFrameDisplayModelMatrix(frame: GPULocalFrame): number[] {
+  const display = new LocalMetricProjection(frame.origin);
+  const toDisplay = (x: number, y: number) => {
+    const [longitude, latitude] = frame.unproject(x, y);
+    return display.project(longitude, latitude);
+  };
+  const step = 100;
+  const east = toDisplay(step, 0);
+  const west = toDisplay(-step, 0);
+  const north = toDisplay(0, step);
+  const south = toDisplay(0, -step);
+  const scale = 1 / (2 * step);
+  // prettier-ignore
+  return [
+    (east[0] - west[0]) * scale,
+    (east[1] - west[1]) * scale,
+    0,
+    0,
+    (north[0] - south[0]) * scale,
+    (north[1] - south[1]) * scale,
+    0,
+    0,
+    0,
+    0,
+    1,
+    0,
+    0,
+    0,
+    0,
+    1
+  ];
+}
 
 /** Vehicle trips with per-vertex timestamps (deck.gl trips example, New York). */
 export type SpatialAnalysisTrips = SpatialAnalysisDataset & {
@@ -110,7 +222,7 @@ export type SpatialAnalysisPolygons = SpatialAnalysisDataset & {
   outlineFeatureRows: Uint32Array;
 };
 
-/** One elevation raster (deck.gl website terrain.png, San Francisco, USGS DEM). */
+/** Regular raster grid in frame meters (deck.gl website terrain.png, San Francisco, USGS DEM). */
 export type SpatialAnalysisTerrain = SpatialAnalysisDataset & {
   /** Raster columns. */
   width: number;
@@ -118,9 +230,9 @@ export type SpatialAnalysisTerrain = SpatialAnalysisDataset & {
   height: number;
   /** Elevation meters, row-major, row 0 at the north edge. */
   elevation: Float32Array;
-  /** `[minX, minY, maxX, maxY]` meters of the raster's outer cell edges. */
+  /** `[minX, minY, maxX, maxY]` frame meters of the raster's outer cell edges. */
   bounds: readonly [number, number, number, number];
-  /** `[cellWidth, cellHeight]` meters. */
+  /** `[cellWidth, cellHeight]` in frame meters, constant across the regular grid. */
   cellSize: readonly [number, number];
   /** `[minimum, maximum]` elevation. */
   elevationRange: readonly [number, number];
@@ -139,10 +251,10 @@ export type SpatialAnalysisDataCatalog = {
 };
 
 /**
- * Converts between `[longitude, latitude]` and planar meters around one origin using the same
- * high-precision distance scales deck.gl applies to `METER_OFFSETS` coordinates.
+ * Display-only Mercator-local math matching deck.gl `METER_OFFSETS` coordinates, used solely by
+ * {@link getFrameDisplayModelMatrix}. Analysis uses the library frames above.
  */
-export class LocalMetricProjection {
+class LocalMetricProjection {
   /** `[longitude, latitude]` origin. */
   readonly origin: readonly [number, number];
   private readonly metersPerDegree: readonly [number, number];
@@ -226,7 +338,7 @@ async function loadNewYorkTrips(): Promise<SpatialAnalysisTrips> {
   const trips = await fetchJson<{vendor: number; path: number[][]; timestamps: number[]}[]>(
     'examples/trips/trips-v7.json'
   );
-  const projection = new LocalMetricProjection(NEW_YORK_ORIGIN);
+  const frame = NEW_YORK_FRAME;
   const vertexCount = trips.reduce((total, trip) => total + trip.path.length, 0);
   const vertexPositions = new Float32Array(vertexCount * 2);
   const vertexTimestamps = new Float32Array(vertexCount);
@@ -239,7 +351,7 @@ async function loadNewYorkTrips(): Promise<SpatialAnalysisTrips> {
     tripOffsets[tripIndex] = vertex;
     vendors[tripIndex] = trip.vendor;
     trip.path.forEach((coordinate, pathIndex) => {
-      const [x, y] = projection.project(coordinate[0], coordinate[1]);
+      const [x, y] = frame.project(coordinate[0], coordinate[1]);
       vertexPositions[vertex * 2] = x;
       vertexPositions[vertex * 2 + 1] = y;
       const time = trip.timestamps[pathIndex];
@@ -254,6 +366,7 @@ async function loadNewYorkTrips(): Promise<SpatialAnalysisTrips> {
     source: 'remote',
     attribution: 'deck.gl-data trips-v7 (New York taxi trips)',
     origin: NEW_YORK_ORIGIN,
+    frame: NEW_YORK_FRAME,
     vertexPositions,
     vertexTimestamps,
     tripOffsets,
@@ -271,7 +384,7 @@ type RoadFeatureCollection = {
 
 async function loadNewYorkRoads(): Promise<SpatialAnalysisRoadNetwork> {
   const collection = await fetchJson<RoadFeatureCollection>('examples/trips/roads.json');
-  const projection = new LocalMetricProjection(NEW_YORK_ORIGIN);
+  const frame = NEW_YORK_FRAME;
   const builder = new RoadNetworkBuilder();
   for (const feature of collection.features) {
     if (feature.geometry.type !== 'LineString') {
@@ -279,7 +392,7 @@ async function loadNewYorkRoads(): Promise<SpatialAnalysisRoadNetwork> {
     }
     const points = feature.geometry.coordinates.map(
       ([longitude, latitude]) =>
-        [longitude, latitude, ...projection.project(longitude, latitude)] as const
+        [longitude, latitude, ...frame.project(longitude, latitude)] as const
     );
     builder.addPolyline(
       points.map(point => ({
@@ -298,13 +411,13 @@ async function loadNewYorkPointsOfInterest(): Promise<SpatialAnalysisPointsOfInt
   const rows = await fetchJson<{fclass: string; coordinates: number[]}[]>(
     'examples/trips/pois.json'
   );
-  const projection = new LocalMetricProjection(NEW_YORK_ORIGIN);
+  const frame = NEW_YORK_FRAME;
   const categoryNames: string[] = [];
   const categoryIndexes = new Map<string, number>();
   const positions = new Float32Array(rows.length * 2);
   const categories = new Uint32Array(rows.length);
   rows.forEach((row, index) => {
-    const [x, y] = projection.project(row.coordinates[0], row.coordinates[1]);
+    const [x, y] = frame.project(row.coordinates[0], row.coordinates[1]);
     positions[index * 2] = x;
     positions[index * 2 + 1] = y;
     let category = categoryIndexes.get(row.fclass);
@@ -319,6 +432,7 @@ async function loadNewYorkPointsOfInterest(): Promise<SpatialAnalysisPointsOfInt
     source: 'remote',
     attribution: 'deck.gl-data trips POIs (OpenStreetMap, New York)',
     origin: NEW_YORK_ORIGIN,
+    frame: NEW_YORK_FRAME,
     positions,
     categories,
     categoryNames
@@ -329,14 +443,14 @@ async function loadSanFranciscoBikeParking(): Promise<SpatialAnalysisBikeParking
   const rows = await fetchJson<{SPACES: number; COORDINATES: number[]}[]>(
     'website/sf-bike-parking.json'
   );
-  const projection = new LocalMetricProjection(SAN_FRANCISCO_ORIGIN);
+  const frame = SAN_FRANCISCO_FRAME;
   const valid = rows.filter(
     row => Array.isArray(row.COORDINATES) && row.COORDINATES.every(Number.isFinite)
   );
   const positions = new Float32Array(valid.length * 2);
   const spaces = new Float32Array(valid.length);
   valid.forEach((row, index) => {
-    const [x, y] = projection.project(row.COORDINATES[0], row.COORDINATES[1]);
+    const [x, y] = frame.project(row.COORDINATES[0], row.COORDINATES[1]);
     positions[index * 2] = x;
     positions[index * 2 + 1] = y;
     spaces[index] = Number(row.SPACES) || 0;
@@ -345,6 +459,7 @@ async function loadSanFranciscoBikeParking(): Promise<SpatialAnalysisBikeParking
     source: 'remote',
     attribution: 'deck.gl-data sf-bike-parking (DataSF)',
     origin: SAN_FRANCISCO_ORIGIN,
+    frame: SAN_FRANCISCO_FRAME,
     positions,
     spaces
   };
@@ -354,12 +469,12 @@ async function loadSanFranciscoZipCodes(): Promise<SpatialAnalysisPolygons> {
   const rows = await fetchJson<{zipcode: number; contour: number[][]}[]>(
     'website/sf-zipcodes.json'
   );
-  const projection = new LocalMetricProjection(SAN_FRANCISCO_ORIGIN);
+  const frame = SAN_FRANCISCO_FRAME;
   return makePolygons(
     rows.map(row => ({
       id: row.zipcode,
       name: String(row.zipcode),
-      rings: [row.contour.map(([longitude, latitude]) => projection.project(longitude, latitude))]
+      rings: [row.contour.map(([longitude, latitude]) => frame.project(longitude, latitude))]
     })),
     'remote',
     'deck.gl-data sf-zipcodes'
@@ -438,6 +553,7 @@ class RoadNetworkBuilder {
       source,
       attribution,
       origin: NEW_YORK_ORIGIN,
+      frame: NEW_YORK_FRAME,
       nodePositions: Float32Array.from(this.nodePositions),
       edgeSources: Uint32Array.from(this.edgeSources),
       edgeTargets: Uint32Array.from(this.edgeTargets),
@@ -504,6 +620,7 @@ function makePolygons(
     source,
     attribution,
     origin: SAN_FRANCISCO_ORIGIN,
+    frame: SAN_FRANCISCO_FRAME,
     polygonPositions: Float32Array.from(positions),
     featureOffsets: Uint32Array.from(featureOffsets),
     polygonOffsets: Uint32Array.from(polygonOffsets),
@@ -525,10 +642,10 @@ function makeTerrain(
   source: SpatialAnalysisDataSource,
   attribution: string
 ): SpatialAnalysisTerrain {
-  const projection = new LocalMetricProjection(SAN_FRANCISCO_ORIGIN);
+  const frame = SAN_FRANCISCO_FRAME;
   const [west, south, east, north] = SAN_FRANCISCO_TERRAIN_BOUNDS;
-  const [minX, minY] = projection.project(west, south);
-  const [maxX, maxY] = projection.project(east, north);
+  const [minX, minY] = frame.project(west, south);
+  const [maxX, maxY] = frame.project(east, north);
   let minimum = Infinity;
   let maximum = -Infinity;
   for (const value of elevation) {
@@ -539,6 +656,7 @@ function makeTerrain(
     source,
     attribution,
     origin: SAN_FRANCISCO_ORIGIN,
+    frame: SAN_FRANCISCO_FRAME,
     width,
     height,
     elevation,
@@ -631,6 +749,7 @@ function makeSyntheticTrips(): SpatialAnalysisTrips {
     source: 'synthetic',
     attribution: 'Synthetic trips on a street grid',
     origin: NEW_YORK_ORIGIN,
+    frame: NEW_YORK_FRAME,
     vertexPositions: Float32Array.from(positions),
     vertexTimestamps: Float32Array.from(timestamps),
     tripOffsets: Uint32Array.from(tripOffsets),
@@ -658,6 +777,7 @@ function makeSyntheticPointsOfInterest(): SpatialAnalysisPointsOfInterest {
     source: 'synthetic',
     attribution: 'Synthetic points of interest',
     origin: NEW_YORK_ORIGIN,
+    frame: NEW_YORK_FRAME,
     positions,
     categories,
     categoryNames
@@ -688,6 +808,7 @@ function makeSyntheticBikeParking(): SpatialAnalysisBikeParking {
     source: 'synthetic',
     attribution: 'Synthetic bike parking',
     origin: SAN_FRANCISCO_ORIGIN,
+    frame: SAN_FRANCISCO_FRAME,
     positions,
     spaces
   };

@@ -48,8 +48,7 @@ import {
   formatDistance,
   formatNumber,
   GREAT_CIRCLE_CONTEXT,
-  importPathOutput,
-  PLANAR_CONTEXT
+  importPathOutput
 } from './b3-common';
 import {
   CHICAGO_LOOP,
@@ -329,7 +328,7 @@ async function createBuffersView(env: ViewEnvironment): Promise<View> {
       new GPUOutlineGeometry({
         id: 'outline',
         ...sourceGeometry,
-        spatialContext: spherical ? GREAT_CIRCLE_CONTEXT : PLANAR_CONTEXT,
+        spatialContext: spherical ? GREAT_CIRCLE_CONTEXT : city.projection.spatialContext,
         joinSegments: options.joinSegments,
         parameters: parameters.importToGraph(graph),
         output: {positions: imp('triangles', triangles, 'float32x2', outputCount)}
@@ -564,7 +563,7 @@ async function createShapesView(env: ViewEnvironment): Promise<View> {
         new GPUShapeGenerator({
           id: `shape-${kind}`,
           shape: kind,
-          spatialContext: geodesic ? GREAT_CIRCLE_CONTEXT : PLANAR_CONTEXT,
+          spatialContext: geodesic ? GREAT_CIRCLE_CONTEXT : city.projection.spatialContext,
           ellipseSpacing: kind === 'ellipse' ? options.ellipseSpacing : undefined,
           maximumSegments,
           centers: imp('centers', geodesic ? centersLngLat : centersLocal, 'float32x2', count),
@@ -964,6 +963,7 @@ async function createGridView(env: ViewEnvironment): Promise<View> {
     const centersView = imp('centers', centers, 'float32x2', cellCount);
     graph.add(
       new GPUGridGenerator({
+        spatialContext: city.projection.spatialContext,
         id: 'grid',
         gridType: type,
         columns: GRID_COLUMNS,
@@ -981,6 +981,7 @@ async function createGridView(env: ViewEnvironment): Promise<View> {
     const rowsView = imp('rows', rows, 'uint32', cellCount);
     graph.add(
       new GPUHilbertKeys({
+        spatialContext: city.projection.spatialContext,
         id: 'hilbert',
         order: options.hilbertOrder,
         positions: centersView,
@@ -1103,6 +1104,7 @@ async function createGridView(env: ViewEnvironment): Promise<View> {
     const rowsView = imp('rows', rows, 'uint32', stopCount);
     graph.add(
       new GPUHilbertKeys({
+        spatialContext: city.projection.spatialContext,
         id: 'stops-hilbert',
         order: options.hilbertOrder,
         positions: points,
@@ -1474,6 +1476,7 @@ async function createClipView(env: ViewEnvironment): Promise<View> {
         };
     graph.add(
       new GPURectangleClip({
+        spatialContext: city.projection.spatialContext,
         id: 'clip',
         ...clipGeometry,
         parameters: parameters.importToGraph(graph),

@@ -217,7 +217,6 @@ export async function createZoneDwell(
   const zoneCount = zones.zoneCount;
   const edgeCount = zones.edgeZones.length;
   const resources = new SpatialAnalysisResources(device, 'zone-dwell');
-  const coordinateOrigin: [number, number, number] = [vessels.origin[0], vessels.origin[1], 0];
   const gateGroup = groups.kinds.indexOf('gate');
 
   // ---- Static inputs --------------------------------------------------------------------------
@@ -538,6 +537,7 @@ export async function createZoneDwell(
       length: number
     ) => importGraphBuffer(graph, name, buffer, format, length);
     addFleetDwellZoneEventsRecipe(graph, {
+      spatialContext: vessels.spatialContext,
       id: 'zones',
       trajectories: {
         kind: 'trajectories',
@@ -650,6 +650,7 @@ export async function createZoneDwell(
       length: number
     ) => importGraphBuffer(graph, name, buffer, format, length);
     addFleetDwellRecipe(graph, {
+      spatialContext: vessels.spatialContext,
       id: 'zone-stops',
       trajectories: {
         kind: 'trajectories',
@@ -1577,7 +1578,7 @@ export async function createZoneDwell(
         const fill = (state: VariantState, side?: 'a' | 'b') =>
           new SpatialAnalysisPolygonLayer({
             id: `zone-fill-${side ?? state.variant}`,
-            coordinateOrigin,
+            analysisFrame: vessels.analysisFrame,
             triangles: fillTriangles,
             features: fillFeatures,
             vertexCount: fillVertexCount,
@@ -1597,7 +1598,7 @@ export async function createZoneDwell(
         layers.push(
           new SpatialAnalysisSegmentLayer({
             id: 'zone-tracks',
-            coordinateOrigin,
+            analysisFrame: vessels.analysisFrame,
             segments: segmentsBuffer,
             instanceCount: segmentCount,
             widthPixels: 0.7,
@@ -1613,7 +1614,7 @@ export async function createZoneDwell(
         layers.push(
           new SpatialAnalysisSegmentLayer({
             id: `zone-outline-${style}`,
-            coordinateOrigin,
+            analysisFrame: vessels.analysisFrame,
             segments: lines.buffer,
             instanceCount: lines.count,
             widthPixels: look.widthPixels,
@@ -1630,7 +1631,7 @@ export async function createZoneDwell(
         layers.push(
           new ZoneEventMarkerLayer({
             id: 'zone-events',
-            coordinateOrigin,
+            analysisFrame: vessels.analysisFrame,
             positions: pulsePositions,
             eventTracks: pulseTracks,
             eventTimes: pulseTimes,
@@ -1648,7 +1649,7 @@ export async function createZoneDwell(
         layers.push(
           new StopMarkerLayer({
             id: 'zone-stops',
-            coordinateOrigin,
+            analysisFrame: vessels.analysisFrame,
             centroids: shownStopCentroids,
             durations: shownStopDurations,
             drawCommands: stopDraw,

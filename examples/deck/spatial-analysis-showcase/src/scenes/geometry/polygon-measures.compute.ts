@@ -2,6 +2,19 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {
+  WEB_MERCATOR_PROJECTION,
+  buildRingEdges,
+  createGraphImporter,
+  findFeatureAt,
+  isPointInFeature,
+  formatNumber,
+  getQuantile,
+  loadPolygonLayout,
+  projectWebMercator,
+  triangulatePolygons,
+  type PolygonLayout
+} from './b3-common';
 import {COORDINATE_SYSTEM, type Layer} from '@deck.gl/core';
 import type {Buffer} from '@luma.gl/core';
 import {
@@ -29,18 +42,6 @@ import {makeClassTable} from '../../cartography/class-table';
 import type {ClassTable} from '../../cartography/types';
 import type {SceneContext, SceneInstance} from '../scene';
 import {B3_PALETTE, FeatureTriangleLayer, PairSegmentLayer, type B3ValueMapping} from './b3-layers';
-import {
-  buildRingEdges,
-  createGraphImporter,
-  findFeatureAt,
-  isPointInFeature,
-  formatNumber,
-  getQuantile,
-  loadPolygonLayout,
-  projectWebMercator,
-  triangulatePolygons,
-  type PolygonLayout
-} from './b3-common';
 
 /** Datasets of the scene. */
 export type PolygonDatasetId = 'us-counties' | 'chicago-community-areas' | 'chicago-tracts';
@@ -317,6 +318,8 @@ export async function createPolygonMeasures(
     const origin = dataset.defaultOrigin;
     const projection = dataset.getProjection(origin);
 
+    const planarProjection = spec.space === 'mercator' ? WEB_MERCATOR_PROJECTION : projection;
+
     // Planar space: Web Mercator for the continental layer, local meters for city layers.
     const planar =
       spec.space === 'mercator'
@@ -507,7 +510,7 @@ fn toLngLat(p: vec2<f32>) -> vec2<f32> {
       const common = {geometryType: 'polygons' as const, ...polygonStructure};
       graph.add(
         new GPUGeometryMeasures({
-          spatialContext: {coordinateSpace: 'planar', metric: 'native', units: 'native'},
+          spatialContext: planarProjection.spatialContext,
           id: 'measures-planar',
           positions: planarView,
           ...common,
@@ -685,6 +688,7 @@ fn toLngLat(p: vec2<f32>) -> vec2<f32> {
       const degenerate = imp('label-degenerate', labelDegenerate, 'uint32', featureCount);
       graph.add(
         new GPULabelPoint({
+          spatialContext: planarProjection.spatialContext,
           id: 'label-point',
           positions: planarView,
           ...partStructure,
@@ -698,6 +702,7 @@ fn toLngLat(p: vec2<f32>) -> vec2<f32> {
       const orientationView = view('orientation', orientation);
       graph.add(
         new GPUShapeDescriptors({
+          spatialContext: planarProjection.spatialContext,
           id: 'shape-descriptors',
           positions: planarView,
           ...groupedStructure,
@@ -1258,7 +1263,10 @@ fn toLngLat(p: vec2<f32>) -> vec2<f32> {
       slivers += table.sliver[feature];
       compactnessSum += table.polsbyPopper[feature];
     }
-    ctx.setReadout('areaPlanar', `${formatNumber(planarTotal / 1e6)} km²`);
+    ctx.setReadout(
+      'areaPlanar',
+      `${formatNumber(planarTotal / 1e6)} km² (${DATASET_SPECS[active.id].space === 'mercator' ? 'Web Mercator' : 'Mercator-local'})`
+    );
     ctx.setReadout('areaSphere', `${formatNumber(sphereTotal / 1e6)} km²`);
     ctx.setReadout('areaWgs84', `${formatNumber(wgsTotal / 1e6)} km²`);
     const areaClassCounts = new Array<number>(POLYGON_AREA_CLASSES.breaks.length + 1).fill(0);

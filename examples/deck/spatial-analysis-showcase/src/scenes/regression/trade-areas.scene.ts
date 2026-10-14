@@ -321,12 +321,13 @@ export default defineScene<TradeAreasOptions>({
 
 // Weights of both directions: demand rows list facilities in reach, facility rows list demand.
 // Decay (${state.decay}) and radius (${state.bandwidth} m) live in a parameter buffer.
-graph.add(new GPUNeighborSearch({mode: 'radius', positions: facilities, queryPositions: demand,
+graph.add(new GPUNeighborSearch({spatialContext: projection.spatialContext, mode: 'radius', positions: facilities, queryPositions: demand,
   mask: facilityMask, parameters, gridSize: [64, 64], output: {...demandWeights, status: {overflow}}}));
-graph.add(new GPUNeighborSearch({mode: 'radius', positions: demand, queryPositions: facilities,
+graph.add(new GPUNeighborSearch({spatialContext: projection.spatialContext, mode: 'radius', positions: demand, queryPositions: facilities,
   queryMask: facilityMask, parameters, gridSize: [64, 64], output: {...facilityWeights, status: {overflow}}}));
 
 // Two- and three-step floating catchment accessibility (access.two_step_fca)
+// Both weights tables carry projection.spatialContext from the searches above.
 graph.add(new GPUCatchmentAccessibility({
   method: '2sfca', supply, demand, facilityWeights, demandWeights,
   output: {accessibility, ratios, reachableFacilities}

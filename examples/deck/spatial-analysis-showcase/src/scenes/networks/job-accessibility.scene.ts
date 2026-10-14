@@ -406,6 +406,7 @@ import {
 // Graph 1: encoded only when the network or the opportunities change.
 const matrixGraph = new GPUCommandGraph(device, {id: 'access-matrix'});
 matrixGraph.add(new GPUNetworkSnapping({
+  spatialContext: network.projection.spatialContext,
   positions: opportunities,                    // float32x2, one job-rich tract each
   topology: {offsets: roadOffsets, neighbors: roadTargets, weights: walkSeconds, nodePositions: roadNodes},
   maximumSnapDistance: maxSnap.importToGraph(matrixGraph),   // ${state.maxSnapDistance} m, per frame${

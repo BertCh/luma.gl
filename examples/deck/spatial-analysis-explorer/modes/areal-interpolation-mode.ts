@@ -43,8 +43,12 @@ import {
   getGPUGridVerticesPerCell,
   type GPUGridType
 } from '@luma.gl/experimental/gpu-spatial-analysis';
+import {
+  getDatasetFrame,
+  getFrameDisplayModelMatrix,
+  reprojectFramePositions
+} from '../spatial-analysis-data';
 import {importGraphBuffer} from '../graph-buffers';
-import {LocalMetricProjection} from '../spatial-analysis-data';
 import {SpatialAnalysisRasterLayer, SpatialAnalysisSegmentLayer} from '../spatial-analysis-layers';
 import type {
   SpatialAnalysisModeDefinition,
@@ -93,14 +97,34 @@ export const arealInterpolationMode: SpatialAnalysisModeDefinition = {
   initialViewState: {longitude: -122.44, latitude: 37.76, zoom: 11.6},
 
   async create(context) {
-    const [parking, zips] = await Promise.all([
+    const [sourceParking, sourceZips] = await Promise.all([
       context.data.getSanFranciscoBikeParking(),
       context.data.getSanFranciscoZipCodes()
     ]);
     context.signal.throwIfAborted();
     const {device} = context;
+    const projection = getDatasetFrame(sourceZips, 'area');
+    const modelMatrix = Float64Array.from(getFrameDisplayModelMatrix(projection));
+    const zips = {
+      ...sourceZips,
+      frame: projection,
+      polygonPositions: reprojectFramePositions(
+        sourceZips.polygonPositions,
+        sourceZips.frame,
+        projection
+      ),
+      outlineSegments: reprojectFramePositions(
+        sourceZips.outlineSegments,
+        sourceZips.frame,
+        projection
+      )
+    };
+    const parking = {
+      ...sourceParking,
+      frame: projection,
+      positions: reprojectFramePositions(sourceParking.positions, sourceParking.frame, projection)
+    };
     const resources = new SpatialAnalysisResources(device, 'areal-interpolation');
-    const projection = new LocalMetricProjection(zips.origin);
     const sourceCount = zips.featureOffsets.length - 1;
     const targetCount = GRID_COLUMNS * GRID_ROWS;
     const cellCount = RASTER_WIDTH * RASTER_HEIGHT;
@@ -284,6 +308,7 @@ export const arealInterpolationMode: SpatialAnalysisModeDefinition = {
       );
       graph.add(
         new GPUGridGenerator({
+          spatialContext: projection.spatialContext,
           id: 'grid',
           gridType,
           columns: GRID_COLUMNS,
@@ -366,6 +391,7 @@ export const arealInterpolationMode: SpatialAnalysisModeDefinition = {
       );
       graph.add(
         new GPUArealInterpolation({
+          spatialContext: projection.spatialContext,
           id: 'areal',
           grid: rasterGrid,
           sourceZones: importGraphBuffer(graph, 'source-zones', sourceZones, 'uint32', cellCount),
@@ -441,6 +467,7 @@ export const arealInterpolationMode: SpatialAnalysisModeDefinition = {
       });
       graph.add(
         new GPUArealInterpolation({
+          spatialContext: projection.spatialContext,
           id: 'areal-timing',
           grid: rasterGrid,
           sourceZones: importGraphBuffer(graph, 'source-zones', sourceZones, 'uint32', cellCount),
@@ -530,6 +557,7 @@ export const arealInterpolationMode: SpatialAnalysisModeDefinition = {
         const graph = new GPUCommandGraph<void>(device, {id: `areal-pycno-${iterations}`});
         graph.add(
           new GPUPycnophylactic({
+            spatialContext: projection.spatialContext,
             id: 'pycnophylactic',
             grid: rasterGrid,
             zones: importGraphBuffer(graph, 'source-zones', sourceZones, 'uint32', cellCount),
@@ -965,6 +993,7 @@ export const arealInterpolationMode: SpatialAnalysisModeDefinition = {
         const layers: Layer[] = [
           new SpatialAnalysisRasterLayer({
             id: 'areal-values',
+            modelMatrix,
             coordinateOrigin,
             gridSize: [RASTER_WIDTH, RASTER_HEIGHT],
             bounds: rasterBounds,
@@ -979,6 +1008,7 @@ export const arealInterpolationMode: SpatialAnalysisModeDefinition = {
           }),
           new SpatialAnalysisSegmentLayer({
             id: 'areal-outline',
+            modelMatrix,
             coordinateOrigin,
             segments: outlineSegments,
             instanceCount: outlineSegmentCount,

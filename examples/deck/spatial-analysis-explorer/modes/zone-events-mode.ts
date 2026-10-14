@@ -24,7 +24,7 @@ import {GPUGroupStatistics} from '@luma.gl/experimental/gpu-dataframe';
 import {GPUZoneEvents} from '@luma.gl/experimental/gpu-spatial-analysis';
 import {importGraphBuffer} from '../graph-buffers';
 import {GraphSwap} from '../graph-swap';
-import {createSeededRandom, LocalMetricProjection} from '../spatial-analysis-data';
+import {createSeededRandom} from '../spatial-analysis-data';
 import {SpatialAnalysisPointLayer, SpatialAnalysisSegmentLayer} from '../spatial-analysis-layers';
 import type {
   SpatialAnalysisModeDefinition,
@@ -218,7 +218,7 @@ export const zoneEventsMode: SpatialAnalysisModeDefinition = {
     const trips = await context.data.getNewYorkTrips();
     context.signal.throwIfAborted();
     const {device} = context;
-    const projection = new LocalMetricProjection(trips.origin);
+    const projection = trips.frame;
     const resources = new SpatialAnalysisResources(device, 'zone-events');
 
     const trackCount = trips.vendors.length;
@@ -315,6 +315,7 @@ export const zoneEventsMode: SpatialAnalysisModeDefinition = {
       const visitDwellView = view('visit-dwell', visitDwell, 'float32', tableCapacity);
       graph.add(
         new GPUZoneEvents({
+          spatialContext: trips.frame.spatialContext,
           id: 'zone-events',
           tracks: {
             kind: 'trajectories',

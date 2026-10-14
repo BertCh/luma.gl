@@ -2,6 +2,10 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {
+  GPU_WGS84_SEMI_MAJOR_AXIS_METERS,
+  GPU_WGS84_FLATTENING
+} from '@luma.gl/experimental/gpu-spatial-analysis';
 /**
  * Shared helpers of the raster chapter (B16): the UTM display frame of the Sentinel-2 grids, a
  * raster layer that draws a UTM grid rotated onto the true-north basemap, small formatters and the
@@ -26,8 +30,8 @@ export {PATCH_COLORS, SEVERITY_COLORS, SEVERITY_NAMES} from './b16-colors';
 
 /** Inverse UTM (Snyder series, WGS84) to `[longitude, latitude]` degrees. */
 export function utmToLngLat(easting: number, northing: number, zone: number): [number, number] {
-  const a = 6378137;
-  const flattening = 1 / 298.257223563;
+  const a = GPU_WGS84_SEMI_MAJOR_AXIS_METERS;
+  const flattening = GPU_WGS84_FLATTENING;
   const k0 = 0.9996;
   const e2 = flattening * (2 - flattening);
   const ep2 = e2 / (1 - e2);

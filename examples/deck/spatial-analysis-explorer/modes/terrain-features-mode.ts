@@ -56,7 +56,6 @@ import {
 } from '@luma.gl/experimental/gpu-raster';
 import {importGraphBuffer} from '../graph-buffers';
 import {GraphSwap} from '../graph-swap';
-import {LocalMetricProjection} from '../spatial-analysis-data';
 import {
   SpatialAnalysisPointLayer,
   SpatialAnalysisRasterLayer,
@@ -132,6 +131,7 @@ type ProfileWindow = '8' | '16' | '32' | '64';
 
 type SpikeInjection = {blockCount: number; pixelCount: number; mask: Uint8Array};
 
+/** Explores terrain features with picking in the San Francisco dataset frame. */
 export const terrainFeaturesMode: SpatialAnalysisModeDefinition = {
   id: 'terrain-features',
   title: 'Peaks',
@@ -169,7 +169,7 @@ export const terrainFeaturesMode: SpatialAnalysisModeDefinition = {
     const pixelGrid = makeGPURasterMetadata({width, height, rowDirection: 'north'});
     const pixelCount = width * height;
     const cell = Math.min(cellSize[0], cellSize[1]);
-    const projection = new LocalMetricProjection(terrain.origin);
+    const projection = terrain.frame;
     const origin: [number, number, number] = [terrain.origin[0], terrain.origin[1], 0];
     const resources = new SpatialAnalysisResources(device, 'terrain-features');
 

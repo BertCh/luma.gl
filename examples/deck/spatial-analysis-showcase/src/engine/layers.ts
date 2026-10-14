@@ -39,7 +39,9 @@ export type {SpatialAnalysisShaderFeatures};
  * fade weights, clip fractions, and GPU-resident bounds are bound as read-only storage, and counts
  * can come from a GPU-written indirect draw record. All positions are planar meters rendered with
  * `COORDINATE_SYSTEM.METER_OFFSETS` around `coordinateOrigin`, optionally through an affine
- * `positionScale`/`positionOffset` (for example raster cell coordinates to meters). With the opt-in
+ * `positionScale`/`positionOffset` (for example raster cell coordinates to meters). Mercator-local
+ * `LocalMetricProjection` / `METER_OFFSETS` is display-only; analysis must use a frame from
+ * `analysis-frame.ts` and pass its `spatialContext` to operators. With the opt-in
  * `analysisFrame` prop the meters are those of an azimuthal or Albers analysis frame instead: the
  * shader inverts the frame to longitude/latitude and the layer draws with
  * `COORDINATE_SYSTEM.LNGLAT` (`coordinateSystem` and `coordinateOrigin` are then ignored).
@@ -287,7 +289,7 @@ export type SpatialAnalysisStyleProps = {
   /**
    * Opt-in: positions (after `positionScale`/`positionOffset`) are meters of this analysis frame
    * (`createAnalysisFrameProjection` in `analysis-frame.ts`), not deck `METER_OFFSETS`. The shader
-   * inverts the frame on the sphere and the layer draws as `COORDINATE_SYSTEM.LNGLAT`, so outputs
+   * inverts the spherical AEQD/Albers or ellipsoidal WGS84 Lambert frame and draws as `COORDINATE_SYSTEM.LNGLAT`, so outputs
    * of analysis run in an azimuthal-equidistant, Lambert equal-area or Albers frame land where
    * their longitude/latitude lies. The frame is compiled into the shader (changing it
    * rebuilds the model); `coordinateSystem` and `coordinateOrigin` are ignored. Rasters need

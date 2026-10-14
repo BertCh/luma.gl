@@ -288,6 +288,7 @@ export async function createNatureDensity(
     const weighted = options.statistic !== 'count';
     graph.add(
       new GPUPointDensity({
+        spatialContext: projection.spatialContext,
         id: 'density',
         positions: importGraphBuffer(graph, 'positions', positionsBuffer, 'float32x2', pointCount),
         mask: importGraphBuffer(graph, 'mask', maskBuffer, 'uint32', pointCount),

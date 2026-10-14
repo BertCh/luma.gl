@@ -2,6 +2,15 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {
+  WEB_MERCATOR_PROJECTION,
+  buildRingEdges,
+  createGraphImporter,
+  createStaticPaths,
+  findFeatureAt,
+  formatNumber,
+  triangulatePolygons
+} from './b3-common';
 import {COORDINATE_SYSTEM, type Layer} from '@deck.gl/core';
 import type {Buffer} from '@luma.gl/core';
 import {
@@ -17,14 +26,6 @@ import {GraphSwap} from '../../engine/graph-swap';
 import {formatCount, SpatialAnalysisResources} from '../../engine/resources';
 import {SummaryReader} from '../../engine/summary-reader';
 import type {SceneContext, SceneInstance} from '../scene';
-import {
-  buildRingEdges,
-  createGraphImporter,
-  createStaticPaths,
-  findFeatureAt,
-  formatNumber,
-  triangulatePolygons
-} from './b3-common';
 import {FeatureTriangleLayer, PathOutputLayer} from './b3-layers';
 import {
   ACRES_PER_SQUARE_METER,
@@ -310,16 +311,14 @@ export async function createWildfireShapes(
     for (const system of SYSTEMS) {
       graph.add(
         new GPUGeometryMeasures({
-          spatialContext: {
-            coordinateSpace: system === 'planar' ? 'planar' : 'longitude-latitude',
-            metric:
-              system === 'planar'
-                ? 'native'
-                : system === 'spherical'
-                  ? 'great-circle'
-                  : 'ellipsoidal',
-            units: system === 'planar' ? 'native' : 'meters'
-          },
+          spatialContext:
+            system === 'planar'
+              ? WEB_MERCATOR_PROJECTION.spatialContext
+              : {
+                  coordinateSpace: 'longitude-latitude',
+                  metric: system === 'spherical' ? 'great-circle' : 'ellipsoidal',
+                  units: 'meters'
+                },
           ellipsoidalEdgeModel: system === 'wgs84' ? 'coordinate-linear' : undefined,
           id: `measures-${system}`,
           positions: system === 'planar' ? planar : lngLat,
@@ -375,6 +374,7 @@ export async function createWildfireShapes(
     const view = (name: string, buffer: Buffer, rows = count) => imp(name, buffer, 'float32', rows);
     graph.add(
       new GPUShapeDescriptors({
+        spatialContext: WEB_MERCATOR_PROJECTION.spatialContext,
         id: 'shape',
         positions: imp('planar', planarBuffer, 'float32x2', vertexCount),
         ...importPolygonStructure(imp, options.ringGrouping),

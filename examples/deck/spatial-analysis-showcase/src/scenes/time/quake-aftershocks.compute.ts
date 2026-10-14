@@ -197,6 +197,7 @@ export async function createQuakeAftershocks(
     const positionsView = v('positions', positions, 'float32x2', count);
     const timesView = v('days', days, 'float32', count);
     const pairs = {
+      spatialContext: events.spatialContext,
       offsets: v('offsets', offsets, 'uint32', count + 1),
       neighbors: v('neighbors', neighbors, 'uint32', slotCapacity),
       weights: v('weights', weights, 'float32', slotCapacity),
@@ -205,6 +206,7 @@ export async function createQuakeAftershocks(
     };
     knoxGraph.add(
       new GPUNeighborSearch({
+        spatialContext: events.spatialContext,
         id: `${key}-search`,
         mode: 'radius',
         positions: positionsView,

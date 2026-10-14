@@ -2,22 +2,29 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import {COORDINATE_SYSTEM, type Layer} from '@deck.gl/core';
-import {HURRICANE_CLASS} from '../../cartography/hue-registry';
-import type {Buffer} from '@luma.gl/core';
 import {
-  GPUDistanceField,
-  GPU_DISTANCE_FIELD_PARAMETER_LENGTH,
-  getGPUDistanceFieldParameterValues,
-  makeGPURasterMetadata
-} from '@luma.gl/experimental/gpu-raster';
-import {
+  GPU_EARTH_MEAN_RADIUS_METERS,
   getGPULineDensityParameterValues,
   GPULineDensity,
   GPUZoneEvents,
   GPU_LINE_DENSITY_PARAMETER_LENGTH,
   GPU_ZONE_EVENT_TYPE
 } from '@luma.gl/experimental/gpu-spatial-analysis';
+import {
+  createAnalysisFrameProjection,
+  type AnalysisFrameProjection,
+  projectLngLatToFrame
+} from '../../engine/analysis-frame';
+import {COORDINATE_SYSTEM, type Layer} from '@deck.gl/core';
+import {HURRICANE_CLASS} from '../../cartography/hue-registry';
+import type {Buffer} from '@luma.gl/core';
+import {
+  GPUDistanceField,
+  GPU_DISTANCE_FIELD_PARAMETER_LENGTH,
+  GPU_DISTANCE_FIELD_NONE,
+  getGPUDistanceFieldParameterValues,
+  makeGPURasterMetadata
+} from '@luma.gl/experimental/gpu-raster';
 import {GPUCommandGraph, type CompiledGPUCommandGraph} from '@luma.gl/gpgpu/gpu-core';
 import {importGraphBuffer} from '../../engine/graph-buffers';
 import {
@@ -29,7 +36,6 @@ import {addKernelPass} from '../../engine/mode-kernels';
 import {GraphSwap} from '../../engine/graph-swap';
 import {formatCount, SpatialAnalysisResources} from '../../engine/resources';
 import {SummaryReader} from '../../engine/summary-reader';
-import {SatelliteCellLayer} from './satellite-layers';
 import type {SceneContext, SceneInstance} from '../scene';
 import {buildZoneSet, rasterizeZones, type ZoneSet} from '../movement/b12-zones';
 import {binValues, histogramChart} from '../movement/f-chart-helpers';
@@ -60,7 +66,7 @@ export type HurricaneLandfallOptions = {
   showStateOutlines: boolean;
 };
 
-/** Origin of the shared planar system (deck.gl meters) of storms, coast, states and grids. */
+/** Origin of the AEQD distance frame and WGS84 Lambert density frame. */
 const ORIGIN: readonly [number, number] = [-56, 28];
 const COLUMNS = 360;
 const ROWS = 232;
@@ -100,23 +106,24 @@ type Landfall = {
 /**
  * Hurricane landfall: four `GPULineDensity` layers (all fixes, tropical storm, hurricane and major
  * hurricane strength) show where tracks pass, a `GPUDistanceField` from the Natural Earth coastline
- * gives the distance to the nearest coast of every cell, and `GPUZoneEvents` finds every entry of
+ * chooses a coast cell for every grid cell, and `GPUZoneEvents` finds every entry of
  * every storm into a US state. The CPU keeps the entries that come from open water, interpolates
  * the wind at the crossing and counts them per state.
  *
- * The line densities run on longitude/latitude with a great-circle context (true meters, exact
- * spherical cell areas) and are drawn as longitude/latitude cells. The coast distance field and
- * the state zones stay in deck.gl meters about 28 N, 56 W so the rasters line up with the map; a
- * meter in that system is not a true meter, so a small kernel multiplies each row by
- * cos(latitude) / cos(28 N) and applies the search limit per row. That is exact for a cell and
- * its row, but the nearest-seed search itself uses one scale per row, so a distance measured
- * across rows differs by a few percent over 500 km north-south.
+ * Coast distances are GPU haversine great-circle kilometers on the mean-radius sphere, from each
+ * cell centre to the centre of the coast cell picked by the AEQD field about 28 N, 56 W. Static
+ * cell-centre lon/lat comes from the frame's unproject. Beyond cell discretization and f32 rounding,
+ * residual error comes from picking a different coast cell where scale varies across candidates
+ * (binary64 estimate: under 1.6% for 99% of cells, worst about 14% far from the frame centre);
+ * jump flooding can introduce additional selection error. The search cutoff is in great-circle km.
+ * State events retain their AEQD frame. Density uses a separate WGS84 Lambert equal-area copy of
+ * the tracks and its own raster frame.
  */
 export async function createHurricaneLandfall(
   ctx: SceneContext<HurricaneLandfallOptions>
 ): Promise<SceneInstance<HurricaneLandfallOptions>> {
   const storms = loadHurricaneTracks(ctx.datasets.get('ibtracs-north-atlantic'), {
-    projection: 'mercator',
+    projection: 'azimuthal',
     origin: ORIGIN,
     timeBase: 'storm'
   });
@@ -125,23 +132,46 @@ export async function createHurricaneLandfall(
   const {device} = ctx;
   const {trackCount, vertexCount, segmentCount} = storms;
   const resources = new SpatialAnalysisResources(device, 'hurricane-landfall');
-  const coordinateOrigin: [number, number, number] = [ORIGIN[0], ORIGIN[1], 0];
+  const densityProjection = createAnalysisFrameProjection({
+    kind: 'lambert-equal-area',
+    origin: ORIGIN
+  });
+  const densityPositions = projectLngLatToFrame(densityProjection, storms.lngLat);
   const lngLatProps = {coordinateSystem: COORDINATE_SYSTEM.LNGLAT} as const;
   const cellCount = COLUMNS * ROWS;
 
   // ---- Grid ----------------------------------------------------------------------------------
-  const corners = [
-    storms.project(GRID_WINDOW[0], GRID_WINDOW[1]),
-    storms.project(GRID_WINDOW[2], GRID_WINDOW[1]),
-    storms.project(GRID_WINDOW[0], GRID_WINDOW[3]),
-    storms.project(GRID_WINDOW[2], GRID_WINDOW[3])
-  ];
-  const bounds: [number, number, number, number] = [
-    Math.min(...corners.map(corner => corner[0])),
-    Math.min(...corners.map(corner => corner[1])),
-    Math.max(...corners.map(corner => corner[0])),
-    Math.max(...corners.map(corner => corner[1]))
-  ];
+  // Sample the geographic window edges: azimuthal edges curve between their corners.
+  const getGridBounds = (
+    projection: Pick<AnalysisFrameProjection, 'project'>
+  ): [number, number, number, number] => {
+    const points: [number, number][] = [];
+    for (let sample = 0; sample <= 1024; sample++) {
+      const fraction = sample / 1024;
+      const longitude = GRID_WINDOW[0] + fraction * (GRID_WINDOW[2] - GRID_WINDOW[0]);
+      const latitude = GRID_WINDOW[1] + fraction * (GRID_WINDOW[3] - GRID_WINDOW[1]);
+      points.push(
+        projection.project(longitude, GRID_WINDOW[1]),
+        projection.project(longitude, GRID_WINDOW[3]),
+        projection.project(GRID_WINDOW[0], latitude),
+        projection.project(GRID_WINDOW[2], latitude)
+      );
+    }
+    return [
+      Math.min(...points.map(point => point[0])),
+      Math.min(...points.map(point => point[1])),
+      Math.max(...points.map(point => point[0])),
+      Math.max(...points.map(point => point[1]))
+    ];
+  };
+  const bounds = getGridBounds(storms);
+  const densityBounds = getGridBounds(densityProjection);
+  const maximumAngularDistance =
+    Math.hypot(
+      Math.max(Math.abs(bounds[0]), Math.abs(bounds[2])),
+      Math.max(Math.abs(bounds[1]), Math.abs(bounds[3]))
+    ) / GPU_EARTH_MEAN_RADIUS_METERS;
+  const maximumScaleFactor = maximumAngularDistance / Math.sin(maximumAngularDistance);
   const cellWidth = (bounds[2] - bounds[0]) / COLUMNS;
   const cellHeight = (bounds[3] - bounds[1]) / ROWS;
   // The coast distance field's grid in the storm frame (meters): origin at the south-west corner,
@@ -153,21 +183,8 @@ export async function createHurricaneLandfall(
     origin: [bounds[0], bounds[1]],
     rowDirection: 'north'
   });
-  // The line-density grid is a longitude/latitude grid over the same window (great-circle meters,
-  // exact spherical cell areas); only the coast distance field and the state raster stay in the
-  // Mercator frame that deck draws rasters in.
-  const densityCellWidth = (GRID_WINDOW[2] - GRID_WINDOW[0]) / COLUMNS;
-  const densityCellHeight = (GRID_WINDOW[3] - GRID_WINDOW[1]) / ROWS;
-  const rowScale = new Float32Array(ROWS);
-  for (let row = 0; row < ROWS; row++) {
-    const [, latitude] = storms.unproject(
-      (bounds[0] + bounds[2]) / 2,
-      bounds[1] + (row + 0.5) * cellHeight
-    );
-    rowScale[row] = Math.cos((latitude * Math.PI) / 180) / Math.cos((ORIGIN[1] * Math.PI) / 180);
-  }
-  const rowScaleBuffer = resources.createBuffer('row-scale', rowScale);
-  const minimumRowScale = Math.min(...rowScale);
+  const densityCellWidth = (densityBounds[2] - densityBounds[0]) / COLUMNS;
+  const densityCellHeight = (densityBounds[3] - densityBounds[1]) / ROWS;
 
   // ---- States --------------------------------------------------------------------------------
   const zones: ZoneSet = buildZoneSet(statesDataset.geojson!, storms.project);
@@ -285,8 +302,8 @@ export async function createHurricaneLandfall(
     'float32',
     GPU_LINE_DENSITY_PARAMETER_LENGTH,
     getGPULineDensityParameterValues({
-      minX: GRID_WINDOW[0],
-      minY: GRID_WINDOW[1],
+      minX: densityBounds[0],
+      minY: densityBounds[1],
       cellWidth: densityCellWidth,
       cellHeight: densityCellHeight
     })
@@ -318,7 +335,7 @@ export async function createHurricaneLandfall(
     for (let track = 0; track < trackCount; track++) {
       for (let vertex = storms.offsets[track]; vertex < storms.offsets[track + 1]; vertex++) {
         if (storms.wind[vertex] >= threshold) {
-          run.push(storms.lngLat[vertex * 2], storms.lngLat[vertex * 2 + 1]);
+          run.push(densityPositions[vertex * 2], densityPositions[vertex * 2 + 1]);
         } else flush();
       }
       flush();
@@ -354,11 +371,7 @@ export async function createHurricaneLandfall(
     );
     densityGraph.add(
       new GPULineDensity({
-        spatialContext: {
-          coordinateSpace: 'longitude-latitude',
-          metric: 'great-circle',
-          units: 'meters'
-        },
+        spatialContext: densityProjection.spatialContext,
         id: `density-${variant}`,
         positions: importGraphBuffer(
           densityGraph,
@@ -466,7 +479,22 @@ export async function createHurricaneLandfall(
     1,
     Uint32Array.of(seedTotal)
   );
-  const coastCapKilometers = resources.createParameterBuffer('coast-cap', 'float32', 4);
+  // Static grid geometry only: every distance and cutoff decision below stays on the GPU.
+  const cellCenters = new Float32Array(cellCount * 2);
+  for (let row = 0; row < ROWS; row++) {
+    for (let column = 0; column < COLUMNS; column++) {
+      cellCenters.set(
+        storms.unproject(
+          bounds[0] + (column + 0.5) * cellWidth,
+          bounds[1] + (row + 0.5) * cellHeight
+        ),
+        (row * COLUMNS + column) * 2
+      );
+    }
+  }
+  const cellCentersBuffer = resources.createBuffer('coast-cell-centers', cellCenters);
+  const coastCutoff = resources.createParameterBuffer('coast-cutoff-km', 'float32', 1);
+  const nearestCellsBuffer = resources.createBuffer('coast-nearest-cells', cellCount * 4);
   const distancesBuffer = resources.createBuffer('coast-distances', cellCount * 4);
   const coastKmBuffer = resources.createBuffer('coast-km', cellCount * 4);
   async function buildCoastGraph(
@@ -480,7 +508,15 @@ export async function createHurricaneLandfall(
       'float32',
       cellCount
     );
+    const nearestCellsView = importGraphBuffer(
+      graph,
+      'coast-nearest-cells',
+      nearestCellsBuffer,
+      'uint32',
+      cellCount
+    );
     graph.add(
+      // GPUDistanceField has no spatialContext prop; the grid and seeds use the same AEQD frame.
       new GPUDistanceField({
         id: `coast-${mode}`,
         grid: coastGrid,
@@ -488,22 +524,27 @@ export async function createHurricaneLandfall(
         parameters: distanceSettings.importToGraph(graph),
         seedPositions: importGraphBuffer(graph, 'coast-seeds', seedBuffer, 'float32x2', seedTotal),
         seedCount: seedCountParameter.importToGraph(graph),
-        output: {distances: distancesView}
+        output: {distances: distancesView, nearestCells: nearestCellsView}
       })
     );
     addKernelPass(graph, {
       id: `coast-km-${mode}`,
       invocationCount: cellCount,
-      declarations: `const COLUMNS: u32 = ${COLUMNS}u;`,
       bindings: [
-        {name: 'distances', view: distancesView, type: 'f32', access: 'read'},
+        {name: 'nearestCells', view: nearestCellsView, type: 'u32', access: 'read'},
         {
-          name: 'rowScale',
-          view: importGraphBuffer(graph, 'row-scale', rowScaleBuffer, 'float32', ROWS),
+          name: 'cellCenters',
+          view: importGraphBuffer(
+            graph,
+            'coast-cell-centers',
+            cellCentersBuffer,
+            'float32x2',
+            cellCount
+          ),
           type: 'f32',
           access: 'read'
         },
-        {name: 'cap', view: coastCapKilometers.importToGraph(graph), type: 'f32', access: 'read'},
+        {name: 'cutoff', view: coastCutoff.importToGraph(graph), type: 'f32', access: 'read'},
         {
           name: 'kilometers',
           view: importGraphBuffer(graph, 'coast-km', coastKmBuffer, 'float32', cellCount),
@@ -511,12 +552,24 @@ export async function createHurricaneLandfall(
           access: 'read_write'
         }
       ],
-      // Planar meters of a row are ground meters times 1 / rowScale. The field searches out to the
-      // cap divided by the smallest row scale; each row then applies its own ground cap.
-      body: `let row = index / COLUMNS;
-  let ground = distances[distancesOffset + index] * rowScale[rowScaleOffset + row] * 0.001;
-  var infinityBits = 0x7f800000u;
-  kilometers[kilometersOffset + index] = select(bitcast<f32>(infinityBits), ground, ground <= cap[capOffset]);`
+      body: /* wgsl */ `
+        // Preserve the old +Infinity no-data value, including cells outside the true cutoff.
+        kilometers[kilometersOffset + index] = bitcast<f32>(0x7f800000u);
+        let nearestCell = nearestCells[nearestCellsOffset + index];
+        if (nearestCell == ${GPU_DISTANCE_FIELD_NONE}u) { return; }
+        let centerOffset = cellCentersOffset + index * 2u;
+        let coastOffset = cellCentersOffset + nearestCell * 2u;
+        let latitude = radians(cellCenters[centerOffset + 1u]);
+        let coastLatitude = radians(cellCenters[coastOffset + 1u]);
+        let longitudeDifference = cellCenters[coastOffset] - cellCenters[centerOffset];
+        let wrappedLongitude = longitudeDifference - 360.0 * floor((longitudeDifference + 180.0) / 360.0);
+        let latitudeSine = sin((coastLatitude - latitude) * 0.5);
+        let longitudeSine = sin(radians(wrappedLongitude) * 0.5);
+        let haversine = latitudeSine * latitudeSine + cos(latitude) * cos(coastLatitude) * longitudeSine * longitudeSine;
+        let distanceKm = ${GPU_EARTH_MEAN_RADIUS_METERS.toFixed(1)} * 0.001 * 2.0 * asin(min(1.0, sqrt(haversine)));
+        if (distanceKm > cutoff[cutoffOffset]) { return; }
+        kilometers[kilometersOffset + index] = distanceKm;
+      `
     });
     return resources.track(await graph.compileAsync());
   }
@@ -556,6 +609,7 @@ export async function createHurricaneLandfall(
     const graph = new GPUCommandGraph<void>(device, {id: `hurricane-${key}`});
     graph.add(
       new GPUZoneEvents({
+        spatialContext: storms.spatialContext,
         id: 'landfalls',
         candidateCapacity: CANDIDATE_CAPACITY,
         zones: {
@@ -970,12 +1024,12 @@ export async function createHurricaneLandfall(
     ctx.setChart(
       'coastChart',
       histogramChart(binValues(distances, 0, limit, 30), 0, limit, {
-        xLabel: 'distance from a fix to the nearest coast (km)',
+        xLabel: 'cell-centre distance to picked coast cell (km)',
         yLabel: 'fixes',
         markers: [{x: COAST_NEAR_KM, label: `${COAST_NEAR_KM} km`}],
         formatX: value => `${Math.round(value / 50) * 50}`,
         description:
-          'Histogram of the distance to the nearest coast at every fix of the chosen intensity, read from the GPU distance field.'
+          'Histogram of great-circle cell-centre distances to the AEQD-picked coast cells, sampled at fixes of the chosen intensity.'
       })
     );
   }
@@ -1018,20 +1072,21 @@ export async function createHurricaneLandfall(
   }
 
   function writeCoastSettings(): void {
+    coastCutoff.write(Float32Array.of(ctx.options.coastSearchKm));
     distanceSettings.write(
       getGPUDistanceFieldParameterValues(
-        {maximumDistance: (ctx.options.coastSearchKm * 1000) / minimumRowScale},
+        // Keep candidates inside the true cutoff despite AEQD tangential stretching.
+        {maximumDistance: ctx.options.coastSearchKm * 1000 * maximumScaleFactor},
         coastGrid
       )
     );
-    coastCapKilometers.write(Float32Array.of(ctx.options.coastSearchKm, 0, 0, 0));
     coastDirty = true;
   }
 
   // ---- Initial work ----------------------------------------------------------------------------
   ctx.setReadout(
     'grid',
-    `${COLUMNS} x ${ROWS} cells of ${densityCellWidth.toFixed(2)}° x ${densityCellHeight.toFixed(2)}° (density), ${(cellWidth / 1000).toFixed(0)} km at 28° N (coast); ${formatCount(seedTotal)} coast seeds`
+    `${COLUMNS} x ${ROWS} cells of ${(densityCellWidth / 1000).toFixed(1)} x ${(densityCellHeight / 1000).toFixed(1)} km (WGS84 Lambert density), ${(cellWidth / 1000).toFixed(1)} x ${(cellHeight / 1000).toFixed(1)} km (AEQD coast cells; distances are great-circle km to the AEQD-picked coast cell); ${formatCount(seedTotal)} coast seeds`
   );
   writeCoastSettings();
   commitEvents(await buildEvents(Number(ctx.options.eventsPerStorm)));
@@ -1114,10 +1169,13 @@ export async function createHurricaneLandfall(
       const layerIndex = INTENSITY_INDEX[options.intensity];
       if (options.view === 'density') {
         layers.push(
-          new SatelliteCellLayer({
+          new SpatialAnalysisRasterLayer({
+            analysisFrame: densityProjection.frame,
             id: `landfall-density-${layerIndex}`,
             gridSize: [COLUMNS, ROWS],
-            grid: [GRID_WINDOW[0], GRID_WINDOW[1], densityCellWidth, densityCellHeight],
+            bounds: densityBounds,
+            rowOrigin: 'south',
+            valueFormat: 'float32',
             values: displayBuffers[layerIndex],
             valueRange: [0, Math.max(1e-6, displayMaxima[layerIndex])],
             colormap: options.ramp,
@@ -1131,7 +1189,7 @@ export async function createHurricaneLandfall(
         layers.push(
           new SpatialAnalysisRasterLayer({
             id: `landfall-coast-${options.coastSearchKm}`,
-            coordinateOrigin,
+            analysisFrame: storms.analysisFrame,
             gridSize: [COLUMNS, ROWS],
             bounds,
             rowOrigin: 'south',
@@ -1148,7 +1206,7 @@ export async function createHurricaneLandfall(
         layers.push(
           new SpatialAnalysisRasterLayer({
             id: `landfall-states-${options.stateMetric}`,
-            coordinateOrigin,
+            analysisFrame: storms.analysisFrame,
             gridSize: [COLUMNS * CHOROPLETH_SCALE, ROWS * CHOROPLETH_SCALE],
             bounds,
             rowOrigin: 'south',
@@ -1196,7 +1254,7 @@ export async function createHurricaneLandfall(
         layers.push(
           new SpatialAnalysisSegmentLayer({
             id: 'landfall-state-outlines',
-            coordinateOrigin,
+            analysisFrame: storms.analysisFrame,
             segments: outlineBuffer,
             instanceCount: edgeCount,
             widthPixels: 1,
@@ -1207,7 +1265,7 @@ export async function createHurricaneLandfall(
       layers.push(
         new SpatialAnalysisSegmentLayer({
           id: 'landfall-selected-state',
-          coordinateOrigin,
+          analysisFrame: storms.analysisFrame,
           segments: selectedOutline,
           instanceCount: maximumZoneEdges,
           widthPixels: 3,
@@ -1218,7 +1276,7 @@ export async function createHurricaneLandfall(
         layers.push(
           new SpatialAnalysisPointLayer({
             id: 'landfall-dots',
-            coordinateOrigin,
+            analysisFrame: storms.analysisFrame,
             positions: dotPositions,
             instanceCount: dotCount,
             values: dotCategories,

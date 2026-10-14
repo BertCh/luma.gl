@@ -10,10 +10,14 @@ import {
   createGPUPointDensityGaussianKernel1D,
   GPUPointDensity
 } from '@luma.gl/experimental/gpu-spatial-analysis';
+import {
+  getDatasetFrame,
+  getFrameDisplayModelMatrix,
+  reprojectFramePositions
+} from '../spatial-analysis-data';
 import {importGraphBuffer} from '../graph-buffers';
 import {GraphSwap} from '../graph-swap';
 import {type GPUParameterBuffer} from '@luma.gl/experimental/gpu-spatial-analysis';
-import {LocalMetricProjection} from '../spatial-analysis-data';
 import {SpatialAnalysisPointLayer, SpatialAnalysisRasterLayer} from '../spatial-analysis-layers';
 import type {
   SpatialAnalysisModeDefinition,
@@ -73,10 +77,12 @@ export const densityMode: SpatialAnalysisModeDefinition = {
     const trips = await context.data.getNewYorkTrips();
     context.signal.throwIfAborted();
     const {device} = context;
-    const projection = new LocalMetricProjection(trips.origin);
+    const projection = getDatasetFrame(trips, 'area');
+    const modelMatrix = Float64Array.from(getFrameDisplayModelMatrix(projection));
+    const areaPositions = reprojectFramePositions(trips.vertexPositions, trips.frame, projection);
     const resources = new SpatialAnalysisResources(device, 'density');
     const pointCount = trips.vertexTimestamps.length;
-    const positionsBuffer = resources.createBuffer('positions', trips.vertexPositions);
+    const positionsBuffer = resources.createBuffer('positions', areaPositions);
     const maskBuffer = resources.createBuffer('mask', new Uint32Array(pointCount).fill(1));
     const bounds = resources.createParameterBuffer('bounds', 'float32', 4);
     const hexagonRadius = resources.createParameterBuffer(
@@ -134,6 +140,7 @@ export const densityMode: SpatialAnalysisModeDefinition = {
       const lineView = useSeparable ? lineKernel.importToGraph(graph) : undefined;
       graph.add(
         new GPUPointDensity({
+          spatialContext: projection.spatialContext,
           id: 'density',
           positions: importGraphBuffer(
             graph,
@@ -441,6 +448,7 @@ export const densityMode: SpatialAnalysisModeDefinition = {
         const layers: Layer[] = [
           new SpatialAnalysisRasterLayer({
             id: `density-${binning}`,
+            modelMatrix,
             coordinateOrigin: [trips.origin[0], trips.origin[1], 0],
             gridSize: binning === 'grid' ? GRID_SIZE : HEXAGON_GRID_SIZE,
             bounds: bounds.buffer,
@@ -459,6 +467,7 @@ export const densityMode: SpatialAnalysisModeDefinition = {
           layers.push(
             new SpatialAnalysisPointLayer({
               id: 'density-points',
+              modelMatrix,
               coordinateOrigin: [trips.origin[0], trips.origin[1], 0],
               positions: positionsBuffer,
               instanceCount: pointCount,

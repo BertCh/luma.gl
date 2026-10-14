@@ -220,6 +220,7 @@ export async function createDotDensity(
   const dotGraph = new GPUCommandGraph<void>(device, {id: 'dot-density'});
   dotGraph.add(
     new GPUDotDensity({
+      spatialContext: projection.spatialContext,
       id: 'dots',
       ...importPolygons(dotGraph),
       values: importGraphBuffer(dotGraph, 'values', valuesBuffer, 'float32', slotCount),
@@ -260,6 +261,7 @@ export async function createDotDensity(
   const randomGraph = new GPUCommandGraph<void>(device, {id: 'random-points'});
   randomGraph.add(
     new GPURandomPointsInPolygon({
+      spatialContext: projection.spatialContext,
       id: 'random-points',
       ...importPolygons(randomGraph),
       counts: importGraphBuffer(

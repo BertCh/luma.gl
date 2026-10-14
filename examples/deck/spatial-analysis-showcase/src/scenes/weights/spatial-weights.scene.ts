@@ -235,7 +235,7 @@ graph.add(new GPULatticeWeights({
   output: {offsets, neighbors, weights, status: {overflow, requiredCount}}
 }));`
         : `// 1. ${kind === 'knn' ? `The ${state.k} nearest centroids of every place` : 'Every centroid within the distance band'}.
-graph.add(new GPUNeighborSearch({
+graph.add(new GPUNeighborSearch({spatialContext: geography.analysisFrame.spatialContext,
   mode: '${kind === 'knn' ? 'knn' : 'radius'}',${kind === 'knn' ? `\n  k: ${state.k},` : ''}
   gridSize: [256, 256], positions: centroids,
   parameters,                          // radius, weightKind, kernel, rowStandardize: buffer writes
@@ -248,7 +248,7 @@ parameters.write(getGPUNeighborSearchParameterValues({
     state.transform === 'none'
       ? ''
       : `\n\n// 2. Rewrite the weights in place.
-graph.add(new GPUSpatialWeightsTransform({
+graph.add(new GPUSpatialWeightsTransform({spatialContext: geography.analysisFrame.spatialContext,
   operation: '${state.transform}',${state.transform === 'kernel' ? `\n  kernel: '${state.transformKernel}', bandwidth: ${state.bandwidth === 'adaptive' ? (state.source === 'knn' ? "'adaptive'" : 'bandRadius') : `${state.bandwidth} * medianSpacing`},` : ''}${state.transform === 'double' ? `\n  doubleSum: '${state.doubleSum}',` : ''}
   weights: {offsets, neighbors, weights${state.transform === 'kernel' ? ', distances' : ''}}
 }));`;
@@ -983,7 +983,7 @@ export default defineScene<SpatialWeightsOptions>({
     {
       id: 'band',
       label: 'Distance band radius',
-      help: 'The radius of the band as ground distance. The search runs in metres of a local frame: Albers equal-area for counties (distance error at most 1.4%), Mercator-local for tracts (at most 0.3%).'
+      help: 'The radius of the band as ground distance. The search runs in metres of a local frame: Albers equal-area for counties (distance error at most 1.44%), azimuthal equidistant for tracts (error bounded from the data extent).'
     },
     {
       id: 'weightSum',
@@ -1227,7 +1227,7 @@ export default defineScene<SpatialWeightsOptions>({
       headline: 'Weights fade with distance and sum to one',
       textAlternative:
         'Map around Cook County with a dashed ring for the distance band; neighbours inside it are classed green by weight and the line widths follow the weights.',
-      body: 'A distance band lists every centroid within **{{band}}** of the focus: **Distance band** times the **{{spacing}}** median spacing. A bisquare kernel weights each neighbour by distance, and row standardisation makes the row sum to **{{weightSum}}**. Line width is the weight. Drag **Distance band** or change **Kernel**.\n\n*A kernel makes W graded, not 0 or 1.*\n\n*Numerical note: the search runs in Albers metres for counties (scale error at most 1.4%) and local Mercator metres for tracts (at most 0.3%); the ring is drawn at ground distance.*',
+      body: 'A distance band lists every centroid within **{{band}}** of the focus: **Distance band** times the **{{spacing}}** median spacing. A bisquare kernel weights each neighbour by distance, and row standardisation makes the row sum to **{{weightSum}}**. Line width is the weight. Drag **Distance band** or change **Kernel**.\n\n*A kernel makes W graded, not 0 or 1.*\n\n*Numerical note: the search runs in Albers metres for counties (scale error at most 1.44%) and azimuthal equidistant metres for tracts (error bounded from the data extent); the ring is drawn at ground distance.*',
       optionsMode: 'fresh',
       options: {
         geography: 'us-counties',

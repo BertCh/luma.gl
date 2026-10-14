@@ -446,6 +446,7 @@ export default defineScene<ZoneDwellOptions>({
 
 const stopsGraph = new GPUCommandGraph(device, {id: 'zone-stops'});
 addFleetDwellRecipe(stopsGraph, {
+      spatialContext: vessels.spatialContext,
   trajectories: {kind: 'trajectories', positions, timestamps, trackOffsets},
   parameters: stopParameters.importToGraph(stopsGraph),     // speed threshold + minimum duration
   stopCapacity: 4096,
@@ -467,6 +468,7 @@ stopParameters.write(getGPUTrajectoryMetricsParameterValues({
 // zones: one polygon feature per zone (holes and extra parts share its index); the edges come from the rings
 const eventsGraph = new GPUCommandGraph(device, {id: 'zone-events'});
 addFleetDwellZoneEventsRecipe(eventsGraph, {
+      spatialContext: vessels.spatialContext,
   trajectories: {kind: 'trajectories', positions, timestamps, trackOffsets},   // planar meters, float32 seconds
   zones: {kind: 'polygons', positions: zonePositions, featureOffsets, polygonOffsets, ringOffsets},
   candidateCapacity: ${1 << 20}, trackEventCapacity: ${state.eventsPerVessel},

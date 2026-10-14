@@ -8,7 +8,6 @@ import {
   GPUParameterBuffer,
   type GPUParameterFormat
 } from '@luma.gl/experimental/gpu-spatial-analysis';
-import type {LocalMetricProjection} from './spatial-analysis-data';
 
 type Destroyable = {destroy: () => void};
 
@@ -106,23 +105,33 @@ export class SpatialAnalysisResources {
   }
 }
 
-/** Returns the viewport's visible `[minX, minY, maxX, maxY]` in a projection's planar meters. */
+/**
+ * Estimates the viewport's visible `[minX, minY, maxX, maxY]` in projection/frame meters.
+ * Samples each screen edge at quarter intervals because its projected shape can be curved.
+ */
 export function getViewportMetricBounds(
   viewport: Viewport,
-  projection: LocalMetricProjection
+  projection: {project(longitude: number, latitude: number): [number, number]}
 ): [number, number, number, number] {
-  const corners = [
-    viewport.unproject([0, 0]),
-    viewport.unproject([viewport.width, 0]),
-    viewport.unproject([0, viewport.height]),
-    viewport.unproject([viewport.width, viewport.height])
-  ].map(([longitude, latitude]) => projection.project(longitude, latitude));
-  return [
-    Math.min(...corners.map(corner => corner[0])),
-    Math.min(...corners.map(corner => corner[1])),
-    Math.max(...corners.map(corner => corner[0])),
-    Math.max(...corners.map(corner => corner[1]))
-  ];
+  const {width, height} = viewport;
+  const bounds: [number, number, number, number] = [Infinity, Infinity, -Infinity, -Infinity];
+  const addSample = (pixelX: number, pixelY: number) => {
+    const [longitude, latitude] = viewport.unproject([pixelX, pixelY]);
+    const [x, y] = projection.project(longitude, latitude);
+    bounds[0] = Math.min(bounds[0], x);
+    bounds[1] = Math.min(bounds[1], y);
+    bounds[2] = Math.max(bounds[2], x);
+    bounds[3] = Math.max(bounds[3], y);
+  };
+  const samplesPerEdge = 4;
+  for (let sample = 0; sample <= samplesPerEdge; sample++) {
+    const fraction = sample / samplesPerEdge;
+    addSample(fraction * width, 0);
+    addSample(fraction * width, height);
+    addSample(0, fraction * height);
+    addSample(width, fraction * height);
+  }
+  return bounds;
 }
 
 /** Formats an integer with thousands separators. */

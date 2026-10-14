@@ -493,7 +493,7 @@ import {GPUPointDensity} from '@luma.gl/experimental/gpu-spatial-analysis';
 
 const graph = new GPUCommandGraph(device, {id: 'nature-density'});
 graph.add(
-  new GPUPointDensity({
+  new GPUPointDensity({spatialContext: projection.spatialContext,
     positions,                         // float32x2 meters, uploaded once
     mask,                              // uint32: hour/day/group filter, rewritten on change${
       weighted

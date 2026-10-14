@@ -53,6 +53,17 @@ const STUB_SOURCE = `const stub = new Proxy(function () {}, {
 });
 module.exports = stub;`;
 
+const CONTRACTS_DIRECTORY = join(
+  dirname(fileURLToPath(import.meta.url)),
+  '../../../../modules/experimental/src/analysis-core/contracts'
+);
+/** Real contract exports (local frames, earth constants); every other name is the stub. */
+const CONTRACTS_SOURCE = `${STUB_SOURCE.replace('module.exports = stub;', '')}
+const contracts = require('./index.ts');
+module.exports = new Proxy(contracts, {
+  get: (target, key) => (key in target ? target[key] : key === '__esModule' ? true : stub)
+});`;
+
 const stubPlugin = {
   name: 'stub-packages',
   setup(builder) {
@@ -63,6 +74,16 @@ const stubPlugin = {
     builder.onLoad({filter: /.*/, namespace: 'raw'}, args => ({
       contents: readFileSync(args.path, 'utf8'),
       loader: 'text'
+    }));
+    // Frames are built at module load, so the spatial-analysis contracts (pure CPU code) are real.
+    builder.onResolve({filter: /^@luma\.gl\/experimental\/gpu-spatial-analysis$/}, args => ({
+      path: args.path,
+      namespace: 'contracts'
+    }));
+    builder.onLoad({filter: /.*/, namespace: 'contracts'}, () => ({
+      contents: CONTRACTS_SOURCE,
+      resolveDir: CONTRACTS_DIRECTORY,
+      loader: 'js'
     }));
     builder.onResolve({filter: /^[^./]/}, args => ({path: args.path, namespace: 'stub'}));
     builder.onLoad({filter: /.*/, namespace: 'stub'}, () => ({contents: STUB_SOURCE, loader: 'js'}));

@@ -79,6 +79,7 @@ function formatDecimal(value: number, digits = 3): string {
   return Number.isFinite(value) ? value.toFixed(digits) : '–';
 }
 
+/** Builds catchment and trade-area weights in the New York AEQD frame. */
 export const tradeAreasMode: SpatialAnalysisModeDefinition = {
   id: 'trade-areas',
   title: 'Trade areas',
@@ -290,6 +291,7 @@ export const tradeAreasMode: SpatialAnalysisModeDefinition = {
     const capacityView = view('capacity', capacityBuffer, 'float32', facilityCount);
     const demandView = view('demand', demandBuffer, 'float32', demandCount);
     const weightsOf = (name: string, csr: Csr, rowCount: number) => ({
+      spatialContext: trips.frame.spatialContext,
       offsets: view(`${name}-offsets`, csr.offsets, 'uint32', rowCount + 1),
       neighbors: view(`${name}-neighbors`, csr.neighbors, 'uint32', slotCapacity),
       weights: view(`${name}-weights`, csr.weights, 'float32', slotCapacity)
@@ -313,6 +315,7 @@ export const tradeAreasMode: SpatialAnalysisModeDefinition = {
     ) => {
       graph.add(
         new GPUNeighborSearch({
+          spatialContext: trips.frame.spatialContext,
           id: name,
           mode: 'radius',
           // Demand rows list the facilities within reach; facility rows list the demand.

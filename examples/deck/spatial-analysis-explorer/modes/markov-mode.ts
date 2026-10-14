@@ -211,6 +211,7 @@ function formatEdge(value: number): string {
   return count < 10 ? count.toFixed(1) : String(Math.round(count));
 }
 
+/** Classifies taxi activity transitions using neighbors in the New York AEQD frame. */
 export const markovMode: SpatialAnalysisModeDefinition = {
   id: 'markov',
   title: 'Markov',
@@ -368,6 +369,7 @@ export const markovMode: SpatialAnalysisModeDefinition = {
     const classesView = view('classes', classesBuffer, 'uint32', pooledCount);
     analysisGraph.add(
       new GPUNeighborSearch({
+        spatialContext: trips.frame.spatialContext,
         id: 'markov-search',
         mode: 'radius',
         positions: view('positions', positionsBuffer, 'float32x2', rowCount),

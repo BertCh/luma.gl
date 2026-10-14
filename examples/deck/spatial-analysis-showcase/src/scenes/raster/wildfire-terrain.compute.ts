@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {GPU_WGS84_SEMI_MAJOR_AXIS_METERS} from '@luma.gl/experimental/gpu-spatial-analysis';
 import {COORDINATE_SYSTEM, type Layer} from '@deck.gl/core';
 import type {Buffer} from '@luma.gl/core';
 import {
@@ -445,7 +446,7 @@ export async function createWildfireTerrain(
   // Ground scale at the latitude of the cell row: Mercator meters shrink by cos(latitude).
   let row = index / WIDTH;
   let mercatorY = params[paramsOffset + 2u] - (f32(row) + 0.5) * params[paramsOffset + 3u];
-  let latitude = 2.0 * atan(exp(mercatorY / 6378137.0)) - 1.5707963;
+  let latitude = 2.0 * atan(exp(mercatorY / ${GPU_WGS84_SEMI_MAJOR_AXIS_METERS.toFixed(1)})) - 1.5707963;
   let groundScale = cos(latitude);
   let zone = zones[zonesOffset + index];
   var assigned = 0xffffffffu;

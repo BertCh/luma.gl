@@ -92,7 +92,6 @@ export async function createVesselEncounters(
   const {device} = ctx;
   const {trackCount, vertexCount, segmentCount} = vessels;
   const resources = new SpatialAnalysisResources(device, 'encounters');
-  const coordinateOrigin: [number, number, number] = [vessels.origin[0], vessels.origin[1], 0];
   const sampleCount = trackCount * BUCKET_COUNT;
 
   // Lattice bounds: the central 99.8 percent of the fixes, padded by one cell.
@@ -138,7 +137,7 @@ export async function createVesselEncounters(
   );
   prepareGraph.add(
     new GPUTrajectoryMetrics({
-      spatialContext: {coordinateSpace: 'planar', metric: 'native', units: 'native'},
+      spatialContext: vessels.spatialContext,
       id: 'metrics',
       positions: preparePositions,
       timestamps: prepareTimestamps,
@@ -163,6 +162,7 @@ export async function createVesselEncounters(
   );
   prepareGraph.add(
     new GPUTrajectoryResample({
+      spatialContext: vessels.spatialContext,
       id: 'routes',
       positions: preparePositions,
       timestamps: prepareTimestamps,
@@ -306,6 +306,7 @@ export async function createVesselEncounters(
   );
   const pairCountView = importGraphBuffer(encounterGraph, 'pair-count', pairCount, 'uint32', 1);
   addClockEncounters(encounterGraph, {
+    spatialContext: vessels.spatialContext,
     id: 'encounters',
     positions: maskedPositionsView,
     timestamps: importGraphBuffer(
@@ -372,6 +373,7 @@ export async function createVesselEncounters(
   });
   encounterGraph.add(
     new GPUTrackSimilarity({
+      spatialContext: vessels.spatialContext,
       id: 'pair-similarity',
       pairA: pairIdsView,
       pairB: pairPartnersView,
@@ -586,6 +588,7 @@ export async function createVesselEncounters(
   });
   selectionGraph.add(
     new GPUTrackSimilarity({
+      spatialContext: vessels.spatialContext,
       id: 'selected-similarity',
       pairA: selectedAView,
       pairB: selectedBView,
@@ -1127,7 +1130,7 @@ export async function createVesselEncounters(
         layers.push(
           new SpatialAnalysisSegmentLayer({
             id: 'encounter-tracks',
-            coordinateOrigin,
+            analysisFrame: vessels.analysisFrame,
             segments: segmentsBuffer,
             instanceCount: segmentCount,
             widthPixels: 1.4,
@@ -1149,7 +1152,7 @@ export async function createVesselEncounters(
       layers.push(
         new SpatialAnalysisSegmentLayer({
           id: 'encounter-selected-route',
-          coordinateOrigin,
+          analysisFrame: vessels.analysisFrame,
           segments: selectedSegments,
           instanceCount: vessels.longestTrack,
           widthPixels: 4,
@@ -1160,7 +1163,7 @@ export async function createVesselEncounters(
         layers.push(
           new SpatialAnalysisPointLayer({
             id: 'encounter-vessels',
-            coordinateOrigin,
+            analysisFrame: vessels.analysisFrame,
             positions: vehicles,
             instanceCount: trackCount,
             values: categoryBuffer,
@@ -1175,7 +1178,7 @@ export async function createVesselEncounters(
       layers.push(
         new SpatialAnalysisSegmentLayer({
           id: 'encounter-connectors',
-          coordinateOrigin,
+          analysisFrame: vessels.analysisFrame,
           segments: connectors,
           instanceCount: PAIR_CAPACITY,
           widthPixels: 6,

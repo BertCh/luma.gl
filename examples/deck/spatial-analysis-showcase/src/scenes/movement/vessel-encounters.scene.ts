@@ -319,6 +319,7 @@ import {
 
 // Whole routes as 64 arc-length samples, once (input of the similarity measures)
 routeGraph.add(new GPUTrajectoryResample({
+  spatialContext: vessels.spatialContext,
   positions, timestamps, trackOffsets, sampleCount: 64, spacing: 'arc-length',
   output: {samples: routes}
 }));
@@ -326,6 +327,7 @@ routeGraph.add(new GPUTrajectoryResample({
 const graph = new GPUCommandGraph(device, {id: 'encounters'});
 const pairs = {ids, status: {count, overflow}, partners, firstBuckets, minimumDistances, bucketCounts};
 addClockEncounters(graph, {
+  spatialContext: vessels.spatialContext,
   positions: maskedPositions, timestamps, trackOffsets, // fixes of vessels slower than ${state.minSpeedKnots} kn set to NaN by a kernel
   clock: clock.importToGraph(graph), bucketCount: 720,  // shared instants start + k * step
   distance: distance.importToGraph(graph),              // per frame, <= cellSize
@@ -333,6 +335,7 @@ addClockEncounters(graph, {
   output: {pairs, status: {candidateOverflow}}
 });
 graph.add(new GPUTrackSimilarity({
+  spatialContext: vessels.spatialContext,
   linesA: {kind: 'lines', positions: routes, lineOffsets: routeOffsets},
   pairA: pairs.ids, pairB: pairs.partners, activePairCount: pairs.status.count,
   maximumFrechetVertexCount: 64,
@@ -443,7 +446,7 @@ compiled.encode(commandEncoder, {parameters: undefined});`,
       textAlternative: 'Encounter limits are summarized with the harbor map.',
       optionsMode: 'fresh',
       title: 'Limits and things to try',
-      body: 'Meetings are tested **at the buckets only**: two vessels that pass within the distance between two buckets are missed, so keep the clock step small compared with the distance divided by the speed. Distances are planar meters from AIS positions, which are only about 10 m accurate, so very small distances are noise. Frechet is computed on 64-point routes (the Frechet cap is 256 vertices per track), so it reflects the shape of the route, not every wiggle.\n\n**Try it:** set **Encounter distance** to 25 m and look at the closest approach; drag **Show connectors at** through the afternoon; select a tug and see which routes match; set **Connectors for** to *Different routes only* at the Narrows to see where traffic crosses.',
+      body: 'Meetings are tested **at the buckets only**: two vessels that pass within the distance between two buckets are missed, so keep the clock step small compared with the distance divided by the speed. Distances are AEQD frame meters from AIS positions, which are only about 10 m accurate, so very small distances are noise. Frechet is computed on 64-point routes (the Frechet cap is 256 vertices per track), so it reflects the shape of the route, not every wiggle.\n\n**Try it:** set **Encounter distance** to 25 m and look at the closest approach; drag **Show connectors at** through the afternoon; select a tug and see which routes match; set **Connectors for** to *Different routes only* at the Narrows to see where traffic crosses.',
       options: {
         trackColor: 'category',
         similarityMetric: 'hausdorff',

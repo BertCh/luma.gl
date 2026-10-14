@@ -501,6 +501,7 @@ graph.add(new GPUNetworkNeighborhood({
       ? `
 // Turn-aware: one line-graph node per directed edge, one arc per allowed turn.
 graph.add(new GPUNetworkLineGraph({
+  spatialContext: network.projection.spatialContext,
   topology: {offsets, neighbors, weights, nodePositions},
   parameters: turnParameters.importToGraph(graph),
   bannedTurns,                                   // optional (fromEdge, toEdge) pairs

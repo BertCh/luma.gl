@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {GPU_WGS84_SEMI_MAJOR_AXIS_METERS} from '@luma.gl/experimental/gpu-spatial-analysis';
 /**
  * Shared terrain preparation of the visibility chapter scenes (`viewshed`, `horizon`, `summits`).
  *
@@ -29,9 +30,9 @@ import {importGraphBuffer} from '../../engine/graph-buffers';
 import {LocalMetricProjection} from '../../engine/projection';
 import type {SpatialAnalysisResources} from '../../engine/resources';
 
-/** Circumference of the Web Mercator world in meters (2 pi R, R = 6378137). */
-export const WORLD_METERS = 40075016.68557849;
-const EARTH_RADIUS = 6378137;
+/** Circumference of the Web Mercator world in meters (2 pi times the WGS84 semi-major axis). */
+export const WORLD_METERS = 2 * Math.PI * GPU_WGS84_SEMI_MAJOR_AXIS_METERS;
+const EARTH_RADIUS = GPU_WGS84_SEMI_MAJOR_AXIS_METERS;
 
 /** One named place used as an observer or a peak catalogue entry. */
 export type NamedPlace = {

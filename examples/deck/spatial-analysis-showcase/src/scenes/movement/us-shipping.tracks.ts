@@ -2,9 +2,14 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {
+  GPU_EARTH_MEAN_RADIUS_METERS,
+  GPU_WGS84_SEMI_MAJOR_AXIS_METERS
+} from '@luma.gl/experimental/gpu-spatial-analysis';
+import {createAnalysisFrameProjection} from '../../engine/analysis-frame';
 import type {LoadedDataset} from '../../data/catalog';
 import {US_TYPE_TO_GROUP} from './movement-style';
-import {createAzimuthalEquidistant, createTrackSet, type TrackSet} from './b12-tracks';
+import {createTrackSet, type AnalysisTrackSet} from './b12-tracks';
 
 /**
  * Data helpers of the `us-shipping-day` scene: the `poopdeck-ais-us` tracks in two planar spaces
@@ -71,22 +76,21 @@ export const CLIP_WALK_REGION: readonly [number, number, number, number] = [
 /** Center of the azimuthal-equidistant analysis projection (central Kansas). */
 export const SHIPPING_PROJECTION_CENTER: readonly [number, number] = [-96, 38];
 
-const EARTH_RADIUS_METERS = 6378137;
 const DEGREES = Math.PI / 180;
 
 /** Web Mercator meters of a longitude and latitude (unbounded in latitude below 85 degrees). */
 export function projectMercator(longitude: number, latitude: number): [number, number] {
   return [
-    EARTH_RADIUS_METERS * longitude * DEGREES,
-    EARTH_RADIUS_METERS * Math.log(Math.tan(Math.PI / 4 + (latitude * DEGREES) / 2))
+    GPU_WGS84_SEMI_MAJOR_AXIS_METERS * longitude * DEGREES,
+    GPU_WGS84_SEMI_MAJOR_AXIS_METERS * Math.log(Math.tan(Math.PI / 4 + (latitude * DEGREES) / 2))
   ];
 }
 
-/** Ellipsoid radius used by the azimuthal-equidistant helper of `b12-tracks`. */
-export const AZIMUTHAL_EARTH_RADIUS_METERS = 6371008.8;
+/** Mean sphere radius used by the library azimuthal-equidistant frame. */
+export const AZIMUTHAL_EARTH_RADIUS_METERS = GPU_EARTH_MEAN_RADIUS_METERS;
 
 /** The vessel tracks of the `poopdeck-ais-us` dataset. */
-export type ShippingTracks = TrackSet & {
+export type ShippingTracks = AnalysisTrackSet & {
   /** Type index per track (see {@link SHIPPING_TYPES}). */
   category: Uint32Array;
   mmsi: Uint32Array;
@@ -111,7 +115,10 @@ export type ShippingTracks = TrackSet & {
 /** Loads `poopdeck-ais-us` as {@link ShippingTracks}. */
 export function loadShippingTracks(dataset: LoadedDataset): ShippingTracks {
   const lngLat = dataset.column<Float32Array>('vertices');
-  const projection = createAzimuthalEquidistant(SHIPPING_PROJECTION_CENTER);
+  const projection = createAnalysisFrameProjection({
+    kind: 'azimuthal-equidistant',
+    origin: SHIPPING_PROJECTION_CENTER
+  });
   const vertexCount = lngLat.length / 2;
   const positions = new Float32Array(lngLat.length);
   const mercator = new Float32Array(lngLat.length);
@@ -143,6 +150,8 @@ export function loadShippingTracks(dataset: LoadedDataset): ShippingTracks {
     lngLat,
     timestamps: Float32Array.from(dataset.column<Uint32Array>('timestamp')),
     origin: SHIPPING_PROJECTION_CENTER,
+    analysisFrame: projection.frame,
+    spatialContext: projection.spatialContext,
     project: projection.project,
     unproject: projection.unproject,
     drawInDegrees: true

@@ -432,7 +432,7 @@ export default defineScene<NearestFacilityOptions>({
         ? `import {GPUNearestFeatureJoin} from '@luma.gl/experimental/gpu-spatial-analysis';
 
 graph.add(
-  new GPUNearestFeatureJoin({
+  new GPUNearestFeatureJoin({spatialContext: projection.spatialContext,
     queries: {kind: 'points', positions: places},  // float32x2 meters, 105,808 rows
     features: ${state.featureSet === 'rail-lines' ? "{kind: 'segments', starts, ends}" : "{kind: 'points', positions: facilities}"},
     radius: radius.importToGraph(graph),     // one float32, rewritten per frame
@@ -447,7 +447,7 @@ graph.add(
 );`
         : state.mode === 'neighbors'
           ? `graph.add(
-  new GPUNearestFeatureJoin({
+  new GPUNearestFeatureJoin({spatialContext: projection.spatialContext,
     queries: {kind: 'points', positions: places},
     features: ${state.featureSet === 'rail-lines' ? "{kind: 'lines', positions, lineOffsets}" : "{kind: 'points', positions: facilities}"},
     k: 8, neighborCapacity: ${state.ties === 'all' ? 16 : 8}, ties: '${state.ties}',
@@ -462,13 +462,13 @@ graph.add(
 );
 // draw the first ${state.kShown} slots of every place: no recompile`
           : state.mode === 'weights'
-            ? `graph.add(new GPUNearestFeatureJoin({
+            ? `graph.add(new GPUNearestFeatureJoin({spatialContext: projection.spatialContext,
   queries: {kind: 'points', positions: facilities}, features: {kind: 'points', positions: facilities},
   k: ${state.weightK + 1},
   output: {neighborIds, neighborCounts, neighborDistances, status: {overflow}}
 }));
 graph.add(
-  new GPUNearestFeatureWeights({
+  new GPUNearestFeatureWeights({spatialContext: projection.spatialContext,
     neighborIds, neighborCounts, neighborDistances,
     slotCapacity: ${state.weightK + 1}, k: ${state.weightK},
     excludeSelf: true,                       // libpysal KNN never lists a row as its own neighbour
@@ -479,7 +479,7 @@ graph.add(
             : `import {GPUSpatialJoinCandidates} from '@luma.gl/experimental/gpu-spatial-analysis';
 
 graph.add(
-  new GPUSpatialJoinCandidates({
+  new GPUSpatialJoinCandidates({spatialContext: projection.spatialContext,
     left: {kind: 'points', positions: facilities},
     right: {kind: 'polygons', positions, featureOffsets, polygonOffsets, ringOffsets},
     distance: candidateDistance.importToGraph(graph),        // one-row float32, read per frame

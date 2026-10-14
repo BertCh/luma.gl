@@ -124,6 +124,7 @@ import {GPUTrajectoryPlayhead} from '@luma.gl/experimental/gpu-spatial-analysis'
 // every taxi at the clock: interpolated position, heading, a compact list of live taxis
 const playheadGraph = new GPUCommandGraph(device);
 playheadGraph.add(new GPUTrajectoryPlayhead({
+  spatialContext: projection.spatialContext,
   positions, timestamps, trackOffsets, parameters: playhead.importToGraph(playheadGraph),
   output: {
     currentPositions, headings, speeds, trackStatus: status,

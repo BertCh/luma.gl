@@ -524,6 +524,7 @@ export async function createChangeOfSupport(
       gridVerticesView = vertices;
       graph.add(
         new GPUGridGenerator({
+          spatialContext: projection.spatialContext,
           id: `grid-${target}`,
           gridType: GRID_TYPES[target as GridTarget],
           columns: GRID_COLUMNS,
@@ -595,6 +596,7 @@ export async function createChangeOfSupport(
       targetCount + 1
     );
     const recipe = addChangeOfSupportRecipe(graph, {
+      spatialContext: projection.spatialContext,
       id: 'cos',
       grid: rasterGrid,
       parameters: rasterParameters.importToGraph(graph),
@@ -774,6 +776,7 @@ export async function createChangeOfSupport(
     ] as const) {
       graph.add(
         new GPUPycnophylactic({
+          spatialContext: projection.spatialContext,
           id: `pycno-${name}`,
           grid: rasterGrid,
           zones,
@@ -1300,6 +1303,7 @@ export async function createChangeOfSupport(
     });
     graph.add(
       new GPUArealInterpolation({
+        spatialContext: projection.spatialContext,
         id: 'areal-timing',
         grid: rasterGrid,
         sourceZones: importGraphBuffer(graph, 'source-zones', sourceZones, 'uint32', CELL_COUNT),

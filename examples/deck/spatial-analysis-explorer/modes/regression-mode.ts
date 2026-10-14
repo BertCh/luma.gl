@@ -101,7 +101,6 @@ import {
 } from '@luma.gl/experimental/gpu-spatial-analysis';
 import {importGraphBuffer} from '../graph-buffers';
 import {
-  LocalMetricProjection,
   type SpatialAnalysisPointsOfInterest,
   type SpatialAnalysisRoadNetwork,
   type SpatialAnalysisTrips
@@ -245,6 +244,8 @@ export const regressionMode: SpatialAnalysisModeDefinition = {
 type CellStudy = {
   attribution: string;
   origin: readonly [number, number];
+  /** AEQD frame of the cell centers and distance predictors. */
+  frame: SpatialAnalysisRoadNetwork['frame'];
   /** Grid south-west corner in meters. */
   gridOrigin: readonly [number, number];
   cellSize: number;
@@ -276,7 +277,7 @@ function buildCellStudy(
   trips: SpatialAnalysisTrips,
   pois: SpatialAnalysisPointsOfInterest
 ): CellStudy {
-  const projection = new LocalMetricProjection(roads.origin);
+  const projection = roads.frame;
   const [centerX, centerY] = projection.project(-73.9855, 40.758);
   let minX = Infinity;
   let minY = Infinity;
@@ -379,6 +380,7 @@ function buildCellStudy(
   return {
     attribution: `${pois.attribution}; ${trips.attribution}; ${roads.attribution}`,
     origin: roads.origin,
+    frame: roads.frame,
     gridOrigin: [minX, minY],
     cellSize,
     columns,
@@ -713,6 +715,7 @@ async function createGwrView(
   const graph = new GPUCommandGraph<void>(context.device, {id: 'regression-gwr'});
   graph.add(
     new GPUGeographicallyWeightedRegression({
+      spatialContext: study.frame.spatialContext,
       id: 'gwr',
       positions: importGraphBuffer(graph, 'positions', positions, 'float32x2', rowCount),
       predictors: importGraphBuffer(graph, 'predictors', predictors, 'float32', rowCount * 3),
@@ -798,6 +801,7 @@ async function createGwrView(
   const testGraph = new GPUCommandGraph<void>(context.device, {id: 'regression-gwr-test'});
   testGraph.add(
     new GPUGeographicallyWeightedRegressionNonstationarityTest({
+      spatialContext: study.frame.spatialContext,
       id: 'gwr-test',
       positions: importGraphBuffer(testGraph, 'positions', positions, 'float32x2', rowCount),
       predictors: importGraphBuffer(testGraph, 'predictors', predictors, 'float32', rowCount * 3),
@@ -1775,6 +1779,7 @@ function createSpatialStage(
   // contiguity). Plain kNN weights are directed: i lists j without j listing i.
   graph.add(
     new GPUNeighborSearch({
+      spatialContext: study.frame.spatialContext,
       id: 'weights-search',
       mode: kind === 'knn' ? 'knn' : 'radius',
       k: kind === 'knn' ? neighborCount : undefined,

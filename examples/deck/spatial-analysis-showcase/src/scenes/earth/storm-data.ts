@@ -5,11 +5,12 @@
 import type {LoadedDataset} from '../../data/catalog';
 import {
   type AnalysisFrame,
+  type AnalysisFrameProjection,
   createAnalysisFrameProjection,
   projectLngLatToFrame
 } from '../../engine/analysis-frame';
 import type {BarChartData, LineChartData} from '../scene';
-import {createAzimuthalEquidistant, createTrackSet, type TrackSet} from '../movement/b12-tracks';
+import {createTrackSet, type AnalysisTrackSet} from '../movement/b12-tracks';
 
 /**
  * Shared helpers of the three storm scenes (cell tracks, warning verification, outage exposure):
@@ -23,16 +24,22 @@ export const STORM_ORIGIN_UNIX = Date.UTC(2024, 4, 21, 12, 0, 0) / 1000;
 export const STORM_EVENT_SECONDS = 18 * 3600;
 /** The part of the window that holds storm reports and warnings: 17:30 UTC to 03:00 UTC. */
 export const STORM_VERIFICATION_RANGE: readonly [number, number] = [19800, 54000];
-/** Centre of the azimuthal-equidistant frame used for joins and areal sums. */
+/** Common origin of the storm distance and density analysis frames. */
 export const STORM_FRAME_CENTER: readonly [number, number] = [-92, 37];
+/** Distance frame for joins and buffers about the storm-region center. */
+export const STORM_DISTANCE_FRAME: AnalysisFrame = {
+  kind: 'azimuthal-equidistant',
+  origin: STORM_FRAME_CENTER
+};
 /** Planar frame of the joins: distances from the centre are exact, tangential error is under 1% at 1,500 km (at most 1.8% over the storm region). */
-export const STORM_FRAME = createAzimuthalEquidistant(STORM_FRAME_CENTER as [number, number]);
+export const STORM_FRAME: AnalysisFrameProjection =
+  createAnalysisFrameProjection(STORM_DISTANCE_FRAME);
 
 /**
- * Equal-area frame of the lightning density raster: Lambert azimuthal equal-area about
+ * Equal-area frame of the lightning density raster: ellipsoidal WGS84 Lambert azimuthal about
  * {@link STORM_FRAME_CENTER}. Every cell covers the same ground area, so a cell sum is flashes per
- * cell area with no weighting. Cell shapes stretch by at most 2.6% at the corners of the flash box
- * (radial scale `1 / cos(c / 2)`, tangential `cos(c / 2)`). The density layers draw in this frame.
+ * cell area with no weighting: areas are exact ellipsoidal areas. The density layers draw in
+ * this frame using its ellipsoidal inverse.
  */
 export const STORM_DENSITY_FRAME: AnalysisFrame = {
   kind: 'lambert-equal-area',
@@ -88,7 +95,7 @@ export const COMPASS_COLORS: readonly (readonly [number, number, number, number]
 ];
 
 /** Storm-cell tracks in the layout of the trajectory contributors, plus the per-vertex reflectivity. */
-export type StormTrackSet = TrackSet & {
+export type StormTrackSet = AnalysisTrackSet & {
   /** Cell reflectivity in dBZ per vertex. */
   reflectivity: Float32Array;
   /** Peak dBZ per track. */
@@ -101,7 +108,8 @@ export type StormTrackSet = TrackSet & {
 /**
  * Loads `poopdeck-mrms-precip-tracks`. `positions` and `lngLat` are the same longitude/latitude
  * degrees: `GPUTrajectoryMetrics` measures them with a great-circle context, so speeds are true
- * meters per second and headings are initial bearings.
+ * meters per second and headings are initial bearings. `analysisFrame` and `spatialContext`
+ * describe the planar `project`/`unproject` helpers, not these longitude/latitude `positions`.
  */
 export function loadStormTracks(dataset: LoadedDataset): StormTrackSet {
   const offsets = dataset.column<Uint32Array>('pathOffsets');
@@ -112,6 +120,8 @@ export function loadStormTracks(dataset: LoadedDataset): StormTrackSet {
     lngLat,
     timestamps: Float32Array.from(dataset.column<Uint32Array>('timestamp')),
     origin: STORM_FRAME_CENTER,
+    analysisFrame: STORM_FRAME.frame,
+    spatialContext: STORM_FRAME.spatialContext,
     project: STORM_FRAME.project,
     unproject: STORM_FRAME.unproject,
     drawInDegrees: true

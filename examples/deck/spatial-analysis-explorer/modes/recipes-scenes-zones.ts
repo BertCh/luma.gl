@@ -29,7 +29,12 @@ import {
   getGPUPolygonRasterizationParameterValues,
   makeGPURasterMetadata
 } from '@luma.gl/experimental/gpu-raster';
-import type {SpatialAnalysisPointsOfInterest} from '../spatial-analysis-data';
+import {
+  getDatasetFrame,
+  getFrameDisplayModelMatrix,
+  reprojectFramePositions,
+  type SpatialAnalysisPointsOfInterest
+} from '../spatial-analysis-data';
 import {SpatialAnalysisRasterLayer, SpatialAnalysisSegmentLayer} from '../spatial-analysis-layers';
 import {formatCount} from '../spatial-analysis-resources';
 import {formatCompact, getRampPalette, PackedColorRasterLayer} from './classification-layers';
@@ -119,12 +124,14 @@ function createOutlineLayer(
   origin: readonly [number, number],
   segments: Buffer,
   count: number,
-  color: readonly [number, number, number, number]
+  color: readonly [number, number, number, number],
+  modelMatrix?: Float32Array
 ): Layer {
   return new SpatialAnalysisSegmentLayer({
     id,
     coordinateOrigin: [origin[0], origin[1], 0],
     segments,
+    modelMatrix,
     instanceCount: count,
     color,
     widthPixels: 1.2
@@ -390,6 +397,7 @@ export function createChoroplethScene(backend: 'zonal' | 'group'): RecipeSceneBu
     const meanValues =
       backend === 'group' ? kit.output('feature-values', 'float32', featureCount) : null;
     const recipe = addPointsInPolygonsChoroplethRecipe(kit.graph, {
+      spatialContext: trips.frame.spatialContext,
       backend,
       points: {kind: 'points', positions: pointsInput.view},
       values: valuesInput?.view,
@@ -545,7 +553,8 @@ const SUPPORT_RASTER_HEIGHT = 190;
  * `addChangeOfSupportRecipe`: points of interest counted per irregular source district are moved
  * onto a regular target grid by overlap area. The dasymetric strength blends the area weights with
  * a point-of-interest density raster; both the weights raster and the choice of extensive or
- * intensive transfer are per-frame.
+ * intensive transfer are per-frame. Positions and generated districts use Lambert equal-area
+ * (WGS84) meters about New York.
  */
 export const buildChangeOfSupportScene: RecipeSceneBuilder = async host => {
   const {context} = host;
@@ -554,12 +563,15 @@ export const buildChangeOfSupportScene: RecipeSceneBuilder = async host => {
     context.data.getNewYorkPointsOfInterest()
   ]);
   context.signal.throwIfAborted();
-  const bounds = getCoreBounds(pois.positions, 0.03);
+  const areaFrame = getDatasetFrame(pois, 'area');
+  const modelMatrix = new Float32Array(getFrameDisplayModelMatrix(areaFrame));
+  const areaPositions = reprojectFramePositions(pois.positions, pois.frame, areaFrame);
+  const bounds = getCoreBounds(areaPositions, 0.03);
   const source = createDistrictPolygons(bounds, SUPPORT_COLUMNS, SUPPORT_ROWS, 0.45, 41);
   const target = createDistrictPolygons(bounds, TARGET_COLUMNS, TARGET_ROWS, 0, 0);
   const sourceCount = source.featureCount;
   const targetCount = target.featureCount;
-  const sourceValues = countPointsPerDistrict(source, pois.positions);
+  const sourceValues = countPointsPerDistrict(source, areaPositions);
   let sourceTotal = 0;
   for (const value of sourceValues) sourceTotal += value;
 
@@ -568,9 +580,9 @@ export const buildChangeOfSupportScene: RecipeSceneBuilder = async host => {
   const density = new Float32Array(cellCount);
   const cellWidth = (bounds[2] - bounds[0]) / SUPPORT_RASTER_WIDTH;
   const cellHeight = (bounds[3] - bounds[1]) / SUPPORT_RASTER_HEIGHT;
-  for (let index = 0; index < pois.positions.length; index += 2) {
-    const column = Math.floor((pois.positions[index] - bounds[0]) / cellWidth);
-    const row = Math.floor((pois.positions[index + 1] - bounds[1]) / cellHeight);
+  for (let index = 0; index < areaPositions.length; index += 2) {
+    const column = Math.floor((areaPositions[index] - bounds[0]) / cellWidth);
+    const row = Math.floor((areaPositions[index + 1] - bounds[1]) / cellHeight);
     if (column >= 0 && column < SUPPORT_RASTER_WIDTH && row >= 0 && row < SUPPORT_RASTER_HEIGHT) {
       density[row * SUPPORT_RASTER_WIDTH + column]++;
     }
@@ -612,6 +624,7 @@ export const buildChangeOfSupportScene: RecipeSceneBuilder = async host => {
   const totalPairs = kit.output('total-pairs', 'uint32', 1);
   const invalidSources = kit.output('invalid-sources', 'uint32', 1);
   const recipe = addChangeOfSupportRecipe(kit.graph, {
+    spatialContext: areaFrame.spatialContext,
     grid,
     parameters: rasterParameters.view,
     source: {...importPolygons(kit, source, 'source'), crossingCapacity: 65536},
@@ -724,12 +737,13 @@ export const buildChangeOfSupportScene: RecipeSceneBuilder = async host => {
       'Target grid colored by points of interest moved from the orange source districts by overlap area (extensive: counts, intensive: area-weighted mean).',
     dataNote:
       `${pois.attribution}. Source: synthetic ${SUPPORT_COLUMNS} x ${SUPPORT_ROWS} irregular districts; ` +
-      `target: synthetic ${TARGET_COLUMNS} x ${TARGET_ROWS} grid`,
+      `target: synthetic ${TARGET_COLUMNS} x ${TARGET_ROWS} grid in Lambert equal-area (WGS84) meters`,
     encode: commandEncoder => encoder.encode(commandEncoder),
     getLayers: (): Layer[] => [
       new SpatialAnalysisRasterLayer({
         id: 'recipe-support-target',
         coordinateOrigin: [origin[0], origin[1], 0],
+        modelMatrix,
         gridSize: [TARGET_COLUMNS, TARGET_ROWS],
         bounds,
         rowOrigin: 'south',
@@ -746,14 +760,16 @@ export const buildChangeOfSupportScene: RecipeSceneBuilder = async host => {
         origin,
         targetOutline,
         target.outlineSegments.length / 4,
-        [210, 220, 240, 70]
+        [210, 220, 240, 70],
+        modelMatrix
       ),
       createOutlineLayer(
         'recipe-support-source-outline',
         origin,
         sourceOutline,
         source.outlineSegments.length / 4,
-        [255, 150, 60, 230]
+        [255, 150, 60, 230],
+        modelMatrix
       )
     ],
     destroy: () => {

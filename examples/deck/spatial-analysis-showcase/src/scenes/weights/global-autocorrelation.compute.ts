@@ -52,7 +52,6 @@ import {
   type SpatialAnalysisStyleProps
 } from '../../engine/layers';
 import {addKernelPass} from '../../engine/mode-kernels';
-import {LocalMetricProjection} from '../../engine/projection';
 import {SpatialAnalysisResources} from '../../engine/resources';
 import {SummaryReader} from '../../engine/summary-reader';
 import type {SceneContext, SceneInstance, TooltipContent, TooltipRow} from '../scene';
@@ -220,7 +219,7 @@ type FrozenClasses = {breaks: number[]; extent: [number, number]};
 
 type World = {
   geography: Geography;
-  projection: LocalMetricProjection;
+  projection: Geography['analysisFrame'];
   resources: SpatialAnalysisResources;
   core: WeightsCore;
   buffers: GeographyBuffers;
@@ -428,6 +427,7 @@ export async function createGlobalAutocorrelation(
         id: `global-statistics-${geography.id}-${rowStandardized ? 'row' : 'raw'}`
       });
       const weights = {
+        spatialContext: geography.analysisFrame.spatialContext,
         offsets: importGraphBuffer(graph, 'offsets', core.csr.offsets, 'uint32', rowCount + 1),
         neighbors: importGraphBuffer(graph, 'neighbors', core.csr.neighbors, 'uint32', core.slots),
         weights: importGraphBuffer(graph, 'weights', core.csr.weights, 'float32', core.slots),
@@ -618,7 +618,7 @@ export async function createGlobalAutocorrelation(
 
     return {
       geography,
-      projection: new LocalMetricProjection(geography.origin),
+      projection: geography.analysisFrame,
       resources,
       core,
       buffers: createGeographyBuffers(resources, geography, 'global'),
@@ -777,6 +777,7 @@ export async function createGlobalAutocorrelation(
       new GPUGlobalPermutationTest({
         id: 'global-permutation',
         weights: {
+          spatialContext: target.geography.analysisFrame.spatialContext,
           offsets: importGraphBuffer(
             graph,
             'offsets',
@@ -853,6 +854,7 @@ export async function createGlobalAutocorrelation(
     ) => importGraphBuffer(graph, name, buffer, format, length);
     graph.add(
       new GPUSpatialCorrelogram({
+        spatialContext: target.geography.analysisFrame.spatialContext,
         id: 'correlogram',
         positions: importGraphBuffer(
           graph,
@@ -906,6 +908,7 @@ export async function createGlobalAutocorrelation(
       new GPUGlobalSpatialStatistics({
         id: 'sweep-moran',
         weights: {
+          spatialContext: target.geography.analysisFrame.spatialContext,
           offsets: importGraphBuffer(graph, 'offsets', core.csr.offsets, 'uint32', rowCount + 1),
           neighbors: importGraphBuffer(
             graph,
@@ -1036,8 +1039,8 @@ export async function createGlobalAutocorrelation(
       ) {
         points.push(
           projection.unproject(
-            geography.contiguityVertices[vertex * 2],
-            geography.contiguityVertices[vertex * 2 + 1]
+            geography.analysisContiguityVertices[vertex * 2],
+            geography.analysisContiguityVertices[vertex * 2 + 1]
           ) as LngLat
         );
       }
@@ -1408,7 +1411,7 @@ export async function createGlobalAutocorrelation(
     );
     ctx.setReadout(
       'distanceNote',
-      `metres of ${target.geography.analysisFrame.name}, within ${(target.geography.analysisFrame.maxScaleError * 100).toFixed(1)}% of ground distance`
+      `metres of ${target.geography.analysisFrame.name}, within ${(Math.ceil(target.geography.analysisFrame.maxScaleError * 1e6) / 1e4).toFixed(4)}% of ground distance`
     );
     publishScatter();
     publishNull();

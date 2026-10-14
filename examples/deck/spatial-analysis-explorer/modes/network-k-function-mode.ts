@@ -33,7 +33,7 @@ import {
   GPU_NETWORK_LINE_GRAPH_PARAMETER_LENGTH
 } from '@luma.gl/experimental/gpu-network';
 import {importGraphBuffer} from '../graph-buffers';
-import {createSeededRandom, LocalMetricProjection} from '../spatial-analysis-data';
+import {createSeededRandom} from '../spatial-analysis-data';
 import {SpatialAnalysisPointLayer, SpatialAnalysisSegmentLayer} from '../spatial-analysis-layers';
 import type {
   SpatialAnalysisModeDefinition,
@@ -70,6 +70,7 @@ const DEFAULT_ORIGIN: readonly [number, number] = [-73.9855, 40.758];
 
 type RouteColor = 'turns' | 'plain' | 'extra';
 
+/** Measures road-network clustering and turns in the New York AEQD frame. */
 export const networkKFunctionMode: SpatialAnalysisModeDefinition = {
   id: 'network-k-function',
   title: 'Network K',
@@ -95,7 +96,7 @@ export const networkKFunctionMode: SpatialAnalysisModeDefinition = {
     ]);
     context.signal.throwIfAborted();
     const {device} = context;
-    const projection = new LocalMetricProjection(roads.origin);
+    const projection = roads.frame;
     const resources = new SpatialAnalysisResources(device, 'network-k');
     const nodeCount = roads.nodePositions.length / 2;
     const segmentCount = roads.segmentNodes.length;
@@ -205,6 +206,7 @@ export const networkKFunctionMode: SpatialAnalysisModeDefinition = {
     const kGraph = new GPUCommandGraph<void>(device, {id: 'network-k'});
     kGraph.add(
       new GPUNetworkKFunction({
+        spatialContext: roads.frame.spatialContext,
         id: 'k',
         positions: importGraphBuffer(kGraph, 'events', eventPositions, 'float32x2', EVENT_COUNT),
         topology: {
@@ -301,6 +303,7 @@ export const networkKFunctionMode: SpatialAnalysisModeDefinition = {
     const routeTurnNodeCosts = routeView('turn-node-costs', turnNodeCosts, 'float32', nodeCount);
     routeGraph.add(
       new GPUNetworkLineGraph({
+        spatialContext: roads.frame.spatialContext,
         id: 'turns',
         topology: {
           offsets: routeOffsets,

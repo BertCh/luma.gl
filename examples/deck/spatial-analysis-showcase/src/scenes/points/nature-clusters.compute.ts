@@ -41,7 +41,8 @@ import {
   SpatialAnalysisSegmentLayer
 } from '../../engine/layers';
 import {addKernelPass} from '../../engine/mode-kernels';
-import {createSeededRandom, LocalMetricProjection} from '../../engine/projection';
+import {createAnalysisFrameProjection, projectLngLatToFrame} from '../../engine/analysis-frame';
+import {createSeededRandom} from '../../engine/projection';
 import {SpatialAnalysisResources} from '../../engine/resources';
 import {SummaryReader} from '../../engine/summary-reader';
 import {formatCompiledGraphTiming, measureCompiledGraph} from '../../engine/vector-timing';
@@ -239,7 +240,11 @@ export async function createNatureClusters(
   const observations = ctx.datasets.get('chicago-nature');
   const columns: NatureColumns = readNatureColumns(observations);
   const origin = columns.origin;
-  const projection = new LocalMetricProjection(origin);
+  const projection = createAnalysisFrameProjection({kind: 'azimuthal-equidistant', origin});
+  const analysisPositions = projectLngLatToFrame(
+    projection,
+    observations.column<Float32Array>('position')
+  );
   const montrose = findPlace(CHICAGO, 'montrose-point');
   const montroseMeters: [number, number] = montrose
     ? projection.project(montrose.lngLat[0], montrose.lngLat[1])
@@ -353,8 +358,8 @@ export async function createNatureClusters(
     let maxX = -Infinity;
     let maxY = -Infinity;
     for (let row = 0; row < pointCount; row++) {
-      const x = columns.positions[indexes[row] * 2];
-      const y = columns.positions[indexes[row] * 2 + 1];
+      const x = analysisPositions[indexes[row] * 2];
+      const y = analysisPositions[indexes[row] * 2 + 1];
       positions[row * 2] = x;
       positions[row * 2 + 1] = y;
       minX = Math.min(minX, x);
@@ -448,7 +453,7 @@ export async function createNatureClusters(
           kind: 'points',
           positions: view('positions', positionsBuffer, 'float32x2', pointCount)
         },
-        spatialContext: {coordinateSpace: 'planar', metric: 'native', units: 'native'},
+        spatialContext: projection.spatialContext,
         clusteringParameters: clusteringParameters.importToGraph(graph),
         gridSize: GRID_SIZE,
         geometryParameters: geometryParameters.importToGraph(graph),
@@ -480,6 +485,7 @@ export async function createNatureClusters(
         const clusterIds = resources.createBuffer('cluster-ids', CLUSTER_CAPACITY * 4);
         graph.add(
           new GPUSpatialClustering({
+            spatialContext: projection.spatialContext,
             id: 'clusters',
             positions: importGraphBuffer(
               graph,
@@ -549,6 +555,7 @@ export async function createNatureClusters(
         );
         graph.add(
           new GPUKMeans({
+            spatialContext: projection.spatialContext,
             id: 'kmeans',
             positions: importGraphBuffer(
               graph,
@@ -593,6 +600,7 @@ export async function createNatureClusters(
       const shapeLabels = importGraphBuffer(shapes, 'labels', labels, 'uint32', pointCount);
       shapes.add(
         new GPUGroupGeometry({
+          spatialContext: projection.spatialContext,
           id: 'geometry',
           positions: shapePositions,
           labels: shapeLabels,
@@ -645,6 +653,7 @@ export async function createNatureClusters(
       );
       shapes.add(
         new GPUGroupConvexHull({
+          spatialContext: projection.spatialContext,
           id: 'hulls',
           positions: shapePositions,
           labels: shapeLabels,
@@ -711,6 +720,7 @@ export async function createNatureClusters(
       const circleView = view('circle-vertices', circleVertices, 'float32x2', RING_VERTICES);
       distribution.add(
         new GPUGeographicDistribution({
+          spatialContext: projection.spatialContext,
           id: 'distribution',
           positions: view('positions', positionsBuffer, 'float32x2', pointCount),
           weights: view('weights', weights, 'float32', pointCount),
@@ -908,6 +918,7 @@ export async function createNatureClusters(
     const overflow = resources.createBuffer('sweep-overflow', 4);
     graph.add(
       new GPUSpatialClustering({
+        spatialContext: projection.spatialContext,
         id: 'sweep',
         positions: importGraphBuffer(
           graph,
@@ -1481,7 +1492,7 @@ export async function createNatureClusters(
   scheduleSweepCompile(active);
 
   // The city limit is only needed for the hull-over-water estimate; load it after the first paint.
-  void loadCityGeometry(ctx, origin)
+  void loadCityGeometry(ctx, origin, projection.project)
     .then(geometry => {
       city = geometry;
       if (!destroyed) publishWinner(active);
@@ -1564,6 +1575,7 @@ export async function createNatureClusters(
         const overflow = scratch.createBuffer(`overflow-${denseBoxShortcut}`, 4);
         graph.add(
           new GPUSpatialClustering({
+            spatialContext: projection.spatialContext,
             id: 'clusters',
             positions: importGraphBuffer(
               graph,
@@ -1855,6 +1867,7 @@ export async function createNatureClusters(
           new SpatialAnalysisPointLayer({
             id: id('records'),
             coordinateOrigin,
+            analysisFrame: projection.frame,
             positions: set.positionsBuffer,
             instanceCount: set.pointCount,
             colormap: 'uniform',
@@ -1868,6 +1881,7 @@ export async function createNatureClusters(
             new SpatialAnalysisPolygonLayer({
               id: id('hull-fill'),
               coordinateOrigin,
+              analysisFrame: projection.frame,
               triangles: set.hullTriangles,
               features: set.hullTriangleFeatures,
               vertexCount: set.drawCounts.hullVertices,
@@ -1886,6 +1900,7 @@ export async function createNatureClusters(
             new SpatialAnalysisPointLayer({
               id: id('noise'),
               coordinateOrigin,
+              analysisFrame: projection.frame,
               positions: set.positionsBuffer,
               ids: set.noiseIds,
               instanceCount: set.drawCounts.noise,
@@ -1900,6 +1915,7 @@ export async function createNatureClusters(
           : DENSE_POINT_RADIUS_STOPS;
         const memberStyle = {
           coordinateOrigin,
+          analysisFrame: projection.frame,
           positions: set.positionsBuffer,
           values: set.pointSizes,
           valueFormat: 'float32' as const,
@@ -1962,6 +1978,7 @@ export async function createNatureClusters(
             new SpatialAnalysisSegmentLayer({
               id: id('hull-outline'),
               coordinateOrigin,
+              analysisFrame: projection.frame,
               segments: set.hullOutline,
               instanceCount: set.drawCounts.hullSegments,
               valueIndices: set.hullOutlineFeatures,
@@ -1985,6 +2002,7 @@ export async function createNatureClusters(
             new SpatialAnalysisPolygonLayer({
               id: id('hull-fill'),
               coordinateOrigin,
+              analysisFrame: projection.frame,
               triangles: set.hullTriangles,
               features: set.hullTriangleFeatures,
               vertexCount: set.drawCounts.hullVertices,
@@ -2000,6 +2018,7 @@ export async function createNatureClusters(
           new SpatialAnalysisPointLayer({
             id: id('partition-points'),
             coordinateOrigin,
+            analysisFrame: projection.frame,
             positions: set.positionsBuffer,
             instanceCount: set.pointCount,
             values: set.pointSlots,
@@ -2016,6 +2035,7 @@ export async function createNatureClusters(
             new SpatialAnalysisSegmentLayer({
               id: id('hull-outline'),
               coordinateOrigin,
+              analysisFrame: projection.frame,
               segments: set.hullOutline,
               instanceCount: set.drawCounts.hullSegments,
               valueIndices: set.hullOutlineFeatures,
@@ -2037,6 +2057,7 @@ export async function createNatureClusters(
         const groupCount = set.groupCount;
         const markerProps = {
           coordinateOrigin,
+          analysisFrame: projection.frame,
           counts: set.geometryCounts,
           centers: set.meanCenters,
           medoidRows: set.medoids,
@@ -2048,6 +2069,7 @@ export async function createNatureClusters(
             new BoundsOutlineLayer({
               id: id('bounds'),
               coordinateOrigin,
+              analysisFrame: projection.frame,
               counts: set.geometryCounts,
               bounds: set.geometryBounds,
               groupCount,
@@ -2062,6 +2084,7 @@ export async function createNatureClusters(
             new EllipseOutlineLayer({
               id: id('ellipses'),
               coordinateOrigin,
+              analysisFrame: projection.frame,
               counts: set.geometryCounts,
               centers: set.weightedCenters,
               ellipses: set.ellipses,
@@ -2118,6 +2141,7 @@ export async function createNatureClusters(
           new SpatialAnalysisSegmentLayer({
             id: id('distribution-circle'),
             coordinateOrigin,
+            analysisFrame: projection.frame,
             segments: set.circleSegments,
             instanceCount: RING_VERTICES,
             widthPixels: 1,
@@ -2127,6 +2151,7 @@ export async function createNatureClusters(
           new SpatialAnalysisSegmentLayer({
             id: id('distribution-ellipse'),
             coordinateOrigin,
+            analysisFrame: projection.frame,
             segments: set.ellipseSegments,
             instanceCount: RING_VERTICES,
             widthPixels: 2,
@@ -2135,6 +2160,7 @@ export async function createNatureClusters(
           new GroupMarkerLayer({
             id: id('distribution-mean'),
             coordinateOrigin,
+            analysisFrame: projection.frame,
             counts: set.distributionCounts,
             centers: set.distributionMean,
             medoidRows: set.distributionCounts,
@@ -2148,6 +2174,7 @@ export async function createNatureClusters(
           new GroupMarkerLayer({
             id: id('distribution-median'),
             coordinateOrigin,
+            analysisFrame: projection.frame,
             counts: set.distributionCounts,
             centers: set.distributionMedian,
             medoidRows: set.distributionCounts,

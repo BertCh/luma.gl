@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {GPU_WGS84_SEMI_MAJOR_AXIS_METERS} from '@luma.gl/experimental/gpu-spatial-analysis';
 import type {Layer} from '@deck.gl/core';
 import type {Buffer} from '@luma.gl/core';
 import {
@@ -400,6 +401,7 @@ export async function createNearestFacility(
       const distancesView = importGraphBuffer(graph, 'distances', distances, 'float32', placeCount);
       graph.add(
         new GPUNearestFeatureJoin({
+          spatialContext: projection.spatialContext,
           id: 'nearest',
           queries: {kind: 'points', positions: places},
           features,
@@ -505,6 +507,7 @@ export async function createNearestFacility(
       );
       graph.add(
         new GPUNearestFeatureJoin({
+          spatialContext: projection.spatialContext,
           id: 'neighbors',
           queries: {kind: 'points', positions: places},
           features,
@@ -593,6 +596,7 @@ export async function createNearestFacility(
       );
       graph.add(
         new GPUNearestFeatureJoin({
+          spatialContext: projection.spatialContext,
           id: 'weights-join',
           queries: {kind: 'points', positions: featuresView},
           features: {kind: 'points', positions: featuresView},
@@ -607,6 +611,7 @@ export async function createNearestFacility(
       );
       graph.add(
         new GPUNearestFeatureWeights({
+          spatialContext: projection.spatialContext,
           id: 'nearest-weights',
           neighborIds: neighborIdsView,
           neighborCounts: neighborCountsView,
@@ -705,6 +710,7 @@ export async function createNearestFacility(
       const polygons = importPolygons(graph, 'tracts', tractBuffers);
       graph.add(
         new GPUSpatialJoinCandidates({
+          spatialContext: projection.spatialContext,
           id: 'candidates',
           left: {kind: 'points', positions: left},
           right: polygons,
@@ -1021,7 +1027,10 @@ export async function createNearestFacility(
   function getMetersPerPixel(latitude: number): number {
     const viewport = ctx.getViewport();
     const zoom = viewport?.zoom ?? 10;
-    return (40075016.686 * Math.cos((latitude * Math.PI) / 180)) / (512 * 2 ** zoom);
+    return (
+      (2 * Math.PI * GPU_WGS84_SEMI_MAJOR_AXIS_METERS * Math.cos((latitude * Math.PI) / 180)) /
+      (512 * 2 ** zoom)
+    );
   }
 
   return {

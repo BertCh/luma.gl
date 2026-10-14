@@ -165,7 +165,7 @@ export default defineScene<ViewshedOptions>({
       apply: 'param',
       default: 'mt-image',
       expert: true,
-      help: 'Terrain at distance d is lowered by c d squared, with c = (1 - k) / 2R, R = 6371008.8 m and refraction coefficient k.',
+      help: 'Terrain at distance d is lowered by c d squared, with c = (1 - k) / 2R, R = the mean Earth radius and refraction coefficient k.',
       options: [
         {
           value: 'mt-image',

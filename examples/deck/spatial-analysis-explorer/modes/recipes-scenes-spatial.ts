@@ -39,7 +39,6 @@ import {
   GPU_SPATIAL_REGRESSION_DIAGNOSTICS_TEST_STRIDE,
   GPU_SPATIAL_REGRESSION_DIAGNOSTICS_TESTS_LENGTH
 } from '@luma.gl/experimental/gpu-spatial-analysis';
-import {LocalMetricProjection} from '../spatial-analysis-data';
 import {
   SpatialAnalysisPointLayer,
   SpatialAnalysisRasterLayer,
@@ -114,7 +113,7 @@ export const buildClusterAndOutlineScene: RecipeSceneBuilder = async host => {
   const perimeters = kit.output('perimeters', 'float32', CLUSTER_MAXIMUM_COUNT);
   const recipe = addClusterAndOutlineRecipe(kit.graph, {
     points: {kind: 'points', positions: pointsInput.view},
-    spatialContext: {coordinateSpace: 'planar', metric: 'native', units: 'native'},
+    spatialContext: trips.frame.spatialContext,
     clusteringParameters: clustering.view,
     gridSize: [256, 256],
     geometryParameters: geometry.view,
@@ -315,7 +314,7 @@ export const buildSpatialRegressionScene: RecipeSceneBuilder = async host => {
     context.data.getNewYorkPointsOfInterest()
   ]);
   context.signal.throwIfAborted();
-  const projection = new LocalMetricProjection(trips.origin);
+  const projection = trips.frame;
   const bounds = getCoreBounds(pois.positions, 0.03);
   const columns = Math.ceil((bounds[2] - bounds[0]) / REGRESSION_CELL_METERS);
   const rowsOfCells = Math.ceil((bounds[3] - bounds[1]) / REGRESSION_CELL_METERS);
@@ -508,6 +507,7 @@ export const buildSpatialRegressionScene: RecipeSceneBuilder = async host => {
       }
     },
     localFits: {
+      spatialContext: trips.frame.spatialContext,
       positions: centersInput.view,
       parameters: gwrParameters.view,
       maximumBandwidthCount: REGRESSION_LADDER_CAPACITY
@@ -776,7 +776,7 @@ export const buildDriveTimeScene: RecipeSceneBuilder = async host => {
     context.data.getNewYorkTrips()
   ]);
   context.signal.throwIfAborted();
-  const projection = new LocalMetricProjection(roads.origin);
+  const projection = roads.frame;
   const nodeCount = roads.nodePositions.length / 2;
   const edges = sortEdgesBySource(roads);
   const edgeCount = edges.sources.length;
@@ -1151,7 +1151,7 @@ export const buildStraightLineScene: RecipeSceneBuilder = async host => {
     context.data.getNewYorkTrips()
   ]);
   context.signal.throwIfAborted();
-  const projection = new LocalMetricProjection(trips.origin);
+  const projection = trips.frame;
   const bounds = getCoreBounds(pois.positions, 0.03);
   const cellWidth = (bounds[2] - bounds[0]) / CATCHMENT_WIDTH;
   const cellHeight = (bounds[3] - bounds[1]) / CATCHMENT_HEIGHT;
@@ -1213,6 +1213,7 @@ export const buildStraightLineScene: RecipeSceneBuilder = async host => {
   const minimums = kit.output('minimums', 'float32', CATCHMENT_CAPACITY);
   const maximums = kit.output('maximums', 'float32', CATCHMENT_CAPACITY);
   const recipe = addStraightLineCatchmentsRecipe(kit.graph, {
+    spatialContext: trips.frame.spatialContext,
     grid,
     parameters: distanceParameters.view,
     facilities: {kind: 'points', positions: seeds.view},

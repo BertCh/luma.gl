@@ -2,6 +2,11 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {
+  GPU_PLANAR_SPATIAL_CONTEXT,
+  type GPUSpatialContext,
+  GPU_WGS84_SEMI_MAJOR_AXIS_METERS
+} from '@luma.gl/experimental/gpu-spatial-analysis';
 import earcut from 'earcut';
 import type {Buffer, CommandEncoder} from '@luma.gl/core';
 import type {Layer} from '@deck.gl/core';
@@ -30,13 +35,6 @@ export const GREAT_CIRCLE_CONTEXT = {
   coordinateSpace: 'longitude-latitude',
   metric: 'great-circle',
   units: 'meters'
-} as const;
-
-/** Planar positions in the data's own units (local meters here): the default context, spelled out. */
-export const PLANAR_CONTEXT = {
-  coordinateSpace: 'planar',
-  metric: 'native',
-  units: 'native'
 } as const;
 
 /** A polygon dataset in the GeoArrow layout the contributors take, plus its longitude/latitude. */
@@ -120,16 +118,31 @@ export function loadPolygonLayout(dataset: LoadedDataset): PolygonLayout {
   };
 }
 
+/** Absolute EPSG:3857 projection used by the deliberate planar-area distortion comparisons. */
+export const WEB_MERCATOR_PROJECTION = {
+  spatialContext: {
+    ...GPU_PLANAR_SPATIAL_CONTEXT,
+    units: 'meters',
+    frame: {kind: 'crs', id: 'EPSG:3857', crs: 'EPSG:3857'}
+  } satisfies GPUSpatialContext,
+  project(longitude: number, latitude: number): [number, number] {
+    const latitudeRadians = (Math.min(Math.max(latitude, -85), 85) * Math.PI) / 180;
+    return [
+      (GPU_WGS84_SEMI_MAJOR_AXIS_METERS * longitude * Math.PI) / 180,
+      GPU_WGS84_SEMI_MAJOR_AXIS_METERS * Math.log(Math.tan(Math.PI / 4 + latitudeRadians / 2))
+    ];
+  }
+};
+
 /** Web Mercator (EPSG:3857) meters of interleaved longitude/latitude degrees. */
 export function projectWebMercator(lngLat: ArrayLike<number>): Float32Array {
-  const radius = 6378137;
   const count = Math.floor(lngLat.length / 2);
   const meters = new Float32Array(count * 2);
   for (let index = 0; index < count; index++) {
-    const longitude = (lngLat[index * 2] * Math.PI) / 180;
-    const latitude = (Math.min(Math.max(lngLat[index * 2 + 1], -85), 85) * Math.PI) / 180;
-    meters[index * 2] = radius * longitude;
-    meters[index * 2 + 1] = radius * Math.log(Math.tan(Math.PI / 4 + latitude / 2));
+    meters.set(
+      WEB_MERCATOR_PROJECTION.project(lngLat[index * 2], lngLat[index * 2 + 1]),
+      index * 2
+    );
   }
   return meters;
 }
@@ -541,5 +554,8 @@ export type GeometryView<Options> = {
 
 /** Meters covered by one CSS pixel at a latitude and Web Mercator zoom (512 px world tiles). */
 export function getMetersPerPixel(zoom: number, latitude: number): number {
-  return (40075016.686 * Math.cos((latitude * Math.PI) / 180)) / (512 * 2 ** zoom);
+  return (
+    (2 * Math.PI * GPU_WGS84_SEMI_MAJOR_AXIS_METERS * Math.cos((latitude * Math.PI) / 180)) /
+    (512 * 2 ** zoom)
+  );
 }

@@ -13,15 +13,16 @@ import {
 import {Buffer, type RenderPass} from '@luma.gl/core';
 import {Model} from '@luma.gl/engine';
 import type {DrawCommandBuffer} from '@luma.gl/gpgpu/gpu-core';
+import type {AnalysisFrame} from '../../engine/analysis-frame';
+import {getAnalysisFrameWgsl} from '../../engine/layer-wgsl';
 import {COLORMAP_INDEXES, getRampWgsl, type RampName} from '../../engine/ramps';
 
 /**
  * Bespoke layers of the movement chapter. Each reads contributor output buffers directly (compact
  * ids, GPU-written draw records) so moving a playhead or editing a threshold never touches the CPU.
  *
- * Every layer takes `coordinateSystem`: the vessel scenes draw planar meters (`METER_OFFSETS`
- * around `coordinateOrigin`, the default), the gull scene draws longitude/latitude degrees
- * (`LNGLAT`) because its analysis meters live in an azimuthal projection.
+ * Frame meters use `analysisFrame`, inverted to longitude/latitude by the engine shader helper.
+ * Without a frame, `coordinateSystem` selects Mercator-local meters or longitude/latitude degrees.
  */
 
 const BLEND_PARAMETERS = {
@@ -55,10 +56,15 @@ var<private> QUAD_CORNERS = array<vec2<f32>, 6>(
 );
 `;
 
+type MovementLayerProps = LayerProps & {
+  /** Frame of the input meters; overrides coordinateSystem and coordinateOrigin for drawing. */
+  analysisFrame?: AnalysisFrame;
+};
+
 type LayerState = {model: Model; styleBuffer: Buffer};
 
 /** Shared lifecycle of the layers below: one model, one uniform buffer, GPU-written draw record. */
-abstract class MovementLayer<PropsT extends LayerProps> extends Layer<PropsT> {
+abstract class MovementLayer<PropsT extends MovementLayerProps> extends Layer<PropsT> {
   static override layerName = 'MovementLayer';
   static override defaultProps = {
     coordinateSystem: COORDINATE_SYSTEM.METER_OFFSETS,
@@ -89,7 +95,18 @@ abstract class MovementLayer<PropsT extends LayerProps> extends Layer<PropsT> {
       usage: Buffer.UNIFORM | Buffer.COPY_DST
     });
     const model = new Model(device, {
-      ...this.getShaders({modules: [project32], source: this.getSource()}),
+      ...this.getShaders({
+        modules: [project32],
+        source: this.props.analysisFrame
+          ? this.getSource().replace(
+              SHARED_WGSL,
+              `${getAnalysisFrameWgsl(this.props.analysisFrame)}
+fn getMovementClipPosition(position: vec2<f32>) -> vec4<f32> {
+  return projectSpatialAnalysisPosition(position);
+}`
+            )
+          : this.getSource()
+      }),
       id: `${this.id}-model`,
       topology: 'triangle-list',
       isInstanced: true,
@@ -104,12 +121,33 @@ abstract class MovementLayer<PropsT extends LayerProps> extends Layer<PropsT> {
 
   override updateState(parameters: UpdateParameters<this>): void {
     super.updateState(parameters);
+    if (parameters.props.analysisFrame !== parameters.oldProps.analysisFrame) {
+      const {model, styleBuffer} = this.state as LayerState;
+      model.destroy();
+      styleBuffer.destroy();
+      this.initializeState(this.context);
+    }
     const {model, styleBuffer} = this.state as LayerState;
     model.setBindings(this.getBindings(styleBuffer));
   }
 
   override getModels(): Model[] {
     return [(this.state as LayerState).model];
+  }
+
+  override _drawLayer(options: Parameters<Layer['_drawLayer']>[0]): void {
+    let {shaderModuleProps} = options;
+    if (this.props.analysisFrame && shaderModuleProps?.project) {
+      shaderModuleProps = {
+        ...shaderModuleProps,
+        project: {
+          ...shaderModuleProps.project,
+          coordinateSystem: COORDINATE_SYSTEM.LNGLAT,
+          coordinateOrigin: [0, 0, 0]
+        }
+      };
+    }
+    super._drawLayer({...options, shaderModuleProps});
   }
 
   override draw({renderPass}: {renderPass: RenderPass}): void {
@@ -303,7 +341,7 @@ fn getSpeedClass(speed: f32) -> u32 {
 `;
 
 /** Props for {@link VesselMarkerLayer}. */
-export type VesselMarkerLayerProps = LayerProps & {
+export type VesselMarkerLayerProps = MovementLayerProps & {
   /** Compact `uint32` list of active track indices (contributor `activeTracks.ids`). */
   ids: Buffer;
   /** `float32x2` interpolated position per track. */
@@ -510,7 +548,7 @@ fn getStopClassColor(duration: f32) -> vec4<f32> {
 `;
 
 /** Props for {@link StopMarkerLayer}. */
-export type StopMarkerLayerProps = LayerProps & {
+export type StopMarkerLayerProps = MovementLayerProps & {
   /** `float32x2` stop centroids. Rows past the stop count are never drawn. */
   centroids: Buffer;
   /** `float32` stop durations in seconds, aligned with `centroids`. */
@@ -659,7 +697,7 @@ ${SHARED_WGSL}
 `;
 
 /** Props for {@link KeptSegmentLayer}. */
-export type KeptSegmentLayerProps = LayerProps & {
+export type KeptSegmentLayerProps = MovementLayerProps & {
   /** `float32x2` vertex positions, one per original vertex. */
   positions: Buffer;
   /** Ascending kept vertex rows (the contributor's compact `output.ids`). */
@@ -792,7 +830,7 @@ ${CORNERS_WGSL}
 `;
 
 /** Props for {@link ZoneEventMarkerLayer}. */
-export type ZoneEventMarkerLayerProps = LayerProps & {
+export type ZoneEventMarkerLayerProps = MovementLayerProps & {
   /** `float32x2` crossing position per event (`events.eventPositions`). */
   positions: Buffer;
   /** `uint32` track per event (`events.output.ids`). */

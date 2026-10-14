@@ -53,7 +53,6 @@ import {
 } from '@luma.gl/experimental/gpu-terrain';
 import {makeGPURasterMetadata} from '@luma.gl/experimental/gpu-raster';
 import {importGraphBuffer} from '../graph-buffers';
-import {LocalMetricProjection} from '../spatial-analysis-data';
 import {
   SpatialAnalysisRasterLayer,
   type SpatialAnalysisRasterLayerProps
@@ -111,6 +110,7 @@ const MULTIDIRECTIONAL_LIGHTS: readonly GPUReliefShadingLight[] = [
   {azimuthDegrees: 360, altitudeDegrees: 30}
 ];
 
+/** Renders terrain relief with readouts in the San Francisco dataset frame. */
 export const reliefMode: SpatialAnalysisModeDefinition = {
   id: 'relief',
   title: 'Relief',
@@ -133,7 +133,7 @@ export const reliefMode: SpatialAnalysisModeDefinition = {
     const {device} = context;
     const {width, height, bounds, cellSize} = terrain;
     const pixelCount = width * height;
-    const projection = new LocalMetricProjection(terrain.origin);
+    const projection = terrain.frame;
     const origin: [number, number, number] = [terrain.origin[0], terrain.origin[1], 0];
     const resources = new SpatialAnalysisResources(device, 'relief');
     const centerLongitudeLatitude = projection.unproject(

@@ -2,6 +2,16 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {
+  STORM_FRAME,
+  formatInteger,
+  formatStormClock,
+  formatStormHourMinute,
+  projectToStormFrame,
+  quantile,
+  seriesChart,
+  STORM_VERIFICATION_RANGE
+} from './storm-data';
 import {COORDINATE_SYSTEM, type Layer} from '@deck.gl/core';
 import {
   getGPUTimeWindowFilterParameterValues,
@@ -28,15 +38,6 @@ import {SummaryReader} from '../../engine/summary-reader';
 import {ChoroplethFillLayer} from '../statistics/b5-choropleth-layer';
 import {buildPolygonMesh, getPolygonLayout} from '../statistics/b5-geometry';
 import type {SceneContext, SceneInstance} from '../scene';
-import {
-  formatInteger,
-  formatStormClock,
-  formatStormHourMinute,
-  projectToStormFrame,
-  quantile,
-  seriesChart,
-  STORM_VERIFICATION_RANGE
-} from './storm-data';
 
 /** Option state of the storm-warning-verification scene. */
 export type StormWarningVerificationOptions = {
@@ -325,6 +326,7 @@ export async function createStormWarningVerification(
     const countView = importGraphBuffer(graph, 'pair-count', pairCount, 'uint32', 1);
     graph.add(
       new GPUSpatialPredicateJoin({
+        spatialContext: STORM_FRAME.spatialContext,
         id: 'report-in-warning',
         left,
         right,

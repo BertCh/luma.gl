@@ -3,9 +3,13 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import type {LoadedDataset} from '../../data/catalog';
-import type {AnalysisFrame} from '../../engine/analysis-frame';
+import {
+  type AnalysisFrame,
+  type AnalysisFrameProjection,
+  createAnalysisFrameProjection
+} from '../../engine/analysis-frame';
+import type {GPUSpatialContext} from '@luma.gl/experimental/gpu-spatial-analysis';
 import {LocalMetricProjection} from '../../engine/projection';
-import {createAzimuthalEquidistant} from '../movement/b12-tracks';
 import {
   BOUNDARY_FAMILY_OF_CLASS,
   QUAKE_DAY_ZERO_MS,
@@ -48,7 +52,9 @@ export type QuakeEvents = {
   /** The analysis frame, for the `analysisFrame` prop of the layers that draw its meters. */
   analysisFrame: AnalysisFrame;
   /** Projection of the analysis frame (azimuthal equidistant meters around `origin`). */
-  analysisProjection: QuakePlanarFrame;
+  analysisProjection: AnalysisFrameProjection;
+  /** Context of the analysis meters, for every operator consuming them. */
+  spatialContext: GPUSpatialContext;
   /** Analysis meters around `origin`, `x, y` per event. */
   positions: Float32Array;
   /** Mercator-local meters around `origin`, `x, y` per event (the aftershocks grid only). */
@@ -107,7 +113,7 @@ export function readQuakeEvents(
   const [west, south, east, north] = region.bbox;
   const origin: [number, number] = [(west + east) / 2, (south + north) / 2];
   const projection = new LocalMetricProjection(origin);
-  const analysisProjection = createAzimuthalEquidistant(origin);
+  const analysisProjection = createAnalysisFrameProjection({kind: 'azimuthal-equidistant', origin});
   const lonLat = dataset.column<Float32Array>('position');
   const seconds = dataset.column<Uint32Array>('timestamp');
   const magnitudes = dataset.column<Float32Array>('magnitude');
@@ -135,7 +141,8 @@ export function readQuakeEvents(
     count,
     origin,
     projection,
-    analysisFrame: {kind: 'azimuthal-equidistant', origin},
+    analysisFrame: analysisProjection.frame,
+    spatialContext: analysisProjection.spatialContext,
     analysisProjection,
     positions: new Float32Array(count * 2),
     mercatorPositions: new Float32Array(count * 2),

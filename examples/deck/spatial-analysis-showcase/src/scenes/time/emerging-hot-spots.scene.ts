@@ -445,7 +445,7 @@ export default defineScene<EmergingHotSpotsOptions>({
   snippet: state => `import {GPUCommandGraph} from '@luma.gl/gpgpu/gpu-core';
 import {
   addSpaceTimeHotSpotsRecipe,
-  GPUEmergingHotSpots
+  GPUEmergingHotSpots, GPUNeighborSearch
 } from '@luma.gl/experimental/gpu-spatial-analysis';
 import {GPUTemporalReduction} from '@luma.gl/experimental/gpu-dataframe';
 
@@ -454,6 +454,18 @@ const hotSpotSettings = {
   persistentFraction: ${state.persistentFraction}${state.tieTrend ? '' : `, trendSignificanceLevel: ${state.trendLevel}`}
 };
 const graph = new GPUCommandGraph(device, {id: 'emerging'});
+${
+  state.neighborhood === 'weights'
+    ? `// Cell centers are Chicago Mercator-local meters.
+weights.spatialContext = projection.spatialContext;
+graph.add(new GPUNeighborSearch({
+  spatialContext: projection.spatialContext,
+  mode: 'radius', positions: cellCenters, mask: cellMask,
+  parameters: searchParameters, gridSize: [64, 64], output: weights
+}));
+`
+    : ''
+}
 ${
   state.cube === 'weeks'
     ? `// 52 seven-day buckets of event counts per ${'500 m'} cell

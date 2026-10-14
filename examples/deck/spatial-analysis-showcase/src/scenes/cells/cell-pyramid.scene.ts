@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {GPU_WGS84_SEMI_MAJOR_AXIS_METERS} from '@luma.gl/experimental/gpu-spatial-analysis';
 import {CHICAGO_CITY_VIEW, MONTROSE_POINT} from '../../cartography/gazetteer';
 import {ground} from '../../cartography/grounds';
 import {sampleRamp} from '../../engine/ramps';
@@ -164,7 +165,8 @@ export default defineScene<CellPyramidOptions>({
       step: 1,
       default: DEFAULT_ROLLUP,
       disabledWhen: inView('rollup', 'classes'),
-      format: value => `res ${value} (tiles about ${((40075 / 2 ** value) * 0.744).toFixed(1)} km)`,
+      format: value =>
+        `res ${value} (tiles about ${(((2 * Math.PI * GPU_WGS84_SEMI_MAJOR_AXIS_METERS) / 1000 / 2 ** value) * 0.744).toFixed(1)} km)`,
       help: 'Resolution of the parent table. It is a kernel constant, so each resolution is its own small compiled graph, built the first time you pick it. The roll-up reads the finest table (res 17), not the points.'
     },
     {
@@ -283,7 +285,7 @@ export default defineScene<CellPyramidOptions>({
       default: 15,
       disabledWhen: inView('compare'),
       format: value =>
-        `Quadbin ${value} (tiles about ${((40075 / 2 ** value) * 0.744).toFixed(1)} km)`,
+        `Quadbin ${value} (tiles about ${(((2 * Math.PI * GPU_WGS84_SEMI_MAJOR_AXIS_METERS) / 1000 / 2 ** value) * 0.744).toFixed(1)} km)`,
       help: 'Both periods are keyed at this resolution. It is baked into the recipe graph, so each value compiles once, on first use.'
     },
     {

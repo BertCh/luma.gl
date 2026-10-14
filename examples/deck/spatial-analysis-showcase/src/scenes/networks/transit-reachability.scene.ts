@@ -303,6 +303,7 @@ graph.add(new GPUNetworkReachability({
   output: {costs, predecessors, status: {converged}}
 }));
 graph.add(new GPUNetworkIsochrones({
+  spatialContext: rail.spatialContext,
   topology: {offsets: stationOnlyOffsets, neighbors: stationOnlyNeighbors, weights: zeros, nodePositions},   // sample stations, not the line between them
   costs, costBreaks: breaksParameter.importToGraph(graph),
   parameters: isochroneParameters.importToGraph(graph),

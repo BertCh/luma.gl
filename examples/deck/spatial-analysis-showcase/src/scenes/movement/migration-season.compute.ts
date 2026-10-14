@@ -113,6 +113,11 @@ export async function createMigrationSeason(
   const playheadGraph = new GPUCommandGraph<void>(device, {id: 'season-playhead'});
   playheadGraph.add(
     new GPUTrajectoryPlayhead({
+      spatialContext: {
+        coordinateSpace: 'longitude-latitude',
+        metric: 'great-circle',
+        units: 'meters'
+      },
       id: 'playhead',
       positions: view(playheadGraph, 'lng-lat', lngLatBuffer, 'float32x2', vertexCount),
       timestamps: view(playheadGraph, 'timestamps', timestampsBuffer, 'float32', vertexCount),

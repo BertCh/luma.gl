@@ -20,7 +20,7 @@ import {SummaryReader} from '../../engine/summary-reader';
 import type {MapAnnotation, SceneContext, SceneInstance, TooltipContent} from '../scene';
 import {
   expandAntimeridianEdges,
-  getApproximateKilometres,
+  getGreatCircleKilometres,
   readUsNetwork,
   readWorldNetwork,
   type ExpandedEdges,
@@ -613,7 +613,7 @@ export async function createFlightBundling(
       if (!getLive(edge)) continue;
       const first = edge * pointsPerEdge * 2;
       const last = first + (pointsPerEdge - 1) * 2;
-      const direct = getApproximateKilometres(
+      const direct = getGreatCircleKilometres(
         paths[first],
         paths[first + 1],
         paths[last],
@@ -623,7 +623,7 @@ export async function createFlightBundling(
       let along = 0;
       for (let point = 0; point < pointsPerEdge - 1; point++) {
         const a = first + point * 2;
-        along += getApproximateKilometres(paths[a], paths[a + 1], paths[a + 2], paths[a + 3]);
+        along += getGreatCircleKilometres(paths[a], paths[a + 1], paths[a + 2], paths[a + 3]);
       }
       bundledKilometres += along;
       if (direct > 50) stretches.push(along / direct);

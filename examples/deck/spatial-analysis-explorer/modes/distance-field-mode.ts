@@ -12,7 +12,6 @@ import {
 } from '@luma.gl/experimental/gpu-raster';
 import {importGraphBuffer} from '../graph-buffers';
 import {GPUCommandGraph, type CompiledGPUCommandGraph} from '@luma.gl/gpgpu/gpu-core';
-import {LocalMetricProjection} from '../spatial-analysis-data';
 import {
   SpatialAnalysisPointLayer,
   SpatialAnalysisRasterLayer,
@@ -78,7 +77,7 @@ export const distanceFieldMode: SpatialAnalysisModeDefinition = {
     const parking = await context.data.getSanFranciscoBikeParking();
     context.signal.throwIfAborted();
     const {device} = context;
-    const projection = new LocalMetricProjection(parking.origin);
+    const projection = parking.frame;
     const resources = new SpatialAnalysisResources(device, 'distance-field');
     const cellCount = GRID_SIZE * GRID_SIZE;
 

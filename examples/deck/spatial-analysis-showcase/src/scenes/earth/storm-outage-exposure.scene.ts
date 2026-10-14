@@ -285,6 +285,7 @@ import {GPUGroupStatistics, GPUTimeWindowFilter, getGPUTimeWindowFilterParameter
 
 // Once: join every flash to its county and keep the point-to-county rows.
 staticGraph.add(new GPUZonalStatistics({
+  spatialContext: STORM_FRAME.spatialContext,
   features: {kind: 'polygons', positions: countyPositions, featureOffsets, polygonOffsets, ringOffsets, candidateCapacity},
   positions: flashMeters,
   output: {counts: flashTotals, pointFeatureRows, status: {overflow}}
@@ -300,6 +301,7 @@ staticGraph.add(new GPUGroupStatistics({
 graph.add(new GPUTimeWindowFilter({timestamps: flashTimes, window: flashWindow.importToGraph(graph),
   output: {ids, status: {count, overflow}, fadeWeights: flashWeights}}));      // 1 inside the window, 0 outside
 graph.add(new GPUZonalStatistics({
+  spatialContext: STORM_FRAME.spatialContext,
   features: {kind: 'feature-rows', pointFeatureRows, featureCount: countyCount},
   values: ones, weights: flashWeights, sumOrder: '${state.sumOrder}',  // compile-time
   output: {sums: flashSums}                                           // flashes in the window per county

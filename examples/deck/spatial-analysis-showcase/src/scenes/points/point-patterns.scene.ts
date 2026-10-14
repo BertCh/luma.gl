@@ -543,18 +543,18 @@ import {
 
 // The observed pattern: compiled once.
 const graph = new GPUCommandGraph(device, {id: 'point-pattern'});
-graph.add(new GPURipley({
+graph.add(new GPURipley({spatialContext: projection.spatialContext,
   positions, mask,                       // mask: 1 for the selected group
   parameters: ripleyParameters.importToGraph(graph),
   gridSize: [96, 96], radiusCount: ${state.radiusCount},
   output: {k, l, lMinusR, radii}
 }));
-graph.add(new GPURipleyDistanceFunctions({
+graph.add(new GPURipleyDistanceFunctions({spatialContext: projection.spatialContext,
   positions, mask, parameters: distanceParameters.importToGraph(graph),
   gridSize: [96, 96], referenceGrid: [${state.referenceGrid}, ${state.referenceGrid}], radiusCount: ${state.radiusCount},
   output: {g, f, j}
 }));
-graph.add(new GPUPointPatternIndices({
+graph.add(new GPUPointPatternIndices({spatialContext: projection.spatialContext,
   positions, mask, parameters: indicesParameters.importToGraph(graph),
   gridSize: [96, 96], quadratGrid: [${state.quadratGrid}, ${state.quadratGrid}],
   output: {nearestNeighborDistances, clarkEvans, quadratCounts, quadratStatistics}

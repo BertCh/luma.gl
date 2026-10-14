@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {getGreatCircleKilometers} from './us-shipping.stats';
 import {COORDINATE_SYSTEM, type Layer} from '@deck.gl/core';
 import type {Buffer} from '@luma.gl/core';
 import {
@@ -489,7 +490,7 @@ export async function createMigrationFlyways(
     const probe = quantiles.get(probeRow);
     if (probe) {
       const latitude = GRID_ORIGIN[1] + (probeRow + 0.5) * size;
-      const widthKm = (probe[2] - probe[0]) * 111.32 * Math.cos((latitude * Math.PI) / 180);
+      const widthKm = getGreatCircleKilometers([probe[0], latitude], [probe[2], latitude]);
       ctx.setReadout(
         'probe',
         `${latitude.toFixed(1)} N: central 80% of track length within ${widthKm.toFixed(0)} km (${probe[0].toFixed(1)} to ${probe[2].toFixed(1)} E), median ${probe[1].toFixed(1)} E`

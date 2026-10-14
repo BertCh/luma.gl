@@ -445,6 +445,7 @@ export async function createPointPatterns(
     ) => importGraphBuffer(graph, name, outputs[name], format, length);
     graph.add(
       new GPURipley({
+        spatialContext: projection.spatialContext,
         id: 'ripley',
         positions,
         mask,
@@ -461,6 +462,7 @@ export async function createPointPatterns(
     );
     graph.add(
       new GPURipleyDistanceFunctions({
+        spatialContext: projection.spatialContext,
         id: 'ripley-distance',
         positions,
         mask,
@@ -477,6 +479,7 @@ export async function createPointPatterns(
     );
     graph.add(
       new GPUPointPatternIndices({
+        spatialContext: projection.spatialContext,
         id: 'indices',
         positions,
         mask,
@@ -555,6 +558,7 @@ export async function createPointPatterns(
       importGraphBuffer(graph, name, outputs[name], 'float32', radiusCount);
     graph.add(
       new GPURipley({
+        spatialContext: projection.spatialContext,
         id: 'ripley',
         positions,
         mask,
@@ -571,6 +575,7 @@ export async function createPointPatterns(
     );
     graph.add(
       new GPURipleyDistanceFunctions({
+        spatialContext: projection.spatialContext,
         id: 'ripley-distance',
         positions,
         mask,

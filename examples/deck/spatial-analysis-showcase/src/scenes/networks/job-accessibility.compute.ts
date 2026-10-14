@@ -656,6 +656,7 @@ export async function createJobAccessibility(
       const seedCostsView = view(seedCosts, 'float32', rowCount * 2);
       matrixGraph.add(
         new GPUNetworkSnapping({
+          spatialContext: network.projection.spatialContext,
           id: 'snapping',
           positions: view(opportunityPositions, 'float32x2', rowCount),
           topology: {
@@ -732,6 +733,7 @@ export async function createJobAccessibility(
       const seedCostsView = view(comparisonSeedCosts, 'float32', rowCount * 2);
       comparisonMatrixGraph.add(
         new GPUNetworkSnapping({
+          spatialContext: network.projection.spatialContext,
           id: 'comparison-snapping',
           positions: view(opportunityPositions, 'float32x2', rowCount),
           topology: {

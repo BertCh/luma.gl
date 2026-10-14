@@ -610,8 +610,10 @@ export default defineScene<NatureClusterOptions>({
   snippet: state => {
     const cap = ITERATION_LADDER[Math.round(state.iterationStep)];
     if (state.method === 'kmeans') {
-      return `const graph = new GPUCommandGraph(device, {id: 'clusters'});
-graph.add(new GPUKMeans({
+      return `const projection = createAnalysisFrameProjection({kind: 'azimuthal-equidistant', origin});
+// Project source longitude/latitude with projection; draw outputs with analysisFrame: projection.frame.
+const graph = new GPUCommandGraph(device, {id: 'clusters'});
+graph.add(new GPUKMeans({spatialContext: projection.spatialContext,
   positions,                               // float32x2 meters of the chosen group
   k: ${state.k},
   maximumIterations: ${cap},                // compile-time cap: each cap is its own graph
@@ -625,10 +627,12 @@ compiled.encode(commandEncoder, {parameters: undefined});
 const slots = colourPartition(centres, k, previousSlots, 7);`;
     }
     if (state.pipeline === 'recipe') {
-      return `const graph = new GPUCommandGraph(device, {id: 'cluster-outline'});
+      return `const projection = createAnalysisFrameProjection({kind: 'azimuthal-equidistant', origin});
+// Project source longitude/latitude with projection; draw outputs with analysisFrame: projection.frame.
+const graph = new GPUCommandGraph(device, {id: 'cluster-outline'});
 addClusterAndOutlineRecipe(graph, {
   points: {kind: 'points', positions},
-  spatialContext: {coordinateSpace: 'planar', metric: 'native', units: 'native'},
+  spatialContext: projection.spatialContext,
   clusteringParameters: clusteringParameters.importToGraph(graph),  // bounds, epsilon, minimumPoints
   gridSize: [256, 256],
   geometryParameters: geometryParameters.importToGraph(graph),
@@ -643,18 +647,20 @@ const compiled = await graph.compileAsync();
 clusteringParameters.write(getGPUSpatialClusteringParameterValues({bounds, epsilon: ${state.epsilon}, minimumPoints: ${state.minimumPoints}}));
 compiled.encode(commandEncoder, {parameters: undefined});`;
     }
-    return `const graph = new GPUCommandGraph(device, {id: 'clusters'});
-graph.add(new GPUSpatialClustering({
+    return `const projection = createAnalysisFrameProjection({kind: 'azimuthal-equidistant', origin});
+// Project source longitude/latitude with projection; draw outputs with analysisFrame: projection.frame.
+const graph = new GPUCommandGraph(device, {id: 'clusters'});
+graph.add(new GPUSpatialClustering({spatialContext: projection.spatialContext,
   positions, parameters: clusteringParameters.importToGraph(graph),
   gridSize: [256, 256],${state.denseBoxShortcut ? '\n  denseBoxShortcut: true,' : ''}${state.sumOrder === 'atomic' ? "\n  sumOrder: 'atomic'," : ''}
   output: {labels, coreFlags, clusterCount, clusterSizes, clusterCentroids,
     clusters: {ids, status: {count, overflow}}}
 }));
 const shapes = new GPUCommandGraph(device, {id: 'shapes'});
-shapes.add(new GPUGroupGeometry({positions, labels, groupCount: 2048, weights,
+shapes.add(new GPUGroupGeometry({spatialContext: projection.spatialContext, positions, labels, groupCount: 2048, weights,
   parameters: geometryParameters.importToGraph(shapes),
   output: {counts, bounds, meanCenters, weightedCenters, medoidIndices, ellipses, status: {overflow}}}));
-shapes.add(new GPUGroupConvexHull({positions, labels, groupCount: 2048,
+shapes.add(new GPUGroupConvexHull({spatialContext: projection.spatialContext, positions, labels, groupCount: 2048,
   maximumVerticesPerGroup: 256, vertexCapacity: 1 << 14, prefilterLevels: ${state.prefilterLevels},
   output: {vertexIndices, vertexPositions, offsets, counts, status: {overflow}}}));   // overflow is a bit set
 // Compiled once. Epsilon and minimumPoints are parameter words:

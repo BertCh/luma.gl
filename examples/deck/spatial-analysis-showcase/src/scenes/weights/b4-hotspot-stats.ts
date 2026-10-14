@@ -6,6 +6,7 @@ import type {Buffer, Device} from '@luma.gl/core';
 import {
   GPU_SPATIAL_AUTOCORRELATION_STATISTICS_LENGTH,
   GPUHotSpotAnalysis,
+  type GPUSpatialContext,
   GPULocalMoran,
   GPULocalPermutationTest,
   type GPUInferenceAlternative,
@@ -93,6 +94,8 @@ export function createStatBuffers(
 
 /** Inputs of {@link compileStatGraph}. */
 export type StatGraphProps = {
+  /** Context of the positions used to construct these weights. */
+  spatialContext: GPUSpatialContext;
   device: Device;
   resources: SpatialAnalysisResources;
   id: string;
@@ -120,6 +123,7 @@ export async function compileStatGraph(
   const {device, resources, rows, slots, buffers, variant} = props;
   const graph = new GPUCommandGraph<void>(device, {id: props.id});
   const weights = {
+    spatialContext: props.spatialContext,
     offsets: importGraphBuffer(graph, 'offsets', props.weights.offsets, 'uint32', rows + 1),
     neighbors: importGraphBuffer(graph, 'neighbors', props.weights.neighbors, 'uint32', slots),
     weights: importGraphBuffer(graph, 'weights', props.weights.weights, 'float32', slots),

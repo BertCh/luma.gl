@@ -268,6 +268,7 @@ export async function createObservationsByTract(
     if (prepared) graph.add(prepared);
     graph.add(
       new GPUPointInPolygonJoin({
+        spatialContext: projection.spatialContext,
         id: 'tract-join',
         points: {
           kind: 'points',
@@ -392,6 +393,7 @@ export async function createObservationsByTract(
     }
     graph.add(
       new GPUZonalStatistics({
+        spatialContext: projection.spatialContext,
         id: 'tract-zonal',
         features: {
           ...views,
@@ -428,6 +430,7 @@ export async function createObservationsByTract(
     const graph = new GPUCommandGraph<void>(device, {id: `observations-recipe-${state.backend}`});
     const views = importPolygons(graph, 'tracts', polygons);
     recipeResultInfo = addPointsInPolygonsChoroplethRecipe(graph, {
+      spatialContext: projection.spatialContext,
       id: 'tract-choropleth',
       backend: state.backend,
       points: {

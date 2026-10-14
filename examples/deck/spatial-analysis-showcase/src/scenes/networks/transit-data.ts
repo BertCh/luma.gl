@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import type {GPUSpatialContext} from '@luma.gl/experimental/gpu-spatial-analysis';
 import type {LoadedDataset} from '../../data/catalog';
 import {
   type AnalysisFrame,
@@ -9,7 +10,7 @@ import {
   projectLngLatToFrame
 } from '../../engine/analysis-frame';
 import {formatPlaybackTime} from '../../engine/playback';
-import {createTrackSet, type TrackSet} from '../movement/b12-tracks';
+import {createTrackSet, type AnalysisTrackSet} from '../movement/b12-tracks';
 
 /**
  * Shared helpers of the three transit scenes: the Randstad morning-peak trips of
@@ -57,7 +58,7 @@ export function formatTransitClock(seconds: number): string {
 }
 
 /** Scheduled trips in contributor layout with the per-trip columns the scenes use. */
-export type TransitTrips = TrackSet & {
+export type TransitTrips = AnalysisTrackSet & {
   /** Mode index per trip (see {@link TRANSIT_MODES}). */
   mode: Uint32Array;
   /** Index into `routeNames` per trip. */
@@ -76,10 +77,12 @@ export type TransitTrips = TrackSet & {
 /** Loads `poopdeck-gtfs-nl` as {@link TransitTrips}. */
 export function loadTransitTrips(dataset: LoadedDataset): TransitTrips {
   const origin = dataset.defaultOrigin;
-  const projection = dataset.getProjection(origin);
+  const projection = createAnalysisFrameProjection({kind: 'azimuthal-equidistant', origin});
   const set = createTrackSet({
     offsets: dataset.column<Uint32Array>('pathOffsets'),
-    positions: dataset.projectColumn('vertices', origin),
+    positions: projectLngLatToFrame(projection, dataset.column('vertices')),
+    analysisFrame: projection.frame,
+    spatialContext: projection.spatialContext,
     lngLat: dataset.column<Float32Array>('vertices'),
     timestamps: Float32Array.from(dataset.column<Uint32Array>('timestamp')),
     origin,
@@ -158,6 +161,8 @@ export type RailGraph = {
   origin: readonly [number, number];
   /** Analysis frame of every position; pass it as the layers' `analysisFrame`. */
   frame: AnalysisFrame;
+  /** Context of the rail node and segment meters. */
+  spatialContext: GPUSpatialContext;
   project: (longitude: number, latitude: number) => [number, number];
   unproject: (x: number, y: number) => [number, number];
   nodeCount: number;
@@ -217,6 +222,7 @@ export function loadRailGraph(dataset: LoadedDataset): RailGraph {
   return {
     origin,
     frame,
+    spatialContext: projection.spatialContext,
     project: (longitude, latitude) => projection.project(longitude, latitude),
     unproject: (x, y) => projection.unproject(x, y),
     nodeCount,

@@ -265,6 +265,7 @@ export async function createRasterJoin(
     );
     graph.add(
       new GPUPointInPolygonJoin({
+        spatialContext: projection.spatialContext,
         id: 'exact-join',
         points: pointsView,
         polygons: views,
@@ -565,6 +566,7 @@ export async function createRasterJoin(
     const overflow = own.createBuffer('overflow', 4);
     graph.add(
       new GPUPointInPolygonJoin({
+        spatialContext: projection.spatialContext,
         id: 'exact-join',
         points: {
           kind: 'points',

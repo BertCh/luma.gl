@@ -2,9 +2,8 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import {COORDINATE_SYSTEM, type Layer} from '@deck.gl/core';
-import type {Buffer} from '@luma.gl/core';
 import {
+  GPU_EARTH_MEAN_RADIUS_METERS,
   getGPUGreatCircleArcsParameterValues,
   getGPULineSimplificationParameterValues,
   getGPULineSmoothParameterValues,
@@ -17,6 +16,8 @@ import {
   GPU_LINE_SIMPLIFICATION_PARAMETER_LENGTH,
   GPU_LINE_SMOOTH_PARAMETER_LENGTH
 } from '@luma.gl/experimental/gpu-spatial-analysis';
+import {COORDINATE_SYSTEM, type Layer} from '@deck.gl/core';
+import type {Buffer} from '@luma.gl/core';
 import {
   DrawCommandBuffer,
   GPUCommandGraph,
@@ -76,6 +77,7 @@ export async function createTracksView(env: TrackEnvironment): Promise<GeometryV
   const {device} = ctx;
   const resources = new SpatialAnalysisResources(device, 'tracks');
   const origin = vessels.defaultOrigin;
+  const projection = vessels.getProjection(origin);
   const coordinateOrigin: [number, number, number] = [origin[0], origin[1], 0];
   const local = vessels.projectColumn('vertices', origin);
   const offsets = vessels.column<Uint32Array>('pathOffsets');
@@ -212,6 +214,7 @@ export async function createTracksView(env: TrackEnvironment): Promise<GeometryV
       const {imp, base} = views(importanceGraph);
       importanceGraph.add(
         new GPULineSimplification({
+          spatialContext: projection.spatialContext,
           id: 'importance',
           ...base,
           maximumIterations: maximumRounds,
@@ -229,6 +232,7 @@ export async function createTracksView(env: TrackEnvironment): Promise<GeometryV
       const {imp, base} = views(selectionGraph);
       selectionGraph.add(
         new GPULineSimplification({
+          spatialContext: projection.spatialContext,
           id: 'selection',
           ...base,
           computeImportance: false,
@@ -325,6 +329,7 @@ export async function createTracksView(env: TrackEnvironment): Promise<GeometryV
     const imp = createGraphImporter(graph);
     graph.add(
       new GPULineSmooth({
+        spatialContext: projection.spatialContext,
         id: `smooth-${iterations}`,
         positions: imp('positions', positions, 'float32x2', vertexCount),
         lineOffsets: imp('offsets', trackOffsets, 'uint32', trackCount + 1),
@@ -923,7 +928,8 @@ export async function createWorldView(env: WorldEnvironment): Promise<GeometryVi
     hubRow = airportRows.get(options.worldHub) ?? 0;
     const longitude = airports[hubRow * 2];
     const latitude = airports[hubRow * 2 + 1];
-    const poleThresholdKm = ((90 - Math.abs(latitude)) * Math.PI * 6371.0088) / 180;
+    const poleThresholdKm =
+      ((90 - Math.abs(latitude)) * Math.PI * (GPU_EARTH_MEAN_RADIUS_METERS / 1000)) / 180;
     ctx.setReadout(
       'worldPoleThreshold',
       `${formatCount(poleThresholdKm)} km from the selected hub`

@@ -145,6 +145,7 @@ export const playheadMode: SpatialAnalysisModeDefinition = {
     );
     playheadGraph.add(
       new GPUTrajectoryPlayhead({
+        spatialContext: trips.frame.spatialContext,
         id: 'playhead',
         positions: positionsView,
         timestamps: timestampsView,
@@ -213,6 +214,7 @@ export const playheadMode: SpatialAnalysisModeDefinition = {
     const resampleGraph = new GPUCommandGraph<void>(device, {id: 'playhead-resample'});
     resampleGraph.add(
       new GPUTrajectoryResample({
+        spatialContext: trips.frame.spatialContext,
         id: 'resample',
         positions: importGraphBuffer(
           resampleGraph,

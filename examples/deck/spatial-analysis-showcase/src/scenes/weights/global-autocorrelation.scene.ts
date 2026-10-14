@@ -207,7 +207,7 @@ graph.add(new GPUGlobalSpatialStatistics({
 ${permutationLine}
 
 // Moran's I at a ladder of distance bands.
-graph.add(new GPUSpatialCorrelogram({
+graph.add(new GPUSpatialCorrelogram({spatialContext: geography.analysisFrame.spatialContext,
   positions: centroids, values, mask, parameters: correlogramParameters,
   gridSize: [128, 128], bandCount: ${state.bandCount}, bandMode: '${state.bandMode}',
   output: {moransI, zScores, pValues, peakBands}

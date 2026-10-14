@@ -2,6 +2,10 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {
+  GPU_WGS84_SEMI_MAJOR_AXIS_METERS,
+  GPU_WGS84_FLATTENING
+} from '@luma.gl/experimental/gpu-spatial-analysis';
 /**
  * Shared helpers of the hydrology chapter: terrain grids built from the shipped DEM datasets
  * (Grand Canyon in Web Mercator, Dixie fire in UTM), their display frame in local ground meters,
@@ -124,8 +128,8 @@ export function createCanyonGrid(dataset: LoadedDataset, stride: number): Terrai
 
 /** Inverse UTM (Krueger series, WGS84) to `[longitude, latitude]` degrees. */
 export function utmToLngLat(easting: number, northing: number, zone: number): [number, number] {
-  const a = 6378137;
-  const flattening = 1 / 298.257223563;
+  const a = GPU_WGS84_SEMI_MAJOR_AXIS_METERS;
+  const flattening = GPU_WGS84_FLATTENING;
   const k0 = 0.9996;
   const n = flattening / (2 - flattening);
   const rectifyingRadius = (a / (1 + n)) * (1 + (n * n) / 4 + n ** 4 / 64);

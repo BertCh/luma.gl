@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import type {GPUSpatialContext} from '@luma.gl/experimental/gpu-spatial-analysis';
 import type {Buffer, CommandEncoder, Device} from '@luma.gl/core';
 import {
   GPU_NEIGHBORHOOD_SUMMARY_NO_MODE,
@@ -184,6 +185,8 @@ const VALID_BODY = /* wgsl */ `
  * the kernels that prepare what the map fill shows. Polygons and lattice cells share it.
  */
 export async function createAnalysisSpace(props: {
+  /** Context of the positions used to construct the weights. */
+  spatialContext: GPUSpatialContext;
   device: Device;
   resources: SpatialAnalysisResources;
   id: string;
@@ -211,6 +214,7 @@ export async function createAnalysisSpace(props: {
     weights: create('analysis-weights', slots * 4)
   };
   const kit = await createWeightsKit({
+    spatialContext: props.spatialContext,
     device,
     resources,
     id: `${id}-kit`,
@@ -257,6 +261,7 @@ export async function createAnalysisSpace(props: {
       new GPUNeighborhoodSummary({
         id: 'neighborhood',
         weights: {
+          spatialContext: props.spatialContext,
           offsets: importGraphBuffer(graph, 'offsets', csr.offsets, 'uint32', rows + 1),
           neighbors: importGraphBuffer(graph, 'neighbors', csr.neighbors, 'uint32', slots),
           weights: importGraphBuffer(graph, 'weights', csr.weights, 'float32', slots),

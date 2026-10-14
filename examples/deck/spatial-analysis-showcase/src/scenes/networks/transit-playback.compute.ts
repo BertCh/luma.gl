@@ -77,7 +77,6 @@ export async function createTransitPlayback(
   const {device} = ctx;
   const {trackCount, vertexCount, segmentCount} = trips;
   const resources = new SpatialAnalysisResources(device, 'transit');
-  const coordinateOrigin: [number, number, number] = [trips.origin[0], trips.origin[1], 0];
 
   // ---- Static inputs ----------------------------------------------------------------------------
   const positionsBuffer = resources.createBuffer('positions', trips.positions);
@@ -129,6 +128,7 @@ export async function createTransitPlayback(
   const playheadGraph = new GPUCommandGraph<void>(device, {id: 'transit-playhead'});
   playheadGraph.add(
     new GPUTrajectoryPlayhead({
+      spatialContext: trips.spatialContext,
       id: 'playhead',
       positions: importGraphBuffer(
         playheadGraph,
@@ -678,7 +678,7 @@ export async function createTransitPlayback(
         layers.push(
           new SpatialAnalysisSegmentLayer({
             id: 'transit-backdrop',
-            coordinateOrigin,
+            analysisFrame: trips.analysisFrame,
             segments: segmentsBuffer,
             instanceCount: segmentCount,
             widthPixels: 0.7,
@@ -689,7 +689,7 @@ export async function createTransitPlayback(
       layers.push(
         new SpatialAnalysisSegmentLayer({
           id: 'transit-data-frame',
-          coordinateOrigin,
+          analysisFrame: trips.analysisFrame,
           segments: dataFrameBuffer,
           instanceCount: 4,
           widthPixels: 0.9,
@@ -701,7 +701,7 @@ export async function createTransitPlayback(
         layers.push(
           new SpatialAnalysisSegmentLayer({
             id: 'transit-trails',
-            coordinateOrigin,
+            analysisFrame: trips.analysisFrame,
             segments: segmentsBuffer,
             ids: trailIds,
             drawCommands: trailDraw,
@@ -724,7 +724,7 @@ export async function createTransitPlayback(
         layers.push(
           new VesselMarkerLayer({
             id: `transit-vehicles-${TRANSIT_MODES[mode]}`,
-            coordinateOrigin,
+            analysisFrame: trips.analysisFrame,
             ids: activeIds,
             positions: currentPositions,
             headings,
@@ -745,7 +745,7 @@ export async function createTransitPlayback(
         layers.push(
           new SpatialAnalysisSegmentLayer({
             id: 'transit-selected-timetable',
-            coordinateOrigin,
+            analysisFrame: trips.analysisFrame,
             segments: selectedRouteBuffer,
             instanceCount: Math.max(1, trips.longestTrack - 1),
             widthPixels: 1.5,
@@ -753,7 +753,7 @@ export async function createTransitPlayback(
           }),
           new SpatialAnalysisPointLayer({
             id: 'transit-selected-timetable-vertices',
-            coordinateOrigin,
+            analysisFrame: trips.analysisFrame,
             positions: selectedVerticesBuffer,
             instanceCount: Math.max(1, trips.longestTrack),
             radiusPixels: 2.5,
@@ -761,7 +761,7 @@ export async function createTransitPlayback(
           }),
           new SpatialAnalysisSegmentLayer({
             id: 'transit-selected-bracket',
-            coordinateOrigin,
+            analysisFrame: trips.analysisFrame,
             segments: selectedBracketBuffer,
             instanceCount: 1,
             widthPixels: 3,

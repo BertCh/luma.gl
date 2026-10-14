@@ -8,11 +8,12 @@
  * live. No GPU imports.
  */
 
+import {GPU_EARTH_MEAN_RADIUS_METERS} from '@luma.gl/experimental/gpu-spatial-analysis';
 import type {ExpandedEdges, FlightNetwork} from './b11-flight-data';
 import {CONTINENT_NAMES} from './b11-geography';
 
 /** Kilometres per degree of latitude, the unit of the bundling work box. */
-export const KILOMETRES_PER_DEGREE = 111.19;
+export const KILOMETRES_PER_DEGREE = (GPU_EARTH_MEAN_RADIUS_METERS * Math.PI) / 180 / 1000;
 
 /** Index of the airport with this IATA code, or `-1`. */
 export function findAirportByIata(network: FlightNetwork, iata: string): number {

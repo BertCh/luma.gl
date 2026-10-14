@@ -24,6 +24,7 @@ import type {Layer} from '@deck.gl/core';
 import {
   DrawCommandBuffer,
   GPUCommandGraph,
+  GPUGather,
   GPUReadbackRing,
   type CompiledGPUCommandGraph
 } from '@luma.gl/gpgpu/gpu-core';
@@ -31,8 +32,15 @@ import {
   getGPUDotDensityParameterValues,
   GPU_DOT_DENSITY_PARAMETER_LENGTH,
   GPUDotDensity,
+  type GPULocalFrame,
   GPURandomPointsInPolygon
 } from '@luma.gl/experimental/gpu-spatial-analysis';
+import {
+  getDatasetFrame,
+  getFrameDisplayModelMatrix,
+  reprojectFramePositions,
+  type SpatialAnalysisTerrain
+} from '../spatial-analysis-data';
 import {importGraphBuffer} from '../graph-buffers';
 import {SpatialAnalysisPointLayer, SpatialAnalysisSegmentLayer} from '../spatial-analysis-layers';
 import type {
@@ -77,13 +85,34 @@ export const dotDensityMode: SpatialAnalysisModeDefinition = {
   initialViewState: {longitude: -122.44, latitude: 37.76, zoom: 12},
 
   async create(context) {
-    const [parking, zips, terrain] = await Promise.all([
+    const [sourceParking, sourceZips, terrain] = await Promise.all([
       context.data.getSanFranciscoBikeParking(),
       context.data.getSanFranciscoZipCodes(),
       context.data.getSanFranciscoTerrain()
     ]);
     context.signal.throwIfAborted();
     const {device} = context;
+    const projection = getDatasetFrame(sourceZips, 'area');
+    const modelMatrix = Float64Array.from(getFrameDisplayModelMatrix(projection));
+    const zips = {
+      ...sourceZips,
+      frame: projection,
+      polygonPositions: reprojectFramePositions(
+        sourceZips.polygonPositions,
+        sourceZips.frame,
+        projection
+      ),
+      outlineSegments: reprojectFramePositions(
+        sourceZips.outlineSegments,
+        sourceZips.frame,
+        projection
+      )
+    };
+    const parking = {
+      ...sourceParking,
+      frame: projection,
+      positions: reprojectFramePositions(sourceParking.positions, sourceParking.frame, projection)
+    };
     const resources = new SpatialAnalysisResources(device, 'dot-density');
     const featureCount = zips.featureOffsets.length - 1;
     const slotCount = featureCount * CATEGORY_COUNT;
@@ -94,6 +123,7 @@ export const dotDensityMode: SpatialAnalysisModeDefinition = {
       synthetic: getSyntheticPopulationValues(zips)
     };
     const maskOn = getTerrainMask(terrain);
+    const {maskExtent, sourceRows} = getAreaMaskMapping(terrain, projection);
     const maskOff = new Float32Array(maskOn.length).fill(1);
 
     // Inputs. Values, mask weights, parameters and per-feature counts are rewritten at runtime.
@@ -103,7 +133,9 @@ export const dotDensityMode: SpatialAnalysisModeDefinition = {
     const ringOffsets = resources.createBuffer('ring-offsets', zips.ringOffsets);
     const outlineSegments = resources.createBuffer('outline-segments', zips.outlineSegments);
     const valuesBuffer = resources.createBuffer('values', valuesBySource.bike);
-    const maskBuffer = resources.createBuffer('mask-weights', maskOff);
+    const maskSourceBuffer = resources.createBuffer('mask-source-weights', maskOff);
+    const maskRowsBuffer = resources.createBuffer('mask-source-rows', sourceRows);
+    const maskBuffer = resources.createBuffer('mask-weights', maskOff.byteLength);
     const parameters = resources.createParameterBuffer(
       'dot-parameters',
       'uint32',
@@ -177,21 +209,42 @@ export const dotDensityMode: SpatialAnalysisModeDefinition = {
         zips.ringOffsets.length
       )
     });
-    const importMask = <Parameters>(graph: GPUCommandGraph<Parameters>) => ({
-      weights: importGraphBuffer(
+    // Reproject the static raster layout once; gather its live weights on the GPU.
+    const importMask = <Parameters>(graph: GPUCommandGraph<Parameters>) => {
+      const weights = importGraphBuffer(
         graph,
         'mask-weights',
         maskBuffer,
         'float32',
-        terrain.width * terrain.height
-      ),
-      width: terrain.width,
-      height: terrain.height
-    });
+        maskOn.length
+      );
+      graph.add(
+        new GPUGather({
+          id: 'area-mask',
+          source: importGraphBuffer(
+            graph,
+            'mask-source',
+            maskSourceBuffer,
+            'float32',
+            maskOn.length
+          ),
+          indices: importGraphBuffer(
+            graph,
+            'mask-source-rows',
+            maskRowsBuffer,
+            'uint32',
+            sourceRows.length
+          ),
+          output: weights
+        })
+      );
+      return {weights, width: terrain.width, height: terrain.height};
+    };
 
     const dotGraph = new GPUCommandGraph<void>(device, {id: 'dot-density'});
     dotGraph.add(
       new GPUDotDensity({
+        spatialContext: projection.spatialContext,
         id: 'dots',
         ...importPolygons(dotGraph),
         values: importGraphBuffer(dotGraph, 'values', valuesBuffer, 'float32', slotCount),
@@ -240,6 +293,7 @@ export const dotDensityMode: SpatialAnalysisModeDefinition = {
     const randomGraph = new GPUCommandGraph<void>(device, {id: 'random-points'});
     randomGraph.add(
       new GPURandomPointsInPolygon({
+        spatialContext: projection.spatialContext,
         id: 'random-points',
         ...importPolygons(randomGraph),
         counts: importGraphBuffer(
@@ -345,7 +399,7 @@ export const dotDensityMode: SpatialAnalysisModeDefinition = {
       value: useMask,
       onChange: value => {
         useMask = value;
-        maskBuffer.write(useMask ? maskOn : maskOff);
+        maskSourceBuffer.write(useMask ? maskOn : maskOff);
       }
     });
     context.controls.addSlider({
@@ -434,12 +488,6 @@ export const dotDensityMode: SpatialAnalysisModeDefinition = {
     const getDotsPerUnit = (zoom: number): number =>
       2 ** (zoomCoupling * (zoom - REFERENCE_ZOOM)) / 10 ** logUnitsPerDot;
 
-    const maskExtent = [
-      terrain.bounds[0],
-      terrain.bounds[1],
-      terrain.cellSize[0],
-      terrain.cellSize[1]
-    ] as const;
     const writeParameters = (dotsPerUnit: number) => {
       parameters.write(
         getGPUDotDensityParameterValues({seed: randomSeed, dotsPerUnit, maskExtent})
@@ -618,6 +666,7 @@ export const dotDensityMode: SpatialAnalysisModeDefinition = {
         const layers: Layer[] = [
           new SpatialAnalysisSegmentLayer({
             id: 'dot-density-outline',
+            modelMatrix,
             coordinateOrigin,
             segments: outlineSegments,
             instanceCount: segmentCount,
@@ -629,6 +678,7 @@ export const dotDensityMode: SpatialAnalysisModeDefinition = {
             : [
                 new SpatialAnalysisPointLayer({
                   id: 'dot-density-dots',
+                  modelMatrix,
                   coordinateOrigin,
                   positions: dotPositions,
                   drawCommands: dotDrawCommands,
@@ -644,6 +694,7 @@ export const dotDensityMode: SpatialAnalysisModeDefinition = {
           layers.push(
             new SpatialAnalysisPointLayer({
               id: 'dot-density-random-points',
+              modelMatrix,
               coordinateOrigin,
               positions: randomPositions,
               drawCommands: randomDrawCommands,
@@ -772,4 +823,58 @@ function getTerrainMask(terrain: {
     }
   }
   return weights;
+}
+
+/** Maps Lambert raster cell centers to source terrain rows for nearest-neighbor GPU gathering. */
+function getAreaMaskMapping(
+  terrain: SpatialAnalysisTerrain,
+  areaFrame: GPULocalFrame
+): {
+  maskExtent: readonly [number, number, number, number];
+  sourceRows: Uint32Array;
+} {
+  const [minimumX, minimumY, maximumX, maximumY] = terrain.bounds;
+  const bounds = [Infinity, Infinity, -Infinity, -Infinity];
+  const include = (x: number, y: number) => {
+    const [longitude, latitude] = terrain.frame.unproject(x, y);
+    const [areaX, areaY] = areaFrame.project(longitude, latitude);
+    bounds[0] = Math.min(bounds[0], areaX);
+    bounds[1] = Math.min(bounds[1], areaY);
+    bounds[2] = Math.max(bounds[2], areaX);
+    bounds[3] = Math.max(bounds[3], areaY);
+  };
+  // Sample the raster perimeter, whose edges curve slightly in the area frame.
+  for (let column = 0; column <= terrain.width; column++) {
+    const x = minimumX + (column / terrain.width) * (maximumX - minimumX);
+    include(x, minimumY);
+    include(x, maximumY);
+  }
+  for (let row = 0; row <= terrain.height; row++) {
+    const y = minimumY + (row / terrain.height) * (maximumY - minimumY);
+    include(minimumX, y);
+    include(maximumX, y);
+  }
+  const cellWidth = (bounds[2] - bounds[0]) / terrain.width;
+  const cellHeight = (bounds[3] - bounds[1]) / terrain.height;
+  const sourceRows = new Uint32Array(terrain.width * terrain.height).fill(0xffffffff);
+  for (let row = 0; row < terrain.height; row++) {
+    for (let column = 0; column < terrain.width; column++) {
+      const [longitude, latitude] = areaFrame.unproject(
+        bounds[0] + (column + 0.5) * cellWidth,
+        bounds[1] + (row + 0.5) * cellHeight
+      );
+      const [x, y] = terrain.frame.project(longitude, latitude);
+      const sourceColumn = Math.floor((x - minimumX) / terrain.cellSize[0]);
+      const sourceRow = Math.floor((y - minimumY) / terrain.cellSize[1]);
+      if (
+        sourceColumn >= 0 &&
+        sourceColumn < terrain.width &&
+        sourceRow >= 0 &&
+        sourceRow < terrain.height
+      ) {
+        sourceRows[row * terrain.width + column] = sourceRow * terrain.width + sourceColumn;
+      }
+    }
+  }
+  return {maskExtent: [bounds[0], bounds[1], cellWidth, cellHeight], sourceRows};
 }

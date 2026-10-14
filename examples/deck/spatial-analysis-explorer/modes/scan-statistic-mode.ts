@@ -54,6 +54,7 @@ function formatProbability(value: number): string {
   return value < 0.001 ? '< 0.001' : value.toFixed(3);
 }
 
+/** Scans taxi activity for clusters in the New York AEQD frame. */
 export const scanStatisticMode: SpatialAnalysisModeDefinition = {
   id: 'scan-statistic',
   title: 'Scan statistic',
@@ -222,6 +223,7 @@ export const scanStatisticMode: SpatialAnalysisModeDefinition = {
     );
     graph.add(
       new GPUSpatialScanStatistic({
+        spatialContext: trips.frame.spatialContext,
         id: 'scan',
         positions: positionsView,
         cases: view('cases', casesBuffer, 'uint32', cellCount),

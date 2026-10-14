@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {GPU_WGS84_SEMI_MAJOR_AXIS_METERS} from '@luma.gl/experimental/gpu-spatial-analysis';
 /**
  * Chicago observations keyed to discrete global grid cells on the GPU.
  *
@@ -187,7 +188,7 @@ export function describeCellSize(family: GPUCellIndexFamily, resolution: number)
   if (family === 's2') {
     return `edge ~${format(Math.sqrt(510.1e6 / (6 * 4 ** resolution)))}`;
   }
-  return `tile ~${format((40075.017 / 2 ** resolution) * Math.cos((41.88 * Math.PI) / 180))} wide`;
+  return `tile ~${format(((2 * Math.PI * GPU_WGS84_SEMI_MAJOR_AXIS_METERS) / 1000 / 2 ** resolution) * Math.cos((41.88 * Math.PI) / 180))} wide`;
 }
 
 /** Rows of the aggregated cell table (cells with at least one observation). */

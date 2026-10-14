@@ -11,7 +11,7 @@ import {B3_PALETTE} from './b3-palette';
 /** Snippet lines for the two spatial contexts (omitted means planar). */
 const GREAT_CIRCLE_SNIPPET =
   "spatialContext: {coordinateSpace: 'longitude-latitude', metric: 'great-circle'},";
-const PLANAR_SNIPPET = '// spatialContext omitted: planar, in the units of the positions';
+const PLANAR_SNIPPET = 'spatialContext: projection.spatialContext, // Mercator-local meters';
 
 const ROAD_CLASS_LABELS = [
   'Motorway',
@@ -624,11 +624,13 @@ shapeParameters.write(getGPUShapeGeneratorParameterValues({
   from '@luma.gl/experimental/gpu-spatial-analysis';
 
 graph.add(new GPUGridGenerator({
+  spatialContext: projection.spatialContext,
   gridType: '${state.gridType}', columns: 56, rows: 72,
   parameters: gridParameters.importToGraph(graph),
   output: {positions: cells, centers}
 }));
 graph.add(new GPUHilbertKeys({
+  spatialContext: projection.spatialContext,
   order: ${state.hilbertOrder}, positions: centers,
   bounds: bounds.importToGraph(graph),        // [minX, minY, maxX, maxY]
   output: {keys, sortedRows}                  // stable radix sort in curve order
@@ -642,6 +644,7 @@ gridParameters.write(getGPUGridGeneratorParameterValues({
   from '@luma.gl/experimental/gpu-spatial-analysis';
 
 graph.add(new GPURectangleClip({
+  spatialContext: projection.spatialContext,
   positions,
   geometryType: '${state.clipGeometry === 'roads' ? 'lines' : 'polygons'}',${state.clipGeometry === 'roads' ? '\n  lineOffsets,' : '\n  featureOffsets, polygonOffsets, ringOffsets,'}
   parameters: clipParameters.importToGraph(graph),

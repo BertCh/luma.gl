@@ -24,7 +24,6 @@ import type {
   SpatialAnalysisModeDefinition,
   SpatialAnalysisModeInstance
 } from '../spatial-analysis-mode';
-import {LocalMetricProjection} from '../spatial-analysis-data';
 import {formatCount, SpatialAnalysisResources} from '../spatial-analysis-resources';
 import {SummaryReader} from './summary-reader';
 import {findContainingFeature} from './raster-join-layers';
@@ -337,6 +336,7 @@ function describeMask(mask: number): string {
   return names.length ? names.join(', ') : 'valid';
 }
 
+/** Checks ZIP geometry validity in the San Francisco AEQD frame. */
 export const validityMode: SpatialAnalysisModeDefinition = {
   id: 'validity',
   title: 'Validity',
@@ -351,7 +351,7 @@ export const validityMode: SpatialAnalysisModeDefinition = {
     context.signal.throwIfAborted();
     const {device} = context;
     const resources = new SpatialAnalysisResources(device, 'validity');
-    const projection = new LocalMetricProjection(zips.origin);
+    const projection = zips.frame;
     // ------------------------------------------------------------------ polygon validity
     const polygonScene = createPolygonScene(zips);
     const zipPositions = resources.createBuffer('zip-positions', polygonScene.polygonPositions);
@@ -377,6 +377,7 @@ export const validityMode: SpatialAnalysisModeDefinition = {
       const graph = new GPUCommandGraph<void>(device, {id: `validity-polygons-${orientation}`});
       graph.add(
         new GPUGeometryValidity({
+          spatialContext: zips.frame.spatialContext,
           id: 'zip-validity',
           polygons: {
             kind: 'polygons',

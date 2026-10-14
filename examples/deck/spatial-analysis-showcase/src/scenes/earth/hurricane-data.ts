@@ -3,10 +3,11 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {GPU_EARTH_MEAN_RADIUS_METERS} from '@luma.gl/experimental/gpu-spatial-analysis';
+import {createAnalysisFrameProjection} from '../../engine/analysis-frame';
 import type {LoadedDataset} from '../../data/catalog';
 import {HURRICANE_CLASS} from '../../cartography/hue-registry';
 import {LocalMetricProjection} from '../../engine/projection';
-import {createAzimuthalEquidistant, createTrackSet, type TrackSet} from '../movement/b12-tracks';
+import {createTrackSet, type TrackSet, type AnalysisTrackSet} from '../movement/b12-tracks';
 
 /**
  * Shared helpers of the hurricane scenes: the IBTrACS storms as a {@link TrackSet} in the planar
@@ -104,9 +105,9 @@ export type HurricaneTrackSet = TrackSet & {
 };
 
 export type HurricaneTrackOptions = {
-  /** `azimuthal` keeps true distances (families); `mercator` matches deck.gl meters (rasters). */
+  /** `azimuthal` supplies analysis meters and context; `mercator` is legacy display-only deck.gl meters. */
   projection: 'azimuthal' | 'mercator';
-  /** Origin of the Mercator system; ignored for `azimuthal`. */
+  /** Origin of the selected projection; defaults to the Atlantic center. */
   origin?: readonly [number, number];
   /**
    * `storm`: seconds since each storm's first fix. `calendar`: hours since 1 January 00:00 UTC of
@@ -115,7 +116,15 @@ export type HurricaneTrackOptions = {
   timeBase: 'storm' | 'calendar';
 };
 
-/** Loads `ibtracs-north-atlantic` as a {@link HurricaneTrackSet}. */
+/** Loads azimuthal tracks with their frame context, or legacy Mercator display tracks. */
+export function loadHurricaneTracks(
+  dataset: LoadedDataset,
+  options: HurricaneTrackOptions & {projection: 'azimuthal'}
+): HurricaneTrackSet & AnalysisTrackSet;
+export function loadHurricaneTracks(
+  dataset: LoadedDataset,
+  options: HurricaneTrackOptions
+): HurricaneTrackSet;
 export function loadHurricaneTracks(
   dataset: LoadedDataset,
   options: HurricaneTrackOptions
@@ -127,10 +136,12 @@ export function loadHurricaneTracks(
   const center = options.origin ?? ATLANTIC_CENTER;
   const projection =
     options.projection === 'azimuthal'
-      ? createAzimuthalEquidistant(center)
+      ? createAnalysisFrameProjection({kind: 'azimuthal-equidistant', origin: center})
       : (() => {
           const local = new LocalMetricProjection(center);
           return {
+            frame: undefined,
+            spatialContext: undefined,
             project: (longitude: number, latitude: number) => local.project(longitude, latitude),
             unproject: (x: number, y: number) => local.unproject(x, y)
           };
@@ -163,6 +174,8 @@ export function loadHurricaneTracks(
     lngLat,
     timestamps,
     origin: center,
+    analysisFrame: projection.frame,
+    spatialContext: projection.spatialContext,
     project: projection.project,
     unproject: projection.unproject,
     drawInDegrees: true

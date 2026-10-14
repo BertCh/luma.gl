@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {GPU_EARTH_MEAN_RADIUS_METERS} from '@luma.gl/experimental/gpu-spatial-analysis';
 import type {LoadedDataset} from '../../data/catalog';
 import {getContinentIndex, type AirportRecord} from './b11-geography';
 
@@ -170,15 +171,18 @@ export function expandAntimeridianEdges(network: FlightNetwork): ExpandedEdges {
   };
 }
 
-/** Great-circle-free equirectangular length in kilometres between two lon/lat points. */
-export function getApproximateKilometres(
+/** Mean-radius great-circle length in kilometres between two lon/lat points. */
+export function getGreatCircleKilometres(
   longitudeA: number,
   latitudeA: number,
   longitudeB: number,
   latitudeB: number
 ): number {
-  const meanLatitude = ((latitudeA + latitudeB) / 2) * (Math.PI / 180);
-  const x = (longitudeB - longitudeA) * Math.cos(meanLatitude);
-  const y = latitudeB - latitudeA;
-  return Math.hypot(x, y) * 111.19;
+  const radians = Math.PI / 180;
+  const haversine =
+    Math.sin(((latitudeB - latitudeA) * radians) / 2) ** 2 +
+    Math.cos(latitudeA * radians) *
+      Math.cos(latitudeB * radians) *
+      Math.sin(((longitudeB - longitudeA) * radians) / 2) ** 2;
+  return (2 * GPU_EARTH_MEAN_RADIUS_METERS * Math.asin(Math.min(1, Math.sqrt(haversine)))) / 1000;
 }

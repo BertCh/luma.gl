@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {ALBERS_CONUS_FRAME, getAnalysisFrameSpatialContext} from '../../engine/analysis-frame';
 import type {Layer} from '@deck.gl/core';
 import {COORDINATE_SYSTEM} from '@deck.gl/core';
 import {
@@ -258,6 +259,7 @@ export async function createLocalRelationships(
     const graph = new GPUCommandGraph<void>(device, {id: `gwr-${indexed ? 'indexed' : 'scan'}`});
     graph.add(
       new GPUGeographicallyWeightedRegression({
+        spatialContext: getAnalysisFrameSpatialContext(ALBERS_CONUS_FRAME),
         id: 'gwr',
         positions: importGraphBuffer(graph, 'positions', positionsBuffer, 'float32x2', rowCount),
         predictors: importGraphBuffer(
@@ -378,6 +380,7 @@ export async function createLocalRelationships(
   try {
     testGraph.add(
       new GPUGeographicallyWeightedRegressionNonstationarityTest({
+        spatialContext: getAnalysisFrameSpatialContext(ALBERS_CONUS_FRAME),
         id: 'gwr-test',
         positions: importGraphBuffer(
           testGraph,

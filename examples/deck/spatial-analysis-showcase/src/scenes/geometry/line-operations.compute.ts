@@ -32,6 +32,7 @@ export async function createLineOperations(
   const rail = loadRailPaths(transit, projection);
   let streets: PathSet | null = null;
   const cityEnvironment: CityLineEnvironment = {
+    projection,
     ctx,
     coordinateOrigin: [origin[0], origin[1], 0],
     rail,

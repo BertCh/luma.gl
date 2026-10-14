@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {GPU_EARTH_MEAN_RADIUS_METERS} from '@luma.gl/experimental/gpu-spatial-analysis';
 import type {LoadedDataset} from '../../data/catalog';
 import {createTrackSet, type TrackSet} from '../movement/b12-tracks';
 
@@ -19,7 +20,7 @@ export const LEAD_SLOTS = LEAD_DAYS + 1;
 /** Seconds per day. */
 export const DAY_SECONDS = 86400;
 /** Mean Earth radius in meters. */
-export const EARTH_RADIUS_METERS = 6371008.8;
+export const EARTH_RADIUS_METERS = GPU_EARTH_MEAN_RADIUS_METERS;
 /** Meters per degree of latitude on the mean sphere. */
 export const METERS_PER_DEGREE = (Math.PI * EARTH_RADIUS_METERS) / 180;
 

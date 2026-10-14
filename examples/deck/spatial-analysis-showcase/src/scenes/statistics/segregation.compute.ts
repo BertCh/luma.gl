@@ -341,6 +341,7 @@ export async function createSegregation(
   const importWeights = (graph: GPUCommandGraph<void>, scale: number): GPUSpatialWeights => {
     const buffers = scaleBuffers[scale];
     return {
+      spatialContext: projection.spatialContext,
       offsets: importGraphBuffer(graph, `offsets-${scale}`, buffers.offsets, 'uint32', n + 1),
       neighbors: importGraphBuffer(
         graph,
@@ -379,6 +380,7 @@ export async function createSegregation(
     const buffers = scaleBuffers[scale];
     searchGraph.add(
       new GPUNeighborSearch({
+        spatialContext: projection.spatialContext,
         id: `search-${scale}`,
         mode: 'radius',
         gridSize: [32, 32],
@@ -420,6 +422,7 @@ export async function createSegregation(
       if (options.weights !== 'band') {
         graph.add(
           new GPUSpatialWeightsTransform({
+            spatialContext: projection.spatialContext,
             id: `kernel-${scale}`,
             operation: 'kernel',
             weights,
@@ -429,7 +432,14 @@ export async function createSegregation(
         );
       }
       if (options.rowStandardize) {
-        graph.add(new GPUSpatialWeightsTransform({id: `row-${scale}`, operation: 'row', weights}));
+        graph.add(
+          new GPUSpatialWeightsTransform({
+            spatialContext: projection.spatialContext,
+            id: `row-${scale}`,
+            operation: 'row',
+            weights
+          })
+        );
       }
       scaleWeights.push(weights);
     });

@@ -400,6 +400,7 @@ import {GPUPointDensity} from '@luma.gl/experimental/gpu-spatial-analysis';
 const graph = new GPUCommandGraph(device, {id: 'taxi-density'});
 graph.add(
   new GPUPointDensity({
+    spatialContext: projection.spatialContext,
     positions,                         // 880,000 points, uploaded once
     mask,                              // uint32: which end, which hours (rewritten on change)${
       state.measure === 'fare'

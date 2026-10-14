@@ -76,7 +76,6 @@ import {
 import {makeGPURasterMetadata} from '@luma.gl/experimental/gpu-raster';
 import {importGraphBuffer} from '../graph-buffers';
 import {GraphSwap} from '../graph-swap';
-import {LocalMetricProjection} from '../spatial-analysis-data';
 import {
   SpatialAnalysisRasterLayer,
   type SpatialAnalysisRasterLayerProps
@@ -260,6 +259,7 @@ const SCALAR_STYLES: Partial<
   }
 };
 
+/** Compares relief products with picking in the San Francisco dataset frame. */
 export const reliefVisualizationMode: SpatialAnalysisModeDefinition = {
   id: 'relief-visualization',
   title: 'Relief tools',
@@ -295,7 +295,7 @@ export const reliefVisualizationMode: SpatialAnalysisModeDefinition = {
       rowDirection: 'south'
     });
     const pixelCount = width * height;
-    const projection = new LocalMetricProjection(terrain.origin);
+    const projection = terrain.frame;
     const origin: [number, number, number] = [terrain.origin[0], terrain.origin[1], 0];
     const resources = new SpatialAnalysisResources(device, 'relief-visualization');
     const centerLongitudeLatitude = projection.unproject(

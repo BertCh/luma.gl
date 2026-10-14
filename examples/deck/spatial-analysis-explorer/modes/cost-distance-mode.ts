@@ -40,7 +40,6 @@ import {
   GPUTerrainDerivatives
 } from '@luma.gl/experimental/gpu-terrain';
 import {importGraphBuffer} from '../graph-buffers';
-import {LocalMetricProjection} from '../spatial-analysis-data';
 import {
   SpatialAnalysisPointLayer,
   SpatialAnalysisRasterLayer,
@@ -101,7 +100,7 @@ export const costDistanceMode: SpatialAnalysisModeDefinition = {
     const {width, height, bounds, cellSize} = terrain;
     const cellCount = width * height;
     const grid = makeGPURasterMetadata({width, height, cellSize});
-    const projection = new LocalMetricProjection(terrain.origin);
+    const projection = terrain.frame;
     const origin: [number, number, number] = [terrain.origin[0], terrain.origin[1], 0];
     const resources = new SpatialAnalysisResources(device, 'cost-distance');
 

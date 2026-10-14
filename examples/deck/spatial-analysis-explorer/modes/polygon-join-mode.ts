@@ -60,6 +60,7 @@ const CATEGORY_COLORS = [
   [255, 92, 92]
 ] as const;
 
+/** Joins bike-parking points to ZIP polygons in the San Francisco AEQD frame. */
 export const polygonJoinMode: SpatialAnalysisModeDefinition = {
   id: 'polygon-join',
   title: 'Polygon join',
@@ -145,6 +146,7 @@ export const polygonJoinMode: SpatialAnalysisModeDefinition = {
       if (prepared) graph.add(prepared);
       graph.add(
         new GPUPointInPolygonJoin({
+          spatialContext: zips.frame.spatialContext,
           id: 'polygon-join',
           points: {
             kind: 'points',

@@ -582,6 +582,7 @@ Use **Outlines** to show one result at a time, and zoom into a state border and 
       return `import {GPUSegmentIntersection} from '@luma.gl/experimental/gpu-spatial-analysis';
 
 graph.add(new GPUSegmentIntersection({
+  spatialContext: projection.spatialContext,
   left: {kind: 'lines', positions: streets, lineOffsets: streetOffsets},${state.crossMode === 'streets-rail' ? "\n  right: {kind: 'lines', positions: rail, lineOffsets: railOffsets}," : `\n  sameFeatureOnly: ${state.sameFeatureOnly},`}
   spatialSort: ${state.crossSpatialSort},
   output: {
@@ -596,6 +597,7 @@ graph.add(new GPUSegmentIntersection({
 import {GPUNetworkNoding} from '@luma.gl/experimental/gpu-network';
 
 graph.add(new GPULineSplit({
+  spatialContext: projection.spatialContext,
   lines: {kind: 'lines', positions, lineOffsets},
   intersectionCapacity: ${state.nodingCapacity}, spatialSort: ${state.nodingSpatialSort},
   output: {
@@ -607,11 +609,13 @@ graph.add(new GPULineSplit({
   }
 }));
 graph.add(new GPULineMerge({
+  spatialContext: projection.spatialContext,
   positions: pieces, lineOffsets: offsets,
   output: {chainOffsets, positions: chains, status: {count}}
 }));
 
 graph.add(new GPUNetworkNoding({
+  spatialContext: projection.spatialContext,
   lines, intersectionCapacity: ${state.nodingCapacity},
   tolerance: tolerance.importToGraph(graph),   // ${state.nodingTolerance} m, per frame
   output: {
@@ -641,6 +645,7 @@ graph.add(new GPUSegmentRingAssembly({
   from '@luma.gl/experimental/gpu-spatial-analysis';
 
 graph.add(new GPUCoverageSimplification({
+  spatialContext: getAnalysisFrameSpatialContext(ALBERS_CONUS_FRAME),
   positions, featureOffsets, polygonOffsets, ringOffsets,   // Albers CONUS metres, one polygon port
   snapTolerance: ${state.coverageSnap},
   topologyIterationCount: ${state.topologyRounds}, maximumIterations: ${state.coverageRounds},

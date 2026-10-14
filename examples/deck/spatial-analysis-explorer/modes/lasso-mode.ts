@@ -22,6 +22,7 @@ import {
   type GraphDataView
 } from '@luma.gl/gpgpu/gpu-core';
 import {
+  type GPULocalFrame,
   getGPURegionStatisticsSummaryLength,
   GPUPickRegionMask,
   GPURegionMask,
@@ -32,7 +33,7 @@ import {
 } from '@luma.gl/experimental/gpu-spatial-analysis';
 import {importGraphBuffer, submitGraph} from '../graph-buffers';
 import {GraphSwap} from '../graph-swap';
-import {createSeededRandom, LocalMetricProjection} from '../spatial-analysis-data';
+import {createSeededRandom} from '../spatial-analysis-data';
 import {SpatialAnalysisPointLayer, SpatialAnalysisSegmentLayer} from '../spatial-analysis-layers';
 import type {
   SpatialAnalysisModeDefinition,
@@ -169,7 +170,7 @@ export const lassoMode: SpatialAnalysisModeDefinition = {
     const bikeParking = await context.data.getSanFranciscoBikeParking();
     context.signal.throwIfAborted();
     const {device} = context;
-    const projection = new LocalMetricProjection(bikeParking.origin);
+    const projection = bikeParking.frame;
     const resources = new SpatialAnalysisResources(device, 'lasso');
     const summaryLength = getGPURegionStatisticsSummaryLength(HISTOGRAM_BINS);
 
@@ -407,6 +408,7 @@ export const lassoMode: SpatialAnalysisModeDefinition = {
           );
           graph.add(
             new GPURegionMask({
+              spatialContext: bikeParking.frame.spatialContext,
               id: 'lasso-region-mask',
               positions,
               region:
@@ -431,6 +433,7 @@ export const lassoMode: SpatialAnalysisModeDefinition = {
         }
         graph.add(
           new GPURegionStatistics({
+            spatialContext: bikeParking.frame.spatialContext,
             id,
             region: selection,
             ...(selection.kind === 'mask' ? {} : {positions}),
@@ -1169,7 +1172,7 @@ export const lassoMode: SpatialAnalysisModeDefinition = {
  * Returns the preset lasso in meters. When it selects almost nothing (for example for synthetic
  * data) it falls back to a ring around the point with the most neighbors within 800 m.
  */
-function getPresetLasso(positions: Float32Array, projection: LocalMetricProjection): Point[] {
+function getPresetLasso(positions: Float32Array, projection: GPULocalFrame): Point[] {
   const preset = PRESET_LASSO.map(([longitude, latitude]) =>
     projection.project(longitude, latitude)
   ) as Point[];

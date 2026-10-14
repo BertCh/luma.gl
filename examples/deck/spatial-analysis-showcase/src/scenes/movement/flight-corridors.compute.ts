@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {GPU_EARTH_MEAN_RADIUS_METERS} from '@luma.gl/experimental/gpu-spatial-analysis';
 import {COORDINATE_SYSTEM, type Layer} from '@deck.gl/core';
 import type {Buffer} from '@luma.gl/core';
 import {
@@ -76,7 +77,7 @@ const SECONDS_PER_DAY = 86400;
 const STATUS_INTERVAL_FRAMES = 12;
 const GRID_BOUNDS = [-125, 25, -65, 50] as const;
 const DIRECTION_CODES = {all: -1, east: 0, west: 1, north: 2, south: 3} as const;
-const EARTH_RADIUS = 6371008.8;
+const EARTH_RADIUS = GPU_EARTH_MEAN_RADIUS_METERS;
 const HOURLY_BINS = 144;
 const ALTITUDE_HISTOGRAM_BINS = 26;
 /** Minimum combined east/west support: 0.05 km of track per km². */
@@ -181,6 +182,11 @@ export async function createFlightCorridors(
   const playheadGraph = new GPUCommandGraph<void>(device, {id: 'flight-playhead'});
   playheadGraph.add(
     new GPUTrajectoryPlayhead({
+      spatialContext: {
+        coordinateSpace: 'longitude-latitude',
+        metric: 'great-circle',
+        units: 'meters'
+      },
       id: 'playhead',
       // Interpolating longitude and latitude directly keeps the output drawable as degrees.
       positions: importGraphBuffer(

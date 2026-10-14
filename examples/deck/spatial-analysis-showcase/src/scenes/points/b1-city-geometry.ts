@@ -55,11 +55,13 @@ export type CityGeometry = {
 
 /**
  * Loads the city limit and the lake and prepares the masks in the metres of `origin` (pass the same
- * origin the scene projects its points with, usually `dataset.defaultOrigin`).
+ * origin the scene projects its points with, usually `dataset.defaultOrigin`). Pass `project`
+ * when the scene uses an analysis frame instead of the default display frame.
  */
 export async function loadCityGeometry(
   ctx: Pick<SceneContext<unknown>, 'datasets' | 'signal'>,
-  origin: LngLat
+  origin: LngLat,
+  project?: (longitude: number, latitude: number) => [number, number]
 ): Promise<CityGeometry> {
   const boundary = ctx.datasets.get('chicago-boundary');
   const city = boundary.geojson ?? {type: 'FeatureCollection', features: []};
@@ -69,16 +71,19 @@ export async function loadCityGeometry(
   } catch {
     // The lake is optional context: the city limit alone still defines the window.
   }
-  return buildCityGeometry(city, lake, origin);
+  return buildCityGeometry(city, lake, origin, project);
 }
 
-/** Builds {@link CityGeometry} from already-loaded GeoJSON (pure; used by {@link loadCityGeometry}). */
+/** Builds city masks in the supplied projection, or display metres about `origin` by default. */
 export function buildCityGeometry(
   city: GeoJsonCollection,
   lake: GeoJsonCollection | null,
-  origin: LngLat
+  origin: LngLat,
+  projectPosition?: (longitude: number, latitude: number) => [number, number]
 ): CityGeometry {
-  const project = getLocalProjector(origin);
+  const project = projectPosition
+    ? (position: readonly number[]) => projectPosition(position[0], position[1])
+    : getLocalProjector(origin);
   const cityPolygons = getInputPolygons(city).map(({polygon}) => polygon);
   const cityRingsMeters: Float64Array[] = [];
   let minX = Infinity;

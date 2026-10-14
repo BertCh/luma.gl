@@ -371,7 +371,7 @@ graph.add(new GPUTimeWindowFilter({
     fadeWeights                        // 0..1, dims toward the old end
   }
 }));
-graph.add(new GPUGeometryMeasures({spatialContext: {coordinateSpace: ('${state.areaSystem}') === 'planar' ? 'planar' : 'longitude-latitude', metric: ('${state.areaSystem}') === 'planar' ? 'native' : ('${state.areaSystem}') === 'spherical' ? 'great-circle' : 'ellipsoidal', units: ('${state.areaSystem}') === 'planar' ? 'native' : 'meters'},ellipsoidalEdgeModel: ('${state.areaSystem}') === 'wgs84' ? 'coordinate-linear' : undefined,
+graph.add(new GPUGeometryMeasures({spatialContext: ('${state.areaSystem}') === 'planar' ? WEB_MERCATOR_PROJECTION.spatialContext : {coordinateSpace: 'longitude-latitude', metric: ('${state.areaSystem}') === 'spherical' ? 'great-circle' : 'ellipsoidal', units: 'meters'}, ellipsoidalEdgeModel: ('${state.areaSystem}') === 'wgs84' ? 'coordinate-linear' : undefined,
   geometryType: 'polygons', positions, featureOffsets, polygonOffsets, ringOffsets,
   groupIds, groupCount: 4,             // ${state.groupBy}
   output: {areas},

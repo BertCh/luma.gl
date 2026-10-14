@@ -3,28 +3,34 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import type {Viewport} from '@deck.gl/core';
-import {GPU_EARTH_MEAN_RADIUS_METERS} from '@luma.gl/experimental/gpu-spatial-analysis';
+import {
+  createGPULocalFrame,
+  GPU_EARTH_MEAN_RADIUS_METERS,
+  GPU_WGS84_SEMI_MAJOR_AXIS_METERS,
+  GPU_WGS84_FLATTENING
+} from '@luma.gl/experimental/gpu-spatial-analysis';
+import type {GPUSpatialContext} from '@luma.gl/experimental/gpu-spatial-analysis';
 
 /**
- * Analysis frames: planar meters about an origin on the sphere of radius
- * `GPU_EARTH_MEAN_RADIUS_METERS`, for analysis that must not run in the Mercator-local frame of
- * `LocalMetricProjection` (regional extents, where that frame's scale error passes about 1%).
+ * Analysis frames project longitude/latitude to planar meters for GPU analysis. The display-only
+ * Mercator-local `LocalMetricProjection` must not be used for analysis.
  *
- * - `'azimuthal-equidistant'`: distances and bearings from the origin are exact; the tangential
- *   scale is `c / sin(c)` (c the angular distance), +0.65% at 1,250 km.
- * - `'lambert-equal-area'`: areas are exact everywhere; scales are `1/cos(c/2)` and `cos(c/2)`.
- * - `'albers-equal-area'`: conic, areas exact everywhere; scale is exact on the two standard
- *   parallels (`ALBERS_CONUS_FRAME`: +-1.44% over the contiguous US).
+ * - `'azimuthal-equidistant'`: the library's spherical projection on the mean Earth radius.
+ *   Distances and bearings from the origin are exact; tangential scale is `c / sin(c)`.
+ * - `'lambert-equal-area'`: the library's ellipsoidal WGS84 Lambert azimuthal equal-area.
+ *   Areas are exact ellipsoidal areas.
+ * - `'albers-equal-area'`: showcase-local spherical Albers on the mean Earth radius, with a
+ *   `'crs'` frame id. Areas on that sphere are exact; scale is true on the standard parallels.
  *
- * The CPU formulas here are the ones the layers' WGSL inverts (`getAnalysisFrameWgsl` in
- * `layer-wgsl.ts`), so a layer with the same `analysisFrame` draws frame meters exactly where the
- * longitude/latitude they came from lies.
+ * Every analysis operator fed frame meters must receive `projection.spatialContext`. Distance
+ * operators reject Lambert frames; area operators reject AEQD frames. Layers invert these same
+ * frames in WGSL (`getAnalysisFrameWgsl` in `layer-wgsl.ts`) to draw their meters at longitude/latitude.
  */
 
 /** Kind of an {@link AnalysisFrame}. */
 export type AnalysisFrameKind = AnalysisFrame['kind'];
 
-/** An azimuthal analysis frame about `origin` (`[longitude, latitude]` degrees). */
+/** A library AEQD (spherical) or Lambert (WGS84 ellipsoidal) frame about `origin` in degrees. */
 export type AzimuthalAnalysisFrame = {
   kind: 'azimuthal-equidistant' | 'lambert-equal-area';
   origin: readonly [number, number];
@@ -40,7 +46,7 @@ export type AlbersAnalysisFrame = {
   standardParallels: readonly [number, number];
 };
 
-/** A planar analysis frame (meters on the sphere of radius `GPU_EARTH_MEAN_RADIUS_METERS`). */
+/** A planar analysis frame in meters: library azimuthal or showcase-local spherical Albers. */
 export type AnalysisFrame = AzimuthalAnalysisFrame | AlbersAnalysisFrame;
 
 /**
@@ -57,59 +63,105 @@ export const ALBERS_CONUS_FRAME: AlbersAnalysisFrame = {
 /** Forward and inverse of one {@link AnalysisFrame}. */
 export type AnalysisFrameProjection = {
   frame: AnalysisFrame;
+  /** Pass this frame identity and metric contract to every operator consuming frame meters. */
+  readonly spatialContext: GPUSpatialContext;
   /** `[x, y]` meters for one `[longitude, latitude]`. */
   project: (longitude: number, latitude: number) => [number, number];
-  /** `[longitude, latitude]` for `[x, y]` meters. */
+  /** `[longitude, latitude]` for `[x, y]` meters, longitude continuous about the origin. */
   unproject: (x: number, y: number) => [number, number];
 };
 
 const DEGREES_TO_RADIANS = Math.PI / 180;
 
 /**
- * Spherical projection of `frame`: azimuthal (equidistant or Lambert equal-area) about
- * `frame.origin`, or Albers equal-area conic. The equidistant formulas are those of
- * `createAzimuthalEquidistant` (scenes/movement/b12-tracks.ts), the Albers ones those of
- * `projectAlbers` (scenes/regression/b6-polygons.ts), in the same operation order.
+ * Projects with the library's AEQD or ellipsoidal Lambert frame, or showcase-local Albers.
+ * Albers preserves the operation order of `projectAlbers` (scenes/regression/b6-polygons.ts).
+ * The inverse keeps longitude continuous about the origin, including across the antimeridian.
  */
 export function createAnalysisFrameProjection(frame: AnalysisFrame): AnalysisFrameProjection {
   if (frame.kind === 'albers-equal-area') return createAlbersProjection(frame);
-  const radius = GPU_EARTH_MEAN_RADIUS_METERS;
-  const equalArea = frame.kind === 'lambert-equal-area';
-  const [longitude0, latitude0] = frame.origin;
-  const lambda0 = longitude0 * DEGREES_TO_RADIANS;
-  const phi0 = latitude0 * DEGREES_TO_RADIANS;
-  const sinPhi0 = Math.sin(phi0);
-  const cosPhi0 = Math.cos(phi0);
+  const localFrame = createGPULocalFrame({origin: frame.origin, kind: frame.kind});
   return {
     frame,
-    project(longitude, latitude) {
-      const deltaLambda = longitude * DEGREES_TO_RADIANS - lambda0;
-      const phi = latitude * DEGREES_TO_RADIANS;
-      const cosC = sinPhi0 * Math.sin(phi) + cosPhi0 * Math.cos(phi) * Math.cos(deltaLambda);
-      let k: number;
-      if (equalArea) {
-        k = Math.sqrt(2 / Math.max(1 + cosC, 1e-15));
-      } else {
-        const c = Math.acos(Math.min(1, Math.max(-1, cosC)));
-        k = c < 1e-9 ? 1 : c / Math.sin(c);
-      }
-      return [
-        radius * k * Math.cos(phi) * Math.sin(deltaLambda),
-        radius * k * (cosPhi0 * Math.sin(phi) - sinPhi0 * Math.cos(phi) * Math.cos(deltaLambda))
-      ];
-    },
+    spatialContext: localFrame.spatialContext,
+    project: localFrame.project,
     unproject(x, y) {
-      const rho = Math.hypot(x, y);
-      if (rho < 1e-9) return [longitude0, latitude0];
-      const c = equalArea ? 2 * Math.asin(Math.min(1, rho / (2 * radius))) : rho / radius;
-      const sinC = Math.sin(c);
-      const cosC = Math.cos(c);
-      const phi = Math.asin(
-        Math.min(1, Math.max(-1, cosC * sinPhi0 + ((y * sinC) / rho) * cosPhi0))
-      );
-      const deltaLambda = Math.atan2(x * sinC, rho * cosPhi0 * cosC - y * sinPhi0 * sinC);
-      return [longitude0 + deltaLambda / DEGREES_TO_RADIANS, phi / DEGREES_TO_RADIANS];
+      const [longitude, latitude] = localFrame.unproject(x, y);
+      const deltaLongitude = (longitude - frame.origin[0]) % 360;
+      const wrappedDelta =
+        deltaLongitude > 180
+          ? deltaLongitude - 360
+          : deltaLongitude < -180
+            ? deltaLongitude + 360
+            : deltaLongitude;
+      return [frame.origin[0] + wrappedDelta, latitude];
     }
+  };
+}
+
+/** Returns the same spatial context and frame id carried by this frame's projection. */
+export function getAnalysisFrameSpatialContext(frame: AnalysisFrame): GPUSpatialContext {
+  if (frame.kind !== 'albers-equal-area') {
+    return createGPULocalFrame({origin: frame.origin, kind: frame.kind}).spatialContext;
+  }
+  return Object.freeze({
+    coordinateSpace: 'planar',
+    metric: 'native',
+    units: 'meters',
+    frame: Object.freeze({
+      kind: 'crs',
+      id: `showcase-albers-${[...frame.origin, ...frame.standardParallels].map(String).join('-')}`
+    })
+  });
+}
+
+/** Binary64 WGS84 constants for the ellipsoidal Lambert inverse used by layer WGSL. */
+export function getLambertFrameConstants(frame: AzimuthalAnalysisFrame): {
+  authalicRadius: number;
+  scaleD: number;
+  sinAuthalicOrigin: number;
+  cosAuthalicOrigin: number;
+  seriesA: number;
+  seriesB: number;
+  seriesC: number;
+} {
+  const eccentricitySquared = GPU_WGS84_FLATTENING * (2 - GPU_WGS84_FLATTENING);
+  const eccentricity = Math.sqrt(eccentricitySquared);
+  const getAuthalicQ = (sinLatitude: number): number => {
+    const eccentricitySine = eccentricity * sinLatitude;
+    return (
+      (1 - eccentricitySquared) *
+      (sinLatitude / (1 - eccentricitySine * eccentricitySine) -
+        (1 / (2 * eccentricity)) * Math.log((1 - eccentricitySine) / (1 + eccentricitySine)))
+    );
+  };
+  const polarAuthalicQ = getAuthalicQ(1);
+  const authalicRadius = GPU_WGS84_SEMI_MAJOR_AXIS_METERS * Math.sqrt(polarAuthalicQ / 2);
+  const originLatitude = frame.origin[1] * DEGREES_TO_RADIANS;
+  const sinGeodeticOrigin = Math.sin(originLatitude);
+  const authalicOrigin = Math.asin(
+    Math.max(-1, Math.min(1, getAuthalicQ(sinGeodeticOrigin) / polarAuthalicQ))
+  );
+  // Match the library's polar-origin threshold and exact polar components.
+  const polar = Math.PI / 2 - Math.abs(originLatitude) < 1e-10;
+  const sinAuthalicOrigin = polar ? Math.sign(originLatitude) : Math.sin(authalicOrigin);
+  const cosAuthalicOrigin = polar ? 0 : Math.cos(authalicOrigin);
+  const scaleD = polar
+    ? 1
+    : (GPU_WGS84_SEMI_MAJOR_AXIS_METERS * Math.cos(originLatitude)) /
+      Math.sqrt(1 - eccentricitySquared * sinGeodeticOrigin * sinGeodeticOrigin) /
+      (authalicRadius * cosAuthalicOrigin);
+  return {
+    authalicRadius,
+    scaleD,
+    sinAuthalicOrigin,
+    cosAuthalicOrigin,
+    seriesA:
+      eccentricitySquared / 3 +
+      (31 * eccentricitySquared ** 2) / 180 +
+      (517 * eccentricitySquared ** 3) / 5040,
+    seriesB: (23 * eccentricitySquared ** 2) / 360 + (251 * eccentricitySquared ** 3) / 3780,
+    seriesC: (761 * eccentricitySquared ** 3) / 45360
   };
 }
 
@@ -142,6 +194,7 @@ function createAlbersProjection(frame: AlbersAnalysisFrame): AnalysisFrameProjec
   const longitude0 = frame.origin[0];
   return {
     frame,
+    spatialContext: getAnalysisFrameSpatialContext(frame),
     project(longitude, latitude) {
       const rho = Math.sqrt(c - 2 * n * Math.sin(latitude * DEGREES_TO_RADIANS)) / n;
       const theta = n * (longitude - longitude0) * DEGREES_TO_RADIANS;

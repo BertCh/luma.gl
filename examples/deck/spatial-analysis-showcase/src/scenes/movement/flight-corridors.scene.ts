@@ -476,6 +476,7 @@ import {GPUTimeWindowFilter, getGPUTimeWindowFilterParameterValues} from '@luma.
 // lngLat: float32x2 degrees, altitude: float32 metres, timestamps: float32 seconds, trackOffsets: uint32
 const playGraph = new GPUCommandGraph(device, {id: 'playhead'});
 playGraph.add(new GPUTrajectoryPlayhead({
+  spatialContext: {coordinateSpace: 'longitude-latitude', metric: 'great-circle', units: 'meters'},
   positions: lngLat, elevations: altitude, timestamps, trackOffsets,   // interpolate degrees directly
   parameters: playheadParameters.importToGraph(playGraph),
   output: {

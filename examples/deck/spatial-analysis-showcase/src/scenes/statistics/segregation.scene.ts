@@ -115,12 +115,12 @@ function getSnippet(state: SegregationOptions): string {
     state.weights === 'band'
       ? ''
       : `
-  graph.add(new GPUSpatialWeightsTransform({
+  graph.add(new GPUSpatialWeightsTransform({spatialContext: projection.spatialContext,
     operation: 'kernel', kernel: '${state.weights}', bandwidth: 'adaptive', weights
   }));`;
   const row = state.rowStandardize
     ? `
-  graph.add(new GPUSpatialWeightsTransform({operation: 'row', weights}));`
+  graph.add(new GPUSpatialWeightsTransform({spatialContext: projection.spatialContext, operation: 'row', weights}));`
     : '';
   return `import {
   GPUNeighborSearch, GPUSegregation, GPUSpatialWeightsTransform,
@@ -129,7 +129,7 @@ function getSnippet(state: SegregationOptions): string {
 
 // One distance band per radius; the radius is a parameter-buffer write.
 scales.forEach(({weights, searchParameters}) => {
-  graph.add(new GPUNeighborSearch({
+  graph.add(new GPUNeighborSearch({spatialContext: projection.spatialContext,
     mode: 'radius', gridSize: [32, 32], positions: tractPoints,
     parameters: searchParameters, output: {...weights, status: {overflow}}
   }));${kernel}${row}

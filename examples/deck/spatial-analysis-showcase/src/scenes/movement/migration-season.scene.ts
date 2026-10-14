@@ -208,6 +208,7 @@ import {GPUTrajectoryPlayhead, getGPUTrajectoryPlayheadParameterValues} from '@l
 
 // 1. Every track interpolated at the playhead, on the GPU (positions: lng/lat degrees, timestamps: float32 s of the year)
 playheadGraph.add(new GPUTrajectoryPlayhead({
+  spatialContext: {coordinateSpace: 'longitude-latitude', metric: 'great-circle', units: 'meters'},
   positions, timestamps, trackOffsets, parameters: playheadParameters.importToGraph(playheadGraph),
   output: {
     currentPositions, trackStatus: status,

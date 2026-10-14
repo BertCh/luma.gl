@@ -265,7 +265,7 @@ const drawCommands = new DrawCommandBuffer(device, {
 });
 const graph = new GPUCommandGraph(device, {id: 'near-transit'});
 graph.add(
-  new GPUBufferSelection({
+  new GPUBufferSelection({spatialContext: projection.spatialContext,
     points: {kind: 'points', positions},     // ${POINT_LABELS[state.points]}, float32x2 meters, uploaded once
     features: ${state.features === 'lines' ? "{kind: 'segments', starts, ends}" : "{kind: 'points', positions}"},
     distance: distance.importToGraph(graph), // one float32, rewritten per frame

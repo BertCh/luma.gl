@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {GPU_EARTH_MEAN_RADIUS_METERS} from '@luma.gl/experimental/gpu-spatial-analysis';
 import {
   SHIPPING_GATES,
   SHIPPING_TYPE_GROUP,
@@ -16,7 +17,7 @@ import {
  * few hundred thousand rows and runs once per readback, never per frame.
  */
 
-const EARTH_RADIUS_KILOMETERS = 6371.0088;
+const EARTH_RADIUS_KILOMETERS = GPU_EARTH_MEAN_RADIUS_METERS / 1000;
 const DEGREES = Math.PI / 180;
 
 /** Great-circle distance in kilometres between two `[longitude, latitude]` points. */
@@ -292,13 +293,13 @@ export function summarizeTracksNear(
   radiusKilometers: number
 ): {tracks: number; towShare: number} {
   const seen = new Uint8Array(tracks.trackCount);
-  const cosLatitude = Math.cos(center[1] * DEGREES);
-  const kilometersPerDegree = EARTH_RADIUS_KILOMETERS * DEGREES;
   for (let track = 0; track < tracks.trackCount; track++) {
     for (let vertex = tracks.offsets[track]; vertex < tracks.offsets[track + 1]; vertex++) {
-      const dx = (tracks.lngLat[vertex * 2] - center[0]) * cosLatitude * kilometersPerDegree;
-      const dy = (tracks.lngLat[vertex * 2 + 1] - center[1]) * kilometersPerDegree;
-      if (dx * dx + dy * dy <= radiusKilometers * radiusKilometers) {
+      const distance = getGreatCircleKilometers(center, [
+        tracks.lngLat[vertex * 2],
+        tracks.lngLat[vertex * 2 + 1]
+      ]);
+      if (distance <= radiusKilometers) {
         seen[track] = 1;
         break;
       }

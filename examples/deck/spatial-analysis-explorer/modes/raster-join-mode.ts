@@ -35,7 +35,6 @@ import {
 } from '@luma.gl/experimental/gpu-raster';
 import {GPUPointInPolygonJoin} from '@luma.gl/experimental/gpu-spatial-analysis';
 import {importGraphBuffer} from '../graph-buffers';
-import {LocalMetricProjection} from '../spatial-analysis-data';
 import {
   SpatialAnalysisPointLayer,
   SpatialAnalysisRasterLayer,
@@ -121,7 +120,7 @@ export const rasterJoinMode: SpatialAnalysisModeDefinition = {
     ]);
     context.signal.throwIfAborted();
     const {device} = context;
-    const projection = new LocalMetricProjection(zips.origin);
+    const projection = zips.frame;
     const resources = new SpatialAnalysisResources(device, 'raster-join');
     const pointCount = parking.positions.length / 2;
     const zoneCount = zips.featureOffsets.length - 1;
@@ -288,6 +287,7 @@ export const rasterJoinMode: SpatialAnalysisModeDefinition = {
     const exactGraph = new GPUCommandGraph<void>(device, {id: 'raster-join-exact'});
     exactGraph.add(
       new GPUPointInPolygonJoin({
+        spatialContext: zips.frame.spatialContext,
         id: 'exact-join',
         points: {
           kind: 'points',

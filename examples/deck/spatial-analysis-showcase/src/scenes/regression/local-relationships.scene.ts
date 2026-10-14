@@ -326,7 +326,7 @@ export default defineScene<LocalRelationshipsOptions>({
 } from '@luma.gl/experimental/gpu-spatial-analysis';
 
 // positions are planar meters (Albers equal-area), predictors are z-scores, row-major
-graph.add(new GPUGeographicallyWeightedRegression({
+graph.add(new GPUGeographicallyWeightedRegression({spatialContext: getAnalysisFrameSpatialContext(ALBERS_CONUS_FRAME),
   positions, predictors, predictorCount: 4, response, mask,
   parameters,                          // kernel, mode, bandwidth ladder: a per-frame buffer
   maximumBandwidthCount: 8, maximumNeighborCount: 128,${state.spatialIndex ? '' : '\n  indexGridSize: false,              // scan every row'}
@@ -341,7 +341,7 @@ parameters.write(getGPUGeographicallyWeightedRegressionParameterValues({
 }, 8));
 
 // Is the spatial variation real? Permute, refit at the selected bandwidth, count exceedances.
-testGraph.add(new GPUGeographicallyWeightedRegressionNonstationarityTest({
+testGraph.add(new GPUGeographicallyWeightedRegressionNonstationarityTest({spatialContext: getAnalysisFrameSpatialContext(ALBERS_CONUS_FRAME),
   positions, predictors, predictorCount: 4, response, mask,
   bandwidthParameters: parameters, selectedBandwidth, coefficients,
   parameters: permutationParameters, maximumPermutations: 99,

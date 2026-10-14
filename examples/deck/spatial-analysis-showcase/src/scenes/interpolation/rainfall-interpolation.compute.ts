@@ -248,6 +248,7 @@ export async function createRainfallInterpolation(
   const selectedView = importGraphBuffer(graph, 'selected', selectedSurface, 'float32', CELL_COUNT);
   graph.add(
     new GPUInverseDistanceWeighting({
+      spatialContext: projection.spatialContext,
       id: 'idw',
       positions: positionsView,
       values: valuesView,
@@ -262,6 +263,7 @@ export async function createRainfallInterpolation(
   );
   graph.add(
     new GPUKriging({
+      spatialContext: projection.spatialContext,
       id: 'kriging',
       positions: positionsView,
       values: valuesView,
@@ -354,6 +356,7 @@ export async function createRainfallInterpolation(
   const variogramGraph = new GPUCommandGraph<void>(device, {id: 'rainfall-variogram'});
   variogramGraph.add(
     new GPUVariogram({
+      spatialContext: projection.spatialContext,
       id: 'variogram',
       positions: importGraphBuffer(
         variogramGraph,

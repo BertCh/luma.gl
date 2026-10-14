@@ -12,6 +12,7 @@
 
 import earcut from 'earcut';
 import type {LoadedDataset} from '../../data/catalog';
+import {GPU_EARTH_MEAN_RADIUS_METERS} from '@luma.gl/experimental/gpu-spatial-analysis';
 import {LocalMetricProjection} from '../../engine/projection';
 
 /** Row marker of a feature that has no value row (drawn by no colored fill). */
@@ -439,7 +440,7 @@ export function projectAlbers(longitude: number, latitude: number): [number, num
   const rho0 = Math.sqrt(c - 2 * n * Math.sin(37.5 * radians)) / n;
   const rho = Math.sqrt(c - 2 * n * Math.sin(latitude * radians)) / n;
   const theta = n * (longitude + 96) * radians;
-  const radius = 6371008.8;
+  const radius = GPU_EARTH_MEAN_RADIUS_METERS;
   return [radius * rho * Math.sin(theta), radius * (rho0 - rho * Math.cos(theta))];
 }
 

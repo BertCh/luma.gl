@@ -24,7 +24,6 @@ import {
   type GPUEdgeBundlingSettings
 } from '@luma.gl/experimental/gpu-network';
 import {importGraphBuffer} from '../graph-buffers';
-import {LocalMetricProjection} from '../spatial-analysis-data';
 import type {
   SpatialAnalysisModeDefinition,
   SpatialAnalysisModeInstance
@@ -58,7 +57,7 @@ export const edgeBundlingMode: SpatialAnalysisModeDefinition = {
     const trips = await context.data.getNewYorkTrips();
     context.signal.throwIfAborted();
     const {device} = context;
-    const projection = new LocalMetricProjection(trips.origin);
+    const projection = trips.frame;
     const resources = new SpatialAnalysisResources(device, 'edge-bundling');
 
     // Snap origin, midpoint and destination of every trip to lattice cells; connect the three

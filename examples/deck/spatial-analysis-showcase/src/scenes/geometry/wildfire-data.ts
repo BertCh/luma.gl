@@ -2,8 +2,9 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {WEB_MERCATOR_PROJECTION, formatNumber, type PolygonLayout} from './b3-common';
+import {GPU_WGS84_SEMI_MAJOR_AXIS_METERS} from '@luma.gl/experimental/gpu-spatial-analysis';
 import type {LoadedDataset} from '../../data/catalog';
-import {formatNumber, type PolygonLayout} from './b3-common';
 
 /**
  * Shared loading and statistics helpers of the wildfire scenes (`wildfire-shapes`,
@@ -13,7 +14,7 @@ import {formatNumber, type PolygonLayout} from './b3-common';
  */
 
 /** Web Mercator sphere radius in meters. */
-export const MERCATOR_RADIUS = 6378137;
+export const MERCATOR_RADIUS = GPU_WGS84_SEMI_MAJOR_AXIS_METERS;
 /** Acres in one square meter. */
 export const ACRES_PER_SQUARE_METER = 1 / 4046.8564224;
 /** Days between 2020-01-01 and the end of 2023. */
@@ -61,11 +62,7 @@ export type WildfireData = {
 
 /** Longitude and latitude (degrees) to Web Mercator meters. */
 export function toMercator(longitude: number, latitude: number): [number, number] {
-  const clamped = Math.min(Math.max(latitude, -85), 85);
-  return [
-    (MERCATOR_RADIUS * longitude * Math.PI) / 180,
-    MERCATOR_RADIUS * Math.log(Math.tan(Math.PI / 4 + (clamped * Math.PI) / 360))
-  ];
+  return WEB_MERCATOR_PROJECTION.project(longitude, latitude);
 }
 
 /** Web Mercator meters to longitude and latitude (degrees). */

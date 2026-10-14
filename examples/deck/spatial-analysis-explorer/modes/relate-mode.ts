@@ -40,7 +40,7 @@ import type {
   SpatialAnalysisModeDefinition,
   SpatialAnalysisModeInstance
 } from '../spatial-analysis-mode';
-import {LocalMetricProjection, type SpatialAnalysisPolygons} from '../spatial-analysis-data';
+import {type SpatialAnalysisPolygons} from '../spatial-analysis-data';
 import {formatCount, SpatialAnalysisResources} from '../spatial-analysis-resources';
 import {SummaryReader} from './summary-reader';
 import {findContainingFeature} from './raster-join-layers';
@@ -354,6 +354,7 @@ type Build = {
   pairs: {left: number; right: number; matrix: number}[];
 };
 
+/** Tests ZIP spatial predicates in the San Francisco AEQD frame. */
 export const relateMode: SpatialAnalysisModeDefinition = {
   id: 'relate',
   title: 'Relate',
@@ -368,7 +369,7 @@ export const relateMode: SpatialAnalysisModeDefinition = {
     context.signal.throwIfAborted();
     const {device} = context;
     const resources = new SpatialAnalysisResources(device, 'relate');
-    const projection = new LocalMetricProjection(zips.origin);
+    const projection = zips.frame;
     const zipCount = zips.featureOffsets.length - 1;
     const outlineSegmentCount = zips.outlineSegments.length / 4;
 
@@ -505,6 +506,7 @@ export const relateMode: SpatialAnalysisModeDefinition = {
         prepared
       };
       const innerJoin = new GPUSpatialPredicateJoin({
+        spatialContext: zips.frame.spatialContext,
         ...common,
         id: 'relate-inner',
         output: {
@@ -529,6 +531,7 @@ export const relateMode: SpatialAnalysisModeDefinition = {
       });
       graph.add(innerJoin);
       const antiJoin = new GPUSpatialPredicateJoin({
+        spatialContext: zips.frame.spatialContext,
         ...common,
         // 'fast' exists only for the four legacy predicates.
         ...(['intersects', 'contains', 'within', 'dwithin'].includes(predicate) ? {engine} : {}),
@@ -547,6 +550,7 @@ export const relateMode: SpatialAnalysisModeDefinition = {
       graph.add(antiJoin);
       graph.add(
         new GPUSpatialJoinCandidates({
+          spatialContext: zips.frame.spatialContext,
           id: 'relate-candidates',
           left,
           right,

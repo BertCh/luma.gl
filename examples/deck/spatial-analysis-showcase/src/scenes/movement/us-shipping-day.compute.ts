@@ -206,7 +206,7 @@ type EventSnapshot = {
  * One US day of AIS. Three independent graphs read the same track buffers: the playhead and
  * time-window graphs animate the fleet, a zone-event graph counts gate crossings and a
  * line-density graph paints the day as km of track per km2. Analysis runs in azimuthal-equidistant
- * meters, the playhead in Web Mercator meters (so headings stay true on the map), and everything
+ * meters, the playhead in longitude/latitude with great-circle bearings and speeds, and everything
  * is drawn from longitude and latitude.
  */
 export async function createUsShippingDay(
@@ -223,7 +223,6 @@ export async function createUsShippingDay(
   ctx.setStatus('Uploading tracks');
   // ---- Static inputs ----------------------------------------------------------------------------
   const positionsBuffer = resources.createBuffer('positions', tracks.positions);
-  const mercatorBuffer = resources.createBuffer('mercator', tracks.mercator);
   const lngLatBuffer = resources.createBuffer('lng-lat', tracks.lngLat);
   const timestampsBuffer = resources.createBuffer('timestamps', tracks.timestamps);
   const offsetsBuffer = resources.createBuffer('track-offsets', tracks.offsets);
@@ -241,10 +240,8 @@ export async function createUsShippingDay(
     new Uint32Array(segmentCount).fill(1)
   );
 
-  // ---- Playhead graph (Web Mercator meters, then longitude and latitude for drawing) ------------
-  const currentPositions = resources.createBuffer('current-positions', trackCount * 8);
+  // ---- Playhead graph (great-circle longitude/latitude, with ground speed and bearing) ------------
   const headings = resources.createBuffer('headings', trackCount * 4);
-  const rawSpeeds = resources.createBuffer('raw-speeds', trackCount * 4);
   const status = resources.createBuffer('status', trackCount * 4);
   const activeIds = resources.createBuffer('active-ids', trackCount * 4);
   const activeCount = resources.createBuffer('active-count', 4);
@@ -266,25 +263,30 @@ export async function createUsShippingDay(
   const playheadGraph = new GPUCommandGraph<void>(device, {id: 'us-playhead'});
   const currentPositionsView = importGraphBuffer(
     playheadGraph,
-    'current-positions',
-    currentPositions,
+    'marker-lng-lat',
+    markerLngLat,
     'float32x2',
     trackCount
   );
   const rawSpeedsView = importGraphBuffer(
     playheadGraph,
-    'raw-speeds',
-    rawSpeeds,
+    'marker-speeds',
+    markerSpeeds,
     'float32',
     trackCount
   );
   playheadGraph.add(
     new GPUTrajectoryPlayhead({
+      spatialContext: {
+        coordinateSpace: 'longitude-latitude',
+        metric: 'great-circle',
+        units: 'meters'
+      },
       id: 'playhead',
       positions: importGraphBuffer(
         playheadGraph,
-        'mercator',
-        mercatorBuffer,
+        'lng-lat',
+        lngLatBuffer,
         'float32x2',
         vertexCount
       ),
@@ -328,50 +330,6 @@ export async function createUsShippingDay(
       }
     })
   );
-  // Mercator meters (relative to the projection origin) to longitude and latitude, and the
-  // Mercator speed to a true ground speed (Mercator stretches distances by 1 / cos(latitude)).
-  addKernelPass(playheadGraph, {
-    id: 'marker-lng-lat',
-    invocationCount: trackCount,
-    declarations: `const MERCATOR_ORIGIN: vec2<f32> = vec2<f32>(${tracks.mercatorOrigin[0].toFixed(3)}, ${tracks.mercatorOrigin[1].toFixed(3)});
-const MERCATOR_RADIUS: f32 = 6378137.0;
-const RADIANS_TO_DEGREES: f32 = 57.29577951308232;`,
-    bindings: [
-      {name: 'mercator', view: currentPositionsView, type: 'f32', access: 'read'},
-      {name: 'rawSpeeds', view: rawSpeedsView, type: 'f32', access: 'read'},
-      {
-        name: 'lngLat',
-        view: importGraphBuffer(
-          playheadGraph,
-          'marker-lng-lat',
-          markerLngLat,
-          'float32x2',
-          trackCount
-        ),
-        type: 'f32',
-        access: 'read_write'
-      },
-      {
-        name: 'trueSpeeds',
-        view: importGraphBuffer(
-          playheadGraph,
-          'marker-speeds',
-          markerSpeeds,
-          'float32',
-          trackCount
-        ),
-        type: 'f32',
-        access: 'read_write'
-      }
-    ],
-    body: `let mx = mercator[mercatorOffset + index * 2u] + MERCATOR_ORIGIN.x;
-  let my = mercator[mercatorOffset + index * 2u + 1u] + MERCATOR_ORIGIN.y;
-  let longitude = mx / MERCATOR_RADIUS * RADIANS_TO_DEGREES;
-  let latitudeRadians = 2.0 * atan(exp(my / MERCATOR_RADIUS)) - 1.5707963267948966;
-  lngLat[lngLatOffset + index * 2u] = longitude;
-  lngLat[lngLatOffset + index * 2u + 1u] = latitudeRadians * RADIANS_TO_DEGREES;
-  trueSpeeds[trueSpeedsOffset + index] = rawSpeeds[rawSpeedsOffset + index] * cos(latitudeRadians);`
-  });
   const playheadCompiled = resources.track(await playheadGraph.compileAsync());
 
   // ---- Trail (time window) graph ----------------------------------------------------------------
@@ -529,6 +487,7 @@ const RADIANS_TO_DEGREES: f32 = 57.29577951308232;`,
     );
     graph.add(
       new GPUZoneEvents({
+        spatialContext: tracks.spatialContext,
         id: 'gates',
         candidateCapacity: CANDIDATE_CAPACITY,
         zones: {

@@ -2,14 +2,8 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import {COORDINATE_SYSTEM, type Layer} from '@deck.gl/core';
-import type {Buffer} from '@luma.gl/core';
 import {
-  getGPUTimeWindowFilterParameterValues,
-  GPU_TIME_WINDOW_FILTER_PARAMETER_LENGTH,
-  GPUTimeWindowFilter
-} from '@luma.gl/experimental/gpu-dataframe';
-import {
+  GPU_EARTH_MEAN_RADIUS_METERS,
   createGPUPointDensityGaussianKernel,
   getGPUOutlineGeometryParameterValues,
   getGPUOutlineGeometryVerticesPerInput,
@@ -23,6 +17,13 @@ import {
   GPU_TRAJECTORY_PLAYHEAD_PARAMETER_LENGTH,
   GPU_TRAJECTORY_PLAYHEAD_STATUS
 } from '@luma.gl/experimental/gpu-spatial-analysis';
+import {COORDINATE_SYSTEM, type Layer} from '@deck.gl/core';
+import type {Buffer} from '@luma.gl/core';
+import {
+  getGPUTimeWindowFilterParameterValues,
+  GPU_TIME_WINDOW_FILTER_PARAMETER_LENGTH,
+  GPUTimeWindowFilter
+} from '@luma.gl/experimental/gpu-dataframe';
 import {
   DrawCommandBuffer,
   GPUCommandGraph,
@@ -646,7 +647,7 @@ export async function createStormCellTracks(
     let cosLat = max(cos(radians(lat)), 0.05);
     let east = -sin(heading) * half;
     let north = cos(heading) * half;
-    segment = vec4<f32>(lng - east / (111194.9 * cosLat), lat - north / 111194.9, lng + east / (111194.9 * cosLat), lat + north / 111194.9);
+    segment = vec4<f32>(lng - east / (${((GPU_EARTH_MEAN_RADIUS_METERS * Math.PI) / 180).toFixed(8)} * cosLat), lat - north / ${((GPU_EARTH_MEAN_RADIUS_METERS * Math.PI) / 180).toFixed(8)}, lng + east / (${((GPU_EARTH_MEAN_RADIUS_METERS * Math.PI) / 180).toFixed(8)} * cosLat), lat + north / ${((GPU_EARTH_MEAN_RADIUS_METERS * Math.PI) / 180).toFixed(8)});
   }
   dimensions[dimensionsOffset + index * 4u] = segment.x;
   dimensions[dimensionsOffset + index * 4u + 1u] = segment.y;
@@ -703,8 +704,8 @@ export async function createStormCellTracks(
     let cosLat = max(cos(radians(lat)), 0.05);
     vector = vec4<f32>(
       lng, lat,
-      lng + travel * cos(heading) / (111194.9 * cosLat),
-      lat + travel * sin(heading) / 111194.9
+      lng + travel * cos(heading) / (${((GPU_EARTH_MEAN_RADIUS_METERS * Math.PI) / 180).toFixed(8)} * cosLat),
+      lat + travel * sin(heading) / ${((GPU_EARTH_MEAN_RADIUS_METERS * Math.PI) / 180).toFixed(8)}
     );
   }
   arrows[arrowsOffset + index * 4u] = vector.x;
@@ -983,6 +984,7 @@ export async function createStormCellTracks(
     const graph = new GPUCommandGraph<void>(device, {id: `storm-density-${key}`});
     graph.add(
       new GPUPointDensity({
+        spatialContext: STORM_DENSITY_PROJECTION.spatialContext,
         id: 'flash-density',
         positions: importGraphBuffer(
           graph,

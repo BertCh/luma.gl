@@ -51,7 +51,6 @@ import {
 import {importGraphBuffer} from '../graph-buffers';
 import {
   createSeededRandom,
-  LocalMetricProjection,
   type SpatialAnalysisPolygons,
   type SpatialAnalysisRoadNetwork
 } from '../spatial-analysis-data';
@@ -838,6 +837,7 @@ async function createDensifyView(
   const graph = new GPUCommandGraph<void>(device, {id: 'geometry-densify'});
   graph.add(
     new GPULineSegmentize({
+      spatialContext: roads.frame.spatialContext,
       id: 'densify',
       positions: importGraphBuffer(
         graph,
@@ -978,6 +978,7 @@ async function createSmoothView(
       const graph = new GPUCommandGraph<void>(device, {id: `geometry-smooth-${iterations}`});
       graph.add(
         new GPULineSmooth({
+          spatialContext: trips.frame.spatialContext,
           id: `smooth-${iterations}`,
           positions: importGraphBuffer(
             graph,
@@ -1181,6 +1182,7 @@ async function createChunkView(
   const graph = new GPUCommandGraph<void>(device, {id: `geometry-${mode}`});
   graph.add(
     new GPULineChunk({
+      spatialContext: roads.frame.spatialContext,
       id: mode,
       positions: importGraphBuffer(
         graph,
@@ -1372,6 +1374,7 @@ async function createSnapView(
   const graph = new GPUCommandGraph<void>(device, {id: 'geometry-snap'});
   graph.add(
     new GPULinearReferencing({
+      spatialContext: roads.frame.spatialContext,
       id: 'snap',
       queryPositions: importGraphBuffer(graph, 'points', points, 'float32x2', pointCount),
       positions: importGraphBuffer(
@@ -1605,6 +1608,7 @@ async function createLocateView(
   const graph = new GPUCommandGraph<void>(device, {id: 'geometry-locate'});
   graph.add(
     new GPULineLocate({
+      spatialContext: roads.frame.spatialContext,
       id: 'locate',
       positions: importGraphBuffer(
         graph,
@@ -1811,7 +1815,7 @@ type MeasureSystem = 'planar' | 'spherical' | 'wgs84';
 type MeasureQuantity = 'area' | 'perimeter';
 
 const MEASURE_SYSTEMS: readonly {id: MeasureSystem; label: string}[] = [
-  {id: 'planar', label: 'Planar (local meters)'},
+  {id: 'planar', label: 'Planar (AEQD meters about San Francisco)'},
   {id: 'spherical', label: 'Spherical (haversine, Chamberlain-Duquette)'},
   {id: 'wgs84', label: 'WGS84 (Vincenty, authalic area)'}
 ];
@@ -1824,7 +1828,7 @@ async function createMeasuresView(
   const zones: SpatialAnalysisPolygons = await context.data.getSanFranciscoZipCodes();
   context.signal.throwIfAborted();
   const {device} = context;
-  const projection = new LocalMetricProjection(zones.origin);
+  const projection = zones.frame;
   const featureCount = zones.featureIds.length;
   const vertexCount = zones.polygonPositions.length / 2;
   const edgeCount = zones.outlineSegments.length / 4;
@@ -1908,16 +1912,13 @@ async function createMeasuresView(
     const planar = entry.id === 'planar';
     graph.add(
       new GPUGeometryMeasures({
-        spatialContext: {
-          coordinateSpace: entry.id === 'planar' ? 'planar' : 'longitude-latitude',
-          metric:
-            entry.id === 'planar'
-              ? 'native'
-              : entry.id === 'spherical'
-                ? 'great-circle'
-                : 'ellipsoidal',
-          units: entry.id === 'planar' ? 'native' : 'meters'
-        },
+        spatialContext: planar
+          ? zones.frame.spatialContext
+          : {
+              coordinateSpace: 'longitude-latitude',
+              metric: entry.id === 'spherical' ? 'great-circle' : 'ellipsoidal',
+              units: 'meters'
+            },
         ellipsoidalEdgeModel: entry.id === 'wgs84' ? 'coordinate-linear' : undefined,
         id: `measures-${entry.id}`,
         positions: importGraphBuffer(

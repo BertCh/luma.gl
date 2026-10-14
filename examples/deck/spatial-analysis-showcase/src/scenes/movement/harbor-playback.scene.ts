@@ -503,9 +503,10 @@ import {
 } from '@luma.gl/experimental/gpu-spatial-analysis';
 import {GPUTimeWindowFilter, getGPUTimeWindowFilterParameterValues} from '@luma.gl/experimental/gpu-dataframe';
 
-// positions: float32x2 planar meters, timestamps: float32 seconds, trackOffsets: uint32 (tracks + 1)
+// positions: float32x2 AEQD frame meters, timestamps: float32 seconds, trackOffsets: uint32 (tracks + 1)
 const playGraph = new GPUCommandGraph(device, {id: 'playback'});
 playGraph.add(new GPUTrajectoryPlayhead({
+  spatialContext: vessels.spatialContext,
   positions, timestamps, trackOffsets,
   parameters: playheadParameters.importToGraph(playGraph),
   output: {
@@ -533,7 +534,7 @@ trailGraph.add(new GPUTimeWindowFilter({
   state.showStops
     ? `
 const stopGraph = new GPUCommandGraph(device, {id: 'stops'});
-stopGraph.add(new GPUTrajectoryMetrics({spatialContext: {coordinateSpace: 'planar', metric: 'native', units: 'native'},
+stopGraph.add(new GPUTrajectoryMetrics({spatialContext: vessels.spatialContext,
   positions, timestamps, trackOffsets,
   parameters: stopParameters.importToGraph(stopGraph),
   output: {
@@ -548,6 +549,7 @@ stopGraph.add(new GPUTrajectoryMetrics({spatialContext: {coordinateSpace: 'plana
     ? `
 const routeGraph = new GPUCommandGraph(device, {id: 'routes'});
 routeGraph.add(new GPUTrajectoryResample({
+  spatialContext: vessels.spatialContext,
   positions, timestamps, trackOffsets,
   sampleCount: ${state.routeSamples}, spacing: '${state.routeSpacing}',   // compile-time
   output: {samples}                         // tracks x ${state.routeSamples} float32x2 rows
@@ -578,6 +580,7 @@ play.encode(commandEncoder, {parameters: undefined});
 
 // the arrows read the GPU's own outputs
 new VesselMarkerLayer({
+  analysisFrame: vessels.analysisFrame,
   ids: activeIds, positions: currentPositions, headings, speeds, drawCommands: markerDraw,
   colorMode: '${state.markerColor === 'speed' ? 'speedClasses' : 'category'}',${
     state.markerColor === 'speed'

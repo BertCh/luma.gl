@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {GPU_WGS84_SEMI_MAJOR_AXIS_METERS} from '@luma.gl/experimental/gpu-spatial-analysis';
 import type {GPURasterMetadata} from '@luma.gl/experimental/gpu-raster';
 import {makeGPURasterMetadata} from '@luma.gl/experimental/gpu-raster';
 import type {LoadedDataset} from '../../data/catalog';
@@ -9,7 +10,7 @@ import {fetchBytes, getDataFileUrl} from '../../data/loaders';
 import {LocalMetricProjection} from '../../engine/projection';
 
 /** Circumference of the Web Mercator world in meters. */
-const WORLD_METERS = 40075016.68557849;
+const WORLD_METERS = 2 * Math.PI * GPU_WGS84_SEMI_MAJOR_AXIS_METERS;
 
 /** A named observer of the alps-dem manifest. */
 export type AlpsObserver = {

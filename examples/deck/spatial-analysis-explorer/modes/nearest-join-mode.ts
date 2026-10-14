@@ -47,7 +47,7 @@ import type {
   SpatialAnalysisModeDefinition,
   SpatialAnalysisModeInstance
 } from '../spatial-analysis-mode';
-import {createSeededRandom, LocalMetricProjection} from '../spatial-analysis-data';
+import {createSeededRandom} from '../spatial-analysis-data';
 import {formatCount, SpatialAnalysisResources} from '../spatial-analysis-resources';
 import {formatCompiledGraphTiming, formatSpeedup, measureCompiledGraph} from './vector-timing';
 import {NearestSnapLayer, NeighborLinkLayer, WeightedLinkLayer} from './nearest-join-layers';
@@ -142,6 +142,7 @@ function createPolygonFeatures(pointPositions: Float32Array) {
   };
 }
 
+/** Joins points to nearby roads in the New York AEQD frame. */
 export const nearestJoinMode: SpatialAnalysisModeDefinition = {
   id: 'nearest-join',
   title: 'Nearest road',
@@ -195,6 +196,7 @@ export const nearestJoinMode: SpatialAnalysisModeDefinition = {
       });
       graph.add(
         new GPUNearestFeatureJoin({
+          spatialContext: roads.frame.spatialContext,
           id: 'nearest-join',
           queries: {
             kind: 'points',
@@ -299,7 +301,7 @@ export const nearestJoinMode: SpatialAnalysisModeDefinition = {
     const roadLines = chainRoadLines(roads.segments);
     const queryCount = Math.min(NEIGHBOR_QUERY_COUNT, pointCount);
     // The points of interest closest to the first view's center, so the links are dense there.
-    const [centerX, centerY] = new LocalMetricProjection(roads.origin).project(-73.985, 40.755);
+    const [centerX, centerY] = roads.frame.project(-73.985, 40.755);
     const nearOrigin = Array.from({length: pointCount}, (_, row) => row)
       .sort(
         (a, b) =>
@@ -467,6 +469,7 @@ export const nearestJoinMode: SpatialAnalysisModeDefinition = {
       );
       graph.add(
         new GPUNearestFeatureJoin({
+          spatialContext: roads.frame.spatialContext,
           id: 'neighbors',
           queries: {
             kind: 'points',
@@ -504,6 +507,7 @@ export const nearestJoinMode: SpatialAnalysisModeDefinition = {
       // compile-time; the rows are the same drifting queries, so the CSR follows them each frame.
       graph.add(
         new GPUNearestFeatureWeights({
+          spatialContext: roads.frame.spatialContext,
           id: 'neighbor-weights',
           neighborIds: joinNeighborIds,
           neighborCounts: joinNeighborCounts,

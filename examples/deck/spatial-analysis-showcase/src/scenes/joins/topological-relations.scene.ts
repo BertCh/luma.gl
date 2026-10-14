@@ -342,7 +342,7 @@ export default defineScene<TopologicalOptions>({
 const prepared = new GPUSpatialJoinPrepared({geometry: ${right}});
 graph.add(prepared);                         // the right-hand BVH, built once
 graph.add(
-  new GPUSpatialPredicateJoin({
+  new GPUSpatialPredicateJoin({spatialContext: projection.spatialContext,
     left: ${left},
     right: ${right},
     predicate: '${state.predicate}',${
@@ -360,7 +360,7 @@ graph.add(
     }
   })
 );
-graph.add(new GPUSpatialPredicateJoin({... how: 'anti', output: {unmatched: {ids, status: {count, overflow}}}}));
+graph.add(new GPUSpatialPredicateJoin({spatialContext: projection.spatialContext, ... how: 'anti', output: {unmatched: {ids, status: {count, overflow}}}}));
 const compiled = await graph.compileAsync();  // once
 compiled.encode(commandEncoder, {parameters: undefined});`;
   },

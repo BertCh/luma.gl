@@ -209,6 +209,7 @@ export async function createSpaceTimeClusters(
   const rats = ctx.datasets.get('chicago-311-rats');
   const tractsDataset = ctx.datasets.get('chicago-tracts');
   const origin = nature.defaultOrigin;
+  const projection = nature.getProjection(origin);
   const tracts: B13Tracts = readTracts(tractsDataset, origin);
   const raster: B13PolygonRaster = rasterizePolygons(
     tracts.source,
@@ -344,6 +345,7 @@ export async function createSpaceTimeClusters(
     const positionsView = v('positions', positionsBuffer, 'float32x2', eventCount);
     const timesView = v('times', timesBuffer, 'float32', eventCount);
     const pairs = {
+      spatialContext: projection.spatialContext,
       offsets: v('offsets', offsets, 'uint32', eventCount + 1),
       neighbors: v('neighbors', neighbors, 'uint32', slotCapacity),
       weights: v('weights', weights, 'float32', slotCapacity),
@@ -353,6 +355,7 @@ export async function createSpaceTimeClusters(
     const testParametersView = testParameters.importToGraph(graph);
     graph.add(
       new GPUNeighborSearch({
+        spatialContext: projection.spatialContext,
         id: `${key}-search`,
         mode: 'radius',
         positions: positionsView,
@@ -603,6 +606,7 @@ export async function createSpaceTimeClusters(
     );
     graph.add(
       new GPUSpatialScanStatistic({
+        spatialContext: projection.spatialContext,
         id: `${key}-scan`,
         positions: zonePositions,
         cases: v('cases', casesBuffer, 'uint32', cellCountBins),

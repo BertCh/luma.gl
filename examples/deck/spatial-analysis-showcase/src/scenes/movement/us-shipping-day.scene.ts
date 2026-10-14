@@ -619,10 +619,10 @@ import {
 } from '@luma.gl/experimental/gpu-spatial-analysis';
 import {GPUTimeWindowFilter, getGPUTimeWindowFilterParameterValues} from '@luma.gl/experimental/gpu-dataframe';
 
-// One set of tracks, three coordinate spaces: Web Mercator meters for the playhead (true headings
-// on the map), azimuthal-equidistant meters for the gates (true distances), degrees for the grid.
+// Playhead: longitude/latitude with great-circle bearings and ground speeds.
+// Gates: AEQD meters; density: longitude/latitude with great-circle lengths.
 const play = new GPUCommandGraph(device, {id: 'playhead'});
-play.add(new GPUTrajectoryPlayhead({positions: mercator, timestamps, trackOffsets, parameters: playheadParameters.importToGraph(play),
+play.add(new GPUTrajectoryPlayhead({spatialContext: {coordinateSpace: 'longitude-latitude', metric: 'great-circle', units: 'meters'}, positions: lngLat, timestamps, trackOffsets, parameters: playheadParameters.importToGraph(play),
   output: {currentPositions, headings, speeds, trackStatus: status, activeTracks: {ids, status: {count, overflow}}, drawInstanceCount}}));
 
 ${
@@ -648,6 +648,7 @@ new SpatialAnalysisRasterLayer({values: ${state.densityValue === 'density' ? 'de
   state.showGates
     ? `const gates = new GPUCommandGraph(device, {id: 'gates'});
 gates.add(new GPUZoneEvents({
+  spatialContext: tracks.spatialContext,
   tracks: {kind: 'trajectories', positions, timestamps, trackOffsets},   // analysis meters, seconds
   // ${SHIPPING_GATES.length} gates, one rectangle each: gate g is feature g, its four corners are one ring
   zones: {kind: 'polygons', positions: gateCorners, featureOffsets, polygonOffsets, ringOffsets},

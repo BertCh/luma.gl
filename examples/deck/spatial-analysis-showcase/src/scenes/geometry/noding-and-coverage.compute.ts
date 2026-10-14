@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {type LocalMetricProjection} from '../../engine/projection';
 import {COORDINATE_SYSTEM, type Layer} from '@deck.gl/core';
 import type {Buffer} from '@luma.gl/core';
 import {
@@ -20,7 +21,7 @@ import {
   type CompiledGPUCommandGraph
 } from '@luma.gl/gpgpu/gpu-core';
 import {GPUNetworkNoding} from '@luma.gl/experimental/gpu-network';
-import {ALBERS_CONUS_FRAME} from '../../engine/analysis-frame';
+import {ALBERS_CONUS_FRAME, getAnalysisFrameSpatialContext} from '../../engine/analysis-frame';
 import {GraphSwap} from '../../engine/graph-swap';
 import {SpatialAnalysisPointLayer} from '../../engine/layers';
 import {addKernelPass} from '../../engine/mode-kernels';
@@ -84,6 +85,7 @@ const DEGREE_COLORS: readonly (readonly [number, number, number, number])[] = [
 ];
 
 type Environment = {
+  projection: LocalMetricProjection;
   ctx: SceneContext<Options>;
   origin: readonly [number, number];
   coordinateOrigin: [number, number, number];
@@ -109,6 +111,7 @@ export async function createNodingAndCoverage(
   let streets: PathSet | null = null;
   let countyData: ReturnType<Environment['getCounties']> | null = null;
   const env: Environment = {
+    projection,
     ctx,
     origin,
     coordinateOrigin: [origin[0], origin[1], 0],
@@ -265,6 +268,7 @@ async function createCrossingsView(env: Environment): Promise<View> {
     const kindsView = imp('kinds', kinds, 'uint32', PAIR_CAPACITY);
     graph.add(
       new GPUSegmentIntersection({
+        spatialContext: env.projection.spatialContext,
         id: 'crossings',
         left: {
           kind: 'lines',
@@ -570,6 +574,7 @@ async function createNodingView(env: Environment): Promise<View> {
       const positionsView = imp('split-positions', splitPositions, 'float32x2', vertexCapacity);
       graphA.add(
         new GPULineSplit({
+          spatialContext: env.projection.spatialContext,
           id: 'split',
           lines: {
             kind: 'lines',
@@ -597,6 +602,7 @@ async function createNodingView(env: Environment): Promise<View> {
       const chainCountView = imp('chain-count', chainCount, 'uint32', 1);
       graphA.add(
         new GPULineMerge({
+          spatialContext: env.projection.spatialContext,
           id: 'merge',
           positions: positionsView,
           lineOffsets: offsetsView,
@@ -668,6 +674,7 @@ async function createNodingView(env: Environment): Promise<View> {
       const csrOffsetsView = imp('csr-offsets', csrOffsets, 'uint32', nodeCapacity + 1);
       graphB.add(
         new GPUNetworkNoding({
+          spatialContext: env.projection.spatialContext,
           id: 'network',
           lines: {
             kind: 'lines',
@@ -1370,6 +1377,7 @@ async function createGeneraliseView(env: Environment): Promise<View> {
       const {imp, base} = views(importanceGraph);
       importanceGraph.add(
         new GPULineSimplification({
+          spatialContext: getAnalysisFrameSpatialContext(ALBERS_CONUS_FRAME),
           id: 'independent-importance',
           ...base,
           maximumIterations: maximumRounds,
@@ -1387,6 +1395,7 @@ async function createGeneraliseView(env: Environment): Promise<View> {
       const {imp, base} = views(selectionGraph);
       selectionGraph.add(
         new GPULineSimplification({
+          spatialContext: getAnalysisFrameSpatialContext(ALBERS_CONUS_FRAME),
           id: 'independent-selection',
           ...base,
           computeImportance: false,
@@ -1440,6 +1449,7 @@ async function createGeneraliseView(env: Environment): Promise<View> {
     const outPositionsView = imp('out-positions', outPositions, 'float32x2', vertexCount);
     graph.add(
       new GPUCoverageSimplification({
+        spatialContext: getAnalysisFrameSpatialContext(ALBERS_CONUS_FRAME),
         id: 'coverage',
         positions: imp('positions', positions, 'float32x2', vertexCount),
         featureOffsets: imp('feature-offsets', featureOffsets, 'uint32', layout.featureCount + 1),

@@ -352,7 +352,9 @@ export default defineScene<SpaceTimeClustersOptions>({
 import {GPUTemporalReduction} from '@luma.gl/experimental/gpu-dataframe';
 
 // Pairs: events within ${state.spatialRadius} m are the spatial pairs of both tests
-graph.add(new GPUNeighborSearch({mode: 'radius', positions, parameters: searchParameters,
+pairs.spatialContext = projection.spatialContext;
+graph.add(new GPUNeighborSearch({
+  spatialContext: projection.spatialContext, mode: 'radius', positions, parameters: searchParameters,
   gridSize: [64, 64], output: pairs}));   // pairs: CSR + status.overflow
 graph.add(new GPUKnoxTest({pairs, times: days, parameters: testParameters,
   maximumPermutations: 999, output: {statistics: knoxStatistics, summary: knoxSummary}}));
@@ -366,6 +368,7 @@ testParameters.write(getGPUSpaceTimeParameterValues({
 graph.add(new GPUTemporalReduction({cellIds: tractIds, timestamps: seconds, values: ones,
   parameters: bucketParameters, cellCount: 791, bucketCount: 26, output: reduction}));
 graph.add(new GPUSpatialScanStatistic({
+  spatialContext: projection.spatialContext,
   positions: tractCentroids, cases: reduction.counts, baseline,
   timeBuckets: 26, maximumPermutations: 999, maximumClusters: 7,   // every tract may join a window
   parameters: scanParameters,

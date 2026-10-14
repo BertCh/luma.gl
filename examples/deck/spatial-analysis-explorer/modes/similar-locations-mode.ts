@@ -27,7 +27,6 @@ import {
 } from '@luma.gl/experimental/gpu-spatial-analysis';
 import {importGraphBuffer} from '../graph-buffers';
 import {GraphSwap} from '../graph-swap';
-import {LocalMetricProjection} from '../spatial-analysis-data';
 import {SpatialAnalysisPointLayer, SpatialAnalysisRasterLayer} from '../spatial-analysis-layers';
 import type {
   SpatialAnalysisModeDefinition,
@@ -55,6 +54,7 @@ const ATTRIBUTES = [
 const ATTRIBUTE_COUNT = ATTRIBUTES.length;
 const OFFSCREEN = 1e9;
 
+/** Compares terrain locations using the San Francisco dataset frame for picking. */
 export const similarLocationsMode: SpatialAnalysisModeDefinition = {
   id: 'similar-locations',
   title: 'Similar locations',
@@ -73,7 +73,7 @@ export const similarLocationsMode: SpatialAnalysisModeDefinition = {
     ]);
     context.signal.throwIfAborted();
     const {device} = context;
-    const projection = new LocalMetricProjection(terrain.origin);
+    const projection = terrain.frame;
     const origin: [number, number, number] = [terrain.origin[0], terrain.origin[1], 0];
     const resources = new SpatialAnalysisResources(device, 'similar-locations');
     const [minX, minY, maxX, maxY] = terrain.bounds;
@@ -101,7 +101,7 @@ export const similarLocationsMode: SpatialAnalysisModeDefinition = {
     const isWater = (cell: number) => elevation[cell] <= WATER_ELEVATION;
     const distanceToWater = getDistanceToWater(isWater, cellWidth);
     const bikeCounts = new Float32Array(CELL_COUNT);
-    const bikeProjection = new LocalMetricProjection(bikeParking.origin);
+    const bikeProjection = bikeParking.frame;
     for (let point = 0; point < bikeParking.spaces.length; point++) {
       const [lng, lat] = bikeProjection.unproject(
         bikeParking.positions[2 * point],

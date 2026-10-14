@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {LocalMetricProjection} from '../../engine/projection';
 import type {Layer} from '@deck.gl/core';
 import {COORDINATE_SYSTEM} from '@deck.gl/core';
 import type {Buffer} from '@luma.gl/core';
@@ -64,7 +65,6 @@ import {
   computeCentroids,
   computeQueenAdjacency,
   createFeatureLocator,
-  createLocalProjector,
   formatInteger,
   formatNumber,
   formatP,
@@ -225,7 +225,10 @@ export async function createHealthRegression(
   const geometry = subsetPolygonGeometry(fullGeometry, features);
   const lngLat = computeCentroids(geometry);
   const origin = tracts.defaultOrigin;
-  const meters = projectRows(lngLat, createLocalProjector(origin));
+  const projection = new LocalMetricProjection(origin);
+  const meters = projectRows(lngLat, (longitude, latitude) =>
+    projection.project(longitude, latitude)
+  );
   const geoids = (tracts.manifest as unknown as {geoid: string[]}).geoid;
 
   // Standardized predictors (z-scores over the study tracts), one array per predictor.
@@ -308,6 +311,7 @@ export async function createHealthRegression(
 
   // ---- Weights graphs (compiled when first chosen). ----
   const importWeights = (graph: GPUCommandGraph<void>) => ({
+    spatialContext: projection.spatialContext,
     offsets: importGraphBuffer(graph, 'offsets', offsetsBuffer, 'uint32', rowCount + 1),
     neighbors: importGraphBuffer(graph, 'neighbors', neighborsBuffer, 'uint32', capacity),
     weights: importGraphBuffer(graph, 'weight-values', weightValuesBuffer, 'float32', capacity)
@@ -373,10 +377,18 @@ export async function createHealthRegression(
           }
         })
       );
-      graph.add(new GPUSpatialWeightsTransform({id: 'row-standardize', operation: 'row', weights}));
+      graph.add(
+        new GPUSpatialWeightsTransform({
+          spatialContext: projection.spatialContext,
+          id: 'row-standardize',
+          operation: 'row',
+          weights
+        })
+      );
     } else {
       graph.add(
         new GPUNeighborSearch({
+          spatialContext: projection.spatialContext,
           id: 'knn',
           mode: 'knn',
           k: NEIGHBOR_COUNTS[kind],

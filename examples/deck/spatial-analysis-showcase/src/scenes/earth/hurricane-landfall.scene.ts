@@ -26,7 +26,7 @@ export default defineScene<HurricaneLandfallOptions>({
   chapter: 'earth',
   order: 4,
   summary:
-    'Line density of 46 seasons of Atlantic storm tracks by intensity, the distance of every cell to the nearest coast from a GPU distance field, and landfalls per US state found as zone entries with interpolated crossing wind.',
+    'Line density of 46 seasons of Atlantic storm tracks by intensity, great-circle distances from cell centres to coast cells picked by an AEQD GPU distance field, and landfalls per US state found as zone entries with interpolated crossing wind.',
   contributors: ['GPULineDensity', 'GPUDistanceField', 'GPUZoneEvents'],
   datasets: [
     {id: 'ibtracs-north-atlantic', role: 'storm tracks (IBTrACS, 1980-2025)'},
@@ -166,7 +166,7 @@ export default defineScene<HurricaneLandfallOptions>({
       step: 100,
       default: 1500,
       unit: 'km',
-      help: 'Cells farther than this from every coast get no distance and are left transparent. It is the maximumDistance setting of the distance field (a parameter write that re-runs the field) and the end of the color ramp. The limit is applied in ground kilometers on each row, because a map meter shrinks with latitude.'
+      help: 'Cells whose great-circle distance to the picked coast cell exceeds this limit are transparent. Parameter writes widen the AEQD candidate search by the maximum grid scale factor, then apply this limit in great-circle kilometers without recompiling. The limit also sets the end of the color ramp.'
     },
     {
       kind: 'select',
@@ -180,7 +180,7 @@ export default defineScene<HurricaneLandfallOptions>({
         {
           value: 'exact',
           label: 'Exact (separable envelopes)',
-          help: 'The exact nearest coast seed of every cell.'
+          help: 'The nearest coast cell in the AEQD grid; the GPU then measures its great-circle distance. Scale variation can make another coast cell closer on the sphere.'
         },
         {
           value: 'jump-flood',
@@ -311,12 +311,12 @@ export default defineScene<HurricaneLandfallOptions>({
       id: 'coastChart',
       label: 'How close do storms get to a coast?',
       kind: 'chart',
-      help: 'Distance to the nearest coast at every fix of the chosen intensity, sampled from the GPU distance field.'
+      help: 'Great-circle distance from each fix’s grid-cell centre to the AEQD-picked coast-cell centre, sampled at fixes of the chosen intensity.'
     },
     {
       id: 'grid',
       label: 'Analysis grid',
-      help: 'Grid shared by the density and distance layers, in deck.gl meters about 28 N, 56 W.'
+      help: 'Density uses WGS84 Lambert equal-area meters. The coast grid uses AEQD meters about 28 N, 56 W to pick coast cells; displayed distances are great-circle kilometers between cell centres on the mean-radius sphere.'
     },
     {
       id: 'density',
@@ -326,7 +326,7 @@ export default defineScene<HurricaneLandfallOptions>({
     {
       id: 'nearCoast',
       label: 'Near the coast',
-      help: 'Share of the fixes of the chosen intensity within 100 km of a coastline (sampled at the center of a 25 km cell).'
+      help: 'Share of fixes whose grid-cell centre lies within 100 great-circle km of the picked coast-cell centre. Cell snapping and AEQD coast-cell selection limit accuracy.'
     },
     {
       id: 'events',
@@ -361,41 +361,81 @@ export default defineScene<HurricaneLandfallOptions>({
       label: 'Line density',
       detail: 'Clip six-hour track segments into the analysis grid'
     },
-    {id: 'distance', label: 'Distance field', detail: 'Find each cell’s nearest coastline seed'},
+    {
+      id: 'distance',
+      label: 'Distance field',
+      detail: 'Pick a coast cell, then measure great-circle distance'
+    },
     {id: 'events', label: 'Zone events', detail: 'Interpolate crossings of a state edge'},
     {id: 'draw', label: 'Draw', detail: 'One measure at a time: length, distance or crossings'}
   ],
 
   snippet: state => `import {GPUCommandGraph} from '@luma.gl/gpgpu/gpu-core';
 import {
-  GPULineDensity, GPUZoneEvents, getGPULineDensityParameterValues, GPU_ZONE_EVENT_TYPE
+  GPULineDensity, GPUZoneEvents, getGPULineDensityParameterValues, GPU_ZONE_EVENT_TYPE,
+  GPU_EARTH_MEAN_RADIUS_METERS
 } from '@luma.gl/experimental/gpu-spatial-analysis';
-import {GPUDistanceField, getGPUDistanceFieldParameterValues, makeGPURasterMetadata} from '@luma.gl/experimental/gpu-raster';
+import {GPUDistanceField, GPU_DISTANCE_FIELD_NONE, getGPUDistanceFieldParameterValues, makeGPURasterMetadata} from '@luma.gl/experimental/gpu-raster';
+import {addKernelPass} from '../../engine/mode-kernels';
 
 // Where tracks pass: one density node per wind threshold (paths split where wind < threshold)
 for (const [index, threshold] of [0, 34, 64, 96].entries()) {
-  densityGraph.add(new GPULineDensity({spatialContext: {coordinateSpace: 'longitude-latitude', metric: 'great-circle', units: 'meters'},
+  densityGraph.add(new GPULineDensity({spatialContext: densityProjection.spatialContext,
     id: 'density-' + index, positions: pathsAbove[index], lineOffsets: offsetsAbove[index],
-    columns: ${360}, rows: ${232}, parameters: gridParameters,   // [west, south, cellWidth, cellHeight] in degrees
-    output: {lengths: lengths[index], densities: densities[index], status: {overflow}}   // densities: length / exact spherical cell area
+    columns: ${360}, rows: ${232}, parameters: gridParameters,   // [minX, minY, cellWidth, cellHeight] in WGS84 Lambert meters
+    output: {lengths: lengths[index], densities: densities[index], status: {overflow}}   // densities: projected length / equal-area cell area
   }));
 }
 
-// Distance to the coast: seeds are coastline vertices (map meters; the search limit is divided by each row's scale)
-const coastGrid = makeGPURasterMetadata({     // storm-frame meters, row 0 = south, rows advance north
+// Distance to the coast: coastline seeds in AEQD meters about 28 N, 56 W
+const coastGrid = makeGPURasterMetadata({     // AEQD frame meters, row 0 = south, rows advance north
   width: ${360}, height: ${232}, cellSize: [cellWidth, cellHeight], origin: [bounds[0], bounds[1]], rowDirection: 'north'
 });
 coastGraph.add(new GPUDistanceField({
   grid: coastGrid, mode: '${state.distanceMode}',   // compile-time
   parameters: coastSettings, seedPositions: coastSeeds, seedCount,
-  output: {distances}
+  output: {distances, nearestCells}   // distances is required; only nearestCells drives the display
 }));
+const maximumScaleFactor = maximumAngularDistance / Math.sin(maximumAngularDistance);
 coastSettings.write(getGPUDistanceFieldParameterValues({
-  maximumDistance: ${state.coastSearchKm * 1000}   // per frame
+  maximumDistance: ${state.coastSearchKm * 1000} * maximumScaleFactor   // per frame, conservative AEQD cutoff
 }, coastGrid));
+coastCutoff.write(Float32Array.of(${state.coastSearchKm}));   // true km, parameter write without recompilation
+
+// cellCenters: static float32x2 lon/lat, storms.unproject(x, y) at every grid-cell centre.
+// Both distance modes feed this pass; bindings below are graph views (float32x2 read as scalar pairs).
+addKernelPass(coastGraph, {
+  id: 'coast-km', invocationCount: ${360 * 232},
+  bindings: [
+    {name: 'nearestCells', view: nearestCells, type: 'u32', access: 'read'},
+    {name: 'cellCenters', view: cellCenters, type: 'f32', access: 'read'},
+    {name: 'cutoff', view: coastCutoff.importToGraph(coastGraph), type: 'f32', access: 'read'},
+    {name: 'kilometers', view: coastKm, type: 'f32', access: 'read_write'}
+  ],
+  declarations: 'const NONE: u32 = ' + GPU_DISTANCE_FIELD_NONE + 'u;\\n' +
+    'const EARTH_RADIUS_METERS: f32 = ' + GPU_EARTH_MEAN_RADIUS_METERS.toFixed(1) + ';',
+  body: \`
+    kilometers[kilometersOffset + index] = bitcast<f32>(0x7f800000u); // +Infinity: transparent / beyond limit
+    let nearestCell = nearestCells[nearestCellsOffset + index];
+    if (nearestCell == NONE) { return; }
+    let centerOffset = cellCentersOffset + index * 2u;
+    let coastOffset = cellCentersOffset + nearestCell * 2u;
+    let latitude = radians(cellCenters[centerOffset + 1u]);
+    let coastLatitude = radians(cellCenters[coastOffset + 1u]);
+    let longitudeDifference = cellCenters[coastOffset] - cellCenters[centerOffset];
+    let wrappedLongitude = longitudeDifference - 360.0 * floor((longitudeDifference + 180.0) / 360.0);
+    let latitudeSine = sin((coastLatitude - latitude) * 0.5);
+    let longitudeSine = sin(radians(wrappedLongitude) * 0.5);
+    let haversine = latitudeSine * latitudeSine + cos(latitude) * cos(coastLatitude) * longitudeSine * longitudeSine;
+    let distanceKm = EARTH_RADIUS_METERS * 0.001 * 2.0 * asin(min(1.0, sqrt(haversine)));
+    if (distanceKm > cutoff[cutoffOffset]) { return; }
+    kilometers[kilometersOffset + index] = distanceKm;
+  \`
+});
 
 // Landfalls: every state boundary edge tagged with its state, one thread per storm
 eventGraph.add(new GPUZoneEvents({
+  spatialContext: storms.spatialContext,
   tracks: {kind: 'trajectories', positions, timestamps, trackOffsets},
   zones: {kind: 'polygons', positions: statePositions, featureOffsets, polygonOffsets, ringOffsets},   // 49 states, one feature each
   candidateCapacity: ${1 << 19}, trackEventCapacity: ${state.eventsPerStorm},
@@ -405,7 +445,7 @@ eventGraph.add(new GPUZoneEvents({
 // then interpolate the wind between the two fixes of eventRows[i] with the crossing time.`,
 
   about: {
-    what: '`GPULineDensity` clips every track segment to a grid and sums the track length per cell, so the map shows where storms spend their path rather than where they began. `GPUDistanceField` computes, for every cell, the distance to the nearest of tens of thousands of coastline seed points. `GPUZoneEvents` finds every moment a storm track crosses a state boundary, with the interpolated time and position of the crossing.',
+    what: '`GPULineDensity` clips every track segment to a grid and sums the track length per cell, so the map shows where storms spend their path rather than where they began. `GPUDistanceField` picks a coast cell in the AEQD grid; a GPU haversine pass measures the great-circle distance between cell centres on the mean-radius sphere. `GPUZoneEvents` finds every moment a storm track crosses a state boundary, with the interpolated time and position of the crossing.',
     why: 'Emergency managers, insurers and coastal planners care about exposure, not just frequency: how often a stretch of ocean carries intense storms, how close the strongest ones get to land, and which states take the landfalls. These three measures, each a GPU pass over 46 seasons, answer those three questions.',
     howToRead:
       'Density is in kilometers of track per 10,000 square kilometers in an average season: a bright cell was crossed by many tracks. Distance rings show how far open water is from any coast. State fills count landfalls from open water; dots mark each crossing, colored by the wind there. These are best-track positions every six hours joined by straight lines, so landfall points are good to about a cell, not a street.'
@@ -421,7 +461,7 @@ eventGraph.add(new GPUZoneEvents({
     northArrow: 'always',
     credit: joinCredits(CREDITS.noaaNhc, 'NOAA IBTrACS', CREDITS.usCensus, CREDITS.naturalEarth),
     caveat:
-      'Six-hour best-track chords and generalised coastlines locate crossings approximately. Track density is measured on the sphere; distance to coast is measured in the map frame with a per-row scale, so it can be off by a few percent across 500 km north-south.'
+      'Six-hour best-track chords and generalised coastlines locate crossings approximately. Track density uses projected lengths and exact WGS84 Lambert cell areas. Coast distances are great-circle distances on the mean-radius sphere from each cell centre to the centre of the coast cell picked by the AEQD field. Beyond cell discretization and floating-point rounding, residual error comes from picking a different cell than the true nearest coast cell where frame scale varies across candidates: it is zero for most cells, under 1.6% for 99% of them, and up to about 14% in a few cells far from the frame centre (European side of the basin). Jump flooding adds approximate selection error.'
   },
   annotations: [...LANDFALL_LABELS, ...COAST_LABELS],
 
@@ -464,7 +504,7 @@ eventGraph.add(new GPUZoneEvents({
       headline: 'Distance turns coastline into a field',
       textAlternative: 'Blue coast-distance bands surround Florida and the Gulf coast.',
       optionsMode: 'fresh',
-      body: 'Wind is not the only exposure: a storm over open ocean and one near land have different consequences. **`GPUDistanceField`** computes each cell’s distance to the nearest coastline seed; the coast is therefore the darkest band.\n\nThe histogram samples that field at fixes for the chosen **Intensity**. Use **Search limit** to hide distant cells, then compare the exact method with *Jump flooding*, which is cheaper but can choose a nearby rather than nearest seed.',
+      body: 'Wind is not the only exposure: a storm over open ocean and one near land have different consequences. **`GPUDistanceField`** picks the nearest coast cell in AEQD grid meters, then a GPU haversine pass measures the great-circle distance between cell centres; the coast is therefore the darkest band. Scale variation can make a different coast cell closer on the sphere.\n\nThe histogram samples that field at fixes for the chosen **Intensity**. Use **Search limit** to hide distant cells, then compare the exact method with *Jump flooding*, which is cheaper but can choose a nearby rather than nearest seed.',
       camera: {...BASIN_VIEW, transitionMs: 1200},
       options: {view: 'coast', intensity: 'hurricane', showCoastline: true, showTracks: false},
       controls: ['coastSearchKm', 'distanceMode', 'intensity'],

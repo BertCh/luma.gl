@@ -336,6 +336,7 @@ const graph = new GPUCommandGraph(device, {id: 'verify'});
 const prepared = new GPUSpatialJoinPrepared({geometry: warningPolygons});
 graph.add(prepared);
 graph.add(new GPUSpatialPredicateJoin({
+  spatialContext: STORM_FRAME.spatialContext,
   left: {kind: 'points', positions: reportMeters},
   right: warningPolygons,
   predicate: '${state.spatialTest}',${state.spatialTest === 'dwithin' ? `\n  distance: tolerance.importToGraph(graph),     // ${state.toleranceKm} km, a parameter buffer` : ''}

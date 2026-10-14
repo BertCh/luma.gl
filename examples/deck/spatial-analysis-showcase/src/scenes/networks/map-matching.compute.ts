@@ -460,6 +460,7 @@ export async function createMapMatching(
     });
     graph.add(
       new GPUMapMatching({
+        spatialContext: projection.spatialContext,
         id: 'matching',
         positions: noisyView,
         trackOffsets: view('track-offsets', trackOffsetsBuffer, 'uint32', trackCount + 1),

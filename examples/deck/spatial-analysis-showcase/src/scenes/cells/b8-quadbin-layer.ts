@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {GPU_WGS84_SEMI_MAJOR_AXIS_METERS} from '@luma.gl/experimental/gpu-spatial-analysis';
 import {
   COORDINATE_SYSTEM,
   Layer,
@@ -125,7 +126,7 @@ fn isFiniteValue(value: f32) -> bool {
   if (mode == 0u) {
     // Observations per square kilometer: a Web Mercator tile is stretched by 1 / cos(latitude).
     let centerLatitude = getMercatorLatitude(f32(tile.y) + 0.5, tileCount);
-    let edgeKilometers = 40075.016686 / tileCount * cos(radians(centerLatitude));
+    let edgeKilometers = ${((2 * Math.PI * GPU_WGS84_SEMI_MAJOR_AXIS_METERS) / 1000).toFixed(6)} / tileCount * cos(radians(centerLatitude));
     let density = f32(count) / (edgeKilometers * edgeKilometers);
     let t = (log2(max(density, 1.0e-3)) * 0.30103 - quadbinStyle.range.x) /
       max(quadbinStyle.range.y - quadbinStyle.range.x, 1.0e-3);

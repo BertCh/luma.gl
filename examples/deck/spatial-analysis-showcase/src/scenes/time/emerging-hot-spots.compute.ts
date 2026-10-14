@@ -165,6 +165,7 @@ export async function createEmergingHotSpots(
   const {device} = ctx;
   const events: B13NatureEvents = readNatureEvents(ctx.datasets.get('chicago-nature'));
   const origin = events.origin;
+  const projection = ctx.datasets.get('chicago-nature').getProjection(origin);
   const eventCount = events.count;
 
   // The lattice covers the events; cells are CELL_METERS squares anchored at the south-west corner.
@@ -321,6 +322,7 @@ export async function createEmergingHotSpots(
     let weights: GPUSpatialWeightsOutput | undefined;
     if (neighborhood === 'weights') {
       weights = {
+        spatialContext: projection.spatialContext,
         offsets: v('offsets', offsetsBuffer, 'uint32', cellCount + 1),
         neighbors: v('neighbors', neighborsBuffer, 'uint32', slotCapacity),
         weights: v('weights', weightsBuffer, 'float32', slotCapacity),
@@ -329,6 +331,7 @@ export async function createEmergingHotSpots(
       };
       graph.add(
         new GPUNeighborSearch({
+          spatialContext: projection.spatialContext,
           id: `${id}-search`,
           mode: 'radius',
           positions: v('cell-centers', cellCentersBuffer, 'float32x2', cellCount),

@@ -36,7 +36,6 @@ import {
 import {importGraphBuffer} from '../graph-buffers';
 import {GraphSwap} from '../graph-swap';
 import {createSeededRandom} from '../spatial-analysis-data';
-import {LocalMetricProjection} from '../spatial-analysis-data';
 import {SpatialAnalysisRasterLayer, SpatialAnalysisSegmentLayer} from '../spatial-analysis-layers';
 import type {
   SpatialAnalysisModeDefinition,
@@ -92,7 +91,7 @@ export const segregationMode: SpatialAnalysisModeDefinition = {
     context.signal.throwIfAborted();
     const {device} = context;
     const resources = new SpatialAnalysisResources(device, 'segregation');
-    const projection = new LocalMetricProjection(zips.origin);
+    const projection = zips.frame;
     const locate = createZipLocator(zips);
 
     // --- Units: a square grid over the ZIP bounds (CPU setup) ----------------------------------------
@@ -273,6 +272,7 @@ export const segregationMode: SpatialAnalysisModeDefinition = {
         };
         graph.add(
           new GPUNeighborSearch({
+            spatialContext: zips.frame.spatialContext,
             id: `search-${scale}`,
             mode: 'radius',
             gridSize: [32, 32],

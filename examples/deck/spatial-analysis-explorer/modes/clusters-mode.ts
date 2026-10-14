@@ -12,6 +12,7 @@ import {
   type CompiledGPUCommandGraph
 } from '@luma.gl/gpgpu/gpu-core';
 import {
+  type GPULocalFrame,
   getGPUGeographicDistributionParameterValues,
   getGPUKMeansParameterValues,
   getGPUSpatialClusteringParameterValues,
@@ -123,6 +124,7 @@ const INITIALIZATION_OPTIONS: readonly {value: GPUKMeansInitialization; label: s
 ];
 
 type PointSetData = {
+  frame: GPULocalFrame;
   positions: Float32Array;
   origin: readonly [number, number];
   attribution: string;
@@ -269,6 +271,7 @@ export const clustersMode: SpatialAnalysisModeDefinition = {
         return {
           positions: pois.positions,
           origin: pois.origin,
+          frame: pois.frame,
           attribution: pois.attribution,
           label: 'points of interest'
         };
@@ -278,6 +281,7 @@ export const clustersMode: SpatialAnalysisModeDefinition = {
         return {
           positions: trips.vertexPositions,
           origin: trips.origin,
+          frame: trips.frame,
           attribution: trips.attribution,
           label: 'trip vertices'
         };
@@ -294,6 +298,7 @@ export const clustersMode: SpatialAnalysisModeDefinition = {
       return {
         positions,
         origin: trips.origin,
+        frame: trips.frame,
         attribution: trips.attribution,
         label: 'pickups and drop-offs'
       };
@@ -317,6 +322,7 @@ export const clustersMode: SpatialAnalysisModeDefinition = {
     const compileDbscan = async (
       resources: SpatialAnalysisResources,
       id: string,
+      frame: GPULocalFrame,
       positionsBuffer: Buffer,
       pointCount: number,
       parameters: GPUParameterBuffer<'float32'>,
@@ -328,6 +334,7 @@ export const clustersMode: SpatialAnalysisModeDefinition = {
       const clusterIds = resources.createBuffer('cluster-ids', CLUSTER_CAPACITY * 4);
       graph.add(
         new GPUSpatialClustering({
+          spatialContext: frame.spatialContext,
           id: 'clusters',
           positions: importGraphBuffer(
             graph,
@@ -475,6 +482,7 @@ export const clustersMode: SpatialAnalysisModeDefinition = {
         clusterGraph = await compileDbscan(
           resources,
           `clusters-dbscan-${setSerial}`,
+          data.frame,
           positionsBuffer,
           pointCount,
           parameters,
@@ -498,6 +506,7 @@ export const clustersMode: SpatialAnalysisModeDefinition = {
         const graph = new GPUCommandGraph<void>(device, {id: `clusters-kmeans-${setSerial}`});
         graph.add(
           new GPUKMeans({
+            spatialContext: data.frame.spatialContext,
             id: 'kmeans',
             positions: importGraphBuffer(
               graph,
@@ -554,6 +563,7 @@ export const clustersMode: SpatialAnalysisModeDefinition = {
       const shapeLabels = importGraphBuffer(shapes, 'labels', labels, 'uint32', pointCount);
       shapes.add(
         new GPUGroupGeometry({
+          spatialContext: data.frame.spatialContext,
           id: 'geometry',
           positions: shapePositions,
           labels: shapeLabels,
@@ -606,6 +616,7 @@ export const clustersMode: SpatialAnalysisModeDefinition = {
       );
       shapes.add(
         new GPUGroupConvexHull({
+          spatialContext: data.frame.spatialContext,
           id: 'hulls',
           positions: shapePositions,
           labels: shapeLabels,
@@ -1081,6 +1092,7 @@ export const clustersMode: SpatialAnalysisModeDefinition = {
           const graph = await compileDbscan(
             scratch,
             `clusters-timing-${denseBoxShortcut ? 'dense' : 'plain'}`,
+            set.data.frame,
             set.positionsBuffer,
             set.pointCount,
             set.parameters,

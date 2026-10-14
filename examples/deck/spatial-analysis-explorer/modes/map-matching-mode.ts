@@ -207,6 +207,7 @@ export const mapMatchingMode: SpatialAnalysisModeDefinition = {
     });
     matchingGraph.add(
       new GPUMapMatching({
+        spatialContext: roads.frame.spatialContext,
         id: 'matching',
         positions: noisyView,
         trackOffsets: view('track-offsets', trackOffsets, 'uint32', trackCount + 1),
@@ -317,6 +318,7 @@ const NONE: u32 = 0xffffffffu;`,
     );
     mergeGraph.add(
       new GPULineMerge({
+        spatialContext: roads.frame.spatialContext,
         id: 'chains',
         positions: importGraphBuffer(
           mergeGraph,

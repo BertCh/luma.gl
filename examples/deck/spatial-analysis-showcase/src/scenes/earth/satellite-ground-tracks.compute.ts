@@ -2,15 +2,16 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import {COORDINATE_SYSTEM, type Layer} from '@deck.gl/core';
-import type {Buffer} from '@luma.gl/core';
 import {
+  GPU_EARTH_MEAN_RADIUS_METERS,
   getGPULineDensityParameterValues,
   GPU_LINE_DENSITY_PARAMETER_LENGTH,
   GPU_ZONE_EVENT_TYPE,
   GPULineDensity,
   GPUZoneEvents
 } from '@luma.gl/experimental/gpu-spatial-analysis';
+import {COORDINATE_SYSTEM, type Layer} from '@deck.gl/core';
+import type {Buffer} from '@luma.gl/core';
 import {GPUCommandGraph, type CompiledGPUCommandGraph} from '@luma.gl/gpgpu/gpu-core';
 import {importGraphBuffer} from '../../engine/graph-buffers';
 import {SpatialAnalysisSegmentLayer} from '../../engine/layers';
@@ -90,7 +91,7 @@ export function formatLatitude(latitude: number): string {
 /** Exact spherical area of a longitude/latitude cell at its centre latitude. */
 function cellAreaKm2(cellDegrees: number, latitude: number): number {
   const radians = Math.PI / 180;
-  const radiusKm = 6371.0088;
+  const radiusKm = GPU_EARTH_MEAN_RADIUS_METERS / 1000;
   const south = (latitude - cellDegrees / 2) * radians;
   const north = (latitude + cellDegrees / 2) * radians;
   return radiusKm * radiusKm * cellDegrees * radians * (Math.sin(north) - Math.sin(south));

@@ -503,6 +503,7 @@ export async function createLassoExplorer(
       );
       graph.add(
         new GPURegionMask({
+          spatialContext: projection.spatialContext,
           id: 'lasso-region-mask',
           positions: positionsView,
           region: graphKey.startsWith('mask-polygon') ? polygonShape() : rectangleShape(),
@@ -527,6 +528,7 @@ export async function createLassoExplorer(
       ID_CAPACITIES[options.idCapacity as keyof typeof ID_CAPACITIES] ?? ID_CAPACITIES.medium;
     graph.add(
       new GPURegionStatistics({
+        spatialContext: projection.spatialContext,
         id,
         region: selection,
         ...(selection.kind === 'mask' ? {} : {positions: positionsView}),

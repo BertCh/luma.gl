@@ -45,6 +45,7 @@ import {
   type GraphDataView
 } from '@luma.gl/gpgpu/gpu-core';
 import {
+  type GPULocalFrame,
   GPUCellAggregation,
   GPUCellCompaction,
   GPUCellCover,
@@ -61,7 +62,6 @@ import {
 import {COORDINATE_SYSTEM} from '@deck.gl/core';
 import {importGraphBuffer} from '../graph-buffers';
 import {GraphSwap} from '../graph-swap';
-import {LocalMetricProjection} from '../spatial-analysis-data';
 import {SpatialAnalysisSegmentLayer} from '../spatial-analysis-layers';
 import type {
   SpatialAnalysisModeDefinition,
@@ -232,7 +232,7 @@ type Zones = {
   outlineSegments: Float32Array;
 };
 
-function makeZones(projection: LocalMetricProjection): Zones {
+function makeZones(projection: GPULocalFrame): Zones {
   const positions: number[] = [];
   const outline: number[] = [];
   const ringOffsets = [0];
@@ -371,7 +371,7 @@ export const cellsMode: SpatialAnalysisModeDefinition = {
     const trips = await context.data.getNewYorkTrips();
     context.signal.throwIfAborted();
     const {device} = context;
-    const projection = new LocalMetricProjection(trips.origin);
+    const projection = trips.frame;
     const resources = new SpatialAnalysisResources(device, 'cells');
     const pointCount = trips.vertexTimestamps.length;
     const zones = makeZones(projection);

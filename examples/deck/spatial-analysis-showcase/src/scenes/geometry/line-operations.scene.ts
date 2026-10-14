@@ -11,7 +11,7 @@ import {B3_PALETTE} from './b3-palette';
 /** Snippet lines for the two spatial contexts (omitted means planar). */
 const GREAT_CIRCLE_SNIPPET =
   "spatialContext: {coordinateSpace: 'longitude-latitude', metric: 'great-circle'},";
-const PLANAR_SNIPPET = '// spatialContext omitted: planar, in the units of the positions';
+const PLANAR_SNIPPET = 'spatialContext: projection.spatialContext, // Mercator-local meters';
 
 const formatKilometers = (value: number) => `${(value / 1000).toFixed(0)} km`;
 const logMeters = (value: number) => {
@@ -646,6 +646,7 @@ chunk.write(getGPULineChunkParameterValues(${state.lineTool === 'chunk' ? `{chun
   from '@luma.gl/experimental/gpu-spatial-analysis';
 
 graph.add(new GPULineLocate({
+  spatialContext: projection.spatialContext,
   positions, lineOffsets,
   eventLineIndices, eventMeasures, eventOffsets,
   measureMode: '${state.locateMode}',
@@ -660,6 +661,7 @@ locate.write(getGPULineLocateParameterValues({measureScale: ${state.locateSpacin
       return `import {GPULinearReferencing} from '@luma.gl/experimental/gpu-spatial-analysis';
 
 graph.add(new GPULinearReferencing({
+  spatialContext: projection.spatialContext,
   queryPositions: points, positions, lineOffsets,  // planar metres
   radius: radius.importToGraph(graph), // ${state.snapRadius} m, one float32 row
   candidateCapacity: 1 << 22,
@@ -675,6 +677,7 @@ graph.add(new GPULinearReferencing({
   from '@luma.gl/experimental/gpu-spatial-analysis';
 
 graph.add(new GPULineSmooth({
+  spatialContext: projection.spatialContext,
   positions, lineOffsets,
   iterationCount: ${state.smoothIterations},    // compile-time: output holds n * 2^iterations vertices
   closed: false,
@@ -689,6 +692,7 @@ smooth.write(getGPULineSmoothParameterValues({ratio: ${state.smoothRatio}}));`;
 
 // Graph 1, encoded once: per-vertex importance
 importanceGraph.add(new GPULineSimplification({
+  spatialContext: projection.spatialContext,
   positions, lineOffsets: trackOffsets, importance,
   timestamps,                            // needed for 'time-ratio'
   metric: '${state.simplifyMetric}', maximumIterations: ${state.simplifyRounds},
@@ -697,6 +701,7 @@ importanceGraph.add(new GPULineSimplification({
 
 // Graph 2, every frame the tolerance changes
 selectionGraph.add(new GPULineSimplification({
+  spatialContext: projection.spatialContext,
   positions, lineOffsets: trackOffsets, importance, computeImportance: false,
   parameters: tolerance.importToGraph(selectionGraph),
   output: {ids, status: {count, overflow, requiredCount}}

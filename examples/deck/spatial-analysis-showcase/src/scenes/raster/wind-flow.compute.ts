@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {GPU_EARTH_MEAN_RADIUS_METERS} from '@luma.gl/experimental/gpu-spatial-analysis';
 import type {Layer} from '@deck.gl/core';
 import {
   DrawCommandBuffer,
@@ -71,7 +72,7 @@ export type WindFlowOptions = {
   streamWidth: number;
 };
 
-const EARTH_RADIUS = 6371008.8;
+const EARTH_RADIUS = GPU_EARTH_MEAN_RADIUS_METERS;
 const FIELD_WIDTH = 181;
 const FIELD_HEIGHT = 153;
 const FIELD_CELLS = FIELD_WIDTH * FIELD_HEIGHT;

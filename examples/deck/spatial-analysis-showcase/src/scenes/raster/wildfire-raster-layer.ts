@@ -2,10 +2,11 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {GPU_WGS84_SEMI_MAJOR_AXIS_METERS} from '@luma.gl/experimental/gpu-spatial-analysis';
 import {SpatialAnalysisRasterLayer} from '../../engine/layers';
 
 /** Web Mercator sphere radius in meters, as used by `wildfire-data.ts`. */
-const MERCATOR_RADIUS = 6378137;
+const MERCATOR_RADIUS = GPU_WGS84_SEMI_MAJOR_AXIS_METERS;
 
 /**
  * A raster layer for grids that are uniform in Web Mercator meters (the Terrarium DEM): `bounds`

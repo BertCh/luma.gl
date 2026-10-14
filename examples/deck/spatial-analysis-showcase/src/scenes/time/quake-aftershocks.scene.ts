@@ -542,7 +542,9 @@ export default defineScene<QuakeAftershocksOptions>({
 import {GPUTemporalReduction, getGPUTemporalReductionParameterValues} from '@luma.gl/experimental/gpu-dataframe';
 
 // Pairs within ${state.spatialRadius} km (azimuthal equidistant meters around the window center), then the Knox test.
+pairs.spatialContext = events.spatialContext;
 graph.add(new GPUNeighborSearch({
+  spatialContext: events.spatialContext,
   mode: 'radius', positions, parameters: searchParameters, gridSize: [64, 64],
   output: pairs   // CSR {offsets, neighbors, weights, status: {overflow}}
 }));

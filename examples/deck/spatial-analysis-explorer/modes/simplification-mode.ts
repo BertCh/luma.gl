@@ -23,6 +23,7 @@ import {
 import {
   getGPULineSimplificationParameterValues,
   GPULineSimplification,
+  GPU_WGS84_SEMI_MAJOR_AXIS_METERS,
   GPU_LINE_SIMPLIFICATION_PARAMETER_LENGTH
 } from '@luma.gl/experimental/gpu-spatial-analysis';
 import {importGraphBuffer} from '../graph-buffers';
@@ -42,7 +43,7 @@ const READBACK_INTERVAL_FRAMES = 30;
 const LOG_TOLERANCE_RANGE = [-1, 3] as const;
 const DEFAULT_LOG_TOLERANCE = 1;
 const DEFAULT_AUTO_PIXELS = 2;
-const WEB_MERCATOR_CIRCUMFERENCE_METERS = 40075016.686;
+const WEB_MERCATOR_CIRCUMFERENCE_METERS = 2 * Math.PI * GPU_WGS84_SEMI_MAJOR_AXIS_METERS;
 const DECK_TILE_SIZE = 512;
 
 /** Meters covered by one CSS pixel at a viewport's center latitude. */
@@ -57,6 +58,7 @@ function formatMeters(meters: number): string {
   return meters < 10 ? `${meters.toFixed(2)} m` : `${meters.toFixed(0)} m`;
 }
 
+/** Simplifies taxi tracks with tolerances in the New York AEQD frame. */
 export const simplificationMode: SpatialAnalysisModeDefinition = {
   id: 'simplification',
   title: 'Simplify',
@@ -139,6 +141,7 @@ export const simplificationMode: SpatialAnalysisModeDefinition = {
     const importanceGraph = new GPUCommandGraph<void>(device, {id: 'simplification-importance'});
     importanceGraph.add(
       new GPULineSimplification({
+        spatialContext: trips.frame.spatialContext,
         id: 'simplification-importance',
         ...importView(importanceGraph),
         maximumIterations: MAXIMUM_ITERATIONS,
@@ -170,6 +173,7 @@ export const simplificationMode: SpatialAnalysisModeDefinition = {
     const selectionGraph = new GPUCommandGraph<void>(device, {id: 'simplification-selection'});
     selectionGraph.add(
       new GPULineSimplification({
+        spatialContext: trips.frame.spatialContext,
         id: 'simplification-selection',
         ...importView(selectionGraph),
         computeImportance: false,

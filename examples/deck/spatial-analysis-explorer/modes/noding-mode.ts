@@ -17,7 +17,6 @@ import {GPUCommandGraph, type CompiledGPUCommandGraph} from '@luma.gl/gpgpu/gpu-
 import {GPUNetworkReachability} from '@luma.gl/experimental/gpu-network';
 import {GPUNetworkNoding} from '@luma.gl/experimental/gpu-network';
 import {importGraphBuffer} from '../graph-buffers';
-import {LocalMetricProjection} from '../spatial-analysis-data';
 import {SpatialAnalysisPointLayer, SpatialAnalysisSegmentLayer} from '../spatial-analysis-layers';
 import type {
   SpatialAnalysisModeDefinition,
@@ -79,6 +78,7 @@ function buildLines(segments: Float32Array, classes: Uint32Array) {
   return {positions: Float32Array.from(positions), lineOffsets: Uint32Array.from(lineOffsets)};
 }
 
+/** Nodes road intersections and snaps map clicks in the New York AEQD frame. */
 export const nodingMode: SpatialAnalysisModeDefinition = {
   id: 'noding',
   title: 'Noding',
@@ -98,7 +98,7 @@ export const nodingMode: SpatialAnalysisModeDefinition = {
     const roads = await context.data.getNewYorkRoads();
     context.signal.throwIfAborted();
     const {device} = context;
-    const projection = new LocalMetricProjection(roads.origin);
+    const projection = roads.frame;
     const resources = new SpatialAnalysisResources(device, 'noding');
     const lines = buildLines(roads.segments, roads.segmentClasses);
     const segmentCount = roads.segments.length / 4;
@@ -174,6 +174,7 @@ export const nodingMode: SpatialAnalysisModeDefinition = {
     const csrWeightsView = scalarView('csr-weights', csrWeights, 'float32', pieceCapacity * 2);
     graph.add(
       new GPUNetworkNoding({
+        spatialContext: roads.frame.spatialContext,
         id: 'noding',
         lines: {
           kind: 'lines',

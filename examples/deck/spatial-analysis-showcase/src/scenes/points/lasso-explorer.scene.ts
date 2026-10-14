@@ -608,7 +608,7 @@ export default defineScene<LassoOptions>({
           : `region: {kind: 'mask', mask: pickMask},             // written by GPUPickRegionMask`;
     const pre =
       state.path === 'mask'
-        ? `graph.add(new GPURegionMask({
+        ? `graph.add(new GPURegionMask({spatialContext: projection.spatialContext,
   positions, output: {mask: regionMask, status: {overflow}},
   region: ${state.shape === 'rectangle' ? "{kind: 'rectangle', bounds}" : "{kind: 'polygon', vertices, vertexCount}"}${state.space === 'screen' ? ',  // plus screenTransform' : ''}
 }));
@@ -619,7 +619,7 @@ export default defineScene<LassoOptions>({
 graph.add(new GPUPickRegionMask({picks: result, output: {mask: pickMask, status: {overflow}}}));
 `
           : '';
-    return `${pre}graph.add(new GPURegionStatistics({
+    return `${pre}graph.add(new GPURegionStatistics({spatialContext: projection.spatialContext,
   ${selection}${state.path === 'direct' ? '\n  positions,' : ''}
   values: ${state.value},                             // float32 per observation
   histogram: ${histogram},${state.gridIndex && state.path === 'direct' ? `\n  spatialIndex: {kind: 'grid', index: gridIndex, candidateCapacity: ${Math.ceil(43557 * Number(state.candidateCapacity))}},` : ''}

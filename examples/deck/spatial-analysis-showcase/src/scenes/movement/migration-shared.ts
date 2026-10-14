@@ -2,8 +2,9 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {createAnalysisFrameProjection} from '../../engine/analysis-frame';
 import type {LoadedDataset} from '../../data/catalog';
-import {createAzimuthalEquidistant, createTrackSet, type TrackSet} from './b12-tracks';
+import {createTrackSet, type AnalysisTrackSet} from './b12-tracks';
 
 /**
  * Shared helpers of the `migration-*` scenes: the poopdeck animals dataset as a track set (azimuthal
@@ -44,7 +45,7 @@ const SOURCE_PLACES: Record<string, string> = {
 };
 
 /** The migration tracks with the per-track attributes of the dataset. */
-export type MigrationTrackSet = TrackSet & {
+export type MigrationTrackSet = AnalysisTrackSet & {
   /** Species index per track (see {@link MIGRATION_SPECIES}). */
   species: Uint8Array;
   /** Individual (tag) index per track; one animal owns several tracks, one per tagged year. */
@@ -66,7 +67,7 @@ export function loadMigrationTracks(dataset: LoadedDataset): MigrationTrackSet {
   const lngLat = dataset.column<Float32Array>('vertices');
   const bbox = dataset.manifest.bbox;
   const center: [number, number] = [(bbox[0] + bbox[2]) / 2, (bbox[1] + bbox[3]) / 2];
-  const projection = createAzimuthalEquidistant(center);
+  const projection = createAnalysisFrameProjection({kind: 'azimuthal-equidistant', origin: center});
   const positions = new Float32Array(lngLat.length);
   for (let index = 0; index < lngLat.length; index += 2) {
     const [x, y] = projection.project(lngLat[index], lngLat[index + 1]);
@@ -82,6 +83,8 @@ export function loadMigrationTracks(dataset: LoadedDataset): MigrationTrackSet {
     lngLat,
     timestamps,
     origin: center,
+    analysisFrame: projection.frame,
+    spatialContext: projection.spatialContext,
     project: projection.project,
     unproject: projection.unproject,
     drawInDegrees: true

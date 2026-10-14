@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {type LocalMetricProjection} from '../../engine/projection';
 import {COORDINATE_SYSTEM, type Layer} from '@deck.gl/core';
 import type {Buffer} from '@luma.gl/core';
 import {
@@ -30,7 +31,6 @@ import {
   formatDistance,
   GREAT_CIRCLE_CONTEXT,
   importPathOutput,
-  PLANAR_CONTEXT,
   type GeometryView,
   type PathOutputBuffers
 } from './b3-common';
@@ -45,6 +45,7 @@ const LNGLAT = COORDINATE_SYSTEM.LNGLAT;
 
 /** Inputs of the Chicago views, prepared once. */
 export type CityLineEnvironment = {
+  projection: LocalMetricProjection;
   ctx: SceneContext<Options>;
   coordinateOrigin: [number, number, number];
   rail: PathSet;
@@ -155,7 +156,7 @@ export async function createReshapeView(env: CityLineEnvironment): Promise<Geome
           inputVertices
         ),
         lineOffsets: imp('offsets', railOffsets, 'uint32', pathCount + 1),
-        spatialContext: spherical ? GREAT_CIRCLE_CONTEXT : PLANAR_CONTEXT,
+        spatialContext: spherical ? GREAT_CIRCLE_CONTEXT : env.projection.spatialContext,
         parameters: parameters.importToGraph(graph),
         output: importPathOutput(graph, output, {measures: true})
       })
@@ -289,7 +290,7 @@ export async function createReshapeView(env: CityLineEnvironment): Promise<Geome
         ),
         lineOffsets: imp('offsets', railOffsets, 'uint32', pathCount + 1),
         mode,
-        spatialContext: spherical ? GREAT_CIRCLE_CONTEXT : PLANAR_CONTEXT,
+        spatialContext: spherical ? GREAT_CIRCLE_CONTEXT : env.projection.spatialContext,
         parameters: parameters.importToGraph(graph),
         output: importPathOutput(graph, output, {lineCount: true, sourceLineIndices: chunkMode})
       })
@@ -395,6 +396,7 @@ export async function createReshapeView(env: CityLineEnvironment): Promise<Geome
     const imp = createGraphImporter(graph);
     graph.add(
       new GPULineLocate({
+        spatialContext: env.projection.spatialContext,
         id: 'locate',
         positions: imp('positions', localPositions, 'float32x2', inputVertices),
         lineOffsets: imp('offsets', railOffsets, 'uint32', pathCount + 1),
@@ -596,6 +598,7 @@ export async function createSnapView(env: CityLineEnvironment): Promise<Geometry
   const imp = createGraphImporter(graph);
   graph.add(
     new GPULinearReferencing({
+      spatialContext: env.projection.spatialContext,
       id: 'snap',
       queryPositions: imp('points', points, 'float32x2', pointCount),
       positions: imp('positions', streetPositions, 'float32x2', vertexCount),

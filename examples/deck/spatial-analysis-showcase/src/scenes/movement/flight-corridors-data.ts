@@ -2,8 +2,10 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {GPU_EARTH_MEAN_RADIUS_METERS} from '@luma.gl/experimental/gpu-spatial-analysis';
+import {createAnalysisFrameProjection} from '../../engine/analysis-frame';
 import type {LoadedDataset} from '../../data/catalog';
-import {createAzimuthalEquidistant, createTrackSet, type TrackSet} from './b12-tracks';
+import {createTrackSet, type AnalysisTrackSet} from './b12-tracks';
 import type {FlightColor} from './flight-corridors-layers';
 
 /** Dataset id of the flight scenes. */
@@ -26,7 +28,7 @@ export const FLIGHT_DIRECTION_COLORS: readonly FlightColor[] = [
 ];
 
 /** Flights in the layout the analysis contributors expect, plus per-vertex columns. */
-export type FlightSet = TrackSet & {
+export type FlightSet = AnalysisTrackSet & {
   /** Altitude in metres per vertex (float32 so GPU graphs can read it). */
   altitude: Float32Array;
   /** Ground speed in knots per vertex, as reported by the aircraft. */
@@ -45,7 +47,6 @@ export type FlightSet = TrackSet & {
   timeOriginMs: number;
 };
 
-const EARTH_RADIUS = 6371008.8;
 const RADIANS = Math.PI / 180;
 
 /** Initial great-circle bearing in degrees clockwise from north. */
@@ -70,7 +71,7 @@ export function getGreatCircleDistance(
   const a =
     Math.sin((phi1 - phi0) / 2) ** 2 +
     Math.cos(phi0) * Math.cos(phi1) * Math.sin(((lon1 - lon0) * RADIANS) / 2) ** 2;
-  return 2 * EARTH_RADIUS * Math.asin(Math.min(1, Math.sqrt(a)));
+  return 2 * GPU_EARTH_MEAN_RADIUS_METERS * Math.asin(Math.min(1, Math.sqrt(a)));
 }
 
 /** 0 east, 1 west, 2 north, 3 south, from a bearing in degrees. */
@@ -92,7 +93,7 @@ export function loadFlights(dataset: LoadedDataset): FlightSet {
   const vertexCount = lngLat.length / 2;
   const trackCount = offsets.length - 1;
   const center: [number, number] = [-96, 38.5];
-  const projection = createAzimuthalEquidistant(center);
+  const projection = createAnalysisFrameProjection({kind: 'azimuthal-equidistant', origin: center});
   const positions = new Float32Array(lngLat.length);
   let west = 180;
   let south = 90;
@@ -115,6 +116,8 @@ export function loadFlights(dataset: LoadedDataset): FlightSet {
     lngLat,
     timestamps: Float32Array.from(dataset.column<Uint32Array>('timestamp')),
     origin: center,
+    analysisFrame: projection.frame,
+    spatialContext: projection.spatialContext,
     project: projection.project,
     unproject: projection.unproject,
     drawInDegrees: true
