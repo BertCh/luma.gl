@@ -286,6 +286,8 @@ code, pre, .mono { font-family: var(--mono); font-size: 0.9em; }
 .chapter-head h2 { margin: 0 0 var(--s-2); }
 .chapter-head p { margin: 0 0 var(--s-2); }
 .card-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 14px; }
+.featured { margin-bottom: 36px; }
+.featured-grid { grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); }
 .scene-card { display: flex; flex-direction: column; background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-card); overflow: hidden; color: var(--text); transition: box-shadow var(--dur-base) var(--ease), transform var(--dur-base) var(--ease), border-color var(--dur-base); }
 .scene-card:hover { text-decoration: none; box-shadow: var(--e2); transform: translateY(-2px); border-color: var(--border-strong); }
 /* The 110 px thumbnail box is reserved up front; a shimmer shows until the art is drawn. */

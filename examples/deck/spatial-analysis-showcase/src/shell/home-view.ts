@@ -9,12 +9,22 @@ import {h} from './dom';
 import {createThumbnail} from './thumbnails';
 import {getReferenceHash, getStoryHash} from './router';
 
+/** Stories featured at the top of the home page, in display order. */
+const FEATURED_SCENE_IDS = [
+  'migration-timing',
+  'flight-bundling',
+  'rainfall-interpolation',
+  'sun-and-shadow'
+];
+
 /** Home: hero plus the chapter gallery. */
 export async function renderHome(root: HTMLElement, focusChapter: string | null): Promise<void> {
   root.replaceChildren(h('div', {class: 'page-loading'}, 'Loading stories…'));
   const scenes = await loadScenes();
   const total = scenes.length;
-  const validatedStart = scenes.find(scene => scene.id === 'rainfall-interpolation') ?? scenes[0];
+  const featuredScenes = FEATURED_SCENE_IDS.map(id => scenes.find(scene => scene.id === id)).filter(
+    (scene): scene is AnyScene => Boolean(scene)
+  );
   const hero = h(
     'section',
     {class: 'hero'},
@@ -27,14 +37,7 @@ export async function renderHome(root: HTMLElement, focusChapter: string | null)
     h(
       'div',
       {class: 'hero-actions'},
-      validatedStart
-        ? h(
-            'a',
-            {class: 'btn btn-primary', href: getStoryHash(validatedStart.id)},
-            'Open a validated example'
-          )
-        : null,
-      h('a', {class: 'btn', href: getReferenceHash()}, 'Browse the reference'),
+      h('a', {class: 'btn btn-primary', href: getReferenceHash()}, 'Browse the reference'),
       h(
         'a',
         {class: 'btn btn-ghost', href: '#/guide/how-contributors-work'},
@@ -47,6 +50,19 @@ export async function renderHome(root: HTMLElement, focusChapter: string | null)
       `${total} ${total === 1 ? 'story' : 'stories'} in ${CHAPTERS.filter(chapter => scenes.some(scene => scene.chapter === chapter.id)).length} of ${CHAPTERS.length} chapters`
     )
   );
+  const featured = featuredScenes.length
+    ? h(
+        'section',
+        {class: 'featured', 'aria-labelledby': 'featured-heading'},
+        h(
+          'div',
+          {class: 'chapter-head'},
+          h('h2', {id: 'featured-heading'}, 'Start here'),
+          h('p', {class: 'muted'}, 'Four stories that show the toolkit at its best.')
+        ),
+        h('div', {class: 'card-grid featured-grid'}, featuredScenes.map(renderSceneCard))
+      )
+    : null;
 
   const chapters = CHAPTERS.map(chapter => {
     const chapterScenes = scenes.filter(scene => scene.chapter === chapter.id);
@@ -64,7 +80,7 @@ export async function renderHome(root: HTMLElement, focusChapter: string | null)
         : h('p', {class: 'coming-soon'}, 'Stories for this chapter are on the way.')
     );
   });
-  root.replaceChildren(h('div', {class: 'page'}, hero, ...chapters));
+  root.replaceChildren(h('div', {class: 'page'}, hero, featured, ...chapters));
   if (focusChapter) document.getElementById(`chapter-${focusChapter}`)?.scrollIntoView();
 }
 
