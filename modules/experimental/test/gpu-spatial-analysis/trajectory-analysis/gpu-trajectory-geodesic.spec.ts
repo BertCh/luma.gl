@@ -76,7 +76,11 @@ function createBuffers(device: Device) {
   };
 }
 
-it('GPUTrajectoryMetrics measures great-circle meters, speeds and bearings against pyproj', async () => {
+it.each([
+  'meters',
+  'kilometers'
+] as const)('GPUTrajectoryMetrics measures great-circle %s, speeds and bearings against pyproj', async units => {
+  const lengthScale = units === 'kilometers' ? 0.001 : 1;
   const device = await getWebGPUTestDevice();
   requireTestDevice(device);
   const tracks = createOracleTracks();
@@ -92,7 +96,7 @@ it('GPUTrajectoryMetrics measures great-circle meters, speeds and bearings again
   const graph = new GPUCommandGraph<void>(device, {id: 'trajectory-geodesic-metrics'});
   graph.add(
     new GPUTrajectoryMetrics({
-      spatialContext: GREAT_CIRCLE,
+      spatialContext: {...GREAT_CIRCLE, units},
       positions: importGraphBuffer(
         graph,
         'positions',
@@ -136,8 +140,8 @@ it('GPUTrajectoryMetrics measures great-circle meters, speeds and bearings again
   const headings = await readFloat32(outputs.headings, rowCount);
   for (let track = 0; track < trackCount; track++) {
     const {a, b} = getUploadedEndpoints(track);
-    const distance = getGreatCircleDistance(a, b);
-    const tolerance = 1e-4 * distance + 0.05;
+    const distance = getGreatCircleDistance(a, b) * lengthScale;
+    const tolerance = 1e-4 * distance + 0.05 * lengthScale;
     expect(Math.abs(lengths[track] - distance)).toBeLessThan(tolerance);
     expect(Math.abs(speeds[2 * track + 1] - distance / TRACK_DURATION)).toBeLessThan(
       tolerance / TRACK_DURATION
@@ -161,7 +165,12 @@ it('GPUTrajectoryMetrics measures great-circle meters, speeds and bearings again
   io.destroy();
 });
 
-it('GPUTrajectoryResample slerps along great circles and keeps longitudes continuous', async () => {
+it.each([
+  ['meters', 'time'],
+  ['meters', 'arc-length'],
+  ['kilometers', 'time'],
+  ['kilometers', 'arc-length']
+] as const)('GPUTrajectoryResample slerps along great circles in %s with %s spacing', async (units, spacing) => {
   const device = await getWebGPUTestDevice();
   requireTestDevice(device);
   const tracks = createOracleTracks();
@@ -173,7 +182,7 @@ it('GPUTrajectoryResample slerps along great circles and keeps longitudes contin
   const graph = new GPUCommandGraph<void>(device, {id: 'trajectory-geodesic-resample'});
   graph.add(
     new GPUTrajectoryResample({
-      spatialContext: GREAT_CIRCLE,
+      spatialContext: {...GREAT_CIRCLE, units},
       positions: importGraphBuffer(
         graph,
         'positions',
@@ -196,7 +205,7 @@ it('GPUTrajectoryResample slerps along great circles and keeps longitudes contin
         trackCount + 1
       ),
       sampleCount,
-      spacing: 'time',
+      spacing,
       output: {
         samples: importGraphBuffer(graph, 'samples', samples, 'float32x2', trackCount * sampleCount)
       }
@@ -231,7 +240,11 @@ it('GPUTrajectoryResample slerps along great circles and keeps longitudes contin
   io.destroy();
 });
 
-it('GPUTrajectoryPlayhead interpolates positions, bearing and meters per time unit', async () => {
+it.each([
+  'meters',
+  'kilometers'
+] as const)('GPUTrajectoryPlayhead interpolates positions, bearing and %s per time unit', async units => {
+  const lengthScale = units === 'kilometers' ? 0.001 : 1;
   const device = await getWebGPUTestDevice();
   requireTestDevice(device);
   const tracks = createOracleTracks();
@@ -252,7 +265,7 @@ it('GPUTrajectoryPlayhead interpolates positions, bearing and meters per time un
   const graph = new GPUCommandGraph<void>(device, {id: 'trajectory-geodesic-playhead'});
   graph.add(
     new GPUTrajectoryPlayhead({
-      spatialContext: GREAT_CIRCLE,
+      spatialContext: {...GREAT_CIRCLE, units},
       positions: importGraphBuffer(
         graph,
         'positions',
@@ -298,9 +311,9 @@ it('GPUTrajectoryPlayhead interpolates positions, bearing and meters per time un
     const [longitude, latitude] = interpolateGreatCircle(a, b, 0.5);
     expect(Math.abs(positions[2 * track] - longitude)).toBeLessThan(5e-4);
     expect(Math.abs(positions[2 * track + 1] - latitude)).toBeLessThan(5e-4);
-    const distance = getGreatCircleDistance(a, b);
+    const distance = getGreatCircleDistance(a, b) * lengthScale;
     expect(Math.abs(speeds[track] - distance / TRACK_DURATION)).toBeLessThan(
-      (1e-4 * distance + 0.05) / TRACK_DURATION
+      (1e-4 * distance + 0.05 * lengthScale) / TRACK_DURATION
     );
     // Headings use the planar convention: pi / 2 - bearing, counterclockwise from east.
     const bearing = Math.PI / 2 - (getInitialBearingDegrees(a, b) * Math.PI) / 180;
@@ -313,7 +326,11 @@ it('GPUTrajectoryPlayhead interpolates positions, bearing and meters per time un
   io.destroy();
 });
 
-it('GPUTrajectoryEncounters finds great-circle neighbors across the antimeridian in meters', async () => {
+it.each([
+  'meters',
+  'kilometers'
+] as const)('GPUTrajectoryEncounters finds great-circle neighbors across the antimeridian in %s', async units => {
+  const lengthScale = units === 'kilometers' ? 0.001 : 1;
   const device = await getWebGPUTestDevice();
   requireTestDevice(device);
   // Two buckets. Tracks 0 and 1 straddle the antimeridian at latitude 50: 143 m apart in bucket 0
@@ -347,7 +364,7 @@ it('GPUTrajectoryEncounters finds great-circle neighbors across the antimeridian
   };
   const graph = new GPUCommandGraph<void>(device, {id: 'trajectory-geodesic-encounters'});
   const encounters = new GPUTrajectoryEncounters({
-    spatialContext: GREAT_CIRCLE,
+    spatialContext: {...GREAT_CIRCLE, units},
     samples: importGraphBuffer(
       graph,
       'samples',
@@ -357,7 +374,13 @@ it('GPUTrajectoryEncounters finds great-circle neighbors across the antimeridian
     ),
     trackCount,
     bucketCount,
-    distance: importGraphBuffer(graph, 'distance', io.input(Float32Array.of(500)), 'float32', 1),
+    distance: importGraphBuffer(
+      graph,
+      'distance',
+      io.input(Float32Array.of(500 * lengthScale)),
+      'float32',
+      1
+    ),
     cellSize: 2,
     bounds: [-180, -60, 180, 60],
     hitCapacity: 64,
@@ -391,7 +414,7 @@ it('GPUTrajectoryEncounters finds great-circle neighbors across the antimeridian
   });
   graph.add(encounters);
   // 500 m is far below the searchable maximum of this lattice.
-  expect(encounters.maximumDistance).toBeGreaterThan(500);
+  expect(encounters.maximumDistance).toBeGreaterThan(500 * lengthScale);
   const compiled = graph.compile();
   submitGraph(device, compiled, undefined);
   const [count] = await readUint32(outputs.count, 1);
@@ -403,12 +426,14 @@ it('GPUTrajectoryEncounters finds great-circle neighbors across the antimeridian
   const distances = await readFloat32(outputs.distances, pairCapacity);
   expect([count, overflow, candidateOverflow]).toEqual([1, 0, 0]);
   expect([ids[0], partners[0], counts[0]]).toEqual([0, 1, 2]);
-  const expected = Math.min(
-    getGreatCircleDistance([fround(179.999), 50], [fround(-179.999), 50]),
-    getGreatCircleDistance([fround(179.9995), 50], [fround(-179.9995), 50])
-  );
-  expect(expected).toBeGreaterThan(60);
-  expect(expected).toBeLessThan(80);
+  const expected =
+    lengthScale *
+    Math.min(
+      getGreatCircleDistance([fround(179.999), 50], [fround(-179.999), 50]),
+      getGreatCircleDistance([fround(179.9995), 50], [fround(-179.9995), 50])
+    );
+  expect(expected).toBeGreaterThan(60 * lengthScale);
+  expect(expected).toBeLessThan(80 * lengthScale);
   expect(Math.abs(distances[0] - expected)).toBeLessThan(0.05 * expected);
   compiled.destroy();
   io.destroy();

@@ -5,6 +5,7 @@
 import {createTransientView, GPUCommandGraph} from '@luma.gl/gpgpu/gpu-core';
 import {describe, expect, test} from 'vitest';
 import {WgslReflect} from 'wgsl_reflect';
+import type {GPUSpatialContext} from '../../../src/analysis-core/contracts/spatial-context';
 import {GPUSpatialScanStatistic} from '../../../src/gpu-spatial-analysis/scan-statistics/gpu-spatial-scan-statistic';
 import {PhiloxStream} from '../../../src/gpu-spatial-analysis/permutation-inference/permutation-random';
 import {PHILOX_PURPOSES} from '../../../src/utils/philox-random';
@@ -27,6 +28,7 @@ function createScan(
   graph: GPUCommandGraph,
   model: GPUSpatialScanModel,
   options: {
+    spatialContext?: GPUSpatialContext;
     zones?: number;
     timeBuckets?: number;
     maximumClusters?: number;
@@ -46,6 +48,7 @@ function createScan(
   ) => createTransientView(graph, `scan-view-${serial++}`, format, length);
   return new GPUSpatialScanStatistic({
     positions: view('float32x2', zones),
+    spatialContext: options.spatialContext,
     model,
     cases: view('uint32', cells),
     ...(model === 'poisson' ? {baseline: view('float32', cells)} : {}),
@@ -67,6 +70,43 @@ function createScan(
 }
 
 describe('GPUSpatialScanStatistic kernels', () => {
+  test.each([
+    'meters',
+    'kilometers'
+  ] as const)('great-circle kernels use haversine keys and decode squared radii in %s', units => {
+    const device = createNullWebGPUDevice();
+    const graph = new GPUCommandGraph(device);
+    try {
+      const kernels = getGPUCommandNodeKernelSources(
+        createScan(graph, 'poisson', {
+          spatialContext: {coordinateSpace: 'longitude-latitude', metric: 'great-circle', units}
+        }).getCommandNodes(graph)
+      );
+      const nearest = kernels.find(kernel => kernel.id.endsWith('-nearest'))!.source;
+      const evaluate = kernels.find(kernel => kernel.id.endsWith('-evaluate'))!.source;
+      expect(nearest).toContain('return geodesicHaversineTerm(query, position);');
+      expect(nearest).toContain(
+        'bitcast<u32>(getSeparationKey(vec2f(zoneX, zoneY), vec2f(centerX, centerY)))'
+      );
+      expect(evaluate).toContain('bitcast<u32>(getSquaredMeters(distances[');
+      expect(evaluate).toContain('return meters * meters;');
+      const sphereRadius = Number(nearest.match(/const SPHERE_RADIUS: f32 = ([^;]+);/)![1]);
+      expect(sphereRadius).toBe(Math.fround(units === 'kilometers' ? 6371.0088 : 6371008.8));
+      for (const kernel of kernels) {
+        expect(() => new WgslReflect(kernel.source), kernel.id).not.toThrow();
+        expect(
+          (kernel.source.match(/fn geodesicHaversineTerm\(/g) ?? []).length
+        ).toBeLessThanOrEqual(1);
+        expect(getStorageBindingCount(kernel.source), kernel.id).toBeLessThanOrEqual(8);
+        expect(getPrivateMemoryBytes(kernel.source), kernel.id).toBeLessThanOrEqual(
+          CORE_PRIVATE_MEMORY_LIMIT_BYTES
+        );
+      }
+    } finally {
+      device.destroy();
+    }
+  });
+
   test.each<GPUSpatialScanModel>([
     'poisson',
     'bernoulli',

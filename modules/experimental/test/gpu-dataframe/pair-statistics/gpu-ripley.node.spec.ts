@@ -310,3 +310,19 @@ it('getIsotropicWeightOnCPU stays exact far beyond half the shorter window side'
     expect(Math.abs(1 / weight - inside / samples), `trial ${trial}`).toBeLessThan(1e-3);
   }
 });
+
+it.each([
+  'local-azimuthal-equidistant',
+  'local-lambert-equal-area'
+] as const)('GPURipley accepts the %s frame for combined distance and area measures', kind => {
+  const device = createNullWebGPUDevice();
+  const graph = new GPUCommandGraph(device);
+  const spatialContext = {
+    coordinateSpace: 'planar',
+    metric: 'native',
+    units: 'meters',
+    frame: {id: 'f', kind}
+  } as const;
+  expect(new GPURipley(createProps(graph, {spatialContext})).spatialContext).toBe(spatialContext);
+  device.destroy();
+});

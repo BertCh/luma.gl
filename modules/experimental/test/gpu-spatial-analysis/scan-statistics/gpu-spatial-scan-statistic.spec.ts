@@ -17,6 +17,7 @@ import {
 import {AnalysisRig, createSeededRandom} from '../catchment-accessibility/rig';
 import {
   computeScanOracle,
+  createGreatCircleScanScene,
   createRegionalClusterScene,
   type ScanOracleInput
 } from './scan-statistic-oracle';
@@ -87,6 +88,7 @@ async function runScan(
   rig.run(
     new GPUSpatialScanStatistic({
       positions: rig.input(scene.positions, 'float32x2', zones),
+      spatialContext: scene.spatialContext,
       model: scene.model,
       cases: rig.input(scene.cases, 'uint32'),
       ...(scene.baseline ? {baseline: rig.input(scene.baseline, 'float32')} : {}),
@@ -159,10 +161,16 @@ function expectMatches(
       oracle.expectedCases,
       2
     );
-    expect(stats[statistic + GPU_SPATIAL_SCAN_STATISTIC_CLUSTER.radius]).toBeCloseTo(
-      oracle.radius,
-      3
-    );
+    if (scene.spatialContext?.metric === 'great-circle') {
+      expect(
+        Math.abs(stats[statistic + GPU_SPATIAL_SCAN_STATISTIC_CLUSTER.radius] - oracle.radius)
+      ).toBeLessThan(2e-5 * oracle.radius + 1e-6);
+    } else {
+      expect(stats[statistic + GPU_SPATIAL_SCAN_STATISTIC_CLUSTER.radius]).toBeCloseTo(
+        oracle.radius,
+        3
+      );
+    }
     expect(stats[statistic + GPU_SPATIAL_SCAN_STATISTIC_CLUSTER.truncatedByZoneCap]).toBe(
       oracle.truncatedByZoneCap ? 1 : 0
     );
@@ -471,3 +479,20 @@ it('GPUSpatialScanStatistic A/B: replicate batching at P = 999 on the spec scene
   expect(checksums['batches of 100']).toBe(checksums['single batch']);
   expect(checksums['single batch again']).toBe(checksums['single batch']);
 }, 120_000);
+
+it.each([
+  {units: 'meters' as const},
+  {units: 'kilometers' as const},
+  {units: 'kilometers' as const, sphereRadius: 1000}
+])('GPUSpatialScanStatistic matches great-circle clusters and radii in $units with radius $sphereRadius', async context => {
+  const scene = createGreatCircleScanScene({
+    coordinateSpace: 'longitude-latitude',
+    metric: 'great-circle',
+    ...context
+  });
+  const actual = await runScan(scene);
+  const expected = expectMatches(scene, actual);
+  expect(expected.clusters[0].center).toBe(0);
+  expect(expected.clusters[0].zoneCount).toBe(2);
+  expect(expected.clusters[0].observedCases).toBe(70);
+});

@@ -50,3 +50,27 @@ it('the drive-time recipe accepts longitude-latitude degrees but no rhumb or ell
     } as never)
   ).toThrow(/discrete-grid/);
 });
+
+it('radius-based movement recipes reject equal-area frames and unmeasured planar positions', () => {
+  for (const recipe of [
+    addStraightLineCatchmentsRecipe,
+    addFleetDwellRecipe,
+    addFleetDwellZoneEventsRecipe
+  ]) {
+    expect(() =>
+      recipe(graph, {
+        spatialContext: {
+          coordinateSpace: 'planar',
+          metric: 'native',
+          units: 'meters',
+          frame: {id: 'equal-area', kind: 'local-lambert-equal-area'}
+        }
+      } as never)
+    ).toThrow(/measures distance/);
+    expect(() =>
+      recipe(graph, {
+        spatialContext: {coordinateSpace: 'planar', metric: 'none'}
+      } as never)
+    ).toThrow(/planar positions need the native metric/);
+  }
+});

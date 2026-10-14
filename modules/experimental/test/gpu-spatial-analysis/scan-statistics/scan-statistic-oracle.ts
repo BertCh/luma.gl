@@ -2,6 +2,10 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {
+  getGPUSphereRadius,
+  type GPUSpatialContext
+} from '../../../src/analysis-core/contracts/spatial-context';
 import {PhiloxStream} from '../../../src/gpu-spatial-analysis/permutation-inference/permutation-random';
 
 /** Philox counter tag of the multinomial case draws, equal to the contributor's. */
@@ -10,9 +14,12 @@ const CASE_BLOCKS = 1024;
 
 export type ScanOracleModel = 'poisson' | 'bernoulli' | 'space-time-permutation';
 
+/** CPU scan inputs, including the metric used by the binary64 geographic oracle. */
 export type ScanOracleInput = {
   /** Interleaved x, y per zone. */
   positions: Float32Array;
+  /** Omitted means planar; great-circle contexts use binary64 haversine distances. */
+  spatialContext?: GPUSpatialContext;
   cases: Uint32Array;
   /** Poisson baseline. */
   baseline?: Float32Array;
@@ -32,6 +39,7 @@ export type ScanOracleInput = {
   permutationCount: number;
 };
 
+/** Expected cluster statistics from the CPU oracle. */
 export type ScanOracleCluster = {
   center: number;
   zoneCount: number;
@@ -41,6 +49,7 @@ export type ScanOracleCluster = {
   observedCases: number;
   expectedCases: number;
   pValue: number;
+  /** Window radius in the context's length unit. */
   radius: number;
   truncatedByZoneCap: boolean;
 };
@@ -154,7 +163,17 @@ export function computeScanOracle(input: ScanOracleInput) {
     for (let zone = 0; zone < zones; zone++) {
       const dx = positions[zone * 2] - positions[center * 2];
       const dy = positions[zone * 2 + 1] - positions[center * 2 + 1];
-      all.push({zone, distance: Math.fround(dx * dx + dy * dy)});
+      const geographic = input.spatialContext?.metric === 'great-circle';
+      const radians = Math.PI / 180;
+      const haversine =
+        Math.sin((dy * radians) / 2) ** 2 +
+        Math.cos(positions[zone * 2 + 1] * radians) *
+          Math.cos(positions[center * 2 + 1] * radians) *
+          Math.sin((dx * radians) / 2) ** 2;
+      all.push({
+        zone,
+        distance: geographic ? Math.min(1, Math.max(0, haversine)) : Math.fround(dx * dx + dy * dy)
+      });
     }
     all.sort((a, b) => a.distance - b.distance || a.zone - b.zone);
     const list = all.slice(0, listLength);
@@ -377,7 +396,12 @@ export function computeScanOracle(input: ScanOracleInput) {
       observedCases: best.cases,
       expectedCases: best.expected,
       pValue: (exceeding + 1) / (input.permutationCount + 1),
-      radius: Math.sqrt(lists[bestCenter][best.zoneCount - 1].distance),
+      radius:
+        input.spatialContext?.metric === 'great-circle'
+          ? 2 *
+            getGPUSphereRadius(input.spatialContext) *
+            Math.asin(Math.sqrt(lists[bestCenter][best.zoneCount - 1].distance))
+          : Math.sqrt(lists[bestCenter][best.zoneCount - 1].distance),
       truncatedByZoneCap: truncatedCenters[bestCenter]
     });
     for (let center = 0; center < zones; center++) {
@@ -441,5 +465,24 @@ export function createRegionalClusterScene(
     maximumClusters: 4,
     seed: 777,
     permutationCount: 99
+  };
+}
+
+/** High-latitude hot pair whose great-circle neighbor order differs from raw-degree order. */
+export function createGreatCircleScanScene(spatialContext: GPUSpatialContext): ScanOracleInput {
+  return {
+    // At (-90, 0), zones 0 and 2 are both exactly 90 degrees away. Binary64 and GPU f32
+    // haversine rounding can split that tie differently, changing circular window membership
+    // and its LLR. Keep the background point away from that tie for the cross-precision oracle.
+    positions: new Float32Array([0, 80, 10, 80, 0, 77, 50, 0, 100, -20, -85, 0]),
+    spatialContext,
+    cases: new Uint32Array([40, 30, 1, 1, 1, 1]),
+    baseline: new Float32Array(6).fill(100),
+    timeBuckets: 1,
+    maximumPopulationFraction: 0.5,
+    windowShape: 'circle',
+    maximumClusters: 1,
+    seed: 777,
+    permutationCount: 19
   };
 }

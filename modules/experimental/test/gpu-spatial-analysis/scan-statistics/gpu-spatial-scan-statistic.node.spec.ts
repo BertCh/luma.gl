@@ -3,6 +3,10 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {describe, expect, test} from 'vitest';
+import {createTransientView, GPUCommandGraph} from '@luma.gl/gpgpu/gpu-core';
+import {GPUSpatialScanStatistic} from '../../../src/gpu-spatial-analysis/scan-statistics/gpu-spatial-scan-statistic';
+import type {GPUSpatialContext} from '../../../src/analysis-core/contracts/spatial-context';
+import {createNullWebGPUDevice} from '../../utils/gpu-contributor-test-utils';
 import {
   getGPUSpatialScanStatisticLayout,
   getGPUSpatialScanStatisticParameterValues,
@@ -10,6 +14,7 @@ import {
 } from '../../../src/gpu-spatial-analysis/scan-statistics/scan-statistic-parameters';
 import {
   computeScanOracle,
+  createGreatCircleScanScene,
   createRegionalClusterScene,
   getOracleBernoulliLogLikelihoodRatio,
   getOracleLogLikelihoodRatio
@@ -187,5 +192,148 @@ describe('scan statistic oracle semantics', () => {
     expect(result.maxima[0]).toBeLessThan(1e-9);
     // Replicates permute the times, so they do vary (with both margins fixed).
     expect(Math.max(...result.maxima.slice(1))).toBeGreaterThan(0);
+  });
+});
+
+describe('GPUSpatialScanStatistic spatial context', () => {
+  function constructScan(spatialContext?: GPUSpatialContext): GPUSpatialScanStatistic {
+    const device = createNullWebGPUDevice();
+    const graph = new GPUCommandGraph(device);
+    try {
+      return new GPUSpatialScanStatistic({
+        id: 'context-scan',
+        spatialContext,
+        positions: createTransientView(graph, 'positions', 'float32x2', 2),
+        cases: createTransientView(graph, 'cases', 'uint32', 2),
+        baseline: createTransientView(graph, 'baseline', 'float32', 2),
+        parameters: createTransientView(graph, 'parameters', 'uint32', 8),
+        maximumPermutations: 1,
+        maximumClusters: 1,
+        output: {
+          clusterIndices: createTransientView(graph, 'indices', 'uint32', 4),
+          clusterStatistics: createTransientView(graph, 'cluster-statistics', 'float32', 8),
+          statistics: createTransientView(graph, 'statistics', 'float32', 2),
+          summary: createTransientView(graph, 'summary', 'uint32', 4)
+        }
+      });
+    } finally {
+      device.destroy();
+    }
+  }
+
+  test('defaults to native planar coordinates', () => {
+    expect(constructScan().spatialContext).toEqual({
+      coordinateSpace: 'planar',
+      metric: 'native',
+      units: 'native'
+    });
+  });
+
+  test.each([
+    'none',
+    'rhumb',
+    'ellipsoidal'
+  ] as const)('rejects longitude/latitude with %s metric', metric => {
+    expect(() => constructScan({coordinateSpace: 'longitude-latitude', metric})).toThrow(
+      'context-scan longitude-latitude positions need the great-circle metric'
+    );
+  });
+
+  test.each([
+    undefined,
+    'meters',
+    'kilometers'
+  ] as const)('accepts and exposes great-circle context in %s', units => {
+    const spatialContext: GPUSpatialContext = {
+      coordinateSpace: 'longitude-latitude',
+      metric: 'great-circle',
+      units
+    };
+    expect(constructScan(spatialContext).spatialContext).toBe(spatialContext);
+  });
+
+  test('rejects equal-area frames because scan windows measure distance', () => {
+    expect(() =>
+      constructScan({
+        coordinateSpace: 'planar',
+        metric: 'native',
+        frame: {id: 'f', kind: 'local-lambert-equal-area'}
+      })
+    ).toThrow('context-scan measures distance');
+  });
+
+  test('accepts an azimuthal-equidistant frame in meters', () => {
+    const spatialContext: GPUSpatialContext = {
+      coordinateSpace: 'planar',
+      metric: 'native',
+      units: 'meters',
+      frame: {id: 'f', kind: 'local-azimuthal-equidistant'}
+    };
+    expect(constructScan(spatialContext).spatialContext).toBe(spatialContext);
+  });
+
+  test('great-circle fixture keeps circular window boundaries away from rounding ties', () => {
+    const {positions} = createGreatCircleScanScene({
+      coordinateSpace: 'longitude-latitude',
+      metric: 'great-circle'
+    });
+    const radians = Math.PI / 180;
+    const zones = positions.length / 2;
+    for (let center = 0; center < zones; center++) {
+      const keys = Array.from({length: zones}, (_, zone) => {
+        const latitudeDelta = (positions[zone * 2 + 1] - positions[center * 2 + 1]) * radians;
+        const longitudeDelta = (positions[zone * 2] - positions[center * 2]) * radians;
+        return (
+          Math.sin(latitudeDelta / 2) ** 2 +
+          Math.cos(positions[zone * 2 + 1] * radians) *
+            Math.cos(positions[center * 2 + 1] * radians) *
+            Math.sin(longitudeDelta / 2) ** 2
+        );
+      }).sort((left, right) => left - right);
+      for (let slot = 1; slot < zones; slot++) {
+        // The GPU groups exact f32 keys; a binary64 oracle cannot predict which side of a
+        // mathematical tie its trigonometric rounding will land on. Keep this comparison
+        // fixture's keys well separated instead of relaxing the likelihood tolerance.
+        expect(keys[slot] - keys[slot - 1], `center ${center}, slot ${slot}`).toBeGreaterThan(1e-6);
+      }
+    }
+  });
+
+  test.each([
+    {units: 'meters' as const, radius: 6371008.8},
+    {units: 'kilometers' as const, radius: 6371.0088},
+    {units: 'kilometers' as const, sphereRadius: 1000, radius: 1000}
+  ])('great-circle oracle uses binary64 distances in $units on radius $radius', ({
+    units,
+    sphereRadius,
+    radius
+  }) => {
+    const scene = createGreatCircleScanScene({
+      coordinateSpace: 'longitude-latitude',
+      metric: 'great-circle',
+      units,
+      sphereRadius
+    });
+    const result = computeScanOracle(scene);
+    const primary = result.clusters[0];
+    expect(primary.center).toBe(0);
+    expect(primary.zoneCount).toBe(2);
+    expect(primary.observedCases).toBe(70);
+    // Independent spherical law of cosines for the 10-degree arc at latitude 80.
+    const latitude = (80 * Math.PI) / 180;
+    const angle = Math.acos(
+      Math.sin(latitude) ** 2 + Math.cos(latitude) ** 2 * Math.cos(Math.PI / 18)
+    );
+    expect(primary.radius).toBeCloseTo(radius * angle, 6);
+    expect(primary.logLikelihoodRatio).toBeCloseTo(
+      getOracleLogLikelihoodRatio(70, 200, 74, 600),
+      10
+    );
+    // The background center includes zone 2 before the hot zone 0: its best window has
+    // 42 cases in three zones, with no rounding-dependent two-zone window of 41 cases.
+    expect(result.observed[5].zoneCount).toBe(3);
+    expect(result.observed[5].ratio).toBeCloseTo(getOracleLogLikelihoodRatio(42, 300, 74, 600), 10);
+    const planar = computeScanOracle({...scene, spatialContext: undefined}).clusters[0];
+    expect(planar.center).not.toBe(primary.center);
   });
 });

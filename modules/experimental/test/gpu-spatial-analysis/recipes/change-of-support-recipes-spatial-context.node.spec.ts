@@ -92,6 +92,40 @@ it('the choropleth recipe resolves a planar or longitude-latitude context', () =
     });
   };
   expect(create().spatialContext.coordinateSpace).toBe('planar');
-  expect(create(LONGITUDE_LATITUDE).spatialContext.coordinateSpace).toBe('longitude-latitude');
+  expect(create({...LONGITUDE_LATITUDE, metric: 'none'}).spatialContext.coordinateSpace).toBe(
+    'longitude-latitude'
+  );
   expect(() => create(DISCRETE_GRID)).toThrow(/does not support discrete-grid/);
+});
+
+it('the change-of-support recipe requires an area-compatible metric and frame', () => {
+  const create = (
+    spatialContext: Parameters<typeof addChangeOfSupportRecipe>[1]['spatialContext']
+  ) => {
+    const context = createGraph();
+    return addChangeOfSupportRecipe(context.graph, {
+      ...createChangeOfSupportProps(context),
+      spatialContext
+    });
+  };
+  expect(() => create({coordinateSpace: 'longitude-latitude', metric: 'none'})).toThrow(
+    /longitude-latitude positions need the great-circle metric/
+  );
+  expect(() => create({coordinateSpace: 'planar', metric: 'none'})).toThrow(
+    /planar positions need the native metric/
+  );
+  const planar = {coordinateSpace: 'planar', metric: 'native', units: 'meters'} as const;
+  expect(() =>
+    create({
+      ...planar,
+      frame: {id: 'distance-frame', kind: 'local-azimuthal-equidistant'}
+    })
+  ).toThrow(/measures area/);
+  const spatialContext = {
+    ...planar,
+    frame: {id: 'area-frame', kind: 'local-lambert-equal-area'}
+  } as const;
+  expect(create(spatialContext).spatialContext).toBe(spatialContext);
+  const kilometers = {...LONGITUDE_LATITUDE, units: 'kilometers'} as const;
+  expect(create(kilometers).spatialContext).toBe(kilometers);
 });

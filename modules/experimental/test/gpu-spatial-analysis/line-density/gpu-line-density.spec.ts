@@ -213,7 +213,7 @@ it('GPULineDensity measures spherical pieces as great-circle meters', async () =
   expect(Math.max(...result['lengths'])).toBeGreaterThan(1000);
   // Spherical cell area: 0.5 degree by 0.5 degree at about 50 degrees north is about 1.8e9 m^2.
   const area =
-    6371008.8 ** 2 *
+    6371007.180918475 ** 2 *
     ((0.5 * Math.PI) / 180) *
     (Math.sin((50.5 * Math.PI) / 180) - Math.sin((50 * Math.PI) / 180));
   expectClose(result['densities'][0], result['lengths'][0] / area, 2e-3, 1e-12, 'density');

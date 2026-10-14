@@ -188,3 +188,34 @@ it('getGPUKernelDensityParameterValues reads the corners and window from the gri
     getGPUKernelDensityParameterValues({bandwidth: 1, window: [5, 5, 4, 6]}, north)
   ).toThrow(/window/);
 });
+
+const DISTANCE_FRAME = {
+  coordinateSpace: 'planar',
+  metric: 'native',
+  units: 'meters',
+  frame: {id: 'f', kind: 'local-azimuthal-equidistant'}
+} as const;
+const AREA_FRAME = {
+  coordinateSpace: 'planar',
+  metric: 'native',
+  units: 'meters',
+  frame: {id: 'f', kind: 'local-lambert-equal-area'}
+} as const;
+
+it('GPUKernelDensity validates its area frame', () => {
+  const device = createNullWebGPUDevice();
+  const graph = new GPUCommandGraph(device);
+  const props = {
+    positions: createTransientView(graph, 'frame-positions', 'float32x2', 8),
+    parameters: createTransientView(graph, 'frame-parameters', 'float32', 9),
+    grid: GRID_4_BY_3,
+    indexGridSize: [2, 2] as const,
+    indexBounds: [0, 0, 4, 3] as const,
+    output: {values: createTransientView(graph, 'frame-values', 'float32', 12)}
+  };
+  expect(() => new GPUKernelDensity({...props, spatialContext: DISTANCE_FRAME})).toThrow(
+    /measures area; project into a lambert-equal-area frame/
+  );
+  expect(() => new GPUKernelDensity({...props, spatialContext: AREA_FRAME})).not.toThrow();
+  device.destroy();
+});

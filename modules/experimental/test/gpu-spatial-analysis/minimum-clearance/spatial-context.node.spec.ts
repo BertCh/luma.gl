@@ -42,5 +42,22 @@ it('GPUMinimumClearance is planar only', () => {
     });
   expect(() => create(LONGITUDE_LATITUDE)).toThrow(UNSUPPORTED);
   expect(create().spatialContext.coordinateSpace).toBe('planar');
+  expect(() => create(AREA_FRAME)).toThrow(
+    /measures distance; project into an azimuthal-equidistant frame/
+  );
+  expect(create(DISTANCE_FRAME).spatialContext).toEqual(DISTANCE_FRAME);
   expect(create(LOCAL_FRAME).spatialContext.frame?.id).toBe('test-frame');
 });
+
+const DISTANCE_FRAME = {
+  coordinateSpace: 'planar',
+  metric: 'native',
+  units: 'meters',
+  frame: {id: 'f', kind: 'local-azimuthal-equidistant'}
+} as const;
+const AREA_FRAME = {
+  coordinateSpace: 'planar',
+  metric: 'native',
+  units: 'meters',
+  frame: {id: 'f', kind: 'local-lambert-equal-area'}
+} as const;

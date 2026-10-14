@@ -161,3 +161,25 @@ it('addHotSpotAnalysisRecipe labels distance-band weights binary or row', () => 
   expect(row.weights.status?.overflow).toBeDefined();
   expect((row.intermediates['weights'] as typeof row.weights).information?.transform).toBe('row');
 });
+
+it('the hot-spot distance band rejects a Lambert planar frame for geographic cell centers', () => {
+  const graph = new GPUCommandGraph(createNullWebGPUDevice(), {id: 'hot-spot-lambert'});
+  expect(() =>
+    addHotSpotAnalysisRecipe(
+      graph,
+      createProps(graph, {
+        distanceBand: {
+          spatialContext: {
+            coordinateSpace: 'planar',
+            metric: 'native',
+            units: 'meters',
+            frame: {id: 'equal-area', kind: 'local-lambert-equal-area'}
+          },
+          neighborSearchParameters: createTransientView(graph, 'band-parameters', 'float32', 16),
+          gridSize: [8, 8],
+          neighborCapacity: 256
+        }
+      }) as never
+    )
+  ).toThrow(/distanceBand does not support planar coordinates/);
+});

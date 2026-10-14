@@ -46,7 +46,7 @@ type NeighborsRun = {
 async function runNeighbors(
   device: Device,
   scene: GeodesicNearestScene,
-  options: {k: number; maxDistance?: number}
+  options: {k: number; maxDistance?: number; units?: 'meters' | 'kilometers'}
 ): Promise<NeighborsRun> {
   const graph = new GPUCommandGraph(device, {id: 'geodesic-neighbors'});
   const buffers: Buffer[] = [];
@@ -90,7 +90,7 @@ async function runNeighbors(
         });
   graph.add(
     new GPUNearestFeatureJoin({
-      spatialContext: GREAT_CIRCLE,
+      spatialContext: {...GREAT_CIRCLE, units: options.units},
       queries: {
         kind: 'points',
         positions: input('queries', Float32Array.from(scene.queries.flat()), 'float32x2')
@@ -269,4 +269,24 @@ it('GPUNearestFeatureJoin great-circle nearest-feature mode returns the nearest 
   compiled.destroy();
   radius.destroy();
   for (const buffer of buffers) buffer.destroy();
+});
+
+it('GPUNearestFeatureJoin measures and thresholds great-circle neighbors in kilometers', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const scene = GEODESIC_NEAREST_SCENES.equator;
+  const result = await runNeighbors(device, scene, {k: 3, maxDistance: 3.2, units: 'kilometers'});
+  expect(result.overflow).toBe(0);
+  expect(result.counts).toEqual([2, 1]);
+  expect(result.ids[0]).toEqual([0, 2, GPU_SPATIAL_JOIN_NO_FEATURE]);
+  for (const [query, ranked] of scene.ranked.entries()) {
+    for (let slot = 0; slot < result.counts[query]; slot++) {
+      expectDistance(
+        result.distances[query][slot] * 1000,
+        ranked[slot].distance,
+        `kilometers query ${query} slot ${slot}`
+      );
+    }
+  }
+  expect(result.distances[0][2]).toBe(-1);
 });

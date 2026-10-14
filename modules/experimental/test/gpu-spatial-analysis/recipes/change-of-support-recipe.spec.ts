@@ -224,3 +224,77 @@ it('addChangeOfSupportRecipe rasterizes two zone systems and transfers values by
     fixture.destroy();
   }
 }, 120000);
+
+it.each([
+  'meters',
+  'kilometers'
+] as const)('change-of-support uses authalic cell areas in square %s', async units => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const fixture = new RecipeTestFixture(device, `change-of-support-authalic-${units}`);
+  try {
+    const grid = makeGPURasterMetadata({width: 1, height: 2, rowDirection: 'north'});
+    const source = createRectangleSystem([[0, 0, 1, 2]]);
+    const target = createRectangleSystem([
+      [0, 0, 1, 1],
+      [0, 1, 1, 2]
+    ]);
+    const zones = (system: ReturnType<typeof createRectangleSystem>, name: string) => ({
+      kind: 'polygons' as const,
+      positions: fixture.input(
+        `${name}-positions`,
+        system.positions,
+        'float32x2',
+        system.positions.length / 2
+      ),
+      featureOffsets: fixture.input(
+        `${name}-features`,
+        system.featureOffsets,
+        'uint32',
+        system.featureOffsets.length
+      ),
+      polygonOffsets: fixture.input(
+        `${name}-polygons`,
+        system.polygonOffsets,
+        'uint32',
+        system.polygonOffsets.length
+      ),
+      ringOffsets: fixture.input(
+        `${name}-rings`,
+        system.ringOffsets,
+        'uint32',
+        system.ringOffsets.length
+      ),
+      crossingCapacity: 16
+    });
+    const sourceAreas = fixture.output('source-areas', 'float32', 1);
+    const extensiveValues = fixture.output('extensive-values', 'float32', 2);
+    addChangeOfSupportRecipe(fixture.graph, {
+      spatialContext: {coordinateSpace: 'longitude-latitude', metric: 'great-circle', units},
+      grid,
+      parameters: fixture.input(
+        'parameters',
+        getGPUPolygonRasterizationParameterValues(grid),
+        'float32',
+        4
+      ),
+      source: zones(source, 'source'),
+      target: zones(target, 'target'),
+      pairCapacity: 2,
+      sourceValues: fixture.input('source-values', Float32Array.of(100), 'float32', 1),
+      outputs: {sourceAreas: sourceAreas.view, extensiveValues: extensiveValues.view}
+    });
+    fixture.run();
+    // Binary64 oracle: the WGS84 authalic radius and latitude-strip formula.
+    const radius = 6371007.180918474 / (units === 'kilometers' ? 1000 : 1);
+    const radians = Math.PI / 180;
+    const area = radius * radius * radians * Math.sin(2 * radians);
+    expect(isClose((await fixture.readFloat32(sourceAreas, 1))[0], area, 0, 1e-6)).toBe(true);
+    const transferred = await fixture.readFloat32(extensiveValues, 2);
+    const firstShare = Math.sin(radians) / Math.sin(2 * radians);
+    expect(isClose(transferred[0], 100 * firstShare, 1e-4, 1e-5)).toBe(true);
+    expect(isClose(transferred[1], 100 * (1 - firstShare), 1e-4, 1e-5)).toBe(true);
+  } finally {
+    fixture.destroy();
+  }
+});

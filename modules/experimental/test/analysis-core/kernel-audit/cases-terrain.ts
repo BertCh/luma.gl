@@ -10,6 +10,7 @@ import {
   type GPURasterExtremaPyramidOutput
 } from '../../../src/gpu-raster';
 import {
+  GPU_TERRAIN_VIEWSHED_PARAMETER_LENGTH,
   GPUGeomorphons,
   GPUPointHorizonProfile,
   GPUPointHorizonVisibility,
@@ -798,7 +799,7 @@ export const TERRAIN_CASES: KernelAuditCase[] = [
             new GPUTerrainViewshed({
               grid,
               elevation: elevationBand(context, grid),
-              parameters: view('float32', 8),
+              parameters: view('float32', GPU_TERRAIN_VIEWSHED_PARAMETER_LENGTH),
               toleranceParameters: view('float32', 4),
               traversal,
               ...(shared ? {pyramid: sharedPyramid(context, grid)} : {}),

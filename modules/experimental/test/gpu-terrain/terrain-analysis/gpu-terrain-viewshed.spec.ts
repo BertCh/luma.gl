@@ -11,6 +11,10 @@ import {
   makeGPURasterMetadata,
   type GPURasterMetadata
 } from '../../../src/gpu-raster';
+import {
+  getRasterGridGeoreference,
+  type GPURasterCellSizeMode
+} from '../../../src/analysis-core/raster-grid';
 import {GPUParameterBuffer, importGraphBuffer} from '../../../src/utils/gpu-contributor-utils';
 import {submitGraph} from '../../utils/gpu-contributor-test-utils';
 import {
@@ -60,7 +64,7 @@ function createViewshedFixture(
   const settingsBuffer = new GPUParameterBuffer(device, {
     id: 'viewshed-settings',
     format: 'float32',
-    length: 8,
+    length: 10,
     values: getGPUTerrainViewshedParameterValues(settings, grid)
   });
   const graph = new GPUCommandGraph(device, {id: 'terrain-viewshed-test'});
@@ -211,7 +215,7 @@ it('GPUTerrainViewshed calibrates uint32 elevation and writes a visibility textu
   const settings = new GPUParameterBuffer(device, {
     id: 'texture-settings',
     format: 'float32',
-    length: 8,
+    length: 10,
     values: getGPUTerrainViewshedParameterValues(BASE_SETTINGS, BASE_GRID)
   });
   const graph = new GPUCommandGraph(device, {id: 'terrain-viewshed-texture'});
@@ -271,6 +275,7 @@ it('GPUTerrainViewshed calibrates uint32 elevation and writes a visibility textu
 });
 
 type ViewshedOptions = {
+  cellSizeMode?: GPURasterCellSizeMode;
   traversal?: GPUTerrainSightLineTraversal;
   tolerance?: GPUTerrainViewshedToleranceSettings;
 };
@@ -289,7 +294,7 @@ async function runViewshed(
   const settingsBuffer = new GPUParameterBuffer(device, {
     id: 'viewshed-settings',
     format: 'float32',
-    length: 8,
+    length: 10,
     values: getGPUTerrainViewshedParameterValues(settings, grid)
   });
   const toleranceBuffer = options.tolerance
@@ -314,6 +319,7 @@ async function runViewshed(
       },
       parameters: settingsBuffer.importToGraph(graph),
       traversal: options.traversal,
+      cellSizeMode: options.cellSizeMode,
       toleranceParameters: toleranceBuffer?.importToGraph(graph),
       output: {
         visibility: importGraphBuffer(graph, 'visibility', visibilityBuffer, 'uint32', pixelCount)
@@ -490,3 +496,74 @@ it('GPUTerrainViewshed with tolerance matches the float64 oracle away from knife
     expect(actual.some(code => code === V.visible)).toBe(true);
   }
 });
+
+for (const cellSizeMode of ['geographic', 'web-mercator'] as const) {
+  it(`GPUTerrainViewshed ${cellSizeMode} at 60 degrees matches the ground-meter oracle`, async () => {
+    const device = await getWebGPUTestDevice();
+    requireTestDevice(device);
+    const width = 64;
+    const height = 64;
+    const grid = makeGPURasterMetadata({width, height});
+    const mercatorCellSize = (6378137 * Math.PI) / (180 * 3600);
+    grid.affine =
+      cellSizeMode === 'geographic'
+        ? [1 / 3600, 0, 0, 0, -1 / 3600, 60 + 32 / 3600]
+        : [
+            mercatorCellSize,
+            0,
+            0,
+            0,
+            -mercatorCellSize,
+            6378137 * Math.log(Math.tan(Math.PI / 4 + Math.PI / 6)) + 32 * mercatorCellSize
+          ];
+    const terrain = createFractalTerrain(width, height, 11, 90);
+    const settings: GPUTerrainViewshedSettings = {
+      observer: [30.5, 31.25],
+      observerHeight: 1.7,
+      maximumDistance: 450,
+      curvatureCoefficient: 3e-5
+    };
+    const oracleOptions = {cellSizeMode, georeference: getRasterGridGeoreference(grid)};
+    for (const tolerance of [
+      undefined,
+      {
+        toleranceMeters: 2,
+        tolerancePerKilometer: 1,
+        targetIgnoreDistance: 60
+      }
+    ]) {
+      const expected = computeTerrainViewshedWithTolerance(
+        terrain,
+        undefined,
+        width,
+        height,
+        getGPUTerrainViewshedParameterValues(settings, grid),
+        getGPUTerrainViewshedToleranceParameterValues(tolerance ?? {}),
+        oracleOptions
+      );
+      const march = await runViewshed(device, terrain, grid, settings, {cellSizeMode, tolerance});
+      const pyramid = await runViewshed(device, terrain, grid, settings, {
+        cellSizeMode,
+        tolerance,
+        traversal: 'pyramid'
+      });
+      expect(pyramid).toEqual(march);
+      let mismatches = 0;
+      for (const [index, code] of march.entries()) {
+        if (code !== expected[index].code) {
+          mismatches++;
+          const {maxSlope, targetSlope, band} = expected[index];
+          const edge = Math.min(
+            Math.abs(maxSlope - (targetSlope + band)),
+            Math.abs(maxSlope - (targetSlope - band))
+          );
+          expect(edge).toBeLessThan(1e-4);
+        }
+      }
+      expect(mismatches / march.length).toBeLessThan(0.005);
+      expect(march).toContain(V.hidden);
+      expect(march).toContain(V.visible);
+      expect(march).toContain(V.outOfRange);
+    }
+  });
+}

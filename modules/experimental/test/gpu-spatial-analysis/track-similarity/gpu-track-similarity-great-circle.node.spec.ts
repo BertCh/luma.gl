@@ -74,8 +74,9 @@ it('GPUTrackSimilarity stays planar without a context and rejects other longitud
     ).toThrow();
   }
   expect(
-    () => new GPUTrackSimilarity({...props, spatialContext: {...GREAT_CIRCLE, units: 'kilometers'}})
-  ).toThrow(/kilometers/);
+    new GPUTrackSimilarity({...props, spatialContext: {...GREAT_CIRCLE, units: 'kilometers'}})
+      .sphereRadius
+  ).toBe(GPU_EARTH_MEAN_RADIUS_METERS / 1000);
   expect(
     () =>
       new GPUTrackSimilarity({
@@ -83,4 +84,25 @@ it('GPUTrackSimilarity stays planar without a context and rejects other longitud
         spatialContext: {coordinateSpace: 'planar', metric: 'great-circle'}
       })
   ).toThrow();
+});
+
+const DISTANCE_FRAME = {
+  coordinateSpace: 'planar',
+  metric: 'native',
+  units: 'meters',
+  frame: {id: 'f', kind: 'local-azimuthal-equidistant'}
+} as const;
+const AREA_FRAME = {
+  coordinateSpace: 'planar',
+  metric: 'native',
+  units: 'meters',
+  frame: {id: 'f', kind: 'local-lambert-equal-area'}
+} as const;
+
+it('GPUTrackSimilarity validates its distance frame', () => {
+  const {props} = createProps();
+  expect(() => new GPUTrackSimilarity({...props, spatialContext: AREA_FRAME})).toThrow(
+    /measures distance; project into an azimuthal-equidistant frame/
+  );
+  expect(() => new GPUTrackSimilarity({...props, spatialContext: DISTANCE_FRAME})).not.toThrow();
 });

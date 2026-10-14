@@ -605,3 +605,38 @@ it('IDW and kriging kernels parse and declare each shared NaN helper once', () =
     expect(sources.some(({source}) => source.includes('fn isNanBits('))).toBe(true);
   });
 });
+
+const DISTANCE_FRAME = {
+  coordinateSpace: 'planar',
+  metric: 'native',
+  units: 'meters',
+  frame: {id: 'f', kind: 'local-azimuthal-equidistant'}
+} as const;
+const AREA_FRAME = {
+  coordinateSpace: 'planar',
+  metric: 'native',
+  units: 'meters',
+  frame: {id: 'f', kind: 'local-lambert-equal-area'}
+} as const;
+
+it('interpolation operators validate distance frames', () => {
+  withGraph(graph => {
+    const inverseDistanceProps = createInterpolationProps(graph);
+    const krigingProps = createKrigingProps(graph);
+    for (const spatialContext of [DISTANCE_FRAME, AREA_FRAME]) {
+      const constructors = [
+        () => new GPUInverseDistanceWeighting({...inverseDistanceProps, spatialContext}),
+        () => new GPUKriging({...krigingProps, spatialContext})
+      ];
+      for (const construct of constructors) {
+        if (spatialContext === AREA_FRAME) {
+          expect(construct).toThrow(
+            /measures distance; project into an azimuthal-equidistant frame/
+          );
+        } else {
+          expect(construct).not.toThrow();
+        }
+      }
+    }
+  });
+});

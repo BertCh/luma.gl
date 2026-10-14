@@ -7,6 +7,10 @@ import {GPUCommandGraph} from '@luma.gl/gpgpu/gpu-core';
 import {getWebGPUTestDevice} from '@luma.gl/test-utils';
 import {expect, it} from 'vitest';
 import {makeGPURasterMetadata, type GPURasterMetadata} from '../../../src/gpu-raster';
+import {
+  getRasterGridGeoreference,
+  type GPURasterCellSizeMode
+} from '../../../src/analysis-core/raster-grid';
 import {GPUParameterBuffer, importGraphBuffer} from '../../../src/utils/gpu-contributor-utils';
 import {submitGraph} from '../../utils/gpu-contributor-test-utils';
 import {
@@ -38,6 +42,7 @@ async function runLineOfSight(
   settings: GPUTerrainLineOfSightSettings,
   options: {
     traversal?: GPUTerrainSightLineTraversal;
+    cellSizeMode?: GPURasterCellSizeMode;
     pairHeights?: Float32Array;
     clearance?: boolean;
   } = {}
@@ -75,6 +80,7 @@ async function runLineOfSight(
         : undefined,
       parameters: settingsBuffer.importToGraph(graph),
       traversal: options.traversal,
+      cellSizeMode: options.cellSizeMode,
       output: {
         visibility: importGraphBuffer(graph, 'visibility', visibilityBuffer, 'uint32', pairCount),
         clearance:
@@ -117,7 +123,7 @@ async function runViewshedCodes(
   const settingsBuffer = new GPUParameterBuffer(device, {
     id: 'viewshed-settings',
     format: 'float32',
-    length: 8,
+    length: 10,
     values: getGPUTerrainViewshedParameterValues(
       {
         observer,
@@ -299,4 +305,74 @@ it('GPUTerrainLineOfSight applies pair heights, noData and the float64 oracle', 
   }
   expect(mismatches).toBeLessThan(2);
   expect(new Set(gpu.codes).size).toBeGreaterThan(1);
+});
+
+it('GPUTerrainLineOfSight geographic pairs at 60 degrees match the ground-meter oracle', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const width = 64;
+  const height = 64;
+  const grid = makeGPURasterMetadata({width, height});
+  grid.affine = [1 / 3600, 0, 0, 0, -1 / 3600, 60 + 32 / 3600];
+  const terrain = createFractalTerrain(width, height, 21, 40);
+  const settings: GPUTerrainLineOfSightSettings = {
+    observerHeight: 2,
+    maximumDistance: 700,
+    curvatureCoefficient: 2e-5,
+    toleranceMeters: 2,
+    tolerancePerKilometer: 1,
+    targetIgnoreDistance: 60
+  };
+  const pairs = new Float32Array(200 * 4);
+  for (let index = 0; index < 200; index++) {
+    pairs.set(
+      [(index * 7.3) % 63, (index * 3.1) % 63, (index * 5.7 + 3) % 63, (index * 11.9 + 1) % 63],
+      index * 4
+    );
+  }
+  const march = await runLineOfSight(device, terrain, grid, pairs, settings, {
+    cellSizeMode: 'geographic'
+  });
+  const pyramid = await runLineOfSight(device, terrain, grid, pairs, settings, {
+    cellSizeMode: 'geographic',
+    traversal: 'pyramid'
+  });
+  expect(pyramid.codes).toEqual(march.codes);
+  expect(new Uint32Array(new Float32Array(pyramid.clearance).buffer)).toEqual(
+    new Uint32Array(new Float32Array(march.clearance).buffer)
+  );
+  const parameters = getGPUTerrainLineOfSightParameterValues(settings, grid);
+  let mismatches = 0;
+  for (let index = 0; index < 200; index++) {
+    const expected = computeTerrainSightLine(
+      terrain,
+      undefined,
+      width,
+      height,
+      [pairs[index * 4], pairs[index * 4 + 1]],
+      [pairs[index * 4 + 2], pairs[index * 4 + 3]],
+      parameters,
+      undefined,
+      {cellSizeMode: 'geographic', georeference: getRasterGridGeoreference(grid)}
+    );
+    if (march.codes[index] !== expected.code) {
+      mismatches++;
+      const edge = Math.min(
+        Math.abs(expected.maxSlope - (expected.targetSlope + expected.band)),
+        Math.abs(expected.maxSlope - (expected.targetSlope - expected.band))
+      );
+      expect(edge).toBeLessThan(1e-4);
+    }
+    if (Number.isNaN(expected.clearance)) {
+      expect(march.clearance[index]).toBeNaN();
+    } else {
+      expect(Math.abs(march.clearance[index] - expected.clearance)).toBeLessThan(
+        Math.max(0.01, Math.abs(expected.clearance) * 1e-5)
+      );
+    }
+  }
+  expect(mismatches).toBeLessThan(2);
+  expect(march.codes).toContain(V.outOfRange);
+  expect(march.codes).toContain(V.visible);
+  expect(march.codes).toContain(V.hidden);
 });

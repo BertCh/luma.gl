@@ -236,6 +236,7 @@ export function measureFeature(
     /** Ring counts of the polygons of the feature; default one polygon owning every ring. */
     polygonRingCounts?: number[];
     radius?: number;
+    areaRadius?: number;
   }
 ): FeatureMeasures {
   const {isPolygon, coordinateSystem} = options;
@@ -336,7 +337,10 @@ export function measureFeature(
     momentX += factor * ringMomentX;
     momentY += factor * ringMomentY;
   });
-  const areaRadius = coordinateSystem === 'wgs84' ? WGS84_AUTHALIC_RADIUS : radius;
+  const areaRadius =
+    coordinateSystem === 'wgs84'
+      ? WGS84_AUTHALIC_RADIUS
+      : (options.areaRadius ?? options.radius ?? 6371007.180918475);
   const signedArea = isPolygon ? 0.5 * crossSum * (isGeographic ? areaRadius ** 2 : 1) : 0;
   let centroid: [number, number] = [
     origin[0] + vertexSumX / vertexCount,

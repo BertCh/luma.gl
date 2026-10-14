@@ -355,6 +355,34 @@ it('GPUNetworkSnapping great-circle scan matches the f64 oracle across the antim
   });
 });
 
+it('GPUNetworkSnapping scales great-circle distances and default costs to kilometers', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const fixture = createAntimeridianFixture();
+  const meters = await runSnapping(device, {fixture, maximumSnapDistance: 400});
+  const kilometers = await runSnapping(device, {
+    fixture: {
+      ...fixture,
+      spatialContext: {
+        coordinateSpace: 'longitude-latitude',
+        metric: 'great-circle',
+        units: 'kilometers'
+      }
+    },
+    maximumSnapDistance: 0.4,
+    candidateCapacity: 4
+  });
+  expect(kilometers.overflow).toBe(0);
+  expect(kilometers.edges).toEqual(meters.edges);
+  expect(kilometers.fractions).toEqual(meters.fractions);
+  expect(kilometers.positions).toEqual(meters.positions);
+  for (const field of ['distances', 'sourceCosts', 'targetCosts'] as const) {
+    kilometers[field].forEach((value, point) => {
+      expect(value).toBeCloseTo(meters[field][point] / 1000, 5);
+    });
+  }
+});
+
 it('GPUNetworkSnapping great-circle BVH candidate path matches the great-circle scan', async () => {
   const device = await getWebGPUTestDevice();
   requireTestDevice(device);

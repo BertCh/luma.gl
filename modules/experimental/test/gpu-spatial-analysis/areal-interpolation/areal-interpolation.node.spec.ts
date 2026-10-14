@@ -4,6 +4,7 @@
 
 import {createTransientView, GPUCommandGraph} from '@luma.gl/gpgpu/gpu-core';
 import {expect, it} from 'vitest';
+import type {GPUSpatialContext} from '../../../src/analysis-core/contracts/spatial-context';
 import {
   GPUArealInterpolation,
   GPUPycnophylactic
@@ -519,3 +520,92 @@ it('longitude/latitude cell areas mirror stored rows for a north-up placement an
     expect(source, nodeId).toContain(`${functionName}(index / WIDTH)`);
   }
 });
+
+for (const operator of ['areal', 'pycnophylactic'] as const) {
+  function createOperator(spatialContext?: GPUSpatialContext) {
+    const {graph, view} = setup();
+    const common = {
+      id: operator,
+      grid: makeGPURasterMetadata({width: 2, height: 2}),
+      spatialContext,
+      parameters:
+        spatialContext?.coordinateSpace === 'longitude-latitude' ? view('float32', 4) : undefined
+    };
+    const contributor =
+      operator === 'areal'
+        ? new GPUArealInterpolation({
+            ...common,
+            sourceZones: view('uint32', 4),
+            targetZones: view('uint32', 4),
+            sourceZoneCount: 1,
+            targetZoneCount: 1,
+            output: {
+              weights: {
+                offsets: view('uint32', 2),
+                neighbors: view('uint32', 1),
+                weights: view('float32', 1)
+              },
+              status: {overflow: view('uint32', 1)}
+            }
+          })
+        : new GPUPycnophylactic({
+            ...common,
+            zones: view('uint32', 4),
+            zoneCount: 1,
+            totals: view('float32', 1),
+            maximumIterations: 1,
+            output: {mass: view('float32', 4)}
+          });
+    return {graph, contributor};
+  }
+
+  it(`${operator} requires great-circle on longitude/latitude and an area-compatible frame`, () => {
+    expect(createOperator().contributor.spatialContext).toEqual({
+      coordinateSpace: 'planar',
+      metric: 'native',
+      units: 'native'
+    });
+    expect(() => createOperator({coordinateSpace: 'longitude-latitude', metric: 'none'})).toThrow(
+      `${operator} longitude-latitude positions need the great-circle metric`
+    );
+    expect(() =>
+      createOperator({
+        coordinateSpace: 'planar',
+        metric: 'native',
+        units: 'meters',
+        frame: {id: 'distance-frame', kind: 'local-azimuthal-equidistant'}
+      })
+    ).toThrow(
+      `${operator} measures area; project into a lambert-equal-area frame, not azimuthal-equidistant`
+    );
+    const spatialContext: GPUSpatialContext = {
+      coordinateSpace: 'planar',
+      metric: 'native',
+      units: 'meters',
+      frame: {id: 'area-frame', kind: 'local-lambert-equal-area'}
+    };
+    const {graph, contributor} = createOperator(spatialContext);
+    expect(contributor.spatialContext).toEqual(spatialContext);
+    expect(contributor.getCommandNodes(graph).length).toBeGreaterThan(0);
+  });
+
+  it.each([
+    {units: 'meters' as const, radius: 6371007.180918475},
+    {units: 'kilometers' as const, radius: 6371.007180918475},
+    {units: 'kilometers' as const, radius: 12.5, sphereRadius: 12.5}
+  ])(`${operator} bakes the authalic area radius in $units (radius $radius)`, options => {
+    const {graph, contributor} = createOperator({
+      coordinateSpace: 'longitude-latitude',
+      metric: 'great-circle',
+      units: options.units,
+      sphereRadius: options.sphereRadius
+    });
+    const kernel = getGPUCommandNodeKernelSources(contributor.getCommandNodes(graph)).find(
+      ({id}) => id === `${operator}-${operator === 'areal' ? 'area-weights' : 'cell-areas'}`
+    );
+    expect(kernel).toBeDefined();
+    const radius = Number(kernel!.source.match(/const SPHERE_RADIUS: f32 = ([^;]+);/)?.[1]);
+    expect(radius).toBe(Math.fround(options.radius));
+    expect(() => new WgslReflect(kernel!.source)).not.toThrow();
+  });
+}

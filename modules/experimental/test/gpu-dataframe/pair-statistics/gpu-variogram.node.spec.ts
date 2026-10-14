@@ -238,3 +238,29 @@ it('gpu-variogram declares planar-only spatial support', () => {
     /does not support discrete-grid/
   );
 });
+
+it('GPUVariogram requires a distance-compatible local frame', () => {
+  const device = createNullWebGPUDevice();
+  const graph = new GPUCommandGraph(device);
+  const spatialContext = {
+    coordinateSpace: 'planar',
+    metric: 'native',
+    units: 'meters',
+    frame: {id: 'f', kind: 'local-lambert-equal-area'}
+  } as const;
+  expect(() => new GPUVariogram(createProps(graph, {id: 'distance', spatialContext}))).toThrow(
+    'distance measures distance; project into an azimuthal-equidistant frame, not lambert-equal-area'
+  );
+  expect(
+    () =>
+      new GPUVariogram(
+        createProps(graph, {
+          spatialContext: {
+            ...spatialContext,
+            frame: {id: 'f', kind: 'local-azimuthal-equidistant'}
+          }
+        })
+      )
+  ).not.toThrow();
+  device.destroy();
+});

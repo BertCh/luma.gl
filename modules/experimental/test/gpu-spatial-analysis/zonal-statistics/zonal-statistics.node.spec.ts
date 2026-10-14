@@ -602,7 +602,7 @@ it('GPUZonalStatistics spatial context: planar default, longitude-latitude needs
   const out = (name: string) => view(graph, name, 'float32', FEATURE_COUNT);
   const longitudeLatitude = {
     coordinateSpace: 'longitude-latitude',
-    metric: 'great-circle'
+    metric: 'none'
   } as const;
   expect(new GPUZonalStatistics(createProps(graph)).spatialContext.coordinateSpace).toBe('planar');
   // Counts and sums are topological: allowed in degrees.
@@ -644,14 +644,12 @@ it('GPUZonalStatistics spatial context: planar default, longitude-latitude needs
 });
 
 it('GPUZonalStatistics gives its membership join a containment context, so longitude-latitude builds', () => {
-  for (const metric of ['none', 'great-circle'] as const) {
-    const graph = new GPUCommandGraph(createNullWebGPUDevice());
-    const zonal = new GPUZonalStatistics(
-      createProps(graph, {spatialContext: {coordinateSpace: 'longitude-latitude', metric}})
-    );
-    // Building the nodes constructs the join with the forwarded context; it used to be planar.
-    expect(zonal.getCommandNodes(graph).some(node => node.id.includes('-join'))).toBe(true);
-  }
+  const graph = new GPUCommandGraph(createNullWebGPUDevice());
+  const zonal = new GPUZonalStatistics(
+    createProps(graph, {spatialContext: {coordinateSpace: 'longitude-latitude', metric: 'none'}})
+  );
+  // Building the nodes constructs the join with the forwarded context; it used to be planar.
+  expect(zonal.getCommandNodes(graph).some(node => node.id.includes('-join'))).toBe(true);
   expect(
     getPointInPolygonContainmentContext({
       coordinateSpace: 'longitude-latitude',
@@ -660,4 +658,94 @@ it('GPUZonalStatistics gives its membership join a containment context, so longi
   ).toEqual({coordinateSpace: 'longitude-latitude', metric: 'none'});
   const planar = {coordinateSpace: 'planar', metric: 'native', units: 'meters'} as const;
   expect(getPointInPolygonContainmentContext(planar)).toBe(planar);
+});
+
+it.each([
+  'great-circle',
+  'rhumb',
+  'ellipsoidal'
+] as const)('GPUZonalStatistics rejects the longitude/latitude %s metric', metric => {
+  const device = createNullWebGPUDevice();
+  const graph = new GPUCommandGraph(device);
+  expect(
+    () =>
+      new GPUZonalStatistics(
+        createProps(graph, {spatialContext: {coordinateSpace: 'longitude-latitude', metric}})
+      )
+  ).toThrow('z longitude-latitude positions need the none metric');
+  device.destroy();
+});
+
+it.each([
+  'densities',
+  'weightedDensities',
+  'featureAreas',
+  'extent'
+] as const)('GPUZonalStatistics validates area frames for GPU-computed %s', statistic => {
+  const device = createNullWebGPUDevice();
+  const graph = new GPUCommandGraph(device);
+  const spatialContext = {
+    coordinateSpace: 'planar',
+    metric: 'native',
+    units: 'meters',
+    frame: {id: 'f', kind: 'local-azimuthal-equidistant'}
+  } as const;
+  const output =
+    statistic === 'extent'
+      ? {extent: view(graph, 'extent', 'float32', 2), extentStatistic: 'density' as const}
+      : {[statistic]: view(graph, statistic, 'float32', FEATURE_COUNT)};
+  const props = createProps(
+    graph,
+    {spatialContext, weights: view(graph, 'weights', 'float32', POINT_COUNT)},
+    output
+  );
+  expect(() => new GPUZonalStatistics(props)).toThrow(
+    'z measures area; project into a lambert-equal-area frame, not azimuthal-equidistant'
+  );
+  const equalArea = new GPUZonalStatistics({
+    ...props,
+    spatialContext: {
+      ...spatialContext,
+      frame: {id: 'f', kind: 'local-lambert-equal-area'}
+    }
+  });
+  expect(equalArea.plan.needGPUAreas).toBe(true);
+  expect(equalArea.getCommandNodes(graph).some(node => node.id.endsWith('-area'))).toBe(true);
+  if (statistic !== 'featureAreas') {
+    const suppliedAreas = new GPUZonalStatistics({
+      ...props,
+      id: 'supplied',
+      areas: view(graph, 'supplied-areas', 'float32', FEATURE_COUNT)
+    });
+    expect(suppliedAreas.plan.needGPUAreas).toBe(false);
+    expect(suppliedAreas.getCommandNodes(graph).some(node => node.id.endsWith('-area'))).toBe(
+      false
+    );
+  }
+  device.destroy();
+});
+
+it('GPUZonalStatistics accepts either local frame for means without computing area', () => {
+  const device = createNullWebGPUDevice();
+  const graph = new GPUCommandGraph(device);
+  for (const kind of ['local-azimuthal-equidistant', 'local-lambert-equal-area'] as const) {
+    const zonal = new GPUZonalStatistics(
+      createProps(
+        graph,
+        {
+          id: kind,
+          spatialContext: {
+            coordinateSpace: 'planar',
+            metric: 'native',
+            units: 'meters',
+            frame: {id: 'f', kind}
+          }
+        },
+        {means: view(graph, 'means', 'float32', FEATURE_COUNT)}
+      )
+    );
+    expect(zonal.plan.needGPUAreas).toBe(false);
+    expect(zonal.getCommandNodes(graph).some(node => node.id.endsWith('-area'))).toBe(false);
+  }
+  device.destroy();
 });

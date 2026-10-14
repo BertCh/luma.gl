@@ -42,15 +42,12 @@ it('GPULineSimplification Douglas-Peucker accepts the great-circle context in me
   expect(timeRatio.line.getCommandNodes(timeRatio.graph).length).toBeGreaterThan(0);
 });
 
-it('GPULineSimplification rejects other longitude-latitude contexts, kilometers and great-circle Visvalingam', () => {
+it('GPULineSimplification rejects other longitude-latitude contexts and great-circle Visvalingam', () => {
   for (const metric of ['none', 'ellipsoidal', 'rhumb'] as const) {
     expect(() =>
       createLine({spatialContext: {coordinateSpace: 'longitude-latitude', metric}})
     ).toThrow();
   }
-  expect(() => createLine({spatialContext: {...GREAT_CIRCLE, units: 'kilometers'}})).toThrow(
-    /kilometers/
-  );
   expect(() => createLine({spatialContext: GREAT_CIRCLE, method: 'visvalingam'})).toThrow(
     /planar only/
   );

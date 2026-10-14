@@ -247,3 +247,27 @@ it('GPUPointDensity is planar-only', () => {
   ).toThrow(/project positions to a planar frame/);
   device.destroy();
 });
+
+const DISTANCE_FRAME = {
+  coordinateSpace: 'planar',
+  metric: 'native',
+  units: 'meters',
+  frame: {id: 'f', kind: 'local-azimuthal-equidistant'}
+} as const;
+const AREA_FRAME = {
+  coordinateSpace: 'planar',
+  metric: 'native',
+  units: 'meters',
+  frame: {id: 'f', kind: 'local-lambert-equal-area'}
+} as const;
+
+it('GPUPointDensity validates its area frame', () => {
+  const device = createNullWebGPUDevice();
+  const graph = new GPUCommandGraph(device);
+  const props = createProps(graph);
+  expect(() => new GPUPointDensity({...props, spatialContext: DISTANCE_FRAME})).toThrow(
+    /measures area; project into a lambert-equal-area frame/
+  );
+  expect(() => new GPUPointDensity({...props, spatialContext: AREA_FRAME})).not.toThrow();
+  device.destroy();
+});

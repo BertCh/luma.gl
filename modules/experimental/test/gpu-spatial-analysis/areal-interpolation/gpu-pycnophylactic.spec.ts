@@ -114,6 +114,7 @@ async function runNumpyFixture(
     anchors: boolean;
     tolerance?: number;
     geographic?: boolean;
+    units?: 'meters' | 'kilometers';
     density?: boolean;
     /** Store rows north-up (row 0 northernmost): the same raster with its rows mirrored. */
     northUp?: boolean;
@@ -179,7 +180,8 @@ async function runNumpyFixture(
         ? {
             spatialContext: {
               coordinateSpace: 'longitude-latitude',
-              metric: 'great-circle'
+              metric: 'great-circle',
+              units: options.units
             } as const,
             // Packed placement: [10, originLatitude, cellWidth, +-cellHeight] as before.
             parameters: rig.input(getGPUPolygonRasterizationParameterValues(grid), 'float32')
@@ -260,4 +262,20 @@ it('GPUPycnophylactic gives a north-up longitude/latitude grid the mirrored resu
   expectClose(northUp.mass, northAdvancing.mass, 'north-up mass', 1e-4, 1e-4);
   expectClose(northUp.density!, northAdvancing.density!, 'north-up density', 1e-4, 1e-14);
   expect(northUp.mass.reduce((sum, value) => sum + value, 0)).toBeCloseTo(507, 1);
+});
+
+it('GPUPycnophylactic preserves mass and scales geographic density to square kilometers', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const options = {iterations: 6, anchors: true, geographic: true, density: true};
+  const meters = await runNumpyFixture(device, {...options, units: 'meters'});
+  const kilometers = await runNumpyFixture(device, {...options, units: 'kilometers'});
+  expectClose(kilometers.mass, meters.mass, 'kilometers mass', 1e-4, 1e-4);
+  expectClose(
+    kilometers.density!,
+    meters.density!.map(value => value * 1e6),
+    'density per square kilometer',
+    1e-4,
+    1e-8
+  );
 });

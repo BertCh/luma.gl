@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import type {GPUSpatialContext} from '../../../src/analysis-core/contracts/spatial-context';
 import {createTransientView, GPUCommandGraph} from '@luma.gl/gpgpu/gpu-core';
 import {expect, it} from 'vitest';
 import {
@@ -499,5 +500,22 @@ it('GPUSpatialClustering neighbor scans read cell-ordered copies (coalesced read
   for (const kernel of kernels) {
     expect(getStorageBindingCount(kernel.source), kernel.id).toBeLessThanOrEqual(8);
   }
+  device.destroy();
+});
+
+it('distance measurements reject Lambert frames and accept AEQD meters', () => {
+  const device = createNullWebGPUDevice();
+  const lambert = {
+    coordinateSpace: 'planar',
+    metric: 'native',
+    units: 'meters',
+    frame: {id: 'local-frame', kind: 'local-lambert-equal-area'}
+  } as const;
+  const create = (spatialContext: GPUSpatialContext) =>
+    new GPUSpatialClustering(createProps(new GPUCommandGraph(device), {spatialContext}));
+  expect(() => create(lambert)).toThrow(/measures distance/);
+  expect(() =>
+    create({...lambert, frame: {...lambert.frame, kind: 'local-azimuthal-equidistant'}})
+  ).not.toThrow();
   device.destroy();
 });

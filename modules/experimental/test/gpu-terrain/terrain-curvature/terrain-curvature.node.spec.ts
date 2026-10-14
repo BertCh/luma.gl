@@ -140,6 +140,11 @@ it('GPUTerrainCurvature validates its properties', () => {
   expect(() => create({parameters: view(11)})).toThrow(/parameters/);
   expect(() => create({method: 'horn' as never})).toThrow(/method/);
   expect(() => create({cellSizeMode: 'polar' as never})).toThrow(/cellSizeMode/);
+  const rotatedGrid = {...GRID, affine: [2, 0.5, 0, 0, -3, 5] as const};
+  expect(() => create({grid: rotatedGrid, cellSizeMode: 'geographic'})).toThrow(
+    /geographic cell sizes need an axis-aligned grid/
+  );
+  expect(() => create({grid: rotatedGrid})).not.toThrow();
   expect(() => create({rowDirection: 'up' as never})).toThrow(/rowDirection/);
   expect(() => create({borderMode: 'reflect' as never})).toThrow(/borderMode/);
   expect(() => create({ringSquash: 'tanh' as never})).toThrow(/ringSquash/);

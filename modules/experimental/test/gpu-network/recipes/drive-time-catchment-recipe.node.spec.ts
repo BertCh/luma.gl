@@ -5,6 +5,7 @@
 import {createTransientView, GPUCommandGraph} from '@luma.gl/gpgpu/gpu-core';
 import {expect, it} from 'vitest';
 import {GPUNetworkSnapping} from '../../../src/gpu-network/network-accessibility/index';
+import {createGPULocalFrame} from '../../../src/analysis-core/contracts/local-frame';
 import type {GPUSpatialContext} from '../../../src/analysis-core/contracts/spatial-context';
 import {addDriveTimeCatchmentRecipe} from '../../../src/gpu-network/recipes/drive-time-catchment-recipe';
 import {createNullWebGPUDevice} from '../../utils/gpu-contributor-test-utils';
@@ -119,4 +120,47 @@ it('drive-time recipe validates the topology', () => {
       costBreaks: view('float32', 3)
     })
   ).toThrow(/topology.nodePositions must contain one row per node/);
+});
+
+it('drive-time recipe accepts distance frames and rejects equal-area frames', () => {
+  const equidistant = createGPULocalFrame({origin: [10, 60]}).spatialContext;
+  const {recipe, snappings} = buildRecipe(equidistant);
+  expect(recipe.spatialContext).toBe(equidistant);
+  expect(equidistant.units).toBe('meters');
+  for (const snapping of snappings) {
+    expect(snapping.spatialContext).toBe(equidistant);
+  }
+  const equalArea = createGPULocalFrame({
+    origin: [10, 60],
+    kind: 'lambert-equal-area'
+  }).spatialContext;
+  expect(() => buildRecipe(equalArea)).toThrow(
+    'drive-time-catchment measures distance; project into an azimuthal-equidistant frame, not lambert-equal-area'
+  );
+});
+
+it('drive-time recipe uses kilometer radii for both longitude/latitude metrics', () => {
+  for (const metric of ['none', 'great-circle'] as const) {
+    const context: GPUSpatialContext = {
+      coordinateSpace: 'longitude-latitude',
+      metric,
+      units: 'kilometers'
+    };
+    const {recipe, snappings} = buildRecipe(context, 4);
+    expect(recipe.spatialContext).toBe(context);
+    for (const snapping of snappings) {
+      expect(snapping.spatialContext).toMatchObject({
+        metric: 'great-circle',
+        units: 'kilometers',
+        sphereRadius: 6371.0088
+      });
+    }
+  }
+  const {snappings} = buildRecipe({
+    coordinateSpace: 'longitude-latitude',
+    metric: 'great-circle',
+    units: 'kilometers',
+    sphereRadius: 6400
+  });
+  expect(snappings[0].spatialContext.sphereRadius).toBe(6400);
 });

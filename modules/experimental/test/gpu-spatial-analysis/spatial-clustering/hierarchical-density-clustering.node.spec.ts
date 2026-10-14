@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import type {GPUSpatialContext} from '../../../src/analysis-core/contracts/spatial-context';
 import {createTransientView, GPUCommandGraph} from '@luma.gl/gpgpu/gpu-core';
 import {expect, it} from 'vitest';
 import {
@@ -218,3 +219,21 @@ it('the GPU formulation (model) reproduces scikit-learn HDBSCAN partitions', () 
     });
   }
 }, 600000);
+
+it('distance measurements reject Lambert frames and accept AEQD meters', () => {
+  const device = createNullWebGPUDevice();
+  const graph = new GPUCommandGraph(device);
+  const lambert = {
+    coordinateSpace: 'planar',
+    metric: 'native',
+    units: 'meters',
+    frame: {id: 'local-frame', kind: 'local-lambert-equal-area'}
+  } as const;
+  const create = (spatialContext: GPUSpatialContext) =>
+    new GPUHierarchicalDensityClustering(createProps(graph, 100, {spatialContext}));
+  expect(() => create(lambert)).toThrow(/measures distance/);
+  expect(() =>
+    create({...lambert, frame: {...lambert.frame, kind: 'local-azimuthal-equidistant'}})
+  ).not.toThrow();
+  device.destroy();
+});

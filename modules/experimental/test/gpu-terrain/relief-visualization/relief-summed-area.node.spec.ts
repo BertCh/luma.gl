@@ -18,7 +18,7 @@ import {
   getStorageBindingCount
 } from '../../utils/gpu-contributor-test-utils';
 import {createBand} from '../terrain-test-utils';
-import {computeMeanFilterRVT} from './relief-visualization-oracle';
+import {computeMeanFilterRVT, computeRectangleMeanFilterRVT} from './relief-visualization-oracle';
 import {computeLiteralReliefDeviation, modelReliefDeviation} from './relief-summed-area-model';
 
 function createRandom(seed: number) {
@@ -326,3 +326,50 @@ describe('relief summed-area kernels', () => {
     ]);
   });
 });
+
+for (const [width, height] of [
+  [7, 5],
+  [1, 5],
+  [7, 1],
+  [1, 1]
+]) {
+  it(`summed-area rectangles match the float64 oracle on ${width} x ${height}`, () => {
+    const elevation = Float32Array.from(
+      {length: width * height},
+      (_, index) => 0.1 + (index % 11) / 17
+    );
+    if (elevation.length > 1) elevation[1] = NaN;
+    const validity = Array.from(elevation, value => (Number.isNaN(value) ? 0 : 1));
+    const rowRadii: [number, number][] = Array.from({length: height}, (_, row) => [
+      row + 2,
+      height + 2 - row
+    ]);
+    const quantum = GPU_RELIEF_DEFAULT_QUANTUM;
+    const model = modelReliefDeviation(elevation, validity, width, height, 0, quantum, rowRadii);
+    const oracle = computeRectangleMeanFilterRVT(elevation, width, height, rowRadii);
+    for (let index = 0; index < elevation.length; index++) {
+      if (!validity[index]) {
+        expect(model.deviation[index]).toBeNaN();
+        continue;
+      }
+      const deviation = elevation[index] - oracle[index];
+      expect(Math.abs(model.deviation[index] - deviation)).toBeLessThanOrEqual(
+        getBound(deviation, quantum)
+      );
+    }
+    const validElevation = Float32Array.from(elevation, value => (Number.isNaN(value) ? 0 : value));
+    const full = modelReliefDeviation(
+      validElevation,
+      new Uint8Array(elevation.length).fill(1),
+      width,
+      height,
+      0,
+      quantum,
+      rowRadii
+    );
+    for (let row = 0; row < height; row++) {
+      const [radiusX, radiusY] = rowRadii[row];
+      expect(full.count[row * width]).toBe((2 * radiusX + 1) * (2 * radiusY + 1));
+    }
+  });
+}

@@ -68,7 +68,6 @@ it('addClusterAndOutlineRecipe clusters points and outlines each cluster with it
         kind: 'points',
         positions: fixture.input('positions', positions, 'float32x2', pointCount)
       },
-      spatialContext: {coordinateSpace: 'planar', metric: 'native', units: 'native'},
       clusteringParameters: fixture.parameters(
         'clustering-parameters',
         'float32',
@@ -100,6 +99,11 @@ it('addClusterAndOutlineRecipe clusters points and outlines each cluster with it
       }
     });
     expect(recipe.contributors.length).toBe(4);
+    expect(recipe.spatialContext).toEqual({
+      coordinateSpace: 'planar',
+      metric: 'native',
+      units: 'native'
+    });
     fixture.run();
 
     expect(await fixture.readUint32(labels, pointCount)).toEqual(clustering.labels);
@@ -196,7 +200,7 @@ it('addClusterAndOutlineRecipe rejects non-great-circle longitude/latitude conte
         maximumVerticesPerHull: 8,
         hullCapacity: 32
       })
-    ).toThrow(/does not support the rhumb metric/);
+    ).toThrow(/project positions to a planar frame first/);
   } finally {
     fixture.destroy();
   }

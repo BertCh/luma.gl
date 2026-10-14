@@ -368,3 +368,40 @@ it('GPURegionMask decides lasso crossings by exact orientation (rule 1)', () => 
   }
   device.destroy();
 });
+
+it('radius regions require a distance frame while rectangle regions accept an equal-area frame', () => {
+  const device = createNullWebGPUDevice();
+  const graph = new GPUCommandGraph(device);
+  const spatialContext = {
+    coordinateSpace: 'planar',
+    metric: 'native',
+    units: 'meters',
+    frame: {id: 'f', kind: 'local-lambert-equal-area'}
+  } as const;
+  const region = {
+    kind: 'radius',
+    circle: createTransientView(graph, 'frame-circle', 'float32', 3)
+  } as const;
+  expect(
+    () =>
+      new GPURegionStatistics(createProps(graph, 'radius-', {id: 'radius', region, spatialContext}))
+  ).toThrow(
+    'radius measures distance; project into an azimuthal-equidistant frame, not lambert-equal-area'
+  );
+  expect(
+    new GPURegionStatistics(createProps(graph, 'rectangle-', {spatialContext})).spatialContext
+  ).toBe(spatialContext);
+  expect(
+    () =>
+      new GPURegionStatistics(
+        createProps(graph, 'equidistant-', {
+          region,
+          spatialContext: {
+            ...spatialContext,
+            frame: {id: 'f', kind: 'local-azimuthal-equidistant'}
+          }
+        })
+      )
+  ).not.toThrow();
+  device.destroy();
+});

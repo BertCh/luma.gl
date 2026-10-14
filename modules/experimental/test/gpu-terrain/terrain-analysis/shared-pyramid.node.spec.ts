@@ -62,7 +62,7 @@ function createFixture() {
       new GPUTerrainViewshed({
         grid: GRID,
         elevation,
-        parameters: view('viewshed-settings', 'float32', 8),
+        parameters: view('viewshed-settings', 'float32', 10),
         output: {visibility: view('viewshed-out', 'uint32', WIDTH * HEIGHT)},
         traversal,
         pyramid

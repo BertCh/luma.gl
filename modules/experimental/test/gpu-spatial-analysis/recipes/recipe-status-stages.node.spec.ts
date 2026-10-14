@@ -395,6 +395,11 @@ describe('fleet dwell recipes status', () => {
         candidateCapacity: 64
       }
     } as never);
+    expect(recipe.spatialContext).toEqual({
+      coordinateSpace: 'planar',
+      metric: 'native',
+      units: 'native'
+    });
     const stages = expectStages(recipe, ['metrics', 'zone-join', 'zone-statistics']);
     expect(stages['metrics']).toEqual({
       count: recipe.stops.status.count,
@@ -449,6 +454,11 @@ describe('fleet dwell recipes status', () => {
       return {recipe, visitTable};
     };
     const plain = create(false);
+    expect(plain.recipe.spatialContext).toEqual({
+      coordinateSpace: 'planar',
+      metric: 'native',
+      units: 'native'
+    });
     const stages = expectStages(plain.recipe, ['zone-events', 'zone-statistics']);
     expect(stages['zone-events']).toEqual({
       count: plain.recipe.events.status.count,
@@ -650,6 +660,11 @@ describe('points in polygons choropleth recipe status', () => {
 
   it('zonal backend reports overflow and uncertain pairs', () => {
     const recipe = create('zonal');
+    expect(recipe.spatialContext).toEqual({
+      coordinateSpace: 'planar',
+      metric: 'native',
+      units: 'native'
+    });
     const stages = expectStages(recipe, ['zonal-statistics']);
     expect(stages['zonal-statistics']).toEqual({
       overflow: recipe.status.overflow,
@@ -755,6 +770,11 @@ describe('straight-line catchments recipe status', () => {
       facilities: {kind: 'points', positions: view('float32x2', 8, 'seeds')},
       values: view('float32', 256, 'values')
     } as never);
+    expect(recipe.spatialContext).toEqual({
+      coordinateSpace: 'planar',
+      metric: 'native',
+      units: 'native'
+    });
     const stages = expectStages(recipe, ['zonal-statistics']);
     expect(stages['zonal-statistics']).toEqual({overflow: recipe.status.overflow});
   });

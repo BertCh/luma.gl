@@ -48,6 +48,20 @@ it('GPUGeographicallyWeightedRegressionNonstationarityTest validates its inputs 
       () => new GPUGeographicallyWeightedRegressionNonstationarityTest(createProps(overrides))
     ).toThrow(message);
   expectThrows({predictorCount: 0}, /predictorCount/);
+  expect(
+    () =>
+      new GPUGeographicallyWeightedRegressionNonstationarityTest({
+        ...createProps(),
+        spatialContext: AREA_FRAME
+      })
+  ).toThrow(/measures distance; project into an azimuthal-equidistant frame/);
+  expect(
+    () =>
+      new GPUGeographicallyWeightedRegressionNonstationarityTest({
+        ...createProps(),
+        spatialContext: DISTANCE_FRAME
+      })
+  ).not.toThrow();
   expectThrows({predictorCount: 8}, /predictorCount/);
   expectThrows({maximumPermutations: 0}, /maximumPermutations/);
   expectThrows({predictors: view('float32', 19)}, /predictors length/);
@@ -111,3 +125,16 @@ it('nonstationarity oracle reproduces mgwr permutation fits (fixed and adaptive 
     expect(oracle.exceedances).toEqual(expected.exceedances);
   }
 });
+
+const DISTANCE_FRAME = {
+  coordinateSpace: 'planar',
+  metric: 'native',
+  units: 'meters',
+  frame: {id: 'f', kind: 'local-azimuthal-equidistant'}
+} as const;
+const AREA_FRAME = {
+  coordinateSpace: 'planar',
+  metric: 'native',
+  units: 'meters',
+  frame: {id: 'f', kind: 'local-lambert-equal-area'}
+} as const;

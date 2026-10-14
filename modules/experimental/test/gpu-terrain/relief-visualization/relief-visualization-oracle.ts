@@ -4,10 +4,110 @@
 
 /**
  * Float64 oracles written straight from the formulas of the Relief Visualization Toolbox (RVT,
- * Apache-2.0; Kokalj and Somrak 2019). They deliberately share no code with the GPU contributors:
+ * Apache-2.0; Kokalj and Somrak 2019). The filter arithmetic is independent of the GPU contributors (ground scaling uses the shared CPU twin):
  * the mean filter uses RVT's padded integral image, MSRM runs RVT's loop over every scale, local
  * dominance rolls the padded array, and blending follows `render_all_images` top-last.
  */
+
+import {
+  getRasterGridGeoreference,
+  getRasterGroundCellSize,
+  type GPURasterCellSizeMode,
+  type RasterGridAffine
+} from '../../../src/analysis-core/raster-grid';
+
+/** Float64 row half-widths for a ground-radius rectangle; zero remains unfiltered. */
+export function getGroundReliefRowRadii(
+  grid: RasterGridAffine,
+  mode: GPURasterCellSizeMode,
+  groundRadius: number
+): [number, number][] {
+  const georeference = getRasterGridGeoreference(grid);
+  return Array.from({length: grid.height}, (_, row) => {
+    if (groundRadius === 0) return [0, 0];
+    const [cellSizeX, cellSizeY] = getRasterGroundCellSize(
+      mode,
+      georeference,
+      row + 0.5,
+      grid.height
+    );
+    return [
+      Math.max(1, Math.round(groundRadius / cellSizeX)),
+      Math.max(1, Math.round(groundRadius / cellSizeY))
+    ];
+  });
+}
+
+/** Literal float64 rectangular windows with RVT edge replication and invalid-sample exclusion. */
+export function computeRectangleMeanFilterRVT(
+  elevation: ArrayLike<number>,
+  width: number,
+  height: number,
+  rowRadii: readonly (readonly [number, number])[]
+): Float64Array {
+  const result = new Float64Array(width * height).fill(NaN);
+  for (let row = 0; row < height; row++) {
+    const [radiusX, radiusY] = rowRadii[row];
+    for (let column = 0; column < width; column++) {
+      const index = row * width + column;
+      if (Number.isNaN(elevation[index])) continue;
+      let sum = 0;
+      let count = 0;
+      for (let rowOffset = -radiusY; rowOffset <= radiusY; rowOffset++) {
+        const sampleRow = Math.max(0, Math.min(height - 1, row + rowOffset));
+        for (let columnOffset = -radiusX; columnOffset <= radiusX; columnOffset++) {
+          const sampleColumn = Math.max(0, Math.min(width - 1, column + columnOffset));
+          const value = elevation[sampleRow * width + sampleColumn];
+          if (!Number.isNaN(value)) {
+            sum += value;
+            count++;
+          }
+        }
+      }
+      result[index] = sum / count;
+    }
+  }
+  return result;
+}
+
+/** Ground-scaled MSRM: the literal RVT scale loop over float64 per-row rectangular windows. */
+export function computeGroundMultiScaleReliefRVT(
+  options: Parameters<typeof computeMultiScaleReliefRVT>[0] & {
+    grid: RasterGridAffine;
+    cellSizeMode: 'geographic' | 'web-mercator';
+  }
+): number[] {
+  const {resolution, grid, cellSizeMode} = options;
+  const elevation = Array.from(
+    options.elevation,
+    value => value * (options.verticalExaggeration ?? 1)
+  );
+  const scalingFactor = Math.trunc(options.scalingFactor);
+  const firstIndex = Math.floor(
+    ((Math.max(options.featureMinimum, resolution) - resolution) / (2 * resolution)) **
+      (1 / scalingFactor)
+  );
+  const lastIndex = Math.ceil(
+    ((options.featureMaximum - resolution) / (2 * resolution)) ** (1 / scalingFactor)
+  );
+  const result = new Float64Array(elevation.length);
+  let previous: Float64Array | undefined;
+  for (let scaleIndex = firstIndex; scaleIndex <= lastIndex; scaleIndex++) {
+    const rowRadii = getGroundReliefRowRadii(
+      grid,
+      cellSizeMode,
+      scaleIndex ** scalingFactor * resolution
+    );
+    const surface = computeRectangleMeanFilterRVT(elevation, grid.width, grid.height, rowRadii);
+    if (previous) {
+      for (let index = 0; index < result.length; index++) {
+        result[index] += previous[index] - surface[index];
+      }
+    }
+    previous = surface;
+  }
+  return Array.from(result, value => value / (lastIndex - firstIndex));
+}
 
 /** Python `round`: ties go to the nearest even integer. */
 export function pythonRound(value: number): number {

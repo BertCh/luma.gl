@@ -33,16 +33,29 @@ const SIDE = 8;
 const LADDER = [3, 4, 6];
 const LADDER_CAPACITY = 4;
 
-it('addSpatialRegressionRecipe chains OLS, diagnostics, residual Moran and local fits', async () => {
+it.each([
+  false,
+  true
+])('addSpatialRegressionRecipe chains OLS, diagnostics, residual Moran and local fits (geographic: %s)', async geographic => {
   const device = await getWebGPUTestDevice();
   requireTestDevice(device);
   const scene = createDiagnosticsScene(SIDE, 11, 0.6, true);
   const rowCount = SIDE * SIDE;
   const k = scene.predictorCount;
+  const spatialContext = geographic
+    ? ({
+        coordinateSpace: 'longitude-latitude',
+        metric: 'great-circle',
+        units: 'kilometers',
+        sphereRadius: 6371
+      } as const)
+    : undefined;
   const positions = new Float32Array(rowCount * 2);
   for (let row = 0; row < rowCount; row++) {
-    positions[2 * row] = row % SIDE;
-    positions[2 * row + 1] = Math.floor(row / SIDE);
+    positions[2 * row] = geographic ? -75 + (row % SIDE) * 0.01 : row % SIDE;
+    positions[2 * row + 1] = geographic
+      ? 40 + Math.floor(row / SIDE) * 0.01
+      : Math.floor(row / SIDE);
   }
   const settings = {kernel: 'bisquare', bandwidthMode: 'fixed', bandwidths: LADDER} as const;
   const ols = fitOrdinaryLeastSquaresOnCPU({
@@ -62,6 +75,7 @@ it('addSpatialRegressionRecipe chains OLS, diagnostics, residual Moran and local
   });
   const local = computeGeographicallyWeightedRegressionOnCPU({
     positions,
+    sphereRadius: spatialContext?.sphereRadius,
     predictors: scene.predictors,
     predictorCount: k,
     response: scene.response,
@@ -140,6 +154,7 @@ it('addSpatialRegressionRecipe chains OLS, diagnostics, residual Moran and local
         }
       },
       localFits: {
+        spatialContext,
         positions: fixture.input('positions', positions, 'float32x2', rowCount),
         parameters: fixture.parameters(
           'gwr-parameters',

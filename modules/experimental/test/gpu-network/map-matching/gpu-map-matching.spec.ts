@@ -410,6 +410,33 @@ it('GPUMapMatching great-circle path matches the f64 oracle across the antimerid
   const metric = createGreatCircleNetworkMetric();
   for (const parameters of [BASE, {...BASE, sigma: 6, beta: 8, searchRadius: 40}]) {
     const result = await runMatching(device, parameters, fixture);
+    const kilometers = await runMatching(
+      device,
+      {
+        ...parameters,
+        sigma: parameters.sigma / 1000,
+        beta: parameters.beta / 1000,
+        searchRadius: parameters.searchRadius / 1000,
+        routeSlack: (parameters.routeSlack ?? 50) / 1000
+      },
+      {
+        ...fixture,
+        spatialContext: {
+          coordinateSpace: 'longitude-latitude',
+          metric: 'great-circle',
+          units: 'kilometers'
+        }
+      }
+    );
+    expect(kilometers.edges).toEqual(result.edges);
+    expect(kilometers.breaks).toEqual(result.breaks);
+    expect(kilometers.overflow).toBe(0);
+    result.edges.forEach((edge, point) => {
+      if (edge !== GPU_MAP_MATCHING_NONE) {
+        expect(kilometers.distances[point]).toBeCloseTo(result.distances[point] / 1000, 5);
+        expect(kilometers.offsets[point]).toBeCloseTo(result.offsets[point] / 1000, 5);
+      }
+    });
     const expected = matchOracle(
       fixture.points,
       TRACKS.offsets,

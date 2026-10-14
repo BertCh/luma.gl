@@ -336,3 +336,27 @@ it('getSegmentedReductionNodes chunks share one pipeline however many there are'
   expect(four.pipelines).toBe(three.pipelines);
   device.destroy();
 });
+
+const DISTANCE_FRAME = {
+  coordinateSpace: 'planar',
+  metric: 'native',
+  units: 'meters',
+  frame: {id: 'f', kind: 'local-azimuthal-equidistant'}
+} as const;
+const AREA_FRAME = {
+  coordinateSpace: 'planar',
+  metric: 'native',
+  units: 'meters',
+  frame: {id: 'f', kind: 'local-lambert-equal-area'}
+} as const;
+
+it('GPUTrajectoryMetrics validates its distance frame', () => {
+  const device = createNullWebGPUDevice();
+  const graph = new GPUCommandGraph(device);
+  const props = createProps(graph);
+  expect(() => new GPUTrajectoryMetrics({...props, spatialContext: AREA_FRAME})).toThrow(
+    /measures distance; project into an azimuthal-equidistant frame/
+  );
+  expect(() => new GPUTrajectoryMetrics({...props, spatialContext: DISTANCE_FRAME})).not.toThrow();
+  device.destroy();
+});

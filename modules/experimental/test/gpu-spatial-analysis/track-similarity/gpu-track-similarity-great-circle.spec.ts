@@ -40,7 +40,7 @@ function pack(polylines: readonly Polyline[]): {positions: Float32Array; offsets
 
 async function runGreatCircle(
   device: Device,
-  options: {sphereRadius?: number; densify?: number}
+  options: {sphereRadius?: number; densify?: number; units?: 'meters' | 'kilometers'}
 ): Promise<{hausdorff: number[]; frechet: number[]; maxDistance: number[]; status: number[]}> {
   const graph = new GPUCommandGraph(device, {id: 'similarity-great-circle'});
   const buffers: Buffer[] = [];
@@ -67,7 +67,7 @@ async function runGreatCircle(
   graph.add(
     new GPUTrackSimilarity({
       id: 'similarity',
-      spatialContext: {...GREAT_CIRCLE, sphereRadius: options.sphereRadius},
+      spatialContext: {...GREAT_CIRCLE, sphereRadius: options.sphereRadius, units: options.units},
       linesA: {
         kind: 'lines',
         positions: importGraphBuffer(graph, 'positions-a', input(packedA.positions), 'float32x2'),
@@ -143,6 +143,25 @@ it('GPUTrackSimilarity great-circle distances scale with sphereRadius', async ()
     expectMeters(result.hausdorff[index], testCase.hausdorff * scale, `${name} hausdorff`);
     expectMeters(result.frechet[index], testCase.frechet * scale, `${name} frechet`);
     expectMeters(result.maxDistance[index], testCase.maxDistance * scale, `${name} maxDistance`);
+  }
+  device.destroy?.();
+});
+
+it('GPUTrackSimilarity reports kilometers against the binary64 great-circle oracle', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const result = await runGreatCircle(device, {units: 'kilometers'});
+  for (const [index, testCase] of CASES.entries()) {
+    expect(result.status[index]).toBe(0);
+    for (const [actual, expected] of [
+      [result.hausdorff[index], testCase.hausdorff],
+      [result.frechet[index], testCase.frechet],
+      [result.maxDistance[index], testCase.maxDistance]
+    ]) {
+      expect(Math.abs(actual - expected / 1000)).toBeLessThanOrEqual(
+        (2e-3 * expected) / 1000 + 0.001
+      );
+    }
   }
   device.destroy?.();
 });

@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import type {GPUSpatialContext} from '../../../src/analysis-core/contracts/spatial-context';
 import {createTransientView, GPUCommandGraph} from '@luma.gl/gpgpu/gpu-core';
 import {expect, it} from 'vitest';
 import {
@@ -626,6 +627,23 @@ it('GPUSpatialPredicateJoin accepts great-circle dwithin and planar-in-degrees t
       ...overrides
     });
   };
+  const lambert = {
+    coordinateSpace: 'planar',
+    metric: 'native',
+    units: 'meters',
+    frame: {id: 'local-frame', kind: 'local-lambert-equal-area'}
+  } as const;
+  expect(() => create({predicate: 'dwithin', distance: 1, spatialContext: lambert})).toThrow(
+    /measures distance/
+  );
+  expect(() => create({predicate: 'intersects', spatialContext: lambert})).not.toThrow();
+  expect(() =>
+    create({
+      predicate: 'dwithin',
+      distance: 1,
+      spatialContext: {...lambert, frame: {...lambert.frame, kind: 'local-azimuthal-equidistant'}}
+    })
+  ).not.toThrow();
   // Default: planar, no radius.
   expect(create({}).spatialContext.coordinateSpace).toBe('planar');
   expect(create({}).sphereRadius).toBeUndefined();
@@ -720,8 +738,10 @@ it('GPUNearestFeatureJoin resolves its spatial context matrix', () => {
   expect(create({spatialContext: {...GREAT_CIRCLE, units: 'meters'}}).sphereRadius).toBe(
     GPU_EARTH_MEAN_RADIUS_METERS
   );
-  // Meters only; degrees need a metric; planar contexts cannot be great-circle.
-  expect(() => create({spatialContext: {...GREAT_CIRCLE, units: 'kilometers'}})).toThrow(/meters/);
+  // Distances honor kilometers; degrees need a metric; planar contexts cannot be great-circle.
+  expect(create({spatialContext: {...GREAT_CIRCLE, units: 'kilometers'}}).sphereRadius).toBe(
+    GPU_EARTH_MEAN_RADIUS_METERS / 1000
+  );
   expect(() => create({spatialContext: DEGREES})).toThrow(/great-circle/);
   expect(() =>
     create({spatialContext: {coordinateSpace: 'longitude-latitude', metric: 'rhumb'}})
@@ -926,5 +946,22 @@ it('GPUSpatialPredicateJoin rejects capacities whose cooperative lanes overflow 
   expect(() =>
     createJoin({predicate: 'relate', pattern: 'T********', candidateCapacity: 2 ** 24})
   ).toThrow(/candidateCapacity exceeds 16777215/);
+  device.destroy();
+});
+
+it('distance measurements reject Lambert frames and accept AEQD meters', () => {
+  const device = createNullWebGPUDevice();
+  const lambert = {
+    coordinateSpace: 'planar',
+    metric: 'native',
+    units: 'meters',
+    frame: {id: 'local-frame', kind: 'local-lambert-equal-area'}
+  } as const;
+  const create = (spatialContext: GPUSpatialContext) =>
+    new GPUNearestFeatureJoin(createNearestProps(new GPUCommandGraph(device), {spatialContext}));
+  expect(() => create(lambert)).toThrow(/measures distance/);
+  expect(() =>
+    create({...lambert, frame: {...lambert.frame, kind: 'local-azimuthal-equidistant'}})
+  ).not.toThrow();
   device.destroy();
 });

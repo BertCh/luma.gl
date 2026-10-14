@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import type {GPUSpatialContext} from '../../../src/analysis-core/contracts/spatial-context';
 import type {Device} from '@luma.gl/core';
 import {createTransientView, GPUCommandGraph} from '@luma.gl/gpgpu/gpu-core';
 import {WgslReflect} from 'wgsl_reflect';
@@ -208,7 +209,11 @@ it('GPUPolygonOverlay validates fillRule and defaults to even-odd', () => {
   expect(nodeIds.at(-1)).toBe('polygon-overlay-publish');
 });
 
-function createPolygonBufferNodes(device: Device, vertexCount: number = 5) {
+function createPolygonBufferNodes(
+  device: Device,
+  vertexCount: number = 5,
+  spatialContext?: GPUSpatialContext
+) {
   const graph = new GPUCommandGraph(device, {id: 'buffer-prepare'});
   let serial = 0;
   const view = <Format extends 'float32' | 'float32x2' | 'float32x4' | 'uint32'>(
@@ -224,6 +229,7 @@ function createPolygonBufferNodes(device: Device, vertexCount: number = 5) {
   });
   const sourceIds = view('uint32', 8);
   const surface = new GPUBufferSurface({
+    spatialContext,
     geometry: {
       kind: 'polygons',
       positions: view('float32x2', vertexCount),
@@ -356,4 +362,26 @@ it('GPUBufferSurface buffers polygons as the polygon and its ring strokes (D-02)
   // the face labelling turns polygon windings into operand coverage.
   const coverage = kernels.find(kernel => kernel.id === 'buffer-surface-repair-group-coverage');
   expect(coverage?.source).toMatch(/winding < 0/);
+});
+
+const DISTANCE_FRAME = {
+  coordinateSpace: 'planar',
+  metric: 'native',
+  units: 'meters',
+  frame: {id: 'f', kind: 'local-azimuthal-equidistant'}
+} as const;
+const AREA_FRAME = {
+  coordinateSpace: 'planar',
+  metric: 'native',
+  units: 'meters',
+  frame: {id: 'f', kind: 'local-lambert-equal-area'}
+} as const;
+
+it('GPUBufferSurface validates its distance frame', () => {
+  const device = createNullWebGPUDevice();
+  expect(() => createPolygonBufferNodes(device, 5, AREA_FRAME)).toThrow(
+    /measures distance; project into an azimuthal-equidistant frame/
+  );
+  expect(() => createPolygonBufferNodes(device, 5, DISTANCE_FRAME)).not.toThrow();
+  device.destroy();
 });

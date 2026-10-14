@@ -36,6 +36,21 @@ it('GPUKMeans validates props and declares nodes', () => {
     output: {labels: view('uint32', 20), centers: view('float32x2', 3)}
   });
   const base = make();
+  const lambert = {
+    coordinateSpace: 'planar',
+    metric: 'native',
+    units: 'meters',
+    frame: {id: 'local-frame', kind: 'local-lambert-equal-area'}
+  } as const;
+  expect(() => new GPUKMeans({...base, spatialContext: lambert})).toThrow(/measures distance/);
+  expect(
+    () =>
+      new GPUKMeans({
+        ...base,
+        spatialContext: {...lambert, frame: {...lambert.frame, kind: 'local-azimuthal-equidistant'}}
+      })
+  ).not.toThrow();
+
   const output = (extra: object) => ({...base, output: {...base.output, ...extra}});
   expect(() => new GPUKMeans({...base, k: 0})).toThrow(/k must/);
   expect(() => new GPUKMeans({...base, k: 300})).toThrow(/k must/);

@@ -28,6 +28,12 @@ it('GPUCoverageSimplification validates props and declares nodes', () => {
     }
   });
   const base = make();
+  expect(() => new GPUCoverageSimplification({...base, spatialContext: AREA_FRAME})).toThrow(
+    /measures distance; project into an azimuthal-equidistant frame/
+  );
+  expect(
+    () => new GPUCoverageSimplification({...base, spatialContext: DISTANCE_FRAME})
+  ).not.toThrow();
   expect(() => new GPUCoverageSimplification({...base, snapTolerance: -1})).toThrow(
     /snapTolerance/
   );
@@ -118,3 +124,16 @@ it('GPUCoverageSimplification builds the same pipelines for any number of topolo
   expect(countPipelines(3)).toBe(countPipelines(4));
   expect(countPipelines(4)).toBe(countPipelines(5));
 });
+
+const DISTANCE_FRAME = {
+  coordinateSpace: 'planar',
+  metric: 'native',
+  units: 'meters',
+  frame: {id: 'f', kind: 'local-azimuthal-equidistant'}
+} as const;
+const AREA_FRAME = {
+  coordinateSpace: 'planar',
+  metric: 'native',
+  units: 'meters',
+  frame: {id: 'f', kind: 'local-lambert-equal-area'}
+} as const;

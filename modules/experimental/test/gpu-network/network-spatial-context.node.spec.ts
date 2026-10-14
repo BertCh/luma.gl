@@ -4,7 +4,14 @@
 
 import {createTransientView, GPUCommandGraph} from '@luma.gl/gpgpu/gpu-core';
 import {describe, expect, it} from 'vitest';
-import type {GPUSpatialContext} from '../../src/analysis-core/contracts/spatial-context';
+import {
+  getGPUGreatCircleRadius,
+  GPU_LONGITUDE_LATITUDE_SPATIAL_CONTEXT,
+  GPU_PLANAR_SPATIAL_CONTEXT,
+  type GPUSpatialContext
+} from '../../src/analysis-core/contracts/spatial-context';
+import {createGPULocalFrame} from '../../src/analysis-core/contracts/local-frame';
+import {getNetworkMetricWGSL} from '../../src/gpu-network/network-spatial-context';
 import {GPUEdgeBundling} from '../../src/gpu-network/edge-bundling';
 import {
   GPU_MAP_MATCHING_PARAMETER_LENGTH,
@@ -34,6 +41,24 @@ const GREAT_CIRCLE: GPUSpatialContext = {
   metric: 'great-circle'
 };
 const PLANAR: GPUSpatialContext = {coordinateSpace: 'planar', metric: 'native'};
+
+const KILOMETERS: GPUSpatialContext = {...GREAT_CIRCLE, units: 'kilometers'};
+const EQUIDISTANT = createGPULocalFrame({origin: [10, 60]}).spatialContext;
+const EQUAL_AREA = createGPULocalFrame({
+  origin: [10, 60],
+  kind: 'lambert-equal-area'
+}).spatialContext;
+
+function expectDistanceFrames(
+  id: string,
+  createContributor: (spatialContext: GPUSpatialContext) => {spatialContext: GPUSpatialContext}
+): void {
+  expect(EQUIDISTANT.units).toBe('meters');
+  expect(createContributor(EQUIDISTANT).spatialContext).toBe(EQUIDISTANT);
+  expect(() => createContributor(EQUAL_AREA)).toThrow(
+    `${id} measures distance; project into an azimuthal-equidistant frame, not lambert-equal-area`
+  );
+}
 
 let serial = 0;
 
@@ -116,6 +141,16 @@ describe('great-circle network metric oracle', () => {
 });
 
 describe('network contributor spatial contexts', () => {
+  it('emits the context radius in kilometers without changing the default meter radius', () => {
+    expect(getNetworkMetricWGSL(getGPUGreatCircleRadius(KILOMETERS))).toContain(
+      `const NETWORK_EARTH_RADIUS: f32 = ${Math.fround(6371.0088)};`
+    );
+    expect(getNetworkMetricWGSL(getGPUGreatCircleRadius(GREAT_CIRCLE))).toContain(
+      `const NETWORK_EARTH_RADIUS: f32 = ${Math.fround(6371008.8)}.0;`
+    );
+    expect(getNetworkMetricWGSL(undefined)).not.toContain('NETWORK_EARTH_RADIUS');
+  });
+
   it('GPUNetworkSnapping accepts great-circle lon/lat on both candidate paths', () => {
     const graph = new GPUCommandGraph(createNullWebGPUDevice());
     const props = {
@@ -151,10 +186,17 @@ describe('network contributor spatial contexts', () => {
           spatialContext: {coordinateSpace: 'longitude-latitude', metric: 'none'}
         })
     ).toThrow(/great-circle metric/);
-    expect(
-      () =>
-        new GPUNetworkSnapping({...props, spatialContext: {...GREAT_CIRCLE, units: 'kilometers'}})
-    ).toThrow(/meters/);
+    expectDistanceFrames(
+      'network-snapping',
+      spatialContext => new GPUNetworkSnapping({...props, spatialContext})
+    );
+    const kilometers = new GPUNetworkSnapping({
+      ...props,
+      id: 'kilometers',
+      spatialContext: KILOMETERS
+    });
+    expect(kilometers.spatialContext).toBe(KILOMETERS);
+    expect(kilometers.getCommandNodes(graph).map(node => node.id)).toContain('kilometers-scan');
     // The BVH candidate path passes the context to GPUNearestFeatureJoin (great-circle search).
     const joined = new GPUNetworkSnapping({
       ...props,
@@ -164,6 +206,18 @@ describe('network contributor spatial contexts', () => {
       maximumSnapDistance: createView(graph, 'float32', 1),
       output: {...props.output, status: {overflow: createView(graph, 'uint32', 1)}}
     }).getCommandNodes(graph);
+    const kilometerCandidates = new GPUNetworkSnapping({
+      ...props,
+      id: 'kilometer-candidates',
+      spatialContext: KILOMETERS,
+      candidateCapacity: 4,
+      maximumSnapDistance: createView(graph, 'float32', 1),
+      output: {...props.output, status: {overflow: createView(graph, 'uint32', 1)}}
+    }).getCommandNodes(graph);
+    // Kilometer contexts take the same join path (the join honours the context's units).
+    expect(kilometerCandidates.some(node => node.id.startsWith('kilometer-candidates-join'))).toBe(
+      true
+    );
     const joinedIds = joined.map(node => node.id);
     expect(joinedIds.some(id => id.startsWith('joined-join'))).toBe(true);
     expect(joinedIds).toContain('joined-project');
@@ -195,6 +249,13 @@ describe('network contributor spatial contexts', () => {
         snappedPositions: createView(graph, 'float32x2', 6)
       }
     };
+    expectDistanceFrames(
+      'map-matching',
+      spatialContext => new GPUMapMatching({...props, spatialContext})
+    );
+    const kilometers = new GPUMapMatching({...props, id: 'kilometers', spatialContext: KILOMETERS});
+    expect(kilometers.spatialContext).toBe(KILOMETERS);
+    expect(kilometers.getCommandNodes(graph).length).toBeGreaterThan(0);
     const matching = new GPUMapMatching({...props, spatialContext: GREAT_CIRCLE});
     expect(matching.spatialContext).toEqual(GREAT_CIRCLE);
     expect(matching.getCommandNodes(graph).map(node => node.id)).toContain(
@@ -227,6 +288,17 @@ describe('network contributor spatial contexts', () => {
       rowsPerBlock: 10,
       output: {kValues: createView(graph, 'float32', 8)}
     };
+    expectDistanceFrames(
+      'network-k-function',
+      spatialContext => new GPUNetworkKFunction({...props, spatialContext})
+    );
+    const kilometers = new GPUNetworkKFunction({
+      ...props,
+      id: 'kilometers',
+      spatialContext: KILOMETERS
+    });
+    expect(kilometers.spatialContext).toBe(KILOMETERS);
+    expect(kilometers.getCommandNodes(graph).length).toBeGreaterThan(0);
     const kFunction = new GPUNetworkKFunction({...props, spatialContext: GREAT_CIRCLE});
     expect(kFunction.spatialContext).toEqual(GREAT_CIRCLE);
     expect(kFunction.getCommandNodes(graph).map(node => node.id)).toContain(
@@ -241,6 +313,15 @@ describe('network contributor spatial contexts', () => {
       output: {...props.output, status: {overflow: createView(graph, 'uint32', 1)}}
     }).getCommandNodes(graph);
     expect(joined.map(node => node.id)).toContain('joined-k-snap-project');
+    const kilometerCandidates = new GPUNetworkKFunction({
+      ...props,
+      id: 'kilometer-k',
+      spatialContext: KILOMETERS,
+      candidateCapacity: 4,
+      maximumSnapDistance: createView(graph, 'float32', 1),
+      output: {...props.output, status: {overflow: createView(graph, 'uint32', 1)}}
+    }).getCommandNodes(graph);
+    expect(kilometerCandidates.map(node => node.id)).toContain('kilometer-k-snap-project');
   });
 
   it('GPUNetworkLineGraph accepts great-circle lon/lat', () => {
@@ -262,6 +343,17 @@ describe('network contributor spatial contexts', () => {
         status: {overflow: createView(graph, 'uint32', 1)}
       }
     };
+    expectDistanceFrames(
+      'network-line-graph',
+      spatialContext => new GPUNetworkLineGraph({...props, spatialContext})
+    );
+    const kilometers = new GPUNetworkLineGraph({
+      ...props,
+      id: 'kilometers',
+      spatialContext: KILOMETERS
+    });
+    expect(kilometers.spatialContext).toBe(KILOMETERS);
+    expect(kilometers.getCommandNodes(graph).length).toBeGreaterThan(0);
     const lineGraph = new GPUNetworkLineGraph({...props, spatialContext: GREAT_CIRCLE});
     expect(lineGraph.spatialContext).toEqual(GREAT_CIRCLE);
     expect(lineGraph.getCommandNodes(graph)[0].id).toBe('network-line-graph-edge-vectors');
@@ -325,6 +417,13 @@ describe('network contributor spatial contexts', () => {
         status: {overflow: createView(graph, 'uint32', 1)}
       }
     });
+    expectDistanceFrames(
+      'noding',
+      spatialContext => new GPUNetworkNoding({...noding.props, spatialContext})
+    );
+    expect(() => new GPUNetworkNoding({...noding.props, spatialContext: KILOMETERS})).toThrow(
+      /does not support longitude-latitude/
+    );
     const ids = noding.getCommandNodes(graph).map(node => node.id);
     const order = [
       'noding-clear-snap-origin',
@@ -345,6 +444,9 @@ describe('network contributor spatial contexts', () => {
       targetNodes: createView(graph, 'uint32', 6),
       output: {paths: createView(graph, 'float32x2', 6 * 16)}
     };
+    for (const spatialContext of [EQUIDISTANT, EQUAL_AREA, KILOMETERS]) {
+      expect(new GPUEdgeBundling({...props, spatialContext}).spatialContext).toBe(spatialContext);
+    }
     const getCoordinateSpace = (bundling: GPUEdgeBundling) =>
       bundling.spatialContext.coordinateSpace;
     expect(getCoordinateSpace(new GPUEdgeBundling(props))).toBe('planar');
@@ -404,7 +506,28 @@ describe('network contributor spatial contexts', () => {
       costBreaks: createView(graph, 'float32', 3),
       parameters: createView(graph, 'float32', GPU_NETWORK_ISOCHRONES_PARAMETER_LENGTH)
     };
-    expect(new GPUNetworkIsochrones({...props, raster}).spatialContext).toBeUndefined();
+    expectDistanceFrames(
+      'network-isochrones',
+      spatialContext => new GPUNetworkIsochrones({...props, raster, spatialContext})
+    );
+    expect(new GPUNetworkIsochrones({...props, raster}).spatialContext).toBe(
+      GPU_PLANAR_SPATIAL_CONTEXT
+    );
+    expect(new GPUNetworkIsochrones({...props, cellOutline}).spatialContext).toBe(
+      GPU_LONGITUDE_LATITUDE_SPATIAL_CONTEXT
+    );
+    const combined = new GPUNetworkIsochrones({...props, raster, cellOutline});
+    expect(combined.spatialContext).toBe(GPU_PLANAR_SPATIAL_CONTEXT);
+    expect(combined.getCommandNodes(graph).length).toBeGreaterThan(0);
+    expect(
+      () => new GPUNetworkIsochrones({...props, raster, cellOutline, spatialContext: PLANAR})
+    ).toThrow(/cellOutline needs longitude-latitude/);
+    expect(
+      () => new GPUNetworkIsochrones({...props, raster, cellOutline, spatialContext: GREAT_CIRCLE})
+    ).toThrow(/raster needs planar positions/);
+    expect(
+      new GPUNetworkIsochrones({...props, cellOutline, spatialContext: KILOMETERS}).spatialContext
+    ).toBe(KILOMETERS);
     expect(
       new GPUNetworkIsochrones({...props, raster, spatialContext: PLANAR}).spatialContext
     ).toEqual(PLANAR);

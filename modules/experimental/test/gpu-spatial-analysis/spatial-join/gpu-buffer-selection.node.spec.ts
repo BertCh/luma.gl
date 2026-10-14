@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import type {GPUSpatialContext} from '../../../src/analysis-core/contracts/spatial-context';
 import {createTransientView, GPUCommandGraph} from '@luma.gl/gpgpu/gpu-core';
 import {expect, it} from 'vitest';
 import {
@@ -139,14 +140,17 @@ it('GPUBufferSelection resolves planar and great-circle contexts', () => {
     .map(node => node.id);
   expect(ids).toContain('buffer-selection-join-traverse');
   expect(ids).not.toContain('buffer-selection-join-probe');
-  expect(
-    () =>
-      new GPUBufferSelection(
-        createProps(new GPUCommandGraph(createNullWebGPUDevice()), {
-          spatialContext: {...greatCircle, units: 'kilometers'}
-        })
-      )
-  ).toThrow(/meters/);
+  const kilometerGraph = new GPUCommandGraph(createNullWebGPUDevice());
+  const kilometerSelection = new GPUBufferSelection(
+    createProps(kilometerGraph, {
+      spatialContext: {...greatCircle, units: 'kilometers'},
+      candidateCapacity: 3
+    })
+  );
+  expect(kilometerSelection.spatialContext.units).toBe('kilometers');
+  const kilometerNodeIds = kilometerSelection.getCommandNodes(kilometerGraph).map(node => node.id);
+  expect(kilometerNodeIds).toContain('buffer-selection-join-traverse');
+  expect(kilometerNodeIds).not.toContain('buffer-selection-join-probe');
   expect(
     () =>
       new GPUBufferSelection(
@@ -155,4 +159,22 @@ it('GPUBufferSelection resolves planar and great-circle contexts', () => {
         })
       )
   ).toThrow(/great-circle/);
+});
+
+it('distance measurements reject Lambert frames and accept AEQD meters', () => {
+  const device = createNullWebGPUDevice();
+  const graph = new GPUCommandGraph(device);
+  const lambert = {
+    coordinateSpace: 'planar',
+    metric: 'native',
+    units: 'meters',
+    frame: {id: 'local-frame', kind: 'local-lambert-equal-area'}
+  } as const;
+  const create = (spatialContext: GPUSpatialContext) =>
+    new GPUBufferSelection(createProps(graph, {spatialContext}));
+  expect(() => create(lambert)).toThrow(/measures distance/);
+  expect(() =>
+    create({...lambert, frame: {...lambert.frame, kind: 'local-azimuthal-equidistant'}})
+  ).not.toThrow();
+  device.destroy();
 });

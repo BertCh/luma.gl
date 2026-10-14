@@ -6,7 +6,11 @@ import type {Device} from '@luma.gl/core';
 import {GPUCommandGraph} from '@luma.gl/gpgpu/gpu-core';
 import {getWebGPUTestDevice} from '@luma.gl/test-utils';
 import {expect, it} from 'vitest';
-import {makeGPURasterMetadata} from '../../../src/gpu-raster';
+import {makeGPURasterMetadata, type GPURasterMetadata} from '../../../src/gpu-raster';
+import {
+  getRasterGridGeoreference,
+  type GPURasterCellSizeMode
+} from '../../../src/analysis-core/raster-grid';
 import {GPUParameterBuffer, importGraphBuffer} from '../../../src/utils/gpu-contributor-utils';
 import {
   GPU_TERRAIN_VISIBILITY as V,
@@ -23,7 +27,7 @@ import {
   readUint32,
   submitGraph
 } from '../../utils/gpu-contributor-test-utils';
-import {createFractalTerrain} from './terrain-analysis-oracle';
+import {computeTerrainSightLine, createFractalTerrain} from './terrain-analysis-oracle';
 import {requireTestDevice} from '../../utils/require-test-device';
 
 const WIDTH = 40;
@@ -48,44 +52,55 @@ async function runCumulative(
   device: Device,
   terrain: Float32Array,
   traversal: GPUTerrainSightLineTraversal,
-  observersPerDispatch: number
+  observersPerDispatch: number,
+  options: {
+    grid?: GPURasterMetadata;
+    observers?: [number, number][];
+    settings?: GPUTerrainLineOfSightSettings;
+    cellSizeMode?: GPURasterCellSizeMode;
+  } = {}
 ) {
+  const grid = options.grid ?? GRID;
+  const observers = options.observers ?? OBSERVERS;
+  const pixelCount = grid.width * grid.height;
+  const settings = options.settings ?? {...SETTINGS, toleranceMeters: 2};
   const elevationBuffer = createInputBuffer(device, terrain);
-  const observerBuffer = createInputBuffer(device, Float32Array.from(OBSERVERS.flat()));
-  const visibleBuffer = createOutputBuffer(device, PIXEL_COUNT);
-  const marginalBuffer = createOutputBuffer(device, PIXEL_COUNT);
+  const observerBuffer = createInputBuffer(device, Float32Array.from(observers.flat()));
+  const visibleBuffer = createOutputBuffer(device, pixelCount);
+  const marginalBuffer = createOutputBuffer(device, pixelCount);
   const settingsBuffer = new GPUParameterBuffer(device, {
     id: 'cumulative-settings',
     format: 'float32',
     length: 12,
-    values: getGPUTerrainLineOfSightParameterValues({...SETTINGS, toleranceMeters: 2}, GRID)
+    values: getGPUTerrainLineOfSightParameterValues(settings, grid)
   });
   const graph = new GPUCommandGraph(device, {id: 'terrain-cumulative-test'});
   const contributor = new GPUTerrainCumulativeViewshed({
-    grid: GRID,
+    grid,
+    cellSizeMode: options.cellSizeMode,
     elevation: {
       id: 'elevation',
       format: 'float32',
       storage: {
         kind: 'buffer',
-        values: importGraphBuffer(graph, 'elevation', elevationBuffer, 'float32', PIXEL_COUNT)
+        values: importGraphBuffer(graph, 'elevation', elevationBuffer, 'float32', pixelCount)
       }
     },
-    observers: importGraphBuffer(graph, 'observers', observerBuffer, 'float32x2', OBSERVERS.length),
+    observers: importGraphBuffer(graph, 'observers', observerBuffer, 'float32x2', observers.length),
     parameters: settingsBuffer.importToGraph(graph),
     traversal,
     observersPerDispatch,
     output: {
-      visibleCount: importGraphBuffer(graph, 'visible', visibleBuffer, 'uint32', PIXEL_COUNT),
-      marginalCount: importGraphBuffer(graph, 'marginal', marginalBuffer, 'uint32', PIXEL_COUNT)
+      visibleCount: importGraphBuffer(graph, 'visible', visibleBuffer, 'uint32', pixelCount),
+      marginalCount: importGraphBuffer(graph, 'marginal', marginalBuffer, 'uint32', pixelCount)
     }
   });
   graph.add(contributor);
   const compiled = graph.compile();
   submitGraph(device, compiled, undefined);
   const result = {
-    visible: await readUint32(visibleBuffer, PIXEL_COUNT),
-    marginal: await readUint32(marginalBuffer, PIXEL_COUNT)
+    visible: await readUint32(visibleBuffer, pixelCount),
+    marginal: await readUint32(marginalBuffer, pixelCount)
   };
   compiled.destroy();
   settingsBuffer.destroy();
@@ -106,7 +121,7 @@ async function runViewshed(
   const settingsBuffer = new GPUParameterBuffer(device, {
     id: 'viewshed-settings',
     format: 'float32',
-    length: 8,
+    length: 10,
     values: getGPUTerrainViewshedParameterValues(
       {
         observer,
@@ -177,4 +192,77 @@ it('GPUTerrainCumulativeViewshed sums single-observer viewsheds over batches', a
   const pyramid = await runCumulative(device, terrain, 'pyramid', 2);
   expect(pyramid.visible).toEqual(march.visible);
   expect(pyramid.marginal).toEqual(march.marginal);
+});
+
+it('GPUTerrainCumulativeViewshed geographic counts at 60 degrees match the oracle', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const width = 64;
+  const height = 64;
+  const grid = makeGPURasterMetadata({width, height});
+  grid.affine = [1 / 3600, 0, 0, 0, -1 / 3600, 60 + 32 / 3600];
+  const terrain = createFractalTerrain(width, height, 3, 45);
+  const observers: [number, number][] = [
+    [20, 15],
+    [5.5, 4.25],
+    [53, 45]
+  ];
+  const settings: GPUTerrainLineOfSightSettings = {
+    observerHeight: 2,
+    targetHeight: 1,
+    maximumDistance: 700,
+    curvatureCoefficient: 2e-5,
+    toleranceMeters: 2,
+    tolerancePerKilometer: 1,
+    targetIgnoreDistance: 60
+  };
+  const parameters = getGPUTerrainLineOfSightParameterValues(settings, grid);
+  const oracleOptions = {
+    cellSizeMode: 'geographic' as const,
+    georeference: getRasterGridGeoreference(grid)
+  };
+  const expectedVisible = new Array<number>(width * height).fill(0);
+  const expectedMarginal = new Array<number>(width * height).fill(0);
+  const nearTie = new Array<boolean>(width * height).fill(false);
+  for (const observer of observers) {
+    for (let index = 0; index < width * height; index++) {
+      const expected = computeTerrainSightLine(
+        terrain,
+        undefined,
+        width,
+        height,
+        observer,
+        [index % width, Math.floor(index / width)],
+        parameters,
+        undefined,
+        oracleOptions
+      );
+      expectedVisible[index] += expected.code === V.visible ? 1 : 0;
+      expectedMarginal[index] += expected.code === V.marginal ? 1 : 0;
+      const edge = Math.min(
+        Math.abs(expected.maxSlope - (expected.targetSlope + expected.band)),
+        Math.abs(expected.maxSlope - (expected.targetSlope - expected.band))
+      );
+      nearTie[index] ||= edge < 1e-4;
+    }
+  }
+  const options = {grid, observers, settings, cellSizeMode: 'geographic' as const};
+  const march = await runCumulative(device, terrain, 'march', 2, options);
+  const pyramid = await runCumulative(device, terrain, 'pyramid', 1, options);
+  expect(pyramid).toEqual(march);
+  let mismatches = 0;
+  for (let index = 0; index < width * height; index++) {
+    if (
+      march.visible[index] !== expectedVisible[index] ||
+      march.marginal[index] !== expectedMarginal[index]
+    ) {
+      mismatches++;
+      // Use the viewshed oracle's float32 tie allowance for the summed codes too.
+      expect(nearTie[index]).toBe(true);
+    }
+  }
+  expect(mismatches / (width * height)).toBeLessThan(0.005);
+  expect(march.visible.some(count => count > 1)).toBe(true);
+  expect(march.visible).toContain(0);
+  expect(march.marginal.some(count => count > 0)).toBe(true);
 });

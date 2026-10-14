@@ -7,7 +7,6 @@ import {GPUCommandGraph} from '@luma.gl/gpgpu/gpu-core';
 import {getWebGPUTestDevice} from '@luma.gl/test-utils';
 import {expect, it, vi} from 'vitest';
 import {
-  GPU_GEODESIC_WGS84_SEMI_MAJOR_AXIS,
   GPUGeometryMeasures,
   type GPUGeometryMeasuresProps
 } from '../../../src/gpu-spatial-analysis/geometry-measures';
@@ -51,6 +50,8 @@ type MeasuresOptions = Pick<GPUGeometryMeasuresProps, 'geometryType'> & {
   polygonRingCounts?: PolygonRingCounts;
   coordinateSystem: 'planar' | 'spherical' | 'wgs84' | 'geodesic';
   radius?: number;
+  units?: 'meters' | 'kilometers';
+  cooperativeRingRows?: number;
   groupIds?: number[];
   groupCount?: number;
 };
@@ -172,9 +173,10 @@ function createMeasuresFixture(
             : options.coordinateSystem === 'spherical'
               ? 'great-circle'
               : 'ellipsoidal',
-        units: options.coordinateSystem === 'planar' ? 'native' : 'meters',
+        units: options.coordinateSystem === 'planar' ? 'native' : (options.units ?? 'meters'),
         sphereRadius: options.coordinateSystem === 'spherical' ? options.radius : undefined
       },
+      cooperativeRingRows: options.cooperativeRingRows,
       ellipsoidalEdgeModel: options.coordinateSystem === 'wgs84' ? 'coordinate-linear' : undefined,
       ...getMeasuresGeometryFields(
         flat,
@@ -416,7 +418,7 @@ it('GPUGeometryMeasures measures lines with length-weighted centroids', async ()
 it('GPUGeometryMeasures spherical areas match closed forms and the f64 oracle', async () => {
   const device = await getWebGPUTestDevice();
   requireTestDevice(device);
-  const radius = GPU_GEODESIC_WGS84_SEMI_MAJOR_AXIS;
+  const areaRadius = 6371007.180918475;
   const features = roundFeatures([
     [square(10, 0, 1)],
     [square(-45, 60, 1)],
@@ -452,18 +454,17 @@ it('GPUGeometryMeasures spherical areas match closed forms and the f64 oracle', 
   ]);
   const fixture = createMeasuresFixture(device, features, {
     geometryType: 'polygons',
-    coordinateSystem: 'spherical',
-    radius
+    coordinateSystem: 'spherical'
   });
   const {features: actual} = await fixture.run();
   const expected = features.map(feature =>
-    measureFeature(feature, {isPolygon: true, coordinateSystem: 'spherical', radius})
+    measureFeature(feature, {isPolygon: true, coordinateSystem: 'spherical', areaRadius})
   );
   expectFeatureParity(actual, expected, {length: 2e-6, area: 2e-5, position: 2e-5}, true);
   const boxes = [
-    getSphericalBoxArea(10, 0, 11, 1, radius),
-    getSphericalBoxArea(-45, 60, -44, 61, radius),
-    getSphericalBoxArea(179, -10, 181, 10, radius)
+    getSphericalBoxArea(10, 0, 11, 1, areaRadius),
+    getSphericalBoxArea(-45, 60, -44, 61, areaRadius),
+    getSphericalBoxArea(179, -10, 181, 10, areaRadius)
   ];
   let maximumRelativeError = 0;
   boxes.forEach((area, feature) => {
@@ -638,4 +639,44 @@ it('GPUGeometryMeasures reduces groups deterministically and re-encodes new posi
   );
   expect(fixture.getCompileCount()).toBe(0);
   fixture.destroy();
+});
+
+it('ellipsoidal kilometers scale serial, cooperative and grouped measures once', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const features = roundFeatures([[square(10, 20, 3)], [square(15, 25, 1)]]);
+  for (const coordinateSystem of ['wgs84', 'geodesic'] as const) {
+    for (const cooperativeRingRows of [0, 2]) {
+      const options: MeasuresOptions = {
+        geometryType: 'polygons',
+        coordinateSystem,
+        cooperativeRingRows,
+        groupIds: [0, 0],
+        groupCount: 1
+      };
+      const meters = createMeasuresFixture(device, features, {...options, units: 'meters'});
+      const kilometers = createMeasuresFixture(device, features, {...options, units: 'kilometers'});
+      try {
+        const expected = await meters.run();
+        const actual = await kilometers.run();
+        for (const [reference, result] of [
+          [expected.features, actual.features],
+          [expected.groups!, actual.groups!]
+        ]) {
+          reference.lengths.forEach((length, row) => {
+            expect(Math.abs((result.lengths[row] * 1000) / length - 1)).toBeLessThan(2e-6);
+            expect(Math.abs((result.areas[row] * 1e6) / reference.areas[row] - 1)).toBeLessThan(
+              2e-6
+            );
+            result.centroids[row].forEach((value, dimension) => {
+              expect(value).toBeCloseTo(reference.centroids[row][dimension], 4);
+            });
+          });
+        }
+      } finally {
+        meters.destroy();
+        kilometers.destroy();
+      }
+    }
+  }
 });

@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import type {GPUSpatialContext} from '../../../src/analysis-core/contracts/spatial-context';
 import {createTransientView, GPUCommandGraph} from '@luma.gl/gpgpu/gpu-core';
 import {expect, it} from 'vitest';
 import {
@@ -690,4 +691,46 @@ it('the masked radius fixture needs more than 64 neighbors per query on average'
   });
   expect(result.neighbors.length).toBeGreaterThan(count * 64);
   expect(result.neighbors.length).toBeLessThanOrEqual(count * (count - 1));
+});
+
+it('distance measurements reject Lambert frames and accept AEQD meters', () => {
+  const device = createNullWebGPUDevice();
+  const graph = new GPUCommandGraph(device);
+  const lambert = {
+    coordinateSpace: 'planar',
+    metric: 'native',
+    units: 'meters',
+    frame: {id: 'local-frame', kind: 'local-lambert-equal-area'}
+  } as const;
+  const create = (spatialContext: GPUSpatialContext) =>
+    new GPUNeighborSearch(createProps(graph, {spatialContext}));
+  expect(() => create(lambert)).toThrow(/measures distance/);
+  expect(() =>
+    create({...lambert, frame: {...lambert.frame, kind: 'local-azimuthal-equidistant'}})
+  ).not.toThrow();
+  device.destroy();
+});
+
+it('GPUNeighborSearch carries the resolved context on kNN and distance-band weights', () => {
+  const device = createNullWebGPUDevice();
+  const graph = new GPUCommandGraph(device);
+  for (const mode of ['knn', 'radius'] as const) {
+    for (const spatialContext of [
+      undefined,
+      {coordinateSpace: 'longitude-latitude', metric: 'great-circle', units: 'kilometers'} as const
+    ]) {
+      const search = new GPUNeighborSearch(createProps(graph, {mode, spatialContext}));
+      expect(search.outputWeights.spatialContext).toBe(search.spatialContext);
+      expect(search.spatialContext).toEqual(
+        spatialContext ?? {coordinateSpace: 'planar', metric: 'native', units: 'native'}
+      );
+    }
+  }
+  expect(
+    () =>
+      new GPUNeighborSearch(
+        createProps(graph, {spatialContext: {coordinateSpace: 'planar', metric: 'none'}})
+      )
+  ).toThrow('neighbor-search planar positions need the native metric');
+  device.destroy();
 });

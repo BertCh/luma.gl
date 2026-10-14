@@ -2,6 +2,11 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {
+  getRasterGroundCellSize,
+  type GPURasterCellSizeMode,
+  type RasterGridGeoreference
+} from '../../../src/analysis-core/raster-grid';
 import {createMulberryRandom, getOracleGroundCellSize} from '../terrain-oracle-utils';
 
 const DEGREES = 180 / Math.PI;
@@ -145,13 +150,22 @@ export function sampleBilinear(
   return top * (1 - fractionY) + bottom * fractionY;
 }
 
+/** Float64 ground-cell interpretation for each ray; defaults to the packed grid georeference. */
+export type TerrainSightLineOptions = {
+  /** Defaults to uniform ground meters. */
+  cellSizeMode?: GPURasterCellSizeMode;
+  /** Unrounded cell sizes and row edges from the source grid, when available. */
+  georeference?: RasterGridGeoreference;
+};
+
 /** CPU mirror of the viewshed kernel. */
 export function computeTerrainViewshed(
   values: ArrayLike<number>,
   valid: ArrayLike<number> | undefined,
   width: number,
   height: number,
-  settings: ArrayLike<number>
+  settings: ArrayLike<number>,
+  options: TerrainSightLineOptions = {}
 ): number[] {
   const isValid = (column: number, row: number) =>
     valid ? valid[row * width + column] !== 0 : true;
@@ -200,7 +214,17 @@ export function computeTerrainViewshed(
       const observerElevation = observerSample + observerHeight;
       const deltaX = column - observerX;
       const deltaY = row - observerY;
-      const targetDistance = Math.hypot(deltaX * cellX, deltaY * cellY);
+      const groundCell = getRasterGroundCellSize(
+        options.cellSizeMode ?? 'uniform',
+        options.georeference ?? {
+          cellSize: [cellX, cellY],
+          northEdge: settings[8],
+          southEdge: settings[9]
+        },
+        0.5 * (observerY + row) + 0.5,
+        height
+      );
+      const targetDistance = Math.hypot(deltaX * groundCell[0], deltaY * groundCell[1]);
       if (maximumDistance > 0 && targetDistance > maximumDistance) {
         result.push(2);
         continue;
@@ -285,6 +309,7 @@ export type TerrainSightLineResult = {
  *
  * `settings` uses the 12-float sight-line layout. The target elevation is the bilinear sample at
  * `target` plus the target height. Always evaluates every sample (no early exit).
+ * Non-uniform modes hold the float64 WGS84 ground cell at the middle row constant along the ray.
  */
 export function computeTerrainSightLine(
   values: ArrayLike<number>,
@@ -294,7 +319,8 @@ export function computeTerrainSightLine(
   observer: readonly [number, number],
   target: readonly [number, number],
   settings: ArrayLike<number>,
-  heights?: readonly [number, number]
+  heights?: readonly [number, number],
+  options: TerrainSightLineOptions = {}
 ): TerrainSightLineResult {
   const isValid = (column: number, row: number) =>
     valid ? valid[row * width + column] !== 0 : true;
@@ -345,7 +371,17 @@ export function computeTerrainSightLine(
   const eye = observerSample + (heights ? heights[0] : observerHeight);
   const deltaX = target[0] - observer[0];
   const deltaY = target[1] - observer[1];
-  const distance = Math.hypot(deltaX * cellX, deltaY * cellY);
+  const groundCell = getRasterGroundCellSize(
+    options.cellSizeMode ?? 'uniform',
+    options.georeference ?? {
+      cellSize: [cellX, cellY],
+      northEdge: settings[10],
+      southEdge: settings[11]
+    },
+    0.5 * (observer[1] + target[1]) + 0.5,
+    height
+  );
+  const distance = Math.hypot(deltaX * groundCell[0], deltaY * groundCell[1]);
   if (maximumDistance > 0 && distance > maximumDistance) {
     return {...noData, code: 2};
   }
@@ -396,7 +432,8 @@ export function computeTerrainViewshedWithTolerance(
   width: number,
   height: number,
   viewshedSettings: ArrayLike<number>,
-  tolerance: ArrayLike<number>
+  tolerance: ArrayLike<number>,
+  options: TerrainSightLineOptions = {}
 ): TerrainSightLineResult[] {
   const [
     observerX,
@@ -419,8 +456,8 @@ export function computeTerrainViewshedWithTolerance(
     tolerance[1],
     tolerance[2],
     tolerance[3],
-    0,
-    0
+    viewshedSettings[8],
+    viewshedSettings[9]
   ];
   const result: TerrainSightLineResult[] = [];
   for (let row = 0; row < height; row++) {
@@ -432,7 +469,9 @@ export function computeTerrainViewshedWithTolerance(
         height,
         [observerX, observerY],
         [column, row],
-        sightSettings
+        sightSettings,
+        undefined,
+        options
       );
       result.push(line);
     }

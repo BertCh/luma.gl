@@ -20,6 +20,9 @@ import {
   measureFeature
 } from './geometry-measures-oracle';
 import {getVincentyDirect, getVincentyInverse} from './vincenty-oracle';
+import {getVincentyWGSL} from '../../../src/gpu-spatial-analysis/geometry-measures/geodesic-kernels';
+import {getAuthalicConstants} from '../../../src/gpu-spatial-analysis/geometry-measures/geometry-measures-kernels';
+import type {GPUSpatialContext} from '../../../src/analysis-core/contracts/spatial-context';
 
 let viewSerial = 0;
 
@@ -316,4 +319,174 @@ it('GPUGeometryMeasures has no signedAreas column (areas is never negative)', ()
         })
       )
   ).toThrow(/output\.signedAreas is not a measure column/);
+});
+
+it('geometry measures resolves native planar defaults and accepts meter frames for both measures', () => {
+  const graph = new GPUCommandGraph(createNullWebGPUDevice());
+  const props = createProps(graph);
+  delete props.spatialContext;
+  const planar = new GPUGeometryMeasures(props);
+  expect(planar.spatialContext).toEqual({
+    coordinateSpace: 'planar',
+    metric: 'native',
+    units: 'native'
+  });
+  expect(planar.coordinateSystem).toBe('planar');
+  expect(planar.measures.lengthUnits).toBe('native');
+  expect(planar.measures.areaUnits).toBe('native-squared');
+  for (const kind of ['local-lambert-equal-area', 'local-azimuthal-equidistant'] as const) {
+    const spatialContext: GPUSpatialContext = {
+      coordinateSpace: 'planar',
+      metric: 'native',
+      units: 'meters',
+      frame: {id: 'f', kind}
+    };
+    const measures = new GPUGeometryMeasures(
+      createProps(graph, {id: `measures-${kind}`, spatialContext})
+    );
+    expect(measures.measures.lengthUnits).toBe('meters');
+    expect(measures.measures.areaUnits).toBe('square-meters');
+    expect(measures.getCommandNodes(graph).length).toBeGreaterThan(0);
+    expect(
+      () =>
+        new GPUGeodesicPairs({
+          spatialContext,
+          origins: view(graph, 'float32x2', 1),
+          targets: view(graph, 'float32x2', 1),
+          output: {distances: view(graph, 'float32', 1)}
+        })
+    ).toThrow('geodesic-pairs does not support planar coordinates');
+  }
+  for (const metric of ['none', 'rhumb'] as const) {
+    expect(
+      () =>
+        new GPUGeometryMeasures(
+          createProps(graph, {
+            spatialContext: {coordinateSpace: 'longitude-latitude', metric}
+          })
+        )
+    ).toThrow(
+      'geometry-measures longitude-latitude positions need the great-circle or ellipsoidal metric'
+    );
+  }
+  expect(
+    () =>
+      new GPUGeometryMeasures(
+        createProps(graph, {
+          spatialContext: {coordinateSpace: 'topology-only', metric: 'none'}
+        })
+      )
+  ).toThrow('geometry-measures does not support topology-only coordinates');
+  expect(
+    () =>
+      new GPUGeometryMeasures(
+        createProps(graph, {
+          ellipsoidalEdgeModel: 'geodesic'
+        })
+      )
+  ).toThrow('ellipsoidalEdgeModel requires an ellipsoidal spatial context');
+});
+
+it('geometry measures separates mean distance and authalic area radii in context units', () => {
+  const graph = new GPUCommandGraph(createNullWebGPUDevice());
+  for (const units of ['meters', 'kilometers'] as const) {
+    for (const sphereRadius of [undefined, 1000]) {
+      const measures = new GPUGeometryMeasures(
+        createProps(graph, {
+          id: `measures-${units}-${sphereRadius}`,
+          spatialContext: {
+            coordinateSpace: 'longitude-latitude',
+            metric: 'great-circle',
+            units,
+            sphereRadius
+          }
+        })
+      );
+      const divisor = units === 'kilometers' ? 1000 : 1;
+      expect(measures.radius).toBe(sphereRadius ?? 6371008.8 / divisor);
+      expect(measures.areaRadius).toBe(sphereRadius ?? 6371007.180918475 / divisor);
+      expect(measures.getCommandNodes(graph).length).toBeGreaterThan(0);
+    }
+  }
+});
+
+it('ellipsoidal contributors honor custom ellipsoids and kilometers', () => {
+  const graph = new GPUCommandGraph(createNullWebGPUDevice());
+  const ellipsoid = {semiMajorAxis: 6378388, flattening: 1 / 297};
+  for (const units of ['meters', 'kilometers'] as const) {
+    const spatialContext: GPUSpatialContext = {
+      coordinateSpace: 'longitude-latitude',
+      metric: 'ellipsoidal',
+      units,
+      ellipsoid
+    };
+    for (const ellipsoidalEdgeModel of ['coordinate-linear', 'geodesic'] as const) {
+      const measures = new GPUGeometryMeasures(
+        createProps(graph, {
+          id: `measures-${units}-${ellipsoidalEdgeModel}`,
+          spatialContext,
+          ellipsoidalEdgeModel
+        })
+      );
+      expect(measures.measures.lengthUnits).toBe(units);
+      expect(measures.measures.areaUnits).toBe(`square-${units}`);
+      expect(measures.getCommandNodes(graph).length).toBeGreaterThan(0);
+    }
+    const pairs = new GPUGeodesicPairs({
+      spatialContext,
+      origins: view(graph, 'float32x2', 1),
+      targets: view(graph, 'float32x2', 1),
+      output: {distances: view(graph, 'float32', 1)}
+    });
+    const destination = new GPUGeodesicDestination({
+      spatialContext,
+      origins: view(graph, 'float32x2', 1),
+      bearings: view(graph, 'float32', 1),
+      distances: view(graph, 'float32', 1),
+      output: {destinations: view(graph, 'float32x2', 1)}
+    });
+    for (const contributor of [pairs, destination]) {
+      expect(contributor.model).toBe('wgs84');
+      expect(contributor.spatialContext.units).toBe(units);
+      expect(contributor.ellipsoid).toEqual({
+        ...ellipsoid,
+        semiMajorAxis: ellipsoid.semiMajorAxis / (units === 'kilometers' ? 1000 : 1)
+      });
+      expect(contributor.getCommandNodes(graph)).toHaveLength(1);
+    }
+  }
+});
+
+it('custom ellipsoid authalic and Vincenty constants match binary64 formulas', () => {
+  const ellipsoid = {semiMajorAxis: 6378388, flattening: 1 / 297};
+  const eccentricitySquared = ellipsoid.flattening * (2 - ellipsoid.flattening);
+  const eccentricity = Math.sqrt(eccentricitySquared);
+  const polarQ = 1 + ((1 - eccentricitySquared) * Math.atanh(eccentricity)) / eccentricity;
+  const authalic = getAuthalicConstants(ellipsoid);
+  expect(authalic.eccentricitySquared).toBe(eccentricitySquared);
+  expect(authalic.polarQ).toBeCloseTo(polarQ, 14);
+  expect(authalic.authalicRadius / (ellipsoid.semiMajorAxis * Math.sqrt(polarQ / 2))).toBeCloseTo(
+    1,
+    14
+  );
+  expect(authalic.sinAuthalicScale).toBeCloseTo((2 * (1 - eccentricitySquared)) / polarQ, 14);
+  const source = getVincentyWGSL(16, ellipsoid);
+  const semiMinorAxis = ellipsoid.semiMajorAxis * (1 - ellipsoid.flattening);
+  for (const [name, expected] of Object.entries({
+    VINCENTY_A: ellipsoid.semiMajorAxis,
+    VINCENTY_B: semiMinorAxis,
+    VINCENTY_F: ellipsoid.flattening,
+    VINCENTY_SECOND_ECCENTRICITY_SQUARED:
+      (ellipsoid.semiMajorAxis ** 2 - semiMinorAxis ** 2) / semiMinorAxis ** 2
+  })) {
+    const literal = source.match(new RegExp(`const ${name}: f32 = ([^;]+);`));
+    expect(literal).not.toBeNull();
+    expect(Number(literal?.[1])).toBe(Math.fround(expected));
+  }
+  expect(getAuthalicConstants({semiMajorAxis: 1000, flattening: 0})).toEqual({
+    eccentricitySquared: 0,
+    polarQ: 2,
+    authalicRadius: 1000,
+    sinAuthalicScale: 1
+  });
 });

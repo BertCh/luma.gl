@@ -135,34 +135,36 @@ export type ReliefDeviationModel = {
   count: number[];
 };
 
-/** Runs the kernel body of `getReliefSummedAreaFilterNodes` for every pixel. */
+/** Runs the kernel body for square windows, or optional per-row rectangular half-widths. */
 export function modelReliefDeviation(
   elevation: ArrayLike<number>,
   validity: ArrayLike<number>,
   width: number,
   height: number,
   radius: number,
-  quantum: number
+  quantum: number,
+  rowRadii?: readonly (readonly [number, number])[]
 ): ReliefDeviationModel {
   const model = buildReliefSummedAreaModel(elevation, validity, width, height, quantum);
   const deviation = new Float64Array(width * height).fill(NaN);
   const difference = new Array<bigint>(width * height).fill(0n);
   const countOutput = new Array<number>(width * height).fill(0);
   for (let row = 0; row < height; row++) {
+    const [radiusX, radiusY] = rowRadii?.[row] ?? [radius, radius];
     for (let column = 0; column < width; column++) {
       const index = row * width + column;
       const centre = queryReliefBox(model, column, column, row, row);
       if (centre.count !== 1) {
         continue;
       }
-      const firstColumn = Math.max(column - radius, 0);
-      const lastColumn = Math.min(column + radius, width - 1);
-      const firstRow = Math.max(row - radius, 0);
-      const lastRow = Math.min(row + radius, height - 1);
-      const overhangLeft = Math.max(radius - column, 0);
-      const overhangRight = Math.max(column + radius - (width - 1), 0);
-      const overhangTop = Math.max(radius - row, 0);
-      const overhangBottom = Math.max(row + radius - (height - 1), 0);
+      const firstColumn = Math.max(column - radiusX, 0);
+      const lastColumn = Math.min(column + radiusX, width - 1);
+      const firstRow = Math.max(row - radiusY, 0);
+      const lastRow = Math.min(row + radiusY, height - 1);
+      const overhangLeft = Math.max(radiusX - column, 0);
+      const overhangRight = Math.max(column + radiusX - (width - 1), 0);
+      const overhangTop = Math.max(radiusY - row, 0);
+      const overhangBottom = Math.max(row + radiusY - (height - 1), 0);
       let sum = 0n;
       let count = 0;
       const add = (box: {sum: bigint; count: number}, weight: number) => {

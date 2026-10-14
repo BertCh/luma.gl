@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import type {GPUSpatialEllipsoid} from '../../../src/analysis-core/contracts/spatial-context';
 import type {Buffer, Device} from '@luma.gl/core';
 import {GPUCommandGraph} from '@luma.gl/gpgpu/gpu-core';
 import {getWebGPUTestDevice} from '@luma.gl/test-utils';
@@ -53,7 +54,13 @@ type PairsReadback = {
   converged: number[];
 };
 
-function createPairsFixture(device: Device, model: 'sphere' | 'wgs84', pairCount: number) {
+function createPairsFixture(
+  device: Device,
+  model: 'sphere' | 'wgs84',
+  pairCount: number,
+  ellipsoid?: GPUSpatialEllipsoid,
+  units: 'meters' | 'kilometers' = 'meters'
+) {
   const buffers: Buffer[] = [];
   const track = (buffer: Buffer) => {
     buffers.push(buffer);
@@ -74,7 +81,8 @@ function createPairsFixture(device: Device, model: 'sphere' | 'wgs84', pairCount
       spatialContext: {
         coordinateSpace: 'longitude-latitude',
         metric: model === 'wgs84' ? 'ellipsoidal' : 'great-circle',
-        units: 'meters'
+        units,
+        ellipsoid
       },
       origins: importGraphBuffer(graph, 'origins', origins, 'float32x2', pairCount),
       targets: importGraphBuffer(graph, 'targets', targets, 'float32x2', pairCount),
@@ -338,6 +346,44 @@ it('GPUGeodesicDestination matches f64 sphere and Vincenty direct solutions', as
     compiled.destroy();
     for (const buffer of buffers) {
       buffer.destroy();
+    }
+  }
+});
+
+it('GPUGeodesicPairs honors a custom ellipsoid in meters and kilometers', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const ellipsoid = {semiMajorAxis: 6378388, flattening: 1 / 297};
+  const pairs = PAIRS.filter(([name]) => name !== 'near-antipodal');
+  const {origins, targets} = getPairValues(pairs);
+  for (const units of ['meters', 'kilometers'] as const) {
+    const fixture = createPairsFixture(device, 'wgs84', pairs.length, ellipsoid, units);
+    try {
+      const actual = await fixture.run(origins, targets);
+      pairs.forEach(([name], row) => {
+        const expected = getVincentyInverse(
+          rounded(origins, row),
+          rounded(targets, row),
+          ellipsoid
+        );
+        const distanceMeters = actual.distances[row] * (units === 'kilometers' ? 1000 : 1);
+        expect(actual.converged[row], name).toBe(1);
+        expect(Math.abs(distanceMeters - expected.distance), name).toBeLessThanOrEqual(
+          1e-3 + 1e-6 * expected.distance
+        );
+        if (expected.distance > 0.5) {
+          expect(
+            getBearingError(actual.initialBearings[row], expected.initialBearing),
+            name
+          ).toBeLessThan(name === '1 m' ? 1e-2 : 1e-3);
+          expect(
+            getBearingError(actual.finalBearings[row], expected.finalBearing),
+            name
+          ).toBeLessThan(name === '1 m' ? 1e-2 : 1e-3);
+        }
+      });
+    } finally {
+      fixture.destroy();
     }
   }
 });

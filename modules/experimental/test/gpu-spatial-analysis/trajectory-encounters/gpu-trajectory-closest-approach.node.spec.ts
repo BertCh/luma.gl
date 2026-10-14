@@ -163,3 +163,29 @@ it('closest-approach JS oracle reproduces the generated fixture', () => {
     });
   }
 });
+
+const DISTANCE_FRAME = {
+  coordinateSpace: 'planar',
+  metric: 'native',
+  units: 'meters',
+  frame: {id: 'f', kind: 'local-azimuthal-equidistant'}
+} as const;
+const AREA_FRAME = {
+  coordinateSpace: 'planar',
+  metric: 'native',
+  units: 'meters',
+  frame: {id: 'f', kind: 'local-lambert-equal-area'}
+} as const;
+
+it('GPUTrajectoryClosestApproach validates its distance frame', () => {
+  const device = createNullWebGPUDevice();
+  const graph = new GPUCommandGraph(device);
+  const props = createProps(graph, 2);
+  expect(() => new GPUTrajectoryClosestApproach({...props, spatialContext: AREA_FRAME})).toThrow(
+    /measures distance; project into an azimuthal-equidistant frame/
+  );
+  expect(
+    () => new GPUTrajectoryClosestApproach({...props, spatialContext: DISTANCE_FRAME})
+  ).not.toThrow();
+  device.destroy();
+});

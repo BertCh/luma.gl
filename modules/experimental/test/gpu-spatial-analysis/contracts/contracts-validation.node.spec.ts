@@ -274,7 +274,7 @@ describe('spatial contexts', () => {
     expect(() => validateGPUSpatialContext('c', {...planar, metric: 'great-circle'})).toThrow(
       /incompatible with planar/
     );
-    expect(() => validateGPUSpatialContext('c', {...planar, units: 'meters'})).toThrow(
+    expect(() => validateGPUSpatialContext('c', {...planar, units: 'kilometers'})).toThrow(
       /native metrics/
     );
     expect(() =>

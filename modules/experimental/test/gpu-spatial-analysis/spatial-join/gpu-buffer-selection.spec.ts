@@ -566,3 +566,47 @@ it('GPUBufferSelection reports join overflow when candidateCapacity is too small
   compiled.destroy();
   fixture.destroy();
 });
+
+it('GPUBufferSelection uses kilometers for great-circle distances and the buffer threshold', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const fixture = createFixture(device, 2);
+  const mask = fixture.importOutput('mask', 3);
+  const distances = fixture.importOutput('distances', 3, 'float32');
+  fixture.graph.add(
+    new GPUBufferSelection({
+      spatialContext: {
+        coordinateSpace: 'longitude-latitude',
+        metric: 'great-circle',
+        units: 'kilometers'
+      },
+      points: {
+        kind: 'points',
+        positions: fixture.importInput(
+          'points',
+          Float32Array.of(0.01, 0, 0.02, 0, 0, 0),
+          'float32x2',
+          3
+        )
+      },
+      features: {
+        kind: 'points',
+        positions: fixture.importInput('feature', Float32Array.of(0, 0), 'float32x2', 1)
+      },
+      distance: fixture.distance.importToGraph(fixture.graph),
+      candidateCapacity: 3,
+      output: {outputMask: mask.view, distances: distances.view}
+    })
+  );
+  const compiled = fixture.graph.compile();
+  submitGraph(device, compiled, undefined);
+  expect(await readUint32(mask.buffer, 3)).toEqual([1, 0, 1]);
+  const result = await readFloat32(distances.buffer, 3);
+  // Binary64 equatorial central angle, using the exact uploaded float32 longitude.
+  const oracle = (6371.0088 * Math.fround(0.01) * Math.PI) / 180;
+  expect(result[0]).toBeCloseTo(oracle, 4);
+  expect(result[1]).toBe(-1);
+  expect(result[2]).toBe(0);
+  compiled.destroy();
+  fixture.destroy();
+});

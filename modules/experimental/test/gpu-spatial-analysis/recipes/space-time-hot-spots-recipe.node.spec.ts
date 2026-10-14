@@ -70,5 +70,60 @@ it('addSpaceTimeHotSpotsRecipe rejects cyclic fields and invalid slices, and for
   );
   expect(recipe.inference.multipleTesting).toBe('benjamini-yekutieli');
   expect(recipe.inference.alternative).toBe('two-sided');
+  expect(recipe.spatialContext).toEqual({
+    coordinateSpace: 'planar',
+    metric: 'native',
+    units: 'native'
+  });
+  const spatialContext = {
+    coordinateSpace: 'planar',
+    metric: 'native',
+    units: 'meters',
+    frame: {id: 'area-frame', kind: 'local-lambert-equal-area'}
+  } as const;
+  const lattice = {
+    kind: 'lattice',
+    positions: view('float32x2', 4, 'context-positions'),
+    width: 2,
+    height: 2,
+    bounds: [0, 0, 2, 2],
+    spatialContext
+  };
+  expect(addSpaceTimeHotSpotsRecipe(graph, props({cells: lattice})).spatialContext).toBe(
+    spatialContext
+  );
+  for (const metric of ['none', 'great-circle']) {
+    expect(() =>
+      addSpaceTimeHotSpotsRecipe(
+        graph,
+        props({
+          cells: {
+            ...lattice,
+            spatialContext: {coordinateSpace: 'longitude-latitude', metric}
+          }
+        })
+      )
+    ).toThrow(/project positions to a planar frame first/);
+  }
+  const geographic = {coordinateSpace: 'longitude-latitude', metric: 'great-circle'} as const;
+  const weights = {
+    offsets: view('uint32', 5, 'context-offsets'),
+    neighbors: view('uint32', 4, 'context-neighbors'),
+    weights: view('float32', 4, 'context-weights'),
+    spatialContext: geographic
+  };
+  const cells = {kind: 'ids', cellIds: view('uint32', 4, 'context-ids'), cellCount: 4, weights};
+  expect(addSpaceTimeHotSpotsRecipe(graph, props({cells})).spatialContext).toBe(geographic);
+  expect(
+    addSpaceTimeHotSpotsRecipe(
+      graph,
+      props({
+        cells: {
+          ...cells,
+          weights: {...weights, spatialContext: undefined}
+        }
+      })
+    ).spatialContext
+  ).toBeUndefined();
   device.destroy();
 });

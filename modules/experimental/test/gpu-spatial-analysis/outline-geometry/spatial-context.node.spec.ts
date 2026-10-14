@@ -43,6 +43,10 @@ it('GPUOffsetCurve is planar only', () => {
     });
   expect(() => create(LONGITUDE_LATITUDE)).toThrow(UNSUPPORTED);
   expect(create().spatialContext.coordinateSpace).toBe('planar');
+  expect(() => create(AREA_FRAME)).toThrow(
+    /measures distance; project into an azimuthal-equidistant frame/
+  );
+  expect(create(DISTANCE_FRAME).spatialContext).toEqual(DISTANCE_FRAME);
   expect(create(LOCAL_FRAME).spatialContext.frame?.id).toBe('test-frame');
 });
 
@@ -59,6 +63,13 @@ it('GPUOutlineGeometry accepts planar and great-circle longitude/latitude only',
       output: {positions: view(graph, 'float32x2', 2 * 18)}
     });
   expect(create().spatialContext.coordinateSpace).toBe('planar');
+  expect(() => create(AREA_FRAME)).toThrow(
+    /measures distance; project into an azimuthal-equidistant frame/
+  );
+  expect(create(DISTANCE_FRAME).spatialContext).toEqual(DISTANCE_FRAME);
+  expect(() => create({coordinateSpace: 'planar', metric: 'none'})).toThrow(
+    'outline-geometry planar positions need the native metric'
+  );
   expect(create(LONGITUDE_LATITUDE).spatialContext.metric).toBe('great-circle');
   expect(create(LONGITUDE_LATITUDE).radius).toBeCloseTo(6371008.8, 1);
   expect(() => create({coordinateSpace: 'longitude-latitude', metric: 'none'})).toThrow(/metric/);
@@ -66,3 +77,16 @@ it('GPUOutlineGeometry accepts planar and great-circle longitude/latitude only',
     create({coordinateSpace: 'discrete-grid', metric: 'none', gridFamily: 'h3'})
   ).toThrow(/does not support discrete-grid/);
 });
+
+const DISTANCE_FRAME = {
+  coordinateSpace: 'planar',
+  metric: 'native',
+  units: 'meters',
+  frame: {id: 'f', kind: 'local-azimuthal-equidistant'}
+} as const;
+const AREA_FRAME = {
+  coordinateSpace: 'planar',
+  metric: 'native',
+  units: 'meters',
+  frame: {id: 'f', kind: 'local-lambert-equal-area'}
+} as const;

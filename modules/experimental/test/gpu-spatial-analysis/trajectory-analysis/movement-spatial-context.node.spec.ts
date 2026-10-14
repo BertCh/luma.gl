@@ -104,7 +104,7 @@ it('GPUTrajectoryMetrics accepts a great-circle context and rejects other geogra
   expect(
     () =>
       new GPUTrajectoryMetrics({...props, spatialContext: {...GREAT_CIRCLE, units: 'kilometers'}})
-  ).toThrow(/meters/);
+  ).not.toThrow();
   expect(
     () =>
       new GPUTrajectoryMetrics({
@@ -129,6 +129,19 @@ it('GPUTrajectoryResample and GPUTrajectoryPlayhead accept a great-circle contex
     output: {samples: createTransientView(graph, unique('samples'), 'float32x2', 8)}
   });
   expect(resample.spatialContext).toEqual(GREAT_CIRCLE);
+  expect(() => new GPUTrajectoryResample({...resample.props, spatialContext: AREA_FRAME})).toThrow(
+    /measures distance; project into an azimuthal-equidistant frame/
+  );
+  expect(
+    () => new GPUTrajectoryResample({...resample.props, spatialContext: DISTANCE_FRAME})
+  ).not.toThrow();
+  expect(
+    () =>
+      new GPUTrajectoryResample({
+        ...resample.props,
+        spatialContext: {...GREAT_CIRCLE, units: 'kilometers'}
+      })
+  ).not.toThrow();
   expect(resample.getCommandNodes(graph).map(node => node.id)).toContain(
     'trajectory-resample-arc-length'
   );
@@ -144,6 +157,19 @@ it('GPUTrajectoryResample and GPUTrajectoryPlayhead accept a great-circle contex
     }
   });
   expect(playhead.spatialContext).toEqual(GREAT_CIRCLE);
+  expect(() => new GPUTrajectoryPlayhead({...playhead.props, spatialContext: AREA_FRAME})).toThrow(
+    /measures distance; project into an azimuthal-equidistant frame/
+  );
+  expect(
+    () => new GPUTrajectoryPlayhead({...playhead.props, spatialContext: DISTANCE_FRAME})
+  ).not.toThrow();
+  expect(
+    () =>
+      new GPUTrajectoryPlayhead({
+        ...playhead.props,
+        spatialContext: {...GREAT_CIRCLE, units: 'kilometers'}
+      })
+  ).not.toThrow();
   expect(playhead.getCommandNodes(graph).length).toBeGreaterThan(1);
   expect(
     () =>
@@ -192,6 +218,18 @@ it('GPUTrajectoryEncounters derives a conservative great-circle search distance'
   const geodesic = new GPUTrajectoryEncounters({...props, spatialContext: GREAT_CIRCLE});
   // pyproj-pinned: cell 2 degrees at latitude 60 (see ENCOUNTER_REACH_ORACLE_CASES).
   expect(geodesic.maximumDistance).toBeCloseTo(111178.03178664722, 6);
+  const kilometers = new GPUTrajectoryEncounters({
+    ...props,
+    spatialContext: {...GREAT_CIRCLE, units: 'kilometers'}
+  });
+  expect(kilometers.maximumDistance).toBeCloseTo(111.17803178664722, 9);
+  expect(kilometers.maximumDistance).toBeCloseTo(geodesic.maximumDistance / 1000, 9);
+  expect(() => new GPUTrajectoryEncounters({...props, spatialContext: AREA_FRAME})).toThrow(
+    /measures distance; project into an azimuthal-equidistant frame/
+  );
+  expect(
+    () => new GPUTrajectoryEncounters({...props, spatialContext: DISTANCE_FRAME})
+  ).not.toThrow();
   expect(geodesic.columns).toBe(180);
   expect(geodesic.rows).toBe(60);
   expect(geodesic.getCommandNodes(graph).length).toBeGreaterThan(10);
@@ -271,6 +309,9 @@ it('planar-only movement operators reject longitude-latitude contexts', () => {
     }
   };
   expect(new GPUZoneEvents(zoneProps).spatialContext).toEqual(PLANAR);
+  // Crossing membership and dwell times do not measure distance or area.
+  expect(() => new GPUZoneEvents({...zoneProps, spatialContext: DISTANCE_FRAME})).not.toThrow();
+  expect(() => new GPUZoneEvents({...zoneProps, spatialContext: AREA_FRAME})).not.toThrow();
   expect(new GPUZoneEvents({...zoneProps, spatialContext: PLANAR}).spatialContext).toEqual(PLANAR);
   expect(() => new GPUZoneEvents({...zoneProps, spatialContext: GREAT_CIRCLE})).toThrow(
     /does not support longitude-latitude/
@@ -292,3 +333,16 @@ it('planar-only movement operators reject longitude-latitude contexts', () => {
     new GPUTrackSimilarity({...similarityProps, spatialContext: GREAT_CIRCLE}).spatialContext
   ).toEqual(GREAT_CIRCLE);
 });
+
+const DISTANCE_FRAME = {
+  coordinateSpace: 'planar',
+  metric: 'native',
+  units: 'meters',
+  frame: {id: 'f', kind: 'local-azimuthal-equidistant'}
+} as const;
+const AREA_FRAME = {
+  coordinateSpace: 'planar',
+  metric: 'native',
+  units: 'meters',
+  frame: {id: 'f', kind: 'local-lambert-equal-area'}
+} as const;

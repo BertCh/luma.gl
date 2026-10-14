@@ -162,7 +162,7 @@ it('GPUTerrainViewshed schedules canonical elevation and the line-of-sight kerne
   const props = {
     grid,
     elevation: createBand(graph, 'elevation', 63),
-    parameters: createTransientView(graph, 'settings', 'float32', 8),
+    parameters: createTransientView(graph, 'settings', 'float32', 10),
     output: {visibility: createTransientView(graph, 'visibility', 'uint32', 63)}
   };
   expect(new GPUTerrainViewshed(props).getCommandNodes(graph).map(node => node.id)).toEqual([
@@ -170,7 +170,7 @@ it('GPUTerrainViewshed schedules canonical elevation and the line-of-sight kerne
     'terrain-viewshed-viewshed'
   ]);
   expect(Array.from(getGPUTerrainViewshedParameterValues({observer: [1, 2]}, grid))).toEqual(
-    Array.from(Float32Array.from([1, 2, 1.7, 0, 0, 30, 30, 0]))
+    Array.from(Float32Array.from([1, 2, 1.7, 0, 0, 30, 30, 0, 0, -210]))
   );
   expect(getGPUTerrainCurvatureCoefficient()).toBeCloseTo(6.8277e-8, 11);
   expect(() => new GPUTerrainViewshed({...props, output: {}})).toThrow(/at least one output/);
@@ -263,7 +263,7 @@ it('GPUTerrainViewshed pyramid and tolerance variants schedule nodes within 8 bi
       id: prefix,
       grid: makeGPURasterMetadata({width: 9, height: 7}),
       elevation: createBand(graph, `${prefix}-elevation`, 63),
-      parameters: createTransientView(graph, `${prefix}-settings`, 'float32', 8),
+      parameters: createTransientView(graph, `${prefix}-settings`, 'float32', 10),
       output: {visibility: createTransientView(graph, `${prefix}-visibility`, 'uint32', 63)},
       ...overrides
     });
@@ -386,7 +386,7 @@ it('GPUTerrainLineOfSight validates and schedules within 8 bindings', () => {
         grid
       )
     )
-  ).toEqual(Array.from(Float32Array.from([1.7, 0, 500, 30, 20, 1e-7, 2, 1, 150, 0.02, 0, 0])));
+  ).toEqual(Array.from(Float32Array.from([1.7, 0, 500, 30, 20, 1e-7, 2, 1, 150, 0.02, 0, -140])));
   expect(() =>
     getGPUTerrainLineOfSightParameterValues(
       {},

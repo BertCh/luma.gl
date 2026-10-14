@@ -177,7 +177,7 @@ export function createSharedPyramidScene(
   };
   const viewshedSettings = makeParameters(
     'viewshed-settings',
-    8,
+    10,
     getGPUTerrainViewshedParameterValues(
       {observer: [width / 2, height / 2], observerHeight, curvatureCoefficient},
       grid
