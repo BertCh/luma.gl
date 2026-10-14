@@ -10,6 +10,7 @@ import {
   getGPUColorScaleParameterValues,
   packGPUColor
 } from '../../../src/gpu-dataframe/column-classification/index';
+import {getGPULonLatPolygonPreparationParameterValues} from '../../../src/gpu-spatial-analysis/lon-lat-polygons';
 import {GPU_PERMUTATION_PARAMETER_LENGTH} from '../../../src/gpu-spatial-analysis/permutation-inference/index';
 import {GPU_SPATIAL_AUTOCORRELATION_PARAMETER_LENGTH} from '../../../src/gpu-spatial-analysis/spatial-autocorrelation/index';
 import {addHotSpotAnalysisRecipe} from '../../../src/gpu-spatial-analysis/recipes/index';
@@ -148,6 +149,7 @@ async function runQuadbinScene(
     multipleTesting: 'none' | 'benjamini-hochberg';
     minimumNeighbors?: number;
     extras?: boolean;
+    prepare?: boolean;
     /** Neighbor slots of the grid-disk CSR; defaults to 8 per study row (no truncation). */
     neighborCapacity?: number;
   }
@@ -199,6 +201,15 @@ async function runQuadbinScene(
       packGPUColor(200, 20, 10)
     ];
     const recipe = addHotSpotAnalysisRecipe(graph, {
+      prepare: options.prepare,
+      preparedPositionCapacity: 32,
+      preparationParameters: options.prepare
+        ? fixture.parameters(
+            'preparation',
+            'float32',
+            getGPULonLatPolygonPreparationParameterValues('linear')
+          )
+        : undefined,
       source: {
         kind: 'points',
         positions: fixture.input('positions', positions, 'float32x2', pointCount),
@@ -757,5 +768,21 @@ it('addHotSpotAnalysisRecipe analyses a dense lattice with queen weights', async
     } finally {
       fixture.destroy();
     }
+  }
+}, 120000);
+
+it('hot-spot preparation preserves study cells, empty rows and point counts', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const run = await runQuadbinScene(device, {multipleTesting: 'none', prepare: true});
+  expect(run.recipe.status.stages[0].stage).toBe('study-area-preparation');
+  expect(run.tableCount).toBe(run.oracle.studyKeys.length);
+  expect(run.tableOverflow).toBe(0);
+  expect(run.gpuKeys).toEqual(run.oracle.studyKeys);
+  expect(run.outside).toBe(run.oracle.outside);
+  for (let row = 0; row < run.rows; row++) {
+    expect(
+      isClose(run.values[row], (2 * run.oracle.counts[row]) / run.oracle.areas[row], 1e-6, 2e-4)
+    ).toBe(true);
   }
 }, 120000);

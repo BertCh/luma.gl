@@ -176,11 +176,12 @@ function doesSegmentTouchBox(
 /**
  * CPU reference for `GPUPolygonRasterization`: point-in-polygon at every cell center (even-odd per
  * polygon, union per feature, smallest feature row wins), plus exact and loose boundary cells.
+ * `longitudeLatitude` repeats wrapped polygons in the longitude strips overlapping the grid.
  */
 export function rasterizePolygonsOnCPU(
   polygons: OraclePolygons,
   raster: OracleRaster,
-  options: {tieTolerance?: number; loosePadding?: number} = {}
+  options: {tieTolerance?: number; loosePadding?: number; longitudeLatitude?: boolean} = {}
 ): OracleRasterization {
   const {width, height} = raster;
   const [originX, originY, cellWidth, cellHeight] = raster.extent.map(Math.fround);
@@ -201,7 +202,19 @@ export function rasterizePolygonsOnCPU(
       polygon < polygons.featureOffsets[feature + 1];
       polygon++
     ) {
-      const edges = getPolygonEdges(polygons, polygon);
+      const sourceEdges = getPolygonEdges(polygons, polygon);
+      const shifts = options.longitudeLatitude
+        ? [-360, 0, 360].filter(
+            shift => originX < shift + 180 && originX + width * cellWidth > shift - 180
+          )
+        : [0];
+      const edges = shifts.flatMap(shift =>
+        sourceEdges.map(edge => ({
+          ...edge,
+          x0: edge.x0 + shift,
+          x1: edge.x1 + shift
+        }))
+      );
       if (edges.length === 0) {
         continue;
       }
@@ -325,4 +338,29 @@ export function joinPointsOnCPU(props: {
     }
   }
   return result;
+}
+
+/** Split Fiji-like multipolygon with an empty preparation copy, in wrapped longitude degrees. */
+export function createSplitFijiPolygons(): OraclePolygons {
+  return createPolygons([
+    [
+      [
+        [
+          [177, -18],
+          [180, -18],
+          [180, -16],
+          [177, -16]
+        ]
+      ],
+      [
+        [
+          [-180, -18],
+          [-178, -18],
+          [-178, -16],
+          [-180, -16]
+        ]
+      ],
+      [[]]
+    ]
+  ]);
 }

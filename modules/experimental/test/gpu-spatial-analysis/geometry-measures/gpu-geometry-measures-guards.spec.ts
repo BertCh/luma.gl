@@ -5,6 +5,17 @@
 import type {Buffer} from '@luma.gl/core';
 import {GPUCommandGraph} from '@luma.gl/gpgpu/gpu-core';
 import {getWebGPUTestDevice} from '@luma.gl/test-utils';
+import {
+  ANTARCTICA_NATURAL_EARTH,
+  ARCTIC_RING,
+  SPIRAL_WIDER_THAN_360,
+  GREAT_CIRCLE_60_DEGREE_EDGE
+} from '../lon-lat-polygons/fixtures';
+import {
+  getFixtureRings,
+  getChamberlainDuquetteArea,
+  getSphericalTriangleArea
+} from './geometry-measures-oracle';
 import {expect, it} from 'vitest';
 import {GPUGeometryMeasures} from '../../../src/gpu-spatial-analysis/geometry-measures';
 import {importGraphBuffer} from '../../../src/utils/gpu-contributor-utils';
@@ -79,6 +90,7 @@ async function measure(
     groupIds?: number[];
     groupCount?: number;
     large?: boolean;
+    edgeModel?: 'linear' | 'great-circle';
   }
 ) {
   const device = await getWebGPUTestDevice();
@@ -103,6 +115,7 @@ async function measure(
       spatialContext: {
         coordinateSpace: 'longitude-latitude',
         metric: options.metric,
+        edgeModel: options.edgeModel,
         units: 'meters'
       },
       ...getMeasuresGeometryFields(
@@ -234,3 +247,37 @@ it('GPUGeometryMeasures group centroids are spherical means across the antimerid
   );
   expect(weighted!.groupCentroids[1]).toBeCloseTo(WEIGHTED_CENTROID[1], 4);
 });
+
+for (const large of [false, true]) {
+  it(`GPUGeometryMeasures pole edges and empty rings (${large ? 'cooperative' : 'serial'})`, async () => {
+    const antarctica = getFixtureRings(ANTARCTICA_NATURAL_EARTH);
+    const result = await measure(
+      [antarctica, getFixtureRings(ARCTIC_RING), getFixtureRings(SPIRAL_WIDER_THAN_360), [[]]],
+      {
+        geometryType: 'polygons',
+        metric: 'great-circle',
+        large
+      }
+    );
+    const expected = getChamberlainDuquetteArea(antarctica[0], 6371007.180918475);
+    expect(Math.abs(result.areas[0] / expected - 1)).toBeLessThan(1e-5);
+    expect(result.areas[1]).toBeNaN();
+    expect(result.areas[2]).toBeNaN();
+    expect(result.areas[3]).toBe(0);
+    expect(result.invalidCount).toBe(2);
+  });
+
+  it(`GPUGeometryMeasures great-circle triangle area (${large ? 'cooperative' : 'serial'})`, async () => {
+    const triangle = getFixtureRings(GREAT_CIRCLE_60_DEGREE_EDGE);
+    const result = await measure([triangle, [[]]], {
+      geometryType: 'polygons',
+      metric: 'great-circle',
+      edgeModel: 'great-circle',
+      large
+    });
+    const expected = getSphericalTriangleArea(triangle[0], 6371008.8);
+    expect(Math.abs(result.areas[0] / expected - 1)).toBeLessThan(1e-6);
+    expect(result.areas[1]).toBe(0);
+    expect(result.invalidCount).toBe(0);
+  });
+}

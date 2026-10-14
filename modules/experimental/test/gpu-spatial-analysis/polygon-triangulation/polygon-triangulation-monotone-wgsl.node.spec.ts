@@ -81,8 +81,8 @@ describe('monotone kernels in the WGSL interpreter', () => {
     );
     cases.forEach((entry, polygon) => expectMatchesModel(result, polygon, entry));
     expect(result.routing.every(route => route === 1)).toBe(true);
-    // The slices of neighbors are disjoint: the whole buffer holds only written slots.
-    expect(result.indices.includes(0xdeadbeef)).toBe(false);
+    // The slices of neighbors are disjoint. The capacity helper also reserves spare tail slots.
+    expect(result.indices.slice(0, result.sliceStarts.at(-1)).includes(0xdeadbeef)).toBe(false);
   }, 600_000);
 
   it('matches the CPU model on random polygons with many equal coordinates, shared run', () => {

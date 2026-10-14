@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {registerPolygonConsumerGPUTests} from '../zonal-statistics/polygon-consumer-status-fixtures';
 import {getWebGPUTestDevice} from '@luma.gl/test-utils';
 import {expect, it} from 'vitest';
 import {GPULineLengthPerPolygon} from '../../../src/gpu-spatial-analysis/line-density/gpu-line-length-per-polygon';
@@ -319,3 +320,5 @@ it('GPULineLengthPerPolygon honours kilometers units on the default sphere', asy
   expectClose(result['lengths'][0], expected.lengths[0] / 1000, 1e-4, 1e-3);
   fixture.destroy();
 });
+
+registerPolygonConsumerGPUTests('GPULineLengthPerPolygon');

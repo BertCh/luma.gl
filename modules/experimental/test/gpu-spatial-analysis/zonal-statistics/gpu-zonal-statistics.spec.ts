@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {registerPolygonConsumerGPUTests} from './polygon-consumer-status-fixtures';
 import type {Buffer, Device} from '@luma.gl/core';
 import {GPUCommandGraph, type GraphDataView, type GraphVectorView} from '@luma.gl/gpgpu/gpu-core';
 import {getWebGPUTestDevice} from '@luma.gl/test-utils';
@@ -1022,3 +1023,5 @@ for (const sumOrder of ['atomic', 'sorted'] as const) {
     });
   }
 }
+
+registerPolygonConsumerGPUTests('GPUZonalStatistics');

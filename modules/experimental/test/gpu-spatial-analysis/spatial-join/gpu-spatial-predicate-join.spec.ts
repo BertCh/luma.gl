@@ -32,6 +32,7 @@ import {
   type OraclePredicate
 } from './spatial-predicate-oracle';
 import {requireTestDevice} from '../../utils/require-test-device';
+import {registerLonLatPolygonStatusTests} from './lon-lat-polygon-status-fixtures';
 
 type JoinResult = {
   pairs: [number, number][];
@@ -620,3 +621,5 @@ it('GPUSpatialPredicateJoin validates its props', async () => {
     buffer.destroy();
   }
 });
+
+registerLonLatPolygonStatusTests('GPUSpatialPredicateJoin');

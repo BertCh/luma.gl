@@ -182,3 +182,19 @@ describe('createGPULocalFrame', () => {
     expect(() => createGPULocalFrame({origin: [0, 91]})).toThrow();
   });
 });
+
+describe('createGPULocalFrame horizontal datum', () => {
+  it('copies the declared datum without changing the frame identity', () => {
+    const declared = createGPULocalFrame({origin: [10, 50], datum: 'EPSG:4258'});
+    const undeclared = createGPULocalFrame({origin: [10, 50]});
+    expect(declared.spatialContext.datum).toBe('EPSG:4258');
+    expect(declared.spatialContext.frame?.id).toBe(undeclared.spatialContext.frame?.id);
+    expect('datum' in undeclared.spatialContext).toBe(false);
+  });
+
+  it.each(['', '   '])('rejects an empty datum %j', datum => {
+    expect(() => createGPULocalFrame({origin: [10, 50], datum})).toThrow(
+      /datum must be a non-empty string/
+    );
+  });
+});

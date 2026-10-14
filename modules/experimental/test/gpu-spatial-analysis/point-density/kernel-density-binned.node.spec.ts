@@ -3,6 +3,12 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {createTransientView, GPUCommandGraph} from '@luma.gl/gpgpu/gpu-core';
+import {ORACLE_RECTANGLE, ORACLE_L_SHAPE} from '../../analysis-core/study-window-oracle';
+import {
+  getPolygonKernelDensityOracle,
+  type PolygonKernelDensityInput
+} from './point-density-oracle';
+import {getPolygonBinnedDensityOracle} from './kernel-density-binned-oracle';
 import {expect, it} from 'vitest';
 import {WgslReflect} from 'wgsl_reflect';
 import {
@@ -356,4 +362,41 @@ it('padding recovers the mass of points outside the grid', () => {
   const scale = 3 / (2 * Math.PI * 25);
   expect(worstPadded).toBeLessThanOrEqual(getGPUKernelDensityBinnedErrorBound(0.2) * scale);
   expect(worstUnpadded).toBeGreaterThan(0.05 * scale);
+});
+
+it('polygon binned oracle excludes outside points before deposition and masks outside cells', () => {
+  for (const window of [ORACLE_RECTANGLE, ORACLE_L_SHAPE]) {
+    for (const edgeCorrection of ['uniform', 'diggle'] as const) {
+      const input: PolygonKernelDensityInput = {
+        window,
+        edgeCorrection,
+        kernel: 'gaussian',
+        points: [100, 100, 300, 500, -100, 100],
+        weights: [2, 3, 1000],
+        start: [-250, -250],
+        width: 10,
+        height: 10,
+        cellSize: [250, 250],
+        bandwidth: 800,
+        padding: 12
+      };
+      const actual = getPolygonBinnedDensityOracle(input);
+      const withoutExcluded = getPolygonBinnedDensityOracle({
+        ...input,
+        points: input.points.slice(0, 4),
+        weights: [2, 3]
+      });
+      expect(actual).toEqual(withoutExcluded);
+      const exact = getPolygonKernelDensityOracle(input);
+      expect(Array.from(actual, Number.isNaN)).toEqual(Array.from(exact, Number.isNaN));
+      expect(actual.some(Number.isNaN)).toBe(true);
+      expect(actual.some(value => Number.isFinite(value) && value > 0)).toBe(true);
+      const probability = getPolygonBinnedDensityOracle({...input, normalization: 'probability'});
+      for (const [index, value] of actual.entries()) {
+        if (Number.isFinite(value)) {
+          expect(probability[index]).toBe(value / 5);
+        }
+      }
+    }
+  }
 });

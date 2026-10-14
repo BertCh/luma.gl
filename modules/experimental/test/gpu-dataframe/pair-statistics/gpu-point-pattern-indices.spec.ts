@@ -13,14 +13,28 @@ import {
   GPU_QUADRAT_STATISTICS_LENGTH,
   type GPUPointPatternIndicesSettings
 } from '../../../src/gpu-dataframe/pair-statistics/point-pattern-indices-parameters';
-import {createPairStatisticsHarness, getFloatBits} from './pair-statistics-harness';
-import {createRandom} from './pair-statistics-oracle';
+import {
+  createPairStatisticsHarness,
+  createPairStatisticsWindowHarness,
+  type HarnessViews,
+  getFloatBits
+} from './pair-statistics-harness';
+import {createRandom, type PairStatisticsFrame} from './pair-statistics-oracle';
 import {
   computePointPatternIndicesOnCPU,
+  computeWindowPointPatternIndicesOnCPU,
   type PointPatternIndicesOracleResult,
   type PointPatternOracleOptions
 } from './point-pattern-indices-oracle';
 import {requireTestDevice} from '../../utils/require-test-device';
+
+import type {GPUStudyWindow} from '../../../src/analysis-core/contracts/study-window';
+import {
+  ORACLE_RECTANGLE,
+  ORACLE_L_SHAPE,
+  getOracleWindowBounds,
+  type OracleStudyWindow
+} from '../../analysis-core/study-window-oracle';
 
 const BOUNDS = [0, 0, 100, 100] as const;
 
@@ -224,7 +238,9 @@ for (const [name, createScene, quadratGrid] of [
     const scene = createScene();
     const harness = createHarness(device, scene, quadratGrid);
     try {
-      const frames: (GPUPointPatternIndicesSettings & PointPatternOracleOptions)[] = [
+      const frames: (GPUPointPatternIndicesSettings &
+        PointPatternOracleOptions &
+        PairStatisticsFrame)[] = [
         {bounds: BOUNDS, maximumDistance: 3},
         {bounds: BOUNDS, maximumDistance: 15},
         // Beyond the extent: the lattice collapses to one cell.
@@ -467,5 +483,137 @@ it('GPUPointPatternIndices builds each part on its own with the same results', a
     full.destroy();
     summaryOnly.destroy();
     idsOnly.destroy();
+  }
+});
+
+type WindowIndicesOutput = 'clarkEvans' | 'quadratAreas' | 'quadratCounts' | 'quadratStatistics';
+
+function createWindowIndicesHarness(
+  device: Device,
+  positions: Float32Array,
+  window?: OracleStudyWindow
+) {
+  const createContributor = (
+    views: HarnessViews<WindowIndicesOutput>,
+    studyWindow?: GPUStudyWindow
+  ) =>
+    new GPUPointPatternIndices({
+      positions: views.positions,
+      parameters: views.parameters,
+      studyWindow,
+      gridSize: [8, 8],
+      quadratGrid: [2, 2],
+      quadratSamples: 16,
+      output: {
+        clarkEvans: views.outputs.clarkEvans as never,
+        quadratAreas: views.outputs.quadratAreas as never,
+        quadratCounts: views.outputs.quadratCounts as never,
+        quadratStatistics: views.outputs.quadratStatistics as never
+      }
+    });
+  const options = {
+    positions,
+    parameterLength: 8,
+    outputs: {
+      clarkEvans: {format: 'float32' as const, length: 7},
+      quadratAreas: {format: 'float32' as const, length: 4},
+      quadratCounts: {format: 'uint32' as const, length: 4},
+      quadratStatistics: {format: 'float32' as const, length: 7}
+    },
+    createContributor
+  };
+  return window
+    ? createPairStatisticsWindowHarness<WindowIndicesOutput>(device, {...options, window})
+    : createPairStatisticsHarness<WindowIndicesOutput>(device, options);
+}
+
+function expectWindowValues(actual: number[], expected: number[]) {
+  expect(actual.length).toBe(expected.length);
+  expected.forEach((value, index) => {
+    if (Number.isNaN(value)) expect(actual[index], `row ${index}`).toBeNaN();
+    else
+      expect(
+        Math.abs(actual[index] - value),
+        `row ${index}: ${actual[index]} vs ${value}`
+      ).toBeLessThanOrEqual(1e-5 * Math.max(Math.abs(value), 1e-6));
+  });
+}
+
+for (const [label, window] of [
+  ['rectangle', undefined],
+  ['polygon rectangle', ORACLE_RECTANGLE],
+  ['L shape', ORACLE_L_SHAPE]
+] as const) {
+  it(`GPUPointPatternIndices guard and quadrats match the oracle: ${label}`, async () => {
+    const device = await getWebGPUTestDevice();
+    requireTestDevice(device);
+    const positions = new Float32Array([
+      100, 300, 300, 300, 600, 300, 1500, 200, 1400, 400, 300, 600, 400, 1000, 400, 1500, 600, 1700,
+      1500, 1500, -10, 500
+    ]);
+    const bounds = getOracleWindowBounds(window ?? ORACLE_RECTANGLE);
+    const frame = {
+      bounds,
+      maximumDistance: 200,
+      clarkEvansCorrection: 'guard' as const,
+      guardDistance: 250
+    };
+    const harness = createWindowIndicesHarness(device, positions, window);
+    try {
+      const parameters = getGPUPointPatternIndicesParameterValues({
+        ...frame,
+        bounds: window ? 'study-window' : bounds
+      });
+      const actual = await harness.run(parameters);
+      const expected = computeWindowPointPatternIndicesOnCPU({positions}, frame, [2, 2], window);
+      expectWindowValues(actual.clarkEvans, expected.clarkEvans);
+      expectWindowValues(actual.quadratAreas, expected.quadratAreas);
+      expectWindowValues(actual.quadratStatistics, expected.quadratStatistics);
+      expect(actual.quadratCounts).toEqual(expected.quadratCounts);
+      const repeated = await harness.run(parameters);
+      expect(getFloatBits(repeated.clarkEvans)).toEqual(getFloatBits(actual.clarkEvans));
+      expect(getFloatBits(repeated.quadratStatistics)).toEqual(
+        getFloatBits(actual.quadratStatistics)
+      );
+      parameters[7] = 5000;
+      const emptyFocus = await harness.run(parameters);
+      expect(emptyFocus.clarkEvans[0]).toBe(actual.clarkEvans[0]);
+      expect(emptyFocus.clarkEvans.slice(1).every(Number.isNaN)).toBe(true);
+      if (window) {
+        parameters[5] = 1; // Bypass the packer: polygon Donnelly must fail closed.
+        const invalid = await harness.run(parameters);
+        for (const index of [2, 3, 4, 5, 6]) expect(invalid.clarkEvans[index]).toBeNaN();
+        expect(invalid.clarkEvans[0]).toBe(actual.clarkEvans[0]);
+      }
+      expect(harness.rebuildCount).toBe(0);
+    } finally {
+      harness.destroy();
+    }
+  });
+}
+
+it('GPUPointPatternIndices polygon-as-rectangle quadrats are bitwise equal to rectangle mode', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const positions = new Float32Array([100, 100, 200, 100, 1100, 200, 1700, 700, 1300, 800]);
+  const rectangle = createWindowIndicesHarness(device, positions);
+  const polygon = createWindowIndicesHarness(device, positions, ORACLE_RECTANGLE);
+  try {
+    const settings = {maximumDistance: 100, clarkEvansCorrection: 'none' as const};
+    const first = await rectangle.run(
+      getGPUPointPatternIndicesParameterValues({
+        ...settings,
+        bounds: getOracleWindowBounds(ORACLE_RECTANGLE)
+      })
+    );
+    const second = await polygon.run(
+      getGPUPointPatternIndicesParameterValues({...settings, bounds: 'study-window'})
+    );
+    expect(getFloatBits(second.quadratStatistics)).toEqual(getFloatBits(first.quadratStatistics));
+    expect(getFloatBits(second.quadratAreas)).toEqual(getFloatBits(first.quadratAreas));
+    expect(second.quadratCounts).toEqual(first.quadratCounts);
+  } finally {
+    rectangle.destroy();
+    polygon.destroy();
   }
 });

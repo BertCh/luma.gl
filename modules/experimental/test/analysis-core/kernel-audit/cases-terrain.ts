@@ -882,6 +882,73 @@ export const TERRAIN_CASES: KernelAuditCase[] = [
     )
   ),
 
+  // ---- terrain analysis: absolute observer elevations
+  ...(['march', 'pyramid'] as const).flatMap(
+    traversal =>
+      [
+        {
+          exportName: 'GPUTerrainViewshed',
+          name: `absolute, ${traversal}`,
+          build: context => {
+            const {graph, view} = context;
+            graph.add(
+              new GPUTerrainViewshed({
+                grid: SMALL,
+                elevation: elevationBand(context, SMALL),
+                heightReference: 'absolute',
+                parameters: view('float32', GPU_TERRAIN_VIEWSHED_PARAMETER_LENGTH),
+                ...(traversal === 'pyramid' ? {toleranceParameters: view('float32', 4)} : {}),
+                traversal,
+                output: {visibility: view('uint32', cellCount(SMALL))}
+              })
+            );
+          }
+        },
+        {
+          exportName: 'GPUTerrainLineOfSight',
+          name: `absolute, ${traversal}`,
+          build: context => {
+            const {graph, view} = context;
+            graph.add(
+              new GPUTerrainLineOfSight({
+                grid: SMALL,
+                elevation: elevationBand(context, SMALL),
+                heightReference: 'absolute',
+                pairs: view('float32x4', 500),
+                pairHeights: view('float32x2', 500),
+                parameters: view('float32', 12),
+                traversal,
+                output: {visibility: view('uint32', 500), clearance: view('float32', 500)}
+              })
+            );
+          }
+        },
+        {
+          exportName: 'GPUTerrainCumulativeViewshed',
+          name: `absolute, ${traversal}`,
+          build: context => {
+            const {graph, view} = context;
+            graph.add(
+              new GPUTerrainCumulativeViewshed({
+                grid: SMALL,
+                elevation: elevationBand(context, SMALL),
+                heightReference: 'absolute',
+                observers: view('float32x2', 10),
+                observerHeights: view('float32', 10),
+                parameters: view('float32', 12),
+                traversal,
+                observersPerDispatch: 4,
+                output: {
+                  visibleCount: view('uint32', cellCount(SMALL)),
+                  marginalCount: view('uint32', cellCount(SMALL))
+                }
+              })
+            );
+          }
+        }
+      ] satisfies KernelAuditCase[]
+  ),
+
   // ---- terrain curvature
   ...(['evans-young', 'zevenbergen-thorne', 'florinsky'] as GPUTerrainCurvatureMethod[]).flatMap(
     (method, methodIndex) =>

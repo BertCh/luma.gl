@@ -470,6 +470,11 @@ export const CELLS_AND_JOINS_CASES: KernelAuditCase[] = [
               family: 'quadbin',
               resolution: GPU_CELL_MAXIMUM_RESOLUTION.quadbin,
               containment,
+              spatialContext: {
+                coordinateSpace: 'longitude-latitude',
+                metric: 'none',
+                edgeModel: 'linear'
+              },
               ...polygons(context, 20, ROWS),
               featureIds: view('uint32', 20),
               candidateCapacity: 4096,

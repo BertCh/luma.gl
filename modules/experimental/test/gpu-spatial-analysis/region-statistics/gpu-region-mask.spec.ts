@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {registerPolygonConsumerGPUTests} from '../zonal-statistics/polygon-consumer-status-fixtures';
 import {GPUCommandGraph} from '@luma.gl/gpgpu/gpu-core';
 import {getWebGPUTestDevice} from '@luma.gl/test-utils';
 import {expect, it} from 'vitest';
@@ -267,3 +268,5 @@ it('GPUPickRegionMask deduplicates picked rows, filters batches, and reports ove
     buffer.destroy();
   }
 });
+
+registerPolygonConsumerGPUTests('GPURegionMask');

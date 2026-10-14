@@ -62,7 +62,8 @@ it('GPUDotDensity validates props and builds deterministic nodes', () => {
   const contributor = new GPUDotDensity(createProps(graph, {id: 'dots'}));
   expect(contributor.featureCount).toBe(3);
   const ids = contributor.getCommandNodes(graph).map(node => node.id);
-  expect(ids[0]).toBe('dots-triangulation-earcut');
+  expect(ids[0]).toBe('dots-triangulation-classify-rings');
+  expect(ids).toContain('dots-triangulation-earcut');
   expect(ids).toContain('dots-feature-triangles');
   expect(ids).toContain('dots-sample');
   expect(ids[ids.length - 1]).toBe('dots-publish');
@@ -244,4 +245,24 @@ it('GPUDotDensity and GPURandomPointsInPolygon accept planar contexts and reject
     /project positions to a planar frame/
   );
   device.destroy();
+});
+
+it('polygon samplers accept zero positions and zero polygon slots at graph declaration', () => {
+  for (const polygonCount of [0, 3]) {
+    const graph = new GPUCommandGraph(createNullWebGPUDevice());
+    const props = createProps(graph, {
+      positions: createTransientView(graph, 'empty-positions', 'float32x2', 0),
+      polygonOffsets: createTransientView(graph, 'empty-polygons', 'uint32', polygonCount + 1),
+      ringOffsets: createTransientView(graph, 'empty-rings', 'uint32', 1)
+    });
+    expect(() => new GPUDotDensity(props).getCommandNodes(graph)).not.toThrow();
+    expect(() =>
+      new GPURandomPointsInPolygon({
+        ...props,
+        id: 'empty-random',
+        counts: createTransientView(graph, 'empty-counts', 'uint32', 3),
+        output: {...props.output, slotCounts: undefined, slotOffsets: undefined}
+      }).getCommandNodes(graph)
+    ).not.toThrow();
+  }
 });

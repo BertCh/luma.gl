@@ -2,6 +2,17 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {
+  evaluateGPUKernelDensityKernel,
+  type GPUKernelDensityKernel
+} from '../../../src/gpu-spatial-analysis/point-density/kernel-density-math';
+import {
+  getOracleKernelMassFan,
+  isOracleInsideWindow,
+  type OracleStudyWindow
+} from '../../analysis-core/study-window-oracle';
+import type {BinnedDensityInput} from './kernel-density-binned-oracle';
+
 /** CPU reference results for one density computation. */
 export type DensityOracleResult = {
   counts: number[];
@@ -211,4 +222,90 @@ function accumulate(result: DensityOracleResult, cell: number, weight: number | 
 function finalize(result: DensityOracleResult): DensityOracleResult {
   result.means = result.counts.map((count, cell) => (count ? result.sums[cell] / count : 0));
   return result;
+}
+
+/** Inputs of the polygon KDE oracle, using absolute planar coordinates. */
+export type PolygonKernelDensityInput = BinnedDensityInput & {
+  window: OracleStudyWindow;
+  kernel: GPUKernelDensityKernel;
+  edgeCorrection: 'uniform' | 'diggle';
+  normalization?: 'intensity' | 'probability';
+};
+
+/** Included raw and corrected point weights, independent of the GPU implementation. */
+export function getPolygonKernelDensityWeights(input: PolygonKernelDensityInput): {
+  weights: number[];
+  weightSum: number;
+  invalidCount: number;
+} {
+  let weightSum = 0;
+  let invalidCount = 0;
+  const weights = Array.from({length: input.points.length / 2}, (_, index) => {
+    const point = [input.points[2 * index], input.points[2 * index + 1]] as const;
+    const weight = input.weights?.[index] ?? 1;
+    if (
+      !point.every(Number.isFinite) ||
+      !Number.isFinite(weight) ||
+      weight < 0 ||
+      !isOracleInsideWindow(input.window, point)
+    ) {
+      invalidCount++;
+      return 0;
+    }
+    weightSum += weight;
+    if (input.edgeCorrection === 'diggle') {
+      const mass = getOracleKernelMassFan(input.window, point, input.bandwidth, input.kernel);
+      return mass > 1e-6 ? weight / mass : 0;
+    }
+    return weight;
+  });
+  return {weights, weightSum, invalidCount};
+}
+
+/** Polygon cell mask, uniform edge mass and optional probability normalization. */
+export function finishPolygonKernelDensity(
+  input: PolygonKernelDensityInput,
+  values: Float64Array,
+  weightSum: number
+): Float64Array {
+  return values.map((value, index) => {
+    const center = [
+      input.start[0] + ((index % input.width) + 0.5) * input.cellSize[0],
+      input.start[1] + (Math.floor(index / input.width) + 0.5) * input.cellSize[1]
+    ] as const;
+    if (!isOracleInsideWindow(input.window, center)) {
+      return NaN;
+    }
+    let result = value;
+    if (input.edgeCorrection === 'uniform') {
+      const mass = getOracleKernelMassFan(input.window, center, input.bandwidth, input.kernel);
+      result = mass > 1e-6 ? result / mass : NaN;
+    }
+    return input.normalization === 'probability'
+      ? weightSum > 0
+        ? result / weightSum
+        : NaN
+      : result;
+  });
+}
+
+/** Exact polygon-window KDE with binary64 fan integration and point inclusion. */
+export function getPolygonKernelDensityOracle(input: PolygonKernelDensityInput): Float64Array {
+  const {weights, weightSum} = getPolygonKernelDensityWeights(input);
+  const values = Float64Array.from({length: input.width * input.height}, (_, index) => {
+    const centerX = input.start[0] + ((index % input.width) + 0.5) * input.cellSize[0];
+    const centerY = input.start[1] + (Math.floor(index / input.width) + 0.5) * input.cellSize[1];
+    let total = 0;
+    for (const [pointIndex, weight] of weights.entries()) {
+      if (weight > 0) {
+        const distance = Math.hypot(
+          input.points[2 * pointIndex] - centerX,
+          input.points[2 * pointIndex + 1] - centerY
+        );
+        total += weight * evaluateGPUKernelDensityKernel(input.kernel, input.bandwidth, distance);
+      }
+    }
+    return total;
+  });
+  return finishPolygonKernelDensity(input, values, weightSum);
 }

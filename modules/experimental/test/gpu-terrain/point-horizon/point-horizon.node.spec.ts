@@ -36,6 +36,59 @@ function createBand(graph: GPUCommandGraph, id: string, length: number) {
   };
 }
 
+function checkPointHorizonVerticalDatums(
+  create: (
+    overrides: Partial<
+      Pick<
+        GPUPointHorizonProfileProps,
+        'id' | 'elevation' | 'heightReference' | 'observerVerticalDatum'
+      >
+    >
+  ) => unknown,
+  elevation: GPUPointHorizonProfileProps['elevation']
+) {
+  const id = 'datum-horizon';
+  const declaredElevation = {...elevation, verticalDatum: 'EPSG:5773'};
+  expect(() =>
+    create({
+      id,
+      elevation: declaredElevation,
+      heightReference: 'absolute',
+      observerVerticalDatum: 'ellipsoidal'
+    })
+  ).toThrow(
+    new Error(
+      `${id} observer heights are ellipsoidal but elevation is EPSG:5773; convert to one vertical datum first`
+    )
+  );
+  for (const heightReference of [undefined, 'ground'] as const) {
+    expect(() =>
+      create({
+        id,
+        elevation: declaredElevation,
+        heightReference,
+        observerVerticalDatum: 'EPSG:5773'
+      })
+    ).toThrow(new Error(`${id} observerVerticalDatum needs heightReference absolute`));
+  }
+  for (const [observerVerticalDatum, verticalDatum] of [
+    [undefined, undefined],
+    [undefined, 'EPSG:5773'],
+    ['ellipsoidal', undefined],
+    ['epsg:5773', 'EPSG:5773'],
+    [' EPSG:5773 ', 'EPSG:5773']
+  ]) {
+    expect(() =>
+      create({
+        id,
+        elevation: {...elevation, verticalDatum},
+        heightReference: 'absolute',
+        observerVerticalDatum
+      })
+    ).not.toThrow();
+  }
+}
+
 it('getGPUPointHorizonDistanceLattice builds the exact power-of-two lattice', () => {
   const lattice = getGPUPointHorizonDistanceLattice({maximumDistance: 150_000, cellSize: 30});
   // 20 m is exactly on the lattice (octave 4, step 0.25: j = 16).
@@ -207,6 +260,7 @@ it('GPUPointHorizonProfile schedules canonicalization, pyramid levels and march 
   };
   const contributor = create();
   expect(contributor.id).toBe('point-horizon-profile');
+  checkPointHorizonVerticalDatums(create, createBand(graph, 'datum-elevation', 64 * 48));
   const nodes = contributor.getCommandNodes(graph);
   const ids = nodes.map(node => node.id);
   const levelCount = contributor.model.layout?.levels.length ?? 0;
@@ -325,6 +379,7 @@ it('GPUPointHorizonVisibility schedules classification chunks within 8 bindings'
   };
   const contributor = create();
   expect(contributor.id).toBe('point-horizon-visibility');
+  checkPointHorizonVerticalDatums(create, createBand(graph, 'datum-elevation', 64 * 48));
   const nodes = contributor.getCommandNodes(graph);
   expect(nodes.at(-1)?.id).toBe('point-horizon-visibility-classify-0');
   expect(nodes.at(-1)?.resources?.length).toBe(8);

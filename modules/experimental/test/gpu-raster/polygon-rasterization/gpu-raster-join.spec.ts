@@ -7,6 +7,7 @@ import {GPUCommandGraph, type GraphDataView} from '@luma.gl/gpgpu/gpu-core';
 import {getWebGPUTestDevice} from '@luma.gl/test-utils';
 import {expect, it} from 'vitest';
 import {GPUParameterBuffer, importGraphBuffer} from '../../../src/utils/gpu-contributor-utils';
+import type {GPUSpatialContext} from '../../../src/analysis-core/contracts';
 import type {GPURasterMetadata} from '../../../src/gpu-raster';
 import {GPURasterJoin} from '../../../src/gpu-raster/polygon-rasterization';
 import {
@@ -18,6 +19,8 @@ import {
 } from '../../utils/gpu-contributor-test-utils';
 import {
   findContainingFeature,
+  createSplitFijiPolygons,
+  rasterizePolygonsOnCPU,
   joinPointsOnCPU,
   NO_ZONE,
   type OracleRasterJoin,
@@ -53,6 +56,7 @@ function addJoin(
   device: Device,
   graph: GPUCommandGraph,
   props: {
+    spatialContext?: GPUSpatialContext;
     grid: GPURasterMetadata;
     parameters: GraphDataView<'float32'>;
     zones: GraphDataView<'uint32'>;
@@ -78,6 +82,7 @@ function addJoin(
     importGraphBuffer(graph, `join-${name}`, buffers[name], format, props.zoneCount);
   graph.add(
     new GPURasterJoin({
+      spatialContext: props.spatialContext,
       grid: props.grid,
       parameters: props.parameters,
       points: importGraphBuffer(graph, 'join-points', buffers.points, 'float32x2', pointCount),
@@ -332,4 +337,57 @@ it('GPURasterJoin over GPUPolygonRasterization agrees with exact point-in-polygo
   compiled.destroy();
   destroyJoinBuffers(buffers);
   destroyRasterizationFixture(fixture);
+});
+
+it('GPURasterJoin accepts a longitude/latitude zone raster spanning 180 degrees', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const raster = {width: 80, height: 16, extent: [170, -19, 0.25, 0.25] as const};
+  const expectedRaster = rasterizePolygonsOnCPU(createSplitFijiPolygons(), raster, {
+    longitudeLatitude: true
+  });
+  const graph = new GPUCommandGraph(device);
+  const parameters = new GPUParameterBuffer(device, {
+    id: 'extent',
+    format: 'float32',
+    length: 4,
+    values: new Float32Array(raster.extent)
+  });
+  const zones = createInputBuffer(device, expectedRaster.zones);
+  const boundary = createInputBuffer(device, Uint32Array.from(expectedRaster.boundary));
+  const points = new Float32Array([179.125, -17.125, 178.125, -17.125, 175.125, -17.125]);
+  const values = new Float32Array([2, 3, 4]);
+  const buffers = addJoin(device, graph, {
+    spatialContext: {coordinateSpace: 'longitude-latitude', metric: 'none'},
+    grid: makeExtentGrid(raster.width, raster.height, raster.extent),
+    parameters: parameters.importToGraph(graph),
+    zones: importGraphBuffer(graph, 'zones', zones, 'uint32', raster.width * raster.height),
+    boundary: importGraphBuffer(
+      graph,
+      'boundary',
+      boundary,
+      'uint32',
+      raster.width * raster.height
+    ),
+    zoneCount: 1,
+    points,
+    values
+  });
+  const compiled = graph.compile();
+  submitGraph(device, compiled, undefined);
+  const expected = joinPointsOnCPU({
+    raster,
+    zones: expectedRaster.zones,
+    boundary: expectedRaster.boundary,
+    zoneCount: 1,
+    points,
+    values
+  });
+  expect(expected.counts).toEqual([2]);
+  await expectJoinMatches(buffers, expected, 1);
+  compiled.destroy();
+  parameters.destroy();
+  zones.destroy();
+  boundary.destroy();
+  for (const buffer of Object.values(buffers)) buffer.destroy();
 });

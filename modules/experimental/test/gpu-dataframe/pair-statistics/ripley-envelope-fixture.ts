@@ -216,3 +216,20 @@ export const ENVELOPE_FIXTURE_CASES: Record<string, EnvelopeFixtureCase> = {
     ]
   }
 };
+
+import {GPUStudyWindowPreparation} from '../../../src/gpu-spatial-analysis/study-window/gpu-study-window-preparation';
+import {createTransientView, type GPUCommandGraph} from '@luma.gl/gpgpu/gpu-core';
+
+/** Null-device prepared handle shared by the polygon consumer node specs. */
+export function createRipleyTestWindow(graph: GPUCommandGraph): GPUStudyWindowPreparation {
+  const studyWindow = new GPUStudyWindowPreparation({
+    id: 'ripley-test-window',
+    positions: createTransientView(graph, 'window-positions', 'float32x2', 6),
+    featureOffsets: createTransientView(graph, 'window-features', 'uint32', 2),
+    polygonOffsets: createTransientView(graph, 'window-polygons', 'uint32', 2),
+    ringOffsets: createTransientView(graph, 'window-rings', 'uint32', 2),
+    samplingGrid: [8, 8]
+  });
+  graph.add(studyWindow);
+  return studyWindow;
+}

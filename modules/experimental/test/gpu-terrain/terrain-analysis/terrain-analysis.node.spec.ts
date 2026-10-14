@@ -21,6 +21,269 @@ import {
 } from '../../../src/gpu-terrain/terrain-analysis';
 import {createNullWebGPUDevice} from '../../utils/gpu-contributor-test-utils';
 import {createBand} from '../terrain-test-utils';
+import type {GPUTerrainHeightReference} from '../../../src/analysis-core/contracts/vertical-datum';
+import {
+  createKernelAuditContext,
+  recordShaderModules
+} from '../../analysis-core/kernel-audit/kernel-audit-context';
+import {
+  computeTerrainSightLine,
+  computeTerrainViewshed,
+  computeTerrainViewshedWithTolerance
+} from './terrain-analysis-oracle';
+
+for (const operator of ['viewshed', 'line-of-sight', 'cumulative-viewshed'] as const) {
+  it(`GPUTerrain ${operator} validates height references and vertical datums`, () => {
+    const context = createKernelAuditContext(operator);
+    const {graph, view} = context;
+    const common = {
+      id: operator,
+      grid: makeGPURasterMetadata({width: 6, height: 5}),
+      elevation: createBand(graph, 'elevation', 30),
+      parameters: view('float32', 12)
+    };
+    const create = (
+      options: {
+        heightReference?: GPUTerrainHeightReference;
+        observerVerticalDatum?: string;
+        elevation?: typeof common.elevation;
+      } = {}
+    ) => {
+      const props = {...common, ...options};
+      switch (operator) {
+        case 'viewshed':
+          return new GPUTerrainViewshed({...props, output: {visibility: view('uint32', 30)}});
+        case 'line-of-sight':
+          return new GPUTerrainLineOfSight({
+            ...props,
+            pairs: view('float32x4', 2),
+            output: {visibility: view('uint32', 2)}
+          });
+        case 'cumulative-viewshed':
+          return new GPUTerrainCumulativeViewshed({
+            ...props,
+            observers: view('float32x2', 2),
+            output: {visibleCount: view('uint32', 30)}
+          });
+      }
+    };
+    try {
+      expect(() => create({heightReference: 'relative' as never})).toThrow(
+        `${operator} heightReference must be 'ground' or 'absolute'`
+      );
+      for (const heightReference of [undefined, 'ground'] as const) {
+        expect(() => create({heightReference, observerVerticalDatum: 'ellipsoidal'})).toThrow(
+          `${operator} observerVerticalDatum needs heightReference absolute`
+        );
+      }
+      const elevation = {...common.elevation, verticalDatum: 'EPSG:3855'};
+      expect(() =>
+        create({heightReference: 'absolute', observerVerticalDatum: 'ellipsoidal', elevation})
+      ).toThrow(
+        `${operator} observer heights are ellipsoidal but elevation is EPSG:3855; convert to one vertical datum first`
+      );
+      expect(() =>
+        create({heightReference: 'absolute', observerVerticalDatum: ' epsg:3855 ', elevation})
+      ).not.toThrow();
+      expect(() => create({heightReference: 'absolute', elevation})).not.toThrow();
+      expect(() =>
+        create({heightReference: 'absolute', observerVerticalDatum: 'ellipsoidal'})
+      ).not.toThrow();
+      expect(() => create({heightReference: 'absolute'})).not.toThrow();
+    } finally {
+      context.device.destroy();
+    }
+  });
+
+  it(`GPUTerrain ${operator} preserves default ground WGSL across kernel variants`, () => {
+    for (const traversal of ['march', 'pyramid'] as const) {
+      for (const cellSizeMode of ['uniform', 'geographic', 'web-mercator'] as const) {
+        for (const tolerance of [false, true]) {
+          const capture = (heightReference?: GPUTerrainHeightReference) => {
+            const context = createKernelAuditContext(operator);
+            const {graph, view} = context;
+            try {
+              const common = {
+                id: operator,
+                heightReference,
+                traversal,
+                cellSizeMode,
+                grid: makeGPURasterMetadata({width: 6, height: 5}),
+                elevation: createBand(graph, 'elevation', 30),
+                parameters: view('float32', 12)
+              };
+              const contributor =
+                operator === 'viewshed'
+                  ? new GPUTerrainViewshed({
+                      ...common,
+                      ...(tolerance ? {toleranceParameters: view('float32', 4)} : {}),
+                      output: {visibility: view('uint32', 30)}
+                    })
+                  : operator === 'line-of-sight'
+                    ? new GPUTerrainLineOfSight({
+                        ...common,
+                        pairs: view('float32x4', 2),
+                        ...(tolerance ? {pairHeights: view('float32x2', 2)} : {}),
+                        output: {visibility: view('uint32', 2)}
+                      })
+                    : new GPUTerrainCumulativeViewshed({
+                        ...common,
+                        observers: view('float32x2', 2),
+                        ...(tolerance ? {observerHeights: view('float32', 2)} : {}),
+                        output: {visibleCount: view('uint32', 30)}
+                      });
+              const sources: string[] = [];
+              recordShaderModules([...contributor.getCommandNodes(graph)], module =>
+                sources.push(module.source)
+              );
+              return sources;
+            } finally {
+              context.device.destroy();
+            }
+          };
+          const ground = capture();
+          expect(capture('ground')).toEqual(ground);
+          const absolute = capture('absolute');
+          expect(absolute).not.toEqual(ground);
+          expect(absolute.join('\n')).not.toContain('let observerSample');
+        }
+      }
+    }
+  });
+}
+
+it('terrain absolute-eye oracles match ground heights and allow no-data observer ground', () => {
+  const width = 12;
+  const grid = makeGPURasterMetadata({width, height: 1});
+  const terrain = Float64Array.from({length: width}, (_, column) => (column === 6 ? 20 : 10));
+  const validity = new Uint32Array(width).fill(1);
+  const groundSettings = getGPUTerrainViewshedParameterValues(
+    {observer: [0, 0], observerHeight: 2},
+    grid
+  );
+  const absoluteSettings = getGPUTerrainViewshedParameterValues(
+    {observer: [0, 0], observerHeight: 12},
+    grid
+  );
+  const sightSettings = getGPUTerrainLineOfSightParameterValues({observerHeight: 2}, grid);
+  const absolute = {heightReference: 'absolute' as const};
+  const ground = computeTerrainViewshed(terrain, validity, width, 1, groundSettings);
+  expect(computeTerrainViewshed(terrain, validity, width, 1, absoluteSettings, absolute)).toEqual(
+    ground
+  );
+  const tolerance = [1, 0, 0, 0];
+  expect(
+    computeTerrainViewshedWithTolerance(
+      terrain,
+      validity,
+      width,
+      1,
+      absoluteSettings,
+      tolerance,
+      absolute
+    )
+  ).toEqual(
+    computeTerrainViewshedWithTolerance(terrain, validity, width, 1, groundSettings, tolerance)
+  );
+  const cumulative = (heightReference: GPUTerrainHeightReference) =>
+    Array.from({length: width}, (_, column) =>
+      [0, 1].reduce(
+        (count, observerColumn) =>
+          count +
+          Number(
+            computeTerrainSightLine(
+              terrain,
+              validity,
+              width,
+              1,
+              [observerColumn, 0],
+              [column, 0],
+              sightSettings,
+              [heightReference === 'absolute' ? 12 : 2, 0],
+              {heightReference}
+            ).code === GPU_TERRAIN_VISIBILITY.visible
+          ),
+        0
+      )
+    );
+  for (let column = 0; column < width; column++) {
+    expect(
+      computeTerrainSightLine(
+        terrain,
+        validity,
+        width,
+        1,
+        [0, 0],
+        [column, 0],
+        sightSettings,
+        [12, 0],
+        absolute
+      )
+    ).toEqual(
+      computeTerrainSightLine(terrain, validity, width, 1, [0, 0], [column, 0], sightSettings)
+    );
+  }
+  expect(cumulative('absolute')).toEqual(cumulative('ground'));
+  validity[0] = 0;
+  terrain[0] = Number.NaN;
+  expect(
+    computeTerrainViewshed(terrain, validity, width, 1, groundSettings).every(
+      code => code === GPU_TERRAIN_VISIBILITY.noData
+    )
+  ).toBe(true);
+  const codes = computeTerrainViewshed(terrain, validity, width, 1, absoluteSettings, absolute);
+  expect(codes).toContain(GPU_TERRAIN_VISIBILITY.visible);
+  expect(codes).toContain(GPU_TERRAIN_VISIBILITY.hidden);
+  expect(codes[0]).toBe(GPU_TERRAIN_VISIBILITY.noData);
+  expect(
+    computeTerrainSightLine(
+      terrain,
+      validity,
+      width,
+      1,
+      [0, 0],
+      [4, 0],
+      sightSettings,
+      [12, 0],
+      absolute
+    ).code
+  ).toBe(GPU_TERRAIN_VISIBILITY.visible);
+  expect(
+    computeTerrainViewshedWithTolerance(
+      terrain,
+      validity,
+      width,
+      1,
+      absoluteSettings,
+      tolerance,
+      absolute
+    ).some(result => result.code === GPU_TERRAIN_VISIBILITY.visible)
+  ).toBe(true);
+  expect(cumulative('absolute')[4]).toBe(2);
+  expect(cumulative('ground')[4]).toBe(1);
+  const outside = getGPUTerrainViewshedParameterValues(
+    {observer: [-1, 0], observerHeight: 12},
+    grid
+  );
+  expect(
+    computeTerrainViewshed(terrain, validity, width, 1, outside, absolute).every(
+      code => code === GPU_TERRAIN_VISIBILITY.noData
+    )
+  ).toBe(true);
+  expect(
+    computeTerrainSightLine(
+      terrain,
+      validity,
+      width,
+      1,
+      [-1, 0],
+      [4, 0],
+      sightSettings,
+      [12, 0],
+      absolute
+    ).code
+  ).toBe(GPU_TERRAIN_VISIBILITY.noData);
+});
 
 /** Collapses the consecutive pyramid builder node ids into one '<pyramid>' marker. */
 function withoutPyramidNodes(ids: string[]): string[] {

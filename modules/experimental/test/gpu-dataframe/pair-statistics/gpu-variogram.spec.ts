@@ -13,7 +13,13 @@ import {
   GPU_VARIOGRAM_STATISTICS_LENGTH,
   type GPUVariogramSettings
 } from '../../../src/gpu-dataframe/pair-statistics/variogram-parameters';
-import {createPairStatisticsHarness, getFloatBits} from './pair-statistics-harness';
+import {
+  createPairStatisticsHarness,
+  createPairStatisticsWindowHarness,
+  getFloatBits,
+  type HarnessViews,
+  type HarnessOutput
+} from './pair-statistics-harness';
 import {createRandom, forEachPair, isNearBinEdge} from './pair-statistics-oracle';
 import {computeVariogramOnCPU} from './variogram-oracle';
 import {createVariogramOutlierScene, VARIOGRAM_OUTLIER_FRAME} from './variogram-outlier-fixture';
@@ -21,6 +27,14 @@ import {VARIOGRAM_OUTLIER_REFERENCES} from './variogram-outlier-reference';
 import {getVariogramReferenceMismatches, VARIOGRAM_REFERENCE} from './variogram-reference';
 import {VARIOGRAM_EDGE_POLICY} from '../dataframe-edge-policy';
 import {requireTestDevice} from '../../utils/require-test-device';
+
+import type {GPUStudyWindow} from '../../../src/analysis-core/contracts/study-window';
+import {
+  ORACLE_L_SHAPE,
+  getOracleWindowBounds,
+  isOracleInsideWindow,
+  type OracleStudyWindow
+} from '../../analysis-core/study-window-oracle';
 
 const BOUNDS = [0, 0, 100, 100] as const;
 
@@ -49,10 +63,11 @@ function createHarness(
   scene: ReturnType<typeof createAnisotropicScene>,
   lagCount: number,
   directionCount: number,
-  gridSize: readonly [number, number] = [32, 32]
+  gridSize: readonly [number, number] = [32, 32],
+  window?: OracleStudyWindow
 ) {
   const binCount = lagCount * directionCount;
-  return createPairStatisticsHarness(device, {
+  const props = {
     ...scene,
     parameterLength: GPU_VARIOGRAM_PARAMETER_LENGTH,
     outputs: {
@@ -62,9 +77,20 @@ function createHarness(
       robustSemivariances: {format: 'float32', length: binCount},
       statistics: {format: 'float32', length: GPU_VARIOGRAM_STATISTICS_LENGTH},
       overflow: {format: 'uint32', length: 1}
-    },
-    createContributor: views =>
+    } satisfies Record<string, HarnessOutput>,
+    createContributor: (
+      views: HarnessViews<
+        | 'semivariances'
+        | 'pairCounts'
+        | 'meanDistances'
+        | 'robustSemivariances'
+        | 'statistics'
+        | 'overflow'
+      >,
+      studyWindow?: GPUStudyWindow
+    ) =>
       new GPUVariogram({
+        studyWindow,
         positions: views.positions,
         values: views.values!,
         mask: views.mask,
@@ -81,7 +107,10 @@ function createHarness(
           status: {overflow: views.outputs.overflow as never}
         }
       })
-  });
+  };
+  return window
+    ? createPairStatisticsWindowHarness(device, {...props, window})
+    : createPairStatisticsHarness(device, props);
 }
 
 function expectClose(label: string, actual: number, expected: number, tolerance: number): void {
@@ -101,7 +130,7 @@ it('GPUVariogram matches the f64 oracle across per-frame distances without rebui
   const lagCount = 12;
   const harness = createHarness(device, scene, lagCount, 1);
   try {
-    const frames: GPUVariogramSettings[] = [
+    const frames: (GPUVariogramSettings & {bounds: readonly [number, number, number, number]})[] = [
       {bounds: BOUNDS, maximumDistance: 6},
       {bounds: BOUNDS, maximumDistance: 30},
       {bounds: BOUNDS, maximumDistance: 400},
@@ -438,5 +467,59 @@ it('GPUVariogram follows the variogram edge policy', async () => {
     } finally {
       harness.destroy();
     }
+  }
+});
+
+it('GPUVariogram L-shape inclusion matches pre-filtered rectangle rows', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const positions = new Float32Array([
+    80, 90, 430, 200, 550, 480, 900, 310, 1450, 260, 1900, 550, 310, 900, 400, 1400, 300, 1900, 550,
+    650, 1100, 1100, 1700, 1700
+  ]);
+  const values = Float32Array.from({length: positions.length / 2}, (_, row) => row * row - 5 * row);
+  const mask = new Uint32Array(values.length).fill(1);
+  const scene = {positions, values, mask};
+  const included = Array.from({length: values.length}, (_, row) => row).filter(row =>
+    isOracleInsideWindow(ORACLE_L_SHAPE, [positions[2 * row], positions[2 * row + 1]])
+  );
+  expect(included.length).toBe(10);
+  const filtered = {
+    positions: Float32Array.from(
+      included.flatMap(row => [positions[2 * row], positions[2 * row + 1]])
+    ),
+    values: Float32Array.from(included.map(row => values[row])),
+    mask: new Uint32Array(included.length).fill(1)
+  };
+  const polygon = createHarness(device, scene, 6, 1, [8, 8], ORACLE_L_SHAPE);
+  const rectangle = createHarness(device, filtered, 6, 1, [8, 8]);
+  try {
+    for (const maximumDistance of [431, 913]) {
+      const actual = await polygon.run(
+        getGPUVariogramParameterValues({bounds: 'study-window', maximumDistance})
+      );
+      const expected = await rectangle.run(
+        getGPUVariogramParameterValues({
+          bounds: getOracleWindowBounds(ORACLE_L_SHAPE),
+          maximumDistance
+        })
+      );
+      expect(actual.statistics[0]).toBe(included.length);
+      expect(actual.pairCounts).toEqual(expected.pairCounts);
+      for (const key of Object.keys(expected) as (keyof typeof expected)[]) {
+        actual[key].forEach((value, index) =>
+          expectClose(
+            `${key} ${index}`,
+            value,
+            expected[key][index],
+            1e-5 * Math.max(1, Math.abs(expected[key][index]))
+          )
+        );
+      }
+    }
+    expect(polygon.rebuildCount).toBe(0);
+  } finally {
+    polygon.destroy();
+    rectangle.destroy();
   }
 });

@@ -189,3 +189,265 @@ it('GPURipleyEnvelope keeps a CSR pattern inside the global envelope and rejects
     }
   }
 }, 240000);
+
+import {GraphDataView} from '@luma.gl/gpgpu/gpu-core';
+import {createWGSLKernelNode} from '../../../src/utils/wgsl-kernel-nodes';
+import {createPairStatisticsWindowHarness} from './pair-statistics-harness';
+import {
+  ORACLE_L_SHAPE,
+  ORACLE_RECTANGLE,
+  getOracleQuadratAreas,
+  getOracleWindowArea,
+  isOracleInsideWindow,
+  type OracleStudyWindow
+} from '../../analysis-core/study-window-oracle';
+
+it('polygon envelope draws are inside, spatially uniform and bitwise deterministic', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const rowCount = 4096;
+  const simulationCount = 2;
+  // A small pair radius keeps the uniformity test inexpensive; two rows fail inclusion.
+  const positions = new Float32Array(rowCount * 2).map((_, index) => (index % 2 ? 100 : 200));
+  positions.set([1500, 1500, NaN, 100], (rowCount - 2) * 2);
+  const includedCount = rowCount - 2;
+  const harness = createPairStatisticsWindowHarness(device, {
+    positions,
+    window: ORACLE_L_SHAPE,
+    parameterLength: GPU_RIPLEY_PARAMETER_LENGTH,
+    outputs: {
+      samples: {format: 'float32', length: rowCount * simulationCount * 2},
+      masks: {format: 'uint32', length: rowCount * simulationCount},
+      unplacedCount: {format: 'uint32', length: 1},
+      statistics: {format: 'float32', length: 6}
+    },
+    createContributor: (views, studyWindow) => ({
+      getCommandNodes(graph) {
+        const nodes = new GPURipleyEnvelope({
+          positions: views.positions,
+          parameters: views.parameters,
+          studyWindow,
+          gridSize: [64, 64],
+          radiusCount: 2,
+          simulationCount,
+          output: {
+            statistics: views.outputs.statistics as never,
+            unplacedCount: views.outputs.unplacedCount as never
+          }
+        }).getCommandNodes(graph);
+        // Inspect the graph's declared simulation outputs immediately after each draw, before
+        // their transient allocations can be reused. This adds no runtime public API.
+        return nodes.flatMap(node => {
+          const match = /^ripley-envelope-sim-(\d+)-points$/.exec(node.id);
+          if (!match) return [node];
+          const simulation = Number(match[1]);
+          const written = node.resources!.flatMap(resource =>
+            'buffer' in resource &&
+            resource.buffer instanceof GraphDataView &&
+            resource.usage === 'storage-read-write'
+              ? [resource.buffer]
+              : []
+          );
+          const points = written.find(view => view.format === 'float32x2')!;
+          const mask = written.find(view => view.format === 'uint32' && view.length === rowCount)!;
+          return [
+            node,
+            createWGSLKernelNode(graph, {
+              id: `inspect-simulation-${simulation}`,
+              operation: 'EnvelopeTest',
+              variant: 'inspect',
+              invocationCount: rowCount,
+              bindings: [
+                {name: 'points', view: points, type: 'f32', access: 'read'},
+                {name: 'mask', view: mask, type: 'u32', access: 'read'},
+                {name: 'samples', view: views.outputs.samples, type: 'f32', access: 'read_write'},
+                {name: 'masks', view: views.outputs.masks, type: 'u32', access: 'read_write'}
+              ],
+              body: `let row = ${simulation * rowCount}u + index;
+  samples[samplesOffset + row * 2u] = points[pointsOffset + index * 2u];
+  samples[samplesOffset + row * 2u + 1u] = points[pointsOffset + index * 2u + 1u];
+  masks[masksOffset + row] = mask[maskOffset + index];`
+            })
+          ];
+        });
+      }
+    })
+  });
+  try {
+    const parameters = getGPURipleyParameterValues({
+      bounds: 'study-window',
+      maximumDistance: 10,
+      edgeCorrection: 'none',
+      seed: 731
+    });
+    const result = await harness.run(parameters);
+    expect(result.unplacedCount).toEqual([0]);
+    expect(result.statistics.slice(0, 2)).toEqual([includedCount, simulationCount]);
+    expect(result.masks.filter(value => value === 1)).toHaveLength(includedCount * simulationCount);
+    const counts = new Array<number>(16).fill(0);
+    for (let row = 0; row < rowCount * simulationCount; row++) {
+      if (!result.masks[row]) continue;
+      const point = [result.samples[row * 2], result.samples[row * 2 + 1]] as const;
+      expect(isOracleInsideWindow(ORACLE_L_SHAPE, point), `simulation row ${row}`).toBe(true);
+      counts[
+        Math.min(Math.floor(point[1] / 500), 3) * 4 + Math.min(Math.floor(point[0] / 500), 3)
+      ]++;
+    }
+    const areas = getOracleQuadratAreas(ORACLE_L_SHAPE, [0, 0, 2000, 2000], [4, 4], 100);
+    let chiSquare = 0;
+    let nonempty = 0;
+    areas.forEach((area, index) => {
+      if (!area) {
+        expect(counts[index]).toBe(0);
+        return;
+      }
+      nonempty++;
+      const expected =
+        (includedCount * simulationCount * area) / getOracleWindowArea(ORACLE_L_SHAPE);
+      chiSquare += (counts[index] - expected) ** 2 / expected;
+    });
+    expect(nonempty).toBe(12);
+    // chi-square(11) 0.999 quantile: p > 0.001, fixed seed.
+    expect(chiSquare).toBeLessThan(31.264134);
+    const again = await harness.run(parameters);
+    expect(getFloatBits(again.samples)).toEqual(getFloatBits(result.samples));
+    expect(getFloatBits(again.statistics)).toEqual(getFloatBits(result.statistics));
+    expect(again.unplacedCount).toEqual([0]);
+  } finally {
+    harness.destroy();
+  }
+}, 240000);
+
+it('polygon-as-rectangle envelope preserves observed K and agrees within Monte Carlo tolerance', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const window: OracleStudyWindow = {
+    ...ORACLE_RECTANGLE,
+    positions: new Float64Array([0, 0, 100, 0, 100, 100, 0, 100])
+  };
+  const positions = createCSRPattern();
+  const rectangle = createHarness(device, positions);
+  const polygon = createPairStatisticsWindowHarness(device, {
+    positions,
+    window,
+    parameterLength: GPU_RIPLEY_PARAMETER_LENGTH,
+    outputs: {
+      k: {format: 'float32', length: RADIUS_COUNT},
+      lower: {format: 'float32', length: RADIUS_COUNT},
+      upper: {format: 'float32', length: RADIUS_COUNT},
+      unplacedCount: {format: 'uint32', length: 1}
+    },
+    createContributor: (views, studyWindow) => ({
+      getCommandNodes: graph => [
+        ...new GPURipley({
+          positions: views.positions,
+          parameters: views.parameters,
+          studyWindow,
+          gridSize: [16, 16],
+          radiusCount: RADIUS_COUNT,
+          output: {k: views.outputs.k as never}
+        }).getCommandNodes(graph),
+        ...new GPURipleyEnvelope({
+          positions: views.positions,
+          parameters: views.parameters,
+          studyWindow,
+          gridSize: [16, 16],
+          radiusCount: RADIUS_COUNT,
+          simulationCount: SIMULATION_COUNT,
+          statistic: 'k',
+          observedK: views.outputs.k as never,
+          output: {
+            lower: views.outputs.lower as never,
+            upper: views.outputs.upper as never,
+            unplacedCount: views.outputs.unplacedCount as never
+          }
+        }).getCommandNodes(graph)
+      ]
+    })
+  });
+  try {
+    // Border uses exact counts in both modes, so the observed curve is bit-identical.
+    const frame = {...FRAME, edgeCorrection: 'border'} as const;
+    const expected = await rectangle.run(getGPURipleyParameterValues(frame));
+    const actual = await polygon.run(
+      getGPURipleyParameterValues({...frame, bounds: 'study-window'})
+    );
+    expect(getFloatBits(actual.k)).toEqual(getFloatBits(expected.k));
+    expect(actual.unplacedCount).toEqual([0]);
+    for (const name of ['lower', 'upper'] as const) {
+      actual[name].forEach((value, index) => {
+        expect(Math.abs(value - expected[name][index])).toBeLessThan(
+          0.3 * Math.PI * RADII[index] ** 2
+        );
+      });
+    }
+  } finally {
+    rectangle.destroy();
+    polygon.destroy();
+  }
+}, 240000);
+
+import {getStudyWindowWGSLOptions} from '../../../src/utils/study-window-wgsl';
+
+it('polygon envelope masks empty or unusable samplers and clears failed counts each encoding', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  for (const invalidWindow of [false, true]) {
+    const harness = createPairStatisticsWindowHarness(device, {
+      positions: new Float32Array([100, 100, 200, 200, 300, 300]),
+      window: ORACLE_L_SHAPE,
+      parameterLength: GPU_RIPLEY_PARAMETER_LENGTH,
+      outputs: {
+        lower: {format: 'float32', length: 2},
+        unplacedCount: {format: 'uint32', length: 1}
+      },
+      createContributor: (views, studyWindow) => ({
+        getCommandNodes(graph) {
+          const windowViews = studyWindow.getViews(graph);
+          const layout = getStudyWindowWGSLOptions(windowViews).layout;
+          // Fault injection models the prepared window's unusable/empty GPU result.
+          const invalidate = createWGSLKernelNode(graph, {
+            id: 'empty-window',
+            operation: 'EnvelopeTest',
+            variant: 'empty-window',
+            invocationCount: 1,
+            bindings: [
+              {name: 'packed', view: windowViews.packed, type: 'u32', access: 'read_write'}
+            ],
+            body: invalidWindow
+              ? `packed[packedOffset + ${layout.summary + 4}u] = 0u;`
+              : `packed[packedOffset + ${layout.sampleCellCount}u] = 0u;`
+          });
+          return [
+            invalidate,
+            ...new GPURipleyEnvelope({
+              positions: views.positions,
+              parameters: views.parameters,
+              studyWindow,
+              radiusCount: 2,
+              gridSize: [8, 8],
+              simulationCount: 2,
+              output: {
+                lower: views.outputs.lower as never,
+                unplacedCount: views.outputs.unplacedCount as never
+              }
+            }).getCommandNodes(graph)
+          ];
+        }
+      })
+    });
+    try {
+      const parameters = getGPURipleyParameterValues({
+        bounds: 'study-window',
+        maximumDistance: 100
+      });
+      for (let encoding = 0; encoding < 2; encoding++) {
+        const result = await harness.run(parameters);
+        expect(result.unplacedCount).toEqual([6]);
+        expect(result.lower.every(Number.isNaN)).toBe(true);
+      }
+    } finally {
+      harness.destroy();
+    }
+  }
+}, 120000);

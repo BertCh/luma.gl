@@ -38,6 +38,7 @@ import {
   createFractalTerrain
 } from './terrain-analysis-oracle';
 import {requireTestDevice} from '../../utils/require-test-device';
+import type {GPUTerrainHeightReference} from '../../../src/analysis-core/contracts/vertical-datum';
 
 const WIDTH = 9;
 const HEIGHT = 7;
@@ -275,6 +276,8 @@ it('GPUTerrainViewshed calibrates uint32 elevation and writes a visibility textu
 });
 
 type ViewshedOptions = {
+  /** Compile-time observer height interpretation. */
+  heightReference?: GPUTerrainHeightReference;
   cellSizeMode?: GPURasterCellSizeMode;
   traversal?: GPUTerrainSightLineTraversal;
   tolerance?: GPUTerrainViewshedToleranceSettings;
@@ -319,6 +322,7 @@ async function runViewshed(
       },
       parameters: settingsBuffer.importToGraph(graph),
       traversal: options.traversal,
+      heightReference: options.heightReference,
       cellSizeMode: options.cellSizeMode,
       toleranceParameters: toleranceBuffer?.importToGraph(graph),
       output: {
@@ -345,6 +349,46 @@ const FRACTAL_GRID = makeGPURasterMetadata({
   cellSize: 30
 });
 const STRIP_GRID = makeGPURasterMetadata({width: 12, height: 1});
+
+it('GPUTerrainViewshed absolute eyes match ground mode and see over no-data observer ground', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const terrain = Float32Array.from({length: 12}, (_, column) => (column === 6 ? 20 : 10));
+  const groundSettings: GPUTerrainViewshedSettings = {observer: [0, 0], observerHeight: 2};
+  const absoluteSettings = {...groundSettings, observerHeight: 12};
+  for (const traversal of ['march', 'pyramid'] as const) {
+    for (const tolerance of [undefined, {toleranceMeters: 1}]) {
+      const options = {traversal, tolerance, heightReference: 'absolute' as const};
+      const ground = await runViewshed(device, terrain, STRIP_GRID, groundSettings, {
+        traversal,
+        tolerance
+      });
+      const absolute = await runViewshed(device, terrain, STRIP_GRID, absoluteSettings, options);
+      const parameters = getGPUTerrainViewshedParameterValues(absoluteSettings, STRIP_GRID);
+      const oracle = (values: Float32Array) =>
+        tolerance
+          ? computeTerrainViewshedWithTolerance(
+              values,
+              undefined,
+              12,
+              1,
+              parameters,
+              getGPUTerrainViewshedToleranceParameterValues(tolerance),
+              options
+            ).map(result => result.code)
+          : computeTerrainViewshed(values, undefined, 12, 1, parameters, options);
+      expect(absolute).toEqual(ground);
+      expect(absolute).toEqual(oracle(terrain));
+      const missing = terrain.slice();
+      missing[0] = Number.NaN;
+      const codes = await runViewshed(device, missing, STRIP_GRID, absoluteSettings, options);
+      expect(codes).toEqual(oracle(missing));
+      expect(codes).toContain(V.visible);
+      expect(codes).toContain(V.hidden);
+      expect(codes[0]).toBe(V.noData);
+    }
+  }
+});
 
 it('GPUTerrainViewshed pyramid traversal is bit-identical to march', async () => {
   const device = await getWebGPUTestDevice();

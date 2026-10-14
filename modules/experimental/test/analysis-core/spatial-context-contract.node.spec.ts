@@ -12,6 +12,10 @@ import {
   GPU_WGS84_SEMI_MAJOR_AXIS_METERS
 } from '../../src/analysis-core/contracts/earth';
 import {
+  assertCompatibleGPUSpatialContexts,
+  getGPUDatumKey,
+  getGPUEdgeModel,
+  GPU_LINEAR_EDGE_MODELS,
   getGPUAuthalicSphereRadius,
   getGPUEllipsoid,
   getGPULengthUnits,
@@ -21,7 +25,8 @@ import {
   GPU_WGS84_ELLIPSOID,
   resolveGPUSpatialContext,
   validateGPUSpatialContext,
-  type GPUSpatialContext
+  type GPUSpatialContext,
+  type GPUSpatialContextSupport
 } from '../../src/analysis-core/contracts/spatial-context';
 
 const PLANAR: GPUSpatialContext = {coordinateSpace: 'planar', metric: 'native'};
@@ -193,5 +198,130 @@ describe('spatial metric constants and units', () => {
     expect(resolveGPUSpatialContext('op', planarNone, {coordinateSpaces: ['planar']})).toBe(
       planarNone
     );
+  });
+});
+
+describe('spatial context edge model contract', () => {
+  it('rejects edge models outside longitude-latitude and on ellipsoidal contexts', () => {
+    expect(() => validateGPUSpatialContext('X', {...PLANAR, edgeModel: 'linear'})).toThrowError(
+      new Error('X edgeModel needs a longitude-latitude coordinate space')
+    );
+    expect(() =>
+      validateGPUSpatialContext('X', {
+        ...GREAT_CIRCLE,
+        edgeModel: 'unknown'
+      } as unknown as GPUSpatialContext)
+    ).toThrowError(new Error('X edgeModel must be linear or great-circle'));
+    expect(() =>
+      validateGPUSpatialContext('X', {...GREAT_CIRCLE, metric: 'ellipsoidal', edgeModel: 'linear'})
+    ).toThrowError(new Error('X ellipsoidal contexts take ellipsoidalEdgeModel, not edgeModel'));
+  });
+
+  it('defaults planar and longitude-latitude edges to linear and preserves great-circle', () => {
+    expect(getGPUEdgeModel(PLANAR)).toBe('linear');
+    expect(getGPUEdgeModel(GREAT_CIRCLE)).toBe('linear');
+    expect(getGPUEdgeModel({...GREAT_CIRCLE, edgeModel: 'great-circle'})).toBe('great-circle');
+  });
+
+  it.each([
+    'none',
+    'great-circle'
+  ] as const)('enforces declared edge support for %s metrics', metric => {
+    const support: GPUSpatialContextSupport = {
+      coordinateSpaces: ['longitude-latitude'],
+      metrics: ['none', 'great-circle'],
+      edgeModels: GPU_LINEAR_EDGE_MODELS
+    };
+    const context: GPUSpatialContext = {...GREAT_CIRCLE, metric};
+    const linear: GPUSpatialContext = {...context, edgeModel: 'linear'};
+    const greatCircle: GPUSpatialContext = {...context, edgeModel: 'great-circle'};
+    expect(resolveGPUSpatialContext('X', context, support)).toBe(context);
+    expect(resolveGPUSpatialContext('X', linear, support)).toBe(linear);
+    expect(() => resolveGPUSpatialContext('X', greatCircle, support)).toThrowError(
+      new Error('X needs linear edges; prepare polygons with GPULonLatPolygonPreparation')
+    );
+    expect(
+      resolveGPUSpatialContext('X', greatCircle, {
+        coordinateSpaces: support.coordinateSpaces,
+        metrics: support.metrics
+      })
+    ).toBe(greatCircle);
+  });
+
+  it('compares omitted edges as linear and reports different edge models', () => {
+    const linear: GPUSpatialContext = {...GREAT_CIRCLE, edgeModel: 'linear'};
+    const greatCircle: GPUSpatialContext = {...GREAT_CIRCLE, edgeModel: 'great-circle'};
+    for (const context of [GREAT_CIRCLE, linear]) {
+      expect(getGPUSpatialContextCompatibility(context, greatCircle)).toEqual({
+        compatible: false,
+        reason: 'edge models differ (linear and great-circle)'
+      });
+    }
+    expect(getGPUSpatialContextCompatibility(GREAT_CIRCLE, linear)).toEqual({compatible: true});
+    expect(getGPUSpatialContextCompatibility(linear, GREAT_CIRCLE)).toEqual({compatible: true});
+  });
+});
+
+describe('spatial context horizontal datum contract', () => {
+  it.each(['', '   '])('rejects an empty datum %j', datum => {
+    expect(() => validateGPUSpatialContext('X', {...GREAT_CIRCLE, datum})).toThrowError(
+      new Error('X datum must be a non-empty string')
+    );
+  });
+
+  it('allows a datum on planar contexts', () => {
+    expect(() => validateGPUSpatialContext('X', {...PLANAR, datum: 'EPSG:4258'})).not.toThrow();
+  });
+
+  it.each([
+    'WGS84',
+    'wgs 84',
+    'epsg:4326',
+    ' EPSG:6326 '
+  ])('normalizes WGS84 spelling %j', datum => {
+    expect(getGPUDatumKey(datum)).toBe('EPSG:4326');
+  });
+
+  it('uppercases other keys without adding aliases', () => {
+    expect(getGPUDatumKey('gcj-02')).toBe('GCJ-02');
+    expect(getGPUDatumKey(' nad83 ')).toBe('NAD83');
+    expect(getGPUDatumKey('NAD83')).not.toBe(getGPUDatumKey('EPSG:4269'));
+  });
+
+  it('reports declared datum mismatches and the exact assertion diagnostic', () => {
+    const source: GPUSpatialContext = {...GREAT_CIRCLE, datum: 'EPSG:4267'};
+    const target: GPUSpatialContext = {...GREAT_CIRCLE, datum: 'EPSG:4326'};
+    expect(getGPUSpatialContextCompatibility(source, target)).toEqual({
+      compatible: false,
+      reason: 'datums differ (EPSG:4267 and EPSG:4326)'
+    });
+    expect(() => assertCompatibleGPUSpatialContexts('X', source, target)).toThrowError(
+      new Error('X incompatible spatial contexts: datums differ (EPSG:4267 and EPSG:4326)')
+    );
+    expect(getGPUSpatialContextCompatibility({...source, datum: 'GCJ-02'}, target)).toEqual({
+      compatible: false,
+      reason: 'datums differ (GCJ-02 and EPSG:4326)'
+    });
+  });
+
+  it('accepts either undeclared datum and equivalent WGS84 declarations', () => {
+    const declared: GPUSpatialContext = {...GREAT_CIRCLE, datum: 'EPSG:4267'};
+    expect(getGPUSpatialContextCompatibility(declared, GREAT_CIRCLE)).toEqual({compatible: true});
+    expect(getGPUSpatialContextCompatibility(GREAT_CIRCLE, declared)).toEqual({compatible: true});
+    expect(
+      getGPUSpatialContextCompatibility(
+        {...GREAT_CIRCLE, datum: 'WGS84'},
+        {...GREAT_CIRCLE, datum: 'epsg:4326'}
+      )
+    ).toEqual({compatible: true});
+  });
+
+  it('reports datum differences before metric differences', () => {
+    expect(
+      getGPUSpatialContextCompatibility(
+        {...GREAT_CIRCLE, datum: 'EPSG:4267'},
+        {...GREAT_CIRCLE, metric: 'rhumb', datum: 'EPSG:4326'}
+      )
+    ).toEqual({compatible: false, reason: 'datums differ (EPSG:4267 and EPSG:4326)'});
   });
 });

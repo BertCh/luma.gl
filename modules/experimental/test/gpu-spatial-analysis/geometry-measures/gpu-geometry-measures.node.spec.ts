@@ -3,6 +3,13 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {createTransientView, GPUCommandGraph} from '@luma.gl/gpgpu/gpu-core';
+import {ANTARCTICA_NATURAL_EARTH} from '../lon-lat-polygons/fixtures';
+import {
+  getFixtureRings,
+  getLongitudeRingStep,
+  getChamberlainDuquetteArea,
+  getSphericalTriangleArea
+} from './geometry-measures-oracle';
 import {expect, it} from 'vitest';
 import {
   GPUGeodesicDestination,
@@ -489,4 +496,55 @@ it('custom ellipsoid authalic and Vincenty constants match binary64 formulas', (
     authalicRadius: 1000,
     sinAuthalicScale: 1
   });
+});
+
+it('GPUGeometryMeasures resolves great-circle polygon edges and rejects ellipsoidal edgeModel', () => {
+  const graph = new GPUCommandGraph(createNullWebGPUDevice(), {id: 'sphere-polygon-model'});
+  const spatialContext = {
+    coordinateSpace: 'longitude-latitude',
+    metric: 'great-circle',
+    edgeModel: 'great-circle',
+    sphereRadius: 1000
+  } as const;
+  const measures = new GPUGeometryMeasures(createProps(graph, {spatialContext}));
+  expect(measures.measures.areaModel).toBe('sphere-polygon');
+  expect(measures.areaRadius).toBe(1000);
+  expect(() => measures.getCommandNodes(graph)).not.toThrow();
+  expect(
+    () =>
+      new GPUGeometryMeasures(
+        createProps(graph, {
+          spatialContext: {...spatialContext, metric: 'ellipsoidal'}
+        })
+      )
+  ).toThrow('geometry-measures ellipsoidal contexts take ellipsoidalEdgeModel, not edgeModel');
+});
+
+it('pole-edge Chamberlain-Duquette and spherical-excess binary64 oracles', () => {
+  const ring = getFixtureRings(ANTARCTICA_NATURAL_EARTH)[0];
+  expect(
+    ring.reduce(
+      (winding, position, vertex) =>
+        winding + getLongitudeRingStep(position, ring[(vertex + 1) % ring.length]),
+      0
+    )
+  ).toBe(0);
+  const radius = 6371007.180918475;
+  const expected = getChamberlainDuquetteArea(ring, radius);
+  expect(expected).toBeGreaterThan(0);
+  expect(
+    measureFeature([ring], {isPolygon: true, coordinateSystem: 'spherical', areaRadius: radius})
+      .area / expected
+  ).toBeCloseTo(1, 12);
+  expect(getChamberlainDuquetteArea([], radius)).toBe(0);
+  expect(
+    getSphericalTriangleArea(
+      [
+        [0, 0],
+        [90, 0],
+        [0, 90]
+      ],
+      1
+    )
+  ).toBeCloseTo(Math.PI / 2, 12);
 });

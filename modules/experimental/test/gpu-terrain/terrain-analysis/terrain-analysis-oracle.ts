@@ -8,6 +8,7 @@ import {
   type RasterGridGeoreference
 } from '../../../src/analysis-core/raster-grid';
 import {createMulberryRandom, getOracleGroundCellSize} from '../terrain-oracle-utils';
+import type {GPUTerrainHeightReference} from '../../../src/analysis-core/contracts/vertical-datum';
 
 const DEGREES = 180 / Math.PI;
 const SOBEL_X = [-1, 0, 1, -2, 0, 2, -1, 0, 1];
@@ -152,13 +153,15 @@ export function sampleBilinear(
 
 /** Float64 ground-cell interpretation for each ray; defaults to the packed grid georeference. */
 export type TerrainSightLineOptions = {
+  /** Ground-relative eye height by default; absolute eye elevation skips observer ground sampling. */
+  heightReference?: GPUTerrainHeightReference;
   /** Defaults to uniform ground meters. */
   cellSizeMode?: GPURasterCellSizeMode;
   /** Unrounded cell sizes and row edges from the source grid, when available. */
   georeference?: RasterGridGeoreference;
 };
 
-/** CPU mirror of the viewshed kernel. */
+/** Binary64 viewshed mirror, including absolute eye elevations over in-grid no-data ground. */
 export function computeTerrainViewshed(
   values: ArrayLike<number>,
   valid: ArrayLike<number> | undefined,
@@ -168,7 +171,7 @@ export function computeTerrainViewshed(
   options: TerrainSightLineOptions = {}
 ): number[] {
   const isValid = (column: number, row: number) =>
-    valid ? valid[row * width + column] !== 0 : true;
+    (!valid || valid[row * width + column] !== 0) && Number.isFinite(values[row * width + column]);
   const sample = (x: number, y: number): number | undefined => {
     const clampedX = Math.min(Math.max(x, 0), width - 1);
     const clampedY = Math.min(Math.max(y, 0), height - 1);
@@ -203,7 +206,11 @@ export function computeTerrainViewshed(
     observerY >= 0 &&
     observerX <= width - 1 &&
     observerY <= height - 1;
-  const observerSample = observerInside ? sample(observerX, observerY) : undefined;
+  const observerSample = observerInside
+    ? options.heightReference === 'absolute'
+      ? 0
+      : sample(observerX, observerY)
+    : undefined;
   const result: number[] = [];
   for (let row = 0; row < height; row++) {
     for (let column = 0; column < width; column++) {
@@ -310,6 +317,7 @@ export type TerrainSightLineResult = {
  * `settings` uses the 12-float sight-line layout. The target elevation is the bilinear sample at
  * `target` plus the target height. Always evaluates every sample (no early exit).
  * Non-uniform modes hold the float64 WGS84 ground cell at the middle row constant along the ray.
+ * Absolute mode uses the observer height directly and allows in-grid no-data observer ground.
  */
 export function computeTerrainSightLine(
   values: ArrayLike<number>,
@@ -323,7 +331,7 @@ export function computeTerrainSightLine(
   options: TerrainSightLineOptions = {}
 ): TerrainSightLineResult {
   const isValid = (column: number, row: number) =>
-    valid ? valid[row * width + column] !== 0 : true;
+    (!valid || valid[row * width + column] !== 0) && Number.isFinite(values[row * width + column]);
   const sample = (x: number, y: number): number | undefined => {
     const clampedX = Math.min(Math.max(x, 0), width - 1);
     const clampedY = Math.min(Math.max(y, 0), height - 1);
@@ -363,7 +371,8 @@ export function computeTerrainSightLine(
   if (!inside(observer) || !inside(target)) {
     return noData;
   }
-  const observerSample = sample(observer[0], observer[1]);
+  const observerSample =
+    options.heightReference === 'absolute' ? 0 : sample(observer[0], observer[1]);
   const targetSample = sample(target[0], target[1]);
   if (observerSample === undefined || targetSample === undefined) {
     return noData;
@@ -425,7 +434,7 @@ export function computeTerrainSightLine(
   };
 }
 
-/** Float64 viewshed with tolerance: one {@link computeTerrainSightLine} per pixel. */
+/** Float64 viewshed with tolerance and height reference: one {@link computeTerrainSightLine} per pixel. */
 export function computeTerrainViewshedWithTolerance(
   values: ArrayLike<number>,
   valid: ArrayLike<number> | undefined,

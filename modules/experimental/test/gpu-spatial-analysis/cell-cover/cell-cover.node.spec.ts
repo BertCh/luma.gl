@@ -4,6 +4,12 @@
 
 import {createTransientView, GPUCommandGraph} from '@luma.gl/gpgpu/gpu-core';
 import {getPentagons, cellToLatLng} from 'h3-js';
+import {
+  FIJI_SPLIT,
+  FIJI_TRANSMERIDIAN,
+  ANTARCTICA_NATURAL_EARTH
+} from '../lon-lat-polygons/fixtures';
+import {getCoverFixtureFeatures, hasCrossingCoverEdge} from './cell-cover-oracle';
 import {expect, it} from 'vitest';
 import {GPUCellCover, type GPUCellCoverProps} from '../../../src/gpu-spatial-analysis/cell-cover';
 import {quadbinCellToTile} from '../cell-aggregation/cell-aggregation-oracle';
@@ -281,4 +287,50 @@ it('GPUCellCover declares longitude/latitude and wires antimeridian and polar st
   expect(ids.indexOf('cell-cover-clear-invalidCount')).toBeLessThan(
     ids.indexOf('cell-cover-count')
   );
+});
+
+it('GPUCellCover requires linear edges', () => {
+  const graph = new GPUCommandGraph(createNullWebGPUDevice(), {id: 'cover-edge-model'});
+  expect(
+    () =>
+      new GPUCellCover(
+        createProps(graph, {
+          spatialContext: {
+            coordinateSpace: 'longitude-latitude',
+            metric: 'none',
+            edgeModel: 'great-circle'
+          }
+        })
+      )
+  ).toThrow('cell-cover needs linear edges; prepare polygons with GPULonLatPolygonPreparation');
+});
+
+it('cell cover edge oracle accepts split Fiji and Antarctica, rejects unsplit Fiji', () => {
+  for (const [fixture, invalid] of [
+    [FIJI_SPLIT, false],
+    [FIJI_TRANSMERIDIAN, true],
+    [ANTARCTICA_NATURAL_EARTH, false]
+  ] as const) {
+    const features = getCoverFixtureFeatures(fixture);
+    expect(hasCrossingCoverEdge(features[0].flat())).toBe(invalid);
+    const result = coverQuadbinOnCPU(flattenCoverFeatures(features), 4, 'center');
+    if (invalid) expect(result.cells).toHaveLength(0);
+  }
+  expect(hasCrossingCoverEdge([[]])).toBe(false);
+  // Only the closing edge crosses: ensure implicit ring closure participates.
+  expect(
+    hasCrossingCoverEdge([
+      [
+        [-179, 0],
+        [0, 1],
+        [179, 0]
+      ]
+    ])
+  ).toBe(true);
+  const split = getCoverFixtureFeatures(FIJI_SPLIT);
+  const lattice = coverH3LatticeOnCPU(flattenCoverFeatures(split), 3);
+  const expected = coverH3OnCPU(getCoverFixtureFeatures(FIJI_TRANSMERIDIAN), 3);
+  expect(countCoverDisagreements(lattice, expected)).toBe(0);
+  expect(new Set(lattice.cells).size).toBe(lattice.cells.length);
+  expect(lattice.cells.length).toBeGreaterThan(0);
 });

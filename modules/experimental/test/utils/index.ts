@@ -4,3 +4,4 @@
 
 import './gpu-contributor-utils.spec';
 import './wgsl-kernel-nodes.spec';
+import './study-window-wgsl.spec';

@@ -25,6 +25,7 @@ import {
 import {createRandom, joinNearestSegments} from './spatial-join-oracle';
 import './gpu-nearest-feature-join-neighbors.spec';
 import {requireTestDevice} from '../../utils/require-test-device';
+import {registerLonLatPolygonStatusTests} from './lon-lat-polygon-status-fixtures';
 
 type Point = [number, number];
 
@@ -341,3 +342,5 @@ it('GPUNearestFeatureJoin reports candidate overflow and matches a random oracle
   compiled.destroy();
   destroyFixture(randomFixture);
 });
+
+registerLonLatPolygonStatusTests('GPUNearestFeatureJoin');

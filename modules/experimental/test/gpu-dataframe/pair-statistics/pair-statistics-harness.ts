@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {GPUStudyWindowPreparation} from '../../../src/gpu-spatial-analysis/study-window/gpu-study-window-preparation';
+import type {OracleStudyWindow} from '../../analysis-core/study-window-oracle';
 import type {Buffer, Device} from '@luma.gl/core';
 import {GPUCommandGraph, type GraphDataView} from '@luma.gl/gpgpu/gpu-core';
 import {GPUParameterBuffer, importGraphBuffer} from '../../../src/utils/gpu-contributor-utils';
@@ -136,4 +138,80 @@ export function createPairStatisticsHarness<Names extends string>(
 export function getFloatBits(values: number[]): (number | 'nan')[] {
   const bits = new Uint32Array(Float32Array.from(values).buffer);
   return Array.from(bits, (bit, index) => (Number.isNaN(values[index]) ? 'nan' : bit));
+}
+
+/**
+ * Adds a GPU-prepared polygon before a harness consumer. Buffers live until the returned harness
+ * is destroyed; the existing rectangle harness remains unchanged.
+ */
+export function createPairStatisticsWindowHarness<Names extends string>(
+  device: Device,
+  props: Omit<Parameters<typeof createPairStatisticsHarness<Names>>[1], 'createContributor'> & {
+    window: OracleStudyWindow;
+    createContributor: (
+      views: HarnessViews<Names>,
+      studyWindow: GPUStudyWindowPreparation
+    ) => GPUCommandNodeProducer;
+  }
+): PairStatisticsHarness<Names> {
+  const buffers: Buffer[] = [];
+  const preparations: GPUStudyWindowPreparation[] = [];
+  const harness = createPairStatisticsHarness(device, {
+    ...props,
+    createContributor: views => ({
+      getCommandNodes(graph) {
+        const importInput = <Format extends 'float32x2' | 'uint32'>(
+          name: string,
+          format: Format,
+          data: Float32Array | Uint32Array,
+          length: number
+        ) => {
+          const buffer = createInputBuffer(device, data);
+          buffers.push(buffer);
+          return importGraphBuffer(graph, `window-input-${name}`, buffer, format, length);
+        };
+        const window = props.window;
+        const featureOffsets =
+          window.featureOffsets ?? new Uint32Array([0, window.polygonOffsets.length - 1]);
+        const studyWindow = new GPUStudyWindowPreparation({
+          positions: importInput(
+            'positions',
+            'float32x2',
+            Float32Array.from(window.positions),
+            window.positions.length / 2
+          ),
+          featureOffsets: importInput('features', 'uint32', featureOffsets, featureOffsets.length),
+          polygonOffsets: importInput(
+            'polygons',
+            'uint32',
+            window.polygonOffsets,
+            window.polygonOffsets.length
+          ),
+          ringOffsets: importInput(
+            'rings',
+            'uint32',
+            window.ringOffsets,
+            window.ringOffsets.length
+          ),
+          samplingGrid: [16, 16]
+        });
+        preparations.push(studyWindow);
+        return [
+          ...studyWindow.getCommandNodes(graph),
+          ...props.createContributor(views, studyWindow).getCommandNodes(graph)
+        ];
+      }
+    })
+  });
+  return {
+    run: parameters => harness.run(parameters),
+    get rebuildCount() {
+      return harness.rebuildCount;
+    },
+    destroy() {
+      harness.destroy();
+      preparations.forEach(preparation => preparation.destroy());
+      for (const buffer of buffers) buffer.destroy();
+    }
+  };
 }

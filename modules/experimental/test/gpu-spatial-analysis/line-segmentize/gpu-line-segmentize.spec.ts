@@ -11,11 +11,30 @@ import {
   GPUGreatCircleArcs,
   GPULineSegmentize
 } from '../../../src/gpu-spatial-analysis/line-segmentize';
-import type {GraphDataView} from '@luma.gl/gpgpu/gpu-core';
+import {
+  createTransientView,
+  GPUCommandGraph,
+  GPUScan,
+  type GraphDataView
+} from '@luma.gl/gpgpu/gpu-core';
+import {
+  createLinePrefixNode,
+  createSegmentizeCountNode,
+  createSegmentizeEmitNode
+} from '../../../src/gpu-spatial-analysis/line-segmentize/line-segmentize-kernels';
+import {GPUParameterBuffer, importGraphBuffer} from '../../../src/utils/gpu-contributor-utils';
+import {
+  createInputBuffer,
+  createOutputBuffer,
+  readFloat32,
+  readUint32,
+  submitGraph
+} from '../../utils/gpu-contributor-test-utils';
 import {getCentralAngle} from '../geometry-measures/geodesic-oracle';
 import {
   createFlatLines,
   createRandom,
+  getLinearInterpolationErrorBound,
   segmentizeLines,
   tessellateGreatCircleArcs,
   type FlatLines
@@ -39,7 +58,7 @@ const MAXIMUM_TEST_ARC_ANGLE = 2.6;
 function createSegmentizeFixture(
   device: Device,
   lines: FlatLines,
-  options: {capacity: number; spherical?: boolean; maximumPieces?: number}
+  options: {capacity: number; spherical?: boolean; maximumPieces?: number; closedLines?: boolean}
 ) {
   return createLineLineFixture(device, {
     inputs: {
@@ -56,6 +75,7 @@ function createSegmentizeFixture(
           ? {coordinateSpace: 'longitude-latitude', metric: 'great-circle'}
           : undefined,
         maximumPieceCount: options.maximumPieces,
+        closedLines: options.closedLines,
         parameters,
         output
       })
@@ -340,4 +360,332 @@ it('GPULineSegmentize matches the oracle for long lines and one segment cut into
     expectLineLineParity(actual, expected, capacity, 2e-3, 2e-5);
   }
   fixture.destroy();
+});
+
+it('GPULineSegmentize densifies implicit and explicit planar and spherical closing edges', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  for (const spherical of [false, true]) {
+    const ring = spherical
+      ? [
+          [177, -20],
+          [-178, -20],
+          [-178, -15],
+          [177, -15]
+        ]
+      : [
+          [0, 0],
+          [2, 0],
+          [2, 2],
+          [0, 2]
+        ];
+    const lines = createFlatLines([
+      ring,
+      [...ring, ring[0]],
+      [],
+      [[1, 1]],
+      [
+        [3, 4],
+        [3, 4]
+      ]
+    ]);
+    const maximumSegmentLength = spherical ? 150000 : 0.5;
+    const fixture = createSegmentizeFixture(device, lines, {
+      capacity: 512,
+      spherical,
+      closedLines: true
+    });
+    try {
+      const actual = await fixture.run(getGPULineSegmentizeParameterValues({maximumSegmentLength}));
+      const expected = segmentizeLines(lines, {
+        maximumSegmentLength,
+        maximumPieces: 1024,
+        spherical,
+        radius: EARTH_RADIUS,
+        closedLines: true
+      });
+      expectLineLineParity(
+        actual,
+        expected,
+        512,
+        spherical ? SPHERICAL_TOLERANCE_METERS : 1e-5,
+        1e-5,
+        spherical ? getSphericalErrorMeters : undefined
+      );
+      const ringLength = actual.lineOffsets[1];
+      expect(actual.lineOffsets[2]).toBe(2 * ringLength);
+      expect(actual.positions.slice(ringLength, 2 * ringLength)).toEqual(
+        actual.positions.slice(0, ringLength)
+      );
+      expect(actual.positions[ringLength - 1]).not.toEqual(actual.positions[0]);
+      expect(actual.sourceRows[ringLength - 1]).toBe(3);
+    } finally {
+      fixture.destroy();
+    }
+  }
+});
+
+/** Direct factory fixture used by polygon preparation: integer turns and a caller-cleared flag. */
+function createDegreeStepFixture(
+  device: Device,
+  lines: FlatLines,
+  options: {
+    capacity: number;
+    maximumPieceCount?: number;
+    closedLines?: boolean;
+    interpolation?: 'linear-degrees' | 'great-circle';
+  }
+) {
+  const graph = new GPUCommandGraph(device, {id: 'degree-step'});
+  const rowCount = lines.positions.length / 2;
+  const positionBuffer = createInputBuffer(device, lines.positions);
+  const offsetBuffer = createInputBuffer(device, lines.lineOffsets);
+  const outputBuffer = createOutputBuffer(device, 2 * options.capacity);
+  const turnBuffer = createOutputBuffer(device, options.capacity);
+  const countBuffer = createOutputBuffer(device, rowCount);
+  const approximationBuffer = createOutputBuffer(device, 1);
+  const positions = importGraphBuffer(graph, 'positions', positionBuffer, 'float32x2', rowCount);
+  const lineOffsets = importGraphBuffer(
+    graph,
+    'offsets',
+    offsetBuffer,
+    'uint32',
+    lines.lineOffsets.length
+  );
+  const counts = importGraphBuffer(graph, 'counts', countBuffer, 'uint32', rowCount);
+  const starts = createTransientView(graph, 'starts', 'uint32', rowCount);
+  const rowTurns = createTransientView(graph, 'row-turns', 'sint32', rowCount);
+  const parameters = new GPUParameterBuffer(device, {
+    id: 'parameters',
+    format: 'float32',
+    length: 4
+  });
+  const common = {
+    operation: 'GPULineSegmentize',
+    positions,
+    lineOffsets,
+    coordinateSystem: 'spherical' as const,
+    radius: 1,
+    closedLines: options.closedLines
+  };
+  graph.add(createLinePrefixNode(graph, {...common, id: 'prefix', rowTurns}));
+  graph.add(
+    createSegmentizeCountNode(graph, {
+      ...common,
+      id: 'count',
+      counts,
+      parameters: parameters.importToGraph(graph),
+      parameterIndex: 2,
+      pieceCountModel: 'degree-step',
+      interpolation: options.interpolation,
+      maximumPieceCount: options.maximumPieceCount ?? 1024,
+      approximation: importGraphBuffer(graph, 'approximation', approximationBuffer, 'uint32', 1)
+    })
+  );
+  graph.add(new GPUScan({id: 'scan', input: counts, output: starts, mode: 'exclusive'}));
+  graph.add(
+    createSegmentizeEmitNode(graph, {
+      ...common,
+      id: 'emit',
+      counts,
+      starts,
+      rowTurns,
+      interpolation: options.interpolation,
+      wrapOutputLongitudes: true,
+      outputPositions: importGraphBuffer(
+        graph,
+        'output',
+        outputBuffer,
+        'float32x2',
+        options.capacity
+      ),
+      outputTurns: importGraphBuffer(graph, 'turns', turnBuffer, 'sint32', options.capacity)
+    })
+  );
+  const compiled = graph.compile();
+  return {
+    async run(maximumSegmentDegrees: number) {
+      approximationBuffer.write(new Uint32Array([0]));
+      parameters.write(new Float32Array([99, 99, maximumSegmentDegrees, 99]));
+      submitGraph(device, compiled, undefined);
+      const countsReadback = await readUint32(countBuffer, rowCount);
+      const count = Math.min(
+        countsReadback.reduce((sum, value) => sum + value, 0),
+        options.capacity
+      );
+      const values = await readFloat32(outputBuffer, 2 * count);
+      const turns = (await readUint32(turnBuffer, count)).map(value => value | 0);
+      return {
+        positions: Array.from({length: count}, (_, row) => values.slice(2 * row, 2 * row + 2)),
+        turns,
+        counts: countsReadback,
+        approximation: (await readUint32(approximationBuffer, 1))[0]
+      };
+    },
+    destroy() {
+      compiled.destroy();
+      parameters.destroy();
+      for (const buffer of [
+        positionBuffer,
+        offsetBuffer,
+        outputBuffer,
+        turnBuffer,
+        countBuffer,
+        approximationBuffer
+      ])
+        buffer.destroy();
+    }
+  };
+}
+
+it('degree-step great-circle kernels emit 600 pieces for 60 degrees at 45N, within 1e-6 radians', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const lines = createFlatLines([
+    [
+      [150, 45],
+      [-150, 45]
+    ]
+  ]);
+  const fixture = createDegreeStepFixture(device, lines, {capacity: 1025});
+  try {
+    const actual = await fixture.run(0.1);
+    const expected = segmentizeLines(lines, {
+      maximumSegmentLength: 0.1,
+      maximumPieces: 1024,
+      spherical: true,
+      pieceCountModel: 'degree-step',
+      wrapOutputLongitudes: true
+    });
+    expect(actual.counts).toEqual([600, 1]);
+    expect(actual.approximation).toBe(0);
+    expect(actual.positions[0]).toEqual([150, 45]);
+    expect(actual.positions[600]).toEqual([-150, 45]);
+    expect(actual.turns[600]).toBe(1);
+    actual.positions.forEach((position, row) => {
+      expect(position[0]).toBeGreaterThanOrEqual(-180);
+      expect(position[0]).toBeLessThanOrEqual(180);
+      // The audit bounds angular slerp error, not longitude ULPs: at 45N, 1e-6 rad
+      // permits about 8.1e-5 degrees of longitude (dLambda*cos(latitude)).
+      expect(getCentralAngle(position, expected.positions[row])).toBeLessThanOrEqual(1e-6);
+      // Angular distance is periodic; separately reject a wrong whole-turn prefix.
+      expect(
+        Math.abs(
+          position[0] +
+            360 * actual.turns[row] -
+            (expected.positions[row][0] + 360 * expected.turns[row])
+        )
+      ).toBeLessThan(180);
+    });
+  } finally {
+    fixture.destroy();
+  }
+});
+
+it('degree-step kernels retain wrapped vertex bits and integer turns across long prefixes and clamping', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  for (const interpolation of ['linear-degrees', 'great-circle'] as const) {
+    // More than 64 rows exercises the cooperative prefix, including many whole turns.
+    const ring = Array.from(
+      {length: 130},
+      (_, row) =>
+        [
+          [170, 70],
+          [-170, 71],
+          [-10, 72],
+          [150, 71]
+        ][row % 4]
+    );
+    const lines = createFlatLines([
+      ring,
+      [
+        [-0, 10],
+        [120, 10],
+        [180, 10],
+        [-180, 10],
+        [-120, 10]
+      ],
+      [
+        [177.1234567, -17.234567],
+        [-178.7654321, -16.345678],
+        [-176.112233, -15.998877]
+      ]
+    ]);
+    const fixture = createDegreeStepFixture(device, lines, {
+      capacity: 2048,
+      closedLines: true,
+      maximumPieceCount: 8,
+      interpolation
+    });
+    try {
+      for (const maximumSegmentDegrees of [0, 0.1, 180]) {
+        const actual = await fixture.run(maximumSegmentDegrees);
+        const expected = segmentizeLines(lines, {
+          maximumSegmentLength: maximumSegmentDegrees,
+          maximumPieces: 8,
+          spherical: true,
+          closedLines: true,
+          pieceCountModel: 'degree-step',
+          interpolation,
+          wrapOutputLongitudes: true
+        });
+        expect(actual.positions).toHaveLength(expected.positions.length);
+        expect(actual.approximation).toBe(maximumSegmentDegrees === 0.1 ? 1 : 0);
+        let outputRow = 0;
+        const keptRows = new Set<number>();
+        for (let row = 0; row < actual.counts.length; row++) {
+          if (actual.counts[row] > 0) {
+            keptRows.add(outputRow);
+            expect(new Uint32Array(new Float32Array(actual.positions[outputRow]).buffer)).toEqual(
+              new Uint32Array(lines.positions.buffer, row * 8, 2)
+            );
+            expect(actual.turns[outputRow]).toBe(expected.turns[outputRow]);
+            expect(actual.positions[outputRow][0] + 360 * actual.turns[outputRow]).toBe(
+              lines.positions[2 * row] + 360 * expected.turns[outputRow]
+            );
+          }
+          outputRow += actual.counts[row];
+        }
+        actual.positions.forEach((position, row) => {
+          expect(position[0]).toBeGreaterThanOrEqual(-180);
+          expect(position[0]).toBeLessThanOrEqual(180);
+          const expectedLongitude = expected.positions[row][0] + 360 * expected.turns[row];
+          const actualLongitude = position[0] + 360 * actual.turns[row];
+          if (keptRows.has(row)) return;
+          if (interpolation === 'linear-degrees') {
+            const sourceRow = expected.sourceRows[row];
+            const line = Array.from(lines.lineOffsets).findIndex(offset => offset > sourceRow) - 1;
+            const nextRow =
+              sourceRow + 1 < lines.lineOffsets[line + 1] ? sourceRow + 1 : lines.lineOffsets[line];
+            // For u=2^-24, the longitude lerp bound is
+            // u*(|rawStep| + 8*|wrappedStep| + |start|)/(1-8u), also covering
+            // the weighted mix form (see the oracle helper). Integer turns add no f32 error.
+            for (const axis of [0, 1]) {
+              expect(
+                Math.abs(
+                  axis === 0
+                    ? actualLongitude - expectedLongitude
+                    : position[1] - expected.positions[row][1]
+                )
+              ).toBeLessThanOrEqual(
+                getLinearInterpolationErrorBound(
+                  lines.positions[2 * sourceRow + axis],
+                  lines.positions[2 * nextRow + axis],
+                  axis === 0
+                )
+              );
+            }
+          } else {
+            // Slerp has the audit's 1e-6 rad angular budget; a longitude ULP is not
+            // an angular bound, especially on the 70N prefix. Check turns separately.
+            expect(Math.abs(actualLongitude - expectedLongitude)).toBeLessThan(180);
+          }
+          expect(getCentralAngle(position, expected.positions[row])).toBeLessThanOrEqual(1e-6);
+        });
+      }
+    } finally {
+      fixture.destroy();
+    }
+  }
 });

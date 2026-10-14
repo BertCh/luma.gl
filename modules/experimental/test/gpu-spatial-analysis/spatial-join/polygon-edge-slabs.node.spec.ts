@@ -11,7 +11,7 @@ import {
   getPolygonEdgeSlabQueryWGSL,
   POLYGON_EDGE_SLAB_MAXIMUM_SLABS,
   type PolygonEdgeSlabOwner
-} from '../../../src/gpu-spatial-analysis/spatial-join/polygon-edge-slabs';
+} from '../../../src/utils/polygon-edge-slabs';
 import {GPUCellCover} from '../../../src/gpu-spatial-analysis/cell-cover';
 import {createWGSLKernelNode} from '../../../src/utils/wgsl-kernel-nodes';
 import {

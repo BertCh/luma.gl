@@ -3,6 +3,12 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {
+  finishPolygonKernelDensity,
+  getPolygonKernelDensityWeights,
+  type PolygonKernelDensityInput
+} from './point-density-oracle';
+
+import {
   GPU_KERNEL_DENSITY_BINNED_BOX_PASS_COUNT,
   GPU_KERNEL_DENSITY_BINNED_EXPONENTIAL_VARIANCE_SHARE,
   GPU_KERNEL_DENSITY_GAUSSIAN_TRUNCATION
@@ -223,4 +229,10 @@ export function getExactDensityModel(input: BinnedDensityInput): Float64Array {
     }
   }
   return density;
+}
+
+/** Binned polygon KDE: independent binary64 cascade with the same fan correction as exact KDE. */
+export function getPolygonBinnedDensityOracle(input: PolygonKernelDensityInput): Float64Array {
+  const {weights, weightSum} = getPolygonKernelDensityWeights(input);
+  return finishPolygonKernelDensity(input, getBinnedDensityModel({...input, weights}), weightSum);
 }

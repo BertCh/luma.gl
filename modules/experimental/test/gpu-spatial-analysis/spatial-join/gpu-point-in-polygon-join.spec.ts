@@ -30,6 +30,7 @@ import {
   POLYGON_POINTS
 } from './spatial-join-oracle';
 import {requireTestDevice} from '../../utils/require-test-device';
+import {registerLonLatPolygonStatusTests} from './lon-lat-polygon-status-fixtures';
 
 type JoinBufferName =
   | 'points'
@@ -365,3 +366,5 @@ it('GPUPointInPolygonJoin preserves point chunks and matches a random oracle', a
   compiled.destroy();
   destroyFixture(randomFixture);
 });
+
+registerLonLatPolygonStatusTests('GPUPointInPolygonJoin');

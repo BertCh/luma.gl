@@ -4,6 +4,7 @@
 
 import {createTransientView, GPUCommandGraph} from '@luma.gl/gpgpu/gpu-core';
 import {expect, it} from 'vitest';
+import {GPUCalendarBuckets} from '../../../src/gpu-dataframe/calendar-buckets/index';
 import {addSpaceTimeHotSpotsRecipe} from '../../../src/gpu-spatial-analysis/recipes/space-time-hot-spots-recipe';
 import {GPU_EMERGING_HOT_SPOTS_PARAMETER_LENGTH} from '../../../src/gpu-spatial-analysis/emerging-hot-spots/index';
 import {GPUParameterBuffer} from '../../../src/utils/gpu-contributor-utils';
@@ -41,6 +42,25 @@ it('addSpaceTimeHotSpotsRecipe rejects cyclic fields and invalid slices, and for
       ...overrides
     } as never;
   };
+  const timeZone = {
+    transitions: view('uint32x2', 1, 'zone-transitions'),
+    offsets: view('sint32', 2, 'zone-offsets')
+  };
+  const utcOffsets = view('sint32', 4, 'row-offsets');
+  expect(() => addSpaceTimeHotSpotsRecipe(graph, props({timeZone, utcOffsets}))).toThrow(
+    'addSpaceTimeHotSpotsRecipe pass utcOffsets or timeZone, not both'
+  );
+  for (const options of [{timeZone}, {utcOffsets}]) {
+    const calendarRecipe = addSpaceTimeHotSpotsRecipe(graph, props(options));
+    const calendar = calendarRecipe.contributors.find(
+      contributor => contributor instanceof GPUCalendarBuckets
+    );
+    expect(calendar).toBeInstanceOf(GPUCalendarBuckets);
+    if (calendar instanceof GPUCalendarBuckets) {
+      expect(calendar.props.timeZone).toBe(options.timeZone);
+      expect(calendar.props.utcOffsets).toBe(options.utcOffsets);
+    }
+  }
   // Cyclic calendar fields are no longer accepted.
   expect(() =>
     addSpaceTimeHotSpotsRecipe(graph, props({slices: {field: 'month', firstValue: 1, count: 6}}))

@@ -111,3 +111,106 @@ it('GPURipleyDistanceFunctions declares planar-only spatial support', () => {
   );
   device.destroy();
 });
+
+import {WgslReflect} from 'wgsl_reflect';
+import {getGPUCommandNodeKernelSources} from '../../utils/gpu-contributor-test-utils';
+import {createRipleyTestWindow} from './ripley-envelope-fixture';
+import {
+  computeRipleyDistanceFunctionsOnCPU,
+  getReferenceLatticeErosion
+} from './ripley-distance-functions-oracle';
+import {
+  ORACLE_RECTANGLE,
+  ORACLE_L_SHAPE,
+  getOracleErodedArea,
+  getOracleWindowArea
+} from '../../analysis-core/study-window-oracle';
+
+it('GPURipleyDistanceFunctions packs study-window bounds and builds polygon Hanisch even for G only', () => {
+  const packed = getGPURipleyDistanceFunctionsParameterValues({
+    bounds: 'study-window',
+    maximumDistance: 100,
+    edgeCorrection: 'hanisch'
+  });
+  expect(Array.from(packed.slice(0, 4)).every(Number.isNaN)).toBe(true);
+  expect(packed[5]).toBe(3);
+  const device = createNullWebGPUDevice();
+  const graph = new GPUCommandGraph(device);
+  const studyWindow = createRipleyTestWindow(graph);
+  const nodes = new GPURipleyDistanceFunctions(createProps(graph, {studyWindow})).getCommandNodes(
+    graph
+  );
+  for (const suffix of ['window-parameters', 'hanisch-reference', 'hanisch-suffix']) {
+    expect(nodes.some(node => node.id === `ripley-distance-functions-${suffix}`)).toBe(true);
+  }
+  const sources = getGPUCommandNodeKernelSources(nodes);
+  for (const {id, source} of sources) {
+    expect(() => new WgslReflect(source), id).not.toThrow();
+    expect(new WgslReflect(source).storage.length, id).toBeLessThanOrEqual(8);
+  }
+  const reference = sources.find(kernel => kernel.id.endsWith('-f-reference'))!.source;
+  expect(reference.match(/isInsideStudyWindow\(/g)).toHaveLength(2);
+  expect(reference).toContain(
+    'getStudyWindowBoundaryDistance(vec2f(x, y), lattice.maximumDistance)'
+  );
+  expect(reference).toContain('mix(f32(erosionCounts');
+  const finish = sources.find(kernel => kernel.id.endsWith('-finish'))!.source;
+  expect(finish).toContain('let REFERENCE_COUNT = f32(getReferencePrefix(3u, RADIUS_COUNT))');
+  device.destroy();
+});
+
+it('GPURipleyDistanceFunctions explicit rectangle keeps every generated shader unchanged', () => {
+  const device = createNullWebGPUDevice();
+  const build = (studyWindow?: 'rectangle') => {
+    const graph = new GPUCommandGraph(device);
+    return getGPUCommandNodeKernelSources(
+      new GPURipleyDistanceFunctions(createProps(graph, {studyWindow})).getCommandNodes(graph)
+    ).map(kernel => kernel.source);
+  };
+  expect(build('rectangle')).toEqual(build());
+  expect(build().join('\n')).not.toContain('studyWindow');
+  expect(build().join('\n')).not.toContain('erosionCounts');
+  device.destroy();
+});
+
+it('polygon rectangle oracle matches border and Kaplan-Meier and estimates rectangle erosion', () => {
+  const scene = {
+    positions: new Float32Array([110, 140, 170, 180, 420, 350, 800, 510, 1330, 790, 1700, 300])
+  };
+  for (const edgeCorrection of ['border', 'kaplan-meier'] as const) {
+    const parameters = {bounds: [0, 0, 2000, 1000] as const, maximumDistance: 400, edgeCorrection};
+    const rectangle = computeRipleyDistanceFunctionsOnCPU(scene, parameters, 8, [31, 29]);
+    const polygon = computeRipleyDistanceFunctionsOnCPU(
+      scene,
+      {...parameters, bounds: 'study-window'},
+      8,
+      [31, 29],
+      ORACLE_RECTANGLE
+    );
+    expect(polygon).toEqual(rectangle);
+  }
+  const erosion = getReferenceLatticeErosion(ORACLE_RECTANGLE, [400, 200], 400, 16);
+  for (const radius of [25, 87.5, 150, 275]) {
+    expect(
+      Math.abs(erosion.getArea(radius) - (2000 - 2 * radius) * (1000 - 2 * radius))
+    ).toBeLessThan(16000);
+  }
+});
+
+it('Hanisch reference-lattice erosion approaches the independent raster oracle', () => {
+  const radius = 123;
+  const expected = getOracleErodedArea(ORACLE_L_SHAPE, radius, 600);
+  const coarse = getReferenceLatticeErosion(ORACLE_L_SHAPE, [12, 12], 400, 64).getArea(radius);
+  const fine = getReferenceLatticeErosion(ORACLE_L_SHAPE, [320, 320], 400, 64).getArea(radius);
+  expect(Math.abs(fine - expected)).toBeLessThan(Math.abs(coarse - expected));
+  expect(Math.abs(fine - expected) / getOracleWindowArea(ORACLE_L_SHAPE)).toBeLessThan(0.01);
+  const result = computeRipleyDistanceFunctionsOnCPU(
+    {positions: new Float32Array([100, 100, 300, 100, 900, 200, 1500, 1500])},
+    {bounds: 'study-window', maximumDistance: 400, edgeCorrection: 'none'},
+    4,
+    [20, 20],
+    ORACLE_L_SHAPE
+  );
+  expect(result.gDenominators).toEqual([3, 3, 3, 3]);
+  expect(result.fDenominators).toEqual([231, 231, 231, 231]);
+});

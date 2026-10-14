@@ -172,11 +172,12 @@ function getTileLatitude(row: number, resolution: number): number {
 /** Candidate Quadbin tiles of one feature's bounding box, north to south then west to east. */
 function getQuadbinCandidates(rings: Vertex[][], resolution: number): {x: number; y: number}[] {
   const bounds = getBounds(rings);
-  if (!bounds) {
+  if (!bounds || hasCrossingCoverEdge(rings)) {
     return [];
   }
-  const x0 = getQuadbinTileX(bounds[0], resolution);
-  const x1 = getQuadbinTileX(bounds[2], resolution);
+  // A bounding edge at +180 is the east edge, whereas point indexing wraps it to column zero.
+  const x0 = bounds[0] >= 180 ? 2 ** resolution - 1 : getQuadbinTileX(bounds[0], resolution);
+  const x1 = bounds[2] >= 180 ? 2 ** resolution - 1 : getQuadbinTileX(bounds[2], resolution);
   const y0 = getQuadbinTileY(bounds[3], resolution);
   const y1 = getQuadbinTileY(bounds[1], resolution);
   const candidates: {x: number; y: number}[] = [];
@@ -248,11 +249,12 @@ export function coverQuadbinCenterFloat64(
   for (let feature = 0; feature < arrays.featureOffsets.length - 1; feature++) {
     const rings = getFeatureRings(arrays, feature);
     const bounds = getBounds(rings);
-    if (!bounds) {
+    if (!bounds || hasCrossingCoverEdge(rings)) {
       continue;
     }
-    const x0 = getQuadbinTileX(bounds[0], resolution);
-    const x1 = getQuadbinTileX(bounds[2], resolution);
+    const lastColumn = 2 ** resolution - 1;
+    const x0 = Math.min(lastColumn, Math.max(0, Math.floor((bounds[0] + 180) / width)));
+    const x1 = Math.min(lastColumn, Math.max(0, Math.floor((bounds[2] + 180) / width)));
     const y0 = getQuadbinTileYFloat64(bounds[3], resolution);
     const y1 = getQuadbinTileYFloat64(bounds[1], resolution);
     for (let y = y0; y <= y1; y++) {
@@ -336,7 +338,7 @@ export function coverH3LatticeOnCPU(
   for (let feature = 0; feature < arrays.featureOffsets.length - 1; feature++) {
     const rings = getFeatureRings(arrays, feature);
     const bounds = getBounds(rings);
-    if (!bounds) {
+    if (!bounds || hasCrossingCoverEdge(rings)) {
       continue;
     }
     const originLat = Math.max(bounds[1] - spacingLat, -CELL_COVER_H3_MAXIMUM_LATITUDE);
@@ -358,14 +360,14 @@ export function coverH3LatticeOnCPU(
         const lat = originLat + row * spacingLat;
         const cell = latLngToCell(lat, lng, resolution);
         const [centreLat, centreLng] = cellToLatLng(cell);
-        let deltaLng = centreLng - lng;
-        deltaLng -= 360 * Math.round(deltaLng / 360);
-        const deltaLat = centreLat - lat;
+        // Canonical center ownership, also unique on a full-width lattice.
+        const middleLongitude = originLng + 0.5 * width * spacingLng;
+        const centerLongitude = centreLng + 360 * Math.round((middleLongitude - centreLng) / 360);
+        const nearestColumn = Math.floor((centerLongitude - originLng) / spacingLng + 0.5);
+        const nearestRow = Math.floor((centreLat - originLat) / spacingLat + 0.5);
         if (
-          deltaLng >= -0.5 * spacingLng &&
-          deltaLng < 0.5 * spacingLng &&
-          deltaLat >= -0.5 * spacingLat &&
-          deltaLat < 0.5 * spacingLat &&
+          nearestColumn === column &&
+          nearestRow === row &&
           isInsideRings(rings, [centreLng, centreLat], true)
         ) {
           result.featureRows.push(feature);
@@ -469,4 +471,48 @@ export function listCoverDisagreements(
     }
   }
   return rows;
+}
+
+/** Binary64 invalid rule: any non-pole closed edge crossing the antimeridian. */
+export function hasCrossingCoverEdge(rings: readonly (readonly (readonly number[])[])[]): boolean {
+  return rings.some(ring =>
+    ring.some((first, vertex) => {
+      const second = ring[(vertex + 1) % ring.length];
+      const poleEdge =
+        Math.abs(first[1]) >= 90 - 1e-6 &&
+        Math.abs(second[1]) >= 90 - 1e-6 &&
+        first[1] * second[1] > 0;
+      return !poleEdge && Math.abs(second[0] - first[0]) > 180;
+    })
+  );
+}
+
+/** Converts shared flat fixtures to the nested cover test layout without rounding. */
+export function getCoverFixtureFeatures(arrays: {
+  positions: ArrayLike<number>;
+  featureOffsets: ArrayLike<number>;
+  polygonOffsets: ArrayLike<number>;
+  ringOffsets: ArrayLike<number>;
+}): CoverFeature[] {
+  return Array.from({length: arrays.featureOffsets.length - 1}, (_, feature) =>
+    Array.from(
+      {length: arrays.featureOffsets[feature + 1] - arrays.featureOffsets[feature]},
+      (_, polygonOffset) => {
+        const polygon = arrays.featureOffsets[feature] + polygonOffset;
+        return Array.from(
+          {length: arrays.polygonOffsets[polygon + 1] - arrays.polygonOffsets[polygon]},
+          (_, ringOffset) => {
+            const ring = arrays.polygonOffsets[polygon] + ringOffset;
+            return Array.from(
+              {length: arrays.ringOffsets[ring + 1] - arrays.ringOffsets[ring]},
+              (_, vertex) => {
+                const offset = 2 * (arrays.ringOffsets[ring] + vertex);
+                return [arrays.positions[offset], arrays.positions[offset + 1]];
+              }
+            );
+          }
+        );
+      }
+    )
+  );
 }

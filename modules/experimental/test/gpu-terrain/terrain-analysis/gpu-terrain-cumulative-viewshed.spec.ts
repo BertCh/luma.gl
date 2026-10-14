@@ -29,6 +29,7 @@ import {
 } from '../../utils/gpu-contributor-test-utils';
 import {computeTerrainSightLine, createFractalTerrain} from './terrain-analysis-oracle';
 import {requireTestDevice} from '../../utils/require-test-device';
+import type {GPUTerrainHeightReference} from '../../../src/analysis-core/contracts/vertical-datum';
 
 const WIDTH = 40;
 const HEIGHT = 30;
@@ -54,6 +55,10 @@ async function runCumulative(
   traversal: GPUTerrainSightLineTraversal,
   observersPerDispatch: number,
   options: {
+    /** Compile-time observer height interpretation. */
+    heightReference?: GPUTerrainHeightReference;
+    /** Optional per-observer heights in the selected reference. */
+    observerHeights?: Float32Array;
     grid?: GPURasterMetadata;
     observers?: [number, number][];
     settings?: GPUTerrainLineOfSightSettings;
@@ -66,6 +71,9 @@ async function runCumulative(
   const settings = options.settings ?? {...SETTINGS, toleranceMeters: 2};
   const elevationBuffer = createInputBuffer(device, terrain);
   const observerBuffer = createInputBuffer(device, Float32Array.from(observers.flat()));
+  const heightBuffer = options.observerHeights
+    ? createInputBuffer(device, options.observerHeights)
+    : undefined;
   const visibleBuffer = createOutputBuffer(device, pixelCount);
   const marginalBuffer = createOutputBuffer(device, pixelCount);
   const settingsBuffer = new GPUParameterBuffer(device, {
@@ -78,6 +86,10 @@ async function runCumulative(
   const contributor = new GPUTerrainCumulativeViewshed({
     grid,
     cellSizeMode: options.cellSizeMode,
+    heightReference: options.heightReference,
+    observerHeights: heightBuffer
+      ? importGraphBuffer(graph, 'heights', heightBuffer, 'float32', observers.length)
+      : undefined,
     elevation: {
       id: 'elevation',
       format: 'float32',
@@ -104,11 +116,72 @@ async function runCumulative(
   };
   compiled.destroy();
   settingsBuffer.destroy();
+  heightBuffer?.destroy();
   for (const buffer of [elevationBuffer, observerBuffer, visibleBuffer, marginalBuffer]) {
     buffer.destroy();
   }
   return result;
 }
+
+it('GPUTerrainCumulativeViewshed absolute observer heights match ground mode over no-data ground', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const grid = makeGPURasterMetadata({width: 12, height: 1});
+  const terrain = Float32Array.from({length: 12}, (_, column) => (column === 6 ? 20 : 10));
+  const observers: [number, number][] = [
+    [0, 0],
+    [1, 0],
+    [-1, 0]
+  ];
+  const observerHeights = Float32Array.from([12, 14, 12]);
+  const settings = {observerHeight: 50, targetHeight: 1, toleranceMeters: 1};
+  const parameters = getGPUTerrainLineOfSightParameterValues(settings, grid);
+  for (const traversal of ['march', 'pyramid'] as const) {
+    const options = {
+      grid,
+      observers,
+      settings,
+      observerHeights,
+      heightReference: 'absolute' as const
+    };
+    const ground = await runCumulative(device, terrain, traversal, 2, {
+      ...options,
+      heightReference: 'ground',
+      observerHeights: Float32Array.from([2, 4, 2])
+    });
+    const absolute = await runCumulative(device, terrain, traversal, 2, options);
+    const oracle = (values: Float32Array) => {
+      const visible = new Array<number>(12).fill(0);
+      const marginal = new Array<number>(12).fill(0);
+      for (let column = 0; column < 12; column++) {
+        for (const [index, observer] of observers.entries()) {
+          const result = computeTerrainSightLine(
+            values,
+            undefined,
+            12,
+            1,
+            observer,
+            [column, 0],
+            parameters,
+            [observerHeights[index], settings.targetHeight],
+            options
+          );
+          visible[column] += Number(result.code === V.visible);
+          marginal[column] += Number(result.code === V.marginal);
+        }
+      }
+      return {visible, marginal};
+    };
+    expect(absolute).toEqual(ground);
+    expect(absolute).toEqual(oracle(terrain));
+    const missing = terrain.slice();
+    missing[0] = Number.NaN;
+    const result = await runCumulative(device, missing, traversal, 2, options);
+    expect(result).toEqual(oracle(missing));
+    expect(result.visible[4]).toBe(2);
+    expect(result.visible[0]).toBe(0);
+  }
+});
 
 async function runViewshed(
   device: Device,

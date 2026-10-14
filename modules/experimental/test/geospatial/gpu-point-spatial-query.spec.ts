@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {registerPolygonConsumerGPUTests} from '../gpu-spatial-analysis/zonal-statistics/polygon-consumer-status-fixtures';
 import {Buffer, type Device} from '@luma.gl/core';
 import {
   type CompiledGPUCommandGraph,
@@ -709,3 +710,5 @@ function isSoftwareBackedDevice(device: Device): boolean {
     device.info.gpu === 'software' || device.info.gpuType === 'cpu' || Boolean(device.info.fallback)
   );
 }
+
+registerPolygonConsumerGPUTests('GPUPointSpatialQuery');

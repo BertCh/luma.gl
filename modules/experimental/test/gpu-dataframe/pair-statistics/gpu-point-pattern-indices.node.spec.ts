@@ -2,8 +2,16 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {createHash} from 'node:crypto';
 import {createTransientView, GPUCommandGraph} from '@luma.gl/gpgpu/gpu-core';
 import {expect, it} from 'vitest';
+import {WgslReflect} from 'wgsl_reflect';
+import {GPUStudyWindowPreparation} from '../../../src/gpu-spatial-analysis/study-window/gpu-study-window-preparation';
+import {
+  ORACLE_RECTANGLE,
+  ORACLE_L_SHAPE,
+  getOracleWindowBounds
+} from '../../analysis-core/study-window-oracle';
 import {
   GPUPointPatternIndices,
   type GPUPointPatternIndicesOutput,
@@ -16,9 +24,14 @@ import {
   GPU_POINT_PATTERN_ALTERNATIVE,
   GPU_POINT_PATTERN_INDICES_PARAMETER_LENGTH
 } from '../../../src/gpu-dataframe/pair-statistics/point-pattern-indices-parameters';
-import {createNullWebGPUDevice} from '../../utils/gpu-contributor-test-utils';
+import {
+  createNullWebGPUDevice,
+  getGPUCommandNodeKernelSources,
+  getStorageBindingCount
+} from '../../utils/gpu-contributor-test-utils';
 import {
   computePointPatternIndicesOnCPU,
+  computeWindowPointPatternIndicesOnCPU,
   getChiSquarePValueOnCPU,
   getGammaTailsOnCPU,
   getNormalPValueOnCPU
@@ -348,4 +361,205 @@ it('gpu-point-pattern-indices declares planar-only spatial support', () => {
     () => ({spatialContext: {coordinateSpace: 'discrete-grid', metric: 'none', gridFamily: 'h3'}}),
     /does not support discrete-grid/
   );
+});
+
+it('point-pattern polygon packer requires explicit corrections and positive guard distances', () => {
+  const settings = {bounds: 'study-window' as const, maximumDistance: 100};
+  expect(() => getGPUPointPatternIndicesParameterValues(settings)).toThrow(
+    "GPUPointPatternIndices needs an explicit clarkEvansCorrection ('guard' or 'none') with a study window"
+  );
+  expect(() =>
+    getGPUPointPatternIndicesParameterValues({...settings, clarkEvansCorrection: 'donnelly'})
+  ).toThrow(
+    "GPUPointPatternIndices clarkEvansCorrection 'donnelly' is defined for rectangular windows only; use 'guard' or 'none' with a study window"
+  );
+  for (const guardDistance of [undefined, 0, -1, Infinity, NaN]) {
+    expect(() =>
+      getGPUPointPatternIndicesParameterValues({
+        ...settings,
+        clarkEvansCorrection: 'guard',
+        guardDistance
+      })
+    ).toThrow("GPUPointPatternIndices clarkEvansCorrection 'guard' needs a positive guardDistance");
+  }
+  const packed = getGPUPointPatternIndicesParameterValues({
+    ...settings,
+    clarkEvansCorrection: 'guard',
+    guardDistance: 25
+  });
+  expect(Array.from(packed.slice(0, 4)).every(Number.isNaN)).toBe(true);
+  expect(packed[5]).toBe(2);
+  expect(packed[7]).toBe(25);
+});
+
+it('point-pattern quadrat sampling and area views validate declared capacities', () => {
+  for (const quadratSamples of [0, -1, 1.5, Infinity, NaN, 4097]) {
+    expectThrows(
+      graph => ({
+        id: 'p',
+        quadratGrid: [2, 2],
+        quadratSamples,
+        output: {quadratAreas: createTransientView(graph, 'areas', 'float32', 4)}
+      }),
+      /^p quadratSamples squared times the quadrat count must be at most 16777216$/
+    );
+  }
+  expectThrows(
+    graph => ({
+      quadratGrid: [2, 2],
+      output: {
+        quadratAreas: createTransientView(graph, 'areas', 'float32', 3)
+      }
+    }),
+    /output.quadratAreas must hold columns \* rows rows/
+  );
+});
+
+it('point-pattern polygon kernels parse within eight bindings and use one membership call site', () => {
+  const device = createNullWebGPUDevice();
+  const graph = new GPUCommandGraph(device);
+  const view = <Format extends 'float32' | 'float32x2' | 'uint32'>(
+    format: Format,
+    length: number
+  ) => createTransientView(graph, `polygon-${serial++}`, format, length);
+  const studyWindow = new GPUStudyWindowPreparation({
+    positions: view('float32x2', 6),
+    featureOffsets: view('uint32', 2),
+    polygonOffsets: view('uint32', 2),
+    ringOffsets: view('uint32', 2),
+    samplingGrid: [8, 8]
+  });
+  graph.add(studyWindow);
+  const props = createProps(graph, {
+    id: 'polygon',
+    studyWindow,
+    quadratGrid: [2, 2],
+    output: {
+      quadratCounts: view('uint32', 4),
+      quadratAreas: view('float32', 4),
+      quadratStatistics: view('float32', 7),
+      nearestNeighborDistances: view('float32', 10),
+      nearestNeighborIds: view('uint32', 10)
+    }
+  });
+  const sources = getGPUCommandNodeKernelSources(
+    new GPUPointPatternIndices(props).getCommandNodes(graph)
+  );
+  for (const {id, source} of sources) {
+    expect(() => new WgslReflect(source), id).not.toThrow();
+    expect(getStorageBindingCount(source), id).toBeLessThanOrEqual(8);
+  }
+  const areaSource = sources.find(({id}) => id === 'polygon-quadrat-area-samples')!.source;
+  expect(areaSource.match(/isInsideStudyWindow\(/g)).toHaveLength(2); // definition and one call
+  expect(areaSource).toContain('sample < 256u');
+  expect(sources.find(({id}) => id === 'polygon-clark-evans')!.source).toContain(
+    'if (correction == 1u) { expected = nan; standardError = nan; }'
+  );
+  expect(sources.find(({id}) => id === 'polygon-guard-terms')!.source).toContain(
+    'getStudyWindowBoundaryDistance(point, guardDistance)'
+  );
+  const rectangleSources = (explicit: boolean) => {
+    const rectangleGraph = new GPUCommandGraph(device);
+    const rectangleProps = createProps(rectangleGraph, {
+      id: 'rectangle',
+      studyWindow: explicit ? 'rectangle' : undefined
+    });
+    return getGPUCommandNodeKernelSources(
+      new GPUPointPatternIndices(rectangleProps).getCommandNodes(rectangleGraph)
+    );
+  };
+  expect(rectangleSources(false)).toEqual(rectangleSources(true));
+  device.destroy();
+});
+
+it('polygon rectangle oracle quadrats exactly preserve the equal-area formula', () => {
+  const scene = {
+    positions: new Float32Array([100, 100, 200, 100, 1100, 200, 1700, 700, 1300, 800])
+  };
+  const frame = {
+    bounds: getOracleWindowBounds(ORACLE_RECTANGLE),
+    maximumDistance: 100,
+    clarkEvansCorrection: 'none' as const
+  };
+  const rectangle = computePointPatternIndicesOnCPU(scene, frame, [4, 2]);
+  const polygon = computeWindowPointPatternIndicesOnCPU(scene, frame, [4, 2], ORACLE_RECTANGLE);
+  expect(polygon.quadratStatistics).toEqual(rectangle.quadratStatistics);
+  expect(polygon.quadratAreas).toEqual(new Array(8).fill(250000));
+});
+
+it('guard oracle uses all neighbors, retains n, and returns NaN for no focus points', () => {
+  const scene = {positions: new Float32Array([100, 300, 300, 300, 600, 300, 1500, 200])};
+  const frame = {
+    bounds: getOracleWindowBounds(ORACLE_RECTANGLE),
+    maximumDistance: 100,
+    clarkEvansCorrection: 'guard' as const,
+    guardDistance: 250
+  };
+  const result = computeWindowPointPatternIndicesOnCPU(scene, frame, [2, 2]);
+  expect(result.clarkEvans[0]).toBe(4);
+  expect(result.clarkEvans[1]).toBe(250); // focus distances 200 and 300; neighbor x=100 is outside guard
+  expect(result.clarkEvans[4]).toBe(0.26136 * Math.sqrt(2000000 / 8));
+  const polygon = computeWindowPointPatternIndicesOnCPU(scene, frame, [2, 2], ORACLE_RECTANGLE);
+  expect(polygon.clarkEvans).toEqual(result.clarkEvans);
+  expect(
+    computeWindowPointPatternIndicesOnCPU(
+      scene,
+      {...frame, guardDistance: 5000},
+      [2, 2],
+      ORACLE_L_SHAPE
+    )
+      .clarkEvans.slice(1)
+      .every(Number.isNaN)
+  ).toBe(true);
+});
+
+it('polygon quadrat oracle drops empty cells and uses unequal expected counts', () => {
+  const scene = {
+    positions: new Float32Array([100, 100, 200, 100, 1100, 200, 300, 1700, 1300, 1800])
+  };
+  const frame = {
+    bounds: getOracleWindowBounds(ORACLE_L_SHAPE),
+    maximumDistance: 100,
+    clarkEvansCorrection: 'none' as const
+  };
+  const result = computeWindowPointPatternIndicesOnCPU(scene, frame, [2, 2], ORACLE_L_SHAPE);
+  expect(result.clarkEvans[0]).toBe(4);
+  expect(result.quadratAreas[3]).toBe(0);
+  expect(result.quadratStatistics[0]).toBe(3);
+  expect(result.quadratAreas.reduce((sum, area) => sum + area, 0)).toBeCloseTo(2310000, 8);
+  const expected = result.quadratAreas.map(area => (4 * area) / 2310000);
+  const chiSquare = expected.reduce(
+    (sum, value, index) =>
+      value > 0 ? sum + (result.quadratCounts[index] - value) ** 2 / value : sum,
+    0
+  );
+  expect(result.quadratStatistics[4]).toBeCloseTo(chiSquare, 12);
+});
+
+// SHA-256 fingerprints verified against the pre-W-3 kernels from HEAD, using this fixture.
+it('legacy rectangle WGSL stays byte-identical', () => {
+  const device = createNullWebGPUDevice();
+  const graph = new GPUCommandGraph(device);
+  const props = createProps(graph, {
+    id: 'legacy',
+    quadratGrid: [3, 2],
+    output: {
+      quadratStatistics: createTransientView(graph, 'statistics', 'float32', 7)
+    }
+  });
+  const expected = {
+    'legacy-nearest': '7a8e5399a613fcddf8a50920e7e61c36210595658d0f8bd0d53dc14edf7a0922',
+    'legacy-nearest-terms': '3fbb6d0525b0a93774d2917e48b1e624dcc6cdc241d5ac4bd1e7cfe29f14a0e6',
+    'legacy-clark-evans': '4d9acfe2aac6da75ea05fc9175105f49ad89a581fc0555905cc802f51a9f2d39',
+    'legacy-quadrat-counts': '2cf3bdad00e120eedee9b7c5aa8304e50a01cacd120b0984b675ba1137251f46',
+    'legacy-quadrat-statistics': 'fa7af12d83d405bff9a11e0a2becc2b141f229b4db66079e75d8f62056a52110'
+  };
+  const sources = getGPUCommandNodeKernelSources(
+    new GPUPointPatternIndices(props).getCommandNodes(graph)
+  );
+  for (const [id, hash] of Object.entries(expected)) {
+    const source = sources.find(kernel => kernel.id === id)!.source;
+    expect(createHash('sha256').update(source).digest('hex'), id).toBe(hash);
+  }
+  device.destroy();
 });

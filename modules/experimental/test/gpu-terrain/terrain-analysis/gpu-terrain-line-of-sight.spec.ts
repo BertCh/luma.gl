@@ -31,6 +31,7 @@ import {
 } from '../../utils/gpu-contributor-test-utils';
 import {computeTerrainSightLine, createFractalTerrain} from './terrain-analysis-oracle';
 import {requireTestDevice} from '../../utils/require-test-device';
+import type {GPUTerrainHeightReference} from '../../../src/analysis-core/contracts/vertical-datum';
 
 type LineOfSightRun = {codes: number[]; clearance: number[]};
 
@@ -41,6 +42,8 @@ async function runLineOfSight(
   pairs: Float32Array,
   settings: GPUTerrainLineOfSightSettings,
   options: {
+    /** Compile-time observer height interpretation. */
+    heightReference?: GPUTerrainHeightReference;
     traversal?: GPUTerrainSightLineTraversal;
     cellSizeMode?: GPURasterCellSizeMode;
     pairHeights?: Float32Array;
@@ -80,6 +83,7 @@ async function runLineOfSight(
         : undefined,
       parameters: settingsBuffer.importToGraph(graph),
       traversal: options.traversal,
+      heightReference: options.heightReference,
       cellSizeMode: options.cellSizeMode,
       output: {
         visibility: importGraphBuffer(graph, 'visibility', visibilityBuffer, 'uint32', pairCount),
@@ -167,6 +171,53 @@ const WIDTH = 30;
 const HEIGHT = 22;
 const GRID = makeGPURasterMetadata({width: WIDTH, height: HEIGHT, cellSize: 30});
 const STRIP_GRID = makeGPURasterMetadata({width: 12, height: 1, cellSize: 1});
+
+it('GPUTerrainLineOfSight absolute pair heights match ground mode over valid and no-data ground', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const terrain = Float32Array.from({length: 12}, (_, column) => (column === 6 ? 20 : 10));
+  const pairs = Float32Array.from([0, 0, 4, 0, 0, 0, 10, 0, -1, 0, 4, 0]);
+  const parameters = getGPUTerrainLineOfSightParameterValues({}, STRIP_GRID);
+  const absoluteHeights = Float32Array.from([12, 1, 12, 1, 12, 1]);
+  for (const traversal of ['march', 'pyramid'] as const) {
+    const options = {traversal, heightReference: 'absolute' as const, pairHeights: absoluteHeights};
+    const ground = await runLineOfSight(
+      device,
+      terrain,
+      STRIP_GRID,
+      pairs,
+      {},
+      {
+        traversal,
+        pairHeights: Float32Array.from([2, 1, 2, 1, 2, 1])
+      }
+    );
+    const absolute = await runLineOfSight(device, terrain, STRIP_GRID, pairs, {}, options);
+    const oracle = (values: Float32Array) =>
+      Array.from(
+        {length: 3},
+        (_, index) =>
+          computeTerrainSightLine(
+            values,
+            undefined,
+            12,
+            1,
+            [pairs[index * 4], pairs[index * 4 + 1]],
+            [pairs[index * 4 + 2], pairs[index * 4 + 3]],
+            parameters,
+            [absoluteHeights[index * 2], absoluteHeights[index * 2 + 1]],
+            options
+          ).code
+      );
+    expect(absolute.codes).toEqual(ground.codes);
+    expect(absolute.codes).toEqual(oracle(terrain));
+    const missing = terrain.slice();
+    missing[0] = Number.NaN;
+    const result = await runLineOfSight(device, missing, STRIP_GRID, pairs, {}, options);
+    expect(result.codes).toEqual(oracle(missing));
+    expect(result.codes).toEqual([V.visible, V.hidden, V.noData]);
+  }
+});
 
 it('GPUTerrainLineOfSight reproduces the viewshed codes for every pixel', async () => {
   const device = await getWebGPUTestDevice();

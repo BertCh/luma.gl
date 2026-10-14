@@ -108,10 +108,13 @@ function buildNodes(
   return {nodes: contributor.getCommandNodes(graph), graph};
 }
 
-it('largePolygonMethod none builds the single Earcut node and no routing word', () => {
+it('largePolygonMethod none prepares the layout then builds Earcut without routing', () => {
   const {nodes} = buildNodes({largePolygonMethod: 'none'});
-  expect(nodes.map(node => node.id)).toEqual(['polygon-triangulation-earcut']);
-  const [earcut] = getGPUCommandNodeKernelSources(nodes);
+  expect(nodes.at(-1)?.id).toBe('polygon-triangulation-earcut');
+  expect(nodes.some(node => node.id.includes('-monotone-'))).toBe(false);
+  const earcut = getGPUCommandNodeKernelSources(nodes).find(kernel =>
+    kernel.id.endsWith('-earcut')
+  )!;
   expect(earcut.source).not.toContain('routing');
   expect(getStorageBindingCount(earcut.source)).toBe(7);
 });
@@ -120,11 +123,13 @@ it('largePolygonMethod monotone routes inside Earcut and triangulates the large 
   const {nodes} = buildNodes();
   const ids = nodes.map(node => node.id);
   const earcutIndex = ids.indexOf('polygon-triangulation-earcut');
-  // The size routing is part of the Earcut kernel, which stays the first node.
-  expect(earcutIndex).toBe(0);
+  // Layout preparation precedes Earcut; size routing remains inside Earcut.
+  expect(earcutIndex).toBeGreaterThan(0);
   // The monotone nodes follow, then a second Earcut pass for the polygons they flagged invalid.
   expect(ids[ids.length - 1]).toBe('polygon-triangulation-earcut-fallback');
-  expect(ids.slice(1, -1).every(id => id.startsWith('polygon-triangulation-monotone-'))).toBe(true);
+  expect(
+    ids.slice(earcutIndex + 1, -1).every(id => id.startsWith('polygon-triangulation-monotone-'))
+  ).toBe(true);
   const sources = getGPUCommandNodeKernelSources(nodes);
   const earcut = sources.find(entry => entry.id.endsWith('-earcut'))!;
   // Size-routed polygons are skipped, failed ones are marked for the retry; nothing else changed.
@@ -185,7 +190,10 @@ it('every monotone kernel parses, binds at most 8 storage buffers and stays with
     expect(getWorkgroupMemoryBytes(kernel.source), `${kernel.id} workgroup`).toBeLessThanOrEqual(
       CORE_WORKGROUP_STORAGE_LIMIT_BYTES
     );
-    if (kernel.id.includes('-monotone-')) {
+    if (
+      kernel.id.includes('-monotone-') ||
+      /-(classify-rings|polygon-capacities|publish-layout)$/.test(kernel.id)
+    ) {
       // Reserved words, NaN self-compares and calls to undeclared functions, the compile traps
       // that wgsl_reflect accepts and Dawn rejects.
       expect(auditWGSLModule(kernel.source), kernel.id).toEqual([]);
@@ -319,6 +327,49 @@ it('the default never throws for inputs above the monotone limit: they behave li
   const rows = getGPUPolygonTriangulationMonotoneMaximumVertexCount(device) + 1;
   expect(rows).toBe(3_355_444);
   const {nodes} = buildNodes({useZOrderHash: false}, rows);
-  expect(nodes.map(node => node.id)).toEqual(['polygon-triangulation-earcut']);
-  expect(getGPUCommandNodeKernelSources(nodes)[0].source).not.toContain('routing');
+  expect(nodes.at(-1)?.id).toBe('polygon-triangulation-earcut');
+  expect(nodes.some(node => node.id.includes('-monotone-'))).toBe(false);
+  expect(getGPUCommandNodeKernelSources(nodes).at(-1)!.source).not.toContain('routing');
+});
+
+it('accepts empty geometry and legacy capacities while validating triangle offset output', () => {
+  const graph = new GPUCommandGraph(createNullWebGPUDevice());
+  const view = <Format extends 'uint32' | 'float32x2'>(
+    name: string,
+    format: Format,
+    length: number
+  ) => createTransientView(graph, name, format, length);
+  const props: GPUPolygonTriangulationProps = {
+    positions: view('empty-positions', 'float32x2', 0),
+    featureOffsets: view('empty-features', 'uint32', 2),
+    polygonOffsets: view('empty-polygons', 'uint32', 1),
+    ringOffsets: view('empty-rings', 'uint32', 1),
+    output: {
+      indices: view('empty-indices', 'uint32', 0),
+      valid: view('empty-valid', 'uint32', 0),
+      triangleCount: view('empty-counts', 'uint32', 0),
+      triangleOffsets: view('empty-triangle-offsets', 'uint32', 1)
+    }
+  };
+  expect(() => new GPUPolygonTriangulation(props).getCommandNodes(graph)).not.toThrow();
+  expect(
+    () =>
+      new GPUPolygonTriangulation({
+        ...props,
+        output: {...props.output, triangleOffsets: view('bad-offsets', 'uint32', 2)}
+      })
+  ).toThrow(/triangleOffsets/);
+  expect(getPolygonTriangulationIndexCount(4, 1, 5)).toBe(6);
+  expect(getPolygonTriangulationIndexCount(0, 0, 0)).toBe(0);
+  // Two ordinary squares still accept the former exact capacity, 12 index words.
+  expect(() =>
+    new GPUPolygonTriangulation({
+      id: 'legacy-capacity',
+      positions: view('positions', 'float32x2', 8),
+      featureOffsets: view('features', 'uint32', 2),
+      polygonOffsets: view('polygons', 'uint32', 3),
+      ringOffsets: view('rings', 'uint32', 3),
+      output: {indices: view('indices', 'uint32', 12), valid: view('valid', 'uint32', 2)}
+    }).getCommandNodes(graph)
+  ).not.toThrow();
 });

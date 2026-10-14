@@ -315,3 +315,92 @@ it('GPURipleyEnvelope pipelines do not grow with simulationCount (rule 12, E-07)
     expect(source, id).not.toContain('SIMULATION_INDEX');
   }
 });
+
+import {createRipleyTestWindow} from './ripley-envelope-fixture';
+import {simulatePolygonCSROnCPU} from './ripley-envelope-oracle';
+import {ORACLE_L_SHAPE, isOracleInsideWindow} from '../../analysis-core/study-window-oracle';
+
+it('GPURipleyEnvelope validates polygon sampling controls', () => {
+  for (const maximumAttempts of [0, 257, 1.5, NaN, Infinity]) {
+    expectThrows(
+      () => ({maximumAttempts}),
+      /ripley-envelope maximumAttempts must be an integer in \[1, 256\]/
+    );
+  }
+  expectThrows(
+    graph => ({output: {unplacedCount: createTransientView(graph, 'empty-unplaced', 'uint32', 0)}}),
+    /unplacedCount must hold 1 row/
+  );
+  const device = createNullWebGPUDevice();
+  for (const maximumAttempts of [1, 32, 256]) {
+    const graph = new GPUCommandGraph(device);
+    expect(new GPURipleyEnvelope(createProps(graph, {maximumAttempts}))).toBeDefined();
+  }
+  device.destroy();
+});
+
+it('GPURipleyEnvelope polygon kernels reuse effective parameters and fit eight bindings', () => {
+  const device = createNullWebGPUDevice();
+  const graph = new GPUCommandGraph(device);
+  const studyWindow = createRipleyTestWindow(graph);
+  const nodes = new GPURipleyEnvelope(
+    createProps(graph, {
+      studyWindow,
+      maximumAttempts: 17,
+      output: {unplacedCount: createTransientView(graph, 'failed-draws', 'uint32', 1)}
+    })
+  ).getCommandNodes(graph);
+  const sources = getGPUCommandNodeKernelSources(nodes);
+  expect(nodes.some(node => node.id === 'ripley-envelope-window-parameters')).toBe(true);
+  expect(nodes.some(node => node.id === 'ripley-envelope-unplaced-clear')).toBe(true);
+  for (const {id, source} of sources) {
+    expect(() => new WgslReflect(source), id).not.toThrow();
+    expect(new WgslReflect(source).storage.length, id).toBeLessThanOrEqual(8);
+  }
+  const simulation = sources.find(kernel => kernel.id === 'ripley-envelope-sim-0-points')!.source;
+  expect(simulation).toContain('attempt < 17u');
+  expect(simulation).toContain('simulationIndex[simulationIndexOffset], attempt, 0u');
+  expect(simulation).toContain('getStudyWindowSampleCell(cell)');
+  expect(simulation).toContain('atomicAdd(&unplacedCount[unplacedCountOffset], 1u)');
+  expect(simulation.match(/isInsideStudyWindow\(/g)).toHaveLength(2); // declaration + one call
+  expect(sources.find(kernel => kernel.id === 'ripley-envelope-sim-0-finish')!.source).toContain(
+    'studyWindowSummaryValue(4u)'
+  );
+  const packed = getGPURipleyParameterValues({
+    bounds: 'study-window',
+    maximumDistance: 1,
+    seed: 0xffffffff
+  });
+  expect(Array.from(packed.slice(0, 4)).every(Number.isNaN)).toBe(true);
+  expect(new Uint32Array(packed.buffer)[6]).toBe(0xffffffff);
+  device.destroy();
+});
+
+it('GPURipleyEnvelope explicit rectangle keeps every generated shader unchanged', () => {
+  const device = createNullWebGPUDevice();
+  const build = (studyWindow?: 'rectangle') => {
+    const graph = new GPUCommandGraph(device);
+    return getGPUCommandNodeKernelSources(
+      new GPURipleyEnvelope(createProps(graph, {studyWindow})).getCommandNodes(graph)
+    ).map(kernel => kernel.source);
+  };
+  expect(build('rectangle')).toEqual(build());
+  expect(build().join('\n')).not.toContain('studyWindow');
+  device.destroy();
+});
+
+it('polygon CSR oracle is deterministic, inside, uniform, and records exhausted draws', () => {
+  const result = simulatePolygonCSROnCPU(19, 2, 6000, ORACLE_L_SHAPE, [16, 16]);
+  expect(result.unplacedCount).toBe(0);
+  expect(simulatePolygonCSROnCPU(19, 2, 6000, ORACLE_L_SHAPE, [16, 16])).toEqual(result);
+  let horizontalCount = 0;
+  for (let row = 0; row < result.mask.length; row++) {
+    const point = [result.positions[row * 2], result.positions[row * 2 + 1]] as const;
+    expect(isOracleInsideWindow(ORACLE_L_SHAPE, point)).toBe(true);
+    if (point[0] > 700) horizontalCount++;
+  }
+  expect(Math.abs(horizontalCount / 6000 - 910000 / 2310000)).toBeLessThan(0.025);
+  expect(
+    simulatePolygonCSROnCPU(19, 2, 10, ORACLE_L_SHAPE, [16, 16], 1, new Uint32Array()).unplacedCount
+  ).toBe(10);
+});

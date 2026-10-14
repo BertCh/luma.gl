@@ -17,6 +17,13 @@ import {createSeededRandom} from '../spatial-autocorrelation/spatial-autocorrela
 import {RecipeTestFixture, isClose} from './recipe-harness';
 import {requireTestDevice} from '../../utils/require-test-device';
 
+import {getGPULonLatPolygonPreparationParameterValues} from '../../../src/gpu-spatial-analysis/lon-lat-polygons';
+import {FIJI_TRANSMERIDIAN, createLonLatPolygonFixtureViews} from '../lon-lat-polygons/fixtures';
+import {
+  prepareLonLatPolygons,
+  pointInLonLatPolygonPrepared
+} from '../lon-lat-polygons/lon-lat-polygon-oracle';
+
 type Ring = [number, number][];
 
 /** Six rectangles in a 3 x 2 grid; the last one has a square hole. */
@@ -243,6 +250,65 @@ for (const backend of ['zonal', 'group'] as const) {
         expect(new Set(gpuClasses).size).toBeGreaterThan(1);
       } finally {
         fixture.destroy();
+      }
+    }, 120000);
+  }
+}
+
+for (const backend of ['zonal', 'group'] as const) {
+  for (const edgeModel of ['linear', 'great-circle'] as const) {
+    it(`choropleth ${backend} prepares ${edgeModel} Fiji across the antimeridian`, async () => {
+      const device = await getWebGPUTestDevice();
+      requireTestDevice(device);
+      const fixture = new RecipeTestFixture(device, `fiji-${backend}-${edgeModel}`);
+      const polygons = createLonLatPolygonFixtureViews(device, fixture.graph, FIJI_TRANSMERIDIAN);
+      try {
+        const points: Ring = [
+          [178, -17],
+          [179.5, -17],
+          [-179.5, -17],
+          [-178.5, -17],
+          [0, -17],
+          [176, -17]
+        ];
+        const prepared = prepareLonLatPolygons(FIJI_TRANSMERIDIAN, {edgeModel});
+        const expected = points.filter(point =>
+          pointInLonLatPolygonPrepared(point, prepared)
+        ).length;
+        expect(expected).toBe(4);
+        const counts = fixture.output('counts', 'uint32', 1);
+        const overflow = fixture.output('overflow', 'uint32', 1);
+        const result = addPointsInPolygonsChoroplethRecipe(fixture.graph, {
+          backend,
+          spatialContext: {coordinateSpace: 'longitude-latitude', metric: 'none', edgeModel},
+          prepare: true,
+          preparedPositionCapacity: 512,
+          preparationParameters: fixture.parameters(
+            'preparation',
+            'float32',
+            getGPULonLatPolygonPreparationParameterValues(edgeModel)
+          ),
+          points: {
+            kind: 'points',
+            positions: fixture.input(
+              'points',
+              Float32Array.from(points.flat()),
+              'float32x2',
+              points.length
+            )
+          },
+          polygons: {...polygons, kind: 'polygons', candidateCapacity: 64},
+          outputs: {counts: counts.view, status: {overflow: overflow.view}}
+        });
+        expect(result.featureCount).toBe(1);
+        expect(result.spatialContext.edgeModel).toBe('linear');
+        expect(result.status.stages[0].stage).toBe('polygon-preparation');
+        fixture.run();
+        expect(await fixture.readUint32(counts, 1)).toEqual([expected]);
+        expect(await fixture.readUint32(overflow, 1)).toEqual([0]);
+      } finally {
+        fixture.destroy();
+        polygons.destroy();
       }
     }, 120000);
   }

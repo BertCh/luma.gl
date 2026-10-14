@@ -113,3 +113,87 @@ export function computeRipleyEnvelopeOnCPU(
     pValue
   };
 }
+
+import {
+  getOracleWindowBounds,
+  getOracleOrientedEdges,
+  isOracleInsideWindow,
+  type OracleStudyWindow
+} from '../../analysis-core/study-window-oracle';
+import {STUDY_WINDOW_BOUNDARY_CELL_BIT} from '../../../src/utils/study-window-wgsl';
+
+/** Conservative equal-area cell cover for the rejection-sampler oracle (test only). */
+export function getOracleSamplerCells(
+  window: OracleStudyWindow,
+  grid: readonly [number, number]
+): Uint32Array {
+  const [minimumX, minimumY, maximumX, maximumY] = getOracleWindowBounds(window);
+  const width = (maximumX - minimumX) / grid[0];
+  const height = (maximumY - minimumY) / grid[1];
+  const edges = getOracleOrientedEdges(window);
+  const cells: number[] = [];
+  for (let row = 0; row < grid[1]; row++) {
+    for (let column = 0; column < grid[0]; column++) {
+      const left = minimumX + column * width;
+      const bottom = minimumY + row * height;
+      const boundary = edges.some(
+        edge =>
+          Math.max(edge[0], edge[2]) >= left &&
+          Math.min(edge[0], edge[2]) <= left + width &&
+          Math.max(edge[1], edge[3]) >= bottom &&
+          Math.min(edge[1], edge[3]) <= bottom + height
+      );
+      if (boundary || isOracleInsideWindow(window, [left + width / 2, bottom + height / 2])) {
+        cells.push((row * grid[0] + column) | (boundary ? STUDY_WINDOW_BOUNDARY_CELL_BIT : 0));
+      }
+    }
+  }
+  return Uint32Array.from(cells);
+}
+
+/** Polygon Philox sampler with the GPU counter, cell flag, rejection restart and attempt limit. */
+export function simulatePolygonCSROnCPU(
+  seed: number,
+  simulationIndex: number,
+  count: number,
+  window: OracleStudyWindow,
+  grid: readonly [number, number],
+  maximumAttempts = 32,
+  cells = getOracleSamplerCells(window, grid)
+): {positions: Float32Array; mask: Uint32Array; unplacedCount: number} {
+  const [minimumX, minimumY, maximumX, maximumY] = getOracleWindowBounds(window).map(fround);
+  const sizeX = fround(fround(maximumX - minimumX) / grid[0]);
+  const sizeY = fround(fround(maximumY - minimumY) / grid[1]);
+  const positions = new Float32Array(count * 2);
+  const mask = new Uint32Array(count);
+  let unplacedCount = 0;
+  for (let row = 0; row < count; row++) {
+    for (let attempt = 0; attempt < maximumAttempts && cells.length; attempt++) {
+      const words = getPhilox4x32(
+        [row, simulationIndex, attempt, 0],
+        [seed, PHILOX_PURPOSES.ripleyEnvelopeSimulation.id]
+      );
+      const cell =
+        cells[
+          Math.min(
+            Math.floor(fround(getPhiloxUnitFloat(words[0]) * cells.length)),
+            cells.length - 1
+          )
+        ];
+      const cellIndex = cell & 0x7fffffff;
+      const originX = fround(minimumX + fround(sizeX * (cellIndex % grid[0])));
+      const originY = fround(minimumY + fround(sizeY * Math.floor(cellIndex / grid[0])));
+      const point = [
+        fround(originX + fround(getPhiloxUnitFloat(words[1]) * sizeX)),
+        fround(originY + fround(getPhiloxUnitFloat(words[2]) * sizeY))
+      ] as const;
+      positions.set(point, row * 2);
+      if (!(cell & STUDY_WINDOW_BOUNDARY_CELL_BIT) || isOracleInsideWindow(window, point)) {
+        mask[row] = 1;
+        break;
+      }
+    }
+    if (!mask[row]) unplacedCount++;
+  }
+  return {positions, mask, unplacedCount};
+}

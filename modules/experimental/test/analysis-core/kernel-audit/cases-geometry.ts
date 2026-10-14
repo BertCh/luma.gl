@@ -2,6 +2,9 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {GPULonLatPolygonPreparation} from '../../../src/gpu-spatial-analysis/lon-lat-polygons';
+import {createLonLatPolygonCheckNode} from '../../../src/analysis-core/lon-lat-ring-wgsl';
+
 import {
   GPUAffineTransform,
   GPUDelaunayTessellation,
@@ -105,6 +108,11 @@ import {
   type GPUSpatialContext
 } from '../../../src/gpu-spatial-analysis';
 import type {KernelAuditCase, KernelAuditContext} from './kernel-audit-context';
+import {
+  createLinePrefixNode,
+  createSegmentizeCountNode,
+  createSegmentizeEmitNode
+} from '../../../src/gpu-spatial-analysis/line-segmentize/line-segmentize-kernels';
 
 // Shared fixtures. Nothing is allocated: every view is a transient description, so the sizes only
 // have to be consistent with each other.
@@ -791,6 +799,11 @@ export const GEOMETRY_CASES: KernelAuditCase[] = [
     [
       ['planar', GPU_PLANAR_SPATIAL_CONTEXT, undefined],
       ['great-circle', GPU_GREAT_CIRCLE_SPATIAL_CONTEXT, undefined],
+      [
+        'great-circle polygon edges',
+        {...GPU_GREAT_CIRCLE_SPATIAL_CONTEXT, edgeModel: 'great-circle'},
+        undefined
+      ],
       ['ellipsoidal geodesic', ELLIPSOIDAL_CONTEXT, 'geodesic'],
       ['ellipsoidal coordinate-linear', ELLIPSOIDAL_CONTEXT, 'coordinate-linear']
     ] as const
@@ -2352,6 +2365,70 @@ export const GEOMETRY_CASES: KernelAuditCase[] = [
   },
 
   // GPULineSegmentize
+  ...([GPU_PLANAR_SPATIAL_CONTEXT, GPU_GREAT_CIRCLE_SPATIAL_CONTEXT] as const).map(
+    (spatialContext): KernelAuditCase => ({
+      exportName: 'GPULineSegmentize',
+      name: `closed ${spatialContext.coordinateSpace}, every output`,
+      build: context => {
+        context.graph.add(
+          new GPULineSegmentize({
+            ...lineFields(context),
+            spatialContext,
+            closedLines: true,
+            parameters: context.view('float32', GPU_LINE_SEGMENTIZE_PARAMETER_LENGTH),
+            output: lineGeometryOutput(context, ROWS, 65536)
+          })
+        );
+      }
+    })
+  ),
+  ...(['linear-degrees', 'great-circle'] as const).map(
+    (interpolation): KernelAuditCase => ({
+      exportName: 'GPULineSegmentize',
+      name: `closed degree-step ${interpolation}, integer turns and approximation`,
+      build: context => {
+        const {graph, view} = context;
+        const fields = {
+          ...lineFields(context),
+          operation: 'GPULineSegmentize',
+          coordinateSystem: 'spherical' as const,
+          radius: 1,
+          closedLines: true
+        };
+        const counts = view('uint32', VERTICES);
+        const starts = view('uint32', VERTICES);
+        const rowTurns = view('sint32', VERTICES);
+        graph.add(createLinePrefixNode(graph, {...fields, id: 'degree-prefix', rowTurns}));
+        graph.add(
+          createSegmentizeCountNode(graph, {
+            ...fields,
+            id: 'degree-count',
+            counts,
+            parameters: view('float32', 4),
+            parameterIndex: 2,
+            pieceCountModel: 'degree-step',
+            interpolation,
+            maximumPieceCount: 65536,
+            approximation: view('uint32', 1)
+          })
+        );
+        graph.add(
+          createSegmentizeEmitNode(graph, {
+            ...fields,
+            id: 'degree-emit',
+            counts,
+            starts,
+            rowTurns,
+            interpolation,
+            wrapOutputLongitudes: true,
+            outputPositions: view('float32x2', 65536),
+            outputTurns: view('sint32', 65536),
+            outputSourceRows: view('uint32', 65536)
+          })
+        );
+      }
+    })
+  ),
   ...(
     [
       ['planar', GPU_PLANAR_SPATIAL_CONTEXT],
@@ -4335,3 +4412,72 @@ export const GEOMETRY_CASES: KernelAuditCase[] = [
     }
   }
 ];
+
+// Internal analysis-core consumer check, including the maximum position binding and optional ports.
+GEOMETRY_CASES.push(
+  ...[0, 1, 2, 3].map(
+    (mask): KernelAuditCase => ({
+      exportName: 'GPUPointInPolygonJoin',
+      name: `lon-lat consumer check status mask ${mask}, positions at the binding limit`,
+      build: context => {
+        context.graph.add(
+          createLonLatPolygonCheckNode(context.graph, {
+            id: 'lon-lat-check',
+            operation: 'GPUPointInPolygonJoin',
+            positions: context.view('float32x2', context.maximumRows(8)),
+            ringOffsets: context.view('uint32', ROWS + 1),
+            status: {
+              ...(mask & 1 ? {antimeridianUncertainCount: scalar(context, 'crossing')} : {}),
+              ...(mask & 2 ? {poleUncertainCount: scalar(context, 'pole')} : {})
+            }
+          })
+        );
+      }
+    })
+  )
+);
+
+// Preparation builds every internal kernel, both edge models, all clipping stages and optional ports.
+GEOMETRY_CASES.push(
+  ...(['linear', 'great-circle'] as const).flatMap(edgeModel =>
+    [false, true].map(
+      (allOutputs): KernelAuditCase => ({
+        exportName: 'GPULonLatPolygonPreparation',
+        name: `${edgeModel}, optional outputs ${allOutputs}`,
+        build: ({graph, view}) => {
+          graph.add(
+            new GPULonLatPolygonPreparation({
+              positions: view('float32x2', 12),
+              featureOffsets: view('uint32', 3),
+              polygonOffsets: view('uint32', 4),
+              ringOffsets: view('uint32', 5),
+              parameters: view('float32', 4),
+              spatialContext: {coordinateSpace: 'longitude-latitude', metric: 'none', edgeModel},
+              maximumPieceCount: 4,
+              antimeridian: allOutputs ? 'reject' : 'split',
+              poleRings: allOutputs ? 'reject' : 'cap',
+              output: {
+                positions: view('float32x2', 64),
+                featureOffsets: view('uint32', 3),
+                polygonOffsets: view('uint32', 7),
+                ringOffsets: view('uint32', 9),
+                ...(allOutputs ? {ringFlags: view('uint32', 4)} : {}),
+                status: {
+                  overflow: view('uint32', 1),
+                  ...(allOutputs
+                    ? {
+                        count: view('uint32', 1),
+                        requiredCount: view('uint32', 1),
+                        invalidCount: view('uint32', 1),
+                        approximation: view('uint32', 1)
+                      }
+                    : {})
+                }
+              }
+            })
+          );
+        }
+      })
+    )
+  )
+);

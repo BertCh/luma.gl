@@ -103,7 +103,9 @@ function createFixture(device: Device, props: FixtureProps): Fixture {
   const graph = new GPUCommandGraph(device, {id: 'dot-density-graph'});
   const buffers: Buffer[] = [];
   const input = (values: Float32Array | Uint32Array) => {
-    const buffer = createInputBuffer(device, values);
+    const buffer = values.length
+      ? createInputBuffer(device, values)
+      : createOutputBuffer(device, 2);
     buffers.push(buffer);
     return buffer;
   };
@@ -583,7 +585,7 @@ it('GPURandomPointsInPolygon matches the count oracle and places every point of 
   }
 });
 
-it('D-16: a feature that cannot be triangulated reports all of its dots as failed', async () => {
+it('D-16: a zero-area feature gets no slots and reports its requested dots as failed', async () => {
   const device = await getWebGPUTestDevice();
   requireTestDevice(device);
   // Feature 1 is a collinear shell (zero area); feature 0 is a normal square.
@@ -615,9 +617,11 @@ it('D-16: a feature that cannot be triangulated reports all of its dots as faile
   });
   try {
     const actual = await fixture.run({seed: 1});
-    expect(actual.count).toBe(50);
+    expect(actual.count).toBe(30);
+    expect(actual.requiredCount).toBe(30);
+    expect(Array.from(actual.slotCounts)).toEqual([30, 0]);
     expect(actual.failedCount).toBe(20);
-    expect(countMissingDots(actual)).toBe(20);
+    expect(countMissingDots(actual)).toBe(0);
     for (let dot = 0; dot < 30; dot++) {
       expect(Number.isNaN(actual.positions[2 * dot])).toBe(false);
     }
@@ -626,5 +630,119 @@ it('D-16: a feature that cannot be triangulated reports all of its dots as faile
     }
   } finally {
     fixture.destroy();
+  }
+});
+
+it('clip-shaped empty and degenerate rings preserve bitwise polygon samples', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const empty: number[][] = [];
+  const point = [[90, 90]];
+  const segment = [
+    [90, 90],
+    [91, 91]
+  ];
+  const collinear = [
+    [90, 90],
+    [91, 91],
+    [92, 92],
+    [90, 90]
+  ];
+  const repeated = [
+    [90, 90],
+    [90, 90],
+    [90, 90]
+  ];
+  // Preserve feature rows (Philox keys), removing only empty polygons and degenerate rings.
+  const padded = SCENE_FEATURES.map(feature => [
+    [],
+    [empty],
+    [point],
+    [segment],
+    [collinear, feature[0][0]],
+    ...feature.flatMap(polygon => [
+      [polygon[0], empty, point, segment, collinear, repeated, ...polygon.slice(1), empty],
+      [],
+      [empty]
+    ])
+  ]);
+  for (const source of [
+    {counts: new Uint32Array([257, 193, 79])},
+    {values: new Float32Array([257.3, 193.7, 79.1])}
+  ]) {
+    const clean = createFixture(device, {...source, capacity: 600});
+    const clipped = createFixture(device, {...source, features: padded, capacity: 600});
+    try {
+      for (const seed of [1, 43]) {
+        const expected = await clean.run({seed});
+        const actual = await clipped.run({seed});
+        expect(actual.count).toBe(expected.count);
+        expect(actual.failedCount).toBe(0);
+        expect(actual.slotCounts).toEqual(expected.slotCounts);
+        expect(actual.featureIds).toEqual(expected.featureIds);
+        expect(new Uint32Array(actual.positions.buffer)).toEqual(
+          new Uint32Array(expected.positions.buffer)
+        );
+      }
+    } finally {
+      clean.destroy();
+      clipped.destroy();
+    }
+  }
+});
+
+it('empty features between live features consume no capacity or Philox ranks', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const features: SceneFeature[] = [SCENE_FEATURES[0], [], [[], [[]]], SCENE_FEATURES[1]];
+  for (const source of [
+    {counts: new Uint32Array([17, 23, 29, 31])},
+    {values: new Float32Array([17, 23, 29, 31])}
+  ]) {
+    const actualFixture = createFixture(device, {...source, features, capacity: 48});
+    const expectedFixture = createFixture(device, {
+      features,
+      counts: new Uint32Array([17, 0, 0, 31]),
+      capacity: 48
+    });
+    try {
+      const actual = await actualFixture.run({seed: 9});
+      const expected = await expectedFixture.run({seed: 9});
+      expect(actual.count).toBe(48);
+      expect(actual.requiredCount).toBe(48);
+      expect(actual.overflow).toBe(0);
+      expect(actual.failedCount).toBe(52);
+      expect(Array.from(actual.slotCounts)).toEqual([17, 0, 0, 31]);
+      expect(new Uint32Array(actual.positions.buffer)).toEqual(
+        new Uint32Array(expected.positions.buffer)
+      );
+    } finally {
+      actualFixture.destroy();
+      expectedFixture.destroy();
+    }
+  }
+});
+
+it('entirely empty polygon input produces zero points and reports all requests', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  for (const features of [
+    [[], []],
+    [[[], [[]]], [[]]]
+  ] satisfies SceneFeature[][]) {
+    for (const source of [{counts: new Uint32Array([3, 5])}, {values: new Float32Array([3, 5])}]) {
+      const fixture = createFixture(device, {...source, features, capacity: 8});
+      try {
+        const actual = await fixture.run({seed: 11});
+        expect(actual.count).toBe(0);
+        expect(actual.requiredCount).toBe(0);
+        expect(actual.overflow).toBe(0);
+        expect(actual.failedCount).toBe(8);
+        expect(Array.from(actual.slotCounts)).toEqual([0, 0]);
+        expect(Array.from(actual.positions).every(Number.isNaN)).toBe(true);
+      } finally {
+        fixture.destroy();
+      }
+    }
   }
 });

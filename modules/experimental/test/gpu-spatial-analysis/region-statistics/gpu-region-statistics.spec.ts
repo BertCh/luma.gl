@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {registerPolygonConsumerGPUTests} from '../zonal-statistics/polygon-consumer-status-fixtures';
 import {Buffer, type Device} from '@luma.gl/core';
 import {GPUCommandGraph} from '@luma.gl/gpgpu/gpu-core';
 import {getWebGPUTestDevice} from '@luma.gl/test-utils';
@@ -512,3 +513,5 @@ it('GPURegionStatisticsReadback reads summaries and drops frames under backpress
   compiled.destroy();
   for (const buffer of [...fixture.buffers, boundsBuffer]) buffer.destroy();
 });
+
+registerPolygonConsumerGPUTests('GPURegionStatistics');

@@ -6,6 +6,7 @@ import {getWebGPUTestDevice} from '@luma.gl/test-utils';
 import {expect, it} from 'vitest';
 import {getGPUPolygonRasterizationParameterValues} from '../../../src/gpu-raster/polygon-rasterization/index';
 import {makeGPURasterMetadata} from '../../../src/gpu-raster/raster-grid/index';
+import {getGPULonLatPolygonPreparationParameterValues} from '../../../src/gpu-spatial-analysis/lon-lat-polygons';
 import {addChangeOfSupportRecipe} from '../../../src/gpu-spatial-analysis/recipes/change-of-support-recipe';
 import {
   computeArealOracle,
@@ -226,9 +227,11 @@ it('addChangeOfSupportRecipe rasterizes two zone systems and transfers values by
 }, 120000);
 
 it.each([
-  'meters',
-  'kilometers'
-] as const)('change-of-support uses authalic cell areas in square %s', async units => {
+  ['meters', false],
+  ['kilometers', false],
+  ['meters', true],
+  ['kilometers', true]
+] as const)('change-of-support uses authalic cell areas in square %s with prepare=%s', async (units, prepare) => {
   const device = await getWebGPUTestDevice();
   requireTestDevice(device);
   const fixture = new RecipeTestFixture(device, `change-of-support-authalic-${units}`);
@@ -271,6 +274,15 @@ it.each([
     const extensiveValues = fixture.output('extensive-values', 'float32', 2);
     addChangeOfSupportRecipe(fixture.graph, {
       spatialContext: {coordinateSpace: 'longitude-latitude', metric: 'great-circle', units},
+      prepare,
+      preparedPositionCapacity: 32,
+      preparationParameters: prepare
+        ? fixture.parameters(
+            'preparation',
+            'float32',
+            getGPULonLatPolygonPreparationParameterValues('linear')
+          )
+        : undefined,
       grid,
       parameters: fixture.input(
         'parameters',

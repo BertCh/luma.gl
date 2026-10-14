@@ -15,7 +15,10 @@ import {requireTestDevice} from '../utils/require-test-device';
 
 const {outside, inside, boundary, uncertain} = GPU_POINT_IN_POLYGON_CLASSIFICATION;
 
-it('GPUPairwisePointInPolygon classifies f32 polygons and malformed inputs', async () => {
+it.each([
+  'planar',
+  'longitude-latitude'
+] as const)('GPUPairwisePointInPolygon classifies %s f32 polygons and malformed inputs', async coordinateSpace => {
   const device = await getWebGPUTestDevice();
   requireTestDevice(device);
 
@@ -197,6 +200,7 @@ it('GPUPairwisePointInPolygon classifies f32 polygons and malformed inputs', asy
 
   graph.add(
     new GPUPairwisePointInPolygon({
+      spatialContext: {coordinateSpace, metric: 'none'},
       queryPositions: pointView,
       positions: positionView,
       featureOffsets: geometryOffsetView,

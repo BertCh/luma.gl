@@ -3,7 +3,8 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {createTransientView, GPUCommandGraph} from '@luma.gl/gpgpu/gpu-core';
-import {expect, it} from 'vitest';
+import {expect, it, vi} from 'vitest';
+import {log} from '@luma.gl/core';
 import {WgslReflect} from 'wgsl_reflect';
 import {
   getGPUGreatCircleArcsParameterValues,
@@ -347,4 +348,145 @@ it('GPULineSmooth builds the same pipelines for any number of passes and parses'
       expect(reflect.storage.length).toBeLessThanOrEqual(8);
     }
   }
+});
+
+it('GPULineSegmentize validates closedLines and builds closed-ring kernels with every output', () => {
+  const graph = new GPUCommandGraph(createNullWebGPUDevice(), {id: 'closed-lines'});
+  expect(
+    () =>
+      new GPULineSegmentize(
+        createSegmentizeProps(graph, {
+          closedLines: 1 as unknown as boolean
+        })
+      )
+  ).toThrow('line-segmentize closedLines must be a boolean');
+  for (const closedLines of [false, true]) {
+    const props = createSegmentizeProps(graph, {
+      id: `closed-${closedLines}`,
+      closedLines,
+      spatialContext: GREAT_CIRCLE
+    });
+    props.output.sourceRows = createTransientView(graph, getViewId('source-rows'), 'uint32', 64);
+    const nodes = new GPULineSegmentize(props).getCommandNodes(graph);
+    for (const {source} of getGPUCommandNodeKernelSources(nodes)) {
+      expect(new WgslReflect(source).storage.length).toBeLessThanOrEqual(8);
+    }
+  }
+});
+
+it('line length writers warn for short lon/lat lengths without changing packed values', () => {
+  const writers = [
+    {
+      operation: 'GPULineSegmentize',
+      write: (
+        spatialContext?: typeof GREAT_CIRCLE | {coordinateSpace: 'planar'; metric: 'native'}
+      ) => getGPULineSegmentizeParameterValues({maximumSegmentLength: 5, spatialContext})
+    },
+    {
+      operation: 'GPUGreatCircleArcs',
+      write: (
+        spatialContext?: typeof GREAT_CIRCLE | {coordinateSpace: 'planar'; metric: 'native'}
+      ) => getGPUGreatCircleArcsParameterValues({maximumSegmentLength: 5, spatialContext})
+    },
+    {
+      operation: 'GPULineChunk',
+      write: (
+        spatialContext?: typeof GREAT_CIRCLE | {coordinateSpace: 'planar'; metric: 'native'}
+      ) => getGPULineChunkParameterValues({chunkLength: 5, spatialContext})
+    }
+  ];
+  const warning = vi.spyOn(log, 'warn');
+  try {
+    for (const {operation, write} of writers) {
+      warning.mockClear();
+      const expected = write();
+      expect(write({coordinateSpace: 'planar', metric: 'native'})).toEqual(expected);
+      expect(warning).not.toHaveBeenCalled();
+      expect(write(GREAT_CIRCLE)).toEqual(expected);
+      expect(warning).toHaveBeenCalledExactlyOnceWith(
+        `${operation} distance is too short for float32 lon/lat; use createGPULocalFrame`
+      );
+    }
+  } finally {
+    warning.mockRestore();
+  }
+});
+
+it('segmentize oracle closes rings, removes only a repeated closing row and retains empty lines', () => {
+  const square = [
+    [0, 0],
+    [2, 0],
+    [2, 2],
+    [0, 2]
+  ];
+  const lines = createFlatLines([
+    square,
+    [...square, square[0]],
+    [],
+    [[7, 8]],
+    [
+      [4, 5],
+      [4, 5]
+    ]
+  ]);
+  const result = segmentizeLines(lines, {
+    closedLines: true,
+    maximumSegmentLength: 1,
+    maximumPieces: 32
+  });
+  expect(result.lineOffsets).toEqual([0, 8, 16, 16, 17, 18]);
+  expect(result.positions.slice(0, 8)).toEqual([
+    [0, 0],
+    [1, 0],
+    [2, 0],
+    [2, 1],
+    [2, 2],
+    [1, 2],
+    [0, 2],
+    [0, 1]
+  ]);
+  expect(result.positions.slice(8, 16)).toEqual(result.positions.slice(0, 8));
+  expect(result.measures[7]).toBe(7);
+});
+
+it('segmentize degree-step oracle counts angular extent, preserves turns and reports clamping', () => {
+  const lines = createFlatLines([
+    [
+      [150, 45],
+      [-150, 45]
+    ]
+  ]);
+  const options = {
+    maximumSegmentLength: 0,
+    maximumSegmentDegrees: 0.1,
+    maximumPieces: 1024,
+    spherical: true,
+    pieceCountModel: 'degree-step' as const,
+    wrapOutputLongitudes: true
+  };
+  const result = segmentizeLines(lines, options);
+  expect(result.positions).toHaveLength(601);
+  expect(result.positions[0]).toEqual([150, 45]);
+  expect(result.positions[600]).toEqual([-150, 45]);
+  expect(result.turns[600]).toBe(1);
+  expect(result.positions[300][1]).toBeGreaterThan(45);
+  const linear = segmentizeLines(lines, {...options, interpolation: 'linear-degrees'});
+  expect(linear.positions[300]).toEqual([180, 45]);
+  expect(linear.approximation).toBe(0);
+  expect(segmentizeLines(lines, {...options, maximumPieces: 8}).approximation).toBe(1);
+  expect(segmentizeLines(lines, {...options, maximumSegmentDegrees: 0}).positions).toHaveLength(2);
+  const latitude = segmentizeLines(
+    createFlatLines([
+      [
+        [1, -20],
+        [2, 20]
+      ]
+    ]),
+    {
+      ...options,
+      maximumSegmentDegrees: 10,
+      interpolation: 'linear-degrees'
+    }
+  );
+  expect(latitude.positions).toHaveLength(5);
 });

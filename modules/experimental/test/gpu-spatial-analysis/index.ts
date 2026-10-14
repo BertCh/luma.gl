@@ -76,3 +76,5 @@ import './polygon-buffer/index';
 import './polygon-overlay/polygon-overlay.spec';
 import './ontology/index';
 import './contracts/index';
+import './lon-lat-polygons';
+import '../gpu-spatial-analysis/study-window';

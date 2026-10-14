@@ -1247,12 +1247,16 @@ function addPolygonRasterization(
     featureCount: number;
     vertexCount: number;
     crossingCapacity: number;
+    longitudeLatitude?: boolean;
   }
 ): void {
   const cellCount = options.width * options.height;
   const {featureCount} = options;
   graph.add(
     new GPUPolygonRasterization({
+      spatialContext: options.longitudeLatitude
+        ? {coordinateSpace: 'longitude-latitude', metric: 'none'}
+        : undefined,
       grid: makeGrid(options.width, options.height),
       parameters: view('float32', 4),
       positions: view('float32x2', options.vertexCount),
@@ -1270,6 +1274,18 @@ function addPolygonRasterization(
 }
 
 const POLYGON_RASTERIZATION_CASES: KernelAuditCase[] = [
+  {
+    exportName: 'GPUPolygonRasterization',
+    name: 'longitude copies, every output',
+    build: context =>
+      addPolygonRasterization(context, {
+        ...MODERATE,
+        featureCount: 10,
+        vertexCount: 400,
+        crossingCapacity: 10000,
+        longitudeLatitude: true
+      })
+  },
   {
     exportName: 'GPUPolygonRasterization',
     name: 'every output, single sort',

@@ -427,6 +427,62 @@ for (const mode of ['exact', 'jump-flood'] as const) {
 
 /** Kernel-audit cases for recipes. */
 export const RECIPES_CASES: KernelAuditCase[] = [
+  {
+    exportName: 'addPointsInPolygonsChoroplethRecipe',
+    name: 'prepared great-circle polygons',
+    build: context => {
+      const {graph, view} = context;
+      addPointsInPolygonsChoroplethRecipe(graph, {
+        spatialContext: {...GEOGRAPHIC_BAND, edgeModel: 'great-circle'},
+        prepare: true,
+        preparedPositionCapacity: 64,
+        preparationParameters: view('float32', 4, 'preparation'),
+        points: {kind: 'points', positions: view('float32x2', 8, 'points')},
+        polygons: createStudyArea(context, 64)
+      });
+    }
+  },
+  {
+    exportName: 'addChangeOfSupportRecipe',
+    name: 'prepared source and target zones',
+    build: context => {
+      const {graph, view} = context;
+      const zones = () => ({...createStudyArea(context, 64), crossingCapacity: 64});
+      addChangeOfSupportRecipe(graph, {
+        spatialContext: {...GEOGRAPHIC_BAND, edgeModel: 'great-circle'},
+        prepare: true,
+        preparedPositionCapacity: 64,
+        preparationParameters: view('float32', 4, 'preparation'),
+        grid: makeGPURasterMetadata({width: 4, height: 4}),
+        parameters: view('float32', 4, 'raster-parameters'),
+        source: zones(),
+        target: zones(),
+        pairCapacity: 8
+      });
+    }
+  },
+  {
+    exportName: 'addHotSpotAnalysisRecipe',
+    name: 'prepared great-circle study area',
+    build: context => {
+      const {graph, view} = context;
+      addHotSpotAnalysisRecipe(graph, {
+        spatialContext: {...GEOGRAPHIC_BAND, edgeModel: 'great-circle'},
+        prepare: true,
+        preparedPositionCapacity: 64,
+        preparationParameters: view('float32', 4, 'preparation'),
+        parameters: parameters(context, 'inference', 'float32', 8),
+        source: {
+          kind: 'points',
+          positions: view('float32x2', 8, 'points'),
+          family: 'quadbin',
+          resolution: 4,
+          studyArea: createStudyArea(context, 64),
+          cellCapacity: 16
+        }
+      });
+    }
+  },
   ...HOT_SPOT_POINT_CASES,
   {
     exportName: 'addHotSpotAnalysisRecipe',

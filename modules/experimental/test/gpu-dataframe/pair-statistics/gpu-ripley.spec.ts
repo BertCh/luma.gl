@@ -11,10 +11,24 @@ import {
   GPU_RIPLEY_PARAMETER_LENGTH,
   type GPURipleySettings
 } from '../../../src/gpu-dataframe/pair-statistics/ripley-parameters';
-import {createPairStatisticsHarness, getFloatBits} from './pair-statistics-harness';
+import {
+  createPairStatisticsHarness,
+  createPairStatisticsWindowHarness,
+  getFloatBits,
+  type HarnessViews,
+  type HarnessOutput
+} from './pair-statistics-harness';
 import {createRandom} from './pair-statistics-oracle';
 import {computeRipleyOnCPU, type RipleyOracleResult} from './ripley-oracle';
 import {requireTestDevice} from '../../utils/require-test-device';
+
+import type {GPUStudyWindow} from '../../../src/analysis-core/contracts/study-window';
+import {
+  ORACLE_RECTANGLE,
+  ORACLE_L_SHAPE,
+  getOracleWindowBounds,
+  type OracleStudyWindow
+} from '../../analysis-core/study-window-oracle';
 
 const BOUNDS = [0, 0, 100, 100] as const;
 const RADIUS_COUNT = 12;
@@ -72,8 +86,13 @@ function createLatticeScene(seed: number): Scene {
   return finishScene(points, createRandom(seed));
 }
 
-function createHarness(device: Device, scene: Scene, radiusCount = RADIUS_COUNT) {
-  const harness = createPairStatisticsHarness(device, {
+function createHarness(
+  device: Device,
+  scene: Scene,
+  radiusCount = RADIUS_COUNT,
+  window?: OracleStudyWindow
+) {
+  const props = {
     ...scene,
     parameterLength: GPU_RIPLEY_PARAMETER_LENGTH,
     outputs: {
@@ -83,9 +102,13 @@ function createHarness(device: Device, scene: Scene, radiusCount = RADIUS_COUNT)
       pairCorrelation: {format: 'float32', length: radiusCount},
       pairCounts: {format: 'uint32', length: radiusCount},
       radii: {format: 'float32', length: radiusCount}
-    },
-    createContributor: views =>
+    } satisfies Record<string, HarnessOutput>,
+    createContributor: (
+      views: HarnessViews<'k' | 'l' | 'lMinusR' | 'pairCorrelation' | 'pairCounts' | 'radii'>,
+      studyWindow?: GPUStudyWindow
+    ) =>
       new GPURipley({
+        studyWindow,
         positions: views.positions,
         mask: views.mask,
         parameters: views.parameters,
@@ -100,7 +123,10 @@ function createHarness(device: Device, scene: Scene, radiusCount = RADIUS_COUNT)
           radii: views.outputs.radii as never
         }
       })
-  });
+  };
+  const harness = window
+    ? createPairStatisticsWindowHarness(device, {...props, window})
+    : createPairStatisticsHarness(device, props);
   return {
     run: async (parameters: Float32Array) => (await harness.run(parameters)) as RipleyReadback,
     get rebuildCount() {
@@ -165,7 +191,8 @@ for (const [name, createScene] of [
     const scene = createScene();
     const harness = createHarness(device, scene);
     try {
-      const frames: GPURipleySettings[] = [];
+      const frames: (GPURipleySettings & {bounds: readonly [number, number, number, number]})[] =
+        [];
       for (const edgeCorrection of MODES) {
         // Small, large and all-pairs (distance beyond the extent) radii, and a sub-window.
         frames.push({bounds: BOUNDS, maximumDistance: 20, edgeCorrection});
@@ -276,6 +303,144 @@ it('GPURipley reports NaN with fewer than two included points and for an invalid
     // Raw invalid parameters (bypassing the packer) exclude every row.
     const invalid = await harness.run(new Float32Array([0, 0, 10, 10, -1, 0, 0, 0]));
     expect(invalid.k.every(Number.isNaN)).toBe(true);
+  } finally {
+    harness.destroy();
+  }
+});
+
+it('GPURipley polygon rectangle matches rectangle K, L and pcf for every correction', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const random = createRandom(312);
+  const positions = Float32Array.from(
+    {length: 120 * 2},
+    (_, index) => 20 + random() * (index % 2 === 0 ? 1960 : 960)
+  );
+  const scene = {positions, mask: new Uint32Array(120).fill(1)};
+  const rectangle = createHarness(device, scene, 9);
+  const polygon = createHarness(device, scene, 9, ORACLE_RECTANGLE);
+  try {
+    for (const edgeCorrection of ['none', 'border', 'isotropic'] as const) {
+      for (const maximumDistance of [173, 281]) {
+        const expected = await rectangle.run(
+          getGPURipleyParameterValues({
+            bounds: getOracleWindowBounds(ORACLE_RECTANGLE),
+            maximumDistance,
+            edgeCorrection
+          })
+        );
+        const actual = await polygon.run(
+          getGPURipleyParameterValues({bounds: 'study-window', maximumDistance, edgeCorrection})
+        );
+        expect(actual.pairCounts).toEqual(expected.pairCounts);
+        for (const key of ['k', 'l', 'pairCorrelation'] as const) {
+          actual[key].forEach((value, index) =>
+            expectClose(
+              `${edgeCorrection} ${key} ${index}`,
+              value,
+              expected[key][index],
+              1e-5 * Math.abs(expected[key][index])
+            )
+          );
+        }
+      }
+    }
+    expect(polygon.rebuildCount).toBe(0);
+    const invalid = await rectangle.run(
+      getGPURipleyParameterValues({bounds: 'study-window', maximumDistance: 200})
+    );
+    expect(invalid.k.every(Number.isNaN)).toBe(true);
+  } finally {
+    rectangle.destroy();
+    polygon.destroy();
+  }
+});
+
+it('GPURipley L-shape with a hole matches the polygon oracle and excludes bbox-only points', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const window: OracleStudyWindow = {
+    positions: Float64Array.from([
+      ...ORACLE_L_SHAPE.positions,
+      150,
+      150,
+      350,
+      150,
+      350,
+      350,
+      150,
+      350
+    ]),
+    featureOffsets: new Uint32Array([0, 1]),
+    polygonOffsets: new Uint32Array([0, 2]),
+    ringOffsets: new Uint32Array([0, 6, 10])
+  };
+  const positions = new Float32Array([
+    80,
+    90,
+    430,
+    200,
+    550,
+    480,
+    900,
+    310,
+    1450,
+    260,
+    1900,
+    550,
+    310,
+    900,
+    400,
+    1400,
+    300,
+    1900,
+    550,
+    650,
+    250,
+    250, // Hole.
+    1100,
+    1100,
+    1700,
+    1700 // Notch, inside bbox.
+  ]);
+  const scene = {positions, mask: new Uint32Array(positions.length / 2).fill(1)};
+  const harness = createHarness(device, scene, 6, window);
+  try {
+    for (const edgeCorrection of ['none', 'border', 'isotropic'] as const) {
+      const maximumDistance = 613;
+      const oracle = computeRipleyOnCPU(
+        scene,
+        {
+          bounds: getOracleWindowBounds(window),
+          maximumDistance,
+          edgeCorrection,
+          studyWindow: window
+        },
+        6
+      );
+      expect(oracle.n).toBe(10);
+      const result = await harness.run(
+        getGPURipleyParameterValues({bounds: 'study-window', maximumDistance, edgeCorrection})
+      );
+      expect(result.pairCounts).toEqual(oracle.pairCounts);
+      result.k.forEach((value, index) =>
+        expectClose(
+          `${edgeCorrection} K ${index}`,
+          value,
+          oracle.k[index],
+          1e-4 * Math.abs(oracle.k[index])
+        )
+      );
+    }
+    // With all pairs in range, ordered pair count n(n-1) independently recovers included n.
+    const allPairs = await harness.run(
+      getGPURipleyParameterValues({
+        bounds: 'study-window',
+        maximumDistance: 4000,
+        edgeCorrection: 'none'
+      })
+    );
+    expect(allPairs.pairCounts.reduce((sum, count) => sum + count, 0)).toBe(10 * 9);
   } finally {
     harness.destroy();
   }

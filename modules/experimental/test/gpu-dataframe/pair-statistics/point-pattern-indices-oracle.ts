@@ -8,6 +8,15 @@ import {
   type PairStatisticsScene
 } from './pair-statistics-oracle';
 
+import {
+  getOracleWindowBounds,
+  getOracleWindowArea,
+  getOracleBoundaryDistance,
+  getOracleQuadratAreas,
+  isOracleInsideWindow,
+  type OracleStudyWindow
+} from '../../analysis-core/study-window-oracle';
+
 const fround = Math.fround;
 
 /** Tail of the Clark-Evans and quadrat tests. */
@@ -239,4 +248,119 @@ export function computePointPatternIndicesOnCPU(
         : NaN
     ]
   };
+}
+
+/** Guard and polygon extension of the independent point-pattern oracle. */
+export function computeWindowPointPatternIndicesOnCPU(
+  scene: PairStatisticsScene,
+  frame: PairStatisticsFrame &
+    Omit<PointPatternOracleOptions, 'clarkEvansCorrection'> & {
+      clarkEvansCorrection?: 'none' | 'donnelly' | 'guard';
+      guardDistance?: number;
+    },
+  quadratGrid: readonly [number, number],
+  window?: OracleStudyWindow,
+  quadratSamples = 16
+): PointPatternIndicesOracleResult & {quadratAreas: number[]} {
+  const bounds = window ? getOracleWindowBounds(window) : frame.bounds;
+  const mask = Uint32Array.from({length: scene.positions.length / 2}, (_, row) =>
+    Number(
+      (!scene.mask || scene.mask[row] !== 0) &&
+        (!window ||
+          isOracleInsideWindow(window, [scene.positions[row * 2], scene.positions[row * 2 + 1]]))
+    )
+  );
+  const effectiveScene = {...scene, mask};
+  const effectiveFrame = {
+    ...frame,
+    bounds,
+    clarkEvansCorrection:
+      frame.clarkEvansCorrection === 'guard' ? ('none' as const) : frame.clarkEvansCorrection
+  };
+  const result = computePointPatternIndicesOnCPU(effectiveScene, effectiveFrame, quadratGrid);
+  const included = getIncludedRows(effectiveScene, effectiveFrame);
+  const count = included.length;
+  const area = window
+    ? getOracleWindowArea(window)
+    : (bounds[2] - bounds[0]) * (bounds[3] - bounds[1]);
+  if (frame.clarkEvansCorrection === 'guard' || window) {
+    const guardDistance = frame.guardDistance ?? 0;
+    const focus = included.filter(row => {
+      if (frame.clarkEvansCorrection !== 'guard') return true;
+      const point = [scene.positions[row * 2], scene.positions[row * 2 + 1]] as const;
+      const distance = window
+        ? getOracleBoundaryDistance(window, point, guardDistance)
+        : Math.min(
+            point[0] - bounds[0],
+            bounds[2] - point[0],
+            point[1] - bounds[1],
+            bounds[3] - point[1]
+          );
+      return Number.isFinite(guardDistance) && guardDistance > 0 && distance >= guardDistance;
+    });
+    result.clarkEvans = [count, NaN, NaN, NaN, NaN, NaN, NaN];
+    if (count >= 2 && focus.length && area > 0) {
+      const observed =
+        focus.reduce((sum, row) => sum + result.nearestNeighborDistances[row], 0) / focus.length;
+      const expected =
+        window && (frame.clarkEvansCorrection ?? 'donnelly') === 'donnelly'
+          ? NaN
+          : 0.5 * Math.sqrt(area / count);
+      const standardError = Number.isFinite(expected)
+        ? 0.26136 * Math.sqrt(area / (count * focus.length))
+        : NaN;
+      const zScore = (observed - expected) / standardError;
+      result.clarkEvans = [
+        count,
+        observed,
+        expected,
+        observed / expected,
+        standardError,
+        zScore,
+        getNormalPValueOnCPU(zScore, resolveAlternative(frame.alternative))
+      ];
+    }
+  }
+  let quadratAreas = new Array<number>(quadratGrid[0] * quadratGrid[1]).fill(
+    area / (quadratGrid[0] * quadratGrid[1])
+  );
+  if (window) {
+    const sampledAreas = getOracleQuadratAreas(window, bounds, quadratGrid, quadratSamples);
+    const sampledTotal = sampledAreas.reduce((sum, value) => sum + value, 0);
+    quadratAreas = sampledAreas.map(value => (value * area) / sampledTotal);
+    const effectiveCount = sampledAreas.filter(value => value > 0).length;
+    const equalAreas = effectiveCount > 0 && sampledAreas.every(value => value === sampledAreas[0]);
+    // Preserve the legacy equal-area formula exactly, including operation order.
+    if (!equalAreas) {
+      const mean = effectiveCount > 0 ? count / effectiveCount : NaN;
+      let squares = 0;
+      let chiSquare = 0;
+      for (let quadrat = 0; quadrat < sampledAreas.length; quadrat++) {
+        if (sampledAreas[quadrat] > 0) {
+          const expected = (count * sampledAreas[quadrat]) / sampledTotal;
+          const residual = result.quadratCounts[quadrat] - expected;
+          squares += residual ** 2;
+          chiSquare += residual ** 2 / expected;
+        }
+      }
+      const degreesOfFreedom = effectiveCount - 1;
+      if (!(degreesOfFreedom > 0 && count > 0)) chiSquare = NaN;
+      result.quadratStatistics = [
+        effectiveCount,
+        mean,
+        degreesOfFreedom > 0 ? squares / degreesOfFreedom : NaN,
+        chiSquare / degreesOfFreedom,
+        chiSquare,
+        degreesOfFreedom,
+        Number.isFinite(chiSquare)
+          ? getChiSquarePValueOnCPU(
+              chiSquare,
+              degreesOfFreedom,
+              resolveAlternative(frame.alternative)
+            )
+          : NaN
+      ];
+    }
+  }
+  return {...result, quadratAreas};
 }

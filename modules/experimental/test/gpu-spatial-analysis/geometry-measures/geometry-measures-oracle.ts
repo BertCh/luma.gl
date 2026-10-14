@@ -298,7 +298,7 @@ export function measureFeature(
       locals[0][0] = wrapLongitudeDelta(ring[0][0] - origin[0]);
       for (let vertex = 1; vertex < ring.length; vertex++) {
         locals[vertex][0] =
-          locals[vertex - 1][0] + wrapLongitudeDelta(ring[vertex][0] - ring[vertex - 1][0]);
+          locals[vertex - 1][0] + getLongitudeRingStep(ring[vertex - 1], ring[vertex]);
       }
     }
     for (const local of locals) {
@@ -381,4 +381,58 @@ export function measureFeature(
     ],
     vertexCount
   };
+}
+
+/** Binary64 short-way ring step, retaining same-pole degree-line edges. */
+export function getLongitudeRingStep(first: readonly number[], second: readonly number[]): number {
+  const rawStep = second[0] - first[0];
+  const poleEdge =
+    Math.abs(first[1]) >= 90 - 1e-6 && Math.abs(second[1]) >= 90 - 1e-6 && first[1] * second[1] > 0;
+  return poleEdge ? rawStep : wrapLongitudeDelta(rawStep);
+}
+
+/** Independent binary64 Chamberlain-Duquette edge integral, including the pole-line term. */
+export function getChamberlainDuquetteArea(
+  ring: readonly (readonly number[])[],
+  radius: number
+): number {
+  let integral = 0;
+  for (let vertex = 0; vertex < ring.length; vertex++) {
+    const first = ring[vertex];
+    const second = ring[(vertex + 1) % ring.length];
+    integral +=
+      getLongitudeRingStep(first, second) *
+      DEGREES_TO_RADIANS *
+      (Math.sin(first[1] * DEGREES_TO_RADIANS) + Math.sin(second[1] * DEGREES_TO_RADIANS));
+  }
+  return (Math.abs(integral) * radius ** 2) / 2;
+}
+
+/** Binary64 spherical triangle excess using l'Huilier's formula, independent of the WGSL determinant. */
+export function getSphericalTriangleArea(
+  triangle: readonly (readonly number[])[],
+  radius: number
+): number {
+  const sides = triangle.map((position, vertex) =>
+    getCentralAngle([...position], [...triangle[(vertex + 1) % 3]])
+  );
+  const semiperimeter = sides.reduce((sum, side) => sum + side, 0) / 2;
+  const product = sides.reduce(
+    (value, side) => value * Math.tan((semiperimeter - side) / 2),
+    Math.tan(semiperimeter / 2)
+  );
+  return 4 * Math.atan(Math.sqrt(Math.max(0, product))) * radius ** 2;
+}
+
+/** Reads the rings of a shared binary64 fixture for the measurement oracle. */
+export function getFixtureRings(fixture: {
+  positions: ArrayLike<number>;
+  ringOffsets: ArrayLike<number>;
+}): number[][][] {
+  return Array.from({length: fixture.ringOffsets.length - 1}, (_, ring) =>
+    Array.from({length: fixture.ringOffsets[ring + 1] - fixture.ringOffsets[ring]}, (_, vertex) => {
+      const offset = 2 * (fixture.ringOffsets[ring] + vertex);
+      return [fixture.positions[offset], fixture.positions[offset + 1]];
+    })
+  );
 }

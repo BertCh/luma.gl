@@ -2,6 +2,14 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {GPUCommandGraph} from '@luma.gl/gpgpu/gpu-core';
+import {GPUParameterBuffer, importGraphBuffer} from '../../../src/utils/gpu-contributor-utils';
+import {GPUPolygonRasterization} from '../../../src/gpu-raster/polygon-rasterization';
+import {
+  createInputBuffer,
+  createOutputBuffer,
+  readUint32
+} from '../../utils/gpu-contributor-test-utils';
 import {getWebGPUTestDevice} from '@luma.gl/test-utils';
 import {makeGPURasterMetadata} from '../../../src/gpu-raster/raster-grid';
 import {getGPUPolygonRasterizationParameterValues} from '../../../src/gpu-raster/polygon-rasterization';
@@ -9,6 +17,7 @@ import {expect, it} from 'vitest';
 import {submitGraph} from '../../utils/gpu-contributor-test-utils';
 import {
   createPolygons,
+  createSplitFijiPolygons,
   NO_ZONE,
   rasterizePolygonsOnCPU,
   type OraclePolygons,
@@ -289,4 +298,116 @@ it('GPUPolygonRasterization mirrors the zone and boundary rasters for a north-up
   expect(northUp.crossingCount).toBe(southUp.crossingCount);
   compiled.destroy();
   destroyRasterizationFixture(fixture);
+});
+
+it('GPUPolygonRasterization shifts split Fiji per frame and ignores empty rings', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const polygons = createSplitFijiPolygons();
+  const width = 80;
+  const height = 16;
+  const graph = new GPUCommandGraph(device);
+  const parameters = new GPUParameterBuffer(device, {
+    id: 'longitude-extent',
+    format: 'float32',
+    length: 4,
+    values: new Float32Array([170, -19, 0.25, 0.25])
+  });
+  const positions = createInputBuffer(device, polygons.positions);
+  const featureOffsets = createInputBuffer(device, polygons.featureOffsets);
+  const polygonOffsets = createInputBuffer(device, polygons.polygonOffsets);
+  const ringOffsets = createInputBuffer(device, polygons.ringOffsets);
+  const zones = createOutputBuffer(device, width * height);
+  const boundary = createOutputBuffer(device, width * height);
+  const overflow = createOutputBuffer(device, 1);
+  const crossingCount = createOutputBuffer(device, 1);
+  graph.add(
+    new GPUPolygonRasterization({
+      spatialContext: {coordinateSpace: 'longitude-latitude', metric: 'none'},
+      grid: makeGPURasterMetadata({width, height}),
+      parameters: parameters.importToGraph(graph),
+      positions: importGraphBuffer(
+        graph,
+        'positions',
+        positions,
+        'float32x2',
+        polygons.positions.length / 2
+      ),
+      featureOffsets: importGraphBuffer(
+        graph,
+        'features',
+        featureOffsets,
+        'uint32',
+        polygons.featureOffsets.length
+      ),
+      polygonOffsets: importGraphBuffer(
+        graph,
+        'polygons',
+        polygonOffsets,
+        'uint32',
+        polygons.polygonOffsets.length
+      ),
+      ringOffsets: importGraphBuffer(
+        graph,
+        'rings',
+        ringOffsets,
+        'uint32',
+        polygons.ringOffsets.length
+      ),
+      crossingCapacity: 256,
+      output: {
+        zones: importGraphBuffer(graph, 'zones', zones, 'uint32', width * height),
+        boundary: importGraphBuffer(graph, 'boundary', boundary, 'uint32', width * height),
+        status: {
+          overflow: importGraphBuffer(graph, 'overflow', overflow, 'uint32', 1),
+          crossingCount: importGraphBuffer(graph, 'crossing-count', crossingCount, 'uint32', 1)
+        }
+      }
+    })
+  );
+  const compiled = graph.compile();
+  for (const extent of [
+    [170, -19, 0.25, 0.25],
+    [-190, -19, 0.25, 0.25],
+    [-180, -19, 0.25, 0.25],
+    // Grid lies inside a polygon with both vertical edges outside its x range.
+    [178, -17.5, 0.015625, 0.0625]
+  ] as const) {
+    parameters.write(new Float32Array(extent));
+    submitGraph(device, compiled, undefined);
+    const expected = rasterizePolygonsOnCPU(
+      polygons,
+      {width, height, extent},
+      {longitudeLatitude: true, loosePadding: 0.05}
+    );
+    expectMatchesOracle(
+      {
+        zones: await readUint32(zones, width * height),
+        boundary: await readUint32(boundary, width * height)
+      },
+      expected,
+      {allowAmbiguous: false}
+    );
+    expect(await readUint32(overflow, 1)).toEqual([0]);
+    expect(await readUint32(crossingCount, 1)).toEqual([expected.crossingCount]);
+  }
+  // All preparation copies empty: unused position capacity must not create edges.
+  ringOffsets.write(new Uint32Array(polygons.ringOffsets.length));
+  submitGraph(device, compiled, undefined);
+  expect(await readUint32(zones, width * height)).toEqual(new Array(width * height).fill(NO_ZONE));
+  expect(await readUint32(boundary, width * height)).toEqual(new Array(width * height).fill(0));
+  expect(await readUint32(crossingCount, 1)).toEqual([0]);
+  compiled.destroy();
+  parameters.destroy();
+  for (const buffer of [
+    positions,
+    featureOffsets,
+    polygonOffsets,
+    ringOffsets,
+    zones,
+    boundary,
+    overflow,
+    crossingCount
+  ])
+    buffer.destroy();
 });

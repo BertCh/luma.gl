@@ -2,6 +2,18 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {GPUStudyWindowPreparation} from '../../../src/gpu-spatial-analysis/study-window/gpu-study-window-preparation';
+import {ORACLE_RECTANGLE, ORACLE_L_SHAPE} from '../../analysis-core/study-window-oracle';
+import {
+  getPolygonKernelDensityOracle,
+  getPolygonKernelDensityWeights,
+  type PolygonKernelDensityInput
+} from './point-density-oracle';
+import {getPolygonBinnedDensityOracle} from './kernel-density-binned-oracle';
+import {
+  getOracleKernelMassFan,
+  isOracleInsideWindow
+} from '../../analysis-core/study-window-oracle';
 import type {Buffer, Device} from '@luma.gl/core';
 import {GPUCommandGraph} from '@luma.gl/gpgpu/gpu-core';
 import {getWebGPUTestDevice} from '@luma.gl/test-utils';
@@ -406,5 +418,238 @@ it('binned gives NaN for a bandwidth the packer cannot reject (GPU-computed NaN)
     parameterBuffer.destroy();
     positionsBuffer.destroy();
     valuesOut.destroy();
+  }
+});
+
+/** Executes one polygon-window fixture, or its rectangle counterpart, without CPU analysis. */
+async function runPolygonDensity(
+  device: Device,
+  input: PolygonKernelDensityInput,
+  options: {
+    method: 'exact' | 'binned' | 'auto';
+    rectangle?: readonly [number, number, number, number];
+  }
+): Promise<{values: Float32Array; weightSum: number; invalidCount: number}> {
+  const buffers: Buffer[] = [];
+  const graph = new GPUCommandGraph(device);
+  const upload = (values: Float32Array | Uint32Array) => {
+    const buffer = createInputBuffer(device, values);
+    buffers.push(buffer);
+    return buffer;
+  };
+  const allocate = (length: number) => {
+    const buffer = createOutputBuffer(device, length);
+    buffers.push(buffer);
+    return buffer;
+  };
+  const valuesBuffer = allocate(input.width * input.height);
+  const weightSumBuffer = allocate(1);
+  const invalidBuffer = allocate(1);
+  const grid = makeExtentGrid(input.width, input.height, [
+    input.start[0],
+    input.start[1],
+    input.start[0] + input.width * input.cellSize[0],
+    input.start[1] + input.height * input.cellSize[1]
+  ]);
+  const positions = importGraphBuffer(
+    graph,
+    'points',
+    upload(Float32Array.from(input.points)),
+    'float32x2',
+    input.points.length / 2
+  );
+  const parameters = importGraphBuffer(
+    graph,
+    'parameters',
+    upload(
+      getGPUKernelDensityParameterValues(
+        {
+          bandwidth: input.bandwidth,
+          window: options.rectangle ?? 'study-window'
+        },
+        grid
+      )
+    ),
+    'float32',
+    9
+  );
+  const values = importGraphBuffer(
+    graph,
+    'values',
+    valuesBuffer,
+    'float32',
+    input.width * input.height
+  );
+  const studyWindow = new GPUStudyWindowPreparation({
+    positions: importGraphBuffer(
+      graph,
+      'vertices',
+      upload(Float32Array.from(input.window.positions)),
+      'float32x2',
+      input.window.positions.length / 2
+    ),
+    featureOffsets: importGraphBuffer(
+      graph,
+      'features',
+      upload(
+        input.window.featureOffsets ?? new Uint32Array([0, input.window.polygonOffsets.length - 1])
+      ),
+      'uint32',
+      2
+    ),
+    polygonOffsets: importGraphBuffer(
+      graph,
+      'polygons',
+      upload(input.window.polygonOffsets),
+      'uint32',
+      input.window.polygonOffsets.length
+    ),
+    ringOffsets: importGraphBuffer(
+      graph,
+      'rings',
+      upload(input.window.ringOffsets),
+      'uint32',
+      input.window.ringOffsets.length
+    ),
+    samplingGrid: [8, 8]
+  });
+  if (!options.rectangle) {
+    graph.add(studyWindow);
+  }
+  graph.add(
+    new GPUKernelDensity({
+      positions,
+      parameters,
+      studyWindow: options.rectangle ? 'rectangle' : studyWindow,
+      weights: input.weights
+        ? importGraphBuffer(
+            graph,
+            'weights',
+            upload(Float32Array.from(input.weights)),
+            'float32',
+            input.weights.length
+          )
+        : undefined,
+      grid,
+      indexGridSize: [8, 8],
+      indexBounds: [-4000, -4000, 4000, 4000],
+      kernel: input.kernel,
+      edgeCorrection: input.edgeCorrection,
+      method: options.method,
+      normalization: input.normalization,
+      binnedPadding: input.padding,
+      output: {
+        values,
+        weightSum: importGraphBuffer(graph, 'weight-sum', weightSumBuffer, 'float32', 1),
+        status: {invalidCount: importGraphBuffer(graph, 'invalid', invalidBuffer, 'uint32', 1)}
+      }
+    })
+  );
+  const compiled = graph.compile();
+  try {
+    submitGraph(device, compiled, undefined);
+    return {
+      values: Float32Array.from(await readFloat32(valuesBuffer, input.width * input.height)),
+      weightSum: (await readFloat32(weightSumBuffer, 1))[0],
+      invalidCount: (await readUint32(invalidBuffer, 1))[0]
+    };
+  } finally {
+    compiled.destroy();
+    studyWindow.destroy();
+    for (const buffer of buffers) {
+      buffer.destroy();
+    }
+  }
+}
+
+/** Compare every finite cell relatively, including exact agreement of the outside NaN mask. */
+function expectPolygonField(
+  actual: Float32Array,
+  expected: ArrayLike<number>,
+  tolerance: number
+): void {
+  for (let index = 0; index < actual.length; index++) {
+    expect(Number.isNaN(actual[index]), `NaN mask at ${index}`).toBe(Number.isNaN(expected[index]));
+    if (Number.isFinite(expected[index])) {
+      expect(Math.abs(actual[index] - expected[index]), `cell ${index}`).toBeLessThanOrEqual(
+        tolerance * Math.abs(expected[index])
+      );
+    }
+  }
+}
+
+it('polygon rectangle matches rectangular binned and auto KDE with uniform and Diggle correction', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  for (const method of ['binned', 'auto'] as const) {
+    for (const edgeCorrection of ['uniform', 'diggle'] as const) {
+      for (const bandwidth of method === 'auto' ? [100, 800] : [800]) {
+        const input: PolygonKernelDensityInput = {
+          window: ORACLE_RECTANGLE,
+          kernel: 'gaussian',
+          edgeCorrection,
+          points: [100, 100, 500, 400, 1600, 750, -10, 500, 2100, 500],
+          weights: [2, 1, 3, 100, 100],
+          width: 24,
+          height: 14,
+          start: [-200, -200],
+          cellSize: [100, 100],
+          bandwidth,
+          padding: 24
+        };
+        const polygon = await runPolygonDensity(device, input, {method});
+        const rectangle = await runPolygonDensity(device, input, {
+          method,
+          rectangle: [0, 0, 2000, 1000]
+        });
+        expectPolygonField(polygon.values, rectangle.values, 2e-5);
+        expect(polygon.weightSum).toBe(6);
+        expect(polygon.invalidCount).toBe(2);
+      }
+    }
+  }
+});
+
+it('polygon binned KDE matches its float64 model and stays within the exact error bound on an L-shape', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  for (const edgeCorrection of ['uniform', 'diggle'] as const) {
+    const input: PolygonKernelDensityInput = {
+      window: ORACLE_L_SHAPE,
+      kernel: 'gaussian',
+      edgeCorrection,
+      points: [100, 100, 600, 650, 1600, 200, 350, 1600, 1000, 1000, -100, 500],
+      weights: [2, 1, 3, 4, 100, 100],
+      width: 24,
+      height: 24,
+      start: [-200, -200],
+      cellSize: [100, 100],
+      bandwidth: 800,
+      padding: 24
+    };
+    const actual = await runPolygonDensity(device, input, {method: 'binned'});
+    expectPolygonField(actual.values, getPolygonBinnedDensityOracle(input), 2e-5);
+    const included = getPolygonKernelDensityWeights(input);
+    expect(actual.weightSum).toBe(included.weightSum);
+    expect(actual.invalidCount).toBe(included.invalidCount);
+    const exact = getPolygonKernelDensityOracle(input);
+    const correctedWeight = included.weights.reduce((total, weight) => total + weight, 0);
+    const bound =
+      (getGPUKernelDensityBinnedErrorBound(100 / input.bandwidth) * correctedWeight) /
+      (2 * Math.PI * input.bandwidth ** 2);
+    for (let index = 0; index < actual.values.length; index++) {
+      const center = [
+        input.start[0] + ((index % input.width) + 0.5) * 100,
+        input.start[1] + (Math.floor(index / input.width) + 0.5) * 100
+      ] as const;
+      if (!isOracleInsideWindow(input.window, center)) {
+        continue;
+      }
+      const mass =
+        edgeCorrection === 'uniform'
+          ? getOracleKernelMassFan(input.window, center, input.bandwidth, 'gaussian')
+          : 1;
+      expect(Math.abs(actual.values[index] - exact[index])).toBeLessThanOrEqual(bound / mass);
+    }
   }
 });

@@ -4,6 +4,14 @@
 
 import type {GPURipleyDistanceFunctionsSettings} from '../../../src/gpu-dataframe/pair-statistics/ripley-distance-parameters';
 
+import {
+  getOracleBoundaryDistance,
+  getOracleWindowBounds,
+  getOracleWindowArea,
+  isOracleInsideWindow,
+  type OracleStudyWindow
+} from '../../analysis-core/study-window-oracle';
+
 /** Result of {@link computeRipleyDistanceFunctionsOnCPU}. */
 export type RipleyDistanceOracleResult = {
   radii: number[];
@@ -24,9 +32,12 @@ export function computeRipleyDistanceFunctionsOnCPU(
   scene: {positions: Float32Array; mask?: Uint32Array},
   parameters: GPURipleyDistanceFunctionsSettings,
   radiusCount: number,
-  referenceGrid: readonly [number, number]
+  referenceGrid: readonly [number, number],
+  studyWindow?: OracleStudyWindow
 ): RipleyDistanceOracleResult {
-  const [minX, minY, maxX, maxY] = parameters.bounds;
+  const bounds = studyWindow ? getOracleWindowBounds(studyWindow) : parameters.bounds;
+  if (bounds === 'study-window') throw new Error('Oracle needs a polygon for study-window bounds');
+  const [minX, minY, maxX, maxY] = bounds;
   const maximumDistance = parameters.maximumDistance;
   const mode = parameters.edgeCorrection ?? 'border';
   const border = mode === 'border';
@@ -34,12 +45,21 @@ export function computeRipleyDistanceFunctionsOnCPU(
   for (let row = 0; row < scene.positions.length / 2; row++) {
     const x = scene.positions[2 * row];
     const y = scene.positions[2 * row + 1];
-    if ((!scene.mask || scene.mask[row]) && x >= minX && x <= maxX && y >= minY && y <= maxY) {
+    if (
+      (!scene.mask || scene.mask[row]) &&
+      x >= minX &&
+      x <= maxX &&
+      y >= minY &&
+      y <= maxY &&
+      (!studyWindow || isOracleInsideWindow(studyWindow, [x, y]))
+    ) {
       events.push([x, y]);
     }
   }
   const getBorderDistance = (x: number, y: number) =>
-    Math.min(x - minX, maxX - x, y - minY, maxY - y);
+    studyWindow
+      ? getOracleBoundaryDistance(studyWindow, [x, y])
+      : Math.min(x - minX, maxX - x, y - minY, maxY - y);
   const getNearest = (x: number, y: number, skip: number): number => {
     let best = Infinity;
     events.forEach(([ex, ey], index) => {
@@ -56,6 +76,7 @@ export function computeRipleyDistanceFunctionsOnCPU(
     for (let column = 0; column < referenceGrid[0]; column++) {
       const x = minX + ((column + 0.5) * (maxX - minX)) / referenceGrid[0];
       const y = minY + ((row + 0.5) * (maxY - minY)) / referenceGrid[1];
+      if (studyWindow && !isOracleInsideWindow(studyWindow, [x, y])) continue;
       referenceSamples.push({distance: getNearest(x, y, -1), border: getBorderDistance(x, y)});
     }
   }
@@ -67,8 +88,16 @@ export function computeRipleyDistanceFunctionsOnCPU(
   const fDenominators: number[] = [];
   const windowWidth = maxX - minX;
   const windowHeight = maxY - minY;
+  const erosion = studyWindow
+    ? getReferenceLatticeErosion(studyWindow, referenceGrid, maximumDistance, radiusCount)
+    : undefined;
   // Weight |W| / |W eroded by distance|, capped like the GPU kernel.
   const getHanischWeight = (distance: number) => {
+    if (erosion) {
+      const eroded = erosion.getArea(distance);
+      const ratio = eroded > 0 ? Math.min(getOracleWindowArea(studyWindow!) / eroded, 1024) : 1024;
+      return Math.floor(ratio * 16384 + 0.5) / 16384;
+    }
     const eroded =
       Math.max(windowWidth - 2 * distance, 0) * Math.max(windowHeight - 2 * distance, 0);
     return eroded > 0 ? Math.min((windowWidth * windowHeight) / eroded, 1024) : 1024;
@@ -151,4 +180,39 @@ export function computeRipleyDistanceFunctionsOnCPU(
     fDenominators.push(fEstimate.size);
   }
   return {radii, g, f, j, gDenominators, fDenominators};
+}
+
+/** Same 4 * radiusCount sub-slot histogram and linear interpolation as the polygon GPU estimator. */
+export function getReferenceLatticeErosion(
+  window: OracleStudyWindow,
+  referenceGrid: readonly [number, number],
+  maximumDistance: number,
+  radiusCount: number
+): {count: number; getArea: (distance: number) => number} {
+  const [minimumX, minimumY, maximumX, maximumY] = getOracleWindowBounds(window);
+  const slotCount = 4 * radiusCount;
+  const counts = new Array<number>(slotCount + 1).fill(0);
+  for (let row = 0; row < referenceGrid[1]; row++) {
+    for (let column = 0; column < referenceGrid[0]; column++) {
+      const point = [
+        minimumX + ((column + 0.5) * (maximumX - minimumX)) / referenceGrid[0],
+        minimumY + ((row + 0.5) * (maximumY - minimumY)) / referenceGrid[1]
+      ] as const;
+      if (!isOracleInsideWindow(window, point)) continue;
+      const distance = Math.min(getOracleBoundaryDistance(window, point), maximumDistance);
+      counts[Math.min(Math.floor((distance / maximumDistance) * slotCount), slotCount)]++;
+    }
+  }
+  for (let slot = slotCount - 1; slot >= 0; slot--) counts[slot] += counts[slot + 1];
+  return {
+    count: counts[0],
+    getArea(distance) {
+      const scaled = Math.min(Math.max((distance / maximumDistance) * slotCount, 0), slotCount);
+      const lower = Math.floor(scaled);
+      const fraction = scaled - lower;
+      const remaining =
+        counts[lower] * (1 - fraction) + counts[Math.min(lower + 1, slotCount)] * fraction;
+      return counts[0] ? (getOracleWindowArea(window) * remaining) / counts[0] : 0;
+    }
+  };
 }

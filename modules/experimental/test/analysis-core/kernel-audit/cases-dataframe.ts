@@ -2128,3 +2128,175 @@ export const DATAFRAME_CASES: KernelAuditCase[] = [
   ...TIME_WINDOW_FILTER_CASES,
   ...PAIR_ABOVE_MAXIMUM_CASES
 ];
+
+import {GPUStudyWindowPreparation} from '../../../src/gpu-spatial-analysis/study-window/gpu-study-window-preparation';
+
+// Polygon consumers keep the default eight-storage-binding budget with every optional output.
+DATAFRAME_CASES.push(
+  ...(['GPURipley', 'GPUVariogram', 'GPUSpatialCorrelogram'] as const).map(
+    (exportName): KernelAuditCase => ({
+      exportName,
+      name: 'polygon study window, every output',
+      build: ({graph, view}) => {
+        const studyWindow = new GPUStudyWindowPreparation({
+          positions: view('float32x2', 12),
+          featureOffsets: view('uint32', 2),
+          polygonOffsets: view('uint32', 2),
+          ringOffsets: view('uint32', 3),
+          samplingGrid: [8, 8]
+        });
+        graph.add(studyWindow);
+        const common = {
+          positions: view('float32x2', ROWS),
+          mask: view('uint32', ROWS),
+          parameters: view('float32', 8),
+          gridSize: [16, 16] as const,
+          studyWindow
+        };
+        if (exportName === 'GPURipley') {
+          graph.add(
+            new GPURipley({
+              ...common,
+              radiusCount: 256,
+              output: {
+                k: view('float32', 256),
+                l: view('float32', 256),
+                lMinusR: view('float32', 256),
+                pairCorrelation: view('float32', 256),
+                pairCounts: view('uint32', 256),
+                radii: view('float32', 256)
+              }
+            })
+          );
+        } else if (exportName === 'GPUVariogram') {
+          graph.add(
+            new GPUVariogram({
+              ...common,
+              values: view('float32', ROWS),
+              lagCount: 409,
+              output: {
+                semivariances: view('float32', 409),
+                pairCounts: view('uint32', 409),
+                meanDistances: view('float32', 409),
+                robustSemivariances: view('float32', 409),
+                statistics: view('float32', GPU_VARIOGRAM_STATISTICS_LENGTH),
+                status: {overflow: view('uint32', 1)}
+              }
+            })
+          );
+        } else {
+          graph.add(
+            new GPUSpatialCorrelogram({
+              ...common,
+              values: view('float32', ROWS),
+              bandCount: 64,
+              output: {
+                moransI: view('float32', 64),
+                zScores: view('float32', 64),
+                pValues: view('float32', 64),
+                expectedI: view('float32', 64),
+                varianceI: view('float32', 64),
+                pairCounts: view('uint32', 64),
+                peakBands: view('uint32', 2),
+                statistics: view('float32', GPU_SPATIAL_CORRELOGRAM_STATISTICS_LENGTH),
+                status: {overflow: view('uint32', 1)}
+              }
+            })
+          );
+        }
+      }
+    })
+  )
+);
+
+DATAFRAME_CASES.push({
+  exportName: 'GPUPointPatternIndices',
+  name: 'polygon guard and quadrats, every output',
+  build: ({graph, view}) => {
+    const studyWindow = new GPUStudyWindowPreparation({
+      positions: view('float32x2', 12),
+      featureOffsets: view('uint32', 2),
+      polygonOffsets: view('uint32', 2),
+      ringOffsets: view('uint32', 3),
+      samplingGrid: [8, 8]
+    });
+    graph.add(studyWindow);
+    graph.add(
+      new GPUPointPatternIndices({
+        studyWindow,
+        positions: view('float32x2', ROWS),
+        mask: view('uint32', ROWS),
+        parameters: view('float32', 8),
+        gridSize: [16, 16],
+        quadratGrid: [16, 16],
+        output: {
+          nearestNeighborDistances: view('float32', ROWS),
+          nearestNeighborIds: view('uint32', ROWS),
+          clarkEvans: view('float32', 7),
+          quadratCounts: view('uint32', 256),
+          quadratAreas: view('float32', 256),
+          quadratStatistics: view('float32', 7)
+        }
+      })
+    );
+  }
+});
+
+DATAFRAME_CASES.push(
+  ...(['GPURipleyEnvelope', 'GPURipleyDistanceFunctions'] as const).map(
+    (exportName): KernelAuditCase => ({
+      exportName,
+      name: 'polygon window, every output and maximum radius count',
+      build: ({graph, view}) => {
+        const studyWindow = new GPUStudyWindowPreparation({
+          positions: view('float32x2', 12),
+          featureOffsets: view('uint32', 2),
+          polygonOffsets: view('uint32', 2),
+          ringOffsets: view('uint32', 3),
+          samplingGrid: [8, 8]
+        });
+        graph.add(studyWindow);
+        const common = {
+          positions: view('float32x2', ROWS),
+          parameters: view('float32', 8),
+          mask: view('uint32', ROWS),
+          gridSize: [16, 16] as const,
+          radiusCount: 256,
+          studyWindow
+        };
+        if (exportName === 'GPURipleyEnvelope') {
+          graph.add(
+            new GPURipleyEnvelope({
+              ...common,
+              simulationCount: 2,
+              maximumAttempts: 256,
+              observedK: view('float32', 256),
+              output: {
+                lower: view('float32', 256),
+                upper: view('float32', 256),
+                globalLower: view('float32', 256),
+                globalUpper: view('float32', 256),
+                theoretical: view('float32', 256),
+                statistics: view('float32', 6),
+                unplacedCount: view('uint32', 1)
+              }
+            })
+          );
+        } else {
+          graph.add(
+            new GPURipleyDistanceFunctions({
+              ...common,
+              referenceGrid: [17, 19],
+              output: {
+                g: view('float32', 256),
+                f: view('float32', 256),
+                j: view('float32', 256),
+                radii: view('float32', 256)
+              }
+            })
+          );
+        }
+      }
+    })
+  )
+);

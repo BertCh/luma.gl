@@ -9,6 +9,15 @@ import {
   type PairStatisticsScene
 } from './pair-statistics-oracle';
 
+import {
+  getOracleWindowArea,
+  getOracleWindowBounds,
+  isOracleInsideWindow,
+  getOracleBoundaryDistance,
+  getOracleCircleFractionFan,
+  type OracleStudyWindow
+} from '../../analysis-core/study-window-oracle';
+
 const fround = Math.fround;
 
 /** Isotropic weight cap, equal to `GPU_RIPLEY_WEIGHT_CAP`. */
@@ -75,15 +84,34 @@ export function getIsotropicWeightOnCPU(
  */
 export function computeRipleyOnCPU(
   scene: PairStatisticsScene,
-  frame: PairStatisticsFrame & {edgeCorrection?: RipleyOracleEdgeCorrection},
+  frame: PairStatisticsFrame & {
+    edgeCorrection?: RipleyOracleEdgeCorrection;
+    /** Prepared-polygon equivalent: overrides the frame bbox, inclusion, area and edge correction. */
+    studyWindow?: OracleStudyWindow;
+  },
   radiusCount: number
 ): RipleyOracleResult {
+  const window = frame.studyWindow;
+  if (window) {
+    frame = {...frame, bounds: getOracleWindowBounds(window)};
+    scene = {
+      ...scene,
+      mask: Uint32Array.from({length: scene.positions.length / 2}, (_, row) =>
+        (!scene.mask || scene.mask[row] !== 0) &&
+        isOracleInsideWindow(window, [scene.positions[2 * row], scene.positions[2 * row + 1]])
+          ? 1
+          : 0
+      )
+    };
+  }
   const mode = frame.edgeCorrection ?? 'isotropic';
   const [minX, minY, maxX, maxY] = frame.bounds.map(fround);
   const maximumDistance = fround(frame.maximumDistance);
   const included = getIncludedRows(scene, frame);
   const n = included.length;
-  const area = fround(fround(maxX - minX) * fround(maxY - minY));
+  const area = window
+    ? getOracleWindowArea(window)
+    : fround(fround(maxX - minX) * fround(maxY - minY));
   const radii = Array.from({length: radiusCount}, (_, b) =>
     fround(fround(maximumDistance * (b + 1)) / radiusCount)
   );
@@ -103,12 +131,9 @@ export function computeRipleyOnCPU(
   for (const focus of included) {
     const x = scene.positions[focus * 2];
     const y = scene.positions[focus * 2 + 1];
-    const borderDistance = Math.min(
-      fround(x - minX),
-      fround(maxX - x),
-      fround(y - minY),
-      fround(maxY - y)
-    );
+    const borderDistance = window
+      ? getOracleBoundaryDistance(window, [x, y])
+      : Math.min(fround(x - minX), fround(maxX - x), fround(y - minY), fround(maxY - y));
     const scaled = fround(fround(borderDistance / maximumDistance) * radiusCount);
     const borderCount = Math.min(Math.floor(scaled), radiusCount);
     borderCounts.set(focus, borderCount);
@@ -142,13 +167,16 @@ export function computeRipleyOnCPU(
     }
     const x = scene.positions[focus * 2];
     const y = scene.positions[focus * 2 + 1];
-    const weight = getIsotropicWeightOnCPU(
-      fround(x - minX),
-      fround(y - minY),
-      fround(maxX - x),
-      fround(maxY - y),
-      distance
-    );
+    const weight = window
+      ? 1 /
+        Math.max(getOracleCircleFractionFan(window, [x, y], distance), 1 / RIPLEY_ORACLE_WEIGHT_CAP)
+      : getIsotropicWeightOnCPU(
+          fround(x - minX),
+          fround(y - minY),
+          fround(maxX - x),
+          fround(maxY - y),
+          distance
+        );
     isotropicSums[annulus] += weight;
     if (nearBoundary && nearest >= 1 && nearest <= radiusCount) {
       isotropicSlack[nearest - 1] += weight;

@@ -2,350 +2,431 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import type {Buffer, Device} from '@luma.gl/core';
-import {GPUCommandGraph} from '@luma.gl/gpgpu/gpu-core';
+import {createTransientView, GPUCommandGraph, type GPUCommandNode} from '@luma.gl/gpgpu/gpu-core';
 import {getWebGPUTestDevice} from '@luma.gl/test-utils';
 import {expect, it} from 'vitest';
+import {WgslReflect} from 'wgsl_reflect';
 import {importGraphBuffer} from '../../../src/utils/gpu-contributor-utils';
 import {
   GPUPolygonTriangulation,
+  type GPUPolygonTriangulationProps,
   getPolygonTriangulationIndexCount
 } from '../../../src/gpu-spatial-analysis/polygon-triangulation/index';
-import {createOutputBuffer, readUint32, submitGraph} from '../../utils/gpu-contributor-test-utils';
-import {createSegmentGeometry} from '../segment-intersection/segment-geometry-harness';
-import type {OracleSegmentFeature} from '../segment-intersection/segment-intersection-oracle';
-import {EARCUT_FIXTURE} from './polygon-triangulation-fixture';
-import {RANDOM_POLYGON_FIXTURE} from './polygon-triangulation-random-fixture';
+import {
+  getGPUPolygonTriangulationMonotoneMaximumVertexCount,
+  getMonotoneJumpPairCount,
+  getMonotoneTriangulationNodes,
+  type MonotoneTriangulationProps
+} from '../../../src/gpu-spatial-analysis/polygon-triangulation/polygon-triangulation-monotone';
+import {
+  CORE_PRIVATE_MEMORY_LIMIT_BYTES,
+  CORE_WORKGROUP_STORAGE_LIMIT_BYTES,
+  createInputBuffer,
+  createNullWebGPUDevice,
+  createOutputBuffer,
+  getGPUCommandNodeKernelSources,
+  getGPUCommandNodePipelineKeys,
+  getPrivateMemoryBytes,
+  getStorageBindingCount,
+  getWorkgroupMemoryBytes,
+  readUint32,
+  submitGraph
+} from '../../utils/gpu-contributor-test-utils';
 import {requireTestDevice} from '../../utils/require-test-device';
+import {auditWGSLModule} from '../../analysis-core/kernel-audit/kernel-audit-wgsl';
 
-type Point = [number, number];
-
-/** The four-level layout of a generated polygon geometry, without the `kind` tag. */
-function getPolygonFields(geometry: ReturnType<typeof createSegmentGeometry>) {
-  if (geometry.kind !== 'polygons') {
-    throw new Error('expected polygons');
-  }
-  const {kind: _kind, ...fields} = geometry;
-  return fields;
-}
-
-type Triangulation = {
-  indices: number[];
-  valid: number[];
-  triangleCount: number[];
-  positions: Point[];
-  /** First index of each polygon's slice, with a terminal entry. */
-  sliceStarts: number[];
-};
-
-async function runTriangulation(
-  device: Device,
-  polygons: Point[][][],
-  options: {
-    maximumWork?: number;
-    useZOrderHash?: boolean;
-    largePolygonMethod?: 'none' | 'monotone';
-  } = {}
-): Promise<Triangulation> {
-  const graph = new GPUCommandGraph(device, {id: 'polygon-triangulation'});
-  const buffers: Buffer[] = [];
-  const features: OracleSegmentFeature[] = polygons.map(rings => ({
-    kind: 'polygons',
-    polygons: [rings]
-  }));
-  const geometry = createSegmentGeometry(device, graph, 'polygons', features, buffers);
-  if (geometry.kind !== 'polygons') {
-    throw new Error('expected polygons');
-  }
-  const vertexCount = geometry.positions.length;
-  const ringCount = geometry.ringOffsets.length - 1;
-  const indexCount = getPolygonTriangulationIndexCount(vertexCount, ringCount, polygons.length);
-  const output = (name: string, length: number) => {
-    const buffer = createOutputBuffer(device, length);
-    buffers.push(buffer);
-    return {buffer, view: importGraphBuffer(graph, name, buffer, 'uint32', length)};
-  };
-  const indices = output('indices', indexCount);
-  const valid = output('valid', polygons.length);
-  const triangleCount = output('triangle-count', polygons.length);
-  graph.add(
-    new GPUPolygonTriangulation({
-      ...getPolygonFields(geometry),
-      output: {indices: indices.view, valid: valid.view, triangleCount: triangleCount.view},
-      maximumWork: options.maximumWork,
-      useZOrderHash: options.useZOrderHash,
-      largePolygonMethod: options.largePolygonMethod
-    })
-  );
-  const compiled = graph.compile();
-  submitGraph(device, compiled, undefined);
-  const flatPositions: Point[] = polygons.flatMap(rings => rings.flat());
-  const sliceStarts = [0];
-  for (const rings of polygons) {
-    const vertices = rings.reduce((sum, ring) => sum + ring.length, 0);
-    sliceStarts.push(
-      sliceStarts[sliceStarts.length - 1] + 3 * (vertices + 2 * (rings.length - 1) - 2)
-    );
-  }
-  const result = {
-    indices: await readUint32(indices.buffer, indexCount),
-    valid: await readUint32(valid.buffer, polygons.length),
-    triangleCount: await readUint32(triangleCount.buffer, polygons.length),
-    positions: flatPositions,
-    sliceStarts
-  };
-  compiled.destroy();
-  for (const buffer of buffers) {
-    buffer.destroy();
-  }
-  return result;
-}
-
-type Triangle = [Point, Point, Point];
-
-function getSlice(result: Triangulation, polygon: number, triangleCount: number): Triangle[] {
-  const triangles: Triangle[] = [];
-  for (let k = 0; k < triangleCount; k++) {
-    const base = result.sliceStarts[polygon] + 3 * k;
-    triangles.push([
-      result.positions[result.indices[base]],
-      result.positions[result.indices[base + 1]],
-      result.positions[result.indices[base + 2]]
-    ]);
-  }
-  return triangles;
-}
-
-const cross = (a: Point, b: Point, c: Point) =>
-  (b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0]);
-
-/** True when the open interiors of two triangles share area (separating-axis test, exact). */
-function trianglesOverlap(first: Triangle, second: Triangle): boolean {
-  for (const triangle of [first, second]) {
-    for (let edge = 0; edge < 3; edge++) {
-      const a = triangle[edge];
-      const b = triangle[(edge + 1) % 3];
-      const axis: Point = [b[1] - a[1], a[0] - b[0]];
-      const project = (point: Point) => axis[0] * point[0] + axis[1] * point[1];
-      const firstValues = first.map(project);
-      const secondValues = second.map(project);
-      if (
-        Math.max(...firstValues) <= Math.min(...secondValues) ||
-        Math.max(...secondValues) <= Math.min(...firstValues)
-      ) {
-        return false;
-      }
+function getEarcutSource(): string {
+  const graph = new GPUCommandGraph(createNullWebGPUDevice(), {id: 'triangulation'});
+  const view = <Format extends 'float32x2' | 'uint32'>(
+    name: string,
+    format: Format,
+    length: number
+  ) => createTransientView(graph, name, format, length);
+  const contributor = new GPUPolygonTriangulation({
+    positions: view('positions', 'float32x2', 8),
+    featureOffsets: view('feature-offsets', 'uint32', 2),
+    polygonOffsets: view('polygon-offsets', 'uint32', 2),
+    ringOffsets: view('ring-offsets', 'uint32', 3),
+    output: {
+      indices: view('indices', 'uint32', getPolygonTriangulationIndexCount(8, 2, 1)),
+      valid: view('valid', 'uint32', 1)
     }
-  }
-  return true;
-}
-
-it('GPUPolygonTriangulation covers Shapely polygon areas exactly without overlap', async () => {
-  const device = await getWebGPUTestDevice();
-  requireTestDevice(device);
-  const polygons = EARCUT_FIXTURE.map(entry => entry.rings);
-  const start = performance.now();
-  const result = await runTriangulation(device, polygons);
-  const elapsed = performance.now() - start;
-  // eslint-disable-next-line no-console
-  console.log(
-    `GPUPolygonTriangulation: ${EARCUT_FIXTURE.length} polygons in ${elapsed.toFixed(0)} ms`
-  );
-  EARCUT_FIXTURE.forEach((entry, polygon) => {
-    expect(result.valid[polygon], `${entry.name} valid`).toBe(1);
-    const triangleCount = result.triangleCount[polygon];
-    const slots = (result.sliceStarts[polygon + 1] - result.sliceStarts[polygon]) / 3;
-    expect(triangleCount, `${entry.name} within slice`).toBeLessThanOrEqual(slots);
-    const triangles = getSlice(result, polygon, slots);
-    // Real triangles come first, padding is degenerate (first, first, first).
-    const real = triangles.slice(0, triangleCount);
-    for (const padding of triangles.slice(triangleCount)) {
-      expect(cross(...padding), `${entry.name} padding`).toBe(0);
-      expect(padding[0]).toEqual(padding[1]);
-    }
-    let area = 0;
-    for (const triangle of real) {
-      const signed = cross(...triangle);
-      expect(signed, `${entry.name} nondegenerate`).not.toBe(0);
-      area += Math.abs(signed) / 2;
-    }
-    expect(area, `${entry.name} area vs Shapely`).toBe(entry.shapelyArea);
-    expect(Math.sign(cross(...real[0])), `${entry.name} winding`).not.toBe(0);
-    for (const triangle of real) {
-      expect(Math.sign(cross(...triangle)), `${entry.name} consistent winding`).toBe(
-        Math.sign(cross(...real[0]))
-      );
-    }
-    for (let i = 0; i < real.length; i++) {
-      for (let j = i + 1; j < real.length; j++) {
-        expect(trianglesOverlap(real[i], real[j]), `${entry.name} ${i}/${j} overlap`).toBe(false);
-      }
-    }
-    // Sanity against the earcut package: same count of triangles for these inputs.
-    expect(triangleCount, `${entry.name} earcut count`).toBe(entry.earcutTriangleCount);
   });
+  const sources = getGPUCommandNodeKernelSources(contributor.getCommandNodes(graph));
+  const earcut = sources.find(entry => entry.id.endsWith('-earcut'));
+  expect(earcut).toBeDefined();
+  return earcut!.source;
+}
+
+function getFunctionBody(source: string, name: string): string {
+  const start = source.indexOf(`fn ${name}(`);
+  expect(start).toBeGreaterThanOrEqual(0);
+  const next = source.indexOf('\nfn ', start + 1);
+  return source.slice(start, next < 0 ? undefined : next);
+}
+
+it('review Rule 1: middleInside decides the diagonal parity with the exact SoS rule', () => {
+  const source = getEarcutSource();
+  expect(() => new WgslReflect(source)).not.toThrow();
+  const middleInside = getFunctionBody(source, 'middleInside');
+  // Exact parity: orientOf (the kernel's existing orientSign wrapper) plus the helper's SoS side.
+  expect(middleInside).toContain('sosPointSide(orientOf(');
+  expect(middleInside).toContain('>= middle.y');
+  // The old f32 division crossing is gone.
+  expect(middleInside).not.toMatch(/\) \/ \(edgeEnd\.y - edgeStart\.y\)/);
+  // No new orientSign call site: the existing wrappers and ringWinding call it, and the helper's
+  // exactOrientSigns (never called by this kernel) keeps its own.
+  const callers = source
+    .split('\nfn ')
+    .filter(chunk => /\borientSign\(/.test(chunk.split('\n').slice(1).join('\n')))
+    .map(chunk => chunk.split('(')[0]);
+  expect(callers.sort()).toEqual(['areaSign', 'exactOrientSigns', 'orientOf', 'ringWinding']);
+  expect(middleInside).not.toMatch(/\borientSign\(/);
+  // exactOrientSigns is reachable only from the helper's probe and segment functions, which this
+  // kernel never calls (a declaration plus the definition of each, no other call site).
+  expect(source.match(/\bexactProbeCrossing\(/g)?.length).toBe(1);
+  expect(source.match(/\bexactSegmentsCross\(/g)?.length).toBe(1);
+  expect(source.match(/\bexactCompareSign\(/g)?.length).toBeGreaterThan(1);
 });
 
-it('GPUPolygonTriangulation flags broken and oversized polygons and keeps neighbors intact', async () => {
-  const device = await getWebGPUTestDevice();
-  requireTestDevice(device);
-  const square: Point[][] = [
-    [
-      [0, 0],
-      [10, 0],
-      [10, 10],
-      [0, 10]
-    ]
-  ];
-  const twoVertexShell: Point[][] = [
-    [
-      [0, 0],
-      [5, 5]
-    ]
-  ];
-  const bowtie: Point[][] = [
-    [
-      [0, 0],
-      [10, 10],
-      [10, 0],
-      [0, 10]
-    ]
-  ];
-  const wavy = EARCUT_FIXTURE.find(entry => entry.name === 'wavy_grid_holes')!.rings as Point[][];
-  const polygons = [square, twoVertexShell, square, wavy, square];
-  // The 2-vertex shell breaks the slice formula's exactness only by one polygon with 0 slots.
-  // Isolate the Earcut work limit: the default monotone path can rescue work-exceeded polygons.
-  const result = await runTriangulation(device, polygons, {
-    maximumWork: 5000,
-    largePolygonMethod: 'none'
+/** Builds the nodes of a polygon layout with `vertexCount` vertices in two polygons. */
+function buildNodes(
+  props: Partial<GPUPolygonTriangulationProps> = {},
+  vertexCount: number = 5000
+): {nodes: readonly GPUCommandNode<unknown>[]; graph: GPUCommandGraph<unknown>} {
+  const graph = new GPUCommandGraph<unknown>(createNullWebGPUDevice(), {id: 'triangulation'});
+  const view = <Format extends 'float32x2' | 'uint32'>(
+    name: string,
+    format: Format,
+    length: number
+  ) => createTransientView(graph, name, format, length);
+  const contributor = new GPUPolygonTriangulation({
+    positions: view('positions', 'float32x2', vertexCount),
+    featureOffsets: view('feature-offsets', 'uint32', 3),
+    polygonOffsets: view('polygon-offsets', 'uint32', 3),
+    ringOffsets: view('ring-offsets', 'uint32', 4),
+    output: {
+      indices: view('indices', 'uint32', getPolygonTriangulationIndexCount(vertexCount, 3, 2)),
+      valid: view('valid', 'uint32', 2),
+      triangleCount: view('triangle-count', 'uint32', 2)
+    },
+    ...props
   });
-  expect(result.valid[0]).toBe(1);
-  expect(result.valid[1]).toBe(0);
-  expect(result.valid[2]).toBe(1);
-  expect(result.valid[3], 'oversized polygon is flagged, not hung').toBe(0);
-  expect(result.valid[4]).toBe(1);
-  expect(result.triangleCount[3]).toBe(0);
-  const wavySlots = (result.sliceStarts[4] - result.sliceStarts[3]) / 3;
-  for (const triangle of getSlice(result, 3, wavySlots)) {
-    expect(cross(...triangle)).toBe(0);
-  }
-  for (const polygon of [0, 2, 4]) {
-    const triangles = getSlice(result, polygon, result.triangleCount[polygon]);
-    expect(triangles.length).toBe(2);
-    expect(triangles.reduce((sum, triangle) => sum + Math.abs(cross(...triangle)) / 2, 0)).toBe(
-      100
-    );
-  }
-  // A self-intersecting bowtie is not triangulable as a simple polygon; it must not hang or
-  // report more triangles than slots.
-  const bowtieResult = await runTriangulation(device, [bowtie, square]);
-  expect(bowtieResult.triangleCount[0]).toBeLessThanOrEqual(2);
-  expect(bowtieResult.valid[1]).toBe(1);
-  expect(bowtieResult.triangleCount[1]).toBe(2);
+  return {nodes: contributor.getCommandNodes(graph), graph};
+}
+
+it('largePolygonMethod none prepares the layout then builds Earcut without routing', () => {
+  const {nodes} = buildNodes({largePolygonMethod: 'none'});
+  expect(nodes.at(-1)?.id).toBe('polygon-triangulation-earcut');
+  expect(nodes.some(node => node.id.includes('-monotone-'))).toBe(false);
+  const earcut = getGPUCommandNodeKernelSources(nodes).find(kernel =>
+    kernel.id.endsWith('-earcut')
+  )!;
+  expect(earcut.source).not.toContain('routing');
+  expect(getStorageBindingCount(earcut.source)).toBe(7);
 });
 
-it('GPUPolygonTriangulation validates its props', async () => {
-  const device = await getWebGPUTestDevice();
-  requireTestDevice(device);
-  const graph = new GPUCommandGraph(device, {id: 'polygon-triangulation-props'});
-  const buffers: Buffer[] = [];
-  const geometry = createSegmentGeometry(
-    device,
-    graph,
-    'p',
-    [
-      {
-        kind: 'polygons',
-        polygons: [
-          [
-            [
-              [0, 0],
-              [1, 0],
-              [1, 1]
-            ]
-          ]
-        ]
-      }
-    ],
-    buffers
-  );
-  if (geometry.kind !== 'polygons') {
-    throw new Error('expected polygons');
+it('largePolygonMethod monotone routes inside Earcut and triangulates the large polygons after it', () => {
+  const {nodes} = buildNodes();
+  const ids = nodes.map(node => node.id);
+  const earcutIndex = ids.indexOf('polygon-triangulation-earcut');
+  // Layout preparation precedes Earcut; size routing remains inside Earcut.
+  expect(earcutIndex).toBeGreaterThan(0);
+  // The monotone nodes follow, then a second Earcut pass for the polygons they flagged invalid.
+  expect(ids[ids.length - 1]).toBe('polygon-triangulation-earcut-fallback');
+  expect(
+    ids.slice(earcutIndex + 1, -1).every(id => id.startsWith('polygon-triangulation-monotone-'))
+  ).toBe(true);
+  const sources = getGPUCommandNodeKernelSources(nodes);
+  const earcut = sources.find(entry => entry.id.endsWith('-earcut'))!;
+  // Size-routed polygons are skipped, failed ones are marked for the retry; nothing else changed.
+  expect(earcut.source).toContain('routing[routingOffset + polygon] = sizeRouteOf(polygon);');
+  expect(earcut.source).toContain('if (routing[routingOffset + polygon] == 1u) { return; }');
+  expect(earcut.source).toContain('routing[routingOffset + polygon] = 2u;');
+  expect(getStorageBindingCount(earcut.source)).toBe(8);
+  const fallback = sources.find(entry => entry.id.endsWith('-earcut-fallback'))!;
+  expect(fallback.source).toContain('if (routing[routingOffset + polygon] != 4u) { return; }');
+  expect(fallback.source).not.toContain('routing[routingOffset + polygon] = 2u');
+  const names = ids.slice(0, -1).map(id => id.replace('polygon-triangulation-monotone-', ''));
+  // The kernels of the design, in order.
+  const order = [
+    'route-counts',
+    'route-overflow',
+    'index',
+    'ring',
+    'counts',
+    'compact',
+    'keys',
+    'rank',
+    'flip',
+    'link',
+    'left-edge',
+    'members',
+    'diagonals',
+    'next',
+    'jump-init',
+    'jump-0-state',
+    'rep-count',
+    'pieces',
+    'piece-count',
+    'measure',
+    'polygon-plan',
+    'piece-plan',
+    'triangulate',
+    'final',
+    'pad'
+  ];
+  let cursor = -1;
+  for (const name of order) {
+    const found = names.indexOf(name);
+    expect(found, `${name} is declared`).toBeGreaterThan(cursor);
+    cursor = found;
   }
-  const view = (name: string, length: number) =>
-    importGraphBuffer(graph, name, createOutputBuffer(device, length), 'uint32', length);
-  const base = {
-    ...getPolygonFields(geometry),
-    output: {indices: view('indices', 3), valid: view('valid', 1)}
+});
+
+it('every monotone kernel parses, binds at most 8 storage buffers and stays within core limits', () => {
+  const {nodes} = buildNodes();
+  const sources = getGPUCommandNodeKernelSources(nodes);
+  expect(sources.length).toBeGreaterThan(40);
+  for (const kernel of sources) {
+    expect(() => new WgslReflect(kernel.source), kernel.id).not.toThrow();
+    expect(getStorageBindingCount(kernel.source), `${kernel.id} bindings`).toBeLessThanOrEqual(8);
+    expect(getPrivateMemoryBytes(kernel.source), `${kernel.id} private`).toBeLessThanOrEqual(
+      CORE_PRIVATE_MEMORY_LIMIT_BYTES
+    );
+    expect(getWorkgroupMemoryBytes(kernel.source), `${kernel.id} workgroup`).toBeLessThanOrEqual(
+      CORE_WORKGROUP_STORAGE_LIMIT_BYTES
+    );
+    if (
+      kernel.id.includes('-monotone-') ||
+      /-(classify-rings|polygon-capacities|publish-layout)$/.test(kernel.id)
+    ) {
+      // Reserved words, NaN self-compares and calls to undeclared functions, the compile traps
+      // that wgsl_reflect accepts and Dawn rejects.
+      expect(auditWGSLModule(kernel.source), kernel.id).toEqual([]);
+    }
+  }
+});
+
+it('the monotone path orients through one wrapper and tests NaN-free (rules 6 and 12 helpers)', () => {
+  const sources = getGPUCommandNodeKernelSources(buildNodes().nodes).filter(entry =>
+    entry.id.includes('-monotone-')
+  );
+  for (const kernel of sources) {
+    const callers = kernel.source
+      .split('\nfn ')
+      .filter(chunk => /\borientSign\(/.test(chunk.split('\n').slice(1).join('\n')))
+      .map(chunk => chunk.split('(')[0]);
+    // orientSign is called by the wrapper only, and the exact helper functions are not duplicated.
+    expect(callers.length, kernel.id).toBeLessThanOrEqual(1);
+    if (callers.length === 1) expect(callers[0], kernel.id).toBe('orientOf');
+    expect(kernel.source, kernel.id).not.toMatch(/(\w+) == \1\b/);
+  }
+});
+
+it('the pointer-jumping rounds do not reach the WGSL (rule 12) and are gated on a GPU word (rule 13)', () => {
+  const graph = new GPUCommandGraph<unknown>(createNullWebGPUDevice(), {id: 'rounds'});
+  const view = <Format extends 'float32x2' | 'uint32'>(
+    name: string,
+    format: Format,
+    length: number
+  ) => createTransientView(graph, name, format, length);
+  const vertexCount = 600;
+  const base = (name: string): Omit<MonotoneTriangulationProps, 'jumpPairCount'> => ({
+    id: name,
+    operation: 'GPUPolygonTriangulation',
+    positions: view(`${name}-positions`, 'float32x2', vertexCount),
+    polygonOffsets: view(`${name}-polygon-offsets`, 'uint32', 3),
+    ringOffsets: view(`${name}-ring-offsets`, 'uint32', 4),
+    routing: view(`${name}-routing`, 'uint32', 2),
+    output: {
+      indices: view(
+        `${name}-indices`,
+        'uint32',
+        getPolygonTriangulationIndexCount(vertexCount, 3, 2)
+      ),
+      valid: view(`${name}-valid`, 'uint32', 2)
+    },
+    capacity: vertexCount,
+    minimumVertices: 100
+  });
+  // Same views would share transient IDs; the kernels do not depend on the IDs (the offsets are 0).
+  const four = getMonotoneTriangulationNodes(graph, {...base('four'), jumpPairCount: 4});
+  const five = getMonotoneTriangulationNodes(graph, {...base('five'), jumpPairCount: 5});
+  expect(getGPUCommandNodePipelineKeys(five).size).toBe(getGPUCommandNodePipelineKeys(four).size);
+  // Per pair: the state step, the dispatch update, and the two gated rounds.
+  expect(five.length - four.length).toBe(4);
+  const jumps = five.filter(node => /-jump-\d+-(forward|backward)$/.test(node.id));
+  expect(jumps).toHaveLength(10);
+  for (const node of jumps) {
+    expect(node.condition, node.id).toMatchObject({source: 'gpu', mode: 'indirect'});
+  }
+  // The state step and the dispatch update that write the gate stay ungated.
+  for (const node of five.filter(entry => /-jump-\d+-state$|-jump-\d+-dispatch$/.test(entry.id))) {
+    expect(node.condition, node.id).toBeUndefined();
+  }
+  // Rounds enough for polygons of `capacity` vertices: 2^rounds reaches 3 n + 3.
+  expect(2 ** (2 * getMonotoneJumpPairCount(vertexCount))).toBeGreaterThanOrEqual(
+    3 * vertexCount + 3
+  );
+  expect(2 ** (2 * getMonotoneJumpPairCount(vertexCount) - 2)).toBeLessThan(
+    4 * (3 * vertexCount + 3)
+  );
+});
+
+it('the work after the routing is sized by GPU-resident counts (indirect dispatch)', () => {
+  const {nodes} = buildNodes();
+  const gated = nodes.filter(node => node.condition);
+  const names = gated.map(node => node.id.replace('polygon-triangulation-monotone-', ''));
+  for (const name of [
+    'index',
+    'ring',
+    'compact',
+    'rank',
+    'flip',
+    'link',
+    'left-edge',
+    'diagonals',
+    'next',
+    'jump-init',
+    'rep-count',
+    'pieces',
+    'measure',
+    'piece-plan',
+    'triangulate',
+    'pad'
+  ]) {
+    expect(names, name).toContain(name);
+  }
+  // The one-thread and static-size kernels are not gated: routing, state words, sort keys.
+  for (const name of ['route-counts', 'route-overflow', 'counts', 'keys', 'members', 'final']) {
+    expect(names, name).not.toContain(name);
+  }
+});
+
+it('validates the large polygon options and the capacity', () => {
+  expect(() => buildNodes({largePolygonMethod: 'delaunay' as 'none'})).toThrow(
+    /largePolygonMethod/
+  );
+  expect(() => buildNodes({monotoneMinimumVertices: 0})).toThrow(/monotoneMinimumVertices/);
+  expect(() => buildNodes({monotoneMaximumVertices: 0})).toThrow(/monotoneMaximumVertices/);
+  const device = createNullWebGPUDevice();
+  const maximum = getGPUPolygonTriangulationMonotoneMaximumVertexCount(device);
+  expect(maximum).toBe(Math.floor(134217728 / 40));
+  expect(() => buildNodes({monotoneMaximumVertices: maximum + 1})).toThrow(
+    /monotoneMaximumVertices must be at most/
+  );
+  // A capacity above the input is clamped, below it sizes the scratch.
+  const small = getGPUCommandNodeKernelSources(buildNodes({monotoneMaximumVertices: 100}).nodes);
+  expect(small.find(entry => entry.id.endsWith('-monotone-keys'))!.source).toContain(
+    'CAPACITY: u32 = 100u'
+  );
+  const whole = getGPUCommandNodeKernelSources(
+    buildNodes({monotoneMaximumVertices: 3_000_000}).nodes
+  );
+  expect(whole.find(entry => entry.id.endsWith('-monotone-keys'))!.source).toContain(
+    'CAPACITY: u32 = 5000u'
+  );
+});
+
+it('the default never throws for inputs above the monotone limit: they behave like none', () => {
+  const device = createNullWebGPUDevice();
+  const rows = getGPUPolygonTriangulationMonotoneMaximumVertexCount(device) + 1;
+  expect(rows).toBe(3_355_444);
+  const {nodes} = buildNodes({useZOrderHash: false}, rows);
+  expect(nodes.at(-1)?.id).toBe('polygon-triangulation-earcut');
+  expect(nodes.some(node => node.id.includes('-monotone-'))).toBe(false);
+  expect(getGPUCommandNodeKernelSources(nodes).at(-1)!.source).not.toContain('routing');
+});
+
+it('accepts empty geometry and legacy capacities while validating triangle offset output', () => {
+  const graph = new GPUCommandGraph(createNullWebGPUDevice());
+  const view = <Format extends 'uint32' | 'float32x2'>(
+    name: string,
+    format: Format,
+    length: number
+  ) => createTransientView(graph, name, format, length);
+  const props: GPUPolygonTriangulationProps = {
+    positions: view('empty-positions', 'float32x2', 0),
+    featureOffsets: view('empty-features', 'uint32', 2),
+    polygonOffsets: view('empty-polygons', 'uint32', 1),
+    ringOffsets: view('empty-rings', 'uint32', 1),
+    output: {
+      indices: view('empty-indices', 'uint32', 0),
+      valid: view('empty-valid', 'uint32', 0),
+      triangleCount: view('empty-counts', 'uint32', 0),
+      triangleOffsets: view('empty-triangle-offsets', 'uint32', 1)
+    }
   };
-  expect(getPolygonTriangulationIndexCount(3, 1, 1)).toBe(3);
+  expect(() => new GPUPolygonTriangulation(props).getCommandNodes(graph)).not.toThrow();
   expect(
     () =>
-      new GPUPolygonTriangulation({...base, output: {...base.output, indices: view('short', 2)}})
-  ).toThrow(/indices needs at least 3/);
-  expect(
-    () => new GPUPolygonTriangulation({...base, output: {...base.output, valid: view('wrong', 2)}})
-  ).toThrow(/polygon count/);
-  expect(() => new GPUPolygonTriangulation({...base, maximumWork: 0})).toThrow(/maximumWork/);
-  for (const buffer of buffers) {
-    buffer.destroy();
-  }
+      new GPUPolygonTriangulation({
+        ...props,
+        output: {...props.output, triangleOffsets: view('bad-offsets', 'uint32', 2)}
+      })
+  ).toThrow(/triangleOffsets/);
+  expect(getPolygonTriangulationIndexCount(4, 1, 5)).toBe(6);
+  expect(getPolygonTriangulationIndexCount(0, 0, 0)).toBe(0);
+  // Two ordinary squares still accept the former exact capacity, 12 index words.
+  expect(() =>
+    new GPUPolygonTriangulation({
+      id: 'legacy-capacity',
+      positions: view('positions', 'float32x2', 8),
+      featureOffsets: view('features', 'uint32', 2),
+      polygonOffsets: view('polygons', 'uint32', 3),
+      ringOffsets: view('rings', 'uint32', 3),
+      output: {indices: view('indices', 'uint32', 12), valid: view('valid', 'uint32', 2)}
+    }).getCommandNodes(graph)
+  ).not.toThrow();
 });
 
-it('GPUPolygonTriangulation matches Shapely areas on random valid polygons', async () => {
+it('ordinary polygons retain the original Earcut index order and slice offsets', async () => {
   const device = await getWebGPUTestDevice();
   requireTestDevice(device);
-  const result = await runTriangulation(
-    device,
-    RANDOM_POLYGON_FIXTURE.map(([rings]) => rings)
-  );
-  expect(RANDOM_POLYGON_FIXTURE.length).toBeGreaterThan(40);
-  RANDOM_POLYGON_FIXTURE.forEach(([rings, shapelyArea], polygon) => {
-    expect(result.valid[polygon], `random ${polygon} valid`).toBe(1);
-    const slots = (result.sliceStarts[polygon + 1] - result.sliceStarts[polygon]) / 3;
-    const real = getSlice(result, polygon, slots).slice(0, result.triangleCount[polygon]);
-    const area = real.reduce((sum, triangle) => sum + Math.abs(cross(...triangle)) / 2, 0);
-    expect(area, `random ${polygon} area`).toBe(shapelyArea);
-    if (rings.length === 1 || polygon % 4 === 0) {
-      for (let i = 0; i < real.length; i++) {
-        for (let j = i + 1; j < real.length; j++) {
-          expect(trianglesOverlap(real[i], real[j]), `random ${polygon} ${i}/${j}`).toBe(false);
+  const graph = new GPUCommandGraph(device, {id: 'ordinary-polygon-triangulation'});
+  const square = [0, 0, 4, 0, 4, 4, 0, 4];
+  const buffers = {
+    positions: createInputBuffer(device, new Float32Array([...square, ...square])),
+    featureOffsets: createInputBuffer(device, new Uint32Array([0, 1, 2])),
+    polygonOffsets: createInputBuffer(device, new Uint32Array([0, 1, 2])),
+    ringOffsets: createInputBuffer(device, new Uint32Array([0, 4, 8])),
+    // The original exact capacity for two squares remains supported.
+    indices: createOutputBuffer(device, 12),
+    valid: createOutputBuffer(device, 2),
+    triangleCount: createOutputBuffer(device, 2),
+    triangleOffsets: createOutputBuffer(device, 3)
+  };
+  try {
+    graph.add(
+      new GPUPolygonTriangulation({
+        positions: importGraphBuffer(graph, 'positions', buffers.positions, 'float32x2', 8),
+        featureOffsets: importGraphBuffer(graph, 'features', buffers.featureOffsets, 'uint32', 3),
+        polygonOffsets: importGraphBuffer(graph, 'polygons', buffers.polygonOffsets, 'uint32', 3),
+        ringOffsets: importGraphBuffer(graph, 'rings', buffers.ringOffsets, 'uint32', 3),
+        output: {
+          indices: importGraphBuffer(graph, 'indices', buffers.indices, 'uint32', 12),
+          valid: importGraphBuffer(graph, 'valid', buffers.valid, 'uint32', 2),
+          triangleCount: importGraphBuffer(graph, 'counts', buffers.triangleCount, 'uint32', 2),
+          triangleOffsets: importGraphBuffer(graph, 'offsets', buffers.triangleOffsets, 'uint32', 3)
         }
-      }
+      })
+    );
+    const compiled = graph.compile();
+    try {
+      submitGraph(device, compiled, undefined);
+      // Pinned order of the existing Earcut walk: start at the last ring vertex, then advance.
+      expect(await readUint32(buffers.indices, 12)).toEqual([2, 3, 0, 2, 0, 1, 6, 7, 4, 6, 4, 5]);
+      expect(await readUint32(buffers.valid, 2)).toEqual([1, 1]);
+      expect(await readUint32(buffers.triangleCount, 2)).toEqual([2, 2]);
+      const triangleOffsets = await readUint32(buffers.triangleOffsets, 3);
+      expect(triangleOffsets.map(offset => 3 * offset)).toEqual([0, 6, 12]);
+    } finally {
+      compiled.destroy();
     }
-  });
-});
-
-it('GPUPolygonTriangulation z-order hash gives the same triangles as the ring scan', async () => {
-  const device = await getWebGPUTestDevice();
-  requireTestDevice(device);
-  // Star-shaped outline with deep spikes (many reflex vertices) and two holes, above the 80
-  // vertex threshold, next to a small polygon that stays unhashed.
-  const spiky: Point[] = [];
-  for (let k = 0; k < 700; k++) {
-    const angle = (2 * Math.PI * k) / 700;
-    const radius = k % 2 === 0 ? 100 : 60 + (k % 7);
-    spiky.push([Math.cos(angle) * radius, Math.sin(angle) * radius]);
+  } finally {
+    for (const buffer of Object.values(buffers)) {
+      buffer.destroy();
+    }
   }
-  const hole = (cx: number, cy: number): Point[] => [
-    [cx - 5, cy - 5],
-    [cx - 5, cy + 5],
-    [cx + 5, cy + 5],
-    [cx + 5, cy - 5]
-  ];
-  const square: Point[][] = [
-    [
-      [0, 0],
-      [4, 0],
-      [4, 4],
-      [0, 4]
-    ]
-  ];
-  const polygons = [[spiky, hole(-20, 0), hole(20, 10)], square, [spiky]];
-  const hashed = await runTriangulation(device, polygons, {useZOrderHash: true});
-  const scanned = await runTriangulation(device, polygons, {useZOrderHash: false});
-  expect(hashed.valid).toEqual([1, 1, 1]);
-  expect(hashed.valid).toEqual(scanned.valid);
-  expect(hashed.triangleCount).toEqual(scanned.triangleCount);
-  expect(hashed.indices).toEqual(scanned.indices);
 });

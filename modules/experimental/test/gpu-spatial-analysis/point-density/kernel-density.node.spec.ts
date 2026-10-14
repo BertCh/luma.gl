@@ -4,6 +4,12 @@
 
 import {createTransientView, GPUCommandGraph} from '@luma.gl/gpgpu/gpu-core';
 import {expect, it} from 'vitest';
+import {GPUStudyWindowPreparation} from '../../../src/gpu-spatial-analysis/study-window/gpu-study-window-preparation';
+import {
+  getGPUCommandNodeKernelSources,
+  getStorageBindingCount
+} from '../../utils/gpu-contributor-test-utils';
+import {auditWGSLModule} from '../../analysis-core/kernel-audit/kernel-audit-wgsl';
 import {createNullWebGPUDevice} from '../../utils/gpu-contributor-test-utils';
 import {
   getGPUKernelDensityParameterValues,
@@ -17,6 +23,7 @@ import {
 } from '../../../src/gpu-spatial-analysis/point-density/kernel-density-math';
 import {makeExtentGrid} from '../spatial-interpolation/extent-grid';
 import {getBandwidthOracle} from './kernel-density-bandwidth-oracle';
+import {getPolygonKernelDensityOracle} from './point-density-oracle';
 import {KERNEL_DENSITY_ORACLE} from './kernel-density-oracle-values';
 
 const GRID_4_BY_3 = makeExtentGrid(4, 3, [0, 0, 4, 3]);
@@ -218,4 +225,207 @@ it('GPUKernelDensity validates its area frame', () => {
   );
   expect(() => new GPUKernelDensity({...props, spatialContext: AREA_FRAME})).not.toThrow();
   device.destroy();
+});
+
+it('polygon KDE packs NaN rectangle slots, validates corrections, frames and graph ownership', () => {
+  const device = createNullWebGPUDevice();
+  const graph = new GPUCommandGraph(device);
+  const otherGraph = new GPUCommandGraph(device);
+  const base = {
+    id: 'polygon-kde',
+    spatialContext: {
+      coordinateSpace: 'planar',
+      metric: 'native',
+      frame: {kind: 'crs', id: 'kde-frame'}
+    } as const,
+    positions: createTransientView(graph, 'points', 'float32x2', 8),
+    parameters: createTransientView(graph, 'parameters', 'float32', 9),
+    grid: GRID_4_BY_3,
+    indexGridSize: [2, 2] as const,
+    indexBounds: [0, 0, 4, 3] as const,
+    output: {values: createTransientView(graph, 'values', 'float32', 12)}
+  };
+  const studyWindow = new GPUStudyWindowPreparation({
+    positions: createTransientView(graph, 'vertices', 'float32x2', 4),
+    featureOffsets: createTransientView(graph, 'features', 'uint32', 2),
+    polygonOffsets: createTransientView(graph, 'polygons', 'uint32', 2),
+    ringOffsets: createTransientView(graph, 'rings', 'uint32', 2),
+    samplingGrid: [4, 4]
+  });
+  const packed = getGPUKernelDensityParameterValues(
+    {bandwidth: 1, window: 'study-window'},
+    GRID_4_BY_3
+  );
+  expect(Array.from(packed.slice(0, 5))).toEqual([0, 0, 4, 3, 1]);
+  expect(Array.from(packed.slice(5)).every(Number.isNaN)).toBe(true);
+  expect(() => new GPUKernelDensity({...base, studyWindow, edgeCorrection: 'none'})).toThrow(
+    "polygon-kde studyWindow is ignored without edge correction; set edgeCorrection to 'uniform' or 'diggle'"
+  );
+  for (const spatialContext of [
+    {coordinateSpace: 'longitude-latitude', metric: 'great-circle'} as const,
+    {
+      coordinateSpace: 'planar',
+      metric: 'native',
+      units: 'meters',
+      frame: {kind: 'crs', id: 'other'}
+    } as const
+  ]) {
+    expect(
+      () =>
+        new GPUKernelDensity({
+          ...base,
+          studyWindow: {
+            kind: 'polygon',
+            id: 'wrong-frame',
+            spatialContext,
+            getViews: () => studyWindow.getViews(graph)
+          }
+        })
+    ).toThrow(/studyWindow incompatible spatial contexts/);
+  }
+  expect(() => new GPUKernelDensity({...base, studyWindow}).getCommandNodes(graph)).toThrow(
+    /needs graph.add/
+  );
+  graph.add(studyWindow);
+  const views = studyWindow.getViews(graph);
+  expect(() =>
+    new GPUKernelDensity({
+      ...base,
+      studyWindow: {
+        kind: 'polygon',
+        id: 'foreign-packed',
+        spatialContext: studyWindow.spatialContext,
+        getViews: () => ({
+          ...views,
+          packed: createTransientView(otherGraph, 'foreign', 'uint32', views.packed.length)
+        })
+      }
+    }).getCommandNodes(graph)
+  ).toThrow(/graph/);
+  device.destroy();
+});
+
+it('polygon KDE uses one packed binding and one exact inclusion call per kernel at core limits', () => {
+  const device = createNullWebGPUDevice();
+  for (const method of ['exact', 'binned', 'auto'] as const) {
+    for (const kernel of KERNELS) {
+      if (method === 'binned' && kernel !== 'gaussian') {
+        continue;
+      }
+      for (const edgeCorrection of ['uniform', 'diggle'] as const) {
+        const graph = new GPUCommandGraph(device);
+        const studyWindow = new GPUStudyWindowPreparation({
+          positions: createTransientView(graph, 'vertices', 'float32x2', 6),
+          featureOffsets: createTransientView(graph, 'features', 'uint32', 2),
+          polygonOffsets: createTransientView(graph, 'polygons', 'uint32', 2),
+          ringOffsets: createTransientView(graph, 'rings', 'uint32', 2),
+          samplingGrid: [4, 4]
+        });
+        graph.add(studyWindow);
+        const nodes = new GPUKernelDensity({
+          studyWindow,
+          method,
+          kernel,
+          edgeCorrection,
+          bandwidthRule: 'scott',
+          normalization: 'probability',
+          positions: createTransientView(graph, 'points', 'float32x2', 8),
+          weights: createTransientView(graph, 'weights', 'float32', 8),
+          parameters: createTransientView(graph, 'parameters', 'float32', 9),
+          grid: GRID_4_BY_3,
+          indexGridSize: [2, 2],
+          indexBounds: [0, 0, 4, 3],
+          output: {
+            values: createTransientView(graph, 'values', 'float32', 12),
+            weightSum: createTransientView(graph, 'weightSum', 'float32', 1),
+            status: {invalidCount: createTransientView(graph, 'invalid', 'uint32', 1)}
+          }
+        }).getCommandNodes(graph);
+        const sources = getGPUCommandNodeKernelSources(nodes);
+        const windowSources = sources.filter(({source}) =>
+          source.includes('fn isInsideStudyWindow')
+        );
+        expect(windowSources.length).toBeGreaterThanOrEqual(2);
+        for (const {source} of sources) {
+          expect(getStorageBindingCount(source)).toBeLessThanOrEqual(8);
+        }
+        for (const {source, constants} of windowSources) {
+          expect(source).toMatch(/var<storage, read> studyWindow: array<u32>/);
+          expect(source.match(/isInsideStudyWindow\(/g)).toHaveLength(2); // declaration + single call
+          expect(source.match(/fn isFiniteBits\(/g)).toHaveLength(1);
+          expect(source.match(/fn exactProbeCrossing\(/g)).toHaveLength(1);
+          expect(source).not.toContain('isInsideStudyWindow(relative)');
+          expect(auditWGSLModule(source, constants)).toEqual([]);
+        }
+      }
+    }
+  }
+  device.destroy();
+});
+
+it('explicit rectangle preserves default KDE nodes and byte-identical WGSL', () => {
+  const device = createNullWebGPUDevice();
+  for (const method of ['exact', 'binned', 'auto'] as const) {
+    for (const edgeCorrection of ['none', 'uniform', 'diggle'] as const) {
+      const build = (explicit: boolean) => {
+        const graph = new GPUCommandGraph(device);
+        const nodes = new GPUKernelDensity({
+          ...(explicit ? {studyWindow: 'rectangle' as const} : {}),
+          method,
+          edgeCorrection,
+          positions: createTransientView(graph, 'points', 'float32x2', 8),
+          parameters: createTransientView(graph, 'parameters', 'float32', 9),
+          grid: GRID_4_BY_3,
+          indexGridSize: [2, 2],
+          indexBounds: [0, 0, 4, 3],
+          output: {values: createTransientView(graph, 'values', 'float32', 12)}
+        }).getCommandNodes(graph);
+        return {ids: nodes.map(node => node.id), sources: getGPUCommandNodeKernelSources(nodes)};
+      };
+      expect(build(true)).toEqual(build(false));
+    }
+  }
+  device.destroy();
+});
+
+it('polygon exact oracle agrees with the pinned rectangle fields at their documented tolerance', () => {
+  const {field} = KERNEL_DENSITY_ORACLE;
+  const [minimumX, minimumY, maximumX, maximumY] = field.window;
+  const window = {
+    positions: new Float64Array([
+      minimumX,
+      minimumY,
+      maximumX,
+      minimumY,
+      maximumX,
+      maximumY,
+      minimumX,
+      maximumY
+    ]),
+    polygonOffsets: new Uint32Array([0, 1]),
+    ringOffsets: new Uint32Array([0, 4])
+  };
+  for (const testCase of field.cases) {
+    if (testCase.edgeCorrection === 'none') {
+      continue;
+    }
+    const actual = getPolygonKernelDensityOracle({
+      window,
+      points: field.points,
+      weights: testCase.weighted ? field.weights : undefined,
+      width: field.columns,
+      height: field.rows,
+      start: [minimumX, minimumY],
+      cellSize: [(maximumX - minimumX) / field.columns, (maximumY - minimumY) / field.rows],
+      bandwidth: field.bandwidth,
+      kernel: testCase.kernel,
+      edgeCorrection: testCase.edgeCorrection
+    });
+    // The pinned sklearn Gaussian field is untruncated; use its existing field tolerance.
+    // Polygon-versus-rectangle GPU parity uses the same truncated sum and keeps 2e-5 relative.
+    const tolerance = 2e-4 * Math.max(...testCase.values.map(Math.abs));
+    for (const [index, expected] of testCase.values.entries()) {
+      expect(Math.abs(actual[index] - expected)).toBeLessThanOrEqual(tolerance);
+    }
+  }
 });

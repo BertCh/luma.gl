@@ -15,12 +15,26 @@ import {
   GPU_SPATIAL_CORRELOGRAM_STATISTICS_LENGTH,
   type GPUSpatialCorrelogramSettings
 } from '../../../src/gpu-dataframe/pair-statistics/spatial-correlogram-parameters';
-import {createPairStatisticsHarness, getFloatBits} from './pair-statistics-harness';
+import {
+  createPairStatisticsHarness,
+  createPairStatisticsWindowHarness,
+  getFloatBits,
+  type HarnessViews,
+  type HarnessOutput
+} from './pair-statistics-harness';
 import {createRandom} from './pair-statistics-oracle';
 import {computeSpatialCorrelogramOnCPU} from './spatial-correlogram-oracle';
 import {CORRELOGRAM_OUTLIER_REFERENCES} from './correlogram-outlier-reference';
 import {createVariogramOutlierScene, VARIOGRAM_OUTLIER_FRAME} from './variogram-outlier-fixture';
 import {requireTestDevice} from '../../utils/require-test-device';
+
+import type {GPUStudyWindow} from '../../../src/analysis-core/contracts/study-window';
+import {
+  ORACLE_L_SHAPE,
+  getOracleWindowBounds,
+  isOracleInsideWindow,
+  type OracleStudyWindow
+} from '../../analysis-core/study-window-oracle';
 
 const BOUNDS = [0, 0, 100, 100] as const;
 
@@ -48,9 +62,10 @@ function createHarness(
   device: Device,
   scene: ReturnType<typeof createSmoothScene>,
   bandCount: number,
-  bandMode: GPUSpatialCorrelogramBandMode
+  bandMode: GPUSpatialCorrelogramBandMode,
+  window?: OracleStudyWindow
 ) {
-  return createPairStatisticsHarness(device, {
+  const props = {
     ...scene,
     parameterLength: GPU_SPATIAL_CORRELOGRAM_PARAMETER_LENGTH,
     outputs: {
@@ -63,9 +78,23 @@ function createHarness(
       peakBands: {format: 'uint32', length: 2},
       statistics: {format: 'float32', length: GPU_SPATIAL_CORRELOGRAM_STATISTICS_LENGTH},
       overflow: {format: 'uint32', length: 1}
-    },
-    createContributor: views =>
+    } satisfies Record<string, HarnessOutput>,
+    createContributor: (
+      views: HarnessViews<
+        | 'moransI'
+        | 'zScores'
+        | 'pValues'
+        | 'expectedI'
+        | 'varianceI'
+        | 'pairCounts'
+        | 'peakBands'
+        | 'statistics'
+        | 'overflow'
+      >,
+      studyWindow?: GPUStudyWindow
+    ) =>
       new GPUSpatialCorrelogram({
+        studyWindow,
         positions: views.positions,
         values: views.values!,
         mask: views.mask,
@@ -85,7 +114,10 @@ function createHarness(
           status: {overflow: views.outputs.overflow as never}
         }
       })
-  });
+  };
+  return window
+    ? createPairStatisticsWindowHarness(device, {...props, window})
+    : createPairStatisticsHarness(device, props);
 }
 
 function expectClose(label: string, actual: number, expected: number, tolerance: number): void {
@@ -106,7 +138,9 @@ for (const bandMode of ['cumulative', 'annulus'] as const) {
     const bandCount = 10;
     const harness = createHarness(device, scene, bandCount, bandMode);
     try {
-      const frames: GPUSpatialCorrelogramSettings[] = [
+      const frames: (GPUSpatialCorrelogramSettings & {
+        bounds: readonly [number, number, number, number];
+      })[] = [
         {bounds: BOUNDS, maximumDistance: 25},
         {bounds: BOUNDS, maximumDistance: 25, varianceAssumption: 'normality'},
         {bounds: BOUNDS, maximumDistance: 6},
@@ -282,3 +316,57 @@ it("GPUSpatialCorrelogram keeps Moran's I when one outlier or sentinel inflates 
     }
   }
 }, 120000);
+
+it('GPUSpatialCorrelogram L-shape inclusion matches pre-filtered rectangle rows', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const positions = new Float32Array([
+    80, 90, 430, 200, 550, 480, 900, 310, 1450, 260, 1900, 550, 310, 900, 400, 1400, 300, 1900, 550,
+    650, 1100, 1100, 1700, 1700
+  ]);
+  const values = Float32Array.from({length: positions.length / 2}, (_, row) => row * row - 5 * row);
+  const mask = new Uint32Array(values.length).fill(1);
+  const scene = {positions, values, mask};
+  const included = Array.from({length: values.length}, (_, row) => row).filter(row =>
+    isOracleInsideWindow(ORACLE_L_SHAPE, [positions[2 * row], positions[2 * row + 1]])
+  );
+  expect(included.length).toBe(10);
+  const filtered = {
+    positions: Float32Array.from(
+      included.flatMap(row => [positions[2 * row], positions[2 * row + 1]])
+    ),
+    values: Float32Array.from(included.map(row => values[row])),
+    mask: new Uint32Array(included.length).fill(1)
+  };
+  const polygon = createHarness(device, scene, 6, 'annulus', ORACLE_L_SHAPE);
+  const rectangle = createHarness(device, filtered, 6, 'annulus');
+  try {
+    for (const maximumDistance of [431, 913]) {
+      const actual = await polygon.run(
+        getGPUSpatialCorrelogramParameterValues({bounds: 'study-window', maximumDistance})
+      );
+      const expected = await rectangle.run(
+        getGPUSpatialCorrelogramParameterValues({
+          bounds: getOracleWindowBounds(ORACLE_L_SHAPE),
+          maximumDistance
+        })
+      );
+      expect(actual.statistics[0]).toBe(included.length);
+      expect(actual.pairCounts).toEqual(expected.pairCounts);
+      for (const key of Object.keys(expected) as (keyof typeof expected)[]) {
+        actual[key].forEach((value, index) =>
+          expectClose(
+            `${key} ${index}`,
+            value,
+            expected[key][index],
+            1e-5 * Math.max(1, Math.abs(expected[key][index]))
+          )
+        );
+      }
+    }
+    expect(polygon.rebuildCount).toBe(0);
+  } finally {
+    polygon.destroy();
+    rectangle.destroy();
+  }
+});

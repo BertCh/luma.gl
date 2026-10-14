@@ -4,6 +4,7 @@
 
 import {createTransientView, GPUCommandGraph, type GraphDataView} from '@luma.gl/gpgpu/gpu-core';
 import {expect, it} from 'vitest';
+import type {GPUSpatialContext} from '../../../src/analysis-core/contracts';
 import {WgslReflect} from 'wgsl_reflect';
 import {getRasterPipelines} from '../raster-pipeline-count';
 import {makeGPURasterMetadata} from '../../../src/gpu-raster/raster-grid';
@@ -19,6 +20,7 @@ import {
 import {createNullWebGPUDevice} from '../../utils/gpu-contributor-test-utils';
 import {
   createPolygons,
+  createSplitFijiPolygons,
   findContainingFeature,
   joinPointsOnCPU,
   NO_ZONE,
@@ -301,4 +303,70 @@ it('rule 14: the join tallies are reduced per workgroup before one global atomic
   expect(aggregate.source.match(/atomicAdd\(&tallies\[/g)).toHaveLength(1);
   expect(aggregate.source).toMatch(/@workgroup_size\(256\)/);
   expect(() => new WgslReflect(aggregate.source)).not.toThrow();
+});
+
+for (const operation of ['raster', 'join'] as const) {
+  it(`${operation} validates and exposes polygon spatial contexts`, () => {
+    const create = (spatialContext?: GPUSpatialContext) => {
+      const graph = new GPUCommandGraph(createNullWebGPUDevice());
+      return operation === 'raster'
+        ? new GPUPolygonRasterization(createRasterizationProps(graph, {spatialContext}))
+        : new GPURasterJoin(createJoinProps(graph, {spatialContext}));
+    };
+    expect(create().spatialContext).toEqual({
+      coordinateSpace: 'planar',
+      metric: 'native',
+      units: 'native'
+    });
+    const planar: GPUSpatialContext = {coordinateSpace: 'planar', metric: 'none'};
+    expect(create(planar).spatialContext).toBe(planar);
+    const longitudeLatitude: GPUSpatialContext = {
+      coordinateSpace: 'longitude-latitude',
+      metric: 'none'
+    };
+    expect(create(longitudeLatitude).spatialContext).toBe(longitudeLatitude);
+    expect(create({...longitudeLatitude, edgeModel: 'linear'}).spatialContext.edgeModel).toBe(
+      'linear'
+    );
+    expect(() => create({...longitudeLatitude, metric: 'great-circle', units: 'meters'})).toThrow(
+      `${operation} does not support the great-circle metric`
+    );
+    expect(() => create({...longitudeLatitude, edgeModel: 'great-circle'})).toThrow(
+      `${operation} needs linear edges; prepare polygons with GPULonLatPolygonPreparation`
+    );
+  });
+}
+
+it('longitude copies preserve Fiji coverage and off-grid crossing parity', () => {
+  const polygons = createSplitFijiPolygons();
+  const raster = {width: 80, height: 16, extent: [170, -19, 0.25, 0.25] as const};
+  const result = rasterizePolygonsOnCPU(polygons, raster, {longitudeLatitude: true});
+  expect(Array.from(result.zones.slice(4 * 80, 5 * 80))).toEqual([
+    ...new Array(28).fill(NO_ZONE),
+    ...new Array(20).fill(0),
+    ...new Array(32).fill(NO_ZONE)
+  ]);
+  expect(result.crossingCount).toBe(64);
+  // Both vertical sides lie outside this grid: they still establish that every center is inside.
+  const interior = {width: 4, height: 4, extent: [178, -17.5, 0.25, 0.25] as const};
+  expect(
+    Array.from(rasterizePolygonsOnCPU(polygons, interior, {longitudeLatitude: true}).zones)
+  ).toEqual(new Array(16).fill(0));
+  const canonical = {width: 80, height: 16, extent: [-180, -19, 0.25, 0.25] as const};
+  expect(rasterizePolygonsOnCPU(polygons, canonical, {longitudeLatitude: true})).toEqual(
+    rasterizePolygonsOnCPU(polygons, canonical)
+  );
+});
+
+it('longitude raster kernels parse and keep shifted positions out of persistent buffers', () => {
+  const graph = new GPUCommandGraph(createNullWebGPUDevice());
+  const contributor = new GPUPolygonRasterization(
+    createRasterizationProps(graph, {
+      spatialContext: {coordinateSpace: 'longitude-latitude', metric: 'none'},
+      boundary: createTransientView(graph, 'boundary', 'uint32', 48)
+    })
+  );
+  for (const pipeline of getRasterPipelines(contributor.getCommandNodes(graph))) {
+    expect(() => new WgslReflect(pipeline.source), pipeline.id).not.toThrow();
+  }
 });

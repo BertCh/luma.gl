@@ -10,6 +10,7 @@ import {
   GPUGeographicDistribution,
   GPUHuffTradeAreas,
   GPUKernelDensity,
+  GPUStudyWindowPreparation,
   GPU_POINT_DENSITY_MAXIMUM_FIXED_POINT_CELL_COUNT,
   GPUPointDensity,
   GPUFocalStatistics,
@@ -118,6 +119,21 @@ function compact(context: KernelAuditContext, capacity: number) {
 
 /** Kernel-audit cases for points-and-regions. */
 export const POINTS_AND_REGIONS_CASES: KernelAuditCase[] = [
+  {
+    exportName: 'GPUStudyWindowPreparation',
+    name: 'polygon window, sampler and caller-owned summary',
+    build: context => {
+      context.graph.add(
+        new GPUStudyWindowPreparation({
+          ...polygons(context, 1, 65),
+          samplingGrid: [16, 16],
+          crossingCapacity: 128,
+          slabEntryCapacity: 256,
+          output: {summary: context.view('float32', 8)}
+        })
+      );
+    }
+  },
   // Areal interpolation
   ...(['extensive', 'intensive'] as const).flatMap(mode =>
     (['zone', 'overlap'] as const).map(
@@ -2234,5 +2250,49 @@ export const POINTS_AND_REGIONS_CASES: KernelAuditCase[] = [
         );
       }
     })
+  ),
+  // Polygon KDE: exercise the binding-heavy configuration on both evaluation paths.
+  ...(['exact', 'binned', 'auto'] as const).flatMap(method =>
+    (['uniform', 'diggle'] as const).flatMap(edgeCorrection =>
+      (method === 'binned'
+        ? (['gaussian'] as const)
+        : (['gaussian', 'quartic', 'epanechnikov'] as const)
+      ).map(
+        (kernel): KernelAuditCase => ({
+          exportName: 'GPUKernelDensity',
+          name: `polygon window ${method} ${kernel} ${edgeCorrection}`,
+          build: context => {
+            const {graph, view} = context;
+            const studyWindow = new GPUStudyWindowPreparation({
+              ...polygons(context, 1, 16),
+              samplingGrid: [8, 8]
+            });
+            graph.add(studyWindow);
+            graph.add(
+              new GPUKernelDensity({
+                studyWindow,
+                method,
+                kernel,
+                edgeCorrection,
+                normalization: 'probability',
+                bandwidthRule: 'scott',
+                positions: view('float32x2', 32),
+                weights: view('float32', 32),
+                parameters: view('float32', GPU_KERNEL_DENSITY_PARAMETER_LENGTH),
+                grid: makeGPURasterMetadata({width: 16, height: 12}),
+                indexGridSize: [4, 4],
+                indexBounds: [0, 0, 100, 100],
+                output: {
+                  values: view('float32', 16 * 12),
+                  weightSum: view('float32', 1),
+                  bandwidth: view('float32', 1),
+                  status: {invalidCount: view('uint32', 1)}
+                }
+              })
+            );
+          }
+        })
+      )
+    )
   )
 ];

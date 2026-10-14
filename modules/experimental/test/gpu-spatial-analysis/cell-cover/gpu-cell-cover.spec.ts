@@ -6,6 +6,12 @@ import type {Buffer, Device} from '@luma.gl/core';
 import {GPUCommandGraph} from '@luma.gl/gpgpu/gpu-core';
 import {getWebGPUTestDevice} from '@luma.gl/test-utils';
 import {cellToLatLng, getPentagons} from 'h3-js';
+import {
+  FIJI_SPLIT,
+  FIJI_TRANSMERIDIAN,
+  ANTARCTICA_NATURAL_EARTH
+} from '../lon-lat-polygons/fixtures';
+import {getCoverFixtureFeatures} from './cell-cover-oracle';
 import {expect, it} from 'vitest';
 import {importGraphBuffer} from '../../../src/utils/gpu-contributor-utils';
 import {
@@ -40,6 +46,9 @@ type CoverRun = CoverResult & {
   count: number;
   overflow: number;
   candidateOverflow: number;
+  candidateCount: number;
+  invalidCount: number;
+  uncertainCount: number;
   total: number;
   featureIds: number[];
   core: number[];
@@ -55,6 +64,7 @@ async function runCover(
     candidateCapacity: number;
     outputCapacity: number;
     featureIds?: number[];
+    candidateEnumeration?: 'bounds' | 'auto' | 'scanline';
     edgeSlabs?: boolean;
     edgeSlabEntryCapacity?: number;
   }
@@ -79,6 +89,9 @@ async function runCover(
     count: output(1),
     overflow: output(1),
     candidateOverflow: output(1),
+    candidateCount: output(1),
+    invalidCount: output(1),
+    uncertainCount: output(1),
     total: output(1)
   };
   const graph = new GPUCommandGraph(device, {id: 'cell-cover-graph'});
@@ -125,6 +138,7 @@ async function runCover(
           )
         : undefined,
       candidateCapacity: options.candidateCapacity,
+      candidateEnumeration: options.candidateEnumeration,
       edgeSlabs: options.edgeSlabs,
       edgeSlabEntryCapacity: options.edgeSlabEntryCapacity,
       output: {
@@ -144,6 +158,27 @@ async function runCover(
         ),
         core: importGraphBuffer(graph, 'out-core', outputBuffers.core, 'uint32', outputCapacity),
         status: {
+          candidateCount: importGraphBuffer(
+            graph,
+            'candidate-count',
+            outputBuffers.candidateCount,
+            'uint32',
+            1
+          ),
+          invalidCount: importGraphBuffer(
+            graph,
+            'invalid-count',
+            outputBuffers.invalidCount,
+            'uint32',
+            1
+          ),
+          uncertainCount: importGraphBuffer(
+            graph,
+            'uncertain-count',
+            outputBuffers.uncertainCount,
+            'uint32',
+            1
+          ),
           count: importGraphBuffer(graph, 'out-count', outputBuffers.count, 'uint32', 1),
           requiredCount: importGraphBuffer(graph, 'out-total', outputBuffers.total, 'uint32', 1),
           overflow: importGraphBuffer(graph, 'out-overflow', outputBuffers.overflow, 'uint32', 1),
@@ -172,6 +207,9 @@ async function runCover(
     count,
     overflow,
     candidateOverflow,
+    candidateCount: (await readUint32(outputBuffers.candidateCount, 1))[0],
+    invalidCount: (await readUint32(outputBuffers.invalidCount, 1))[0],
+    uncertainCount: (await readUint32(outputBuffers.uncertainCount, 1))[0],
     total,
     featureIds: ids.slice(0, count),
     featureRows: [],
@@ -620,3 +658,70 @@ for (const edgeSlabs of [false, true]) {
     buffers.forEach(buffer => buffer.destroy());
   });
 }
+
+for (const candidateEnumeration of ['bounds', 'auto', 'scanline'] as const) {
+  it(`GPUCellCover split Fiji equals transmeridian h3-js cover (${candidateEnumeration})`, async () => {
+    const device = await getWebGPUTestDevice();
+    requireTestDevice(device);
+    const features = getCoverFixtureFeatures(FIJI_SPLIT);
+    // Fixed prepared topology can include empty polygons/rings.
+    features[0].push([[]]);
+    const result = await runCover(device, features, {
+      family: 'h3',
+      resolution: 3,
+      candidateEnumeration,
+      candidateCapacity: 100000,
+      outputCapacity: 1000
+    });
+    const expected = coverH3OnCPU(getCoverFixtureFeatures(FIJI_TRANSMERIDIAN), 3);
+    expect(result.invalidCount).toBe(0);
+    expect(result.candidateOverflow).toBe(0);
+    expect(result.overflow).toBe(0);
+    expect(countCoverDisagreements(result, expected)).toBe(0);
+    expect(new Set(result.cells).size).toBe(result.count);
+    expect(result.count).toBeGreaterThan(0);
+  });
+}
+
+it('GPUCellCover accepts full-width Antarctica and reports candidates and polar uncertainty', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const features = getCoverFixtureFeatures(ANTARCTICA_NATURAL_EARTH);
+  features.push([[[]]]);
+  const result = await runCover(device, features, {
+    family: 'quadbin',
+    resolution: 4,
+    candidateEnumeration: 'bounds',
+    candidateCapacity: 256,
+    outputCapacity: 256
+  });
+  expect(result.invalidCount).toBe(0);
+  expect(result.uncertainCount).toBe(1);
+  // Bounds [-180, -90, 180, -70] span all 16 columns and Mercator rows 12 through 15.
+  expect(result.candidateCount).toBe(64);
+  expect(result.candidateOverflow).toBe(0);
+  expect(
+    countCoverDisagreements(result, coverQuadbinOnCPU(flattenCoverFeatures(features), 4, 'center'))
+  ).toBe(0);
+  expect(
+    countCoverDisagreements(result, coverQuadbinCenterFloat64(flattenCoverFeatures(features), 4))
+  ).toBe(0);
+  // The three southern rows have centers below every coastal vertex: 3 * 16 distinct cells.
+  expect(result.cells).toHaveLength(48);
+  expect(new Set(result.cells).size).toBe(result.cells.length);
+  expect(result.featureRows.every(feature => feature === 0)).toBe(true);
+});
+
+it('GPUCellCover rejects unsplit transmeridian Fiji', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const result = await runCover(device, getCoverFixtureFeatures(FIJI_TRANSMERIDIAN), {
+    family: 'h3',
+    resolution: 3,
+    candidateCapacity: 1000,
+    outputCapacity: 1000
+  });
+  expect(result.invalidCount).toBe(1);
+  expect(result.candidateCount).toBe(0);
+  expect(result.count).toBe(0);
+});

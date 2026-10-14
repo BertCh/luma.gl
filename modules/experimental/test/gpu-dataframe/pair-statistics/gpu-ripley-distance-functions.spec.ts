@@ -191,3 +191,114 @@ it('GPURipleyDistanceFunctions separates clustering from complete spatial random
   expect(clustered.j[3]).toBeLessThan(0.5);
   expect(clustered.g[3]).toBeGreaterThan(clustered.f[3]);
 });
+
+import {createPairStatisticsWindowHarness} from './pair-statistics-harness';
+import {
+  ORACLE_RECTANGLE,
+  ORACLE_L_SHAPE,
+  type OracleStudyWindow
+} from '../../analysis-core/study-window-oracle';
+
+it('polygon G/F/J matches rectangle border/KM and the same-lattice Hanisch oracle', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const positions = new Float32Array(240);
+  const random = createRandom(178);
+  for (let row = 0; row < positions.length / 2; row++) {
+    positions[row * 2] = 20 + random() * 1960;
+    positions[row * 2 + 1] = 20 + random() * 960;
+  }
+  const radiusCount = 8;
+  const referenceGrid = [53, 47] as const;
+  const makeHarness = (window?: OracleStudyWindow) => {
+    const common = {
+      positions,
+      parameterLength: GPU_RIPLEY_DISTANCE_FUNCTIONS_PARAMETER_LENGTH,
+      outputs: {
+        g: {format: 'float32', length: radiusCount},
+        f: {format: 'float32', length: radiusCount},
+        j: {format: 'float32', length: radiusCount},
+        radii: {format: 'float32', length: radiusCount}
+      }
+    } as const;
+    if (window)
+      return createPairStatisticsWindowHarness(device, {
+        ...common,
+        window,
+        createContributor: (views, studyWindow) =>
+          new GPURipleyDistanceFunctions({
+            positions: views.positions,
+            parameters: views.parameters,
+            studyWindow,
+            gridSize: [16, 16],
+            referenceGrid,
+            radiusCount,
+            output: {
+              g: views.outputs.g as never,
+              f: views.outputs.f as never,
+              j: views.outputs.j as never,
+              radii: views.outputs.radii as never
+            }
+          })
+      });
+    return createPairStatisticsHarness(device, {
+      ...common,
+      createContributor: views =>
+        new GPURipleyDistanceFunctions({
+          positions: views.positions,
+          parameters: views.parameters,
+          gridSize: [16, 16],
+          referenceGrid,
+          radiusCount,
+          output: {
+            g: views.outputs.g as never,
+            f: views.outputs.f as never,
+            j: views.outputs.j as never,
+            radii: views.outputs.radii as never
+          }
+        })
+    });
+  };
+  const rectangle = makeHarness();
+  const polygonRectangle = makeHarness(ORACLE_RECTANGLE);
+  const polygon = makeHarness(ORACLE_L_SHAPE);
+  try {
+    for (const edgeCorrection of ['border', 'kaplan-meier'] as const) {
+      const frame = {bounds: [0, 0, 2000, 1000] as const, maximumDistance: 160, edgeCorrection};
+      const expected = await rectangle.run(getGPURipleyDistanceFunctionsParameterValues(frame));
+      const actual = await polygonRectangle.run(
+        getGPURipleyDistanceFunctionsParameterValues({...frame, bounds: 'study-window'})
+      );
+      for (const name of ['g', 'f', 'j'] as const) {
+        actual[name].forEach((value, index) =>
+          expectClose(`${edgeCorrection} ${name} ${index}`, value, expected[name][index], 1e-5)
+        );
+      }
+    }
+    for (const edgeCorrection of ['none', 'hanisch'] as const) {
+      const frame = {bounds: 'study-window', maximumDistance: 160, edgeCorrection} as const;
+      const actual = await polygon.run(getGPURipleyDistanceFunctionsParameterValues(frame));
+      const expected = computeRipleyDistanceFunctionsOnCPU(
+        {positions},
+        frame,
+        radiusCount,
+        referenceGrid,
+        ORACLE_L_SHAPE
+      );
+      expect(expected.fDenominators[0]).toBeLessThan(referenceGrid[0] * referenceGrid[1]);
+      expect(actual.f.some(value => value > 0)).toBe(true);
+      for (const name of ['g', 'f', 'j'] as const) {
+        actual[name].forEach((value, index) =>
+          expectClose(`${edgeCorrection} ${name} ${index}`, value, expected[name][index], 1e-4)
+        );
+      }
+      const again = await polygon.run(getGPURipleyDistanceFunctionsParameterValues(frame));
+      expect(getFloatBits(actual.g)).toEqual(getFloatBits(again.g));
+      expect(getFloatBits(actual.f)).toEqual(getFloatBits(again.f));
+    }
+  } finally {
+    rectangle.destroy();
+    polygonRectangle.destroy();
+    polygon.destroy();
+  }
+}, 240000);
