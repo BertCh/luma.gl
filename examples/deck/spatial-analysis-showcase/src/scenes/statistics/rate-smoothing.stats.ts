@@ -29,7 +29,8 @@ export function getPercentile(sorted: ArrayLike<number>, value: number): number 
 /**
  * The empirical-Bayes weight of every county, `w = a / (a + m / b)`: how much of its smoothed rate
  * is its own. `a` is the estimated variance of the true rates, `m` the pooled rate (per woman-year)
- * and `b` the woman-years. esda does not clamp `a`, so a negative `a` is clamped to 0 here for display.
+ * and `b` the woman-years. A negative `a` is clamped to 0, as the library does by default
+ * (`clampPriorVariance`, Marshall 1991); esda's `Empirical_Bayes` does not clamp.
  */
 export function getEmpiricalBayesWeights(
   priorVariance: number,

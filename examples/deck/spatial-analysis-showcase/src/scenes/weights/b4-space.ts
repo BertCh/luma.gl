@@ -12,6 +12,7 @@ import {importGraphBuffer} from '../../engine/graph-buffers';
 import {addKernelPass} from '../../engine/mode-kernels';
 import type {SpatialAnalysisResources} from '../../engine/resources';
 import {SummaryReader} from '../../engine/summary-reader';
+import {getWeightsInfo} from './b4-weights-core';
 import {runGuarded} from './b4-format';
 import {
   createWeightsKit,
@@ -63,6 +64,8 @@ export type SpaceEncodeOptions = {
   summary: SummaryChoice;
   includeFocal: boolean;
   focalWeight: number;
+  /** The analysis weights are row-standardized (`info.transform: 'row'`) and not combined by set algebra. */
+  rowStandardized: boolean;
 };
 
 /** Weights analysis of one row space (polygons or lattice cells). */
@@ -83,7 +86,7 @@ export type AnalysisSpace = {
   /** Choice of the display kernel (a buffer write). */
   setDisplayChoice: (display: SpaceDisplay, summary: SummaryChoice) => number;
   /** Compiles the neighbourhood variant a configuration needs; true when it compiled. */
-  prepare: (includeFocal: boolean, focalWeight: number) => boolean;
+  prepare: (includeFocal: boolean, focalWeight: number, rowStandardized: boolean) => boolean;
   /** Encodes summary, transpose, lag, focus links, neighbourhood summary and the display kernels. */
   encode: (commandEncoder: CommandEncoder, options: SpaceEncodeOptions) => void;
   /** Reads the weights summary and the tooltip snapshot; call after `encode` when stale. */
@@ -105,13 +108,17 @@ const MAXIMUM_NEIGHBORHOOD_MEMBERS = 64;
 const CLASSIFY_BODY = /* wgsl */ `
   let start = offsets[offsetsOffset + index];
   let end = offsets[offsetsOffset + index + 1u];
-  let degree = end - start;
+  // Active neighbours by the library's definition (positive weight, not the row itself), as the
+  // weights summary counts them; an island has none.
+  let degree = activeCardinality[activeCardinalityOffset + index];
   isolate[isolateOffset + index] = select(0u, 1u, degree == 0u);
   cardinality[cardinalityOffset + index] = f32(degree);
   var oneWayCount = 0u;
   for (var slot = start; slot < end; slot++) {
     let other = neighbors[neighborsOffset + slot];
-    if (other >= ROW_COUNT) { continue; }
+    if (other >= ROW_COUNT || other == index || !(slotWeights[slotWeightsOffset + slot] > 0.0)) {
+      continue;
+    }
     var low = offsets[offsetsOffset + other];
     var high = offsets[offsetsOffset + other + 1u];
     let rowEnd = high;
@@ -229,10 +236,17 @@ export function createAnalysisSpace(props: {
 
   // Neighbourhood summary variants, compiled on first use.
   const neighborhoodGraphs = new Map<string, CompiledGPUCommandGraph<void>>();
-  const getNeighborhoodKey = (includeFocal: boolean, focalWeight: number) =>
-    `${includeFocal ? 'focal' : 'plain'}-${focalWeight}`;
-  const prepare = (includeFocal: boolean, focalWeight: number): boolean => {
-    const key = getNeighborhoodKey(includeFocal, focalWeight);
+  const getNeighborhoodKey = (
+    includeFocal: boolean,
+    focalWeight: number,
+    rowStandardized: boolean
+  ) => `${includeFocal ? 'focal' : 'plain'}-${focalWeight}-${rowStandardized ? 'row' : 'raw'}`;
+  const prepare = (
+    includeFocal: boolean,
+    focalWeight: number,
+    rowStandardized: boolean
+  ): boolean => {
+    const key = getNeighborhoodKey(includeFocal, focalWeight, rowStandardized);
     if (neighborhoodGraphs.has(key)) return false;
     const graph = new GPUCommandGraph<void>(device, {id: `${id}-neighborhood-${key}`});
     graph.add(
@@ -241,7 +255,8 @@ export function createAnalysisSpace(props: {
         weights: {
           offsets: importGraphBuffer(graph, 'offsets', csr.offsets, 'uint32', rows + 1),
           neighbors: importGraphBuffer(graph, 'neighbors', csr.neighbors, 'uint32', slots),
-          weights: importGraphBuffer(graph, 'weights', csr.weights, 'float32', slots)
+          weights: importGraphBuffer(graph, 'weights', csr.weights, 'float32', slots),
+          info: getWeightsInfo(rows, rowStandardized)
         },
         values: importGraphBuffer(graph, 'values', values, 'float32', rows),
         mask: importGraphBuffer(graph, 'mask', mask, 'uint32', rows),
@@ -259,14 +274,15 @@ export function createAnalysisSpace(props: {
     neighborhoodGraphs.set(key, resources.track(graph.compile()));
     return true;
   };
-  prepare(false, 1);
+  prepare(false, 1, false);
 
   // Classification kernels (isolates, one-way links, focus class) and the display select.
   const displayGraph = new GPUCommandGraph<void>(device, {id: `${id}-display`});
   {
     const importCsr = () => ({
       offsets: importGraphBuffer(displayGraph, 'offsets', csr.offsets, 'uint32', rows + 1),
-      neighbors: importGraphBuffer(displayGraph, 'neighbors', csr.neighbors, 'uint32', slots)
+      neighbors: importGraphBuffer(displayGraph, 'neighbors', csr.neighbors, 'uint32', slots),
+      weights: importGraphBuffer(displayGraph, 'weights', csr.weights, 'float32', slots)
     });
     const view = importCsr();
     const cardinalityView = importGraphBuffer(
@@ -283,6 +299,19 @@ export function createAnalysisSpace(props: {
       bindings: [
         {name: 'offsets', view: view.offsets, type: 'u32', access: 'read'},
         {name: 'neighbors', view: view.neighbors, type: 'u32', access: 'read'},
+        {name: 'slotWeights', view: view.weights, type: 'f32', access: 'read'},
+        {
+          name: 'activeCardinality',
+          view: importGraphBuffer(
+            displayGraph,
+            'active-cardinality',
+            kit.cardinality!,
+            'uint32',
+            rows
+          ),
+          type: 'u32',
+          access: 'read'
+        },
         {
           name: 'focusRow',
           view: importGraphBuffer(displayGraph, 'focus-row', kit.focusRow, 'uint32', 1),
@@ -460,9 +489,11 @@ export function createAnalysisSpace(props: {
         normalizeLag: options.normalizeLag,
         matrix: options.matrix
       });
-      prepare(options.includeFocal, options.focalWeight);
+      prepare(options.includeFocal, options.focalWeight, options.rowStandardized);
       neighborhoodGraphs
-        .get(getNeighborhoodKey(options.includeFocal, options.focalWeight))!
+        .get(
+          getNeighborhoodKey(options.includeFocal, options.focalWeight, options.rowStandardized)
+        )!
         .encode(commandEncoder, {parameters: undefined});
       displayCompiled.encode(commandEncoder, {parameters: undefined});
     },

@@ -197,7 +197,7 @@ export default defineScene<LocalRelationshipsOptions>({
     {
       id: 'bandwidth',
       label: 'Selected bandwidth',
-      help: 'The ladder value with the lowest AICc, or the one you fixed.'
+      help: 'The value with the lowest AICc, or the one you fixed. In auto mode the search also refines between the ladder steps, so the winner can lie between two of them.'
     },
     {
       id: 'scores',
@@ -220,7 +220,21 @@ export default defineScene<LocalRelationshipsOptions>({
       label: 'Local coefficient 5th to 95th percentile',
       help: 'For the coefficient on the map, with the national OLS value.'
     },
-    {id: 'globalCoefficients', label: 'National OLS coefficients'},
+    {
+      id: 'globalCoefficients',
+      label: 'National OLS coefficients',
+      help: 'Estimate, standard error and p-value of each coefficient of the single national regression.'
+    },
+    {
+      id: 'globalCondition',
+      label: 'National OLS collinearity',
+      help: 'Belsley condition number of the national design (above 30 is harmful collinearity) and the largest variance inflation factor.'
+    },
+    {
+      id: 'significance',
+      label: 'Local significance rule',
+      help: 'Local t values are judged against a critical value corrected for the effective number of parameters (Da Silva and Fotheringham), not the usual 1.96.'
+    },
     {
       id: 'condition',
       label: 'Local condition number',

@@ -249,7 +249,7 @@ parameters.write(getGPUNeighborSearchParameterValues({
       ? ''
       : `\n\n// 2. Rewrite the weights in place.
 graph.add(new GPUSpatialWeightsTransform({
-  operation: '${state.transform}',${state.transform === 'kernel' ? `\n  kernel: '${state.transformKernel}', bandwidth: '${state.bandwidth === 'adaptive' ? 'adaptive' : `${state.bandwidth} x median spacing`}',` : ''}${state.transform === 'double' ? `\n  doubleSum: '${state.doubleSum}',` : ''}
+  operation: '${state.transform}',${state.transform === 'kernel' ? `\n  kernel: '${state.transformKernel}', bandwidth: ${state.bandwidth === 'adaptive' ? (state.source === 'knn' ? "'adaptive'" : 'bandRadius') : `${state.bandwidth} * medianSpacing`},` : ''}${state.transform === 'double' ? `\n  doubleSum: '${state.doubleSum}',` : ''}
   weights: {offsets, neighbors, weights${state.transform === 'kernel' ? ', distances' : ''}}
 }));`;
   const algebra =
@@ -653,9 +653,9 @@ export default defineScene<SpatialWeightsOptions>({
       apply: 'compile',
       default: 'adaptive',
       disabledWhen: state => state.transform !== 'kernel',
-      help: "Adaptive uses each row's farthest neighbour as h; a fixed bandwidth is the same for every place.",
+      help: "Adaptive uses each row's distance to its k-th neighbour as h (PySAL, kNN weights only); with a distance band it falls back to the band radius. A fixed bandwidth is the same for every place.",
       options: [
-        {value: 'adaptive', label: 'Adaptive (per row)'},
+        {value: 'adaptive', label: 'Adaptive (kNN) or band radius'},
         {value: '1.5', label: 'Fixed, 1.5 x spacing'},
         {value: '3', label: 'Fixed, 3 x spacing'},
         {value: '6', label: 'Fixed, 6 x spacing'}
@@ -983,7 +983,7 @@ export default defineScene<SpatialWeightsOptions>({
     {
       id: 'band',
       label: 'Distance band radius',
-      help: 'The radius of the band as ground distance at the focus (the search itself runs in planar metres).'
+      help: 'The radius of the band as ground distance. The search runs in metres of a local frame: Albers equal-area for counties (distance error at most 1.4%), Mercator-local for tracts (at most 0.3%).'
     },
     {
       id: 'weightSum',
@@ -1227,7 +1227,7 @@ export default defineScene<SpatialWeightsOptions>({
       headline: 'Weights fade with distance and sum to one',
       textAlternative:
         'Map around Cook County with a dashed ring for the distance band; neighbours inside it are classed green by weight and the line widths follow the weights.',
-      body: 'A distance band lists every centroid within **{{band}}** of the focus: **Distance band** times the **{{spacing}}** median spacing. A bisquare kernel weights each neighbour by distance, and row standardisation makes the row sum to **{{weightSum}}**. Line width is the weight. Drag **Distance band** or change **Kernel**.\n\n*A kernel makes W graded, not 0 or 1.*\n\n*Numerical note: the search runs in planar metres; the ring is the same disc at ground distance.*',
+      body: 'A distance band lists every centroid within **{{band}}** of the focus: **Distance band** times the **{{spacing}}** median spacing. A bisquare kernel weights each neighbour by distance, and row standardisation makes the row sum to **{{weightSum}}**. Line width is the weight. Drag **Distance band** or change **Kernel**.\n\n*A kernel makes W graded, not 0 or 1.*\n\n*Numerical note: the search runs in Albers metres for counties (scale error at most 1.4%) and local Mercator metres for tracts (at most 0.3%); the ring is drawn at ground distance.*',
       optionsMode: 'fresh',
       options: {
         geography: 'us-counties',

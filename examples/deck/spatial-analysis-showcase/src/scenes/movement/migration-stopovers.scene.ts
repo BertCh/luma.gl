@@ -128,7 +128,7 @@ export default defineScene<MigrationStopoversOptions>({
       step: 5,
       default: 80,
       unit: 'km',
-      help: 'Two stopovers are neighbors when their centers are at most this far apart (planar azimuthal-equidistant meters). A larger radius merges nearby sites; a smaller one splits them. A parameter write.'
+      help: 'Two stopovers are neighbors when their centers are at most this far apart (a great-circle distance on longitude/latitude, in kilometers on the ground). A larger radius merges nearby sites; a smaller one splits them. A parameter write.'
     },
     {
       kind: 'slider',
@@ -313,11 +313,13 @@ import {
   getGPUTrajectoryMetricsParameterValues, getGPUSpatialClusteringParameterValues
 } from '@luma.gl/experimental/gpu-spatial-analysis';
 
-// positions: azimuthal-equidistant meters, timestamps: float32 seconds of the folded year
+// positions: float32x2 longitude/latitude degrees (great-circle metric), also for the clustering.
+// timestamps: float32 seconds of the folded year
 // 1. Dwells: runs of slow steps lasting at least the minimum stay
-metricsGraph.add(new GPUTrajectoryMetrics({spatialContext: {coordinateSpace: 'planar', metric: 'native', units: 'native'},
+metricsGraph.add(new GPUTrajectoryMetrics({
+  spatialContext: {coordinateSpace: 'longitude-latitude', metric: 'great-circle', units: 'meters'},
   positions, timestamps, trackOffsets, parameters: metricsParameters.importToGraph(metricsGraph),
-  stops: {output: {ids, count, overflow, requiredCount}, startRows, endRows, centroids, durations}  // capacity 16,384
+  stops: {output: {ids, count, overflow, requiredCount}, startRows, endRows, durations}  // capacity 16,384
 }));
 metricsParameters.write(getGPUTrajectoryMetricsParameterValues({
   stopSpeedThreshold: ${state.stopSpeed}, stopMinimumDuration: ${state.minStayHours * 3600}     // m/s, s
@@ -327,11 +329,13 @@ metricsParameters.write(getGPUTrajectoryMetricsParameterValues({
 // 3. DBSCAN over the kept centroids: sites
 clusterGraph.add(new GPUSpatialClustering({
   positions: keptCentroids, parameters: clusterParameters.importToGraph(clusterGraph),
+  spatialContext: {coordinateSpace: 'longitude-latitude', metric: 'great-circle', units: 'meters'},
   gridSize: [192, 192], labels,
   clusters: {ids, count, overflow}, clusterSizes, clusterCentroids   // capacity 512
 }));
 clusterParameters.write(getGPUSpatialClusteringParameterValues({
-  bounds: dataBounds, epsilon: ${state.epsilonKm * 1000}, minimumPoints: ${state.minimumStops}   // meters
+  bounds: dataBounds,   // degrees [minLon, minLat, maxLon, maxLat]
+  epsilon: ${state.epsilonKm * 1000}, minimumPoints: ${state.minimumStops}   // meters
 }));
 // Ranking by ${state.rankBy} is a few lines on the CPU over the read-back labels and durations.`,
 
@@ -387,7 +391,7 @@ clusterParameters.write(getGPUSpatialClusteringParameterValues({
       textAlternative: 'A metric radius ring groups individual stop points into a site.',
       optionsMode: 'fresh',
       title: 'From stops to sites',
-      body: '**`GPUSpatialClustering`** runs DBSCAN on the stopover centers: two stopovers are neighbors when they lie within the **Site radius**, and a stop is a core point when **Minimum stops per site** of them are near. Clusters become **sites**; stops that never reach the minimum are noise (grey). The clustering runs on the GPU in planar kilometers, and moving either slider just rewrites a parameter buffer.\n\nColor the stops by **Site** to see the clusters. A radius of 80 km gives about two dozen sites; 300 km merges most of them into a handful, and 10 km shatters them.',
+      body: '**`GPUSpatialClustering`** runs DBSCAN on the stopover centers: two stopovers are neighbors when they lie within the **Site radius**, and a stop is a core point when **Minimum stops per site** of them are near. Clusters become **sites**; stops that never reach the minimum are noise (grey). The clustering runs on the GPU on longitude and latitude with a great-circle radius, and moving either slider just rewrites a parameter buffer.\n\nColor the stops by **Site** to see the clusters. A radius of 80 km gives about two dozen sites; 300 km merges most of them into a handful, and 10 km shatters them.',
       options: {showSites: true, colorStops: 'cluster', maxStayDays: 14},
       highlight: {readout: 'sites'},
       controls: ['colorStops', 'epsilonKm', 'minimumStops'],

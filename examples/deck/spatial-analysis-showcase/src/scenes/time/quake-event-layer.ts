@@ -10,8 +10,10 @@ import {
   type LayerProps,
   type UpdateParameters
 } from '@deck.gl/core';
-import {Buffer, type RenderPass} from '@luma.gl/core';
+import {Buffer, type Device, type RenderPass} from '@luma.gl/core';
 import {Model} from '@luma.gl/engine';
+import type {AnalysisFrame} from '../../engine/analysis-frame';
+import {getAnalysisFrameWgsl} from '../../engine/layer-wgsl';
 import {COLORMAP_INDEXES, getRampWgsl, type RampName} from '../../engine/ramps';
 
 const BLEND_PARAMETERS = {
@@ -28,7 +30,28 @@ const BLEND_PARAMETERS = {
 
 const STYLE_BYTE_LENGTH = 128;
 
-const QUAKE_SHADER = /* wgsl */ `
+/** The ramp functions, rendered once. */
+const RAMP_WGSL = getRampWgsl();
+
+/** Clip position of a `METER_OFFSETS` event position. */
+const METER_OFFSETS_CLIP_WGSL = /* wgsl */ `fn getQuakeClipPosition(position: vec2<f32>) -> vec4<f32> {
+  var clipPosition = project_position_to_clipspace(vec3<f32>(position, 0.0), vec3<f32>(0.0), vec3<f32>(0.0));
+  // Deck's project32 matrices use OpenGL depth; WebGPU clip space requires [0, w].
+  clipPosition.z = (clipPosition.z + clipPosition.w) * 0.5;
+  return clipPosition;
+}`;
+
+/** Clip position of an analysis-frame event position: the engine's frame inverse. */
+function getFrameClipWgsl(frame: AnalysisFrame): string {
+  return /* wgsl */ `${getAnalysisFrameWgsl(frame)}
+fn getQuakeClipPosition(position: vec2<f32>) -> vec4<f32> {
+  return projectSpatialAnalysisPosition(position);
+}`;
+}
+
+/** Shader of {@link QuakeEventLayer}; positions are `METER_OFFSETS` or `frame` meters. */
+function getQuakeShader(frame: AnalysisFrame | undefined): string {
+  return /* wgsl */ `
 struct QuakeStyle {
   palette: array<vec4<f32>, 3>,
   outlineColor: vec4<f32>,
@@ -62,14 +85,9 @@ struct QuakeVertexOutput {
   @location(1) color: vec4<f32>,
 };
 
-${getRampWgsl()}
+${RAMP_WGSL}
 
-fn getQuakeClipPosition(position: vec2<f32>) -> vec4<f32> {
-  var clipPosition = project_position_to_clipspace(vec3<f32>(position, 0.0), vec3<f32>(0.0), vec3<f32>(0.0));
-  // Deck's project32 matrices use OpenGL depth; WebGPU clip space requires [0, w].
-  clipPosition.z = (clipPosition.z + clipPosition.w) * 0.5;
-  return clipPosition;
-}
+${frame ? getFrameClipWgsl(frame) : METER_OFFSETS_CLIP_WGSL}
 
 @vertex fn vertexMain(
   @builtin(vertex_index) vertexIndex: u32,
@@ -149,14 +167,21 @@ fn getQuakeClipPosition(position: vec2<f32>) -> vec4<f32> {
   return vec4<f32>(rgb, input.color.a * quakeStyle.opacity * cover * mix(0.62, 1.0, ring));
 }
 `;
+}
 
 /** Color with 0-255 channels. */
 export type QuakeColor = readonly [number, number, number, number?];
 
 /** Props for {@link QuakeEventLayer}. */
 export type QuakeEventLayerProps = LayerProps & {
-  /** `float32x2` planar meters per event. */
+  /** `float32x2` planar meters per event (`METER_OFFSETS`, or `analysisFrame` meters). */
   positions: Buffer;
+  /**
+   * Positions are meters of this analysis frame; the shader inverts it on the GPU and the layer
+   * draws as `COORDINATE_SYSTEM.LNGLAT`, as the engine's spatial-analysis layers do with the same
+   * prop. `coordinateSystem` and `coordinateOrigin` are then ignored.
+   */
+  analysisFrame?: AnalysisFrame;
   /** `float32` event time in days. */
   times: Buffer;
   /** `float32` magnitude per event. */
@@ -195,7 +220,7 @@ export type QuakeEventLayerProps = LayerProps & {
   minimumMagnitude?: number;
 };
 
-type QuakeLayerState = {model: Model; styleBuffer: Buffer};
+type QuakeLayerState = {model: Model; styleBuffer: Buffer; source: string};
 
 /**
  * Earthquake discs: radius grows with magnitude, color follows depth, age or depth class, and in
@@ -221,24 +246,44 @@ export class QuakeEventLayer extends Layer<QuakeEventLayerProps> {
       byteLength: STYLE_BYTE_LENGTH,
       usage: Buffer.UNIFORM | Buffer.COPY_DST
     });
-    const model = new Model(device, {
-      ...this.getShaders({modules: [project32], source: QUAKE_SHADER}),
-      id: `${this.id}-model`,
-      topology: 'triangle-list',
-      isInstanced: true,
-      vertexCount: 6,
-      instanceCount: 0,
-      bufferLayout: [],
-      bindings: this.getBindings(styleBuffer),
-      parameters: BLEND_PARAMETERS
-    });
-    this.setState({model, styleBuffer});
+    const source = getQuakeShader(this.props.analysisFrame);
+    this.setState({model: this.createModel(device, source, styleBuffer), styleBuffer, source});
   }
 
   override updateState(parameters: UpdateParameters<this>): void {
     super.updateState(parameters);
-    const {model, styleBuffer} = this.state as QuakeLayerState;
+    const {model, styleBuffer, source} = this.state as QuakeLayerState;
+    const nextSource = getQuakeShader(this.props.analysisFrame);
+    if (nextSource !== source) {
+      // A different analysis frame is a different shader.
+      model.destroy();
+      this.setState({
+        model: this.createModel(this.context.device, nextSource, styleBuffer),
+        source: nextSource
+      });
+      return;
+    }
     model.setBindings(this.getBindings(styleBuffer));
+  }
+
+  /** The analysis-frame hook emits longitude/latitude, whatever `coordinateSystem` says. */
+  override _drawLayer(options: Parameters<Layer['_drawLayer']>[0]): void {
+    const {shaderModuleProps} = options;
+    if (!this.props.analysisFrame || !shaderModuleProps?.project) {
+      super._drawLayer(options);
+      return;
+    }
+    super._drawLayer({
+      ...options,
+      shaderModuleProps: {
+        ...shaderModuleProps,
+        project: {
+          ...shaderModuleProps.project,
+          coordinateSystem: COORDINATE_SYSTEM.LNGLAT,
+          coordinateOrigin: [0, 0, 0]
+        }
+      }
+    });
   }
 
   override getModels(): Model[] {
@@ -257,6 +302,20 @@ export class QuakeEventLayer extends Layer<QuakeEventLayerProps> {
     model.destroy();
     styleBuffer.destroy();
     super.finalizeState(context);
+  }
+
+  private createModel(device: Device, source: string, styleBuffer: Buffer): Model {
+    return new Model(device, {
+      ...this.getShaders({modules: [project32], source}),
+      id: `${this.id}-model`,
+      topology: 'triangle-list',
+      isInstanced: true,
+      vertexCount: 6,
+      instanceCount: 0,
+      bufferLayout: [],
+      bindings: this.getBindings(styleBuffer),
+      parameters: BLEND_PARAMETERS
+    });
   }
 
   private getBindings(styleBuffer: Buffer): Record<string, Buffer> {

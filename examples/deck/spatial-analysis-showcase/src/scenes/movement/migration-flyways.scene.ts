@@ -354,11 +354,14 @@ densityParameters.write(getGPULineDensityParameterValues({
   minX: -20, minY: 3, cellWidth: ${state.cellSize}, cellHeight: ${state.cellSize}      // degrees: a buffer write
 }));
 
-// 2. Routes: ${96} points per track (planar azimuthal-equidistant meters), then every pair
+// 2. Routes: ${96} points per track, resampled along great circles and
+// compared with great-circle distances
 graph.add(new GPUTrajectoryResample({
-  positions: meters, timestamps, trackOffsets, sampleCount: 96, spacing: '${state.routeSpacing}', samples: routes
+  spatialContext: {coordinateSpace: 'longitude-latitude', metric: 'great-circle', units: 'meters'},
+  positions: lngLat, timestamps, trackOffsets, sampleCount: 96, spacing: '${state.routeSpacing}', samples: routes
 }));
 graph.add(new GPUTrackSimilarity({
+  spatialContext: {coordinateSpace: 'longitude-latitude', metric: 'great-circle', units: 'meters'},
   positionsA: routes, offsetsA: routeOffsets, pairA, pairB,
   hausdorff, frechet, maxFrechetVertices: 96      // distance column: ${state.similarityMetric}
 }));`,
@@ -453,7 +456,7 @@ graph.add(new GPUTrackSimilarity({
       textAlternative: 'One selected route is compared with the population density.',
       optionsMode: 'fresh',
       title: 'Does a bird repeat its own route?',
-      body: '**`GPUTrajectoryResample`** rebuilds every track as 96 points and **`GPUTrackSimilarity`** scores all 5,050 pairs with the discrete **Frechet distance**: the shortest leash that lets two walkers follow their routes in order. The chart compares pairs that are the same bird in two different years against pairs of different birds, for tracks with enough days of data.\n\nSet **Color tracks by** to *Route distance to the selected track* and click a track: its other tagged years (yellow) should be the coldest lines if birds are faithful to a route. Use **Minimum days of data** to include or drop short tags, and **Route distance** to switch to Hausdorff.\n\nThe honest limits: tags are on 42 birds, only a few of which have two or more complete years; the years are folded onto one calendar; and Frechet on 96 points describes the shape of a route, not every detour. **Try:** set the minimum to 300 days and see how the same-bird curve changes.',
+      body: '**`GPUTrajectoryResample`** rebuilds every track as 96 points and **`GPUTrackSimilarity`** scores all 5,050 pairs with the discrete **Frechet distance**: the shortest leash that lets two walkers follow their routes in order. The routes are resampled along great circles and compared with great-circle distances. The chart compares pairs that are the same bird in two different years against pairs of different birds, for tracks with enough days of data.\n\nSet **Color tracks by** to *Route distance to the selected track* and click a track: its other tagged years (yellow) should be the coldest lines if birds are faithful to a route. Use **Minimum days of data** to include or drop short tags, and **Route distance** to switch to Hausdorff.\n\nThe honest limits: tags are on 42 birds, only a few of which have two or more complete years; the years are folded onto one calendar; and Frechet on 96 points describes the shape of a route, not every detour. **Try:** set the minimum to 300 days and see how the same-bird curve changes.',
       options: {
         colorBy: 'similarity',
         showTracks: true,

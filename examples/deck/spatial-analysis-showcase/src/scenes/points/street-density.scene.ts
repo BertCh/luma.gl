@@ -18,6 +18,12 @@ import {
   type StreetGround
 } from './street-density-look';
 
+/** Snippet lines for the two spatial contexts. */
+const SPHERICAL_CONTEXT_SNIPPET =
+  "spatialContext: {coordinateSpace: 'longitude-latitude', metric: 'great-circle', units: 'meters'},";
+const PLANAR_CONTEXT_SNIPPET =
+  "spatialContext: {coordinateSpace: 'planar', metric: 'native', units: 'native'},";
+
 /** Names that orient the reader in every step (drawn above the data). */
 const ORIENTATION = labelsFor(CHICAGO, ['lake-michigan', 'loop'], {loop: {minZoom: 10.2}});
 
@@ -366,7 +372,7 @@ const density = new GPUCommandGraph(device, {id: 'line-density'});
 density.add(new GPULineDensity({
   positions, pathOffsets,                    // ${state.system === 'spherical' ? 'longitude / latitude degrees' : 'float32x2 meters'}
   columns: 192, rows: 120,
-  spatialContext: '${state.system}' === 'spherical' ? {coordinateSpace: 'longitude-latitude', metric: 'great-circle', units: 'meters'} : {coordinateSpace: 'planar', metric: 'native', units: 'native'},
+  ${state.system === 'spherical' ? SPHERICAL_CONTEXT_SNIPPET : PLANAR_CONTEXT_SNIPPET}
   maximumRecords: 4 * vertexCount,           // compile-time; \`overflow\` says if it was too small
   parameters: gridParameters.importToGraph(density),
   output: {lengths, densities, overflow, totalRecords}
@@ -389,7 +395,7 @@ perPolygon.add(new GPULineLengthPerPolygon({
   positions, pathOffsets,
   pathWeights: ${state.weight},                // optional per-street multiplier
   polygons: {kind: 'polygons', positions: polygonPositions, featureOffsets, polygonOffsets, ringOffsets},
-  coordinateSystem: '${state.system}',
+  ${state.system === 'spherical' ? SPHERICAL_CONTEXT_SNIPPET : PLANAR_CONTEXT_SNIPPET}
   output: {lengths, weightedLengths, segmentCounts, overflow}
 }));`,
 

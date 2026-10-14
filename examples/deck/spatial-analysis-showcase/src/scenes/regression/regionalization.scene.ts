@@ -229,6 +229,11 @@ export default defineScene<RegionalizationOptions>({
       help: 'Between-region share of the total sum of squares of the attribute table, the same metric for both partitions (GPURegionPartitionEvaluation).'
     },
     {
+      id: 'pseudoF',
+      label: 'Pseudo-F (Calinski-Harabasz)',
+      help: 'Between-region against within-region variance per degree of freedom, the same for both partitions; higher means tighter, better separated regions. Unlike explained variance it does not grow just because there are more regions.'
+    },
+    {
       id: 'within',
       label: 'Within-region SSD',
       help: 'Sum of squared deviations from region means. Lower is more homogeneous.'
@@ -374,7 +379,7 @@ graph.add(new GPUKMeans({positions: principalPlane, k: ${state.kmeansClusters}, 
       body: 'Move **Regions** from 2 to 20. The partition with k regions is the one with k+1 plus its last cut undone, so the compiled graph holds the whole cut log and the slider is only a parameter write (**Under the hood** shows no rebuild). Watch **Explained variance** and the gains: when each extra cut explains little, you have found the elbow.\n\nRaise **Minimum region size** to forbid tiny regions: a cut is refused when either side would be smaller, so the region count can fall short of the target.',
       options: {regions: 12, minimumSize: 12, showTree: false},
       controls: ['regions', 'minimumSize'],
-      readouts: ['explained', 'gains']
+      readouts: ['explained', 'pseudoF', 'gains']
     },
     {
       id: 'standardize',
@@ -385,7 +390,7 @@ graph.add(new GPUKMeans({positions: principalPlane, k: ${state.kmeansClusters}, 
       body: 'Tree costs add up squared differences across attributes. Turn **Standardize attributes** off and the columns keep their own units: poverty and uninsured rates in points, car-free households in points, diabetes in points, but **ln income** in tiny log units. Large-unit variables now dominate and income barely matters. This is a compile-time option of the spanning tree, so the graph variant compiles once.\n\nTurn it back on before you trust a result: z-scoring gives every attribute an equal voice.',
       options: {regions: 8, standardize: false},
       controls: ['standardize'],
-      readouts: ['explained']
+      readouts: ['explained', 'pseudoF']
     },
     {
       id: 'kmeans',

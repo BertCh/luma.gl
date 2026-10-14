@@ -655,6 +655,10 @@ export async function createRegionalization(
         `SKATER ${formatNumber(explained(summary), 1)}% vs k-means ${formatNumber(explained(kSummary), 1)}% of variance`
       );
       ctx.setReadout(
+        'pseudoF',
+        `SKATER ${formatNumber(summary[layout.pseudoF], 1)} vs k-means ${formatNumber(kSummary[layout.pseudoF], 1)}`
+      );
+      ctx.setReadout(
         'within',
         `SKATER ${formatNumber(summary[layout.withinSsd], 0)} vs k-means ${formatNumber(kSummary[layout.withinSsd], 0)} (of ${formatNumber(summary[layout.totalSsd], 0)})`
       );

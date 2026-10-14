@@ -61,7 +61,7 @@ export type WeightsKitProps = {
   csr: WeightsCsrBuffers;
   /** Producer overflow flag and unclamped neighbor total, copied into the readback. */
   producer: {overflow: Buffer; total: Buffer};
-  /** Existing summary buffers of `csr` (12 and 20 bytes) when another graph already fills them. */
+  /** Existing summary buffers of `csr` (12 and 24 bytes) when another graph already fills them. */
   summary?: {statistics: Buffer; counts: Buffer};
   /** Also build full-matrix link segments for the transpose and the union. */
   drawAllLinks: boolean;
@@ -89,9 +89,10 @@ export type WeightsKitSummary = {
   producerTotal: number;
 };
 
-// statistics 3, counts 5, asymmetric 1, lag extent 2, union overflow and total 2, producer
-// overflow and total 2, focus info 3 x 2.
-const SUMMARY_WORDS = 3 + 5 + 1 + 2 + 2 + 2 + 6;
+// statistics 3, counts (the layout's length: 6 with the empty-row count), asymmetric 1, lag extent 2,
+// union overflow and total 2, producer overflow and total 2, focus info 3 x 2.
+const COUNTS_WORDS = GPU_SPATIAL_WEIGHTS_SUMMARY_LAYOUT.counts.length;
+const SUMMARY_WORDS = 3 + COUNTS_WORDS + 1 + 2 + 2 + 2 + 6;
 
 /** Weights analysis kit for one source; see the module comment. */
 export type WeightsKit = {
@@ -202,7 +203,7 @@ export function createWeightsKit(props: WeightsKitProps): WeightsKit {
   const lagExtentBuffer = create('lag-extent', 2 * 4);
   const focusRowBuffer = create('focus-row', new Uint32Array([0]));
   const summaryStatistics = props.summary?.statistics ?? create('summary-statistics', 3 * 4);
-  const summaryCounts = props.summary?.counts ?? create('summary-counts', 5 * 4);
+  const summaryCounts = props.summary?.counts ?? create('summary-counts', COUNTS_WORDS * 4);
   const cardinalityBuffer = props.summary ? null : create('cardinality', rowCount * 4);
   const infoBuffers = {
     weights: create('focus-info-weights', 2 * 4),
@@ -245,7 +246,7 @@ export function createWeightsKit(props: WeightsKitProps): WeightsKit {
         id: 'weights-summary',
         weights: importCsr(graph, 'a', csr, slots),
         statistics: importGraphBuffer(graph, 'statistics', summaryStatistics, 'float32', 3),
-        counts: importGraphBuffer(graph, 'counts', summaryCounts, 'uint32', 5),
+        counts: importGraphBuffer(graph, 'counts', summaryCounts, 'uint32', COUNTS_WORDS),
         cardinality: importGraphBuffer(graph, 'cardinality', cardinalityBuffer!, 'uint32', rowCount)
       })
     );
@@ -463,7 +464,7 @@ export function createWeightsKit(props: WeightsKitProps): WeightsKit {
         word += words;
       };
       copy(summaryStatistics, 3);
-      copy(summaryCounts, 5);
+      copy(summaryCounts, COUNTS_WORDS);
       copy(asymmetricBuffer, 1);
       copy(lagExtentBuffer, 2);
       copy(unionOverflowBuffer, 1);
@@ -479,6 +480,8 @@ export function createWeightsKit(props: WeightsKitProps): WeightsKit {
       const words = new Uint32Array(bytes.buffer, bytes.byteOffset, SUMMARY_WORDS);
       const layout = GPU_SPATIAL_WEIGHTS_SUMMARY_LAYOUT;
       const counts = (field: number) => words[3 + field];
+      // Words after the summary counts: asymmetric, lag extent, union, producer, focus info.
+      const after = 3 + COUNTS_WORDS;
       const info = (start: number) => ({degree: floats[start], weightSum: floats[start + 1]});
       return {
         s0: floats[layout.statistics.s0],
@@ -489,14 +492,14 @@ export function createWeightsKit(props: WeightsKitProps): WeightsKit {
         isolates: counts(layout.counts.isolates),
         minimumCardinality: counts(layout.counts.minimumCardinality),
         maximumCardinality: counts(layout.counts.maximumCardinality),
-        transposeAsymmetricSlots: words[8],
-        lagMinimum: floats[9],
-        lagMaximum: floats[10],
-        unionOverflow: words[11] !== 0,
-        unionSlots: words[12],
-        producerOverflow: words[13] !== 0,
-        producerTotal: words[14],
-        focus: {weights: info(15), transpose: info(17), union: info(19)}
+        transposeAsymmetricSlots: words[after],
+        lagMinimum: floats[after + 1],
+        lagMaximum: floats[after + 2],
+        unionOverflow: words[after + 3] !== 0,
+        unionSlots: words[after + 4],
+        producerOverflow: words[after + 5] !== 0,
+        producerTotal: words[after + 6],
+        focus: {weights: info(after + 7), transpose: info(after + 9), union: info(after + 11)}
       };
     }
   };

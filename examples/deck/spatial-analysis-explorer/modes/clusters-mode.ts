@@ -116,7 +116,7 @@ const METHOD_OPTIONS: readonly {value: ClusterMethod; label: string}[] = [
 
 const INITIALIZATION_OPTIONS: readonly {value: GPUKMeansInitialization; label: string}[] = [
   {value: 'first-valid', label: 'First k valid points'},
-  {value: 'kmeans++', label: 'Seeded k-means++'}
+  {value: 'kmeans++', label: 'Seeded k-means++ (library default)'}
 ];
 
 type PointSetData = {
@@ -224,7 +224,7 @@ export const clustersMode: SpatialAnalysisModeDefinition = {
       pointSet: 'pickups',
       method: 'dbscan',
       k: KMEANS_DEFAULT_K,
-      initialization: 'first-valid',
+      initialization: 'kmeans++',
       seed: 0,
       denseBoxShortcut: false
     };

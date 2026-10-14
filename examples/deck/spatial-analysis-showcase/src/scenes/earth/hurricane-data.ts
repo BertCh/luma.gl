@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {GPU_EARTH_MEAN_RADIUS_METERS} from '@luma.gl/experimental/gpu-spatial-analysis';
 import type {LoadedDataset} from '../../data/catalog';
 import {HURRICANE_CLASS} from '../../cartography/hue-registry';
 import {LocalMetricProjection} from '../../engine/projection';
@@ -57,7 +58,7 @@ export function getCategoryOfWind(knots: number): number {
   return 6;
 }
 
-/** Centre of the azimuthal-equidistant system used for track comparison. */
+/** Centre of the azimuthal-equidistant system used for track comparison and drawing interpolation. */
 export const ATLANTIC_CENTER: readonly [number, number] = [-60, 28];
 
 const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
@@ -213,18 +214,27 @@ export function findStorm(storms: HurricaneTrackSet, name: string, season: numbe
   return -1;
 }
 
-/** Track with the longest planar path, used as a fallback selection. */
+/** Great-circle length in meters of a storm track, summed over its longitude/latitude fixes. */
+export function getTrackLengthMeters(storms: HurricaneTrackSet, track: number): number {
+  const {lngLat} = storms;
+  let length = 0;
+  for (let vertex = storms.offsets[track] + 1; vertex < storms.offsets[track + 1]; vertex++) {
+    const lat1 = (lngLat[vertex * 2 - 1] * Math.PI) / 180;
+    const lat2 = (lngLat[vertex * 2 + 1] * Math.PI) / 180;
+    const sinLat = Math.sin((lat2 - lat1) / 2);
+    const sinLng = Math.sin(((lngLat[vertex * 2] - lngLat[vertex * 2 - 2]) * Math.PI) / 360);
+    const haversine = sinLat * sinLat + Math.cos(lat1) * Math.cos(lat2) * sinLng * sinLng;
+    length += 2 * GPU_EARTH_MEAN_RADIUS_METERS * Math.asin(Math.min(1, Math.sqrt(haversine)));
+  }
+  return length;
+}
+
+/** Track with the longest great-circle path, used as a fallback selection. */
 export function findLongestStorm(storms: HurricaneTrackSet): number {
   let best = 0;
   let bestLength = -1;
   for (let track = 0; track < storms.trackCount; track++) {
-    let length = 0;
-    for (let vertex = storms.offsets[track] + 1; vertex < storms.offsets[track + 1]; vertex++) {
-      length += Math.hypot(
-        storms.positions[vertex * 2] - storms.positions[vertex * 2 - 2],
-        storms.positions[vertex * 2 + 1] - storms.positions[vertex * 2 - 1]
-      );
-    }
+    const length = getTrackLengthMeters(storms, track);
     if (length > bestLength) {
       bestLength = length;
       best = track;

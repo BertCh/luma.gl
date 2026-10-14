@@ -126,7 +126,7 @@ export default defineScene<RainfallOptions>({
       step: 10,
       default: 120,
       unit: 'km',
-      help: 'Gauges farther than this are ignored by both methods. Cells with too few gauges inside the radius are no data and stay transparent, which is how the map avoids inventing rain over the ocean.'
+      help: 'Gauges farther than this are ignored by both methods. Cells with too few gauges inside the radius are no data and stay transparent, which is how the map avoids inventing rain over the ocean. Distances are measured in an azimuthal equidistant frame about 83 W, 32 N: exact from that centre and within 0.65% anywhere in the gauge box.'
     },
     {
       kind: 'slider',
@@ -391,7 +391,7 @@ export default defineScene<RainfallOptions>({
     {
       id: 'cellSize',
       label: 'Cell size',
-      help: 'Width × height of one raster cell. Follows the camera: the extent buffer is rewritten each frame.'
+      help: 'Width × height of one raster cell, in meters of the azimuthal equidistant analysis frame about 83 W, 32 N (within 0.65% of ground distance across the gauge box). Follows the camera: the extent buffer is rewritten each frame.'
     },
     {
       id: 'variogramModel',

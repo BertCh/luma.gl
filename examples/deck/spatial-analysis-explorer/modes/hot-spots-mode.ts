@@ -102,8 +102,8 @@ type Gating = GPULocalMoranQuadrantGating | 'permutation';
 type Alternative = Exclude<GPUPermutationAlternative, 'less'>;
 
 const ALTERNATIVES: readonly {value: Alternative; label: string}[] = [
-  {value: 'directed', label: 'Directed (esda default, tail on the observed side)'},
-  {value: 'two-sided', label: 'Two-sided (doubled smaller tail)'},
+  {value: 'directed', label: 'Directed (legacy esda default, tail on the observed side)'},
+  {value: 'two-sided', label: 'Two-sided (default)'},
   {value: 'greater', label: 'Greater (large observed statistic)'},
   {value: 'lesser', label: 'Less (small observed statistic)'},
   {value: 'folded', label: 'Folded (|sim - mean| at least |obs - mean|)'}
@@ -151,7 +151,7 @@ export const hotSpotsMode: SpatialAnalysisModeDefinition = {
 
     let statistic: Statistic = 'gi-star';
     let gating: Gating = 'analytic';
-    let alternative: Alternative = 'directed';
+    let alternative: Alternative = 'two-sided';
     let permutations = 199;
     let seed = 1;
     let falseDiscoveryRate = false;
@@ -259,7 +259,7 @@ export const hotSpotsMode: SpatialAnalysisModeDefinition = {
       kind: Statistic,
       fdr: boolean,
       variantGating: Gating = 'analytic',
-      variantAlternative: Alternative = 'directed'
+      variantAlternative: Alternative = 'two-sided'
     ): Variant {
       const graph = new GPUCommandGraph<void>(device, {
         id: `hot-spots-${kind}${fdr ? '-fdr' : ''}-${variantGating}-${variantAlternative}`
@@ -287,7 +287,7 @@ export const hotSpotsMode: SpatialAnalysisModeDefinition = {
             zScores,
             bins,
             globalStatistics: statistics,
-            falseDiscoveryRate: fdr
+            multipleTesting: fdr ? 'benjamini-hochberg' : 'none'
           })
         );
         graph.add(
@@ -320,7 +320,7 @@ export const hotSpotsMode: SpatialAnalysisModeDefinition = {
             quadrants,
             globalStatistics: statistics,
             quadrantGating: variantGating === 'analytic' ? 'analytic' : 'none',
-            falseDiscoveryRate: fdr
+            multipleTesting: fdr ? 'benjamini-hochberg' : 'none'
           })
         );
         if (variantGating === 'permutation') {

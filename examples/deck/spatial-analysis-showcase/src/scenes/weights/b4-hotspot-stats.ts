@@ -8,8 +8,8 @@ import {
   GPUHotSpotAnalysis,
   GPULocalMoran,
   GPULocalPermutationTest,
-  type GPUParameterBuffer,
-  type GPUPermutationAlternative
+  type GPUInferenceAlternative,
+  type GPUParameterBuffer
 } from '@luma.gl/experimental/gpu-spatial-analysis';
 import {
   GPUCommandGraph,
@@ -18,6 +18,7 @@ import {
   type CompiledGPUCommandGraph
 } from '@luma.gl/gpgpu/gpu-core';
 import {importGraphBuffer} from '../../engine/graph-buffers';
+import {getWeightsInfo} from './b4-weights-core';
 import {addKernelPass} from '../../engine/mode-kernels';
 import type {SpatialAnalysisResources} from '../../engine/resources';
 
@@ -37,9 +38,11 @@ export type StatVariant = {
   inference: 'analytic' | 'permutation' | 'none';
   /** Weight of the focal place in Gi*: 1 is Gi*, 0 is Gi. */
   selfWeight: 0 | 1;
-  /** Benjamini-Hochberg false discovery rate control. */
+  /** Benjamini-Hochberg false discovery rate control (`multipleTesting`: BH when set, none otherwise). */
   falseDiscoveryRate: boolean;
-  alternative: GPUPermutationAlternative;
+  alternative: GPUInferenceAlternative;
+  /** The weights are row-standardized (`weights.info.transform: 'row'`), so masked neighbours are re-standardized out. */
+  rowStandardized: boolean;
   maximumNeighbors: number;
   /** The Gi* z-scores, bins and permutation were already produced (by `addHotSpotAnalysisRecipe`). */
   precomputed?: boolean;
@@ -117,7 +120,8 @@ export function compileStatGraph(props: StatGraphProps): CompiledGPUCommandGraph
   const weights = {
     offsets: importGraphBuffer(graph, 'offsets', props.weights.offsets, 'uint32', rows + 1),
     neighbors: importGraphBuffer(graph, 'neighbors', props.weights.neighbors, 'uint32', slots),
-    weights: importGraphBuffer(graph, 'weights', props.weights.weights, 'float32', slots)
+    weights: importGraphBuffer(graph, 'weights', props.weights.weights, 'float32', slots),
+    info: getWeightsInfo(rows, variant.rowStandardized)
   };
   const values = importGraphBuffer(graph, 'values', props.values, 'float32', rows);
   const mask = importGraphBuffer(graph, 'mask', props.mask, 'uint32', rows);
@@ -139,6 +143,7 @@ export function compileStatGraph(props: StatGraphProps): CompiledGPUCommandGraph
     'uint32',
     rows
   );
+  const multipleTesting = variant.falseDiscoveryRate ? 'benjamini-hochberg' : 'none';
   const isGi = variant.statistic === 'gi-star';
   const usePermutation = variant.inference === 'permutation';
   const baseFormat = isGi ? ('sint32' as const) : ('uint32' as const);
@@ -162,7 +167,7 @@ export function compileStatGraph(props: StatGraphProps): CompiledGPUCommandGraph
           neighborCounts,
           globalStatistics: statistics,
           selfWeight: variant.selfWeight,
-          falseDiscoveryRate: variant.falseDiscoveryRate
+          multipleTesting
         })
       );
     } else {
@@ -179,7 +184,7 @@ export function compileStatGraph(props: StatGraphProps): CompiledGPUCommandGraph
           neighborCounts,
           globalStatistics: statistics,
           quadrantGating: variant.inference === 'analytic' ? 'analytic' : 'none',
-          falseDiscoveryRate: variant.inference === 'analytic' ? variant.falseDiscoveryRate : false
+          multipleTesting: variant.inference === 'analytic' ? multipleTesting : 'none'
         })
       );
     }
@@ -195,7 +200,7 @@ export function compileStatGraph(props: StatGraphProps): CompiledGPUCommandGraph
           parameters: permutationParameters,
           maximumPermutations: MAXIMUM_PERMUTATIONS,
           maximumNeighbors: variant.maximumNeighbors,
-          falseDiscoveryRate: variant.falseDiscoveryRate,
+          multipleTesting,
           exceedances: importGraphBuffer(graph, 'exceedances', buffers.exceedances, 'uint32', rows),
           pseudoPValues: importGraphBuffer(
             graph,

@@ -325,7 +325,7 @@ export default defineScene<GullMigrationOptions>({
     {
       id: 'distance',
       label: 'Distance flown',
-      help: "Sum of every bird's path length, from GPUTrajectoryMetrics in azimuthal-equidistant meters (true distance)."
+      help: "Sum of every bird's path length, from GPUTrajectoryMetrics on longitude/latitude with the great-circle metric (meters)."
     },
     {id: 'longestFlight', label: 'Longest journey'},
     {
@@ -475,11 +475,13 @@ import {
 } from '@luma.gl/experimental/gpu-spatial-analysis';
 import {GPUTemporalReduction, getGPUTemporalReductionParameterValues} from '@luma.gl/experimental/gpu-dataframe';
 
-// positions: azimuthal-equidistant meters (true distances over 40 degrees of latitude),
+// positions: float32x2 longitude/latitude degrees, great-circle metric (meters),
+// simplification and similarity use the same great-circle context,
 // timestamps: float32 seconds since 15 July, trackOffsets: uint32 (31 birds + 1)
 
 // 1. Metrics and stopovers
-graph.add(new GPUTrajectoryMetrics({spatialContext: {coordinateSpace: 'planar', metric: 'native', units: 'native'},
+graph.add(new GPUTrajectoryMetrics({
+  spatialContext: {coordinateSpace: 'longitude-latitude', metric: 'great-circle', units: 'meters'},
   positions, timestamps, trackOffsets, parameters: stopParameters.importToGraph(graph),
   trackLengths, averageSpeeds, maximumSpeeds, stepSpeeds, trackStopCounts,
   stops: {output: {ids, count, overflow}, centroids, durations, startRows, endRows}
@@ -490,11 +492,13 @@ stopParameters.write(getGPUTrajectoryMetricsParameterValues({
 
 // 2. Simplification: importance once, selection per tolerance
 importanceGraph.add(new GPULineSimplification({
+  spatialContext: {coordinateSpace: 'longitude-latitude', metric: 'great-circle', units: 'meters'},
   positions, trackOffsets, importance, metric: '${state.simplifyMetric}',
   timestamps,                                       // needed for 'time-ratio'
   maximumRounds: 96
 }));
 selectionGraph.add(new GPULineSimplification({
+  spatialContext: {coordinateSpace: 'longitude-latitude', metric: 'great-circle', units: 'meters'},
   positions, trackOffsets, importance, metric: '${state.simplifyMetric}', computeImportance: false,
   parameters: toleranceParameters.importToGraph(selectionGraph),
   selection: {output: {ids: keptIds, count: keptCount, overflow}}
@@ -502,8 +506,10 @@ selectionGraph.add(new GPULineSimplification({
 toleranceParameters.write(getGPULineSimplificationParameterValues({tolerance: ${Math.round(10 ** state.toleranceLog * 1000)}}));   // meters
 
 // 3. Routes: 96 samples each, then every pair
-graph.add(new GPUTrajectoryResample({positions, timestamps, trackOffsets, sampleCount: 96, spacing: '${state.routeSpacing}', samples: routes}));
+graph.add(new GPUTrajectoryResample({
+  spatialContext: {coordinateSpace: 'longitude-latitude', metric: 'great-circle', units: 'meters'}, positions, timestamps, trackOffsets, sampleCount: 96, spacing: '${state.routeSpacing}', samples: routes}));
 graph.add(new GPUTrackSimilarity({
+  spatialContext: {coordinateSpace: 'longitude-latitude', metric: 'great-circle', units: 'meters'},
   positionsA: routes, offsetsA: routeOffsets, pairA, pairB,   // 465 pairs
   hausdorff, frechet, maxFrechetVertices: 96
 }));
@@ -544,7 +550,7 @@ bucketParameters.write(getGPUTemporalReductionParameterValues(0, ${state.bucketD
       textAlternative: 'Gull routes and stop discs distinguish movement from rest.',
       optionsMode: 'fresh',
       title: 'Measuring a journey, and finding the stopovers',
-      body: '**`GPUTrajectoryMetrics`** gives every bird its path length, duration and average and maximum speed, and a speed for every hourly step, which colors the tracks now: gulls cruise at 30 to 60 km per hour in a migration push and almost stand still the rest of the time.\n\nIt also finds **stopovers**: runs of slow steps that last at least the minimum stay. The discs mark where the birds stayed 72 hours or more within a few kilometers: breeding colonies at the start, estuaries on the way and wintering sites at the end. The numbers are true distances: the analysis runs in azimuthal-equidistant meters, not on flat map units.\n\nChange **Stopover speed threshold** and **Minimum stopover** below to see how the definition decides where the discs appear.',
+      body: '**`GPUTrajectoryMetrics`** gives every bird its path length, duration and average and maximum speed, and a speed for every hourly step, which colors the tracks now: gulls cruise at 30 to 60 km per hour in a migration push and almost stand still the rest of the time.\n\nIt also finds **stopovers**: runs of slow steps that last at least the minimum stay. The discs mark where the birds stayed 72 hours or more within a few kilometers: breeding colonies at the start, estuaries on the way and wintering sites at the end. The numbers are great-circle distances on the sphere, measured on longitude and latitude, not on flat map units.\n\nChange **Stopover speed threshold** and **Minimum stopover** below to see how the definition decides where the discs appear.',
       options: {colorBy: 'speed', showStops: true},
       highlight: {readout: 'stops'},
       controls: ['colorBy', 'showStops', 'stopSpeed', 'stopHours'],
@@ -585,7 +591,7 @@ bucketParameters.write(getGPUTemporalReductionParameterValues(0, ${state.bucketD
       textAlternative: 'A route-distance matrix groups gull migrations into families.',
       optionsMode: 'fresh',
       title: 'Do they all take the same route?',
-      body: 'To compare routes, **`GPUTrajectoryResample`** rebuilds each track as 96 points, and **`GPUTrackSimilarity`** scores all 465 pairs in one pass with the discrete **Frechet distance**: the shortest leash that lets two walkers follow their routes in order. It follows Shapely `frechet_distance` without densification.\n\nThe 31 x 31 distance matrix is small, so the CPU clusters it into **three route families** (average linkage), drawn in three colors, from the most northerly last fix to the most southerly. Move **Number of route families**, switch **Route distance** to *Hausdorff*, or set **Color tracks by** to *Route distance to the selected bird* and click any track to ask who flies like it.',
+      body: 'To compare routes, **`GPUTrajectoryResample`** rebuilds each track as 96 points, and **`GPUTrackSimilarity`** scores all 465 pairs in one pass with the discrete **Frechet distance**: the shortest leash that lets two walkers follow their routes in order. It follows Shapely `frechet_distance` without densification. The routes are resampled along great circles and compared with great-circle distances, and the simplification tolerance is in great-circle meters too, so no projection enters.\n\nThe 31 x 31 distance matrix is small, so the CPU clusters it into **three route families** (average linkage), drawn in three colors, from the most northerly last fix to the most southerly. Move **Number of route families**, switch **Route distance** to *Hausdorff*, or set **Color tracks by** to *Route distance to the selected bird* and click any track to ask who flies like it.',
       options: {
         colorBy: 'family',
         familyCount: 3,

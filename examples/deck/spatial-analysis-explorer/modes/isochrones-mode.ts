@@ -235,6 +235,7 @@ export const isochronesMode: SpatialAnalysisModeDefinition = {
       (RING_CAPACITY + 1) * 4
     );
     const costs = resources.createBuffer('costs', nodeCount * 4);
+    const searchConverged = resources.createBuffer('search-converged', 4);
     const assignments = resources.createBuffer('assignments', nodeCount * 4);
     const pixelFacilities = resources.createBuffer(
       'pixel-facilities',
@@ -359,6 +360,8 @@ export const isochronesMode: SpatialAnalysisModeDefinition = {
           ),
           costs: costsView,
           sources: sources.importToGraph(graph),
+          // 0 when maxIterations cut the search short: every isochrone is then too small.
+          converged: importGraphBuffer(graph, 'search-converged', searchConverged, 'uint32', 1),
           sourceCount: sourceCount.importToGraph(graph),
           assignments: assignmentsView,
           costLimit: costLimit.importToGraph(graph),
@@ -741,6 +744,7 @@ export const isochronesMode: SpatialAnalysisModeDefinition = {
     const triangleReadout = context.controls.addReadout('Band triangles');
     const cellReadout = context.controls.addReadout('Reached cells');
     const outlineReadout = context.controls.addReadout('Outline segments');
+    const convergedReadout = context.controls.addReadout('Search converged');
     const ringReadout = context.controls.addReadout('Rings (shells / holes)');
     const ringHealthReadout = context.controls.addReadout('Open / touching segments');
     const demandReadout = context.controls.addReadout('Points of interest inside');
@@ -756,13 +760,19 @@ export const isochronesMode: SpatialAnalysisModeDefinition = {
         {buffer: tableOverflow, size: 4},
         {buffer: outlineCount, size: 4},
         {buffer: outlineOverflow, size: 4},
-        {buffer: outlineTotal, size: 4}
+        {buffer: outlineTotal, size: 4},
+        {buffer: searchConverged, size: 4}
       ],
       bytes => {
         if (destroyed) return;
         const words = new Uint32Array(bytes);
         triangleReadout.setValue(
           `${formatCount(words[0])} of ${formatCount(TRIANGLE_CAPACITY)}${words[1] ? ' OVERFLOW' : ''}`
+        );
+        convergedReadout.setValue(
+          words[7]
+            ? 'yes'
+            : `no: not converged (truncated) after ${MAXIMUM_ITERATIONS} rounds, isochrones are too small`
         );
         cellReadout.setValue(`${formatCount(words[2])}${words[3] ? ' (table OVERFLOW)' : ''}`);
         outlineReadout.setValue(

@@ -25,8 +25,8 @@ import {
   GPUGlobalSpatialStatistics,
   GPUSpatialLag,
   type GPUGlobalPermutationStatistic,
-  type GPUParameterBuffer,
-  type GPUPermutationAlternative
+  type GPUInferenceAlternative,
+  type GPUParameterBuffer
 } from '@luma.gl/experimental/gpu-spatial-analysis';
 import {GPUCommandGraph, type CompiledGPUCommandGraph} from '@luma.gl/gpgpu/gpu-core';
 import {getClassBreaks, getClassCounts, getExtent} from '../../cartography/breaks';
@@ -55,7 +55,13 @@ import {LocalMetricProjection} from '../../engine/projection';
 import {SpatialAnalysisResources} from '../../engine/resources';
 import {SummaryReader} from '../../engine/summary-reader';
 import type {SceneContext, SceneInstance, TooltipContent, TooltipRow} from '../scene';
-import {formatNumber, formatPValue, getPercentile, runGuarded} from './b4-format';
+import {
+  formatNumber,
+  formatPValue,
+  getMinimumPseudoP,
+  getPercentile,
+  runGuarded
+} from './b4-format';
 import {
   getVariableInfo,
   loadGeography,
@@ -66,6 +72,8 @@ import {
 import {createGeographyBuffers, type GeographyBuffers} from './b4-layers';
 import {
   createWeightsCore,
+  getWeightsInfo,
+  isRowStandardized,
   type WeightsConfig,
   type WeightsCore,
   type WeightsSource,
@@ -75,7 +83,6 @@ import {
   buildMoranScatter,
   formatPseudoPValue,
   getBivariateClasses,
-  getGroundDistanceRatio,
   getRank,
   getTertileBreaks,
   NO_CLASS,
@@ -112,7 +119,7 @@ export type GlobalAutocorrelationOptions = {
   /** Compares the four neighbour rules on a second weights set (step "Does the neighbour rule matter?"). */
   showRuleSweep: boolean;
   statistic: GlobalStatistic;
-  alternative: GPUPermutationAlternative;
+  alternative: GPUInferenceAlternative;
   permutations: number;
   seed: number;
   /** Draws a seeded shuffle of x left of the swipe divider. */
@@ -171,10 +178,22 @@ const CLASSIFY_BODY = /* wgsl */ `
   joinClass[joinClassOffset + index] = select(0u, 1u, black);
   binary[binaryOffset + index] = select(0.0, 1.0, black);`;
 
-// A county with no neighbour (an island) or no value has no quadrant and no neighbour average:
-// the lag the contributor writes for it is a 0 that means nothing, so it becomes NaN (no data).
+// A county with no active neighbour (an island) or no value has no quadrant and no neighbour average:
+// the lag the contributor writes for it is a 0 that means nothing, so it becomes NaN (no data). The
+// island rule is the library's: a slot counts when its neighbour is another row, has a positive weight
+// and is included by the mask, so this matches the islands the statistics leave out of n.
 const ISLAND_BODY = /* wgsl */ `
-  let isolated = rowOffsets[rowOffsetsOffset + index + 1u] == rowOffsets[rowOffsetsOffset + index];
+  var isolated = true;
+  let begin = min(rowOffsets[rowOffsetsOffset + index], ROW_SLOTS);
+  let end = min(rowOffsets[rowOffsetsOffset + index + 1u], ROW_SLOTS);
+  for (var slot = begin; slot < end; slot++) {
+    let neighbor = rowNeighbors[rowNeighborsOffset + slot];
+    if (neighbor < ROW_COUNT && neighbor != index && rowWeights[rowWeightsOffset + slot] > 0.0 &&
+        mask[maskOffset + neighbor] != 0u) {
+      isolated = false;
+      break;
+    }
+  }
   if (isolated || mask[maskOffset + index] == 0u) {
     quadrant[quadrantOffset + index] = 0u;
     var nanBits = 0x7fc00000u;
@@ -221,6 +240,10 @@ type World = {
   bivariateClasses: Uint32Array;
   focusRow: number;
   statsCompiled: CompiledGPUCommandGraph<void>;
+  /** The statistics graph for a row-standardized state of the weights (compiled on first use). */
+  getStats: (rowStandardized: boolean) => CompiledGPUCommandGraph<void>;
+  /** Every statistics graph compiled so far. */
+  statsGraphs: () => CompiledGPUCommandGraph<void>[];
   permutation: Map<string, CompiledGPUCommandGraph<void>>;
   correlogram: Map<string, CompiledGPUCommandGraph<void>>;
   permutationParameters: GPUParameterBuffer<'uint32'>;
@@ -248,6 +271,8 @@ type Snapshot = {
   pValues: Float32Array;
   pairCounts: Uint32Array;
   peaks: Uint32Array;
+  /** True when a correlogram pair count saturated. */
+  correlogramOverflowed: boolean;
   statistics: Float32Array;
   shuffled: Float32Array;
   lag: Float32Array;
@@ -315,6 +340,8 @@ export async function createGlobalAutocorrelation(
     transform: 'row'
   });
 
+  const getStatsGraph = (target: World) => target.getStats(isRowStandardized(getConfig()));
+
   const getMaxDistance = (geography: Geography) =>
     ctx.options.maxDistanceFactor * geography.medianSpacing;
 
@@ -342,6 +369,7 @@ export async function createGlobalAutocorrelation(
       expectedI: create('correlogram-expected', MAXIMUM_BANDS * 4),
       pairCounts: create('correlogram-pairs', MAXIMUM_BANDS * 4),
       peaks: create('correlogram-peaks', 8),
+      correlogramOverflow: create('correlogram-overflow', 4),
       correlogramStatistics: create(
         'correlogram-statistics',
         GPU_SPATIAL_CORRELOGRAM_STATISTICS_LENGTH * 4
@@ -382,140 +410,162 @@ export async function createGlobalAutocorrelation(
         )
       : null;
 
-    // One graph: lag, classes, every analytic statistic (plus Moran's I of the shuffled map).
-    const graph = new GPUCommandGraph<void>(device, {id: `global-statistics-${geography.id}`});
-    const weights = {
-      offsets: importGraphBuffer(graph, 'offsets', core.csr.offsets, 'uint32', rowCount + 1),
-      neighbors: importGraphBuffer(graph, 'neighbors', core.csr.neighbors, 'uint32', core.slots),
-      weights: importGraphBuffer(graph, 'weights', core.csr.weights, 'float32', core.slots)
+    // One graph: lag, classes, every analytic statistic (plus Moran's I of the shuffled map). The
+    // weights' row-standardized state is compile-time (it makes the statistics re-standardize rows
+    // over masked neighbours), so each state gets its own graph, built on first use.
+    const statsGraphs = new Map<boolean, CompiledGPUCommandGraph<void>>();
+    const compileStats = (rowStandardized: boolean): CompiledGPUCommandGraph<void> => {
+      const graph = new GPUCommandGraph<void>(device, {
+        id: `global-statistics-${geography.id}-${rowStandardized ? 'row' : 'raw'}`
+      });
+      const weights = {
+        offsets: importGraphBuffer(graph, 'offsets', core.csr.offsets, 'uint32', rowCount + 1),
+        neighbors: importGraphBuffer(graph, 'neighbors', core.csr.neighbors, 'uint32', core.slots),
+        weights: importGraphBuffer(graph, 'weights', core.csr.weights, 'float32', core.slots),
+        info: getWeightsInfo(rowCount, rowStandardized)
+      };
+      const xView = importGraphBuffer(graph, 'x', x, 'float32', rowCount);
+      const yView = importGraphBuffer(graph, 'y', y, 'float32', rowCount);
+      const maskXView = importGraphBuffer(graph, 'mask-x', maskX, 'uint32', rowCount);
+      const maskXYView = importGraphBuffer(graph, 'mask-xy', maskXY, 'uint32', rowCount);
+      const globalResults = importGraphBuffer(
+        graph,
+        'global-results',
+        buffersByName.globalResults,
+        'float32',
+        STATISTICS_LENGTH
+      );
+      graph.add(
+        new GPUGlobalSpatialStatistics({
+          id: 'global-moran-geary-g',
+          weights,
+          values: xView,
+          mask: maskXView,
+          statistics: ['moran', 'geary', 'getisOrdG'],
+          results: globalResults
+        })
+      );
+      graph.add(
+        new GPUGlobalSpatialStatistics({
+          id: 'global-bivariate',
+          weights,
+          values: xView,
+          secondValues: yView,
+          mask: maskXYView,
+          statistics: ['bivariateMoran'],
+          results: importGraphBuffer(
+            graph,
+            'bivariate-results',
+            buffersByName.bivariateResults,
+            'float32',
+            STATISTICS_LENGTH
+          )
+        })
+      );
+      graph.add(
+        new GPUGlobalSpatialStatistics({
+          id: 'global-shuffled',
+          weights,
+          values: importGraphBuffer(graph, 'shuffled-x', shuffled, 'float32', rowCount),
+          mask: maskXView,
+          statistics: ['moran'],
+          results: importGraphBuffer(
+            graph,
+            'shuffled-results',
+            buffersByName.shuffledResults,
+            'float32',
+            STATISTICS_LENGTH
+          )
+        })
+      );
+      const lagView = importGraphBuffer(graph, 'lag', lag, 'float32', rowCount);
+      graph.add(
+        new GPUSpatialLag({
+          id: 'spatial-lag',
+          values: xView,
+          mask: maskXView,
+          weights,
+          normalize: true,
+          output: lagView
+        })
+      );
+      const binaryView = importGraphBuffer(
+        graph,
+        'binary',
+        buffersByName.binary,
+        'float32',
+        rowCount
+      );
+      const quadrantView = importGraphBuffer(graph, 'quadrant', quadrant, 'uint32', rowCount);
+      addKernelPass(graph, {
+        id: 'global-classes',
+        invocationCount: rowCount,
+        bindings: [
+          {name: 'x', view: xView, type: 'f32', access: 'read'},
+          {name: 'lag', view: lagView, type: 'f32', access: 'read'},
+          {name: 'mask', view: maskXView, type: 'u32', access: 'read'},
+          {name: 'summary', view: globalResults, type: 'f32', access: 'read'},
+          {
+            name: 'threshold',
+            view: importGraphBuffer(graph, 'threshold', threshold, 'float32', 1),
+            type: 'f32',
+            access: 'read'
+          },
+          {name: 'quadrant', view: quadrantView, type: 'u32', access: 'read_write'},
+          {
+            name: 'joinClass',
+            view: importGraphBuffer(graph, 'join-class', joinClass, 'uint32', rowCount),
+            type: 'u32',
+            access: 'read_write'
+          },
+          {name: 'binary', view: binaryView, type: 'f32', access: 'read_write'}
+        ],
+        body: CLASSIFY_BODY
+      });
+      addKernelPass(graph, {
+        id: 'global-islands',
+        invocationCount: rowCount,
+        bindings: [
+          {name: 'rowOffsets', view: weights.offsets, type: 'u32', access: 'read'},
+          {name: 'rowNeighbors', view: weights.neighbors, type: 'u32', access: 'read'},
+          {name: 'rowWeights', view: weights.weights, type: 'f32', access: 'read'},
+          {name: 'mask', view: maskXView, type: 'u32', access: 'read'},
+          {name: 'quadrant', view: quadrantView, type: 'u32', access: 'read_write'},
+          {name: 'lag', view: lagView, type: 'f32', access: 'read_write'}
+        ],
+        declarations: `const ROW_COUNT: u32 = ${rowCount}u;
+  const ROW_SLOTS: u32 = ${core.slots}u;`,
+        body: ISLAND_BODY
+      });
+      graph.add(
+        new GPUGlobalSpatialStatistics({
+          id: 'global-join-count',
+          weights,
+          values: binaryView,
+          mask: maskXView,
+          statistics: ['joinCount'],
+          results: importGraphBuffer(
+            graph,
+            'join-results',
+            buffersByName.joinResults,
+            'float32',
+            STATISTICS_LENGTH
+          ),
+          joinCounts: importGraphBuffer(graph, 'join-counts', buffersByName.joinCounts, 'uint32', 3)
+        })
+      );
+
+      return resources.track(graph.compile());
     };
-    const xView = importGraphBuffer(graph, 'x', x, 'float32', rowCount);
-    const yView = importGraphBuffer(graph, 'y', y, 'float32', rowCount);
-    const maskXView = importGraphBuffer(graph, 'mask-x', maskX, 'uint32', rowCount);
-    const maskXYView = importGraphBuffer(graph, 'mask-xy', maskXY, 'uint32', rowCount);
-    const globalResults = importGraphBuffer(
-      graph,
-      'global-results',
-      buffersByName.globalResults,
-      'float32',
-      STATISTICS_LENGTH
-    );
-    graph.add(
-      new GPUGlobalSpatialStatistics({
-        id: 'global-moran-geary-g',
-        weights,
-        values: xView,
-        mask: maskXView,
-        statistics: ['moran', 'geary', 'getisOrdG'],
-        results: globalResults
-      })
-    );
-    graph.add(
-      new GPUGlobalSpatialStatistics({
-        id: 'global-bivariate',
-        weights,
-        values: xView,
-        secondValues: yView,
-        mask: maskXYView,
-        statistics: ['bivariateMoran'],
-        results: importGraphBuffer(
-          graph,
-          'bivariate-results',
-          buffersByName.bivariateResults,
-          'float32',
-          STATISTICS_LENGTH
-        )
-      })
-    );
-    graph.add(
-      new GPUGlobalSpatialStatistics({
-        id: 'global-shuffled',
-        weights,
-        values: importGraphBuffer(graph, 'shuffled-x', shuffled, 'float32', rowCount),
-        mask: maskXView,
-        statistics: ['moran'],
-        results: importGraphBuffer(
-          graph,
-          'shuffled-results',
-          buffersByName.shuffledResults,
-          'float32',
-          STATISTICS_LENGTH
-        )
-      })
-    );
-    const lagView = importGraphBuffer(graph, 'lag', lag, 'float32', rowCount);
-    graph.add(
-      new GPUSpatialLag({
-        id: 'spatial-lag',
-        values: xView,
-        mask: maskXView,
-        weights,
-        normalize: true,
-        output: lagView
-      })
-    );
-    const binaryView = importGraphBuffer(
-      graph,
-      'binary',
-      buffersByName.binary,
-      'float32',
-      rowCount
-    );
-    const quadrantView = importGraphBuffer(graph, 'quadrant', quadrant, 'uint32', rowCount);
-    addKernelPass(graph, {
-      id: 'global-classes',
-      invocationCount: rowCount,
-      bindings: [
-        {name: 'x', view: xView, type: 'f32', access: 'read'},
-        {name: 'lag', view: lagView, type: 'f32', access: 'read'},
-        {name: 'mask', view: maskXView, type: 'u32', access: 'read'},
-        {name: 'summary', view: globalResults, type: 'f32', access: 'read'},
-        {
-          name: 'threshold',
-          view: importGraphBuffer(graph, 'threshold', threshold, 'float32', 1),
-          type: 'f32',
-          access: 'read'
-        },
-        {name: 'quadrant', view: quadrantView, type: 'u32', access: 'read_write'},
-        {
-          name: 'joinClass',
-          view: importGraphBuffer(graph, 'join-class', joinClass, 'uint32', rowCount),
-          type: 'u32',
-          access: 'read_write'
-        },
-        {name: 'binary', view: binaryView, type: 'f32', access: 'read_write'}
-      ],
-      body: CLASSIFY_BODY
-    });
-    addKernelPass(graph, {
-      id: 'global-islands',
-      invocationCount: rowCount,
-      bindings: [
-        {name: 'rowOffsets', view: weights.offsets, type: 'u32', access: 'read'},
-        {name: 'mask', view: maskXView, type: 'u32', access: 'read'},
-        {name: 'quadrant', view: quadrantView, type: 'u32', access: 'read_write'},
-        {name: 'lag', view: lagView, type: 'f32', access: 'read_write'}
-      ],
-      body: ISLAND_BODY
-    });
-    graph.add(
-      new GPUGlobalSpatialStatistics({
-        id: 'global-join-count',
-        weights,
-        values: binaryView,
-        mask: maskXView,
-        statistics: ['joinCount'],
-        results: importGraphBuffer(
-          graph,
-          'join-results',
-          buffersByName.joinResults,
-          'float32',
-          STATISTICS_LENGTH
-        ),
-        joinCounts: importGraphBuffer(graph, 'join-counts', buffersByName.joinCounts, 'uint32', 3)
-      })
-    );
-    const statsCompiled = resources.track(graph.compile());
+    const getStats = (rowStandardized: boolean) => {
+      let compiled = statsGraphs.get(rowStandardized);
+      if (!compiled) {
+        compiled = compileStats(rowStandardized);
+        statsGraphs.set(rowStandardized, compiled);
+      }
+      return compiled;
+    };
+    const statsCompiled = getStats(isRowStandardized(getConfig()));
 
     const reader = new SummaryReader(
       resources,
@@ -538,7 +588,8 @@ export async function createGlobalAutocorrelation(
         },
         {buffer: buffersByName.shuffledResults, size: STATISTICS_LENGTH * 4},
         {buffer: lag, size: rowCount * 4},
-        {buffer: core.csr.offsets, size: (rowCount + 1) * 4}
+        {buffer: core.csr.offsets, size: (rowCount + 1) * 4},
+        {buffer: buffersByName.correlogramOverflow, size: 4}
       ],
       bytes => runGuarded('global snapshot', () => handleSnapshot(bytes))
     );
@@ -565,6 +616,8 @@ export async function createGlobalAutocorrelation(
       bivariateClasses: new Uint32Array(rowCount).fill(NO_CLASS),
       focusRow,
       statsCompiled,
+      getStats,
+      statsGraphs: () => [...statsGraphs.values()],
       permutation: new Map(),
       correlogram: new Map(),
       permutationParameters,
@@ -684,7 +737,9 @@ export async function createGlobalAutocorrelation(
 
   const getPermutationKey = () => {
     const o = ctx.options;
-    return o.statistic === 'joinCount' ? null : `${o.statistic}-${o.alternative}`;
+    return o.statistic === 'joinCount'
+      ? null
+      : `${o.statistic}-${o.alternative}-${isRowStandardized(getConfig()) ? 'row' : 'raw'}`;
   };
 
   const preparePermutation = (target: World): boolean => {
@@ -719,7 +774,8 @@ export async function createGlobalAutocorrelation(
             target.core.csr.weights,
             'float32',
             target.core.slots
-          )
+          ),
+          info: getWeightsInfo(rowCount, isRowStandardized(getConfig()))
         },
         values: importGraphBuffer(graph, 'x', target.x, 'float32', rowCount),
         secondValues: bivariate
@@ -791,6 +847,7 @@ export async function createGlobalAutocorrelation(
         pValues: view('pValues', target.buffersByName.pValues, 'float32', o.bandCount),
         expectedI: view('expectedI', target.buffersByName.expectedI, 'float32', o.bandCount),
         pairCounts: view('pairCounts', target.buffersByName.pairCounts, 'uint32', o.bandCount),
+        overflow: view('overflow', target.buffersByName.correlogramOverflow, 'uint32', 1),
         peakBands: view('peaks', target.buffersByName.peaks, 'uint32', 2),
         statistics: view(
           'statistics',
@@ -828,7 +885,9 @@ export async function createGlobalAutocorrelation(
             'uint32',
             core.slots
           ),
-          weights: importGraphBuffer(graph, 'weights', core.csr.weights, 'float32', core.slots)
+          weights: importGraphBuffer(graph, 'weights', core.csr.weights, 'float32', core.slots),
+          // The comparison always row-standardizes (see getRuleConfig).
+          info: getWeightsInfo(rowCount, true)
         },
         values: importGraphBuffer(graph, 'x', target.x, 'float32', rowCount),
         mask: importGraphBuffer(graph, 'mask', target.maskX, 'uint32', rowCount),
@@ -923,15 +982,8 @@ export async function createGlobalAutocorrelation(
   // Geometry helpers: rings of a county, ground distances
   // ---------------------------------------------------------------------------------------
 
-  const getCentroid = (target: World, row: number): [number, number] => [
-    target.geography.centroids[row * 2],
-    target.geography.centroids[row * 2 + 1]
-  ];
-
-  const getCentroidLngLat = (target: World, row: number): LngLat => {
-    const [x, y] = getCentroid(target, row);
-    return target.projection.unproject(x, y) as LngLat;
-  };
+  const getCentroidLngLat = (target: World, row: number): LngLat =>
+    target.geography.getCentroidLngLat(row) as LngLat;
 
   /** The rings of a county in longitude and latitude, for the achromatic selection outline. */
   const getRowRings = (target: World, row: number): LngLat[][] => {
@@ -958,12 +1010,6 @@ export async function createGlobalAutocorrelation(
       rings.push(points);
     }
     return rings;
-  };
-
-  /** Ground metres at the focus county per planar metre of the correlogram's frame. */
-  const getGroundRatio = (target: World): number => {
-    const focus = getCentroidLngLat(target, target.focusRow);
-    return getGroundDistanceRatio(focus[1], target.geography.origin[1]);
   };
 
   /** The band the correlogram marks: the first z peak, else the strongest band, or -1. */
@@ -1093,10 +1139,9 @@ export async function createGlobalAutocorrelation(
     const o = ctx.options;
     const bandCount = o.bandCount;
     const maximumDistance = getMaxDistance(target.geography);
-    const ratio = getGroundRatio(target);
     const distances = Array.from(
       {length: bandCount},
-      (_, band) => (((band + 1) * maximumDistance) / bandCount) * ratio
+      (_, band) => ((band + 1) * maximumDistance) / bandCount
     );
     const kilometers = distances.map(distance => distance / 1000);
     const zScores = Array.from(snapshot.zScores.subarray(0, bandCount));
@@ -1136,7 +1181,7 @@ export async function createGlobalAutocorrelation(
     const peak = snapshot ? getPeakBand(snapshot) : {band: -1, isFirstPeak: false};
     const ticks =
       o.showBands && snapshot && peak.band >= 0
-        ? [(((peak.band + 1) * getMaxDistance(geography)) / o.bandCount) * getGroundRatio(target)]
+        ? [((peak.band + 1) * getMaxDistance(geography)) / o.bandCount]
         : undefined;
     ctx.setFurniture({
       title: {sample},
@@ -1193,8 +1238,7 @@ export async function createGlobalAutocorrelation(
     // The focus county and the two correlogram rings, in true ground metres at the focus.
     if (snapshot && o.showBands) {
       const focus = getCentroidLngLat(target, target.focusRow);
-      const ratio = getGroundRatio(target);
-      const longest = getMaxDistance(target.geography) * ratio;
+      const longest = getMaxDistance(target.geography);
       const peak = getPeakBand(snapshot);
       const rings: MapAnnotation[] = [
         {
@@ -1218,8 +1262,7 @@ export async function createGlobalAutocorrelation(
         }
       ];
       if (peak.band >= 0) {
-        const peakDistance =
-          (((peak.band + 1) * getMaxDistance(target.geography)) / o.bandCount) * ratio;
+        const peakDistance = ((peak.band + 1) * getMaxDistance(target.geography)) / o.bandCount;
         rings.push({
           kind: 'ring',
           id: 'band-peak',
@@ -1246,7 +1289,7 @@ export async function createGlobalAutocorrelation(
     const sweep = target.sweep;
     ctx.setCost({
       records: included ?? target.geography.count,
-      passes: target.statsCompiled.stats.nodeOrder.length,
+      passes: getStatsGraph(target).stats.nodeOrder.length,
       note:
         sweep && sweep.state === 'done'
           ? `${sweep.core.getGraphs().length} weights graphs compiled once, reused for 4 rules`
@@ -1309,7 +1352,7 @@ export async function createGlobalAutocorrelation(
     } else {
       const shuffles = permutation[R.permutations];
       ctx.setReadout('pSim', formatPseudoPValue(permutation[R.pseudoPValue]));
-      ctx.setReadout('pFloor', formatPseudoPValue(1 / (shuffles + 1)));
+      ctx.setReadout('pFloor', formatPseudoPValue(getMinimumPseudoP(o.alternative, shuffles)));
       ctx.setReadout('permutations', formatCount(shuffles));
       ctx.setReadout('exceedances', formatCount(permutation[R.exceedances]));
       ctx.setReadout('zSim', formatNumber(permutation[R.zSimulated], 1));
@@ -1317,22 +1360,21 @@ export async function createGlobalAutocorrelation(
     ctx.setReadout('shuffledI', formatNumber(snapshot.shuffled[L.moran + F.statistic], 2));
     // Correlogram.
     const maximumDistance = getMaxDistance(target.geography);
-    const ratio = getGroundRatio(target);
     const peak = getPeakBand(snapshot);
     ctx.setReadout(
       'peak',
       peak.band >= 0
-        ? formatDistance((((peak.band + 1) * maximumDistance) / o.bandCount) * ratio)
+        ? formatDistance(((peak.band + 1) * maximumDistance) / o.bandCount)
         : 'no defined band'
     );
-    ctx.setReadout('maxDistance', formatDistance(maximumDistance * ratio));
+    ctx.setReadout('maxDistance', formatDistance(maximumDistance));
     ctx.setReadout(
       'bandSpan',
-      `${formatDistance(maximumDistance * ratio)} in ${o.bandCount} ${o.bandMode} bands${peak.band >= 0 && !peak.isFirstPeak ? '; no z peak, strongest band shown' : ''}`
+      `${formatDistance(maximumDistance)} in ${o.bandCount} ${o.bandMode} bands${peak.band >= 0 && !peak.isFirstPeak ? '; no z peak, strongest band shown' : ''}${snapshot.correlogramOverflowed ? '; pair counts saturated (overflow), treat with care' : ''}`
     );
     ctx.setReadout(
       'distanceNote',
-      `planar metres of the map frame, true at ${target.geography.origin[1].toFixed(1)} N; ground distance at the focus county = planar x ${ratio.toFixed(3)}`
+      `metres of ${target.geography.analysisFrame.name}, within ${(target.geography.analysisFrame.maxScaleError * 100).toFixed(1)}% of ground distance`
     );
     publishScatter();
     publishNull();
@@ -1372,6 +1414,7 @@ export async function createGlobalAutocorrelation(
     const shuffled = floats(STATISTICS_LENGTH);
     const lag = floats(rowCount);
     const offsets = words(rowCount + 1);
+    const correlogramOverflowed = words(1)[0] !== 0;
     const S = GPU_GLOBAL_SPATIAL_STATISTICS_SUMMARY;
     const L = GPU_GLOBAL_SPATIAL_STATISTICS_LAYOUT;
     const o = ctx.options;
@@ -1394,6 +1437,7 @@ export async function createGlobalAutocorrelation(
       pValues,
       pairCounts,
       peaks,
+      correlogramOverflowed,
       statistics,
       shuffled,
       lag,
@@ -1618,7 +1662,7 @@ export async function createGlobalAutocorrelation(
       if (!target) return [];
       return [
         ...target.core.getGraphs(),
-        target.statsCompiled,
+        ...target.statsGraphs(),
         ...target.permutation.values(),
         ...target.correlogram.values(),
         ...(target.sweep ? [...target.sweep.core.getGraphs(), target.sweep.graph] : [])
@@ -1704,7 +1748,7 @@ export async function createGlobalAutocorrelation(
           target.core.encode(commandEncoder, getConfig());
           weightsDirty = false;
         }
-        target.statsCompiled.encode(commandEncoder, {parameters: undefined});
+        getStatsGraph(target).encode(commandEncoder, {parameters: undefined});
         const permutationKey = getPermutationKey();
         if (permutationKey) {
           target.permutation.get(permutationKey)?.encode(commandEncoder, {parameters: undefined});

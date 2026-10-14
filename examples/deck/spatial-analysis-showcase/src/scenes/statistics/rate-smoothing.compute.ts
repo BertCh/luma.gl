@@ -16,7 +16,8 @@ import {
   GPUGlobalSpatialStatistics,
   GPUSpatialEmpiricalBayesRates,
   type GPUContiguityCriterion,
-  type GPUPermutationAlternative
+  type GPUInferenceAlternative,
+  type GPUInferenceMetadata
 } from '@luma.gl/experimental/gpu-spatial-analysis';
 import {GPUCommandGraph, type CompiledGPUCommandGraph} from '@luma.gl/gpgpu/gpu-core';
 import {getClassTableLayerProps} from '../../cartography/class-table';
@@ -51,6 +52,7 @@ import {
   getStateLineStyle,
   MORAN_LEGEND_TO_CATEGORY
 } from '../weights/hot-spots.style';
+import {getMinimumPseudoP} from '../weights/b4-format';
 import {createByteReader} from './b5-common';
 import {getPolygonLayout} from './b5-geometry';
 import {packColor} from './b5-palettes';
@@ -94,7 +96,8 @@ export type RateSmoothingOptions = {
   analyze: 'standardized' | 'smoothed';
   criterion: GPUContiguityCriterion;
   gating: 'permutation' | 'analytic';
-  alternative: Exclude<GPUPermutationAlternative, 'less'>;
+  alternative: Exclude<GPUInferenceAlternative, 'less'>;
+  /** Benjamini-Hochberg FDR across the county tests (the recipe's `multipleTesting`); off is `'none'`. */
   falseDiscoveryRate: boolean;
   permutations: number;
   seed: number;
@@ -112,6 +115,8 @@ export type RateSmoothingLegendData = {
   clusterCounts: number[];
   groundIsDark: boolean;
   pooledPerThousand: number;
+  /** How the cluster significance was decided, from the recipe. */
+  inference: GPUInferenceMetadata;
 };
 
 const MAXIMUM_PERMUTATIONS = 999;
@@ -124,7 +129,11 @@ const QUADRANT_NAMES = [
   'High-low outlier'
 ] as const;
 
-type Variant = {compiled: CompiledGPUCommandGraph<void>; key: string};
+type Variant = {
+  compiled: CompiledGPUCommandGraph<void>;
+  key: string;
+  inference: GPUInferenceMetadata;
+};
 
 /** Everything read back from the GPU after the graph ran. */
 type Latest = {
@@ -345,7 +354,7 @@ export async function createRateSmoothing(
       options.analyze,
       options.gating,
       options.gating === 'permutation' ? options.alternative : '-',
-      options.gating === 'permutation' && options.falseDiscoveryRate ? 'fdr' : '-'
+      options.falseDiscoveryRate ? 'fdr' : '-'
     ].join('|');
 
   const compileVariant = (options: RateSmoothingOptions): Variant => {
@@ -381,6 +390,8 @@ export async function createRateSmoothing(
       neighborCapacity,
       pairCapacity: n * 96,
       analyze: options.analyze,
+      // The recipe default is Benjamini-Hochberg, so the uncorrected map must ask for 'none'.
+      multipleTesting: options.falseDiscoveryRate ? 'benjamini-hochberg' : 'none',
       parameters: autocorrelationParameters.importToGraph(graph),
       permutation:
         options.gating === 'permutation'
@@ -389,7 +400,8 @@ export async function createRateSmoothing(
               maximumPermutations: MAXIMUM_PERMUTATIONS,
               alternative: options.alternative,
               maximumNeighbors: MAXIMUM_LOCAL_NEIGHBORS,
-              falseDiscoveryRate: options.falseDiscoveryRate
+              permutations: options.permutations,
+              seed: options.seed
             }
           : undefined,
       palette: word('palette', paletteBuffer, GPU_RATE_CLUSTER_MAP_PALETTE_LENGTH),
@@ -448,7 +460,7 @@ export async function createRateSmoothing(
         })
       );
     }
-    return {key, compiled: resources.track(graph.compile())};
+    return {key, compiled: resources.track(graph.compile()), inference: recipe.inference};
   };
 
   const variants = new Map<string, Variant>();
@@ -503,7 +515,8 @@ export async function createRateSmoothing(
       zCounts: getClassCounts(latest.standardized, Z_BREAKS),
       clusterCounts: countQuadrants(latest.quadrants),
       groundIsDark: ctx.ground() === 'dark',
-      pooledPerThousand: latest.pooledRate * RATE_SCALE
+      pooledPerThousand: latest.pooledRate * RATE_SCALE,
+      inference: active.inference
     };
     ctx.setLegendData('rateSmoothing', legendData);
   };
@@ -683,7 +696,9 @@ export async function createRateSmoothing(
     );
     ctx.setReadout(
       'priorCheck',
-      latest.priorVariance < 0 ? 'a < 0: weights leave 0-1 (esda does not clamp)' : 'a >= 0'
+      latest.priorVariance < 0
+        ? 'a < 0: clamped to 0, every county shrinks to the pooled rate'
+        : 'a >= 0'
     );
     const quadrantColors = getMoranQuadrantColors(getGiTable(ctx.ground(), 'No data'));
     ctx.setChart('clusterBars', {
@@ -820,8 +835,8 @@ export async function createRateSmoothing(
   // ---------------------------------------------------------------------------------------------
 
   const publishTest = () => {
-    const {falseDiscoveryRate, gating, permutations, significance} = ctx.options;
-    const minimumPseudoP = 1 / (permutations + 1);
+    const {alternative, falseDiscoveryRate, gating, permutations, significance} = ctx.options;
+    const minimumPseudoP = getMinimumPseudoP(alternative, permutations);
     ctx.setReadout(
       'testName',
       gating === 'permutation' ? `a ${permutations}-permutation test` : 'the analytic p-value'
@@ -829,16 +844,18 @@ export async function createRateSmoothing(
     ctx.setReadout(
       'testResolution',
       gating === 'permutation'
-        ? `1 / ${permutations + 1} = ${minimumPseudoP.toFixed(4)}`
+        ? `${alternative === 'two-sided' ? '2' : '1'} / ${permutations + 1} = ${minimumPseudoP.toFixed(4)}`
         : 'continuous normal approximation'
     );
     ctx.setReadout(
       'multiplicity',
       gating === 'permutation'
         ? falseDiscoveryRate
-          ? `Benjamini-Hochberg FDR across ${formatCount(n)} local tests`
+          ? `Benjamini-Hochberg FDR across the tested counties (of ${formatCount(n)})`
           : `${formatCount(n)} uncorrected local tests`
-        : `${formatCount(n)} uncorrected analytic local tests`
+        : falseDiscoveryRate
+          ? `Benjamini-Hochberg FDR across the tested counties (of ${formatCount(n)})`
+          : `${formatCount(n)} uncorrected analytic local tests`
     );
     const minimumRank = Math.ceil((n * minimumPseudoP) / significance);
     ctx.setReadout(

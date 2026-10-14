@@ -28,11 +28,15 @@ const SOUTH_EAST_BOUNDS = [-98.5, 25, -74.5, 40.5] as const;
 
 const ALTERNATIVES = [
   {
-    value: 'directed',
-    label: 'Directed (esda default)',
-    help: 'The tail on the side of the observed statistic, as esda p_sim.'
+    value: 'two-sided',
+    label: 'Two-sided (default)',
+    help: 'Doubles the smaller tail: the smallest possible p is 2 / (P + 1).'
   },
-  {value: 'two-sided', label: 'Two-sided', help: 'Doubles the smaller tail.'},
+  {
+    value: 'directed',
+    label: 'Directed (legacy esda, anti-conservative)',
+    help: 'The tail on the side of the observed statistic, not doubled, as esda p_sim: p-values run about twice too small.'
+  },
   {value: 'greater', label: 'Greater', help: 'Tests for clustering stronger than chance.'},
   {
     value: 'lesser',
@@ -149,11 +153,11 @@ function getLegends(
               color: (data['noDataColor'] as [number, number, number, number] | undefined) ?? [
                 217, 217, 217, 178
               ],
-              label: 'No neighbours (island)',
+              label: 'No active neighbours (island)',
               count: counts?.[4]
             }
           ],
-          note: 'High or low against the mean, for the county and for the average of its neighbours. No significance test: see Hot spots beyond chance.'
+          note: 'High or low against the mean, for the county and for the average of its neighbours. Islands are left out of every statistic here (n excludes them). No significance test: see Hot spots beyond chance.'
         }
       ];
     }
@@ -365,9 +369,9 @@ export default defineScene<GlobalAutocorrelationOptions>({
       label: 'Tail of the p-value',
       group: 'Permutation test',
       apply: 'compile',
-      default: 'directed',
+      default: 'two-sided',
       disabledWhen: state => state.statistic === 'joinCount',
-      help: 'Which tail counts as evidence. Compile-time.',
+      help: 'Which tail counts as evidence. Two-sided is the default; directed is the legacy esda rule and is anti-conservative. The analytic z and p of each statistic stay two-sided. Compile-time.',
       options: ALTERNATIVES
     },
     {
@@ -381,7 +385,7 @@ export default defineScene<GlobalAutocorrelationOptions>({
       step: 100,
       default: 999,
       disabledWhen: state => state.statistic === 'joinCount',
-      help: 'More permutations give a finer pseudo p-value: the smallest possible is 1 / (P + 1). A parameter write.'
+      help: 'More permutations give a finer pseudo p-value: the smallest possible is 1 / (P + 1), or 2 / (P + 1) for the two-sided tail. A parameter write.'
     },
     {
       kind: 'slider',
@@ -516,7 +520,11 @@ export default defineScene<GlobalAutocorrelationOptions>({
   ],
 
   readouts: [
-    {id: 'places', label: 'Places analysed', help: 'Places with a finite value of x.'},
+    {
+      id: 'places',
+      label: 'Places analysed',
+      help: 'Places with a finite value of x and at least one neighbour: islands are left out of n.'
+    },
     {
       id: 'moran',
       label: "Moran's I",
@@ -549,12 +557,12 @@ export default defineScene<GlobalAutocorrelationOptions>({
     {
       id: 'pSim',
       label: 'Pseudo p-value',
-      help: 'p_sim = (larger + 1) / (P + 1) for the selected statistic and tail.'
+      help: 'p_sim = (larger + 1) / (P + 1) for one tail; the two-sided tail doubles the smaller one. The selected statistic and tail.'
     },
     {
       id: 'pFloor',
       label: 'Smallest possible p',
-      help: '1 / (P + 1): even a perfect result cannot go below it.'
+      help: '1 / (P + 1), or 2 / (P + 1) for the two-sided tail: even a perfect result cannot go below it.'
     },
     {
       id: 'permutations',
@@ -649,7 +657,7 @@ export default defineScene<GlobalAutocorrelationOptions>({
     {
       id: 'permutation',
       label: 'Permutations',
-      detail: 'Shuffles by a keyed bijection, no n x P table',
+      detail: 'Shuffles by a swap-or-not permutation, no n x P table',
       show: {option: 'showShuffled', value: true}
     },
     {
@@ -768,7 +776,7 @@ export default defineScene<GlobalAutocorrelationOptions>({
       headline: 'No shuffled map comes close to the real one',
       textAlternative:
         'A swipe between a shuffled county map, which looks like salt and pepper, on the left and the real map with its southern belt on the right, above a histogram of Moran I over the shuffles with the observed value far to the right.',
-      body: 'Deal the county values out at random and the belt vanishes: left is one shuffle (I = **{{shuffledI}}**), right the real map (I = **{{moran}}**). **{{permutations}}** shuffles built the histogram; **{{exceedances}}** reached the real I, so p_sim is **{{pSim}}** and cannot go below **{{pFloor}}**, 1 / (shuffles + 1).\n\nStep the **Shuffle seed**; change **Permutations**.\n\n*Beyond chance means beyond shuffling.*',
+      body: 'Deal the county values out at random and the belt vanishes: left is one shuffle (I = **{{shuffledI}}**), right the real map (I = **{{moran}}**). **{{permutations}}** shuffles built the histogram; **{{exceedances}}** reached the real I, so p_sim is **{{pSim}}** and cannot go below **{{pFloor}}**, (1 or 2) / (shuffles + 1) by tail.\n\nStep the **Shuffle seed**; change **Permutations**.\n\n*Beyond chance means beyond shuffling.*',
       evidence:
         'The observed statistic sits against its full shuffled reference distribution: **{{exceedances}}** of **{{permutations}}** shuffles are at least as extreme, giving p = **{{pSim}}**.',
       caveat:

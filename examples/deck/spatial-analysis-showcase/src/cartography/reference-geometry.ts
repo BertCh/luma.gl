@@ -13,10 +13,13 @@
  * a screen can show at national scales; do not use it for survey work.
  */
 
+import {GPU_EARTH_MEAN_RADIUS_METERS} from '@luma.gl/experimental/gpu-spatial-analysis';
 import type {LngLat} from './types';
 
 /** Mean earth radius in metres (IUGG), the sphere every function here assumes. */
-export const EARTH_RADIUS_METERS = 6_371_008.8;
+export const EARTH_RADIUS_METERS = GPU_EARTH_MEAN_RADIUS_METERS;
+
+export {GPU_EARTH_MEAN_RADIUS_METERS};
 
 /** Web Mercator (EPSG:3857) sphere radius in metres, used by {@link metricGridLines}. */
 export const WEB_MERCATOR_RADIUS_METERS = 6_378_137;

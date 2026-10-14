@@ -279,17 +279,10 @@ export const segregationMode: SpatialAnalysisModeDefinition = {
             overflow: importGraphBuffer(graph, `overflow-${scale}`, buffers.overflow, 'uint32', 1)
           })
         );
-        if (variant === 'kernel') {
-          graph.add(
-            new GPUSpatialWeightsTransform({
-              id: `kernel-${scale}`,
-              operation: 'kernel',
-              weights,
-              kernel: 'epanechnikov',
-              bandwidth: 'adaptive'
-            })
-          );
-        } else if (variant === 'row') {
+        // The 'kernel' variant weights inside the search (Epanechnikov with bandwidth = the band
+        // radius, see writeSearchParameters): the transform's 'adaptive' bandwidth needs kNN weights
+        // and this is a distance band.
+        if (variant === 'row') {
           graph.add(
             new GPUSpatialWeightsTransform({id: `row-${scale}`, operation: 'row', weights})
           );
@@ -432,6 +425,10 @@ export const segregationMode: SpatialAnalysisModeDefinition = {
       value = f32(best);
     }
   }
+  // Undefined indices (an empty environment, a group absent everywhere) are NaN; draw them as hidden.
+  if ((bitcast<u32>(value) & 0x7fffffffu) > 0x7f800000u) {
+    value = ${HIDDEN.toFixed(1)};
+  }
   display[displayOffset + index] = value;
   dominant[dominantOffset + index] = winner;`
     });
@@ -462,7 +459,8 @@ export const segregationMode: SpatialAnalysisModeDefinition = {
               gridBounds[3] + cellSize
             ],
             radius: BANDWIDTH_LADDER[index] * bandwidthUnit * cellSize,
-            weightKind: 'binary'
+            weightKind: variant === 'kernel' ? 'kernel' : 'binary',
+            kernel: 'epanechnikov'
           })
         );
       });
@@ -474,7 +472,8 @@ export const segregationMode: SpatialAnalysisModeDefinition = {
       index === 0
         ? 'aspatial'
         : `${((BANDWIDTH_LADDER[index - 1] * bandwidthUnit * cellSize) / 1000).toFixed(1)} km`;
-    const decimal = (value: number): string => value.toFixed(3);
+    const decimal = (value: number): string =>
+      Number.isFinite(value) ? value.toFixed(3) : 'undefined';
 
     // Readback layout: indices, overflow flags, display, local Theil, local dissimilarity.
     const summaryReader = new SummaryReader(
@@ -530,8 +529,13 @@ export const segregationMode: SpatialAnalysisModeDefinition = {
         let localTheilSum = 0;
         let localDissimilaritySum = 0;
         for (let unit = 0; unit < unitCount; unit++) {
-          localTheilSum += theil[scale * unitCount + unit];
-          localDissimilaritySum += dissimilarity[(scale * unitCount + unit) * GROUP_COUNT + g];
+          // Undefined local values are NaN (units with no population); they add nothing.
+          const localTheilValue = theil[scale * unitCount + unit];
+          const localDissimilarityValue =
+            dissimilarity[(scale * unitCount + unit) * GROUP_COUNT + g];
+          if (Number.isFinite(localTheilValue)) localTheilSum += localTheilValue;
+          if (Number.isFinite(localDissimilarityValue))
+            localDissimilaritySum += localDissimilarityValue;
         }
         localSumReadout.setValue(
           `sum of local H ${decimal(localTheilSum)} vs H ${decimal(column(scale, layout.entropy))}; ` +
@@ -635,7 +639,7 @@ export const segregationMode: SpatialAnalysisModeDefinition = {
       label: 'Weights (compile-time: rebuilds the graph)',
       options: [
         {value: 'band', label: 'Distance band, binary'},
-        {value: 'kernel', label: 'Epanechnikov kernel (Transform)'},
+        {value: 'kernel', label: 'Epanechnikov kernel (bandwidth = band radius)'},
         {value: 'row', label: 'Row-standardized band (Transform)'}
       ],
       value: variant,
@@ -643,6 +647,7 @@ export const segregationMode: SpatialAnalysisModeDefinition = {
         variant = value;
         const previous = analysis;
         analysis = buildAnalysisGraph(variant);
+        writeSearchParameters();
         // Deck may still be encoding the old graph for one more frame; free it afterwards.
         requestAnimationFrame(() =>
           requestAnimationFrame(() => {

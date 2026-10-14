@@ -28,8 +28,8 @@ The stories use real data: the 3,109 counties of the contiguous United States wi
 | One verdict on the whole map | `GPUGlobalSpatialStatistics` | Statistic, expectation, z and p |
 | Is that verdict robust | `GPUGlobalPermutationTest` | `p_sim`, `z_sim`, the null histogram |
 | At what distance | `GPUSpatialCorrelogram` | Moran's I and z per distance band, the first peak |
-| Hot and cold spots | `GPUHotSpotAnalysis` | Gi* z-scores and 90, 95, 99 percent bins, optional FDR |
-| Clusters and outliers | `GPULocalMoran` | Quadrants, z-scores, optional FDR |
+| Hot and cold spots | `GPUHotSpotAnalysis` | Gi* z-scores and 90, 95, 99 percent bins, optional multiple-testing correction (`multipleTesting`) |
+| Clusters and outliers | `GPULocalMoran` | Quadrants, z-scores, optional multiple-testing correction |
 | Significance without assumptions | `GPULocalPermutationTest` | Pseudo p-values and a significance mask |
 
 Global statistics say *whether*; local statistics say *where*. A strong global I with no significant local places usually means weak, widespread structure; a few significant local places with a small global I means a small number of pockets.
@@ -46,7 +46,7 @@ All of these follow the compile-once pattern: shapes, statistics and tests are c
 ## Pitfalls that matter for real data
 
 - **Weights are a modelling choice.** Queen and rook differ at corners; k nearest never leaves a place isolated but is not symmetric; a distance band gives a dense downtown many neighbours and a rural place none. Check *Islands*, *Asymmetric slots* and the neighbour count before trusting a statistic, and re-run with a different rule.
-- **Islands.** Nantucket and San Juan County (Washington) touch no other county, and one Chicago tract (O'Hare) has no neighbour. Their local statistics are undefined; `GPUGlobalSpatialStatistics` reports the island count.
+- **Islands.** Nantucket and San Juan County (Washington) touch no other county, and one Chicago tract (O'Hare) has no neighbour. Their local statistics are undefined, and by default they are excluded from `n` and the moments (`islands: 'exclude'`; pass `'keep'` for esda parity); `GPUGlobalSpatialStatistics` reports the island count.
 - **Row standardisation changes the question.** With `R` weights a lag is a weighted mean and Moran's I is the regression slope of the lag on the value; with binary weights a place with many neighbours counts more. Gi* is classically defined on binary weights with the place included; with row-standardised weights prefer Gi (exclude the place).
 - **Many tests at once.** At the 95 percent level about one place in twenty is flagged by chance. Use the Benjamini-Hochberg option, and read a pseudo p-value as no finer than `1 / (permutations + 1)`.
 - **The unit is not the process.** Counts per cell mix exposure with risk, and results move with the cell size or the boundaries (the modifiable areal unit problem). Nature observations follow where people look; model-based health estimates are smoothed.

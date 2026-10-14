@@ -3,6 +3,11 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import type {LoadedDataset} from '../../data/catalog';
+import {
+  type AnalysisFrame,
+  createAnalysisFrameProjection,
+  projectLngLatToFrame
+} from '../../engine/analysis-frame';
 import {formatPlaybackTime} from '../../engine/playback';
 import {createTrackSet, type TrackSet} from '../movement/b12-tracks';
 
@@ -148,9 +153,11 @@ export const RAIL_CLASS_LABELS = [
   'Stopping (Sprinter, Stoptrein)'
 ] as const;
 
-/** The Dutch rail graph in CSR layout with drawing tables, planar meters around `origin`. */
+/** The Dutch rail graph in CSR layout with drawing tables, planar meters of `frame`. */
 export type RailGraph = {
   origin: readonly [number, number];
+  /** Analysis frame of every position; pass it as the layers' `analysisFrame`. */
+  frame: AnalysisFrame;
   project: (longitude: number, latitude: number) => [number, number];
   unproject: (x: number, y: number) => [number, number];
   nodeCount: number;
@@ -176,11 +183,17 @@ export type RailGraph = {
   bounds: [number, number, number, number];
 };
 
-/** Loads `gtfs-nl-rail-graph` as a {@link RailGraph}. */
+/**
+ * Loads `gtfs-nl-rail-graph` as a {@link RailGraph}. Positions are meters of an azimuthal
+ * equidistant frame about the centre of the network's box: scale within 0.02% across the
+ * Netherlands (the Mercator-local frame was 3.2%), so buffer radii and cell sizes are ground
+ * meters. Layers draw them with `analysisFrame: graph.frame`.
+ */
 export function loadRailGraph(dataset: LoadedDataset): RailGraph {
   const origin = dataset.defaultOrigin;
-  const projection = dataset.getProjection(origin);
-  const nodePositions = dataset.projectColumn('nodes', origin);
+  const frame: AnalysisFrame = {kind: 'azimuthal-equidistant', origin};
+  const projection = createAnalysisFrameProjection(frame);
+  const nodePositions = projectLngLatToFrame(projection, dataset.column('nodes'));
   const nodeCount = nodePositions.length / 2;
   const sources = dataset.column<Uint32Array>('edgeSource');
   const targets = dataset.column<Uint32Array>('edgeTarget');
@@ -203,6 +216,7 @@ export function loadRailGraph(dataset: LoadedDataset): RailGraph {
   const tripsPerHour = dataset.column<Uint16Array>('edgeTripsPerHour');
   return {
     origin,
+    frame,
     project: (longitude, latitude) => projection.project(longitude, latitude),
     unproject: (x, y) => projection.unproject(x, y),
     nodeCount,

@@ -87,6 +87,12 @@ import {
   type DensestPoint
 } from './point-patterns-neighbours';
 
+/** A p-value for a readout: three decimals below 0.1, two above, `p < 0.001` below that. */
+function formatPValue(p: number): string {
+  if (!Number.isFinite(p)) return 'p undefined';
+  return p < 0.001 ? 'p < 0.001' : `p = ${p.toFixed(p < 0.1 ? 3 : 2)}`;
+}
+
 /** Option state of the point-patterns scene. */
 export type PointPatternOptions = {
   subject: 'observations' | 'places';
@@ -943,13 +949,14 @@ export async function createPointPatterns(
       lMinusR: Array.from(lMinusR)
     };
 
-    // Clark-Evans: [n, observed, expected, ratio, standardError, z]
+    // Clark-Evans: [n, observed, expected, ratio, standardError, z, p]. The expectation carries
+    // Donnelly's edge correction (the library default); p is two-sided.
     const ratio = clark[3];
     ctx.setReadout('clarkEvansR', Number.isFinite(ratio) ? ratio.toFixed(2) : null);
     ctx.setReadout(
       'clarkEvans',
       Number.isFinite(ratio)
-        ? `R = ${ratio.toFixed(3)} (${ratio < 1 ? 'clustered' : 'dispersed'}), z = ${formatSigned(clark[5], 1)}`
+        ? `R = ${ratio.toFixed(3)} (${ratio < 1 ? 'clustered' : 'dispersed'}), z = ${formatSigned(clark[5], 1)}, ${formatPValue(clark[6])}`
         : 'undefined'
     );
     ctx.setReadout('expectedNN', formatDistance(clark[2]));
@@ -972,13 +979,13 @@ export async function createPointPatterns(
       ctx.requestLayers();
     }
 
-    // Quadrat: [count, mean, variance, VMR, chiSquare, df]. The classes are computed once per
+    // Quadrat: [count, mean, variance, VMR, chiSquare, df, p]. The classes are computed once per
     // selection, window and grid and then frozen, so toggling anything else keeps the same breaks.
     ctx.setReadout('vmr', Number.isFinite(quadrat[3]) ? quadrat[3].toFixed(1) : null);
     ctx.setReadout(
       'chiSquare',
       Number.isFinite(quadrat[3])
-        ? `chi-square ${formatCount(quadrat[4])} on ${formatCount(quadrat[5])} degrees of freedom`
+        ? `chi-square ${formatCount(quadrat[4])} on ${formatCount(quadrat[5])} degrees of freedom, ${formatPValue(quadrat[6])}`
         : null
     );
     const nextQuadratKey = `${set.key}|${categoryOf(options)}|${options.window}`;

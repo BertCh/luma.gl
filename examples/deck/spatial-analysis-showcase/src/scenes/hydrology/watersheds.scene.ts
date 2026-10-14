@@ -467,6 +467,24 @@ export default defineScene<WatershedsOptions>({
           {
             color: [40, 140, 240, 255],
             label: `Cells draining at least ${(10 ** state.streamArea).toFixed(3)} km²`
+          },
+          {
+            color: [255, 176, 0, 170],
+            label: 'Unresolved',
+            detail: 'accumulation did not converge'
+          }
+        ]
+      });
+    }
+    if (state.product === 'hand' || state.product === 'flood') {
+      legends.push({
+        kind: 'categories',
+        title: 'Drainage reach',
+        entries: [
+          {
+            color: [255, 176, 0, 170],
+            label: 'Unresolved',
+            detail: 'flow path never reached resolved drainage (NaN HAND)'
           }
         ]
       });

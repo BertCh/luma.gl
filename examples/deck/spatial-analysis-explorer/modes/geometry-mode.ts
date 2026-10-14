@@ -843,7 +843,6 @@ async function createDensifyView(
         inputVertexCount
       ),
       pathOffsets: importGraphBuffer(graph, 'offsets', roadPaths.offsets, 'uint32', pathCount + 1),
-      coordinateSystem: 'planar',
       maximumPiecesPerSegment: DENSIFY_MAXIMUM_PIECES,
       parameters: parameters.importToGraph(graph),
       output: importPathOutput(graph, output, capacity, pathCount, {measures: true})
@@ -1181,7 +1180,6 @@ async function createChunkView(
       ),
       pathOffsets: importGraphBuffer(graph, 'offsets', roadPaths.offsets, 'uint32', pathCount + 1),
       mode,
-      coordinateSystem: 'planar',
       parameters: parameters.importToGraph(graph),
       output: importPathOutput(graph, output, vertexCapacity, pieceCapacity, {
         pathCount: true,

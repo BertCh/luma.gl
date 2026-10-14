@@ -243,6 +243,7 @@ export async function createLeastCostPaths(
       pathCount: resources.createBuffer('path-count', 4),
       pathOverflow: resources.createBuffer('path-overflow', 4),
       pathTotal: resources.createBuffer('path-total', 4),
+      pathIterationLimit: resources.createBuffer('path-iteration-limit', 4),
       pathSegments: resources.createBuffer('path-segments', PATH_CAPACITY * 16),
       destinationCost: resources.createBuffer('destination-cost', 4),
       distances: cells('distances'),
@@ -425,6 +426,14 @@ export async function createLeastCostPaths(
           cellCount
         ),
         target: targetView,
+        // 1 when the cost phase hit its iteration limit: back-links are unresolved, path is empty.
+        iterationLimitReached: importGraphBuffer(
+          pathGraph,
+          'path-iteration-limit',
+          buffers.pathIterationLimit,
+          'uint32',
+          1
+        ),
         output: {
           ids: pathIds,
           count: pathCount,
@@ -713,6 +722,7 @@ export async function createLeastCostPaths(
         {buffer: buffers.pathTotal, size: 4},
         {buffer: buffers.converged, size: 4},
         {buffer: buffers.iterations, size: 4},
+        {buffer: buffers.pathIterationLimit, size: 4},
         {buffer: buffers.bandCounts, size: BAND_COUNT * 4},
         {buffer: buffers.pathIds, size: PATH_CAPACITY * 4}
       ],
@@ -874,19 +884,25 @@ export async function createLeastCostPaths(
     const total = words[3];
     const converged = words[4];
     const iterations = words[5];
+    const unresolved = words[6] !== 0;
     ctx.setReadout(
       `${prefix}Converged`,
       `${converged ? 'yes' : 'no (iteration limit)'} after ${iterations} of ${MAXIMUM_ITERATIONS}`
     );
-    if (total === 0 || !Number.isFinite(minutes)) {
-      ctx.setReadout(`${prefix}Time`, 'destination unreached');
-      ctx.setReadout(`${prefix}Path`, 'no route: the destination is walled in or beyond the limit');
+    if (unresolved || total === 0 || !Number.isFinite(minutes)) {
+      ctx.setReadout(`${prefix}Time`, unresolved ? 'unresolved' : 'destination unreached');
+      ctx.setReadout(
+        `${prefix}Path`,
+        unresolved
+          ? 'unresolved: the cost search hit its iteration limit before the back-links settled'
+          : 'no route: the destination is walled in or beyond the limit'
+      );
       ctx.setReadout(`${prefix}Climb`, '-');
       ctx.setReadout(`${prefix}Detour`, '-');
     } else {
       const ids = words.subarray(
-        6 + BAND_COUNT,
-        6 + BAND_COUNT + Math.min(pathCount, PATH_CAPACITY)
+        7 + BAND_COUNT,
+        7 + BAND_COUNT + Math.min(pathCount, PATH_CAPACITY)
       );
       let length = 0;
       let ascent = 0;
@@ -920,7 +936,7 @@ export async function createLeastCostPaths(
     }
     ctx.setReadout(
       `${prefix}Bands`,
-      Array.from(words.subarray(6, 6 + BAND_COUNT), count => formatInteger(count)).join(' / ')
+      Array.from(words.subarray(7, 7 + BAND_COUNT), count => formatInteger(count)).join(' / ')
     );
   }
 

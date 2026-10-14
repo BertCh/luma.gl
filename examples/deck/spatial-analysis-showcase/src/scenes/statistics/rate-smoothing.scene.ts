@@ -10,6 +10,7 @@ import {NATIONAL_FURNITURE} from '../../cartography/projection-notes';
 import {defineScene, type LegendSpec} from '../scene';
 import {getGiTable, getMoranQuadrantColors} from '../weights/hot-spots.style';
 import type {RateSmoothingLegendData, RateSmoothingOptions} from './rate-smoothing.compute';
+import {getMinimumPseudoP} from '../weights/b4-format';
 import {getInkColor, RATE_BASIS} from './rate-smoothing.style';
 
 /** The contiguous US, the frame of every national county step. */
@@ -117,8 +118,8 @@ function getLegends(
       ],
       note:
         state.gating === 'permutation'
-          ? `Conditional permutation, ${state.permutations} permutations (minimum attainable p = ${(1 / (state.permutations + 1)).toFixed(4)}), p <= ${state.significance}${state.falseDiscoveryRate ? ', Benjamini-Hochberg FDR gate' : ', uncorrected across counties'}.`
-          : `Analytic p <= ${state.significance}.`
+          ? `Conditional permutation, ${state.permutations} permutations, ${shared.inference.alternative} tail (minimum attainable p = ${getMinimumPseudoP(state.alternative, state.permutations).toFixed(4)}), p <= ${state.significance}${state.falseDiscoveryRate ? ', Benjamini-Hochberg FDR gate' : ', uncorrected across counties'}. Islands and counties without a rate are never tested.`
+          : `Analytic two-sided p <= ${state.significance}${state.falseDiscoveryRate ? ', Benjamini-Hochberg FDR gate' : ', uncorrected across counties'}. A quick preview; the permutation test is the reference.`
     });
   }
   return legends;
@@ -130,11 +131,10 @@ function getSnippet(state: RateSmoothingOptions): string {
       ? `  permutation: {                              // GPULocalPermutationTest
     parameters: permutationParameters,        // seed ${state.seed}, ${state.permutations} permutations
     maximumPermutations: 999,
-    alternative: '${state.alternative}',
-    falseDiscoveryRate: ${state.falseDiscoveryRate}
+    alternative: '${state.alternative}'
   },
 `
-      : '  // no permutation: GPULocalMoran gates analytically\n';
+      : '  // no permutation: GPULocalMoran gates analytically (two-sided)\n';
   return `import {
   addRateClusterMapRecipe,
   GPUSpatialEmpiricalBayesRates
@@ -148,6 +148,7 @@ const rates = addRateClusterMapRecipe(graph, {
   criterion: '${state.criterion}',            // GPUContiguityWeights
   analyze: '${state.analyze}',                // GPUEmpiricalBayesRates output
   neighborCapacity, parameters, palette,
+  multipleTesting: '${state.falseDiscoveryRate ? 'benjamini-hochberg' : 'none'}',  // the recipe default is 'benjamini-hochberg'
 ${permutation}  standardizedRates, smoothedRates, rawRates, summary
 });
 
@@ -281,13 +282,13 @@ export default defineScene<RateSmoothingOptions>({
       label: 'Permutation tail',
       group: 'Cluster map',
       apply: 'compile',
-      default: 'directed',
+      default: 'two-sided',
       expert: true,
       disabledWhen: state => state.gating !== 'permutation',
-      help: 'Which tail of the simulated distribution counts as extreme. Directed is the esda default; folded compares absolute deviations from the mean.',
+      help: 'Which tail of the simulated distribution counts as extreme. Two-sided doubles the smaller tail, so its smallest attainable p is 2 / (permutations + 1). Directed is the legacy esda default: it picks the tail from the data without doubling, so its p-values run about twice too small and it should not be combined with FDR control. Folded compares absolute deviations from the mean.',
       options: [
-        {value: 'directed', label: 'Directed (esda default)'},
-        {value: 'two-sided', label: 'Two-sided'},
+        {value: 'two-sided', label: 'Two-sided (default)'},
+        {value: 'directed', label: 'Directed (legacy esda, anti-conservative)'},
         {value: 'greater', label: 'Greater (unusually high)'},
         {value: 'lesser', label: 'Lesser (unusually low)'},
         {value: 'folded', label: 'Folded'}
@@ -300,8 +301,7 @@ export default defineScene<RateSmoothingOptions>({
       group: 'Cluster map',
       apply: 'compile',
       default: false,
-      disabledWhen: state => state.gating !== 'permutation',
-      help: 'Controls the share of false discoveries over thousands of simultaneous tests. Expect fewer, more trustworthy clusters.'
+      help: 'Controls the share of false discoveries over thousands of simultaneous tests, for the permutation and the analytic p-values alike. Expect fewer, more trustworthy clusters. The library default is on; this scene starts with it off so the uncorrected map is the baseline.'
     },
     {
       kind: 'slider',
@@ -314,7 +314,7 @@ export default defineScene<RateSmoothingOptions>({
       step: 50,
       default: 499,
       disabledWhen: state => state.gating !== 'permutation',
-      help: 'More permutations resolve smaller pseudo p-values at proportional GPU cost: the smallest p is 1 / (permutations + 1).'
+      help: 'More permutations resolve smaller pseudo p-values at proportional GPU cost: the smallest p is 1 / (permutations + 1), or 2 / (permutations + 1) for the two-sided tail.'
     },
     {
       kind: 'slider',
@@ -467,12 +467,12 @@ export default defineScene<RateSmoothingOptions>({
     {
       id: 'testResolution',
       label: 'Smallest attainable pseudo-p',
-      help: 'Permutation p-values are discrete. With P permutations, the minimum possible pseudo-p is 1 / (P + 1).'
+      help: 'Permutation p-values are discrete. With P permutations, the minimum possible pseudo-p is 1 / (P + 1), doubled for the two-sided tail.'
     },
     {
       id: 'multiplicity',
       label: 'Multiplicity rule',
-      help: 'Whether the county-level decisions are uncorrected or gated by Benjamini-Hochberg false-discovery-rate control.'
+      help: 'Whether the county-level decisions are uncorrected or gated by Benjamini-Hochberg false-discovery-rate control. The family is every county with a valid rate and at least one neighbor.'
     },
     {
       id: 'fdrResolutionBarrier',
@@ -500,7 +500,7 @@ export default defineScene<RateSmoothingOptions>({
       label: 'Prior variance a',
       hood: true,
       format: 'decimal',
-      help: 'Estimated variance of the true rates, in births per 1,000 women a year squared (esda does not clamp it).'
+      help: 'Estimated variance of the true rates, in births per 1,000 women a year squared (the smoothed rates clamp a negative value to zero, as Marshall 1991 and GeoDa do; esda does not).'
     },
     {id: 'priorCheck', label: 'Prior variance sign', hood: true},
     {
@@ -561,7 +561,7 @@ export default defineScene<RateSmoothingOptions>({
     what: '`GPUEmpiricalBayesRates` computes the raw rate, the empirical-Bayes smoothed rate and the Assuncao-Reis standardised rate of every county from births and the women at risk. `GPUSpatialEmpiricalBayesRates` pools each county with its neighbours instead of the nation. `addRateClusterMapRecipe` chains the rates into queen contiguity, local Moran and a permutation test.',
     why: 'A county with a handful of births can show almost any rate: one birth more or less visibly moves it. Smoothing and standardising separate signal from small-number noise before anyone ranks or maps the rates.',
     howToRead:
-      'Darker is a higher rate; faded counties borrow most of their estimate from the prior. The same classes are used on every rate map, so a change of colour is a change of estimate. In the funnel chart, counties outside the dotted curves differ from the pooled rate by more than chance. On the cluster map, red counties are high-rate clusters and blue low-rate ones. Limits: births are counted by the mother\'s residence; women aged 15-44 is an estimate, and in college towns students inflate it and lower the rate, which smoothing cannot fix; and smoothed maps can still mislead (Gelman and Price, "All maps of parameter estimates are misleading"). Matches PySAL esda `Empirical_Bayes`, `Spatial_Empirical_Bayes`, `assuncao_rate` and `Moran_Local_Rate`.'
+      'Darker is a higher rate; faded counties borrow most of their estimate from the prior. The same classes are used on every rate map, so a change of colour is a change of estimate. In the funnel chart, counties outside the dotted curves differ from the pooled rate by more than chance. On the cluster map, red counties are high-rate clusters and blue low-rate ones. Limits: births are counted by the mother\'s residence; women aged 15-44 is an estimate, and in college towns students inflate it and lower the rate, which smoothing cannot fix; and smoothed maps can still mislead (Gelman and Price, "All maps of parameter estimates are misleading"). Follows PySAL esda `Empirical_Bayes` (with the prior variance clamped at zero), `Spatial_Empirical_Bayes`, `assuncao_rate` and `Moran_Local_Rate`.'
   },
 
   create: async ctx => (await import('./rate-smoothing.compute')).createRateSmoothing(ctx),
@@ -722,8 +722,8 @@ export default defineScene<RateSmoothingOptions>({
       title: 'Can the cluster map survive 3,109 tests?',
       headline: 'Permutation resolution is part of the evidence',
       textAlternative:
-        'At the default 499-permutation, five-percent FDR setting, the US county map is entirely pale because no local Moran cluster clears the attainable multiple-testing threshold; disabling FDR reveals uncorrected red, blue and outlier classes.',
-      body: 'Local Moran tests each county against conditional permutations of its neighbours. **{{testName}}** can resolve no p below **{{testResolution}}**; **{{multiplicity}}**. At this resolution, **{{fdrResolutionBarrier}}**. The surviving map contains **{{hhCount}}** high–high and **{{llCount}}** low–low counties, while **{{notSignificantShare}}** are not discoveries. Change permutations or toggle FDR to move the evidentiary gate—not the underlying rates.\n\n*An empty corrected map can be an honest result, not a broken one.*',
+        'At the default 499-permutation, two-sided, five-percent FDR setting, few or none of the US counties clear the attainable multiple-testing threshold, so the map is mostly or entirely pale; disabling FDR reveals uncorrected red, blue and outlier classes.',
+      body: 'Local Moran tests each county against conditional permutations of its neighbours. **{{testName}}** can resolve no p below **{{testResolution}}**; **{{multiplicity}}**. At this resolution, **{{fdrResolutionBarrier}}**. The surviving map contains **{{hhCount}}** high–high and **{{llCount}}** low–low counties, while **{{notSignificantShare}}** are not discoveries. Change permutations or toggle FDR to move the evidentiary gate—not the underlying rates.\n\n*A sparse or empty corrected map can be an honest result, not a broken one. The two-sided tail doubles the smallest attainable p, which raises this barrier.*',
       evidence:
         'At the current permutation resolution and multiplicity rule, **{{hhCount}}** High-High and **{{llCount}}** Low-Low counties pass the gate; **{{notSignificantShare}}** do not.',
       caveat:

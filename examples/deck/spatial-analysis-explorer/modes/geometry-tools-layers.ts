@@ -210,7 +210,6 @@ export function createShapeOverlay(
         new GPUShapeGenerator({
           id: `shape-${kind}`,
           shape: kind,
-          coordinateSystem: 'planar',
           maximumSegments: MAXIMUM_SEGMENTS,
           centers: importGraphBuffer(graph, 'centers', centersBuffer, 'float32x2', pointCount),
           radii:

@@ -225,7 +225,9 @@ export const markovMode: SpatialAnalysisModeDefinition = {
   description:
     'Do busy cells stay busy? Taxi vertices per cell and time period are classified with one ' +
     'pooled legend; scrub or play the periods, and read the transition matrix, the same matrix ' +
-    'conditioned on the neighbors’ class (spatial Markov), and LISA-state transitions.',
+    'conditioned on the neighbors’ class (spatial Markov), and LISA-state transitions. LISA states ' +
+    'are gated by an uncorrected analytic local Moran level, so they map clusters rather than test ' +
+    'transition dynamics; cells with no neighbor have no state and are hidden.',
   initialViewState: {longitude: -73.985, latitude: 40.735, zoom: 12.2},
 
   async create(context) {
@@ -458,6 +460,9 @@ export const markovMode: SpatialAnalysisModeDefinition = {
         periods: PERIOD_COUNT,
         parameters: lisaParameters.importToGraph(analysisGraph),
         mask: cellMaskView,
+        // The library default is 'none' (giddy parity: four quadrant states). This mode maps
+        // significant clusters, so it gates on the analytic local Moran level of the slider.
+        gating: 'significance',
         output: {
           counts: view('lisa-counts', lisaCountsBuffer, 'uint32', STATE_COUNT ** 2),
           probabilities: view(
@@ -641,7 +646,7 @@ export const markovMode: SpatialAnalysisModeDefinition = {
       }
     });
     context.controls.addSlider({
-      label: 'LISA significance level',
+      label: 'LISA significance level (analytic, uncorrected)',
       min: 0.01,
       max: 0.2,
       step: 0.01,

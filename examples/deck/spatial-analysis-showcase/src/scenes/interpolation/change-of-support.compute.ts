@@ -617,7 +617,9 @@ export async function createChangeOfSupport(
       },
       target: targetSystem,
       cellWeights: importGraphBuffer(graph, 'cell-weights', cellWeights, 'float32', CELL_COUNT),
-      denominator,
+      // The option picks the area that divides extensive totals. Rates and means always divide by
+      // the overlap, so a partly covered target is the mean of what covers it, not diluted.
+      denominator: {extensive: denominator, intensive: 'overlap'},
       pairCapacity: PAIR_CAPACITY,
       sourceValues: importGraphBuffer(
         graph,

@@ -2,7 +2,11 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import {GPU_POINT_DENSITY_HEXAGON_WGSL} from '@luma.gl/experimental/gpu-spatial-analysis';
+import {
+  GPU_EARTH_MEAN_RADIUS_METERS,
+  GPU_POINT_DENSITY_HEXAGON_WGSL
+} from '@luma.gl/experimental/gpu-spatial-analysis';
+import {type AlbersAnalysisFrame, type AnalysisFrame, getAlbersConstants} from './analysis-frame';
 import {getRampWgsl} from './ramps';
 
 /**
@@ -35,6 +39,12 @@ export type SpatialAnalysisShaderFeatures = {
   lineStyle?: boolean;
   /** Raster layers: class-boundary outlines. */
   classOutline?: boolean;
+  /**
+   * Positions are meters of this analysis frame: the projection hook inverts the frame to
+   * longitude/latitude and the layer draws with `COORDINATE_SYSTEM.LNGLAT` (see `analysisFrame`
+   * in `layers.ts`). The frame kind, origin and parallels are compiled in as constants.
+   */
+  analysisFrame?: AnalysisFrame;
 };
 
 /** The rendered-once ramp functions (the ramp source is large; build it a single time). */
@@ -384,11 +394,151 @@ fn getSpatialAnalysisPosition(position: vec2<f32>) -> vec2<f32> {
   return position * spatialAnalysisStyle.positionScale + spatialAnalysisStyle.positionOffset;
 }
 
-fn projectSpatialAnalysisPosition(position: vec2<f32>) -> vec4<f32> {
+${features.analysisFrame ? getAnalysisFrameWgsl(features.analysisFrame) : DEFAULT_PROJECTION_WGSL}`;
+}
+
+/** Projection hook of the default (Mercator-local `METER_OFFSETS`) layers. */
+const DEFAULT_PROJECTION_WGSL = /* wgsl */ `fn projectSpatialAnalysisPosition(position: vec2<f32>) -> vec4<f32> {
   var clipPosition = project_position_to_clipspace(vec3<f32>(position, 0.0), vec3<f32>(0.0), vec3<f32>(0.0));
   // Deck's project32 matrices use OpenGL depth; WebGPU clip space requires [0, w].
   clipPosition.z = (clipPosition.z + clipPosition.w) * 0.5;
   return clipPosition;
+}
+`;
+
+/** Longitude grid of the high part of a drawn longitude: 2^-16 degree (about 1.7 m). */
+const LONGITUDE_GRID_STEPS_PER_DEGREE = 65536;
+
+/** A WGSL f32 literal for a finite number. */
+function formatFloatLiteral(value: number): string {
+  const text = String(value);
+  return /[.e]/.test(text) ? text : `${text}.0`;
+}
+
+/**
+ * Projection hook of a layer with an `analysisFrame`: the spherical inverse of the frame
+ * ({@link getAnalysisFrameInverseWgsl}), then deck's `LNGLAT` projection with a 64-bit low part.
+ */
+export function getAnalysisFrameWgsl(frame: AnalysisFrame): string {
+  return `${getAnalysisFrameInverseWgsl(frame)}\n${FRAME_PROJECTION_WGSL}`;
+}
+
+/**
+ * WGSL constants and `fn getSpatialAnalysisFrameLngLat(position: vec2<f32>) -> vec3<f32>`: frame
+ * meters to `(longitude high, latitude, longitude low)` degrees, the spherical inverse of the
+ * frame (the formulas of `createAnalysisFrameProjection` in `analysis-frame.ts`, radius
+ * `GPU_EARTH_MEAN_RADIUS_METERS`). Compute kernels that feed a layer drawing longitude/latitude
+ * (not an engine spatial-analysis layer) use it too: the longitude is `high + low`.
+ *
+ * The longitude is split without cancellation, so it survives compilers that reassociate float
+ * math: the high part is the origin and the offset both rounded to a 2^-16 degree grid (their sum
+ * is exact in f32), the low part is the two remainders. Deck uses the low part from zoom 12 on
+ * (offset projection about the viewport centre); below it the high part alone is within 1.7 m.
+ * The latitude comes from one f32 `asin` (about 0.5 m).
+ */
+export function getAnalysisFrameInverseWgsl(frame: AnalysisFrame): string {
+  if (frame.kind === 'albers-equal-area') return getAlbersFrameInverseWgsl(frame);
+  const [longitude, latitude] = frame.origin;
+  const latitudeRadians = (latitude * Math.PI) / 180;
+  const longitudeGrid =
+    Math.round(longitude * LONGITUDE_GRID_STEPS_PER_DEGREE) / LONGITUDE_GRID_STEPS_PER_DEGREE;
+  const angle =
+    frame.kind === 'lambert-equal-area'
+      ? '2.0 * asin(min(1.0, rho / (2.0 * SPATIAL_ANALYSIS_FRAME_RADIUS)))'
+      : 'rho / SPATIAL_ANALYSIS_FRAME_RADIUS';
+  return /* wgsl */ `// Analysis frame: ${frame.kind} about (${longitude}, ${latitude}).
+const SPATIAL_ANALYSIS_FRAME_RADIUS: f32 = ${formatFloatLiteral(GPU_EARTH_MEAN_RADIUS_METERS)};
+const SPATIAL_ANALYSIS_FRAME_SIN_LATITUDE: f32 = ${formatFloatLiteral(Math.sin(latitudeRadians))};
+const SPATIAL_ANALYSIS_FRAME_COS_LATITUDE: f32 = ${formatFloatLiteral(Math.cos(latitudeRadians))};
+const SPATIAL_ANALYSIS_FRAME_LATITUDE: f32 = ${formatFloatLiteral(latitude)};
+const SPATIAL_ANALYSIS_FRAME_LONGITUDE_GRID: f32 = ${formatFloatLiteral(longitudeGrid)};
+const SPATIAL_ANALYSIS_FRAME_LONGITUDE_REST: f32 = ${formatFloatLiteral(longitude - longitudeGrid)};
+const SPATIAL_ANALYSIS_FRAME_GRID_STEPS: f32 = ${formatFloatLiteral(LONGITUDE_GRID_STEPS_PER_DEGREE)};
+const SPATIAL_ANALYSIS_RADIANS_TO_DEGREES: f32 = 57.29577951308232;
+
+// Frame meters to (longitude high, latitude, longitude low) degrees.
+fn getSpatialAnalysisFrameLngLat(position: vec2<f32>) -> vec3<f32> {
+  let rho = length(position);
+  var deltaLongitude = 0.0;
+  var latitude = SPATIAL_ANALYSIS_FRAME_LATITUDE;
+  if (rho > 1e-3) {
+    let angle = ${angle};
+    let sinAngle = sin(angle);
+    let cosAngle = cos(angle);
+    let sinLatitude = cosAngle * SPATIAL_ANALYSIS_FRAME_SIN_LATITUDE +
+      position.y * sinAngle / rho * SPATIAL_ANALYSIS_FRAME_COS_LATITUDE;
+    latitude = asin(clamp(sinLatitude, -1.0, 1.0)) * SPATIAL_ANALYSIS_RADIANS_TO_DEGREES;
+    deltaLongitude = atan2(
+      position.x * sinAngle,
+      rho * SPATIAL_ANALYSIS_FRAME_COS_LATITUDE * cosAngle - position.y * SPATIAL_ANALYSIS_FRAME_SIN_LATITUDE * sinAngle
+    ) * SPATIAL_ANALYSIS_RADIANS_TO_DEGREES;
+  }
+  let deltaGrid = floor(deltaLongitude * SPATIAL_ANALYSIS_FRAME_GRID_STEPS) / SPATIAL_ANALYSIS_FRAME_GRID_STEPS;
+  return vec3<f32>(
+    SPATIAL_ANALYSIS_FRAME_LONGITUDE_GRID + deltaGrid,
+    latitude,
+    (deltaLongitude - deltaGrid) + SPATIAL_ANALYSIS_FRAME_LONGITUDE_REST
+  );
+}
+`;
+}
+
+/** Projection hook of every analysis frame, after its `getSpatialAnalysisFrameLngLat`. */
+const FRAME_PROJECTION_WGSL = /* wgsl */ `fn projectSpatialAnalysisPosition(position: vec2<f32>) -> vec4<f32> {
+  let lngLat = getSpatialAnalysisFrameLngLat(position);
+  var clipPosition = project_position_to_clipspace(
+    vec3<f32>(lngLat.xy, 0.0),
+    vec3<f32>(lngLat.z, 0.0, 0.0),
+    vec3<f32>(0.0)
+  );
+  // Deck's project32 matrices use OpenGL depth; WebGPU clip space requires [0, w].
+  clipPosition.z = (clipPosition.z + clipPosition.w) * 0.5;
+  return clipPosition;
+}
+`;
+
+/**
+ * `getSpatialAnalysisFrameLngLat` of a spherical Albers frame: the inverse of
+ * `createAnalysisFrameProjection` (and so of `projectAlbers`), radius
+ * `GPU_EARTH_MEAN_RADIUS_METERS`, with the longitude split as in
+ * {@link getAnalysisFrameInverseWgsl}. Assumes northern standard parallels (`n > 0`).
+ *
+ * The latitude avoids the cancellation of `C - (rho n)^2`: with `e = x / R` and `u = y / R`,
+ * `rho0^2 - rho^2 = u (2 rho0 - u) - e^2` is formed from small terms, and
+ * `sin(phi) = sin(phi0) + n (rho0^2 - rho^2) / 2`. The f32 inverse is within about 1 m.
+ */
+function getAlbersFrameInverseWgsl(frame: AlbersAnalysisFrame): string {
+  const [longitude, latitude] = frame.origin;
+  const [parallel1, parallel2] = frame.standardParallels;
+  const {n, rho0} = getAlbersConstants(frame);
+  const longitudeGrid =
+    Math.round(longitude * LONGITUDE_GRID_STEPS_PER_DEGREE) / LONGITUDE_GRID_STEPS_PER_DEGREE;
+  return /* wgsl */ `// Analysis frame: albers-equal-area, parallels (${parallel1}, ${parallel2}), origin (${longitude}, ${latitude}).
+const SPATIAL_ANALYSIS_FRAME_RADIUS: f32 = ${formatFloatLiteral(GPU_EARTH_MEAN_RADIUS_METERS)};
+const SPATIAL_ANALYSIS_FRAME_CONE: f32 = ${formatFloatLiteral(n)};
+const SPATIAL_ANALYSIS_FRAME_RHO0: f32 = ${formatFloatLiteral(rho0)};
+const SPATIAL_ANALYSIS_FRAME_SIN_LATITUDE: f32 = ${formatFloatLiteral(Math.sin((latitude * Math.PI) / 180))};
+const SPATIAL_ANALYSIS_FRAME_LONGITUDE_GRID: f32 = ${formatFloatLiteral(longitudeGrid)};
+const SPATIAL_ANALYSIS_FRAME_LONGITUDE_REST: f32 = ${formatFloatLiteral(longitude - longitudeGrid)};
+const SPATIAL_ANALYSIS_FRAME_GRID_STEPS: f32 = ${formatFloatLiteral(LONGITUDE_GRID_STEPS_PER_DEGREE)};
+const SPATIAL_ANALYSIS_RADIANS_TO_DEGREES: f32 = 57.29577951308232;
+
+// Frame meters to (longitude high, latitude, longitude low) degrees.
+fn getSpatialAnalysisFrameLngLat(position: vec2<f32>) -> vec3<f32> {
+  let east = position.x / SPATIAL_ANALYSIS_FRAME_RADIUS;
+  let north = position.y / SPATIAL_ANALYSIS_FRAME_RADIUS;
+  let rho0SquaredMinusRhoSquared = north * (2.0 * SPATIAL_ANALYSIS_FRAME_RHO0 - north) - east * east;
+  let sinLatitude = SPATIAL_ANALYSIS_FRAME_SIN_LATITUDE +
+    0.5 * SPATIAL_ANALYSIS_FRAME_CONE * rho0SquaredMinusRhoSquared;
+  let latitude = asin(clamp(sinLatitude, -1.0, 1.0)) * SPATIAL_ANALYSIS_RADIANS_TO_DEGREES;
+  let theta = atan2(east, SPATIAL_ANALYSIS_FRAME_RHO0 - north);
+  let deltaLongitude = theta / SPATIAL_ANALYSIS_FRAME_CONE * SPATIAL_ANALYSIS_RADIANS_TO_DEGREES;
+  let deltaGrid = floor(deltaLongitude * SPATIAL_ANALYSIS_FRAME_GRID_STEPS) / SPATIAL_ANALYSIS_FRAME_GRID_STEPS;
+  return vec3<f32>(
+    SPATIAL_ANALYSIS_FRAME_LONGITUDE_GRID + deltaGrid,
+    latitude,
+    (deltaLongitude - deltaGrid) + SPATIAL_ANALYSIS_FRAME_LONGITUDE_REST
+  );
 }
 `;
 }

@@ -5,6 +5,13 @@
 import {earcut} from '@math.gl/polygon';
 import type {LoadedDataset} from '../../data/catalog';
 import {fetchJson, getDataFileUrl} from '../../data/loaders';
+import {
+  ALBERS_CONUS_FRAME,
+  type AnalysisFrame,
+  createAnalysisFrameProjection
+} from '../../engine/analysis-frame';
+import {LocalMetricProjection} from '../../engine/projection';
+import {projectRows} from '../regression/b6-polygons';
 import type {ResolvedDatasets} from '../scene';
 
 /** Geographies of the weights chapter. Both are polygon coverages with exact shared edges. */
@@ -129,13 +136,44 @@ export type Geography = {
   unit: string;
   unitPlural: string;
   count: number;
+  /**
+   * Origin of the DISPLAY frame (deck.gl `METER_OFFSETS`, Mercator true at the origin). The
+   * polygon geometry (`triangles`, `outlineSegments`, `contiguityVertices`, `displayBounds`,
+   * `pickMeters`, `project`) is in this frame. Never measure distance in it beyond city scale.
+   */
   origin: [number, number];
   /** Dataset bounding box `[west, south, east, north]`. */
   bbox: readonly [number, number, number, number];
-  /** Metre bounds of the vertices `[minX, minY, maxX, maxY]`. */
+  /**
+   * The ANALYSIS frame: what distance bands, kernels, correlogram bins and `medianSpacing` are
+   * measured in. Counties use Albers equal-area conic (USGS CONUS parallels, distance scale error
+   * at most 1.44% over the lower 48), tracts the display frame (+-0.3% over Chicago).
+   */
+  analysisFrame: {
+    name: string;
+    /** Largest local distance scale error of the frame over the dataset, as a fraction. */
+    maxScaleError: number;
+    project: (longitude: number, latitude: number) => [number, number];
+    unproject: (x: number, y: number) => [number, number];
+    /**
+     * The `analysisFrame` layer prop that draws analysis-frame metres (`centroids` and what is
+     * built from them, such as weight links) on the map: `ALBERS_CONUS_FRAME` for counties.
+     * Undefined for tracts, whose analysis frame is the display frame (draw with
+     * `coordinateOrigin`).
+     */
+    layerFrame: AnalysisFrame | undefined;
+  };
+  /** Metre bounds of the vertices in the analysis frame `[minX, minY, maxX, maxY]`. */
   bounds: [number, number, number, number];
-  /** Centroid of each feature in planar metres, interleaved. */
+  /** Metre bounds of the vertices in the display frame (the lattice of spatial-weights). */
+  displayBounds: [number, number, number, number];
+  /**
+   * Centroid of each feature in analysis-frame metres, interleaved. Feeds the operators; draw it
+   * with `analysisFrame.layerFrame`.
+   */
   centroids: Float32Array;
+  /** `[longitude, latitude]` of the centroid of a feature. */
+  getCentroidLngLat: (feature: number) => [number, number];
   /** Contiguity layout: vertices in metres with closing duplicates removed. */
   contiguityVertices: Float32Array;
   contiguityRingOffsets: Uint32Array;
@@ -163,9 +201,9 @@ export type Geography = {
   pick: (longitude: number, latitude: number) => number;
   /** Index of the feature containing planar metres, or -1. */
   pickMeters: (x: number, y: number) => number;
-  /** Median distance from a centroid to its nearest other centroid, metres. */
+  /** Median distance from a centroid to its nearest other centroid, analysis-frame metres. */
   medianSpacing: number;
-  /** Projects `[lng, lat]` to planar metres around `origin`. */
+  /** Projects `[lng, lat]` to display-frame metres around `origin`. */
   project: (longitude: number, latitude: number) => [number, number];
 };
 
@@ -281,6 +319,54 @@ function isInsideRing(
   return inside;
 }
 
+/** Area-weighted centroids of the exterior rings of each feature, in the units of `positions`. */
+function computeFeatureCentroids(
+  positions: Float32Array,
+  layout: PartLayout,
+  isClosed: (ring: number) => boolean
+): Float32Array {
+  const {featureCount, partFeature, partRingOffsets, ringOffsets} = layout;
+  const centroids = new Float32Array(featureCount * 2);
+  const areaSums = new Float64Array(featureCount);
+  const centroidSums = new Float64Array(featureCount * 2);
+  for (let part = 0; part < partRingOffsets.length - 1; part++) {
+    const feature = partFeature[part];
+    const ring = partRingOffsets[part];
+    const first = ringOffsets[ring];
+    const end = ringOffsets[ring + 1] - (isClosed(ring) ? 1 : 0);
+    // Relative to the first vertex, so the cross products stay small at continental coordinates.
+    const baseX = positions[first * 2];
+    const baseY = positions[first * 2 + 1];
+    let signedArea = 0;
+    let cx = 0;
+    let cy = 0;
+    for (let vertex = first; vertex < end; vertex++) {
+      const next = vertex + 1 < end ? vertex + 1 : first;
+      const x0 = positions[vertex * 2] - baseX;
+      const y0 = positions[vertex * 2 + 1] - baseY;
+      const x1 = positions[next * 2] - baseX;
+      const y1 = positions[next * 2 + 1] - baseY;
+      const cross = x0 * y1 - x1 * y0;
+      signedArea += cross;
+      cx += (x0 + x1) * cross;
+      cy += (y0 + y1) * cross;
+    }
+    if (Math.abs(signedArea) > 0) {
+      areaSums[feature] += signedArea / 2;
+      centroidSums[feature * 2] += cx / 6 + (baseX * signedArea) / 2;
+      centroidSums[feature * 2 + 1] += cy / 6 + (baseY * signedArea) / 2;
+    }
+  }
+  for (let feature = 0; feature < featureCount; feature++) {
+    const area = areaSums[feature];
+    if (Math.abs(area) > 1e-6) {
+      centroids[feature * 2] = centroidSums[feature * 2] / area;
+      centroids[feature * 2 + 1] = centroidSums[feature * 2 + 1] / area;
+    }
+  }
+  return centroids;
+}
+
 /**
  * Loads the polygon coverage of a weights scene: metres around the dataset origin, the contiguity
  * layout, a triangle mesh for the GPU choropleth, outline segments, groups and a CPU picker.
@@ -293,7 +379,6 @@ export async function loadGeography(
   const dataset = datasets.get(id);
   const isCounty = id === 'us-counties';
   const origin = dataset.defaultOrigin;
-  const projection = dataset.getProjection(origin);
   const meters = dataset.projectColumn('vertices', origin);
   const layout = readPartLayout(dataset);
   const {featureCount, partFeature, partRingOffsets, ringOffsets, featureRingOffsets} = layout;
@@ -332,6 +417,43 @@ export async function loadGeography(
     contiguityVertices[index * 2] = meters[vertex * 2];
     contiguityVertices[index * 2 + 1] = meters[vertex * 2 + 1];
   });
+
+  // Analysis frame. Counties span the continent, where the Mercator-local display frame is off by
+  // -14.7%..+20.7%, so the operators get Albers equal-area coordinates instead. The display
+  // geometry above and below stays in the display frame (it is drawn with METER_OFFSETS).
+  const displayProjection = new LocalMetricProjection(origin);
+  // The Albers projection is bit-identical to `projectAlbers` (b6-polygons.ts).
+  const albersProjection = createAnalysisFrameProjection(ALBERS_CONUS_FRAME);
+  const analysisFrame: Geography['analysisFrame'] = isCounty
+    ? {
+        name: 'Albers equal-area conic (CONUS)',
+        maxScaleError: 0.0144,
+        project: albersProjection.project,
+        unproject: albersProjection.unproject,
+        layerFrame: ALBERS_CONUS_FRAME
+      }
+    : {
+        name: 'local Mercator meters',
+        maxScaleError: 0.003,
+        project: (longitude, latitude) => displayProjection.project(longitude, latitude),
+        unproject: (x, y) => displayProjection.unproject(x, y),
+        layerFrame: undefined
+      };
+  const analysisMeters = isCounty
+    ? projectRows(dataset.column<Float32Array>('vertices'), analysisFrame.project)
+    : meters;
+  const analysisBounds: [number, number, number, number] = [
+    Infinity,
+    Infinity,
+    -Infinity,
+    -Infinity
+  ];
+  for (let index = 0; index < analysisMeters.length / 2; index++) {
+    analysisBounds[0] = Math.min(analysisBounds[0], analysisMeters[index * 2]);
+    analysisBounds[1] = Math.min(analysisBounds[1], analysisMeters[index * 2 + 1]);
+    analysisBounds[2] = Math.max(analysisBounds[2], analysisMeters[index * 2]);
+    analysisBounds[3] = Math.max(analysisBounds[3], analysisMeters[index * 2 + 1]);
+  }
 
   // Triangle mesh, outline segments and centroids.
   const triangleVertices: number[] = [];
@@ -387,10 +509,16 @@ export async function loadGeography(
       centroids[feature * 2 + 1] = centroidSums[feature * 2 + 1] / area;
     }
   }
+  // Tracts: the display-frame centroids are the analysis ones.
+  let analysisCentroids: Float32Array = centroids;
   if (isCounty && dataset.hasColumn('centroid')) {
     // The dataset ships equal-area centroids; use them so county points match the published ones.
-    const projected = dataset.projectColumn('centroid', origin);
-    centroids.set(projected);
+    analysisCentroids = projectRows(
+      dataset.column<Float32Array>('centroid'),
+      analysisFrame.project
+    );
+  } else if (isCounty) {
+    analysisCentroids = computeFeatureCentroids(analysisMeters, layout, isClosed);
   }
 
   // Groups: state for counties, community area for tracts.
@@ -492,7 +620,7 @@ export async function loadGeography(
     return -1;
   };
   const pick = (longitude: number, latitude: number): number => {
-    const [x, y] = projection.project(longitude, latitude);
+    const [x, y] = displayProjection.project(longitude, latitude);
     return pickMeters(x, y);
   };
 
@@ -500,12 +628,12 @@ export async function loadGeography(
   const nearest = new Float32Array(featureCount);
   for (let a = 0; a < featureCount; a++) {
     let best = Infinity;
-    const ax = centroids[a * 2];
-    const ay = centroids[a * 2 + 1];
+    const ax = analysisCentroids[a * 2];
+    const ay = analysisCentroids[a * 2 + 1];
     for (let b = 0; b < featureCount; b++) {
       if (a === b) continue;
-      const dx = centroids[b * 2] - ax;
-      const dy = centroids[b * 2 + 1] - ay;
+      const dx = analysisCentroids[b * 2] - ax;
+      const dy = analysisCentroids[b * 2 + 1] - ay;
       const squared = dx * dx + dy * dy;
       if (squared < best) best = squared;
     }
@@ -540,8 +668,12 @@ export async function loadGeography(
     count: featureCount,
     origin,
     bbox: dataset.manifest.bbox,
-    bounds,
-    centroids,
+    analysisFrame,
+    bounds: analysisBounds,
+    displayBounds: bounds,
+    centroids: analysisCentroids,
+    getCentroidLngLat: feature =>
+      analysisFrame.unproject(analysisCentroids[feature * 2], analysisCentroids[feature * 2 + 1]),
     contiguityVertices,
     contiguityRingOffsets,
     featureRingOffsets,
@@ -558,7 +690,7 @@ export async function loadGeography(
     pick,
     pickMeters,
     medianSpacing,
-    project: (longitude, latitude) => projection.project(longitude, latitude)
+    project: (longitude, latitude) => displayProjection.project(longitude, latitude)
   };
 }
 

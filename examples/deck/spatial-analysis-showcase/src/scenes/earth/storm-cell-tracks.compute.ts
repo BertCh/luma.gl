@@ -36,11 +36,8 @@ import {
 } from '../../engine/layers';
 import {addKernelPass} from '../../engine/mode-kernels';
 import {createPlaybackClock} from '../../engine/playback';
-import {
-  formatCount,
-  getViewportMetricBounds,
-  SpatialAnalysisResources
-} from '../../engine/resources';
+import {getViewportFrameBounds} from '../../engine/analysis-frame';
+import {formatCount, SpatialAnalysisResources} from '../../engine/resources';
 import {SummaryReader} from '../../engine/summary-reader';
 import {TriangleListLayer} from '../geometry/b3-layers';
 import type {SceneContext, SceneInstance} from '../scene';
@@ -58,6 +55,8 @@ import {
   loadStormTracks,
   quantile,
   seriesChart,
+  STORM_DENSITY_FRAME,
+  STORM_DENSITY_PROJECTION,
   STORM_EVENT_SECONDS,
   STORM_SPEED_RAMP_KMH,
   type StormFlashes,
@@ -131,8 +130,9 @@ type SwathGraph = {
 
 /**
  * Storm-cell tracks on 21-22 May 2024. Five graphs share the track buffers:
- * - metrics (`GPUTrajectoryMetrics`): per-step speed and heading in each track's own tangent
- *   plane, stalled-cell detection; run again only when the stall thresholds change;
+ * - metrics (`GPUTrajectoryMetrics`): per-step speed and heading on longitude/latitude with a
+ *   great-circle context (meters, initial bearings), stalled-cell detection; run again only
+ *   when the stall thresholds change;
  * - playhead (`GPUTrajectoryPlayhead`): every cell interpolated at the clock, plus a small kernel
  *   that looks up the speed and heading of the segment each cell is on and writes a motion vector;
  * - trails (`GPUTimeWindowFilter`): the track segments inside a sliding window;
@@ -151,13 +151,8 @@ export async function createStormCellTracks(
   const flashCount = flashes.count;
   const resources = new SpatialAnalysisResources(device, 'storm-cells');
   const lngLatDraw = {coordinateSystem: COORDINATE_SYSTEM.LNGLAT} as const;
-  const flashOrigin: [number, number, number] = [flashes.origin[0], flashes.origin[1], 0];
-  const densityProjection = ctx.datasets
-    .get('poopdeck-goes-glm-lightning')
-    .getProjection(flashes.origin);
 
   // ---- Static inputs ----------------------------------------------------------------------------
-  const localBuffer = resources.createBuffer('local-positions', tracks.positions);
   const lngLatBuffer = resources.createBuffer('lng-lat', tracks.lngLat);
   const timestampsBuffer = resources.createBuffer('timestamps', tracks.timestamps);
   const offsetsBuffer = resources.createBuffer('offsets', tracks.offsets);
@@ -168,7 +163,8 @@ export async function createStormCellTracks(
     tracks.segmentStartTimes
   );
   const segmentEndTimesBuffer = resources.createBuffer('segment-end-times', tracks.segmentEndTimes);
-  const flashPositionsBuffer = resources.createBuffer('flash-local', flashes.local);
+  // Density positions in the Lambert equal-area frame: equal cells are equal ground areas.
+  const flashPositionsBuffer = resources.createBuffer('flash-equal-area', flashes.equalArea);
   const flashLngLatBuffer = resources.createBuffer('flash-lng-lat', flashes.lngLat);
   const flashTimesBuffer = resources.createBuffer('flash-times', flashes.times);
   const flashEnergyBuffer = resources.createBuffer('flash-energy', flashes.energy);
@@ -189,7 +185,7 @@ export async function createStormCellTracks(
   const stopTotal = resources.createBuffer('stop-total', 4);
   const stopStartRows = resources.createBuffer('stop-start-rows', STOP_CAPACITY * 4);
   const stopEndRows = resources.createBuffer('stop-end-rows', STOP_CAPACITY * 4);
-  const stopCentroidsLocal = resources.createBuffer('stop-centroids-local', STOP_CAPACITY * 8);
+  const stopCentroids = resources.createBuffer('stop-centroids', STOP_CAPACITY * 8);
   const stopDurations = resources.createBuffer('stop-durations', STOP_CAPACITY * 4);
   const stopLngLat = resources.createBuffer('stop-lng-lat', STOP_CAPACITY * 8);
   const metricsParameters = resources.createParameterBuffer(
@@ -256,15 +252,13 @@ export async function createStormCellTracks(
   );
   metricsGraph.add(
     new GPUTrajectoryMetrics({
-      spatialContext: {coordinateSpace: 'planar', metric: 'native', units: 'native'},
+      spatialContext: {
+        coordinateSpace: 'longitude-latitude',
+        metric: 'great-circle',
+        units: 'meters'
+      },
       id: 'metrics',
-      positions: importGraphBuffer(
-        metricsGraph,
-        'local-positions',
-        localBuffer,
-        'float32x2',
-        vertexCount
-      ),
+      positions: metricsLngLat,
       timestamps: importGraphBuffer(
         metricsGraph,
         'timestamps',
@@ -332,8 +326,8 @@ export async function createStormCellTracks(
         endRows: stopEndView,
         centroids: importGraphBuffer(
           metricsGraph,
-          'stop-centroids-local',
-          stopCentroidsLocal,
+          'stop-centroids',
+          stopCentroids,
           'float32x2',
           STOP_CAPACITY
         ),
@@ -817,7 +811,11 @@ export async function createStormCellTracks(
         positions: inputView,
         geometryType: 'lines',
         pathOffsets: importGraphBuffer(graph, 'offsets', offsetsBuffer, 'uint32', trackCount + 1),
-        coordinateSystem: 'spherical',
+        spatialContext: {
+          coordinateSpace: 'longitude-latitude',
+          metric: 'great-circle',
+          units: 'meters'
+        },
         joinSegments: join,
         parameters: swathDistance.importToGraph(graph),
         output: {
@@ -971,12 +969,13 @@ export async function createStormCellTracks(
         id: 'flash-density',
         positions: importGraphBuffer(
           graph,
-          'flash-local',
+          'flash-equal-area',
           flashPositionsBuffer,
           'float32x2',
           flashCount
         ),
         mask: importGraphBuffer(graph, 'flash-mask', flashMask, 'uint32', flashCount),
+        // Energy sums the flashes' energy; the count statistic needs no weights.
         ...(weighted
           ? {
               weights: importGraphBuffer(
@@ -1416,7 +1415,7 @@ export async function createStormCellTracks(
       }
 
       if (options.showLightning && currentDensity) {
-        const viewBounds = getViewportMetricBounds(frame.viewport, densityProjection);
+        const viewBounds = getViewportFrameBounds(frame.viewport, STORM_DENSITY_PROJECTION);
         const boundsData = Float32Array.from(viewBounds);
         if (!lastBounds || boundsData.some((value, index) => value !== lastBounds![index])) {
           markChanged();
@@ -1493,7 +1492,7 @@ export async function createStormCellTracks(
         layers.push(
           new SpatialAnalysisRasterLayer({
             id: `storm-flash-density-${currentDensityKey}`,
-            coordinateOrigin: flashOrigin,
+            analysisFrame: STORM_DENSITY_FRAME,
             gridSize: currentDensity.gridSize,
             bounds: densityBounds.buffer,
             binning: 'grid',
@@ -1519,7 +1518,7 @@ export async function createStormCellTracks(
           layers.push(
             new SpatialAnalysisRasterLayer({
               id: `storm-hot-spots-${currentDensityKey}`,
-              coordinateOrigin: flashOrigin,
+              analysisFrame: STORM_DENSITY_FRAME,
               gridSize: currentDensity.gridSize,
               bounds: densityBounds.buffer,
               binning: 'grid',

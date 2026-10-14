@@ -3,7 +3,9 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import type {LoadedDataset} from '../../data/catalog';
+import type {AnalysisFrame} from '../../engine/analysis-frame';
 import {LocalMetricProjection} from '../../engine/projection';
+import {createAzimuthalEquidistant} from '../movement/b12-tracks';
 import {
   BOUNDARY_FAMILY_OF_CLASS,
   QUAKE_DAY_ZERO_MS,
@@ -11,26 +13,60 @@ import {
   type QuakeRegionId
 } from './quake-regions';
 
-/** Events of one region as the typed arrays the contributors read. */
+/**
+ * Largest local distance scale error of the analysis frame over any of the regions: an
+ * azimuthal equidistant frame about the window center is exact along radii from the center and
+ * off by at most +2.2% across them (computed at the window corners of all five regions).
+ */
+export const QUAKE_ANALYSIS_SCALE_ERROR = 0.022;
+
+/** Name of the analysis frame, for help and readout text. */
+export const QUAKE_ANALYSIS_FRAME_NAME = 'azimuthal equidistant about the window center';
+
+/** A planar frame: `[longitude, latitude]` degrees to meters and back. */
+export type QuakePlanarFrame = {
+  project: (longitude: number, latitude: number) => [number, number];
+  unproject: (x: number, y: number) => [number, number];
+};
+
+/**
+ * Events of one region as the typed arrays the contributors read.
+ *
+ * The ANALYSIS frame (azimuthal equidistant about the window center `origin`, at most 2.2%
+ * distance error) feeds every operator: `positions`, `analysisWindowMeters` and the boundary
+ * step segments. Layers draw it directly with `analysisFrame` (the engine inverts the frame on
+ * the GPU). The MERCATOR-LOCAL frame (deck.gl `METER_OFFSETS` around `origin`, -10%..+19% off in
+ * these windows) remains only for the aftershocks month-by-cell grid, which is binned and drawn
+ * in it: `mercatorPositions`, `windowMeters`, `projection`.
+ */
 export type QuakeEvents = {
   count: number;
-  /** `[longitude, latitude]` of the window center, the origin of the planar frame. */
+  /** `[longitude, latitude]` of the window center, the origin of both frames. */
   origin: [number, number];
+  /** Mercator-local frame (`METER_OFFSETS` meters around `origin`). */
   projection: LocalMetricProjection;
-  /** Planar meters around `origin`, `x, y` per event. */
+  /** The analysis frame, for the `analysisFrame` prop of the layers that draw its meters. */
+  analysisFrame: AnalysisFrame;
+  /** Projection of the analysis frame (azimuthal equidistant meters around `origin`). */
+  analysisProjection: QuakePlanarFrame;
+  /** Analysis meters around `origin`, `x, y` per event. */
   positions: Float32Array;
+  /** Mercator-local meters around `origin`, `x, y` per event (the aftershocks grid only). */
+  mercatorPositions: Float32Array;
   /** Event time in days since 2020-01-01 00:00 UTC, ascending. */
   days: Float32Array;
   magnitude: Float32Array;
   /** Depth in km (negative values from the catalog are clamped to 0). */
   depth: Float32Array;
-  /** `[west, south, east, north]` of the window in planar meters. */
+  /** `[west, south, east, north]` of the window in Mercator-local meters. */
   windowMeters: [number, number, number, number];
+  /** `[west, south, east, north]` of the window in analysis meters. */
+  analysisWindowMeters: [number, number, number, number];
 };
 
-/** Metric window of a region: the extremes of its edge points in the planar frame. */
+/** Metric window of a region: the extremes of its edge points in one planar frame. */
 function getWindowMeters(
-  projection: LocalMetricProjection,
+  projection: Pick<QuakePlanarFrame, 'project'>,
   bbox: readonly [number, number, number, number]
 ): [number, number, number, number] {
   const [west, south, east, north] = bbox;
@@ -59,7 +95,8 @@ function getWindowMeters(
 
 /**
  * Reads the catalog rows of type `earthquake` inside a region with magnitude at or above
- * `minimumMagnitude`, in time order, projected to planar meters around the window center.
+ * `minimumMagnitude`, in time order, projected to analysis and Mercator-local meters around the
+ * window center.
  */
 export function readQuakeEvents(
   dataset: LoadedDataset,
@@ -70,6 +107,7 @@ export function readQuakeEvents(
   const [west, south, east, north] = region.bbox;
   const origin: [number, number] = [(west + east) / 2, (south + north) / 2];
   const projection = new LocalMetricProjection(origin);
+  const analysisProjection = createAzimuthalEquidistant(origin);
   const lonLat = dataset.column<Float32Array>('position');
   const seconds = dataset.column<Uint32Array>('timestamp');
   const magnitudes = dataset.column<Float32Array>('magnitude');
@@ -97,16 +135,23 @@ export function readQuakeEvents(
     count,
     origin,
     projection,
+    analysisFrame: {kind: 'azimuthal-equidistant', origin},
+    analysisProjection,
     positions: new Float32Array(count * 2),
+    mercatorPositions: new Float32Array(count * 2),
     days: new Float32Array(count),
     magnitude: new Float32Array(count),
     depth: new Float32Array(count),
-    windowMeters: getWindowMeters(projection, region.bbox)
+    windowMeters: getWindowMeters(projection, region.bbox),
+    analysisWindowMeters: getWindowMeters(analysisProjection, region.bbox)
   };
   kept.forEach((row, index) => {
-    const [x, y] = projection.project(lonLat[row * 2], lonLat[row * 2 + 1]);
+    const [x, y] = analysisProjection.project(lonLat[row * 2], lonLat[row * 2 + 1]);
     events.positions[index * 2] = x;
     events.positions[index * 2 + 1] = y;
+    const [mercatorX, mercatorY] = projection.project(lonLat[row * 2], lonLat[row * 2 + 1]);
+    events.mercatorPositions[index * 2] = mercatorX;
+    events.mercatorPositions[index * 2 + 1] = mercatorY;
     events.days[index] = seconds[row] / 86400 + dayOffset;
     events.magnitude[index] = magnitudes[row];
     events.depth[index] = Math.max(0, depths[row]);
@@ -114,10 +159,10 @@ export function readQuakeEvents(
   return events;
 }
 
-/** Plate boundary steps of the window, projected into the same frame as the events. */
+/** Plate boundary steps of the window, in the analysis frame of the events. */
 export type QuakeBoundarySteps = {
   count: number;
-  /** `x0, y0, x1, y1` planar meters per step. */
+  /** `x0, y0, x1, y1` analysis meters per step: seeds, distances and drawing. */
   segments: Float32Array;
   /** Class code per step (index into `BOUNDARY_CLASS_NAMES`). */
   stepClass: Uint8Array;
@@ -128,7 +173,7 @@ export type QuakeBoundarySteps = {
 /** Reads the steps with an end point inside the window grown by `padDegrees`. */
 export function readBoundarySteps(
   boundaries: LoadedDataset,
-  projection: LocalMetricProjection,
+  events: Pick<QuakeEvents, 'analysisProjection'>,
   regionId: QuakeRegionId,
   padDegrees: number
 ): QuakeBoundarySteps {
@@ -159,8 +204,8 @@ export function readBoundarySteps(
   };
   kept.forEach((step, index) => {
     const base = step * 4;
-    const [x0, y0] = projection.project(vertices[base], vertices[base + 1]);
-    const [x1, y1] = projection.project(vertices[base + 2], vertices[base + 3]);
+    const [x0, y0] = events.analysisProjection.project(vertices[base], vertices[base + 1]);
+    const [x1, y1] = events.analysisProjection.project(vertices[base + 2], vertices[base + 3]);
     result.segments.set([x0, y0, x1, y1], index * 4);
     result.stepClass[index] = classes[step];
     result.convergence[index] = convergence[step];
@@ -168,7 +213,7 @@ export function readBoundarySteps(
   return result;
 }
 
-/** Seed points along boundary steps, spaced at most `spacing` meters apart. */
+/** Seed points (analysis meters) along boundary steps, spaced at most `spacing` meters apart. */
 export type QuakeSeeds = {
   count: number;
   positions: Float32Array;

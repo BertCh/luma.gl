@@ -164,6 +164,8 @@ const NEIGHBORHOOD_COLUMNS: readonly GPUNeighborhoodSummaryStatistic[] = [
 ];
 
 const STATISTICS_LENGTH = GPU_GLOBAL_SPATIAL_STATISTICS_LAYOUT.length;
+/** Uint32 `counts` of a `GPUSpatialWeightsSummary`. */
+const SUMMARY_COUNTS_LENGTH = GPU_SPATIAL_WEIGHTS_SUMMARY_LAYOUT.counts.length;
 const PERMUTATION_RESULT_LENGTH = GPU_GLOBAL_PERMUTATION_RESULT.length;
 // Summary layout (float32 words): statistics, permutation results, histogram, class counts, flags.
 const SUMMARY_STATISTICS = 0;
@@ -176,9 +178,9 @@ const SUMMARY_TOOLKIT = SUMMARY_FLAGS + 3;
 // neighborhood extent, then result overflow, result total, band overflow, band total, neighborhood overflow.
 const SUMMARY_STATISTICS_A = SUMMARY_TOOLKIT;
 const SUMMARY_COUNTS_A = SUMMARY_STATISTICS_A + 3;
-const SUMMARY_STATISTICS_C = SUMMARY_COUNTS_A + 5;
+const SUMMARY_STATISTICS_C = SUMMARY_COUNTS_A + SUMMARY_COUNTS_LENGTH;
 const SUMMARY_COUNTS_C = SUMMARY_STATISTICS_C + 3;
-const SUMMARY_CARDINALITY = SUMMARY_COUNTS_C + 5;
+const SUMMARY_CARDINALITY = SUMMARY_COUNTS_C + SUMMARY_COUNTS_LENGTH;
 const SUMMARY_EXTENT = SUMMARY_CARDINALITY + CARDINALITY_BINS;
 const SUMMARY_TOOLKIT_FLAGS = SUMMARY_EXTENT + 2;
 const SUMMARY_WORDS = SUMMARY_TOOLKIT_FLAGS + 5;
@@ -672,7 +674,7 @@ export const spatialWeightsMode: SpatialAnalysisModeDefinition = {
           ),
           observed,
           significant,
-          falseDiscoveryRate: fdr,
+          multipleTesting: fdr ? 'benjamini-hochberg' : 'none',
           overflow: importGraphBuffer(graph, 'local-overflow', localOverflowBuffer, 'uint32', 1)
         })
       );
@@ -756,9 +758,15 @@ export const spatialWeightsMode: SpatialAnalysisModeDefinition = {
     const maskBuffer = resources.createBuffer('subgraph-mask', cellCount * 4);
     const groupIdsBuffer = resources.createBuffer('block-ids', cells.blockIds);
     const summaryStatisticsABuffer = resources.createBuffer('summary-statistics-a', 3 * 4);
-    const summaryCountsABuffer = resources.createBuffer('summary-counts-a', 5 * 4);
+    const summaryCountsABuffer = resources.createBuffer(
+      'summary-counts-a',
+      SUMMARY_COUNTS_LENGTH * 4
+    );
     const summaryStatisticsCBuffer = resources.createBuffer('summary-statistics-c', 3 * 4);
-    const summaryCountsCBuffer = resources.createBuffer('summary-counts-c', 5 * 4);
+    const summaryCountsCBuffer = resources.createBuffer(
+      'summary-counts-c',
+      SUMMARY_COUNTS_LENGTH * 4
+    );
     const cardinalityBuffer = resources.createBuffer('cardinality', cellCount * 4);
     const cardinalityCountsBuffer = resources.createBuffer(
       'cardinality-counts',
@@ -941,7 +949,7 @@ export const spatialWeightsMode: SpatialAnalysisModeDefinition = {
             'summary-counts-c',
             summaryCountsCBuffer,
             'uint32',
-            5
+            SUMMARY_COUNTS_LENGTH
           ),
           cardinality
         })
@@ -1016,7 +1024,7 @@ export const spatialWeightsMode: SpatialAnalysisModeDefinition = {
           'summary-counts-a',
           summaryCountsABuffer,
           'uint32',
-          5
+          SUMMARY_COUNTS_LENGTH
         )
       })
     );
@@ -2056,9 +2064,9 @@ export const spatialWeightsMode: SpatialAnalysisModeDefinition = {
       copy(totalNeighborsBuffer, SUMMARY_FLAGS + 1, 1);
       copy(localOverflowBuffer, SUMMARY_FLAGS + 2, 1);
       copy(summaryStatisticsABuffer, SUMMARY_STATISTICS_A, 3);
-      copy(summaryCountsABuffer, SUMMARY_COUNTS_A, 5);
+      copy(summaryCountsABuffer, SUMMARY_COUNTS_A, SUMMARY_COUNTS_LENGTH);
       copy(summaryStatisticsCBuffer, SUMMARY_STATISTICS_C, 3);
-      copy(summaryCountsCBuffer, SUMMARY_COUNTS_C, 5);
+      copy(summaryCountsCBuffer, SUMMARY_COUNTS_C, SUMMARY_COUNTS_LENGTH);
       copy(cardinalityCountsBuffer, SUMMARY_CARDINALITY, CARDINALITY_BINS);
       copy(neighborhoodExtentBuffer, SUMMARY_EXTENT, 2);
       copy(resultOverflowBuffer, SUMMARY_TOOLKIT_FLAGS, 1);

@@ -8,13 +8,13 @@ import {EMERGING_CATEGORY_COLORS} from './b13-categories';
 const wgslColor = (color: readonly number[]) =>
   `vec3<f32>(${color[0].toFixed(1)}, ${color[1].toFixed(1)}, ${color[2].toFixed(1)})`;
 
-/** WGSL helper that maps the 17 emerging hot spot category codes to colors. */
+/** WGSL helper that maps the 18 emerging hot spot category codes (0 to 17) to colors. */
 const CATEGORY_WGSL = /* wgsl */ `
 fn emergingCategoryColor(category: u32) -> vec4<f32> {
-  let colors = array<vec3<f32>, 17>(
+  let colors = array<vec3<f32>, ${EMERGING_CATEGORY_COLORS.length}>(
     ${EMERGING_CATEGORY_COLORS.map(wgslColor).join(', ')}
   );
-  if (category == 0u || category > 16u) {
+  if (category == 0u || category >= ${EMERGING_CATEGORY_COLORS.length}u) {
     return vec4<f32>(0.0);
   }
   return vec4<f32>(colors[category] / 255.0, 0.9);
@@ -24,9 +24,9 @@ fn emergingCategoryColor(category: u32) -> vec4<f32> {
 const CATEGORY_LINE = 'return spatialAnalysisStyle.palette[raw % size];';
 
 /**
- * A raster layer whose `category` colormap knows the 17 emerging hot spot categories. The shared
- * layer has an 8-color palette, so this extends its shader source with a 17-entry table (value 0
- * is transparent).
+ * A raster layer whose `category` colormap knows the 18 emerging hot spot category codes (the 17
+ * categories plus `UNDETERMINED`). The shared layer has an 8-color palette, so this extends its
+ * shader source with an 18-entry table (value 0 is transparent).
  */
 export class EmergingCategoryRasterLayer extends SpatialAnalysisRasterLayer {
   static override layerName = 'EmergingCategoryRasterLayer';

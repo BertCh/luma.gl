@@ -16,6 +16,11 @@ const SUBDIVISIONS = 48;
  * middle of the raster, which would misregister the surface against the stations drawn on top of
  * it. This subclass draws `SUBDIVISIONS x SUBDIVISIONS` quads and projects each of their corners
  * exactly, which brings the error under a kilometer. Square-grid binning only.
+ *
+ * The replacement vertex shader projects through `projectSpatialAnalysisPosition`, so the
+ * `analysisFrame` prop works unchanged: each sub-quad corner (about 35 km apart at 1,700 km) is
+ * inverted from the frame exactly, and the residual interpolation error inside a sub-quad is
+ * tens of meters.
  */
 export class B7TessellatedRasterLayer extends SpatialAnalysisRasterLayer {
   static override layerName = 'B7TessellatedRasterLayer';

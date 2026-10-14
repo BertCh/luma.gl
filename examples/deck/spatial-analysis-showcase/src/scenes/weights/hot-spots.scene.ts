@@ -53,11 +53,15 @@ const COUNTY_CREDIT = joinCredits('CDC PLACES (public domain)', CREDITS.usCensus
 
 const ALTERNATIVES = [
   {
-    value: 'directed',
-    label: 'Directed (esda default)',
-    help: 'The tail on the side of the observed statistic.'
+    value: 'two-sided',
+    label: 'Two-sided (default)',
+    help: 'Doubles the smaller tail, so the smallest attainable p is 2 / (permutations + 1).'
   },
-  {value: 'two-sided', label: 'Two-sided', help: 'Doubles the smaller tail.'},
+  {
+    value: 'directed',
+    label: 'Directed (legacy esda, anti-conservative)',
+    help: 'Picks the tail on the side of the observed statistic and does not double it, so p-values run about twice too small. Avoid it with FDR control.'
+  },
   {value: 'greater', label: 'Greater', help: 'Tests for an unusually large statistic: hot spots.'},
   {value: 'lesser', label: 'Less', help: 'Tests for an unusually small statistic: cold spots.'},
   {
@@ -178,29 +182,36 @@ graph.add(new GPULocalPermutationTest({
   statistic: '${isGi ? (state.selfWeight === 'include' ? 'localGStar' : 'localG') : 'localMoran'}', alternative: '${state.alternative}',
   parameters: permutationParameters,       // seed, permutations, significance: buffer writes
   maximumPermutations: 999, maximumNeighbors: ${state.maximumNeighbors},
-  falseDiscoveryRate: ${state.falseDiscoveryRate},
+  multipleTesting: '${state.falseDiscoveryRate ? 'benjamini-hochberg' : 'none'}',
   exceedances, pseudoPValues, significant
 }));`
       : '';
   if (isCells(state)) {
     return `import {addHotSpotAnalysisRecipe, GPULocalMoran, getGPUNeighborSearchParameterValues} from '@luma.gl/experimental/gpu-spatial-analysis';
 
-// One call adds the whole chain: points -> ${state.family} cells -> counts -> neighbour search -> Gi* ${state.inference === 'permutation' ? '-> permutation test' : ''}
+// One call adds the whole chain: points -> ${state.family} cells -> counts per study cell -> great-circle neighbours -> Gi* ${state.inference === 'permutation' ? '-> permutation test' : ''}
 const hotSpots = addHotSpotAnalysisRecipe(graph, {
   source: {
     kind: 'points', positions, mask,           // lon/lat degrees; the mask is a category and hour filter
     family: '${state.family}', resolution: ${state.family === 'quadbin' ? state.resolution : state.h3Resolution},
-    tableCapacity: 16384, neighborCapacity: 16384 * 40, gridSize: [128, 128],
-    neighborSearchParameters               // radius ${state.radiusCells} cells: a buffer write
+    studyArea,                              // tract polygons: every cell inside is a row, empty ones too
+    cellCapacity: 16384,
+    distanceBand: {                         // great-circle neighbours, radius in meters
+      spatialContext: {coordinateSpace: 'longitude-latitude', metric: 'great-circle', units: 'meters'},
+      neighborSearchParameters,             // radius ${state.radiusCells} cells: a buffer write
+      gridSize: [128, 128], neighborCapacity: 16384 * 40
+    }
   },
+  analyze: 'density',                       // records per km2
   parameters,                               // significance level
   selfWeight: ${state.selfWeight === 'include' ? 1 : 0},                         // 1 is Gi*, 0 is Gi
-  falseDiscoveryRate: ${state.falseDiscoveryRate},
+  multipleTesting: '${state.falseDiscoveryRate ? 'benjamini-hochberg' : 'none'}',
   zScores, bins, pValues, weights${
     state.inference === 'permutation' && isGi
       ? `,
   permutation: {parameters: permutationParameters, maximumPermutations: 999,
-    alternative: '${state.alternative}', maximumNeighbors: ${state.maximumNeighbors}, significant}`
+    alternative: '${state.alternative}', maximumNeighbors: ${state.maximumNeighbors}, significant,
+    falseDiscoveryRate: ${state.falseDiscoveryRate}}   // the permutation's own switch (BH when true)`
       : ''
   }
 });
@@ -223,7 +234,7 @@ ${
     ? `graph.add(new GPUHotSpotAnalysis({
   weights, values, mask, parameters,
   selfWeight: ${state.selfWeight === 'include' ? 1 : 0},                         // 1 is Gi*, 0 is Gi
-  falseDiscoveryRate: ${state.falseDiscoveryRate},
+  multipleTesting: '${state.falseDiscoveryRate ? 'benjamini-hochberg' : 'none'}',
   zScores, bins, pValues
 }));`
     : `graph.add(new GPULocalMoran({
@@ -231,7 +242,7 @@ ${
   quadrantGating: '${state.inference === 'analytic' ? 'analytic' : 'none'}'${
     state.inference === 'analytic'
       ? `,
-  falseDiscoveryRate: ${state.falseDiscoveryRate}`
+  multipleTesting: '${state.falseDiscoveryRate ? 'benjamini-hochberg' : 'none'}'`
       : ''
   }
 }));`
@@ -342,7 +353,7 @@ export default defineScene<HotSpotsOptions>({
       default: 15,
       disabledWhen: state => !isCells(state) || state.family !== 'quadbin',
       format: value => `level ${value}`,
-      help: 'Zoom level of the square tiles: 15 is about 0.9 km, 16 about 0.45 km, 17 about 0.2 km at this latitude. Compile-time; the table holds up to 16,384 occupied cells.'
+      help: 'Zoom level of the square tiles: 15 is about 0.9 km, 16 about 0.45 km, 17 about 0.2 km at this latitude. Compile-time; the study area holds up to 16,384 cells.'
     },
     {
       kind: 'slider',
@@ -428,7 +439,7 @@ export default defineScene<HotSpotsOptions>({
       default: 1.5,
       disabledWhen: state => !isCells(state),
       format: value => `${value} cells`,
-      help: 'Cells whose centres lie within this many cell widths are neighbours (the search runs on the cell centres in degrees, so the band is about 15% longer north-south than east-west at this latitude). A parameter write.'
+      help: 'Cells whose centres lie within this many cell widths are neighbours: a great-circle distance in meters on the cell centres, so the band is a circle on the ground. Cells with fewer than 4 neighbours (the lake shore) are not tested. A parameter write.'
     },
     {
       kind: 'select',
@@ -526,9 +537,9 @@ export default defineScene<HotSpotsOptions>({
       label: 'Permutation tail',
       group: 'Significance',
       apply: 'compile',
-      default: 'directed',
+      default: 'two-sided',
       disabledWhen: state => state.inference !== 'permutation',
-      help: 'Which tail of the simulated distribution counts as evidence. Compile-time.',
+      help: 'Which tail of the simulated distribution counts as evidence. Two-sided is the default; directed is the legacy esda rule and is anti-conservative. Compile-time.',
       options: ALTERNATIVES
     },
     {
@@ -682,7 +693,7 @@ export default defineScene<HotSpotsOptions>({
     {
       id: 'places',
       label: 'Places analysed',
-      help: 'Cells with at least one record, or areas with data.'
+      help: 'Study-area cells (empty ones count as zero) or areas with data, without the islands and untested edge cells.'
     },
     {id: 'cellSize', label: 'Cell size', help: 'Edge of one cell.'},
     {
@@ -781,8 +792,8 @@ export default defineScene<HotSpotsOptions>({
       title: 'Where Chicago looks at nature',
       headline: 'Counts show where people look, not wildlife',
       textAlternative:
-        'Map of Chicago with square cells shaded in five purple classes by record count: the lakefront and the large parks are darkest.',
-      body: '**{{places}}** cells hold at least one iNaturalist record, each **{{cellSize}}** across, coloured in five classes. The darkest cells are the lakefront and the large parks.\n\nA count measures observer effort, not nature: more people looking means more records. **Category** and **Hours of the day** change what is counted.\n\n*Counts follow people.*',
+        'Map of Chicago with square cells shaded in five purple classes by records per square kilometre: the lakefront and the large parks are darkest.',
+      body: '**{{places}}** study-area cells are analysed, each **{{cellSize}}** across, coloured in five classes of records per square kilometre. Cells with no record are part of the study area and count as zero; cells along the lake shore with fewer than four neighbours are left untested. The darkest cells are the lakefront and the large parks.\n\nA count measures observer effort, not nature: more people looking means more records. **Category** and **Hours of the day** change what is counted.\n\n*Counts follow people.*',
       optionsMode: 'fresh',
       options: {
         source: 'nature-cells',

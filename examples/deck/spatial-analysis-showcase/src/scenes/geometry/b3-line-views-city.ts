@@ -27,7 +27,9 @@ import {
   createPathOutputBuffers,
   createStaticPaths,
   formatDistance,
+  GREAT_CIRCLE_CONTEXT,
   importPathOutput,
+  PLANAR_CONTEXT,
   type GeometryView,
   type PathOutputBuffers
 } from './b3-common';
@@ -152,7 +154,7 @@ export function createReshapeView(env: CityLineEnvironment): GeometryView<Option
           inputVertices
         ),
         pathOffsets: imp('offsets', railOffsets, 'uint32', pathCount + 1),
-        coordinateSystem: spherical ? 'spherical' : 'planar',
+        spatialContext: spherical ? GREAT_CIRCLE_CONTEXT : PLANAR_CONTEXT,
         parameters: parameters.importToGraph(graph),
         output: importPathOutput(graph, output, {measures: true})
       })
@@ -286,7 +288,7 @@ export function createReshapeView(env: CityLineEnvironment): GeometryView<Option
         ),
         pathOffsets: imp('offsets', railOffsets, 'uint32', pathCount + 1),
         mode,
-        coordinateSystem: spherical ? 'spherical' : 'planar',
+        spatialContext: spherical ? GREAT_CIRCLE_CONTEXT : PLANAR_CONTEXT,
         parameters: parameters.importToGraph(graph),
         output: importPathOutput(graph, output, {pathCount: true, sourcePaths: chunkMode})
       })

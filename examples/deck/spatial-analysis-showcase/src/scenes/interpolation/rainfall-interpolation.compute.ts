@@ -33,10 +33,12 @@ import {SpatialAnalysisPointLayer} from '../../engine/layers';
 import {addKernelPass} from '../../engine/mode-kernels';
 import type {RampName} from '../../engine/ramps';
 import {
-  formatCount,
-  getViewportMetricBounds,
-  SpatialAnalysisResources
-} from '../../engine/resources';
+  type AnalysisFrame,
+  createAnalysisFrameProjection,
+  getViewportFrameBounds,
+  projectLngLatToFrame
+} from '../../engine/analysis-frame';
+import {formatCount, SpatialAnalysisResources} from '../../engine/resources';
 import {SummaryReader} from '../../engine/summary-reader';
 import {formatCompiledGraphTiming, measureCompiledGraph} from '../../engine/vector-timing';
 import type {SceneContext, SceneInstance} from '../scene';
@@ -95,6 +97,14 @@ const HOLD_OUT_MODULUS = 10;
 const SETTLE_MILLISECONDS = 450;
 const STATION_NAME_LIMIT_PIXELS = 11;
 
+/**
+ * Analysis frame of the gauges, the grid and every distance (IDW search radius, kriging range,
+ * variogram lags): azimuthal equidistant about the centre of the GHCN box [-92, 24, -74, 40].
+ * Distances from the centre are exact and the scale error is at most +0.65% at the box corners
+ * (the Mercator-local frame this replaced was -8.0% to +9.5%). The layers draw in this frame.
+ */
+const RAINFALL_FRAME: AnalysisFrame = {kind: 'azimuthal-equidistant', origin: [-83, 32]};
+
 type Bins = {distances: number[]; gammas: number[]; robust: number[]; pairs: number[]};
 
 /**
@@ -112,9 +122,8 @@ export async function createRainfallInterpolation(
 ): Promise<SceneInstance<RainfallOptions>> {
   const stations = ctx.datasets.get('ghcn-stations');
   const {device} = ctx;
-  const origin = stations.defaultOrigin;
-  const projection = stations.getProjection(origin);
-  const positions = stations.projectColumn('position', origin);
+  const projection = createAnalysisFrameProjection(RAINFALL_FRAME);
+  const positions = projectLngLatToFrame(projection, stations.column('position'));
   const stationCount = positions.length / 2;
   const valuesByVariable: Record<RainfallVariable, Float32Array> = {
     prcp: stations.column('prcp'),
@@ -328,6 +337,7 @@ export async function createRainfallInterpolation(
   const compiled: CompiledGPUCommandGraph<void> = resources.track(graph.compile());
 
   // --- Variogram graph ------------------------------------------------------------------------
+  const variogramOverflowBuffer = resources.createBuffer('variogram-overflow', 4);
   const variogramGraph = new GPUCommandGraph<void>(device, {id: 'rainfall-variogram'});
   variogramGraph.add(
     new GPUVariogram({
@@ -373,7 +383,15 @@ export async function createRainfallInterpolation(
         'float32',
         BIN_COUNT
       ),
-      statistics: importGraphBuffer(variogramGraph, 'statistics', statisticsBuffer, 'float32', 5)
+      statistics: importGraphBuffer(variogramGraph, 'statistics', statisticsBuffer, 'float32', 5),
+      // 1 when a bin's pair count saturated; the fit would be distorted, so it is skipped.
+      overflow: importGraphBuffer(
+        variogramGraph,
+        'variogram-overflow',
+        variogramOverflowBuffer,
+        'uint32',
+        1
+      )
     })
   );
   const variogramCompiled: CompiledGPUCommandGraph<void> = resources.track(
@@ -382,6 +400,7 @@ export async function createRainfallInterpolation(
 
   // --- State ----------------------------------------------------------------------------------
   let destroyed = false;
+  let variogramOverflowed = false;
   let measuring = false;
   let dirtyRaster = true;
   let variogramStale = true;
@@ -515,7 +534,8 @@ export async function createRainfallInterpolation(
       {buffer: robustBuffer, size: BIN_COUNT * 4},
       {buffer: pairCountBuffer, size: BIN_COUNT * 4},
       {buffer: distanceBuffer, size: BIN_COUNT * 4},
-      {buffer: statisticsBuffer, size: 5 * 4}
+      {buffer: statisticsBuffer, size: 5 * 4},
+      {buffer: variogramOverflowBuffer, size: 4}
     ],
     bytes => {
       const floats = new Float32Array(bytes);
@@ -552,12 +572,14 @@ export async function createRainfallInterpolation(
         omni.robust.push(pairs > 0 ? robust / pairs : Number.NaN);
         omni.distances.push(pairs > 0 ? distance / pairs : Number.NaN);
       }
+      variogramOverflowed = counts[4 * BIN_COUNT + 5] !== 0;
       bins = {sectors, omni, statistics: floats.slice(4 * BIN_COUNT, 4 * BIN_COUNT + 5)};
       refit();
     }
   );
 
   function fitBins(source: Bins): VariogramModel | null {
+    if (variogramOverflowed) return null;
     try {
       return fitVariogramModel(
         {
@@ -595,9 +617,11 @@ export async function createRainfallInterpolation(
     );
     ctx.setReadout(
       'variogramModel',
-      fit
-        ? `nugget ${formatSignificant(fit.nugget)} · partial sill ${formatSignificant(fit.sill)} ${unit} · range ${formatSignificant(fit.range / 1000)} km`
-        : 'not fitted'
+      variogramOverflowed
+        ? 'pair counts saturated (overflow): not fitted'
+        : fit
+          ? `nugget ${formatSignificant(fit.nugget)} · partial sill ${formatSignificant(fit.sill)} ${unit} · range ${formatSignificant(fit.range / 1000)} km`
+          : 'not fitted'
     );
     ctx.setReadout('sampleVariance', `${formatSignificant(bins.statistics[2])} ${unit}`);
     ctx.setChart('variogramChart', {
@@ -936,7 +960,7 @@ export async function createRainfallInterpolation(
     commandEncoder: Parameters<SceneInstance<RainfallOptions>['encode']>[0],
     viewport: Viewport
   ) {
-    const next = getViewportMetricBounds(viewport, projection);
+    const next = getViewportFrameBounds(viewport, projection);
     if (next.some((value, index) => value !== viewBounds[index])) {
       viewBounds = next;
       dirtyRaster = true;
@@ -974,7 +998,6 @@ export async function createRainfallInterpolation(
     const style = getRainfallSurfaceStyle(o);
     const meta = RAINFALL_VARIABLES[o.variable];
     const dark = ctx.theme() === 'dark';
-    const coordinateOrigin: [number, number, number] = [origin[0], origin[1], 0];
     const isAuxiliary = o.surface === 'error' || o.surface === 'support';
     let range = style.range;
     if (!range) {
@@ -990,7 +1013,7 @@ export async function createRainfallInterpolation(
     const layers: Layer[] = [
       new B7TessellatedRasterLayer({
         id: `rainfall-${o.surface}-${statistic}`,
-        coordinateOrigin,
+        analysisFrame: RAINFALL_FRAME,
         gridSize: [RASTER_WIDTH, RASTER_HEIGHT],
         bounds: idwParameters.buffer,
         rowOrigin: 'south',
@@ -1008,7 +1031,7 @@ export async function createRainfallInterpolation(
       layers.push(
         new SpatialAnalysisPointLayer({
           id: 'rainfall-station-halo',
-          coordinateOrigin,
+          analysisFrame: RAINFALL_FRAME,
           positions: positionsBuffer,
           values: valuesBuffer,
           valueFormat: 'float32',
@@ -1022,7 +1045,7 @@ export async function createRainfallInterpolation(
         }),
         new SpatialAnalysisPointLayer({
           id: 'rainfall-stations',
-          coordinateOrigin,
+          analysisFrame: RAINFALL_FRAME,
           positions: positionsBuffer,
           values: valuesBuffer,
           valueFormat: 'float32',
@@ -1038,7 +1061,7 @@ export async function createRainfallInterpolation(
         layers.push(
           new SpatialAnalysisPointLayer({
             id: 'rainfall-held-out-ring',
-            coordinateOrigin,
+            analysisFrame: RAINFALL_FRAME,
             positions: positionsBuffer,
             ids: heldOutIds,
             instanceCount: heldOutCount,
@@ -1047,7 +1070,7 @@ export async function createRainfallInterpolation(
           }),
           new SpatialAnalysisPointLayer({
             id: 'rainfall-held-out',
-            coordinateOrigin,
+            analysisFrame: RAINFALL_FRAME,
             positions: positionsBuffer,
             ids: heldOutIds,
             values: valuesBuffer,

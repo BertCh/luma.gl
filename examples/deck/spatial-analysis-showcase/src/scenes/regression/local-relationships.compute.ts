@@ -5,8 +5,10 @@
 import type {Layer} from '@deck.gl/core';
 import {COORDINATE_SYSTEM} from '@deck.gl/core';
 import {
+  getGPUGeographicallyWeightedRegressionModelResult,
   getGPUGeographicallyWeightedRegressionParameterLength,
   getGPUGeographicallyWeightedRegressionParameterValues,
+  getGPUOrdinaryLeastSquaresModelResult,
   getGPUPermutationParameterValues,
   GPUGeographicallyWeightedRegression,
   GPUGeographicallyWeightedRegressionNonstationarityTest,
@@ -18,9 +20,6 @@ import {
   GPU_GWR_NONSTATIONARITY_TABLE,
   GPU_GWR_NONSTATIONARITY_TABLE_STRIDE,
   GPU_ORDINARY_LEAST_SQUARES_SUMMARY_LENGTH,
-  GPU_ORDINARY_LEAST_SQUARES_SUMMARY_R_SQUARED,
-  GPU_ORDINARY_LEAST_SQUARES_SUMMARY_RESIDUAL_SUM_OF_SQUARES,
-  GPU_ORDINARY_LEAST_SQUARES_SUMMARY_ROW_COUNT,
   GPU_PERMUTATION_PARAMETER_LENGTH
 } from '@luma.gl/experimental/gpu-spatial-analysis';
 import {GPUCommandGraph, type CompiledGPUCommandGraph} from '@luma.gl/gpgpu/gpu-core';
@@ -533,6 +532,8 @@ export async function createLocalRelationships(
       {name: 'condition', buffer: conditionBuffer, bytes: rowCount * 4},
       {name: 'hat', buffer: hatBuffer, bytes: rowCount * 4},
       {name: 'olsCoefficients', buffer: olsCoefficients, bytes: COEFFICIENT_COUNT * 4},
+      {name: 'olsStatus', buffer: olsStatus, bytes: 4},
+      {name: 'olsStandardErrors', buffer: olsStandardErrors, bytes: COEFFICIENT_COUNT * 4},
       {name: 'olsTStatistics', buffer: olsTStatistics, bytes: COEFFICIENT_COUNT * 4},
       {
         name: 'olsSummary',
@@ -552,7 +553,20 @@ export async function createLocalRelationships(
       const condition = get('condition').f32;
       const olsSummaryValues = get('olsSummary').f32;
       const olsCoefficientValues = get('olsCoefficients').f32;
-      const olsT = get('olsTStatistics').f32;
+      const olsResult = getGPUOrdinaryLeastSquaresModelResult(
+        {
+          coefficients: olsCoefficientValues,
+          standardErrors: get('olsStandardErrors').f32,
+          tStatistics: get('olsTStatistics').f32,
+          summary: olsSummaryValues,
+          status: get('olsStatus').u32
+        },
+        {predictorNames: [...COUNTY_PREDICTOR_LABELS]}
+      );
+      const gwrResult = getGPUGeographicallyWeightedRegressionModelResult({
+        summary,
+        selectedBandwidth: selected
+      });
       const slot = GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_SUMMARY;
       latest = {
         coefficients,
@@ -563,7 +577,6 @@ export async function createLocalRelationships(
         selected: selected[1],
         mode: ctx.options.mode
       };
-      const included = olsSummaryValues[GPU_ORDINARY_LEAST_SQUARES_SUMMARY_ROW_COUNT];
       let singular = 0;
       let excluded = 0;
       for (let row = 0; row < rowCount; row++) {
@@ -576,7 +589,7 @@ export async function createLocalRelationships(
       ctx.setReadout(
         'bandwidth',
         valid
-          ? `${formatNumber(shown, 0)} ${unit} (ladder step ${selected[0] + 1})`
+          ? `${formatNumber(shown, 0)} ${unit} (${selected[0] < LADDER_LENGTH ? `ladder step ${selected[0] + 1}` : 'refined between ladder steps'})`
           : 'no valid candidate (all singular)'
       );
       const ladderCount = ctx.options.bandwidth <= 0 ? LADDER_LENGTH : 1;
@@ -587,25 +600,24 @@ export async function createLocalRelationships(
           .map(value => (Number.isFinite(value) ? value.toFixed(0) : 'invalid'))
           .join(' / ')
       );
-      const aicc = summary[slot.AICC];
-      // OLS AICc with the same formula as the GWR (its hat trace is the parameter count).
-      const parameterCount = COEFFICIENT_COUNT;
-      const rss = olsSummaryValues[GPU_ORDINARY_LEAST_SQUARES_SUMMARY_RESIDUAL_SUM_OF_SQUARES];
-      const olsAicc =
-        included * Math.log(rss / included) +
-        included * Math.log(2 * Math.PI) +
-        (included * (included + parameterCount)) / (included - 2 - parameterCount);
+      const aicc = gwrResult.correctedAkaikeInformationCriterion ?? NaN;
+      // OLS AICc from the shared model result (the same Gaussian likelihood and parameter count).
+      const olsAicc = olsResult.correctedAkaikeInformationCriterion ?? NaN;
       ctx.setReadout(
         'aicc',
         `GWR ${formatNumber(aicc, 0)} vs OLS ${formatNumber(olsAicc, 0)} (${aicc < olsAicc ? 'GWR better by' : 'OLS better by'} ${formatNumber(Math.abs(olsAicc - aicc), 0)})`
       );
       ctx.setReadout(
         'rSquared',
-        `GWR ${formatNumber(summary[slot.R_SQUARED])} vs OLS ${formatNumber(olsSummaryValues[GPU_ORDINARY_LEAST_SQUARES_SUMMARY_R_SQUARED])}`
+        `GWR ${formatNumber(gwrResult.rSquared)} vs OLS ${formatNumber(olsResult.rSquared)}`
       );
       ctx.setReadout(
         'trace',
-        `${formatNumber(summary[slot.TRACE_OF_HAT], 1)} (OLS: ${COEFFICIENT_COUNT})`
+        `${formatNumber(gwrResult.effectiveParameterCount, 1)} (OLS: ${COEFFICIENT_COUNT})`
+      );
+      ctx.setReadout(
+        'significance',
+        `a local coefficient counts as significant when |t| exceeds ${formatNumber(gwrResult.criticalT, 2)} (alpha 0.05 adjusted to ${formatNumber(gwrResult.adjustedAlpha, 4)} for ${formatNumber(gwrResult.effectiveParameterCount, 1)} effective parameters)`
       );
       ctx.setReadout(
         'singular',
@@ -613,6 +625,12 @@ export async function createLocalRelationships(
       );
       const finiteCondition = Array.from(condition).filter(Number.isFinite);
       const flagged = finiteCondition.filter(value => value > CONDITION_NUMBER_WARNING).length;
+      ctx.setReadout(
+        'globalCondition',
+        olsResult.conditioning
+          ? `${formatNumber(olsResult.conditioning.conditionNumber, 1)}${olsResult.conditioning.illConditioned ? ' (float32 precision warning)' : ''}; largest VIF ${formatNumber(olsResult.conditioning.maximumVarianceInflationFactor, 1)}`
+          : 'n/a'
+      );
       ctx.setReadout(
         'condition',
         finiteCondition.length
@@ -623,7 +641,7 @@ export async function createLocalRelationships(
         'globalCoefficients',
         COUNTY_PREDICTOR_LABELS.map(
           (label, index) =>
-            `${label} ${formatNumber(olsCoefficientValues[index + 1], 2)} (t ${formatNumber(olsT[index + 1], 1)})`
+            `${label} ${formatNumber(olsResult.coefficients[index + 1].estimate, 2)} (se ${formatNumber(olsResult.coefficients[index + 1].standardError, 2)}, ${formatP(olsResult.coefficients[index + 1].pValue)})`
         ).join('; ')
       );
       const hat = get('hat').f32;

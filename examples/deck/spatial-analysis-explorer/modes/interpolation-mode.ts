@@ -157,6 +157,7 @@ export const interpolationMode: SpatialAnalysisModeDefinition = {
     };
     const focalCountBuffer = resources.createBuffer('focal-count', CELL_COUNT * 4);
     const overflowBuffer = resources.createBuffer('overflow', 4);
+    const variogramOverflowBuffer = resources.createBuffer('variogram-overflow', 4);
     const idwParameters = resources.createParameterBuffer(
       'idw-parameters',
       'float32',
@@ -390,6 +391,14 @@ export const interpolationMode: SpatialAnalysisModeDefinition = {
           meanDistanceBuffer,
           'float32',
           LAG_COUNT
+        ),
+        // 1 when a bin's pair count saturated: the fit would be distorted, so it is skipped.
+        overflow: importGraphBuffer(
+          variogramGraph,
+          'variogram-overflow',
+          variogramOverflowBuffer,
+          'uint32',
+          1
         )
       })
     );
@@ -413,6 +422,7 @@ export const interpolationMode: SpatialAnalysisModeDefinition = {
     let krigingNeighborCount = 12;
     let variogramType: VariogramModelType = 'spherical';
     let variogramModel: VariogramModel | null = null;
+    let variogramOverflowed = false;
     let variogramBins: {distances: number[]; semivariances: number[]; pairCounts: number[]} | null =
       null;
     let variogramStale = true;
@@ -479,6 +489,13 @@ export const interpolationMode: SpatialAnalysisModeDefinition = {
     }
     function fitVariogram(): void {
       if (!variogramBins) return;
+      if (variogramOverflowed) {
+        variogramModel = null;
+        variogramReadout.setValue('pair counts overflowed: not fitted');
+        writeKrigingParameters();
+        context.updateLayers();
+        return;
+      }
       try {
         variogramModel = fitVariogramModel(variogramBins, {model: variogramType});
       } catch {
@@ -499,7 +516,8 @@ export const interpolationMode: SpatialAnalysisModeDefinition = {
       [
         {buffer: semivarianceBuffer, size: LAG_COUNT * 4},
         {buffer: pairCountBuffer, size: LAG_COUNT * 4},
-        {buffer: meanDistanceBuffer, size: LAG_COUNT * 4}
+        {buffer: meanDistanceBuffer, size: LAG_COUNT * 4},
+        {buffer: variogramOverflowBuffer, size: 4}
       ],
       bytes => {
         const floats = new Float32Array(bytes);
@@ -515,6 +533,7 @@ export const interpolationMode: SpatialAnalysisModeDefinition = {
           bins.distances.push(floats[2 * LAG_COUNT + lag]);
         }
         variogramBins = bins;
+        variogramOverflowed = counts[3 * LAG_COUNT] !== 0;
         fitVariogram();
       }
     );

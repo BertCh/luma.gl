@@ -623,7 +623,9 @@ export async function createStreetDensity(
         ),
         pathOffsets: view('path-offsets', buffers.pathOffsets, 'uint32', road.pathCount + 1),
         pathWeights: view('path-weights', buffers.pathWeights, 'float32', road.pathCount),
-        coordinateSystem: options.system,
+        spatialContext: spherical
+          ? {coordinateSpace: 'longitude-latitude', metric: 'great-circle', units: 'meters'}
+          : {coordinateSpace: 'planar', metric: 'native', units: 'native'},
         polygons: {
           kind: 'polygons',
           positions: view(

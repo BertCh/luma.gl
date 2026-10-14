@@ -32,21 +32,33 @@ import {
   metersToDegrees,
   RecipeKit,
   SummaryReader,
+  describeMultipleTesting,
   sliceSummary,
   type RecipeParameter,
   type RecipeSceneBuilder
 } from './recipes-kit';
 
 const HOT_SPOT_RESOLUTION = 15;
-const HOT_SPOT_TABLE_CAPACITY = 4096;
+/** Neighbor slots per study cell: a 3-cell metric band holds about 28 cell centers. */
 const HOT_SPOT_NEIGHBORS_PER_ROW = 40;
+/** Quadbin cell width at the equator in meters (Web Mercator circumference over 2^resolution). */
+const HOT_SPOT_CELL_EQUATOR_METERS = (2 * Math.PI * 6378137) / 2 ** 15;
 const HOT_SPOT_MAXIMUM_PERMUTATIONS = 199;
 /** Width of a Quadbin cell in degrees of longitude at the resolution. */
 const HOT_SPOT_CELL_DEGREES = 360 / 2 ** HOT_SPOT_RESOLUTION;
 
+/** Web Mercator tile row of a latitude at the hot spot resolution. */
+function getHotSpotTileRow(latitude: number): number {
+  const radians = (latitude * Math.PI) / 180;
+  const fraction = (1 - Math.asinh(Math.tan(radians)) / Math.PI) / 2;
+  return Math.floor(fraction * 2 ** HOT_SPOT_RESOLUTION);
+}
+
 /**
- * `addHotSpotAnalysisRecipe`: points to cells to Gi* z-scores to permutation confirmation to class
- * colors. The radius, permutation count and significance level are parameter buffers.
+ * `addHotSpotAnalysisRecipe`: points to the cells of a study area (empty cells included) to Gi*
+ * z-scores to permutation confirmation to class colors. The neighborhood is a great-circle
+ * distance band in meters over the cell centers; the band radius, permutation count and
+ * significance level are parameter buffers.
  */
 export const buildHotSpotScene: RecipeSceneBuilder = async host => {
   const {context} = host;
@@ -73,20 +85,43 @@ export const buildHotSpotScene: RecipeSceneBuilder = async host => {
     maximumLatitude + padding
   ] as const;
 
-  let radiusCells = 1.5;
+  // Study area: the padded bounding rectangle of the trips, as planar longitude/latitude
+  // polygon vertices (the ring closes implicitly). Every Quadbin cell whose center is inside it is
+  // an analysis row, empty or not, so empty ground is the null Gi* compares against.
+  const studyPolygon = Float32Array.of(
+    bounds[0],
+    bounds[1],
+    bounds[2],
+    bounds[1],
+    bounds[2],
+    bounds[3],
+    bounds[0],
+    bounds[3]
+  );
+  const tileColumns = Math.floor(((bounds[2] - bounds[0]) / 360) * 2 ** HOT_SPOT_RESOLUTION) + 2;
+  const tileRows = getHotSpotTileRow(bounds[1]) - getHotSpotTileRow(bounds[3]) + 2;
+  const capacity = tileColumns * tileRows;
+  // Cell width in meters at the study area's mid latitude (Web Mercator is conformal, so the
+  // cell is as tall as it is wide). The band radius is a great-circle distance in meters.
+  const cellMeters =
+    HOT_SPOT_CELL_EQUATOR_METERS * Math.cos((((bounds[1] + bounds[3]) / 2) * Math.PI) / 180);
+  let radiusCells = 1.6;
   let permutations = 99;
   let significanceLevel = 0.05;
   let gateBySignificance = true;
 
   const kit = new RecipeKit(context.device, 'recipe-hot-spot');
-  const capacity = HOT_SPOT_TABLE_CAPACITY;
   const positions = kit.input('positions', degrees, 'float32x2', pointCount);
+  const studyPositions = kit.input('study-positions', studyPolygon, 'float32x2', 4);
+  const studyFeatureOffsets = kit.input('study-feature-offsets', Uint32Array.of(0, 1), 'uint32', 2);
+  const studyPolygonOffsets = kit.input('study-polygon-offsets', Uint32Array.of(0, 1), 'uint32', 2);
+  const studyRingOffsets = kit.input('study-ring-offsets', Uint32Array.of(0, 4), 'uint32', 2);
   const searchParameters = kit.parameter(
     'search-parameters',
     'float32',
     getGPUNeighborSearchParameterValues({
       bounds,
-      radius: radiusCells * HOT_SPOT_CELL_DEGREES,
+      radius: radiusCells * cellMeters,
       weightKind: 'binary'
     })
   );
@@ -129,8 +164,9 @@ export const buildHotSpotScene: RecipeSceneBuilder = async host => {
   const tableCount = kit.output('table-count', 'uint32', 1);
   const tableOverflow = kit.output('table-overflow', 'uint32', 1);
   const weightsOverflow = kit.output('weights-overflow', 'uint32', 1);
+  const invalidCount = kit.output('invalid-count', 'uint32', 1);
   const bins = kit.output('bins', 'sint32', capacity);
-  const globalStatistics = kit.output('global-statistics', 'float32', 4);
+  const globalStatistics = kit.output('global-statistics', 'float32', 5);
   const significant = kit.output('significant', 'uint32', capacity);
   const colors = kit.output('colors', 'uint32', capacity);
   const gatedColors = kit.output('gated-colors', 'uint32', capacity);
@@ -141,10 +177,20 @@ export const buildHotSpotScene: RecipeSceneBuilder = async host => {
       positions: positions.view,
       family: 'quadbin',
       resolution: HOT_SPOT_RESOLUTION,
-      tableCapacity: capacity,
-      neighborCapacity: capacity * HOT_SPOT_NEIGHBORS_PER_ROW,
-      gridSize: [64, 64],
-      neighborSearchParameters: searchParameters.view
+      studyArea: {
+        polygonPositions: studyPositions.view,
+        featureOffsets: studyFeatureOffsets.view,
+        polygonOffsets: studyPolygonOffsets.view,
+        ringOffsets: studyRingOffsets.view,
+        candidateCapacity: capacity * 2
+      },
+      cellCapacity: capacity,
+      distanceBand: {
+        spatialContext: {coordinateSpace: 'longitude-latitude', metric: 'great-circle'},
+        neighborSearchParameters: searchParameters.view,
+        gridSize: [64, 64],
+        neighborCapacity: capacity * HOT_SPOT_NEIGHBORS_PER_ROW
+      }
     },
     parameters: autocorrelation.view,
     scratch: {
@@ -154,6 +200,7 @@ export const buildHotSpotScene: RecipeSceneBuilder = async host => {
       bins: bins.view,
       globalStatistics: globalStatistics.view,
       weightsOverflow: weightsOverflow.view,
+      invalidCount: invalidCount.view,
       permutation: {significant: significant.view},
       color: {colors: colors.view}
     },
@@ -186,7 +233,7 @@ export const buildHotSpotScene: RecipeSceneBuilder = async host => {
   });
   const compiled = kit.compile();
 
-  const summarySizes = [4, 4, 4, 16, capacity * 4, capacity * 4];
+  const summarySizes = [4, 4, 4, 20, 4, capacity * 4, capacity * 4];
   const reader = new SummaryReader(
     kit.resources,
     'hot-spot',
@@ -194,15 +241,14 @@ export const buildHotSpotScene: RecipeSceneBuilder = async host => {
       {buffer: tableCount.buffer, size: 4},
       {buffer: tableOverflow.buffer, size: 4},
       {buffer: weightsOverflow.buffer, size: 4},
-      {buffer: globalStatistics.buffer, size: 16},
+      {buffer: globalStatistics.buffer, size: 20},
+      {buffer: invalidCount.buffer, size: 4},
       {buffer: bins.buffer, size: capacity * 4},
       {buffer: significant.buffer, size: capacity * 4}
     ],
     bytes => {
-      const [count, tableFlag, weightsFlag, statistics, binRows, significantRows] = sliceSummary(
-        bytes,
-        summarySizes
-      );
+      const [count, tableFlag, weightsFlag, statistics, invalid, binRows, significantRows] =
+        sliceSummary(bytes, summarySizes);
       const rows = Math.min(count.u32[0], capacity);
       let hot = 0;
       let cold = 0;
@@ -213,10 +259,14 @@ export const buildHotSpotScene: RecipeSceneBuilder = async host => {
         if (significantRows.u32[row] !== 0) confirmed++;
       }
       host.setOutputs([
-        ['Occupied cells', `${formatCount(rows)} of ${formatCount(capacity)}`],
-        ['Gi* hot / cold (90%+)', `${formatCount(hot)} / ${formatCount(cold)}`],
+        ['Study-area cells', `${formatCount(rows)} (capacity ${formatCount(capacity)})`],
+        ['Not tested (under 8 neighbors)', formatCount(invalid.u32[0])],
+        [
+          `Gi* hot / cold (${describeMultipleTesting(recipe.inference.multipleTesting)}, 90%+)`,
+          `${formatCount(hot)} / ${formatCount(cold)}`
+        ],
         ['Permutation-confirmed', `${formatCount(confirmed)} (${permutations} runs)`],
-        ['Mean points per cell', statistics.f32[1].toFixed(1)],
+        ['Mean trip vertices per km²', statistics.f32[1].toFixed(1)],
         ['Table overflow', tableFlag.u32[0] ? 'YES' : 'no'],
         ['Neighbor overflow', weightsFlag.u32[0] ? 'YES' : 'no']
       ]);
@@ -228,7 +278,7 @@ export const buildHotSpotScene: RecipeSceneBuilder = async host => {
     searchParameters.parameters.write(
       getGPUNeighborSearchParameterValues({
         bounds,
-        radius: radiusCells * HOT_SPOT_CELL_DEGREES,
+        radius: radiusCells * cellMeters,
         weightKind: 'binary'
       })
     );
@@ -247,11 +297,13 @@ export const buildHotSpotScene: RecipeSceneBuilder = async host => {
     {
       kind: 'slider',
       label: 'Neighborhood radius',
-      minimum: 1,
+      // Below 1.5 cells a band holds fewer than the 8 neighbors a row needs to be tested.
+      minimum: 1.5,
       maximum: 3,
       step: 0.1,
       value: radiusCells,
-      format: value => `${value.toFixed(1)} cells (${Math.round(value * 925)} m)`,
+      format: value =>
+        `${value.toFixed(1)} cells (${Math.round(value * cellMeters)} m great-circle)`,
       onChange: value => {
         radiusCells = value;
         writeNeighborParameters();
@@ -299,17 +351,17 @@ export const buildHotSpotScene: RecipeSceneBuilder = async host => {
     compiled,
     contributorCount: recipe.contributors.length,
     chain: [
-      'GPUPointToCell (H3 only; Quadbin bins directly)',
-      'GPUCellAggregation (points per cell)',
-      'GPUCellGeometry (cell centers)',
-      'GPUNeighborSearch (radius weights)',
+      'GPUCellCover (study-area cells, empty ones included)',
+      'GPUCellAggregation (points per cell, joined onto the study cells)',
+      'GPUCellGeometry (cell centers) + per-km² density',
+      'GPUNeighborSearch (great-circle distance band in meters)',
       'GPUHotSpotAnalysis (Gi*)',
       'GPULocalPermutationTest (pseudo p)',
       'GPUClassBreaks + GPUColorScale'
     ],
     parameters,
     legend:
-      'Cells colored by Gi* z-score class, cold blue to hot red; dimmed cells fail the permutation test.',
+      'Cells colored by Gi* z-score class of trip-vertex density per km², cold blue to hot red; empty cells count as zero. Rows with fewer than 8 neighbors in the band are not tested. Dimmed cells fail the (unadjusted) permutation test; the hot/cold counts use the Benjamini-Hochberg false discovery rate correction.',
     dataNote: `${trips.attribution}, ${formatCount(pointCount)} vertices`,
     encode: commandEncoder => encoder.encode(commandEncoder),
     getLayers: (): Layer[] => [
@@ -571,9 +623,15 @@ export const buildPeriodComparisonScene: RecipeSceneBuilder = async host => {
 
 const SPACE_TIME_WIDTH = 16;
 const SPACE_TIME_HEIGHT = 20;
-/** Minutes with trips: the real trips start in the first 30 minutes, then the last ones finish. */
+/** Time steps with trips: the real trips start in the first 30 minutes, then the last ones finish. */
 const SPACE_TIME_SLICES = 30;
-/** Palette of the 17 emerging hot spot categories: none, 8 hot (yellow to red), 8 cold (blue). */
+/**
+ * The trips are one 30 minute session, which is too short for a trend. Each trip minute is
+ * stretched to one calendar hour (a linear `hour` step; the recipe rejects the cyclic `minute`
+ * field), so the cube holds 30 consecutive steps and Mann-Kendall has the 10 slices it needs.
+ */
+const SPACE_TIME_SECONDS_PER_STEP = 60;
+/** Palette of the 18 emerging hot spot categories: none, 8 hot (yellow to red), 8 cold (blue), undetermined. */
 const EMERGING_PALETTE: readonly (readonly [number, number, number, number])[] = [
   [0, 0, 0, 0],
   [255, 237, 160, 235],
@@ -591,7 +649,8 @@ const EMERGING_PALETTE: readonly (readonly [number, number, number, number])[] =
   [33, 113, 181, 250],
   [8, 81, 156, 250],
   [8, 48, 107, 255],
-  [8, 29, 88, 255]
+  [8, 29, 88, 255],
+  [150, 150, 150, 200]
 ];
 const EMERGING_NAMES = [
   'no pattern',
@@ -610,7 +669,8 @@ const EMERGING_NAMES = [
   'diminishing cold',
   'sporadic cold',
   'oscillating cold',
-  'historical cold'
+  'historical cold',
+  'undetermined (final slice empty or too few slices)'
 ];
 const CONFIDENCE_LEVELS = [0.9, 0.95, 0.99] as const;
 
@@ -627,11 +687,13 @@ export const buildSpaceTimeScene: RecipeSceneBuilder = async host => {
   const bounds = getCoreBounds(trips.vertexPositions);
   const cellCount = SPACE_TIME_WIDTH * SPACE_TIME_HEIGHT;
 
-  // Calendar time for the trips: seconds since a fixed 12:00 UTC start, as epoch milliseconds.
+  // Calendar time for the trips: each trip minute becomes one hour after a fixed 12:00 UTC start,
+  // as epoch milliseconds (see SPACE_TIME_SECONDS_PER_STEP).
   const epochStart = Date.UTC(2023, 5, 1, 12, 0, 0);
   const timestampWords = new Uint32Array(pointCount * 2);
   for (let row = 0; row < pointCount; row++) {
-    const milliseconds = epochStart + Math.round(trips.vertexTimestamps[row] * 1000);
+    const milliseconds =
+      epochStart + Math.round((trips.vertexTimestamps[row] / SPACE_TIME_SECONDS_PER_STEP) * 3.6e6);
     timestampWords[row * 2] = milliseconds % 2 ** 32;
     timestampWords[row * 2 + 1] = Math.floor(milliseconds / 2 ** 32);
   }
@@ -659,13 +721,13 @@ export const buildSpaceTimeScene: RecipeSceneBuilder = async host => {
   const colorScale = kit.parameter(
     'color-scale-parameters',
     'float32',
-    getGPUColorScaleParameterValues({scale: 'ordinal', domainCount: 0, paletteCount: 17})
+    getGPUColorScaleParameterValues({scale: 'ordinal', domainCount: 0, paletteCount: 18})
   );
   const palette = kit.input(
     'palette',
     Uint32Array.from(EMERGING_PALETTE, ([r, g, b, a]) => packGPUColor(r, g, b, a)),
     'uint32',
-    17
+    18
   );
   const category = kit.output('category', 'uint32', cellCount);
   const hotSlices = kit.output('hot-slices', 'uint32', cellCount);
@@ -674,7 +736,11 @@ export const buildSpaceTimeScene: RecipeSceneBuilder = async host => {
   const recipe = addSpaceTimeHotSpotsRecipe(kit.graph, {
     timestamps: timestamps.view,
     calendarParameters: calendar.view,
-    slices: {field: 'minute', firstValue: 0, count: SPACE_TIME_SLICES},
+    slices: {
+      step: 'hour',
+      origin: {year: 2023, month: 6, day: 1, hour: 12},
+      count: SPACE_TIME_SLICES
+    },
     cells: {
       kind: 'lattice',
       positions: positions.view,
@@ -704,14 +770,14 @@ export const buildSpaceTimeScene: RecipeSceneBuilder = async host => {
     ],
     bytes => {
       const [categories, hot] = sliceSummary(bytes, summarySizes);
-      const histogram = new Uint32Array(17);
+      const histogram = new Uint32Array(18);
       let mostHotSlices = 0;
       for (let cell = 0; cell < cellCount; cell++) {
-        histogram[Math.min(16, categories.u32[cell])]++;
+        histogram[Math.min(17, categories.u32[cell])]++;
         mostHotSlices = Math.max(mostHotSlices, hot.u32[cell]);
       }
       const hotCells = histogram.slice(1, 9).reduce((total, value) => total + value, 0);
-      const coldCells = histogram.slice(9).reduce((total, value) => total + value, 0);
+      const coldCells = histogram.slice(9, 17).reduce((total, value) => total + value, 0);
       const dominant = Array.from(histogram.keys())
         .filter(code => code > 0 && histogram[code] > 0)
         .sort((a, b) => histogram[b] - histogram[a])[0];
@@ -725,6 +791,7 @@ export const buildSpaceTimeScene: RecipeSceneBuilder = async host => {
         ],
         ['New or consecutive hot', `${histogram[1] + histogram[2]}`],
         ['Intensifying / persistent hot', `${histogram[3]} / ${histogram[4]}`],
+        ['Undetermined', `${histogram[17]}`],
         ['Most hot slices in a cell', `${mostHotSlices} of ${SPACE_TIME_SLICES}`]
       ]);
     }
@@ -750,12 +817,12 @@ export const buildSpaceTimeScene: RecipeSceneBuilder = async host => {
     },
     {
       kind: 'slider',
-      label: 'Temporal window (previous minutes)',
+      label: 'Temporal window (previous steps)',
       minimum: 0,
       maximum: 4,
       step: 1,
       value: temporalWindow,
-      format: value => `${value} min`,
+      format: value => `${value} step${value === 1 ? '' : 's'}`,
       onChange: value => {
         temporalWindow = value;
         writeParameters();
@@ -780,15 +847,15 @@ export const buildSpaceTimeScene: RecipeSceneBuilder = async host => {
     compiled,
     contributorCount: recipe.contributors.length,
     chain: [
-      'GPUCalendarBuckets (minute of each event)',
-      'atomic count adapter (counts per cell and minute into the dense cube)',
-      'GPUEmergingHotSpots (Gi* per bin, Mann-Kendall)',
+      'GPUCalendarBuckets (calendar fields of each event)',
+      'atomic count adapter (counts per cell and hourly step into the dense cube)',
+      'GPUEmergingHotSpots (Gi* per bin, Benjamini-Hochberg, Mann-Kendall)',
       'GPUColorScale (ordinal categories)'
     ],
     parameters,
     legend:
-      'Yellow to dark red: new, consecutive, intensifying, persistent, diminishing, sporadic, oscillating, historical hot. Blues are the cold mirror.',
-    dataNote: `${trips.attribution}; trip seconds mapped to calendar minutes of a fixed hour`,
+      'Yellow to dark red: new, consecutive, intensifying, persistent, diminishing, sporadic, oscillating, historical hot. Blues are the cold mirror; gray cells are undetermined (final step empty or fewer than 10 usable steps). Confidence uses the Benjamini-Hochberg false discovery rate correction.',
+    dataNote: `${trips.attribution}; each trip minute is stretched to one hourly time step so the 30 minute session forms a 30-slice cube`,
     encode: commandEncoder => encoder.encode(commandEncoder),
     getLayers: (): Layer[] => [
       new PackedColorRasterLayer({

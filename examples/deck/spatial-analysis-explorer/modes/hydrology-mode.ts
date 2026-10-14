@@ -346,6 +346,13 @@ export const hydrologyMode: SpatialAnalysisModeDefinition = {
         label
       }))
     });
+    context.controls.addLegend({
+      title: 'Stream overlay',
+      entries: [
+        {color: [40, 170, 255, 255], label: 'Stream'},
+        {color: [255, 176, 0, 170], label: 'Unresolved (accumulation not converged)'}
+      ]
+    });
     context.controls.addNote(
       'Sea is no data, so water leaves the grid at the coast. Fill depth shows cells raised ' +
         'to remove sinks; the 8-bit DEM has 2 m steps, so plateaus fill as flats.'
@@ -475,7 +482,9 @@ export const hydrologyMode: SpatialAnalysisModeDefinition = {
               valueFormat: 'uint32',
               colormap: 'mask',
               color: [40, 170, 255, 255],
-              noDataColor: [0, 0, 0, 0]
+              // 0xffffffff is GPU_TERRAIN_FLOW_STREAM_UNRESOLVED, the layer's default noDataValue:
+              // draw it as "unknown" instead of hiding it or calling it a stream.
+              noDataColor: [255, 176, 0, 170]
             })
           );
         }

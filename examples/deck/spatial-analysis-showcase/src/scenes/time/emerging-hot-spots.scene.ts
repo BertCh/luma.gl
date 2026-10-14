@@ -2,9 +2,14 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import type {GPUInferenceMetadata} from '@luma.gl/experimental/gpu-spatial-analysis';
 import {ground} from '../../cartography/grounds';
 import {defineScene} from '../scene';
-import {EMERGING_CATEGORY_COLORS} from './b13-categories';
+import {
+  describeEmergingInference,
+  EMERGING_CATEGORY_COLORS,
+  EMERGING_CUBE_SLICE_COUNTS
+} from './b13-categories';
 import type {EmergingHotSpotsOptions} from './emerging-hot-spots.compute';
 
 const GROUPS = [
@@ -40,7 +45,8 @@ const CATEGORY_ENTRIES = [
   {color: color(13), label: 'Diminishing cold spot'},
   {color: color(14), label: 'Sporadic cold spot'},
   {color: color(15), label: 'Oscillating cold spot'},
-  {color: color(16), label: 'Historical cold spot'}
+  {color: color(16), label: 'Historical cold spot'},
+  {color: color(17), label: 'Undetermined'}
 ];
 
 export default defineScene<EmergingHotSpotsOptions>({
@@ -94,12 +100,12 @@ export default defineScene<EmergingHotSpotsOptions>({
           help: 'GPUCalendarBuckets decodes each timestamp to a month and the recipe counts events per cell and month.'
         },
         {
-          value: 'hours',
-          label: '24 hours of the day (recipe)',
-          help: 'A cyclic cube in Chicago local wall-clock time as recorded, with no timezone conversion. Slice 0 is midnight; trends are read loosely because 23:00 and 00:00 are neighbours.'
+          value: 'days',
+          label: '73 five-day periods (recipe)',
+          help: 'Absolute five-day steps from 1 January, in Chicago local wall-clock time as recorded, with no timezone conversion. 73 periods cover the 365 days of 2023 exactly. Hour of day is not offered: it is cyclic, and a Mann-Kendall trend from midnight to 23:00 means nothing.'
         }
       ],
-      help: 'How events are cut into slices. The slice count is fixed when the graph is compiled, so changing it rebuilds (each variant is cached).'
+      help: 'How events are cut into slices. Every axis is linear time. The slice count is fixed when the graph is compiled, so changing it rebuilds (each variant is cached).'
     },
     {
       kind: 'slider',
@@ -189,7 +195,33 @@ export default defineScene<EmergingHotSpotsOptions>({
         {value: '0.95', label: '95% (z 1.96)'},
         {value: '0.99', label: '99% (z 2.58)'}
       ],
-      help: 'A bin is hot when its Gi* z-score reaches the critical value, cold when it reaches its negative.'
+      help: 'A bin is hot when its two-sided Gi* p-value, adjusted by the correction below, is at most one minus this level and z is positive; cold when z is negative.'
+    },
+    {
+      kind: 'select',
+      id: 'multipleTesting',
+      label: 'Multiple-testing correction',
+      group: 'Significance',
+      apply: 'compile',
+      default: 'benjamini-hochberg',
+      options: [
+        {
+          value: 'benjamini-hochberg',
+          label: 'Benjamini-Hochberg (false discovery rate)',
+          help: 'Adjusts the p-values of all valid bins together, so the share of false hot and cold bins among the flagged ones is controlled.'
+        },
+        {
+          value: 'benjamini-yekutieli',
+          label: 'Benjamini-Yekutieli (arbitrary dependence)',
+          help: 'Valid under the overlap of temporal windows and neighboring cells, at a cost in power of about ln m.'
+        },
+        {
+          value: 'none',
+          label: 'None (each bin alone)',
+          help: 'Each bin is tested alone at the confidence level, so many chance hot spots are expected in thousands of bins.'
+        }
+      ],
+      help: 'The correction is applied over all valid bins of the cube, never over the displayed slice. It is part of the compiled graph, so changing it builds (and caches) a variant.'
     },
     {
       kind: 'toggle',
@@ -250,11 +282,11 @@ export default defineScene<EmergingHotSpotsOptions>({
       group: 'Display',
       apply: 'param',
       min: 1,
-      max: 52,
+      max: 73,
       step: 1,
       default: 1,
       disabledWhen: state => !['gi', 'events'].includes(state.mapView),
-      help: 'Which time slice the Gi* and event-count views display (clamped to the cube, 12, 24 or 52).'
+      help: 'Which time slice the Gi* and event-count views display (clamped to the cube, 12, 52 or 73).'
     },
     {
       kind: 'toggle',
@@ -304,7 +336,7 @@ export default defineScene<EmergingHotSpotsOptions>({
     {
       id: 'tests',
       label: 'Significance family',
-      help: 'Active cells times slices. Each Gi* bin is tested at the selected confidence without a multiple-testing correction.'
+      help: 'Active cells times slices, with the multiple-testing correction applied across them. The family is every valid bin, whichever slice is displayed.'
     },
     {
       id: 'sliceTimeline',
@@ -314,6 +346,12 @@ export default defineScene<EmergingHotSpotsOptions>({
     },
     {id: 'hot', label: 'Hot spot cells', format: 'integer', help: 'Categories 1 to 8.'},
     {id: 'cold', label: 'Cold spot cells', format: 'integer', help: 'Categories 9 to 16.'},
+    {
+      id: 'undetermined',
+      label: 'Undetermined cells',
+      format: 'integer',
+      help: 'Category 17: the final slice is missing, or the cell is persistent but has too few finite slices for a trend decision.'
+    },
     {id: 'new', label: 'New hot spots', format: 'integer'},
     {id: 'intensifying', label: 'Intensifying hot spots', format: 'integer'},
     {id: 'persistent', label: 'Persistent hot spots', format: 'integer'},
@@ -323,7 +361,7 @@ export default defineScene<EmergingHotSpotsOptions>({
       id: 'categoryProfile',
       label: 'Emerging-pattern profile',
       kind: 'chart',
-      help: 'Active cells in each of the eight hot and eight cold categories.'
+      help: 'Active cells in each of the eight hot and eight cold categories, and the undetermined ones.'
     }
   ],
 
@@ -333,7 +371,7 @@ export default defineScene<EmergingHotSpotsOptions>({
     format: value => `Slice ${Math.round(value)}`
   },
 
-  legends: state => {
+  legends: (state, data) => {
     switch (state.mapView) {
       case 'category':
         return [
@@ -341,7 +379,7 @@ export default defineScene<EmergingHotSpotsOptions>({
             kind: 'categories',
             title: 'Emerging hot spot pattern',
             entries: CATEGORY_ENTRIES,
-            note: 'Cells with no pattern are transparent. Warm = hot, cool = cold; the final slice decides the track.'
+            note: `Cells with no pattern are transparent. Warm = hot, cool = cold; the final slice decides the track. Undetermined cells have no final-slice value or too few slices for a trend. ${describeEmergingInference(data.inference as GPUInferenceMetadata | undefined, state.confidence)}`
           }
         ];
       case 'gi':
@@ -374,7 +412,7 @@ export default defineScene<EmergingHotSpotsOptions>({
             kind: 'ramp',
             title: 'Hot slices per cell',
             ramp: 'inferno',
-            extent: [0, state.cube === 'months' ? 12 : state.cube === 'hours' ? 24 : 52],
+            extent: [0, EMERGING_CUBE_SLICE_COUNTS[state.cube]],
             unit: 'slices'
           }
         ];
@@ -384,7 +422,7 @@ export default defineScene<EmergingHotSpotsOptions>({
             kind: 'ramp',
             title: 'Cold slices per cell',
             ramp: 'cividis',
-            extent: [0, state.cube === 'months' ? 12 : state.cube === 'hours' ? 24 : 52],
+            extent: [0, EMERGING_CUBE_SLICE_COUNTS[state.cube]],
             unit: 'slices'
           }
         ];
@@ -425,12 +463,18 @@ graph.add(new GPUTemporalReduction({
 graph.add(new GPUEmergingHotSpots({
   values: counts, ${state.neighborhood === 'lattice' ? 'gridWidth, gridHeight, maximumRadius: 4' : 'weights, selfWeight: 1'},
   sliceCount: 52, mask: cellMask, parameters: hotSpotParameters,
+  multipleTesting: '${state.multipleTesting}',
   giZScores, trendZ, trendP, trendS, category, hotSliceCount, coldSliceCount
 }));`
-    : `// calendar ${state.cube} -> cube -> Gi* -> categories in one recipe
+    : `// calendar ${state.cube === 'months' ? 'months' : 'five-day periods'} of 2023 -> cube -> Gi* -> categories in one recipe
 addSpaceTimeHotSpotsRecipe(graph, {
   timestamps, mask: eventMask, calendarParameters,
-  slices: {field: '${state.cube === 'months' ? 'month' : 'hour'}', firstValue: ${state.cube === 'months' ? 1 : 0}, count: ${state.cube === 'months' ? 12 : 24}},
+  slices: ${
+    state.cube === 'months'
+      ? `{step: 'month', origin: {year: 2023, month: 1}, count: 12}`
+      : `{step: 'day', interval: 5, origin: {year: 2023, month: 1, day: 1}, count: 73}`
+  },
+  multipleTesting: '${state.multipleTesting}',
   cells: ${
     state.neighborhood === 'lattice'
       ? `{kind: 'lattice', positions, width, height, bounds, maximumRadius: 4}`
@@ -444,12 +488,13 @@ const compiled = graph.compile();            // once
 // per change: write parameters (no rebuild), then encode
 hotSpotParameters.write(getGPUEmergingHotSpotParameterValues({
   radius: ${state.radius}, temporalWindow: ${state.temporalWindow}, confidenceLevel: ${state.confidence},
+  multipleTesting: '${state.multipleTesting}',
   persistentFraction: ${state.persistentFraction}${state.tieTrend ? '' : `, trendSignificanceLevel: ${state.trendLevel}`}
 }));
 compiled.encode(commandEncoder, {parameters: undefined});`,
 
   about: {
-    what: "`GPUEmergingHotSpots` takes a space-time cube of counts (cells by time slices) and computes, for every bin, a Gi* z-score over its space-time neighborhood; then a Mann-Kendall trend test over each cell's Gi* series; then assigns one of 17 categories. The cube comes from `GPUTemporalReduction` (equal-width time buckets) or from `addSpaceTimeHotSpotsRecipe` (calendar months or hours).",
+    what: "`GPUEmergingHotSpots` takes a space-time cube of counts (cells by time slices) and computes, for every bin, a Gi* z-score over its space-time neighborhood; then a Mann-Kendall trend test over each cell's Gi* series; adjusts the p-values for multiple testing over all valid bins, then assigns one of 17 categories (code 17 marks cells that cannot be decided). The cube comes from `GPUTemporalReduction` (equal-width time buckets) or from `addSpaceTimeHotSpotsRecipe` (absolute calendar months or five-day periods).",
     why: 'A map of one period tells you where observations are, not whether a place is a lasting refuge, a seasonal flush or a newly discovered patch. The categories separate a spot that lit up for one migration week from one that has drawn observers all year, which is the difference between a seasonal event and a core habitat. Because the data are community-science records, hot spots mean wildlife and observers together.',
     howToRead:
       'Warm colors are hot spots and cool colors are cold spots. The final slice picks the track: hot now (new, consecutive, intensifying, persistent, diminishing, sporadic, oscillating) or not hot now but hot before (historical). Cells with no significant pattern are transparent.'
@@ -497,7 +542,7 @@ compiled.encode(commandEncoder, {parameters: undefined});`,
       evidence:
         'The playhead locates **{{sliceLabel}}** in the full record curve; the mapped z-scores test that slice in its spatial and temporal neighbourhood. The current family contains **{{tests}}**.',
       caveat:
-        'Gi* tests concentration relative to this study area and neighbourhood, not ecological abundance or habitat quality. The displayed confidence is per bin; it is not a family-wise error guarantee.',
+        'Gi* tests concentration relative to this study area and neighbourhood, not ecological abundance or habitat quality. The correction controls the false discovery rate over all bins, not the error of any single cell; overlapping windows make the bins dependent, so Benjamini-Yekutieli is the conservative choice.',
       options: {mapView: 'gi', slice: 29},
       controls: ['slice', 'confidence'],
       readouts: ['sliceTimeline', 'sliceLabel', 'tests']
@@ -558,7 +603,7 @@ compiled.encode(commandEncoder, {parameters: undefined});`,
       headline: 'Volunteer effort limits habitat interpretation',
       textAlternative:
         'Monthly insect categories show observation hot spots shaped by biological activity and uneven volunteer effort.',
-      body: 'These are volunteer records, not a census: where and when people look shapes the map, and a hot spot may be a popular trailhead rather than rich habitat. Zero records is treated as a valid low value inside the study area, so the threshold matters. Gi* runs **{{tests}}** without a multiple-testing correction; some significant bins will occur by chance. Mann-Kendall assumes more independence than 52 overlapping, temporally smoothed slices provide, so positive autocorrelation can make trends look more certain than they are. The categories are screening signals, not confirmatory ecological claims.\n\nTry *Insects* or *Fungi*; switch to 12 calendar months; or use 24 local-clock hours. Hour-of-day is cyclic, so an ordered Mann-Kendall trend from midnight to 23:00 is especially weak evidence.',
+      body: 'These are volunteer records, not a census: where and when people look shapes the map, and a hot spot may be a popular trailhead rather than rich habitat. Zero records is treated as a valid low value inside the study area, so the threshold matters. Gi* runs **{{tests}}**; the default Benjamini-Hochberg correction controls the share of false discoveries among flagged bins, but switching it to *None* shows how many chance hot spots an uncorrected test flags. Mann-Kendall assumes more independence than 52 overlapping, temporally smoothed slices provide, so positive autocorrelation can make trends look more certain than they are. The categories are screening signals, not confirmatory ecological claims.\n\nTry *Insects* or *Fungi*; switch to 12 calendar months or 73 five-day periods. Time of day is not offered as a cube: it is cyclic, and a Mann-Kendall trend from midnight to 23:00 would be meaningless.',
       options: {groupType: '2', cube: 'months', neighborhood: 'lattice', mapView: 'category'},
       controls: ['groupType', 'cube'],
       readouts: ['challengePulse', 'tests']

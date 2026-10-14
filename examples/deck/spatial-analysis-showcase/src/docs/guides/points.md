@@ -34,11 +34,11 @@ Density is a descriptive map; clustering and point-pattern statistics are *infer
 
 Every contributor here follows the compile-once pattern: counts, grid sizes and the *kind* of thing computed are compile-time, while the numbers an analyst steers are parameter-buffer writes.
 
-- **Density.** Cell shape (square or hexagon), grid resolution and the statistic (`count`, `sum`, `mean`) are compile-time. The viewport bounds, hexagon radius, Gaussian sigma, the mask and the weights are buffer writes. A Gaussian is separable, so a horizontal and a vertical pass give the same field as the dense 2D kernel with far fewer taps.
+- **Density.** Cell shape (square or hexagon), grid resolution and the statistic (`count`, `sum`, `mean`) are compile-time. The viewport bounds, hexagon radius, Gaussian sigma, the mask and the weights are buffer writes. A Gaussian is separable, so a horizontal and a vertical pass give the same field as the dense 2D kernel with far fewer taps. The smoothing is a blur of binned counts in cell units, close to but not a kernel density estimate: points sit at cell centres and nothing corrects the window edge. `GPUKernelDensity` takes a bandwidth in ground units, a kernel, optional weights and an edge correction.
 - **Clustering.** DBSCAN `epsilon` and `minimumPoints` are per-frame; the dense-box shortcut and summation order are compile-time and never change the labels. K-means takes `k`, the iteration cap, tolerance, initialization and seed at compile time.
-- **Point patterns.** The window, largest radius and edge corrections are per-frame; the number of radii, the quadrat grid and the reference lattice of F are compile-time. A mask selects the observation group without recompiling.
+- **Point patterns.** The window, largest radius and edge corrections are per-frame; the number of radii, the quadrat grid and the reference lattice of F are compile-time. A mask selects the observation group without recompiling. Clark-Evans uses Donnelly's edge-corrected expectation by default and reports a p-value; the quadrat chi-square reports one too.
 - **Region statistics.** The shape (a few numbers, or up to 256 lasso vertices) is per-frame. The shape *kind*, the selection path, the histogram bins and domain, the grid index and the optional mask and id outputs are compile-time, so each combination is its own cached graph.
-- **Line density.** The grid origin and cell size are four numbers per frame; the coordinate system (planar or spherical), the grid size and the polygon set are compile-time.
+- **Line density.** The grid origin and cell size are four numbers per frame; the spatial context (planar, or longitude/latitude with a great-circle metric), the grid size and the polygon set are compile-time.
 
 ## Pitfalls that matter for real data
 

@@ -35,8 +35,8 @@ export function getKilometres(
 
 /**
  * Side of the square work box `GPUEdgeBundling` measures its kernel radius in, in metres: the
- * larger of the east-west extent (scaled by the cosine of the mid-latitude, the `geographic`
- * option) and the north-south extent of the live edges' endpoints, padded by 5 % on each side.
+ * larger of the east-west extent (scaled by the cosine of the mid-latitude, the longitude/latitude
+ * `spatialContext`) and the north-south extent of the live edges' endpoints, padded by 5 % on each side.
  * It is the GPU's own arithmetic (`getBox` in the contributor), repeated on the CPU so the ring
  * and the readouts can say the radius in metres.
  */

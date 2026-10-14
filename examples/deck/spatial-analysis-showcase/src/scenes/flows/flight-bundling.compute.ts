@@ -538,7 +538,7 @@ export async function createFlightBundling(
           'uint32',
           buffers.edgeCount
         ),
-        geographic: true,
+        spatialContext: {coordinateSpace: 'longitude-latitude', metric: 'none'},
         pointsPerEdge,
         iterations: MAXIMUM_ITERATIONS,
         densityResolution,

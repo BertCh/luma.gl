@@ -865,6 +865,13 @@ export const drainageMode: SpatialAnalysisModeDefinition = {
       entries: [1, 2, 3, 4, 5, 6].map(order => ({color: ORDER_PALETTE[order], label: `${order}`}))
     });
     context.controls.addLegend({
+      title: 'Streams and HAND',
+      entries: [
+        {color: [40, 170, 255, 255], label: 'Stream'},
+        {color: UNRESOLVED_COLOR, label: 'Unresolved (stream word or NaN HAND)'}
+      ]
+    });
+    context.controls.addLegend({
       title: 'Cell class',
       entries: [
         {color: CELL_CLASS_PALETTE[1], label: 'flat'},
@@ -1066,7 +1073,8 @@ export const drainageMode: SpatialAnalysisModeDefinition = {
           values: Buffer,
           colormap: 'viridis' | 'inferno',
           valueRange: readonly [number, number],
-          discardAtOrBelow: number
+          discardAtOrBelow: number,
+          noDataColor?: readonly [number, number, number, number]
         ) =>
           new SpatialAnalysisRasterLayer({
             ...rasterProps,
@@ -1076,7 +1084,8 @@ export const drainageMode: SpatialAnalysisModeDefinition = {
             colormap,
             valueRange,
             discardAtOrBelow,
-            color: [255, 255, 255, 225]
+            color: [255, 255, 255, 225],
+            ...(noDataColor ? {noDataColor} : {})
           });
         const categorical = (
           id: string,
@@ -1100,7 +1109,14 @@ export const drainageMode: SpatialAnalysisModeDefinition = {
           layers.push(categorical('drainage-classes', classesBuffer, CELL_CLASS_PALETTE));
         } else if (product === 'hand') {
           layers.push(
-            scalar('drainage-hand', handBuffer, 'inferno', [0, handMaximum], HIDDEN_VALUE / 2)
+            scalar(
+              'drainage-hand',
+              handBuffer,
+              'inferno',
+              [0, handMaximum],
+              HIDDEN_VALUE / 2,
+              UNRESOLVED_COLOR
+            )
           );
         } else if (product === 'watersheds') {
           layers.push(
@@ -1152,7 +1168,8 @@ export const drainageMode: SpatialAnalysisModeDefinition = {
               valueFormat: 'uint32',
               colormap: 'mask',
               color: [40, 170, 255, 255],
-              noDataColor: [0, 0, 0, 0]
+              // 0xffffffff is GPU_TERRAIN_FLOW_STREAM_UNRESOLVED (the default noDataValue).
+              noDataColor: UNRESOLVED_COLOR
             })
           );
         }
@@ -1220,6 +1237,12 @@ export const drainageMode: SpatialAnalysisModeDefinition = {
     return instance;
   }
 };
+
+/**
+ * Unknown, not a stream: GPU_TERRAIN_FLOW_STREAM_UNRESOLVED (0xffffffff) in `streams` and NaN
+ * height above drainage (GPU_TERRAIN_DRAINAGE_UNRESOLVED).
+ */
+const UNRESOLVED_COLOR = [255, 176, 0, 170] as const;
 
 const NAN_DECLARATIONS = /* wgsl */ `
 fn isNaNValue(value: f32) -> bool { return (bitcast<u32>(value) & 0x7fffffffu) > 0x7f800000u; }

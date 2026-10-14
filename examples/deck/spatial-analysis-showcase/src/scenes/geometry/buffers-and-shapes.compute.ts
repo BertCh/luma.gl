@@ -46,7 +46,9 @@ import {
   createStaticPaths,
   formatDistance,
   formatNumber,
-  importPathOutput
+  GREAT_CIRCLE_CONTEXT,
+  importPathOutput,
+  PLANAR_CONTEXT
 } from './b3-common';
 import {
   CHICAGO_LOOP,
@@ -274,7 +276,7 @@ function createBuffersView(env: ViewEnvironment): View {
         pathOffsets: source.offsets
           ? imp('offsets', source.offsets, 'uint32', source.pathCount + 1)
           : undefined,
-        coordinateSystem: spherical ? 'spherical' : 'planar',
+        spatialContext: spherical ? GREAT_CIRCLE_CONTEXT : PLANAR_CONTEXT,
         joinSegments: options.joinSegments,
         parameters: parameters.importToGraph(graph),
         output: {positions: imp('triangles', triangles, 'float32x2', outputCount)}
@@ -477,7 +479,7 @@ function createShapesView(env: ViewEnvironment): View {
         new GPUShapeGenerator({
           id: `shape-${kind}`,
           shape: kind,
-          coordinateSystem: geodesic ? 'geodesic' : 'planar',
+          spatialContext: geodesic ? GREAT_CIRCLE_CONTEXT : PLANAR_CONTEXT,
           ellipseSpacing: kind === 'ellipse' ? options.ellipseSpacing : undefined,
           maximumSegments,
           centers: imp('centers', geodesic ? centersLngLat : centersLocal, 'float32x2', count),

@@ -580,7 +580,8 @@ export async function createSpaceTimeClusters(
         cases: v('cases', casesBuffer, 'uint32', cellCountBins),
         baseline: v('baseline', baseline, 'float32', cellCountBins),
         timeBuckets: BUCKET_COUNT,
-        maximumWindowZones: 32,
+        // No compile-time zone cap: every tract can join a window, and the per-frame limit and the
+        // population fraction end it.
         maximumPermutations: MAXIMUM_PERMUTATIONS,
         maximumClusters: MAXIMUM_CLUSTERS,
         parameters: scanParameters.importToGraph(graph),

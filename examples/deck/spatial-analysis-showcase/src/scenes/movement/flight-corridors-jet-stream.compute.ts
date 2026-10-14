@@ -46,9 +46,11 @@ type Snapshot = {speeds: Float32Array; headings: Float32Array};
 
 /**
  * Directional cruise-speed contrast. One `GPUTrajectoryMetrics` graph measures speed and heading
- * for every flight step in azimuthal-equidistant metres. The map reads those GPU buffers through a
- * shader-side altitude and direction filter. Statistics read the columns back once and compare
- * unmatched eastbound and westbound samples on the CPU.
+ * for every flight step on longitude-latitude positions with the great-circle metric: speeds
+ * are great-circle metres per second and headings are true initial bearings (counterclockwise
+ * from east). The map reads those GPU buffers through a shader-side altitude and direction
+ * filter. Statistics read the columns back once and compare unmatched eastbound and westbound
+ * samples on the CPU.
  */
 export async function createFlightSpeedContrast(
   ctx: SceneContext<FlightSpeedContrastOptions>
@@ -58,7 +60,6 @@ export async function createFlightSpeedContrast(
   const {trackCount, vertexCount, segmentCount} = flights;
   const resources = new SpatialAnalysisResources(device, 'flight-speed-contrast');
 
-  const positionsBuffer = resources.createBuffer('positions', flights.positions);
   const lngLatBuffer = resources.createBuffer('lng-lat', flights.lngLat);
   const altitudeBuffer = resources.createBuffer('altitude', flights.altitude);
   const timestampsBuffer = resources.createBuffer('timestamps', flights.timestamps);
@@ -71,15 +72,13 @@ export async function createFlightSpeedContrast(
   const metricsGraph = new GPUCommandGraph<void>(device, {id: 'flight-speed-contrast-metrics'});
   metricsGraph.add(
     new GPUTrajectoryMetrics({
-      spatialContext: {coordinateSpace: 'planar', metric: 'native', units: 'native'},
+      spatialContext: {
+        coordinateSpace: 'longitude-latitude',
+        metric: 'great-circle',
+        units: 'meters'
+      },
       id: 'metrics',
-      positions: importGraphBuffer(
-        metricsGraph,
-        'positions',
-        positionsBuffer,
-        'float32x2',
-        vertexCount
-      ),
+      positions: importGraphBuffer(metricsGraph, 'lng-lat', lngLatBuffer, 'float32x2', vertexCount),
       timestamps: importGraphBuffer(
         metricsGraph,
         'timestamps',

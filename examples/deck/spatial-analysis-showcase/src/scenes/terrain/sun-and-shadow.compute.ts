@@ -709,15 +709,12 @@ export async function createSunAndShadow(
           write: () => {
             const sun = getVillageSun();
             settings.parameters.write(
-              getGPUTerrainCastShadowParameterValues(
-                {
-                  ...cell,
-                  azimuthDegrees: sun.azimuthDegrees,
-                  altitudeDegrees: sun.altitudeDegrees,
-                  angularRadiusDegrees: GPU_SOLAR_DISK_ANGULAR_RADIUS_DEGREES * ctx.options.softness
-                },
-                'south'
-              )
+              getGPUTerrainCastShadowParameterValues({
+                ...cell,
+                azimuthDegrees: sun.azimuthDegrees,
+                altitudeDegrees: sun.altitudeDegrees,
+                angularRadiusDegrees: GPU_SOLAR_DISK_ANGULAR_RADIUS_DEGREES * ctx.options.softness
+              })
             );
           }
         });

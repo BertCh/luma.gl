@@ -138,7 +138,7 @@ export default defineScene<TransitReachabilityOptions>({
       default: 15,
       unit: 'min',
       disabledWhen: state => state.lastMile === 'none',
-      help: 'Longest walk or ride from the station. The buffer radius is speed times this time, capped at 16 raster pixels (about 6 km at this resolution), as the Last-mile readout says.'
+      help: 'Longest walk or ride from the station. The buffer radius is speed times this time, capped at 16 raster pixels (about 6 km at this resolution), as the Last-mile readout says. Radii are measured in an azimuthal equidistant frame about the center of the Netherlands, within 0.02% of ground distance everywhere in the country.'
     },
     {
       kind: 'select',

@@ -278,7 +278,7 @@ export function createRateClusterScene(analyze: 'standardized' | 'smoothed'): Re
         maximum: 0.2,
         step: 0.01,
         value: significanceLevel,
-        format: value => `p <= ${value.toFixed(2)}`,
+        format: value => `adjusted p <= ${value.toFixed(2)}`,
         onChange: value => {
           significanceLevel = value;
           writeSignificance();
@@ -293,12 +293,12 @@ export function createRateClusterScene(analyze: 'standardized' | 'smoothed'): Re
         'GPUContiguityWeights (queen, shared vertices)',
         'GPUSpatialWeightsTransform (row-standardize)',
         'GPULocalMoran (LISA quadrants, ungated)',
-        'GPULocalPermutationTest (gate)',
+        'GPULocalPermutationTest (two-sided pseudo p, Benjamini-Hochberg)',
         'quadrant color adapter'
       ],
       parameters,
       legend:
-        'Red high-high, blue low-low, light blue low-high, orange high-low; gray is not significant. Rate: taxi pickups and drop-offs per point of interest.',
+        'Red high-high, blue low-low, light blue low-high, orange high-low; gray is not significant at the Benjamini-Hochberg adjusted level, or not tested (a district with no neighbor or no rate). Rate: taxi pickups and drop-offs per point of interest.',
       dataNote:
         `${trips.attribution}; ${pois.attribution}. Districts: synthetic ${polygons.columns} x ${polygons.rows} mesh ` +
         `(no polygon data for New York), ${analyze} empirical-Bayes rate`,
@@ -603,6 +603,7 @@ export const buildChangeOfSupportScene: RecipeSceneBuilder = async host => {
   const intensiveValues = kit.output('intensive', 'float32', targetCount);
   const overflow = kit.output('overflow', 'uint32', 1);
   const totalPairs = kit.output('total-pairs', 'uint32', 1);
+  const invalidSources = kit.output('invalid-sources', 'uint32', 1);
   const recipe = addChangeOfSupportRecipe(kit.graph, {
     width: SUPPORT_RASTER_WIDTH,
     height: SUPPORT_RASTER_HEIGHT,
@@ -616,7 +617,8 @@ export const buildChangeOfSupportScene: RecipeSceneBuilder = async host => {
       extensiveValues: extensive.view,
       intensiveValues: intensiveValues.view,
       overflow: overflow.view,
-      requiredCount: totalPairs.view
+      requiredCount: totalPairs.view,
+      invalidCount: invalidSources.view
     }
   });
   writeWeights();
@@ -625,7 +627,7 @@ export const buildChangeOfSupportScene: RecipeSceneBuilder = async host => {
   const sourceOutline = kit.resources.createBuffer('source-outline', source.outlineSegments);
 
   let displayMaximum = Math.max(1, sourceTotal / targetCount) * 3;
-  const summarySizes = [targetCount * 4, targetCount * 4, 4, 4];
+  const summarySizes = [targetCount * 4, targetCount * 4, 4, 4, 4];
   const reader = new SummaryReader(
     kit.resources,
     'support',
@@ -633,10 +635,14 @@ export const buildChangeOfSupportScene: RecipeSceneBuilder = async host => {
       {buffer: extensive.buffer, size: summarySizes[0]},
       {buffer: intensiveValues.buffer, size: summarySizes[1]},
       {buffer: totalPairs.buffer, size: 4},
-      {buffer: overflow.buffer, size: 4}
+      {buffer: overflow.buffer, size: 4},
+      {buffer: invalidSources.buffer, size: 4}
     ],
     bytes => {
-      const [extensiveRows, intensiveRows, pairs, overflowFlag] = sliceSummary(bytes, summarySizes);
+      const [extensiveRows, intensiveRows, pairs, overflowFlag, invalid] = sliceSummary(
+        bytes,
+        summarySizes
+      );
       let transferred = 0;
       let largest = 0;
       let largestIntensive = 0;
@@ -662,6 +668,7 @@ export const buildChangeOfSupportScene: RecipeSceneBuilder = async host => {
           'Largest target cell',
           `${largest.toFixed(1)} counts, ${largestIntensive.toFixed(1)} mean`
         ],
+        ['Source zones with no raster cell (mass lost)', formatCount(invalid.u32[0])],
         ['Overflow', overflowFlag.u32[0] ? 'YES' : 'no']
       ]);
     }

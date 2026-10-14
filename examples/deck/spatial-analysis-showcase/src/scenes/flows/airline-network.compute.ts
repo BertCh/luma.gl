@@ -713,7 +713,7 @@ export async function createAirlineNetwork(
           bundleEdgeCount
         ),
         edgeMask: importGraphBuffer(graph, 'mask', bundleMask, 'uint32', bundleEdgeCount),
-        geographic: true,
+        spatialContext: {coordinateSpace: 'longitude-latitude', metric: 'none'},
         pointsPerEdge,
         iterations: MAXIMUM_BUNDLE_ITERATIONS,
         densityResolution,

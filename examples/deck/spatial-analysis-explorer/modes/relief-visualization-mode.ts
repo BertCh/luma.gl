@@ -709,15 +709,12 @@ export const reliefVisualizationMode: SpatialAnalysisModeDefinition = {
     }
     function writeShadow(): void {
       shadowSettings.write(
-        getGPUTerrainCastShadowParameterValues(
-          {
-            cellSize,
-            azimuthDegrees: sunAzimuth,
-            altitudeDegrees: sunAltitude,
-            angularRadiusDegrees: GPU_SOLAR_DISK_ANGULAR_RADIUS_DEGREES * sunSoftness
-          },
-          'south'
-        )
+        getGPUTerrainCastShadowParameterValues({
+          cellSize,
+          azimuthDegrees: sunAzimuth,
+          altitudeDegrees: sunAltitude,
+          angularRadiusDegrees: GPU_SOLAR_DISK_ANGULAR_RADIUS_DEGREES * sunSoftness
+        })
       );
       invalidate('shadow');
     }
@@ -875,7 +872,7 @@ export const reliefVisualizationMode: SpatialAnalysisModeDefinition = {
       }
     });
     context.controls.addSlider({
-      label: 'Anisotropic SVF direction',
+      label: 'Anisotropic SVF direction (RVT: counterclockwise from north; 315 = NE)',
       min: 0,
       max: 355,
       step: 5,

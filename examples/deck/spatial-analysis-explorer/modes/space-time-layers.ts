@@ -6,22 +6,24 @@ import {SpatialAnalysisRasterLayer} from '../spatial-analysis-layers';
 
 /**
  * WGSL helpers appended to the shared style shader. The shared category palette holds 8 colors,
- * so the 17 emerging hot spot categories need their own table, and the shared scalar colormaps
+ * so the 18 emerging hot spot categories need their own table, and the shared scalar colormaps
  * have no diverging ramp for signed change.
  */
 const SPACE_TIME_WGSL = /* wgsl */ `
-// Emerging hot spot categories: 0 no pattern, 1..8 hot, 9..16 cold (same order, new to historical).
+// Emerging hot spot categories: 0 no pattern, 1..8 hot, 9..16 cold (same order, new to historical),
+// 17 undetermined (final slice empty, or too few slices for the trend decision).
 fn spaceTimeCategoryColor(category: u32) -> vec4<f32> {
-  let colors = array<vec3<f32>, 17>(
+  let colors = array<vec3<f32>, 18>(
     vec3<f32>(0.0, 0.0, 0.0),
     vec3<f32>(255.0, 224.0, 102.0), vec3<f32>(255.0, 160.0, 60.0), vec3<f32>(165.0, 0.0, 38.0),
     vec3<f32>(215.0, 48.0, 39.0), vec3<f32>(244.0, 160.0, 150.0), vec3<f32>(253.0, 208.0, 162.0),
     vec3<f32>(200.0, 100.0, 200.0), vec3<f32>(170.0, 140.0, 140.0),
     vec3<f32>(160.0, 230.0, 255.0), vec3<f32>(90.0, 170.0, 255.0), vec3<f32>(8.0, 48.0, 107.0),
     vec3<f32>(33.0, 102.0, 172.0), vec3<f32>(150.0, 190.0, 230.0), vec3<f32>(190.0, 230.0, 215.0),
-    vec3<f32>(120.0, 100.0, 220.0), vec3<f32>(130.0, 150.0, 170.0)
+    vec3<f32>(120.0, 100.0, 220.0), vec3<f32>(130.0, 150.0, 170.0),
+    vec3<f32>(150.0, 150.0, 150.0)
   );
-  if (category == 0u || category > 16u) {
+  if (category == 0u || category > 17u) {
     return vec4<f32>(0.0);
   }
   return vec4<f32>(colors[category] / 255.0, 0.9);
@@ -44,7 +46,7 @@ const SCALAR_LINE = 'var rgb = vec3<f32>(t);';
 
 /**
  * A raster layer with two extra colormaps, implemented by extending the shared shader source:
- * the `category` colormap uses the 17 emerging hot spot colors (value 0 is transparent), and the
+ * the `category` colormap uses the 18 emerging hot spot colors (value 0 is transparent), and the
  * `grayscale` colormap becomes a diverging blue-white-red ramp centered on the middle of
  * `valueRange`.
  */

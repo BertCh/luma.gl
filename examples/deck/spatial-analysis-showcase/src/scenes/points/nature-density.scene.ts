@@ -60,7 +60,7 @@ export default defineScene<NatureDensityOptions>({
   chapter: 'points',
   order: 1,
   summary:
-    'A camera-following map of 43,557 iNaturalist records—not 43,557 organisms—reveals where Chicago nature gets noticed. Move from points to a GPU density estimate, then test bandwidth, grid and observer-time assumptions.',
+    'A camera-following map of 43,557 iNaturalist records—not 43,557 organisms—reveals where Chicago nature gets noticed. Move from points to a GPU density surface, then test bandwidth, grid and observer-time assumptions.',
   contributors: ['GPUPointDensity'],
   datasets: [
     {id: 'chicago-nature', role: 'iNaturalist observations (2023)'},
@@ -538,7 +538,7 @@ new SpatialAnalysisPointLayer({positions, instanceCount,
   },
 
   about: {
-    what: '`GPUPointDensity` bins points into a square grid or a hexagon lattice that covers the visible map, optionally convolves the field with a Gaussian kernel, and reduces it to an extent and a histogram, all in compute shaders. The statistic per cell is a count, a sum of a weight, or its mean.',
+    what: '`GPUPointDensity` bins points into a square grid or a hexagon lattice that covers the visible map, optionally convolves the field with a Gaussian kernel (binned counts smoothed in cell units, not an exact kernel density estimate: use `GPUKernelDensity` for a bandwidth in ground units and edge correction), and reduces it to an extent and a histogram, all in compute shaders. The statistic per cell is a count, a sum of a weight, or its mean.',
     why: 'Density answers "where is activity concentrated?" without choosing a boundary first. Because the grid follows the camera, the answer stays sharp at every zoom, and the same graph answers different questions (when, which group, what share) through small buffers.',
     howToRead:
       'Brighter cells hold more observations. The scale uses a square root so quiet neighbourhoods stay visible next to hot spots; the legend range is the real min and max read back from the GPU. Cells with a value of 0 are transparent. Observations follow observers, so a bright cell means many people looked and logged what they saw there, not only that much lives there.'
@@ -613,7 +613,7 @@ new SpatialAnalysisPointLayer({positions, instanceCount,
       headline: 'Change the bandwidth and the peaks change',
       textAlternative:
         'Smoothed density map with two dashed rings at the map centre showing the kernel width and its reach.',
-      body: "A Gaussian spreads each cell over its neighbours: a **kernel density estimate**. Its bandwidth, sigma, here **{{bandwidth}}**, matters most. Press Play on **Smoothing radius**: too small and every footpath is a peak ({{peakCount}}); too large and the lakefront and the parks merge into one blur.\n\nThe dashed rings show sigma and its 3-sigma reach.\n\n*The bandwidth is the analyst's choice, not the data's.*",
+      body: "A Gaussian spreads each cell over its neighbours: a **kernel-smoothed density**, binned counts blurred on the grid (close to a kernel density estimate, but points are placed at cell centres and the city edge is not corrected). Its bandwidth, sigma, here **{{bandwidth}}**, matters most. Press Play on **Smoothing radius**: too small and every footpath is a peak ({{peakCount}}); too large and the lakefront and the parks merge into one blur.\n\nThe dashed rings show sigma and its 3-sigma reach.\n\n*The bandwidth is the analyst's choice, not the data's.*",
       optionsMode: 'fresh',
       options: {
         view: 'density',

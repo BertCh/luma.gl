@@ -2,13 +2,14 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {EARTH_RADIUS_METERS} from '../cartography/reference-geometry';
 import type {LngLat} from '../cartography/types';
 
-/** Mean Earth radius in metres (IUGG), the sphere used for every geodesic in the overlay. */
-export const EARTH_RADIUS_METERS = 6371008.8;
+export {EARTH_RADIUS_METERS};
 
-const METERS_PER_DEGREE = 111320;
 const RADIANS_PER_DEGREE = Math.PI / 180;
+/** Meters per degree of arc on the mean-radius sphere used for every geodesic in the overlay. */
+const METERS_PER_DEGREE = EARTH_RADIUS_METERS * RADIANS_PER_DEGREE;
 /** Latitude limit of the Web Mercator plane; points are clamped here before projection. */
 export const MAX_MERCATOR_LATITUDE = 85.0511;
 

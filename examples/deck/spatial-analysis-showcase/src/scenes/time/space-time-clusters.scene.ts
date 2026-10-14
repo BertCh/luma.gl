@@ -165,11 +165,11 @@ export default defineScene<SpaceTimeClustersOptions>({
       group: 'Scan statistic',
       apply: 'param',
       min: 1,
-      max: 32,
+      max: 200,
       step: 1,
       default: 20,
       unit: 'tracts',
-      help: 'Windows are the k nearest tracts of each center for every k up to this limit (at most 32, the compile-time bound).'
+      help: 'Windows are the k nearest tracts of each center for every k up to this limit. There is no compile-time cap: with the limit raised, the share of baseline above ends each window.'
     },
     {
       kind: 'slider',
@@ -265,7 +265,7 @@ export default defineScene<SpaceTimeClustersOptions>({
     {id: 'knoxRatio', label: 'Knox: observed / expected'},
     {id: 'knoxPermuted', label: 'Knox: permutation mean ± sd'},
     {id: 'knoxP', label: 'Knox: pseudo p (X >= observed)'},
-    {id: 'knoxPoisson', label: 'Knox: classic Poisson p'},
+    {id: 'knoxPoisson', label: 'Knox: classic Poisson p (anti-conservative)'},
     {id: 'knoxDistribution', label: 'Knox null distribution'},
     {id: 'mantelR', label: 'Mantel r (distance vs time gap)'},
     {id: 'mantelPermuted', label: 'Mantel: permutation mean ± sd'},
@@ -367,7 +367,7 @@ graph.add(new GPUTemporalReduction({cellIds: tractIds, timestamps: seconds, valu
   parameters: bucketParameters, cellCount: 791, bucketCount: 26, output: reduction}));
 graph.add(new GPUSpatialScanStatistic({
   positions: tractCentroids, cases: reduction.counts, baseline,
-  timeBuckets: 26, maximumWindowZones: 32, maximumPermutations: 999, maximumClusters: 7,
+  timeBuckets: 26, maximumPermutations: 999, maximumClusters: 7,   // every tract may join a window
   parameters: scanParameters, clusterIndices, clusterStatistics, statistics, summary, zoneStatistics
 }));
 scanParameters.write(getGPUSpatialScanParameterValues({

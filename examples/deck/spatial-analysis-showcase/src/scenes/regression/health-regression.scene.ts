@@ -191,13 +191,13 @@ export default defineScene<HealthRegressionOptions>({
     },
     {
       id: 'heteroskedasticity',
-      label: 'Breusch-Pagan (constant variance)',
-      help: 'Small p: residual variance changes with the predictors.'
+      label: 'Koenker-Bassett (constant variance)',
+      help: 'The studentized Breusch-Pagan test, which does not assume normal residuals. Small p: residual variance changes with the predictors.'
     },
     {
       id: 'coefficient0',
       label: 'β₀',
-      help: 'Coefficient (t statistic, standard error) from OLS, then the same coefficient in the lag and error models.'
+      help: 'Estimate, standard error and p-value of the coefficient in OLS (t), the lag model and the error model (z).'
     },
     {id: 'coefficient1', label: 'β₁'},
     {id: 'coefficient2', label: 'β₂'},
@@ -245,9 +245,14 @@ export default defineScene<HealthRegressionOptions>({
     },
     {id: 'lagFit', label: 'Lag model fit'},
     {
+      id: 'conditioning',
+      label: 'Collinearity (condition numbers)',
+      help: 'Belsley condition number of each design (above 30 is harmful collinearity) and the largest variance inflation factor. A float32 precision warning means the normal equations may have lost digits; the fit is still shown.'
+    },
+    {
       id: 'lambda',
       label: 'Error model λ',
-      help: 'Spatial error coefficient from generalized moments (Kelejian-Prucha).'
+      help: 'Spatial error coefficient from generalized moments (homoskedastic, spreg GM_Error_Hom), with its standard error, z and p-value.'
     },
     {
       id: 'clusters',
@@ -350,7 +355,7 @@ errorGraph.add(new GPUSpatialErrorGM({weights, predictors, response, predictorCo
   },
 
   about: {
-    what: '`GPUOrdinaryLeastSquares` fits the regression and reports R², AIC/BIC, Jarque-Bera and Breusch-Pagan. `GPUSpatialRegressionDiagnostics` tests its residuals for spatial dependence (LM-lag, LM-error, robust variants, SARMA, Moran’s I). `GPUSpatialTwoStageLeastSquares` fits the spatial lag model and `GPUSpatialErrorGM` the spatial error model. `addSpatialRegressionRecipe` wires OLS, diagnostics and a residual local Moran in one graph.',
+    what: '`GPUOrdinaryLeastSquares` fits the regression and reports R², AIC/BIC, Jarque-Bera and Koenker-Bassett, with a standard error and p-value for each coefficient and the collinearity evidence. `GPUSpatialRegressionDiagnostics` tests its residuals for spatial dependence (LM-lag, LM-error, robust variants, SARMA, Moran’s I). `GPUSpatialTwoStageLeastSquares` fits the spatial lag model and `GPUSpatialErrorGM` the spatial error model. `addSpatialRegressionRecipe` wires OLS, diagnostics and a residual local Moran in one graph.',
     why: 'Neighbouring tracts share air, food environments, clinics and history. If the residuals of an ordinary regression are spatially clustered, the standard errors are too small and coefficients can be biased. The diagnostics tell you which spatial model to fit.',
     howToRead:
       'On the residual maps blue tracts have less diabetes than the model predicts and red tracts more. A model that has captured the spatial structure leaves residuals with no clusters (Moran’s I near its expected value). Compare the coefficients on the three fits: a predictor whose effect collapses once the spatial term is added was partly standing in for place.'
@@ -376,7 +381,7 @@ errorGraph.add(new GPUSpatialErrorGM({weights, predictors, response, predictorCo
       headline: 'Income-only residuals remain spatially patterned',
       textAlternative:
         'A diverging tract map shows adjacent areas with similarly positive or negative income-only OLS residuals.',
-      body: '**`GPUOrdinaryLeastSquares`** fits `prevalence = β₀ + β₁·ln(income per capita) + ε` by least squares on the GPU, and reports the fit in the readouts: R², AIC and BIC, and the **Jarque-Bera** and **Breusch-Pagan** tests of the residuals. Predictors are standardized, so β₁ is points of prevalence per standard deviation of ln income.\n\nThe map now shows the **residual**: observed minus fitted. Blue tracts have less diabetes than their income predicts, red tracts more. Hover a tract for its numbers.',
+      body: '**`GPUOrdinaryLeastSquares`** fits `prevalence = β₀ + β₁·ln(income per capita) + ε` by least squares on the GPU, and reports the fit in the readouts: R², AIC and BIC, and the **Jarque-Bera** and **Koenker-Bassett** tests of the residuals. Predictors are standardized, so β₁ is points of prevalence per standard deviation of ln income.\n\nThe map now shows the **residual**: observed minus fitted. Blue tracts have less diabetes than their income predicts, red tracts more. Hover a tract for its numbers.',
       options: {map: 'residuals'},
       controls: ['map'],
       readouts: ['fit', 'normality', 'heteroskedasticity']
@@ -401,7 +406,7 @@ errorGraph.add(new GPUSpatialErrorGM({weights, predictors, response, predictorCo
       body: '**Predictors** is now *Full (8)*, which adds age, disability, vehicle access and race/ethnicity shares. Tract covariates are highly correlated, so individual coefficients become unstable and their standard errors inflate. Slide the **Ridge penalty λ (log₁₀)**: `GPUOrdinaryLeastSquares` adds λ to the diagonal of XᵀX, which shrinks the coefficients and tightens the standard errors at the price of a little bias. The penalty is a one-float parameter buffer, so the slider is a buffer write and no graph is rebuilt.',
       options: {model: 'full', ridge: 0.5},
       controls: ['model', 'ridge'],
-      readouts: ['coefficient1', 'coefficient2', 'coefficient3']
+      readouts: ['coefficient1', 'coefficient2', 'coefficient3', 'conditioning']
     },
     {
       id: 'diagnostics',
@@ -431,7 +436,7 @@ errorGraph.add(new GPUSpatialErrorGM({weights, predictors, response, predictorCo
       headline: 'Spatial error captures correlated omitted structure',
       textAlternative:
         'Spatial-error residuals are mapped by tract beside lag and error coefficients used to compare model specifications.',
-      body: 'If neighbours are alike because of *omitted* factors (shared history, services, housing quality) rather than direct spillover, the error model `u = λ·Wu + ε` fits better. **`GPUSpatialErrorGM`** finds λ by a global scan of the generalized-moments objective (spreg `GM_Error`), then re-estimates β on spatially filtered data.\n\nThe LM tests and robust variants decide between the two: the **Which spatial model?** readout applies the classical rule. Try other **Spatial weights** (rook, k nearest) and another **Health outcome (response)**: diagnostics, ρ and λ all depend on how neighbours are defined, and on whether the model is mis-specified rather than truly spatial.\n\n**Limits:** PLACES values are model-based estimates, not tract surveys; these are ecological associations, not individual risk; and predictors are standardized to compare effects, not to be causal.',
+      body: 'If neighbours are alike because of *omitted* factors (shared history, services, housing quality) rather than direct spillover, the error model `u = λ·Wu + ε` fits better. **`GPUSpatialErrorGM`** finds λ by a global scan of the generalized-moments objective (spreg `GM_Error_Hom`, with a standard error and p-value for λ), then re-estimates β on spatially filtered data.\n\nThe LM tests and robust variants decide between the two: the **Which spatial model?** readout applies the classical rule. Try other **Spatial weights** (rook, k nearest) and another **Health outcome (response)**: diagnostics, ρ and λ all depend on how neighbours are defined, and on whether the model is mis-specified rather than truly spatial.\n\n**Limits:** PLACES values are model-based estimates, not tract surveys; these are ecological associations, not individual risk; and predictors are standardized to compare effects, not to be causal.',
       options: {map: 'error'},
       controls: ['weights', 'outcome', 'map'],
       readouts: ['verdict', 'lambda', 'rho']

@@ -36,14 +36,14 @@ export const RECIPE_ENTRIES: readonly RecipeEntry[] = [
     id: 'hot-spot-analysis',
     label: 'addHotSpotAnalysisRecipe',
     summary:
-      'Taxi-trip vertices to Quadbin cells to Getis-Ord Gi* hot and cold spots, confirmed by conditional permutation.',
+      'Taxi-trip vertices to the Quadbin cells of a study area (empty cells included) to Getis-Ord Gi* hot and cold spots over a great-circle distance band, confirmed by conditional permutation.',
     build: buildHotSpotScene
   },
   {
     id: 'rate-cluster-map',
     label: 'addRateClusterMapRecipe (standardized rate)',
     summary:
-      'Event counts and populations per district to empirical-Bayes rates to significant local Moran clusters.',
+      'Event counts and populations per district to empirical-Bayes rates to local Moran clusters, significant after a false discovery rate correction.',
     build: createRateClusterScene('standardized')
   },
   {
@@ -71,7 +71,7 @@ export const RECIPE_ENTRIES: readonly RecipeEntry[] = [
     id: 'space-time-hot-spots',
     label: 'addSpaceTimeHotSpotsRecipe',
     summary:
-      'Timestamped taxi-trip vertices to a space-time cube to emerging hot and cold spot categories.',
+      'Timestamped taxi-trip vertices to a space-time cube of hourly steps to emerging hot and cold spot categories (false discovery rate corrected).',
     build: buildSpaceTimeScene
   },
   {

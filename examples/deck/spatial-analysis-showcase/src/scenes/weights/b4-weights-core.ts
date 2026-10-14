@@ -11,6 +11,7 @@ import {
   GPUSpatialWeightsTransform,
   type GPUNeighborSearchKernel,
   type GPUNeighborSearchWeightKind,
+  type GPUSpatialWeightsInfo,
   type GPUSpatialWeightsKernel
 } from '@luma.gl/experimental/gpu-spatial-analysis';
 import {GPUCommandGraph, type CompiledGPUCommandGraph} from '@luma.gl/gpgpu/gpu-core';
@@ -51,11 +52,33 @@ export type WeightsConfig = {
   transform: WeightsTransform;
   /** Kernel of the `kernel` transform. Compile-time. */
   transformKernel: GPUSpatialWeightsKernel;
-  /** Bandwidth of the `kernel` transform in median spacings, 0 for adaptive. Compile-time. */
+  /**
+   * Bandwidth of the `kernel` transform in median spacings. 0 is adaptive for kNN weights (the distance
+   * to the k-th neighbour, PySAL) and the band radius for distance-band weights, because the transform
+   * only supports `'adaptive'` for kNN. Compile-time.
+   */
   bandwidthFactor: number;
   /** `double` standardisation total. Compile-time. */
   doubleSum: 'one' | 'rows';
 };
+
+/** True when the weights the config produces have each row summing to 1 (the library's `'row'` state). */
+export function isRowStandardized(config: Pick<WeightsConfig, 'transform' | 'rowStandardize'>) {
+  return config.transform === 'row' || (config.transform === 'none' && config.rowStandardize);
+}
+
+/**
+ * `GPUSpatialWeights.info` for hand-assembled weights. With `transform: 'row'` the statistics
+ * re-standardize each row over the neighbours left after masking, so a masked neighbour does not
+ * shrink the row's total weight. Otherwise the state is unknown and the weights are used as given.
+ */
+export function getWeightsInfo(rowCount: number, rowStandardized: boolean): GPUSpatialWeightsInfo {
+  return {
+    rowCount,
+    transform: rowStandardized ? 'row' : 'unknown',
+    symmetric: 'unknown'
+  };
+}
 
 /** A weights CSR with optional distances. */
 export type WeightsCsr = {
@@ -83,6 +106,8 @@ export type WeightsCore = {
   getGraphs: () => CompiledGPUCommandGraph<never>[];
   /** Distance band in metres for a factor. */
   getBandMeters: (config: WeightsConfig) => number;
+  /** Bandwidth of the kernel transform in meters, or `'adaptive'` (kNN weights only). */
+  getKernelBandwidth: (config: WeightsConfig) => number | 'adaptive';
   /** True when the config's source writes distances (so the kernel transform applies). */
   hasDistances: (config: WeightsConfig) => boolean;
   /** Creates an independent kNN neighbour list (binary weights) for set algebra. */
@@ -231,7 +256,7 @@ export function createWeightsCore(props: {
   const getTransformKey = (config: WeightsConfig): string | null => {
     if (config.transform === 'none') return null;
     if (config.transform === 'kernel') {
-      return `kernel-${config.transformKernel}-${config.bandwidthFactor}`;
+      return `kernel-${config.transformKernel}-${config.bandwidthFactor}-${getKernelBandwidthKey(config)}`;
     }
     if (config.transform === 'double') return `double-${config.doubleSum}`;
     return config.transform;
@@ -242,6 +267,25 @@ export function createWeightsCore(props: {
 
   const getBandMeters = (config: WeightsConfig) => config.bandFactor * geography.medianSpacing;
 
+  /**
+   * Bandwidth of the kernel transform in meters, or `'adaptive'`. Adaptive needs kNN weights, so a
+   * distance band with no fixed bandwidth uses its own radius.
+   */
+  const getKernelBandwidth = (config: WeightsConfig): number | 'adaptive' =>
+    config.bandwidthFactor > 0
+      ? config.bandwidthFactor * geography.medianSpacing
+      : config.source === 'knn'
+        ? 'adaptive'
+        : getBandMeters(config);
+
+  /** Compile-time inputs of the kernel bandwidth that the bandwidth factor alone does not name. */
+  const getKernelBandwidthKey = (config: WeightsConfig): string =>
+    config.bandwidthFactor > 0
+      ? 'fixed'
+      : config.source === 'knn'
+        ? `knn-${config.k}`
+        : `band-${config.bandFactor}`;
+
   const buildTransform = (config: WeightsConfig) => {
     const operation = config.transform as Exclude<WeightsTransform, 'none'>;
     const key = getTransformKey(config)!;
@@ -251,18 +295,25 @@ export function createWeightsCore(props: {
       new GPUSpatialWeightsTransform({
         id: `transform-${operation}`,
         operation,
-        weights: importCsr(graph, csr, withDistances),
+        weights: {
+          ...importCsr(graph, csr, withDistances),
+          // 'adaptive' reads the neighbour criterion from the provenance.
+          info: {
+            rowCount,
+            transform: 'unknown',
+            symmetric: 'unknown',
+            provenance:
+              config.source === 'knn'
+                ? {source: 'GPUNeighborSearch', criterion: 'knn', k: config.k}
+                : {source: 'GPUNeighborSearch', criterion: config.source}
+          }
+        },
         output:
           operation === 'symmetrize'
             ? importGraphBuffer(graph, 'scratch', scratch, 'float32', slots)
             : undefined,
         kernel: operation === 'kernel' ? config.transformKernel : undefined,
-        bandwidth:
-          operation === 'kernel'
-            ? config.bandwidthFactor > 0
-              ? config.bandwidthFactor * geography.medianSpacing
-              : 'adaptive'
-            : undefined,
+        bandwidth: operation === 'kernel' ? getKernelBandwidth(config) : undefined,
         doubleSum: operation === 'double' ? config.doubleSum : undefined
       })
     );
@@ -282,6 +333,7 @@ export function createWeightsCore(props: {
     total,
     hasDistances,
     getBandMeters,
+    getKernelBandwidth,
 
     prepare(rawConfig) {
       const config = effectiveTransform(rawConfig);

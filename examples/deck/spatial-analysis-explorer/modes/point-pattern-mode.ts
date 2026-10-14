@@ -112,6 +112,8 @@ type SummaryLayoutKey =
   | 'variogramPairs'
   | 'variogramDistances'
   | 'variogramStatistics'
+  | 'variogramOverflow'
+  | 'correlogramOverflow'
   | 'moransI'
   | 'zScores'
   | 'bandPairs'
@@ -140,6 +142,8 @@ const SUMMARY_LAYOUT = (() => {
   add('variogramPairs', LAG_COUNT * DIRECTION_COUNT);
   add('variogramDistances', LAG_COUNT * DIRECTION_COUNT);
   add('variogramStatistics', GPU_VARIOGRAM_STATISTICS_LENGTH);
+  add('variogramOverflow', 1);
+  add('correlogramOverflow', 1);
   add('moransI', BAND_COUNT);
   add('zScores', BAND_COUNT);
   add('bandPairs', BAND_COUNT);
@@ -159,23 +163,6 @@ const SUMMARY_LAYOUT = (() => {
 type WindowChoice = 'extent' | 'view';
 type CategoryChoice = 'all' | `${number}`;
 type Bounds = [number, number, number, number];
-
-/** Upper tail probability of a chi-square statistic by the Wilson-Hilferty approximation. */
-function getChiSquareUpperTail(statistic: number, degreesOfFreedom: number): number {
-  if (!(degreesOfFreedom > 0) || !Number.isFinite(statistic)) return NaN;
-  const scale = 2 / (9 * degreesOfFreedom);
-  const z = ((statistic / degreesOfFreedom) ** (1 / 3) - (1 - scale)) / Math.sqrt(scale);
-  return 0.5 * erfc(z / Math.SQRT2);
-}
-
-function erfc(x: number): number {
-  const t = 1 / (1 + 0.3275911 * Math.abs(x));
-  const polynomial =
-    t *
-    (0.254829592 + t * (-0.284496736 + t * (1.421413741 + t * (-1.453152027 + t * 1.061405429))));
-  const value = polynomial * Math.exp(-x * x);
-  return x >= 0 ? value : 2 - value;
-}
 
 export const pointPatternMode: SpatialAnalysisModeDefinition = {
   id: 'point-pattern',
@@ -344,6 +331,8 @@ export const pointPatternMode: SpatialAnalysisModeDefinition = {
         'variogram-statistics',
         GPU_VARIOGRAM_STATISTICS_LENGTH * 4
       ),
+      variogramOverflow: resources.createBuffer('variogram-overflow', 4),
+      correlogramOverflow: resources.createBuffer('correlogram-overflow', 4),
       moransI: resources.createBuffer('morans-i', BAND_COUNT * 4),
       zScores: resources.createBuffer('z-scores', BAND_COUNT * 4),
       bandPairs: resources.createBuffer('band-pairs', BAND_COUNT * 4),
@@ -433,7 +422,8 @@ export const pointPatternMode: SpatialAnalysisModeDefinition = {
           semivariances: view('semivariances', 'float32', LAG_COUNT * DIRECTION_COUNT),
           pairCounts: view('variogramPairs', 'uint32', LAG_COUNT * DIRECTION_COUNT),
           meanDistances: view('variogramDistances', 'float32', LAG_COUNT * DIRECTION_COUNT),
-          statistics: view('variogramStatistics', 'float32', GPU_VARIOGRAM_STATISTICS_LENGTH)
+          statistics: view('variogramStatistics', 'float32', GPU_VARIOGRAM_STATISTICS_LENGTH),
+          overflow: view('variogramOverflow', 'uint32', 1)
         })
       );
       patternGraph.add(
@@ -449,6 +439,7 @@ export const pointPatternMode: SpatialAnalysisModeDefinition = {
           moransI: view('moransI', 'float32', BAND_COUNT),
           zScores: view('zScores', 'float32', BAND_COUNT),
           pairCounts: view('bandPairs', 'uint32', BAND_COUNT),
+          overflow: view('correlogramOverflow', 'uint32', 1),
           peakBands: view('peakBands', 'uint32', 2),
           statistics: view(
             'correlogramStatistics',
@@ -852,7 +843,9 @@ export const pointPatternMode: SpatialAnalysisModeDefinition = {
     context.controls.addReadout('Points of interest', formatCount(pointCount));
     const windowReadout = context.controls.addReadout('Window (area)');
     const selectedReadout = context.controls.addReadout('Included in the pattern');
-    const clarkEvansReadout = context.controls.addReadout('Clark-Evans R (z)');
+    const clarkEvansReadout = context.controls.addReadout(
+      'Clark-Evans R (z, two-sided p, edge corrected)'
+    );
     const nearestReadout = context.controls.addReadout('Mean NN distance (expected)');
     const quadratReadout = context.controls.addReadout('Quadrats VMR (12 x 12)');
     const quadratTestReadout = context.controls.addReadout('Quadrat chi-square (df), p');
@@ -863,6 +856,7 @@ export const pointPatternMode: SpatialAnalysisModeDefinition = {
     const jReadout = context.controls.addReadout('Ripley J (max distance / 3)');
     const modelReadout = context.controls.addReadout('Variogram nugget / sill / range');
     const peakReadout = context.controls.addReadout('Correlogram first peak / max z band');
+    const overflowReadout = context.controls.addReadout('Pair-count overflow');
     const countReadout = context.controls.addReadout('Distribution: count');
     const meanReadout = context.controls.addReadout('Mean centre (x, y from origin)');
     const medianReadout = context.controls.addReadout('Median centre offset');
@@ -1003,9 +997,21 @@ export const pointPatternMode: SpatialAnalysisModeDefinition = {
           lagPairs.push(pairTotal);
         }
       }
+      const variogramOverflowed = lastSummaryWords[SUMMARY_LAYOUT['variogramOverflow']] !== 0;
+      const correlogramOverflowed = lastSummaryWords[SUMMARY_LAYOUT['correlogramOverflow']] !== 0;
+      overflowReadout.setValue(
+        [
+          variogramOverflowed ? 'variogram pair counts saturated (model not fitted)' : '',
+          correlogramOverflowed ? 'correlogram pair counts saturated' : ''
+        ]
+          .filter(Boolean)
+          .join('; ') || 'none'
+      );
       const variance = lastSummary[SUMMARY_LAYOUT['variogramStatistics'] + 2];
       let model: VariogramModel | null = null;
       try {
+        // Saturated pair counts would distort the pair weights, so skip the fit.
+        if (variogramOverflowed) throw new Error('variogram pair counts saturated');
         model = fitVariogramModel(
           {distances: lagDistances, semivariances: lagSemivariances, pairCounts: lagPairs},
           {model: modelType}
@@ -1083,16 +1089,16 @@ export const pointPatternMode: SpatialAnalysisModeDefinition = {
       );
       const clark = getSlice('clarkEvans', GPU_CLARK_EVANS_LENGTH);
       selectedReadout.setValue(formatCount(clark[0]));
-      clarkEvansReadout.setValue(`${formatNumber(clark[3])} (z ${formatNumber(clark[5], 1)})`);
+      clarkEvansReadout.setValue(
+        `${formatNumber(clark[3])} (z ${formatNumber(clark[5], 1)}, p ${formatP(clark[6])})`
+      );
       nearestReadout.setValue(`${formatNumber(clark[1], 1)} m (${formatNumber(clark[2], 1)} m)`);
       const quadrat = getSlice('quadrat', GPU_QUADRAT_STATISTICS_LENGTH);
       quadratReadout.setValue(
         `${formatNumber(quadrat[3], 2)} (mean ${formatNumber(quadrat[1], 1)}, var ${formatNumber(quadrat[2], 1)})`
       );
       quadratTestReadout.setValue(
-        `${formatNumber(quadrat[4], 0)} (${formatNumber(quadrat[5], 0)}), p ${formatP(
-          getChiSquareUpperTail(quadrat[4], quadrat[5])
-        )}`
+        `${formatNumber(quadrat[4], 0)} (${formatNumber(quadrat[5], 0)}), p ${formatP(quadrat[6])}`
       );
       const rippleValues = getSlice('rippleL', RIPLEY_RADII);
       let bestIndex = -1;
@@ -1176,6 +1182,8 @@ export const pointPatternMode: SpatialAnalysisModeDefinition = {
       copy('variogramPairs', 'variogramPairs', LAG_COUNT * DIRECTION_COUNT);
       copy('variogramDistances', 'variogramDistances', LAG_COUNT * DIRECTION_COUNT);
       copy('variogramStatistics', 'variogramStatistics', GPU_VARIOGRAM_STATISTICS_LENGTH);
+      copy('variogramOverflow', 'variogramOverflow', 1);
+      copy('correlogramOverflow', 'correlogramOverflow', 1);
       copy('moransI', 'moransI', BAND_COUNT);
       copy('zScores', 'zScores', BAND_COUNT);
       copy('bandPairs', 'bandPairs', BAND_COUNT);

@@ -981,8 +981,10 @@ export const ratesMode: SpatialAnalysisModeDefinition = {
         varianceReadout.setValue(
           `${formatNumber(getStandardDeviation(latest.raw) * 1000, 2)} / ${formatNumber(getStandardDeviation(latest.smoothed) * 1000, 2)} / ${formatNumber(getStandardDeviation(latest.spatial) * 1000, 2)} per 1,000`
         );
+        // The smoothed rate uses max(a, 0) (Marshall 1991); a negative a shrinks every rate to the pooled rate.
+        const priorVariance = summary[GPU_EMPIRICAL_BAYES_SUMMARY.priorVariance];
         priorReadout.setValue(
-          `${formatNumber(summary[GPU_EMPIRICAL_BAYES_SUMMARY.priorVariance] * 1e6, 3)} / ${formatNumber(summary[GPU_EMPIRICAL_BAYES_SUMMARY.weightedRateVariance] * 1e6, 3)} (x1e-6)`
+          `${formatNumber(priorVariance * 1e6, 3)}${priorVariance < 0 ? ' (clamped to 0)' : ''} / ${formatNumber(summary[GPU_EMPIRICAL_BAYES_SUMMARY.weightedRateVariance] * 1e6, 3)} (x1e-6)`
         );
         const byPopulation = Array.from({length: featureCount}, (_, row) => row).sort(
           (a, b) => latest!.populations[a] - latest!.populations[b]

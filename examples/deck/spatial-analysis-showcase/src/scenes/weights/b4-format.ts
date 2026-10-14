@@ -85,3 +85,11 @@ export function runGuarded(label: string, action: () => void): void {
     console.warn(`${label} failed`, error);
   }
 }
+
+/**
+ * Smallest pseudo p-value a permutation test can report: `1 / (R + 1)` for the one-tailed, folded
+ * and directed alternatives, doubled for the two-sided one (`2 (min(g, l) + 1) / (R + 1)`).
+ */
+export function getMinimumPseudoP(alternative: string, permutations: number): number {
+  return Math.min(1, (alternative === 'two-sided' ? 2 : 1) / (permutations + 1));
+}

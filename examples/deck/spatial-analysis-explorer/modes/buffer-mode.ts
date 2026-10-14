@@ -44,6 +44,11 @@ const READBACK_INTERVAL = 10;
 const AUTO_MEASURE_FRAME = 40;
 const CANDIDATES_PER_POINT = 128;
 /**
+ * Upper bound on the candidate list. The library's candidate scratch can reach 8 bytes per
+ * candidate, and one storage binding is limited to 128 MiB, so this stays well below that.
+ */
+const MAXIMUM_CANDIDATES = 1 << 22;
+/**
  * Parked rows sit this many meters beyond the north-east corner of the data, far more than the
  * maximum distance, so no POI is ever in range. Keeping them close to the data (rather than at a
  * huge coordinate) keeps the Morton domain of `spatialSort` tight around the real segments.
@@ -128,7 +133,7 @@ export const bufferMode: SpatialAnalysisModeDefinition = {
             ends: importGraphBuffer(graph, 'ends', endsBuffer, 'float32x2', segmentCount)
           },
           distance: distance.importToGraph(graph),
-          candidateCapacity: pointCount * CANDIDATES_PER_POINT,
+          candidateCapacity: Math.min(pointCount * CANDIDATES_PER_POINT, MAXIMUM_CANDIDATES),
           spatialSort,
           outputMask: importGraphBuffer(graph, 'output-mask', outputMask, 'uint32', pointCount),
           output: {

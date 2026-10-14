@@ -9,6 +9,7 @@ import {
   GPU_GEOMETRY_VALIDITY_BIT,
   GPU_GEOMETRY_VALIDITY_STRUCTURAL_MASK,
   GPU_SHAPE_DESCRIPTORS_PARAMETER_LENGTH,
+  GPU_WGS84_SEMI_MAJOR_AXIS_METERS,
   GPUContiguityWeights,
   GPUGeometryMeasures,
   GPUGeometryValidity,
@@ -86,8 +87,11 @@ export type PolygonMeasuresOptions = {
 
 /** Number of segments of an inscribed circle. */
 const CIRCLE_SEGMENTS = 32;
-/** Mercator sphere radius. */
-const MERCATOR_RADIUS = 6378137;
+/**
+ * Web Mercator sphere radius. Counties are measured in Mercator meters on purpose, so their label
+ * radii overstate ground distance by 1 / cos(latitude) and the circles are round on the map.
+ */
+const MERCATOR_RADIUS = GPU_WGS84_SEMI_MAJOR_AXIS_METERS;
 /** Validity category colors: valid, orientation only, structural defect. */
 export const VALIDITY_PALETTE_INDEXES = [3, 5, 7] as const;
 export const VALIDITY_COLORS = VALIDITY_PALETTE_INDEXES.map(index => B3_PALETTE[index]);

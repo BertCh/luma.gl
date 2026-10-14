@@ -21,7 +21,7 @@ A map of one period tells you where. The tools in this chapter add *when*, and t
 Most space-time statistics start from a dense **cube**: one count (or value) per cell and time slice, indexed `cell * sliceCount + slice`. Two contributors build it on the GPU, and they cut time differently.
 
 - [`GPUTemporalReduction`](#/reference/GPUTemporalReduction) buckets rows by *equal-width* time from an origin: the 52 seven-day weeks of the emerging hot spot story. The bucket origin and width are parameters; the number of buckets is compile-time.
-- [`addSpaceTimeHotSpotsRecipe`](#/reference/addSpaceTimeHotSpotsRecipe) cuts time by *calendar field* (month, hour, ISO week, weekday) using `GPUCalendarBuckets`, so the slices are months or hours of the day, not fixed-length intervals.
+- [`addSpaceTimeHotSpotsRecipe`](#/reference/addSpaceTimeHotSpotsRecipe) cuts time into *absolute calendar steps* (year, quarter, month, week, day, hour, with an interval and an origin) using `GPUCalendarBuckets`, so the slices run along one linear time axis. Cyclic fields (month of year, weekday, hour of day) are rejected, because a trend over them is meaningless; the story uses calendar months and five-day periods of 2023. Cyclic profiles belong in `GPUCalendarBuckets` summaries.
 
 Both produce a `uint32` count cube that `GPUEmergingHotSpots` reads directly. The same layout (`zone * timeBuckets + bucket`) is what `GPUSpatialScanStatistic` expects as its `cases`.
 
@@ -30,7 +30,7 @@ Both produce a `uint32` count cube that `GPUEmergingHotSpots` reads directly. Th
 - **Neighborhoods.** Emerging hot spots take either a lattice radius in cells or arbitrary spatial weights (a `GPUNeighborSearch` table). With binary weights the two agree; weights mode is the way in for H3 cells, polygons and points, and the only way to decay neighbors by distance.
 - **Temporal window.** A bin also gathers its neighbors in the previous *k* slices. Larger *k* smooths flicker and raises the bar for "new".
 - **Confidence and persistence.** The confidence level sets the Gi* critical z; the persistence share (default 90%) decides when a spot is persistent, intensifying, diminishing or historical.
-- **Permutations and seeds.** Knox, Mantel and the scan statistic judge themselves against Monte Carlo replicates. The smallest possible p-value is `1 / (replicates + 1)`; a new seed shows how stable a result is.
+- **Permutations and seeds.** Knox, Mantel and the scan statistic judge themselves against Monte Carlo replicates. The smallest possible p-value is `1 / (replicates + 1)`; a new seed shows how stable a result is. Knox and Mantel test one side (an excess of close pairs), so their pseudo p-value is the upper tail; the classic Poisson Knox p-value is anti-conservative and shown only for comparison.
 - **Baselines.** A scan statistic only finds "more than expected", so the expectation is the analysis. Population, history-based independence and a uniform baseline give different clusters from the same cases.
 - **Classes and lags.** Markov chains need one set of class breaks for all periods (pooled breaks), a transition step (one or several periods) and, for the spatial Markov, a classification of the neighbors' average.
 - **Clock handling.** `GPUCalendarBuckets` takes a fixed UTC offset and the first day of the week as parameters; daylight saving needs a per-row offset column.
@@ -44,7 +44,8 @@ Anything that changes a *shape* is compile-time: the number of time slices, the 
 - **Observers are not wildlife.** iNaturalist observations measure where and when people look as much as what is there: parks, the lakefront and weekends dominate, and the City Nature Challenge weekend (28 April to 1 May 2023) is a spike made by a campaign. 311 complaints have the same problem. Hot spots of records can be hot spots of effort.
 - **Seasons look like trends.** Almost every group has a season (birds in May, insects in July, fungi into October), so a 12-month or 52-week trend test mostly reports the season. Filter to one group, or read the persistent classes first.
 - **Clock times are not instants.** The observation timestamps are Chicago local clock time stored as if it were UTC; the story says so and the calendar scene lets you break it on purpose.
-- **Cyclic time is not linear.** Slices of the hour of day wrap around. Mean hours of observations that straddle midnight are misleading; use the median or a percentile on a rotated clock.
+- **Multiple testing.** Emerging hot spots test thousands of space-time bins; the default Benjamini-Hochberg correction adjusts all valid bins together, and the new *Undetermined* category marks cells whose final slice is missing or that have too few slices for a trend.
+- **Cyclic time is not linear.** Slices of the hour of day wrap around, which is why the emerging hot spots cube does not offer them. Mean hours of observations that straddle midnight are misleading; use the median or a percentile on a rotated clock.
 - **Missing periods change the sample.** The 2024 county returns are missing for five states, so including 2024 drops those counties from every election.
 - **Many tests, some false alarms.** Thousands of Gi* tests at 90% will flag cells by chance. Raise the confidence level or read the persistent and intensifying classes first.
 

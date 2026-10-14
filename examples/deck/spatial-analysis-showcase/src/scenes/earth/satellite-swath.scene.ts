@@ -316,7 +316,7 @@ export default defineScene<SatelliteSwathOptions>({
 // positions: float32x2 [longitude, latitude]; one node per instrument (one distance per node)
 graph.add(new GPUOutlineGeometry({
   positions, geometryType: 'lines', pathOffsets: trackOffsets,
-  coordinateSystem: 'spherical',          // distances in meters, local east/north scale per vertex
+  spatialContext: {coordinateSpace: 'longitude-latitude', metric: 'great-circle', units: 'meters'},  // distances in meters; offsets use local east/north scale per vertex
   joinSegments: 16,
   parameters: distance.importToGraph(graph),
   output: {positions: triangles}          // positions.length * ${'3 * (16 + 2)'} triangle-list vertices
@@ -333,7 +333,7 @@ distance.write(getGPUOutlineGeometryParameterValues({
     what: 'The ground tracks of 16 Earth observation satellites (Landsat, Sentinel, Terra, Aqua, Suomi NPP, NOAA-20 and -21, Metop) over three hours, buffered by half their nominal swath width with `GPUOutlineGeometry` in spherical mode. A bespoke compute pass then measures, for every 1-degree cell, the first time a swath touched it.',
     why: 'Revisit and time to coverage decide whether a sensor can answer a question in hours (weather, smoke, floods) or only in weeks (land cover). The swath width, not the number of satellites, usually dominates.',
     howToRead:
-      "Purple ribbons are the buffered tracks; where they overlap they are darker. The colored cells show when each place was first covered, dark early and bright late; empty cells were not reached by the playhead. The chart and readouts give area-weighted coverage between 85 S and 85 N. Nominal swath widths, daylight and cloud, off-nadir pointing and the terrain are ignored. The outline contributor measures meters with each vertex's local east and north scale, which is not geodesic and degrades near the poles and across the antimeridian, so very wide swaths look distorted at high latitude on the Mercator map; the coverage pass uses the same approximation. Satellite conjunctions are deliberately not computed: `GPUTrajectoryEncounters` is two-dimensional."
+      'Purple ribbons are the buffered tracks; where they overlap they are darker. The colored cells show when each place was first covered, dark early and bright late; empty cells were not reached by the playhead. The chart and readouts give area-weighted coverage between 85 S and 85 N. Nominal swath widths, daylight and cloud, off-nadir pointing and the terrain are ignored. The coverage pass tests each cell against the great-circle distance to the track segment on the mean-radius sphere, so it stays exact near the poles and across the antimeridian. The drawn ribbons come from the outline contributor, which offsets each vertex with its local east and north scale; that is a drawing approximation, so very wide swaths can differ slightly from the coverage cells at high latitude. Satellite conjunctions are deliberately not computed: `GPUTrajectoryEncounters` is two-dimensional.'
   },
 
   pipeline: [

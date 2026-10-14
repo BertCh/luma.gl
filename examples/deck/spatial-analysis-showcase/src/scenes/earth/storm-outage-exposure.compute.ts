@@ -10,10 +10,19 @@ import {
   GPUTimeWindowFilter
 } from '@luma.gl/experimental/gpu-dataframe';
 import {
+  GPU_EARTH_AUTHALIC_RADIUS_METERS,
   GPULineLengthPerPolygon,
   GPUZonalStatistics,
+  type GPUSpatialContext,
   type GPUZonalStatisticsSumOrder
 } from '@luma.gl/experimental/gpu-spatial-analysis';
+
+/** Track lengths: longitude/latitude positions, great-circle meters. */
+const GREAT_CIRCLE_METERS: GPUSpatialContext = {
+  coordinateSpace: 'longitude-latitude',
+  metric: 'great-circle',
+  units: 'meters'
+};
 import {GPUCommandGraph, type CompiledGPUCommandGraph} from '@luma.gl/gpgpu/gpu-core';
 import {fetchJson, getDataFileUrl} from '../../data/loaders';
 import {importGraphBuffer} from '../../engine/graph-buffers';
@@ -117,7 +126,10 @@ export async function createStormOutageExposure(
   const fipsToCounty = new Map<number, number>();
   countyFips.forEach((fips, county) => fipsToCounty.set(fips, county));
 
-  // Planar area in square kilometers (shells add, holes subtract) and the study region mask.
+  // Ellipsoid-free spherical area in square kilometers (shells add, holes subtract): the
+  // Chamberlain-Duquette sum on the authalic sphere, so it is exact for equal-area purposes and
+  // does not depend on a map projection. Counties are small, so edges as parallels and meridians
+  // differ from great-circle edges by far less than 0.1%.
   const countyStatic = new Float32Array(countyCount * 4);
   const inRegion = new Uint8Array(countyCount);
   let regionCount = 0;
@@ -131,15 +143,20 @@ export async function createStormOutageExposure(
       ) {
         const first = layout.ringOffsets[ring];
         const last = layout.ringOffsets[ring + 1];
-        let twice = 0;
+        let sum = 0;
         for (let vertex = first; vertex < last; vertex++) {
           const next = vertex + 1 < last ? vertex + 1 : first;
-          twice +=
-            countyAeqd[vertex * 2] * countyAeqd[next * 2 + 1] -
-            countyAeqd[next * 2] * countyAeqd[vertex * 2 + 1];
+          const deltaLongitude =
+            ((layout.vertices[next * 2] - layout.vertices[vertex * 2] + 540) % 360) - 180;
+          sum +=
+            ((deltaLongitude * Math.PI) / 180) *
+            (2 +
+              Math.sin((layout.vertices[vertex * 2 + 1] * Math.PI) / 180) +
+              Math.sin((layout.vertices[next * 2 + 1] * Math.PI) / 180));
         }
         areaSquareMeters +=
-          (ring === layout.polygonRingOffsets[part] ? 1 : -1) * Math.abs(twice / 2);
+          (ring === layout.polygonRingOffsets[part] ? 1 : -1) *
+          Math.abs((sum / 2) * GPU_EARTH_AUTHALIC_RADIUS_METERS ** 2);
       }
     }
     const longitude = centroid[county * 2];
@@ -217,7 +234,6 @@ export async function createStormOutageExposure(
   const flashCount = flashes.count;
   const trackCount = tracks.trackCount;
   const vertexCount = tracks.vertexCount;
-  const trackAeqd = projectToStormFrame(tracks.lngLat);
   const countyVerticesBuffer = resources.createBuffer('county-aeqd', countyAeqd);
   const countyFeatureOffsets = resources.createBuffer(
     'county-feature-offsets',
@@ -235,7 +251,8 @@ export async function createStormOutageExposure(
     'flash-ones',
     new Float32Array(flashCount).fill(1)
   );
-  const trackAeqdBuffer = resources.createBuffer('track-aeqd', trackAeqd);
+  const trackLngLatBuffer = resources.createBuffer('track-lng-lat', tracks.lngLat);
+  const countyLngLatBuffer = resources.createBuffer('county-lng-lat', layout.vertices);
   const trackTimesBuffer = resources.createBuffer('track-times', tracks.timestamps);
   const trackOffsetsBuffer = resources.createBuffer('track-offsets', tracks.offsets);
   const trackPeakBuffer = resources.createBuffer('track-peak-dbz', tracks.peakDbz);
@@ -269,7 +286,7 @@ export async function createStormOutageExposure(
   const flashOverflow = resources.createBuffer('flash-overflow', 4);
   const flashWeights = resources.createBuffer('flash-weights', flashCount * 4);
   const flashSums = resources.createBuffer('flash-sums', countyCount * 4);
-  const clipped = resources.createBuffer('clipped-aeqd', vertexCount * 8);
+  const clipped = resources.createBuffer('clipped-lng-lat', vertexCount * 8);
   const trackLengths = resources.createBuffer('county-track-lengths', countyCount * 4);
   const trackWeighted = resources.createBuffer('county-track-weighted', countyCount * 4);
   const lineOverflow = resources.createBuffer('line-overflow', 4);
@@ -405,10 +422,11 @@ export async function createStormOutageExposure(
   staticGraph.add(
     new GPULineLengthPerPolygon({
       id: 'full-event-track-length',
+      spatialContext: GREAT_CIRCLE_METERS,
       positions: importGraphBuffer(
         staticGraph,
-        'full-event-track-aeqd',
-        trackAeqdBuffer,
+        'full-event-track-lng-lat',
+        trackLngLatBuffer,
         'float32x2',
         vertexCount
       ),
@@ -424,10 +442,10 @@ export async function createStormOutageExposure(
         kind: 'polygons',
         positions: importGraphBuffer(
           staticGraph,
-          'full-event-county-aeqd',
-          countyVerticesBuffer,
+          'full-event-county-lng-lat',
+          countyLngLatBuffer,
           'float32x2',
-          countyAeqd.length / 2
+          layout.vertices.length / 2
         ),
         featureOffsets: importGraphBuffer(
           staticGraph,
@@ -550,14 +568,26 @@ export async function createStormOutageExposure(
       })
     );
     // Cell tracks up to the clip limit: later vertices repeat the last visible one (zero length).
-    const clippedView = importGraphBuffer(graph, 'clipped-aeqd', clipped, 'float32x2', vertexCount);
+    const clippedView = importGraphBuffer(
+      graph,
+      'clipped-lng-lat',
+      clipped,
+      'float32x2',
+      vertexCount
+    );
     addKernelPass(graph, {
       id: 'clip-tracks',
       invocationCount: trackCount,
       bindings: [
         {
           name: 'positions',
-          view: importGraphBuffer(graph, 'track-aeqd', trackAeqdBuffer, 'float32x2', vertexCount),
+          view: importGraphBuffer(
+            graph,
+            'track-lng-lat',
+            trackLngLatBuffer,
+            'float32x2',
+            vertexCount
+          ),
           type: 'f32',
           access: 'read'
         },
@@ -585,6 +615,7 @@ export async function createStormOutageExposure(
     graph.add(
       new GPULineLengthPerPolygon({
         id: 'track-length',
+        spatialContext: GREAT_CIRCLE_METERS,
         positions: clippedView,
         pathOffsets: trackOffsetsView,
         maximumCandidatePairs: Math.max(1024, 64 * vertexCount),
@@ -599,10 +630,10 @@ export async function createStormOutageExposure(
           kind: 'polygons',
           positions: importGraphBuffer(
             graph,
-            'county-aeqd',
-            countyVerticesBuffer,
+            'county-lng-lat',
+            countyLngLatBuffer,
             'float32x2',
-            countyAeqd.length / 2
+            layout.vertices.length / 2
           ),
           featureOffsets: importGraphBuffer(
             graph,

@@ -27,6 +27,7 @@ import {
 import {addKernelPass} from '../../engine/mode-kernels';
 import {formatCount, SpatialAnalysisResources} from '../../engine/resources';
 import {SummaryReader} from '../../engine/summary-reader';
+import {SatelliteCellLayer} from './satellite-layers';
 import type {SceneContext, SceneInstance} from '../scene';
 import {buildZoneSet, rasterizeZones, type ZoneSet} from '../movement/b12-zones';
 import {binValues, histogramChart} from '../movement/f-chart-helpers';
@@ -101,9 +102,13 @@ type Landfall = {
  * every storm into a US state. The CPU keeps the entries that come from open water, interpolates
  * the wind at the crossing and counts them per state.
  *
- * Everything is planar in deck.gl meters about 28 N, 56 W so the rasters line up with the map. At
- * these latitudes a meter in that system is not a true meter, so a small kernel multiplies each
- * row by cos(latitude) / cos(28 N) before lengths, areas and distances are displayed.
+ * The line densities run on longitude/latitude with a great-circle context (true meters, exact
+ * spherical cell areas) and are drawn as longitude/latitude cells. The coast distance field and
+ * the state zones stay in deck.gl meters about 28 N, 56 W so the rasters line up with the map; a
+ * meter in that system is not a true meter, so a small kernel multiplies each row by
+ * cos(latitude) / cos(28 N) and applies the search limit per row. That is exact for a cell and
+ * its row, but the nearest-seed search itself uses one scale per row, so a distance measured
+ * across rows differs by a few percent over 500 km north-south.
  */
 export async function createHurricaneLandfall(
   ctx: SceneContext<HurricaneLandfallOptions>
@@ -137,6 +142,11 @@ export async function createHurricaneLandfall(
   ];
   const cellWidth = (bounds[2] - bounds[0]) / COLUMNS;
   const cellHeight = (bounds[3] - bounds[1]) / ROWS;
+  // The line-density grid is a longitude/latitude grid over the same window (great-circle meters,
+  // exact spherical cell areas); only the coast distance field and the state raster stay in the
+  // Mercator frame that deck draws rasters in.
+  const densityCellWidth = (GRID_WINDOW[2] - GRID_WINDOW[0]) / COLUMNS;
+  const densityCellHeight = (GRID_WINDOW[3] - GRID_WINDOW[1]) / ROWS;
   const rowScale = new Float32Array(ROWS);
   for (let row = 0; row < ROWS; row++) {
     const [, latitude] = storms.unproject(
@@ -146,6 +156,7 @@ export async function createHurricaneLandfall(
     rowScale[row] = Math.cos((latitude * Math.PI) / 180) / Math.cos((ORIGIN[1] * Math.PI) / 180);
   }
   const rowScaleBuffer = resources.createBuffer('row-scale', rowScale);
+  const minimumRowScale = Math.min(...rowScale);
 
   // ---- States --------------------------------------------------------------------------------
   const zones: ZoneSet = buildZoneSet(statesDataset.geojson!, storms.project);
@@ -263,27 +274,18 @@ export async function createHurricaneLandfall(
     'float32',
     GPU_LINE_DENSITY_PARAMETER_LENGTH,
     getGPULineDensityParameterValues({
-      minX: bounds[0],
-      minY: bounds[1],
-      cellWidth,
-      cellHeight
+      minX: GRID_WINDOW[0],
+      minY: GRID_WINDOW[1],
+      cellWidth: densityCellWidth,
+      cellHeight: densityCellHeight
     })
   );
   const densityGraph = new GPUCommandGraph<void>(device, {id: 'hurricane-density'});
   const densityParameterView = densityParameters.importToGraph(densityGraph);
-  const rowScaleView = importGraphBuffer(
-    densityGraph,
-    'row-scale',
-    rowScaleBuffer,
-    'float32',
-    ROWS
-  );
   const displayBuffers: Buffer[] = [];
   const displayViews: ReturnType<typeof importGraphBuffer<'float32', void>>[] = [];
   const densityFlagBuffers: {overflow: Buffer; total: Buffer}[] = [];
-  const densityLengths: Buffer[] = [];
   const unit = 1e7 / storms.seasonCount;
-  const cellArea = cellWidth * cellHeight;
   INTENSITY_THRESHOLDS.forEach((threshold, variant) => {
     const positions: number[] = [];
     const offsets: number[] = [0];
@@ -295,8 +297,8 @@ export async function createHurricaneLandfall(
         offsets.push(positions.length / 2);
         for (let index = 2; index < run.length; index += 2) {
           pieces +=
-            Math.abs(run[index] - run[index - 2]) / cellWidth +
-            Math.abs(run[index + 1] - run[index - 1]) / cellHeight +
+            Math.abs(run[index] - run[index - 2]) / densityCellWidth +
+            Math.abs(run[index + 1] - run[index - 1]) / densityCellHeight +
             2;
         }
       }
@@ -305,7 +307,7 @@ export async function createHurricaneLandfall(
     for (let track = 0; track < trackCount; track++) {
       for (let vertex = storms.offsets[track]; vertex < storms.offsets[track + 1]; vertex++) {
         if (storms.wind[vertex] >= threshold) {
-          run.push(storms.positions[vertex * 2], storms.positions[vertex * 2 + 1]);
+          run.push(storms.lngLat[vertex * 2], storms.lngLat[vertex * 2 + 1]);
         } else flush();
       }
       flush();
@@ -320,7 +322,7 @@ export async function createHurricaneLandfall(
     );
     const lengths = resources.createBuffer(`density-lengths-${variant}`, cellCount * 4);
     const display = resources.createBuffer(`density-display-${variant}`, cellCount * 4);
-    densityLengths.push(lengths);
+    const densities = resources.createBuffer(`density-per-area-${variant}`, cellCount * 4);
     displayBuffers.push(display);
     const overflow = resources.createBuffer(`density-overflow-${variant}`, 4);
     const total = resources.createBuffer(`density-total-${variant}`, 4);
@@ -332,9 +334,20 @@ export async function createHurricaneLandfall(
       'float32',
       cellCount
     );
+    const densitiesView = importGraphBuffer(
+      densityGraph,
+      `density-per-area-${variant}`,
+      densities,
+      'float32',
+      cellCount
+    );
     densityGraph.add(
       new GPULineDensity({
-        spatialContext: {coordinateSpace: 'planar', metric: 'native', units: 'native'},
+        spatialContext: {
+          coordinateSpace: 'longitude-latitude',
+          metric: 'great-circle',
+          units: 'meters'
+        },
         id: `density-${variant}`,
         positions: importGraphBuffer(
           densityGraph,
@@ -356,6 +369,7 @@ export async function createHurricaneLandfall(
         parameters: densityParameterView,
         output: {
           lengths: lengthsView,
+          densities: densitiesView,
           overflow: importGraphBuffer(
             densityGraph,
             `density-overflow-${variant}`,
@@ -384,11 +398,9 @@ export async function createHurricaneLandfall(
     addKernelPass(densityGraph, {
       id: `density-display-${variant}`,
       invocationCount: cellCount,
-      declarations: `const COLUMNS: u32 = ${COLUMNS}u;
-const AREA_UNIT: f32 = ${Math.fround(unit / cellArea)};`,
+      declarations: `const AREA_UNIT: f32 = ${Math.fround(unit)};`,
       bindings: [
-        {name: 'lengths', view: lengthsView, type: 'f32', access: 'read'},
-        {name: 'rowScale', view: rowScaleView, type: 'f32', access: 'read'},
+        {name: 'densities', view: densitiesView, type: 'f32', access: 'read'},
         {
           name: 'display',
           view: displayView,
@@ -396,8 +408,7 @@ const AREA_UNIT: f32 = ${Math.fround(unit / cellArea)};`,
           access: 'read_write'
         }
       ],
-      body: `let row = index / COLUMNS;
-  display[displayOffset + index] = lengths[lengthsOffset + index] * AREA_UNIT / rowScale[rowScaleOffset + row];`
+      body: `display[displayOffset + index] = densities[densitiesOffset + index] * AREA_UNIT;`
     });
   });
   // The weighted layer adds the four layers: a fix counts once for each wind threshold it reaches.
@@ -442,6 +453,7 @@ const AREA_UNIT: f32 = ${Math.fround(unit / cellArea)};`,
     1,
     Uint32Array.of(seedTotal)
   );
+  const coastCapKilometers = resources.createParameterBuffer('coast-cap', 'float32', 4);
   const distancesBuffer = resources.createBuffer('coast-distances', cellCount * 4);
   const coastKmBuffer = resources.createBuffer('coast-km', cellCount * 4);
   function buildCoastGraph(mode: 'exact' | 'jump-flood'): CompiledGPUCommandGraph<void> {
@@ -477,6 +489,7 @@ const AREA_UNIT: f32 = ${Math.fround(unit / cellArea)};`,
           type: 'f32',
           access: 'read'
         },
+        {name: 'cap', view: coastCapKilometers.importToGraph(graph), type: 'f32', access: 'read'},
         {
           name: 'kilometers',
           view: importGraphBuffer(graph, 'coast-km', coastKmBuffer, 'float32', cellCount),
@@ -484,8 +497,12 @@ const AREA_UNIT: f32 = ${Math.fround(unit / cellArea)};`,
           access: 'read_write'
         }
       ],
+      // Planar meters of a row are ground meters times 1 / rowScale. The field searches out to the
+      // cap divided by the smallest row scale; each row then applies its own ground cap.
       body: `let row = index / COLUMNS;
-  kilometers[kilometersOffset + index] = distances[distancesOffset + index] * rowScale[rowScaleOffset + row] * 0.001;`
+  let ground = distances[distancesOffset + index] * rowScale[rowScaleOffset + row] * 0.001;
+  var infinityBits = 0x7f800000u;
+  kilometers[kilometersOffset + index] = select(bitcast<f32>(infinityBits), ground, ground <= cap[capOffset]);`
     });
     return resources.track(graph.compile());
   }
@@ -944,16 +961,17 @@ const AREA_UNIT: f32 = ${Math.fround(unit / cellArea)};`,
       getGPUDistanceFieldParameterValues({
         bounds,
         gridSize: [COLUMNS, ROWS],
-        maxDistance: ctx.options.coastSearchKm * 1000
+        maxDistance: (ctx.options.coastSearchKm * 1000) / minimumRowScale
       })
     );
+    coastCapKilometers.write(Float32Array.of(ctx.options.coastSearchKm, 0, 0, 0));
     coastDirty = true;
   }
 
   // ---- Initial work ----------------------------------------------------------------------------
   ctx.setReadout(
     'grid',
-    `${COLUMNS} x ${ROWS} cells of ${(cellWidth / 1000).toFixed(0)} km; ${formatCount(seedTotal)} coast seeds`
+    `${COLUMNS} x ${ROWS} cells of ${densityCellWidth.toFixed(2)}° x ${densityCellHeight.toFixed(2)}° (density), ${(cellWidth / 1000).toFixed(0)} km at 28° N (coast); ${formatCount(seedTotal)} coast seeds`
   );
   writeCoastSettings();
   replaceEvents(Number(ctx.options.eventsPerStorm));
@@ -1029,15 +1047,11 @@ const AREA_UNIT: f32 = ${Math.fround(unit / cellArea)};`,
       const layerIndex = INTENSITY_INDEX[options.intensity];
       if (options.view === 'density') {
         layers.push(
-          new SpatialAnalysisRasterLayer({
+          new SatelliteCellLayer({
             id: `landfall-density-${layerIndex}`,
-            coordinateOrigin,
             gridSize: [COLUMNS, ROWS],
-            bounds,
-            rowOrigin: 'south',
-            tessellation: 48,
+            grid: [GRID_WINDOW[0], GRID_WINDOW[1], densityCellWidth, densityCellHeight],
             values: displayBuffers[layerIndex],
-            valueFormat: 'float32',
             valueRange: [0, Math.max(1e-6, displayMaxima[layerIndex])],
             colormap: options.ramp,
             sqrtScale: options.sqrtScale,

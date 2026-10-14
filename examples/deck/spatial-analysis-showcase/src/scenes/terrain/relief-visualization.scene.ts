@@ -523,7 +523,7 @@ const OPTIONS: readonly OptionSpec<ReliefOptions>[] = [
     unit: '°',
     expert: true,
     disabledWhen: isProduct('anisotropic'),
-    help: 'Compass bearing the anisotropic sky-view favors (RVT uses the sun direction).'
+    help: 'Direction the anisotropic sky-view favors, in the Relief Visualization Toolbox convention: degrees counterclockwise from north (90 is west, 180 south, 270 east). The default 315 favors the north-east sky, which RVT also uses.'
   },
   {
     kind: 'slider',

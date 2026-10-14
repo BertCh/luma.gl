@@ -106,6 +106,7 @@ type MonthlyPart = {
 type Variant = {
   key: string;
   events: QuakeEvents;
+  /** Analysis-frame event positions: the operators read them, layers draw them with the frame. */
   positions: Buffer;
   days: Buffer;
   magnitude: Buffer;
@@ -172,6 +173,8 @@ export async function createQuakeAftershocks(
     const buffer = (name: string, data: Float32Array | Uint32Array | number) =>
       resources.createBuffer(`${key}-${name}`, data);
     const positions = buffer('positions', events.positions);
+    // The month-by-cell grid is binned in Mercator-local meters (see `writeGridParameters`).
+    const mercatorPositions = buffer('mercator-positions', events.mercatorPositions);
     const days = buffer('days', events.days);
     const magnitude = buffer('magnitude', events.magnitude);
     const depth = buffer('depth', events.depth);
@@ -220,7 +223,8 @@ export async function createQuakeAftershocks(
       })
     );
     // One thread per pair slot finds its row by binary search and writes the segment of each
-    // unordered pair (entries j > i) that is close in time; every other slot stays empty.
+    // unordered pair (entries j > i) that is close in time; every other slot stays empty. The
+    // segments are analysis-frame meters, drawn with `analysisFrame`.
     addKernelPass(knoxGraph, {
       id: `${key}-segments`,
       invocationCount: slotCapacity,
@@ -296,7 +300,7 @@ export async function createQuakeAftershocks(
         showKnox(bytes);
       }
     );
-    const [west, south, east, north] = events.windowMeters;
+    const [west, south, east, north] = events.analysisWindowMeters;
     const knox: KnoxPart = {
       compiled: knoxCompiled,
       segments,
@@ -317,7 +321,7 @@ export async function createQuakeAftershocks(
     const burst = buffer('burst', MAXIMUM_CELLS * 4);
     const monthlyGraph = new GPUCommandGraph<void>(device, {id: `quake-monthly-${key}`});
     const m = createViewImporter(monthlyGraph, `${key}-monthly`);
-    const monthlyPositions = m('positions', positions, 'float32x2', count);
+    const monthlyPositions = m('mercator-positions', mercatorPositions, 'float32x2', count);
     const cellIdView = m('cell-ids', cellIds, 'uint32', count);
     const countsView = m('month-counts', counts, 'uint32', slotCount);
     const gridView = gridParameters.importToGraph(monthlyGraph);
@@ -535,6 +539,10 @@ export async function createQuakeAftershocks(
     knoxDirty = true;
   }
 
+  /**
+   * The month-by-cell grid is a map-aligned square grid over the window in Mercator-local meters
+   * (a binning, not a metric), so it keeps that frame; changing it would change the cells.
+   */
   function writeGridParameters(): void {
     if (!current) return;
     const options = ctx.options;
@@ -693,7 +701,9 @@ export async function createQuakeAftershocks(
       if (!current) return [];
       const options = ctx.options;
       const dark = ctx.theme() === 'dark';
-      const origin = current.events.origin;
+      const {origin, analysisFrame} = current.events;
+      // The month-by-cell grid is Mercator-local meters (METER_OFFSETS about the window center);
+      // the pairs and events are analysis-frame meters, drawn with `analysisFrame`.
       const coordinateOrigin: [number, number, number] = [origin[0], origin[1], 0];
       const layers: Layer[] = [];
       if (options.gridView !== 'off') {
@@ -746,7 +756,7 @@ export async function createQuakeAftershocks(
         layers.push(
           new SpatialAnalysisSegmentLayer({
             id: 'quake-pairs',
-            coordinateOrigin,
+            analysisFrame,
             segments: current.knox.segments,
             weights: current.knox.fade,
             instanceCount: current.knox.slotCapacity,
@@ -759,7 +769,7 @@ export async function createQuakeAftershocks(
       layers.push(
         new QuakeEventLayer({
           id: 'quake-events',
-          coordinateOrigin,
+          analysisFrame,
           positions: current.positions,
           times: current.days,
           magnitudes: current.magnitude,

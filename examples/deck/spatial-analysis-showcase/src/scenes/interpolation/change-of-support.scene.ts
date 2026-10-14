@@ -128,7 +128,7 @@ export default defineScene<ChangeOfSupportOptions>({
       group: 'Transfer',
       apply: 'compile',
       default: 'overlap',
-      help: 'Which area a share is divided by. Compile-time in GPUArealInterpolation.',
+      help: 'Which area an extensive total (a count) is divided by. Rates and means always use the overlap. Compile-time in GPUArealInterpolation.',
       options: [
         {
           value: 'overlap',
@@ -138,7 +138,7 @@ export default defineScene<ChangeOfSupportOptions>({
         {
           value: 'zone',
           label: 'Whole zone (tobler)',
-          help: 'Divide by the full zone area: mass that falls outside the other system is lost, and intensive values are diluted at coasts.'
+          help: 'Divide a source’s count by its full area: the part that falls outside the other system is lost. Rates and means are not affected; they always use the overlap.'
         }
       ]
     },
@@ -366,7 +366,7 @@ const result = addChangeOfSupportRecipe(graph, {
       : `
   cellWeights,                    // dasymetric raster: ${state.ancillary === 'streets' ? 'street length' : 'places'} per cell`
   }
-  denominator: '${state.denominator}',
+  denominator: {extensive: '${state.denominator}', intensive: 'overlap'},  // rates are never diluted by uncovered area
   pairCapacity: 1 << 15,
   sourceValues, columnCount: 3,   // numerator, denominator, the tract's own rate
   extensiveValues, intensiveValues,
@@ -460,7 +460,7 @@ compiled.encode(commandEncoder, {parameters: undefined});
       textAlternative:
         'Chicago community areas receive tract values under whole-zone or overlap-only denominators.',
       title: 'Real boundaries, and the denominator',
-      body: 'Now move the tracts to the **77 community areas**. Tract and community-area boundaries mostly align, but the two files do not cover exactly the same ground, so the choice of **Area denominator** matters. With *Whole zone (tobler)* (the tobler default) a source’s mass is divided by its entire area, and the part that falls outside every target is lost; *Overlap only* divides by the shared part, which conserves what overlaps.\n\nCompare the **Totals, tracts → targets** readout between the two denominators. Community areas have unequal areas, so a count per area is not comparable between them: for fair comparison use a rate. Notice also that the thick outlines are real polygons, rasterized by the same `GPUPolygonRasterization` used for the grids.',
+      body: 'Now move the tracts to the **77 community areas**. Tract and community-area boundaries mostly align, but the two files do not cover exactly the same ground, so the choice of **Area denominator** matters. With *Whole zone (tobler)* (the default for counts in the library) a source’s mass is divided by its entire area, and the part that falls outside every target is lost; *Overlap only* divides by the shared part, which conserves what overlaps. Rates and means always use the overlap.\n\nCompare the **Totals, tracts → targets** readout between the two denominators. Community areas have unequal areas, so a count per area is not comparable between them: for fair comparison use a rate. Notice also that the thick outlines are real polygons, rasterized by the same `GPUPolygonRasterization` used for the grids.',
       camera: {longitude: -87.7, latitude: 41.84, zoom: 10.0, transitionMs: 1800},
       options: {target: 'community', denominator: 'zone', ancillary: 'none'},
       controls: ['target', 'denominator'],

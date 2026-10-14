@@ -121,6 +121,13 @@ export const BASIN_PALETTE = [
   [150, 110, 235, 215],
   [225, 100, 200, 215]
 ] as const;
+/**
+ * Overlay color for cells the contributors report as unresolved: stream word
+ * `GPU_TERRAIN_FLOW_STREAM_UNRESOLVED` (0xffffffff) and NaN height above drainage
+ * (`GPU_TERRAIN_DRAINAGE_UNRESOLVED`). Matches the "Unresolved" legend entry.
+ */
+const UNRESOLVED_COLOR = [255, 176, 0, 170] as const;
+
 /** Strahler orders 0 (none) to 7. */
 export const ORDER_PALETTE = [
   [0, 0, 0, 0],
@@ -746,7 +753,8 @@ export async function createWatersheds(
         values: Buffer,
         colormap: 'bamako' | 'inferno' | 'cividis',
         valueRange: readonly [number, number],
-        discardAtOrBelow: number
+        discardAtOrBelow: number,
+        noDataColor?: readonly [number, number, number, number]
       ) =>
         new SpatialAnalysisRasterLayer({
           ...rasterProps,
@@ -756,7 +764,8 @@ export async function createWatersheds(
           colormap,
           valueRange,
           discardAtOrBelow,
-          color: [255, 255, 255, alpha]
+          color: [255, 255, 255, alpha],
+          ...(noDataColor ? {noDataColor} : {})
         });
       const categorical = (
         id: string,
@@ -796,13 +805,21 @@ export async function createWatersheds(
               handBuffer,
               'inferno',
               [0, options.handRange],
-              HIDDEN_VALUE / 2
+              HIDDEN_VALUE / 2,
+              UNRESOLVED_COLOR
             )
           );
           break;
         case 'flood':
           layers.push(
-            scalar('watersheds-flood', floodDepthBuffer, 'cividis', [0, options.floodStage], 0)
+            scalar(
+              'watersheds-flood',
+              floodDepthBuffer,
+              'cividis',
+              [0, options.floodStage],
+              0,
+              UNRESOLVED_COLOR
+            )
           );
           break;
         case 'watersheds':
@@ -864,7 +881,9 @@ export async function createWatersheds(
             valueFormat: 'uint32',
             colormap: 'mask',
             color: dark ? [90, 190, 255, 255] : [20, 110, 230, 255],
-            noDataColor: [0, 0, 0, 0]
+            // 0xffffffff is GPU_TERRAIN_FLOW_STREAM_UNRESOLVED (accumulation did not converge).
+            // It is the layer's default noDataValue, so it draws as "unknown", not as a stream.
+            noDataColor: UNRESOLVED_COLOR
           })
         );
       }

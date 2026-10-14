@@ -598,7 +598,7 @@ import {
 const graph = new GPUCommandGraph(device, {id: 'skyline'});
 graph.add(new GPUPointHorizonProfile({
   width, height, elevation,
-  projection: '${state.projection}',       // Web Mercator window of a z12 tile
+  projection: '${state.projection}',       // ${state.projection === 'web-mercator' ? 'Web Mercator window of a z12 tile' : 'local metric raster'}
   traversal: '${state.traversal}',${state.traversal === 'pyramid' ? '\n  pyramid: extrema.output,               // one shared min-max pyramid' : ''}
   azimuthCount: ${state.azimuthCount}, maximumDistance: 20000, cellSize: groundCellSize,
   observers,                                 // float32x4 [column, row, eyeHeight, 0]
@@ -623,12 +623,12 @@ graph.add(new GPUTerrainHorizon({             // the same horizon for every cell
 const compiled = graph.compile();            // once
 
 horizonSettings.write(getGPUPointHorizonParameterValues({
-  worldPixelSize: 512 * 2 ** 12, originY,    // Web Mercator window
+  ${state.projection === 'web-mercator' ? 'worldPixelSize: 512 * 2 ** 12, originY,    // Web Mercator window' : 'cellSize: [groundCellSize, groundCellSize], // planar: one ground cell size'}
   curvatureCoefficient, maximumDistance: ${state.maxDistance * 1000}
 }));
 peakSettings.write(getGPUProfilePeaksParameterValues({minProminence: ${state.minProminence}}));
 visibilitySettings.write(getGPUPointHorizonVisibilityParameterValues({
-  worldPixelSize: 512 * 2 ** 12, originY, curvatureCoefficient,
+  ${state.projection === 'web-mercator' ? 'worldPixelSize: 512 * 2 ** 12, originY,' : 'cellSize: [groundCellSize, groundCellSize],'} curvatureCoefficient,
   toleranceDegrees: ${state.toleranceDegrees}, sigmaZ: ${state.sigmaZ}, targetIgnoreDistance: ${state.targetIgnoreDistance}
 }));
 compiled.encode(commandEncoder, {parameters: undefined}); // when the eye moves`

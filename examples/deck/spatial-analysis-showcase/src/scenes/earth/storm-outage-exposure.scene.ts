@@ -400,7 +400,7 @@ flashWindow.write(getGPUTimeWindowParameterValues({start: 0, end: ${state.exposu
       textAlternative:
         'County choropleth of radar-derived storm-cell track kilometers within each polygon, with the source tracks drawn over whole-event exposure.',
       optionsMode: 'fresh',
-      body: '**`GPULineLengthPerPolygon`** splits every radar-derived path where it meets a county boundary, then sums the in-county length in metres. The violet classes are a footprint proxy, not measured damage.\n\nSwitch between the clock-to-date and whole-event windows to see exposure accumulate. The computation uses an azimuthal metric frame; map display remains Web Mercator.',
+      body: '**`GPULineLengthPerPolygon`** splits every radar-derived path where it meets a county boundary, then sums the in-county length in metres. The violet classes are a footprint proxy, not measured damage.\n\nSwitch between the clock-to-date and whole-event windows to see exposure accumulate. Lengths are great-circle meters on longitude/latitude; the clipping runs straight in longitude/latitude, which is exact enough at county scale. Map display remains Web Mercator.',
       evidence:
         'At **{{clock}}**, the computation covers **{{inputs}}** and clips each track at every county edge before summing length.',
       caveat:
@@ -427,7 +427,7 @@ flashWindow.write(getGPUTimeWindowParameterValues({start: 0, end: ${state.exposu
       evidence:
         '**{{flashesCounted}}** estimated flashes contribute to the selected UTC window; **{{overflow}}** reports whether either fixed-capacity GPU result was truncated.',
       caveat:
-        'Counts are expanded from a seeded sample and divided by county area. They do not measure lightning exposure of people or infrastructure within each county.',
+        'Counts are expanded from a seeded sample and divided by county area. They do not measure lightning exposure of people or infrastructure within each county. County areas are spherical (equal-area) sums on longitude/latitude; the flash-to-county join uses an azimuthal-equidistant frame, which only decides containment.',
       camera: {...EAST_VIEW, transitionMs: 1400},
       options: {
         metric: 'flashDensity',

@@ -20,11 +20,13 @@ import {
   type CompiledGPUCommandGraph
 } from '@luma.gl/gpgpu/gpu-core';
 import {GPUNetworkNoding} from '@luma.gl/experimental/gpu-network';
+import {ALBERS_CONUS_FRAME} from '../../engine/analysis-frame';
 import {SpatialAnalysisPointLayer} from '../../engine/layers';
 import {addKernelPass} from '../../engine/mode-kernels';
 import {formatCount, SpatialAnalysisResources} from '../../engine/resources';
 import {SummaryReader} from '../../engine/summary-reader';
 import type {SceneContext, SceneInstance} from '../scene';
+import {projectAlbers, projectRows} from '../regression/b6-polygons';
 import {loadRailPaths, loadStreetPaths, type PathSet} from './b3-city-data';
 import {
   buildRingEdges,
@@ -959,6 +961,8 @@ function createDissolveView(env: Environment): View {
         id: 'dissolve',
         endpoints: imp('endpoints', endpoints, 'float32x4', segmentCount),
         groups: imp('segment-groups', segmentGroups, 'uint32', segmentCount),
+        // County rings are longitude/latitude degrees: turns at shared vertices are judged on the ground.
+        spatialContext: {coordinateSpace: 'longitude-latitude', metric: 'none'},
         vertexTolerance: Number(options.vertexTolerance),
         interiorSide: options.interiorSide,
         normalizeWinding: options.normalizeWinding,
@@ -1180,7 +1184,10 @@ function createGeneraliseView(env: Environment): View {
   const resources = new SpatialAnalysisResources(device, 'generalise');
   const {layout} = env.getCounties();
   const {vertexCount, ringCount, partCount} = layout;
-  const positions = resources.createBuffer('positions', layout.lngLat);
+  // Simplification runs on Albers CONUS meters (`ALBERS_CONUS_FRAME`, equal-area, distance
+  // scale error <= 1.44%), so the tolerances are ground meters. Drawing uses the lon/lat
+  // originals, and the coverage output is drawn in its own Albers meters with `analysisFrame`.
+  const positions = resources.createBuffer('positions', projectRows(layout.lngLat, projectAlbers));
   const ringOffsets = resources.createBuffer('ring-offsets', layout.ringOffsets);
   const polygonOffsets = resources.createBuffer('polygon-offsets', layout.polygonOffsets);
   const vertexRings = new Uint32Array(vertexCount);
@@ -1318,6 +1325,7 @@ function createGeneraliseView(env: Environment): View {
     const graph = new GPUCommandGraph<void>(device, {id: `coverage-${key}`});
     const imp = createGraphImporter(graph);
     const outRingsView = imp('out-rings', outRings, 'uint32', ringCount + 1);
+    const outPositionsView = imp('out-positions', outPositions, 'float32x2', vertexCount);
     graph.add(
       new GPUCoverageSimplification({
         id: 'coverage',
@@ -1330,7 +1338,7 @@ function createGeneraliseView(env: Environment): View {
         topologyRounds: Number(options.topologyRounds),
         converged: imp('converged', converged, 'uint32', 1),
         output: {
-          positions: imp('out-positions', outPositions, 'float32x2', vertexCount),
+          positions: outPositionsView,
           ringOffsets: outRingsView,
           keepMask: imp('keep-mask', keepMask, 'uint32', vertexCount),
           overflow: imp('overflow', overflow, 'uint32', 1),
@@ -1439,7 +1447,7 @@ function createGeneraliseView(env: Environment): View {
     },
     encode(commandEncoder) {
       if (!active || !independent) return;
-      const tolerance = Math.fround(10 ** ctx.options.coverageTolerance);
+      const tolerance = Math.fround(10 ** ctx.options.coverageTolerance); // meters
       if (!independent.encoded) {
         independent.importance.encode(commandEncoder, {parameters: undefined});
         independent.encoded = true;
@@ -1454,7 +1462,7 @@ function createGeneraliseView(env: Environment): View {
         copyCountToDrawRecord(commandEncoder, keptCount, keptDraw);
         ctx.setReadout(
           'coverageTolerance',
-          `${tolerance < 0.01 ? tolerance.toExponential(1) : tolerance.toFixed(3)}° (about ${formatDistance(tolerance * 95000)})`
+          `${formatDistance(tolerance)} on Albers CONUS (scale error up to 1.4%)`
         );
         needsRead = true;
       }
@@ -1519,7 +1527,7 @@ function createGeneraliseView(env: Environment): View {
           new KeptSegmentLayer({
             id: 'generalise-independent',
             coordinateSystem: LNGLAT,
-            positions,
+            positions: staticRings.positions,
             keptIds,
             vertexLines: vertexRingBuffer,
             keptCount,
@@ -1533,7 +1541,7 @@ function createGeneraliseView(env: Environment): View {
         layers.push(
           new PathOutputLayer({
             id: 'generalise-coverage',
-            coordinateSystem: LNGLAT,
+            analysisFrame: ALBERS_CONUS_FRAME,
             positions: active.outPositions,
             pathOffsets: active.outRings,
             pathOffsetCount: ringCount + 1,

@@ -74,6 +74,11 @@ export const GULL_SEX_COLORS: readonly (readonly [number, number, number, number
   [150, 156, 168, 255]
 ];
 
+const GREAT_CIRCLE_METERS = {
+  coordinateSpace: 'longitude-latitude',
+  metric: 'great-circle',
+  units: 'meters'
+} as const;
 const STOP_CAPACITY = 2048;
 const SIMULATION_ROUNDS = 96;
 const SIMILARITY_SAMPLES = 96;
@@ -124,8 +129,11 @@ type TemporalColumns = {
  * all-pairs similarity that the CPU clusters into route families; a temporal reduction thins the
  * hourly fixes to one per bird per bucket of days.
  *
- * Analysis runs in azimuthal-equidistant meters (true distances across 40 degrees of latitude);
- * drawing uses the longitude/latitude degrees of the same rows with `LNGLAT` layers.
+ * Track metrics (lengths, speeds, stopovers) and route resampling run on longitude/latitude with a
+ * great-circle metric, so they carry no projection error. Line simplification (Douglas-Peucker and
+ * TD-TR) and route similarity use the same great-circle context on longitude/latitude; chords are
+ * straight in longitude/latitude, the library's edge model. Drawing uses the same degrees with
+ * `LNGLAT` layers. The data-centered azimuthal frame remains only for click picking.
  */
 export async function createGullMigration(
   ctx: SceneContext<GullMigrationOptions>
@@ -138,7 +146,6 @@ export async function createGullMigration(
   const slotCount = trackCount * BUCKET_COUNT;
 
   // ---- Static inputs --------------------------------------------------------------------------
-  const positionsBuffer = resources.createBuffer('positions', gulls.positions);
   const lngLatBuffer = resources.createBuffer('lng-lat', gulls.lngLat);
   const timestampsBuffer = resources.createBuffer('timestamps', gulls.timestamps);
   const offsetsBuffer = resources.createBuffer('offsets', gulls.offsets);
@@ -210,15 +217,9 @@ export async function createGullMigration(
   );
   metricsGraph.add(
     new GPUTrajectoryMetrics({
-      spatialContext: {coordinateSpace: 'planar', metric: 'native', units: 'native'},
+      spatialContext: GREAT_CIRCLE_METERS,
       id: 'metrics',
-      positions: importGraphBuffer(
-        metricsGraph,
-        'positions',
-        positionsBuffer,
-        'float32x2',
-        vertexCount
-      ),
+      positions: importGraphBuffer(metricsGraph, 'lng-lat', lngLatBuffer, 'float32x2', vertexCount),
       timestamps: importGraphBuffer(
         metricsGraph,
         'timestamps',
@@ -306,8 +307,8 @@ export async function createGullMigration(
       }
     })
   );
-  // The stop centroids are planar analysis meters; drawing needs degrees. Average the longitude and
-  // latitude of the rows each stop covers.
+  // The metrics run on longitude/latitude, so stop centroids are already degrees, but they are
+  // plain means of degrees. Average the rows each stop covers explicitly for drawing.
   addKernelPass(metricsGraph, {
     id: 'stop-lng-lat',
     invocationCount: STOP_CAPACITY,
@@ -378,7 +379,7 @@ export async function createGullMigration(
       })
     );
     const inputs = (graph: GPUCommandGraph<void>) => ({
-      positions: importGraphBuffer(graph, 'positions', positionsBuffer, 'float32x2', vertexCount),
+      positions: importGraphBuffer(graph, 'lng-lat', lngLatBuffer, 'float32x2', vertexCount),
       trackOffsets: importGraphBuffer(graph, 'offsets', offsetsBuffer, 'uint32', trackCount + 1),
       importance: importGraphBuffer(graph, 'importance', importance, 'float32', vertexCount)
     });
@@ -386,6 +387,7 @@ export async function createGullMigration(
     importanceGraph.add(
       new GPULineSimplification({
         id: `importance-${metric}`,
+        spatialContext: GREAT_CIRCLE_METERS,
         ...inputs(importanceGraph),
         metric,
         timestamps: importGraphBuffer(
@@ -406,6 +408,7 @@ export async function createGullMigration(
     selectionGraph.add(
       new GPULineSimplification({
         id: `selection-${metric}`,
+        spatialContext: GREAT_CIRCLE_METERS,
         ...inputs(selectionGraph),
         metric,
         computeImportance: false,
@@ -484,10 +487,18 @@ export async function createGullMigration(
 
   function buildResample(spacing: 'arc-length' | 'time'): CompiledGPUCommandGraph<void> {
     const graph = new GPUCommandGraph<void>(device, {id: `gull-routes-${spacing}`});
+    const routesView = importGraphBuffer(
+      graph,
+      'routes',
+      routesBuffer,
+      'float32x2',
+      trackCount * SIMILARITY_SAMPLES
+    );
     graph.add(
       new GPUTrajectoryResample({
         id: `routes-${spacing}`,
-        positions: importGraphBuffer(graph, 'positions', positionsBuffer, 'float32x2', vertexCount),
+        spatialContext: GREAT_CIRCLE_METERS,
+        positions: importGraphBuffer(graph, 'lng-lat', lngLatBuffer, 'float32x2', vertexCount),
         timestamps: importGraphBuffer(
           graph,
           'timestamps',
@@ -498,13 +509,7 @@ export async function createGullMigration(
         trackOffsets: importGraphBuffer(graph, 'offsets', offsetsBuffer, 'uint32', trackCount + 1),
         sampleCount: SIMILARITY_SAMPLES,
         spacing,
-        samples: importGraphBuffer(
-          graph,
-          'routes',
-          routesBuffer,
-          'float32x2',
-          trackCount * SIMILARITY_SAMPLES
-        )
+        samples: routesView
       })
     );
     return resources.track(graph.compile());
@@ -517,6 +522,7 @@ export async function createGullMigration(
   similarityGraph.add(
     new GPUTrackSimilarity({
       id: 'route-similarity',
+      spatialContext: GREAT_CIRCLE_METERS,
       positionsA: importGraphBuffer(
         similarityGraph,
         'routes',

@@ -200,13 +200,14 @@ export default defineScene<FlightSpeedContrastOptions>({
   snippet: state => `import {GPUCommandGraph} from '@luma.gl/gpgpu/gpu-core';
 import {GPUTrajectoryMetrics} from '@luma.gl/experimental/gpu-spatial-analysis';
 
-// positions: float32x2 planar metres (azimuthal equidistant around 38.5 N 96 W),
+// positions: float32x2 longitude/latitude degrees, spatialContext great-circle (meters),
 // timestamps: float32 seconds, trackOffsets: uint32 (flights + 1)
 const graph = new GPUCommandGraph(device, {id: 'flight-speed-contrast'});
-graph.add(new GPUTrajectoryMetrics({spatialContext: {coordinateSpace: 'planar', metric: 'native', units: 'native'},
+graph.add(new GPUTrajectoryMetrics({
+  spatialContext: {coordinateSpace: 'longitude-latitude', metric: 'great-circle', units: 'meters'},
   positions, timestamps, trackOffsets,
   stepSpeeds,      // per row: speed of the step that ends there, m/s
-  stepHeadings     // per row: atan2(dy, dx) of that step, radians counter-clockwise from +x
+  stepHeadings     // per row: initial true bearing of that step, radians counter-clockwise from east
 }));
 const compiled = graph.compile();
 compiled.encode(commandEncoder, {parameters: undefined});   // once: the tracks never change
@@ -298,7 +299,7 @@ compiled.encode(commandEncoder, {parameters: undefined});   // once: the tracks 
         'The altitude profile shows unmatched directional medians and their half-difference; missing bins have fewer than 30 steps in either direction.',
       optionsMode: 'fresh',
       title: 'Sampling and measurement constraints',
-      body: 'The sample covers one day. Steps can span up to 10 minutes after trajectory simplification. Speeds and headings use an azimuthal-equidistant planar projection; distance error reaches about 4% at the coasts and projected headings differ from true bearings. Coverage ends at the contiguous-US boundary.\n\nThe principal confounders are aircraft performance, fleet composition, route selection, altitude selection, and unequal location and time sampling by direction. Compare altitude and latitude profiles, change the minimum altitude, and widen the direction cone to evaluate sensitivity. These checks do not convert the proxy into a wind observation.',
+      body: 'The sample covers one day. Steps can span up to 10 minutes after trajectory simplification. Speeds are great-circle distances over time and headings are true initial bearings, so east and west are measured against geographic north at every longitude. Coverage ends at the contiguous-US boundary.\n\nThe principal confounders are aircraft performance, fleet composition, route selection, altitude selection, and unequal location and time sampling by direction. Compare altitude and latitude profiles, change the minimum altitude, and widen the direction cone to evaluate sensitivity. These checks do not convert the proxy into a wind observation.',
       camera: {...US_VIEW, transitionMs: 1400},
       options: {show: 'all', chartBy: 'altitude'},
       controls: ['chartBy', 'coneDegrees', 'minAltitude'],

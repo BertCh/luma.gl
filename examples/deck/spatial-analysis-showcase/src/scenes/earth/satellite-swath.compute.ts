@@ -6,6 +6,7 @@ import type {Layer} from '@deck.gl/core';
 import type {Buffer} from '@luma.gl/core';
 import {
   getGPUOutlineGeometryParameterValues,
+  GPU_EARTH_MEAN_RADIUS_METERS,
   getGPUOutlineGeometryVerticesPerInput,
   GPU_OUTLINE_GEOMETRY_PARAMETER_LENGTH,
   GPUOutlineGeometry
@@ -66,7 +67,54 @@ export const COVERAGE_GRID = {
   rows: 170
 };
 const JOIN_SEGMENTS = 16;
-const KILOMETERS_PER_DEGREE = 111.195;
+/** Kilometers per degree of arc on the mean-radius sphere, for drawing the width bracket only. */
+const KILOMETERS_PER_DEGREE_OF_ARC = (GPU_EARTH_MEAN_RADIUS_METERS * Math.PI) / 180 / 1000;
+/**
+ * Great-circle point-to-arc test for the first-cover kernel. It is kept local on purpose: the
+ * library's `GEODESIC_WGSL` (`geodesicSegmentFraction` / `geodesicSegmentDistance`) models segments
+ * as straight in longitude/latitude and finds the closest point in the local equirectangular frame,
+ * which is exact only for kilometer-long segments. These ground-track steps are about 1,000 km and
+ * follow great circles, so the test needs true cross-track distance on the arc.
+ * Returns (angular distance in radians, fraction along the arc) from a unit-vector cell center to
+ * the arc a-b given as longitude/latitude degrees: the cross-track distance when the foot of the
+ * perpendicular lies inside the arc, otherwise the distance to the nearer endpoint.
+ */
+const GREAT_CIRCLE_ARC_WGSL = /* wgsl */ `
+const ARC_DEGREES_TO_RADIANS: f32 = 0.017453292;
+fn arcUnitVector(lngLat: vec2<f32>) -> vec3<f32> {
+  let lambda = lngLat.x * ARC_DEGREES_TO_RADIANS;
+  let phi = lngLat.y * ARC_DEGREES_TO_RADIANS;
+  let cosPhi = sin((90.0 - abs(lngLat.y)) * ARC_DEGREES_TO_RADIANS);
+  return vec3<f32>(cosPhi * cos(lambda), cosPhi * sin(lambda), sin(phi));
+}
+fn arcAngle(u: vec3<f32>, v: vec3<f32>) -> f32 {
+  return atan2(length(cross(u, v)), dot(u, v));
+}
+fn arcDistanceAndFraction(cellVector: vec3<f32>, startVector: vec3<f32>, endVector: vec3<f32>) -> vec2<f32> {
+  let normalRaw = cross(startVector, endVector);
+  let normalLength = length(normalRaw);
+  let arcAngleTotal = atan2(normalLength, dot(startVector, endVector));
+  if (normalLength < 1.0e-6) {
+    return vec2<f32>(arcAngle(cellVector, startVector), 0.0);
+  }
+  let normal = normalRaw / normalLength;
+  let offset = dot(cellVector, normal);
+  let foot = cellVector - normal * offset;
+  let footLength = length(foot);
+  if (footLength > 1.0e-6) {
+    let footVector = foot / footLength;
+    if (dot(cross(startVector, footVector), normal) >= 0.0 && dot(cross(footVector, endVector), normal) >= 0.0) {
+      let along = arcAngle(startVector, footVector);
+      return vec2<f32>(asin(clamp(abs(offset), 0.0, 1.0)), clamp(along / arcAngleTotal, 0.0, 1.0));
+    }
+  }
+  let toStart = arcAngle(cellVector, startVector);
+  let toEnd = arcAngle(cellVector, endVector);
+  if (toStart <= toEnd) {
+    return vec2<f32>(toStart, 0.0);
+  }
+  return vec2<f32>(toEnd, 1.0);
+}`;
 const TIME_BIN_SECONDS = 150;
 
 type SensorClass = {
@@ -148,7 +196,11 @@ export async function createSatelliteSwath(
           'uint32',
           subset.trackCount + 1
         ),
-        coordinateSystem: 'spherical',
+        spatialContext: {
+          coordinateSpace: 'longitude-latitude',
+          metric: 'great-circle',
+          units: 'meters'
+        },
         joinSegments: JOIN_SEGMENTS,
         parameters: parameters.importToGraph(nominalGraph),
         output: {
@@ -192,7 +244,11 @@ export async function createSatelliteSwath(
         'uint32',
         all.trackCount + 1
       ),
-      coordinateSystem: 'spherical',
+      spatialContext: {
+        coordinateSpace: 'longitude-latitude',
+        metric: 'great-circle',
+        units: 'meters'
+      },
       joinSegments: JOIN_SEGMENTS,
       parameters: customParameters.importToGraph(customGraph),
       output: {
@@ -240,8 +296,9 @@ const SEGMENTS: u32 = ${segmentCount}u;
 const CELL: f32 = ${COVERAGE_GRID.cell.toFixed(4)};
 const MIN_LONGITUDE: f32 = ${COVERAGE_GRID.minLongitude.toFixed(4)};
 const MIN_LATITUDE: f32 = ${COVERAGE_GRID.minLatitude.toFixed(4)};
-const KILOMETERS_PER_DEGREE: f32 = ${KILOMETERS_PER_DEGREE};
-const DEGREES_TO_RADIANS: f32 = 0.017453292;`,
+const EARTH_RADIUS_METERS: f32 = ${GPU_EARTH_MEAN_RADIUS_METERS.toFixed(1)};
+const RADIANS_TO_DEGREES: f32 = 57.29578;
+${GREAT_CIRCLE_ARC_WGSL}`,
     bindings: [
       {
         name: 'segments',
@@ -293,11 +350,12 @@ const DEGREES_TO_RADIANS: f32 = 0.017453292;`,
       }
     ],
     // For the cell center, the earliest time any segment passes within its half swath. Distances are
-    // measured in the local east/north kilometres around the cell, as GPUOutlineGeometry draws them.
+    // great-circle: cross-track to the segment arc, or to the nearer endpoint beyond it.
     body: `let column = index % COLUMNS;
   let row = index / COLUMNS;
   let cellLongitude = MIN_LONGITUDE + (f32(column) + 0.5) * CELL;
   let cellLatitude = MIN_LATITUDE + (f32(row) + 0.5) * CELL;
+  let cellVector = arcUnitVector(vec2<f32>(cellLongitude, cellLatitude));
   var bestTime = 1.0e30;
   for (var segment = 0u; segment < SEGMENTS; segment = segment + 1u) {
     let halfWidth = halfWidths[halfWidthsOffset + segment];
@@ -305,13 +363,13 @@ const DEGREES_TO_RADIANS: f32 = 0.017453292;`,
       continue;
     }
     let base = segmentsOffset + segment * 4u;
-    let startLongitude = segments[base];
-    let startLatitude = segments[base + 1u];
-    let endLongitude = segments[base + 2u];
-    let endLatitude = segments[base + 3u];
-    let southLatitude = min(startLatitude, endLatitude);
-    let northLatitude = max(startLatitude, endLatitude);
-    let reach = halfWidth / KILOMETERS_PER_DEGREE;
+    let startLngLat = vec2<f32>(segments[base], segments[base + 1u]);
+    let endLngLat = vec2<f32>(segments[base + 2u], segments[base + 3u]);
+    let halfAngle = halfWidth * 1000.0 / EARTH_RADIUS_METERS;
+    // Latitude prefilter; the 0.1 degree margin covers the arc bulging past its endpoints.
+    let reach = halfAngle * RADIANS_TO_DEGREES + 0.1;
+    let southLatitude = min(startLngLat.y, endLngLat.y);
+    let northLatitude = max(startLngLat.y, endLngLat.y);
     if (cellLatitude < southLatitude - reach || cellLatitude > northLatitude + reach) {
       continue;
     }
@@ -321,22 +379,9 @@ const DEGREES_TO_RADIANS: f32 = 0.017453292;`,
     if (startTime >= bestTime) {
       continue;
     }
-    let nearLatitude = clamp(cellLatitude, southLatitude, northLatitude);
-    let eastScale = max(cos(0.5 * (cellLatitude + nearLatitude) * DEGREES_TO_RADIANS), 0.02) * KILOMETERS_PER_DEGREE;
-    var deltaStart = startLongitude - cellLongitude;
-    var deltaEnd = endLongitude - cellLongitude;
-    deltaStart = deltaStart - 360.0 * round(deltaStart / 360.0);
-    deltaEnd = deltaEnd - 360.0 * round(deltaEnd / 360.0);
-    let fromCell = vec2<f32>(deltaStart * eastScale, (startLatitude - cellLatitude) * KILOMETERS_PER_DEGREE);
-    let toCell = vec2<f32>(deltaEnd * eastScale, (endLatitude - cellLatitude) * KILOMETERS_PER_DEGREE);
-    let along = toCell - fromCell;
-    let lengthSquared = dot(along, along);
-    var fraction = 0.0;
-    if (lengthSquared > 1.0e-9) {
-      fraction = clamp(-dot(fromCell, along) / lengthSquared, 0.0, 1.0);
-    }
-    if (length(fromCell + along * fraction) <= halfWidth) {
-      bestTime = min(bestTime, startTime + fraction * (endTime - startTime));
+    let hit = arcDistanceAndFraction(cellVector, arcUnitVector(startLngLat), arcUnitVector(endLngLat));
+    if (hit.x <= halfAngle) {
+      bestTime = min(bestTime, startTime + hit.y * (endTime - startTime));
     }
   }
   firstCover[firstCoverOffset + index] = select(-1.0, bestTime, bestTime < 1.0e29);`
@@ -394,7 +439,8 @@ const DEGREES_TO_RADIANS: f32 = 0.017453292;`,
     const longitude = tracks.positions[vertex * 2];
     const latitude = tracks.positions[vertex * 2 + 1];
     const longitudeHalfWidth =
-      width / (2 * KILOMETERS_PER_DEGREE * Math.max(Math.cos((latitude * Math.PI) / 180), 0.1));
+      width /
+      (2 * KILOMETERS_PER_DEGREE_OF_ARC * Math.max(Math.cos((latitude * Math.PI) / 180), 0.1));
     ctx.setReadout(
       'selectedWidth',
       `${info.name} · ${width.toLocaleString()} km${ctx.options.swathMode === 'custom' ? ' hypothetical' : ' nominal'}`

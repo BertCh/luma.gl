@@ -3,6 +3,11 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import type {LoadedDataset} from '../../data/catalog';
+import {
+  type AnalysisFrame,
+  createAnalysisFrameProjection,
+  projectLngLatToFrame
+} from '../../engine/analysis-frame';
 import type {BarChartData, LineChartData} from '../scene';
 import {createAzimuthalEquidistant, createTrackSet, type TrackSet} from '../movement/b12-tracks';
 
@@ -20,8 +25,22 @@ export const STORM_EVENT_SECONDS = 18 * 3600;
 export const STORM_VERIFICATION_RANGE: readonly [number, number] = [19800, 54000];
 /** Centre of the azimuthal-equidistant frame used for joins and areal sums. */
 export const STORM_FRAME_CENTER: readonly [number, number] = [-92, 37];
-/** Planar frame of the joins: distances from the centre are exact, tangential error is under 1% at 1,500 km. */
+/** Planar frame of the joins: distances from the centre are exact, tangential error is under 1% at 1,500 km (at most 1.8% over the storm region). */
 export const STORM_FRAME = createAzimuthalEquidistant(STORM_FRAME_CENTER as [number, number]);
+
+/**
+ * Equal-area frame of the lightning density raster: Lambert azimuthal equal-area about
+ * {@link STORM_FRAME_CENTER}. Every cell covers the same ground area, so a cell sum is flashes per
+ * cell area with no weighting. Cell shapes stretch by at most 2.6% at the corners of the flash box
+ * (radial scale `1 / cos(c / 2)`, tangential `cos(c / 2)`). The density layers draw in this frame.
+ */
+export const STORM_DENSITY_FRAME: AnalysisFrame = {
+  kind: 'lambert-equal-area',
+  origin: STORM_FRAME_CENTER
+};
+
+/** Forward and inverse of {@link STORM_DENSITY_FRAME}. */
+export const STORM_DENSITY_PROJECTION = createAnalysisFrameProjection(STORM_DENSITY_FRAME);
 
 /** Camera over the central and eastern US where the 21 May 2024 storms ran. */
 export const STORM_VIEW = {longitude: -93.5, latitude: 38, zoom: 4.4};
@@ -29,7 +48,6 @@ export const STORM_VIEW = {longitude: -93.5, latitude: 38, zoom: 4.4};
 /** Speed in km/h at which the speed ramps of the storm scenes end. */
 export const STORM_SPEED_RAMP_KMH = 120;
 
-const METERS_PER_DEGREE = 111194.9;
 const MONTH_DAY = ['Tue 21 May', 'Wed 22 May'];
 
 /** `Tue 21 May 18:30 UTC` for seconds since the storm origin. */
@@ -81,36 +99,16 @@ export type StormTrackSet = TrackSet & {
 };
 
 /**
- * Projects every track on its own tangent plane: x east and y north in meters around the track's
- * mean latitude and first longitude. A track is at most a few hundred kilometers long, so the
- * east-west scale error stays under 3%, and every step heading is true compass north, which a
- * single continental projection cannot give.
+ * Loads `poopdeck-mrms-precip-tracks`. `positions` and `lngLat` are the same longitude/latitude
+ * degrees: `GPUTrajectoryMetrics` measures them with a great-circle context, so speeds are true
+ * meters per second and headings are initial bearings.
  */
-export function projectTracksLocal(lngLat: Float32Array, offsets: Uint32Array): Float32Array {
-  const local = new Float32Array(lngLat.length);
-  for (let track = 0; track + 1 < offsets.length; track++) {
-    const first = offsets[track];
-    const last = offsets[track + 1];
-    let latitudeSum = 0;
-    for (let vertex = first; vertex < last; vertex++) latitudeSum += lngLat[vertex * 2 + 1];
-    const referenceLatitude = latitudeSum / Math.max(1, last - first);
-    const referenceLongitude = lngLat[first * 2];
-    const scale = Math.cos((referenceLatitude * Math.PI) / 180);
-    for (let vertex = first; vertex < last; vertex++) {
-      local[vertex * 2] = (lngLat[vertex * 2] - referenceLongitude) * scale * METERS_PER_DEGREE;
-      local[vertex * 2 + 1] = (lngLat[vertex * 2 + 1] - referenceLatitude) * METERS_PER_DEGREE;
-    }
-  }
-  return local;
-}
-
-/** Loads `poopdeck-mrms-precip-tracks`. `positions` are per-track tangent-plane meters (see {@link projectTracksLocal}). */
 export function loadStormTracks(dataset: LoadedDataset): StormTrackSet {
   const offsets = dataset.column<Uint32Array>('pathOffsets');
   const lngLat = dataset.column<Float32Array>('vertices');
   const set = createTrackSet({
     offsets,
-    positions: projectTracksLocal(lngLat, offsets),
+    positions: lngLat,
     lngLat,
     timestamps: Float32Array.from(dataset.column<Uint32Array>('timestamp')),
     origin: STORM_FRAME_CENTER,
@@ -132,16 +130,14 @@ export type StormFlashes = {
   count: number;
   /** Longitude and latitude degrees. */
   lngLat: Float32Array;
-  /** Meters around `origin` in deck's local metric frame (the frame the density raster is drawn in). */
-  local: Float32Array;
+  /** Meters in the Lambert equal-area {@link STORM_DENSITY_FRAME} (the density raster). */
+  equalArea: Float32Array;
   /** Meters in the azimuthal-equidistant frame (areal joins). */
   aeqd: Float32Array;
   /** Seconds since the storm origin. */
   times: Float32Array;
   /** Optical energy of each flash, femtojoules. */
   energy: Float32Array;
-  origin: readonly [number, number];
-  project: (longitude: number, latitude: number) => [number, number];
   /** Fraction of all flashes in the window that the sample holds. */
   sampleFraction: number;
   flashesInWindow: number;
@@ -149,8 +145,6 @@ export type StormFlashes = {
 
 /** Loads `poopdeck-goes-glm-lightning`. */
 export function loadStormFlashes(dataset: LoadedDataset): StormFlashes {
-  const origin = dataset.defaultOrigin;
-  const projection = dataset.getProjection(origin);
   const lngLat = dataset.column<Float32Array>('position');
   const aeqd = new Float32Array(lngLat.length);
   for (let index = 0; index < lngLat.length; index += 2) {
@@ -162,12 +156,10 @@ export function loadStormFlashes(dataset: LoadedDataset): StormFlashes {
   return {
     count: dataset.count,
     lngLat,
-    local: dataset.projectColumn('position', origin),
+    equalArea: projectLngLatToFrame(STORM_DENSITY_PROJECTION, lngLat),
     aeqd,
     times: Float32Array.from(dataset.column<Uint32Array>('timestamp')),
     energy: dataset.column<Float32Array>('energy'),
-    origin,
-    project: (longitude, latitude) => projection.project(longitude, latitude),
     sampleFraction: properties.sampleFraction ?? 1,
     flashesInWindow: properties.flashesInWindow ?? dataset.count
   };

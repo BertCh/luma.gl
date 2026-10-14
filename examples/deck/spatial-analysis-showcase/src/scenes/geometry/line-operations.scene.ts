@@ -8,6 +8,11 @@ import {defineScene, type LegendSpec} from '../scene';
 import type {LineOperationsOptions} from './b3-line-options';
 import {B3_PALETTE} from './b3-palette';
 
+/** Snippet lines for the two spatial contexts (omitted means planar). */
+const GREAT_CIRCLE_SNIPPET =
+  "spatialContext: {coordinateSpace: 'longitude-latitude', metric: 'great-circle'},";
+const PLANAR_SNIPPET = '// spatialContext omitted: planar, in the units of the positions';
+
 const formatKilometers = (value: number) => `${(value / 1000).toFixed(0)} km`;
 const logMeters = (value: number) => {
   const meters = 10 ** value;
@@ -616,7 +621,7 @@ Orange is the simplified track over the faint original. Slide **Tolerance** belo
 
 graph.add(new GPULineSegmentize({
   positions, pathOffsets,
-  coordinateSystem: '${state.lineSystem}',
+  ${state.lineSystem === 'spherical' ? GREAT_CIRCLE_SNIPPET : PLANAR_SNIPPET}
   parameters: segmentize.importToGraph(graph),
   output: {positions: out, pathOffsets: outOffsets, count, overflow, measures}
 }));
@@ -630,7 +635,7 @@ segmentize.write(getGPULineSegmentizeParameterValues({maximumSegmentLength: ${Ma
 graph.add(new GPULineChunk({
   positions, pathOffsets,
   mode: '${state.lineTool}',
-  coordinateSystem: '${state.lineSystem}',
+  ${state.lineSystem === 'spherical' ? GREAT_CIRCLE_SNIPPET : PLANAR_SNIPPET}
   parameters: chunk.importToGraph(graph),
   output: {positions: out, pathOffsets: outOffsets, count, overflow, pathCount${state.lineTool === 'chunk' ? ', sourcePaths' : ''}}
 }));

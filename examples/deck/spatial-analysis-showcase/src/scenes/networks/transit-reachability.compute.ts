@@ -187,7 +187,8 @@ export async function createTransitReachability(
   const {device} = ctx;
   const {nodeCount, edgeCount} = rail;
   const resources = new SpatialAnalysisResources(device, 'reach');
-  const coordinateOrigin: [number, number, number] = [rail.origin[0], rail.origin[1], 0];
+  // Every position is in the rail graph's azimuthal equidistant frame; the layers invert it.
+  const analysisFrame = rail.frame;
 
   // Draw this cover after the GPU isobands: planar last-mile buffers are invalid over water.
   // Detailed Natural Earth land holes retain the real coast; lakes include IJsselmeer.
@@ -722,7 +723,7 @@ export async function createTransitReachability(
         layers.push(
           new IsobandTriangleLayer({
             id: 'reach-bands',
-            coordinateOrigin,
+            analysisFrame,
             gridSize: [1, 1],
             bounds: [0, 0, 1, 1],
             triangles,
@@ -740,7 +741,7 @@ export async function createTransitReachability(
         layers.push(
           new SpatialAnalysisPolygonLayer({
             id: 'reach-water-mask',
-            coordinateOrigin,
+            analysisFrame,
             triangles: waterPolygons.triangles,
             features: waterPolygons.triangleFeatures,
             vertexCount: waterPolygons.vertexCount,
@@ -753,7 +754,7 @@ export async function createTransitReachability(
         layers.push(
           new SpatialAnalysisSegmentLayer({
             id: 'reach-natural-earth-boundaries',
-            coordinateOrigin,
+            analysisFrame,
             segments: boundarySegmentsBuffer,
             instanceCount: boundarySegments.length / 4,
             widthPixels: 0.65,
@@ -766,7 +767,7 @@ export async function createTransitReachability(
         layers.push(
           new SpatialAnalysisSegmentLayer({
             id: 'reach-edges',
-            coordinateOrigin,
+            analysisFrame,
             segments: segmentsBuffer,
             instanceCount: edgeCount,
             weights: edgeAlphaBuffer,
@@ -779,7 +780,7 @@ export async function createTransitReachability(
         layers.push(
           new SpatialAnalysisSegmentLayer({
             id: 'reach-tree',
-            coordinateOrigin,
+            analysisFrame,
             segments: treeSegmentsBuffer,
             instanceCount: nodeCount,
             widthPixels: 1.5,
@@ -791,7 +792,7 @@ export async function createTransitReachability(
         layers.push(
           new SpatialAnalysisSegmentLayer({
             id: 'reach-geodesic-60km',
-            coordinateOrigin,
+            analysisFrame,
             segments: referenceRingBuffer,
             instanceCount: REFERENCE_RING_VERTEX_COUNT - 1,
             widthPixels: 1.4,
@@ -804,7 +805,7 @@ export async function createTransitReachability(
         layers.push(
           new SpatialAnalysisPointLayer({
             id: 'reach-stations',
-            coordinateOrigin,
+            analysisFrame,
             positions: nodePositionsBuffer,
             instanceCount: nodeCount,
             radiusPixels: 2,
@@ -814,7 +815,7 @@ export async function createTransitReachability(
         layers.push(
           new SpatialAnalysisPointLayer({
             id: 'reach-hubs',
-            coordinateOrigin,
+            analysisFrame,
             positions: hubPositionsBuffer,
             instanceCount: hubCount,
             radiusPixels: 4.5,
@@ -827,7 +828,7 @@ export async function createTransitReachability(
       layers.push(
         new SpatialAnalysisPointLayer({
           id: 'reach-origin-ring',
-          coordinateOrigin,
+          analysisFrame,
           positions: originPositionBuffer,
           instanceCount: 1,
           radiusPixels: 8,
@@ -838,7 +839,7 @@ export async function createTransitReachability(
         }),
         new SpatialAnalysisPointLayer({
           id: 'reach-origin',
-          coordinateOrigin,
+          analysisFrame,
           positions: originPositionBuffer,
           instanceCount: 1,
           radiusPixels: 3.25,

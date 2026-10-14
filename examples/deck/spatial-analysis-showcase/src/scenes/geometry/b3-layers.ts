@@ -10,9 +10,11 @@ import {
   type LayerProps,
   type UpdateParameters
 } from '@deck.gl/core';
-import {Buffer, type RenderPass} from '@luma.gl/core';
+import {Buffer, type Device, type RenderPass} from '@luma.gl/core';
 import {Model} from '@luma.gl/engine';
 import type {DrawCommandBuffer} from '@luma.gl/gpgpu/gpu-core';
+import type {AnalysisFrame} from '../../engine/analysis-frame';
+import {getAnalysisFrameWgsl} from '../../engine/layer-wgsl';
 import {COLORMAP_INDEXES, getRampWgsl, type RampName} from '../../engine/ramps';
 import type {ClassTable} from '../../cartography/types';
 import {B3_PALETTE} from './b3-palette';
@@ -60,6 +62,37 @@ const PALETTE_WGSL = B3_PALETTE.map(
 export type B3ValueMapping = 'ramp' | 'category' | 'flag' | 'class';
 
 const STYLE_BYTE_LENGTH = 448;
+
+/** Projection of a `METER_OFFSETS` position; {@link B3BaseLayer} swaps it for an `analysisFrame`. */
+const PROJECT_GEOMETRY_WGSL = /* wgsl */ `fn projectGeometryPosition(position: vec2<f32>) -> vec4<f32> {
+  var clipPosition = project_position_to_clipspace(
+    vec3<f32>(position + geometryStyle.positionOffset, 0.0),
+    vec3<f32>(0.0),
+    vec3<f32>(0.0)
+  );
+  // Deck's project32 matrices use OpenGL depth; WebGPU clip space requires [0, w].
+  clipPosition.z = (clipPosition.z + clipPosition.w) * 0.5;
+  return clipPosition;
+}
+`;
+
+/** Projection of an `analysisFrame` position: the engine's frame inverse, then `LNGLAT`. */
+function getFrameProjectionWgsl(frame: AnalysisFrame): string {
+  return /* wgsl */ `${getAnalysisFrameWgsl(frame)}
+fn projectGeometryPosition(position: vec2<f32>) -> vec4<f32> {
+  return projectSpatialAnalysisPosition(position + geometryStyle.positionOffset);
+}
+`;
+}
+
+/** The shader text of a geometry layer: with a frame, the frame projection replaces the default. */
+function applyAnalysisFrame(source: string, frame: AnalysisFrame | undefined): string {
+  if (!frame) return source;
+  if (!source.includes(PROJECT_GEOMETRY_WGSL)) {
+    throw new Error('Geometry shader has no projection to replace');
+  }
+  return source.replace(PROJECT_GEOMETRY_WGSL, () => getFrameProjectionWgsl(frame));
+}
 
 export const B3_COMMON_WGSL = /* wgsl */ `
 struct GeometryStyle {
@@ -122,17 +155,7 @@ fn getGeometryColor(value: f32) -> vec4<f32> {
   return vec4<f32>(clamp(rgb, vec3<f32>(0.0), vec3<f32>(1.0)), geometryStyle.color.a);
 }
 
-fn projectGeometryPosition(position: vec2<f32>) -> vec4<f32> {
-  var clipPosition = project_position_to_clipspace(
-    vec3<f32>(position + geometryStyle.positionOffset, 0.0),
-    vec3<f32>(0.0),
-    vec3<f32>(0.0)
-  );
-  // Deck's project32 matrices use OpenGL depth; WebGPU clip space requires [0, w].
-  clipPosition.z = (clipPosition.z + clipPosition.w) * 0.5;
-  return clipPosition;
-}
-
+${PROJECT_GEOMETRY_WGSL}
 struct GeometryVertexOutput {
   @builtin(position) position: vec4<f32>,
   @location(0) side: f32,
@@ -410,6 +433,7 @@ ${SEGMENT_FRAGMENT_WGSL}
 `;
 
 type GeometryLayerState = {
+  source: string;
   model: Model | null;
   styleBuffer: Buffer | null;
   placeholderBuffer: Buffer | null;
@@ -441,6 +465,14 @@ export type B3StyleProps = {
   classColors?: readonly B3Color[];
   /** Offset added to every position before projection (for example `[-360, 0]` degrees). */
   positionOffset?: readonly [number, number];
+  /**
+   * Positions are meters of this analysis frame (for example `ALBERS_CONUS_FRAME`): the shader
+   * inverts the frame to longitude/latitude and draws as `COORDINATE_SYSTEM.LNGLAT`, as the
+   * engine's spatial-analysis layers do, so a contributor's output needs no conversion pass.
+   * `coordinateSystem` and `coordinateOrigin` are ignored. The frame is compiled into the shader;
+   * changing it rebuilds the model. `positionOffset` is added in frame meters.
+   */
+  analysisFrame?: AnalysisFrame;
 };
 
 /** Shared lifecycle of the geometry layers: one model, a style uniform and storage bindings. */
@@ -489,8 +521,61 @@ export abstract class B3BaseLayer<PropsT extends LayerProps & B3StyleProps> exte
       byteLength: 16,
       usage: Buffer.STORAGE | Buffer.COPY_DST
     });
-    const model = new Model(device, {
-      ...this.getShaders({modules: [project32], source: this.getShaderSource()}),
+    const source = this.getFrameShaderSource();
+    const model = this.createModel(device, source, styleBuffer, placeholderBuffer);
+    this.setState({model, styleBuffer, placeholderBuffer, source});
+  }
+
+  override updateState(parameters: UpdateParameters<this>): void {
+    super.updateState(parameters);
+    const {model, styleBuffer, placeholderBuffer, source} = this.state as GeometryLayerState;
+    if (model && styleBuffer && placeholderBuffer) {
+      const nextSource = this.getFrameShaderSource();
+      if (nextSource !== source) {
+        // A different analysis frame is a different shader.
+        model.destroy();
+        this.setState({
+          model: this.createModel(this.context.device, nextSource, styleBuffer, placeholderBuffer),
+          source: nextSource
+        });
+        return;
+      }
+      model.setBindings({...this.getBindings(placeholderBuffer), geometryStyle: styleBuffer});
+    }
+  }
+
+  /** The analysis-frame hook emits longitude/latitude, whatever `coordinateSystem` says. */
+  override _drawLayer(options: Parameters<Layer['_drawLayer']>[0]): void {
+    const {shaderModuleProps} = options;
+    if (!this.props.analysisFrame || !shaderModuleProps?.project) {
+      super._drawLayer(options);
+      return;
+    }
+    super._drawLayer({
+      ...options,
+      shaderModuleProps: {
+        ...shaderModuleProps,
+        project: {
+          ...shaderModuleProps.project,
+          coordinateSystem: COORDINATE_SYSTEM.LNGLAT,
+          coordinateOrigin: [0, 0, 0]
+        }
+      }
+    });
+  }
+
+  private getFrameShaderSource(): string {
+    return applyAnalysisFrame(this.getShaderSource(), this.props.analysisFrame);
+  }
+
+  private createModel(
+    device: Device,
+    source: string,
+    styleBuffer: Buffer,
+    placeholderBuffer: Buffer
+  ): Model {
+    return new Model(device, {
+      ...this.getShaders({modules: [project32], source}),
       id: `${this.id}-model`,
       topology: 'triangle-list',
       isInstanced: true,
@@ -500,15 +585,6 @@ export abstract class B3BaseLayer<PropsT extends LayerProps & B3StyleProps> exte
       bindings: {...this.getBindings(placeholderBuffer), geometryStyle: styleBuffer},
       parameters: BLEND_PARAMETERS
     });
-    this.setState({model, styleBuffer, placeholderBuffer});
-  }
-
-  override updateState(parameters: UpdateParameters<this>): void {
-    super.updateState(parameters);
-    const {model, styleBuffer, placeholderBuffer} = this.state as GeometryLayerState;
-    if (model && styleBuffer && placeholderBuffer) {
-      model.setBindings({...this.getBindings(placeholderBuffer), geometryStyle: styleBuffer});
-    }
   }
 
   override getModels(): Model[] {
@@ -565,7 +641,7 @@ export abstract class B3BaseLayer<PropsT extends LayerProps & B3StyleProps> exte
     state.model?.destroy();
     state.styleBuffer?.destroy();
     state.placeholderBuffer?.destroy();
-    this.setState({model: null, styleBuffer: null, placeholderBuffer: null});
+    this.setState({model: null, styleBuffer: null, placeholderBuffer: null, source: ''});
     super.finalizeState(context);
   }
 }

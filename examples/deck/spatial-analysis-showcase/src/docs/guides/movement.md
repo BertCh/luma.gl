@@ -43,7 +43,7 @@ Two real datasets run through the four stories: **897 AIS tracks of 471 vessels 
 
 ## Pitfalls
 
-- **Units follow the data.** Timestamps are float32 seconds from a dataset epoch (exact below about 194 days of seconds), positions are planar meters. The harbor stories project around the harbor; the gull story, spanning 40 degrees of latitude, projects with an azimuthal-equidistant projection so that distances are true, and draws from the degrees.
+- **Units follow the data.** Timestamps are float32 seconds from a dataset epoch (exact below about 194 days of seconds), positions are planar meters. The harbor stories project around the harbor; the long-range stories (gulls, flyways, stopovers, flights) keep longitude and latitude and measure with a great-circle metric, so no distance depends on a projection.
 - **Paths are not vessels.** A vessel that stops reporting for more than 20 minutes starts a new track, so one ship may appear as two tracks and a long stay can look like two visits.
 - **Straight-line interpolation.** Between two fixes the playhead draws a straight line. A vessel rounding a corner is drawn on the chord.
 - **Approximate zones.** Only the anchorages and channels are official chart polygons; the terminal, gate, ferry-lane and tour areas are hand-drawn and marked approximate.

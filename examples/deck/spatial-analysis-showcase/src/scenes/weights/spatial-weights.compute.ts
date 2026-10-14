@@ -52,6 +52,7 @@ import {
 } from './b4-space';
 import {
   createWeightsCore,
+  isRowStandardized,
   type WeightsConfig,
   type WeightsCore,
   type WeightsSource,
@@ -298,7 +299,7 @@ type World = {
 
 const geographyCache = new Map<GeographyId, Promise<Geography>>();
 
-/** Lattice cell containing the focus centroid of a world. */
+/** Lattice cell containing the focus centroid of a world (the lattice is display-frame metres). */
 function getLatticeCellOf(
   target: {geography: Geography; focusRow: number},
   minX: number,
@@ -307,8 +308,8 @@ function getLatticeCellOf(
   columns: number,
   rows: number
 ): number {
-  const x = target.geography.centroids[target.focusRow * 2];
-  const y = target.geography.centroids[target.focusRow * 2 + 1];
+  const {geography} = target;
+  const [x, y] = geography.project(...geography.getCentroidLngLat(target.focusRow));
   const column = Math.min(columns - 1, Math.max(0, Math.floor((x - minX) / cell)));
   const row = Math.min(rows - 1, Math.max(0, Math.floor((y - minY) / cell)));
   return row * columns + column;
@@ -437,10 +438,7 @@ export async function createSpatialWeights(
 
   /** Centroid of one place as `[lng, lat]`. */
   const getCentroidLngLat = (target: World, row: number): LngLat =>
-    target.projection.unproject(
-      target.geography.centroids[row * 2],
-      target.geography.centroids[row * 2 + 1]
-    ) as LngLat;
+    target.geography.getCentroidLngLat(row) as LngLat;
 
   /** A label point inside one place, snapped to its geometry (falls back to the centroid). */
   const getLabelPoint = (target: World, row: number): LngLat => {
@@ -448,19 +446,6 @@ export async function createSpatialWeights(
     const feature = geojson?.features[row];
     return (
       (feature ? getFeatureLabelPoint(feature.geometry) : null) ?? getCentroidLngLat(target, row)
-    );
-  };
-
-  /**
-   * Ground metres per planar metre at the focus. The search measures distance in metres that are
-   * true at the latitude of the dataset origin; Web Mercator stretches them by cos(origin) over
-   * cos(focus latitude) at the focus, so a planar radius `r` covers `r * factor` ground metres.
-   */
-  const getGroundFactor = (target: World): number => {
-    const focusLatitude = getCentroidLngLat(target, target.focusRow)[1];
-    return (
-      Math.cos((focusLatitude * Math.PI) / 180) /
-      Math.cos((target.geography.origin[1] * Math.PI) / 180)
     );
   };
 
@@ -739,7 +724,9 @@ export async function createSpatialWeights(
   const buildLattice = (target: World): Lattice => {
     const {geography, resources} = target;
     const columns = LATTICE_COLUMNS[geography.id];
-    const [minX, minY, maxX, maxY] = geography.bounds;
+    // The lattice is a display raster (cells are counted, never measured), so it lives in the
+    // display frame.
+    const [minX, minY, maxX, maxY] = geography.displayBounds;
     const cell = (maxX - minX) / columns;
     const rows = Math.ceil((maxY - minY) / cell);
     const count = columns * rows;
@@ -1005,6 +992,10 @@ export async function createSpatialWeights(
     return target.reference;
   };
 
+  /** The polygon analysis weights are the producer's, row-standardized, with no set algebra on top. */
+  const isPolygonRowStandardized = (target: World) =>
+    !getAlgebraKey() && isRowStandardized(getConfig(target.geography));
+
   /** Compiles every variant the current options need. Called from `create` and `setOption`. */
   const prepareAll = () => {
     const target = world;
@@ -1014,12 +1005,12 @@ export async function createSpatialWeights(
     if (o.lattice) {
       target.lattice ??= buildLattice(target);
       prepareLatticeProducer(target.lattice);
-      target.lattice.space.prepare(o.includeFocal, focalWeight);
+      target.lattice.space.prepare(o.includeFocal, focalWeight, false);
     } else {
       target.core.prepare(getConfig(target.geography));
       if (isBinaryCombine()) target.partner.prepare(o.partnerK);
       prepareAlgebra(target);
-      target.space.prepare(o.includeFocal, focalWeight);
+      target.space.prepare(o.includeFocal, focalWeight, isPolygonRowStandardized(target));
       if (o.showQueenOnly) {
         const reference = ensureReference(target);
         reference.queen.prepare(getReferenceConfig(target, 'queen'));
@@ -1200,10 +1191,8 @@ export async function createSpatialWeights(
     let bandwidth = 0;
     if (o.transform === 'kernel') {
       kernel = o.transformKernel as KernelName;
-      bandwidth =
-        o.bandwidth === 'adaptive'
-          ? farthest
-          : Number(o.bandwidth) * target.geography.medianSpacing;
+      const kernelBandwidth = target.core.getKernelBandwidth(config);
+      bandwidth = kernelBandwidth === 'adaptive' ? farthest : kernelBandwidth;
     } else if (o.weightKind === 'kernel') {
       kernel = o.kernel as KernelName;
       bandwidth = o.source === 'band' ? target.core.getBandMeters(config) : farthest;
@@ -1217,7 +1206,7 @@ export async function createSpatialWeights(
       getKernelChart({
         kernel,
         bandwidth,
-        groundFactor: getGroundFactor(target),
+        groundFactor: 1,
         distances,
         weights,
         focusName: target.geography.getName(focus)
@@ -1319,17 +1308,11 @@ export async function createSpatialWeights(
     }
     const config = getConfig(geography);
     const planar = target.core.getBandMeters(config);
-    ctx.setReadout(
-      'band',
-      o.source === 'band' && !o.lattice ? formatDistance(planar * getGroundFactor(target)) : null
-    );
-    ctx.setReadout(
-      'spacing',
-      formatDistance(geography.medianSpacing * (o.lattice ? 1 : getGroundFactor(target)))
-    );
+    ctx.setReadout('band', o.source === 'band' && !o.lattice ? formatDistance(planar) : null);
+    ctx.setReadout('spacing', formatDistance(geography.medianSpacing));
     ctx.setReadout(
       'numerics',
-      `Distances are planar metres, true at ${geography.origin[1].toFixed(1)} N; at the focus a planar metre is ${getGroundFactor(target).toFixed(2)} ground metres. Band radius ${formatDistance(planar)} planar. Weights are float32; lags sum in slot order.`
+      `Distances are metres of ${geography.analysisFrame.name}, within ${(geography.analysisFrame.maxScaleError * 100).toFixed(1)}% of ground distance. Band radius ${formatDistance(planar)}. Weights are float32; lags sum in slot order.`
     );
     ctx.setCost({records: rows});
   }
@@ -1345,12 +1328,11 @@ export async function createSpatialWeights(
         ? `${formatCount(geography.count)} counties of the contiguous US (Alaska and Hawaii not in the data)`
         : `${formatCount(geography.count)} census tracts of Chicago, 2020 boundaries`;
     if (o.source === 'band' && !o.lattice) {
-      const factor = getGroundFactor(target);
       ctx.setFurniture({
         title: {sample},
         scaleBar: {
           latitude: getCentroidLngLat(target, target.focusRow)[1],
-          ticks: [target.core.getBandMeters(getConfig(geography)) * factor]
+          ticks: [target.core.getBandMeters(getConfig(geography))]
         }
       });
     } else {
@@ -1393,7 +1375,7 @@ export async function createSpatialWeights(
         });
       }
       if (o.source === 'band') {
-        const radius = target.core.getBandMeters(getConfig(geography)) * getGroundFactor(target);
+        const radius = target.core.getBandMeters(getConfig(geography));
         list.push({
           kind: 'ring',
           id: 'weights-band-ring',
@@ -1442,7 +1424,7 @@ export async function createSpatialWeights(
       }
       // The edge effect, read off a county on the outer edge of the map near the Rio Grande.
       const anchor = US.places['rio-grande-valley'].lngLat;
-      const [anchorX, anchorY] = geography.project(anchor[0], anchor[1]);
+      const [anchorX, anchorY] = geography.analysisFrame.project(anchor[0], anchor[1]);
       let nearest = -1;
       let nearestDistance = Number.POSITIVE_INFINITY;
       for (let row = 0; row < geography.count; row++) {
@@ -1729,6 +1711,10 @@ export async function createSpatialWeights(
     ];
     const useLattice = Boolean(o.lattice && target.lattice);
     const space = useLattice ? target.lattice!.space : target.space;
+    // Links and island rings are built from the analysis centroids (Albers metres for counties):
+    // they draw with the analysis frame. The lattice and the polygon geometry are display metres.
+    const centroidFrame = geography.analysisFrame.layerFrame;
+    const spaceFrame = useLattice ? undefined : centroidFrame;
     const display = getEffectiveDisplay(o);
     const fillOpacity = geography.id === 'us-counties' ? 1 : 0.88;
     const hairlineWidth = geography.count > 2000 ? 0.4 : 0.5;
@@ -1829,6 +1815,7 @@ export async function createSpatialWeights(
           new SpatialAnalysisSegmentLayer({
             id: `weights-links-${o.matrix}`,
             coordinateOrigin,
+            analysisFrame: centroidFrame,
             segments: links.segments,
             weights: links.fade,
             instanceCount: links.slots,
@@ -1878,6 +1865,7 @@ export async function createSpatialWeights(
       new SpatialAnalysisSegmentLayer({
         id: `weights-focus-links-${o.matrix}-${useLattice ? 'lattice' : 'polygons'}${byWeight ? '-by-weight' : ''}`,
         coordinateOrigin,
+        analysisFrame: spaceFrame,
         segments: space.kit.focusSegments[o.matrix],
         instanceCount: FOCUS_SLOTS,
         widthPixels: 1.6,
@@ -1915,6 +1903,7 @@ export async function createSpatialWeights(
     if (!useLattice) {
       const ringProps = {
         coordinateOrigin,
+        analysisFrame: centroidFrame,
         positions: target.core.positions,
         instanceCount: geography.count,
         values: target.space.isolate,
@@ -2181,7 +2170,8 @@ export async function createSpatialWeights(
             display: getEffectiveDisplay(o) as SpaceDisplay,
             summary: o.summary,
             includeFocal: o.includeFocal,
-            focalWeight
+            focalWeight,
+            rowStandardized: false
           });
         } else {
           target.core.encode(commandEncoder, getConfig(target.geography));
@@ -2205,7 +2195,8 @@ export async function createSpatialWeights(
             display: display === 'weights' ? 'focus' : display === 'difference' ? 'lag' : display,
             summary: o.summary,
             includeFocal: o.includeFocal,
-            focalWeight
+            focalWeight,
+            rowStandardized: isPolygonRowStandardized(target)
           });
           target.gatherer.encode(commandEncoder);
           const reference = target.reference;

@@ -82,7 +82,7 @@ export default defineScene<StormCellTracksOptions>({
       group: 'Cells',
       apply: 'param',
       default: 'speed',
-      help: 'Speed of the 10-minute step the cell is on, or the compass direction it is heading. Both come from the step columns of GPUTrajectoryMetrics, measured on each track’s own tangent plane.',
+      help: 'Speed of the 10-minute step the cell is on, or the compass direction it is heading. Both come from the step columns of GPUTrajectoryMetrics, measured on the sphere (great-circle meters and initial bearings), not on a flat projection.',
       options: [
         {value: 'speed', label: 'Speed (km/h)'},
         {value: 'heading', label: 'Heading (compass sector)'}
@@ -444,7 +444,11 @@ export default defineScene<StormCellTracksOptions>({
       label: 'Peak cell value',
       help: 'Highest cell value in view (flashes, or femtojoules).'
     },
-    {id: 'cellSize', label: 'Cell width', help: 'Width of one density cell at the current zoom.'},
+    {
+      id: 'cellSize',
+      label: 'Cell width',
+      help: 'Width of one density cell at the current zoom, in a Lambert azimuthal equal-area frame about 92° W, 37° N. Every cell covers the same ground area, so a cell value is flashes per cell area with no weighting; cell shapes stretch by at most 2.6% at the far corners of the region (more along the line to the centre, less across it).'
+    },
     {
       id: 'hotCells',
       label: 'Hot-spot cells',
@@ -541,10 +545,10 @@ import {
 } from '@luma.gl/experimental/gpu-spatial-analysis';
 import {GPUTimeWindowFilter, getGPUTimeWindowParameterValues} from '@luma.gl/experimental/gpu-dataframe';
 
-// Each track on its own tangent plane (x east, y north, meters): speeds and headings are true.
+// Longitude/latitude positions with a great-circle context: speeds in m/s, headings are initial bearings.
 const metrics = new GPUCommandGraph(device, {id: 'metrics'});
-metrics.add(new GPUTrajectoryMetrics({spatialContext: {coordinateSpace: 'planar', metric: 'native', units: 'native'},
-  positions: localMeters, timestamps, trackOffsets,
+metrics.add(new GPUTrajectoryMetrics({spatialContext: {coordinateSpace: 'longitude-latitude', metric: 'great-circle', units: 'meters'},
+  positions: lngLat, timestamps, trackOffsets,
   parameters: stallParameters.importToGraph(metrics),
   stepSpeeds, stepHeadings, trackStopCounts,
   stops: {output: {ids, count, overflow}, startRows, endRows, durations}
@@ -563,7 +567,7 @@ ${
 // Buffer the tracks by meters on the sphere (drawing only; overlaps are not merged).
 swath.add(new GPUOutlineGeometry({
   positions: lngLat, geometryType: 'lines', pathOffsets: trackOffsets,
-  coordinateSystem: 'spherical', joinSegments: ${state.swathJoin},      // compile-time
+  spatialContext: {coordinateSpace: 'longitude-latitude', metric: 'great-circle', units: 'meters'}, joinSegments: ${state.swathJoin},      // compile-time
   parameters: swathDistance.importToGraph(swath),                       // per-frame
   output: {positions: triangles}
 }));`
@@ -578,8 +582,8 @@ flashes.add(new GPUTimeWindowFilter({
   output: {ids, count, overflow}, outputMask: mask
 }));
 density.add(new GPUPointDensity({
-  positions: flashMeters, mask, bounds: viewBounds.importToGraph(density),
-  gridSize: [${state.resolution === 'coarse' ? 80 : state.resolution === 'fine' ? 192 : 128}, ${state.resolution === 'coarse' ? 52 : state.resolution === 'fine' ? 126 : 84}], statistic: '${state.statistic === 'count' ? 'count' : 'sum'}',${state.statistic === 'energy' ? '\n  weights: flashEnergy,' : ''}
+  positions: flashEqualAreaMeters, mask, bounds: viewBounds.importToGraph(density),   // Lambert equal-area meters
+  gridSize: [${state.resolution === 'coarse' ? 80 : state.resolution === 'fine' ? 192 : 128}, ${state.resolution === 'coarse' ? 52 : state.resolution === 'fine' ? 126 : 84}], statistic: 'count',   // or weights: flashEnergy with statistic 'sum'
   smoothing: {kernel: gaussian.importToGraph(density), kernelWidth: 17, kernelHeight: 17, strategy: 'direct'},
   output: {values, extent, histogram}
 }));`
@@ -606,7 +610,7 @@ play.encode(commandEncoder, {parameters: undefined});`,
     {
       id: 'metrics',
       label: 'Track metrics',
-      detail: 'Measure each tangent-plane step: speed and heading'
+      detail: 'Measure each great-circle step: speed and heading'
     },
     {id: 'playhead', label: 'Playhead', detail: 'Interpolate one cell position per track'},
     {
@@ -656,7 +660,7 @@ play.encode(commandEncoder, {parameters: undefined});`,
       textAlternative:
         'Classed warm-to-cool speed trails and arrowheads sit over dim context tracks.',
       optionsMode: 'fresh',
-      body: '**`GPUTrajectoryMetrics`** measures each segment on its own tangent plane: distance divided by elapsed time gives speed. The histogram is the full step distribution; the live readouts report the median and fastest step.\n\nSteps above the displayed range are tracker-jump candidates, not evidence of a faster storm. Fixes are about ten minutes apart, so a cell head is an interpolation between observations.',
+      body: '**`GPUTrajectoryMetrics`** measures each segment on the sphere (great-circle distance): distance divided by elapsed time gives speed. The histogram is the full step distribution; the live readouts report the median and fastest step.\n\nSteps above the displayed range are tracker-jump candidates, not evidence of a faster storm. Fixes are about ten minutes apart, so a cell head is an interpolation between observations.',
       evidence:
         'Across **{{tracks}}**, the median is **{{medianSpeed}}** and the largest observed step is **{{fastest}}**; the histogram keeps every 10-minute step in the denominator.',
       caveat:

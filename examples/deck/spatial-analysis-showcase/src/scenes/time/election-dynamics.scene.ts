@@ -176,7 +176,7 @@ export default defineScene<ElectionDynamicsOptions>({
       max: 0.2,
       step: 0.01,
       default: 0.05,
-      help: 'Local Moran z-test level (analytic, not permutation). Counties below it are state "not significant" in that year.'
+      help: 'Local Moran z-test level (analytic, not permutation). Counties whose p-value is above it are state "not significant" in that year.'
     },
     {
       kind: 'select',
@@ -293,6 +293,16 @@ export default defineScene<ElectionDynamicsOptions>({
     },
     {id: 'stayLag', label: 'Stay by neighbors low / mid / high'},
     {id: 'stayLisa', label: 'Stay (LISA states)'},
+    {
+      id: 'homogeneity',
+      label: 'Do neighbors change the matrix? (Q and LR)',
+      help: "Chi-square and likelihood-ratio tests that the lag-conditional transition matrices equal the pooled matrix (giddy Q and LR). A small p says the neighbors' class matters; a large p says do not read differences between the three matrices. Asymptotic and unreliable with sparse rows."
+    },
+    {
+      id: 'sparseStates',
+      label: 'Sparse lag-conditional rows',
+      help: 'Lag-conditional (neighbor class, from-class) rows with fewer than 5 moves, and rows with none. Few moves make the tests and the probabilities unreliable.'
+    },
     {id: 'row0', label: 'Matrix row 1'},
     {id: 'row1', label: 'Matrix row 2'},
     {id: 'row2', label: 'Matrix row 3'},
@@ -397,9 +407,11 @@ graph.add(new GPUTransitionMatrix({classes, rows, periods: ${state.through === '
   output: {counts, probabilities, rowTotals, ignored}}));
 graph.add(new GPUSpatialMarkov({values, classes, classCount: 5, weights, periods: ${state.through === '2024' ? 7 : 6},
   periodLag: ${state.periodLag}, lagMaximumClassCount: 3, lagParameters, lagMethods: ['equal-interval', 'quantile'],
-  mask: rowMask, output: {counts: spatialCounts, lagBreaks, lagClassCount, lagClasses}}));
+  mask: rowMask, output: {counts: spatialCounts, lagBreaks, lagClassCount, lagClasses,
+    homogeneity, stateSparsity}}));   // Q and LR tests, sparse rows
 graph.add(new GPULISAMarkov({values, weights, periods: ${state.through === '2024' ? 7 : 6}, periodLag: ${state.periodLag},
-  parameters: lisaParameters, mask: rowMask, output: {counts: lisaCounts, quadrants}}));
+  parameters: lisaParameters, gating: 'significance',   // the default 'none' has four states
+  mask: rowMask, output: {counts: lisaCounts, quadrants}}));
 
 // parameters, per frame, no rebuild
 breaksParameters.write(getGPUClassBreaksParameterValues(
@@ -411,7 +423,7 @@ lisaParameters.write(getGPUSpatialAutocorrelationParameterValues(
     what: "`GPUTransitionMatrix` counts how many counties moved from class a to class b between elections (giddy `Markov`). `GPUSpatialMarkov` splits those counts by the class of the neighbors' average at the start (Rey 2001). `GPULISAMarkov` counts moves between local Moran states (HH, LH, LL, HL, not significant).",
     why: 'A single map says who votes how; a transition matrix says how sticky that is. If a county in a Democratic neighborhood is much less likely to switch than one in a Republican neighborhood, regional context shapes change, which a non-spatial matrix cannot show.',
     howToRead:
-      'Each matrix row is the class a county is in now; the numbers are the chances of each class at the next election. A strong diagonal means persistence. Compare the three neighbor-conditioned matrices: differences between them are the spatial effect.'
+      'Each matrix row is the class a county is in now; the numbers are the chances of each class at the next election. A strong diagonal means persistence. Compare the three neighbor-conditioned matrices: differences between them are the spatial effect, if the homogeneity test says they differ.'
   },
 
   create: async ctx => (await import('./election-dynamics.compute')).createElectionDynamics(ctx),
@@ -458,11 +470,11 @@ lisaParameters.write(getGPUSpatialAutocorrelationParameterValues(
       headline: 'Persistence differs by neighboring vote class',
       textAlternative:
         'Counties are shaded by neighbor-average class while conditioned transition rows compare low, middle and high surroundings.',
-      body: "**`GPUSpatialMarkov`** repeats the matrix but splits every transition by the class of the **average of the county's neighbors** at the start (queen contiguity, row-standardised). Three matrices result: for counties in low, middle and high surroundings.\n\nIf the three matrices were the same, location would not matter. Switch **Transition matrix shown** between *low-lag*, *middle-lag* and *high-lag* and compare the rows and **Stay by neighbors**. Setting **Map shows** to *Class of the neighbors' average* shows the context itself. The lag classes come from their own pooled breaks, set by **Neighbor class method** and **Neighbor classes**.",
+      body: "**`GPUSpatialMarkov`** repeats the matrix but splits every transition by the class of the **average of the county's neighbors** at the start (queen contiguity, row-standardised). Three matrices result: for counties in low, middle and high surroundings.\n\nIf the three matrices were the same, location would not matter: **{{homogeneity}}** tests exactly that against the pooled matrix. Switch **Transition matrix shown** between *low-lag*, *middle-lag* and *high-lag* and compare the rows and **Stay by neighbors**. Setting **Map shows** to *Class of the neighbors' average* shows the context itself. The lag classes come from their own pooled breaks, set by **Neighbor class method** and **Neighbor classes**.",
       options: {matrix: 'lag0', mapView: 'lag', year: 6},
       highlight: {readout: 'stayLag'},
       controls: ['matrix', 'mapView', 'lagMethod', 'lagClassCount'],
-      readouts: ['stayLag', 'row0', 'row1']
+      readouts: ['stayLag', 'homogeneity', 'sparseStates', 'row0', 'row1']
     },
     {
       id: 'lisa-markov',
@@ -470,7 +482,7 @@ lisaParameters.write(getGPUSpatialAutocorrelationParameterValues(
       headline: 'Local Moran states persist across elections',
       textAlternative:
         'Counties are classified as high-high, low-low, spatial outliers or nonsignificant for the selected election.',
-      body: '**`GPULISAMarkov`** runs a local Moran test in each election and counts how counties move between the states HH (high among high), LL (low among low), LH, HL and not significant. HH and LL are the regional blocs, for example the Democratic urban and coastal counties and the Republican Great Plains and South.\n\nThe **Local Moran reference** choice matters: on each year\'s own mean, "high" is relative to that election; pooled, "high" means above the 24-year mean, so a national shift moves counties between states. The test is analytic (a z-test), not a permutation test, so p-values differ from esda\'s permutation inference. **LISA significance level** sets the threshold.',
+      body: '**`GPULISAMarkov`** runs a local Moran test in each election and counts how counties move between the states HH (high among high), LL (low among low), LH, HL and not significant. HH and LL are the regional blocs, for example the Democratic urban and coastal counties and the Republican Great Plains and South.\n\nThe **Local Moran reference** choice matters: on each year\'s own mean, "high" is relative to that election; pooled, "high" means above the 24-year mean, so a national shift moves counties between states. The test is analytic (a z-test), not a permutation test, so p-values differ from esda\'s permutation inference. **LISA significance level** sets the threshold. Counties that are islands or have no value in an election are skipped, not put in the not-significant state.',
       options: {matrix: 'lisa', mapView: 'lisa', year: 6, lisaSignificance: 0.05},
       highlight: {readout: 'stayLisa'},
       controls: ['lisaMoments', 'lisaSignificance'],

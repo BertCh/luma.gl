@@ -13,6 +13,8 @@ import {
 } from '@luma.gl/experimental/gpu-dataframe';
 import {
   addSpaceTimeHotSpotsRecipe,
+  type GPUInferenceMetadata,
+  type GPUMultipleTestingMethod,
   getGPUEmergingHotSpotParameterValues,
   getGPUNeighborSearchParameterValues,
   GPU_EMERGING_HOT_SPOT_PARAMETER_LENGTH,
@@ -30,7 +32,12 @@ import {formatCount, SpatialAnalysisResources} from '../../engine/resources';
 import {SummaryReader} from '../../engine/summary-reader';
 import type {SceneContext, SceneInstance} from '../scene';
 import {EmergingCategoryRasterLayer} from './b13-category-layer';
-import {EMERGING_CATEGORY_COLORS, EMERGING_CATEGORY_NAMES} from './b13-categories';
+import {
+  CORRECTION_NAMES,
+  EMERGING_CATEGORY_COLORS,
+  EMERGING_CATEGORY_NAMES,
+  EMERGING_CUBE_SLICE_COUNTS
+} from './b13-categories';
 import {
   NATURE_YEAR_SECONDS,
   fillCategoryMask,
@@ -41,12 +48,13 @@ import {
 /** Option state of the emerging-hot-spots scene. */
 export type EmergingHotSpotsOptions = {
   groupType: string;
-  cube: 'months' | 'weeks' | 'hours';
+  cube: 'months' | 'weeks' | 'days';
   neighborhood: 'lattice' | 'weights';
   radius: number;
   weightKind: 'binary' | 'inverse-distance' | 'kernel';
   temporalWindow: number;
   confidence: '0.9' | '0.95' | '0.99';
+  multipleTesting: GPUMultipleTestingMethod;
   tieTrend: boolean;
   trendLevel: number;
   persistentFraction: number;
@@ -62,7 +70,6 @@ export type EmergingHotSpotsOptions = {
 const CELL_METERS = 500;
 const MAXIMUM_RADIUS_CELLS = 4;
 const WEEK_SECONDS = 7 * 86400;
-const WEEK_COUNT = 52;
 /** 28 April through 1 May, inclusive, in Chicago local-wall-clock seconds. */
 const CITY_NATURE_CHALLENGE_START = 117 * 86400;
 const CITY_NATURE_CHALLENGE_END = 121 * 86400;
@@ -82,17 +89,39 @@ const MONTH_NAMES = [
   'Dec'
 ];
 
+/** Days per slice of the `days` cube: 73 slices cover the 365 days of 2023 exactly. */
+const DAYS_PER_SLICE = 5;
+
+/**
+ * Cube sources. Every slice axis is linear time (the recipe rejects cyclic month-of-year and hour-of-day fields,
+ * which pool every year or day and carry no trend). `slices` is the recipe's absolute step, or null for the
+ * `GPUTemporalReduction` path.
+ */
 const CUBES = {
-  months: {sliceCount: 12, field: 'month' as const, firstValue: 1},
-  hours: {sliceCount: 24, field: 'hour' as const, firstValue: 0},
-  weeks: {sliceCount: WEEK_COUNT, field: null, firstValue: 0}
+  months: {
+    sliceCount: EMERGING_CUBE_SLICE_COUNTS.months,
+    slices: {step: 'month' as const, origin: {year: 2023, month: 1}, count: 12}
+  },
+  days: {
+    sliceCount: EMERGING_CUBE_SLICE_COUNTS.days,
+    slices: {
+      step: 'day' as const,
+      interval: DAYS_PER_SLICE,
+      origin: {year: 2023, month: 1, day: 1},
+      count: 73
+    }
+  },
+  weeks: {sliceCount: EMERGING_CUBE_SLICE_COUNTS.weeks, slices: null}
 };
 
 /** Label of one slice of a cube. */
 export function formatSliceLabel(cube: EmergingHotSpotsOptions['cube'], slice: number): string {
   if (cube === 'months') return `${MONTH_NAMES[slice] ?? '?'} 2023`;
-  if (cube === 'hours') {
-    return `${String(slice).padStart(2, '0')}:00 to ${String((slice + 1) % 24).padStart(2, '0')}:00`;
+  if (cube === 'days') {
+    const first = new Date(Date.UTC(2023, 0, 1 + slice * DAYS_PER_SLICE));
+    const last = new Date(Date.UTC(2023, 0, DAYS_PER_SLICE + slice * DAYS_PER_SLICE));
+    const formatDay = (date: Date) => `${MONTH_NAMES[date.getUTCMonth()]} ${date.getUTCDate()}`;
+    return `Days ${slice * DAYS_PER_SLICE + 1}-${(slice + 1) * DAYS_PER_SLICE}: ${formatDay(first)} to ${formatDay(last)}`;
   }
   const start = new Date(Date.UTC(2023, 0, 1 + slice * 7));
   const end = new Date(Date.UTC(2023, 0, 7 + slice * 7));
@@ -112,14 +141,16 @@ type Variant = {
   coldSlices: Buffer;
   overflow: Buffer;
   occupiedCount: Buffer | null;
+  inference: GPUInferenceMetadata;
   reader: SummaryReader;
 };
 
 /**
  * Emerging hot spot analysis of Chicago nature observations. One cube (cells x time slices) of event counts is
- * built on the GPU three ways: `addSpaceTimeHotSpotsRecipe` over calendar months or hours, or
- * `GPUTemporalReduction` over seven-day buckets. `GPUEmergingHotSpots` then runs space-time Gi*,
- * the Mann-Kendall trend and the 17-category classification, with the neighborhood either a
+ * built on the GPU three ways: `addSpaceTimeHotSpotsRecipe` over absolute calendar months or five-day periods
+ * of 2023, or `GPUTemporalReduction` over seven-day buckets. `GPUEmergingHotSpots` then runs space-time Gi*, a
+ * multiple-testing correction over all valid bins, the Mann-Kendall trend and the 18-code classification (17
+ * categories plus `UNDETERMINED`), with the neighborhood either a
  * lattice radius or a `GPUNeighborSearch` weights table. Cube source and neighborhood are
  * compile-time, so each of the six combinations is compiled on first use and cached; every other
  * option is a parameter-buffer write.
@@ -245,12 +276,13 @@ export async function createEmergingHotSpots(
 
   function buildVariant(
     cube: EmergingHotSpotsOptions['cube'],
-    neighborhood: EmergingHotSpotsOptions['neighborhood']
+    neighborhood: EmergingHotSpotsOptions['neighborhood'],
+    multipleTesting: GPUMultipleTestingMethod
   ): Variant {
     const spec = CUBES[cube];
     const sliceCount = spec.sliceCount;
     const binCount = cellCount * sliceCount;
-    const id = `${cube}-${neighborhood}`;
+    const id = `${cube}-${neighborhood}-${multipleTesting}`;
     const buffer = (name: string, bytes: number) => resources.createBuffer(`${id}-${name}`, bytes);
     const counts = buffer('counts', binCount * 4);
     const giZ = buffer('gi-z', binCount * 4);
@@ -302,6 +334,7 @@ export async function createEmergingHotSpots(
     }
 
     let occupiedCount: Buffer | null = null;
+    let inference: GPUInferenceMetadata;
     if (cube === 'weeks') {
       const occupiedIds = buffer('occupied-ids', binCount * 4);
       occupiedCount = buffer('occupied-count', 4);
@@ -330,34 +363,32 @@ export async function createEmergingHotSpots(
           }
         })
       );
-      graph.add(
-        new GPUEmergingHotSpots({
-          id: `${id}-emerging`,
-          values: v('counts', counts, 'uint32', binCount),
-          ...(weights ? {weights} : {gridWidth, gridHeight, maximumRadius: MAXIMUM_RADIUS_CELLS}),
-          sliceCount,
-          mask: v('cell-mask', cellMaskBuffer, 'uint32', cellCount),
-          parameters: hotSpotParameters.importToGraph(graph),
-          giZScores: v('gi-z', giZ, 'float32', binCount),
-          trendZ: v('trend-z', trendZ, 'float32', cellCount),
-          trendP: v('trend-p', trendP, 'float32', cellCount),
-          trendS: v('trend-s', trendS, 'sint32', cellCount),
-          category: v('category', category, 'uint32', cellCount),
-          hotSliceCount: v('hot-slices', hotSlices, 'uint32', cellCount),
-          coldSliceCount: v('cold-slices', coldSlices, 'uint32', cellCount)
-        })
-      );
+      const emerging = new GPUEmergingHotSpots({
+        id: `${id}-emerging`,
+        values: v('counts', counts, 'uint32', binCount),
+        ...(weights ? {weights} : {gridWidth, gridHeight, maximumRadius: MAXIMUM_RADIUS_CELLS}),
+        sliceCount,
+        mask: v('cell-mask', cellMaskBuffer, 'uint32', cellCount),
+        parameters: hotSpotParameters.importToGraph(graph),
+        multipleTesting,
+        giZScores: v('gi-z', giZ, 'float32', binCount),
+        trendZ: v('trend-z', trendZ, 'float32', cellCount),
+        trendP: v('trend-p', trendP, 'float32', cellCount),
+        trendS: v('trend-s', trendS, 'sint32', cellCount),
+        category: v('category', category, 'uint32', cellCount),
+        hotSliceCount: v('hot-slices', hotSlices, 'uint32', cellCount),
+        coldSliceCount: v('cold-slices', coldSlices, 'uint32', cellCount)
+      });
+      graph.add(emerging);
+      inference = emerging.getInferenceMetadata();
     } else {
-      addSpaceTimeHotSpotsRecipe(graph, {
+      const recipe = addSpaceTimeHotSpotsRecipe(graph, {
         id: `${id}-recipe`,
         timestamps: v('time-words', timeWordsBuffer, 'uint32x2', eventCount),
         mask: v('event-mask', eventMaskBuffer, 'uint32', eventCount),
         calendarParameters: calendarParameters.importToGraph(graph),
-        slices: {
-          field: spec.field!,
-          firstValue: spec.firstValue,
-          count: sliceCount
-        },
+        slices: spec.slices!,
+        multipleTesting,
         cells: weights
           ? {
               kind: 'ids',
@@ -387,6 +418,7 @@ export async function createEmergingHotSpots(
           coldSliceCount: v('cold-slices', coldSlices, 'uint32', cellCount)
         }
       });
+      inference = recipe.inference;
     }
     const compiled = resources.track(graph.compile());
     const reader = new SummaryReader(
@@ -422,16 +454,17 @@ export async function createEmergingHotSpots(
       coldSlices,
       overflow,
       occupiedCount,
+      inference,
       reader
     };
   }
 
   function getVariant(): Variant {
-    const {cube, neighborhood} = ctx.options;
-    const key = `${cube}-${neighborhood}`;
+    const {cube, neighborhood, multipleTesting} = ctx.options;
+    const key = `${cube}-${neighborhood}-${multipleTesting}`;
     let variant = variants.get(key);
     if (!variant) {
-      variant = buildVariant(cube, neighborhood);
+      variant = buildVariant(cube, neighborhood, multipleTesting);
       variants.set(key, variant);
     }
     return variant;
@@ -473,10 +506,18 @@ export async function createEmergingHotSpots(
     dirty = true;
   }
 
-  /** Number of Gi* decisions in the active family; shown because no multiplicity correction is applied. */
+  /** Number of Gi* decisions in the active family and the correction applied to them. */
   function publishTestFamily(): void {
     const sliceCount = current?.sliceCount ?? CUBES[ctx.options.cube].sliceCount;
-    ctx.setReadout('tests', `${formatCount(activeCells * sliceCount)} Gi* bins (uncorrected)`);
+    ctx.setReadout(
+      'tests',
+      `${formatCount(activeCells * sliceCount)} Gi* bins (${CORRECTION_NAMES[ctx.options.multipleTesting]})`
+    );
+  }
+
+  /** Publishes the variant's inference description to the legend. */
+  function publishInference(): void {
+    ctx.setLegendData('inference', current?.inference);
   }
 
   function writeParameters(): void {
@@ -487,6 +528,7 @@ export async function createEmergingHotSpots(
         radius: options.radius,
         temporalWindow: options.temporalWindow,
         confidenceLevel,
+        multipleTesting: options.multipleTesting,
         trendSignificanceLevel: options.tieTrend ? 1 - confidenceLevel : options.trendLevel,
         persistentFraction: options.persistentFraction
       })
@@ -538,7 +580,7 @@ export async function createEmergingHotSpots(
       y: sliceTotals,
       mode: 'area',
       playhead: shownSlice + 1,
-      xLabel: ctx.options.cube === 'hours' ? 'hour of day' : 'time slice',
+      xLabel: 'time slice',
       yLabel: 'observations',
       formatX: value => formatSliceLabel(ctx.options.cube, Math.round(value) - 1),
       link: {
@@ -546,20 +588,21 @@ export async function createEmergingHotSpots(
         label: value => formatSliceLabel(ctx.options.cube, Math.round(value) - 1)
       },
       description:
-        'Records in every time slice, summed across the active study-area cells. Dates and hours use the source Chicago local wall clock; the playhead is the slice shown on the map.'
+        'Records in every time slice, summed across the active study-area cells. Dates use the source Chicago local wall clock; the playhead is the slice shown on the map.'
     });
   }
 
   function showSummary(): void {
     if (!cpuCategory || !cpuCounts || !current) return;
-    const categoryCounts = new Array<number>(17).fill(0);
+    const categoryCounts = new Array<number>(EMERGING_CATEGORY_NAMES.length).fill(0);
     for (let cell = 0; cell < cellCount; cell++) {
-      if (cpuCategory[cell] < 17) categoryCounts[cpuCategory[cell]]++;
+      if (cpuCategory[cell] < categoryCounts.length) categoryCounts[cpuCategory[cell]]++;
     }
     const sum = (from: number, to: number) =>
       categoryCounts.slice(from, to + 1).reduce((total, value) => total + value, 0);
     ctx.setReadout('hot', sum(1, 8));
     ctx.setReadout('cold', sum(9, 16));
+    ctx.setReadout('undetermined', categoryCounts[17]);
     ctx.setReadout('new', categoryCounts[1]);
     ctx.setReadout('intensifying', categoryCounts[3]);
     ctx.setReadout('persistent', categoryCounts[4]);
@@ -574,7 +617,7 @@ export async function createEmergingHotSpots(
       horizontal: true,
       table: false,
       description:
-        'Counts of active cells in each of the eight hot and eight cold emerging-pattern categories.'
+        'Counts of active cells in each of the eight hot and eight cold emerging-pattern categories, plus cells whose category cannot be decided (final slice missing, or too few slices for a trend).'
     });
     const slices = current.sliceCount;
     const perSlice = new Array<number>(slices).fill(0);
@@ -599,7 +642,7 @@ export async function createEmergingHotSpots(
           ? [{at: 17.7, label: 'City Nature Challenge, 28 Apr–1 May'}]
           : ctx.options.cube === 'months'
             ? [{at: 4, label: 'City Nature Challenge, 28 Apr–1 May'}]
-            : []
+            : [{at: 117 / DAYS_PER_SLICE + 1, label: 'City Nature Challenge, 28 Apr–1 May'}]
     });
     ctx.setReadout(
       'cubeEvents',
@@ -620,6 +663,7 @@ export async function createEmergingHotSpots(
   writeCellMask();
   writeParameters();
   current = getVariant();
+  publishInference();
   const playbackClock = createPlaybackClock(
     ctx,
     {time: 'slice', play: 'play'},
@@ -633,10 +677,12 @@ export async function createEmergingHotSpots(
     getCompiledGraphs: () => (current ? [current.compiled as CompiledGPUCommandGraph<never>] : []),
 
     setOption(id, _value, state) {
-      if (id === 'cube' || id === 'neighborhood') {
+      if (id === 'cube' || id === 'neighborhood' || id === 'multipleTesting') {
         current = getVariant();
         playbackClock.setRange(1, current.sliceCount);
         publishTestFamily();
+        publishInference();
+        if (id === 'multipleTesting') writeParameters();
         if (id === 'cube') {
           sliceTotals = null;
           ctx.setChart('sliceTimeline', null);
@@ -842,10 +888,5 @@ export async function createEmergingHotSpots(
   }
 }
 
-// Exported for the scene's code snippet text.
-export const EMERGING_CUBE_SLICE_COUNTS = {
-  months: CUBES.months.sliceCount,
-  weeks: CUBES.weeks.sliceCount,
-  hours: CUBES.hours.sliceCount
-};
+export {EMERGING_CUBE_SLICE_COUNTS};
 export const EMERGING_YEAR_SECONDS = NATURE_YEAR_SECONDS;

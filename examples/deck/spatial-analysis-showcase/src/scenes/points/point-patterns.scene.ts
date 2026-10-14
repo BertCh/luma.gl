@@ -406,7 +406,7 @@ export default defineScene<PointPatternOptions>({
     {
       id: 'expectedNN',
       label: 'Expected nearest-neighbour distance',
-      help: 'The mean distance to the nearest neighbour of a random pattern of the same intensity.'
+      help: 'The mean distance to the nearest neighbour of a random pattern of the same intensity, with Donnelly’s edge correction: points near the window edge have farther neighbours than an infinite plane would give.'
     },
     {id: 'observedNN', label: 'Observed nearest-neighbour distance'},
     {
@@ -580,7 +580,7 @@ for (let run = 0; run < 39; run++) {
 }`,
 
   about: {
-    what: "`GPURipley` counts pairs of points within growing radii to estimate K(r) and Besag's L(r) = sqrt(K/pi), with edge corrections. `GPURipleyDistanceFunctions` adds the nearest-neighbour function G, the empty-space function F and J = (1-G)/(1-F). `GPUPointPatternIndices` gives each point's nearest-neighbour distance, the Clark-Evans ratio and quadrat dispersion. The story reruns the same compiled graph over 39 random patterns for a Monte Carlo envelope. Parity target: spatstat `Kest`, `Lest`, `Gest`, `Fest`, `Jest` (rectangle windows) and pointpats.",
+    what: "`GPURipley` counts pairs of points within growing radii to estimate K(r) and Besag's L(r) = sqrt(K/pi), with edge corrections. `GPURipleyDistanceFunctions` adds the nearest-neighbour function G, the empty-space function F and J = (1-G)/(1-F). `GPUPointPatternIndices` gives each point's nearest-neighbour distance, the Clark-Evans ratio (Donnelly edge-corrected expectation, with a two-sided p-value) and quadrat dispersion (chi-square with a p-value). The story reruns the same compiled graph over 39 random patterns for a Monte Carlo envelope. Parity target: spatstat `Kest`, `Lest`, `Gest`, `Fest`, `Jest` (rectangle windows) and pointpats.",
     why: 'Before modelling a point pattern you need to know how it departs from complete spatial randomness: at what distance do events attract, and is the clustering real or an artefact of the window? The curves answer that scale by scale, and the envelope says what chance alone would draw.',
     howToRead:
       'L(r) - r above zero is clustering at that radius; it is only convincing above the grey band of random patterns. G rising early and F rising late both indicate clustering; J below 1 agrees. Clark-Evans R below 1 and a quadrat variance-to-mean ratio above 1 are the single-number versions. A hatched area is inside the window but not city land: no record can fall there, which is why "random in the rectangle" is an unfair null.'

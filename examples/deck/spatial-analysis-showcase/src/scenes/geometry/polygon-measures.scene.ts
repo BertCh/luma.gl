@@ -196,7 +196,7 @@ export default defineScene<PolygonMeasuresOptions>({
       group: 'Label points',
       apply: 'param',
       default: false,
-      help: 'A circle around each label point with the distance output as its radius.'
+      help: 'A circle around each label point with the distance output as its radius, in the planar metres of the layer (Web Mercator metres for counties, so county radii exceed ground distance by 1 / cos(latitude)).'
     },
     {
       kind: 'toggle',

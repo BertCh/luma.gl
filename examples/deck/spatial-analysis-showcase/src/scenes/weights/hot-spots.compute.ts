@@ -9,11 +9,14 @@ import {
   getGPUNeighborSearchParameterValues,
   getGPUPermutationParameterValues,
   getGPUSpatialAutocorrelationParameterValues,
+  GPU_EARTH_MEAN_RADIUS_METERS,
   GPU_NEIGHBOR_SEARCH_PARAMETER_LENGTH,
   GPU_PERMUTATION_PARAMETER_LENGTH,
   GPU_SPATIAL_AUTOCORRELATION_PARAMETER_LENGTH,
+  GPU_SPATIAL_AUTOCORRELATION_STATISTICS_LENGTH,
   type GPUCellFamily,
-  type GPUPermutationAlternative
+  type GPUInferenceAlternative,
+  type GPUSpatialContext
 } from '@luma.gl/experimental/gpu-spatial-analysis';
 import {GPUCommandGraph, type CompiledGPUCommandGraph} from '@luma.gl/gpgpu/gpu-core';
 import {
@@ -117,7 +120,7 @@ export type HotSpotsOptions = {
   selfWeight: 'include' | 'exclude';
   inference: 'analytic' | 'permutation' | 'none';
   falseDiscoveryRate: boolean;
-  alternative: GPUPermutationAlternative;
+  alternative: GPUInferenceAlternative;
   maximumNeighbors: string;
   permutations: number;
   seed: number;
@@ -163,8 +166,20 @@ const HIDDEN: SpatialAnalysisColor = [0, 0, 0, 0];
 const LABELLED_HOT_SPOTS = 3;
 /** Bars of the z-score histogram. */
 const Z_BIN_COUNT = 32;
-/** Ground metres per degree, averaged over east-west and north-south at Chicago's latitude. */
-const METERS_PER_DEGREE_MEAN = 97_000;
+/**
+ * The cell-center neighbourhood is a great-circle distance band, so its radius is in meters on
+ * the ground and never in degrees.
+ */
+const CELL_SPATIAL_CONTEXT: GPUSpatialContext = {
+  coordinateSpace: 'longitude-latitude',
+  metric: 'great-circle',
+  units: 'meters'
+};
+/**
+ * A band of one or two cell widths holds 4 to 8 neighbours (6 for H3), below the recipe's
+ * default of 8, so this scene asks for 4 and the radius slider starts at one cell.
+ */
+const CELL_MINIMUM_NEIGHBORS = 4;
 /** Average H3 edge length in metres per resolution. */
 const H3_EDGE_METERS: Record<number, number> = {
   4: 22_606,
@@ -177,6 +192,9 @@ const H3_EDGE_METERS: Record<number, number> = {
 const EQUATOR_CIRCUMFERENCE = 40_075_016.68;
 const EARTH_RADIUS = 6_378_137;
 const DEGREES = Math.PI / 180;
+
+/** Records per square kilometre, one decimal. */
+const formatDensity = (value: number): string => value.toFixed(value < 10 ? 1 : 0);
 
 const geographyCache = new Map<GeographyId, Promise<Geography>>();
 
@@ -292,6 +310,7 @@ export async function createHotSpots(
       selfWeight: isGi && o.selfWeight === 'exclude' ? 0 : 1,
       falseDiscoveryRate: o.falseDiscoveryRate && (isGi || o.inference !== 'none'),
       alternative: o.alternative,
+      rowStandardized: o.weightTransform === 'row',
       maximumNeighbors: Number(o.maximumNeighbors),
       precomputed
     };
@@ -303,6 +322,7 @@ export async function createHotSpots(
       variant.inference,
       variant.selfWeight,
       variant.falseDiscoveryRate,
+      variant.rowStandardized,
       variant.inference === 'permutation'
         ? `${variant.alternative}-${variant.maximumNeighbors}`
         : '',
@@ -413,7 +433,7 @@ export async function createHotSpots(
           ctx.ground(),
           breaks.length + 1
         ),
-        unit: cells ? 'records' : info.unit,
+        unit: cells ? 'records per km²' : info.unit,
         extent,
         format: cells ? formatCount : (value: number) => value.toFixed(info.digits),
         method: `${CLASSIFICATION_METHOD_INFO[method].label}, GVF ${gvf.toFixed(2)}`,
@@ -613,7 +633,7 @@ export async function createHotSpots(
       if (apart) chosen.push(row);
       if (chosen.length === LABELLED_HOT_SPOTS) break;
     }
-    const unit = o.source === 'nature-cells' ? 'records' : getVariableInfo(o.variable).unit;
+    const unit = o.source === 'nature-cells' ? 'records per km²' : getVariableInfo(o.variable).unit;
     const labels: MapAnnotation[] = chosen.map((row, rank) => {
       const {coordinate, name, value} = target.describeRow(row);
       const z = formatSigned(snapshot.zScores[row], 1);
@@ -903,6 +923,24 @@ export async function createHotSpots(
     const tableCount = create('table-count', 4);
     const tableOverflow = create('table-overflow', 4);
     const centersDegrees = create('centers-degrees', rows * 8);
+    // Study area: the Chicago tracts, one polygon per feature, in longitude/latitude degrees.
+    const tractDataset = ctx.datasets.get('chicago-tracts');
+    const studyVertices = tractDataset.column<Float32Array>('vertices');
+    const studyPolygonOffsets = tractDataset.column<Uint32Array>('polygonRingOffsets');
+    const studyFeatureOffsets = Uint32Array.from(
+      {length: studyPolygonOffsets.length},
+      (_, index) => index
+    );
+    const studyArea = {
+      vertices: create('study-vertices', Float32Array.from(studyVertices)),
+      vertexCount: studyVertices.length / 2,
+      featureOffsets: create('study-feature-offsets', studyFeatureOffsets),
+      polygonOffsets: create('study-polygon-offsets', Uint32Array.from(studyPolygonOffsets)),
+      ringOffsets: create(
+        'study-ring-offsets',
+        Uint32Array.from(tractDataset.column<Uint32Array>('ringOffsets'))
+      )
+    };
     const centersMeters = create('centers-meters', rows * 8);
     const csr = {
       offsets: create('offsets', (rows + 1) * 4),
@@ -928,16 +966,6 @@ export async function createHotSpots(
       'float32',
       GPU_NEIGHBOR_SEARCH_PARAMETER_LENGTH
     );
-    let minimumLng = Infinity;
-    let minimumLat = Infinity;
-    let maximumLng = -Infinity;
-    let maximumLat = -Infinity;
-    for (let index = 0; index < pointCount; index++) {
-      minimumLng = Math.min(minimumLng, positionsLngLat[index * 2]);
-      maximumLng = Math.max(maximumLng, positionsLngLat[index * 2]);
-      minimumLat = Math.min(minimumLat, positionsLngLat[index * 2 + 1]);
-      maximumLat = Math.max(maximumLat, positionsLngLat[index * 2 + 1]);
-    }
     const [originLng, originLat] = tracts.origin;
     const cellProjection = new LocalMetricProjection(tracts.origin);
     const tractBuffers = createGeographyBuffers(resources, tracts, 'cells-tracts');
@@ -967,6 +995,7 @@ export async function createHotSpots(
         getResolution(),
         variant.selfWeight,
         variant.falseDiscoveryRate,
+        variant.rowStandardized,
         o.statistic === 'gi-star' && o.inference === 'permutation'
           ? `perm-${o.alternative}-${o.maximumNeighbors}`
           : 'plain'
@@ -999,20 +1028,59 @@ export async function createHotSpots(
           mask: view('nature-mask', pointMask, 'uint32', pointCount),
           family: o.family,
           resolution: getResolution(),
-          tableCapacity: rows,
-          neighborCapacity: slots,
-          gridSize: [128, 128],
-          neighborSearchParameters: searchParameters.importToGraph(graph)
+          studyArea: {
+            polygonPositions: view(
+              'study-vertices',
+              studyArea.vertices,
+              'float32x2',
+              studyArea.vertexCount
+            ),
+            featureOffsets: view(
+              'study-feature-offsets',
+              studyArea.featureOffsets,
+              'uint32',
+              studyFeatureOffsets.length
+            ),
+            polygonOffsets: view(
+              'study-polygon-offsets',
+              studyArea.polygonOffsets,
+              'uint32',
+              studyPolygonOffsets.length
+            ),
+            ringOffsets: view(
+              'study-ring-offsets',
+              studyArea.ringOffsets,
+              'uint32',
+              tractDataset.column<Uint32Array>('ringOffsets').length
+            ),
+            candidateCapacity: rows * 4
+          },
+          cellCapacity: rows,
+          // Neighbours: cell centres within a great-circle radius in meters.
+          distanceBand: {
+            spatialContext: CELL_SPATIAL_CONTEXT,
+            neighborSearchParameters: searchParameters.importToGraph(graph),
+            gridSize: [128, 128],
+            neighborCapacity: slots,
+            rowStandardize: variant.rowStandardized
+          }
         },
+        analyze: 'density',
+        minimumNeighbors: CELL_MINIMUM_NEIGHBORS,
         parameters: parameters.importToGraph(graph),
         selfWeight: variant.selfWeight,
-        falseDiscoveryRate: variant.falseDiscoveryRate,
+        multipleTesting: variant.falseDiscoveryRate ? 'benjamini-hochberg' : 'none',
         outputs: {
           zScores: view('z-scores', buffers.zScores, 'float32', rows),
           bins: view('bins', buffers.base, 'sint32', rows),
           pValues: view('p-values', buffers.pValues, 'float32', rows),
           neighborCounts: view('neighbor-counts', buffers.neighborCounts, 'uint32', rows),
-          globalStatistics: view('statistics', buffers.statistics, 'float32', 4),
+          globalStatistics: view(
+            'statistics',
+            buffers.statistics,
+            'float32',
+            GPU_SPATIAL_AUTOCORRELATION_STATISTICS_LENGTH
+          ),
           weightsOverflow: view('weights-overflow', weightsOverflow, 'uint32', 1),
           permutation: usePermutation
             ? {
@@ -1025,6 +1093,9 @@ export async function createHotSpots(
         scratch: {
           table,
           centers,
+          // The recipe writes records per km2 and the study-row mask; the stat graph reads them.
+          values: view('values', values, 'float32', rows),
+          mask: view('mask', mask, 'uint32', rows),
           weights: {
             offsets: view('offsets', csr.offsets, 'uint32', rows + 1),
             neighbors: view('neighbors', csr.neighbors, 'uint32', slots),
@@ -1042,21 +1113,7 @@ export async function createHotSpots(
             }
           : undefined
       });
-      // Adapters: counts to analysis values and mask, cell centres to planar metres.
-      const valuesView = view('values', values, 'float32', rows);
-      const maskView = view('mask', mask, 'uint32', rows);
-      addKernelPass(graph, {
-        id: 'cells-values',
-        invocationCount: rows,
-        bindings: [
-          {name: 'counts', view: table.counts, type: 'u32', access: 'read'},
-          {name: 'values', view: valuesView, type: 'f32', access: 'read_write'},
-          {name: 'mask', view: maskView, type: 'u32', access: 'read_write'}
-        ],
-        body: `let count = counts[countsOffset + index];
-  values[valuesOffset + index] = f32(count);
-  mask[maskOffset + index] = select(0u, 1u, count > 0u);`
-      });
+      // Adapter: cell centres to planar metres.
       addKernelPass(graph, {
         id: 'cells-centers',
         invocationCount: rows,
@@ -1122,16 +1179,22 @@ export async function createHotSpots(
 
     const writeParameters = () => {
       const o = ctx.options;
-      const padding = (getSpacing() * 4) / METERS_PER_DEGREE_MEAN;
+      // The search grid covers the study area plus four cell widths. Bounds are degrees; the
+      // padding is meters on the ground turned into degrees on the sphere (longitude stretches
+      // by 1 / cos(latitude)).
+      const [west, south, east, north] = tracts.bbox;
+      const paddingLatitude = (getSpacing() * 4) / GPU_EARTH_MEAN_RADIUS_METERS / DEGREES;
+      const paddingLongitude =
+        paddingLatitude / Math.cos(Math.max(Math.abs(south), Math.abs(north)) * DEGREES);
       searchParameters.write(
         getGPUNeighborSearchParameterValues({
           bounds: [
-            minimumLng - padding,
-            minimumLat - padding,
-            maximumLng + padding,
-            maximumLat + padding
+            west - paddingLongitude,
+            south - paddingLatitude,
+            east + paddingLongitude,
+            north + paddingLatitude
           ],
-          radius: (o.radiusCells * getSpacing()) / METERS_PER_DEGREE_MEAN,
+          radius: o.radiusCells * getSpacing(),
           weightKind: 'binary',
           rowStandardize: o.weightTransform === 'row'
         })
@@ -1291,13 +1354,15 @@ export async function createHotSpots(
             : {kind: 'circle', coordinate: center, radiusMeters: radius};
         const sorted = getSortedValues(created, snapshot);
         const tooltipRows: TooltipRow[] = [
-          describeMappedRow(snapshot, best, count, 'Records', formatCount(count)),
+          describeMappedRow(snapshot, best, count, 'Records per km²', formatDensity(count)),
           {
             label: 'Rank',
             value: `${formatOrdinal(getRank(sorted, count) * 100)} percentile`,
-            unit: 'of records per cell'
+            unit: 'of records per km² over the cells'
           },
-          ...(o.display === 'values' ? [] : [{label: 'Records', value: formatCount(count)}]),
+          ...(o.display === 'values'
+            ? []
+            : [{label: 'Records per km²', value: formatDensity(count)}]),
           ...describeStatisticRows(snapshot, best)
         ];
         return {
@@ -1444,15 +1509,14 @@ export async function createHotSpots(
         return data.filter(value => Number.isFinite(value));
       },
       describeRow(row) {
-        const x = geography.centroids[row * 2];
-        const y = geography.centroids[row * 2 + 1];
         return {
-          coordinate: polygonProjection.unproject(x, y),
+          coordinate: geography.getCentroidLngLat(row),
           name: `${geography.getName(row)}, ${geography.getGroupName(row)}`,
           value: geography.getVariable(ctx.options.variable)[row]
         };
       },
       labelSeparationMeters: () => geography.medianSpacing * (geography.count > 2000 ? 8 : 4),
+      // Analysis-frame metres, the frame of `medianSpacing` in the label separation.
       rowMeters: row => [geography.centroids[row * 2], geography.centroids[row * 2 + 1]],
       bandMeters: () => null,
       getCellText: () => null,
@@ -1591,10 +1655,7 @@ export async function createHotSpots(
           title: geography.getName(row),
           subtitle: geography.getGroupName(row),
           rows: tooltipRows,
-          anchor: polygonProjection.unproject(
-            geography.centroids[row * 2],
-            geography.centroids[row * 2 + 1]
-          ) as LngLat,
+          anchor: geography.getCentroidLngLat(row) as LngLat,
           highlight: {kind: 'polygon', rings}
         };
       }

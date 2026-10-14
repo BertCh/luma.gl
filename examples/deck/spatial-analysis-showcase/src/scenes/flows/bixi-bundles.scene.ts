@@ -569,7 +569,7 @@ const graph = new GPUCommandGraph(device, {id: 'bundling'});
 graph.add(new GPUEdgeBundling({
   positions, sourceVertices, targetVertices,   // 905 stations, the busiest pairs by rides
   edgeMask,                                    // busiest ${state.edges}, at least ${state.minRides} rides
-  geographic: true,                            // longitude scaled by cos(latitude): a round kernel
+  spatialContext: {coordinateSpace: 'longitude-latitude', metric: 'none'},  // longitude scaled by cos(latitude): a round kernel
   pointsPerEdge: ${state.pointsPerEdge},
   iterations: 32,                              // compiled maximum
   densityResolution: ${state.densityResolution},
@@ -602,7 +602,7 @@ playheadParams.write(getGPUTrajectoryPlayheadParameterValues({playhead: seconds,
   annotations: ORIENTATION,
 
   about: {
-    what: 'Previously: communities against boroughs in the BIXI network. This closes the flows chapter.\n\n`GPUEdgeBundling` turns straight edges into bundled polylines with kernel-density edge bundling on the GPU, as in the airline story, here with `geographic: true` so the kernel is round on the ground at Montreal. A `GPUTrajectoryPlayhead` graph interpolates every routed ride at the clock and a `GPUTimeWindowFilter` graph selects the trail segments that are still visible.',
+    what: 'Previously: communities against boroughs in the BIXI network. This closes the flows chapter.\n\n`GPUEdgeBundling` turns straight edges into bundled polylines with kernel-density edge bundling on the GPU, as in the airline story, here with a longitude/latitude `spatialContext` so the kernel is round on the ground at Montreal. A `GPUTrajectoryPlayhead` graph interpolates every routed ride at the clock and a `GPUTimeWindowFilter` graph selects the trail segments that are still visible.',
     why: 'A flow map of every station pair is a hairball. Bundling shows where traffic concentrates, and width by rides keeps the volume readable. Running a morning of routed rides over it shows what bundling is: a summary of pairs. The corridors are an optimisation outcome, not streets.',
     howToRead:
       'Each trunk is many station pairs merged: its width follows the rides on the pair (square-root scale, one scale for every step) and its colour is the ride class. The pairs drawn are a top-N cut, so the map over-represents short, central, repeated trips; the ride-share denominator remains every retained inter-station ride, while a separate readout says how much the pair table could represent before display filters. The rides are OSRM bicycle-profile routes between the start and end station with times spread along the route, so they are modelled, not GPS traces, and speeds are modelled too. Their proximity test is a one-morning route envelope, not a street-network truth test. Rides under way at 07:30 begin at the first frame; the bundles use the whole month, the rides one morning. The bundling schedule is chaotic in 32-bit floats: two runs agree only statistically.'

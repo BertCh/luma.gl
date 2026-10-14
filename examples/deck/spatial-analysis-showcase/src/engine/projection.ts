@@ -4,9 +4,19 @@
 
 import {addMetersToLngLat, getDistanceScales} from '@math.gl/web-mercator';
 
+/** Bbox half-diagonal beyond which {@link LocalMetricProjection} exceeds about 1% scale error. */
+export const LOCAL_METRIC_MAXIMUM_HALF_DIAGONAL_METERS = 150_000;
+
 /**
  * Converts between `[longitude, latitude]` and planar meters around one origin using the same
  * high-precision distance scales deck.gl applies to `METER_OFFSETS` coordinates.
+ *
+ * This is Web Mercator scaled to be true at the origin, so it must match deck.gl for drawing. Its
+ * local scale error grows with distance from the origin: about +-0.3% over Chicago, +-3% over the
+ * Netherlands rail network, and -15% to +21% over the contiguous US. Use it for city-scale
+ * analysis only (bbox half-diagonal under about 150 km). For larger extents project with an
+ * equal-area (Albers, Lambert azimuthal) or azimuthal equidistant frame, or a great-circle
+ * `spatialContext`.
  */
 export class LocalMetricProjection {
   /** `[longitude, latitude]` origin. */

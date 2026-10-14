@@ -346,6 +346,7 @@ export const regionsMode: SpatialAnalysisModeDefinition = {
       regions: context.controls.addReadout('Regions'),
       explained: context.controls.addReadout('Explained variance'),
       within: context.controls.addReadout('Within-region SSD'),
+      pseudoF: context.controls.addReadout('Pseudo-F (Calinski-Harabasz)'),
       sizes: context.controls.addReadout('Region sizes'),
       boundary: context.controls.addReadout('Boundary links'),
       tree: context.controls.addReadout('Tree edges'),
@@ -387,6 +388,8 @@ export const regionsMode: SpatialAnalysisModeDefinition = {
         totalSsd > 0 ? `${((100 * summaryWords[words.betweenSsd]) / totalSsd).toFixed(1)}%` : 'n/a'
       );
       readouts.within.setValue(`${withinSsd.toFixed(1)} of ${totalSsd.toFixed(1)}`);
+      const pseudoF = summaryWords[words.pseudoF];
+      readouts.pseudoF.setValue(Number.isFinite(pseudoF) ? pseudoF.toFixed(1) : 'n/a');
       readouts.sizes.setValue(
         `${formatCount(summaryWords[words.minimumSize])} to ${formatCount(summaryWords[words.maximumSize])} zones`
       );

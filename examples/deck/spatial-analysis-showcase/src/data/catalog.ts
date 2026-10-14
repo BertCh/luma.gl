@@ -2,7 +2,13 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import {LocalMetricProjection, getBboxCenter, projectLngLatArray} from '../engine/projection';
+import {
+  LOCAL_METRIC_MAXIMUM_HALF_DIAGONAL_METERS,
+  LocalMetricProjection,
+  getBboxCenter,
+  projectLngLatArray
+} from '../engine/projection';
+import {haversineDistance} from '../cartography/reference-geometry';
 import {BUILTIN_DATASETS} from './builtin-datasets';
 import type {DatasetInfo} from './dataset-types';
 import {
@@ -139,6 +145,7 @@ export class LoadedDataset {
   readonly raster: LoadedRaster | null;
   private readonly projections = new Map<string, LocalMetricProjection>();
   private readonly projected = new Map<string, Float32Array>();
+  private extentWarned = false;
   private readonly tablePromises = new Map<string, Promise<LoadedTable>>();
   private readonly rasterPromises = new Map<string, Promise<LoadedRaster>>();
 
@@ -260,8 +267,13 @@ export class LoadedDataset {
   /**
    * Local metric projection. The origin defaults to the bbox center and is shared by every
    * projected column, so positions from different columns of one dataset line up.
+   *
+   * The frame is exact only near its origin (see {@link LocalMetricProjection}); a dataset whose
+   * bbox half-diagonal exceeds about 150 km logs one warning. Use an equal-area or azimuthal
+   * frame for analysis beyond city scale.
    */
   getProjection(origin?: readonly [number, number]): LocalMetricProjection {
+    this.warnOnLargeExtent();
     const resolved = origin ?? getBboxCenter(this.manifest.bbox ?? this.info.bbox);
     const key = `${resolved[0]},${resolved[1]}`;
     let projection = this.projections.get(key);
@@ -270,6 +282,19 @@ export class LoadedDataset {
       this.projections.set(key, projection);
     }
     return projection;
+  }
+
+  /** Warns once per dataset when the bbox is too large for the Mercator-local frame. */
+  private warnOnLargeExtent(): void {
+    if (this.extentWarned) return;
+    const [west, south, east, north] = this.manifest.bbox ?? this.info.bbox;
+    const halfDiagonal = haversineDistance([west, south], [east, north]) / 2;
+    if (halfDiagonal <= LOCAL_METRIC_MAXIMUM_HALF_DIAGONAL_METERS) return;
+    this.extentWarned = true;
+    // biome-ignore lint/suspicious/noConsole: scene authors must see a wrong-frame dataset
+    console.warn(
+      `${this.info.id}: ${Math.round(halfDiagonal / 1000)} km half-diagonal is too wide for the local metric frame (>1% scale error); use an Albers or azimuthal frame.`
+    );
   }
 
   /** `[longitude, latitude]` origin used when none is given. */

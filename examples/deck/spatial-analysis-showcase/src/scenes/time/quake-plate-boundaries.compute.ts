@@ -83,6 +83,7 @@ function formatNumber(value: number, digits = 2): string {
   return Number.isFinite(value) ? value.toFixed(digits) : 'n/a';
 }
 
+/** A square grid of `GRID` cells per side: its corner and cell size, in the meters of one frame. */
 type Grid = {origin: [number, number]; cellSize: number};
 
 type DistanceVariant = {
@@ -94,7 +95,9 @@ type RegionVariant = {
   region: QuakeRegionId;
   events: QuakeEvents;
   steps: QuakeBoundarySteps;
+  /** The distance-field grid, in analysis meters (drawn with `analysisFrame`). */
   grid: Grid;
+  /** Event positions in analysis meters. */
   positions: Buffer;
   depth: Buffer;
   magnitude: Buffer;
@@ -159,8 +162,8 @@ export async function createQuakePlateBoundaries(
   // Last statistics read back, kept so the completeness slider can refit without a GPU pass.
   let magnitudeCounts: Uint32Array | null = null;
 
-  function getGrid(events: QuakeEvents): Grid {
-    const [west, south, east, north] = events.windowMeters;
+  function getGrid(window: readonly [number, number, number, number]): Grid {
+    const [west, south, east, north] = window;
     const extent = Math.max(east - west, north - south) + 2 * GRID_PADDING_METERS;
     return {
       origin: [(west + east) / 2 - extent / 2, (south + north) / 2 - extent / 2],
@@ -175,8 +178,9 @@ export async function createQuakePlateBoundaries(
   ): RegionVariant {
     // The whole M4+ catalog of the window; the magnitude cut is a parameter.
     const events = readQuakeEvents(catalog, region, 4);
-    const steps = readBoundarySteps(boundaries, events.projection, region, 7);
-    const grid = getGrid(events);
+    const steps = readBoundarySteps(boundaries, events, region, 7);
+    // Distances are measured on a grid in the analysis frame, and the raster draws that grid.
+    const grid = getGrid(events.analysisWindowMeters);
     const count = events.count;
     const buffer = (name: string, data: Float32Array | Uint32Array | number) =>
       resources.createBuffer(`${key}-${name}`, data);
@@ -861,13 +865,13 @@ export async function createQuakePlateBoundaries(
       if (!current) return [];
       const options = ctx.options;
       const dark = ctx.theme() === 'dark';
-      const origin = current.events.origin;
-      const coordinateOrigin: [number, number, number] = [origin[0], origin[1], 0];
+      // Every layer draws analysis-frame meters; the engine inverts the frame on the GPU.
+      const {analysisFrame} = current.events;
       const {grid} = current;
       const layers: Layer[] = [];
       if (options.mapShows !== 'events') {
         const common = {
-          coordinateOrigin,
+          analysisFrame,
           gridSize: [GRID, GRID] as const,
           bounds: [
             grid.origin[0],
@@ -909,7 +913,7 @@ export async function createQuakePlateBoundaries(
       layers.push(
         new SpatialAnalysisSegmentLayer({
           id: 'quake-steps-all',
-          coordinateOrigin,
+          analysisFrame,
           segments: current.stepSegments,
           instanceCount: current.steps.count,
           widthPixels: 1,
@@ -921,7 +925,7 @@ export async function createQuakePlateBoundaries(
         layers.push(
           new SpatialAnalysisSegmentLayer({
             id: 'quake-steps-selected',
-            coordinateOrigin,
+            analysisFrame,
             segments: current.stepSegments,
             ids: current.selectedSteps,
             values: current.stepFamily,
@@ -937,7 +941,7 @@ export async function createQuakePlateBoundaries(
         layers.push(
           new SpatialAnalysisSegmentLayer({
             id: 'quake-links',
-            coordinateOrigin,
+            analysisFrame,
             segments: current.linkSegments,
             weights: current.linkFade,
             instanceCount: current.events.count,
@@ -950,7 +954,7 @@ export async function createQuakePlateBoundaries(
       layers.push(
         new QuakeEventLayer({
           id: 'quake-plate-events',
-          coordinateOrigin,
+          analysisFrame,
           positions: current.positions,
           times: current.depth,
           magnitudes: current.magnitude,

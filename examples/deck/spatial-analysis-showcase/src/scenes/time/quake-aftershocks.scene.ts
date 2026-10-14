@@ -24,7 +24,7 @@ export default defineScene<QuakeAftershocksOptions>({
   chapter: 'time',
   order: 5,
   summary:
-    'A permutation Knox test and monthly grid reduction use the 2020–2024 USGS M4+ catalog to map close-pair excess and burstiness; catalog completeness, planar distances and dominant sequences limit inference.',
+    'A permutation Knox test and monthly grid reduction use the 2020–2024 USGS M4+ catalog to map close-pair excess and burstiness; catalog completeness, the window frame (distances within 2.2% of ground) and dominant sequences limit inference.',
   contributors: ['GPUNeighborSearch', 'GPUKnoxTest', 'GPUTemporalReduction'],
   datasets: [{id: 'poopdeck-earthquakes', role: 'USGS M4+ catalog, 2020 to 2024'}],
   initialView: QUAKE_REGIONS.turkiye.view,
@@ -36,7 +36,8 @@ export default defineScene<QuakeAftershocksOptions>({
     },
     scaleBar: {units: 'metric'},
     credit: 'US Geological Survey (public domain)',
-    caveat: 'Catalog completeness and planar windows constrain the clustering estimates.'
+    caveat:
+      'Catalog completeness and the 2.2% window-frame distance error constrain the clustering estimates.'
   },
 
   options: [
@@ -73,7 +74,7 @@ export default defineScene<QuakeAftershocksOptions>({
       apply: 'compile',
       default: 'turkiye',
       options: QUAKE_REGION_OPTIONS,
-      help: 'The analysis window. Each window is a separate planar metric frame (meters around its center) and a separate compiled set of graphs, built the first time you pick it.'
+      help: 'The analysis window. Each window is a separate azimuthal equidistant frame (meters around its center; distances within 2.2% of ground) and a separate compiled set of graphs, built the first time you pick it.'
     },
     {
       kind: 'select',
@@ -364,7 +365,7 @@ export default defineScene<QuakeAftershocksOptions>({
       headline: 'Knox ratios do not identify causal processes',
       textAlternative:
         'The Sunda region shows earthquake events alongside clustering statistics whose interpretation is constrained by catalog and distance assumptions.',
-      body: 'Read the numbers as a **screen for clustering**, not a forecast. A Knox test does not know about aftershock physics: the Omori-Utsu law says the rate of aftershocks decays roughly as 1 / (c + t) after a mainshock, so most close pairs fall in the first days. The test also counts every pair, so a single large sequence with hundreds of events dominates the count (n events make n(n-1)/2 pairs).\n\nThe frame is planar: each window is meters around its center, so distances are exact on the center latitude and off by up to about 12% at the top and bottom. The catalog is incomplete for small events right after a large shock. Try the other regions with a short **Time threshold** (a day or less) to isolate the aftershock burst from the background.',
+      body: 'Read the numbers as a **screen for clustering**, not a forecast. A Knox test does not know about aftershock physics: the Omori-Utsu law says the rate of aftershocks decays roughly as 1 / (c + t) after a mainshock, so most close pairs fall in the first days. The test also counts every pair, so a single large sequence with hundreds of events dominates the count (n events make n(n-1)/2 pairs).\n\nEach window is an azimuthal equidistant frame about its center: distances from the center are exact and distances across it are within 2.2% of ground at the window corners. The catalog is incomplete for small events right after a large shock. Try the other regions with a short **Time threshold** (a day or less) to isolate the aftershock burst from the background.',
       camera: {...QUAKE_REGIONS.sunda.view, transitionMs: 1800},
       options: {
         region: 'sunda',
@@ -506,12 +507,12 @@ export default defineScene<QuakeAftershocksOptions>({
     {
       id: 'knoxP',
       label: 'Pseudo p-value',
-      help: '(1 + permutations with a count at least as large) / (permutations + 1).'
+      help: 'One-sided, an excess of close pairs: (1 + permutations with a count at least as large) / (permutations + 1).'
     },
     {
       id: 'knoxPoisson',
-      label: 'Poisson p-value (classic)',
-      help: 'The classic Knox p-value with a Poisson reference; shown for comparison.'
+      label: 'Poisson p-value (classic, anti-conservative)',
+      help: 'The classic Knox p-value with a Poisson reference; shown for comparison only. Aftershocks share times and places, so the true variance is larger and this p-value is anti-conservative: use the pseudo p-value.'
     },
     {
       id: 'pairOverflow',
@@ -540,7 +541,7 @@ export default defineScene<QuakeAftershocksOptions>({
 } from '@luma.gl/experimental/gpu-spatial-analysis';
 import {GPUTemporalReduction, getGPUTemporalReductionParameterValues} from '@luma.gl/experimental/gpu-dataframe';
 
-// Pairs within ${state.spatialRadius} km (planar meters around the window center), then the Knox test.
+// Pairs within ${state.spatialRadius} km (azimuthal equidistant meters around the window center), then the Knox test.
 graph.add(new GPUNeighborSearch({
   mode: 'radius', positions, parameters: searchParameters, gridSize: [64, 64], weights: pairs, overflow
 }));

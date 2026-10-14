@@ -166,7 +166,7 @@ export default defineScene<HurricaneLandfallOptions>({
       step: 100,
       default: 1500,
       unit: 'km',
-      help: 'Cells farther than this from every coast get no distance and are left transparent. It is the maxDistance setting of the distance field (a parameter write that re-runs the field) and the end of the color ramp.'
+      help: 'Cells farther than this from every coast get no distance and are left transparent. It is the maxDistance setting of the distance field (a parameter write that re-runs the field) and the end of the color ramp. The limit is applied in ground kilometers on each row, because a map meter shrinks with latitude.'
     },
     {
       kind: 'select',
@@ -374,14 +374,14 @@ import {GPUDistanceField, getGPUDistanceFieldParameterValues} from '@luma.gl/exp
 
 // Where tracks pass: one density node per wind threshold (paths split where wind < threshold)
 for (const [index, threshold] of [0, 34, 64, 96].entries()) {
-  densityGraph.add(new GPULineDensity({spatialContext: {coordinateSpace: 'planar', metric: 'native', units: 'native'},
+  densityGraph.add(new GPULineDensity({spatialContext: {coordinateSpace: 'longitude-latitude', metric: 'great-circle', units: 'meters'},
     id: 'density-' + index, positions: pathsAbove[index], pathOffsets: offsetsAbove[index],
-    columns: ${360}, rows: ${232}, parameters: gridParameters,   // [minX, minY, cellWidth, cellHeight]
-    output: {lengths: lengths[index], overflow}
+    columns: ${360}, rows: ${232}, parameters: gridParameters,   // [west, south, cellWidth, cellHeight] in degrees
+    output: {lengths: lengths[index], densities: densities[index], overflow}   // densities: length / exact spherical cell area
   }));
 }
 
-// Distance to the coast: seeds are coastline vertices (planar meters)
+// Distance to the coast: seeds are coastline vertices (map meters; the search limit is divided by each row's scale)
 coastGraph.add(new GPUDistanceField({
   width: ${360}, height: ${232}, mode: '${state.distanceMode}',   // compile-time
   settings: coastSettings, seedPositions: coastSeeds, seedCount,
@@ -416,7 +416,8 @@ eventGraph.add(new GPUZoneEvents({
     scaleBar: {units: 'metric'},
     northArrow: 'always',
     credit: joinCredits(CREDITS.noaaNhc, 'NOAA IBTrACS', CREDITS.usCensus, CREDITS.naturalEarth),
-    caveat: 'Six-hour best-track chords and generalised coastlines locate crossings approximately.'
+    caveat:
+      'Six-hour best-track chords and generalised coastlines locate crossings approximately. Track density is measured on the sphere; distance to coast is measured in the map frame with a per-row scale, so it can be off by a few percent across 500 km north-south.'
   },
   annotations: [...LANDFALL_LABELS, ...COAST_LABELS],
 

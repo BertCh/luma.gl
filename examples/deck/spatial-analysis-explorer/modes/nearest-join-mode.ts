@@ -56,6 +56,11 @@ const DEFAULT_RADIUS = 60;
 /** Frames between summary readbacks. */
 const READBACK_INTERVAL = 15;
 const CANDIDATES_PER_POINT = 256;
+/**
+ * Upper bound on the candidate list. The library's candidate scratch can reach 8 bytes per
+ * candidate, and one storage binding is limited to 128 MiB, so this stays well below that.
+ */
+const MAXIMUM_CANDIDATES = 1 << 22;
 /** Frames after creation before the automatic spatialSort measurement runs. */
 const AUTO_MEASURE_FRAME = 40;
 const SHUFFLE_SEED = 20240611;
@@ -197,7 +202,7 @@ export const nearestJoinMode: SpatialAnalysisModeDefinition = {
           },
           radius: radius.importToGraph(graph),
           // Sized for the maximum radius; the candidate readout shows the real demand.
-          candidateCapacity: pointCount * CANDIDATES_PER_POINT,
+          candidateCapacity: Math.min(pointCount * CANDIDATES_PER_POINT, MAXIMUM_CANDIDATES),
           spatialSort,
           nearestFeatureIds: importGraphBuffer(
             graph,

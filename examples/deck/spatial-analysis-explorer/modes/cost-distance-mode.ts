@@ -122,6 +122,7 @@ export const costDistanceMode: SpatialAnalysisModeDefinition = {
     const pathCountBuffer = resources.createBuffer('path-count', 4);
     const pathOverflowBuffer = resources.createBuffer('path-overflow', 4);
     const pathTotalBuffer = resources.createBuffer('path-total', 4);
+    const pathLimitBuffer = resources.createBuffer('path-iteration-limit', 4);
     const pathSegmentsBuffer = resources.createBuffer('path-segments', PATH_CAPACITY * 16);
     const markerBuffer = resources.createBuffer('markers', 16);
     const destinationIdBuffer = resources.createBuffer('destination-id', Uint32Array.of(1));
@@ -152,7 +153,7 @@ export const costDistanceMode: SpatialAnalysisModeDefinition = {
       })
     );
     // Cost at the destination, path count, overflow and total, converged, iterations, band counts.
-    const summaryWordCount = 6 + BAND_COUNT;
+    const summaryWordCount = 7 + BAND_COUNT;
     const readbackRing = resources.track(
       new GPUReadbackRing(device, {id: 'cost-distance-summary', byteLength: summaryWordCount * 4})
     );
@@ -252,6 +253,14 @@ export const costDistanceMode: SpatialAnalysisModeDefinition = {
         height,
         backLinks: importGraphBuffer(pathGraph, 'back-links', backLinksBuffer, 'uint32', cellCount),
         target: target.importToGraph(pathGraph),
+        // 1 when the cost phase hit its iteration limit: back-links are unresolved, path is empty.
+        iterationLimitReached: importGraphBuffer(
+          pathGraph,
+          'path-iteration-limit',
+          pathLimitBuffer,
+          'uint32',
+          1
+        ),
         output: {
           ids: pathIds,
           count: pathCount,
@@ -497,7 +506,8 @@ export const costDistanceMode: SpatialAnalysisModeDefinition = {
         [pathTotalBuffer, 0, 12, 4],
         [convergedBuffer, 0, 16, 4],
         [iterationCountBuffer, 0, 20, 4],
-        [bandCountsBuffer, 0, 24, BAND_COUNT * 4]
+        [pathLimitBuffer, 0, 24, 4],
+        [bandCountsBuffer, 0, 28, BAND_COUNT * 4]
       ];
       for (const [sourceBuffer, sourceOffset, destinationOffset, size] of copies) {
         commandEncoder.copyBufferToBuffer({
@@ -519,11 +529,13 @@ export const costDistanceMode: SpatialAnalysisModeDefinition = {
           `${words[4] ? 'yes' : 'no (iteration limit)'} after ${words[5]} of ${MAXIMUM_ITERATIONS} iterations`
         );
         pathReadout.setValue(
-          words[3] === 0
-            ? 'destination unreached'
-            : `${formatCount(words[3])} cells, cost ${(cost / 1000).toFixed(1)} km-equivalent${words[2] ? ', overflow' : ''}`
+          words[6]
+            ? 'unresolved: iteration limit reached before the back-links settled (no path)'
+            : words[3] === 0
+              ? 'destination unreached'
+              : `${formatCount(words[3])} cells, cost ${(cost / 1000).toFixed(1)} km-equivalent${words[2] ? ', overflow' : ''}`
         );
-        bandReadout.setValue(Array.from(words.subarray(6), formatCount).join(' / '));
+        bandReadout.setValue(Array.from(words.subarray(7), formatCount).join(' / '));
       } catch {
         // The ring or device was destroyed while the read was in flight.
       } finally {

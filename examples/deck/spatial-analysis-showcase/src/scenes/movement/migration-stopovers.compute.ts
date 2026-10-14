@@ -78,7 +78,9 @@ type Site = {
  * lasts at least the minimum stay); a kernel keeps the stays that are short enough to be a stopover
  * rather than a home range, started in the chosen season, by the chosen species; `GPUSpatialClustering`
  * (DBSCAN) groups the surviving stops into sites; the CPU ranks the sites by bird-days of dwell.
- * Analysis runs in azimuthal-equidistant meters, drawing in longitude/latitude.
+ * Stop detection (speeds, dwell) and DBSCAN both run on longitude/latitude with a great-circle metric
+ * (the site radius is a great-circle distance in meters), so no projection is involved; drawing uses
+ * the same longitude/latitude.
  */
 export async function createMigrationStopovers(
   ctx: SceneContext<MigrationStopoversOptions>
@@ -97,7 +99,6 @@ export async function createMigrationStopovers(
   ) => importGraphBuffer(graph, name, buffer, format, length);
 
   // ---- Static inputs ----------------------------------------------------------------------------
-  const positionsBuffer = resources.createBuffer('positions', tracks.positions);
   const lngLatBuffer = resources.createBuffer('lng-lat', tracks.lngLat);
   const timestampsBuffer = resources.createBuffer('timestamps', tracks.timestamps);
   const offsetsBuffer = resources.createBuffer('offsets', tracks.offsets);
@@ -113,7 +114,6 @@ export async function createMigrationStopovers(
   const stopCount = resources.createBuffer('stop-count', 4);
   const stopOverflow = resources.createBuffer('stop-overflow', 4);
   const stopTotal = resources.createBuffer('stop-total', 4);
-  const stopCentroids = resources.createBuffer('stop-centroids', STOP_CAPACITY * 8);
   const stopDurations = resources.createBuffer('stop-durations', STOP_CAPACITY * 4);
   const stopStartRows = resources.createBuffer('stop-start-rows', STOP_CAPACITY * 4);
   const stopEndRows = resources.createBuffer('stop-end-rows', STOP_CAPACITY * 4);
@@ -135,9 +135,13 @@ export async function createMigrationStopovers(
   const endRowsView = view(metricsGraph, 'stop-end-rows', stopEndRows, 'uint32', STOP_CAPACITY);
   metricsGraph.add(
     new GPUTrajectoryMetrics({
-      spatialContext: {coordinateSpace: 'planar', metric: 'native', units: 'native'},
+      spatialContext: {
+        coordinateSpace: 'longitude-latitude',
+        metric: 'great-circle',
+        units: 'meters'
+      },
       id: 'metrics',
-      positions: view(metricsGraph, 'positions', positionsBuffer, 'float32x2', vertexCount),
+      positions: view(metricsGraph, 'lng-lat', lngLatBuffer, 'float32x2', vertexCount),
       timestamps: view(metricsGraph, 'timestamps', timestampsBuffer, 'float32', vertexCount),
       trackOffsets: view(metricsGraph, 'offsets', offsetsBuffer, 'uint32', trackCount + 1),
       parameters: metricsParameters.importToGraph(metricsGraph),
@@ -159,12 +163,19 @@ export async function createMigrationStopovers(
         },
         startRows: startRowsView,
         endRows: endRowsView,
-        centroids: view(metricsGraph, 'stop-centroids', stopCentroids, 'float32x2', STOP_CAPACITY),
         durations: view(metricsGraph, 'stop-durations', stopDurations, 'float32', STOP_CAPACITY)
       }
     })
   );
-  // Planar centroids drive the clustering; drawing needs degrees, so average the lng/lat of each stop's rows.
+  // The metrics run on longitude/latitude with a great-circle metric. A stop's center is the mean
+  // lng/lat of its rows; it is both what is drawn and what `GPUSpatialClustering` groups.
+  const stopLngLatMetricsView = view(
+    metricsGraph,
+    'stop-lng-lat',
+    stopLngLat,
+    'float32x2',
+    STOP_CAPACITY
+  );
   addKernelPass(metricsGraph, {
     id: 'stop-lng-lat',
     invocationCount: STOP_CAPACITY,
@@ -180,7 +191,7 @@ export async function createMigrationStopovers(
       },
       {
         name: 'output',
-        view: view(metricsGraph, 'stop-lng-lat', stopLngLat, 'float32x2', STOP_CAPACITY),
+        view: stopLngLatMetricsView,
         type: 'f32',
         access: 'read_write'
       }
@@ -207,18 +218,10 @@ export async function createMigrationStopovers(
   const metricsCompiled = resources.track(metricsGraph.compile());
 
   // ---- Selection graph: which stops are stopovers of the chosen species and season --------------
-  const selectedMeters = resources.createBuffer('selected-meters', STOP_CAPACITY * 8);
   const selectedLngLat = resources.createBuffer('selected-lng-lat', STOP_CAPACITY * 8);
   // [species mask, longest stay (s), season start (s), season end (s)]
   const selectionParameters = resources.createParameterBuffer('selection-parameters', 'float32', 4);
   const selectionGraph = new GPUCommandGraph<void>(device, {id: 'stopovers-selection'});
-  const selectedMetersView = view(
-    selectionGraph,
-    'selected-meters',
-    selectedMeters,
-    'float32x2',
-    STOP_CAPACITY
-  );
   const stopLngLatView = view(
     selectionGraph,
     'stop-lng-lat',
@@ -263,7 +266,7 @@ export async function createMigrationStopovers(
       },
       {
         name: 'centroids',
-        view: view(selectionGraph, 'stop-centroids', stopCentroids, 'float32x2', STOP_CAPACITY),
+        view: stopLngLatView,
         type: 'f32',
         access: 'read'
       },
@@ -286,8 +289,8 @@ export async function createMigrationStopovers(
         access: 'read'
       },
       {
-        name: 'meters',
-        view: selectedMetersView,
+        name: 'selected',
+        view: selectedLngLatView,
         type: 'f32',
         access: 'read_write'
       }
@@ -303,43 +306,10 @@ export async function createMigrationStopovers(
       && startTime >= rules[rulesOffset + 2u]
       && startTime <= rules[rulesOffset + 3u];
   }
-  let meter = vec2<f32>(centroids[centroidsOffset + index * 2u], centroids[centroidsOffset + index * 2u + 1u]);
-  let hiddenMeter = select(vec2<f32>(nan), meter, accepted);
-  meters[metersOffset + index * 2u] = hiddenMeter.x;
-  meters[metersOffset + index * 2u + 1u] = hiddenMeter.y;`
-  });
-  // Keep each shader within the WebGPU minimum of ten storage buffers. The accepted flag is
-  // already encoded by the finite/NaN planar output, so the drawing coordinates need only a
-  // small follow-up pass.
-  addKernelPass(selectionGraph, {
-    id: 'stop-selection-lng-lat',
-    invocationCount: STOP_CAPACITY,
-    bindings: [
-      {
-        name: 'meters',
-        view: selectedMetersView,
-        type: 'f32',
-        access: 'read'
-      },
-      {
-        name: 'lngLatIn',
-        view: stopLngLatView,
-        type: 'f32',
-        access: 'read'
-      },
-      {
-        name: 'lngLatOut',
-        view: selectedLngLatView,
-        type: 'f32',
-        access: 'read_write'
-      }
-    ],
-    body: `let nan = bitcast<f32>(0x7fc00000u | (index & 0u));
-  let accepted = meters[metersOffset + index * 2u] == meters[metersOffset + index * 2u];
-  let degree = vec2<f32>(lngLatIn[lngLatInOffset + index * 2u], lngLatIn[lngLatInOffset + index * 2u + 1u]);
-  let output = select(vec2<f32>(nan), degree, accepted);
-  lngLatOut[lngLatOutOffset + index * 2u] = output.x;
-  lngLatOut[lngLatOutOffset + index * 2u + 1u] = output.y;`
+  let center = vec2<f32>(centroids[centroidsOffset + index * 2u], centroids[centroidsOffset + index * 2u + 1u]);
+  let shown = select(vec2<f32>(nan), center, accepted);
+  selected[selectedOffset + index * 2u] = shown.x;
+  selected[selectedOffset + index * 2u + 1u] = shown.y;`
   });
   const selectionCompiled = resources.track(selectionGraph.compile());
 
@@ -360,7 +330,12 @@ export async function createMigrationStopovers(
   clusterGraph.add(
     new GPUSpatialClustering({
       id: 'sites',
-      positions: view(clusterGraph, 'selected-meters', selectedMeters, 'float32x2', STOP_CAPACITY),
+      positions: view(clusterGraph, 'selected-lng-lat', selectedLngLat, 'float32x2', STOP_CAPACITY),
+      spatialContext: {
+        coordinateSpace: 'longitude-latitude',
+        metric: 'great-circle',
+        units: 'meters'
+      },
       parameters: clusterParameters.importToGraph(clusterGraph),
       gridSize: [192, 192],
       labels: view(clusterGraph, 'labels', labels, 'uint32', STOP_CAPACITY),
@@ -382,18 +357,24 @@ export async function createMigrationStopovers(
   );
   const clusterCompiled = resources.track(clusterGraph.compile());
 
-  // Planar extent of the data: stops outside the bounds would be noise.
-  let minX = Infinity;
-  let minY = Infinity;
-  let maxX = -Infinity;
-  let maxY = -Infinity;
-  for (let index = 0; index < tracks.positions.length; index += 2) {
-    minX = Math.min(minX, tracks.positions[index]);
-    maxX = Math.max(maxX, tracks.positions[index]);
-    minY = Math.min(minY, tracks.positions[index + 1]);
-    maxY = Math.max(maxY, tracks.positions[index + 1]);
+  // Longitude/latitude extent of the data (degrees), padded by a degree: stops outside the bounds
+  // would be noise. The data does not cross the antimeridian, which the clustering requires.
+  let minLongitude = Infinity;
+  let minLatitude = Infinity;
+  let maxLongitude = -Infinity;
+  let maxLatitude = -Infinity;
+  for (let index = 0; index < tracks.lngLat.length; index += 2) {
+    minLongitude = Math.min(minLongitude, tracks.lngLat[index]);
+    maxLongitude = Math.max(maxLongitude, tracks.lngLat[index]);
+    minLatitude = Math.min(minLatitude, tracks.lngLat[index + 1]);
+    maxLatitude = Math.max(maxLatitude, tracks.lngLat[index + 1]);
   }
-  const bounds = [minX - 1e5, minY - 1e5, maxX + 1e5, maxY + 1e5] as const;
+  const bounds = [
+    Math.max(-180, minLongitude - 1),
+    Math.max(-90, minLatitude - 1),
+    Math.min(180, maxLongitude + 1),
+    Math.min(90, maxLatitude + 1)
+  ] as const;
 
   // ---- Site drawing buffers (CPU-ranked) --------------------------------------------------------
   const siteLngLat = resources.createBuffer('site-lng-lat', SITES_DRAWN * 8);
@@ -561,10 +542,9 @@ export async function createMigrationStopovers(
         starts.push(tracks.timestamps[snapshot.startRows[stop]] / SECONDS_PER_DAY);
         dwell += snapshot.durations[stop] / SECONDS_PER_DAY;
       }
-      const [lng, lat] = tracks.unproject(
-        snapshot.centroids[cluster * 2],
-        snapshot.centroids[cluster * 2 + 1]
-      );
+      // Cluster centroids are the mean longitude/latitude of the member stops.
+      const lng = snapshot.centroids[cluster * 2];
+      const lat = snapshot.centroids[cluster * 2 + 1];
       all.push({
         rank: 0,
         cluster,

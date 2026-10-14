@@ -46,6 +46,16 @@ import {
 } from './b2-graph';
 import {PackedZoneFillLayer, ZoneFillLayer} from './b2-layers';
 
+/**
+ * `GPUZonalStatistics` and the choropleth recipe take a boolean: `true` is the closed rule, `false`
+ * the open rule, and leaving it out gives the half-open default.
+ */
+function getZonalBoundary(rule: ObservationsByTractOptions['boundaryRule']): {
+  includeBoundary?: boolean;
+} {
+  return rule === 'half-open' ? {} : {includeBoundary: rule === 'closed'};
+}
+
 /** Option state of the observations-by-tract scene. */
 export type ObservationsByTractOptions = {
   statistic: 'count' | 'sum' | 'mean' | 'minimum' | 'maximum' | 'density';
@@ -53,7 +63,13 @@ export type ObservationsByTractOptions = {
   groupType: string;
   denominator: 'area' | 'population';
   sumOrder: 'sorted' | 'atomic';
-  includeBoundary: boolean;
+  /**
+   * Which of two tracts owns a point exactly on their shared edge: `'half-open'` (the library
+   * default: left and bottom edges belong to the tract, right and top edges do not, so every point
+   * has one owner whatever the row order), `'closed'` (every touching tract; the lowest row wins)
+   * or `'open'` (no tract).
+   */
+  boundaryRule: 'half-open' | 'closed' | 'open';
   prepared: boolean;
   spatialSort: boolean;
   invalidateEveryFrame: boolean;
@@ -234,19 +250,19 @@ export async function createObservationsByTract(
   let displayedClasses = 0;
 
   const getAssignKey = (
-    state: Pick<ObservationsByTractOptions, 'prepared' | 'spatialSort' | 'includeBoundary'>
+    state: Pick<ObservationsByTractOptions, 'prepared' | 'spatialSort' | 'boundaryRule'>
   ) =>
-    `${state.prepared ? 'prepared' : 'plain'}|${state.spatialSort ? 'sorted' : 'unsorted'}|${state.includeBoundary ? 'boundary' : 'open'}`;
+    `${state.prepared ? 'prepared' : 'plain'}|${state.spatialSort ? 'sorted' : 'unsorted'}|${state.boundaryRule}`;
   const getZonalKey = (state: ObservationsByTractOptions) =>
-    `${state.statistic}|${state.sumOrder}|${state.includeBoundary ? 'boundary' : 'open'}|${state.statistic === 'density' ? state.denominator : '-'}`;
+    `${state.statistic}|${state.sumOrder}|${state.boundaryRule}|${state.statistic === 'density' ? state.denominator : '-'}`;
   const getRecipeStatistic = (state: ObservationsByTractOptions) =>
     state.statistic === 'density' ? 'count' : state.statistic;
   const getRecipeKey = (state: ObservationsByTractOptions) =>
-    `${state.backend}|${getRecipeStatistic(state)}|${state.includeBoundary ? 'boundary' : 'open'}`;
+    `${state.backend}|${getRecipeStatistic(state)}|${state.boundaryRule}`;
 
   /** Builds the assignment join (and its prepared handle) for the compile-time choices. */
   function buildAssignGraph(
-    state: Pick<ObservationsByTractOptions, 'prepared' | 'spatialSort' | 'includeBoundary'>,
+    state: Pick<ObservationsByTractOptions, 'prepared' | 'spatialSort' | 'boundaryRule'>,
     idSuffix = ''
   ): AssignGraph {
     const graph = new GPUCommandGraph<void>(device, {id: `observations-assign${idSuffix}`});
@@ -268,7 +284,7 @@ export async function createObservationsByTract(
         polygonOffsets: views.polygonOffsets,
         ringOffsets: views.ringOffsets,
         candidateCapacity: pointCount * CANDIDATES_PER_POINT,
-        includeBoundary: state.includeBoundary,
+        boundaryRule: state.boundaryRule,
         ...(prepared ? {prepared} : {spatialSort: state.spatialSort}),
         pointFeatureIds: importGraphBuffer(
           graph,
@@ -381,7 +397,7 @@ export async function createObservationsByTract(
           polygonOffsets: views.polygonOffsets,
           ringOffsets: views.ringOffsets,
           candidateCapacity: pointCount * CANDIDATES_PER_POINT,
-          includeBoundary: state.includeBoundary
+          ...getZonalBoundary(state.boundaryRule)
         },
         points: importGraphBuffer(graph, 'points', positionsBuffer, 'float32x2', pointCount),
         ...(usesValues
@@ -426,7 +442,7 @@ export async function createObservationsByTract(
         polygonOffsets: views.polygonOffsets,
         ringOffsets: views.ringOffsets,
         candidateCapacity: pointCount * CANDIDATES_PER_POINT,
-        includeBoundary: state.includeBoundary
+        ...getZonalBoundary(state.boundaryRule)
       },
       outputs: {
         counts: importGraphBuffer(graph, 'recipe-counts', recipeCounts, 'uint32', featureCount),
@@ -757,7 +773,7 @@ export async function createObservationsByTract(
     try {
       for (const variant of variants) {
         const built = buildAssignGraph(
-          {...variant.state, includeBoundary: ctx.options.includeBoundary},
+          {...variant.state, boundaryRule: ctx.options.boundaryRule},
           `-time-${variant.id}`
         );
         try {
@@ -788,7 +804,7 @@ export async function createObservationsByTract(
 
     setOption(id, _value, state) {
       switch (id) {
-        case 'includeBoundary':
+        case 'boundaryRule':
         case 'prepared':
         case 'spatialSort':
           assign = getAssignGraph(state);

@@ -983,7 +983,7 @@ const CLIP: f32 = ${RELATIVE_CLIP.toFixed(1)};`,
     }
     ctx.setReadout(
       'localSum',
-      `local H sums to ${localTheilSum.toFixed(3)} (global ${column(latest.indices, scale, layoutIndices.entropy).toFixed(3)}); local D of ${getFocalLabel()} sums to ${localDissimilaritySum.toFixed(3)} (global ${column(latest.indices, scale, layoutIndices.dissimilarity + focal).toFixed(3)})`
+      `local H sums to ${localTheilSum.toFixed(3)} (global ${formatIndex(column(latest.indices, scale, layoutIndices.entropy), 3)}); local D of ${getFocalLabel()} sums to ${localDissimilaritySum.toFixed(3)} (global ${formatIndex(column(latest.indices, scale, layoutIndices.dissimilarity + focal), 3)})`
     );
   };
 

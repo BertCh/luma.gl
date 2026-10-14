@@ -134,6 +134,7 @@ export const mapMatchingMode: SpatialAnalysisModeDefinition = {
     const matchedCount = resources.createBuffer('matched-count', 4);
     const breakCount = resources.createBuffer('break-count', 4);
     const overflow = resources.createBuffer('overflow', 4);
+    const routeOverflow = resources.createBuffer('route-overflow', 4);
     const rawSegments = resources.createBuffer('raw-segments', pointCount * 16);
     const rawWeights = resources.createBuffer('raw-weights', pointCount * 4);
     const matchedSegments = resources.createBuffer('matched-segments', pointCount * 16);
@@ -223,7 +224,8 @@ export const mapMatchingMode: SpatialAnalysisModeDefinition = {
           breaks: breaksView,
           matchedCount: view('matched-count', matchedCount, 'uint32', 1),
           breakCount: view('break-count', breakCount, 'uint32', 1),
-          overflow: view('overflow', overflow, 'uint32', 1)
+          overflow: view('overflow', overflow, 'uint32', 1),
+          routeOverflow: view('route-overflow', routeOverflow, 'uint32', 1)
         }
       })
     );
@@ -407,16 +409,27 @@ const NONE: u32 = 0xffffffffu;`,
         {buffer: matchedCount, size: 4},
         {buffer: breakCount, size: 4},
         {buffer: overflow, size: 4},
-        {buffer: chainCount, size: 4}
+        {buffer: chainCount, size: 4},
+        {buffer: routeOverflow, size: 4}
       ],
       bytes => {
         if (destroyed) return;
-        const [matched, breakTotal, overflowFlag, chains] = new Uint32Array(bytes, 0, 4);
+        const [matched, breakTotal, overflowFlag, chains, routeOverflowNodes] = new Uint32Array(
+          bytes,
+          0,
+          5
+        );
         matchedReadout.setValue(
           `${formatCount(matched)} of ${formatCount(pointCount)} (${((100 * matched) / Math.max(pointCount, 1)).toFixed(1)}%)`
         );
         breakReadout.setValue(formatCount(breakTotal));
-        overflowReadout.setValue(overflowFlag ? 'edge grid overflowed' : 'none');
+        overflowReadout.setValue(
+          routeOverflowNodes > 0
+            ? `route budget exceeded (${formatCount(routeOverflowNodes)} nodes dropped; some breaks are budget breaks)`
+            : overflowFlag
+              ? 'edge grid overflowed'
+              : 'none'
+        );
         chainReadout.setValue(
           mergeEncoded
             ? `${formatCount(roadSegmentCount)} segments into ${formatCount(chains)} chains`
@@ -525,7 +538,7 @@ const NONE: u32 = 0xffffffffu;`,
     );
     const matchedReadout = context.controls.addReadout('Matched points', '...');
     const breakReadout = context.controls.addReadout('Breaks and unmatched points', '...');
-    const overflowReadout = context.controls.addReadout('Edge grid overflow', '...');
+    const overflowReadout = context.controls.addReadout('Edge grid / route budget overflow', '...');
     const chainReadout = context.controls.addReadout('Road chains', '...');
     context.controls.addReadout(
       'Network',

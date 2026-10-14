@@ -8,8 +8,12 @@ import type {Buffer} from '@luma.gl/core';
 import {
   addSpatialRegressionRecipe,
   getGPUNeighborSearchParameterValues,
+  getGPUOrdinaryLeastSquaresModelResult,
   getGPUOrdinaryLeastSquaresParameterValues,
   getGPUSpatialAutocorrelationParameterValues,
+  getGPUSpatialErrorGMModelResult,
+  getGPUSpatialTwoStageLeastSquaresDiagnostics,
+  getGPUSpatialTwoStageLeastSquaresModelResult,
   GPUContiguityWeights,
   GPUNeighborSearch,
   GPUSpatialErrorGM,
@@ -20,16 +24,14 @@ import {
   GPU_ORDINARY_LEAST_SQUARES_SUMMARY_ADJUSTED_R_SQUARED,
   GPU_ORDINARY_LEAST_SQUARES_SUMMARY_AIC,
   GPU_ORDINARY_LEAST_SQUARES_SUMMARY_BIC,
-  GPU_ORDINARY_LEAST_SQUARES_SUMMARY_BREUSCH_PAGAN_P_VALUE,
+  GPU_ORDINARY_LEAST_SQUARES_SUMMARY_KOENKER_BASSETT_P_VALUE,
   GPU_ORDINARY_LEAST_SQUARES_SUMMARY_JARQUE_BERA_P_VALUE,
   GPU_ORDINARY_LEAST_SQUARES_SUMMARY_LENGTH,
   GPU_ORDINARY_LEAST_SQUARES_SUMMARY_R_SQUARED,
   GPU_ORDINARY_LEAST_SQUARES_SUMMARY_SIGMA_SQUARED,
   GPU_SPATIAL_AUTOCORRELATION_PARAMETER_LENGTH,
   GPU_SPATIAL_ERROR_GM_STATUS_OK,
-  GPU_SPATIAL_ERROR_GM_SUMMARY_LAMBDA,
   GPU_SPATIAL_ERROR_GM_SUMMARY_LENGTH,
-  GPU_SPATIAL_ERROR_GM_SUMMARY_PSEUDO_R_SQUARED,
   GPU_SPATIAL_ERROR_GM_TABLE_STRIDE,
   GPU_SPATIAL_REGRESSION_DIAGNOSTICS_SUMMARY_LENGTH,
   GPU_SPATIAL_REGRESSION_DIAGNOSTICS_SUMMARY_MORAN_EXPECTATION,
@@ -42,10 +44,7 @@ import {
   GPU_SPATIAL_REGRESSION_DIAGNOSTICS_TEST_ROBUST_LM_ERROR,
   GPU_SPATIAL_REGRESSION_DIAGNOSTICS_TEST_ROBUST_LM_LAG,
   GPU_SPATIAL_REGRESSION_DIAGNOSTICS_TEST_STRIDE,
-  GPU_SPATIAL_TWO_STAGE_LEAST_SQUARES_SUMMARY_ANSELIN_KELEJIAN,
-  GPU_SPATIAL_TWO_STAGE_LEAST_SQUARES_SUMMARY_ANSELIN_KELEJIAN_P_VALUE,
   GPU_SPATIAL_TWO_STAGE_LEAST_SQUARES_SUMMARY_LENGTH,
-  GPU_SPATIAL_TWO_STAGE_LEAST_SQUARES_SUMMARY_PSEUDO_R_SQUARED,
   GPU_SPATIAL_TWO_STAGE_LEAST_SQUARES_TABLE_STRIDE
 } from '@luma.gl/experimental/gpu-spatial-analysis';
 import {
@@ -735,7 +734,7 @@ export async function createHealthRegression(
     );
     ctx.setReadout(
       'heteroskedasticity',
-      formatP(summary[GPU_ORDINARY_LEAST_SQUARES_SUMMARY_BREUSCH_PAGAN_P_VALUE])
+      formatP(summary[GPU_ORDINARY_LEAST_SQUARES_SUMMARY_KOENKER_BASSETT_P_VALUE])
     );
 
     const stride = GPU_SPATIAL_REGRESSION_DIAGNOSTICS_TEST_STRIDE;
@@ -773,35 +772,79 @@ export async function createHealthRegression(
     }
     ctx.setReadout('verdict', verdict);
 
+    // The three fits as the shared model result: estimate, standard error and p-value per
+    // coefficient, one convention for sigma squared, and the conditioning evidence.
+    const predictorNames = variant.names.slice(1, predictorCount + 1);
     const lagStride = GPU_SPATIAL_TWO_STAGE_LEAST_SQUARES_TABLE_STRIDE;
     const errorStride = GPU_SPATIAL_ERROR_GM_TABLE_STRIDE;
+    const olsResult = getGPUOrdinaryLeastSquaresModelResult(
+      {
+        coefficients: coefficients.subarray(0, predictorCount + 1),
+        standardErrors: standardErrors.subarray(0, predictorCount + 1),
+        tStatistics: tStatistics.subarray(0, predictorCount + 1),
+        summary,
+        status: get('olsStatus').u32
+      },
+      {predictorNames}
+    );
+    const lagResult = getGPUSpatialTwoStageLeastSquaresModelResult(
+      {
+        table: lagTable.subarray(0, (predictorCount + 2) * lagStride),
+        summary: lagSummary,
+        status: get('lagStatus').u32
+      },
+      {predictorNames}
+    );
+    const errorResult = getGPUSpatialErrorGMModelResult(
+      {
+        table: errorTable.subarray(0, (predictorCount + 2) * errorStride),
+        summary: errorSummary,
+        status: get('errorStatus').u32
+      },
+      {predictorNames}
+    );
+    const describeCoefficient = (entry: {
+      estimate: number;
+      standardError: number;
+      pValue: number;
+    }) =>
+      `${formatNumber(entry.estimate, 2)} (se ${formatNumber(entry.standardError, 2)}, ${formatP(entry.pValue)})`;
     for (let index = 0; index <= MAXIMUM_PREDICTORS; index++) {
       if (index > predictorCount) {
         ctx.setReadout(`coefficient${index}`, null);
         continue;
       }
-      const name = variant.names[index];
       ctx.setReadout(
         `coefficient${index}`,
-        `${name}: ${formatNumber(coefficients[index], 2)} (t ${formatNumber(tStatistics[index], 1)}, se ${formatNumber(standardErrors[index], 2)})  to lag ${formatNumber(lagTable[index * lagStride], 2)}, error ${formatNumber(errorTable[index * errorStride], 2)}`
+        `${variant.names[index]}: OLS ${describeCoefficient(olsResult.coefficients[index])}; lag ${describeCoefficient(lagResult.coefficients[index])}; error ${describeCoefficient(errorResult.coefficients[index])}`
       );
     }
-    const rhoBase = (predictorCount + 1) * lagStride;
+    const rho = lagResult.coefficients[predictorCount + 1];
     ctx.setReadout(
       'rho',
       statuses[2] === 0
-        ? `ρ ${formatNumber(lagTable[rhoBase])} ± ${formatNumber(lagTable[rhoBase + 1])} (z ${formatNumber(lagTable[rhoBase + 2], 1)}, ${formatP(lagTable[rhoBase + 3])})`
+        ? `ρ ${formatNumber(rho.estimate)} ± ${formatNumber(rho.standardError)} (z ${formatNumber(rho.statistic, 1)}, ${formatP(rho.pValue)})`
         : `fit failed (status ${statuses[2]})`
     );
+    const diagnosticsLag = getGPUSpatialTwoStageLeastSquaresDiagnostics(lagSummary);
     ctx.setReadout(
       'lagFit',
-      `pseudo R² ${formatNumber(lagSummary[GPU_SPATIAL_TWO_STAGE_LEAST_SQUARES_SUMMARY_PSEUDO_R_SQUARED])}; Anselin-Kelejian ${formatNumber(lagSummary[GPU_SPATIAL_TWO_STAGE_LEAST_SQUARES_SUMMARY_ANSELIN_KELEJIAN], 1)}, ${formatP(lagSummary[GPU_SPATIAL_TWO_STAGE_LEAST_SQUARES_SUMMARY_ANSELIN_KELEJIAN_P_VALUE])}`
+      `pseudo R² ${formatNumber(lagResult.pseudoRSquared)}; Anselin-Kelejian ${formatNumber(lagResult.tests.anselinKelejian?.statistic ?? NaN, 1)}, ${formatP(lagResult.tests.anselinKelejian?.pValue ?? NaN)}; first-stage F ${formatNumber(diagnosticsLag.firstStageF, 1)}${diagnosticsLag.rhoOutsideAdmissibleRange ? '; ρ outside the admissible range' : ''}`
     );
+    const lambda = errorResult.coefficients[predictorCount + 1];
     ctx.setReadout(
       'lambda',
       statuses[3] === GPU_SPATIAL_ERROR_GM_STATUS_OK
-        ? `λ ${formatNumber(errorSummary[GPU_SPATIAL_ERROR_GM_SUMMARY_LAMBDA])}; pseudo R² ${formatNumber(errorSummary[GPU_SPATIAL_ERROR_GM_SUMMARY_PSEUDO_R_SQUARED])}`
+        ? `λ ${formatNumber(lambda.estimate)} ± ${formatNumber(lambda.standardError)} (z ${formatNumber(lambda.statistic, 1)}, ${formatP(lambda.pValue)}); pseudo R² ${formatNumber(errorResult.pseudoRSquared)}`
         : `fit failed (status ${statuses[3]})`
+    );
+    const conditioning = (name: string, result: typeof olsResult) =>
+      result.conditioning
+        ? `${name} ${formatNumber(result.conditioning.conditionNumber, 1)}${result.conditioning.illConditioned ? ' (float32 precision warning)' : ''}`
+        : `${name} n/a`;
+    ctx.setReadout(
+      'conditioning',
+      `${conditioning('OLS', olsResult)}; ${conditioning('lag', lagResult)}; ${conditioning('error', errorResult)}; largest VIF ${formatNumber(olsResult.conditioning?.maximumVarianceInflationFactor ?? NaN, 1)}`
     );
     ctx.setReadout('status', statuses.join(' / '));
 

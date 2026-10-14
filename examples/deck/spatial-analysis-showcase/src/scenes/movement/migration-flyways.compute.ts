@@ -17,6 +17,7 @@ import {SpatialAnalysisRasterLayer, SpatialAnalysisSegmentLayer} from '../../eng
 import {formatCount, SpatialAnalysisResources} from '../../engine/resources';
 import {SummaryReader} from '../../engine/summary-reader';
 import type {SceneContext, SceneInstance} from '../scene';
+import {getGreatCircleTrackLengths} from './track-frames';
 import {findNearestTrack} from './b12-tracks';
 import {getMigrationFlywayEvidence} from './migration-flyways-evidence';
 import {
@@ -91,6 +92,8 @@ export async function createMigrationFlyways(
   const tracks = loadMigrationTracks(ctx.datasets.get(MIGRATION_DATASET_ID));
   const {device} = ctx;
   const {trackCount, vertexCount, segmentCount} = tracks;
+  // Great-circle path lengths; the track set's own `pathMeters` are azimuthal-frame lengths.
+  const pathMeters = getGreatCircleTrackLengths(tracks.lngLat, tracks.offsets);
   const resources = new SpatialAnalysisResources(device, 'flyways');
   const drawProps = {coordinateSystem: COORDINATE_SYSTEM.LNGLAT} as const;
   const view = <Format extends 'float32' | 'uint32' | 'float32x2'>(
@@ -173,7 +176,7 @@ export async function createMigrationFlyways(
   }
 
   // ---- Route similarity: resample, then every pair ----------------------------------------------
-  const positionsBuffer = resources.createBuffer('positions', tracks.positions);
+  const lngLatBuffer = resources.createBuffer('lng-lat', tracks.lngLat);
   const offsetsBuffer = resources.createBuffer('offsets', tracks.offsets);
   const routesBuffer = resources.createBuffer('routes', trackCount * SIMILARITY_SAMPLES * 8);
   const routeOffsets = Uint32Array.from({length: trackCount + 1}, (_, i) => i * SIMILARITY_SAMPLES);
@@ -199,15 +202,27 @@ export async function createMigrationFlyways(
 
   function buildResample(spacing: 'arc-length' | 'time'): CompiledGPUCommandGraph<void> {
     const graph = new GPUCommandGraph<void>(device, {id: `flyways-routes-${spacing}`});
+    const routesView = view(
+      graph,
+      'routes',
+      routesBuffer,
+      'float32x2',
+      trackCount * SIMILARITY_SAMPLES
+    );
     graph.add(
       new GPUTrajectoryResample({
         id: `routes-${spacing}`,
-        positions: view(graph, 'positions', positionsBuffer, 'float32x2', vertexCount),
+        spatialContext: {
+          coordinateSpace: 'longitude-latitude',
+          metric: 'great-circle',
+          units: 'meters'
+        },
+        positions: view(graph, 'lng-lat', lngLatBuffer, 'float32x2', vertexCount),
         timestamps: view(graph, 'timestamps', timestampsBuffer, 'float32', vertexCount),
         trackOffsets: view(graph, 'offsets', offsetsBuffer, 'uint32', trackCount + 1),
         sampleCount: SIMILARITY_SAMPLES,
         spacing,
-        samples: view(graph, 'routes', routesBuffer, 'float32x2', trackCount * SIMILARITY_SAMPLES)
+        samples: routesView
       })
     );
     return resources.track(graph.compile());
@@ -217,6 +232,11 @@ export async function createMigrationFlyways(
   similarityGraph.add(
     new GPUTrackSimilarity({
       id: 'route-similarity',
+      spatialContext: {
+        coordinateSpace: 'longitude-latitude',
+        metric: 'great-circle',
+        units: 'meters'
+      },
       positionsA: view(
         similarityGraph,
         'routes',
@@ -328,7 +348,7 @@ export async function createMigrationFlyways(
     const siblings = (individualTracks.get(tracks.individual[selectedTrack]) ?? []).length - 1;
     ctx.setReadout(
       'selected',
-      `${describeMigrationTrack(tracks, selectedTrack)}: ${tracks.coverageDays[selectedTrack].toFixed(0)} days, ${formatCount(tracks.pathMeters[selectedTrack] / 1000)} km, ${siblings} other tagged year${siblings === 1 ? '' : 's'} of this bird`
+      `${describeMigrationTrack(tracks, selectedTrack)}: ${tracks.coverageDays[selectedTrack].toFixed(0)} days, ${formatCount(pathMeters[selectedTrack] / 1000)} km, ${siblings} other tagged year${siblings === 1 ? '' : 's'} of this bird`
     );
   }
 
@@ -550,7 +570,7 @@ export async function createMigrationFlyways(
     );
     ctx.setReadout(
       'routes',
-      `${trackCount} routes x ${SIMILARITY_SAMPLES} samples, ${formatCount(pairCount)} pairs scored`
+      `${trackCount} routes x ${SIMILARITY_SAMPLES} samples, ${formatCount(pairCount)} pairs scored; great-circle route distances`
     );
   }
 
@@ -604,7 +624,7 @@ export async function createMigrationFlyways(
     for (let track = 0; track < trackCount; track++) {
       const siblings = (individualTracks.get(tracks.individual[track]) ?? []).length;
       if (siblings < 2 || tracks.coverageDays[track] < 270) continue;
-      if (best === NO_TRACK || tracks.pathMeters[track] > tracks.pathMeters[best]) best = track;
+      if (best === NO_TRACK || pathMeters[track] > pathMeters[best]) best = track;
     }
     selectedTrack = best;
   }
@@ -799,7 +819,7 @@ export async function createMigrationFlyways(
     getTooltip(event) {
       const track = pickTrack(event.coordinate);
       if (track < 0) return null;
-      return `${describeMigrationTrack(tracks, track)}: ${tracks.coverageDays[track].toFixed(0)} days of data, ${formatCount(tracks.pathMeters[track] / 1000)} km`;
+      return `${describeMigrationTrack(tracks, track)}: ${tracks.coverageDays[track].toFixed(0)} days of data, ${formatCount(pathMeters[track] / 1000)} km`;
     },
 
     onClick(event) {

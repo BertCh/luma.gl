@@ -134,6 +134,7 @@ export async function createMapMatching(
   const matchedCount = resources.createBuffer('matched-count', 4);
   const breakCount = resources.createBuffer('break-count', 4);
   const overflow = resources.createBuffer('overflow', 4);
+  const routeOverflow = resources.createBuffer('route-overflow', 4);
   const rawSegments = resources.createBuffer('raw-segments', pointCount * 16);
   const rawWeights = resources.createBuffer('raw-weights', pointCount * 4);
   const truthSegments = resources.createBuffer('truth-segments', pointCount * 16);
@@ -481,7 +482,8 @@ export async function createMapMatching(
           breaks: breaksView,
           matchedCount: view('matched-count', matchedCount, 'uint32', 1),
           breakCount: view('break-count', breakCount, 'uint32', 1),
-          overflow: view('overflow', overflow, 'uint32', 1)
+          overflow: view('overflow', overflow, 'uint32', 1),
+          routeOverflow: view('route-overflow', routeOverflow, 'uint32', 1)
         }
       })
     );
@@ -652,7 +654,8 @@ const NONE: u32 = ${NONE}u;`,
         {buffer: overflow, size: 4},
         {buffer: matchedEdges, size: pointCount * 4},
         {buffer: snapDistances, size: pointCount * 4},
-        {buffer: breaks, size: pointCount * 4}
+        {buffer: breaks, size: pointCount * 4},
+        {buffer: routeOverflow, size: 4}
       ],
       bytes => {
         if (destroyed || build?.reader !== reader) return;
@@ -673,6 +676,9 @@ const NONE: u32 = ${NONE}u;`,
     latestMatchedRows = rows.slice();
     latestBreaks = new Uint32Array(bytes, (3 + pointCount * 2) * 4, pointCount).slice();
     latestSnapDistances = distances.slice();
+    const routeOverflowNodes = new Uint32Array(bytes, (3 + pointCount * 3) * 4, 1)[0];
+    // `breaks` values: 0 none, 1 no reachable candidate pair, 2 route budget exceeded.
+    const budgetBreaks = latestBreaks.reduce((total, value) => total + (value === 2 ? 1 : 0), 0);
     let exact = 0;
     let reversed = 0;
     let distanceSum = 0;
@@ -693,8 +699,20 @@ const NONE: u32 = ${NONE}u;`,
       'matched',
       `${formatCount(matched)} of ${formatCount(pointCount)} (${((100 * matched) / pointCount).toFixed(1)}%)`
     );
-    ctx.setReadout('breaks', breakTotal);
-    ctx.setReadout('overflow', overflowFlag ? 'edge grid overflowed' : 'none');
+    ctx.setReadout(
+      'breaks',
+      budgetBreaks > 0
+        ? `${formatCount(breakTotal)} (${formatCount(budgetBreaks)} route budget exceeded)`
+        : breakTotal
+    );
+    ctx.setReadout(
+      'overflow',
+      routeOverflowNodes > 0
+        ? `route budget exceeded (${formatCount(routeOverflowNodes)} nodes dropped)`
+        : overflowFlag
+          ? 'edge grid overflowed'
+          : 'none'
+    );
     ctx.setReadout('exact', `${((100 * exact) / pointCount).toFixed(1)}%`);
     ctx.setReadout('sameStreet', `${((100 * (exact + reversed)) / pointCount).toFixed(1)}%`);
     ctx.setReadout('snap', distanceCount ? `${(distanceSum / distanceCount).toFixed(1)} m` : null);

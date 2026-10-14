@@ -52,6 +52,11 @@ import {
   type GPUGeographicallyWeightedRegressionKernel,
   getGPUGeographicallyWeightedRegressionParameterValues,
   getGPUOrdinaryLeastSquaresParameterValues,
+  getGPUOrdinaryLeastSquaresModelResult,
+  getGPUGeographicallyWeightedRegressionModelResult,
+  getGPUSpatialErrorGMModelResult,
+  getGPUSpatialTwoStageLeastSquaresModelResult,
+  GPU_ORDINARY_LEAST_SQUARES_SUMMARY_LENGTH,
   getGPUPermutationParameterValues,
   GPU_PERMUTATION_PARAMETER_LENGTH,
   getGPUNeighborSearchParameterValues,
@@ -62,12 +67,8 @@ import {
   GPUSpatialRegressionDiagnostics,
   GPUSpatialTwoStageLeastSquares,
   GPUSpatialErrorGM,
-  GPU_SPATIAL_ERROR_GM_STATUS_OK,
-  GPU_SPATIAL_ERROR_GM_SUMMARY_LAMBDA,
   GPU_SPATIAL_ERROR_GM_SUMMARY_LENGTH,
   GPU_SPATIAL_ERROR_GM_SUMMARY_MOMENT_OBJECTIVE,
-  GPU_SPATIAL_ERROR_GM_SUMMARY_PSEUDO_R_SQUARED,
-  GPU_SPATIAL_ERROR_GM_SUMMARY_SIGMA_SQUARED,
   GPU_SPATIAL_ERROR_GM_TABLE_STRIDE,
   GPU_SPATIAL_REGRESSION_DIAGNOSTICS_SUMMARY_LENGTH,
   GPU_SPATIAL_REGRESSION_DIAGNOSTICS_SUMMARY_MORAN_EXPECTATION,
@@ -80,23 +81,12 @@ import {
   GPU_SPATIAL_REGRESSION_DIAGNOSTICS_TEST_ROBUST_LM_ERROR,
   GPU_SPATIAL_REGRESSION_DIAGNOSTICS_TEST_ROBUST_LM_LAG,
   GPU_SPATIAL_REGRESSION_DIAGNOSTICS_TEST_STRIDE,
-  GPU_SPATIAL_TWO_STAGE_LEAST_SQUARES_SUMMARY_ANSELIN_KELEJIAN,
-  GPU_SPATIAL_TWO_STAGE_LEAST_SQUARES_SUMMARY_ANSELIN_KELEJIAN_P_VALUE,
   GPU_SPATIAL_TWO_STAGE_LEAST_SQUARES_SUMMARY_LENGTH,
   GPU_SPATIAL_TWO_STAGE_LEAST_SQUARES_SUMMARY_MORAN_I,
-  GPU_SPATIAL_TWO_STAGE_LEAST_SQUARES_SUMMARY_PSEUDO_R_SQUARED,
-  GPU_SPATIAL_TWO_STAGE_LEAST_SQUARES_SUMMARY_SIGMA_SQUARED,
   GPU_SPATIAL_TWO_STAGE_LEAST_SQUARES_TABLE_STRIDE,
   GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_SUMMARY,
   GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_SUMMARY_LENGTH,
   GPU_ORDINARY_LEAST_SQUARES_PARAMETER_LENGTH,
-  GPU_ORDINARY_LEAST_SQUARES_SUMMARY_ADJUSTED_R_SQUARED,
-  GPU_ORDINARY_LEAST_SQUARES_SUMMARY_AIC,
-  GPU_ORDINARY_LEAST_SQUARES_SUMMARY_BIC,
-  GPU_ORDINARY_LEAST_SQUARES_SUMMARY_BREUSCH_PAGAN,
-  GPU_ORDINARY_LEAST_SQUARES_SUMMARY_BREUSCH_PAGAN_P_VALUE,
-  GPU_ORDINARY_LEAST_SQUARES_SUMMARY_JARQUE_BERA,
-  GPU_ORDINARY_LEAST_SQUARES_SUMMARY_JARQUE_BERA_P_VALUE,
   GPU_ORDINARY_LEAST_SQUARES_SUMMARY_R_SQUARED,
   GPU_ORDINARY_LEAST_SQUARES_SUMMARY_RESIDUAL_SUM_OF_SQUARES,
   GPU_ORDINARY_LEAST_SQUARES_SUMMARY_ROW_COUNT,
@@ -124,6 +114,7 @@ import type {
 } from '../spatial-analysis-mode';
 import {formatCount, SpatialAnalysisResources} from '../spatial-analysis-resources';
 import {CellGridLayer} from './regression-layers';
+import {addModelResultReadouts} from './regression-result-readouts';
 import {SummaryReader} from './summary-reader';
 
 type RegressionView = 'ols' | 'spatial' | 'error' | 'gwr' | 'composite' | 'inequality';
@@ -196,7 +187,9 @@ export const regressionMode: SpatialAnalysisModeDefinition = {
     'coefficients, a weight-slider composite index and Lorenz curves, all computed on the GPU ' +
     'from road, taxi and POI columns. The Spatial view tests OLS residuals for a spatial lag or ' +
     'error and fits the lag model by two-stage least squares; the Spatial error view fits the ' +
-    'error model (lambda) and compares it with OLS. Both take distance-band or kNN weights; the ' +
+    'error model (lambda, GM_Error_Hom with a standard error) and compares it with OLS. Every ' +
+    'model reports its coefficient table (estimate, standard error, t or z, p), n / k / df, σ², ' +
+    'likelihood criteria where defined and the condition number. Both take distance-band or kNN weights; the ' +
     'lag model can use W²X instruments too (rebuilds, labelled). The GWR view maps the local ' +
     'condition number and runs a Monte Carlo test of which coefficient surfaces vary beyond ' +
     'chance (button, p-value per coefficient). Sliders rewrite parameter buffers; the weights ' +
@@ -477,7 +470,7 @@ function createOlsView(
   const coefficients = resources.createBuffer('coefficients', 4 * 4);
   const standardErrors = resources.createBuffer('standard-errors', 4 * 4);
   const tStatistics = resources.createBuffer('t-statistics', 4 * 4);
-  const summary = resources.createBuffer('summary', 16 * 4);
+  const summary = resources.createBuffer('summary', GPU_ORDINARY_LEAST_SQUARES_SUMMARY_LENGTH * 4);
   const status = resources.createBuffer('status', 4);
   const residuals = resources.createBuffer('residuals', rowCount * 4);
   const fitted = resources.createBuffer('fitted', rowCount * 4);
@@ -499,7 +492,13 @@ function createOlsView(
         coefficients: importGraphBuffer(graph, 'coefficients', coefficients, 'float32', 4),
         standardErrors: importGraphBuffer(graph, 'standard-errors', standardErrors, 'float32', 4),
         tStatistics: importGraphBuffer(graph, 't-statistics', tStatistics, 'float32', 4),
-        summary: importGraphBuffer(graph, 'summary', summary, 'float32', 16),
+        summary: importGraphBuffer(
+          graph,
+          'summary',
+          summary,
+          'float32',
+          GPU_ORDINARY_LEAST_SQUARES_SUMMARY_LENGTH
+        ),
         status: importGraphBuffer(graph, 'status', status, 'uint32', 1),
         residuals: importGraphBuffer(graph, 'residuals', residuals, 'float32', rowCount),
         fitted: importGraphBuffer(graph, 'fitted', fitted, 'float32', rowCount)
@@ -551,13 +550,16 @@ function createOlsView(
     `log(1 + POIs) ~ ${PREDICTOR_NAMES.join(' + ')} on ${study.cellSize} m cells that contain a road.`
   );
   context.controls.addReadout('Cells (rows)', formatCount(rowCount));
-  const fitReadout = context.controls.addReadout('Fit');
   const r2Readout = context.controls.addReadout('R² / adjusted');
-  const criteriaReadout = context.controls.addReadout('AIC / BIC');
-  const jarqueReadout = context.controls.addReadout('Jarque-Bera p');
-  const pagan = context.controls.addReadout('Breusch-Pagan p');
-  const coefficientReadouts = ['Intercept', ...PREDICTOR_NAMES].map(name =>
-    context.controls.addReadout(name)
+  const olsReadouts = addModelResultReadouts(
+    context.controls,
+    '',
+    ['CONSTANT', ...PREDICTOR_NAMES],
+    ['jarqueBera', 'breuschPagan', 'koenkerBassett']
+  );
+  context.controls.addNote(
+    'Ridge penalty off: standard errors and p-values are classical OLS (Student t, n−k degrees of freedom). ' +
+      'With a ridge penalty the estimates are biased and those intervals no longer apply.'
   );
   context.controls.addReadout('Data', study.attribution);
   writeRidge();
@@ -569,32 +571,27 @@ function createOlsView(
       {buffer: coefficients, size: 16},
       {buffer: standardErrors, size: 16},
       {buffer: tStatistics, size: 16},
-      {buffer: summary, size: 64},
+      {buffer: summary, size: GPU_ORDINARY_LEAST_SQUARES_SUMMARY_LENGTH * 4},
       {buffer: status, size: 4}
     ],
     bytes => {
       const floats = new Float32Array(bytes);
-      const statusWord = new Uint32Array(bytes)[28];
-      const sum = floats.subarray(12, 28);
-      fitReadout.setValue(statusWord === 0 ? 'ok' : statusWord === 1 ? 'singular' : 'too few rows');
-      r2Readout.setValue(
-        `${formatNumber(sum[GPU_ORDINARY_LEAST_SQUARES_SUMMARY_R_SQUARED])} / ${formatNumber(sum[GPU_ORDINARY_LEAST_SQUARES_SUMMARY_ADJUSTED_R_SQUARED])}`
+      const summaryEnd = 12 + GPU_ORDINARY_LEAST_SQUARES_SUMMARY_LENGTH;
+      const result = getGPUOrdinaryLeastSquaresModelResult(
+        {
+          coefficients: floats.slice(0, 4),
+          standardErrors: floats.slice(4, 8),
+          tStatistics: floats.slice(8, 12),
+          summary: floats.slice(12, summaryEnd),
+          status: new Uint32Array(bytes).slice(summaryEnd, summaryEnd + 1)
+        },
+        {predictorNames: PREDICTOR_NAMES}
       );
-      criteriaReadout.setValue(
-        `${formatNumber(sum[GPU_ORDINARY_LEAST_SQUARES_SUMMARY_AIC], 1)} / ${formatNumber(sum[GPU_ORDINARY_LEAST_SQUARES_SUMMARY_BIC], 1)}`
-      );
-      jarqueReadout.setValue(
-        `${formatNumber(sum[GPU_ORDINARY_LEAST_SQUARES_SUMMARY_JARQUE_BERA_P_VALUE])} (JB ${formatNumber(sum[GPU_ORDINARY_LEAST_SQUARES_SUMMARY_JARQUE_BERA], 1)})`
-      );
-      pagan.setValue(
-        `${formatNumber(sum[GPU_ORDINARY_LEAST_SQUARES_SUMMARY_BREUSCH_PAGAN_P_VALUE])} (BP ${formatNumber(sum[GPU_ORDINARY_LEAST_SQUARES_SUMMARY_BREUSCH_PAGAN], 1)})`
-      );
-      coefficientReadouts.forEach((readout, index) =>
-        readout.setValue(
-          `${formatNumber(floats[index])} ± ${formatNumber(floats[4 + index])} (t ${formatNumber(floats[8 + index], 1)})`
-        )
-      );
-      sigma = Math.sqrt(Math.max(0, sum[GPU_ORDINARY_LEAST_SQUARES_SUMMARY_SIGMA_SQUARED]));
+      olsReadouts.update(result);
+      const adjusted =
+        1 - ((1 - result.rSquared) * (result.rowCount - 1)) / Math.max(1, result.degreesOfFreedom);
+      r2Readout.setValue(`${formatNumber(result.rSquared)} / ${formatNumber(adjusted)}`);
+      sigma = Math.sqrt(Math.max(0, result.sigmaSquared));
       context.updateLayers();
     }
   );
@@ -707,7 +704,10 @@ function createGwrView(
   const olsCoefficients = resources.createBuffer('ols-coefficients', 16);
   const olsStandardErrors = resources.createBuffer('ols-standard-errors', 16);
   const olsTStatistics = resources.createBuffer('ols-t-statistics', 16);
-  const olsSummary = resources.createBuffer('ols-summary', 64);
+  const olsSummary = resources.createBuffer(
+    'ols-summary',
+    GPU_ORDINARY_LEAST_SQUARES_SUMMARY_LENGTH * 4
+  );
   const olsStatus = resources.createBuffer('ols-status', 4);
 
   const graph = new GPUCommandGraph<void>(context.device, {id: 'regression-gwr'});
@@ -781,7 +781,13 @@ function createGwrView(
           4
         ),
         tStatistics: importGraphBuffer(olsGraph, 't-statistics', olsTStatistics, 'float32', 4),
-        summary: importGraphBuffer(olsGraph, 'summary', olsSummary, 'float32', 16),
+        summary: importGraphBuffer(
+          olsGraph,
+          'summary',
+          olsSummary,
+          'float32',
+          GPU_ORDINARY_LEAST_SQUARES_SUMMARY_LENGTH
+        ),
         status: importGraphBuffer(olsGraph, 'status', olsStatus, 'uint32', 1)
       }
     })
@@ -971,6 +977,10 @@ function createGwrView(
   context.controls.addReadout('Cells (rows)', formatCount(rowCount));
   const selectedReadout = context.controls.addReadout('Selected bandwidth');
   const scoreReadout = context.controls.addReadout('AICc per ladder value');
+  const gwrReadouts = addModelResultReadouts(context.controls, 'GWR', []);
+  const gwrInferenceReadout = context.controls.addReadout(
+    'GWR adjusted α / critical |t| (Da Silva-Fotheringham)'
+  );
   const gwrAiccReadout = context.controls.addReadout('GWR AICc / trace S');
   const olsAiccReadout = context.controls.addReadout('OLS AICc (same formula)');
   const rSquaredReadout = context.controls.addReadout('R²: GWR / OLS');
@@ -1014,7 +1024,7 @@ function createGwrView(
       {buffer: localR2Buffer, size: rowCount * 4},
       {buffer: localStatus, size: rowCount * 4},
       {buffer: olsCoefficients, size: 16},
-      {buffer: olsSummary, size: 64},
+      {buffer: olsSummary, size: GPU_ORDINARY_LEAST_SQUARES_SUMMARY_LENGTH * 4},
       {buffer: testTable, size: testTableLength * 4},
       {buffer: testSummary, size: GPU_GWR_NONSTATIONARITY_SUMMARY.length * 4},
       {buffer: conditionNumbers, size: rowCount * 4}
@@ -1037,7 +1047,8 @@ function createGwrView(
       for (let row = 0; row < rowCount; row++) if (words[statusBase + row] === 1) singular++;
       const olsBase = statusBase + rowCount;
       olsCoefficientValues = floats.slice(olsBase, olsBase + 4);
-      const olsSummaryValues = floats.subarray(olsBase + 4, olsBase + 20);
+      const olsSummaryEnd = olsBase + 4 + GPU_ORDINARY_LEAST_SQUARES_SUMMARY_LENGTH;
+      const olsSummaryValues = floats.subarray(olsBase + 4, olsSummaryEnd);
       const count = olsSummaryValues[GPU_ORDINARY_LEAST_SQUARES_SUMMARY_ROW_COUNT];
       const rss = olsSummaryValues[GPU_ORDINARY_LEAST_SQUARES_SUMMARY_RESIDUAL_SUM_OF_SQUARES];
       olsR2 = olsSummaryValues[GPU_ORDINARY_LEAST_SQUARES_SUMMARY_R_SQUARED];
@@ -1046,7 +1057,7 @@ function createGwrView(
         count * Math.log(rss / count) +
         count * Math.log(2 * Math.PI) +
         (count * (count + 4)) / (count - 2 - 4);
-      const testBase = olsBase + 20;
+      const testBase = olsSummaryEnd;
       const testValues = floats.subarray(testBase, testBase + testTableLength);
       const testSummaryValues = floats.subarray(
         testBase + testTableLength,
@@ -1079,7 +1090,7 @@ function createGwrView(
       const ladder = getLadder();
       selectedReadout.setValue(
         valid
-          ? `${bandwidthMode === 'adaptive' ? `${selected[1]} nearest cells` : `${selected[1]} m`} (candidate ${selected[0]})`
+          ? `${bandwidthMode === 'adaptive' ? `${selected[1]} nearest cells` : `${selected[1]} m`} (${selected[0] >= GWR_LADDER_LENGTH ? 'refined between ladder values' : `candidate ${selected[0]}`})`
           : 'no valid candidate (all singular)'
       );
       scoreReadout.setValue(
@@ -1087,6 +1098,14 @@ function createGwrView(
           .slice(0, ladderChoice < 0 ? ladder.length : 1)
           .map(value => (Number.isFinite(value) ? value.toFixed(0) : 'NaN'))
           .join(' / ')
+      );
+      const gwrResult = getGPUGeographicallyWeightedRegressionModelResult({
+        summary: gwr.slice(),
+        selectedBandwidth: selected.slice()
+      });
+      gwrReadouts.update(gwrResult);
+      gwrInferenceReadout.setValue(
+        `${formatNumber(gwrResult.adjustedAlpha, 4)} / ${formatNumber(gwrResult.criticalT, 2)} (${formatCount(gwrResult.singularRowCount)} singular rows excluded)`
       );
       const aicc = getSummary(GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_SUMMARY.AICC);
       gwrAiccReadout.setValue(
@@ -1875,7 +1894,10 @@ function addSpatialOls(
   const olsCoefficients = resources.createBuffer('ols-coefficients', 4 * 4);
   const olsStandardErrors = resources.createBuffer('ols-standard-errors', 4 * 4);
   const olsTStatistics = resources.createBuffer('ols-t-statistics', 4 * 4);
-  const olsSummary = resources.createBuffer('ols-summary', 16 * 4);
+  const olsSummary = resources.createBuffer(
+    'ols-summary',
+    GPU_ORDINARY_LEAST_SQUARES_SUMMARY_LENGTH * 4
+  );
   const olsStatus = resources.createBuffer('ols-status', 4);
   const olsResiduals = resources.createBuffer('ols-residuals', rowCount * 4);
   const olsParameters = resources.createParameterBuffer(
@@ -1896,7 +1918,13 @@ function addSpatialOls(
         coefficients: importGraphBuffer(graph, 'ols-coefficients', olsCoefficients, 'float32', 4),
         standardErrors: importGraphBuffer(graph, 'ols-se', olsStandardErrors, 'float32', 4),
         tStatistics: importGraphBuffer(graph, 'ols-t', olsTStatistics, 'float32', 4),
-        summary: importGraphBuffer(graph, 'ols-summary', olsSummary, 'float32', 16),
+        summary: importGraphBuffer(
+          graph,
+          'ols-summary',
+          olsSummary,
+          'float32',
+          GPU_ORDINARY_LEAST_SQUARES_SUMMARY_LENGTH
+        ),
         status: importGraphBuffer(graph, 'ols-status', olsStatus, 'uint32', 1),
         residuals: residualView
       }
@@ -2062,12 +2090,14 @@ function createSpatialView(
   const moranReadout = context.controls.addReadout('Residual Moran I (E[I]), z');
   const moranPReadout = context.controls.addReadout('Residual Moran p (two-sided)');
   const olsReadout = context.controls.addReadout('OLS R² / sigma²');
-  const coefficientReadouts = ['Intercept', ...PREDICTOR_NAMES, 'rho (spatial lag)'].map(name =>
-    context.controls.addReadout(`2SLS ${name}`)
+  const twoStageReadouts = addModelResultReadouts(
+    context.controls,
+    '2SLS',
+    ['CONSTANT', ...PREDICTOR_NAMES, 'W_y (rho, spatial lag)'],
+    ['anselinKelejian']
   );
-  const twoStageReadout = context.controls.addReadout('2SLS pseudo R² / sigma²');
+  const twoStageR2Readout = context.controls.addReadout('2SLS pseudo R²');
   const moranTwoStageReadout = context.controls.addReadout('2SLS residual Moran I');
-  const akReadout = context.controls.addReadout('Anselin-Kelejian (2SLS)');
   const statusReadout = context.controls.addReadout('Status (OLS / diag / 2SLS)');
   context.controls.addReadout('Data', study.attribution);
   stage.writeSearch();
@@ -2083,7 +2113,7 @@ function createSpatialView(
       {buffer: diagnosticsSummary, size: summaryBytes},
       {buffer: table, size: tableLength * 4},
       {buffer: twoStageSummary, size: twoStageSummaryBytes},
-      {buffer: olsSummary, size: 64},
+      {buffer: olsSummary, size: GPU_ORDINARY_LEAST_SQUARES_SUMMARY_LENGTH * 4},
       {buffer: olsStatus, size: 4},
       {buffer: diagnosticsStatus, size: 4},
       {buffer: twoStageStatus, size: 4},
@@ -2103,7 +2133,7 @@ function createSpatialView(
       const diagnostics = take(GPU_SPATIAL_REGRESSION_DIAGNOSTICS_SUMMARY_LENGTH);
       const tableValues = take(tableLength);
       const twoStage = take(GPU_SPATIAL_TWO_STAGE_LEAST_SQUARES_SUMMARY_LENGTH);
-      const olsValues = take(16);
+      const olsValues = take(GPU_ORDINARY_LEAST_SQUARES_SUMMARY_LENGTH);
       const [olsStatusWord, diagnosticsStatusWord, twoStageStatusWord, overflowWord, totalWord] =
         words.subarray(cursor, cursor + 5);
       const stride = GPU_SPATIAL_REGRESSION_DIAGNOSTICS_TEST_STRIDE;
@@ -2120,21 +2150,18 @@ function createSpatialView(
       olsReadout.setValue(
         `${formatNumber(olsValues[GPU_ORDINARY_LEAST_SQUARES_SUMMARY_R_SQUARED])} / ${formatNumber(olsValues[GPU_ORDINARY_LEAST_SQUARES_SUMMARY_SIGMA_SQUARED])}`
       );
-      const tableStride = GPU_SPATIAL_TWO_STAGE_LEAST_SQUARES_TABLE_STRIDE;
-      coefficientReadouts.forEach((readout, index) => {
-        const base = index * tableStride;
-        readout.setValue(
-          `${formatNumber(tableValues[base])} ± ${formatNumber(tableValues[base + 1])} (z ${formatNumber(tableValues[base + 2], 1)}, ${formatP(tableValues[base + 3])})`
-        );
-      });
-      twoStageReadout.setValue(
-        `${formatNumber(twoStage[GPU_SPATIAL_TWO_STAGE_LEAST_SQUARES_SUMMARY_PSEUDO_R_SQUARED])} / ${formatNumber(twoStage[GPU_SPATIAL_TWO_STAGE_LEAST_SQUARES_SUMMARY_SIGMA_SQUARED])}`
+      const twoStageResult = getGPUSpatialTwoStageLeastSquaresModelResult(
+        {
+          table: tableValues.slice(),
+          summary: twoStage.slice(),
+          status: Uint32Array.of(twoStageStatusWord)
+        },
+        {predictorNames: PREDICTOR_NAMES}
       );
+      twoStageReadouts.update(twoStageResult);
+      twoStageR2Readout.setValue(formatNumber(twoStageResult.pseudoRSquared));
       moranTwoStageReadout.setValue(
         formatNumber(twoStage[GPU_SPATIAL_TWO_STAGE_LEAST_SQUARES_SUMMARY_MORAN_I])
-      );
-      akReadout.setValue(
-        `${formatNumber(twoStage[GPU_SPATIAL_TWO_STAGE_LEAST_SQUARES_SUMMARY_ANSELIN_KELEJIAN], 2)}, ${formatP(twoStage[GPU_SPATIAL_TWO_STAGE_LEAST_SQUARES_SUMMARY_ANSELIN_KELEJIAN_P_VALUE])}`
       );
       statusReadout.setValue(`${olsStatusWord} / ${diagnosticsStatusWord} / ${twoStageStatusWord}`);
       linksReadout.setValue(stage.formatLinks(totalWord, overflowWord));
@@ -2259,22 +2286,26 @@ function createErrorView(
     gradient: {...DIVERGING_GRADIENT, minimumLabel: '-2σ', maximumLabel: '+2σ'}
   });
   context.controls.addNote(
-    'GPUSpatialErrorGM (spreg GM_Error): OLS residuals u give the moments of lambda in ' +
-      'u = lambda W u + e; the model is then refit on the spatially filtered y and X. The ' +
-      'coefficients below compare OLS with the GM error fit; lambda has no standard error.'
+    'GPUSpatialErrorGM (default estimator: spreg GM_Error_Hom): OLS residuals u give the moments of ' +
+      'lambda in u = lambda W u + e; the model is then refit on the spatially filtered y and X. ' +
+      'Lambda now has a standard error, z and p (the homoskedastic estimator); the earlier ' +
+      "Kelejian-Prucha estimator has none. Standard errors use sigma² = e'e / n."
   );
   context.controls.addReadout('Cells (rows)', formatCount(rowCount));
   const linksReadout = context.controls.addReadout('Weight links / overflow');
-  const lambdaReadout = context.controls.addReadout('lambda (spatial error)');
-  const sigmaReadout = context.controls.addReadout('GM sigma² / pseudo R²');
+  const gmReadouts = addModelResultReadouts(context.controls, 'GM error', [
+    'CONSTANT',
+    ...PREDICTOR_NAMES,
+    'lambda (spatial error)'
+  ]);
+  const pseudoReadout = context.controls.addReadout('GM pseudo R²');
   const objectiveReadout = context.controls.addReadout('Moment objective');
   const olsReadout = context.controls.addReadout('OLS sigma² / R²');
   const lmErrorReadout = context.controls.addReadout('LM-error (OLS residuals)');
   const moranReadout = context.controls.addReadout('OLS residual Moran I, z');
   const coefficientReadouts = ['Intercept', ...PREDICTOR_NAMES].map(name =>
-    context.controls.addReadout(`${name}: OLS → GM error`)
+    context.controls.addReadout(`${name}: OLS (t)`)
   );
-  const statusReadout = context.controls.addReadout('Status (OLS / GM)');
   context.controls.addReadout('Data', study.attribution);
   stage.writeSearch();
 
@@ -2288,7 +2319,7 @@ function createErrorView(
       {buffer: errorSummary, size: GPU_SPATIAL_ERROR_GM_SUMMARY_LENGTH * 4},
       {buffer: ols.olsCoefficients, size: 16},
       {buffer: ols.olsTStatistics, size: 16},
-      {buffer: ols.olsSummary, size: 64},
+      {buffer: ols.olsSummary, size: GPU_ORDINARY_LEAST_SQUARES_SUMMARY_LENGTH * 4},
       {buffer: tests, size: testsBytes},
       {buffer: diagnosticsSummary, size: diagnosticsBytes},
       {buffer: ols.olsStatus, size: 4},
@@ -2309,20 +2340,20 @@ function createErrorView(
       const error = take(GPU_SPATIAL_ERROR_GM_SUMMARY_LENGTH);
       const olsCoefficients = take(4);
       const olsT = take(4);
-      const olsValues = take(16);
+      const olsValues = take(GPU_ORDINARY_LEAST_SQUARES_SUMMARY_LENGTH);
       const testValues = take(GPU_SPATIAL_REGRESSION_DIAGNOSTICS_TESTS_LENGTH);
       const diagnostics = take(GPU_SPATIAL_REGRESSION_DIAGNOSTICS_SUMMARY_LENGTH);
-      const [olsStatusWord, errorStatusWord, overflowWord, totalWord] = words.subarray(
-        cursor,
-        cursor + 4
+      const [, errorStatusWord, overflowWord, totalWord] = words.subarray(cursor, cursor + 4);
+      const gmResult = getGPUSpatialErrorGMModelResult(
+        {
+          table: tableValues.slice(),
+          summary: error.slice(),
+          status: Uint32Array.of(errorStatusWord)
+        },
+        {predictorNames: PREDICTOR_NAMES}
       );
-      const lambda = error[GPU_SPATIAL_ERROR_GM_SUMMARY_LAMBDA];
-      lambdaReadout.setValue(
-        errorStatusWord === GPU_SPATIAL_ERROR_GM_STATUS_OK ? formatNumber(lambda) : 'fit failed'
-      );
-      sigmaReadout.setValue(
-        `${formatNumber(error[GPU_SPATIAL_ERROR_GM_SUMMARY_SIGMA_SQUARED])} / ${formatNumber(error[GPU_SPATIAL_ERROR_GM_SUMMARY_PSEUDO_R_SQUARED])}`
-      );
+      gmReadouts.update(gmResult);
+      pseudoReadout.setValue(formatNumber(gmResult.pseudoRSquared));
       objectiveReadout.setValue(
         formatNumber(error[GPU_SPATIAL_ERROR_GM_SUMMARY_MOMENT_OBJECTIVE], 4)
       );
@@ -2339,12 +2370,10 @@ function createErrorView(
         `${formatNumber(diagnostics[GPU_SPATIAL_REGRESSION_DIAGNOSTICS_SUMMARY_MORAN_I])}, z ${formatNumber(testValues[moranRow], 2)}`
       );
       coefficientReadouts.forEach((readout, index) => {
-        const base = index * GPU_SPATIAL_ERROR_GM_TABLE_STRIDE;
         readout.setValue(
-          `${formatNumber(olsCoefficients[index])} (t ${formatNumber(olsT[index], 1)}) → ${formatNumber(tableValues[base])} ± ${formatNumber(tableValues[base + 1])} (z ${formatNumber(tableValues[base + 2], 1)})`
+          `${formatNumber(olsCoefficients[index])} (t ${formatNumber(olsT[index], 1)})`
         );
       });
-      statusReadout.setValue(`${olsStatusWord} / ${errorStatusWord}`);
       linksReadout.setValue(stage.formatLinks(totalWord, overflowWord));
       sigma = Math.sqrt(Math.max(0, olsValues[GPU_ORDINARY_LEAST_SQUARES_SUMMARY_SIGMA_SQUARED]));
       context.updateLayers();

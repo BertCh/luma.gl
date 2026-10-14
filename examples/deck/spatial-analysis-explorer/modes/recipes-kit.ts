@@ -415,6 +415,24 @@ export function metersToDegrees(
   return degrees;
 }
 
+/** Short legend wording for a `GPUInferenceMetadata.multipleTesting` method. */
+export function describeMultipleTesting(method: string): string {
+  switch (method) {
+    case 'none':
+      return 'unadjusted';
+    case 'bonferroni':
+      return 'Bonferroni-adjusted';
+    case 'holm':
+      return 'Holm-adjusted';
+    case 'benjamini-hochberg':
+      return 'FDR-adjusted (BH)';
+    case 'benjamini-yekutieli':
+      return 'FDR-adjusted (BY)';
+    default:
+      return method;
+  }
+}
+
 export {SummaryReader};
 
 /**

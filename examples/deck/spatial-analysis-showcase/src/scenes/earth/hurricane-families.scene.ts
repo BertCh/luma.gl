@@ -355,16 +355,18 @@ import {
   GPUTrajectoryResample, GPUTrackSimilarity, GPUKMeans
 } from '@luma.gl/experimental/gpu-spatial-analysis';
 
-// positions: float32x2 azimuthal-equidistant meters, timestamps: float32 seconds since each storm's start
+// positions: float32x2 longitude/latitude degrees, timestamps: float32 seconds since each storm's start
 const routes = new GPUCommandGraph(device, {id: 'routes'});
 routes.add(new GPUTrajectoryResample({
+  spatialContext: {coordinateSpace: 'longitude-latitude', metric: 'great-circle', units: 'meters'},
   positions, timestamps, trackOffsets,
   sampleCount: ${state.routeSamples}, spacing: '${state.routeSpacing}',      // compile-time
-  samples                                  // storms x ${state.routeSamples} float32x2 rows
+  samples                                  // storms x ${state.routeSamples} float32x2 rows (degrees)
 }));
 
 const similarity = new GPUCommandGraph(device, {id: 'similarity'});
 similarity.add(new GPUTrackSimilarity({
+  spatialContext: {coordinateSpace: 'longitude-latitude', metric: 'great-circle', units: 'meters'},
   positionsA: samples, offsetsA: sampleOffsets,
   pairA, pairB,                            // every unordered pair of storms
   frechet, hausdorff, status,              // one float32 per pair
@@ -396,7 +398,7 @@ families.add(new GPUKMeans({
     scaleBar: {units: 'metric'},
     credit: joinCredits(CREDITS.noaaNhc, 'NOAA IBTrACS', CREDITS.naturalEarth, CREDITS.okabeIto),
     caveat:
-      'Distances are computed in an azimuthal metric frame and drawn in Web Mercator; families are a lens, not storm species.'
+      'Routes are resampled along great circles and compared with great-circle Fréchet and Hausdorff distances, so no projection distorts the distances. The map is Web Mercator; families are a lens, not storm species.'
   },
   annotations: FAMILY_LABELS,
 

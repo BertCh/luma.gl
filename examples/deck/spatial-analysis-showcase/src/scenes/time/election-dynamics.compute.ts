@@ -14,6 +14,10 @@ import {
   getGPUSpatialAutocorrelationParameterValues,
   GPU_LISA_MARKOV_STATE_COUNT,
   GPU_SPATIAL_AUTOCORRELATION_PARAMETER_LENGTH,
+  GPU_TRANSITION_HOMOGENEITY,
+  GPU_TRANSITION_HOMOGENEITY_LENGTH,
+  GPU_TRANSITION_STATE_SPARSITY,
+  GPU_TRANSITION_STATE_SPARSITY_LENGTH,
   GPUClassAssignment,
   GPULISAMarkov,
   GPUSpatialMarkov,
@@ -28,6 +32,8 @@ import {
 } from '../../engine/layers';
 import {formatCount, SpatialAnalysisResources} from '../../engine/resources';
 import {SummaryReader} from '../../engine/summary-reader';
+import {formatPValue} from '../weights/b4-format';
+import {getWeightsInfo} from '../weights/b4-weights-core';
 import type {SceneContext, SceneInstance} from '../scene';
 import {
   getGeoJsonOutlineSegments,
@@ -180,6 +186,10 @@ type MatrixSummary = {
   lisaCounts: Uint32Array;
   lisaProbabilities: Float32Array;
   ignored: number;
+  /** giddy Q, its p, LR, its p and the degrees of freedom of the lag homogeneity tests. */
+  homogeneity: Float32Array;
+  /** Lag-conditional `(lag class, from)` states with a few transitions, and with none. */
+  sparseStates: Uint32Array;
 };
 
 /**
@@ -288,6 +298,8 @@ export async function createElectionDynamics(
     const lagBreaks = buffer('lag-breaks', (LAG_CLASS_COUNT + 1) * 4);
     const lagClassCount = buffer('lag-class-count', 4);
     const lagClasses = buffer('lag-classes', pooledCount * 4);
+    const homogeneity = buffer('homogeneity', GPU_TRANSITION_HOMOGENEITY_LENGTH * 4);
+    const stateSparsity = buffer('state-sparsity', GPU_TRANSITION_STATE_SPARSITY_LENGTH * 4);
     const lisaCounts = buffer('lisa-counts', STATE_COUNT ** 2 * 4);
     const lisaProbabilities = buffer('lisa-probabilities', STATE_COUNT ** 2 * 4);
     const lisaTotals = buffer('lisa-totals', STATE_COUNT * 4);
@@ -316,7 +328,9 @@ export async function createElectionDynamics(
     const weights = {
       offsets: v('offsets', offsets, 'uint32', rows + 1),
       neighbors: v('neighbors', neighbors, 'uint32', queen.neighbors.length),
-      weights: v('weights', weightsBuffer, 'float32', queen.weights.length)
+      weights: v('weights', weightsBuffer, 'float32', queen.weights.length),
+      // Queen weights are row-standardized (1 / degree), so masked neighbours are re-standardized out.
+      info: getWeightsInfo(rows, true)
     };
     const breaksView = v('breaks', breaks, 'float32', MAXIMUM_CLASS_COUNT + 1);
     const classCountView = v('class-count', classCount, 'uint32', 1);
@@ -384,7 +398,15 @@ export async function createElectionDynamics(
           ),
           lagBreaks: v('lag-breaks', lagBreaks, 'float32', LAG_CLASS_COUNT + 1),
           lagClassCount: v('lag-class-count', lagClassCount, 'uint32', 1),
-          lagClasses: v('lag-classes', lagClasses, 'uint32', pooledCount)
+          lagClasses: v('lag-classes', lagClasses, 'uint32', pooledCount),
+          // Tests whether the lag-conditional matrices differ from the pooled one (giddy Q and LR).
+          homogeneity: v('homogeneity', homogeneity, 'float32', GPU_TRANSITION_HOMOGENEITY_LENGTH),
+          stateSparsity: v(
+            'state-sparsity',
+            stateSparsity,
+            'uint32',
+            GPU_TRANSITION_STATE_SPARSITY_LENGTH
+          )
         }
       })
     );
@@ -393,6 +415,10 @@ export async function createElectionDynamics(
         id: `${key}-lisa`,
         values: valuesView,
         weights,
+        // The legend has a 'not significant' state and a significance slider; the library default
+        // ('none', giddy parity) would have four quadrant states. Island and masked rows are
+        // 0xffffffff and skipped either way.
+        gating: 'significance',
         periods,
         periodLag: lag,
         parameters: lisaParameters.importToGraph(analysisGraph),
@@ -497,7 +523,9 @@ export async function createElectionDynamics(
         {buffer: spatialProbabilities, size: spatialCells * 4},
         {buffer: lisaCounts, size: STATE_COUNT ** 2 * 4},
         {buffer: lisaProbabilities, size: STATE_COUNT ** 2 * 4},
-        {buffer: ignored, size: 4}
+        {buffer: ignored, size: 4},
+        {buffer: homogeneity, size: GPU_TRANSITION_HOMOGENEITY_LENGTH * 4},
+        {buffer: stateSparsity, size: GPU_TRANSITION_STATE_SPARSITY_LENGTH * 4}
       ],
       bytes => {
         if (destroyed || current?.key !== key) return;
@@ -520,7 +548,9 @@ export async function createElectionDynamics(
           spatialProbabilities: floating(spatialCells),
           lisaCounts: unsigned(STATE_COUNT ** 2),
           lisaProbabilities: floating(STATE_COUNT ** 2),
-          ignored: unsigned(1)[0]
+          ignored: unsigned(1)[0],
+          homogeneity: floating(GPU_TRANSITION_HOMOGENEITY_LENGTH),
+          sparseStates: unsigned(GPU_TRANSITION_STATE_SPARSITY_LENGTH)
         };
         showSummary();
       }
@@ -687,6 +717,19 @@ export async function createElectionDynamics(
         .join(' / ')
     );
     ctx.setReadout('stayLisa', percent(stay(data.lisaCounts, STATE_COUNT)));
+    const H = GPU_TRANSITION_HOMOGENEITY;
+    const dof = data.homogeneity[H.DEGREES_OF_FREEDOM];
+    ctx.setReadout(
+      'homogeneity',
+      dof > 0
+        ? `Q ${data.homogeneity[H.Q].toFixed(1)} (p ${formatPValue(data.homogeneity[H.Q_P_VALUE])}), LR ${data.homogeneity[H.LR].toFixed(1)} (p ${formatPValue(data.homogeneity[H.LR_P_VALUE])}), ${dof} degrees of freedom`
+        : 'not testable (fewer than two lag classes with moves)'
+    );
+    const S = GPU_TRANSITION_STATE_SPARSITY;
+    ctx.setReadout(
+      'sparseStates',
+      `${data.sparseStates[S.SPARSE]} sparse and ${data.sparseStates[S.EMPTY]} empty lag-conditional rows`
+    );
 
     // Transition matrix rows of the chosen matrix.
     let shownCounts = data.counts;

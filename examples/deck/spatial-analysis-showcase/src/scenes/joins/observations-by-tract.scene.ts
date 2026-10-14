@@ -164,13 +164,26 @@ export default defineScene<ObservationsByTractOptions>({
       ]
     },
     {
-      kind: 'toggle',
-      id: 'includeBoundary',
-      label: 'Count points on a tract edge',
+      kind: 'select',
+      id: 'boundaryRule',
+      label: 'Points on a tract edge',
       group: 'Join',
       apply: 'compile',
-      default: true,
-      help: 'Observation coordinates are precise, so very few sit exactly on a tract edge. On: they join the lowest-numbered tract whose edge they touch. Off: they join no tract.'
+      default: 'half-open',
+      help: 'Observation coordinates are precise, so very few sit exactly on a tract edge. Half-open gives every such point one tract however the rows are ordered; closed gives it to the lowest-numbered tract it touches; open gives it to none.',
+      options: [
+        {
+          value: 'half-open',
+          label: 'Half-open (one owner)',
+          help: 'A tract owns its left and bottom edges but not its right and top edges, so a shared edge belongs to exactly one tract and the result does not depend on row order.'
+        },
+        {
+          value: 'closed',
+          label: 'Closed (lowest tract)',
+          help: 'A point on an edge joins the lowest-numbered tract whose edge it touches.'
+        },
+        {value: 'open', label: 'Open (no tract)', help: 'A point on an edge joins no tract.'}
+      ]
     },
     {
       kind: 'toggle',
@@ -486,7 +499,7 @@ graph.add(prepared);                          // built once, reused every run
     points,                                   // float32x2 meters, uploaded once
     polygonPositions, featureOffsets, polygonOffsets, ringOffsets,
     candidateCapacity: points.length * ${8},
-    includeBoundary: ${state.includeBoundary},${state.prepared ? '\n    prepared,' : `\n    spatialSort: ${state.spatialSort},`}
+    boundaryRule: '${state.boundaryRule}',${state.prepared ? '\n    prepared,' : `\n    spatialSort: ${state.spatialSort},`}
     pointFeatureIds,                          // per observation: tract row or NO_FEATURE
     featureCounts,                            // per tract: observations
     overflow, candidateCount, uncertainCount
@@ -610,15 +623,14 @@ compiled.encode(commandEncoder, {parameters: undefined});`,
       headline: 'GPU tract totals agree away from boundary ambiguity',
       textAlternative:
         'Comparison readouts audit GPU assignments against GeoPandas and identify edge-adjacent differences.',
-      controls: ['pointsMode', 'includeBoundary'],
+      controls: ['pointsMode', 'boundaryRule'],
       readouts: ['agreement', 'differenceNearEdge', 'tractParity'],
       title: 'Check against GeoPandas, then mind the limits',
       body: 'The data pipeline joined the same points with GeoPandas. **Agrees with GeoPandas** reports the share of records where the GPU tract equals that tract index, and **Tract totals vs table** compares every per-tract count. **Where the differences are** shows that any disagreement lies within 2 m of a tract edge, where float32 coordinates can put a point on either side. **Observation points** is set to *Only records outside every tract*: every record in this data lies inside a tract, so expect none.\n\n**Limits.** Tracts stabilize the denominator but introduce fixed administrative boundaries. Parks, the lakefront and enthusiastic users dominate, and the City Nature Challenge pulse from 28 April through 1 May moves counts without proving an ecological change. The next time story replaces tracts with fixed 500 m cells and keeps those boundaries constant through 52 weekly slices—then tests how much the result changes with neighbourhood and significance choices.',
       options: {
         pointsMode: 'outside',
         display: 'ramp',
-        rerunEveryFrame: false,
-        includeBoundary: true
+        rerunEveryFrame: false
       },
       highlight: {readout: 'agreement'}
     }

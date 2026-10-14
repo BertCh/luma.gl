@@ -177,16 +177,6 @@ export function rebinHistogram(
   return {values, domain: [low, high]};
 }
 
-/**
- * Ratio of true ground distance at `latitude` to a planar metre of the map frame whose scale is
- * true at `originLatitude`: `cos(latitude) / cos(originLatitude)`. The planar frame is Web
- * Mercator scaled to be correct at its origin, so a planar kilometre is a shorter ground
- * kilometre north of the origin and a longer one south of it.
- */
-export function getGroundDistanceRatio(latitude: number, originLatitude: number): number {
-  return Math.cos((latitude * Math.PI) / 180) / Math.cos((originLatitude * Math.PI) / 180);
-}
-
 /** Value of `value` among the ascending `sorted` as a 0-1 rank (share at or below). */
 export function getRank(sorted: ArrayLike<number>, value: number): number {
   let low = 0;

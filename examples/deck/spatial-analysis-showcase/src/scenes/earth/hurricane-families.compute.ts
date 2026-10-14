@@ -6,6 +6,7 @@ import {COORDINATE_SYSTEM, type Layer} from '@deck.gl/core';
 import {HURRICANE_CLASS} from '../../cartography/hue-registry';
 import type {Buffer} from '@luma.gl/core';
 import {
+  GPU_EARTH_MEAN_RADIUS_METERS,
   GPUKMeans,
   GPUTrackSimilarity,
   GPUTrajectoryResample
@@ -20,11 +21,11 @@ import type {SceneContext, SceneInstance} from '../scene';
 import {findNearestTrack} from '../movement/b12-tracks';
 import {binValues, histogramChart} from '../movement/f-chart-helpers';
 import {
-  ATLANTIC_CENTER,
   describeStorm,
   findLongestStorm,
   findStorm,
   getStormLabel,
+  getTrackLengthMeters,
   HURRICANE_FAMILY_COLORS,
   loadHurricaneTracks
 } from './hurricane-data';
@@ -49,15 +50,29 @@ export type HurricaneFamiliesOptions = {
 
 const MAXIMUM_FAMILIES = 8;
 const NO_STORM = 0xffffffff;
-const EARTH_RADIUS_METERS = 6371008.8;
 const PICK_RADIUS_METERS = 450000;
 const MDS_ITERATIONS = 90;
 
 /**
  * Finds one optimal discrete-Frechet coupling and returns its widest leash.
- * Routes are already resampled in an azimuthal-equidistant metre frame, so the
- * Euclidean length used here agrees with the GPU comparison's metric frame.
+ * Routes are longitude/latitude degrees and the leash length is the haversine distance on
+ * `GPU_EARTH_MEAN_RADIUS_METERS`, the metric `GPUTrackSimilarity` compares with.
  */
+function getHaversineMeters(
+  longitudeA: number,
+  latitudeA: number,
+  longitudeB: number,
+  latitudeB: number
+): number {
+  const toRadians = Math.PI / 180;
+  const sinLatitude = Math.sin(((latitudeB - latitudeA) * toRadians) / 2);
+  const sinLongitude = Math.sin(((longitudeB - longitudeA) * toRadians) / 2);
+  const haversine =
+    sinLatitude * sinLatitude +
+    Math.cos(latitudeA * toRadians) * Math.cos(latitudeB * toRadians) * sinLongitude * sinLongitude;
+  return 2 * GPU_EARTH_MEAN_RADIUS_METERS * Math.asin(Math.min(1, Math.sqrt(haversine)));
+}
+
 function frechetBottleneck(
   routes: Float32Array,
   sampleCount: number,
@@ -71,7 +86,7 @@ function frechetBottleneck(
     const ay = routes[(first * sampleCount + a) * 2 + 1];
     const bx = routes[(second * sampleCount + b) * 2];
     const by = routes[(second * sampleCount + b) * 2 + 1];
-    return Math.hypot(ax - bx, ay - by);
+    return getHaversineMeters(ax, ay, bx, by);
   };
   for (let a = 0; a < sampleCount; a++) {
     for (let b = 0; b < sampleCount; b++) {
@@ -116,7 +131,6 @@ type RouteVariant = {
   sampleCount: number;
   routes: Buffer;
   routeOffsets: Buffer;
-  routeDegrees: Buffer;
   routeSegments: Buffer;
   resample: CompiledGPUCommandGraph<void>;
   similarity: CompiledGPUCommandGraph<void>;
@@ -135,8 +149,10 @@ type KMeansVariant = {
  * distances (`GPUTrackSimilarity`), the distance matrix is embedded in two dimensions on the CPU
  * (classical multidimensional scaling) and `GPUKMeans` clusters the embedding into families.
  *
- * Analysis runs in azimuthal-equidistant meters about 28 N, 60 W so distances between tracks are
- * true over the whole basin; drawing uses the longitude and latitude of the same vertices.
+ * Routes are resampled on the sphere (`GPUTrajectoryResample` with a great-circle context, so
+ * arc-length spacing is true meters) and compared as longitude/latitude with great-circle
+ * distances (`GPUTrackSimilarity` with the same context). No projection is involved; the only
+ * planar frame left is the azimuthal-equidistant one that picks the nearest storm under the cursor.
  */
 export async function createHurricaneFamilies(
   ctx: SceneContext<HurricaneFamiliesOptions>
@@ -151,7 +167,7 @@ export async function createHurricaneFamilies(
   const drawProps = {coordinateSystem: COORDINATE_SYSTEM.LNGLAT} as const;
 
   // ---- Static inputs --------------------------------------------------------------------------
-  const positionsBuffer = resources.createBuffer('positions', storms.positions);
+  const lngLatBuffer = resources.createBuffer('lng-lat', storms.lngLat);
   const timestampsBuffer = resources.createBuffer('timestamps', storms.timestamps);
   const offsetsBuffer = resources.createBuffer('offsets', storms.offsets);
   const segmentsBuffer = resources.createBuffer('segments', storms.segments);
@@ -236,10 +252,6 @@ export async function createHurricaneFamilies(
   function buildRoutes(sampleCount: number, spacing: 'arc-length' | 'time'): RouteVariant {
     const key = `${sampleCount}-${spacing}`;
     const routes = resources.createBuffer(`routes-${key}`, trackCount * sampleCount * 8);
-    const routeDegrees = resources.createBuffer(
-      `route-degrees-${key}`,
-      trackCount * sampleCount * 8
-    );
     const routeSegments = resources.createBuffer(
       `route-segments-${key}`,
       trackCount * (sampleCount - 1) * 16
@@ -260,10 +272,15 @@ export async function createHurricaneFamilies(
     resampleGraph.add(
       new GPUTrajectoryResample({
         id: 'routes',
+        spatialContext: {
+          coordinateSpace: 'longitude-latitude',
+          metric: 'great-circle',
+          units: 'meters'
+        },
         positions: importGraphBuffer(
           resampleGraph,
           'positions',
-          positionsBuffer,
+          lngLatBuffer,
           'float32x2',
           vertexCount
         ),
@@ -286,53 +303,12 @@ export async function createHurricaneFamilies(
         samples: routesView
       })
     );
-    // Back to longitude and latitude so the samples can be drawn: the inverse of the
-    // azimuthal-equidistant projection the analysis runs in.
-    const degreesView = importGraphBuffer(
-      resampleGraph,
-      'route-degrees',
-      routeDegrees,
-      'float32x2',
-      trackCount * sampleCount
-    );
-    const phi0 = (ATLANTIC_CENTER[1] * Math.PI) / 180;
-    const literal = (value: number) =>
-      Math.fround(value)
-        .toString()
-        .replace(/^(-?\d+)$/, '$1.0');
-    addKernelPass(resampleGraph, {
-      id: 'route-degrees',
-      invocationCount: trackCount * sampleCount,
-      declarations: `const EARTH_RADIUS: f32 = ${literal(EARTH_RADIUS_METERS)};
-const CENTER_LONGITUDE: f32 = ${literal((ATLANTIC_CENTER[0] * Math.PI) / 180)};
-const CENTER_LATITUDE: f32 = ${literal(phi0)};
-const SIN_CENTER: f32 = ${literal(Math.sin(phi0))};
-const COS_CENTER: f32 = ${literal(Math.cos(phi0))};`,
-      bindings: [
-        {name: 'samples', view: routesView, type: 'f32', access: 'read'},
-        {name: 'lngLatDegrees', view: degreesView, type: 'f32', access: 'read_write'}
-      ],
-      body: `let x = samples[samplesOffset + index * 2u];
-  let y = samples[samplesOffset + index * 2u + 1u];
-  let rho = sqrt(x * x + y * y);
-  var longitude = CENTER_LONGITUDE;
-  var latitude = CENTER_LATITUDE;
-  if (rho > 1.0) {
-    let c = rho / EARTH_RADIUS;
-    let sinC = sin(c);
-    let cosC = cos(c);
-    latitude = asin(clamp(cosC * SIN_CENTER + (y * sinC / rho) * COS_CENTER, -1.0, 1.0));
-    longitude = CENTER_LONGITUDE + atan2(x * sinC, rho * COS_CENTER * cosC - y * SIN_CENTER * sinC);
-  }
-  lngLatDegrees[lngLatDegreesOffset + index * 2u] = longitude * 57.29577951;
-  lngLatDegrees[lngLatDegreesOffset + index * 2u + 1u] = latitude * 57.29577951;`
-    });
     addKernelPass(resampleGraph, {
       id: 'route-segments',
       invocationCount: trackCount * (sampleCount - 1),
       declarations: `const SAMPLES: u32 = ${sampleCount}u;`,
       bindings: [
-        {name: 'lngLatDegrees', view: degreesView, type: 'f32', access: 'read'},
+        {name: 'lngLatDegrees', view: routesView, type: 'f32', access: 'read'},
         {
           name: 'segments',
           view: importGraphBuffer(
@@ -359,6 +335,11 @@ const COS_CENTER: f32 = ${literal(Math.cos(phi0))};`,
     similarityGraph.add(
       new GPUTrackSimilarity({
         id: 'route-similarity',
+        spatialContext: {
+          coordinateSpace: 'longitude-latitude',
+          metric: 'great-circle',
+          units: 'meters'
+        },
         positionsA: importGraphBuffer(
           similarityGraph,
           'routes',
@@ -398,7 +379,6 @@ const COS_CENTER: f32 = ${literal(Math.cos(phi0))};`,
       sampleCount,
       routes,
       routeOffsets,
-      routeDegrees,
       routeSegments,
       resample: resources.track(resampleGraph.compile()),
       similarity: resources.track(similarityGraph.compile()),
@@ -414,7 +394,6 @@ const COS_CENTER: f32 = ${literal(Math.cos(phi0))};`,
       resources.release(previous.resample);
       resources.release(previous.routes);
       resources.release(previous.routeOffsets);
-      resources.release(previous.routeDegrees);
       resources.release(previous.routeSegments);
     }
     similarityDirty = true;
@@ -604,12 +583,7 @@ const COS_CENTER: f32 = ${literal(Math.cos(phi0))};`,
         endLongitude += storms.lngLat[last * 2];
         endLatitude += storms.lngLat[last * 2 + 1];
         if (storms.maxCategory[track] >= 2) hurricanes++;
-        for (let vertex = first + 1; vertex <= last; vertex++) {
-          length += Math.hypot(
-            storms.positions[vertex * 2] - storms.positions[vertex * 2 - 2],
-            storms.positions[vertex * 2 + 1] - storms.positions[vertex * 2 - 1]
-          );
-        }
+        length += getTrackLengthMeters(storms, track);
         count++;
       }
       if (!count) continue;
@@ -747,9 +721,10 @@ const COS_CENTER: f32 = ${literal(Math.cos(phi0))};`,
           count++;
         }
         if (!count) continue;
-        const points = Array.from({length: sampleCount}, (_, sample) =>
-          storms.unproject(sumX[sample] / count, sumY[sample] / count)
-        );
+        const points = Array.from({length: sampleCount}, (_, sample): [number, number] => [
+          sumX[sample] / count,
+          sumY[sample] / count
+        ]);
         for (let sample = 0; sample + 1 < sampleCount; sample++) {
           segments.set(
             [points[sample][0], points[sample][1], points[sample + 1][0], points[sample + 1][1]],
@@ -784,14 +759,14 @@ const COS_CENTER: f32 = ${literal(Math.cos(phi0))};`,
         }
         if (medoid < 0) continue;
         for (let sample = 0; sample + 1 < sampleCount; sample++) {
-          const first = storms.unproject(
+          const first = [
             routesSnapshot[(medoid * sampleCount + sample) * 2],
             routesSnapshot[(medoid * sampleCount + sample) * 2 + 1]
-          );
-          const second = storms.unproject(
+          ];
+          const second = [
             routesSnapshot[(medoid * sampleCount + sample + 1) * 2],
             routesSnapshot[(medoid * sampleCount + sample + 1) * 2 + 1]
-          );
+          ];
           segments.set([first[0], first[1], second[0], second[1]], (family * 63 + sample) * 4);
         }
       }
@@ -830,16 +805,16 @@ const COS_CENTER: f32 = ${literal(Math.cos(phi0))};`,
           ? frechetBottleneck(routesSnapshot, routeVariant.sampleCount, selectedStorm, nearest)
           : null;
       if (bottleneck && routesSnapshot) {
-        const first = storms.unproject(
+        const first = [
           routesSnapshot[(selectedStorm * routeVariant!.sampleCount + bottleneck.firstSample) * 2],
           routesSnapshot[
             (selectedStorm * routeVariant!.sampleCount + bottleneck.firstSample) * 2 + 1
           ]
-        );
-        const second = storms.unproject(
+        ];
+        const second = [
           routesSnapshot[(nearest * routeVariant!.sampleCount + bottleneck.secondSample) * 2],
           routesSnapshot[(nearest * routeVariant!.sampleCount + bottleneck.secondSample) * 2 + 1]
-        );
+        ];
         leash.set([first[0], first[1], second[0], second[1]]);
         ctx.setReadout(
           'leash',
@@ -1041,7 +1016,7 @@ const COS_CENTER: f32 = ${literal(Math.cos(phi0))};`,
           new SpatialAnalysisPointLayer({
             id: `hurricane-route-samples-${variant.key}`,
             ...drawProps,
-            positions: variant.routeDegrees,
+            positions: variant.routes,
             instanceCount: trackCount * variant.sampleCount,
             values: familyBuffer,
             valueFormat: 'uint32',

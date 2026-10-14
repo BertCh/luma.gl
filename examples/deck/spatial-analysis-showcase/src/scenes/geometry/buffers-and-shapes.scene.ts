@@ -8,6 +8,11 @@ import {defineScene, type LegendSpec} from '../scene';
 import type {BuffersAndShapesOptions} from './buffers-and-shapes.compute';
 import {B3_PALETTE} from './b3-palette';
 
+/** Snippet lines for the two spatial contexts (omitted means planar). */
+const GREAT_CIRCLE_SNIPPET =
+  "spatialContext: {coordinateSpace: 'longitude-latitude', metric: 'great-circle'},";
+const PLANAR_SNIPPET = '// spatialContext omitted: planar, in the units of the positions';
+
 const ROAD_CLASS_LABELS = [
   'Motorway',
   'Trunk',
@@ -587,7 +592,7 @@ The readouts show the vertices that survive, the number of pieces and whether th
 graph.add(new GPUOutlineGeometry({
   positions,                                  // float32x2, ${state.bufferSystem === 'spherical' ? 'longitude/latitude degrees' : 'local metres'}
   geometryType: '${state.bufferSource === 'stations' ? 'points' : state.bufferSource}',${state.bufferSource === 'stations' ? '' : '\n  pathOffsets,                                // path or ring starts'}
-  coordinateSystem: '${state.bufferSystem}',
+  ${state.bufferSystem === 'spherical' ? GREAT_CIRCLE_SNIPPET : PLANAR_SNIPPET}
   joinSegments: ${state.joinSegments},
   parameters: distance.importToGraph(graph),  // GPUParameterBuffer, length 4
   output: {positions: triangles}              // vertexCount * ${state.joinSegments * 3 + 6} float32x2 rows
@@ -602,7 +607,7 @@ distance.write(getGPUOutlineGeometryParameterValues({distance: ${state.bufferDis
 
 graph.add(new GPUShapeGenerator({
   shape: '${state.shapeKind}',
-  coordinateSystem: '${state.shapeSystem}',
+  ${state.shapeSystem === 'geodesic' ? GREAT_CIRCLE_SNIPPET : PLANAR_SNIPPET}
   ${state.shapeKind === 'ellipse' ? `ellipseSpacing: '${state.ellipseSpacing}',` : ''}
   maximumSegments: ${state.maxSegments},
   centers, radii,${state.shapeKind === 'sector' ? ' bearings,           // float32x2 start and end bearing per station' : ''}${state.shapeKind === 'ellipse' ? ' rotations,         // degrees clockwise per station' : ''}

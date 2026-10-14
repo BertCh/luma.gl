@@ -3,6 +3,7 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {Buffer, type Device} from '@luma.gl/core';
+import {GPU_EARTH_MEAN_RADIUS_METERS} from '@luma.gl/experimental/gpu-spatial-analysis';
 import type {SpatialAnalysisRasterLayerProps} from './layers';
 
 /**
@@ -220,8 +221,8 @@ const DARK_FLOOR: readonly [number, number, number] = [0x1b, 0x1f, 0x27];
 const FLAT_POSITION = 0.62;
 const MULTIDIRECTIONAL_OFFSETS = [-60, -30, 0, 30, 60] as const;
 const MULTIDIRECTIONAL_WEIGHTS = [1, 2, 3, 2, 1] as const;
-const METERS_PER_DEGREE_LATITUDE = 110574;
-const METERS_PER_DEGREE_EQUATOR = 111320;
+/** Meters per degree of arc on the mean-radius sphere (a DEM cell is tens of meters, so the sphere is ample). */
+const METERS_PER_DEGREE = (GPU_EARTH_MEAN_RADIUS_METERS * Math.PI) / 180;
 
 type Rgb = [number, number, number];
 
@@ -294,8 +295,8 @@ function getCellSizeMeters(dem: ReliefDem, option: ReliefOptions['cellSizeMeters
   const [west, south, east, north] = dem.bounds;
   const centerLatitude = ((south + north) / 2) * (Math.PI / 180);
   return [
-    (Math.abs(east - west) / dem.width) * METERS_PER_DEGREE_EQUATOR * Math.cos(centerLatitude),
-    (Math.abs(north - south) / dem.height) * METERS_PER_DEGREE_LATITUDE
+    (Math.abs(east - west) / dem.width) * METERS_PER_DEGREE * Math.cos(centerLatitude),
+    (Math.abs(north - south) / dem.height) * METERS_PER_DEGREE
   ] as const;
 }
 

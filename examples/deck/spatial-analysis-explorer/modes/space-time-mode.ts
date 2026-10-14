@@ -8,7 +8,7 @@
  * `GPUCalendarBuckets` (UTC offset -> local hour and an hour by weekday matrix) ->
  * `GPUCrossfilter` (hour-of-day brush -> per-vertex selection mask) ->
  * `GPUTemporalReduction` (vertices x cells x 24 time slices: counts and peak speed) ->
- * `GPUEmergingHotSpots` (17-category map of the count cube) and
+ * `GPUEmergingHotSpots` (18-category map of the count cube) and
  * `GPUChangeDetection` (two-slice difference / log ratio / percent change, Mann-Kendall and Sen's
  * slope over the peak-speed stack).
  *
@@ -74,7 +74,8 @@ const LATTICE_CELLS = 48;
 const MAXIMUM_RADIUS = 4;
 /** `GPUTemporalReduction` cell id that skips a row. */
 const NO_CELL = 0xffffffff;
-const CATEGORY_COUNT = 17;
+/** The 17 pattern codes plus `UNDETERMINED` (17). */
+const CATEGORY_COUNT = 18;
 const SIGNIFICANCE_CLASS_COUNT = 3;
 const READBACK_INTERVAL_FRAMES = 10;
 const WEEKDAYS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'] as const;
@@ -101,7 +102,8 @@ const CATEGORY_NAMES = [
   'Diminishing cold',
   'Sporadic cold',
   'Oscillating cold',
-  'Historical cold'
+  'Historical cold',
+  'Undetermined'
 ] as const;
 /** Mirrors `spaceTimeCategoryColor` in space-time-layers.ts. */
 const CATEGORY_COLORS: readonly (readonly [number, number, number])[] = [
@@ -121,7 +123,8 @@ const CATEGORY_COLORS: readonly (readonly [number, number, number])[] = [
   [150, 190, 230],
   [190, 230, 215],
   [120, 100, 220],
-  [130, 150, 170]
+  [130, 150, 170],
+  [150, 150, 150]
 ];
 const DIVERGING_COLORS = [
   [33, 102, 172],
@@ -174,7 +177,7 @@ export const spaceTimeMode: SpatialAnalysisModeDefinition = {
   ],
   description:
     'Taxi vertices binned into a space-time cube (cells x 24 time slices) on the GPU: a calendar ' +
-    'hour brush, 17-category emerging hot spots over counts, and two-slice change detection with ' +
+    'hour brush, 18-category emerging hot spots over counts, and two-slice change detection with ' +
     'Mann-Kendall and Sen trends over peak speed. The trips carry only 41 minutes of relative ' +
     'time, so the calendar is a labelled nominal anchor.',
   initialViewState: {longitude: -73.985, latitude: 40.735, zoom: 11.6},
@@ -548,7 +551,7 @@ export const spaceTimeMode: SpatialAnalysisModeDefinition = {
     let hourTo = 23;
     let radius = 2;
     let temporalWindow = 2;
-    let confidenceLevel: 0.9 | 0.95 | 0.99 = 0.9;
+    let confidenceLevel: 0.9 | 0.95 | 0.99 = 0.95;
     let beforeSlice = 8;
     let afterSlice = 16;
     let view: MapView = 'hot-spots';
@@ -590,7 +593,7 @@ export const spaceTimeMode: SpatialAnalysisModeDefinition = {
     context.controls.addSelect<MapView>({
       label: 'Map layer (buffer choice, no recompile)',
       options: [
-        {value: 'hot-spots', label: 'Emerging hot spots (17 categories, count cube)'},
+        {value: 'hot-spots', label: 'Emerging hot spots (18 categories, count cube)'},
         {value: 'activity', label: 'Activity: vertices in the after slice'},
         {value: 'difference', label: 'Change: difference of peak speed'},
         {value: 'log-ratio', label: 'Change: log ratio of peak speed'},
@@ -695,13 +698,13 @@ export const spaceTimeMode: SpatialAnalysisModeDefinition = {
       }
     });
     context.controls.addSelect({
-      label: 'Hot spot confidence',
+      label: 'Hot spot confidence (false discovery rate)',
       options: [
         {value: '0.9', label: '90%'},
         {value: '0.95', label: '95%'},
         {value: '0.99', label: '99%'}
       ],
-      value: '0.9',
+      value: '0.95',
       onChange: value => {
         confidenceLevel = Number(value) as typeof confidenceLevel;
         writeParameters();
@@ -890,7 +893,7 @@ export const spaceTimeMode: SpatialAnalysisModeDefinition = {
           const count = words[CATEGORY_WORD + category];
           categoryCountElements[category].textContent = formatCount(count);
           if (category >= 1 && category <= 8) hotCells += count;
-          if (category >= 9) coldCells += count;
+          if (category >= 9 && category <= 16) coldCells += count;
         }
         hotReadout.setValue(`${formatCount(hotCells)} / ${formatCount(coldCells)}`);
         trendReadout.setValue(

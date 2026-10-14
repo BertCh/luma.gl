@@ -25,7 +25,7 @@ export default defineScene<QuakePlateBoundariesOptions>({
   chapter: 'time',
   order: 6,
   summary:
-    'A GPU distance field and grouped statistics combine PB2002 boundaries with 77,000 USGS events to map depth-distance profiles and magnitude frequency; model boundaries, planar windows and catalog completeness limit precision.',
+    'A GPU distance field and grouped statistics combine PB2002 boundaries with 77,000 USGS events to map depth-distance profiles and magnitude frequency; model boundaries, window frames (distances within 2.2% of ground) and catalog completeness limit precision.',
   contributors: ['GPUDistanceField', 'GPUGroupStatistics'],
   datasets: [
     {id: 'poopdeck-earthquakes', role: 'USGS M4+ catalog, 2020 to 2024'},
@@ -40,7 +40,8 @@ export default defineScene<QuakePlateBoundariesOptions>({
     },
     scaleBar: {units: 'metric'},
     credit: 'US Geological Survey; PB2002 plate-boundary model',
-    caveat: 'Boundary positions, planar distance and catalog completeness limit precision.'
+    caveat:
+      'Boundary positions, the 2.2% window-frame distance error and catalog completeness limit precision.'
   },
 
   options: [
@@ -52,7 +53,7 @@ export default defineScene<QuakePlateBoundariesOptions>({
       apply: 'compile',
       default: 'japan',
       options: QUAKE_REGION_OPTIONS,
-      help: 'The analysis window: a planar metric frame (meters around its center, distances exact at the center latitude and about 12% off at the top and bottom) with a 1,024 by 1,024 distance grid that extends 450 km past the window so the nearest boundary is never cut off. Built the first time you pick a region.'
+      help: 'The analysis window: an azimuthal equidistant frame (meters around its center, distances within 2.2% of ground at the window corners) with a 1,024 by 1,024 distance grid that extends 450 km past the window so the nearest boundary is never cut off. Built the first time you pick a region.'
     },
     {
       kind: 'select',
@@ -440,7 +441,7 @@ export default defineScene<QuakePlateBoundariesOptions>({
       headline: 'Unsigned nearest-boundary distance can misassign events',
       textAlternative:
         'The Sunda allocation raster partitions locations by nearest boundary family, including abrupt changes unrelated to tectonic side.',
-      body: 'The distance is **unsigned** and to the *nearest* boundary: an event behind an arc may be measured to a transform fault on the wrong side, and the allocation map shows where the nearest family changes. PB2002 is a model whose boundary positions are good to tens of kilometers at best, so distances under that are in the noise; the grid is 3 to 4 km per cell; intraplate earthquakes are far from every boundary by construction.\n\nThe frame is planar, so distances are exact on the center latitude and drift by up to about 12% toward the top and bottom of a window, and the windows avoid the antimeridian. Depths of 10 km are often a network default. Try **Distance algorithm** (jump flooding) against the exact one on the slab chart, or **Deviation kind**, which only changes the spread readout.',
+      body: 'The distance is **unsigned** and to the *nearest* boundary: an event behind an arc may be measured to a transform fault on the wrong side, and the allocation map shows where the nearest family changes. PB2002 is a model whose boundary positions are good to tens of kilometers at best, so distances under that are in the noise; the grid is 3 to 4 km per cell; intraplate earthquakes are far from every boundary by construction.\n\nThe frame is azimuthal equidistant about the window center, so distances from the center are exact and distances elsewhere are within 2.2% of ground; the windows avoid the antimeridian. Depths of 10 km are often a network default. Try **Distance algorithm** (jump flooding) against the exact one on the slab chart, or **Deviation kind**, which only changes the spread readout.',
       camera: {...QUAKE_REGIONS.sunda.view, transitionMs: 1800},
       options: {
         region: 'sunda',

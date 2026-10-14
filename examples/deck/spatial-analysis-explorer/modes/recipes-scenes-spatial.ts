@@ -762,9 +762,8 @@ const DRIVE_BAND_COLORS = [
  * demand point lands in a drive-time band. Click the map to move the next facility; the time
  * budget scales the four band breaks. The recipe also builds the isochrone of the whole budget as
  * closed rings (Quadbin tiles that hold reached nodes, outlined and chained by the GPU); shells
- * are white and holes magenta. Cell outlines need longitude/latitude, so the whole recipe runs in
- * degrees: snapping measures distance in degrees (about 24% narrower east-west at this latitude),
- * which can pick a neighboring street over the nearest one but does not change drive times.
+ * are white and holes magenta. Cell outlines need longitude/latitude, and on longitude/latitude
+ * the recipe snaps great-circle (meters).
  */
 export const buildDriveTimeScene: RecipeSceneBuilder = async host => {
   const {context} = host;
@@ -875,6 +874,9 @@ export const buildDriveTimeScene: RecipeSceneBuilder = async host => {
   const ringOpen = kit.output('ring-open', 'uint32', 1);
   const ringStyle = kit.resources.createBuffer('ring-style', Uint32Array.of(0, 1));
   const recipe = addDriveTimeCatchmentRecipe(kit.graph, {
+    // Longitude/latitude: the isochrone cell outline needs it, and the recipe snaps great-circle
+    // on longitude/latitude (meters).
+    spatialContext: {coordinateSpace: 'longitude-latitude', metric: 'none'},
     network: {
       offsets: csrOffsets.view,
       neighbors: csrNeighbors.view,

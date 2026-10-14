@@ -15,6 +15,7 @@ import {Model} from '@luma.gl/engine';
 import type {DrawCommandBuffer} from '@luma.gl/gpgpu/gpu-core';
 import type {ClassTable} from '../cartography/types';
 import {evaluateZoomStops, type ZoomStops} from '../cartography/zoom';
+import type {AnalysisFrame} from './analysis-frame';
 import {COLORMAP_INDEXES, type RampName} from './ramps';
 import {
   MAXIMUM_PALETTE_SIZE,
@@ -38,7 +39,10 @@ export type {SpatialAnalysisShaderFeatures};
  * fade weights, clip fractions, and GPU-resident bounds are bound as read-only storage, and counts
  * can come from a GPU-written indirect draw record. All positions are planar meters rendered with
  * `COORDINATE_SYSTEM.METER_OFFSETS` around `coordinateOrigin`, optionally through an affine
- * `positionScale`/`positionOffset` (for example raster cell coordinates to meters).
+ * `positionScale`/`positionOffset` (for example raster cell coordinates to meters). With the opt-in
+ * `analysisFrame` prop the meters are those of an azimuthal or Albers analysis frame instead: the
+ * shader inverts the frame to longitude/latitude and the layer draws with
+ * `COORDINATE_SYSTEM.LNGLAT` (`coordinateSystem` and `coordinateOrigin` are then ignored).
  *
  * Style prop groups of {@link SpatialAnalysisStyleProps} (all optional; defaults draw as before):
  *
@@ -280,6 +284,16 @@ export type SpatialAnalysisStyleProps = {
   blending?: SpatialAnalysisBlending;
   /** Affine transform applied to positions before projection. Defaults to identity. */
   positionScale?: readonly [number, number];
+  /**
+   * Opt-in: positions (after `positionScale`/`positionOffset`) are meters of this analysis frame
+   * (`createAnalysisFrameProjection` in `analysis-frame.ts`), not deck `METER_OFFSETS`. The shader
+   * inverts the frame on the sphere and the layer draws as `COORDINATE_SYSTEM.LNGLAT`, so outputs
+   * of analysis run in an azimuthal-equidistant, Lambert equal-area or Albers frame land where
+   * their longitude/latitude lies. The frame is compiled into the shader (changing it
+   * rebuilds the model); `coordinateSystem` and `coordinateOrigin` are ignored. Rasters need
+   * `tessellation` (it defaults to 32 with a frame).
+   */
+  analysisFrame?: AnalysisFrame;
   /** Affine transform offset applied after `positionScale`. */
   positionOffset?: readonly [number, number];
 };
@@ -306,6 +320,12 @@ const DEFAULT_PALETTE: readonly SpatialAnalysisColor[] = [
   [107, 158, 255, 255],
   [255, 92, 92, 255]
 ];
+
+/**
+ * Raster sub-quads per side when an `analysisFrame` is set and `tessellation` is not: the frame
+ * inverse and Mercator bend straight frame lines, so one quad would misplace cells.
+ */
+const DEFAULT_FRAME_TESSELLATION = 32;
 
 /** Byte length of the style uniform; the offsets are in `STYLE_OFFSETS`. */
 const STYLE_BYTE_LENGTH = 704;
@@ -774,10 +794,12 @@ export abstract class SpatialAnalysisBaseLayer<
    * add their own (segment line style, raster class outline).
    */
   protected getShaderFeatures(): SpatialAnalysisShaderFeatures {
-    return {
+    const features: SpatialAnalysisShaderFeatures = {
       channels: Boolean(this.props.instanceChannels),
       hatch: hasHatch(this.props)
     };
+    if (this.props.analysisFrame) features.analysisFrame = this.props.analysisFrame;
+    return features;
   }
 
   /**
@@ -895,8 +917,22 @@ export abstract class SpatialAnalysisBaseLayer<
    * factors of the `blending` prop are applied last, so they win.
    */
   override _drawLayer(options: Parameters<Layer['_drawLayer']>[0]): void {
+    let {shaderModuleProps} = options;
+    if (this.props.analysisFrame && shaderModuleProps?.project) {
+      // The analysis-frame hook emits longitude/latitude (with a low part), whatever the
+      // layer's coordinateSystem prop says.
+      shaderModuleProps = {
+        ...shaderModuleProps,
+        project: {
+          ...shaderModuleProps.project,
+          coordinateSystem: COORDINATE_SYSTEM.LNGLAT,
+          coordinateOrigin: [0, 0, 0]
+        }
+      };
+    }
     super._drawLayer({
       ...options,
+      shaderModuleProps,
       parameters: {...options.parameters, ...getBlendParameters(this.props.blending)}
     });
   }
@@ -1219,6 +1255,7 @@ export type SpatialAnalysisRasterLayerProps = LayerProps &
      * 32-64 for a continental extent): with the default `1`, one quad is interpolated linearly
      * in screen space and, because Web Mercator's scale varies with latitude, cells land tens of
      * kilometers from their true position at 1,800 km. Changing it rebuilds the layer's model.
+     * Defaults to 32 when `analysisFrame` is set.
      */
     tessellation?: number;
     /**
@@ -1246,9 +1283,10 @@ export class SpatialAnalysisRasterLayer extends SpatialAnalysisBaseLayer<
   protected getVertexCount(): number {
     return 6 * this.getTessellation() ** 2;
   }
-  /** Sub-quads per side, clamped to `1..256`. */
+  /** Sub-quads per side, clamped to `1..256` (default 1, or 32 with an `analysisFrame`). */
   protected getTessellation(): number {
-    return Math.min(256, Math.max(1, Math.floor(this.props.tessellation ?? 1)));
+    const fallback = this.props.analysisFrame ? DEFAULT_FRAME_TESSELLATION : 1;
+    return Math.min(256, Math.max(1, Math.floor(this.props.tessellation ?? fallback)));
   }
   protected override createBoundsBuffer(device: Device): Buffer | null {
     return device.createBuffer({

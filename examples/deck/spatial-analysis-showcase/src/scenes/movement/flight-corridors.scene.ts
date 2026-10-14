@@ -567,7 +567,7 @@ playCompiled.encode(commandEncoder, {parameters: undefined});`,
       textAlternative: 'A luminous density grid shows the busiest air corridors.',
       optionsMode: 'fresh',
       title: 'Add up the whole day: the airways emerge',
-      body: '**`GPULineDensity`** clips every segment of all 38,135 flights to a 0.2 degree grid and sums the length inside each cell. Line density is what QGIS calls "Line density"; here it runs in a few milliseconds on the GPU, in longitude/latitude with great-circle lengths (`coordinateSystem: \'spherical\'`).\n\nRead the map: bright straight lines are airways, bright knots are airports where arrivals and departures funnel together, dark areas are the empty sky between them. Try **Cell size** at 0.1 degrees (a compile-time option, so the control shows a rebuild badge): parallel airways separate. The curve below says how lopsided the sky is: a small share of cells carries most of the distance.',
+      body: '**`GPULineDensity`** clips every segment of all 38,135 flights to a 0.2 degree grid and sums the length inside each cell. Line density is what QGIS calls "Line density"; here it runs in a few milliseconds on the GPU, in longitude/latitude with great-circle lengths (a `spatialContext` with the great-circle metric).\n\nRead the map: bright straight lines are airways, bright knots are airports where arrivals and departures funnel together, dark areas are the empty sky between them. Try **Cell size** at 0.1 degrees (a compile-time option, so the control shows a rebuild badge): parallel airways separate. The curve below says how lopsided the sky is: a small share of cells carries most of the distance.',
       camera: {...US_VIEW, transitionMs: 1400},
       options: {
         showDensity: true,

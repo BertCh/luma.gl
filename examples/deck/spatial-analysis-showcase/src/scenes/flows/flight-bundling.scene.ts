@@ -491,7 +491,7 @@ graph.add(
     positions,                         // float32x2 [lon, lat] per airport (plus antimeridian copies)
     sourceVertices, targetVertices,    // uint32 airport per edge end
     edgeMask,                          // uint32 per edge: the region and distance filters
-    geographic: true,                  // lon/lat degrees: longitude scaled by cos(mid-latitude)
+    spatialContext: {coordinateSpace: 'longitude-latitude', metric: 'none'},  // degrees: longitude scaled by cos(mid-latitude)
     pointsPerEdge: ${state.pointsPerEdge},
     iterations: 32,                    // compile-time maximum
     densityResolution: ${state.densityResolution},

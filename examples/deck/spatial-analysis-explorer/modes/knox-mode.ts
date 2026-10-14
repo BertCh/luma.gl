@@ -434,11 +434,11 @@ export const knoxMode: SpatialAnalysisModeDefinition = {
     const observedReadout = context.controls.addReadout('Knox observed');
     const expectedReadout = context.controls.addReadout('Knox expected');
     const permutedReadout = context.controls.addReadout('Permutation mean ± sd');
-    const pValueReadout = context.controls.addReadout('Pseudo p (X ≥ obs)');
-    const poissonReadout = context.controls.addReadout('Poisson p (classic)');
+    const pValueReadout = context.controls.addReadout('Pseudo p, one-sided (X ≥ obs)');
+    const poissonReadout = context.controls.addReadout('Poisson p (classic, anti-conservative)');
     const mantelReadout = context.controls.addReadout('Mantel r (observed)');
     const mantelPermutedReadout = context.controls.addReadout('Mantel perm. mean ± sd');
-    const mantelPReadout = context.controls.addReadout('Mantel pseudo p');
+    const mantelPReadout = context.controls.addReadout('Mantel pseudo p, one-sided');
     const overflowReadout = context.controls.addReadout('Pair overflow');
     context.controls.addReadout('Data', trips.attribution);
     // The panel has no preformatted block, so the histogram goes straight into the readout area.

@@ -25,6 +25,20 @@ import type {SceneFrame, ScenePointerEvent} from '../scene';
 // Polygon layout
 // ---------------------------------------------------------------------------------------------
 
+/** Longitude/latitude positions, great-circle metric, meters: the context of the spherical variants. */
+export const GREAT_CIRCLE_CONTEXT = {
+  coordinateSpace: 'longitude-latitude',
+  metric: 'great-circle',
+  units: 'meters'
+} as const;
+
+/** Planar positions in the data's own units (local meters here): the default context, spelled out. */
+export const PLANAR_CONTEXT = {
+  coordinateSpace: 'planar',
+  metric: 'native',
+  units: 'native'
+} as const;
+
 /** A polygon dataset in the GeoArrow layout the contributors take, plus its longitude/latitude. */
 export type PolygonLayout = {
   featureCount: number;

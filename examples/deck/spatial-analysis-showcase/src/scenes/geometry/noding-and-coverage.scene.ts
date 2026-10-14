@@ -20,9 +20,9 @@ const KIND_LEGEND = [
   {color: [255, 255, 255, 255], label: 'Uncertain'}
 ] as const;
 
-const logDegrees = (value: number) => {
-  const degrees = 10 ** value;
-  return `${degrees < 0.01 ? degrees.toExponential(1) : degrees.toFixed(2)}° (~${Math.round(degrees * 95)} km)`;
+const logMeters = (value: number) => {
+  const meters = 10 ** value;
+  return meters < 1000 ? `${Math.round(meters)} m` : `${(meters / 1000).toFixed(1)} km`;
 };
 
 /** Noding, crossings, dissolve and coverage simplification. GPU work in `noding-and-coverage.compute.ts`. */
@@ -310,13 +310,13 @@ export default defineScene<NodingAndCoverageOptions>({
       label: 'Tolerance',
       group: 'Generalise',
       apply: 'param',
-      min: -3.5,
-      max: -0.3,
+      min: 1.5,
+      max: 4.7,
       step: 0.05,
-      default: -1.5,
-      format: logDegrees,
+      default: 3.5,
+      format: logMeters,
       disabledWhen: s => s.view !== 'generalise',
-      help: 'Douglas-Peucker tolerance in degrees (log scale). Only the selection re-runs when it moves.'
+      help: 'Douglas-Peucker tolerance in ground metres (log scale), measured on an Albers equal-area projection of the contiguous US (distance scale error up to 1.4%). Only the selection re-runs when it moves.'
     },
     {
       kind: 'select',
@@ -359,11 +359,11 @@ export default defineScene<NodingAndCoverageOptions>({
       apply: 'compile',
       default: '0',
       disabledWhen: s => s.view !== 'generalise',
-      help: 'Vertices that snap to the same point are one point of the coverage. 0 compares exact f32 values. Compile-time.',
+      help: 'Vertices within this many ground metres (Albers projection) snap to the same point of the coverage. 0 compares exact f32 values. Compile-time.',
       options: [
         {value: '0', label: 'Exact'},
-        {value: '0.0001', label: '0.0001°'},
-        {value: '0.001', label: '0.001°'}
+        {value: '10', label: '10 m'},
+        {value: '100', label: '100 m'}
       ]
     },
     {
@@ -470,7 +470,7 @@ Change **Dissolve counties by** below to the USDA rural-urban continuum code: th
 
 Use **Outlines** to show one result at a time, and zoom into a state border and raise **Tolerance** below: the blue line is single, the red one splits into two lines that disagree. **Topology repair rounds** (below) also find crossings and restore vertices (see the readout). Compare the kept percentage of the two.`,
       camera: {longitude: -80.5, latitude: 38.5, zoom: 6.4, transitionMs: 1600},
-      options: {view: 'generalise', coverageTolerance: -1.0, coverageOutline: 'both'},
+      options: {view: 'generalise', coverageTolerance: 4.0, coverageOutline: 'both'},
       highlight: {readout: 'coverageTopology'},
       controls: ['coverageTolerance', 'coverageOutline', 'topologyRounds'],
       readouts: ['coverageTopology', 'coverageKept', 'independentKept']
@@ -484,7 +484,7 @@ Use **Outlines** to show one result at a time, and zoom into a state border and 
       body: `**Limits.** Capacities are fixed at compile time: a too-small intersection or ring capacity truncates and sets a flag. Noding snaps end points only: a line that stops near the middle of another is not connected, and a bridge cannot be excluded. Ring assembly leaves open chains unwritten. Coverage simplification uses a distance, not an area, criterion, and a huge arc is processed serially.
 
 **Try it.** Set **Topology repair rounds** to 0 and watch the crossings reported. Then switch **Tool** to *Dissolve counties (ring assembly)* and turn **Cancel opposing segments** off, or make **Vertex matching distance** 0.005° (about 500 m) and see rings merge. Under *Crossings*, set **Intersect** to *Streets × streets (self)* and **Show** to *Overlaps* to find duplicated street geometry.`,
-      options: {view: 'generalise', coverageTolerance: -0.7, topologyRounds: '0'},
+      options: {view: 'generalise', coverageTolerance: 4.3, topologyRounds: '0'},
       controls: ['topologyRounds', 'view'],
       readouts: ['coverageTopology']
     }
@@ -623,13 +623,13 @@ graph.add(new GPUSegmentRingAssembly({
   from '@luma.gl/experimental/gpu-spatial-analysis';
 
 graph.add(new GPUCoverageSimplification({
-  positions, ringOffsets, polygonOffsets,
+  positions, ringOffsets, polygonOffsets,   // Albers CONUS metres
   snapTolerance: ${state.coverageSnap},
   topologyRounds: ${state.topologyRounds}, maximumRounds: ${state.coverageRounds},
   parameters: tolerance.importToGraph(graph),
   output: {positions: outPositions, ringOffsets: outRings, keepMask, overflow, topologyStats}
 }));
-tolerance.write(getGPULineSimplificationParameterValues({tolerance: ${(10 ** state.coverageTolerance).toFixed(4)}}));`;
+tolerance.write(getGPULineSimplificationParameterValues({tolerance: ${(10 ** state.coverageTolerance).toFixed(0)}}));`;
   },
 
   create: async ctx => (await import('./noding-and-coverage.compute')).createNodingAndCoverage(ctx)
